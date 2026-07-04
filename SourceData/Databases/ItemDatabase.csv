@@ -1,0 +1,4 @@
+﻿---,ItemType,Damage,ItemName,ItemText,ItemIcon,ItemClass
+Potion,Consumable,30,Potion,,/Game/_Main/TutorialImport/Icons/T_Potion.T_Potion,/Script/Engine.BlueprintGeneratedClass'/Game/_Main/Blueprints/03_ItemSystem/BP_ItemHealthPotion.BP_ItemHealthPotion_C'
+Hatchet,Equipable,50,Hatchet,<Bold>HATCHET</>,/Game/_Main/TutorialImport/Icons/T_Hatchet.T_Hatchet,/Script/Engine.BlueprintGeneratedClass'/Game/_Main/Blueprints/03_ItemSystem/BP_ItemHatchet.BP_ItemHatchet_C'
+Book,Readable,0,Book,Book text,/Game/_Main/TutorialImport/Icons/T_Book.T_Book,/Script/Engine.BlueprintGeneratedClass'/Game/_Main/Blueprints/03_ItemSystem/BP_ItemBook.BP_ItemBook_C'
