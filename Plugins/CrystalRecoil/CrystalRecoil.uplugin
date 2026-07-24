@@ -1,0 +1,28 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "CrystalRecoil",
+	"Description": "Pattern-based recoil system with a built-in Recoil Pattern Editor, runtime recovery and spread simulation.",
+	"Category": "Gameplay",
+	"CreatedBy": "",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "CrystalRecoil",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "CrystalRecoilEditor",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
