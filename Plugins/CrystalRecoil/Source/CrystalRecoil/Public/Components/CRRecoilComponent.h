@@ -53,7 +53,7 @@ public:
 	*/
 	UFUNCTION(BlueprintCallable, Category = "Recoil Component")
 	void SetRecoilStrength(const float InRecoilStrength);
-
+	
 	/** Returns the current recoil strength multiplier */
 	UFUNCTION(BlueprintCallable, Category = "Recoil Component")
 	float GetRecoilStrength() const;
@@ -62,6 +62,23 @@ public:
 	// ======================================================================================
 	// ================================= [arubaii] ADDED ====================================
 	// ======================================================================================
+	
+	
+	/** Sets the horizontal (yaw) recoil multiplier. Clamped to >= 0. Drive from mods/states. */
+	UFUNCTION(BlueprintCallable, Category = "Recoil Component")
+	void SetHorizontalRecoilStrength(const float In) { HorizontalRecoilStrength = FMath::Max(0.f, In); }
+
+	/** Sets the vertical (pitch) recoil multiplier. Clamped to >= 0. Drive from mods/states. */
+	UFUNCTION(BlueprintCallable, Category = "Recoil Component")
+	void SetVerticalRecoilStrength(const float In) { VerticalRecoilStrength = FMath::Max(0.f, In); }
+
+	/** Returns the current horizontal (yaw) recoil multiplier. */
+	UFUNCTION(BlueprintPure, Category = "Recoil Component")
+	float GetHorizontalRecoilStrength() const { return HorizontalRecoilStrength; }
+
+	/** Returns the current vertical (pitch) recoil multiplier. */
+	UFUNCTION(BlueprintPure, Category = "Recoil Component")
+	float GetVerticalRecoilStrength() const { return VerticalRecoilStrength; }
 	
 	/**
 	* Returns the index of the next shot in the recoil pattern.
@@ -84,20 +101,45 @@ public:
 	* Accumulates as shots are fired and drains once recovery begins after RecoveryDelay.
 	* Reduced early by player input that opposes the recoil (compensation).
 	*/
-	UFUNCTION(BlueprintPure, Category = "Recoil Component")
+	UFUNCTION(BlueprintPure, Category = "Recoil Component|Recovery")
 	FRotator GetRecoilToRecover() const { return RecoilToRecover; }
 	
-	/**
-	* Enables or disables recoil recovery.
-	* When disabled, the camera holds its position after each shot rather than returning.
-	* Useful for weapons where the player is expected to re-aim manually (shotguns, revolvers).
-	* See UCRRecoilComponent::TickComponent for the guarded block. 
-	*/
-	UFUNCTION(BlueprintCallable, Category = "Recoil Component")
+	UFUNCTION(BlueprintCallable, Category = "Recoil Component|Recovery")
 	void SetRecoveryEnabled(const bool bEnabled) { bRecoveryEnabled = bEnabled; }
 
-	UFUNCTION(BlueprintPure, Category = "Recoil Component")
+	UFUNCTION(BlueprintPure, Category = "Recoil Component|Recovery")
 	bool IsRecoveryEnabled() const { return bRecoveryEnabled; }
+	
+	UFUNCTION(BlueprintCallable, Category = "Recoil Component|Recovery")
+	void SetRecoverySpeedMultiplier(const float In);
+	
+	/**
+	 * Sets the vertical jitter amount and whether it scales with shot index.
+	 * @param In                Maximum random yaw (degrees) applied per shot. 
+	 * @param UseJitterScale    If true, jitter scales linearly with sustained fire (by shot index).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Recoil Component|Jitter")
+	void SetHorizontalJitter(const float In, const bool UseJitterScale)
+	{
+		HorizontalJitter = FMath::Max(0.f, In);
+		ShouldUseJitterScale_Hor = UseJitterScale;
+	}
+
+	/**
+	 * Sets the vertical jitter amount and whether it scales with shot index.
+	 * @param In                Maximum random pitch (degrees) applied per shot.
+	 * @param UseJitterScale    If true, jitter scales linearly with sustained fire (by shot index).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Recoil Component|Jitter")
+	void SetVerticalJitter(const float In, const bool UseJitterScale)
+	{
+		VerticalJitter = FMath::Max(0.f, In);
+		ShouldUseJitterScale_Ver = UseJitterScale;
+	}
+	
+	/** The strength of which the jitter scales (linearly), if UseJitterScale is True.**/
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "Recoil Component|Jitter")
+	float JitterScaleFactor = 0.1f;
 	
 	// ======================================================================================
 	// ======================================================================================
@@ -146,7 +188,18 @@ protected:
 
 	// Recoil strength and index parameters
 	float RecoilStrength = 1.f;
-	int32 CurrentShotIndex = 0;
+	
+	// [arubaii] ADDED: Horizontal and vertical recoil knobs
+	float HorizontalRecoilStrength = 1.f;
+	float VerticalRecoilStrength = 1.f;
+	
+	// [arubaii] ADDED: Per-shot recoil jitter
+	float HorizontalJitter = 0.f;   // degrees of random yaw per delta
+	float VerticalJitter = 0.f;     // degrees of random pitch per delta
+	bool ShouldUseJitterScale_Hor = false; 
+	bool ShouldUseJitterScale_Ver = false; 
+	
+	
 
 	// Recoil uplift state
 	FRotator RecoilToApply = FRotator::ZeroRotator;
@@ -156,6 +209,7 @@ protected:
 	// Recovery state
 	FRotator RecoilToRecover = FRotator::ZeroRotator;
 	float CurrentRecoverySpeed = 0.f;
+	float RecoverySpeedMultiplier = 1.f;
 	float LastFireTime = 0.f;
 
 	// Recovery cancellation tracking
@@ -170,4 +224,7 @@ protected:
 	
 	// [arubaii83] ADDED: Gates the recovery block in TickComponent
 	bool bRecoveryEnabled = true;
+	
+	int32 CurrentShotIndex = 0;
+	
 };

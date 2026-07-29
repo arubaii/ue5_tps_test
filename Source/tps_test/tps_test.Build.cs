@@ -13,6 +13,7 @@ public class tps_test : ModuleRules
 			"CoreUObject",
 			"Engine",
 			"InputCore",
+			"DeveloperSettings",
 			"EnhancedInput",
 			"AIModule",
 			"StateTreeModule",

@@ -10,7 +10,8 @@ void FCRRecoilPatternEditorCommands::RegisterCommands()
 		"Remove Unit",
 		"Remove the selected recoil unit",
 		EUserInterfaceActionType::Button,
-		FInputChord(EKeys::Platform_Delete));
+		FInputChord(EKeys::Platform_Delete),
+		FInputChord(EKeys::BackSpace));
 
 	UI_COMMAND(SelectAll,
 		"Select All",

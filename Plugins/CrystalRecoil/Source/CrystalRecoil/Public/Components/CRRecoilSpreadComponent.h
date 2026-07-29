@@ -71,6 +71,23 @@ public:
 	*/
 	UPROPERTY(BlueprintAssignable, Category = "Spread Recoil Component")
 	FCRSpreadRecoilHeatChangedDelegate OnHeatChanged;
+	
+	// [arubaii] ADDED: Max shot dispersion. 
+	/** 
+	 * Max shot dispersion. Scales the spread angle of the cone 
+	 * 
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Spread Recoil Component")
+	void SetSpreadAngleMultiplier(const float In) { SpreadAngleMultiplier = FMath::Max(0.f, In); }
+	
+	// [arubaii] ADDED: Per-shot dispersion.
+	/**
+	 * Multiplier on the heat added per shot (per-shot dispersion).
+	 * 1.0 = full, 0.6 = 40% reduced per-shot dispersion, etc.
+	 * Drive from mods/states to tune how fast spread builds.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Spread Recoil Component")
+	void SetPerShotHeatMultiplier(const float InMultiplier);
 
 protected:
 	virtual void ApplyShot() override;
@@ -97,4 +114,9 @@ protected:
 	FRuntimeFloatCurve HeatToCooldownPerSecondCurve;
 
 	float CurrentRecoilHeat = 0.f;
+	
+	// [arubaii] ADDED: Max shot dispersion.
+	float SpreadAngleMultiplier = 1.f;
+	// [arubaii] ADDED: Per-shot dispersion.
+	float PerShotHeatMultiplier = 1.f;
 };

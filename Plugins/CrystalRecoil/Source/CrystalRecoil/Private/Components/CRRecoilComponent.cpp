@@ -96,7 +96,11 @@ void UCRRecoilComponent::TickComponent(float DeltaTime, ELevelTick TickType, FAc
 						}
 					}
 
-					CurrentRecoverySpeed = FMath::FInterpConstantTo(CurrentRecoverySpeed, RecoilPattern->MaxRecoverySpeed, DeltaTime, RecoilPattern->RecoveryAcceleration);
+					// [arubaii] ADDED: RecoverySpeedMultiplier
+					const float TargetRecoverySpeed = RecoilPattern->MaxRecoverySpeed * RecoverySpeedMultiplier;
+					const float RecoveryAccel = RecoilPattern->RecoveryAcceleration * RecoverySpeedMultiplier;
+					CurrentRecoverySpeed = FMath::FInterpConstantTo(CurrentRecoverySpeed, TargetRecoverySpeed, DeltaTime, RecoveryAccel);
+
 					DeltaRecoveryRotation = FMath::RInterpTo(FRotator::ZeroRotator, RecoilToRecover, DeltaTime, CurrentRecoverySpeed);
 					DeltaRecoveryRotation = FRotator(-DeltaRecoveryRotation.Pitch, -DeltaRecoveryRotation.Yaw, 0.f);
 
@@ -136,7 +140,27 @@ void UCRRecoilComponent::ApplyShot()
 		return;
 	}
 
-	const FVector2f RecoilPositionDelta = RecoilPattern->ConsumeShot(CurrentShotIndex) * RecoilStrength;
+	// [arubaii] CHANGED: Removed const
+	FVector2f RecoilPositionDelta = RecoilPattern->ConsumeShot(CurrentShotIndex) * RecoilStrength;
+	
+	// [arubaii] ADDED: Per-shot jitter
+	// Scales linearly with current shot index (first shot has no jitter)
+	const float JitterScale = FMath::Min(CurrentShotIndex * JitterScaleFactor, 1.f);
+	
+	RecoilPositionDelta.X += FMath::FRandRange(-HorizontalJitter, HorizontalJitter)
+							 * (ShouldUseJitterScale_Hor ? JitterScale : 1.f);
+	RecoilPositionDelta.Y += FMath::FRandRange(-VerticalJitter, VerticalJitter)
+							 * (ShouldUseJitterScale_Ver ? JitterScale : 1.f);
+	
+	// [arubaii] ADDED: Horizontal and vertical strength scale the whole delta (pattern + jitter)
+	/*
+	 * Importantly, the strength is applied AFTER the jitter, so that perfectly vertical/horizontal recoil patterns
+	 * with jitter are still affected by recoil strength
+	*/
+	RecoilPositionDelta.X *= HorizontalRecoilStrength;
+	RecoilPositionDelta.Y *= VerticalRecoilStrength;
+	
+
 	const float RecoilDeltaLength = RecoilPositionDelta.Size();
 
 	// Map UpliftSpeed (0-1) to duration: high sharpness = short = snappy
@@ -154,7 +178,8 @@ void UCRRecoilComponent::ApplyShot()
 	CurrentRecoilSpeed = 2.f * RecoilDeltaLength / UpliftDuration;
 
 	RecoilToApply = FRotator(-RecoilPositionDelta.Y, RecoilPositionDelta.X, 0.0);
-	CurrentRecoverySpeed = RecoilPattern->InitialRecoverySpeed;
+	// [arubaii] ADDED: RecoverySpeedMultiplier
+	CurrentRecoverySpeed = RecoilPattern->InitialRecoverySpeed * RecoverySpeedMultiplier;
 	LastFireTime = GetWorld()->GetTimeSeconds();
 }
 
@@ -280,4 +305,9 @@ bool UCRRecoilComponent::ProcessDeltaRecoveryRotation(FRotator& DeltaRecoveryRot
 	// return !bIsPlayingCinematic;
 
 	return true;
+}
+
+void UCRRecoilComponent::SetRecoverySpeedMultiplier(const float In)
+{
+    RecoverySpeedMultiplier = FMath::Max(0.f, In);
 }

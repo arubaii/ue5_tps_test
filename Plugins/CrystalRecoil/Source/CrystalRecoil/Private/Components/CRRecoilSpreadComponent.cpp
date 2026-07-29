@@ -19,10 +19,11 @@ void UCRRecoilSpreadComponent::TickComponent(float DeltaTime, ELevelTick TickTyp
 void UCRRecoilSpreadComponent::ApplyShot()
 {
     Super::ApplyShot();
-
     if (ReadyToCalculateRecoil())
     {
-        AddRecoilHeat(ShotToHeatCurve.GetRichCurveConst()->Eval(CurrentRecoilHeat));
+        // [arubaii] CHANGED: Per-shot dispersion tunable 
+        const float HeatToAdd = ShotToHeatCurve.GetRichCurveConst()->Eval(CurrentRecoilHeat) * PerShotHeatMultiplier;
+        AddRecoilHeat(HeatToAdd);
     }
 }
 
@@ -55,14 +56,7 @@ void UCRRecoilSpreadComponent::SetRecoilHeatCoolDownDelay(const float InDelay)
     RecoilHeatCooldownDelay = FMath::Max(0.f, InDelay);
 }
 
-float UCRRecoilSpreadComponent::GetCurrentSpreadAngle() const
-{
-    if (!ensureMsgf(HeatToSpreadAngleCurve.GetRichCurveConst(), TEXT("HeatToSpreadAngleCurve is not set")))
-    {
-        return 0.f;
-    }
-    return HeatToSpreadAngleCurve.GetRichCurveConst()->Eval(CurrentRecoilHeat);
-}
+
 
 void UCRRecoilSpreadComponent::DoHeatCooldown(const float DeltaTime)
 {
@@ -77,4 +71,18 @@ void UCRRecoilSpreadComponent::DoHeatCooldown(const float DeltaTime)
 bool UCRRecoilSpreadComponent::ReadyToCalculateRecoil() const
 {
     return ShotToHeatCurve.GetRichCurveConst() && HeatToSpreadAngleCurve.GetRichCurveConst() && HeatToCooldownPerSecondCurve.GetRichCurveConst();
+}
+
+float UCRRecoilSpreadComponent::GetCurrentSpreadAngle() const
+{
+    if (!ensureMsgf(HeatToSpreadAngleCurve.GetRichCurveConst(), TEXT("HeatToSpreadAngleCurve is not set")))
+    {
+        return 0.f;
+    }
+    return HeatToSpreadAngleCurve.GetRichCurveConst()->Eval(CurrentRecoilHeat) * SpreadAngleMultiplier;
+}
+
+void UCRRecoilSpreadComponent::SetPerShotHeatMultiplier(const float InMultiplier)
+{
+    PerShotHeatMultiplier = FMath::Max(0.f, InMultiplier);
 }
