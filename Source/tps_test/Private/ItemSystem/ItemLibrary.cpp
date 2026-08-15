@@ -1,5 +1,6 @@
 #include "Public/ItemSystem/ItemLibrary.h"
 #include "Engine/DataTable.h"
+#include "ItemSystem/Definition.h"
 
 UDataTable* UItemLibrary::GetTableForRowName(FName RowName)
 {
@@ -117,4 +118,10 @@ DEFINE_FUNCTION(UItemLibrary::execGetItemDef)
         P_NATIVE_END;
     }
     *(bool*)RESULT_PARAM = bResult;
+}
+
+
+bool UItemLibrary::GetItemStructTyped(FName RowName, FItemStructure& OutItemStructure)
+{
+    return Generic_GetRow(RowName, &OutItemStructure, FItemStructure::StaticStruct(), /*bExtractItemDetails=*/true);
 }

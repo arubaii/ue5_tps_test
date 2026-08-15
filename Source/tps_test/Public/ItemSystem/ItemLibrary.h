@@ -52,6 +52,11 @@ public:
 	   meta = (CustomStructureParam = "OutItemRow", ReturnDisplayName = "Found"))
 	static bool GetItemDef(FName RowName, int32& OutItemRow);
 	DECLARE_FUNCTION(execGetItemDef);
+	
+	
+	/** C++-friendly: get the shared FItemStructure for a row name. */
+	UFUNCTION(BlueprintPure, Category = "Item Library", meta = (ReturnDisplayName = "Found"))
+	static bool GetItemStructTyped(FName RowName, FItemStructure& OutItemStructure);
 
 private:
 	static UDataTable* GetTableForRowName(FName RowName);

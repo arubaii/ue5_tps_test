@@ -19,7 +19,10 @@ public class tps_test : ModuleRules
 			"StateTreeModule",
 			"GameplayStateTreeModule",
 			"UMG",
-			"Slate"
+			"Slate",
+			"NetCore",	
+			"GameplayTags",		// FGameplayTag in FModifierPayload
+			"CrystalRecoil"		// UCRRecoilPattern in FWeaponRecoil
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
