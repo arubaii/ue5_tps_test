@@ -5,9 +5,11 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "Net/Serialization/FastArraySerializer.h"
-#include "Public/ItemSystem/InventoryEnums.h"
-#include "Public/ItemSystem/Definition.h"
-#include "Public/ItemSystem/Instance.h"
+#include "Public/Systems/Item/InventoryEnums.h"
+#include "Public/Systems/Item/Definition.h"
+#include "Public/Systems/Item/Instance.h"
+#include "Public/Systems/Item/ItemFragment.h"
+#include "Public/Systems/Item/ItemFragmentLibrary.h"
 #include "InventoryComponent.generated.h"
 
 class UInventoryComponent;
@@ -300,7 +302,7 @@ public:
 	int32 PickupItem(AActor* WorldItemActor);
 
 	/** Core pickup logic when you already hold the payload (used by PickupItem; exposed for native callers). */
-	int32 PickupItemInstance(const FItemInstance& WorldInstance, const TArray<FItemInstance>& AttachedInstances, bool& bAnyTaken);
+	int32 PickupItemInstance(const FItemInstance& WorldInstance, const TArray<FItemInstance>& AttachedInstances, bool& AnyTaken);
 
 	/** DropItem parity: clear the slot, move the instance (+ attachment closure) onto a spawned world actor. */
 	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Inventory|Actions")
@@ -373,6 +375,123 @@ public:
 	// --- Fast array plumbing (called by FInventoryItemList replication callbacks) ---
 	void HandleReplicatedItemsChanged(const TArray<FGuid>& ChangedIds);
 	void HandleReplicatedItemsRebuilt();
+	
+	
+	/** 
+	 * Authority: overwrite a stored instance (used by systems like weapons to write
+	 * ammo/durability back). Broadcasts the owning slot's change. 
+	*/
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Inventory|Items")
+	bool SetItemInstance(FGuid ItemID, const FItemInstance& NewInstance);
+ 
+	/** Total quantity across all slotted stacks whose RowName matches (ammo pool read). */
+	UFUNCTION(BlueprintPure, Category = "Inventory|Items")
+	int32 GetTotalQuantityByRowName(FName RowName) const;
+ 
+	/**
+	 * Authority: consume up to Amount across stacks of RowName — first stack found,
+	 * then the next, and so on; emptied stacks are removed from their slots.
+	 * Returns the amount actually consumed (may be less than Amount).
+	 */
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Inventory|Items")
+	int32 ConsumeItemsByRowName(FName RowName, int32 Amount);
+
+	// =================================================================================
+	//  Fragments
+	// =================================================================================
+
+	/** Read a fragment off a stored item. Null when the item or the fragment is absent. */
+	template<typename T>
+	const T* FindFragment(FGuid ItemID) const
+	{
+		FItemInstance Instance;
+		return GetItem(ItemID, Instance) ? Instance.GetFragment<T>() : nullptr;
+	}
+
+	/**
+	 * Read-modify-write a fragment in one step: fetch, mutate, push back, replicate.
+	 *
+	 * This is the ONLY correct way to change fragment state from C++. GetItem hands back
+	 * a COPY, so editing that copy and dropping it does nothing - a mistake that silently
+	 * discarded every ammo decrement until it was caught.
+	 *
+	 *   Inv->ModifyFragment<FWeaponItemFragment>(Id, [](FWeaponItemFragment& S)
+	 *   {
+	 *       S.AmmoCount.AmmoInMag--;
+	 *   });
+	 */
+	template<typename T>
+	bool ModifyFragment(FGuid ItemID, TFunctionRef<void(T&)> Mutator)
+	{
+		if (!HasAuthority())
+		{
+			return false;
+		}
+
+		FItemInstance Instance;
+		if (!GetItem(ItemID, Instance))
+		{
+			return false;
+		}
+
+		T* Fragment = Instance.GetMutableFragment<T>();
+		if (!Fragment)
+		{
+			return false;
+		}
+
+		Mutator(*Fragment);
+		return SetItemInstance(ItemID, Instance);
+	}
+
+	/** Ids of every stored item carrying a fragment of the given type. */
+	UFUNCTION(BlueprintPure, Category = "Inventory|Fragments")
+	TArray<FGuid> FindItemsWithFragment(
+		UPARAM(meta = (MetaStruct = "/Script/tps_test.ItemFragment")) UScriptStruct* FragmentType) const;
+
+	/**
+	 * Blueprint: read a fragment from a stored item. The wildcard pin's struct type IS the
+	 * query - connect a FWeaponItemFragment variable and you get the weapon fragment. One
+	 * node covers every fragment type you will ever add.
+	 */
+	UFUNCTION(BlueprintCallable, CustomThunk, Category = "Inventory|Fragments",
+		meta = (CustomStructureParam = "OutFragment", DisplayName = "Get Item Fragment By Id"))
+	bool GetItemFragmentById(FGuid ItemID, int32& OutFragment) const;
+
+	/** Blueprint: write a fragment onto a stored item and replicate it. Authority only. */
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, CustomThunk, Category = "Inventory|Fragments",
+		meta = (CustomStructureParam = "InFragment", DisplayName = "Set Item Fragment By Id"))
+	bool SetItemFragmentById(FGuid ItemID, const int32& InFragment);
+
+	DECLARE_FUNCTION(execGetItemFragmentById)
+	{
+		P_GET_STRUCT(FGuid, ItemID);
+		Stack.StepCompiledIn<FStructProperty>(nullptr);
+		void* OutPtr = Stack.MostRecentPropertyAddress;
+		FStructProperty* OutProp = CastField<FStructProperty>(Stack.MostRecentProperty);
+		P_FINISH;
+		bool bResult = false;
+		P_NATIVE_BEGIN;
+		FItemInstance Instance;
+		bResult = P_THIS->GetItem(ItemID, Instance)
+			&& UItemFragmentLibrary::Generic_GetFragment(Instance.Fragments, OutProp, OutPtr);
+		P_NATIVE_END;
+		*static_cast<bool*>(RESULT_PARAM) = bResult;
+	}
+
+	DECLARE_FUNCTION(execSetItemFragmentById)
+	{
+		P_GET_STRUCT(FGuid, ItemID);
+		Stack.StepCompiledIn<FStructProperty>(nullptr);
+		const void* InPtr = Stack.MostRecentPropertyAddress;
+		FStructProperty* InProp = CastField<FStructProperty>(Stack.MostRecentProperty);
+		P_FINISH;
+		bool bResult = false;
+		P_NATIVE_BEGIN;
+		bResult = P_THIS->SetFragmentInternal(ItemID, InProp, InPtr);
+		P_NATIVE_END;
+		*static_cast<bool*>(RESULT_PARAM) = bResult;
+	}
 
 protected:
 	// ---------------------------------------------------------------------------------
@@ -397,7 +516,7 @@ protected:
 
 	/** Merge SourceSlot's stack into DestSlot across (possibly different) components. */
 	bool MergeAcross(UInventoryComponent* SourceInv, const FInventorySlot& SourceSlot,
-	                 UInventoryComponent* DestInv, const FInventorySlot& DestSlot);
+	                 UInventoryComponent* DestInv, const FInventorySlot& DestSlot) const;
 
 	// ---------------------------------------------------------------------------------
 	// Server RPC carriers (routed through player-owned components)
@@ -493,7 +612,7 @@ protected:
 
 	/** Spawn a world item actor carrying Instance (+closure) via IWorldItemInterface. */
 	AActor* SpawnWorldItem(TSubclassOf<AActor> ItemClass, const FTransform& Transform,
-	                       FItemInstance Instance, const TArray<FItemInstance>& AttachedInstances);
+	                       FItemInstance Instance, const TArray<FItemInstance>& AttachedInstances) const;
 
 	/** SpawnItemInFrontOfPlayer parity (spawns at the owner avatar's transform). */
 	AActor* SpawnItemInFrontOfPlayer(TSubclassOf<AActor> ItemClass, const FItemInstance& Instance,
@@ -509,4 +628,16 @@ protected:
 
 	/** On-screen + log debug message (so failures are visible without the Output Log open). */
 	static void ScreenLog(const FString& Message, bool bIsError = true);
+	
+	/** Durability now lives in a FDurabilityFragment. Returns -1 when the item has none,
+	matching the sentinel the create/build functions already use. */
+	static float GetInstanceDurability(const FItemInstance& Instance);
+ 
+	/** Write a durability value, adding the fragment if the definition didn't author one. */
+	static void SetInstanceDurability(FItemInstance& Instance, float NewDurability);
+
+	/** Shared by the Set Item Fragment By Id thunk: fetch, write, push back through the store. */
+	bool SetFragmentInternal(FGuid ItemID, FStructProperty* InProp, const void* InPtr);
+	
+	UInventoryComponent* GetRoutingComponent();
 };

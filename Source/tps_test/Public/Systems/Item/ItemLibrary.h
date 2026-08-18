@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
+#include "Engine/DataTable.h"        // UDataTable, FTableRowBase, FindRow
+#include "Templates/SubclassOf.h"    
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "ItemLibrary.generated.h"
 
@@ -57,6 +59,62 @@ public:
 	/** C++-friendly: get the shared FItemStructure for a row name. */
 	UFUNCTION(BlueprintPure, Category = "Item Library", meta = (ReturnDisplayName = "Found"))
 	static bool GetItemStructTyped(FName RowName, FItemStructure& OutItemStructure);
+	
+public:
+	/**
+	 * Typed row lookup: resolves the DataTable for RowName via the UItemTableSettings
+	 * prefix map, verifies the table's row struct is (or derives from) T, and copies the
+	 * row into OutRow. Returns false if the prefix/table/row aren't found or the struct
+	 * type doesn't match. Header-defined because it's a template.
+	 *
+	 * Usage: UItemLibrary::GetItemDefTyped<FWeaponRow>(RowName, OutWeaponRow);
+	 */
+	template<typename T>
+	static bool GetItemDefTyped(FName RowName, T& OutRow)
+	{
+		static_assert(TIsDerivedFrom<T, FTableRowBase>::IsDerived,
+		              "GetItemDefTyped<T>: T must derive from FTableRowBase.");
+
+		OutRow = T();
+
+		if (RowName == NAME_None)
+		{
+			return false;
+		}
+
+		const UItemTableSettings* Settings = GetDefault<UItemTableSettings>();
+		if (!Settings)
+		{
+			return false;
+		}
+
+		// Prefix -> table (first matching prefix wins), matching UItemLibrary's own routing.
+		const FString RowStr = RowName.ToString();
+		UDataTable* Table = nullptr;
+		for (const TPair<FString, TSoftObjectPtr<UDataTable>>& Pair : Settings->PrefixToTable)
+		{
+			if (RowStr.StartsWith(Pair.Key))
+			{
+				Table = Pair.Value.LoadSynchronous();
+				break;
+			}
+		}
+
+		// The table's row struct must actually be T (GetItemDef's exact-match behavior).
+		if (!Table || !Table->GetRowStruct() || !Table->GetRowStruct()->IsChildOf(T::StaticStruct()))
+		{
+			return false;
+		}
+
+		const T* Found = Table->FindRow<T>(RowName, TEXT("UItemLibrary::GetItemDefTyped"), /*bWarnIfMissing*/ false);
+		if (!Found)
+		{
+			return false;
+		}
+
+		OutRow = *Found;
+		return true;
+	}
 
 private:
 	static UDataTable* GetTableForRowName(FName RowName);

@@ -20,6 +20,7 @@ public class tps_test : ModuleRules
 			"GameplayStateTreeModule",
 			"UMG",
 			"Slate",
+			"Niagara",
 			"NetCore",	
 			"GameplayTags",		// FGameplayTag in FModifierPayload
 			"CrystalRecoil"		// UCRRecoilPattern in FWeaponRecoil

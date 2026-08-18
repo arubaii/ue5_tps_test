@@ -10,6 +10,6 @@ public class tps_testEditorTarget : TargetRules
 		Type = TargetType.Editor;
 		DefaultBuildSettings = BuildSettingsVersion.V6;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_7;
-		ExtraModuleNames.Add("tps_test");
+		ExtraModuleNames.AddRange(new string[] { "tps_test", "tps_testEditor" });
 	}
 }

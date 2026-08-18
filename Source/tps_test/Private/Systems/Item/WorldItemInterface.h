@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "UObject/Interface.h"
-#include "Public/ItemSystem/Instance.h"
+#include "Public/Systems/Item/Instance.h"
 #include "WorldItemInterface.generated.h"
 
 /**

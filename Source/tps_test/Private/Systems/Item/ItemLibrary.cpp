@@ -1,6 +1,6 @@
-#include "Public/ItemSystem/ItemLibrary.h"
+#include "Public/Systems/Item/ItemLibrary.h"
 #include "Engine/DataTable.h"
-#include "ItemSystem/Definition.h"
+#include "Systems/Item/Definition.h"
 
 UDataTable* UItemLibrary::GetTableForRowName(FName RowName)
 {
