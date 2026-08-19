@@ -32,5 +32,5 @@ private:
 	void RegisterAllRuntimeStructs();
 
 	/** Struct type names registered by this module, unregistered on shutdown. */
-	TArray<FName> RegisteredStructNames;
+	TArray<FName> m_RegisteredStructNames;
 };

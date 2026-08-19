@@ -1,0 +1,24 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0",
+  "FriendlyName": "Struct Category Groups",
+  "Description": "Turns Category metadata on nested struct members into real collapsible groups in Details panels, DataTable row editors, and anywhere else a struct is displayed nested.",
+  "Category": "Editor",
+  "CreatedBy": "Bilcash",
+  "CreatedByURL": "",
+  "DocsURL": "",
+  "MarketplaceURL": "",
+  "SupportURL": "",
+  "CanContainContent": false,
+  "IsBetaVersion": false,
+  "IsExperimentalVersion": false,
+  "Installed": false,
+  "Modules": [
+    {
+      "Name": "StructCategoryGroupsEditor",
+      "Type": "Editor",
+      "LoadingPhase": "PostEngineInit"
+    }
+  ]
+}

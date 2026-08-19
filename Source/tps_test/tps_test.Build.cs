@@ -22,8 +22,9 @@ public class tps_test : ModuleRules
 			"Slate",
 			"Niagara",
 			"NetCore",	
+			"PhysicsCore",
 			"GameplayTags",		// FGameplayTag in FModifierPayload
-			"CrystalRecoil"		// UCRRecoilPattern in FWeaponRecoil
+			"CrystalRecoil"  // UCRRecoilPattern in FWeaponRecoil
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

@@ -10,7 +10,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
 #include "Blueprint/UserWidget.h"
-#include "tps_test.h"
+#include "Game/tps_test.h"
 #include "Widgets/Input/SVirtualJoystick.h"
 
 void ACombatPlayerController::BeginPlay()

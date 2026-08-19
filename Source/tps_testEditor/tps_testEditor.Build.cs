@@ -6,24 +6,25 @@ public class tps_testEditor : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
-		PublicDependencyModuleNames.AddRange(new string[]
-		{
-			"Core",
-			"CoreUObject",
-			"Engine",
-			"tps_test"        // the runtime module whose structs we customize
+		// Public dependencies should only be things that other modules 
+		// inheriting from this editor module absolutely must see in headers.
+		PublicDependencyModuleNames.AddRange(new string[] { 
+			"Core", 
+			"CoreUObject", 
+			"Engine", 
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[]
-		{
-			"UnrealEd",
-			"BlueprintGraph",
-			"KismetCompiler",
-			"GraphEditor",
-			"Slate",
-			"SlateCore",
-			"InputCore",
-			"PropertyEditor"   // FCategorizedStructCustomization needs this
+		// Keep editor-only workflows and your runtime game module private
+		PrivateDependencyModuleNames.AddRange(new string[] { 
+			"tps_test", // Moved here to prevent cyclic dependency issues
+			"UnrealEd", 
+			"BlueprintGraph", 
+			"KismetCompiler", 
+			"GraphEditor", 
+			"Slate", 
+			"SlateCore", 
+			"InputCore", 
+			"PropertyEditor" 
 		});
 	}
 }
