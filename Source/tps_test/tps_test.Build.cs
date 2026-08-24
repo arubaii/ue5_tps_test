@@ -20,6 +20,7 @@ public class tps_test : ModuleRules
 			"GameplayStateTreeModule",
 			"UMG",
 			"Slate",
+			"SlateCore",
 			"Niagara",
 			"NetCore",	
 			"PhysicsCore",

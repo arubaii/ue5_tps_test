@@ -9,74 +9,72 @@
 
 namespace
 {
-	static const FName s_UseCategoryGroupsMetaKey(TEXT("UseCategoryGroups"));
+    static const FName s_UseCategoryGroupsMetaKey(TEXT("UseCategoryGroups"));
 }
 
 void FStructCategoryGroupsEditorModule::RegisterOptedInStructs()
 {
-	FPropertyEditorModule& propertyModule =
-		FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+    FPropertyEditorModule& propertyModule =
+       FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
-	for (TObjectIterator<UScriptStruct> structIt; structIt; ++structIt)
-	{
-		UScriptStruct* scriptStruct = *structIt;
-		if (!scriptStruct)
-		{
-			continue;
-		}
+    for (TObjectIterator<UScriptStruct> structIt; structIt; ++structIt)
+    {
+       UScriptStruct* scriptStruct = *structIt;
+       if (!scriptStruct)
+       {
+          continue;
+       }
 
-		// Opt-in gate: controlled by FStructCategoryGroups::bRequireOptInTag. When true
-		// (default), only structs whose USTRUCT() carries meta = (UseCategoryGroups) are
-		// enrolled. When false, every USTRUCT found here is enrolled, including engine and
-		// third-party plugin structs.
+       // Opt-in gate: only structs whose USTRUCT() carries meta = (UseCategoryGroups)
+       // are enrolled.
 #if WITH_EDITORONLY_DATA
-		if (FStructCategoryGroups::bRequireOptInTag && !scriptStruct->HasMetaData(s_UseCategoryGroupsMetaKey))
-		{
-			continue;
-		}
+       if (!scriptStruct->HasMetaData(s_UseCategoryGroupsMetaKey))
+       {
+          continue;
+       }
 #else
-		continue;
+       continue;
 #endif
 
-		const FName structName = scriptStruct->GetFName();
-		if (m_RegisteredStructNames.Contains(structName))
-		{
-			continue;
-		}
+       const FName structName = scriptStruct->GetFName();
+       if (m_RegisteredStructNames.Contains(structName))
+       {
+          continue;
+       }
 
-		propertyModule.RegisterCustomPropertyTypeLayout(
-			structName,
-			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FStructCategoryGroups::MakeInstance));
+       propertyModule.RegisterCustomPropertyTypeLayout(
+          structName,
+          FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FStructCategoryGroups::MakeInstance));
 
-		m_RegisteredStructNames.Add(structName);
-	}
+       m_RegisteredStructNames.Add(structName);
+    }
 
-	propertyModule.NotifyCustomizationModuleChanged();
+    propertyModule.NotifyCustomizationModuleChanged();
 }
 
 void FStructCategoryGroupsEditorModule::StartupModule()
 {
-	RegisterOptedInStructs();
+    RegisterOptedInStructs();
 }
 
 void FStructCategoryGroupsEditorModule::ShutdownModule()
 {
-	if (!FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
-	{
-		m_RegisteredStructNames.Reset();
-		return;
-	}
+    if (!FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
+    {
+       m_RegisteredStructNames.Reset();
+       return;
+    }
 
-	FPropertyEditorModule& propertyModule =
-		FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+    FPropertyEditorModule& propertyModule =
+       FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
-	for (const FName& structName : m_RegisteredStructNames)
-	{
-		propertyModule.UnregisterCustomPropertyTypeLayout(structName);
-	}
-	m_RegisteredStructNames.Reset();
+    for (const FName& structName : m_RegisteredStructNames)
+    {
+       propertyModule.UnregisterCustomPropertyTypeLayout(structName);
+    }
+    m_RegisteredStructNames.Reset();
 
-	propertyModule.NotifyCustomizationModuleChanged();
+    propertyModule.NotifyCustomizationModuleChanged();
 }
 
 IMPLEMENT_MODULE(FStructCategoryGroupsEditorModule, StructCategoryGroupsEditor)

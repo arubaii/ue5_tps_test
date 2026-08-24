@@ -178,7 +178,7 @@ struct FWeaponStats
  * FWeaponItemFragment, so attachments and modifiers can tune a single copy without
  * touching every other weapon of the same type.
  */
-USTRUCT(BlueprintType)
+USTRUCT(BlueprintType, meta = (UseCategoryGroups))
 struct FWeaponRecoil
 {
 	GENERATED_BODY()
@@ -276,7 +276,7 @@ struct FWeaponRecoil
 /**
  * Weapon presentation & spawn design — the cosmetic/spawnable assets a weapon uses
  */
-USTRUCT(BlueprintType)
+USTRUCT(BlueprintType, meta = (UseCategoryGroups))
 struct FWeaponDesign
 {
 	GENERATED_BODY()
@@ -295,7 +295,7 @@ struct FWeaponDesign
 	TSoftObjectPtr<USoundBase> ShotSound;
 };
 
-USTRUCT(BlueprintType)
+USTRUCT(BlueprintType, meta = (UseCategoryGroups))
 struct FProjectileImpact
 {
 	GENERATED_BODY()

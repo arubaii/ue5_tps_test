@@ -856,8 +856,43 @@ void UWeaponComponent::TryFire()
 		                          *MuzzleSocketName.ToString()));
 	}
 
+	// --- Muzzle -> target obstruction check (THIRD-PERSON FIX) -------------------------
+	// ComputeAimTargetPoint only ever traces from the CAMERA. In third person the camera
+	// sits up/behind the character while the muzzle is out at arm's length (often
+	// laterally offset over a shoulder). The camera can have a completely clear line to
+	// the crosshair target while the muzzle's line to that SAME point clips a wall,
+	// pillar, low cover, or the character's own geometry that the camera trace never
+	// touched. Nothing previously re-checked this, so SpawnProjectile could send a
+	// projectile toward/through geometry sitting right in front of the barrel.
+	//
+	// Re-trace from the muzzle to the camera's target point using the same object types
+	// as the aim trace. If something is hit before the target, that hit becomes the
+	// actual point we aim at — this both bends the shot to stop at the real obstruction
+	// and keeps the projectile's own travel distance short, so it reliably registers the
+	// hit instead of relying on the projectile to detect it after the fact.
+	FVector actualTargetPoint = targetPoint;
+	{
+		FCollisionObjectQueryParams objectParams;
+		objectParams.AddObjectTypesToQuery(ECC_Pawn);
+		objectParams.AddObjectTypesToQuery(ECC_WorldStatic);
+		objectParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+
+		FCollisionQueryParams params(FName(TEXT("WeaponMuzzleObstructionTrace")), /*bTraceComplex*/ false);
+		params.AddIgnoredActor(GetOwner());
+
+		FHitResult muzzleHit;
+		const bool bMuzzleBlocked = world->LineTraceSingleByObjectType(muzzleHit, muzzleLocation, targetPoint, objectParams, params);
+		if (bMuzzleBlocked)
+		{
+			actualTargetPoint = muzzleHit.ImpactPoint;
+
+			if (CVarWeaponDebugDraw.GetValueOnGameThread() == 2)
+				DrawDebugLine(world, muzzleLocation, actualTargetPoint, FColor::Orange, false, 2.f, 0, 1.f);
+		}
+	}
+
 	// --- Direction with spread (spread affects the REAL shot) ---
-	FVector direction = (targetPoint - muzzleLocation).GetSafeNormal();
+	FVector direction = (actualTargetPoint - muzzleLocation).GetSafeNormal();
 	if (direction.IsNearlyZero())
 		direction = GetOwner() ? GetOwner()->GetActorForwardVector() : FVector::ForwardVector;
 
@@ -937,9 +972,18 @@ bool UWeaponComponent::ComputeLocalAimPoint(FVector& OutPoint) const
 
 	const FVector traceEnd = viewLocation + viewDirection * AimTraceRange;
 
-	FCollisionQueryParams params(FName(TEXT("WeaponAimTrace")), /*bTraceComplex*/ false, GetOwner());
+	// Object-type trace against Pawns, WorldStatic, and WorldDynamic — ignoring the
+	// owning actor so the trace doesn't hit the shooter's own character/weapon mesh.
+	FCollisionObjectQueryParams objectParams;
+	objectParams.AddObjectTypesToQuery(ECC_Pawn);
+	objectParams.AddObjectTypesToQuery(ECC_WorldStatic);
+	objectParams.AddObjectTypesToQuery(ECC_WorldDynamic);
+
+	FCollisionQueryParams params(FName(TEXT("WeaponAimTrace")), /*bTraceComplex*/ false);
+	params.AddIgnoredActor(GetOwner());
+
 	FHitResult hit;
-	const bool bHit = world->LineTraceSingleByChannel(hit, viewLocation, traceEnd, ECC_Visibility, params);
+	const bool bHit = world->LineTraceSingleByObjectType(hit, viewLocation, traceEnd, objectParams, params);
 
 	OutPoint = bHit ? hit.ImpactPoint : traceEnd;
 

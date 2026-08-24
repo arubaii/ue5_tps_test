@@ -80,3 +80,14 @@ bool UItemFragmentLibrary::HasItemFragment(const FItemInstance& instance, UScrip
 	}
 	return false;
 }
+
+void UItemFragmentLibrary::ExecuteUsableFragment(const FUsableFragment& Fragment, AActor* User)
+{
+	for (const TSubclassOf<UItemAction>& ActionClass : Fragment.Actions)
+	{
+		if (!ActionClass) continue;
+
+		UItemAction* Action = ActionClass->GetDefaultObject<UItemAction>();
+		Action->ExecuteItemAction(User, Fragment);
+	}
+}

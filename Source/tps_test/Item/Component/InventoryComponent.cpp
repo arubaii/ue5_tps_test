@@ -117,6 +117,24 @@ void UInventoryComponent::BeginPlay()
 		if (ShouldFillDefaultInventory)
 			FillDefaultInventory();
 	}
+	
+	// Event graph parity: BeginPlay -> InitializeInventory -> (ShouldFillDefaultInventory ? FillDefaultInventory).
+	// Server only: clients receive the result through replication.
+	UE_LOG(LogInventoryComponent, Warning, TEXT("[InventoryComponent] BeginPlay on '%s': HasAuthority=%s, NetMode=%d"),
+		*GetName(), HasAuthority() ? TEXT("true") : TEXT("false"), (int32)GetOwner()->GetNetMode());
+
+	if (HasAuthority())
+	{
+		InitializeInventory();
+		UE_LOG(LogInventoryComponent, Warning, TEXT("[InventoryComponent] '%s': InitializeInventory done, Slots.Num()=%d, ShouldFillDefaultInventory=%s"),
+			*GetName(), Slots.Num(), ShouldFillDefaultInventory ? TEXT("true") : TEXT("false"));
+
+		if (ShouldFillDefaultInventory)
+		{
+			FillDefaultInventory();
+			UE_LOG(LogInventoryComponent, Warning, TEXT("[InventoryComponent] '%s': FillDefaultInventory done."), *GetName());
+		}
+	}
 }
 
 bool UInventoryComponent::HasAuthority() const

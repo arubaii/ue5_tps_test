@@ -16,7 +16,7 @@
 		},
 		{
 			"Name": "tps_testEditor",
-			"Type": "Editor",
+			"Type": "UncookedOnly",
 			"LoadingPhase": "PostEngineInit"
 		}
 	],

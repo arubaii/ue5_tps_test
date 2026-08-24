@@ -92,7 +92,7 @@ struct FAmmoRow : public FTableRowBase
 };
 
 
-USTRUCT(BlueprintType)  
+USTRUCT(BlueprintType, meta = (UseCategoryGroups))  
 struct FTestRow : public FTableRowBase  
 {  
     GENERATED_BODY()  

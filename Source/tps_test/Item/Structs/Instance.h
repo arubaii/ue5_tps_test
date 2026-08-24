@@ -29,18 +29,18 @@ struct FItemInstance
 	GENERATED_BODY()
 
 	/** Stable unique identity for this instance. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item Instance")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FGuid UUID;
 
 	/** Row name into the item tables; selects the definition (prefix picks the table). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item Instance")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FName RowName = NAME_None;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item Instance")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	int32 Quantity = 0;
 	
 	/** True while this instance is represented by a world actor rather than held in an inventory. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item Instance")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	bool IsWorldItem = false;
 
 	/**
@@ -48,8 +48,7 @@ struct FItemInstance
 	 * item is created and then mutated in place. Weapons carry a FWeaponItemFragment,
 	 * anything that wears out carries a FDurabilityFragment, and so on.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item Instance",
-		meta = (BaseStruct = "/Script/tps_test.ItemFragment"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (BaseStruct = "/Script/tps_test.ItemFragment"))
 	TArray<FInstancedStruct> Fragments;
 
 	/** First fragment of type T, or null if this item has none. */
@@ -138,14 +137,14 @@ struct FInventorySlot
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory Slot")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	int32 SlotIndex = 0;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory Slot")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	ESlotType SlotType = ESlotType::Generic;
 
 	/** Guid of the FItemInstance occupying this slot; invalid/empty when the slot is empty. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory Slot")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FGuid ItemID;
 
 	/** True when no item occupies this slot. */

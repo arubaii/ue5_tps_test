@@ -3,13 +3,16 @@
 #pragma once
 
 #include "CoreMinimal.h"
+
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Item/Structs/Definition.h"
 #include "Item/Structs/Instance.h"
 #include "Item/Fragment/ItemFragment.h"
+#include "Item/Actions/ItemAction.h"
 #include "Utils/WildcardThunk/WildcardThunkMacros.h"
 
 #include "InstancedStruct.h"
+ 
 #include "ItemFragmentLibrary.generated.h"
 
 /**
@@ -29,6 +32,10 @@ class TPS_TEST_API UItemFragmentLibrary : public UBlueprintFunctionLibrary
 	GENERATED_BODY()
 
 public:
+	// =============================================================================================================
+	// Generic fragment utilities
+	// =============================================================================================================
+	
 
 	/** Read a fragment off an instance. */
 	UFUNCTION(BlueprintPure, CustomThunk, Category = "Items|Fragments",
@@ -37,8 +44,7 @@ public:
 				DisplayName			 = "Get Item Fragment",
 				BlueprintInternalUseOnly = "true"))
 	static bool GetItemFragment(const FItemInstance& Instance,
-		UPARAM(meta = (MetaStruct = "/Script/tps_test.ItemFragment")) UScriptStruct* FragmentType, 
-		int32& OutFragment);
+		UPARAM(meta = (MetaStruct = "/Script/tps_test.ItemFragment")) UScriptStruct* FragmentType, int32& OutFragment);
 	
 	/**
 	Writes a fragment into the passed instance, replacing an existing fragment of that type or adding one if absent. 
@@ -51,8 +57,7 @@ public:
 			DisplayName              = "Set Item Fragment",
 			BlueprintInternalUseOnly = "true"))
 	static bool SetItemFragment(UPARAM(ref) FItemInstance& Instance,
-		UPARAM(meta = (MetaStruct = "/Script/tps_test.ItemFragment")) UScriptStruct* FragmentType,
-		const int32& InFragment);
+		UPARAM(meta = (MetaStruct = "/Script/tps_test.ItemFragment")) UScriptStruct* FragmentType, const int32& InFragment);
 
 	/** Read a definition's authored default fragment. */
 	UFUNCTION(BlueprintPure, CustomThunk, Category = "Items|Fragments",
@@ -61,8 +66,7 @@ public:
 			DisplayName              = "Get Default Fragment",
 			BlueprintInternalUseOnly = "true"))
 	static bool GetDefaultFragment(const FItemDefinition& Definition,
-		UPARAM(meta = (MetaStruct = "/Script/tps_test.ItemFragment")) UScriptStruct* FragmentType,
-		int32& OutFragment);
+		UPARAM(meta = (MetaStruct = "/Script/tps_test.ItemFragment")) UScriptStruct* FragmentType, int32& OutFragment);
 	
 	/** Presence check of a selected fragment. */
 	UFUNCTION(BlueprintPure, Category = "Items|Fragments")
@@ -91,6 +95,13 @@ public:
 	// Shared implementations, also used by UInventoryComponent's thunks
 	static bool Generic_GetFragment(const TArray<FInstancedStruct>& Fragments, FStructProperty* OutProp, void* OutPtr);
 	static bool Generic_SetFragment(FItemInstance& Instance, const FStructProperty* InProp, const void* InPtr);
+
+	// =============================================================================================================
+	// Fragment tools
+	// =============================================================================================================
+	
+	UFUNCTION(BlueprintCallable, Category = "Item")
+	static void ExecuteUsableFragment(const FUsableFragment& Fragment, AActor* User);
 	
 	
 };
