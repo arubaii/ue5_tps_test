@@ -54,8 +54,7 @@ struct FAttachmentRow : public FTableRowBase
 /**
  * Row for the weapon table: the IMMUTABLE half of a weapon.
  *
- * Everything here is identical for every copy of the weapon that will ever exist. The
- * mutable half - ammo, stats, recoil, fitted attachments - lives in a FWeaponItemFragment
+ mutable half - ammo, stats, recoil, fitted attachments - lives in a FWeaponItemFragment
  * authored in ItemDetails.DefaultFragments and copied onto each instance.
  */
 USTRUCT(BlueprintType)
@@ -91,22 +90,5 @@ struct FAmmoRow : public FTableRowBase
     FProjectileImpact ProjectileImpact;
 };
 
-
-USTRUCT(BlueprintType, meta = (UseCategoryGroups))  
-struct FTestRow : public FTableRowBase  
-{  
-    GENERATED_BODY()  
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Test1")  
-    int testing1;  
-      
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Test2")  
-    bool testing2;  
-      
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Test | Nested")  
-    int g;  
-    
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Test | Nested | Nested 2")  
-    int gg;  
-};
 
 

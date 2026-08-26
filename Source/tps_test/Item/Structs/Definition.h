@@ -35,7 +35,7 @@ class AInteractable;
  * typed rows like FWeaponRow embed it as ItemDetails).
  * Replaces Blueprint struct S_ItemStructure.
  */
-USTRUCT(BlueprintType)
+USTRUCT(BlueprintType, meta = (UseCategoryGroups))
 struct FItemDefinition : public FTableRowBase
 {
 	GENERATED_BODY()
@@ -58,9 +58,14 @@ struct FItemDefinition : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	TSubclassOf<AInteractable> Class;
 	
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Inventory Slot")
 	TArray<ESlotType> CompatibleSlotTypes;
+	
+	/* 
+	 * Slot footprint within grid.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory Slot")
+	FIntPoint SlotSize = FIntPoint(1, 1);
 	
 	/**
 	 * Fragments copied onto every new instance of this item, with their starting values
@@ -164,12 +169,6 @@ struct FWeaponStats
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float TimeBetweenEachBurstBullet_Seconds = 0.f;
-
-	// --- Add your per-instance jitter tunables here, e.g.:
-	// UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon Stats")
-	// float HorizontalJitter = 0.f;
-	// UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weapon Stats")
-	// float VerticalJitter = 0.f;
 };
 
 

@@ -435,6 +435,17 @@ bool UInventoryComponent::CreateAndRegisterItem(FName RowName, int32 Quantity, f
 //  Slot reads
 // =====================================================================================
 
+bool UInventoryComponent::GetItemByIndex(int32 Index, FItemInstance& OutItem) const
+{
+	const FInventorySlot Slot = GetSlot(Index);
+	if (!Slot.ItemID.IsValid())
+	{
+		OutItem = FItemInstance();
+		return false;
+	}
+	return GetItem(Slot.ItemID, OutItem);
+}
+
 FInventorySlot UInventoryComponent::GetSlot(int32 Index) const
 {
 	// Parity: valid index -> the slot; otherwise a default slot.
@@ -777,7 +788,10 @@ int32 UInventoryComponent::PickupItemInstance(const FItemInstance& WorldInstance
 		AddInstancesPreservingIds(AttachedInstances);
 
 		if (Slots.IsValidIndex(compatibleSlot.SlotIndex))
+		{
 			Slots[compatibleSlot.SlotIndex].ItemID = incoming.UUID; // SlotType preserved
+			Slots[compatibleSlot.SlotIndex].bIsAnchor = true;
+		}
 		OnInventoryChanged.Broadcast(compatibleSlot.SlotIndex);
 		RefreshIsInventoryFull();
 
@@ -840,7 +854,10 @@ void UInventoryComponent::DropItem(int32 InventoryIndex)
 	// SlotType=Generic, which would corrupt typed inventories; RemoveItemFromInventory-
 	// AndDatabase preserved SlotType — this follows the correct one.)
 	if (Slots.IsValidIndex(slot.SlotIndex))
+	{
 		Slots[slot.SlotIndex].ItemID.Invalidate();
+		Slots[slot.SlotIndex].bIsAnchor = false;
+	}
 
 	// Spawn the world actor carrying the payload (instance + closure), then remove the
 	// instances from this store — the item now lives on the actor. (Old model left the
@@ -987,7 +1004,9 @@ bool UInventoryComponent::SwapSlots(UInventoryComponent* SourceInventory, int32 
 	else if (src == this)
 	{
 		Slots[SourceIndex].ItemID = dstSlot.ItemID;
+		Slots[SourceIndex].bIsAnchor = dstSlot.ItemID.IsValid();
 		Slots[DestIndex].ItemID = srcSlot.ItemID;
+		Slots[DestIndex].bIsAnchor = srcSlot.ItemID.IsValid();
 		MarkSlotsDirty();
 	}
 	
@@ -1019,7 +1038,9 @@ bool UInventoryComponent::SwapSlots(UInventoryComponent* SourceInventory, int32 
 		// Write slot references: dest slot now holds the source item; source slot holds the
 		// dest item (or empty). SlotType on each slot is preserved (we only touch ItemID).
 		Slots[DestIndex].ItemID = srcSlot.ItemID;
+		Slots[DestIndex].bIsAnchor = srcSlot.ItemID.IsValid();
 		src->Slots[SourceIndex].ItemID = dstHasItem ? dstSlot.ItemID : FGuid();
+		src->Slots[SourceIndex].bIsAnchor = dstHasItem;
 
 		MarkSlotsDirty();
 		src->MarkSlotsDirty();
@@ -1151,6 +1172,7 @@ bool UInventoryComponent::CreateItemInSlot(int32 SlotIndex, ESlotType InSlotType
 	Slots[SlotIndex].SlotIndex = SlotIndex;
 	Slots[SlotIndex].SlotType = InSlotType;
 	Slots[SlotIndex].ItemID = OutItemID;
+	Slots[SlotIndex].bIsAnchor = true; // every item is 1x1 today, so its one cell is its anchor
 
 	OnInventoryChanged.Broadcast(SlotIndex);
 	RefreshIsInventoryFull();
@@ -1184,6 +1206,7 @@ bool UInventoryComponent::RemoveItemFromSlot(const FInventorySlot& InventorySlot
 		Slots[InventorySlotToBeRemoved.SlotIndex].SlotIndex = InventorySlotToBeRemoved.SlotIndex;
 		Slots[InventorySlotToBeRemoved.SlotIndex].SlotType = InventorySlotToBeRemoved.SlotType;
 		Slots[InventorySlotToBeRemoved.SlotIndex].ItemID.Invalidate();
+		Slots[InventorySlotToBeRemoved.SlotIndex].bIsAnchor = false;
 	}
 
 	OnInventoryChanged.Broadcast(InventorySlotToBeRemoved.SlotIndex);
@@ -1193,10 +1216,15 @@ bool UInventoryComponent::RemoveItemFromSlot(const FInventorySlot& InventorySlot
 
 void UInventoryComponent::SetSlot(int32 Index, const FInventorySlot& Slot)
 {
-	// Parity: SetSlot only transfers the ItemID; SlotIndex/SlotType stay.
+	// Parity: SetSlot only transfers the ItemID; SlotIndex/SlotType stay. bIsAnchor is
+	// derived from the ItemID here (every item is still 1x1) rather than copied from
+	// Slot, since Slot may be a caller-side struct that predates the field.
 	if (Slots.IsValidIndex(Index))
+	{
 		Slots[Index].ItemID = Slot.ItemID;
+		Slots[Index].bIsAnchor = Slot.ItemID.IsValid();
 		// No broadcast here — parity: callers (SwapSlots) broadcast themselves.
+	}
 }
 
 // =============================================================================================================
@@ -1205,18 +1233,31 @@ void UInventoryComponent::SetSlot(int32 Index, const FInventorySlot& Slot)
 
 void UInventoryComponent::InitializeInventory()
 {
-	// Parity: guarded by IsDataInitialized; builds MaxInventorySlots slots of SlotType.
+	// Guarded by IsDataInitialized; builds Slots of SlotType.
+	//
+	// Grid-aware: when GridWidth and GridHeight are both configured (> 0), Slots is
+	// sized to GridWidth * GridHeight and addressed row-major (SlotIndex = Y * GridWidth
+	// + X), keeping MaxInventorySlots synced to the product for anything still reading
+	// it as a flat count. When the grid dims are left at 0, this falls back to the old
+	// flat MaxInventorySlots behavior unchanged.
 	if (IsDataInitialized)
 		return;
 	IsDataInitialized = true;
 
-	Slots.Reset(MaxInventorySlots);
-	for (int32 i = 0; i < MaxInventorySlots; ++i)
+	const bool bUseGrid = GridWidth > 0 && GridHeight > 0;
+	const int32 slotCount = bUseGrid ? (GridWidth * GridHeight) : MaxInventorySlots;
+
+	if (bUseGrid)
+		MaxInventorySlots = slotCount;
+
+	Slots.Reset(slotCount);
+	for (int32 i = 0; i < slotCount; ++i)
 	{
 		FInventorySlot newSlot;
 		newSlot.SlotIndex = i;
 		newSlot.SlotType = SlotType;
 		newSlot.ItemID.Invalidate();
+		newSlot.bIsAnchor = false; // empty slot; nothing anchored here yet
 		Slots.Add(newSlot);
 	}
 	RefreshIsInventoryFull();
@@ -1292,6 +1333,7 @@ void UInventoryComponent::ClearInventory()
 	for (FInventorySlot& slot : Slots)
 	{
 		slot.ItemID.Invalidate();
+		slot.bIsAnchor = false;
 	}
 
 	RebuildIdCache();
@@ -1403,7 +1445,8 @@ void UInventoryComponent::OnRep_Slots(const TArray<FInventorySlot>& PreviousSlot
 		}
 		const FInventorySlot& oldSlot = PreviousSlots[i];
 		const FInventorySlot& newSlot = Slots[i];
-		if (oldSlot.ItemID != newSlot.ItemID || oldSlot.SlotType != newSlot.SlotType || oldSlot.SlotIndex != newSlot.SlotIndex)
+		if (oldSlot.ItemID != newSlot.ItemID || oldSlot.SlotType != newSlot.SlotType
+			|| oldSlot.SlotIndex != newSlot.SlotIndex || oldSlot.bIsAnchor != newSlot.bIsAnchor)
 			OnInventoryChanged.Broadcast(i);
 	}
 	RefreshIsInventoryFull();

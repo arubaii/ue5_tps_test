@@ -147,6 +147,11 @@ struct FInventorySlot
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FGuid ItemID;
 
+	/** True only on the item's top-left cell. Every other occupied cell for a
+	multi-cell item is a "shadow" cell pointing at the same ItemID. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	bool bIsAnchor = false;
+	
 	/** True when no item occupies this slot. */
 	bool IsEmpty() const { return !ItemID.IsValid(); }
 };

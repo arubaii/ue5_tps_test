@@ -5,37 +5,32 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="8c152ba5-21b6-44f0-9652-c4c856fcd831" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/Item/Actions/ItemAction.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/Item/Actions/ItemAction.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Item/UI/IInventorySlotInterface.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Item/UI/InventoryGridPacker.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Item/UI/InventoryGridPacker.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Item/UI/InventorySlotSizeSettings.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Item/UI/InventorySlotSizeSettings.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Item/UI/W_InventoryBase.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Item/UI/W_InventoryBase.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Config/DefaultEditor.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Config/DefaultEditor.ini" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Config/DefaultEngine.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Config/DefaultEngine.ini" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/Generated/LevelPrototyping/Interactable/Door/BP_DoorFrame.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/Generated/LevelPrototyping/Interactable/Door/BP_DoorFrame.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/Weapons/Blueprints/BP_ProjectileBase.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/Weapons/Blueprints/BP_ProjectileBase.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_ItemBase.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_ItemBase.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_Book.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_Book.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/04_InventorySystem/BP_InventoryDragDrop.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/04_InventorySystem/BP_InventoryDragDrop.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/Components/BPC_Interactable.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/Components/BPC_Interactable.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_PlayerState.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_PlayerState.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/DataTables/DT_Item_Generics.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/DataTables/DT_Item_Generics.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCharacter.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCharacter.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_Inventory.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_Inventory.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_InventorySlot.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_InventorySlot.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_ItemDropBox.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_ItemDropBox.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_PauseMenu.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_PauseMenu.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/2/JJ/LKMVT9BVA6R09Z9ZQMJIVC.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/2/JJ/LKMVT9BVA6R09Z9ZQMJIVC.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/D/HQ/EJ5AF743WVQPRVC1C40QRA.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/D/HQ/EJ5AF743WVQPRVC1C40QRA.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Source/StructCategoryGroupsEditor/Private/StructCategoryGroupsEditorModule.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Source/StructCategoryGroupsEditor/Private/StructCategoryGroupsEditorModule.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Source/StructCategoryGroupsEditor/Public/StructCategoryGroups.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Source/StructCategoryGroupsEditor/Public/StructCategoryGroups.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Resources/Icon_128x128.png" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Source/StructCategoryGroupsEditor/Private/StructCategoryGroups.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Source/StructCategoryGroupsEditor/Private/StructCategoryGroupsEditorModule.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Source/StructCategoryGroupsEditor/Public/StructCategoryGroups.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Source/StructCategoryGroupsEditor/Public/StructCategoryGroupsEditorModule.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Source/StructCategoryGroupsEditor/StructCategoryGroupsEditor.Build.cs" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/StructCategoryGroups/StructCategoryGroups.uplugin" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Component/InventoryComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Item/Component/InventoryComponent.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Fragment/ItemFragment.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Item/Fragment/ItemFragment.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Fragment/ItemFragmentLibrary.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Item/Fragment/ItemFragmentLibrary.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Fragment/ItemFragmentLibrary.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Item/Fragment/ItemFragmentLibrary.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Component/InventoryComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Item/Component/InventoryComponent.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Definition.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Definition.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Instance.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Instance.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Rows.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Rows.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponComponent.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/tps_test.Build.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/tps_test.Build.cs" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/tps_test.uproject" beforeDir="false" afterPath="$PROJECT_DIR$/tps_test.uproject" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -47,8 +42,15 @@
   </component>
   <component name="HighlightingSettingsPerFile">
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Plugins/Marketplace/Developer/RiderLink/Source/RD/thirdparty/spdlog/include/spdlog/details/registry.h" root0="SKIP_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Plugins/Marketplace/Developer/RiderLink/Source/RD/thirdparty/spdlog/include/spdlog/fmt/ranges.h" root0="SKIP_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Plugins/Marketplace/Developer/RiderLink/Source/RD/thirdparty/variant/include/mpark/lib.hpp" root0="SKIP_HIGHLIGHTING" />
+    <setting file="file://$USER_HOME$/Downloads/StructCategoryGroups/StructCategoryGroups.uplugin" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../test/Plugins/StructCategoryGroups/StructCategoryGroups/StructCategoryGroups.uplugin" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Item/UI/InventoryGridPacker.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Item/UI/InventorySlotSizeSettings.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Item/UI/W_InventoryBase.h" root0="FORCE_HIGHLIGHTING" />
   </component>
+  <component name="MetaFilesCheckinStateConfiguration" checkMetaFiles="true" />
   <component name="ProjectColorInfo">{
   &quot;customColor&quot;: &quot;&quot;,
   &quot;associatedIndex&quot;: 2
@@ -174,13 +176,21 @@
       <workItem from="1787520496871" duration="2286000" />
       <workItem from="1787540431050" duration="5044000" />
       <workItem from="1787597201983" duration="1563000" />
-      <workItem from="1787605804897" duration="1178000" />
+      <workItem from="1787605804897" duration="1830000" />
+      <workItem from="1787615960112" duration="11000" />
+      <workItem from="1787619590685" duration="1692000" />
+      <workItem from="1787627766930" duration="9734000" />
+      <workItem from="1787681749588" duration="63000" />
+      <workItem from="1787686468279" duration="689000" />
+      <workItem from="1787717540330" duration="2905000" />
+      <workItem from="1787769907388" duration="7019000" />
     </task>
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
+  <component name="UnityCheckinConfiguration" checkUnsavedScenes="true" />
   <component name="UnityProjectConfiguration" hasMinimizedUI="false" />
   <component name="VcsManagerConfiguration">
     <option name="CLEAR_INITIAL_COMMIT_MESSAGE" value="true" />

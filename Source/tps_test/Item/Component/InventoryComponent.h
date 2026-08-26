@@ -125,6 +125,10 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnItemPickup, FItemInstance, Picke
  *   InventoryList : replicated Fast Array of FItemInstance — the source of truth for
  *                   every instance this container holds (incl. attachment instances).
  *   Slots         : replicated slot layout; each slot references an instance by Guid.
+ *                   Addressed in 2D via GridWidth/GridHeight (SlotIndex = Y * GridWidth + X)
+ *                   when those are configured. Every item is currently 1x1, so every
+ *                   occupied slot sets FInventorySlot::bIsAnchor = true; that field is
+ *                   groundwork for multi-cell items and isn't load-bearing yet.
  *   IdToIndex     : transient lookup cache (Guid -> entry index), rebuilt on changes.
  *
  * AUTHORITY MODEL
@@ -155,6 +159,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Replicated, Category = "Inventory|Config")
 	FName InventoryName = NAME_None;
 
+	/**
+	 * Legacy flat slot count. Superseded by GridWidth * GridHeight whenever both are set
+	 * (> 0) — InitializeInventory prefers the grid dimensions and keeps this field synced
+	 * to their product so old BP reads/UI relying on a flat count still see the right
+	 * number. Only used directly as a fallback when GridWidth/GridHeight are left at 0
+	 * (e.g. inventories that don't care about 2D layout).
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Config")
 	int32 MaxInventorySlots = 0;
 
@@ -164,7 +175,19 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Config")
 	EInventoryType InventoryType = EInventoryType::Backpack;
+	
+	/**
+	 * Number of slots wide. Slot count in cell units, NOT pixels — pixel sizing is a
+	 * widget-side concern. When this and GridHeight are both > 0, InitializeInventory
+	 * builds Slots as a GridWidth * GridHeight grid (row-major: SlotIndex = Y * GridWidth + X).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Config")
+	int32 GridWidth = 0;
 
+	/** Number of slots tall. See GridWidth. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Config")
+	int32 GridHeight = 0;
+	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Config")
 	bool ShouldFillDefaultInventory = false;
 
@@ -232,6 +255,10 @@ public:
 	// Slot reads (UI-facing, preserved)
 	// ---------------------------------------------------------------------------------
 
+	/** Convenience: the item instance occupying the slot at Index (empty slot -> default FItemInstance). */
+	UFUNCTION(BlueprintPure, Category = "Inventory|Slots", meta = (ReturnDisplayName = "Found"))
+	bool GetItemByIndex(int32 Index, FItemInstance& OutItem) const;
+	
 	UFUNCTION(BlueprintPure, Category = "Inventory|Slots")
 	FInventorySlot GetSlot(int32 Index) const;
 

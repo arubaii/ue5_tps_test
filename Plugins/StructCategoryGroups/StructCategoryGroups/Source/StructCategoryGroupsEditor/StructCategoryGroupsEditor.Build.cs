@@ -1,4 +1,4 @@
-// Copyright Bilcash. All rights reserved.
+// Copyright Bilcash 2026. All rights reserved.
 
 using UnrealBuildTool;
 
@@ -20,6 +20,8 @@ public class StructCategoryGroupsEditor : ModuleRules
 			"Slate",
 			"SlateCore",
 			"PropertyEditor",
+			"DeveloperSettings",
+			"InputCore",
 		});
 	}
 }
