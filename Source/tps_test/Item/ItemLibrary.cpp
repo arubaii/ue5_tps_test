@@ -4,7 +4,7 @@
 
 UDataTable* UItemLibrary::GetTableForRowName(FName RowName)
 {
-    const UItemTableSettings* Settings = GetDefault<UItemTableSettings>();
+    const UInventorySettings* Settings = GetDefault<UInventorySettings>();
     if (!Settings)
     {
         return nullptr;

@@ -5,6 +5,7 @@
 #include "Engine/DataTable.h"        // UDataTable, FTableRowBase, FindRow
 #include "Templates/SubclassOf.h"    
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "Structs/InventoryEnums.h"
 #include "Utils/WildcardThunk/WildcardThunkMacros.h"
 #include "ItemLibrary.generated.h"
 
@@ -14,14 +15,18 @@ class UDataTable;
  * Central config for item data tables. Edit in Project Settings -> Game -> Item Tables.
  * Map each row-name prefix (e.g. "WPN_") to its data table. Add one entry per table.
  */
-UCLASS(Config = Game, DefaultConfig, meta = (DisplayName = "Item Tables"))
-class TPS_TEST_API UItemTableSettings : public UDeveloperSettings
+UCLASS(Config = Game, DefaultConfig, meta = (DisplayName = "Inventory System"))
+class TPS_TEST_API UInventorySettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
 
 public:
 	UPROPERTY(EditAnywhere, Config, Category = "Item Tables")
 	TMap<FString, TSoftObjectPtr<UDataTable>> PrefixToTable;
+	
+	/* Inventory slots will default to the background image set here by their slot type */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Config, Category = "Inventory Slot")
+	TMap<ESlotType, TSoftObjectPtr<UTexture2D>> DefaultSlotBackground;
 };
 
 UCLASS()
@@ -95,7 +100,7 @@ public:
 			return false;
 		}
 
-		const UItemTableSettings* Settings = GetDefault<UItemTableSettings>();
+		const UInventorySettings* Settings = GetDefault<UInventorySettings>();
 		if (!Settings)
 		{
 			return false;

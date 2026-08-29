@@ -18,6 +18,7 @@
 UENUM(BlueprintType)
 enum class ESlotType : uint8
 {
+	_,
 	Generic,
 	Weapon,
 	Support,

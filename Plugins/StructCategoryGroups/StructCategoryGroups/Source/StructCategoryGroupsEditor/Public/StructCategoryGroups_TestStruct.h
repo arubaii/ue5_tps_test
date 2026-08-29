@@ -91,6 +91,6 @@ struct FStructCategoryGroups_RowWrapper : public FTableRowBase
 
 	/** ShowOnlyInnerProperties flattens the wrapper so the grouped/colored fields
 	 *  appear directly in the Data Table row editor. */
-	UPROPERTY(EditAnywhere, meta = (ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, Category = "Row", meta = (ShowOnlyInnerProperties))
 	FStructCategoryGroupsShowcase_WithPlugin Data;
 };

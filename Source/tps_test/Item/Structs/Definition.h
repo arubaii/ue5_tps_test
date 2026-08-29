@@ -64,8 +64,11 @@ struct FItemDefinition : public FTableRowBase
 	/* 
 	 * Slot footprint within grid.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory Slot")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory Slot | Design")
 	FIntPoint SlotSize = FIntPoint(1, 1);
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory Slot | Design")
+	bool HasInfoBar = true;
 	
 	/**
 	 * Fragments copied onto every new instance of this item, with their starting values
