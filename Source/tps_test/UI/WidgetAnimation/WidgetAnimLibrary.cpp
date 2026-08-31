@@ -1,11 +1,8 @@
-﻿// WidgetAnimLibrary.cpp
-
-#include "WidgetAnimLibrary.h"
+﻿#include "UI/WidgetAnimation/WidgetAnimLibrary.h"
+#include "Materials/MaterialInstanceDynamic.h"
 
 float UWidgetAnimLibrary::EaseOutBack(float Alpha, float Overshoot)
 {
-	// Standard "ease out back" formula: overshoots past 1.0 then settles.
-	// Overshoot controls how far past 1.0 it punches (0 = no punch).
 	const float C1 = Overshoot;
 	const float C3 = C1 + 1.f;
 	const float T = Alpha - 1.f;
@@ -20,16 +17,12 @@ float UWidgetAnimLibrary::EvaluateEasedAlpha(const FWidgetAnimSettings& Settings
 	{
 	case EWidgetAnimEasing::Linear:
 		return LinearAlpha;
-
 	case EWidgetAnimEasing::EaseIn:
 		return FMath::InterpEaseIn(0.f, 1.f, LinearAlpha, 2.f);
-
 	case EWidgetAnimEasing::EaseOut:
 		return FMath::InterpEaseOut(0.f, 1.f, LinearAlpha, 2.f);
-
 	case EWidgetAnimEasing::EaseInOut:
 		return FMath::InterpEaseInOut(0.f, 1.f, LinearAlpha, 2.f);
-
 	case EWidgetAnimEasing::Custom:
 		return Settings.CustomCurve ? Settings.CustomCurve->GetFloatValue(LinearAlpha) : LinearAlpha;
 	}
@@ -39,9 +32,6 @@ float UWidgetAnimLibrary::EvaluateEasedAlpha(const FWidgetAnimSettings& Settings
 
 FVector2D UWidgetAnimLibrary::GetSlideDirectionOffset(EWidgetSlideDirection Direction)
 {
-	// Returns the unit direction the widget starts displaced toward, before
-	// scaling by SlideDistance. E.g. "From Up" starts above rest position,
-	// which is a smaller (more negative) screen-space Y.
 	switch (Direction)
 	{
 	case EWidgetSlideDirection::Up:    return FVector2D(0.f, -1.f);
@@ -53,6 +43,21 @@ FVector2D UWidgetAnimLibrary::GetSlideDirectionOffset(EWidgetSlideDirection Dire
 	return FVector2D::ZeroVector;
 }
 
+FWidgetAnimTargetedTransform& UWidgetAnimLibrary::FindOrAddTargetedTransform(FWidgetAnimResult& Result, UWidget* TargetWidget)
+{
+	for (FWidgetAnimTargetedTransform& Existing : Result.TargetedTransforms)
+	{
+		if (Existing.TargetWidget == TargetWidget)
+		{
+			return Existing;
+		}
+	}
+
+	FWidgetAnimTargetedTransform& NewEntry = Result.TargetedTransforms.AddDefaulted_GetRef();
+	NewEntry.TargetWidget = TargetWidget;
+	return NewEntry;
+}
+
 void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& Settings, float DirectedAlpha, FWidgetAnimResult& OutResult)
 {
 	switch (Settings.AnimType)
@@ -60,7 +65,8 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 	case EWidgetAnimType::Fade:
 	{
 		const float EasedAlpha = EvaluateEasedAlpha(Settings, DirectedAlpha);
-		OutResult.Opacity *= FMath::Lerp(Settings.StartOpacity, Settings.EndOpacity, EasedAlpha);
+		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
+		Transform.Opacity *= FMath::Lerp(Settings.StartOpacity, Settings.EndOpacity, EasedAlpha);
 		break;
 	}
 
@@ -70,7 +76,8 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 			? EaseOutBack(DirectedAlpha, Settings.Overshoot)
 			: EvaluateEasedAlpha(Settings, DirectedAlpha);
 		const float ScaleValue = FMath::Lerp(Settings.StartScale, Settings.EndScale, ScaleAlpha);
-		OutResult.Scale *= FVector2D(ScaleValue, ScaleValue);
+		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
+		Transform.Scale *= FVector2D(ScaleValue, ScaleValue);
 		break;
 	}
 
@@ -80,60 +87,85 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 			? EaseOutBack(DirectedAlpha, Settings.SlideOvershoot)
 			: EvaluateEasedAlpha(Settings, DirectedAlpha);
 		const FVector2D StartOffset = GetSlideDirectionOffset(Settings.SlideFromDirection) * Settings.SlideDistance;
-		OutResult.Translation += FMath::Lerp(StartOffset, FVector2D::ZeroVector, SlideAlpha);
+		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
+		Transform.Translation += FMath::Lerp(StartOffset, FVector2D::ZeroVector, SlideAlpha);
 		break;
 	}
 
 	case EWidgetAnimType::Rotate:
 	{
 		const float EasedAlpha = EvaluateEasedAlpha(Settings, DirectedAlpha);
-		OutResult.Angle += FMath::Lerp(Settings.StartAngle, Settings.EndAngle, EasedAlpha);
+		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
+		Transform.Angle += FMath::Lerp(Settings.StartAngle, Settings.EndAngle, EasedAlpha);
 		break;
 	}
 
 	case EWidgetAnimType::Pulse:
 	{
-		// Continuous sine wave over one Duration-length cycle; DirectedAlpha
-		// is the phase within the current cycle (0-1 -> a full sine wave).
 		const float Phase = DirectedAlpha * 2.f * PI;
 		const float ScaleMultiplier = 1.f + Settings.PulseScaleAmount * FMath::Sin(Phase);
-		OutResult.Scale *= FVector2D(ScaleMultiplier, ScaleMultiplier);
+		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
+		Transform.Scale *= FVector2D(ScaleMultiplier, ScaleMultiplier);
+		break;
+	}
+
+	case EWidgetAnimType::MaterialScalar:
+	{
+		if (!Settings.ScalarParameterName.IsNone())
+		{
+			const float EasedAlpha = EvaluateEasedAlpha(Settings, DirectedAlpha);
+			const float Value = FMath::Lerp(Settings.StartScalarValue, Settings.EndScalarValue, EasedAlpha);
+			FWidgetAnimScalarTarget& Target = OutResult.ScalarParameters.FindOrAdd(Settings.ScalarParameterName);
+			Target.TargetImage = Settings.MaterialTargetImage;
+			Target.Value = Value;
+		}
+		break;
+	}
+
+	case EWidgetAnimType::MaterialVector:
+	{
+		if (!Settings.VectorParameterName.IsNone())
+		{
+			const float EasedAlpha = EvaluateEasedAlpha(Settings, DirectedAlpha);
+			const FLinearColor Value = FMath::Lerp(Settings.StartVectorValue, Settings.EndVectorValue, EasedAlpha);
+			FWidgetAnimVectorTarget& Target = OutResult.VectorParameters.FindOrAdd(Settings.VectorParameterName);
+			Target.TargetImage = Settings.MaterialTargetImage;
+			Target.Value = Value;
+		}
 		break;
 	}
 	}
 }
 
-void UWidgetAnimLibrary::EvaluateSingleAnimation(const FWidgetAnimSettings& Settings, FWidgetAnimState& State, float DeltaTime, FWidgetAnimResult& OutResult)
+bool UWidgetAnimLibrary::GetEffectiveInvert(const FWidgetAnimSettings& Settings, bool bIsOutAnimation)
 {
+	return Settings.bInvertAnimation != bIsOutAnimation;
+}
+
+void UWidgetAnimLibrary::EvaluateSingleAnimation(const FWidgetAnimSettings& Settings, FWidgetAnimState& State, float DeltaTime, FWidgetAnimResult& OutResult, bool bIsOutAnimation)
+{
+	const bool bInvert = GetEffectiveInvert(Settings, bIsOutAnimation);
+
 	if (State.bFinished)
 	{
-		// Already reached its end - keep contributing the resting value
-		// directly rather than re-deriving it each tick.
 		const float RestingAlpha = State.bPlayingForward ? 1.f : 0.f;
-		ApplyAnimationContribution(Settings, RestingAlpha, OutResult);
+		ApplyAnimationContribution(Settings, bInvert ? 1.f - RestingAlpha : RestingAlpha, OutResult);
 		return;
 	}
 
-	// Count down any remaining start delay first.
 	if (State.DelayRemaining > 0.f)
 	{
 		State.DelayRemaining -= DeltaTime;
 		if (State.DelayRemaining > 0.f)
 		{
-			return; // still waiting - identity contribution
+			return; 
 		}
 
-		// Carry over whatever part of this tick's DeltaTime occurred after
-		// the delay actually ended, so we don't lose/duplicate time.
 		DeltaTime = -State.DelayRemaining;
 		State.DelayRemaining = 0.f;
 	}
 
 	const float Duration = FMath::Max(Settings.Duration, KINDA_SMALL_NUMBER);
-
-	// CycleTime is bounded to [0, Duration] and wrapped in place below, so
-	// looping only ever advances once per actually-completed cycle - unlike
-	// recomputing from an ever-growing total elapsed time every tick.
 	State.CycleTime += DeltaTime;
 
 	while (State.CycleTime >= Duration)
@@ -151,10 +183,6 @@ void UWidgetAnimLibrary::EvaluateSingleAnimation(const FWidgetAnimSettings& Sett
 		{
 			State.CycleTime = Duration;
 			State.bFinished = true;
-			// Always settle at the End pose when finishing, regardless of
-			// which bounce direction ping-pong happened to be facing - the
-			// alternative is that an even LoopCount lands back at Start
-			// purely by parity, which reads as broken rather than intentional.
 			State.bPlayingForward = true;
 			break;
 		}
@@ -165,10 +193,10 @@ void UWidgetAnimLibrary::EvaluateSingleAnimation(const FWidgetAnimSettings& Sett
 		? (State.bPlayingForward ? 1.f : 0.f)
 		: (State.bPlayingForward ? LinearAlpha : (1.f - LinearAlpha));
 
-	ApplyAnimationContribution(Settings, DirectedAlpha, OutResult);
+	ApplyAnimationContribution(Settings, bInvert ? 1.f - DirectedAlpha : DirectedAlpha, OutResult);
 }
 
-FWidgetAnimResult UWidgetAnimLibrary::TickWidgetAnimations(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime)
+FWidgetAnimResult UWidgetAnimLibrary::TickWidgetAnimations(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation)
 {
 	if (States.Num() != Animations.Num())
 	{
@@ -186,7 +214,7 @@ FWidgetAnimResult UWidgetAnimLibrary::TickWidgetAnimations(const TArray<FWidgetA
 	for (int32 Index = 0; Index < Animations.Num(); ++Index)
 	{
 		const FWidgetAnimSettings& Settings = Animations[Index];
-		EvaluateSingleAnimation(Settings, States[Index], DeltaTime, Result);
+		EvaluateSingleAnimation(Settings, States[Index], DeltaTime, Result, bIsOutAnimation);
 
 		const bool bCountsTowardFinished = !Settings.bLoop;
 		if (bCountsTowardFinished && !States[Index].bFinished)
@@ -198,39 +226,73 @@ FWidgetAnimResult UWidgetAnimLibrary::TickWidgetAnimations(const TArray<FWidgetA
 	return Result;
 }
 
-void UWidgetAnimLibrary::ApplyWidgetAnimResult(UWidget* Widget, const FWidgetAnimResult& Result)
+void UWidgetAnimLibrary::ApplyWidgetAnimResult(UWidget* FallbackWidget, const FWidgetAnimResult& Result)
 {
-	if (!Widget)
+	for (const FWidgetAnimTargetedTransform& Transform : Result.TargetedTransforms)
 	{
-		return;
+		UWidget* Target = Transform.TargetWidget ? Transform.TargetWidget : FallbackWidget;
+		if (!Target)
+		{
+			continue;
+		}
+
+		Target->SetRenderOpacity(Transform.Opacity);
+		Target->SetRenderScale(Transform.Scale);
+		Target->SetRenderTranslation(Transform.Translation);
+		Target->SetRenderTransformAngle(Transform.Angle);
+	}
+}
+
+void UWidgetAnimLibrary::ApplyMaterialAnimResult(const FWidgetAnimResult& Result)
+{
+	for (const TPair<FName, FWidgetAnimScalarTarget>& Pair : Result.ScalarParameters)
+	{
+		UImage* TargetImage = Pair.Value.TargetImage;
+		if (!TargetImage)
+		{
+			continue;
+		}
+
+		if (UMaterialInstanceDynamic* MID = TargetImage->GetDynamicMaterial())
+		{
+			MID->SetScalarParameterValue(Pair.Key, Pair.Value.Value);
+		}
 	}
 
-	Widget->SetRenderOpacity(Result.Opacity);
-	Widget->SetRenderScale(Result.Scale);
-	Widget->SetRenderTranslation(Result.Translation);
-	Widget->SetRenderTransformAngle(Result.Angle);
+	for (const TPair<FName, FWidgetAnimVectorTarget>& Pair : Result.VectorParameters)
+	{
+		UImage* TargetImage = Pair.Value.TargetImage;
+		if (!TargetImage)
+		{
+			continue;
+		}
+
+		if (UMaterialInstanceDynamic* MID = TargetImage->GetDynamicMaterial())
+		{
+			MID->SetVectorParameterValue(Pair.Key, Pair.Value.Value);
+		}
+	}
 }
 
-void UWidgetAnimLibrary::PlayWidgetAnimations(UWidget* Widget, const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime)
+void UWidgetAnimLibrary::PlayWidgetAnimations(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation)
 {
-	const FWidgetAnimResult Result = TickWidgetAnimations(Animations, States, DeltaTime);
-	ApplyWidgetAnimResult(Widget, Result);
+	const FWidgetAnimResult Result = TickWidgetAnimations(Animations, States, DeltaTime, bIsOutAnimation);
+	ApplyWidgetAnimResult(FallbackWidget, Result);
+	ApplyMaterialAnimResult(Result);
 }
 
-void UWidgetAnimLibrary::InitializeWidgetAnimations(UWidget* Widget, const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States)
+void UWidgetAnimLibrary::InitializeWidgetAnimations(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States)
 {
 	ResetWidgetAnimations(Animations, States);
 
-	// Compute every entry's contribution at DirectedAlpha 0 (i.e. its Start
-	// value), ignoring Delay entirely, so the widget is placed in the exact
-	// pre-animation pose regardless of how long each entry waits to start.
 	FWidgetAnimResult StartResult;
 	for (const FWidgetAnimSettings& Settings : Animations)
 	{
-		ApplyAnimationContribution(Settings, 0.f, StartResult);
+		ApplyAnimationContribution(Settings, GetEffectiveInvert(Settings, /*bIsOutAnimation=*/false) ? 1.f : 0.f, StartResult);
 	}
 
-	ApplyWidgetAnimResult(Widget, StartResult);
+	ApplyWidgetAnimResult(FallbackWidget, StartResult);
+	ApplyMaterialAnimResult(StartResult);
 }
 
 void UWidgetAnimLibrary::ResetWidgetAnimations(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States)
@@ -256,4 +318,52 @@ bool UWidgetAnimLibrary::AreWidgetAnimationsFinished(const TArray<FWidgetAnimSet
 	}
 
 	return true;
+}
+
+
+void UWidgetAnimLibrary::PlayWidgetIn(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& InAnimations, FWidgetAnimPlaybackState& PlaybackState)
+{
+	PlaybackState.OutStates.Reset();
+
+	InitializeWidgetAnimations(FallbackWidget, InAnimations, PlaybackState.InStates);
+	PlaybackState.Phase = EWidgetAnimPhase::PlayingIn;
+}
+
+void UWidgetAnimLibrary::PlayWidgetOut(FWidgetAnimPlaybackState& PlaybackState, const TArray<FWidgetAnimSettings>& OutAnimations)
+{
+	ResetWidgetAnimations(OutAnimations, PlaybackState.OutStates);
+	PlaybackState.Phase = EWidgetAnimPhase::PlayingOut;
+}
+
+bool UWidgetAnimLibrary::TickWidgetAnimPlayback(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& InAnimations, const TArray<FWidgetAnimSettings>& OutAnimations, FWidgetAnimPlaybackState& PlaybackState, float DeltaTime)
+{
+	switch (PlaybackState.Phase)
+	{
+	case EWidgetAnimPhase::PlayingIn:
+	{
+		PlayWidgetAnimations(FallbackWidget, InAnimations, PlaybackState.InStates, DeltaTime, /*bIsOutAnimation=*/false);
+		if (AreWidgetAnimationsFinished(InAnimations, PlaybackState.InStates))
+		{
+			PlaybackState.Phase = EWidgetAnimPhase::Shown;
+		}
+		return false;
+	}
+
+	case EWidgetAnimPhase::PlayingOut:
+	{
+		PlayWidgetAnimations(FallbackWidget, OutAnimations, PlaybackState.OutStates, DeltaTime, /*bIsOutAnimation=*/true);
+		if (AreWidgetAnimationsFinished(OutAnimations, PlaybackState.OutStates))
+		{
+			PlaybackState.Phase = EWidgetAnimPhase::Hidden;
+			return true; 
+		}
+		return false;
+	}
+
+	case EWidgetAnimPhase::Idle:
+	case EWidgetAnimPhase::Shown:
+	case EWidgetAnimPhase::Hidden:
+	default:
+		return false;
+	}
 }
