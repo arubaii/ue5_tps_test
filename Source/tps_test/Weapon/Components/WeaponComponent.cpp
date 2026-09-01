@@ -3,8 +3,8 @@
 
 #include "Weapon/Components/WeaponComponent.h"
 
-#include "Item/Component/InventoryComponent.h"
-#include "Item/ItemLibrary.h"
+#include "Inventory/Components/InventoryComponent.h"
+#include "Inventory/ItemLibrary.h"
 #include "Weapon/Fragment/WeaponItemFragment.h"
 
 #include "Camera/CameraShakeBase.h"

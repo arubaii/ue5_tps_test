@@ -3,9 +3,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Item/Fragment/ItemFragment.h"
-#include "Item/Structs/InventoryEnums.h"
-#include "Item/Structs/Definition.h"
+#include "Inventory/Fragment/ItemFragment.h"
+#include "Inventory/Structs/InventoryEnums.h"
+#include "Inventory/Structs/Definition.h"
 #include "WeaponItemFragment.generated.h"
 
 /**

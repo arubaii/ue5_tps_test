@@ -4,10 +4,10 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
-#include "Item/Structs/InventoryEnums.h"
-#include "Item/Structs/Definition.h"
-#include "Item/Structs/Instance.h"
-#include "Item/Structs/Rows.h"
+#include "Inventory/Structs/InventoryEnums.h"
+#include "Inventory/Structs/Definition.h"
+#include "Inventory/Structs/Instance.h"
+#include "Inventory/Structs/Rows.h"
 #include "Weapon/Fragment/WeaponItemFragment.h"
 #include "Weapon/Components/WeaponRecoilComponent.h"
 

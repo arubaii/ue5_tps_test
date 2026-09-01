@@ -8,28 +8,53 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="8c152ba5-21b6-44f0-9652-c4c856fcd831" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardTypes.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardTypes.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/UserWidget_Animatable.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/UserWidget_Animatable.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Audio/Cue/AudioCueLibrary.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Audio/Cue/AudioCueLibrary.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Audio/Cue/AudioCueSet.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/DeveloperSettings/InventorySettings.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/DeveloperSettings/InventoryUITheme.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryWidgetRegistryComponent.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryWidgetRegistryComponent.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Tags/InventoryAudioTags.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Tags/InventoryAudioTags.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCharacter.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCharacter.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Config/DefaultEditor.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Config/DefaultEditor.ini" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Config/DefaultEngine.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Config/DefaultEngine.ini" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Config/DefaultGame.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Config/DefaultGame.ini" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/DataTables/DT_RichTextStyles.uasset" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_PlayerState.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_PlayerState.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard_ItemHover.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard_ItemHover.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard_RightClick_Item.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard_RightClick_Item.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_Chest.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_Chest.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_DragVisual.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_DragVisual.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_IconFrame.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_IconFrame.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_InGameMenuBase.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_InGameMenuBase.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_InfoCard.uasset" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_InfoCard_ItemHover.uasset" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_InfoCard_RightClick.uasset" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_InfoCard_RightClick_Item.uasset" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_Inventory.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_Inventory.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_InventorySlot.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_InventorySlot.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_LoadoutMenuManager.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_LoadoutMenuManager.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardWidget_Base.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardWidget_Base.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardWidget_Base.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardWidget_Base.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/WidgetAnimLibrary.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/WidgetAnimLibrary.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/WidgetAnimLibrary.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/WidgetAnimLibrary.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_PauseMenu.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_PauseMenu.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Actions/ItemAction.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Actions/ItemAction.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Actions/ItemAction.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Actions/ItemAction.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Component/InventoryComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Component/InventoryComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Fragment/ItemFragment.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Fragment/ItemFragment.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Fragment/ItemFragmentLibrary.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Fragment/ItemFragmentLibrary.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Fragment/ItemFragmentLibrary.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Fragment/ItemFragmentLibrary.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/ItemLibrary.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/ItemLibrary.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/ItemLibrary.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/ItemLibrary.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Definition.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/Definition.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Instance.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/Instance.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Structs/InventoryEnums.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/InventoryEnums.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Rows.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/Rows.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/UI/IInventorySlotInterface.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/IInventorySlotInterface.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/WorldItemInterface.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/WorldItemInterface.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponComponent.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponComponent.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponRecoilComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponRecoilComponent.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Weapon/Fragment/WeaponItemFragment.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Weapon/Fragment/WeaponItemFragment.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tps_test.uproject" beforeDir="false" afterPath="$PROJECT_DIR$/tps_test.uproject" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -60,6 +85,11 @@
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/UMG/Public/Binding/States/WidgetStateSettings.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/UMG/Public/Blueprint/WidgetLayoutLibrary.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../test/Plugins/StructCategoryGroups/StructCategoryGroups/StructCategoryGroups.uplugin" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Audio/Cue/AudioCueLibrary.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Audio/Cue/AudioCueLibrary.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/DeveloperSettings/InventorySettings.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/Component/InventoryWidgetRegistryComponent.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/Component/InventoryWidgetRegistryComponent.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardTypes.cpp" root0="FORCE_HIGHLIGHTING" />
@@ -87,22 +117,22 @@
     <option name="showScratchesAndConsoles" value="false" />
     <option name="showVisibilityIcons" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.cidr.known.project.marker&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.readMode.enableVisualFormatting&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
-    &quot;cidr.known.project.marker&quot;: &quot;true&quot;,
-    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;language.cpp.clangd&quot;,
-    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.cidr.known.project.marker": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.readMode.enableVisualFormatting": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "cidr.known.project.marker": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
+    "git-widget-placeholder": "main",
+    "settings.editor.selected.configurable": "reference.settingsdialog.IDE.editor.colors.C/C++",
+    "vue.rearranger.settings.migration": "true"
   }
-}</component>
+}]]></component>
   <component name="RunManager">
     <configuration name="tps_test" type="Uproject" factoryName="rider.uproject">
       <configuration_1 setup="1">
@@ -216,6 +246,11 @@
       <workItem from="1788060879826" duration="4779000" />
       <workItem from="1788146182257" duration="2561000" />
       <workItem from="1788149402896" duration="657000" />
+      <workItem from="1788159780739" duration="5741000" />
+      <workItem from="1788231374980" duration="78000" />
+      <workItem from="1788231500401" duration="6946000" />
+      <workItem from="1788246150816" duration="4104000" />
+      <workItem from="1788252830889" duration="6968000" />
     </task>
     <servers />
   </component>
@@ -244,5 +279,9 @@
         </breakpoint>
       </breakpoints>
     </breakpoint-manager>
+  </component>
+  <component name="XSLT-Support.FileAssociations.UIState">
+    <expand />
+    <select />
   </component>
 </project>

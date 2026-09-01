@@ -4,7 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/CRRecoilSpreadComponent.h"
-#include "Item/Structs/Definition.h"
+#include "Inventory/Structs/Definition.h"
 #include "WeaponRecoilComponent.generated.h"
 
 /**
