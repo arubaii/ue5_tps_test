@@ -9,7 +9,7 @@
 #include "Templates/SubclassOf.h"
 
 #include "Inventory/Structs/InventoryEnums.h"  // ESlotType, EItemType, EFireMode, EModifierValueType
-#include "Interactable/InteractableClass.h"
+
 #include "StructUtils/InstancedStruct.h"
 
 #include "Definition.generated.h"
@@ -23,7 +23,8 @@ class UTexture2D;
 class UStaticMesh;
 class USkeletalMesh;
 class UNiagaraSystem; 
-class AInteractable;
+class AInteractableActor;
+
 
 /**
  * Shared item definition data embedded in every item row (Generic row IS this struct;
@@ -56,7 +57,7 @@ struct FItemDefinition : public FTableRowBase
 	// The item's base actor class ("Inherited from BP Item Master" in the BP struct).
 	// Adjust the base type if BP_ItemBase has a native parent you'd prefer here.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
-	TSubclassOf<AInteractable> Class;
+	TSubclassOf<AActor> Class;
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category= "Inventory Slot")
 	TArray<ESlotType> CompatibleSlotTypes;

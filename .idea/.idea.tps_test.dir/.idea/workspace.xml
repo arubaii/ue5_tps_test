@@ -8,48 +8,54 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="8c152ba5-21b6-44f0-9652-c4c856fcd831" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/SlotInfoBarWidget.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/SlotInfoBarWidget.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryDisplayOnly_Base.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryDisplayOnly_Base.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventorySlot_Base.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventorySlot_Base.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardSpecDataAsset.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/Utils/BlueprintFunctionLibraries/Tags/GameplayTagUtilsLibrary.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/Utils/BlueprintFunctionLibraries/Tags/GameplayTagUtilsLibrary.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/Utils/Tags/StateTagsComponent.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/Utils/Tags/StateTagsComponent.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/1/VE/ZX1E3I2OSMBMXLPIJE1I7O.uasset" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractableComponent.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractableComponent.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractionTagsComponent.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractionTagsComponent.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractorComponent.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractorComponent.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/DeveloperSettings/InteractionSettings.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/DeveloperSettings/InteractionSettings.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/InteractableActor.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/InteractableActor.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Interfaces/InteractableInterface.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Interfaces/InteractableInterface.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Interfaces/InteractionWidgetInterface.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Interfaces/InteractionWidgetInterface.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Types/InteractionTypes.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Types/InteractionWidgetDataAsset.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Utils/InteractionStatics.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Utils/InteractionStatics.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Utils/InteractionTags.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Utils/InteractionTags.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Classes/WorldItemActor.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Classes/WorldItemActor.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Config/DefaultEngine.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Config/DefaultEngine.ini" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/Weapons/Attachments/BP_Item_Grip.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/Weapons/Attachments/BP_Item_Grip.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/Weapons/Pistol/Blueprints/BP_Item_Pistol.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/Weapons/Pistol/Blueprints/BP_Item_Pistol.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/01_DoorBlueprint/BP_Door.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/01_DoorBlueprint/BP_Door.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_ItemBase.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_ItemBase.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_Book.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_Book.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_Hatchet.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_Hatchet.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_HealthPotion.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_HealthPotion.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_Weapon.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_Weapon.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/05_Interactables/BP_Interactable.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/05_Interactables/BP_Interactable.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/Components/BPC_Interactable.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/Components/BPC_Interactable.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/Components/Tags/BPC_StateTags.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/Components/Tags/BPC_StateTags.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/Macros/BPM_GameplayTagUtils.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/Macros/BPM_GameplayTagUtils.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/Macros/BPM_ItemNotFoundFromRowName.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/Macros/BPM_ItemNotFoundFromRowName.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCharacter.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCharacter.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonPlayerController.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonPlayerController.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/BPL_GlobalUI.uasset" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard_ItemHover.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard_ItemHover.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_Chest.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_Chest.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_DragVisual.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_DragVisual.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_IconFrame.uasset" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_InGameMenuBase.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_InGameMenuBase.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_Inventory.uasset" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_InventorySlot.uasset" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_LoadoutMenuManager.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_LoadoutMenuManager.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_PauseMenu.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_PauseMenu.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_SearchBar.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_SearchBar.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_DynamicAmbient.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_DynamicAmbient.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_DynamicWidgetBase.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_DynamicWidgetBase.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/1/CT/Z3KWSBN12HY8VOI8DY6G6B.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/1/CT/Z3KWSBN12HY8VOI8DY6G6B.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/2/SP/IJHZI4KLOV1O68KE968LNR.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/2/SP/IJHZI4KLOV1O68KE968LNR.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/5/L0/RN5ZY9KZ26IZUKW8K1XO88.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/5/L0/RN5ZY9KZ26IZUKW8K1XO88.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/7/3J/MAI4Q4R4L981QEF7YTC76G.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/7/3J/MAI4Q4R4L981QEF7YTC76G.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/A/N3/CBJ3KF9V26MONITRP9SARP.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/A/N3/CBJ3KF9V26MONITRP9SARP.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/D/HQ/EJ5AF743WVQPRVC1C40QRA.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/D/HQ/EJ5AF743WVQPRVC1C40QRA.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/E/3X/OAWQ6WQMAIXDEHLMMUN1S0.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/E/3X/OAWQ6WQMAIXDEHLMMUN1S0.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Interactable/InteractableClass.h" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Fragment/ItemFragment.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Fragment/ItemFragment.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/IInventorySlotInterface.h" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardTypes.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardTypes.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardWidget_Base.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardWidget_Base.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardWidget_Base.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardWidget_Base.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/Definition.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/Definition.h" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -80,6 +86,7 @@
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Engine/Classes/Animation/AnimNotifies/AnimNotify_PlaySound.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Engine/Classes/Engine/AssetManagerSettings.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Engine/Classes/Engine/DebugCameraHUD.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Engine/Classes/Engine/OverlapResult.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Engine/Classes/GameFramework/GameModeBase.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Engine/Public/SceneManagement.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Experimental/IoStore/OnDemand/Private/Tool/Main.cpp" root0="FORCE_HIGHLIGHTING" />
@@ -93,6 +100,9 @@
     <setting file="file://$PROJECT_DIR$/Source/tps_test/Audio/Cue/AudioCueLibrary.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/tps_test/Audio/Cue/AudioCueLibrary.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/tps_test/DeveloperSettings/InventorySettings.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Interactable/Interactable.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/Classes/WorldItemActor.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/Classes/WorldItemActor.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/UI/SlotInfoBarWidget.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/UI/SlotInfoBarWidget.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.cpp" root0="FORCE_HIGHLIGHTING" />
@@ -260,6 +270,8 @@
       <workItem from="1788252830889" duration="22833000" />
       <workItem from="1788356593899" duration="6298000" />
       <workItem from="1788407426382" duration="16944000" />
+      <workItem from="1788436712659" duration="11413000" />
+      <workItem from="1788450749026" duration="3771000" />
     </task>
     <servers />
   </component>
