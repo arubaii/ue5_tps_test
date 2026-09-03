@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/DataTable.h"
 #include "StructUtils/InstancedStruct.h"
 
 #include "ItemFragment.generated.h"
@@ -57,5 +58,27 @@ struct TPS_TEST_API FUsableFragment : public FItemFragment
 	
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly)
 	bool ConsumeOnUse = false;
+};
+
+USTRUCT(BlueprintType)
+struct FCraftingCost
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite)
+	FDataTableRowHandle Item;
+
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite)
+	int32 Quantity = 1;
+};
+
+USTRUCT(BlueprintType)
+struct TPS_TEST_API FCraftableFragment : public FItemFragment
+{
+	GENERATED_BODY()
+	
+	/* Specify the item, and the quantity required to craft */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite)
+	TArray<FCraftingCost> Recipe;
 };
 

@@ -23,7 +23,7 @@ UInfoCardAnchor::UInfoCardAnchor()
 
 	// Invisible by default; it's a behaviour wrapper, not a visual one.
 	Background.DrawAs = ESlateBrushDrawType::NoDrawType;
-
+	
 	// UBorder defaults to a small internal padding; zero it out so wrapping a
 	// widget in an anchor never nudges its layout.
 	SetPadding(FMargin(0.f));
@@ -40,6 +40,43 @@ TSharedRef<SWidget> UInfoCardAnchor::RebuildWidget()
 void UInfoCardAnchor::SynchronizeProperties()
 {
 	Super::SynchronizeProperties();
+
+	// InfoCards can be mutated in place at runtime after this first copy —
+	// e.g. GetOrAddPayload attaching data into a payload's own properties.
+	// UMG can call SynchronizeProperties repeatedly during normal play
+	// (visibility changes, layout invalidation, a hover card opening
+	// elsewhere), and an unconditional re-copy here would silently discard
+	// those mutations, resetting every payload back to its data-asset
+	// default the next time a card reads it. Only sync once at runtime;
+	// always resync at design-time so editing the data asset is reflected
+	// live in the UMG preview.
+	if (IsValid(InfoCards_DA) && (IsDesignTime() || !bInfoCardsSyncedFromDataAsset))
+	{
+		// NOT a plain "InfoCards = InfoCards_DA->InfoCards;" — that copies
+		// FInfoCardSpec::Payloads by pointer, not by value. Every
+		// InfoCardAnchor in the game would then reference the SAME payload
+		// UObjects the data asset itself owns, so any one slot's InitSlot
+		// mutating a payload silently overwrites what every other slot
+		// using the same InfoCards_DA had just written — whichever slot's
+		// InitSlot runs last "wins" for the entire session. Each anchor
+		// needs its own duplicated payload instances instead.
+		InfoCards.Reset(InfoCards_DA->InfoCards.Num());
+
+		for (const FInfoCardSpec& SourceSpec : InfoCards_DA->InfoCards)
+		{
+			FInfoCardSpec NewSpec = SourceSpec;
+			NewSpec.Payloads.Reset(SourceSpec.Payloads.Num());
+
+			for (const TObjectPtr<UInfoCardPayload>& SourcePayload : SourceSpec.Payloads)
+			{
+				NewSpec.Payloads.Add(SourcePayload ? DuplicateObject<UInfoCardPayload>(SourcePayload, this) : nullptr);
+			}
+
+			InfoCards.Add(MoveTemp(NewSpec));
+		}
+
+		bInfoCardsSyncedFromDataAsset = true;
+	}
 
 	EnsureRuntimeStatesSize();
 	EnsureHitTestable();
@@ -166,37 +203,67 @@ void UInfoCardAnchor::HandleMouseLeave(const FPointerEvent& PointerEvent)
 
 FReply UInfoCardAnchor::HandleMouseButtonDown(const FGeometry& Geometry, const FPointerEvent& PointerEvent)
 {
-	if (!IsDesignTime() && PointerEvent.GetEffectingButton() == EKeys::RightMouseButton)
+	if (!IsDesignTime())
 	{
-		EnsureRuntimeStatesSize();
+		// Right and left click drive their own, independent CardType — a
+		// single mouse-down is never both, so at most one of these matches.
+		const FKey EffectingButton = PointerEvent.GetEffectingButton();
 
-		bool bHandledAny = false;
-
-		for (int32 Index = 0; Index < InfoCards.Num(); ++Index)
+		ECardType MatchType;
+		if (EffectingButton == EKeys::RightMouseButton)
 		{
-			const FInfoCardSpec& Spec = InfoCards[Index];
-			if (!Spec.bEnabled || Spec.CardType != ECardType::RightClick)
-			{
-				continue;
-			}
-
-			bHandledAny = true;
-
-			const bool bIsActive = RuntimeStates.IsValidIndex(Index) && RuntimeStates[Index].ActiveCard != nullptr;
-			if (bIsActive && Spec.bToggleOnRightClick)
-			{
-				HideCardAtIndex(Index);
-			}
-			else
-			{
-				HideCardAtIndex(Index);
-				ShowCardAtIndex(Index);
-			}
+			MatchType = ECardType::RightClick;
+		}
+		else if (EffectingButton == EKeys::LeftMouseButton)
+		{
+			MatchType = ECardType::LeftClick;
+		}
+		else
+		{
+			MatchType = ECardType::Hover; // sentinel: neither button we react to on mouse-down
 		}
 
-		if (bHandledAny)
+		if (MatchType != ECardType::Hover)
 		{
-			return FReply::Handled();
+			EnsureRuntimeStatesSize();
+
+			bool bHandledAny = false;
+
+			for (int32 Index = 0; Index < InfoCards.Num(); ++Index)
+			{
+				const FInfoCardSpec& Spec = InfoCards[Index];
+				if (!Spec.bEnabled || Spec.CardType != MatchType)
+				{
+					continue;
+				}
+
+				bHandledAny = true;
+
+				// Right and left click each carry their own toggle flag
+				// (Spec.bToggleOnRightClick / Spec.bToggleOnLeftClick) so a
+				// single anchor can toggle on one button and re-open-on-
+				// reclick on the other, independently, if ever configured
+				// that way.
+				const bool bToggleOnThisClick = (MatchType == ECardType::RightClick)
+					? Spec.bToggleOnRightClick
+					: Spec.bToggleOnLeftClick;
+
+				const bool bIsActive = RuntimeStates.IsValidIndex(Index) && RuntimeStates[Index].ActiveCard != nullptr;
+				if (bIsActive && bToggleOnThisClick)
+				{
+					HideCardAtIndex(Index);
+				}
+				else
+				{
+					HideCardAtIndex(Index);
+					ShowCardAtIndex(Index);
+				}
+			}
+
+			if (bHandledAny)
+			{
+				return FReply::Handled();
+			}
 		}
 	}
 
@@ -510,6 +577,104 @@ void UInfoCardAnchor::SetPayloadsById(FName CardId, const TArray<UInfoCardPayloa
 void UInfoCardAnchor::SetPayloadById(FName CardId, UInfoCardPayload* NewPayload)
 {
 	SetPayloadAtIndex(FindCardIndexById(CardId), NewPayload);
+}
+
+UInfoCardPayload* UInfoCardAnchor::GetOrAddPayload(FName CardId, TSubclassOf<UInfoCardPayload> PayloadClass, bool& bIsPayloadValid)
+{
+	bIsPayloadValid = false;
+
+	if (!PayloadClass)
+	{
+		return nullptr;
+	}
+
+	// Defensive: SynchronizeProperties (which normally populates InfoCards
+	// from InfoCards_DA) runs when the underlying Slate widget is built, and
+	// that can happen after InitSlot-style callers already need this data —
+	// e.g. a slot widget calling this the moment it's added to a grid, before
+	// its own Slate tree (and this anchor's) has been constructed. Rather
+	// than depend on that ordering, sync here if it looks like it hasn't
+	// happened yet. Uses the same per-anchor deep copy as SynchronizeProperties
+	// — see there for why a plain array copy is wrong.
+	if (InfoCards.Num() == 0 && IsValid(InfoCards_DA) && InfoCards_DA->InfoCards.Num() > 0)
+	{
+		InfoCards.Reset(InfoCards_DA->InfoCards.Num());
+
+		for (const FInfoCardSpec& SourceSpec : InfoCards_DA->InfoCards)
+		{
+			FInfoCardSpec NewSpec = SourceSpec;
+			NewSpec.Payloads.Reset(SourceSpec.Payloads.Num());
+
+			for (const TObjectPtr<UInfoCardPayload>& SourcePayload : SourceSpec.Payloads)
+			{
+				NewSpec.Payloads.Add(SourcePayload ? DuplicateObject<UInfoCardPayload>(SourcePayload, this) : nullptr);
+			}
+
+			InfoCards.Add(MoveTemp(NewSpec));
+		}
+
+		bInfoCardsSyncedFromDataAsset = true;
+	}
+
+	const int32 Index = FindCardIndexById(CardId);
+
+	if (!InfoCards.IsValidIndex(Index))
+	{
+		return nullptr;
+	}
+
+	FInfoCardSpec& Spec = InfoCards[Index];
+
+	// Reuse whatever's already there for this class — whether it was authored
+	// as a design-time default in the Details panel or added by an earlier
+	// call to this function. Either way the caller gets the SAME object back
+	// every time, so mutating it here is the whole update.
+	for (const TObjectPtr<UInfoCardPayload>& Existing : Spec.Payloads)
+	{
+		if (Existing && Existing->IsA(PayloadClass))
+		{
+			bIsPayloadValid = true;
+			return Existing;
+		}
+	}
+
+	// The DA's Payloads array is the declared contract for what this card
+	// accepts — not a suggestion. If PayloadClass isn't authored there,
+	// that's a configuration mistake (a designer forgot to add the entry,
+	// or C++ is asking for the wrong class), not something to silently
+	// paper over by fabricating a default-constructed one. Fabricating it
+	// here would mean the DA's array carries no real meaning: any class any
+	// caller asks for would "work" whether or not it was ever declared.
+	UE_LOG(LogInfoCard, Error,
+		TEXT("GetOrAddPayload: CardId '%s' has no authored payload of class %s. Add one to this entry's Payloads array in its Info Card data asset."),
+		*CardId.ToString(), *PayloadClass->GetName());
+	return nullptr;
+}
+
+void UInfoCardAnchor::RefreshCard(FName CardId)
+{
+	const int32 Index = FindCardIndexById(CardId);
+	if (!InfoCards.IsValidIndex(Index))
+	{
+		return;
+	}
+
+	EnsureRuntimeStatesSize();
+
+	UInfoCardWidgetBase* ActiveCard = RuntimeStates.IsValidIndex(Index) ? RuntimeStates[Index].ActiveCard : nullptr;
+	if (!ActiveCard)
+	{
+		return; // not currently shown — nothing to redraw; next open already picks up the mutated data
+	}
+
+	TArray<UInfoCardPayload*> RawPayloads;
+	RawPayloads.Reserve(InfoCards[Index].Payloads.Num());
+	for (const TObjectPtr<UInfoCardPayload>& P : InfoCards[Index].Payloads)
+	{
+		RawPayloads.Add(P.Get());
+	}
+
+	ActiveCard->SetPayloads(RawPayloads);
 }
 
 UInfoCardWidgetBase* UInfoCardAnchor::GetActiveCardById(FName CardId) const

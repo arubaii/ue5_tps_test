@@ -2,6 +2,7 @@
 
 #include "Inventory/ItemLibrary.h"
 #include "UI/Search/SearchLibrary.h" // adjust to wherever USearchLibrary lives in your module
+#include "Components/GridSlot.h"
 
 FSubInventoryView UW_InventoryBase::FilterSubInventoryBySearch(const FSubInventoryView& View,
                                                                const FString& SearchText)
@@ -104,15 +105,26 @@ void UW_InventoryBase::RefreshFilterOptionsFromMap()
 	TArray<FSearchFilterOption> options;
 	options.Reserve(FragmentFilterOptions.Num());
 
-	for (const TPair<TObjectPtr<UScriptStruct>, FText>& pair : FragmentFilterOptions)
+	for (const TPair<FFragmentFilterOption, FText>& pair : FragmentFilterOptions)
 	{
-		if (!pair.Key)
+		if (pair.Key.Fragments.Num() == 0)
 			continue; // an empty row in the Details panel — skip rather than crash on it
 
-		// The fragment struct's own name is stable and unique within the project, so it
-		// doubles as the search bar's opaque Key with nothing extra to author or keep
-		// in sync — the one thing the designer fills in is the display label.
-		const FName key = pair.Key->GetFName();
+		// A single fragment struct no longer doubles as its own key now that an entry can
+		// name several — build one from the group instead: every fragment's name plus the
+		// combinator, so two entries with the same fragments but different FilterMode
+		// (or vice versa) still resolve to distinct keys.
+		FString keyString;
+		for (const TObjectPtr<UScriptStruct>& fragment : pair.Key.Fragments)
+		{
+			if (fragment)
+				keyString += fragment->GetName() + TEXT("|");
+		}
+		keyString += (pair.Key.FilterMode == EFragmentFilterMode::WidensFilter)
+			? TEXT("Widens")
+			: TEXT("Narrows");
+
+		const FName key(*keyString);
 
 		FilterKeyToFragment.Add(key, pair.Key);
 		options.Add(FSearchFilterOption{ key, pair.Value });
@@ -121,10 +133,228 @@ void UW_InventoryBase::RefreshFilterOptionsFromMap()
 	InventorySearchBar->SetFilterOptions(options);
 }
 
-UScriptStruct* UW_InventoryBase::ResolveFilterKey(FName Key) const
+FFragmentFilterOption UW_InventoryBase::ResolveFilterKey(FName Key) const
 {
-	if (const TObjectPtr<UScriptStruct>* found = FilterKeyToFragment.Find(Key))
+	if (const FFragmentFilterOption* found = FilterKeyToFragment.Find(Key))
 		return *found;
 
-	return nullptr;
+	return FFragmentFilterOption();
+}
+
+void UW_InventoryBase::RefreshGrid()
+{
+	if (!InventoryComponent || !SlotGridPanel || !InventorySlotClass) return;
+
+	// 1. TOGGLE VISIBILITY & STATE
+	bInSubView = false;
+	SlotGridPanel->SetVisibility(ESlateVisibility::Visible);
+	if (SubViewPanel) SubViewPanel->SetVisibility(ESlateVisibility::Collapsed);
+
+	const TArray<FInventorySlot> Slots = InventoryComponent->GetSlots();
+	const int32 GridWidth = FMath::Max(1, InventoryComponent->GridWidth);
+
+	for (int32 i = 0; i < Slots.Num(); ++i)
+	{
+		UW_InventorySlotBase* SlotWidget = nullptr;
+
+		// 2. REUSE OR CREATE WIDGET (Pooling to fix lag)
+		if (i < InventorySlotWidgets.Num())
+		{
+			SlotWidget = InventorySlotWidgets[i];
+			SlotWidget->SetVisibility(ESlateVisibility::Visible);
+			
+			if (SlotWidget->GetParent() != SlotGridPanel)
+			{
+				SlotWidget->RemoveFromParent();
+				SlotGridPanel->AddChildToGrid(SlotWidget);
+			}
+		}
+		else
+		{
+			SlotWidget = CreateWidget<UW_InventorySlotBase>(this, InventorySlotClass);
+			SlotGridPanel->AddChildToGrid(SlotWidget);
+			InventorySlotWidgets.Add(SlotWidget);
+		}
+
+		// 3. UPDATE DATA
+		if (UGridSlot* GridSlot = Cast<UGridSlot>(SlotWidget->Slot))
+		{
+			GridSlot->SetRow(i / GridWidth);
+			GridSlot->SetColumn(i % GridWidth);
+		}
+
+		SlotWidget->GetInventoryWidgetRef(this);
+		SlotWidget->InitSlot(InventoryComponent, i);
+	}
+
+	// 4. HIDE UNUSED WIDGETS
+	for (int32 i = Slots.Num(); i < InventorySlotWidgets.Num(); ++i)
+	{
+		InventorySlotWidgets[i]->SetVisibility(ESlateVisibility::Collapsed);
+	}
+}
+
+void UW_InventoryBase::RefreshSubView()
+{
+	if (!InventoryComponent || !SubViewPanel || !InventorySlotClass) return;
+
+	// 1. TOGGLE VISIBILITY & STATE
+	bInSubView = true;
+	SubViewPanel->SetVisibility(ESlateVisibility::Visible);
+	if (SlotGridPanel) SlotGridPanel->SetVisibility(ESlateVisibility::Collapsed);
+
+	FSubInventoryView View = InventoryComponent->GetSubInventoryByFragment(SubViewQuery);
+
+	if (!SearchQuery.IsEmpty())
+	{
+		View = FilterSubInventoryBySearch(View, SearchQuery);
+	}
+
+	TArray<FSubInventoryPlacement> Placements;
+	// Ask for the layout of the ITEMS ONLY (bShowEmptySlots = false). We will generate the empty slots ourselves.
+	UInventoryComponent::GetSubInventoryLayout(View, InventoryComponent->GridWidth, true, false, Placements);
+
+	const int32 GridW = FMath::Max(1, InventoryComponent->GridWidth);
+	const int32 GridH = FMath::Max(1, InventoryComponent->GridHeight);
+	const int32 TotalCells = InventoryComponent->IsGridEnabled() ? (GridW * GridH) : InventoryComponent->MaxInventorySlots;
+
+	// Track which grid coordinates are occupied so we know where to put filler slots
+	TArray<bool> OccupiedCells;
+	OccupiedCells.Init(false, TotalCells);
+
+	int32 WidgetIndex = 0;
+
+	// Helper lambda to cleanly reuse or spawn widgets
+	auto GetOrCreateSlotWidget = [&](int32 CurrentWidgetIndex) -> UW_InventorySlotBase*
+	{
+		UW_InventorySlotBase* SlotWidget = nullptr;
+		if (CurrentWidgetIndex < InventorySlotWidgets.Num())
+		{
+			SlotWidget = InventorySlotWidgets[CurrentWidgetIndex];
+			SlotWidget->SetVisibility(ESlateVisibility::Visible);
+			if (SlotWidget->GetParent() != SubViewPanel)
+			{
+				SlotWidget->RemoveFromParent();
+				SubViewPanel->AddChildToGrid(SlotWidget);
+			}
+		}
+		else
+		{
+			SlotWidget = CreateWidget<UW_InventorySlotBase>(this, InventorySlotClass);
+			SubViewPanel->AddChildToGrid(SlotWidget);
+			InventorySlotWidgets.Add(SlotWidget);
+		}
+		return SlotWidget;
+	};
+
+	// --- STEP 1: PLACE THE ACTUAL SEARCHED/FILTERED ITEMS ---
+	for (const FSubInventoryPlacement& Placement : Placements)
+	{
+		// FIX: Retrieve the TRUE SourceSlotIndex from the view entry!
+		int32 TrueSourceIndex = Placement.SourceSlotIndex;
+		if (Placement.ViewIndex != INDEX_NONE && View.Entries.IsValidIndex(Placement.ViewIndex))
+		{
+			TrueSourceIndex = View.Entries[Placement.ViewIndex].SourceSlotIndex;
+		}
+
+		// Mark these cells as occupied
+		for (int32 r = 0; r < Placement.RowSpan; ++r)
+		{
+			for (int32 c = 0; c < Placement.ColumnSpan; ++c)
+			{
+				int32 CellIndex = (Placement.Row + r) * GridW + (Placement.Column + c);
+				if (OccupiedCells.IsValidIndex(CellIndex))
+				{
+					OccupiedCells[CellIndex] = true;
+				}
+			}
+		}
+
+		UW_InventorySlotBase* SlotWidget = GetOrCreateSlotWidget(WidgetIndex);
+
+		if (UGridSlot* GridSlot = Cast<UGridSlot>(SlotWidget->Slot))
+		{
+			GridSlot->SetRow(Placement.Row);
+			GridSlot->SetColumn(Placement.Column);
+			GridSlot->SetRowSpan(Placement.RowSpan);
+			GridSlot->SetColumnSpan(Placement.ColumnSpan);
+		}
+
+		SlotWidget->InitSlot(InventoryComponent, TrueSourceIndex);
+		SlotWidget->AddPadding(SlotPadding);
+		SlotWidget->GetInventoryWidgetRef(this);
+
+		WidgetIndex++;
+	}
+
+	// --- STEP 2: FILL THE REST OF THE INVENTORY WITH EMPTY SLOTS ---
+	if (bSubViewShowsEmptySlots)
+	{
+		for (int32 i = 0; i < TotalCells; ++i)
+		{
+			if (OccupiedCells.IsValidIndex(i) && !OccupiedCells[i])
+			{
+				UW_InventorySlotBase* SlotWidget = GetOrCreateSlotWidget(WidgetIndex);
+
+				if (UGridSlot* GridSlot = Cast<UGridSlot>(SlotWidget->Slot))
+				{
+					GridSlot->SetRow(i / GridW);
+					GridSlot->SetColumn(i % GridW);
+					GridSlot->SetRowSpan(1);
+					GridSlot->SetColumnSpan(1);
+				}
+
+				// Passing INDEX_NONE (-1) forces the Blueprint to draw a genuinely empty slot
+				SlotWidget->InitSlot(InventoryComponent, INDEX_NONE);
+				SlotWidget->AddPadding(SlotPadding);
+				SlotWidget->GetInventoryWidgetRef(this);
+
+				WidgetIndex++;
+			}
+		}
+	}
+
+	// --- STEP 3: HIDE UNUSED WIDGETS IN THE POOL ---
+	for (int32 i = WidgetIndex; i < InventorySlotWidgets.Num(); ++i)
+	{
+		InventorySlotWidgets[i]->SetVisibility(ESlateVisibility::Collapsed);
+	}
+}
+
+void UW_InventoryBase::HandleInventoryChanged(int32 Index)
+{
+	if (!InventoryComponent) return;
+
+	if (bInSubView)
+	{
+		// Debounce the heavy packing algorithm:
+		// If this fires multiple times in a single frame, we only queue the refresh ONCE.
+		if (!bSubViewNeedsRefresh)
+		{
+			bSubViewNeedsRefresh = true;
+			if (UWorld* World = GetWorld())
+			{
+				World->GetTimerManager().SetTimerForNextTick(this, &UW_InventoryBase::ExecuteDeferredSubViewRefresh);
+			}
+		}
+	}
+	else
+	{
+		// Safety check: If the widget array hasn't been populated yet, do a full rebuild
+		if (InventorySlotWidgets.Num() != InventoryComponent->GetSlots().Num())
+		{
+			RefreshGrid();
+		}
+		// OPTIMIZATION: Just update the exact slot that changed (O(1) operation)
+		else if (InventorySlotWidgets.IsValidIndex(Index))
+		{
+			InventorySlotWidgets[Index]->InitSlot(InventoryComponent, Index);
+		}
+	}
+}
+
+void UW_InventoryBase::ExecuteDeferredSubViewRefresh()
+{
+	bSubViewNeedsRefresh = false;
+	RefreshSubView();
 }

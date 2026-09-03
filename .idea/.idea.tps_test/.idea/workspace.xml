@@ -9,20 +9,19 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="77094a73-4108-4268-a451-43a53254f29f" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventorySlotBase.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventorySlotBase.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/Generated/LevelPrototyping/Interactable/Door/BP_DoorFrame.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/Generated/LevelPrototyping/Interactable/Door/BP_DoorFrame.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/Weapons/Blueprints/BP_ProjectileBase.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/Weapons/Blueprints/BP_ProjectileBase.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_ItemBase.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_ItemBase.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/Components/BPC_Interactable.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/Components/BPC_Interactable.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCharacter.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCharacter.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/2/JJ/LKMVT9BVA6R09Z9ZQMJIVC.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/2/JJ/LKMVT9BVA6R09Z9ZQMJIVC.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/D/HQ/EJ5AF743WVQPRVC1C40QRA.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/D/HQ/EJ5AF743WVQPRVC1C40QRA.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Source/StructCategoryGroupsEditor/Private/StructCategoryGroupsEditorModule.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Source/StructCategoryGroupsEditor/Private/StructCategoryGroupsEditorModule.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Source/StructCategoryGroupsEditor/Public/StructCategoryGroups.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/StructCategoryGroups/Source/StructCategoryGroupsEditor/Public/StructCategoryGroups.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Definition.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Definition.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Instance.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Instance.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Rows.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Item/Structs/Rows.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponComponent.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Config/DefaultEngine.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Config/DefaultEngine.ini" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_Inventory.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_Inventory.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_InventorySlot.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_InventorySlot.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_LoadoutMenuManager.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_LoadoutMenuManager.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_SearchBar.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_SearchBar.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/IInventorySlotInterface.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.h" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -171,6 +170,7 @@
       <workItem from="1787165290734" duration="87000" />
       <workItem from="1787336043302" duration="180000" />
       <workItem from="1787521041665" duration="6000" />
+      <workItem from="1788333308243" duration="70000" />
     </task>
     <servers />
   </component>

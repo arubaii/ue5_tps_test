@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/Border.h"
-#include "UI/Cards/InfoCardTypes.h"
+#include "UI/Cards/InfoCardSpecDataAsset.h"
 #include "InfoCardAnchor.generated.h"
 
 class UInfoCardWidgetBase;
@@ -59,9 +59,11 @@ public:
 	 * tooltip/context-card behaviour. Give an entry a CardId if you want to
 	 * address it from Blueprint by name instead of array index.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (TitleProperty = "CardId"))
-	TArray<FInfoCardSpec> InfoCards;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (TitleProperty = "CardId", DisplayName = "Info Cards"))
+	TObjectPtr<UInfoCardDataAsset> InfoCards_DA;
 
+	 
+	
 	// ------------------------------------------------------------------
 	// By index
 	// ------------------------------------------------------------------
@@ -118,6 +120,34 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Info Card")
 	void SetPayloadById(FName CardId, UInfoCardPayload* NewPayload);
+
+	/**
+	 * The low-friction path for supplying data. Finds CardId's existing
+	 * payload of PayloadClass — one authored directly in InfoCards[].Payloads
+	 * in the Details panel — and returns it so you can set its properties
+	 * directly with normal Set nodes, rather than constructing a new payload
+	 * object and calling SetPayloadsById every time. The object is live:
+	 * mutating its properties takes effect the next time this card is shown
+	 * with no further calls. If the card might already be open and you want
+	 * it to redraw immediately, follow up with RefreshCard.
+	 *
+	 * Does NOT fabricate a payload that wasn't authored — bIsPayloadValid
+	 * comes back false (and ReturnValue is null) if CardId doesn't exist or
+	 * has no Payloads entry of PayloadClass. The Payloads array in the data
+	 * asset is a required declaration, not an optional default: add the
+	 * entry there rather than expecting this to create one silently.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Info Card", meta = (DeterminesOutputType = "PayloadClass"))
+	UInfoCardPayload* GetOrAddPayload(FName CardId, TSubclassOf<UInfoCardPayload> PayloadClass, bool& bIsPayloadValid);
+
+	/**
+	 * Re-delivers CardId's current payload set to its active card, if one is
+	 * showing (a no-op otherwise). Use after mutating a payload object
+	 * returned by GetOrAddPayload when the card is already on screen and you
+	 * want the change to appear without waiting for it to re-open.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Info Card")
+	void RefreshCard(FName CardId);
 
 	UFUNCTION(BlueprintPure, Category = "Info Card")
 	UInfoCardWidgetBase* GetActiveCardById(FName CardId) const;
@@ -201,4 +231,23 @@ protected:
 	 * out; pruned in PruneRegistry wherever it's walked or updated.
 	 */
 	static TArray<TWeakObjectPtr<UInfoCardAnchor>> ActiveCardAnchors;
+
+	/**
+	 * Set once InfoCards has been populated from InfoCards_DA at runtime.
+	 * SynchronizeProperties only re-copies from InfoCards_DA while this is
+	 * false (or at design-time) — see SynchronizeProperties for why an
+	 * unconditional copy on every call is wrong.
+	 */
+	UPROPERTY(Transient)
+	bool bInfoCardsSyncedFromDataAsset = false;
+
+	/**
+	 * Must stay UPROPERTY. FInfoCardSpec::Payloads holds UObject* payloads
+	 * (via Instanced TObjectPtr) — without reflection on this array, the GC
+	 * has no visible reference path to them, and any payload added here
+	 * before its card is ever shown (e.g. via GetOrAddPayload) gets
+	 * collected and turns into a dangling pointer on the very next GC pass.
+	 */
+	UPROPERTY()
+	TArray<FInfoCardSpec> InfoCards;
 };

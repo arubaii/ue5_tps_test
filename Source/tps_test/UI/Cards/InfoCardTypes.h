@@ -1,11 +1,13 @@
 ﻿#pragma once
 
 #include "CoreMinimal.h"
+#include "Inventory/Structs/Instance.h"
 #include "UObject/Object.h"
 #include "Templates/SubclassOf.h"
 #include "InfoCardTypes.generated.h"
 
 class UInfoCardWidgetBase;
+class UInventoryComponent;
 
 /**
  * Cardinal direction used to place the info card relative to an icon.
@@ -37,12 +39,27 @@ enum class EInfoCardCursorPosition : uint8
 	RightCenter
 };
 
-/** Whether the card anchors itself to an icon or to a fixed cursor-relative position. */
+/** Whether the card anchors itself to an icon, a fixed cursor-relative position, or a fixed viewport-relative position. */
 UENUM(BlueprintType)
 enum class EInfoCardPosition : uint8
 {
 	ToIcon,
-	ToCursor
+	ToCursor,
+	ToViewport
+};
+
+/** Fixed corner/edge of the viewport used to place the info card when PositionMode is ToViewport. */
+UENUM(BlueprintType)
+enum class EViewportPosition : uint8
+{
+	TopLeft,
+	TopCenter,
+	TopRight,
+	LeftCenter,
+	RightCenter,
+	BottomLeft,
+	BottomCenter,
+	BottomRight
 };
 
 /** How the card is triggered by the widget it is attached to. */
@@ -50,7 +67,8 @@ UENUM(BlueprintType)
 enum class ECardType : uint8
 {
 	Hover,
-	RightClick
+	RightClick,
+	LeftClick
 };
 
 /** What happens to other active info cards already on screen when this one is shown. */
@@ -85,6 +103,62 @@ public:
 	FText Body;
 };
 
+/**
+ * Drives any card's optional InventoryDisplay child (see UInfoCardWidgetBase)
+ * from a live UInventoryComponent. UInfoCardWidgetBase handles the refresh and
+ * the "close if the source changes" safety net generically from this payload
+ * alone — no per-card C++/Blueprint work needed. Attach this to any InfoCards
+ * entry whose card is meant to preview a component's slots (attachments, a
+ * recipe's owned-resources view, a shop's stock, etc.).
+ */
+UCLASS(DisplayName = "Info Card Data (Inventory Display)")
+class TPS_TEST_API UInfoCardPayload_InventoryDisplay : public UInfoCardPayload
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory Display")
+	TObjectPtr<UInventoryComponent> SourceComponent = nullptr;
+};
+
+/**
+ * Carries the row name a card should look up its own display data from —
+ * separate from UInfoCardPayload_InventoryDisplay, since a card can show
+ * "this item's own name/icon/description" (this payload) and "this item's
+ * attachments/contents" (the display payload) independently, or both at
+ * once in the same Payloads array.
+ */
+UCLASS(DisplayName = "Info Card Data (Item Row)")
+class TPS_TEST_API UInfoCardPayload_ItemRow : public UInfoCardPayload
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item Row")
+	FName ItemRowName = NAME_None;
+};
+
+UCLASS(DisplayName = "Info Card Data (Item Instance)")
+class TPS_TEST_API UInfoCardPayload_ItemInstance : public UInfoCardPayload
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
+	FItemInstance ItemInstance;
+};
+
+UCLASS(DisplayName = "Info Card Data (Item Definition)")
+class TPS_TEST_API UInfoCardPayload_ItemDefinition : public UInfoCardPayload
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item")
+	FItemInstance ItemInstance;
+};
+
+
 USTRUCT(BlueprintType)
 struct TPS_TEST_API FInfoCardSpec
 {
@@ -108,6 +182,9 @@ struct TPS_TEST_API FInfoCardSpec
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (EditCondition = "CardType == ECardType::RightClick"))
 	bool bToggleOnRightClick = true;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (EditCondition = "CardType == ECardType::LeftClick"))
+	bool bToggleOnLeftClick = true;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card")
 	ECardExclusivityScope ExclusivityScope = ECardExclusivityScope::None;
 
@@ -119,6 +196,9 @@ struct TPS_TEST_API FInfoCardSpec
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor"))
 	EInfoCardCursorPosition CursorPosition = EInfoCardCursorPosition::UpRight;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToViewport"))
+	EViewportPosition ViewportPosition = EViewportPosition::TopRight;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Placement")
 	FVector2D Offset = FVector2D::ZeroVector;

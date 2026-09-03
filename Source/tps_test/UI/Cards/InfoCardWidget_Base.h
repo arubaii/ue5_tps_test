@@ -8,6 +8,8 @@
 
 class UWidget;
 class UMenuManagerComponent;
+class UInventoryComponent;
+class UW_InventoryDisplayOnlyBase;
 
 UCLASS()
 class TPS_TEST_API UInfoCardWidgetBase : public UUserWidget_Animatable
@@ -24,6 +26,9 @@ public:
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "InfoCard", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor"))
 	EInfoCardCursorPosition CursorPosition = EInfoCardCursorPosition::UpRight;
+
+	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "InfoCard", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToViewport"))
+	EViewportPosition ViewportPosition = EViewportPosition::TopRight;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "InfoCard")
 	FVector2D Offset = FVector2D(0.0f, 0.0f);
@@ -68,6 +73,19 @@ public:
 	UPROPERTY(BlueprintReadOnly, Transient, Category = "InfoCard")
 	TWeakObjectPtr<UWidget> AnchorWidget;
 
+	/**
+	 * Optional. Any WBP built on this base can include a widget named
+	 * "InventoryDisplay" of this class to get automatic component-preview
+	 * behaviour for free: on ApplyPayloads, a UInfoCardPayload_InventoryDisplay
+	 * (if present) refreshes this widget from its SourceComponent and binds to
+	 * that component's OnInventoryChanged; any subsequent change to that
+	 * component closes the card rather than risking a stale/wrong display.
+	 * Cards with no such widget bound simply skip all of this — it's opt-in
+	 * per WBP, not a requirement of the base class.
+	 */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "InfoCard")
+	TObjectPtr<UW_InventoryDisplayOnlyBase> InventoryDisplay;
+
 	UFUNCTION(BlueprintCallable, Category = "InfoCard")
 	void SetupCard(const FInfoCardSpec& Spec, UWidget* InAnchorWidget);
 
@@ -105,6 +123,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "InfoCard|Position")
 	FVector2D PositionToCursor(EInfoCardCursorPosition Position, float OffsetX, float OffsetY) const;
 
+	UFUNCTION(BlueprintPure, Category = "InfoCard|Position")
+	FVector2D PositionToViewport(EViewportPosition Position, float OffsetX, float OffsetY) const;
+
 protected:
 
 	virtual void NativeConstruct() override;
@@ -125,6 +146,23 @@ protected:
 
 	UPROPERTY(Transient)
 	TWeakObjectPtr<UMenuManagerComponent> BoundMenuManager;
+
+	/**
+	 * Binds InventoryDisplay to Component's OnInventoryChanged and refreshes it
+	 * immediately. Unbinds any previously-bound component first. Passing null
+	 * clears the display and leaves nothing bound. No-op if InventoryDisplay
+	 * isn't present in this WBP.
+	 */
+	void BindInventoryDisplay(UInventoryComponent* Component);
+
+	/** Unbinds from whatever's currently in BoundInventoryComponent, if anything. */
+	void UnbindInventoryDisplay();
+
+	UFUNCTION()
+	void HandleBoundInventoryChanged(int32 InventoryIndex);
+
+	UPROPERTY(Transient)
+	TWeakObjectPtr<UInventoryComponent> BoundInventoryComponent;
 
 	void TickClickOutsideToClose();
 

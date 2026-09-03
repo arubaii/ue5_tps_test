@@ -1126,11 +1126,6 @@ bool UInventoryComponent::SwapSlots(UInventoryComponent* SourceInventory, int32 
 	FInventorySwapPlan plan;
 	if (!BuildSwapPlan(src, SourceIndex, DestIndex, plan))
 	{
-		ScreenLog(FString::Printf(
-			TEXT("[SwapSlots] Rejected drop of slot %d onto slot %d: out of bounds, incompatible slot type, "
-				 "an item under the drop reaching outside the swap confine %s, or no room left inside it."),
-			SourceIndex, DestIndex, *plan.Confine.ToString()));
-
 		Multicast_PlayInventoryCue(InventoryAudioTags::InvalidSlotSwap);
 		return false;
 	}
@@ -3610,11 +3605,45 @@ namespace
 		OutRule.bMissingValuesLast = true;
 		return true;
 	}
+
+	/**
+	 * Whether Instance satisfies Filter: an empty Fragments list always passes ("everything"),
+	 * WidensFilter is an OR (any named fragment is enough), NarrowsFilter is an AND (every
+	 * named fragment must be present).
+	 */
+	bool MatchesFragmentFilter(const FItemInstance& Instance, const FFragmentFilterOption& Filter)
+	{
+		if (Filter.Fragments.Num() == 0)
+			return true;
+
+		if (Filter.FilterMode == EFragmentFilterMode::WidensFilter)
+		{
+			for (const TObjectPtr<UScriptStruct>& fragment : Filter.Fragments)
+			{
+				if (fragment && UItemFragmentLibrary::HasItemFragment(Instance, fragment))
+					return true;
+			}
+			return false;
+		}
+
+		// NarrowsFilter
+		for (const TObjectPtr<UScriptStruct>& fragment : Filter.Fragments)
+		{
+			if (fragment && !UItemFragmentLibrary::HasItemFragment(Instance, fragment))
+				return false;
+		}
+		return true;
+	}
 }
 
 FSubInventoryView UInventoryComponent::GetSubInventoryByFragment(const FSubInventoryQuery& Query) const
 {
-	UScriptStruct* const fragmentType = Query.FragmentType;
+	// Filtering on a group has no single "the" fragment to read a sort value off, so the
+	// first named fragment stands in for it — same rule ResolveFilterKey's callers rely
+	// on when a widget's dropdown entry gets handed straight to this query.
+	UScriptStruct* const sortFragmentType = Query.FragmentFilter.Fragments.Num() > 0
+		? Query.FragmentFilter.Fragments[0]
+		: nullptr;
 
 	FSubInventoryView view;
 	view.SourceInventory = const_cast<UInventoryComponent*>(this);
@@ -3627,7 +3656,7 @@ FSubInventoryView UInventoryComponent::GetSubInventoryByFragment(const FSubInven
 	TArray<FInventorySortRule> rules;
 	FInventorySortRule rule;
 
-	if (MakeSubViewSortRule(Query.FirstSortLayer, fragmentType, Query.SortValueName,
+	if (MakeSubViewSortRule(Query.FirstSortLayer, sortFragmentType, Query.SortValueName,
 		Query.SortFirstLayerDirection, rule))
 	{
 		rules.Add(rule);
@@ -3637,7 +3666,7 @@ FSubInventoryView UInventoryComponent::GetSubInventoryByFragment(const FSubInven
 	// only ever re-ask a question the first layer already answered, and answering it the
 	// other way round can't reorder items the first layer called equal.
 	if (Query.SecondSortLayer != Query.FirstSortLayer
-		&& MakeSubViewSortRule(Query.SecondSortLayer, fragmentType, Query.SortValueName,
+		&& MakeSubViewSortRule(Query.SecondSortLayer, sortFragmentType, Query.SortValueName,
 			Query.SortSecondLayerDirection, rule))
 	{
 		rules.Add(rule);
@@ -3661,7 +3690,7 @@ FSubInventoryView UInventoryComponent::GetSubInventoryByFragment(const FSubInven
 		// re-tested once per cell it covers.
 		seen.Add(slot.ItemID);
 
-		if (fragmentType && !UItemFragmentLibrary::HasItemFragment(instance, fragmentType))
+		if (!MatchesFragmentFilter(instance, Query.FragmentFilter))
 			continue;
 
 		FSubInventoryEntry entry;
@@ -3747,15 +3776,22 @@ bool UInventoryComponent::RefreshSubInventoryView(const FSubInventoryView& View,
 }
 
 void UInventoryComponent::GetSubInventoryLayout(const FSubInventoryView& View, int32 Columns, bool bPackByFootprint,
-                                                TArray<FSubInventoryPlacement>& OutPlacements)
+                                                bool bShowEmptySlots, TArray<FSubInventoryPlacement>& OutPlacements)
 {
 	OutPlacements.Reset();
 	OutPlacements.Reserve(View.Entries.Num());
 
 	const int32 columns = FMath::Max(1, Columns);
 
+	// Cell index -> taken, in the same (row * columns + column) numbering both branches
+	// below place into. Built either way so the empty-slot pass at the bottom can skip
+	// past real content regardless of which packing mode produced it.
+	TArray<bool> occupied;
+
 	if (!bPackByFootprint)
 	{
+		occupied.Init(true, View.Entries.Num());
+
 		for (int32 i = 0; i < View.Entries.Num(); ++i)
 		{
 			FSubInventoryPlacement placement;
@@ -3764,72 +3800,100 @@ void UInventoryComponent::GetSubInventoryLayout(const FSubInventoryView& View, i
 			placement.Column = i % columns;
 			OutPlacements.Add(placement);
 		}
-		return;
+	}
+	else
+	{
+		// First-fit over a cell grid that grows downwards — the same shape of walk the real
+		// inventory uses to place an item, minus the slot-type rules, which a view has no
+		// business enforcing because it isn't moving anything.
+		auto Fits = [&occupied, columns](int32 Row, int32 Column, int32 Width, int32 Height)
+		{
+			if (Column + Width > columns)
+				return false;
+
+			for (int32 y = 0; y < Height; ++y)
+			{
+				for (int32 x = 0; x < Width; ++x)
+				{
+					const int32 cell = (Row + y) * columns + (Column + x);
+					if (occupied.IsValidIndex(cell) && occupied[cell])
+						return false;
+				}
+			}
+			return true;
+		};
+
+		for (int32 i = 0; i < View.Entries.Num(); ++i)
+		{
+			const FSubInventoryEntry& entry = View.Entries[i];
+			const int32 width = FMath::Clamp(entry.ItemSize.X, 1, columns);
+			const int32 height = FMath::Max(1, entry.ItemSize.Y);
+
+			int32 placedRow = 0;
+			int32 placedColumn = 0;
+			bool bPlaced = false;
+
+			// Terminates: a row past everything already marked is always empty, and an empty
+			// row fits any item narrow enough for the panel — which width was clamped to be.
+			for (int32 row = 0; !bPlaced; ++row)
+			{
+				for (int32 column = 0; column + width <= columns; ++column)
+				{
+					if (!Fits(row, column, width, height))
+						continue;
+
+					placedRow = row;
+					placedColumn = column;
+					bPlaced = true;
+					break;
+				}
+			}
+
+			const int32 needed = (placedRow + height) * columns;
+			if (occupied.Num() < needed)
+				occupied.AddZeroed(needed - occupied.Num());
+
+			for (int32 y = 0; y < height; ++y)
+				for (int32 x = 0; x < width; ++x)
+					occupied[(placedRow + y) * columns + (placedColumn + x)] = true;
+
+			FSubInventoryPlacement placement;
+			placement.ViewIndex = i;
+			placement.Row = placedRow;
+			placement.Column = placedColumn;
+			placement.RowSpan = height;
+			placement.ColumnSpan = width;
+			OutPlacements.Add(placement);
+		}
 	}
 
-	// First-fit over a cell grid that grows downwards — the same shape of walk the real
-	// inventory uses to place an item, minus the slot-type rules, which a view has no
-	// business enforcing because it isn't moving anything.
-	TArray<bool> occupied;
+	if (!bShowEmptySlots)
+		return;
 
-	auto Fits = [&occupied, columns](int32 Row, int32 Column, int32 Width, int32 Height)
+	const UInventoryComponent* const source = View.SourceInventory.Get();
+	if (!source)
+		return;
+
+	// One placement per REAL empty slot (ItemID invalid) — never a filtered-out occupied
+	// slot, since binding InitSlot to that index would show the item the filter or search
+	// was asked to hide rather than a true empty cell. Each carries its real slot index in
+	// SourceSlotIndex so the caller can feed it straight into InitSlot, same as a real entry.
+	int32 cell = 0;
+	for (int32 slotIndex = 0; slotIndex < source->Slots.Num(); ++slotIndex)
 	{
-		if (Column + Width > columns)
-			return false;
+		if (source->Slots[slotIndex].ItemID.IsValid())
+			continue;
 
-		for (int32 y = 0; y < Height; ++y)
-		{
-			for (int32 x = 0; x < Width; ++x)
-			{
-				const int32 cell = (Row + y) * columns + (Column + x);
-				if (occupied.IsValidIndex(cell) && occupied[cell])
-					return false;
-			}
-		}
-		return true;
-	};
-
-	for (int32 i = 0; i < View.Entries.Num(); ++i)
-	{
-		const FSubInventoryEntry& entry = View.Entries[i];
-		const int32 width = FMath::Clamp(entry.ItemSize.X, 1, columns);
-		const int32 height = FMath::Max(1, entry.ItemSize.Y);
-
-		int32 placedRow = 0;
-		int32 placedColumn = 0;
-		bool bPlaced = false;
-
-		// Terminates: a row past everything already marked is always empty, and an empty
-		// row fits any item narrow enough for the panel — which width was clamped to be.
-		for (int32 row = 0; !bPlaced; ++row)
-		{
-			for (int32 column = 0; column + width <= columns; ++column)
-			{
-				if (!Fits(row, column, width, height))
-					continue;
-
-				placedRow = row;
-				placedColumn = column;
-				bPlaced = true;
-				break;
-			}
-		}
-
-		const int32 needed = (placedRow + height) * columns;
-		if (occupied.Num() < needed)
-			occupied.AddZeroed(needed - occupied.Num());
-
-		for (int32 y = 0; y < height; ++y)
-			for (int32 x = 0; x < width; ++x)
-				occupied[(placedRow + y) * columns + (placedColumn + x)] = true;
+		while (occupied.IsValidIndex(cell) && occupied[cell])
+			++cell;
 
 		FSubInventoryPlacement placement;
-		placement.ViewIndex = i;
-		placement.Row = placedRow;
-		placement.Column = placedColumn;
-		placement.RowSpan = height;
-		placement.ColumnSpan = width;
+		placement.SourceSlotIndex = slotIndex;
+		placement.Row = cell / columns;
+		placement.Column = cell % columns;
 		OutPlacements.Add(placement);
+
+		++cell;
 	}
 }
 
@@ -3852,8 +3916,12 @@ bool UInventoryComponent::GetSubInventoryPlacement(const FSubInventoryView& View
 		return true;
 	}
 
+	// bShowEmptySlots is irrelevant here: this call only ever resolves a real Entry
+	// (ViewIndex indexes View.Entries), and empty filler cells aren't entries — they only
+	// exist in GetSubInventoryLayout's output. Passing false costs nothing since the
+	// padding pass never touches placements at valid entry indices.
 	TArray<FSubInventoryPlacement> placements;
-	GetSubInventoryLayout(View, Columns, bPackByFootprint, placements);
+	GetSubInventoryLayout(View, Columns, bPackByFootprint, false, placements);
 
 	if (!placements.IsValidIndex(ViewIndex))
 		return false;

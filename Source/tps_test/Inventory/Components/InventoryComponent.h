@@ -464,6 +464,50 @@ struct FSubInventoryEntry
 	bool bHasSortValue = false;
 };
 
+/** How a fragment filter's Fragments list is combined against an item's fragments. */
+UENUM(BlueprintType)
+enum class EFragmentFilterMode : uint8
+{
+	/** Keeps items carrying ANY of the listed fragments (an OR). */
+	WidensFilter  UMETA(DisplayName = "Widens Filter"),
+	/** Keeps items carrying EVERY listed fragment (an AND). */
+	NarrowsFilter UMETA(DisplayName = "Narrows Filter")
+};
+
+/**
+ * A group of item fragments to filter by, plus how that group is combined against an
+ * item's fragments. Declared once here — rather than in a UI class — so both a widget's
+ * authored filter dropdown (FragmentFilterOptions on W_InventoryBase) and the runtime
+ * query below (FSubInventoryQuery::FragmentFilter) share the same type: the widget
+ * resolves a dropdown selection straight into one of these and hands it to the query
+ * with no conversion step.
+ */
+USTRUCT(BlueprintType)
+struct FFragmentFilterOption
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Search",
+		meta = (MetaStruct = "/Script/tps_test.ItemFragment"))
+	TArray<TObjectPtr<UScriptStruct>> Fragments;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Search")
+	EFragmentFilterMode FilterMode = EFragmentFilterMode::WidensFilter;
+
+	bool operator==(const FFragmentFilterOption& Other) const
+	{
+		return FilterMode == Other.FilterMode && Fragments == Other.Fragments;
+	}
+
+	friend uint32 GetTypeHash(const FFragmentFilterOption& Key)
+	{
+		uint32 Hash = GetTypeHash(Key.FilterMode);
+		for (const TObjectPtr<UScriptStruct>& Fragment : Key.Fragments)
+			Hash = HashCombine(Hash, GetTypeHash(Fragment));
+		return Hash;
+	}
+};
+
 /**
  * Everything that defines a sub-inventory view except which inventory it's built from.
  * This is the SINGLE SOURCE for that parameter list: GetSubInventoryByFragment takes one
@@ -477,10 +521,13 @@ struct FSubInventoryQuery
 {
 	GENERATED_BODY()
 
-	/** The fragment items are filtered by. Null means "everything in the container". */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sub Inventory",
-		meta = (MetaStruct = "/Script/tps_test.ItemFragment"))
-	TObjectPtr<UScriptStruct> FragmentType = nullptr;
+	/**
+	 * The fragments items are filtered by, and how they combine (see FFragmentFilterOption).
+	 * An empty Fragments list means "everything in the container", same as the old null
+	 * FragmentType did — FilterMode is simply irrelevant with nothing to combine.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sub Inventory")
+	FFragmentFilterOption FragmentFilter;
 
 	/** Primary ordering. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sub Inventory")
@@ -552,8 +599,20 @@ struct FSubInventoryPlacement
 {
 	GENERATED_BODY()
 
+	/** INDEX_NONE for a filler cell (see SourceSlotIndex) — no entry backs it. */
 	UPROPERTY(BlueprintReadOnly, Category = "Sub Inventory")
 	int32 ViewIndex = INDEX_NONE;
+
+	/**
+	 * Only set (not INDEX_NONE) on a filler cell — one of GetSubInventoryLayout's
+	 * bShowEmptySlots additions. It's the real, genuinely empty inventory slot this
+	 * placeholder stands for, so it can be fed straight into InitSlot exactly the way a
+	 * real entry's SourceSlotIndex is: InitSlot already renders correctly whether or not
+	 * the index it's given has an item (RefreshGrid calls it identically either way), so
+	 * a filler cell needs no special no-item handling of its own.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Sub Inventory")
+	int32 SourceSlotIndex = INDEX_NONE;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Sub Inventory")
 	int32 Row = 0;
@@ -1269,16 +1328,20 @@ public:
 	// =================================================================================
 
 	/**
-	 * Every item in this container carrying Query.FragmentType, compacted into a gap-free
-	 * list. Pass a null FragmentType for "everything".
+	 * Every item in this container matching Query.FragmentFilter, compacted into a
+	 * gap-free list. Leave FragmentFilter.Fragments empty for "everything". Otherwise
+	 * FragmentFilter.FilterMode decides how the list is combined: WidensFilter keeps an
+	 * item carrying ANY of the named fragments, NarrowsFilter keeps only items carrying
+	 * EVERY one of them.
 	 *
 	 * SORTING. Two layers of the same enum. FirstSortLayer is the ordering; SecondSortLayer
 	 * is consulted only where the first found two items equal — quantity then name, size
 	 * then damage, and so on. Leave both at No Sorting for slot order.
 	 *
 	 * SortValueName is only read when one of the layers is By Fragment Value, and it is
-	 * read off FragmentType itself: filtering on one fragment and sorting on a value from
-	 * another isn't a case worth a pin, so there's no separate sort fragment.
+	 * read off the first fragment in FragmentFilter.Fragments: filtering on a group and
+	 * sorting on a value from some other, unnamed fragment isn't a case worth a pin, so
+	 * there's no separate sort fragment — an empty Fragments list means no value to read.
 	 *
 	 * Each layer has its own direction, so "biggest stacks first, ties alphabetically"
 	 * is one call. On By Display Name, Ascending is A-Z.
@@ -1322,12 +1385,27 @@ public:
 	 * same first-fit walk the inventory itself uses, so multi-cell items get real spans
 	 * and the rows stay flush; that's what you want when the view is meant to look like
 	 * a bag rather than a list.
+	 *
+	 * bShowEmptySlots pads the result after packing: once every entry has a placement, it
+	 * keeps handing out placements for the source inventory's genuinely empty slots —
+	 * ItemID invalid, not merely absent from this (possibly filtered) view — each carrying
+	 * that real slot's index in SourceSlotIndex so it can be fed into InitSlot exactly like
+	 * a real entry. A filtered-out slot that actually holds an item never becomes a filler:
+	 * that would leak an item the filter was asked to hide. The result is the same total
+	 * slot count the regular inventory grid shows only when nothing is filtered; a search
+	 * or fragment filter legitimately shrinks it, since a hidden item's slot is neither
+	 * packed content nor a true empty.
 	 */
 	UFUNCTION(BlueprintPure, Category = "Inventory|SubInventory")
 	static void GetSubInventoryLayout(const FSubInventoryView& View, int32 Columns, bool bPackByFootprint,
-	                                  TArray<FSubInventoryPlacement>& OutPlacements);
+	                                  bool bShowEmptySlots, TArray<FSubInventoryPlacement>& OutPlacements);
 
-	/** One entry's position, for widgets that place themselves inside a ForEach. */
+	/**
+	 * One entry's position, for widgets that place themselves inside a ForEach. Only
+	 * resolves real entries (ViewIndex indexes View.Entries) — the empty filler cells
+	 * GetSubInventoryLayout's bShowEmptySlots adds have no entry behind them, so there is
+	 * nothing for this function to look up for those; it has no bShowEmptySlots pin.
+	 */
 	UFUNCTION(BlueprintPure, Category = "Inventory|SubInventory", meta = (ReturnDisplayName = "Found"))
 	static bool GetSubInventoryPlacement(const FSubInventoryView& View, int32 ViewIndex, int32 Columns,
 	                                     bool bPackByFootprint, FSubInventoryPlacement& OutPlacement);
