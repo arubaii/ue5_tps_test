@@ -27,7 +27,10 @@ public:
 	/* Inventory slots will default to the background image set here by their slot type */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Config, Category = "Inventory Slot")
 	TMap<ESlotType, TSoftObjectPtr<UTexture2D>> DefaultSlotBackground;
-
+	/** Reference slot size every inventory widget's SlotSizeMultiplier scales from. Change this once to resize every slot across the project. */
+	
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Config, Category = "Inventory Slot")
+	FVector2D BaseSlotSize = FVector2D(128.0f, 128.0f);
 	/**
 	 * Fallback audio cue set, used by any UInventoryComponent whose own AudioCues
 	 * property is left unset. A component's own AudioCues always takes priority when

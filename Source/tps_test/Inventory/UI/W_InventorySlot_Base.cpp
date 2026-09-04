@@ -1,7 +1,7 @@
 ﻿#include "W_InventorySlot_Base.h"
-
 #include "Inventory/Components/InventoryComponent.h"
 #include "Inventory/ItemLibrary.h" 
+#include "DeveloperSettings/InventorySettings.h"
 #include "W_InventoryBase.h"
 #include "SlotInfoBarWidget.h"
 #include "W_InventoryDisplayOnly_Base.h"
@@ -143,23 +143,23 @@ void UW_InventorySlotBase::AddPadding_Implementation(FMargin InPadding)
 
 FVector2D UW_InventorySlotBase::GetBaseSlotSize() const
 {
-	if (InventoryWidgetRef)
-	{
-		return InventoryWidgetRef->BaseSlotSize;
-	}
-	if (InventoryDisplayWidgetRef)
-	{
-		return InventoryDisplayWidgetRef->BaseSlotSize;
-	}
-	
-	return FallbackBaseSlotSize;
+	return UInventorySettings::GetInventorySettings()->BaseSlotSize;
+}
+
+FVector2D UW_InventorySlotBase::GetSlotMultiplier() const
+{
+	if (InventoryWidgetRef) return InventoryWidgetRef->SlotSizeMultiplier;
+	if (InventoryDisplayWidgetRef) return InventoryDisplayWidgetRef->SlotSizeMultiplier;
+	return FallbackSlotSizeMultiplier;
 }
 
 void UW_InventorySlotBase::RefreshSlotSize()
 {
 	FVector2D BaseSize = GetBaseSlotSize();
-	SlotSize.X = BaseSize.X * SlotFootprint.X;
-	SlotSize.Y = BaseSize.Y * SlotFootprint.Y;
+	FVector2D Multiplier = GetSlotMultiplier();
+
+	SlotSize.X = BaseSize.X * SlotFootprint.X * Multiplier.X;
+	SlotSize.Y = BaseSize.Y * SlotFootprint.Y * Multiplier.Y;
 
 	if (SlotSizeBox)
 	{
@@ -167,11 +167,25 @@ void UW_InventorySlotBase::RefreshSlotSize()
 		SlotSizeBox->SetHeightOverride(SlotSize.Y);
 	}
 
+	if (SlotVisualRoot)
+	{
+		SlotVisualRoot->SetWidthOverride(BaseSize.X * SlotFootprint.X);
+		SlotVisualRoot->SetHeightOverride(BaseSize.Y * SlotFootprint.Y);
+	}
+
 	if (SlotInfoBar)
 	{
-		SlotInfoBar->SetVisibility(bHasInfoBar ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+		bool bShouldShowBar = bHasInfoBar;
+		
+		// Override visibility if this slot belongs to a DisplayOnly widget with the flag disabled
+		if (InventoryDisplayWidgetRef && !InventoryDisplayWidgetRef->ShowSlotInfoBar)
+		{
+			bShouldShowBar = false;
+		}
+		
+		SlotInfoBar->SetVisibility(bShouldShowBar ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
 	}
-	
+
 	if (InventoryWidgetRef)
 	{
 		AddPadding(InventoryWidgetRef->SlotPadding);
@@ -197,7 +211,7 @@ void UW_InventorySlotBase::SetupInfoCardPayload()
 	{
 		bool bIsPayloadValid = false;
 		if (UInfoCardPayload_ItemInstance* Payload = Cast<UInfoCardPayload_ItemInstance>(
-			InfoCardAnchor->GetOrAddPayload(HoverCardId, UInfoCardPayload_ItemInstance::StaticClass(), bIsPayloadValid)))
+			InfoCardAnchor->GetOrAddPayload(HoverCardId, UInfoCardPayload_ItemInstance::StaticClass(), bIsPayloadValid,HoverCardId )))
 		{
 			Payload->ItemInstance = CurrentSlotInstance;
 			InfoCardAnchor->RefreshCard(HoverCardId);

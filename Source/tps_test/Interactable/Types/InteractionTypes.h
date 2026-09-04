@@ -116,6 +116,28 @@ struct TPS_TEST_API FInteractionWidgetSpec
 	FVector2D DrawSizeScale = FVector2D(1.f, 1.f);
 
 	/**
+	 * Hold this widget at a fixed size on screen.
+	 *
+	 * Screen space only. A World space widget is a quad in the level — its size on screen
+	 * is supposed to fall off with distance, and the interactor leaves those completely
+	 * alone: authored scale in, authored scale out. Setting this on a World space spec
+	 * does nothing.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Widget",
+		meta = (EditCondition = "WidgetSpace == EWidgetSpace::Screen"))
+	bool bConstantWidgetSize = false;
+
+	/**
+	 * The distance, in cm from the camera, at which a constant-size widget draws at its
+	 * natural size. Nearer or further, the widget is scaled to keep the same footprint.
+	 *
+	 * Set it to roughly the distance you were standing at when you liked how it looked.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Widget",
+		meta = (EditCondition = "bConstantWidgetSize && WidgetSpace == EWidgetSpace::Screen", ClampMin = "1.0"))
+	float ConstantSizeReferenceDistance = 300.f;
+
+	/**
 	 * Offset from the attach point.
 	 *
 	 * Authoring tip that survived from the Blueprint version: drop a Widget Component in
@@ -192,6 +214,43 @@ struct TPS_TEST_API FInteractionWidgetInstance
 	
 	UPROPERTY(Transient)
 	bool bFadeWithDistance = true;
+	
+	UPROPERTY(Transient)
+	bool bConstantWidgetSize = false;
+
+	/**
+	 * Cached from the spec at build time.
+	 *
+	 * The scale pass used to ask the live UWidgetComponent for its widget space every
+	 * frame; caching it here means the decision is made once, from the authored data,
+	 * and can never disagree with what the tick-enable bookkeeping decided. Constant
+	 * size applies to Screen only; billboarding applies to World only.
+	 */
+	UPROPERTY(Transient)
+	EWidgetSpace WidgetSpace = EWidgetSpace::World;
+
+	/**
+	 * The widget's own render scale as authored in UMG, captured the first time the
+	 * constant-size pass touches it.
+	 *
+	 * Screen space widget components ignore component scale entirely — the screen layer
+	 * positions them at DrawSize in pixels — so the only lever that changes their size is
+	 * the UUserWidget's render transform. Constant-size scaling MULTIPLIES this rather
+	 * than replacing it.
+	 */
+	UPROPERTY(Transient)
+	FVector2D BaseRenderScale = FVector2D(1.f, 1.f);
+
+	UPROPERTY(Transient)
+	float ConstantSizeReferenceDistance = 300.f;
+
+	/** Resolved once at build: this instance needs the per-frame scale pass. */
+	UPROPERTY(Transient)
+	bool bWantsScaleTick = false;
+
+	/** Resolved once at build: this instance needs the per-frame billboard pass. */
+	UPROPERTY(Transient)
+	bool bWantsBillboardTick = false;
 	
 	UPROPERTY(Transient)
 	EWidgetFadeCurve FadeCurve = EWidgetFadeCurve::Linear;

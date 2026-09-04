@@ -48,7 +48,7 @@ public:
 	 * prompt before it ever picks anything up. Server-owned: only the inventory system
 	 * writes it, through IWorldItemInterface.
 	 */
-	UPROPERTY(ReplicatedUsing = OnRep_ItemInstance, EditAnywhere, BlueprintReadWrite, Category = "Item")
+	UPROPERTY(ReplicatedUsing = OnRep_ItemInstance, BlueprintReadWrite, Category = "Item")
 	FItemInstance ItemInstance;
 
 	/**
@@ -59,14 +59,26 @@ public:
 	TArray<FItemInstance> AttachedInstances;
 
 	/**
-	 * Level-authored contents. Ignored once the actor has been given a real instance by
-	 * a drop, which is what bRuntimeSpawned tracks.
+	 * Level-authored contents. Hidden in the level editor to prevent clutter,
+	 * but available in the Blueprint class defaults to configure the item.
 	 */
-	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Item|Level Editor")
+	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite, Category = "Item")
 	FDataTableRowHandle ItemRow;
 
-	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Item|Level Editor", meta = (ClampMin = "1"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item|Level Editor", meta = (ClampMin = "1"))
 	int32 Quantity = 1;
+
+	/** When true, pulls the default fragments from the DataTable so you can tweak them per-instance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item|Level Editor")
+	bool bEditDefaultFragments = false;
+
+	/** The live-editable fragments. Populates automatically when bEditDefaultFragments is true. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Item|Level Editor", meta = (EditCondition = "bEditDefaultFragments", BaseStruct = "/Script/tps_test.ItemFragment"))
+	TArray<FInstancedStruct> EditDefaultFragments;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 	/** True once a runtime system has handed this actor its instance. Do not author. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Item")

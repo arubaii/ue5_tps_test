@@ -54,12 +54,33 @@ public:
 	bool bLineTraceWhenMultipleInteractablesInFocusRange = false;
 
 	/**
+	 * Field of view, in degrees, that FInteractionWidgetSpec::ConstantSizeReferenceDistance
+	 * was authored against.
+	 *
+	 * Constant-size widgets divide out the camera's current FOV against this, so a prompt
+	 * stays the same size on screen when the player zooms an ADS or a cutscene pulls the
+	 * FOV in. Leave it at your default camera FOV.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Presentation",
+		meta = (ClampMin = "5.0", ClampMax = "170.0"))
+	float ConstantSizeReferenceFOV = 90.f;
+
+	/**
 	 * Logs focus selection each poll and draws the trace: green when it resolved to a candidate,
 	 * red when it did not. Also draws each candidate's focus point, green for the winner.
 	 * Editor and development builds only.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Debug")
 	bool bDebugFocusSelection = false;
+
+	/**
+	 * Reports, on screen, every widget the constant-size pass is driving and the scale it
+	 * is applying. Only Screen space widgets ever appear here — if one you marked
+	 * bConstantWidgetSize is missing, check that its spec is Screen space.
+	 * Editor and development builds only.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Debug")
+	bool bDebugWidgetScaling = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Detection")
 	TArray<TEnumAsByte<EObjectTypeQuery>> InteractableObjectTypesOverride;
@@ -155,6 +176,7 @@ private:
 	void TickAmbient();
 	void TickHold(float DeltaTime);
 	void TickBillboards();
+	void TickWidgetScale();
 	void UpdateTickState();
 
 	void SweepInteractables(float Radius, TArray<AActor*>& OutActors) const;
@@ -167,6 +189,15 @@ private:
 	void ClearAllPresentation();
 
 	bool BuildWidgetsFor(AActor* Actor, UInteractableComponent& Interactable);
+
+	/** Tangent of the camera's half-FOV, used to keep constant-size widgets stable under zoom. */
+	float GetViewHalfFOVTangent() const;
+
+	/**
+	 * Drives one constant-size widget. Safe to call on any instance — it returns
+	 * immediately for widgets that did not ask for it.
+	 */
+	void ApplyConstantScale(FInteractionWidgetInstance& Instance, const FVector& ViewLocation, float HalfFOVTangent);
 
 	void UpdateWidgetVisibility(FInteractionWidgetSet& Set, EInteractionPresentation Presentation, bool bInLineOfSight);
 	void UpdateAmbientOpacity(AActor* Actor, const UInteractableComponent& Interactable, FInteractionWidgetSet& Set);

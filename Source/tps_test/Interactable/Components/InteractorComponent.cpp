@@ -10,6 +10,7 @@
 #include "Interactable/Interfaces/InteractionWidgetInterface.h"
 
 #include "Blueprint/UserWidget.h"
+#include "Camera/PlayerCameraManager.h"
 #include "Components/MeshComponent.h"
 #include "Components/WidgetComponent.h"
 #include "EnhancedInputComponent.h"
@@ -362,7 +363,10 @@ void UInteractorComponent::UpdateTickState()
 			{
 				for (const FInteractionWidgetInstance& Instance : Pair.Value.Widgets)
 				{
-					if (Instance.Billboard != EWidgetBillboard::Disabled && Instance.Component && Instance.Component->GetWidgetSpace() == EWidgetSpace::World)
+					// bWantsScaleTick / bWantsBillboardTick are resolved once, at build, from
+					// the authored spec. Asking the live UWidgetComponent for its space here
+					// is what let this disagree with the pass it was supposed to be gating.
+					if ((Instance.bWantsScaleTick || Instance.bWantsBillboardTick) && IsValid(Instance.Component))
 					{
 						bNeedsTick = true;
 						break;
@@ -381,6 +385,7 @@ void UInteractorComponent::TickComponent(float DeltaTime, ELevelTick TickType, F
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 	TickHold(DeltaTime);
 	TickBillboards();
+	TickWidgetScale();
 }
 
 void UInteractorComponent::TickHold(float DeltaTime)
@@ -415,9 +420,7 @@ void UInteractorComponent::TickBillboards()
 
 		for (FInteractionWidgetInstance& Instance : Pair.Value.Widgets)
 		{
-			if (Instance.Billboard == EWidgetBillboard::Disabled || !IsValid(Instance.Component)) continue;
-			
-			if (Instance.Component->GetWidgetSpace() != EWidgetSpace::World) continue;
+			if (!Instance.bWantsBillboardTick || !IsValid(Instance.Component)) continue;
 
 			FVector StartLoc = Instance.Component->GetComponentLocation();
 			FRotator TargetRot = (ViewLoc - StartLoc).Rotation();
@@ -441,6 +444,83 @@ void UInteractorComponent::TickBillboards()
 			}
 
 			Instance.Component->SetWorldRotation(TargetRot);
+		}
+	}
+}
+
+float UInteractorComponent::GetViewHalfFOVTangent() const
+{
+	float FOV = ConstantSizeReferenceFOV;
+
+	if (const APlayerController* PC = GetOwningPlayerController())
+	{
+		if (const APlayerCameraManager* CameraManager = PC->PlayerCameraManager)
+		{
+			FOV = CameraManager->GetFOVAngle();
+		}
+	}
+
+	return FMath::Tan(FMath::DegreesToRadians(FMath::Clamp(FOV, 5.f, 170.f) * 0.5f));
+}
+
+void UInteractorComponent::ApplyConstantScale(FInteractionWidgetInstance& Instance, const FVector& ViewLocation, float HalfFOVTangent)
+{
+	// World space is left strictly alone. A widget sitting in the level is meant to fall
+	// off with distance, and its scale stays exactly as authored on the spec's
+	// RelativeTransform. bWantsScaleTick is only ever set for Screen space specs.
+	if (!Instance.bWantsScaleTick || !IsValid(Instance.Component) || !IsValid(Instance.Widget))
+	{
+		return;
+	}
+
+	const float ReferenceTangent = FMath::Tan(
+		FMath::DegreesToRadians(FMath::Clamp(ConstantSizeReferenceFOV, 5.f, 170.f) * 0.5f));
+
+	const float FOVTerm = ReferenceTangent > KINDA_SMALL_NUMBER
+		? (HalfFOVTangent / ReferenceTangent)
+		: 1.f;
+
+	const float Distance = FVector::Dist(ViewLocation, Instance.Component->GetComponentLocation());
+	const float ReferenceDistance = FMath::Max(1.f, Instance.ConstantSizeReferenceDistance);
+
+	const float Multiplier = FMath::Max((Distance / ReferenceDistance) * FOVTerm, KINDA_SMALL_NUMBER);
+
+	// A Screen space widget component is placed by the world widget screen layer at a flat
+	// DrawSize in pixels, so component scale never reaches it — the UUserWidget's render
+	// transform is the only lever that changes its size. Multiply the scale the designer
+	// set in UMG rather than stamping over it.
+	const FVector2D Desired = Instance.BaseRenderScale * Multiplier;
+
+	if (!Instance.Widget->GetRenderTransform().Scale.Equals(Desired, SMALL_NUMBER))
+	{
+		Instance.Widget->SetRenderScale(Desired);
+	}
+
+	#if !UE_BUILD_SHIPPING
+	if (bDebugWidgetScaling && GEngine)
+	{
+		GEngine->AddOnScreenDebugMessage(
+			/*Key=*/ (uint64)Instance.Component->GetUniqueID(), 0.f, FColor::Yellow,
+			FString::Printf(TEXT("[Interactor] %s constant-size: dist=%.0f ref=%.0f base=%s x%.3f -> %s"),
+				*GetNameSafe(Instance.Component->GetOwner()),
+				Distance, ReferenceDistance, *Instance.BaseRenderScale.ToString(),
+				Multiplier, *Desired.ToString()));
+	}
+	#endif
+}
+
+void UInteractorComponent::TickWidgetScale()
+{
+	const FVector ViewLoc = GetViewLocation();
+	const float HalfFOVTangent = GetViewHalfFOVTangent();
+
+	for (auto& Pair : WidgetSets)
+	{
+		if (Pair.Value.Presentation == EInteractionPresentation::None) continue;
+
+		for (FInteractionWidgetInstance& Instance : Pair.Value.Widgets)
+		{
+			ApplyConstantScale(Instance, ViewLoc, HalfFOVTangent);
 		}
 	}
 }
@@ -776,7 +856,19 @@ bool UInteractorComponent::BuildWidgetsFor(AActor* Actor, UInteractableComponent
 		WidgetComponent->SetIsReplicated(false);
 		WidgetComponent->RegisterComponent();
 		WidgetComponent->AttachToComponent(AttachTo, FAttachmentTransformRules::KeepRelativeTransform);
-		WidgetComponent->SetRelativeTransform(Spec.RelativeTransform);
+
+		// A spec pasted from a viewport widget component occasionally arrives with a zero
+		// scale on one axis. Left alone that produces an invisible widget and a very
+		// confusing bug report, and it would poison the constant-size multiplier below.
+		FTransform SpecTransform = Spec.RelativeTransform;
+		FVector AuthoredScale = SpecTransform.GetScale3D();
+		if (AuthoredScale.IsNearlyZero())
+		{
+			AuthoredScale = FVector::OneVector;
+			SpecTransform.SetScale3D(AuthoredScale);
+		}
+
+		WidgetComponent->SetRelativeTransform(SpecTransform);
 
 		UUserWidget* Widget = CreateWidget<UUserWidget>(OwningPC, WidgetClass);
 		if (!Widget)
@@ -807,6 +899,40 @@ bool UInteractorComponent::BuildWidgetsFor(AActor* Actor, UInteractableComponent
 		Instance.Component = WidgetComponent;
 		Instance.Billboard = Spec.Billboard;
 		Instance.bIgnoresLineOfSight = Spec.bIgnoresLineOfSight;
+
+		// ------------------------------------------------------------ constant size
+		// Everything the per-frame pass needs is resolved here, once, from the authored
+		// spec. Nothing downstream re-reads the spec or interrogates the live component.
+		//
+		// Constant size is Screen space only. World space widgets are never touched by
+		// the scale pass — they keep the scale authored on RelativeTransform, and the
+		// setting is inert on them by design.
+		Instance.bConstantWidgetSize = Spec.bConstantWidgetSize;
+		Instance.WidgetSpace = Spec.WidgetSpace;
+		Instance.ConstantSizeReferenceDistance = FMath::Max(1.f, Spec.ConstantSizeReferenceDistance);
+
+		// A widget that never had a render transform authored in UMG reports a scale of
+		// (0,0) here, not (1,1) — the CDO is zero-initialised and FWidgetTransform's
+		// constructor default never lands on it. Multiplying that by anything gives zero
+		// and the prompt vanishes, so treat a degenerate baseline as unit scale.
+		const FVector2D AuthoredRenderScale = Widget->GetRenderTransform().Scale;
+		Instance.BaseRenderScale = AuthoredRenderScale.IsNearlyZero()
+			? FVector2D(1.f, 1.f)
+			: AuthoredRenderScale;
+
+		Instance.bWantsScaleTick = Spec.bConstantWidgetSize && Spec.WidgetSpace == EWidgetSpace::Screen;
+		Instance.bWantsBillboardTick = Spec.Billboard != EWidgetBillboard::Disabled
+			&& Spec.WidgetSpace == EWidgetSpace::World;
+
+		#if !UE_BUILD_SHIPPING
+		if (Spec.bConstantWidgetSize && Spec.WidgetSpace != EWidgetSpace::Screen)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[Interaction] %s has a World space widget spec marked bConstantWidgetSize; ")
+				TEXT("that setting only applies to Screen space widgets and is ignored here."),
+				*GetNameSafe(Actor));
+		}
+		#endif
 
 		if (Spec.DisplayPreset == EWidgetDisplayPreset::Focus)
 		{
@@ -860,6 +986,9 @@ void UInteractorComponent::ApplyPresentation(AActor* Actor, EInteractionPresenta
 
 void UInteractorComponent::UpdateWidgetVisibility(FInteractionWidgetSet& Set, EInteractionPresentation Presentation, bool bInLineOfSight)
 {
+	const FVector ViewLoc = GetViewLocation();
+	const float HalfFOVTangent = GetViewHalfFOVTangent();
+
 	for (FInteractionWidgetInstance& Instance : Set.Widgets)
 	{
 		if (!Instance.IsValidInstance()) continue;
@@ -879,7 +1008,16 @@ void UInteractorComponent::UpdateWidgetVisibility(FInteractionWidgetSet& Set, EI
 		}
 
 		const bool bIsShowing = Instance.Widget->GetVisibility() != ESlateVisibility::Collapsed;
-		if (bIsShowing == bShouldShow) continue;
+		if (bIsShowing == bShouldShow)
+		{
+			// Already in the right visibility state, but a constant-size widget still wants
+			// its scale correct right now rather than after the next tick.
+			if (bShouldShow) ApplyConstantScale(Instance, ViewLoc, HalfFOVTangent);
+			continue;
+		}
+
+		// Size it before it is shown, otherwise it pops in at its authored scale for a frame.
+		if (bShouldShow) ApplyConstantScale(Instance, ViewLoc, HalfFOVTangent);
 
 		Instance.Widget->SetVisibility(bShouldShow ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
 		Instance.Component->SetVisibility(bShouldShow);

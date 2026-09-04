@@ -40,9 +40,6 @@ void AWorldItemActor::BeginPlay()
 
 void AWorldItemActor::InitializeFromLevelData()
 {
-	// A level-placed pickup mints its own instance once, on the server, and replicates
-	// it down. The Blueprint did this on every client independently, which produced a
-	// different Guid per machine for what is supposed to be one object.
 	if (ItemRow.RowName.IsNone())
 	{
 		return;
@@ -54,17 +51,49 @@ void AWorldItemActor::InitializeFromLevelData()
 	NewInstance.Quantity = FMath::Max(1, Quantity);
 	NewInstance.IsWorldItem = true;
 
-	// Seed the instance's fragments from the row's authored defaults, so a level-placed
-	// weapon arrives with its ammo and durability already correct.
 	FItemDefinition Definition;
 	if (UItemLibrary::GetItemDefinition(ItemRow.RowName, Definition))
 	{
-		NewInstance.Fragments = Definition.DefaultFragments;
+		if (bEditDefaultFragments && EditDefaultFragments.Num() > 0)
+		{
+			NewInstance.Fragments = EditDefaultFragments;
+		}
+		else
+		{
+			NewInstance.Fragments = Definition.DefaultFragments;
+		}
 	}
 
 	ItemInstance = NewInstance;
 	OnItemInstanceChanged();
 }
+
+#if WITH_EDITOR
+void AWorldItemActor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	const FName MemberName = PropertyChangedEvent.GetMemberPropertyName();
+
+	// Check if the boolean toggled OR if the ItemRow struct was modified
+	if (MemberName == GET_MEMBER_NAME_CHECKED(AWorldItemActor, bEditDefaultFragments) || 
+		MemberName == GET_MEMBER_NAME_CHECKED(AWorldItemActor, ItemRow))
+	{
+		if (bEditDefaultFragments && !ItemRow.RowName.IsNone())
+		{
+			FItemDefinition Definition;
+			if (UItemLibrary::GetItemDefinition(ItemRow.RowName, Definition))
+			{
+				EditDefaultFragments = Definition.DefaultFragments;
+			}
+		}
+		else if (!bEditDefaultFragments)
+		{
+			EditDefaultFragments.Empty();
+		}
+	}
+}
+#endif
 
 void AWorldItemActor::OnRep_ItemInstance()
 {

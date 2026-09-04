@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "CoreMinimal.h"
+#include "GameplayTagContainer.h"
 #include "Inventory/Structs/Instance.h"
 #include "UObject/Object.h"
 #include "Templates/SubclassOf.h"
@@ -187,6 +188,16 @@ struct TPS_TEST_API FInfoCardSpec
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card")
 	ECardExclusivityScope ExclusivityScope = ECardExclusivityScope::None;
+
+	/**
+	 * When the owning anchor's suppression tags (see
+	 * UInfoCardAnchor::AddSuppressionTag) contain any tag in this container,
+	 * this specific entry is suppressed: it will not spawn, and if it is
+	 * already showing it is closed. Every other entry on the same anchor is
+	 * unaffected — this is per-card, not per-anchor. Root tag: InfoCard.Suppress.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Suppression")
+	FGameplayTagContainer SuppressionTags;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Placement")
 	EInfoCardPosition PositionMode = EInfoCardPosition::ToIcon;

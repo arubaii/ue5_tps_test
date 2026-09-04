@@ -52,31 +52,21 @@ void UInfoCardAnchor::SynchronizeProperties()
 	// live in the UMG preview.
 	if (IsValid(InfoCards_DA) && (IsDesignTime() || !bInfoCardsSyncedFromDataAsset))
 	{
-		// NOT a plain "InfoCards = InfoCards_DA->InfoCards;" — that copies
-		// FInfoCardSpec::Payloads by pointer, not by value. Every
-		// InfoCardAnchor in the game would then reference the SAME payload
-		// UObjects the data asset itself owns, so any one slot's InitSlot
-		// mutating a payload silently overwrites what every other slot
-		// using the same InfoCards_DA had just written — whichever slot's
-		// InitSlot runs last "wins" for the entire session. Each anchor
-		// needs its own duplicated payload instances instead.
-		InfoCards.Reset(InfoCards_DA->InfoCards.Num());
-
-		for (const FInfoCardSpec& SourceSpec : InfoCards_DA->InfoCards)
-		{
-			FInfoCardSpec NewSpec = SourceSpec;
-			NewSpec.Payloads.Reset(SourceSpec.Payloads.Num());
-
-			for (const TObjectPtr<UInfoCardPayload>& SourcePayload : SourceSpec.Payloads)
-			{
-				NewSpec.Payloads.Add(SourcePayload ? DuplicateObject<UInfoCardPayload>(SourcePayload, this) : nullptr);
-			}
-
-			InfoCards.Add(MoveTemp(NewSpec));
-		}
-
-		bInfoCardsSyncedFromDataAsset = true;
+		RebuildInfoCardsFromDataAsset();
 	}
+
+#if WITH_EDITOR
+	// Design-time only. Catches the case PostEditChangeProperty can't: the
+	// Data Asset is a separate asset, so edits to ITS contents (a card added,
+	// a payload removed) never notify this anchor. Re-syncing here means the
+	// Details panel is correct again as soon as the UMG editor next
+	// refreshes this widget, with no button for anyone to remember to press.
+	if (IsDesignTime())
+	{
+		SyncPayloadDefaultsFromDataAsset();
+		SyncSettingsOverridesFromDataAsset();
+	}
+#endif
 
 	EnsureRuntimeStatesSize();
 	EnsureHitTestable();
@@ -176,7 +166,11 @@ void UInfoCardAnchor::HandleMouseEnter(const FGeometry& Geometry, const FPointer
 
 		// Re-entering while a delay timer from a previous enter is still
 		// pending would otherwise restart the clock; SetTimer on the same
-		// handle replaces it, which is what we want either way.
+		// handle replaces it, which is what we want either way. A
+		// currently-suppressed entry still gets a timer here — the elapsed
+		// handler re-checks suppression via ShowCardAtIndex, so this stays
+		// harmless and the entry picks up automatically the moment it's
+		// un-suppressed within the delay window.
 		World->GetTimerManager().SetTimer(
 			RuntimeStates[Index].HoverDelayHandle,
 			FTimerDelegate::CreateUObject(this, &UInfoCardAnchor::HandleHoverDelayElapsedForIndex, Index),
@@ -385,6 +379,247 @@ void UInfoCardAnchor::CloseCardsForExclusivity(int32 SourceIndex) const
 	}
 }
 
+bool UInfoCardAnchor::IsCardSuppressedAtIndex(int32 Index) const
+{
+	if (ActiveSuppressionTags.IsEmpty() || !InfoCards.IsValidIndex(Index))
+	{
+		return false;
+	}
+
+	// Per-entry suppression: only this InfoCards[Index] is affected.
+	if (InfoCards[Index].SuppressionTags.HasAny(ActiveSuppressionTags))
+	{
+		return true;
+	}
+
+	// Data-asset-wide suppression: every entry sourced from InfoCards_DA is
+	// affected, regardless of that entry's own SuppressionTags.
+	if (IsValid(InfoCards_DA) && InfoCards_DA->SuppressionTags.HasAny(ActiveSuppressionTags))
+	{
+		return true;
+	}
+
+	return false;
+}
+
+
+// =================================================================================================
+// Data asset sync / per-instance defaults
+// =================================================================================================
+
+void UInfoCardAnchor::RebuildInfoCardsFromDataAsset()
+{
+	if (!IsValid(InfoCards_DA))
+	{
+		return;
+	}
+
+	// NOT a plain "InfoCards = InfoCards_DA->InfoCards;" — that copies
+	// FInfoCardSpec::Payloads by pointer, not by value. Every InfoCardAnchor
+	// in the game would then reference the SAME payload UObjects the data
+	// asset itself owns, so any one slot's InitSlot mutating a payload
+	// silently overwrites what every other slot using the same InfoCards_DA
+	// had just written — whichever slot's InitSlot runs last "wins" for the
+	// entire session. Each anchor needs its own duplicated payload instances
+	// instead.
+	InfoCards.Reset(InfoCards_DA->InfoCards.Num());
+
+	for (const FInfoCardSpec& SourceSpec : InfoCards_DA->InfoCards)
+	{
+		FInfoCardSpec NewSpec = SourceSpec;
+		NewSpec.Payloads.Reset(SourceSpec.Payloads.Num());
+
+		for (const TObjectPtr<UInfoCardPayload>& SourcePayload : SourceSpec.Payloads)
+		{
+			NewSpec.Payloads.Add(SourcePayload ? DuplicateObject<UInfoCardPayload>(SourcePayload, this) : nullptr);
+		}
+
+		InfoCards.Add(MoveTemp(NewSpec));
+	}
+
+	// Layer this anchor's own defaults/overrides on top of what the Data
+	// Asset just gave us, before anything else (suppression checks, first
+	// paint, etc.) can read InfoCards.
+	ApplyPayloadDefaults();
+	ApplySettingsOverrides();
+
+	bInfoCardsSyncedFromDataAsset = true;
+}
+
+void UInfoCardAnchor::ApplyPayloadDefaults()
+{
+	for (const FInfoCardPayloadDefault& Default : PayloadDefaults)
+	{
+		if (Default.CardId == NAME_None)
+		{
+			continue;
+		}
+
+		const int32 Index = FindCardIndexById(Default.CardId);
+		if (!InfoCards.IsValidIndex(Index))
+		{
+			// This entry doesn't correspond to anything on the currently
+			// assigned InfoCards_DA (wrong CardId, or the DA was swapped) —
+			// nothing to apply it to.
+			continue;
+		}
+
+		FInfoCardSpec& Spec = InfoCards[Index];
+
+		for (const FInfoCardPayloadDefaultEntry& DefaultEntry : Default.Payloads)
+		{
+			// Off by default (including every auto-generated stub) — an
+			// un-customized stub must never displace the Data Asset's real
+			// value, which is the whole reason this is a struct with a gate
+			// rather than a bare payload pointer.
+			if (!DefaultEntry.bSetDefaults || !DefaultEntry.Payload)
+			{
+				continue;
+			}
+
+			// Each anchor needs its own instance, same reasoning as the
+			// Data Asset's own payloads above — otherwise every anchor
+			// using this default would share one UObject.
+			UInfoCardPayload* Duplicated = DuplicateObject<UInfoCardPayload>(DefaultEntry.Payload, this);
+
+			const int32 ExistingIndex = Spec.Payloads.IndexOfByPredicate(
+				[Duplicated](const TObjectPtr<UInfoCardPayload>& ExistingPayload)
+				{
+					return ExistingPayload && ExistingPayload->GetClass() == Duplicated->GetClass();
+				});
+
+			if (ExistingIndex != INDEX_NONE)
+			{
+				// Same payload class as something the Data Asset already
+				// gave this CardId — replace it rather than showing both.
+				Spec.Payloads[ExistingIndex] = Duplicated;
+			}
+			else
+			{
+				// A payload class the Data Asset didn't have for this
+				// CardId — just add it.
+				Spec.Payloads.Add(Duplicated);
+			}
+		}
+	}
+}
+
+void UInfoCardAnchor::ApplySettingsOverrides()
+{
+	for (const FInfoCardSettingsOverrideElement& Element : SettingsOverrides)
+	{
+		if (Element.CardId == NAME_None)
+		{
+			continue;
+		}
+
+		const int32 Index = FindCardIndexById(Element.CardId);
+		if (!InfoCards.IsValidIndex(Index))
+		{
+			// No InfoCards entry for this CardId on the currently assigned
+			// InfoCards_DA — nothing to apply these overrides to.
+			continue;
+		}
+
+		FInfoCardSpec& Spec = InfoCards[Index];
+		const FInfoCardSettingsOverride& Settings = Element.Settings;
+
+		if (Settings.bDisableCard)
+		{
+			// Equivalent to SetCardEnabledById(CardId, false) at sync time.
+			// None of the other override groups matter for a card that can't
+			// show, so skip straight past them.
+			Spec.bEnabled = false;
+			continue;
+		}
+
+		if (Settings.bOverrideCardType)
+		{
+			Spec.CardType = Settings.CardType;
+			Spec.HoverDelay = Settings.HoverDelay;
+			Spec.bToggleOnRightClick = Settings.bToggleOnRightClick;
+			Spec.bToggleOnLeftClick = Settings.bToggleOnLeftClick;
+		}
+
+		if (Settings.bOverrideCardPosition)
+		{
+			Spec.PositionMode = Settings.PositionMode;
+			Spec.IconPosition = Settings.IconPosition;
+			Spec.CursorPosition = Settings.CursorPosition;
+			Spec.ViewportPosition = Settings.ViewportPosition;
+			Spec.bClampToViewport = Settings.bClampToViewport;
+		}
+
+		if (Settings.bOverrideOffset)
+		{
+			Spec.Offset = Settings.Offset;
+			Spec.HoverAnchorPadding = Settings.HoverAnchorPadding;
+		}
+
+		if (Settings.bOverrideTickUpdate)
+		{
+			Spec.bUpdatePositionOnTick = Settings.bUpdatePositionOnTick;
+		}
+	}
+}
+
+
+// =================================================================================================
+// Suppression
+// =================================================================================================
+
+void UInfoCardAnchor::AddSuppressionTag(FGameplayTag Tag)
+{
+	if (!Tag.IsValid() || ActiveSuppressionTags.HasTagExact(Tag))
+	{
+		return;
+	}
+
+	ActiveSuppressionTags.AddTag(Tag);
+
+	EnsureRuntimeStatesSize();
+	for (int32 Index = 0; Index < InfoCards.Num(); ++Index)
+	{
+		if (IsCardSuppressedAtIndex(Index))
+		{
+			HideCardAtIndex(Index);
+		}
+	}
+}
+
+void UInfoCardAnchor::AddSuppressionTags(const FGameplayTagContainer& Tags)
+{
+	if (Tags.IsEmpty())
+	{
+		return;
+	}
+
+	ActiveSuppressionTags.AppendTags(Tags);
+
+	EnsureRuntimeStatesSize();
+	for (int32 Index = 0; Index < InfoCards.Num(); ++Index)
+	{
+		if (IsCardSuppressedAtIndex(Index))
+		{
+			HideCardAtIndex(Index);
+		}
+	}
+}
+
+void UInfoCardAnchor::RemoveSuppressionTag(FGameplayTag Tag)
+{
+	// Doesn't re-open anything: a card closed by suppression rebuilds fresh
+	// from whatever's actually true the next time it's naturally triggered,
+	// the same "safe default" already used for the inventory-display bind
+	// in UInfoCardWidgetBase::HandleBoundInventoryChanged.
+	ActiveSuppressionTags.RemoveTag(Tag);
+}
+
+void UInfoCardAnchor::RemoveSuppressionTags(const FGameplayTagContainer& Tags)
+{
+	ActiveSuppressionTags.RemoveTags(Tags);
+}
+
 
 // =================================================================================================
 // By index
@@ -401,6 +636,14 @@ void UInfoCardAnchor::ShowCardAtIndex(int32 Index)
 
 	// bEnabled: designer/runtime master switch for this entry.
 	if (!InfoCards[Index].bEnabled || !InfoCards[Index].CardClass || RuntimeStates[Index].ActiveCard)
+	{
+		return;
+	}
+
+	// Suppression tags currently attached to this anchor (see
+	// AddSuppressionTag) can block this specific entry, or every entry
+	// sourced from InfoCards_DA — see IsCardSuppressedAtIndex.
+	if (IsCardSuppressedAtIndex(Index))
 	{
 		return;
 	}
@@ -579,41 +822,19 @@ void UInfoCardAnchor::SetPayloadById(FName CardId, UInfoCardPayload* NewPayload)
 	SetPayloadAtIndex(FindCardIndexById(CardId), NewPayload);
 }
 
-UInfoCardPayload* UInfoCardAnchor::GetOrAddPayload(FName CardId, TSubclassOf<UInfoCardPayload> PayloadClass, bool& bIsPayloadValid)
+UInfoCardPayload* UInfoCardAnchor::GetOrAddPayload(FName CardId, TSubclassOf<UInfoCardPayload> PayloadClass, bool& bIsPayloadValid, FName& InputCardID)
 {
 	bIsPayloadValid = false;
-
+	InputCardID = CardId;
+	
 	if (!PayloadClass)
 	{
 		return nullptr;
 	}
-
-	// Defensive: SynchronizeProperties (which normally populates InfoCards
-	// from InfoCards_DA) runs when the underlying Slate widget is built, and
-	// that can happen after InitSlot-style callers already need this data —
-	// e.g. a slot widget calling this the moment it's added to a grid, before
-	// its own Slate tree (and this anchor's) has been constructed. Rather
-	// than depend on that ordering, sync here if it looks like it hasn't
-	// happened yet. Uses the same per-anchor deep copy as SynchronizeProperties
-	// — see there for why a plain array copy is wrong.
+	
 	if (InfoCards.Num() == 0 && IsValid(InfoCards_DA) && InfoCards_DA->InfoCards.Num() > 0)
 	{
-		InfoCards.Reset(InfoCards_DA->InfoCards.Num());
-
-		for (const FInfoCardSpec& SourceSpec : InfoCards_DA->InfoCards)
-		{
-			FInfoCardSpec NewSpec = SourceSpec;
-			NewSpec.Payloads.Reset(SourceSpec.Payloads.Num());
-
-			for (const TObjectPtr<UInfoCardPayload>& SourcePayload : SourceSpec.Payloads)
-			{
-				NewSpec.Payloads.Add(SourcePayload ? DuplicateObject<UInfoCardPayload>(SourcePayload, this) : nullptr);
-			}
-
-			InfoCards.Add(MoveTemp(NewSpec));
-		}
-
-		bInfoCardsSyncedFromDataAsset = true;
+		RebuildInfoCardsFromDataAsset();
 	}
 
 	const int32 Index = FindCardIndexById(CardId);
@@ -624,11 +845,7 @@ UInfoCardPayload* UInfoCardAnchor::GetOrAddPayload(FName CardId, TSubclassOf<UIn
 	}
 
 	FInfoCardSpec& Spec = InfoCards[Index];
-
-	// Reuse whatever's already there for this class — whether it was authored
-	// as a design-time default in the Details panel or added by an earlier
-	// call to this function. Either way the caller gets the SAME object back
-	// every time, so mutating it here is the whole update.
+	
 	for (const TObjectPtr<UInfoCardPayload>& Existing : Spec.Payloads)
 	{
 		if (Existing && Existing->IsA(PayloadClass))
@@ -637,14 +854,7 @@ UInfoCardPayload* UInfoCardAnchor::GetOrAddPayload(FName CardId, TSubclassOf<UIn
 			return Existing;
 		}
 	}
-
-	// The DA's Payloads array is the declared contract for what this card
-	// accepts — not a suggestion. If PayloadClass isn't authored there,
-	// that's a configuration mistake (a designer forgot to add the entry,
-	// or C++ is asking for the wrong class), not something to silently
-	// paper over by fabricating a default-constructed one. Fabricating it
-	// here would mean the DA's array carries no real meaning: any class any
-	// caller asks for would "work" whether or not it was ever declared.
+	
 	UE_LOG(LogInfoCard, Error,
 		TEXT("GetOrAddPayload: CardId '%s' has no authored payload of class %s. Add one to this entry's Payloads array in its Info Card data asset."),
 		*CardId.ToString(), *PayloadClass->GetName());
@@ -701,6 +911,138 @@ void UInfoCardAnchor::HideAllCards()
 const FText UInfoCardAnchor::GetPaletteCategory()
 {
 	return LOCTEXT("PaletteCategory", "Panel");
+}
+
+void UInfoCardAnchor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	const FName ChangedPropertyName = PropertyChangedEvent.GetPropertyName();
+	if (ChangedPropertyName == GET_MEMBER_NAME_CHECKED(UInfoCardAnchor, InfoCards_DA))
+	{
+		// Covers both assigning a Data Asset (populate) and clearing it
+		// (empty out), since both syncs handle a null InfoCards_DA themselves.
+		SyncPayloadDefaultsFromDataAsset();
+		SyncSettingsOverridesFromDataAsset();
+	}
+}
+
+void UInfoCardAnchor::SyncPayloadDefaultsFromDataAsset()
+{
+	// No Data Asset assigned: there is nothing for defaults to be layered on
+	// top of, so leaving the previous asset's entries sitting in the Details
+	// panel would just be showing the designer a list that does nothing.
+	if (!IsValid(InfoCards_DA))
+	{
+		PayloadDefaults.Reset();
+		return;
+	}
+
+	// Built as a fresh array and swapped in at the end rather than mutated in
+	// place: that gets pruning of removed CardIds for free (anything not
+	// rebuilt simply isn't carried over) and keeps PayloadDefaults in the
+	// same order as the Data Asset's own InfoCards, which is what a designer
+	// comparing the two side by side expects.
+	TArray<FInfoCardPayloadDefault> Rebuilt;
+	Rebuilt.Reserve(InfoCards_DA->InfoCards.Num());
+
+	for (const FInfoCardSpec& SourceSpec : InfoCards_DA->InfoCards)
+	{
+		if (SourceSpec.CardId == NAME_None)
+		{
+			// Without an id there's nothing for ApplyPayloadDefaults to match
+			// against, so a slot for it could never take effect anyway.
+			continue;
+		}
+
+		const FInfoCardPayloadDefault* ExistingDefault = PayloadDefaults.FindByPredicate(
+			[&SourceSpec](const FInfoCardPayloadDefault& Existing) { return Existing.CardId == SourceSpec.CardId; });
+
+		FInfoCardPayloadDefault NewDefault;
+		NewDefault.CardId = SourceSpec.CardId;
+
+		for (const TObjectPtr<UInfoCardPayload>& SourcePayload : SourceSpec.Payloads)
+		{
+			if (!SourcePayload)
+			{
+				continue;
+			}
+
+			UClass* PayloadClass = SourcePayload->GetClass();
+
+			// Carry over the existing slot for this payload class if there is
+			// one, so anything already switched on and edited survives the
+			// sync untouched. Only genuinely new classes get a fresh slot.
+			const FInfoCardPayloadDefaultEntry* ExistingEntry = ExistingDefault
+				? ExistingDefault->Payloads.FindByPredicate(
+					[PayloadClass](const FInfoCardPayloadDefaultEntry& Entry)
+					{
+						return Entry.Payload && Entry.Payload->GetClass() == PayloadClass;
+					})
+				: nullptr;
+
+			if (ExistingEntry)
+			{
+				NewDefault.Payloads.Add(*ExistingEntry);
+				continue;
+			}
+
+			FInfoCardPayloadDefaultEntry NewEntry;
+			NewEntry.bSetDefaults = false;
+			NewEntry.Payload = NewObject<UInfoCardPayload>(this, PayloadClass);
+			NewDefault.Payloads.Add(MoveTemp(NewEntry));
+		}
+
+		Rebuilt.Add(MoveTemp(NewDefault));
+	}
+
+	PayloadDefaults = MoveTemp(Rebuilt);
+}
+
+void UInfoCardAnchor::SyncSettingsOverridesFromDataAsset()
+{
+	// No Data Asset assigned: same reasoning as SyncPayloadDefaultsFromDataAsset
+	// — a list of overrides for a Data Asset that's no longer set is just
+	// misleading, so clear it rather than leave it stale.
+	if (!IsValid(InfoCards_DA))
+	{
+		SettingsOverrides.Reset();
+		return;
+	}
+
+	// Same rebuild-and-swap approach as SyncPayloadDefaultsFromDataAsset: gets
+	// pruning of removed CardIds for free and keeps this in the same order as
+	// the Data Asset's own InfoCards.
+	TArray<FInfoCardSettingsOverrideElement> Rebuilt;
+	Rebuilt.Reserve(InfoCards_DA->InfoCards.Num());
+
+	for (const FInfoCardSpec& SourceSpec : InfoCards_DA->InfoCards)
+	{
+		if (SourceSpec.CardId == NAME_None)
+		{
+			// Without an id there's nothing for ApplySettingsOverrides to
+			// match against, so an entry for it could never take effect.
+			continue;
+		}
+
+		const FInfoCardSettingsOverrideElement* ExistingElement = SettingsOverrides.FindByPredicate(
+			[&SourceSpec](const FInfoCardSettingsOverrideElement& Existing) { return Existing.CardId == SourceSpec.CardId; });
+
+		FInfoCardSettingsOverrideElement NewElement;
+		NewElement.CardId = SourceSpec.CardId;
+
+		// Carry over whatever was already set for this CardId — this sync
+		// only needs to add/prune entries by CardId, never touch the
+		// FInfoCardSettingsOverride contents of one that survives.
+		if (ExistingElement)
+		{
+			NewElement.Settings = ExistingElement->Settings;
+		}
+
+		Rebuilt.Add(MoveTemp(NewElement));
+	}
+
+	SettingsOverrides = MoveTemp(Rebuilt);
 }
 #endif
 

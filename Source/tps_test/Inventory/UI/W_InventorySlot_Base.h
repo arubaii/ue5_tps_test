@@ -21,9 +21,6 @@ class TPS_TEST_API UW_InventorySlotBase : public UUserWidget
 	GENERATED_BODY()
 
 public:
-	// -------------------------------------------------------------------------
-	// Core State Absorbed from Blueprint
-	// -------------------------------------------------------------------------
 	UPROPERTY(BlueprintReadOnly, Category = "Inventory|Slot")
 	TObjectPtr<UInventoryComponent> InventoryComponentRef;
 
@@ -61,17 +58,17 @@ public:
 	FLinearColor EmptySlotColor = FLinearColor(0.0f, 0.0f, 0.0f, 0.5f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Slot")
-	FVector2D FallbackBaseSlotSize = FVector2D(128.f, 128.f);
+	FVector2D FallbackSlotSizeMultiplier = FVector2D(1.0f, 1.0f);
 
-	/** Matches the CardId you authored in the InfoCard Data Asset */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Inventory|Slot")
 	FName HoverCardId = FName("ItemHover");
 
-	// -------------------------------------------------------------------------
-	// Bound Widgets
-	// -------------------------------------------------------------------------
+	// --- Bound Widgets ---
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Inventory|Widgets")
 	TObjectPtr<USizeBox> SlotSizeBox;
+
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Inventory|Widgets")
+	TObjectPtr<USizeBox> SlotVisualRoot;
 
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Inventory|Widgets")
 	TObjectPtr<UBorder> SlotPadding;
@@ -82,9 +79,7 @@ public:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Inventory|Widgets")
 	TObjectPtr<UInfoCardAnchor> InfoCardAnchor;
 
-	// -------------------------------------------------------------------------
-	// Native Entry Points
-	// -------------------------------------------------------------------------
+	// --- Native Entry Points ---
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Inventory|Slot")
 	void InitSlot(UInventoryComponent* InInventoryComponent, int32 Index);
 
@@ -100,13 +95,10 @@ public:
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Inventory|Slot")
 	void GetInventoryWidgetRef(UW_InventoryBase* InventoryWidget);
 
-	/** Called at the end of InitSlot */
 	UFUNCTION(BlueprintNativeEvent, Category = "Inventory|Slot|Internal", meta = (DisplayName = "Delayed Construct"))
 	void DelayedConstruct();
 	
-	// -------------------------------------------------------------------------
-	// Internal Native Logic
-	// -------------------------------------------------------------------------
+	// --- Internal Native Logic ---
 	UFUNCTION(BlueprintCallable, Category = "Inventory|Slot|Internal")
 	virtual void RefreshSlot();
 
@@ -122,13 +114,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Inventory|Slot|Internal")
 	FVector2D GetBaseSlotSize() const;
 
-
+	UFUNCTION(BlueprintPure, Category = "Inventory|Slot|Internal")
+	FVector2D GetSlotMultiplier() const;
 	
 protected:
-	/** 
-	 * Called after C++ has resolved all data and resized the slot. 
-	 * Implement in Blueprint to call SetVisuals / SetEmptyVisuals on W_IconFrame.
-	 */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Inventory|Slot")
 	void OnRefreshVisuals(bool bIsEmpty);
 	

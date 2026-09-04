@@ -34,24 +34,39 @@ void UW_InventoryDisplayOnlyBase::RefreshFromItems(UInventoryComponent* Inventor
 
 	const int32 SafeGridWidth = FMath::Max(1, GridWidth);
 
+	int32 VisibleCount = 0;
+
 	for (int32 i = 0; i < InventorySlots.Num(); ++i)
 	{
-		UW_InventorySlotBase* SlotWidget = GetOrCreateSlotWidget(i);
-
-		if (UGridSlot* GridSlot = Cast<UGridSlot>(SlotWidget->Slot))
+		if (!InventorySlots[i].bIsAnchor)
 		{
-			GridSlot->SetRow(i / SafeGridWidth);
-			GridSlot->SetColumn(i % SafeGridWidth);
+			continue; // shadow cell of a multi-cell item — never gets its own widget
 		}
 
 		FItemInstance ResolvedItem;
 		InventoryComponentRef->GetItem(InventorySlots[i].ItemID, ResolvedItem);
 
+		const bool bHasItem = ResolvedItem.UUID.IsValid() || !ResolvedItem.RowName.IsNone();
+		if (!bHasItem)
+		{
+			continue; // empty slot — nothing to preview
+		}
+
+		UW_InventorySlotBase* SlotWidget = GetOrCreateSlotWidget(VisibleCount);
+
+		if (UGridSlot* GridSlot = Cast<UGridSlot>(SlotWidget->Slot))
+		{
+			GridSlot->SetRow(VisibleCount / SafeGridWidth);
+			GridSlot->SetColumn(VisibleCount % SafeGridWidth);
+		}
+
 		SlotWidget->GetDisplayWidgetRef(this);
 		SlotWidget->InitSlotReadOnly(ResolvedItem, InventorySlots[i].bIsAnchor);
+
+		++VisibleCount;
 	}
 
-	for (int32 i = InventorySlots.Num(); i < InventorySlotWidgets.Num(); ++i)
+	for (int32 i = VisibleCount; i < InventorySlotWidgets.Num(); ++i)
 	{
 		InventorySlotWidgets[i]->SetVisibility(ESlateVisibility::Collapsed);
 	}
