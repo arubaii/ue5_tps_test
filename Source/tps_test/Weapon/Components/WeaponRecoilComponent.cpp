@@ -2,6 +2,7 @@
 
 #include "Weapon/Components/WeaponRecoilComponent.h"
 #include "Data/CRRecoilPattern.h"
+#include "Weapon/Types/WeaponTypes.h"
 
 void UWeaponRecoilComponent::SetSpreadCurves(const FRuntimeFloatCurve& InShotToHeat,
                                              const FRuntimeFloatCurve& InHeatToSpreadAngle,

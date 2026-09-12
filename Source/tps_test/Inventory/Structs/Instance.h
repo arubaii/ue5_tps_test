@@ -151,7 +151,42 @@ struct FInventorySlot
 	multi-cell item is a "shadow" cell pointing at the same ItemID. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	bool bIsAnchor = false;
-	
+
+	/**
+	 * How many grid cells the SLOT ITSELF spans, independent of whatever item is in it.
+	 * (1,1) for an ordinary cell; authored per-index through FSlotOverrideData::SlotFootprint
+	 * on the component and stamped in by InitializeInventory.
+	 *
+	 * This is the "3x1 weapon slot" case: the slot is one slot no matter what goes in it,
+	 * an item dropped there fills the whole thing (and picks its 3x1 icon out of
+	 * FItemDefinition::IconByFootprint), and an item too big for it is refused.
+	 *
+	 * Only meaningful on grid-enabled containers; forced back to (1,1) elsewhere.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	FIntPoint SlotFootprint = FIntPoint(1, 1);
+
+	/**
+	 * Which slot owns this cell. INDEX_NONE (or SlotIndex) on a real slot — including the
+	 * top-left cell of an oversized one — and the anchor's index on the cells an oversized
+	 * slot swallows.
+	 *
+	 * Deliberately parallel to bIsAnchor, but a different axis: bIsAnchor is about the ITEM
+	 * spread across cells, this is about the SLOT spread across cells. A 3x1 slot holding a
+	 * 3x1 rifle has both at once.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	int32 OwningSlotIndex = INDEX_NONE;
+
 	/** True when no item occupies this slot. */
 	bool IsEmpty() const { return !ItemID.IsValid(); }
+
+	/** True when this cell is a slot in its own right (the common case). */
+	bool IsSlotAnchor() const { return OwningSlotIndex == INDEX_NONE || OwningSlotIndex == SlotIndex; }
+
+	/** True when this cell was swallowed by an oversized slot anchored elsewhere. */
+	bool IsSlotShadow() const { return !IsSlotAnchor(); }
+
+	/** True when this slot spans more than one cell on its own. */
+	bool IsOversizedSlot() const { return SlotFootprint.X > 1 || SlotFootprint.Y > 1; }
 };

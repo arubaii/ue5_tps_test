@@ -28,7 +28,7 @@ public class tps_test : ModuleRules
 			"CrystalRecoil"  // UCRRecoilPattern in FWeaponRecoil
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[] { "NameTBD" });
 
 		PublicIncludePaths.AddRange(new string[] {
 			"tps_test",

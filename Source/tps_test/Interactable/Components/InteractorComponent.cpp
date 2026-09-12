@@ -465,30 +465,56 @@ float UInteractorComponent::GetViewHalfFOVTangent() const
 
 void UInteractorComponent::ApplyConstantScale(FInteractionWidgetInstance& Instance, const FVector& ViewLocation, float HalfFOVTangent)
 {
-	// World space is left strictly alone. A widget sitting in the level is meant to fall
-	// off with distance, and its scale stays exactly as authored on the spec's
+	// World space is left strictly alone. A widget sitting in the level already falls off
+	// with distance for free, and its scale stays exactly as authored on the spec's
 	// RelativeTransform. bWantsScaleTick is only ever set for Screen space specs.
 	if (!Instance.bWantsScaleTick || !IsValid(Instance.Component) || !IsValid(Instance.Widget))
 	{
 		return;
 	}
 
+	// Perspective, reproduced by hand.
+	//
+	// A Screen space widget component is not in the scene. The world widget screen layer
+	// projects the component's location to a screen position and draws the widget there at
+	// a flat DrawSize in pixels, and nothing about that pixel size depends on how far away
+	// the component is. So the prompt holds its full size while the object it belongs to
+	// shrinks into the distance, which reads as the prompt growing.
+	//
+	// bConstantWidgetSize means constant size IN THE WORLD, so this pass has to supply the
+	// falloff the screen layer never applies. Apparent size goes as 1 / Distance, which
+	// makes the ratio REFERENCE OVER DISTANCE.
+	//
+	// It used to be Distance / Reference — the correction a World space quad would need to
+	// defeat perspective. Applied to a screen widget, which has no perspective to defeat,
+	// it did not cancel anything: it scaled the prompt up linearly with range, so the
+	// setting appeared to do nothing but make the problem worse.
 	const float ReferenceTangent = FMath::Tan(
 		FMath::DegreesToRadians(FMath::Clamp(ConstantSizeReferenceFOV, 5.f, 170.f) * 0.5f));
 
-	const float FOVTerm = ReferenceTangent > KINDA_SMALL_NUMBER
-		? (HalfFOVTangent / ReferenceTangent)
+	// Zoom follows the same reasoning. Narrowing the FOV magnifies the scene, so a widget
+	// pinned to the world has to grow with it. tan(half FOV) SHRINKS as the camera zooms
+	// in, so the reference belongs on top here as well.
+	const float FOVTerm = HalfFOVTangent > KINDA_SMALL_NUMBER
+		? (ReferenceTangent / HalfFOVTangent)
 		: 1.f;
 
-	const float Distance = FVector::Dist(ViewLocation, Instance.Component->GetComponentLocation());
+	// Floored at 1cm: the camera can end up effectively inside a prompt attached to
+	// something the player is standing on, and this term is a divisor.
+	const float Distance = FMath::Max(1.f, FVector::Dist(ViewLocation, Instance.Component->GetComponentLocation()));
 	const float ReferenceDistance = FMath::Max(1.f, Instance.ConstantSizeReferenceDistance);
 
-	const float Multiplier = FMath::Max((Distance / ReferenceDistance) * FOVTerm, KINDA_SMALL_NUMBER);
+	// The clamp is not paranoia. Reference distance is authored for the range you read the
+	// prompt from, and walking up to an interactable puts you well inside it — without a
+	// ceiling the widget fills the screen over the last metre.
+	const float Multiplier = FMath::Clamp(
+		(ReferenceDistance / Distance) * FOVTerm,
+		Instance.ConstantSizeMinScale,
+		Instance.ConstantSizeMaxScale);
 
-	// A Screen space widget component is placed by the world widget screen layer at a flat
-	// DrawSize in pixels, so component scale never reaches it — the UUserWidget's render
-	// transform is the only lever that changes its size. Multiply the scale the designer
-	// set in UMG rather than stamping over it.
+	// Component scale never reaches a Screen space widget — the screen layer sizes it from
+	// DrawSize in pixels — so the UUserWidget's render transform is the only lever left.
+	// Multiply the scale the designer set in UMG rather than stamping over it.
 	const FVector2D Desired = Instance.BaseRenderScale * Multiplier;
 
 	if (!Instance.Widget->GetRenderTransform().Scale.Equals(Desired, SMALL_NUMBER))
@@ -501,10 +527,11 @@ void UInteractorComponent::ApplyConstantScale(FInteractionWidgetInstance& Instan
 	{
 		GEngine->AddOnScreenDebugMessage(
 			/*Key=*/ (uint64)Instance.Component->GetUniqueID(), 0.f, FColor::Yellow,
-			FString::Printf(TEXT("[Interactor] %s constant-size: dist=%.0f ref=%.0f base=%s x%.3f -> %s"),
+			FString::Printf(TEXT("[Interactor] %s constant-size: dist=%.0f ref=%.0f base=%s x%.3f (clamp %.2f..%.2f) -> %s"),
 				*GetNameSafe(Instance.Component->GetOwner()),
 				Distance, ReferenceDistance, *Instance.BaseRenderScale.ToString(),
-				Multiplier, *Desired.ToString()));
+				Multiplier, Instance.ConstantSizeMinScale, Instance.ConstantSizeMaxScale,
+				*Desired.ToString()));
 	}
 	#endif
 }
@@ -901,15 +928,35 @@ bool UInteractorComponent::BuildWidgetsFor(AActor* Actor, UInteractableComponent
 		Instance.bIgnoresLineOfSight = Spec.bIgnoresLineOfSight;
 
 		// ------------------------------------------------------------ constant size
-		// Everything the per-frame pass needs is resolved here, once, from the authored
-		// spec. Nothing downstream re-reads the spec or interrogates the live component.
+		// Everything the per-frame pass needs is resolved here, once. bConstantWidgetSize
+		// and its tuning live on the owning UInteractableComponent now, not on the spec —
+		// one switch covers every widget this interactable shows, including specs pulled
+		// from a shared UInteractionWidgetDataAsset. Nothing downstream re-reads the
+		// component or the spec, or interrogates the live widget component.
 		//
 		// Constant size is Screen space only. World space widgets are never touched by
-		// the scale pass — they keep the scale authored on RelativeTransform, and the
-		// setting is inert on them by design.
-		Instance.bConstantWidgetSize = Spec.bConstantWidgetSize;
+		// the scale pass — a quad in the level already foreshortens on its own, so it
+		// keeps the scale authored on RelativeTransform and the setting is inert on it
+		// by design. The mismatch (component has it on, this spec is World space) is
+		// warned about once per component in UInteractableComponent::BeginPlay rather
+		// than here, since every spec on the component shares the same switch.
+		Instance.bConstantWidgetSize = Interactable.bConstantWidgetSize;
 		Instance.WidgetSpace = Spec.WidgetSpace;
-		Instance.ConstantSizeReferenceDistance = FMath::Max(1.f, Spec.ConstantSizeReferenceDistance);
+
+		// 0 means "auto": read at natural size out to the edge of however close you
+		// actually have to be to interact with this thing, so nobody has to hand-tune a
+		// reference distance per object. GetResolvedMaxDistance falls back to this
+		// interactor's own FocusRadius when the interactable has no authored range.
+		const float AutoReferenceDistance = Interactable.GetResolvedMaxDistance(FocusRadius);
+		const float ReferenceDistance = Interactable.ConstantSizeReferenceDistance > 0.f
+			? Interactable.ConstantSizeReferenceDistance
+			: AutoReferenceDistance;
+		Instance.ConstantSizeReferenceDistance = FMath::Max(1.f, ReferenceDistance);
+
+		// Resolved here so the per-frame pass never has to defend itself against an
+		// inverted or degenerate range authored in the details panel.
+		Instance.ConstantSizeMinScale = FMath::Max(0.01f, Interactable.ConstantSizeMinScale);
+		Instance.ConstantSizeMaxScale = FMath::Max(Instance.ConstantSizeMinScale, Interactable.ConstantSizeMaxScale);
 
 		// A widget that never had a render transform authored in UMG reports a scale of
 		// (0,0) here, not (1,1) — the CDO is zero-initialised and FWidgetTransform's
@@ -920,19 +967,9 @@ bool UInteractorComponent::BuildWidgetsFor(AActor* Actor, UInteractableComponent
 			? FVector2D(1.f, 1.f)
 			: AuthoredRenderScale;
 
-		Instance.bWantsScaleTick = Spec.bConstantWidgetSize && Spec.WidgetSpace == EWidgetSpace::Screen;
+		Instance.bWantsScaleTick = Interactable.bConstantWidgetSize && Spec.WidgetSpace == EWidgetSpace::Screen;
 		Instance.bWantsBillboardTick = Spec.Billboard != EWidgetBillboard::Disabled
 			&& Spec.WidgetSpace == EWidgetSpace::World;
-
-		#if !UE_BUILD_SHIPPING
-		if (Spec.bConstantWidgetSize && Spec.WidgetSpace != EWidgetSpace::Screen)
-		{
-			UE_LOG(LogTemp, Warning,
-				TEXT("[Interaction] %s has a World space widget spec marked bConstantWidgetSize; ")
-				TEXT("that setting only applies to Screen space widgets and is ignored here."),
-				*GetNameSafe(Actor));
-		}
-		#endif
 
 		if (Spec.DisplayPreset == EWidgetDisplayPreset::Focus)
 		{

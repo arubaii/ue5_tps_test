@@ -464,6 +464,12 @@ bool UInventoryComponent::GetNextEmptySlot(FInventorySlot& Slot) const
 	// Parity: first slot whose ItemID is invalid. Return value is "Inventory Full?".
 	for (const FInventorySlot& candidate : Slots)
 	{
+		// A cell swallowed by an oversized slot is not a slot and can never be filled on
+		// its own, so counting it as empty would leave IsInventoryFull permanently false
+		// on any container that uses one.
+		if (candidate.IsSlotShadow())
+			continue;
+
 		if (!candidate.ItemID.IsValid())
 		{
 			Slot = candidate;
@@ -1455,7 +1461,15 @@ bool UInventoryComponent::CreateItemInSlot(int32 SlotIndex, ESlotType InSlotType
 	if (!CreateAndRegisterItem(RowName, Quantity, Durability, Template, OutInstance, OutItemID))
 		return false;
 
-	Slots[SlotIndex].SlotType = InSlotType; // anchor slot's type; footprint writes never touch SlotType
+	// Anchor slot's type; footprint writes never touch SlotType.
+	//
+	// Skipped for an oversized slot: its type was authored on the override and copied out
+	// across every cell it swallowed, and rewriting only the anchor here would leave the
+	// anchor saying one thing and its own shadow cells another — which the cell-walking
+	// compatibility checks would then read as a slot that refuses its own item.
+	if (!Slots[SlotIndex].IsOversizedSlot())
+		Slots[SlotIndex].SlotType = InSlotType;
+
 	OccupyFootprint(SlotIndex, size, OutItemID);
 
 	BroadcastFootprintForItem(OutItemID);
@@ -1610,9 +1624,106 @@ FIntPoint UInventoryComponent::GetItemFootprintSize(FName RowName) const
 	return (def.SlotSize.X > 0 && def.SlotSize.Y > 0) ? def.SlotSize : FIntPoint(1, 1);
 }
 
+FIntPoint UInventoryComponent::GetSlotFootprintSize(int32 SlotIndex) const
+{
+	if (!Slots.IsValidIndex(SlotIndex) || !IsGridEnabled())
+		return FIntPoint(1, 1);
+
+	const FInventorySlot& slot = Slots[SlotIndex];
+	const FIntPoint size = slot.IsSlotShadow() && Slots.IsValidIndex(slot.OwningSlotIndex)
+		? Slots[slot.OwningSlotIndex].SlotFootprint
+		: slot.SlotFootprint;
+
+	return (size.X > 0 && size.Y > 0) ? size : FIntPoint(1, 1);
+}
+
+bool UInventoryComponent::IsSlotShadowCell(int32 SlotIndex) const
+{
+	return Slots.IsValidIndex(SlotIndex) && Slots[SlotIndex].IsSlotShadow();
+}
+
+int32 UInventoryComponent::GetOwningSlotIndex(int32 SlotIndex) const
+{
+	if (!Slots.IsValidIndex(SlotIndex))
+		return INDEX_NONE;
+
+	const FInventorySlot& slot = Slots[SlotIndex];
+	return slot.IsSlotShadow() && Slots.IsValidIndex(slot.OwningSlotIndex)
+		? slot.OwningSlotIndex
+		: SlotIndex;
+}
+
+FIntPoint UInventoryComponent::GetEffectiveFootprintAt(int32 AnchorIndex, FIntPoint ItemSize) const
+{
+	if (!Slots.IsValidIndex(AnchorIndex))
+		return ItemSize; // let the caller's own index guard report the problem
+
+	// Non-grid containers have no second axis and ignore SlotSize entirely, so slot
+	// footprints can't mean anything there either.
+	if (!IsGridEnabled())
+		return FIntPoint(1, 1);
+
+	// A swallowed cell is not a slot, so nothing can ever anchor on it. (0,0) rather than
+	// a bool because every primitive below already rejects a non-positive size, which is
+	// what makes this expansion droppable into them without new failure paths.
+	if (Slots[AnchorIndex].IsSlotShadow())
+		return FIntPoint(0, 0);
+
+	const FIntPoint slotSize = Slots[AnchorIndex].SlotFootprint;
+	if (slotSize.X <= 1 && slotSize.Y <= 1)
+		return ItemSize; // ordinary slot: the item's own footprint decides, as before
+
+	// An oversized slot is one slot: the item fills it whatever its own size, which is
+	// what lets a 1x1 pistol sit in a 3x1 holster and draw with the 3x1 icon. It just has
+	// to fit inside.
+	if (ItemSize.X > slotSize.X || ItemSize.Y > slotSize.Y)
+		return FIntPoint(0, 0);
+
+	return slotSize;
+}
+
+bool UInventoryComponent::DoesRegionRespectSlotBoundaries(int32 AnchorIndex, FIntPoint Size) const
+{
+	if (!Slots.IsValidIndex(AnchorIndex))
+		return false;
+	if (!IsGridEnabled() || Size.X <= 0 || Size.Y <= 0)
+		return true; // nothing to straddle
+
+	if (Slots[AnchorIndex].IsSlotShadow())
+		return false;
+
+	const FIntPoint anchor = IndexToXY(AnchorIndex);
+	for (int32 y = anchor.Y; y < anchor.Y + Size.Y; ++y)
+	{
+		for (int32 x = anchor.X; x < anchor.X + Size.X; ++x)
+		{
+			const int32 idx = XYToIndex(x, y);
+			if (!Slots.IsValidIndex(idx))
+				return false;
+
+			// Every cell is either part of the slot we're anchored on, or a plain slot of
+			// its own. Anything else means the region is half-covering a wide slot.
+			const int32 owner = GetOwningSlotIndex(idx);
+			if (owner == AnchorIndex)
+				continue;
+			if (Slots.IsValidIndex(owner) && Slots[owner].IsOversizedSlot())
+				return false;
+		}
+	}
+	return true;
+}
+
 bool UInventoryComponent::CanPlaceFootprintAtIgnoringItem(int32 AnchorIndex, FIntPoint Size, FGuid IgnoreItemID) const
 {
 	if (!Slots.IsValidIndex(AnchorIndex) || Size.X <= 0 || Size.Y <= 0)
+		return false;
+
+	// An oversized slot claims the whole region regardless of how big the item is.
+	Size = GetEffectiveFootprintAt(AnchorIndex, Size);
+	if (Size.X <= 0 || Size.Y <= 0)
+		return false;
+
+	if (!DoesRegionRespectSlotBoundaries(AnchorIndex, Size))
 		return false;
 
 	// Non-grid container, or a 1x1 footprint: legacy single-cell check.
@@ -1650,6 +1761,17 @@ bool UInventoryComponent::CanPlaceFootprintAt(int32 AnchorIndex, FIntPoint Size)
 
 void UInventoryComponent::OccupyFootprint(int32 AnchorIndex, FIntPoint Size, FGuid ItemID)
 {
+	// Same expansion the Can* checks ran, so what gets written is exactly what was
+	// validated: an item dropped into a 3x1 slot claims all three cells.
+	Size = GetEffectiveFootprintAt(AnchorIndex, Size);
+	if (Size.X <= 0 || Size.Y <= 0)
+	{
+		UE_LOG(LogInventoryComponent, Warning,
+		       TEXT("[UInventoryComponent::OccupyFootprint] Slot %d can't host this item (shadow cell, or item larger than the slot); nothing written."),
+		       AnchorIndex);
+		return;
+	}
+
 	// Non-grid container, or a 1x1 footprint: legacy single-cell write.
 	if (!IsGridEnabled() || (Size.X <= 1 && Size.Y <= 1))
 	{
@@ -1750,6 +1872,13 @@ bool UInventoryComponent::IsFootprintInBounds(int32 AnchorIndex, FIntPoint Size)
 	if (!IsGridEnabled())
 		return true; // a single valid index is trivially "in bounds" on a non-grid container
 
+	// The oversized slot's own footprint is what has to fit, not the item's — and a
+	// shadow cell reports (0,0) here, which is the earliest point most placement paths
+	// reject one.
+	Size = GetEffectiveFootprintAt(AnchorIndex, Size);
+	if (Size.X <= 0 || Size.Y <= 0)
+		return false;
+
 	const FIntPoint anchor = IndexToXY(AnchorIndex);
 	return anchor.X + Size.X <= GridWidth && anchor.Y + Size.Y <= GridHeight;
 }
@@ -1758,6 +1887,12 @@ TArray<FGuid> UInventoryComponent::GetItemsOverlappingFootprint(int32 AnchorInde
 {
 	TArray<FGuid> found;
 	if (!IsFootprintInBounds(AnchorIndex, Size))
+		return found;
+
+	// Dropping into a 3x1 slot has to see everything across all three cells, not just
+	// whatever sits under the item's own footprint.
+	Size = GetEffectiveFootprintAt(AnchorIndex, Size);
+	if (Size.X <= 0 || Size.Y <= 0)
 		return found;
 
 	if (!IsGridEnabled() || (Size.X <= 1 && Size.Y <= 1))
@@ -1862,6 +1997,10 @@ bool UInventoryComponent::IsFootprintSlotTypeCompatible(int32 AnchorIndex, FIntP
 	if (!Slots.IsValidIndex(AnchorIndex))
 		return false;
 
+	Size = GetEffectiveFootprintAt(AnchorIndex, Size);
+	if (Size.X <= 0 || Size.Y <= 0)
+		return false;
+
 	if (!IsGridEnabled() || (Size.X <= 1 && Size.Y <= 1))
 		return Def.CompatibleSlotTypes.Contains(Slots[AnchorIndex].SlotType);
 
@@ -1886,6 +2025,13 @@ bool UInventoryComponent::CanPlaceFootprintIgnoring(int32 AnchorIndex, FIntPoint
 													const TArray<FGuid>& IgnoreItemIDs) const
 {
 	if (!IsFootprintInBounds(AnchorIndex, Size))
+		return false;
+
+	Size = GetEffectiveFootprintAt(AnchorIndex, Size);
+	if (Size.X <= 0 || Size.Y <= 0)
+		return false;
+
+	if (!DoesRegionRespectSlotBoundaries(AnchorIndex, Size))
 		return false;
 
 	if (!IsGridEnabled() || (Size.X <= 1 && Size.Y <= 1))
@@ -1914,9 +2060,10 @@ bool UInventoryComponent::CanPlaceFootprintIgnoring(int32 AnchorIndex, FIntPoint
 bool UInventoryComponent::FindBestAnchorInRect(FIntPoint Size, const FItemDefinition& Def,
 											   const FInventoryGridRect& Confine, FIntPoint IdealAnchorXY,
 											   TFunctionRef<bool(int32)> IsCellAvailable,
-											   int32& OutAnchorIndex) const
+											   int32& OutAnchorIndex, FIntPoint& OutSize) const
 {
 	OutAnchorIndex = INDEX_NONE;
+	OutSize = Size;
 
 	if (!Confine.bValid || Size.X <= 0 || Size.Y <= 0)
 		return false;
@@ -1930,13 +2077,30 @@ bool UInventoryComponent::FindBestAnchorInRect(FIntPoint Size, const FItemDefini
 		for (int32 x = Confine.Min.X; x + Size.X <= Confine.Max.X; ++x)
 		{
 			const int32 anchorIdx = XYToIndex(x, y);
-			if (!Slots.IsValidIndex(anchorIdx) || !IsFootprintInBounds(anchorIdx, Size))
+			if (!Slots.IsValidIndex(anchorIdx))
+				continue;
+
+			// A displaced item can legitimately be re-homed INTO an oversized slot, so
+			// the region it would claim there is resolved per candidate rather than
+			// assumed to be its own size.
+			const FIntPoint claimed = GetEffectiveFootprintAt(anchorIdx, Size);
+			if (claimed.X <= 0 || claimed.Y <= 0)
+				continue;
+			if (!IsFootprintInBounds(anchorIdx, claimed))
+				continue;
+			if (!DoesRegionRespectSlotBoundaries(anchorIdx, claimed))
+				continue;
+
+			// The whole claimed region must sit inside the confine — a wide slot poking
+			// out of the box is exactly the "flung somewhere else" outcome the confine
+			// rules exist to prevent.
+			if (!Confine.ContainsRect(FInventoryGridRect::FromAnchorAndSize(FIntPoint(x, y), claimed)))
 				continue;
 
 			bool bFits = true;
-			for (int32 cy = y; cy < y + Size.Y && bFits; ++cy)
+			for (int32 cy = y; cy < y + claimed.Y && bFits; ++cy)
 			{
-				for (int32 cx = x; cx < x + Size.X && bFits; ++cx)
+				for (int32 cx = x; cx < x + claimed.X && bFits; ++cx)
 				{
 					const int32 cellIdx = XYToIndex(cx, cy);
 					bFits = Slots.IsValidIndex(cellIdx)
@@ -1954,6 +2118,7 @@ bool UInventoryComponent::FindBestAnchorInRect(FIntPoint Size, const FItemDefini
 			{
 				bestScore = score;
 				OutAnchorIndex = anchorIdx;
+				OutSize = claimed;
 				if (score == 0)
 					return true; // exactly where it wanted to go; nothing can beat that
 			}
@@ -2048,10 +2213,18 @@ bool UInventoryComponent::BuildSwapPlan(UInventoryComponent* SourceInv, int32 So
 		dropAnchorXY.Y = FMath::Clamp(dropAnchorXY.Y, 0, FMath::Max(0, GridHeight - dragSize.Y));
 	}
 
-	const int32 dropAnchorIndex = (IsGridEnabled() && src->IsGridEnabled())
+	int32 dropAnchorIndex = (IsGridEnabled() && src->IsGridEnabled())
 		? XYToIndex(dropAnchorXY.X, dropAnchorXY.Y)
 		: DestIndex;
 
+	if (!Slots.IsValidIndex(dropAnchorIndex))
+		return false;
+
+	// The clamping above works in raw cells and knows nothing about slot footprints, so
+	// it can land on a cell an oversized slot swallowed. Those cells aren't slots — the
+	// player pointing at the middle of a 3x1 holster means the holster, so resolve to the
+	// owner instead of refusing a drop that visually landed on a slot.
+	dropAnchorIndex = GetOwningSlotIndex(dropAnchorIndex);
 	if (!Slots.IsValidIndex(dropAnchorIndex))
 		return false;
 
@@ -2081,9 +2254,21 @@ bool UInventoryComponent::TryPlanDropAt(const UInventoryComponent* Src, int32 Sr
 	OutPlan.bValid = false;
 	OutPlan.DraggedItemID = DraggedItem.UUID;
 	OutPlan.DraggedNewAnchor = DropAnchorIndex;
+
+	// Resolved once, up front, and used for every rect and cell walk below: dropping into
+	// an oversized slot means the item takes the whole slot, so the confine, the overlap
+	// test and the plan itself all have to be written in terms of that region rather than
+	// the item's own size. (0,0) here is "this item can't go in this slot" — either it's
+	// too big for the slot or the cell isn't a slot at all.
+	DragSize = GetEffectiveFootprintAt(DropAnchorIndex, DragSize);
+	if (DragSize.X <= 0 || DragSize.Y <= 0)
+		return false;
+
 	OutPlan.DraggedSize = DragSize;
 
 	if (!IsFootprintInBounds(DropAnchorIndex, DragSize))
+		return false;
+	if (!DoesRegionRespectSlotBoundaries(DropAnchorIndex, DragSize))
 		return false;
 	if (!IsFootprintSlotTypeCompatible(DropAnchorIndex, DragSize, DraggedDef))
 		return false;
@@ -2206,19 +2391,25 @@ bool UInventoryComponent::TryPlanDropAt(const UInventoryComponent* Src, int32 Sr
 		const FIntPoint sizeInSrc = SizeInSrcFor(id);
 
 		int32 chosenAnchor = INDEX_NONE;
+
+		// Not necessarily sizeInSrc: a displaced item can land in an oversized slot, in
+		// which case it claims that whole slot. Reserving and recording the authored size
+		// instead would under-claim the cells and leave the plan disagreeing with what
+		// OccupyFootprint goes on to write.
+		FIntPoint sizeClaimed = sizeInSrc;
 		if (!src->FindBestAnchorInRect(sizeInSrc, displacedDef, placementConfine,
-		                               IdealAnchorXYFor(id), IsCellAvailableInSrc, chosenAnchor))
+		                               IdealAnchorXYFor(id), IsCellAvailableInSrc, chosenAnchor, sizeClaimed))
 		{
 			OutPlan.Displaced.Reset();
 			return false;
 		}
 
 		const FIntPoint chosenXY = src->IndexToXY(chosenAnchor);
-		for (int32 y = chosenXY.Y; y < chosenXY.Y + sizeInSrc.Y; ++y)
-			for (int32 x = chosenXY.X; x < chosenXY.X + sizeInSrc.X; ++x)
+		for (int32 y = chosenXY.Y; y < chosenXY.Y + sizeClaimed.Y; ++y)
+			for (int32 x = chosenXY.X; x < chosenXY.X + sizeClaimed.X; ++x)
 				claimed.Add(src->XYToIndex(x, y));
 
-		OutPlan.Displaced.Add({ id, chosenAnchor, sizeInSrc });
+		OutPlan.Displaced.Add({ id, chosenAnchor, sizeClaimed });
 	}
 
 	OutPlan.bValid = true;
@@ -2300,7 +2491,7 @@ bool UInventoryComponent::TryPlanTrade(const UInventoryComponent* Src, int32 Src
 
 	// Candidate landing spots for the DRAGGED item, nearest to where it was actually
 	// dropped first — the player's intent still wins, it just bends when it has to.
-	struct FCandidate { int32 Anchor; int32 Score; };
+	struct FCandidate { int32 Anchor; int32 Score; FIntPoint Size; };
 	TArray<FCandidate> candidates;
 
 	for (int32 y = confine.Min.Y; y + DragSize.Y <= confine.Max.Y; ++y)
@@ -2308,22 +2499,34 @@ bool UInventoryComponent::TryPlanTrade(const UInventoryComponent* Src, int32 Src
 		for (int32 x = confine.Min.X; x + DragSize.X <= confine.Max.X; ++x)
 		{
 			const int32 anchorIdx = XYToIndex(x, y);
-			if (!Slots.IsValidIndex(anchorIdx) || !IsFootprintInBounds(anchorIdx, DragSize))
+			if (!Slots.IsValidIndex(anchorIdx))
 				continue;
-			if (!IsFootprintSlotTypeCompatible(anchorIdx, DragSize, DraggedDef))
+
+			// Per-candidate, for the same reason as the displacement pass: landing in an
+			// oversized slot means claiming that slot, and every test below has to be run
+			// against the region actually claimed.
+			const FIntPoint candSize = GetEffectiveFootprintAt(anchorIdx, DragSize);
+			if (candSize.X <= 0 || candSize.Y <= 0)
+				continue;
+			if (!IsFootprintInBounds(anchorIdx, candSize))
+				continue;
+			if (!DoesRegionRespectSlotBoundaries(anchorIdx, candSize))
+				continue;
+			if (!confine.ContainsRect(FInventoryGridRect::FromAnchorAndSize(FIntPoint(x, y), candSize)))
+				continue;
+			if (!IsFootprintSlotTypeCompatible(anchorIdx, candSize, DraggedDef))
 				continue;
 
 			// It has to still read as "I swapped with THAT item": the dragged item's new
 			// footprint must land on ground the partner currently occupies.
-			const FInventoryGridRect candidateRect = FInventoryGridRect::FromAnchorAndSize(FIntPoint(x, y), DragSize);
 			bool bTouchesPartner = false;
-			for (int32 cy = y; cy < y + DragSize.Y && !bTouchesPartner; ++cy)
-				for (int32 cx = x; cx < x + DragSize.X && !bTouchesPartner; ++cx)
+			for (int32 cy = y; cy < y + candSize.Y && !bTouchesPartner; ++cy)
+				for (int32 cx = x; cx < x + candSize.X && !bTouchesPartner; ++cx)
 					bTouchesPartner = (Slots[XYToIndex(cx, cy)].ItemID == partnerId);
 			if (!bTouchesPartner)
 				continue;
 
-			candidates.Add({ anchorIdx, FMath::Abs(x - dropXY.X) + FMath::Abs(y - dropXY.Y) });
+			candidates.Add({ anchorIdx, FMath::Abs(x - dropXY.X) + FMath::Abs(y - dropXY.Y), candSize });
 		}
 	}
 
@@ -2336,9 +2539,9 @@ bool UInventoryComponent::TryPlanTrade(const UInventoryComponent* Src, int32 Src
 		draggedClaim.Reset();
 		const FIntPoint candXY = IndexToXY(candidate.Anchor);
 		bool bDraggedFits = true;
-		for (int32 y = candXY.Y; y < candXY.Y + DragSize.Y && bDraggedFits; ++y)
+		for (int32 y = candXY.Y; y < candXY.Y + candidate.Size.Y && bDraggedFits; ++y)
 		{
-			for (int32 x = candXY.X; x < candXY.X + DragSize.X && bDraggedFits; ++x)
+			for (int32 x = candXY.X; x < candXY.X + candidate.Size.X && bDraggedFits; ++x)
 			{
 				const int32 idx = XYToIndex(x, y);
 				bDraggedFits = IsCellFree(idx);
@@ -2350,8 +2553,9 @@ bool UInventoryComponent::TryPlanTrade(const UInventoryComponent* Src, int32 Src
 			continue;
 
 		int32 partnerNewAnchor = INDEX_NONE;
+		FIntPoint partnerClaimed = partnerSize;
 		if (!FindBestAnchorInRect(partnerSize, partnerDef, confine, srcAnchorXY,
-		                          IsCellFreeForPartner, partnerNewAnchor))
+		                          IsCellFreeForPartner, partnerNewAnchor, partnerClaimed))
 			continue;
 
 		// Refuse an arrangement where nothing actually moved.
@@ -2360,8 +2564,8 @@ bool UInventoryComponent::TryPlanTrade(const UInventoryComponent* Src, int32 Src
 
 		OutPlan.DraggedItemID = DraggedItem.UUID;
 		OutPlan.DraggedNewAnchor = candidate.Anchor;
-		OutPlan.DraggedSize = DragSize;
-		OutPlan.Displaced.Add({ partnerId, partnerNewAnchor, partnerSize });
+		OutPlan.DraggedSize = candidate.Size;
+		OutPlan.Displaced.Add({ partnerId, partnerNewAnchor, partnerClaimed });
 		OutPlan.bValid = true;
 		return true;
 	}
@@ -2376,21 +2580,14 @@ bool UInventoryComponent::TryPlanTrade(const UInventoryComponent* Src, int32 Src
 void UInventoryComponent::InitializeInventory()
 {
 	// Guarded by IsDataInitialized; builds Slots of SlotType.
-	//
-	// Grid-aware: when GridWidth and GridHeight are both configured (> 0), Slots is
-	// sized to GridWidth * GridHeight and addressed row-major (SlotIndex = Y * GridWidth
-	// + X), keeping MaxInventorySlots synced to the product for anything still reading
-	// it as a flat count. When the grid dims are left at 0, this falls back to the old
-	// flat MaxInventorySlots behavior unchanged.
+
 	if (IsDataInitialized)
 		return;
 	IsDataInitialized = true;
 
 	const bool bUseGrid = GridWidth > 0 && GridHeight > 0;
-	const int32 slotCount = bUseGrid ? (GridWidth * GridHeight) : MaxInventorySlots;
-
-	if (bUseGrid)
-		MaxInventorySlots = slotCount;
+	const int32 slotCount = bUseGrid ? (GridWidth * GridHeight) : 0;
+	
 
 	Slots.Reset(slotCount);
 	// Build empty slots
@@ -2398,21 +2595,125 @@ void UInventoryComponent::InitializeInventory()
 	{
 		FInventorySlot newSlot;
 		newSlot.SlotIndex = i;
-		
-		
-		// Slot overrides
-		const FSlotOverrideData* foundOverride = SlotOverrides.FindByPredicate([i](const FSlotOverrideData& Item)
-		{
-			return Item.Index == i;
-		});
-		
-		newSlot.SlotType = foundOverride ? foundOverride->Type : SlotType; 
-		
+		newSlot.SlotType = SlotType;
 		newSlot.ItemID.Invalidate();
 		newSlot.bIsAnchor = false; // empty slot; nothing anchored here yet
 		Slots.Add(newSlot);
 	}
+
+	// Type and footprint overrides are one pass, because a footprint override has to see
+	// the whole array to know whether its cells are free.
+	ApplySlotOverridesToSlots();
+
 	RefreshIsInventoryFull();
+}
+
+void UInventoryComponent::ApplySlotOverridesToSlots()
+{
+	// Reset first: this runs again after LoadFromRecord, and a save written while a 3x1
+	// override existed at index 4 must not leave three orphaned shadow cells behind if
+	// that override has since been deleted or moved.
+	for (int32 i = 0; i < Slots.Num(); ++i)
+	{
+		Slots[i].SlotIndex        = i;
+		Slots[i].SlotType         = SlotType;
+		Slots[i].SlotFootprint    = FIntPoint(1, 1);
+		Slots[i].OwningSlotIndex  = INDEX_NONE;
+	}
+
+	const bool bUseGrid = IsGridEnabled();
+
+	for (const FSlotOverrideData& slotOverride : SlotOverrides)
+	{
+		if (!Slots.IsValidIndex(slotOverride.Index))
+		{
+			UE_LOG(LogInventoryComponent, Warning,
+			       TEXT("[UInventoryComponent::ApplySlotOverridesToSlots] '%s': override index %d is out of range (have %d slots); ignored."),
+			       *GetName(), slotOverride.Index, Slots.Num());
+			continue;
+		}
+
+		// The type override applies to the anchor cell regardless of footprint; the
+		// footprint pass below copies it out across the cells the slot swallows so that
+		// IsFootprintSlotTypeCompatible, which tests every cell, still agrees with itself.
+		Slots[slotOverride.Index].SlotType = slotOverride.Type;
+
+		const FIntPoint requested = slotOverride.SlotFootprint;
+		if (requested.X <= 1 && requested.Y <= 1)
+			continue; // ordinary single-cell slot; nothing further to stamp
+
+		if (!bUseGrid)
+		{
+			// A flat container has no second axis to grow along, so a footprint here has
+			// no meaning that could be honoured — better to say so than to silently
+			// consume neighbouring slots in a container the designer thinks is a list.
+			UE_LOG(LogInventoryComponent, Warning,
+			       TEXT("[UInventoryComponent::ApplySlotOverridesToSlots] '%s': slot %d asks for a %dx%d footprint, but this container isn't grid-enabled (GridWidth/GridHeight are 0). Left at 1x1."),
+			       *GetName(), slotOverride.Index, requested.X, requested.Y);
+			continue;
+		}
+
+		if (requested.X <= 0 || requested.Y <= 0)
+		{
+			UE_LOG(LogInventoryComponent, Warning,
+			       TEXT("[UInventoryComponent::ApplySlotOverridesToSlots] '%s': slot %d has a non-positive footprint (%dx%d). Left at 1x1."),
+			       *GetName(), slotOverride.Index, requested.X, requested.Y);
+			continue;
+		}
+
+		const FIntPoint anchor = IndexToXY(slotOverride.Index);
+		if (anchor.X + requested.X > GridWidth || anchor.Y + requested.Y > GridHeight)
+		{
+			// Refused rather than clamped: a slot that quietly comes back narrower than
+			// authored is a bug the designer finds later, via an item that mysteriously
+			// won't fit, instead of now.
+			UE_LOG(LogInventoryComponent, Warning,
+			       TEXT("[UInventoryComponent::ApplySlotOverridesToSlots] '%s': a %dx%d slot at index %d (cell %d,%d) runs off a %dx%d grid. Left at 1x1."),
+			       *GetName(), requested.X, requested.Y, slotOverride.Index,
+			       anchor.X, anchor.Y, GridWidth, GridHeight);
+			continue;
+		}
+
+		// Collision pass BEFORE writing anything: two overrides fighting over the same
+		// cells has no sane resolution, so the second one loses whole rather than
+		// half-stamping itself over the first.
+		bool bClear = true;
+		for (int32 y = anchor.Y; y < anchor.Y + requested.Y && bClear; ++y)
+		{
+			for (int32 x = anchor.X; x < anchor.X + requested.X && bClear; ++x)
+			{
+				const int32 idx = XYToIndex(x, y);
+				bClear = Slots.IsValidIndex(idx)
+					&& Slots[idx].IsSlotAnchor()
+					&& !Slots[idx].IsOversizedSlot();
+			}
+		}
+
+		if (!bClear)
+		{
+			UE_LOG(LogInventoryComponent, Warning,
+			       TEXT("[UInventoryComponent::ApplySlotOverridesToSlots] '%s': a %dx%d slot at index %d overlaps a slot another override already claimed. Left at 1x1."),
+			       *GetName(), requested.X, requested.Y, slotOverride.Index);
+			continue;
+		}
+
+		Slots[slotOverride.Index].SlotFootprint = requested;
+
+		for (int32 y = anchor.Y; y < anchor.Y + requested.Y; ++y)
+		{
+			for (int32 x = anchor.X; x < anchor.X + requested.X; ++x)
+			{
+				const int32 idx = XYToIndex(x, y);
+				Slots[idx].OwningSlotIndex = slotOverride.Index;
+
+				// Swallowed cells inherit the anchor's type. They are not slots any more,
+				// but every cell-walking compatibility check still reads SlotType off
+				// them, and a cell of a Weapon slot reporting Generic would refuse the
+				// very item the slot exists for.
+				Slots[idx].SlotType = slotOverride.Type;
+			}
+		}
+	}
 }
 
 void UInventoryComponent::FillDefaultInventory()
@@ -2468,6 +2769,12 @@ void UInventoryComponent::LoadFromRecord(const FInventoryRecord& Record)
 
 	Slots = Record.Slots;
 	IsDataInitialized = true;
+
+	// Slot LAYOUT is authored config, not save data — a record only carries where items
+	// were. Re-stamping means a save from before a 3x1 override was added (or one whose
+	// override has since moved) still loads with the container the designer authored,
+	// instead of resurrecting the old shape out of the save file.
+	ApplySlotOverridesToSlots();
 
 	RebuildIdCache();
 	BroadcastAllSlots();
@@ -2850,7 +3157,11 @@ void UInventoryComponent::GetSlotOverrideByIndex(
 	FSlotOverrideData& OverrideData, 
 	UPARAM(DisplayName = "Found") bool& bFound)
 {
-	
+	// Asking about a cell an oversized slot swallowed should answer for that slot: the
+	// caller usually has a raw cell index (a hovered cell, a grid position) and means the
+	// slot the player can actually see there.
+	SlotIndex = GetOwningSlotIndex(SlotIndex);
+
 	for (const FSlotOverrideData& slotOverride : SlotOverrides)
 	{
 		if (slotOverride.Index == SlotIndex)
@@ -3349,6 +3660,14 @@ bool UInventoryComponent::RebuildLayoutFromOrder(const TArray<FGuid>& OrderedIte
 		int32 anchorIndex = INDEX_NONE;
 		for (int32 i = 0; i < Slots.Num(); ++i)
 		{
+			// A sort is a bulk re-pack, not a decision the player made, so it declines to
+			// consume an oversized slot with something that doesn't fill it — otherwise
+			// sorting a bag would drop a bandage into the 3x1 rifle slot and the rifle
+			// would then have nowhere to go. A direct drag can still put anything that
+			// fits in there; that one the player asked for.
+			if (Slots[i].IsOversizedSlot() && Slots[i].SlotFootprint != size)
+				continue;
+
 			if (!CanPlaceFootprintAt(i, size))
 				continue;
 			if (bHasDef && !IsFootprintSlotTypeCompatible(i, size, def))
@@ -3698,7 +4017,13 @@ FSubInventoryView UInventoryComponent::GetSubInventoryByFragment(const FSubInven
 		entry.SourceSlotIndex = (anchorIndex != INDEX_NONE) ? anchorIndex : slotIndex;
 		entry.ItemID = instance.UUID;
 		entry.Item = instance;
-		entry.ItemSize = GetItemFootprintSize(instance.RowName);
+		// The size the item DRAWS at, which is the slot's when it lives in an oversized
+		// one — a pistol in a 3x1 holster reads as 3x1 in the main grid, and a sub view
+		// that shrank it back to 1x1 would look like a different item.
+		entry.ItemSize = GetEffectiveFootprintAt(entry.SourceSlotIndex,
+		                                         GetItemFootprintSize(instance.RowName));
+		if (entry.ItemSize.X <= 0 || entry.ItemSize.Y <= 0)
+			entry.ItemSize = GetItemFootprintSize(instance.RowName);
 		entry.SlotType = Slots.IsValidIndex(entry.SourceSlotIndex) ? Slots[entry.SourceSlotIndex].SlotType : slot.SlotType;
 
 		FInventorySortItem sortItem;

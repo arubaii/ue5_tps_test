@@ -7,45 +7,91 @@
     <option name="flavorId" value="CMakePlainProjectFlavor" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="8c152ba5-21b6-44f0-9652-c4c856fcd831" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/Source/tps_test/DeveloperSettings/DragVisualSettings.h" afterDir="false" />
+    <list default="true" id="dc1934b2-75b5-4bee-9119-3fe06808e968" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Config/DefaultNameTBD.ini" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/NameTBD.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/NameTBD.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/InfoCardWidget_Inventory.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/InfoCardWidget_Inventory.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/InventoryInfoCardPayloads.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_IconFrameBase.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_IconFrameBase.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Source/tps_test/Weapon/Types/WeaponTypes.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/vcs.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/vcs.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test/.idea/indexLayout.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test/.idea/projectSettingsUpdater.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test/.idea/vcs.xml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test/.idea/workspace.xml" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/Config/DefaultEngine.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Config/DefaultEngine.ini" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Config/DefaultGame.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Config/DefaultGame.ini" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Config/DefaultGameplayTags.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Config/DefaultGameplayTags.ini" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/Weapons/Attachments/BP_Item_Grip.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/Weapons/Attachments/BP_Item_Grip.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/Weapons/Pistol/Blueprints/BP_Item_Pistol.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/Weapons/Pistol/Blueprints/BP_Item_Pistol.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_ItemBase.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_ItemBase.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_Hatchet.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_Hatchet.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_Book.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_Book.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_HealthPotion.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/03_ItemSystem/BP_Item_HealthPotion.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/DataTables/DT_Item_Attachments.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/DataTables/DT_Item_Attachments.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/DataTables/DT_Item_Generics.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/DataTables/DT_Item_Generics.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/DataTables/DT_Item_Weapons.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/DataTables/DT_Item_Weapons.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_PlayerState.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_PlayerState.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCameraManager.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCameraManager.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCharacter.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCharacter.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/CommonUI/DA_InfoCard_InventorySlot_Default.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/CommonUI/DA_InfoCard_InventorySlot_Default.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard_ItemHover.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard_ItemHover.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard_RightClick.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard_RightClick.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard_RightClick_Item.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_InfoCard_RightClick_Item.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/InfoCards/W_uwa.uasset" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/Inventory/W_IconFrame.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/Inventory/W_IconFrame.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/Inventory/W_Inventory.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/Inventory/W_Inventory.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/Inventory/W_InventoryDisplayOnly.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/Inventory/W_InventoryDisplayOnly.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/Inventory/W_InventorySlot.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/Inventory/W_InventorySlot.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/Inventory/W_SlotInfoBar.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/Inventory/W_SlotInfoBar.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_DragVisual.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_DragVisual.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/1/CT/Z3KWSBN12HY8VOI8DY6G6B.uasset" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Content/__ExternalActors__/Generated/LevelPrototyping/Lvl_ThirdPerson/1/VE/ZX1E3I2OSMBMXLPIJE1I7O.uasset" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/DeveloperSettings/InventorySettings.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/DeveloperSettings/InventorySettings.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_DynamicInteractable.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_DynamicInteractable.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_InGameMenuBase.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_InGameMenuBase.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_ItemDropBox.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_ItemDropBox.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Content/_Main/Widgets/W_LoadoutMenuManager.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Widgets/W_LoadoutMenuManager.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/DeveloperSettings/DragVisualSettings.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractableComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractableComponent.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractableComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractableComponent.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractorComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractorComponent.cpp" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractorComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Components/InteractorComponent.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Interactable/InteractableActor.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/InteractableActor.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Source/tps_test/Interactable/Types/InteractionTypes.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Interactable/Types/InteractionTypes.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Classes/WorldItemActor.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Classes/WorldItemActor.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Classes/WorldItemActor.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Classes/WorldItemActor.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Components/InventoryComponent.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/Definition.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/Definition.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/Instance.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/Instance.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/InventoryEnums.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/InventoryEnums.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/Rows.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/Structs/Rows.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.cpp" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryBase.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryDisplayOnly_Base.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryDisplayOnly_Base.cpp" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryDisplayOnly_Base.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventoryDisplayOnly_Base.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventorySlot_Base.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventorySlot_Base.cpp" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventorySlot_Base.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/W_InventorySlot_Base.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardSpecDataAsset.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardSpecDataAsset.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardTypes.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardTypes.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Menu/MenuManagerComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Menu/MenuManagerComponent.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Menu/MenuManagerComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Menu/MenuManagerComponent.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Menu/MenuScreenInterface.h" beforeDir="false" afterPath="$PROJECT_DIR$/Menu/MenuScreenInterface.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Menu/MenuTypes.h" beforeDir="false" afterPath="$PROJECT_DIR$/Menu/MenuTypes.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardSpecDataAsset.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardTypes.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardTypes.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardWidget_Base.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardWidget_Base.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Search/SearchLibrary.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Search/SearchLibrary.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Search/W_SearchBarBase.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/Search/W_SearchBarBase.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/W_DragVisualBase.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/W_DragVisualBase.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/UserWidget_Animatable.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/UserWidget_Animatable.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/WidgetAnimLibrary.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/WidgetAnimLibrary.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponComponent.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponRecoilComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Weapon/Components/WeaponRecoilComponent.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/Weapon/Fragment/WeaponItemFragment.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Weapon/Fragment/WeaponItemFragment.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Source/tps_test/tps_test.Build.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/tps_test.Build.cs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tps_test.sln.DotSettings.user" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -55,65 +101,45 @@
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;arubaii&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/arubaii/ue5_tps_test&quot;,
+    &quot;accountId&quot;: &quot;d8c8d280-eec1-4490-932b-61d1168861b0&quot;
+  }
+}</component>
   <component name="HighlightingSettingsPerFile">
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Plugins/Marketplace/Developer/RiderLink/Source/RD/thirdparty/spdlog/include/spdlog/details/registry.h" root0="SKIP_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Plugins/Marketplace/Developer/RiderLink/Source/RD/thirdparty/spdlog/include/spdlog/fmt/ranges.h" root0="SKIP_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Plugins/Marketplace/Developer/RiderLink/Source/RD/thirdparty/spdlog/include/spdlog/sinks/android_sink.h" root0="SKIP_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Plugins/Marketplace/Developer/RiderLink/Source/RD/thirdparty/variant/include/mpark/lib.hpp" root0="SKIP_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Developer/NaniteUtilities/Public/AdaptiveTessellatorDisplace.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Editor/AssetTagsEditor/Public/SAssetTagItem.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Editor/Experimental/EditorInteractiveToolsFramework/EditorInteractiveToolsFramework.Build.cs" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Editor/MainFrame/Private/Menus/MainMenu.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Editor/UnrealEd/Public/FileHelpers.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Editor/VREditor/Public/VRModeSettings.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/AIModule/Classes/BehaviorTree/Tasks/BTTask_RotateToFaceBBEntry.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/AIModule/Classes/EnvironmentQuery/EnvQueryManager.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/AIModule/Classes/EnvironmentQuery/Tests/EnvQueryTest_GameplayTags.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/AIModule/Classes/Perception/AIPerceptionStimuliSourceComponent.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/AIModule/Classes/Perception/AISenseEvent.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/AIModule/Private/GameplayDebugger/GameplayDebuggerCategory_EQS.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Core/Public/Containers/Map.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Engine/Classes/Animation/AnimNotifies/AnimNotify_PlaySound.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Engine/Classes/Engine/AssetManagerSettings.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Engine/Classes/Engine/DebugCameraHUD.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Engine/Classes/Engine/OverlapResult.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Engine/Classes/GameFramework/GameModeBase.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Engine/Public/SceneManagement.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Experimental/IoStore/OnDemand/Private/Tool/Main.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/GameplayTags/Classes/GameplayTagsSettings.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/GameplayTasks/Classes/GameplayTask.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/SlateRHIRenderer/Public/SlateRHIRendererSettings.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/UMG/Public/Binding/States/WidgetStateSettings.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/UMG/Public/Blueprint/WidgetLayoutLibrary.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Windows/D3D11RHI/Private/Windows/WindowsD3D11Device.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/../test/Plugins/StructCategoryGroups/StructCategoryGroups/StructCategoryGroups.uplugin" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/Audio/Cue/AudioCueLibrary.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/Audio/Cue/AudioCueLibrary.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/DeveloperSettings/DragVisualSettings.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/DeveloperSettings/InventorySettings.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/Classes/WorldItemActor.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/Classes/WorldItemActor.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/UI/SlotInfoBarWidget.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/UI/SlotInfoBarWidget.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardAnchor.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardTypes.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardTypes.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardWidget_Base.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/Cards/InfoCardWidget_Base.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/UserWidget_Animatable.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/UserWidget_Animatable.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/WidgetAnimLibrary.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/UI/WidgetAnimation/WidgetAnimLibrary.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/Utils/Tags/StateTagsComponent.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Source/tps_test/Utils/Tags/StateTagsComponent.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Private/DiffControl.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Private/SBlueprintDiff.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Private/SSCSEditor.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Public/ReviewComments.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/UnrealEd/Private/SkeletalMeshEdit.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/VREditor/Private/UI/VREditorRadialFloatingUI.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Runtime/Core/Public/CoreMinimal.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Runtime/UMG/Private/Components/Widget.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Runtime/UMG/Public/Blueprint/DragDropOperation.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Runtime/UMG/Public/Components/GridSlot.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Runtime/UMG/Public/Components/Widget.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Plugins/NameTBD/Intermediate/Build/Mac/UnrealEditor/Inc/NameTBD/UHT/MenuManagerComponent.gen.cpp" root0="SKIP_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/NameTBD.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/NameTBD.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/UI/InfoCardWidget_Inventory.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/UI/InfoCardWidget_Inventory.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/UI/InventoryInfoCardPayloads.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/Source/tps_test/Weapon/Types/WeaponTypes.h" root0="FORCE_HIGHLIGHTING" />
   </component>
-  <component name="MetaFilesCheckinStateConfiguration" checkMetaFiles="true" />
+  <component name="ProblemsViewState">
+    <option name="selectedTabId" value="CurrentFile" />
+  </component>
   <component name="ProjectColorInfo">{
-  &quot;customColor&quot;: &quot;&quot;,
   &quot;associatedIndex&quot;: 2
 }</component>
-  <component name="ProjectId" id="3I97dpElSvfiXWbqblYDVeRL2In" />
+  <component name="ProjectId" id="3IxR2EbRUSJpzWucnY3yTG0dfBR" />
   <component name="ProjectLevelVcsManager">
     <ConfirmationsSetting value="2" id="Add" />
   </component>
@@ -123,12 +149,13 @@
     <option name="showLibraryContents" value="true" />
     <option name="showScratchesAndConsoles" value="false" />
     <option name="showVisibilityIcons" value="true" />
+    <option name="sortByType" value="true" />
+    <option name="sortKey" value="BY_TYPE" />
   </component>
   <component name="PropertiesComponent">{
   &quot;keyToString&quot;: {
     &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.cidr.known.project.marker&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.readMode.enableVisualFormatting&quot;: &quot;true&quot;,
@@ -136,74 +163,74 @@
     &quot;cidr.known.project.marker&quot;: &quot;true&quot;,
     &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
     &quot;git-widget-placeholder&quot;: &quot;main&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;reference.settingsdialog.IDE.editor.colors.ColorSchemeFont&quot;,
-    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;preferences.keymap&quot;
   }
 }</component>
   <component name="RunManager">
     <configuration name="tps_test" type="Uproject" factoryName="rider.uproject">
       <configuration_1 setup="1">
         <option name="CONFIGURATION" value="DebugGame Editor" />
-        <option name="PLATFORM" value="Win64" />
+        <option name="PLATFORM" value="Mac" />
         <option name="CURRENT_LAUNCH_PROFILE" value="Local" />
-        <option name="EXECUTABLE_PATH" value="$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor-Win64-DebugGame.exe" />
-        <option name="MANDATORY_PROGRAM_PARAMETERS" value=" &quot;C:\Users\100bi\Unreal Projects\tps_test\tps_test.uproject&quot;" />
+        <option name="EXECUTABLE_PATH" value="$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Binaries/Mac/UnrealEditor-Mac-DebugGame.app/Contents/MacOS/UnrealEditor-Mac-DebugGame" />
+        <option name="MANDATORY_PROGRAM_PARAMETERS" value=" &quot;$PROJECT_DIR$/tps_test.uproject&quot;" />
         <option name="CUSTOM_PROGRAM_PARAMETERS" value="" />
-        <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7" />
+        <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7" />
         <option name="PASS_PARENT_ENVS" value="1" />
-        <option name="USE_EXTERNAL_CONSOLE" value="1" />
+        <option name="USE_EXTERNAL_CONSOLE" value="0" />
         <option name="TERMINAL_INTERACTION_BEHAVIOR" value="FORCE_CONSOLE" />
         <option name="PROJECT_FILE_PATH" value="$PROJECT_DIR$/tps_test.uproject" />
       </configuration_1>
       <configuration_2 setup="1">
         <option name="CONFIGURATION" value="DebugGame" />
-        <option name="PLATFORM" value="Win64" />
+        <option name="PLATFORM" value="Mac" />
         <option name="CURRENT_LAUNCH_PROFILE" value="Local" />
-        <option name="EXECUTABLE_PATH" value="$PROJECT_DIR$/Binaries/Win64/tps_test-Win64-DebugGame.exe" />
+        <option name="EXECUTABLE_PATH" value="$PROJECT_DIR$/Binaries/Mac/tps_test-Mac-DebugGame.app/Contents/MacOS/tps_test-Mac-DebugGame" />
         <option name="MANDATORY_PROGRAM_PARAMETERS" value="" />
         <option name="CUSTOM_PROGRAM_PARAMETERS" value="" />
-        <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7" />
+        <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7" />
         <option name="PASS_PARENT_ENVS" value="1" />
-        <option name="USE_EXTERNAL_CONSOLE" value="1" />
+        <option name="USE_EXTERNAL_CONSOLE" value="0" />
         <option name="TERMINAL_INTERACTION_BEHAVIOR" value="FORCE_CONSOLE" />
         <option name="PROJECT_FILE_PATH" value="$PROJECT_DIR$/tps_test.uproject" />
       </configuration_2>
       <configuration_3 setup="1">
         <option name="CONFIGURATION" value="Development Editor" />
-        <option name="PLATFORM" value="Win64" />
+        <option name="PLATFORM" value="Mac" />
         <option name="CURRENT_LAUNCH_PROFILE" value="Local" />
-        <option name="EXECUTABLE_PATH" value="$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Binaries/Win64/UnrealEditor.exe" />
-        <option name="MANDATORY_PROGRAM_PARAMETERS" value=" &quot;C:\Users\100bi\Unreal Projects\tps_test\tps_test.uproject&quot;" />
+        <option name="EXECUTABLE_PATH" value="$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor" />
+        <option name="MANDATORY_PROGRAM_PARAMETERS" value=" &quot;$PROJECT_DIR$/tps_test.uproject&quot;" />
         <option name="CUSTOM_PROGRAM_PARAMETERS" value="" />
-        <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7" />
+        <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7" />
         <option name="PASS_PARENT_ENVS" value="1" />
-        <option name="USE_EXTERNAL_CONSOLE" value="1" />
+        <option name="USE_EXTERNAL_CONSOLE" value="0" />
         <option name="TERMINAL_INTERACTION_BEHAVIOR" value="FORCE_CONSOLE" />
         <option name="PROJECT_FILE_PATH" value="$PROJECT_DIR$/tps_test.uproject" />
       </configuration_3>
       <configuration_4 setup="1">
         <option name="CONFIGURATION" value="Development" />
-        <option name="PLATFORM" value="Win64" />
+        <option name="PLATFORM" value="Mac" />
         <option name="CURRENT_LAUNCH_PROFILE" value="Local" />
-        <option name="EXECUTABLE_PATH" value="$PROJECT_DIR$/Binaries/Win64/tps_test.exe" />
+        <option name="EXECUTABLE_PATH" value="$PROJECT_DIR$/Binaries/Mac/tps_test.app/Contents/MacOS/tps_test" />
         <option name="MANDATORY_PROGRAM_PARAMETERS" value="" />
         <option name="CUSTOM_PROGRAM_PARAMETERS" value="" />
-        <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7" />
+        <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7" />
         <option name="PASS_PARENT_ENVS" value="1" />
-        <option name="USE_EXTERNAL_CONSOLE" value="1" />
+        <option name="USE_EXTERNAL_CONSOLE" value="0" />
         <option name="TERMINAL_INTERACTION_BEHAVIOR" value="FORCE_CONSOLE" />
         <option name="PROJECT_FILE_PATH" value="$PROJECT_DIR$/tps_test.uproject" />
       </configuration_4>
       <configuration_5 setup="1">
         <option name="CONFIGURATION" value="Shipping" />
-        <option name="PLATFORM" value="Win64" />
+        <option name="PLATFORM" value="Mac" />
         <option name="CURRENT_LAUNCH_PROFILE" value="Local" />
-        <option name="EXECUTABLE_PATH" value="$PROJECT_DIR$/Binaries/Win64/tps_test-Win64-Shipping.exe" />
+        <option name="EXECUTABLE_PATH" value="$PROJECT_DIR$/Binaries/Mac/tps_test-Mac-Shipping.app/Contents/MacOS/tps_test-Mac-Shipping" />
         <option name="MANDATORY_PROGRAM_PARAMETERS" value="" />
         <option name="CUSTOM_PROGRAM_PARAMETERS" value="" />
-        <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7" />
+        <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7" />
         <option name="PASS_PARENT_ENVS" value="1" />
-        <option name="USE_EXTERNAL_CONSOLE" value="1" />
+        <option name="USE_EXTERNAL_CONSOLE" value="0" />
         <option name="TERMINAL_INTERACTION_BEHAVIOR" value="FORCE_CONSOLE" />
         <option name="PROJECT_FILE_PATH" value="$PROJECT_DIR$/tps_test.uproject" />
       </configuration_5>
@@ -217,59 +244,17 @@
   </component>
   <component name="TaskManager">
     <task active="true" id="Default" summary="Default task">
-      <changelist id="8c152ba5-21b6-44f0-9652-c4c856fcd831" name="Changes" comment="" />
-      <created>1767842205561</created>
+      <changelist id="dc1934b2-75b5-4bee-9119-3fe06808e968" name="Changes" comment="" />
+      <created>1788704030694</created>
       <option name="number" value="Default" />
       <option name="presentableId" value="Default" />
-      <updated>1767842205561</updated>
-      <workItem from="1767842208507" duration="127000" />
-      <workItem from="1787165022667" duration="89000" />
-      <workItem from="1787165363750" duration="1998000" />
-      <workItem from="1787167838776" duration="775000" />
-      <workItem from="1787169621220" duration="1825000" />
-      <workItem from="1787226195209" duration="3506000" />
-      <workItem from="1787272966203" duration="259000" />
-      <workItem from="1787336223838" duration="3616000" />
-      <workItem from="1787506640922" duration="4894000" />
-      <workItem from="1787518785135" duration="1310000" />
-      <workItem from="1787520496871" duration="2286000" />
-      <workItem from="1787540431050" duration="5044000" />
-      <workItem from="1787597201983" duration="1563000" />
-      <workItem from="1787605804897" duration="1830000" />
-      <workItem from="1787615960112" duration="11000" />
-      <workItem from="1787619590685" duration="1692000" />
-      <workItem from="1787627766930" duration="9734000" />
-      <workItem from="1787681749588" duration="63000" />
-      <workItem from="1787686468279" duration="689000" />
-      <workItem from="1787717540330" duration="2905000" />
-      <workItem from="1787769907388" duration="15024000" />
-      <workItem from="1787798740891" duration="1959000" />
-      <workItem from="1787822338276" duration="8990000" />
-      <workItem from="1787895354425" duration="9621000" />
-      <workItem from="1787912095495" duration="3505000" />
-      <workItem from="1787916381756" duration="302000" />
-      <workItem from="1787917304227" duration="2550000" />
-      <workItem from="1787954705543" duration="19556000" />
-      <workItem from="1788060879826" duration="4779000" />
-      <workItem from="1788146182257" duration="2561000" />
-      <workItem from="1788149402896" duration="657000" />
-      <workItem from="1788159780739" duration="5741000" />
-      <workItem from="1788231374980" duration="78000" />
-      <workItem from="1788231500401" duration="6946000" />
-      <workItem from="1788246150816" duration="4104000" />
-      <workItem from="1788252830889" duration="22833000" />
-      <workItem from="1788356593899" duration="6298000" />
-      <workItem from="1788407426382" duration="16944000" />
-      <workItem from="1788436712659" duration="11413000" />
-      <workItem from="1788450749026" duration="3771000" />
-      <workItem from="1788496724615" duration="21915000" />
+      <updated>1788704030694</updated>
     </task>
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
-  <component name="UnityCheckinConfiguration" checkUnsavedScenes="true" />
   <component name="UnityProjectConfiguration" hasMinimizedUI="false" />
   <component name="VcsManagerConfiguration">
     <option name="CLEAR_INITIAL_COMMIT_MESSAGE" value="true" />

@@ -1,0 +1,36 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "NameTBD",
+	"Description": "UI components, Info Cards, and Widget Utilities",
+	"Category": "UI",
+	"CreatedBy": "",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"EngineVersion": "5.7.0",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "NameTBD",
+			"Type": "Runtime",
+			"LoadingPhase": "Default",
+			"PlatformAllowList": [
+				"Win64",
+				"Mac",
+				"Linux"
+			],
+			"Plugins": [
+				{
+					"Name": "EnhancedInput",
+					"Enabled": true
+				}
+			]
+		}
+	]
+}

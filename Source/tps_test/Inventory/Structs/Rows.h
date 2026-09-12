@@ -6,6 +6,7 @@
 #include "Engine/DataTable.h"                         // FTableRowBase
 #include "Inventory/Structs/Definition.h"			  //  FWeaponStats, FWeaponRecoil
 #include "Inventory/Structs/InventoryEnums.h"       // ESlotType, EModifierValueType
+#include "Weapon/Types/WeaponTypes.h"
 #include "Rows.generated.h"
 
 class USkeletalMesh;
@@ -71,6 +72,7 @@ struct FWeaponRow : public FTableRowBase
     /** Presentation & spawn design (projectile class, muzzle flash, future FX). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)
     FWeaponDesign Design;
+    
     
     /** Which ammo item this weapon consumes by row name into the ammo table (e.g. "AMU_Light"). */
     UPROPERTY(EditAnywhere, BlueprintReadWrite)

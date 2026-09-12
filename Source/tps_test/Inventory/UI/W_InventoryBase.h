@@ -6,10 +6,10 @@
 #include "Components/Border.h"
 #include "Components/GridPanel.h"
 #include "Styling/SlateBrush.h"
-#include "UI/WidgetAnimation/UserWidget_Animatable.h" 
+#include "NameTBD/WidgetAnimation/UserWidget_Animatable.h" 
 #include "Inventory/Components/InventoryComponent.h"    
-#include "UI/Search/W_SearchBarBase.h" 
-#include "UI/Cards/InfoCardSpecDataAsset.h"
+#include "NameTBD/Search/W_SearchBarBase.h" 
+#include "NameTBD/Cards/InfoCardSpecDataAsset.h"
 #include "W_InventorySlot_Base.h"
 #include "W_InventoryBase.generated.h"
 
@@ -74,6 +74,47 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Slot")
 	FMargin SlotPadding = FMargin{0.0, 0.0, 0.0, 0.0};
 
+	// =================================================================================
+	//  Designer preview
+	//
+	//  The component is handed over at runtime, so SlotGridPanel is an empty rectangle
+	//  in the UMG designer and there is nothing to lay a background, padding or a slot
+	//  multiplier out against. These properties describe the SHAPE of the inventory this
+	//  WBP is meant to display, and PreConstruct fills PreviewGridPanel with empty slot
+	//  widgets built from them.
+	//
+	//  It is a drawing, not a state: nothing here is read at runtime, no inventory is
+	//  created from it, and the whole panel is torn down the moment the game starts. It
+	//  is on the author to keep these numbers in step with the component they intend to
+	//  point at this widget — nothing can check that for them from inside a WBP.
+	// =================================================================================
+
+	/** Master switch. Off leaves PreviewGridPanel collapsed and empty in the designer. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Preview")
+	bool bShowDesignerPreview = true;
+
+	/** Cells wide, mirroring UInventoryComponent::GridWidth. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Preview", meta = (ClampMin = "0", EditCondition = "bShowDesignerPreview"))
+	int32 PreviewGridWidth = 6;
+
+	/** Cells tall, mirroring UInventoryComponent::GridHeight. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Preview", meta = (ClampMin = "0", EditCondition = "bShowDesignerPreview"))
+	int32 PreviewGridHeight = 4;
+
+	/** The type every preview cell gets, mirroring UInventoryComponent::SlotType. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Preview", meta = (EditCondition = "bShowDesignerPreview"))
+	ESlotType PreviewSlotType = ESlotType::Generic;
+
+	/**
+	 * Per-index overrides, exactly the struct the component takes: Index addresses the
+	 * flat row-major preview grid, and Type / BackgroundImage / SlotFootprint mean what
+	 * they mean there. Overrides that run off the grid or collide with another are
+	 * skipped with a warning and drawn as ordinary 1x1 cells, which is the same call
+	 * InitializeInventory makes.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Preview", meta = (EditCondition = "bShowDesignerPreview"))
+	TArray<FSlotOverrideData> PreviewSlotOverrides;
+
 	UPROPERTY(BlueprintReadWrite, Category = "Inventory|State")
 	TObjectPtr<UInventoryComponent> InventoryComponent;
 
@@ -89,14 +130,44 @@ public:
 	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Inventory|Widgets")
 	TObjectPtr<UGridPanel> SubViewPanel;
 
+	/**
+	 * Where the design-time preview is drawn. Deliberately its own panel rather than
+	 * SlotGridPanel: the runtime pool owns that one, and the two would fight over its
+	 * children the first time a real refresh landed on top of a preview.
+	 */
+	UPROPERTY(BlueprintReadOnly, meta = (BindWidgetOptional), Category = "Inventory|Widgets")
+	TObjectPtr<UGridPanel> PreviewGridPanel;
+
 	UPROPERTY(BlueprintReadWrite, Category = "Inventory|Widgets")
 	TArray<UW_InventorySlotBase*> InventorySlotWidgets;
+
+	/**
+	 * The design-time preview pool, one widget per cell in the same order BuildPreviewGrid
+	 * lays them into PreviewGridPanel (row-major, swallowed cells included). Exposed
+	 * read-only so a Blueprint graph can iterate the actual preview widgets directly —
+	 * each one already carries its own resolved SlotType / SlotBackgroundImage / footprint
+	 * — instead of walking PreviewGridPanel's children and re-casting them by hand.
+	 *
+	 * Kept separate from InventorySlotWidgets on purpose — that array IS the runtime
+	 * pool, and its index is a slot index (HandleInventoryChanged's O(1) path is built
+	 * on that identity). Preview cells are never slots, so they never go in it.
+	 */
+	UPROPERTY(BlueprintReadOnly, Transient, Category = "Inventory|Widgets")
+	TArray<TObjectPtr<UW_InventorySlotBase>> PreviewSlotWidgets;
 
 	UFUNCTION(BlueprintCallable, Category = "Inventory|UI")
 	void RefreshGrid();
 
 	UFUNCTION(BlueprintCallable, Category = "Inventory|UI")
 	void RefreshSubView();
+
+	/** Rebuilds PreviewGridPanel from the Preview* properties. Design time only. */
+	UFUNCTION(BlueprintCallable, Category = "Inventory|Preview")
+	void BuildPreviewGrid();
+
+	/** Destroys every preview cell and collapses the panel. Safe to call repeatedly. */
+	UFUNCTION(BlueprintCallable, Category = "Inventory|Preview")
+	void ClearPreviewGrid();
 
 protected:
 	virtual void NativePreConstruct() override;
@@ -123,7 +194,7 @@ private:
 
 	UPROPERTY()
 	TMap<FName, FFragmentFilterOption> FilterKeyToFragment;
-	
+
 	bool bSubViewNeedsRefresh = false;
 
 	UFUNCTION()

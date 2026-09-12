@@ -63,18 +63,7 @@ enum class EInventoryType : uint8
 	Attachment
 };
 
-/**
- * Weapon firing mode.
- * Replaces the Blueprint enum E_FireMode. Order preserved exactly.
- * Display names keep the spacing the Blueprint asset used ("Semi Auto", etc.).
- */
-UENUM(BlueprintType)
-enum class EFireMode : uint8
-{
-	SemiAuto UMETA(DisplayName = "Semi Auto"),
-	Burst    UMETA(DisplayName = "Burst"),
-	FullAuto UMETA(DisplayName = "Full Auto")
-};
+
 
 /**
  * How a modifier's value is applied.

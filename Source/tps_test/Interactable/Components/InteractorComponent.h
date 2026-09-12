@@ -57,9 +57,12 @@ public:
 	 * Field of view, in degrees, that FInteractionWidgetSpec::ConstantSizeReferenceDistance
 	 * was authored against.
 	 *
-	 * Constant-size widgets divide out the camera's current FOV against this, so a prompt
-	 * stays the same size on screen when the player zooms an ADS or a cutscene pulls the
-	 * FOV in. Leave it at your default camera FOV.
+	 * Constant-size widgets weigh the camera's current FOV against this so they track the
+	 * scene through a zoom: narrowing the FOV magnifies everything in view, and a prompt
+	 * that is pretending to sit in the world has to magnify with it. Without this term an
+	 * ADS would pull the crate closer and leave its prompt behind at the hip-fire size.
+	 *
+	 * Leave it at your default camera FOV.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction|Presentation",
 		meta = (ClampMin = "5.0", ClampMax = "170.0"))

@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/GridPanel.h"
-#include "UI/WidgetAnimation/UserWidget_Animatable.h"
+#include "NameTBD/WidgetAnimation/UserWidget_Animatable.h"
 #include "W_InventorySlot_Base.h"
 #include "W_InventoryDisplayOnly_Base.generated.h"
 

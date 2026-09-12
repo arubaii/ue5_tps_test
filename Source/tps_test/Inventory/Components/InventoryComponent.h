@@ -104,6 +104,12 @@ struct FDefaultInventoryEntry
 	int32 SlotIndex = 0;
 };
 
+/**
+ * A per-index override of what a slot IS, applied by InitializeInventory.
+ *
+ * Index addresses the inventory's flat slot array (row-major on a grid container), NOT a
+ * position in the SlotOverrides array itself.
+ */
 USTRUCT(BlueprintType)
 struct FSlotOverrideData
 {
@@ -117,6 +123,23 @@ struct FSlotOverrideData
 	
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	TSoftObjectPtr<UTexture2D> BackgroundImage;
+
+	/**
+	 * How many grid cells this ONE slot occupies, anchored at Index and growing +X/+Y.
+	 * (1,1) leaves it an ordinary cell.
+	 *
+	 * A 3x1 here makes a single wide slot out of three cells: the two to the right stop
+	 * being slots of their own, anything dropped in fills the whole width (and draws with
+	 * the 3x1 entry from FItemDefinition::IconByFootprint), and an item whose own SlotSize
+	 * doesn't fit inside 3x1 is refused. Item footprints smaller than the slot are fine —
+	 * a 1x1 pistol in a 3x1 holster just fills it.
+	 *
+	 * Ignored on non-grid containers (GridWidth/GridHeight == 0), where every slot is 1x1
+	 * by definition. Overrides that run off the row/grid, or that collide with another
+	 * override's cells, are rejected at init with a warning and fall back to (1,1).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (ClampMin = "1"))
+	FIntPoint SlotFootprint = FIntPoint(1, 1);
 };
 
 /**
@@ -673,17 +696,7 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Replicated, Category = "Inventory|Config")
 	FName InventoryName = NAME_None;
-
-	/**
-	 * Legacy flat slot count. Superseded by GridWidth * GridHeight whenever both are set
-	 * (> 0) — InitializeInventory prefers the grid dimensions and keeps this field synced
-	 * to their product so old BP reads/UI relying on a flat count still see the right
-	 * number. Only used directly as a fallback when GridWidth/GridHeight are left at 0
-	 * (e.g. inventories that don't care about 2D layout).
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Config")
-	int32 MaxInventorySlots = 0;
-
+	
 	/** Slot type every slot in this inventory is created with (InitializeInventory parity). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Inventory|Config")
 	ESlotType SlotType = ESlotType::Generic;
@@ -1176,11 +1189,60 @@ public:
 	
 	/** 
 	 * @param SlotIndex This should be this index in the inventory, not for the SlotOverride array on the component
+	 *
+	 * Resolves through oversized slots: asking about a cell that a 3x1 override swallowed
+	 * returns that override, so UI that only knows a cell index still gets the right data.
  	 */
 	UFUNCTION(BlueprintPure)
 	void GetSlotOverrideByIndex(int SlotIndex, 
 								FSlotOverrideData& OverrideData, 
 								UPARAM(DisplayName = "Found") bool& bFound);
+
+	/**
+	 * How many cells the SLOT at this index spans on its own — (1,1) unless an override
+	 * widened it. This is what the UI should size and span a slot widget by, not the
+	 * item's footprint: an empty 3x1 slot is still 3x1.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Inventory|Slots")
+	FIntPoint GetSlotFootprintSize(int32 SlotIndex) const;
+
+	/**
+	 * True when this cell was swallowed by an oversized slot anchored elsewhere. Such a
+	 * cell is not a slot: it never takes an item of its own and never draws a widget.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Inventory|Slots")
+	bool IsSlotShadowCell(int32 SlotIndex) const;
+
+	/**
+	 * The index of the slot that owns this cell — itself for an ordinary slot, the anchor
+	 * for a cell inside an oversized one. Use it to turn "the cell the cursor is over"
+	 * into "the slot the player means".
+	 */
+	UFUNCTION(BlueprintPure, Category = "Inventory|Slots")
+	int32 GetOwningSlotIndex(int32 SlotIndex) const;
+
+	/**
+	 * The region an item of ItemSize would ACTUALLY occupy if anchored here.
+	 *
+	 *   ordinary slot   -> ItemSize (unchanged; the pre-existing behaviour)
+	 *   oversized slot  -> the slot's own footprint, because the item fills it
+	 *   won't fit       -> (0,0), which every footprint primitive treats as "no"
+	 *
+	 * Idempotent, so it is safe for a caller that already holds an effective size to pass
+	 * it back through. Every placement path funnels through this, which is why adding a
+	 * slot footprint didn't need each of those paths rewritten.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Inventory|Slots")
+	FIntPoint GetEffectiveFootprintAt(int32 AnchorIndex, FIntPoint ItemSize) const;
+
+	/**
+	 * Re-stamps SlotFootprint/OwningSlotIndex (and SlotType) across Slots from the
+	 * authored SlotOverrides, leaving item occupancy alone. Called by InitializeInventory
+	 * and again after LoadFromRecord, so a save written before an override was authored
+	 * (or with a since-changed one) still comes back with the current slot layout.
+	 */
+	UFUNCTION(BlueprintCallable, BlueprintAuthorityOnly, Category = "Inventory|Setup")
+	void ApplySlotOverridesToSlots();
 
 	// =================================================================================
 	//  Sorting
@@ -1551,6 +1613,13 @@ protected:
 	// These are what make FItemDefinition::SlotSize do anything. On a non-grid container
 	// (GridWidth or GridHeight == 0) they all degrade to the old single-cell behavior —
 	// SlotSize is simply ignored there, exactly as before this feature existed.
+	//
+	// They are also where SLOT footprints (FSlotOverrideData::SlotFootprint) are honoured.
+	// Each primitive below runs the Size it was handed through GetEffectiveFootprintAt
+	// first, so callers keep passing the item's authored size and get slot-aware behaviour
+	// for free — that expansion happening in one place, at the bottom, is the reason a
+	// 3x1 slot works identically for pickup, drop, swap, sort and default-fill without any
+	// of those paths knowing slot footprints exist.
 	// ---------------------------------------------------------------------------------
 
 	/** Cell coordinate <-> flat SlotIndex (row-major). Safe even when GridWidth is 0. */
@@ -1642,15 +1711,28 @@ protected:
 	bool CanPlaceFootprintIgnoring(int32 AnchorIndex, FIntPoint Size, const TArray<FGuid>& IgnoreItemIDs) const;
 
 	/**
+	 * Does a region line up with slot boundaries? Either the anchor is an oversized slot
+	 * and the region is exactly that slot, or every cell in the region is a plain 1x1
+	 * slot. What this rules out is the half-overlap: a 2x1 item covering one cell of
+	 * someone else's 3x1 weapon slot, which would leave that slot permanently unusable
+	 * with no way for the player to see why.
+	 */
+	bool DoesRegionRespectSlotBoundaries(int32 AnchorIndex, FIntPoint Size) const;
+
+	/**
 	 * The best anchor for a Size footprint inside Confine: of every position whose cells
 	 * all pass IsCellAvailable and whose slot types all accept Def, the one closest to
 	 * IdealAnchorXY (an exact match wins outright and returns immediately). False when
 	 * the confine has no room at all — which is a rejection, never a licence to look
 	 * outside the confine.
+	 *
+	 * OutSize reports the region actually claimed, which is NOT Size when the winning
+	 * anchor turned out to be an oversized slot — the caller needs that to reserve the
+	 * right cells and to write a plan that matches what OccupyFootprint will do.
 	 */
 	bool FindBestAnchorInRect(FIntPoint Size, const FItemDefinition& Def, const FInventoryGridRect& Confine,
 							  FIntPoint IdealAnchorXY, TFunctionRef<bool(int32)> IsCellAvailable,
-							  int32& OutAnchorIndex) const;
+							  int32& OutAnchorIndex, FIntPoint& OutSize) const;
 
 	/**
 	 * Validates and plans moving the item found at SourceIndex (in SourceInv, or this

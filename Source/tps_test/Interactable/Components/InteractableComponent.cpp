@@ -28,11 +28,22 @@ void UInteractableComponent::BeginPlay()
 	Super::BeginPlay();
 
 	#if !UE_BUILD_SHIPPING
-	if (bDebugInteractable && Profile.AmbientRange <= 0.f && WantsAmbientPresentation())
+	if (bDebugInteractable)
 	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("[Interaction] %s has widget specs marked bShowWhenAmbient but AmbientRange is 0; they will never draw."),
-			*GetNameSafe(GetOwner()));
+		if (Profile.AmbientRange <= 0.f && WantsAmbientPresentation())
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[Interaction] %s has widget specs marked bShowWhenAmbient but AmbientRange is 0; they will never draw."),
+				*GetNameSafe(GetOwner()));
+		}
+
+		if (bConstantWidgetSize && HasWorldSpaceWidgetSpec())
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("[Interaction] %s has bConstantWidgetSize set but at least one widget spec is World space; ")
+				TEXT("that setting only affects Screen space widgets and is ignored for the rest."),
+				*GetNameSafe(GetOwner()));
+		}
 	}
 	#endif
 }
@@ -176,6 +187,29 @@ bool UInteractableComponent::WantsAmbientPresentation() const
 	for (const FInteractionWidgetSpec& Spec : WidgetSpecs)
 	{
 		if (Spec.bShowWhenAmbient && Spec.IsValidSpec())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool UInteractableComponent::HasWorldSpaceWidgetSpec() const
+{
+	if (WidgetSpecDataAsset)
+	{
+		for (const FInteractionWidgetSpec& Spec : WidgetSpecDataAsset->WidgetSpecs)
+		{
+			if (Spec.IsValidSpec() && Spec.WidgetSpace == EWidgetSpace::World)
+			{
+				return true;
+			}
+		}
+	}
+
+	for (const FInteractionWidgetSpec& Spec : WidgetSpecs)
+	{
+		if (Spec.IsValidSpec() && Spec.WidgetSpace == EWidgetSpace::World)
 		{
 			return true;
 		}

@@ -1,7 +1,7 @@
 ﻿#include "W_InventoryBase.h"
 
 #include "Inventory/ItemLibrary.h"
-#include "UI/Search/SearchLibrary.h" // adjust to wherever USearchLibrary lives in your module
+#include "NameTBD/Search/SearchLibrary.h" 
 #include "Components/GridSlot.h"
 
 FSubInventoryView UW_InventoryBase::FilterSubInventoryBySearch(const FSubInventoryView& View,
@@ -50,9 +50,6 @@ void UW_InventoryBase::NativePreConstruct()
 	// in the UMG designer.
 	if (SlotBorder)
 	{
-		// UBorder::GetBrush() doesn't exist yet in 5.7 — Background is the same
-		// underlying FSlateBrush (it's what Blueprint's own "Brush" pin reads/writes),
-		// just without an accessor wrapping it. Read and write it directly instead.
 		FSlateBrush brush = SlotBorder->Background;
 		brush.TintColor = FSlateColor(BackgroundColor);
 
@@ -68,13 +65,191 @@ void UW_InventoryBase::NativePreConstruct()
 		// struct, with whichever ran second silently discarding the other's change.
 		SlotBorder->SetBrush(brush);
 	}
+
+	// PreConstruct also runs once at runtime, on the real widget. BuildPreviewGrid's own
+	// design-time check turns that call into a teardown, so a preview left over from the
+	// designer can never survive into a live session.
+	BuildPreviewGrid();
 }
 
 void UW_InventoryBase::NativeConstruct()
 {
 	Super::NativeConstruct();
 
+	// Belt and braces with the PreConstruct teardown: Construct is the last point before
+	// anything gameplay-driven touches this widget, and a stray preview cell here would
+	// draw on top of the real grid.
+	ClearPreviewGrid();
+
 	RefreshFilterOptionsFromMap();
+}
+
+void UW_InventoryBase::ClearPreviewGrid()
+{
+	for (UW_InventorySlotBase* previewWidget : PreviewSlotWidgets)
+	{
+		if (previewWidget)
+			previewWidget->RemoveFromParent();
+	}
+	PreviewSlotWidgets.Reset();
+
+	if (PreviewGridPanel)
+	{
+		// ClearChildren as well as the loop above: a previous PreConstruct in this editor
+		// session may have left children behind that this instance's array no longer
+		// knows about (the array is Transient and the panel's children are not).
+		PreviewGridPanel->ClearChildren();
+		PreviewGridPanel->SetVisibility(ESlateVisibility::Collapsed);
+	}
+}
+
+void UW_InventoryBase::BuildPreviewGrid()
+{
+	// Always start from nothing. PreConstruct re-runs on every property edit in the
+	// designer, and rebuilding on top of the previous pass would stack cells.
+	ClearPreviewGrid();
+
+	if (!PreviewGridPanel)
+		return; // this WBP has no preview panel — nothing to do, at either time
+
+	const bool bDesignTime =
+#if WITH_EDITOR
+		IsDesignTime();
+#else
+		false;
+#endif
+
+	if (!bDesignTime || !bShowDesignerPreview || !InventorySlotClass)
+		return; // ClearPreviewGrid already collapsed the panel
+
+	const int32 gridW = FMath::Max(0, PreviewGridWidth);
+	const int32 gridH = FMath::Max(0, PreviewGridHeight);
+	const int32 totalCells = gridW * gridH;
+
+	if (totalCells <= 0)
+		return;
+
+	// Resolve the authored overrides into a per-cell picture first, then draw it. The
+	// two passes can't be merged: whether a cell is a slot of its own depends on an
+	// override that may be authored AFTER it in the array.
+	TArray<FIntPoint> footprints;
+	footprints.Init(FIntPoint(1, 1), totalCells);
+
+	TArray<int32> owningIndex;                 // INDEX_NONE == the cell owns itself
+	owningIndex.Init(INDEX_NONE, totalCells);
+
+	TArray<ESlotType> types;
+	types.Init(PreviewSlotType, totalCells);
+
+	TArray<TSoftObjectPtr<UTexture2D>> backgrounds;
+	backgrounds.SetNum(totalCells);
+
+	for (const FSlotOverrideData& slotOverride : PreviewSlotOverrides)
+	{
+		const int32 anchor = slotOverride.Index;
+
+		if (!footprints.IsValidIndex(anchor))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("%s: preview slot override index %d is outside a %dx%d grid — skipped."),
+				*GetName(), anchor, gridW, gridH);
+			continue;
+		}
+
+		// Type and background land on the anchor whether or not the footprint is valid:
+		// those two are independent of geometry and a rejected footprint shouldn't also
+		// throw away a perfectly good slot type.
+		types[anchor] = slotOverride.Type;
+		backgrounds[anchor] = slotOverride.BackgroundImage;
+
+		const FIntPoint footprint(
+			FMath::Max(1, slotOverride.SlotFootprint.X),
+			FMath::Max(1, slotOverride.SlotFootprint.Y));
+
+		if (footprint == FIntPoint(1, 1))
+			continue; // an ordinary cell; nothing to swallow
+
+		const int32 anchorX = anchor % gridW;
+		const int32 anchorY = anchor / gridW;
+
+		if (anchorX + footprint.X > gridW || anchorY + footprint.Y > gridH)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("%s: preview slot override at %d (%dx%d) runs off the grid — drawn as 1x1."),
+				*GetName(), anchor, footprint.X, footprint.Y);
+			continue;
+		}
+
+		// Reject on collision rather than letting the later override win: two oversized
+		// slots overlapping is an authoring mistake, and silently resolving it in the
+		// designer would hide a mistake the component itself rejects at init.
+		bool bRegionClear = true;
+		for (int32 y = 0; y < footprint.Y && bRegionClear; ++y)
+		{
+			for (int32 x = 0; x < footprint.X && bRegionClear; ++x)
+			{
+				const int32 cell = (anchorY + y) * gridW + (anchorX + x);
+				if (owningIndex[cell] != INDEX_NONE || footprints[cell] != FIntPoint(1, 1))
+					bRegionClear = false;
+			}
+		}
+
+		if (!bRegionClear)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("%s: preview slot override at %d collides with another — drawn as 1x1."),
+				*GetName(), anchor);
+			continue;
+		}
+
+		footprints[anchor] = footprint;
+
+		for (int32 y = 0; y < footprint.Y; ++y)
+		{
+			for (int32 x = 0; x < footprint.X; ++x)
+			{
+				if (x == 0 && y == 0)
+					continue; // the anchor keeps owning itself
+
+				owningIndex[(anchorY + y) * gridW + (anchorX + x)] = anchor;
+			}
+		}
+	}
+
+	PreviewGridPanel->SetVisibility(ESlateVisibility::Visible);
+	PreviewSlotWidgets.Reserve(totalCells);
+
+	// One widget per CELL, swallowed cells included — the same shape the runtime grid
+	// builds, so what the designer shows is what RefreshGrid will produce.
+	for (int32 i = 0; i < totalCells; ++i)
+	{
+		UW_InventorySlotBase* slotWidget = CreateWidget<UW_InventorySlotBase>(this, InventorySlotClass);
+		if (!slotWidget)
+			continue;
+
+		PreviewGridPanel->AddChildToGrid(slotWidget);
+		PreviewSlotWidgets.Add(slotWidget);
+
+		if (UGridSlot* gridSlot = Cast<UGridSlot>(slotWidget->Slot))
+		{
+			gridSlot->SetRow(i / gridW);
+			gridSlot->SetColumn(i % gridW);
+		}
+
+		// Before InitSlotPreview, not after: the slot reads SlotSizeMultiplier and
+		// SlotPadding off this reference while it sizes itself.
+		slotWidget->GetInventoryWidgetRef(this);
+
+		const bool bIsShadowCell = owningIndex[i] != INDEX_NONE;
+
+		slotWidget->InitSlotPreview(
+			footprints[i],
+			types[i],
+			backgrounds[i],
+			bIsShadowCell);
+
+		slotWidget->AddPadding(SlotPadding);
+	}
 }
 
 void UW_InventoryBase::RefreshFilterOptionsFromMap()
@@ -145,6 +320,10 @@ void UW_InventoryBase::RefreshGrid()
 {
 	if (!InventoryComponent || !SlotGridPanel || !InventorySlotClass) return;
 
+	// The real thing is about to be drawn, so the drawing of it goes away. This is the
+	// path that actually matters in PIE: PreConstruct ran before the component arrived.
+	ClearPreviewGrid();
+
 	// 1. TOGGLE VISIBILITY & STATE
 	bInSubView = false;
 	SlotGridPanel->SetVisibility(ESlateVisibility::Visible);
@@ -153,6 +332,12 @@ void UW_InventoryBase::RefreshGrid()
 	const TArray<FInventorySlot> Slots = InventoryComponent->GetSlots();
 	const int32 GridWidth = FMath::Max(1, InventoryComponent->GridWidth);
 
+	// One widget per CELL, including the cells an oversized slot (or a multi-cell item)
+	// swallows — those collapse themselves inside RefreshSlot rather than being skipped
+	// here. Skipping them would be tempting and wrong: it breaks the widget-index ==
+	// slot-index identity that HandleInventoryChanged's O(1) path depends on, and a
+	// collapsed widget costs nothing in a grid panel anyway. The span each visible widget
+	// claims is set from its own footprint in RefreshSlotDimensions.
 	for (int32 i = 0; i < Slots.Num(); ++i)
 	{
 		UW_InventorySlotBase* SlotWidget = nullptr;
@@ -198,6 +383,8 @@ void UW_InventoryBase::RefreshSubView()
 {
 	if (!InventoryComponent || !SubViewPanel || !InventorySlotClass) return;
 
+	ClearPreviewGrid();
+
 	// 1. TOGGLE VISIBILITY & STATE
 	bInSubView = true;
 	SubViewPanel->SetVisibility(ESlateVisibility::Visible);
@@ -216,7 +403,7 @@ void UW_InventoryBase::RefreshSubView()
 
 	const int32 GridW = FMath::Max(1, InventoryComponent->GridWidth);
 	const int32 GridH = FMath::Max(1, InventoryComponent->GridHeight);
-	const int32 TotalCells = InventoryComponent->IsGridEnabled() ? (GridW * GridH) : InventoryComponent->MaxInventorySlots;
+	const int32 TotalCells = InventoryComponent->IsGridEnabled() ? (GridW * GridH) : 0;
 
 	// Track which grid coordinates are occupied so we know where to put filler slots
 	TArray<bool> OccupiedCells;

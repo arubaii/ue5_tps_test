@@ -1,0 +1,586 @@
+{
+	"folders": [
+		{
+			"name": "tps_test",
+			"path": "."
+		},
+		{
+			"name": "UE5",
+			"path": "/Users/Shared/Epic Games/UE_5.7"
+		}
+	],
+	"settings": {
+		"typescript.tsc.autoDetect": "off",
+		"npm.autoDetect": "off",
+		"terminal.integrated.env.mac": {
+			"PATH": "/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/ThirdParty/DotNet/8.0.412/mac-arm64:${env:PATH}",
+			"DOTNET_ROOT": "/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/ThirdParty/DotNet/8.0.412/mac-arm64",
+			"DOTNET_HOST_PATH": "/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/ThirdParty/DotNet/8.0.412/mac-arm64/dotnet",
+			"DOTNET_MULTILEVEL_LOOKUP": "0",
+			"DOTNET_ROLL_FORWARD": "LatestMajor"
+		}
+	},
+	"extensions": {
+		"recommendations": [
+			"ms-vscode.cpptools",
+			"ms-dotnettools.csharp"
+		]
+	},
+	"tasks": {
+		"version": "2.0.0",
+		"tasks": [
+			{
+				"label": "tps_test Mac Debug Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"Debug",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac Debug Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"Debug",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"tps_test Mac Debug Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac Debug Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"Debug",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac DebugGame Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"DebugGame",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac DebugGame Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"DebugGame",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"tps_test Mac DebugGame Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac DebugGame Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"DebugGame",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac Development Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"Development",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac Development Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"Development",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"tps_test Mac Development Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac Development Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"Development",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac Test Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"Test",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac Test Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"Test",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"tps_test Mac Test Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac Test Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"Test",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac Shipping Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"Shipping",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac Shipping Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"Shipping",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"tps_test Mac Shipping Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_test Mac Shipping Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_test",
+					"Mac",
+					"Shipping",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_testEditor Mac Debug Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_testEditor",
+					"Mac",
+					"Debug",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_testEditor Mac Debug Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_testEditor",
+					"Mac",
+					"Debug",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"tps_testEditor Mac Debug Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_testEditor Mac Debug Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_testEditor",
+					"Mac",
+					"Debug",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_testEditor Mac DebugGame Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_testEditor",
+					"Mac",
+					"DebugGame",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_testEditor Mac DebugGame Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_testEditor",
+					"Mac",
+					"DebugGame",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"tps_testEditor Mac DebugGame Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_testEditor Mac DebugGame Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_testEditor",
+					"Mac",
+					"DebugGame",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_testEditor Mac Development Build",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_testEditor",
+					"Mac",
+					"Development",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_testEditor Mac Development Rebuild",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_testEditor",
+					"Mac",
+					"Development",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex"
+				],
+				"problemMatcher": "$msCompile",
+				"dependsOn": [
+					"tps_testEditor Mac Development Clean"
+				],
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			},
+			{
+				"label": "tps_testEditor Mac Development Clean",
+				"group": "build",
+				"command": "Engine/Build/BatchFiles/Mac/Build.sh",
+				"args": [
+					"tps_testEditor",
+					"Mac",
+					"Development",
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject",
+					"-waitmutex",
+					"-clean"
+				],
+				"problemMatcher": "$msCompile",
+				"type": "shell",
+				"options": {
+					"cwd": "/Users/Shared/Epic Games/UE_5.7"
+				}
+			}
+		]
+	},
+	"launch": {
+		"version": "0.2.0",
+		"configurations": [
+			{
+				"name": "Launch tps_test (Debug)",
+				"request": "launch",
+				"program": "/Users/ahmadrubaii/Unreal Projects/tps_test/Binaries/Mac/UnrealGame-Mac-Debug.app/Contents/MacOS/UnrealGame-Mac-Debug",
+				"preLaunchTask": "tps_test Mac Debug Build",
+				"args": [
+				],
+				"cwd": "/Users/Shared/Epic Games/UE_5.7",
+				"type": "lldb"
+			},
+			{
+				"name": "Launch tps_test (DebugGame)",
+				"request": "launch",
+				"program": "/Users/ahmadrubaii/Unreal Projects/tps_test/Binaries/Mac/UnrealGame-Mac-DebugGame.app/Contents/MacOS/UnrealGame-Mac-DebugGame",
+				"preLaunchTask": "tps_test Mac DebugGame Build",
+				"args": [
+				],
+				"cwd": "/Users/Shared/Epic Games/UE_5.7",
+				"type": "lldb"
+			},
+			{
+				"name": "Launch tps_test (Development)",
+				"request": "launch",
+				"program": "/Users/ahmadrubaii/Unreal Projects/tps_test/Binaries/Mac/UnrealGame.app/Contents/MacOS/UnrealGame",
+				"preLaunchTask": "tps_test Mac Development Build",
+				"args": [
+				],
+				"cwd": "/Users/Shared/Epic Games/UE_5.7",
+				"type": "lldb"
+			},
+			{
+				"name": "Launch tps_test (Test)",
+				"request": "launch",
+				"program": "/Users/ahmadrubaii/Unreal Projects/tps_test/Binaries/Mac/UnrealGame-Mac-Test.app/Contents/MacOS/UnrealGame-Mac-Test",
+				"preLaunchTask": "tps_test Mac Test Build",
+				"args": [
+				],
+				"cwd": "/Users/Shared/Epic Games/UE_5.7",
+				"type": "lldb"
+			},
+			{
+				"name": "Launch tps_test (Shipping)",
+				"request": "launch",
+				"program": "/Users/ahmadrubaii/Unreal Projects/tps_test/Binaries/Mac/UnrealGame-Mac-Shipping.app/Contents/MacOS/UnrealGame-Mac-Shipping",
+				"preLaunchTask": "tps_test Mac Shipping Build",
+				"args": [
+				],
+				"cwd": "/Users/Shared/Epic Games/UE_5.7",
+				"type": "lldb"
+			},
+			{
+				"name": "Launch tps_testEditor (Debug)",
+				"request": "launch",
+				"program": "/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/Mac/UnrealEditor-Mac-Debug.app/Contents/MacOS/UnrealEditor-Mac-Debug",
+				"preLaunchTask": "tps_testEditor Mac Debug Build",
+				"args": [
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject"
+				],
+				"cwd": "/Users/Shared/Epic Games/UE_5.7",
+				"type": "lldb"
+			},
+			{
+				"name": "Launch tps_testEditor (DebugGame)",
+				"request": "launch",
+				"program": "/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/Mac/UnrealEditor-Mac-DebugGame.app/Contents/MacOS/UnrealEditor-Mac-DebugGame",
+				"preLaunchTask": "tps_testEditor Mac DebugGame Build",
+				"args": [
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject"
+				],
+				"cwd": "/Users/Shared/Epic Games/UE_5.7",
+				"type": "lldb"
+			},
+			{
+				"name": "Launch tps_testEditor (Development)",
+				"request": "launch",
+				"program": "/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor",
+				"preLaunchTask": "tps_testEditor Mac Development Build",
+				"args": [
+					"/Users/ahmadrubaii/Unreal Projects/tps_test/tps_test.uproject"
+				],
+				"cwd": "/Users/Shared/Epic Games/UE_5.7",
+				"type": "lldb"
+			},
+			{
+				"name": "Generate Project Files",
+				"type": "coreclr",
+				"request": "launch",
+				"preLaunchTask": "UnrealBuildTool Mac Development Build",
+				"program": "/Users/Shared/Epic Games/UE_5.7/Engine/Build/BatchFiles/RunUBT.bat",
+				"args": [
+					"-projectfiles",
+					"-vscode",
+					"-engine",
+					"-dotnet"
+				],
+				"env": {
+					"PATH": "/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/ThirdParty/DotNet/8.0.412/mac-arm64:${env:PATH}",
+					"DOTNET_ROOT": "/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/ThirdParty/DotNet/8.0.412/mac-arm64",
+					"DOTNET_HOST_PATH": "/Users/Shared/Epic Games/UE_5.7/Engine/Binaries/ThirdParty/DotNet/8.0.412/mac-arm64/dotnet",
+					"DOTNET_MULTILEVEL_LOOKUP": "0",
+					"DOTNET_ROLL_FORWARD": "LatestMajor"
+				},
+				"console": "internalConsole",
+				"internalConsoleOptions": "openOnSessionStart",
+				"stopAtEntry": false,
+				"cwd": "/Users/Shared/Epic Games/UE_5.7"
+			}
+		]
+	}
+}

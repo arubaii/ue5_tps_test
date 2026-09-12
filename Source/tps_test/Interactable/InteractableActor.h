@@ -53,7 +53,6 @@ class TPS_TEST_API AInteractableActor : public AActor, public IInteractableInter
 
 public:
 	AInteractableActor();
-
 	virtual void BeginPlay() override;
 	virtual void OnConstruction(const FTransform& Transform) override;
 
@@ -74,7 +73,7 @@ public:
 	 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Interactable")
 	TObjectPtr<USceneComponent> LineTracePoint;
-
+	
 	/**
 	 * Which volume is live. Both shapes exist on every interactable; the unselected one is
 	 * set to NoCollision, so it is invisible to every trace and sweep and costs nothing.

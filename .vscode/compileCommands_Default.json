@@ -1,0 +1,1794 @@
+[
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/.idea/.gitignore",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/.idea/encodings.xml",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/.idea/indexLayout.xml",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/.idea/vcs.xml",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/CrystalRecoil.Build.cs",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Private/Components/CRRecoilComponent.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Private/Components/CRRecoilSpreadComponent.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Private/CrystalRecoil.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Private/Data/CRRecoilPattern.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Private/Data/CRRecoilUnitGraph.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Public/Components/.idea/.gitignore",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Public/Components/.idea/encodings.xml",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Public/Components/.idea/indexLayout.xml",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Public/Components/.idea/vcs.xml",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Public/Components/CRRecoilComponent.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Public/Components/CRRecoilSpreadComponent.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Public/CrystalRecoil.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Public/Data/CRRecoilPattern.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoil/Public/Data/CRRecoilUnitGraph.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoil.73.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/CrystalRecoilEditor.Build.cs",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Private/AssetTools/CRAssetTypeActions_RecoilPattern.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Private/AssetTools/CRRecoilPatternFactory.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Private/CrystalRecoilEditor.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Private/Editor/CRRecoilPatternEditor.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Private/Editor/CRRecoilPatternEditorCommands.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Private/Editor/CRRecoilUnitGraphWidgetDragOperations.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Private/Widget/CRRecoilUnitGraphBackgroundWidget.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Private/Widget/CRRecoilUnitGraphEditor.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Public/AssetTools/CRAssetTypeActions_RecoilPattern.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Public/AssetTools/CRRecoilPatternFactory.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Public/CrystalRecoilEditor.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Public/Editor/CRRecoilPatternEditor.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Public/Editor/CRRecoilPatternEditorCommands.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Public/Editor/CRRecoilUnitGraphWidgetDragOperations.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Public/Widget/CRRecoilUnitGraphBackgroundWidget.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/CrystalRecoil/Source/CrystalRecoilEditor/Public/Widget/CRRecoilUnitGraphEditor.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/CrystalRecoilEditor.74.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/StructCategoryGroups/StructCategoryGroups/Source/StructCategoryGroupsEditor/Private/StructCategoryGroups.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/StructCategoryGroupsEditor.75.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/StructCategoryGroups/StructCategoryGroups/Source/StructCategoryGroupsEditor/Private/StructCategoryGroupsEditorModule.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/StructCategoryGroupsEditor.75.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/StructCategoryGroups/StructCategoryGroups/Source/StructCategoryGroupsEditor/Public/StructCategoryGroups.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/StructCategoryGroupsEditor.75.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/StructCategoryGroups/StructCategoryGroups/Source/StructCategoryGroupsEditor/Public/StructCategoryGroupsEditorModule.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/StructCategoryGroupsEditor.75.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/StructCategoryGroups/StructCategoryGroups/Source/StructCategoryGroupsEditor/Public/StructCategoryGroupsSettings.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/StructCategoryGroupsEditor.75.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/StructCategoryGroups/StructCategoryGroups/Source/StructCategoryGroupsEditor/Public/StructCategoryGroups_TestStruct.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/StructCategoryGroupsEditor.75.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Plugins/StructCategoryGroups/StructCategoryGroups/Source/StructCategoryGroupsEditor/StructCategoryGroupsEditor.Build.cs",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/StructCategoryGroupsEditor.75.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Audio/Cue/AudioCueLibrary.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Audio/Cue/AudioCueLibrary.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Audio/Cue/AudioCueSet.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Character/tps_testCharacter.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Character/tps_testCharacter.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Character/tps_testPlayerController.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Character/tps_testPlayerController.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/DeveloperSettings/DragVisualSettings.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/DeveloperSettings/InventorySettings.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/DeveloperSettings/InventoryUITheme.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Game/tps_test.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Game/tps_test.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Game/tps_testGameMode.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Game/tps_testGameMode.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Components/InteractableComponent.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Components/InteractableComponent.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Components/InteractionTagsComponent.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Components/InteractionTagsComponent.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Components/InteractorComponent.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Components/InteractorComponent.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/DeveloperSettings/InteractionSettings.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/DeveloperSettings/InteractionSettings.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/InteractableActor.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/InteractableActor.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Interfaces/InteractableInterface.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Interfaces/InteractableInterface.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Interfaces/InteractionWidgetInterface.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Interfaces/InteractionWidgetInterface.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Types/InteractionTypes.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Types/InteractionWidgetDataAsset.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Utils/InteractionStatics.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Utils/InteractionStatics.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Utils/InteractionTags.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Interactable/Utils/InteractionTags.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Actions/ItemAction.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Actions/ItemAction.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Classes/WorldItemActor.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Classes/WorldItemActor.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Components/InventoryComponent.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Components/InventoryComponent.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Components/InventoryWidgetRegistryComponent.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Components/InventoryWidgetRegistryComponent.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Fragment/ItemFragment.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Fragment/ItemFragmentLibrary.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Fragment/ItemFragmentLibrary.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/ItemLibrary.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/ItemLibrary.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Structs/Definition.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Structs/Instance.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Structs/InventoryEnums.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Structs/Rows.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Tags/InventoryAudioTags.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/Tags/InventoryAudioTags.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/UI/SlotInfoBarWidget.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/UI/SlotInfoBarWidget.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/UI/W_InventoryBase.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/UI/W_InventoryBase.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/UI/W_InventoryDisplayOnly_Base.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/UI/W_InventoryDisplayOnly_Base.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/UI/W_InventorySlot_Base.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/UI/W_InventorySlot_Base.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Inventory/WorldItemInterface.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Menu/MenuManagerComponent.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Menu/MenuManagerComponent.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Menu/MenuScreenInterface.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Menu/MenuTypes.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Physics/PhysicalMaterial_Gameplay/PhysicalMaterial_Gameplay.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Physics/PhysicalMaterial_Gameplay/PhysicalMaterial_Gameplay.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/Cards/InfoCardAnchor.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/Cards/InfoCardAnchor.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/Cards/InfoCardSpecDataAsset.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/Cards/InfoCardTypes.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/Cards/InfoCardTypes.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/Cards/InfoCardWidget_Base.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/Cards/InfoCardWidget_Base.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/Search/SearchLibrary.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/Search/SearchLibrary.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/Search/W_SearchBarBase.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/Search/W_SearchBarBase.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/W_DragVisualBase.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/W_DragVisualBase.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/WidgetAnimation/UserWidget_Animatable.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/WidgetAnimation/UserWidget_Animatable.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/WidgetAnimation/WidgetAnimLibrary.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/UI/WidgetAnimation/WidgetAnimLibrary.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Utils/BlueprintFunctionLibraries/Array/ArrayDifference.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Utils/BlueprintFunctionLibraries/Curve/CurveUtilityLibrary.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Utils/BlueprintFunctionLibraries/Curve/CurveUtilityLibrary.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Utils/BlueprintFunctionLibraries/Tags/GameplayTagUtilsLibrary.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Utils/BlueprintFunctionLibraries/Tags/GameplayTagUtilsLibrary.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Utils/Tags/StateTagsComponent.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Utils/Tags/StateTagsComponent.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Utils/WildcardThunk/WildcardThunkHelpers.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Utils/WildcardThunk/WildcardThunkMacros.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/AI/CombatAIController.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/AI/CombatAIController.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/AI/CombatEnemy.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/AI/CombatEnemy.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/AI/CombatEnemySpawner.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/AI/CombatEnemySpawner.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/AI/CombatStateTreeUtility.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/AI/CombatStateTreeUtility.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/AI/EnvQueryContext_Danger.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/AI/EnvQueryContext_Danger.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/AI/EnvQueryContext_Player.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/AI/EnvQueryContext_Player.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Animation/AnimNotify_CheckChargedAttack.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Animation/AnimNotify_CheckChargedAttack.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Animation/AnimNotify_CheckCombo.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Animation/AnimNotify_CheckCombo.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Animation/AnimNotify_DoAttackTrace.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Animation/AnimNotify_DoAttackTrace.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/CombatCharacter.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/CombatCharacter.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/CombatGameMode.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/CombatGameMode.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/CombatPlayerController.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/CombatPlayerController.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Gameplay/CombatActivationVolume.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Gameplay/CombatActivationVolume.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Gameplay/CombatCheckpointVolume.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Gameplay/CombatCheckpointVolume.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Gameplay/CombatDamageableBox.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Gameplay/CombatDamageableBox.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Gameplay/CombatDummy.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Gameplay/CombatDummy.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Gameplay/CombatLavaFloor.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Gameplay/CombatLavaFloor.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Interfaces/CombatActivatable.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Interfaces/CombatActivatable.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Interfaces/CombatAttacker.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Interfaces/CombatAttacker.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Interfaces/CombatDamageable.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/Interfaces/CombatDamageable.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/UI/CombatLifeBar.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Combat/UI/CombatLifeBar.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Platforming/Animation/AnimNotify_EndDash.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Platforming/Animation/AnimNotify_EndDash.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Platforming/PlatformingCharacter.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Platforming/PlatformingCharacter.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Platforming/PlatformingGameMode.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Platforming/PlatformingGameMode.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Platforming/PlatformingPlayerController.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_Platforming/PlatformingPlayerController.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/AI/SideScrollingAIController.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/AI/SideScrollingAIController.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/AI/SideScrollingNPC.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/AI/SideScrollingNPC.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/AI/SideScrollingStateTreeUtility.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/AI/SideScrollingStateTreeUtility.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/Gameplay/SideScrollingJumpPad.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/Gameplay/SideScrollingJumpPad.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/Gameplay/SideScrollingMovingPlatform.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/Gameplay/SideScrollingMovingPlatform.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/Gameplay/SideScrollingPickup.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/Gameplay/SideScrollingPickup.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/Gameplay/SideScrollingSoftPlatform.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/Gameplay/SideScrollingSoftPlatform.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/Interfaces/SideScrollingInteractable.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/Interfaces/SideScrollingInteractable.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/SideScrollingCameraManager.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/SideScrollingCameraManager.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/SideScrollingCharacter.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/SideScrollingCharacter.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/SideScrollingGameMode.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/SideScrollingGameMode.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/SideScrollingPlayerController.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/SideScrollingPlayerController.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/UI/SideScrollingUI.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Variant_SideScrolling/UI/SideScrollingUI.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Weapon/Components/WeaponComponent.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Weapon/Components/WeaponComponent.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Weapon/Components/WeaponRecoilComponent.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Weapon/Components/WeaponRecoilComponent.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/Weapon/Fragment/WeaponItemFragment.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_test/tps_test.Build.cs",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_test.1.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_testEditor/Private/K2Node_StructPickerCall.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_testEditor.2.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_testEditor/Private/tps_testEditor.cpp",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_testEditor.2.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_testEditor/Public/K2Node_StructPickerCall.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_testEditor.2.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_testEditor/Public/tps_testEditor.h",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_testEditor.2.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	},
+	{
+		"file": "/Users/ahmadrubaii/Unreal Projects/tps_test/Source/tps_testEditor/tps_testEditor.Build.cs",
+		"arguments": [
+			"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang++",
+			"@/Users/ahmadrubaii/Unreal Projects/tps_test/.vscode/compileCommands_Default/tps_testEditor.2.rsp"
+		],
+		"directory": "/Users/Shared/Epic Games/UE_5.7/Engine/Source"
+	}
+]

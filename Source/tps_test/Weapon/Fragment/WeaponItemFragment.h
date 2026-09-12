@@ -6,6 +6,7 @@
 #include "Inventory/Fragment/ItemFragment.h"
 #include "Inventory/Structs/InventoryEnums.h"
 #include "Inventory/Structs/Definition.h"
+#include "Weapon/Types/WeaponTypes.h"
 #include "WeaponItemFragment.generated.h"
 
 /**

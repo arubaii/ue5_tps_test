@@ -8,6 +8,7 @@
 #include "Inventory/Structs/Definition.h"
 #include "Inventory/Structs/Instance.h"
 #include "Inventory/Structs/Rows.h"
+#include "Weapon/Types/WeaponTypes.h"
 #include "Weapon/Fragment/WeaponItemFragment.h"
 #include "Weapon/Components/WeaponRecoilComponent.h"
 
