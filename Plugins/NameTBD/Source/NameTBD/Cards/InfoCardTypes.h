@@ -9,6 +9,8 @@
 #include "Components/Widget.h"
 #include "Layout/Margin.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimLibrary.h" // FWidgetAnimSettings, for FInfoCardAdditiveAnimations
+#include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"  // FWidgetAnimEntryBase, for FInfoCardAdditiveAnimations
+#include "NameTBD/Sound/UISoundTypes.h" // FUISoundSlot / FUISoundSetSettings, for FInfoCardSoundSet
 #include "InfoCardTypes.generated.h"
 
 class UInfoCardWidget;
@@ -313,7 +315,7 @@ struct NAMETBD_API FInfoCardConfigurableBool
 	 * The bool to actually use: CustomValue as-authored if Source is Custom;
 	 * otherwise whichever single project-wide default Kind selects, read
 	 * live off UInfoCardDeveloperSettings every call. Falls back to
-	 * CustomValue if there's no settings CDO (shouldn't happen).
+	 * CustomValue if there's no settings CDO (shouldn't happen).å
 	 */
 	bool Resolve(EInfoCardConfigurableBoolKind Kind) const;
 };
@@ -323,14 +325,22 @@ struct NAMETBD_API FInfoCardConfigurableBool
 /// Payloads
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-UCLASS(DefaultToInstanced, EditInlineNew, DisplayName = "Info Card Data")
-class NAMETBD_API UInfoCardPayload : public UObject
+UCLASS(DefaultToInstanced, EditInlineNew, DisplayName = "UI Payload")
+class NAMETBD_API UNameTBD_Payload : public UObject
 {
 	GENERATED_BODY()
 
 public:
 	virtual UWorld* GetWorld() const override;
 };
+
+
+UCLASS()
+class NAMETBD_API UInfoCardPayload : public UNameTBD_Payload
+{
+	GENERATED_BODY()
+};
+
 
 UCLASS(DisplayName = "Info Card Data (Text)")
 class NAMETBD_API UInfoCardPayload_Text : public UInfoCardPayload
@@ -484,7 +494,8 @@ struct NAMETBD_API FInfoCardAdditiveAnimSettings
 
 /**
  * Extra entrance/exit animations layered on top of the ones authored on the
- * card class itself (UUserWidget_Animatable::AnimIn / AnimOut).
+ * card class itself (the Anim In / Anim Out on its Widget Animation
+ * component, UWidgetAnimationComponent).
  * ADDITIVE, never a replacement: whatever the card's Widget Blueprint already
  * plays still plays, and every entry here plays alongside it. Since the
  * animation system combines simultaneous entries rather than letting them
@@ -495,7 +506,8 @@ struct NAMETBD_API FInfoCardAdditiveAnimSettings
  * Every entry animates the whole card; there is no target selection (see
  * FInfoCardAdditiveAnimSettings for why).
  *
- * Merged into the spawned card's AnimIn / AnimOut in
+ * Handed to the spawned card's Widget Animation component as extra layers
+ * (UWidgetAnimationComponent::SetExtraAnimSettings) in
  * UInfoCardWidget::SetupCard, before the card is constructed, so the
  * NativeConstruct -> RebuildEffectiveAnimations -> PlayIn that follows already
  * includes them. Entries with bMirrorInOut set are mirrored into the other
@@ -505,6 +517,26 @@ USTRUCT(BlueprintType)
 struct NAMETBD_API FInfoCardAdditiveAnimations
 {
 	GENERATED_BODY()
+
+	/**
+	 * Shared Widget Animation assets layered onto this card, on top of everything else.
+	 *
+	 * The same thing as the entries below, authored once as an asset instead of retyped per card - point
+	 * three cards at "Anim_CardPop" and retuning the asset retunes all three.
+	 *
+	 * One entry covers both directions: Mirror In Out makes it play backwards as the exit too, so a card
+	 * that pops in and pops back out needs one line here rather than two. Invert Animation is the way to
+	 * author an exit-only entry.
+	 *
+	 * Resolved BEFORE the Play In / Play Out entries below, so these are the base layer and anything typed
+	 * underneath stacks on top. Additive throughout: neither replaces the card class's own animations, and
+	 * the entries below do not replace these.
+	 *
+	 * Widget targeting is deliberately absent for the same reason it is on the entries below - see
+	 * FInfoCardAdditiveAnimSettings. Every layer animates the whole card.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Animations", TitleProperty = "Animation", ToolTip = "Shared Widget Animation assets layered onto this card. Resolved before the Play In / Play Out entries below, and additive with them and with the card class's own animations. Mirror In Out on an entry makes it play as the exit as well."))
+	TArray<FWidgetAnimEntryBase> Animations;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Play In", ToolTip = "Played in addition to the card class's own Anim In when this card appears. Does not replace them. Always animates the whole card."))
 	TArray<FInfoCardAdditiveAnimSettings> PlayIn;
@@ -525,8 +557,19 @@ struct NAMETBD_API FInfoCardAdditiveAnimations
 
 	bool IsEmpty() const
 	{
-		return PlayIn.IsEmpty() && PlayOut.IsEmpty();
+		return PlayIn.IsEmpty() && PlayOut.IsEmpty() && !UWidgetAnimEntryLibrary::HasAnyUsableAnimation(Animations);
 	}
+
+	/**
+	 * Everything this struct contributes, flattened into the two FWidgetAnimSettings stacks the animation
+	 * library actually plays: Animations first, then the Play In / Play Out entries, with Mirror In Out
+	 * resolved on both.
+	 *
+	 * The one place a consumer should go. UInfoCardWidget::SetupCard hands OutIn / OutOut to the card's
+	 * Widget Animation component as its extra layers rather than converting PlayIn / PlayOut itself, or
+	 * presets would be silently dropped.
+	 */
+	void ResolveInto(TArray<FWidgetAnimSettings>& OutIn, TArray<FWidgetAnimSettings>& OutOut) const;
 
 	void PostSerialize(const FArchive& Ar);
 };
@@ -538,6 +581,48 @@ struct TStructOpsTypeTraits<FInfoCardAdditiveAnimations> : public TStructOpsType
 	{
 		WithPostSerialize = true
 	};
+};
+
+/**
+ * The points in a card's life a sound can be attached to. Kept small on purpose: these are the three moments
+ * that are unambiguous no matter what triggered the card or what closed it.
+ */
+UENUM(BlueprintType)
+enum class EInfoCardSoundEvent : uint8
+{
+	Triggered UMETA(ToolTip = "The anchor was hovered, focused or clicked and this card is going to show. Fires BEFORE Highlight Delay, so it's the sound of the interaction rather than of the card - which is usually what you want for a delayed tooltip. Never fires for an Always On card, which has no trigger."),
+
+	Shown UMETA(ToolTip = "The card has appeared and is playing its entrance. Fires after Highlight Delay, once suppression and every other reason not to show has already been cleared."),
+
+	Hidden UMETA(ToolTip = "The card is closing, for any reason at all - clicked away, cursor left, auto-dismissed, suppressed, or hidden from code. Fires as the exit animation starts, not after it.")
+};
+
+/**
+ * Sounds for one info card, using the same slots and playback the Context Menu Button uses (FUISoundSlot,
+ * FUISoundPlayer - see UISoundTypes.h). Only the event-to-slot mapping is card-specific.
+ *
+ * Leave a slot's Sound empty and that event is silent, so a set that only wants a click noise doesn't need
+ * anything else filled in. Several sets are allowed on one card and all of them are heard, which is how a
+ * shared "tooltip" set can sit alongside one extra sound for a single card.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FInfoCardSoundSet
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (ShowOnlyInnerProperties))
+	FUISoundSetSettings Settings;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound|Events")
+	FUISoundSlot Triggered;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound|Events")
+	FUISoundSlot Shown;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound|Events")
+	FUISoundSlot Hidden;
+
+	const FUISoundSlot& GetSoundForEvent(EInfoCardSoundEvent Event) const;
 };
 
 USTRUCT(BlueprintType)
@@ -680,6 +765,14 @@ struct NAMETBD_API FInfoCardSpec
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Animations", meta = (DisplayName = "Additive Animations", ToolTip = "Extra Play In / Play Out animations, played in addition to the Anim In / Anim Out already set on the card class. They add to the card's own animations; they never replace them."))
 	FInfoCardAdditiveAnimations AdditiveAnimations;
 
+	/**
+	 * Sounds for this card, keyed by what's happening to it. Authored here on the spec, so a Data Asset entry
+	 * and a Custom Info Cards entry get the same field, and an anchor can replace it per placement through
+	 * Settings Overrides > Sound.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Sound", meta = (DisplayName = "Sounds", TitleProperty = "Settings", ToolTip = "Sounds played as this card is triggered, shown and hidden. Several sets are allowed and all of them are heard."))
+	TArray<FInfoCardSoundSet> Sounds;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Placement")
 	int32 ZOrder = 1000;
 
@@ -687,6 +780,6 @@ struct NAMETBD_API FInfoCardSpec
 	 * The info card class defined above will recieve these payloads by the event ApplyPayloads. 
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Instanced, Category = "Info Card|Payloads")
-	TArray<TObjectPtr<UInfoCardPayload>> Payloads;
+	TArray<TObjectPtr<UNameTBD_Payload>> Payloads;
 
 };

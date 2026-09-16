@@ -2,145 +2,204 @@
 
 #include "UserWidget_Animatable.h"
 
+UUserWidget_Animatable::UUserWidget_Animatable(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	WidgetAnimationComponent = ObjectInitializer.CreateDefaultSubobject<UWidgetAnimationComponent>(this, TEXT("WidgetAnimationComponent"));
+}
+
+UWidgetAnimationComponent& UUserWidget_Animatable::GetAnim() const
+{
+	check(WidgetAnimationComponent);
+
+	if (!IsTemplate() && WidgetAnimationComponent->GetAnimatedWidget() != this)
+	{
+		// const_cast: binding is bookkeeping on the component, not a change to this widget.
+		WidgetAnimationComponent->BindToWidget(const_cast<UUserWidget_Animatable*>(this));
+	}
+
+	return *WidgetAnimationComponent;
+}
+
+// =====================================================================================================
+// Pass-throughs
+// =====================================================================================================
+
 void UUserWidget_Animatable::PlayIn(bool bCascadeToChildren)
 {
-	UWidgetAnimLibrary::PlayWidgetIn(this, EffectiveInAnimations, AnimPlayback);
-
-	if (bCascadeToChildren)
-	{
-		CascadeAnimationToChildren(/*bPlayingIn=*/true);
-	}
+	GetAnim().PlayIn(bCascadeToChildren);
 }
 
 void UUserWidget_Animatable::PlayOut(bool bCascadeToChildren)
 {
-	UWidgetAnimLibrary::PlayWidgetOut(AnimPlayback, EffectiveOutAnimations);
-
-	if (bCascadeToChildren)
-	{
-		CascadeAnimationToChildren(/*bPlayingIn=*/false);
-	}
-}
-
-void UUserWidget_Animatable::CascadeAnimationToChildren(bool bPlayingIn)
-{
-	if (!WidgetTree)
-	{
-		return;
-	}
-
-	TArray<UWidget*> AllWidgets;
-	WidgetTree->GetAllWidgets(AllWidgets);
-
-	for (UWidget* Child : AllWidgets)
-	{
-		if (UUserWidget_Animatable* NestedAnimatable = Cast<UUserWidget_Animatable>(Child))
-		{
-			// Each nested UserWidget owns its own WidgetTree, so GetAllWidgets() above only
-			// ever finds DIRECT embedded UserWidget children - never grandchildren. Cascading
-			// must stay enabled so each level triggers its own children's children in turn.
-			if (bPlayingIn)
-			{
-				NestedAnimatable->PlayIn(/*bCascadeToChildren=*/true);
-			}
-			else
-			{
-				NestedAnimatable->PlayOut(/*bCascadeToChildren=*/true);
-			}
-		}
-	}
+	GetAnim().PlayOut(bCascadeToChildren);
 }
 
 bool UUserWidget_Animatable::IsAnimClosing() const
 {
-	return AnimPlayback.Phase == EWidgetAnimPhase::PlayingOut || AnimPlayback.Phase == EWidgetAnimPhase::Hidden;
+	return GetAnim().IsAnimClosing();
+}
+
+EWidgetAnimPhase UUserWidget_Animatable::GetAnimPhase() const
+{
+	return GetAnim().GetAnimPhase();
 }
 
 void UUserWidget_Animatable::RebuildEffectiveAnimations()
 {
-	EffectiveInAnimations = AnimIn;
-	EffectiveOutAnimations = AnimOut;
-
-	for (const FWidgetAnimSettings& Settings : AnimIn)
-	{
-		if (Settings.bMirrorInOut)
-		{
-			EffectiveOutAnimations.Add(Settings);
-		}
-	}
-
-	for (const FWidgetAnimSettings& Settings : AnimOut)
-	{
-		if (Settings.bMirrorInOut)
-		{
-			EffectiveInAnimations.Add(Settings);
-		}
-	}
+	GetAnim().RebuildEffectiveAnimations();
 }
+
+void UUserWidget_Animatable::SetExtraAnimSettings(const TArray<FWidgetAnimSettings>& InExtraAnimIn, const TArray<FWidgetAnimSettings>& InExtraAnimOut)
+{
+	GetAnim().SetExtraAnimSettings(InExtraAnimIn, InExtraAnimOut);
+}
+
+TArray<FString> UUserWidget_Animatable::GetAnimTargetWidgetOptions() const
+{
+	return GetAnim().GetAnimTargetWidgetOptions();
+}
+
+UWidget* UUserWidget_Animatable::ResolveAnimTarget(FName TargetWidgetName) const
+{
+	return GetAnim().ResolveAnimTarget(TargetWidgetName);
+}
+
+bool UUserWidget_Animatable::TickAnimationPlayback(float DeltaTime)
+{
+	// The component already ticks itself; this is only for graphs that clock it by hand.
+	return GetAnim().TickAnimationPlayback(DeltaTime);
+}
+
+void UUserWidget_Animatable::PlayWidgetAnimationsById(const TArray<FName>& AnimIds, bool bReverse, float PlaybackSpeed, bool bHoldFinalPose, bool bRestartIfPlaying)
+{
+	GetAnim().PlayWidgetAnimationsById(AnimIds, bReverse, PlaybackSpeed, bHoldFinalPose, bRestartIfPlaying);
+}
+
+void UUserWidget_Animatable::StopWidgetAnimationsById(const TArray<FName>& AnimIds, bool bResetToStart)
+{
+	GetAnim().StopWidgetAnimationsById(AnimIds, bResetToStart);
+}
+
+bool UUserWidget_Animatable::AreWidgetAnimationsPlayingById(const TArray<FName>& AnimIds) const
+{
+	return GetAnim().AreWidgetAnimationsPlayingById(AnimIds);
+}
+
+// =====================================================================================================
+// Lifecycle
+// =====================================================================================================
 
 void UUserWidget_Animatable::SetVisibility(ESlateVisibility InVisibility)
 {
-	if (bPlayAnimationsOnVisibilityHidden && !bPlayOnlyOnConstructAndDestruct)
+	// Straight through when the component is the one applying it, or when there is nothing to route to.
+	if (!WidgetAnimationComponent || IsTemplate() || WidgetAnimationComponent->IsApplyingVisibility())
 	{
-		const bool bIsBecomingInvisible = (InVisibility == ESlateVisibility::Hidden || InVisibility == ESlateVisibility::Collapsed);
-		const bool bWasVisible = (GetVisibility() == ESlateVisibility::Visible || GetVisibility() == ESlateVisibility::SelfHitTestInvisible || GetVisibility() == ESlateVisibility::HitTestInvisible);
-
-		// Intercept the hidden call, play the out animation, and cache the desired visibility for later.
-		if (bIsBecomingInvisible && bWasVisible && !IsAnimClosing())
-		{
-			bIsDeferringVisibility = true;
-			DeferredVisibility = InVisibility;
-			PlayOut();
-			return; 
-		}
-		// If it's returning to a visible state, immediately show it and play the in animation
-		else if (!bIsBecomingInvisible && !bWasVisible)
-		{
-			bIsDeferringVisibility = false;
-			Super::SetVisibility(InVisibility);
-			PlayIn();
-			return;
-		}
+		Super::SetVisibility(InVisibility);
+		return;
 	}
 
-	bIsDeferringVisibility = false;
-	Super::SetVisibility(InVisibility);
+	GetAnim().SetVisibilityAnimated(InVisibility);
 }
 
 void UUserWidget_Animatable::NativeConstruct()
 {
 	Super::NativeConstruct();
 
-	RebuildEffectiveAnimations();
-
-	if (bPlayOnlyOnConstructAndDestruct || bPlayInAnimationsOnConstruct)
+	UWidgetAnimationComponent& Anim = GetAnim();
+	if (!OutFinishedHandle.IsValid())
 	{
-		PlayIn();
+		OutFinishedHandle = Anim.OnOutAnimationFinishedNative.AddUObject(this, &UUserWidget_Animatable::HandleComponentOutFinished);
 	}
+
+	Anim.NotifyOwnerConstructed();
 }
 
-bool UUserWidget_Animatable::TickAnimationPlayback(float DeltaTime)
+void UUserWidget_Animatable::NativeDestruct()
 {
-	const bool bJustFinishedOut = UWidgetAnimLibrary::TickWidgetAnimPlayback(this, EffectiveInAnimations, EffectiveOutAnimations, AnimPlayback, DeltaTime);
-	if (bJustFinishedOut)
+	if (WidgetAnimationComponent)
 	{
-		OnOutAnimationFinished();
+		WidgetAnimationComponent->NotifyOwnerDestructed();
+		WidgetAnimationComponent->OnOutAnimationFinishedNative.Remove(OutFinishedHandle);
 	}
-	return bJustFinishedOut;
+	OutFinishedHandle.Reset();
+
+	Super::NativeDestruct();
 }
 
-void UUserWidget_Animatable::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
+void UUserWidget_Animatable::HandleComponentOutFinished(UWidgetAnimationComponent* /*Component*/)
 {
-	Super::NativeTick(MyGeometry, InDeltaTime);
-	TickAnimationPlayback(InDeltaTime);
+	OnOutAnimationFinished();
 }
 
 void UUserWidget_Animatable::OnOutAnimationFinished_Implementation()
 {
-	// If SetVisibility() triggered this exit animation, apply the actual hidden state now
-	if (bIsDeferringVisibility)
+	// Nothing by default: the component has already applied any deferred visibility.
+}
+
+void UUserWidget_Animatable::SynchronizeProperties()
+{
+	Super::SynchronizeProperties();
+
+	// The component previews itself in the designer; a built-in one just needs telling when that is.
+	if (IsDesignTime() && WidgetAnimationComponent && !IsTemplate())
 	{
-		bIsDeferringVisibility = false;
-		Super::SetVisibility(DeferredVisibility);
+		GetAnim().NotifyOwnerDesignTimeRefresh();
 	}
 }
+
+void UUserWidget_Animatable::OnWidgetRebuilt()
+{
+	Super::OnWidgetRebuilt();
+
+	if (IsDesignTime() && WidgetAnimationComponent && !IsTemplate())
+	{
+		GetAnim().EnsureDesignerPreviewTimer();
+	}
+}
+
+// =====================================================================================================
+// Migration
+// =====================================================================================================
+
+void UUserWidget_Animatable::Serialize(FArchive& Ar)
+{
+	Super::Serialize(Ar);
+	Ar.UsingCustomVersion(FWidgetAnimationComponentVersion::GUID);
+}
+
+void UUserWidget_Animatable::PostLoad()
+{
+	Super::PostLoad();
+
+#if WITH_EDITORONLY_DATA
+	if (WidgetAnimationComponent && GetLinkerCustomVersion(FWidgetAnimationComponentVersion::GUID) < FWidgetAnimationComponentVersion::MovedIntoComponent)
+	{
+		const UUserWidget_Animatable* Archetype = Cast<UUserWidget_Animatable>(GetArchetype());
+		if (UWidgetAnimationComponent::ShouldDiffLegacyAgainstArchetype(Archetype))
+		{
+			const FWidgetAnimationLegacySettings ArchetypeLegacy = Archetype->GatherLegacyWidgetAnimationSettings();
+			WidgetAnimationComponent->ImportLegacySettings(GatherLegacyWidgetAnimationSettings(), &ArchetypeLegacy);
+		}
+		else
+		{
+			WidgetAnimationComponent->ImportLegacySettings(GatherLegacyWidgetAnimationSettings(), nullptr);
+		}
+	}
+#endif
+}
+
+#if WITH_EDITORONLY_DATA
+FWidgetAnimationLegacySettings UUserWidget_Animatable::GatherLegacyWidgetAnimationSettings() const
+{
+	FWidgetAnimationLegacySettings Legacy;
+	Legacy.bPlayOnlyOnConstructAndDestruct   = bPlayOnlyOnConstructAndDestruct_DEPRECATED;
+	Legacy.bPlayInAnimationsOnConstruct      = bPlayInAnimationsOnConstruct_DEPRECATED;
+	Legacy.bPlayAnimationsOnVisibilityHidden = bPlayAnimationsOnVisibilityHidden_DEPRECATED;
+	Legacy.AnimIn                            = AnimIn_DEPRECATED;
+	Legacy.AnimOut                           = AnimOut_DEPRECATED;
+	Legacy.bPreserveAuthoredTransforms       = bPreserveAuthoredTransforms_DEPRECATED;
+	Legacy.DesignerPreview                   = DesignerPreview_DEPRECATED;
+	return Legacy;
+}
+#endif

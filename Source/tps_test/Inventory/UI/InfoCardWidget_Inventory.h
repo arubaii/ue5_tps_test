@@ -13,7 +13,7 @@ class UW_InventoryDisplayOnlyBase;
  * Moved from InfoCardTypes.h to keep the core UI module free of Inventory dependencies.
  */
 UCLASS(DisplayName = "Info Card Data (Inventory Display)")
-class TPS_TEST_API UInfoCardPayload_InventoryDisplay : public UInfoCardPayload
+class TPS_TEST_API UInfoCardPayload_InventoryDisplay : public UNameTBD_Payload
 {
 	GENERATED_BODY()
 
@@ -46,7 +46,7 @@ protected:
 	UPROPERTY(Transient)
 	TWeakObjectPtr<UInventoryComponent> BoundInventoryComponent;
 
-	virtual void ApplyPayloads_Implementation(const TArray<UInfoCardPayload*>& InPayloads) override;
+	virtual void ApplyPayloads_Implementation(const TArray<UNameTBD_Payload*>& InPayloads) override;
 	virtual void NativeDestruct() override;
 
 	/**

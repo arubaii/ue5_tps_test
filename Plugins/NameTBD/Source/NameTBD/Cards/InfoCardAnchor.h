@@ -8,6 +8,7 @@
 #include "GameplayTagContainer.h"
 #include "Input/Events.h"
 #include "InfoCardSpecDataAsset.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimDesignerPreview.h"
 #include "InfoCardAnchor.generated.h"
 
 class UInfoCardWidget;
@@ -47,6 +48,13 @@ struct FInfoCardRuntimeState
      * Always cleared through UInfoCardAnchor::ClearHoverDelayAtIndex.
      */
     FTSTicker::FDelegateHandle HoverDelayHandle;
+
+    /**
+     * Sound bookkeeping for the Triggered event only. It fires before Highlight Delay, so there is no card
+     * widget yet to own it - the anchor has to. Everything from Shown onwards is the card's own business and
+     * uses the runtimes on UInfoCardWidget instead. Sized on demand; see UInfoCardAnchor::PlayCardSound.
+     */
+    TArray<FUISoundRuntime> TriggerSoundRuntimes;
 };
 
 /**
@@ -64,7 +72,7 @@ struct FInfoCardPayloadDefaultEntry
     bool bSetDefaults = false;
 
     UPROPERTY(Instanced)
-    TObjectPtr<UInfoCardPayload> Payload = nullptr;
+    TObjectPtr<UNameTBD_Payload> Payload = nullptr;
 };
 
 /**
@@ -94,14 +102,14 @@ struct FInfoCardPayloadDefault
      * Asset's payload to apply.
      */
     UPROPERTY(EditAnywhere, Instanced, BlueprintReadOnly, Category = "Info Card", meta = (NoResetToDefault))
-    TObjectPtr<UInfoCardPayload> Payload = nullptr;
+    TObjectPtr<UNameTBD_Payload> Payload = nullptr;
 
     /**
      * The Data Asset's payload as it was when Payload was last refreshed from it. A field in Payload counts as
      * overridden exactly when it differs from the same field here. Hidden.
      */
     UPROPERTY(Instanced)
-    TObjectPtr<UInfoCardPayload> Baseline = nullptr;
+    TObjectPtr<UNameTBD_Payload> Baseline = nullptr;
 
     /** Pre-flattening layout, read only by UInfoCardAnchor::PostLoad. Always empty once loaded. */
     UPROPERTY()
@@ -255,6 +263,21 @@ struct FInfoCardSettingsOverride
     bool bIgnoresMenuStateChange = false;
 
     // ------------------------------------------------------------------
+    // Sound
+    // ------------------------------------------------------------------
+
+    /**
+     * Replaces the card's whole Sounds array rather than merging into it. Sound sets have no stable identity
+     * to merge by - two sets on the same card are just two sets - so "override" here means "this anchor
+     * supplies the sounds instead", including supplying none. Leave it off and the Data Asset's sounds play.
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (EditCondition = "!bDisableCard"))
+    bool bOverrideSounds = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (DisplayName = "Sounds", EditCondition = "bOverrideSounds", EditConditionHides, ToolTip = "Played instead of whatever the Data Asset authored for this card. An empty array silences the card on this anchor."))
+    TArray<FInfoCardSoundSet> Sounds;
+
+    // ------------------------------------------------------------------
     // Card Transform
     // ------------------------------------------------------------------
 
@@ -306,6 +329,9 @@ struct FInfoCardAdditiveAnimationsOverride
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (DisplayName = "Override"))
     bool bOverride = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (DisplayName = "Animations", TitleProperty = "Animation", EditCondition = "bOverride", ToolTip = "Shared Widget Animation assets layered onto this card on this anchor. Resolved before Play In / Play Out below and additive with them. Mirrors the Data Asset while Override is off."))
+    TArray<FWidgetAnimEntryBase> Animations;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (DisplayName = "Play In", EditCondition = "bOverride", ToolTip = "Played in addition to the card class's own Anim In. Always animates the whole card. Mirrors the Data Asset while Override is off."))
     TArray<FInfoCardAdditiveAnimSettings> PlayIn;
@@ -386,7 +412,7 @@ enum class EInfoCardHoverTriggerSource : uint8
  * automatically from the assigned Data Asset.
  */
 UCLASS(meta = (DisplayName = "Info Card Anchor"))
-class NAMETBD_API UInfoCardAnchor : public UBorder
+class NAMETBD_API UInfoCardAnchor : public UBorder, public IWidgetAnimDesignerPreviewHost
 {
     GENERATED_BODY()
 
@@ -449,6 +475,58 @@ public:
      */
     UPROPERTY(EditAnywhere, EditFixedSize, BlueprintReadWrite, Category = "Info Card", meta = (TitleProperty = "CardId", DisplayName = "Additive Animation Overrides", EditCondition = "SourceMode == EInfoCardSourceMode::UseDataAsset", EditConditionHides))
     TArray<FInfoCardAdditiveAnimationsOverride> AdditiveAnimationOverrides;
+
+    // ------------------------------------------------------------------
+    // Designer preview
+    // ------------------------------------------------------------------
+
+    /**
+     * Which entry's animation the Designer Preview below plays. Leave it None and nothing is previewed.
+     *
+     * The list is this anchor's own InfoCards, so it follows whichever source mode is active.
+     */
+    UPROPERTY(EditAnywhere, Category = "Info Card|Designer Preview", meta = (DisplayName = "Preview Card ID", GetOptions = "GetInfoCardIdOptions"))
+    FName DesignerPreviewCardId = NAME_None;
+
+    /**
+     * Plays the selected card's animation in the UMG designer, without compiling or running.
+     *
+     * What it plays is the TOTAL: the card class's own Anim In / Anim Out, plus the additive animations
+     * resolved for this anchor - the Data Asset's, or this anchor's Additive Animation Overrides where
+     * one is switched on. That combination only exists at the moment a card spawns, which is why judging
+     * an override previously meant a PIE session per adjustment.
+     *
+     * The animation plays on this anchor's own content, since the card itself does not exist in the
+     * designer. Timing, easing, overshoot and the interaction between the card's animation and the
+     * additive layers are all exactly what the spawned card will do; the widget being moved is a stand-in.
+     * For the same reason a layer that names a Target Widget inside the card animates the content here
+     * instead - there is no card tree to search.
+     *
+     * Non-destructive, like every other designer preview: setting Mode back to Off restores the content
+     * exactly as authored.
+     */
+    UPROPERTY(EditAnywhere, Category = "Info Card|Designer Preview", meta = (DisplayName = "Designer Preview", ShowOnlyInnerProperties))
+    FWidgetAnimPreviewSettings DesignerAnimPreview;
+
+    /** Backs the Preview Card ID dropdown. Must stay a UFUNCTION for GetOptions. */
+    UFUNCTION()
+    TArray<FString> GetInfoCardIdOptions() const;
+
+    // IWidgetAnimDesignerPreviewHost
+    virtual UWidget* GetPreviewOwnerWidget() override { return this; }
+
+    /**
+     * The anchor's content, not the anchor. The anchor is a layout wrapper sized to its child; animating
+     * the child is what looks like a card moving. Falls back to the anchor itself when it is empty.
+     */
+    virtual UWidget* GetPreviewAnimationTarget() override;
+
+    virtual FWidgetAnimPreviewSettings& GetPreviewSettings() override { return DesignerAnimPreview; }
+    virtual FWidgetAnimPreviewState& GetPreviewState() override { return DesignerAnimPreviewState; }
+    virtual FWidgetAnimBaselineSet& GetPreviewBaselines() override { return DesignerAnimBaselines; }
+    virtual const TArray<FWidgetAnimSettings>& GetPreviewAnimIn() const override { return PreviewAnimIn; }
+    virtual const TArray<FWidgetAnimSettings>& GetPreviewAnimOut() const override { return PreviewAnimOut; }
+    virtual void RebuildPreviewAnimations() override;
 
     /**
      * InfoCards, authored directly on this anchor, used in place of
@@ -561,11 +639,11 @@ public:
 
     /** Replaces InfoCards[Index]'s payload set. Updates the live card if one is showing; closes it if NewPayloads is empty. */
     UFUNCTION(BlueprintCallable, Category = "Info Card")
-    void SetPayloadsAtIndex(int32 Index, const TArray<UInfoCardPayload*>& NewPayloads);
+    void SetPayloadsAtIndex(int32 Index, const TArray<UNameTBD_Payload*>& NewPayloads);
 
     /** Convenience wrapper around SetPayloadsAtIndex for the common single-payload case. */
     UFUNCTION(BlueprintCallable, Category = "Info Card")
-    void SetPayloadAtIndex(int32 Index, UInfoCardPayload* NewPayload);
+    void SetPayloadAtIndex(int32 Index, UNameTBD_Payload* NewPayload);
 
     /** The card currently on screen at Index, or null. */
     UFUNCTION(BlueprintPure, Category = "Info Card")
@@ -596,10 +674,10 @@ public:
     void SetCardEnabledById(UPARAM(DisplayName = "Card ID") FName CardId, bool bEnabled, bool bRevealCard);
 
     UFUNCTION(BlueprintCallable, Category = "Info Card")
-    void SetPayloadsById(UPARAM(DisplayName = "Card ID") FName CardId, const TArray<UInfoCardPayload*>& NewPayloads);
+    void SetPayloadsById(UPARAM(DisplayName = "Card ID") FName CardId, const TArray<UNameTBD_Payload*>& NewPayloads);
 
     UFUNCTION(BlueprintCallable, Category = "Info Card")
-    void SetPayloadById(UPARAM(DisplayName = "Card ID") FName CardId, UInfoCardPayload* NewPayload);
+    void SetPayloadById(UPARAM(DisplayName = "Card ID") FName CardId, UNameTBD_Payload* NewPayload);
 
     /**
      * Once payload variables are set, call RefreshCard with the same CardID to update the payload 
@@ -614,8 +692,8 @@ public:
      * @param InputCardID The input CardID as an output pin, for convenience.
      */
     UFUNCTION(BlueprintCallable, Category = "Info Card", meta = (DeterminesOutputType = "PayloadClass"))
-    UInfoCardPayload* GetOrAddPayload(UPARAM(DisplayName = "Card ID") FName CardId, 
-                              TSubclassOf<UInfoCardPayload> PayloadClass,
+    UNameTBD_Payload* GetOrAddPayload(UPARAM(DisplayName = "Card ID") FName CardId, 
+                              TSubclassOf<UNameTBD_Payload> PayloadClass,
                               bool& bIsPayloadValid,
                               UPARAM(DisplayName = "Card ID") FName& InputCardID);
 
@@ -949,6 +1027,12 @@ protected:
 
     virtual TSharedRef<SWidget> RebuildWidget() override;
 
+    /**
+     * SynchronizeProperties can run before the Slate widget exists, and the designer preview's active
+     * timer needs one to register against. By here it definitely does.
+     */
+    virtual void OnWidgetRebuilt() override;
+
     // NOTE: mouse handlers are (re)bound here, not in RebuildWidget. UBorder
     // installs its own OnMouseButtonDown handler on MyBorder as part of
     // RebuildWidget, so binding ours there gets overwritten in the same
@@ -968,6 +1052,25 @@ protected:
      * Index or a slot with nothing pending.
      */
     void ClearHoverDelayAtIndex(int32 Index);
+
+    /**
+     * The card class's Anim In / Anim Out flattened together with this anchor's resolved additive
+     * animations: what UWidgetAnimDesignerPreview plays. Rebuilt by RebuildPreviewAnimations on every
+     * design-time synchronize, so editing an override is reflected immediately. Editor-only in practice,
+     * but not compiled out, because the interface accessors that return them are not.
+     */
+    UPROPERTY(Transient, DuplicateTransient)
+    TArray<FWidgetAnimSettings> PreviewAnimIn;
+
+    UPROPERTY(Transient, DuplicateTransient)
+    TArray<FWidgetAnimSettings> PreviewAnimOut;
+
+    UPROPERTY(Transient, DuplicateTransient)
+    FWidgetAnimPreviewState DesignerAnimPreviewState;
+
+    /** What the previewed content looked like before the preview touched it, so Off can put it back. */
+    UPROPERTY(Transient, DuplicateTransient)
+    FWidgetAnimBaselineSet DesignerAnimBaselines;
 
     /**
      * Shows every ECardType::AlwaysOn entry that's currently eligible
@@ -1062,6 +1165,17 @@ protected:
      * the whole array from.
      */
     void TriggerHoverEntryAtIndex(int32 Index, EInfoCardHoverTriggerSource Source);
+
+    /**
+     * Plays one entry's Sounds for an event, from the anchor rather than from the card. Only really needed
+     * for Triggered, which fires before the card widget exists; Shown and Hidden are played by the card
+     * itself in UInfoCardWidget. Exposed anyway so a project driving cards manually can fire any of them.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Info Card|Sound")
+    void PlayCardSound(int32 Index, EInfoCardSoundEvent Event);
+
+    UFUNCTION(BlueprintCallable, Category = "Info Card|Sound", meta = (DisplayName = "Play Card Sound By Id"))
+    void PlayCardSoundById(FName CardId, EInfoCardSoundEvent Event);
 
     /** Shared by HandleMouseLeave, HandleSlateFocusChanging, and NotifyFocusLost: hides every Hover-type InfoCards entry that allows this Source and cancels its pending delay timer, if any. */
     void UntriggerHoverEntries(EInfoCardHoverTriggerSource Source);
@@ -1224,7 +1338,7 @@ protected:
      */
     void ApplySettingsOverrides();
 
-    /** Replaces the matching CardId's AdditiveAnimations with each AdditiveAnimationOverrides entry that has Override on. */
+    /** Replaces the matching CardId's AdditiveAnimations (animation assets included) with each AdditiveAnimationOverrides entry that has Override on. */
     void ApplyAdditiveAnimationOverrides();
 
 #if WITH_EDITOR

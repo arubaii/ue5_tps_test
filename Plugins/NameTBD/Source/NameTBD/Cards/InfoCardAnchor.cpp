@@ -2,8 +2,11 @@
 
 #include "InfoCardAnchor.h"
 
+#include "NameTBD/Sound/UISoundTypes.h"
+
 #include "InfoCardWidget.h"
 #include "NameTBD/DeveloperSettings/InfoCardDeveloperSettings.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
 #include "Blueprint/WidgetTree.h"
 #include "Blueprint/UserWidget.h"
 #include "Engine/GameInstance.h"
@@ -168,6 +171,11 @@ void UInfoCardAnchor::SynchronizeProperties()
 	}
 #endif
 
+	// After the syncs above, so the preview is built from InfoCards as they now stand - additive
+	// animation overrides included. Returns immediately at runtime, which is why there is no
+	// IsDesignTime() guard here.
+	UWidgetAnimDesignerPreview::Synchronize(this);
+
 	EnsureRuntimeStatesSize();
 	EnsureHitTestable();
 
@@ -231,6 +239,9 @@ void UInfoCardAnchor::ReleaseSlateResources(bool bReleaseChildren)
 	// against FSlateApplication for the lifetime of the process.
 	UnbindSlateFocusChanging();
 
+	// The Slate widget the designer preview's active timer was registered against is going away.
+	UWidgetAnimDesignerPreview::Shutdown(this);
+
 	Super::ReleaseSlateResources(bReleaseChildren);
 }
 
@@ -246,6 +257,8 @@ void UInfoCardAnchor::BeginDestroy()
 	// teardown orders, and a subscription left bound after this object is
 	// gone would call back into a dead UObject.
 	UnbindSlateFocusChanging();
+
+	UWidgetAnimDesignerPreview::Shutdown(this);
 
 	Super::BeginDestroy();
 }
@@ -532,6 +545,37 @@ FReply UInfoCardAnchor::HandleMouseButtonDown(const FGeometry& Geometry, const F
 	return FReply::Unhandled();
 }
 
+void UInfoCardAnchor::PlayCardSound(int32 Index, EInfoCardSoundEvent Event)
+{
+	if (!InfoCards.IsValidIndex(Index))
+	{
+		return;
+	}
+
+	EnsureRuntimeStatesSize();
+	if (!RuntimeStates.IsValidIndex(Index))
+	{
+		return;
+	}
+
+	const TArray<FInfoCardSoundSet>& Sets = InfoCards[Index].Sounds;
+	TArray<FUISoundRuntime>& Runtimes = RuntimeStates[Index].TriggerSoundRuntimes;
+	FUISoundPlayer::ResizeRuntimes(this, Runtimes, Sets.Num());
+
+	// Straight Play, not PlayOnEventChange: a trigger is an event, not a state the anchor settles into, so
+	// hovering the same anchor twice has to sound twice. The set's own repeat limit is what stops a jittering
+	// cursor on the anchor's edge from firing it continuously.
+	for (int32 SetIndex = 0; SetIndex < Sets.Num(); ++SetIndex)
+	{
+		FUISoundPlayer::Play(this, Runtimes[SetIndex], Sets[SetIndex].Settings, Sets[SetIndex].GetSoundForEvent(Event));
+	}
+}
+
+void UInfoCardAnchor::PlayCardSoundById(FName CardId, EInfoCardSoundEvent Event)
+{
+	PlayCardSound(FindCardIndexById(CardId), Event);
+}
+
 void UInfoCardAnchor::HandleHoverDelayElapsedForIndex(int32 Index)
 {
 	// The ticker element that called us removes itself when its delegate
@@ -691,6 +735,11 @@ void UInfoCardAnchor::TriggerHoverEntryAtIndex(int32 Index, EInfoCardHoverTrigge
 	// feel for THIS entry — resolved fresh per-entry rather than reading
 	// one fixed project value, since two entries could reasonably want
 	// different windows.
+	// Before the delay, so this is the sound of the interaction rather than of the card. Everything that could
+	// still stop the card appearing (suppression, a re-entrant close) is checked later, so a Triggered sound
+	// can be heard for a card that never actually shows - which is the right way round for a click noise.
+	PlayCardSound(Index, EInfoCardSoundEvent::Triggered);
+
 	const float SuccessiveWindow = Spec.SuccessiveHoverWindow.Resolve(EInfoCardConfigurableFloatKind::SuccessiveHoverWindow);
 	const float EffectiveHoverDelay = ShouldSkipHoverDelay(SuccessiveWindow)
 		? 0.f
@@ -1162,9 +1211,9 @@ namespace InfoCardPayloadDefaultFields
 		return false;
 	}
 
-	UInfoCardPayload* FindOfClass(const TArray<TObjectPtr<UInfoCardPayload>>& Payloads, const UClass* PayloadClass)
+	UNameTBD_Payload* FindOfClass(const TArray<TObjectPtr<UNameTBD_Payload>>& Payloads, const UClass* PayloadClass)
 	{
-		for (const TObjectPtr<UInfoCardPayload>& Payload : Payloads)
+		for (const TObjectPtr<UNameTBD_Payload>& Payload : Payloads)
 		{
 			if (Payload && Payload->GetClass() == PayloadClass)
 			{
@@ -1197,9 +1246,25 @@ void UInfoCardAnchor::RebuildInfoCardsFromDataAsset()
 		FInfoCardSpec NewSpec = SourceSpec;
 		NewSpec.Payloads.Reset(SourceSpec.Payloads.Num());
 
-		for (const TObjectPtr<UInfoCardPayload>& SourcePayload : SourceSpec.Payloads)
+		for (const TObjectPtr<UNameTBD_Payload>& SourcePayload : SourceSpec.Payloads)
 		{
-			NewSpec.Payloads.Add(SourcePayload ? DuplicateObject<UInfoCardPayload>(SourcePayload, this) : nullptr);
+			NewSpec.Payloads.Add(SourcePayload ? DuplicateObject<UNameTBD_Payload>(SourcePayload, this) : nullptr);
+		}
+
+		// Fallback, not a merge: an entry that authored its own sounds meant those and not the asset's. Done
+		// here rather than at play time so everything downstream - the overrides below, the card itself - only
+		// ever has one array to read.
+		if (NewSpec.Sounds.IsEmpty())
+		{
+			NewSpec.Sounds = InfoCards_DA->DefaultSounds;
+		}
+
+		// Same fallback-not-merge rule as the sounds above, for the same reason: an entry that named its
+		// own animations meant those and not the asset's. Applied here so everything downstream reads one
+		// already-resolved array.
+		if (NewSpec.AdditiveAnimations.Animations.IsEmpty())
+		{
+			NewSpec.AdditiveAnimations.Animations = InfoCards_DA->DefaultAdditiveAnimations;
 		}
 
 		InfoCards.Add(MoveTemp(NewSpec));
@@ -1233,9 +1298,9 @@ void UInfoCardAnchor::RebuildInfoCardsFromCustomArray()
 		FInfoCardSpec NewSpec = SourceSpec;
 		NewSpec.Payloads.Reset(SourceSpec.Payloads.Num());
 
-		for (const TObjectPtr<UInfoCardPayload>& SourcePayload : SourceSpec.Payloads)
+		for (const TObjectPtr<UNameTBD_Payload>& SourcePayload : SourceSpec.Payloads)
 		{
-			NewSpec.Payloads.Add(SourcePayload ? DuplicateObject<UInfoCardPayload>(SourcePayload, this) : nullptr);
+			NewSpec.Payloads.Add(SourcePayload ? DuplicateObject<UNameTBD_Payload>(SourcePayload, this) : nullptr);
 		}
 
 		InfoCards.Add(MoveTemp(NewSpec));
@@ -1278,11 +1343,11 @@ void UInfoCardAnchor::ApplyPayloadDefaults()
 		// Data Asset has been edited since. An entry with no usable Baseline
 		// (converted from the old layout, not synced yet) falls back to the
 		// Data Asset's current payload instead.
-		const UInfoCardPayload* Baseline = (Default.Baseline && Default.Baseline->GetClass() == PayloadClass)
+		const UNameTBD_Payload* Baseline = (Default.Baseline && Default.Baseline->GetClass() == PayloadClass)
 			? Default.Baseline.Get()
 			: nullptr;
 
-		UInfoCardPayload* Target = FindOfClass(Spec.Payloads, PayloadClass);
+		UNameTBD_Payload* Target = FindOfClass(Spec.Payloads, PayloadClass);
 		if (!Target)
 		{
 			// The Data Asset has no payload of this class for this card
@@ -1293,7 +1358,7 @@ void UInfoCardAnchor::ApplyPayloadDefaults()
 			{
 				// Each anchor needs its own instance, same reasoning as the
 				// Data Asset's own payloads in RebuildInfoCardsFromDataAsset.
-				Spec.Payloads.Add(DuplicateObject<UInfoCardPayload>(Default.Payload, this));
+				Spec.Payloads.Add(DuplicateObject<UNameTBD_Payload>(Default.Payload, this));
 			}
 			continue;
 		}
@@ -1389,6 +1454,13 @@ void UInfoCardAnchor::ApplySettingsOverrides()
 			Spec.bIgnoresMenuStateChange = Settings.bIgnoresMenuStateChange;
 		}
 
+		if (Settings.bOverrideSounds)
+		{
+			// Replaces rather than merges - see FInfoCardSettingsOverride::bOverrideSounds for why. An empty
+			// array here is a deliberate "no sounds on this anchor", not a missing value to fall back from.
+			Spec.Sounds = Settings.Sounds;
+		}
+
 		if (Settings.bOverrideCardTransform)
 		{
 			Spec.CardTransform = Settings.CardTransform;
@@ -1415,8 +1487,103 @@ void UInfoCardAnchor::ApplyAdditiveAnimationOverrides()
 		// with respect to the card class: UInfoCardWidget::ApplyAdditiveAnimations
 		// appends these after the class's own Anim In / Anim Out.
 		FInfoCardAdditiveAnimations& AdditiveAnimations = InfoCards[Index].AdditiveAnimations;
+		AdditiveAnimations.Animations = Override.Animations;
 		AdditiveAnimations.PlayIn  = Override.PlayIn;
 		AdditiveAnimations.PlayOut = Override.PlayOut;
+	}
+}
+
+
+// =================================================================================================
+// Designer preview
+// =================================================================================================
+
+TArray<FString> UInfoCardAnchor::GetInfoCardIdOptions() const
+{
+	TArray<FString> Options;
+
+	// First, so there is a way back to "preview nothing" once a card has been picked.
+	Options.Add(TEXT("None"));
+
+	for (const FInfoCardSpec& Spec : InfoCards)
+	{
+		if (Spec.CardId != NAME_None)
+		{
+			Options.AddUnique(Spec.CardId.ToString());
+		}
+	}
+
+	return Options;
+}
+
+UWidget* UInfoCardAnchor::GetPreviewAnimationTarget()
+{
+	// The anchor is a layout wrapper sized to its child, so animating the anchor itself would move the
+	// slot the child lives in rather than look like a card. An empty anchor has nothing else to offer,
+	// and animating it is harmless.
+	UWidget* Content = GetContent();
+	return Content ? Content : this;
+}
+
+void UInfoCardAnchor::RebuildPreviewAnimations()
+{
+	PreviewAnimIn.Reset();
+	PreviewAnimOut.Reset();
+
+	if (DesignerPreviewCardId == NAME_None)
+	{
+		return;
+	}
+
+	const int32 Index = FindCardIndexById(DesignerPreviewCardId);
+	if (!InfoCards.IsValidIndex(Index))
+	{
+		// The selected id was renamed or the Data Asset swapped underneath it. Nothing to play, rather
+		// than quietly previewing some other card.
+		return;
+	}
+
+	const FInfoCardSpec& Spec = InfoCards[Index];
+
+	// The card class's own animations first: they are the base layer, exactly as they are on a real card,
+	// where the additive entries go onto the card's Widget Animation Component as extra layers on top of its
+	// own Anim In / Anim Out (UInfoCardWidget::ApplyAdditiveAnimations).
+	TArray<FWidgetAnimEntry> ClassAnimIn;
+	TArray<FWidgetAnimEntry> ClassAnimOut;
+	if (Spec.CardClass && UInfoCardWidget::GetClassAnimationEntries(Spec.CardClass, this, ClassAnimIn, ClassAnimOut))
+	{
+		// Mirroring resolved at the entry level, before any settings are built, so an entry marked
+		// Mirror In Out contributes to both stacks - the same order the card itself would do it in.
+		TArray<FWidgetAnimEntry> EntriesIn;
+		TArray<FWidgetAnimEntry> EntriesOut;
+		UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(ClassAnimIn, EntriesIn, EntriesOut);
+		UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(ClassAnimOut, EntriesOut, EntriesIn);
+
+		// Every target resolved to null. A Target Widget path names something inside the card's own
+		// WidgetTree, and there is no card here to search - so those layers fall back to the widget
+		// the preview is animating, the same fallback the library applies everywhere else. It means a
+		// card that animates one of its own children shows that motion on the whole stand-in instead,
+		// which is the one way this preview is an approximation.
+		auto NullResolver = [](FName) -> UWidget* { return nullptr; };
+		UWidgetAnimEntryLibrary::FlattenEntries(EntriesIn, NullResolver, PreviewAnimIn);
+		UWidgetAnimEntryLibrary::FlattenEntries(EntriesOut, NullResolver, PreviewAnimOut);
+	}
+
+	// Then the additives, on top - and these are the resolved ones. ApplyAdditiveAnimationOverrides has
+	// already written this anchor's Additive Animation Overrides into the spec by the time we get here,
+	// so what this appends is precisely what a spawned card would be handed. That is the whole point of
+	// the anchor having a preview at all: the total is the only thing neither the Data Asset nor the card
+	// class can show on its own.
+	Spec.AdditiveAnimations.ResolveInto(PreviewAnimIn, PreviewAnimOut);
+}
+
+void UInfoCardAnchor::OnWidgetRebuilt()
+{
+	Super::OnWidgetRebuilt();
+
+	if (UWidgetAnimDesignerPreview::ShouldRun(this))
+	{
+		EnsurePreviewTimer();
 	}
 }
 
@@ -1714,7 +1881,7 @@ void UInfoCardAnchor::SetCardEnabledAtIndex(int32 Index, bool bNewEnabled)
 	}
 }
 
-void UInfoCardAnchor::SetPayloadsAtIndex(int32 Index, const TArray<UInfoCardPayload*>& NewPayloads)
+void UInfoCardAnchor::SetPayloadsAtIndex(int32 Index, const TArray<UNameTBD_Payload*>& NewPayloads)
 {
 	if (!InfoCards.IsValidIndex(Index))
 	{
@@ -1723,7 +1890,7 @@ void UInfoCardAnchor::SetPayloadsAtIndex(int32 Index, const TArray<UInfoCardPayl
 
 	FInfoCardSpec& Spec = InfoCards[Index];
 	Spec.Payloads.Reset(NewPayloads.Num());
-	for (UInfoCardPayload* PayloadObj : NewPayloads)
+	for (UNameTBD_Payload* PayloadObj : NewPayloads)
 	{
 		Spec.Payloads.Add(PayloadObj);
 	}
@@ -1744,9 +1911,9 @@ void UInfoCardAnchor::SetPayloadsAtIndex(int32 Index, const TArray<UInfoCardPayl
 	}
 }
 
-void UInfoCardAnchor::SetPayloadAtIndex(int32 Index, UInfoCardPayload* NewPayload)
+void UInfoCardAnchor::SetPayloadAtIndex(int32 Index, UNameTBD_Payload* NewPayload)
 {
-	TArray<UInfoCardPayload*> Single;
+	TArray<UNameTBD_Payload*> Single;
 	if (NewPayload)
 	{
 		Single.Add(NewPayload);
@@ -1807,17 +1974,17 @@ void UInfoCardAnchor::SetCardEnabledById(FName CardId, bool bEnabled, bool bReve
 		ShowCardAtIndex(FindCardIndexById(CardId));
 }
 
-void UInfoCardAnchor::SetPayloadsById(FName CardId, const TArray<UInfoCardPayload*>& NewPayloads)
+void UInfoCardAnchor::SetPayloadsById(FName CardId, const TArray<UNameTBD_Payload*>& NewPayloads)
 {
 	SetPayloadsAtIndex(FindCardIndexById(CardId), NewPayloads);
 }
 
-void UInfoCardAnchor::SetPayloadById(FName CardId, UInfoCardPayload* NewPayload)
+void UInfoCardAnchor::SetPayloadById(FName CardId, UNameTBD_Payload* NewPayload)
 {
 	SetPayloadAtIndex(FindCardIndexById(CardId), NewPayload);
 }
 
-UInfoCardPayload* UInfoCardAnchor::GetOrAddPayload(FName CardId, TSubclassOf<UInfoCardPayload> PayloadClass, bool& bIsPayloadValid, FName& InputCardID)
+UNameTBD_Payload* UInfoCardAnchor::GetOrAddPayload(FName CardId, TSubclassOf<UNameTBD_Payload> PayloadClass, bool& bIsPayloadValid, FName& InputCardID)
 {
 	bIsPayloadValid = false;
 	InputCardID = CardId;
@@ -1851,12 +2018,12 @@ UInfoCardPayload* UInfoCardAnchor::GetOrAddPayload(FName CardId, TSubclassOf<UIn
 
 	FInfoCardSpec& Spec = InfoCards[Index];
 	
-	for (const TObjectPtr<UInfoCardPayload>& Existing : Spec.Payloads)
+	for (const TObjectPtr<UNameTBD_Payload>& Existing : Spec.Payloads)
 	{
 		if (Existing && Existing->IsA(PayloadClass))
 		{
 			bIsPayloadValid = true;
-			return Existing;
+			return Existing.Get();
 		}
 	}
 	
@@ -1882,9 +2049,9 @@ void UInfoCardAnchor::RefreshCard(FName CardId)
 		return; // not currently shown — nothing to redraw; next open already picks up the mutated data
 	}
 
-	TArray<UInfoCardPayload*> RawPayloads;
+	TArray<UNameTBD_Payload*> RawPayloads;
 	RawPayloads.Reserve(InfoCards[Index].Payloads.Num());
-	for (const TObjectPtr<UInfoCardPayload>& P : InfoCards[Index].Payloads)
+	for (const TObjectPtr<UNameTBD_Payload>& P : InfoCards[Index].Payloads)
 	{
 		RawPayloads.Add(P.Get());
 	}
@@ -2127,7 +2294,7 @@ void UInfoCardAnchor::NotifyHoldProgress(FName CardId, float Progress)
 	}
 
 	UInfoCardPayload_HoldProgress* ProgressPayload = nullptr;
-	for (const TObjectPtr<UInfoCardPayload>& Payload : InfoCards[Index].Payloads)
+	for (const TObjectPtr<UNameTBD_Payload>& Payload : InfoCards[Index].Payloads)
 	{
 		ProgressPayload = Cast<UInfoCardPayload_HoldProgress>(Payload.Get());
 		if (ProgressPayload)
@@ -2214,6 +2381,10 @@ void UInfoCardAnchor::PostEditChangeProperty(FPropertyChangedEvent& PropertyChan
 		SyncSettingsOverridesFromDataAsset();
 		SyncAdditiveAnimationOverridesFromDataAsset();
 	}
+
+	// Pushes a mid-drag edit - Scrub Alpha, Playback Speed - straight to the anchor being painted in the
+	// viewport, which the commit-time rebuild would only show once the mouse came up.
+	UWidgetAnimDesignerPreview::NotifyPropertyChanged(this, PropertyChangedEvent);
 }
 
 void UInfoCardAnchor::SyncPayloadDefaultsFromDataAsset()
@@ -2245,9 +2416,9 @@ void UInfoCardAnchor::SyncPayloadDefaultsFromDataAsset()
 			continue;
 		}
 
-		for (const TObjectPtr<UInfoCardPayload>& SourcePayloadPtr : SourceSpec.Payloads)
+		for (const TObjectPtr<UNameTBD_Payload>& SourcePayloadPtr : SourceSpec.Payloads)
 		{
-			const UInfoCardPayload* SourcePayload = SourcePayloadPtr.Get();
+			const UNameTBD_Payload* SourcePayload = SourcePayloadPtr.Get();
 			if (!SourcePayload)
 			{
 				continue;
@@ -2279,8 +2450,8 @@ void UInfoCardAnchor::SyncPayloadDefaultsFromDataAsset()
 				// changed until the designer edits something.
 				FInfoCardPayloadDefault& NewDefault = Rebuilt.AddDefaulted_GetRef();
 				NewDefault.CardId   = SourceSpec.CardId;
-				NewDefault.Payload  = DuplicateObject<UInfoCardPayload>(SourcePayload, this);
-				NewDefault.Baseline = DuplicateObject<UInfoCardPayload>(SourcePayload, this);
+				NewDefault.Payload  = DuplicateObject<UNameTBD_Payload>(SourcePayload, this);
+				NewDefault.Baseline = DuplicateObject<UNameTBD_Payload>(SourcePayload, this);
 				continue;
 			}
 
@@ -2294,7 +2465,7 @@ void UInfoCardAnchor::SyncPayloadDefaultsFromDataAsset()
 				// Converted from the old layout (or otherwise missing): capture
 				// one now. Fields already differing from the Data Asset stay
 				// overridden; the rest become plain copies.
-				Kept.Baseline = DuplicateObject<UInfoCardPayload>(SourcePayload, this);
+				Kept.Baseline = DuplicateObject<UNameTBD_Payload>(SourcePayload, this);
 				continue;
 			}
 
@@ -2403,6 +2574,7 @@ void UInfoCardAnchor::SyncAdditiveAnimationOverridesFromDataAsset()
 		// there instead of from nothing.
 		if (!NewElement.bOverride)
 		{
+			NewElement.Animations = SourceSpec.AdditiveAnimations.Animations;
 			NewElement.PlayIn  = SourceSpec.AdditiveAnimations.PlayIn;
 			NewElement.PlayOut = SourceSpec.AdditiveAnimations.PlayOut;
 		}

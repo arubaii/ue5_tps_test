@@ -1,6 +1,8 @@
-﻿// Copyright AR GameSystems 2026. All rights reserved.
+﻿// Copyright AR Game Systems 2026. All rights reserved.
 
 #include "InfoCardWidget.h"
+
+#include "NameTBD/Sound/UISoundTypes.h"
 
 #include "InfoCardAnchor.h"
 #include "Blueprint/WidgetLayoutLibrary.h"
@@ -314,8 +316,14 @@ void UInfoCardWidget::SetupCard(const FInfoCardSpec& Spec, UWidget* InAnchorWidg
 	SetRenderShear(CardTransform.Shear);
 	SetRenderTransformAngle(CardTransform.Angle);
 
-	// Before AddToViewport (which runs NativeConstruct -> PlayIn), so the
-	// entrance this card plays already includes these. See
+	// Copied wholesale. Anything the anchor wanted to change about them was already folded into the spec by
+	// ApplySettingsOverrides, so by the time a card sees them there is only one answer to what it sounds like.
+	Sounds = Spec.Sounds;
+	FUISoundPlayer::ResizeRuntimes(this, SoundRuntimes, Sounds.Num());
+
+	// After CreateWidget (so a component added in the card's Widget Blueprint
+	// already exists) and before AddToViewport (which constructs it and plays
+	// the entrance), so that entrance already includes these. See
 	// ApplyAdditiveAnimations.
 	AdditiveAnimations = Spec.AdditiveAnimations;
 	ApplyAdditiveAnimations();
@@ -386,19 +394,19 @@ void UInfoCardWidget::SetupCard(const FInfoCardSpec& Spec, UWidget* InAnchorWidg
 
 	RefreshAnchorGeometry();
 
-	TArray<UInfoCardPayload*> RawPayloads;
+	TArray<UNameTBD_Payload*> RawPayloads;
 	RawPayloads.Reserve(Spec.Payloads.Num());
-	for (const TObjectPtr<UInfoCardPayload>& P : Spec.Payloads)
+	for (const TObjectPtr<UNameTBD_Payload>& P : Spec.Payloads)
 	{
 		RawPayloads.Add(P.Get());
 	}
 	SetPayloads(RawPayloads);
 }
 
-void UInfoCardWidget::SetPayloads(const TArray<UInfoCardPayload*>& NewPayloads)
+void UInfoCardWidget::SetPayloads(const TArray<UNameTBD_Payload*>& NewPayloads)
 {
 	Payloads.Reset(NewPayloads.Num());
-	for (UInfoCardPayload* P : NewPayloads)
+	for (UNameTBD_Payload* P : NewPayloads)
 	{
 		Payloads.Add(P);
 	}
@@ -406,18 +414,18 @@ void UInfoCardWidget::SetPayloads(const TArray<UInfoCardPayload*>& NewPayloads)
 	ApplyPayloads(NewPayloads);
 }
 
-void UInfoCardWidget::ApplyPayloads_Implementation(const TArray<UInfoCardPayload*>& InPayloads)
+void UInfoCardWidget::ApplyPayloads_Implementation(const TArray<UNameTBD_Payload*>& InPayloads)
 {
 	// Base implementation does nothing.
 	// Subclasses override this to wire up custom payload logic.
 }
 
-UInfoCardPayload* UInfoCardWidget::GetPrimaryPayload() const
+UNameTBD_Payload* UInfoCardWidget::GetPrimaryPayload() const
 {
 	return Payloads.IsValidIndex(0) ? Payloads[0].Get() : nullptr;
 }
 
-UInfoCardPayload* UInfoCardWidget::GetPayloadAtIndex(int32 Index) const
+UNameTBD_Payload* UInfoCardWidget::GetPayloadAtIndex(int32 Index) const
 {
 	return Payloads.IsValidIndex(Index) ? Payloads[Index].Get() : nullptr;
 }
@@ -436,6 +444,11 @@ void UInfoCardWidget::CloseCard()
 	// re-broadcast OnCardHidden via NotifyCardSelfClosed) once per frame for
 	// as long as the card stayed on screen.
 	bCloseRequested = true;
+
+	// Guarded by bCloseRequested above, so the per-tick closers that call CloseCard every frame only sound
+	// once. Fired as the exit starts rather than after it: a card with a slow Anim Out shouldn't hold its
+	// close sound back until the animation finishes.
+	PlayCardSound(EInfoCardSoundEvent::Hidden);
 
 	// The anchor's RuntimeStates holds a strong TObjectPtr to this card, so
 	// closing without telling it leaves that slot pointing at a
@@ -471,18 +484,54 @@ void UInfoCardWidget::CloseCard()
 void UInfoCardWidget::FinishClose()
 {
 	bClosePendingConstruct = false;
-	PlayOut();
+
+	if (UWidgetAnimationComponent* Anim = ResolveCardAnimation())
+	{
+		// Removes the card through HandleCardAnimationOutFinished once the exit has played.
+		Anim->PlayOut();
+	}
+	else
+	{
+		RemoveFromParent();
+	}
+
 	UpdateAnimationHitTestBlock();
 }
 
 bool UInfoCardWidget::IsClosing() const
 {
-	return bCloseRequested || IsAnimClosing();
+	return bCloseRequested || (CardAnimation && CardAnimation->IsAnimClosing());
+}
+
+void UInfoCardWidget::PlayCardSound(EInfoCardSoundEvent Event)
+{
+	if (Sounds.Num() == 0)
+	{
+		return;
+	}
+
+	FUISoundPlayer::ResizeRuntimes(this, SoundRuntimes, Sounds.Num());
+
+	// Straight Play, not PlayOnEventChange: a card's events are one-shots in a fixed order, not states it
+	// settles into, so there is no repeated event to filter out. Each set's own repeat limit still applies.
+	for (int32 Index = 0; Index < Sounds.Num(); ++Index)
+	{
+		FUISoundPlayer::Play(this, SoundRuntimes[Index], Sounds[Index].Settings, Sounds[Index].GetSoundForEvent(Event));
+	}
 }
 
 void UInfoCardWidget::NativeConstruct()
 {
 	Super::NativeConstruct();
+
+	// A designer-added component is also constructed by the UI component system; NotifyOwnerConstructed
+	// only acts once, so whichever of the two gets there first starts the entrance. Called here as well so
+	// the entrance has definitely started before the hit-test block below reads the phase, and because a
+	// component the card made for itself has nobody else to construct it.
+	if (UWidgetAnimationComponent* Anim = ResolveCardAnimation())
+	{
+		Anim->NotifyOwnerConstructed();
+	}
 
 	IsFirstFrame         = true;
 	ElapsedTime          = 0.f;
@@ -503,7 +552,11 @@ void UInfoCardWidget::NativeConstruct()
 
 	bHasBeenConstructed = true;
 
-	// Super::NativeConstruct has just started the in animation. Block now,
+	// Here rather than in SetupCard: this is the point the card is actually on screen and its entrance has
+	// started, and it's also the only point a card built by hand (no anchor, no SetupCard) passes through.
+	PlayCardSound(EInfoCardSoundEvent::Shown);
+
+	// The in animation has just started. Block now,
 	// before the first hit test can see the card at its starting transform.
 	UpdateAnimationHitTestBlock();
 
@@ -526,6 +579,9 @@ void UInfoCardWidget::NativeDestruct()
 	bHasBeenConstructed    = false;
 	bClosePendingConstruct = false;
 
+	// A delayed sound outliving the widget would fire its timer into a card that is already gone.
+	FUISoundPlayer::CancelAll(this, SoundRuntimes);
+
 	ActiveCards.RemoveSwap(TWeakObjectPtr<UInfoCardWidget>(this));
 
 	// Nothing unregisters the press watcher here any more. It used to, and
@@ -534,20 +590,7 @@ void UInfoCardWidget::NativeDestruct()
 	// pre-processor list for that same click. See EnsurePressWatcher.
 	ClearPendingDismiss();
 
-	// The anchor's RuntimeStates slot holds a strong pointer to this card and
-	// treats a non-null pointer as "a card is currently up." CloseCard reports
-	// itself, but CloseCard is not the only way a card leaves the screen — a
-	// Blueprint RemoveFromParent, a HUD/level teardown, or anything else that
-	// removes the widget directly bypasses it entirely, and the anchor is
-	// never told. The slot then stays wedged: a hover entry can never spawn
-	// again (ShowCardAtIndex sees an occupied slot), and a click entry burns
-	// its next press "closing" a card that is already gone.
-	//
-	// Reporting from here covers every one of those paths at once, since a
-	// card cannot leave the viewport without this running. It is safe to
-	// double-report — NotifyCardSelfClosed only acts on the slot that
-	// actually still points at this card, so the normal CloseCard path
-	// (which already reported, and cleared the slot) makes this a no-op.
+
 	if (UInfoCardAnchor* Anchor = Cast<UInfoCardAnchor>(AnchorWidget.Get()))
 	{
 		Anchor->NotifyCardSelfClosed(this);
@@ -555,12 +598,18 @@ void UInfoCardWidget::NativeDestruct()
 
 	ClearAutoDismissTimer();
 
+	// Only the card's own component; a designer-added one is destructed by the UI component system.
+	if (CardAnimation && bOwnsCardAnimation)
+	{
+		CardAnimation->NotifyOwnerDestructed();
+	}
+
 	Super::NativeDestruct();
 }
 
 void UInfoCardWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
-	UUserWidget::NativeTick(MyGeometry, InDeltaTime);
+	Super::NativeTick(MyGeometry, InDeltaTime);
 
 	ElapsedTime += InDeltaTime;
 	++FramesSinceConstruct;
@@ -592,14 +641,146 @@ void UInfoCardWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 
 	ApplyPendingDismiss();
 	TickKeepOpenWhileCursorNearby(InDeltaTime);
-	TickAnimationPlayback(InDeltaTime);
+	// The animation component keeps its own clock; only the hit-test block needs updating from here.
 	UpdateAnimationHitTestBlock();
 }
 
-void UInfoCardWidget::OnOutAnimationFinished_Implementation()
+// =====================================================================================================
+// Widget Animation Component
+// =====================================================================================================
+
+UWidgetAnimationComponent* UInfoCardWidget::FindAuthoredAnimationComponent() const
 {
-    Super::OnOutAnimationFinished_Implementation();
-	RemoveFromParent();
+	// Only components the UI component system attached; the card's own fallback is excluded by the caller.
+	if (UWidgetAnimationComponent* OnSelf = UWidgetAnimationComponent::FindWidgetAnimationComponent(this))
+	{
+		if (OnSelf != CardAnimation || !bOwnsCardAnimation)
+		{
+			return OnSelf;
+		}
+	}
+
+	if (UWidget* Root = GetRootWidget())
+	{
+		if (UWidgetAnimationComponent* OnRoot = UWidgetAnimationComponent::FindWidgetAnimationComponent(Root))
+		{
+			return OnRoot;
+		}
+	}
+
+	UWidgetAnimationComponent* Found = nullptr;
+	if (WidgetTree)
+	{
+		// This card's own tree only. Components inside nested User Widgets belong to those widgets, and are
+		// reached through the cascade rather than mistaken for the card's own.
+		WidgetTree->ForEachWidget([&Found](UWidget* Widget)
+		{
+			if (!Found)
+			{
+				Found = UWidgetAnimationComponent::FindWidgetAnimationComponent(Widget);
+			}
+		});
+	}
+
+	return Found;
+}
+
+UWidgetAnimationComponent* UInfoCardWidget::ResolveCardAnimation()
+{
+	if (!CardAnimation)
+	{
+		if (UWidgetAnimationComponent* Authored = FindAuthoredAnimationComponent())
+		{
+			CardAnimation = Authored;
+			bOwnsCardAnimation = false;
+		}
+		else
+		{
+			// No component in the Widget Blueprint. The card still needs something to carry the additive
+			// layers and to report the close, so it makes one and animates itself with it - which is also
+			// exactly what a card class built before components existed did.
+			UWidgetAnimationComponent* Own = NewObject<UWidgetAnimationComponent>(this, NAME_None, RF_Transient);
+			Own->AnimIn = LegacyAnimIn;
+			Own->AnimOut = LegacyAnimOut;
+			Own->bPreserveAuthoredTransforms = bLegacyPreserveAuthoredTransforms;
+			Own->BindToWidget(this);
+
+			CardAnimation = Own;
+			bOwnsCardAnimation = true;
+		}
+	}
+
+	if (!CardAnimationOutFinishedHandle.IsValid())
+	{
+		CardAnimationOutFinishedHandle = CardAnimation->OnOutAnimationFinishedNative.AddUObject(this, &UInfoCardWidget::HandleCardAnimationOutFinished);
+	}
+
+	return CardAnimation;
+}
+
+void UInfoCardWidget::HandleCardAnimationOutFinished(UWidgetAnimationComponent* /*Component*/)
+{
+	// A component also finishes exits that have nothing to do with closing (Set Visibility Animated, a
+	// cascade from a parent). Only a card that was asked to close removes itself - bCloseRequested rather
+	// than IsClosing(), which is true after ANY finished exit.
+	if (bCloseRequested)
+	{
+		RemoveFromParent();
+	}
+}
+
+bool UInfoCardWidget::GetClassAnimationEntries(TSubclassOf<UInfoCardWidget> CardClass, UWidget* OwningWidget, TArray<FWidgetAnimEntry>& OutAnimIn, TArray<FWidgetAnimEntry>& OutAnimOut)
+{
+	OutAnimIn.Reset();
+	OutAnimOut.Reset();
+
+	if (!CardClass)
+	{
+		return false;
+	}
+
+	// The Widget Blueprint keeps designer-added components as archetypes and only creates them on an
+	// instance, during Initialize. A throwaway instance is the supported way to read them: it is never
+	// added to a parent, so it is never constructed, never animates, and is simply collected.
+	if (OwningWidget && !OwningWidget->IsTemplate())
+	{
+		if (UInfoCardWidget* Probe = CreateWidget<UInfoCardWidget>(OwningWidget, CardClass))
+		{
+			const UWidgetAnimationComponent* Authored = Probe->FindAuthoredAnimationComponent();
+			if (Authored)
+			{
+				OutAnimIn = Authored->AnimIn;
+				OutAnimOut = Authored->AnimOut;
+				return true;
+			}
+		}
+	}
+
+	const UInfoCardWidget* Defaults = CardClass->GetDefaultObject<UInfoCardWidget>();
+	OutAnimIn = Defaults->LegacyAnimIn;
+	OutAnimOut = Defaults->LegacyAnimOut;
+	return OutAnimIn.Num() > 0 || OutAnimOut.Num() > 0;
+}
+
+void UInfoCardWidget::PlayWidgetAnimationsById(const TArray<FName>& AnimIds, bool bReverse, float PlaybackSpeed, bool bHoldFinalPose, bool bRestartIfPlaying)
+{
+	if (UWidgetAnimationComponent* Anim = ResolveCardAnimation())
+	{
+		Anim->PlayWidgetAnimationsById(AnimIds, bReverse, PlaybackSpeed, bHoldFinalPose, bRestartIfPlaying);
+	}
+}
+
+void UInfoCardWidget::StopWidgetAnimationsById(const TArray<FName>& AnimIds, bool bResetToStart)
+{
+	if (UWidgetAnimationComponent* Anim = ResolveCardAnimation())
+	{
+		Anim->StopWidgetAnimationsById(AnimIds, bResetToStart);
+	}
+}
+
+bool UInfoCardWidget::AreWidgetAnimationsPlayingById(const TArray<FName>& AnimIds) const
+{
+	return CardAnimation && CardAnimation->AreWidgetAnimationsPlayingById(AnimIds);
 }
 
 void UInfoCardWidget::DispatchGlobalMenuStateChanged(FGameplayTag ScreenTag, bool bIsOpen)
@@ -665,45 +846,21 @@ void UInfoCardWidget::ClearAutoDismissTimer()
 
 void UInfoCardWidget::ApplyAdditiveAnimations()
 {
-	// Capture the class-authored arrays exactly once. This instance's
-	// AnimIn/AnimOut were initialized from the class defaults when it was
-	// created and nothing has touched them yet the first time we get here, so
-	// this is the card Widget Blueprint's own set.
-	if (!bHasCapturedBaseAnimations)
-	{
-		BaseAnimIn  = AnimIn;
-		BaseAnimOut = AnimOut;
-		bHasCapturedBaseAnimations = true;
-	}
+	TArray<FWidgetAnimSettings> AdditiveAnimIn;
+	TArray<FWidgetAnimSettings> AdditiveAnimOut;
+	AdditiveAnimations.ResolveInto(AdditiveAnimIn, AdditiveAnimOut);
 
-	// Class entries first, additive entries after. Appended, never
-	// substituted: the class's own animations always play, whatever the spec
-	// adds. Additive entries have no target, so each one animates this card
-	// as a whole.
-	AnimIn = BaseAnimIn;
-	for (const FInfoCardAdditiveAnimSettings& Source : AdditiveAnimations.PlayIn)
+	// Additive layers carry no target, so they move whatever the component is on - the widget picked in
+	// the card's designer, or the card itself for a card without one.
+	if (UWidgetAnimationComponent* Anim = ResolveCardAnimation())
 	{
-		AnimIn.Add(Source.ToWidgetAnimSettings());
-	}
-
-	AnimOut = BaseAnimOut;
-	for (const FInfoCardAdditiveAnimSettings& Source : AdditiveAnimations.PlayOut)
-	{
-		AnimOut.Add(Source.ToWidgetAnimSettings());
-	}
-
-	// The normal path runs before construction, and NativeConstruct rebuilds
-	// the effective arrays itself. Past that point nothing else will, so do it
-	// here or the change would never play.
-	if (bHasBeenConstructed)
-	{
-		RebuildEffectiveAnimations();
+		Anim->SetExtraAnimSettings(AdditiveAnimIn, AdditiveAnimOut);
 	}
 }
 
 void UInfoCardWidget::UpdateAnimationHitTestBlock()
 {
-	const bool bIsPlayingIn = AnimPlayback.Phase == EWidgetAnimPhase::PlayingIn;
+	const bool bIsPlayingIn = CardAnimation && CardAnimation->GetAnimPhase() == EWidgetAnimPhase::PlayingIn;
 	const bool bShouldBlock = IsClosing() || (bIsPlayingIn && SourceCardType == ECardType::Hover);
 
 	if (bShouldBlock == bHitTestBlockedForAnimation)
@@ -714,8 +871,8 @@ void UInfoCardWidget::UpdateAnimationHitTestBlock()
 	if (bShouldBlock)
 	{
 		// Only the two hit-testable states need blocking. Hidden/Collapsed
-		// (or already hit-test invisible) is left exactly as it is.
 		const ESlateVisibility Current = GetVisibility();
+		// (or already hit-test invisible) is left exactly as it is.
 		if (Current != ESlateVisibility::Visible && Current != ESlateVisibility::SelfHitTestInvisible)
 		{
 			return;
@@ -724,8 +881,7 @@ void UInfoCardWidget::UpdateAnimationHitTestBlock()
 		VisibilityBeforeHitTestBlock = Current;
 		bHitTestBlockedForAnimation = true;
 
-		// Not a hide as far as UUserWidget_Animatable::SetVisibility is
-		// concerned, so this never triggers its visibility-driven animations.
+		// Not a hide, so this never triggers visibility-driven animations.
 		SetVisibility(ESlateVisibility::HitTestInvisible);
 		return;
 	}

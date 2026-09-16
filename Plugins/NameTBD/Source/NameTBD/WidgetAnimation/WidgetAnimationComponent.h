@@ -1,0 +1,363 @@
+// Copyright AR GameSystems 2026. All rights reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Containers/Ticker.h"
+#include "Extensions/UIComponent.h"
+#include "Misc/EngineVersionComparison.h"
+#include "UObject/ObjectKey.h"
+#include "Blueprint/UserWidget.h"
+#include "WidgetAnimLibrary.h"
+#include "WidgetAnimPreset.h"
+#include "WidgetAnimationComponent.generated.h"
+
+class SWidget;
+class FActiveTimerHandle;
+class UWidgetAnimationComponent;
+
+// =====================================================================================================
+// Versioning (UUserWidget_Animatable migration)
+// =====================================================================================================
+
+/**
+ * Stamped into packages saved by UUserWidget_Animatable. Before this version Anim In / Anim Out and
+ * their flags were properties of the widget itself; UUserWidget_Animatable::PostLoad moves them into
+ * its component once.
+ */
+struct NAMETBD_API FWidgetAnimationComponentVersion
+{
+	enum Type : int32
+	{
+		BeforeCustomVersionWasAdded = 0,
+
+		/** Anim In / Anim Out and their flags live on UWidgetAnimationComponent instead of the widget. */
+		MovedIntoComponent,
+
+		VersionPlusOne,
+		LatestVersion = VersionPlusOne - 1
+	};
+
+	static const FGuid GUID;
+
+	FWidgetAnimationComponentVersion() = delete;
+};
+
+/** Everything a widget authored about its animations before they moved into the component. */
+struct NAMETBD_API FWidgetAnimationLegacySettings
+{
+	bool bPlayOnlyOnConstructAndDestruct = false;
+	bool bPlayInAnimationsOnConstruct = true;
+	bool bPlayAnimationsOnVisibilityHidden = false;
+	TArray<FWidgetAnimEntry> AnimIn;
+	TArray<FWidgetAnimEntry> AnimOut;
+	bool bPreserveAuthoredTransforms = false;
+	FWidgetAnimPreviewSettings DesignerPreview;
+};
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FWidgetAnimationComponentEvent, UWidgetAnimationComponent*, Component);
+DECLARE_MULTICAST_DELEGATE_OneParam(FWidgetAnimationComponentNativeEvent, UWidgetAnimationComponent* /*Component*/);
+
+// =====================================================================================================
+// Component
+// =====================================================================================================
+
+/**
+ * Anim In / Anim Out for any widget, added from the UMG designer's Add Component button.
+ *
+ * Select a widget in the hierarchy (a Border, a Button, a nested User Widget - anything), press Add
+ * Component, pick Widget Animation Component. The component then plays its Anim In when the User Widget
+ * it lives in is constructed, and everything else UUserWidget_Animatable used to do: mirroring, the
+ * track player, Play In / Play Out with the cascade into nested components, play-by-ID, authored
+ * transform baselines, extra layers handed over at runtime, and a designer preview.
+ *
+ * The widget the component is added to is the one it animates. An entry with no Target Widget animates
+ * it; a Target Widget path is looked up in the same Widget Blueprint the component was added in.
+ *
+ * Things that are different from a widget-based host, because a UI Component is not a widget:
+ *  - It keeps its own clock (the core ticker) instead of riding on NativeTick, so it animates whether or
+ *    not the owning widget ticks, and poses are applied before Slate lays out the frame.
+ *  - It cannot intercept SetVisibility on its owner. With Play Animations On Visibility Hidden on,
+ *    becoming visible still plays Anim In automatically; hiding WITH an exit animation goes through
+ *    Set Visibility Animated. (UUserWidget_Animatable routes its own SetVisibility there, so it keeps
+ *    the old behaviour.)
+ *
+ * Code can also create one and attach it by hand with BindToWidget - UInfoCardWidget and
+ * UUserWidget_Animatable both do - in which case the code that bound it also calls
+ * NotifyOwnerConstructed / NotifyOwnerDestructed.
+ */
+UCLASS(DefaultToInstanced, EditInlineNew, BlueprintType, meta = (DisplayName = "Widget Animation Component"))
+class NAMETBD_API UWidgetAnimationComponent : public UUIComponent
+{
+	GENERATED_BODY()
+
+public:
+
+	// -------------------------------------------------------------------------------------------------
+	// Authored settings
+	// -------------------------------------------------------------------------------------------------
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	bool bPlayOnlyOnConstructAndDestruct = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "!bPlayOnlyOnConstructAndDestruct"))
+	bool bPlayInAnimationsOnConstruct = true;
+
+	/**
+	 * Plays Anim In whenever the owning widget goes from hidden/collapsed to visible. To play Anim Out
+	 * before hiding, hide it with Set Visibility Animated.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "!bPlayOnlyOnConstructAndDestruct"))
+	bool bPlayAnimationsOnVisibilityHidden = false;
+
+	/**
+	 * The animations this widget plays as it appears.
+	 *
+	 * Each entry points at a Widget Animation asset - which holds the layers, the timing and the curves -
+	 * and decides the handful of things that are about THIS use of it: whether it loops, whether it also
+	 * plays backwards as the exit, whether it runs inverted, and which widget it moves.
+	 *
+	 * Give an entry an Anim ID to fire it from Blueprint later with Play Widget Animations By Id.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Anim In", TitleProperty = "Animation"))
+	TArray<FWidgetAnimEntry> AnimIn;
+
+	/** The animations this widget plays as it closes. Anything in Anim In marked Mirror In Out is included automatically. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Anim Out", TitleProperty = "Animation"))
+	TArray<FWidgetAnimEntry> AnimOut;
+
+	/**
+	 * Whether animations compose over whatever each target was authored as, instead of replacing it.
+	 *
+	 * Off (the default): a Fade ending at 1 means opacity 1, full stop, even on a widget authored at 0.5.
+	 * On: opacity and scale multiply, translation and angle add - so that same Fade settles at 0.5, and a
+	 * Slide returns to wherever the widget was nudged to rather than to zero.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Preserve Authored Transforms"))
+	bool bPreserveAuthoredTransforms = false;
+
+	/**
+	 * Plays these animations in the UMG designer, so they can be judged without compiling and running.
+	 * Nothing here is saved into the widget's authored state, and it has no effect at runtime.
+	 *
+	 * Requires Unreal Engine 5.6 or newer: older UI Components are never told they are in the designer.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Animation|Designer Preview", meta = (DisplayName = "Designer Preview", ShowOnlyInnerProperties))
+	FWidgetAnimPreviewSettings DesignerPreview;
+
+	/** Fired when the exit animation finishes, after any visibility deferred by Set Visibility Animated has been applied. */
+	UPROPERTY(BlueprintAssignable, Category = "Animation")
+	FWidgetAnimationComponentEvent OnOutAnimationFinished;
+
+	/** Native twin of OnOutAnimationFinished, broadcast just after it. */
+	FWidgetAnimationComponentNativeEvent OnOutAnimationFinishedNative;
+
+	// -------------------------------------------------------------------------------------------------
+	// Playback
+	// -------------------------------------------------------------------------------------------------
+
+	UFUNCTION(BlueprintCallable, Category = "Animation")
+	void PlayIn(bool bCascadeToChildren = true);
+
+	UFUNCTION(BlueprintCallable, Category = "Animation")
+	void PlayOut(bool bCascadeToChildren = true);
+
+	UFUNCTION(BlueprintPure, Category = "Animation")
+	bool IsAnimClosing() const;
+
+	UFUNCTION(BlueprintPure, Category = "Animation")
+	EWidgetAnimPhase GetAnimPhase() const { return AnimPlayer.Phase; }
+
+	/** True if any track going in this direction is still running. */
+	UFUNCTION(BlueprintPure, Category = "Animation")
+	bool IsPlayingInDirection(bool bIsOut) const;
+
+	UFUNCTION(BlueprintCallable, Category = "Animation")
+	void RebuildEffectiveAnimations();
+
+	/**
+	 * Extra layers merged on top of Anim In / Anim Out, for callers that build FWidgetAnimSettings
+	 * themselves - the info card additive animations being the case this exists for. A null Target
+	 * Widget on a layer animates the component's owner. Replaces whatever was set before.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Animation")
+	void SetExtraAnimSettings(const TArray<FWidgetAnimSettings>& InExtraAnimIn, const TArray<FWidgetAnimSettings>& InExtraAnimOut);
+
+	/**
+	 * Sets the owner's visibility, with animation: hiding plays Anim Out first and applies the
+	 * visibility when it finishes; showing applies it immediately and plays Anim In. Without Play
+	 * Animations On Visibility Hidden this is a plain SetVisibility.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Animation")
+	void SetVisibilityAnimated(ESlateVisibility InVisibility);
+
+	/**
+	 * Advances every running animation by DeltaTime and applies the result. Returns true on the frame the
+	 * exit animation finishes. The component already calls this itself every frame while its owner is
+	 * constructed; only call it for a component you are clocking by hand.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Animation")
+	bool TickAnimationPlayback(float DeltaTime);
+
+	// -------------------------------------------------------------------------------------------------
+	// Play by ID
+	// -------------------------------------------------------------------------------------------------
+
+	UFUNCTION(BlueprintCallable, Category = "Animation", meta = (AutoCreateRefTerm = "AnimIds"))
+	void PlayWidgetAnimationsById(const TArray<FName>& AnimIds, bool bReverse = false, float PlaybackSpeed = 1.f, bool bHoldFinalPose = true, bool bRestartIfPlaying = true);
+
+	UFUNCTION(BlueprintCallable, Category = "Animation", meta = (AutoCreateRefTerm = "AnimIds"))
+	void StopWidgetAnimationsById(const TArray<FName>& AnimIds, bool bResetToStart = false);
+
+	UFUNCTION(BlueprintPure, Category = "Animation", meta = (AutoCreateRefTerm = "AnimIds"))
+	bool AreWidgetAnimationsPlayingById(const TArray<FName>& AnimIds) const;
+
+	// -------------------------------------------------------------------------------------------------
+	// Owner and lookup
+	// -------------------------------------------------------------------------------------------------
+
+	/** The widget this component animates. */
+	UFUNCTION(BlueprintPure, Category = "Animation")
+	UWidget* GetAnimatedWidget() const { return AnimOwner.Get(); }
+
+	/** The Widget Animation Component on Widget, or null. Works for designer-added and code-bound components alike. */
+	UFUNCTION(BlueprintPure, Category = "Animation")
+	static UWidgetAnimationComponent* FindWidgetAnimationComponent(const UWidget* Widget);
+
+	/**
+	 * Attaches this component to InWidget by hand, for code that creates the component itself rather than
+	 * having it added in the designer. Paths are then resolved inside InWidget if it is a User Widget.
+	 * The caller also becomes responsible for NotifyOwnerConstructed / NotifyOwnerDestructed.
+	 */
+	void BindToWidget(UWidget* InWidget);
+
+	/** Owner lifecycle. Both are idempotent, so being told twice (designer system and host code) is harmless. */
+	void NotifyOwnerConstructed();
+	void NotifyOwnerDestructed();
+
+	/** At design time, (re)starts the designer preview from the widget's authored pose. No-op at runtime. */
+	void NotifyOwnerDesignTimeRefresh();
+
+	/** Registers the designer preview's active timer if the preview needs frames and it isn't registered yet. */
+	void EnsureDesignerPreviewTimer();
+
+	/** True while this component is applying a visibility itself. A SetVisibility override that routes into the component must pass the call straight through while this is set. */
+	bool IsApplyingVisibility() const { return bApplyingVisibility; }
+
+	/** The widget an entry's Target Widget path refers to, or null to mean "the animated widget". */
+	UWidget* ResolveAnimTarget(FName TargetWidgetName) const;
+
+	/** Backs the Target Widget dropdown on every entry. Must stay a UFUNCTION for GetOptions. */
+	UFUNCTION()
+	TArray<FString> GetAnimTargetWidgetOptions() const;
+
+	const TArray<FWidgetAnimSettings>& GetFlattenedAnimIn() const { return FlattenedIn; }
+	const TArray<FWidgetAnimSettings>& GetFlattenedAnimOut() const { return FlattenedOut; }
+
+	// -------------------------------------------------------------------------------------------------
+	// Migration
+	// -------------------------------------------------------------------------------------------------
+
+	/**
+	 * Takes settings that were saved on the owning widget before they moved here. With ArchetypeLegacy
+	 * null everything is taken; with it set, only fields that differ from it are.
+	 */
+	void ImportLegacySettings(const FWidgetAnimationLegacySettings& Legacy, const FWidgetAnimationLegacySettings* ArchetypeLegacy);
+
+	/** Whether an owner's legacy fields should be compared against Archetype's (see ImportLegacySettings). */
+	static bool ShouldDiffLegacyAgainstArchetype(const UObject* Archetype);
+
+	virtual void BeginDestroy() override;
+
+protected:
+
+	// UUIComponent
+#if UE_VERSION_OLDER_THAN(5, 6, 0)
+	virtual bool OnInitialize() override;
+#else
+	virtual void OnInitialize() override;
+	virtual void OnPreConstruct(bool bIsDesignTime) override;
+#endif
+	virtual void OnConstruct() override;
+	virtual void OnDestruct() override;
+
+private:
+
+	/** The widget being animated. Set from the UI Component owner, or by BindToWidget. */
+	TWeakObjectPtr<UWidget> AnimOwner;
+
+	/** True when BindToWidget attached this rather than the designer's component system. */
+	bool bBoundByCode = false;
+
+	bool bOwnerConstructed = false;
+	bool bApplyingVisibility = false;
+	bool bLastSeenVisible = false;
+
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimEntry> EffectiveInEntries;
+
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimEntry> EffectiveOutEntries;
+
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimSettings> FlattenedIn;
+
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimSettings> FlattenedOut;
+
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimSettings> ExtraAnimIn;
+
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimSettings> ExtraAnimOut;
+
+	UPROPERTY(Transient)
+	FWidgetAnimPlayer AnimPlayer;
+
+	UPROPERTY(Transient)
+	bool bIsDeferringVisibility = false;
+
+	UPROPERTY(Transient)
+	ESlateVisibility DeferredVisibility = ESlateVisibility::Hidden;
+
+	/** Authored pose of every animated widget. Captured at design time always, at runtime only for Preserve Authored Transforms. */
+	UPROPERTY(Transient)
+	FWidgetAnimBaselineSet AnimBaselines;
+
+	UPROPERTY(Transient)
+	FWidgetAnimPreviewState DesignerPreviewState;
+
+	/** Runtime clock: the core ticker, registered while the owner is constructed. */
+	FTSTicker::FDelegateHandle RuntimeTickHandle;
+
+	/** Designer clock: an active timer on the owner's Slate widget, which is also what keeps the designer repainting. */
+	TWeakPtr<FActiveTimerHandle> PreviewTimerHandle;
+	TWeakPtr<SWidget> PreviewTimerWidget;
+
+	/** Retries EnsureDesignerPreviewTimer until the owner's Slate widget exists. */
+	FTSTicker::FDelegateHandle PreviewRetryHandle;
+	int32 PreviewRetriesLeft = 0;
+
+	/** Widget -> component, for FindWidgetAnimationComponent. Game thread only. */
+	static TMap<TObjectKey<UWidget>, TWeakObjectPtr<UWidgetAnimationComponent>> ComponentsByWidget;
+
+	void SetAnimOwner(UWidget* InWidget, bool bByCode);
+	void Unregister();
+
+	/** The User Widget whose tree Target Widget paths are resolved in. */
+	UUserWidget* GetPathRoot() const;
+
+	void CascadeAnimationToChildren(bool bPlayingIn);
+	void EnsureRuntimeBaselines();
+	void ApplyCurrentAnimPose();
+	void ApplyVisibilityToOwner(ESlateVisibility InVisibility);
+	void HandleOutAnimationFinished();
+
+	void StartRuntimeTicking();
+	void StopRuntimeTicking();
+	void RuntimeTick(float DeltaTime);
+
+	void StopDesignerPreview();
+
+	static bool IsVisibleState(ESlateVisibility Visibility);
+};

@@ -2,7 +2,7 @@
 #include "Inventory/Components/InventoryComponent.h"
 #include "Inventory/UI/W_InventoryDisplayOnly_Base.h" 
 
-void UInfoCardWidget_Inventory::ApplyPayloads_Implementation(const TArray<UInfoCardPayload*>& InPayloads)
+void UInfoCardWidget_Inventory::ApplyPayloads_Implementation(const TArray<UNameTBD_Payload*>& InPayloads)
 {
 	Super::ApplyPayloads_Implementation(InPayloads);
 
@@ -12,7 +12,7 @@ void UInfoCardWidget_Inventory::ApplyPayloads_Implementation(const TArray<UInfoC
 	}
 
 	const UInfoCardPayload_InventoryDisplay* DisplayPayload = nullptr;
-	for (const UInfoCardPayload* Payload : InPayloads)
+	for (const UNameTBD_Payload* Payload : InPayloads)
 	{
 		DisplayPayload = Cast<UInfoCardPayload_InventoryDisplay>(Payload);
 		if (DisplayPayload)

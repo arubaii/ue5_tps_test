@@ -60,7 +60,18 @@ bool FInfoCardConfigurableBool::Resolve(EInfoCardConfigurableBoolKind Kind) cons
 	}
 }
 
-UWorld* UInfoCardPayload::GetWorld() const
+const FUISoundSlot& FInfoCardSoundSet::GetSoundForEvent(EInfoCardSoundEvent Event) const
+{
+	switch (Event)
+	{
+	case EInfoCardSoundEvent::Triggered: return Triggered;
+	case EInfoCardSoundEvent::Hidden:    return Hidden;
+	case EInfoCardSoundEvent::Shown:
+	default:                             return Shown;
+	}
+}
+
+UWorld* UNameTBD_Payload::GetWorld() const
 {
 	// Payloads are instanced sub-objects; borrow the world from whatever owns us
 	// so Blueprint subclasses can still use world-context nodes.
@@ -162,6 +173,49 @@ bool FInfoCardAdditiveAnimSettings::FromLegacyWidgetAnimSettings(const FWidgetAn
 
 	Out.PulseScaleAmount = Legacy.PulseScaleAmount;
 	return true;
+}
+
+void FInfoCardAdditiveAnimations::ResolveInto(TArray<FWidgetAnimSettings>& OutIn, TArray<FWidgetAnimSettings>& OutOut) const
+{
+	// Animations first: they are the base layer, and the hand-authored entries stack on top of them.
+	// Mirroring is resolved at the ENTRY level before any settings are built, so an entry marked Mirror
+	// In Out contributes its layers to both stacks rather than only to the one it was listed in.
+	TArray<FWidgetAnimEntryBase> EntriesIn;
+	TArray<FWidgetAnimEntryBase> EntriesOut;
+	UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(Animations, EntriesIn, EntriesOut);
+
+	// Null target throughout: an additive entry animates the whole card, and the animation library falls
+	// back to the widget it is given when an entry names no target.
+	for (const FWidgetAnimEntryBase& Entry : EntriesIn)
+	{
+		Entry.BuildSettings(OutIn, nullptr);
+	}
+
+	for (const FWidgetAnimEntryBase& Entry : EntriesOut)
+	{
+		Entry.BuildSettings(OutOut, nullptr);
+	}
+
+	// Converted rather than appended directly, because the additive entries are the trimmed-down struct
+	// (no target picker) and the library only knows about FWidgetAnimSettings.
+	TArray<FWidgetAnimSettings> ConvertedIn;
+	ConvertedIn.Reserve(PlayIn.Num());
+	for (const FInfoCardAdditiveAnimSettings& Entry : PlayIn)
+	{
+		ConvertedIn.Add(Entry.ToWidgetAnimSettings());
+	}
+
+	TArray<FWidgetAnimSettings> ConvertedOut;
+	ConvertedOut.Reserve(PlayOut.Num());
+	for (const FInfoCardAdditiveAnimSettings& Entry : PlayOut)
+	{
+		ConvertedOut.Add(Entry.ToWidgetAnimSettings());
+	}
+
+	// Mirroring goes through the library so an additive entry marked Mirror In Out behaves exactly like
+	// one on the card class's own Anim In - the card would otherwise mirror its own and not these.
+	UWidgetAnimLibrary::AppendWithMirroring(ConvertedIn, OutIn, OutOut);
+	UWidgetAnimLibrary::AppendWithMirroring(ConvertedOut, OutOut, OutIn);
 }
 
 void FInfoCardAdditiveAnimations::PostSerialize(const FArchive& Ar)

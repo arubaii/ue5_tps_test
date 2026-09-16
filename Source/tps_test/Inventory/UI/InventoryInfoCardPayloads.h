@@ -9,7 +9,7 @@
 #include "InventoryInfoCardPayloads.generated.h"
 
 UCLASS(DisplayName = "Info Card Data (Item Instance)")
-class TPS_TEST_API UInfoCardPayload_ItemInstance : public UInfoCardPayload
+class TPS_TEST_API UInfoCardPayload_ItemInstance : public UNameTBD_Payload
 {
 	GENERATED_BODY()
 
@@ -19,7 +19,7 @@ public:
 };
 
 UCLASS(DisplayName = "Info Card Data (Item Definition)")
-class TPS_TEST_API UInfoCardPayload_ItemDefinition : public UInfoCardPayload
+class TPS_TEST_API UInfoCardPayload_ItemDefinition : public UNameTBD_Payload
 {
 	GENERATED_BODY()
 

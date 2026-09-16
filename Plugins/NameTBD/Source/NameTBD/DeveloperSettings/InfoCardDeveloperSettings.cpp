@@ -1,6 +1,11 @@
-// Copyright AR GameSystems 2026. All rights reserved.
+// Copyright AR Game Systems 2026. All rights reserved.
 
 #include "InfoCardDeveloperSettings.h"
+#include "NativeGameplayTags.h"
+
+// Root category tag
+UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_UIContext_Button, "UIContext.Button");
+UE_DEFINE_GAMEPLAY_TAG_STATIC(TAG_UIContext_Button_0_Divider, "UIContext.Button.0_Divider");
 
 UInfoCardDeveloperSettings::UInfoCardDeveloperSettings()
 {

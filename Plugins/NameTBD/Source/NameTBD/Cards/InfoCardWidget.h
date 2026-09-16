@@ -1,10 +1,13 @@
-﻿// Copyright AR GameSystems 2026. All rights reserved.
+﻿// Copyright AR Game Systems 2026. All rights reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Containers/Ticker.h"
-#include "NameTBD/WidgetAnimation/UserWidget_Animatable.h"
+#include "Blueprint/UserWidget.h"
+#include "Blueprint/WidgetTree.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimHost.h"
 #include "GameplayTagContainer.h"
 #include "InfoCardTypes.h"
 #include "InfoCardWidget.generated.h"
@@ -12,8 +15,19 @@
 class UWidget;
 class UInfoCardAnchor;
 
+/**
+ * A tooltip / context card spawned by UInfoCardAnchor.
+ *
+ * Animation is not built into the card. In the card's Widget Blueprint, select the widget that should
+ * move (usually the root) and Add Component > Widget Animation Component; its Anim In / Anim Out are the
+ * card's. The anchor-specific part - FInfoCardSpec::AdditiveAnimations, after an anchor's Additive
+ * Animation Overrides - is handed to that component as extra layers in SetupCard.
+ *
+ * A card class without one still works: the card makes a component of its own at runtime, bound to the
+ * card itself, holding the Legacy Anim In / Anim Out below (if any) plus the additive layers.
+ */
 UCLASS()
-class NAMETBD_API UInfoCardWidget : public UUserWidget_Animatable
+class NAMETBD_API UInfoCardWidget : public UUserWidget, public IWidgetAnimHost
 {
 	GENERATED_BODY()
 
@@ -155,10 +169,10 @@ public:
 
 	/**
 	 * Set from FInfoCardSpec::AdditiveAnimations via SetupCard (after any
-	 * anchor settings override has been applied to that spec). Merged into
-	 * AnimIn / AnimOut on top of this card class's own authored entries by
-	 * ApplyAdditiveAnimations — see that function. Kept as a readable record
-	 * of what the spec asked for.
+	 * anchor settings override has been applied to that spec). Handed to the
+	 * card's Widget Animation Component as extra layers, on top of its own
+	 * Anim In / Anim Out, by ApplyAdditiveAnimations — see that function.
+	 * Kept as a readable record of what the spec asked for.
 	 */
 	UPROPERTY(BlueprintReadOnly, Transient, Category = "InfoCard")
 	FInfoCardAdditiveAnimations AdditiveAnimations;
@@ -177,7 +191,7 @@ public:
 	ECardType SourceCardType = ECardType::AlwaysOn;
 
 	UPROPERTY(BlueprintReadOnly, Transient, Category = "InfoCard")
-	TArray<TObjectPtr<UInfoCardPayload>> Payloads;
+	TArray<TObjectPtr<UNameTBD_Payload>> Payloads;
 
 	UPROPERTY(BlueprintReadOnly, Transient, Category = "InfoCard")
 	FName CardId = NAME_None;
@@ -189,20 +203,32 @@ public:
 	void SetupCard(const FInfoCardSpec& Spec, UWidget* InAnchorWidget);
 
 	UFUNCTION(BlueprintCallable, Category = "InfoCard")
-	void SetPayloads(const TArray<UInfoCardPayload*>& NewPayloads);
+	void SetPayloads(const TArray<UNameTBD_Payload*>& NewPayloads);
 
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "InfoCard", meta = (ToolTips = "Loop through the payload array and cast to the payload class(es) on each loop to implement."))
-	void ApplyPayloads(const TArray<UInfoCardPayload*>& InPayloads);
-	virtual void ApplyPayloads_Implementation(const TArray<UInfoCardPayload*>& InPayloads);
+	void ApplyPayloads(const TArray<UNameTBD_Payload*>& InPayloads);
+	virtual void ApplyPayloads_Implementation(const TArray<UNameTBD_Payload*>& InPayloads);
 
 	UFUNCTION(BlueprintPure, Category = "InfoCard")
-	UInfoCardPayload* GetPrimaryPayload() const;
+	UNameTBD_Payload* GetPrimaryPayload() const;
 
 	UFUNCTION(BlueprintPure, Category = "InfoCard")
-	UInfoCardPayload* GetPayloadAtIndex(int32 Index) const;
+	UNameTBD_Payload* GetPayloadAtIndex(int32 Index) const;
 
 	UFUNCTION(BlueprintCallable, Category = "InfoCard")
 	void CloseCard();
+
+	/**
+	 * Sound sets for this card, copied from FInfoCardSpec::Sounds by SetupCard (so an anchor's Settings
+	 * Overrides > Sound has already been folded in by the time they get here). Shown and Hidden are played
+	 * automatically; Triggered is played by the anchor, before this widget exists.
+	 */
+	UPROPERTY(BlueprintReadWrite, Transient, Category = "InfoCard|Sound")
+	TArray<FInfoCardSoundSet> Sounds;
+
+	/** Plays every set's slot for an event. Exposed so a card driving its own lifetime can fire one by hand. */
+	UFUNCTION(BlueprintCallable, Category = "InfoCard|Sound")
+	void PlayCardSound(EInfoCardSoundEvent Event);
 
 	UFUNCTION(BlueprintPure, Category = "InfoCard")
 	bool IsClosing() const;
@@ -395,6 +421,41 @@ public:
 	 * UContextMenuButton::ResolveOwningCard.
 	 */
 	static UInfoCardWidget* FindContainingCard(const UWidget* Widget);
+
+	/**
+	 * The Widget Animation Component that plays this card's entrance and exit: one added in the card's
+	 * Widget Blueprint (on the card itself, its root, or any widget in its tree, in that order), or else the
+	 * one the card made for itself. Resolved in SetupCard / NativeConstruct; null before either has run.
+	 */
+	UFUNCTION(BlueprintPure, Category = "InfoCard|Animation")
+	UWidgetAnimationComponent* GetCardAnimation() const { return CardAnimation; }
+
+	/**
+	 * The Anim In / Anim Out a card of CardClass plays, before additive animations - for previews that have
+	 * no real card. A designer-added component only exists on an instance, so this briefly creates one
+	 * (owned by OwningWidget, never constructed or shown). Falls back to the class's Legacy Anim In / Out.
+	 */
+	static bool GetClassAnimationEntries(TSubclassOf<UInfoCardWidget> CardClass, UWidget* OwningWidget, TArray<FWidgetAnimEntry>& OutAnimIn, TArray<FWidgetAnimEntry>& OutAnimOut);
+
+	// IWidgetAnimHost - forwarded, so Play Widget Animation keeps working when aimed at a card.
+	virtual void PlayWidgetAnimationsById(const TArray<FName>& AnimIds, bool bReverse, float PlaybackSpeed, bool bHoldFinalPose, bool bRestartIfPlaying) override;
+	virtual void StopWidgetAnimationsById(const TArray<FName>& AnimIds, bool bResetToStart) override;
+	virtual bool AreWidgetAnimationsPlayingById(const TArray<FName>& AnimIds) const override;
+
+	/**
+	 * Anim In / Anim Out saved on this class while it derived from UUserWidget_Animatable (brought here by
+	 * CoreRedirects). Copy them into a Widget Animation Component on the card (right-click > Copy, then
+	 * Paste on the component's Anim In), then clear them here. Only played while the card has no
+	 * component of its own.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Animation|Legacy", meta = (DisplayName = "Legacy Anim In", TitleProperty = "Animation"))
+	TArray<FWidgetAnimEntry> LegacyAnimIn;
+
+	UPROPERTY(EditAnywhere, Category = "Animation|Legacy", meta = (DisplayName = "Legacy Anim Out", TitleProperty = "Animation"))
+	TArray<FWidgetAnimEntry> LegacyAnimOut;
+
+	UPROPERTY(EditAnywhere, Category = "Animation|Legacy", meta = (DisplayName = "Legacy Preserve Authored Transforms"))
+	bool bLegacyPreserveAuthoredTransforms = false;
 
 protected:
 
@@ -637,7 +698,26 @@ protected:
 	virtual void NativeDestruct() override;
 	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
 
-	virtual void OnOutAnimationFinished_Implementation() override;
+	/** Removes the card once its exit animation has finished. Bound to CardAnimation's native event. */
+	void HandleCardAnimationOutFinished(UWidgetAnimationComponent* Component);
+
+	/**
+	 * Finds the card's component (see GetCardAnimation), creating one bound to the card if the Widget
+	 * Blueprint has none, and binds HandleCardAnimationOutFinished to it. Idempotent.
+	 */
+	UWidgetAnimationComponent* ResolveCardAnimation();
+
+	/** A designer-added component on this card or anywhere in its tree, or null. */
+	UWidgetAnimationComponent* FindAuthoredAnimationComponent() const;
+
+	/** The component that animates this card. See GetCardAnimation. */
+	UPROPERTY(Transient)
+	TObjectPtr<UWidgetAnimationComponent> CardAnimation;
+
+	/** True when CardAnimation was created by the card rather than added in the designer. */
+	bool bOwnsCardAnimation = false;
+
+	FDelegateHandle CardAnimationOutFinishedHandle;
 
 	/**
 	 * The size this card is drawn at. Normally its content's desired size;
@@ -682,20 +762,14 @@ protected:
 	void HandleAutoDismissElapsed();
 
 	/**
-	 * Rebuilds AnimIn / AnimOut as this card class's own authored entries
-	 * followed by AdditiveAnimations' Play In / Play Out entries.
+	 * Resolves AdditiveAnimations and hands the result to the card's Widget
+	 * Animation Component as its extra layers, on top of its own Anim In /
+	 * Anim Out.
 	 *
-	 * Called from SetupCard, which runs before AddToViewport. That matters:
-	 * UUserWidget_Animatable only runs RebuildEffectiveAnimations (which turns
-	 * AnimIn/AnimOut into what actually plays, mirroring included) from
-	 * NativeConstruct, so merging before construction is what gets the
-	 * additive entries into the very first PlayIn. If this ever runs on an
-	 * already-constructed card, it calls RebuildEffectiveAnimations itself so
-	 * the next PlayIn/PlayOut picks the change up.
-	 *
-	 * Rebuilds from BaseAnimIn/BaseAnimOut rather than appending to the live
-	 * arrays, so calling SetupCard more than once on the same instance can
-	 * never stack the additive entries twice.
+	 * Called from SetupCard, which runs after CreateWidget (so a designer-added
+	 * component already exists) and before AddToViewport (so the layers are in
+	 * place for the very first PlayIn). The extra layers are replaced, not
+	 * appended, so calling SetupCard twice never stacks them.
 	 */
 	void ApplyAdditiveAnimations();
 
@@ -722,21 +796,6 @@ protected:
 
 	/** The visibility to restore once the block lifts. */
 	ESlateVisibility VisibilityBeforeHitTestBlock = ESlateVisibility::Visible;
-
-	/**
-	 * This card class's own AnimIn / AnimOut, captured the first time
-	 * ApplyAdditiveAnimations runs, before anything was added. The baseline
-	 * every merge starts from. UPROPERTY so the widget and curve pointers
-	 * inside these entries stay visible to GC.
-	 */
-	UPROPERTY(Transient)
-	TArray<FWidgetAnimSettings> BaseAnimIn;
-
-	UPROPERTY(Transient)
-	TArray<FWidgetAnimSettings> BaseAnimOut;
-
-	/** Whether BaseAnimIn / BaseAnimOut have been captured yet. */
-	bool bHasCapturedBaseAnimations = false;
 
 	/**
 	 * The second half of CloseCard: plays the out animation (which, for a card
@@ -1042,4 +1101,7 @@ protected:
 	 * array.
 	 */
 	static void EnsurePressWatcher();
+
+	/** One entry per set in Sounds, resized on demand. Not a UPROPERTY: it holds timer handles, nothing to serialize. */
+	TArray<FUISoundRuntime> SoundRuntimes;
 };

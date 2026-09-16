@@ -1,4 +1,4 @@
-// Copyright AR GameSystems 2026. All rights reserved.
+// Copyright AR Game Systems 2026. All rights reserved.
 
 #include "NameTBD.h"
 

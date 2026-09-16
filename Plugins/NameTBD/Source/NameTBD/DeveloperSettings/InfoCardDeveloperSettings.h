@@ -1,14 +1,19 @@
-// Copyright AR GameSystems 2026. All rights reserved.
+// Copyright AR Game Systems 2026. All rights reserved.
 
 #pragma once
 
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
 
+
 #include "NameTBD/Cards/InfoCardTypes.h"
 #include "NameTBD/Buttons/ContextMenuButton.h"
-
+#include "NameTBD/Buttons/Actions/ButtonAction.h"
+#include "NameTBD/Buttons/Actions/ContextMenuInterface.h"
 #include "InfoCardDeveloperSettings.generated.h"
+
+
+
 
 /**
  * One named preset: a full set of values for every project-wide info card
@@ -90,6 +95,79 @@ struct NAMETBD_API FContextMenuDesignPreset
 	float InterpolationSpeed = 15.0f;
 };
 
+// TODO: Put into its own file and refactor so it stops getting copied everywhere
+UENUM(BlueprintType)
+enum class EDeveloperButtonSettingSource : uint8
+{
+	UseProjectSettings UMETA(DisplayName = "Use Project Settings"),
+	Custom
+};
+
+UENUM(BlueprintType)
+enum class EImageChoice : uint8
+{
+	Icon,
+	Spacer,
+	Divider
+};
+
+
+// Couldn't think of a better name
+USTRUCT(BlueprintType)
+struct NAMETBD_API FContextButtonImageChoice
+{
+	GENERATED_BODY()
+	
+	/* Choosing spacer or divider will place either instead of an image. Spacer and divider configurations are set in the
+	 * context menu builder */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design")
+	EImageChoice IconChoice = EImageChoice::Icon;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (EditCondition = "IconChoice == EImageChoice::Icon", EditConditionHides))
+	TSoftObjectPtr<UTexture2D> Icon;
+};
+
+USTRUCT(BlueprintType)
+struct NAMETBD_API FContextMenuButtonData
+{
+	GENERATED_BODY()
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Actions")
+	TArray<TSubclassOf<UButtonAction>> Actions; 
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Actions")
+	TArray<TSubclassOf<UContextButtonPayload>> ExpectedPayloads;
+	
+	
+	////////////////////////////////////////////////////////////////////////
+	/// Design 
+	////////////////////////////////////////////////////////////////////////
+	
+	/** Icons will be placed in order from Left->Right of the array */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design")
+	TArray<FContextButtonImageChoice>   LeftIcons;
+	
+	/** Icons will be placed in order from Left->Right of the array */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design")
+	TArray<FContextButtonImageChoice>   CenterIcons;
+	
+	/** Icons will be placed in order from Left->Right of the array */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design")
+	TArray<FContextButtonImageChoice>   RightIcons;
+	
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design")
+	FText ButtonText_Left   = FText::GetEmpty();
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design")
+	FText ButtonText_Center = FText::GetEmpty();
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design")
+	FText ButtonText_Right  = FText::GetEmpty();
+	
+	
+};
+
 /**
  * Project-wide defaults for the info card system, editable under Project
  * Settings > Game > Info Card. Presets is an open-ended, designer-named list
@@ -102,7 +180,7 @@ struct NAMETBD_API FContextMenuDesignPreset
  * picks it up immediately, with nothing on the individual cards needing to
  * be touched or resynced.
  */
-UCLASS(Config = Game, DefaultConfig, meta = (DisplayName = "Info Card"))
+UCLASS(Config = Game, DefaultConfig, meta = (DisplayName = "Info Card Settings"))
 class NAMETBD_API UInfoCardDeveloperSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
@@ -246,6 +324,10 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, Config, Category = "Context Menu Button Design Presets", meta = (TitleProperty = "PresetName"))
 	TArray<FContextMenuDesignPreset> ContextMenuDesignPresets;
+	
+	/** Set to BlueprintReadOnly for queries */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Config, Category = "Button Actions", meta = (Categories = "UIContext.Button"))
+	TMap<FGameplayTag, FContextMenuButtonData> ButtonActions; 
 
 	/** Returns the shape preset named PresetName, or nullptr if none currently has that name (caller falls back to its own Custom shapes). */
 	const FContextMenuShapePreset* FindContextMenuShapePreset(FName PresetName) const;
