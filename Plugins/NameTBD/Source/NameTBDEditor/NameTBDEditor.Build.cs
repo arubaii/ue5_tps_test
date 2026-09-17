@@ -30,5 +30,16 @@ public class NameTBDEditor : ModuleRules
 			"Projects",       
 			"AssetTools",
 		});
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"UnrealEd",
+					"AssetTools",
+					"AssetRegistry"
+				}
+			);
+		}
 	}
 }

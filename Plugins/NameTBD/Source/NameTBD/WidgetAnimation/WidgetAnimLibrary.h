@@ -63,12 +63,21 @@ struct NAMETBD_API FWidgetAnimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom", EditConditionHides))
 	UCurveFloat* CustomCurve = nullptr;
 
+	/**
+	 * Repeats the animation. Layers that share a Loop Group loop together as one animation - the stagger
+	 * between them repeats every loop - rather than each on its own clock.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
 	bool bLoop = false;
 
+	/** Plays back to the start between plays instead of snapping there. Always comes to rest on the end pose. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "bLoop", EditConditionHides))
 	bool bPingPong = true;
 
+	/**
+	 * How many times the animation plays through; 0 loops forever. With Ping Pong it plays back between
+	 * plays, so 2 is forward, back, forward - it always ends on the end pose, for any count.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "bLoop", EditConditionHides, ClampMin = "0"))
 	int32 LoopCount = 0;
 
@@ -91,6 +100,16 @@ struct NAMETBD_API FWidgetAnimSettings
 	/** Reverted to native UWidget pointer for Designer dropdowns */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "AnimType != EWidgetAnimType::MaterialScalar && AnimType != EWidgetAnimType::MaterialVector", EditConditionHides))
 	TObjectPtr<UWidget> TargetWidget = nullptr;
+
+	/**
+	 * Which animation this layer belongs to, for looping. Layers in one stack that share a group share one
+	 * clock: they loop, ping-pong and settle as a unit. INDEX_NONE loops the layer on its own.
+	 *
+	 * Stamped by FWidgetAnimEntryBase::BuildSettings with a process-unique id, so stacks built from
+	 * different entries can be concatenated freely without their groups merging. Never saved.
+	 */
+	UPROPERTY(Transient)
+	int32 LoopGroup = INDEX_NONE;
 
 	// ------------------------------------------------------------------
 	// Fade
@@ -277,17 +296,30 @@ struct NAMETBD_API FWidgetAnimState
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	float DelayRemaining = 0.f;
 
+	/**
+	 * For the first layer of a loop group, the group's position on its timeline, which is what is
+	 * advanced. For every other layer, that layer's own progress into its duration, kept for reading only.
+	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	float CycleTime = 0.f;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bFinished = false;
 
+	/** Legs completed. A ping-pong return counts as its own leg. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	int32 LoopsCompleted = 0;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bPlayingForward = true;
+
+	/**
+	 * Set by EndWidgetAnimTrackLoops with a soft settle. A looping layer with this set finishes the cycle
+	 * it is in instead of starting another one - and if that cycle was a ping-pong return leg, it plays
+	 * one more forward leg first, so it comes to rest on its end pose rather than snapping to it.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	bool bSettleRequested = false;
 };
 
 USTRUCT(BlueprintType)
@@ -407,8 +439,22 @@ struct NAMETBD_API FWidgetAnimTrack
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bIsOut = false;
 
+	/**
+	 * True once every layer of this track has come to rest. A track with an endlessly looping layer
+	 * never gets here on its own - it keeps running until it is stopped or its loop is ended.
+	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bFinished = false;
+
+	/**
+	 * True once every layer that CAN end has ended - everything except endless loops.
+	 *
+	 * This, not bFinished, is what "the entrance has landed" / "the exit is done" means. A pulse that
+	 * loops forever on top of an entrance must not keep the widget in Playing In for good, but it must
+	 * not be frozen either, which is what happened when the two questions were answered by one flag.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	bool bSettled = false;
 
 	/**
 	 * Whether a finished track keeps contributing its final pose.
@@ -733,6 +779,25 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Player")
 	static void StopWidgetAnimTracks(UPARAM(ref) FWidgetAnimPlayer& Player, const TArray<FName>& AnimIds, bool bRemoveTracks = true);
 
+	/**
+	 * Ends the looping on every running track with this Anim ID. Returns true if any track was affected.
+	 *
+	 * Soft settle: each looping animation finishes the leg it is in and then stops on its end pose (a
+	 * ping-pong caught on its return leg plays one more forward leg to get there). Layers that do not
+	 * loop simply carry on to their natural end.
+	 *
+	 * Hard: every layer jumps to its end pose now. The track is reported finished on the next player
+	 * tick, and is dropped then if it was started without Hold When Finished.
+	 *
+	 * None never matches anything - unnamed tracks cannot be singled out.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Player")
+	static bool EndWidgetAnimTrackLoops(UPARAM(ref) FWidgetAnimPlayer& Player, FName AnimId, bool bSoftSettle = true);
+
+	/** True for a layer that loops with no Loop Count, i.e. one that will never end by itself. */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation")
+	static bool IsEndlessLoop(const FWidgetAnimSettings& Settings);
+
 	/** True if any track matching the IDs is still running. An empty array asks about every track. */
 	UFUNCTION(BlueprintPure, Category = "Widget Animation|Player")
 	static bool AreWidgetAnimTracksPlaying(const FWidgetAnimPlayer& Player, const TArray<FName>& AnimIds);
@@ -774,7 +839,6 @@ private:
 	static FWidgetAnimTargetedTransform& FindOrAddTargetedTransform(FWidgetAnimResult& Result, UWidget* TargetWidget);
 
 	static void ApplyAnimationContribution(const FWidgetAnimSettings& Settings, float DirectedAlpha, FWidgetAnimResult& OutResult);
-	static void EvaluateSingleAnimation(const FWidgetAnimSettings& Settings, FWidgetAnimState& State, float DeltaTime, FWidgetAnimResult& OutResult, bool bIsOutAnimation);
 
 	static bool GetEffectiveInvert(const FWidgetAnimSettings& Settings, bool bIsOutAnimation);
 
@@ -786,8 +850,17 @@ private:
 
 	// Baseline-aware cores. The original entry points forward to these with a null set, which is the
 	// absolute (pre-baseline) behaviour every existing caller already relies on.
-	/** TickWidgetAnimations, accumulating into a caller-owned result so several tracks can share one. */
-	static bool TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult);
+	/**
+	 * TickWidgetAnimations, accumulating into a caller-owned result so several tracks can share one.
+	 *
+	 * Returns whether the stack has SETTLED (every layer that can end has ended). bOutAllComplete, when
+	 * given, receives whether EVERY layer has ended, endless loops included - which only happens once
+	 * a loop has been ended explicitly.
+	 */
+	static bool TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult, bool* bOutAllComplete = nullptr);
+
+	/** True while any layer in the stack is still moving - an endless loop always is. */
+	static bool HasRunningLayers(const TArray<FWidgetAnimSettings>& Animations, const TArray<FWidgetAnimState>& States);
 
 	static void ApplyResultInternal(UWidget* FallbackWidget, const FWidgetAnimResult& Result, const FWidgetAnimBaselineSet* Baselines);
 	static void PlayInternal(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, const FWidgetAnimBaselineSet* Baselines);

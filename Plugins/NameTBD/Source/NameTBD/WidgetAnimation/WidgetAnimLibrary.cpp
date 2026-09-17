@@ -151,97 +151,268 @@ bool UWidgetAnimLibrary::GetEffectiveInvert(const FWidgetAnimSettings& Settings,
 	return Settings.bInvertAnimation != bIsOutAnimation;
 }
 
-void UWidgetAnimLibrary::EvaluateSingleAnimation(const FWidgetAnimSettings& Settings, FWidgetAnimState& State, float DeltaTime, FWidgetAnimResult& OutResult, bool bIsOutAnimation)
+namespace WidgetAnimLoop
 {
-	const bool bInvert = GetEffectiveInvert(Settings, bIsOutAnimation);
-
-	// Speed is applied to the clock, not to Duration, so the delay countdown below is scaled by exactly
-	// the same factor as the cycle - a stack that staggered by 0.1s at speed 1 still staggers
-	// proportionally at speed 0.25 - and the authored numbers stay as authored in the Details panel.
-	DeltaTime *= FMath::Max(Settings.PlaybackSpeed, 0.01f);
-
-	if (State.bFinished)
+	/** Where one layer sits on its animation's timeline, in seconds of track time. Speed already applied. */
+	struct FLayerSpan
 	{
-		const float RestingAlpha = State.bPlayingForward ? 1.f : 0.f;
-		ApplyAnimationContribution(Settings, bInvert ? 1.f - RestingAlpha : RestingAlpha, OutResult);
-		return;
+		float Start = 0.f;
+		float Length = KINDA_SMALL_NUMBER;
+	};
+
+	static FLayerSpan GetLayerSpan(const FWidgetAnimSettings& Settings)
+	{
+		// Speed scales the layer's whole placement, delay included, so a stagger keeps its proportions.
+		const float Speed = FMath::Max(Settings.PlaybackSpeed, 0.01f);
+
+		FLayerSpan Span;
+		Span.Start = FMath::Max(Settings.Delay, 0.f) / Speed;
+		Span.Length = FMath::Max(Settings.Duration, KINDA_SMALL_NUMBER) / Speed;
+		return Span;
 	}
 
-	if (State.DelayRemaining > 0.f)
+	/**
+	 * Whether the leg that just ended is followed by another.
+	 *
+	 * Loop Count is how many times the animation plays through. With Ping Pong it plays back between
+	 * those plays, so N plays is 2N-1 legs - forward, back, forward, ... - and it always ends on a
+	 * forward leg, on its end pose. Counting legs instead is what made an even count settle on the
+	 * start pose.
+	 */
+	static bool ShouldStartAnotherLeg(const FWidgetAnimSettings& Settings, const FWidgetAnimState& Clock, bool bEndedForward)
 	{
-		State.DelayRemaining -= DeltaTime;
-		if (State.DelayRemaining > 0.f)
+		if (!Settings.bLoop)
 		{
-			// Still waiting, but the layer has to hold its start pose while it waits. Contributing
-			// nothing left its target at whatever it was last drawn as - for a delayed Fade from 0 on a
-			// freshly shown widget, that is fully visible - until the delay ran out and it snapped to 0.
-			ApplyAnimationContribution(Settings, bInvert ? 1.f : 0.f, OutResult);
+			return false;
+		}
+
+		// A return leg is never the last one: whatever ends the loop, it ends on the end pose.
+		if (!bEndedForward)
+		{
+			return true;
+		}
+
+		if (Clock.bSettleRequested)
+		{
+			return false;
+		}
+
+		if (Settings.LoopCount <= 0)
+		{
+			return true;
+		}
+
+		// LoopsCompleted counts legs, including the one that just ended.
+		const int32 PlaysCompleted = Settings.bPingPong ? (Clock.LoopsCompleted + 1) / 2 : Clock.LoopsCompleted;
+		return PlaysCompleted < Settings.LoopCount;
+	}
+
+	/**
+	 * Advances one animation's shared clock.
+	 *
+	 * The clock is a position on the animation's timeline, 0 .. End, where End is the latest point any
+	 * of its layers finishes. The first play runs the whole timeline. Every later leg runs between Lead
+	 * (the earliest any layer starts) and End: the stagger between layers repeats every loop, but a
+	 * lead-in shared by all of them is only waited out once, as a single delayed layer always did.
+	 *
+	 * A ping-pong return leg runs the same span backwards, so the layers unwind in reverse order.
+	 */
+	static void AdvanceTimeline(const FWidgetAnimSettings& Settings, FWidgetAnimState& Clock, float Lead, float End, float DeltaTime)
+	{
+		if (Clock.bFinished)
+		{
 			return;
 		}
 
-		DeltaTime = -State.DelayRemaining;
-		State.DelayRemaining = 0.f;
-	}
+		Lead = FMath::Clamp(Lead, 0.f, End);
+		float Remaining = FMath::Max(DeltaTime, 0.f);
 
-	const float Duration = FMath::Max(Settings.Duration, KINDA_SMALL_NUMBER);
-	State.CycleTime += DeltaTime;
-
-	while (State.CycleTime >= Duration)
-	{
-		if (Settings.bLoop && (Settings.LoopCount <= 0 || State.LoopsCompleted < Settings.LoopCount - 1))
+		// Bounded so a long hitch on a very short loop can't spin here. Hitting the bound only drops time.
+		for (int32 Guard = 0; Guard < 1024; ++Guard)
 		{
-			State.CycleTime -= Duration;
-			State.LoopsCompleted++;
+			if (Clock.bPlayingForward)
+			{
+				Clock.CycleTime += Remaining;
+				if (Clock.CycleTime < End)
+				{
+					return;
+				}
+				Remaining = Clock.CycleTime - End;
+				Clock.CycleTime = End;
+			}
+			else
+			{
+				Clock.CycleTime -= Remaining;
+				if (Clock.CycleTime > Lead)
+				{
+					return;
+				}
+				Remaining = Lead - Clock.CycleTime;
+				Clock.CycleTime = Lead;
+			}
+
+			const bool bEndedForward = Clock.bPlayingForward;
+			++Clock.LoopsCompleted;
+
+			if (!ShouldStartAnotherLeg(Settings, Clock, bEndedForward))
+			{
+				// Only ever reached at the end of a forward leg, so this is the end pose.
+				Clock.CycleTime = End;
+				Clock.bPlayingForward = true;
+				Clock.bFinished = true;
+				Clock.bSettleRequested = false;
+				return;
+			}
+
 			if (Settings.bPingPong)
 			{
-				State.bPlayingForward = !State.bPlayingForward;
+				Clock.bPlayingForward = !bEndedForward;
+			}
+			else
+			{
+				Clock.CycleTime = Lead;
+			}
+
+			if (End - Lead <= KINDA_SMALL_NUMBER)
+			{
+				return;
 			}
 		}
-		else
-		{
-			State.CycleTime = Duration;
-			State.bFinished = true;
-			State.bPlayingForward = true;
-			break;
-		}
 	}
-
-	const float LinearAlpha = FMath::Clamp(State.CycleTime / Duration, 0.f, 1.f);
-	const float DirectedAlpha = State.bFinished
-		? (State.bPlayingForward ? 1.f : 0.f)
-		: (State.bPlayingForward ? LinearAlpha : (1.f - LinearAlpha));
-
-	ApplyAnimationContribution(Settings, bInvert ? 1.f - DirectedAlpha : DirectedAlpha, OutResult);
 }
 
-bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult)
+bool UWidgetAnimLibrary::IsEndlessLoop(const FWidgetAnimSettings& Settings)
+{
+	return Settings.bLoop && Settings.LoopCount <= 0;
+}
+
+bool UWidgetAnimLibrary::HasRunningLayers(const TArray<FWidgetAnimSettings>& Animations, const TArray<FWidgetAnimState>& States)
 {
 	if (States.Num() != Animations.Num())
 	{
+		return false;
+	}
+
+	for (const FWidgetAnimState& State : States)
+	{
+		if (!State.bFinished)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult, bool* bOutAllComplete)
+{
+	const int32 NumLayers = Animations.Num();
+
+	if (States.Num() != NumLayers)
+	{
 		const int32 OldNum = States.Num();
-		States.SetNum(Animations.Num());
-		for (int32 Index = OldNum; Index < Animations.Num(); ++Index)
+		States.SetNum(NumLayers);
+		for (int32 Index = OldNum; Index < NumLayers; ++Index)
 		{
 			States[Index].DelayRemaining = FMath::Max(Animations[Index].Delay, 0.f);
 		}
 	}
 
-	bool bAllFinished = true;
+	// Layers loop as the animation they belong to, not one by one. Looped separately, layers of different
+	// lengths drift apart after the first cycle and every delay is lost after the first play, so a
+	// layered animation never looked like itself again. Each group's clock lives on its first layer.
+	TArray<int32, TInlineAllocator<16>> LeaderOf;
+	TArray<WidgetAnimLoop::FLayerSpan, TInlineAllocator<16>> Spans;
+	TArray<float, TInlineAllocator<16>> GroupLead;
+	TArray<float, TInlineAllocator<16>> GroupEnd;
+	LeaderOf.SetNum(NumLayers);
+	Spans.SetNum(NumLayers);
+	GroupLead.Init(TNumericLimits<float>::Max(), NumLayers);
+	GroupEnd.Init(0.f, NumLayers);
 
-	for (int32 Index = 0; Index < Animations.Num(); ++Index)
+	for (int32 Index = 0; Index < NumLayers; ++Index)
 	{
-		const FWidgetAnimSettings& Settings = Animations[Index];
-		EvaluateSingleAnimation(Settings, States[Index], DeltaTime, OutResult, bIsOutAnimation);
+		LeaderOf[Index] = Index;
 
-		// A looping layer never "finishes", so it must not hold the whole animation open forever either.
-		const bool bCountsTowardFinished = !Settings.bLoop;
-		if (bCountsTowardFinished && !States[Index].bFinished)
+		const int32 Group = Animations[Index].LoopGroup;
+		if (Group != INDEX_NONE)
 		{
-			bAllFinished = false;
+			for (int32 Earlier = 0; Earlier < Index; ++Earlier)
+			{
+				if (Animations[Earlier].LoopGroup == Group)
+				{
+					LeaderOf[Index] = LeaderOf[Earlier];
+					break;
+				}
+			}
+		}
+
+		Spans[Index] = WidgetAnimLoop::GetLayerSpan(Animations[Index]);
+
+		const int32 Leader = LeaderOf[Index];
+		GroupLead[Leader] = FMath::Min(GroupLead[Leader], Spans[Index].Start);
+		GroupEnd[Leader] = FMath::Max(GroupEnd[Leader], Spans[Index].Start + Spans[Index].Length);
+	}
+
+	// One advance per group, on its leader.
+	for (int32 Index = 0; Index < NumLayers; ++Index)
+	{
+		if (LeaderOf[Index] == Index)
+		{
+			WidgetAnimLoop::AdvanceTimeline(Animations[Index], States[Index], GroupLead[Index], GroupEnd[Index], DeltaTime);
 		}
 	}
 
-	return bAllFinished;
+	bool bAllSettled = true;
+	bool bAllComplete = true;
+
+	for (int32 Index = 0; Index < NumLayers; ++Index)
+	{
+		const FWidgetAnimSettings& Settings = Animations[Index];
+		const int32 Leader = LeaderOf[Index];
+		const FWidgetAnimState& Clock = States[Leader];
+		const WidgetAnimLoop::FLayerSpan& Span = Spans[Index];
+
+		const float TimelineTime = Clock.bFinished ? GroupEnd[Leader] : Clock.CycleTime;
+		const float LocalTime = TimelineTime - Span.Start;
+
+		// Before its start the layer holds its start pose, after its end its end pose. Direction needs no
+		// special case: a return leg is the timeline running backwards, so the alpha falls on its own.
+		const float LinearAlpha = FMath::Clamp(LocalTime / Span.Length, 0.f, 1.f);
+
+		if (Index != Leader)
+		{
+			// Members mirror the group's progress so anything reading a single layer's state sees the truth.
+			FWidgetAnimState& State = States[Index];
+			State.bFinished = Clock.bFinished;
+			State.bPlayingForward = Clock.bPlayingForward;
+			State.LoopsCompleted = Clock.LoopsCompleted;
+			State.bSettleRequested = Clock.bSettleRequested;
+			State.DelayRemaining = FMath::Max(-LocalTime, 0.f);
+			State.CycleTime = FMath::Clamp(LocalTime, 0.f, Span.Length);
+		}
+
+		const bool bInvert = GetEffectiveInvert(Settings, bIsOutAnimation);
+		ApplyAnimationContribution(Settings, bInvert ? 1.f - LinearAlpha : LinearAlpha, OutResult);
+
+		if (!States[Index].bFinished)
+		{
+			bAllComplete = false;
+
+			// An endless loop never ends by itself, so it must not hold the whole animation open forever.
+			if (!IsEndlessLoop(Settings))
+			{
+				bAllSettled = false;
+			}
+		}
+	}
+
+	if (bOutAllComplete)
+	{
+		*bOutAllComplete = bAllComplete;
+	}
+
+	return bAllSettled;
 }
 
 FWidgetAnimResult UWidgetAnimLibrary::TickWidgetAnimations(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation)
@@ -376,9 +547,7 @@ bool UWidgetAnimLibrary::AreWidgetAnimationsFinished(const TArray<FWidgetAnimSet
 {
 	for (int32 Index = 0; Index < Animations.Num() && Index < States.Num(); ++Index)
 	{
-		const FWidgetAnimSettings& Settings = Animations[Index];
-		const bool bCountsTowardFinished = !Settings.bLoop;
-		if (bCountsTowardFinished && !States[Index].bFinished)
+		if (!States[Index].bFinished && !IsEndlessLoop(Animations[Index]))
 		{
 			return false;
 		}
@@ -427,9 +596,28 @@ bool UWidgetAnimLibrary::TickPlaybackInternal(UWidget* FallbackWidget, const TAr
 		return false;
 	}
 
-	case EWidgetAnimPhase::Idle:
 	case EWidgetAnimPhase::Shown:
+	{
+		// The entrance has landed, but endless loops in it keep running. This used to return without
+		// ticking, which is what froze every looping layer the moment the rest of the stack finished.
+		// Skipped when nothing is moving, so a settled widget is not re-posed every frame for nothing.
+		if (HasRunningLayers(InAnimations, PlaybackState.InStates))
+		{
+			PlayInternal(FallbackWidget, InAnimations, PlaybackState.InStates, DeltaTime, /*bIsOutAnimation=*/false, Baselines);
+		}
+		return false;
+	}
+
 	case EWidgetAnimPhase::Hidden:
+	{
+		if (HasRunningLayers(OutAnimations, PlaybackState.OutStates))
+		{
+			PlayInternal(FallbackWidget, OutAnimations, PlaybackState.OutStates, DeltaTime, /*bIsOutAnimation=*/true, Baselines);
+		}
+		return false;
+	}
+
+	case EWidgetAnimPhase::Idle:
 	default:
 		return false;
 	}
@@ -683,12 +871,17 @@ bool UWidgetAnimLibrary::TickWidgetAnimPreview(UWidget* FallbackWidget, const TA
 		}
 	}
 
+	const float ScaledDelta = DeltaTime * FMath::Max(Settings.PlaybackSpeed, 0.01f);
+
 	// Holds run on real time, not scaled time: they're dead air between animations, not part of them.
 	if (State.HoldRemaining > 0.f)
 	{
 		State.HoldRemaining -= DeltaTime;
 		if (State.HoldRemaining > 0.f)
 		{
+			// Only Shown / Hidden are ever held, and ticking those just keeps any looping layers moving
+			// through the hold instead of freezing them for its length.
+			TickPlaybackInternal(FallbackWidget, InAnimations, OutAnimations, State.Playback, ScaledDelta, BaselinePtr);
 			return true;
 		}
 		State.HoldRemaining = 0.f;
@@ -716,7 +909,6 @@ bool UWidgetAnimLibrary::TickWidgetAnimPreview(UWidget* FallbackWidget, const TA
 	}
 
 	const EWidgetAnimPhase PhaseBefore = State.Playback.Phase;
-	const float ScaledDelta = DeltaTime * FMath::Max(Settings.PlaybackSpeed, 0.01f);
 	TickPlaybackInternal(FallbackWidget, InAnimations, OutAnimations, State.Playback, ScaledDelta, BaselinePtr);
 
 	if (State.Playback.Phase != PhaseBefore && bLooping)
@@ -732,7 +924,15 @@ bool UWidgetAnimLibrary::TickWidgetAnimPreview(UWidget* FallbackWidget, const TA
 	}
 
 	const bool bIsPlaying = State.Playback.Phase == EWidgetAnimPhase::PlayingIn || State.Playback.Phase == EWidgetAnimPhase::PlayingOut;
-	return bIsPlaying || State.HoldRemaining > 0.f || bLooping;
+
+	// Play In Once / Play Out Once: the stack has landed, but a looping layer in it is still moving and
+	// needs frames. Returning false here stopped the active timer, so the loop never visibly ran.
+	const bool bShowingOut = State.Playback.Phase == EWidgetAnimPhase::PlayingOut || State.Playback.Phase == EWidgetAnimPhase::Hidden;
+	const bool bLayersStillRunning = bShowingOut
+		? HasRunningLayers(OutAnimations, State.Playback.OutStates)
+		: HasRunningLayers(InAnimations, State.Playback.InStates);
+
+	return bIsPlaying || State.HoldRemaining > 0.f || bLooping || bLayersStillRunning;
 }
 
 // =====================================================================================================
@@ -878,6 +1078,7 @@ void UWidgetAnimLibrary::StartWidgetAnimTrack(FWidgetAnimPlayer& Player, FName A
 	Track.SourceIndex = SourceIndex;
 	Track.bIsOut = bIsOut;
 	Track.bFinished = false;
+	Track.bSettled = false;
 	Track.bHoldWhenFinished = bHoldWhenFinished;
 	Track.Speed = FMath::Max(Speed, 0.01f);
 	Track.Settings = Settings;
@@ -905,8 +1106,66 @@ void UWidgetAnimLibrary::StopWidgetAnimTracks(FWidgetAnimPlayer& Player, const T
 			// Left in place and marked done, so a track asked to stop holds where it got to rather than
 			// snapping back to the baseline mid-motion.
 			Player.Tracks[Index].bFinished = true;
+			Player.Tracks[Index].bSettled = true;
 		}
 	}
+}
+
+bool UWidgetAnimLibrary::EndWidgetAnimTrackLoops(FWidgetAnimPlayer& Player, FName AnimId, bool bSoftSettle)
+{
+	if (AnimId.IsNone())
+	{
+		return false;
+	}
+
+	bool bAnyAffected = false;
+
+	for (FWidgetAnimTrack& Track : Player.Tracks)
+	{
+		if (Track.bFinished || Track.AnimId != AnimId)
+		{
+			continue;
+		}
+
+		// Normally already in step; guarded so a track that has not been ticked yet cannot index past the end.
+		if (Track.States.Num() != Track.Settings.Num())
+		{
+			ResetWidgetAnimations(Track.Settings, Track.States);
+		}
+
+		for (int32 Index = 0; Index < Track.Settings.Num(); ++Index)
+		{
+			const FWidgetAnimSettings& Settings = Track.Settings[Index];
+			FWidgetAnimState& State = Track.States[Index];
+			if (State.bFinished)
+			{
+				continue;
+			}
+
+			if (bSoftSettle)
+			{
+				// Non-looping layers already run to their end without being told.
+				if (Settings.bLoop)
+				{
+					State.bSettleRequested = true;
+				}
+			}
+			else
+			{
+				// Straight to the end pose. The next tick sees every layer finished, marks the track
+				// finished and reports it, and applies this pose (or drops the track if it doesn't hold).
+				// A finished clock is always evaluated at the end of its timeline, whatever CycleTime says.
+				State.DelayRemaining = 0.f;
+				State.bPlayingForward = true;
+				State.bFinished = true;
+				State.bSettleRequested = false;
+			}
+		}
+
+		bAnyAffected = true;
+	}
+
+	return bAnyAffected;
 }
 
 bool UWidgetAnimLibrary::AreWidgetAnimTracksPlaying(const FWidgetAnimPlayer& Player, const TArray<FName>& AnimIds)
@@ -949,10 +1208,18 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 			continue;
 		}
 
-		const bool bJustFinished = TickAnimationsInto(Track.Settings, Track.States, DeltaTime * Track.Speed, Track.bIsOut, Result);
-		if (bJustFinished)
+		// Finished and settled are separate questions. A track is only finished once EVERY layer has
+		// stopped - an endless loop never does until something ends it. Marking a track finished as
+		// soon as its non-looping layers were done (which, for a stack made only of loops, was on its
+		// very first frame) is what stopped loops from ever advancing: finished tracks are only
+		// re-posed at zero delta.
+		bool bAllComplete = false;
+		Track.bSettled = TickAnimationsInto(Track.Settings, Track.States, DeltaTime * Track.Speed, Track.bIsOut, Result, &bAllComplete);
+
+		if (bAllComplete)
 		{
 			Track.bFinished = true;
+			Track.bSettled = true;
 			OutJustFinished.AddUnique(Track.AnimId);
 		}
 		else

@@ -8,73 +8,26 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="dc1934b2-75b5-4bee-9119-3fe06808e968" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/Actions/ButtonAction.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/Actions/ButtonAction.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/Actions/ContextMenuInterface.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/Actions/ContextMenuPayload.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/Actions/ContextMenuPayload.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuBuilderBase.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuBuilderBase.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButtonEvents.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuPresetDataAsset.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Sound/UISoundTypes.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Sound/UISoundTypes.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimDesignerPreview.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimDesignerPreview.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimHost.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimHost.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreviewBox.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreviewBox.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDThumbnailRenderer.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDThumbnailRenderer.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDAssetTypeActions.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDAssetTypeActions.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.h" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.cpp" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Config/DefaultEngine.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Config/DefaultEngine.ini" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Config/DefaultGame.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Config/DefaultGame.ini" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Config/DefaultNameTBD.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Config/DefaultNameTBD.ini" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/DA_InfoCard_WidgetAnim_Example.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/DA_InfoCard_WidgetAnim_Example.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_InfoCard_Context_RightClick_Example.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_InfoCard_Context_RightClick_Example.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_InfoCard_WidgetAnim_Example.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_InfoCard_WidgetAnim_Example.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/Icons/Internal/smooth-shooting-star-large.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/Icons/Internal/smooth-shooting-star-large.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/Radio_Button.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/Radio_Button.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/RightClickCard.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/RightClickCard.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_Menu_Example.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_Menu_Example.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/NameTBD.uplugin" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/NameTBD.uplugin" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardAnchor.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardAnchor.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardAnchor.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardAnchor.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardSpecDataAsset.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardSpecDataAsset.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTypes.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTypes.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTypes.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTypes.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WidgetAnimationPreview.uasset" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardWidget.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardWidget.cpp" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardWidget.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardWidget.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/DeveloperSettings/DragVisualSettings.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/DeveloperSettings/DragVisualSettings.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/DeveloperSettings/InfoCardDeveloperSettings.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/DeveloperSettings/InfoCardDeveloperSettings.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/DeveloperSettings/InfoCardDeveloperSettings.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/DeveloperSettings/InfoCardDeveloperSettings.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Menu/MenuManagerComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Menu/MenuManagerComponent.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Menu/MenuManagerComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Menu/MenuManagerComponent.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Menu/MenuScreenInterface.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Menu/MenuScreenInterface.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Menu/MenuTypes.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Menu/MenuTypes.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/NameTBD.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/NameTBD.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/NameTBD.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/NameTBD.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Search/SearchLibrary.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Search/SearchLibrary.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Search/SearchableItemInterface.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Search/SearchableItemInterface.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Search/W_SearchBarBase.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Search/W_SearchBarBase.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Search/W_SearchBarBase.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Search/W_SearchBarBase.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/UI/W_DragVisualBase.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/UI/W_DragVisualBase.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/UI/W_DragVisualBase.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/UI/W_DragVisualBase.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/UserWidget_Animatable.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/UserWidget_Animatable.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/UserWidget_Animatable.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/UserWidget_Animatable.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/NameTBD.Build.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/NameTBD.Build.cs" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/InfoCardWidget_Inventory.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/InfoCardWidget_Inventory.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/InfoCardWidget_Inventory.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/InfoCardWidget_Inventory.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/InventoryInfoCardPayloads.h" beforeDir="false" afterPath="$PROJECT_DIR$/Source/tps_test/Inventory/UI/InventoryInfoCardPayloads.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreviewBox.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreviewBox.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/NameTBDEditor.Build.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/NameTBDEditor.Build.cs" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -102,11 +55,14 @@
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Plugins/Developer/Concert/ConcertSync/ConcertSyncServer/Source/ConcertSyncServer/ConcertSyncServer.Build.cs" root0="SKIP_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Plugins/Enterprise/DatasmithC4DImporter/Source/DatasmithC4DTranslator/DatasmithC4DTranslator.Build.cs" root0="SKIP_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Private/DiffControl.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Private/FiBSearchInstance.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Private/FieldNotifyToggle.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Private/SBlueprintDiff.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Private/SBlueprintRevisionMenu.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Private/SSCSEditor.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Private/Tests/BlueprintEditorTests.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Public/BlueprintEditorModes.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Public/BlueprintEditorModule.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Public/BlueprintNamespaceUtilities.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Public/ImaginaryBlueprintData.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Public/ReviewComments.h" root0="FORCE_HIGHLIGHTING" />
@@ -114,6 +70,7 @@
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Kismet/Public/SMyBlueprint.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/MovieSceneTools/Private/Conditions/MovieSceneDirectorBlueprintConditionExtension.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Persona/Private/SAnimCurveEd.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Persona/Private/SAnimMontageSectionsPanel.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/Persona/Private/SAnimationScrubPanel.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/UnrealEd/Classes/Editor/EditorEngine.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../Shared/Epic Games/UE_5.7/Engine/Source/Editor/UnrealEd/Private/SkeletalMeshEdit.cpp" root0="FORCE_HIGHLIGHTING" />
@@ -149,12 +106,9 @@
     <setting file="file://$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDThumbnailRenderer.cpp.cpp" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDThumbnailRenderer.cpp.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDThumbnailRenderer.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDAssetTypeActions.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDAssetTypeActions.h" root0="FORCE_HIGHLIGHTING" />
-    <setting file="file://$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/UI/InfoCardWidget_Inventory.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/UI/InfoCardWidget_Inventory.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/Source/tps_test/Inventory/UI/InventoryInfoCardPayloads.h" root0="FORCE_HIGHLIGHTING" />
@@ -179,21 +133,21 @@
     <option name="sortByType" value="true" />
     <option name="sortKey" value="BY_TYPE" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.cidr.known.project.marker": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "RunOnceActivity.readMode.enableVisualFormatting": "true",
-    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "cidr.known.project.marker": "true",
-    "codeWithMe.voiceChat.enabledByDefault": "false",
-    "git-widget-placeholder": "main",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "reference.settingsdialog.IDE.editor.colors.ColorSchemeFont"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.cidr.known.project.marker&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.readMode.enableVisualFormatting&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;cidr.known.project.marker&quot;: &quot;true&quot;,
+    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;reference.settingsdialog.IDE.editor.colors.ColorSchemeFont&quot;
   }
-}]]></component>
+}</component>
   <component name="RunManager">
     <configuration name="tps_test" type="Uproject" factoryName="rider.uproject">
       <configuration_1 setup="1">

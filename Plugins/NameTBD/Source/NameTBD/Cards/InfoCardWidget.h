@@ -58,7 +58,7 @@ public:
 	FVector2D Offset = FVector2D(0.0f, 0.0f);
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "InfoCard")
-	bool UpdatesPositionOnTick = true;
+	bool UpdatesPositionOnTick = false;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "InfoCard")
 	float HoverAnchorPadding = 8.f;
@@ -129,7 +129,7 @@ public:
 	bool bIgnoresMenuStateChange = false;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere, Category = "InfoCard")
-	bool bCloseOnClickOutside = true;
+	bool bCloseOnClickOutside = false;
 
 	/**
 	 * Set from FInfoCardSpec::RemoveCardOnPressing via SetupCard. See
@@ -281,6 +281,27 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "InfoCard|Position")
 	void UpdatePosition();
+
+	/**
+	 * True while this card is placed directly in a layout (dragged into a Widget Blueprint's hierarchy, or
+	 * added to a panel by hand) rather than spawned into the viewport by a UInfoCardAnchor. Resolved in
+	 * NativeConstruct.
+	 *
+	 * An embedded card is owned by its layout: it is never positioned or sized through the viewport, never
+	 * registered in ActiveCards (so menu-state changes, click-away dismissal, keep-open and overlap
+	 * avoidance all leave it alone), and never hit-test blocked while animating in. It only goes away when
+	 * something explicitly calls CloseCard / RemoveFromParent on it.
+	 */
+	UFUNCTION(BlueprintPure, Category = "InfoCard")
+	bool IsEmbeddedInLayout() const { return bEmbeddedInLayout; }
+
+	/**
+	 * Embedded cards only (see IsEmbeddedInLayout). UUserWidget defaults to Self Hit Test Invisible, so the
+	 * card's own background never receives the cursor. When on, an embedded card left at that default is
+	 * promoted to Visible on construct. Any other visibility you chose is left alone.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InfoCard|Embedded")
+	bool bHitTestableWhenEmbedded = true;
 
 	/**
 	 * True if the cursor is currently inside this card's "keep open" region:
@@ -790,6 +811,12 @@ protected:
 	 * never block anything underneath it.
 	 */
 	void UpdateAnimationHitTestBlock();
+
+	/** Whether this card counts as placed in a layout rather than spawned into the viewport. Evaluates live; NativeConstruct caches it. */
+	bool ComputeEmbeddedInLayout() const;
+
+	/** Cached result of ComputeEmbeddedInLayout, set in NativeConstruct and cleared in NativeDestruct. See IsEmbeddedInLayout. */
+	bool bEmbeddedInLayout = false;
 
 	/** Whether UpdateAnimationHitTestBlock currently has this card hit-test invisible. */
 	bool bHitTestBlockedForAnimation = false;

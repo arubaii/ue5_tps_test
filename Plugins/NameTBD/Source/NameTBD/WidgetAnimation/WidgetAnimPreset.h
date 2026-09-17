@@ -26,11 +26,13 @@ class UWidget;
  * That is why this is a list and not a single type.
  *
  * PREVIEWING ONE
- * Drop a Widget Anim Preview Box into any Widget Blueprint, add an entry pointing at this asset and set
- * Preview Mode to Loop In and Out. It plays in the UMG designer, no compile and no PIE. The box is a
- * plain UBorder underneath, so size and colour it however you like.
+ * Press View Animation Preview at the top of this asset. It opens the WidgetAnimationBuilder Widget
+ * Blueprint playing this animation, and edits made here show up there as they are made.
+ *
+ * MAKING ONE
+ * Build the layers in WidgetAnimationBuilder and press Create Widget Animation, which saves a WA_ asset.
  */
-UCLASS(BlueprintType, meta = (DisplayName = "Widget Animation"))
+UCLASS(BlueprintType, meta = (DisplayName = "Widget Animation", PrioritizeCategories = "Preview"))
 class NAMETBD_API UWidgetAnimPresetAsset : public UDataAsset
 {
 	GENERATED_BODY()
@@ -44,7 +46,24 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (TitleProperty = "AnimType"))
 	TArray<FWidgetAnimLayer> Layers;
 
+	/** Opens WidgetAnimationBuilder playing this animation. Edits made here keep showing there while it's open. 
+	 * 
+	 *  The widget blueprint 'WidgetAnimationBuilder' (exact naming)must exist somewhere in the project, 
+	 *  otherwise this button does nothing.
+	 *  
+	 *  To create the widget blueprint if you deleted it:
+	 *	  1. Create a widget blueprint parented to 'WidgetAnimBuilder'. This can go anywhere your project. 
+	 *	  2. Add an image widget and name it 'PreviewWidget'.
+	 *	  3. Choose whatever image you like (T_FivePointStar set to a gold color looks good for preview). 
+	 */
+	UFUNCTION(CallInEditor, Category = "Preview", meta = (DisplayName = "View Animation Preview"))
+	void ViewAnimationPreview();
+
 	virtual void PostLoad() override;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 private:
 
@@ -81,18 +100,30 @@ struct NAMETBD_API FWidgetAnimEntryBase
 	 * Leave it empty for anything that only ever plays as part of the widget's own entrance or exit. Give
 	 * it one - "Press", "Alert", "Refresh" - for anything you want to fire from Blueprint by name.
 	 * Several entries may share an ID, in which case they all start and stop together, which is how you
-	 * build one named effect out of animations on three different child widgets.
+	 * build one named effect out of animations on three different child widgets. Two entries with the same
+	 * ID on the SAME widget going the same direction are a conflict, and are reported as one at runtime.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Anim ID"))
 	FName AnimId;
 
+	/**
+	 * Repeats this animation. All of its layers loop together as one animation, so the stagger between
+	 * them plays again every loop. A delay every layer shares is only waited out the first time.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
 	bool bLoop = false;
 
+	/** Plays back to the start between plays instead of snapping there. Always comes to rest on the end pose. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "bLoop", EditConditionHides))
 	bool bPingPong = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "bLoop", EditConditionHides, ClampMin = "0", ToolTip = "0 loops forever."))
+	/**
+	 * How many times the animation plays through. 0 loops forever.
+	 *
+	 * With Ping Pong it plays back between plays, so 2 is forward, back, forward. Whatever the count, it
+	 * finishes on its end pose.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "bLoop", EditConditionHides, ClampMin = "0"))
 	int32 LoopCount = 0;
 
 	/** Also plays as the other half of the pair, backwards. An entrance authored once becomes its own exit. */

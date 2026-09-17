@@ -23,9 +23,22 @@ public class NameTBD : ModuleRules
 			new string[]
 			{
 				"Slate",
-				"SlateCore", 
-				"EnhancedInput", 
+				"SlateCore",
+				"EnhancedInput"
 			}
 		);
+
+		// Editor-only: Widget Anim Builder's Create Widget Animation button creates, saves and selects assets.
+		// Kept out of game builds, where that code is compiled out by WITH_EDITOR.
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(
+				new string[]
+				{
+					"UnrealEd",
+					"AssetTools"
+				}
+			);
+		}
 	}
 }

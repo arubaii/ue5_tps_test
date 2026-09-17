@@ -5,6 +5,12 @@
 #include "Components/Image.h"
 #include "Components/Widget.h"
 
+#if WITH_EDITOR
+#include "WidgetAnimBuilder.h"
+#endif
+
+#include <atomic>
+
 // =====================================================================================================
 // UWidgetAnimPresetAsset
 // =====================================================================================================
@@ -36,9 +42,42 @@ void UWidgetAnimPresetAsset::PostLoad()
 	AnimOut_DEPRECATED.Reset();
 }
 
+void UWidgetAnimPresetAsset::ViewAnimationPreview()
+{
+#if WITH_EDITOR
+	UWidgetAnimBuilder::OpenPreviewFor(this);
+#endif
+}
+
+#if WITH_EDITOR
+void UWidgetAnimPresetAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	// Keeps an open builder in step with the asset. A value still being dragged updates what is playing;
+	// a finished edit starts the animation over.
+	const bool bRestart = PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive;
+	UWidgetAnimBuilder::NotifyAnimationAssetEdited(this, bRestart);
+}
+#endif
+
 // =====================================================================================================
 // FWidgetAnimEntryBase
 // =====================================================================================================
+
+namespace
+{
+	/**
+	 * Process-unique loop group ids. Unique rather than per-array, so stacks built separately - an
+	 * entry list plus extra layers, In plus mirrored Out - can be concatenated without two different
+	 * animations ending up on one clock. Masked to stay non-negative, since INDEX_NONE means "ungrouped".
+	 */
+	int32 AllocateLoopGroup()
+	{
+		static std::atomic<uint32> NextLoopGroup{ 0 };
+		return static_cast<int32>(NextLoopGroup.fetch_add(1, std::memory_order_relaxed) & 0x7FFFFFFFu);
+	}
+}
 
 void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSettings, UWidget* Target) const
 {
@@ -53,6 +92,9 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 
 	OutSettings.Reserve(OutSettings.Num() + Animation->Layers.Num());
 
+	// Every layer of this use shares one clock, so the animation loops as the animation it was authored as.
+	const int32 LoopGroup = AllocateLoopGroup();
+
 	for (const FWidgetAnimLayer& Layer : Animation->Layers)
 	{
 		FWidgetAnimSettings Settings = Layer.ToSettings();
@@ -62,6 +104,8 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 		Settings.LoopCount = LoopCount;
 		Settings.bInvertAnimation = bInvertAnimation;
 		Settings.bMirrorInOut = bMirrorInOut;
+		Settings.PlaybackSpeed = PlaybackSpeed;
+		Settings.LoopGroup = LoopGroup;
 		Settings.TargetWidget = Target;
 		Settings.MaterialTargetImage = MaterialTarget;
 

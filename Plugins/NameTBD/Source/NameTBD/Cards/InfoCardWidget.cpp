@@ -10,6 +10,7 @@
 #include "Blueprint/WidgetTree.h"
 #include "Components/Widget.h"
 #include "Components/CanvasPanelSlot.h"
+#include "Components/PanelWidget.h"
 #include "Engine/GameInstance.h"
 #include "Framework/Application/IInputProcessor.h"
 #include "Framework/Application/SlateApplication.h"
@@ -198,7 +199,7 @@ void UInfoCardWidget::DispatchPressToActiveCards(bool bHasPosition, const FVecto
 	for (const TWeakObjectPtr<UInfoCardWidget>& WeakCard : Snapshot)
 	{
 		UInfoCardWidget* Card = WeakCard.Get();
-		if (!Card || Card->IsDesignTime())
+		if (!Card || Card->IsDesignTime() || Card->bEmbeddedInLayout)
 		{
 			continue;
 		}
@@ -300,6 +301,7 @@ void UInfoCardWidget::SetupCard(const FInfoCardSpec& Spec, UWidget* InAnchorWidg
 	bReappearOnClickDismiss = Spec.bReappearOnClickDismiss;
 	RemoveCardOnPressing = Spec.RemoveCardOnPressing;
 	bIgnoresMenuStateChange = Spec.bIgnoresMenuStateChange;
+	bCloseOnClickOutside = true; // Managed cards close on outside clicks by default
 	bDismissClickGetsConsumed = Spec.DismissClickGetsConsumed.Resolve(EInfoCardConfigurableBoolKind::DismissClickGetsConsumed);
 	bFlipToAvoidClipping = Spec.FlipToAvoidClipping.Resolve(EInfoCardConfigurableBoolKind::FlipToAvoidClipping);
 
@@ -540,15 +542,32 @@ void UInfoCardWidget::NativeConstruct()
 	bHasCardRect         = false;
 	bHasAppliedPosition  = false;
 
-	// AvoidOverlappingCards (on every OTHER card, checking against this one)
-	// needs to find this card here, and so does the press dispatch: a card
-	// not in this array is a card no press is ever offered to.
-	ActiveCards.AddUnique(this);
+	bEmbeddedInLayout = ComputeEmbeddedInLayout();
 
-	// Idempotent; see EnsurePressWatcher. Called from here as well as
-	// SetupCard so a card built by hand, without going through an anchor,
-	// still gets a working dismissal path.
-	EnsurePressWatcher();
+	if (bEmbeddedInLayout)
+	{
+		// Placed in a Widget Blueprint (or a panel) rather than spawned by an
+		// anchor. Deliberately NOT added to ActiveCards: that list is what
+		// menu-state changes and press dismissal walk to find cards to close,
+		// and closing ends in RemoveFromParent, which pulled the card straight
+		// back out of the layout it was placed in on its first frame.
+		if (bHitTestableWhenEmbedded && GetVisibility() == ESlateVisibility::SelfHitTestInvisible)
+		{
+			SetVisibility(ESlateVisibility::Visible);
+		}
+	}
+	else
+	{
+		// AvoidOverlappingCards (on every OTHER card, checking against this one)
+		// needs to find this card here, and so does the press dispatch: a card
+		// not in this array is a card no press is ever offered to.
+		ActiveCards.AddUnique(this);
+
+		// Idempotent; see EnsurePressWatcher. Called from here as well as
+		// SetupCard so a card built by hand, without going through an anchor,
+		// still gets a working dismissal path.
+		EnsurePressWatcher();
+	}
 
 	bHasBeenConstructed = true;
 
@@ -604,15 +623,57 @@ void UInfoCardWidget::NativeDestruct()
 		CardAnimation->NotifyOwnerDestructed();
 	}
 
+	// Re-evaluated on the next NativeConstruct, in case the widget is re-parented.
+	bEmbeddedInLayout = false;
+
 	Super::NativeDestruct();
+}
+
+bool UInfoCardWidget::ComputeEmbeddedInLayout() const
+{
+	// Anything an anchor set up belongs to the viewport, whatever else is true.
+	if (AnchorWidget.IsValid())
+	{
+		return false;
+	}
+
+	// In a panel slot: the panel owns position and size.
+	if (GetParent() != nullptr)
+	{
+		return true;
+	}
+
+	// The root of another Widget Blueprint's tree has no slot, but its outer is
+	// that tree. Cards added to the viewport are never a tree's root.
+	if (const UWidgetTree* OuterTree = Cast<UWidgetTree>(GetOuter()))
+	{
+		return OuterTree->RootWidget == this;
+	}
+
+	return false;
 }
 
 void UInfoCardWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
 
+	if (IsDesignTime())
+	{
+		return;
+	}
+
 	ElapsedTime += InDeltaTime;
 	++FramesSinceConstruct;
+
+	if (bEmbeddedInLayout)
+	{
+		// The layout owns this card: no viewport positioning (SetPositionInViewport /
+		// SetDesiredSizeInViewport on a slotted widget hands it to the game viewport
+		// subsystem), no anchor geometry, no dismissal, no keep-open.
+		IsFirstFrame = false;
+		UpdateAnimationHitTestBlock();
+		return;
+	}
 
 	if (UpdatesPositionOnTick || IsFirstFrame)
 	{
@@ -799,7 +860,7 @@ void UInfoCardWidget::DispatchGlobalMenuStateChanged(FGameplayTag ScreenTag, boo
 
 void UInfoCardWidget::HandleMenuStateChanged(FGameplayTag ScreenTag, bool bIsOpen)
 {
-	if (bIgnoresMenuStateChange || bIsPinned)
+	if (bIgnoresMenuStateChange || bIsPinned || bEmbeddedInLayout)
 	{
 		return;
 	}
@@ -861,7 +922,9 @@ void UInfoCardWidget::ApplyAdditiveAnimations()
 void UInfoCardWidget::UpdateAnimationHitTestBlock()
 {
 	const bool bIsPlayingIn = CardAnimation && CardAnimation->GetAnimPhase() == EWidgetAnimPhase::PlayingIn;
-	const bool bShouldBlock = IsClosing() || (bIsPlayingIn && SourceCardType == ECardType::Hover);
+	// The intro block only exists to stop a Hover card stealing the cursor from its
+	// anchor. An embedded card has no anchor, so it stays hit-testable throughout.
+	const bool bShouldBlock = IsClosing() || (bIsPlayingIn && SourceCardType == ECardType::Hover && !bEmbeddedInLayout);
 
 	if (bShouldBlock == bHitTestBlockedForAnimation)
 	{
@@ -2338,6 +2401,17 @@ void UInfoCardWidget::RefreshAnchorGeometry()
 
 void UInfoCardWidget::UpdatePosition()
 {
+	// Also guards Blueprint calls: an embedded card is positioned by its panel.
+	if (bEmbeddedInLayout)
+	{
+		return;
+	}
+
+	if (PositionMode == EInfoCardPosition::ToIcon && !AnchorWidget.IsValid())
+	{
+		return;
+	}
+
 	const bool bFillIcon = IsFillingIcon();
 
 	if (PositionMode == EInfoCardPosition::ToIcon)

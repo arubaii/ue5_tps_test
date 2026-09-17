@@ -127,6 +127,20 @@ public:
 	TArray<FWidgetAnimEntry> AnimOut;
 
 	/**
+	 * Plain animation layers played on top of Anim In, every time it plays.
+	 *
+	 * For a touch that belongs to this one widget and isn't worth a Widget Animation asset of its own. The
+	 * layers animate the widget this component is on, have no Anim ID (so Play Widget Animations By Id only
+	 * includes them when it is asked to play everything), and are not mirrored into Anim Out.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Additive Anim Layers In", TitleProperty = "AnimType"))
+	TArray<FWidgetAnimLayer> AdditiveAnimLayersIn;
+
+	/** Plain animation layers played on top of Anim Out, every time it plays. See Additive Anim Layers In. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Additive Anim Layers Out", TitleProperty = "AnimType"))
+	TArray<FWidgetAnimLayer> AdditiveAnimLayersOut;
+
+	/**
 	 * Whether animations compose over whatever each target was authored as, instead of replacing it.
 	 *
 	 * Off (the default): a Fade ending at 1 means opacity 1, full stop, even on a widget authored at 0.5.
@@ -168,17 +182,24 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Animation")
 	EWidgetAnimPhase GetAnimPhase() const { return AnimPlayer.Phase; }
 
-	/** True if any track going in this direction is still running. */
+	/**
+	 * True if any track going in this direction is still running. An endlessly looping track counts as
+	 * running until its loop is ended, even after the rest of its direction has landed.
+	 */
 	UFUNCTION(BlueprintPure, Category = "Animation")
 	bool IsPlayingInDirection(bool bIsOut) const;
 
+	/**
+	 * Rebuilds the stacks the component plays from Anim In / Anim Out and the additive layers. Call it after
+	 * changing any of those at runtime.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Animation")
 	void RebuildEffectiveAnimations();
 
 	/**
-	 * Extra layers merged on top of Anim In / Anim Out, for callers that build FWidgetAnimSettings
-	 * themselves - the info card additive animations being the case this exists for. A null Target
-	 * Widget on a layer animates the component's owner. Replaces whatever was set before.
+	 * Extra layers merged on top of Anim In / Anim Out (after the additive layers), for callers that build
+	 * FWidgetAnimSettings themselves - the info card additive animations being the case this exists for.
+	 * A null Target Widget on a layer animates the component's owner. Replaces whatever was set before.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Animation")
 	void SetExtraAnimSettings(const TArray<FWidgetAnimSettings>& InExtraAnimIn, const TArray<FWidgetAnimSettings>& InExtraAnimOut);
@@ -211,6 +232,28 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Animation", meta = (AutoCreateRefTerm = "AnimIds"))
 	bool AreWidgetAnimationsPlayingById(const TArray<FName>& AnimIds) const;
+
+	/**
+	 * Ends the looping of the running animation with this Anim ID, in either direction.
+	 *
+	 * Soft Settle on: the animation finishes the loop it is in, then stops on its end pose. A ping-pong
+	 * loop caught on its way back plays forward once more so it settles rather than snapping.
+	 * Soft Settle off: the animation ends immediately, jumping to its end pose.
+	 *
+	 * Every running entry with this ID is ended together, the same way they start together. Does nothing
+	 * if AnimId is None, is not playing, or is conflicting (two entries with this ID on the same widget in
+	 * the same direction) - the last case also puts an error on screen.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Animation")
+	void EndLoopingAnimation(FName AnimId, bool bSoftSettle = true);
+
+	/**
+	 * Anim IDs used by more than one entry on the same widget going the same direction (mirrored copies
+	 * included), as of the last Rebuild Effective Animations. Sharing an ID across different widgets is
+	 * intended and is not listed here.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Animation")
+	TArray<FName> GetConflictingAnimationIds() const { return ConflictingAnimIds; }
 
 	// -------------------------------------------------------------------------------------------------
 	// Owner and lookup
@@ -311,6 +354,13 @@ private:
 	UPROPERTY(Transient)
 	TArray<FWidgetAnimSettings> ExtraAnimOut;
 
+	/** Additive Anim Layers followed by the extra layers: everything without an Anim ID, played as one track. */
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimSettings> UnnamedAnimIn;
+
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimSettings> UnnamedAnimOut;
+
 	UPROPERTY(Transient)
 	FWidgetAnimPlayer AnimPlayer;
 
@@ -333,6 +383,9 @@ private:
 	/** Designer clock: an active timer on the owner's Slate widget, which is also what keeps the designer repainting. */
 	TWeakPtr<FActiveTimerHandle> PreviewTimerHandle;
 	TWeakPtr<SWidget> PreviewTimerWidget;
+
+	/** Anim IDs two effective entries use on the same widget in the same direction. Rebuilt with the stacks. */
+	TArray<FName> ConflictingAnimIds;
 
 	/** Retries EnsureDesignerPreviewTimer until the owner's Slate widget exists. */
 	FTSTicker::FDelegateHandle PreviewRetryHandle;
@@ -358,6 +411,18 @@ private:
 	void RuntimeTick(float DeltaTime);
 
 	void StopDesignerPreview();
+
+	/** True while any track in this direction still has a layer that is going to end - endless loops excluded. Drives Phase. */
+	bool IsSettlingInDirection(bool bIsOut) const;
+
+	/** Recomputes ConflictingAnimIds from the effective stacks, reporting any conflict that is new. */
+	void RefreshAnimIdConflicts();
+
+	/** Puts the conflict error for AnimId on screen and in the log. */
+	void ReportAnimIdConflict(FName AnimId) const;
+
+	/** Reports each of AnimIds that is conflicting. Returns true if any was. */
+	bool ReportConflictsIn(const TArray<FName>& AnimIds) const;
 
 	static bool IsVisibleState(ESlateVisibility Visibility);
 };

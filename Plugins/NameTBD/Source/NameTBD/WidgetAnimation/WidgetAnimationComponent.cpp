@@ -4,11 +4,15 @@
 
 #include "Blueprint/WidgetTree.h"
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
+#include "Components/Image.h"
 #include "Components/PanelWidget.h"
 #include "Components/Widget.h"
 #include "Engine/Blueprint.h"
+#include "Engine/Engine.h"
 #include "Serialization/CustomVersion.h"
 #include "Widgets/SWidget.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimationComponent, Log, All);
 
 const FGuid FWidgetAnimationComponentVersion::GUID(0x4E86197C, 0x6A5440B8, 0x9235D438, 0x82E3D644);
 
@@ -22,12 +26,33 @@ namespace
 		TEXT("WidgetAnimationComponentVer"));
 
 	// Entry tracks use SourceIndex 0..N-1 (their position in the entry array), so a negative sentinel can
-	// never collide with one. This is what lets ExtraAnimIn / ExtraAnimOut run as their own track without
-	// an Anim ID and still be found again to stop or restart.
-	constexpr int32 ExtraAnimSourceIndex = -1;
+	// never collide with one. This is what lets the unnamed layers - Additive Anim Layers plus anything
+	// handed over with SetExtraAnimSettings - run as their own track without an Anim ID and still be found
+	// again to stop or restart.
+	constexpr int32 UnnamedLayersSourceIndex = -1;
 
 	/** How many frames the designer preview waits for the owner's Slate widget before giving up. */
 	constexpr int32 PreviewTimerRetryFrames = 30;
+
+	/** How long an Anim ID conflict error stays on screen. Re-reporting the same conflict refreshes it rather than stacking. */
+	constexpr float AnimIdConflictMessageSeconds = 10.f;
+
+	/**
+	 * Additive layers as runtime settings. No Target Widget, so they animate the widget the component is
+	 * on; material layers use it too when it is an Image, as an entry with no target would.
+	 */
+	void AppendAdditiveLayers(const TArray<FWidgetAnimLayer>& Layers, UWidget* Owner, TArray<FWidgetAnimSettings>& OutSettings)
+	{
+		UImage* MaterialTarget = Cast<UImage>(Owner);
+
+		OutSettings.Reserve(OutSettings.Num() + Layers.Num());
+		for (const FWidgetAnimLayer& Layer : Layers)
+		{
+			FWidgetAnimSettings Settings = Layer.ToSettings();
+			Settings.MaterialTargetImage = MaterialTarget;
+			OutSettings.Add(MoveTemp(Settings));
+		}
+	}
 
 	template <typename StructType>
 	bool AreStructArraysIdentical(const TArray<StructType>& A, const TArray<StructType>& B)
@@ -312,9 +337,107 @@ void UWidgetAnimationComponent::RebuildEffectiveAnimations()
 	UWidgetAnimEntryLibrary::FlattenEntries(EffectiveInEntries, Resolver, FlattenedIn);
 	UWidgetAnimEntryLibrary::FlattenEntries(EffectiveOutEntries, Resolver, FlattenedOut);
 
-	// Extra layers go on top of the entry-authored stack.
-	FlattenedIn.Append(ExtraAnimIn);
-	FlattenedOut.Append(ExtraAnimOut);
+	// The unnamed layers: Additive Anim Layers first, then anything code handed over. They play as one
+	// track alongside the entries every time Anim In / Anim Out plays.
+	UnnamedAnimIn.Reset();
+	UnnamedAnimOut.Reset();
+	AppendAdditiveLayers(AdditiveAnimLayersIn, AnimOwner.Get(), UnnamedAnimIn);
+	AppendAdditiveLayers(AdditiveAnimLayersOut, AnimOwner.Get(), UnnamedAnimOut);
+	UnnamedAnimIn.Append(ExtraAnimIn);
+	UnnamedAnimOut.Append(ExtraAnimOut);
+
+	// On top of the entry-authored stack, which is also what the designer preview and the baselines read.
+	FlattenedIn.Append(UnnamedAnimIn);
+	FlattenedOut.Append(UnnamedAnimOut);
+
+	RefreshAnimIdConflicts();
+}
+
+void UWidgetAnimationComponent::RefreshAnimIdConflicts()
+{
+	TArray<FName> Found;
+	UWidget* Owner = AnimOwner.Get();
+
+	// Sharing an ID across entries is intended - one named effect built from animations on several widgets.
+	// Two entries under one ID going the same direction on the SAME widget is not: a by-ID call stacks
+	// both onto that widget, and there is no telling which was meant. Checked per direction because an In
+	// entry and an Out entry sharing an ID is the ordinary way to pair them.
+	auto Scan = [this, Owner, &Found](const TArray<FWidgetAnimEntry>& Entries)
+	{
+		TSet<TPair<FName, UWidget*>> Seen;
+		for (const FWidgetAnimEntry& Entry : Entries)
+		{
+			if (Entry.AnimId.IsNone() || !Entry.IsUsable())
+			{
+				continue;
+			}
+
+			// No target (or one that doesn't resolve) animates the owner, exactly as the library falls back.
+			UWidget* Target = ResolveAnimTarget(Entry.TargetWidgetName);
+			if (!Target)
+			{
+				Target = Owner;
+			}
+
+			bool bAlreadySeen = false;
+			Seen.Add(TPair<FName, UWidget*>(Entry.AnimId, Target), &bAlreadySeen);
+			if (bAlreadySeen)
+			{
+				Found.AddUnique(Entry.AnimId);
+			}
+		}
+	};
+
+	Scan(EffectiveInEntries);
+	Scan(EffectiveOutEntries);
+
+	Found.Sort(FNameLexicalLess());
+
+	// Reported when a conflict first appears rather than on every rebuild, so the log is not flooded.
+	for (const FName& AnimId : Found)
+	{
+		if (!ConflictingAnimIds.Contains(AnimId))
+		{
+			ReportAnimIdConflict(AnimId);
+		}
+	}
+
+	ConflictingAnimIds = MoveTemp(Found);
+}
+
+void UWidgetAnimationComponent::ReportAnimIdConflict(FName AnimId) const
+{
+	const UWidget* Owner = AnimOwner.Get();
+	const FString TargetWidgetName = Owner ? Owner->GetName() : FString(TEXT("None"));
+
+	const FString Message = FString::Printf(
+		TEXT("[WidgetAnimationComponent.%s] Animation ID '%s' is currently conflicting. Change the ID(s) which conflict for proper functionality."),
+		*TargetWidgetName,
+		*AnimId.ToString());
+
+	UE_LOG(LogWidgetAnimationComponent, Error, TEXT("%s"), *Message);
+
+	if (GEngine)
+	{
+		// Keyed on this component and this ID, so reporting the same conflict again replaces the line
+		// on screen instead of adding another copy of it.
+		const uint64 Key = (static_cast<uint64>(PointerHash(this)) << 32) | static_cast<uint64>(GetTypeHash(AnimId));
+		GEngine->AddOnScreenDebugMessage(Key, AnimIdConflictMessageSeconds, FColor::Red, Message);
+	}
+}
+
+bool UWidgetAnimationComponent::ReportConflictsIn(const TArray<FName>& AnimIds) const
+{
+	bool bAnyConflict = false;
+	for (const FName& AnimId : AnimIds)
+	{
+		if (ConflictingAnimIds.Contains(AnimId))
+		{
+			ReportAnimIdConflict(AnimId);
+			bAnyConflict = true;
+		}
+	}
+	return bAnyConflict;
 }
 
 void UWidgetAnimationComponent::SetExtraAnimSettings(const TArray<FWidgetAnimSettings>& InExtraAnimIn, const TArray<FWidgetAnimSettings>& InExtraAnimOut)
@@ -481,7 +604,7 @@ void UWidgetAnimationComponent::PlayIn(bool bCascadeToChildren)
 		/*bRestartIfPlaying=*/true,
 		/*bHoldWhenFinished=*/true);
 
-	UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, ExtraAnimSourceIndex, ExtraAnimIn, /*bIsOut=*/false, /*Speed=*/1.f, /*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
+	UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, UnnamedAnimIn, /*bIsOut=*/false, /*Speed=*/1.f, /*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
 
 	AnimPlayer.Phase = EWidgetAnimPhase::PlayingIn;
 
@@ -518,7 +641,7 @@ void UWidgetAnimationComponent::PlayOut(bool bCascadeToChildren)
 		/*bRestartIfPlaying=*/true,
 		/*bHoldWhenFinished=*/true);
 
-	UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, ExtraAnimSourceIndex, ExtraAnimOut, /*bIsOut=*/true, /*Speed=*/1.f, /*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
+	UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, UnnamedAnimOut, /*bIsOut=*/true, /*Speed=*/1.f, /*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
 
 	AnimPlayer.Phase = EWidgetAnimPhase::PlayingOut;
 
@@ -569,6 +692,19 @@ bool UWidgetAnimationComponent::IsPlayingInDirection(bool bIsOut) const
 	return false;
 }
 
+bool UWidgetAnimationComponent::IsSettlingInDirection(bool bIsOut) const
+{
+	for (const FWidgetAnimTrack& Track : AnimPlayer.Tracks)
+	{
+		if (!Track.bSettled && Track.bIsOut == bIsOut)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 bool UWidgetAnimationComponent::TickAnimationPlayback(float DeltaTime)
 {
 	UWidget* Owner = AnimOwner.Get();
@@ -580,12 +716,13 @@ bool UWidgetAnimationComponent::TickAnimationPlayback(float DeltaTime)
 	TArray<FName> JustFinished;
 	UWidgetAnimLibrary::TickWidgetAnimPlayer(Owner, AnimPlayer, AnimBaselines, DeltaTime, JustFinished);
 
-	// Asked per direction, so a looping named animation can't hold the entrance open forever.
-	if (AnimPlayer.Phase == EWidgetAnimPhase::PlayingIn && !IsPlayingInDirection(/*bIsOut=*/false))
+	// Settled rather than playing: an endless loop is still playing, but it must not hold the entrance
+	// (or the exit, and with it the deferred visibility and OnOutAnimationFinished) open forever.
+	if (AnimPlayer.Phase == EWidgetAnimPhase::PlayingIn && !IsSettlingInDirection(/*bIsOut=*/false))
 	{
 		AnimPlayer.Phase = EWidgetAnimPhase::Shown;
 	}
-	else if (AnimPlayer.Phase == EWidgetAnimPhase::PlayingOut && !IsPlayingInDirection(/*bIsOut=*/true))
+	else if (AnimPlayer.Phase == EWidgetAnimPhase::PlayingOut && !IsSettlingInDirection(/*bIsOut=*/true))
 	{
 		AnimPlayer.Phase = EWidgetAnimPhase::Hidden;
 		HandleOutAnimationFinished();
@@ -672,6 +809,9 @@ void UWidgetAnimationComponent::PlayWidgetAnimationsById(const TArray<FName>& An
 		return;
 	}
 
+	// Reported, not refused: playing every entry that shares the ID is what this has always done.
+	ReportConflictsIn(AnimIds);
+
 	EnsureRuntimeBaselines();
 
 	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
@@ -687,11 +827,11 @@ void UWidgetAnimationComponent::PlayWidgetAnimationsById(const TArray<FName>& An
 		bRestartIfPlaying,
 		bHoldFinalPose);
 
-	// The extra layers have no Anim ID, so they only join a "play everything" call.
+	// Additive and extra layers have no Anim ID, so they only join a "play everything" call.
 	if (AnimIds.Num() == 0)
 	{
-		const TArray<FWidgetAnimSettings>& Extra = bReverse ? ExtraAnimOut : ExtraAnimIn;
-		UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, ExtraAnimSourceIndex, Extra, bReverse, PlaybackSpeed, bRestartIfPlaying, bHoldFinalPose);
+		const TArray<FWidgetAnimSettings>& Unnamed = bReverse ? UnnamedAnimOut : UnnamedAnimIn;
+		UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, Unnamed, bReverse, PlaybackSpeed, bRestartIfPlaying, bHoldFinalPose);
 	}
 
 	ApplyCurrentAnimPose();
@@ -699,6 +839,8 @@ void UWidgetAnimationComponent::PlayWidgetAnimationsById(const TArray<FName>& An
 
 void UWidgetAnimationComponent::StopWidgetAnimationsById(const TArray<FName>& AnimIds, bool bResetToStart)
 {
+	ReportConflictsIn(AnimIds);
+
 	UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, AnimIds, /*bRemoveTracks=*/bResetToStart);
 
 	if (bResetToStart)
@@ -710,7 +852,32 @@ void UWidgetAnimationComponent::StopWidgetAnimationsById(const TArray<FName>& An
 
 bool UWidgetAnimationComponent::AreWidgetAnimationsPlayingById(const TArray<FName>& AnimIds) const
 {
+	ReportConflictsIn(AnimIds);
 	return UWidgetAnimLibrary::AreWidgetAnimTracksPlaying(AnimPlayer, AnimIds);
+}
+
+void UWidgetAnimationComponent::EndLoopingAnimation(FName AnimId, bool bSoftSettle)
+{
+	if (!AnimOwner.IsValid() || AnimId.IsNone())
+	{
+		return;
+	}
+
+	// Ambiguous: ending one of several same-named animations and not the others is never what was meant.
+	if (ConflictingAnimIds.Contains(AnimId))
+	{
+		ReportAnimIdConflict(AnimId);
+		return;
+	}
+
+	const bool bAnyAffected = UWidgetAnimLibrary::EndWidgetAnimTrackLoops(AnimPlayer, AnimId, bSoftSettle);
+
+	// A soft settle carries on under the normal clock. A hard end is posed now, so the jump to the end
+	// pose is on this frame rather than the next.
+	if (bAnyAffected && !bSoftSettle)
+	{
+		ApplyCurrentAnimPose();
+	}
 }
 
 // =====================================================================================================
