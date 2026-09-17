@@ -29,6 +29,7 @@ public class NameTBDEditor : ModuleRules
 			"UMGEditor",        // UWidgetBlueprint
 			"Projects",       
 			"AssetTools",
+			 "ToolMenus",
 		});
 		if (Target.bBuildEditor)
 		{
@@ -37,7 +38,7 @@ public class NameTBDEditor : ModuleRules
 				{
 					"UnrealEd",
 					"AssetTools",
-					"AssetRegistry"
+					"AssetRegistry",
 				}
 			);
 		}

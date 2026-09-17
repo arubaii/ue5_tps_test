@@ -172,6 +172,151 @@ namespace WidgetAnimLoop
 	}
 
 	/**
+	 * The same leader/group assignment TickAnimationsInto computes inline, factored out for the duration
+	 * helpers below so the two can't drift apart. TickAnimationsInto keeps its own inline copy rather than
+	 * calling this: it runs every frame, and its TInlineAllocator arrays are worth leaving untouched.
+	 */
+	static void ComputeGroupSpans(
+		const TArray<FWidgetAnimSettings>& Animations,
+		TArray<int32, TInlineAllocator<16>>& OutLeaderOf,
+		TArray<FLayerSpan, TInlineAllocator<16>>& OutSpans,
+		TArray<float, TInlineAllocator<16>>& OutGroupLead,
+		TArray<float, TInlineAllocator<16>>& OutGroupEnd)
+	{
+		const int32 NumLayers = Animations.Num();
+		OutLeaderOf.SetNum(NumLayers);
+		OutSpans.SetNum(NumLayers);
+		OutGroupLead.Init(TNumericLimits<float>::Max(), NumLayers);
+		OutGroupEnd.Init(0.f, NumLayers);
+
+		for (int32 Index = 0; Index < NumLayers; ++Index)
+		{
+			OutLeaderOf[Index] = Index;
+
+			const int32 Group = Animations[Index].LoopGroup;
+			if (Group != INDEX_NONE)
+			{
+				for (int32 Earlier = 0; Earlier < Index; ++Earlier)
+				{
+					if (Animations[Earlier].LoopGroup == Group)
+					{
+						OutLeaderOf[Index] = OutLeaderOf[Earlier];
+						break;
+					}
+				}
+			}
+
+			OutSpans[Index] = GetLayerSpan(Animations[Index]);
+
+			const int32 Leader = OutLeaderOf[Index];
+			OutGroupLead[Leader] = FMath::Min(OutGroupLead[Leader], OutSpans[Index].Start);
+			OutGroupEnd[Leader] = FMath::Max(OutGroupEnd[Leader], OutSpans[Index].Start + OutSpans[Index].Length);
+		}
+	}
+
+	/**
+	 * Analytic version of what AdvanceTimeline walks toward frame by frame: how long a group's clock takes
+	 * to come to rest, in the same track-timeline seconds AdvanceTimeline measures CycleTime in. -1 if it
+	 * never rests on its own (IsEndlessLoop).
+	 *
+	 * The first leg always runs the group's whole 0..End span, lead-in included; every following leg is a
+	 * shorter Lead..End trip, and with Ping Pong a full extra "play" after the first is a forward-back
+	 * pair of those trips - mirrors ShouldStartAnotherLeg exactly.
+	 */
+	static float GetGroupDuration(const FWidgetAnimSettings& Settings, float Lead, float End)
+	{
+		if (!Settings.bLoop)
+		{
+			return End;
+		}
+
+		if (UWidgetAnimLibrary::IsEndlessLoop(Settings))
+		{
+			return -1.f;
+		}
+
+		const int32 ExtraPlays = FMath::Max(Settings.LoopCount - 1, 0);
+		const float ReturnLegLength = End - Lead;
+
+		return Settings.bPingPong
+			? End + ExtraPlays * 2.f * ReturnLegLength
+			: End + ExtraPlays * ReturnLegLength;
+	}
+
+	/**
+	 * Cumulative seconds a leader's clock has actually played, across every completed leg and the one in
+	 * progress - unlike Clock.CycleTime itself, which AdvanceTimeline resets to Lead (or bounces between
+	 * Lead and End with Ping Pong) at the start of every leg after the first, so read alone it never grows
+	 * past one leg's length no matter how many legs have played.
+	 */
+	static float GetGroupElapsed(const FWidgetAnimSettings& Settings, const FWidgetAnimState& Clock, float Lead, float End)
+	{
+		if (!Settings.bLoop)
+		{
+			return Clock.CycleTime;
+		}
+
+		if (Clock.bFinished)
+		{
+			return GetGroupDuration(Settings, Lead, End);
+		}
+
+		if (Clock.LoopsCompleted <= 0)
+		{
+			// Still in the first leg, which runs the whole 0..End span - CycleTime already is cumulative.
+			return Clock.CycleTime;
+		}
+
+		// Every leg after the first is a Lead..End trip, whichever direction it runs, so each one adds
+		// exactly (End - Lead) seconds once it completes.
+		const float ReturnLegLength = End - Lead;
+		const float PriorCumulative = End + (Clock.LoopsCompleted - 1) * ReturnLegLength;
+		const float CurrentLegProgress = Clock.bPlayingForward ? (Clock.CycleTime - Lead) : (End - Clock.CycleTime);
+
+		return PriorCumulative + FMath::Max(CurrentLegProgress, 0.f);
+	}
+
+	/**
+	 * The leader whose GetGroupDuration is the largest - or, if any group is endless, the first such group
+	 * found - matching how GetStackDuration reduces a whole stack down to one number. OutDuration carries
+	 * that leader's own duration back out (-1 for endless). INDEX_NONE, with OutDuration left at 0, for an
+	 * empty stack.
+	 */
+	static int32 FindDrivingLeader(
+		const TArray<FWidgetAnimSettings>& Animations,
+		const TArray<int32, TInlineAllocator<16>>& LeaderOf,
+		const TArray<float, TInlineAllocator<16>>& GroupLead,
+		const TArray<float, TInlineAllocator<16>>& GroupEnd,
+		float& OutDuration)
+	{
+		OutDuration = 0.f;
+		int32 Driving = INDEX_NONE;
+
+		for (int32 Index = 0; Index < Animations.Num(); ++Index)
+		{
+			if (LeaderOf[Index] != Index)
+			{
+				continue;
+			}
+
+			const float GroupDuration = GetGroupDuration(Animations[Index], GroupLead[Index], GroupEnd[Index]);
+			if (GroupDuration < 0.f)
+			{
+				OutDuration = -1.f;
+				return Index;
+			}
+
+			if (Driving == INDEX_NONE || GroupDuration > OutDuration)
+			{
+				OutDuration = GroupDuration;
+				Driving = Index;
+			}
+		}
+
+		return Driving;
+	}
+
+	/**
 	 * Whether the leg that just ended is followed by another.
 	 *
 	 * Loop Count is how many times the animation plays through. With Ping Pong it plays back between
@@ -304,6 +449,22 @@ bool UWidgetAnimLibrary::HasRunningLayers(const TArray<FWidgetAnimSettings>& Ani
 	return false;
 }
 
+bool UWidgetAnimLibrary::BlocksSettle(const FWidgetAnimSettings& Settings, const FWidgetAnimState& State)
+{
+	if (State.bFinished)
+	{
+		return false;
+	}
+
+	if (IsEndlessLoop(Settings) && State.LoopsCompleted >= 1)
+	{
+		// It has played through its span at least once, so what's left is ongoing flourish, not arrival.
+		return false;
+	}
+
+	return true;
+}
+
 bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult, bool* bOutAllComplete)
 {
 	const int32 NumLayers = Animations.Num();
@@ -398,12 +559,11 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 		if (!States[Index].bFinished)
 		{
 			bAllComplete = false;
+		}
 
-			// An endless loop never ends by itself, so it must not hold the whole animation open forever.
-			if (!IsEndlessLoop(Settings))
-			{
-				bAllSettled = false;
-			}
+		if (BlocksSettle(Settings, States[Index]))
+		{
+			bAllSettled = false;
 		}
 	}
 
@@ -547,7 +707,7 @@ bool UWidgetAnimLibrary::AreWidgetAnimationsFinished(const TArray<FWidgetAnimSet
 {
 	for (int32 Index = 0; Index < Animations.Num() && Index < States.Num(); ++Index)
 	{
-		if (!States[Index].bFinished && !IsEndlessLoop(Animations[Index]))
+		if (BlocksSettle(Animations[Index], States[Index]))
 		{
 			return false;
 		}
@@ -965,6 +1125,88 @@ void UWidgetAnimLibrary::AppendWithMirroring(const TArray<FWidgetAnimSettings>& 
 			MirrorDestination.Add(Settings);
 		}
 	}
+}
+
+float UWidgetAnimLibrary::GetStackDuration(const TArray<FWidgetAnimSettings>& Settings)
+{
+	if (Settings.Num() == 0)
+	{
+		return 0.f;
+	}
+
+	TArray<int32, TInlineAllocator<16>> LeaderOf;
+	TArray<WidgetAnimLoop::FLayerSpan, TInlineAllocator<16>> Spans;
+	TArray<float, TInlineAllocator<16>> GroupLead;
+	TArray<float, TInlineAllocator<16>> GroupEnd;
+	WidgetAnimLoop::ComputeGroupSpans(Settings, LeaderOf, Spans, GroupLead, GroupEnd);
+
+	float Duration = 0.f;
+	WidgetAnimLoop::FindDrivingLeader(Settings, LeaderOf, GroupLead, GroupEnd, Duration);
+	return Duration;
+}
+
+float UWidgetAnimLibrary::GetStackElapsed(const TArray<FWidgetAnimSettings>& Settings, const TArray<FWidgetAnimState>& States)
+{
+	const int32 NumLayers = Settings.Num();
+	if (NumLayers == 0 || States.Num() != NumLayers)
+	{
+		// Not yet initialized for this stack - nothing has played, so nothing has elapsed.
+		return 0.f;
+	}
+
+	TArray<int32, TInlineAllocator<16>> LeaderOf;
+	TArray<WidgetAnimLoop::FLayerSpan, TInlineAllocator<16>> Spans;
+	TArray<float, TInlineAllocator<16>> GroupLead;
+	TArray<float, TInlineAllocator<16>> GroupEnd;
+	WidgetAnimLoop::ComputeGroupSpans(Settings, LeaderOf, Spans, GroupLead, GroupEnd);
+
+	// Only a leader's clock sits on the group's absolute timeline; a member's CycleTime is local to its
+	// own span instead (see TickAnimationsInto), so only leaders are read here.
+	float Elapsed = 0.f;
+	for (int32 Index = 0; Index < NumLayers; ++Index)
+	{
+		if (LeaderOf[Index] != Index)
+		{
+			continue;
+		}
+
+		const float GroupElapsed = WidgetAnimLoop::GetGroupElapsed(Settings[Index], States[Index], GroupLead[Index], GroupEnd[Index]);
+		Elapsed = FMath::Max(Elapsed, GroupElapsed);
+	}
+
+	return Elapsed;
+}
+
+bool UWidgetAnimLibrary::GetStackDrivingLoopInfo(const TArray<FWidgetAnimSettings>& Settings, bool& OutPingPong, float& OutLoopSeconds)
+{
+	OutPingPong = false;
+	OutLoopSeconds = 0.f;
+
+	if (Settings.Num() == 0)
+	{
+		return false;
+	}
+
+	TArray<int32, TInlineAllocator<16>> LeaderOf;
+	TArray<WidgetAnimLoop::FLayerSpan, TInlineAllocator<16>> Spans;
+	TArray<float, TInlineAllocator<16>> GroupLead;
+	TArray<float, TInlineAllocator<16>> GroupEnd;
+	WidgetAnimLoop::ComputeGroupSpans(Settings, LeaderOf, Spans, GroupLead, GroupEnd);
+
+	float Duration = 0.f;
+	const int32 Driving = WidgetAnimLoop::FindDrivingLeader(Settings, LeaderOf, GroupLead, GroupEnd, Duration);
+
+	if (Driving == INDEX_NONE || !Settings[Driving].bLoop)
+	{
+		return false;
+	}
+
+	const float ReturnLegLength = GroupEnd[Driving] - GroupLead[Driving];
+	OutPingPong = Settings[Driving].bPingPong;
+
+	// A round trip is there-and-back, so what a Ping Pong loop visibly repeats is double the one-way span.
+	OutLoopSeconds = OutPingPong ? ReturnLegLength * 2.f : ReturnLegLength;
+	return true;
 }
 
 // =====================================================================================================

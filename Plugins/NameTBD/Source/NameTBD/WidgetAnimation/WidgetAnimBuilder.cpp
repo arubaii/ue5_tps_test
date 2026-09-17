@@ -121,7 +121,8 @@ void UWidgetAnimBuilder::OnWidgetRebuilt()
 	Super::OnWidgetRebuilt();
 
 	// SynchronizeProperties can run before the Slate widget exists; this is the pass where it does.
-	if (UWidgetAnimDesignerPreview::ShouldRun(this))
+	// bPreviewPaused defaults true, so a freshly opened builder is not ticked into motion on its own.
+	if (!bPreviewPaused && UWidgetAnimDesignerPreview::ShouldRun(this))
 	{
 		EnsurePreviewTimer();
 	}
@@ -139,7 +140,7 @@ void UWidgetAnimBuilder::BeginDestroy()
 	Super::BeginDestroy();
 }
 
-void UWidgetAnimBuilder::RefreshPreview(bool bRestart)
+void UWidgetAnimBuilder::RefreshPreview(bool bRestart, bool bAnimate)
 {
 	if (!IsDesignTime())
 	{
@@ -157,6 +158,13 @@ void UWidgetAnimBuilder::RefreshPreview(bool bRestart)
 
 	UWidgetAnimDesignerPreview::Synchronize(this);
 
+	// Synchronize alone already leaves the widget at its authored, resting look. Only pose it into the
+	// animation on top when asked to - Reset asks with bAnimate false, so it stops right here.
+	if (!bAnimate)
+	{
+		return;
+	}
+
 	// Posed now: a held mode has already stopped its timer, so there may be no next tick to wait for.
 	if (UWidgetAnimDesignerPreview::ShouldRun(this))
 	{
@@ -164,12 +172,72 @@ void UWidgetAnimBuilder::RefreshPreview(bool bRestart)
 	}
 }
 
-void UWidgetAnimBuilder::RestartPreview()
+void UWidgetAnimBuilder::SetPreviewPaused(bool bPaused)
+{
+	if (bPreviewPaused == bPaused)
+	{
+		return;
+	}
+
+	bPreviewPaused = bPaused;
+
+	if (!IsDesignTime())
+	{
+		return;
+	}
+
+	// Resuming has to start the timer again. A paused TickFrame reports that it has nothing more to draw,
+	// and an active timer that says that is stopped by Slate there and then - so by the time Play is
+	// pressed there is no clock left to carry on with. EnsureTimer no-ops if one is somehow still running.
+	if (!bPreviewPaused && UWidgetAnimDesignerPreview::ShouldRun(this))
+	{
+		EnsurePreviewTimer();
+	}
+
+	// Posed once either way, so the freeze and the release are both visible on the frame they happen
+	// rather than on the next tick - which, when pausing, never comes.
+	if (UWidgetAnimDesignerPreview::ShouldRun(this))
+	{
+		UWidgetAnimDesignerPreview::TickFrame(this, 0.f);
+	}
+}
+
+float UWidgetAnimBuilder::GetPreviewElapsedSeconds() const
+{
+	const bool bShowingOut = PreviewState.Playback.Phase == EWidgetAnimPhase::PlayingOut
+		|| PreviewState.Playback.Phase == EWidgetAnimPhase::Hidden;
+
+	return bShowingOut
+		? UWidgetAnimLibrary::GetStackElapsed(FlattenedOut, PreviewState.Playback.OutStates)
+		: UWidgetAnimLibrary::GetStackElapsed(FlattenedIn, PreviewState.Playback.InStates);
+}
+
+float UWidgetAnimBuilder::GetPreviewTotalSeconds() const
+{
+	const bool bShowingOut = PreviewState.Playback.Phase == EWidgetAnimPhase::PlayingOut
+		|| PreviewState.Playback.Phase == EWidgetAnimPhase::Hidden;
+
+	return bShowingOut
+		? UWidgetAnimLibrary::GetStackDuration(FlattenedOut)
+		: UWidgetAnimLibrary::GetStackDuration(FlattenedIn);
+}
+
+bool UWidgetAnimBuilder::GetPreviewLoopInfo(bool& OutPingPong, float& OutLoopSeconds) const
+{
+	const bool bShowingOut = PreviewState.Playback.Phase == EWidgetAnimPhase::PlayingOut
+		|| PreviewState.Playback.Phase == EWidgetAnimPhase::Hidden;
+
+	return bShowingOut
+		? UWidgetAnimLibrary::GetStackDrivingLoopInfo(FlattenedOut, OutPingPong, OutLoopSeconds)
+		: UWidgetAnimLibrary::GetStackDrivingLoopInfo(FlattenedIn, OutPingPong, OutLoopSeconds);
+}
+
+void UWidgetAnimBuilder::ResetPreview()
 {
 #if WITH_EDITOR
-	RefreshLivePreviews(/*bRestart=*/true, /*bCopyAuthoredState=*/false);
+	RefreshLivePreviews(/*bRestart=*/true, /*bCopyAuthoredState=*/false, /*bAnimate=*/false);
 #else
-	RefreshPreview(/*bRestart=*/true);
+	RefreshPreview(/*bRestart=*/true, /*bAnimate=*/false);
 #endif
 }
 
@@ -191,15 +259,15 @@ void UWidgetAnimBuilder::CopyAuthoredStateFrom(const UWidgetAnimBuilder& Source)
 	PreviewPlaybackSpeed = Source.PreviewPlaybackSpeed;
 }
 
-void UWidgetAnimBuilder::RefreshLivePreviews(bool bRestart, bool bCopyAuthoredState)
+void UWidgetAnimBuilder::RefreshLivePreviews(bool bRestart, bool bCopyAuthoredState, bool bAnimate)
 {
 	// The Details panel edits a template - the Class Defaults, or the copy a parent Widget Blueprint keeps -
 	// while the viewport paints a separate preview instance. Refreshing only this object would change
 	// nothing visible; the live instances are found and updated directly.
-	RefreshPreview(bRestart);
+	RefreshPreview(bRestart, bAnimate);
 
 	const UWidgetAnimBuilder* Source = this;
-	WidgetAnimDesignerSync::ForEachPreviewOf(this, [Source, bRestart, bCopyAuthoredState](UObject* PreviewObject)
+	WidgetAnimDesignerSync::ForEachPreviewOf(this, [Source, bRestart, bCopyAuthoredState, bAnimate](UObject* PreviewObject)
 	{
 		if (UWidgetAnimBuilder* LiveBuilder = Cast<UWidgetAnimBuilder>(PreviewObject))
 		{
@@ -207,7 +275,7 @@ void UWidgetAnimBuilder::RefreshLivePreviews(bool bRestart, bool bCopyAuthoredSt
 			{
 				LiveBuilder->CopyAuthoredStateFrom(*Source);
 			}
-			LiveBuilder->RefreshPreview(bRestart);
+			LiveBuilder->RefreshPreview(bRestart, bAnimate);
 		}
 	});
 }
@@ -334,6 +402,54 @@ void UWidgetAnimBuilder::OpenPreviewFor(UWidgetAnimPresetAsset* Animation)
 			LiveBuilder->RefreshPreview(/*bRestart=*/true);
 		}
 	});
+}
+
+void UWidgetAnimBuilder::ForEachLivePreview(const UClass* BuilderClass, TFunctionRef<void(UWidgetAnimBuilder&)> Func)
+{
+	if (!BuilderClass)
+	{
+		return;
+	}
+
+	for (TObjectIterator<UWidgetAnimBuilder> It; It; ++It)
+	{
+		UWidgetAnimBuilder* Builder = *It;
+		if (!IsValid(Builder) || Builder->GetClass() != BuilderClass)
+		{
+			continue;
+		}
+
+		// On screen, not merely in memory: a cached Slate widget is what separates the designer's preview
+		// instance from the templates and the leftovers waiting to be collected.
+		if (!Builder->IsDesignTime() || !Builder->GetCachedWidget().IsValid())
+		{
+			continue;
+		}
+
+		Func(*Builder);
+	}
+}
+
+bool UWidgetAnimBuilder::IsLivePreviewPaused(const UClass* BuilderClass)
+{
+	bool bPaused = false;
+	ForEachLivePreview(BuilderClass, [&bPaused](UWidgetAnimBuilder& Builder)
+	{
+		bPaused = bPaused || Builder.IsPreviewPaused();
+	});
+
+	return bPaused;
+}
+
+bool UWidgetAnimBuilder::HasLivePreview(const UClass* BuilderClass)
+{
+	bool bFound = false;
+	ForEachLivePreview(BuilderClass, [&bFound](UWidgetAnimBuilder&)
+	{
+		bFound = true;
+	});
+
+	return bFound;
 }
 
 void UWidgetAnimBuilder::NotifyAnimationAssetEdited(const UWidgetAnimPresetAsset* Animation, bool bRestart)

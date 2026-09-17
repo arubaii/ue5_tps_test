@@ -2,7 +2,7 @@
 #include "CoreMinimal.h"
 #include "Modules/ModuleInterface.h"
 
-class IAssetTypeActions; // Forward declaration
+class IAssetTypeActions; 
 
 class FNameTBDEditorModule : public IModuleInterface
 {

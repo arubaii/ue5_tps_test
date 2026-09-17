@@ -79,6 +79,9 @@ public:
 	 * ticked twice a frame by two separate timers.
 	 */
 	virtual void EnsurePreviewTimer();
+	
+	/** Whether the preview clock is frozen. Posing still happens; only time stops. */
+	virtual bool IsPreviewPaused() const { return false; }
 };
 
 /**

@@ -1,4 +1,6 @@
 #include "NameTBDAssetTypeActions.h"
+
+#include "NameTBDColors.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h" 
 
 #define LOCTEXT_NAMESPACE "AssetTypeActions"
@@ -11,7 +13,7 @@ FText FNameTBDAssetTypeActions::GetName() const
 FColor FNameTBDAssetTypeActions::GetTypeColor() const
 {
 	// Stripe color under data asset icon
-	return FColor(235, 168, 52); 
+	return NameTBD::Colors::AnimationOrange_Normal.ToFColor(true); 
 }
 
 UClass* FNameTBDAssetTypeActions::GetSupportedClass() const

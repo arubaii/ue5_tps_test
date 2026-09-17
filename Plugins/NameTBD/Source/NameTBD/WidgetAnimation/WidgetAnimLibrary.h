@@ -761,6 +761,32 @@ public:
 	 */
 	static void AppendWithMirroring(const TArray<FWidgetAnimSettings>& Source, TArray<FWidgetAnimSettings>& Destination, TArray<FWidgetAnimSettings>& MirrorDestination);
 
+	/**
+	 * How long one full pass of Settings takes to play, in seconds - the whole stack together, accounting
+	 * for staggered starts, shared loop groups, and each layer's own finite Loop Count, exactly as
+	 * TickWidgetAnimations plays it. -1 if any layer in the stack loops forever, since then the stack as a
+	 * whole never finishes on its own.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Authoring")
+	static float GetStackDuration(const TArray<FWidgetAnimSettings>& Settings);
+
+	/**
+	 * How far into one pass of Settings the given States currently are, in the same seconds GetStackDuration
+	 * reports - the position TickWidgetAnimations left the furthest-along loop group at. 0 if States hasn't
+	 * been initialized for this stack yet (nothing has played).
+	 */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Authoring")
+	static float GetStackElapsed(const TArray<FWidgetAnimSettings>& Settings, const TArray<FWidgetAnimState>& States);
+
+	/**
+	 * Whether the layer group that decides GetStackDuration's answer loops, and if so, how long one visible
+	 * repeat of it takes - the span AdvanceTimeline repeats after the first leg, doubled by OutPingPong
+	 * since a round trip is there-and-back. Returns false, with OutLoopSeconds left at 0, when nothing in
+	 * the stack drives a loop (including an empty stack).
+	 */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Authoring")
+	static bool GetStackDrivingLoopInfo(const TArray<FWidgetAnimSettings>& Settings, bool& OutPingPong, float& OutLoopSeconds);
+
 	// -------------------------------------------------------------------------------------------------
 	// Track player
 	// -------------------------------------------------------------------------------------------------
@@ -861,6 +887,18 @@ private:
 
 	/** True while any layer in the stack is still moving - an endless loop always is. */
 	static bool HasRunningLayers(const TArray<FWidgetAnimSettings>& Animations, const TArray<FWidgetAnimState>& States);
+
+	/**
+	 * Whether this one layer is still something PlayingIn / PlayingOut should wait on before calling the
+	 * stack settled. A real not-yet-finished layer always is. An endless loop is too, until it has played
+	 * through its whole span at least once - after that it is just looping on top of a stack that has
+	 * otherwise arrived, not still arriving itself, and must not hold the transition to Shown / Hidden
+	 * open forever. Without that leg-count check, a stack that is ENTIRELY endless layers (an "entry"
+	 * previewed with Loop Count 0, say) would report itself settled from frame one, before any of it had
+	 * actually played - which is what used to make a looped preview snap into its held pose immediately
+	 * and cut PlayingOut in mid-cycle.
+	 */
+	static bool BlocksSettle(const FWidgetAnimSettings& Settings, const FWidgetAnimState& State);
 
 	static void ApplyResultInternal(UWidget* FallbackWidget, const FWidgetAnimResult& Result, const FWidgetAnimBaselineSet* Baselines);
 	static void PlayInternal(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, const FWidgetAnimBaselineSet* Baselines);

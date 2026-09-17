@@ -1,50 +1,88 @@
 #include "NameTBDStyle.h"
 #include "Styling/SlateStyleRegistry.h"
+#include "Styling/AppStyle.h"
 #include "Interfaces/IPluginManager.h"
+#include "Misc/PackageName.h"
+#include "Misc/Paths.h"
 
 TSharedPtr<FSlateStyleSet> FNameTBDStyle::StyleInstance = nullptr;
 
 void FNameTBDStyle::Initialize()
 {
-	if (!StyleInstance.IsValid())
-	{
-		StyleInstance = Create();
-		FSlateStyleRegistry::RegisterSlateStyle(*StyleInstance);
-	}
+    if (!StyleInstance.IsValid())
+    {
+       StyleInstance = Create();
+       FSlateStyleRegistry::RegisterSlateStyle(*StyleInstance);
+    }
 }
 
 void FNameTBDStyle::Shutdown()
 {
-	if (StyleInstance.IsValid())
-	{
-		FSlateStyleRegistry::UnRegisterSlateStyle(*StyleInstance);
-		StyleInstance.Reset();
-	}
+    if (StyleInstance.IsValid())
+    {
+       FSlateStyleRegistry::UnRegisterSlateStyle(*StyleInstance);
+       StyleInstance.Reset();
+    }
 }
 
 FName FNameTBDStyle::GetStyleSetName()
 {
-	static FName StyleSetName(TEXT("NameTBDStyle"));
-	return StyleSetName;
+    static FName StyleSetName(TEXT("NameTBDStyle"));
+    return StyleSetName;
 }
 
 const ISlateStyle& FNameTBDStyle::Get()
 {
-	return *StyleInstance;
+    return *StyleInstance;
 }
 
 TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
 {
-	TSharedRef<FSlateStyleSet> Style = MakeShareable(new FSlateStyleSet(GetStyleSetName()));
+    TSharedRef<FSlateStyleSet> Style = MakeShareable(new FSlateStyleSet(GetStyleSetName()));
 
-	// Point to the plugin's root /Resources folder
-	FString ContentDir = IPluginManager::Get().FindPlugin(TEXT("NameTBD"))->GetBaseDir() / TEXT("Resources");
-	Style->SetContentRoot(ContentDir);
+    bool bAppliedCustomIcon = false;
 
-	// Register the 16x16 Class Icon. 
-	// NOTE: Replace "YourDataAssetClass" with the name of your C++ class, omitting the 'U' prefix.
-	// E.g., for UNameTBDDataAsset, use "ClassIcon.NameTBDDataAsset"
-	Style->Set("ClassIcon.YourDataAssetClass", new FSlateImageBrush(Style->RootToContentDir(TEXT("Icon16_NameTBD.png")), FVector2D(16.0f, 16.0f)));
+    if (TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("NameTBD")))
+    {
+       FString SVGFilePath = Plugin->GetBaseDir() / TEXT("Resources/shooting-star-class-icon.svg");
 
-	return Style;
+       if (FPaths::FileExists(SVGFilePath))
+       {
+          UE_LOG(LogTemp, Log, TEXT("FNameTBDStyle: Found custom SVG asset at %s"), *SVGFilePath);
+
+          Style->Set(
+             "ClassIcon.WidgetAnimPresetAsset",
+             new FSlateVectorImageBrush(SVGFilePath, FVector2D(16.0f, 16.0f))
+          );
+
+          bAppliedCustomIcon = true;
+       }
+       else
+       {
+          UE_LOG(LogTemp, Warning, TEXT("FNameTBDStyle: SVG file not found at %s"), *SVGFilePath);
+       }
+    }
+    else
+    {
+       UE_LOG(LogTemp, Warning, TEXT("FNameTBDStyle: Could not find plugin 'NameTBD'."));
+    }
+
+    if (!bAppliedCustomIcon)
+    {
+       UE_LOG(LogTemp, Warning, TEXT("FNameTBDStyle: Falling back to tinted DataAsset icon."));
+
+       const FSlateBrush* DefaultDataAssetBrush = FAppStyle::GetBrush("ClassIcon.DataAsset");
+       FString EngineIconPath = DefaultDataAssetBrush->GetResourceName().ToString();
+
+       Style->Set(
+          "ClassIcon.WidgetAnimPresetAsset",
+          new FSlateVectorImageBrush(
+             EngineIconPath,
+             FVector2D(16.0f, 16.0f),
+             FLinearColor(FColor(235, 168, 52))
+          )
+       );
+    }
+
+    return Style;
 }

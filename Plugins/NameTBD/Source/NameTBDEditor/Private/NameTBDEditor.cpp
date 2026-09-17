@@ -15,9 +15,14 @@
 #include "ThumbnailRendering/ThumbnailManager.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h" 
 
+#include "WidgetAnimBuilderToolbar.h"
+#include "ToolMenus.h"
+
 #include "NameTBDAssetTypeActions.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
+#include "WidgetAnimBuilderDetails.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
 
@@ -42,6 +47,16 @@ void FNameTBDEditorModule::StartupModule()
 	TSharedPtr<IAssetTypeActions> CustomAction = MakeShareable(new FNameTBDAssetTypeActions());
 	AssetTools.RegisterAssetTypeActions(CustomAction.ToSharedRef());
 	RegisteredAssetTypeActions.Add(CustomAction);
+	
+	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateLambda([]()
+	{
+		FToolMenuOwnerScoped OwnerScoped(TEXT("NameTBDEditor"));
+		FWidgetAnimBuilderToolbar::Register();
+	}));
+	
+	PropertyModule.RegisterCustomClassLayout(
+		UWidgetAnimBuilder::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetAnimBuilderDetails::MakeInstance));
 }
 
 void FNameTBDEditorModule::ShutdownModule()
@@ -63,8 +78,14 @@ void FNameTBDEditorModule::ShutdownModule()
 		// gone, and StaticClass() would be reaching into it.
 		PropertyModule->UnregisterCustomClassLayout(TEXT("ContextMenuButton"));
 		PropertyModule->NotifyCustomizationModuleChanged();
-	}
+		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimBuilder"));
 
+	}
+	
+	UToolMenus::UnRegisterStartupCallback(this);
+	UToolMenus::UnregisterOwner(TEXT("NameTBDEditor"));
+
+	
 	// Unregister Slate Style
 	FNameTBDStyle::Shutdown();
 
@@ -73,6 +94,8 @@ void FNameTBDEditorModule::ShutdownModule()
 	{
 		UThumbnailManager::Get().UnregisterCustomRenderer(UWidgetAnimPresetAsset::StaticClass());
 	}
+	
+	
 }
 
 #undef LOCTEXT_NAMESPACE

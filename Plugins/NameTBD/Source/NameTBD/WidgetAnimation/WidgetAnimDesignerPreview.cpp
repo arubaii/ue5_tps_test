@@ -142,6 +142,11 @@ bool UWidgetAnimDesignerPreview::TickFrame(IWidgetAnimDesignerPreviewHost* Host,
 	{
 		return false;
 	}
+	
+	if (Host && Host->IsPreviewPaused() && DeltaTime > 0.f)
+	{
+		return true;
+	}
 
 	return UWidgetAnimLibrary::TickWidgetAnimPreview(
 		Host->GetPreviewAnimationTarget(),
