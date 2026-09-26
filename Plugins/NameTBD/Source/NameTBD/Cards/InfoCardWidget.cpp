@@ -1776,7 +1776,7 @@ namespace
 
 FVector2D UInfoCardWidget::AvoidOverlappingCards(const FVector2D& InPosition, const FVector2D& CardSize) const
 {
-	const float Padding = FMath::Max(0.f, ClampPadding);
+	const float EffectivePadding = FMath::Max(0.f, ClampPadding);
 
 	// This card's ancestor chain, nearest first. Built once up front rather
 	// than climbing it again (via IsAncestorCard) for every card in
@@ -1908,7 +1908,7 @@ FVector2D UInfoCardWidget::AvoidOverlappingCards(const FVector2D& InPosition, co
 			// Push straight down below the older card — the same direction
 			// toast notifications stack in, and simpler/more predictable
 			// than trying to pick a side to slide toward.
-			const float PushTo = Peer.Max.Y + Padding;
+			const float PushTo = Peer.Max.Y + EffectivePadding;
 			Min.Y = PushTo;
 			Max.Y = PushTo + CardSize.Y;
 			bMoved = true;
@@ -2025,7 +2025,7 @@ FVector2D UInfoCardWidget::AvoidOverlappingCards(const FVector2D& InPosition, co
 			}
 
 			FVector2D Candidate = FVector2D::ZeroVector;
-			if (!InfoCardSlideClear(Start, CardSize, Slide, AllRects, Padding, ViewportSize, /*bParentBlocksSlide=*/bAlongPlacement && !bMayHopParent, Candidate))
+			if (!InfoCardSlideClear(Start, CardSize, Slide, AllRects, EffectivePadding, ViewportSize, /*bParentBlocksSlide=*/bAlongPlacement && !bMayHopParent, Candidate))
 			{
 				continue;
 			}
@@ -2634,11 +2634,11 @@ FVector2D UInfoCardWidget::ClampToViewport(const FVector2D& InPosition, const FV
 	// to begin with — ToCursor, ToViewport, or the axis perpendicular to a
 	// ToIcon card's IconPosition) gets pinned here instead, with Padding kept
 	// as spacing from the literal screen edge rather than touching it.
-	const float Padding = FMath::Max(0.f, ClampPadding);
+	const float EffectivePadding = FMath::Max(0.f, ClampPadding);
 
 	FVector2D Result = InPosition;
-	Result.X = FMath::Clamp(Result.X, Padding, FMath::Max(Padding, ViewportSize.X - CardSize.X - Padding));
-	Result.Y = FMath::Clamp(Result.Y, Padding, FMath::Max(Padding, ViewportSize.Y - CardSize.Y - Padding));
+	Result.X = FMath::Clamp(Result.X, EffectivePadding, FMath::Max(EffectivePadding, ViewportSize.X - CardSize.X - EffectivePadding));
+	Result.Y = FMath::Clamp(Result.Y, EffectivePadding, FMath::Max(EffectivePadding, ViewportSize.Y - CardSize.Y - EffectivePadding));
 	return Result;
 }
 
@@ -2728,7 +2728,7 @@ FVector2D UInfoCardWidget::PositionToIcon(EDirection2D TryPosition, float Offset
 		return Result;
 	}
 
-	const float Padding = FMath::Max(0.f, ClampPadding);
+	const float EffectivePadding = FMath::Max(0.f, ClampPadding);
 
 	// Up/Down and Left/Right only ever flip along the axis their IconPosition
 	// points down, exactly as asked: a card running out of room to the right
@@ -2745,7 +2745,7 @@ FVector2D UInfoCardWidget::PositionToIcon(EDirection2D TryPosition, float Offset
 	// this falls straight through to the plain inset clamp below, the same
 	// as if every FitsWithPadding check here had failed.
 	if (bFlipToAvoidClipping && DirectionHasHorizontalComponent(TryPosition) &&
-		!FitsWithPadding(Result.X, CardSize.X, ViewportSize.X, Padding))
+		!FitsWithPadding(Result.X, CardSize.X, ViewportSize.X, EffectivePadding))
 	{
 		const FVector2D FlippedResult = PositionToIconRaw(FlipHorizontalDirection(TryPosition), CardSize, OffsetX, OffsetY);
 
@@ -2754,18 +2754,18 @@ FVector2D UInfoCardWidget::PositionToIcon(EDirection2D TryPosition, float Offset
 		// switching sides — clamping from the side it was actually
 		// authored for (below) keeps it closer to its intended position
 		// than an arbitrary flip would.
-		if (FitsWithPadding(FlippedResult.X, CardSize.X, ViewportSize.X, Padding))
+		if (FitsWithPadding(FlippedResult.X, CardSize.X, ViewportSize.X, EffectivePadding))
 		{
 			Result.X = FlippedResult.X;
 		}
 	}
 
 	if (bFlipToAvoidClipping && DirectionHasVerticalComponent(TryPosition) &&
-		!FitsWithPadding(Result.Y, CardSize.Y, ViewportSize.Y, Padding))
+		!FitsWithPadding(Result.Y, CardSize.Y, ViewportSize.Y, EffectivePadding))
 	{
 		const FVector2D FlippedResult = PositionToIconRaw(FlipVerticalDirection(TryPosition), CardSize, OffsetX, OffsetY);
 
-		if (FitsWithPadding(FlippedResult.Y, CardSize.Y, ViewportSize.Y, Padding))
+		if (FitsWithPadding(FlippedResult.Y, CardSize.Y, ViewportSize.Y, EffectivePadding))
 		{
 			Result.Y = FlippedResult.Y;
 		}
@@ -2856,7 +2856,7 @@ FVector2D UInfoCardWidget::PositionToCursor(EInfoCardCursorPosition Position, fl
 		return Result;
 	}
 
-	const float Padding = FMath::Max(0.f, ClampPadding);
+	const float EffectivePadding = FMath::Max(0.f, ClampPadding);
 
 	// Same flip-before-clamp idea PositionToIcon uses (see its own comment),
 	// mapped onto cursor placements instead of icon placements: a card
@@ -2867,25 +2867,25 @@ FVector2D UInfoCardWidget::PositionToCursor(EInfoCardCursorPosition Position, fl
 	// vertical component (centered on the cursor's Y) — see
 	// CursorPositionHasHorizontalComponent/CursorPositionHasVerticalComponent.
 	if (bFlipToAvoidClipping && CursorPositionHasHorizontalComponent(Position) &&
-		!FitsWithPadding(Result.X, CardSize.X, ViewportSize.X, Padding))
+		!FitsWithPadding(Result.X, CardSize.X, ViewportSize.X, EffectivePadding))
 	{
 		const FVector2D FlippedResult = PositionToCursorRaw(FlipHorizontalCursorPosition(Position), CursorPos, CardSize, OffsetX, OffsetY);
 
 		// Only take the flip if it actually solves the problem — same
 		// reasoning as PositionToIcon: a card wider than the room available
 		// on both sides doesn't get better by switching sides.
-		if (FitsWithPadding(FlippedResult.X, CardSize.X, ViewportSize.X, Padding))
+		if (FitsWithPadding(FlippedResult.X, CardSize.X, ViewportSize.X, EffectivePadding))
 		{
 			Result.X = FlippedResult.X;
 		}
 	}
 
 	if (bFlipToAvoidClipping && CursorPositionHasVerticalComponent(Position) &&
-		!FitsWithPadding(Result.Y, CardSize.Y, ViewportSize.Y, Padding))
+		!FitsWithPadding(Result.Y, CardSize.Y, ViewportSize.Y, EffectivePadding))
 	{
 		const FVector2D FlippedResult = PositionToCursorRaw(FlipVerticalCursorPosition(Position), CursorPos, CardSize, OffsetX, OffsetY);
 
-		if (FitsWithPadding(FlippedResult.Y, CardSize.Y, ViewportSize.Y, Padding))
+		if (FitsWithPadding(FlippedResult.Y, CardSize.Y, ViewportSize.Y, EffectivePadding))
 		{
 			Result.Y = FlippedResult.Y;
 		}

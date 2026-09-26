@@ -16,12 +16,13 @@
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimDesignerPreview.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimHost.h"
+#include "NameTBD/Widgets/ShapeBox.h"
 
 #include "ContextMenuButton.generated.h"
 
 class UInfoCardWidget;
 class UContextMenuButton;
-class UButtonAction;
+class UButtonAction; 
 class UContextButtonPayload;
 class UNameTBD_Payload;
 struct FContextMenuButtonData;
@@ -31,6 +32,9 @@ class UMaterialInstanceDynamic;
 class FWidgetPath;
 class FWeakWidgetPath;
 class UUserWidget;
+class UShapeBox;
+class SShapeBox;
+class SContextMenuButtonBrush;
 
 UENUM(BlueprintType)
 enum class EContextMenuButtonType : uint8
@@ -378,6 +382,14 @@ struct NAMETBD_API FContextMenuColorTarget
 	TObjectPtr<UWidget> TargetWidget = nullptr;
 };
 
+/**
+ * What one Shape Target looks like in one state: a Transform, plus a whole Shape Box shape.
+ *
+ * Shape is an FShapeBoxShape stored whole - Extrude, Inset, Skew, Corners, Bend, Edge Bow, Angle, Rotation and
+ * anything added to the Shape Box later. Nothing in the button names the individual properties: states blend
+ * with FShapeBoxShape::Lerp, compare with Equals, and a placement overrides the struct as one piece, so a new
+ * Shape Box property shows up here, animates between states and can be overridden without the button changing.
+ */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FContextMenuShapeStateSettings
 {
@@ -386,62 +398,39 @@ struct NAMETBD_API FContextMenuShapeStateSettings
 	/**
 	 * Transforms this shape's target widget. When the target IS the button, that means the button's background
 	 * brush: content and layout are not affected, but the mouse hit area follows the transform, pivoting on the
-	 * center of the (extruded/inset) button. Any other target is transformed through its own Render Transform.
-	 *
-	 * There used to be a second transform beside this one, aimed at "the content", from back when Shape was a
-	 * single implicit thing pointed at the button and a field of its own was the only way to reach the widget
-	 * inside it. Shape Targets made that redundant - point a target at the content widget and it gets this
-	 * transform, with the same states, overrides and speeds as everything else - so the two are one field now.
+	 * middle of the shaped brush. A Shape Box target (or a widget sitting alone inside a Shape Box) has the
+	 * transform put on the Shape Box; any other target is transformed through its own Render Transform.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bIsApplicable", HideEditConditionToggle))
 	FWidgetTransform Transform;
 
 	/**
-	 * Grows only the target outward, in pixels. Content and layout are not affected, but the mouse hit area grows with it. +X extends the right edge, -X the left, +Y the top, -Y the bottom.
-	 * Works the same on an Image or Border inside the button as on the button itself: the brush is resized, not scaled.
+	 * The Shape Box shape for this state, applied before Transform.
+	 *
+	 * On the button itself it shapes the background brush: Extrude and Inset resize the brush (margins and corners
+	 * kept, not stretched), and the mouse hit area follows the drawn shape, chamfered corners and all. Content and
+	 * layout are not affected.
+	 *
+	 * On any other target it needs a Shape Box to act through: target the Shape Box itself, or a widget that sits
+	 * alone inside one. Anything else only gets Transform - Shape Status on the button says which targets those are.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bIsApplicable", HideEditConditionToggle))
-	FVector2D Extrude = FVector2D::ZeroVector;
-
-	/**
-	 * Pulls only the target inward, in pixels. Content and layout are not affected, but the mouse hit area shrinks with it. +X pulls in the right edge, -X the left, +Y the top, -Y the bottom.
-	 * Works the same on an Image or Border inside the button as on the button itself: the brush is resized, not scaled.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bIsApplicable", HideEditConditionToggle))
-	FVector2D Inset = FVector2D::ZeroVector;
+	FShapeBoxShape Shape;
 
 	/**
 	 * Details-panel only; no runtime effect. When false, the fields above are greyed out.
 	 * Unreal can't hide a property on one condition and grey it out on another, so UContextMenuButton
-	 * hides EnabledShape by Shape Setting Source and mirrors "Button Can Be Enabled and not Enabled
+	 * hides EnabledShape by Shape Source and mirrors "Button Can Be Enabled and not Enabled
 	 * Matches Hover Shape" into this flag to grey it.
 	 */
 	UPROPERTY()
 	bool bIsApplicable = true;
-
-	// ---- Legacy ----
-	// The split transform, hidden. PostSerialize below folds Button Transform into Transform the moment an old
-	// asset loads, wherever the struct is stored - a button, a Shape Preset in Project Settings, an instance
-	// patch on somebody's widget - which is why there is no PostLoad pass for it anywhere. Content Transform is
-	// read and dropped: what it meant is now a Shape Target aimed at the content widget, and there is no way to
-	// invent that target from here without guessing at which widget it was.
-
-	UPROPERTY()
-	FWidgetTransform ButtonTransform_DEPRECATED;
-
-	UPROPERTY()
-	FWidgetTransform ContentTransform_DEPRECATED;
-
-	void PostSerialize(const FArchive& Ar);
 };
 
-template<>
-struct TStructOpsTypeTraits<FContextMenuShapeStateSettings> : public TStructOpsTypeTraitsBase2<FContextMenuShapeStateSettings>
-{
-	enum { WithPostSerialize = true };
-};
-
-/** Speed, curve, overshoot and delay for both channels, resolved through a preset and through Separate Transform And Size. */
+/**
+ * Speed, curve, overshoot and delay for both channels, resolved through a preset and through Separate Transform And Shape.
+ * The "Size" channel is the whole Shape Box shape (the name predates it).
+ */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FContextMenuResolvedInterpolation
 {
@@ -474,7 +463,7 @@ struct NAMETBD_API FContextMenuResolvedInterpolation
 
 /**
  * A named, project-wide set of state shapes, authored in Project Settings > Game > Info Card.
- * A button with ShapeSettingSource = Use Project Settings picks one of these by name.
+ * A Shape Target with Shape Source = Use Project Settings picks one of these by name.
  */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FContextMenuShapePreset
@@ -538,22 +527,22 @@ struct NAMETBD_API FContextMenuShapePreset
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
 	float TransformDelay = 0.0f;
 
-	/** When off, Extrude and Inset reuse every Transform setting above, so the whole shape moves as one. Turn it on to give size its own speed, curve and delay. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Separate Transform And Size"))
+	/** When off, Shape reuses every Transform setting above, so the whole thing moves as one. Turn it on to give Shape its own speed, curve and delay. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Separate Transform And Shape"))
 	bool bSeparateTransformAndSize = false;
 
-	/** Blend speed for Extrude and Inset. 0 snaps instantly. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (EditCondition = "bSeparateTransformAndSize", ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
+	/** Blend speed for Shape (every Shape Box property). 0 snaps instantly. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Speed", EditCondition = "bSeparateTransformAndSize", ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
 	float SizeInterpolationSpeed = 5.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (EditCondition = "bSeparateTransformAndSize"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Curve", EditCondition = "bSeparateTransformAndSize"))
 	EContextMenuInterpolationCurve SizeInterpolationCurve = EContextMenuInterpolationCurve::Linear;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (EditCondition = "bSeparateTransformAndSize && SizeInterpolationCurve == EContextMenuInterpolationCurve::Click"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Overshoot", EditCondition = "bSeparateTransformAndSize && SizeInterpolationCurve == EContextMenuInterpolationCurve::Click"))
 	float SizeOvershoot = 1.5f;
 
-	/** Seconds to wait after the state changes before Extrude/Inset start moving. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (EditCondition = "bSeparateTransformAndSize", ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
+	/** Seconds to wait after the state changes before Shape starts moving. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Delay", EditCondition = "bSeparateTransformAndSize", ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
 	float SizeDelay = 0.0f;
 
 	/** This preset's own speed/curve/overshoot/delay, resolved through Separate Transform And Size. */
@@ -617,9 +606,13 @@ struct NAMETBD_API FContextMenuSoundSet
 };
 
 /**
- * A patch on one FContextMenuShapeStateSettings: only the fields switched on are replaced, everything else
- * keeps whatever the button (or its Shape Preset) authored. This is what lets a placement nudge one number
- * without freezing a whole copy of the shape.
+ * A patch on one FContextMenuShapeStateSettings: only the halves switched on are replaced, everything else
+ * keeps whatever the button (or its Shape Preset) authored. This is what lets a placement nudge a shape
+ * without freezing a whole copy of the target.
+ *
+ * Shape is overridden as one piece: switched on, every Shape Box property in it is the placement's. That is
+ * what keeps the Shape Box the single definition of a shape - a property added to it is overridable here
+ * without this struct (or the button) needing a toggle of its own for it.
  */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FContextMenuShapeOverride
@@ -633,59 +626,25 @@ struct NAMETBD_API FContextMenuShapeOverride
 	FWidgetTransform Transform;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (InlineEditConditionToggle))
-	bool bOverrideExtrude = false;
+	bool bOverrideShape = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bOverrideExtrude"))
-	FVector2D Extrude = FVector2D::ZeroVector;
+	/** The whole Shape Box shape for this slot. Untoggled, it shows (and follows) the button's. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bOverrideShape"))
+	FShapeBoxShape Shape;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (InlineEditConditionToggle))
-	bool bOverrideInset = false;
+	bool HasAnything() const { return bOverrideTransform || bOverrideShape; }
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bOverrideInset"))
-	FVector2D Inset = FVector2D::ZeroVector;
-
-	bool HasAnything() const { return bOverrideTransform || bOverrideExtrude || bOverrideInset; }
-
-	/** Writes the switched-on fields over Target. */
+	/** Writes the switched-on halves over Target. */
 	void ApplyTo(FContextMenuShapeStateSettings& Target) const;
-
-	// ---- Legacy ----
-	// The split transform, hidden, migrated by PostSerialize the same way the shape state's own is.
-
-	UPROPERTY()
-	bool bOverrideButtonTransform_DEPRECATED = false;
-
-	UPROPERTY()
-	FWidgetTransform ButtonTransform_DEPRECATED;
-
-	UPROPERTY()
-	bool bOverrideContentTransform_DEPRECATED = false;
-
-	UPROPERTY()
-	FWidgetTransform ContentTransform_DEPRECATED;
-
-	void PostSerialize(const FArchive& Ar);
-};
-
-template<>
-struct TStructOpsTypeTraits<FContextMenuShapeOverride> : public TStructOpsTypeTraitsBase2<FContextMenuShapeOverride>
-{
-	enum { WithPostSerialize = true };
 };
 
 /**
- * One widget shaped per button state: its own Transform, Extrude and Inset. Replaces
- * the old single Shape authored directly on the button - that shape still exists, it is simply this array's
- * first entry, aimed at the button itself.
+ * One widget shaped per button state: its own Transform and Shape Box shape.
  *
- * Extrude and Inset grow or shrink the target's own hit area when the target IS the button (the same
- * mouse-hit-aware mechanism as before), and also work on any other widget in the tree. An Image or Border is
- * resized for real through its slot - each edge moves by its own offset, the brush keeps its margins and
- * corners, a Border's content stays put, and the parent's layout doesn't move - see
- * UContextMenuButton::ApplyGenericWidgetShape. Other widget types fall back to their Render Transform. The separate
- * Content Transform this used to carry is gone: a second target aimed at the content widget does the same job
- * with the same states, overrides and speeds as everything else, so there is no reason for a shape to have two
- * transforms in it.
+ * Aimed at the button itself, the shape bends the button's background brush and the hit area follows it;
+ * content and layout stay put. Aimed at a Shape Box (or at a widget that sits alone inside one), the Shape Box
+ * is driven: its Shape and Render Transform follow the button's state. Aimed at anything else, only Transform
+ * applies - wrap the widget in a Shape Box to give it the rest. Shape Status on the button lists which is which.
  *
  * Authored the same way a Design Target is: every state falls back to Base Shape until its own override is
  * switched on.
@@ -769,22 +728,22 @@ struct NAMETBD_API FContextMenuShapeTarget
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
 	float TransformDelay = 0.0f;
 
-	/** When off, Extrude and Inset reuse every Transform setting above, so the whole shape moves as one. Turn it on to give size its own speed, curve and delay. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Separate Transform And Size"))
+	/** When off, Shape reuses every Transform setting above, so the whole thing moves as one. Turn it on to give Shape its own speed, curve and delay. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Separate Transform And Shape"))
 	bool bSeparateTransformAndSize = false;
 
-	/** Blend speed for Extrude and Inset. 0 snaps instantly. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (EditCondition = "bSeparateTransformAndSize", ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
+	/** Blend speed for Shape (every Shape Box property). 0 snaps instantly. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Speed", EditCondition = "bSeparateTransformAndSize", ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
 	float SizeInterpolationSpeed = 5.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (EditCondition = "bSeparateTransformAndSize"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Curve", EditCondition = "bSeparateTransformAndSize"))
 	EContextMenuInterpolationCurve SizeInterpolationCurve = EContextMenuInterpolationCurve::Linear;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (EditCondition = "bSeparateTransformAndSize && SizeInterpolationCurve == EContextMenuInterpolationCurve::Click"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Overshoot", EditCondition = "bSeparateTransformAndSize && SizeInterpolationCurve == EContextMenuInterpolationCurve::Click"))
 	float SizeOvershoot = 1.5f;
 
-	/** Seconds to wait after the state changes before Extrude/Inset start moving. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (EditCondition = "bSeparateTransformAndSize", ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
+	/** Seconds to wait after the state changes before Shape starts moving. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Delay", EditCondition = "bSeparateTransformAndSize", ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
 	float SizeDelay = 0.0f;
 
 	/**
@@ -906,33 +865,6 @@ struct NAMETBD_API FContextMenuShapeTargetOverride
 
 	/** Whether this placement has switched on the state's own slot. */
 	bool IsStateSlotOverridden(EContextMenuState State) const;
-
-	// ---- Legacy ----
-	// This used to be one flat patch applied uniformly to every state. It becomes Base Shape, which means
-	// exactly that, so an existing placement keeps looking the way it did. PostSerialize does it on load.
-
-	UPROPERTY()
-	FContextMenuShapeOverride Patch_DEPRECATED;
-
-	/** Guards the one-time conversion above. Set once the struct has been read under the new layout. */
-	UPROPERTY()
-	bool bHasMigratedStateLayout = false;
-
-	/**
-	 * Guards the conversion to per-slot switches. For one version the state switches were mirrors of the
-	 * button rather than the placement's own choice, so on load a slot is switched on only if something in
-	 * it is actually patched.
-	 */
-	UPROPERTY()
-	bool bHasMigratedSlotToggles = false;
-
-	void PostSerialize(const FArchive& Ar);
-};
-
-template<>
-struct TStructOpsTypeTraits<FContextMenuShapeTargetOverride> : public TStructOpsTypeTraitsBase2<FContextMenuShapeTargetOverride>
-{
-	enum { WithPostSerialize = true };
 };
 
 /**
@@ -1136,7 +1068,11 @@ struct NAMETBD_API FContextMenuDesignTargetOverride
 	UPROPERTY()
 	bool bHasMigratedStateLayout = false;
 
-	/** See FContextMenuShapeTargetOverride::bHasMigratedSlotToggles. */
+	/**
+	 * Guards the conversion to per-slot switches. For one version the state switches were mirrors of the
+	 * button rather than the placement's own choice, so on load a slot is switched on only if something in
+	 * it is actually patched.
+	 */
 	UPROPERTY()
 	bool bHasMigratedSlotToggles = false;
 
@@ -1225,17 +1161,9 @@ struct NAMETBD_API FContextMenuButtonInstanceOverrides
 	bool HasAnything() const;
 
 	// ---- Legacy ----
-	// The first version of this struct stored whole copies of the shape and the Design Target array, which is
-	// exactly the behaviour that made a placement stop tracking its parent. Kept hidden so old assets still
-	// load; UContextMenuButton::PostLoad reads them once and clears them.
-	//
-	// The single-shape-era instance patch (back when Shape was one implicit target rather than an array) isn't
-	// kept: it was also named ShapePatch, and Unreal's own "_DEPRECATED" convention for catching an old name
-	// under a new type only works when nothing else wants that same name - which the new ShapePatch array does.
-	// Dropped rather than migrated, the same as the whole-copy fields below.
-
-	UPROPERTY()
-	FContextMenuShapeStateSettings ShapeOverride;
+	// The first version of this struct stored whole copies of the Design Target array, which is exactly the
+	// behaviour that made a placement stop tracking its parent. Kept hidden so old assets still load;
+	// UContextMenuButton::PostLoad reads them once and clears them.
 
 	UPROPERTY()
 	TArray<FContextMenuDesignTarget> DesignOverride;
@@ -1261,13 +1189,11 @@ struct FContextMenuRuntimeShapeTarget
 
 	/** Where each channel is right now. */
 	FWidgetTransform CurrentTransform;
-	FVector2D CurrentExtrude = FVector2D::ZeroVector;
-	FVector2D CurrentInset = FVector2D::ZeroVector;
+	FShapeBoxShape CurrentShape;
 
 	/** Where the current blend started from, captured the moment the shape state last changed. */
 	FWidgetTransform StartTransform;
-	FVector2D StartExtrude = FVector2D::ZeroVector;
-	FVector2D StartInset = FVector2D::ZeroVector;
+	FShapeBoxShape StartShape;
 
 	/** Blend progress since the last state change. Tracked per target now that each target has its own speed/curve/delay. */
 	float TransformTransitionAlpha = 1.0f;
@@ -1320,68 +1246,43 @@ struct FContextMenuRuntimeDesignTarget
 };
 
 /**
- * What a generic Shape Target widget was authored with, for the layout-based Extrude/Inset. Runtime and
- * designer preview only, not a USTRUCT: nothing here is saved.
- *
- * Every value is kept next to the one this button last wrote over it. Anything else sitting there means
- * someone else changed it (the designer copying an edited value onto its preview, a Blueprint...), and that
- * becomes the new authored value rather than being stamped over with a stale one.
- */
-struct FContextMenuGenericShapeBaseline
-{
-	TWeakObjectPtr<UObject> Slot;
-
-	bool bHasSlotPadding = false;
-	FMargin SlotPadding = FMargin(0.0f);
-	FMargin WrittenSlotPadding = FMargin(0.0f);
-
-	bool bHasBorderPadding = false;
-	FMargin BorderPadding = FMargin(0.0f);
-	FMargin WrittenBorderPadding = FMargin(0.0f);
-
-	/** An Image's desired size is re-read from its brush every time (nothing here writes the brush), so only whether one was written is kept. */
-	bool bWroteImageDesiredSize = false;
-
-	/** True while the offsets are being carried by the layout rather than by the render transform. */
-	bool bLayoutShaped = false;
-};
-
-/**
  * Slate button used by UContextMenuButton. Identical to SButton, except for two things.
  *
- * Shape: the extruded/inset bounds plus the shape's Transform are carried on this widget's render transform, so the
- * mouse hit area follows the shape - an extruded button is clickable (and hoverable) out to its painted edge, an
- * inset one stops responding where it stops being drawn. Layout is untouched, since a render transform never
- * reflows anything, and both the brush and the content are painted back through the inverse of the shape: the
- * brush resized in unshaped local space (so a Box/Border brush's margins are never stretched) and the content
- * left exactly where layout put it. That is what lets the shape affect only the button and never its content.
+ * Shape: the button's background brush is drawn by a brush layer - an SShapeBox wrapping a leaf that paints the
+ * brush - rather than by SBorder, so the brush takes any FShapeBoxShape plus the shape's Transform, while the
+ * content is painted exactly where layout put it. The brush layer sits in the hit-test grid with this button as its
+ * parent, so wherever the shape is drawn (an extruded edge, a skewed corner) is hoverable and clickable, and events
+ * there reach this button as if the button itself had been hit. Where the shape is not drawn, nothing is hit: the
+ * button's own hit rect is shrunk to a "core" that sits inside the shape, carried on this widget's render
+ * transform (layout never moves, and the content is painted back through the inverse of it). The button itself
+ * stays in the hit-test grid, which is what keeps it focusable and reachable by gamepad navigation.
  *
  * OnPaint is the only thing that writes that render transform, and it writes it last, for the paint after this
  * one. It has to be that way round. A paint is handed geometry built from whatever transform was on the widget
- * when Slate last updated it, so the shape OnPaint cancels has to be one that cannot have moved since that
- * geometry was built - which is only guaranteed of the shape committed by the previous paint. Writing the
- * transform from anywhere else (Tick, or the owner pushing a new shape) lets the two drift apart by one frame's
- * worth of the blend, which shows up as the content fidgeting about while the shape animates: the faster the
- * interpolation, the bigger the frame delta, the further it moves.
+ * when Slate last updated it, so the transform OnPaint cancels has to be one that cannot have moved since that
+ * geometry was built - which is only guaranteed of the one committed by the previous paint. Writing it from
+ * anywhere else lets the two drift apart by one frame's worth of the blend, which shows up as the content
+ * fidgeting while the shape animates.
  *
  * Brush: the style brush is picked from the state the owner resolved rather than from Slate's own hover/press
  * flags, so the button's own state settings win over the native button style instead of being painted on top of it.
  *
- * With no active button visuals and no state reported, it paints exactly like a stock SButton.
+ * With no shape, no active button visuals and no state reported, it paints exactly like a stock SButton.
  */
 class SContextMenuSlateButton : public SButton
 {
 public:
+	/** Also builds the brush layer. Called once, straight after construction. */
 	void SetOwnerWidget(UContextMenuButton* InOwner);
 
 	/**
-	 * The shape to paint and hit test against. Takes effect on the next paint, which is where it gets composed onto
-	 * the render transform.
+	 * The shape to paint the brush with and hit test against. The brush takes it on the next paint; the hit area
+	 * of the button's own rect follows at the end of that paint.
 	 *
-	 * @param InEdgeOffsets  Per-edge offsets in local pixels. Positive grows that edge outward, negative pulls it inward.
-	 * @param InTransform    Render transform applied to the button brush only, pivoting on the brush center.
+	 * @param InShape      The brush's Shape Box shape, evaluated against the button's layout size.
+	 * @param InTransform  Applied to the shaped brush, pivoting on its middle.
 	 */
-	void SetButtonShape(const FMargin& InEdgeOffsets, const FWidgetTransform& InTransform);
+	void SetButtonShape(const FShapeBoxShape& InShape, const FWidgetTransform& InTransform);
 
 	/**
 	 * The state the owner's state machine resolved. From the first call on, this is what picks the style brush:
@@ -1397,40 +1298,55 @@ public:
 	void SetVisualState(EContextMenuState InVisualState, bool bInDesignOwnsBrush);
 
 	/**
-	 * Writes the committed shape back onto the render transform. UWidget::SynchronizeProperties pushes the authored
-	 * render transform straight onto this widget, which drops the shape composed into it; the owner calls this
-	 * straight afterwards. It re-applies the shape the last paint committed, never a newly computed one, so the
+	 * Writes the committed core transform back onto the render transform. UWidget::SynchronizeProperties pushes the
+	 * authored render transform straight onto this widget, which drops the core composed into it; the owner calls
+	 * this straight afterwards. It re-applies what the last paint committed, never a newly computed one, so the
 	 * invariant the next paint relies on still holds.
 	 */
 	void RefreshShapeRenderTransform();
-	
+
 	void ClearVisualState();
 
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
 
+	/**
+	 * A mouse release reaches the button wherever the shape is drawn, because the brush layer bubbles to it. A touch
+	 * release is only counted as "over the button" by SButton if it lands inside the button's own geometry, though,
+	 * so one lifted over an extruded edge is re-checked here against the drawn shape.
+	 */
+	virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+
 private:
-	/** The extruded/inset size for a given layout size. Never quite zero, so the shape stays invertible. */
-	FVector2D GetShapedSize(const FVector2D& LocalSize) const;
-
-	/** Maps the layout box onto the extruded/inset box: a per-axis scale plus the top-left offset. */
-	FSlateRenderTransform ComputeEdgeTransform(const FVector2D& LocalSize) const;
-
-	/** The whole shape: the edge offsets, then the shape's Transform about the center of the shaped box. */
-	FSlateRenderTransform ComputeShapeTransform(const FVector2D& LocalSize) const;
+	/** The shape's Transform, pivoting on the middle of the shaped brush, in the layout box's local space. */
+	FSlateRenderTransform ComputeBrushTransform(const FVector2D& LocalSize) const;
 
 	/**
-	 * Works out the shape for the current Extrude/Inset/Transform and commits it: stores what the next paint
-	 * needs to cancel it, and composes it onto the render transform (which is what moves the hit area, since Slate
-	 * hit tests against paint-space geometry). Called at the very end of OnPaint and nowhere else.
+	 * Maps the layout box onto the button's own hit rect. For a parallelogram shape that is the shape itself; for
+	 * anything else (chamfers, bends, tapers...) it is the largest centred, scaled-down layout box the painted
+	 * shape fully covers, so the button's rect never pokes out past the drawn outline.
+	 */
+	FSlateRenderTransform ComputeCoreTransform(const FVector2D& LocalSize) const;
+
+	/**
+	 * Works out the core transform for the current shape and commits it: stores what the next paint needs to cancel
+	 * it, and composes it onto the render transform (which is what moves the button's own hit rect, since Slate hit
+	 * tests against paint-space geometry). Called at the very end of OnPaint and nowhere else.
 	 */
 	void CommitShapeRenderTransform(const FVector2D& LocalSize) const;
 
-	/** Composes a committed shape with the widget's own authored render transform and writes the result. */
-	void WriteRenderTransform(const FSlateRenderTransform& Shape, bool bShapeActive, const FVector2D& LocalSize, const FWidgetTransform& AuthoredTransform, const FVector2D& AuthoredPivot);
+	/** Composes a committed core transform with the widget's own authored render transform and writes the result. */
+	void WriteRenderTransform(const FSlateRenderTransform& Core, bool bShapeActive, const FVector2D& LocalSize, const FWidgetTransform& AuthoredTransform, const FVector2D& AuthoredPivot);
 
-	
+	/** Whether a screen-space point lies on the brush as it was last painted. False if the brush layer wasn't painted. */
+	bool IsScreenPointInBrushShape(const FVector2D& ScreenPoint) const;
+
 	TWeakObjectPtr<UContextMenuButton> OwnerWidget;
-	FMargin EdgeOffsets = FMargin(0.0f);
+
+	/** The shaped brush: an SShapeBox around BrushPainter. Not a layout child - painted by OnPaint, with this button as its parent. */
+	TSharedPtr<SShapeBox> BrushLayer;
+	TSharedPtr<SContextMenuButtonBrush> BrushPainter;
+
+	FShapeBoxShape ButtonShape;
 	FWidgetTransform BrushTransform;
 	bool bHasButtonShape = false;
 
@@ -1440,20 +1356,21 @@ private:
 	/** False until the owner first calls SetVisualState; until then the stock SButton brush logic applies. */
 	bool bHasVisualState = false;
 
-	// The shape as committed by the last paint, i.e. the shape sitting on the render transform right now and so the
-	// one baked into the geometry this paint was handed. Everything a paint draws comes from these. Mutable because
-	// the commit happens at the end of OnPaint, which is const.
+	/** True when the brush layer was painted by the latest paint, i.e. its geometry and hit data are current. */
+	mutable bool bBrushLayerPainted = false;
+
+	// The core as committed by the last paint, i.e. the transform sitting on the render transform right now and so
+	// the one baked into the geometry this paint was handed. Mutable because the commit happens at the end of
+	// OnPaint, which is const.
 	mutable bool bHasCommittedShape = false;
 	mutable bool bCommittedShapeActive = false;
 	mutable FSlateRenderTransform CommittedShape;
 	mutable FSlateRenderTransform CommittedShapeInverse;
-	mutable FVector2D CommittedBrushSize = FVector2D::ZeroVector;
-	mutable FVector2D CommittedEdgeScale = FVector2D(1.0, 1.0);
 
-	// What that shape was committed from, so the transform is only rewritten (and the widget invalidated) when one
+	// What that core was committed from, so the transform is only rewritten (and the widget invalidated) when one
 	// of its inputs actually moves.
 	mutable FVector2D CommittedLocalSize = FVector2D::ZeroVector;
-	mutable FMargin CommittedEdgeOffsets = FMargin(0.0f);
+	mutable FShapeBoxShape CommittedButtonShape;
 	mutable FWidgetTransform CommittedBrushTransform;
 	mutable FWidgetTransform CommittedAuthoredTransform;
 	mutable FVector2D CommittedAuthoredPivot = FVector2D(0.5, 0.5);
@@ -1540,7 +1457,7 @@ public:
 	bool bDefaultEnabledState = false;
 
 	/**
-	 * If true, the Enabled state uses the Hovered shape (Transform, Extrude, Inset, and the style's
+	 * If true, the Enabled state uses the Hovered shape (Transform, Shape, and the style's
 	 * Hovered brush), so there's nothing to copy from Hovered to Enabled. Enabled Shape is greyed out while this is on.
 	 * Applies to Shape Presets too.
 	 * 
@@ -1559,8 +1476,8 @@ public:
 	bool bEnabledMatchesHoverDesign = false;
 
 	/**
-	 * If false, hovering while this button is enabled does not apply the Hovered shape (Transform, Extrude,
-	 * Inset, and the style's Hovered brush); the Enabled shape stays.
+	 * If false, hovering while this button is enabled does not apply the Hovered shape (Transform, Shape,
+	 * and the style's Hovered brush); the Enabled shape stays.
 	 *
 	 * Hidden while Enabled Matches Hover Shape is on: at that point Enabled already looks exactly like Hovered, so
 	 * this has nothing left to switch off.
@@ -1671,88 +1588,22 @@ public:
 	// ------------------------------------------------------------------
 
 	/**
-	 * One entry per widget this button shapes: its own Transform, Extrude and Inset
-	 * across the button's states. The button's own shape - the same Extrude/Inset/Transform it always
-	 * had, hit area included - is simply the entry aimed at the button itself; every other entry shapes some
-	 * other widget in the tree, visually, via that widget's own Render Transform.
+	 * One entry per widget this button shapes: its own Transform and Shape Box shape across the button's states.
+	 *
+	 * Aim one at the button itself to shape its background brush (the hit area follows; content and layout don't
+	 * move). Aim one at a Shape Box, or at a widget sitting alone inside a Shape Box, to drive that Shape Box.
+	 * Any other widget only takes the Transform.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Shape", meta = (TitleProperty = "TargetWidgetName"))
 	TArray<FContextMenuShapeTarget> ShapeTargets;
 
-	/** Guards the one-time PostLoad migration below so it never re-fires once ShapeTargets exists on its own. */
-	UPROPERTY()
-	bool bHasMigratedShapeTargets = false;
-
-	// ---- Legacy ----
-	// Before Shape Targets, the button had exactly one implicit shape, authored directly here. Kept hidden so
-	// old assets still load; UContextMenuButton::PostLoad converts these into ShapeTargets' first entry (aimed
-	// at the button itself, exactly what they already meant) and never looks at them again.
-
-	UPROPERTY()
-	EContextMenuButtonSettingSource ShapeSettingSource = EContextMenuButtonSettingSource::UseProjectSettings;
-
-	UPROPERTY()
-	FName ShapePresetName = TEXT("Default");
-
-	UPROPERTY()
-	FContextMenuShapeStateSettings BaseShape;
-
-	UPROPERTY()
-	bool bOverrideNormalShape = false;
-
-	UPROPERTY()
-	FContextMenuShapeStateSettings NormalShape;
-
-	UPROPERTY()
-	bool bOverrideHoveredShape = false;
-
-	UPROPERTY()
-	FContextMenuShapeStateSettings HoveredShape;
-
-	UPROPERTY()
-	bool bOverridePressedShape = false;
-
-	UPROPERTY()
-	FContextMenuShapeStateSettings PressedShape;
-
-	UPROPERTY()
-	bool bOverrideDisabledShape = false;
-
-	UPROPERTY()
-	FContextMenuShapeStateSettings DisabledShape;
-
-	UPROPERTY()
-	bool bOverrideEnabledShape = false;
-
-	UPROPERTY()
-	FContextMenuShapeStateSettings EnabledShape;
-
-	UPROPERTY()
-	float TransformInterpolationSpeed = 5.0f;
-
-	UPROPERTY()
-	EContextMenuInterpolationCurve TransformInterpolationCurve = EContextMenuInterpolationCurve::Linear;
-
-	UPROPERTY()
-	float TransformOvershoot = 1.5f;
-
-	UPROPERTY()
-	float TransformDelay = 0.0f;
-
-	UPROPERTY()
-	bool bSeparateTransformAndSize = false;
-
-	UPROPERTY()
-	float SizeInterpolationSpeed = 5.0f;
-
-	UPROPERTY()
-	EContextMenuInterpolationCurve SizeInterpolationCurve = EContextMenuInterpolationCurve::Linear;
-
-	UPROPERTY()
-	float SizeOvershoot = 1.5f;
-
-	UPROPERTY()
-	float SizeDelay = 0.0f;
+	/**
+	 * What each Shape Target is actually shaping: the button's brush, a Shape Box, or - for a widget that is
+	 * neither a Shape Box nor alone inside one - Transform only, with its Shape ignored. Rebuilt whenever the
+	 * button is edited.
+	 */
+	UPROPERTY(VisibleAnywhere, Transient, Category = "Context Menu Button|Shape", meta = (DisplayName = "Shape Status", MultiLine = true))
+	FString ShapeTargetStatus;
 
 	// ------------------------------------------------------------------
 	// Design Configurations
@@ -2268,8 +2119,8 @@ protected:
 	/** Moves every visual one step toward the current state's targets (or snaps if bInstant). Returns true once everything has arrived. */
 	bool ApplyTransitions(float DeltaTime, bool bInstant);
 
-	/** Sends a target's current Extrude/Inset/Transform to the Slate button, which paints them on the brush and hit tests against them. Self-targeting only; see ApplyShapeToTargetWidget for the general case. */
-	void PushButtonShapeToSlate(const FVector2D& Extrude, const FVector2D& Inset, const FWidgetTransform& Transform);
+	/** Sends a target's current Shape and Transform to the Slate button, which paints the brush with them and hit tests against them. Self-targeting only; see ApplyShapeToTargetWidget for the general case. */
+	void PushButtonShapeToSlate(const FShapeBoxShape& Shape, const FWidgetTransform& Transform);
 
 	/** Sends the resolved state (and who owns the brush) to the Slate button, which picks the style brush from it. */
 	void PushVisualStateToSlate(EContextMenuState ShapeState);
@@ -2313,7 +2164,7 @@ protected:
 	void PlayClickSounds();
 
 	/** One slot from one set: applies the repeat limit, then either plays now or arms the set's delay timer. */
-	void PlaySoundSlot(int32 SetIndex, const FUISoundSlot& Slot);
+	void PlaySoundSlot(int32 SetIndex, const FUISoundSlot& SoundSlot);
 
 	void CancelPendingSounds();
 
@@ -2353,43 +2204,17 @@ protected:
 
 	/**
 	 * Applies a fully-resolved shape to whichever widget a Shape Target points at. Self-targeting (Widget ==
-	 * this) goes through the button's own mouse-hit-aware Slate mechanism; anything else is shaped generically
-	 * via its own Render Transform - see ApplyGenericWidgetShape for what that does and doesn't reproduce
-	 * exactly.
+	 * this) goes through the button's own mouse-hit-aware Slate brush; a Shape Box found by FindDrivenShapeBox
+	 * takes both the Shape and the Transform; anything else takes the Transform alone, through its own Render
+	 * Transform.
 	 */
-	void ApplyShapeToTargetWidget(UWidget* Widget, const FVector2D& Extrude, const FVector2D& Inset, const FWidgetTransform& Transform);
+	void ApplyShapeToTargetWidget(UWidget* Widget, const FShapeBoxShape& Shape, const FWidgetTransform& Transform);
 
-	/**
-	 * Extrudes/insets a generic (non-button) widget and applies Transform to it.
-	 *
-	 * Image and Border targets sitting in a padded, Fill/Left/Right/Top/Bottom-aligned slot (Overlay, Button,
-	 * Border, Size Box, box panels...) are resized for real, the way the button's own brush is: the slot's
-	 * padding moves each edge by exactly its own offset, and the widget's desired size is grown by the same
-	 * amount so the parent's layout doesn't move. The brush is drawn at the new size with its margins and
-	 * corner radii intact rather than stretched, a Border's content stays exactly where it was, and the hit
-	 * area follows. Transform then rides on the widget's own Render Transform, pivoting on the shaped box.
-	 *
-	 * Anything else falls back to the widget's Render Transform: each edge still moves by exactly its own
-	 * offset (so +X extends only the right edge, rather than growing both sides like a scale), but the
-	 * widget's pixels are necessarily stretched to get there, since a render transform is the only
-	 * layout-free hook a plain widget offers.
-	 */
-	void ApplyGenericWidgetShape(UWidget* Widget, const FVector2D& Extrude, const FVector2D& Inset, const FWidgetTransform& Transform);
+	/** The Shape Box a Shape Target drives: the widget itself if it is one, else its parent if that is one (a Shape Box only ever has one child). Null otherwise. */
+	static UShapeBox* FindDrivenShapeBox(UWidget* Widget);
 
-	/** Resizes Widget through its slot (see ApplyGenericWidgetShape). Returns false if this widget/slot can't be resized that way. */
-	bool TryApplyLayoutShape(UWidget* Widget, FContextMenuGenericShapeBaseline& Baseline, const FMargin& EdgeOffsets);
-
-	/** Puts back anything TryApplyLayoutShape wrote. */
-	static void RestoreLayoutShape(UWidget* Widget, FContextMenuGenericShapeBaseline& Baseline);
-
-	/** Re-reads the authored layout values for Widget, unless what's there now is simply what this button last wrote. */
-	static void RefreshGenericShapeBaseline(UWidget* Widget, FContextMenuGenericShapeBaseline& Baseline);
-
-	/** Authored layout of every generic widget a Shape Target has resized, so it can be put back. */
-	TMap<TWeakObjectPtr<UWidget>, FContextMenuGenericShapeBaseline> GenericShapeBaselines;
-
-	/** The target's own single child, if it is a panel with exactly one - the generalized form of GetContent(). Null otherwise. */
-	static UWidget* FindSingleChildWidget(UWidget* Widget);
+	/** Rebuilds Shape Status from the current Shape Targets. */
+	void RebuildShapeTargetStatus();
 
 	static FLinearColor ExtractWidgetColor(UWidget* Widget);
 	static void ApplyColorToWidget(UWidget* Widget, const FLinearColor& Color);

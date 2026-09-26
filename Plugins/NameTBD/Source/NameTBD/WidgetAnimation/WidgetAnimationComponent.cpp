@@ -8,6 +8,8 @@
 #include "Components/PanelWidget.h"
 #include "Components/Widget.h"
 #include "Engine/Blueprint.h"
+#include "NameTBD/Widgets/ShapeBox.h"
+#include "WidgetAnimTransform.h"
 #include "Engine/Engine.h"
 #include "Serialization/CustomVersion.h"
 #include "Widgets/SWidget.h"
@@ -39,17 +41,26 @@ namespace
 
 	/**
 	 * Additive layers as runtime settings. No Target Widget, so they animate the widget the component is
-	 * on; material layers use it too when it is an Image, as an entry with no target would.
+	 * on; material layers use it too when it is an Image, and a Transform layer's Animate Shape uses it when
+	 * it is a Shape Box - the same narrowing an entry with no target gets in FWidgetAnimEntryBase::BuildSettings.
 	 */
-	void AppendAdditiveLayers(const TArray<FWidgetAnimLayer>& Layers, UWidget* Owner, TArray<FWidgetAnimSettings>& OutSettings)
+	void AppendAdditiveLayers(const TArray<FWidgetAnimLayer>& Layers, UWidget* AnimatedWidget, TArray<FWidgetAnimSettings>& OutSettings)
 	{
-		UImage* MaterialTarget = Cast<UImage>(Owner);
+		UImage* MaterialTarget = Cast<UImage>(AnimatedWidget);
 
-		OutSettings.Reserve(OutSettings.Num() + Layers.Num());
-		for (const FWidgetAnimLayer& Layer : Layers)
+		// The widget itself when it is a Shape Box, or the Shape Box it sits in - so a component on an Image
+		// inside a Shape Box animates the box's outline while it moves the Image.
+		UShapeBox* ShapeTarget = UWidgetAnimLibrary::ResolveShapeBox(AnimatedWidget);
+
+		// Placed in order, each after the one above it, exactly as an entry's layers are.
+		TArray<FWidgetAnimSettings> Placed;
+		UWidgetAnimLibrary::BuildLayerSettings(Layers, Placed);
+
+		OutSettings.Reserve(OutSettings.Num() + Placed.Num());
+		for (FWidgetAnimSettings& Settings : Placed)
 		{
-			FWidgetAnimSettings Settings = Layer.ToSettings();
 			Settings.MaterialTargetImage = MaterialTarget;
+			Settings.ShapeTargetBox = ShapeTarget;
 			OutSettings.Add(MoveTemp(Settings));
 		}
 	}
@@ -181,7 +192,7 @@ void UWidgetAnimationComponent::BeginDestroy()
 }
 
 // =====================================================================================================
-// Owner and lookup
+// AnimatedWidget and lookup
 // =====================================================================================================
 
 void UWidgetAnimationComponent::BindToWidget(UWidget* InWidget)
@@ -242,8 +253,8 @@ UWidgetAnimationComponent* UWidgetAnimationComponent::FindWidgetAnimationCompone
 
 UUserWidget* UWidgetAnimationComponent::GetPathRoot() const
 {
-	UWidget* Owner = AnimOwner.Get();
-	if (!Owner)
+	UWidget* AnimatedWidget = AnimOwner.Get();
+	if (!AnimatedWidget)
 	{
 		return nullptr;
 	}
@@ -251,7 +262,7 @@ UUserWidget* UWidgetAnimationComponent::GetPathRoot() const
 	// Bound by a User Widget onto itself: paths are into its own tree, as they always were.
 	if (bBoundByCode)
 	{
-		if (UUserWidget* OwnerAsUserWidget = Cast<UUserWidget>(Owner))
+		if (UUserWidget* OwnerAsUserWidget = Cast<UUserWidget>(AnimatedWidget))
 		{
 			return OwnerAsUserWidget;
 		}
@@ -259,12 +270,12 @@ UUserWidget* UWidgetAnimationComponent::GetPathRoot() const
 
 	// Added in the designer: paths are into the Widget Blueprint the component was added in, which is the
 	// User Widget whose tree holds the owner - the same tree the Target Widget dropdown lists.
-	if (UUserWidget* ContainingUserWidget = Owner->GetTypedOuter<UUserWidget>())
+	if (UUserWidget* ContainingUserWidget = AnimatedWidget->GetTypedOuter<UUserWidget>())
 	{
 		return ContainingUserWidget;
 	}
 
-	return Cast<UUserWidget>(Owner);
+	return Cast<UUserWidget>(AnimatedWidget);
 }
 
 UWidget* UWidgetAnimationComponent::ResolveAnimTarget(FName TargetWidgetName) const
@@ -330,6 +341,17 @@ void UWidgetAnimationComponent::RebuildEffectiveAnimations()
 	UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(AnimIn, EffectiveInEntries, EffectiveOutEntries);
 	UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(AnimOut, EffectiveOutEntries, EffectiveInEntries);
 
+	// The working copies are brought up to the animations' current groups even when the authored entries
+	// are behind - an animation that gained a group since this widget was last saved plays it on its default.
+	for (FWidgetAnimEntry& Entry : EffectiveInEntries)
+	{
+		Entry.SyncGroupTargets();
+	}
+	for (FWidgetAnimEntry& Entry : EffectiveOutEntries)
+	{
+		Entry.SyncGroupTargets();
+	}
+
 	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
 
 	FlattenedIn.Reset();
@@ -356,13 +378,13 @@ void UWidgetAnimationComponent::RebuildEffectiveAnimations()
 void UWidgetAnimationComponent::RefreshAnimIdConflicts()
 {
 	TArray<FName> Found;
-	UWidget* Owner = AnimOwner.Get();
+	UWidget* AnimatedWidget = AnimOwner.Get();
 
 	// Sharing an ID across entries is intended - one named effect built from animations on several widgets.
 	// Two entries under one ID going the same direction on the SAME widget is not: a by-ID call stacks
 	// both onto that widget, and there is no telling which was meant. Checked per direction because an In
 	// entry and an Out entry sharing an ID is the ordinary way to pair them.
-	auto Scan = [this, Owner, &Found](const TArray<FWidgetAnimEntry>& Entries)
+	auto Scan = [this, AnimatedWidget, &Found](const TArray<FWidgetAnimEntry>& Entries)
 	{
 		TSet<TPair<FName, UWidget*>> Seen;
 		for (const FWidgetAnimEntry& Entry : Entries)
@@ -372,18 +394,24 @@ void UWidgetAnimationComponent::RefreshAnimIdConflicts()
 				continue;
 			}
 
-			// No target (or one that doesn't resolve) animates the owner, exactly as the library falls back.
-			UWidget* Target = ResolveAnimTarget(Entry.TargetWidgetName);
-			if (!Target)
+			// Every widget this entry animates - one per Layer Group, though groups may share one. Collected
+			// first, so an entry whose own groups share a widget isn't reported as conflicting with itself.
+			TSet<UWidget*> EntryTargets;
+			for (int32 GroupIndex = 0; GroupIndex < FMath::Max(1, Entry.Animation->LayerGroups.Num()); ++GroupIndex)
 			{
-				Target = Owner;
+				// No target (or one that doesn't resolve) animates the owner, exactly as the library falls back.
+				UWidget* Target = ResolveAnimTarget(Entry.GetGroupTargetName(GroupIndex));
+				EntryTargets.Add(Target ? Target : AnimatedWidget);
 			}
 
-			bool bAlreadySeen = false;
-			Seen.Add(TPair<FName, UWidget*>(Entry.AnimId, Target), &bAlreadySeen);
-			if (bAlreadySeen)
+			for (UWidget* Target : EntryTargets)
 			{
-				Found.AddUnique(Entry.AnimId);
+				bool bAlreadySeen = false;
+				Seen.Add(TPair<FName, UWidget*>(Entry.AnimId, Target), &bAlreadySeen);
+				if (bAlreadySeen)
+				{
+					Found.AddUnique(Entry.AnimId);
+				}
 			}
 		}
 	};
@@ -407,8 +435,8 @@ void UWidgetAnimationComponent::RefreshAnimIdConflicts()
 
 void UWidgetAnimationComponent::ReportAnimIdConflict(FName AnimId) const
 {
-	const UWidget* Owner = AnimOwner.Get();
-	const FString TargetWidgetName = Owner ? Owner->GetName() : FString(TEXT("None"));
+	const UWidget* AnimatedWidget = AnimOwner.Get();
+	const FString TargetWidgetName = AnimatedWidget ? AnimatedWidget->GetName() : FString(TEXT("None"));
 
 	const FString Message = FString::Printf(
 		TEXT("[WidgetAnimationComponent.%s] Animation ID '%s' is currently conflicting. Change the ID(s) which conflict for proper functionality."),
@@ -462,14 +490,14 @@ void UWidgetAnimationComponent::SetExtraAnimSettings(const TArray<FWidgetAnimSet
 
 void UWidgetAnimationComponent::NotifyOwnerConstructed()
 {
-	UWidget* Owner = AnimOwner.Get();
-	if (bOwnerConstructed || !Owner || Owner->IsDesignTime())
+	UWidget* AnimatedWidget = AnimOwner.Get();
+	if (bOwnerConstructed || !AnimatedWidget || AnimatedWidget->IsDesignTime())
 	{
 		return;
 	}
 
 	bOwnerConstructed = true;
-	bLastSeenVisible = IsVisibleState(Owner->GetVisibility());
+	bLastSeenVisible = IsVisibleState(AnimatedWidget->GetVisibility());
 
 	RebuildEffectiveAnimations();
 	EnsureRuntimeBaselines();
@@ -525,8 +553,8 @@ void UWidgetAnimationComponent::StopRuntimeTicking()
 
 void UWidgetAnimationComponent::RuntimeTick(float DeltaTime)
 {
-	UWidget* Owner = AnimOwner.Get();
-	if (!Owner || !bOwnerConstructed)
+	UWidget* AnimatedWidget = AnimOwner.Get();
+	if (!AnimatedWidget || !bOwnerConstructed)
 	{
 		StopRuntimeTicking();
 		return;
@@ -536,7 +564,7 @@ void UWidgetAnimationComponent::RuntimeTick(float DeltaTime)
 	// The pose is applied in the same frame (see ApplyCurrentAnimPose), before Slate draws the widget.
 	if (bPlayAnimationsOnVisibilityHidden && !bPlayOnlyOnConstructAndDestruct)
 	{
-		const bool bVisibleNow = IsVisibleState(Owner->GetVisibility());
+		const bool bVisibleNow = IsVisibleState(AnimatedWidget->GetVisibility());
 		if (bVisibleNow && !bLastSeenVisible && !bIsDeferringVisibility)
 		{
 			PlayIn();
@@ -560,18 +588,18 @@ bool UWidgetAnimationComponent::IsVisibleState(ESlateVisibility Visibility)
 
 void UWidgetAnimationComponent::EnsureRuntimeBaselines()
 {
-	UWidget* Owner = AnimOwner.Get();
-	if (Owner && bPreserveAuthoredTransforms)
+	UWidget* AnimatedWidget = AnimOwner.Get();
+	if (AnimatedWidget && bPreserveAuthoredTransforms)
 	{
 		// No-ops after the first call. Capturing again would read back a pose the animation itself wrote.
-		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(Owner, FlattenedIn, FlattenedOut, AnimBaselines);
+		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(AnimatedWidget, FlattenedIn, FlattenedOut, AnimBaselines);
 	}
 }
 
 void UWidgetAnimationComponent::ApplyCurrentAnimPose()
 {
-	UWidget* Owner = AnimOwner.Get();
-	if (!Owner)
+	UWidget* AnimatedWidget = AnimOwner.Get();
+	if (!AnimatedWidget)
 	{
 		return;
 	}
@@ -579,7 +607,7 @@ void UWidgetAnimationComponent::ApplyCurrentAnimPose()
 	// Starting a track only resets its clock. A zero-delta tick applies time zero now, so the first frame
 	// is never drawn in the authored pose.
 	TArray<FName> JustFinished;
-	UWidgetAnimLibrary::TickWidgetAnimPlayer(Owner, AnimPlayer, AnimBaselines, 0.f, JustFinished);
+	UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, 0.f, JustFinished);
 }
 
 void UWidgetAnimationComponent::PlayIn(bool bCascadeToChildren)
@@ -707,14 +735,14 @@ bool UWidgetAnimationComponent::IsSettlingInDirection(bool bIsOut) const
 
 bool UWidgetAnimationComponent::TickAnimationPlayback(float DeltaTime)
 {
-	UWidget* Owner = AnimOwner.Get();
-	if (!Owner)
+	UWidget* AnimatedWidget = AnimOwner.Get();
+	if (!AnimatedWidget)
 	{
 		return false;
 	}
 
 	TArray<FName> JustFinished;
-	UWidgetAnimLibrary::TickWidgetAnimPlayer(Owner, AnimPlayer, AnimBaselines, DeltaTime, JustFinished);
+	UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, JustFinished);
 
 	// Settled rather than playing: an endless loop is still playing, but it must not hold the entrance
 	// (or the exit, and with it the deferred visibility and OnOutAnimationFinished) open forever.
@@ -752,8 +780,8 @@ void UWidgetAnimationComponent::HandleOutAnimationFinished()
 
 void UWidgetAnimationComponent::SetVisibilityAnimated(ESlateVisibility InVisibility)
 {
-	UWidget* Owner = AnimOwner.Get();
-	if (!Owner)
+	UWidget* AnimatedWidget = AnimOwner.Get();
+	if (!AnimatedWidget)
 	{
 		return;
 	}
@@ -761,7 +789,7 @@ void UWidgetAnimationComponent::SetVisibilityAnimated(ESlateVisibility InVisibil
 	if (bPlayAnimationsOnVisibilityHidden && !bPlayOnlyOnConstructAndDestruct && bOwnerConstructed)
 	{
 		const bool bIsBecomingInvisible = !IsVisibleState(InVisibility);
-		const bool bWasVisible = IsVisibleState(Owner->GetVisibility());
+		const bool bWasVisible = IsVisibleState(AnimatedWidget->GetVisibility());
 
 		// Hide after the exit has played.
 		if (bIsBecomingInvisible && bWasVisible && !IsAnimClosing())
@@ -789,11 +817,11 @@ void UWidgetAnimationComponent::SetVisibilityAnimated(ESlateVisibility InVisibil
 
 void UWidgetAnimationComponent::ApplyVisibilityToOwner(ESlateVisibility InVisibility)
 {
-	if (UWidget* Owner = AnimOwner.Get())
+	if (UWidget* AnimatedWidget = AnimOwner.Get())
 	{
 		// Guarded so an owner whose SetVisibility routes into SetVisibilityAnimated passes this call through.
 		TGuardValue<bool> Guard(bApplyingVisibility, true);
-		Owner->SetVisibility(InVisibility);
+		AnimatedWidget->SetVisibility(InVisibility);
 		bLastSeenVisible = IsVisibleState(InVisibility);
 	}
 }
@@ -886,8 +914,8 @@ void UWidgetAnimationComponent::EndLoopingAnimation(FName AnimId, bool bSoftSett
 
 void UWidgetAnimationComponent::NotifyOwnerDesignTimeRefresh()
 {
-	UWidget* Owner = AnimOwner.Get();
-	if (!Owner || !Owner->IsDesignTime())
+	UWidget* AnimatedWidget = AnimOwner.Get();
+	if (!AnimatedWidget || !AnimatedWidget->IsDesignTime())
 	{
 		return;
 	}
@@ -901,13 +929,19 @@ void UWidgetAnimationComponent::NotifyOwnerDesignTimeRefresh()
 
 	RebuildEffectiveAnimations();
 
+	// The toolbar's copies follow the stacks they are stamped from.
+	if (DesignerPreviewModeOverride.IsSet())
+	{
+		RebuildDesignerOverrideStacks();
+	}
+
 	// Always captured at design time: Off has to be able to put everything back exactly.
-	UWidgetAnimLibrary::CaptureWidgetAnimBaselines(Owner, FlattenedIn, FlattenedOut, AnimBaselines);
+	UWidgetAnimLibrary::CaptureWidgetAnimBaselines(AnimatedWidget, FlattenedIn, FlattenedOut, AnimBaselines);
 
 	// Fresh state: the preview starts again from the top whenever the designer rebuilds the widget.
 	DesignerPreviewState = FWidgetAnimPreviewState();
 
-	if (DesignerPreview.Mode == EWidgetAnimPreviewMode::Off)
+	if (GetEffectiveDesignerPreview().Mode == EWidgetAnimPreviewMode::Off)
 	{
 		StopDesignerPreview();
 		return;
@@ -919,8 +953,8 @@ void UWidgetAnimationComponent::NotifyOwnerDesignTimeRefresh()
 
 void UWidgetAnimationComponent::EnsureDesignerPreviewTimer()
 {
-	UWidget* Owner = AnimOwner.Get();
-	if (!Owner || !Owner->IsDesignTime() || DesignerPreview.Mode == EWidgetAnimPreviewMode::Off)
+	UWidget* AnimatedWidget = AnimOwner.Get();
+	if (!AnimatedWidget || !AnimatedWidget->IsDesignTime() || GetEffectiveDesignerPreview().Mode == EWidgetAnimPreviewMode::Off)
 	{
 		return;
 	}
@@ -930,7 +964,7 @@ void UWidgetAnimationComponent::EnsureDesignerPreviewTimer()
 		return;
 	}
 
-	TSharedPtr<SWidget> SlateWidget = Owner->GetCachedWidget();
+	TSharedPtr<SWidget> SlateWidget = AnimatedWidget->GetCachedWidget();
 	if (!SlateWidget.IsValid())
 	{
 		// The owner's Slate widget is built after its properties are synchronized. Try again next frame.
@@ -949,7 +983,8 @@ void UWidgetAnimationComponent::EnsureDesignerPreviewTimer()
 
 	// An active timer rather than the core ticker: it is what tells the designer viewport to keep
 	// repainting while the preview runs.
-	TSharedRef<FActiveTimerHandle> Handle = SlateWidget->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateWeakLambda(this,
+	TSharedRef<FActiveTimerHandle> Handle = SlateWidget->RegisterActiveTimer(0.f, 
+		FWidgetActiveTimerDelegate::CreateWeakLambda(this,
 		[this](double /*CurrentTime*/, float DeltaTime) -> EActiveTimerReturnType
 		{
 			UWidget* PreviewOwner = AnimOwner.Get();
@@ -959,13 +994,176 @@ void UWidgetAnimationComponent::EnsureDesignerPreviewTimer()
 			}
 
 			const bool bNeedsMoreFrames = UWidgetAnimLibrary::TickWidgetAnimPreview(
-				PreviewOwner, FlattenedIn, FlattenedOut, DesignerPreviewState, DesignerPreview, AnimBaselines, DeltaTime);
+				PreviewOwner, GetDesignerPreviewIn(), GetDesignerPreviewOut(), DesignerPreviewState, GetEffectiveDesignerPreview(), AnimBaselines, DeltaTime);
 
 			return bNeedsMoreFrames ? EActiveTimerReturnType::Continue : EActiveTimerReturnType::Stop;
 		}));
 
 	PreviewTimerHandle = Handle;
 	PreviewTimerWidget = SlateWidget;
+}
+
+FWidgetAnimPreviewSettings UWidgetAnimationComponent::GetEffectiveDesignerPreview() const
+{
+	FWidgetAnimPreviewSettings Settings = DesignerPreview;
+	if (DesignerPreviewModeOverride.IsSet())
+	{
+		Settings.Mode = DesignerPreviewModeOverride.GetValue();
+		Settings.PlaybackSpeed = FMath::Max(DesignerPreview.PlaybackSpeed * DesignerPreviewOptions.Speed, 0.01f);
+		Settings.ScrubAlpha = DesignerPreviewScrubAlpha;
+		Settings.bScrubOutAnimation = bDesignerPreviewScrubOut;
+	}
+	return Settings;
+}
+
+void UWidgetAnimationComponent::RebuildDesignerOverrideStacks()
+{
+	// The toolbar's choices replace each entry's own loop and ping-pong, as one use of the animation would;
+	// Invert flips whatever direction the entry already runs in, so an inverted entry plays forward again.
+	auto Stamp = [this](const TArray<FWidgetAnimSettings>& Source, TArray<FWidgetAnimSettings>& Out)
+	{
+		Out = Source;
+		for (FWidgetAnimSettings& Layer : Out)
+		{
+			Layer.bLoop = DesignerPreviewOptions.bLoop;
+			Layer.bPingPong = DesignerPreviewOptions.bPingPong;
+			Layer.LoopCount = 0;
+			Layer.bInvertAnimation = Layer.bInvertAnimation != DesignerPreviewOptions.bInvert;
+		}
+	};
+
+	Stamp(FlattenedIn, DesignerOverrideIn);
+	Stamp(FlattenedOut, DesignerOverrideOut);
+}
+
+void UWidgetAnimationComponent::PlayDesignerPreviewOverride(bool bOut, const FWidgetAnimDesignerPlayback& Options)
+{
+	// The exit is only ever seen after the entrance has settled, so Play Out plays from the settled pose.
+	// Looping is the stamped layers' own - endless, with Ping Pong if asked - so the mode is always Once.
+	DesignerPreviewOptions = Options;
+	DesignerPreviewModeOverride = bOut ? EWidgetAnimPreviewMode::PlayOut : EWidgetAnimPreviewMode::PlayIn;
+	bDesignerPreviewScrubOut = bOut;
+
+	// From the top: the running timer dropped, the widget put back as authored and read again, fresh state -
+	// and the stamped stacks rebuilt from what was read.
+	StopDesignerPreview();
+	NotifyOwnerDesignTimeRefresh();
+}
+
+void UWidgetAnimationComponent::ScrubDesignerPreviewOverride(float Alpha, const FWidgetAnimDesignerPlayback& Options)
+{
+	const bool bWasDriving = DesignerPreviewModeOverride.IsSet();
+
+	DesignerPreviewOptions = Options;
+	DesignerPreviewScrubAlpha = FMath::Clamp(Alpha, 0.f, 1.f);
+	DesignerPreviewModeOverride = EWidgetAnimPreviewMode::Scrub;
+
+	if (!bWasDriving)
+	{
+		// First touch of the toolbar on this widget: set up as Play would, then freeze.
+		StopDesignerPreview();
+		NotifyOwnerDesignTimeRefresh();
+		return;
+	}
+
+	// Already driving: the player sees the new mode or alpha on its next frame and poses it. Only its timer
+	// needs waking - a scrub poses one frame and stops asking for more.
+	RebuildDesignerOverrideStacks();
+	EnsureDesignerPreviewTimer();
+}
+
+void UWidgetAnimationComponent::UpdateDesignerPreviewOptions(const FWidgetAnimDesignerPlayback& Options)
+{
+	if (!DesignerPreviewModeOverride.IsSet())
+	{
+		return;
+	}
+
+	DesignerPreviewOptions = Options;
+	RebuildDesignerOverrideStacks();
+
+	// A frozen scrub re-poses on the next frame only if asked; a playing preview simply carries on with it.
+	DesignerPreviewState.LastScrubAlpha = -1.f;
+	EnsureDesignerPreviewTimer();
+}
+
+void UWidgetAnimationComponent::ResetDesignerPreviewOverride()
+{
+	// Off: put back as authored, and held there - until played again, or until the designer rebuilds the
+	// widget, which drops the override and hands the preview back to Designer Preview.
+	DesignerPreviewModeOverride = EWidgetAnimPreviewMode::Off;
+	DesignerPreviewScrubAlpha = 0.f;
+	bDesignerPreviewScrubOut = false;
+	StopDesignerPreview();
+	NotifyOwnerDesignTimeRefresh();
+}
+
+bool UWidgetAnimationComponent::IsDesignerPreviewShowingOut() const
+{
+	if (GetEffectiveDesignerPreview().Mode == EWidgetAnimPreviewMode::Scrub)
+	{
+		return bDesignerPreviewScrubOut;
+	}
+
+	const EWidgetAnimPhase Phase = DesignerPreviewState.Playback.Phase;
+	return Phase == EWidgetAnimPhase::PlayingOut || Phase == EWidgetAnimPhase::Hidden;
+}
+
+float UWidgetAnimationComponent::GetDesignerPreviewDuration() const
+{
+	// One pass, loops ignored: what a looping preview walks along and starts again.
+	return UWidgetAnimLibrary::GetStackPassDuration(IsDesignerPreviewShowingOut() ? GetDesignerPreviewOut() : GetDesignerPreviewIn());
+}
+
+float UWidgetAnimationComponent::GetDesignerPreviewSeconds() const
+{
+	const float Duration = GetDesignerPreviewDuration();
+
+	// A scrub never moves the playing clock - it poses a frame directly - so the readout is the scrub.
+	if (GetEffectiveDesignerPreview().Mode == EWidgetAnimPreviewMode::Scrub)
+	{
+		return DesignerPreviewScrubAlpha * Duration;
+	}
+
+	const bool bShowingOut = IsDesignerPreviewShowingOut();
+	const float RawElapsed = bShowingOut
+		? UWidgetAnimLibrary::GetStackElapsed(GetDesignerPreviewOut(), DesignerPreviewState.Playback.OutStates)
+		: UWidgetAnimLibrary::GetStackElapsed(GetDesignerPreviewIn(), DesignerPreviewState.Playback.InStates);
+
+	// Looping, it is reported against one pass - up to the end and round again, or back down with Ping Pong.
+	float Position = FMath::Max(RawElapsed, 0.f);
+	if (DesignerPreviewModeOverride.IsSet() && DesignerPreviewOptions.bLoop && Duration > 0.f)
+	{
+		const float Repeat = DesignerPreviewOptions.bPingPong ? Duration * 2.f : Duration;
+		const float InRepeat = FMath::Fmod(Position, Repeat);
+		Position = InRepeat > Duration ? Repeat - InRepeat : InRepeat;
+	}
+
+	// The exit is the entrance played backwards; the readout is where the pose is, walking back to the start.
+	if (bShowingOut && Duration > 0.f)
+	{
+		Position = Duration - Position;
+	}
+
+	return FMath::Clamp(Position, 0.f, FMath::Max(Duration, 0.f));
+}
+
+float UWidgetAnimationComponent::GetDesignerPreviewAlpha() const
+{
+	const float Duration = GetDesignerPreviewDuration();
+	return Duration > KINDA_SMALL_NUMBER ? GetDesignerPreviewSeconds() / Duration : 0.f;
+}
+
+bool UWidgetAnimationComponent::IsDesignerPreviewPlaying() const
+{
+	if (!DesignerPreviewModeOverride.IsSet())
+	{
+		return false;
+	}
+
+	const EWidgetAnimPreviewMode Mode = DesignerPreviewModeOverride.GetValue();
+	return (Mode == EWidgetAnimPreviewMode::PlayIn || Mode == EWidgetAnimPreviewMode::PlayOut)
+		&& PreviewTimerHandle.IsValid();
 }
 
 void UWidgetAnimationComponent::StopDesignerPreview()
@@ -1043,3 +1241,45 @@ bool UWidgetAnimationComponent::ShouldDiffLegacyAgainstArchetype(const UObject* 
 
 	return Archetype->GetLinkerCustomVersion(FWidgetAnimationComponentVersion::GUID) >= FWidgetAnimationComponentVersion::MovedIntoComponent;
 }
+
+void UWidgetAnimationComponent::PostLoad()
+{
+	Super::PostLoad();
+	SyncEntryGroupTargets();
+}
+
+bool UWidgetAnimationComponent::SyncEntryGroupTargets()
+{
+	bool bChanged = false;
+
+	for (FWidgetAnimEntry& Entry : AnimIn)
+	{
+		bChanged |= Entry.SyncGroupTargets();
+	}
+
+	for (FWidgetAnimEntry& Entry : AnimOut)
+	{
+		bChanged |= Entry.SyncGroupTargets();
+	}
+
+	return bChanged;
+}
+
+#if WITH_EDITOR
+void UWidgetAnimationComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	// An animation picked, swapped or cleared: its Target Widgets get a row per Layer Group. Only once the
+	// edit is committed - resizing an array under a drag in progress would pull the row out from under it.
+	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+	{
+		SyncEntryGroupTargets();
+	}
+
+	// Keeps each Transform layer's Keys list one-to-one with its curve: a key added on the curve gets an
+	// entry, a deleted one loses it, and every entry's time follows its key. Deferred and skipped mid-drag -
+	// see RequestSyncTransformAnims - so the Details panel is never rebuilt under an edit in progress.
+	UWidgetAnimTransformLibrary::RequestSyncTransformAnims(this, PropertyChangedEvent);
+}
+#endif

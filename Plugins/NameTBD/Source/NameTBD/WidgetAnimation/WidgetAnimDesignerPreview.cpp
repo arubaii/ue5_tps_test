@@ -4,6 +4,23 @@
 
 #include "Components/Widget.h"
 
+namespace
+{
+	/**
+	 * Modes that run a clock, as opposed to the ones that pose a single frame and are done.
+	 *
+	 * Both kinds report "no more frames wanted" the same way, so this is what separates an animation that
+	 * has finished playing from a held pose that has simply been drawn.
+	 */
+	bool IsPlayingMode(EWidgetAnimPreviewMode Mode)
+	{
+		return Mode == EWidgetAnimPreviewMode::PlayIn
+			|| Mode == EWidgetAnimPreviewMode::PlayOut
+			|| Mode == EWidgetAnimPreviewMode::LoopIn
+			|| Mode == EWidgetAnimPreviewMode::LoopInOut;
+	}
+}
+
 void IWidgetAnimDesignerPreviewHost::EnsurePreviewTimer()
 {
 	UWidgetAnimDesignerPreview::EnsureTimer(this);
@@ -142,10 +159,14 @@ bool UWidgetAnimDesignerPreview::TickFrame(IWidgetAnimDesignerPreviewHost* Host,
 	{
 		return false;
 	}
-	
-	if (Host && Host->IsPreviewPaused() && DeltaTime > 0.f)
+
+	// Frozen: time does not move, so there is nothing for a clock to draw. Reporting "no more frames" lets
+	// the active timer stop instead of being ticked every frame for as long as the preview sits paused -
+	// which kept the designer repainting constantly for nothing. A zero-delta call still poses, which is
+	// how a paused host shows the frame it is frozen on; resuming registers a fresh timer.
+	if (Host->IsPreviewPaused() && DeltaTime > 0.f)
 	{
-		return true;
+		return false;
 	}
 
 	return UWidgetAnimLibrary::TickWidgetAnimPreview(
@@ -182,7 +203,17 @@ EActiveTimerReturnType UWidgetAnimDesignerPreview::Tick(IWidgetAnimDesignerPrevi
 	{
 		// A held pose, or a Play Once that has finished. Any property edit restarts the timer, so nothing
 		// is lost by stopping here. Scrub deliberately never reaches this branch - see TickWidgetAnimPreview.
-		Host->GetPreviewState().bTimerActive = false;
+		FWidgetAnimPreviewState& State = Host->GetPreviewState();
+		State.bTimerActive = false;
+
+		// A clock that has run out, rather than a single frame that has been drawn: the host is told so it
+		// can put itself back to the start and stop calling itself paused-or-playing by the wrong name.
+		// Told after bTimerActive is cleared, so a host that wants a fresh timer can ask for one.
+		if (State.bStarted && !Host->IsPreviewPaused() && IsPlayingMode(Host->GetPreviewSettings().Mode))
+		{
+			Host->OnPreviewFinished();
+		}
+
 		return EActiveTimerReturnType::Stop;
 	}
 

@@ -24,6 +24,7 @@ public class NameTBD : ModuleRules
 			{
 				"Slate",
 				"SlateCore",
+				"RenderCore",
 				"EnhancedInput"
 			}
 		);

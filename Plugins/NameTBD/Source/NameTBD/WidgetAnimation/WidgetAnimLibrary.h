@@ -7,10 +7,14 @@
 #include "Components/Widget.h"
 #include "Components/Image.h"
 #include "Curves/CurveFloat.h"
+#include "WidgetAnimEasing.h"    // EWidgetAnimEasing
+#include "WidgetAnimTransform.h" // FWidgetTransformAnim
+#include "WidgetAnimSpring.h"    // EWidgetAnimTiming, FWidgetSpringParams
 #include "WidgetAnimLibrary.generated.h"
 
 class UMaterialInstanceDynamic;
 class UUserWidget;
+class UShapeBox;
 
 UENUM(BlueprintType)
 enum class EWidgetAnimType : uint8
@@ -21,18 +25,34 @@ enum class EWidgetAnimType : uint8
 	Rotate,
 	Pulse,
 	MaterialScalar,
-	MaterialVector
+	MaterialVector,
+
+	/**
+	 * Keyframed Render Transform (and optionally a Shape Box outline), driven by a curve.
+	 *
+	 * The curve's keys are the keyframes and its shape between them is the interpolation - linear by
+	 * default - so Duration and Easing are hidden. Each key holds one Transform. The general form of Slide /
+	 * Scale / Rotate: those each answer one narrow question, this answers "put this widget through these
+	 * poses, at these times, moving like this". See FWidgetTransformAnim.
+	 *
+	 * Appended last on purpose. Enum properties serialize by name, but anything that stored the raw byte
+	 * keeps meaning exactly what it meant before.
+	 */
+	Transform
 };
 
-UENUM(BlueprintType)
-enum class EWidgetAnimEasing : uint8
+// EWidgetAnimEasing now lives in WidgetAnimEasing.h, included above, so anything that includes this
+// header still gets it and needs no include changed.
+
+/**
+ * Whether tracks of this type can be Spring timed: the types that travel from a start value to an end
+ * value. Transform's keys set their own timing, and Pulse has no start and end to travel between - a
+ * Spring Timing left on either is ignored and it plays as a Tween. See WidgetAnimSpring.h.
+ */
+inline bool WidgetAnimTypeSupportsSpring(EWidgetAnimType AnimType)
 {
-	Linear,
-	EaseIn,
-	EaseOut,
-	EaseInOut,
-	Custom
-};
+	return AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse;
+}
 
 UENUM(BlueprintType)
 enum class EWidgetSlideDirection : uint8
@@ -51,17 +71,27 @@ struct NAMETBD_API FWidgetAnimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
 	EWidgetAnimType AnimType = EWidgetAnimType::Fade;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (ClampMin = "0.01"))
+	/** Tween: Duration and Easing. Spring: a spring, which sets its own length. Not offered on Transform or Pulse. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
+	EWidgetAnimTiming Timing = EWidgetAnimTiming::Tween;
+
+	/** Hidden on a Transform layer, whose curve's last key sets how long it runs, and on a Spring one, which runs until it settles. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && Timing == EWidgetAnimTiming::Tween || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	float Duration = 0.3f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (ClampMin = "0.0"))
 	float Delay = 0.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
+	/** Hidden on a Spring layer, whose spring is its motion. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Tween || AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	EWidgetAnimEasing Easing = EWidgetAnimEasing::EaseOut;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Tween || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Transform || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	UCurveFloat* CustomCurve = nullptr;
+
+	/** The spring a Spring layer travels by. See FWidgetSpringParams. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Spring && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides, ShowOnlyInnerProperties))
+	FWidgetSpringParams Spring;
 
 	/**
 	 * Repeats the animation. Layers that share a Loop Group loop together as one animation - the stagger
@@ -111,6 +141,14 @@ struct NAMETBD_API FWidgetAnimSettings
 	UPROPERTY(Transient)
 	int32 LoopGroup = INDEX_NONE;
 
+	/**
+	 * Played as if it weren't there: its place in the timeline still counts - nothing around it moves - but it
+	 * poses nothing. Set only by the Widget Animations panel's previews, for a track hidden there (see
+	 * FWidgetAnimLayer::bHiddenInEditor). Never saved.
+	 */
+	UPROPERTY(Transient)
+	bool bMuted = false;
+
 	// ------------------------------------------------------------------
 	// Fade
 	// ------------------------------------------------------------------
@@ -131,7 +169,8 @@ struct NAMETBD_API FWidgetAnimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale", EditConditionHides))
 	float EndScale = 1.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale", EditConditionHides, ClampMin = "0.0"))
+	/** How far past its end a Tween Scale pops before settling back. A Spring Scale gets its overshoot from the spring. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale && Timing == EWidgetAnimTiming::Tween", EditConditionHides, ClampMin = "0.0"))
 	float Overshoot = 0.4f;
 
 	// ------------------------------------------------------------------
@@ -144,7 +183,8 @@ struct NAMETBD_API FWidgetAnimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slide", meta = (EditCondition = "AnimType == EWidgetAnimType::Slide", EditConditionHides, ClampMin = "0.0"))
 	float SlideDistance = 100.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slide", meta = (EditCondition = "AnimType == EWidgetAnimType::Slide", EditConditionHides, ClampMin = "0.0"))
+	/** How far past its end a Tween Slide travels before settling back. A Spring Slide gets its overshoot from the spring. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slide", meta = (EditCondition = "AnimType == EWidgetAnimType::Slide && Timing == EWidgetAnimTiming::Tween", EditConditionHides, ClampMin = "0.0"))
 	float SlideOvershoot = 0.f;
 
 	// ------------------------------------------------------------------
@@ -189,6 +229,24 @@ struct NAMETBD_API FWidgetAnimSettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
 	FLinearColor EndVectorValue = FLinearColor::White;
+
+	// ------------------------------------------------------------------
+	// Transform
+	// ------------------------------------------------------------------
+
+	/**
+	 * Which Shape Box a Transform layer with Animate Shape on drives, derived the same way
+	 * MaterialTargetImage is: the entry's Target Widget, narrowed. Null on anything that is not a Shape
+	 * Box, which is what makes Animate Shape quietly do nothing there rather than fail.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform", EditConditionHides))
+	TObjectPtr<UShapeBox> ShapeTargetBox = nullptr;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform", EditConditionHides, ShowOnlyInnerProperties))
+	FWidgetTransformAnim Transform;
+
+	/** Whether this layer travels by its spring: Spring timing, on a type that has a start and an end to travel between. */
+	bool IsSpringTimed() const { return Timing == EWidgetAnimTiming::Spring && WidgetAnimTypeSupportsSpring(AnimType); }
 };
 
 /**
@@ -199,10 +257,23 @@ struct NAMETBD_API FWidgetAnimSettings
  * one particular use of it (does this one loop, is it mirrored, which widget does it move) lives on the
  * FWidgetAnimEntry that references the asset instead.
  *
- * Layers combine rather than overwrite: put Fade and Scale in one animation and both happen, with Delay
- * staggering them. That is the whole point of authoring an animation as layers instead of as a single
- * type - "pop" is a fade plus a scale plus a small slide, not one of the three.
+ * Layers combine rather than overwrite: put Fade and Scale in one animation and both happen. That is the
+ * whole point of authoring an animation as layers instead of as a single type - "pop" is a fade plus a
+ * scale plus a small slide, not one of the three.
+ *
+ * Layers run in list order. Each one starts relative to the layer above it - With Previous (the default)
+ * starts it alongside that layer, After Previous starts it once that layer has finished - and Delay adds
+ * seconds on top - or, negative, takes them off, overlapping the layer above. A delay on the first layer
+ * holds back the whole animation. The first layer counts from the start of the animation, and no layer
+ * starts before it.
  */
+UENUM(BlueprintType)
+enum class EWidgetAnimLayerStart : uint8
+{
+	WithPrevious  UMETA(DisplayName = "With Previous",  ToolTip = "Starts when the track above starts, plus Delay. Tracks left at this play together - a fade, scale and slide making one pop."),
+	AfterPrevious UMETA(DisplayName = "After Previous", ToolTip = "Starts when the track above finishes, plus Delay. A run of these plays one after another, as a sequence.")
+};
+
 USTRUCT(BlueprintType)
 struct NAMETBD_API FWidgetAnimLayer
 {
@@ -211,18 +282,56 @@ struct NAMETBD_API FWidgetAnimLayer
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer")
 	EWidgetAnimType AnimType = EWidgetAnimType::Fade;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (ClampMin = "0.01"))
+	/** Whether this track starts with the track above it or after it. The first track counts from the start of the animation. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Starts"))
+	EWidgetAnimLayerStart Start = EWidgetAnimLayerStart::WithPrevious;
+
+	/**
+	 * How the track travels from its start values to its end values. Tween is authored - a Duration and an
+	 * Easing, the same motion every time. Spring is physical - a spring with weight pulls it there, overshoots
+	 * as much as its bounce allows and settles, and the track runs for as long as that takes.
+	 *
+	 * Not offered on Transform tracks, whose keys set their own timing, or on Pulse, which has no end to
+	 * travel to.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
+	EWidgetAnimTiming Timing = EWidgetAnimTiming::Tween;
+
+	/**
+	 * How long the track runs, in seconds. Hidden on a Transform track, whose last key sets how long it runs,
+	 * and on a Spring track, which runs until its spring settles.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && Timing == EWidgetAnimTiming::Tween || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	float Duration = 0.3f;
 
-	/** Seconds before this layer starts. The only thing that staggers layers within one animation. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (ClampMin = "0.0"))
+	/**
+	 * Seconds after the track above starts (With Previous) or finishes (After Previous) before this one
+	 * starts. On the first track, seconds after the animation starts - which holds back every track below.
+	 *
+	 * May be negative: the track starts that long BEFORE the track above starts or finishes - an overlap. That
+	 * is what dragging a track freely along the timeline in the Widget Animations panel writes. No track ever
+	 * starts before the animation itself does; a start that would is held at 0.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer")
 	float Delay = 0.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer")
+	/**
+	 * How the track moves between its start and end values: the curve it follows over its Duration. On a
+	 * Transform track it bends time across the whole run of keys. Hidden on a Spring track, whose spring is its
+	 * motion.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Tween || AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	EWidgetAnimEasing Easing = EWidgetAnimEasing::EaseOut;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Tween || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Transform || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	TObjectPtr<UCurveFloat> CustomCurve = nullptr;
+
+	// Spring
+	//
+	// One nested payload, as Transform is, so every spring setting follows the track through ToSettings and
+	// FromSettings in one line - and a whole spring can be copied between tracks as one value.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Spring && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides, ShowOnlyInnerProperties))
+	FWidgetSpringParams Spring;
 
 	// Fade
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fade", meta = (EditCondition = "AnimType == EWidgetAnimType::Fade", EditConditionHides))
@@ -238,7 +347,8 @@ struct NAMETBD_API FWidgetAnimLayer
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale", EditConditionHides))
 	float EndScale = 1.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale", EditConditionHides, ClampMin = "0.0"))
+	/** How far past its end a Tween Scale pops before settling back. A Spring Scale gets its overshoot from the spring. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale && Timing == EWidgetAnimTiming::Tween", EditConditionHides, ClampMin = "0.0"))
 	float Overshoot = 0.4f;
 
 	// Slide
@@ -248,7 +358,8 @@ struct NAMETBD_API FWidgetAnimLayer
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slide", meta = (EditCondition = "AnimType == EWidgetAnimType::Slide", EditConditionHides, ClampMin = "0.0"))
 	float SlideDistance = 100.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slide", meta = (EditCondition = "AnimType == EWidgetAnimType::Slide", EditConditionHides, ClampMin = "0.0"))
+	/** How far past its end a Tween Slide travels before settling back. A Spring Slide gets its overshoot from the spring. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slide", meta = (EditCondition = "AnimType == EWidgetAnimType::Slide && Timing == EWidgetAnimTiming::Tween", EditConditionHides, ClampMin = "0.0"))
 	float SlideOvershoot = 0.f;
 
 	// Rotate
@@ -281,11 +392,111 @@ struct NAMETBD_API FWidgetAnimLayer
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
 	FLinearColor EndVectorValue = FLinearColor::White;
 
-	/** This layer as the runtime settings struct. Every per-use flag is left at its default for the caller to fill in. */
+	// Transform
+	//
+	// One nested payload instead of a dozen more flat fields. That is the point of the shape: an unused
+	// channel collapses to a single row, and the next family costs one property here rather than twelve.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform", EditConditionHides, ShowOnlyInnerProperties))
+	FWidgetTransformAnim Transform;
+
+	/**
+	 * This layer as the runtime settings struct. Every per-use flag is left at its default for the caller to
+	 * fill in, and Delay is this layer's own - relative, not yet placed on the animation's timeline. Use
+	 * UWidgetAnimLibrary::BuildLayerSettings for a whole list, which places each layer after the one above.
+	 */
 	FWidgetAnimSettings ToSettings() const;
+
+	/**
+	 * Seconds this layer takes to play once: its curve's length on a Transform layer, its spring's settle time
+	 * on a Spring layer, Duration otherwise.
+	 */
+	float GetRunLength() const;
+
+	/** Whether this layer travels by its spring: Spring timing, on a type that has a start and an end to travel between. */
+	bool IsSpringTimed() const { return Timing == EWidgetAnimTiming::Spring && WidgetAnimTypeSupportsSpring(AnimType); }
+
+	/**
+	 * Which Layer Group of its animation this layer belongs to - which widget it moves - by the group's
+	 * position. Set from the Widget Animations panel, never in a Details panel. Membership only: where the layer
+	 * sits in time is still its place in the animation's one list of layers and its Starts setting, so layers
+	 * of different groups sequence against each other freely. Unused wherever layers stand alone, such as a
+	 * component's Additive Anim Layers.
+	 */
+	UPROPERTY()
+	int32 LayerGroup = 0;
+
+#if WITH_EDITORONLY_DATA
+	/**
+	 * Locked in the Widget Animations panel: shown and selectable there, but not moved, resized, re-keyed or
+	 * edited until unlocked. Authoring state only - playback never reads it, and it is not in cooked builds.
+	 */
+	UPROPERTY()
+	bool bLockedInEditor = false;
+
+	/**
+	 * Which line of its group's tracks this layer is drawn on in the Widget Animations panel's Track Editor,
+	 * counted down from the group's first. Several layers can share a line, one after another; INDEX_NONE (a
+	 * new layer, older data) is a line of its own. Authoring state only - where a layer plays is its Starts and
+	 * Delay, never this.
+	 */
+	UPROPERTY()
+	int32 EditorLine = INDEX_NONE;
+
+	/**
+	 * Hidden in the Widget Animations panel: the editor's previews play the animation without this track -
+	 * everything else stays exactly where it is - so what the others do can be judged on its own. Authoring
+	 * state only: a game plays every track.
+	 */
+	UPROPERTY()
+	bool bHiddenInEditor = false;
+#endif
 
 	/** The reverse, for migrating data authored before animations were split into layers and entries. */
 	static FWidgetAnimLayer FromSettings(const FWidgetAnimSettings& Settings);
+};
+
+/**
+ * One widget an animation moves: a name and where it points. The layers themselves stay in the animation's
+ * single list, each naming its group with FWidgetAnimLayer::LayerGroup.
+ *
+ * Keeping the list single is what lets groups interleave: a layer's Starts - With or After Previous - reads
+ * the layer above it in the list, whichever group that one belongs to. A title sliding in, then the card
+ * flipping, then the title fading, then the icon popping is one sequence across three groups.
+ *
+ * The group does not name its widget for good. Each use of the animation - an entry on a Widget Animation
+ * Component - picks a Target Widget per group, so the same animation drives the matching parts of any
+ * widget it is put on. Preview Target is only the widget it animates while it is being built, and the
+ * default a new use starts from.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimLayerGroup
+{
+	GENERATED_BODY()
+
+	/** Optional. Left empty it reads "Layer Group 1", "Layer Group 2"... by position. Uses of the animation label this group's Target Widget with it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer Group", meta = (DisplayName = "Group Name"))
+	FString GroupName;
+
+	/**
+	 * The widget this group animates while it is being authored, as a path into the Widget Blueprint it is
+	 * being built in. None animates that widget itself. A use of the animation that has not picked its own
+	 * Target Widget for this group starts from this one.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer Group", meta = (DisplayName = "Preview Target"))
+	FName PreviewTarget;
+
+	/**
+	 * Only from the brief format where each group held its own layers. Moved into the animation's single list on
+	 * load by UWidgetAnimLibrary::NormalizeLayerGroups and emptied; never edited.
+	 */
+	UPROPERTY()
+	TArray<FWidgetAnimLayer> Layers;
+
+	/** GroupName, or "Layer Group N" (1-based) when it was left empty. */
+	FString GetDisplayName(int32 GroupIndex) const;
+
+	/** "Layer Group N" for the group at GroupIndex. */
+	static FString MakeDefaultName(int32 GroupIndex);
 };
 
 USTRUCT(BlueprintType)
@@ -339,8 +550,31 @@ struct NAMETBD_API FWidgetAnimTargetedTransform
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	FVector2D Translation = FVector2D::ZeroVector;
 
+	/** Additive, like Translation and Angle. Nothing wrote this channel before the Transform family. */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	FVector2D Shear = FVector2D::ZeroVector;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	float Angle = 0.f;
+};
+
+/**
+ * One Shape Box's outline for this frame.
+ *
+ * Authoritative, not accumulated: two shapes cannot be meaningfully added or multiplied, so the last
+ * layer to write a given box wins. That is deliberately unlike TargetedTransforms, and is why this is a
+ * flat "here is the shape" rather than a running total.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimShapeTarget
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UShapeBox> TargetBox = nullptr;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	FShapeBoxShape Shape;
 };
 
 USTRUCT(BlueprintType)
@@ -380,6 +614,10 @@ struct NAMETBD_API FWidgetAnimResult
 
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	TMap<FName, FWidgetAnimVectorTarget> VectorParameters;
+
+	/** Shape Box outlines written this frame. Empty unless a Transform layer has Animate Shape on. */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	TArray<FWidgetAnimShapeTarget> ShapeTargets;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bAllFinished = false;
@@ -523,7 +761,37 @@ struct NAMETBD_API FWidgetAnimBaseline
 	FVector2D Translation = FVector2D::ZeroVector;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	FVector2D Shear = FVector2D::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	float Angle = 0.f;
+};
+
+/**
+ * What one Shape Box's outline was before any animation touched it.
+ *
+ * Kept apart from FWidgetAnimBaseline because a shape is not part of the render transform and most
+ * animated widgets are not Shape Boxes - there is no point carrying a whole FShapeBoxShape on every
+ * baseline for the sake of the few that are. It is also what a Transform key's Use Authored
+ * Shape resolves against.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimShapeBaseline
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UShapeBox> Box = nullptr;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	FShapeBoxShape Shape;
+
+	/**
+	 * Captured for layers that named no target, off the Shape Box the fallback widget resolves to. What a
+	 * lookup for a null box finds, the same way a transform with no target falls back to the animated widget.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	bool bIsFallback = false;
 };
 
 USTRUCT(BlueprintType)
@@ -534,6 +802,10 @@ struct NAMETBD_API FWidgetAnimBaselineSet
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	TArray<FWidgetAnimBaseline> Baselines;
 
+	/** Authored outlines of every Shape Box a Transform layer animates the shape of. Usually empty. */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	TArray<FWidgetAnimShapeBaseline> ShapeBaselines;
+
 	/** Set by the first capture, so a later pass can't re-capture a pose the animation itself just wrote. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bCaptured = false;
@@ -541,7 +813,25 @@ struct NAMETBD_API FWidgetAnimBaselineSet
 	void ResetBaselines()
 	{
 		Baselines.Reset();
+		ShapeBaselines.Reset();
 		bCaptured = false;
+	}
+
+	/**
+	 * The authored outline captured for Box, or null if nothing captured one. A null Box means "the layer
+	 * named no target" and finds the fallback capture, if there was one.
+	 */
+	const FShapeBoxShape* FindShapeBaseline(const UShapeBox* Box) const
+	{
+		for (const FWidgetAnimShapeBaseline& Baseline : ShapeBaselines)
+		{
+			if (Box ? (Baseline.Box == Box) : Baseline.bIsFallback)
+			{
+				return &Baseline.Shape;
+			}
+		}
+
+		return nullptr;
 	}
 };
 
@@ -660,6 +950,73 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Widget Animation")
 	static void ApplyMaterialAnimResult(const FWidgetAnimResult& Result);
 
+	/**
+	 * Pushes every Shape Box outline in Result onto its box.
+	 *
+	 * Folded into ApplyWidgetAnimResult and its baseline-aware twin already, so ordinary callers never
+	 * need this. It is public for the same reason ApplyMaterialAnimResult is: a host driving the pieces
+	 * by hand should be able to.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation")
+	static void ApplyShapeAnimResult(const FWidgetAnimResult& Result, UWidget* FallbackWidget = nullptr);
+
+	/**
+	 * Sets Box's shape and invalidates it so Slate actually re-arranges and repaints it. Does nothing when the
+	 * shape is unchanged. Every shape the library writes - animated or restored - goes through here.
+	 */
+	static void ApplyShapeToBox(UShapeBox* Box, const FShapeBoxShape& Shape);
+
+	/**
+	 * The Shape Box a Transform layer's shape acts through for Widget: Widget itself when it is one, or the
+	 * Shape Box it sits inside when it is that box's content. Null otherwise.
+	 *
+	 * The parent rule is the one the Context Menu Button's shape targets already use. It is what lets a plain
+	 * Image be the animated widget - moved by its own Render Transform - while the Shape Box around it takes
+	 * the outline, which is exactly how the Widget Animation Builder's preview is laid out.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation")
+	static UShapeBox* ResolveShapeBox(UWidget* Widget);
+
+	/**
+	 * Every layer as runtime settings, in order, with each one's Delay turned from "after the layer above"
+	 * into seconds from the start of the animation - the only place that sequencing rule lives. Everything
+	 * that plays a list of layers (entries, a component's Additive Anim Layers, the builder) goes through
+	 * this, so a layer is placed the same way no matter where the list is played from.
+	 */
+	static void BuildLayerSettings(const TArray<FWidgetAnimLayer>& Layers, TArray<FWidgetAnimSettings>& OutSettings);
+
+#if WITH_EDITOR
+	/**
+	 * For an editor preview: marks the settings built from Layers - starting at FirstSetting, one per layer, in
+	 * order - muted wherever the track is hidden in the Widget Animations panel. See FWidgetAnimSettings::bMuted.
+	 */
+	static void MuteHiddenLayers(const TArray<FWidgetAnimLayer>& Layers, TArray<FWidgetAnimSettings>& Settings, int32 FirstSetting = 0);
+#endif
+
+	/**
+	 * Brings an animation's groups and layers into shape after loading: layers still held inside groups (a
+	 * format that only briefly existed) moved into the single list with their group recorded, at least one
+	 * group whenever there are layers, and every layer's LayerGroup pointing at a group that exists.
+	 * True if anything changed.
+	 */
+	static bool NormalizeLayerGroups(TArray<FWidgetAnimLayerGroup>& Groups, TArray<FWidgetAnimLayer>& Layers);
+
+	/** The group a layer really plays in: its LayerGroup, kept in range. INDEX_NONE when there are no groups. */
+	static int32 GetLayerGroupIndex(const FWidgetAnimLayer& Layer, int32 NumGroups);
+
+	/**
+	 * Seconds one pass of Settings takes: where its last layer ends, delays included, loops ignored. The
+	 * clock a scrub slider walks along, and what ApplyWidgetAnimationsAtAlpha measures Alpha against.
+	 */
+	static float GetStackPassDuration(const TArray<FWidgetAnimSettings>& Settings);
+
+	/**
+	 * Seconds into its stack that key KeyIndex of a Transform layer lands: the layer's delay plus the key's
+	 * time, both scaled by the layer's playback speed. -1 if Layer is not a Transform layer or has no such
+	 * key. Read off the curve rather than off Keys, so it is right even before Keys has synced.
+	 */
+	static float GetTransformKeyStackTime(const FWidgetAnimSettings& Layer, int32 KeyIndex);
+
 	UFUNCTION(BlueprintCallable, Category = "Widget Animation")
 	static void PlayWidgetAnimations(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Animations, UPARAM(ref) TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation = false);
 
@@ -725,7 +1082,11 @@ public:
 	// -------------------------------------------------------------------------------------------------
 
 	/**
-	 * Freezes a stack at one point in its timeline and applies it, ignoring Delay, looping and ping-pong.
+	 * Freezes a stack at one point in one pass of its timeline and applies it. Alpha is a fraction of
+	 * GetStackPassDuration, so 0.5 is halfway through the pass in time - and each layer is posed where it
+	 * really is at that moment, its Delay included: a layer that has not started yet holds its start pose,
+	 * one that has finished holds its end pose. Looping and ping-pong are ignored; this is one pass.
+	 *
 	 * Drives Hold Start Pose / Hold End Pose / Scrub, and it is the only way to see a single frame of an
 	 * animation without running a clock.
 	 */
@@ -749,7 +1110,8 @@ public:
 
 	/**
 	 * Divides Duration and Delay by Speed, then adds ExtraDelay, so a preset can be slowed down or
-	 * staggered where it is referenced without editing the preset asset itself.
+	 * staggered where it is referenced without editing the preset asset itself. A Spring layer's spring is
+	 * retimed to match - the same motion, Speed times faster.
 	 */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Widget Animation|Authoring")
 	static FWidgetAnimSettings RetimeWidgetAnimation(const FWidgetAnimSettings& Settings, float Speed = 1.f, float ExtraDelay = 0.f);
@@ -856,15 +1218,39 @@ public:
 	static void GatherTargetableWidgetPathsInTree(UUserWidget* Owner, TArray<FString>& OutPaths);
 	static UWidget* FindWidgetByPathInTree(UUserWidget* Owner, FName Path);
 
+	/**
+	 * A layer's Easing applied to LinearAlpha (0-1): the curve it moves along, custom curve included. Public so
+	 * editor tools can draw it - the Widget Animations panel sketches it across each layer's section.
+	 *
+	 * On a Spring layer it is the spring's progress instead, run forward - which rises past 1 while it
+	 * overshoots, so a sketch drawn from it shows the bounce.
+	 */
+	static float EvaluateEasedAlpha(const FWidgetAnimSettings& Settings, float LinearAlpha);
+
 private:
 
-	static float EvaluateEasedAlpha(const FWidgetAnimSettings& Settings, float LinearAlpha);
 	static float EaseOutBack(float Alpha, float Overshoot);
 	static FVector2D GetSlideDirectionOffset(EWidgetSlideDirection Direction);
 
 	static FWidgetAnimTargetedTransform& FindOrAddTargetedTransform(FWidgetAnimResult& Result, UWidget* TargetWidget);
 
-	static void ApplyAnimationContribution(const FWidgetAnimSettings& Settings, float DirectedAlpha, FWidgetAnimResult& OutResult);
+	/**
+	 * One layer's contribution at DirectedAlpha.
+	 *
+	 * Baselines is optional and only the Transform family reads it, to resolve its keys' Use
+	 * Authored Shape against the outline the baseline captured. Every other type ignores it.
+	 *
+	 * bTowardStart says the layer is travelling back toward its start values right now - inverted, or on a
+	 * ping-pong's return leg, but not both. Only Spring layers read it: they run their spring forward in time
+	 * toward the start instead of rewinding it. See UWidgetAnimSpringLibrary::EvaluateDirectedProgress.
+	 */
+	static void ApplyAnimationContribution(const FWidgetAnimSettings& Settings, float DirectedAlpha, FWidgetAnimResult& OutResult, const FWidgetAnimBaselineSet* Baselines = nullptr, bool bTowardStart = false);
+
+	/**
+	 * How far along its travel a layer is at DirectedAlpha: its Easing on a Tween layer, its spring - in the
+	 * right direction - on a Spring layer. Overshoot on Scale and Slide is not applied here; it replaces this.
+	 */
+	static float EvaluateLayerAlpha(const FWidgetAnimSettings& Settings, float DirectedAlpha, bool bTowardStart);
 
 	static bool GetEffectiveInvert(const FWidgetAnimSettings& Settings, bool bIsOutAnimation);
 
@@ -873,6 +1259,9 @@ private:
 
 	/** Adds Widget to the set if it isn't in it already, recording its current pose. */
 	static void CaptureOne(FWidgetAnimBaselineSet& Baselines, UWidget* Widget);
+
+	/** Records Box's authored outline, if it isn't already recorded. The Shape Box half of CaptureOne. */
+	static void CaptureOneShape(FWidgetAnimBaselineSet& Baselines, UShapeBox* Box, bool bIsFallback = false);
 
 	// Baseline-aware cores. The original entry points forward to these with a null set, which is the
 	// absolute (pre-baseline) behaviour every existing caller already relies on.
@@ -883,7 +1272,7 @@ private:
 	 * given, receives whether EVERY layer has ended, endless loops included - which only happens once
 	 * a loop has been ended explicitly.
 	 */
-	static bool TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult, bool* bOutAllComplete = nullptr);
+	static bool TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult, bool* bOutAllComplete = nullptr, const FWidgetAnimBaselineSet* Baselines = nullptr);
 
 	/** True while any layer in the stack is still moving - an endless loop always is. */
 	static bool HasRunningLayers(const TArray<FWidgetAnimSettings>& Animations, const TArray<FWidgetAnimState>& States);

@@ -5,38 +5,43 @@
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/PanelWidget.h"
+#include "NameTBD/Widgets/ShapeBox.h"
+#include "WidgetAnimTransform.h"
+#include "WidgetAnimSpring.h"
 
 #if WITH_EDITOR
 #include "UObject/UnrealType.h"
 #endif
 
+// The easing maths moved to WidgetAnimEasing.h so the Transform family - and the spring and sequencing
+// families after it - share one implementation instead of each growing a copy. These two stay as thin
+// forwarders because plenty of call sites in this file use them, and both are declared in the header.
+
 float UWidgetAnimLibrary::EaseOutBack(float Alpha, float Overshoot)
 {
-	const float C1 = Overshoot;
-	const float C3 = C1 + 1.f;
-	const float T = Alpha - 1.f;
-	return 1.f + C3 * FMath::Pow(T, 3.f) + C1 * FMath::Pow(T, 2.f);
+	return WidgetAnimEasing::EaseOutBack(Alpha, Overshoot);
 }
 
 float UWidgetAnimLibrary::EvaluateEasedAlpha(const FWidgetAnimSettings& Settings, float LinearAlpha)
 {
-	LinearAlpha = FMath::Clamp(LinearAlpha, 0.f, 1.f);
-
-	switch (Settings.Easing)
+	if (Settings.IsSpringTimed())
 	{
-	case EWidgetAnimEasing::Linear:
-		return LinearAlpha;
-	case EWidgetAnimEasing::EaseIn:
-		return FMath::InterpEaseIn(0.f, 1.f, LinearAlpha, 2.f);
-	case EWidgetAnimEasing::EaseOut:
-		return FMath::InterpEaseOut(0.f, 1.f, LinearAlpha, 2.f);
-	case EWidgetAnimEasing::EaseInOut:
-		return FMath::InterpEaseInOut(0.f, 1.f, LinearAlpha, 2.f);
-	case EWidgetAnimEasing::Custom:
-		return Settings.CustomCurve ? Settings.CustomCurve->GetFloatValue(LinearAlpha) : LinearAlpha;
+		return UWidgetAnimSpringLibrary::EvaluateDirectedProgress(Settings.Spring, LinearAlpha, /*bTowardStart=*/false);
 	}
 
-	return LinearAlpha;
+	return WidgetAnimEasing::Evaluate(Settings.Easing, Settings.CustomCurve, LinearAlpha);
+}
+
+float UWidgetAnimLibrary::EvaluateLayerAlpha(const FWidgetAnimSettings& Settings, float DirectedAlpha, bool bTowardStart)
+{
+	// Only a spring cares which way it is heading. A tween's curve is the same curve rewound, which is
+	// exactly what running a tween backwards means; a spring rewound would not look like a spring at all.
+	if (Settings.IsSpringTimed())
+	{
+		return UWidgetAnimSpringLibrary::EvaluateDirectedProgress(Settings.Spring, DirectedAlpha, bTowardStart);
+	}
+
+	return WidgetAnimEasing::Evaluate(Settings.Easing, Settings.CustomCurve, DirectedAlpha);
 }
 
 FVector2D UWidgetAnimLibrary::GetSlideDirectionOffset(EWidgetSlideDirection Direction)
@@ -67,23 +72,57 @@ FWidgetAnimTargetedTransform& UWidgetAnimLibrary::FindOrAddTargetedTransform(FWi
 	return NewEntry;
 }
 
-void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& Settings, float DirectedAlpha, FWidgetAnimResult& OutResult)
+namespace
 {
+	/**
+	 * The slot holding TargetBox's outline for this frame, created if this is the first layer to write it.
+	 *
+	 * Unlike the transform slot, whatever the caller assigns here REPLACES what was there: shapes do not
+	 * add or multiply, so the last layer to write a box wins.
+	 */
+	FWidgetAnimShapeTarget& FindOrAddShapeTarget(FWidgetAnimResult& Result, UShapeBox* TargetBox)
+	{
+		for (FWidgetAnimShapeTarget& Existing : Result.ShapeTargets)
+		{
+			if (Existing.TargetBox == TargetBox)
+			{
+				return Existing;
+			}
+		}
+
+		FWidgetAnimShapeTarget& NewEntry = Result.ShapeTargets.AddDefaulted_GetRef();
+		NewEntry.TargetBox = TargetBox;
+		return NewEntry;
+	}
+}
+
+void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& Settings, float DirectedAlpha, FWidgetAnimResult& OutResult, const FWidgetAnimBaselineSet* Baselines, bool bTowardStart)
+{
+	// Scale and Slide's Overshoot is the tween's way of getting a pop, and replaces the Easing when set. A
+	// Spring layer already overshoots by its own physics, so there Overshoot is hidden and ignored - two
+	// different pops stacked on one value would be neither.
+	const bool bSpring = Settings.IsSpringTimed();
+
 	switch (Settings.AnimType)
 	{
 	case EWidgetAnimType::Fade:
 	{
-		const float EasedAlpha = EvaluateEasedAlpha(Settings, DirectedAlpha);
+		const float EasedAlpha = EvaluateLayerAlpha(Settings, DirectedAlpha, bTowardStart);
 		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
-		Transform.Opacity *= FMath::Lerp(Settings.StartOpacity, Settings.EndOpacity, EasedAlpha);
+
+		// Held inside what opacity can mean. A spring (or a custom curve) overshooting a fade to 1 would
+		// otherwise ask for 1.1, and one overshooting a fade to 0 for less than nothing; neither is a look,
+		// only a glitch. The end values themselves are left alone, so an opacity authored above 1 still reaches it.
+		const float Opacity = FMath::Lerp(Settings.StartOpacity, Settings.EndOpacity, EasedAlpha);
+		Transform.Opacity *= FMath::Clamp(Opacity, 0.f, FMath::Max3(1.f, Settings.StartOpacity, Settings.EndOpacity));
 		break;
 	}
 
 	case EWidgetAnimType::Scale:
 	{
-		const float ScaleAlpha = Settings.Overshoot > 0.f
+		const float ScaleAlpha = (Settings.Overshoot > 0.f && !bSpring)
 			? EaseOutBack(DirectedAlpha, Settings.Overshoot)
-			: EvaluateEasedAlpha(Settings, DirectedAlpha);
+			: EvaluateLayerAlpha(Settings, DirectedAlpha, bTowardStart);
 		const float ScaleValue = FMath::Lerp(Settings.StartScale, Settings.EndScale, ScaleAlpha);
 		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
 		Transform.Scale *= FVector2D(ScaleValue, ScaleValue);
@@ -92,9 +131,9 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 
 	case EWidgetAnimType::Slide:
 	{
-		const float SlideAlpha = Settings.SlideOvershoot > 0.f
+		const float SlideAlpha = (Settings.SlideOvershoot > 0.f && !bSpring)
 			? EaseOutBack(DirectedAlpha, Settings.SlideOvershoot)
-			: EvaluateEasedAlpha(Settings, DirectedAlpha);
+			: EvaluateLayerAlpha(Settings, DirectedAlpha, bTowardStart);
 		const FVector2D StartOffset = GetSlideDirectionOffset(Settings.SlideFromDirection) * Settings.SlideDistance;
 		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
 		Transform.Translation += FMath::Lerp(StartOffset, FVector2D::ZeroVector, SlideAlpha);
@@ -103,7 +142,7 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 
 	case EWidgetAnimType::Rotate:
 	{
-		const float EasedAlpha = EvaluateEasedAlpha(Settings, DirectedAlpha);
+		const float EasedAlpha = EvaluateLayerAlpha(Settings, DirectedAlpha, bTowardStart);
 		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
 		Transform.Angle += FMath::Lerp(Settings.StartAngle, Settings.EndAngle, EasedAlpha);
 		break;
@@ -122,7 +161,7 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 	{
 		if (!Settings.ScalarParameterName.IsNone())
 		{
-			const float EasedAlpha = EvaluateEasedAlpha(Settings, DirectedAlpha);
+			const float EasedAlpha = EvaluateLayerAlpha(Settings, DirectedAlpha, bTowardStart);
 			const float Value = FMath::Lerp(Settings.StartScalarValue, Settings.EndScalarValue, EasedAlpha);
 			FWidgetAnimScalarTarget& Target = OutResult.ScalarParameters.FindOrAdd(Settings.ScalarParameterName);
 			Target.TargetImage = Settings.MaterialTargetImage;
@@ -135,11 +174,44 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 	{
 		if (!Settings.VectorParameterName.IsNone())
 		{
-			const float EasedAlpha = EvaluateEasedAlpha(Settings, DirectedAlpha);
+			const float EasedAlpha = EvaluateLayerAlpha(Settings, DirectedAlpha, bTowardStart);
 			const FLinearColor Value = FMath::Lerp(Settings.StartVectorValue, Settings.EndVectorValue, EasedAlpha);
 			FWidgetAnimVectorTarget& Target = OutResult.VectorParameters.FindOrAdd(Settings.VectorParameterName);
 			Target.TargetImage = Settings.MaterialTargetImage;
 			Target.Value = Value;
+		}
+		break;
+	}
+
+	case EWidgetAnimType::Transform:
+	{
+		// Eased like every other layer: the layer's Easing bends time across the whole run of keys, and the
+		// keys are met linearly in that eased time. The last key is the layer's length. The layer's Delay was
+		// already consumed by the clock before DirectedAlpha reached us, and inversion is folded into
+		// DirectedAlpha, so a reversed layer just walks this time backwards.
+		const float EasedAlpha = EvaluateEasedAlpha(Settings, FMath::Clamp(DirectedAlpha, 0.f, 1.f));
+		const float LocalTime = EasedAlpha * Settings.Transform.GetDuration();
+
+		// Null unless a baseline captured this Shape Box's authored outline, which is exactly when a key's
+		// Use Authored Shape has something to mean.
+		const FShapeBoxShape* AuthoredShape = Baselines ? Baselines->FindShapeBaseline(Settings.ShapeTargetBox) : nullptr;
+
+		const FWidgetTransformAnimResult Contribution =
+			UWidgetAnimTransformLibrary::Evaluate(Settings.Transform, LocalTime, AuthoredShape);
+
+		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
+		Transform.Translation += Contribution.Translation;
+		Transform.Scale       *= Contribution.Scale;
+		Transform.Shear       += Contribution.Shear;
+		Transform.Angle       += Contribution.Angle;
+
+		// Assigned, not accumulated - see FindOrAddShapeTarget. A null box is kept rather than dropped: it
+		// means "no target named", and is resolved against the fallback widget when the result is applied,
+		// exactly as a transform with no target is. Dropping it here is what made Animate Shape do nothing on
+		// every entry left pointing at its own widget.
+		if (Contribution.bHasShape)
+		{
+			FindOrAddShapeTarget(OutResult, Settings.ShapeTargetBox).Shape = Contribution.Shape;
 		}
 		break;
 	}
@@ -160,6 +232,29 @@ namespace WidgetAnimLoop
 		float Length = KINDA_SMALL_NUMBER;
 	};
 
+	/**
+	 * How long a layer runs. A Transform layer's is its curve's last key, a Spring layer's is its spring's
+	 * settle time; for both, the Duration field is hidden and ignored.
+	 *
+	 * A spring's settle time is worked out from its parameters on every call rather than cached - a handful
+	 * of logs and square roots, and only a critically damped spring searches - so there is no stored copy to
+	 * go stale when a spring is edited mid-preview.
+	 */
+	static float GetEffectiveLayerDuration(const FWidgetAnimSettings& Settings)
+	{
+		if (Settings.AnimType == EWidgetAnimType::Transform)
+		{
+			return Settings.Transform.GetDuration();
+		}
+
+		if (Settings.IsSpringTimed())
+		{
+			return UWidgetAnimSpringLibrary::GetSettleTime(Settings.Spring);
+		}
+
+		return Settings.Duration;
+	}
+
 	static FLayerSpan GetLayerSpan(const FWidgetAnimSettings& Settings)
 	{
 		// Speed scales the layer's whole placement, delay included, so a stagger keeps its proportions.
@@ -167,7 +262,8 @@ namespace WidgetAnimLoop
 
 		FLayerSpan Span;
 		Span.Start = FMath::Max(Settings.Delay, 0.f) / Speed;
-		Span.Length = FMath::Max(Settings.Duration, KINDA_SMALL_NUMBER) / Speed;
+		// A Transform layer's length comes from its curve, a Spring layer's from its spring, rather than Duration.
+		Span.Length = FMath::Max(GetEffectiveLayerDuration(Settings), KINDA_SMALL_NUMBER) / Speed;
 		return Span;
 	}
 
@@ -465,7 +561,7 @@ bool UWidgetAnimLibrary::BlocksSettle(const FWidgetAnimSettings& Settings, const
 	return true;
 }
 
-bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult, bool* bOutAllComplete)
+bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult, bool* bOutAllComplete, const FWidgetAnimBaselineSet* Baselines)
 {
 	const int32 NumLayers = Animations.Num();
 
@@ -537,8 +633,13 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 		const float TimelineTime = Clock.bFinished ? GroupEnd[Leader] : Clock.CycleTime;
 		const float LocalTime = TimelineTime - Span.Start;
 
-		// Before its start the layer holds its start pose, after its end its end pose. Direction needs no
-		// special case: a return leg is the timeline running backwards, so the alpha falls on its own.
+		// After its end the layer holds its end pose. Before its start it does nothing at all - the widget is
+		// left exactly as it is until the layer actually begins - unless it plays inverted, where what comes
+		// before its start is its end pose: a Play Out has to hold the pose the entrance left the widget in
+		// until each layer begins undoing it. Direction needs no special case: a return leg is the timeline
+		// running backwards, so the alpha falls on its own.
+		const bool bInvert = GetEffectiveInvert(Settings, bIsOutAnimation);
+		const bool bBeforeStart = (LocalTime < 0.f && !bInvert) || Settings.bMuted;
 		const float LinearAlpha = FMath::Clamp(LocalTime / Span.Length, 0.f, 1.f);
 
 		if (Index != Leader)
@@ -553,8 +654,16 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 			State.CycleTime = FMath::Clamp(LocalTime, 0.f, Span.Length);
 		}
 
-		const bool bInvert = GetEffectiveInvert(Settings, bIsOutAnimation);
-		ApplyAnimationContribution(Settings, bInvert ? 1.f - LinearAlpha : LinearAlpha, OutResult);
+		if (!bBeforeStart)
+		{
+			// Heading back toward the start values: inverted on a forward leg, or not inverted on a ping-pong's
+			// return leg. A finished clock always rests at the end of a forward leg. Only springs read it - see
+			// ApplyAnimationContribution.
+			const bool bReturnLeg = !Clock.bFinished && !Clock.bPlayingForward;
+			const bool bTowardStart = bInvert != bReturnLeg;
+
+			ApplyAnimationContribution(Settings, bInvert ? 1.f - LinearAlpha : LinearAlpha, OutResult, Baselines, bTowardStart);
+		}
 
 		if (!States[Index].bFinished)
 		{
@@ -599,6 +708,7 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
 			Target->SetRenderOpacity(Baseline.Opacity * Transform.Opacity);
 			Target->SetRenderScale(Baseline.Scale * Transform.Scale);
 			Target->SetRenderTranslation(Baseline.Translation + Transform.Translation);
+			Target->SetRenderShear(Baseline.Shear + Transform.Shear);
 			Target->SetRenderTransformAngle(Baseline.Angle + Transform.Angle);
 		}
 		else
@@ -606,9 +716,71 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
 			Target->SetRenderOpacity(Transform.Opacity);
 			Target->SetRenderScale(Transform.Scale);
 			Target->SetRenderTranslation(Transform.Translation);
+			Target->SetRenderShear(Transform.Shear);
 			Target->SetRenderTransformAngle(Transform.Angle);
 		}
 	}
+
+	// Shapes are not part of the render transform and are never composed over a baseline - the animation
+	// says what the outline IS, and the baseline's job is only to put it back afterwards.
+	ApplyShapeAnimResult(Result, FallbackWidget);
+}
+
+void UWidgetAnimLibrary::ApplyShapeAnimResult(const FWidgetAnimResult& Result, UWidget* FallbackWidget)
+{
+	for (const FWidgetAnimShapeTarget& Target : Result.ShapeTargets)
+	{
+		// No box named: the layer animates the widget it was played on, so the outline goes to that widget's
+		// Shape Box - the widget itself, or the Shape Box it sits in.
+		UShapeBox* Box = Target.TargetBox ? Target.TargetBox.Get() : ResolveShapeBox(FallbackWidget);
+		if (Box)
+		{
+			ApplyShapeToBox(Box, Target.Shape);
+		}
+	}
+}
+
+void UWidgetAnimLibrary::ApplyShapeToBox(UShapeBox* Box, const FShapeBoxShape& Shape)
+{
+	if (!Box || Box->GetShape().Equals(Shape))
+	{
+		return;
+	}
+
+	Box->SetShape(Shape);
+
+	// SetShape writes the UObject's copy. The Slate widget that actually draws the outline keeps its own,
+	// handed to it in SynchronizeProperties - which is why the Shape Box reacts to a Details panel edit (that
+	// path always synchronizes) but an animation writing the same field changed nothing on screen, and why
+	// only invalidating the Slate widget was not enough: it repainted the old outline. Synchronizing pushes
+	// the new shape across the same way the Details panel does, whatever UShapeBox::SetShape does or doesn't
+	// forward on its own.
+	//
+	// Layout as well as paint, because the shape decides where the box's content is arranged, not just how
+	// it is drawn. Only when the shape actually changed, so a held pose costs nothing, and only once the
+	// Slate widget exists - before that, building it synchronizes the UObject's shape by itself.
+	if (const TSharedPtr<SWidget> SlateBox = Box->GetCachedWidget())
+	{
+		// Through UWidget, where SynchronizeProperties is public, in case UShapeBox re-declares it protected.
+		static_cast<UWidget*>(Box)->SynchronizeProperties();
+		SlateBox->Invalidate(EInvalidateWidgetReason::LayoutAndVolatility);
+	}
+}
+
+UShapeBox* UWidgetAnimLibrary::ResolveShapeBox(UWidget* Widget)
+{
+	if (!Widget)
+	{
+		return nullptr;
+	}
+
+	if (UShapeBox* Direct = Cast<UShapeBox>(Widget))
+	{
+		return Direct;
+	}
+
+	// A Shape Box holds exactly one child, so a Shape Box parent always means "this widget alone inside it".
+	return Cast<UShapeBox>(Widget->GetParent());
 }
 
 void UWidgetAnimLibrary::ApplyWidgetAnimResult(UWidget* FallbackWidget, const FWidgetAnimResult& Result)
@@ -654,7 +826,11 @@ void UWidgetAnimLibrary::ApplyMaterialAnimResult(const FWidgetAnimResult& Result
 
 void UWidgetAnimLibrary::PlayInternal(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, const FWidgetAnimBaselineSet* Baselines)
 {
-	const FWidgetAnimResult Result = TickWidgetAnimations(Animations, States, DeltaTime, bIsOutAnimation);
+	// Ticked through the internal entry point rather than TickWidgetAnimations, so a Transform layer's
+	// keys can resolve Use Authored Shape against the captured baseline.
+	FWidgetAnimResult Result;
+	Result.bAllFinished = TickAnimationsInto(Animations, States, DeltaTime, bIsOutAnimation, Result, nullptr, Baselines);
+
 	ApplyResultInternal(FallbackWidget, Result, Baselines);
 	ApplyMaterialAnimResult(Result);
 }
@@ -673,10 +849,17 @@ void UWidgetAnimLibrary::InitializeInternal(UWidget* FallbackWidget, const TArra
 {
 	ResetWidgetAnimations(Animations, States);
 
+	// The pose at time 0: every layer that starts right away, at its start. A layer with a delay does nothing
+	// until it starts - see TickAnimationsInto - so it leaves the widget alone here too.
 	FWidgetAnimResult StartResult;
 	for (const FWidgetAnimSettings& Settings : Animations)
 	{
-		ApplyAnimationContribution(Settings, GetEffectiveInvert(Settings, /*bIsOutAnimation=*/false) ? 1.f : 0.f, StartResult);
+		const bool bInvert = GetEffectiveInvert(Settings, /*bIsOutAnimation=*/false);
+		if (Settings.bMuted || (!bInvert && WidgetAnimLoop::GetLayerSpan(Settings).Start > 0.f))
+		{
+			continue;
+		}
+		ApplyAnimationContribution(Settings, bInvert ? 1.f : 0.f, StartResult, Baselines, /*bTowardStart=*/bInvert);
 	}
 
 	ApplyResultInternal(FallbackWidget, StartResult, Baselines);
@@ -833,7 +1016,32 @@ void UWidgetAnimLibrary::CaptureOne(FWidgetAnimBaselineSet& Baselines, UWidget* 
 	Baseline.Opacity = Widget->GetRenderOpacity();
 	Baseline.Scale = Transform.Scale;
 	Baseline.Translation = Transform.Translation;
+	Baseline.Shear = Transform.Shear;
 	Baseline.Angle = Transform.Angle;
+}
+
+void UWidgetAnimLibrary::CaptureOneShape(FWidgetAnimBaselineSet& Baselines, UShapeBox* Box, bool bIsFallback)
+{
+	if (!Box)
+	{
+		return;
+	}
+
+	for (FWidgetAnimShapeBaseline& Existing : Baselines.ShapeBaselines)
+	{
+		if (Existing.Box == Box)
+		{
+			// Already captured - under a name, or as the fallback. The same box can be both, and must not be
+			// captured twice or the second read would record a pose the animation had already written.
+			Existing.bIsFallback |= bIsFallback;
+			return;
+		}
+	}
+
+	FWidgetAnimShapeBaseline& Baseline = Baselines.ShapeBaselines.AddDefaulted_GetRef();
+	Baseline.Box = Box;
+	Baseline.Shape = Box->GetShape();
+	Baseline.bIsFallback = bIsFallback;
 }
 
 void UWidgetAnimLibrary::CaptureWidgetAnimBaselines(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& InAnimations, const TArray<FWidgetAnimSettings>& OutAnimations, FWidgetAnimBaselineSet& Baselines)
@@ -848,13 +1056,29 @@ void UWidgetAnimLibrary::CaptureWidgetAnimBaselines(UWidget* FallbackWidget, con
 
 	Baselines.bCaptured = true;
 	Baselines.Baselines.Reset();
+	Baselines.ShapeBaselines.Reset();
 
 	bool bNeedsFallback = false;
+	bool bNeedsShapeFallback = false;
 
-	auto Gather = [&Baselines, &bNeedsFallback](const TArray<FWidgetAnimSettings>& Animations)
+	auto Gather = [&Baselines, &bNeedsFallback, &bNeedsShapeFallback](const TArray<FWidgetAnimSettings>& Animations)
 	{
 		for (const FWidgetAnimSettings& Settings : Animations)
 		{
+			// A Transform layer that animates a Shape Box needs the box's authored outline kept, both to
+			// restore it afterwards and because a key's Use Authored Shape resolves against it.
+			if (Settings.AnimType == EWidgetAnimType::Transform && Settings.Transform.IsAnimatingShape())
+			{
+				if (Settings.ShapeTargetBox)
+				{
+					CaptureOneShape(Baselines, Settings.ShapeTargetBox);
+				}
+				else
+				{
+					bNeedsShapeFallback = true;
+				}
+			}
+
 			if (Settings.AnimType == EWidgetAnimType::MaterialScalar || Settings.AnimType == EWidgetAnimType::MaterialVector)
 			{
 				// Material entries write parameters, not a transform, so there is no pose to restore.
@@ -879,6 +1103,11 @@ void UWidgetAnimLibrary::CaptureWidgetAnimBaselines(UWidget* FallbackWidget, con
 	{
 		CaptureOne(Baselines, FallbackWidget);
 	}
+
+	if (bNeedsShapeFallback)
+	{
+		CaptureOneShape(Baselines, ResolveShapeBox(FallbackWidget), /*bIsFallback=*/true);
+	}
 }
 
 void UWidgetAnimLibrary::RestoreWidgetAnimBaselines(const FWidgetAnimBaselineSet& Baselines)
@@ -894,7 +1123,15 @@ void UWidgetAnimLibrary::RestoreWidgetAnimBaselines(const FWidgetAnimBaselineSet
 		Widget->SetRenderOpacity(Baseline.Opacity);
 		Widget->SetRenderScale(Baseline.Scale);
 		Widget->SetRenderTranslation(Baseline.Translation);
+		Widget->SetRenderShear(Baseline.Shear);
 		Widget->SetRenderTransformAngle(Baseline.Angle);
+	}
+
+	// Outlines go back whole. Nothing partial to undo: Animate Shape replaced the shape rather than
+	// composing with it, so the authored one is the only thing there is to restore.
+	for (const FWidgetAnimShapeBaseline& ShapeBaseline : Baselines.ShapeBaselines)
+	{
+		ApplyShapeToBox(ShapeBaseline.Box, ShapeBaseline.Shape);
 	}
 }
 
@@ -908,6 +1145,7 @@ void UWidgetAnimLibrary::ResetWidgetRenderState(UWidget* Widget)
 	Widget->SetRenderOpacity(1.f);
 	Widget->SetRenderScale(FVector2D(1.f, 1.f));
 	Widget->SetRenderTranslation(FVector2D::ZeroVector);
+	Widget->SetRenderShear(FVector2D::ZeroVector);
 	Widget->SetRenderTransformAngle(0.f);
 }
 
@@ -919,21 +1157,181 @@ void UWidgetAnimLibrary::ApplyWidgetAnimationsAtAlpha(UWidget* FallbackWidget, c
 {
 	const float ClampedAlpha = FMath::Clamp(Alpha, 0.f, 1.f);
 
-	// Every entry is posed at the SAME alpha rather than at its own point on a shared clock. Delay and
-	// looping are deliberately ignored: this answers "what does the stack look like N% of the way
-	// through", which is what a scrub slider and a held start/end pose both want. Watching the stagger
-	// between two delayed entries is what the playing modes are for.
+	// Alpha is a point in TIME along one pass of the stack, and every layer is posed where it actually is
+	// at that time - its own Delay included, the same way TickAnimationsInto places it on a playing clock.
+	// Posing every layer at the same alpha instead is what made a scrub show a staggered animation as if
+	// every layer started together. A layer that hasn't started yet leaves the widget alone, exactly as it
+	// does on a playing clock - an inverted one excepted, which holds its end pose until it starts.
+	const float StackTime = ClampedAlpha * GetStackPassDuration(Animations);
+
 	FWidgetAnimResult Result;
 	Result.bAllFinished = true;
 
 	for (const FWidgetAnimSettings& Settings : Animations)
 	{
+		const WidgetAnimLoop::FLayerSpan Span = WidgetAnimLoop::GetLayerSpan(Settings);
+		const float LayerAlpha = FMath::Clamp((StackTime - Span.Start) / Span.Length, 0.f, 1.f);
+
 		const bool bInvert = GetEffectiveInvert(Settings, bIsOutAnimation);
-		ApplyAnimationContribution(Settings, bInvert ? 1.f - ClampedAlpha : ClampedAlpha, Result);
+		if (Settings.bMuted || (!bInvert && StackTime < Span.Start))
+		{
+			continue;
+		}
+		// One pass has no return legs, so the only thing that turns a layer toward its start here is inversion.
+		ApplyAnimationContribution(Settings, bInvert ? 1.f - LayerAlpha : LayerAlpha, Result, Baselines.bCaptured ? &Baselines : nullptr, /*bTowardStart=*/bInvert);
 	}
 
 	ApplyResultInternal(FallbackWidget, Result, Baselines.bCaptured ? &Baselines : nullptr);
 	ApplyMaterialAnimResult(Result);
+}
+
+float FWidgetAnimLayer::GetRunLength() const
+{
+	if (AnimType == EWidgetAnimType::Transform)
+	{
+		return Transform.GetDuration();
+	}
+
+	// The same number GetEffectiveLayerDuration gives the settings built from this layer, so a layer is
+	// placed after the one above it by exactly the length it then plays for.
+	if (IsSpringTimed())
+	{
+		return UWidgetAnimSpringLibrary::GetSettleTime(Spring);
+	}
+
+	return FMath::Max(Duration, KINDA_SMALL_NUMBER);
+}
+
+FString FWidgetAnimLayerGroup::GetDisplayName(int32 GroupIndex) const
+{
+	return GroupName.TrimStartAndEnd().IsEmpty() ? MakeDefaultName(GroupIndex) : GroupName;
+}
+
+FString FWidgetAnimLayerGroup::MakeDefaultName(int32 GroupIndex)
+{
+	return FString::Printf(TEXT("Layer Group %d"), GroupIndex + 1);
+}
+
+bool UWidgetAnimLibrary::NormalizeLayerGroups(TArray<FWidgetAnimLayerGroup>& Groups, TArray<FWidgetAnimLayer>& Layers)
+{
+	bool bChanged = false;
+
+	// Layers held inside their groups: into the single list, group by group, each remembering its group.
+	for (int32 GroupIndex = 0; GroupIndex < Groups.Num(); ++GroupIndex)
+	{
+		TArray<FWidgetAnimLayer>& Held = Groups[GroupIndex].Layers;
+		if (Held.Num() == 0)
+		{
+			continue;
+		}
+
+		for (FWidgetAnimLayer& Layer : Held)
+		{
+			Layer.LayerGroup = GroupIndex;
+			Layers.Add(MoveTemp(Layer));
+		}
+		Held.Reset();
+		bChanged = true;
+	}
+
+	// Layers from before groups belong to the one group they were always played on.
+	if (Layers.Num() > 0 && Groups.Num() == 0)
+	{
+		Groups.AddDefaulted();
+		bChanged = true;
+	}
+
+	for (FWidgetAnimLayer& Layer : Layers)
+	{
+		const int32 InRange = GetLayerGroupIndex(Layer, Groups.Num());
+		if (InRange != INDEX_NONE && InRange != Layer.LayerGroup)
+		{
+			Layer.LayerGroup = InRange;
+			bChanged = true;
+		}
+	}
+
+	return bChanged;
+}
+
+int32 UWidgetAnimLibrary::GetLayerGroupIndex(const FWidgetAnimLayer& Layer, int32 NumGroups)
+{
+	return NumGroups > 0 ? FMath::Clamp(Layer.LayerGroup, 0, NumGroups - 1) : INDEX_NONE;
+}
+
+void UWidgetAnimLibrary::BuildLayerSettings(const TArray<FWidgetAnimLayer>& Layers, TArray<FWidgetAnimSettings>& OutSettings)
+{
+	OutSettings.Reserve(OutSettings.Num() + Layers.Num());
+
+	// Where the layer above started and finished, in seconds from the start of the animation. Both begin at
+	// 0, so the first layer counts from the start whichever way it is set to start.
+	float PreviousStart = 0.f;
+	float PreviousEnd = 0.f;
+
+	for (const FWidgetAnimLayer& Layer : Layers)
+	{
+		const float Anchor = (Layer.Start == EWidgetAnimLayerStart::AfterPrevious) ? PreviousEnd : PreviousStart;
+		// A negative Delay overlaps the layer above - see FWidgetAnimLayer::Delay - but never reaches back before
+		// the animation starts.
+		const float LayerStart = FMath::Max(Anchor + Layer.Delay, 0.f);
+
+		FWidgetAnimSettings Settings = Layer.ToSettings();
+
+		// From here on Delay means seconds from the start of the animation, which is what the clock, the
+		// scrub and every duration helper read it as. Speed is applied to it later, uniformly, so the
+		// sequence keeps its proportions at any playback speed.
+		Settings.Delay = LayerStart;
+		OutSettings.Add(MoveTemp(Settings));
+
+		PreviousStart = LayerStart;
+		PreviousEnd = LayerStart + Layer.GetRunLength();
+	}
+}
+
+#if WITH_EDITOR
+void UWidgetAnimLibrary::MuteHiddenLayers(const TArray<FWidgetAnimLayer>& Layers, TArray<FWidgetAnimSettings>& Settings, int32 FirstSetting)
+{
+	for (int32 LayerIndex = 0; LayerIndex < Layers.Num(); ++LayerIndex)
+	{
+		const int32 SettingIndex = FirstSetting + LayerIndex;
+		if (Settings.IsValidIndex(SettingIndex) && Layers[LayerIndex].bHiddenInEditor)
+		{
+			Settings[SettingIndex].bMuted = true;
+		}
+	}
+}
+#endif
+
+float UWidgetAnimLibrary::GetStackPassDuration(const TArray<FWidgetAnimSettings>& Settings)
+{
+	float End = 0.f;
+	for (const FWidgetAnimSettings& Layer : Settings)
+	{
+		const WidgetAnimLoop::FLayerSpan Span = WidgetAnimLoop::GetLayerSpan(Layer);
+		End = FMath::Max(End, Span.Start + Span.Length);
+	}
+
+	return FMath::Max(End, KINDA_SMALL_NUMBER);
+}
+
+float UWidgetAnimLibrary::GetTransformKeyStackTime(const FWidgetAnimSettings& Layer, int32 KeyIndex)
+{
+	if (Layer.AnimType != EWidgetAnimType::Transform)
+	{
+		return -1.f;
+	}
+
+	const FRichCurve* Curve = Layer.Transform.GetActiveCurve();
+	if (!Curve || !Curve->GetConstRefOfKeys().IsValidIndex(KeyIndex))
+	{
+		return -1.f;
+	}
+
+	// Same placement GetLayerSpan gives the layer - delay and key time both scaled by speed - so the result
+	// is a point on the very clock ApplyWidgetAnimationsAtAlpha and the playing modes run on.
+	const float Speed = FMath::Max(Layer.PlaybackSpeed, 0.01f);
+	const float KeyTime = FMath::Max(Curve->GetConstRefOfKeys()[KeyIndex].Time, 0.f);
+	return (FMath::Max(Layer.Delay, 0.f) + KeyTime) / Speed;
 }
 
 void UWidgetAnimLibrary::RestartWidgetAnimPreview(FWidgetAnimPreviewState& State)
@@ -1107,6 +1505,18 @@ FWidgetAnimSettings UWidgetAnimLibrary::RetimeWidgetAnimation(const FWidgetAnimS
 	Result.Duration = FMath::Max(Settings.Duration / SafeSpeed, 0.01f);
 	Result.Delay = FMath::Max(Settings.Delay / SafeSpeed + ExtraDelay, 0.f);
 
+	// A spring's length is its own, so Duration alone would retime nothing. The same spring played Speed times
+	// faster is the same shape in less time: its frequency scaled by Speed with its damping ratio unchanged -
+	// which is Visual Duration divided by it, or Stiffness by its square and Damping by it - and its initial
+	// velocity, in travels per second, scaled with it.
+	if (Settings.IsSpringTimed())
+	{
+		Result.Spring.VisualDuration = FMath::Max(Settings.Spring.VisualDuration / SafeSpeed, 0.02f);
+		Result.Spring.Stiffness = Settings.Spring.Stiffness * SafeSpeed * SafeSpeed;
+		Result.Spring.Damping = Settings.Spring.Damping * SafeSpeed;
+		Result.Spring.InitialVelocity = Settings.Spring.InitialVelocity * SafeSpeed;
+	}
+
 	return Result;
 }
 
@@ -1218,10 +1628,12 @@ FWidgetAnimSettings FWidgetAnimLayer::ToSettings() const
 	FWidgetAnimSettings Out;
 
 	Out.AnimType = AnimType;
+	Out.Timing = Timing;
 	Out.Duration = Duration;
 	Out.Delay = Delay;
 	Out.Easing = Easing;
 	Out.CustomCurve = CustomCurve;
+	Out.Spring = Spring;
 
 	Out.StartOpacity = StartOpacity;
 	Out.EndOpacity = EndOpacity;
@@ -1247,6 +1659,10 @@ FWidgetAnimSettings FWidgetAnimLayer::ToSettings() const
 	Out.StartVectorValue = StartVectorValue;
 	Out.EndVectorValue = EndVectorValue;
 
+	// One line rather than a dozen, which is the whole point of the nested payload: the next family costs
+	// one line here too instead of a copy of every one of its fields.
+	Out.Transform = Transform;
+
 	// bLoop / bPingPong / LoopCount / bInvertAnimation / bMirrorInOut / the two targets are all decisions
 	// about ONE USE of this layer, so they are deliberately left at their defaults here and filled in by
 	// the entry that references the animation.
@@ -1258,10 +1674,12 @@ FWidgetAnimLayer FWidgetAnimLayer::FromSettings(const FWidgetAnimSettings& Setti
 	FWidgetAnimLayer Out;
 
 	Out.AnimType = Settings.AnimType;
+	Out.Timing = Settings.Timing;
 	Out.Duration = Settings.Duration;
 	Out.Delay = Settings.Delay;
 	Out.Easing = Settings.Easing;
 	Out.CustomCurve = Settings.CustomCurve;
+	Out.Spring = Settings.Spring;
 
 	Out.StartOpacity = Settings.StartOpacity;
 	Out.EndOpacity = Settings.EndOpacity;
@@ -1286,6 +1704,8 @@ FWidgetAnimLayer FWidgetAnimLayer::FromSettings(const FWidgetAnimSettings& Setti
 	Out.VectorParameterName = Settings.VectorParameterName;
 	Out.StartVectorValue = Settings.StartVectorValue;
 	Out.EndVectorValue = Settings.EndVectorValue;
+
+	Out.Transform = Settings.Transform;
 
 	return Out;
 }
@@ -1445,7 +1865,7 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 			// than vanishing from the combined result and letting the widget snap back.
 			if (Track.bHoldWhenFinished)
 			{
-				TickAnimationsInto(Track.Settings, Track.States, 0.f, Track.bIsOut, Result);
+				TickAnimationsInto(Track.Settings, Track.States, 0.f, Track.bIsOut, Result, nullptr, &Baselines);
 			}
 			continue;
 		}
@@ -1456,7 +1876,7 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 		// very first frame) is what stopped loops from ever advancing: finished tracks are only
 		// re-posed at zero delta.
 		bool bAllComplete = false;
-		Track.bSettled = TickAnimationsInto(Track.Settings, Track.States, DeltaTime * Track.Speed, Track.bIsOut, Result, &bAllComplete);
+		Track.bSettled = TickAnimationsInto(Track.Settings, Track.States, DeltaTime * Track.Speed, Track.bIsOut, Result, &bAllComplete, &Baselines);
 
 		if (bAllComplete)
 		{

@@ -27,10 +27,23 @@ class UWidget;
  *
  * PREVIEWING ONE
  * Press View Animation Preview at the top of this asset. It opens the WidgetAnimationBuilder Widget
- * Blueprint playing this animation, and edits made here show up there as they are made.
+ * Blueprint playing this animation.
+ *
+ * EDITING ONE
+ * In any Widget Blueprint - the builder included - open the Widget Animations drawer, choose Edit Existing
+ * Asset, and pick it: it is edited in place against that widget's own widgets, and Update Animation Asset
+ * saves it.
  *
  * MAKING ONE
- * Build the layers in WidgetAnimationBuilder and press Create Widget Animation, which saves a WA_ asset.
+ * In any Widget Blueprint: open the Widget Animations drawer on the status bar, leave it on New Animation,
+ * build it against that Widget Blueprint's own widgets - each Layer Group animating the widget it is pointed
+ * at - and press Save as Animation Asset. For something generic meant for many places, do the same in
+ * WidgetAnimationBuilder, whose Animation Name and Save Folder decide where it is saved.
+ *
+ * LAYER GROUPS
+ * Every layer belongs to one Layer Group, one group per widget the animation moves. The layers are still
+ * one list in one sequence, so layers of different groups follow each other freely. Each use of the
+ * animation picks a Target Widget per group - see FWidgetAnimEntry - so the asset stays reusable.
  */
 UCLASS(BlueprintType, meta = (DisplayName = "Widget Animation", PrioritizeCategories = "Preview"))
 class NAMETBD_API UWidgetAnimPresetAsset : public UDataAsset
@@ -43,18 +56,38 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (MultiLine = true))
 	FText Description;
 
+	/** The widgets this animation moves, one group each: a name and the widget it plays on while authored. See FWidgetAnimLayerGroup. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (TitleProperty = "GroupName"))
+	TArray<FWidgetAnimLayerGroup> LayerGroups;
+
+	/**
+	 * The animation: one list of layers, each in one of the Layer Groups. Order is sequence - a layer's Starts
+	 * reads the layer above it here, whichever group that is - so groups interleave freely.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (TitleProperty = "AnimType"))
 	TArray<FWidgetAnimLayer> Layers;
 
-	/** Opens WidgetAnimationBuilder playing this animation. Edits made here keep showing there while it's open. 
-	 * 
-	 *  The widget blueprint 'WidgetAnimationBuilder' (exact naming)must exist somewhere in the project, 
-	 *  otherwise this button does nothing.
-	 *  
-	 *  To create the widget blueprint if you deleted it:
-	 *	  1. Create a widget blueprint parented to 'WidgetAnimBuilder'. This can go anywhere your project. 
-	 *	  2. Add an image widget and name it 'PreviewWidget'.
-	 *	  3. Choose whatever image you like (T_FivePointStar set to a gold color looks good for preview). 
+	/**
+	 * How fast the whole animation plays, wherever it is used: 2 plays every track - its delay, length and keys
+	 * - in half the time, 0.5 takes twice as long. Part of the animation itself, unlike an entry's Playback
+	 * Speed, which is one use's choice and multiplies on top of this.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Animation Speed Multiplier", ClampMin = "0.01", UIMin = "0.1", UIMax = "4.0"))
+	float AnimationSpeedMultiplier = 1.f;
+
+	int32 GetNumLayers() const { return Layers.Num(); }
+
+	/**
+	 * Opens WidgetAnimationBuilder playing this animation. Its Widget Animations panel opens on Edit Existing
+	 * Asset with this asset picked, so it can be changed there too - as it can in any Widget Blueprint's panel.
+	 *
+	 * The widget blueprint 'WidgetAnimationBuilder' (exact naming) must exist somewhere in the project,
+	 * otherwise this button does nothing. To create it if you deleted it:
+	 *   1. Create a widget blueprint parented to 'WidgetAnimBuilder'. It can go anywhere in your project.
+	 *   2. Add an image widget and name it 'PreviewImage'.
+	 *   3. Choose whatever image you like (T_FivePointStar set to a gold color looks good for preview).
+	 *   4. Optional, for previewing Animate Shape on Transform layers: wrap 'PreviewImage' in a Shape Box.
+	 *      The Image keeps getting the render transform; the Shape Box around it takes the outline.
 	 */
 	UFUNCTION(CallInEditor, Category = "Preview", meta = (DisplayName = "View Animation Preview"))
 	void ViewAnimationPreview();
@@ -66,6 +99,9 @@ public:
 #endif
 
 private:
+
+	/** AnimIn / AnimOut from before layers, into Layers. */
+	void MigrateSettingsStacks();
 
 	/**
 	 * Authored before animations were split into layers and per-use entries. Migrated into Layers on
@@ -153,13 +189,40 @@ struct NAMETBD_API FWidgetAnimEntryBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Playback Speed", ClampMin = "0.01", UIMin = "0.1", UIMax = "4.0"))
 	float PlaybackSpeed = 1.f;
 
-	bool IsUsable() const { return Animation != nullptr && Animation->Layers.Num() > 0; }
+	bool IsUsable() const { return Animation != nullptr && Animation->GetNumLayers() > 0; }
 
 	/**
 	 * Every layer of the referenced animation as runtime settings, with this entry's flags stamped onto
-	 * each of them and both targets set to the widget the caller resolved.
+	 * each of them and every group's targets set to the one widget the caller resolved.
 	 */
 	void BuildSettings(TArray<FWidgetAnimSettings>& OutSettings, UWidget* Target) const;
+
+	/**
+	 * The same, with a widget per Layer Group: GroupTarget(GroupIndex) answers the widget that group's layers
+	 * animate, or null for the widget the animation is played on.
+	 */
+	void BuildSettings(TArray<FWidgetAnimSettings>& OutSettings, TFunctionRef<UWidget*(int32 /*GroupIndex*/)> GroupTarget) const;
+};
+
+/** Which widget one Layer Group of an entry's animation animates. */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimGroupTarget
+{
+	GENERATED_BODY()
+
+	/** The group's name in the animation, kept here as the row's label. Refreshed whenever the entry is edited or loaded. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Layer Group"))
+	FString GroupName;
+
+	/**
+	 * Which widget this group animates. None animates whatever the entry is attached to.
+	 *
+	 * Material Scalar / Material Vector layers need this to name an Image, and a Transform layer's Shape
+	 * channel needs it to name a Shape Box (or a widget inside one); any other widget type and those
+	 * particular layers do nothing - the rest of the group still plays.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Target Widget", GetOptions = "GetAnimTargetWidgetOptions"))
+	FName TargetWidgetName;
 };
 
 /**
@@ -175,13 +238,29 @@ struct NAMETBD_API FWidgetAnimEntry : public FWidgetAnimEntryBase
 	GENERATED_BODY()
 
 	/**
-	 * Which widget this animates. Empty animates whatever the entry is attached to.
-	 *
-	 * Material Scalar / Material Vector layers need this to name an Image; any other widget type and
-	 * those layers do nothing (the rest of the animation still plays).
+	 * A Target Widget for each Layer Group of the animation, in the animation's order and labelled with its
+	 * group names. Sized to the animation by the owner whenever the entry is edited or loaded - see
+	 * SyncGroupTargets - so it always lists exactly the groups there are. A new row starts on the group's
+	 * Preview Target.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Target Widget", GetOptions = "GetAnimTargetWidgetOptions"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Target Widgets", EditFixedSize, TitleProperty = "GroupName"))
+	TArray<FWidgetAnimGroupTarget> GroupTargets;
+
+	/**
+	 * The single Target Widget from before Layer Groups. No longer edited; kept so an entry saved with one
+	 * carries it into every group it has not been given a target for yet.
+	 */
+	UPROPERTY()
 	FName TargetWidgetName;
+
+	/** Sizes GroupTargets to the animation's groups and refreshes their labels. True if anything changed. */
+	bool SyncGroupTargets();
+
+	/** The target path group GroupIndex animates: its row if it has one, else the default a new row would get. */
+	FName GetGroupTargetName(int32 GroupIndex) const;
+
+	/** BuildSettings with each group's target path resolved by Resolver. */
+	void BuildSettingsResolved(TArray<FWidgetAnimSettings>& OutSettings, TFunctionRef<UWidget*(FName)> Resolver) const;
 };
 
 UCLASS()

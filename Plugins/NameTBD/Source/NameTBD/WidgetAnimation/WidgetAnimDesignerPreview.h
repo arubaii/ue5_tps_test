@@ -80,8 +80,19 @@ public:
 	 */
 	virtual void EnsurePreviewTimer();
 	
-	/** Whether the preview clock is frozen. Posing still happens; only time stops. */
+	/**
+	 * Whether the preview clock is frozen. Posing still happens (a zero-delta TickFrame poses the current
+	 * frame); only time stops. While this is true the harness's active timer stops itself, so a host that
+	 * un-pauses must call EnsurePreviewTimer to start the clock again.
+	 */
 	virtual bool IsPreviewPaused() const { return false; }
+	
+	/**
+	 * Called once the harness has run a playing mode to its end - not for a held pose or a scrub frame,
+	 * which stop for a different reason. A host that tracks a paused/playing state of its own uses this
+	 * to put itself back to the start rather than sitting on the last frame still calling itself playing.
+	 */
+	virtual void OnPreviewFinished() {}
 };
 
 /**
@@ -114,6 +125,9 @@ public:
 
 	/**
 	 * One preview frame. True while more are needed.
+	 *
+	 * A paused host asked for a frame with time in it gets false and no pose - there is nothing to advance.
+	 * Asked with a zero delta it is posed as usual, which is how the frozen frame is shown.
 	 *
 	 * Does not touch the timer flag, so a host driving this from a timer it owns keeps its own bookkeeping.
 	 */

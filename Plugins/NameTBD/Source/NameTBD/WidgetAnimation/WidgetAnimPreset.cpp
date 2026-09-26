@@ -4,6 +4,8 @@
 
 #include "Components/Image.h"
 #include "Components/Widget.h"
+#include "NameTBD/Widgets/ShapeBox.h"
+#include "WidgetAnimTransform.h"
 
 #if WITH_EDITOR
 #include "WidgetAnimBuilder.h"
@@ -19,11 +21,19 @@ void UWidgetAnimPresetAsset::PostLoad()
 {
 	Super::PostLoad();
 
-	if (AnimIn_DEPRECATED.Num() == 0 && AnimOut_DEPRECATED.Num() == 0)
+	// Oldest first: settings stacks become layers, then layers become a group.
+	if (AnimIn_DEPRECATED.Num() > 0 || AnimOut_DEPRECATED.Num() > 0)
 	{
-		return;
+		MigrateSettingsStacks();
 	}
 
+	// Groups made to fit the layers: from before groups, every layer in one group, which animates whatever
+	// each use pointed its single Target Widget at - FWidgetAnimEntry carries that target across on its own.
+	UWidgetAnimLibrary::NormalizeLayerGroups(LayerGroups, Layers);
+}
+
+void UWidgetAnimPresetAsset::MigrateSettingsStacks()
+{
 	// Both halves, in order. An exit stack is a perfectly good set of layers - which direction it runs in
 	// is the entry's decision now, not the asset's - so nothing is thrown away here.
 	Layers.Reserve(Layers.Num() + AnimIn_DEPRECATED.Num() + AnimOut_DEPRECATED.Num());
@@ -54,10 +64,22 @@ void UWidgetAnimPresetAsset::PostEditChangeProperty(FPropertyChangedEvent& Prope
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	// Keeps an open builder in step with the asset. A value still being dragged updates what is playing;
-	// a finished edit starts the animation over.
-	const bool bRestart = PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive;
-	UWidgetAnimBuilder::NotifyAnimationAssetEdited(this, bRestart);
+	// Keys follow the curve on the next tick, once this edit has unwound. See RequestSyncTransformAnims.
+	UWidgetAnimTransformLibrary::RequestSyncTransformAnims(this, PropertyChangedEvent);
+
+	// Keeps an open builder in step with the asset. Not forced to restart: the builder starts over by itself
+	// when the animation's shape changes (a layer added, a type changed, a key added), and otherwise keeps
+	// whatever it is showing - still playing, or paused on the key being edited - with the new values in it.
+	UWidgetAnimBuilder::NotifyAnimationAssetEdited(this, /*bForceRestart=*/false);
+
+	// Editing a keyframe's values takes any builder previewing this asset straight to that key's time, so
+	// the change is seen as it is made rather than whenever the playing clock next passes it.
+	const int32 LayerIndex = PropertyChangedEvent.GetArrayIndex(GET_MEMBER_NAME_STRING_CHECKED(UWidgetAnimPresetAsset, Layers));
+	const int32 KeyIndex = PropertyChangedEvent.GetArrayIndex(GET_MEMBER_NAME_STRING_CHECKED(FWidgetTransformAnim, Keys));
+	if (LayerIndex != INDEX_NONE && KeyIndex != INDEX_NONE)
+	{
+		UWidgetAnimBuilder::NotifyAnimationAssetKeyEdited(this, LayerIndex, KeyIndex);
+	}
 }
 #endif
 
@@ -81,36 +103,130 @@ namespace
 
 void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSettings, UWidget* Target) const
 {
+	// Every group on the one widget: an entry with nowhere to point each group separately.
+	BuildSettings(OutSettings, [Target](int32) { return Target; });
+}
+
+void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSettings, TFunctionRef<UWidget*(int32)> GroupTarget) const
+{
 	if (!Animation)
 	{
 		return;
 	}
 
-	// Only meaningful for the two material types, and harmless on the rest: the library ignores it unless
-	// the layer is a material layer. One picker instead of two is the whole reason it's derived here.
-	UImage* MaterialTarget = Cast<UImage>(Target);
+	// Placed in order first - one sequence across every group, each layer after the one above it per its
+	// Starts setting - so the per-use flags below are stamped onto layers that already sit where they belong.
+	TArray<FWidgetAnimSettings> Placed;
+	UWidgetAnimLibrary::BuildLayerSettings(Animation->Layers, Placed);
 
-	OutSettings.Reserve(OutSettings.Num() + Animation->Layers.Num());
+	// One widget per group, resolved once each rather than once per layer.
+	const int32 NumGroups = Animation->LayerGroups.Num();
+	TArray<UWidget*, TInlineAllocator<4>> GroupWidgets;
+	GroupWidgets.SetNumZeroed(NumGroups);
+	for (int32 GroupIndex = 0; GroupIndex < NumGroups; ++GroupIndex)
+	{
+		GroupWidgets[GroupIndex] = GroupTarget(GroupIndex);
+	}
 
-	// Every layer of this use shares one clock, so the animation loops as the animation it was authored as.
+	OutSettings.Reserve(OutSettings.Num() + Placed.Num());
+
+	// Every layer of this use - every group - shares one clock, so the animation loops as the animation it
+	// was authored as, its groups staying in step with each other.
 	const int32 LoopGroup = AllocateLoopGroup();
 
-	for (const FWidgetAnimLayer& Layer : Animation->Layers)
+	for (int32 Index = 0; Index < Placed.Num(); ++Index)
 	{
-		FWidgetAnimSettings Settings = Layer.ToSettings();
+		FWidgetAnimSettings& Settings = Placed[Index];
+		const int32 GroupIndex = Animation->Layers.IsValidIndex(Index)
+			? UWidgetAnimLibrary::GetLayerGroupIndex(Animation->Layers[Index], NumGroups)
+			: INDEX_NONE;
+		UWidget* Target = GroupWidgets.IsValidIndex(GroupIndex) ? GroupWidgets[GroupIndex] : nullptr;
 
 		Settings.bLoop = bLoop;
 		Settings.bPingPong = bPingPong;
 		Settings.LoopCount = LoopCount;
 		Settings.bInvertAnimation = bInvertAnimation;
 		Settings.bMirrorInOut = bMirrorInOut;
-		Settings.PlaybackSpeed = PlaybackSpeed;
+		// The animation's own Speed Multiplier, then this use's Playback Speed on top.
+		Settings.PlaybackSpeed = PlaybackSpeed * FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);
 		Settings.LoopGroup = LoopGroup;
 		Settings.TargetWidget = Target;
-		Settings.MaterialTargetImage = MaterialTarget;
+
+		// Only meaningful for the two material types, and harmless on the rest: the library ignores it
+		// unless the layer is a material layer. One picker per group instead of two is why it's derived here.
+		Settings.MaterialTargetImage = Cast<UImage>(Target);
+
+		// Same idea for a Transform layer's Animate Shape: the group's target, or the Shape Box it sits in.
+		// Null when no target was named; the library then resolves the widget the animation is played on.
+		Settings.ShapeTargetBox = UWidgetAnimLibrary::ResolveShapeBox(Target);
 
 		OutSettings.Add(MoveTemp(Settings));
 	}
+}
+
+// =====================================================================================================
+// FWidgetAnimEntry
+// =====================================================================================================
+
+bool FWidgetAnimEntry::SyncGroupTargets()
+{
+	bool bChanged = false;
+	const int32 NumGroups = Animation ? Animation->LayerGroups.Num() : 0;
+
+	if (GroupTargets.Num() != NumGroups)
+	{
+		const int32 OldNum = GroupTargets.Num();
+		GroupTargets.SetNum(NumGroups);
+
+		// A new row starts where a target would have come from without it: the single Target Widget this
+		// entry had before groups, or else the group's own Preview Target.
+		for (int32 GroupIndex = OldNum; GroupIndex < NumGroups; ++GroupIndex)
+		{
+			GroupTargets[GroupIndex].TargetWidgetName = !TargetWidgetName.IsNone()
+				? TargetWidgetName
+				: Animation->LayerGroups[GroupIndex].PreviewTarget;
+		}
+		bChanged = true;
+	}
+
+	for (int32 GroupIndex = 0; GroupIndex < NumGroups; ++GroupIndex)
+	{
+		const FString Label = Animation->LayerGroups[GroupIndex].GetDisplayName(GroupIndex);
+		if (GroupTargets[GroupIndex].GroupName != Label)
+		{
+			GroupTargets[GroupIndex].GroupName = Label;
+			bChanged = true;
+		}
+	}
+
+	return bChanged;
+}
+
+FName FWidgetAnimEntry::GetGroupTargetName(int32 GroupIndex) const
+{
+	// The row, whatever it says - None included, which deliberately means "the widget this is on".
+	if (GroupTargets.IsValidIndex(GroupIndex))
+	{
+		return GroupTargets[GroupIndex].TargetWidgetName;
+	}
+
+	// A group the animation gained since this entry was last synced: the default its row would start on.
+	if (!TargetWidgetName.IsNone())
+	{
+		return TargetWidgetName;
+	}
+
+	return Animation && Animation->LayerGroups.IsValidIndex(GroupIndex)
+		? Animation->LayerGroups[GroupIndex].PreviewTarget
+		: NAME_None;
+}
+
+void FWidgetAnimEntry::BuildSettingsResolved(TArray<FWidgetAnimSettings>& OutSettings, TFunctionRef<UWidget*(FName)> Resolver) const
+{
+	BuildSettings(OutSettings, [this, &Resolver](int32 GroupIndex)
+	{
+		return Resolver(GetGroupTargetName(GroupIndex));
+	});
 }
 
 // =====================================================================================================
@@ -153,7 +269,7 @@ void UWidgetAnimEntryLibrary::FlattenEntries(const TArray<FWidgetAnimEntry>& Ent
 {
 	for (const FWidgetAnimEntry& Entry : Entries)
 	{
-		Entry.BuildSettings(OutSettings, Resolver(Entry.TargetWidgetName));
+		Entry.BuildSettingsResolved(OutSettings, Resolver);
 	}
 }
 
@@ -178,7 +294,7 @@ int32 UWidgetAnimEntryLibrary::StartEntriesById(FWidgetAnimPlayer& Player, const
 		}
 
 		TArray<FWidgetAnimSettings> Settings;
-		Entry.BuildSettings(Settings, Resolver(Entry.TargetWidgetName));
+		Entry.BuildSettingsResolved(Settings, Resolver);
 		if (Settings.Num() == 0)
 		{
 			continue;

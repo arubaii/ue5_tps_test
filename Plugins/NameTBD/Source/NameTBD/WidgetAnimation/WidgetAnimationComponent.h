@@ -55,6 +55,18 @@ struct NAMETBD_API FWidgetAnimationLegacySettings
 	FWidgetAnimPreviewSettings DesignerPreview;
 };
 
+/**
+ * How the designer toolbar plays a selected widget's animations, in place of its entries' own flags: the same
+ * four choices an entry makes about one use of an animation. Editor-only in use; plain data.
+ */
+struct NAMETBD_API FWidgetAnimDesignerPlayback
+{
+	bool bLoop = false;
+	bool bPingPong = true;
+	bool bInvert = false;
+	float Speed = 1.f;
+};
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FWidgetAnimationComponentEvent, UWidgetAnimationComponent*, Component);
 DECLARE_MULTICAST_DELEGATE_OneParam(FWidgetAnimationComponentNativeEvent, UWidgetAnimationComponent* /*Component*/);
 
@@ -284,6 +296,38 @@ public:
 	/** Registers the designer preview's active timer if the preview needs frames and it isn't registered yet. */
 	void EnsureDesignerPreviewTimer();
 
+	/**
+	 * For the designer toolbar shown when an animated widget is selected: plays this component's animations in
+	 * the designer - the entrance, or the exit from the settled pose - with the toolbar's Loop, Ping Pong,
+	 * Invert and Speed in place of its entries' own, whatever its Designer Preview is set to. Lasts until
+	 * Reset, or until the designer rebuilds the widget and the preview is Designer Preview's again.
+	 */
+	void PlayDesignerPreviewOverride(bool bOut, const FWidgetAnimDesignerPlayback& Options);
+
+	/** Freezes the toolbar's preview at Alpha of one pass - of the exit if the last play was Play Out. */
+	void ScrubDesignerPreviewOverride(float Alpha, const FWidgetAnimDesignerPlayback& Options);
+
+	/**
+	 * The toolbar's Loop / Ping Pong / Invert / Speed changed. Applied to what is showing where it stands - no
+	 * restart, so flipping Invert or dragging Speed keeps the preview where it is. Nothing to do while the
+	 * toolbar isn't driving this component.
+	 */
+	void UpdateDesignerPreviewOptions(const FWidgetAnimDesignerPlayback& Options);
+
+	/** Puts the widget back as authored and holds it there. The toolbar's Reset. */
+	void ResetDesignerPreviewOverride();
+
+	/** The toolbar's readouts: where the preview is in one pass, in seconds and as a fraction, and how long a pass is. */
+	float GetDesignerPreviewSeconds() const;
+	float GetDesignerPreviewDuration() const;
+	float GetDesignerPreviewAlpha() const;
+
+	/** Whether the toolbar's preview is running - Play pressed, not yet finished, frozen or reset. */
+	bool IsDesignerPreviewPlaying() const;
+
+	/** Whether there is anything for the designer toolbar to play. */
+	bool HasDesignerPreviewAnimations() const { return FlattenedIn.Num() > 0 || FlattenedOut.Num() > 0; }
+
 	/** True while this component is applying a visibility itself. A SetVisibility override that routes into the component must pass the call straight through while this is set. */
 	bool IsApplyingVisibility() const { return bApplyingVisibility; }
 
@@ -311,6 +355,21 @@ public:
 	static bool ShouldDiffLegacyAgainstArchetype(const UObject* Archetype);
 
 	virtual void BeginDestroy() override;
+
+	/** Brings every entry's Target Widgets in line with its animation's Layer Groups - see SyncEntryGroupTargets. */
+	virtual void PostLoad() override;
+
+#if WITH_EDITOR
+	/** Keeps every Transform layer's Keys in step with its curve, and every entry's Target Widgets in step with its animation's groups. */
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
+	/**
+	 * Sizes and labels each Anim In / Anim Out entry's Target Widgets to its animation's Layer Groups. Run on
+	 * load and on every edit, so the Details panel lists exactly the groups the picked animation has; the
+	 * built stacks never depend on it - an entry that is behind resolves missing groups to their defaults.
+	 */
+	bool SyncEntryGroupTargets();
 
 protected:
 
@@ -376,6 +435,31 @@ private:
 
 	UPROPERTY(Transient)
 	FWidgetAnimPreviewState DesignerPreviewState;
+
+	/** The designer toolbar's mode, while it is overriding Designer Preview. Never saved. */
+	TOptional<EWidgetAnimPreviewMode> DesignerPreviewModeOverride;
+
+	/** The toolbar's playback options, and where its scrub stands - which stack, and how far along. */
+	FWidgetAnimDesignerPlayback DesignerPreviewOptions;
+	float DesignerPreviewScrubAlpha = 0.f;
+	bool bDesignerPreviewScrubOut = false;
+
+	/** Anim In / Anim Out with the toolbar's options stamped on - what plays while the toolbar is driving. */
+	TArray<FWidgetAnimSettings> DesignerOverrideIn;
+	TArray<FWidgetAnimSettings> DesignerOverrideOut;
+
+	/** Designer Preview, with the toolbar's mode, speed and scrub in place of its own while it is driving. */
+	FWidgetAnimPreviewSettings GetEffectiveDesignerPreview() const;
+
+	/** Restamps DesignerOverrideIn/Out from the built stacks and DesignerPreviewOptions. */
+	void RebuildDesignerOverrideStacks();
+
+	/** The stacks the designer preview plays: the toolbar's stamped copies while it is driving, else the built ones. */
+	const TArray<FWidgetAnimSettings>& GetDesignerPreviewIn() const { return DesignerPreviewModeOverride.IsSet() ? DesignerOverrideIn : FlattenedIn; }
+	const TArray<FWidgetAnimSettings>& GetDesignerPreviewOut() const { return DesignerPreviewModeOverride.IsSet() ? DesignerOverrideOut : FlattenedOut; }
+
+	/** Whether the preview is on the exit: playing it, or holding after it. */
+	bool IsDesignerPreviewShowingOut() const;
 
 	/** Runtime clock: the core ticker, registered while the owner is constructed. */
 	FTSTicker::FDelegateHandle RuntimeTickHandle;

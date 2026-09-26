@@ -23,13 +23,16 @@ public class NameTBDEditor : ModuleRules
 			"InputCore",
 			"UnrealEd",
 			"PropertyEditor",
+			"StatusBar",
 			"BlueprintGraph",   // UK2Node_FunctionEntry, for adding the dispatcher's parameters
 			"KismetCompiler",
 			"UMG",
-			"UMGEditor",        // UWidgetBlueprint
+			"UMGEditor",        // UWidgetBlueprint, and the tab / layout hooks Dock in Layout uses
+			"Kismet",           // FWidgetBlueprintApplicationMode's base, for registering the panel's tab
 			"Projects",       
 			"AssetTools",
-			 "ToolMenus",
+			"ToolMenus",
+			"DeveloperSettings", // UWidgetAnimEditorSettings - track colours and track controls
 		});
 		if (Target.bBuildEditor)
 		{
