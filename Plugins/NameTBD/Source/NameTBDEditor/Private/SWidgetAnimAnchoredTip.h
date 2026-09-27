@@ -13,6 +13,9 @@ class FActiveTimerHandle;
  * above it - not beside the cursor, and not following it - in the Widget Animations panel's own dark tooltip
  * style. It goes away when the mouse leaves or the control is pressed.
  *
+ * The tip is written "Name: what it does". The name - everything before the first ": ", if short - is shown bold in
+ * the animation orange, and what it does under it; a short tip with no ": " is all name ("Go to Start").
+ *
  * Use it in place of ToolTipText on compact controls laid out in a row - icon buttons, toggles in a pill - where
  * a tooltip that chases the cursor covers the very controls beside it.
  *

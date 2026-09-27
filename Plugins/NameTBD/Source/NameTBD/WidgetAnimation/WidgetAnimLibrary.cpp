@@ -44,6 +44,108 @@ float UWidgetAnimLibrary::EvaluateLayerAlpha(const FWidgetAnimSettings& Settings
 	return WidgetAnimEasing::Evaluate(Settings.Easing, Settings.CustomCurve, DirectedAlpha);
 }
 
+float UWidgetAnimLibrary::EvaluateTrackEase(const FWidgetAnimSettings& Settings, float Alpha, bool bTowardStart)
+{
+	// Scale and Slide's Overshoot is the tween's way of getting a pop, and replaces the Easing when set. A
+	// Spring layer already overshoots by its own physics, so there Overshoot is hidden and ignored - two
+	// different pops stacked on one value would be neither. So is a track with keys between its start and end:
+	// every segment would pop past its own key, which is a wobble, not a pop - its keys and their curves are how
+	// it is shaped instead.
+	if (!Settings.IsSpringTimed() && Settings.ValueKeys.Keys.Num() == 0)
+	{
+		if (Settings.AnimType == EWidgetAnimType::Scale && Settings.Overshoot > 0.f)
+		{
+			return EaseOutBack(Alpha, Settings.Overshoot);
+		}
+		if (Settings.AnimType == EWidgetAnimType::Slide && Settings.SlideOvershoot > 0.f)
+		{
+			return EaseOutBack(Alpha, Settings.SlideOvershoot);
+		}
+	}
+
+	return EvaluateLayerAlpha(Settings, Alpha, bTowardStart);
+}
+
+void UWidgetAnimLibrary::SampleValueKeys(const FWidgetAnimSettings& Settings, float DirectedAlpha, bool bTowardStart, int32& OutSegment, float& OutAlpha)
+{
+	const FWidgetAnimValueKeys& ValueKeys = Settings.ValueKeys;
+	const int32 LastSegment = ValueKeys.Keys.Num();
+
+	// Exactly the start and exactly the end at either end of the track, whatever the easing makes of them. A
+	// Custom curve that stops at 0.98, or a spring that is only within its rest threshold when its run ends,
+	// would otherwise leave a fade to 0 very slightly visible for good - which is what a fast scrub, or a
+	// frame landing just so, used to show.
+	if (DirectedAlpha <= 0.f)
+	{
+		OutSegment = 0;
+		OutAlpha = 0.f;
+		return;
+	}
+	if (DirectedAlpha >= 1.f)
+	{
+		OutSegment = LastSegment;
+		OutAlpha = 1.f;
+		return;
+	}
+
+	// Where each point sits, never behind the one before it, so keys out of order can't turn a segment inside out.
+	TArray<float, TInlineAllocator<8>> Times;
+	Times.SetNum(LastSegment + 2);
+	Times[0] = 0.f;
+	for (int32 Point = 1; Point <= LastSegment; ++Point)
+	{
+		Times[Point] = FMath::Clamp(ValueKeys.Keys[Point - 1].Time, Times[Point - 1], 1.f);
+	}
+	Times[LastSegment + 1] = 1.f;
+
+	// The segment Position falls in, and how far across it. Before the start it is the first segment and past
+	// the end the last, run on past their ends - that is an overshoot, carried on in the direction it was going.
+	auto Locate = [&Times, LastSegment](float Position, int32& OutLocated, float& OutAcross)
+	{
+		int32 Segment = 0;
+		while (Segment < LastSegment && Position >= Times[Segment + 1])
+		{
+			++Segment;
+		}
+
+		const float Length = Times[Segment + 1] - Times[Segment];
+		OutLocated = Segment;
+		OutAcross = Length > KINDA_SMALL_NUMBER ? (Position - Times[Segment]) / Length : (Position >= Times[Segment + 1] ? 1.f : 0.f);
+	};
+
+	// A spring springs across the whole run, keys and all: its progress finds the segment, and the keys are points
+	// along the way it travels.
+	if (Settings.IsSpringTimed())
+	{
+		Locate(EvaluateTrackEase(Settings, DirectedAlpha, bTowardStart), OutSegment, OutAlpha);
+		return;
+	}
+
+	// A tween with no keys between its start and end: one segment, moving by the track's Easing (or overshoot).
+	if (LastSegment == 0)
+	{
+		OutSegment = 0;
+		OutAlpha = EvaluateTrackEase(Settings, DirectedAlpha);
+		return;
+	}
+
+	// Keyed: plain time finds the segment, so every key is reached exactly when the timeline shows it - and the
+	// segment's own curve, or the track's Easing for one left at Track Easing, shapes the way across it. Bending
+	// time across the whole run instead made a key drawn halfway along arrive a fifth of the way in on an Ease Out
+	// track, which is not what a keyframe means anywhere else.
+	float Across = 0.f;
+	Locate(DirectedAlpha, OutSegment, Across);
+
+	if (Across <= 0.f || Across >= 1.f)
+	{
+		OutAlpha = FMath::Clamp(Across, 0.f, 1.f);
+		return;
+	}
+
+	OutAlpha = WidgetAnimEasing::EvaluateSegment(ValueKeys.GetSegmentCurve(OutSegment), Across,
+		[&Settings](float Alpha) { return EvaluateTrackEase(Settings, Alpha); });
+}
+
 FVector2D UWidgetAnimLibrary::GetSlideDirectionOffset(EWidgetSlideDirection Direction)
 {
 	switch (Direction)
@@ -98,32 +200,47 @@ namespace
 
 void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& Settings, float DirectedAlpha, FWidgetAnimResult& OutResult, const FWidgetAnimBaselineSet* Baselines, bool bTowardStart)
 {
-	// Scale and Slide's Overshoot is the tween's way of getting a pop, and replaces the Easing when set. A
-	// Spring layer already overshoots by its own physics, so there Overshoot is hidden and ignored - two
-	// different pops stacked on one value would be neither.
-	const bool bSpring = Settings.IsSpringTimed();
+	// Every type that travels from a start value to an end value does it the same way: through its points -
+	// start, any keys, end - one segment at a time. See FWidgetAnimValueKeys and SampleValueKeys, which is also
+	// what makes the very start and the very end exact.
+	int32 Segment = 0;
+	float SegmentAlpha = 0.f;
+	if (WidgetAnimTypeSupportsValueKeys(Settings.AnimType))
+	{
+		SampleValueKeys(Settings, DirectedAlpha, bTowardStart, Segment, SegmentAlpha);
+	}
+
+	auto LerpValue = [&Settings, &Segment, &SegmentAlpha]()
+	{
+		return FMath::Lerp(WidgetAnimKeyPoints::GetValue(Settings, Segment), WidgetAnimKeyPoints::GetValue(Settings, Segment + 1), SegmentAlpha);
+	};
 
 	switch (Settings.AnimType)
 	{
 	case EWidgetAnimType::Fade:
 	{
-		const float EasedAlpha = EvaluateLayerAlpha(Settings, DirectedAlpha, bTowardStart);
 		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
 
 		// Held inside what opacity can mean. A spring (or a custom curve) overshooting a fade to 1 would
 		// otherwise ask for 1.1, and one overshooting a fade to 0 for less than nothing; neither is a look,
-		// only a glitch. The end values themselves are left alone, so an opacity authored above 1 still reaches it.
-		const float Opacity = FMath::Lerp(Settings.StartOpacity, Settings.EndOpacity, EasedAlpha);
-		Transform.Opacity *= FMath::Clamp(Opacity, 0.f, FMath::Max3(1.f, Settings.StartOpacity, Settings.EndOpacity));
+		// only a glitch. The values themselves are left alone, so an opacity authored above 1 still reaches it.
+		const float Opacity = LerpValue();
+		Transform.Opacity *= FMath::Clamp(Opacity, 0.f, FMath::Max(1.f, WidgetAnimKeyPoints::GetMaxValue(Settings)));
 		break;
 	}
 
 	case EWidgetAnimType::Scale:
 	{
-		const float ScaleAlpha = (Settings.Overshoot > 0.f && !bSpring)
-			? EaseOutBack(DirectedAlpha, Settings.Overshoot)
-			: EvaluateLayerAlpha(Settings, DirectedAlpha, bTowardStart);
-		const float ScaleValue = FMath::Lerp(Settings.StartScale, Settings.EndScale, ScaleAlpha);
+		float ScaleValue = LerpValue();
+
+		// A scale that overshoots past 0 on its way to (or back to) nothing turns the widget inside out - a
+		// negative scale is a mirror image - so a spring's bounce near 0 flipped it for a frame. Held at 0 unless
+		// the track itself asks for a negative scale somewhere, which is a mirror on purpose.
+		if (WidgetAnimKeyPoints::GetMinValue(Settings) >= 0.f)
+		{
+			ScaleValue = FMath::Max(ScaleValue, 0.f);
+		}
+
 		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
 		Transform.Scale *= FVector2D(ScaleValue, ScaleValue);
 		break;
@@ -131,27 +248,26 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 
 	case EWidgetAnimType::Slide:
 	{
-		const float SlideAlpha = (Settings.SlideOvershoot > 0.f && !bSpring)
-			? EaseOutBack(DirectedAlpha, Settings.SlideOvershoot)
-			: EvaluateLayerAlpha(Settings, DirectedAlpha, bTowardStart);
-		const FVector2D StartOffset = GetSlideDirectionOffset(Settings.SlideFromDirection) * Settings.SlideDistance;
+		// A Slide's points are how far along its direction the widget is: its Distance at the start, 0 at the end.
+		const FVector2D Offset = GetSlideDirectionOffset(Settings.SlideFromDirection) * LerpValue();
 		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
-		Transform.Translation += FMath::Lerp(StartOffset, FVector2D::ZeroVector, SlideAlpha);
+		Transform.Translation += Offset;
 		break;
 	}
 
 	case EWidgetAnimType::Rotate:
 	{
-		const float EasedAlpha = EvaluateLayerAlpha(Settings, DirectedAlpha, bTowardStart);
 		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
-		Transform.Angle += FMath::Lerp(Settings.StartAngle, Settings.EndAngle, EasedAlpha);
+		Transform.Angle += LerpValue();
 		break;
 	}
 
 	case EWidgetAnimType::Pulse:
 	{
+		// Exactly 1 at both ends: the sine only gets back to 0 to within float error, which left a pulsed widget
+		// a hair off its size once it stopped.
 		const float Phase = DirectedAlpha * 2.f * PI;
-		const float ScaleMultiplier = 1.f + Settings.PulseScaleAmount * FMath::Sin(Phase);
+		const float ScaleMultiplier = (DirectedAlpha <= 0.f || DirectedAlpha >= 1.f) ? 1.f : 1.f + Settings.PulseScaleAmount * FMath::Sin(Phase);
 		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
 		Transform.Scale *= FVector2D(ScaleMultiplier, ScaleMultiplier);
 		break;
@@ -161,11 +277,9 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 	{
 		if (!Settings.ScalarParameterName.IsNone())
 		{
-			const float EasedAlpha = EvaluateLayerAlpha(Settings, DirectedAlpha, bTowardStart);
-			const float Value = FMath::Lerp(Settings.StartScalarValue, Settings.EndScalarValue, EasedAlpha);
 			FWidgetAnimScalarTarget& Target = OutResult.ScalarParameters.FindOrAdd(Settings.ScalarParameterName);
 			Target.TargetImage = Settings.MaterialTargetImage;
-			Target.Value = Value;
+			Target.Value = LerpValue();
 		}
 		break;
 	}
@@ -174,8 +288,7 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 	{
 		if (!Settings.VectorParameterName.IsNone())
 		{
-			const float EasedAlpha = EvaluateLayerAlpha(Settings, DirectedAlpha, bTowardStart);
-			const FLinearColor Value = FMath::Lerp(Settings.StartVectorValue, Settings.EndVectorValue, EasedAlpha);
+			const FLinearColor Value = FMath::Lerp(WidgetAnimKeyPoints::GetColor(Settings, Segment), WidgetAnimKeyPoints::GetColor(Settings, Segment + 1), SegmentAlpha);
 			FWidgetAnimVectorTarget& Target = OutResult.VectorParameters.FindOrAdd(Settings.VectorParameterName);
 			Target.TargetImage = Settings.MaterialTargetImage;
 			Target.Value = Value;
@@ -185,19 +298,22 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 
 	case EWidgetAnimType::Transform:
 	{
-		// Eased like every other layer: the layer's Easing bends time across the whole run of keys, and the
-		// keys are met linearly in that eased time. The last key is the layer's length. The layer's Delay was
-		// already consumed by the clock before DirectedAlpha reached us, and inversion is folded into
-		// DirectedAlpha, so a reversed layer just walks this time backwards.
-		const float EasedAlpha = EvaluateEasedAlpha(Settings, FMath::Clamp(DirectedAlpha, 0.f, 1.f));
-		const float LocalTime = EasedAlpha * Settings.Transform.GetDuration();
+		// Keyed like every other keyed layer: plain time finds the segment, so each key is reached exactly when
+		// the timeline shows it, and each segment is shaped by its key's Curve To Next Key - the layer's Easing,
+		// for a key left at Track Easing. The last key is the layer's length. The layer's Delay was already
+		// consumed by the clock before DirectedAlpha reached us, and inversion is folded into DirectedAlpha, so a
+		// reversed layer just walks this time backwards. Exactly the first and last keys' times at either end.
+		const float Duration = Settings.Transform.GetDuration();
+		auto EaseSegment = [&Settings](float Alpha) { return EvaluateEasedAlpha(Settings, Alpha); };
+		const TFunctionRef<float(float)> TrackEase(EaseSegment);
+		const float LocalTime = FMath::Clamp(DirectedAlpha, 0.f, 1.f) * Duration;
 
 		// Null unless a baseline captured this Shape Box's authored outline, which is exactly when a key's
 		// Use Authored Shape has something to mean.
 		const FShapeBoxShape* AuthoredShape = Baselines ? Baselines->FindShapeBaseline(Settings.ShapeTargetBox) : nullptr;
 
 		const FWidgetTransformAnimResult Contribution =
-			UWidgetAnimTransformLibrary::Evaluate(Settings.Transform, LocalTime, AuthoredShape);
+			UWidgetAnimTransformLibrary::Evaluate(Settings.Transform, LocalTime, AuthoredShape, &TrackEase);
 
 		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
 		Transform.Translation += Contribution.Translation;
@@ -211,7 +327,9 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 		// every entry left pointing at its own widget.
 		if (Contribution.bHasShape)
 		{
-			FindOrAddShapeTarget(OutResult, Settings.ShapeTargetBox).Shape = Contribution.Shape;
+			FWidgetAnimShapeTarget& ShapeTarget = FindOrAddShapeTarget(OutResult, Settings.ShapeTargetBox);
+			ShapeTarget.Shape = Contribution.Shape;
+			ShapeTarget.bIsBaseline = false;
 		}
 		break;
 	}
@@ -221,6 +339,40 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 bool UWidgetAnimLibrary::GetEffectiveInvert(const FWidgetAnimSettings& Settings, bool bIsOutAnimation)
 {
 	return Settings.bInvertAnimation != bIsOutAnimation;
+}
+
+void UWidgetAnimLibrary::TouchLayerTargets(const FWidgetAnimSettings& Settings, FWidgetAnimResult& OutResult, const FWidgetAnimBaselineSet& Baselines)
+{
+	// Material parameters have no baseline to go back to - nothing records what a material was authored at - so
+	// a material layer that hasn't started is still left alone.
+	if (Settings.AnimType == EWidgetAnimType::MaterialScalar || Settings.AnimType == EWidgetAnimType::MaterialVector)
+	{
+		return;
+	}
+
+	// The identity: multiplies and adds nothing, so a layer that IS contributing to the same widget this frame
+	// is untouched by it - but the widget is written, at its baseline, even when nothing else is.
+	FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
+
+	// A shape is assigned rather than composed, so the authored outline only goes in where no other layer has
+	// put one this frame - and a later layer that does still replaces it.
+	if (Settings.AnimType == EWidgetAnimType::Transform && Settings.Transform.IsAnimatingShape())
+	{
+		const bool bAlreadyWritten = OutResult.ShapeTargets.ContainsByPredicate([&Settings](const FWidgetAnimShapeTarget& Target)
+		{
+			return Target.TargetBox == Settings.ShapeTargetBox;
+		});
+
+		if (!bAlreadyWritten)
+		{
+			if (const FShapeBoxShape* Authored = Baselines.FindShapeBaseline(Settings.ShapeTargetBox))
+			{
+				FWidgetAnimShapeTarget& ShapeTarget = FindOrAddShapeTarget(OutResult, Settings.ShapeTargetBox);
+				ShapeTarget.Shape = *Authored;
+				ShapeTarget.bIsBaseline = true;
+			}
+		}
+	}
 }
 
 namespace WidgetAnimLoop
@@ -253,6 +405,19 @@ namespace WidgetAnimLoop
 		}
 
 		return Settings.Duration;
+	}
+
+	/**
+	 * How far through its span a layer is at LocalTime seconds into it, 0 to 1 - exactly 0 or 1 within a
+	 * hair of either end. A layer's end is worked out as start plus length and read back as time minus start,
+	 * and in floats that round trip lands a whisker short of 1 about as often as not - which is a pose a
+	 * whisker short of the end, held for good once the clock stops there.
+	 */
+	static float GetLayerAlpha(float LocalTime, const FLayerSpan& Span)
+	{
+		const float Alpha = FMath::Clamp(LocalTime / Span.Length, 0.f, 1.f);
+		constexpr float Snap = 1.e-5f;
+		return Alpha >= 1.f - Snap ? 1.f : (Alpha <= Snap ? 0.f : Alpha);
 	}
 
 	static FLayerSpan GetLayerSpan(const FWidgetAnimSettings& Settings)
@@ -633,14 +798,17 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 		const float TimelineTime = Clock.bFinished ? GroupEnd[Leader] : Clock.CycleTime;
 		const float LocalTime = TimelineTime - Span.Start;
 
-		// After its end the layer holds its end pose. Before its start it does nothing at all - the widget is
-		// left exactly as it is until the layer actually begins - unless it plays inverted, where what comes
-		// before its start is its end pose: a Play Out has to hold the pose the entrance left the widget in
-		// until each layer begins undoing it. Direction needs no special case: a return leg is the timeline
-		// running backwards, so the alpha falls on its own.
+		// After its end the layer holds its end pose. Before its start it contributes nothing - the widget is left
+		// as it is, or, with a baseline captured, put back at that baseline, so what is on screen never depends
+		// on where the clock was a frame ago - unless it plays inverted, where what comes before its start is its
+		// end pose: a Play Out has to hold the pose the entrance left the widget in until each layer begins
+		// undoing it. Direction needs no special case: a return leg is the timeline running backwards, so the
+		// alpha falls on its own.
 		const bool bInvert = GetEffectiveInvert(Settings, bIsOutAnimation);
 		const bool bBeforeStart = (LocalTime < 0.f && !bInvert) || Settings.bMuted;
-		const float LinearAlpha = FMath::Clamp(LocalTime / Span.Length, 0.f, 1.f);
+
+		// A clock that has come to rest has every layer at its very end, however the arithmetic rounds.
+		const float LinearAlpha = Clock.bFinished ? 1.f : WidgetAnimLoop::GetLayerAlpha(LocalTime, Span);
 
 		if (Index != Leader)
 		{
@@ -663,6 +831,11 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 			const bool bTowardStart = bInvert != bReturnLeg;
 
 			ApplyAnimationContribution(Settings, bInvert ? 1.f - LinearAlpha : LinearAlpha, OutResult, Baselines, bTowardStart);
+		}
+		else if (Baselines && Baselines->bCaptured)
+		{
+			// Not started, or hidden: its widget sits at its baseline rather than wherever it was last posed.
+			TouchLayerTargets(Settings, OutResult, *Baselines);
 		}
 
 		if (!States[Index].bFinished)
@@ -857,6 +1030,12 @@ void UWidgetAnimLibrary::InitializeInternal(UWidget* FallbackWidget, const TArra
 		const bool bInvert = GetEffectiveInvert(Settings, /*bIsOutAnimation=*/false);
 		if (Settings.bMuted || (!bInvert && WidgetAnimLoop::GetLayerSpan(Settings).Start > 0.f))
 		{
+			// Back to the baseline, not left at wherever the last play finished - a loop restarting would
+			// otherwise begin with a delayed layer still showing the end of the previous one.
+			if (Baselines && Baselines->bCaptured)
+			{
+				TouchLayerTargets(Settings, StartResult, *Baselines);
+			}
 			continue;
 		}
 		ApplyAnimationContribution(Settings, bInvert ? 1.f : 0.f, StartResult, Baselines, /*bTowardStart=*/bInvert);
@@ -1170,11 +1349,17 @@ void UWidgetAnimLibrary::ApplyWidgetAnimationsAtAlpha(UWidget* FallbackWidget, c
 	for (const FWidgetAnimSettings& Settings : Animations)
 	{
 		const WidgetAnimLoop::FLayerSpan Span = WidgetAnimLoop::GetLayerSpan(Settings);
-		const float LayerAlpha = FMath::Clamp((StackTime - Span.Start) / Span.Length, 0.f, 1.f);
+		const float LayerAlpha = ClampedAlpha >= 1.f ? 1.f : WidgetAnimLoop::GetLayerAlpha(StackTime - Span.Start, Span);
 
 		const bool bInvert = GetEffectiveInvert(Settings, bIsOutAnimation);
 		if (Settings.bMuted || (!bInvert && StackTime < Span.Start))
 		{
+			// Scrubbed back to before it starts: its widget goes back to how it was authored, rather than
+			// keeping the pose the last frame left - which is what left a fade half done after a fast scrub.
+			if (Baselines.bCaptured)
+			{
+				TouchLayerTargets(Settings, Result, Baselines);
+			}
 			continue;
 		}
 		// One pass has no return legs, so the only thing that turns a layer toward its start here is inversion.
@@ -1314,15 +1499,34 @@ float UWidgetAnimLibrary::GetStackPassDuration(const TArray<FWidgetAnimSettings>
 	return FMath::Max(End, KINDA_SMALL_NUMBER);
 }
 
-float UWidgetAnimLibrary::GetTransformKeyStackTime(const FWidgetAnimSettings& Layer, int32 KeyIndex)
+float UWidgetAnimLibrary::GetLayerRunSeconds(const FWidgetAnimSettings& Layer)
 {
-	if (Layer.AnimType != EWidgetAnimType::Transform)
-	{
-		return -1.f;
-	}
+	return WidgetAnimLoop::GetEffectiveLayerDuration(Layer);
+}
 
-	const FRichCurve* Curve = Layer.Transform.GetActiveCurve();
-	if (!Curve || !Curve->GetConstRefOfKeys().IsValidIndex(KeyIndex))
+float UWidgetAnimLibrary::GetKeyStackTime(const FWidgetAnimSettings& Layer, int32 KeyIndex)
+{
+	float KeyTime = -1.f;
+
+	if (Layer.AnimType == EWidgetAnimType::Transform)
+	{
+		const FRichCurve* Curve = Layer.Transform.GetActiveCurve();
+		if (!Curve || !Curve->GetConstRefOfKeys().IsValidIndex(KeyIndex))
+		{
+			return -1.f;
+		}
+		KeyTime = FMath::Max(Curve->GetConstRefOfKeys()[KeyIndex].Time, 0.f);
+	}
+	else if (WidgetAnimTypeSupportsValueKeys(Layer.AnimType))
+	{
+		// Start, keys, end - each at its fraction of the layer's run.
+		if (KeyIndex < 0 || KeyIndex >= Layer.ValueKeys.NumPoints())
+		{
+			return -1.f;
+		}
+		KeyTime = Layer.ValueKeys.GetPointTime(KeyIndex) * WidgetAnimLoop::GetEffectiveLayerDuration(Layer);
+	}
+	else
 	{
 		return -1.f;
 	}
@@ -1330,7 +1534,6 @@ float UWidgetAnimLibrary::GetTransformKeyStackTime(const FWidgetAnimSettings& La
 	// Same placement GetLayerSpan gives the layer - delay and key time both scaled by speed - so the result
 	// is a point on the very clock ApplyWidgetAnimationsAtAlpha and the playing modes run on.
 	const float Speed = FMath::Max(Layer.PlaybackSpeed, 0.01f);
-	const float KeyTime = FMath::Max(Curve->GetConstRefOfKeys()[KeyIndex].Time, 0.f);
 	return (FMath::Max(Layer.Delay, 0.f) + KeyTime) / Speed;
 }
 
@@ -1634,6 +1837,7 @@ FWidgetAnimSettings FWidgetAnimLayer::ToSettings() const
 	Out.Easing = Easing;
 	Out.CustomCurve = CustomCurve;
 	Out.Spring = Spring;
+	Out.ValueKeys = ValueKeys;
 
 	Out.StartOpacity = StartOpacity;
 	Out.EndOpacity = EndOpacity;
@@ -1680,6 +1884,7 @@ FWidgetAnimLayer FWidgetAnimLayer::FromSettings(const FWidgetAnimSettings& Setti
 	Out.Easing = Settings.Easing;
 	Out.CustomCurve = Settings.CustomCurve;
 	Out.Spring = Settings.Spring;
+	Out.ValueKeys = Settings.ValueKeys;
 
 	Out.StartOpacity = Settings.StartOpacity;
 	Out.EndOpacity = Settings.EndOpacity;
@@ -1875,8 +2080,12 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 		// soon as its non-looping layers were done (which, for a stack made only of loops, was on its
 		// very first frame) is what stopped loops from ever advancing: finished tracks are only
 		// re-posed at zero delta.
+		//
+		// Evaluated on its own first, so that a track ending this frame without holding can hand back its
+		// widgets instead of its pose - see below.
+		FWidgetAnimResult TrackResult;
 		bool bAllComplete = false;
-		Track.bSettled = TickAnimationsInto(Track.Settings, Track.States, DeltaTime * Track.Speed, Track.bIsOut, Result, &bAllComplete, &Baselines);
+		Track.bSettled = TickAnimationsInto(Track.Settings, Track.States, DeltaTime * Track.Speed, Track.bIsOut, TrackResult, &bAllComplete, &Baselines);
 
 		if (bAllComplete)
 		{
@@ -1887,6 +2096,75 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 		else
 		{
 			bAnyPlaying = true;
+		}
+
+		if (bAllComplete && !Track.bHoldWhenFinished)
+		{
+			// Done, and not holding: its widgets go back to what the other tracks and their baselines say, this
+			// frame. Its end pose used to be applied on this last frame and then nothing ever wrote the widget
+			// again, so a track that was meant to let go left its end pose behind for good. Touched as the
+			// identity, so they are written even when no other track is moving them. Material parameters have
+			// nothing to go back to and keep the value they ended on.
+			for (const FWidgetAnimTargetedTransform& Touched : TrackResult.TargetedTransforms)
+			{
+				FindOrAddTargetedTransform(Result, Touched.TargetWidget);
+			}
+
+			if (Baselines.bCaptured)
+			{
+				for (const FWidgetAnimShapeTarget& Touched : TrackResult.ShapeTargets)
+				{
+					const bool bAlreadyWritten = Result.ShapeTargets.ContainsByPredicate([&Touched](const FWidgetAnimShapeTarget& Target)
+					{
+						return Target.TargetBox == Touched.TargetBox;
+					});
+
+					const FShapeBoxShape* Authored = Baselines.FindShapeBaseline(Touched.TargetBox);
+					if (!bAlreadyWritten && Authored)
+					{
+						FWidgetAnimShapeTarget& ShapeTarget = FindOrAddShapeTarget(Result, Touched.TargetBox);
+						ShapeTarget.Shape = *Authored;
+						ShapeTarget.bIsBaseline = true;
+					}
+				}
+			}
+			continue;
+		}
+
+		// Folded into the frame's one result the way layers inside one track fold together: opacity and scale
+		// multiply, translation, shear and angle add, and parameters and shapes are simply the last written.
+		for (const FWidgetAnimTargetedTransform& Contribution : TrackResult.TargetedTransforms)
+		{
+			FWidgetAnimTargetedTransform& Combined = FindOrAddTargetedTransform(Result, Contribution.TargetWidget);
+			Combined.Opacity *= Contribution.Opacity;
+			Combined.Scale *= Contribution.Scale;
+			Combined.Translation += Contribution.Translation;
+			Combined.Shear += Contribution.Shear;
+			Combined.Angle += Contribution.Angle;
+		}
+		for (const TPair<FName, FWidgetAnimScalarTarget>& Pair : TrackResult.ScalarParameters)
+		{
+			Result.ScalarParameters.Add(Pair.Key, Pair.Value);
+		}
+		for (const TPair<FName, FWidgetAnimVectorTarget>& Pair : TrackResult.VectorParameters)
+		{
+			Result.VectorParameters.Add(Pair.Key, Pair.Value);
+		}
+		for (const FWidgetAnimShapeTarget& Shape : TrackResult.ShapeTargets)
+		{
+			// Only an authored outline - a layer not started yet - never replaces one another track is animating.
+			FWidgetAnimShapeTarget* Existing = Result.ShapeTargets.FindByPredicate([&Shape](const FWidgetAnimShapeTarget& Target)
+			{
+				return Target.TargetBox == Shape.TargetBox;
+			});
+			if (Shape.bIsBaseline && Existing)
+			{
+				continue;
+			}
+
+			FWidgetAnimShapeTarget& Combined = Existing ? *Existing : FindOrAddShapeTarget(Result, Shape.TargetBox);
+			Combined.Shape = Shape.Shape;
+			Combined.bIsBaseline = Shape.bIsBaseline;
 		}
 	}
 

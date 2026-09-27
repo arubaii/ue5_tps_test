@@ -106,8 +106,8 @@ namespace
 	const FName NativeAnimationsTabIds[] = { TEXT("Animations") };
 
 	/**
-	 * Where the panel goes by hand when the layout has no slot for it: beside the first of these the editor has
-	 * - the native Animations tab under the names it has gone by, then the bottom well's other tabs.
+	 * What Dock in Layout puts the panel beside: the first of these that is open - the native Animations tab under
+	 * the names it has gone by, then the bottom well's other tabs. Never opened for the purpose.
 	 */
 	const FName DockBesideTabIds[] = { TEXT("Animations"), TEXT("WidgetAnimSequencer"), TEXT("CompilerResults") };
 
@@ -265,12 +265,18 @@ namespace
 	}
 
 	/**
-	 * Docks the panel where the native Animations panel's Dock in Layout puts that one: in its tab well, along
-	 * the bottom of the editor.
+	 * Docks the panel in the editor's bottom tab well, where the native Animations panel's Dock in Layout puts that
+	 * one. Already open, it is brought forward.
 	 *
-	 * That is the slot the layout extension gave the panel's tab beside the native Animations tab, so opening
-	 * the tab restores it there - or, once it has been docked and dragged somewhere else, wherever the layout
-	 * last had it. Already open, it is brought forward.
+	 * First choice: beside a tab of that well that is already open - the native Animations tab, or the Compiler
+	 * Results - put straight into its well under a spawner-less document id, which is the only way a tab can be put
+	 * next to another. Nothing is opened to find one: this used to open the native Animations tab and the Compiler
+	 * Results in the hope of docking beside them, and then judged every tab to be outside the editor's window - a
+	 * tab inside an asset editor reports no window of its own - so it closed the panel it had just docked and left
+	 * those two open instead.
+	 *
+	 * Failing that: the tab's own slot, the one the layout extension gave it beside the native Animations tab -
+	 * wherever the layout has it, or floating if the layout has none. Dragged into place once, the layout keeps it.
 	 *
 	 * The drawer is dismissed first, as the native Dock in Layout dismisses its own. It slides up over the very
 	 * place the tab opens, so a tab docked behind an open drawer looks as if nothing happened at all.
@@ -307,59 +313,22 @@ namespace
 			}
 		}
 
-		// Whether a tab ended up in the editor's own window rather than a floating one of its own.
-		const TSharedPtr<SDockTab> OwnerTab = TabManager->GetOwnerTab();
-		const TSharedPtr<SWindow> EditorWindow = OwnerTab.IsValid() ? OwnerTab->GetParentWindow() : nullptr;
-		auto IsInEditorWindow = [&EditorWindow](const TSharedPtr<SDockTab>& Tab)
-		{
-			return Tab.IsValid() && EditorWindow.IsValid() && Tab->GetParentWindow() == EditorWindow;
-		};
-
-		// The slot the layout extension gave it beside the native Animations tab. If the layout has no such slot
-		// - the native tab goes by another name in this engine version - the tab opens floating instead; that is
-		// taken back, and the tab is placed by hand below.
-		const TSharedPtr<SDockTab> Opened = TabManager->TryInvokeTab(FTabId(WidgetAnimationsTabId));
-		if (IsInEditorWindow(Opened))
-		{
-			BringForward(Opened.ToSharedRef());
-			return;
-		}
-		if (Opened.IsValid())
-		{
-			Opened->RequestCloseTab();
-		}
-
-		// By hand: straight into the native Animations tab's well - opened just long enough to be found, if it
-		// isn't open - under a spawner-less document id, which is the only way a tab can be put next to another.
+		// Beside an open tab of the bottom well - only one that is open already, never one opened for the purpose.
 		for (const FName NativeTabId : DockBesideTabIds)
 		{
-			TSharedPtr<SDockTab> NativeTab = TabManager->FindExistingLiveTab(FTabId(NativeTabId));
-			const bool bNativeWasOpen = NativeTab.IsValid();
-			if (!bNativeWasOpen && TabManager->HasTabSpawner(NativeTabId))
+			if (TabManager->FindExistingLiveTab(FTabId(NativeTabId)).IsValid())
 			{
-				NativeTab = TabManager->TryInvokeTab(FTabId(NativeTabId));
+				const TSharedRef<SDockTab> PanelTab = MakeWidgetAnimationsTab(PanelSource);
+				TabManager->InsertNewDocumentTab(WidgetAnimationsDockedTabId, FTabManager::FLiveTabSearch(NativeTabId), PanelTab);
+				BringForward(PanelTab);
+				return;
 			}
-			if (!IsInEditorWindow(NativeTab))
-			{
-				continue;
-			}
-
-			const TSharedRef<SDockTab> PanelTab = MakeWidgetAnimationsTab(PanelSource);
-			TabManager->InsertNewDocumentTab(WidgetAnimationsDockedTabId, FTabManager::FLiveTabSearch(NativeTabId), PanelTab);
-
-			if (!bNativeWasOpen)
-			{
-				NativeTab->RequestCloseTab();
-			}
-			BringForward(PanelTab);
-			return;
 		}
 
-		// Nowhere to dock it: floating it is, and the log says why.
-		UE_LOG(LogTemp, Warning, TEXT("Widget Animations: couldn't find the native Animations tab to dock beside, so the panel opened in its own window. Drag it into place once and the layout keeps it there."));
-		if (const TSharedPtr<SDockTab> Floating = TabManager->TryInvokeTab(FTabId(WidgetAnimationsTabId)))
+		// Its own slot in the layout, wherever that is.
+		if (const TSharedPtr<SDockTab> Opened = TabManager->TryInvokeTab(FTabId(WidgetAnimationsTabId)))
 		{
-			BringForward(Floating.ToSharedRef());
+			BringForward(Opened.ToSharedRef());
 		}
 	}
 

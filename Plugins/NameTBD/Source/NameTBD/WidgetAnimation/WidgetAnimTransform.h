@@ -8,6 +8,7 @@
 #include "Slate/WidgetTransform.h"
 
 #include "NameTBD/Widgets/ShapeBox.h"   // FShapeBoxShape, for the optional Shape on each key
+#include "WidgetAnimEasing.h"           // FWidgetAnimSegmentCurve, for the curve from each key to the next
 
 #include "WidgetAnimTransform.generated.h"
 
@@ -61,6 +62,13 @@ struct NAMETBD_API FWidgetTransformKeyframe
 	FShapeBoxShape Shape;
 
 	/**
+	 * How the widget travels from this key to the next. Track Easing - the default - leaves it to the layer's
+	 * Easing; anything else is this segment's own curve. Ignored on the last key, which has no next.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (ShowOnlyInnerProperties))
+	FWidgetAnimSegmentCurve CurveToNext;
+
+	/**
 	 * Details-panel only; no runtime effect. Mirrors the layer's Animate Shape, because an EditCondition
 	 * can only see properties on its own struct. The Context Menu Button's shape states use the same trick
 	 * (bIsApplicable) for the same reason. Evaluation reads the layer's flag, never this one.
@@ -80,11 +88,10 @@ struct NAMETBD_API FWidgetTransformKeyframe
  * layer runs - which is why Duration and Easing are hidden on a Transform layer. The layer's Delay still
  * applies, and so do loop, ping-pong, invert, mirror and speed on whatever entry plays it.
  *
- * INTERPOLATION is the shape of the curve between two keys. Only the shape matters, not the height: between
- * key A and key B, the widget is as far from A's values toward B's as the curve is from A's Y toward B's Y.
- * So a straight line - the default - is linear. Curve the segment for ease-in or ease-out, push it past
- * B's Y and back for overshoot, set the key to Constant for a hold-then-snap. If two neighbouring keys
- * share a Y the segment has no shape to read and falls back to linear.
+ * INTERPOLATION: each key is reached exactly at its time, and each segment - from a key to the next - is shaped
+ * on its own: by that key's Curve To Next Key, or, left at Track Easing, by the layer's Easing. The way a
+ * keyframe editor sets the interpolation between two keys. With two keys that is the layer's Easing over the
+ * whole run, as it always was.
  *
  * VALUES live in Keys: one entry per curve key, in time order. Add or delete a curve key and Keys grows or
  * shrinks with it - a new entry starts at whatever the animation looked like at that moment, so inserting
@@ -102,8 +109,8 @@ struct NAMETBD_API FWidgetTransformAnim
 	FWidgetTransformAnim();
 
 	/**
-	 * When each key happens: one curve key per Transform key, its X the key's time. Timing only - the motion
-	 * between keys is linear, and the layer's Easing shapes the whole run - so it is not shown anywhere;
+	 * When each key happens: one curve key per Transform key, its X the key's time. Timing only - how the
+	 * motion travels between keys is the layer's Easing and each key's Curve To Next Key - so it is not shown anywhere;
 	 * keys are added, deleted and retimed on the Widget Animations panel's tracks. Its Y values and
 	 * interpolation are ignored. A Curve asset set here by older data still supplies the times.
 	 */
@@ -128,6 +135,19 @@ struct NAMETBD_API FWidgetTransformAnim
 	float GetDuration() const;
 
 	bool IsAnimatingShape() const { return bAnimateShape; }
+
+	/** Whether any key but the last has a Curve To Next Key of its own, rather than the layer's Easing. */
+	bool HasSegmentCurves() const
+	{
+		for (int32 Index = 0; Index + 1 < Keys.Num(); ++Index)
+		{
+			if (!Keys[Index].CurveToNext.IsTrackEasing())
+			{
+				return true;
+			}
+		}
+		return false;
+	}
 
 	/**
 	 * Brings Keys back into step with the curve after an edit: one entry per curve key, times mirrored, the
@@ -202,8 +222,12 @@ public:
 	 * hands in a time that runs backwards. AuthoredShape is what a key's Use Authored Shape resolves to -
 	 * the outline the baseline captured off the Shape Box - and null means none is known, in which case
 	 * those keys fall back to their own Shape.
+	 *
+	 * TrackEase, when given, shapes each segment by its key's Curve To Next Key, a key left at Track Easing
+	 * by TrackEase itself - the layer's Easing - and LocalTime is plain time. Null keeps every segment
+	 * linear.
 	 */
-	static FWidgetTransformAnimResult Evaluate(const FWidgetTransformAnim& Anim, float LocalTime, const FShapeBoxShape* AuthoredShape = nullptr);
+	static FWidgetTransformAnimResult Evaluate(const FWidgetTransformAnim& Anim, float LocalTime, const FShapeBoxShape* AuthoredShape = nullptr, const TFunctionRef<float(float)>* TrackEase = nullptr);
 
 	/**
 	 * Runs SyncKeysToCurve on every FWidgetTransformAnim anywhere inside Object - in layer arrays, in

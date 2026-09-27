@@ -803,18 +803,19 @@ float UWidgetAnimBuilder::GetTransformKeyScrubAlpha(int32 LayerIndex, int32 KeyI
 
 	const FWidgetAnimSettings& Layer = FlattenedIn[LayerIndex];
 
-	float KeySeconds = UWidgetAnimLibrary::GetTransformKeyStackTime(Layer, KeyIndex);
+	float KeySeconds = UWidgetAnimLibrary::GetKeyStackTime(Layer, KeyIndex);
 	if (KeySeconds < 0.f)
 	{
 		return -1.f;
 	}
 
-	// With Invert on, the layer runs its curve backwards, so its key sits mirrored within the layer's span.
+	// With Invert on, the layer runs its keys backwards, so its key sits mirrored within the layer's span - a
+	// span as long as the layer runs, whatever sets that: a Transform curve, a spring, or Duration.
 	if (Layer.bInvertAnimation)
 	{
 		const float Speed = FMath::Max(Layer.PlaybackSpeed, 0.01f);
 		const float LayerStart = FMath::Max(Layer.Delay, 0.f) / Speed;
-		const float LayerLength = Layer.Transform.GetDuration() / Speed;
+		const float LayerLength = UWidgetAnimLibrary::GetLayerRunSeconds(Layer) / Speed;
 		KeySeconds = LayerStart + LayerLength - (KeySeconds - LayerStart);
 	}
 

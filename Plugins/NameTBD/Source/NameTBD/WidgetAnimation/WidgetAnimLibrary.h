@@ -54,6 +54,128 @@ inline bool WidgetAnimTypeSupportsSpring(EWidgetAnimType AnimType)
 	return AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse;
 }
 
+/**
+ * Whether tracks of this type take keys between their start and their end: the same types that travel from a
+ * start value to an end value. Transform has keys of its own (see FWidgetTransformAnim), and Pulse has no values
+ * to key. See FWidgetAnimValueKeys.
+ */
+inline bool WidgetAnimTypeSupportsValueKeys(EWidgetAnimType AnimType)
+{
+	return AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse;
+}
+
+/**
+ * One key between a track's start and its end: a value the track passes through on the way.
+ *
+ * The track's own start and end values are its first and last keys, so a Fade from 0 to 1 with one key of 0.3 at
+ * 0.5 rises to 0.3 by the middle and on to 1 at the end - or, keyed 2 in the middle of a Scale from 1 to 1, zooms
+ * in and back out again.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimValueKey
+{
+	GENERATED_BODY()
+
+	/**
+	 * Where along the track the key sits: 0 its start, 1 its end. A fraction rather than seconds, so the keys
+	 * keep their places when the track is lengthened or shortened. Set by dragging the key on its track.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Key", meta = (DisplayName = "Position"))
+	float Time = 0.5f;
+
+	/**
+	 * The value at this key, in the track's own terms: an opacity on a Fade, a scale on a Scale, how far along
+	 * the slide on a Slide (its Distance at the start, 0 at the end), an angle on a Rotate, the parameter's value
+	 * on a Material Scalar.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key")
+	float Value = 0.f;
+
+	/** The value at this key on a Material Vector track. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key")
+	FLinearColor Color = FLinearColor::White;
+
+	/** How the track travels from this key to the next one. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (ShowOnlyInnerProperties))
+	FWidgetAnimSegmentCurve CurveToNext;
+};
+
+/**
+ * The keys a track passes through between its start and its end, and how it travels between them.
+ *
+ * Points are counted the way the Widget Animations panel draws them: point 0 is the track's start value, the last
+ * point its end value, and every key in Keys one in between. Segment N runs from point N to point N + 1 - so there
+ * is always one more segment than there are keys.
+ *
+ * Each key is reached exactly when the timeline shows it, and each segment is shaped on its own: by its own curve,
+ * or - left at Track Easing, the default - by the track's Easing, across that one segment. No keys at all is
+ * exactly the track as it always was. A Spring track springs across the whole run however its segments are set,
+ * its keys being points along the way it travels; a Tween Scale or Slide's Overshoot applies only while it has no
+ * keys.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimValueKeys
+{
+	GENERATED_BODY()
+
+	/** How the track travels from its start value to its first key - to its end value, when it has no keys. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Keys", meta = (ShowOnlyInnerProperties))
+	FWidgetAnimSegmentCurve StartCurve;
+
+	/** The keys between the start and the end, in order along the track. Added, deleted and moved on the track. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, EditFixedSize, Category = "Keys")
+	TArray<FWidgetAnimValueKey> Keys;
+
+	/** Start, every key, end. */
+	int32 NumPoints() const { return Keys.Num() + 2; }
+
+	/** Where point Point sits along the track, 0 to 1. */
+	float GetPointTime(int32 Point) const
+	{
+		if (Point <= 0)
+		{
+			return 0.f;
+		}
+		return Point <= Keys.Num() ? FMath::Clamp(Keys[Point - 1].Time, 0.f, 1.f) : 1.f;
+	}
+
+	/** The curve from point Segment to the next. */
+	const FWidgetAnimSegmentCurve& GetSegmentCurve(int32 Segment) const
+	{
+		return (Segment <= 0 || Keys.Num() == 0) ? StartCurve : Keys[FMath::Min(Segment, Keys.Num()) - 1].CurveToNext;
+	}
+
+	FWidgetAnimSegmentCurve& GetSegmentCurve(int32 Segment)
+	{
+		return (Segment <= 0 || Keys.Num() == 0) ? StartCurve : Keys[FMath::Min(Segment, Keys.Num()) - 1].CurveToNext;
+	}
+
+	/**
+	 * Whether any segment has a curve of its own rather than the track's Easing - what the Widget Animations panel
+	 * names on the track, segment by segment. Never with no keys: a track that only goes from its start to its end
+	 * moves by its Easing, and a curve left behind on its one segment by keys since deleted is not used.
+	 */
+	bool HasSegmentCurves() const
+	{
+		if (Keys.Num() == 0)
+		{
+			return false;
+		}
+		if (!StartCurve.IsTrackEasing())
+		{
+			return true;
+		}
+		for (const FWidgetAnimValueKey& Key : Keys)
+		{
+			if (!Key.CurveToNext.IsTrackEasing())
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+};
+
 UENUM(BlueprintType)
 enum class EWidgetSlideDirection : uint8
 {
@@ -92,6 +214,10 @@ struct NAMETBD_API FWidgetAnimSettings
 	/** The spring a Spring layer travels by. See FWidgetSpringParams. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Spring && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides, ShowOnlyInnerProperties))
 	FWidgetSpringParams Spring;
+
+	/** Keys between the start and end values, and the curves between them. See FWidgetAnimValueKeys. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
+	FWidgetAnimValueKeys ValueKeys;
 
 	/**
 	 * Repeats the animation. Layers that share a Loop Group loop together as one animation - the stagger
@@ -169,7 +295,11 @@ struct NAMETBD_API FWidgetAnimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale", EditConditionHides))
 	float EndScale = 1.f;
 
-	/** How far past its end a Tween Scale pops before settling back. A Spring Scale gets its overshoot from the spring. */
+	/**
+	 * How far past its end a Tween Scale pops before settling back. Replaces the Easing while set, and - like any
+	 * pop - reaches the end value early on the way past it. Only while the track has no keys between its start and
+	 * end; a Spring Scale gets its overshoot from the spring.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale && Timing == EWidgetAnimTiming::Tween", EditConditionHides, ClampMin = "0.0"))
 	float Overshoot = 0.4f;
 
@@ -183,7 +313,10 @@ struct NAMETBD_API FWidgetAnimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slide", meta = (EditCondition = "AnimType == EWidgetAnimType::Slide", EditConditionHides, ClampMin = "0.0"))
 	float SlideDistance = 100.f;
 
-	/** How far past its end a Tween Slide travels before settling back. A Spring Slide gets its overshoot from the spring. */
+	/**
+	 * How far past its end a Tween Slide travels before settling back. Replaces the Easing while set. Only while the
+	 * track has no keys between its start and end; a Spring Slide gets its overshoot from the spring.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slide", meta = (EditCondition = "AnimType == EWidgetAnimType::Slide && Timing == EWidgetAnimTiming::Tween", EditConditionHides, ClampMin = "0.0"))
 	float SlideOvershoot = 0.f;
 
@@ -316,9 +449,9 @@ struct NAMETBD_API FWidgetAnimLayer
 	float Delay = 0.f;
 
 	/**
-	 * How the track moves between its start and end values: the curve it follows over its Duration. On a
-	 * Transform track it bends time across the whole run of keys. Hidden on a Spring track, whose spring is its
-	 * motion.
+	 * How the track moves between its start and end values: the curve it follows over its Duration. With keys
+	 * between them - or on a Transform track - it is how each segment left at Track Easing moves from its key to
+	 * the next. Hidden on a Spring track, whose spring is its motion.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Tween || AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	EWidgetAnimEasing Easing = EWidgetAnimEasing::EaseOut;
@@ -332,6 +465,14 @@ struct NAMETBD_API FWidgetAnimLayer
 	// FromSettings in one line - and a whole spring can be copied between tracks as one value.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Spring && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides, ShowOnlyInnerProperties))
 	FWidgetSpringParams Spring;
+
+	// Keys
+	//
+	// The values the track passes through between its start and its end, and the curve of each stretch between
+	// two of them. Added, moved and deleted on the track in the Widget Animations panel, and edited there by
+	// selecting a key - so the Selection panel never shows them as a list. See FWidgetAnimValueKeys.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Keys", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
+	FWidgetAnimValueKeys ValueKeys;
 
 	// Fade
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fade", meta = (EditCondition = "AnimType == EWidgetAnimType::Fade", EditConditionHides))
@@ -347,7 +488,11 @@ struct NAMETBD_API FWidgetAnimLayer
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale", EditConditionHides))
 	float EndScale = 1.f;
 
-	/** How far past its end a Tween Scale pops before settling back. A Spring Scale gets its overshoot from the spring. */
+	/**
+	 * How far past its end a Tween Scale pops before settling back. Replaces the Easing while set, and - like any
+	 * pop - reaches the end value early on the way past it. Only while the track has no keys between its start and
+	 * end; a Spring Scale gets its overshoot from the spring.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale && Timing == EWidgetAnimTiming::Tween", EditConditionHides, ClampMin = "0.0"))
 	float Overshoot = 0.4f;
 
@@ -358,7 +503,10 @@ struct NAMETBD_API FWidgetAnimLayer
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slide", meta = (EditCondition = "AnimType == EWidgetAnimType::Slide", EditConditionHides, ClampMin = "0.0"))
 	float SlideDistance = 100.f;
 
-	/** How far past its end a Tween Slide travels before settling back. A Spring Slide gets its overshoot from the spring. */
+	/**
+	 * How far past its end a Tween Slide travels before settling back. Replaces the Easing while set. Only while the
+	 * track has no keys between its start and end; a Spring Slide gets its overshoot from the spring.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Slide", meta = (EditCondition = "AnimType == EWidgetAnimType::Slide && Timing == EWidgetAnimTiming::Tween", EditConditionHides, ClampMin = "0.0"))
 	float SlideOvershoot = 0.f;
 
@@ -449,11 +597,82 @@ struct NAMETBD_API FWidgetAnimLayer
 	 */
 	UPROPERTY()
 	bool bHiddenInEditor = false;
+
+	/**
+	 * The Widget Animation asset this track was brought in from with Insert Existing Widget Animation, by name -
+	 * shown beside it in the Widget Animations panel's list. Empty for a track made here. Authoring state only.
+	 */
+	UPROPERTY()
+	FString InsertedFrom;
 #endif
 
 	/** The reverse, for migrating data authored before animations were split into layers and entries. */
 	static FWidgetAnimLayer FromSettings(const FWidgetAnimSettings& Settings);
 };
+
+/**
+ * The values at a keyed track's points - see FWidgetAnimValueKeys - read the same way off a layer or off the
+ * settings built from it, which share their field names. Point 0 is the track's start value, the last point its
+ * end value; a Slide's are its Distance and 0, how far along the slide it is.
+ */
+namespace WidgetAnimKeyPoints
+{
+	template <typename TTrack>
+	float GetValue(const TTrack& Track, int32 Point)
+	{
+		const int32 NumKeys = Track.ValueKeys.Keys.Num();
+		if (Point > 0 && Point <= NumKeys)
+		{
+			return Track.ValueKeys.Keys[Point - 1].Value;
+		}
+
+		const bool bStart = Point <= 0;
+		switch (Track.AnimType)
+		{
+		case EWidgetAnimType::Fade:           return bStart ? Track.StartOpacity : Track.EndOpacity;
+		case EWidgetAnimType::Scale:          return bStart ? Track.StartScale : Track.EndScale;
+		case EWidgetAnimType::Slide:          return bStart ? Track.SlideDistance : 0.f;
+		case EWidgetAnimType::Rotate:         return bStart ? Track.StartAngle : Track.EndAngle;
+		case EWidgetAnimType::MaterialScalar: return bStart ? Track.StartScalarValue : Track.EndScalarValue;
+		default:                              return 0.f;
+		}
+	}
+
+	template <typename TTrack>
+	FLinearColor GetColor(const TTrack& Track, int32 Point)
+	{
+		const int32 NumKeys = Track.ValueKeys.Keys.Num();
+		if (Point > 0 && Point <= NumKeys)
+		{
+			return Track.ValueKeys.Keys[Point - 1].Color;
+		}
+		return Point <= 0 ? Track.StartVectorValue : Track.EndVectorValue;
+	}
+
+	/** The lowest value any point of the track has - what decides whether a value can sensibly go below zero. */
+	template <typename TTrack>
+	float GetMinValue(const TTrack& Track)
+	{
+		float Min = GetValue(Track, 0);
+		for (int32 Point = 1; Point < Track.ValueKeys.NumPoints(); ++Point)
+		{
+			Min = FMath::Min(Min, GetValue(Track, Point));
+		}
+		return Min;
+	}
+
+	/** The highest value any point of the track has. */
+	template <typename TTrack>
+	float GetMaxValue(const TTrack& Track)
+	{
+		float Max = GetValue(Track, 0);
+		for (int32 Point = 1; Point < Track.ValueKeys.NumPoints(); ++Point)
+		{
+			Max = FMath::Max(Max, GetValue(Track, Point));
+		}
+		return Max;
+	}
+}
 
 /**
  * One widget an animation moves: a name and where it points. The layers themselves stay in the animation's
@@ -575,6 +794,13 @@ struct NAMETBD_API FWidgetAnimShapeTarget
 
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	FShapeBoxShape Shape;
+
+	/**
+	 * Only the box's authored outline, put in for a layer that isn't moving it this frame - see
+	 * UWidgetAnimLibrary::TouchLayerTargets. Any outline a layer is actually animating wins over it, whichever
+	 * order the two were written in. Not reflected: it only lives for the frame it is worked out in.
+	 */
+	bool bIsBaseline = false;
 };
 
 USTRUCT(BlueprintType)
@@ -1011,11 +1237,22 @@ public:
 	static float GetStackPassDuration(const TArray<FWidgetAnimSettings>& Settings);
 
 	/**
-	 * Seconds into its stack that key KeyIndex of a Transform layer lands: the layer's delay plus the key's
-	 * time, both scaled by the layer's playback speed. -1 if Layer is not a Transform layer or has no such
-	 * key. Read off the curve rather than off Keys, so it is right even before Keys has synced.
+	 * Seconds into its stack that key KeyIndex of a layer lands: the layer's delay plus the key's time, both
+	 * scaled by the layer's playback speed. -1 if the layer has no such key.
+	 *
+	 * A Transform layer's keys are read off its curve rather than off Keys, so it is right even before Keys has
+	 * synced. Any other keyed layer counts its start as key 0, its keys in between, and its end as the last.
 	 */
-	static float GetTransformKeyStackTime(const FWidgetAnimSettings& Layer, int32 KeyIndex);
+	static float GetKeyStackTime(const FWidgetAnimSettings& Layer, int32 KeyIndex);
+
+	/** GetKeyStackTime, from when only Transform layers had keys. */
+	static float GetTransformKeyStackTime(const FWidgetAnimSettings& Layer, int32 KeyIndex) { return GetKeyStackTime(Layer, KeyIndex); }
+
+	/**
+	 * Seconds one play of a layer takes, before its playback speed: its curve's length on a Transform layer, its
+	 * spring's settle time on a Spring layer, Duration otherwise.
+	 */
+	static float GetLayerRunSeconds(const FWidgetAnimSettings& Layer);
 
 	UFUNCTION(BlueprintCallable, Category = "Widget Animation")
 	static void PlayWidgetAnimations(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Animations, UPARAM(ref) TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation = false);
@@ -1084,8 +1321,9 @@ public:
 	/**
 	 * Freezes a stack at one point in one pass of its timeline and applies it. Alpha is a fraction of
 	 * GetStackPassDuration, so 0.5 is halfway through the pass in time - and each layer is posed where it
-	 * really is at that moment, its Delay included: a layer that has not started yet holds its start pose,
-	 * one that has finished holds its end pose. Looping and ping-pong are ignored; this is one pass.
+	 * really is at that moment, its Delay included: a layer that has not started yet leaves its widget as it
+	 * was authored (at its captured baseline, when there is one - see TouchLayerTargets), one that has finished
+	 * holds its end pose, exactly. Looping and ping-pong are ignored; this is one pass.
 	 *
 	 * Drives Hold Start Pose / Hold End Pose / Scrub, and it is the only way to see a single frame of an
 	 * animation without running a clock.
@@ -1227,6 +1465,20 @@ public:
 	 */
 	static float EvaluateEasedAlpha(const FWidgetAnimSettings& Settings, float LinearAlpha);
 
+	/**
+	 * How far along its travel a layer is at Alpha (0-1): the layer's Easing - or, on a Tween Scale or Slide with
+	 * an overshoot, that overshoot - or, on a Spring layer, its spring, heading the way bTowardStart says. What a
+	 * segment left at Track Easing moves by, too. Public so editor tools can sketch a segment's curve.
+	 */
+	static float EvaluateTrackEase(const FWidgetAnimSettings& Settings, float Alpha, bool bTowardStart = false);
+
+	/**
+	 * Where a keyed layer is at DirectedAlpha: which segment - from point OutSegment to the next - and how far
+	 * across it, OutAlpha, which may run past 0 or 1 while the layer overshoots. Exactly the first point at 0 and
+	 * the last at 1, whatever the easing or the spring makes of either end. See FWidgetAnimValueKeys.
+	 */
+	static void SampleValueKeys(const FWidgetAnimSettings& Settings, float DirectedAlpha, bool bTowardStart, int32& OutSegment, float& OutAlpha);
+
 private:
 
 	static float EaseOutBack(float Alpha, float Overshoot);
@@ -1273,6 +1525,14 @@ private:
 	 * a loop has been ended explicitly.
 	 */
 	static bool TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult, bool* bOutAllComplete = nullptr, const FWidgetAnimBaselineSet* Baselines = nullptr);
+
+	/**
+	 * Puts a layer that contributes nothing this frame - not started yet, or hidden - into the result anyway, as
+	 * the identity: its widget is then written at its captured baseline rather than left at whatever it was last
+	 * posed at. Without that, a scrub from the middle of a fade back to before it starts left the widget
+	 * half-faded, because nothing wrote it at all. Only when a baseline was captured; see ApplyResultInternal.
+	 */
+	static void TouchLayerTargets(const FWidgetAnimSettings& Settings, FWidgetAnimResult& OutResult, const FWidgetAnimBaselineSet& Baselines);
 
 	/** True while any layer in the stack is still moving - an endless loop always is. */
 	static bool HasRunningLayers(const TArray<FWidgetAnimSettings>& Animations, const TArray<FWidgetAnimState>& States);

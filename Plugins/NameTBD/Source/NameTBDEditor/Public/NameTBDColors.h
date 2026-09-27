@@ -134,6 +134,19 @@ namespace NameTBD
 			inline const FLinearColor KeySummary(0.80f, 0.80f, 0.80f);
 			inline const FLinearColor KeySummaryOutline(0.00f, 0.00f, 0.00f, 0.85f);
 
+			/**
+			 * A track some of whose segments - the stretches between two keys - have curves of their own names each
+			 * segment's curve in small text in the middle of its stretch, instead of one easing on the right. A
+			 * segment with its own curve is named at SegmentLabelOwnCurveOpacity, one left at the track's Easing at
+			 * SegmentLabelTrackEasingOpacity, so what was changed stands out.
+			 */
+			inline constexpr float SegmentLabelOwnCurveOpacity = 0.95f;
+			inline constexpr float SegmentLabelTrackEasingOpacity = 0.45f;
+
+			/** The selection box dragged out over empty space in the Track Editor: a faint fill, and a thin outline. */
+			inline const FLinearColor MarqueeFill = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.08f);
+			inline const FLinearColor MarqueeOutline = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.70f);
+
 			// -------------------------------------------------------------------------------------------------
 			// Timeline
 			// -------------------------------------------------------------------------------------------------
@@ -167,6 +180,12 @@ namespace NameTBD
 
 			/** The thin bar down the left of a track picked in the list. */
 			inline const FLinearColor ListSelectedAccent(AnimationOrange_Normal);
+
+			/** The name of the control a pinned tooltip is for - "Ping Pong" - bold, above what it does. */
+			inline const FLinearColor TooltipControlName(AnimationOrange_Normal);
+
+			/** A warning line at the bottom of a track's tooltip - what the track needs to work - bold, italic, in this. */
+			inline const FLinearColor TooltipWarning(AnimationOrange_Normal);
 
 			/** The Value Watcher's reading while a track is changing the value it watches. */
 			inline const FLinearColor WatcherChanging(0.98f, 0.30f, 0.24f);

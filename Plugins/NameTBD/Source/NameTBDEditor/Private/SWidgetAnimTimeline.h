@@ -31,8 +31,10 @@ struct FPropertyChangedChainEvent;
  * Middle, the Track Editor: a time ruler, and under it each group's line - its name and the span it moves -
  * followed by its tracks, on lines of their own or sharing a line one after another. Tracks are dragged along
  * the timeline, up and down between their group's lines, resized from either edge and snapped to their
- * neighbours; a Transform layer's keys are selected, dragged, added and deleted there. Layers are selected one
- * at a time, or several with Shift (a range) and Ctrl / Cmd (one more), and several move and resize together.
+ * neighbours; every track's keys are selected, dragged, added and deleted there, and the stretch between two
+ * keys can be given a curve of its own. Layers are selected one at a time, or several with Shift (a range) and
+ * Ctrl / Cmd (one more), and several move and resize together; keys likewise. A box dragged out over empty space
+ * selects the tracks it takes in - or, when it holds no whole track, the keys inside it.
  * Hovering a track or a key shows what it does. Right-drag pans, in time and down the lines.
  *
  * Right, the Selection: only what is selected - a key's pose, a layer's settings, what several layers share, a
@@ -113,6 +115,19 @@ public:
 		bool operator!=(const FSelection& Other) const { return !(*this == Other); }
 	};
 
+	/**
+	 * One key of one track. Keys are counted along the track: a Transform track's are its curve's, and any other
+	 * keyed track's start value is key 0, its keys in between follow, and its end value is the last.
+	 */
+	struct FKeyRef
+	{
+		int32 Layer = INDEX_NONE;
+		int32 Key = INDEX_NONE;
+
+		bool operator==(const FKeyRef& Other) const { return Layer == Other.Layer && Key == Other.Key; }
+		bool operator!=(const FKeyRef& Other) const { return !(*this == Other); }
+	};
+
 	/** What a drag on a track's section does to it. */
 	enum class ELayerDrag : uint8
 	{
@@ -176,8 +191,17 @@ public:
 	/** Whether a layer can be edited at all: the animation can be, and the track isn't locked. */
 	bool CanEditLayer(int32 LayerIndex) const;
 
-	/** Whether a layer's keys can be added, deleted and dragged here: an editable Transform layer on an inline curve. */
+	/**
+	 * Whether a layer's keys can be added, deleted and dragged here: an editable layer of a type that has keys -
+	 * a Transform layer on an inline curve, or any layer that travels from a start value to an end value.
+	 */
 	bool CanEditKeys(int32 LayerIndex) const;
+
+	/** Whether one key can be dragged along its track. A keyed track's first and last keys are its start and end, which stay put. */
+	bool CanMoveKey(int32 LayerIndex, int32 KeyIndex) const;
+
+	/** Whether one key can be deleted. Never a keyed track's start or end, and never below the two a Transform track needs. */
+	bool CanDeleteKey(int32 LayerIndex, int32 KeyIndex) const;
 
 	/** Whether a layer's section can be dragged along the timeline, and up and down its group's lines. */
 	bool CanMoveLayer(int32 LayerIndex) const { return CanEditLayer(LayerIndex); }
@@ -201,8 +225,24 @@ public:
 	/** Seconds one pass of the animation takes, as authored: where the longest group ends. */
 	float GetPassSeconds() const;
 
-	/** Key times of a Transform layer, in seconds from the layer's own start. Empty for any other type. */
+	/**
+	 * Key times of a layer, in seconds from the layer's own start: a Transform layer's curve keys, or any other
+	 * keyed layer's start, keys and end - once it has a key between its start and end; before that, none. Empty
+	 * for a type with no keys (Pulse).
+	 */
 	void GetKeyTimes(int32 LayerIndex, TArray<float>& OutTimes) const;
+
+	/**
+	 * The curve of segment Segment of a layer - from key Segment to the next - or null when there is no such
+	 * segment. See FWidgetAnimValueKeys and FWidgetTransformKeyframe::CurveToNext.
+	 */
+	const FWidgetAnimSegmentCurve* GetSegmentCurve(int32 LayerIndex, int32 Segment) const;
+
+	/** Whether any segment of a layer has a curve of its own - which is when its section sketches each segment's curve. */
+	bool HasSegmentCurves(int32 LayerIndex) const;
+
+	/** Whether a layer's segment curves are used at all - not on a Spring track, which springs across its whole run. */
+	bool UsesSegmentCurves(int32 LayerIndex) const;
 
 	/** Where the designer's preview is, in authored seconds. */
 	float GetPlayheadSeconds() const;
@@ -270,7 +310,8 @@ public:
 	const TArray<int32>& GetSelectedLayers() const { return SelectedLayers; }
 
 	bool IsLayerSelected(int32 LayerIndex) const { return SelectedLayers.Contains(LayerIndex); }
-	bool IsMultiSelection() const { return SelectedLayers.Num() > 1; }
+	/** Several layers selected as layers - not several tracks' keys, which select their layers only to light them. */
+	bool IsMultiSelection() const { return SelectedLayers.Num() > 1 && SelectedKeys.Num() == 0; }
 
 	void SelectGroup(int32 GroupIndex);
 	void SelectLayer(int32 LayerIndex);
@@ -288,6 +329,37 @@ public:
 	/** Selects a key and takes the designer's preview to it, frozen there. */
 	void SelectKey(int32 LayerIndex, int32 KeyIndex);
 
+	/**
+	 * A click on a key with a modifier: Ctrl (Cmd on a Mac) adds it to the selected keys, or takes it out if it was
+	 * in; Shift adds it. Keys of any tracks can be selected together, and moved together.
+	 */
+	void SelectKeyWithModifiers(int32 LayerIndex, int32 KeyIndex, bool bToggle);
+
+	/**
+	 * What a selection box took in: keys, or tracks - one or the other, never both. bAdd keeps what was selected
+	 * (Shift); bToggle flips each one in or out (Ctrl / Cmd).
+	 */
+	void SelectInBox(const TArray<FKeyRef>& Keys, const TArray<int32>& Layers, bool bAdd, bool bToggle);
+
+	/** Every selected key, the one clicked last among them. Empty unless keys are what is selected. */
+	const TArray<FKeyRef>& GetSelectedKeys() const { return SelectedKeys; }
+
+	bool IsKeySelected(int32 LayerIndex, int32 KeyIndex) const { return SelectedKeys.Contains(FKeyRef{ LayerIndex, KeyIndex }); }
+
+	/** Several keys selected - the Selection panel then offers the curve between them. */
+	bool IsKeyMultiSelection() const { return SelectedKeys.Num() > 1; }
+
+	/**
+	 * The segments between selected keys: every segment - named by its layer and its first key - whose keys at
+	 * both ends are selected, on a track that can be edited. What the curve between selected keys is set on.
+	 */
+	void GetSelectedSegments(TArray<FKeyRef>& OutSegments) const;
+
+	/** Sets the curve of every one of Segments, as one undoable step. Segment curves named by their first key. */
+	void SetSegmentCurves(const TArray<FKeyRef>& Segments, const FWidgetAnimSegmentCurve& Curve);
+
+	/** A segment curve's name as shown: its easing, or its Curve asset's name. */
+	static FText GetSegmentCurveName(const FWidgetAnimSegmentCurve& Curve);
 	void ClearSelection();
 
 	// ---------------------------------------------------------------------------------------------
@@ -333,16 +405,24 @@ public:
 	 */
 	void InsertAnimation(const class UWidgetAnimPresetAsset* Animation, int32 GroupIndex);
 
-	/** Adds a key at LocalSeconds on a Transform layer's curve. The new key starts at the pose already there. */
+	/**
+	 * Adds a key at LocalSeconds on a layer. On a Transform layer the new key starts at the pose already there; on
+	 * any other keyed layer at the value on the way between its neighbours, and with the curve of the segment it
+	 * splits - so adding a key changes nothing until it is edited.
+	 */
 	void AddKey(int32 LayerIndex, float LocalSeconds);
 
-	/** Deletes a key. A Transform layer always keeps at least two. */
+	/** Deletes a key. A Transform layer always keeps at least two; any other layer keeps its start and end. */
 	void DeleteKey(int32 LayerIndex, int32 KeyIndex);
+
+	/** Deletes every selected key that can be, as one undoable step. */
+	void DeleteSelectedKeys();
 
 	/**
 	 * A key drag: one transaction from press to release, the preview following every move in between. With
 	 * Track Snapping on, the key snaps to other tracks' edges, their keys and the playhead within
-	 * SnapThresholdSeconds.
+	 * SnapThresholdSeconds. Pressed on one of several selected keys, every one of them that can move goes with
+	 * it, by the same amount - none past a neighbour that isn't moving.
 	 */
 	void BeginKeyDrag(int32 LayerIndex, int32 KeyIndex);
 	void UpdateKeyDrag(float LocalSeconds, float SnapThresholdSeconds);
@@ -404,7 +484,7 @@ public:
 	 */
 	static FLinearColor GetGroupColor(int32 GroupIndex);
 
-	/** A layer's easing as shown on its section: the curve's name, or a Curve asset's own name. */
+	/** A layer's easing as shown on its section: the curve's name, a Curve asset's own name, or Spring. */
 	static FText GetEasingName(const FWidgetAnimLayer& Layer);
 
 	// FEditorUndoClient
@@ -511,14 +591,17 @@ private:
 	/** The Value Watcher, under the Selection panel. */
 	TSharedRef<SWidget> MakeValueWatcher();
 
-	/** The watched widget on the designer's preview, or null. */
-	class UWidget* GetWatchedWidget() const;
+	/** The Selection panel while several keys are selected: the curve between them, and what they are. */
+	TSharedRef<SWidget> MakeKeyCurvePanel();
 
-	/** The watched value, read off the preview widget. False when there is nothing to read. */
-	bool ReadWatchedValue(float& OutValue) const;
+	/** The curve choices - every easing, and a Curve asset - as a menu that sets them on Segments. */
+	void AddSegmentCurveEntries(class FMenuBuilder& Menu, const TArray<FKeyRef>& Segments);
 
-	/** Whether a track of the watched widget that moves the watched value is running at the playhead. */
-	bool IsWatchedValueChanging() const;
+	/** Moves one key to LocalSeconds - played seconds from its layer's start - however that layer stores its keys. */
+	void SetKeyTime(int32 LayerIndex, int32 KeyIndex, float LocalSeconds);
+
+	/** Drops selected keys that no longer exist, and keeps the selected layers to the keys' layers. */
+	void ValidateSelectedKeys();
 
 	TSharedRef<SWidget> MakeHeader();
 	TSharedRef<SWidget> MakeTransport();
@@ -572,6 +655,19 @@ private:
 	int32 DragKey = INDEX_NONE;
 	TUniquePtr<FScopedTransaction> KeyDragTransaction;
 
+	/**
+	 * Every key a key drag carries - the pressed one first - and where each was at the press, in played seconds
+	 * from its layer's start. Moved by one amount from those, so a drag back and forth never drifts.
+	 */
+	TArray<FKeyRef> DragKeys;
+	TArray<float> DragKeyOriginalTimes;
+
+	/** Where the pressed key was at the press - what the mouse is measured against, whether or not it moves itself. */
+	float DragPressedOriginalTime = 0.f;
+
+	/** Every selected key - keys of any tracks - in the order they were picked, the primary one last. */
+	TArray<FKeyRef> SelectedKeys;
+
 	/** A track drag in progress: what moves, how, and every layer as it was when it started. */
 	struct FLayerDragState
 	{
@@ -616,25 +712,62 @@ private:
 
 public:
 
-	/** What the Value Watcher can watch on a widget. */
+	/**
+	 * What the Value Watcher can watch on a widget. The two-part values - Translation, Scale, Shear - are read
+	 * whole, X and Y together, as the Details panel shows a Render Transform.
+	 */
 	enum class EWatchedValue : uint8
 	{
 		Opacity,
-		TranslationX,
-		TranslationY,
-		ScaleX,
-		ScaleY,
-		ShearX,
-		ShearY,
-		Angle
+		Translation,
+		Scale,
+		Shear,
+		Rotation
 	};
 
 	static FText GetWatchedValueName(EWatchedValue Value);
 
 private:
 
-	/** The Value Watcher's widget - a path into the preview, None for the widget itself - and what it reads. */
-	FName WatchedTarget;
-	bool bWatching = false;
-	EWatchedValue WatchedValue = EWatchedValue::Opacity;
+	/** One row of the Value Watcher: a widget - a path into the preview, None for the widget itself - and what of it is read. */
+	struct FWatch
+	{
+		FName Target;
+		EWatchedValue Value = EWatchedValue::Opacity;
+
+		/** Whether its widget has been picked yet. A row that hasn't reads nothing. */
+		bool bPicked = false;
+	};
+
+	/** The widget a row watches, on the designer's preview, or null. */
+	class UWidget* GetWatchedWidget(FName Target) const;
+
+	/** A row's value, read off the preview widget - X and Y, or the one number in X. False when there is nothing to read. */
+	bool ReadWatchedValue(const FWatch& Watch, FVector2D& OutValue) const;
+
+	/** A row's value as it reads: "0.500", "(12.0, -4.0)", "35.0 deg" - uniform pairs as one number. */
+	FText FormatWatchedValue(const FWatch& Watch) const;
+
+	/** Whether a track of the row's widget that moves its value is running at the playhead. */
+	bool IsWatchChanging(const FWatch& Watch) const;
+
+	/** Rebuilds the Value Watcher's rows after one is added or removed. Each row reads live; only the count needs this. */
+	void RebuildWatchRows();
+
+	/** Every row of the Value Watcher, top to bottom. Starts with one, watching nothing yet. */
+	TArray<FWatch> Watches;
+
+	/** Where the rows go, and whether the Value Watcher is open - remembered across sessions, as the row height is. */
+	TSharedPtr<SVerticalBox> WatchRows;
+	bool bWatcherExpanded = true;
+
+	/**
+	 * Where the layer or group a menu was opened for is jumped to: the playhead to its start, and the Track Editor
+	 * scrolled until it is in view.
+	 */
+	void JumpToLayer(int32 LayerIndex);
+	void JumpToGroup(int32 GroupIndex);
+
+	/** The line a context menu opens with, naming what it acts on - a track and its group, or Multiple Tracks. */
+	static void AddMenuHeading(class FMenuBuilder& Menu, const FText& Heading, const FLinearColor& Accent);
 };

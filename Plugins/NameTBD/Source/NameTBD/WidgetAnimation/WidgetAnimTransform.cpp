@@ -67,6 +67,9 @@ namespace
 
 			FWidgetTransformKeyframe Blended = (Alpha < 0.5f) ? A : B;
 			Blended.Time = Time;
+
+			// A key dropped into a segment splits it, and both halves keep moving the way the whole did.
+			Blended.CurveToNext = A.CurveToNext;
 			Blended.Transform = LerpWidgetTransform(A.Transform, B.Transform, Alpha);
 			Blended.Shape = FShapeBoxShape::Lerp(A.Shape, B.Shape, Alpha);
 			return Blended;
@@ -195,7 +198,7 @@ bool FWidgetTransformAnim::SyncKeysToCurve(bool* bOutResized)
 // UWidgetAnimTransformLibrary
 // =====================================================================================================
 
-FWidgetTransformAnimResult UWidgetAnimTransformLibrary::Evaluate(const FWidgetTransformAnim& Anim, float LocalTime, const FShapeBoxShape* AuthoredShape)
+FWidgetTransformAnimResult UWidgetAnimTransformLibrary::Evaluate(const FWidgetTransformAnim& Anim, float LocalTime, const FShapeBoxShape* AuthoredShape, const TFunctionRef<float(float)>* TrackEase)
 {
 	FWidgetTransformAnimResult Result;
 
@@ -233,13 +236,21 @@ FWidgetTransformAnimResult UWidgetAnimTransformLibrary::Evaluate(const FWidgetTr
 			++Segment;
 		}
 
-		// Linear in time between the two keys. The shaping is the layer's Easing, already applied to LocalTime.
+		// Linear in time between the two keys, when the layer's Easing was already applied to LocalTime. Given a
+		// TrackEase instead, LocalTime is plain time and each segment is shaped here, by its own curve.
 		const float SegmentStart = CurveKeys[Segment].Time;
 		const float SegmentLength = FMath::Max(CurveKeys[Segment + 1].Time - SegmentStart, KINDA_SMALL_NUMBER);
-		const float Alpha = FMath::Clamp((LocalTime - SegmentStart) / SegmentLength, 0.f, 1.f);
+		const float LinearAlpha = FMath::Clamp((LocalTime - SegmentStart) / SegmentLength, 0.f, 1.f);
 
 		const FWidgetTransformKeyframe& KeyA = Anim.Keys[Segment];
 		const FWidgetTransformKeyframe& KeyB = Anim.Keys[Segment + 1];
+
+		// Pinned at the keys themselves, whatever a curve makes of its ends: at a key, the pose is that key's.
+		float Alpha = LinearAlpha;
+		if (TrackEase && LinearAlpha > 0.f && LinearAlpha < 1.f)
+		{
+			Alpha = WidgetAnimEasing::EvaluateSegment(KeyA.CurveToNext, LinearAlpha, *TrackEase);
+		}
 
 		Pose = LerpWidgetTransform(KeyA.Transform, KeyB.Transform, Alpha);
 

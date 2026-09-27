@@ -9,6 +9,7 @@
 #include "Widgets/Input/SMenuAnchor.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
 namespace
@@ -95,6 +96,54 @@ TSharedRef<SWidget> SWidgetAnimAnchoredTip::MakeTipContent() const
 {
 	namespace Palette = NameTBD::Colors::WidgetAnimEditor;
 
+	// The control's name, then what it does. Written "Name: what it does" - the name is everything before the first
+	// ": ", when that is short enough to be one. A short tip with no ": " is all name ("Go to Start"); a long one is
+	// all description.
+	constexpr int32 MaxNameLength = 32;
+	const FString Whole = Text.Get().ToString();
+	FString Name;
+	FString Description = Whole;
+
+	int32 Colon = INDEX_NONE;
+	if (Whole.FindChar(TEXT(':'), Colon) && Colon > 0 && Colon <= MaxNameLength && Whole.Mid(Colon + 1, 1) == TEXT(" "))
+	{
+		Name = Whole.Left(Colon).TrimStartAndEnd();
+		Description = Whole.Mid(Colon + 1).TrimStartAndEnd();
+	}
+	else if (Whole.Len() <= MaxNameLength)
+	{
+		Name = Whole;
+		Description.Reset();
+	}
+
+	const TSharedRef<SVerticalBox> Lines = SNew(SVerticalBox);
+
+	if (!Name.IsEmpty())
+	{
+		Lines->AddSlot()
+		.AutoHeight()
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString(Name))
+			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+			.ColorAndOpacity(Palette::TooltipControlName)
+		];
+	}
+
+	if (!Description.IsEmpty())
+	{
+		Lines->AddSlot()
+		.AutoHeight()
+		.Padding(FMargin(0.f, Name.IsEmpty() ? 0.f : 3.f, 0.f, 0.f))
+		[
+			SNew(STextBlock)
+			.Text(FText::FromString(Description))
+			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+			.ColorAndOpacity(Palette::TooltipValue)
+			.WrapTextAt(WrapWidth)
+		];
+	}
+
 	// Never hit-testable: a tip under the cursor would take the hover from the control, which would close it.
 	return SNew(SBox)
 		.Visibility(EVisibility::HitTestInvisible)
@@ -102,13 +151,9 @@ TSharedRef<SWidget> SWidgetAnimAnchoredTip::MakeTipContent() const
 		[
 			SNew(SBorder)
 			.BorderImage(AnchoredTipBrush())
-			.Padding(FMargin(9.f, 5.f))
+			.Padding(FMargin(12.f, 8.f))
 			[
-				SNew(STextBlock)
-				.Text(Text.Get())
-				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-				.ColorAndOpacity(Palette::TooltipValue)
-				.WrapTextAt(WrapWidth)
+				Lines
 			]
 		];
 }
