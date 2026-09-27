@@ -5,6 +5,7 @@
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/PanelWidget.h"
+#include "UObject/ObjectKey.h"
 #include "NameTBD/Widgets/ShapeBox.h"
 #include "WidgetAnimTransform.h"
 #include "WidgetAnimSpring.h"
@@ -196,6 +197,207 @@ namespace
 		NewEntry.TargetBox = TargetBox;
 		return NewEntry;
 	}
+
+	/**
+	 * The slot for a registered track's write to TargetWidget's Channel this frame, created if this is the first
+	 * track to write it. Like a shape, whatever the caller puts here REPLACES what was there - see
+	 * EWidgetAnimComposition::Authoritative. Keyed on the widget the track was played on, not the object its
+	 * evaluator narrows that to, so a null target (the fallback widget) is matched the way transforms match it.
+	 */
+	FWidgetAnimAuthoritativeWrite* FindAuthoritativeWrite(FWidgetAnimResult& Result, const UWidget* TargetWidget, FName Channel)
+	{
+		return Result.AuthoritativeWrites.FindByPredicate([TargetWidget, Channel](const FWidgetAnimAuthoritativeWrite& Write)
+		{
+			return Write.TargetWidget == TargetWidget && Write.Channel == Channel;
+		});
+	}
+
+	FWidgetAnimAuthoritativeWrite& FindOrAddAuthoritativeWrite(FWidgetAnimResult& Result, UWidget* TargetWidget, FName Channel)
+	{
+		if (FWidgetAnimAuthoritativeWrite* Existing = FindAuthoritativeWrite(Result, TargetWidget, Channel))
+		{
+			return *Existing;
+		}
+
+		FWidgetAnimAuthoritativeWrite& NewEntry = Result.AuthoritativeWrites.AddDefaulted_GetRef();
+		NewEntry.TargetWidget = TargetWidget;
+		NewEntry.Channel = Channel;
+		return NewEntry;
+	}
+
+	/**
+	 * Puts a registered track's channel back at its captured baseline this frame - unless some track has already
+	 * written that channel, whose write stands; and one that writes it later still replaces this. The registered-type
+	 * half of TouchLayerTargets. Whether a baseline was actually captured is only asked when the result is applied.
+	 */
+	void AddAuthoritativeBaselineWrite(FWidgetAnimResult& Result, UWidget* TargetWidget, FName Channel, const FWidgetAnimEvaluator* Evaluator, const FInstancedStruct* Params)
+	{
+		if (!Evaluator || FindAuthoritativeWrite(Result, TargetWidget, Channel))
+		{
+			return;
+		}
+
+		FWidgetAnimAuthoritativeWrite& Write = FindOrAddAuthoritativeWrite(Result, TargetWidget, Channel);
+		Write.Evaluator = Evaluator;
+		Write.Params = Params;
+		Write.bIsBaseline = true;
+	}
+
+	/**
+	 * What was last applied to each target's channel by a quantized write - see FWidgetAnimEvaluator::GetQuantizeStep -
+	 * so a write that would show exactly what is already showing is skipped. That is what keeps a Blueprint type from
+	 * running Blueprint on every frame, and a Count Up from formatting the same number sixty times a second.
+	 *
+	 * Keyed by the resolved target and channel. An entry is only trusted when the same evaluator and the same settings
+	 * wrote it; anything else writing that channel - a baseline put back, an unquantized write - drops the entry, so
+	 * the next quantized write always goes through.
+	 */
+	struct FLastAuthoritativeWrite
+	{
+		const FWidgetAnimEvaluator* Evaluator = nullptr;
+		const void* ParamsIdentity = nullptr;
+		int64 Step = 0;
+
+		/** The exact value last handed to Apply. */
+		double AppliedValue = 0.0;
+
+		/** The exact value the last write carried, applied or not - how a value that has stopped moving is noticed. */
+		double SeenValue = 0.0;
+	};
+
+	using FAuthoritativeWriteKey = TPair<FObjectKey, FName>;
+
+	TMap<FAuthoritativeWriteKey, FLastAuthoritativeWrite>& GetLastAuthoritativeWrites()
+	{
+		static TMap<FAuthoritativeWriteKey, FLastAuthoritativeWrite> LastWrites;
+		return LastWrites;
+	}
+
+	void ForgetAuthoritativeWrite(const UObject* Target, FName Channel)
+	{
+		GetLastAuthoritativeWrites().Remove(FAuthoritativeWriteKey(FObjectKey(Target), Channel));
+	}
+
+	/** Records what a registered track's target holds in its channel, if nothing has recorded it already. */
+	void CaptureOneAuthoritative(FWidgetAnimBaselineSet& Baselines, const FWidgetAnimEvaluator& Evaluator, const FInstancedStruct& Params, UWidget* Widget)
+	{
+		UObject* Target = Evaluator.ResolveTarget(Widget, Params);
+		if (!Target)
+		{
+			return;
+		}
+
+		// Once per target and channel, whichever track and type gets there first: a second capture would read back
+		// what an animation had already written.
+		const FName Channel = Evaluator.GetChannel(Params);
+		if (Baselines.FindAuthoritativeBaseline(Target, Channel))
+		{
+			return;
+		}
+
+		FInstancedStruct Captured;
+		if (!Evaluator.CaptureBaseline(Target, Params, Captured))
+		{
+			return;
+		}
+
+		FWidgetAnimAuthoritativeBaseline& Baseline = Baselines.AuthoritativeBaselines.AddDefaulted_GetRef();
+		Baseline.Target = Target;
+		Baseline.Channel = Channel;
+		// Reflected as a plain object pointer; the struct is never written through it.
+		Baseline.CapturedBy = const_cast<UScriptStruct*>(Evaluator.GetParamsStruct());
+		Baseline.Captured = MoveTemp(Captured);
+	}
+
+	/**
+	 * Every registered-type write in the result, onto its target. Live writes go through their evaluator; a baseline
+	 * write puts back what was captured - by whichever type captured it - and does nothing when nothing was.
+	 */
+	void ApplyAuthoritativeWrites(const FWidgetAnimResult& Result, UWidget* FallbackWidget, const FWidgetAnimBaselineSet* Baselines)
+	{
+		for (const FWidgetAnimAuthoritativeWrite& Write : Result.AuthoritativeWrites)
+		{
+			if (!Write.Evaluator)
+			{
+				continue;
+			}
+
+			const FInstancedStruct& Params = Write.GetParams();
+			UObject* Target = Write.Evaluator->ResolveTarget(Write.TargetWidget ? Write.TargetWidget : FallbackWidget, Params);
+			if (!Target)
+			{
+				continue;
+			}
+
+			TMap<FAuthoritativeWriteKey, FLastAuthoritativeWrite>& LastWrites = GetLastAuthoritativeWrites();
+			const FAuthoritativeWriteKey Key(FObjectKey(Target), Write.Channel);
+
+			if (!Write.bIsBaseline)
+			{
+				const double QuantizeStep = Write.Evaluator->GetQuantizeStep(Params);
+				if (QuantizeStep > 0.0)
+				{
+					// Rounded the way a shown number is, half away from zero, so the step changes exactly when the
+					// text would.
+					const int64 Step = static_cast<int64>(FMath::RoundHalfFromZero(Write.Value / QuantizeStep));
+					FLastAuthoritativeWrite* Last = LastWrites.Find(Key);
+					if (Last && Last->Evaluator == Write.Evaluator && Last->ParamsIdentity == &Params && Last->Step == Step)
+					{
+						// Same step as what is showing - but the step only says when to apply while the value is on
+						// its way. Where it comes to rest must be shown exactly: a 0-to-1 fill with a step of 0.05
+						// last applied at 0.975 would otherwise sit at 0.975 for good, because 1.0 rounds to the same
+						// step. So the exact value still goes through, once, when it lands on the track's start or
+						// end, or stops moving anywhere else - a Hold key, a paused scrub, a held end pose, a spring
+						// settling. Everything in between is still skipped.
+						const bool bAtEndpoint = Write.Value == Write.Evaluator->GetEndpointValue(Params, /*bStart=*/false)
+							|| Write.Value == Write.Evaluator->GetEndpointValue(Params, /*bStart=*/true);
+						const bool bStoppedMoving = Write.Value == Last->SeenValue;
+						Last->SeenValue = Write.Value;
+
+						if (Write.Value == Last->AppliedValue || !(bAtEndpoint || bStoppedMoving))
+						{
+							continue;
+						}
+
+						Write.Evaluator->Apply(Target, Params, Write.Value);
+						Last->AppliedValue = Write.Value;
+						continue;
+					}
+
+					Write.Evaluator->Apply(Target, Params, Write.Value);
+
+					// Stale entries - widgets long gone - are dropped wholesale rather than tracked; a cleared cache
+					// only costs one extra apply per channel.
+					if (LastWrites.Num() > 4096)
+					{
+						LastWrites.Reset();
+					}
+					FLastAuthoritativeWrite& Entry = LastWrites.FindOrAdd(Key);
+					Entry.Evaluator = Write.Evaluator;
+					Entry.ParamsIdentity = &Params;
+					Entry.Step = Step;
+					Entry.AppliedValue = Write.Value;
+					Entry.SeenValue = Write.Value;
+				}
+				else
+				{
+					Write.Evaluator->Apply(Target, Params, Write.Value);
+					LastWrites.Remove(Key);
+				}
+				continue;
+			}
+
+			// Whatever is put back here is not what any cached write showed.
+			LastWrites.Remove(Key);
+
+			const FWidgetAnimAuthoritativeBaseline* Baseline = Baselines ? Baselines->FindAuthoritativeBaseline(Target, Write.Channel) : nullptr;
+			const FWidgetAnimEvaluator* Capturer = Baseline ? FWidgetAnimEvaluatorRegistry::Get().Find(Baseline->CapturedBy.Get()) : nullptr;
+			if (Capturer)
+			{
+				Capturer->RestoreBaseline(Target, Baseline->Captured);
+			}
+		}
+	}
 }
 
 void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& Settings, float DirectedAlpha, FWidgetAnimResult& OutResult, const FWidgetAnimBaselineSet* Baselines, bool bTowardStart)
@@ -333,6 +535,54 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 		}
 		break;
 	}
+
+	case EWidgetAnimType::Custom:
+	{
+		// A registered type: the shared timeline has already found the segment and how far across it the track is,
+		// so all that is left is the value there and who writes it. An unregistered type - its module not loaded -
+		// plays as nothing rather than failing.
+		const FWidgetAnimEvaluator* Evaluator = Settings.FindEvaluator();
+		if (!Evaluator)
+		{
+			break;
+		}
+
+		// At full precision, not through WidgetAnimKeyPoints' floats: a count to 20,000,000 must land on it exactly.
+		// The keys between are floats like every track's keys.
+		auto PointValue = [&Settings, Evaluator](int32 Point) -> double
+		{
+			const int32 NumKeys = Settings.ValueKeys.Keys.Num();
+			if (Point > 0 && Point <= NumKeys)
+			{
+				return Settings.ValueKeys.Keys[Point - 1].Value;
+			}
+			return Evaluator->GetEndpointValue(Settings.TypeParams, /*bStart=*/Point <= 0);
+		};
+
+		// Exactly the point itself at either end of a segment, not a lerp that lands a rounding error off it: a track
+		// at its very end must carry exactly its End Value, which is what lets a quantized write recognise it has
+		// landed and show it (see ApplyAuthoritativeWrites). Only exactly 0 and 1: a spring's alpha running past
+		// either end is an overshoot, and still lerps out beyond the point.
+		const double RegisteredValue = SegmentAlpha == 0.f ? PointValue(Segment)
+			: SegmentAlpha == 1.f ? PointValue(Segment + 1)
+			: FMath::Lerp(PointValue(Segment), PointValue(Segment + 1), static_cast<double>(SegmentAlpha));
+
+		switch (Evaluator->GetComposition())
+		{
+		case EWidgetAnimComposition::Authoritative:
+		{
+			// Assigned, not accumulated: a later track writing the same channel of the same target replaces this.
+			// Points at the settings rather than copying them - see FWidgetAnimAuthoritativeWrite.
+			FWidgetAnimAuthoritativeWrite& Write = FindOrAddAuthoritativeWrite(OutResult, Settings.TargetWidget, Evaluator->GetChannel(Settings.TypeParams));
+			Write.Evaluator = Evaluator;
+			Write.Params = &Settings.TypeParams;
+			Write.Value = RegisteredValue;
+			Write.bIsBaseline = false;
+			break;
+		}
+		}
+		break;
+	}
 	}
 }
 
@@ -347,6 +597,16 @@ void UWidgetAnimLibrary::TouchLayerTargets(const FWidgetAnimSettings& Settings, 
 	// a material layer that hasn't started is still left alone.
 	if (Settings.AnimType == EWidgetAnimType::MaterialScalar || Settings.AnimType == EWidgetAnimType::MaterialVector)
 	{
+		return;
+	}
+
+	// A registered type doesn't touch the transform at all - it puts its own channel back at its baseline instead.
+	if (Settings.AnimType == EWidgetAnimType::Custom)
+	{
+		if (const FWidgetAnimEvaluator* Evaluator = Settings.FindEvaluator())
+		{
+			AddAuthoritativeBaselineWrite(OutResult, Settings.TargetWidget, Evaluator->GetChannel(Settings.TypeParams), Evaluator, &Settings.TypeParams);
+		}
 		return;
 	}
 
@@ -861,6 +1121,13 @@ FWidgetAnimResult UWidgetAnimLibrary::TickWidgetAnimations(const TArray<FWidgetA
 {
 	FWidgetAnimResult Result;
 	Result.bAllFinished = TickAnimationsInto(Animations, States, DeltaTime, bIsOutAnimation, Result);
+
+	// The one place a result leaves the call that built it: the caller may apply it after these settings are gone,
+	// so registered-type writes take their own copy of their settings. See FWidgetAnimAuthoritativeWrite.
+	for (FWidgetAnimAuthoritativeWrite& Write : Result.AuthoritativeWrites)
+	{
+		Write.DetachParams();
+	}
 	return Result;
 }
 
@@ -897,6 +1164,9 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
 	// Shapes are not part of the render transform and are never composed over a baseline - the animation
 	// says what the outline IS, and the baseline's job is only to put it back afterwards.
 	ApplyShapeAnimResult(Result, FallbackWidget);
+
+	// Registered types, the same way: each write says what its channel IS.
+	ApplyAuthoritativeWrites(Result, FallbackWidget, Baselines);
 }
 
 void UWidgetAnimLibrary::ApplyShapeAnimResult(const FWidgetAnimResult& Result, UWidget* FallbackWidget)
@@ -1236,14 +1506,28 @@ void UWidgetAnimLibrary::CaptureWidgetAnimBaselines(UWidget* FallbackWidget, con
 	Baselines.bCaptured = true;
 	Baselines.Baselines.Reset();
 	Baselines.ShapeBaselines.Reset();
+	Baselines.AuthoritativeBaselines.Reset();
 
 	bool bNeedsFallback = false;
 	bool bNeedsShapeFallback = false;
 
-	auto Gather = [&Baselines, &bNeedsFallback, &bNeedsShapeFallback](const TArray<FWidgetAnimSettings>& Animations)
+	auto Gather = [&Baselines, &bNeedsFallback, &bNeedsShapeFallback, FallbackWidget](const TArray<FWidgetAnimSettings>& Animations)
 	{
 		for (const FWidgetAnimSettings& Settings : Animations)
 		{
+			// A registered type keeps what its own channel held - a Text Block's text, say - and never touches the
+			// transform, so there is no pose of its widget to keep. Resolved here, against the fallback widget when the
+			// track names none, the same way the result is applied.
+			if (Settings.AnimType == EWidgetAnimType::Custom)
+			{
+				if (const FWidgetAnimEvaluator* Evaluator = Settings.FindEvaluator())
+				{
+					UWidget* Widget = Settings.TargetWidget ? Settings.TargetWidget.Get() : FallbackWidget;
+					CaptureOneAuthoritative(Baselines, *Evaluator, Settings.TypeParams, Widget);
+				}
+				continue;
+			}
+
 			// A Transform layer that animates a Shape Box needs the box's authored outline kept, both to
 			// restore it afterwards and because a key's Use Authored Shape resolves against it.
 			if (Settings.AnimType == EWidgetAnimType::Transform && Settings.Transform.IsAnimatingShape())
@@ -1311,6 +1595,18 @@ void UWidgetAnimLibrary::RestoreWidgetAnimBaselines(const FWidgetAnimBaselineSet
 	for (const FWidgetAnimShapeBaseline& ShapeBaseline : Baselines.ShapeBaselines)
 	{
 		ApplyShapeToBox(ShapeBaseline.Box, ShapeBaseline.Shape);
+	}
+
+	// Registered types' channels go back whole too, each by the type that captured it.
+	for (const FWidgetAnimAuthoritativeBaseline& Baseline : Baselines.AuthoritativeBaselines)
+	{
+		UObject* Target = Baseline.Target;
+		const FWidgetAnimEvaluator* Capturer = FWidgetAnimEvaluatorRegistry::Get().Find(Baseline.CapturedBy.Get());
+		if (Target && Capturer)
+		{
+			Capturer->RestoreBaseline(Target, Baseline.Captured);
+			ForgetAuthoritativeWrite(Target, Baseline.Channel);
+		}
 	}
 }
 
@@ -1867,6 +2163,10 @@ FWidgetAnimSettings FWidgetAnimLayer::ToSettings() const
 	// one line here too instead of a copy of every one of its fields.
 	Out.Transform = Transform;
 
+	// And a registered type's settings are one value whatever the type, which is what makes the next family cost
+	// nothing here at all.
+	Out.TypeParams = TypeParams;
+
 	// bLoop / bPingPong / LoopCount / bInvertAnimation / bMirrorInOut / the two targets are all decisions
 	// about ONE USE of this layer, so they are deliberately left at their defaults here and filled in by
 	// the entry that references the animation.
@@ -1911,8 +2211,19 @@ FWidgetAnimLayer FWidgetAnimLayer::FromSettings(const FWidgetAnimSettings& Setti
 	Out.EndVectorValue = Settings.EndVectorValue;
 
 	Out.Transform = Settings.Transform;
+	Out.TypeParams = Settings.TypeParams;
 
 	return Out;
+}
+
+const FWidgetAnimEvaluator* FWidgetAnimLayer::FindEvaluator() const
+{
+	return AnimType == EWidgetAnimType::Custom ? FWidgetAnimEvaluatorRegistry::Get().Find(TypeParams) : nullptr;
+}
+
+const FWidgetAnimEvaluator* FWidgetAnimSettings::FindEvaluator() const
+{
+	return AnimType == EWidgetAnimType::Custom ? FWidgetAnimEvaluatorRegistry::Get().Find(TypeParams) : nullptr;
 }
 
 // =====================================================================================================
@@ -2127,6 +2438,13 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 						ShapeTarget.bIsBaseline = true;
 					}
 				}
+
+				// Registered types' channels go back to their baselines the same way - a Count Up let go shows its
+				// Text Block's own text again.
+				for (const FWidgetAnimAuthoritativeWrite& Touched : TrackResult.AuthoritativeWrites)
+				{
+					AddAuthoritativeBaselineWrite(Result, Touched.TargetWidget, Touched.Channel, Touched.Evaluator, Touched.Params);
+				}
 			}
 			continue;
 		}
@@ -2165,6 +2483,25 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 			FWidgetAnimShapeTarget& Combined = Existing ? *Existing : FindOrAddShapeTarget(Result, Shape.TargetBox);
 			Combined.Shape = Shape.Shape;
 			Combined.bIsBaseline = Shape.bIsBaseline;
+		}
+		for (const FWidgetAnimAuthoritativeWrite& Write : TrackResult.AuthoritativeWrites)
+		{
+			// The same rule as shapes: the last track to write a channel wins, but a baseline - a track not started
+			// yet - never replaces a value another track is writing.
+			FWidgetAnimAuthoritativeWrite* Existing = FindAuthoritativeWrite(Result, Write.TargetWidget, Write.Channel);
+			if (Write.bIsBaseline && Existing)
+			{
+				continue;
+			}
+
+			if (Existing)
+			{
+				*Existing = Write;
+			}
+			else
+			{
+				Result.AuthoritativeWrites.Add(Write);
+			}
 		}
 	}
 

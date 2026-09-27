@@ -8,6 +8,7 @@
 
 UWidgetAnimEditorSettings::UWidgetAnimEditorSettings()
 {
+	BlueprintTypeTrackColor = NameTBD::Colors::WidgetAnimEditor::LayerBlueprintType;
 	FillMissingTrackColors();
 }
 
@@ -61,6 +62,7 @@ FLinearColor UWidgetAnimEditorSettings::GetDefaultTrackColor(EWidgetAnimType Ani
 	case EWidgetAnimType::MaterialScalar: return Palette::LayerMaterialScalar;
 	case EWidgetAnimType::MaterialVector: return Palette::LayerMaterialVector;
 	case EWidgetAnimType::Transform:      return Palette::LayerTransform;
+	case EWidgetAnimType::Custom:         return Palette::LayerCustom;
 	default:                              return Palette::LayerUnknown;
 	}
 }

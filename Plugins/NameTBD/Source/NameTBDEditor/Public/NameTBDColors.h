@@ -30,6 +30,12 @@ namespace NameTBD
 			inline const FLinearColor LayerMaterialScalar(0.85f, 0.75f, 0.30f);
 			inline const FLinearColor LayerMaterialVector(0.85f, 0.60f, 0.30f);
 			inline const FLinearColor LayerTransform(AnimationOrange_Normal);
+			// Every registered track type - Count Up and any a game adds - shares this one, as they share the one
+			// Registered Type slot; their names tell them apart.
+			inline const FLinearColor LayerCustom(0.90f, 0.85f, 0.85f);
+			// Every Blueprint track type that doesn't set a Track Color of its own. Blueprint blue, so a type a
+			// designer made reads apart from the C++ ones at a glance.
+			inline const FLinearColor LayerBlueprintType(0.20f, 0.50f, 0.95f);
 			inline const FLinearColor LayerUnknown(0.50f, 0.50f, 0.50f);
 
 			// -------------------------------------------------------------------------------------------------

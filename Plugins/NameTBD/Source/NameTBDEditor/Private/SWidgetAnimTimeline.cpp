@@ -11,6 +11,8 @@
 #include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimTransform.h"
+#include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimBlueprintType.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h"
 #include "NameTBDColors.h"
 #include "NameTBDTooltips.h"
 
@@ -43,6 +45,8 @@
 #include "Brushes/SlateImageBrush.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Interfaces/IPluginManager.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Misc/Paths.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
@@ -327,17 +331,86 @@ namespace WidgetAnimTimeline
 		return FString::Printf(TEXT("%.*f"), Decimals, Seconds);
 	}
 
-	/** Every layer type the Add Layer menus offer, in the enum's order. */
+	/**
+	 * Every built-in layer type the Add Layer menus offer, in the enum's order. Registered Type is left out: it is not
+	 * a type of its own but the slot every registered type shares, and those are offered one by one instead - see
+	 * ForEachRegisteredType.
+	 */
 	void ForEachAnimType(TFunctionRef<void(EWidgetAnimType)> Visit)
 	{
 		const UEnum* TypeEnum = StaticEnum<EWidgetAnimType>();
 		const int32 NumTypes = TypeEnum ? TypeEnum->NumEnums() - 1 : 0; // the last entry is the generated _MAX
 		for (int32 Index = 0; Index < NumTypes; ++Index)
 		{
-			if (!TypeEnum->HasMetaData(TEXT("Hidden"), Index))
+			const EWidgetAnimType AnimType = static_cast<EWidgetAnimType>(TypeEnum->GetValueByIndex(Index));
+			if (AnimType != EWidgetAnimType::Custom && !TypeEnum->HasMetaData(TEXT("Hidden"), Index))
 			{
-				Visit(static_cast<EWidgetAnimType>(TypeEnum->GetValueByIndex(Index)));
+				Visit(AnimType);
 			}
+		}
+	}
+
+	/**
+	 * Every C++ registered track type the Add menus offer, in name order - Count Up, and any a game's own modules have
+	 * added. Not the Blueprint bridge, which is not a type of its own; see ForEachBlueprintType.
+	 */
+	void ForEachRegisteredType(TFunctionRef<void(const FWidgetAnimEvaluator&)> Visit)
+	{
+		TArray<const FWidgetAnimEvaluator*> Evaluators;
+		FWidgetAnimEvaluatorRegistry::Get().GetAll(Evaluators);
+		for (const FWidgetAnimEvaluator* Evaluator : Evaluators)
+		{
+			if (Evaluator->IsListedInAddMenu())
+			{
+				Visit(*Evaluator);
+			}
+		}
+	}
+
+	/**
+	 * Every Blueprint track type in the project, in name order, by its class's path - found through the asset registry,
+	 * so types that have never been opened are listed too without loading them. Loaded only when one is picked.
+	 */
+	void ForEachBlueprintType(TFunctionRef<void(const FTopLevelAssetPath&, const FText&)> Visit)
+	{
+		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+
+		TSet<FTopLevelAssetPath> DerivedPaths;
+		AssetRegistry.GetDerivedClassNames({ UWidgetAnimBlueprintType::StaticClass()->GetClassPathName() }, TSet<FTopLevelAssetPath>(), DerivedPaths);
+
+		TArray<TPair<FText, FTopLevelAssetPath>> Types;
+		for (const FTopLevelAssetPath& ClassPath : DerivedPaths)
+		{
+			const FString ClassName = ClassPath.GetAssetName().ToString();
+
+			// Blueprint compilation's leftovers are classes too, but never types anyone made.
+			if (ClassName.StartsWith(TEXT("SKEL_")) || ClassName.StartsWith(TEXT("REINST_")))
+			{
+				continue;
+			}
+
+			// A class already loaded knows its own display name and whether it is abstract - a base for other types,
+			// not one to put on a track. One not loaded yet is named by its asset.
+			FText Name = FText::FromString(ClassName.EndsWith(TEXT("_C")) ? ClassName.LeftChop(2) : ClassName);
+			if (const UClass* LoadedClass = FindObject<UClass>(ClassPath))
+			{
+				if (LoadedClass->HasAnyClassFlags(CLASS_Abstract))
+				{
+					continue;
+				}
+				Name = LoadedClass->GetDefaultObject<UWidgetAnimBlueprintType>()->GetTypeDisplayName();
+			}
+			Types.Emplace(Name, ClassPath);
+		}
+
+		Types.Sort([](const TPair<FText, FTopLevelAssetPath>& A, const TPair<FText, FTopLevelAssetPath>& B)
+		{
+			return A.Key.CompareTo(B.Key) < 0;
+		});
+
+		for (const TPair<FText, FTopLevelAssetPath>& Type : Types)
+		{
+			Visit(Type.Value, Type.Key);
 		}
 	}
 }
@@ -1369,7 +1442,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			const bool bWashedOut = bReadOnly || bTrackLocked || bTrackHidden;
 			const bool bBarHovered = Drag == EDrag::None && Hover.Layer == LayerIndex && Hover.Key == INDEX_NONE && Hover.Edge == EEdge::None && Hover.bOnSection;
 
-			FLinearColor TypeColor = SWidgetAnimTimeline::GetAnimTypeColor(Layer.AnimType);
+			FLinearColor TypeColor = SWidgetAnimTimeline::GetLayerTypeColor(Layer);
 			if (bWashedOut)
 			{
 				TypeColor = SWidgetAnimTimeline::GetLockedColor(TypeColor);
@@ -1445,7 +1518,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 
 			// Inside it: its type and length on the left, its easing - or Spring - on the right, in the graph node
 			// title's own text style. Whichever doesn't fit is dropped, the easing first, so text never spills out.
-			const FString Label = FString::Printf(TEXT("%s  %.2fs"), *SWidgetAnimTimeline::GetAnimTypeName(Layer.AnimType).ToString(), Span.Y);
+			const FString Label = FString::Printf(TEXT("%s  %.2fs"), *SWidgetAnimTimeline::GetLayerTypeName(Layer).ToString(), Span.Y);
 			const FString EasingLabel = SWidgetAnimTimeline::GetEasingName(Layer).ToString();
 			const FVector2f LabelSize = MeasureText(Label, SectionFont);
 			const FVector2f EasingSize = MeasureText(EasingLabel, SectionFont);
@@ -2522,10 +2595,15 @@ private:
 		}
 	}
 
-	/** What a keyed track's values are called in the Selection panel, by type. */
-	static FText GetKeyValueLabel(EWidgetAnimType AnimType)
+	/** What a keyed track's values are called in the Selection panel, by type - a registered type names its own. */
+	static FText GetKeyValueLabel(const FWidgetAnimLayer& Layer)
 	{
-		switch (AnimType)
+		if (const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator())
+		{
+			return Evaluator->GetTrackValueLabel(Layer.TypeParams);
+		}
+
+		switch (Layer.AnimType)
 		{
 		case EWidgetAnimType::Fade:           return LOCTEXT("KeyValueOpacity", "Opacity");
 		case EWidgetAnimType::Scale:          return LOCTEXT("KeyValueScale", "Scale");
@@ -2566,7 +2644,7 @@ private:
 
 		const int32 LastKey = Layer.ValueKeys.NumPoints() - 1;
 		const bool bSpring = Layer.IsSpringTimed();
-		const FText ValueLabel = GetKeyValueLabel(Layer.AnimType);
+		const FText ValueLabel = GetKeyValueLabel(Layer);
 
 		auto AddLayerProperty = [&Category, &LayerHandle](FName Name, const FText& Label)
 		{
@@ -2623,6 +2701,11 @@ private:
 				AddLayerProperty(GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, SlideFromDirection), FText::GetEmpty());
 				AddLayerProperty(GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, SlideDistance), FText::GetEmpty());
 				break;
+			case EWidgetAnimType::Custom:
+				// A registered type's start and end values are fields of its own settings, which only exist as one
+				// struct here - so its settings are shown whole, start value among them.
+				AddLayerProperty(GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, TypeParams), FText::GetEmpty());
+				break;
 			default:
 				break;
 			}
@@ -2638,6 +2721,9 @@ private:
 			case EWidgetAnimType::MaterialVector: AddLayerProperty(GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, EndVectorValue), FText::GetEmpty()); break;
 			case EWidgetAnimType::Slide:
 				AddNoteRow(Category, WidgetAnimTips::SlideEndNote());
+				break;
+			case EWidgetAnimType::Custom:
+				AddLayerProperty(GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, TypeParams), FText::GetEmpty());
 				break;
 			default:
 				break;
@@ -5720,7 +5806,7 @@ FText SWidgetAnimTimeline::GetDetailsTitle() const
 		return FText::Format(LOCTEXT("SelectionGroup", "Selection: {0}{1}"), GroupName, IsReadOnly() ? Suffix : FText::GetEmpty());
 	}
 
-	const FText TypeName = GetAnimTypeName((*Layers)[Selection.Layer].AnimType);
+	const FText TypeName = GetLayerTypeName((*Layers)[Selection.Layer]);
 
 	if (Selection.Key != INDEX_NONE)
 	{
@@ -6161,7 +6247,7 @@ void SWidgetAnimTimeline::RebuildLayerList()
 								{
 									const TArray<FWidgetAnimLayer>* Current = GetLayers();
 									return Current && Current->IsValidIndex(LayerIndex)
-										? GetAnimTypeName((*Current)[LayerIndex].AnimType)
+										? GetLayerTypeName((*Current)[LayerIndex])
 										: FText::GetEmpty();
 								})
 							]
@@ -6856,7 +6942,7 @@ void SWidgetAnimTimeline::MoveGroupTo(int32 GroupIndex, int32 InsertBefore)
 	SelectGroup(NewIndex);
 }
 
-void SWidgetAnimTimeline::AddLayer(int32 GroupIndex, EWidgetAnimType AnimType)
+void SWidgetAnimTimeline::AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, const FInstancedStruct* InitialTypeParams)
 {
 	const FScopedTransaction Transaction(LOCTEXT("AddLayerTransaction", "Add Animation Track"));
 	if (!BeginEdit())
@@ -6879,6 +6965,12 @@ void SWidgetAnimTimeline::AddLayer(int32 GroupIndex, EWidgetAnimType AnimType)
 	FWidgetAnimLayer NewLayer;
 	NewLayer.AnimType = AnimType;
 	NewLayer.LayerGroup = GroupIndex;
+
+	// A registered type is its settings struct, so a new track of one starts from the settings it was picked with.
+	if (AnimType == EWidgetAnimType::Custom && InitialTypeParams)
+	{
+		NewLayer.TypeParams = *InitialTypeParams;
+	}
 
 	// A new layer follows the one above it, so adding layers builds a sequence rather than a pile.
 	if (InsertAt > 0)
@@ -8286,6 +8378,62 @@ void SWidgetAnimTimeline::AddTrackSubMenu(FMenuBuilder& Menu, int32 GroupIndex)
 					FSlateIcon(),
 					FUIAction(FExecuteAction::CreateLambda([this, GroupIndex, AnimType]() { AddLayer(GroupIndex, AnimType); })));
 			});
+
+			// Registered types after the built-in ones, under their own heading - each is a type in its own right,
+			// whichever module it came from.
+			bool bFirstRegistered = true;
+			WidgetAnimTimeline::ForEachRegisteredType([this, &SubMenu, GroupIndex, &bFirstRegistered](const FWidgetAnimEvaluator& Evaluator)
+			{
+				if (bFirstRegistered)
+				{
+					SubMenu.BeginSection(NAME_None, LOCTEXT("RegisteredTypesSection", "Registered Types"));
+					bFirstRegistered = false;
+				}
+
+				const UScriptStruct* ParamsStruct = Evaluator.GetParamsStruct();
+				SubMenu.AddMenuEntry(
+					Evaluator.GetDisplayName(),
+					Evaluator.GetDescription(),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateLambda([this, GroupIndex, ParamsStruct]()
+					{
+						const FInstancedStruct InitialParams(ParamsStruct);
+						AddLayer(GroupIndex, EWidgetAnimType::Custom, &InitialParams);
+					})));
+			});
+			if (!bFirstRegistered)
+			{
+				SubMenu.EndSection();
+			}
+
+			// Blueprint types last, found as assets. Loaded on pick, so the menu costs nothing for types not chosen.
+			bool bFirstBlueprint = true;
+			WidgetAnimTimeline::ForEachBlueprintType([this, &SubMenu, GroupIndex, &bFirstBlueprint](const FTopLevelAssetPath& ClassPath, const FText& TypeName)
+			{
+				if (bFirstBlueprint)
+				{
+					SubMenu.BeginSection(NAME_None, LOCTEXT("BlueprintTypesSection", "Blueprint Types"));
+					bFirstBlueprint = false;
+				}
+
+				SubMenu.AddMenuEntry(
+					TypeName,
+					FText::GetEmpty(),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateLambda([this, GroupIndex, ClassPath]()
+					{
+						UClass* TypeClass = LoadObject<UClass>(nullptr, *ClassPath.ToString());
+						if (TypeClass && TypeClass->IsChildOf(UWidgetAnimBlueprintType::StaticClass()))
+						{
+							const FInstancedStruct InitialParams = FWidgetAnimBlueprintTypeParams::MakeFor(TypeClass);
+							AddLayer(GroupIndex, EWidgetAnimType::Custom, &InitialParams);
+						}
+					})));
+			});
+			if (!bFirstBlueprint)
+			{
+				SubMenu.EndSection();
+			}
 		}),
 		/*bInOpenSubMenuOnClick=*/false,
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Plus"));
@@ -8560,9 +8708,9 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 		const bool bOne = ActedOn.Num() == 1 && HeadingLayers && HeadingLayers->IsValidIndex(LayerIndex);
 		AddMenuHeading(Menu,
 			bOne
-				? FText::Format(LOCTEXT("TrackMenuHeading", "{0}  ({1})"), GetAnimTypeName((*HeadingLayers)[LayerIndex].AnimType), GetGroupName(GroupIndex))
+				? FText::Format(LOCTEXT("TrackMenuHeading", "{0}  ({1})"), GetLayerTypeName((*HeadingLayers)[LayerIndex]), GetGroupName(GroupIndex))
 				: LOCTEXT("MultipleTracksMenuHeading", "Multiple Tracks"),
-			bOne ? GetAnimTypeColor((*HeadingLayers)[LayerIndex].AnimType) : GetGroupColor(GroupIndex));
+			bOne ? GetLayerTypeColor((*HeadingLayers)[LayerIndex]) : GetGroupColor(GroupIndex));
 	}
 
 	// Jumping there only looks at the animation, so it is offered whatever can be edited.
@@ -9020,6 +9168,39 @@ FLinearColor SWidgetAnimTimeline::GetAnimTypeColor(EWidgetAnimType AnimType)
 	return UWidgetAnimEditorSettings::Get().GetTrackColor(AnimType);
 }
 
+FText SWidgetAnimTimeline::GetLayerTypeName(const FWidgetAnimLayer& Layer)
+{
+	if (Layer.AnimType != EWidgetAnimType::Custom)
+	{
+		return GetAnimTypeName(Layer.AnimType);
+	}
+
+	if (const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator())
+	{
+		return Evaluator->GetTrackDisplayName(Layer.TypeParams);
+	}
+
+	// Settings of a type whose module isn't loaded are still named - by their struct - so the track can be found and
+	// dealt with; no type picked yet reads as the bare enum name.
+	if (const UScriptStruct* ParamsStruct = Layer.TypeParams.GetScriptStruct())
+	{
+		return FText::Format(LOCTEXT("UnregisteredTypeName", "{0} (not registered)"), ParamsStruct->GetDisplayNameText());
+	}
+	return GetAnimTypeName(Layer.AnimType);
+}
+
+FLinearColor SWidgetAnimTimeline::GetLayerTypeColor(const FWidgetAnimLayer& Layer)
+{
+	// A Blueprint type is drawn in its own colour when it sets one, else in the one colour every Blueprint type shares -
+	// so a designer's types read apart from the C++ ones, and a type that matters can stand out on its own.
+	if (const FWidgetAnimBlueprintTypeParams* BlueprintParams = Layer.AnimType == EWidgetAnimType::Custom ? Layer.TypeParams.GetPtr<FWidgetAnimBlueprintTypeParams>() : nullptr)
+	{
+		const UWidgetAnimBlueprintType* TypeObject = BlueprintParams->GetTypeObject();
+		return TypeObject && TypeObject->bOverrideTrackColor ? TypeObject->TrackColor : UWidgetAnimEditorSettings::Get().BlueprintTypeTrackColor;
+	}
+	return GetAnimTypeColor(Layer.AnimType);
+}
+
 FLinearColor SWidgetAnimTimeline::GetLockedColor(const FLinearColor& Color)
 {
 	namespace Palette = NameTBD::Colors::WidgetAnimEditor;
@@ -9160,6 +9341,16 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ Colour(Layer.EndVectorValue, Palette::TooltipEndValue) ]);
 		break;
 	}
+
+	case EWidgetAnimType::Custom:
+		// A registered type's start and end, under the name it gives its values. Nothing to show for one whose module
+		// isn't loaded - the blurb below says so.
+		if (const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator())
+		{
+			Rows.Add(Evaluator->GetTrackValueLabel(Layer.TypeParams).ToString(),
+				StartToEnd(Number(Evaluator->GetEndpointValue(Layer.TypeParams, true)), Number(Evaluator->GetEndpointValue(Layer.TypeParams, false))));
+		}
+		break;
 
 	default:
 		break;
@@ -9369,6 +9560,15 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 	case EWidgetAnimType::MaterialScalar: Blurb = WidgetAnimTips::MaterialScalarBlurbTooltip(); break;
 	case EWidgetAnimType::MaterialVector: Blurb = WidgetAnimTips::MaterialVectorBlurbTooltip(); break;
 	case EWidgetAnimType::Transform:      Blurb = WidgetAnimTips::TransformBlurbTooltip(); break;
+	case EWidgetAnimType::Custom:
+	{
+		// A registered type describes itself - it may come from a module this plugin knows nothing about.
+		const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator();
+		Blurb = Evaluator ? Evaluator->GetTrackDescription(Layer.TypeParams)
+			: Layer.TypeParams.IsValid() ? WidgetAnimTips::UnregisteredTypeBlurbTooltip()
+			: WidgetAnimTips::NoRegisteredTypeBlurbTooltip();
+		break;
+	}
 	default:                              break;
 	}
 
@@ -9379,6 +9579,36 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 		[
 			Note(Blurb.ToString())
 		];
+	}
+
+	// A Blueprint type's cost: over budget this session, or bound to run Blueprint on every frame it plays. See
+	// UWidgetAnimRuntimeSettings, where the budget and whether to warn at all are set.
+	if (const FWidgetAnimBlueprintTypeParams* BlueprintParams = Layer.AnimType == EWidgetAnimType::Custom ? Layer.TypeParams.GetPtr<FWidgetAnimBlueprintTypeParams>() : nullptr)
+	{
+		const UWidgetAnimBlueprintType* TypeObject = BlueprintParams->GetTypeObject();
+		if (TypeObject && UWidgetAnimRuntimeSettings::Get().bWarnAboutExpensiveBlueprintTypes)
+		{
+			float MsPerFrame = 0.f;
+			float CallFrameShare = 0.f;
+			if (WidgetAnimBlueprintTypeCost::IsFlagged(TypeObject->GetClass()) && WidgetAnimBlueprintTypeCost::GetLastWindow(TypeObject->GetClass(), MsPerFrame, CallFrameShare))
+			{
+				Body->AddSlot()
+				.AutoHeight()
+				[
+					Warning(FText::Format(WidgetAnimTips::BlueprintTypeOverBudgetWarning(),
+						FText::FromString(FString::Printf(TEXT("%.3f"), MsPerFrame)),
+						FText::AsNumber(FMath::RoundToInt(CallFrameShare * 100.f))))
+				];
+			}
+			else if (TypeObject->QuantizeStep <= 0.0)
+			{
+				Body->AddSlot()
+				.AutoHeight()
+				[
+					Warning(WidgetAnimTips::BlueprintTypeNoQuantizeWarning())
+				];
+			}
+		}
 	}
 
 	// Animate Shape acts through a Shape Box - see UWidgetAnimLibrary::ResolveShapeBox - and does nothing without one.
@@ -9392,8 +9622,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 	}
 
 	return Frame(
-		IsReadOnly() || IsLayerLocked(LayerIndex) || IsLayerHidden(LayerIndex) ? GetLockedColor(GetAnimTypeColor(Layer.AnimType)) : GetAnimTypeColor(Layer.AnimType),
-		GetAnimTypeName(Layer.AnimType).ToString(),
+		IsReadOnly() || IsLayerLocked(LayerIndex) || IsLayerHidden(LayerIndex) ? GetLockedColor(GetLayerTypeColor(Layer)) : GetLayerTypeColor(Layer),
+		GetLayerTypeName(Layer).ToString(),
 		GetGroupName(GetLayerGroup(LayerIndex)).ToString(),
 		GetLayerTimeRange(LayerIndex).ToString(),
 		Body);
@@ -9452,10 +9682,10 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyToolTip(int32 LayerIndex, int32 
 		}
 
 		const FString PointTitle = FString::Printf(TEXT("Key %d of %d"), KeyIndex + 1, NumPoints);
-		const FString PointWhere = KeyIndex == 0 ? TEXT("Start") : KeyIndex == NumPoints - 1 ? TEXT("End") : GetAnimTypeName(Layer.AnimType).ToString();
+		const FString PointWhere = KeyIndex == 0 ? TEXT("Start") : KeyIndex == NumPoints - 1 ? TEXT("End") : GetLayerTypeName(Layer).ToString();
 		const FString PointSubtitle = FString::Printf(TEXT("%s  \u00B7  %s"), *PointWhere, *GetGroupName(GetLayerGroup(LayerIndex)).ToString());
 
-		return Frame(GetAnimTypeColor(Layer.AnimType), PointTitle, PointSubtitle, Seconds(Spans[LayerIndex].X + PointTime), PointBody);
+		return Frame(GetLayerTypeColor(Layer), PointTitle, PointSubtitle, Seconds(Spans[LayerIndex].X + PointTime), PointBody);
 	}
 
 	const TArray<FWidgetTransformKeyframe>& Keys = Layer.Transform.Keys;
@@ -9511,10 +9741,10 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyToolTip(int32 LayerIndex, int32 
 	];
 
 	const FString Title = FString::Printf(TEXT("Key %d of %d"), KeyIndex + 1, NumKeys);
-	const FString Where = KeyIndex == 0 ? TEXT("First key") : KeyIndex == NumKeys - 1 ? TEXT("Last key") : GetAnimTypeName(Layer.AnimType).ToString();
+	const FString Where = KeyIndex == 0 ? TEXT("First key") : KeyIndex == NumKeys - 1 ? TEXT("Last key") : GetLayerTypeName(Layer).ToString();
 	const FString Subtitle = FString::Printf(TEXT("%s  \u00B7  %s"), *Where, *GetGroupName(GetLayerGroup(LayerIndex)).ToString());
 
-	return Frame(GetAnimTypeColor(Layer.AnimType), Title, Subtitle, Seconds(Spans[LayerIndex].X + LocalTime), Body);
+	return Frame(GetLayerTypeColor(Layer), Title, Subtitle, Seconds(Spans[LayerIndex].X + LocalTime), Body);
 }
 
 // -----------------------------------------------------------------------------------------------------

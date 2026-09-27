@@ -376,8 +376,11 @@ public:
 	/**
 	 * Adds a layer in a group - a new first group when there are none - into the sequence just after the
 	 * selected layer, or at the end when no layer is selected. It gets a line of its own at the bottom of its group.
+	 *
+	 * InitialTypeParams is a Registered Type layer's type and its starting settings - a Count Up at its defaults, or a
+	 * Blueprint type with its default values. Ignored on every built-in type.
 	 */
-	void AddLayer(int32 GroupIndex, EWidgetAnimType AnimType);
+	void AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, const FInstancedStruct* InitialTypeParams = nullptr);
 	void DuplicateLayer(int32 LayerIndex);
 	void DeleteLayer(int32 LayerIndex);
 
@@ -474,6 +477,18 @@ public:
 	/** Display name and track colour of a layer type. The colour is the user's, from the editor settings. */
 	static FText GetAnimTypeName(EWidgetAnimType AnimType);
 	static FLinearColor GetAnimTypeColor(EWidgetAnimType AnimType);
+
+	/**
+	 * What a layer is called: its type's name - or, on a Registered Type layer, the name its type registered with
+	 * ("Count Up"), since every registered type shares the one enum value.
+	 */
+	static FText GetLayerTypeName(const FWidgetAnimLayer& Layer);
+
+	/**
+	 * What colour a layer is drawn in: its type's - or, on a Blueprint type's track, that type's own Track Color if it
+	 * sets one, else the Blueprint type colour from the editor settings.
+	 */
+	static FLinearColor GetLayerTypeColor(const FWidgetAnimLayer& Layer);
 
 	/** A colour washed out the way a track that can't be edited is drawn. */
 	static FLinearColor GetLockedColor(const FLinearColor& Color);

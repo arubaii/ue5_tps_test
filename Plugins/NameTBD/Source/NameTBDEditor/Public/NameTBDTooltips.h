@@ -551,6 +551,33 @@ namespace NameTBD::Tooltips
 				"Poses the widget's Render Transform at each key, and moves it between them.");
 		}
 
+		// A registered type describes itself (FWidgetAnimEvaluator::GetDescription); these two are only for a
+		// Registered Type track that has no registered type to describe it.
+
+		inline FText UnregisteredTypeBlurbTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "UnregisteredTypeBlurbTooltip",
+				"This track's type isn't registered - the module that adds it isn't loaded. Its settings are kept, and it plays as nothing until that module is loaded again.");
+		}
+
+		inline FText BlueprintTypeOverBudgetWarning()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "BlueprintTypeOverBudgetWarning",
+				"This Blueprint type is over budget: {0} ms of Blueprint per frame, on {1}% of frames. Give it a Quantize Step, or move it to a C++ evaluator.");
+		}
+
+		inline FText BlueprintTypeNoQuantizeWarning()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "BlueprintTypeNoQuantizeWarning",
+				"This Blueprint type has no Quantize Step, so it runs Blueprint on every frame it plays. Set one in its class defaults - 1 for whole numbers - to run it only when its value visibly changes.");
+		}
+
+		inline FText NoRegisteredTypeBlurbTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NoRegisteredTypeBlurbTooltip",
+				"Pick which registered type this track is in its Type Params, in the Selection panel. Until then it does nothing.");
+		}
+
 		inline FText TransformShapeBoxWarningTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TransformShapeBoxWarningTooltip",

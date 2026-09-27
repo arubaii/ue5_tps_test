@@ -723,7 +723,7 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 	// Not on screen: nothing is being judged, so nothing stays posed.
 	if (!bPanelActive || !GetEditedAnimation())
 	{
-		if (PosedRoot.IsValid() || Baselines.Baselines.Num() > 0)
+		if (PosedRoot.IsValid() || Baselines.Baselines.Num() > 0 || Baselines.AuthoritativeBaselines.Num() > 0)
 		{
 			RestorePreview();
 		}
@@ -748,6 +748,8 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 		Signature = HashCombine(Signature, PointerHash(Layer.TargetWidget.Get()));
 		Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType)));
 		Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.bAnimateShape)));
+		// Which registered type, too: swapping a Count Up for another type may write another channel of the target.
+		Signature = HashCombine(Signature, PointerHash(Layer.TypeParams.GetScriptStruct()));
 	}
 
 	if (PosedRoot.Get() != Root || Signature != PosedSignature)

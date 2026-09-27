@@ -10,6 +10,8 @@
 #include "WidgetAnimEasing.h"    // EWidgetAnimEasing
 #include "WidgetAnimTransform.h" // FWidgetTransformAnim
 #include "WidgetAnimSpring.h"    // EWidgetAnimTiming, FWidgetSpringParams
+#include "WidgetAnimEvaluator.h" // FWidgetAnimTypeParams, registered track types
+#include "StructUtils/InstancedStruct.h"
 #include "WidgetAnimLibrary.generated.h"
 
 class UMaterialInstanceDynamic;
@@ -38,7 +40,17 @@ enum class EWidgetAnimType : uint8
 	 * Appended last on purpose. Enum properties serialize by name, but anything that stored the raw byte
 	 * keeps meaning exactly what it meant before.
 	 */
-	Transform
+	Transform,
+
+	/**
+	 * A registered track type: one defined by a settings struct and an evaluator rather than by this enum. Which
+	 * type it is lives in the track's Type Params - the struct is the type - so every registered type, first-party
+	 * or from another module, shares this one value. See FWidgetAnimEvaluator.
+	 *
+	 * Appended last for the same reason as Transform. Timed, keyed and looped like any other track that travels
+	 * from a start value to an end value.
+	 */
+	Custom UMETA(DisplayName = "Registered Type")
 };
 
 // EWidgetAnimEasing now lives in WidgetAnimEasing.h, included above, so anything that includes this
@@ -378,6 +390,17 @@ struct NAMETBD_API FWidgetAnimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform", EditConditionHides, ShowOnlyInnerProperties))
 	FWidgetTransformAnim Transform;
 
+	// ------------------------------------------------------------------
+	// Registered types
+	// ------------------------------------------------------------------
+
+	/** Which registered type a Registered Type layer is, and its settings. See FWidgetAnimLayer::TypeParams. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Type", meta = (DisplayName = "Type Params", BaseStruct = "/Script/NameTBD.WidgetAnimTypeParams", ExcludeBaseStruct, EditCondition = "AnimType == EWidgetAnimType::Custom", EditConditionHides))
+	FInstancedStruct TypeParams;
+
+	/** The evaluator for a Registered Type layer's type. Null on built-in types, and on a type whose module isn't loaded. */
+	const FWidgetAnimEvaluator* FindEvaluator() const;
+
 	/** Whether this layer travels by its spring: Spring timing, on a type that has a start and an end to travel between. */
 	bool IsSpringTimed() const { return Timing == EWidgetAnimTiming::Spring && WidgetAnimTypeSupportsSpring(AnimType); }
 };
@@ -547,6 +570,18 @@ struct NAMETBD_API FWidgetAnimLayer
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform", EditConditionHides, ShowOnlyInnerProperties))
 	FWidgetTransformAnim Transform;
 
+	// Registered types
+	//
+	// A Registered Type track's type and its settings, in one: the struct held here is the type (Count Up is an
+	// FWidgetAnimCountUpParams), and its fields are that type's settings. Only this track's own type's fields are
+	// carried, which is how new families stop adding flat fields to every track. Empty on every built-in type, so
+	// assets authored before registered types existed load exactly as they were. See FWidgetAnimEvaluator.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Type", meta = (DisplayName = "Type Params", BaseStruct = "/Script/NameTBD.WidgetAnimTypeParams", ExcludeBaseStruct, EditCondition = "AnimType == EWidgetAnimType::Custom", EditConditionHides))
+	FInstancedStruct TypeParams;
+
+	/** The evaluator for a Registered Type track's type. Null on built-in types, and on a type whose module isn't loaded. */
+	const FWidgetAnimEvaluator* FindEvaluator() const;
+
 	/**
 	 * This layer as the runtime settings struct. Every per-use flag is left at its default for the caller to
 	 * fill in, and Delay is this layer's own - relative, not yet placed on the animation's timeline. Use
@@ -634,6 +669,10 @@ namespace WidgetAnimKeyPoints
 		case EWidgetAnimType::Slide:          return bStart ? Track.SlideDistance : 0.f;
 		case EWidgetAnimType::Rotate:         return bStart ? Track.StartAngle : Track.EndAngle;
 		case EWidgetAnimType::MaterialScalar: return bStart ? Track.StartScalarValue : Track.EndScalarValue;
+		// A registered type says where it starts and ends; see FWidgetAnimEvaluator::GetEndpointValue. As a float,
+		// like every key: this is what the panel draws and what bounds a track's values, not what plays - playback
+		// reads the endpoints at full precision.
+		case EWidgetAnimType::Custom:         return static_cast<float>(WidgetAnimGetRegisteredEndpoint(Track.TypeParams, bStart));
 		default:                              return 0.f;
 		}
 	}
@@ -845,6 +884,14 @@ struct NAMETBD_API FWidgetAnimResult
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	TArray<FWidgetAnimShapeTarget> ShapeTargets;
 
+	/**
+	 * Registered-type writes this frame: one per target and channel, the last track to write it winning - the third
+	 * way a result composes, next to the transforms that multiply and add and the parameters and shapes that are
+	 * assigned. Not reflected: each write points at the settings it came from, and lives only as long as the frame it
+	 * is worked out in. See FWidgetAnimAuthoritativeWrite.
+	 */
+	TArray<FWidgetAnimAuthoritativeWrite> AuthoritativeWrites;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bAllFinished = false;
 };
@@ -1032,6 +1079,13 @@ struct NAMETBD_API FWidgetAnimBaselineSet
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	TArray<FWidgetAnimShapeBaseline> ShapeBaselines;
 
+	/**
+	 * What every registered track's target held before it was animated - a Text Block's text under a Count Up, say -
+	 * one per target and channel. Usually empty.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	TArray<FWidgetAnimAuthoritativeBaseline> AuthoritativeBaselines;
+
 	/** Set by the first capture, so a later pass can't re-capture a pose the animation itself just wrote. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bCaptured = false;
@@ -1040,7 +1094,17 @@ struct NAMETBD_API FWidgetAnimBaselineSet
 	{
 		Baselines.Reset();
 		ShapeBaselines.Reset();
+		AuthoritativeBaselines.Reset();
 		bCaptured = false;
+	}
+
+	/** The captured value of Target's Channel, or null if nothing captured one. */
+	const FWidgetAnimAuthoritativeBaseline* FindAuthoritativeBaseline(const UObject* Target, FName Channel) const
+	{
+		return AuthoritativeBaselines.FindByPredicate([Target, Channel](const FWidgetAnimAuthoritativeBaseline& Baseline)
+		{
+			return Baseline.Target.Get() == Target && Baseline.Channel == Channel;
+		});
 	}
 
 	/**

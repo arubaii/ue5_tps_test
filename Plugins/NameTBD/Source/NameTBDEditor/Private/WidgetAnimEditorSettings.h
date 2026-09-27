@@ -37,6 +37,13 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Track Colors", meta = (DisplayName = "Track Colors", ReadOnlyKeys))
 	TMap<EWidgetAnimType, FLinearColor> TrackColors;
 
+	/**
+	 * The colour of every Blueprint track type that doesn't set a Track Color of its own in its class defaults. Other
+	 * registered types - Count Up, and any C++ type - use Registered Type in Track Colors above.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Track Colors", meta = (DisplayName = "Blueprint Type Track Color"))
+	FLinearColor BlueprintTypeTrackColor;
+
 	// -------------------------------------------------------------------------------------------------
 	// Track controls - the toggles in the panel's Track Controls pill
 	// -------------------------------------------------------------------------------------------------
