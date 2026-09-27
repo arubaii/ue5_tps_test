@@ -280,6 +280,15 @@ public:
 	static UWidgetAnimationComponent* FindWidgetAnimationComponent(const UWidget* Widget);
 
 	/**
+	 * Calls Visit for the nearest components below Widget (Widget's own component is not included): a branch that
+	 * has its own component is handed to it and not walked further, because that component cascades into its own
+	 * children in turn. Steps into nested User Widgets. The same walk Play In / Play Out cascade along, so code that
+	 * drives a whole widget from outside - a screen transition waiting on every exit - sees the components the
+	 * cascade reaches.
+	 */
+	static void ForEachNearestNestedComponent(UWidget* Widget, TFunctionRef<void(UWidgetAnimationComponent*)> Visit);
+
+	/**
 	 * Attaches this component to InWidget by hand, for code that creates the component itself rather than
 	 * having it added in the designer. Paths are then resolved inside InWidget if it is a User Widget.
 	 * The caller also becomes responsible for NotifyOwnerConstructed / NotifyOwnerDestructed.

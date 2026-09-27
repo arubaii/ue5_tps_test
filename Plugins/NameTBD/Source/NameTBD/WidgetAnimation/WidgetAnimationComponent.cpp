@@ -251,6 +251,11 @@ UWidgetAnimationComponent* UWidgetAnimationComponent::FindWidgetAnimationCompone
 	return nullptr;
 }
 
+void UWidgetAnimationComponent::ForEachNearestNestedComponent(UWidget* Widget, TFunctionRef<void(UWidgetAnimationComponent*)> Visit)
+{
+	ForEachNearestChildComponent(Widget, Visit);
+}
+
 UUserWidget* UWidgetAnimationComponent::GetPathRoot() const
 {
 	UWidget* AnimatedWidget = AnimOwner.Get();
