@@ -233,6 +233,25 @@ namespace NameTBD
 			inline const FLinearColor ToggleOffText(1.00f, 1.00f, 1.00f, 0.55f);
 			inline const FLinearColor PlayTint(AnimationOrange_Normal);
 			inline const FLinearColor PauseTint(AnimationOrange_Disabled);
+
+			// -------------------------------------------------------------------------------------------------
+			// The inline track editor in a Widget Animation Component's Details - its resize grip along the bottom
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor InlineEditorGrip(1.00f, 1.00f, 1.00f, 0.10f);
+			inline const FLinearColor InlineEditorGripHovered = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.70f);
+			inline const FLinearColor InlineEditorBorder(0.00f, 0.00f, 0.00f, 0.35f);
+
+			// -------------------------------------------------------------------------------------------------
+			// Context tracks - the read-only tracks of the animation an additive list starts within, drawn above
+			// the list's own
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor ContextRowBackground(0.00f, 0.00f, 0.00f, 0.22f);
+			inline const FLinearColor ContextRowsDivider(1.00f, 1.00f, 1.00f, 0.18f);
+			inline constexpr float ContextTrackOpacity = 0.55f;
+			inline const FLinearColor ContextTrackText(1.00f, 1.00f, 1.00f, 0.55f);
+			inline const FLinearColor StartLinkedText = FLinearColor(AnimationOrange_Normal);
 		}
 	}
 }

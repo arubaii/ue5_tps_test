@@ -67,6 +67,36 @@ struct NAMETBD_API FWidgetAnimDesignerPlayback
 	float Speed = 1.f;
 };
 
+/**
+ * When a component's Additive Anim Layers start: right away, with Anim In or Anim Out (unset) - or within one of its
+ * entries, as part of it: on its clock, from its start, whenever it plays - its own Play In, a trigger, a Play By ID
+ * of its Anim ID - with its Loop, Ping Pong, Invert and Playback Speed. Set from the component's inline track editor.
+ *
+ * The entry is remembered by where it is authored - which list, and its place there - and by its animation, so it is
+ * found again after the list is reordered. An entry that can no longer be found - removed, or its animation swapped -
+ * leaves the layers starting right away again.
+ */
+USTRUCT()
+struct NAMETBD_API FWidgetAnimAdditiveStart
+{
+	GENERATED_BODY()
+
+	/** The entry is in Anim Out (true) or Anim In. One from the other list plays in this list's direction by Mirror In Out. */
+	UPROPERTY()
+	bool bInAnimOut = false;
+
+	/** Its place in that list when it was picked. */
+	UPROPERTY()
+	int32 EntryIndex = INDEX_NONE;
+
+	/** Its animation: what tells it apart, and finds it again at another place. */
+	UPROPERTY()
+	TObjectPtr<UWidgetAnimPresetAsset> Animation = nullptr;
+
+	bool IsSet() const { return EntryIndex != INDEX_NONE && Animation != nullptr; }
+	void Reset() { *this = FWidgetAnimAdditiveStart(); }
+};
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FWidgetAnimationComponentEvent, UWidgetAnimationComponent*, Component);
 DECLARE_MULTICAST_DELEGATE_OneParam(FWidgetAnimationComponentNativeEvent, UWidgetAnimationComponent* /*Component*/);
 
@@ -153,6 +183,14 @@ public:
 	/** Plain animation layers played on top of Anim Out, every time it plays. See Additive Anim Layers In. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Additive Anim Layers Out", TitleProperty = "AnimType"))
 	TArray<FWidgetAnimLayer> AdditiveAnimLayersOut;
+
+	/** When Additive Anim Layers In start: right away with Anim In, or within one of its entries. See FWidgetAnimAdditiveStart. */
+	UPROPERTY()
+	FWidgetAnimAdditiveStart AdditiveAnimLayersInStart;
+
+	/** When Additive Anim Layers Out start: right away with Anim Out, or within one of its entries. See FWidgetAnimAdditiveStart. */
+	UPROPERTY()
+	FWidgetAnimAdditiveStart AdditiveAnimLayersOutStart;
 
 	/**
 	 * Whether animations compose over whatever each target was authored as, instead of replacing it.
@@ -345,6 +383,25 @@ public:
 	/** The widget an entry's Target Widget path refers to, or null to mean "the animated widget". */
 	UWidget* ResolveAnimTarget(FName TargetWidgetName) const;
 
+	// -------------------------------------------------------------------------------------------------
+	// When the additive layers start
+	// -------------------------------------------------------------------------------------------------
+
+	/**
+	 * The entry an Additive Anim Layers list starts within - bOutList picks Out or In - as its place in Anim Out
+	 * (bOutInAnimOut) or Anim In. INDEX_NONE when the list starts right away, or its entry can't be found.
+	 */
+	int32 ResolveAdditiveStart(bool bOutList, bool& bOutInAnimOut) const;
+
+	/**
+	 * Whether an authored entry can host an Additive Anim Layers list: it has an animation, and plays in the list's
+	 * direction - in its own list, or mirrored into it by Mirror In Out.
+	 */
+	bool CanHostAdditiveList(bool bOutList, bool bInAnimOut, int32 EntryIndex) const;
+
+	/** Points each list's start at its entry's current place, and clears one whose entry is gone. True if either changed. */
+	bool RefreshAdditiveStarts();
+
 	/** Backs the Target Widget dropdown on every entry. Must stay a UFUNCTION for GetOptions. */
 	UFUNCTION()
 	TArray<FString> GetAnimTargetWidgetOptions() const;
@@ -427,6 +484,26 @@ private:
 	/** Additive Anim Layers followed by the extra layers: everything without an Anim ID, played as one track. */
 	UPROPERTY(Transient)
 	TArray<FWidgetAnimSettings> UnnamedAnimIn;
+
+	/** An Additive Anim Layers list that starts within an entry, placed, and that entry's place among the effective entries. */
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimSettings> LinkedAdditiveIn;
+
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimSettings> LinkedAdditiveOut;
+
+	int32 LinkedEffectiveIn = INDEX_NONE;
+	int32 LinkedEffectiveOut = INDEX_NONE;
+
+	/** Where an authored entry is among the effective entries of a direction - see AppendEntriesWithMirroring. */
+	int32 ToEffectiveIndex(bool bOutDirection, bool bInAnimOut, int32 EntryIndex) const;
+
+	/**
+	 * Appends the Additive Anim Layers list that starts within effective entry EffectiveIndex - if one does - to that
+	 * entry's settings, EntrySettings from First on: stamped with the entry's own per-use flags and its clock, so it
+	 * plays as part of it.
+	 */
+	void AppendLinkedAdditive(int32 EffectiveIndex, bool bOut, TArray<FWidgetAnimSettings>& EntrySettings, int32 First) const;
 
 	UPROPERTY(Transient)
 	TArray<FWidgetAnimSettings> UnnamedAnimOut;

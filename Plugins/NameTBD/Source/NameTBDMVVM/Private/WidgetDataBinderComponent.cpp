@@ -14,12 +14,13 @@
 #include "UObject/UnrealType.h"
 #include "View/MVVMView.h"
 #include "WidgetDataBinderEventProxy.h"
+#include "WidgetDataBinderLog.h"
 
 #if WITH_EDITORONLY_DATA
 #include "Engine/Blueprint.h"
 #endif
 
-DEFINE_LOG_CATEGORY_STATIC(LogWidgetDataBinder, Log, All);
+DEFINE_LOG_CATEGORY(LogWidgetDataBinder);
 
 TMap<TObjectKey<UWidget>, TWeakObjectPtr<UWidgetDataBinderComponent>> UWidgetDataBinderComponent::BindersByWidget;
 

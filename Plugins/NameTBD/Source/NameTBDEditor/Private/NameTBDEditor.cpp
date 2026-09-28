@@ -22,7 +22,9 @@
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
 #include "WidgetAnimBuilderDetails.h"
+#include "WidgetAnimationComponentDetails.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
 
@@ -57,6 +59,12 @@ void FNameTBDEditorModule::StartupModule()
 	PropertyModule.RegisterCustomClassLayout(
 		UWidgetAnimBuilder::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetAnimBuilderDetails::MakeInstance));
+
+	// The component's Additive Anim Layers get the track editor, inline, instead of plain fields only.
+	PropertyModule.RegisterCustomClassLayout(
+		UWidgetAnimationComponent::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetAnimationComponentDetails::MakeInstance));
+	PropertyModule.NotifyCustomizationModuleChanged();
 }
 
 void FNameTBDEditorModule::ShutdownModule()
@@ -79,6 +87,7 @@ void FNameTBDEditorModule::ShutdownModule()
 		PropertyModule->UnregisterCustomClassLayout(TEXT("ContextMenuButton"));
 		PropertyModule->NotifyCustomizationModuleChanged();
 		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimBuilder"));
+		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimationComponent"));
 
 	}
 	

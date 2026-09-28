@@ -633,5 +633,134 @@ namespace NameTBD::Tooltips
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "WatchFoldTooltip",
 				"Open or close the Value Watcher.");
 		}
+		// -------------------------------------------------------------------------------------------------
+		// The compact panel - a plain list of tracks, such as a component's Additive Anim Layers
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText CompactNoTracks()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CompactNoTracks",
+				"No tracks yet. Add one with Add Track, or right-click here.");
+		}
+
+		inline FText CompactNothingSelected()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CompactNothingSelected",
+				"Select a track, or a key on one, to edit it here. Play or scrub to see the tracks on the widget in the designer.");
+		}
+
+		inline FText CompactAddTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CompactAddTooltip",
+				"Add Track: A track of any type, after the selected one - or build on an existing Widget Animation.");
+		}
+
+		inline FText CompactSaveTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CompactSaveTooltip",
+				"Save as Animation: Keep these tracks as a Widget Animation asset of their own, to use on other widgets too.");
+		}
+
+		inline FText CompactSaveAsAssetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CompactSaveAsAssetTooltip",
+				"Saves a copy of these tracks as a new WA_ asset beside this Widget Blueprint. The tracks here stay as they are.");
+		}
+
+		inline FText CompactReplaceWithEntryTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CompactReplaceWithEntryTooltip",
+				"Saves these tracks as a new WA_ asset, then plays that asset from a new entry instead: the entry is added and these tracks are cleared. Undoable, apart from the asset itself.");
+		}
+
+		inline FText CompactExpandTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CompactExpandTooltip",
+				"Expand: The same tracks in a window of their own, which can be made as big as they need.");
+		}
+
+		inline FText CompactSavedNotice()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CompactSavedNotice",
+				"Saved the tracks as {0}.");
+		}
+
+		inline FText CompactReplacedNotice()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CompactReplacedNotice",
+				"Saved the tracks as {0}, and replaced them with an entry playing it.");
+		}
+
+		inline FText AdditiveStartTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveStartTooltip",
+				"Starts: When these tracks start - right away, with the rest of Anim In or Anim Out, or within one of its animations, as part of it.");
+		}
+
+		inline FText AdditiveStartRightAwayTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveStartRightAwayTooltip",
+				"The tracks start as soon as Anim In (or Anim Out) plays, on a clock of their own.");
+		}
+
+		inline FText AdditiveStartWithinTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveStartWithinTooltip",
+				"The tracks play as part of {0}: from its start, whenever it plays - Play In, a trigger, Play By Id - with its Loop, Ping Pong, Invert and Playback Speed. Its tracks show above these, greyed, to place them against.");
+		}
+
+		inline FText AdditiveStartNoAnimations()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveStartNoAnimations",
+				"No animations to start within yet. Add one to Anim In or Anim Out - or mark one Mirror In Out.");
+		}
+
+		inline FText CompactFoldTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CompactFoldTooltip",
+				"Show or hide the track editor. Hidden, it leaves the widget in the designer as authored.");
+		}
+
+		inline FText LayerTargetWidgetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "LayerTargetWidgetTooltip",
+				"The widget this track moves, as a path into this Widget Blueprint - the same kind an entry's Target Widgets use. None moves the widget the component is on.");
+		}
+
+		inline FText AdditiveLayersInEditorTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveLayersInEditorTooltip",
+				"Tracks played on this widget on top of Anim In, every time it plays. For a touch that belongs to this one widget and isn't worth a Widget Animation asset of its own.");
+		}
+
+		inline FText AdditiveLayersOutEditorTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveLayersOutEditorTooltip",
+				"Tracks played on this widget on top of Anim Out, every time it plays. Like every exit they play in reverse - authored as the widget arriving, played as it leaving - and the preview here plays them that way.");
+		}
+
+		inline FText AdditiveLayersRawFieldsNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveLayersRawFieldsNote",
+				"The same tracks as plain fields, under Advanced below.");
+		}
+
+		inline FText AdditiveLayersResizeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveLayersResizeTooltip",
+				"Drag to make the track editor taller or shorter.");
+		}
+
+		inline FText AdditiveLayersMultipleObjects()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveLayersMultipleObjects",
+				"Several components are selected: edit their tracks one at a time, or in the fields under Advanced.");
+		}
+
+		inline FText AdditiveLayersWindowTitle()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveLayersWindowTitle",
+				"{0} - {1}");
+		}
 	}
 }

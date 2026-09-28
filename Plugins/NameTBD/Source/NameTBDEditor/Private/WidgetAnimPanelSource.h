@@ -13,6 +13,7 @@ class UWidget;
 class UWidgetAnimBuilder;
 class UWidgetAnimPresetAsset;
 class UWidgetBlueprint;
+class IPropertyHandle;
 
 /**
  * What the Widget Animations panel edits, and how it plays it.
@@ -62,9 +63,56 @@ public:
 	/** After an edit made outside the property system: keys brought in step with curves, previews refreshed. */
 	virtual void NotifyGroupsChanged(EPropertyChangeType::Type ChangeType) = 0;
 
-	/** Names of the LayerGroups and Layers properties on GetEditedObject's class - the same on a builder and an asset. */
-	static FName GetGroupsPropertyName() { return TEXT("LayerGroups"); }
-	static FName GetLayersPropertyName() { return TEXT("Layers"); }
+	/**
+	 * Names of the LayerGroups and Layers properties on GetEditedObject's class - what the Selection panel binds its
+	 * rows to. The same on a builder and an asset; a source editing some other object's list of tracks names that
+	 * list, and None for groups it doesn't keep.
+	 */
+	virtual FName GetGroupsPropertyName() const { return TEXT("LayerGroups"); }
+	virtual FName GetLayersPropertyName() const { return TEXT("Layers"); }
+
+	/**
+	 * Whether the tracks can be split between Layer Groups - each moving a widget of its own. A plain list of tracks,
+	 * such as a component's Additive Anim Layers, plays on the one widget it belongs to: it has a single group,
+	 * which the panel neither shows nor lets a track leave.
+	 */
+	virtual bool SupportsLayerGroups() const { return true; }
+
+	/**
+	 * Whether each track names the widget it moves itself - FWidgetAnimLayer::TargetWidget - as the tracks of a plain
+	 * list do, where there are no groups to say it. The Selection panel then shows a Target Widget row for a track,
+	 * offering GetLayerTargetOptions.
+	 */
+	virtual bool SupportsLayerTargets() const { return false; }
+	virtual TArray<FString> GetLayerTargetOptions() const { return GetTargetOptions(); }
+
+	// ---------------------------------------------------------------------------------------------
+	// Where the tracks start - and what they play within
+	// ---------------------------------------------------------------------------------------------
+
+	/** One choice of where a list starts: right away (Id INDEX_NONE), or within one of the animations the source offers. */
+	struct FStartOption
+	{
+		FText Label;
+		FText ToolTip;
+		int32 Id = INDEX_NONE;
+	};
+
+	/** Whether the list can start within another animation - a component's Additive Anim Layers within one of its entries. */
+	virtual bool SupportsStartOptions() const { return false; }
+	virtual void GetStartOptions(TArray<FStartOption>& OutOptions) const {}
+
+	/** The Id of the option now in force: INDEX_NONE for right away. Setting it is one undoable edit. */
+	virtual int32 GetStartOption() const { return INDEX_NONE; }
+	virtual void SetStartOption(int32 Id) {}
+
+	/**
+	 * The tracks of the animation the list starts within, shown read-only above the list's own, greyed, so the list's
+	 * tracks can be placed against it. GetContextTimeScale turns their authored seconds into the list's - how much
+	 * faster than authored that animation plays. Null when the list starts right away.
+	 */
+	virtual const TArray<FWidgetAnimLayer>* GetContextLayers() const { return nullptr; }
+	virtual float GetContextTimeScale() const { return 1.f; }
 
 	// ---------------------------------------------------------------------------------------------
 	// The widget it plays on
@@ -146,6 +194,16 @@ public:
 	/** Whether there is something to save as a new asset, or unsaved changes to update the asset with. */
 	bool CanSaveAsNewAsset() const;
 	bool CanUpdateAsset() const;
+
+	/**
+	 * A source whose tracks can be handed over to an entry using them - a component's Additive Anim Layers becoming
+	 * an Anim In entry - says so here, and what that is called on the button.
+	 */
+	virtual bool CanReplaceWithEntry() const { return false; }
+	virtual FText GetReplaceWithEntryLabel() const { return FText::GetEmpty(); }
+
+	/** Saves the tracks as a new WA_ asset, as SaveAsNewAsset does, then replaces them with an entry playing it. Null if nothing was saved. */
+	virtual UWidgetAnimPresetAsset* SaveAndReplaceWithEntry() { return nullptr; }
 
 	virtual bool IsBuilder() const { return false; }
 	virtual UWidgetAnimBuilder* GetBuilder() const { return nullptr; }
@@ -297,6 +355,201 @@ private:
 	TWeakObjectPtr<UUserWidget> PosedRoot;
 	uint32 PosedSignature = 0;
 	FWidgetAnimBaselineSet Baselines;
+
+	FTSTicker::FDelegateHandle TickerHandle;
+	double LastPanelActiveTime = -1.0;
+
+	float Alpha = 0.f;
+	bool bPlaying = false;
+	bool bPlayingForward = true;
+	bool bLoop = false;
+	bool bPingPong = true;
+	bool bInvert = false;
+	float Speed = 1.f;
+};
+
+/**
+ * A plain list of tracks - any TArray<FWidgetAnimLayer> property of any object, such as a Widget Animation
+ * Component's Additive Anim Layers - edited in the panel's compact form, as one implicit group playing on one widget.
+ *
+ * The list is edited in place on its object: every edit is a transaction on it, so undo, redo and the package's
+ * dirty state all work as for any Details edit. Nothing here tells UMG's designer - that would rebuild its preview,
+ * and every Details panel with it, on every drag - so the designer's preview is posed by this source itself, as
+ * FWidgetAnimAssetPanelSource does it, on whatever widget FindPreviewWidget names.
+ *
+ * Posing starts only once the panel is used - played, scrubbed, a key picked, an edit made - so merely showing the
+ * list (a Details panel with two of these in it, say) leaves the designer alone. One source poses a widget at a
+ * time: the one used last takes it over, and the one before puts it back first. When the panel goes away, or
+ * another takes over, the widget is put back as authored.
+ */
+class FWidgetAnimLayerArrayPanelSource : public IWidgetAnimPanelSource
+{
+public:
+
+	/**
+	 * InOwner holds the list, in its property InArrayPropertyName. bInPlaysAsOut: the list plays as an exit - in
+	 * reverse, as every Anim Out does - so the preview plays it that way too.
+	 */
+	FWidgetAnimLayerArrayPanelSource(UObject* InOwner, FName InArrayPropertyName, bool bInPlaysAsOut);
+	virtual ~FWidgetAnimLayerArrayPanelSource() override;
+
+	/** The object holding the list, while it exists. */
+	UObject* GetOwner() const { return Owner.Get(); }
+	FName GetArrayPropertyName() const { return ArrayPropertyName; }
+	bool PlaysAsOut() const { return bPlaysAsOut; }
+
+	// IWidgetAnimPanelSource
+
+	virtual UObject* GetEditedObject() const override { return GetLayers() ? Owner.Get() : nullptr; }
+
+	/** The one group every track is in. Kept here, never saved: the list has no groups of its own. */
+	virtual TArray<FWidgetAnimLayerGroup>* GetGroups() const override;
+	virtual TArray<FWidgetAnimLayer>* GetLayers() const override;
+	virtual bool CanEdit() const override { return GetLayers() != nullptr; }
+	virtual void NotifyGroupsChanged(EPropertyChangeType::Type ChangeType) override;
+
+	virtual FName GetGroupsPropertyName() const override { return NAME_None; }
+	virtual FName GetLayersPropertyName() const override { return ArrayPropertyName; }
+	virtual bool SupportsLayerGroups() const override { return false; }
+	virtual bool SupportsLayerTargets() const override { return true; }
+
+	/** The User Widget the posed widget sits in, for anything that reads paths into the designer's preview. */
+	virtual UUserWidget* GetPreviewRoot() const override;
+
+	virtual float GetPlayheadAlpha() const override { return Alpha; }
+	virtual void ScrubToAlpha(float InAlpha) override;
+	virtual void FocusKey(int32 FlatLayerIndex, int32 KeyIndex) override;
+	virtual bool IsPlaying() const override { return bPlaying; }
+	virtual void TogglePlay() override;
+	virtual bool GetLoop() const override { return bLoop; }
+	virtual void SetLoop(bool bValue) override { bLoop = bValue; }
+	virtual bool GetPingPong() const override { return bPingPong; }
+	virtual void SetPingPong(bool bValue) override { bPingPong = bValue; }
+	virtual bool GetInvert() const override { return bInvert; }
+	virtual void SetInvert(bool bValue) override { bInvert = bValue; }
+	virtual float GetSpeed() const override { return Speed; }
+	virtual void SetSpeed(float InSpeed) override { Speed = FMath::Max(InSpeed, 0.01f); }
+
+	virtual void NotifyPanelActive() override;
+
+	/** Always a working list: there is no asset to switch to. Save as Animation copies it into a new one. */
+	virtual EMode GetMode() const override { return EMode::NewAnimation; }
+	virtual void SetMode(EMode InMode) override {}
+	virtual UWidgetAnimPresetAsset* GetAsset() const override { return nullptr; }
+	virtual void SetAsset(UWidgetAnimPresetAsset* InAsset) override {}
+
+	/**
+	 * Copies the tracks into a new WA_ asset beside the Widget Blueprint (GetNewAssetPackagePath, named from
+	 * GetNewAssetBaseName), one group playing on whatever widget uses it. The list itself is left as it is.
+	 */
+	virtual UWidgetAnimPresetAsset* SaveAsNewAsset() override;
+
+	/** Puts the preview widget back as authored now, if this source is posing it. */
+	void RestorePreview();
+
+	/**
+	 * The Details row the list is shown in, if any - its property handle. Edits here go straight onto the object, which
+	 * keeps the Details panel and UMG's designer from rebuilding on every drag; once they settle, they are told through
+	 * this handle, exactly as an edit of the plain fields would be, so whatever the Details panel does with such an edit
+	 * - UMG copying it from its preview onto the Widget Blueprint, marking the Blueprint modified, rebuilding its
+	 * preview - happens to them too. Without a live handle, an owning Blueprint is marked modified instead.
+	 */
+	void SetArrayHandle(const TSharedPtr<IPropertyHandle>& InHandle);
+
+protected:
+
+	/** The widget the tracks play on in the designer's preview, or null while there is none. Looked for at most twice a second. */
+	virtual UWidget* FindPreviewWidget() const { return nullptr; }
+
+	/** Just before this source first poses Widget: the moment to still anything else that animates it there. */
+	virtual void OnPreviewTaken(UWidget* Widget) {}
+
+	/** Just after this source put Widget back as authored. bEdited: the list was edited while it was posed. */
+	virtual void OnPreviewReleased(UWidget* Widget, bool bEdited) {}
+
+	/**
+	 * The widget a track's Target Widget path names, on the preview Widget is part of. Null for None - the track moves
+	 * Widget itself - or for a path that finds nothing, which plays on Widget too, as at runtime.
+	 */
+	virtual UWidget* ResolveLayerTarget(UWidget* Widget, FName Path) const;
+
+	/**
+	 * Settled edits are about to be told (see SetArrayHandle): the moment for a subclass to copy them onto every other
+	 * copy of the list that must agree - the object saved in the Blueprint, the designer's live one.
+	 */
+	virtual void PrepareCommit() {}
+
+	/** Settled edits were told - through the Details row's handle when bThroughHandle, else by marking the Blueprint modified. */
+	virtual void FinishCommit(bool bThroughHandle) {}
+
+	/** Where SaveAsNewAsset puts the new asset, and the name it starts from (numbered on a clash). */
+	virtual FString GetNewAssetPackagePath() const;
+	virtual FString GetNewAssetBaseName() const;
+
+	/**
+	 * The tracks as settings for Widget: placed in sequence, material and shape tracks aimed at it, hidden ones muted,
+	 * Invert stamped on - after whatever animation they play within (AppendContextSettings). OutFirstOwn is where the
+	 * list's own settings begin.
+	 */
+	void BuildSettings(UWidget* Widget, TArray<FWidgetAnimSettings>& OutSettings, int32* OutFirstOwn = nullptr) const;
+
+	/** The animation the list plays within, as settings for Widget, placed before the list's own - nothing by default. */
+	virtual void AppendContextSettings(UWidget* Widget, TArray<FWidgetAnimSettings>& OutSettings) const {}
+
+	/** Whether the list's own tracks play inverted as part of that animation - its use of it inverts it. */
+	virtual bool GetContextInvert() const { return false; }
+
+	/** The preview widget, from FindPreviewWidget - cached, since finding it may walk every widget. */
+	UWidget* GetPreviewWidget() const;
+
+private:
+
+	/** The ticker: advances the clock and poses the preview while the panel is in use, puts it back once it isn't. */
+	bool Tick(float DeltaTime);
+
+	/** The panel was used: from now until it goes away, this source poses the preview. */
+	void Claim();
+
+	/** Puts the posed widget back as authored and forgets it, without ending the claim. Returns it if it was still alive. */
+	UWidget* PutBackPose();
+
+	/** An edit to be told through the Details once edits settle - see SetArrayHandle. */
+	void MarkCommitPending();
+
+	/** Tells the settled edits through the Details row's handle, or marks the Blueprint modified. See SetArrayHandle. */
+	void CommitEdits();
+
+	/** Any property of the object changed - the Selection panel's fields among them: a commit is due. */
+	void OnObjectPropertyChanged(UObject* Object, struct FPropertyChangedEvent& Event);
+
+	TWeakObjectPtr<UObject> Owner;
+	FName ArrayPropertyName;
+	bool bPlaysAsOut = false;
+
+	/** The implicit group - one, playing on the widget itself. */
+	mutable TArray<FWidgetAnimLayerGroup> Groups;
+
+	mutable TWeakObjectPtr<UWidget> CachedWidget;
+	mutable double LastWidgetSearchTime = -1.0;
+
+	/** The widget posed, and what it was captured for; either changing means capture again. */
+	TWeakObjectPtr<UWidget> PosedWidget;
+	uint32 PosedSignature = 0;
+	FWidgetAnimBaselineSet Baselines;
+
+	/** Whether the list was edited while the widget was posed - told to OnPreviewReleased. */
+	bool bEditedWhilePosed = false;
+
+	/** Whether the panel has been used since it last went away - see Claim. */
+	bool bClaimed = false;
+
+	/** The Details row's handle, edits not yet told through it, when the last one was made, and whether it is being told now. */
+	TWeakPtr<IPropertyHandle> ArrayHandle;
+	bool bCommitPending = false;
+	double LastEditTime = 0.0;
+	bool bCommitting = false;
+	bool bCommitScheduled = false;
+	FDelegateHandle PropertyChangedHandle;
 
 	FTSTicker::FDelegateHandle TickerHandle;
 	double LastPanelActiveTime = -1.0;

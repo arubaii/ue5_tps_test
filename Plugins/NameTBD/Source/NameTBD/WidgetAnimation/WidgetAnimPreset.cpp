@@ -273,7 +273,8 @@ void UWidgetAnimEntryLibrary::FlattenEntries(const TArray<FWidgetAnimEntry>& Ent
 	}
 }
 
-int32 UWidgetAnimEntryLibrary::StartEntriesById(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& Entries, TFunctionRef<UWidget*(FName)> Resolver, const TArray<FName>& AnimIds, bool bIsOut, float PlaybackSpeed, bool bRestartIfPlaying, bool bHoldWhenFinished, const TFunctionRef<bool(const FWidgetAnimEntry&)>* Filter)
+int32 UWidgetAnimEntryLibrary::StartEntriesById(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& Entries, TFunctionRef<UWidget*(FName)> Resolver, const TArray<FName>& AnimIds, bool bIsOut, float PlaybackSpeed, bool bRestartIfPlaying, bool bHoldWhenFinished, const TFunctionRef<bool(const FWidgetAnimEntry&)>* Filter,
+	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)>* AppendExtra)
 {
 	const bool bAll = AnimIds.Num() == 0;
 	int32 Started = 0;
@@ -303,6 +304,11 @@ int32 UWidgetAnimEntryLibrary::StartEntriesById(FWidgetAnimPlayer& Player, const
 		if (Settings.Num() == 0)
 		{
 			continue;
+		}
+
+		if (AppendExtra)
+		{
+			(*AppendExtra)(Index, Settings);
 		}
 
 		UWidgetAnimLibrary::StartWidgetAnimTrack(Player, Entry.AnimId, Index, Settings, bIsOut, PlaybackSpeed, bRestartIfPlaying, bHoldWhenFinished);

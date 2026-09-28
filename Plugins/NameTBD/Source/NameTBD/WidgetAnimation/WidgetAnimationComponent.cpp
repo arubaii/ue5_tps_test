@@ -44,23 +44,28 @@ namespace
 	 * on; material layers use it too when it is an Image, and a Transform layer's Animate Shape uses it when
 	 * it is a Shape Box - the same narrowing an entry with no target gets in FWidgetAnimEntryBase::BuildSettings.
 	 */
-	void AppendAdditiveLayers(const TArray<FWidgetAnimLayer>& Layers, UWidget* AnimatedWidget, TArray<FWidgetAnimSettings>& OutSettings)
+	void AppendAdditiveLayers(const TArray<FWidgetAnimLayer>& Layers, UWidget* AnimatedWidget, TFunctionRef<UWidget*(FName)> Resolver, TArray<FWidgetAnimSettings>& OutSettings)
 	{
-		UImage* MaterialTarget = Cast<UImage>(AnimatedWidget);
-
-		// The widget itself when it is a Shape Box, or the Shape Box it sits in - so a component on an Image
-		// inside a Shape Box animates the box's outline while it moves the Image.
-		UShapeBox* ShapeTarget = UWidgetAnimLibrary::ResolveShapeBox(AnimatedWidget);
-
-		// Placed in order, each after the one above it, exactly as an entry's layers are.
+		// Placed in order, each after the one above it, exactly as an entry's layers are - one setting per layer.
 		TArray<FWidgetAnimSettings> Placed;
 		UWidgetAnimLibrary::BuildLayerSettings(Layers, Placed);
 
 		OutSettings.Reserve(OutSettings.Num() + Placed.Num());
-		for (FWidgetAnimSettings& Settings : Placed)
+		for (int32 Index = 0; Index < Placed.Num(); ++Index)
 		{
-			Settings.MaterialTargetImage = MaterialTarget;
-			Settings.ShapeTargetBox = ShapeTarget;
+			FWidgetAnimSettings& Settings = Placed[Index];
+
+			// Each layer on its own Target Widget - a path, resolved as an entry's are - or on the widget this
+			// component is on. A path that finds nothing falls back to that widget, as an entry's does.
+			UWidget* Target = Layers.IsValidIndex(Index) && !Layers[Index].TargetWidget.IsNone() ? Resolver(Layers[Index].TargetWidget) : nullptr;
+			UWidget* Moved = Target ? Target : AnimatedWidget;
+
+			Settings.TargetWidget = Target;
+			Settings.MaterialTargetImage = Cast<UImage>(Moved);
+
+			// The widget itself when it is a Shape Box, or the Shape Box it sits in - so a component on an Image
+			// inside a Shape Box animates the box's outline while it moves the Image.
+			Settings.ShapeTargetBox = UWidgetAnimLibrary::ResolveShapeBox(Moved);
 			OutSettings.Add(MoveTemp(Settings));
 		}
 	}
@@ -335,6 +340,126 @@ TArray<FString> UWidgetAnimationComponent::GetAnimTargetWidgetOptions() const
 }
 
 // =====================================================================================================
+// When the additive layers start
+// =====================================================================================================
+
+bool UWidgetAnimationComponent::CanHostAdditiveList(bool bOutList, bool bInAnimOut, int32 EntryIndex) const
+{
+	const TArray<FWidgetAnimEntry>& List = bInAnimOut ? AnimOut : AnimIn;
+	if (!List.IsValidIndex(EntryIndex) || !List[EntryIndex].Animation)
+	{
+		return false;
+	}
+
+	// In its own list's direction, or mirrored into this one.
+	return bInAnimOut == bOutList || List[EntryIndex].bMirrorInOut;
+}
+
+int32 UWidgetAnimationComponent::ResolveAdditiveStart(bool bOutList, bool& bOutInAnimOut) const
+{
+	const FWidgetAnimAdditiveStart& Start = bOutList ? AdditiveAnimLayersOutStart : AdditiveAnimLayersInStart;
+	bOutInAnimOut = Start.bInAnimOut;
+	if (!Start.IsSet())
+	{
+		return INDEX_NONE;
+	}
+
+	// Where it was picked, if it is still there; else wherever its animation went - the list reordered.
+	const TArray<FWidgetAnimEntry>& List = Start.bInAnimOut ? AnimOut : AnimIn;
+	int32 Found = List.IsValidIndex(Start.EntryIndex) && List[Start.EntryIndex].Animation == Start.Animation ? Start.EntryIndex : INDEX_NONE;
+	if (Found == INDEX_NONE)
+	{
+		Found = List.IndexOfByPredicate([&Start](const FWidgetAnimEntry& Entry) { return Entry.Animation == Start.Animation; });
+	}
+
+	return Found != INDEX_NONE && CanHostAdditiveList(bOutList, Start.bInAnimOut, Found) ? Found : INDEX_NONE;
+}
+
+bool UWidgetAnimationComponent::RefreshAdditiveStarts()
+{
+	bool bChanged = false;
+	for (const bool bOutList : { false, true })
+	{
+		FWidgetAnimAdditiveStart& Start = bOutList ? AdditiveAnimLayersOutStart : AdditiveAnimLayersInStart;
+		if (!Start.IsSet())
+		{
+			if (Start.EntryIndex != INDEX_NONE || Start.Animation)
+			{
+				Start.Reset();
+				bChanged = true;
+			}
+			continue;
+		}
+
+		bool bInAnimOut = false;
+		const int32 Found = ResolveAdditiveStart(bOutList, bInAnimOut);
+		if (Found == INDEX_NONE)
+		{
+			// Its entry is gone: the list starts right away again.
+			Start.Reset();
+			bChanged = true;
+		}
+		else if (Found != Start.EntryIndex)
+		{
+			Start.EntryIndex = Found;
+			bChanged = true;
+		}
+	}
+	return bChanged;
+}
+
+int32 UWidgetAnimationComponent::ToEffectiveIndex(bool bOutDirection, bool bInAnimOut, int32 EntryIndex) const
+{
+	// AppendEntriesWithMirroring runs over Anim In, then Anim Out: the In direction is every Anim In entry, then the
+	// Anim Out entries mirrored into it; the Out direction is the Anim In entries mirrored into it, then every Anim
+	// Out entry.
+	auto CountMirrored = [](const TArray<FWidgetAnimEntry>& List, int32 Before)
+	{
+		int32 Count = 0;
+		for (int32 Index = 0; Index < FMath::Min(Before, List.Num()); ++Index)
+		{
+			Count += List[Index].bMirrorInOut ? 1 : 0;
+		}
+		return Count;
+	};
+
+	if (!bOutDirection)
+	{
+		return bInAnimOut ? AnimIn.Num() + CountMirrored(AnimOut, EntryIndex) : EntryIndex;
+	}
+	return bInAnimOut ? CountMirrored(AnimIn, AnimIn.Num()) + EntryIndex : CountMirrored(AnimIn, EntryIndex);
+}
+
+void UWidgetAnimationComponent::AppendLinkedAdditive(int32 EffectiveIndex, bool bOut, TArray<FWidgetAnimSettings>& EntrySettings, int32 First) const
+{
+	const int32 LinkedEffective = bOut ? LinkedEffectiveOut : LinkedEffectiveIn;
+	const TArray<FWidgetAnimSettings>& Linked = bOut ? LinkedAdditiveOut : LinkedAdditiveIn;
+	const TArray<FWidgetAnimEntry>& Entries = bOut ? EffectiveOutEntries : EffectiveInEntries;
+	if (EffectiveIndex != LinkedEffective || Linked.Num() == 0 || !Entries.IsValidIndex(EffectiveIndex) || !EntrySettings.IsValidIndex(First))
+	{
+		return;
+	}
+
+	// As one more part of the entry's animation: its per-use flags, its Playback Speed - not its animation's Speed
+	// Multiplier, which the inline editor already shows its tracks at - and its clock, so the two loop as one.
+	const FWidgetAnimEntry& Entry = Entries[EffectiveIndex];
+	const int32 LoopGroup = EntrySettings[First].LoopGroup;
+
+	EntrySettings.Reserve(EntrySettings.Num() + Linked.Num());
+	for (const FWidgetAnimSettings& Layer : Linked)
+	{
+		FWidgetAnimSettings& Stamped = EntrySettings.Add_GetRef(Layer);
+		Stamped.bLoop = Entry.bLoop;
+		Stamped.bPingPong = Entry.bPingPong;
+		Stamped.LoopCount = Entry.LoopCount;
+		Stamped.bInvertAnimation = Entry.bInvertAnimation;
+		Stamped.bMirrorInOut = Entry.bMirrorInOut;
+		Stamped.PlaybackSpeed = FMath::Max(Entry.PlaybackSpeed, 0.01f);
+		Stamped.LoopGroup = LoopGroup;
+	}
+}
+
+// =====================================================================================================
 // Building the effective stacks
 // =====================================================================================================
 
@@ -359,17 +484,52 @@ void UWidgetAnimationComponent::RebuildEffectiveAnimations()
 
 	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
 
-	FlattenedIn.Reset();
-	FlattenedOut.Reset();
-	UWidgetAnimEntryLibrary::FlattenEntries(EffectiveInEntries, Resolver, FlattenedIn);
-	UWidgetAnimEntryLibrary::FlattenEntries(EffectiveOutEntries, Resolver, FlattenedOut);
+	// Each Additive Anim Layers list starts right away - one of the unnamed layers - or within one of the entries,
+	// as part of it. An entry with nothing to play can't carry it, so the list starts right away then.
+	auto LinkList = [this, &Resolver](bool bOut, const TArray<FWidgetAnimLayer>& Layers, TArray<FWidgetAnimSettings>& Linked, int32& LinkedEffective)
+	{
+		Linked.Reset();
+		LinkedEffective = INDEX_NONE;
 
-	// The unnamed layers: Additive Anim Layers first, then anything code handed over. They play as one
-	// track alongside the entries every time Anim In / Anim Out plays.
+		bool bInAnimOut = false;
+		const int32 EntryIndex = ResolveAdditiveStart(bOut, bInAnimOut);
+		const int32 Effective = EntryIndex == INDEX_NONE ? INDEX_NONE : ToEffectiveIndex(bOut, bInAnimOut, EntryIndex);
+		const TArray<FWidgetAnimEntry>& Entries = bOut ? EffectiveOutEntries : EffectiveInEntries;
+		if (Layers.Num() > 0 && Entries.IsValidIndex(Effective) && Entries[Effective].IsUsable())
+		{
+			AppendAdditiveLayers(Layers, AnimOwner.Get(), Resolver, Linked);
+			LinkedEffective = Effective;
+		}
+	};
+	LinkList(/*bOut=*/false, AdditiveAnimLayersIn, LinkedAdditiveIn, LinkedEffectiveIn);
+	LinkList(/*bOut=*/true, AdditiveAnimLayersOut, LinkedAdditiveOut, LinkedEffectiveOut);
+
+	// Every entry, followed by the list that starts within it, if one does.
+	auto Flatten = [this, &Resolver](const TArray<FWidgetAnimEntry>& Entries, bool bOut, TArray<FWidgetAnimSettings>& OutSettings)
+	{
+		OutSettings.Reset();
+		for (int32 Index = 0; Index < Entries.Num(); ++Index)
+		{
+			const int32 First = OutSettings.Num();
+			Entries[Index].BuildSettingsResolved(OutSettings, Resolver);
+			AppendLinkedAdditive(Index, bOut, OutSettings, First);
+		}
+	};
+	Flatten(EffectiveInEntries, /*bOut=*/false, FlattenedIn);
+	Flatten(EffectiveOutEntries, /*bOut=*/true, FlattenedOut);
+
+	// The unnamed layers: Additive Anim Layers first - those that start right away - then anything code handed
+	// over. They play as one track alongside the entries every time Anim In / Anim Out plays.
 	UnnamedAnimIn.Reset();
 	UnnamedAnimOut.Reset();
-	AppendAdditiveLayers(AdditiveAnimLayersIn, AnimOwner.Get(), UnnamedAnimIn);
-	AppendAdditiveLayers(AdditiveAnimLayersOut, AnimOwner.Get(), UnnamedAnimOut);
+	if (LinkedEffectiveIn == INDEX_NONE)
+	{
+		AppendAdditiveLayers(AdditiveAnimLayersIn, AnimOwner.Get(), Resolver, UnnamedAnimIn);
+	}
+	if (LinkedEffectiveOut == INDEX_NONE)
+	{
+		AppendAdditiveLayers(AdditiveAnimLayersOut, AnimOwner.Get(), Resolver, UnnamedAnimOut);
+	}
 	UnnamedAnimIn.Append(ExtraAnimIn);
 	UnnamedAnimOut.Append(ExtraAnimOut);
 
@@ -665,6 +825,8 @@ bool UWidgetAnimationComponent::PlayForTrigger(EEntryTrigger Trigger, bool bOut)
 	// The same as Play In / Play Out from here on - the other direction's tracks dropped, the phase set, the pose
 	// applied this frame and the children cascaded into - only with the entries this trigger doesn't play left out.
 	UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
+	auto AppendLinked = [this, bOut](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { AppendLinkedAdditive(EntryIndex, bOut, EntrySettings, 0); };
+	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
 	UWidgetAnimEntryLibrary::StartEntriesById(
 		AnimPlayer,
 		Entries,
@@ -674,7 +836,8 @@ bool UWidgetAnimationComponent::PlayForTrigger(EEntryTrigger Trigger, bool bOut)
 		/*PlaybackSpeed=*/1.f,
 		/*bRestartIfPlaying=*/true,
 		/*bHoldWhenFinished=*/true,
-		&Filter);
+		&Filter,
+		&AppendExtra);
 
 	UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, Unnamed, bOut, /*Speed=*/1.f, /*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
 
@@ -743,6 +906,8 @@ void UWidgetAnimationComponent::PlayIn(bool bCascadeToChildren)
 	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
 
 	UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
+	auto AppendLinked = [this](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { AppendLinkedAdditive(EntryIndex, /*bOut=*/false, EntrySettings, 0); };
+	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
 	UWidgetAnimEntryLibrary::StartEntriesById(
 		AnimPlayer,
 		EffectiveInEntries,
@@ -751,7 +916,9 @@ void UWidgetAnimationComponent::PlayIn(bool bCascadeToChildren)
 		/*bIsOut=*/false,
 		/*PlaybackSpeed=*/1.f,
 		/*bRestartIfPlaying=*/true,
-		/*bHoldWhenFinished=*/true);
+		/*bHoldWhenFinished=*/true,
+		/*Filter=*/nullptr,
+		&AppendExtra);
 
 	UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, UnnamedAnimIn, /*bIsOut=*/false, /*Speed=*/1.f, /*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
 
@@ -780,6 +947,8 @@ void UWidgetAnimationComponent::PlayOut(bool bCascadeToChildren)
 	// The In tracks are dropped rather than left holding: an exit that has to fight the entrance's final
 	// pose every frame never quite gets where it's going.
 	UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
+	auto AppendLinked = [this](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { AppendLinkedAdditive(EntryIndex, /*bOut=*/true, EntrySettings, 0); };
+	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
 	UWidgetAnimEntryLibrary::StartEntriesById(
 		AnimPlayer,
 		EffectiveOutEntries,
@@ -788,7 +957,9 @@ void UWidgetAnimationComponent::PlayOut(bool bCascadeToChildren)
 		/*bIsOut=*/true,
 		/*PlaybackSpeed=*/1.f,
 		/*bRestartIfPlaying=*/true,
-		/*bHoldWhenFinished=*/true);
+		/*bHoldWhenFinished=*/true,
+		/*Filter=*/nullptr,
+		&AppendExtra);
 
 	UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, UnnamedAnimOut, /*bIsOut=*/true, /*Speed=*/1.f, /*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
 
@@ -968,7 +1139,10 @@ void UWidgetAnimationComponent::PlayWidgetAnimationsById(const TArray<FName>& An
 
 	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
 
-	// Phase is deliberately untouched: a named one-shot is not the widget appearing or closing.
+	// Phase is deliberately untouched: a named one-shot is not the widget appearing or closing. An additive list
+	// that starts within an entry plays with it, whatever called for it.
+	auto AppendLinked = [this, bReverse](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { AppendLinkedAdditive(EntryIndex, bReverse, EntrySettings, 0); };
+	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
 	UWidgetAnimEntryLibrary::StartEntriesById(
 		AnimPlayer,
 		bReverse ? EffectiveOutEntries : EffectiveInEntries,
@@ -977,9 +1151,11 @@ void UWidgetAnimationComponent::PlayWidgetAnimationsById(const TArray<FName>& An
 		bReverse,
 		PlaybackSpeed,
 		bRestartIfPlaying,
-		bHoldFinalPose);
+		bHoldFinalPose,
+		/*Filter=*/nullptr,
+		&AppendExtra);
 
-	// Additive and extra layers have no Anim ID, so they only join a "play everything" call.
+	// Additive layers that start right away, and extra layers, have no Anim ID, so they only join a "play everything" call.
 	if (AnimIds.Num() == 0)
 	{
 		const TArray<FWidgetAnimSettings>& Unnamed = bReverse ? UnnamedAnimOut : UnnamedAnimIn;
@@ -1378,6 +1554,7 @@ void UWidgetAnimationComponent::PostLoad()
 	MigrateTriggersIntoEntries();
 	SyncEntryGroupTargets();
 	RefreshEntryTriggers();
+	RefreshAdditiveStarts();
 }
 
 bool UWidgetAnimationComponent::SyncEntryGroupTargets()
@@ -1411,6 +1588,9 @@ void UWidgetAnimationComponent::PostEditChangeProperty(FPropertyChangedEvent& Pr
 
 	// A new entry shows its trigger settings, and a changed one is heard by the visibility watch.
 	RefreshEntryTriggers();
+
+	// An entry an additive list starts within moved, or went: the list follows it, or starts right away again.
+	RefreshAdditiveStarts();
 
 	// Keeps each Transform layer's Keys list one-to-one with its curve: a key added on the curve gets an
 	// entry, a deleted one loses it, and every entry's time follows its key. Deferred and skipped mid-drag -

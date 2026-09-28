@@ -603,10 +603,19 @@ struct NAMETBD_API FWidgetAnimLayer
 	 * position. Set from the Widget Animations panel, never in a Details panel. Membership only: where the layer
 	 * sits in time is still its place in the animation's one list of layers and its Starts setting, so layers
 	 * of different groups sequence against each other freely. Unused wherever layers stand alone, such as a
-	 * component's Additive Anim Layers.
+	 * component's Additive Anim Layers - see TargetWidget.
 	 */
 	UPROPERTY()
 	int32 LayerGroup = 0;
+
+	/**
+	 * Where a layer stands alone - a Widget Animation Component's Additive Anim Layers - the widget it moves: a path
+	 * into the Widget Blueprint the component was added in, the same kind of path an entry's Target Widgets hold.
+	 * None moves the component's own widget. Set from the component's inline track editor, never in a Details panel.
+	 * Unused in an animation, where the layer's Layer Group says which widget it moves.
+	 */
+	UPROPERTY()
+	FName TargetWidget;
 
 #if WITH_EDITORONLY_DATA
 	/**

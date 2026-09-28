@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "EditorUndoClient.h"
+#include "PropertyEditorDelegates.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Widgets/SCompoundWidget.h"
 
@@ -54,13 +55,47 @@ class SWidgetAnimTimeline : public SCompoundWidget, public FSelfRegisteringEdito
 {
 public:
 
-	SLATE_BEGIN_ARGS(SWidgetAnimTimeline) {}
+	SLATE_BEGIN_ARGS(SWidgetAnimTimeline)
+		: _Compact(false)
+		, _Inline(false)
+		, _IsCollapsed(false)
+		{}
 
 		/** What the panel edits and plays. Shared between the drawer and the docked tab of one editor. */
 		SLATE_ARGUMENT(TSharedPtr<IWidgetAnimPanelSource>, Source)
 
 		/** Shows the Dock in Layout button, and is what it does. Left unbound where the panel already is a tab. */
 		SLATE_EVENT(FSimpleDelegate, OnDockInLayout)
+
+		/**
+		 * The compact panel, for a plain list of tracks inside a Details panel - a component's Additive Anim Layers.
+		 * Just the Track Editor, the transport and a small Selection panel beside the tracks: no Animation Tracks
+		 * list, no Layer Groups, no New Animation / Edit Existing Asset, no Dock in Layout, no Value Watcher. Its
+		 * own header strip names the list and holds Add Track, Save as Animation and Expand.
+		 */
+		SLATE_ARGUMENT(bool, Compact)
+
+		/** The compact panel's header: what the list is ("Additive Anim Layers In"), and a tip saying more. */
+		SLATE_ATTRIBUTE(FText, Title)
+		SLATE_ATTRIBUTE(FText, TitleToolTip)
+
+		/** Shows the compact panel's Expand button, and is what it does: the same list in a window of its own. */
+		SLATE_EVENT(FSimpleDelegate, OnExpand)
+
+		/**
+		 * The compact panel squeezed into a Details panel: a slim transport - the transport buttons and the time, small,
+		 * under the tracks only, so the Selection panel beside them runs the whole height, drawn a little smaller - and no
+		 * Animation Controls, Track Controls, track scroll bars or Selection header. Loop, Ping Pong, Invert, Speed and the track controls keep
+		 * whatever they are set to; Expand shows them all.
+		 */
+		SLATE_ARGUMENT(bool, Inline)
+
+		/**
+		 * Whether the compact panel is folded to its header strip, and what its fold arrow does. The arrow shows only
+		 * with OnToggleCollapsed bound. A folded panel leaves the designer alone, as a panel off screen does.
+		 */
+		SLATE_ATTRIBUTE(bool, IsCollapsed)
+		SLATE_EVENT(FSimpleDelegate, OnToggleCollapsed)
 
 	SLATE_END_ARGS()
 
@@ -156,6 +191,13 @@ public:
 	// ---------------------------------------------------------------------------------------------
 
 	IWidgetAnimPanelSource* GetSource() const { return Source.Get(); }
+
+	/** Whether this is the compact panel - see FArguments::Compact - and whether it is inline, in a Details panel. */
+	bool IsCompact() const { return bCompact; }
+	bool IsInline() const { return bCompact && bInline; }
+
+	/** Whether the compact panel is folded to its header - see FArguments::IsCollapsed. */
+	bool IsBodyCollapsed() const { return bCompact && IsCollapsedAttr.Get(false); }
 
 	/** The groups on screen, or null when there is nothing to show. */
 	const TArray<FWidgetAnimLayerGroup>* GetGroups() const;
@@ -262,6 +304,16 @@ public:
 
 	/** Every line of the Track Editor, top to bottom: each group's own line, then its track lines. */
 	const TArray<FTrackLine>& GetTrackLines() const { return TrackLines; }
+
+	/**
+	 * The read-only tracks of the animation the list plays within - see IWidgetAnimPanelSource::GetContextLayers -
+	 * drawn greyed on rows of their own above the list's lines, packed so tracks that don't overlap share a row.
+	 * Their spans are in the list's seconds; row is which context row each is on.
+	 */
+	const TArray<FWidgetAnimLayer>* GetContextLayers() const;
+	const TArray<FVector2f>& GetContextSpans() const { return ContextSpans; }
+	int32 GetContextRow(int32 ContextIndex) const { return ContextRows.IsValidIndex(ContextIndex) ? ContextRows[ContextIndex] : 0; }
+	int32 GetNumContextRows() const { return NumContextRows; }
 
 	/** The Track Editor line a layer is drawn on, or INDEX_NONE while its group is folded. */
 	int32 GetLayerLine(int32 LayerIndex) const { return LayerToLine.IsValidIndex(LayerIndex) ? LayerToLine[LayerIndex] : INDEX_NONE; }
@@ -401,6 +453,15 @@ public:
 
 	/** Moves a layer into another group - another widget - leaving its place in the sequence alone. */
 	void SetLayerGroup(int32 LayerIndex, int32 GroupIndex);
+
+	/** A plain list's track pointed at another widget - see FWidgetAnimLayer::TargetWidget. None is the list's own widget. */
+	void SetLayerTarget(int32 LayerIndex, FName Target);
+
+	/**
+	 * Which widget a track moves, as tooltips and menus name it: its group's name - or, on a plain list, its Target
+	 * Widget, or "This Widget".
+	 */
+	FText GetLayerWhereName(int32 LayerIndex) const;
 
 	/**
 	 * Unwraps an existing Widget Animation's layers into this one, where a new layer would go. An animation with
@@ -589,6 +650,35 @@ private:
 	/** "Add Animation Track to {group}", opening onto every track type. */
 	void AddTrackSubMenu(class FMenuBuilder& Menu, int32 GroupIndex);
 
+	/** Every track type - built-in, registered, Blueprint - each adding a track of it to GroupIndex. */
+	void AddTrackTypeEntries(class FMenuBuilder& Menu, int32 GroupIndex);
+
+	/** The compact panel's header strip: the list's name, then Add Track, Save as Animation and Expand. */
+	TSharedRef<SWidget> MakeCompactHeader();
+
+	/** Save as Animation Asset, and - where the source offers it - saving and handing the tracks over to an entry. */
+	void SaveCompactList(bool bReplaceWithEntry);
+
+	/** The Selection panel: its header strip and whichever view fits what is selected. Shared by both layouts. */
+	TSharedRef<SWidget> MakeSelectionPanel();
+
+	/** The inline panel's transport: its buttons and the time, small, in one slim row. */
+	TSharedRef<SWidget> MakeInlineTransport();
+
+	/** Where the list starts - right away, or within one of the animations the source offers - as a menu of choices. */
+	TSharedRef<SWidget> MakeStartMenu();
+
+	/** The start in force, as the header's Starts button shows it: "Right Away", or the animation's name. */
+	FText GetStartLabel() const;
+
+	/**
+	 * The compact panel's selection, kept per source while no panel shows it: a Details panel lays itself out again
+	 * after an edit is told through it, and the panel it held is made anew - with what was selected, and where the
+	 * view was, put back.
+	 */
+	void SaveCompactState() const;
+	void RestoreCompactState();
+
 	/** Every layer's start in authored seconds, as the sequence places it. */
 	void GetAuthoredStarts(TArray<float>& OutStarts) const;
 
@@ -631,8 +721,25 @@ private:
 	TSharedPtr<IWidgetAnimPanelSource> Source;
 	FSimpleDelegate OnDockInLayout;
 
+	/** The compact panel, its header's name and tip, and its Expand - see FArguments. */
+	bool bCompact = false;
+	bool bInline = false;
+	TAttribute<bool> IsCollapsedAttr;
+	FSimpleDelegate OnToggleCollapsed;
+	TAttribute<FText> CompactTitle;
+	TAttribute<FText> CompactTitleToolTip;
+	FSimpleDelegate OnExpand;
+
+	/** What lays the Selection panel out, kept so it can be registered for any class a source edits. */
+	FOnGetDetailCustomizationInstance SelectionLayout;
+
 	/** The Track Editor's lines, and where each layer is on them - see UpdateTrackLayout. */
 	TArray<FTrackLine> TrackLines;
+
+	/** The context tracks' spans and rows, worked out with the lines - see GetContextSpans. */
+	TArray<FVector2f> ContextSpans;
+	TArray<int32> ContextRows;
+	int32 NumContextRows = 0;
 	TArray<int32> LayerToLine;
 	TArray<int32> LayerLineOrdinals;
 	TArray<int32> GroupLineCounts;

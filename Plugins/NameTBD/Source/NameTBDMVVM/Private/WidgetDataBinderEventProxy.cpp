@@ -4,9 +4,7 @@
 
 #include "UObject/UnrealType.h"
 #include "WidgetDataBinderComponent.h"
-
-// Same name as the binder's category, so "Log LogWidgetDataBinder Verbose" turns both on.
-DEFINE_LOG_CATEGORY_STATIC(LogWidgetDataBinder, Log, All);
+#include "WidgetDataBinderLog.h"
 
 bool UWidgetDataBinderEventProxy::Attach(UWidgetDataBinderComponent* InBinder, int32 InBindingIndex, UObject* EventOwner, const FMulticastDelegateProperty* EventProperty)
 {

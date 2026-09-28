@@ -319,8 +319,12 @@ public:
 	 * Filter, when given, skips every entry it returns false for - how a host plays only the entries a given trigger
 	 * (construction, becoming visible) is set for. Skipped entries keep their index, so a track's source index is
 	 * always the entry's position in Entries.
+	 *
+	 * AppendExtra, when given, may add settings of its own to an entry's before its track starts - how a component's
+	 * Additive Anim Layers play as part of the entry they start within.
 	 */
-	static int32 StartEntriesById(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& Entries, TFunctionRef<UWidget*(FName)> Resolver, const TArray<FName>& AnimIds, bool bIsOut, float PlaybackSpeed, bool bRestartIfPlaying, bool bHoldWhenFinished, const TFunctionRef<bool(const FWidgetAnimEntry&)>* Filter = nullptr);
+	static int32 StartEntriesById(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& Entries, TFunctionRef<UWidget*(FName)> Resolver, const TArray<FName>& AnimIds, bool bIsOut, float PlaybackSpeed, bool bRestartIfPlaying, bool bHoldWhenFinished, const TFunctionRef<bool(const FWidgetAnimEntry&)>* Filter = nullptr,
+		const TFunctionRef<void(int32 /*EntryIndex*/, TArray<FWidgetAnimSettings>& /*EntrySettings*/)>* AppendExtra = nullptr);
 
 	/** True if any entry points at an animation that actually has layers. */
 	UFUNCTION(BlueprintPure, Category = "Widget Animation")
