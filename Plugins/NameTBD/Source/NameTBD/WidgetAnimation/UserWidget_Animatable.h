@@ -59,8 +59,8 @@ public:
 	virtual void PlayWidgetAnimationsById(const TArray<FName>& AnimIds, bool bReverse, float PlaybackSpeed, bool bHoldFinalPose, bool bRestartIfPlaying) override;
 	virtual void StopWidgetAnimationsById(const TArray<FName>& AnimIds, bool bResetToStart) override;
 	virtual bool AreWidgetAnimationsPlayingById(const TArray<FName>& AnimIds) const override;
-	virtual bool SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying) override;
-	virtual FVector4 GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const override;
+	virtual bool SetWidgetAnimationValues(const FWidgetAnimValueId& Id, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying) override;
+	virtual FVector4 GetWidgetAnimationValues(const FWidgetAnimValueId& Id, bool bTargetValue) const override;
 
 	/** Routed into the component, so hiding this widget still plays Anim Out first. */
 	virtual void SetVisibility(ESlateVisibility InVisibility) override;

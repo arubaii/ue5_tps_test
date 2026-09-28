@@ -16,7 +16,7 @@ namespace NameTBD
 		{
 			// -------------------------------------------------------------------------------------------------
 			// Layer types - the section bars in the Track Editor, and the accent on their tooltips.
-			// Vivid on purpose: they are the loudest colours in the editor. Everything else stays muted around them.
+			// Vivid on purpose: they are the loudest colors in the editor. Everything else stays muted around them.
 			//
 			// These are the defaults. Each user can change them in Editor Preferences > Plugins > Widget
 			// Animations Editor > Track Colors - see UWidgetAnimEditorSettings - and the panel reads those.
@@ -41,10 +41,10 @@ namespace NameTBD
 			// -------------------------------------------------------------------------------------------------
 			// Layer groups - the band down the left of a group's rows, and its summary bar.
 			//
-			// Not a fixed list: group N's colour is generated, stepping round the hue circle by the golden angle
-			// from GroupHueStart, so any number of groups stay distinct from their neighbours. Kept low in
+			// Not a fixed list: group N's color is generated, stepping around the hue circle by the golden angle
+			// from GroupHueStart, so any number of groups stay distinct from their neighbors. Kept low in
 			// saturation and value so a group reads as a quiet grouping cue and never competes with the layer
-			// colours above. Hue is 0-1 around the circle.
+			// colors above. Hue is 0-1 around the circle.
 			// -------------------------------------------------------------------------------------------------
 
 			inline constexpr float GroupHueStart = 0.58f;
@@ -56,7 +56,7 @@ namespace NameTBD
 			// -------------------------------------------------------------------------------------------------
 
 			/**
-			 * A section is drawn like a graph node's title: a dark rounded frame, the node gloss, the layer colour
+			 * A section is drawn like a graph node's title: a dark rounded frame, the node gloss, the layer color
 			 * spilled over it, and a sheen along the top. The frame shows as a lip along the bottom: SectionLipRatio
 			 * of the section's height, kept between SectionLipMin and SectionLipMax pixels.
 			 */
@@ -70,11 +70,11 @@ namespace NameTBD
 			/** How tall the highlight sheen along a section's top is drawn, in pixels. */
 			inline constexpr float SectionSheenHeight = 20.0f;
 
-			/** How much a hovered section's colour is lifted. */
+			/** How much a hovered section's color is lifted. */
 			inline constexpr float SectionHoverLift = 1.15f;
 
 			/**
-			 * Section text uses the editor's own graph node title style ("Graph.Node.NodeTitle" - font, colour and
+			 * Section text uses the editor's own graph node title style ("Graph.Node.NodeTitle" - font, color and
 			 * shadow), so it matches a macro node's title exactly. Only these are ours: how far text sits in from the
 			 * section's ends, and how much softer the easing name on the right is than the layer name on the left.
 			 */
@@ -83,7 +83,7 @@ namespace NameTBD
 
 			/**
 			 * A selected section gets a selected Blueprint node's outline: a solid orange rim SectionSelectedOutlineSize
-			 * pixels out round the section, under its frame - the frame's alpha (SectionFrame, below 1) is what lets
+			 * pixels out around the section, under its frame - the frame's alpha (SectionFrame, below 1) is what lets
 			 * the orange bleed into its edge - and a faint halo SectionSelectedHaloSize pixels further out.
 			 */
 			inline const FLinearColor SectionSelectedOutline = FLinearColor(FColor(236, 150, 18));
@@ -99,7 +99,7 @@ namespace NameTBD
 			inline const FLinearColor SectionBacking(0.00f, 0.00f, 0.00f, 1.00f);
 
 			/**
-			 * The opaque body under a section's gloss and colour spill - what a graph node's title sits on. Those
+			 * The opaque body under a section's gloss and color spill - what a graph node's title sits on. Those
 			 * two textures are partly transparent, so whatever is under them shows through; this is what does, the
 			 * same on every section. SectionFrame only ever shows as the section's edge and bottom lip.
 			 */
@@ -107,7 +107,7 @@ namespace NameTBD
 
 			/**
 			 * A track that can't be edited - locked on its own, or the whole panel locked read-only - is drawn washed
-			 * out: its colour moved LockedDesaturate of the way to grey, then dimmed to LockedBrightness.
+			 * out: its color moved LockedDesaturate of the way to gray, then dimmed to LockedBrightness.
 			 */
 			inline constexpr float LockedDesaturate = 0.75f;
 			inline constexpr float LockedBrightness = 0.55f;
@@ -119,6 +119,17 @@ namespace NameTBD
 			/** The strip lit along a section's edge while it can be dragged to resize, and while it is being dragged. */
 			inline const FLinearColor SectionEdgeHandle(1.00f, 1.00f, 1.00f, 0.55f);
 			inline constexpr float SectionEdgeHandleWidth = 2.0f;
+
+			/**
+			 * A value-driven track (Timing = Value) is striped: diagonal bands SectionValueStripeWidth pixels wide,
+			 * every SectionValueStripeSpacing pixels, across its color. Gameplay's value decides where it is, so its
+			 * length on the timeline is only how long its preview sweep takes - the stripes and "(Value Driven)" in
+			 * place of its length say so at a glance. Its color spill is dimmed to SectionValueSpillOpacity under them.
+			 */
+			inline const FLinearColor SectionValueStripe(1.00f, 1.00f, 1.00f, 0.07f);
+			inline constexpr float SectionValueStripeWidth = 3.0f;
+			inline constexpr float SectionValueStripeSpacing = 9.0f;
+			inline constexpr float SectionValueSpillOpacity = 0.6f;
 
 			// -------------------------------------------------------------------------------------------------
 			// Keys
@@ -136,7 +147,7 @@ namespace NameTBD
 			inline constexpr float KeySizeMin = 5.0f;
 			inline constexpr float KeySizeMax = 9.0f;
 
-			/** The small keys summarised on a group's row. Dark-outlined, so they read on any group colour. */
+			/** The small keys summarized on a group's row. Dark-outlined, so they read on any group color. */
 			inline const FLinearColor KeySummary(0.80f, 0.80f, 0.80f);
 			inline const FLinearColor KeySummaryOutline(0.00f, 0.00f, 0.00f, 0.85f);
 
@@ -177,7 +188,7 @@ namespace NameTBD
 			/** Behind a small inline label - a group's target. */
 			inline const FLinearColor Pill(0.00f, 0.00f, 0.00f, 0.35f);
 
-			/** How strongly the editor theme's Select and Hover colours tint a selected or hovered row. */
+			/** How strongly the editor theme's Select and Hover colors tint a selected or hovered row. */
 			inline constexpr float RowSelectedTintAlpha = 0.16f;
 			inline constexpr float RowHoveredTintAlpha = 0.35f;
 

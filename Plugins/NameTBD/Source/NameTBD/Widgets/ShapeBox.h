@@ -100,14 +100,13 @@ struct NAMETBD_API FShapeBoxEdges
  * The controls stack, in this order:
  *   Extrude / Inset - move individual edges out or in. The content is laid out at the new size (resized, not
  *                     stretched), while the box itself keeps its place in the layout.
- *   Skew            - leans the whole box (a parallelogram).
  *   Corners         - bevels (whole sides lean: one-sided skews, tapers, keystones) or chamfers (corners cut off).
  *   Bend            - arcs the whole box, content included (a flat, curved bar).
  *   Edge Bow        - curves individual edges in or out (brackets, barrels, a single rounded side).
  *   Angle           - turns the result in depth, with Wrap and Perspective (the angled, curved-visor HUD look).
  *   Rotation        - spins the finished shape about its middle.
  *
- * All zero is a normal, untouched box.
+ * All zero is a normal, untouched box. To lean the whole box, use the widget's own Render Transform Shear.
  *
  * This struct is the single definition of a shape. Anything else that shapes widgets (a Context Menu Button's
  * Shape Targets, for one) stores one of these whole and blends it with Lerp, so a property added here is picked
@@ -132,14 +131,6 @@ struct NAMETBD_API FShapeBoxShape
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape")
 	FVector2D Inset = FVector2D::ZeroVector;
-
-	/**
-	 * Leans the box about its centre, in degrees.
-	 * X leans the left and right edges (italic slant): positive pushes the bottom to the right.
-	 * Y leans the top and bottom edges: positive pushes the right side down.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (UIMin = "-45", UIMax = "45", ClampMin = "-80", ClampMax = "80", ForceUnits = "Degrees"))
-	FVector2D Skew = FVector2D::ZeroVector;
 
 	/**
 	 * Cuts each corner, either as a Bevel or a Chamfer.
@@ -227,7 +218,7 @@ struct NAMETBD_API FShapeBoxShape
  *
  * Three paths, chosen every frame from the shape:
  *   Flat      - paints the content normally.
- *   Affine    - a parallelogram (Extrude, Inset, Skew, matching bevels, Rotation). The content gets a render
+ *   Affine    - a parallelogram (Extrude, Inset, matching bevels, Rotation). The content gets a render
  *               transform, so Slate draws and hit tests it natively at no extra cost.
  *   Warped    - anything else (tapers, chamfers, bends, bows, angles). The content is rendered into a texture and
  *               drawn as a mesh following the shape. Input is mapped back through that mesh into the content, and
@@ -343,23 +334,23 @@ private:
 // =====================================================================================================
 
 /**
- * Bends whatever is placed inside it into a stylised shape - extrusions, slants, bevels, chamfered corners, arcs,
+ * Bends whatever is placed inside it into a stylized shape - extrusions, slants, bevels, chamfered corners, arcs,
  * bowed edges, rotations and angled, curved-visor panels - while buttons and other widgets inside keep working
  * exactly where they are drawn.
  *
  * Recipes:
  *   Grow on the right:        Extrude X = 8                        (content re-laid out 8 wider, box stays put)
- *   Italic slant:             Skew X = -12
+ *   Italic slant:             Render Transform Shear X = -12     (the widget's own Shear)
  *   One-sided skew:           Corners > Top Right = Bevel, X 20      (only the right side leans)
  *   Keystone (short right):   Corners > Top Right = Bevel, Y 12; Bottom Right = Bevel, Y 12
  *   Cut corner:               Corners > Top Right = Chamfer, X 12, Y 12
- *   Curved health bar:        Bend Y = -8                          (arches up; add Skew X for speed)
+ *   Curved health bar:        Bend Y = -8                          (arches up; add Shear X for speed)
  *   Bracket panel:            Edge Bow Left = 10, Right = 10
  *   Tilted card:              Rotation = -4
- *   Angled HUD panel:         Angle X = 15, Wrap X = 20, Perspective = 0.5, Skew Y = 3
+ *   Angled HUD panel:         Angle X = 15, Wrap X = 20, Perspective = 0.5
  *   Curved visor row:         Wrap X = 30, Perspective = 0.4    (wrap a whole row of panels in one box)
  *
- * Parallelograms (Extrude, Inset, Skew, Rotation, bevels in matching pairs) cost nothing extra. Other shapes render
+ * Parallelograms (Extrude, Inset, Rotation, bevels in matching pairs) cost nothing extra. Other shapes render
  * the content into a texture every frame, like a Retainer Box.
  *
  * A Context Menu Button whose Shape Target names this box, or the only widget inside it, drives this box's Shape
@@ -390,9 +381,6 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Shape Box")
 	void SetInset(FVector2D InInset) { Shape.Inset = InInset; }
-
-	UFUNCTION(BlueprintCallable, Category = "Shape Box")
-	void SetSkew(FVector2D InSkew) { Shape.Skew = InSkew; }
 
 	UFUNCTION(BlueprintCallable, Category = "Shape Box")
 	void SetCorners(const FShapeBoxCorners& InCorners) { Shape.Corners = InCorners; }

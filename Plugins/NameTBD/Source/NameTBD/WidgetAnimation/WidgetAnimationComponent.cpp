@@ -14,6 +14,8 @@
 #include "WidgetAnimTransform.h"
 #include "Engine/Engine.h"
 #include "Serialization/CustomVersion.h"
+#include "UObject/UObjectIterator.h"
+#include "UObject/UnrealType.h"
 #include "Widgets/SWidget.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimationComponent, Log, All);
@@ -302,42 +304,140 @@ UWidget* UWidgetAnimationComponent::ResolveAnimTarget(FName TargetWidgetName) co
 	return Root ? UWidgetAnimLibrary::FindWidgetByPathInTree(Root, TargetWidgetName) : nullptr;
 }
 
+namespace WidgetAnimComponentOptions
+{
+	/**
+	 * The name of the widget a UI component is kept for, read off whatever holds it: an array of structs, on one of its
+	 * outers, with an entry holding the component and a name beside it - how UMG's component container pairs each
+	 * component with its widget. Found by reflection, so nothing here depends on the container's private layout.
+	 */
+	FName FindHeldUnderName(const UObject* Held)
+	{
+		static constexpr int32 MaxOuters = 4;
+		int32 Depth = 0;
+		for (const UObject* Holder = Held ? Held->GetOuter() : nullptr; Holder && Depth < MaxOuters; Holder = Holder->GetOuter(), ++Depth)
+		{
+			for (TFieldIterator<FArrayProperty> It(Holder->GetClass()); It; ++It)
+			{
+				const FArrayProperty* ArrayProperty = *It;
+				const FStructProperty* Inner = CastField<FStructProperty>(ArrayProperty->Inner);
+				if (!Inner)
+				{
+					continue;
+				}
+
+				FScriptArrayHelper Helper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(Holder));
+				for (int32 Index = 0; Index < Helper.Num(); ++Index)
+				{
+					const uint8* Element = Helper.GetRawPtr(Index);
+					bool bHoldsIt = false;
+					FName HeldName;
+					for (TFieldIterator<FProperty> FieldIt(Inner->Struct); FieldIt; ++FieldIt)
+					{
+						if (const FObjectPropertyBase* ObjectProperty = CastField<FObjectPropertyBase>(*FieldIt))
+						{
+							bHoldsIt |= ObjectProperty->GetObjectPropertyValue_InContainer(Element) == Held;
+						}
+						else if (const FNameProperty* NameProperty = CastField<FNameProperty>(*FieldIt))
+						{
+							HeldName = NameProperty->GetPropertyValue_InContainer(Element);
+						}
+					}
+
+					if (bHoldsIt)
+					{
+						return HeldName;
+					}
+				}
+			}
+		}
+		return NAME_None;
+	}
+
+#if WITH_EDITOR
+	/**
+	 * The widget a live copy of Template is on - a designer preview's component made from it. What the Details panel's
+	 * template, which is on no widget itself, stands for.
+	 */
+	UWidget* FindLiveOwner(const UWidgetAnimationComponent* Template)
+	{
+		for (TObjectIterator<UWidgetAnimationComponent> It(RF_ClassDefaultObject | RF_ArchetypeObject, /*bIncludeDerivedClasses=*/true, EInternalObjectFlags::Garbage); It; ++It)
+		{
+			const UWidgetAnimationComponent* Candidate = *It;
+			if (Candidate == Template || !Candidate->GetAnimatedWidget())
+			{
+				continue;
+			}
+
+			for (const UObject* Archetype = Candidate->GetArchetype(); Archetype; Archetype = Archetype->GetArchetype())
+			{
+				if (Archetype == Template)
+				{
+					return Candidate->GetAnimatedWidget();
+				}
+				if (Archetype->HasAnyFlags(RF_ClassDefaultObject))
+				{
+					break;
+				}
+			}
+		}
+		return nullptr;
+	}
+#endif
+}
+
 TArray<FString> UWidgetAnimationComponent::GetAnimTargetWidgetOptions() const
 {
 	TArray<FString> Options;
 
-	UUserWidget* Root = GetPathRoot();
-
-	// The Details panel edits the component ARCHETYPE the Widget Blueprint keeps, which has no owner widget
-	// to ask. Find the Widget Blueprint it belongs to and list that class's tree instead.
-	if (!Root)
+	// The widget the component is on - or, for the Details panel's template, the one its live copy is on.
+	UWidget* WidgetOwner = AnimOwner.Get();
+#if WITH_EDITOR
+	if (!WidgetOwner)
 	{
-		if (const UWidgetBlueprintGeneratedClass* GeneratedClass = GetTypedOuter<UWidgetBlueprintGeneratedClass>())
-		{
-			Root = GeneratedClass->GetDefaultObject<UUserWidget>();
-		}
-	}
-
-#if WITH_EDITORONLY_DATA
-	if (!Root)
-	{
-		if (const UBlueprint* Blueprint = GetTypedOuter<UBlueprint>())
-		{
-			if (Blueprint->GeneratedClass)
-			{
-				Root = Cast<UUserWidget>(Blueprint->GeneratedClass->GetDefaultObject());
-			}
-		}
+		WidgetOwner = WidgetAnimComponentOptions::FindLiveOwner(this);
 	}
 #endif
 
-	if (Root)
+	if (WidgetOwner)
 	{
-		UWidgetAnimLibrary::GatherTargetableWidgetPathsInTree(Root, Options);
+		// On a whole User Widget - bound onto itself by code, or the top of the Widget Blueprint - its paths go into its
+		// own tree, so that is what is offered. Otherwise the widget and everything inside it, named as they are in the
+		// tree it sits in - which is how targets are looked up.
+		UUserWidget* OwnerAsUserWidget = Cast<UUserWidget>(WidgetOwner);
+		if (OwnerAsUserWidget && (bBoundByCode || !WidgetOwner->GetTypedOuter<UUserWidget>()))
+		{
+			UWidgetAnimLibrary::GatherTargetableWidgetPathsInTree(OwnerAsUserWidget, Options);
+		}
+		else
+		{
+			UWidgetAnimLibrary::GatherTargetableWidgetPaths(WidgetOwner, Options);
+		}
+	}
+	else
+	{
+		// No widget to ask: the Widget Blueprint's tree as authored - its generated class keeps it - from the widget the
+		// component is kept for, or all of it when that can't be told.
+		const UWidgetBlueprintGeneratedClass* AuthoredClass = GetTypedOuter<UWidgetBlueprintGeneratedClass>();
+#if WITH_EDITORONLY_DATA
+		if (!AuthoredClass)
+		{
+			if (const UBlueprint* Blueprint = GetTypedOuter<UBlueprint>())
+			{
+				AuthoredClass = Cast<UWidgetBlueprintGeneratedClass>(Blueprint->GeneratedClass);
+			}
+		}
+#endif
+		if (const UWidgetTree* AuthoredTree = AuthoredClass ? AuthoredClass->GetWidgetTreeArchetype() : nullptr)
+		{
+			const FName HeldName = WidgetAnimComponentOptions::FindHeldUnderName(this);
+			UWidget* Kept = HeldName.IsNone() ? nullptr : AuthoredTree->FindWidget(HeldName);
+			UWidgetAnimLibrary::GatherTargetableWidgetPaths(Kept ? Kept : AuthoredTree->RootWidget.Get(), Options);
+		}
 	}
 
 	// First, so there is a way back to "animate the widget this is on" once something has been picked.
-	Options.Insert(TEXT("None"), 0);
+	Options.Insert(FWidgetAnimGroupTarget::ThisWidget.ToString(), 0);
 	return Options;
 }
 
@@ -787,7 +887,7 @@ void UWidgetAnimationComponent::EnsureRuntimeBaselines()
 	{
 		// Not composed over - Preserve Authored Transforms is off - but still needed to put widgets back when an
 		// animation is stopped with Reset To Start. Without it that reset had nothing to restore, so the widget
-		// stayed wherever the animation had got to.
+		// stayed wherever the animation had gotten to.
 		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(AnimatedWidget, FlattenedIn, FlattenedOut, ResetPoseBaselines);
 	}
 }
@@ -1131,27 +1231,27 @@ void UWidgetAnimationComponent::HandleOutAnimationFinished()
 
 bool UWidgetAnimationComponent::SetWidgetAnimationValue(FName ValueName, float Value, bool bSnap, bool bStartIfNotPlaying)
 {
-	return SetWidgetAnimationValues(ValueName, WidgetAnimValue::FromFloat(Value), bSnap, bStartIfNotPlaying);
+	return SetWidgetAnimationValues(FWidgetAnimValueId::Anywhere(ValueName), WidgetAnimValue::FromFloat(Value), bSnap, bStartIfNotPlaying);
 }
 
 bool UWidgetAnimationComponent::SetWidgetAnimationValueInteger(FName ValueName, int32 Value, bool bSnap, bool bStartIfNotPlaying)
 {
-	return SetWidgetAnimationValues(ValueName, WidgetAnimValue::FromFloat(static_cast<double>(Value)), bSnap, bStartIfNotPlaying);
+	return SetWidgetAnimationValues(FWidgetAnimValueId::Anywhere(ValueName), WidgetAnimValue::FromFloat(static_cast<double>(Value)), bSnap, bStartIfNotPlaying);
 }
 
 bool UWidgetAnimationComponent::SetWidgetAnimationValueVector2D(FName ValueName, FVector2D Value, bool bSnap, bool bStartIfNotPlaying)
 {
-	return SetWidgetAnimationValues(ValueName, WidgetAnimValue::FromVector2D(Value), bSnap, bStartIfNotPlaying);
+	return SetWidgetAnimationValues(FWidgetAnimValueId::Anywhere(ValueName), WidgetAnimValue::FromVector2D(Value), bSnap, bStartIfNotPlaying);
 }
 
 bool UWidgetAnimationComponent::SetWidgetAnimationValueColor(FName ValueName, FLinearColor Value, bool bSnap, bool bStartIfNotPlaying)
 {
-	return SetWidgetAnimationValues(ValueName, WidgetAnimValue::FromColor(Value), bSnap, bStartIfNotPlaying);
+	return SetWidgetAnimationValues(FWidgetAnimValueId::Anywhere(ValueName), WidgetAnimValue::FromColor(Value), bSnap, bStartIfNotPlaying);
 }
 
-bool UWidgetAnimationComponent::SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
+bool UWidgetAnimationComponent::SetWidgetAnimationValues(const FWidgetAnimValueId& Id, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
 {
-	if (ValueName.IsNone())
+	if (Id.ValueName.IsNone())
 	{
 		return false;
 	}
@@ -1160,7 +1260,7 @@ bool UWidgetAnimationComponent::SetWidgetAnimationValues(FName ValueName, const 
 	// tracks start from it when they do start, rather than from their Start Value.
 	if (!AnimOwner.IsValid() || !bOwnerConstructed)
 	{
-		UWidgetAnimLibrary::SetWidgetAnimTrackValue(AnimPlayer, ValueName, Value, /*bSnap=*/true);
+		UWidgetAnimLibrary::SetWidgetAnimTrackValue(AnimPlayer, Id, Value, /*bSnap=*/true);
 		return false;
 	}
 
@@ -1172,46 +1272,76 @@ bool UWidgetAnimationComponent::SetWidgetAnimationValues(FName ValueName, const 
 
 	// The unnamed layers too, when they take this value and aren't running - never restarted when they are, which
 	// would play their clock tracks again.
-	if (bStartIfNotPlaying && UWidgetAnimLibrary::HasValueLayer(UnnamedAnimIn, ValueName)
+	if (bStartIfNotPlaying && UWidgetAnimLibrary::HasValueLayer(UnnamedAnimIn, Id)
 		&& !AnimPlayer.Tracks.ContainsByPredicate([](const FWidgetAnimTrack& Track) { return !Track.bIsOut && Track.SourceIndex == UnnamedLayersSourceIndex; }))
 	{
 		UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, UnnamedAnimIn, /*bIsOut=*/false, /*Speed=*/1.f, /*bRestartIfPlaying=*/false, /*bHoldWhenFinished=*/true);
 	}
 
-	const int32 Taken = UWidgetAnimEntryLibrary::SetEntriesValue(AnimPlayer, EffectiveInEntries, Resolver, ValueName, Value, bSnap, bStartIfNotPlaying, &AppendExtra);
+	const int32 Taken = UWidgetAnimEntryLibrary::SetEntriesValue(AnimPlayer, EffectiveInEntries, Resolver, Id, Value, bSnap, bStartIfNotPlaying, &AppendExtra);
 
 	// Shown this frame: a snap, or a track just started at its value. The ticker takes it from here.
 	ApplyCurrentAnimPose();
 	return Taken > 0;
 }
 
-FVector4 UWidgetAnimationComponent::GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const
+FVector4 UWidgetAnimationComponent::GetWidgetAnimationValues(const FWidgetAnimValueId& Id, bool bTargetValue) const
 {
 	FVector4 Value(0.0, 0.0, 0.0, 0.0);
-	UWidgetAnimLibrary::GetWidgetAnimTrackValue(AnimPlayer, ValueName, bTargetValue, Value);
+	UWidgetAnimLibrary::GetWidgetAnimTrackValue(AnimPlayer, Id, bTargetValue, Value);
 	return Value;
 }
 
 float UWidgetAnimationComponent::GetWidgetAnimationValue(FName ValueName, bool bTargetValue) const
 {
-	return static_cast<float>(GetWidgetAnimationValues(ValueName, bTargetValue).X);
+	return static_cast<float>(GetWidgetAnimationValues(FWidgetAnimValueId::Anywhere(ValueName), bTargetValue).X);
 }
 
 int32 UWidgetAnimationComponent::GetWidgetAnimationValueInteger(FName ValueName, bool bTargetValue) const
 {
-	return FMath::RoundToInt32(GetWidgetAnimationValues(ValueName, bTargetValue).X);
+	return FMath::RoundToInt32(GetWidgetAnimationValues(FWidgetAnimValueId::Anywhere(ValueName), bTargetValue).X);
 }
 
 FVector2D UWidgetAnimationComponent::GetWidgetAnimationValueVector2D(FName ValueName, bool bTargetValue) const
 {
-	const FVector4 Value = GetWidgetAnimationValues(ValueName, bTargetValue);
+	const FVector4 Value = GetWidgetAnimationValues(FWidgetAnimValueId::Anywhere(ValueName), bTargetValue);
 	return FVector2D(Value.X, Value.Y);
 }
 
 FLinearColor UWidgetAnimationComponent::GetWidgetAnimationValueColor(FName ValueName, bool bTargetValue) const
 {
-	const FVector4 Value = GetWidgetAnimationValues(ValueName, bTargetValue);
+	const FVector4 Value = GetWidgetAnimationValues(FWidgetAnimValueId::Anywhere(ValueName), bTargetValue);
 	return FLinearColor(static_cast<float>(Value.X), static_cast<float>(Value.Y), static_cast<float>(Value.Z), static_cast<float>(Value.W));
+}
+
+bool UWidgetAnimationComponent::HasWidgetAnimationValue(const FWidgetAnimValueId& Id) const
+{
+	if (Id.ValueName.IsNone())
+	{
+		return false;
+	}
+
+	auto TakesIt = [&Id](const TArray<FWidgetAnimLayer>& Tracks, const UObject* Scope)
+	{
+		return Tracks.ContainsByPredicate([&Id, Scope](const FWidgetAnimLayer& Track) { return Track.IsValueDriven() && Id.Matches(Scope, Track.ValueName); });
+	};
+
+	for (const TArray<FWidgetAnimEntry>* List : { &AnimIn, &AnimOut })
+	{
+		for (const FWidgetAnimEntry& Candidate : *List)
+		{
+			if (const UWidgetAnimPresetAsset* Animation = Candidate.Animation.Get())
+			{
+				if (TakesIt(Animation->Layers, Animation))
+				{
+					return true;
+				}
+			}
+		}
+	}
+
+	// Additive tracks belong to no animation: their scope is none.
+	return TakesIt(AdditiveAnimLayersIn, nullptr) || TakesIt(AdditiveAnimLayersOut, nullptr);
 }
 
 bool UWidgetAnimationComponent::HasExitToPlay() const
@@ -1235,7 +1365,7 @@ void UWidgetAnimationComponent::ApplyValueOverrides(TArray<FWidgetAnimSettings>&
 
 		const FWidgetAnimValueOverride* Row = ValueOverrides.FindByPredicate([&Layer](const FWidgetAnimValueOverride& Candidate)
 		{
-			return Candidate.bOverride && Candidate.ValueName == Layer.ValueName;
+			return Candidate.bOverride && Candidate.ValueName == Layer.ValueName && Candidate.Animation.Get() == Layer.ValueScope.Get();
 		});
 		if (Row)
 		{
@@ -1256,56 +1386,73 @@ void UWidgetAnimationComponent::PrepareEntrySettings(int32 EffectiveIndex, bool 
 
 bool UWidgetAnimationComponent::RefreshValueOverrides()
 {
-	// Every value-driven track's defaults, by name, in the order first found: the entries in both lists, then the
-	// additive layers.
-	TArray<TPair<FName, FWidgetAnimValueOptions>> Found;
-	auto Gather = [&Found](const TArray<FWidgetAnimLayer>& Layers)
+	// Every value-driven track's defaults, by animation and name, in the order first found: the entries in both lists,
+	// then the additive tracks.
+	struct FFoundValue
+	{
+		UObject* Animation = nullptr;
+		FName ValueName;
+		FWidgetAnimValueOptions Defaults;
+	};
+	TArray<FFoundValue> Found;
+	auto Gather = [&Found](UObject* Animation, const TArray<FWidgetAnimLayer>& Layers)
 	{
 		for (const FWidgetAnimLayer& Layer : Layers)
 		{
-			if (Layer.IsValueDriven() && !Layer.ValueName.IsNone() && !Found.ContainsByPredicate([&Layer](const TPair<FName, FWidgetAnimValueOptions>& Pair) { return Pair.Key == Layer.ValueName; }))
+			if (!Layer.IsValueDriven() || Layer.ValueName.IsNone())
 			{
-				Found.Emplace(Layer.ValueName, Layer.ValueOptions);
+				continue;
 			}
+			if (Found.ContainsByPredicate([Animation, &Layer](const FFoundValue& Value) { return Value.Animation == Animation && Value.ValueName == Layer.ValueName; }))
+			{
+				continue;
+			}
+
+			FFoundValue& Value = Found.AddDefaulted_GetRef();
+			Value.Animation = Animation;
+			Value.ValueName = Layer.ValueName;
+			Value.Defaults = Layer.ValueOptions;
+			Value.Defaults.Kind = Layer.GetEffectiveValueKind();
 		}
 	};
-	for (const FWidgetAnimEntry& Entry : AnimIn)
+	for (const TArray<FWidgetAnimEntry>* Entries : { &AnimIn, &AnimOut })
 	{
-		if (Entry.Animation)
+		for (const FWidgetAnimEntry& Entry : *Entries)
 		{
-			Gather(Entry.Animation->Layers);
+			if (Entry.Animation)
+			{
+				Gather(Entry.Animation, Entry.Animation->Layers);
+			}
 		}
 	}
-	for (const FWidgetAnimEntry& Entry : AnimOut)
-	{
-		if (Entry.Animation)
-		{
-			Gather(Entry.Animation->Layers);
-		}
-	}
-	Gather(AdditiveAnimLayersIn);
-	Gather(AdditiveAnimLayersOut);
+	Gather(nullptr, AdditiveAnimLayersIn);
+	Gather(nullptr, AdditiveAnimLayersOut);
 
 	TArray<FWidgetAnimValueOverride> Rows;
 	Rows.Reserve(Found.Num());
-	for (const TPair<FName, FWidgetAnimValueOptions>& Pair : Found)
+	for (const FFoundValue& Value : Found)
 	{
-		const FWidgetAnimValueOverride* Existing = ValueOverrides.FindByPredicate([&Pair](const FWidgetAnimValueOverride& Row) { return Row.ValueName == Pair.Key; });
+		const FWidgetAnimValueOverride* Existing = ValueOverrides.FindByPredicate([&Value](const FWidgetAnimValueOverride& Row)
+		{
+			return Row.ValueName == Value.ValueName && Row.Animation.Get() == Value.Animation;
+		});
 
 		FWidgetAnimValueOverride& Row = Rows.AddDefaulted_GetRef();
-		Row.ValueName = Pair.Key;
-		Row.Kind = Pair.Value.Kind;
+		Row.Animation = Value.Animation;
+		Row.Source = Value.Animation ? Value.Animation->GetName() : FString(TEXT("Additive Tracks"));
+		Row.ValueName = Value.ValueName;
+		Row.Kind = Value.Defaults.Kind;
 		Row.bOverride = Existing && Existing->bOverride;
 
 		// Overridden: this widget's settings, kept. Not: the track's own, so the row always shows what will be used.
-		Row.Options = Row.bOverride ? Existing->Options : Pair.Value;
-		Row.Options.Kind = Pair.Value.Kind;
+		Row.Options = Row.bOverride ? Existing->Options : Value.Defaults;
+		Row.Options.Kind = Value.Defaults.Kind;
 		Row.Options.bCanEditKind = false;
 	}
 
 	const bool bChanged = Rows.Num() != ValueOverrides.Num() || !Algo::Compare(Rows, ValueOverrides, [](const FWidgetAnimValueOverride& A, const FWidgetAnimValueOverride& B)
 	{
-		return A.ValueName == B.ValueName && A.Kind == B.Kind && A.bOverride == B.bOverride
+		return A.ValueName == B.ValueName && A.Animation == B.Animation && A.Source == B.Source && A.Kind == B.Kind && A.bOverride == B.bOverride
 			&& FWidgetAnimValueOptions::StaticStruct()->CompareScriptStruct(&A.Options, &B.Options, PPF_None);
 	});
 
@@ -1314,6 +1461,22 @@ bool UWidgetAnimationComponent::RefreshValueOverrides()
 		ValueOverrides = MoveTemp(Rows);
 	}
 	return bChanged;
+}
+
+bool UWidgetAnimationComponent::AssignAdditiveValueNames()
+{
+	// One scope for both lists - Additive Tracks - so a name is unique across them.
+	TSet<FName> Taken;
+	for (const FWidgetAnimLayer& Layer : AdditiveAnimLayersOut)
+	{
+		if (Layer.IsValueDriven() && !Layer.ValueName.IsNone())
+		{
+			Taken.Add(Layer.ValueName);
+		}
+	}
+	const bool bInChanged = UWidgetAnimLibrary::AssignDefaultValueNames(AdditiveAnimLayersIn, &Taken);
+	const bool bOutChanged = UWidgetAnimLibrary::AssignDefaultValueNames(AdditiveAnimLayersOut, &Taken);
+	return bInChanged || bOutChanged;
 }
 
 bool UWidgetAnimationComponent::PrepareValuesForExit(bool bCascade)
@@ -1360,7 +1523,7 @@ bool UWidgetAnimationComponent::TryStartPendingExit()
 	}
 	else if (!PlayForTrigger(EEntryTrigger::Visibility, /*bOut=*/true))
 	{
-		// Nothing answers the trigger any more (the entries were changed while it waited): the exit is simply over.
+		// Nothing answers the trigger anymore (the entries were changed while it waited): the exit is simply over.
 		AnimPlayer.Phase = EWidgetAnimPhase::Hidden;
 		HandleOutAnimationFinished();
 	}
@@ -1609,11 +1772,12 @@ void UWidgetAnimationComponent::EnsureDesignerPreviewTimer()
 
 FWidgetAnimPreviewSettings UWidgetAnimationComponent::GetEffectiveDesignerPreview() const
 {
-	FWidgetAnimPreviewSettings Settings = DesignerPreview;
+	// The saved DesignerPreview is no longer used: Off unless the toolbar is previewing, at its defaults.
+	FWidgetAnimPreviewSettings Settings;
 	if (DesignerPreviewModeOverride.IsSet())
 	{
 		Settings.Mode = DesignerPreviewModeOverride.GetValue();
-		Settings.PlaybackSpeed = FMath::Max(DesignerPreview.PlaybackSpeed * DesignerPreviewOptions.Speed, 0.01f);
+		Settings.PlaybackSpeed = FMath::Max(DesignerPreviewOptions.Speed, 0.01f);
 		Settings.ScrubAlpha = DesignerPreviewScrubAlpha;
 		Settings.bScrubOutAnimation = bDesignerPreviewScrubOut;
 	}
@@ -1857,6 +2021,7 @@ void UWidgetAnimationComponent::PostLoad()
 	SyncEntryGroupTargets();
 	RefreshEntryTriggers();
 	RefreshAdditiveStarts();
+	AssignAdditiveValueNames();
 	RefreshValueOverrides();
 }
 
@@ -1864,14 +2029,17 @@ bool UWidgetAnimationComponent::SyncEntryGroupTargets()
 {
 	bool bChanged = false;
 
+	// New rows are checked against what this widget's tree has - see FWidgetAnimEntry::SyncGroupTargets.
+	const TArray<FString> TargetOptions = GetAnimTargetWidgetOptions();
+
 	for (FWidgetAnimEntry& Entry : AnimIn)
 	{
-		bChanged |= Entry.SyncGroupTargets();
+		bChanged |= Entry.SyncGroupTargets(&TargetOptions);
 	}
 
 	for (FWidgetAnimEntry& Entry : AnimOut)
 	{
-		bChanged |= Entry.SyncGroupTargets();
+		bChanged |= Entry.SyncGroupTargets(&TargetOptions);
 	}
 
 	return bChanged;
@@ -1899,6 +2067,7 @@ void UWidgetAnimationComponent::PostEditChangeProperty(FPropertyChangedEvent& Pr
 	// Only once the edit is committed, like the Target Widgets above.
 	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
+		AssignAdditiveValueNames();
 		RefreshValueOverrides();
 	}
 

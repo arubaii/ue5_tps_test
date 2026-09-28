@@ -167,7 +167,7 @@ bool UInfoCardWidget::IsDismissingKey(const FKey& Key)
 	// trigger was — a right-click card is dismissed by a left-click just as
 	// readily, the way an OS context menu behaves.
 	//
-	// Gamepad AXES are excluded: a stick drifting off centre is a continuous
+	// Gamepad AXES are excluded: a stick drifting off center is a continuous
 	// analog value, not a press, and would dismiss every card on screen the
 	// moment anyone touched the controller.
 	if (Key.IsGamepadKey())
@@ -350,7 +350,7 @@ void UInfoCardWidget::SetupCard(const FInfoCardSpec& Spec, UWidget* InAnchorWidg
 	IsFirstFrame          = true;
 	ElapsedTime           = 0.f;
 
-	// No "ignore the press that spawned me" bookkeeping is needed any more.
+	// No "ignore the press that spawned me" bookkeeping is needed anymore.
 	// A card is only offered a press once it is in ActiveCards, and it only
 	// joins ActiveCards in NativeConstruct — which, for a click-triggered
 	// card, runs inside the AddToViewport that follows this function, well
@@ -603,7 +603,7 @@ void UInfoCardWidget::NativeDestruct()
 
 	ActiveCards.RemoveSwap(TWeakObjectPtr<UInfoCardWidget>(this));
 
-	// Nothing unregisters the press watcher here any more. It used to, and
+	// Nothing unregisters the press watcher here anymore. It used to, and
 	// this is exactly the call site that made that unsafe: a card closed by a
 	// click reaches NativeDestruct while Slate is still walking its
 	// pre-processor list for that same click. See EnsurePressWatcher.
@@ -844,15 +844,15 @@ bool UInfoCardWidget::AreWidgetAnimationsPlayingById(const TArray<FName>& AnimId
 	return CardAnimation && CardAnimation->AreWidgetAnimationsPlayingById(AnimIds);
 }
 
-bool UInfoCardWidget::SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
+bool UInfoCardWidget::SetWidgetAnimationValues(const FWidgetAnimValueId& Id, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
 {
 	UWidgetAnimationComponent* Anim = ResolveCardAnimation();
-	return Anim && Anim->SetWidgetAnimationValues(ValueName, Value, bSnap, bStartIfNotPlaying);
+	return Anim && Anim->SetWidgetAnimationValues(Id, Value, bSnap, bStartIfNotPlaying);
 }
 
-FVector4 UInfoCardWidget::GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const
+FVector4 UInfoCardWidget::GetWidgetAnimationValues(const FWidgetAnimValueId& Id, bool bTargetValue) const
 {
-	return CardAnimation ? CardAnimation->GetWidgetAnimationValues(ValueName, bTargetValue) : FVector4(0.0, 0.0, 0.0, 0.0);
+	return CardAnimation ? CardAnimation->GetWidgetAnimationValues(Id, bTargetValue) : FVector4(0.0, 0.0, 0.0, 0.0);
 }
 
 void UInfoCardWidget::DispatchGlobalMenuStateChanged(FGameplayTag ScreenTag, bool bIsOpen)
@@ -1419,7 +1419,7 @@ bool UInfoCardWidget::IsCursorOverIconOrCard() const
 	if (!World)
 	{
 		// No world to read a cursor position from is another "can't tell yet",
-		// and it fails the same way everything else here does: in favour of
+		// and it fails the same way everything else here does: in favor of
 		// keeping the card up.
 		return true;
 	}
@@ -1596,7 +1596,7 @@ bool UInfoCardWidget::IsCursorOverAnchorIcon() const
 	// Kept for subclasses, but no longer on the dismissal path itself:
 	// EvaluateGlobalPress now tests where the PRESS landed rather than
 	// where the cursor is at the moment the card gets round to reacting, and
-	// those differ by however far the cursor travelled in between.
+	// those differ by however far the cursor traveled in between.
 	UWorld* World = GetWorld();
 	if (!World)
 	{

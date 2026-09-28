@@ -160,7 +160,7 @@ struct NAMETBDMVVM_API FWidgetFieldTrigger
 	 * When the binder starts (the widget is constructed, or a new source is set), a condition that is already
 	 * true acts straight away. On by default, so a row created for a badly hurt pawn starts pulsing at once.
 	 * Off: only a change after binding acts. A condition that turns false at a rebind always stops its
-	 * animations either way. For Set Value: on, the value at binding is shown at once (snapped, not travelled to),
+	 * animations either way. For Set Value: on, the value at binding is shown at once (snapped, not traveled to),
 	 * so a row pointed at another pawn shows that pawn's health straight away; off, nothing is set until it changes.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger")

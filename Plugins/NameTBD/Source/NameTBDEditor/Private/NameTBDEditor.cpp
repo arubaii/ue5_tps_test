@@ -25,6 +25,9 @@
 #include "WidgetAnimationComponentDetails.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
+#include "EdGraphUtilities.h"
+#include "WidgetAnimValuePinFactory.h"
+#include "WidgetAnimEntryCustomization.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
 
@@ -64,11 +67,25 @@ void FNameTBDEditorModule::StartupModule()
 	PropertyModule.RegisterCustomClassLayout(
 		UWidgetAnimationComponent::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetAnimationComponentDetails::MakeInstance));
+
+	// Every animation entry - a component's, a button's, a card's - shows Target Widgets right under its Animation.
+	PropertyModule.RegisterCustomPropertyTypeLayout(
+		FWidgetAnimEntry::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FWidgetAnimEntryCustomization::MakeInstance));
 	PropertyModule.NotifyCustomizationModuleChanged();
+
+	ValuePinFactory = MakeShared<FWidgetAnimValuePinFactory>();
+	FEdGraphUtilities::RegisterVisualPinFactory(ValuePinFactory);
 }
 
 void FNameTBDEditorModule::ShutdownModule()
 {
+	if (ValuePinFactory.IsValid())
+	{
+		FEdGraphUtilities::UnregisterVisualPinFactory(ValuePinFactory);
+		ValuePinFactory.Reset();
+	}
+
 	if (FModuleManager::Get().IsModuleLoaded("AssetTools"))
 	{
 		IAssetTools& AssetTools = FModuleManager::GetModuleChecked<FAssetToolsModule>("AssetTools").Get();
@@ -88,6 +105,7 @@ void FNameTBDEditorModule::ShutdownModule()
 		PropertyModule->NotifyCustomizationModuleChanged();
 		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimBuilder"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimationComponent"));
+		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimEntry"));
 
 	}
 	

@@ -104,6 +104,15 @@ namespace
 		// As an edit to Layers: that is what both a builder and an asset refresh their previews for, and a
 		// group edit changes what the layers play on just the same.
 		FProperty* LayersProperty = FindFProperty<FProperty>(Object->GetClass(), TEXT("Layers"));
+
+		// A track just made value-driven with no name typed is named after its type, once the edit is committed.
+		const FArrayProperty* LayersArray = CastField<FArrayProperty>(LayersProperty);
+		const FStructProperty* LayerStruct = LayersArray ? CastField<FStructProperty>(LayersArray->Inner) : nullptr;
+		if (ChangeType != EPropertyChangeType::Interactive && LayerStruct && LayerStruct->Struct == FWidgetAnimLayer::StaticStruct())
+		{
+			UWidgetAnimLibrary::AssignDefaultValueNames(*LayersArray->ContainerPtrToValuePtr<TArray<FWidgetAnimLayer>>(Object));
+		}
+
 		FPropertyChangedEvent Event(LayersProperty, ChangeType);
 		Object->PostEditChangeProperty(Event);
 	}

@@ -30,6 +30,9 @@ void UWidgetAnimPresetAsset::PostLoad()
 	// Groups made to fit the layers: from before groups, every layer in one group, which animates whatever
 	// each use pointed its single Target Widget at - FWidgetAnimEntry carries that target across on its own.
 	UWidgetAnimLibrary::NormalizeLayerGroups(LayerGroups, Layers);
+
+	// A value-driven track saved without a name gets its default one, so it can be set.
+	UWidgetAnimLibrary::AssignDefaultValueNames(Layers);
 }
 
 void UWidgetAnimPresetAsset::MigrateSettingsStacks()
@@ -66,6 +69,13 @@ void UWidgetAnimPresetAsset::PostEditChangeProperty(FPropertyChangedEvent& Prope
 
 	// Keys follow the curve on the next tick, once this edit has unwound. See RequestSyncTransformAnims.
 	UWidgetAnimTransformLibrary::RequestSyncTransformAnims(this, PropertyChangedEvent);
+
+	// A track just made value-driven, with no name typed, is named after its type - "Scale", "Scale 1" - once the
+	// edit is committed, so a name isn't handed out for every step of a drag.
+	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+	{
+		UWidgetAnimLibrary::AssignDefaultValueNames(Layers);
+	}
 
 	// Keeps an open builder in step with the asset. Not forced to restart: the builder starts over by itself
 	// when the animation's shape changes (a layer added, a type changed, a key added), and otherwise keeps
@@ -152,6 +162,9 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 		Settings.LoopGroup = LoopGroup;
 		Settings.TargetWidget = Target;
 
+		// What its value-driven tracks' values belong to: this animation. See FWidgetAnimValueId.
+		Settings.ValueScope = Animation;
+
 		// Only meaningful for the two material types, and harmless on the rest: the library ignores it
 		// unless the layer is a material layer. One picker per group instead of two is why it's derived here.
 		Settings.MaterialTargetImage = Cast<UImage>(Target);
@@ -168,10 +181,21 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 // FWidgetAnimEntry
 // =====================================================================================================
 
-bool FWidgetAnimEntry::SyncGroupTargets()
+const FName FWidgetAnimGroupTarget::ThisWidget(TEXT("(This Widget)"));
+
+bool FWidgetAnimEntry::SyncGroupTargets(const TArray<FString>* TargetOptions)
 {
 	bool bChanged = false;
 	const int32 NumGroups = Animation ? Animation->LayerGroups.Num() : 0;
+
+	// Only worth checking a target against choices that list more than (This Widget): with no tree to list yet - a
+	// Blueprint still loading - every target would look missing.
+	const bool bCanCheck = TargetOptions && TargetOptions->Num() > 1;
+	auto IsOffered = [TargetOptions](FName Name)
+	{
+		const FString NameString = Name.ToString();
+		return TargetOptions->ContainsByPredicate([&NameString](const FString& Option) { return Option.Equals(NameString, ESearchCase::IgnoreCase); });
+	};
 
 	if (GroupTargets.Num() != NumGroups)
 	{
@@ -182,11 +206,32 @@ bool FWidgetAnimEntry::SyncGroupTargets()
 		// entry had before groups, or else the group's own Preview Target.
 		for (int32 GroupIndex = OldNum; GroupIndex < NumGroups; ++GroupIndex)
 		{
-			GroupTargets[GroupIndex].TargetWidgetName = !TargetWidgetName.IsNone()
+			FName Start = !TargetWidgetName.IsNone()
 				? TargetWidgetName
 				: Animation->LayerGroups[GroupIndex].PreviewTarget;
+
+			// A Preview Target this widget's tree doesn't have - the animation was authored in another Widget
+			// Blueprint - would animate nothing; the widget the entry is on is the useful place to start.
+			if (bCanCheck && !FWidgetAnimGroupTarget::IsThisWidget(Start) && !IsOffered(Start))
+			{
+				Start = NAME_None;
+			}
+			GroupTargets[GroupIndex].TargetWidgetName = Start;
 		}
 		bChanged = true;
+	}
+
+	// Shown the way the dropdown offers it.
+	if (TargetOptions)
+	{
+		for (FWidgetAnimGroupTarget& Row : GroupTargets)
+		{
+			if (Row.TargetWidgetName.IsNone())
+			{
+				Row.TargetWidgetName = FWidgetAnimGroupTarget::ThisWidget;
+				bChanged = true;
+			}
+		}
 	}
 
 	for (int32 GroupIndex = 0; GroupIndex < NumGroups; ++GroupIndex)
@@ -212,10 +257,11 @@ bool FWidgetAnimEntryBase::HasValueTrack(FName ValueName) const
 
 FName FWidgetAnimEntry::GetGroupTargetName(int32 GroupIndex) const
 {
-	// The row, whatever it says - None included, which deliberately means "the widget this is on".
+	// The row, whatever it says - None or (This Widget) included, which deliberately mean "the widget this is on".
 	if (GroupTargets.IsValidIndex(GroupIndex))
 	{
-		return GroupTargets[GroupIndex].TargetWidgetName;
+		const FName Row = GroupTargets[GroupIndex].TargetWidgetName;
+		return FWidgetAnimGroupTarget::IsThisWidget(Row) ? FName(NAME_None) : Row;
 	}
 
 	// A group the animation gained since this entry was last synced: the default its row would start on.
@@ -326,21 +372,22 @@ int32 UWidgetAnimEntryLibrary::StartEntriesById(FWidgetAnimPlayer& Player, const
 	return Started;
 }
 
-int32 UWidgetAnimEntryLibrary::SetEntriesValue(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& InEntries, TFunctionRef<UWidget*(FName)> Resolver, FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying,
+int32 UWidgetAnimEntryLibrary::SetEntriesValue(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& InEntries, TFunctionRef<UWidget*(FName)> Resolver, const FWidgetAnimValueId& Id, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying,
 	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)>* AppendExtra)
 {
-	if (ValueName.IsNone())
+	if (Id.ValueName.IsNone())
 	{
 		return 0;
 	}
 
-	if (bStartIfNotPlaying)
+	// An entry's tracks belong to its animation, so the additive tracks alone never start one.
+	if (bStartIfNotPlaying && !Id.bAdditiveTracks)
 	{
 		// Only entries whose animation takes this value, and only those with no track yet - one already started, even
 		// one whose clock tracks have finished, keeps its pose rather than playing its clock tracks again.
-		auto NeedsStart = [&Player, &InEntries, ValueName](const FWidgetAnimEntry& Entry)
+		auto NeedsStart = [&Player, &InEntries, &Id](const FWidgetAnimEntry& Entry)
 		{
-			if (!Entry.HasValueTrack(ValueName))
+			if (!Entry.HasValueTrack(Id.ValueName) || (!Id.IsAnywhere() && Entry.Animation.Get() != Id.Animation))
 			{
 				return false;
 			}
@@ -355,7 +402,7 @@ int32 UWidgetAnimEntryLibrary::SetEntriesValue(FWidgetAnimPlayer& Player, const 
 		StartEntriesById(Player, InEntries, Resolver, TArray<FName>(), /*bIsOut=*/false, /*PlaybackSpeed=*/1.f, /*bRestartIfPlaying=*/false, /*bHoldWhenFinished=*/true, &Filter, AppendExtra);
 	}
 
-	return UWidgetAnimLibrary::SetWidgetAnimTrackValue(Player, ValueName, Value, bSnap);
+	return UWidgetAnimLibrary::SetWidgetAnimTrackValue(Player, Id, Value, bSnap);
 }
 
 bool UWidgetAnimEntryLibrary::HasAnyUsableAnimation(const TArray<FWidgetAnimEntryBase>& Entries)

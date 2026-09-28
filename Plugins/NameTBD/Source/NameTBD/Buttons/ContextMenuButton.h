@@ -132,7 +132,7 @@ struct NAMETBD_API FContextMenuMaterialVectorValue
  * Every channel carries its own toggle, right next to the value it controls. A channel that's off is simply
  * not written for this state, and the widget shows whatever it was authored as - captured once, the first
  * time the button resolves its targets, and blended back to exactly as if it were any other value. So a
- * target can tint on hover and leave the resting colour alone, without a second place to go and switch the
+ * target can tint on hover and leave the resting color alone, without a second place to go and switch the
  * channel on first.
  */
 USTRUCT(BlueprintType)
@@ -144,7 +144,7 @@ struct NAMETBD_API FContextMenuWidgetDesign
 	bool bDriveTint = true;
 
 	/**
-	 * Multiplied against the widget's own pixels, not a replacement: a white or grey image can be tinted any color,
+	 * Multiplied against the widget's own pixels, not a replacement: a white or gray image can be tinted any color,
 	 * a pure black one stays black. Export icons white with the shape in the alpha channel, or drive a material instead.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (EditCondition = "bDriveTint"))
@@ -199,7 +199,7 @@ struct NAMETBD_API FContextMenuWidgetDesign
 	TObjectPtr<USoundBase> Sound = nullptr;
 
 	// Legacy, hidden, unused. These were details-panel mirrors of the owning target's channel switches, back
-	// when the switches lived one level up and a state's fields were greyed out from there. The switches are
+	// when the switches lived one level up and a state's fields were grayed out from there. The switches are
 	// now the toggles above, so there is nothing left to mirror.
 
 	UPROPERTY()
@@ -309,7 +309,7 @@ struct NAMETBD_API FContextMenuDesignTarget
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::Custom && bEnabledDesignApplicable", EditConditionHides))
 	bool bOverrideEnabledDesign = false;
 
-	/** Used while the button's enabled state is true. Greyed out unless Button Can Be Enabled is on, and while Enabled Matches Hover Design is on (Hovered is used instead). */
+	/** Used while the button's enabled state is true. Grayed out unless Button Can Be Enabled is on, and while Enabled Matches Hover Design is on (Hovered is used instead). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::Custom && bEnabledDesignApplicable && bOverrideEnabledDesign", EditConditionHides))
 	FContextMenuWidgetDesign Enabled;
 
@@ -385,7 +385,7 @@ struct NAMETBD_API FContextMenuColorTarget
 /**
  * What one Shape Target looks like in one state: a Transform, plus a whole Shape Box shape.
  *
- * Shape is an FShapeBoxShape stored whole - Extrude, Inset, Skew, Corners, Bend, Edge Bow, Angle, Rotation and
+ * Shape is an FShapeBoxShape stored whole - Extrude, Inset, Corners, Bend, Edge Bow, Angle, Rotation and
  * anything added to the Shape Box later. Nothing in the button names the individual properties: states blend
  * with FShapeBoxShape::Lerp, compare with Equals, and a placement overrides the struct as one piece, so a new
  * Shape Box property shows up here, animates between states and can be overridden without the button changing.
@@ -418,10 +418,10 @@ struct NAMETBD_API FContextMenuShapeStateSettings
 	FShapeBoxShape Shape;
 
 	/**
-	 * Details-panel only; no runtime effect. When false, the fields above are greyed out.
-	 * Unreal can't hide a property on one condition and grey it out on another, so UContextMenuButton
+	 * Details-panel only; no runtime effect. When false, the fields above are grayed out.
+	 * Unreal can't hide a property on one condition and gray it out on another, so UContextMenuButton
 	 * hides EnabledShape by Shape Source and mirrors "Button Can Be Enabled and not Enabled
-	 * Matches Hover Shape" into this flag to grey it.
+	 * Matches Hover Shape" into this flag to gray it.
 	 */
 	UPROPERTY()
 	bool bIsApplicable = true;
@@ -585,7 +585,7 @@ struct NAMETBD_API FContextMenuSoundSet
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound|States")
 	FUISoundSlot Disabled;
 
-	/** Plays when the button becomes enabled. Greyed out unless Button Can Be Enabled is on. */
+	/** Plays when the button becomes enabled. Grayed out unless Button Can Be Enabled is on. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound|States", meta = (EditCondition = "bEnabledSoundApplicable", HideEditConditionToggle))
 	FUISoundSlot Enabled;
 
@@ -703,7 +703,7 @@ struct NAMETBD_API FContextMenuShapeTarget
 	bool bOverrideEnabledShape = false;
 
 	/**
-	 * Used while the enabled state is true. Greyed out unless Button Can Be Enabled is on, and while Enabled Matches Hover Shape is on.
+	 * Used while the enabled state is true. Grayed out unless Button Can Be Enabled is on, and while Enabled Matches Hover Shape is on.
 	 * NOT the same as disabled: a button can be enabled and un-enabled, and when un-enabled it simply returns to Normal.
 	 * Priority: Disabled > Pressed > Hovered > Enabled > Normal.
 	 */
@@ -766,7 +766,7 @@ struct NAMETBD_API FContextMenuShapeTarget
  * Shape has no slot here; a slot the button has always shows, with a checkbox:
  *
  *  - Checked: this placement patches that slot. Inside it, each channel still has its own toggle.
- *  - Unchecked: the slot is greyed out and ignored, and its values are put back to the button's, exactly as if
+ *  - Unchecked: the slot is grayed out and ignored, and its values are put back to the button's, exactly as if
  *    it had never been touched. Unchecking never hides the row.
  *
  * Which slots appear is decided by the "... Applicable" mirrors, which the button rewrites every time it seeds
@@ -972,7 +972,7 @@ struct NAMETBD_API FContextMenuDesignStateOverride
  * Laid out slot for slot like the Design Target it patches: a Base Design, and one slot for each state the
  * button overrides (every state, for a target on a Design Preset, since a preset authors each state on its
  * own; Enabled is a state like any other). Each slot has a checkbox that works exactly like the one on a Shape
- * Target Override: unchecked greys the slot out, ignores it, and puts its values back to the button's. Inside a
+ * Target Override: unchecked grays the slot out, ignores it, and puts its values back to the button's. Inside a
  * slot, only the channels the button drives in that slot are shown.
  */
 USTRUCT(BlueprintType)
@@ -1116,7 +1116,7 @@ struct NAMETBD_API FContextMenuButtonInstanceOverrides
 	 * guessing from the variable's name - so the variable can be called anything, a widget can hold as
 	 * many of them as it has buttons, and none of it depends on a naming convention anyone has to know.
 	 *
-	 * Left empty, the old behaviour still applies: the button looks for a variable named after itself, or
+	 * Left empty, the old behavior still applies: the button looks for a variable named after itself, or
 	 * for a single unambiguous one. Existing setups keep working untouched.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Target", meta = (DisplayName = "Target Button Name"))
@@ -1162,7 +1162,7 @@ struct NAMETBD_API FContextMenuButtonInstanceOverrides
 
 	// ---- Legacy ----
 	// The first version of this struct stored whole copies of the Design Target array, which is exactly the
-	// behaviour that made a placement stop tracking its parent. Kept hidden so old assets still load;
+	// behavior that made a placement stop tracking its parent. Kept hidden so old assets still load;
 	// UContextMenuButton::PostLoad reads them once and clears them.
 
 	UPROPERTY()
@@ -1322,7 +1322,7 @@ private:
 
 	/**
 	 * Maps the layout box onto the button's own hit rect. For a parallelogram shape that is the shape itself; for
-	 * anything else (chamfers, bends, tapers...) it is the largest centred, scaled-down layout box the painted
+	 * anything else (chamfers, bends, tapers...) it is the largest centered, scaled-down layout box the painted
 	 * shape fully covers, so the button's rect never pokes out past the drawn outline.
 	 */
 	FSlateRenderTransform ComputeCoreTransform(const FVector2D& LocalSize) const;
@@ -1458,7 +1458,7 @@ public:
 
 	/**
 	 * If true, the Enabled state uses the Hovered shape (Transform, Shape, and the style's
-	 * Hovered brush), so there's nothing to copy from Hovered to Enabled. Enabled Shape is greyed out while this is on.
+	 * Hovered brush), so there's nothing to copy from Hovered to Enabled. Enabled Shape is grayed out while this is on.
 	 * Applies to Shape Presets too.
 	 * 
 	 * Set to true if your hover shape and enabled shapes are identical (which they often are).
@@ -1811,8 +1811,8 @@ public:
 	virtual void PlayWidgetAnimationsById(const TArray<FName>& AnimIds, bool bReverse, float PlaybackSpeed, bool bHoldFinalPose, bool bRestartIfPlaying) override;
 	virtual void StopWidgetAnimationsById(const TArray<FName>& AnimIds, bool bResetToStart) override;
 	virtual bool AreWidgetAnimationsPlayingById(const TArray<FName>& AnimIds) const override;
-	virtual bool SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying) override;
-	virtual FVector4 GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const override;
+	virtual bool SetWidgetAnimationValues(const FWidgetAnimValueId& Id, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying) override;
+	virtual FVector4 GetWidgetAnimationValues(const FWidgetAnimValueId& Id, bool bTargetValue) const override;
 
 	// IWidgetAnimDesignerPreviewHost
 	virtual UWidget* GetPreviewOwnerWidget() override { return this; }
@@ -2192,7 +2192,7 @@ protected:
 	 * safe to run on every rebuild and a parent edit can never be overwritten by a stale instance copy.
 	 *
 	 * Seed Source fills the channels nobody has switched on with the button's own values, which is what
-	 * keeps a greyed-out override showing what the button actually looks like. Pass false from anything
+	 * keeps a grayed-out override showing what the button actually looks like. Pass false from anything
 	 * that polls: seeding WRITES to whatever struct was found, and doing that on a timer means repeatedly
 	 * mutating an object that may well be a real asset rather than a throwaway designer preview.
 	 */

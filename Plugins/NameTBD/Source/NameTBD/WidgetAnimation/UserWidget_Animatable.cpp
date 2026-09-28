@@ -86,14 +86,14 @@ bool UUserWidget_Animatable::AreWidgetAnimationsPlayingById(const TArray<FName>&
 	return GetAnim().AreWidgetAnimationsPlayingById(AnimIds);
 }
 
-bool UUserWidget_Animatable::SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
+bool UUserWidget_Animatable::SetWidgetAnimationValues(const FWidgetAnimValueId& Id, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
 {
-	return GetAnim().SetWidgetAnimationValues(ValueName, Value, bSnap, bStartIfNotPlaying);
+	return GetAnim().SetWidgetAnimationValues(Id, Value, bSnap, bStartIfNotPlaying);
 }
 
-FVector4 UUserWidget_Animatable::GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const
+FVector4 UUserWidget_Animatable::GetWidgetAnimationValues(const FWidgetAnimValueId& Id, bool bTargetValue) const
 {
-	return GetAnim().GetWidgetAnimationValues(ValueName, bTargetValue);
+	return GetAnim().GetWidgetAnimationValues(Id, bTargetValue);
 }
 
 // =====================================================================================================

@@ -489,11 +489,27 @@ namespace
 			}
 		}
 
-		/** The Target Widget choices the component's own entries offer - listed even from the template, which has no widget to ask. */
+		/**
+		 * The Target Widget choices the component's own entries offer - listed even from the template, which has no widget
+		 * to ask - with their (This Widget) as the None a track's own Target Widget uses for the same thing.
+		 */
 		virtual TArray<FString> GetLayerTargetOptions() const override
 		{
 			const UWidgetAnimationComponent* Edited = Component.Get();
-			return Edited ? Edited->GetAnimTargetWidgetOptions() : FWidgetAnimLayerArrayPanelSource::GetLayerTargetOptions();
+			if (!Edited)
+			{
+				return FWidgetAnimLayerArrayPanelSource::GetLayerTargetOptions();
+			}
+
+			TArray<FString> Options = Edited->GetAnimTargetWidgetOptions();
+			for (FString& Option : Options)
+			{
+				if (Option == FWidgetAnimGroupTarget::ThisWidget.ToString())
+				{
+					Option = TEXT("None");
+				}
+			}
+			return Options;
 		}
 
 		// ---------------------------------------------------------------------------------------------

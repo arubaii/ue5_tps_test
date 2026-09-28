@@ -515,20 +515,27 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 	{
 		// Keyed like every other keyed layer: plain time finds the segment, so each key is reached exactly when
 		// the timeline shows it, and each segment is shaped by its key's Curve To Next Key - the layer's Easing,
-		// for a key left at Track Easing. The last key is the layer's length. The layer's Delay was already
+		// for a key left at Track Easing (straight, on a value-driven track). The last key is the layer's length. The layer's Delay was already
 		// consumed by the clock before DirectedAlpha reached us, and inversion is folded into DirectedAlpha, so a
 		// reversed layer just walks this time backwards. Exactly the first and last keys' times at either end.
 		const float Duration = Settings.Transform.GetDuration();
 		auto EaseSegment = [&Settings](float Alpha) { return EvaluateEasedAlpha(Settings, Alpha); };
 		const TFunctionRef<float(float)> TrackEase(EaseSegment);
-		const float LocalTime = FMath::Clamp(DirectedAlpha, 0.f, 1.f) * Duration;
 
 		// Null unless a baseline captured this Shape Box's authored outline, which is exactly when a key's
 		// Use Authored Shape has something to mean.
 		const FShapeBoxShape* AuthoredShape = Baselines ? Baselines->FindShapeBaseline(Settings.ShapeTargetBox) : nullptr;
 
+		// A spring fitted to the keys: it runs the track's length, its progress walks the keys - each segment straight,
+		// the spring being the motion, as a spring track's value keys are points along its travel - and its overshoot
+		// carries on past the last key (or before the first, heading back) instead of holding there.
+		const bool bSpring = Settings.IsSpringTimed();
+		const float LocalTime = bSpring
+			? UWidgetAnimSpringLibrary::EvaluateDirectedProgress(Settings.Spring, FMath::Clamp(DirectedAlpha, 0.f, 1.f), bTowardStart) * Duration
+			: FMath::Clamp(DirectedAlpha, 0.f, 1.f) * Duration;
+
 		const FWidgetTransformAnimResult Contribution =
-			UWidgetAnimTransformLibrary::Evaluate(Settings.Transform, LocalTime, AuthoredShape, &TrackEase);
+			UWidgetAnimTransformLibrary::Evaluate(Settings.Transform, LocalTime, AuthoredShape, bSpring ? nullptr : &TrackEase, /*bExtrapolate=*/bSpring);
 
 		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget);
 		Transform.Translation += Contribution.Translation;
@@ -573,7 +580,7 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 		};
 
 		// Exactly the point itself at either end of a segment, not a lerp that lands a rounding error off it: a track
-		// at its very end must carry exactly its End Value, which is what lets a quantized write recognise it has
+		// at its very end must carry exactly its End Value, which is what lets a quantized write recognize it has
 		// landed and show it (see ApplyAuthoritativeWrites). Only exactly 0 and 1: a spring's alpha running past
 		// either end is an overshoot, and still lerps out beyond the point.
 		const double RegisteredValue = SegmentAlpha == 0.f ? PointValue(Segment)
@@ -1079,7 +1086,17 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 			// track starts, with no delay: it is showing data, not playing its part of a sequence. At rest it counts as
 			// ended, and it never holds the stack from settling. See WidgetAnimDriver.h.
 			FWidgetAnimState& State = States[Index];
-			State.bFinished = WidgetAnimValue::Advance(Settings.ValueOptions, Settings.GetValueMotion(), State.ValueState, DeltaTime * FMath::Max(Settings.PlaybackSpeed, 0.01f));
+			const float ValueDeltaTime = DeltaTime * FMath::Max(Settings.PlaybackSpeed, 0.01f);
+			State.bFinished = WidgetAnimValue::Advance(Settings.ValueOptions, Settings.GetValueMotion(), State.ValueState, ValueDeltaTime);
+
+			// A Pulse's value is its strength; it pulses on its own clock, one pulse per Duration, for as long as it has
+			// any strength - and only then counts as at rest.
+			if (Settings.AnimType == EWidgetAnimType::Pulse)
+			{
+				const float Period = FMath::Max(Settings.Duration, KINDA_SMALL_NUMBER);
+				State.ValueState.PulseTime = FMath::Fmod(State.ValueState.PulseTime + ValueDeltaTime, Period);
+				State.bFinished = State.bFinished && State.ValueState.Progress.X <= 0.f;
+			}
 
 			if (!Settings.bMuted)
 			{
@@ -2201,7 +2218,10 @@ FWidgetAnimSettings FWidgetAnimLayer::ToSettings() const
 	Out.Spring = Spring;
 	Out.ValueName = ValueName;
 	Out.ValueSmoothing = ValueSmoothing;
+	Out.ValueDrives = ValueDrives;
 	Out.ValueOptions = ValueOptions;
+	// Only a value type this track can take reaches the runtime; one it can't is read as Float.
+	Out.ValueOptions.Kind = GetEffectiveValueKind();
 	Out.ValueKeys = ValueKeys;
 
 	Out.StartOpacity = StartOpacity;
@@ -2255,6 +2275,7 @@ FWidgetAnimLayer FWidgetAnimLayer::FromSettings(const FWidgetAnimSettings& Setti
 	Out.Spring = Settings.Spring;
 	Out.ValueName = Settings.ValueName;
 	Out.ValueSmoothing = Settings.ValueSmoothing;
+	Out.ValueDrives = Settings.ValueDrives;
 	Out.ValueOptions = Settings.ValueOptions;
 	Out.ValueKeys = Settings.ValueKeys;
 
@@ -2356,14 +2377,41 @@ void UWidgetAnimLibrary::InitializeValueLayers(const FWidgetAnimPlayer& Player, 
 
 		// Where it was last left - the widget shown again, Play In restarting everything - or, before any value, its
 		// Start Value. Each layer maps the raw value onto itself through its own range.
-		const FVector4* Remembered = Layer.ValueName.IsNone() ? nullptr : Player.Values.Find(Layer.ValueName);
-		WidgetAnimValue::Snap(Track.States[Index].ValueState, Layer.ValueOptions.ToProgress(Remembered ? *Remembered : Layer.ValueOptions.GetStartValue()));
+		const FWidgetAnimRememberedValue* Remembered = FindRememberedValue(Player, Layer.ValueScope, Layer.ValueName);
+		WidgetAnimValue::Snap(Track.States[Index].ValueState, Layer.ValueOptions.ToProgress(Remembered ? Remembered->Value : Layer.ValueOptions.GetStartValue()));
 	}
 }
 
-int32 UWidgetAnimLibrary::SetWidgetAnimTrackValue(FWidgetAnimPlayer& Player, FName ValueName, const FVector4& Value, bool bSnap)
+const FWidgetAnimRememberedValue* UWidgetAnimLibrary::FindRememberedValue(const FWidgetAnimPlayer& Player, const UObject* Scope, FName Name)
 {
-	if (ValueName.IsNone())
+	if (Name.IsNone())
+	{
+		return nullptr;
+	}
+
+	// Set in its own scope first; failing that, set for the name anywhere.
+	const FWidgetAnimRememberedValue* Anywhere = nullptr;
+	for (const FWidgetAnimRememberedValue& Remembered : Player.Values)
+	{
+		if (Remembered.ValueName != Name)
+		{
+			continue;
+		}
+		if (!Remembered.bAnywhere && Remembered.Animation.Get() == Scope)
+		{
+			return &Remembered;
+		}
+		if (Remembered.bAnywhere)
+		{
+			Anywhere = &Remembered;
+		}
+	}
+	return Anywhere;
+}
+
+int32 UWidgetAnimLibrary::SetWidgetAnimTrackValue(FWidgetAnimPlayer& Player, const FWidgetAnimValueId& Id, const FVector4& Value, bool bSnap)
+{
+	if (Id.ValueName.IsNone())
 	{
 		return 0;
 	}
@@ -2374,7 +2422,7 @@ int32 UWidgetAnimLibrary::SetWidgetAnimTrackValue(FWidgetAnimPlayer& Player, FNa
 		for (int32 Index = 0; Index < Track.Settings.Num(); ++Index)
 		{
 			const FWidgetAnimSettings& Layer = Track.Settings[Index];
-			if (!Layer.IsValueDriven() || Layer.ValueName != ValueName)
+			if (!Layer.IsValueDriven() || !Id.Matches(Layer.ValueScope, Layer.ValueName))
 			{
 				continue;
 			}
@@ -2394,21 +2442,53 @@ int32 UWidgetAnimLibrary::SetWidgetAnimTrackValue(FWidgetAnimPlayer& Player, FNa
 				State.bFinished = false;
 				Track.bFinished = false;
 			}
+
+			// A Pulse given strength pulses on: its track runs until the strength is back to nothing.
+			if (Layer.AnimType == EWidgetAnimType::Pulse && State.ValueState.Target.X > 0.f)
+			{
+				State.bFinished = false;
+				Track.bFinished = false;
+			}
 		}
 	}
 
-	Player.Values.Add(ValueName, Value);
+	// Remembered in the scope it was set in, replacing what was remembered there.
+	FWidgetAnimRememberedValue* Remembered = Player.Values.FindByPredicate([&Id](const FWidgetAnimRememberedValue& Candidate)
+	{
+		return Candidate.ValueName == Id.ValueName && Candidate.bAnywhere == Id.IsAnywhere() && Candidate.Animation.Get() == Id.Animation;
+	});
+	if (!Remembered)
+	{
+		Remembered = &Player.Values.AddDefaulted_GetRef();
+		Remembered->ValueName = Id.ValueName;
+		Remembered->bAnywhere = Id.IsAnywhere();
+		Remembered->Animation = const_cast<UObject*>(Id.Animation);
+	}
+	Remembered->Value = Value;
+
+	// A value set anywhere is the newest word on every scope's copy of it too.
+	if (Id.IsAnywhere())
+	{
+		for (FWidgetAnimRememberedValue& Other : Player.Values)
+		{
+			if (Other.ValueName == Id.ValueName)
+			{
+				Other.Value = Value;
+			}
+		}
+	}
+
 	return Taken;
 }
 
-bool UWidgetAnimLibrary::GetWidgetAnimTrackValue(const FWidgetAnimPlayer& Player, FName ValueName, bool bTargetValue, FVector4& OutValue)
+bool UWidgetAnimLibrary::GetWidgetAnimTrackValue(const FWidgetAnimPlayer& Player, const FWidgetAnimValueId& Id, bool bTargetValue, FVector4& OutValue)
 {
 	for (const FWidgetAnimTrack& Track : Player.Tracks)
 	{
 		for (int32 Index = 0; Index < Track.Settings.Num() && Index < Track.States.Num(); ++Index)
 		{
 			const FWidgetAnimSettings& Layer = Track.Settings[Index];
-			if (Layer.IsValueDriven() && Layer.ValueName == ValueName)
+			if (Layer.IsValueDriven() && Id.Matches(Layer.ValueScope, Layer.ValueName))
 			{
 				const FWidgetAnimValueState& State = Track.States[Index].ValueState;
 				OutValue = Layer.ValueOptions.FromProgress(bTargetValue ? State.Target : State.Progress);
@@ -2417,9 +2497,13 @@ bool UWidgetAnimLibrary::GetWidgetAnimTrackValue(const FWidgetAnimPlayer& Player
 		}
 	}
 
-	if (const FVector4* Remembered = Player.Values.Find(ValueName))
+	// Not running: what was last set - for the name anywhere, any scope's; for one scope, its own or the name anywhere's.
+	const FWidgetAnimRememberedValue* Remembered = Id.IsAnywhere()
+		? Player.Values.FindByPredicate([&Id](const FWidgetAnimRememberedValue& Candidate) { return Candidate.ValueName == Id.ValueName; })
+		: FindRememberedValue(Player, Id.Animation, Id.ValueName);
+	if (Remembered)
 	{
-		OutValue = *Remembered;
+		OutValue = Remembered->Value;
 		return true;
 	}
 
@@ -2427,12 +2511,66 @@ bool UWidgetAnimLibrary::GetWidgetAnimTrackValue(const FWidgetAnimPlayer& Player
 	return false;
 }
 
-bool UWidgetAnimLibrary::HasValueLayer(const TArray<FWidgetAnimSettings>& Settings, FName ValueName)
+bool UWidgetAnimLibrary::HasValueLayer(const TArray<FWidgetAnimSettings>& Settings, const FWidgetAnimValueId& Id)
 {
-	return !ValueName.IsNone() && Settings.ContainsByPredicate([ValueName](const FWidgetAnimSettings& Layer)
+	return Settings.ContainsByPredicate([&Id](const FWidgetAnimSettings& Layer)
 	{
-		return Layer.IsValueDriven() && Layer.ValueName == ValueName;
+		return Layer.IsValueDriven() && Id.Matches(Layer.ValueScope, Layer.ValueName);
 	});
+}
+
+bool UWidgetAnimLibrary::AssignDefaultValueNames(TArray<FWidgetAnimLayer>& Layers, TSet<FName>* TakenNames)
+{
+	TSet<FName> LocalTaken;
+	TSet<FName>& Taken = TakenNames ? *TakenNames : LocalTaken;
+
+	// The names already given count as taken first, wherever they are in the list, so a new name never repeats one.
+	for (const FWidgetAnimLayer& Layer : Layers)
+	{
+		if (Layer.IsValueDriven() && !Layer.ValueName.IsNone())
+		{
+			Taken.Add(Layer.ValueName);
+		}
+	}
+
+	bool bChanged = false;
+	for (FWidgetAnimLayer& Layer : Layers)
+	{
+		if (!Layer.IsValueDriven() || !Layer.ValueName.IsNone())
+		{
+			continue;
+		}
+
+		// The type's name: its registered type's, or the built-in one's display name.
+		FString Base;
+		if (Layer.AnimType == EWidgetAnimType::Custom)
+		{
+			const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator();
+			Base = Evaluator ? Evaluator->GetTrackDisplayName(Layer.TypeParams).ToString() : FString(TEXT("Value"));
+		}
+		else
+		{
+			Base = StaticEnum<EWidgetAnimType>()->GetDisplayNameTextByValue(static_cast<int64>(Layer.AnimType)).ToString();
+		}
+		Base.TrimStartAndEndInline();
+		if (Base.IsEmpty())
+		{
+			Base = TEXT("Value");
+		}
+
+		// "Scale", then "Scale 1", "Scale 2" - the first free one.
+		FName Candidate(*Base);
+		for (int32 Suffix = 1; Taken.Contains(Candidate); ++Suffix)
+		{
+			Candidate = FName(*FString::Printf(TEXT("%s %d"), *Base, Suffix));
+		}
+
+		Layer.ValueName = Candidate;
+		Taken.Add(Candidate);
+		bChanged = true;
+	}
+
+	return bChanged;
 }
 
 namespace
@@ -2440,6 +2578,12 @@ namespace
 	/** Whether an exit starting now would have to wait for this value-driven layer. */
 	bool ValueLayerHoldsExit(const FWidgetAnimSettings& Layer, const FWidgetAnimValueState& State)
 	{
+		// A Pulse's value is how strong it pulses, not somewhere it is going: nothing for an exit to wait for.
+		if (Layer.AnimType == EWidgetAnimType::Pulse)
+		{
+			return false;
+		}
+
 		switch (Layer.ValueOptions.OnExit)
 		{
 		case EWidgetAnimValueExit::WaitForValue:
@@ -2487,7 +2631,7 @@ bool UWidgetAnimLibrary::PrepareValueLayersForExit(FWidgetAnimPlayer& Player)
 			}
 
 			FWidgetAnimState& State = Track.States[Index];
-			if (Layer.ValueOptions.OnExit == EWidgetAnimValueExit::CompleteFirst
+			if (Layer.AnimType != EWidgetAnimType::Pulse && Layer.ValueOptions.OnExit == EWidgetAnimValueExit::CompleteFirst
 				&& WidgetAnimValue::SetTarget(Layer.ValueOptions, Layer.GetValueMotion(), State.ValueState, FVector4f(1.f, 1.f, 1.f, 1.f), /*bSnap=*/false)
 				&& State.ValueState.IsMoving())
 			{
@@ -2523,6 +2667,52 @@ bool UWidgetAnimLibrary::IsAnyValueLayerHoldingExit(const FWidgetAnimPlayer& Pla
 	return false;
 }
 
+namespace WidgetAnimValueShape
+{
+	/** Copies one shape setting - its X from FromX, its Y from FromY, as bX and bY say - into Into. */
+	void CopyShapeField(EWidgetAnimTransformPart Field, bool bX, bool bY, const FShapeBoxShape& FromX, const FShapeBoxShape& FromY, FShapeBoxShape& Into)
+	{
+		auto Axes = [bX, bY](const FVector2D& X, const FVector2D& Y, FVector2D& Out)
+		{
+			if (bX)
+			{
+				Out.X = X.X;
+			}
+			if (bY)
+			{
+				Out.Y = Y.Y;
+			}
+		};
+
+		// A corner's cut size, and its style with it - a size means little under the other style.
+		auto Corner = [&Axes](const FShapeBoxCorner& X, const FShapeBoxCorner& Y, FShapeBoxCorner& Out)
+		{
+			Axes(X.Size, Y.Size, Out.Size);
+			Out.Style = X.Style;
+		};
+
+		switch (Field)
+		{
+		case EWidgetAnimTransformPart::ShapeAngle:             Axes(FromX.Angle, FromY.Angle, Into.Angle); break;
+		case EWidgetAnimTransformPart::ShapeBend:              Axes(FromX.Bend, FromY.Bend, Into.Bend); break;
+		case EWidgetAnimTransformPart::ShapeCornerBottomLeft:  Corner(FromX.Corners.BottomLeft, FromY.Corners.BottomLeft, Into.Corners.BottomLeft); break;
+		case EWidgetAnimTransformPart::ShapeCornerBottomRight: Corner(FromX.Corners.BottomRight, FromY.Corners.BottomRight, Into.Corners.BottomRight); break;
+		case EWidgetAnimTransformPart::ShapeCornerTopLeft:     Corner(FromX.Corners.TopLeft, FromY.Corners.TopLeft, Into.Corners.TopLeft); break;
+		case EWidgetAnimTransformPart::ShapeCornerTopRight:    Corner(FromX.Corners.TopRight, FromY.Corners.TopRight, Into.Corners.TopRight); break;
+		case EWidgetAnimTransformPart::ShapeEdgeBowBottom:     Into.EdgeBow.Bottom = FromX.EdgeBow.Bottom; break;
+		case EWidgetAnimTransformPart::ShapeEdgeBowLeft:       Into.EdgeBow.Left = FromX.EdgeBow.Left; break;
+		case EWidgetAnimTransformPart::ShapeEdgeBowRight:      Into.EdgeBow.Right = FromX.EdgeBow.Right; break;
+		case EWidgetAnimTransformPart::ShapeEdgeBowTop:        Into.EdgeBow.Top = FromX.EdgeBow.Top; break;
+		case EWidgetAnimTransformPart::ShapeExtrude:           Axes(FromX.Extrude, FromY.Extrude, Into.Extrude); break;
+		case EWidgetAnimTransformPart::ShapeInset:             Axes(FromX.Inset, FromY.Inset, Into.Inset); break;
+		case EWidgetAnimTransformPart::ShapePerspective:       Into.Perspective = FromX.Perspective; break;
+		case EWidgetAnimTransformPart::ShapeRotation:          Into.Rotation = FromX.Rotation; break;
+		case EWidgetAnimTransformPart::ShapeWrap:              Axes(FromX.Wrap, FromY.Wrap, Into.Wrap); break;
+		default: break;
+		}
+	}
+}
+
 void UWidgetAnimLibrary::ApplyValueLayerContribution(const FWidgetAnimSettings& Settings, const FWidgetAnimValueState& ValueState, FWidgetAnimResult& OutResult, const FWidgetAnimBaselineSet* Baselines)
 {
 	// A value poses the same whichever direction its track was started in: only the layer's own Invert Animation turns
@@ -2533,26 +2723,49 @@ void UWidgetAnimLibrary::ApplyValueLayerContribution(const FWidgetAnimSettings& 
 		return Settings.bInvertAnimation ? 1.f - Progress : Progress;
 	};
 
+	// A Pulse: one pulse of its own clock, its size scaled by how strong the value says it is.
+	if (Settings.AnimType == EWidgetAnimType::Pulse)
+	{
+		const float Period = FMath::Max(Settings.Duration, KINDA_SMALL_NUMBER);
+		FWidgetAnimResult Pulse;
+		ApplyAnimationContribution(Settings, FMath::Clamp(ValueState.PulseTime / Period, 0.f, 1.f), Pulse, Baselines, /*bTowardStart=*/false);
+
+		const float Strength = Directed(0);
+		for (const FWidgetAnimTargetedTransform& Pose : Pulse.TargetedTransforms)
+		{
+			FWidgetAnimTargetedTransform& Into = FindOrAddTargetedTransform(OutResult, Pose.TargetWidget);
+			Into.Scale *= FVector2D::UnitVector + (Pose.Scale - FVector2D::UnitVector) * Strength;
+		}
+		return;
+	}
+
 	const int32 NumChannels = Settings.ValueOptions.GetNumChannels();
-	if (NumChannels <= 1)
+	const bool bWholePath = Settings.AnimType != EWidgetAnimType::Transform || Settings.ValueDrives == EWidgetAnimTransformValueTarget::WholePath;
+	if (NumChannels <= 1 && bWholePath)
 	{
 		ApplyAnimationContribution(Settings, Directed(0), OutResult, Baselines, /*bTowardStart=*/false);
 		return;
 	}
 
-	// Several channels: the track posed once per channel, each pose lending its own axis or colour channel. The first
-	// carries everything a single value would - so a type with one axis follows X, or R.
+	// Several channels, or one part of a Transform: the track posed once per channel, each pose lending its own axis or
+	// color channel. The first carries everything a single value would - so a type with one axis follows X, or R.
 	FWidgetAnimResult Parts[4];
-	for (int32 Channel = 0; Channel < NumChannels; ++Channel)
+	for (int32 Channel = 0; Channel < FMath::Max(NumChannels, 1); ++Channel)
 	{
 		ApplyAnimationContribution(Settings, Directed(Channel), Parts[Channel], Baselines, /*bTowardStart=*/false);
 	}
 	const FWidgetAnimResult& First = Parts[0];
+	const FWidgetAnimResult& Second = NumChannels >= 2 ? Parts[1] : Parts[0];
+
+	// A Transform driving one field, or one axis of it: the rest of its keys stay out of it.
+	bool bX = true;
+	bool bY = true;
+	const EWidgetAnimTransformPart Driven = bWholePath ? EWidgetAnimTransformPart::WholePath : WidgetAnimValue::GetTransformPart(Settings.ValueDrives, bX, bY);
 
 	for (const FWidgetAnimTargetedTransform& Pose : First.TargetedTransforms)
 	{
 		FWidgetAnimTargetedTransform Combined = Pose;
-		const FWidgetAnimTargetedTransform* YPose = Parts[1].TargetedTransforms.FindByPredicate([&Pose](const FWidgetAnimTargetedTransform& Other)
+		const FWidgetAnimTargetedTransform* YPose = Second.TargetedTransforms.FindByPredicate([&Pose](const FWidgetAnimTargetedTransform& Other)
 		{
 			return Other.TargetWidget == Pose.TargetWidget;
 		});
@@ -2561,6 +2774,21 @@ void UWidgetAnimLibrary::ApplyValueLayerContribution(const FWidgetAnimSettings& 
 			Combined.Scale.Y = YPose->Scale.Y;
 			Combined.Translation.Y = YPose->Translation.Y;
 			Combined.Shear.Y = YPose->Shear.Y;
+		}
+
+		// Everything but the driven field - all of the pose, when it is a shape setting - as the identity.
+		if (!bWholePath)
+		{
+			auto Keep = [bX, bY](const FVector2D& Posed, double Identity)
+			{
+				return FVector2D(bX ? Posed.X : Identity, bY ? Posed.Y : Identity);
+			};
+
+			Combined.Opacity = 1.f;
+			Combined.Translation = Driven == EWidgetAnimTransformPart::Translation ? Keep(Combined.Translation, 0.0) : FVector2D::ZeroVector;
+			Combined.Scale = Driven == EWidgetAnimTransformPart::Scale ? Keep(Combined.Scale, 1.0) : FVector2D::UnitVector;
+			Combined.Shear = Driven == EWidgetAnimTransformPart::Shear ? Keep(Combined.Shear, 0.0) : FVector2D::ZeroVector;
+			Combined.Angle = Driven == EWidgetAnimTransformPart::Angle ? Combined.Angle : 0.f;
 		}
 
 		// Folded in the way layers always fold: opacity and scale multiply, the rest add.
@@ -2590,11 +2818,34 @@ void UWidgetAnimLibrary::ApplyValueLayerContribution(const FWidgetAnimSettings& 
 		OutResult.VectorParameters.Add(Pair.Key, Combined);
 	}
 
-	for (const FWidgetAnimShapeTarget& Shape : First.ShapeTargets)
+	// The outline: whole on the whole path; on a shape setting, that setting from the keys - X from the first channel's
+	// pose, Y from the second's - over the box's own authored outline.
+	if (bWholePath)
 	{
-		FWidgetAnimShapeTarget& Into = FindOrAddShapeTarget(OutResult, Shape.TargetBox);
-		Into.Shape = Shape.Shape;
-		Into.bIsBaseline = Shape.bIsBaseline;
+		for (const FWidgetAnimShapeTarget& Shape : First.ShapeTargets)
+		{
+			FWidgetAnimShapeTarget& Into = FindOrAddShapeTarget(OutResult, Shape.TargetBox);
+			Into.Shape = Shape.Shape;
+			Into.bIsBaseline = Shape.bIsBaseline;
+		}
+	}
+	else if (WidgetAnimValue::IsShapePart(Driven))
+	{
+		for (const FWidgetAnimShapeTarget& Shape : First.ShapeTargets)
+		{
+			const FWidgetAnimShapeTarget* YShape = Second.ShapeTargets.FindByPredicate([&Shape](const FWidgetAnimShapeTarget& Other)
+			{
+				return Other.TargetBox == Shape.TargetBox;
+			});
+			const FShapeBoxShape* Authored = Baselines ? Baselines->FindShapeBaseline(Shape.TargetBox.Get()) : nullptr;
+
+			FShapeBoxShape Outline = Authored ? *Authored : FShapeBoxShape();
+			WidgetAnimValueShape::CopyShapeField(Driven, bX, bY, Shape.Shape, YShape ? YShape->Shape : Shape.Shape, Outline);
+
+			FWidgetAnimShapeTarget& Into = FindOrAddShapeTarget(OutResult, Shape.TargetBox);
+			Into.Shape = Outline;
+			Into.bIsBaseline = false;
+		}
 	}
 
 	for (const FWidgetAnimAuthoritativeWrite& Write : First.AuthoritativeWrites)

@@ -821,7 +821,7 @@ void UWidgetDataBinderComponent::EvaluateTrigger(int32 TriggerIndex, bool bIniti
 			Raw = WidgetAnimValue::FromFloat(WidgetDataValues::IsTruthy(Value.Property, Value.ValuePtr) ? 1.0 : 0.0);
 		}
 
-		// At binding the value is shown where it is rather than travelled to - a row pointed at another pawn shows that
+		// At binding the value is shown where it is rather than traveled to - a row pointed at another pawn shows that
 		// pawn's health at once - and only with Evaluate On Bind. After that, only a change sends anything.
 		if (bInitial)
 		{
@@ -1035,13 +1035,15 @@ void UWidgetDataBinderComponent::SetAnimationValue(const FWidgetFieldTrigger& Tr
 		return;
 	}
 
+	// By name alone: every animation's tracks with this Value Name follow the field.
+	const FWidgetAnimValueId Id = FWidgetAnimValueId::Anywhere(Trigger.ValueName);
 	if (Component)
 	{
-		Component->SetWidgetAnimationValues(Trigger.ValueName, Value, bSnap, /*bStartIfNotPlaying=*/true);
+		Component->SetWidgetAnimationValues(Id, Value, bSnap, /*bStartIfNotPlaying=*/true);
 	}
 	else
 	{
-		Host->SetWidgetAnimationValues(Trigger.ValueName, Value, bSnap, /*bStartIfNotPlaying=*/true);
+		Host->SetWidgetAnimationValues(Id, Value, bSnap, /*bStartIfNotPlaying=*/true);
 	}
 }
 

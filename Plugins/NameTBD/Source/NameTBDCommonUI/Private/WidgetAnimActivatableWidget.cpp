@@ -139,14 +139,14 @@ bool UWidgetAnimActivatableWidget::AreWidgetAnimationsPlayingById(const TArray<F
 	return GetAnim().AreWidgetAnimationsPlayingById(AnimIds);
 }
 
-bool UWidgetAnimActivatableWidget::SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
+bool UWidgetAnimActivatableWidget::SetWidgetAnimationValues(const FWidgetAnimValueId& Id, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
 {
-	return GetAnim().SetWidgetAnimationValues(ValueName, Value, bSnap, bStartIfNotPlaying);
+	return GetAnim().SetWidgetAnimationValues(Id, Value, bSnap, bStartIfNotPlaying);
 }
 
-FVector4 UWidgetAnimActivatableWidget::GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const
+FVector4 UWidgetAnimActivatableWidget::GetWidgetAnimationValues(const FWidgetAnimValueId& Id, bool bTargetValue) const
 {
-	return GetAnim().GetWidgetAnimationValues(ValueName, bTargetValue);
+	return GetAnim().GetWidgetAnimationValues(Id, bTargetValue);
 }
 
 // =====================================================================================================

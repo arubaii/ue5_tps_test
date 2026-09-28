@@ -93,7 +93,7 @@ void FWidgetAnimScreenTransitionDriver::GetAllComponents(UWidget& Screen, TArray
 void FWidgetAnimScreenTransitionDriver::NotifyActivated(UCommonActivatableWidget& Screen, const FWidgetAnimScreenTransitionSettings& Settings)
 {
 	// Activated again part-way through its exit: the screen is staying after all, so it stops leaving and
-	// plays its activation below from wherever the exit had got to.
+	// plays its activation below from wherever the exit had gotten to.
 	if (bClosing)
 	{
 		CancelClose();

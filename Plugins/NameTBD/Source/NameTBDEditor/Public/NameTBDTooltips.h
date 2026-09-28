@@ -63,6 +63,24 @@ namespace NameTBD::Tooltips
 				"A Spring track springs across its whole run, keys and all, so it has no curves between keys. Its keys are points along the way it travels.");
 		}
 
+		inline FText NotForThisTrackType()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NotForThisTrackType",
+				"Not used by this type of track.");
+		}
+
+		inline FText ValueDrivenTrackNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ValueDrivenTrackNote",
+				"Value driven: gameplay's value decides where along its keys this track is, with Set Widget Animation Value, so its place and length here don't time it in game. Its keys still shape it. The preview sweeps it once across its length so it can be judged.");
+		}
+
+		inline FText ValueDrivenPulseNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ValueDrivenPulseNote",
+				"Value driven: gameplay's value is how strongly this Pulse pulses, from none at the start of its range to full at the end. It keeps its own beat, its Duration, however long it runs.");
+		}
+
 		// -------------------------------------------------------------------------------------------------
 		// The Selection panel - several tracks
 		// -------------------------------------------------------------------------------------------------
@@ -144,7 +162,7 @@ namespace NameTBD::Tooltips
 		inline FText LockTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "LockTooltip",
-				"Lock the animation so that it is read only: a preview, with everything that would edit it greyed out.");
+				"Lock the animation so that it is read only: a preview, with everything that would edit it grayed out.");
 		}
 
 		// -------------------------------------------------------------------------------------------------
@@ -484,13 +502,13 @@ namespace NameTBD::Tooltips
 		inline FText KeyCurveNoSegments()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyCurveNoSegments",
-				"No two selected keys sit next to each other on one track. Select neighbouring keys - Shift- or Ctrl-click them, or drag a box round them - to set the curve between them.");
+				"No two selected keys sit next to each other on one track. Select neighboring keys - Shift- or Ctrl-click them, or drag a box around them - to set the curve between them.");
 		}
 
 		inline FText KeyCurveSegments()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyCurveSegments",
-				"Sets {0} {0}|plural(one=stretch,other=stretches) between neighbouring selected keys. Any other stretch keeps its curve.");
+				"Sets {0} {0}|plural(one=stretch,other=stretches) between neighboring selected keys. Any other stretch keeps its curve.");
 		}
 
 		inline FText KeyCurveSpringNote()
@@ -502,7 +520,7 @@ namespace NameTBD::Tooltips
 		inline FText KeyCurvePanelHelp()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyCurvePanelHelp",
-				"The curve between two keys is how a track travels from one to the other. Set it here for every stretch between neighbouring selected keys at once, or for one key at a time by selecting just that key. Track Easing leaves a stretch to its track's Easing.");
+				"The curve between two keys is how a track travels from one to the other. Set it here for every stretch between neighboring selected keys at once, or for one key at a time by selecting just that key. Track Easing leaves a stretch to its track's Easing.");
 		}
 
 		// -------------------------------------------------------------------------------------------------
@@ -542,7 +560,7 @@ namespace NameTBD::Tooltips
 		inline FText MaterialVectorBlurbTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MaterialVectorBlurbTooltip",
-				"Drives a vector (colour) parameter of the material on its target Image's brush.");
+				"Drives a vector (color) parameter of the material on its target Image's brush.");
 		}
 
 		inline FText TransformBlurbTooltip()
@@ -706,7 +724,7 @@ namespace NameTBD::Tooltips
 		inline FText AdditiveStartWithinTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveStartWithinTooltip",
-				"The tracks play as part of {0}: from its start, whenever it plays - Play In, a trigger, Play By Id - with its Loop, Ping Pong, Invert and Playback Speed. Its tracks show above these, greyed, to place them against.");
+				"The tracks play as part of {0}: from its start, whenever it plays - Play In, a trigger, Play By Id - with its Loop, Ping Pong, Invert and Playback Speed. Its tracks show above these, grayed, to place them against.");
 		}
 
 		inline FText AdditiveStartNoAnimations()
@@ -761,6 +779,58 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveLayersWindowTitle",
 				"{0} - {1}");
+		}
+	}
+
+	/** The Set Widget Animation Value node's dropdown pins, in the Blueprint graph. */
+	namespace WidgetAnimValuePins
+	{
+		inline FText AnimationPicker()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "AnimationPicker",
+				"The Widget Animation the value belongs to: one of those played in Anim In and Anim Out by the Widget Animation Components on the Target and inside it, or their Additive Tracks. Only that animation's tracks take the value, so the same Value Name in another animation is left alone.");
+		}
+
+		inline FText ValuePicker()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "ValuePicker",
+				"The Value Name of a value-driven track (Timing = Value) in the picked Animation, with the type it takes. The Value pin changes to that type.");
+		}
+
+		inline FText SourceValues()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "SourceValues",
+				"Values: {0}");
+		}
+
+		inline FText SourceHasNoValues()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "SourceHasNoValues",
+				"No value-driven tracks in here yet. Set a track's Timing to Value in the Widget Animations editor and it shows up.");
+		}
+
+		inline FText NoAnimations()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "NoAnimations",
+				"No Widget Animation Component on the Target or inside it has an animation in Anim In or Anim Out. Unconnected, the Target is this widget; connected to one of its designer widgets, that widget and what is inside it.");
+		}
+
+		inline FText NoValues()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "NoValues",
+				"Nothing here is value-driven. Set a track's Timing to Value in the Widget Animations editor and it shows up.");
+		}
+
+		inline FText AnimationMissing()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "AnimationMissing",
+				"No Widget Animation Component on the Target or inside it plays this animation anymore - it was removed, or the Target changed. Pick one that is.");
+		}
+
+		inline FText ValueMissing()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "ValueMissing",
+				"No value-driven track here has this Value Name anymore: it was renamed, removed or is no longer Value timed. Pick one that is.");
 		}
 	}
 }

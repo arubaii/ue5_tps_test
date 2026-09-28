@@ -767,7 +767,7 @@ void SContextMenuSlateButton::RefreshShapeRenderTransform()
 	const FVector2D AuthoredPivot = Owner ? Owner->GetRenderTransformPivot() : FVector2D(0.5, 0.5);
 
 	// The authored half is read fresh (it is what just changed) while the core is the committed one. Only the core
-	// is ever cancelled at paint time, so refreshing the authored half can't put the two out of step.
+	// is ever canceled at paint time, so refreshing the authored half can't put the two out of step.
 	CommittedAuthoredTransform = AuthoredTransform;
 	CommittedAuthoredPivot = AuthoredPivot;
 
@@ -805,7 +805,7 @@ FSlateRenderTransform SContextMenuSlateButton::ComputeBrushTransform(const FVect
 {
 	using namespace ContextMenuButtonShape;
 
-	// Pivots on the middle of the shaped brush, wherever Extrude/Inset/Skew/... have put it.
+	// Pivots on the middle of the shaped brush, wherever Extrude/Inset/... have put it.
 	const FVector2D Middle = ButtonShape.Evaluate(LocalSize, FVector2D(0.5, 0.5));
 	return FoldPivot(BrushTransform.ToSlateRenderTransform(), Middle);
 }
@@ -1045,7 +1045,7 @@ int32 SContextMenuSlateButton::OnPaint(const FPaintArgs& Args, const FGeometry& 
 	// is the plain layout box: the content ends up exactly where layout put it, with its own hit area unmoved.
 	//
 	// The inverse is the core the previous paint committed, never the current one. That committed core is the one on
-	// the render transform, so it is the one this geometry was built from; cancelling anything else leaves the content
+	// the render transform, so it is the one this geometry was built from; canceling anything else leaves the content
 	// off by however much the shape has moved on since, which is the content fidgeting mid-blend. The new core is
 	// committed at the bottom of this function, for the next paint.
 	const FGeometry ContentGeometry = bCommittedShapeActive
@@ -1504,7 +1504,7 @@ void UContextMenuButton::PostLoad()
 	// Design Targets used to author Normal/Hovered/Pressed/Disabled/Enabled directly, with nothing to fall
 	// back to - Base Design now fills that role, and a state with its override left off simply follows it.
 	// So a state that was actually authored under the old layout needs its override forced on here, or its
-	// values would go from "always applied" to "ignored in favour of a blank Base Design" the moment this
+	// values would go from "always applied" to "ignored in favor of a blank Base Design" the moment this
 	// loads. Detected the same way as the channel-switch migration above: by differing from what a freshly
 	// constructed state looks like. A state already sitting at those defaults doesn't care either way, since
 	// Base Design starts at the same defaults, so there's nothing for it to lose.
@@ -2094,7 +2094,7 @@ void UContextMenuButton::BroadcastToOwnerDispatchers(EContextMenuButtonEvent Eve
 
 void UContextMenuButton::SyncEditConditionMirrors()
 {
-	// Only the Enabled state is ever greyed/hidden; the other states always apply. Every target shares the same
+	// Only the Enabled state is ever grayed/hidden; the other states always apply. Every target shares the same
 	// mirror, since Enabled Matches Hover Shape is a button-wide setting.
 	const bool bEnabledShapeApplicable = bButtonCanBeEnabled && !bEnabledMatchesHoverShape;
 	for (FContextMenuShapeTarget& Target : ShapeTargets)
@@ -2111,7 +2111,7 @@ void UContextMenuButton::SyncEditConditionMirrors()
 	for (FContextMenuDesignTarget& Target : DesignTargets)
 	{
 		// The only mirror left. Every other field now carries its own inline toggle, and a preset-driven
-		// target hides its states outright rather than greying each field from up here.
+		// target hides its states outright rather than graying each field from up here.
 		Target.bEnabledDesignApplicable = bEnabledDesignApplicable;
 	}
 }
@@ -2790,7 +2790,7 @@ void UContextMenuButton::ExecuteButtonAction()
 	PlayClickSounds();
 
 	// Before the delegate rather than after it, and before the card is closed further down: an action is
-	// this button's own behaviour, and anything bound to On Context Clicked is a reaction to the button
+	// this button's own behavior, and anything bound to On Context Clicked is a reaction to the button
 	// having done its job. A card that closes on click would otherwise be tearing down the widget the
 	// actions are still reading payloads from.
 	ExecuteTaggedActions();
@@ -5273,7 +5273,7 @@ void UContextMenuButton::StartDesignPreviewWatcher()
 
 	bIsDesignPreviewWatcherActive = true;
 
-	// A tenth of a second. Fast enough that dragging a colour swatch in a parent designer reads as live,
+	// A tenth of a second. Fast enough that dragging a color swatch in a parent designer reads as live,
 	// slow enough that a screen full of these costs nothing worth measuring - and each tick is a struct
 	// comparison that early-outs, not a repaint.
 	SlateWidget->RegisterActiveTimer(0.1f, FWidgetActiveTimerDelegate::CreateUObject(this, &UContextMenuButton::TickDesignPreviewWatcher));
@@ -5516,7 +5516,7 @@ bool UContextMenuButton::AreWidgetAnimationsPlayingById(const TArray<FName>& Ani
 	return UWidgetAnimLibrary::AreWidgetAnimTracksPlaying(ButtonAnimPlayer, AnimIds);
 }
 
-bool UContextMenuButton::SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
+bool UContextMenuButton::SetWidgetAnimationValues(const FWidgetAnimValueId& Id, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
 {
 	// The designer previews value-driven tracks on their timelines; only a live button takes values.
 	if (IsDesignTime())
@@ -5532,7 +5532,7 @@ bool UContextMenuButton::SetWidgetAnimationValues(FName ValueName, const FVector
 	UWidgetAnimLibrary::CaptureWidgetAnimBaselines(this, FlattenedAnimIn, FlattenedAnimOut, ButtonAnimBaselines);
 
 	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
-	const int32 Taken = UWidgetAnimEntryLibrary::SetEntriesValue(ButtonAnimPlayer, EffectiveInEntries, Resolver, ValueName, Value, bSnap, bStartIfNotPlaying);
+	const int32 Taken = UWidgetAnimEntryLibrary::SetEntriesValue(ButtonAnimPlayer, EffectiveInEntries, Resolver, Id, Value, bSnap, bStartIfNotPlaying);
 
 	// The timer stops once nothing moves, so it is started again for the value to travel - and a snap, which moves
 	// nothing over time, is posed now.
@@ -5542,10 +5542,10 @@ bool UContextMenuButton::SetWidgetAnimationValues(FName ValueName, const FVector
 	return Taken > 0;
 }
 
-FVector4 UContextMenuButton::GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const
+FVector4 UContextMenuButton::GetWidgetAnimationValues(const FWidgetAnimValueId& Id, bool bTargetValue) const
 {
 	FVector4 Value(0.0, 0.0, 0.0, 0.0);
-	UWidgetAnimLibrary::GetWidgetAnimTrackValue(ButtonAnimPlayer, ValueName, bTargetValue, Value);
+	UWidgetAnimLibrary::GetWidgetAnimTrackValue(ButtonAnimPlayer, Id, bTargetValue, Value);
 	return Value;
 }
 
@@ -5618,11 +5618,11 @@ EActiveTimerReturnType UContextMenuButton::TickButtonAnimations(double InCurrent
 // ==================================================================
 //
 // Why this is a customization and not just UPROPERTY metadata: every slot needs a checkbox on its own row that
-// greys the row out when cleared, while the row as a whole only exists if the button has that slot. Unreal
+// grays the row out when cleared, while the row as a whole only exists if the button has that slot. Unreal
 // draws a row's checkbox from its Edit Condition, and Edit Condition Hides hides on that SAME condition - so with
 // metadata alone, clearing the checkbox also made the row vanish, and it only came back once the asset was
 // reopened and the button re-seeded it. Here the two are separate: which slots exist is decided when the rows are
-// built, and the checkbox only ever greys.
+// built, and the checkbox only ever grays.
 
 #if WITH_EDITOR
 
@@ -5735,7 +5735,7 @@ namespace ContextMenuButtonOverrideDetails
 					FOnBooleanValueChanged::CreateLambda([StructHandle = TSharedRef<IPropertyHandle>(PropertyHandle), Slot = SlotHandle.ToSharedRef(), Switch = SwitchHandle.ToSharedRef(), DefaultIndex](bool bNewValue)
 					{
 						// Cleared: the slot goes back to the button's values, as if it had never been
-						// overridden. The row stays where it is, greyed out.
+						// overridden. The row stays where it is, grayed out.
 						if (!bNewValue)
 						{
 							ResetSlotToDefault(StructHandle, Slot, DefaultIndex);

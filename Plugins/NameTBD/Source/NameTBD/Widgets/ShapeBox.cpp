@@ -29,7 +29,7 @@
 namespace ShapeBoxPrivate
 {
 	constexpr double Tolerance = 0.01;
-	constexpr double MaxSkewDegrees = 80.0;
+	constexpr double MaxAngleDegrees = 80.0;
 	constexpr double MaxWrapDegrees = 180.0;
 	constexpr double MaxPerspectiveFov = 90.0;
 
@@ -67,20 +67,15 @@ namespace ShapeBoxPrivate
 		return Corner.Style == EShapeBoxCornerStyle::Bevel ? Corner.Size : FVector2D::ZeroVector;
 	}
 
-	double SkewTangent(double Degrees)
-	{
-		return FMath::Tan(FMath::DegreesToRadians(FMath::Clamp(Degrees, -MaxSkewDegrees, MaxSkewDegrees)));
-	}
-
 	/**
-	 * How far each corner moves for its bevel, in TL, TR, BR, BL order. A bevel slides the corner along its own edges
-	 * as they lie after Skew, so the cut always runs along the edge rather than off it. Those directions depend only
-	 * on the skew angles, never on the box's size, which is what lets IsAffine answer without a size.
+	 * How far each corner moves for its bevel, in TL, TR, BR, BL order. A bevel slides the corner along its own edges,
+	 * so the cut always runs along the edge rather than off it. Never depends on the box's size, which is what lets
+	 * IsAffine answer without one.
 	 */
-	void ComputeBevelOffsets(const FShapeBoxShape& Shape, double TanX, double TanY, FVector2D OutOffsets[4])
+	void ComputeBevelOffsets(const FShapeBoxShape& Shape, FVector2D OutOffsets[4])
 	{
-		const FVector2D AlongTop = FVector2D(1.0, TanY).GetSafeNormal();   // top and bottom edges, pointing right
-		const FVector2D AlongSide = FVector2D(TanX, 1.0).GetSafeNormal();  // left and right sides, pointing down
+		const FVector2D AlongTop(1.0, 0.0);   // top and bottom edges, pointing right
+		const FVector2D AlongSide(0.0, 1.0);  // left and right sides, pointing down
 
 		const FVector2D TopLeft = GetBevel(Shape.Corners.TopLeft);
 		const FVector2D TopRight = GetBevel(Shape.Corners.TopRight);
@@ -115,11 +110,11 @@ namespace ShapeBoxPrivate
 	 * Extrude/Inset applied - and values outside extrapolate smoothly, for the feather border. Returns a position in the
 	 * box's local space.
 	 *
-	 * Stage 1 (flat): the content box, skewed, with bevelled corners joined by optionally bowed edges, filled as a Coons
+	 * Stage 1 (flat): the content box, with beveled corners joined by optionally bowed edges, filled as a Coons
 	 * patch, plus Bend.
-	 * Stage 2 (depth): the flat result is wrapped onto a cylinder, turned by Angle about the box centre and projected,
+	 * Stage 2 (depth): the flat result is wrapped onto a cylinder, turned by Angle about the box center and projected,
 	 * so the far side shrinks and everything on it foreshortens correctly.
-	 * Stage 3 (roll): the result is spun by Rotation about the centre.
+	 * Stage 3 (roll): the result is spun by Rotation about the center.
 	 *
 	 * Chamfers are not part of the mapping: they are straight cuts in content space, clipped out of the mesh and the
 	 * hit cells.
@@ -160,21 +155,13 @@ namespace ShapeBoxPrivate
 				FMath::Max(MinContentSize, LayoutSize.Y + Edges.Top + Edges.Bottom));
 			Center = Origin + Size * 0.5;
 
-			const double TanX = SkewTangent(Shape.Skew.X);
-			const double TanY = SkewTangent(Shape.Skew.Y);
-
-			auto Skewed = [&](double X, double Y)
-			{
-				return FVector2D(X + TanX * (Y - Center.Y), Y + TanY * (X - Center.X));
-			};
-
 			FVector2D Bevels[4];
-			ComputeBevelOffsets(Shape, TanX, TanY, Bevels);
+			ComputeBevelOffsets(Shape, Bevels);
 
-			TL = Skewed(Origin.X, Origin.Y) + Bevels[0];
-			TR = Skewed(Origin.X + Size.X, Origin.Y) + Bevels[1];
-			BR = Skewed(Origin.X + Size.X, Origin.Y + Size.Y) + Bevels[2];
-			BL = Skewed(Origin.X, Origin.Y + Size.Y) + Bevels[3];
+			TL = FVector2D(Origin.X, Origin.Y) + Bevels[0];
+			TR = FVector2D(Origin.X + Size.X, Origin.Y) + Bevels[1];
+			BR = FVector2D(Origin.X + Size.X, Origin.Y + Size.Y) + Bevels[2];
+			BL = FVector2D(Origin.X, Origin.Y + Size.Y) + Bevels[3];
 
 			// Edges walk clockwise, so the right-hand normal of each points out of the box.
 			TopBow = OutwardNormal(TL, TR) * static_cast<double>(Shape.EdgeBow.Top);
@@ -192,8 +179,8 @@ namespace ShapeBoxPrivate
 			WrapRadiusX = bWrapX ? Size.X / WrapX : 0.0;
 			WrapRadiusY = bWrapY ? Size.Y / WrapY : 0.0;
 
-			FMath::SinCos(&SinYaw, &CosYaw, FMath::DegreesToRadians(FMath::Clamp(Shape.Angle.X, -MaxSkewDegrees, MaxSkewDegrees)));
-			FMath::SinCos(&SinPitch, &CosPitch, FMath::DegreesToRadians(FMath::Clamp(Shape.Angle.Y, -MaxSkewDegrees, MaxSkewDegrees)));
+			FMath::SinCos(&SinYaw, &CosYaw, FMath::DegreesToRadians(FMath::Clamp(Shape.Angle.X, -MaxAngleDegrees, MaxAngleDegrees)));
+			FMath::SinCos(&SinPitch, &CosPitch, FMath::DegreesToRadians(FMath::Clamp(Shape.Angle.Y, -MaxAngleDegrees, MaxAngleDegrees)));
 
 			// Focal length chosen so an unturned box projects at exactly its content size.
 			const double Fov = FMath::DegreesToRadians(FMath::Clamp(static_cast<double>(Shape.Perspective), 0.0, 1.0) * MaxPerspectiveFov);
@@ -446,7 +433,7 @@ namespace ShapeBoxPrivate
 			FVector2f(Origin));
 	}
 
-	/** Vertex colour for premultiplied, gamma-space content (what the widget renderer writes). */
+	/** Vertex color for premultiplied, gamma-space content (what the widget renderer writes). */
 	FColor MakePremultipliedColor(const FLinearColor& Tint)
 	{
 		const float Alpha = FMath::Clamp(Tint.A, 0.0f, 1.0f);
@@ -458,7 +445,7 @@ namespace ShapeBoxPrivate
 		return Encoded;
 	}
 
-	/** A premultiplied colour scaled by coverage. Premultiplied, so every channel scales together. */
+	/** A premultiplied color scaled by coverage. Premultiplied, so every channel scales together. */
 	FColor ScalePremultipliedColor(const FColor& Color, float Coverage)
 	{
 		if (Coverage >= 1.0f)
@@ -595,7 +582,7 @@ bool FShapeBoxShape::IsAffine() const
 
 	// Bevels keep a parallelogram only if opposite corners move by matching amounts.
 	FVector2D Bevels[4];
-	ComputeBevelOffsets(*this, SkewTangent(Skew.X), SkewTangent(Skew.Y), Bevels);
+	ComputeBevelOffsets(*this, Bevels);
 	const FVector2D Twist = Bevels[0] + Bevels[2] - Bevels[1] - Bevels[3];
 
 	// Angle without perspective only foreshortens, which is still a parallelogram. Wrap never is. Rotation always is.
@@ -623,7 +610,6 @@ bool FShapeBoxShape::IsFlat() const
 
 	return IsAffine()
 		&& bNoEdgeOffsets
-		&& Skew.IsNearlyZero(Tolerance)
 		&& Angle.IsNearlyZero(Tolerance)
 		&& Wrap.IsNearlyZero(Tolerance)
 		&& FMath::IsNearlyZero(Rotation, static_cast<float>(Tolerance))
@@ -903,7 +889,7 @@ EVisibility SShapeBox::GetEffectiveVisibility() const
 
 	// While shaped, the content (or, warped, the hit cells) is this box's hit area. If the box itself were
 	// hit-testable too, its layout rect would swallow clicks wherever the shape no longer covers it: the corners a
-	// skew leaves bare, an inset margin, a chamfered corner.
+	// bevel leaves bare, an inset margin, a chamfered corner.
 	if (Mode != EMode::Flat && Requested == EVisibility::Visible)
 	{
 		return EVisibility::SelfHitTestInvisible;
@@ -1086,7 +1072,7 @@ bool SShapeBox::RenderContent(const FVector2D& ContentSize, float Scale, int32 I
 			return false;
 		}
 
-		// Gamma-space colour stored as-is, cleared to transparent so the feather border is empty.
+		// Gamma-space color stored as-is, cleared to transparent so the feather border is empty.
 		RenderTarget->ClearColor = FLinearColor::Transparent;
 		RenderTarget->TargetGamma = 1.0f;
 		RenderTarget->SRGB = false;
@@ -1299,7 +1285,7 @@ void SShapeBox::BuildHitCells(const FVector2D& Size) const
 		const FVector2D P01 = Evaluator.Evaluate(U0, V1);
 		const FVector2D P11 = Evaluator.Evaluate(U1, V1);
 
-		// The parallelogram that best fits this (slightly non-parallel) cell: averaged sides, same centre.
+		// The parallelogram that best fits this (slightly non-parallel) cell: averaged sides, same center.
 		const FVector2D AxisX = ((P10 - P00) + (P11 - P01)) * 0.5;
 		const FVector2D AxisY = ((P01 - P00) + (P11 - P10)) * 0.5;
 		const FVector2D Origin = (P00 + P10 + P01 + P11) * 0.25 - (AxisX + AxisY) * 0.5;

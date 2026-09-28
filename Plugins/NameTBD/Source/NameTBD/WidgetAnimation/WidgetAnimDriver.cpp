@@ -144,7 +144,7 @@ namespace WidgetAnimValue
 			return false;
 		}
 
-		// A tween starts a fresh ease from wherever it has got to; a spring needs nothing, since its displacement is
+		// A tween starts a fresh ease from wherever it has gotten to; a spring needs nothing, since its displacement is
 		// measured from the target each step and its velocity carries straight over.
 		State.Target = Target;
 		State.TweenFrom = State.Progress;
@@ -232,4 +232,102 @@ namespace WidgetAnimValue
 
 		return !State.IsMoving();
 	}
+}
+
+// =====================================================================================================
+// Transform value targets
+// =====================================================================================================
+
+namespace
+{
+	struct FTransformTargetRow
+	{
+		EWidgetAnimTransformValueTarget Target;
+		EWidgetAnimTransformPart Part;
+		bool bX;
+		bool bY;
+	};
+
+	// Every target, the field it moves and its axes. A field with one value is X only.
+	const FTransformTargetRow TransformTargetRows[] =
+	{
+		{ EWidgetAnimTransformValueTarget::WholePath, EWidgetAnimTransformPart::WholePath, true, true },
+		{ EWidgetAnimTransformValueTarget::Angle, EWidgetAnimTransformPart::Angle, true, false },
+		{ EWidgetAnimTransformValueTarget::Scale, EWidgetAnimTransformPart::Scale, true, true },
+		{ EWidgetAnimTransformValueTarget::ScaleX, EWidgetAnimTransformPart::Scale, true, false },
+		{ EWidgetAnimTransformValueTarget::ScaleY, EWidgetAnimTransformPart::Scale, false, true },
+		{ EWidgetAnimTransformValueTarget::ShapeAngle, EWidgetAnimTransformPart::ShapeAngle, true, true },
+		{ EWidgetAnimTransformValueTarget::ShapeAngleX, EWidgetAnimTransformPart::ShapeAngle, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeAngleY, EWidgetAnimTransformPart::ShapeAngle, false, true },
+		{ EWidgetAnimTransformValueTarget::ShapeBend, EWidgetAnimTransformPart::ShapeBend, true, true },
+		{ EWidgetAnimTransformValueTarget::ShapeBendX, EWidgetAnimTransformPart::ShapeBend, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeBendY, EWidgetAnimTransformPart::ShapeBend, false, true },
+		{ EWidgetAnimTransformValueTarget::ShapeCornerBottomLeft, EWidgetAnimTransformPart::ShapeCornerBottomLeft, true, true },
+		{ EWidgetAnimTransformValueTarget::ShapeCornerBottomLeftX, EWidgetAnimTransformPart::ShapeCornerBottomLeft, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeCornerBottomLeftY, EWidgetAnimTransformPart::ShapeCornerBottomLeft, false, true },
+		{ EWidgetAnimTransformValueTarget::ShapeCornerBottomRight, EWidgetAnimTransformPart::ShapeCornerBottomRight, true, true },
+		{ EWidgetAnimTransformValueTarget::ShapeCornerBottomRightX, EWidgetAnimTransformPart::ShapeCornerBottomRight, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeCornerBottomRightY, EWidgetAnimTransformPart::ShapeCornerBottomRight, false, true },
+		{ EWidgetAnimTransformValueTarget::ShapeCornerTopLeft, EWidgetAnimTransformPart::ShapeCornerTopLeft, true, true },
+		{ EWidgetAnimTransformValueTarget::ShapeCornerTopLeftX, EWidgetAnimTransformPart::ShapeCornerTopLeft, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeCornerTopLeftY, EWidgetAnimTransformPart::ShapeCornerTopLeft, false, true },
+		{ EWidgetAnimTransformValueTarget::ShapeCornerTopRight, EWidgetAnimTransformPart::ShapeCornerTopRight, true, true },
+		{ EWidgetAnimTransformValueTarget::ShapeCornerTopRightX, EWidgetAnimTransformPart::ShapeCornerTopRight, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeCornerTopRightY, EWidgetAnimTransformPart::ShapeCornerTopRight, false, true },
+		{ EWidgetAnimTransformValueTarget::ShapeEdgeBowBottom, EWidgetAnimTransformPart::ShapeEdgeBowBottom, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeEdgeBowLeft, EWidgetAnimTransformPart::ShapeEdgeBowLeft, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeEdgeBowRight, EWidgetAnimTransformPart::ShapeEdgeBowRight, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeEdgeBowTop, EWidgetAnimTransformPart::ShapeEdgeBowTop, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeExtrude, EWidgetAnimTransformPart::ShapeExtrude, true, true },
+		{ EWidgetAnimTransformValueTarget::ShapeExtrudeX, EWidgetAnimTransformPart::ShapeExtrude, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeExtrudeY, EWidgetAnimTransformPart::ShapeExtrude, false, true },
+		{ EWidgetAnimTransformValueTarget::ShapeInset, EWidgetAnimTransformPart::ShapeInset, true, true },
+		{ EWidgetAnimTransformValueTarget::ShapeInsetX, EWidgetAnimTransformPart::ShapeInset, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeInsetY, EWidgetAnimTransformPart::ShapeInset, false, true },
+		{ EWidgetAnimTransformValueTarget::ShapePerspective, EWidgetAnimTransformPart::ShapePerspective, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeRotation, EWidgetAnimTransformPart::ShapeRotation, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeWrap, EWidgetAnimTransformPart::ShapeWrap, true, true },
+		{ EWidgetAnimTransformValueTarget::ShapeWrapX, EWidgetAnimTransformPart::ShapeWrap, true, false },
+		{ EWidgetAnimTransformValueTarget::ShapeWrapY, EWidgetAnimTransformPart::ShapeWrap, false, true },
+		{ EWidgetAnimTransformValueTarget::Shear, EWidgetAnimTransformPart::Shear, true, true },
+		{ EWidgetAnimTransformValueTarget::ShearX, EWidgetAnimTransformPart::Shear, true, false },
+		{ EWidgetAnimTransformValueTarget::ShearY, EWidgetAnimTransformPart::Shear, false, true },
+		{ EWidgetAnimTransformValueTarget::Translation, EWidgetAnimTransformPart::Translation, true, true },
+		{ EWidgetAnimTransformValueTarget::TranslationX, EWidgetAnimTransformPart::Translation, true, false },
+		{ EWidgetAnimTransformValueTarget::TranslationY, EWidgetAnimTransformPart::Translation, false, true },
+	};
+}
+
+EWidgetAnimTransformPart WidgetAnimValue::GetTransformPart(EWidgetAnimTransformValueTarget Target, bool& bOutX, bool& bOutY)
+{
+	for (const FTransformTargetRow& Row : TransformTargetRows)
+	{
+		if (Row.Target == Target)
+		{
+			bOutX = Row.bX;
+			bOutY = Row.bY;
+			return Row.Part;
+		}
+	}
+
+	bOutX = true;
+	bOutY = true;
+	return EWidgetAnimTransformPart::WholePath;
+}
+
+bool WidgetAnimValue::TransformTargetTakesTwoAxes(EWidgetAnimTransformValueTarget Target)
+{
+	bool bX = true;
+	bool bY = true;
+	GetTransformPart(Target, bX, bY);
+	return bX && bY;
+}
+
+bool WidgetAnimValue::IsShapePart(EWidgetAnimTransformPart Part)
+{
+	return Part != EWidgetAnimTransformPart::WholePath
+		&& Part != EWidgetAnimTransformPart::Translation
+		&& Part != EWidgetAnimTransformPart::Scale
+		&& Part != EWidgetAnimTransformPart::Shear
+		&& Part != EWidgetAnimTransformPart::Angle;
 }

@@ -122,7 +122,7 @@ DECLARE_MULTICAST_DELEGATE_OneParam(FWidgetAnimationComponentNativeEvent, UWidge
  *  - It cannot intercept SetVisibility on its owner. With Play Animations On Visibility Hidden on,
  *    becoming visible still plays Anim In automatically; hiding WITH an exit animation goes through
  *    Set Visibility Animated. (UUserWidget_Animatable routes its own SetVisibility there, so it keeps
- *    the old behaviour.)
+ *    the old behavior.)
  *
  * Code can also create one and attach it by hand with BindToWidget - UInfoCardWidget and
  * UUserWidget_Animatable both do - in which case the code that bound it also calls
@@ -193,12 +193,12 @@ public:
 	FWidgetAnimAdditiveStart AdditiveAnimLayersOutStart;
 
 	/**
-	 * Every Value Name the value-driven tracks in this component's animations use (Timing = Value in the Widget
-	 * Animations editor), one row each, listed for you: set them with Set Widget Animation Value. Tick a row to give
-	 * this widget its own range, start value and limits for it, in place of the tracks' own. How the tracks travel to
-	 * a value - their smoothing - is part of the animation and stays there.
+	 * Every value the value-driven tracks in this component's animations and additive tracks use (Timing = Value in
+	 * the Widget Animations editor), one row per animation and Value Name, listed for you: set them with Set Widget
+	 * Animation Value. Tick a row to give this widget its own range, start value and limits for it, in place of the
+	 * tracks' own. The value type and how the tracks travel to a value - their smoothing - belong to the tracks.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Value Tracks", EditFixedSize, TitleProperty = "ValueName"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Value Tracks", EditFixedSize, TitleProperty = "{ValueName} ({Source})"))
 	TArray<FWidgetAnimValueOverride> ValueOverrides;
 
 	/**
@@ -212,12 +212,11 @@ public:
 	bool bPreserveAuthoredTransforms = false;
 
 	/**
-	 * Plays these animations in the UMG designer, so they can be judged without compiling and running.
-	 * Nothing here is saved into the widget's authored state, and it has no effect at runtime.
-	 *
-	 * Requires Unreal Engine 5.6 or newer: older UI Components are never told they are in the designer.
+	 * The old always-on designer preview (its Mode, speed and holds). No longer shown or used - the Widget Animations
+	 * toolbar and panel preview instead - and read as Off whatever was saved, so a widget saved previewing doesn't keep
+	 * playing with no way to stop it. Kept only so older assets load quietly.
 	 */
-	UPROPERTY(EditAnywhere, Category = "Animation|Designer Preview", meta = (DisplayName = "Designer Preview", ShowOnlyInnerProperties))
+	UPROPERTY()
 	FWidgetAnimPreviewSettings DesignerPreview;
 
 	/** Fired when the exit animation finishes, after any visibility deferred by Set Visibility Animated has been applied. */
@@ -321,9 +320,10 @@ public:
 	// -------------------------------------------------------------------------------------------------
 
 	/**
-	 * Sets the value of the value-driven tracks with this Value Name (Timing = Value in the Widget Animations editor).
-	 * Each track maps it onto itself through its Value At Start and Value At End - 0 and 1 by default, so 0.5 is
-	 * halfway along - and travels there by its own smoothing. Call it as often as the value changes.
+	 * Sets the value of the value-driven tracks with this Value Name (Timing = Value in the Widget Animations editor),
+	 * in every animation that has one - the Set Widget Animation Value node picks one animation instead. Each track
+	 * maps it onto itself through its Value At Start and Value At End - 0 and 1 by default, so 0.5 is halfway along -
+	 * and travels there by its own smoothing. Call it as often as the value changes.
 	 *
 	 * Snap jumps straight to the value, and may go back even where a track never goes backwards - for resetting. Start
 	 * If Not Playing starts the Anim In entries that have such a track but haven't played yet, so no Play call is needed
@@ -341,12 +341,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Animation|Value", meta = (DisplayName = "Set Widget Animation Value (Vector 2D)", AdvancedDisplay = "bSnap,bStartIfNotPlaying"))
 	bool SetWidgetAnimationValueVector2D(FName ValueName, FVector2D Value, bool bSnap = false, bool bStartIfNotPlaying = true);
 
-	/** Set Widget Animation Value, for a track whose Value Type is Colour: R, G, B and A each move their own channel. */
-	UFUNCTION(BlueprintCallable, Category = "Animation|Value", meta = (DisplayName = "Set Widget Animation Value (Colour)", AdvancedDisplay = "bSnap,bStartIfNotPlaying"))
+	/** Set Widget Animation Value, for a track whose Value Type is Color: R, G, B and A each move their own channel. */
+	UFUNCTION(BlueprintCallable, Category = "Animation|Value", meta = (DisplayName = "Set Widget Animation Value (Color)", AdvancedDisplay = "bSnap,bStartIfNotPlaying"))
 	bool SetWidgetAnimationValueColor(FName ValueName, FLinearColor Value, bool bSnap = false, bool bStartIfNotPlaying = true);
 
-	/** Any of the four, with the value raw - up to four channels. See WidgetAnimValue::FromFloat and the others. */
-	bool SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying);
+	/**
+	 * Any of the four, for the value Id names - one animation's, the additive tracks', or the name anywhere - with the
+	 * value raw, up to four channels. See WidgetAnimValue::FromFloat and the others.
+	 */
+	bool SetWidgetAnimationValues(const FWidgetAnimValueId& Id, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying);
 
 	/**
 	 * The value the first value-driven track with this Value Name shows now - or, with Target Value, the one it is
@@ -361,18 +364,28 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Animation|Value", meta = (DisplayName = "Get Widget Animation Value (Vector 2D)"))
 	FVector2D GetWidgetAnimationValueVector2D(FName ValueName, bool bTargetValue = false) const;
 
-	UFUNCTION(BlueprintPure, Category = "Animation|Value", meta = (DisplayName = "Get Widget Animation Value (Colour)"))
+	UFUNCTION(BlueprintPure, Category = "Animation|Value", meta = (DisplayName = "Get Widget Animation Value (Color)"))
 	FLinearColor GetWidgetAnimationValueColor(FName ValueName, bool bTargetValue = false) const;
 
-	/** The raw value behind the four getters. */
-	FVector4 GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const;
+	/** The raw value behind the four getters, for the value Id names. */
+	FVector4 GetWidgetAnimationValues(const FWidgetAnimValueId& Id, bool bTargetValue) const;
 
 	/**
-	 * Lists every Value Name the component's animations and additive layers use in Value Tracks - one row each, in the
-	 * order first found - keeping the rows already overridden and dropping names no longer used. Rows not overridden
-	 * show their tracks' settings. Run on load and on every edit. True if anything changed.
+	 * Whether any animation here - an Anim In or Anim Out entry's, or the additive tracks - has a value-driven track
+	 * that takes the value Id names. What the Set Widget Animation Value node looks for among the components on and
+	 * under its Target, to set the first one (or every one) that has it.
+	 */
+	bool HasWidgetAnimationValue(const FWidgetAnimValueId& Id) const;
+
+	/**
+	 * Lists every value the component's animations and additive tracks use in Value Tracks - one row per animation and
+	 * Value Name, in the order first found - keeping the rows already overridden and dropping values no longer used.
+	 * Rows not overridden show their tracks' settings. Run on load and on every edit. True if anything changed.
 	 */
 	bool RefreshValueOverrides();
+
+	/** Names every value-driven additive track that has no Value Name yet after its type, unique across both lists. */
+	bool AssignAdditiveValueNames();
 
 	/**
 	 * True while Play Out is waiting for a value-driven track - here, or in a component it cascades into - to arrive
@@ -482,7 +495,11 @@ public:
 	/** Points each list's start at its entry's current place, and clears one whose entry is gone. True if either changed. */
 	bool RefreshAdditiveStarts();
 
-	/** Backs the Target Widget dropdown on every entry. Must stay a UFUNCTION for GetOptions. */
+	/**
+	 * Backs the Target Widget dropdown on every entry: (This Widget) first, then the widget the component is on and every
+	 * widget inside it - a Border with a Text in it offers (This Widget), Border and Text - nested User Widgets' insides
+	 * as "Nested/Inner". On a whole User Widget, its whole tree. Must stay a UFUNCTION for GetOptions.
+	 */
 	UFUNCTION()
 	TArray<FString> GetAnimTargetWidgetOptions() const;
 

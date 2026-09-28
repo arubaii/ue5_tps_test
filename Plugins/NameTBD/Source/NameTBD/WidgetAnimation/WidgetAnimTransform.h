@@ -226,8 +226,11 @@ public:
 	 * TrackEase, when given, shapes each segment by its key's Curve To Next Key, a key left at Track Easing
 	 * by TrackEase itself - the layer's Easing - and LocalTime is plain time. Null keeps every segment
 	 * linear.
+	 *
+	 * bExtrapolate: a LocalTime before the first key or past the last carries on along the first or last segment,
+	 * in a straight line, instead of holding the key - how a spring-timed track overshoots its last key.
 	 */
-	static FWidgetTransformAnimResult Evaluate(const FWidgetTransformAnim& Anim, float LocalTime, const FShapeBoxShape* AuthoredShape = nullptr, const TFunctionRef<float(float)>* TrackEase = nullptr);
+	static FWidgetTransformAnimResult Evaluate(const FWidgetTransformAnim& Anim, float LocalTime, const FShapeBoxShape* AuthoredShape = nullptr, const TFunctionRef<float(float)>* TrackEase = nullptr, bool bExtrapolate = false);
 
 	/**
 	 * Runs SyncKeysToCurve on every FWidgetTransformAnim anywhere inside Object - in layer arrays, in

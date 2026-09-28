@@ -198,7 +198,7 @@ bool FWidgetTransformAnim::SyncKeysToCurve(bool* bOutResized)
 // UWidgetAnimTransformLibrary
 // =====================================================================================================
 
-FWidgetTransformAnimResult UWidgetAnimTransformLibrary::Evaluate(const FWidgetTransformAnim& Anim, float LocalTime, const FShapeBoxShape* AuthoredShape, const TFunctionRef<float(float)>* TrackEase)
+FWidgetTransformAnimResult UWidgetAnimTransformLibrary::Evaluate(const FWidgetTransformAnim& Anim, float LocalTime, const FShapeBoxShape* AuthoredShape, const TFunctionRef<float(float)>* TrackEase, bool bExtrapolate)
 {
 	FWidgetTransformAnimResult Result;
 
@@ -240,7 +240,18 @@ FWidgetTransformAnimResult UWidgetAnimTransformLibrary::Evaluate(const FWidgetTr
 		// TrackEase instead, LocalTime is plain time and each segment is shaped here, by its own curve.
 		const float SegmentStart = CurveKeys[Segment].Time;
 		const float SegmentLength = FMath::Max(CurveKeys[Segment + 1].Time - SegmentStart, KINDA_SMALL_NUMBER);
-		const float LinearAlpha = FMath::Clamp((LocalTime - SegmentStart) / SegmentLength, 0.f, 1.f);
+		float LinearAlpha = (LocalTime - SegmentStart) / SegmentLength;
+		if (bExtrapolate)
+		{
+			// Only the ends run on: before the first key along the first segment, past the last along the last. A
+			// time inside the run is inside a segment, as always.
+			LinearAlpha = Segment > 0 ? FMath::Max(LinearAlpha, 0.f) : LinearAlpha;
+			LinearAlpha = Segment < NumKeys - 2 ? FMath::Min(LinearAlpha, 1.f) : LinearAlpha;
+		}
+		else
+		{
+			LinearAlpha = FMath::Clamp(LinearAlpha, 0.f, 1.f);
+		}
 
 		const FWidgetTransformKeyframe& KeyA = Anim.Keys[Segment];
 		const FWidgetTransformKeyframe& KeyB = Anim.Keys[Segment + 1];

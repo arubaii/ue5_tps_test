@@ -32,7 +32,9 @@ public class NameTBDEditor : ModuleRules
 			"Projects",       
 			"AssetTools",
 			"ToolMenus",
-			"DeveloperSettings", // UWidgetAnimEditorSettings - track colours and track controls
+			"DeveloperSettings", // UWidgetAnimEditorSettings - track colors and track controls
+			"GraphEditor",       // SGraphPin, for the Set Widget Animation Value node's dropdown pins
+			"NameTBDUncooked",   // that node
 		});
 		if (Target.bBuildEditor)
 		{

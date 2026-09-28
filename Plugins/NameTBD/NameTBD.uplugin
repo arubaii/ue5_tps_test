@@ -33,6 +33,11 @@
 			]
 		},
 		{
+			"Name": "NameTBDUncooked",
+			"Type": "UncookedOnly",
+			"LoadingPhase": "Default"
+		},
+		{
 			"Name": "NameTBDEditor",
 			"Type": "Editor",
 			"LoadingPhase": "PostEngineInit"

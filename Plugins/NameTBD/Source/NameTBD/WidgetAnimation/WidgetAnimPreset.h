@@ -218,7 +218,7 @@ struct NAMETBD_API FWidgetAnimGroupTarget
 	FString GroupName;
 
 	/**
-	 * Which widget this group animates. None animates whatever the entry is attached to.
+	 * Which widget this group animates. (This Widget) - or None - animates whatever the entry is attached to.
 	 *
 	 * Material Scalar / Material Vector layers need this to name an Image, and a Transform layer's Shape
 	 * channel needs it to name a Shape Box (or a widget inside one); any other widget type and those
@@ -226,6 +226,15 @@ struct NAMETBD_API FWidgetAnimGroupTarget
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Target Widget", GetOptions = "GetAnimTargetWidgetOptions"))
 	FName TargetWidgetName;
+
+	/**
+	 * What the Widget Animation Component's Target Widget dropdown offers first, and stores, for the widget the entry is
+	 * on. Read as None wherever a target is resolved - see IsThisWidget.
+	 */
+	static const FName ThisWidget;
+
+	/** Whether Name means the widget the entry is on: None, or (This Widget). */
+	static bool IsThisWidget(FName Name) { return Name.IsNone() || Name == ThisWidget; }
 };
 
 /**
@@ -241,7 +250,7 @@ struct NAMETBD_API FWidgetAnimEntry : public FWidgetAnimEntryBase
 	GENERATED_BODY()
 
 	/**
-	 * A Target Widget for each Layer Group of the animation, in the animation's order and labelled with its
+	 * A Target Widget for each Layer Group of the animation, in the animation's order and labeled with its
 	 * group names. Sized to the animation by the owner whenever the entry is edited or loaded - see
 	 * SyncGroupTargets - so it always lists exactly the groups there are. A new row starts on the group's
 	 * Preview Target.
@@ -283,10 +292,16 @@ struct NAMETBD_API FWidgetAnimEntry : public FWidgetAnimEntryBase
 	UPROPERTY()
 	FName TargetWidgetName;
 
-	/** Sizes GroupTargets to the animation's groups and refreshes their labels. True if anything changed. */
-	bool SyncGroupTargets();
+	/**
+	 * Sizes GroupTargets to the animation's groups and refreshes their labels. True if anything changed.
+	 *
+	 * With TargetOptions - the owner's Target Widget choices, as a Widget Animation Component passes them - a new row's
+	 * starting target (the group's Preview Target) is kept only if it is one of them, else the row starts on (This
+	 * Widget); and a row on None shows as (This Widget), which means the same.
+	 */
+	bool SyncGroupTargets(const TArray<FString>* TargetOptions = nullptr);
 
-	/** The target path group GroupIndex animates: its row if it has one, else the default a new row would get. */
+	/** The target path group GroupIndex animates: its row if it has one, else the default a new row would get. None for (This Widget). */
 	FName GetGroupTargetName(int32 GroupIndex) const;
 
 	/** BuildSettings with each group's target path resolved by Resolver. */
@@ -330,16 +345,16 @@ public:
 		const TFunctionRef<void(int32 /*EntryIndex*/, TArray<FWidgetAnimSettings>& /*EntrySettings*/)>* AppendExtra = nullptr);
 
 	/**
-	 * Sets the value of every value-driven track with this Value Name (see WidgetAnimDriver.h) - the one call behind
-	 * every host's Set Widget Animation Value, so a card, a button and a component all mean the same by it. Value is
-	 * raw, up to four channels.
+	 * Sets the value of every value-driven track Id names (see WidgetAnimDriver.h) - the one call behind every host's
+	 * Set Widget Animation Value, so a card, a button and a component all mean the same by it. Value is raw, up to four
+	 * channels.
 	 *
-	 * With bStartIfNotPlaying, the Anim In entries (InEntries) whose animation has a track with this name, and that
-	 * haven't been started yet, are started first - their clock tracks play as usual, their value tracks start at their
+	 * With bStartIfNotPlaying, the Anim In entries (InEntries) whose animation has a track Id names, and that haven't
+	 * been started yet, are started first - their clock tracks play as usual, their value tracks start at their
 	 * Start Value (or the last value set) and travel to the new one - so gameplay needs no Play call before its first
 	 * value. An entry already started is never restarted by it. Returns how many running tracks took the value.
 	 */
-	static int32 SetEntriesValue(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& InEntries, TFunctionRef<UWidget*(FName)> Resolver, FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying,
+	static int32 SetEntriesValue(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& InEntries, TFunctionRef<UWidget*(FName)> Resolver, const FWidgetAnimValueId& Id, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying,
 		const TFunctionRef<void(int32 /*EntryIndex*/, TArray<FWidgetAnimSettings>& /*EntrySettings*/)>* AppendExtra = nullptr);
 
 	/** True if any entry points at an animation that actually has layers. */

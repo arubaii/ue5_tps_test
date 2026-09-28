@@ -462,8 +462,8 @@ public:
 	virtual void PlayWidgetAnimationsById(const TArray<FName>& AnimIds, bool bReverse, float PlaybackSpeed, bool bHoldFinalPose, bool bRestartIfPlaying) override;
 	virtual void StopWidgetAnimationsById(const TArray<FName>& AnimIds, bool bResetToStart) override;
 	virtual bool AreWidgetAnimationsPlayingById(const TArray<FName>& AnimIds) const override;
-	virtual bool SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying) override;
-	virtual FVector4 GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const override;
+	virtual bool SetWidgetAnimationValues(const FWidgetAnimValueId& Id, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying) override;
+	virtual FVector4 GetWidgetAnimationValues(const FWidgetAnimValueId& Id, bool bTargetValue) const override;
 
 	/**
 	 * Anim In / Anim Out saved on this class while it derived from UUserWidget_Animatable (brought here by
@@ -958,7 +958,7 @@ protected:
 	 * better evidence. Kept because a subclass may still want the live
 	 * cursor form of the question.
 	 * False if the anchor's geometry hasn't resolved (no rect to test
-	 * against), which correctly favours "not over it" here rather than
+	 * against), which correctly favors "not over it" here rather than
 	 * IsCursorOverIconOrCard's fail-safe true — an unresolved rect on the
 	 * one frame this runs (right as the card is closing) is not a reason to
 	 * reopen it.
@@ -1105,7 +1105,7 @@ protected:
 	// needed serial bookkeeping on every card to avoid double-handling. A
 	// card created during the dispatch of a press is simply not in
 	// ActiveCards yet, which is why no "ignore the press that spawned me"
-	// guard is needed any more — the guard the serials existed for is now
+	// guard is needed anymore — the guard the serials existed for is now
 	// structural.
 
 	/**
