@@ -180,10 +180,11 @@ bool FWidgetAnimScreenTransitionDriver::RequestClose(UCommonActivatableWidget& S
 	}
 
 	// Only wait if something will actually move. A screen with no exit authored anywhere closes this frame, rather
-	// than a frame later for no visible reason.
+	// than a frame later for no visible reason. A value-driven animation the exit waits for counts - a loading bar
+	// filling up before its screen goes, even on a screen with no exit of its own.
 	const bool bAnyExit = AllComponents.ContainsByPredicate([](const UWidgetAnimationComponent* Component)
 	{
-		return Component && Component->GetAnimatedWidget() && Component->GetFlattenedAnimOut().Num() > 0;
+		return Component && Component->GetAnimatedWidget() && Component->HasExitToPlay();
 	});
 
 	if (!bAnyExit)

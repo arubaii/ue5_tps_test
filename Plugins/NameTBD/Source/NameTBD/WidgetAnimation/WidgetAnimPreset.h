@@ -191,6 +191,9 @@ struct NAMETBD_API FWidgetAnimEntryBase
 
 	bool IsUsable() const { return Animation != nullptr && Animation->GetNumLayers() > 0; }
 
+	/** Whether this entry's animation has a value-driven track with this Value Name. See WidgetAnimDriver.h. */
+	bool HasValueTrack(FName ValueName) const;
+
 	/**
 	 * Every layer of the referenced animation as runtime settings, with this entry's flags stamped onto
 	 * each of them and every group's targets set to the one widget the caller resolved.
@@ -324,6 +327,19 @@ public:
 	 * Additive Anim Layers play as part of the entry they start within.
 	 */
 	static int32 StartEntriesById(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& Entries, TFunctionRef<UWidget*(FName)> Resolver, const TArray<FName>& AnimIds, bool bIsOut, float PlaybackSpeed, bool bRestartIfPlaying, bool bHoldWhenFinished, const TFunctionRef<bool(const FWidgetAnimEntry&)>* Filter = nullptr,
+		const TFunctionRef<void(int32 /*EntryIndex*/, TArray<FWidgetAnimSettings>& /*EntrySettings*/)>* AppendExtra = nullptr);
+
+	/**
+	 * Sets the value of every value-driven track with this Value Name (see WidgetAnimDriver.h) - the one call behind
+	 * every host's Set Widget Animation Value, so a card, a button and a component all mean the same by it. Value is
+	 * raw, up to four channels.
+	 *
+	 * With bStartIfNotPlaying, the Anim In entries (InEntries) whose animation has a track with this name, and that
+	 * haven't been started yet, are started first - their clock tracks play as usual, their value tracks start at their
+	 * Start Value (or the last value set) and travel to the new one - so gameplay needs no Play call before its first
+	 * value. An entry already started is never restarted by it. Returns how many running tracks took the value.
+	 */
+	static int32 SetEntriesValue(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& InEntries, TFunctionRef<UWidget*(FName)> Resolver, FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying,
 		const TFunctionRef<void(int32 /*EntryIndex*/, TArray<FWidgetAnimSettings>& /*EntrySettings*/)>* AppendExtra = nullptr);
 
 	/** True if any entry points at an animation that actually has layers. */

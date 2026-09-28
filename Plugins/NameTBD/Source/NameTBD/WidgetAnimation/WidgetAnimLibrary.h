@@ -10,6 +10,7 @@
 #include "WidgetAnimEasing.h"    // EWidgetAnimEasing
 #include "WidgetAnimTransform.h" // FWidgetTransformAnim
 #include "WidgetAnimSpring.h"    // EWidgetAnimTiming, FWidgetSpringParams
+#include "WidgetAnimDriver.h"    // Value-driven tracks: FWidgetAnimValueOptions, FWidgetAnimValueState
 #include "WidgetAnimEvaluator.h" // FWidgetAnimTypeParams, registered track types
 #include "StructUtils/InstancedStruct.h"
 #include "WidgetAnimLibrary.generated.h"
@@ -210,22 +211,43 @@ struct NAMETBD_API FWidgetAnimSettings
 	EWidgetAnimTiming Timing = EWidgetAnimTiming::Tween;
 
 	/** Hidden on a Transform layer, whose curve's last key sets how long it runs, and on a Spring one, which runs until it settles. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && Timing == EWidgetAnimTiming::Tween || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && Timing == EWidgetAnimTiming::Tween || AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse && Timing == EWidgetAnimTiming::Value || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	float Duration = 0.3f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (ClampMin = "0.0"))
 	float Delay = 0.f;
 
 	/** Hidden on a Spring layer, whose spring is its motion. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Tween || AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Tween || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	EWidgetAnimEasing Easing = EWidgetAnimEasing::EaseOut;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Tween || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Transform || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Pulse", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Tween || Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Transform || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	UCurveFloat* CustomCurve = nullptr;
 
 	/** The spring a Spring layer travels by. See FWidgetSpringParams. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Spring && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides, ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Spring && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Spring && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides, ShowOnlyInnerProperties))
 	FWidgetSpringParams Spring;
+
+	/**
+	 * A value-driven track's name: gameplay moves it with Set Widget Animation Value by this name. Several tracks - in
+	 * one animation or several on the widget - may share a name and follow the same value, each its own way.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
+	FName ValueName;
+
+	/**
+	 * How a value-driven track travels to each new value: Immediate jumps, Tween eases over Duration by Easing, Spring
+	 * chases it with the spring. Part of the motion, so authored here only - a widget can't override it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
+	EWidgetAnimValueSmoothing ValueSmoothing = EWidgetAnimValueSmoothing::Spring;
+
+	/**
+	 * A value-driven track's value type, range, start and limits - its defaults, which a Widget Animation Component
+	 * can override for its own widget. See FWidgetAnimValueOptions.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Value", EditCondition = "Timing == EWidgetAnimTiming::Value && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
+	FWidgetAnimValueOptions ValueOptions;
 
 	/** Keys between the start and end values, and the curves between them. See FWidgetAnimValueKeys. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
@@ -403,6 +425,25 @@ struct NAMETBD_API FWidgetAnimSettings
 
 	/** Whether this layer travels by its spring: Spring timing, on a type that has a start and an end to travel between. */
 	bool IsSpringTimed() const { return Timing == EWidgetAnimTiming::Spring && WidgetAnimTypeSupportsSpring(AnimType); }
+
+	/**
+	 * Whether this layer is moved by a value rather than its clock: Value timing, on a type that has a start and an end
+	 * to travel between. See WidgetAnimDriver.h.
+	 */
+	bool IsValueDriven() const { return Timing == EWidgetAnimTiming::Value && WidgetAnimTypeSupportsSpring(AnimType); }
+
+	/** The value track's motion - its smoothing, and the tween or spring that smooths it - for WidgetAnimValue. */
+	FWidgetAnimValueMotion GetValueMotion() const
+	{
+		FWidgetAnimValueMotion Motion;
+		Motion.Smoothing = ValueSmoothing;
+		Motion.TweenDuration = Duration;
+		Motion.TweenEasing = Easing;
+		Motion.TweenCurve = CustomCurve;
+		Motion.Spring = &Spring;
+		Motion.NumChannels = ValueOptions.GetNumChannels();
+		return Motion;
+	}
 };
 
 /**
@@ -445,7 +486,9 @@ struct NAMETBD_API FWidgetAnimLayer
 	/**
 	 * How the track travels from its start values to its end values. Tween is authored - a Duration and an
 	 * Easing, the same motion every time. Spring is physical - a spring with weight pulls it there, overshoots
-	 * as much as its bounce allows and settles, and the track runs for as long as that takes.
+	 * as much as its bounce allows and settles, and the track runs for as long as that takes. Value is driven from
+	 * gameplay - Set Widget Animation Value by its Value Name says where between its start and end it is, and Value
+	 * Smoothing how it travels there - while the rest of the animation plays on its clock.
 	 *
 	 * Not offered on Transform tracks, whose keys set their own timing, or on Pulse, which has no end to
 	 * travel to.
@@ -457,7 +500,7 @@ struct NAMETBD_API FWidgetAnimLayer
 	 * How long the track runs, in seconds. Hidden on a Transform track, whose last key sets how long it runs,
 	 * and on a Spring track, which runs until its spring settles.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && Timing == EWidgetAnimTiming::Tween || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && Timing == EWidgetAnimTiming::Tween || AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse && Timing == EWidgetAnimTiming::Value || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	float Duration = 0.3f;
 
 	/**
@@ -476,18 +519,39 @@ struct NAMETBD_API FWidgetAnimLayer
 	 * between them - or on a Transform track - it is how each segment left at Track Easing moves from its key to
 	 * the next. Hidden on a Spring track, whose spring is its motion.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Tween || AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Tween || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	EWidgetAnimEasing Easing = EWidgetAnimEasing::EaseOut;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Tween || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Transform || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Pulse", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Tween || Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Transform || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	TObjectPtr<UCurveFloat> CustomCurve = nullptr;
 
 	// Spring
 	//
 	// One nested payload, as Transform is, so every spring setting follows the track through ToSettings and
 	// FromSettings in one line - and a whole spring can be copied between tracks as one value.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Spring && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides, ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Spring && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Spring && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides, ShowOnlyInnerProperties))
 	FWidgetSpringParams Spring;
+
+	/**
+	 * A value-driven track's name: gameplay moves it with Set Widget Animation Value by this name. Several tracks - in
+	 * one animation or several on the widget - may share a name and follow the same value, each its own way.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
+	FName ValueName;
+
+	/**
+	 * How a value-driven track travels to each new value: Immediate jumps, Tween eases over Duration by Easing, Spring
+	 * chases it with the spring. Part of the motion, so authored here only - a widget can't override it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
+	EWidgetAnimValueSmoothing ValueSmoothing = EWidgetAnimValueSmoothing::Spring;
+
+	/**
+	 * A value-driven track's value type, range, start and limits - its defaults, which a Widget Animation Component
+	 * can override for its own widget. See FWidgetAnimValueOptions.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Value", EditCondition = "Timing == EWidgetAnimTiming::Value && AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
+	FWidgetAnimValueOptions ValueOptions;
 
 	// Keys
 	//
@@ -597,6 +661,25 @@ struct NAMETBD_API FWidgetAnimLayer
 
 	/** Whether this layer travels by its spring: Spring timing, on a type that has a start and an end to travel between. */
 	bool IsSpringTimed() const { return Timing == EWidgetAnimTiming::Spring && WidgetAnimTypeSupportsSpring(AnimType); }
+
+	/**
+	 * Whether this layer is moved by a value rather than its clock: Value timing, on a type that has a start and an end
+	 * to travel between. See WidgetAnimDriver.h.
+	 */
+	bool IsValueDriven() const { return Timing == EWidgetAnimTiming::Value && WidgetAnimTypeSupportsSpring(AnimType); }
+
+	/** The value track's motion - its smoothing, and the tween or spring that smooths it - for WidgetAnimValue. */
+	FWidgetAnimValueMotion GetValueMotion() const
+	{
+		FWidgetAnimValueMotion Motion;
+		Motion.Smoothing = ValueSmoothing;
+		Motion.TweenDuration = Duration;
+		Motion.TweenEasing = Easing;
+		Motion.TweenCurve = CustomCurve;
+		Motion.Spring = &Spring;
+		Motion.NumChannels = ValueOptions.GetNumChannels();
+		return Motion;
+	}
 
 	/**
 	 * Which Layer Group of its animation this layer belongs to - which widget it moves - by the group's
@@ -798,6 +881,13 @@ struct NAMETBD_API FWidgetAnimState
 	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bSettleRequested = false;
+
+	/**
+	 * A value-driven layer's value: where it is and where it is heading, as progress along it. Only the track player
+	 * moves it (see UWidgetAnimLibrary::TickAnimationsInto); everywhere else a value layer plays on the clock.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	FWidgetAnimValueState ValueState;
 };
 
 USTRUCT(BlueprintType)
@@ -1007,6 +1097,14 @@ struct NAMETBD_API FWidgetAnimPlayer
 	/** Whole-widget phase, driven by Play In / Play Out. Play-by-ID does not touch it. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	EWidgetAnimPhase Phase = EWidgetAnimPhase::Idle;
+
+	/**
+	 * The last value set for each Value Name, by SetWidgetAnimTrackValue - raw, up to four channels. A value-driven
+	 * layer starting later - the widget shown again, Play In restarting everything - starts from it rather than from
+	 * its Start Value, so it picks up where it was instead of jumping back.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	TMap<FName, FVector4> Values;
 };
 
 // =====================================================================================================
@@ -1474,6 +1572,33 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Player")
 	static void StartWidgetAnimTrack(UPARAM(ref) FWidgetAnimPlayer& Player, FName AnimId, int32 SourceIndex, const TArray<FWidgetAnimSettings>& Settings, bool bIsOut, float Speed = 1.f, bool bRestartIfPlaying = true, bool bHoldWhenFinished = true);
 
+	/**
+	 * Sets the value of every value-driven layer with this Value Name, in every track, and remembers it for any that
+	 * start later. Value is raw, up to four channels (see WidgetAnimValue::FromFloat and the others); each layer maps
+	 * it onto itself through its own range. Snap jumps straight there, and may go back even where a layer never goes
+	 * backwards - for resetting. Returns how many running layers took it.
+	 */
+	static int32 SetWidgetAnimTrackValue(FWidgetAnimPlayer& Player, FName ValueName, const FVector4& Value, bool bSnap);
+
+	/**
+	 * The raw value the first value-driven layer with this Value Name shows now - or, with bTargetValue, the one it is
+	 * heading to. When none is running, the last value set for it. False if there is neither.
+	 */
+	static bool GetWidgetAnimTrackValue(const FWidgetAnimPlayer& Player, FName ValueName, bool bTargetValue, FVector4& OutValue);
+
+	/** Whether any layer in Settings is value-driven with this Value Name. */
+	static bool HasValueLayer(const TArray<FWidgetAnimSettings>& Settings, FName ValueName);
+
+	/**
+	 * Before an exit: sends every value-driven layer set to Complete First to its end, and answers whether any of them -
+	 * or any set to Wait For Value - still has a way to go, which the exit should wait out. Only tracks going in are
+	 * asked: they are the ones an exit replaces.
+	 */
+	static bool PrepareValueLayersForExit(FWidgetAnimPlayer& Player);
+
+	/** Whether an exit starting now would wait for a value-driven layer: PrepareValueLayersForExit's answer, without sending anything anywhere. */
+	static bool IsAnyValueLayerHoldingExit(const FWidgetAnimPlayer& Player);
+
 	/** Stops tracks matching any of the given IDs, or every track when the array is empty. */
 	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Player")
 	static void StopWidgetAnimTracks(UPARAM(ref) FWidgetAnimPlayer& Player, const TArray<FName>& AnimIds, bool bRemoveTracks = true);
@@ -1506,6 +1631,9 @@ public:
 	 *
 	 * Returns true while anything is still running. IDs that reached their end on this exact frame come
 	 * back in OutJustFinished, which is how a caller knows an exit animation is done.
+	 *
+	 * A track's value-driven layers move toward the last value set for their names instead of on its clock; the track
+	 * counts as running while any of them is moving.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Player")
 	static bool TickWidgetAnimPlayer(UWidget* FallbackWidget, UPARAM(ref) FWidgetAnimPlayer& Player, const FWidgetAnimBaselineSet& Baselines, float DeltaTime, TArray<FName>& OutJustFinished);
@@ -1596,8 +1724,12 @@ private:
 	 * Returns whether the stack has SETTLED (every layer that can end has ended). bOutAllComplete, when
 	 * given, receives whether EVERY layer has ended, endless loops included - which only happens once
 	 * a loop has been ended explicitly.
+	 *
+	 * bDriveValueLayers: value-driven layers follow their values (FWidgetAnimState::ValueState) instead of the clock,
+	 * stand outside their loop group, count as ended while their value is at rest and never hold the stack from
+	 * settling. Only the track player asks for it; every preview plays them on the clock.
 	 */
-	static bool TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult, bool* bOutAllComplete = nullptr, const FWidgetAnimBaselineSet* Baselines = nullptr);
+	static bool TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult, bool* bOutAllComplete = nullptr, const FWidgetAnimBaselineSet* Baselines = nullptr, bool bDriveValueLayers = false);
 
 	/**
 	 * Puts a layer that contributes nothing this frame - not started yet, or hidden - into the result anyway, as
@@ -1621,6 +1753,15 @@ private:
 	 * and cut PlayingOut in mid-cycle.
 	 */
 	static bool BlocksSettle(const FWidgetAnimSettings& Settings, const FWidgetAnimState& State);
+
+	/**
+	 * A value-driven layer's contribution at its value: one channel posed like any layer at that progress, or - for a
+	 * Vector 2D or Colour value - each channel posed on its own and its axis or channel taken from that pose.
+	 */
+	static void ApplyValueLayerContribution(const FWidgetAnimSettings& Settings, const FWidgetAnimValueState& ValueState, FWidgetAnimResult& OutResult, const FWidgetAnimBaselineSet* Baselines);
+
+	/** Puts a newly started track's value-driven layers at the last value set for their names, or their Start Value. */
+	static void InitializeValueLayers(const FWidgetAnimPlayer& Player, FWidgetAnimTrack& Track);
 
 	static void ApplyResultInternal(UWidget* FallbackWidget, const FWidgetAnimResult& Result, const FWidgetAnimBaselineSet* Baselines);
 	static void PlayInternal(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, const FWidgetAnimBaselineSet* Baselines);

@@ -8,6 +8,8 @@
 
 #include "WidgetAnimHost.generated.h"
 
+class UWidgetAnimationComponent;
+
 UENUM(BlueprintType)
 enum class EWidgetAnimPlayDirection : uint8
 {
@@ -40,6 +42,16 @@ public:
 	virtual void StopWidgetAnimationsById(const TArray<FName>& AnimIds, bool bResetToStart) = 0;
 
 	virtual bool AreWidgetAnimationsPlayingById(const TArray<FName>& AnimIds) const = 0;
+
+	/**
+	 * Sets the value of the value-driven tracks with this Value Name - see WidgetAnimDriver.h - starting the entries that
+	 * have one but haven't played yet when bStartIfNotPlaying. Value is raw, up to four channels. True if a running
+	 * track took it. Not pure, so a host with no value-driven tracks needn't implement it: the default takes nothing.
+	 */
+	virtual bool SetWidgetAnimationValues(FName /*ValueName*/, const FVector4& /*Value*/, bool /*bSnap*/, bool /*bStartIfNotPlaying*/) { return false; }
+
+	/** The raw value a value-driven track shows now, or with bTargetValue the one it is heading to. */
+	virtual FVector4 GetWidgetAnimationValues(FName /*ValueName*/, bool /*bTargetValue*/) const { return FVector4(0.0, 0.0, 0.0, 0.0); }
 };
 
 UCLASS()
@@ -82,6 +94,51 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Widget Animation", meta = (DefaultToSelf = "Target", AutoCreateRefTerm = "AnimIds"))
 	static bool IsWidgetAnimationPlaying(UObject* Target, const TArray<FName>& AnimIds, bool bSearchParentWidgets = true);
 
+	/**
+	 * Sets the value of the value-driven tracks with this Value Name (Timing = Value in the Widget Animations editor).
+	 * Each track maps it onto itself through its Value At Start and Value At End - 0 and 1 by default - and travels
+	 * there by its own smoothing. Call it whenever the value changes.
+	 *
+	 * Target is a widget with a Widget Animation Component, the component itself, or any animation host (a button, a
+	 * card, an animatable widget); from a plain child widget the search goes outwards until it finds one. Snap jumps
+	 * straight to the value (and may go back even where a track never goes backwards - for resetting). Start If Not
+	 * Playing starts the entries that have such a track but haven't played yet, so no Play call is needed. True if a
+	 * running track took the value.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Value", meta = (DefaultToSelf = "Target", AdvancedDisplay = "bSnap,bStartIfNotPlaying,bSearchParentWidgets"))
+	static bool SetWidgetAnimationValue(UObject* Target, FName ValueName, float Value, bool bSnap = false, bool bStartIfNotPlaying = true, bool bSearchParentWidgets = true);
+
+	/** Set Widget Animation Value, for tracks whose Value Type is Integer. */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Value", meta = (DisplayName = "Set Widget Animation Value (Integer)", DefaultToSelf = "Target", AdvancedDisplay = "bSnap,bStartIfNotPlaying,bSearchParentWidgets"))
+	static bool SetWidgetAnimationValueInteger(UObject* Target, FName ValueName, int32 Value, bool bSnap = false, bool bStartIfNotPlaying = true, bool bSearchParentWidgets = true);
+
+	/** Set Widget Animation Value, for tracks whose Value Type is Vector 2D: X and Y each move their own axis. */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Value", meta = (DisplayName = "Set Widget Animation Value (Vector 2D)", DefaultToSelf = "Target", AdvancedDisplay = "bSnap,bStartIfNotPlaying,bSearchParentWidgets"))
+	static bool SetWidgetAnimationValueVector2D(UObject* Target, FName ValueName, FVector2D Value, bool bSnap = false, bool bStartIfNotPlaying = true, bool bSearchParentWidgets = true);
+
+	/** Set Widget Animation Value, for tracks whose Value Type is Colour: R, G, B and A each move their own channel. */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Value", meta = (DisplayName = "Set Widget Animation Value (Colour)", DefaultToSelf = "Target", AdvancedDisplay = "bSnap,bStartIfNotPlaying,bSearchParentWidgets"))
+	static bool SetWidgetAnimationValueColor(UObject* Target, FName ValueName, FLinearColor Value, bool bSnap = false, bool bStartIfNotPlaying = true, bool bSearchParentWidgets = true);
+
+	/** The value a value-driven track shows now - or, with Target Value, the one it is heading to - in its own units. Found like Set Widget Animation Value. */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Value", meta = (DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
+	static float GetWidgetAnimationValue(UObject* Target, FName ValueName, bool bTargetValue = false, bool bSearchParentWidgets = true);
+
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Value", meta = (DisplayName = "Get Widget Animation Value (Integer)", DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
+	static int32 GetWidgetAnimationValueInteger(UObject* Target, FName ValueName, bool bTargetValue = false, bool bSearchParentWidgets = true);
+
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Value", meta = (DisplayName = "Get Widget Animation Value (Vector 2D)", DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
+	static FVector2D GetWidgetAnimationValueVector2D(UObject* Target, FName ValueName, bool bTargetValue = false, bool bSearchParentWidgets = true);
+
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Value", meta = (DisplayName = "Get Widget Animation Value (Colour)", DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
+	static FLinearColor GetWidgetAnimationValueColor(UObject* Target, FName ValueName, bool bTargetValue = false, bool bSearchParentWidgets = true);
+
+	/** The four setters' shared path, raw: whatever owns Target's animations takes Value. */
+	static bool SetValueOn(UObject* Target, FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying, bool bSearchParentWidgets);
+
+	/** The four getters' shared path, raw. */
+	static FVector4 GetValueFrom(UObject* Target, FName ValueName, bool bTargetValue, bool bSearchParentWidgets);
+
 private:
 
 	/**
@@ -92,4 +149,11 @@ private:
 	 * the shape of most Blueprint graphs that want it.
 	 */
 	static IWidgetAnimHost* ResolveHost(UObject* Target, bool bSearchParentWidgets);
+
+	/**
+	 * Whatever owns Target's animations, for the value calls: the component itself, a widget's Widget Animation Component,
+	 * or an animation host - checked in that order on Target and then, with bSearchParentWidgets, outwards. One of the
+	 * two outputs is set when it returns true.
+	 */
+	static bool ResolveValueOwner(UObject* Target, bool bSearchParentWidgets, UWidgetAnimationComponent*& OutComponent, IWidgetAnimHost*& OutHost);
 };

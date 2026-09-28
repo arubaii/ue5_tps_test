@@ -139,6 +139,16 @@ bool UWidgetAnimActivatableWidget::AreWidgetAnimationsPlayingById(const TArray<F
 	return GetAnim().AreWidgetAnimationsPlayingById(AnimIds);
 }
 
+bool UWidgetAnimActivatableWidget::SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
+{
+	return GetAnim().SetWidgetAnimationValues(ValueName, Value, bSnap, bStartIfNotPlaying);
+}
+
+FVector4 UWidgetAnimActivatableWidget::GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const
+{
+	return GetAnim().GetWidgetAnimationValues(ValueName, bTargetValue);
+}
+
 // =====================================================================================================
 // Lifecycle
 // =====================================================================================================

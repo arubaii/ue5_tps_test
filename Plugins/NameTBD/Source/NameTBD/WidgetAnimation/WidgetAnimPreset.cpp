@@ -202,6 +202,14 @@ bool FWidgetAnimEntry::SyncGroupTargets()
 	return bChanged;
 }
 
+bool FWidgetAnimEntryBase::HasValueTrack(FName ValueName) const
+{
+	return Animation && !ValueName.IsNone() && Animation->Layers.ContainsByPredicate([ValueName](const FWidgetAnimLayer& Layer)
+	{
+		return Layer.IsValueDriven() && Layer.ValueName == ValueName;
+	});
+}
+
 FName FWidgetAnimEntry::GetGroupTargetName(int32 GroupIndex) const
 {
 	// The row, whatever it says - None included, which deliberately means "the widget this is on".
@@ -316,6 +324,38 @@ int32 UWidgetAnimEntryLibrary::StartEntriesById(FWidgetAnimPlayer& Player, const
 	}
 
 	return Started;
+}
+
+int32 UWidgetAnimEntryLibrary::SetEntriesValue(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& InEntries, TFunctionRef<UWidget*(FName)> Resolver, FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying,
+	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)>* AppendExtra)
+{
+	if (ValueName.IsNone())
+	{
+		return 0;
+	}
+
+	if (bStartIfNotPlaying)
+	{
+		// Only entries whose animation takes this value, and only those with no track yet - one already started, even
+		// one whose clock tracks have finished, keeps its pose rather than playing its clock tracks again.
+		auto NeedsStart = [&Player, &InEntries, ValueName](const FWidgetAnimEntry& Entry)
+		{
+			if (!Entry.HasValueTrack(ValueName))
+			{
+				return false;
+			}
+
+			const int32 EntryIndex = UE_PTRDIFF_TO_INT32(&Entry - InEntries.GetData());
+			return !Player.Tracks.ContainsByPredicate([&Entry, EntryIndex](const FWidgetAnimTrack& Track)
+			{
+				return !Track.bIsOut && Track.SourceIndex == EntryIndex && Track.AnimId == Entry.AnimId;
+			});
+		};
+		const TFunctionRef<bool(const FWidgetAnimEntry&)> Filter(NeedsStart);
+		StartEntriesById(Player, InEntries, Resolver, TArray<FName>(), /*bIsOut=*/false, /*PlaybackSpeed=*/1.f, /*bRestartIfPlaying=*/false, /*bHoldWhenFinished=*/true, &Filter, AppendExtra);
+	}
+
+	return UWidgetAnimLibrary::SetWidgetAnimTrackValue(Player, ValueName, Value, bSnap);
 }
 
 bool UWidgetAnimEntryLibrary::HasAnyUsableAnimation(const TArray<FWidgetAnimEntryBase>& Entries)

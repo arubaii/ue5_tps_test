@@ -33,7 +33,9 @@ enum class EWidgetAnimTiming : uint8
 {
 	Tween UMETA(ToolTip = "Authored: Duration says how long it takes and Easing says how it moves. The same motion every time."),
 
-	Spring UMETA(ToolTip = "Physical: a spring pulls the value to its end, with weight, overshoot and settle. How long the track runs comes from the spring - Duration and Easing are not used.")
+	Spring UMETA(ToolTip = "Physical: a spring pulls the value to its end, with weight, overshoot and settle. How long the track runs comes from the spring - Duration and Easing are not used."),
+
+	Value UMETA(ToolTip = "Driven from gameplay: Set Widget Animation Value with this track's Value Name says where between its start and end it is, and Value Smoothing says how it travels there. The rest of the animation still plays on its clock. On the timeline - and in every preview - it sweeps once across its Duration.")
 };
 
 /** Which two ways of describing the same spring a track is authored in. */

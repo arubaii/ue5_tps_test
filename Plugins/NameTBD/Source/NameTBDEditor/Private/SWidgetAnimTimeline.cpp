@@ -3119,6 +3119,9 @@ public:
 		const FName ValueKeysName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueKeys);
 		const FName TimingName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Timing);
 		const FName SpringName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Spring);
+		const FName ValueNameName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueName);
+		const FName ValueSmoothingName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueSmoothing);
+		const FName ValueOptionsName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueOptions);
 
 		// Timing and its spring belong to every type that travels from a start to an end - so to a mix of them too.
 		bool bAllSpringable = true;
@@ -3170,7 +3173,7 @@ public:
 			const bool bShared = Algo::Find(SharedNames, Name) != nullptr;
 			const bool bShow = bShared
 				|| (Name == DurationName && !bAnyTransform)
-				|| ((Name == TimingName || Name == SpringName) && bAllSpringable)
+				|| ((Name == TimingName || Name == SpringName || Name == ValueNameName || Name == ValueSmoothingName || Name == ValueOptionsName) && bAllSpringable)
 				// A type's own settings, when every layer is that type. Each hides itself on other types by its
 				// EditCondition, which reads the same on every proxy here.
 				|| (bSameType && Name != DurationName);
@@ -10291,6 +10294,14 @@ FText SWidgetAnimTimeline::GetEasingName(const FWidgetAnimLayer& Layer)
 	if (Layer.IsSpringTimed())
 	{
 		return LOCTEXT("SpringEasingName", "Spring");
+	}
+
+	// A value-driven track goes where its value says, so it names the value it follows instead.
+	if (Layer.IsValueDriven())
+	{
+		return Layer.ValueName.IsNone()
+			? LOCTEXT("UnnamedValueEasingName", "Value (no name)")
+			: FText::Format(LOCTEXT("ValueEasingName", "Value: {0}"), FText::FromName(Layer.ValueName));
 	}
 
 	// A Custom easing is a Curve asset - Custom Curve - so it is shown by that asset's own name.

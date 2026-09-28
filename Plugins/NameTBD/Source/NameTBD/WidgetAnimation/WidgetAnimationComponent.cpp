@@ -2,6 +2,8 @@
 
 #include "WidgetAnimationComponent.h"
 
+#include "Algo/Compare.h"
+
 #include "Blueprint/WidgetTree.h"
 #include "Blueprint/WidgetBlueprintGeneratedClass.h"
 #include "Components/Image.h"
@@ -533,6 +535,15 @@ void UWidgetAnimationComponent::RebuildEffectiveAnimations()
 	UnnamedAnimIn.Append(ExtraAnimIn);
 	UnnamedAnimOut.Append(ExtraAnimOut);
 
+	// This widget's own settings for its value-driven tracks, on every stack built here. An entry's own settings are
+	// built afresh each time it starts, and get them in PrepareEntrySettings.
+	ApplyValueOverrides(LinkedAdditiveIn);
+	ApplyValueOverrides(LinkedAdditiveOut);
+	ApplyValueOverrides(UnnamedAnimIn);
+	ApplyValueOverrides(UnnamedAnimOut);
+	ApplyValueOverrides(FlattenedIn);
+	ApplyValueOverrides(FlattenedOut);
+
 	// On top of the entry-authored stack, which is also what the designer preview and the baselines read.
 	FlattenedIn.Append(UnnamedAnimIn);
 	FlattenedOut.Append(UnnamedAnimOut);
@@ -690,6 +701,7 @@ void UWidgetAnimationComponent::NotifyOwnerDestructed()
 
 	bOwnerConstructed = false;
 	bIsDeferringVisibility = false;
+	PendingExit = EPendingExit::None;
 	StopRuntimeTicking();
 
 	// A widget can be constructed again (removed and re-added); it should start from a clean player.
@@ -822,10 +834,25 @@ bool UWidgetAnimationComponent::PlayForTrigger(EEntryTrigger Trigger, bool bOut)
 		return false;
 	}
 
+	if (!bOut)
+	{
+		// The entrance after all: whatever exit was waiting for a value is not going to happen.
+		PendingExit = EPendingExit::None;
+	}
+	else if (!bStartingPendingExit && Trigger == EEntryTrigger::Visibility && PrepareValuesForExit(/*bCascade=*/true))
+	{
+		// A value-driven animation still has a way to go - a bar gliding to full - so the exit, and with it the hide
+		// Set Visibility Animated deferred, waits for it. Playing Out already, so the widget counts as closing.
+		PendingExit = EPendingExit::VisibilityTrigger;
+		bPendingExitCascade = true;
+		AnimPlayer.Phase = EWidgetAnimPhase::PlayingOut;
+		return true;
+	}
+
 	// The same as Play In / Play Out from here on - the other direction's tracks dropped, the phase set, the pose
 	// applied this frame and the children cascaded into - only with the entries this trigger doesn't play left out.
 	UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
-	auto AppendLinked = [this, bOut](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { AppendLinkedAdditive(EntryIndex, bOut, EntrySettings, 0); };
+	auto AppendLinked = [this, bOut](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { PrepareEntrySettings(EntryIndex, bOut, EntrySettings); };
 	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
 	UWidgetAnimEntryLibrary::StartEntriesById(
 		AnimPlayer,
@@ -903,10 +930,13 @@ void UWidgetAnimationComponent::PlayIn(bool bCascadeToChildren)
 
 	EnsureRuntimeBaselines();
 
+	// The entrance after all: whatever exit was waiting for a value is not going to happen.
+	PendingExit = EPendingExit::None;
+
 	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
 
 	UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
-	auto AppendLinked = [this](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { AppendLinkedAdditive(EntryIndex, /*bOut=*/false, EntrySettings, 0); };
+	auto AppendLinked = [this](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { PrepareEntrySettings(EntryIndex, /*bOut=*/false, EntrySettings); };
 	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
 	UWidgetAnimEntryLibrary::StartEntriesById(
 		AnimPlayer,
@@ -942,12 +972,33 @@ void UWidgetAnimationComponent::PlayOut(bool bCascadeToChildren)
 
 	EnsureRuntimeBaselines();
 
+	if (!bStartingPendingExit)
+	{
+		// Asked again while already waiting: the one waiting exit covers it.
+		if (PendingExit != EPendingExit::None)
+		{
+			bPendingExitCascade |= bCascadeToChildren;
+			return;
+		}
+
+		// A value-driven animation - here, or below when this cascades - still has a way to go: a loading bar gliding
+		// to full, which Complete First has just sent there. The exit starts once it arrives (TickAnimationPlayback).
+		// Playing Out already, so the widget counts as closing and a screen closing waits for it.
+		if (PrepareValuesForExit(bCascadeToChildren))
+		{
+			PendingExit = EPendingExit::PlayOut;
+			bPendingExitCascade = bCascadeToChildren;
+			AnimPlayer.Phase = EWidgetAnimPhase::PlayingOut;
+			return;
+		}
+	}
+
 	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
 
 	// The In tracks are dropped rather than left holding: an exit that has to fight the entrance's final
 	// pose every frame never quite gets where it's going.
 	UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
-	auto AppendLinked = [this](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { AppendLinkedAdditive(EntryIndex, /*bOut=*/true, EntrySettings, 0); };
+	auto AppendLinked = [this](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { PrepareEntrySettings(EntryIndex, /*bOut=*/true, EntrySettings); };
 	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
 	UWidgetAnimEntryLibrary::StartEntriesById(
 		AnimPlayer,
@@ -1036,6 +1087,14 @@ bool UWidgetAnimationComponent::TickAnimationPlayback(float DeltaTime)
 	TArray<FName> JustFinished;
 	UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, JustFinished);
 
+	// An exit waiting for a value to arrive is Playing Out with nothing of its own playing yet, which the check below
+	// would take for an exit already over. It starts here, once every value it waits on has got where it was going.
+	if (PendingExit != EPendingExit::None)
+	{
+		TryStartPendingExit();
+		return false;
+	}
+
 	// Settled rather than playing: an endless loop is still playing, but it must not hold the entrance
 	// (or the exit, and with it the deferred visibility and OnOutAnimationFinished) open forever.
 	if (AnimPlayer.Phase == EWidgetAnimPhase::PlayingIn && !IsSettlingInDirection(/*bIsOut=*/false))
@@ -1064,6 +1123,249 @@ void UWidgetAnimationComponent::HandleOutAnimationFinished()
 
 	// Last: a listener may remove the owner from its parent (an info card does).
 	OnOutAnimationFinishedNative.Broadcast(this);
+}
+
+// =====================================================================================================
+// Value-driven tracks
+// =====================================================================================================
+
+bool UWidgetAnimationComponent::SetWidgetAnimationValue(FName ValueName, float Value, bool bSnap, bool bStartIfNotPlaying)
+{
+	return SetWidgetAnimationValues(ValueName, WidgetAnimValue::FromFloat(Value), bSnap, bStartIfNotPlaying);
+}
+
+bool UWidgetAnimationComponent::SetWidgetAnimationValueInteger(FName ValueName, int32 Value, bool bSnap, bool bStartIfNotPlaying)
+{
+	return SetWidgetAnimationValues(ValueName, WidgetAnimValue::FromFloat(static_cast<double>(Value)), bSnap, bStartIfNotPlaying);
+}
+
+bool UWidgetAnimationComponent::SetWidgetAnimationValueVector2D(FName ValueName, FVector2D Value, bool bSnap, bool bStartIfNotPlaying)
+{
+	return SetWidgetAnimationValues(ValueName, WidgetAnimValue::FromVector2D(Value), bSnap, bStartIfNotPlaying);
+}
+
+bool UWidgetAnimationComponent::SetWidgetAnimationValueColor(FName ValueName, FLinearColor Value, bool bSnap, bool bStartIfNotPlaying)
+{
+	return SetWidgetAnimationValues(ValueName, WidgetAnimValue::FromColor(Value), bSnap, bStartIfNotPlaying);
+}
+
+bool UWidgetAnimationComponent::SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
+{
+	if (ValueName.IsNone())
+	{
+		return false;
+	}
+
+	// Nothing plays before the owner is constructed (or at all in the designer), so the value is only remembered: the
+	// tracks start from it when they do start, rather than from their Start Value.
+	if (!AnimOwner.IsValid() || !bOwnerConstructed)
+	{
+		UWidgetAnimLibrary::SetWidgetAnimTrackValue(AnimPlayer, ValueName, Value, /*bSnap=*/true);
+		return false;
+	}
+
+	EnsureRuntimeBaselines();
+
+	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
+	auto AppendLinked = [this](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { PrepareEntrySettings(EntryIndex, /*bOut=*/false, EntrySettings); };
+	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
+
+	// The unnamed layers too, when they take this value and aren't running - never restarted when they are, which
+	// would play their clock tracks again.
+	if (bStartIfNotPlaying && UWidgetAnimLibrary::HasValueLayer(UnnamedAnimIn, ValueName)
+		&& !AnimPlayer.Tracks.ContainsByPredicate([](const FWidgetAnimTrack& Track) { return !Track.bIsOut && Track.SourceIndex == UnnamedLayersSourceIndex; }))
+	{
+		UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, UnnamedAnimIn, /*bIsOut=*/false, /*Speed=*/1.f, /*bRestartIfPlaying=*/false, /*bHoldWhenFinished=*/true);
+	}
+
+	const int32 Taken = UWidgetAnimEntryLibrary::SetEntriesValue(AnimPlayer, EffectiveInEntries, Resolver, ValueName, Value, bSnap, bStartIfNotPlaying, &AppendExtra);
+
+	// Shown this frame: a snap, or a track just started at its value. The ticker takes it from here.
+	ApplyCurrentAnimPose();
+	return Taken > 0;
+}
+
+FVector4 UWidgetAnimationComponent::GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const
+{
+	FVector4 Value(0.0, 0.0, 0.0, 0.0);
+	UWidgetAnimLibrary::GetWidgetAnimTrackValue(AnimPlayer, ValueName, bTargetValue, Value);
+	return Value;
+}
+
+float UWidgetAnimationComponent::GetWidgetAnimationValue(FName ValueName, bool bTargetValue) const
+{
+	return static_cast<float>(GetWidgetAnimationValues(ValueName, bTargetValue).X);
+}
+
+int32 UWidgetAnimationComponent::GetWidgetAnimationValueInteger(FName ValueName, bool bTargetValue) const
+{
+	return FMath::RoundToInt32(GetWidgetAnimationValues(ValueName, bTargetValue).X);
+}
+
+FVector2D UWidgetAnimationComponent::GetWidgetAnimationValueVector2D(FName ValueName, bool bTargetValue) const
+{
+	const FVector4 Value = GetWidgetAnimationValues(ValueName, bTargetValue);
+	return FVector2D(Value.X, Value.Y);
+}
+
+FLinearColor UWidgetAnimationComponent::GetWidgetAnimationValueColor(FName ValueName, bool bTargetValue) const
+{
+	const FVector4 Value = GetWidgetAnimationValues(ValueName, bTargetValue);
+	return FLinearColor(static_cast<float>(Value.X), static_cast<float>(Value.Y), static_cast<float>(Value.Z), static_cast<float>(Value.W));
+}
+
+bool UWidgetAnimationComponent::HasExitToPlay() const
+{
+	return FlattenedOut.Num() > 0 || PendingExit != EPendingExit::None || UWidgetAnimLibrary::IsAnyValueLayerHoldingExit(AnimPlayer);
+}
+
+void UWidgetAnimationComponent::ApplyValueOverrides(TArray<FWidgetAnimSettings>& Settings) const
+{
+	if (ValueOverrides.Num() == 0)
+	{
+		return;
+	}
+
+	for (FWidgetAnimSettings& Layer : Settings)
+	{
+		if (!Layer.IsValueDriven())
+		{
+			continue;
+		}
+
+		const FWidgetAnimValueOverride* Row = ValueOverrides.FindByPredicate([&Layer](const FWidgetAnimValueOverride& Candidate)
+		{
+			return Candidate.bOverride && Candidate.ValueName == Layer.ValueName;
+		});
+		if (Row)
+		{
+			// Everything but the kind, which is the track's: a row shared by tracks of two kinds still leaves each
+			// reading the fields of its own.
+			const EWidgetAnimValueKind TrackKind = Layer.ValueOptions.Kind;
+			Layer.ValueOptions = Row->Options;
+			Layer.ValueOptions.Kind = TrackKind;
+		}
+	}
+}
+
+void UWidgetAnimationComponent::PrepareEntrySettings(int32 EffectiveIndex, bool bOut, TArray<FWidgetAnimSettings>& EntrySettings) const
+{
+	AppendLinkedAdditive(EffectiveIndex, bOut, EntrySettings, 0);
+	ApplyValueOverrides(EntrySettings);
+}
+
+bool UWidgetAnimationComponent::RefreshValueOverrides()
+{
+	// Every value-driven track's defaults, by name, in the order first found: the entries in both lists, then the
+	// additive layers.
+	TArray<TPair<FName, FWidgetAnimValueOptions>> Found;
+	auto Gather = [&Found](const TArray<FWidgetAnimLayer>& Layers)
+	{
+		for (const FWidgetAnimLayer& Layer : Layers)
+		{
+			if (Layer.IsValueDriven() && !Layer.ValueName.IsNone() && !Found.ContainsByPredicate([&Layer](const TPair<FName, FWidgetAnimValueOptions>& Pair) { return Pair.Key == Layer.ValueName; }))
+			{
+				Found.Emplace(Layer.ValueName, Layer.ValueOptions);
+			}
+		}
+	};
+	for (const FWidgetAnimEntry& Entry : AnimIn)
+	{
+		if (Entry.Animation)
+		{
+			Gather(Entry.Animation->Layers);
+		}
+	}
+	for (const FWidgetAnimEntry& Entry : AnimOut)
+	{
+		if (Entry.Animation)
+		{
+			Gather(Entry.Animation->Layers);
+		}
+	}
+	Gather(AdditiveAnimLayersIn);
+	Gather(AdditiveAnimLayersOut);
+
+	TArray<FWidgetAnimValueOverride> Rows;
+	Rows.Reserve(Found.Num());
+	for (const TPair<FName, FWidgetAnimValueOptions>& Pair : Found)
+	{
+		const FWidgetAnimValueOverride* Existing = ValueOverrides.FindByPredicate([&Pair](const FWidgetAnimValueOverride& Row) { return Row.ValueName == Pair.Key; });
+
+		FWidgetAnimValueOverride& Row = Rows.AddDefaulted_GetRef();
+		Row.ValueName = Pair.Key;
+		Row.Kind = Pair.Value.Kind;
+		Row.bOverride = Existing && Existing->bOverride;
+
+		// Overridden: this widget's settings, kept. Not: the track's own, so the row always shows what will be used.
+		Row.Options = Row.bOverride ? Existing->Options : Pair.Value;
+		Row.Options.Kind = Pair.Value.Kind;
+		Row.Options.bCanEditKind = false;
+	}
+
+	const bool bChanged = Rows.Num() != ValueOverrides.Num() || !Algo::Compare(Rows, ValueOverrides, [](const FWidgetAnimValueOverride& A, const FWidgetAnimValueOverride& B)
+	{
+		return A.ValueName == B.ValueName && A.Kind == B.Kind && A.bOverride == B.bOverride
+			&& FWidgetAnimValueOptions::StaticStruct()->CompareScriptStruct(&A.Options, &B.Options, PPF_None);
+	});
+
+	if (bChanged)
+	{
+		ValueOverrides = MoveTemp(Rows);
+	}
+	return bChanged;
+}
+
+bool UWidgetAnimationComponent::PrepareValuesForExit(bool bCascade)
+{
+	bool bWaiting = UWidgetAnimLibrary::PrepareValueLayersForExit(AnimPlayer);
+
+	// Down the same walk the exit cascades along, so a loading bar in a nested widget holds its screen's exit too -
+	// the screen fades once the bar is full, not while it is still filling. Every one is asked, not just until the
+	// first that waits: each Complete First has to be sent to 1 now, so it is on its way while the others arrive.
+	if (bCascade)
+	{
+		ForEachNearestChildComponent(AnimOwner.Get(), [this, &bWaiting](UWidgetAnimationComponent* Nested)
+		{
+			if (Nested != this && Nested->bOwnerConstructed)
+			{
+				const bool bNestedWaiting = Nested->PrepareValuesForExit(/*bCascade=*/true);
+				bWaiting = bWaiting || bNestedWaiting;
+			}
+		});
+	}
+
+	return bWaiting;
+}
+
+bool UWidgetAnimationComponent::TryStartPendingExit()
+{
+	if (PendingExit == EPendingExit::None)
+	{
+		return false;
+	}
+
+	if (PrepareValuesForExit(bPendingExitCascade))
+	{
+		return false;
+	}
+
+	const EPendingExit Exit = PendingExit;
+	PendingExit = EPendingExit::None;
+
+	TGuardValue<bool> Guard(bStartingPendingExit, true);
+	if (Exit == EPendingExit::PlayOut)
+	{
+		PlayOut(bPendingExitCascade);
+	}
+	else if (!PlayForTrigger(EEntryTrigger::Visibility, /*bOut=*/true))
+	{
+		// Nothing answers the trigger any more (the entries were changed while it waited): the exit is simply over.
+		AnimPlayer.Phase = EWidgetAnimPhase::Hidden;
+		HandleOutAnimationFinished();
+	}
+
+	return true;
 }
 
 // =====================================================================================================
@@ -1141,7 +1443,7 @@ void UWidgetAnimationComponent::PlayWidgetAnimationsById(const TArray<FName>& An
 
 	// Phase is deliberately untouched: a named one-shot is not the widget appearing or closing. An additive list
 	// that starts within an entry plays with it, whatever called for it.
-	auto AppendLinked = [this, bReverse](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { AppendLinkedAdditive(EntryIndex, bReverse, EntrySettings, 0); };
+	auto AppendLinked = [this, bReverse](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { PrepareEntrySettings(EntryIndex, bReverse, EntrySettings); };
 	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
 	UWidgetAnimEntryLibrary::StartEntriesById(
 		AnimPlayer,
@@ -1555,6 +1857,7 @@ void UWidgetAnimationComponent::PostLoad()
 	SyncEntryGroupTargets();
 	RefreshEntryTriggers();
 	RefreshAdditiveStarts();
+	RefreshValueOverrides();
 }
 
 bool UWidgetAnimationComponent::SyncEntryGroupTargets()
@@ -1591,6 +1894,13 @@ void UWidgetAnimationComponent::PostEditChangeProperty(FPropertyChangedEvent& Pr
 
 	// An entry an additive list starts within moved, or went: the list follows it, or starts right away again.
 	RefreshAdditiveStarts();
+
+	// An animation picked or swapped, or an additive track made value-driven: Value Tracks lists what is used now.
+	// Only once the edit is committed, like the Target Widgets above.
+	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
+	{
+		RefreshValueOverrides();
+	}
 
 	// Keeps each Transform layer's Keys list one-to-one with its curve: a key added on the curve gets an
 	// entry, a deleted one loses it, and every entry's time follows its key. Deferred and skipped mid-drag -

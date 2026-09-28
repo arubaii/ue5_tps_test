@@ -462,6 +462,8 @@ public:
 	virtual void PlayWidgetAnimationsById(const TArray<FName>& AnimIds, bool bReverse, float PlaybackSpeed, bool bHoldFinalPose, bool bRestartIfPlaying) override;
 	virtual void StopWidgetAnimationsById(const TArray<FName>& AnimIds, bool bResetToStart) override;
 	virtual bool AreWidgetAnimationsPlayingById(const TArray<FName>& AnimIds) const override;
+	virtual bool SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying) override;
+	virtual FVector4 GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const override;
 
 	/**
 	 * Anim In / Anim Out saved on this class while it derived from UUserWidget_Animatable (brought here by

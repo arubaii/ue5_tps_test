@@ -844,6 +844,17 @@ bool UInfoCardWidget::AreWidgetAnimationsPlayingById(const TArray<FName>& AnimId
 	return CardAnimation && CardAnimation->AreWidgetAnimationsPlayingById(AnimIds);
 }
 
+bool UInfoCardWidget::SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
+{
+	UWidgetAnimationComponent* Anim = ResolveCardAnimation();
+	return Anim && Anim->SetWidgetAnimationValues(ValueName, Value, bSnap, bStartIfNotPlaying);
+}
+
+FVector4 UInfoCardWidget::GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const
+{
+	return CardAnimation ? CardAnimation->GetWidgetAnimationValues(ValueName, bTargetValue) : FVector4(0.0, 0.0, 0.0, 0.0);
+}
+
 void UInfoCardWidget::DispatchGlobalMenuStateChanged(FGameplayTag ScreenTag, bool bIsOpen)
 {
 	// Snapshot the array because HandleMenuStateChanged might close cards, mutating ActiveCards mid-loop.

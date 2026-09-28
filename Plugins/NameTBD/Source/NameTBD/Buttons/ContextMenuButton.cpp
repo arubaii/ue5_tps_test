@@ -5516,6 +5516,39 @@ bool UContextMenuButton::AreWidgetAnimationsPlayingById(const TArray<FName>& Ani
 	return UWidgetAnimLibrary::AreWidgetAnimTracksPlaying(ButtonAnimPlayer, AnimIds);
 }
 
+bool UContextMenuButton::SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying)
+{
+	// The designer previews value-driven tracks on their timelines; only a live button takes values.
+	if (IsDesignTime())
+	{
+		return false;
+	}
+
+	if (FlattenedAnimIn.Num() == 0 && FlattenedAnimOut.Num() == 0)
+	{
+		RebuildEffectiveButtonAnimations();
+	}
+
+	UWidgetAnimLibrary::CaptureWidgetAnimBaselines(this, FlattenedAnimIn, FlattenedAnimOut, ButtonAnimBaselines);
+
+	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
+	const int32 Taken = UWidgetAnimEntryLibrary::SetEntriesValue(ButtonAnimPlayer, EffectiveInEntries, Resolver, ValueName, Value, bSnap, bStartIfNotPlaying);
+
+	// The timer stops once nothing moves, so it is started again for the value to travel - and a snap, which moves
+	// nothing over time, is posed now.
+	TArray<FName> JustFinished;
+	UWidgetAnimLibrary::TickWidgetAnimPlayer(this, ButtonAnimPlayer, ButtonAnimBaselines, 0.f, JustFinished);
+	StartButtonAnimTimer();
+	return Taken > 0;
+}
+
+FVector4 UContextMenuButton::GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const
+{
+	FVector4 Value(0.0, 0.0, 0.0, 0.0);
+	UWidgetAnimLibrary::GetWidgetAnimTrackValue(ButtonAnimPlayer, ValueName, bTargetValue, Value);
+	return Value;
+}
+
 void UContextMenuButton::StartButtonAnimTimer()
 {
 	if (bIsButtonAnimTimerActive)

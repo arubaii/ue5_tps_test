@@ -1010,6 +1010,20 @@ void FWidgetAnimationComponentDetails::CustomizeDetails(IDetailLayoutBuilder& De
 	AddListEditor(DetailBuilder, Category, GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, AdditiveAnimLayersIn), /*bOut=*/false, Objects);
 	AddListEditor(DetailBuilder, Category, GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, AdditiveAnimLayersOut), /*bOut=*/true, Objects);
 
+	// The Value Names its value-driven tracks use, listed by the component itself - shown only when there are some.
+	const TSharedRef<IPropertyHandle> ValuesHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, ValueOverrides));
+	uint32 NumValues = 0;
+	const TSharedPtr<IPropertyHandleArray> ValuesArray = ValuesHandle->AsArray();
+	const bool bKnownCount = ValuesArray.IsValid() && ValuesArray->GetNumElements(NumValues) == FPropertyAccess::Success;
+	if (bKnownCount && NumValues == 0)
+	{
+		DetailBuilder.HideProperty(ValuesHandle);
+	}
+	else
+	{
+		Category.AddProperty(ValuesHandle);
+	}
+
 	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, bPreserveAuthoredTransforms)));
 }
 

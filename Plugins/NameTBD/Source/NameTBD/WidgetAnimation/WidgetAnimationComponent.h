@@ -193,6 +193,15 @@ public:
 	FWidgetAnimAdditiveStart AdditiveAnimLayersOutStart;
 
 	/**
+	 * Every Value Name the value-driven tracks in this component's animations use (Timing = Value in the Widget
+	 * Animations editor), one row each, listed for you: set them with Set Widget Animation Value. Tick a row to give
+	 * this widget its own range, start value and limits for it, in place of the tracks' own. How the tracks travel to
+	 * a value - their smoothing - is part of the animation and stays there.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Value Tracks", EditFixedSize, TitleProperty = "ValueName"))
+	TArray<FWidgetAnimValueOverride> ValueOverrides;
+
+	/**
 	 * Whether animations compose over whatever each target was authored as, instead of replacing it.
 	 *
 	 * Off (the default): a Fade ending at 1 means opacity 1, full stop, even on a widget authored at 0.5.
@@ -306,6 +315,77 @@ public:
 	 */
 	UFUNCTION(BlueprintPure, Category = "Animation")
 	TArray<FName> GetConflictingAnimationIds() const { return ConflictingAnimIds; }
+
+	// -------------------------------------------------------------------------------------------------
+	// Value-driven tracks
+	// -------------------------------------------------------------------------------------------------
+
+	/**
+	 * Sets the value of the value-driven tracks with this Value Name (Timing = Value in the Widget Animations editor).
+	 * Each track maps it onto itself through its Value At Start and Value At End - 0 and 1 by default, so 0.5 is
+	 * halfway along - and travels there by its own smoothing. Call it as often as the value changes.
+	 *
+	 * Snap jumps straight to the value, and may go back even where a track never goes backwards - for resetting. Start
+	 * If Not Playing starts the Anim In entries that have such a track but haven't played yet, so no Play call is needed
+	 * first; an entry already playing is never restarted. Set before the widget is constructed, the value is where the
+	 * tracks start. Returns whether a running track took the value.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Animation|Value", meta = (AdvancedDisplay = "bSnap,bStartIfNotPlaying"))
+	bool SetWidgetAnimationValue(FName ValueName, float Value, bool bSnap = false, bool bStartIfNotPlaying = true);
+
+	/** Set Widget Animation Value, for a track whose Value Type is Integer. */
+	UFUNCTION(BlueprintCallable, Category = "Animation|Value", meta = (DisplayName = "Set Widget Animation Value (Integer)", AdvancedDisplay = "bSnap,bStartIfNotPlaying"))
+	bool SetWidgetAnimationValueInteger(FName ValueName, int32 Value, bool bSnap = false, bool bStartIfNotPlaying = true);
+
+	/** Set Widget Animation Value, for a track whose Value Type is Vector 2D: X and Y each move their own axis. */
+	UFUNCTION(BlueprintCallable, Category = "Animation|Value", meta = (DisplayName = "Set Widget Animation Value (Vector 2D)", AdvancedDisplay = "bSnap,bStartIfNotPlaying"))
+	bool SetWidgetAnimationValueVector2D(FName ValueName, FVector2D Value, bool bSnap = false, bool bStartIfNotPlaying = true);
+
+	/** Set Widget Animation Value, for a track whose Value Type is Colour: R, G, B and A each move their own channel. */
+	UFUNCTION(BlueprintCallable, Category = "Animation|Value", meta = (DisplayName = "Set Widget Animation Value (Colour)", AdvancedDisplay = "bSnap,bStartIfNotPlaying"))
+	bool SetWidgetAnimationValueColor(FName ValueName, FLinearColor Value, bool bSnap = false, bool bStartIfNotPlaying = true);
+
+	/** Any of the four, with the value raw - up to four channels. See WidgetAnimValue::FromFloat and the others. */
+	bool SetWidgetAnimationValues(FName ValueName, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying);
+
+	/**
+	 * The value the first value-driven track with this Value Name shows now - or, with Target Value, the one it is
+	 * heading to (the last one set) - in the value's own units. 0 when nothing has this name and no value was set.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Animation|Value")
+	float GetWidgetAnimationValue(FName ValueName, bool bTargetValue = false) const;
+
+	UFUNCTION(BlueprintPure, Category = "Animation|Value", meta = (DisplayName = "Get Widget Animation Value (Integer)"))
+	int32 GetWidgetAnimationValueInteger(FName ValueName, bool bTargetValue = false) const;
+
+	UFUNCTION(BlueprintPure, Category = "Animation|Value", meta = (DisplayName = "Get Widget Animation Value (Vector 2D)"))
+	FVector2D GetWidgetAnimationValueVector2D(FName ValueName, bool bTargetValue = false) const;
+
+	UFUNCTION(BlueprintPure, Category = "Animation|Value", meta = (DisplayName = "Get Widget Animation Value (Colour)"))
+	FLinearColor GetWidgetAnimationValueColor(FName ValueName, bool bTargetValue = false) const;
+
+	/** The raw value behind the four getters. */
+	FVector4 GetWidgetAnimationValues(FName ValueName, bool bTargetValue) const;
+
+	/**
+	 * Lists every Value Name the component's animations and additive layers use in Value Tracks - one row each, in the
+	 * order first found - keeping the rows already overridden and dropping names no longer used. Rows not overridden
+	 * show their tracks' settings. Run on load and on every edit. True if anything changed.
+	 */
+	bool RefreshValueOverrides();
+
+	/**
+	 * True while Play Out is waiting for a value-driven track - here, or in a component it cascades into - to arrive
+	 * before the exit starts (its On Exit is Wait For Value or Complete First). The phase is already Playing Out.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Animation")
+	bool IsExitWaitingForValues() const { return PendingExit != EPendingExit::None; }
+
+	/**
+	 * Whether Play Out would move anything here: an exit to play, or a value-driven track it would wait for first.
+	 * What a screen closing asks before deciding it has an exit to wait for.
+	 */
+	bool HasExitToPlay() const;
 
 	// -------------------------------------------------------------------------------------------------
 	// Owner and lookup
@@ -531,6 +611,42 @@ private:
 
 	/** Whether any Anim In or Anim Out entry plays on a visibility change - what the visibility watch is for. */
 	bool bAnyVisibilityTrigger = false;
+
+	/**
+	 * An exit asked for while a value-driven animation still had a way to go, waiting for it to arrive - see
+	 * FWidgetAnimValueOptions::OnExit. Which exit it was, and whether it cascades; started from TickAnimationPlayback
+	 * once every value it waits on has arrived. Cleared by anything that plays the entrance instead.
+	 */
+	enum class EPendingExit : uint8
+	{
+		None,
+		PlayOut,
+		VisibilityTrigger
+	};
+
+	EPendingExit PendingExit = EPendingExit::None;
+	bool bPendingExitCascade = true;
+
+	/** Set while a waiting exit is being started, so it doesn't wait again. */
+	bool bStartingPendingExit = false;
+
+	/**
+	 * Sends this component's value-driven animations - and, with bCascade, those of every component the exit cascades
+	 * into - their exit values (Complete First goes to 1), and answers whether any still has a way to go.
+	 */
+	bool PrepareValuesForExit(bool bCascade);
+
+	/** Starts the waiting exit if every value it waits on has arrived. True once it has started. */
+	bool TryStartPendingExit();
+
+	/** Puts this widget's Value Tracks overrides onto the value-driven layers in Settings. */
+	void ApplyValueOverrides(TArray<FWidgetAnimSettings>& Settings) const;
+
+	/**
+	 * What every call starting an entry does to that entry's settings before its track starts: the Additive Anim Layers
+	 * list that starts within it, and this widget's value overrides.
+	 */
+	void PrepareEntrySettings(int32 EffectiveIndex, bool bOut, TArray<FWidgetAnimSettings>& EntrySettings) const;
 
 	UPROPERTY(Transient)
 	FWidgetAnimPreviewState DesignerPreviewState;

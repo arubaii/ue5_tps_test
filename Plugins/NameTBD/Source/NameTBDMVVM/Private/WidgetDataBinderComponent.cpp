@@ -797,6 +797,49 @@ void UWidgetDataBinderComponent::EvaluateTrigger(int32 TriggerIndex, bool bIniti
 		return;
 	}
 
+	if (Trigger.Action == EWidgetDataTriggerAction::SetValue)
+	{
+		// No condition and no edge: every change of the field is a value, as it is - each track maps it onto itself. A
+		// Vector 2D or Linear Color field carries its channels; a number or bool (0 and 1) is one value.
+		FVector4 Raw(0.0, 0.0, 0.0, 0.0);
+		const FStructProperty* StructProperty = CastField<FStructProperty>(Value.Property);
+		double Number = 0.0;
+		if (StructProperty && StructProperty->Struct == TBaseStructure<FVector2D>::Get())
+		{
+			Raw = WidgetAnimValue::FromVector2D(*static_cast<const FVector2D*>(Value.ValuePtr));
+		}
+		else if (StructProperty && StructProperty->Struct == TBaseStructure<FLinearColor>::Get())
+		{
+			Raw = WidgetAnimValue::FromColor(*static_cast<const FLinearColor*>(Value.ValuePtr));
+		}
+		else if (WidgetDataValues::ReadNumber(Value.Property, Value.ValuePtr, Number))
+		{
+			Raw = WidgetAnimValue::FromFloat(Number);
+		}
+		else
+		{
+			Raw = WidgetAnimValue::FromFloat(WidgetDataValues::IsTruthy(Value.Property, Value.ValuePtr) ? 1.0 : 0.0);
+		}
+
+		// At binding the value is shown where it is rather than travelled to - a row pointed at another pawn shows that
+		// pawn's health at once - and only with Evaluate On Bind. After that, only a change sends anything.
+		if (bInitial)
+		{
+			if (Trigger.bEvaluateOnBind)
+			{
+				SetAnimationValue(Trigger, Raw, /*bSnap=*/true);
+			}
+		}
+		else if (!State.bHasLastValue || State.LastValue != Raw)
+		{
+			SetAnimationValue(Trigger, Raw, /*bSnap=*/false);
+		}
+
+		State.bHasLastValue = true;
+		State.LastValue = Raw;
+		return;
+	}
+
 	if (Trigger.Condition == EWidgetDataTriggerCondition::Changed)
 	{
 		FString Text;
@@ -899,17 +942,24 @@ void UWidgetDataBinderComponent::FireTrigger(int32 TriggerIndex, bool bBecameAct
 			PlayOrStop(Trigger, /*bPlay=*/false);
 		}
 		break;
+
+	default:
+		// Set Value acts in EvaluateTrigger, on every change, and never gets here.
+		break;
 	}
 
 	OnTriggerChanged.Broadcast(Trigger.TriggerName, bBecameActive);
 }
 
-void UWidgetDataBinderComponent::PlayOrStop(const FWidgetFieldTrigger& Trigger, bool bPlay)
+bool UWidgetDataBinderComponent::FindAnimationOwner(const FWidgetFieldTrigger& Trigger, UWidgetAnimationComponent*& OutComponent, IWidgetAnimHost*& OutHost) const
 {
+	OutComponent = nullptr;
+	OutHost = nullptr;
+
 	UWidget* Start = ResolveAnimationWidget(Trigger.AnimationWidget);
 	if (!Start)
 	{
-		return;
+		return false;
 	}
 
 	// Outwards from the picked widget until something owns animations: a Widget Animation Component on a
@@ -923,31 +973,15 @@ void UWidgetDataBinderComponent::PlayOrStop(const FWidgetFieldTrigger& Trigger, 
 		{
 			if (UWidgetAnimationComponent* Component = UWidgetAnimationComponent::FindWidgetAnimationComponent(SearchWidget))
 			{
-				if (bPlay)
-				{
-					Component->PlayWidgetAnimationsById(Trigger.AnimIds, Trigger.Direction == EWidgetAnimPlayDirection::Reverse,
-						FMath::Max(Trigger.PlaybackSpeed, 0.01f), Trigger.bHoldFinalPose, Trigger.bRestartIfPlaying);
-				}
-				else
-				{
-					Component->StopWidgetAnimationsById(Trigger.AnimIds, Trigger.bResetToStartOnStop);
-				}
-				return;
+				OutComponent = Component;
+				return true;
 			}
 		}
 
 		if (IWidgetAnimHost* Host = Cast<IWidgetAnimHost>(Search))
 		{
-			if (bPlay)
-			{
-				Host->PlayWidgetAnimationsById(Trigger.AnimIds, Trigger.Direction == EWidgetAnimPlayDirection::Reverse,
-					FMath::Max(Trigger.PlaybackSpeed, 0.01f), Trigger.bHoldFinalPose, Trigger.bRestartIfPlaying);
-			}
-			else
-			{
-				Host->StopWidgetAnimationsById(Trigger.AnimIds, Trigger.bResetToStartOnStop);
-			}
-			return;
+			OutHost = Host;
+			return true;
 		}
 
 		Search = Search->GetOuter();
@@ -955,6 +989,60 @@ void UWidgetDataBinderComponent::PlayOrStop(const FWidgetFieldTrigger& Trigger, 
 
 	UE_LOG(LogWidgetDataBinder, Warning, TEXT("%s: trigger '%s' found no Widget Animation Component at or above %s to play its Anim IDs on."),
 		*DescribeForLog(), *Trigger.TriggerName.ToString(), *GetNameSafe(Start));
+	return false;
+}
+
+void UWidgetDataBinderComponent::PlayOrStop(const FWidgetFieldTrigger& Trigger, bool bPlay)
+{
+	UWidgetAnimationComponent* Component = nullptr;
+	IWidgetAnimHost* Host = nullptr;
+	if (!FindAnimationOwner(Trigger, Component, Host))
+	{
+		return;
+	}
+
+	if (Component)
+	{
+		if (bPlay)
+		{
+			Component->PlayWidgetAnimationsById(Trigger.AnimIds, Trigger.Direction == EWidgetAnimPlayDirection::Reverse,
+				FMath::Max(Trigger.PlaybackSpeed, 0.01f), Trigger.bHoldFinalPose, Trigger.bRestartIfPlaying);
+		}
+		else
+		{
+			Component->StopWidgetAnimationsById(Trigger.AnimIds, Trigger.bResetToStartOnStop);
+		}
+		return;
+	}
+
+	if (bPlay)
+	{
+		Host->PlayWidgetAnimationsById(Trigger.AnimIds, Trigger.Direction == EWidgetAnimPlayDirection::Reverse,
+			FMath::Max(Trigger.PlaybackSpeed, 0.01f), Trigger.bHoldFinalPose, Trigger.bRestartIfPlaying);
+	}
+	else
+	{
+		Host->StopWidgetAnimationsById(Trigger.AnimIds, Trigger.bResetToStartOnStop);
+	}
+}
+
+void UWidgetDataBinderComponent::SetAnimationValue(const FWidgetFieldTrigger& Trigger, const FVector4& Value, bool bSnap)
+{
+	UWidgetAnimationComponent* Component = nullptr;
+	IWidgetAnimHost* Host = nullptr;
+	if (Trigger.ValueName.IsNone() || !FindAnimationOwner(Trigger, Component, Host))
+	{
+		return;
+	}
+
+	if (Component)
+	{
+		Component->SetWidgetAnimationValues(Trigger.ValueName, Value, bSnap, /*bStartIfNotPlaying=*/true);
+	}
+	else
+	{
+		Host->SetWidgetAnimationValues(Trigger.ValueName, Value, bSnap, /*bStartIfNotPlaying=*/true);
+	}
 }
 
 // =====================================================================================================

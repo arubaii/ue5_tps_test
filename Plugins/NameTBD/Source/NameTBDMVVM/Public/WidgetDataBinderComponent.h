@@ -18,6 +18,7 @@ class UUserWidget;
 class UWidget;
 class UWidgetDataBinderComponent;
 class UWidgetDataBinderEventProxy;
+class UWidgetAnimationComponent;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FWidgetDataTriggerEvent, FName, TriggerName, bool, bActive);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FWidgetDataBinderEvent, UWidgetDataBinderComponent*, Binder);
@@ -225,6 +226,9 @@ private:
 		bool bActive = false;
 		bool bHasLastText = false;
 		FString LastText;
+		/** Set Value: the last value sent, so an unchanged field sends nothing. */
+		bool bHasLastValue = false;
+		FVector4 LastValue = FVector4(0.0, 0.0, 0.0, 0.0);
 		bool bWarned = false;
 	};
 
@@ -261,6 +265,16 @@ private:
 	bool EvaluateCondition(const FWidgetFieldTrigger& Trigger, const FWidgetDataValue& Value, bool bCurrentlyActive) const;
 	void FireTrigger(int32 TriggerIndex, bool bBecameActive);
 	void PlayOrStop(const FWidgetFieldTrigger& Trigger, bool bPlay);
+
+	/** Set Value: the field's value - raw, up to four channels - as the value of the trigger's Value Name. */
+	void SetAnimationValue(const FWidgetFieldTrigger& Trigger, const FVector4& Value, bool bSnap);
+
+	/**
+	 * What owns a trigger's Anim IDs: outwards from its Animation Widget to the first Widget Animation Component on a
+	 * widget, or widget that is an animation host itself - the same search Play Widget Animation makes. One output is
+	 * set when it returns true; false logs a warning.
+	 */
+	bool FindAnimationOwner(const FWidgetFieldTrigger& Trigger, UWidgetAnimationComponent*& OutComponent, IWidgetAnimHost*& OutHost) const;
 
 	/** The User Widget whose view holds ViewModel Name: the selected widget if it is one with that ViewModel, else the Widget Blueprint the binder is in. */
 	UUserWidget* FindViewModelHost() const;

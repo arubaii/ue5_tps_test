@@ -25,6 +25,13 @@ float UWidgetAnimLibrary::EaseOutBack(float Alpha, float Overshoot)
 
 float UWidgetAnimLibrary::EvaluateEasedAlpha(const FWidgetAnimSettings& Settings, float LinearAlpha)
 {
+	// A value-driven track goes where its value says, straight: its Easing (or spring) is how it travels to each new
+	// value, in time, not a bend in where a value puts it. Its keys' own curves still shape it.
+	if (Settings.IsValueDriven())
+	{
+		return FMath::Clamp(LinearAlpha, 0.f, 1.f);
+	}
+
 	if (Settings.IsSpringTimed())
 	{
 		return UWidgetAnimSpringLibrary::EvaluateDirectedProgress(Settings.Spring, LinearAlpha, /*bTowardStart=*/false);
@@ -35,6 +42,12 @@ float UWidgetAnimLibrary::EvaluateEasedAlpha(const FWidgetAnimSettings& Settings
 
 float UWidgetAnimLibrary::EvaluateLayerAlpha(const FWidgetAnimSettings& Settings, float DirectedAlpha, bool bTowardStart)
 {
+	// Straight, on a value-driven track - see EvaluateEasedAlpha.
+	if (Settings.IsValueDriven())
+	{
+		return FMath::Clamp(DirectedAlpha, 0.f, 1.f);
+	}
+
 	// Only a spring cares which way it is heading. A tween's curve is the same curve rewound, which is
 	// exactly what running a tween backwards means; a spring rewound would not look like a spring at all.
 	if (Settings.IsSpringTimed())
@@ -52,7 +65,7 @@ float UWidgetAnimLibrary::EvaluateTrackEase(const FWidgetAnimSettings& Settings,
 	// different pops stacked on one value would be neither. So is a track with keys between its start and end:
 	// every segment would pop past its own key, which is a wobble, not a pop - its keys and their curves are how
 	// it is shaped instead.
-	if (!Settings.IsSpringTimed() && Settings.ValueKeys.Keys.Num() == 0)
+	if (Settings.Timing == EWidgetAnimTiming::Tween && Settings.ValueKeys.Keys.Num() == 0)
 	{
 		if (Settings.AnimType == EWidgetAnimType::Scale && Settings.Overshoot > 0.f)
 		{
@@ -986,7 +999,7 @@ bool UWidgetAnimLibrary::BlocksSettle(const FWidgetAnimSettings& Settings, const
 	return true;
 }
 
-bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult, bool* bOutAllComplete, const FWidgetAnimBaselineSet* Baselines)
+bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, FWidgetAnimResult& OutResult, bool* bOutAllComplete, const FWidgetAnimBaselineSet* Baselines, bool bDriveValueLayers)
 {
 	const int32 NumLayers = Animations.Num();
 
@@ -1012,16 +1025,24 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 	GroupLead.Init(TNumericLimits<float>::Max(), NumLayers);
 	GroupEnd.Init(0.f, NumLayers);
 
+	// Value-driven layers, when they follow their values, have no place on the clock: they neither lead a loop group
+	// nor stretch one, so the rest of the animation times, loops and finishes exactly as if they weren't there.
+	auto FollowsValue = [&Animations, bDriveValueLayers](int32 Index) { return bDriveValueLayers && Animations[Index].IsValueDriven(); };
+
 	for (int32 Index = 0; Index < NumLayers; ++Index)
 	{
 		LeaderOf[Index] = Index;
+		if (FollowsValue(Index))
+		{
+			continue;
+		}
 
 		const int32 Group = Animations[Index].LoopGroup;
 		if (Group != INDEX_NONE)
 		{
 			for (int32 Earlier = 0; Earlier < Index; ++Earlier)
 			{
-				if (Animations[Earlier].LoopGroup == Group)
+				if (Animations[Earlier].LoopGroup == Group && !FollowsValue(Earlier))
 				{
 					LeaderOf[Index] = LeaderOf[Earlier];
 					break;
@@ -1039,7 +1060,7 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 	// One advance per group, on its leader.
 	for (int32 Index = 0; Index < NumLayers; ++Index)
 	{
-		if (LeaderOf[Index] == Index)
+		if (LeaderOf[Index] == Index && !FollowsValue(Index))
 		{
 			WidgetAnimLoop::AdvanceTimeline(Animations[Index], States[Index], GroupLead[Index], GroupEnd[Index], DeltaTime);
 		}
@@ -1051,6 +1072,28 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 	for (int32 Index = 0; Index < NumLayers; ++Index)
 	{
 		const FWidgetAnimSettings& Settings = Animations[Index];
+
+		if (FollowsValue(Index))
+		{
+			// Moved toward the last value set for its name, at the entry's speed, and posed there - from the moment the
+			// track starts, with no delay: it is showing data, not playing its part of a sequence. At rest it counts as
+			// ended, and it never holds the stack from settling. See WidgetAnimDriver.h.
+			FWidgetAnimState& State = States[Index];
+			State.bFinished = WidgetAnimValue::Advance(Settings.ValueOptions, Settings.GetValueMotion(), State.ValueState, DeltaTime * FMath::Max(Settings.PlaybackSpeed, 0.01f));
+
+			if (!Settings.bMuted)
+			{
+				ApplyValueLayerContribution(Settings, State.ValueState, OutResult, Baselines);
+			}
+			else if (Baselines && Baselines->bCaptured)
+			{
+				TouchLayerTargets(Settings, OutResult, *Baselines);
+			}
+
+			bAllComplete = bAllComplete && State.bFinished;
+			continue;
+		}
+
 		const int32 Leader = LeaderOf[Index];
 		const FWidgetAnimState& Clock = States[Leader];
 		const WidgetAnimLoop::FLayerSpan& Span = Spans[Index];
@@ -1131,6 +1174,29 @@ FWidgetAnimResult UWidgetAnimLibrary::TickWidgetAnimations(const TArray<FWidgetA
 	return Result;
 }
 
+namespace
+{
+	/**
+	 * A render scale Slate can always invert. At exactly 0 on an axis, together with an angle or a shear, the widget's
+	 * render transform has no inverse, and Slate lays that frame out with a garbage one - the widget flashed up huge
+	 * for a frame whenever a Scale from 0 and a Rotate played on it together. A ten-thousandth is invisible, and keeps
+	 * the transform invertible; the sign is kept, so a mirror stays a mirror.
+	 */
+	FVector2D MakeInvertibleScale(FVector2D Scale)
+	{
+		constexpr double MinScale = 0.0001;
+		if (FMath::Abs(Scale.X) < MinScale)
+		{
+			Scale.X = Scale.X < 0.0 ? -MinScale : MinScale;
+		}
+		if (FMath::Abs(Scale.Y) < MinScale)
+		{
+			Scale.Y = Scale.Y < 0.0 ? -MinScale : MinScale;
+		}
+		return Scale;
+	}
+}
+
 void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWidgetAnimResult& Result, const FWidgetAnimBaselineSet* Baselines)
 {
 	for (const FWidgetAnimTargetedTransform& Transform : Result.TargetedTransforms)
@@ -1146,7 +1212,7 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
 			// Composed: the animation says "half as bright, eight pixels up", not "opacity 0.5, y = -8".
 			const FWidgetAnimBaseline Baseline = FindBaselineFor(*Baselines, Target);
 			Target->SetRenderOpacity(Baseline.Opacity * Transform.Opacity);
-			Target->SetRenderScale(Baseline.Scale * Transform.Scale);
+			Target->SetRenderScale(MakeInvertibleScale(Baseline.Scale * Transform.Scale));
 			Target->SetRenderTranslation(Baseline.Translation + Transform.Translation);
 			Target->SetRenderShear(Baseline.Shear + Transform.Shear);
 			Target->SetRenderTransformAngle(Baseline.Angle + Transform.Angle);
@@ -1154,7 +1220,7 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
 		else
 		{
 			Target->SetRenderOpacity(Transform.Opacity);
-			Target->SetRenderScale(Transform.Scale);
+			Target->SetRenderScale(MakeInvertibleScale(Transform.Scale));
 			Target->SetRenderTranslation(Transform.Translation);
 			Target->SetRenderShear(Transform.Shear);
 			Target->SetRenderTransformAngle(Transform.Angle);
@@ -2133,6 +2199,9 @@ FWidgetAnimSettings FWidgetAnimLayer::ToSettings() const
 	Out.Easing = Easing;
 	Out.CustomCurve = CustomCurve;
 	Out.Spring = Spring;
+	Out.ValueName = ValueName;
+	Out.ValueSmoothing = ValueSmoothing;
+	Out.ValueOptions = ValueOptions;
 	Out.ValueKeys = ValueKeys;
 
 	Out.StartOpacity = StartOpacity;
@@ -2184,6 +2253,9 @@ FWidgetAnimLayer FWidgetAnimLayer::FromSettings(const FWidgetAnimSettings& Setti
 	Out.Easing = Settings.Easing;
 	Out.CustomCurve = Settings.CustomCurve;
 	Out.Spring = Settings.Spring;
+	Out.ValueName = Settings.ValueName;
+	Out.ValueSmoothing = Settings.ValueSmoothing;
+	Out.ValueOptions = Settings.ValueOptions;
 	Out.ValueKeys = Settings.ValueKeys;
 
 	Out.StartOpacity = Settings.StartOpacity;
@@ -2262,6 +2334,280 @@ void UWidgetAnimLibrary::StartWidgetAnimTrack(FWidgetAnimPlayer& Player, FName A
 	Track.Settings = Settings;
 
 	ResetWidgetAnimations(Track.Settings, Track.States);
+	InitializeValueLayers(Player, Track);
+
+	// A value shown is shown until the next one: a track with value-driven layers always holds, or letting go would
+	// snap its widgets back the moment its clock layers and values came to rest.
+	if (Track.Settings.ContainsByPredicate([](const FWidgetAnimSettings& Layer) { return Layer.IsValueDriven(); }))
+	{
+		Track.bHoldWhenFinished = true;
+	}
+}
+
+void UWidgetAnimLibrary::InitializeValueLayers(const FWidgetAnimPlayer& Player, FWidgetAnimTrack& Track)
+{
+	for (int32 Index = 0; Index < Track.Settings.Num() && Index < Track.States.Num(); ++Index)
+	{
+		const FWidgetAnimSettings& Layer = Track.Settings[Index];
+		if (!Layer.IsValueDriven())
+		{
+			continue;
+		}
+
+		// Where it was last left - the widget shown again, Play In restarting everything - or, before any value, its
+		// Start Value. Each layer maps the raw value onto itself through its own range.
+		const FVector4* Remembered = Layer.ValueName.IsNone() ? nullptr : Player.Values.Find(Layer.ValueName);
+		WidgetAnimValue::Snap(Track.States[Index].ValueState, Layer.ValueOptions.ToProgress(Remembered ? *Remembered : Layer.ValueOptions.GetStartValue()));
+	}
+}
+
+int32 UWidgetAnimLibrary::SetWidgetAnimTrackValue(FWidgetAnimPlayer& Player, FName ValueName, const FVector4& Value, bool bSnap)
+{
+	if (ValueName.IsNone())
+	{
+		return 0;
+	}
+
+	int32 Taken = 0;
+	for (FWidgetAnimTrack& Track : Player.Tracks)
+	{
+		for (int32 Index = 0; Index < Track.Settings.Num(); ++Index)
+		{
+			const FWidgetAnimSettings& Layer = Track.Settings[Index];
+			if (!Layer.IsValueDriven() || Layer.ValueName != ValueName)
+			{
+				continue;
+			}
+
+			// Normally already in step; a track not yet ticked is sized here, its value layers put where they start.
+			if (Track.States.Num() != Track.Settings.Num())
+			{
+				ResetWidgetAnimations(Track.Settings, Track.States);
+				InitializeValueLayers(Player, Track);
+			}
+
+			++Taken;
+			FWidgetAnimState& State = Track.States[Index];
+			if (WidgetAnimValue::SetTarget(Layer.ValueOptions, Layer.GetValueMotion(), State.ValueState, Layer.ValueOptions.ToProgress(Value), bSnap) && State.ValueState.IsMoving())
+			{
+				// Moving again: the track runs, and is reported finished again once everything in it has come to rest.
+				State.bFinished = false;
+				Track.bFinished = false;
+			}
+		}
+	}
+
+	Player.Values.Add(ValueName, Value);
+	return Taken;
+}
+
+bool UWidgetAnimLibrary::GetWidgetAnimTrackValue(const FWidgetAnimPlayer& Player, FName ValueName, bool bTargetValue, FVector4& OutValue)
+{
+	for (const FWidgetAnimTrack& Track : Player.Tracks)
+	{
+		for (int32 Index = 0; Index < Track.Settings.Num() && Index < Track.States.Num(); ++Index)
+		{
+			const FWidgetAnimSettings& Layer = Track.Settings[Index];
+			if (Layer.IsValueDriven() && Layer.ValueName == ValueName)
+			{
+				const FWidgetAnimValueState& State = Track.States[Index].ValueState;
+				OutValue = Layer.ValueOptions.FromProgress(bTargetValue ? State.Target : State.Progress);
+				return true;
+			}
+		}
+	}
+
+	if (const FVector4* Remembered = Player.Values.Find(ValueName))
+	{
+		OutValue = *Remembered;
+		return true;
+	}
+
+	OutValue = FVector4(0.0, 0.0, 0.0, 0.0);
+	return false;
+}
+
+bool UWidgetAnimLibrary::HasValueLayer(const TArray<FWidgetAnimSettings>& Settings, FName ValueName)
+{
+	return !ValueName.IsNone() && Settings.ContainsByPredicate([ValueName](const FWidgetAnimSettings& Layer)
+	{
+		return Layer.IsValueDriven() && Layer.ValueName == ValueName;
+	});
+}
+
+namespace
+{
+	/** Whether an exit starting now would have to wait for this value-driven layer. */
+	bool ValueLayerHoldsExit(const FWidgetAnimSettings& Layer, const FWidgetAnimValueState& State)
+	{
+		switch (Layer.ValueOptions.OnExit)
+		{
+		case EWidgetAnimValueExit::WaitForValue:
+			return State.IsMoving();
+
+		case EWidgetAnimValueExit::CompleteFirst:
+		{
+			if (State.IsMoving())
+			{
+				return true;
+			}
+			for (int32 Channel = 0; Channel < Layer.ValueOptions.GetNumChannels(); ++Channel)
+			{
+				if (State.Progress[Channel] < 1.f)
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		default:
+			return false;
+		}
+	}
+}
+
+bool UWidgetAnimLibrary::PrepareValueLayersForExit(FWidgetAnimPlayer& Player)
+{
+	bool bAnyHolding = false;
+
+	for (FWidgetAnimTrack& Track : Player.Tracks)
+	{
+		if (Track.bIsOut)
+		{
+			continue;
+		}
+
+		for (int32 Index = 0; Index < Track.Settings.Num() && Index < Track.States.Num(); ++Index)
+		{
+			const FWidgetAnimSettings& Layer = Track.Settings[Index];
+			if (!Layer.IsValueDriven())
+			{
+				continue;
+			}
+
+			FWidgetAnimState& State = Track.States[Index];
+			if (Layer.ValueOptions.OnExit == EWidgetAnimValueExit::CompleteFirst
+				&& WidgetAnimValue::SetTarget(Layer.ValueOptions, Layer.GetValueMotion(), State.ValueState, FVector4f(1.f, 1.f, 1.f, 1.f), /*bSnap=*/false)
+				&& State.ValueState.IsMoving())
+			{
+				State.bFinished = false;
+				Track.bFinished = false;
+			}
+
+			bAnyHolding = ValueLayerHoldsExit(Layer, State.ValueState) || bAnyHolding;
+		}
+	}
+
+	return bAnyHolding;
+}
+
+bool UWidgetAnimLibrary::IsAnyValueLayerHoldingExit(const FWidgetAnimPlayer& Player)
+{
+	for (const FWidgetAnimTrack& Track : Player.Tracks)
+	{
+		if (Track.bIsOut)
+		{
+			continue;
+		}
+
+		for (int32 Index = 0; Index < Track.Settings.Num() && Index < Track.States.Num(); ++Index)
+		{
+			if (Track.Settings[Index].IsValueDriven() && ValueLayerHoldsExit(Track.Settings[Index], Track.States[Index].ValueState))
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+void UWidgetAnimLibrary::ApplyValueLayerContribution(const FWidgetAnimSettings& Settings, const FWidgetAnimValueState& ValueState, FWidgetAnimResult& OutResult, const FWidgetAnimBaselineSet* Baselines)
+{
+	// A value poses the same whichever direction its track was started in: only the layer's own Invert Animation turns
+	// it round, so a mirrored exit shows the value the entrance was showing.
+	auto Directed = [&Settings, &ValueState](int32 Channel)
+	{
+		const float Progress = FMath::Clamp(ValueState.Progress[Channel], 0.f, 1.f);
+		return Settings.bInvertAnimation ? 1.f - Progress : Progress;
+	};
+
+	const int32 NumChannels = Settings.ValueOptions.GetNumChannels();
+	if (NumChannels <= 1)
+	{
+		ApplyAnimationContribution(Settings, Directed(0), OutResult, Baselines, /*bTowardStart=*/false);
+		return;
+	}
+
+	// Several channels: the track posed once per channel, each pose lending its own axis or colour channel. The first
+	// carries everything a single value would - so a type with one axis follows X, or R.
+	FWidgetAnimResult Parts[4];
+	for (int32 Channel = 0; Channel < NumChannels; ++Channel)
+	{
+		ApplyAnimationContribution(Settings, Directed(Channel), Parts[Channel], Baselines, /*bTowardStart=*/false);
+	}
+	const FWidgetAnimResult& First = Parts[0];
+
+	for (const FWidgetAnimTargetedTransform& Pose : First.TargetedTransforms)
+	{
+		FWidgetAnimTargetedTransform Combined = Pose;
+		const FWidgetAnimTargetedTransform* YPose = Parts[1].TargetedTransforms.FindByPredicate([&Pose](const FWidgetAnimTargetedTransform& Other)
+		{
+			return Other.TargetWidget == Pose.TargetWidget;
+		});
+		if (YPose)
+		{
+			Combined.Scale.Y = YPose->Scale.Y;
+			Combined.Translation.Y = YPose->Translation.Y;
+			Combined.Shear.Y = YPose->Shear.Y;
+		}
+
+		// Folded in the way layers always fold: opacity and scale multiply, the rest add.
+		FWidgetAnimTargetedTransform& Into = FindOrAddTargetedTransform(OutResult, Pose.TargetWidget);
+		Into.Opacity *= Combined.Opacity;
+		Into.Scale *= Combined.Scale;
+		Into.Translation += Combined.Translation;
+		Into.Shear += Combined.Shear;
+		Into.Angle += Combined.Angle;
+	}
+
+	for (const TPair<FName, FWidgetAnimScalarTarget>& Pair : First.ScalarParameters)
+	{
+		OutResult.ScalarParameters.Add(Pair.Key, Pair.Value);
+	}
+
+	for (const TPair<FName, FWidgetAnimVectorTarget>& Pair : First.VectorParameters)
+	{
+		FWidgetAnimVectorTarget Combined = Pair.Value;
+		for (int32 Channel = 1; Channel < NumChannels && Channel < 4; ++Channel)
+		{
+			if (const FWidgetAnimVectorTarget* ChannelPose = Parts[Channel].VectorParameters.Find(Pair.Key))
+			{
+				Combined.Value.Component(Channel) = ChannelPose->Value.Component(Channel);
+			}
+		}
+		OutResult.VectorParameters.Add(Pair.Key, Combined);
+	}
+
+	for (const FWidgetAnimShapeTarget& Shape : First.ShapeTargets)
+	{
+		FWidgetAnimShapeTarget& Into = FindOrAddShapeTarget(OutResult, Shape.TargetBox);
+		Into.Shape = Shape.Shape;
+		Into.bIsBaseline = Shape.bIsBaseline;
+	}
+
+	for (const FWidgetAnimAuthoritativeWrite& Write : First.AuthoritativeWrites)
+	{
+		if (FWidgetAnimAuthoritativeWrite* Existing = FindAuthoritativeWrite(OutResult, Write.TargetWidget, Write.Channel))
+		{
+			*Existing = Write;
+		}
+		else
+		{
+			OutResult.AuthoritativeWrites.Add(Write);
+		}
+	}
 }
 
 void UWidgetAnimLibrary::StopWidgetAnimTracks(FWidgetAnimPlayer& Player, const TArray<FName>& AnimIds, bool bRemoveTracks)
@@ -2315,7 +2661,9 @@ bool UWidgetAnimLibrary::EndWidgetAnimTrackLoops(FWidgetAnimPlayer& Player, FNam
 		{
 			const FWidgetAnimSettings& Settings = Track.Settings[Index];
 			FWidgetAnimState& State = Track.States[Index];
-			if (State.bFinished)
+
+			// A value-driven layer has no loop to end: it goes where its value sends it.
+			if (State.bFinished || Settings.IsValueDriven())
 			{
 				continue;
 			}
@@ -2381,7 +2729,7 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 			// than vanishing from the combined result and letting the widget snap back.
 			if (Track.bHoldWhenFinished)
 			{
-				TickAnimationsInto(Track.Settings, Track.States, 0.f, Track.bIsOut, Result, nullptr, &Baselines);
+				TickAnimationsInto(Track.Settings, Track.States, 0.f, Track.bIsOut, Result, nullptr, &Baselines, /*bDriveValueLayers=*/true);
 			}
 			continue;
 		}
@@ -2396,7 +2744,7 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 		// widgets instead of its pose - see below.
 		FWidgetAnimResult TrackResult;
 		bool bAllComplete = false;
-		Track.bSettled = TickAnimationsInto(Track.Settings, Track.States, DeltaTime * Track.Speed, Track.bIsOut, TrackResult, &bAllComplete, &Baselines);
+		Track.bSettled = TickAnimationsInto(Track.Settings, Track.States, DeltaTime * Track.Speed, Track.bIsOut, TrackResult, &bAllComplete, &Baselines, /*bDriveValueLayers=*/true);
 
 		if (bAllComplete)
 		{
