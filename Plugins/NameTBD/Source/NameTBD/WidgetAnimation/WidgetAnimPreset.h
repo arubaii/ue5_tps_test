@@ -247,6 +247,33 @@ struct NAMETBD_API FWidgetAnimEntry : public FWidgetAnimEntryBase
 	TArray<FWidgetAnimGroupTarget> GroupTargets;
 
 	/**
+	 * Plays this animation when the widget it is on is constructed. Only on a Widget Animation Component's Anim In,
+	 * and ignored while the component's Play Only On Construct And Destruct is on, which plays every entry.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Play In Animation On Construct", EditCondition = "bShowConstructTrigger", EditConditionHides, HideEditConditionToggle))
+	bool bPlayInAnimationOnConstruct = true;
+
+	/**
+	 * Plays this animation when the widget's visibility changes. In Anim In: whenever the widget goes from hidden or
+	 * collapsed to visible. In Anim Out: before the widget is hidden with Set Visibility Animated, which then hides it
+	 * once the exit has played. Only on a Widget Animation Component's entries.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Play Animation On Visibility Hidden", EditCondition = "bShowVisibilityTrigger", EditConditionHides, HideEditConditionToggle))
+	bool bPlayAnimationOnVisibilityHidden = false;
+
+	/**
+	 * Whether the two settings above are shown. Set by the Widget Animation Component on its own entries, on load and
+	 * on every edit; every other host - a button, a card - plays its entries its own way and leaves them hidden.
+	 * Saved rather than transient so a Blueprint recompile, which copies entries without their transient values,
+	 * doesn't hide them until the next edit.
+	 */
+	UPROPERTY()
+	bool bShowConstructTrigger = false;
+
+	UPROPERTY()
+	bool bShowVisibilityTrigger = false;
+
+	/**
 	 * The single Target Widget from before Layer Groups. No longer edited; kept so an entry saved with one
 	 * carries it into every group it has not been given a target for yet.
 	 */
@@ -288,8 +315,12 @@ public:
 	 * Shared by every animation host so "play by name" means the same thing on a card, a panel and a
 	 * button. Returns how many tracks were started, which is how a caller can warn about an ID nothing
 	 * matched rather than silently doing nothing.
+	 *
+	 * Filter, when given, skips every entry it returns false for - how a host plays only the entries a given trigger
+	 * (construction, becoming visible) is set for. Skipped entries keep their index, so a track's source index is
+	 * always the entry's position in Entries.
 	 */
-	static int32 StartEntriesById(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& Entries, TFunctionRef<UWidget*(FName)> Resolver, const TArray<FName>& AnimIds, bool bIsOut, float PlaybackSpeed, bool bRestartIfPlaying, bool bHoldWhenFinished);
+	static int32 StartEntriesById(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& Entries, TFunctionRef<UWidget*(FName)> Resolver, const TArray<FName>& AnimIds, bool bIsOut, float PlaybackSpeed, bool bRestartIfPlaying, bool bHoldWhenFinished, const TFunctionRef<bool(const FWidgetAnimEntry&)>* Filter = nullptr);
 
 	/** True if any entry points at an animation that actually has layers. */
 	UFUNCTION(BlueprintPure, Category = "Widget Animation")

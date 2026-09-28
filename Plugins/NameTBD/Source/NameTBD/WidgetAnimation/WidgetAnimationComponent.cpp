@@ -378,6 +378,7 @@ void UWidgetAnimationComponent::RebuildEffectiveAnimations()
 	FlattenedOut.Append(UnnamedAnimOut);
 
 	RefreshAnimIdConflicts();
+	RefreshEntryTriggers();
 }
 
 void UWidgetAnimationComponent::RefreshAnimIdConflicts()
@@ -486,6 +487,7 @@ void UWidgetAnimationComponent::SetExtraAnimSettings(const TArray<FWidgetAnimSet
 	if (!bOwnerConstructed)
 	{
 		AnimBaselines.ResetBaselines();
+		ResetPoseBaselines.ResetBaselines();
 	}
 }
 
@@ -508,9 +510,14 @@ void UWidgetAnimationComponent::NotifyOwnerConstructed()
 	EnsureRuntimeBaselines();
 	StartRuntimeTicking();
 
-	if (bPlayOnlyOnConstructAndDestruct || bPlayInAnimationsOnConstruct)
+	if (bPlayOnlyOnConstructAndDestruct)
 	{
 		PlayIn();
+	}
+	else
+	{
+		// Only the Anim In entries set to Play In Animation On Construct.
+		PlayForTrigger(EEntryTrigger::Construct, /*bOut=*/false);
 	}
 }
 
@@ -567,12 +574,12 @@ void UWidgetAnimationComponent::RuntimeTick(float DeltaTime)
 
 	// A component cannot intercept its owner's SetVisibility, so becoming visible is noticed here instead.
 	// The pose is applied in the same frame (see ApplyCurrentAnimPose), before Slate draws the widget.
-	if (bPlayAnimationsOnVisibilityHidden && !bPlayOnlyOnConstructAndDestruct)
+	if (bAnyVisibilityTrigger && !bPlayOnlyOnConstructAndDestruct)
 	{
 		const bool bVisibleNow = IsVisibleState(AnimatedWidget->GetVisibility());
 		if (bVisibleNow && !bLastSeenVisible && !bIsDeferringVisibility)
 		{
-			PlayIn();
+			PlayForTrigger(EEntryTrigger::Visibility, /*bOut=*/false);
 		}
 		bLastSeenVisible = bVisibleNow;
 	}
@@ -594,10 +601,22 @@ bool UWidgetAnimationComponent::IsVisibleState(ESlateVisibility Visibility)
 void UWidgetAnimationComponent::EnsureRuntimeBaselines()
 {
 	UWidget* AnimatedWidget = AnimOwner.Get();
-	if (AnimatedWidget && bPreserveAuthoredTransforms)
+	if (!AnimatedWidget)
 	{
-		// No-ops after the first call. Capturing again would read back a pose the animation itself wrote.
+		return;
+	}
+
+	// No-ops after the first call. Capturing again would read back a pose the animation itself wrote.
+	if (bPreserveAuthoredTransforms)
+	{
 		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(AnimatedWidget, FlattenedIn, FlattenedOut, AnimBaselines);
+	}
+	else
+	{
+		// Not composed over - Preserve Authored Transforms is off - but still needed to put widgets back when an
+		// animation is stopped with Reset To Start. Without it that reset had nothing to restore, so the widget
+		// stayed wherever the animation had got to.
+		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(AnimatedWidget, FlattenedIn, FlattenedOut, ResetPoseBaselines);
 	}
 }
 
@@ -613,6 +632,103 @@ void UWidgetAnimationComponent::ApplyCurrentAnimPose()
 	// is never drawn in the authored pose.
 	TArray<FName> JustFinished;
 	UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, 0.f, JustFinished);
+}
+
+bool UWidgetAnimationComponent::PlayForTrigger(EEntryTrigger Trigger, bool bOut)
+{
+	if (!AnimOwner.IsValid())
+	{
+		return false;
+	}
+
+	EnsureRuntimeBaselines();
+
+	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
+	auto Answers = [Trigger](const FWidgetAnimEntry& Entry)
+	{
+		return Trigger == EEntryTrigger::Construct ? Entry.bPlayInAnimationOnConstruct : Entry.bPlayAnimationOnVisibilityHidden;
+	};
+	const TFunctionRef<bool(const FWidgetAnimEntry&)> Filter(Answers);
+
+	const TArray<FWidgetAnimEntry>& Entries = bOut ? EffectiveOutEntries : EffectiveInEntries;
+
+	// Nothing set to play on this trigger: leave whatever is playing alone, as if the trigger hadn't happened. The
+	// unnamed layers alone still play on construct when there are no entries at all, as they always did.
+	const bool bAnyEntryAnswers = Entries.ContainsByPredicate([&Answers](const FWidgetAnimEntry& Entry) { return Entry.IsUsable() && Answers(Entry); });
+	const TArray<FWidgetAnimSettings>& Unnamed = bOut ? UnnamedAnimOut : UnnamedAnimIn;
+	const bool bUnnamedOnly = !bAnyEntryAnswers && Trigger == EEntryTrigger::Construct && Entries.Num() == 0 && Unnamed.Num() > 0;
+	if (!bAnyEntryAnswers && !bUnnamedOnly)
+	{
+		return false;
+	}
+
+	// The same as Play In / Play Out from here on - the other direction's tracks dropped, the phase set, the pose
+	// applied this frame and the children cascaded into - only with the entries this trigger doesn't play left out.
+	UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
+	UWidgetAnimEntryLibrary::StartEntriesById(
+		AnimPlayer,
+		Entries,
+		Resolver,
+		TArray<FName>(),
+		bOut,
+		/*PlaybackSpeed=*/1.f,
+		/*bRestartIfPlaying=*/true,
+		/*bHoldWhenFinished=*/true,
+		&Filter);
+
+	UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, Unnamed, bOut, /*Speed=*/1.f, /*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
+
+	AnimPlayer.Phase = bOut ? EWidgetAnimPhase::PlayingOut : EWidgetAnimPhase::PlayingIn;
+
+	ApplyCurrentAnimPose();
+	CascadeAnimationToChildren(/*bPlayingIn=*/!bOut);
+	return true;
+}
+
+void UWidgetAnimationComponent::RefreshEntryTriggers()
+{
+	// The authored entries show their trigger settings; the effective copies are what gets asked whether any
+	// entry - mirrored ones included - plays on a visibility change.
+	for (FWidgetAnimEntry& Entry : AnimIn)
+	{
+		Entry.bShowConstructTrigger = true;
+		Entry.bShowVisibilityTrigger = true;
+	}
+	for (FWidgetAnimEntry& Entry : AnimOut)
+	{
+		Entry.bShowConstructTrigger = false;
+		Entry.bShowVisibilityTrigger = true;
+	}
+
+	auto PlaysOnVisibility = [](const FWidgetAnimEntry& Entry) { return Entry.bPlayAnimationOnVisibilityHidden; };
+	bAnyVisibilityTrigger = EffectiveInEntries.ContainsByPredicate(PlaysOnVisibility) || EffectiveOutEntries.ContainsByPredicate(PlaysOnVisibility);
+}
+
+void UWidgetAnimationComponent::MigrateTriggersIntoEntries()
+{
+	// Each is only saved when it differs from its default, so only a component that had changed it carries it into
+	// its entries - and does again on every load until it is resaved, which is harmless: the result is the same.
+	if (!bPlayInAnimationsOnConstruct_DEPRECATED)
+	{
+		for (FWidgetAnimEntry& Entry : AnimIn)
+		{
+			Entry.bPlayInAnimationOnConstruct = false;
+		}
+		bPlayInAnimationsOnConstruct_DEPRECATED = true;
+	}
+
+	if (bPlayAnimationsOnVisibilityHidden_DEPRECATED)
+	{
+		for (FWidgetAnimEntry& Entry : AnimIn)
+		{
+			Entry.bPlayAnimationOnVisibilityHidden = true;
+		}
+		for (FWidgetAnimEntry& Entry : AnimOut)
+		{
+			Entry.bPlayAnimationOnVisibilityHidden = true;
+		}
+		bPlayAnimationsOnVisibilityHidden_DEPRECATED = false;
+	}
 }
 
 void UWidgetAnimationComponent::PlayIn(bool bCascadeToChildren)
@@ -791,27 +907,30 @@ void UWidgetAnimationComponent::SetVisibilityAnimated(ESlateVisibility InVisibil
 		return;
 	}
 
-	if (bPlayAnimationsOnVisibilityHidden && !bPlayOnlyOnConstructAndDestruct && bOwnerConstructed)
+	if (bAnyVisibilityTrigger && !bPlayOnlyOnConstructAndDestruct && bOwnerConstructed)
 	{
 		const bool bIsBecomingInvisible = !IsVisibleState(InVisibility);
 		const bool bWasVisible = IsVisibleState(AnimatedWidget->GetVisibility());
 
-		// Hide after the exit has played.
+		// Hide after the exit has played - the Anim Out entries set to play on visibility. With none, it hides now.
 		if (bIsBecomingInvisible && bWasVisible && !IsAnimClosing())
 		{
 			bIsDeferringVisibility = true;
 			DeferredVisibility = InVisibility;
-			PlayOut();
-			return;
+			if (PlayForTrigger(EEntryTrigger::Visibility, /*bOut=*/true))
+			{
+				return;
+			}
+			bIsDeferringVisibility = false;
 		}
 
-		// Show now and play the entrance.
+		// Show now and play the entrance - the Anim In entries set to play on visibility.
 		if (!bIsBecomingInvisible && !bWasVisible)
 		{
 			bIsDeferringVisibility = false;
 			ApplyVisibilityToOwner(InVisibility);
 			bLastSeenVisible = true;
-			PlayIn();
+			PlayForTrigger(EEntryTrigger::Visibility, /*bOut=*/false);
 			return;
 		}
 	}
@@ -878,7 +997,9 @@ void UWidgetAnimationComponent::StopWidgetAnimationsById(const TArray<FName>& An
 
 	if (bResetToStart)
 	{
-		UWidgetAnimLibrary::RestoreWidgetAnimBaselines(AnimBaselines);
+		// Every widget back to its authored pose, then the tracks still playing re-applied over it this frame. The
+		// authored pose is in AnimBaselines when Preserve Authored Transforms is on, ResetPoseBaselines when it isn't.
+		UWidgetAnimLibrary::RestoreWidgetAnimBaselines(AnimBaselines.bCaptured ? AnimBaselines : ResetPoseBaselines);
 		ApplyCurrentAnimPose();
 	}
 }
@@ -1206,14 +1327,15 @@ void UWidgetAnimationComponent::ImportLegacySettings(const FWidgetAnimationLegac
 		bPlayOnlyOnConstructAndDestruct = Legacy.bPlayOnlyOnConstructAndDestruct;
 	}
 
+	// Carried by the deprecated component settings into the entries, below, once the entries are in.
 	if (Differs(Legacy.bPlayInAnimationsOnConstruct, &FWidgetAnimationLegacySettings::bPlayInAnimationsOnConstruct))
 	{
-		bPlayInAnimationsOnConstruct = Legacy.bPlayInAnimationsOnConstruct;
+		bPlayInAnimationsOnConstruct_DEPRECATED = Legacy.bPlayInAnimationsOnConstruct;
 	}
 
 	if (Differs(Legacy.bPlayAnimationsOnVisibilityHidden, &FWidgetAnimationLegacySettings::bPlayAnimationsOnVisibilityHidden))
 	{
-		bPlayAnimationsOnVisibilityHidden = Legacy.bPlayAnimationsOnVisibilityHidden;
+		bPlayAnimationsOnVisibilityHidden_DEPRECATED = Legacy.bPlayAnimationsOnVisibilityHidden;
 	}
 
 	if (Differs(Legacy.bPreserveAuthoredTransforms, &FWidgetAnimationLegacySettings::bPreserveAuthoredTransforms))
@@ -1235,6 +1357,9 @@ void UWidgetAnimationComponent::ImportLegacySettings(const FWidgetAnimationLegac
 	{
 		DesignerPreview = Legacy.DesignerPreview;
 	}
+
+	MigrateTriggersIntoEntries();
+	RefreshEntryTriggers();
 }
 
 bool UWidgetAnimationComponent::ShouldDiffLegacyAgainstArchetype(const UObject* Archetype)
@@ -1250,7 +1375,9 @@ bool UWidgetAnimationComponent::ShouldDiffLegacyAgainstArchetype(const UObject* 
 void UWidgetAnimationComponent::PostLoad()
 {
 	Super::PostLoad();
+	MigrateTriggersIntoEntries();
 	SyncEntryGroupTargets();
+	RefreshEntryTriggers();
 }
 
 bool UWidgetAnimationComponent::SyncEntryGroupTargets()
@@ -1281,6 +1408,9 @@ void UWidgetAnimationComponent::PostEditChangeProperty(FPropertyChangedEvent& Pr
 	{
 		SyncEntryGroupTargets();
 	}
+
+	// A new entry shows its trigger settings, and a changed one is heard by the visibility watch.
+	RefreshEntryTriggers();
 
 	// Keeps each Transform layer's Keys list one-to-one with its curve: a key added on the curve gets an
 	// entry, a deleted one loses it, and every entry's time follows its key. Deferred and skipped mid-drag -

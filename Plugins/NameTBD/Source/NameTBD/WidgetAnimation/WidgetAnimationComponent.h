@@ -109,18 +109,20 @@ public:
 	// Authored settings
 	// -------------------------------------------------------------------------------------------------
 
+	/**
+	 * Plays every Anim In entry on construct and ignores visibility, whatever each entry's own Play In Animation On
+	 * Construct and Play Animation On Visibility Hidden say.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation")
 	bool bPlayOnlyOnConstructAndDestruct = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "!bPlayOnlyOnConstructAndDestruct"))
-	bool bPlayInAnimationsOnConstruct = true;
+	/** Moved onto each Anim In entry as Play In Animation On Construct. Read once on load, then cleared into the entries. */
+	UPROPERTY()
+	bool bPlayInAnimationsOnConstruct_DEPRECATED = true;
 
-	/**
-	 * Plays Anim In whenever the owning widget goes from hidden/collapsed to visible. To play Anim Out
-	 * before hiding, hide it with Set Visibility Animated.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "!bPlayOnlyOnConstructAndDestruct"))
-	bool bPlayAnimationsOnVisibilityHidden = false;
+	/** Moved onto each entry as Play Animation On Visibility Hidden. Read once on load, then cleared into the entries. */
+	UPROPERTY()
+	bool bPlayAnimationsOnVisibilityHidden_DEPRECATED = false;
 
 	/**
 	 * The animations this widget plays as it appears.
@@ -442,6 +444,17 @@ private:
 	UPROPERTY(Transient)
 	FWidgetAnimBaselineSet AnimBaselines;
 
+	/**
+	 * The authored pose again, captured at runtime when Preserve Authored Transforms is off and AnimBaselines
+	 * therefore isn't. Only for putting widgets back - Stop with Reset To Start - never composed over, so animations
+	 * still replace the authored pose exactly as that setting says.
+	 */
+	UPROPERTY(Transient)
+	FWidgetAnimBaselineSet ResetPoseBaselines;
+
+	/** Whether any Anim In or Anim Out entry plays on a visibility change - what the visibility watch is for. */
+	bool bAnyVisibilityTrigger = false;
+
 	UPROPERTY(Transient)
 	FWidgetAnimPreviewState DesignerPreviewState;
 
@@ -496,6 +509,26 @@ private:
 	void CascadeAnimationToChildren(bool bPlayingIn);
 	void EnsureRuntimeBaselines();
 	void ApplyCurrentAnimPose();
+
+	/** What starts a filtered Play In / Play Out: which of each entry's triggers it answers to. */
+	enum class EEntryTrigger : uint8
+	{
+		Construct,
+		Visibility
+	};
+
+	/**
+	 * Play In or Play Out for one trigger: only the entries set to play on it. The unnamed layers (Additive Anim
+	 * Layers and extra layers) join whenever an entry does - or, on construct, when there are no entries at all, as
+	 * they always have. False when nothing was started.
+	 */
+	bool PlayForTrigger(EEntryTrigger Trigger, bool bOut);
+
+	/** Marks the entries' trigger settings visible on this component's own entries, and notes whether any watches visibility. */
+	void RefreshEntryTriggers();
+
+	/** Moves the two trigger settings saved on the component before they moved onto entries onto every entry. */
+	void MigrateTriggersIntoEntries();
 	void ApplyVisibilityToOwner(ESlateVisibility InVisibility);
 	void HandleOutAnimationFinished();
 

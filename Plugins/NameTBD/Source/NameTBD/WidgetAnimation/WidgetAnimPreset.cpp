@@ -273,7 +273,7 @@ void UWidgetAnimEntryLibrary::FlattenEntries(const TArray<FWidgetAnimEntry>& Ent
 	}
 }
 
-int32 UWidgetAnimEntryLibrary::StartEntriesById(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& Entries, TFunctionRef<UWidget*(FName)> Resolver, const TArray<FName>& AnimIds, bool bIsOut, float PlaybackSpeed, bool bRestartIfPlaying, bool bHoldWhenFinished)
+int32 UWidgetAnimEntryLibrary::StartEntriesById(FWidgetAnimPlayer& Player, const TArray<FWidgetAnimEntry>& Entries, TFunctionRef<UWidget*(FName)> Resolver, const TArray<FName>& AnimIds, bool bIsOut, float PlaybackSpeed, bool bRestartIfPlaying, bool bHoldWhenFinished, const TFunctionRef<bool(const FWidgetAnimEntry&)>* Filter)
 {
 	const bool bAll = AnimIds.Num() == 0;
 	int32 Started = 0;
@@ -289,6 +289,11 @@ int32 UWidgetAnimEntryLibrary::StartEntriesById(FWidgetAnimPlayer& Player, const
 		// Several entries may share an ID on purpose - that is how one named effect is built out of
 		// animations on three different child widgets - so this doesn't stop at the first match.
 		if (!bAll && !AnimIds.Contains(Entry.AnimId))
+		{
+			continue;
+		}
+
+		if (Filter && !(*Filter)(Entry))
 		{
 			continue;
 		}

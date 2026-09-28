@@ -11,13 +11,9 @@
       <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Config/DefaultEngine.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Config/DefaultEngine.ini" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCharacter.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Content/_Main/Blueprints/_ThirdPerson/BP_ThirdPersonCharacter.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WA_InfoCard_WidgetAnim_Example.uasset" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WA_NewWidgetAnimation.uasset" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WA_NewWidgetAnimation1.uasset" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_InfoCard_WidgetAnim_Example.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_InfoCard_WidgetAnim_Example.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WidgetAnimationBuilder.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WidgetAnimationBuilder.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_Menu_Example.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_Menu_Example.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/NameTBD.uplugin" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/NameTBD.uplugin" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Resources/Grading Rubric_Cultural Mapping Portfolio.docx" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
