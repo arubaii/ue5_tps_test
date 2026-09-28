@@ -5,6 +5,7 @@
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/PanelWidget.h"
+#include "Framework/Application/SlateApplication.h"
 #include "UObject/ObjectKey.h"
 #include "NameTBD/Widgets/ShapeBox.h"
 #include "WidgetAnimTransform.h"
@@ -2222,6 +2223,7 @@ FWidgetAnimSettings FWidgetAnimLayer::ToSettings() const
 	Out.ValueOptions = ValueOptions;
 	// Only a value type this track can take reaches the runtime; one it can't is read as Float.
 	Out.ValueOptions.Kind = GetEffectiveValueKind();
+	Out.ValueInput = ValueInput;
 	Out.ValueKeys = ValueKeys;
 
 	Out.StartOpacity = StartOpacity;
@@ -2277,6 +2279,7 @@ FWidgetAnimLayer FWidgetAnimLayer::FromSettings(const FWidgetAnimSettings& Setti
 	Out.ValueSmoothing = Settings.ValueSmoothing;
 	Out.ValueDrives = Settings.ValueDrives;
 	Out.ValueOptions = Settings.ValueOptions;
+	Out.ValueInput = Settings.ValueInput;
 	Out.ValueKeys = Settings.ValueKeys;
 
 	Out.StartOpacity = Settings.StartOpacity;
@@ -2965,9 +2968,121 @@ bool UWidgetAnimLibrary::AreWidgetAnimTracksPlaying(const FWidgetAnimPlayer& Pla
 	return false;
 }
 
+void UWidgetAnimLibrary::ReadValueInputs(UWidget* HostWidget, FWidgetAnimPlayer& Player, float DeltaTime)
+{
+	// The designer's previews play value tracks on the clock; a pointer over the editor isn't a player's hand.
+	if (HostWidget && HostWidget->IsDesignTime())
+	{
+		return;
+	}
+
+	// Leaving: an entrance's inputs stop, so an exit waiting for a value to arrive (On Exit) isn't held open by a pointer
+	// that keeps moving, and the exit plays the way it was authored.
+	const bool bLeaving = Player.Phase == EWidgetAnimPhase::PlayingOut || Player.Phase == EWidgetAnimPhase::Hidden;
+
+	FWidgetAnimInputContext Context;
+	Context.HostWidget = HostWidget;
+	Context.DeltaTime = DeltaTime;
+	if (FSlateApplication::IsInitialized())
+	{
+		const FVector2D Pointer = FSlateApplication::Get().GetCursorPos();
+		Context.PointerPosition = FVector2f(static_cast<float>(Pointer.X), static_cast<float>(Pointer.Y));
+		Context.bHasPointer = true;
+	}
+
+	// Read first and set after: setting a value can size a track's states, which mustn't happen under the loop.
+	struct FFeed
+	{
+		FWidgetAnimValueId Id;
+		FVector4 Value;
+		bool bSnap = false;
+	};
+	TArray<FFeed, TInlineAllocator<4>> Feeds;
+
+	// The values an input has already claimed this frame, changed or not - see below.
+	TArray<TPair<const UObject*, FName>, TInlineAllocator<4>> Claimed;
+
+	for (FWidgetAnimTrack& Track : Player.Tracks)
+	{
+		if ((bLeaving && !Track.bIsOut) || Track.States.Num() != Track.Settings.Num())
+		{
+			continue;
+		}
+
+		for (int32 Index = 0; Index < Track.Settings.Num(); ++Index)
+		{
+			FWidgetAnimSettings& Layer = Track.Settings[Index];
+			FWidgetAnimInputSource* Source = Layer.IsValueDriven() && !Layer.ValueName.IsNone() ? Layer.ValueInput.GetMutablePtr<FWidgetAnimInputSource>() : nullptr;
+			FWidgetAnimState& State = Track.States[Index];
+			if (!Source)
+			{
+				continue;
+			}
+
+			// Tracks sharing a Value Name in one animation share one value, so one input feeds it: the first one's, even on
+			// a frame it has nothing new to say - otherwise a second input on the same name would slip in between.
+			const TPair<const UObject*, FName> Key(Layer.ValueScope.Get(), Layer.ValueName);
+			if (Claimed.Contains(Key))
+			{
+				continue;
+			}
+			Claimed.Add(Key);
+
+			// A pose applied mid-frame (zero time) reads only inputs that haven't read yet: a Speed read over no time is 0.
+			if (DeltaTime <= 0.f && State.bInputSent)
+			{
+				continue;
+			}
+			const FWidgetAnimValueId Id = FWidgetAnimValueId::In(Key.Key, Key.Value);
+
+			// Measured on the widget the track animates, as its Layer Group's target resolved it.
+			Context.MeasuredWidget = Layer.TargetWidget ? Layer.TargetWidget.Get() : HostWidget;
+			if (!Context.MeasuredWidget)
+			{
+				continue;
+			}
+
+			FVector4 Value;
+			if (!Source->Sample(Context, Value) || (State.bInputSent && Value == State.InputLastValue))
+			{
+				continue;
+			}
+
+			FFeed& Feed = Feeds.AddDefaulted_GetRef();
+			Feed.Id = Id;
+			Feed.Value = Value;
+
+			// The first value since the track started is jumped to, so a card doesn't glide in from its Start Value.
+			Feed.bSnap = !State.bInputSent;
+			State.InputLastValue = Value;
+			State.bInputSent = true;
+		}
+	}
+
+	for (const FFeed& Feed : Feeds)
+	{
+		SetWidgetAnimTrackValue(Player, Feed.Id, Feed.Value, Feed.bSnap);
+	}
+}
+
+bool UWidgetAnimLibrary::HasValueInputs(const FWidgetAnimPlayer& Player)
+{
+	for (const FWidgetAnimTrack& Track : Player.Tracks)
+	{
+		if (Track.Settings.ContainsByPredicate([](const FWidgetAnimSettings& Layer) { return Layer.IsValueDriven() && Layer.ValueInput.IsValid(); }))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAnimPlayer& Player, const FWidgetAnimBaselineSet& Baselines, float DeltaTime, TArray<FName>& OutJustFinished)
 {
 	OutJustFinished.Reset();
+
+	// Value Inputs first, so this frame's tracks move toward what the pointer or the scroll says now.
+	ReadValueInputs(FallbackWidget, Player, DeltaTime);
 
 	FWidgetAnimResult Result;
 	bool bAnyPlaying = false;

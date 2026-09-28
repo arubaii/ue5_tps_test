@@ -11,6 +11,7 @@
 #include "WidgetAnimTransform.h" // FWidgetTransformAnim
 #include "WidgetAnimSpring.h"    // EWidgetAnimTiming, FWidgetSpringParams
 #include "WidgetAnimDriver.h"    // Value-driven tracks: FWidgetAnimValueOptions, FWidgetAnimValueState
+#include "WidgetAnimInput.h"     // Value-driven tracks: FWidgetAnimInputSource (Value Input)
 #include "WidgetAnimEvaluator.h" // FWidgetAnimTypeParams, registered track types
 #include "StructUtils/InstancedStruct.h"
 #include "WidgetAnimLibrary.generated.h"
@@ -255,8 +256,9 @@ struct NAMETBD_API FWidgetAnimSettings
 	FWidgetSpringParams Spring;
 
 	/**
-	 * A value-driven track's name: gameplay moves it with Set Widget Animation Value by this name. Several tracks - in
-	 * one animation or several on the widget - may share a name and follow the same value, each its own way.
+	 * A value-driven track's name: gameplay moves it with Set Widget Animation Value by this name, or its Value Input
+	 * does. Several tracks - in one animation or several on the widget - may share a name and follow the same value,
+	 * each its own way.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value", EditConditionHides))
 	FName ValueName;
@@ -281,6 +283,16 @@ struct NAMETBD_API FWidgetAnimSettings
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Value", EditCondition = "Timing == EWidgetAnimTiming::Value", EditConditionHides))
 	FWidgetAnimValueOptions ValueOptions;
+
+	/**
+	 * Where a value-driven track's value comes from when it isn't set from gameplay: the pointer over the widget the track
+	 * animates, it being hovered, pressed or focused, a drag, or the Scroll Box it is in. Read every frame wherever the
+	 * animation plays, and set on the track's Value Name in its animation exactly as Set Widget Animation Value would - so
+	 * the range, smoothing and limits above all apply, and every widget that plays the animation follows it with nothing
+	 * to set up. None: the value is set from gameplay. See WidgetAnimInput.h.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Value Input", BaseStruct = "/Script/NameTBD.WidgetAnimInputSource", ExcludeBaseStruct, EditCondition = "Timing == EWidgetAnimTiming::Value", EditConditionHides))
+	FInstancedStruct ValueInput;
 
 	/** Keys between the start and end values, and the curves between them. See FWidgetAnimValueKeys. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
@@ -581,8 +593,9 @@ struct NAMETBD_API FWidgetAnimLayer
 	FWidgetSpringParams Spring;
 
 	/**
-	 * A value-driven track's name: gameplay moves it with Set Widget Animation Value by this name. Several tracks - in
-	 * one animation or several on the widget - may share a name and follow the same value, each its own way.
+	 * A value-driven track's name: gameplay moves it with Set Widget Animation Value by this name, or its Value Input
+	 * does. Several tracks - in one animation or several on the widget - may share a name and follow the same value,
+	 * each its own way.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value", EditConditionHides))
 	FName ValueName;
@@ -608,6 +621,16 @@ struct NAMETBD_API FWidgetAnimLayer
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Value", EditCondition = "Timing == EWidgetAnimTiming::Value", EditConditionHides))
 	FWidgetAnimValueOptions ValueOptions;
+
+	/**
+	 * Where a value-driven track's value comes from when it isn't set from gameplay: the pointer over the widget the track
+	 * animates, it being hovered, pressed or focused, a drag, or the Scroll Box it is in. Read every frame wherever the
+	 * animation plays, and set on the track's Value Name in its animation exactly as Set Widget Animation Value would - so
+	 * the range, smoothing and limits above all apply, and every widget that plays the animation follows it with nothing
+	 * to set up. None: the value is set from gameplay. See WidgetAnimInput.h.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Value Input", BaseStruct = "/Script/NameTBD.WidgetAnimInputSource", ExcludeBaseStruct, EditCondition = "Timing == EWidgetAnimTiming::Value", EditConditionHides))
+	FInstancedStruct ValueInput;
 
 	// Keys
 	//
@@ -949,6 +972,13 @@ struct NAMETBD_API FWidgetAnimState
 	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	FWidgetAnimValueState ValueState;
+
+	/**
+	 * A value-driven layer's Value Input: the last value it passed on - only a change is - and whether it has passed one
+	 * on since the track started, the first being snapped to. See UWidgetAnimLibrary::ReadValueInputs. Never saved.
+	 */
+	FVector4 InputLastValue = FVector4(0.0, 0.0, 0.0, 0.0);
+	bool bInputSent = false;
 };
 
 USTRUCT(BlueprintType)
@@ -1704,6 +1734,22 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Player")
 	static bool TickWidgetAnimPlayer(UWidget* FallbackWidget, UPARAM(ref) FWidgetAnimPlayer& Player, const FWidgetAnimBaselineSet& Baselines, float DeltaTime, TArray<FName>& OutJustFinished);
+
+	/**
+	 * Reads the Value Input of every value-driven layer that has one - measured on the widget the layer animates, or
+	 * HostWidget when it has no target - and sets what changed on the layer's Value Name in its animation, as Set Widget
+	 * Animation Value would. The first read since a track started is snapped to. Called by TickWidgetAnimPlayer before
+	 * the tracks move, so every host reads its tracks' inputs; with a zero DeltaTime only layers that haven't read yet do,
+	 * so a pose applied mid-frame doesn't see a Speed of 0. Entrance tracks aren't read while the player is Playing Out or
+	 * Hidden, nor anything in the designer. See WidgetAnimInput.h.
+	 */
+	static void ReadValueInputs(UWidget* HostWidget, FWidgetAnimPlayer& Player, float DeltaTime);
+
+	/**
+	 * Whether any track in Player has a value-driven layer with a Value Input: a host whose clock stops once nothing is
+	 * playing keeps it going while this is true, so the input is still read at rest.
+	 */
+	static bool HasValueInputs(const FWidgetAnimPlayer& Player);
 
 	// -------------------------------------------------------------------------------------------------
 	// Widget targeting

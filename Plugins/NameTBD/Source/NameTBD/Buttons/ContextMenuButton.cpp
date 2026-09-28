@@ -5605,7 +5605,9 @@ EActiveTimerReturnType UContextMenuButton::TickButtonAnimations(double InCurrent
 	TArray<FName> JustFinished;
 	const bool bAnyPlaying = UWidgetAnimLibrary::TickWidgetAnimPlayer(this, ButtonAnimPlayer, ButtonAnimBaselines, InDeltaTime, JustFinished);
 
-	if (!bAnyPlaying)
+	// A track following a Value Input - the pointer, a scroll - has to be read every frame even at rest, or it would stop
+	// following the moment it caught up.
+	if (!bAnyPlaying && !UWidgetAnimLibrary::HasValueInputs(ButtonAnimPlayer))
 	{
 		bIsButtonAnimTimerActive = false;
 		return EActiveTimerReturnType::Stop;

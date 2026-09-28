@@ -1,0 +1,15 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDUncooked/Private/K2Node_SetWidgetAnimationValue.cpp b/Plugins/NameTBD/Source/NameTBDUncooked/Private/K2Node_SetWidgetAnimationValue.cpp
+index 1516800..af0d070 100644
+--- a/Plugins/NameTBD/Source/NameTBDUncooked/Private/K2Node_SetWidgetAnimationValue.cpp
++++ b/Plugins/NameTBD/Source/NameTBDUncooked/Private/K2Node_SetWidgetAnimationValue.cpp
+@@ -431,6 +431,10 @@ namespace SetWidgetAnimationValueNode
+ 			}
+ 			else if (UWidget* Targeted = Tree->FindWidget(Scope.WidgetName))
+ 			{
++				// The widget itself too: ForWidgetAndChildren visits only what is inside it, so a Target with nothing
++				// inside it in this tree - a nested User Widget - left nothing in scope, and its own component was ruled
++				// out. That only showed when the designer preview, which is searched first, couldn't be read.
++				AddWidget(Targeted);
+ 				UWidgetTree::ForWidgetAndChildren(Targeted, AddWidget);
+ 			}
+ 		}

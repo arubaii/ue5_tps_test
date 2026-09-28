@@ -15,6 +15,9 @@
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "WidgetBlueprint.h"
+#include "WidgetBlueprintEditor.h"
+#include "Editor.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/CompilerResultsLog.h"
 #include "KismetCompiler.h"
@@ -334,11 +337,26 @@ namespace SetWidgetAnimationValueNode
 			return nullptr;
 		}
 
+		// The one the Widget Blueprint's editor is showing, asked for directly. Every compile builds a new preview and
+		// the old ones linger until garbage is collected, so searching for "a design-time widget of this class" found
+		// a discarded one - with nothing attached - after a compile from the Graph.
+		UAssetEditorSubsystem* AssetEditors = GEditor ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr;
+		IAssetEditorInstance* Instance = AssetEditors ? AssetEditors->FindEditorForAsset(const_cast<UBlueprint*>(Blueprint), /*bFocusIfOpen=*/false) : nullptr;
+		if (Instance && Instance->GetEditorName() == FName(TEXT("WidgetBlueprintEditor")))
+		{
+			if (UUserWidget* Shown = static_cast<FWidgetBlueprintEditor*>(Instance)->GetPreview())
+			{
+				return Shown;
+			}
+		}
+
+		// Its editor isn't open: a preview still on screen - one that has a Slate widget - of this class, the top-level
+		// one first. A discarded preview has none.
 		UUserWidget* Nested = nullptr;
 		for (TObjectIterator<UUserWidget> It(RF_ClassDefaultObject | RF_ArchetypeObject, /*bIncludeDerivedClasses=*/true, EInternalObjectFlags::Garbage); It; ++It)
 		{
 			UUserWidget* Candidate = *It;
-			if (Candidate->GetClass() != Class || !Candidate->IsDesignTime() || !Candidate->WidgetTree)
+			if (Candidate->GetClass() != Class || !Candidate->IsDesignTime() || !Candidate->WidgetTree || !Candidate->GetCachedWidget().IsValid())
 			{
 				continue;
 			}
@@ -413,6 +431,10 @@ namespace SetWidgetAnimationValueNode
 			}
 			else if (UWidget* Targeted = Tree->FindWidget(Scope.WidgetName))
 			{
+				// The widget itself too: ForWidgetAndChildren visits only what is inside it, so a Target with nothing
+				// inside it in this tree - a nested User Widget - left nothing in scope, and its own component was ruled
+				// out. That only showed when the designer preview, which is searched first, couldn't be read.
+				AddWidget(Targeted);
 				UWidgetTree::ForWidgetAndChildren(Targeted, AddWidget);
 			}
 		}
@@ -420,8 +442,11 @@ namespace SetWidgetAnimationValueNode
 		TArray<const UWidgetAnimationComponent*> Stored;
 		ForEachObjectWithPackage(Scope.Blueprint->GetPackage(), [&Stored](UObject* Object)
 		{
+			// Everything in the Blueprint's package, Transient copies included: after a compile the copies the component
+			// lists pair with their widgets can be flagged Transient, and skipping them left nothing to offer. Nothing
+			// live is in the package - previews and game widgets live elsewhere - so nothing else gets in this way.
 			const UWidgetAnimationComponent* Component = Cast<UWidgetAnimationComponent>(Object);
-			if (Component && !Component->HasAnyFlags(RF_Transient | RF_ClassDefaultObject))
+			if (Component && !Component->HasAnyFlags(RF_ClassDefaultObject))
 			{
 				Stored.Add(Component);
 			}
@@ -636,12 +661,25 @@ void UK2Node_SetWidgetAnimationValue::LogValueSourceSearch() const
 	for (const UWidgetAnimationComponent* Component : Stored)
 	{
 		const FName* HeldName = HeldNames.Find(Component);
-		UE_LOG(LogWidgetAnimValueNode, Log, TEXT("  %s (outer %s): kept for '%s', %d Anim In, %d Anim Out, live on %s"),
+		UE_LOG(LogWidgetAnimValueNode, Log, TEXT("  %s (outer %s%s): kept for '%s', %d Anim In, %d Anim Out, live on %s"),
 			*Component->GetName(),
 			Component->GetOuter() ? *Component->GetOuter()->GetClass()->GetName() : TEXT("none"),
+			Component->HasAnyFlags(RF_Transient) ? TEXT(", Transient") : TEXT(""),
 			HeldName ? *HeldName->ToString() : TEXT("(not found)"),
 			Component->AnimIn.Num(), Component->AnimOut.Num(),
 			Component->GetAnimatedWidget() ? *Component->GetAnimatedWidget()->GetName() : TEXT("nothing"));
+	}
+
+	// What the lists end up offering, against what the Animation pin has saved: a key that differs only in its path
+	// shows up here.
+	const UEdGraphPin* AnimationPin = FindPin(AnimationPinName);
+	UE_LOG(LogWidgetAnimValueNode, Log, TEXT("  Animation pin holds '%s'."), AnimationPin ? *AnimationPin->DefaultValue : TEXT("(no pin)"));
+
+	TArray<FWidgetAnimValueSource> Sources;
+	GatherValueSources(Scope, Sources);
+	for (const FWidgetAnimValueSource& Source : Sources)
+	{
+		UE_LOG(LogWidgetAnimValueNode, Log, TEXT("  Offered: '%s' (%d values)"), *Source.Key, Source.Values.Num());
 	}
 }
 

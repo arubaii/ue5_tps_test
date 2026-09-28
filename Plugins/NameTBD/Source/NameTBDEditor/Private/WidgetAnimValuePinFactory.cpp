@@ -108,6 +108,9 @@ private:
 	mutable FText CachedText;
 	mutable FText CachedTooltip;
 
+	/** The pick last reported as not on the Target, so the search is logged once per pick rather than every refresh. */
+	mutable FString LoggedMissingFor;
+
 	UK2Node_SetWidgetAnimationValue* GetNode() const
 	{
 		return GraphPinObj && !GraphPinObj->WasTrashed() ? Cast<UK2Node_SetWidgetAnimationValue>(GraphPinObj->GetOwningNodeUnchecked()) : nullptr;
@@ -171,6 +174,14 @@ private:
 			{
 				CachedText = FText::Format(LOCTEXT("AnimationMissing", "{0}  (not on the Target)"), FText::FromString(FPackageName::ObjectPathToObjectName(Current)));
 				CachedTooltip = NameTBD::Tooltips::WidgetAnimValuePins::AnimationMissing();
+
+				// Where it looked and what it found there, in the Output Log, so a missed animation can be told apart
+				// from one that really isn't reachable - once per pick.
+				if (LoggedMissingFor != Current)
+				{
+					LoggedMissingFor = Current;
+					Node->LogValueSourceSearch();
+				}
 			}
 			return;
 		}

@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "WidgetAnimEasing.h" // EWidgetAnimEasing
 #include "WidgetAnimSpring.h" // FWidgetSpringParams
+#include "StructUtils/InstancedStruct.h"
 
 #include "WidgetAnimDriver.generated.h"
 
@@ -319,6 +320,15 @@ struct NAMETBD_API FWidgetAnimValueOverride
 	/** The kind of value its tracks take - which Set Widget Animation Value node to use. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Value", meta = (DisplayName = "Value Type"))
 	EWidgetAnimValueKind Kind = EWidgetAnimValueKind::Float;
+
+	/**
+	 * What feeds the value, as its tracks author it in the Widget Animations editor: the pointer, a hover, a drag or a
+	 * scroll, measured on the widget the track animates - or None, set from gameplay with Set Widget Animation Value.
+	 * Shown here to read, not to change: it belongs to the animation, so every widget that plays it follows the same
+	 * input. See WidgetAnimInput.h.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Value", meta = (DisplayName = "Value Input", BaseStruct = "/Script/NameTBD.WidgetAnimInputSource"))
+	FInstancedStruct ValueInput;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Value", meta = (InlineEditConditionToggle))
 	bool bOverride = false;

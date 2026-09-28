@@ -1393,6 +1393,7 @@ bool UWidgetAnimationComponent::RefreshValueOverrides()
 		UObject* Animation = nullptr;
 		FName ValueName;
 		FWidgetAnimValueOptions Defaults;
+		FInstancedStruct ValueInput;
 	};
 	TArray<FFoundValue> Found;
 	auto Gather = [&Found](UObject* Animation, const TArray<FWidgetAnimLayer>& Layers)
@@ -1403,8 +1404,13 @@ bool UWidgetAnimationComponent::RefreshValueOverrides()
 			{
 				continue;
 			}
-			if (Found.ContainsByPredicate([Animation, &Layer](const FFoundValue& Value) { return Value.Animation == Animation && Value.ValueName == Layer.ValueName; }))
+			if (FFoundValue* Existing = Found.FindByPredicate([Animation, &Layer](const FFoundValue& Value) { return Value.Animation == Animation && Value.ValueName == Layer.ValueName; }))
 			{
+				// Tracks sharing a name share one value, fed by the first of them with an input - as it plays.
+				if (!Existing->ValueInput.IsValid() && Layer.ValueInput.IsValid())
+				{
+					Existing->ValueInput = Layer.ValueInput;
+				}
 				continue;
 			}
 
@@ -1413,6 +1419,7 @@ bool UWidgetAnimationComponent::RefreshValueOverrides()
 			Value.ValueName = Layer.ValueName;
 			Value.Defaults = Layer.ValueOptions;
 			Value.Defaults.Kind = Layer.GetEffectiveValueKind();
+			Value.ValueInput = Layer.ValueInput;
 		}
 	};
 	for (const TArray<FWidgetAnimEntry>* Entries : { &AnimIn, &AnimOut })
@@ -1442,6 +1449,7 @@ bool UWidgetAnimationComponent::RefreshValueOverrides()
 		Row.Source = Value.Animation ? Value.Animation->GetName() : FString(TEXT("Additive Tracks"));
 		Row.ValueName = Value.ValueName;
 		Row.Kind = Value.Defaults.Kind;
+		Row.ValueInput = Value.ValueInput;
 		Row.bOverride = Existing && Existing->bOverride;
 
 		// Overridden: this widget's settings, kept. Not: the track's own, so the row always shows what will be used.
@@ -1453,6 +1461,7 @@ bool UWidgetAnimationComponent::RefreshValueOverrides()
 	const bool bChanged = Rows.Num() != ValueOverrides.Num() || !Algo::Compare(Rows, ValueOverrides, [](const FWidgetAnimValueOverride& A, const FWidgetAnimValueOverride& B)
 	{
 		return A.ValueName == B.ValueName && A.Animation == B.Animation && A.Source == B.Source && A.Kind == B.Kind && A.bOverride == B.bOverride
+			&& A.ValueInput == B.ValueInput
 			&& FWidgetAnimValueOptions::StaticStruct()->CompareScriptStruct(&A.Options, &B.Options, PPF_None);
 	});
 

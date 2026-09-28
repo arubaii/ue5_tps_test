@@ -3264,6 +3264,7 @@ public:
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueSmoothing),
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueDrives),
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueOptions),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueInput),
 		};
 
 		uint32 NumChildren = 0;
@@ -6962,6 +6963,9 @@ uint32 SWidgetAnimTimeline::ComputeLayoutSignature() const
 		{
 			Hash = HashCombine(Hash, GetTypeHash(static_cast<uint8>(Layer.ValueDrives)));
 			Hash = HashCombine(Hash, GetTypeHash(static_cast<uint8>(Layer.ValueOptions.Kind)));
+
+			// Which Value Input it has decides which of the input's own settings are shown.
+			Hash = HashCombine(Hash, PointerHash(Layer.ValueInput.GetScriptStruct()));
 		}
 
 		if (Layer.AnimType == EWidgetAnimType::Transform)
@@ -10609,6 +10613,29 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 		const UEnum* SmoothingEnum = StaticEnum<EWidgetAnimValueSmoothing>();
 		Rows.Add(TEXT("Value Type"), KindEnum ? KindEnum->GetDisplayNameTextByValue(static_cast<int64>(Layer.GetEffectiveValueKind())).ToString() : FString());
 		Rows.Add(TEXT("Smoothing"), SmoothingEnum ? SmoothingEnum->GetDisplayNameTextByValue(static_cast<int64>(Layer.ValueSmoothing)).ToString() : FString());
+
+		// Where the value comes from: its Value Input, or gameplay.
+		const FWidgetAnimInputSource* Input = Layer.ValueInput.GetPtr<FWidgetAnimInputSource>();
+		const FString InputSummary = Input ? Input->GetSummary() : FString();
+		Rows.Add(TEXT("Input"), Input
+			? (InputSummary.IsEmpty() ? Layer.ValueInput.GetScriptStruct()->GetDisplayNameText().ToString() : InputSummary)
+			: FString(TEXT("None (set from gameplay)")));
+
+		// An input giving another kind of value than the track takes still reaches it, only not all of it: say how.
+		if (Input)
+		{
+			const EWidgetAnimValueKind Gives = Input->GetValueKind();
+			const EWidgetAnimValueKind Takes = Layer.GetEffectiveValueKind();
+			const bool bTakesOneNumber = Takes == EWidgetAnimValueKind::Float || Takes == EWidgetAnimValueKind::Integer;
+			if (Gives == EWidgetAnimValueKind::Vector2D && bTakesOneNumber)
+			{
+				Rows.Add(TEXT("Input Note"), TEXT("The input gives X and Y; this track takes one number, so only X reaches it."));
+			}
+			else if (Gives == EWidgetAnimValueKind::Float && !bTakesOneNumber)
+			{
+				Rows.Add(TEXT("Input Note"), TEXT("The input gives one number; every channel of this track gets it."));
+			}
+		}
 		if (Layer.AnimType == EWidgetAnimType::Transform)
 		{
 			const UEnum* DrivesEnum = StaticEnum<EWidgetAnimTransformValueTarget>();
