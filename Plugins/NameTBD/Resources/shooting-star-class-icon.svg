@@ -1,10 +1,4 @@
-\documentclass[10pt]{article}
-\usepackage[usenames]{color} %used for font color
-\usepackage{amssymb} %maths
-\usepackage{amsmath} %maths
-\usepackage[utf8]{inputenc} %useful to type directly diacritic characters
-\begin{document}
-\begin{align*}<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <svg version="1.2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2200 2200" width="512" height="512">
     <g id="background">
     </g>
@@ -16,5 +10,4 @@
             <path fill-rule="evenodd" fill="#f6d37c" d="m907.75 669.9l-28.6-669.9 525.16 416.9 628.27-234.21-234.21 628.27 416.9 525.14-669.91-28.6-370.61 558.77-179.81-645.96-645.94-179.79z"/>
         </g>
     </g>
-</svg>\end{align*}
-\end{document}
+</svg>

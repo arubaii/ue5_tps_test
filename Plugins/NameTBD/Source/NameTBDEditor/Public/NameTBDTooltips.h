@@ -507,6 +507,36 @@ namespace NameTBD::Tooltips
 				"Make this track move another group's widget. Its place in time stays where it is.");
 		}
 
+		inline FText CutTracksTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CutTracksTooltip",
+				"Copy these tracks, then delete them. Locked tracks are copied but not deleted.");
+		}
+
+		inline FText CopyTracksTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CopyTracksTooltip",
+				"Copy these tracks, with their keys and settings, to paste here or into another animation.");
+		}
+
+		inline FText PasteTracksTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PasteTracksTooltip",
+				"Paste the copied tracks, keeping their spacing in time. From a menu they start where it was opened; from the keyboard, at the playhead.");
+		}
+
+		inline FText FocusTracksTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "FocusTracksTooltip",
+				"Hide every other track, so only these play in the previews. Un-focus shows them again.");
+		}
+
+		inline FText UnfocusTracksTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "UnfocusTracksTooltip",
+				"Show the tracks the focus hid. Tracks hidden by hand before it stay hidden.");
+		}
+
 		// -------------------------------------------------------------------------------------------------
 		// Curves between keys
 		// -------------------------------------------------------------------------------------------------

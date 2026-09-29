@@ -1,0 +1,53 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 8af7af7..836ac13 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -1857,27 +1857,37 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 				Box(InnerX, InnerTop, InnerWidth, FMath::Min(InnerHeight, Palette::SectionSheenHeight), FLinearColor::White, SheenLayer, NodeTitleHighlight());
+ 
+ 				// The macro node's half-tone line: across the body, part way down, everything below is a shade darker - most
+-				// at the right end, fading out toward the middle, so the line disappears as it runs left. Drawn as a row of
+-				// slices, each a little darker than the one before, clipped to the body so its rounded corners stay round.
+-				// Over the sheen rather than on its layer: Slate only promises the order of different layers.
++				// at the right end, fading out toward the middle, so the line disappears as it runs left. One gradient, so
++				// the fade is smooth with no seams, clipped to the body so its rounded corners stay round. Over the sheen
++				// rather than on its layer: Slate only promises the order of different layers.
+ 				const float HalfToneTop = InnerTop + FMath::RoundToFloat(InnerHeight * Palette::SectionHalfToneLine);
+ 				const float HalfToneWidth = FMath::Min(InnerWidth * Palette::SectionHalfToneReach, Palette::SectionHalfToneMaxReach);
+-				if (Palette::SectionHalfTone.A > 0.f && HalfToneWidth >= 1.f && HalfToneTop < InnerTop + InnerHeight)
++				const float HalfToneHeight = InnerTop + InnerHeight - HalfToneTop;
++				if (Palette::SectionHalfTone.A > 0.f && HalfToneWidth >= 1.f && HalfToneHeight > 0.f)
+ 				{
+ 					const FGeometry HalfToneGeometry = AllottedGeometry.MakeChild(FVector2f(InnerWidth, InnerHeight), FSlateLayoutTransform(FVector2f(InnerX, InnerTop)));
+ 					OutDrawElements.PushClip(FSlateClippingZone(HalfToneGeometry));
+ 
++					// Stops along its width - Orient_Vertical puts them along X - enough to follow the falloff's curve.
+ 					const float HalfToneOpacity = Palette::SectionHalfTone.A * (bWashedOut ? Palette::LockedBrightness : 1.f);
+-					const int32 NumSlices = FMath::Clamp(FMath::CeilToInt(HalfToneWidth / 4.f), 1, 64);
+-					const float SliceWidth = HalfToneWidth / NumSlices;
+-					const float HalfToneLeft = InnerX + InnerWidth - HalfToneWidth;
+-					for (int32 Slice = 0; Slice < NumSlices; ++Slice)
++					constexpr int32 NumStops = 9;
++					TArray<FSlateGradientStop> Stops;
++					Stops.Reserve(NumStops);
++					for (int32 Stop = 0; Stop < NumStops; ++Stop)
+ 					{
+-						const float Strength = FMath::Pow((Slice + 0.5f) / NumSlices, Palette::SectionHalfToneFalloff);
+-						Box(HalfToneLeft + Slice * SliceWidth, HalfToneTop, SliceWidth + 0.5f, InnerTop + InnerHeight - HalfToneTop,
+-							WithAlpha(Palette::SectionHalfTone, HalfToneOpacity * Strength), SectionOverlayLayer);
++						const float Along = static_cast<float>(Stop) / (NumStops - 1);
++						const float Strength = FMath::Pow(Along, Palette::SectionHalfToneFalloff);
++						Stops.Add(FSlateGradientStop(FVector2D(Along * HalfToneWidth, 0.f), WithAlpha(Palette::SectionHalfTone, HalfToneOpacity * Strength)));
+ 					}
+ 
++					FSlateDrawElement::MakeGradient(
++						OutDrawElements,
++						SectionOverlayLayer,
++						AllottedGeometry.ToPaintGeometry(FVector2f(HalfToneWidth, HalfToneHeight), FSlateLayoutTransform(FVector2f(InnerX + InnerWidth - HalfToneWidth, HalfToneTop))),
++						MoveTemp(Stops),
++						Orient_Vertical,
++						ESlateDrawEffect::None);
++
+ 					OutDrawElements.PopClip();
+ 				}
+ 

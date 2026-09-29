@@ -9,6 +9,7 @@
 #include "WidgetAnimRuntimeSettings.generated.h"
 
 class UWidgetAnimPresetAsset;
+class UMaterialInterface;
 
 /** Which kind of animated text widget a set of project defaults is for. */
 UENUM(BlueprintType)
@@ -167,10 +168,24 @@ public:
 
 	/**
 	 * Every effect tag a text can use, by the name written in the text. Built-in tags - speed, instant, pause, event,
-	 * play, color and size - are always there and need no entry.
+	 * play, color, size and glow - are always there and need no entry.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Text Tags", meta = (TitleProperty = "Tag"))
 	TArray<FWidgetAnimTextTag> TextTags;
+
+	/**
+	 * The material that turns <glow> - and every tag with Glow and no Glow Material of its own - into a soft glow behind
+	 * its letters. A User Interface material: its Texture Object Parameter "Texture" receives the glowing letters drawn in
+	 * their glow color, and its scalar parameters "Radius" (in pixels) and "TagStrength" are set from the text's tags,
+	 * with any parameters the tag names. It outputs the effect alone - the letters are drawn over (or under) it. Empty,
+	 * or missing, and those tags simply don't glow.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Text Tags", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	TSoftObjectPtr<UMaterialInterface> TextGlowMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/NameTBD/Materials/M_WidgetAnimTextGlow.M_WidgetAnimTextGlow")));
+
+	/** What plain <glow> starts from - its attributes change it per use: <glow=cyan r=10 a=2 p=0.4 s=2>. */
+	UPROPERTY(Config, EditAnywhere, Category = "Text Tags", meta = (DisplayName = "Glow Defaults"))
+	FWidgetAnimTextGlowDefaults TextGlowDefaults;
 
 	/** The defaults for one kind of text widget. */
 	const FWidgetAnimTextWidgetDefaults& GetTextWidgetDefaults(EWidgetAnimTextWidgetKind Kind) const

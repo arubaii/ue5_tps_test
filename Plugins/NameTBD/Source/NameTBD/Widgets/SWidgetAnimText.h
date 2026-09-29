@@ -9,6 +9,7 @@
 #include "Layout/Margin.h"
 #include "Styling/SlateColor.h"
 #include "Styling/SlateTypes.h"
+#include "UObject/SoftObjectPath.h"
 #include "Widgets/DeclarativeSyntaxSupport.h"
 #include "Widgets/SLeafWidget.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimParts.h"
@@ -92,11 +93,33 @@ struct NAMETBD_API FWidgetAnimTextStyle
  * Right-to-left text is drawn correctly while nothing moves its letters; animated letter by letter, it is placed in
  * reading order, left to right.
  */
+/** One effect layer a text's glowing tags ask for - see SWidgetAnimText::GetEffectLayers. */
+struct FWidgetAnimTextEffectLayer
+{
+	/** Its key - see FWidgetAnimTextSpan::EffectKey. */
+	uint32 Key = 0;
+
+	/** The material that makes it, and whether it goes over the text rather than under it. */
+	FSoftObjectPath Material;
+	bool bOver = false;
+
+	/** The largest radius (Slate units) and strength among its tags. */
+	float Radius = 0.f;
+	float Strength = 0.f;
+
+	/** The material parameters its tags set - the same for every tag in it. */
+	TMap<FName, float> ScalarParameters;
+	TMap<FName, FLinearColor> VectorParameters;
+};
+
 class NAMETBD_API SWidgetAnimText : public SLeafWidget
 {
 public:
 
-	SLATE_BEGIN_ARGS(SWidgetAnimText) {}
+	SLATE_BEGIN_ARGS(SWidgetAnimText)
+		: _GlowOnly(false)
+		, _EffectKey(0)
+	{}
 		/**
 		 * Asked every frame for the owner's current text and style, so a change made any way - a Blueprint setting a
 		 * color, a binding, a Common UI style - is picked up without the owner having to push it.
@@ -111,6 +134,15 @@ public:
 		 * after it has taken the new text. Not called for the first text it is given.
 		 */
 		SLATE_ARGUMENT(TFunction<void()>, OnTextChanged)
+
+		/**
+		 * Draws only the letters of the glowing tags in one effect layer (EffectKey), each in its glow color, with no
+		 * shadow - what SWidgetAnimTextGlow runs through that layer's material. See WidgetAnimTextMarkup.h.
+		 */
+		SLATE_ARGUMENT(bool, GlowOnly)
+
+		/** The effect layer a Glow Only copy draws - see FWidgetAnimTextSpan::EffectKey. */
+		SLATE_ARGUMENT(uint32, EffectKey)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
@@ -132,6 +164,18 @@ public:
 
 	/** Where line LineIndex is in the drawn string, [OutBegin, OutEnd). False past the last line. */
 	bool GetLineRange(int32 LineIndex, int32& OutBegin, int32& OutEnd) const;
+
+	/** Picks up its owner's current text and style now, as it does every tick - for a copy that isn't ticked while hidden. */
+	void PullStyle();
+
+	/**
+	 * The effect layers its text's glowing tags ask for - one per material, side and set of parameters - with the
+	 * largest radius and strength of the tags in each. Worked out once per text; empty when nothing glows.
+	 */
+	const TArray<FWidgetAnimTextEffectLayer>& GetEffectLayers() const;
+
+	/** The strongest Glow Strength among the tags in the effect layer Key - what each tag's share is measured against. */
+	float GetEffectStrength(uint32 Key) const;
 
 	/** Whether it has been given a width yet - before that, a wrapping text's lines are only a guess. */
 	bool HasBeenArranged() const { return bHasBeenArranged; }
@@ -305,6 +349,14 @@ private:
 
 	TFunction<void(FWidgetAnimTextStyle&)> StyleSource;
 	TFunction<void()> OnTextChanged;
+
+	/** See FArguments::GlowOnly and EffectKey. */
+	bool bGlowOnly = false;
+	uint32 EffectKeyFilter = 0;
+
+	/** GetEffectLayers, and the text it was worked out for. */
+	mutable TArray<FWidgetAnimTextEffectLayer> EffectLayers;
+	mutable TSharedPtr<const FWidgetAnimTextMarkup> EffectLayersFor;
 	FWidgetAnimTextStyle Style;
 	TArray<FWidgetAnimTextRunStyle> ResolvedRuns;
 	TSharedPtr<const FWidgetAnimTextEffects> Effects;

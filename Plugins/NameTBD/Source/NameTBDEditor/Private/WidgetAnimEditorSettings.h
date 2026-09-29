@@ -9,11 +9,22 @@
 
 #include "WidgetAnimEditorSettings.generated.h"
 
+/** What a track's text does in the Track Editor once the track is drawn too short for it. */
+UENUM()
+enum class EWidgetAnimTrackTextZoomOut : uint8
+{
+	/** Drawn smaller, down to half its size, so it still fits; left out once even that doesn't. */
+	Shrink UMETA(DisplayName = "Shrink To Fit"),
+
+	/** Left out as soon as it doesn't fit at its full size. */
+	Disappear
+};
+
 /**
  * The Widget Animations panel's per-user preferences: Editor Preferences > Plugins > Widget Animations Editor.
  *
  * Per user and per project (EditorPerProjectUserSettings), like the rest of the editor's layout preferences,
- * so one person's track colours never land in anyone else's editor. The Track Controls toggles in the panel
+ * so one person's track colors never land in anyone else's editor. The Track Controls toggles in the panel
  * write here too, so they are remembered between sessions.
  */
 UCLASS(config = EditorPerProjectUserSettings, meta = (DisplayName = "Widget Animations Editor"))
@@ -26,19 +37,19 @@ public:
 	UWidgetAnimEditorSettings();
 
 	// -------------------------------------------------------------------------------------------------
-	// Track colours
+	// Track colors
 	// -------------------------------------------------------------------------------------------------
 
 	/**
-	 * The colour of each track type: its sections in the Track Editor, and the accent on their tooltips. Reset
-	 * to Default puts back the colours from NameTBDColors.h; a type taken out of the list is drawn in its
-	 * default colour, and put back in it the next time the editor starts.
+	 * The color of each track type: its sections in the Track Editor, and the accent on their tooltips. Reset
+	 * to Default puts back the colors from NameTBDColors.h; a type taken out of the list is drawn in its
+	 * default color, and put back in it the next time the editor starts.
 	 */
 	UPROPERTY(config, EditAnywhere, Category = "Track Colors", meta = (DisplayName = "Track Colors", ReadOnlyKeys))
 	TMap<EWidgetAnimType, FLinearColor> TrackColors;
 
 	/**
-	 * The colour of every Blueprint track type that doesn't set a Track Color of its own in its class defaults. Other
+	 * The color of every Blueprint track type that doesn't set a Track Color of its own in its class defaults. Other
 	 * registered types - Count Up, and any C++ type - use Registered Type in Track Colors above.
 	 */
 	UPROPERTY(config, EditAnywhere, Category = "Track Colors", meta = (DisplayName = "Blueprint Type Track Color"))
@@ -69,11 +80,23 @@ public:
 	bool bLinkedEdges = false;
 
 	// -------------------------------------------------------------------------------------------------
+	// Track display
+	// -------------------------------------------------------------------------------------------------
 
-	/** The colour a layer type's tracks are drawn in: the user's, or the default for any type not set. */
+	/**
+	 * What a track's name, length and easing do in the Track Editor as it is zoomed out and the track gets too
+	 * short to hold them: shrink to fit, down to half their size, or disappear. Either way, text that can't fit is
+	 * left out rather than spilling past the track.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Track Display", meta = (DisplayName = "Track Text When Zoomed Out"))
+	EWidgetAnimTrackTextZoomOut TrackTextZoomOut = EWidgetAnimTrackTextZoomOut::Shrink;
+
+	// -------------------------------------------------------------------------------------------------
+
+	/** The color a layer type's tracks are drawn in: the user's, or the default for any type not set. */
 	FLinearColor GetTrackColor(EWidgetAnimType AnimType) const;
 
-	/** The colour NameTBDColors.h gives a layer type - what Track Colors starts from. */
+	/** The color NameTBDColors.h gives a layer type - what Track Colors starts from. */
 	static FLinearColor GetDefaultTrackColor(EWidgetAnimType AnimType);
 
 	void SetTrackSnapping(bool bEnabled);
@@ -97,6 +120,6 @@ public:
 
 private:
 
-	/** Adds a default colour for any layer type the map doesn't have yet. */
+	/** Adds a default color for any layer type the map doesn't have yet. */
 	void FillMissingTrackColors();
 };

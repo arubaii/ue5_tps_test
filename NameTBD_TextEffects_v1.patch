@@ -1,0 +1,1070 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.cpp
+index 11dde25..154eafb 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.cpp
+@@ -18,7 +18,7 @@ void FWidgetAnimTextTag::Scale(float Amount, float Speed)
+ 		PulseAmount *= Amount;
+ 		Size = 1.f + (Size - 1.f) * Amount;
+ 		ShimmerStrength = FMath::Clamp(ShimmerStrength * Amount, 0.f, 1.f);
+-		GlowRadius *= Amount;
++		GlowStrength *= Amount;
+ 		BlinkOpacity = FMath::Clamp(1.f - (1.f - BlinkOpacity) * Amount, 0.f, 1.f);
+ 	}
+ 	if (Speed != 1.f)
+@@ -287,6 +287,85 @@ namespace WidgetAnimTextMarkup
+ 		}
+ 
+ 		/** Names of the built-in tags that stand at a point rather than covering words. */
++		/**
++		 * A glowing tag's attributes as written: r= its radius and p= its pulse, and every other attribute besides a= and
++		 * s= (which Scale reads) a material parameter of that name - a number a scalar, a color a vector.
++		 */
++		void ApplyEffectAttributes(const FTagText& Tag, FWidgetAnimTextTag& Effect)
++		{
++			for (const TPair<FString, FString>& Attribute : Tag.Attributes)
++			{
++				const FString& Key = Attribute.Key;
++				if (Key.Equals(TEXT("a"), ESearchCase::IgnoreCase) || Key.Equals(TEXT("s"), ESearchCase::IgnoreCase))
++				{
++					continue;
++				}
++				if (Key.Equals(TEXT("r"), ESearchCase::IgnoreCase))
++				{
++					Effect.GlowRadius = FMath::Max(ReadNumber(Attribute.Value, Effect.GlowRadius), 0.5f);
++					continue;
++				}
++				if (Key.Equals(TEXT("p"), ESearchCase::IgnoreCase))
++				{
++					Effect.GlowPulse = FMath::Clamp(ReadNumber(Attribute.Value, Effect.GlowPulse), 0.f, 1.f);
++					continue;
++				}
++
++				const FString Trimmed = Attribute.Value.TrimStartAndEnd();
++				FLinearColor Color;
++				if (!Trimmed.IsEmpty() && FCString::IsNumeric(*Trimmed))
++				{
++					Effect.GlowScalarParameters.Add(FName(*Key), FCString::Atof(*Trimmed));
++				}
++				else if (ReadColor(Trimmed, Color))
++				{
++					Effect.GlowVectorParameters.Add(FName(*Key), Color);
++				}
++			}
++		}
++
++		/**
++		 * Which layer a glowing span's letters go into: its material (the tag's, or the project's), which side of the text,
++		 * and its material parameters - so spans agreeing on all three share one. 0 when it has no material to draw with.
++		 */
++		void ResolveEffect(FWidgetAnimTextSpan& Span)
++		{
++			const FWidgetAnimTextTag& Tag = Span.Tag;
++			Span.EffectKey = 0;
++			Span.EffectMaterial.Reset();
++			if (!Tag.bGlow)
++			{
++				return;
++			}
++
++			Span.EffectMaterial = Tag.GlowMaterial.IsNull()
++				? UWidgetAnimRuntimeSettings::Get().TextGlowMaterial.ToSoftObjectPath()
++				: Tag.GlowMaterial.ToSoftObjectPath();
++			if (Span.EffectMaterial.IsNull())
++			{
++				return;
++			}
++
++			uint32 Key = HashCombine(GetTypeHash(Span.EffectMaterial), GetTypeHash(Tag.bGlowOverText));
++
++			// Parameters in name order, so the same set written in another order is the same layer.
++			TArray<FName> ScalarNames;
++			Tag.GlowScalarParameters.GetKeys(ScalarNames);
++			ScalarNames.Sort(FNameLexicalLess());
++			for (const FName Name : ScalarNames)
++			{
++				Key = HashCombine(Key, HashCombine(GetTypeHash(Name.ToString().ToLower()), GetTypeHash(Tag.GlowScalarParameters.FindChecked(Name))));
++			}
++			TArray<FName> VectorNames;
++			Tag.GlowVectorParameters.GetKeys(VectorNames);
++			VectorNames.Sort(FNameLexicalLess());
++			for (const FName Name : VectorNames)
++			{
++				Key = HashCombine(Key, HashCombine(GetTypeHash(Name.ToString().ToLower()), GetTypeHash(Tag.GlowVectorParameters.FindChecked(Name))));
++			}
++			Span.EffectKey = Key != 0 ? Key : 1u;
++		}
++
+ 		bool IsMarkerName(FName Name)
+ 		{
+ 			static const FName Pause(TEXT("pause"));
+@@ -574,11 +653,19 @@ namespace WidgetAnimTextMarkup
+ 						}
+ 						else if (bTags && Name == GlowName)
+ 						{
+-							// <glow> in the letters' own color; <glow=cyan> or <glow=#40C0FF> in that one - or, given a number
+-							// rather than a color, <glow=2> twice as strong. r= radius, a= strength, p= pulse, s= pulse speed.
++							// From the project's Glow Defaults. <glow=cyan> or <glow=#40C0FF> in that color - or, given a
++							// number rather than a color, <glow=2> twice as strong. a= strength, s= pulse speed, r= radius,
++							// p= pulse, and any other attribute a parameter of the glow material.
++							const FWidgetAnimTextGlowDefaults& Defaults = UWidgetAnimRuntimeSettings::Get().TextGlowDefaults;
+ 							FWidgetAnimTextTag Glowing;
+ 							Glowing.bGlow = true;
+-							Glowing.bGlowInTextColor = true;
++							Glowing.bGlowInTextColor = Defaults.bInTextColor;
++							Glowing.GlowColor = Defaults.Color;
++							Glowing.GlowRadius = FMath::Max(Defaults.Radius, 0.5f);
++							Glowing.GlowStrength = FMath::Max(Defaults.Strength, 0.f);
++							Glowing.GlowPulse = FMath::Clamp(Defaults.Pulse, 0.f, 1.f);
++							Glowing.GlowPulseSpeed = FMath::Max(Defaults.PulseSpeed, 0.f);
++
+ 							float Amount = 1.f;
+ 							FLinearColor Color;
+ 							if (ReadColor(Tag.Value, Color))
+@@ -590,23 +677,10 @@ namespace WidgetAnimTextMarkup
+ 							{
+ 								Amount = ReadNumber(Tag.Value, 1.f);
+ 							}
+-							if (const FString* RadiusAttribute = Tag.FindAttribute(TEXT("r")))
+-							{
+-								Glowing.GlowRadius = FMath::Max(ReadNumber(*RadiusAttribute, Glowing.GlowRadius), 0.5f);
+-							}
+-							if (const FString* AmountAttribute = Tag.FindAttribute(TEXT("a")))
+-							{
+-								Amount = ReadNumber(*AmountAttribute, Amount);
+-							}
+-							Glowing.GlowStrength = FMath::Max(Glowing.GlowStrength * Amount, 0.f);
+-							if (const FString* PulseAttribute = Tag.FindAttribute(TEXT("p")))
+-							{
+-								Glowing.GlowPulse = FMath::Clamp(ReadNumber(*PulseAttribute, 0.f), 0.f, 1.f);
+-							}
+-							if (const FString* SpeedAttribute = Tag.FindAttribute(TEXT("s")))
+-							{
+-								Glowing.GlowPulseSpeed = FMath::Max(ReadNumber(*SpeedAttribute, 1.f), 0.f);
+-							}
++							const FString* AmountAttribute = Tag.FindAttribute(TEXT("a"));
++							const FString* SpeedAttribute = Tag.FindAttribute(TEXT("s"));
++							Glowing.Scale(AmountAttribute ? ReadNumber(*AmountAttribute, Amount) : Amount, SpeedAttribute ? ReadNumber(*SpeedAttribute, 1.f) : 1.f);
++							ApplyEffectAttributes(Tag, Glowing);
+ 							OpenSpan(Glowing, Name, !Tag.bSelfClosing);
+ 						}
+ 						else if (const FWidgetAnimTextTag* Found = bTags ? FindTag(Name) : nullptr)
+@@ -619,6 +693,10 @@ namespace WidgetAnimTextMarkup
+ 
+ 							FWidgetAnimTextTag Scaled = *Found;
+ 							Scaled.Scale(Amount, Speed);
++							if (Scaled.bGlow)
++							{
++								ApplyEffectAttributes(Tag, Scaled);
++							}
+ 							if (Scaled.PlayAnimId != NAME_None)
+ 							{
+ 								FWidgetAnimTextMarker& Marker = Out.Markers.AddDefaulted_GetRef();
+@@ -676,8 +754,9 @@ namespace WidgetAnimTextMarkup
+ 			}
+ 		}
+ 
+-		for (const FWidgetAnimTextSpan& Span : Out.Spans)
++		for (FWidgetAnimTextSpan& Span : Out.Spans)
+ 		{
++			ResolveEffect(Span);
+ 			Out.bDrawsEffects = Out.bDrawsEffects || Span.Tag.DrawsEffect();
+ 			Out.bLiveEffects = Out.bLiveEffects || (Span.Tag.DrawsEffect() && Span.Tag.IsLive());
+ 			Out.bShapesReveal = Out.bShapesReveal || Span.Tag.bRevealSpeed || Span.Tag.bRevealInstant || Span.Tag.bRevealLook;
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.h
+index c1796b3..c8d3190 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.h
+@@ -4,10 +4,14 @@
+ 
+ #include "CoreMinimal.h"
+ #include "Kismet/BlueprintFunctionLibrary.h"
++#include "UObject/SoftObjectPath.h"
++#include "UObject/SoftObjectPtr.h"
+ #include "WidgetAnimTextHost.h"
+ 
+ #include "WidgetAnimTextMarkup.generated.h"
+ 
++class UMaterialInterface;
++
+ // =====================================================================================================
+ // Text tags
+ // =====================================================================================================
+@@ -36,9 +40,17 @@
+ //    to the end of the line); <instant>...</> shows them all at once; <pause=0.5> waits half a second before the rest;
+ //    <event=Name> fires On Text Event with Name as the reveal reaches it (a sound, a portrait, a camera shake);
+ //    <play=AnimId> plays that Anim ID on the text widget as the reveal reaches it; <color=#FF4020> or <color=red>
+-//    colors the words it tags; <size=1.3> draws them larger; <glow>...</> gives them a soft glow in their own color -
++//    colors the words it tags; <size=1.3> draws them larger; <glow>...</> gives them a soft glow (from Glow Defaults) -
+ //    <glow=cyan> or <glow=#40C0FF> in that color, r=6 its radius, a=1.5 its strength, p=0.4 a pulse and s=2 its speed.
+ //
++// Glow and material effects: any effect tag with Glow ticked draws its letters, in its glow color, into a layer of their
++// own, and a material turns that layer into the effect - drawn under the text (a glow) or over it (Glow Over Text). The
++// material is the tag's Glow Material, or the project's Text Glow Material. So a new look is only a material and a tag:
++// a User Interface material reading "Texture", given "Radius" (pixels) and "TagStrength", and any parameters the tag
++// lists. In the text, r= a= p= s= set its radius, strength, pulse and speed, and any other attribute sets a material
++// parameter of that name for that use: <magic Swirl=3 Tint=cyan>. The text widget builds the layers itself, one per
++// material, side and set of parameters its text uses; a text with none costs nothing.
++//
+ // </> closes the tag opened last and </shake> the last shake. Tags nest. On an Animated Rich Text Block, a tag its Text
+ // Style Set has a row for stays a style; everything else works as above. A name that is neither a style nor a tag is
+ // left in the text as written on a plain animated text, and taken out, as a Rich Text Block does, on a rich one.
+@@ -108,39 +120,65 @@ struct NAMETBD_API FWidgetAnimTextTag
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Size", EditCondition = "bSize", ClampMin = "0.1", UIMax = "3.0"))
+ 	float Size = 1.3f;
+ 
++	// Glow and material effects -----------------------------------------------------------------
++
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (InlineEditConditionToggle))
+ 	bool bGlow = false;
+ 
+ 	/**
+-	 * A soft glow around the tagged letters, in this color - behind them, following every motion of theirs. Its opacity
+-	 * scales the glow's. Blurred by the Text Glow Material (Project Settings > Widget Animations > Text Tags).
++	 * A material effect on the tagged letters - a soft glow by default. The letters are drawn in this color into a
++	 * layer of their own, and a material turns that layer into the effect: Glow Material, or the project's Text Glow
++	 * Material when that is empty. Its opacity scales the effect's. See the note at the top of WidgetAnimTextMarkup.h.
+ 	 */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow", EditCondition = "bGlow"))
+ 	FLinearColor GlowColor = FLinearColor(1.f, 0.8f, 0.35f, 1.f);
+ 
+-	/** Glow in each letter's own color (after any other color this tag gives it) instead of Glow's. */
++	/** Draw the letters into the effect's layer in their own color (after any other color this tag gives them) instead of Glow's. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow In Text Color", EditCondition = "bGlow == true", EditConditionHides))
+ 	bool bGlowInTextColor = false;
+ 
+ 	/**
+-	 * How far the glow reaches past the letters' edges, in Slate units. One text has one radius: the largest of its
+-	 * glowing tags'.
++	 * The material that makes the effect - any User Interface material reading the Texture Object Parameter "Texture"
++	 * (the tagged letters, drawn in their glow color) and outputting a color and an opacity. It is given "Radius" (in
++	 * pixels) and "TagStrength", plus the parameters below. Empty: the project's Text Glow Material.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Material", EditCondition = "bGlow == true", EditConditionHides))
++	TSoftObjectPtr<UMaterialInterface> GlowMaterial;
++
++	/** Draw the effect over the letters rather than under them - a shine, scanlines, a dissolve - where a glow goes under. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Over Text", EditCondition = "bGlow == true", EditConditionHides))
++	bool bGlowOverText = false;
++
++	/**
++	 * How far the effect reaches past the letters' edges, in Slate units - the material's "Radius", and the room its
++	 * layer is given. One layer has one radius: the largest of the tags drawn into it. <tag r=10> sets it.
+ 	 */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Radius", EditCondition = "bGlow == true", EditConditionHides, ClampMin = "0.5", UIMax = "24.0"))
+ 	float GlowRadius = 6.f;
+ 
+-	/** How strong the glow is, on top of the glow material's own Strength: 0.5 half as strong, 2 twice as strong. */
++	/** How strong the effect is - the material's "TagStrength": 0.5 half as strong, 2 twice as strong. <tag a=2> doubles it. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Strength", EditCondition = "bGlow == true", EditConditionHides, ClampMin = "0.0", UIMax = "3.0"))
+ 	float GlowStrength = 1.f;
+ 
+-	/** How far the glow's strength dips and returns, over and over: 0 holds it steady, 1 fades it right out. */
++	/** How far the effect's strength dips and returns, over and over: 0 holds it steady, 1 fades it right out. <tag p=0.5> sets it. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Pulse", EditCondition = "bGlow == true", EditConditionHides, ClampMin = "0.0", ClampMax = "1.0"))
+ 	float GlowPulse = 0.f;
+ 
+-	/** Glow pulses a second. */
++	/** Pulses a second. <tag s=2> doubles it. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Pulse Speed", EditCondition = "bGlow == true", EditConditionHides, ClampMin = "0.0", UIMax = "6.0", Units = "Hz"))
+ 	float GlowPulseSpeed = 1.f;
+ 
++	/**
++	 * Scalar parameters set on the material, by name. Written in the text, <tag Speed=3> sets (or adds) Speed for that
++	 * use - any attribute besides a, s, r and p that is a number.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Scalar Parameters", EditCondition = "bGlow == true", EditConditionHides))
++	TMap<FName, float> GlowScalarParameters;
++
++	/** Vector parameters set on the material, by name. <tag Tint=#FF8000> or <tag Tint=cyan> sets one for that use. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Vector Parameters", EditCondition = "bGlow == true", EditConditionHides))
++	TMap<FName, FLinearColor> GlowVectorParameters;
++
+ 	// Motion -------------------------------------------------------------------------------------
+ 
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (InlineEditConditionToggle))
+@@ -240,6 +278,38 @@ struct NAMETBD_API FWidgetAnimTextTag
+ 	void Scale(float Amount, float Speed);
+ };
+ 
++/**
++ * What plain <glow> starts from - Project Settings > Plugins > Widget Animations > Text Tags > Glow Defaults. Its
++ * attributes change it per use: <glow=cyan r=10 a=2 p=0.4 s=2>.
++ */
++USTRUCT(BlueprintType)
++struct NAMETBD_API FWidgetAnimTextGlowDefaults
++{
++	GENERATED_BODY()
++
++	/** The glow in each letter's own color. Off: in Color. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (DisplayName = "In Text Color"))
++	bool bInTextColor = true;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (EditCondition = "!bInTextColor"))
++	FLinearColor Color = FLinearColor(1.f, 0.8f, 0.35f, 1.f);
++
++	/** How far the glow reaches past the letters, in Slate units. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (ClampMin = "0.5", UIMax = "24.0"))
++	float Radius = 6.f;
++
++	/** On top of the material's own Strength. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (ClampMin = "0.0", UIMax = "3.0"))
++	float Strength = 1.f;
++
++	/** How far it dips and returns, over and over: 0 steady. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (ClampMin = "0.0", ClampMax = "1.0"))
++	float Pulse = 0.f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (ClampMin = "0.0", UIMax = "6.0", Units = "Hz"))
++	float PulseSpeed = 1.f;
++};
++
+ /** One stretch of a text's drawn string an effect tag covers, and the tag as it applies there. */
+ struct NAMETBD_API FWidgetAnimTextSpan
+ {
+@@ -252,6 +322,15 @@ struct NAMETBD_API FWidgetAnimTextSpan
+ 	/** Tag.RevealLook as it is drawn, when the tag has one. */
+ 	FWidgetAnimTextAppear Appear;
+ 
++	/**
++	 * For a tag with Glow: which effect layer its letters are drawn into - one per material, side and set of material
++	 * parameters, so tags that share all three share a layer. 0 for none (no Glow, or no material to draw it with).
++	 */
++	uint32 EffectKey = 0;
++
++	/** The material its layer uses: the tag's Glow Material, or the project's Text Glow Material. */
++	FSoftObjectPath EffectMaterial;
++
+ 	bool Covers(int32 Index) const { return Index >= Begin && Index < End; }
+ };
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.cpp
+index 9fb88c6..9c9ac61 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.cpp
+@@ -14,8 +14,12 @@ void UWidgetAnimRuntimeSettings::PostEditChangeProperty(FPropertyChangedEvent& P
+ {
+ 	Super::PostEditChangeProperty(PropertyChangedEvent);
+ 
+-	// Every text reads its tags again the next time it is drawn, so an edited tag shows in the designer at once.
+-	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UWidgetAnimRuntimeSettings, TextTags))
++	// Every text reads its tags again the next time it is drawn, so an edited tag - or the glow's defaults or material -
++	// shows in the designer at once.
++	const FName Member = PropertyChangedEvent.GetMemberPropertyName();
++	if (Member == GET_MEMBER_NAME_CHECKED(UWidgetAnimRuntimeSettings, TextTags)
++		|| Member == GET_MEMBER_NAME_CHECKED(UWidgetAnimRuntimeSettings, TextGlowDefaults)
++		|| Member == GET_MEMBER_NAME_CHECKED(UWidgetAnimRuntimeSettings, TextGlowMaterial))
+ 	{
+ 		WidgetAnimTextMarkup::NotifyTagsChanged();
+ 	}
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h
+index b299b5e..e698d7d 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h
+@@ -174,14 +174,19 @@ public:
+ 	TArray<FWidgetAnimTextTag> TextTags;
+ 
+ 	/**
+-	 * The material that blurs <glow> and every tag with Glow into a soft glow behind its letters. A User Interface
+-	 * material: its Texture Object Parameter "Texture" receives the glowing letters drawn in their glow color, and its
+-	 * scalar parameters "Radius" (in pixels) and "TagStrength" are set from the text's tags. It outputs the glow alone -
+-	 * the letters are drawn over it. Empty, or missing, and texts simply don't glow.
++	 * The material that turns <glow> - and every tag with Glow and no Glow Material of its own - into a soft glow behind
++	 * its letters. A User Interface material: its Texture Object Parameter "Texture" receives the glowing letters drawn in
++	 * their glow color, and its scalar parameters "Radius" (in pixels) and "TagStrength" are set from the text's tags,
++	 * with any parameters the tag names. It outputs the effect alone - the letters are drawn over (or under) it. Empty,
++	 * or missing, and those tags simply don't glow.
+ 	 */
+ 	UPROPERTY(Config, EditAnywhere, Category = "Text Tags", meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+ 	TSoftObjectPtr<UMaterialInterface> TextGlowMaterial = TSoftObjectPtr<UMaterialInterface>(FSoftObjectPath(TEXT("/NameTBD/Materials/M_WidgetAnimTextGlow.M_WidgetAnimTextGlow")));
+ 
++	/** What plain <glow> starts from - its attributes change it per use: <glow=cyan r=10 a=2 p=0.4 s=2>. */
++	UPROPERTY(Config, EditAnywhere, Category = "Text Tags", meta = (DisplayName = "Glow Defaults"))
++	FWidgetAnimTextGlowDefaults TextGlowDefaults;
++
+ 	/** The defaults for one kind of text widget. */
+ 	const FWidgetAnimTextWidgetDefaults& GetTextWidgetDefaults(EWidgetAnimTextWidgetKind Kind) const
+ 	{
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.cpp
+index 1cff88e..9508ebc 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.cpp
+@@ -225,6 +225,7 @@ void SWidgetAnimText::Construct(const FArguments& InArgs)
+ 	// Told only of changes after the first text: that one is simply what it was made with.
+ 	OnTextChanged = InArgs._OnTextChanged;
+ 	bGlowOnly = InArgs._GlowOnly;
++	EffectKeyFilter = InArgs._EffectKey;
+ 
+ 	// Ticks to notice its owner's changes - see StyleSource - and to learn the width it wraps at.
+ 	SetCanTick(true);
+@@ -396,30 +397,53 @@ void SWidgetAnimText::PullStyle()
+ 	}
+ }
+ 
+-float SWidgetAnimText::GetGlowRadius() const
++const TArray<FWidgetAnimTextEffectLayer>& SWidgetAnimText::GetEffectLayers() const
+ {
+-	float Radius = 0.f;
+-	if (Style.Markup.IsValid())
++	// A text's tags are read once and shared, so its layers only need working out again for another text.
++	// Held, not just compared by address, so a new text read into the same memory is never taken for the old one.
++	const FWidgetAnimTextMarkup* Markup = Style.Markup.Get();
++	if (Markup == EffectLayersFor.Get() && EffectLayersFor.IsValid() == Style.Markup.IsValid())
+ 	{
+-		for (const FWidgetAnimTextSpan& Span : Style.Markup->Spans)
++		return EffectLayers;
++	}
++	EffectLayersFor = Style.Markup;
++	EffectLayers.Reset();
++
++	if (Markup)
++	{
++		for (const FWidgetAnimTextSpan& Span : Markup->Spans)
+ 		{
+-			Radius = Span.Tag.bGlow ? FMath::Max(Radius, Span.Tag.GlowRadius) : Radius;
++			if (Span.EffectKey == 0)
++			{
++				continue;
++			}
++			FWidgetAnimTextEffectLayer* Layer = EffectLayers.FindByPredicate([&Span](const FWidgetAnimTextEffectLayer& Existing) { return Existing.Key == Span.EffectKey; });
++			if (!Layer)
++			{
++				Layer = &EffectLayers.AddDefaulted_GetRef();
++				Layer->Key = Span.EffectKey;
++				Layer->Material = Span.EffectMaterial;
++				Layer->bOver = Span.Tag.bGlowOverText;
++				Layer->ScalarParameters = Span.Tag.GlowScalarParameters;
++				Layer->VectorParameters = Span.Tag.GlowVectorParameters;
++			}
++			Layer->Radius = FMath::Max(Layer->Radius, Span.Tag.GlowRadius);
++			Layer->Strength = FMath::Max(Layer->Strength, Span.Tag.GlowStrength);
+ 		}
+ 	}
+-	return Radius;
++	return EffectLayers;
+ }
+ 
+-float SWidgetAnimText::GetGlowStrength() const
++float SWidgetAnimText::GetEffectStrength(uint32 Key) const
+ {
+-	float Strength = 0.f;
+-	if (Style.Markup.IsValid())
++	for (const FWidgetAnimTextEffectLayer& Layer : GetEffectLayers())
+ 	{
+-		for (const FWidgetAnimTextSpan& Span : Style.Markup->Spans)
++		if (Layer.Key == Key)
+ 		{
+-			Strength = Span.Tag.bGlow ? FMath::Max(Strength, Span.Tag.GlowStrength) : Strength;
++			return Layer.Strength;
+ 		}
+ 	}
+-	return Strength;
++	return 0.f;
+ }
+ 
+ void SWidgetAnimText::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
+@@ -998,8 +1022,8 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
+ 	const FWidgetAnimTextEffects* Fx = Effects.IsValid() && !Effects->IsEmpty() ? Effects.Get() : nullptr;
+ 	const FWidgetAnimTextMarkup* Markup = Style.Markup.IsValid() && Style.Markup->bDrawsEffects ? Style.Markup.Get() : nullptr;
+ 
+-	// The glow layer draws only what glows; with nothing glowing, nothing.
+-	const float GlowStrengthScale = bGlowOnly ? GetGlowStrength() : 0.f;
++	// A glow layer draws only what glows into it; with nothing, nothing.
++	const float GlowStrengthScale = bGlowOnly ? GetEffectStrength(EffectKeyFilter) : 0.f;
+ 	if (bGlowOnly && (!Markup || GlowStrengthScale <= 0.f))
+ 	{
+ 		return LayerId;
+@@ -1363,7 +1387,7 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
+ 				{
+ 					EffectScale *= FMath::Max(TextTag.Size, 0.f);
+ 				}
+-				if (TextTag.bGlow)
++				if (bGlowOnly && Span.EffectKey != 0 && Span.EffectKey == EffectKeyFilter)
+ 				{
+ 					GlowTag = &TextTag;
+ 				}
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.h b/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.h
+index d1cb856..d658302 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.h
+@@ -9,6 +9,7 @@
+ #include "Layout/Margin.h"
+ #include "Styling/SlateColor.h"
+ #include "Styling/SlateTypes.h"
++#include "UObject/SoftObjectPath.h"
+ #include "Widgets/DeclarativeSyntaxSupport.h"
+ #include "Widgets/SLeafWidget.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimParts.h"
+@@ -92,12 +93,32 @@ struct NAMETBD_API FWidgetAnimTextStyle
+  * Right-to-left text is drawn correctly while nothing moves its letters; animated letter by letter, it is placed in
+  * reading order, left to right.
+  */
++/** One effect layer a text's glowing tags ask for - see SWidgetAnimText::GetEffectLayers. */
++struct FWidgetAnimTextEffectLayer
++{
++	/** Its key - see FWidgetAnimTextSpan::EffectKey. */
++	uint32 Key = 0;
++
++	/** The material that makes it, and whether it goes over the text rather than under it. */
++	FSoftObjectPath Material;
++	bool bOver = false;
++
++	/** The largest radius (Slate units) and strength among its tags. */
++	float Radius = 0.f;
++	float Strength = 0.f;
++
++	/** The material parameters its tags set - the same for every tag in it. */
++	TMap<FName, float> ScalarParameters;
++	TMap<FName, FLinearColor> VectorParameters;
++};
++
+ class NAMETBD_API SWidgetAnimText : public SLeafWidget
+ {
+ public:
+ 
+ 	SLATE_BEGIN_ARGS(SWidgetAnimText)
+ 		: _GlowOnly(false)
++		, _EffectKey(0)
+ 	{}
+ 		/**
+ 		 * Asked every frame for the owner's current text and style, so a change made any way - a Blueprint setting a
+@@ -115,10 +136,13 @@ public:
+ 		SLATE_ARGUMENT(TFunction<void()>, OnTextChanged)
+ 
+ 		/**
+-		 * Draws only the letters a glowing tag covers, each in its glow color, with no shadow - the layer
+-		 * SWidgetAnimTextGlow blurs into the glow behind the text. See WidgetAnimTextMarkup.h.
++		 * Draws only the letters of the glowing tags in one effect layer (EffectKey), each in its glow color, with no
++		 * shadow - what SWidgetAnimTextGlow runs through that layer's material. See WidgetAnimTextMarkup.h.
+ 		 */
+ 		SLATE_ARGUMENT(bool, GlowOnly)
++
++		/** The effect layer a Glow Only copy draws - see FWidgetAnimTextSpan::EffectKey. */
++		SLATE_ARGUMENT(uint32, EffectKey)
+ 	SLATE_END_ARGS()
+ 
+ 	void Construct(const FArguments& InArgs);
+@@ -144,9 +168,14 @@ public:
+ 	/** Picks up its owner's current text and style now, as it does every tick - for a copy that isn't ticked while hidden. */
+ 	void PullStyle();
+ 
+-	/** The glow its text's tags ask for: the largest Glow Radius (Slate units) and Glow Strength among them. 0 for none. */
+-	float GetGlowRadius() const;
+-	float GetGlowStrength() const;
++	/**
++	 * The effect layers its text's glowing tags ask for - one per material, side and set of parameters - with the
++	 * largest radius and strength of the tags in each. Worked out once per text; empty when nothing glows.
++	 */
++	const TArray<FWidgetAnimTextEffectLayer>& GetEffectLayers() const;
++
++	/** The strongest Glow Strength among the tags in the effect layer Key - what each tag's share is measured against. */
++	float GetEffectStrength(uint32 Key) const;
+ 
+ 	/** Whether it has been given a width yet - before that, a wrapping text's lines are only a guess. */
+ 	bool HasBeenArranged() const { return bHasBeenArranged; }
+@@ -321,8 +350,13 @@ private:
+ 	TFunction<void(FWidgetAnimTextStyle&)> StyleSource;
+ 	TFunction<void()> OnTextChanged;
+ 
+-	/** See FArguments::GlowOnly. */
++	/** See FArguments::GlowOnly and EffectKey. */
+ 	bool bGlowOnly = false;
++	uint32 EffectKeyFilter = 0;
++
++	/** GetEffectLayers, and the text it was worked out for. */
++	mutable TArray<FWidgetAnimTextEffectLayer> EffectLayers;
++	mutable TSharedPtr<const FWidgetAnimTextMarkup> EffectLayersFor;
+ 	FWidgetAnimTextStyle Style;
+ 	TArray<FWidgetAnimTextRunStyle> ResolvedRuns;
+ 	TSharedPtr<const FWidgetAnimTextEffects> Effects;
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimTextGlow.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimTextGlow.cpp
+index d3f5313..3e0f38a 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimTextGlow.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimTextGlow.cpp
+@@ -4,14 +4,14 @@
+ 
+ #include "Materials/MaterialInstanceDynamic.h"
+ #include "Materials/MaterialInterface.h"
+-#include "NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h"
+ #include "Slate/SRetainerWidget.h"
+ #include "SWidgetAnimText.h"
+ #include "Widgets/Layout/SBox.h"
++#include "Widgets/SOverlay.h"
+ 
+ namespace WidgetAnimTextGlow
+ {
+-	/** The material parameters the glow sets - see UWidgetAnimRuntimeSettings::TextGlowMaterial. */
++	/** The parameters every effect material is given - see UWidgetAnimRuntimeSettings::TextGlowMaterial. */
+ 	const FName TextureParameter(TEXT("Texture"));
+ 	const FName RadiusParameter(TEXT("Radius"));
+ 	const FName TagStrengthParameter(TEXT("TagStrength"));
+@@ -20,95 +20,166 @@ namespace WidgetAnimTextGlow
+ void SWidgetAnimTextGlow::Construct(const FArguments& InArgs)
+ {
+ 	Text = InArgs._Text;
+-	GlowText = InArgs._GlowText;
++	bOver = InArgs._Over;
++	StyleSource = InArgs._StyleSource;
++	Effects = InArgs._Effects;
+ 
+-	// Collapsed until the text has something that glows: nothing renders, and the glow copy isn't laid out.
+ 	ChildSlot
+-	.Padding(TAttribute<FMargin>::CreateSP(this, &SWidgetAnimTextGlow::GetOuterPadding))
+ 	[
+-		SAssignNew(Retainer, SRetainerWidget)
++		SAssignNew(Overlay, SOverlay)
++	];
++
++	SetCanTick(true);
++}
++
++void SWidgetAnimTextGlow::ForEachLayerText(TFunctionRef<void(SWidgetAnimText&)> Visit) const
++{
++	for (const TSharedRef<FLayer>& Layer : Layers)
++	{
++		if (Layer->Text.IsValid())
++		{
++			Visit(*Layer->Text);
++		}
++	}
++}
++
++void SWidgetAnimTextGlow::AddLayer(const FWidgetAnimTextEffectLayer& Wanted)
++{
++	const TSharedRef<FLayer> Layer = MakeShared<FLayer>();
++	Layer->Key = Wanted.Key;
++	const TWeakPtr<FLayer> WeakLayer = Layer;
++
++	Layer->Text = SNew(SWidgetAnimText)
++		.StyleSource(StyleSource)
++		.Effects(Effects)
++		.GlowOnly(true)
++		.EffectKey(Wanted.Key);
++
++	// Its material, loaded once as the layer is made. One that can't be loaded leaves the layer undrawn.
++	UMaterialInterface* Material = Cast<UMaterialInterface>(Wanted.Material.TryLoad());
++	Layer->bHasMaterial = Material != nullptr;
++
++	// Reaching out past the text by its room on every side, then padded back in, so the copy lines up with the text.
++	Layer->Root = SAssignNew(Layer->Retainer, SRetainerWidget)
+ 		.RenderOnPhase(true)
+ 		.RenderOnInvalidation(false)
+ 		.Phase(0)
+ 		.PhaseCount(1)
+-		.Visibility(EVisibility::Collapsed)
++		.Visibility(Layer->bHasMaterial ? EVisibility::HitTestInvisible : EVisibility::Collapsed)
+ 		[
+ 			SNew(SBox)
+-			.Padding(TAttribute<FMargin>::CreateSP(this, &SWidgetAnimTextGlow::GetInnerPadding))
++			.Padding(TAttribute<FMargin>::CreateLambda([WeakLayer]()
++			{
++				const TSharedPtr<FLayer> Pinned = WeakLayer.Pin();
++				return FMargin(Pinned.IsValid() ? Pinned->Pad : 0.f);
++			}))
+ 			[
+-				GlowText.IsValid() ? GlowText.ToSharedRef() : SNullWidget::NullWidget
++				Layer->Text.ToSharedRef()
+ 			]
+-		]
++		];
++
++	if (Material)
++	{
++		Layer->Retainer->SetEffectMaterial(Material);
++		Layer->Retainer->SetTextureParameter(WidgetAnimTextGlow::TextureParameter);
++	}
++
++	Overlay->AddSlot()
++	.Padding(TAttribute<FMargin>::CreateLambda([WeakLayer]()
++	{
++		const TSharedPtr<FLayer> Pinned = WeakLayer.Pin();
++		return FMargin(Pinned.IsValid() ? -Pinned->Pad : 0.f);
++	}))
++	[
++		Layer->Root.ToSharedRef()
+ 	];
+ 
+-	SetCanTick(true);
++	Layers.Add(Layer);
+ }
+ 
+-bool SWidgetAnimTextGlow::EnsureMaterial()
++void SWidgetAnimTextGlow::UpdateLayer(FLayer& Layer, const FWidgetAnimTextEffectLayer& Wanted, float Scale)
+ {
+-	if (!bMaterialTried)
++	// Twice the radius each way, so the effect fades out well inside the layer rather than being cut off at its edge.
++	const float NewPad = FMath::CeilToFloat(Wanted.Radius * 2.f) + 2.f;
++	if (NewPad != Layer.Pad)
+ 	{
+-		bMaterialTried = true;
+-		if (UMaterialInterface* Material = UWidgetAnimRuntimeSettings::Get().TextGlowMaterial.LoadSynchronous())
+-		{
+-			Retainer->SetEffectMaterial(Material);
+-			Retainer->SetTextureParameter(WidgetAnimTextGlow::TextureParameter);
+-			bMaterialSet = true;
+-		}
++		Layer.Pad = NewPad;
++		Invalidate(EInvalidateWidgetReason::Layout);
+ 	}
+-	return bMaterialSet;
+-}
+ 
+-void SWidgetAnimTextGlow::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
+-{
+-	const TSharedPtr<SWidgetAnimText> Shown = Text.Pin();
+-	if (!Shown.IsValid() || !GlowText.IsValid() || !Retainer.IsValid())
++	UMaterialInstanceDynamic* Material = Layer.bHasMaterial && Layer.Retainer.IsValid() ? Layer.Retainer->GetEffectMaterial() : nullptr;
++	if (!Material)
+ 	{
+ 		return;
+ 	}
+ 
+-	// The text as drawn is always up to date; the glow copy keeps itself up to date only while it is shown (and ticked),
+-	// so it is brought up to date as it is about to be.
+-	const float Radius = Shown->GetGlowRadius();
+-	const bool bGlow = Radius > 0.f && EnsureMaterial();
+-	if (bGlow && !bShown)
++	// The tags' own parameters are part of what makes the layer, so they never change for it: set once.
++	if (!Layer.bParametersSet)
+ 	{
+-		GlowText->PullStyle();
++		Layer.bParametersSet = true;
++		for (const TPair<FName, float>& Parameter : Wanted.ScalarParameters)
++		{
++			Material->SetScalarParameterValue(Parameter.Key, Parameter.Value);
++		}
++		for (const TPair<FName, FLinearColor>& Parameter : Wanted.VectorParameters)
++		{
++			Material->SetVectorParameterValue(Parameter.Key, Parameter.Value);
++		}
+ 	}
+ 
+-	if (bGlow != bShown)
++	// The radius in the render target's pixels, which follow the text's scale on screen.
++	const float PixelRadius = Wanted.Radius * Scale;
++	if (PixelRadius != Layer.AppliedRadius)
+ 	{
+-		bShown = bGlow;
+-		Retainer->SetVisibility(bGlow ? EVisibility::HitTestInvisible : EVisibility::Collapsed);
+-		Invalidate(EInvalidateWidgetReason::Layout);
++		Layer.AppliedRadius = PixelRadius;
++		Material->SetScalarParameterValue(WidgetAnimTextGlow::RadiusParameter, PixelRadius);
+ 	}
+-	if (!bGlow)
++	if (Wanted.Strength != Layer.AppliedStrength)
++	{
++		Layer.AppliedStrength = Wanted.Strength;
++		Material->SetScalarParameterValue(WidgetAnimTextGlow::TagStrengthParameter, Wanted.Strength);
++	}
++}
++
++void SWidgetAnimTextGlow::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
++{
++	const TSharedPtr<SWidgetAnimText> Shown = Text.Pin();
++	if (!Shown.IsValid() || !Overlay.IsValid())
+ 	{
+ 		return;
+ 	}
+ 
+-	// Twice the radius each way, so the blur fades out well inside the layer rather than being cut off at its edge.
+-	const float NewPad = FMath::CeilToFloat(Radius * 2.f) + 2.f;
+-	if (NewPad != Pad)
++	// The layers the text's tags ask for on this side. Worked out once per text, so this is cheap every frame.
++	const TArray<FWidgetAnimTextEffectLayer>& Wanted = Shown->GetEffectLayers();
++
++	// Layers no longer asked for go.
++	for (int32 Index = Layers.Num() - 1; Index >= 0; --Index)
+ 	{
+-		Pad = NewPad;
+-		Invalidate(EInvalidateWidgetReason::Layout);
++		const uint32 Key = Layers[Index]->Key;
++		const bool bStillWanted = Wanted.ContainsByPredicate([this, Key](const FWidgetAnimTextEffectLayer& Layer) { return Layer.Key == Key && Layer.bOver == bOver; });
++		if (!bStillWanted)
++		{
++			if (Layers[Index]->Root.IsValid())
++			{
++				Overlay->RemoveSlot(Layers[Index]->Root.ToSharedRef());
++			}
++			Layers.RemoveAt(Index);
++		}
+ 	}
+ 
+-	// The radius in the render target's pixels, which follow the text's scale on screen.
+-	const float PixelRadius = Radius * AllottedGeometry.Scale;
+-	const float Strength = GlowText->GetGlowStrength();
+-	if (UMaterialInstanceDynamic* Material = Retainer->GetEffectMaterial())
++	// New ones come; every one is kept up to date.
++	for (const FWidgetAnimTextEffectLayer& Layer : Wanted)
+ 	{
+-		if (PixelRadius != AppliedRadius)
++		if (Layer.bOver != bOver)
+ 		{
+-			AppliedRadius = PixelRadius;
+-			Material->SetScalarParameterValue(WidgetAnimTextGlow::RadiusParameter, PixelRadius);
++			continue;
+ 		}
+-		if (Strength != AppliedStrength)
++		const TSharedRef<FLayer>* Existing = Layers.FindByPredicate([&Layer](const TSharedRef<FLayer>& Candidate) { return Candidate->Key == Layer.Key; });
++		if (!Existing)
+ 		{
+-			AppliedStrength = Strength;
+-			Material->SetScalarParameterValue(WidgetAnimTextGlow::TagStrengthParameter, Strength);
++			AddLayer(Layer);
++			Existing = &Layers.Last();
+ 		}
++		UpdateLayer(**Existing, Layer, AllottedGeometry.Scale);
+ 	}
+ }
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimTextGlow.h b/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimTextGlow.h
+index 83830cb..511dca0 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimTextGlow.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimTextGlow.h
+@@ -5,60 +5,82 @@
+ #include "CoreMinimal.h"
+ #include "Widgets/SCompoundWidget.h"
+ 
++class SOverlay;
+ class SRetainerWidget;
+ class SWidgetAnimText;
++struct FWidgetAnimTextEffects;
++struct FWidgetAnimTextEffectLayer;
++struct FWidgetAnimTextStyle;
+ 
+ /**
+- * The soft glow behind an animated text's <glow> words and every tag with Glow ticked.
++ * The material effects on one side of an animated text - under it (glows) or over it - for <glow> and every tag with
++ * Glow ticked. See the note at the top of WidgetAnimTextMarkup.h.
+  *
+- * Slate can't blur what it draws, so the glow is drawn the way a Retainer Box with an effect material draws: a second
+- * SWidgetAnimText in Glow Only mode - the glowing letters alone, each in its glow color, moving exactly as the text's
+- * do - is rendered into a small render target, and the project's Text Glow Material (UWidgetAnimRuntimeSettings)
+- * blurs that into the glow, drawn under the text. The text widget builds this for itself: nothing to wrap it in.
++ * Slate can't run a material over what it draws, so each effect is drawn the way a Retainer Box with an effect material
++ * draws: a copy of the text in Glow Only mode - only the letters of that effect's tags, each in its glow color, moving
++ * exactly as the text's do - rendered into a small render target, which the effect's material turns into the effect.
++ * One layer per material, side and set of material parameters the text uses: tags agreeing on all three share one.
++ * The text widget builds these for itself: nothing to wrap it in.
+  *
+- * It costs nothing while its text has no glowing tag - the retainer is collapsed, so nothing renders and the glow copy
+- * isn't even laid out - and one small render target, re-rendered each frame, while it has one. With no material set,
+- * or the material missing, texts simply don't glow.
++ * With no glowing tags it has no layers and costs nothing. Each layer costs one small render target, re-rendered each
++ * frame. A layer whose material can't be loaded is simply not drawn.
+  *
+- * Its layer reaches past the text by twice the glow's radius on every side, so the glow isn't cut off at the text's
+- * edges, while taking up exactly the text's own room in the layout.
++ * Each layer reaches past the text by twice its radius on every side, so the effect isn't cut off at the text's edges,
++ * while taking up exactly the text's own room in the layout.
+  */
+ class NAMETBD_API SWidgetAnimTextGlow : public SCompoundWidget
+ {
+ public:
+ 
+-	SLATE_BEGIN_ARGS(SWidgetAnimTextGlow) {}
+-		/** The text as drawn: whether it has glowing tags, and how far they reach. */
++	SLATE_BEGIN_ARGS(SWidgetAnimTextGlow)
++		: _Over(false)
++	{}
++		/** The text as drawn: which layers its tags ask for. */
+ 		SLATE_ARGUMENT(TSharedPtr<SWidgetAnimText>, Text)
+ 
+-		/** The copy that draws only the glowing letters - see SWidgetAnimText's Glow Only. */
+-		SLATE_ARGUMENT(TSharedPtr<SWidgetAnimText>, GlowText)
++		/** The effects over the text rather than under it. */
++		SLATE_ARGUMENT(bool, Over)
++
++		/** What each layer's copy of the text is made with - the same as the text's own. */
++		SLATE_ARGUMENT(TFunction<void(FWidgetAnimTextStyle&)>, StyleSource)
++		SLATE_ARGUMENT(TSharedPtr<const FWidgetAnimTextEffects>, Effects)
+ 	SLATE_END_ARGS()
+ 
+ 	void Construct(const FArguments& InArgs);
+ 
++	/** Every layer's copy of the text - for passing on what the text is given (poses, effects, a new style). */
++	void ForEachLayerText(TFunctionRef<void(SWidgetAnimText&)> Visit) const;
++
+ 	// SWidget
+ 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
+ 
+ private:
+ 
+-	/** Room around the text for the glow, in Slate units - reached out into past the text, then padded back in. */
+-	FMargin GetOuterPadding() const { return FMargin(-Pad); }
+-	FMargin GetInnerPadding() const { return FMargin(Pad); }
++	/** One effect layer: its copy of the text, the retainer running it through the material, and what was last set. */
++	struct FLayer
++	{
++		uint32 Key = 0;
++		TSharedPtr<SWidgetAnimText> Text;
++		TSharedPtr<SRetainerWidget> Retainer;
++		TSharedPtr<SWidget> Root;
++		float Pad = 0.f;
++		bool bHasMaterial = false;
++		bool bParametersSet = false;
++		float AppliedRadius = -1.f;
++		float AppliedStrength = -1.f;
++	};
+ 
+-	/** Whether the effect material is in place on the retainer, loading it the first time it is needed. */
+-	bool EnsureMaterial();
++	/** Makes the layer for Wanted and puts it in the overlay. */
++	void AddLayer(const FWidgetAnimTextEffectLayer& Wanted);
+ 
+-	TWeakPtr<SWidgetAnimText> Text;
+-	TSharedPtr<SWidgetAnimText> GlowText;
+-	TSharedPtr<SRetainerWidget> Retainer;
++	/** Brings a layer's room and material parameters up to Wanted, at the text's scale on screen. */
++	void UpdateLayer(FLayer& Layer, const FWidgetAnimTextEffectLayer& Wanted, float Scale);
+ 
+-	float Pad = 0.f;
+-	bool bMaterialTried = false;
+-	bool bMaterialSet = false;
+-	bool bShown = false;
++	TWeakPtr<SWidgetAnimText> Text;
++	bool bOver = false;
++	TFunction<void(FWidgetAnimTextStyle&)> StyleSource;
++	TSharedPtr<const FWidgetAnimTextEffects> Effects;
+ 
+-	/** The material parameters last set, so they're only set again when they change. */
+-	float AppliedRadius = -1.f;
+-	float AppliedStrength = -1.f;
++	TSharedPtr<SOverlay> Overlay;
++	TArray<TSharedRef<FLayer>> Layers;
+ };
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimTextWidgetCore.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimTextWidgetCore.cpp
+index fe34c0f..2c15071 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimTextWidgetCore.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimTextWidgetCore.cpp
+@@ -99,27 +99,46 @@ TSharedRef<SWidget> FWidgetAnimTextWidgetCore::BuildSlate()
+ 		.Effects(Effects)
+ 		.OnTextChanged([this]() { HandleTextChanged(); });
+ 
+-	// The glow behind any <glow> words: the same text, drawing only what glows, blurred under it. Every text widget has
+-	// it, so a tag is all it takes - it does nothing until the text has something that glows.
+-	GlowSlate = SNew(SWidgetAnimText)
+-		.StyleSource(StyleSource)
+-		.Effects(Effects)
+-		.GlowOnly(true);
++	// The material effects of the text's tags - <glow> under it, and whatever a tag's own material makes, under or over
++	// it. Every text widget has both sides, so a tag is all it takes; each does nothing until the text asks for it.
++	auto MakeEffects = [this](bool bOver)
++	{
++		return SNew(SWidgetAnimTextGlow)
++			.Visibility(EVisibility::HitTestInvisible)
++			.Text(Slate)
++			.Over(bOver)
++			.StyleSource(StyleSource)
++			.Effects(Effects);
++	};
++	EffectsUnder = MakeEffects(/*bOver=*/false);
++	EffectsOver = MakeEffects(/*bOver=*/true);
+ 
+ 	return SNew(SOverlay)
+ 		+ SOverlay::Slot()
+ 		[
+-			SNew(SWidgetAnimTextGlow)
+-			.Visibility(EVisibility::HitTestInvisible)
+-			.Text(Slate)
+-			.GlowText(GlowSlate)
++			EffectsUnder.ToSharedRef()
+ 		]
+ 		+ SOverlay::Slot()
+ 		[
+ 			Slate.ToSharedRef()
++		]
++		+ SOverlay::Slot()
++		[
++			EffectsOver.ToSharedRef()
+ 		];
+ }
+ 
++void FWidgetAnimTextWidgetCore::ForEachEffectText(TFunctionRef<void(SWidgetAnimText&)> Visit) const
++{
++	for (const TSharedPtr<SWidgetAnimTextGlow>& Side : { EffectsUnder, EffectsOver })
++	{
++		if (Side.IsValid())
++		{
++			Side->ForEachLayerText(Visit);
++		}
++	}
++}
++
+ void FWidgetAnimTextWidgetCore::ReleaseSlate()
+ {
+ 	UWidget* Widget = Owner.Get();
+@@ -131,7 +150,8 @@ void FWidgetAnimTextWidgetCore::ReleaseSlate()
+ 		}
+ 	}
+ 	Slate.Reset();
+-	GlowSlate.Reset();
++	EffectsUnder.Reset();
++	EffectsOver.Reset();
+ }
+ 
+ void FWidgetAnimTextWidgetCore::NotifyRebuilt()
+@@ -175,10 +195,7 @@ void FWidgetAnimTextWidgetCore::NotifyTextChanged()
+ 		FWidgetAnimTextStyle Style;
+ 		StyleSource(Style);
+ 		Slate->SetStyle(Style);
+-		if (GlowSlate.IsValid())
+-		{
+-			GlowSlate->SetStyle(Style);
+-		}
++		ForEachEffectText([&Style](SWidgetAnimText& Copy) { Copy.SetStyle(Style); });
+ 	}
+ 
+ 	// A new text is a new reveal: skipping the last one to its end doesn't skip this one.
+@@ -281,10 +298,7 @@ void FWidgetAnimTextWidgetCore::SetPartPoses(TConstArrayView<FWidgetAnimPartPose
+ 	{
+ 		Slate->SetPartPoses(Poses);
+ 	}
+-	if (GlowSlate.IsValid())
+-	{
+-		GlowSlate->SetPartPoses(Poses);
+-	}
++	ForEachEffectText([Poses](SWidgetAnimText& Copy) { Copy.SetPartPoses(Poses); });
+ }
+ 
+ void FWidgetAnimTextWidgetCore::ClearPartPoses()
+@@ -293,10 +307,7 @@ void FWidgetAnimTextWidgetCore::ClearPartPoses()
+ 	{
+ 		Slate->ClearPartPoses();
+ 	}
+-	if (GlowSlate.IsValid())
+-	{
+-		GlowSlate->ClearPartPoses();
+-	}
++	ForEachEffectText([](SWidgetAnimText& Copy) { Copy.ClearPartPoses(); });
+ }
+ 
+ void FWidgetAnimTextWidgetCore::NotifyEffectsChanged(const FString& DisplayString)
+@@ -368,10 +379,7 @@ void FWidgetAnimTextWidgetCore::NotifyEffectsChanged(const FString& DisplayStrin
+ 	{
+ 		Slate->NotifyEffectsChanged();
+ 	}
+-	if (GlowSlate.IsValid())
+-	{
+-		GlowSlate->NotifyEffectsChanged();
+-	}
++	ForEachEffectText([](SWidgetAnimText& Copy) { Copy.NotifyEffectsChanged(); });
+ }
+ 
+ bool FWidgetAnimTextWidgetCore::IsRevealing() const
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimTextWidgetCore.h b/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimTextWidgetCore.h
+index 1d318ac..8514b41 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimTextWidgetCore.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimTextWidgetCore.h
+@@ -201,8 +201,12 @@ private:
+ 
+ 	TSharedPtr<SWidgetAnimText> Slate;
+ 
+-	/** The copy drawing only the glowing letters, blurred into their glow behind Slate - see SWidgetAnimTextGlow. */
+-	TSharedPtr<SWidgetAnimText> GlowSlate;
++	/** The material effects under and over Slate - glows and the like, from the text's tags. See SWidgetAnimTextGlow. */
++	TSharedPtr<class SWidgetAnimTextGlow> EffectsUnder;
++	TSharedPtr<class SWidgetAnimTextGlow> EffectsOver;
++
++	/** Every copy of the text the effect layers draw - for passing on what Slate is given. */
++	void ForEachEffectText(TFunctionRef<void(SWidgetAnimText&)> Visit) const;
+ 	TSharedRef<FWidgetAnimTextEffects> Effects;
+ 
+ 	/** How many parts of the reveal had appeared at the last change - what the events are fired against. */

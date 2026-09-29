@@ -1,6 +1,7 @@
 #include "NameTBDStyle.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/AppStyle.h"
+#include "NameTBDColors.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/PackageName.h"
 #include "Misc/Paths.h"
@@ -83,6 +84,33 @@ TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
           )
        );
     }
+
+    // The Widget Animations panel's own icon - its tab, and its drawer on the status bar: the plugin's shooting star
+    // in the editor's icon grays. The Details tab's icon stands in if the file is missing.
+    {
+       const TSharedPtr<IPlugin> IconPlugin = IPluginManager::Get().FindPlugin(TEXT("NameTBD"));
+       const FString EditorIconPath = IconPlugin.IsValid() ? IconPlugin->GetBaseDir() / TEXT("Resources/widget-animations-editor-icon.svg") : FString();
+       if (!EditorIconPath.IsEmpty() && FPaths::FileExists(EditorIconPath))
+       {
+          Style->Set(WidgetAnimationsIcon, new FSlateVectorImageBrush(EditorIconPath, FVector2D(16.0f, 16.0f)));
+       }
+       else
+       {
+          Style->Set(WidgetAnimationsIcon, new FSlateBrush(*FAppStyle::GetBrush("LevelEditor.Tabs.Details")));
+       }
+    }
+
+    // Menu icons in a color of their own. A menu draws its icons in its foreground color, which can't be set per
+    // entry, but it multiplies a brush's own tint: so a copy of the editor's icon with a tint shows in that color,
+    // dimmer at rest and full on hover, as the menu's other icons brighten.
+    auto AddTintedCopy = [&Style](const FName Name, const FName EditorIcon, const FLinearColor& Tint)
+    {
+       FSlateBrush* Brush = new FSlateBrush(*FAppStyle::GetBrush(EditorIcon));
+       Brush->TintColor = FSlateColor(Tint);
+       Style->Set(Name, Brush);
+    };
+    AddTintedCopy(MenuAddIcon, "Icons.Plus", NameTBD::Colors::WidgetAnimEditor::MenuAddIconTint);
+    AddTintedCopy(MenuDeleteIcon, "Icons.Delete", NameTBD::Colors::WidgetAnimEditor::MenuDeleteIconTint);
 
     return Style;
 }

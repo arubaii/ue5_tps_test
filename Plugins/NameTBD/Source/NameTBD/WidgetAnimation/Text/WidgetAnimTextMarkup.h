@@ -4,9 +4,13 @@
 
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
+#include "UObject/SoftObjectPath.h"
+#include "UObject/SoftObjectPtr.h"
 #include "WidgetAnimTextHost.h"
 
 #include "WidgetAnimTextMarkup.generated.h"
+
+class UMaterialInterface;
 
 // =====================================================================================================
 // Text tags
@@ -36,7 +40,16 @@
 //    to the end of the line); <instant>...</> shows them all at once; <pause=0.5> waits half a second before the rest;
 //    <event=Name> fires On Text Event with Name as the reveal reaches it (a sound, a portrait, a camera shake);
 //    <play=AnimId> plays that Anim ID on the text widget as the reveal reaches it; <color=#FF4020> or <color=red>
-//    colors the words it tags; <size=1.3> draws them larger.
+//    colors the words it tags; <size=1.3> draws them larger; <glow>...</> gives them a soft glow (from Glow Defaults) -
+//    <glow=cyan> or <glow=#40C0FF> in that color, r=6 its radius, a=1.5 its strength, p=0.4 a pulse and s=2 its speed.
+//
+// Glow and material effects: any effect tag with Glow ticked draws its letters, in its glow color, into a layer of their
+// own, and a material turns that layer into the effect - drawn under the text (a glow) or over it (Glow Over Text). The
+// material is the tag's Glow Material, or the project's Text Glow Material. So a new look is only a material and a tag:
+// a User Interface material reading "Texture", given "Radius" (pixels) and "TagStrength", and any parameters the tag
+// lists. In the text, r= a= p= s= set its radius, strength, pulse and speed, and any other attribute sets a material
+// parameter of that name for that use: <magic Swirl=3 Tint=cyan>. The text widget builds the layers itself, one per
+// material, side and set of parameters its text uses; a text with none costs nothing.
 //
 // </> closes the tag opened last and </shake> the last shake. Tags nest. On an Animated Rich Text Block, a tag its Text
 // Style Set has a row for stays a style; everything else works as above. A name that is neither a style nor a tag is
@@ -106,6 +119,65 @@ struct NAMETBD_API FWidgetAnimTextTag
 	/** Draws the tagged letters this much larger, each about its own middle: 1.3 is 30% larger. The line isn't laid out again. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Size", EditCondition = "bSize", ClampMin = "0.1", UIMax = "3.0"))
 	float Size = 1.3f;
+
+	// Glow and material effects -----------------------------------------------------------------
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (InlineEditConditionToggle))
+	bool bGlow = false;
+
+	/**
+	 * A material effect on the tagged letters - a soft glow by default. The letters are drawn in this color into a
+	 * layer of their own, and a material turns that layer into the effect: Glow Material, or the project's Text Glow
+	 * Material when that is empty. Its opacity scales the effect's. See the note at the top of WidgetAnimTextMarkup.h.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow", EditCondition = "bGlow"))
+	FLinearColor GlowColor = FLinearColor(1.f, 0.8f, 0.35f, 1.f);
+
+	/** Draw the letters into the effect's layer in their own color (after any other color this tag gives them) instead of Glow's. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow In Text Color", EditCondition = "bGlow == true", EditConditionHides))
+	bool bGlowInTextColor = false;
+
+	/**
+	 * The material that makes the effect - any User Interface material reading the Texture Object Parameter "Texture"
+	 * (the tagged letters, drawn in their glow color) and outputting a color and an opacity. It is given "Radius" (in
+	 * pixels) and "TagStrength", plus the parameters below. Empty: the project's Text Glow Material.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Material", EditCondition = "bGlow == true", EditConditionHides))
+	TSoftObjectPtr<UMaterialInterface> GlowMaterial;
+
+	/** Draw the effect over the letters rather than under them - a shine, scanlines, a dissolve - where a glow goes under. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Over Text", EditCondition = "bGlow == true", EditConditionHides))
+	bool bGlowOverText = false;
+
+	/**
+	 * How far the effect reaches past the letters' edges, in Slate units - the material's "Radius", and the room its
+	 * layer is given. One layer has one radius: the largest of the tags drawn into it. <tag r=10> sets it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Radius", EditCondition = "bGlow == true", EditConditionHides, ClampMin = "0.5", UIMax = "24.0"))
+	float GlowRadius = 6.f;
+
+	/** How strong the effect is - the material's "TagStrength": 0.5 half as strong, 2 twice as strong. <tag a=2> doubles it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Strength", EditCondition = "bGlow == true", EditConditionHides, ClampMin = "0.0", UIMax = "3.0"))
+	float GlowStrength = 1.f;
+
+	/** How far the effect's strength dips and returns, over and over: 0 holds it steady, 1 fades it right out. <tag p=0.5> sets it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Pulse", EditCondition = "bGlow == true", EditConditionHides, ClampMin = "0.0", ClampMax = "1.0"))
+	float GlowPulse = 0.f;
+
+	/** Pulses a second. <tag s=2> doubles it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Pulse Speed", EditCondition = "bGlow == true", EditConditionHides, ClampMin = "0.0", UIMax = "6.0", Units = "Hz"))
+	float GlowPulseSpeed = 1.f;
+
+	/**
+	 * Scalar parameters set on the material, by name. Written in the text, <tag Speed=3> sets (or adds) Speed for that
+	 * use - any attribute besides a, s, r and p that is a number.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Scalar Parameters", EditCondition = "bGlow == true", EditConditionHides))
+	TMap<FName, float> GlowScalarParameters;
+
+	/** Vector parameters set on the material, by name. <tag Tint=#FF8000> or <tag Tint=cyan> sets one for that use. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Vector Parameters", EditCondition = "bGlow == true", EditConditionHides))
+	TMap<FName, FLinearColor> GlowVectorParameters;
 
 	// Motion -------------------------------------------------------------------------------------
 
@@ -193,16 +265,49 @@ struct NAMETBD_API FWidgetAnimTextTag
 	FName PlayAnimId;
 
 	/** Whether it draws anything on its letters - a color, a size or a motion - rather than only changing a reveal. */
-	bool DrawsEffect() const { return bColor || bRainbow || bShimmer || bSize || bWave || bShake || bPulse || bBlink; }
+	bool DrawsEffect() const { return bColor || bRainbow || bShimmer || bSize || bGlow || bWave || bShake || bPulse || bBlink; }
 
 	/** Whether what it draws moves on its own, so its text must be drawn every frame. */
 	bool IsLive() const
 	{
-		return (bRainbow && RainbowSpeed != 0.f) || bShimmer || (bWave && WaveSpeed != 0.f) || bShake || (bPulse && PulseSpeed != 0.f) || (bBlink && BlinkSpeed != 0.f);
+		return (bRainbow && RainbowSpeed != 0.f) || bShimmer || (bWave && WaveSpeed != 0.f) || bShake || (bPulse && PulseSpeed != 0.f) || (bBlink && BlinkSpeed != 0.f)
+			|| (bGlow && GlowPulse > 0.f && GlowPulseSpeed != 0.f);
 	}
 
 	/** Scales its sizes by Amount and its speeds by Speed - what <tag a=2 s=0.5> asks for. */
 	void Scale(float Amount, float Speed);
+};
+
+/**
+ * What plain <glow> starts from - Project Settings > Plugins > Widget Animations > Text Tags > Glow Defaults. Its
+ * attributes change it per use: <glow=cyan r=10 a=2 p=0.4 s=2>.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimTextGlowDefaults
+{
+	GENERATED_BODY()
+
+	/** The glow in each letter's own color. Off: in Color. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (DisplayName = "In Text Color"))
+	bool bInTextColor = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (EditCondition = "!bInTextColor"))
+	FLinearColor Color = FLinearColor(1.f, 0.8f, 0.35f, 1.f);
+
+	/** How far the glow reaches past the letters, in Slate units. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (ClampMin = "0.5", UIMax = "24.0"))
+	float Radius = 6.f;
+
+	/** On top of the material's own Strength. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (ClampMin = "0.0", UIMax = "3.0"))
+	float Strength = 1.f;
+
+	/** How far it dips and returns, over and over: 0 steady. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float Pulse = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (ClampMin = "0.0", UIMax = "6.0", Units = "Hz"))
+	float PulseSpeed = 1.f;
 };
 
 /** One stretch of a text's drawn string an effect tag covers, and the tag as it applies there. */
@@ -216,6 +321,15 @@ struct NAMETBD_API FWidgetAnimTextSpan
 
 	/** Tag.RevealLook as it is drawn, when the tag has one. */
 	FWidgetAnimTextAppear Appear;
+
+	/**
+	 * For a tag with Glow: which effect layer its letters are drawn into - one per material, side and set of material
+	 * parameters, so tags that share all three share a layer. 0 for none (no Glow, or no material to draw it with).
+	 */
+	uint32 EffectKey = 0;
+
+	/** The material its layer uses: the tag's Glow Material, or the project's Text Glow Material. */
+	FSoftObjectPath EffectMaterial;
 
 	bool Covers(int32 Index) const { return Index >= Begin && Index < End; }
 };

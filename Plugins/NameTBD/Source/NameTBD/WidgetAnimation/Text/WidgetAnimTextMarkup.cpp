@@ -18,6 +18,7 @@ void FWidgetAnimTextTag::Scale(float Amount, float Speed)
 		PulseAmount *= Amount;
 		Size = 1.f + (Size - 1.f) * Amount;
 		ShimmerStrength = FMath::Clamp(ShimmerStrength * Amount, 0.f, 1.f);
+		GlowStrength *= Amount;
 		BlinkOpacity = FMath::Clamp(1.f - (1.f - BlinkOpacity) * Amount, 0.f, 1.f);
 	}
 	if (Speed != 1.f)
@@ -27,6 +28,7 @@ void FWidgetAnimTextTag::Scale(float Amount, float Speed)
 		PulseSpeed *= Speed;
 		BlinkSpeed *= Speed;
 		RainbowSpeed *= Speed;
+		GlowPulseSpeed *= Speed;
 		ShimmerEvery /= FMath::Max(Speed, 0.01f);
 		RevealSpeed *= Speed;
 	}
@@ -285,6 +287,85 @@ namespace WidgetAnimTextMarkup
 		}
 
 		/** Names of the built-in tags that stand at a point rather than covering words. */
+		/**
+		 * A glowing tag's attributes as written: r= its radius and p= its pulse, and every other attribute besides a= and
+		 * s= (which Scale reads) a material parameter of that name - a number a scalar, a color a vector.
+		 */
+		void ApplyEffectAttributes(const FTagText& Tag, FWidgetAnimTextTag& Effect)
+		{
+			for (const TPair<FString, FString>& Attribute : Tag.Attributes)
+			{
+				const FString& Key = Attribute.Key;
+				if (Key.Equals(TEXT("a"), ESearchCase::IgnoreCase) || Key.Equals(TEXT("s"), ESearchCase::IgnoreCase))
+				{
+					continue;
+				}
+				if (Key.Equals(TEXT("r"), ESearchCase::IgnoreCase))
+				{
+					Effect.GlowRadius = FMath::Max(ReadNumber(Attribute.Value, Effect.GlowRadius), 0.5f);
+					continue;
+				}
+				if (Key.Equals(TEXT("p"), ESearchCase::IgnoreCase))
+				{
+					Effect.GlowPulse = FMath::Clamp(ReadNumber(Attribute.Value, Effect.GlowPulse), 0.f, 1.f);
+					continue;
+				}
+
+				const FString Trimmed = Attribute.Value.TrimStartAndEnd();
+				FLinearColor Color;
+				if (!Trimmed.IsEmpty() && FCString::IsNumeric(*Trimmed))
+				{
+					Effect.GlowScalarParameters.Add(FName(*Key), FCString::Atof(*Trimmed));
+				}
+				else if (ReadColor(Trimmed, Color))
+				{
+					Effect.GlowVectorParameters.Add(FName(*Key), Color);
+				}
+			}
+		}
+
+		/**
+		 * Which layer a glowing span's letters go into: its material (the tag's, or the project's), which side of the text,
+		 * and its material parameters - so spans agreeing on all three share one. 0 when it has no material to draw with.
+		 */
+		void ResolveEffect(FWidgetAnimTextSpan& Span)
+		{
+			const FWidgetAnimTextTag& Tag = Span.Tag;
+			Span.EffectKey = 0;
+			Span.EffectMaterial.Reset();
+			if (!Tag.bGlow)
+			{
+				return;
+			}
+
+			Span.EffectMaterial = Tag.GlowMaterial.IsNull()
+				? UWidgetAnimRuntimeSettings::Get().TextGlowMaterial.ToSoftObjectPath()
+				: Tag.GlowMaterial.ToSoftObjectPath();
+			if (Span.EffectMaterial.IsNull())
+			{
+				return;
+			}
+
+			uint32 Key = HashCombine(GetTypeHash(Span.EffectMaterial), GetTypeHash(Tag.bGlowOverText));
+
+			// Parameters in name order, so the same set written in another order is the same layer.
+			TArray<FName> ScalarNames;
+			Tag.GlowScalarParameters.GetKeys(ScalarNames);
+			ScalarNames.Sort(FNameLexicalLess());
+			for (const FName Name : ScalarNames)
+			{
+				Key = HashCombine(Key, HashCombine(GetTypeHash(Name.ToString().ToLower()), GetTypeHash(Tag.GlowScalarParameters.FindChecked(Name))));
+			}
+			TArray<FName> VectorNames;
+			Tag.GlowVectorParameters.GetKeys(VectorNames);
+			VectorNames.Sort(FNameLexicalLess());
+			for (const FName Name : VectorNames)
+			{
+				Key = HashCombine(Key, HashCombine(GetTypeHash(Name.ToString().ToLower()), GetTypeHash(Tag.GlowVectorParameters.FindChecked(Name))));
+			}
+			Span.EffectKey = Key != 0 ? Key : 1u;
+		}
+
 		bool IsMarkerName(FName Name)
 		{
 			static const FName Pause(TEXT("pause"));
@@ -399,6 +480,7 @@ namespace WidgetAnimTextMarkup
 		static const FName ColorName(TEXT("color"));
 		static const FName ColourName(TEXT("colour"));
 		static const FName SizeName(TEXT("size"));
+		static const FName GlowName(TEXT("glow"));
 		static const FName EventName(TEXT("event"));
 		static const FName PlayName(TEXT("play"));
 
@@ -569,6 +651,38 @@ namespace WidgetAnimTextMarkup
 							Sized.Size = FMath::Max(ReadNumber(Tag.Value, 1.3f), 0.05f);
 							OpenSpan(Sized, Name, !Tag.bSelfClosing);
 						}
+						else if (bTags && Name == GlowName)
+						{
+							// From the project's Glow Defaults. <glow=cyan> or <glow=#40C0FF> in that color - or, given a
+							// number rather than a color, <glow=2> twice as strong. a= strength, s= pulse speed, r= radius,
+							// p= pulse, and any other attribute a parameter of the glow material.
+							const FWidgetAnimTextGlowDefaults& Defaults = UWidgetAnimRuntimeSettings::Get().TextGlowDefaults;
+							FWidgetAnimTextTag Glowing;
+							Glowing.bGlow = true;
+							Glowing.bGlowInTextColor = Defaults.bInTextColor;
+							Glowing.GlowColor = Defaults.Color;
+							Glowing.GlowRadius = FMath::Max(Defaults.Radius, 0.5f);
+							Glowing.GlowStrength = FMath::Max(Defaults.Strength, 0.f);
+							Glowing.GlowPulse = FMath::Clamp(Defaults.Pulse, 0.f, 1.f);
+							Glowing.GlowPulseSpeed = FMath::Max(Defaults.PulseSpeed, 0.f);
+
+							float Amount = 1.f;
+							FLinearColor Color;
+							if (ReadColor(Tag.Value, Color))
+							{
+								Glowing.GlowColor = Color;
+								Glowing.bGlowInTextColor = false;
+							}
+							else if (!Tag.Value.IsEmpty())
+							{
+								Amount = ReadNumber(Tag.Value, 1.f);
+							}
+							const FString* AmountAttribute = Tag.FindAttribute(TEXT("a"));
+							const FString* SpeedAttribute = Tag.FindAttribute(TEXT("s"));
+							Glowing.Scale(AmountAttribute ? ReadNumber(*AmountAttribute, Amount) : Amount, SpeedAttribute ? ReadNumber(*SpeedAttribute, 1.f) : 1.f);
+							ApplyEffectAttributes(Tag, Glowing);
+							OpenSpan(Glowing, Name, !Tag.bSelfClosing);
+						}
 						else if (const FWidgetAnimTextTag* Found = bTags ? FindTag(Name) : nullptr)
 						{
 							// <shake=2> and <shake a=2> both double its size; s= scales its speed.
@@ -579,6 +693,10 @@ namespace WidgetAnimTextMarkup
 
 							FWidgetAnimTextTag Scaled = *Found;
 							Scaled.Scale(Amount, Speed);
+							if (Scaled.bGlow)
+							{
+								ApplyEffectAttributes(Tag, Scaled);
+							}
 							if (Scaled.PlayAnimId != NAME_None)
 							{
 								FWidgetAnimTextMarker& Marker = Out.Markers.AddDefaulted_GetRef();
@@ -636,8 +754,9 @@ namespace WidgetAnimTextMarkup
 			}
 		}
 
-		for (const FWidgetAnimTextSpan& Span : Out.Spans)
+		for (FWidgetAnimTextSpan& Span : Out.Spans)
 		{
+			ResolveEffect(Span);
 			Out.bDrawsEffects = Out.bDrawsEffects || Span.Tag.DrawsEffect();
 			Out.bLiveEffects = Out.bLiveEffects || (Span.Tag.DrawsEffect() && Span.Tag.IsLive());
 			Out.bShapesReveal = Out.bShapesReveal || Span.Tag.bRevealSpeed || Span.Tag.bRevealInstant || Span.Tag.bRevealLook;

@@ -1,0 +1,276 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.cpp
+index f4e7894..7f3579c 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.cpp
+@@ -18,6 +18,7 @@ void FWidgetAnimTextTag::Scale(float Amount, float Speed)
+ 		PulseAmount *= Amount;
+ 		Size = 1.f + (Size - 1.f) * Amount;
+ 		ShimmerStrength = FMath::Clamp(ShimmerStrength * Amount, 0.f, 1.f);
++		GlowRadius *= Amount;
+ 		BlinkOpacity = FMath::Clamp(1.f - (1.f - BlinkOpacity) * Amount, 0.f, 1.f);
+ 	}
+ 	if (Speed != 1.f)
+@@ -27,6 +28,7 @@ void FWidgetAnimTextTag::Scale(float Amount, float Speed)
+ 		PulseSpeed *= Speed;
+ 		BlinkSpeed *= Speed;
+ 		RainbowSpeed *= Speed;
++		GlowPulseSpeed *= Speed;
+ 		ShimmerEvery /= FMath::Max(Speed, 0.01f);
+ 		RevealSpeed *= Speed;
+ 	}
+@@ -399,6 +401,7 @@ namespace WidgetAnimTextMarkup
+ 		static const FName ColorName(TEXT("color"));
+ 		static const FName ColourName(TEXT("colour"));
+ 		static const FName SizeName(TEXT("size"));
++		static const FName GlowName(TEXT("glow"));
+ 		static const FName EventName(TEXT("event"));
+ 		static const FName PlayName(TEXT("play"));
+ 
+@@ -569,6 +572,43 @@ namespace WidgetAnimTextMarkup
+ 							Sized.Size = FMath::Max(ReadNumber(Tag.Value, 1.3f), 0.05f);
+ 							OpenSpan(Sized, Name, !Tag.bSelfClosing);
+ 						}
++						else if (bTags && Name == GlowName)
++						{
++							// <glow> in the letters' own color; <glow=cyan> or <glow=#40C0FF> in that one - or, given a number
++							// rather than a color, <glow=2> twice as strong. r= radius, a= strength, p= pulse, s= pulse speed.
++							FWidgetAnimTextTag Glowing;
++							Glowing.bGlow = true;
++							Glowing.bGlowInTextColor = true;
++							float Amount = 1.f;
++							FLinearColor Color;
++							if (ReadColor(Tag.Value, Color))
++							{
++								Glowing.GlowColor = Color;
++								Glowing.bGlowInTextColor = false;
++							}
++							else if (!Tag.Value.IsEmpty())
++							{
++								Amount = ReadNumber(Tag.Value, 1.f);
++							}
++							if (const FString* RadiusAttribute = Tag.FindAttribute(TEXT("r")))
++							{
++								Glowing.GlowRadius = FMath::Max(ReadNumber(*RadiusAttribute, Glowing.GlowRadius), 0.5f);
++							}
++							if (const FString* AmountAttribute = Tag.FindAttribute(TEXT("a")))
++							{
++								Amount = ReadNumber(*AmountAttribute, Amount);
++							}
++							Glowing.GlowStrength = FMath::Clamp(Glowing.GlowStrength * Amount, 0.f, 1.f);
++							if (const FString* PulseAttribute = Tag.FindAttribute(TEXT("p")))
++							{
++								Glowing.GlowPulse = FMath::Clamp(ReadNumber(*PulseAttribute, 0.f), 0.f, 1.f);
++							}
++							if (const FString* SpeedAttribute = Tag.FindAttribute(TEXT("s")))
++							{
++								Glowing.GlowPulseSpeed = FMath::Max(ReadNumber(*SpeedAttribute, 1.f), 0.f);
++							}
++							OpenSpan(Glowing, Name, !Tag.bSelfClosing);
++						}
+ 						else if (const FWidgetAnimTextTag* Found = bTags ? FindTag(Name) : nullptr)
+ 						{
+ 							// <shake=2> and <shake a=2> both double its size; s= scales its speed.
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.h
+index f7d0205..894c9ef 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.h
+@@ -36,7 +36,8 @@
+ //    to the end of the line); <instant>...</> shows them all at once; <pause=0.5> waits half a second before the rest;
+ //    <event=Name> fires On Text Event with Name as the reveal reaches it (a sound, a portrait, a camera shake);
+ //    <play=AnimId> plays that Anim ID on the text widget as the reveal reaches it; <color=#FF4020> or <color=red>
+-//    colors the words it tags; <size=1.3> draws them larger.
++//    colors the words it tags; <size=1.3> draws them larger; <glow>...</> gives them a soft glow in their own color -
++//    <glow=cyan> or <glow=#40C0FF> in that color, r=6 its radius, a=1.5 its strength, p=0.4 a pulse and s=2 its speed.
+ //
+ // </> closes the tag opened last and </shake> the last shake. Tags nest. On an Animated Rich Text Block, a tag its Text
+ // Style Set has a row for stays a style; everything else works as above. A name that is neither a style nor a tag is
+@@ -107,6 +108,36 @@ struct NAMETBD_API FWidgetAnimTextTag
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Size", EditCondition = "bSize", ClampMin = "0.1", UIMax = "3.0"))
+ 	float Size = 1.3f;
+ 
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (InlineEditConditionToggle))
++	bool bGlow = false;
++
++	/**
++	 * A soft glow around the tagged letters, in this color - drawn behind them, following every motion of theirs. Its
++	 * opacity scales the glow's.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow", EditCondition = "bGlow"))
++	FLinearColor GlowColor = FLinearColor(1.f, 0.8f, 0.35f, 1.f);
++
++	/** Glow in each letter's own color (after any other color this tag gives it) instead of Glow's. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow In Text Color", EditCondition = "bGlow == true", EditConditionHides))
++	bool bGlowInTextColor = false;
++
++	/** How far the glow reaches past the letters' edges, in Slate units. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Radius", EditCondition = "bGlow == true", EditConditionHides, ClampMin = "0.5", UIMax = "16.0"))
++	float GlowRadius = 4.f;
++
++	/** How strong the glow is next to the letters; it fades out toward Glow Radius. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Strength", EditCondition = "bGlow == true", EditConditionHides, ClampMin = "0.0", ClampMax = "1.0"))
++	float GlowStrength = 0.6f;
++
++	/** How far the glow's strength dips and returns, over and over: 0 holds it steady, 1 fades it right out. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Pulse", EditCondition = "bGlow == true", EditConditionHides, ClampMin = "0.0", ClampMax = "1.0"))
++	float GlowPulse = 0.f;
++
++	/** Glow pulses a second. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (DisplayName = "Glow Pulse Speed", EditCondition = "bGlow == true", EditConditionHides, ClampMin = "0.0", UIMax = "6.0", Units = "Hz"))
++	float GlowPulseSpeed = 1.f;
++
+ 	// Motion -------------------------------------------------------------------------------------
+ 
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tag", meta = (InlineEditConditionToggle))
+@@ -193,12 +224,13 @@ struct NAMETBD_API FWidgetAnimTextTag
+ 	FName PlayAnimId;
+ 
+ 	/** Whether it draws anything on its letters - a color, a size or a motion - rather than only changing a reveal. */
+-	bool DrawsEffect() const { return bColor || bRainbow || bShimmer || bSize || bWave || bShake || bPulse || bBlink; }
++	bool DrawsEffect() const { return bColor || bRainbow || bShimmer || bSize || bGlow || bWave || bShake || bPulse || bBlink; }
+ 
+ 	/** Whether what it draws moves on its own, so its text must be drawn every frame. */
+ 	bool IsLive() const
+ 	{
+-		return (bRainbow && RainbowSpeed != 0.f) || bShimmer || (bWave && WaveSpeed != 0.f) || bShake || (bPulse && PulseSpeed != 0.f) || (bBlink && BlinkSpeed != 0.f);
++		return (bRainbow && RainbowSpeed != 0.f) || bShimmer || (bWave && WaveSpeed != 0.f) || bShake || (bPulse && PulseSpeed != 0.f) || (bBlink && BlinkSpeed != 0.f)
++			|| (bGlow && GlowPulse > 0.f && GlowPulseSpeed != 0.f);
+ 	}
+ 
+ 	/** Scales its sizes by Amount and its speeds by Speed - what <tag a=2 s=0.5> asks for. */
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.cpp
+index 99c0ffa..e212305 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.cpp
+@@ -1027,7 +1027,9 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
+ 	};
+ 	auto LineTop = [&](const FLayout::FLine& Line) { return Style.Margin.Top + Line.Top * InverseScale; };
+ 
+-	auto Draw = [&](const FShapedGlyphSequencePtr& Glyphs, int32 Run, const FVector2f& Offset, const FVector2f& Size, const FSlateRenderTransform* Transform, float Opacity, const FLinearColor* ColorOverride)
++	// bGlowPass: a copy of a glow, drawn in ColorOverride - no shadow, and on the shadows' layer, under every letter, so
++	// one letter's glow never covers the letter drawn before it.
++	auto Draw = [&](const FShapedGlyphSequencePtr& Glyphs, int32 Run, const FVector2f& Offset, const FVector2f& Size, const FSlateRenderTransform* Transform, float Opacity, const FLinearColor* ColorOverride, bool bGlowPass = false)
+ 	{
+ 		if (!Glyphs.IsValid() || !ResolvedRuns.IsValidIndex(Run))
+ 		{
+@@ -1041,6 +1043,14 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
+ 				: AllottedGeometry.MakeChild(Size, FSlateLayoutTransform(At));
+ 		};
+ 
++		if (bGlowPass && ColorOverride)
++		{
++			FLinearColor GlowColor = *ColorOverride;
++			GlowColor.A *= Opacity;
++			FSlateDrawElement::MakeShapedText(OutDrawElements, LayerId, MakeGeometry(Offset).ToPaintGeometry(), Glyphs.ToSharedRef(), DrawEffects, GlowColor, GlowColor);
++			return;
++		}
++
+ 		const FWidgetAnimTextRunStyle& RunStyle = ResolvedRuns[Run];
+ 		FLinearColor Shadow = RunShadows[Run];
+ 		if (Shadow.A > 0.f && !RunStyle.ShadowOffset.IsNearlyZero())
+@@ -1127,6 +1137,60 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
+ 		}
+ 	};
+ 
++	/**
++	 * A glow around glyphs at Origin, posed as they are: copies in its color, in rings around them out to Radius, each
++	 * ring fainter than the one inside it and each copy faint enough that where a ring's copies all overlap - the
++	 * letter's own shape - it is as strong as that ring is meant to be. So the glow is strongest hugging the letter and
++	 * fades out toward Radius. Drawn before the letter, on the layer under it.
++	 */
++	auto DrawGlow = [&](const FShapedGlyphSequencePtr& Glyphs, int32 Run, const FVector2f& Origin, const FVector2f& Size, bool bPosed,
++		const FSlateRenderTransform& Composed, float Opacity, FLinearColor GlowColor, float Radius, float Strength, const FBox2f* Clip)
++	{
++		const float Peak = FMath::Clamp(Strength * GlowColor.A * Opacity, 0.f, 0.999f);
++		if (!Glyphs.IsValid() || Peak <= KINDA_SMALL_NUMBER || Radius <= 0.f)
++		{
++			return;
++		}
++		GlowColor.A = 1.f;
++
++		if (Clip)
++		{
++			OutDrawElements.PushClip(FSlateClippingZone(AllottedGeometry.MakeChild(Clip->GetSize(), FSlateLayoutTransform(Clip->Min))));
++		}
++
++		// A ring every couple of units out to Radius (three at most), with a copy every couple of units around each.
++		constexpr float Spacing = 2.f;
++		const int32 NumRings = FMath::Clamp(FMath::CeilToInt32(Radius / Spacing), 1, 3);
++		for (int32 Ring = 1; Ring <= NumRings; ++Ring)
++		{
++			const float RingRadius = Radius * Ring / NumRings;
++			const int32 NumTaps = FMath::Clamp(FMath::RoundToInt32(2.f * PI * RingRadius / Spacing), 6, 16);
++			const float Falloff = 1.f - static_cast<float>(Ring - 1) / NumRings;
++			const float RingStrength = Peak * Falloff * Falloff;
++			const float TapOpacity = 1.f - FMath::Pow(1.f - RingStrength, 1.f / NumTaps);
++			for (int32 Tap = 0; Tap < NumTaps; ++Tap)
++			{
++				// Each ring turned half a step from the one inside it, so their copies don't line up into spokes.
++				const float Theta = 2.f * PI * (Tap + 0.5f * (Ring - 1)) / NumTaps;
++				const FVector2f At = Origin + FVector2f(FMath::Cos(Theta), FMath::Sin(Theta)) * RingRadius;
++				if (bPosed)
++				{
++					const FSlateRenderTransform InGlyphs = Concatenate(Concatenate(FSlateRenderTransform(At), Composed), FSlateRenderTransform(-At));
++					Draw(Glyphs, Run, At, Size, &InGlyphs, TapOpacity, &GlowColor, /*bGlowPass=*/true);
++				}
++				else
++				{
++					Draw(Glyphs, Run, At, Size, nullptr, TapOpacity, &GlowColor, /*bGlowPass=*/true);
++				}
++			}
++		}
++
++		if (Clip)
++		{
++			OutDrawElements.PopClip();
++		}
++	};
++
+ 	RebuildPoseIndex();
+ 
+ 	// Where each letter sits, in the widget's own units - and the box around each word and line, whose middle a word or
+@@ -1260,6 +1324,9 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
+ 		FBox2f Clip(ForceInit);
+ 		bool bClip = false;
+ 
++		// A glow a tag gives the letter - the innermost glowing tag around it wins.
++		const FWidgetAnimTextTag* GlowTag = nullptr;
++
+ 		// A change of text: where this letter was before it, so it slides from there to its new place as the change goes.
+ 		const FChangeLetter* ChangeLetter = bChanging ? &Change.Letters[LetterIndex] : nullptr;
+ 		const FDrawnLetter* OldLetter = ChangeLetter && Change.Old.IsValidIndex(ChangeLetter->Old) ? &Change.Old[ChangeLetter->Old] : nullptr;
+@@ -1320,6 +1387,10 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
+ 				{
+ 					EffectScale *= FMath::Max(TextTag.Size, 0.f);
+ 				}
++				if (TextTag.bGlow)
++				{
++					GlowTag = &TextTag;
++				}
+ 				if (TextTag.bWave && TextTag.WaveLength > KINDA_SMALL_NUMBER)
+ 				{
+ 					const float Phase = static_cast<float>(FMath::Fmod(Now * TextTag.WaveSpeed, 1.0)) - InSpan / TextTag.WaveLength;
+@@ -1599,6 +1670,24 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
+ 			Size.X = StandInWidth;
+ 		}
+ 
++		if (GlowTag)
++		{
++			// In the letter's color as drawn, or the tag's own, tinted as the text is; pulsing when asked.
++			FLinearColor GlowColor = Color;
++			if (!GlowTag->bGlowInTextColor)
++			{
++				GlowColor = GlowTag->GlowColor * Tint;
++				GlowColor.A = GlowTag->GlowColor.A * Color.A;
++			}
++			float GlowStrength = GlowTag->GlowStrength;
++			if (GlowTag->GlowPulse > 0.f)
++			{
++				const float Phase = static_cast<float>(FMath::Fmod(Now * GlowTag->GlowPulseSpeed, 1.0));
++				GlowStrength *= 1.f - FMath::Clamp(GlowTag->GlowPulse, 0.f, 1.f) * (0.5f - 0.5f * FMath::Cos(2.f * PI * Phase));
++			}
++			DrawGlow(Glyphs, Letter.Run, Origin, Size, bPosed, Composed, Opacity, GlowColor, GlowTag->GlowRadius, GlowStrength, bClip ? &Clip : nullptr);
++		}
++
+ 		DrawPosed(Glyphs, Letter.Run, Origin, Size, bPosed, Composed, Opacity, ColorOverride, Blur, bClip ? &Clip : nullptr);
+ 	}
+ 

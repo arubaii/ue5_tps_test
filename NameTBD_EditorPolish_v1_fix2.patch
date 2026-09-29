@@ -1,0 +1,47 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 36a6060..fec44e9 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -1787,6 +1787,22 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 				Box(InnerX, InnerTop, InnerWidth, InnerHeight, Spill, SpillLayer, NodeColorSpill());
+ 				Box(InnerX, InnerTop, InnerWidth, FMath::Min(InnerHeight, Palette::SectionSheenHeight), FLinearColor::White, SheenLayer, NodeTitleHighlight());
+ 
++				// The macro node's edge glint: a thin light line down the inside of the right edge, carrying on from where
++				// the highlight turns the top-right corner and fading out into the body part way down. One pixel at a time,
++				// each fainter than the one above, so the fade is the same at any height.
++				const float GlintX = InnerX + InnerWidth - Palette::SectionEdgeGlintInset - Palette::SectionEdgeGlintWidth;
++				const int32 GlintRows = FMath::FloorToInt(InnerHeight * Palette::SectionEdgeGlintLength);
++				if (Palette::SectionEdgeGlint.A > 0.f && GlintX > InnerX + Palette::SectionTextPadding && GlintRows > 0)
++				{
++					const float GlintOpacity = Palette::SectionEdgeGlint.A * (bWashedOut ? Palette::LockedBrightness : 1.f);
++					for (int32 Row = 0; Row < GlintRows; ++Row)
++					{
++						const float Fade = 1.f - (Row + 0.5f) / GlintRows;
++						Box(GlintX, InnerTop + Palette::SectionEdgeGlintTop + Row, Palette::SectionEdgeGlintWidth, 1.f,
++							WithAlpha(Palette::SectionEdgeGlint, GlintOpacity * Fade * Fade), SheenLayer);
++					}
++				}
++
+ 				// A value-driven track is striped, so its place and length on the timeline don't read as when it
+ 				// plays: gameplay's value decides that. So is one whose length its widget decides - a text typed at its
+ 				// Typing Speed - since its Duration means nothing. Diagonal bands, clipped to the body, only those in view.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index fe3ea50..ceca503 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -69,6 +69,15 @@ namespace NameTBD
+ 
+ 			/** How tall the highlight sheen along a section's top is drawn, in pixels. */
+ 			inline constexpr float SectionSheenHeight = 20.0f;
++			// The macro node's edge glint: a thin light line down the inside of a track's right edge that fades out as it
++			// goes down. Color and peak strength (alpha; 0 turns it off); width in pixels; how far in from the body's
++			// right edge; how far below the body's top it starts, in pixels; how far down it reaches, as a share of the
++			// body's height.
++			inline const FLinearColor SectionEdgeGlint(1.00f, 1.00f, 1.00f, 0.30f);
++			inline constexpr float SectionEdgeGlintWidth = 1.0f;
++			inline constexpr float SectionEdgeGlintInset = 1.0f;
++			inline constexpr float SectionEdgeGlintTop = 2.0f;
++			inline constexpr float SectionEdgeGlintLength = 0.55f;
+ 
+ 			/** How much a hovered section's color is lifted. */
+ 			inline constexpr float SectionHoverLift = 1.15f;

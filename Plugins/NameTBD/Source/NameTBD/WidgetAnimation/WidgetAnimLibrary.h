@@ -893,6 +893,13 @@ struct NAMETBD_API FWidgetAnimLayer
 	bool bHiddenInEditor = false;
 
 	/**
+	 * Hidden by Focus Tracks in the Widget Animations panel, rather than by hand: Un-focus shows it again, and leaves
+	 * every track hidden by hand as it was. Saved with the track, so a focus outlasts a closed panel. Authoring state only.
+	 */
+	UPROPERTY()
+	bool bHiddenByFocus = false;
+
+	/**
 	 * The Widget Animation asset this track was brought in from with Insert Existing Widget Animation, by name -
 	 * shown beside it in the Widget Animations panel's list. Empty for a track made here. Authoring state only.
 	 */

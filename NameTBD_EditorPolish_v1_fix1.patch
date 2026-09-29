@@ -1,0 +1,88 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index c5617a8..36a6060 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -1422,20 +1422,11 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 	const FSlateFontInfo& SectionFont = NodeTitleStyle.Font;
+ 
+ 	// Text on a track: a slight drop shadow under it, for legibility over the gloss and the track's color, in the
+-	// same font and size. On a track too light for light text the two swap - dark text over a light shadow - so it
+-	// reads whatever color the track is.
+-	auto TrackText = [&](const FString& String, float X, float Y, const FSlateFontInfo& Font, const FLinearColor& Color, bool bOnLightTrack)
+-	{
+-		const FLinearColor TextColor = bOnLightTrack ? WithAlpha(Palette::TrackTextOnLightTrack, Palette::TrackTextOnLightTrack.A * Color.A) : Color;
+-		const FLinearColor ShadowColor = bOnLightTrack ? Palette::TrackTextShadowOnLightTrack : Palette::TrackTextShadow;
+-		Text(String, X + Palette::TrackTextShadowOffset, Y + Palette::TrackTextShadowOffset, Font, WithAlpha(ShadowColor, ShadowColor.A * Color.A), TextShadowLayer);
+-		Text(String, X, Y, Font, TextColor, TextShadowLayer + 1);
+-	};
+-
+-	// Whether a track's color is too light for light text over it - see TrackText.
+-	auto IsLightTrack = [](const FLinearColor& TrackColor)
++	// same font and size. Its color and offset are TrackTextShadow and TrackTextShadowOffset in NameTBDColors.h.
++	auto TrackText = [&](const FString& String, float X, float Y, const FSlateFontInfo& Font, const FLinearColor& Color)
+ 	{
+-		return TrackColor.GetLuminance() > Palette::LightTrackLuminance;
++		Text(String, X + Palette::TrackTextShadowOffset, Y + Palette::TrackTextShadowOffset, Font, WithAlpha(Palette::TrackTextShadow, Palette::TrackTextShadow.A * Color.A), TextShadowLayer);
++		Text(String, X, Y, Font, Color, TextShadowLayer + 1);
+ 	};
+ 
+ 	// The font a track's text is drawn in to fit Available pixels: its own, or - zoomed out, with Shrink To Fit in the
+@@ -1712,7 +1703,6 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			{
+ 				TypeColor = SWidgetAnimTimeline::GetLockedColor(TypeColor);
+ 			}
+-			const bool bOnLightTrack = IsLightTrack(TypeColor);
+ 
+ 			// The stagger's tail: a thinner band of the track's color from the end of its first item to the end of its
+ 			// last, with a tick where each item after the first starts - when the preview has counted them. The ticks
+@@ -1898,7 +1888,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			const float FullTextY = InnerTop + (InnerHeight - MeasureText(Label, SectionFont).Y) * 0.5f;
+ 			if (bTitleShown)
+ 			{
+-				TrackText(Label, TextLeft, TextY, TitleFont, TitleColor, bOnLightTrack);
++				TrackText(Label, TextLeft, TextY, TitleFont, TitleColor);
+ 			}
+ 
+ 			// Each segment's curve, named in the middle of its stretch - a segment with a curve of its own brighter
+@@ -1940,14 +1930,14 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 					const float CurveNameY = TitleBaselineY - SegmentAscent;
+ 					const float Opacity = TextOpacity * (Curve->IsTrackEasing() ? Palette::SegmentLabelTrackEasingOpacity : Palette::SegmentLabelOwnCurveOpacity);
+ 
+-					TrackText(CurveName, CurveNameX, CurveNameY, SegmentFont, FLinearColor(1.f, 1.f, 1.f, Opacity), bOnLightTrack);
++					TrackText(CurveName, CurveNameX, CurveNameY, SegmentFont, FLinearColor(1.f, 1.f, 1.f, Opacity));
+ 				}
+ 			}
+ 
+ 			// Only beside a title at its full size: once the title has to shrink, the easing gives way to it.
+ 			if (!bLabelSegments && bTitleFullSize && TextLeft - BarX0 + LabelSize.X + EasingSize.X + Padding * 2.f + 12.f <= BarWidth)
+ 			{
+-				TrackText(EasingLabel, BarX0 + BarWidth - Padding - EasingSize.X, TextY, SectionFont, TitleColor * FLinearColor(1.f, 1.f, 1.f, Palette::SectionSecondaryTextOpacity), bOnLightTrack);
++				TrackText(EasingLabel, BarX0 + BarWidth - Padding - EasingSize.X, TextY, SectionFont, TitleColor * FLinearColor(1.f, 1.f, 1.f, Palette::SectionSecondaryTextOpacity));
+ 			}
+ 
+ 			// Keys: diamonds, button-like - normal, hovered (lighter, bigger), pressed (darker), selected (orange,
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index 1471802..fe3ea50 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -282,16 +282,14 @@ namespace NameTBD
+ 			inline const FLinearColor MenuDeleteIconTint(1.00f, 0.32f, 0.30f);
+ 
+ 			// -------------------------------------------------------------------------------------------------
+-			// Track text - the name, length, easing and segment curves drawn on a track, with a slight drop shadow
+-			// under them for legibility. On a track lighter than LightTrackLuminance (linear luminance of its color)
+-			// the text goes dark over a light shadow instead.
++			// Track text - the name, length, easing and segment curves drawn on a track (and the labels on stagger
++			// tails and context tracks), with a slight drop shadow under them for legibility.
++			// TrackTextShadowOffset: how far the shadow sits down and to the right, in pixels.
++			// TrackTextShadow: its color; the alpha is how strong it is (0 turns it off).
+ 			// -------------------------------------------------------------------------------------------------
+ 
+ 			inline constexpr float TrackTextShadowOffset = 1.0f;
+ 			inline const FLinearColor TrackTextShadow(0.00f, 0.00f, 0.00f, 0.55f);
+-			inline const FLinearColor TrackTextOnLightTrack(0.02f, 0.02f, 0.02f, 1.00f);
+-			inline const FLinearColor TrackTextShadowOnLightTrack(1.00f, 1.00f, 1.00f, 0.45f);
+-			inline constexpr float LightTrackLuminance = 0.70f;
+ 			// The smallest a track's text is shrunk to, zoomed out, before it is left out - as a share of its size.
+ 			inline constexpr float TrackTextMinShrink = 0.5f;
+ 		}

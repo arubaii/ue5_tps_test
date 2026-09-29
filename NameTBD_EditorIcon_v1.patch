@@ -1,0 +1,94 @@
+diff --git a/Plugins/NameTBD/Resources/widget-animations-editor-icon.svg b/Plugins/NameTBD/Resources/widget-animations-editor-icon.svg
+new file mode 100644
+index 0000000..299ffb5
+--- /dev/null
++++ b/Plugins/NameTBD/Resources/widget-animations-editor-icon.svg
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!-- Widget Animations editor icon: the plugin's shooting star in the editor's icon grays - the star in the
++     light gray of Unreal's editor icons, its streaks a darker gray - framed so the whole tail fits. -->
++<svg version="1.2" xmlns="http://www.w3.org/2000/svg" viewBox="-227.14 -77.65 2513.55 2513.55" width="16" height="16">
++    <path fill-rule="evenodd" fill="#808080" d="m1072.25 1659.27l-947.68 698.98 913.43-827.68z"/>
++    <path fill-rule="evenodd" fill="#808080" d="m984.71 1374.87l-1117 959.67 959.67-1117.01 126.13 31.21z"/>
++    <path fill-rule="evenodd" fill="#808080" d="m671.66 1164.23l-827.66 913.44 698.97-947.67z"/>
++    <path fill-rule="evenodd" fill="#C0C0C0" d="m907.75 669.9l-28.6-669.9 525.16 416.9 628.27-234.21-234.21 628.27 416.9 525.14-669.91-28.6-370.61 558.77-179.81-645.96-645.94-179.79z"/>
++</svg>
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp
+index 739e79a..7b38719 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp
+@@ -85,6 +85,21 @@ TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
+        );
+     }
+ 
++    // The Widget Animations panel's own icon - its tab, and its drawer on the status bar: the plugin's shooting star
++    // in the editor's icon grays. The Details tab's icon stands in if the file is missing.
++    {
++       const TSharedPtr<IPlugin> IconPlugin = IPluginManager::Get().FindPlugin(TEXT("NameTBD"));
++       const FString EditorIconPath = IconPlugin.IsValid() ? IconPlugin->GetBaseDir() / TEXT("Resources/widget-animations-editor-icon.svg") : FString();
++       if (!EditorIconPath.IsEmpty() && FPaths::FileExists(EditorIconPath))
++       {
++          Style->Set(WidgetAnimationsIcon, new FSlateVectorImageBrush(EditorIconPath, FVector2D(16.0f, 16.0f)));
++       }
++       else
++       {
++          Style->Set(WidgetAnimationsIcon, new FSlateBrush(*FAppStyle::GetBrush("LevelEditor.Tabs.Details")));
++       }
++    }
++
+     // Menu icons in a color of their own. A menu draws its icons in its foreground color, which can't be set per
+     // entry, but it multiplies a brush's own tint: so a copy of the editor's icon with a tint shows in that color,
+     // dimmer at rest and full on hover, as the menu's other icons brighten.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp
+index c0c5728..0fddc5c 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp
+@@ -5,6 +5,7 @@
+ #include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
+ #include "NameTBDColors.h"
++#include "NameTBDStyle.h"
+ #include "Containers/Ticker.h"
+ #include "Editor.h"
+ #include "Framework/Docking/LayoutExtender.h"
+@@ -227,7 +228,7 @@ namespace
+ 			: FWorkflowTabFactory(WidgetAnimationsTabId, InHostingApp)
+ 		{
+ 			TabLabel = LOCTEXT("WidgetAnimationsTab", "Widget Animations");
+-			TabIcon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details");
++			TabIcon = FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::WidgetAnimationsIcon);
+ 			bIsSingleton = true;
+ 			ViewMenuDescription = LOCTEXT("WidgetAnimationsTabName", "Widget Animations");
+ 			ViewMenuTooltip = LOCTEXT("WidgetAnimationsTabTooltip", "Build the widget animation: its tracks, keys and preview settings.");
+@@ -254,7 +255,7 @@ namespace
+ 			return;
+ 		}
+ 
+-		const FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details");
++		const FSlateIcon Icon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::WidgetAnimationsIcon);
+ 		TabManager->RegisterTabSpawner(WidgetAnimationsTabId, FOnSpawnTab::CreateLambda([PanelSource](const FSpawnTabArgs&)
+ 		{
+ 			return MakeWidgetAnimationsTab(PanelSource);
+@@ -352,7 +353,7 @@ namespace
+ 		FWidgetDrawerConfig Config(WidgetAnimationsDrawerId);
+ 		Config.ButtonText = LOCTEXT("WidgetAnimationsDrawer", "Widget Animations");
+ 		Config.ToolTipText = LOCTEXT("WidgetAnimationsDrawerTooltip", "Build widget animations: layer groups for each widget they move, their tracks and keys.");
+-		Config.Icon = PickBrush({ "LevelEditor.Tabs.Details", "Icons.Details", "UMGEditor.AnimTabIcon" });
++		Config.Icon = FNameTBDStyle::Get().GetBrush(FNameTBDStyle::WidgetAnimationsIcon);
+ 
+ 		// The panel is built on first open and kept, so its selection and zoom survive the drawer closing -
+ 		// and the drawer being taken down and put back.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.h
+index c9ed8dd..52d6368 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.h
+@@ -14,6 +14,9 @@ public:
+ 	/** Context menu icons tinted to say what they do: the green plus of Add Animation Track, the red trash can of Delete. */
+ 	static inline const FName MenuAddIcon = TEXT("NameTBD.Menu.Add");
+ 	static inline const FName MenuDeleteIcon = TEXT("NameTBD.Menu.Delete");
++
++	/** The Widget Animations panel's icon - its tab and its status-bar drawer: the shooting star in the editor's grays. */
++	static inline const FName WidgetAnimationsIcon = TEXT("NameTBD.WidgetAnimationsIcon");
+ 	
+ 
+ private:

@@ -5,6 +5,7 @@
 #include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
 #include "NameTBDColors.h"
+#include "NameTBDStyle.h"
 #include "Containers/Ticker.h"
 #include "Editor.h"
 #include "Framework/Docking/LayoutExtender.h"
@@ -227,7 +228,7 @@ namespace
 			: FWorkflowTabFactory(WidgetAnimationsTabId, InHostingApp)
 		{
 			TabLabel = LOCTEXT("WidgetAnimationsTab", "Widget Animations");
-			TabIcon = FSlateIcon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details");
+			TabIcon = FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::WidgetAnimationsIcon);
 			bIsSingleton = true;
 			ViewMenuDescription = LOCTEXT("WidgetAnimationsTabName", "Widget Animations");
 			ViewMenuTooltip = LOCTEXT("WidgetAnimationsTabTooltip", "Build the widget animation: its tracks, keys and preview settings.");
@@ -254,7 +255,7 @@ namespace
 			return;
 		}
 
-		const FSlateIcon Icon(FAppStyle::GetAppStyleSetName(), "LevelEditor.Tabs.Details");
+		const FSlateIcon Icon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::WidgetAnimationsIcon);
 		TabManager->RegisterTabSpawner(WidgetAnimationsTabId, FOnSpawnTab::CreateLambda([PanelSource](const FSpawnTabArgs&)
 		{
 			return MakeWidgetAnimationsTab(PanelSource);
@@ -352,7 +353,7 @@ namespace
 		FWidgetDrawerConfig Config(WidgetAnimationsDrawerId);
 		Config.ButtonText = LOCTEXT("WidgetAnimationsDrawer", "Widget Animations");
 		Config.ToolTipText = LOCTEXT("WidgetAnimationsDrawerTooltip", "Build widget animations: layer groups for each widget they move, their tracks and keys.");
-		Config.Icon = PickBrush({ "LevelEditor.Tabs.Details", "Icons.Details", "UMGEditor.AnimTabIcon" });
+		Config.Icon = FNameTBDStyle::Get().GetBrush(FNameTBDStyle::WidgetAnimationsIcon);
 
 		// The panel is built on first open and kept, so its selection and zoom survive the drawer closing -
 		// and the drawer being taken down and put back.

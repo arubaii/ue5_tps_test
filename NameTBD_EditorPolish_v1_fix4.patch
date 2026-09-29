@@ -1,0 +1,82 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 01b14aa..8af7af7 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -1856,20 +1856,29 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 				Box(InnerX, InnerTop, InnerWidth, InnerHeight, Spill, SpillLayer, NodeColorSpill());
+ 				Box(InnerX, InnerTop, InnerWidth, FMath::Min(InnerHeight, Palette::SectionSheenHeight), FLinearColor::White, SheenLayer, NodeTitleHighlight());
+ 
+-				// The macro node's edge glint: a thin light line down the inside of the right edge, carrying on from where
+-				// the highlight turns the top-right corner and fading out into the body part way down. One pixel at a time,
+-				// each fainter than the one above, so the fade is the same at any height.
+-				const float GlintX = InnerX + InnerWidth - Palette::SectionEdgeGlintInset - Palette::SectionEdgeGlintWidth;
+-				const int32 GlintRows = FMath::FloorToInt(InnerHeight * Palette::SectionEdgeGlintLength);
+-				if (Palette::SectionEdgeGlint.A > 0.f && GlintX > InnerX + Palette::SectionTextPadding && GlintRows > 0)
++				// The macro node's half-tone line: across the body, part way down, everything below is a shade darker - most
++				// at the right end, fading out toward the middle, so the line disappears as it runs left. Drawn as a row of
++				// slices, each a little darker than the one before, clipped to the body so its rounded corners stay round.
++				// Over the sheen rather than on its layer: Slate only promises the order of different layers.
++				const float HalfToneTop = InnerTop + FMath::RoundToFloat(InnerHeight * Palette::SectionHalfToneLine);
++				const float HalfToneWidth = FMath::Min(InnerWidth * Palette::SectionHalfToneReach, Palette::SectionHalfToneMaxReach);
++				if (Palette::SectionHalfTone.A > 0.f && HalfToneWidth >= 1.f && HalfToneTop < InnerTop + InnerHeight)
+ 				{
+-					const float GlintOpacity = Palette::SectionEdgeGlint.A * (bWashedOut ? Palette::LockedBrightness : 1.f);
+-					for (int32 Row = 0; Row < GlintRows; ++Row)
++					const FGeometry HalfToneGeometry = AllottedGeometry.MakeChild(FVector2f(InnerWidth, InnerHeight), FSlateLayoutTransform(FVector2f(InnerX, InnerTop)));
++					OutDrawElements.PushClip(FSlateClippingZone(HalfToneGeometry));
++
++					const float HalfToneOpacity = Palette::SectionHalfTone.A * (bWashedOut ? Palette::LockedBrightness : 1.f);
++					const int32 NumSlices = FMath::Clamp(FMath::CeilToInt(HalfToneWidth / 4.f), 1, 64);
++					const float SliceWidth = HalfToneWidth / NumSlices;
++					const float HalfToneLeft = InnerX + InnerWidth - HalfToneWidth;
++					for (int32 Slice = 0; Slice < NumSlices; ++Slice)
+ 					{
+-						const float Fade = FMath::Pow(1.f - (Row + 0.5f) / GlintRows, Palette::SectionEdgeGlintFalloff);
+-						Box(GlintX, InnerTop + Palette::SectionEdgeGlintTop + Row, Palette::SectionEdgeGlintWidth, 1.f,
+-							WithAlpha(Palette::SectionEdgeGlint, GlintOpacity * Fade), SheenLayer);
++						const float Strength = FMath::Pow((Slice + 0.5f) / NumSlices, Palette::SectionHalfToneFalloff);
++						Box(HalfToneLeft + Slice * SliceWidth, HalfToneTop, SliceWidth + 0.5f, InnerTop + InnerHeight - HalfToneTop,
++							WithAlpha(Palette::SectionHalfTone, HalfToneOpacity * Strength), SectionOverlayLayer);
+ 					}
++
++					OutDrawElements.PopClip();
+ 				}
+ 
+ 				// A value-driven track is striped, so its place and length on the timeline don't read as when it
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index 5bc1081..56f5535 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -69,20 +69,18 @@ namespace NameTBD
+ 
+ 			/** How tall the highlight sheen along a section's top is drawn, in pixels. */
+ 			inline constexpr float SectionSheenHeight = 20.0f;
+-			// The macro node's edge glint: a thin light line down the inside of a track's right edge that fades out as it
+-			// goes down.
+-			//   SectionEdgeGlint: its color; alpha is its strength at the top (0 turns it off).
+-			//   SectionEdgeGlintWidth: pixels wide.
+-			//   SectionEdgeGlintInset: pixels in from the body's right edge. At 1 it sits against the frame and reads as part of it.
+-			//   SectionEdgeGlintTop: pixels below the body's top where it starts.
+-			//   SectionEdgeGlintLength: how far down it reaches, as a share of the body's height.
+-			//   SectionEdgeGlintFalloff: how it fades - 1 evenly, higher fades faster near the top.
+-			inline const FLinearColor SectionEdgeGlint(1.00f, 1.00f, 1.00f, 0.35f);
+-			inline constexpr float SectionEdgeGlintWidth = 1.0f;
+-			inline constexpr float SectionEdgeGlintInset = 3.0f;
+-			inline constexpr float SectionEdgeGlintTop = 1.0f;
+-			inline constexpr float SectionEdgeGlintLength = 0.5f;
+-			inline constexpr float SectionEdgeGlintFalloff = 1.0f;
++			// The macro node's half-tone line: part way down a track's body, everything below it is a shade darker,
++			// most at the right end and fading out toward the left, so the line disappears as it runs left.
++			//   SectionHalfTone: the shade laid over the body below the line; alpha is how dark at the right end (0 turns it off).
++			//   SectionHalfToneLine: where the line sits, as a share of the body's height from its top.
++			//   SectionHalfToneReach: how far left it reaches before it has faded out, as a share of the track's width...
++			//   SectionHalfToneMaxReach: ...but never further than this many pixels, so long tracks match short ones.
++			//   SectionHalfToneFalloff: how it fades - 1 evenly, higher keeps it to the right end.
++			inline const FLinearColor SectionHalfTone(0.00f, 0.00f, 0.00f, 0.25f);
++			inline constexpr float SectionHalfToneLine = 0.62f;
++			inline constexpr float SectionHalfToneReach = 0.55f;
++			inline constexpr float SectionHalfToneMaxReach = 280.0f;
++			inline constexpr float SectionHalfToneFalloff = 1.0f;
+ 
+ 			/** How much a hovered section's color is lifted. */
+ 			inline constexpr float SectionHoverLift = 1.15f;

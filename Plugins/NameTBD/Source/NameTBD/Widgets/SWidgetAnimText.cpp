@@ -224,6 +224,8 @@ void SWidgetAnimText::Construct(const FArguments& InArgs)
 
 	// Told only of changes after the first text: that one is simply what it was made with.
 	OnTextChanged = InArgs._OnTextChanged;
+	bGlowOnly = InArgs._GlowOnly;
+	EffectKeyFilter = InArgs._EffectKey;
 
 	// Ticks to notice its owner's changes - see StyleSource - and to learn the width it wraps at.
 	SetCanTick(true);
@@ -385,7 +387,7 @@ float SWidgetAnimText::GetWrapWidth() const
 	return 0.f;
 }
 
-void SWidgetAnimText::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
+void SWidgetAnimText::PullStyle()
 {
 	if (StyleSource)
 	{
@@ -393,6 +395,60 @@ void SWidgetAnimText::Tick(const FGeometry& AllottedGeometry, const double InCur
 		StyleSource(Current);
 		SetStyle(Current);
 	}
+}
+
+const TArray<FWidgetAnimTextEffectLayer>& SWidgetAnimText::GetEffectLayers() const
+{
+	// A text's tags are read once and shared, so its layers only need working out again for another text.
+	// Held, not just compared by address, so a new text read into the same memory is never taken for the old one.
+	const FWidgetAnimTextMarkup* Markup = Style.Markup.Get();
+	if (Markup == EffectLayersFor.Get() && EffectLayersFor.IsValid() == Style.Markup.IsValid())
+	{
+		return EffectLayers;
+	}
+	EffectLayersFor = Style.Markup;
+	EffectLayers.Reset();
+
+	if (Markup)
+	{
+		for (const FWidgetAnimTextSpan& Span : Markup->Spans)
+		{
+			if (Span.EffectKey == 0)
+			{
+				continue;
+			}
+			FWidgetAnimTextEffectLayer* Layer = EffectLayers.FindByPredicate([&Span](const FWidgetAnimTextEffectLayer& Existing) { return Existing.Key == Span.EffectKey; });
+			if (!Layer)
+			{
+				Layer = &EffectLayers.AddDefaulted_GetRef();
+				Layer->Key = Span.EffectKey;
+				Layer->Material = Span.EffectMaterial;
+				Layer->bOver = Span.Tag.bGlowOverText;
+				Layer->ScalarParameters = Span.Tag.GlowScalarParameters;
+				Layer->VectorParameters = Span.Tag.GlowVectorParameters;
+			}
+			Layer->Radius = FMath::Max(Layer->Radius, Span.Tag.GlowRadius);
+			Layer->Strength = FMath::Max(Layer->Strength, Span.Tag.GlowStrength);
+		}
+	}
+	return EffectLayers;
+}
+
+float SWidgetAnimText::GetEffectStrength(uint32 Key) const
+{
+	for (const FWidgetAnimTextEffectLayer& Layer : GetEffectLayers())
+	{
+		if (Layer.Key == Key)
+		{
+			return Layer.Strength;
+		}
+	}
+	return 0.f;
+}
+
+void SWidgetAnimText::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
+{
+	PullStyle();
 
 	// The width it is given decides where an Auto Wrap Text breaks its lines - known only once it has been arranged.
 	const float Width = AllottedGeometry.GetLocalSize().X;
@@ -965,6 +1021,13 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 
 	const FWidgetAnimTextEffects* Fx = Effects.IsValid() && !Effects->IsEmpty() ? Effects.Get() : nullptr;
 	const FWidgetAnimTextMarkup* Markup = Style.Markup.IsValid() && Style.Markup->bDrawsEffects ? Style.Markup.Get() : nullptr;
+
+	// A glow layer draws only what glows into it; with nothing, nothing.
+	const float GlowStrengthScale = bGlowOnly ? GetEffectStrength(EffectKeyFilter) : 0.f;
+	if (bGlowOnly && (!Markup || GlowStrengthScale <= 0.f))
+	{
+		return LayerId;
+	}
 	const double Now = GetNow();
 	const bool bChanging = Change.IsActive(Now) && Change.Letters.Num() == Letters.Num();
 
@@ -1043,7 +1106,7 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 
 		const FWidgetAnimTextRunStyle& RunStyle = ResolvedRuns[Run];
 		FLinearColor Shadow = RunShadows[Run];
-		if (Shadow.A > 0.f && !RunStyle.ShadowOffset.IsNearlyZero())
+		if (!bGlowOnly && Shadow.A > 0.f && !RunStyle.ShadowOffset.IsNearlyZero())
 		{
 			Shadow.A *= Opacity;
 			FSlateDrawElement::MakeShapedText(OutDrawElements, LayerId, MakeGeometry(Offset + FVector2f(RunStyle.ShadowOffset)).ToPaintGeometry(), Glyphs.ToSharedRef(), DrawEffects, Shadow, Shadow);
@@ -1051,8 +1114,9 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 
 		FLinearColor Color = ColorOverride ? *ColorOverride : RunColors[Run];
 		Color.A *= Opacity;
-		FLinearColor Outline = RunOutlines[Run];
-		Outline.A *= Opacity;
+		// The glow layer's outline glows with the letter: it is part of its shape.
+		FLinearColor Outline = bGlowOnly ? Color : RunOutlines[Run];
+		Outline.A *= bGlowOnly ? 1.f : Opacity;
 		FSlateDrawElement::MakeShapedText(OutDrawElements, LayerId + 1, MakeGeometry(Offset).ToPaintGeometry(), Glyphs.ToSharedRef(), DrawEffects, Color, Outline);
 	};
 
@@ -1260,6 +1324,9 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 		FBox2f Clip(ForceInit);
 		bool bClip = false;
 
+		// The glow a tag gives the letter - the innermost glowing tag around it wins. Only the glow layer reads it.
+		const FWidgetAnimTextTag* GlowTag = nullptr;
+
 		// A change of text: where this letter was before it, so it slides from there to its new place as the change goes.
 		const FChangeLetter* ChangeLetter = bChanging ? &Change.Letters[LetterIndex] : nullptr;
 		const FDrawnLetter* OldLetter = ChangeLetter && Change.Old.IsValidIndex(ChangeLetter->Old) ? &Change.Old[ChangeLetter->Old] : nullptr;
@@ -1319,6 +1386,10 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 				if (TextTag.bSize)
 				{
 					EffectScale *= FMath::Max(TextTag.Size, 0.f);
+				}
+				if (bGlowOnly && Span.EffectKey != 0 && Span.EffectKey == EffectKeyFilter)
+				{
+					GlowTag = &TextTag;
 				}
 				if (TextTag.bWave && TextTag.WaveLength > KINDA_SMALL_NUMBER)
 				{
@@ -1419,7 +1490,7 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 				// The text still to come, faint and in its place, moving as the letters around it do.
 				auto DrawGhost = [&](float GhostShare)
 				{
-					if (!Fx->bRevealGhost || GhostShare <= 0.f)
+					if (bGlowOnly || !Fx->bRevealGhost || GhostShare <= 0.f)
 					{
 						return;
 					}
@@ -1533,6 +1604,33 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 
 		const FLinearColor* ColorOverride = bRecolored ? &Color : nullptr;
 
+		// The glow layer: the letter in its glow color - the tag's, or its own as drawn - at its tag's share of the
+		// strongest glow in the text (the material scales the rest), dipping as its glow pulses. Everything else about
+		// it - where it is, how it moves, how far it has arrived - is as the text draws it.
+		if (bGlowOnly)
+		{
+			if (!GlowTag)
+			{
+				continue;
+			}
+			FLinearColor GlowColor = Color;
+			if (!GlowTag->bGlowInTextColor)
+			{
+				GlowColor = GlowTag->GlowColor * Tint;
+				GlowColor.A = GlowTag->GlowColor.A * Color.A;
+			}
+			float GlowShare = GlowTag->GlowStrength / FMath::Max(GlowStrengthScale, KINDA_SMALL_NUMBER);
+			if (GlowTag->GlowPulse > 0.f)
+			{
+				const float Phase = static_cast<float>(FMath::Fmod(Now * GlowTag->GlowPulseSpeed, 1.0));
+				GlowShare *= 1.f - FMath::Clamp(GlowTag->GlowPulse, 0.f, 1.f) * (0.5f - 0.5f * FMath::Cos(2.f * PI * Phase));
+			}
+			GlowColor.A *= FMath::Clamp(GlowShare, 0.f, 1.f);
+			const FVector2f GlowAt = Box.Min + (bChangedHere ? Glide : FVector2f::ZeroVector);
+			DrawPosed(Glyphs, Letter.Run, GlowAt, Box.GetSize(), bPosed, Composed, Opacity, &GlowColor, Blur, bClip ? &Clip : nullptr);
+			continue;
+		}
+
 		// A changed character: the old one leaving and the new one coming in, or a digit turning on its reel.
 		if (bChangedHere && !bStandIn)
 		{
@@ -1602,8 +1700,8 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 		DrawPosed(Glyphs, Letter.Run, Origin, Size, bPosed, Composed, Opacity, ColorOverride, Blur, bClip ? &Clip : nullptr);
 	}
 
-	// Old characters with nothing to go to - a number that lost a digit - leave where they were.
-	if (bChanging && bOldGlyphsUsable)
+	// Old characters with nothing to go to - a number that lost a digit - leave where they were. Not glowing.
+	if (!bGlowOnly && bChanging && bOldGlyphsUsable)
 	{
 		for (const int32 OldIndex : Change.Leaving)
 		{

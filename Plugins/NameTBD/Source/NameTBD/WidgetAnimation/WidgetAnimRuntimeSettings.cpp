@@ -14,8 +14,12 @@ void UWidgetAnimRuntimeSettings::PostEditChangeProperty(FPropertyChangedEvent& P
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	// Every text reads its tags again the next time it is drawn, so an edited tag shows in the designer at once.
-	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UWidgetAnimRuntimeSettings, TextTags))
+	// Every text reads its tags again the next time it is drawn, so an edited tag - or the glow's defaults or material -
+	// shows in the designer at once.
+	const FName Member = PropertyChangedEvent.GetMemberPropertyName();
+	if (Member == GET_MEMBER_NAME_CHECKED(UWidgetAnimRuntimeSettings, TextTags)
+		|| Member == GET_MEMBER_NAME_CHECKED(UWidgetAnimRuntimeSettings, TextGlowDefaults)
+		|| Member == GET_MEMBER_NAME_CHECKED(UWidgetAnimRuntimeSettings, TextGlowMaterial))
 	{
 		WidgetAnimTextMarkup::NotifyTagsChanged();
 	}

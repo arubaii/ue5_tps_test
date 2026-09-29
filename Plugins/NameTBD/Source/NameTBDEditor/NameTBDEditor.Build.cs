@@ -21,6 +21,7 @@ public class NameTBDEditor : ModuleRules
 			"Slate",
 			"SlateCore",
 			"InputCore",
+			"ApplicationCore",   // the clipboard, for cutting, copying and pasting tracks
 			"UnrealEd",
 			"PropertyEditor",
 			"StatusBar",

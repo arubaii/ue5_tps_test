@@ -200,6 +200,13 @@ private:
 	EWidgetAnimTextWidgetKind Kind = EWidgetAnimTextWidgetKind::Text;
 
 	TSharedPtr<SWidgetAnimText> Slate;
+
+	/** The material effects under and over Slate - glows and the like, from the text's tags. See SWidgetAnimTextGlow. */
+	TSharedPtr<class SWidgetAnimTextGlow> EffectsUnder;
+	TSharedPtr<class SWidgetAnimTextGlow> EffectsOver;
+
+	/** Every copy of the text the effect layers draw - for passing on what Slate is given. */
+	void ForEachEffectText(TFunctionRef<void(SWidgetAnimText&)> Visit) const;
 	TSharedRef<FWidgetAnimTextEffects> Effects;
 
 	/** How many parts of the reveal had appeared at the last change - what the events are fired against. */

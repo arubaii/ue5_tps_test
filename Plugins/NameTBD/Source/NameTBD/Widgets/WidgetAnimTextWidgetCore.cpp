@@ -10,6 +10,8 @@
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
 #include "SWidgetAnimText.h"
+#include "SWidgetAnimTextGlow.h"
+#include "Widgets/SOverlay.h"
 
 FWidgetAnimTextWidgetCore::FWidgetAnimTextWidgetCore()
 	: Effects(MakeShared<FWidgetAnimTextEffects>())
@@ -96,7 +98,45 @@ TSharedRef<SWidget> FWidgetAnimTextWidgetCore::BuildSlate()
 		.StyleSource(StyleSource)
 		.Effects(Effects)
 		.OnTextChanged([this]() { HandleTextChanged(); });
-	return Slate.ToSharedRef();
+
+	// The material effects of the text's tags - <glow> under it, and whatever a tag's own material makes, under or over
+	// it. Every text widget has both sides, so a tag is all it takes; each does nothing until the text asks for it.
+	auto MakeEffects = [this](bool bOver)
+	{
+		return SNew(SWidgetAnimTextGlow)
+			.Visibility(EVisibility::HitTestInvisible)
+			.Text(Slate)
+			.Over(bOver)
+			.StyleSource(StyleSource)
+			.Effects(Effects);
+	};
+	EffectsUnder = MakeEffects(/*bOver=*/false);
+	EffectsOver = MakeEffects(/*bOver=*/true);
+
+	return SNew(SOverlay)
+		+ SOverlay::Slot()
+		[
+			EffectsUnder.ToSharedRef()
+		]
+		+ SOverlay::Slot()
+		[
+			Slate.ToSharedRef()
+		]
+		+ SOverlay::Slot()
+		[
+			EffectsOver.ToSharedRef()
+		];
+}
+
+void FWidgetAnimTextWidgetCore::ForEachEffectText(TFunctionRef<void(SWidgetAnimText&)> Visit) const
+{
+	for (const TSharedPtr<SWidgetAnimTextGlow>& Side : { EffectsUnder, EffectsOver })
+	{
+		if (Side.IsValid())
+		{
+			Side->ForEachLayerText(Visit);
+		}
+	}
 }
 
 void FWidgetAnimTextWidgetCore::ReleaseSlate()
@@ -110,6 +150,8 @@ void FWidgetAnimTextWidgetCore::ReleaseSlate()
 		}
 	}
 	Slate.Reset();
+	EffectsUnder.Reset();
+	EffectsOver.Reset();
 }
 
 void FWidgetAnimTextWidgetCore::NotifyRebuilt()
@@ -153,6 +195,7 @@ void FWidgetAnimTextWidgetCore::NotifyTextChanged()
 		FWidgetAnimTextStyle Style;
 		StyleSource(Style);
 		Slate->SetStyle(Style);
+		ForEachEffectText([&Style](SWidgetAnimText& Copy) { Copy.SetStyle(Style); });
 	}
 
 	// A new text is a new reveal: skipping the last one to its end doesn't skip this one.
@@ -255,6 +298,7 @@ void FWidgetAnimTextWidgetCore::SetPartPoses(TConstArrayView<FWidgetAnimPartPose
 	{
 		Slate->SetPartPoses(Poses);
 	}
+	ForEachEffectText([Poses](SWidgetAnimText& Copy) { Copy.SetPartPoses(Poses); });
 }
 
 void FWidgetAnimTextWidgetCore::ClearPartPoses()
@@ -263,6 +307,7 @@ void FWidgetAnimTextWidgetCore::ClearPartPoses()
 	{
 		Slate->ClearPartPoses();
 	}
+	ForEachEffectText([](SWidgetAnimText& Copy) { Copy.ClearPartPoses(); });
 }
 
 void FWidgetAnimTextWidgetCore::NotifyEffectsChanged(const FString& DisplayString)
@@ -334,6 +379,7 @@ void FWidgetAnimTextWidgetCore::NotifyEffectsChanged(const FString& DisplayStrin
 	{
 		Slate->NotifyEffectsChanged();
 	}
+	ForEachEffectText([](SWidgetAnimText& Copy) { Copy.NotifyEffectsChanged(); });
 }
 
 bool FWidgetAnimTextWidgetCore::IsRevealing() const

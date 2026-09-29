@@ -69,6 +69,20 @@ namespace NameTBD
 
 			/** How tall the highlight sheen along a section's top is drawn, in pixels. */
 			inline constexpr float SectionSheenHeight = 20.0f;
+			// The macro node's half-tone line: part way down a track's body, everything below it is a shade darker,
+			// most at the right end and fading out toward the left, so the line disappears as it runs left. The defaults
+			// are measured off the macro node: the line 61% down, the right half of the width darkened, from nothing at
+			// its middle to about a quarter darker at its right end, a little slower at first than an even fade.
+			//   SectionHalfTone: the shade laid over the body below the line; alpha is how dark at the right end (0 turns it off).
+			//   SectionHalfToneLine: where the line sits, as a share of the body's height from its top.
+			//   SectionHalfToneReach: how far left it reaches before it has faded out, as a share of the track's width.
+			//   SectionHalfToneMaxReach: a cap on that in pixels; 0 for none, which is how the macro node does it.
+			//   SectionHalfToneFalloff: how it fades - 1 evenly, higher keeps it to the right end.
+			inline const FLinearColor SectionHalfTone(0.00f, 0.00f, 0.00f, 0.26f);
+			inline constexpr float SectionHalfToneLine = 0.61f;
+			inline constexpr float SectionHalfToneReach = 0.50f;
+			inline constexpr float SectionHalfToneMaxReach = 0.0f;
+			inline constexpr float SectionHalfToneFalloff = 1.2f;
 
 			/** How much a hovered section's color is lifted. */
 			inline constexpr float SectionHoverLift = 1.15f;
@@ -272,6 +286,29 @@ namespace NameTBD
 			inline constexpr float ContextTrackOpacity = 0.55f;
 			inline const FLinearColor ContextTrackText(1.00f, 1.00f, 1.00f, 0.55f);
 			inline const FLinearColor StartLinkedText = FLinearColor(AnimationOrange_Normal);
+
+			// -------------------------------------------------------------------------------------------------
+			// Context menu icons - Add Animation Track in green, the Delete entries in red. Brighter than they
+			// show: the menu dims its icons at rest (see FNameTBDStyle::Create).
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor MenuAddIconTint(0.35f, 0.95f, 0.45f);
+			inline const FLinearColor MenuDeleteIconTint(1.00f, 0.32f, 0.30f);
+
+			// -------------------------------------------------------------------------------------------------
+			// Track text - the name, length, easing and segment curves drawn on a track (and the labels on stagger
+			// tails and context tracks), with a slight drop shadow under them for legibility.
+			// TrackTextShadowOffset: how far the shadow sits down and to the right, in pixels.
+			// TrackTextShadow: its color; the alpha is how strong it is (0 turns it off).
+			// -------------------------------------------------------------------------------------------------
+
+			inline constexpr float TrackTextShadowOffset = 1.0f;
+			// How far a hidden track's text leans when its font has no italic typeface and it is slanted instead:
+			// pixels right per pixel up.
+			inline constexpr float TrackTextSlant = 0.2f;
+			inline const FLinearColor TrackTextShadow(0.00f, 0.00f, 0.00f, 0.55f);
+			// The smallest a track's text is shrunk to, zoomed out, before it is left out - as a share of its size.
+			inline constexpr float TrackTextMinShrink = 0.5f;
 		}
 	}
 }

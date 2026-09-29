@@ -7,6 +7,7 @@
 #include "PropertyEditorDelegates.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Widgets/SCompoundWidget.h"
+#include "Widgets/Layout/SSplitter.h"
 
 #include "NameTBD/WidgetAnimation/WidgetAnimLibrary.h"
 
@@ -440,8 +441,11 @@ public:
 	 *
 	 * InitialTypeParams is a Registered Type layer's type and its starting settings - a Count at its defaults, or a
 	 * Blueprint type with its default values. Ignored on every built-in type.
+	 *
+	 * AtSeconds, when set, is where on the Track Editor's time axis (played seconds) the menu that added it was
+	 * opened: the new track starts right there, With the track above it and delayed to that time, rather than After it.
 	 */
-	void AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, const FInstancedStruct* InitialTypeParams = nullptr);
+	void AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, const FInstancedStruct* InitialTypeParams = nullptr, TOptional<float> AtSeconds = TOptional<float>());
 	void DuplicateLayer(int32 LayerIndex);
 	void DeleteLayer(int32 LayerIndex);
 
@@ -456,6 +460,39 @@ public:
 	 * hiding a track is a way of looking at the animation, not of changing what it does.
 	 */
 	void SetLayersHidden(const TArray<int32>& LayerIndices, bool bHidden);
+
+	/**
+	 * Focus Tracks: hides every other track - marked bHiddenByFocus, so it can be told from one hidden by hand - and
+	 * shows these. A focus already on is lifted first. Undoable, and allowed while the panel is read-only, as hiding is.
+	 */
+	void FocusLayers(const TArray<int32>& LayerIndices);
+
+	/** Un-focus: shows the tracks Focus Tracks hid, and only those - a track hidden by hand before stays hidden. */
+	void UnfocusLayers();
+
+	/** Whether Focus Tracks is on: some track is hidden by it. */
+	bool IsFocusActive() const;
+
+	/**
+	 * Copies tracks to the clipboard as text - each with where it starts and its group - for Paste here or in any
+	 * other Widget Animations panel. Cut copies them, then deletes those that aren't locked.
+	 */
+	void CopyLayers(const TArray<int32>& LayerIndices);
+	void CutLayers(const TArray<int32>& LayerIndices);
+
+	/** Whether the clipboard holds tracks copied from a Widget Animations panel. */
+	bool CanPasteLayers() const;
+
+	/**
+	 * Pastes the copied tracks after the selected one, keeping their spacing in time, the first starting at AtSeconds
+	 * (played seconds on the time axis) or else at the playhead. Tracks copied from one group go into GroupIndex (or
+	 * the default group); tracks copied from several keep their groups where the animation has them. The pasted tracks
+	 * are selected.
+	 */
+	void PasteLayers(int32 GroupIndex = INDEX_NONE, TOptional<float> AtSeconds = TOptional<float>());
+
+	/** What Cut and Copy act on from the keyboard: the selected tracks, or the one selected. */
+	TArray<int32> GetClipboardLayers() const;
 
 	/** Moves a layer in the sequence so it sits before InsertBefore. Num() means last. Its group is unchanged. */
 	void MoveLayerTo(int32 LayerIndex, int32 InsertBefore);
@@ -538,11 +575,17 @@ public:
 	// Menus
 	// ---------------------------------------------------------------------------------------------
 
-	TSharedRef<SWidget> MakeGroupContextMenu(int32 GroupIndex);
-	TSharedRef<SWidget> MakeLayerContextMenu(int32 LayerIndex, int32 KeyIndex, TOptional<float> LocalSeconds);
+	/** AtSeconds: where on the time axis the group's line was right-clicked, for tracks added from the menu. */
+	TSharedRef<SWidget> MakeGroupContextMenu(int32 GroupIndex, TOptional<float> AtSeconds = TOptional<float>());
+	/** LocalSeconds: where on the track's bar it was right-clicked. ClickSeconds: where on the time axis, for tracks added from it. */
+	TSharedRef<SWidget> MakeLayerContextMenu(int32 LayerIndex, int32 KeyIndex, TOptional<float> LocalSeconds, TOptional<float> ClickSeconds = TOptional<float>());
 
-	/** Add Layer Group, Add Animation Track to each group, and Insert Existing Widget Animation. */
-	TSharedRef<SWidget> MakeAddMenu(int32 GroupIndex);
+	/**
+	 * Add Layer Group, Add Animation Track to each group, and Insert Existing Widget Animation. Opened within a
+	 * group (bWithinGroup, on an empty stretch of one of its lines), only that group's Add Animation Track, and no
+	 * Add Layer Group. AtSeconds: where on the time axis it was opened, for tracks added from it.
+	 */
+	TSharedRef<SWidget> MakeAddMenu(int32 GroupIndex, bool bWithinGroup = false, TOptional<float> AtSeconds = TOptional<float>());
 
 	/** Display name and track color of a layer type. The color is the user's, from the editor settings. */
 	static FText GetAnimTypeName(EWidgetAnimType AnimType);
@@ -677,11 +720,20 @@ private:
 	/** The Insert Existing Widget Animation picker. */
 	void AddInsertAnimationEntry(class FMenuBuilder& Menu, int32 GroupIndex);
 
-	/** "Add Animation Track to {group}", opening onto every track type. */
-	void AddTrackSubMenu(class FMenuBuilder& Menu, int32 GroupIndex);
+	/** Paste, into GroupIndex (INDEX_NONE: see PasteLayers) from AtSeconds - disabled while nothing copied is on the clipboard. */
+	void AddPasteEntry(class FMenuBuilder& Menu, int32 GroupIndex, TOptional<float> AtSeconds);
 
-	/** Every track type - built-in, registered, Blueprint - each adding a track of it to GroupIndex. */
-	void AddTrackTypeEntries(class FMenuBuilder& Menu, int32 GroupIndex);
+	/** Cut, Copy and Paste for a track's menu, acting on LayerIndices and pasting as AddPasteEntry does. */
+	void AddClipboardEntries(class FMenuBuilder& Menu, const TArray<int32>& LayerIndices, int32 GroupIndex, TOptional<float> AtSeconds);
+
+	/** Focus Track(s) on LayerIndices, and Un-focus while a focus is on. */
+	void AddFocusEntries(class FMenuBuilder& Menu, const TArray<int32>& LayerIndices);
+
+	/** "Add Animation Track to {group}", opening onto every track type. AtSeconds: see AddLayer. */
+	void AddTrackSubMenu(class FMenuBuilder& Menu, int32 GroupIndex, TOptional<float> AtSeconds = TOptional<float>());
+
+	/** Every track type - built-in, registered, Blueprint - each adding a track of it to GroupIndex. AtSeconds: see AddLayer. */
+	void AddTrackTypeEntries(class FMenuBuilder& Menu, int32 GroupIndex, TOptional<float> AtSeconds = TOptional<float>());
 
 	/** The compact panel's header strip: the list's name, then Add Track, Save as Animation and Expand. */
 	TSharedRef<SWidget> MakeCompactHeader();
@@ -789,6 +841,17 @@ private:
 	TSet<int32> TrackCollapsedGroups;
 	TSet<int32> ListCollapsedGroups;
 	float RowHeight = DefaultRowHeight;
+
+	/**
+	 * How far along each of the panel's splitters sits - the Animation Tracks list, the Track Editor and the Selection
+	 * panel - by key, read from the editor's per-project settings the first time and saved as they are dragged, so the
+	 * layout outlasts a dock or undock, a closed panel and an editor restart. See MakeSplitSize / MakeSplitResized.
+	 */
+	mutable TMap<FName, float> SplitSizes;
+	float GetSplitSize(FName Key, float Default) const;
+	void SetSplitSize(float NewSize, FName Key);
+	TAttribute<float> MakeSplitSize(FName Key, float Default);
+	SSplitter::FOnSlotResized MakeSplitResized(FName Key);
 
 	TSharedPtr<SVerticalBox> LayerList;
 	TSharedPtr<SWidgetAnimTimelineTracks> Tracks;
