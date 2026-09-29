@@ -63,6 +63,34 @@ namespace NameTBD::Tooltips
 				"A Spring track springs across its whole run, keys and all, so it has no curves between keys. Its keys are points along the way it travels.");
 		}
 
+		// -------------------------------------------------------------------------------------------------
+		// Staggers - notes in a staggered track's tooltip
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText StaggerPartsTypeNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "StaggerPartsTypeNote",
+				"Letters, words and lines can only be moved by Fade, Scale, Slide, Rotate, Pulse and Transform tracks. This track plays once, on the whole widget.");
+		}
+
+		inline FText StaggerNoTextNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "StaggerNoTextNote",
+				"Nothing to stagger on the preview: letters, words and lines need an Animated Text Block, and a plain Text Block has none to move. Replace it with an Animated Text Block.");
+		}
+
+		inline FText StaggerNoChildrenNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "StaggerNoChildrenNote",
+				"Nothing to stagger on the preview: the widget has no children shown. A list filled at runtime staggers the entries it shows then.");
+		}
+
+		inline FText StaggerValueNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "StaggerValueNote",
+				"A value-driven track shows its value from the moment it starts, so its items all follow it together - the stagger's spacing isn't used.");
+		}
+
 		inline FText NotForThisTrackType()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NotForThisTrackType",

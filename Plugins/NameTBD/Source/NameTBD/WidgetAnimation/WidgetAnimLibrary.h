@@ -13,6 +13,8 @@
 #include "WidgetAnimDriver.h"    // Value-driven tracks: FWidgetAnimValueOptions, FWidgetAnimValueState
 #include "WidgetAnimInput.h"     // Value-driven tracks: FWidgetAnimInputSource (Value Input)
 #include "WidgetAnimEvaluator.h" // FWidgetAnimTypeParams, registered track types
+#include "WidgetAnimExpander.h"  // Staggers: FWidgetAnimExpander
+#include "WidgetAnimParts.h"     // Parts of a widget: FWidgetAnimPartKey
 #include "StructUtils/InstancedStruct.h"
 #include "WidgetAnimLibrary.generated.h"
 
@@ -244,6 +246,13 @@ struct NAMETBD_API FWidgetAnimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (ClampMin = "0.0"))
 	float Delay = 0.f;
 
+	/**
+	 * Fans the layer out into one copy per child, letter, word or line of its widget, their starts spread apart, when
+	 * it starts playing. See WidgetAnimExpander.h and FWidgetAnimLayer::Expander.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Stagger", BaseStruct = "/Script/NameTBD.WidgetAnimExpander", ExcludeBaseStruct))
+	FInstancedStruct Expander;
+
 	/** Hidden on a Spring layer, whose spring is its motion. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Tween || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	EWidgetAnimEasing Easing = EWidgetAnimEasing::EaseOut;
@@ -265,10 +274,24 @@ struct NAMETBD_API FWidgetAnimSettings
 
 	/**
 	 * How a value-driven track travels to each new value: Immediate jumps, Tween eases over Duration by Easing, Spring
-	 * chases it with the spring. Part of the motion, so authored here only - a widget can't override it.
+	 * chases it with the spring, Steady moves at Steady Speed. Part of the motion, so authored here only - a widget can't override it.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value", EditConditionHides))
 	EWidgetAnimValueSmoothing ValueSmoothing = EWidgetAnimValueSmoothing::Spring;
+
+	/**
+	 * Steady smoothing: how fast the track moves toward each new value, in the value's own units a second - 250 counts
+	 * coins up 250 a second, whatever the range of the track.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Steady Speed", ClampMin = "0.0", EditCondition = "Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Steady", EditConditionHides))
+	double SteadySpeed = 100.0;
+
+	/**
+	 * Steady smoothing: the longest it may take to arrive at a new value. A value further off than Steady Speed covers in
+	 * this long is caught up to faster, easing back to the steady pace as it closes in. 0: always the steady pace.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Catch Up Within", ClampMin = "0.0", UIMax = "5.0", Units = "s", EditCondition = "Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Steady", EditConditionHides))
+	float SteadyCatchUpTime = 1.f;
 
 	/**
 	 * On a value-driven Transform track: what its one value moves - the whole path of its keys, only their translation,
@@ -361,6 +384,37 @@ struct NAMETBD_API FWidgetAnimSettings
 	 */
 	UPROPERTY(Transient)
 	TObjectPtr<UObject> ValueScope = nullptr;
+
+	/**
+	 * Which part of TargetWidget this layer moves - a letter of an Animated Text Block - rather than the whole widget.
+	 * Set only on the copies a text stagger fans a layer out into. See WidgetAnimParts.h. Never saved.
+	 */
+	FWidgetAnimPartKey Part;
+
+	/**
+	 * Before it starts, the layer shows its start pose rather than leaving its widget alone. Set on the copies a stagger
+	 * fans a layer out into, from its Hold Start Pose Until Its Turn - so a letter waiting its turn to fade in is not
+	 * already showing. Never saved.
+	 */
+	bool bHoldStartPose = false;
+
+	/**
+	 * A registered type that works something out as it starts playing (see FWidgetAnimEvaluator::NeedsPlayPreparation)
+	 * has done it: its TypeParams hold what it worked out, and its Duration the length that came of it. Set by
+	 * UWidgetAnimLibrary::ExpandSettings, so preparing again does nothing. Never saved.
+	 */
+	bool bPlayPrepared = false;
+
+	/**
+	 * How UWidgetAnimLibrary::BuildLayerSettings placed this layer, kept so that a stagger fanning out at play time can
+	 * move the layers after it along by however much longer it turned out to be - see
+	 * UWidgetAnimLibrary::ExpandSettings. PlacementChain names the list it was placed in (INDEX_NONE: not placed there,
+	 * and never moved); the rest are its own Starts, Delay and run length as it was placed. Never saved.
+	 */
+	int32 PlacementChain = INDEX_NONE;
+	bool bPlacedAfterPrevious = false;
+	float PlacedDelay = 0.f;
+	float PlacedRun = 0.f;
 
 	// ------------------------------------------------------------------
 	// Fade
@@ -497,6 +551,8 @@ struct NAMETBD_API FWidgetAnimSettings
 		Motion.TweenEasing = Easing;
 		Motion.TweenCurve = CustomCurve;
 		Motion.Spring = &Spring;
+		Motion.SteadySpeed = SteadySpeed;
+		Motion.SteadyCatchUpTime = SteadyCatchUpTime;
 		FWidgetAnimValueOptions Effective;
 		Effective.Kind = GetEffectiveValueKind();
 		Motion.NumChannels = Effective.GetNumChannels();
@@ -575,6 +631,17 @@ struct NAMETBD_API FWidgetAnimLayer
 	float Delay = 0.f;
 
 	/**
+	 * Plays the track once for each child of its widget - or each letter, word or line of an Animated Text Block - each
+	 * starting a little after the one before: rows of a list sliding in one by one, a title's letters dropping into
+	 * place. Worked out every time the track starts, on the widget as it is then. None plays it once, on the widget.
+	 *
+	 * The track as authored is the first item; the others follow, so the track reaches as far along the timeline as its
+	 * last item, and a track after it set to After Previous waits for that one. See WidgetAnimExpander.h.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Stagger", BaseStruct = "/Script/NameTBD.WidgetAnimExpander", ExcludeBaseStruct))
+	FInstancedStruct Expander;
+
+	/**
 	 * How the track moves between its start and end values: the curve it follows over its Duration. With keys
 	 * between them - or on a Transform track - it is how each segment left at Track Easing moves from its key to
 	 * the next. Hidden on a Spring track, whose spring is its motion.
@@ -602,10 +669,24 @@ struct NAMETBD_API FWidgetAnimLayer
 
 	/**
 	 * How a value-driven track travels to each new value: Immediate jumps, Tween eases over Duration by Easing, Spring
-	 * chases it with the spring. Part of the motion, so authored here only - a widget can't override it.
+	 * chases it with the spring, Steady moves at Steady Speed. Part of the motion, so authored here only - a widget can't override it.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value", EditConditionHides))
 	EWidgetAnimValueSmoothing ValueSmoothing = EWidgetAnimValueSmoothing::Spring;
+
+	/**
+	 * Steady smoothing: how fast the track moves toward each new value, in the value's own units a second - 250 counts
+	 * coins up 250 a second, whatever the range of the track.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Steady Speed", ClampMin = "0.0", EditCondition = "Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Steady", EditConditionHides))
+	double SteadySpeed = 100.0;
+
+	/**
+	 * Steady smoothing: the longest it may take to arrive at a new value. A value further off than Steady Speed covers in
+	 * this long is caught up to faster, easing back to the steady pace as it closes in. 0: always the steady pace.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Catch Up Within", ClampMin = "0.0", UIMax = "5.0", Units = "s", EditCondition = "Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Steady", EditConditionHides))
+	float SteadyCatchUpTime = 1.f;
 
 	/**
 	 * On a value-driven Transform track: what its one value moves - the whole path of its keys, only their translation,
@@ -715,7 +796,7 @@ struct NAMETBD_API FWidgetAnimLayer
 
 	// Registered types
 	//
-	// A Registered Type track's type and its settings, in one: the struct held here is the type (Count Up is an
+	// A Registered Type track's type and its settings, in one: the struct held here is the type (Count is an
 	// FWidgetAnimCountUpParams), and its fields are that type's settings. Only this track's own type's fields are
 	// carried, which is how new families stop adding flat fields to every track. Empty on every built-in type, so
 	// assets authored before registered types existed load exactly as they were. See FWidgetAnimEvaluator.
@@ -759,6 +840,8 @@ struct NAMETBD_API FWidgetAnimLayer
 		Motion.TweenEasing = Easing;
 		Motion.TweenCurve = CustomCurve;
 		Motion.Spring = &Spring;
+		Motion.SteadySpeed = SteadySpeed;
+		Motion.SteadyCatchUpTime = SteadyCatchUpTime;
 		FWidgetAnimValueOptions Effective;
 		Effective.Kind = GetEffectiveValueKind();
 		Motion.NumChannels = Effective.GetNumChannels();
@@ -989,6 +1072,12 @@ struct NAMETBD_API FWidgetAnimTargetedTransform
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	UWidget* TargetWidget = nullptr;
 
+	/**
+	 * A part of TargetWidget - a letter - rather than the whole of it: posed on the part, through the widget's
+	 * IWidgetAnimPartHost, instead of on its render transform. Unset for a whole widget. Not reflected.
+	 */
+	FWidgetAnimPartKey Part;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	float Opacity = 1.f;
 
@@ -1175,6 +1264,14 @@ struct NAMETBD_API FWidgetAnimTrack
 
 	UPROPERTY()
 	TArray<FWidgetAnimState> States;
+
+	/**
+	 * Set when the track starts with staggered layers still to fan out: they fan out on the track's first tick, where
+	 * the widget they are played on is known (see UWidgetAnimLibrary::TickWidgetAnimPlayer). ExpansionFirstFrame is the
+	 * frame it first tried, for giving up on waiting. Not reflected.
+	 */
+	bool bNeedsExpansion = false;
+	uint64 ExpansionFirstFrame = 0;
 };
 
 USTRUCT(BlueprintType)
@@ -1278,7 +1375,7 @@ struct NAMETBD_API FWidgetAnimBaselineSet
 	TArray<FWidgetAnimShapeBaseline> ShapeBaselines;
 
 	/**
-	 * What every registered track's target held before it was animated - a Text Block's text under a Count Up, say -
+	 * What every registered track's target held before it was animated - a Text Block's text under a Count, say -
 	 * one per target and channel. Usually empty.
 	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
@@ -1473,6 +1570,60 @@ public:
 	 */
 	static void BuildLayerSettings(const TArray<FWidgetAnimLayer>& Layers, TArray<FWidgetAnimSettings>& OutSettings);
 
+	/**
+	 * Where each of Layers starts, in seconds from the start of the animation - the rule BuildLayerSettings places them
+	 * by. ExtraSpans, when given, lengthens a layer by that many seconds for the layers after it (or, negative, shortens
+	 * it): a staggered layer's items after its first, or a length worked out on its widget, which is how the Widget
+	 * Animations editor places the layers after one. OutStarts gets one start per layer.
+	 */
+	static void PlaceLayerStarts(const TArray<FWidgetAnimLayer>& Layers, TConstArrayView<float> ExtraSpans, TArray<float>& OutStarts);
+
+	/**
+	 * Whether any of Settings has a Stagger still to fan out, or a registered type still to prepare for play (see
+	 * NeedsPlayPreparation). Cheap: what every player and preview asks before it does any fanning out.
+	 */
+	static bool HasExpanders(const TArray<FWidgetAnimSettings>& Settings);
+
+	/**
+	 * Whether Layer is a registered type that works something out from its widget as it starts playing - a Text Reveal
+	 * counting its letters to set its length by its Typing Speed - and hasn't yet. ExpandSettings does it.
+	 */
+	static bool NeedsPlayPreparation(const FWidgetAnimSettings& Layer);
+
+	/**
+	 * How long Layer runs once prepared for play on its widget - TargetWidget, or FallbackWidget where it names none: a
+	 * text typed out at its Typing Speed runs as long as its letters take. Its authored run length when its type
+	 * prepares nothing or keeps its length. For the Widget Animations editor, which draws and places a track by it.
+	 */
+	static float GetPreparedRunLength(UWidget* FallbackWidget, const FWidgetAnimSettings& Layer);
+
+	/**
+	 * Settings with every Stagger fanned out, into OutSettings: each staggered layer as one copy per item of its widget
+	 * - TargetWidget, or FallbackWidget where it names none - each started its share of the spread later, and every
+	 * layer placed after a staggered one in the same list moved along by however much longer it turned out to be. See
+	 * WidgetAnimExpander.h. The copies carry no Stagger, so fanning out what has been fanned out already does nothing.
+	 *
+	 * Registered types are prepared for play on their widget first (see FWidgetAnimEvaluator::PrepareForPlay): a length
+	 * worked out there - a text typed at its Typing Speed - moves the layers placed after it the same way, shorter or
+	 * longer. Such a layer plays as a Tween (a Spring's length being its own), and Linear where its type prefers an even
+	 * pace - a text typed out.
+	 *
+	 * False, with OutSettings left alone, when nothing in Settings has a Stagger or anything to prepare. bOutReady, when
+	 * given, is false when a stagger's items can't be counted yet (see FWidgetAnimExpander::IsReadyToExpand) or a type
+	 * isn't ready to prepare; OutSettings is filled anyway.
+	 */
+	static bool ExpandSettings(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Settings, TArray<FWidgetAnimSettings>& OutSettings, bool* bOutReady = nullptr);
+
+	/**
+	 * How many items one layer's Stagger fans out to on its widget right now - TargetWidget, or FallbackWidget where it
+	 * names none. INDEX_NONE when it has no Stagger. For the Widget Animations editor, which places the layers after a
+	 * staggered one by it.
+	 */
+	static int32 CountExpandedItems(UWidget* FallbackWidget, const FWidgetAnimSettings& Settings);
+
+	/** Whether a type moves a widget's render transform and opacity - the only ones that can move a part of it. */
+	static bool TypeMovesParts(EWidgetAnimType AnimType);
+
 #if WITH_EDITOR
 	/**
 	 * For an editor preview: marks the settings built from Layers - starting at FirstSetting, one per layer, in
@@ -1497,6 +1648,12 @@ public:
 	 * clock a scrub slider walks along, and what ApplyWidgetAnimationsAtAlpha measures Alpha against.
 	 */
 	static float GetStackPassDuration(const TArray<FWidgetAnimSettings>& Settings);
+
+	/**
+	 * GetStackPassDuration with every Stagger fanned out on FallbackWidget: the pass ApplyWidgetAnimationsAtAlpha and
+	 * every preview scrub along.
+	 */
+	static float GetExpandedPassDuration(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Settings);
 
 	/**
 	 * Seconds into its stack that key KeyIndex of a layer lands: the layer's delay plus the key's time, both
@@ -1798,7 +1955,7 @@ private:
 	static float EaseOutBack(float Alpha, float Overshoot);
 	static FVector2D GetSlideDirectionOffset(EWidgetSlideDirection Direction);
 
-	static FWidgetAnimTargetedTransform& FindOrAddTargetedTransform(FWidgetAnimResult& Result, UWidget* TargetWidget);
+	static FWidgetAnimTargetedTransform& FindOrAddTargetedTransform(FWidgetAnimResult& Result, UWidget* TargetWidget, const FWidgetAnimPartKey& Part = FWidgetAnimPartKey());
 
 	/**
 	 * One layer's contribution at DirectedAlpha.
@@ -1879,6 +2036,12 @@ private:
 
 	/** Puts a newly started track's value-driven layers at the last value set for their names, or their Start Value. */
 	static void InitializeValueLayers(const FWidgetAnimPlayer& Player, FWidgetAnimTrack& Track);
+
+	/**
+	 * Fans out a track's staggered layers - see FWidgetAnimTrack::bNeedsExpansion - on the widget it is played on. False
+	 * while it is still waiting for a stagger's items to be countable; the track doesn't play meanwhile.
+	 */
+	static bool ExpandTrack(UWidget* FallbackWidget, const FWidgetAnimPlayer& Player, FWidgetAnimTrack& Track);
 
 	static void ApplyResultInternal(UWidget* FallbackWidget, const FWidgetAnimResult& Result, const FWidgetAnimBaselineSet* Baselines);
 	static void PlayInternal(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation, const FWidgetAnimBaselineSet* Baselines);

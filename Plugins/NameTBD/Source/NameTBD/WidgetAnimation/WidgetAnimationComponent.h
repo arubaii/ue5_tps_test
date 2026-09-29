@@ -413,6 +413,15 @@ public:
 	static UWidgetAnimationComponent* FindWidgetAnimationComponent(const UWidget* Widget);
 
 	/**
+	 * Supplies Anim In and Anim Out entries for a component whose own lists are both empty - how an animated text widget
+	 * plays the project's default text animations (Project Settings > Widget Animations > Text Widgets) until it is
+	 * given entries of its own. Returns false for "no defaults". Asked each time the effective animations are built, so
+	 * a changed project default reaches every widget the next time it is constructed. Never saved; set by the owner.
+	 */
+	using FDefaultEntriesProvider = TFunction<bool(TArray<FWidgetAnimEntry>& OutAnimIn, TArray<FWidgetAnimEntry>& OutAnimOut)>;
+	void SetDefaultEntriesProvider(FDefaultEntriesProvider InProvider) { DefaultEntriesProvider = MoveTemp(InProvider); }
+
+	/**
 	 * Calls Visit for the nearest components below Widget (Widget's own component is not included): a branch that
 	 * has its own component is handed to it and not walked further, because that component cascades into its own
 	 * children in turn. Steps into nested User Widgets. The same walk Play In / Play Out cascade along, so code that
@@ -549,6 +558,9 @@ protected:
 	virtual void OnDestruct() override;
 
 private:
+
+	/** See SetDefaultEntriesProvider. */
+	FDefaultEntriesProvider DefaultEntriesProvider;
 
 	/** The widget being animated. Set from the UI Component owner, or by BindToWidget. */
 	TWeakObjectPtr<UWidget> AnimOwner;

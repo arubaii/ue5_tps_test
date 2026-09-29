@@ -443,7 +443,7 @@ namespace WidgetAnimTimeline
 	}
 
 	/**
-	 * Every C++ registered track type the Add menus offer, in name order - Count Up, and any a game's own modules have
+	 * Every C++ registered track type the Add menus offer, in name order - the text tracks, and any a game's own modules have
 	 * added. Not the Blueprint bridge, which is not a type of its own; see ForEachBlueprintType.
 	 */
 	void ForEachRegisteredType(TFunctionRef<void(const FWidgetAnimEvaluator&)> Visit)
@@ -1646,8 +1646,12 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			const float BarWidth = Rect.Max.X - Rect.Min.X;
 			const float BarHeight = Rect.Max.Y - Rect.Min.Y;
 
+			// A stagger reaches on past its first item, to where its last item ends: a tail drawn after the section.
+			const float FanSeconds = Owner->GetLayerFanSeconds(LayerIndex);
+			const float TailRight = FanSeconds > 0.f ? TimeToX(Span.X + Span.Y + FanSeconds, Size.X) : BarX0 + BarWidth;
+
 			// Nowhere near the view: nothing of it to draw.
-			if (BarX0 > Size.X + 8.f || BarX0 + BarWidth < -8.f)
+			if (BarX0 > Size.X + 8.f || FMath::Max(BarX0 + BarWidth, TailRight) < -8.f)
 			{
 				continue;
 			}
@@ -1662,6 +1666,48 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			if (bWashedOut)
 			{
 				TypeColor = SWidgetAnimTimeline::GetLockedColor(TypeColor);
+			}
+
+			// The stagger's tail: a thinner band of the track's color from the end of its first item to the end of its
+			// last, with a tick where each item after the first starts - when the preview has counted them. The ticks
+			// are left out once they would crowd into a smear.
+			if (TailRight > BarX0 + BarWidth + 0.5f)
+			{
+				const float TailHeight = BarHeight * Palette::SectionStaggerTailHeight;
+				const float TailTop = BarTop + (BarHeight - TailHeight) * 0.5f;
+				const float TailLeft = BarX0 + BarWidth;
+				Box(TailLeft, TailTop, TailRight - TailLeft, TailHeight, WithAlpha(TypeColor, Palette::SectionStaggerTailOpacity), BackingLayer, RoundedFill(2.f));
+
+				const FWidgetAnimExpander* Expander = Layer.Expander.GetPtr<FWidgetAnimExpander>();
+				const int32 NumItems = Owner->GetLayerFanCount(LayerIndex);
+				const float PixelsPerItem = (TailRight - BarX0) / FMath::Max(NumItems, 1);
+				if (Expander && NumItems > 1 && PixelsPerItem >= 3.f)
+				{
+					TArray<float> Offsets;
+					Expander->ComputeOffsets(NumItems, Offsets);
+					const float TimeScale = Owner->GetTimeScale();
+					for (const float Offset : Offsets)
+					{
+						if (Offset > 0.f)
+						{
+							const float TickX = TimeToX(Span.X + Offset * TimeScale, Size.X);
+							Box(TickX, TailTop, 1.f, TailHeight, Palette::SectionStaggerTick, BackingLayer + 1);
+						}
+					}
+				}
+
+				// What it fans out to, and how many, on the tail - where there's room for it.
+				if (Expander)
+				{
+					const FString Summary = Expander->GetSummary();
+					const FString TailLabel = NumItems != INDEX_NONE ? FString::Printf(TEXT("%s \u00D7%d"), *Summary, NumItems) : Summary;
+					const FSlateFontInfo TailFont = FCoreStyle::GetDefaultFontStyle("Regular", 8);
+					const FVector2f TailLabelSize = MeasureText(TailLabel, TailFont);
+					if (!TailLabel.IsEmpty() && TailLabelSize.X + 8.f <= TailRight - TailLeft)
+					{
+						Text(TailLabel, TailLeft + 4.f, BarTop + (BarHeight - TailLabelSize.Y) * 0.5f, TailFont, WithAlpha(ForegroundColor(), 0.75f), LabelLayer);
+					}
+				}
 			}
 
 			// A section, drawn the way the editor draws a graph node's title: a dark rounded frame, an opaque body,
@@ -1691,9 +1737,11 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			Box(BarX0, BarTop, BarWidth, BarHeight, Palette::SectionFrame, FrameLayer, RoundedFill());
 
 			const bool bValueDriven = Layer.IsValueDriven();
+			const bool bDerivedLength = SWidgetAnimTimeline::HasDerivedLength(Layer);
+			const bool bStriped = bValueDriven || bDerivedLength;
 			if (InnerWidth > 0.f && InnerHeight > 0.f)
 			{
-				const FLinearColor Spill = WithAlpha(bBarHovered && !bWashedOut ? TypeColor * Palette::SectionHoverLift : TypeColor, bValueDriven ? Palette::SectionValueSpillOpacity : 1.f);
+				const FLinearColor Spill = WithAlpha(bBarHovered && !bWashedOut ? TypeColor * Palette::SectionHoverLift : TypeColor, bStriped ? Palette::SectionValueSpillOpacity : 1.f);
 
 				Box(InnerX, InnerTop, InnerWidth, InnerHeight, Palette::SectionBody, BodyLayer, RoundedFill(2.f));
 				Box(InnerX, InnerTop, InnerWidth, InnerHeight, bWashedOut ? SWidgetAnimTimeline::GetLockedColor(FLinearColor::White) : FLinearColor::White, GlossLayer, NodeTitleGloss());
@@ -1701,8 +1749,9 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 				Box(InnerX, InnerTop, InnerWidth, FMath::Min(InnerHeight, Palette::SectionSheenHeight), FLinearColor::White, SheenLayer, NodeTitleHighlight());
 
 				// A value-driven track is striped, so its place and length on the timeline don't read as when it
-				// plays: gameplay's value decides that. Diagonal bands, clipped to the body, and only those in view.
-				if (bValueDriven)
+				// plays: gameplay's value decides that. So is one whose length its widget decides - a text typed at its
+				// Typing Speed - since its Duration means nothing. Diagonal bands, clipped to the body, only those in view.
+				if (bStriped)
 				{
 					const FGeometry BodyGeometry = AllottedGeometry.MakeChild(FVector2f(InnerWidth, InnerHeight), FSlateLayoutTransform(FVector2f(InnerX, InnerTop)));
 					OutDrawElements.PushClip(FSlateClippingZone(BodyGeometry));
@@ -1769,9 +1818,19 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			// On a plain list, a track moving another widget than the list's own says which.
 			const bool bNamesTarget = Owner->GetSource() && Owner->GetSource()->SupportsLayerTargets() && !Layer.TargetWidget.IsNone();
 			// A value-driven track says so in place of its length, which only times its preview sweep.
-			const FString LengthLabel = bValueDriven
+			// One whose length its widget decides says what decides it, beside the length the preview works out.
+			FString LengthLabel = bValueDriven
 				? LOCTEXT("ValueDrivenSectionLength", "(Value Driven)").ToString()
 				: FString::Printf(TEXT("%.2fs"), Span.Y);
+			if (bDerivedLength)
+			{
+				const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator();
+				const FText DerivedLabel = Evaluator ? Evaluator->GetDerivedLengthLabel(Layer.TypeParams) : FText::GetEmpty();
+				if (!DerivedLabel.IsEmpty())
+				{
+					LengthLabel = FString::Printf(TEXT("%s (%s)"), *LengthLabel, *DerivedLabel.ToString());
+				}
+			}
 			const FString Label = bNamesTarget
 				? FString::Printf(TEXT("%s \u2192 %s  %s"), *SWidgetAnimTimeline::GetLayerTypeName(Layer).ToString(), *Layer.TargetWidget.ToString(), *LengthLabel)
 				: FString::Printf(TEXT("%s  %s"), *SWidgetAnimTimeline::GetLayerTypeName(Layer).ToString(), *LengthLabel);
@@ -3246,6 +3305,7 @@ public:
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, AnimType),
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Start),
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Delay),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Expander),
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Easing),
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, CustomCurve),
 		};
@@ -3262,6 +3322,8 @@ public:
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Spring),
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueName),
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueSmoothing),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, SteadySpeed),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, SteadyCatchUpTime),
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueDrives),
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueOptions),
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueInput),
@@ -5801,6 +5863,12 @@ bool SWidgetAnimTimeline::CanResizeLayer(int32 LayerIndex, bool bStartEdge) cons
 		return false;
 	}
 
+	// Nor one whose length comes from its widget - a text typed at its Typing Speed - but its start can still move.
+	if (HasDerivedLength(Layer) && !bStartEdge)
+	{
+		return false;
+	}
+
 	// Either edge - a track that starts with the animation included: its start can be pulled in, just never
 	// back past 0. UpdateLayerDrag holds it there.
 	return true;
@@ -5816,16 +5884,136 @@ void SWidgetAnimTimeline::GetLayerSpans(TArray<FVector2f>& OutSpans) const
 		return;
 	}
 
-	// Placed exactly as playback places them - one sequence across every group, Starts and Delay - so the
-	// bars are where the layers really run. In played seconds: the animation's Speed Multiplier applied.
-	TArray<FWidgetAnimSettings> Placed;
-	UWidgetAnimLibrary::BuildLayerSettings(*Layers, Placed);
+	// Placed exactly as playback places them - one sequence across every group, Starts and Delay, a staggered layer
+	// reaching on to its last item as it does once it fans out on the preview - so the bars are where the layers
+	// really run. In played seconds: the animation's Speed Multiplier applied. A span is its layer's first item; the
+	// rest of a stagger is its fan - see GetLayerFanSeconds.
+	TArray<float> Extras;
+	GetPlacementExtras(Extras);
+	TArray<float> Starts;
+	UWidgetAnimLibrary::PlaceLayerStarts(*Layers, Extras, Starts);
 	const float TimeScale = GetTimeScale();
 
-	OutSpans.Reserve(Placed.Num());
-	for (int32 Index = 0; Index < Placed.Num() && Layers->IsValidIndex(Index); ++Index)
+	OutSpans.Reserve(Starts.Num());
+	for (int32 Index = 0; Index < Starts.Num(); ++Index)
 	{
-		OutSpans.Add(FVector2f(FMath::Max(Placed[Index].Delay, 0.f), (*Layers)[Index].GetRunLength()) * TimeScale);
+		OutSpans.Add(FVector2f(Starts[Index], GetShownRunLength(Index)) * TimeScale);
+	}
+}
+
+namespace WidgetAnimStaggerFans
+{
+	/**
+	 * Seconds past its first item a layer's stagger reaches, authored, for NumItems items - the fan the preview plays.
+	 * With the count unknown, a Spread Over reaches its spread, and Seconds Apart can only be guessed as nothing.
+	 */
+	float GetExtra(const FWidgetAnimLayer& Layer, int32 NumItems)
+	{
+		const FWidgetAnimExpander* Expander = Layer.Expander.GetPtr<FWidgetAnimExpander>();
+		if (!Expander || Layer.IsValueDriven() || (Expander->GathersParts() && !UWidgetAnimLibrary::TypeMovesParts(Layer.AnimType)))
+		{
+			return 0.f;
+		}
+
+		if (NumItems == INDEX_NONE)
+		{
+			return Expander->Spacing == EWidgetAnimStaggerSpacing::Across ? FMath::Max(Expander->Spread, 0.f) : 0.f;
+		}
+		return Expander->GetFanSeconds(NumItems);
+	}
+}
+
+void SWidgetAnimTimeline::UpdateStaggerFans()
+{
+	TrackFans.Reset();
+	TrackFanCounts.Reset();
+	TrackRuns.Reset();
+
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!Layers)
+	{
+		return;
+	}
+
+	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+	{
+		const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+		const int32 Count = Layer.Expander.IsValid() && Source.IsValid() ? Source->GetExpandedCount(LayerIndex) : INDEX_NONE;
+		TrackFanCounts.Add(Count);
+		TrackFans.Add(WidgetAnimStaggerFans::GetExtra(Layer, Count));
+
+		// A length worked out on the preview - a text typed at its Typing Speed - in place of its Duration.
+		TrackRuns.Add(HasDerivedLength(Layer) && Source.IsValid() ? Source->GetPreparedRun(LayerIndex) : -1.f);
+	}
+}
+
+bool SWidgetAnimTimeline::HasDerivedLength(const FWidgetAnimLayer& Layer)
+{
+	if (Layer.AnimType != EWidgetAnimType::Custom || Layer.IsValueDriven())
+	{
+		return false;
+	}
+	const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator();
+	return Evaluator && Evaluator->HasDerivedLength(Layer.TypeParams);
+}
+
+float SWidgetAnimTimeline::GetShownRunLength(int32 LayerIndex) const
+{
+	if (TrackRuns.IsValidIndex(LayerIndex) && TrackRuns[LayerIndex] >= 0.f)
+	{
+		return TrackRuns[LayerIndex];
+	}
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	return Layers && Layers->IsValidIndex(LayerIndex) ? (*Layers)[LayerIndex].GetRunLength() : 0.f;
+}
+
+void SWidgetAnimTimeline::GetPlacementExtras(TArray<float>& OutExtras) const
+{
+	// Each layer's stagger fan, plus however much longer - or shorter - the preview runs it than its Duration.
+	OutExtras = TrackFans;
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!Layers)
+	{
+		return;
+	}
+	OutExtras.SetNumZeroed(Layers->Num());
+	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+	{
+		if (TrackRuns.IsValidIndex(LayerIndex) && TrackRuns[LayerIndex] >= 0.f)
+		{
+			OutExtras[LayerIndex] += TrackRuns[LayerIndex] - (*Layers)[LayerIndex].GetRunLength();
+		}
+	}
+}
+
+float SWidgetAnimTimeline::GetLayerFanSeconds(int32 LayerIndex) const
+{
+	return TrackFans.IsValidIndex(LayerIndex) ? TrackFans[LayerIndex] * GetTimeScale() : 0.f;
+}
+
+void SWidgetAnimTimeline::FocusPreviewOnKey(int32 LayerIndex, int32 KeyIndex)
+{
+	if (!Source.IsValid())
+	{
+		return;
+	}
+
+	// Without staggers the source knows best - it mirrors a key for Invert, too. With one, only the panel knows how far
+	// it reaches, so the key is found on the panel's own timeline: the layer's start plus the key's time into it.
+	const bool bAnyFan = TrackFans.ContainsByPredicate([](float Fan) { return Fan > 0.f; });
+	if (!bAnyFan)
+	{
+		Source->FocusKey(LayerIndex, KeyIndex);
+		return;
+	}
+
+	TArray<FVector2f> Spans;
+	GetLayerSpans(Spans);
+	TArray<float> KeyTimes;
+	GetKeyTimes(LayerIndex, KeyTimes);
+	if (Spans.IsValidIndex(LayerIndex) && KeyTimes.IsValidIndex(KeyIndex))
+	{
+		ScrubToSeconds(Spans[LayerIndex].X + KeyTimes[KeyIndex]);
 	}
 }
 
@@ -5851,10 +6039,11 @@ float SWidgetAnimTimeline::GetPassSeconds() const
 	TArray<FVector2f> Spans;
 	GetLayerSpans(Spans);
 
+	// To where the last item of a stagger ends, too.
 	float End = 0.f;
-	for (const FVector2f& Span : Spans)
+	for (int32 LayerIndex = 0; LayerIndex < Spans.Num(); ++LayerIndex)
 	{
-		End = FMath::Max(End, Span.X + Span.Y);
+		End = FMath::Max(End, Spans[LayerIndex].X + Spans[LayerIndex].Y + GetLayerFanSeconds(LayerIndex));
 	}
 
 	// Played within another animation, one pass runs until both have ended - the preview's pass is the same.
@@ -5902,7 +6091,7 @@ void SWidgetAnimTimeline::GetKeyTimes(int32 LayerIndex, TArray<float>& OutTimes)
 	// adds its first key.
 	if (WidgetAnimTypeSupportsValueKeys(Layer.AnimType) && Layer.ValueKeys.Keys.Num() > 0)
 	{
-		const float RunSeconds = Layer.GetRunLength() * TimeScale;
+		const float RunSeconds = GetShownRunLength(LayerIndex) * TimeScale;
 		for (int32 Point = 0; Point < Layer.ValueKeys.NumPoints(); ++Point)
 		{
 			OutTimes.Add(Layer.ValueKeys.GetPointTime(Point) * RunSeconds);
@@ -6309,7 +6498,7 @@ void SWidgetAnimTimeline::SelectKey(int32 LayerIndex, int32 KeyIndex)
 	// The preview plays the layers as the one list they are, so the layer's index is the preview's.
 	if (Selection.Key != INDEX_NONE && Source.IsValid())
 	{
-		Source->FocusKey(LayerIndex, KeyIndex);
+		FocusPreviewOnKey(LayerIndex, KeyIndex);
 	}
 }
 
@@ -6347,7 +6536,7 @@ void SWidgetAnimTimeline::SelectKeyWithModifiers(int32 LayerIndex, int32 KeyInde
 
 	if (Source.IsValid() && SelectedKeys.Contains(Clicked))
 	{
-		Source->FocusKey(LayerIndex, KeyIndex);
+		FocusPreviewOnKey(LayerIndex, KeyIndex);
 	}
 }
 
@@ -6957,6 +7146,9 @@ uint32 SWidgetAnimTimeline::ComputeLayoutSignature() const
 		Hash = HashCombine(Hash, GetTypeHash(static_cast<uint8>(Layer.Timing)));
 		Hash = HashCombine(Hash, GetTypeHash(Layer.ValueKeys.Keys.Num()));
 
+		// Which Stagger it has decides which of the stagger's own settings are shown.
+		Hash = HashCombine(Hash, PointerHash(Layer.Expander.GetScriptStruct()));
+
 		// What a value-driven Transform drives decides which Value Types it offers, and its Value Type which of
 		// those it can drive.
 		if (Layer.IsValueDriven())
@@ -7484,6 +7676,7 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 	LayerToLine.Reset();
 	LayerLineOrdinals.Reset();
 	GroupLineCounts.Reset();
+	UpdateStaggerFans();
 	GetLayerSpans(TrackSpans);
 
 	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
@@ -7511,10 +7704,13 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 		{
 			return false;
 		}
+		// A stagger's tail is part of the track: another track on its line starts after it.
 		constexpr float Tolerance = 0.0005f;
 		const FVector2f SpanA = TrackSpans[A];
 		const FVector2f SpanB = TrackSpans[B];
-		return SpanA.X < SpanB.X + SpanB.Y - Tolerance && SpanB.X < SpanA.X + SpanA.Y - Tolerance;
+		const float EndA = SpanA.X + SpanA.Y + GetLayerFanSeconds(A);
+		const float EndB = SpanB.X + SpanB.Y + GetLayerFanSeconds(B);
+		return SpanA.X < EndB - Tolerance && SpanB.X < EndA - Tolerance;
 	};
 
 	auto StartOf = [this](int32 LayerIndex) { return TrackSpans.IsValidIndex(LayerIndex) ? TrackSpans[LayerIndex].X : 0.f; };
@@ -7795,12 +7991,10 @@ void SWidgetAnimTimeline::GetAuthoredStarts(TArray<float>& OutStarts) const
 		return;
 	}
 
-	TArray<FWidgetAnimSettings> Placed;
-	UWidgetAnimLibrary::BuildLayerSettings(*Layers, Placed);
-	for (const FWidgetAnimSettings& Settings : Placed)
-	{
-		OutStarts.Add(FMath::Max(Settings.Delay, 0.f));
-	}
+	// Staggers reaching as far as the preview plays them, and lengths worked out there, as the bars are drawn.
+	TArray<float> Extras;
+	GetPlacementExtras(Extras);
+	UWidgetAnimLibrary::PlaceLayerStarts(*Layers, Extras, OutStarts);
 }
 
 void SWidgetAnimTimeline::PinLayerStarts(const TArray<float>& OldStarts, const TArray<int32>& OldIndexOf)
@@ -7838,8 +8032,12 @@ void SWidgetAnimTimeline::PinLayerStarts(const TArray<float>& OldStarts, const T
 			LayerStart = FMath::Max(Anchor + Layer.Delay, 0.f);
 		}
 
+		// A stagger reaches on past its first item: the fan it had before the edit, found by where it was then.
+		const float Fan = TrackFans.IsValidIndex(OldIndex) ? TrackFans[OldIndex] : WidgetAnimStaggerFans::GetExtra(Layer, INDEX_NONE);
+
 		PreviousStart = LayerStart;
-		PreviousEnd = LayerStart + Layer.GetRunLength();
+		const float Run = TrackRuns.IsValidIndex(OldIndex) && TrackRuns[OldIndex] >= 0.f ? TrackRuns[OldIndex] : Layer.GetRunLength();
+		PreviousEnd = LayerStart + Run + Fan;
 	}
 }
 
@@ -8111,6 +8309,13 @@ void SWidgetAnimTimeline::AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, c
 	if (AnimType == EWidgetAnimType::Custom && InitialTypeParams)
 	{
 		NewLayer.TypeParams = *InitialTypeParams;
+
+		// A type whose value is a steady pace - a text typed out - starts without an ease that would make it uneven.
+		const FWidgetAnimEvaluator* Evaluator = NewLayer.FindEvaluator();
+		if (Evaluator && Evaluator->PrefersLinearEasing())
+		{
+			NewLayer.Easing = EWidgetAnimEasing::Linear;
+		}
 	}
 
 	// A new layer follows the one above it, so adding layers builds a sequence rather than a pile.
@@ -8569,7 +8774,7 @@ void SWidgetAnimTimeline::AddKey(int32 LayerIndex, float LocalSeconds)
 	{
 		// A keyed track's keys sit at fractions of its run, so they keep their places when it is resized.
 		// LocalSeconds is played time, as the timeline shows it.
-		const float RunSeconds = Layer.GetRunLength() * GetTimeScale();
+		const float RunSeconds = GetShownRunLength(LayerIndex) * GetTimeScale();
 		if (RunSeconds <= KINDA_SMALL_NUMBER)
 		{
 			return;
@@ -8830,7 +9035,7 @@ void SWidgetAnimTimeline::SetKeyTime(int32 LayerIndex, int32 KeyIndex, float Loc
 	}
 
 	// A key between a keyed track's start and end: its fraction of the run.
-	const float RunSeconds = Layer.GetRunLength() * TimeScale;
+	const float RunSeconds = GetShownRunLength(LayerIndex) * TimeScale;
 	if (Layer.ValueKeys.Keys.IsValidIndex(KeyIndex - 1) && RunSeconds > KINDA_SMALL_NUMBER)
 	{
 		const float Fraction = FMath::Clamp(LocalSeconds / RunSeconds, 0.f, 1.f);
@@ -9091,7 +9296,7 @@ void SWidgetAnimTimeline::UpdateKeyDrag(float LocalSeconds, float SnapThresholdS
 	// Interactive, as a Details panel drag is: the preview follows live and keeps its place - on the key
 	// pressed, so what it looks like at its new moment is on screen.
 	NotifyGroupsChanged(EPropertyChangeType::Interactive);
-	Source->FocusKey(DragLayer, DragKey);
+	FocusPreviewOnKey(DragLayer, DragKey);
 
 	// Moving a Transform track's last key changes how long it runs, which can change what fits on its line.
 	UpdateTrackLayout();
@@ -9449,7 +9654,7 @@ void SWidgetAnimTimeline::ApplyLayerSpans(const TArray<float>& NewStarts, const 
 				}
 			}
 		}
-		else if (!Layer.IsSpringTimed() && !FMath::IsNearlyEqual(Layer.Duration, Length, 1.e-5f))
+		else if (!Layer.IsSpringTimed() && !HasDerivedLength(Layer) && !FMath::IsNearlyEqual(Layer.Duration, Length, 1.e-5f))
 		{
 			// Not on a Spring track, whose length is its spring's: its Duration is only kept for going back to a
 			// Tween, and a move must not quietly overwrite it with the settle time.
@@ -9464,7 +9669,7 @@ void SWidgetAnimTimeline::ApplyLayerSpans(const TArray<float>& NewStarts, const 
 		}
 
 		PreviousStart = Start;
-		PreviousEnd = Start + Layer.GetRunLength();
+		PreviousEnd = Start + GetShownRunLength(LayerIndex) + (TrackFans.IsValidIndex(LayerIndex) ? TrackFans[LayerIndex] : 0.f);
 	}
 }
 
@@ -9571,30 +9776,41 @@ void SWidgetAnimTimeline::AddTrackTypeEntries(FMenuBuilder& Menu, int32 GroupInd
 			FUIAction(FExecuteAction::CreateLambda([this, GroupIndex, AnimType]() { AddLayer(GroupIndex, AnimType); })));
 	});
 
-	// Registered types after the built-in ones, under their own heading - each is a type in its own right,
+	// Registered types after the built-in ones, under the heading each names for itself - Text for the text tracks -
+	// in heading order, and those naming none under Registered Types after the rest. Each is a type in its own right,
 	// whichever module it came from.
-	bool bFirstRegistered = true;
-	WidgetAnimTimeline::ForEachRegisteredType([this, &Menu, GroupIndex, &bFirstRegistered](const FWidgetAnimEvaluator& Evaluator)
+	TArray<FString> Categories;
+	TMap<FString, TArray<const FWidgetAnimEvaluator*>> ByCategory;
+	WidgetAnimTimeline::ForEachRegisteredType([&Categories, &ByCategory](const FWidgetAnimEvaluator& Evaluator)
 	{
-		if (bFirstRegistered)
+		const FString Category = Evaluator.GetCategory().ToString();
+		if (!ByCategory.Contains(Category))
 		{
-			Menu.BeginSection(NAME_None, LOCTEXT("RegisteredTypesSection", "Registered Types"));
-			bFirstRegistered = false;
+			Categories.Add(Category);
 		}
-
-		const UScriptStruct* ParamsStruct = Evaluator.GetParamsStruct();
-		Menu.AddMenuEntry(
-			Evaluator.GetDisplayName(),
-			Evaluator.GetDescription(),
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateLambda([this, GroupIndex, ParamsStruct]()
-			{
-				const FInstancedStruct InitialParams(ParamsStruct);
-				AddLayer(GroupIndex, EWidgetAnimType::Custom, &InitialParams);
-			})));
+		ByCategory.FindOrAdd(Category).Add(&Evaluator);
 	});
-	if (!bFirstRegistered)
+	Categories.Sort([](const FString& A, const FString& B)
 	{
+		return A.IsEmpty() != B.IsEmpty() ? B.IsEmpty() : A < B;
+	});
+
+	for (const FString& Category : Categories)
+	{
+		Menu.BeginSection(NAME_None, Category.IsEmpty() ? LOCTEXT("RegisteredTypesSection", "Registered Types") : FText::FromString(Category));
+		for (const FWidgetAnimEvaluator* Evaluator : ByCategory.FindChecked(Category))
+		{
+			const UScriptStruct* ParamsStruct = Evaluator->GetParamsStruct();
+			Menu.AddMenuEntry(
+				Evaluator->GetDisplayName(),
+				Evaluator->GetDescription(),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateLambda([this, GroupIndex, ParamsStruct]()
+				{
+					const FInstancedStruct InitialParams(ParamsStruct);
+					AddLayer(GroupIndex, EWidgetAnimType::Custom, &InitialParams);
+				})));
+		}
 		Menu.EndSection();
 	}
 
@@ -10603,6 +10819,33 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 			Curves.Add(GetEasingName(Layer).ToString());
 		}
 		Rows.Add(Curves.Num() > 1 ? TEXT("Curves") : TEXT("Curve"), FString::Join(Curves, TEXT(", ")));
+	}
+
+	// A stagger: what it fans out to, how its items are spaced and - when the preview has counted them - how many
+	// there are there, with a note when it has nothing to fan out to or can't move what it would.
+	if (const FWidgetAnimExpander* Expander = Layer.Expander.GetPtr<FWidgetAnimExpander>())
+	{
+		const FString Summary = Expander->GetSummary().IsEmpty() ? Layer.Expander.GetScriptStruct()->GetDisplayNameText().ToString() : Expander->GetSummary();
+		FString StaggerText = FString::Printf(TEXT("%s, %s"), *Summary, *Expander->DescribeSpacing());
+		const int32 NumItems = GetLayerFanCount(LayerIndex);
+		if (NumItems != INDEX_NONE)
+		{
+			StaggerText += FString::Printf(TEXT(" (%d on the preview)"), NumItems);
+		}
+		Rows.Add(TEXT("Stagger"), StaggerText);
+
+		if (Expander->GathersParts() && !UWidgetAnimLibrary::TypeMovesParts(Layer.AnimType))
+		{
+			Rows.Add(TEXT("Stagger Note"), WidgetAnimTips::StaggerPartsTypeNote().ToString());
+		}
+		else if (NumItems == 0)
+		{
+			Rows.Add(TEXT("Stagger Note"), (Expander->GathersParts() ? WidgetAnimTips::StaggerNoTextNote() : WidgetAnimTips::StaggerNoChildrenNote()).ToString());
+		}
+		else if (Layer.IsValueDriven())
+		{
+			Rows.Add(TEXT("Stagger Note"), WidgetAnimTips::StaggerValueNote().ToString());
+		}
 	}
 
 	// A value-driven track: the value it follows, its type and how it travels to each new one - and, on a Transform,

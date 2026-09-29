@@ -27,7 +27,7 @@ public class NameTBDCommonUI : ModuleRules
 			new string[]
 			{
 				"Slate",
-				"SlateCore"
+				"SlateCore",
 			}
 		);
 	}

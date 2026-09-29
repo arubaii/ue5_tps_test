@@ -47,7 +47,7 @@ enum class EWidgetAnimValueKind : uint8
 {
 	Float UMETA(ToolTip = "One number. Set with Set Widget Animation Value."),
 
-	Integer UMETA(ToolTip = "One whole number - a count, a level. Set with Set Widget Animation Value (Integer). Smoothing still passes through the numbers in between, which a Count Up shows as it counts."),
+	Integer UMETA(ToolTip = "One whole number - a count, a level. Set with Set Widget Animation Value (Integer). Smoothing still passes through the numbers in between, which a Count shows as it counts."),
 
 	Vector2D UMETA(DisplayName = "Vector 2D", ToolTip = "Two numbers, each moving its own axis: X and Y of a Scale separately, or of whatever a Transform track's Value Drives. Set with Set Widget Animation Value (Vector 2D)."),
 
@@ -187,7 +187,9 @@ enum class EWidgetAnimValueSmoothing : uint8
 
 	Tween UMETA(ToolTip = "Eases to each new value over the track's Duration, by its Easing. Every new value starts a new ease from wherever it had gotten to."),
 
-	Spring UMETA(ToolTip = "Chases each new value with the track's spring, keeping its speed when the value changes again mid-way. What makes jumpy values, such as load progress arriving in chunks, look smooth.")
+	Spring UMETA(ToolTip = "Chases each new value with the track's spring, keeping its speed when the value changes again mid-way. What makes jumpy values, such as load progress arriving in chunks, look smooth."),
+
+	Steady UMETA(ToolTip = "Moves toward each new value at a steady speed - Steady Speed, in the value's own units a second - speeding up only when it would otherwise take longer than Catch Up Within to get there. A count ticking up coin by coin however often coins arrive, or a health bar draining at an even rate.")
 };
 
 /** What a value-driven track does when its widget plays its exit while its value is still moving. Not used by a Pulse, whose value is its strength. */
@@ -445,6 +447,11 @@ struct NAMETBD_API FWidgetAnimValueMotion
 	EWidgetAnimEasing TweenEasing = EWidgetAnimEasing::EaseOut;
 	const UCurveFloat* TweenCurve = nullptr;
 	const FWidgetSpringParams* Spring = nullptr;
+
+	/** Steady smoothing: its speed in the value's own units a second, and the longest it may take to arrive (0: no limit). */
+	double SteadySpeed = 100.0;
+	float SteadyCatchUpTime = 1.f;
+
 	int32 NumChannels = 1;
 };
 

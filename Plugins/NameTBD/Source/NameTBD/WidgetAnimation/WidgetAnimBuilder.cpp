@@ -597,7 +597,7 @@ float UWidgetAnimBuilder::GetPreviewElapsedSeconds() const
 	// reports where the scrub is instead. Same clock ApplyWidgetAnimationsAtAlpha measures the alpha on.
 	if (bPreviewScrubbing)
 	{
-		return PreviewScrubAlpha * UWidgetAnimLibrary::GetStackPassDuration(FlattenedIn);
+		return PreviewScrubAlpha * UWidgetAnimLibrary::GetExpandedPassDuration(const_cast<UWidgetAnimBuilder*>(this)->GetPreviewAnimationTarget(), FlattenedIn);
 	}
 
 	const bool bShowingOut = IsShowingOutStack();
@@ -819,7 +819,8 @@ float UWidgetAnimBuilder::GetTransformKeyScrubAlpha(int32 LayerIndex, int32 KeyI
 		KeySeconds = LayerStart + LayerLength - (KeySeconds - LayerStart);
 	}
 
-	const float PassSeconds = UWidgetAnimLibrary::GetStackPassDuration(FlattenedIn);
+	// Along the pass as the preview scrubs it, with every stagger fanned out.
+	const float PassSeconds = UWidgetAnimLibrary::GetExpandedPassDuration(const_cast<UWidgetAnimBuilder*>(this)->GetPreviewAnimationTarget(), FlattenedIn);
 	return PassSeconds > KINDA_SMALL_NUMBER ? FMath::Clamp(KeySeconds / PassSeconds, 0.f, 1.f) : 0.f;
 }
 

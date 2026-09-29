@@ -570,8 +570,14 @@ void UWidgetAnimationComponent::RebuildEffectiveAnimations()
 	EffectiveInEntries.Reset();
 	EffectiveOutEntries.Reset();
 
-	UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(AnimIn, EffectiveInEntries, EffectiveOutEntries);
-	UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(AnimOut, EffectiveOutEntries, EffectiveInEntries);
+	// An owner's defaults in place of lists left empty - see SetDefaultEntriesProvider. Entries of its own, once it has
+	// any, always win.
+	TArray<FWidgetAnimEntry> ProvidedIn;
+	TArray<FWidgetAnimEntry> ProvidedOut;
+	const bool bProvided = AnimIn.Num() == 0 && AnimOut.Num() == 0 && DefaultEntriesProvider && DefaultEntriesProvider(ProvidedIn, ProvidedOut);
+
+	UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(bProvided ? ProvidedIn : AnimIn, EffectiveInEntries, EffectiveOutEntries);
+	UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(bProvided ? ProvidedOut : AnimOut, EffectiveOutEntries, EffectiveInEntries);
 
 	// The working copies are brought up to the animations' current groups even when the authored entries
 	// are behind - an animation that gained a group since this widget was last saved plays it on its default.

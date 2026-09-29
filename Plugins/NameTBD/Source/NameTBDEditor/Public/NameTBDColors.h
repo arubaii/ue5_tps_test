@@ -30,7 +30,7 @@ namespace NameTBD
 			inline const FLinearColor LayerMaterialScalar(0.85f, 0.75f, 0.30f);
 			inline const FLinearColor LayerMaterialVector(0.85f, 0.60f, 0.30f);
 			inline const FLinearColor LayerTransform(AnimationOrange_Normal);
-			// Every registered track type - Count Up and any a game adds - shares this one, as they share the one
+			// Every registered track type - the text tracks and any a game adds - shares this one, as they share the one
 			// Registered Type slot; their names tell them apart.
 			inline const FLinearColor LayerCustom(0.90f, 0.85f, 0.85f);
 			// Every Blueprint track type that doesn't set a Track Color of its own. Blueprint blue, so a type a
@@ -130,6 +130,15 @@ namespace NameTBD
 			inline constexpr float SectionValueStripeWidth = 3.0f;
 			inline constexpr float SectionValueStripeSpacing = 9.0f;
 			inline constexpr float SectionValueSpillOpacity = 0.6f;
+
+			/**
+			 * A staggered track (see WidgetAnimExpander.h) is drawn as its first item, with a tail running on to where its
+			 * last item ends: the tail in the track's color at SectionStaggerTailOpacity, SectionStaggerTailHeight of the
+			 * section's height, with a tick where each item after the first starts when the preview knows how many there are.
+			 */
+			inline constexpr float SectionStaggerTailOpacity = 0.35f;
+			inline constexpr float SectionStaggerTailHeight = 0.45f;
+			inline const FLinearColor SectionStaggerTick(1.00f, 1.00f, 1.00f, 0.35f);
 
 			// -------------------------------------------------------------------------------------------------
 			// Keys

@@ -3,6 +3,7 @@
 #include "WidgetAnimPanelSource.h"
 
 #include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimEvaluator.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimTransform.h"
 #include "NameTBD/Widgets/ShapeBox.h"
@@ -317,6 +318,64 @@ void FWidgetAnimBuilderPanelSource::FocusKey(int32 FlatLayerIndex, int32 KeyInde
 	{
 		Live.ScrubToTransformKey(FlatLayerIndex, KeyIndex);
 	});
+}
+
+namespace WidgetAnimPreparedRuns
+{
+	/** How long Layer runs on Widget when its length comes from there rather than its Duration; negative otherwise. */
+	float Get(UWidget* Widget, const FWidgetAnimSettings& Layer)
+	{
+		if (Layer.IsValueDriven() || !UWidgetAnimLibrary::NeedsPlayPreparation(Layer))
+		{
+			return -1.f;
+		}
+		const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator();
+		return Evaluator && Evaluator->HasDerivedLength(Layer.TypeParams) ? UWidgetAnimLibrary::GetPreparedRunLength(Widget, Layer) : -1.f;
+	}
+}
+
+float FWidgetAnimBuilderPanelSource::GetPreparedRun(int32 FlatLayerIndex) const
+{
+	// Worked out on the first live preview, as GetExpandedCount counts.
+	float Run = -1.f;
+	bool bFound = false;
+	UWidgetAnimBuilder::ForEachLivePreview(GetBuilderClass(), [FlatLayerIndex, &Run, &bFound](UWidgetAnimBuilder& Live)
+	{
+		if (bFound)
+		{
+			return;
+		}
+		bFound = true;
+
+		const TArray<FWidgetAnimSettings>& Settings = Live.GetPreviewAnimIn();
+		if (Settings.IsValidIndex(FlatLayerIndex))
+		{
+			Run = WidgetAnimPreparedRuns::Get(Live.GetPreviewAnimationTarget(), Settings[FlatLayerIndex]);
+		}
+	});
+	return Run;
+}
+
+int32 FWidgetAnimBuilderPanelSource::GetExpandedCount(int32 FlatLayerIndex) const
+{
+	// Counted on the first live preview, on the widget its layer is aimed at there - one setting per layer, in order.
+	int32 Count = INDEX_NONE;
+	bool bFound = false;
+	UWidgetAnimBuilder::ForEachLivePreview(GetBuilderClass(), [FlatLayerIndex, &Count, &bFound](UWidgetAnimBuilder& Live)
+	{
+		if (bFound)
+		{
+			return;
+		}
+		bFound = true;
+
+		const TArray<FWidgetAnimSettings>& Settings = Live.GetPreviewAnimIn();
+		if (Settings.IsValidIndex(FlatLayerIndex))
+		{
+			Count = UWidgetAnimLibrary::CountExpandedItems(Live.GetPreviewAnimationTarget(), Settings[FlatLayerIndex]);
+		}
+	});
+	return Count;
 }
 
 bool FWidgetAnimBuilderPanelSource::IsPlaying() const
@@ -641,7 +700,8 @@ void FWidgetAnimAssetPanelSource::FocusKey(int32 FlatLayerIndex, int32 KeyIndex)
 	TArray<FWidgetAnimSettings> Settings;
 	BuildFlattened(Root, Settings);
 
-	const float PassSeconds = UWidgetAnimLibrary::GetStackPassDuration(Settings);
+	// Along the pass as the preview plays it, every stagger fanned out.
+	const float PassSeconds = UWidgetAnimLibrary::GetExpandedPassDuration(Root, Settings);
 	if (!Settings.IsValidIndex(FlatLayerIndex) || PassSeconds <= KINDA_SMALL_NUMBER)
 	{
 		return;
@@ -756,16 +816,29 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 	TArray<FWidgetAnimSettings> Settings;
 	BuildFlattened(Root, Settings);
 
+	// How many items each staggered layer fans out to here, for the Track Editor - one setting per layer, in order.
+	ExpandedCounts.Reset(Settings.Num());
+	PreparedRuns.Reset(Settings.Num());
+	for (const FWidgetAnimSettings& Layer : Settings)
+	{
+		ExpandedCounts.Add(UWidgetAnimLibrary::CountExpandedItems(Root, Layer));
+		PreparedRuns.Add(WidgetAnimPreparedRuns::Get(Root, Layer));
+	}
+
 	// Which widgets are moved, and how: when that changes - a group pointed elsewhere, a layer type swapped,
 	// a new preview instance - the old poses come off and the authored state is read again before posing.
 	uint32 Signature = PointerHash(Root);
-	for (const FWidgetAnimSettings& Layer : Settings)
+	for (int32 Index = 0; Index < Settings.Num(); ++Index)
 	{
+		const FWidgetAnimSettings& Layer = Settings[Index];
 		Signature = HashCombine(Signature, PointerHash(Layer.TargetWidget.Get()));
 		Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType)));
 		Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.bAnimateShape)));
-		// Which registered type, too: swapping a Count Up for another type may write another channel of the target.
+		// Which registered type, too: swapping a Count for another type may write another channel of the target.
 		Signature = HashCombine(Signature, PointerHash(Layer.TypeParams.GetScriptStruct()));
+		// And which stagger, and how many items: a stagger moves each child, or each letter, which are captured one by one.
+		Signature = HashCombine(Signature, PointerHash(Layer.Expander.GetScriptStruct()));
+		Signature = HashCombine(Signature, GetTypeHash(ExpandedCounts[Index]));
 	}
 
 	if (PosedRoot.Get() != Root || Signature != PosedSignature)
@@ -1117,9 +1190,10 @@ void FWidgetAnimLayerArrayPanelSource::FocusKey(int32 FlatLayerIndex, int32 KeyI
 	int32 FirstOwn = 0;
 	BuildSettings(GetPreviewWidget(), Settings, &FirstOwn);
 
-	// The list's layers come after any animation it plays within.
+	// The list's layers come after any animation it plays within. Along the pass as the preview plays it, every
+	// stagger fanned out.
 	const int32 SettingIndex = FirstOwn + FlatLayerIndex;
-	const float PassSeconds = UWidgetAnimLibrary::GetStackPassDuration(Settings);
+	const float PassSeconds = UWidgetAnimLibrary::GetExpandedPassDuration(GetPreviewWidget(), Settings);
 	if (!Settings.IsValidIndex(SettingIndex) || PassSeconds <= KINDA_SMALL_NUMBER)
 	{
 		return;
@@ -1268,7 +1342,18 @@ bool FWidgetAnimLayerArrayPanelSource::Tick(float DeltaTime)
 	}
 
 	TArray<FWidgetAnimSettings> Settings;
-	BuildSettings(Widget, Settings);
+	int32 FirstOwn = 0;
+	BuildSettings(Widget, Settings, &FirstOwn);
+
+	// How many items each of the list's staggered tracks fans out to here, for the Track Editor - after the animation
+	// the list plays within, one setting per track, in order.
+	ExpandedCounts.Reset();
+	PreparedRuns.Reset();
+	for (int32 Index = FirstOwn; Index < Settings.Num(); ++Index)
+	{
+		ExpandedCounts.Add(UWidgetAnimLibrary::CountExpandedItems(Widget, Settings[Index]));
+		PreparedRuns.Add(WidgetAnimPreparedRuns::Get(Widget, Settings[Index]));
+	}
 
 	// What is moved, and how: when that changes - a track type swapped, a new preview instance - the old poses
 	// come off and the authored state is read again before posing.
@@ -1279,6 +1364,9 @@ bool FWidgetAnimLayerArrayPanelSource::Tick(float DeltaTime)
 		Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.bAnimateShape)));
 		Signature = HashCombine(Signature, PointerHash(Layer.TypeParams.GetScriptStruct()));
 		Signature = HashCombine(Signature, PointerHash(Layer.TargetWidget.Get()));
+		// A stagger moves each child, or each letter, which are captured one by one.
+		Signature = HashCombine(Signature, PointerHash(Layer.Expander.GetScriptStruct()));
+		Signature = HashCombine(Signature, GetTypeHash(UWidgetAnimLibrary::CountExpandedItems(Widget, Layer)));
 	}
 
 	if (PosedWidget.Get() != Widget || Signature != PosedSignature)

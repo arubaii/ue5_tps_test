@@ -92,7 +92,7 @@ namespace WidgetAnimValue
 {
 	/**
 	 * How close to its target, and how slow, a spring has to be to count as arrived - in progress, a fraction of the
-	 * whole track. A two-thousandth of a 500 pixel slide is a quarter of a pixel; and a quantized track (a Count Up, a
+	 * whole track. A two-thousandth of a 500 pixel slide is a quarter of a pixel; and a quantized track (a Count, a
 	 * Blueprint type with a Quantize Step) still lands exactly, because arriving snaps onto the target.
 	 */
 	constexpr float SpringRestDistance = 0.0005f;
@@ -194,6 +194,39 @@ namespace WidgetAnimValue
 				State.Progress[Channel] = ChannelState.Value;
 				State.Velocity[Channel] = ChannelState.Velocity;
 				bArrived = bArrived && bChannelArrived;
+			}
+			break;
+		}
+
+		case EWidgetAnimValueSmoothing::Steady:
+		{
+			// Each channel at its own steady pace, measured in the value's own units: 100 a second on a 0 - 1000 count is
+			// a tenth of the track a second. Faster only as far as Catch Up Within needs, so a big jump still lands in
+			// time and eases into the steady pace as it closes in.
+			for (int32 Channel = 0; Channel < NumChannels; ++Channel)
+			{
+				double AtStart = 0.0;
+				double AtEnd = 1.0;
+				Options.GetChannelRange(Channel, AtStart, AtEnd);
+				const double Range = FMath::Abs(AtEnd - AtStart);
+				const float Remaining = State.Target[Channel] - State.Progress[Channel];
+				const float Distance = FMath::Abs(Remaining);
+
+				float Speed = Range > UE_DOUBLE_SMALL_NUMBER ? static_cast<float>(FMath::Max(Motion.SteadySpeed, 0.0) / Range) : 0.f;
+				if (Motion.SteadyCatchUpTime > KINDA_SMALL_NUMBER)
+				{
+					Speed = FMath::Max(Speed, Distance / Motion.SteadyCatchUpTime);
+				}
+				if (Speed <= 0.f)
+				{
+					// No speed at all and no time to catch up in: there is no pace to keep, so it is shown at once.
+					Speed = TNumericLimits<float>::Max();
+				}
+
+				const float Step = Speed * DeltaTime;
+				State.Progress[Channel] = Step >= Distance - SpringRestDistance ? State.Target[Channel] : State.Progress[Channel] + FMath::Sign(Remaining) * Step;
+				State.Velocity[Channel] = 0.f;
+				bArrived = bArrived && State.Progress[Channel] == State.Target[Channel];
 			}
 			break;
 		}

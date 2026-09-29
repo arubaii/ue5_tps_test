@@ -4,7 +4,75 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
+#include "UObject/SoftObjectPtr.h"
 #include "WidgetAnimRuntimeSettings.generated.h"
+
+class UWidgetAnimPresetAsset;
+
+/** Which kind of animated text widget a set of project defaults is for. */
+UENUM(BlueprintType)
+enum class EWidgetAnimTextWidgetKind : uint8
+{
+	Text UMETA(ToolTip = "Animated Text Block and Common Animated Text."),
+
+	RichText UMETA(DisplayName = "Rich Text", ToolTip = "Animated Rich Text Block and Common Animated Rich Text."),
+
+	Numeric UMETA(ToolTip = "Common Animated Numeric Text."),
+
+	DateTime UMETA(DisplayName = "Date Time", ToolTip = "Common Animated Date Time Text.")
+};
+
+/**
+ * One default use of a Widget Animation on every text widget of a kind: the animation, its Anim ID and how it plays.
+ * Every Layer Group of the animation plays on the text widget itself. Held softly, so project settings never load
+ * animations before they are used.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimTextDefaultEntry
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	TSoftObjectPtr<UWidgetAnimPresetAsset> Animation;
+
+	/** Plays it by name as well - Play Widget Animation with this ID. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Anim ID"))
+	FName AnimId;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation")
+	bool bLoop = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (EditCondition = "bLoop", EditConditionHides))
+	bool bPingPong = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (EditCondition = "bLoop", EditConditionHides, ClampMin = "0"))
+	int32 LoopCount = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Invert Animation"))
+	bool bInvertAnimation = false;
+
+	/** Also plays backwards as the widget's exit (or entrance, for an Anim Out entry). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Mirror In Out"))
+	bool bMirrorInOut = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (ClampMin = "0.01", UIMin = "0.1", UIMax = "4.0"))
+	float PlaybackSpeed = 1.f;
+};
+
+/** The animations every text widget of one kind plays unless it is given its own. */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimTextWidgetDefaults
+{
+	GENERATED_BODY()
+
+	/** Played as the widget is constructed and shown - a line of text typing out, a number counting up. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Anim In"))
+	TArray<FWidgetAnimTextDefaultEntry> AnimIn;
+
+	/** Played as the widget is hidden, or by Play Out. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Anim Out"))
+	TArray<FWidgetAnimTextDefaultEntry> AnimOut;
+};
 
 /**
  * Project-wide settings for widget animations, in Project Settings > Plugins > Widget Animations.
@@ -55,4 +123,39 @@ public:
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Blueprint Types", meta = (EditCondition = "bWarnAboutExpensiveBlueprintTypes", ClampMin = "0.25", UIMax = "5.0", Units = "s"))
 	float MeasurementWindowSeconds = 1.f;
+
+	// Text widgets
+	//
+	// Every animated text widget has a Widget Animation Component of its own. Until it is given Anim In or Anim Out
+	// entries of its own, it plays these - live: change them here and every text widget without its own entries plays
+	// the new ones the next time it is constructed. A widget with Use Project Default Animations off plays none.
+
+	/** Animated Text Block and Common Animated Text. */
+	UPROPERTY(Config, EditAnywhere, Category = "Text Widgets", meta = (DisplayName = "Animated Text"))
+	FWidgetAnimTextWidgetDefaults TextDefaults;
+
+	/** Animated Rich Text Block and Common Animated Rich Text. */
+	UPROPERTY(Config, EditAnywhere, Category = "Text Widgets", meta = (DisplayName = "Animated Rich Text"))
+	FWidgetAnimTextWidgetDefaults RichTextDefaults;
+
+	/** Common Animated Numeric Text. */
+	UPROPERTY(Config, EditAnywhere, Category = "Text Widgets", meta = (DisplayName = "Animated Numeric Text"))
+	FWidgetAnimTextWidgetDefaults NumericTextDefaults;
+
+	/** Common Animated Date Time Text. */
+	UPROPERTY(Config, EditAnywhere, Category = "Text Widgets", meta = (DisplayName = "Animated Date Time Text"))
+	FWidgetAnimTextWidgetDefaults DateTimeTextDefaults;
+
+	/** The defaults for one kind of text widget. */
+	const FWidgetAnimTextWidgetDefaults& GetTextWidgetDefaults(EWidgetAnimTextWidgetKind Kind) const
+	{
+		switch (Kind)
+		{
+		case EWidgetAnimTextWidgetKind::RichText: return RichTextDefaults;
+		case EWidgetAnimTextWidgetKind::Numeric:  return NumericTextDefaults;
+		case EWidgetAnimTextWidgetKind::DateTime: return DateTimeTextDefaults;
+		case EWidgetAnimTextWidgetKind::Text:
+		default:                                  return TextDefaults;
+		}
+	}
 };

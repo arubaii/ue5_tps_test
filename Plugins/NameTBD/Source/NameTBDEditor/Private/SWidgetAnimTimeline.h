@@ -41,7 +41,7 @@ struct FPropertyChangedChainEvent;
  * Right, the Selection: only what is selected - a key's pose, a layer's settings, what several layers share, a
  * group's name and target, or the animation itself.
  *
- * Locking: the lock in the header makes the whole animation read-only - a preview, every editable thing greyed
+ * Locking: the lock in the header makes the whole animation read-only - a preview, every editable thing grayed
  * out. A single track can be locked from its context menu, which leaves it selectable but unmovable.
  *
  * What is being edited and how it plays comes from an IWidgetAnimPanelSource: a builder's working copy in a
@@ -261,6 +261,15 @@ public:
 	/** The same, as worked out for the Track Editor this frame - what it draws and hit-tests against. */
 	const TArray<FVector2f>& GetTrackSpans() const { return TrackSpans; }
 
+	/**
+	 * How much further than its first item a staggered layer reaches along the timeline - where its last item starts -
+	 * in played seconds, as worked out this frame. 0 for a layer with no Stagger. See WidgetAnimExpander.h.
+	 */
+	float GetLayerFanSeconds(int32 LayerIndex) const;
+
+	/** How many items a staggered layer fans out to on the preview this frame. INDEX_NONE when unknown or not staggered. */
+	int32 GetLayerFanCount(int32 LayerIndex) const { return TrackFanCounts.IsValidIndex(LayerIndex) ? TrackFanCounts[LayerIndex] : INDEX_NONE; }
+
 	/** From a group's first layer starting to its last one ending. X is start, Y is end; Y below X when it has no layers. */
 	FVector2f GetGroupSpan(int32 GroupIndex) const;
 
@@ -307,7 +316,7 @@ public:
 
 	/**
 	 * The read-only tracks of the animation the list plays within - see IWidgetAnimPanelSource::GetContextLayers -
-	 * drawn greyed on rows of their own above the list's lines, packed so tracks that don't overlap share a row.
+	 * drawn grayed on rows of their own above the list's lines, packed so tracks that don't overlap share a row.
 	 * Their spans are in the list's seconds; row is which context row each is on.
 	 */
 	const TArray<FWidgetAnimLayer>* GetContextLayers() const;
@@ -429,7 +438,7 @@ public:
 	 * Adds a layer in a group - a new first group when there are none - into the sequence just after the
 	 * selected layer, or at the end when no layer is selected. It gets a line of its own at the bottom of its group.
 	 *
-	 * InitialTypeParams is a Registered Type layer's type and its starting settings - a Count Up at its defaults, or a
+	 * InitialTypeParams is a Registered Type layer's type and its starting settings - a Count at its defaults, or a
 	 * Blueprint type with its default values. Ignored on every built-in type.
 	 */
 	void AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, const FInstancedStruct* InitialTypeParams = nullptr);
@@ -535,28 +544,34 @@ public:
 	/** Add Layer Group, Add Animation Track to each group, and Insert Existing Widget Animation. */
 	TSharedRef<SWidget> MakeAddMenu(int32 GroupIndex);
 
-	/** Display name and track colour of a layer type. The colour is the user's, from the editor settings. */
+	/** Display name and track color of a layer type. The color is the user's, from the editor settings. */
 	static FText GetAnimTypeName(EWidgetAnimType AnimType);
 	static FLinearColor GetAnimTypeColor(EWidgetAnimType AnimType);
 
 	/**
 	 * What a layer is called: its type's name - or, on a Registered Type layer, the name its type registered with
-	 * ("Count Up"), since every registered type shares the one enum value.
+	 * ("Count"), since every registered type shares the one enum value.
 	 */
 	static FText GetLayerTypeName(const FWidgetAnimLayer& Layer);
 
 	/**
-	 * What colour a layer is drawn in: its type's - or, on a Blueprint type's track, that type's own Track Color if it
-	 * sets one, else the Blueprint type colour from the editor settings.
+	 * Whether a track's length comes from its widget rather than its Duration - a text typed at a Typing Speed (see
+	 * FWidgetAnimEvaluator::HasDerivedLength). Drawn striped, its end not draggable.
+	 */
+	static bool HasDerivedLength(const FWidgetAnimLayer& Layer);
+
+	/**
+	 * What color a layer is drawn in: its type's - or, on a Blueprint type's track, that type's own Track Color if it
+	 * sets one, else the Blueprint type color from the editor settings.
 	 */
 	static FLinearColor GetLayerTypeColor(const FWidgetAnimLayer& Layer);
 
-	/** A colour washed out the way a track that can't be edited is drawn. */
+	/** A color washed out the way a track that can't be edited is drawn. */
 	static FLinearColor GetLockedColor(const FLinearColor& Color);
 
 	/**
-	 * The colour a group is marked with - its band in the list, its bar and edge in the Track Editor. Generated
-	 * for any number of groups, muted so it never competes with the layer colours - see NameTBDColors.h.
+	 * The color a group is marked with - its band in the list, its bar and edge in the Track Editor. Generated
+	 * for any number of groups, muted so it never competes with the layer colors - see NameTBDColors.h.
 	 */
 	static FLinearColor GetGroupColor(int32 GroupIndex);
 
@@ -584,6 +599,21 @@ private:
 	 * line of its own just below. Cheap, and done every frame, so the lines follow every edit.
 	 */
 	void UpdateTrackLayout();
+
+	/** Works out TrackFans, TrackFanCounts and TrackRuns from the layers' staggers and the preview's counts and lengths. */
+	void UpdateStaggerFans();
+
+	/** How long a layer runs as the panel shows it: its length worked out on the preview (TrackRuns), or its own. */
+	float GetShownRunLength(int32 LayerIndex) const;
+
+	/** What placing the layers lengthens each by: its stagger's fan, and a worked-out length's difference from its own. */
+	void GetPlacementExtras(TArray<float>& OutExtras) const;
+
+	/**
+	 * Freezes the preview on a key. With a stagger anywhere, from the panel's own placing - which knows how far the
+	 * staggers reach - rather than the source's.
+	 */
+	void FocusPreviewOnKey(int32 LayerIndex, int32 KeyIndex);
 
 	/** Writes every layer's line as the Track Editor shows it now, so what a drag left on screen is what is kept. */
 	void CommitTrackLines();
@@ -744,6 +774,17 @@ private:
 	TArray<int32> LayerLineOrdinals;
 	TArray<int32> GroupLineCounts;
 	TArray<FVector2f> TrackSpans;
+
+	/**
+	 * Per layer, how much further its stagger reaches, in authored seconds, and how many items the preview counted for
+	 * it - worked out at the start of every UpdateTrackLayout, and what every placement in the panel lengthens a
+	 * staggered layer by, as the preview plays it. See UpdateStaggerFans.
+	 */
+	TArray<float> TrackFans;
+	TArray<int32> TrackFanCounts;
+
+	/** Per layer, how long it runs on the preview when its widget decides that, in authored seconds; negative when not. */
+	TArray<float> TrackRuns;
 
 	TSet<int32> TrackCollapsedGroups;
 	TSet<int32> ListCollapsedGroups;

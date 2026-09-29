@@ -72,7 +72,7 @@ public:
 	/** The settings struct this evaluator is registered under - which is what a track's type is. */
 	virtual const UScriptStruct* GetParamsStruct() const = 0;
 
-	/** What the type is called: in the Add Track menu, on its tracks, in the track list. "Count Up". */
+	/** What the type is called: in the Add Track menu, on its tracks, in the track list. "Text Reveal". */
 	virtual FText GetDisplayName() const = 0;
 
 	/**
@@ -81,7 +81,7 @@ public:
 	 */
 	virtual FText GetDescription() const { return FText::GetEmpty(); }
 
-	/** What the value at a key is called in the Selection panel - "Count" on a Count Up. */
+	/** What the value at a key is called in the Selection panel - "Count" on a Count. */
 	virtual FText GetValueLabel() const;
 
 	/**
@@ -98,6 +98,18 @@ public:
 	 */
 	virtual bool IsListedInAddMenu() const { return true; }
 
+	/**
+	 * The heading the Add Track menu lists this type under - "Text" for the text tracks. Empty lists it under
+	 * Registered Types.
+	 */
+	virtual FText GetCategory() const { return FText::GetEmpty(); }
+
+	/**
+	 * Whether a new track of this type starts with Linear easing rather than the usual Ease Out: types whose value is a
+	 * steady pace, such as a text typed out, where easing would only make the pace uneven.
+	 */
+	virtual bool PrefersLinearEasing() const { return false; }
+
 	// ---------------------------------------------------------------------------------------------
 	// Target
 	// ---------------------------------------------------------------------------------------------
@@ -113,15 +125,15 @@ public:
 	 * the animation is played on when the group names none.
 	 *
 	 * By default Widget itself when it is a GetTargetClass(), or else the first one inside it, depth first - so a
-	 * Count Up pointed at a whole button counts on the button's label. Null when there is none, and the track then
+	 * Count pointed at a whole button counts on the button's label. Null when there is none, and the track then
 	 * quietly does nothing, the way a Material track does on something that is not an Image.
 	 */
 	virtual UObject* ResolveTarget(UWidget* Widget, const FInstancedStruct& Params) const;
 
 	/**
 	 * Which of the target's values this track writes. Two tracks writing the same channel of the same target take
-	 * turns - the last one wins that frame - and share one baseline, whatever their types: a Count Up and a text
-	 * reveal on one label both write its "Text".
+	 * turns - the last one wins that frame - and share one baseline, whatever their types: a Count and a Blueprint
+	 * type that writes text, on one label, both write its "Text".
 	 */
 	virtual FName GetChannel(const FInstancedStruct& Params) const { return NAME_None; }
 
@@ -139,6 +151,48 @@ public:
 	 * Blueprint type, where every call runs Blueprint.
 	 */
 	virtual double GetQuantizeStep(const FInstancedStruct& Params) const { return 0.0; }
+
+	// ---------------------------------------------------------------------------------------------
+	// Play-time length
+	// ---------------------------------------------------------------------------------------------
+
+	/**
+	 * Whether a track of this type works something out when it starts playing, from the widget it plays on - how long
+	 * it runs, say, from how many letters its text has. PrepareForPlay is only called when this is true.
+	 */
+	virtual bool NeedsPlayPreparation(const FInstancedStruct& Params) const { return false; }
+
+	/**
+	 * Called as a track of this type starts playing - and whenever a preview poses it - on the track's own copy of its
+	 * settings: Target is what ResolveTarget found on the widget it plays on (null when nothing). May fill in runtime
+	 * state of Params (non-reflected members, which each playing copy owns), and returns how many seconds the track
+	 * runs, or a negative number to keep AuthoredRun. A new length moves the tracks placed after it, as a stagger does.
+	 */
+	virtual float PrepareForPlay(UObject* Target, FInstancedStruct& Params, float AuthoredRun) const { return -1.f; }
+
+	/**
+	 * Whether Target can be prepared for yet - false while what PrepareForPlay counts isn't known, such as a wrapping
+	 * text's lines before it has been given a width. A player waits a few frames for it, as it does for a stagger.
+	 */
+	virtual bool IsReadyToPrepare(UObject* Target, const FInstancedStruct& Params) const { return true; }
+
+	/**
+	 * Whether a track of this type, waiting for its start, shows its start rather than leaving its target alone: a text
+	 * still to be typed out is hidden from the moment the animation starts, not shown whole until its track begins.
+	 * Only asked of types that prepare for play.
+	 */
+	virtual bool HoldsStartPose(const FInstancedStruct& Params) const { return false; }
+
+	/**
+	 * Whether the track's length comes from PrepareForPlay rather than its Duration - a text typed out at a Typing
+	 * Speed, a count at so many per second. Such a track plays as a Tween (a Spring's length is its own), Linear too if
+	 * the type PrefersLinearEasing, and the Widget Animations editor draws it striped, as it draws a value track, since
+	 * its authored Duration means nothing.
+	 */
+	virtual bool HasDerivedLength(const FInstancedStruct& Params) const { return false; }
+
+	/** A few words saying what sets a derived length, shown on the track in place of its Duration - "30 letters/s". */
+	virtual FText GetDerivedLengthLabel(const FInstancedStruct& Params) const { return FText::GetEmpty(); }
 
 	/**
 	 * The track's value at its start (bStart) or its end. Every key in between holds its own value on the track, the
@@ -215,7 +269,7 @@ public:
 
 	/**
 	 * The evaluator for ParamsStruct - or, if that struct has none of its own, for the nearest struct it derives
-	 * from that does, so a game's variant of a Count Up plays as a Count Up without registering anything. Null when
+	 * from that does, so a game's variant of a Count plays as a Count without registering anything. Null when
 	 * nothing in its line is registered.
 	 */
 	const FWidgetAnimEvaluator* Find(const UScriptStruct* ParamsStruct) const;

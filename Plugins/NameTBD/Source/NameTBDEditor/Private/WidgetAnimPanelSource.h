@@ -107,7 +107,7 @@ public:
 	virtual void SetStartOption(int32 Id) {}
 
 	/**
-	 * The tracks of the animation the list starts within, shown read-only above the list's own, greyed, so the list's
+	 * The tracks of the animation the list starts within, shown read-only above the list's own, grayed, so the list's
 	 * tracks can be placed against it. GetContextTimeScale turns their authored seconds into the list's - how much
 	 * faster than authored that animation plays. Null when the list starts right away.
 	 */
@@ -124,7 +124,7 @@ public:
 	/** Every widget a group can target, as paths, "None" first. */
 	TArray<FString> GetTargetOptions() const;
 
-	/** The widget a group's Preview Target resolves to on the preview, for labelling. Null for "the widget itself". */
+	/** The widget a group's Preview Target resolves to on the preview, for labeling. Null for "the widget itself". */
 	UWidget* ResolvePreviewTarget(FName Path) const;
 
 	// ---------------------------------------------------------------------------------------------
@@ -139,6 +139,20 @@ public:
 
 	/** Freeze the preview on key KeyIndex of flattened layer FlatLayerIndex (groups in order, then layers). */
 	virtual void FocusKey(int32 FlatLayerIndex, int32 KeyIndex) = 0;
+
+	/**
+	 * How many items the Stagger of flattened layer FlatLayerIndex fans out to on the preview - so the Track Editor can
+	 * draw how far the layer reaches and place the layers after it where the preview plays them. INDEX_NONE when it has
+	 * no Stagger, or there is no preview to count on.
+	 */
+	virtual int32 GetExpandedCount(int32 FlatLayerIndex) const { return INDEX_NONE; }
+
+	/**
+	 * How long flattened layer FlatLayerIndex runs on the preview when its length comes from its widget rather than its
+	 * Duration - a text typed at a Typing Speed, a count at so many a second (see FWidgetAnimEvaluator::HasDerivedLength).
+	 * Negative when its Duration is its length, or there is no preview to work it out on.
+	 */
+	virtual float GetPreparedRun(int32 FlatLayerIndex) const { return -1.f; }
 
 	virtual bool IsPlaying() const = 0;
 
@@ -240,6 +254,8 @@ public:
 	virtual float GetPlayheadAlpha() const override;
 	virtual void ScrubToAlpha(float Alpha) override;
 	virtual void FocusKey(int32 FlatLayerIndex, int32 KeyIndex) override;
+	virtual int32 GetExpandedCount(int32 FlatLayerIndex) const override;
+	virtual float GetPreparedRun(int32 FlatLayerIndex) const override;
 	virtual bool IsPlaying() const override;
 	virtual void TogglePlay() override;
 	virtual bool GetLoop() const override;
@@ -307,6 +323,8 @@ public:
 	virtual float GetPlayheadAlpha() const override;
 	virtual void ScrubToAlpha(float Alpha) override;
 	virtual void FocusKey(int32 FlatLayerIndex, int32 KeyIndex) override;
+	virtual int32 GetExpandedCount(int32 FlatLayerIndex) const override { return ExpandedCounts.IsValidIndex(FlatLayerIndex) ? ExpandedCounts[FlatLayerIndex] : INDEX_NONE; }
+	virtual float GetPreparedRun(int32 FlatLayerIndex) const override { return PreparedRuns.IsValidIndex(FlatLayerIndex) ? PreparedRuns[FlatLayerIndex] : -1.f; }
 	virtual bool IsPlaying() const override { return bPlaying; }
 	virtual void TogglePlay() override;
 	virtual bool GetLoop() const override { return bLoop; }
@@ -354,6 +372,12 @@ private:
 	/** The root the baselines were captured on, and what they were captured for; either changing means capture again. */
 	TWeakObjectPtr<UUserWidget> PosedRoot;
 	uint32 PosedSignature = 0;
+
+	/** How many items each layer's Stagger fans out to on the preview, counted every tick. See GetExpandedCount. */
+	TArray<int32> ExpandedCounts;
+
+	/** How long each layer whose length comes from its widget runs on the preview, every tick. See GetPreparedRun. */
+	TArray<float> PreparedRuns;
 	FWidgetAnimBaselineSet Baselines;
 
 	FTSTicker::FDelegateHandle TickerHandle;
@@ -419,6 +443,8 @@ public:
 	virtual float GetPlayheadAlpha() const override { return Alpha; }
 	virtual void ScrubToAlpha(float InAlpha) override;
 	virtual void FocusKey(int32 FlatLayerIndex, int32 KeyIndex) override;
+	virtual int32 GetExpandedCount(int32 FlatLayerIndex) const override { return ExpandedCounts.IsValidIndex(FlatLayerIndex) ? ExpandedCounts[FlatLayerIndex] : INDEX_NONE; }
+	virtual float GetPreparedRun(int32 FlatLayerIndex) const override { return PreparedRuns.IsValidIndex(FlatLayerIndex) ? PreparedRuns[FlatLayerIndex] : -1.f; }
 	virtual bool IsPlaying() const override { return bPlaying; }
 	virtual void TogglePlay() override;
 	virtual bool GetLoop() const override { return bLoop; }
@@ -535,6 +561,12 @@ private:
 	/** The widget posed, and what it was captured for; either changing means capture again. */
 	TWeakObjectPtr<UWidget> PosedWidget;
 	uint32 PosedSignature = 0;
+
+	/** How many items each layer's Stagger fans out to on the preview, counted every tick. See GetExpandedCount. */
+	TArray<int32> ExpandedCounts;
+
+	/** How long each layer whose length comes from its widget runs on the preview, every tick. See GetPreparedRun. */
+	TArray<float> PreparedRuns;
 	FWidgetAnimBaselineSet Baselines;
 
 	/** Whether the list was edited while the widget was posed - told to OnPreviewReleased. */
