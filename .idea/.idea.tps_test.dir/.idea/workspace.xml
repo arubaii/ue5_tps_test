@@ -7,52 +7,7 @@
     <option name="flavorId" value="CMakePlainProjectFlavor" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="dc1934b2-75b5-4bee-9119-3fe06808e968" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimTextReveal.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimTextReveal.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimTextTracks.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimTextTracks.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextHost.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Text/WidgetAnimTextHost.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimExpander.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimExpander.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParts.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParts.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/SWidgetAnimText.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimRichTextBlock.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimRichTextBlock.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimTextBlock.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimTextBlock.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimTextWidgetCore.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetAnimTextWidgetCore.h" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDCommonUI/Private/WidgetAnimCommonText.cpp" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDCommonUI/Public/WidgetAnimCommonText.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/NameTBD_ValueInputs_v2_fix1.patch" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/NameTBD_ValueInputs_v2_fix2.patch" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_Menu_Example.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_Menu_Example.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WidgetAnimationBuilder.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WidgetAnimationBuilder.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/NameTBD.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/NameTBD.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimCountUp.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimCountUp.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimCountUp.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimCountUp.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimDriver.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimDriver.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimDriver.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimDriver.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEvaluator.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEvaluator.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDCommonUI/NameTBDCommonUI.Build.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDCommonUI/NameTBDCommonUI.Build.cs" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h" afterDir="false" />
-    </list>
+    <list default="true" id="dc1934b2-75b5-4bee-9119-3fe06808e968" name="Changes" comment="" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />

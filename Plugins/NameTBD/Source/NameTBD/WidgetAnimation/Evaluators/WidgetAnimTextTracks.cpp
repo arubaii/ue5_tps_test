@@ -25,6 +25,8 @@ namespace WidgetAnimPlainText
 			FText Source;
 			FString LastWritten;
 			bool bHasWritten = false;
+			double LastNumber = 0.0;
+			bool bHasNumber = false;
 		};
 
 		using FKey = TPair<FObjectKey, FName>;
@@ -65,6 +67,26 @@ namespace WidgetAnimPlainText
 		FEntry& Entry = GetEntries().FindOrAdd(FKey(FObjectKey(Target), Channel));
 		Entry.LastWritten = Written;
 		Entry.bHasWritten = true;
+	}
+
+	bool IsStillWritten(const UObject* Target, FName Channel)
+	{
+		const FEntry* Entry = GetEntries().Find(FKey(FObjectKey(Target), Channel));
+		return Entry && Entry->bHasWritten && WidgetAnimText::GetText(Target).ToString().Equals(Entry->LastWritten, ESearchCase::CaseSensitive);
+	}
+
+	void NoteNumberWritten(UObject* Target, FName Channel, double Written)
+	{
+		FEntry& Entry = GetEntries().FindOrAdd(FKey(FObjectKey(Target), Channel));
+		Entry.LastNumber = Written;
+		Entry.bHasNumber = true;
+	}
+
+	bool IsNumberStillWritten(const UObject* Target, FName Channel, double Current)
+	{
+		const FEntry* Entry = GetEntries().Find(FKey(FObjectKey(Target), Channel));
+		// Numeric texts keep their number as a float, so near enough is the same number.
+		return Entry && Entry->bHasNumber && FMath::IsNearlyEqual(Entry->LastNumber, Current, FMath::Max(FMath::Abs(Current) * 1.e-6, 1.e-4));
 	}
 
 	void Forget(UObject* Target, FName Channel)
@@ -320,11 +342,15 @@ void FWidgetAnimScrambleEvaluator::RestoreBaseline(UObject* Target, const FInsta
 {
 	ClearEffectsOn(Target);
 
+	// Put back only while the scramble's own writing still shows - see WidgetAnimPlainText::IsStillWritten.
 	const FWidgetAnimTextTrackBaseline* Captured = Baseline.GetPtr<FWidgetAnimTextTrackBaseline>();
 	if (Captured && Captured->bHasText)
 	{
+		if (WidgetAnimPlainText::IsStillWritten(Target, ScrambleChannel))
+		{
+			WidgetAnimPlainText::Write(Target, Captured->Text);
+		}
 		WidgetAnimPlainText::Forget(Target, ScrambleChannel);
-		WidgetAnimPlainText::Write(Target, Captured->Text);
 	}
 }
 
@@ -353,6 +379,13 @@ namespace
 		static TMap<FObjectKey, FLinearColor> OwnColors;
 		return OwnColors;
 	}
+
+	/** The color a Text Color last set on a plain Text Block - so a color set since isn't undone when it lets go. */
+	TMap<FObjectKey, FLinearColor>& GetWrittenColors()
+	{
+		static TMap<FObjectKey, FLinearColor> WrittenColors;
+		return WrittenColors;
+	}
 }
 
 FText FWidgetAnimTextColorEvaluator::GetDisplayName() const
@@ -362,7 +395,7 @@ FText FWidgetAnimTextColorEvaluator::GetDisplayName() const
 
 FText FWidgetAnimTextColorEvaluator::GetDescription() const
 {
-	return LOCTEXT("ColorDescription", "Changes a text's color, blending from Start Color to End Color - a flash on damage, a highlight settling back. Multiply keeps a rich text's styles apart; Replace makes every style the one color. Sets a plain Text Block's Color and Opacity, and puts it back after.");
+	return LOCTEXT("ColorDescription", "Changes a text's color, blending from Start Color through a color at each key to End Color - a flash on damage, a highlight settling back, red to gold to white. Multiply keeps a rich text's styles apart; Replace makes every style the one color. Sets a plain Text Block's Color and Opacity, and puts it back after.");
 }
 
 FText FWidgetAnimTextColorEvaluator::GetValueLabel() const
@@ -376,17 +409,36 @@ FName FWidgetAnimTextColorEvaluator::GetChannel(const FInstancedStruct& Params) 
 	return Channel;
 }
 
-void FWidgetAnimTextColorEvaluator::Apply(UObject* Target, const FInstancedStruct& Params, double Value) const
+FLinearColor FWidgetAnimTextColorEvaluator::GetEndpointColor(const FInstancedStruct& Params, bool bStart) const
 {
 	const FWidgetAnimTextColorParams* TextColor = GetParams(Params);
-	if (!Target || !TextColor)
+	return TextColor ? (bStart ? TextColor->StartColor : TextColor->EndColor) : FLinearColor::White;
+}
+
+void FWidgetAnimTextColorEvaluator::Apply(UObject* Target, const FInstancedStruct& Params, double Value) const
+{
+	// Unclamped, so a spring's overshoot carries on past the end color.
+	if (const FWidgetAnimTextColorParams* TextColor = GetParams(Params))
+	{
+		ApplyColor(Target, *TextColor, FMath::Lerp(TextColor->StartColor, TextColor->EndColor, static_cast<float>(Value)));
+	}
+}
+
+void FWidgetAnimTextColorEvaluator::ApplyWithColor(UObject* Target, const FInstancedStruct& Params, double Value, const FLinearColor& Color) const
+{
+	if (const FWidgetAnimTextColorParams* TextColor = GetParams(Params))
+	{
+		ApplyColor(Target, *TextColor, Color);
+	}
+}
+
+void FWidgetAnimTextColorEvaluator::ApplyColor(UObject* Target, const FWidgetAnimTextColorParams& Params, const FLinearColor& Color)
+{
+	if (!Target)
 	{
 		return;
 	}
-
-	// Unclamped, so a spring's overshoot carries on past the end color.
-	const FLinearColor Color = FMath::Lerp(TextColor->StartColor, TextColor->EndColor, static_cast<float>(Value));
-	const bool bReplace = TextColor->Mode == EWidgetAnimTextColorMode::Replace;
+	const bool bReplace = Params.Mode == EWidgetAnimTextColorMode::Replace;
 
 	if (IWidgetAnimTextHost* Host = WidgetAnimText::AsHost(Target))
 	{
@@ -405,16 +457,21 @@ void FWidgetAnimTextColorEvaluator::Apply(UObject* Target, const FInstancedStruc
 		return;
 	}
 	TMap<FObjectKey, FLinearColor>& OwnColors = GetOwnColors();
+	TMap<FObjectKey, FLinearColor>& WrittenColors = GetWrittenColors();
 	if (OwnColors.Num() > 256)
 	{
 		OwnColors.Reset();
+		WrittenColors.Reset();
 	}
 	const FObjectKey Key(TextBlock);
-	if (!OwnColors.Contains(Key))
+	FLinearColor Current = FLinearColor::White;
+	WidgetAnimText::GetColor(TextBlock, Current);
+
+	// Its own color is read on the first write - and again if something else has set a color since the last one.
+	const FLinearColor* Written = WrittenColors.Find(Key);
+	if (!OwnColors.Contains(Key) || !Written || !Written->Equals(Current, 0.f))
 	{
-		FLinearColor Own = FLinearColor::White;
-		WidgetAnimText::GetColor(TextBlock, Own);
-		OwnColors.Add(Key, Own);
+		OwnColors.Add(Key, Current);
 	}
 	const FLinearColor Base = OwnColors.FindChecked(Key);
 	FLinearColor Result = bReplace ? Color : Base * Color;
@@ -423,6 +480,11 @@ void FWidgetAnimTextColorEvaluator::Apply(UObject* Target, const FInstancedStruc
 		Result.A *= Base.A;
 	}
 	WidgetAnimText::SetColor(TextBlock, Result);
+
+	// Read back rather than kept as asked: a Slate color can round what it is given.
+	FLinearColor Shown = Result;
+	WidgetAnimText::GetColor(TextBlock, Shown);
+	WrittenColors.Add(Key, Shown);
 }
 
 bool FWidgetAnimTextColorEvaluator::CaptureBaseline(UObject* Target, const FInstancedStruct& Params, FInstancedStruct& OutBaseline) const
@@ -449,12 +511,17 @@ void FWidgetAnimTextColorEvaluator::RestoreBaseline(UObject* Target, const FInst
 	const FWidgetAnimTextTrackBaseline* Captured = Baseline.GetPtr<FWidgetAnimTextTrackBaseline>();
 	if (Captured && Captured->bHasColor)
 	{
-		GetOwnColors().Remove(FObjectKey(Target));
+		// Put back only while the color the track set still shows: one set since - in the designer's Details, or by the
+		// game - is the text's color now.
+		const FObjectKey Key(Target);
+		const FLinearColor* Written = GetWrittenColors().Find(Key);
 		FLinearColor Current;
-		if (WidgetAnimText::GetColor(Target, Current) && !Current.Equals(Captured->Color, 0.f))
+		if (Written && WidgetAnimText::GetColor(Target, Current) && Written->Equals(Current, 0.f) && !Current.Equals(Captured->Color, 0.f))
 		{
 			WidgetAnimText::SetColor(Target, Captured->Color);
 		}
+		GetOwnColors().Remove(Key);
+		GetWrittenColors().Remove(Key);
 	}
 }
 
@@ -478,7 +545,7 @@ FText FWidgetAnimShimmerEvaluator::GetDisplayName() const
 
 FText FWidgetAnimShimmerEvaluator::GetDescription() const
 {
-	return LOCTEXT("ShimmerDescription", "Sweeps a band of light across a text, letter by letter. Its value is where the band is: 0 before the first letter, 1 past the last - loop it for a gleam every so often. Animated text widgets only.");
+	return LOCTEXT("ShimmerDescription", "Sweeps a band of light across a text, letter by letter. Its value is where the band is: 0 before the first letter, 1 past the last - loop it for a gleam every so often. Each key has a band color of its own, so the band can change color as it travels. Animated text widgets only.");
 }
 
 FText FWidgetAnimShimmerEvaluator::GetValueLabel() const
@@ -492,7 +559,27 @@ FName FWidgetAnimShimmerEvaluator::GetChannel(const FInstancedStruct& Params) co
 	return Channel;
 }
 
+FText FWidgetAnimShimmerEvaluator::GetKeyColorLabel(const FInstancedStruct& Params) const
+{
+	return LOCTEXT("ShimmerKeyColor", "Band Color");
+}
+
+FLinearColor FWidgetAnimShimmerEvaluator::GetEndpointColor(const FInstancedStruct& Params, bool bStart) const
+{
+	const FWidgetAnimShimmerParams* Shimmer = GetParams(Params);
+	if (!Shimmer)
+	{
+		return FLinearColor::White;
+	}
+	return bStart || !Shimmer->bEndColor ? Shimmer->Color : Shimmer->EndColor;
+}
+
 void FWidgetAnimShimmerEvaluator::Apply(UObject* Target, const FInstancedStruct& Params, double Value) const
+{
+	ApplyWithColor(Target, Params, Value, GetEndpointColor(Params, /*bStart=*/true));
+}
+
+void FWidgetAnimShimmerEvaluator::ApplyWithColor(UObject* Target, const FInstancedStruct& Params, double Value, const FLinearColor& Color) const
 {
 	IWidgetAnimTextHost* Host = WidgetAnimText::AsHost(Target);
 	const FWidgetAnimShimmerParams* Shimmer = GetParams(Params);
@@ -510,7 +597,7 @@ void FWidgetAnimShimmerEvaluator::Apply(UObject* Target, const FInstancedStruct&
 	Effects.ShimmerCenter = FMath::Lerp(-Reach, Last + Reach, static_cast<float>(Value));
 	Effects.ShimmerWidth = FMath::Max(Shimmer->Width, 0.f);
 	Effects.ShimmerSoftness = FMath::Max(Shimmer->Softness, 0.f);
-	Effects.ShimmerColor = Shimmer->Color;
+	Effects.ShimmerColor = Color;
 	Effects.ShimmerStrength = FMath::Clamp(Shimmer->Strength, 0.f, 1.f);
 	Host->OnWidgetAnimTextEffectsChanged();
 }

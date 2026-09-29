@@ -1,0 +1,23 @@
+// Copyright AR GameSystems 2026. All rights reserved.
+
+#include "WidgetAnimRuntimeSettings.h"
+
+UWidgetAnimRuntimeSettings::UWidgetAnimRuntimeSettings()
+{
+	// The library a project starts with. Only a default: once the list is edited, the project's own list is what the
+	// config holds, so a tag a team removed stays removed.
+	WidgetAnimTextMarkup::GetDefaultTags(TextTags);
+}
+
+#if WITH_EDITOR
+void UWidgetAnimRuntimeSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	// Every text reads its tags again the next time it is drawn, so an edited tag shows in the designer at once.
+	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UWidgetAnimRuntimeSettings, TextTags))
+	{
+		WidgetAnimTextMarkup::NotifyTagsChanged();
+	}
+}
+#endif

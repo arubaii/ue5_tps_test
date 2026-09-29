@@ -330,6 +330,19 @@ namespace
 		Baseline.Captured = MoveTemp(Captured);
 	}
 
+	/** One live write onto its target: with the color it blended to, for a type whose keys hold colors. */
+	void ApplyWrite(const FWidgetAnimAuthoritativeWrite& Write, UObject* Target, const FInstancedStruct& Params)
+	{
+		if (Write.bHasColor)
+		{
+			Write.Evaluator->ApplyWithColor(Target, Params, Write.Value, Write.Color);
+		}
+		else
+		{
+			Write.Evaluator->Apply(Target, Params, Write.Value);
+		}
+	}
+
 	/**
 	 * Every registered-type write in the result, onto its target. Live writes go through their evaluator; a baseline
 	 * write puts back what was captured - by whichever type captured it - and does nothing when nothing was.
@@ -380,12 +393,12 @@ namespace
 							continue;
 						}
 
-						Write.Evaluator->Apply(Target, Params, Write.Value);
+						ApplyWrite(Write, Target, Params);
 						Last->AppliedValue = Write.Value;
 						continue;
 					}
 
-					Write.Evaluator->Apply(Target, Params, Write.Value);
+					ApplyWrite(Write, Target, Params);
 
 					// Stale entries - widgets long gone - are dropped wholesale rather than tracked; a cleared cache
 					// only costs one extra apply per channel.
@@ -402,7 +415,7 @@ namespace
 				}
 				else
 				{
-					Write.Evaluator->Apply(Target, Params, Write.Value);
+					ApplyWrite(Write, Target, Params);
 					LastWrites.Remove(Key);
 				}
 				continue;
@@ -607,6 +620,15 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 			Write.Params = &Settings.TypeParams;
 			Write.Value = RegisteredValue;
 			Write.bIsBaseline = false;
+
+			// Keys holding colors: blended between the same two points, the same way, exact at either end.
+			Write.bHasColor = Evaluator->GetKeyContent(Settings.TypeParams) != EWidgetAnimKeyContent::Value;
+			if (Write.bHasColor)
+			{
+				const FLinearColor From = WidgetAnimKeyPoints::GetColor(Settings, Segment);
+				const FLinearColor To = WidgetAnimKeyPoints::GetColor(Settings, Segment + 1);
+				Write.Color = SegmentAlpha == 0.f ? From : SegmentAlpha == 1.f ? To : FMath::Lerp(From, To, SegmentAlpha);
+			}
 			break;
 		}
 		}

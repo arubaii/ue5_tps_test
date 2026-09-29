@@ -13,6 +13,108 @@
 #include "Internationalization/Internationalization.h"
 
 // =====================================================================================================
+// Appearing
+// =====================================================================================================
+
+float FWidgetAnimTextAppear::Ease(float Alpha) const
+{
+	// Overshoot replaces the easing, as it does on a Scale or Slide track: a pop that travels past its place and settles.
+	return Overshoot > 0.f
+		? WidgetAnimEasing::EaseOutBack(FMath::Clamp(Alpha, 0.f, 1.f), Overshoot)
+		: WidgetAnimEasing::Evaluate(Easing, nullptr, Alpha);
+}
+
+FWidgetAnimTextAppear FWidgetAnimTextRevealLook::MakeAppear(EWidgetAnimTextRevealStyle InStyle, float InAppearTime, EWidgetAnimTextSlideFrom InSlideFrom,
+	float InDistance, bool bInFadeIn, const FWidgetAnimTextAppear& InCustom)
+{
+	if (InStyle == EWidgetAnimTextRevealStyle::Custom)
+	{
+		return InCustom;
+	}
+
+	// Every style starts from a part in its place, as it is, and says only what differs.
+	FWidgetAnimTextAppear Appear;
+	Appear.Time = FMath::Max(InAppearTime, 0.f);
+	Appear.Opacity = bInFadeIn ? 0.f : 1.f;
+	Appear.Offset = FVector2D::ZeroVector;
+	Appear.Easing = EWidgetAnimEasing::EaseOut;
+
+	const float Distance = FMath::Max(InDistance, 0.f);
+	switch (InStyle)
+	{
+	case EWidgetAnimTextRevealStyle::Typewriter:
+		// On at once: nothing to ease between.
+		Appear.Time = 0.f;
+		Appear.Opacity = 0.f;
+		break;
+
+	case EWidgetAnimTextRevealStyle::Fade:
+		Appear.Opacity = 0.f;
+		break;
+
+	case EWidgetAnimTextRevealStyle::Slide:
+		switch (InSlideFrom)
+		{
+		case EWidgetAnimTextSlideFrom::Above: Appear.Offset = FVector2D(0.0, -Distance); break;
+		case EWidgetAnimTextSlideFrom::Left:  Appear.Offset = FVector2D(-Distance, 0.0); break;
+		case EWidgetAnimTextSlideFrom::Right: Appear.Offset = FVector2D(Distance, 0.0); break;
+		case EWidgetAnimTextSlideFrom::Below:
+		default:                              Appear.Offset = FVector2D(0.0, Distance); break;
+		}
+		break;
+
+	case EWidgetAnimTextRevealStyle::Pop:
+		Appear.Scale = 0.f;
+		Appear.Overshoot = 1.7f;
+		break;
+
+	case EWidgetAnimTextRevealStyle::Stomp:
+		// Speeding up into its place and stopping dead there - which is what reads as an impact.
+		Appear.Scale = 2.2f;
+		Appear.Easing = EWidgetAnimEasing::EaseIn;
+		break;
+
+	case EWidgetAnimTextRevealStyle::Drop:
+		Appear.Offset = FVector2D(0.0, -Distance * 1.5f);
+		Appear.Overshoot = 1.2f;
+		break;
+
+	case EWidgetAnimTextRevealStyle::Spin:
+		Appear.Angle = -180.f;
+		Appear.Scale = 0.2f;
+		break;
+
+	case EWidgetAnimTextRevealStyle::Flip:
+		Appear.Stretch = FVector2D(1.0, 0.0);
+		break;
+
+	case EWidgetAnimTextRevealStyle::Stretch:
+		Appear.Stretch = FVector2D(0.0, 1.0);
+		Appear.Overshoot = 0.6f;
+		break;
+
+	case EWidgetAnimTextRevealStyle::Blur:
+		Appear.Opacity = 0.f;
+		Appear.Blur = Distance * 0.5f;
+		Appear.Scale = 1.08f;
+		break;
+
+	case EWidgetAnimTextRevealStyle::Wipe:
+		Appear.Opacity = 1.f;
+		Appear.bWipe = true;
+		break;
+
+	case EWidgetAnimTextRevealStyle::Scatter:
+		Appear.Scatter = Distance * 3.f;
+		break;
+
+	default:
+		break;
+	}
+	return Appear;
+}
+
+// =====================================================================================================
 // WidgetAnimText
 // =====================================================================================================
 

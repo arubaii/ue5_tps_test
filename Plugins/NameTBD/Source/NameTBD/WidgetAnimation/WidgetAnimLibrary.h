@@ -944,7 +944,20 @@ namespace WidgetAnimKeyPoints
 		{
 			return Track.ValueKeys.Keys[Point - 1].Color;
 		}
+		// A registered type whose keys hold colors says what its own start and end colors are.
+		if (Track.AnimType == EWidgetAnimType::Custom)
+		{
+			return WidgetAnimGetRegisteredEndpointColor(Track.TypeParams, /*bStart=*/Point <= 0);
+		}
 		return Point <= 0 ? Track.StartVectorValue : Track.EndVectorValue;
+	}
+
+	/** Whether the track's keys hold colors - a Material Vector, or a registered type whose keys do. */
+	template <typename TTrack>
+	bool HasColorKeys(const TTrack& Track)
+	{
+		return Track.AnimType == EWidgetAnimType::MaterialVector
+			|| (Track.AnimType == EWidgetAnimType::Custom && WidgetAnimGetRegisteredKeyContent(Track.TypeParams) != EWidgetAnimKeyContent::Value);
 	}
 
 	/** The lowest value any point of the track has - what decides whether a value can sensibly go below zero. */

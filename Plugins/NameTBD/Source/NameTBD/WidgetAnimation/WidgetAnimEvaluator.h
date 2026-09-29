@@ -46,6 +46,19 @@ enum class EWidgetAnimComposition : uint8
 	Authoritative
 };
 
+/** What each key between a registered track's start and end holds - see FWidgetAnimEvaluator::GetKeyContent. */
+enum class EWidgetAnimKeyContent : uint8
+{
+	/** A value, as every track's keys hold. */
+	Value,
+
+	/** A color only: the track blends from color to color, its start color to its keys' to its end color. */
+	Color,
+
+	/** A value and a color, each blended between the points - a shimmer's place and its band's color. */
+	ValueAndColor
+};
+
 /**
  * What a registered track type does: how its value reaches its target, and how the target is put back.
  *
@@ -208,6 +221,29 @@ public:
 	virtual void Apply(UObject* Target, const FInstancedStruct& Params, double Value) const = 0;
 
 	// ---------------------------------------------------------------------------------------------
+	// Colors
+	// ---------------------------------------------------------------------------------------------
+
+	/**
+	 * What the keys between a track's start and end hold: a value (the default), a color, or both. A type whose keys
+	 * hold a color says what its start and end colors are with GetEndpointColor, and receives the color the timeline
+	 * blends to in ApplyWithColor - so a Text Color passes from red to gold to white, one color per key.
+	 */
+	virtual EWidgetAnimKeyContent GetKeyContent(const FInstancedStruct& Params) const { return EWidgetAnimKeyContent::Value; }
+
+	/** What a key's color is called in the Selection panel - "Band Color" on a Shimmer. */
+	virtual FText GetKeyColorLabel(const FInstancedStruct& Params) const;
+
+	/** The track's color at its start (bStart) or its end, for a type whose keys hold colors. */
+	virtual FLinearColor GetEndpointColor(const FInstancedStruct& Params, bool bStart) const { return FLinearColor::White; }
+
+	/**
+	 * Apply, for a type whose keys hold colors: Value as Apply receives it, and Color blended from the start color
+	 * through the keys' to the end color the same way. Calls Apply by default.
+	 */
+	virtual void ApplyWithColor(UObject* Target, const FInstancedStruct& Params, double Value, const FLinearColor& Color) const { Apply(Target, Params, Value); }
+
+	// ---------------------------------------------------------------------------------------------
 	// Baseline
 	// ---------------------------------------------------------------------------------------------
 
@@ -317,6 +353,10 @@ struct NAMETBD_API FWidgetAnimAuthoritativeWrite
 
 	double Value = 0.0;
 
+	/** The color the track has blended to, for a type whose keys hold colors (bHasColor). */
+	FLinearColor Color = FLinearColor::White;
+	bool bHasColor = false;
+
 	/**
 	 * Only the captured baseline, put in for a track that isn't writing this frame - not started yet, hidden, or
 	 * just let go. A track that IS writing the same channel wins over it, whichever order the two came in, exactly
@@ -367,3 +407,9 @@ struct NAMETBD_API FWidgetAnimAuthoritativeBaseline
  * see WidgetAnimKeyPoints. 0 when the type isn't registered.
  */
 NAMETBD_API double WidgetAnimGetRegisteredEndpoint(const FInstancedStruct& Params, bool bStart);
+
+/** A registered track's start or end color, when its keys hold colors - see WidgetAnimKeyPoints. White otherwise. */
+NAMETBD_API FLinearColor WidgetAnimGetRegisteredEndpointColor(const FInstancedStruct& Params, bool bStart);
+
+/** What a registered track's keys hold. Value when its type isn't registered. */
+NAMETBD_API EWidgetAnimKeyContent WidgetAnimGetRegisteredKeyContent(const FInstancedStruct& Params);

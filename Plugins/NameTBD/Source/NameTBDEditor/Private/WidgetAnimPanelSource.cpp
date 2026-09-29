@@ -128,17 +128,24 @@ UUserWidget* FindWidgetAnimDesignerPreview(const UWidgetBlueprint* Blueprint)
 	}
 
 	// A copy of this widget placed in another Widget Blueprint sits inside that one's tree; the designer's
-	// own preview of it does not.
+	// own preview of it does not. The designer throws its preview away and makes a new one whenever the Blueprint
+	// changes - an edit in its Details included - and the old one lingers until garbage is collected, so the one on
+	// screen (with a Slate widget) is preferred over any other.
+	UUserWidget* Fallback = nullptr;
 	for (TObjectIterator<UUserWidget> It(RF_ClassDefaultObject | RF_ArchetypeObject, /*bIncludeDerivedClasses=*/true, EInternalObjectFlags::Garbage); It; ++It)
 	{
 		UUserWidget* Candidate = *It;
 		if (Candidate->GetClass() == GeneratedClass && Candidate->IsDesignTime() && !Candidate->GetTypedOuter<UWidgetTree>())
 		{
-			return Candidate;
+			if (Candidate->GetCachedWidget().IsValid())
+			{
+				return Candidate;
+			}
+			Fallback = Fallback ? Fallback : Candidate;
 		}
 	}
 
-	return nullptr;
+	return Fallback;
 }
 
 // =====================================================================================================
@@ -580,12 +587,17 @@ void FWidgetAnimAssetPanelSource::SetMode(EMode InMode)
 
 UUserWidget* FWidgetAnimAssetPanelSource::GetPreviewRoot() const
 {
+	// Still the designer's preview only while it is on screen: an edit in the Details replaces the preview, and the old
+	// one - no longer drawn, but not yet collected - would otherwise be posed in its place, the new text or layout never
+	// seen until a compile.
 	if (UUserWidget* Cached = CachedRoot.Get())
 	{
-		if (IsValid(Cached))
+		if (IsValid(Cached) && Cached->GetCachedWidget().IsValid())
 		{
 			return Cached;
 		}
+		CachedRoot.Reset();
+		LastRootSearchTime = -1.0;
 	}
 
 	const double Now = FPlatformTime::Seconds();
@@ -1117,12 +1129,15 @@ UWidget* FWidgetAnimLayerArrayPanelSource::ResolveLayerTarget(UWidget* Widget, F
 
 UWidget* FWidgetAnimLayerArrayPanelSource::GetPreviewWidget() const
 {
+	// Only while it is on screen - see FWidgetAnimAssetPanelSource::GetPreviewRoot.
 	if (UWidget* Cached = CachedWidget.Get())
 	{
-		if (IsValid(Cached))
+		if (IsValid(Cached) && Cached->GetCachedWidget().IsValid())
 		{
 			return Cached;
 		}
+		CachedWidget.Reset();
+		LastWidgetSearchTime = -1.0;
 	}
 
 	const double Now = FPlatformTime::Seconds();

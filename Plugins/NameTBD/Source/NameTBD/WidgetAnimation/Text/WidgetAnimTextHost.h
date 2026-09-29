@@ -9,6 +9,7 @@
 #include "WidgetAnimTextHost.generated.h"
 
 class UWidget;
+struct FWidgetAnimTextMarkup;
 
 // =====================================================================================================
 // Text hosts and text effects
@@ -30,6 +31,58 @@ class UWidget;
 // keeps its place, a wave or a shake moves letters about their places, Letter Spacing pushes letters apart from the
 // middle of their line without re-wrapping it. Only Scramble changes which glyph a letter shows, and it draws the
 // stand-in in the letter's own box.
+//
+// A text host also reads tags in its own text - <shake>this</>, <speed=2>, <pause=0.5> - and draws their effects on the
+// words they tag, with no track at all (see WidgetAnimTextMarkup.h). That is how a line of dialogue carries its own
+// emphasis: whatever dialogue system sets the text, the tags come with it.
+
+// Appearing
+//
+// How a part of a text appears as a Text Reveal reaches it - or as a text tag's own reveal look reaches the letters it
+// tags. Designers pick a Style (Typewriter, Fade, Slide, Pop...) and tune a few words' worth of settings; each style
+// is then turned into an FWidgetAnimTextAppear - where the part starts from and how it gets to its place - which is
+// what the text widget draws. Custom hands over an FWidgetAnimTextAppear as authored.
+
+/** How each part of a text appears once a reveal reaches it. */
+UENUM(BlueprintType)
+enum class EWidgetAnimTextRevealStyle : uint8
+{
+	Typewriter UMETA(ToolTip = "Each part pops on at once, in place - the classic dialogue box."),
+
+	Fade UMETA(ToolTip = "Each part fades in, in place - a soft, calm line."),
+
+	Slide UMETA(ToolTip = "Each part slides into place from a side (Slide From), fading in as it comes or not (Fade In As It Appears)."),
+
+	Pop UMETA(ToolTip = "Each part grows from nothing, overshoots a little and settles - lively, cartoon-like."),
+
+	Stomp UMETA(ToolTip = "Each part lands from much larger, as if stamped down - an impact, a shout, a title card."),
+
+	Drop UMETA(ToolTip = "Each part drops in from above and bounces into place."),
+
+	Spin UMETA(ToolTip = "Each part spins into place about its middle as it grows."),
+
+	Flip UMETA(ToolTip = "Each part flips up into place, opening from a flat line - a flap display."),
+
+	Stretch UMETA(ToolTip = "Each part stretches out sideways from its middle."),
+
+	Blur UMETA(ToolTip = "Each part comes into focus from a soft blur - Distance sets how soft."),
+
+	Wipe UMETA(ToolTip = "Each part is wiped on from left to right, as if written by hand."),
+
+	Scatter UMETA(ToolTip = "Each part flies in from a direction of its own and gathers into place."),
+
+	Custom UMETA(ToolTip = "Set where each part starts from - its opacity, offset, scale, angle, stretch and blur - yourself, under Custom Appear.")
+};
+
+/** Which side a Slide reveal brings each part in from. */
+UENUM(BlueprintType)
+enum class EWidgetAnimTextSlideFrom : uint8
+{
+	Below,
+	Above,
+	Left,
+	Right
+};
 
 /** How a letter (or word, or line) of a Text Reveal looks as it appears: where it comes from, over how long. */
 USTRUCT(BlueprintType)
@@ -60,9 +113,82 @@ struct NAMETBD_API FWidgetAnimTextAppear
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appear", meta = (DisplayName = "From Angle", UIMin = "-180.0", UIMax = "180.0", Units = "deg"))
 	float Angle = 0.f;
 
+	/**
+	 * How squashed a part starts on each axis, on top of From Scale: (1, 0) opens up from a flat line, (0, 1) stretches
+	 * out sideways from its middle. (1, 1) is neither.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appear", meta = (DisplayName = "From Stretch", UIMin = "0.0", UIMax = "3.0"))
+	FVector2D Stretch = FVector2D(1.0, 1.0);
+
+	/** How blurred a part starts, in Slate units - it comes into focus as it appears. 0 is sharp. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appear", meta = (DisplayName = "From Blur", ClampMin = "0.0", UIMax = "12.0"))
+	float Blur = 0.f;
+
+	/**
+	 * How far each part starts in a direction of its own, in Slate units - on top of From Offset. The parts gather in
+	 * from all around.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appear", meta = (DisplayName = "Scatter", ClampMin = "0.0", UIMax = "80.0"))
+	float Scatter = 0.f;
+
+	/** Each part is uncovered from left to right as it appears, rather than all of it at once. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appear", meta = (DisplayName = "Wipe On"))
+	bool bWipe = false;
+
 	/** How each part moves from where it starts to its place. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appear")
 	EWidgetAnimEasing Easing = EWidgetAnimEasing::EaseOut;
+
+	/**
+	 * How far past its place a part travels before it settles back - 0 not at all, 1.7 a lively bounce. Replaces
+	 * Easing while above 0.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appear", meta = (ClampMin = "0.0", UIMax = "3.0"))
+	float Overshoot = 0.f;
+
+	/** How far along its way in a part is drawn when it has appeared Alpha (0 to 1) of the way. May pass 1 with Overshoot. */
+	float Ease(float Alpha) const;
+};
+
+/**
+ * A reveal look as a designer picks it: a Style and the few settings it takes. What a Text Reveal track and a text tag
+ * (see WidgetAnimTextMarkup.h) are both given, turned into an FWidgetAnimTextAppear by ToAppear.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimTextRevealLook
+{
+	GENERATED_BODY()
+
+	/** How each part appears once it is reached. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reveal")
+	EWidgetAnimTextRevealStyle Style = EWidgetAnimTextRevealStyle::Typewriter;
+
+	/** Seconds each part takes to appear. Longer overlaps them, several parts always on their way in. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reveal", meta = (DisplayName = "Appear Time", ClampMin = "0.0", UIMax = "1.0", Units = "s", EditCondition = "Style != EWidgetAnimTextRevealStyle::Typewriter && Style != EWidgetAnimTextRevealStyle::Custom", EditConditionHides))
+	float AppearTime = 0.25f;
+
+	/** Which side each part slides in from. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reveal", meta = (DisplayName = "Slide From", EditCondition = "Style == EWidgetAnimTextRevealStyle::Slide", EditConditionHides))
+	EWidgetAnimTextSlideFrom SlideFrom = EWidgetAnimTextSlideFrom::Below;
+
+	/** How far each part travels - or, for Blur, how soft it starts - in Slate units. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reveal", meta = (ClampMin = "0.0", UIMax = "60.0", EditCondition = "Style == EWidgetAnimTextRevealStyle::Slide || Style == EWidgetAnimTextRevealStyle::Drop || Style == EWidgetAnimTextRevealStyle::Blur || Style == EWidgetAnimTextRevealStyle::Scatter", EditConditionHides))
+	float Distance = 12.f;
+
+	/** Each part fades in as it moves into place. Off, it is fully there from its first frame. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reveal", meta = (DisplayName = "Fade In As It Appears", EditCondition = "Style != EWidgetAnimTextRevealStyle::Typewriter && Style != EWidgetAnimTextRevealStyle::Fade && Style != EWidgetAnimTextRevealStyle::Blur && Style != EWidgetAnimTextRevealStyle::Wipe && Style != EWidgetAnimTextRevealStyle::Custom", EditConditionHides))
+	bool bFadeIn = true;
+
+	/** Every setting of the appearance, for a Style of Custom. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Reveal", meta = (DisplayName = "Custom Appear", EditCondition = "Style == EWidgetAnimTextRevealStyle::Custom", EditConditionHides))
+	FWidgetAnimTextAppear Custom;
+
+	/** The appearance this look stands for. */
+	FWidgetAnimTextAppear ToAppear() const { return MakeAppear(Style, AppearTime, SlideFrom, Distance, bFadeIn, Custom); }
+
+	/** The appearance a Style stands for with these settings - shared by every place that offers the styles. */
+	static FWidgetAnimTextAppear MakeAppear(EWidgetAnimTextRevealStyle InStyle, float InAppearTime, EWidgetAnimTextSlideFrom InSlideFrom,
+		float InDistance, bool bInFadeIn, const FWidgetAnimTextAppear& InCustom);
 };
 
 /** What a Wave moves on each letter. */
@@ -75,8 +201,40 @@ enum class EWidgetAnimTextWaveMotion : uint8
 
 	Rotate UMETA(ToolTip = "Tilting back and forth about each letter's middle: Amplitude in degrees."),
 
-	Scale UMETA(ToolTip = "Growing and shrinking about each letter's middle: Amplitude is how much bigger at the crest - 0.2 is 20% larger.")
+	Scale UMETA(ToolTip = "Growing and shrinking about each letter's middle: Amplitude is how much bigger at the crest - 0.2 is 20% larger."),
+
+	Hop UMETA(ToolTip = "Hopping up from its place and landing again, never below it - a bounce. Amplitude in Slate units.")
 };
+
+// Changing
+
+/** How a text's changed characters make way for the new ones - a Count's number ticking over, say. */
+UENUM(BlueprintType)
+enum class EWidgetAnimTextChangeStyle : uint8
+{
+	Instant UMETA(ToolTip = "The new text simply replaces the old."),
+
+	SlotMachine UMETA(DisplayName = "Slot Machine", ToolTip = "Each changed digit rolls up or down to the next, as on a slot machine's reel or an odometer - through the digits in between."),
+
+	Roulette UMETA(ToolTip = "Each changed digit rolls in sideways, from the right or the left, as on a roulette strip."),
+
+	Fade UMETA(ToolTip = "Each changed digit fades out as the new one fades in, in place."),
+
+	Blend UMETA(ToolTip = "Each changed digit melts into the next: the old one softens and shrinks away as the new one comes into focus.")
+};
+
+/** What moves when a text changes. */
+UENUM(BlueprintType)
+enum class EWidgetAnimTextChangeScope : uint8
+{
+	ChangedDigits UMETA(DisplayName = "Changed Digits", ToolTip = "Only the characters that changed - 1,250 to 1,260 moves only the 5. Characters that stay slide to their new places if the text got wider or narrower."),
+
+	WholeNumber UMETA(DisplayName = "Whole Number", ToolTip = "The whole number moves as one, whatever changed in it. Text around it - a label, a unit - stays put.")
+};
+
+// =====================================================================================================
+// Effects
+// =====================================================================================================
 
 /**
  * Everything the text tracks have set on one text host this frame. Plain data, drawn by the host. Each track writes
@@ -94,7 +252,7 @@ struct NAMETBD_API FWidgetAnimTextEffects
 
 	/**
 	 * How far each part of RevealUnit has appeared, in order: 0 not yet, 1 fully. Parts past the end of the array have
-	 * not appeared. A part between 0 and 1 is drawn part way in from Appear.
+	 * not appeared. A part between 0 and 1 is drawn part way in from its appearance - Appear, or a text tag's own.
 	 */
 	TArray<float> RevealAlphas;
 
@@ -105,6 +263,17 @@ struct NAMETBD_API FWidgetAnimTextEffects
 
 	/** The cursor blinks, twice a second. */
 	bool bCursorBlink = true;
+
+	/**
+	 * The text still to come is shown faintly, at GhostOpacity, and each part fills in as the reveal reaches it - a
+	 * preview of the whole line. Off, parts not reached yet aren't drawn at all.
+	 */
+	bool bRevealGhost = false;
+	float GhostOpacity = 0.3f;
+
+	/** The text still to come in this color (at GhostOpacity) rather than its own. */
+	bool bGhostColor = false;
+	FLinearColor GhostColor = FLinearColor::White;
 
 	// Scramble -------------------------------------------------------------------------------------
 
@@ -177,10 +346,36 @@ struct NAMETBD_API FWidgetAnimTextEffects
 	/** Slate units added between each two letters of a line, pushing them apart from the line's middle. May be negative. */
 	float ExtraSpacing = 0.f;
 
+	// Count: how the text changes ------------------------------------------------------------------
+
+	/**
+	 * How the text's characters make way when the text changes while this is set: a Count ticking over, drawn rolling,
+	 * fading or blending rather than replaced. The host keeps the time each change takes. Instant: not set.
+	 */
+	EWidgetAnimTextChangeStyle ChangeStyle = EWidgetAnimTextChangeStyle::Instant;
+	EWidgetAnimTextChangeScope ChangeScope = EWidgetAnimTextChangeScope::ChangedDigits;
+
+	/** Seconds each change takes, and how it moves. */
+	float ChangeTime = 0.3f;
+	EWidgetAnimEasing ChangeEasing = EWidgetAnimEasing::EaseOut;
+
+	/**
+	 * Which way rolling changes come in: +1 the new characters from below (Slot Machine) or the right (Roulette), -1
+	 * from above or the left, 0 whichever way the number went - in from below or the right when it went up.
+	 */
+	int32 ChangeFrom = 0;
+
+	/** Which way the number last went: +1 up, -1 down, 0 not known - then the host compares the numbers itself. */
+	int32 ChangeTrend = 0;
+
+	/** A rolling digit passes through every digit between its old and new one, as a reel does. Off, it rolls straight to the new one. */
+	bool bChangeThroughDigits = true;
+
 	/** Whether anything at all is set - with nothing, the host can draw its text whole. */
 	bool IsEmpty() const
 	{
-		return !bReveal && !bScramble && !bTint && !bShimmer && !bWave && !bShake && ExtraSpacing == 0.f;
+		return !bReveal && !bScramble && !bTint && !bShimmer && !bWave && !bShake && ExtraSpacing == 0.f
+			&& ChangeStyle == EWidgetAnimTextChangeStyle::Instant;
 	}
 
 	/** Whether anything set moves on its own, so the host must be drawn every frame to show it. */
@@ -248,6 +443,18 @@ public:
 
 	/** Sets a numeric text's number, for it to format its own way. False, doing nothing, on any other text. */
 	virtual bool SetWidgetAnimNumber(double Value) { return false; }
+
+	/**
+	 * Its text's tags, as read from the text it shows (see WidgetAnimTextMarkup.h): the effects on tagged words, and
+	 * where a reveal speeds up, slows down, pauses and fires events. Null when its text has none.
+	 */
+	virtual TSharedPtr<const FWidgetAnimTextMarkup> GetWidgetAnimTextMarkup() const { return nullptr; }
+
+	/**
+	 * How much faster than authored a Text Reveal paced by its Typing Speed plays on it - the widget's own Text Reveal
+	 * Speed times the game's (see UWidgetAnimTextLibrary::SetGlobalTextRevealSpeed). 1 as authored.
+	 */
+	virtual float GetWidgetAnimRevealSpeed() const { return 1.f; }
 };
 
 /**

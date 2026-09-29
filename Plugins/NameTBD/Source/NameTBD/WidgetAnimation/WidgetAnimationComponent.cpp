@@ -11,6 +11,7 @@
 #include "Components/Widget.h"
 #include "Engine/Blueprint.h"
 #include "NameTBD/Widgets/ShapeBox.h"
+#include "NameTBD/WidgetAnimation/Text/WidgetAnimTextHost.h"
 #include "WidgetAnimTransform.h"
 #include "Engine/Engine.h"
 #include "Serialization/CustomVersion.h"
@@ -909,7 +910,84 @@ void UWidgetAnimationComponent::ApplyCurrentAnimPose()
 	// Starting a track only resets its clock. A zero-delta tick applies time zero now, so the first frame
 	// is never drawn in the authored pose.
 	TArray<FName> JustFinished;
-	UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, 0.f, JustFinished);
+	TickPlayer(AnimatedWidget, 0.f, JustFinished);
+}
+
+void UWidgetAnimationComponent::TickPlayer(UWidget* AnimatedWidget, float DeltaTime, TArray<FName>& OutJustFinished)
+{
+	++PlayerTickDepth;
+	UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, OutJustFinished);
+	--PlayerTickDepth;
+
+	if (PlayerTickDepth == 0 && bTextChangePending)
+	{
+		bTextChangePending = false;
+		PlayForTextChange();
+	}
+}
+
+bool UWidgetAnimationComponent::PlayForTextChange()
+{
+	if (!AnimOwner.IsValid() || !bOwnerConstructed || !bAnyTextChangeTrigger)
+	{
+		return false;
+	}
+
+	// Leaving, or gone: a new text doesn't bring the widget back - showing it again does, by its own triggers.
+	if (PendingExit != EPendingExit::None || AnimPlayer.Phase == EWidgetAnimPhase::PlayingOut || AnimPlayer.Phase == EWidgetAnimPhase::Hidden)
+	{
+		return false;
+	}
+
+	// The player's tracks can't be started over while a frame of them is being applied - a text set by an event the
+	// reveal just fired, say. Played as soon as that frame is done instead, before it is drawn.
+	if (PlayerTickDepth > 0)
+	{
+		bTextChangePending = true;
+		return true;
+	}
+
+	EnsureRuntimeBaselines();
+
+	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
+	auto Answers = [](const FWidgetAnimEntry& Entry) { return Entry.bPlayOnTextChange; };
+	const TFunctionRef<bool(const FWidgetAnimEntry&)> Filter(Answers);
+	auto AppendLinked = [this](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { PrepareEntrySettings(EntryIndex, /*bOut=*/false, EntrySettings); };
+	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
+
+	// Only these entries, from their start; whatever else plays - a looping shimmer, an entrance still settling - goes on.
+	const int32 Started = UWidgetAnimEntryLibrary::StartEntriesById(
+		AnimPlayer,
+		EffectiveInEntries,
+		Resolver,
+		TArray<FName>(),
+		/*bIsOut=*/false,
+		/*PlaybackSpeed=*/1.f,
+		/*bRestartIfPlaying=*/true,
+		/*bHoldWhenFinished=*/true,
+		&Filter,
+		&AppendExtra);
+	if (Started == 0)
+	{
+		return false;
+	}
+
+	AnimPlayer.Phase = EWidgetAnimPhase::PlayingIn;
+
+	// Posed now, before the new text is ever drawn whole.
+	ApplyCurrentAnimPose();
+	return true;
+}
+
+bool UWidgetAnimationComponent::IsOnTextWidget() const
+{
+	// Bound at runtime; on the template the Details show, the text widget is what the component was made inside.
+	const UWidget* Widget = AnimOwner.Get();
+	if (!Widget)
+	{
+		Widget = Cast<UWidget>(GetOuter());
+	}
+	return Widget && Widget->Implements<UWidgetAnimTextHost>();
 }
 
 bool UWidgetAnimationComponent::PlayForTrigger(EEntryTrigger Trigger, bool bOut)
@@ -985,19 +1063,25 @@ void UWidgetAnimationComponent::RefreshEntryTriggers()
 {
 	// The authored entries show their trigger settings; the effective copies are what gets asked whether any
 	// entry - mirrored ones included - plays on a visibility change.
+	const bool bOnText = IsOnTextWidget();
 	for (FWidgetAnimEntry& Entry : AnimIn)
 	{
 		Entry.bShowConstructTrigger = true;
 		Entry.bShowVisibilityTrigger = true;
+		Entry.bShowTextChangeTrigger = bOnText;
 	}
 	for (FWidgetAnimEntry& Entry : AnimOut)
 	{
 		Entry.bShowConstructTrigger = false;
 		Entry.bShowVisibilityTrigger = true;
+		Entry.bShowTextChangeTrigger = false;
 	}
 
 	auto PlaysOnVisibility = [](const FWidgetAnimEntry& Entry) { return Entry.bPlayAnimationOnVisibilityHidden; };
 	bAnyVisibilityTrigger = EffectiveInEntries.ContainsByPredicate(PlaysOnVisibility) || EffectiveOutEntries.ContainsByPredicate(PlaysOnVisibility);
+
+	// Only an entrance plays on a new text; project defaults count too - they arrive as effective entries.
+	bAnyTextChangeTrigger = bOnText && EffectiveInEntries.ContainsByPredicate([](const FWidgetAnimEntry& Entry) { return Entry.bPlayOnTextChange; });
 }
 
 void UWidgetAnimationComponent::MigrateTriggersIntoEntries()
@@ -1191,7 +1275,7 @@ bool UWidgetAnimationComponent::TickAnimationPlayback(float DeltaTime)
 	}
 
 	TArray<FName> JustFinished;
-	UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, JustFinished);
+	TickPlayer(AnimatedWidget, DeltaTime, JustFinished);
 
 	// An exit waiting for a value to arrive is Playing Out with nothing of its own playing yet, which the check below
 	// would take for an exit already over. It starts here, once every value it waits on has got where it was going.

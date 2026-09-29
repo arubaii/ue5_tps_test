@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
 #include "UObject/SoftObjectPtr.h"
+#include "NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.h" // FWidgetAnimTextTag
 #include "WidgetAnimRuntimeSettings.generated.h"
 
 class UWidgetAnimPresetAsset;
@@ -57,6 +58,13 @@ struct NAMETBD_API FWidgetAnimTextDefaultEntry
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (ClampMin = "0.01", UIMin = "0.1", UIMax = "4.0"))
 	float PlaybackSpeed = 1.f;
+
+	/**
+	 * Plays it again every time the widget is given a new text while it is on screen - a dialogue line typing out
+	 * whenever a dialogue system sets the next one. Anim In only.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Play When Text Changes"))
+	bool bPlayOnTextChange = false;
 };
 
 /** The animations every text widget of one kind plays unless it is given its own. */
@@ -88,9 +96,15 @@ class NAMETBD_API UWidgetAnimRuntimeSettings : public UDeveloperSettings
 
 public:
 
+	UWidgetAnimRuntimeSettings();
+
 	static const UWidgetAnimRuntimeSettings& Get() { return *GetDefault<UWidgetAnimRuntimeSettings>(); }
 
 	virtual FName GetCategoryName() const override { return TEXT("Plugins"); }
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 	/**
 	 * Warn when a Blueprint track type is costing more than it should - averaging over the budget below, or running
@@ -145,6 +159,18 @@ public:
 	/** Common Animated Date Time Text. */
 	UPROPERTY(Config, EditAnywhere, Category = "Text Widgets", meta = (DisplayName = "Animated Date Time Text"))
 	FWidgetAnimTextWidgetDefaults DateTimeTextDefaults;
+
+	// Text tags
+	//
+	// The effect tags every animated text widget reads in its text - <shake>these words</> - and what each one does.
+	// See WidgetAnimTextMarkup.h. A new project starts with a library of them; edit them, add your own, or remove any.
+
+	/**
+	 * Every effect tag a text can use, by the name written in the text. Built-in tags - speed, instant, pause, event,
+	 * play, color and size - are always there and need no entry.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Text Tags", meta = (TitleProperty = "Tag"))
+	TArray<FWidgetAnimTextTag> TextTags;
 
 	/** The defaults for one kind of text widget. */
 	const FWidgetAnimTextWidgetDefaults& GetTextWidgetDefaults(EWidgetAnimTextWidgetKind Kind) const

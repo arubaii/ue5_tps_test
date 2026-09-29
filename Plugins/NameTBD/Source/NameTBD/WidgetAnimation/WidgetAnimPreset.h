@@ -274,6 +274,14 @@ struct NAMETBD_API FWidgetAnimEntry : public FWidgetAnimEntryBase
 	bool bPlayAnimationOnVisibilityHidden = false;
 
 	/**
+	 * Plays this animation again every time the widget it is on is given a new text while it is on screen - however the
+	 * text is set: Set Text, a binding, a View Model, a dialogue system. A dialogue line typing out whenever the next one
+	 * is set. Only on an animated text widget's Anim In.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Play When Text Changes", EditCondition = "bShowTextChangeTrigger", EditConditionHides, HideEditConditionToggle))
+	bool bPlayOnTextChange = false;
+
+	/**
 	 * Whether the two settings above are shown. Set by the Widget Animation Component on its own entries, on load and
 	 * on every edit; every other host - a button, a card - plays its entries its own way and leaves them hidden.
 	 * Saved rather than transient so a Blueprint recompile, which copies entries without their transient values,
@@ -284,6 +292,10 @@ struct NAMETBD_API FWidgetAnimEntry : public FWidgetAnimEntryBase
 
 	UPROPERTY()
 	bool bShowVisibilityTrigger = false;
+
+	/** Whether Play When Text Changes is shown: set by a Widget Animation Component on an animated text widget. */
+	UPROPERTY()
+	bool bShowTextChangeTrigger = false;
 
 	/**
 	 * The single Target Widget from before Layer Groups. No longer edited; kept so an entry saved with one

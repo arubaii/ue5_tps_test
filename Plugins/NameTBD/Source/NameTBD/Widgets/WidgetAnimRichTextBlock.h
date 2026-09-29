@@ -60,6 +60,25 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Animation|Text")
 	FWidgetAnimTextRevealFinished OnTextRevealFinished;
 
+	/** A Text Reveal has reached an <event=Name> tag in the text. See UWidgetAnimTextBlock. */
+	UPROPERTY(BlueprintAssignable, Category = "Animation|Text")
+	FWidgetAnimTextEvent OnTextEvent;
+
+	/** Reads text tags in its text - <shake>these words</>, <speed=2> - and draws and paces them. See UWidgetAnimTextBlock. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation|Text", meta = (DisplayName = "Read Text Tags"))
+	bool bReadTextTags = true;
+
+	/** How much faster than authored a Text Reveal types on this text. See UWidgetAnimTextBlock. */
+	UFUNCTION(BlueprintCallable, Category = "Animation|Text")
+	void SetTextRevealSpeed(float Speed);
+
+	UFUNCTION(BlueprintPure, Category = "Animation|Text")
+	float GetTextRevealSpeed() const;
+
+	/** Its text as drawn: text tags and style tags taken out. */
+	UFUNCTION(BlueprintPure, Category = "Animation|Text")
+	FText GetTextWithoutTags() const;
+
 	/** Shows the rest of a Text Reveal under way at once, as a dialogue box does when a line is skipped. */
 	UFUNCTION(BlueprintCallable, Category = "Animation|Text")
 	void FinishTextReveal();

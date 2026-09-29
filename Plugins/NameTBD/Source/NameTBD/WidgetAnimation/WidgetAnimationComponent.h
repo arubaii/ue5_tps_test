@@ -444,6 +444,14 @@ public:
 	/** At design time, (re)starts the designer preview from the widget's authored pose. No-op at runtime. */
 	void NotifyOwnerDesignTimeRefresh();
 
+	/**
+	 * The owner - an animated text widget - was given a new text: plays the Anim In entries set to Play When Text
+	 * Changes, from their start, leaving everything else playing. Runtime only. When it arrives in the middle of a frame
+	 * being applied - a text set by an event the animation fired - it plays as soon as that frame is done. False when
+	 * nothing is set to play.
+	 */
+	bool PlayForTextChange();
+
 	/** Registers the designer preview's active timer if the preview needs frames and it isn't registered yet. */
 	void EnsureDesignerPreviewTimer();
 
@@ -640,6 +648,19 @@ private:
 
 	/** Whether any Anim In or Anim Out entry plays on a visibility change - what the visibility watch is for. */
 	bool bAnyVisibilityTrigger = false;
+
+	/** Whether any Anim In entry plays when the text changes. */
+	bool bAnyTextChangeTrigger = false;
+
+	/** How deep inside applying a frame this component is, and a text change waiting for it to finish - see PlayForTextChange. */
+	int32 PlayerTickDepth = 0;
+	bool bTextChangePending = false;
+
+	/** Ticks the player by DeltaTime and applies the result, then plays a text change that arrived meanwhile. */
+	void TickPlayer(UWidget* AnimatedWidget, float DeltaTime, TArray<FName>& OutJustFinished);
+
+	/** Whether the component sits on an animated text widget - which is what shows Play When Text Changes. */
+	bool IsOnTextWidget() const;
 
 	/**
 	 * An exit asked for while a value-driven animation still had a way to go, waiting for it to arrive - see

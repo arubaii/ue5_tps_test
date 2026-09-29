@@ -92,6 +92,17 @@ namespace WidgetAnimPlainText
 	/** What the track has just written, to know its own writing from a new text next time. */
 	NAMETBD_API void NoteWritten(UObject* Target, FName Channel, const FString& Written);
 
+	/**
+	 * Whether Target still shows what the track last wrote on Channel - false once anything else has set its text since,
+	 * or when the track never wrote. Only then is its old text put back: a text changed in the designer's Details, or
+	 * given by the game for the next line, is the widget's text now.
+	 */
+	NAMETBD_API bool IsStillWritten(const UObject* Target, FName Channel);
+
+	/** The same two, for a numeric text's number. */
+	NAMETBD_API void NoteNumberWritten(UObject* Target, FName Channel, double Written);
+	NAMETBD_API bool IsNumberStillWritten(const UObject* Target, FName Channel, double Current);
+
 	/** The track has let the text go. */
 	NAMETBD_API void Forget(UObject* Target, FName Channel);
 
@@ -222,9 +233,9 @@ enum class EWidgetAnimTextColorMode : uint8
 /**
  * Text Color: a text changing color - a flash of red on damage, a highlight settling back, a label graying out.
  *
- * Its value blends from Start Color (0) to End Color (1); keys in between blend part way, so a key of 1 with the end at
- * 0 flashes and returns. On a plain Text Block it sets its Color and Opacity; on an animated text widget it colors
- * the text over its own colors, the whole text at once.
+ * It blends from Start Color to End Color, through a color of its own at each key between: red, then gold, then back
+ * to white is two keys. On a plain Text Block it sets its Color and Opacity; on an animated text widget it colors the
+ * text over its own colors, the whole text at once.
  */
 USTRUCT(BlueprintType, meta = (DisplayName = "Text Color"))
 struct NAMETBD_API FWidgetAnimTextColorParams : public FWidgetAnimTypeParams
@@ -253,12 +264,19 @@ public:
 	virtual double GetEndpointValue(const FInstancedStruct& Params, bool bStart) const override { return bStart ? 0.0 : 1.0; }
 	virtual void Apply(UObject* Target, const FInstancedStruct& Params, double Value) const override;
 
+	virtual EWidgetAnimKeyContent GetKeyContent(const FInstancedStruct& Params) const override { return EWidgetAnimKeyContent::Color; }
+	virtual FLinearColor GetEndpointColor(const FInstancedStruct& Params, bool bStart) const override;
+	virtual void ApplyWithColor(UObject* Target, const FInstancedStruct& Params, double Value, const FLinearColor& Color) const override;
+
 	virtual bool CaptureBaseline(UObject* Target, const FInstancedStruct& Params, FInstancedStruct& OutBaseline) const override;
 	virtual void RestoreBaseline(UObject* Target, const FInstancedStruct& Baseline) const override;
 
 protected:
 
 	virtual bool ClearEffects(FWidgetAnimTextEffects& Effects) const override;
+
+	/** Colors Target with Color, as Mode says. */
+	static void ApplyColor(UObject* Target, const FWidgetAnimTextColorParams& Params, const FLinearColor& Color);
 };
 
 // =====================================================================================================
@@ -269,16 +287,24 @@ protected:
  * Shimmer: a band of light sweeping across a text, letter by letter - a gleam on a reward, a "new" label, loading text.
  *
  * Its value is where the band is: 0 just before the first letter, 1 just past the last, so each run of the track is one
- * sweep - loop it for a gleam every so often, with a Delay between. Animated text widgets only.
+ * sweep - loop it for a gleam every so often, with a Delay between. Each key has a band color of its own too, so the
+ * band can shift color as it travels: gold into white into blue. Animated text widgets only.
  */
 USTRUCT(BlueprintType, meta = (DisplayName = "Shimmer"))
 struct NAMETBD_API FWidgetAnimShimmerParams : public FWidgetAnimTypeParams
 {
 	GENERATED_BODY()
 
-	/** The band's color. */
+	/** The band's color at the start of the sweep. Keys between have colors of their own. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shimmer")
 	FLinearColor Color = FLinearColor::White;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shimmer", meta = (InlineEditConditionToggle))
+	bool bEndColor = false;
+
+	/** The band's color at the end of the sweep, when it isn't Color. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shimmer", meta = (DisplayName = "End Color", EditCondition = "bEndColor"))
+	FLinearColor EndColor = FLinearColor(1.f, 0.85f, 0.4f, 1.f);
 
 	/** How fully the band takes the place of the letters' own color at its middle, 0 to 1. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shimmer", meta = (ClampMin = "0.0", ClampMax = "1.0"))
@@ -305,6 +331,11 @@ public:
 
 	virtual double GetEndpointValue(const FInstancedStruct& Params, bool bStart) const override { return bStart ? 0.0 : 1.0; }
 	virtual void Apply(UObject* Target, const FInstancedStruct& Params, double Value) const override;
+
+	virtual EWidgetAnimKeyContent GetKeyContent(const FInstancedStruct& Params) const override { return EWidgetAnimKeyContent::ValueAndColor; }
+	virtual FText GetKeyColorLabel(const FInstancedStruct& Params) const override;
+	virtual FLinearColor GetEndpointColor(const FInstancedStruct& Params, bool bStart) const override;
+	virtual void ApplyWithColor(UObject* Target, const FInstancedStruct& Params, double Value, const FLinearColor& Color) const override;
 
 protected:
 

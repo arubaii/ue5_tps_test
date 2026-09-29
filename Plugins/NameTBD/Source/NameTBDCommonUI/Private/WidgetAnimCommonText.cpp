@@ -57,8 +57,12 @@ bool UCommonAnimatedNumericText::SetWidgetAnimNumber(double Value)
 	const float NewValue = static_cast<float>(Value);
 	if (NewValue != CurrentNumericValue)
 	{
-		SetCurrentValue(NewValue);
-		TextCore.NotifyTextChanged();
+		// A Count's number, not a new text: nothing set to Play When Text Changes starts over for it.
+		TextCore.WriteFromTrack([this, NewValue]()
+		{
+			SetCurrentValue(NewValue);
+			TextCore.NotifyTextChanged();
+		});
 	}
 	return true;
 }

@@ -26,6 +26,12 @@ class UWidgetAnimationComponent;
  * Settings > Plugins > Widget Animations > Text Widgets) - turn off Use Project Default Animations for one that
  * shouldn't.
  *
+ * For dialogue, give its Anim In an entry with a Text Reveal and tick Play When Text Changes: whatever sets its text -
+ * a dialogue system, a binding, Set Text - the new line types out. Tags written in the line itself shake, wave, color
+ * and pace its words (<shake>no</>, <speed=3>, <pause=0.5>, <event=Portrait>; see WidgetAnimTextMarkup.h and Project
+ * Settings > Plugins > Widget Animations > Text Tags). Set Text Reveal Speed speeds one speaker up; On Text Part
+ * Revealed blips per letter, On Text Event answers <event> tags, and Finish Text Reveal skips to the end.
+ *
  * Everything else is a Text Block's: the same Text, Font, Color and Opacity, Shadow, Justification, Wrapping, Margin,
  * Line Height and Transform Policy, set the same ways - in the designer, or from a Blueprint at runtime, whose changes
  * it picks up the next frame. So it can replace a Text Block anywhere (Replace With in the designer).
@@ -65,6 +71,36 @@ public:
 	/** Every part of a Text Reveal has appeared - also when Finish Text Reveal skipped to its end. */
 	UPROPERTY(BlueprintAssignable, Category = "Animation|Text")
 	FWidgetAnimTextRevealFinished OnTextRevealFinished;
+
+	/**
+	 * A Text Reveal has reached an <event=Name> tag in the text - with its name and the index of the part it stands
+	 * before. Fires a frame after it is reached, so it may set a new text or play an animation. For a portrait change,
+	 * a sound, a camera shake - whatever a line of dialogue asks for at that point.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Animation|Text")
+	FWidgetAnimTextEvent OnTextEvent;
+
+	/**
+	 * Reads text tags in its text - <shake>these words</>, <speed=2>, <pause=0.5> - and draws and paces them (see
+	 * Project Settings > Plugins > Widget Animations > Text Tags). Off, a tag is shown as written.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation|Text", meta = (DisplayName = "Read Text Tags"))
+	bool bReadTextTags = true;
+
+	/**
+	 * How much faster than authored a Text Reveal paced by its Typing Speed types on this text: 2 twice as fast - a
+	 * furious witness - 0.5 half as fast. Takes effect the next time a reveal starts. Multiplies the game's Global Text
+	 * Reveal Speed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Animation|Text")
+	void SetTextRevealSpeed(float Speed);
+
+	UFUNCTION(BlueprintPure, Category = "Animation|Text")
+	float GetTextRevealSpeed() const;
+
+	/** Its text as drawn: text tags and style tags taken out, upper or lower case applied. */
+	UFUNCTION(BlueprintPure, Category = "Animation|Text")
+	FText GetTextWithoutTags() const;
 
 	/** Shows the rest of a Text Reveal under way at once, as a dialogue box does when a line is skipped. */
 	UFUNCTION(BlueprintCallable, Category = "Animation|Text")

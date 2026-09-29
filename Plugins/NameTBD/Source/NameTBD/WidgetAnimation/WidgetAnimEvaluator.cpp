@@ -18,6 +18,11 @@ FText FWidgetAnimEvaluator::GetValueLabel() const
 	return LOCTEXT("DefaultValueLabel", "Value");
 }
 
+FText FWidgetAnimEvaluator::GetKeyColorLabel(const FInstancedStruct& Params) const
+{
+	return LOCTEXT("DefaultKeyColorLabel", "Color");
+}
+
 UClass* FWidgetAnimEvaluator::GetTargetClass() const
 {
 	return UWidget::StaticClass();
@@ -132,6 +137,18 @@ double WidgetAnimGetRegisteredEndpoint(const FInstancedStruct& Params, bool bSta
 {
 	const FWidgetAnimEvaluator* Evaluator = FWidgetAnimEvaluatorRegistry::Get().Find(Params);
 	return Evaluator ? Evaluator->GetEndpointValue(Params, bStart) : 0.0;
+}
+
+FLinearColor WidgetAnimGetRegisteredEndpointColor(const FInstancedStruct& Params, bool bStart)
+{
+	const FWidgetAnimEvaluator* Evaluator = FWidgetAnimEvaluatorRegistry::Get().Find(Params);
+	return Evaluator && Evaluator->GetKeyContent(Params) != EWidgetAnimKeyContent::Value ? Evaluator->GetEndpointColor(Params, bStart) : FLinearColor::White;
+}
+
+EWidgetAnimKeyContent WidgetAnimGetRegisteredKeyContent(const FInstancedStruct& Params)
+{
+	const FWidgetAnimEvaluator* Evaluator = FWidgetAnimEvaluatorRegistry::Get().Find(Params);
+	return Evaluator ? Evaluator->GetKeyContent(Params) : EWidgetAnimKeyContent::Value;
 }
 
 #undef LOCTEXT_NAMESPACE

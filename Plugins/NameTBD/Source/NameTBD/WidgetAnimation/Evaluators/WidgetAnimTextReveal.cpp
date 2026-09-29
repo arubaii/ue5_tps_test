@@ -3,6 +3,7 @@
 #include "WidgetAnimTextReveal.h"
 
 #include "NameTBD/WidgetAnimation/WidgetAnimParts.h"
+#include "NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.h"
 
 #define LOCTEXT_NAMESPACE "WidgetAnimTextReveal"
 
@@ -20,9 +21,13 @@ namespace WidgetAnimTextRevealPlan
 		}
 	}
 
-	/** Where each part of Text ends: its letters, its words, or its own lines (a plain text's lines are its line breaks). */
-	void FindPartEnds(const FString& Text, EWidgetAnimTextUnit Unit, TArray<int32>& OutEnds)
+	/**
+	 * Where each part of Text begins and ends: its letters, its words, or its own lines (a plain text's lines are its
+	 * line breaks).
+	 */
+	void FindParts(const FString& Text, EWidgetAnimTextUnit Unit, TArray<int32>& OutBegins, TArray<int32>& OutEnds)
 	{
+		OutBegins.Reset();
 		OutEnds.Reset();
 
 		TArray<WidgetAnimTextParts::FRange> Letters;
@@ -34,6 +39,7 @@ namespace WidgetAnimTextRevealPlan
 			WidgetAnimTextParts::GetWords(Letters, Words);
 			for (const WidgetAnimTextParts::FRange& Word : Words)
 			{
+				OutBegins.Add(Word.Begin);
 				OutEnds.Add(Word.End);
 			}
 			return;
@@ -49,6 +55,7 @@ namespace WidgetAnimTextRevealPlan
 				{
 					continue;
 				}
+				OutBegins.Add(Letter.Begin);
 				LineEnd = Letter.End;
 				while (LineEnd < Text.Len() && Text[LineEnd] != TEXT('\n'))
 				{
@@ -61,6 +68,7 @@ namespace WidgetAnimTextRevealPlan
 
 		for (const WidgetAnimTextParts::FRange& Letter : Letters)
 		{
+			OutBegins.Add(Letter.Begin);
 			OutEnds.Add(Letter.End);
 		}
 	}
@@ -70,7 +78,7 @@ namespace WidgetAnimTextRevealPlan
 	{
 		// Closing quotes and brackets belong to what they close: 'he said "stop."' pauses after the quote.
 		int32 Last = End - 1;
-		while (Last >= 0 && FCString::Strchr(TEXT("\"')]}\x201D\x2019\x00BB"), Text[Last]) != nullptr)
+		while (Last >= 0 && Last < Text.Len() && FCString::Strchr(TEXT("\"')]}\x201D\x2019\x00BB"), Text[Last]) != nullptr)
 		{
 			--Last;
 		}
@@ -108,64 +116,115 @@ namespace WidgetAnimTextRevealPlan
 	}
 
 	/**
-	 * Works out Plan for String, counted in Unit as NumParts parts - PartEnds where each ends, when known, for the pauses.
-	 * FitSeconds above 0 fits the reveal to that many seconds; otherwise it runs as long as its Typing Speed takes.
+	 * Works out Plan for String, counted in Unit as NumParts parts - PartBegins and PartEnds where each is, when known,
+	 * for the pauses and for Markup's speeds, pauses and looks. FitSeconds above 0 fits the reveal to that many seconds;
+	 * otherwise it runs as long as its Typing Speed takes, sped up by SpeedScale.
 	 */
 	void Build(FWidgetAnimTextRevealPlan& Plan, const FWidgetAnimTextRevealParams& Reveal, const FString& String, EWidgetAnimTextUnit Unit,
-		int32 NumParts, const TArray<int32>& PartEnds, float FitSeconds)
+		int32 NumParts, const TArray<int32>& PartBegins, const TArray<int32>& PartEnds, const FWidgetAnimTextMarkup* Markup, float SpeedScale, float FitSeconds)
 	{
 		Plan.ForString = String;
 		Plan.Unit = ToPartUnit(Unit);
 		Plan.NumParts = FMath::Max(NumParts, 0);
+		Plan.ForMarkup = Markup;
 		Plan.Starts.Reset(Plan.NumParts);
+		Plan.Appears.Reset();
 
-		// Every part's start in seconds, at one interval apart and with its pauses, then scaled to the run.
-		const bool bKnowEnds = PartEnds.Num() == Plan.NumParts;
+		// Only a text counted the way it will be drawn can be paced by what is written in it.
+		const bool bKnowParts = PartBegins.Num() == Plan.NumParts && PartEnds.Num() == Plan.NumParts;
+		const FWidgetAnimTextMarkup* PacingMarkup = bKnowParts && Markup && Markup->bShapesReveal ? Markup : nullptr;
+
+		// Per part, in authored seconds: how much of a typing interval it waits for (0 when shown with the one before, more
+		// when typed slower), the pause before it, and how long it takes to appear.
+		const float BaseAppear = FMath::Max(Reveal.GetAppear().Time, 0.f);
+		TArray<float, TInlineAllocator<64>> Weights;
 		TArray<float, TInlineAllocator<64>> Pauses;
+		TArray<float, TInlineAllocator<64>> Appears;
+		Weights.SetNumZeroed(Plan.NumParts);
+		Pauses.SetNumZeroed(Plan.NumParts);
+		Appears.Init(BaseAppear, Plan.NumParts);
+		bool bAppearsDiffer = false;
+
+		float TotalWeight = 0.f;
 		float TotalPause = 0.f;
-		for (int32 Part = 0; Part + 1 < Plan.NumParts; ++Part)
+		for (int32 Part = 0; Part < Plan.NumParts; ++Part)
 		{
-			const float Pause = bKnowEnds ? FMath::Max(GetPauseAfter(String, PartEnds[Part], Reveal), 0.f) : 0.f;
-			Pauses.Add(Pause);
-			TotalPause += Pause;
+			float Speed = 1.f;
+			bool bInstant = false;
+			if (PacingMarkup)
+			{
+				const int32 Begin = PartBegins[Part];
+				Speed = PacingMarkup->GetRevealSpeedAt(Begin);
+				bInstant = PacingMarkup->IsInstantAt(Begin);
+				Pauses[Part] += PacingMarkup->GetPauseBetween(Part > 0 ? PartBegins[Part - 1] : -1, Begin);
+				if (const FWidgetAnimTextSpan* Look = PacingMarkup->FindRevealLookAt(Begin))
+				{
+					Appears[Part] = FMath::Max(Look->Appear.Time, 0.f);
+					bAppearsDiffer = true;
+				}
+			}
+
+			if (Part > 0)
+			{
+				// Shown at once with the part before it, or after a typing interval at its speed.
+				Weights[Part] = bInstant ? 0.f : 1.f / FMath::Max(Speed, 0.01f);
+				if (bKnowParts)
+				{
+					Pauses[Part] += FMath::Max(GetPauseAfter(String, PartEnds[Part - 1], Reveal), 0.f);
+				}
+			}
+			TotalWeight += Weights[Part];
+			TotalPause += Pauses[Part];
 		}
 
-		float Appear = FMath::Max(Reveal.Appear.Time, 0.f);
-		const int32 Gaps = FMath::Max(Plan.NumParts - 1, 0);
+		const float LastAppear = Plan.NumParts > 0 ? Appears.Last() : BaseAppear;
 		float Interval = Reveal.TypingSpeed > KINDA_SMALL_NUMBER ? 1.f / Reveal.TypingSpeed : 0.f;
-		float PauseScale = 1.f;
-		float Run = Gaps * Interval + TotalPause + Appear;
+		float FixedScale = 1.f;
 
 		if (FitSeconds > 0.f)
 		{
 			// Across the run given: the pauses and the appearing kept in seconds, the parts spread over what's left - or,
 			// with nothing left, all of it squeezed in proportion.
-			Run = FitSeconds;
-			const float Fixed = TotalPause + Appear;
-			if (Fixed <= Run)
+			const float Fixed = TotalPause + LastAppear;
+			if (Fixed <= FitSeconds && TotalWeight > KINDA_SMALL_NUMBER)
 			{
-				Interval = Gaps > 0 ? (Run - Fixed) / Gaps : 0.f;
+				Interval = (FitSeconds - Fixed) / TotalWeight;
 			}
 			else
 			{
 				Interval = 0.f;
-				PauseScale = Fixed > KINDA_SMALL_NUMBER ? Run / Fixed : 0.f;
-				Appear *= PauseScale;
+				FixedScale = Fixed > KINDA_SMALL_NUMBER ? FMath::Min(FitSeconds / Fixed, 1.f) : 0.f;
 			}
 		}
-		Run = FMath::Max(Run, 0.01f);
 
+		TArray<float, TInlineAllocator<64>> Seconds;
+		Seconds.SetNumUninitialized(Plan.NumParts);
 		float Time = 0.f;
+		float Run = 0.f;
 		for (int32 Part = 0; Part < Plan.NumParts; ++Part)
 		{
-			Plan.Starts.Add(FMath::Clamp(Time / Run, 0.f, 1.f));
-			if (Pauses.IsValidIndex(Part))
+			Time += Interval * Weights[Part] + Pauses[Part] * FixedScale;
+			Seconds[Part] = Time;
+			Run = FMath::Max(Run, Time + Appears[Part] * FixedScale);
+		}
+		Run = FitSeconds > 0.f ? FitSeconds : FMath::Max(Run, 0.01f);
+
+		for (int32 Part = 0; Part < Plan.NumParts; ++Part)
+		{
+			Plan.Starts.Add(FMath::Clamp(Seconds[Part] / Run, 0.f, 1.f));
+		}
+		if (bAppearsDiffer)
+		{
+			Plan.Appears.Reserve(Plan.NumParts);
+			for (const float Appear : Appears)
 			{
-				Time += Interval + Pauses[Part] * PauseScale;
+				Plan.Appears.Add(Appear * FixedScale / Run);
 			}
 		}
-		Plan.AppearFraction = Appear / Run;
-		Plan.RunSeconds = Run;
+		Plan.AppearFraction = BaseAppear * FixedScale / Run;
+
+		// Faster or slower as the widget and the game ask: every part keeps its place along the run, only the run changes.
+		Plan.RunSeconds = FitSeconds > 0.f ? Run : Run / FMath::Max(SpeedScale, 0.01f);
 	}
 
 	/** Target's text as it will be revealed: Override when set, else what it shows. */
@@ -184,6 +243,16 @@ namespace WidgetAnimTextRevealPlan
 		}
 		return PartEnds.Num();
 	}
+
+	/** Gives a text widget the reveal's own Text, if it has one and the widget doesn't show it yet. */
+	void GiveOwnText(IWidgetAnimTextHost* Host, UObject* Target, const FText& Override)
+	{
+		if (Host && !Override.IsEmpty() && !Host->GetWidgetAnimText().ToString().Equals(Override.ToString(), ESearchCase::CaseSensitive))
+		{
+			Host->SetWidgetAnimText(Override);
+			WidgetAnimPlainText::NoteWritten(Target, FWidgetAnimTextRevealEvaluator::RevealChannel, Override.ToString());
+		}
+	}
 }
 
 float FWidgetAnimTextRevealPlan::GetPartAlpha(int32 PartIndex, double Revealed) const
@@ -200,11 +269,12 @@ float FWidgetAnimTextRevealPlan::GetPartAlpha(int32 PartIndex, double Revealed) 
 
 	// Strictly after its start, so a reveal at 0 shows nothing.
 	const double Past = Revealed - Starts[PartIndex];
-	if (AppearFraction <= KINDA_SMALL_NUMBER)
+	const float PartAppear = Appears.IsValidIndex(PartIndex) ? Appears[PartIndex] : AppearFraction;
+	if (PartAppear <= KINDA_SMALL_NUMBER)
 	{
 		return Past > 0.0 ? 1.f : 0.f;
 	}
-	return static_cast<float>(FMath::Clamp(Past / AppearFraction, 0.0, 1.0));
+	return static_cast<float>(FMath::Clamp(Past / PartAppear, 0.0, 1.0));
 }
 
 FText FWidgetAnimTextRevealEvaluator::GetDisplayName() const
@@ -214,7 +284,7 @@ FText FWidgetAnimTextRevealEvaluator::GetDisplayName() const
 
 FText FWidgetAnimTextRevealEvaluator::GetDescription() const
 {
-	return LOCTEXT("Description", "Types a text out a letter, word or line at a time, each part appearing as its Appear says. At a Typing Speed the track is as long as its text takes, pausing after sentences and commas; with it off, Duration sets the pace. Value timing follows a value from 0 to 1 - for keeping a line in step with its voice-over. On an animated text widget nothing re-wraps as it types.");
+	return LOCTEXT("Description", "Types a text out a letter, word or line at a time, each part appearing by its Style - Typewriter, Fade, Slide, Pop, Stomp, Drop, Spin, Flip, Stretch, Blur, Wipe or Scatter. At a Typing Speed the track is as long as its text takes, pausing after sentences and commas and paced by the text's tags; with it off, Duration sets the pace. Preview Text To Come shows the whole line faintly first. Value timing follows a value from 0 to 1 - for keeping a line in step with its voice-over. On an animated text widget nothing re-wraps as it types.");
 }
 
 FText FWidgetAnimTextRevealEvaluator::GetValueLabel() const
@@ -272,14 +342,22 @@ float FWidgetAnimTextRevealEvaluator::PrepareForPlay(UObject* Target, FInstanced
 		return -1.f;
 	}
 
+	// A text widget given the reveal's own text now, so it is counted - tags and all - as it will be drawn.
+	IWidgetAnimTextHost* Host = WidgetAnimText::AsHost(Target);
+	WidgetAnimTextRevealPlan::GiveOwnText(Host, Target, Reveal->Text);
+
 	// The text it will type, counted as it will be - the widget's own count of its own text, so a stagger and the
 	// reveal agree on what a line is.
-	const FString String = Target ? WidgetAnimTextRevealPlan::GetRevealedString(Target, Reveal->Text) : FString();
+	const FString String = Host ? Host->GetWidgetAnimDisplayString() : Target ? WidgetAnimTextRevealPlan::GetRevealedString(Target, Reveal->Text) : FString();
+	TArray<int32> PartBegins;
 	TArray<int32> PartEnds;
-	WidgetAnimTextRevealPlan::FindPartEnds(String, Reveal->Unit, PartEnds);
-	const int32 NumParts = Target ? WidgetAnimTextRevealPlan::CountParts(Target, String, Reveal->Unit, PartEnds, Reveal->Text.IsEmpty()) : PartEnds.Num();
+	WidgetAnimTextRevealPlan::FindParts(String, Reveal->Unit, PartBegins, PartEnds);
+	const int32 NumParts = Target ? WidgetAnimTextRevealPlan::CountParts(Target, String, Reveal->Unit, PartEnds, Host || Reveal->Text.IsEmpty()) : PartEnds.Num();
 
-	WidgetAnimTextRevealPlan::Build(Reveal->Plan, *Reveal, String, Reveal->Unit, NumParts, PartEnds, Reveal->bUseTypingSpeed ? 0.f : AuthoredRun);
+	const TSharedPtr<const FWidgetAnimTextMarkup> Markup = Host ? Host->GetWidgetAnimTextMarkup() : nullptr;
+	const float SpeedScale = Host ? Host->GetWidgetAnimRevealSpeed() : 1.f;
+	WidgetAnimTextRevealPlan::Build(Reveal->Plan, *Reveal, String, Reveal->Unit, NumParts, PartBegins, PartEnds, Markup.Get(), SpeedScale,
+		Reveal->bUseTypingSpeed ? 0.f : AuthoredRun);
 
 	// With no text to count - nothing to aim at, say, in a preview - a typed reveal keeps its authored length.
 	if (!Reveal->bUseTypingSpeed || !Target)
@@ -307,35 +385,25 @@ void FWidgetAnimTextRevealEvaluator::Apply(UObject* Target, const FInstancedStru
 		return;
 	}
 	FWidgetAnimTextRevealPlan& Plan = Reveal->Plan;
-
-	// A plan worked out for another text - one set while it plays, or none worked out yet - is worked out again, fitted
-	// to the length the track already has.
-	auto EnsurePlan = [&Plan, Reveal](const FString& String, int32 NumParts, const TArray<int32>& PartEnds)
-	{
-		if (!Plan.IsFor(String, WidgetAnimTextRevealPlan::ToPartUnit(Reveal->Unit), NumParts))
-		{
-			WidgetAnimTextRevealPlan::Build(Plan, *Reveal, String, Reveal->Unit, NumParts, PartEnds, Plan.RunSeconds);
-		}
-	};
+	const FName Unit = WidgetAnimTextRevealPlan::ToPartUnit(Reveal->Unit);
 
 	if (IWidgetAnimTextHost* Host = WidgetAnimText::AsHost(Target))
 	{
-		if (!Reveal->Text.IsEmpty() && !Host->GetWidgetAnimText().ToString().Equals(Reveal->Text.ToString(), ESearchCase::CaseSensitive))
-		{
-			Host->SetWidgetAnimText(Reveal->Text);
-		}
+		WidgetAnimTextRevealPlan::GiveOwnText(Host, Target, Reveal->Text);
 
 		const FString Display = Host->GetWidgetAnimDisplayString();
-		// Counted by the widget, which lays its text out itself; where each part ends is only looked for when the plan
-		// has to be worked out again.
-		const FName Unit = WidgetAnimTextRevealPlan::ToPartUnit(Reveal->Unit);
+		const TSharedPtr<const FWidgetAnimTextMarkup> Markup = Host->GetWidgetAnimTextMarkup();
+
+		// Counted by the widget, which lays its text out itself. A plan worked out for another text - one set while it
+		// plays, or none worked out yet - is worked out again, fitted to the length the track already has.
+		TArray<int32> PartBegins;
 		TArray<int32> PartEnds;
 		const int32 NumParts = WidgetAnimTextRevealPlan::CountParts(Target, Display, Reveal->Unit, PartEnds, /*bOwnText=*/true);
-		if (!Plan.IsFor(Display, Unit, NumParts))
+		if (!Plan.IsFor(Display, Unit, NumParts, Markup.Get()))
 		{
-			WidgetAnimTextRevealPlan::FindPartEnds(Display, Reveal->Unit, PartEnds);
+			WidgetAnimTextRevealPlan::FindParts(Display, Reveal->Unit, PartBegins, PartEnds);
+			WidgetAnimTextRevealPlan::Build(Plan, *Reveal, Display, Reveal->Unit, NumParts, PartBegins, PartEnds, Markup.Get(), Host->GetWidgetAnimRevealSpeed(), Plan.RunSeconds);
 		}
-		EnsurePlan(Display, NumParts, PartEnds);
 
 		FWidgetAnimTextEffects& Effects = Host->GetWidgetAnimTextEffects();
 		Effects.bReveal = true;
@@ -345,9 +413,13 @@ void FWidgetAnimTextRevealEvaluator::Apply(UObject* Target, const FInstancedStru
 		{
 			Effects.RevealAlphas[Part] = Plan.GetPartAlpha(Part, Value);
 		}
-		Effects.Appear = Reveal->Appear;
+		Effects.Appear = Reveal->GetAppear();
 		Effects.Cursor = Reveal->Cursor;
 		Effects.bCursorBlink = Reveal->bCursorBlink;
+		Effects.bRevealGhost = Reveal->bPreviewTextToCome;
+		Effects.GhostOpacity = FMath::Clamp(Reveal->PreviewOpacity, 0.f, 1.f);
+		Effects.bGhostColor = Reveal->bPreviewColor;
+		Effects.GhostColor = Reveal->PreviewColor;
 		Host->OnWidgetAnimTextEffectsChanged();
 		return;
 	}
@@ -355,9 +427,13 @@ void FWidgetAnimTextRevealEvaluator::Apply(UObject* Target, const FInstancedStru
 	// A plain text: rewritten to the parts that have appeared.
 	const FText Source = WidgetAnimPlainText::GetSource(Target, RevealChannel, Reveal->Text);
 	const FString SourceString = WidgetAnimPlainText::GetDisplayString(Target, Source);
+	TArray<int32> PartBegins;
 	TArray<int32> PartEnds;
-	WidgetAnimTextRevealPlan::FindPartEnds(SourceString, Reveal->Unit, PartEnds);
-	EnsurePlan(SourceString, PartEnds.Num(), PartEnds);
+	WidgetAnimTextRevealPlan::FindParts(SourceString, Reveal->Unit, PartBegins, PartEnds);
+	if (!Plan.IsFor(SourceString, Unit, PartEnds.Num(), nullptr))
+	{
+		WidgetAnimTextRevealPlan::Build(Plan, *Reveal, SourceString, Reveal->Unit, PartEnds.Num(), PartBegins, PartEnds, nullptr, 1.f, Plan.RunSeconds);
+	}
 
 	int32 Shown = 0;
 	while (Shown < PartEnds.Num() && Plan.GetPartAlpha(Shown, Value) > 0.f)
@@ -398,11 +474,16 @@ void FWidgetAnimTextRevealEvaluator::RestoreBaseline(UObject* Target, const FIns
 {
 	ClearEffectsOn(Target);
 
+	// Put back only while what shows is still what the reveal wrote. A text set since - in the designer, or by the game
+	// for the next line - is the text now, and putting the old one back over it would undo it.
 	const FWidgetAnimTextTrackBaseline* Captured = Baseline.GetPtr<FWidgetAnimTextTrackBaseline>();
 	if (Captured && Captured->bHasText)
 	{
+		if (WidgetAnimPlainText::IsStillWritten(Target, RevealChannel))
+		{
+			WidgetAnimPlainText::Write(Target, Captured->Text);
+		}
 		WidgetAnimPlainText::Forget(Target, RevealChannel);
-		WidgetAnimPlainText::Write(Target, Captured->Text);
 	}
 }
 
@@ -412,6 +493,7 @@ bool FWidgetAnimTextRevealEvaluator::ClearEffects(FWidgetAnimTextEffects& Effect
 	Effects.bReveal = false;
 	Effects.RevealAlphas.Reset();
 	Effects.Cursor.Reset();
+	Effects.bRevealGhost = false;
 	return bWasSet;
 }
 

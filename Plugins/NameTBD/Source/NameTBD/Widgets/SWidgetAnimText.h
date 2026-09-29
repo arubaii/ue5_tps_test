@@ -51,6 +51,12 @@ struct NAMETBD_API FWidgetAnimTextStyle
 	/** The default style: a plain text's only one. */
 	FWidgetAnimTextRunStyle Default;
 
+	/**
+	 * The text's tags, read (see WidgetAnimTextMarkup.h): the effects its tagged words are drawn with. Null for a text
+	 * with none. Shared, and only ever replaced, so the same tags keep the same pointer.
+	 */
+	TSharedPtr<const FWidgetAnimTextMarkup> Markup;
+
 	ETextJustify::Type Justification = ETextJustify::Left;
 	bool bAutoWrap = false;
 	float WrapTextAt = 0.f;
@@ -78,6 +84,10 @@ struct NAMETBD_API FWidgetAnimTextStyle
  * aligned by Justification. Nothing is laid out again while it animates. With no effect set and nothing posed, each
  * line is drawn whole, as cheaply as a Text Block draws it.
  *
+ * It also draws its text's tags (see WidgetAnimTextMarkup.h) - a shake, a wave, a color on the words they tag - and,
+ * while a Change Style is set, draws a change of text as its characters rolling, fading or blending into the new ones,
+ * keeping the time each change takes itself.
+ *
  * Not done: inline decorators (images) in rich text, overflow ellipsis, strike-through, the finer wrapping policies.
  * Right-to-left text is drawn correctly while nothing moves its letters; animated letter by letter, it is placed in
  * reading order, left to right.
@@ -95,6 +105,12 @@ public:
 
 		/** The effects the text tracks write, shared with the owner. May be null. */
 		SLATE_ARGUMENT(TSharedPtr<const FWidgetAnimTextEffects>, Effects)
+
+		/**
+		 * Called whenever the text it draws changes - however it was changed: set, bound, or picked up from its owner -
+		 * after it has taken the new text. Not called for the first text it is given.
+		 */
+		SLATE_ARGUMENT(TFunction<void()>, OnTextChanged)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
@@ -184,7 +200,7 @@ private:
 		};
 		TArray<FLetter> Letters;
 
-		/** Scramble's stand-in glyphs, shaped as needed: by character and run. */
+		/** Single characters shaped on their own as needed - Scramble's stand-ins, a reel's digits: by character and run. */
 		TMap<TPair<TCHAR, int32>, FShapedGlyphSequencePtr> StandIns;
 	};
 
@@ -196,7 +212,99 @@ private:
 	/** Scramble's stand-in for letter LetterIndex, shaped with its run's font at the layout's scale. */
 	FShapedGlyphSequencePtr GetStandIn(FLayout& Layout, int32 LetterIndex) const;
 
+	/** Char shaped on its own with run Run's font at the layout's scale - kept, so each is shaped once. */
+	FShapedGlyphSequencePtr GetCharGlyphs(FLayout& Layout, TCHAR Char, int32 Run) const;
+
+	/** The time the host keeps - what everything that moves on its own is drawn at. */
+	static double GetNow();
+
+	/** Marks the widget volatile or not, as what it draws now needs. */
+	void UpdateVolatility();
+
+	// ---------------------------------------------------------------------------------------------
+	// Changes: a text changing while a Change Style is set (see FWidgetAnimTextEffects::ChangeStyle)
+	// ---------------------------------------------------------------------------------------------
+
+	/** One letter as it was last drawn, kept so a change can draw it leaving. */
+	struct FDrawnLetter
+	{
+		FString Chars;
+		/** Where it sat, in the widget's own units. */
+		FBox2f Box = FBox2f(ForceInit);
+		FShapedGlyphSequencePtr Glyphs;
+		int32 Run = 0;
+	};
+
+	/** How a letter of the new text comes in. */
+	enum class EChangeKind : uint8
+	{
+		/** The same character as before: it stays, sliding to its new place if it moved. */
+		Stay,
+		/** Another character than before: the old one leaves as the new one comes in. */
+		Swap,
+		/** A character with none before it - a number grown a digit. */
+		Arrive,
+		/** A digit on a reel, rolling through the digits between its old and new one. */
+		Wheel
+	};
+
+	struct FChangeLetter
+	{
+		EChangeKind Kind = EChangeKind::Stay;
+		/** The letter of the old text it was, or replaces. */
+		int32 Old = INDEX_NONE;
+		/** A reel's place, counted from the text's last letter. */
+		int32 WheelKey = INDEX_NONE;
+	};
+
+	/** One reel: rolling from From to To, in digits that keep counting past 9 (so 18 shows 8). */
+	struct FChangeWheel
+	{
+		double From = 0.0;
+		double To = 0.0;
+	};
+
+	struct FChange
+	{
+		/** When it started, by GetNow; negative while there is none. */
+		double Start = -1.0;
+		float Time = 0.3f;
+		EWidgetAnimEasing Easing = EWidgetAnimEasing::EaseOut;
+		EWidgetAnimTextChangeStyle Style = EWidgetAnimTextChangeStyle::Instant;
+
+		/** +1: new characters come in from below or the right; -1 from above or the left. */
+		int32 Sign = 1;
+
+		/** The old text's letters, and the scale their glyphs were shaped at. */
+		TArray<FDrawnLetter> Old;
+		float OldScale = 0.f;
+
+		/** How each letter of the new text comes in, and the old letters with nothing to go to. */
+		TArray<FChangeLetter> Letters;
+		TArray<int32> Leaving;
+
+		/** The reels turning, by place from the text's last letter. */
+		TMap<int32, FChangeWheel> Wheels;
+
+		bool IsActive(double Now) const { return Start >= 0.0 && Now - Start < Time; }
+
+		/** How far along it is at Now, eased: 0 to 1. */
+		float GetProgress(double Now) const;
+	};
+
+	/** The text just changed from what was last drawn: works out how each of its letters comes in. */
+	void BeginChange(double Now);
+
+	FChange Change;
+	bool bChangeWasActive = false;
+
+	/** Every letter as last drawn, while a Change Style is set - what a change leaves from. */
+	mutable TArray<FDrawnLetter> Drawn;
+	mutable FString DrawnText;
+	mutable float DrawnScale = 0.f;
+
 	TFunction<void(FWidgetAnimTextStyle&)> StyleSource;
+	TFunction<void()> OnTextChanged;
 	FWidgetAnimTextStyle Style;
 	TArray<FWidgetAnimTextRunStyle> ResolvedRuns;
 	TSharedPtr<const FWidgetAnimTextEffects> Effects;

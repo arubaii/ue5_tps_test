@@ -94,6 +94,19 @@ namespace WidgetAnimCount
 	}
 }
 
+int32 FWidgetAnimCountUpParams::GetChangeFrom() const
+{
+	switch (ChangeStyle)
+	{
+	case EWidgetAnimTextChangeStyle::SlotMachine:
+		return SlotFrom == EWidgetAnimCountSlotFrom::Below ? 1 : SlotFrom == EWidgetAnimCountSlotFrom::Above ? -1 : 0;
+	case EWidgetAnimTextChangeStyle::Roulette:
+		return RouletteFrom == EWidgetAnimCountRouletteFrom::Right ? 1 : RouletteFrom == EWidgetAnimCountRouletteFrom::Left ? -1 : 0;
+	default:
+		return 0;
+	}
+}
+
 FText FWidgetAnimCountUpEvaluator::GetDisplayName() const
 {
 	return LOCTEXT("DisplayName", "Count");
@@ -101,7 +114,7 @@ FText FWidgetAnimCountUpEvaluator::GetDisplayName() const
 
 FText FWidgetAnimCountUpEvaluator::GetDescription() const
 {
-	return LOCTEXT("Description", "Counts a number from its start to its end - through any keys on the way - as a number, a percentage, a shortened 12.5K, or a time. Its pace is its Duration, or so many a second, or longer the bigger the change. It can carry on from the number shown and count to the number the text was just given. Puts the text back afterwards.");
+	return LOCTEXT("Description", "Counts a number from its start to its end - through any keys on the way - as a number, a percentage, a shortened 12.5K, or a time. Its pace is its Duration, or so many a second, or longer the bigger the change. It can carry on from the number shown and count to the number the text was just given. On an animated text widget its Change Style rolls each changed digit in like a slot machine or a roulette strip, fades it, or melts it into the next. Puts the text back afterwards.");
 }
 
 FText FWidgetAnimCountUpEvaluator::GetValueLabel() const
@@ -265,16 +278,58 @@ void FWidgetAnimCountUpEvaluator::Apply(UObject* Target, const FInstancedStruct&
 		return;
 	}
 
+	// Which way the number went since this track last wrote it - which way a reel turns with the count.
+	const int32 Trend = !Count->bHasLastApplied || Value == Count->LastAppliedValue ? 0 : (Value > Count->LastAppliedValue ? 1 : -1);
+	Count->LastAppliedValue = Value;
+	Count->bHasLastApplied = true;
+
+	// On a text widget, how the number changes is set before it does, so the change is drawn the way asked.
+	if (IWidgetAnimTextHost* Host = WidgetAnimText::AsHost(Target))
+	{
+		FWidgetAnimTextEffects& Effects = Host->GetWidgetAnimTextEffects();
+		const int32 From = Count->GetChangeFrom();
+		const float Time = FMath::Max(Count->ChangeTime, 0.01f);
+		const bool bThroughDigits = Count->bSpinThroughDigits && Count->ChangeScope == EWidgetAnimTextChangeScope::ChangedDigits;
+		const bool bChanged = Effects.ChangeStyle != Count->ChangeStyle || Effects.ChangeScope != Count->ChangeScope
+			|| Effects.ChangeTime != Time || Effects.ChangeEasing != Count->ChangeEasing || Effects.ChangeFrom != From
+			|| Effects.bChangeThroughDigits != bThroughDigits;
+		Effects.ChangeStyle = Count->ChangeStyle;
+		Effects.ChangeScope = Count->ChangeScope;
+		Effects.ChangeTime = Time;
+		Effects.ChangeEasing = Count->ChangeEasing;
+		Effects.ChangeFrom = From;
+		Effects.bChangeThroughDigits = bThroughDigits;
+		if (Trend != 0)
+		{
+			Effects.ChangeTrend = Trend;
+		}
+		if (bChanged)
+		{
+			Host->OnWidgetAnimTextEffectsChanged();
+		}
+	}
+
 	// A numeric text takes the number and formats it itself.
 	if (IWidgetAnimTextHost* Taker = WidgetAnimCount::GetNumberTaker(Target, *Count))
 	{
 		Taker->SetWidgetAnimNumber(Value);
+		WidgetAnimPlainText::NoteNumberWritten(Target, TextChannel, Value);
 		return;
 	}
 
 	// Only when the text actually changes. Setting it invalidates the text's layout, and a count that is holding - or
 	// crawling across a whole number over several frames - would otherwise lay it out again every frame.
-	WidgetAnimPlainText::Write(Target, FormatValue(*Count, Value));
+	const FText Formatted = FormatValue(*Count, Value);
+	WidgetAnimPlainText::Write(Target, Formatted);
+	WidgetAnimPlainText::NoteWritten(Target, TextChannel, Formatted.ToString());
+}
+
+bool FWidgetAnimCountUpEvaluator::ClearEffects(FWidgetAnimTextEffects& Effects) const
+{
+	const bool bWasSet = Effects.ChangeStyle != EWidgetAnimTextChangeStyle::Instant;
+	Effects.ChangeStyle = EWidgetAnimTextChangeStyle::Instant;
+	Effects.ChangeTrend = 0;
+	return bWasSet;
 }
 
 bool FWidgetAnimCountUpEvaluator::CaptureBaseline(UObject* Target, const FInstancedStruct& Params, FInstancedStruct& OutBaseline) const
@@ -298,6 +353,10 @@ bool FWidgetAnimCountUpEvaluator::CaptureBaseline(UObject* Target, const FInstan
 
 void FWidgetAnimCountUpEvaluator::RestoreBaseline(UObject* Target, const FInstancedStruct& Baseline) const
 {
+	ClearEffectsOn(Target);
+
+	// Each put back only while what shows is still what the count wrote: a number or text set since - typed into the
+	// designer's Details, or given by the game - is the widget's now, and putting the old one over it would undo it.
 	if (const FWidgetAnimTextTrackBaseline* Captured = Baseline.GetPtr<FWidgetAnimTextTrackBaseline>())
 	{
 		if (Captured->bHasNumber)
@@ -305,23 +364,29 @@ void FWidgetAnimCountUpEvaluator::RestoreBaseline(UObject* Target, const FInstan
 			if (IWidgetAnimTextHost* Host = WidgetAnimText::AsHost(Target))
 			{
 				double Current = 0.0;
-				if (!Host->GetWidgetAnimNumber(Current) || Current != Captured->Number)
+				const bool bHasCurrent = Host->GetWidgetAnimNumber(Current);
+				if (bHasCurrent && Current != Captured->Number && WidgetAnimPlainText::IsNumberStillWritten(Target, TextChannel, Current))
 				{
 					Host->SetWidgetAnimNumber(Captured->Number);
 				}
 			}
 		}
-		else if (Captured->bHasText)
+		else if (Captured->bHasText && WidgetAnimPlainText::IsStillWritten(Target, TextChannel))
 		{
 			WidgetAnimPlainText::Write(Target, Captured->Text);
 		}
+		WidgetAnimPlainText::Forget(Target, TextChannel);
 		return;
 	}
 
 	// A baseline recorded in the shape an earlier version kept.
 	if (const FWidgetAnimTextBaseline* Old = Baseline.GetPtr<FWidgetAnimTextBaseline>())
 	{
-		WidgetAnimPlainText::Write(Target, Old->Text);
+		if (WidgetAnimPlainText::IsStillWritten(Target, TextChannel))
+		{
+			WidgetAnimPlainText::Write(Target, Old->Text);
+		}
+		WidgetAnimPlainText::Forget(Target, TextChannel);
 	}
 }
 

@@ -3174,14 +3174,32 @@ private:
 
 			if (KeyHandle.IsValid() && KeyHandle->IsValidHandle())
 			{
-				// One value, named for what it is on this track: an opacity, a scale, a color...
-				const FName ValueName = Layer.AnimType == EWidgetAnimType::MaterialVector
-					? GET_MEMBER_NAME_CHECKED(FWidgetAnimValueKey, Color)
-					: GET_MEMBER_NAME_CHECKED(FWidgetAnimValueKey, Value);
-				const TSharedPtr<IPropertyHandle> ValueHandle = KeyHandle->GetChildHandle(ValueName);
-				if (ValueHandle.IsValid() && ValueHandle->IsValidHandle())
+				// What the key holds, named for what it is on this track: an opacity, a scale, a color - or, on a
+				// registered type whose keys carry colors, a color of its own (and its value too, when it has one).
+				const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator();
+				const EWidgetAnimKeyContent Content = Layer.AnimType == EWidgetAnimType::MaterialVector ? EWidgetAnimKeyContent::Color
+					: Evaluator ? Evaluator->GetKeyContent(Layer.TypeParams)
+					: EWidgetAnimKeyContent::Value;
+
+				auto AddKeyField = [&Category, &KeyHandle](FName Name, const FText& Label)
 				{
-					Category.AddProperty(ValueHandle).DisplayName(ValueLabel);
+					const TSharedPtr<IPropertyHandle> FieldHandle = KeyHandle->GetChildHandle(Name);
+					if (FieldHandle.IsValid() && FieldHandle->IsValidHandle())
+					{
+						Category.AddProperty(FieldHandle).DisplayName(Label);
+					}
+				};
+
+				if (Content != EWidgetAnimKeyContent::Color)
+				{
+					AddKeyField(GET_MEMBER_NAME_CHECKED(FWidgetAnimValueKey, Value), ValueLabel);
+				}
+				if (Content != EWidgetAnimKeyContent::Value)
+				{
+					const FText ColorLabel = Layer.AnimType == EWidgetAnimType::MaterialVector ? ValueLabel
+						: Evaluator ? Evaluator->GetKeyColorLabel(Layer.TypeParams)
+						: ValueLabel;
+					AddKeyField(GET_MEMBER_NAME_CHECKED(FWidgetAnimValueKey, Color), ColorLabel);
 				}
 			}
 
@@ -3923,12 +3941,18 @@ namespace WidgetAnimToolTip
 	/** How a keyed track's value reads in a tooltip, by type: an angle in degrees, a color as a swatch and hex, a number. */
 	TSharedRef<SWidget> KeyValue(const FWidgetAnimLayer& Layer, int32 Point, const FLinearColor& TextColor)
 	{
-		if (Layer.AnimType == EWidgetAnimType::MaterialVector)
+		// A color: a Material Vector's value, or the color a registered type's key holds (beside its value, when it has one).
+		if (WidgetAnimKeyPoints::HasColorKeys(Layer))
 		{
 			const FLinearColor Color = WidgetAnimKeyPoints::GetColor(Layer, Point);
+			const bool bWithValue = Layer.AnimType == EWidgetAnimType::Custom && WidgetAnimGetRegisteredKeyContent(Layer.TypeParams) == EWidgetAnimKeyContent::ValueAndColor;
 			return SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 5.f, 0.f))[ Swatch(Color) ]
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ Text(TEXT("#") + Color.ToFColor(true).ToHex().Left(6), TextColor, ValueFont()) ];
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ Text(TEXT("#") + Color.ToFColor(true).ToHex().Left(6), TextColor, ValueFont()) ]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(7.f, 0.f, 0.f, 0.f))
+				[
+					Text(bWithValue ? Number(WidgetAnimKeyPoints::GetValue(Layer, Point)) : FString(), TextColor, ValueFont())
+				];
 		}
 
 		const float Value = WidgetAnimKeyPoints::GetValue(Layer, Point);

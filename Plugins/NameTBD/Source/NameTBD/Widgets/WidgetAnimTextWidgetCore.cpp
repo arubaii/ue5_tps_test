@@ -4,7 +4,9 @@
 
 #include "Components/RichTextBlock.h"
 #include "Components/TextBlock.h"
+#include "Containers/Ticker.h"
 #include "Engine/DataTable.h"
+#include "NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
 #include "SWidgetAnimText.h"
@@ -80,6 +82,7 @@ bool FWidgetAnimTextWidgetCore::ProvideDefaultEntries(TArray<FWidgetAnimEntry>& 
 			Entry.bInvertAnimation = Default.bInvertAnimation;
 			Entry.bMirrorInOut = Default.bMirrorInOut;
 			Entry.PlaybackSpeed = Default.PlaybackSpeed;
+			Entry.bPlayOnTextChange = Default.bPlayOnTextChange;
 		}
 	};
 	Convert(Defaults.AnimIn, OutAnimIn);
@@ -91,7 +94,8 @@ TSharedRef<SWidget> FWidgetAnimTextWidgetCore::BuildSlate()
 {
 	Slate = SNew(SWidgetAnimText)
 		.StyleSource(StyleSource)
-		.Effects(Effects);
+		.Effects(Effects)
+		.OnTextChanged([this]() { HandleTextChanged(); });
 	return Slate.ToSharedRef();
 }
 
@@ -153,6 +157,38 @@ void FWidgetAnimTextWidgetCore::NotifyTextChanged()
 
 	// A new text is a new reveal: skipping the last one to its end doesn't skip this one.
 	bRevealFinished = false;
+}
+
+void FWidgetAnimTextWidgetCore::WriteFromTrack(TFunctionRef<void()> Write)
+{
+	TGuardValue<bool> Guard(bWritingFromTrack, true);
+	Write();
+}
+
+void FWidgetAnimTextWidgetCore::HandleTextChanged()
+{
+	// A track writing its own text - a count ticking over, a reveal putting the text back - is not a new line.
+	if (bWritingFromTrack)
+	{
+		return;
+	}
+
+	UWidget* Widget = Owner.Get();
+	if (!Widget || Widget->IsDesignTime())
+	{
+		return;
+	}
+
+	// However the text was set - Set Text, a binding, a View Model, a dialogue system - what plays on a new text plays.
+	if (UWidgetAnimationComponent* Component = GetComponent())
+	{
+		Component->PlayForTextChange();
+	}
+}
+
+float FWidgetAnimTextWidgetCore::GetRevealSpeed() const
+{
+	return RevealSpeed * WidgetAnimTextMarkup::GetGlobalRevealSpeed();
 }
 
 bool FWidgetAnimTextWidgetCore::RouteVisibility(ESlateVisibility InVisibility)
@@ -276,6 +312,10 @@ void FWidgetAnimTextWidgetCore::NotifyEffectsChanged(const FString& DisplayStrin
 				OnPartRevealed(PartIndex, GetPartText(Fx.RevealUnit, PartIndex, DisplayString));
 			}
 		}
+		if (Raw > Before || (Raw >= Total && Before < Total))
+		{
+			FireMarkers(Fx.RevealUnit, Before, Raw, Total, DisplayString);
+		}
 		if (OnRevealFinished && Raw >= Total && Before < Total)
 		{
 			OnRevealFinished();
@@ -312,6 +352,121 @@ void FWidgetAnimTextWidgetCore::FinishReveal(const FString& DisplayString)
 	NotifyEffectsChanged(DisplayString);
 }
 
+void FWidgetAnimTextWidgetCore::GetPartBegins(FName Unit, const FString& DisplayString, TArray<int32>& OutBegins) const
+{
+	OutBegins.Reset();
+	if (Unit == WidgetAnimPartUnits::Line)
+	{
+		const int32 NumLines = Slate.IsValid() ? Slate->GetLineCount() : 0;
+		for (int32 LineIndex = 0; LineIndex < NumLines; ++LineIndex)
+		{
+			int32 Begin = 0;
+			int32 End = 0;
+			if (Slate->GetLineRange(LineIndex, Begin, End))
+			{
+				OutBegins.Add(Begin);
+			}
+		}
+		return;
+	}
+
+	TArray<WidgetAnimTextParts::FRange> LetterRanges;
+	WidgetAnimTextParts::GetLetters(DisplayString, LetterRanges);
+	if (Unit == WidgetAnimPartUnits::Word)
+	{
+		TArray<WidgetAnimTextParts::FRange> WordRanges;
+		WidgetAnimTextParts::GetWords(LetterRanges, WordRanges);
+		for (const WidgetAnimTextParts::FRange& Range : WordRanges)
+		{
+			OutBegins.Add(Range.Begin);
+		}
+		return;
+	}
+	for (const WidgetAnimTextParts::FRange& Range : LetterRanges)
+	{
+		OutBegins.Add(Range.Begin);
+	}
+}
+
+void FWidgetAnimTextWidgetCore::FireMarkers(FName Unit, int32 Before, int32 Now, int32 Total, const FString& DisplayString)
+{
+	const TSharedPtr<const FWidgetAnimTextMarkup> Markup = CachedMarkup;
+	if (!Markup.IsValid() || Markup->Markers.Num() == 0 || !Markup->Display.Equals(DisplayString, ESearchCase::CaseSensitive))
+	{
+		return;
+	}
+
+	TArray<int32> Begins;
+	GetPartBegins(Unit, DisplayString, Begins);
+
+	// Each marker happens as the reveal reaches the first part at or after it - or, past the last part, as it finishes.
+	TArray<TPair<FName, int32>> Events;
+	TArray<FName> Plays;
+	for (const FWidgetAnimTextMarker& Marker : Markup->Markers)
+	{
+		if (Marker.Kind == EWidgetAnimTextMarkerKind::Pause)
+		{
+			continue;
+		}
+
+		int32 Part = Total;
+		for (int32 PartIndex = 0; PartIndex < Begins.Num(); ++PartIndex)
+		{
+			if (Begins[PartIndex] >= Marker.At)
+			{
+				Part = PartIndex;
+				break;
+			}
+		}
+
+		const bool bReached = Part < Total ? (Part >= Before && Part < Now) : (Now >= Total && Before < Total);
+		if (!bReached)
+		{
+			continue;
+		}
+		if (Marker.Kind == EWidgetAnimTextMarkerKind::Event)
+		{
+			Events.Emplace(Marker.Name, Part);
+		}
+		else
+		{
+			Plays.AddUnique(Marker.Name);
+		}
+	}
+
+	if (Events.Num() == 0 && Plays.Num() == 0)
+	{
+		return;
+	}
+
+	// A frame later, rather than in the middle of the animation drawing the reveal: an event may set a new text or play
+	// an animation, which must not happen while the animation that reached it is being applied.
+	TWeakObjectPtr<UWidget> WeakOwner = Owner;
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([this, WeakOwner, Events, Plays](float)
+	{
+		UWidget* Widget = WeakOwner.Get();
+		if (!Widget)
+		{
+			return false;
+		}
+		for (const TPair<FName, int32>& Event : Events)
+		{
+			if (OnTextEvent)
+			{
+				OnTextEvent(Event.Key, Event.Value);
+			}
+		}
+		if (Plays.Num() > 0 && !Widget->IsDesignTime())
+		{
+			if (UWidgetAnimationComponent* Component = GetComponent())
+			{
+				Component->PlayWidgetAnimationsById(Plays, /*bReverse=*/false, /*PlaybackSpeed=*/1.f, /*bHoldFinalPose=*/false, /*bRestartIfPlaying=*/true);
+			}
+		}
+		return false;
+	}));
+}
+
 FString FWidgetAnimTextWidgetCore::GetPartText(FName Unit, int32 PartIndex, const FString& DisplayString) const
 {
 	if (Unit == WidgetAnimPartUnits::Line)
@@ -346,9 +501,65 @@ FString FWidgetAnimTextWidgetCore::ApplyTransformPolicy(const FText& Text, uint8
 	}
 }
 
-void FWidgetAnimTextWidgetCore::GatherTextBlockStyle(const UTextBlock& TextBlock, FWidgetAnimTextStyle& OutStyle)
+TSharedRef<const FWidgetAnimTextMarkup> FWidgetAnimTextWidgetCore::ReadMarkup(const FString& Source, bool bRich, const UDataTable* StyleSet, uint8 TransformPolicy) const
 {
-	OutStyle.Text = ApplyTransformPolicy(TextBlock.GetText(), static_cast<uint8>(TextBlock.GetTextTransformPolicy()));
+	const bool bTags = !TagsEnabled || TagsEnabled();
+	const uint32 TagsVersion = WidgetAnimTextMarkup::GetTagsVersion();
+	if (CachedMarkup.IsValid() && bCachedRich == bRich && bCachedTags == bTags && CachedTagsVersion == TagsVersion
+		&& CachedTransformPolicy == TransformPolicy && CachedStyleSet.Get() == StyleSet && CachedSource.Equals(Source, ESearchCase::CaseSensitive))
+	{
+		return CachedMarkup.ToSharedRef();
+	}
+
+	auto IsStyle = [StyleSet](FName Name)
+	{
+		return StyleSet && StyleSet->FindRow<FRichTextStyleRow>(Name, TEXT("Animated Rich Text"), /*bWarnIfRowMissing=*/false) != nullptr;
+	};
+
+	const TSharedRef<FWidgetAnimTextMarkup> Markup = MakeShared<FWidgetAnimTextMarkup>();
+	WidgetAnimTextMarkup::Parse(Source, bRich, bTags, IsStyle, *Markup);
+
+	// Upper or lower case, as a Text Block draws it - applied to what is drawn, so no tag is changed by it. A language
+	// whose casing changes a text's length (German's sharp s) is read again after casing instead, so every tag still
+	// stands where it should.
+	if (TransformPolicy != static_cast<uint8>(ETextTransformPolicy::None))
+	{
+		const FString Cased = ApplyTransformPolicy(FText::FromString(Markup->Display), TransformPolicy);
+		if (Cased.Len() == Markup->Display.Len())
+		{
+			Markup->Display = Cased;
+		}
+		else
+		{
+			WidgetAnimTextMarkup::Parse(ApplyTransformPolicy(FText::FromString(Source), TransformPolicy), bRich, bTags, IsStyle, *Markup);
+		}
+	}
+
+	CachedMarkup = Markup;
+	CachedSource = Source;
+	CachedStyleSet = StyleSet;
+	CachedTagsVersion = TagsVersion;
+	CachedTransformPolicy = TransformPolicy;
+	bCachedRich = bRich;
+	bCachedTags = bTags;
+	return Markup;
+}
+
+TSharedRef<const FWidgetAnimTextMarkup> FWidgetAnimTextWidgetCore::ReadTextBlockMarkup(const FText& Text, uint8 TransformPolicy) const
+{
+	return ReadMarkup(Text.ToString(), /*bRich=*/false, /*StyleSet=*/nullptr, TransformPolicy);
+}
+
+TSharedRef<const FWidgetAnimTextMarkup> FWidgetAnimTextWidgetCore::ReadRichTextMarkup(const FText& Text, const UDataTable* StyleSet) const
+{
+	return ReadMarkup(Text.ToString(), /*bRich=*/true, StyleSet, static_cast<uint8>(ETextTransformPolicy::None));
+}
+
+void FWidgetAnimTextWidgetCore::GatherTextBlockStyle(const UTextBlock& TextBlock, FWidgetAnimTextStyle& OutStyle) const
+{
+	const TSharedRef<const FWidgetAnimTextMarkup> Markup = ReadTextBlockMarkup(TextBlock.GetText(), static_cast<uint8>(TextBlock.GetTextTransformPolicy()));
+	OutStyle.Text = Markup->Display;
+	OutStyle.Markup = Markup;
 	OutStyle.Runs.Reset();
 	OutStyle.Default.Font = TextBlock.GetFont();
 	OutStyle.Default.Color = TextBlock.GetColorAndOpacity();
@@ -359,10 +570,13 @@ void FWidgetAnimTextWidgetCore::GatherTextBlockStyle(const UTextBlock& TextBlock
 	OutStyle.WrapTextAt = TextBlock.GetWrapTextAt();
 }
 
-void FWidgetAnimTextWidgetCore::GatherRichTextStyle(const URichTextBlock& RichText, const FTextBlockStyle& DefaultStyle, const UDataTable* StyleSet, FWidgetAnimTextStyle& OutStyle)
+void FWidgetAnimTextWidgetCore::GatherRichTextStyle(const URichTextBlock& RichText, const FTextBlockStyle& DefaultStyle, const UDataTable* StyleSet, FWidgetAnimTextStyle& OutStyle) const
 {
-	TArray<WidgetAnimRichText::FRun> Runs;
-	WidgetAnimRichText::Parse(RichText.GetText().ToString(), OutStyle.Text, Runs);
+	// Styles and text tags read together, so each styled run and each tag lands on the same letters.
+	const TSharedRef<const FWidgetAnimTextMarkup> Markup = ReadRichTextMarkup(RichText.GetText(), StyleSet);
+	OutStyle.Text = Markup->Display;
+	OutStyle.Markup = Markup;
+	const TArray<WidgetAnimRichText::FRun>& Runs = Markup->StyleRuns;
 
 	// The default style is the Rich Text Block's own - its Text Style Set's "Default" row, or its override.
 	auto ToRunStyle = [](const FTextBlockStyle& TextStyle, FWidgetAnimTextRunStyle& OutRun)

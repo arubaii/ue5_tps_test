@@ -18,6 +18,7 @@ class URichTextBlock;
 class UDataTable;
 class UWidgetAnimationComponent;
 struct FTextBlockStyle;
+struct FWidgetAnimTextMarkup;
 struct FWidgetAnimEntry;
 struct FWidgetAnimTextStyle;
 struct FWidgetAnimValueId;
@@ -34,6 +35,12 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FWidgetAnimTextPartRevealed, int32,
 
 /** Every part of a text's reveal has been revealed. */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FWidgetAnimTextRevealFinished);
+
+/**
+ * A Text Reveal has reached an <event=Name> in the text: the event's name, and the index of the part it stands before
+ * (the reveal's part count when it stands at the very end).
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FWidgetAnimTextEvent, FName, EventName, int32, PartIndex);
 
 /**
  * Everything the animated text widgets share - Animated Text Block, Animated Rich Text Block and their Common UI
@@ -74,6 +81,12 @@ public:
 	/** The text or a style changed now: drawn with it this frame, and counted anew. */
 	void NotifyTextChanged();
 
+	/**
+	 * Runs Write - a text track writing the widget's text or number - without it counting as the widget being given a
+	 * new text: nothing set to Play When Text Changes starts over because a Count ticked or a reveal put its text back.
+	 */
+	void WriteFromTrack(TFunctionRef<void()> Write);
+
 	/** Routes a hide through Anim Out first. Returns false when the widget should set it straight away. */
 	bool RouteVisibility(ESlateVisibility InVisibility);
 
@@ -108,6 +121,33 @@ public:
 	TFunction<void(int32, const FString&)> OnPartRevealed;
 	TFunction<void()> OnRevealFinished;
 
+	/** Told each <event> the reveal reaches, a frame later - so what it does can't upset the animation drawing it. */
+	TFunction<void(FName, int32)> OnTextEvent;
+
+	/**
+	 * How much faster than authored a Text Reveal paced by its Typing Speed plays on this widget - Phoenix Wright's
+	 * furious witness, or a player's Text Speed setting. Multiplied by the game's (UWidgetAnimTextLibrary).
+	 */
+	void SetRevealSpeed(float Speed) { RevealSpeed = FMath::Max(Speed, 0.01f); }
+	float GetOwnRevealSpeed() const { return RevealSpeed; }
+	float GetRevealSpeed() const;
+
+	// ---------------------------------------------------------------------------------------------
+	// Text tags
+	// ---------------------------------------------------------------------------------------------
+
+	/** Says whether the widget reads text tags in its text - its Read Text Tags. Set once, from the widget's constructor. */
+	void SetTagsEnabledSource(TFunction<bool()> InTagsEnabled) { TagsEnabled = MoveTemp(InTagsEnabled); }
+
+	/**
+	 * A Text Block kind's text read for tags, Transform Policy (upper or lower case) applied to what it draws. The same
+	 * text returns the same markup, so reading it every frame costs nothing once read.
+	 */
+	TSharedRef<const FWidgetAnimTextMarkup> ReadTextBlockMarkup(const FText& Text, uint8 TransformPolicy) const;
+
+	/** A Rich Text Block kind's markup read for its styles - StyleSet's rows - and tags. Cached the same way. */
+	TSharedRef<const FWidgetAnimTextMarkup> ReadRichTextMarkup(const FText& Text, const UDataTable* StyleSet) const;
+
 	// ---------------------------------------------------------------------------------------------
 	// Shared helpers for the widgets' own code
 	// ---------------------------------------------------------------------------------------------
@@ -115,14 +155,17 @@ public:
 	/** Text in a Text Block's Transform Policy - upper or lower case - as it is drawn. */
 	static FString ApplyTransformPolicy(const FText& Text, uint8 TransformPolicy);
 
-	/** A Text Block's text and look, into Style: everything but the Text Layout Widget settings the widget fills itself. */
-	static void GatherTextBlockStyle(const UTextBlock& TextBlock, FWidgetAnimTextStyle& OutStyle);
+	/**
+	 * A Text Block's text and look, into Style: everything but the Text Layout Widget settings the widget fills itself.
+	 * Its text as drawn - tags taken out - and its tags.
+	 */
+	void GatherTextBlockStyle(const UTextBlock& TextBlock, FWidgetAnimTextStyle& OutStyle) const;
 
 	/**
 	 * A Rich Text Block's markup and Text Style Set, into Style as its string and styled runs: DefaultStyle for text in
 	 * no style, and StyleSet's rows for the rest. The widget passes its own, which only it can read.
 	 */
-	static void GatherRichTextStyle(const URichTextBlock& RichText, const FTextBlockStyle& DefaultStyle, const UDataTable* StyleSet, FWidgetAnimTextStyle& OutStyle);
+	void GatherRichTextStyle(const URichTextBlock& RichText, const FTextBlockStyle& DefaultStyle, const UDataTable* StyleSet, FWidgetAnimTextStyle& OutStyle) const;
 
 	/** A Rich Text Block's string as drawn, its style tags taken out. */
 	static FString GetRichDisplayString(const URichTextBlock& RichText);
@@ -134,6 +177,21 @@ private:
 
 	/** Part PartIndex of the reveal's unit as text, for its event. */
 	FString GetPartText(FName Unit, int32 PartIndex, const FString& DisplayString) const;
+
+	/** Where each part of the reveal's unit starts in DisplayString. */
+	void GetPartBegins(FName Unit, const FString& DisplayString, TArray<int32>& OutBegins) const;
+
+	/**
+	 * Fires the <event>s and <play>s of the text whose parts have just been reached - those before parts [Before, Now),
+	 * and those at the very end once every one of Total has.
+	 */
+	void FireMarkers(FName Unit, int32 Before, int32 Now, int32 Total, const FString& DisplayString);
+
+	/** The Slate widget took a new text: at runtime, whatever is set to Play When Text Changes plays. */
+	void HandleTextChanged();
+
+	/** Reads Source into a markup, or returns the last one when nothing it depends on changed. */
+	TSharedRef<const FWidgetAnimTextMarkup> ReadMarkup(const FString& Source, bool bRich, const UDataTable* StyleSet, uint8 TransformPolicy) const;
 
 	TWeakObjectPtr<UWidget> Owner;
 	TFunction<UWidgetAnimationComponent*()> GetComponentFunction;
@@ -158,6 +216,23 @@ private:
 	mutable FString CountedString;
 	mutable int32 NumLetters = 0;
 	mutable int32 NumWords = 0;
+
+	/** The widget's Read Text Tags; always on when not set. */
+	TFunction<bool()> TagsEnabled;
+
+	/** The last text read for tags, and everything its reading depended on. */
+	mutable TSharedPtr<const FWidgetAnimTextMarkup> CachedMarkup;
+	mutable FString CachedSource;
+	mutable TWeakObjectPtr<const UDataTable> CachedStyleSet;
+	mutable uint32 CachedTagsVersion = 0;
+	mutable uint8 CachedTransformPolicy = 0;
+	mutable bool bCachedRich = false;
+	mutable bool bCachedTags = false;
+
+	/** Set while a track writes the text - see WriteFromTrack. */
+	bool bWritingFromTrack = false;
+
+	float RevealSpeed = 1.f;
 };
 
 // =====================================================================================================
@@ -199,6 +274,8 @@ private:
 	virtual void ReleaseSlateResources(bool bReleaseChildren) override; \
 	virtual TSharedRef<SWidget> RebuildWidget() override; \
 	virtual void OnWidgetRebuilt() override; \
+	virtual TSharedPtr<const FWidgetAnimTextMarkup> GetWidgetAnimTextMarkup() const override; \
+	virtual float GetWidgetAnimRevealSpeed() const override; \
 	/* Shared */ \
 	void GatherWidgetAnimTextStyle(FWidgetAnimTextStyle& OutStyle) const; \
 	void SetupTextCore(EWidgetAnimTextWidgetKind InKind);
@@ -215,6 +292,24 @@ private:
 			[this]() { return bUseProjectDefaultAnimations; }); \
 		TextCore.OnPartRevealed = [this](int32 PartIndex, const FString& PartText) { OnTextPartRevealed.Broadcast(PartIndex, PartText); }; \
 		TextCore.OnRevealFinished = [this]() { OnTextRevealFinished.Broadcast(); }; \
+		TextCore.OnTextEvent = [this](FName EventName, int32 PartIndex) { OnTextEvent.Broadcast(EventName, PartIndex); }; \
+		TextCore.SetTagsEnabledSource([this]() { return bReadTextTags; }); \
+	} \
+	void Class::SetTextRevealSpeed(float Speed) \
+	{ \
+		TextCore.SetRevealSpeed(Speed); \
+	} \
+	float Class::GetTextRevealSpeed() const \
+	{ \
+		return TextCore.GetOwnRevealSpeed(); \
+	} \
+	float Class::GetWidgetAnimRevealSpeed() const \
+	{ \
+		return TextCore.GetRevealSpeed(); \
+	} \
+	FText Class::GetTextWithoutTags() const \
+	{ \
+		return FText::FromString(GetWidgetAnimDisplayString()); \
 	} \
 	void Class::PlayWidgetAnimationsById(const TArray<FName>& AnimIds, bool bReverse, float PlaybackSpeed, bool bHoldFinalPose, bool bRestartIfPlaying) \
 	{ \
@@ -312,7 +407,7 @@ private:
 #define WIDGETANIM_TEXT_WIDGET_TEXTBLOCK_IMPL(Class) \
 	void Class::GatherWidgetAnimTextStyle(FWidgetAnimTextStyle& OutStyle) const \
 	{ \
-		FWidgetAnimTextWidgetCore::GatherTextBlockStyle(*this, OutStyle); \
+		TextCore.GatherTextBlockStyle(*this, OutStyle); \
 		OutStyle.Justification = Justification; \
 		OutStyle.Margin = Margin; \
 		OutStyle.LineHeight = LineHeightPercentage; \
@@ -324,12 +419,19 @@ private:
 	void Class::SetWidgetAnimText(const FText& InText) \
 	{ \
 		/* Through the Text Block, as any caller would set it: Common UI's Numeric and Date Time blocks hide their own. */ \
-		static_cast<UTextBlock*>(this)->SetText(InText); \
-		TextCore.NotifyTextChanged(); \
+		TextCore.WriteFromTrack([this, &InText]() \
+		{ \
+			static_cast<UTextBlock*>(this)->SetText(InText); \
+			TextCore.NotifyTextChanged(); \
+		}); \
 	} \
 	FString Class::GetWidgetAnimDisplayString() const \
 	{ \
-		return FWidgetAnimTextWidgetCore::ApplyTransformPolicy(GetText(), static_cast<uint8>(GetTextTransformPolicy())); \
+		return TextCore.ReadTextBlockMarkup(GetText(), static_cast<uint8>(GetTextTransformPolicy()))->Display; \
+	} \
+	TSharedPtr<const FWidgetAnimTextMarkup> Class::GetWidgetAnimTextMarkup() const \
+	{ \
+		return TextCore.ReadTextBlockMarkup(GetText(), static_cast<uint8>(GetTextTransformPolicy())); \
 	}
 
 /**
@@ -348,7 +450,7 @@ private:
 #define WIDGETANIM_TEXT_WIDGET_RICHTEXT_IMPL(Class) \
 	void Class::GatherWidgetAnimTextStyle(FWidgetAnimTextStyle& OutStyle) const \
 	{ \
-		FWidgetAnimTextWidgetCore::GatherRichTextStyle(*this, GetCurrentDefaultTextStyle(), GetTextStyleSet(), OutStyle); \
+		TextCore.GatherRichTextStyle(*this, GetCurrentDefaultTextStyle(), GetTextStyleSet(), OutStyle); \
 		OutStyle.Justification = Justification; \
 		OutStyle.Margin = Margin; \
 		OutStyle.LineHeight = LineHeightPercentage; \
@@ -361,11 +463,15 @@ private:
 	} \
 	void Class::SetWidgetAnimText(const FText& InText) \
 	{ \
-		SetText(InText); \
+		TextCore.WriteFromTrack([this, &InText]() { SetText(InText); }); \
 	} \
 	FString Class::GetWidgetAnimDisplayString() const \
 	{ \
-		return FWidgetAnimTextWidgetCore::GetRichDisplayString(*this); \
+		return TextCore.ReadRichTextMarkup(GetText(), GetTextStyleSet())->Display; \
+	} \
+	TSharedPtr<const FWidgetAnimTextMarkup> Class::GetWidgetAnimTextMarkup() const \
+	{ \
+		return TextCore.ReadRichTextMarkup(GetText(), GetTextStyleSet()); \
 	} \
 	/* The class declares "virtual void SetText(const FText& InText) override;". */ \
 	void Class::SetText(const FText& InText) \

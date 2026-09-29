@@ -52,6 +52,24 @@ enum class EWidgetAnimCountStyle : uint8
 	TimeWithHundredths UMETA(DisplayName = "Time (m:ss.cc)", ToolTip = "Seconds to the hundredth: 65.5 reads 1:05.50 - a race timer.")
 };
 
+/** Which way a Slot Machine's new digits roll in. */
+UENUM(BlueprintType)
+enum class EWidgetAnimCountSlotFrom : uint8
+{
+	WithTheCount UMETA(DisplayName = "With The Count", ToolTip = "From below as the number goes up, from above as it goes down - the way a reel turns."),
+	Below UMETA(ToolTip = "Always from below: the digits roll up."),
+	Above UMETA(ToolTip = "Always from above: the digits roll down.")
+};
+
+/** Which way a Roulette's new digits roll in. */
+UENUM(BlueprintType)
+enum class EWidgetAnimCountRouletteFrom : uint8
+{
+	WithTheCount UMETA(DisplayName = "With The Count", ToolTip = "From the right as the number goes up, from the left as it goes down."),
+	Right UMETA(ToolTip = "Always from the right: the digits roll left."),
+	Left UMETA(ToolTip = "Always from the left: the digits roll right.")
+};
+
 /**
  * Count: a number counting from one value to another - a score landing, a price ticking down, XP filling in, a timer.
  *
@@ -64,6 +82,9 @@ enum class EWidgetAnimCountStyle : uint8
  * and Value At End to its Start and End Value so the value is the number itself - and Steady smoothing counts toward
  * each new number at Steady Speed, speeding up to catch up on a big jump: a coin total that ticks up however often coins
  * arrive.
+ *
+ * Change Style says how each new number replaces the last on an animated text widget: at once, or its changed digits
+ * (or the whole number) rolling in like a slot machine's reel or a roulette strip, fading, or melting into the next.
  *
  * On Common Animated Numeric Text, Use Widget's Format hands the number to the widget, which formats it its own way. On
  * any other text it writes the text, and puts the text back afterwards.
@@ -135,14 +156,58 @@ struct NAMETBD_API FWidgetAnimCountUpParams : public FWidgetAnimTypeParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Count|Look", meta = (DisplayName = "Use Widget's Format"))
 	bool bUseWidgetFormat = true;
 
+	/**
+	 * How each new number replaces the last: at once, or rolling in like a slot machine's reel or a roulette strip,
+	 * fading, or melting into it. Animated text widgets only - a plain Text Block changes at once.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Count|Change", meta = (DisplayName = "Change Style"))
+	EWidgetAnimTextChangeStyle ChangeStyle = EWidgetAnimTextChangeStyle::Instant;
+
+	/** Whether only the digits that changed move, or the whole number as one. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Count|Change", meta = (DisplayName = "Animate", EditCondition = "ChangeStyle != EWidgetAnimTextChangeStyle::Instant", EditConditionHides))
+	EWidgetAnimTextChangeScope ChangeScope = EWidgetAnimTextChangeScope::ChangedDigits;
+
+	/** Which way new digits roll in. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Count|Change", meta = (DisplayName = "Roll From", EditCondition = "ChangeStyle == EWidgetAnimTextChangeStyle::SlotMachine", EditConditionHides))
+	EWidgetAnimCountSlotFrom SlotFrom = EWidgetAnimCountSlotFrom::WithTheCount;
+
+	/** Which way new digits roll in. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Count|Change", meta = (DisplayName = "Roll From", EditCondition = "ChangeStyle == EWidgetAnimTextChangeStyle::Roulette", EditConditionHides))
+	EWidgetAnimCountRouletteFrom RouletteFrom = EWidgetAnimCountRouletteFrom::WithTheCount;
+
+	/**
+	 * Seconds each change takes. A count faster than this keeps its reels turning, each one carrying on toward the
+	 * newest number; Fade and Blend suit numbers that change now and then - a score, a timer - better than a fast count.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Count|Change", meta = (DisplayName = "Change Time", ClampMin = "0.01", UIMax = "1.0", Units = "s", EditCondition = "ChangeStyle != EWidgetAnimTextChangeStyle::Instant", EditConditionHides))
+	float ChangeTime = 0.3f;
+
+	/** How each change moves. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Count|Change", meta = (DisplayName = "Change Easing", EditCondition = "ChangeStyle != EWidgetAnimTextChangeStyle::Instant", EditConditionHides))
+	EWidgetAnimEasing ChangeEasing = EWidgetAnimEasing::EaseOut;
+
+	/**
+	 * A digit rolls through every digit between its old and new one, as a reel does - 2 to 7 passes 3, 4, 5 and 6. Off,
+	 * it rolls straight to the new one.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Count|Change", meta = (DisplayName = "Spin Through Digits", EditCondition = "(ChangeStyle == EWidgetAnimTextChangeStyle::SlotMachine || ChangeStyle == EWidgetAnimTextChangeStyle::Roulette) && ChangeScope == EWidgetAnimTextChangeScope::ChangedDigits", EditConditionHides))
+	bool bSpinThroughDigits = true;
+
 	/** Where it counts from and to on the widget it is playing on, worked out as it starts. Never saved. */
 	double PreparedStart = 0.0;
 	double PreparedEnd = 0.0;
 	bool bPrepared = false;
 
+	/** The value it last wrote on its widget - which way the number went - on the playing copy. Never saved. */
+	mutable double LastAppliedValue = 0.0;
+	mutable bool bHasLastApplied = false;
+
 	/** Its start or end, as prepared on its widget where it was. */
 	double GetStart() const { return bPrepared ? PreparedStart : StartValue; }
 	double GetEnd() const { return bPrepared ? PreparedEnd : EndValue; }
+
+	/** Which way new characters come in, for FWidgetAnimTextEffects::ChangeFrom: +1, -1, or 0 with the count. */
+	int32 GetChangeFrom() const;
 };
 
 /** What a Text Block said before a Count - or anything else that writes its text - touched it. Kept for old baselines. */
@@ -188,5 +253,6 @@ public:
 
 protected:
 
-	virtual bool ClearEffects(FWidgetAnimTextEffects& Effects) const override { return false; }
+	/** Its change style - how the number changes - taken off the text. */
+	virtual bool ClearEffects(FWidgetAnimTextEffects& Effects) const override;
 };
