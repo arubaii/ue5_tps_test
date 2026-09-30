@@ -123,10 +123,19 @@ public:
 		enum class EKind : uint8
 		{
 			Group,
-			Lane
+			Lane,
+
+			/**
+			 * Under an open animation track (see IsAnimationTrackExpanded): one of the inserted animation's own groups -
+			 * its header - and the lines its tracks are on. Shown only; nothing on them is this animation's to edit.
+			 */
+			NestedGroup,
+			NestedLane
 		};
 
 		EKind Kind = EKind::Lane;
+
+		/** The group the line is in - for a nested line, the group the animation track is in. */
 		int32 Group = INDEX_NONE;
 
 		/** A track line's place among its group's track lines, from 0. */
@@ -134,6 +143,16 @@ public:
 
 		/** The layers on a track line, in the order they run. */
 		TArray<int32> Layers;
+
+		/**
+		 * A nested line's animation track, which of the inserted animation's groups it shows, and - on a nested track line
+		 * - which of the inserted animation's layers are on it, by their index in its Layers.
+		 */
+		int32 AnimationLayer = INDEX_NONE;
+		int32 NestedGroup = INDEX_NONE;
+		TArray<int32> NestedLayers;
+
+		bool IsNested() const { return Kind == EKind::NestedGroup || Kind == EKind::NestedLane; }
 	};
 
 	/**
@@ -337,6 +356,24 @@ public:
 	bool IsListGroupCollapsed(int32 GroupIndex) const { return ListCollapsedGroups.Contains(GroupIndex); }
 	void ToggleListGroupCollapsed(int32 GroupIndex);
 
+	/**
+	 * An animation track (see FWidgetAnimLayer::InsertedAnimation) opened, in both the list and the Track Editor: the
+	 * inserted animation's own groups under it, each foldable, with its tracks - tinted, shown only. Closed to start.
+	 */
+	bool IsAnimationTrackExpanded(int32 LayerIndex) const { return ExpandedAnimationTracks.Contains(LayerIndex); }
+	void ToggleAnimationTrackExpanded(int32 LayerIndex);
+	bool IsNestedGroupFolded(int32 LayerIndex, int32 NestedGroup) const { return FoldedNestedGroups.Contains(MakeNestedGroupKey(LayerIndex, NestedGroup)); }
+	void ToggleNestedGroupFolded(int32 LayerIndex, int32 NestedGroup);
+
+	/**
+	 * Where an open animation track's animation's tracks run, in the panel's seconds, one per layer of the inserted
+	 * animation - worked out with the lines. Null for a track that isn't an open animation track.
+	 */
+	const TArray<FVector2f>* GetNestedSpans(int32 LayerIndex) const { return NestedSpans.Find(LayerIndex); }
+
+	/** The inserted animation of an animation track, or null. */
+	const class UWidgetAnimPresetAsset* GetInsertedAnimation(int32 LayerIndex) const;
+
 	/** Height of the Track Editor's lines. Dragged from any line's edge - all of them at once - and remembered across sessions. */
 	float GetRowHeight() const { return RowHeight; }
 	void SetRowHeight(float NewHeight);
@@ -516,6 +553,14 @@ public:
 	void InsertAnimation(const class UWidgetAnimPresetAsset* Animation, int32 GroupIndex);
 
 	/**
+	 * Unravel: replaces an animation track with a copy of every track of the animation it plays, each in the group the
+	 * track played it in and starting where it played - so it plays as it did, now editable here and no longer following
+	 * the animation. The copies are selected. CanUnravelLayer: an editable animation track whose animation has tracks.
+	 */
+	bool CanUnravelLayer(int32 LayerIndex) const;
+	void UnravelAnimationTrack(int32 LayerIndex);
+
+	/**
 	 * Adds a key at LocalSeconds on a layer. On a Transform layer the new key starts at the pose already there; on
 	 * any other keyed layer at the value on the way between its neighbours, and with the curve of the segment it
 	 * splits - so adding a key changes nothing until it is edited.
@@ -605,9 +650,15 @@ public:
 
 	/**
 	 * What color a layer is drawn in: its type's - or, on a Blueprint type's track, that type's own Track Color if it
-	 * sets one, else the Blueprint type color from the editor settings.
+	 * sets one, else the Blueprint type color from the editor settings; on a cue's, the cue color, or a Blueprint cue's own.
 	 */
 	static FLinearColor GetLayerTypeColor(const FWidgetAnimLayer& Layer);
+
+	/**
+	 * Whether a track is a cue - it fires at moments rather than moving anything (see WidgetAnimCue.h): drawn with a line
+	 * at each point it fires at, and without an easing, a spring or curves between its keys.
+	 */
+	static bool IsCueLayer(const FWidgetAnimLayer& Layer);
 
 	/** A color washed out the way a track that can't be edited is drawn. */
 	static FLinearColor GetLockedColor(const FLinearColor& Color);
@@ -636,12 +687,21 @@ private:
 	/** Rebuilds the Animation Layers list. Its times read live; only its structure and order need this. */
 	void RebuildLayerList();
 
+	/** The list's rows under an open animation track: its animation's groups, foldable, and their tracks - tinted, shown only. */
+	void AddNestedListRows(int32 LayerIndex, int32 GroupIndex);
+
 	/**
 	 * Works out the Track Editor's lines from the layers' groups, their EditorLine and their times: each group's
 	 * layers by line, and on each line in time order, a track that would overlap one already there moved to a
 	 * line of its own just below. Cheap, and done every frame, so the lines follow every edit.
 	 */
 	void UpdateTrackLayout();
+
+	/** Works out NestedSpans for the open animation tracks, from TrackSpans - and forgets any that no longer is one. */
+	void UpdateNestedSpans();
+
+	/** The lines under an open animation track, after its own line: its animation's groups and their tracks. */
+	void AddNestedLines(int32 LayerIndex, int32 GroupIndex);
 
 	/** Works out TrackFans, TrackFanCounts and TrackRuns from the layers' staggers and the preview's counts and lengths. */
 	void UpdateStaggerFans();
@@ -840,6 +900,14 @@ private:
 
 	TSet<int32> TrackCollapsedGroups;
 	TSet<int32> ListCollapsedGroups;
+
+	/** The open animation tracks, and their folded groups - see IsAnimationTrackExpanded - by position, as groups fold. */
+	TSet<int32> ExpandedAnimationTracks;
+	TSet<uint64> FoldedNestedGroups;
+	static uint64 MakeNestedGroupKey(int32 LayerIndex, int32 NestedGroup) { return (static_cast<uint64>(static_cast<uint32>(LayerIndex)) << 32) | static_cast<uint32>(NestedGroup); }
+
+	/** Per open animation track, where its animation's tracks run - see GetNestedSpans. */
+	TMap<int32, TArray<FVector2f>> NestedSpans;
 	float RowHeight = DefaultRowHeight;
 
 	/**

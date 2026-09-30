@@ -1,4 +1,4 @@
-// Copyright AR GameSystems 2026. All rights reserved.
+﻿// Copyright AR GameSystems 2026. All rights reserved.
 
 #pragma once
 
@@ -99,6 +99,7 @@ struct NAMETBD_API FWidgetAnimAdditiveStart
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FWidgetAnimationComponentEvent, UWidgetAnimationComponent*, Component);
 DECLARE_MULTICAST_DELEGATE_OneParam(FWidgetAnimationComponentNativeEvent, UWidgetAnimationComponent* /*Component*/);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FWidgetAnimationComponentCueEvent, FName, EventName, const FWidgetAnimCueInfo&, Info);
 
 // =====================================================================================================
 // Component
@@ -225,6 +226,16 @@ public:
 
 	/** Native twin of OnOutAnimationFinished, broadcast just after it. */
 	FWidgetAnimationComponentNativeEvent OnOutAnimationFinishedNative;
+
+	/**
+	 * An Event cue in one of this component's animations or additive tracks has fired: its Event Name, and where and how
+	 * (which widget it is aimed at, which point, its value). Fires a frame after the cue is passed, so anything may be
+	 * done here - play another animation, change the text, remove the widget. UMG shows no events for a UI component, so
+	 * in a Widget Blueprint use the event's own Custom Event instead - On <Animation> Event Track <Name> Fired, added with
+	 * the + in these Details' Events; this is for code holding the component. See WidgetAnimCue.h.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Animation")
+	FWidgetAnimationComponentCueEvent OnAnimationEvent;
 
 	// -------------------------------------------------------------------------------------------------
 	// Playback

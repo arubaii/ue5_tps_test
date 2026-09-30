@@ -352,7 +352,41 @@ namespace NameTBD::Tooltips
 		inline FText InsertAnimationTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "InsertAnimationTooltip",
-				"Unwrap another Widget Animation's tracks into this one, where a new track would go - after the selected track, or at the end - to build on it.");
+				"Plays another Widget Animation as one track of this one, where a new track would go - after the selected track, or at the end. It plays exactly as it does on its own, and follows every change made to it. Open it with its arrow to see its groups and tracks; right-click it and Unravel to copy its tracks in, to edit them here.");
+		}
+
+		// -------------------------------------------------------------------------------------------------
+		// Animation tracks - another Widget Animation inserted as one track
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText AnimationTrackNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AnimationTrackNote",
+				"This track plays another Widget Animation whole, as long as it runs: only when it starts is set here. Edit the animation itself (Edit Existing Asset) to change what it does - every animation it is inserted into follows. To edit its tracks here instead, right-click the track and Unravel it.");
+		}
+
+		inline FText AnimationTrackBrowseTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AnimationTrackBrowseTooltip",
+				"Find this animation in the Content Browser.");
+		}
+
+		inline FText AnimationTrackFoldTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AnimationTrackFoldTooltip",
+				"Show or hide the inserted animation's own groups and tracks, under this one. They are shown only: edit them in their own animation, or Unravel the track.");
+		}
+
+		inline FText NestedRowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NestedRowTooltip",
+				"A track of the animation inserted above, shown for reference: it plays as part of that track. Click to select the animation track.");
+		}
+
+		inline FText UnravelAnimationTrackTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "UnravelAnimationTrackTooltip",
+				"Replaces this track with a copy of every track of the animation it plays, each where it plays now, to edit here. The copies no longer follow the animation.");
 		}
 
 		inline FText AddTrackToGroupTooltip()
@@ -825,6 +859,24 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveLayersResizeTooltip",
 				"Drag to make the track editor taller or shorter.");
+		}
+
+		inline FText TrackEventRowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TrackEventRowTooltip",
+				"An Event track in this component's animations (Add Track > Cues > Event), or in an animation inserted into them as a track, named by the animation it is in. Its event fires in this Widget Blueprint's graph each time the track is passed, with an Info pin: the widget it is aimed at, which point fired and its value, the Anim ID that played it.");
+		}
+
+		inline FText TrackEventAddTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TrackEventAddTooltip",
+				"Adds this event to the Event Graph and goes to it.");
+		}
+
+		inline FText TrackEventViewTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TrackEventViewTooltip",
+				"This event is in the graph already: goes to it.");
 		}
 
 		inline FText AdditiveLayersMultipleObjects()

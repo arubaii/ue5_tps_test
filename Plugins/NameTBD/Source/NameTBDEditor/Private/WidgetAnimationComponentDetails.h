@@ -21,7 +21,8 @@ class IDetailLayoutBuilder;
  * Playing or scrubbing poses the component's widget in the designer; see FindPreviewWidget in the .cpp for how
  * the component shown here is matched to the one on the designer's preview.
  *
- * The lists' plain fields are still there, under the category's Advanced section.
+ * The lists' plain array fields are hidden: the editors are the lists. Events lists every Event track the component's
+ * animations have, each with a + for its event, as a button lists On Clicked.
  */
 class FWidgetAnimationComponentDetails : public IDetailCustomization
 {
@@ -34,9 +35,18 @@ public:
 
 private:
 
-	/** One list's editor, under its own row, with the list's plain fields moved to Advanced. */
+	/** One list's editor, under its own row, with the list's plain array field hidden. */
 	void AddListEditor(IDetailLayoutBuilder& DetailBuilder, class IDetailCategoryBuilder& Category, FName PropertyName, bool bOut,
 		const TArray<TWeakObjectPtr<UObject>>& Objects);
+
+	/**
+	 * The Events group, open from the start, at the end of the Animation category: one row per Event track in the
+	 * component's animations and additive tracks, and in the animations inserted into them as tracks - "On Card Event
+	 * Track Landed Fired" for a Landed track in WA_Card - with a + that adds its event to the Widget Blueprint's graph and
+	 * shows it, as a button's On Clicked does, or shows the one already there. The event is a Custom Event named for its
+	 * animation and track, with an Info pin (see WidgetAnimCues::GetEventFunctionName).
+	 */
+	void AddEventRows(class IDetailCategoryBuilder& Category, const TArray<TWeakObjectPtr<UObject>>& Objects);
 
 	/** The builder these Details were laid out by - refreshed after a list is handed over to an entry. */
 	TWeakPtr<IDetailLayoutBuilder> WeakDetailBuilder;

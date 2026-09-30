@@ -151,4 +151,10 @@ EWidgetAnimKeyContent WidgetAnimGetRegisteredKeyContent(const FInstancedStruct& 
 	return Evaluator ? Evaluator->GetKeyContent(Params) : EWidgetAnimKeyContent::Value;
 }
 
+bool WidgetAnimIsRegisteredCue(const FInstancedStruct& Params)
+{
+	const FWidgetAnimEvaluator* Evaluator = Params.IsValid() ? FWidgetAnimEvaluatorRegistry::Get().Find(Params) : nullptr;
+	return Evaluator && Evaluator->IsCue();
+}
+
 #undef LOCTEXT_NAMESPACE

@@ -15,12 +15,14 @@
 #include "WidgetAnimEvaluator.h" // FWidgetAnimTypeParams, registered track types
 #include "WidgetAnimExpander.h"  // Staggers: FWidgetAnimExpander
 #include "WidgetAnimParts.h"     // Parts of a widget: FWidgetAnimPartKey
+#include "WidgetAnimCue.h"       // Cues: FWidgetAnimCueFire
 #include "StructUtils/InstancedStruct.h"
 #include "WidgetAnimLibrary.generated.h"
 
 class UMaterialInstanceDynamic;
 class UUserWidget;
 class UShapeBox;
+class UWidgetAnimPresetAsset;
 
 UENUM(BlueprintType)
 enum class EWidgetAnimType : uint8
@@ -386,6 +388,15 @@ struct NAMETBD_API FWidgetAnimSettings
 	TObjectPtr<UObject> ValueScope = nullptr;
 
 	/**
+	 * The Widget Animation this layer is authored in, where that isn't the one it plays as part of: a layer of an
+	 * animation inserted into another as a track (see FWidgetAnimLayer::InsertedAnimation) - whose values still belong
+	 * to the animation it plays in (ValueScope), but whose events are named by this one. Null otherwise. Stamped by
+	 * UWidgetAnimLibrary::BuildLayerSettings. Never saved.
+	 */
+	UPROPERTY(Transient)
+	TObjectPtr<UObject> AuthoredIn = nullptr;
+
+	/**
 	 * Which part of TargetWidget this layer moves - a letter of an Animated Text Block - rather than the whole widget.
 	 * Set only on the copies a text stagger fans a layer out into. See WidgetAnimParts.h. Never saved.
 	 */
@@ -415,6 +426,36 @@ struct NAMETBD_API FWidgetAnimSettings
 	bool bPlacedAfterPrevious = false;
 	float PlacedDelay = 0.f;
 	float PlacedRun = 0.f;
+
+	/**
+	 * For a layer of an animation inserted into another as a track (see FWidgetAnimLayer::InsertedAnimation), how much
+	 * faster than the rest of its stack it plays: the inserted animation's Animation Speed Multiplier - every one of them,
+	 * multiplied, for an animation inserted into one that was inserted itself. Multiplies Playback Speed wherever the
+	 * layer's clock is read (GetPlaySpeed), and its Delay is in its own seconds, so the inserted animation keeps its own
+	 * pace inside the one it plays in, whatever speed that plays at. 1 for every other layer. Never saved.
+	 */
+	float NestedSpeed = 1.f;
+
+	/**
+	 * How a layer of an inserted animation follows its track. The track itself is built as a placeholder that poses
+	 * nothing (see UWidgetAnimLibrary::BuildLayerSettings) and names itself PlacementAnchor; each layer the inserted
+	 * animation plays is AnchoredTo it, so a stagger fanning out before the track moves the whole inserted animation along
+	 * with the track - see UWidgetAnimLibrary::ExpandSettings. INDEX_NONE on every other layer. Never saved.
+	 */
+	int32 PlacementAnchor = INDEX_NONE;
+	int32 AnchoredTo = INDEX_NONE;
+
+	/**
+	 * For a layer an inserted animation plays: which layer of the list handed to BuildLayerSettings its track is - so a
+	 * caller finds its Target Widget, and whether the track is hidden in the editor - and which of that list's Layer
+	 * Groups it plays in (see FWidgetAnimLayer::InsertedGroups). INDEX_NONE on the list's own layers, which are built one
+	 * setting per layer, in order, ahead of every inserted one. Never saved.
+	 */
+	int32 InsertedFromLayer = INDEX_NONE;
+	int32 InsertedGroup = INDEX_NONE;
+
+	/** The speed this layer's clock runs at: Playback Speed, times NestedSpeed. What every span and clock is read by. */
+	float GetPlaySpeed() const { return FMath::Max(PlaybackSpeed * NestedSpeed, 0.01f); }
 
 	// ------------------------------------------------------------------
 	// Fade
@@ -815,7 +856,8 @@ struct NAMETBD_API FWidgetAnimLayer
 
 	/**
 	 * Seconds this layer takes to play once: its curve's length on a Transform layer, its spring's settle time
-	 * on a Spring layer, Duration otherwise.
+	 * on a Spring layer, the inserted animation's length on an animation track (see
+	 * UWidgetAnimLibrary::GetAnimationPassSeconds), Duration otherwise.
 	 */
 	float GetRunLength() const;
 
@@ -847,6 +889,32 @@ struct NAMETBD_API FWidgetAnimLayer
 		Motion.NumChannels = Effective.GetNumChannels();
 		return Motion;
 	}
+
+	// Animation tracks
+	//
+	// Another Widget Animation, inserted as one track (the Widget Animations panel's Insert Existing Widget Animation):
+	// the whole animation played from where the track starts, exactly as it plays on its own - its groups, its sequence,
+	// its Speed Multiplier - and as long as it is, so none of its settings are edited here. It stays that animation: edit
+	// the animation and every track inserting it plays the change. Unravel, in the panel, copies its tracks in instead.
+	//
+	// Such a track is a Registered Type with no type set - nothing plays it as a track of its own - and is expanded into
+	// the inserted animation's layers wherever layers are built into settings; see UWidgetAnimLibrary::BuildLayerSettings.
+	// Only its Starts, Delay, group, line, lock and hidden state are its own.
+
+	/** The animation this track plays, or null for any other track. See IsAnimationTrack. */
+	UPROPERTY()
+	TObjectPtr<UWidgetAnimPresetAsset> InsertedAnimation = nullptr;
+
+	/**
+	 * For an animation track: which Layer Group of the animation it is in each of the inserted animation's own groups
+	 * plays in, by position - so an inserted animation that moves three widgets moves three here. A group with no entry,
+	 * or one out of range, plays in the track's own group - which is all an animation of one group needs.
+	 */
+	UPROPERTY()
+	TArray<int32> InsertedGroups;
+
+	/** Whether this track plays another Widget Animation - see InsertedAnimation. */
+	bool IsAnimationTrack() const { return InsertedAnimation != nullptr; }
 
 	/**
 	 * Which Layer Group of its animation this layer belongs to - which widget it moves - by the group's
@@ -1082,6 +1150,15 @@ struct NAMETBD_API FWidgetAnimState
 	 */
 	FVector4 InputLastValue = FVector4(0.0, 0.0, 0.0, 0.0);
 	bool bInputSent = false;
+
+	/**
+	 * Cues (see WidgetAnimCue.h): whether this layer's clock - a loop group's, on its first layer - has had its first
+	 * frame, which passes the very start of the timeline too; and, on a value-driven cue track, the value the cue last
+	 * judged crossings from. Never saved: a track started again starts these again.
+	 */
+	bool bCueClockStarted = false;
+	float CueProgress = 0.f;
+	bool bCueProgressSet = false;
 };
 
 USTRUCT(BlueprintType)
@@ -1190,6 +1267,12 @@ struct NAMETBD_API FWidgetAnimResult
 	 * is worked out in. See FWidgetAnimAuthoritativeWrite.
 	 */
 	TArray<FWidgetAnimAuthoritativeWrite> AuthoritativeWrites;
+
+	/**
+	 * The cue points passed this frame, in the order they were passed - fired a frame later by whoever applies the result
+	 * (see WidgetAnimCues::Queue). Not reflected, and pointing at the settings they came from, like the writes above.
+	 */
+	TArray<FWidgetAnimCueFire> CueFires;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bAllFinished = false;
@@ -1587,6 +1670,12 @@ public:
 	 * into seconds from the start of the animation - the only place that sequencing rule lives. Everything
 	 * that plays a list of layers (entries, a component's Additive Anim Layers, the builder) goes through
 	 * this, so a layer is placed the same way no matter where the list is played from.
+	 *
+	 * One setting per layer, in order - then, after all of them, the layers of every animation inserted as a track (see
+	 * FWidgetAnimLayer::InsertedAnimation), each placed where its track starts and marked with the track it came from and
+	 * the group it plays in (FWidgetAnimSettings::InsertedFromLayer, InsertedGroup). The track's own setting stays in its
+	 * place as a muted placeholder as long as the inserted animation, so everything after it is placed as before. A
+	 * caller reading setting N as layer N can go on doing so for the first Layers.Num().
 	 */
 	static void BuildLayerSettings(const TArray<FWidgetAnimLayer>& Layers, TArray<FWidgetAnimSettings>& OutSettings);
 
@@ -1597,6 +1686,27 @@ public:
 	 * Animations editor places the layers after one. OutStarts gets one start per layer.
 	 */
 	static void PlaceLayerStarts(const TArray<FWidgetAnimLayer>& Layers, TConstArrayView<float> ExtraSpans, TArray<float>& OutStarts);
+
+	/**
+	 * Seconds one pass of an animation takes as it plays inserted into another as a track: where its last layer ends,
+	 * placed in sequence, at its Animation Speed Multiplier - staggers as their first item, as BuildLayerSettings places
+	 * them. What an animation track's run length is. 0 for none, or for an animation inserted too deep into itself.
+	 */
+	static float GetAnimationPassSeconds(const UWidgetAnimPresetAsset* Animation);
+
+	/**
+	 * Whether Animation plays Other: is it, or has a track inserting it - or an animation that does, however deep. What
+	 * keeps an animation from being inserted into itself.
+	 */
+	static bool AnimationPlays(const UWidgetAnimPresetAsset* Animation, const UObject* Other);
+
+	/**
+	 * Visits every layer of Layers, then every layer of every animation inserted into them as a track, however deep - each
+	 * with the animation it is authored in (In for Layers' own, which may be null: a component's additive tracks). Each
+	 * inserted animation once, however many tracks insert it. For finding what an animation's tracks hold - its events,
+	 * its value names - wherever they were authored.
+	 */
+	static void ForEachLayerIncludingInserted(const TArray<FWidgetAnimLayer>& Layers, const UWidgetAnimPresetAsset* In, TFunctionRef<void(const UWidgetAnimPresetAsset* /*In*/, const FWidgetAnimLayer& /*Layer*/)> Visit);
 
 	/**
 	 * Whether any of Settings has a Stagger still to fan out, or a registered type still to prepare for play (see
@@ -1644,10 +1754,25 @@ public:
 	/** Whether a type moves a widget's render transform and opacity - the only ones that can move a part of it. */
 	static bool TypeMovesParts(EWidgetAnimType AnimType);
 
+	/**
+	 * Whether a text stagger fans a track of this type out over the letters, words or lines of its text: the types that
+	 * move a part (TypeMovesParts), and every cue - which moves nothing, so fires once per letter instead.
+	 */
+	static bool TypeTakesParts(EWidgetAnimType AnimType, const FInstancedStruct& TypeParams);
+
+	/**
+	 * Fires the cues an editor preview's playhead passed going from FromAlpha to ToAlpha along one pass of Animations -
+	 * forward when ToAlpha is past FromAlpha, back otherwise - the pass ApplyWidgetAnimationsAtAlpha poses at. For a
+	 * preview that plays by alpha rather than a clock; only cues that fire at design time do. bIncludeFrom fires a point
+	 * exactly at FromAlpha too - the preview's first frame from the start. Never call it for a scrub.
+	 */
+	static void FirePreviewCues(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Animations, float FromAlpha, float ToAlpha, bool bIsOutAnimation, bool bIncludeFrom);
+
 #if WITH_EDITOR
 	/**
 	 * For an editor preview: marks the settings built from Layers - starting at FirstSetting, one per layer, in
-	 * order - muted wherever the track is hidden in the Widget Animations panel. See FWidgetAnimSettings::bMuted.
+	 * order, then those of the animations inserted as tracks (see BuildLayerSettings) - muted wherever the track is
+	 * hidden in the Widget Animations panel. See FWidgetAnimSettings::bMuted.
 	 */
 	static void MuteHiddenLayers(const TArray<FWidgetAnimLayer>& Layers, TArray<FWidgetAnimSettings>& Settings, int32 FirstSetting = 0);
 #endif

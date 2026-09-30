@@ -8,6 +8,7 @@
 
 class UWidget;
 class FWidgetAnimEvaluator;
+struct FWidgetAnimCueContext;
 
 /**
  * The base every registered track type's settings derive from.
@@ -32,9 +33,9 @@ struct NAMETBD_API FWidgetAnimTypeParams
 /**
  * How a registered type's value is combined with what other tracks write in the same frame.
  *
- * Only Authoritative exists so far. The built-in types already show the other shapes this will grow into - opacity
- * and scale multiply, translation and angle add, material parameters are a keyed map - and each will be added here
- * when the first registered type needs it, rather than guessed at now.
+ * Authoritative and Cue so far. The built-in types already show the other shapes this will grow into - opacity and
+ * scale multiply, translation and angle add, material parameters are a keyed map - and each will be added here when
+ * the first registered type needs it, rather than guessed at now.
  */
 enum class EWidgetAnimComposition : uint8
 {
@@ -43,7 +44,14 @@ enum class EWidgetAnimComposition : uint8
 	 * multiplied - a piece of text, an icon, a frame of a flipbook - so two tracks on the same text take turns rather
 	 * than blending into nonsense. The target's own value is captured as a baseline and put back afterwards.
 	 */
-	Authoritative
+	Authoritative,
+
+	/**
+	 * Writes nothing: something happens at moments on the timeline instead - an event, a sound, another animation
+	 * started. The track has no pose, so nothing to compose or put back; the timeline tells the type when its moments
+	 * are passed, through Fire. See WidgetAnimCue.h for when a cue fires and when it doesn't.
+	 */
+	Cue
 };
 
 /** What each key between a registered track's start and end holds - see FWidgetAnimEvaluator::GetKeyContent. */
@@ -156,6 +164,9 @@ public:
 
 	virtual EWidgetAnimComposition GetComposition() const { return EWidgetAnimComposition::Authoritative; }
 
+	/** Whether this type is a cue: it fires at moments rather than writing a value. See EWidgetAnimComposition::Cue. */
+	bool IsCue() const { return GetComposition() == EWidgetAnimComposition::Cue; }
+
 	/**
 	 * The smallest change in value that changes what the target shows - 1 for a whole-number count, 0.01 for two
 	 * decimals. When set, Apply is only called on frames where the value has moved to a different step, so a count
@@ -255,6 +266,29 @@ public:
 
 	/** Puts back what CaptureBaseline recorded. */
 	virtual void RestoreBaseline(UObject* Target, const FInstancedStruct& Baseline) const {}
+
+	// ---------------------------------------------------------------------------------------------
+	// Cues
+	// ---------------------------------------------------------------------------------------------
+
+	/**
+	 * A cue type's one moment of behavior: the playhead has passed one of the track's moments. Called a frame after the
+	 * moment was passed, never in the middle of an animation being applied, so it may play, stop or destroy anything -
+	 * the animation it came from included. Only called on a type whose composition is Cue. See WidgetAnimCue.h.
+	 */
+	virtual void Fire(const FWidgetAnimCueContext& Context) const {}
+
+	/**
+	 * Whether a cue of this type fires while an editor preview plays - the Widget Animations panel's, or the designer
+	 * toolbar's. A sound does, so it can be heard where it is timed; an event, which the game handles, doesn't.
+	 */
+	virtual bool FiresAtDesignTime(const FInstancedStruct& Params) const { return false; }
+
+	/**
+	 * A few words on what one track of this type does, drawn on its track in the Widget Animations editor in place of
+	 * its easing - "Landed", "UI_Click". Empty draws the easing, as every other track does.
+	 */
+	virtual FText GetTrackSummary(const FInstancedStruct& Params) const { return FText::GetEmpty(); }
 
 protected:
 
@@ -413,3 +447,6 @@ NAMETBD_API FLinearColor WidgetAnimGetRegisteredEndpointColor(const FInstancedSt
 
 /** What a registered track's keys hold. Value when its type isn't registered. */
 NAMETBD_API EWidgetAnimKeyContent WidgetAnimGetRegisteredKeyContent(const FInstancedStruct& Params);
+
+/** Whether a registered track's settings are a cue type's - see EWidgetAnimComposition::Cue. False when unregistered. */
+NAMETBD_API bool WidgetAnimIsRegisteredCue(const FInstancedStruct& Params);

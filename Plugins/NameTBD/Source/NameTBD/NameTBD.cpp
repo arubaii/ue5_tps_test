@@ -7,6 +7,9 @@
 #include "WidgetAnimation/Evaluators/WidgetAnimTextReveal.h"
 #include "WidgetAnimation/Evaluators/WidgetAnimTextTracks.h"
 #include "WidgetAnimation/Evaluators/WidgetAnimBlueprintType.h"
+#include "WidgetAnimation/Evaluators/WidgetAnimCues.h"
+#include "WidgetAnimation/Evaluators/WidgetAnimBlueprintCue.h"
+#include "WidgetAnimation/WidgetAnimCue.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDModule"
 
@@ -28,6 +31,12 @@ void FNameTBDModule::StartupModule()
 	// The bridge every Blueprint track type runs through - see UWidgetAnimBlueprintType. Blueprint types themselves
 	// need no registering: the Widget Animations panel finds them as assets.
 	Registry.Register(MakeShared<FWidgetAnimBlueprintEvaluator>());
+
+	// The cues, listed under Cues - see WidgetAnimCue.h - and the bridge every Blueprint cue runs through.
+	Registry.Register(MakeShared<FWidgetAnimEventCueEvaluator>());
+	Registry.Register(MakeShared<FWidgetAnimSoundCueEvaluator>());
+	Registry.Register(MakeShared<FWidgetAnimPlayCueEvaluator>());
+	Registry.Register(MakeShared<FWidgetAnimBlueprintCueEvaluator>());
 }
 
 void FNameTBDModule::ShutdownModule()
@@ -42,6 +51,13 @@ void FNameTBDModule::ShutdownModule()
 	Registry.Unregister(FWidgetAnimShakeParams::StaticStruct());
 	Registry.Unregister(FWidgetAnimLetterSpacingParams::StaticStruct());
 	Registry.Unregister(FWidgetAnimBlueprintTypeParams::StaticStruct());
+	Registry.Unregister(FWidgetAnimEventCueParams::StaticStruct());
+	Registry.Unregister(FWidgetAnimSoundCueParams::StaticStruct());
+	Registry.Unregister(FWidgetAnimPlayCueParams::StaticStruct());
+	Registry.Unregister(FWidgetAnimBlueprintCueParams::StaticStruct());
+
+	// Cues passed on the last frame have nothing left to fire into.
+	WidgetAnimCues::DiscardPending();
 }
 
 #undef LOCTEXT_NAMESPACE

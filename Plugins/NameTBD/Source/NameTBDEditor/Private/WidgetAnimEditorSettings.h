@@ -55,6 +55,25 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Track Colors", meta = (DisplayName = "Blueprint Type Track Color"))
 	FLinearColor BlueprintTypeTrackColor;
 
+	/**
+	 * The color of every cue track - Event, Sound, Play Animation, and each Blueprint cue that doesn't set a Track Color
+	 * of its own - so what makes something happen reads apart from what moves something.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Track Colors", meta = (DisplayName = "Cue Track Color"))
+	FLinearColor CueTrackColor;
+
+	// -------------------------------------------------------------------------------------------------
+	// Previews
+	// -------------------------------------------------------------------------------------------------
+
+	/**
+	 * Sound cues play while the Widget Animations panel's preview, or the designer toolbar's, plays - so a sound can be
+	 * timed where it is heard. One cue sound at a time: a new one cuts off the last. Scrubbing never plays them, and no
+	 * Event or Play Animation cue ever fires in a preview. See WidgetAnimCue.h.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Previews", meta = (DisplayName = "Play Cue Sounds In Previews"))
+	bool bPlayCueSoundsInPreviews = true;
+
 	// -------------------------------------------------------------------------------------------------
 	// Track controls - the toggles in the panel's Track Controls pill
 	// -------------------------------------------------------------------------------------------------

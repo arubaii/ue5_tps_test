@@ -7,6 +7,12 @@
 
 #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
+#include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimCues.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
+#include "EdGraphSchema_K2.h"
+#include "K2Node_CustomEvent.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "NameTBDColors.h"
 #include "NameTBDTooltips.h"
 
@@ -19,6 +25,7 @@
 #include "Editor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Docking/TabManager.h"
+#include "IDetailGroup.h"
 #include "IDetailPropertyRow.h"
 #include "Misc/ConfigCacheIni.h"
 #include "PropertyHandle.h"
@@ -32,8 +39,10 @@
 #include "WidgetBlueprint.h"
 #include "WidgetBlueprintEditor.h"
 #include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/SWindow.h"
@@ -1001,6 +1010,189 @@ TSharedRef<IDetailCustomization> FWidgetAnimationComponentDetails::MakeInstance(
 	return MakeShared<FWidgetAnimationComponentDetails>();
 }
 
+namespace WidgetAnimComponentEvents
+{
+	/**
+	 * Every Event track's event in Component's Anim In and Anim Out animations and its additive tracks - those of every
+	 * animation inserted into them as a track too, named by the animation each is authored in - once each, in the order
+	 * found. Its Custom Event's name - see WidgetAnimCues::GetEventFunctionName.
+	 */
+	void GatherEvents(const UWidgetAnimationComponent& Component, TArray<FName>& OutFunctionNames)
+	{
+		auto FromLayers = [&OutFunctionNames](const TArray<FWidgetAnimLayer>& Layers, const UWidgetAnimPresetAsset* Animation)
+		{
+			UWidgetAnimLibrary::ForEachLayerIncludingInserted(Layers, Animation, [&OutFunctionNames](const UWidgetAnimPresetAsset* In, const FWidgetAnimLayer& Layer)
+			{
+				const FWidgetAnimEventCueParams* Event = Layer.AnimType == EWidgetAnimType::Custom ? Layer.TypeParams.GetPtr<FWidgetAnimEventCueParams>() : nullptr;
+				const FName FunctionName = Event ? WidgetAnimCues::GetEventFunctionName(In, Event->EventName) : NAME_None;
+				if (!FunctionName.IsNone())
+				{
+					OutFunctionNames.AddUnique(FunctionName);
+				}
+			});
+		};
+
+		for (const TArray<FWidgetAnimEntry>* Entries : { &Component.AnimIn, &Component.AnimOut })
+		{
+			for (const FWidgetAnimEntry& Entry : *Entries)
+			{
+				if (Entry.Animation)
+				{
+					FromLayers(Entry.Animation->Layers, Entry.Animation);
+				}
+			}
+		}
+		FromLayers(Component.AdditiveAnimLayersIn, nullptr);
+		FromLayers(Component.AdditiveAnimLayersOut, nullptr);
+	}
+
+	/** Blueprint's Custom Event named FunctionName - an Event track's, see WidgetAnimCues::GetEventFunctionName - or null. */
+	UK2Node_CustomEvent* FindEvent(const UBlueprint* Blueprint, FName FunctionName)
+	{
+		if (!Blueprint || FunctionName.IsNone())
+		{
+			return nullptr;
+		}
+
+		TArray<UK2Node_CustomEvent*> Events;
+		FBlueprintEditorUtils::GetAllNodesOfClass(Blueprint, Events);
+		UK2Node_CustomEvent* const* Found = Events.FindByPredicate([FunctionName](const UK2Node_CustomEvent* Event)
+		{
+			return Event && Event->CustomFunctionName == FunctionName;
+		});
+		return Found ? *Found : nullptr;
+	}
+
+	/**
+	 * Blueprint's Custom Event named FunctionName - added to its event graph, with an Info pin, if there is none yet -
+	 * shown in the graph editor, as a widget event's + does.
+	 */
+	void FindOrAddEventAndFocus(UBlueprint* Blueprint, FName FunctionName)
+	{
+		if (!Blueprint || FunctionName.IsNone())
+		{
+			return;
+		}
+
+		UK2Node_CustomEvent* Event = FindEvent(Blueprint, FunctionName);
+		if (!Event)
+		{
+			UEdGraph* EventGraph = FBlueprintEditorUtils::FindEventGraph(Blueprint);
+			if (!EventGraph)
+			{
+				return;
+			}
+
+			const FScopedTransaction Transaction(LOCTEXT("AddTrackEvent", "Add Widget Animation Event"));
+			EventGraph->Modify();
+
+			// A plain Custom Event, as the graph's own Add Custom Event makes, only named for the track - the name is what
+			// the Event cue calls - and given the one parameter it hands over.
+			Event = NewObject<UK2Node_CustomEvent>(EventGraph);
+			Event->CreateNewGuid();
+			Event->CustomFunctionName = FunctionName;
+			Event->PostPlacedNewNode();
+			Event->AllocateDefaultPins();
+
+			FEdGraphPinType InfoType;
+			InfoType.PinCategory = UEdGraphSchema_K2::PC_Struct;
+			InfoType.PinSubCategoryObject = FWidgetAnimCueInfo::StaticStruct();
+			Event->CreateUserDefinedPin(TEXT("Info"), InfoType, EGPD_Output);
+
+			const auto Place = EventGraph->GetGoodPlaceForNewNode();
+			Event->NodePosX = static_cast<int32>(Place.X);
+			Event->NodePosY = static_cast<int32>(Place.Y);
+			EventGraph->AddNode(Event, /*bFromUI=*/true, /*bSelectNewNode=*/false);
+
+			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		}
+
+		FKismetEditorUtilities::BringKismetToFocusAttentionOnObject(Event);
+	}
+}
+
+void FWidgetAnimationComponentDetails::AddEventRows(IDetailCategoryBuilder& Category, const TArray<TWeakObjectPtr<UObject>>& Objects)
+{
+	const UWidgetAnimationComponent* Component = Objects.Num() == 1 ? Cast<UWidgetAnimationComponent>(Objects[0].Get()) : nullptr;
+	TArray<FName> FunctionNames;
+	if (Component)
+	{
+		WidgetAnimComponentEvents::GatherEvents(*Component, FunctionNames);
+	}
+	if (FunctionNames.Num() == 0)
+	{
+		// No Event track, no Events: the group only appears when there is something to bind.
+		return;
+	}
+
+	// A group of the component's own category, open from the start: UMG draws a UI component's Details as one block, with
+	// no headers for categories of their own, so an Events category would only run on under the Animation settings.
+	IDetailGroup& Group = Category.AddGroup(TEXT("Events"), LOCTEXT("EventsGroup", "Events"), /*bForAdvanced=*/false, /*bStartExpanded=*/true);
+	const TWeakObjectPtr<UWidgetBlueprint> WeakBlueprint = FindOwningWidgetBlueprint(Component);
+
+	for (const FName FunctionName : FunctionNames)
+	{
+		const FText Title = FText::FromName(FunctionName);
+		auto IsBound = [WeakBlueprint, FunctionName]() { return WidgetAnimComponentEvents::FindEvent(WeakBlueprint.Get(), FunctionName) != nullptr; };
+
+		// Built the way UMG builds a widget's own events (FBlueprintWidgetCustomization): the event icon and the event's
+		// name, and a + that adds it - or, once it is there, the select icon, which goes to it.
+		Group.AddWidgetRow()
+			.FilterString(Title)
+			.NameContent()
+			[
+				SNew(SHorizontalBox)
+				.ToolTipText(WidgetAnimTips::TrackEventRowTooltip())
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(0.f, 0.f, 5.f, 0.f)
+				[
+					SNew(SImage)
+					.Image(FAppStyle::Get().GetBrush("GraphEditor.Event_16x"))
+				]
+				+ SHorizontalBox::Slot()
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.Text(Title)
+				]
+			]
+			.ValueContent()
+			.MinDesiredWidth(150.f)
+			.MaxDesiredWidth(200.f)
+			[
+				SNew(SButton)
+				.HAlign(HAlign_Center)
+				.ForegroundColor(FSlateColor::UseForeground())
+				.IsEnabled_Lambda([WeakBlueprint]() { return WeakBlueprint.IsValid(); })
+				.ToolTipText_Lambda([IsBound]() { return IsBound() ? WidgetAnimTips::TrackEventViewTooltip() : WidgetAnimTips::TrackEventAddTooltip(); })
+				.OnClicked_Lambda([WeakBlueprint, FunctionName]()
+				{
+					WidgetAnimComponentEvents::FindOrAddEventAndFocus(WeakBlueprint.Get(), FunctionName);
+					return FReply::Handled();
+				})
+				[
+					SNew(SWidgetSwitcher)
+					.WidgetIndex_Lambda([IsBound]() { return IsBound() ? 0 : 1; })
+					+ SWidgetSwitcher::Slot()
+					[
+						SNew(SImage)
+						.ColorAndOpacity(FSlateColor::UseForeground())
+						.Image(FAppStyle::GetBrush("Icons.SelectInViewport"))
+					]
+					+ SWidgetSwitcher::Slot()
+					[
+						SNew(SImage)
+						.ColorAndOpacity(FSlateColor::UseForeground())
+						.Image(FAppStyle::GetBrush("Icons.Plus"))
+					]
+				]
+			];
+	}
+}
+
 void FWidgetAnimationComponentDetails::CustomizeDetails(const TSharedPtr<IDetailLayoutBuilder>& DetailBuilder)
 {
 	WeakDetailBuilder = DetailBuilder;
@@ -1041,6 +1233,8 @@ void FWidgetAnimationComponentDetails::CustomizeDetails(IDetailLayoutBuilder& De
 	}
 
 	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, bPreserveAuthoredTransforms)));
+
+	AddEventRows(Category, Objects);
 }
 
 void FWidgetAnimationComponentDetails::AddListEditor(IDetailLayoutBuilder& DetailBuilder, IDetailCategoryBuilder& Category, FName PropertyName, bool bOut,
@@ -1190,9 +1384,9 @@ void FWidgetAnimationComponentDetails::AddListEditor(IDetailLayoutBuilder& Detai
 			Editor
 		];
 
-	// The plain fields stay reachable - for a value the editor doesn't show, or a copy and paste of the whole list.
-	Category.AddProperty(Handle, EPropertyLocation::Advanced)
-		.ToolTip(WidgetAnimTips::AdditiveLayersRawFieldsNote());
+	// The plain array is left out: the editor above is the list. Hidden, not removed - the editor still tells its edits
+	// through this handle, as a Details edit would be told.
+	DetailBuilder.HideProperty(Handle);
 }
 
 #undef LOCTEXT_NAMESPACE

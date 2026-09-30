@@ -813,7 +813,7 @@ float UWidgetAnimBuilder::GetTransformKeyScrubAlpha(int32 LayerIndex, int32 KeyI
 	// span as long as the layer runs, whatever sets that: a Transform curve, a spring, or Duration.
 	if (Layer.bInvertAnimation)
 	{
-		const float Speed = FMath::Max(Layer.PlaybackSpeed, 0.01f);
+		const float Speed = Layer.GetPlaySpeed();
 		const float LayerStart = FMath::Max(Layer.Delay, 0.f) / Speed;
 		const float LayerLength = UWidgetAnimLibrary::GetLayerRunSeconds(Layer) / Speed;
 		KeySeconds = LayerStart + LayerLength - (KeySeconds - LayerStart);

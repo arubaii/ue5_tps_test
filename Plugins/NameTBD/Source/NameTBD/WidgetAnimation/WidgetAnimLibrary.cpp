@@ -5,6 +5,7 @@
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/PanelWidget.h"
+#include "Algo/StableSort.h"
 #include "Framework/Application/SlateApplication.h"
 #include "UObject/ObjectKey.h"
 #include "NameTBD/Widgets/ShapeBox.h"
@@ -15,6 +16,7 @@
 #include "UObject/UnrealType.h"
 #include "WidgetAnimExpander.h"
 #include "WidgetAnimParts.h"
+#include "WidgetAnimPreset.h"
 
 #include <atomic>
 #endif
@@ -584,7 +586,10 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 		// so all that is left is the value there and who writes it. An unregistered type - its module not loaded -
 		// plays as nothing rather than failing.
 		const FWidgetAnimEvaluator* Evaluator = Settings.FindEvaluator();
-		if (!Evaluator)
+
+		// A cue has no pose: it fires as the clock passes its points, which TickAnimationsInto finds - see
+		// WidgetAnimCue.h. At any one alpha - a scrub, a held pose - there is nothing to write.
+		if (!Evaluator || Evaluator->IsCue())
 		{
 			break;
 		}
@@ -631,6 +636,9 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 			}
 			break;
 		}
+
+		case EWidgetAnimComposition::Cue:
+			break;
 		}
 		break;
 	}
@@ -651,10 +659,12 @@ void UWidgetAnimLibrary::TouchLayerTargets(const FWidgetAnimSettings& Settings, 
 		return;
 	}
 
-	// A registered type doesn't touch the transform at all - it puts its own channel back at its baseline instead.
+	// A registered type doesn't touch the transform at all - it puts its own channel back at its baseline instead. A cue
+	// has neither, and touches nothing.
 	if (Settings.AnimType == EWidgetAnimType::Custom)
 	{
-		if (const FWidgetAnimEvaluator* Evaluator = Settings.FindEvaluator())
+		const FWidgetAnimEvaluator* Evaluator = Settings.FindEvaluator();
+		if (Evaluator && !Evaluator->IsCue())
 		{
 			AddAuthoritativeBaselineWrite(OutResult, Settings.TargetWidget, Evaluator->GetChannel(Settings.TypeParams), Evaluator, &Settings.TypeParams);
 		}
@@ -733,8 +743,9 @@ namespace WidgetAnimLoop
 
 	static FLayerSpan GetLayerSpan(const FWidgetAnimSettings& Settings)
 	{
-		// Speed scales the layer's whole placement, delay included, so a stagger keeps its proportions.
-		const float Speed = FMath::Max(Settings.PlaybackSpeed, 0.01f);
+		// Speed scales the layer's whole placement, delay included, so a stagger keeps its proportions - and a layer of an
+		// inserted animation plays at that animation's own pace on top.
+		const float Speed = Settings.GetPlaySpeed();
 
 		FLayerSpan Span;
 		Span.Start = FMath::Max(Settings.Delay, 0.f) / Speed;
@@ -925,6 +936,37 @@ namespace WidgetAnimLoop
 	}
 
 	/**
+	 * One stretch of timeline a clock crossed in one advance, going one way - what cues are fired from. A frame that
+	 * wraps round a loop, or turns round a ping-pong, crosses several. See WidgetAnimCue.h for the rules these encode.
+	 */
+	struct FClockPiece
+	{
+		/** The loop group's first layer, whose clock this is. */
+		int32 Leader = INDEX_NONE;
+
+		float From = 0.f;
+		float To = 0.f;
+		bool bForward = true;
+
+		/**
+		 * A forward leg's first stretch: its very start is passed too, not only what lies after it - the animation's first
+		 * frame, and every pass of a loop after it.
+		 */
+		bool bIncludeFrom = false;
+
+		/** That start is where a ping-pong return just turned round. */
+		bool bFromIsTurn = false;
+
+		/** A forward leg ending where a ping-pong return begins. */
+		bool bToIsTurn = false;
+
+		/** The end of the timeline, where a forward leg ends and a return begins. */
+		float LegEnd = 0.f;
+	};
+
+	using FClockPieces = TArray<FClockPiece, TInlineAllocator<8>>;
+
+	/**
 	 * Advances one animation's shared clock.
 	 *
 	 * The clock is a position on the animation's timeline, 0 .. End, where End is the latest point any
@@ -933,8 +975,10 @@ namespace WidgetAnimLoop
 	 * lead-in shared by all of them is only waited out once, as a single delayed layer always did.
 	 *
 	 * A ping-pong return leg runs the same span backwards, so the layers unwind in reverse order.
+	 *
+	 * OutPieces, when given, gets every stretch the clock crossed, in order - for firing cues. Leader names the clock.
 	 */
-	static void AdvanceTimeline(const FWidgetAnimSettings& Settings, FWidgetAnimState& Clock, float Lead, float End, float DeltaTime)
+	static void AdvanceTimeline(const FWidgetAnimSettings& Settings, FWidgetAnimState& Clock, float Lead, float End, float DeltaTime, FClockPieces* OutPieces = nullptr, int32 Leader = INDEX_NONE)
 	{
 		if (Clock.bFinished)
 		{
@@ -944,14 +988,40 @@ namespace WidgetAnimLoop
 		Lead = FMath::Clamp(Lead, 0.f, End);
 		float Remaining = FMath::Max(DeltaTime, 0.f);
 
+		// The clock's very first advance starts a leg - its first frame passes the start of the timeline itself - and so
+		// does every leg after a loop wraps or a ping-pong turns.
+		bool bLegStart = !Clock.bCueClockStarted;
+		bool bFromTurn = false;
+		Clock.bCueClockStarted = true;
+
+		auto Record = [OutPieces, Leader, End, &bLegStart, &bFromTurn](float From, float To, bool bForward, bool bToTurn)
+		{
+			if (OutPieces)
+			{
+				FClockPiece& Piece = OutPieces->AddDefaulted_GetRef();
+				Piece.Leader = Leader;
+				Piece.From = From;
+				Piece.To = To;
+				Piece.bForward = bForward;
+				Piece.bIncludeFrom = bForward && bLegStart;
+				Piece.bFromIsTurn = bForward && bFromTurn;
+				Piece.bToIsTurn = bToTurn;
+				Piece.LegEnd = End;
+			}
+			bLegStart = false;
+			bFromTurn = false;
+		};
+
 		// Bounded so a long hitch on a very short loop can't spin here. Hitting the bound only drops time.
 		for (int32 Guard = 0; Guard < 1024; ++Guard)
 		{
+			const float From = Clock.CycleTime;
 			if (Clock.bPlayingForward)
 			{
 				Clock.CycleTime += Remaining;
 				if (Clock.CycleTime < End)
 				{
+					Record(From, Clock.CycleTime, /*bForward=*/true, /*bToTurn=*/false);
 					return;
 				}
 				Remaining = Clock.CycleTime - End;
@@ -962,16 +1032,25 @@ namespace WidgetAnimLoop
 				Clock.CycleTime -= Remaining;
 				if (Clock.CycleTime > Lead)
 				{
+					Record(From, Clock.CycleTime, /*bForward=*/false, /*bToTurn=*/false);
 					return;
 				}
 				Remaining = Lead - Clock.CycleTime;
 				Clock.CycleTime = Lead;
+				Record(From, Lead, /*bForward=*/false, /*bToTurn=*/false);
 			}
 
 			const bool bEndedForward = Clock.bPlayingForward;
 			++Clock.LoopsCompleted;
 
-			if (!ShouldStartAnotherLeg(Settings, Clock, bEndedForward))
+			const bool bAnotherLeg = ShouldStartAnotherLeg(Settings, Clock, bEndedForward);
+			if (bEndedForward)
+			{
+				// Known only now: whether the end just reached is where a ping-pong turns round.
+				Record(From, End, /*bForward=*/true, /*bToTurn=*/bAnotherLeg && Settings.bPingPong);
+			}
+
+			if (!bAnotherLeg)
 			{
 				// Only ever reached at the end of a forward leg, so this is the end pose.
 				Clock.CycleTime = End;
@@ -990,9 +1069,173 @@ namespace WidgetAnimLoop
 				Clock.CycleTime = Lead;
 			}
 
+			// The leg starting now: a forward one after a return starts where the ping-pong turned round.
+			bLegStart = true;
+			bFromTurn = !bEndedForward;
+
 			if (End - Lead <= KINDA_SMALL_NUMBER)
 			{
 				return;
+			}
+		}
+	}
+
+	/** The cue rules of a cue track's settings - its own, or a new cue's for a type whose settings don't carry them. */
+	static const FWidgetAnimCueParams& GetCueRules(const FInstancedStruct& TypeParams)
+	{
+		static const FWidgetAnimCueParams Defaults;
+		const FWidgetAnimCueParams* Rules = WidgetAnimCues::GetCueParams(TypeParams);
+		return Rules ? *Rules : Defaults;
+	}
+
+	/** Adds one fire to Result, unless this point of this track has already fired this frame. */
+	static void AddCueFire(FWidgetAnimResult& Result, const FWidgetAnimSettings& Settings, int32 LayerIndex, int32 Point, bool bBackward, bool bInverted, float Order)
+	{
+		const bool bAlreadyFired = Result.CueFires.ContainsByPredicate([&Settings, Point](const FWidgetAnimCueFire& Fire)
+		{
+			return Fire.Params == &Settings.TypeParams && Fire.Point == Point;
+		});
+		if (bAlreadyFired)
+		{
+			return;
+		}
+
+		FWidgetAnimCueFire& Fire = Result.CueFires.AddDefaulted_GetRef();
+		Fire.Params = &Settings.TypeParams;
+		Fire.TargetWidget = Settings.TargetWidget;
+		// The animation the cue is authored in - an animation inserted as a track's own - else the one it plays in.
+		Fire.Animation = Settings.AuthoredIn ? Settings.AuthoredIn.Get() : Settings.ValueScope.Get();
+		Fire.Part = Settings.Part;
+		Fire.Point = Point;
+		Fire.Value = WidgetAnimCues::GetPointValue(Settings.TypeParams, Settings.ValueKeys, Point);
+		Fire.bBackward = bBackward;
+		Fire.bInverted = bInverted;
+		Fire.LayerIndex = LayerIndex;
+		Fire.Order = Order;
+	}
+
+	/**
+	 * The points of one cue layer its clock crossed this frame, into Result. Span is where the layer sits on the timeline;
+	 * inverted, a point sits where its motion is, mirrored in the layer's span. See WidgetAnimCue.h for the rules.
+	 */
+	static void GatherClockCues(const FWidgetAnimSettings& Settings, int32 LayerIndex, const FLayerSpan& Span, bool bInvert, int32 Leader, const FClockPieces& Pieces, FWidgetAnimResult& Result)
+	{
+		const FWidgetAnimCueParams& Rules = GetCueRules(Settings.TypeParams);
+		if (bInvert && !Rules.bFireWhenInverted)
+		{
+			return;
+		}
+
+		TArray<TPair<int32, float>, TInlineAllocator<8>> Points;
+		WidgetAnimCues::GetFiringPoints(Settings.TypeParams, Settings.ValueKeys, Points);
+		if (Points.Num() == 0)
+		{
+			return;
+		}
+
+		// Only for telling a point exactly at a leg's start or end from one a hair beside it: the timeline's times and a
+		// point's are worked out by the same sums, so they match to within float rounding when they are the same place.
+		constexpr float Epsilon = 1.e-5f;
+
+		for (int32 PieceIndex = 0; PieceIndex < Pieces.Num(); ++PieceIndex)
+		{
+			const FClockPiece& Piece = Pieces[PieceIndex];
+			if (Piece.Leader != Leader)
+			{
+				continue;
+			}
+
+			for (const TPair<int32, float>& Point : Points)
+			{
+				const float At = Span.Start + (bInvert ? 1.f - Point.Value : Point.Value) * Span.Length;
+
+				bool bCrossed = false;
+				bool bAtTurn = false;
+				if (Piece.bForward)
+				{
+					// (From, To] - a leg's start included on its first stretch, its end matched to within rounding.
+					const bool bAtFrom = FMath::Abs(At - Piece.From) <= Epsilon;
+					const float Upper = Piece.To >= Piece.LegEnd ? Piece.To + Epsilon : Piece.To;
+					if (Piece.bIncludeFrom && bAtFrom)
+					{
+						bCrossed = true;
+						bAtTurn = Piece.bFromIsTurn;
+					}
+					else if (At > Piece.From && At <= Upper)
+					{
+						bCrossed = true;
+						bAtTurn = Piece.bToIsTurn && FMath::Abs(At - Piece.To) <= Epsilon;
+					}
+				}
+				else
+				{
+					// [To, From) the other way - but never a turnaround point at either end, which the forward legs on
+					// either side of a return pass (once, whichever direction the cue fires on).
+					bCrossed = At > Piece.To && At <= Piece.From && At < Piece.LegEnd - Epsilon;
+				}
+
+				if (!bCrossed)
+				{
+					continue;
+				}
+
+				const bool bAllowed = bAtTurn
+					? (Rules.AllowsForward() || Rules.AllowsBackward())
+					: (Piece.bForward ? Rules.AllowsForward() : Rules.AllowsBackward());
+				if (!bAllowed)
+				{
+					continue;
+				}
+
+				// In the order the playhead met them: stretch by stretch, and along each the way it was going.
+				const float Along = Piece.bForward ? At - Piece.From : Piece.From - At;
+				AddCueFire(Result, Settings, LayerIndex, Point.Key, /*bBackward=*/!Piece.bForward && !bAtTurn, bInvert, PieceIndex * 100000.f + Along);
+			}
+		}
+	}
+
+	/**
+	 * The points of one value-driven cue layer its value crossed since it last looked, into Result - rising past one is
+	 * forward, falling back past one backward. The value it starts at crosses nothing, and movements under a hundredth of
+	 * the range are waited out, so a spring settling on a point doesn't chatter; its own ends are always reached exactly.
+	 */
+	static void GatherValueCues(const FWidgetAnimSettings& Settings, int32 LayerIndex, FWidgetAnimState& State, FWidgetAnimResult& Result)
+	{
+		const float Progress = FMath::Clamp(State.ValueState.Progress.X, 0.f, 1.f);
+		const float Directed = Settings.bInvertAnimation ? 1.f - Progress : Progress;
+
+		if (!State.bCueProgressSet)
+		{
+			State.CueProgress = Directed;
+			State.bCueProgressSet = true;
+			return;
+		}
+
+		const float From = State.CueProgress;
+		constexpr float MinStep = 0.01f;
+		const bool bReachedEnd = (Directed == 0.f || Directed == 1.f) && Directed != From;
+		if (FMath::Abs(Directed - From) < MinStep && !bReachedEnd)
+		{
+			return;
+		}
+		State.CueProgress = Directed;
+
+		const FWidgetAnimCueParams& Rules = GetCueRules(Settings.TypeParams);
+		const bool bRising = Directed > From;
+		if (bRising ? !Rules.AllowsForward() : !Rules.AllowsBackward())
+		{
+			return;
+		}
+
+		TArray<TPair<int32, float>, TInlineAllocator<8>> Points;
+		WidgetAnimCues::GetFiringPoints(Settings.TypeParams, Settings.ValueKeys, Points);
+		for (const TPair<int32, float>& Point : Points)
+		{
+			const float At = Point.Value;
+			const bool bCrossed = bRising ? (At > From && At <= Directed) : (At >= Directed && At < From);
+			if (bCrossed)
+			{
+				AddCueFire(Result, Settings, LayerIndex, Point.Key, /*bBackward=*/!bRising, Settings.bInvertAnimation, bRising ? At - From : From - At);
 			}
 		}
 	}
@@ -1067,6 +1310,23 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 	// nor stretch one, so the rest of the animation times, loops and finishes exactly as if they weren't there.
 	auto FollowsValue = [&Animations, bDriveValueLayers](int32 Index) { return bDriveValueLayers && Animations[Index].IsValueDriven(); };
 
+	// Cues fire from the stretches of timeline the clocks cross, so those are recorded - but only when the stack has a
+	// cue in it; everything else plays exactly as it did. See WidgetAnimCue.h.
+	TArray<bool, TInlineAllocator<16>> IsCueLayer;
+	IsCueLayer.Init(false, NumLayers);
+	bool bHasCues = false;
+	for (int32 Index = 0; Index < NumLayers; ++Index)
+	{
+		if (Animations[Index].AnimType == EWidgetAnimType::Custom)
+		{
+			const FWidgetAnimEvaluator* Evaluator = Animations[Index].FindEvaluator();
+			IsCueLayer[Index] = Evaluator && Evaluator->IsCue();
+			bHasCues = bHasCues || IsCueLayer[Index];
+		}
+	}
+	WidgetAnimLoop::FClockPieces ClockPieces;
+	const int32 FirstCueFire = OutResult.CueFires.Num();
+
 	for (int32 Index = 0; Index < NumLayers; ++Index)
 	{
 		LeaderOf[Index] = Index;
@@ -1100,7 +1360,7 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 	{
 		if (LeaderOf[Index] == Index && !FollowsValue(Index))
 		{
-			WidgetAnimLoop::AdvanceTimeline(Animations[Index], States[Index], GroupLead[Index], GroupEnd[Index], DeltaTime);
+			WidgetAnimLoop::AdvanceTimeline(Animations[Index], States[Index], GroupLead[Index], GroupEnd[Index], DeltaTime, bHasCues ? &ClockPieces : nullptr, Index);
 		}
 	}
 
@@ -1117,7 +1377,7 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 			// track starts, with no delay: it is showing data, not playing its part of a sequence. At rest it counts as
 			// ended, and it never holds the stack from settling. See WidgetAnimDriver.h.
 			FWidgetAnimState& State = States[Index];
-			const float ValueDeltaTime = DeltaTime * FMath::Max(Settings.PlaybackSpeed, 0.01f);
+			const float ValueDeltaTime = DeltaTime * Settings.GetPlaySpeed();
 			State.bFinished = WidgetAnimValue::Advance(Settings.ValueOptions, Settings.GetValueMotion(), State.ValueState, ValueDeltaTime);
 
 			// A Pulse's value is its strength; it pulses on its own clock, one pulse per Duration, for as long as it has
@@ -1127,6 +1387,17 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 				const float Period = FMath::Max(Settings.Duration, KINDA_SMALL_NUMBER);
 				State.ValueState.PulseTime = FMath::Fmod(State.ValueState.PulseTime + ValueDeltaTime, Period);
 				State.bFinished = State.bFinished && State.ValueState.Progress.X <= 0.f;
+			}
+
+			// A cue poses nothing: it fires as its value crosses its points.
+			if (IsCueLayer[Index])
+			{
+				if (!Settings.bMuted)
+				{
+					WidgetAnimLoop::GatherValueCues(Settings, Index, State, OutResult);
+				}
+				bAllComplete = bAllComplete && State.bFinished;
+				continue;
 			}
 
 			if (!Settings.bMuted)
@@ -1173,7 +1444,16 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 			State.CycleTime = FMath::Clamp(LocalTime, 0.f, Span.Length);
 		}
 
-		if (!bBeforeStart)
+		if (IsCueLayer[Index])
+		{
+			// A cue poses nothing - not even its baseline - and fires as the clock passes its points. Muted (hidden in the
+			// editor) it keeps its place in time but never fires.
+			if (!Settings.bMuted)
+			{
+				WidgetAnimLoop::GatherClockCues(Settings, Index, Span, bInvert, Leader, ClockPieces, OutResult);
+			}
+		}
+		else if (!bBeforeStart)
 		{
 			// Heading back toward the start values: inverted on a forward leg, or not inverted on a ping-pong's
 			// return leg. A finished clock always rests at the end of a forward leg. Only springs read it - see
@@ -1205,6 +1485,13 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 		}
 	}
 
+	// This frame's cues in the order the playhead met them, whichever layers they are on.
+	if (OutResult.CueFires.Num() - FirstCueFire > 1)
+	{
+		TArrayView<FWidgetAnimCueFire> Fired(OutResult.CueFires.GetData() + FirstCueFire, OutResult.CueFires.Num() - FirstCueFire);
+		Algo::StableSortBy(Fired, &FWidgetAnimCueFire::Order);
+	}
+
 	if (bOutAllComplete)
 	{
 		*bOutAllComplete = bAllComplete;
@@ -1224,6 +1511,10 @@ FWidgetAnimResult UWidgetAnimLibrary::TickWidgetAnimations(const TArray<FWidgetA
 	{
 		Write.DetachParams();
 	}
+
+	// With no widget to fire them from, and settings that may be gone by the time the result is used, cues passed here
+	// are dropped: a caller clocking animations by hand through this node poses them, and gets no cues.
+	Result.CueFires.Reset();
 	return Result;
 }
 
@@ -1434,6 +1725,9 @@ void UWidgetAnimLibrary::PlayInternal(UWidget* FallbackWidget, const TArray<FWid
 
 	ApplyResultInternal(FallbackWidget, Result, Baselines);
 	ApplyMaterialAnimResult(Result);
+
+	// Fired next frame - see WidgetAnimCue.h. No Anim ID here: these stacks are played without entries' names.
+	WidgetAnimCues::Queue(Result.CueFires, FallbackWidget, NAME_None);
 }
 
 void UWidgetAnimLibrary::PlayWidgetAnimations(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States, float DeltaTime, bool bIsOutAnimation)
@@ -1701,7 +1995,9 @@ void UWidgetAnimLibrary::CaptureWidgetAnimBaselines(UWidget* FallbackWidget, con
 			// track names none, the same way the result is applied.
 			if (Settings.AnimType == EWidgetAnimType::Custom)
 			{
-				if (const FWidgetAnimEvaluator* Evaluator = Settings.FindEvaluator())
+				// A cue writes nothing, so has nothing to keep.
+				const FWidgetAnimEvaluator* Evaluator = Settings.FindEvaluator();
+				if (Evaluator && !Evaluator->IsCue())
 				{
 					UWidget* Widget = Settings.TargetWidget ? Settings.TargetWidget.Get() : FallbackWidget;
 					CaptureOneAuthoritative(Baselines, *Evaluator, Settings.TypeParams, Widget);
@@ -1868,8 +2164,62 @@ void UWidgetAnimLibrary::ApplyWidgetAnimationsAtAlpha(UWidget* FallbackWidget, c
 	ApplyMaterialAnimResult(Result);
 }
 
+void UWidgetAnimLibrary::FirePreviewCues(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& InAnimations, float FromAlpha, float ToAlpha, bool bIsOutAnimation, bool bIncludeFrom)
+{
+	if (!FallbackWidget)
+	{
+		return;
+	}
+
+	// Asked of the layers as authored - a stagger's items are the same type - so a preview with no cue costs nothing more.
+	const bool bHasCues = InAnimations.ContainsByPredicate([](const FWidgetAnimSettings& Settings)
+	{
+		return Settings.AnimType == EWidgetAnimType::Custom && WidgetAnimIsRegisteredCue(Settings.TypeParams);
+	});
+	if (!bHasCues)
+	{
+		return;
+	}
+
+	// The same pass ApplyWidgetAnimationsAtAlpha poses along, stagger items and all.
+	TArray<FWidgetAnimSettings> Expanded;
+	const TArray<FWidgetAnimSettings>& Animations = ExpandSettings(FallbackWidget, InAnimations, Expanded) ? Expanded : InAnimations;
+
+	// One stretch of one pass, laid out the way a clock's would be: forward from FromAlpha to ToAlpha, or back. A preview
+	// posing by alpha has no loop legs of its own, so each call is one leg's worth - the preview splits a wrap in two.
+	const float PassSeconds = GetStackPassDuration(Animations);
+	WidgetAnimLoop::FClockPieces Pieces;
+	WidgetAnimLoop::FClockPiece& Piece = Pieces.AddDefaulted_GetRef();
+	Piece.Leader = 0;
+	Piece.From = FMath::Clamp(FromAlpha, 0.f, 1.f) * PassSeconds;
+	Piece.To = FMath::Clamp(ToAlpha, 0.f, 1.f) * PassSeconds;
+	Piece.bForward = ToAlpha >= FromAlpha;
+	Piece.bIncludeFrom = bIncludeFrom && Piece.bForward;
+	Piece.LegEnd = PassSeconds;
+
+	FWidgetAnimResult Result;
+	for (int32 Index = 0; Index < Animations.Num(); ++Index)
+	{
+		const FWidgetAnimSettings& Settings = Animations[Index];
+		if (Settings.bMuted || Settings.AnimType != EWidgetAnimType::Custom || !WidgetAnimIsRegisteredCue(Settings.TypeParams))
+		{
+			continue;
+		}
+		WidgetAnimLoop::GatherClockCues(Settings, Index, WidgetAnimLoop::GetLayerSpan(Settings), GetEffectiveInvert(Settings, bIsOutAnimation), /*Leader=*/0, Pieces, Result);
+	}
+
+	Algo::StableSortBy(Result.CueFires, &FWidgetAnimCueFire::Order);
+	WidgetAnimCues::Queue(Result.CueFires, FallbackWidget, NAME_None, /*bPreview=*/true);
+}
+
 float FWidgetAnimLayer::GetRunLength() const
 {
+	// An animation track is as long as its animation plays, and can't be made longer or shorter.
+	if (IsAnimationTrack())
+	{
+		return FMath::Max(UWidgetAnimLibrary::GetAnimationPassSeconds(InsertedAnimation.Get()), KINDA_SMALL_NUMBER);
+	}
+
 	if (AnimType == EWidgetAnimType::Transform)
 	{
 		return Transform.GetDuration();
@@ -2001,6 +2351,9 @@ void UWidgetAnimLibrary::BuildLayerSettings(const TArray<FWidgetAnimLayer>& Laye
 	PlaceLayerStarts(Layers, TConstArrayView<float>(), Starts);
 	const int32 Chain = AllocatePlacementChain();
 
+	// Where each animation track's placeholder went, for its animation's layers to follow once the list's own are in.
+	TArray<int32, TInlineAllocator<4>> AnimationTracks;
+
 	for (int32 Index = 0; Index < Layers.Num(); ++Index)
 	{
 		const FWidgetAnimLayer& Layer = Layers[Index];
@@ -2016,7 +2369,190 @@ void UWidgetAnimLibrary::BuildLayerSettings(const TArray<FWidgetAnimLayer>& Laye
 		Settings.PlacedDelay = Layer.Delay;
 		Settings.PlacedRun = Layer.GetRunLength();
 
+		// An animation track keeps its place as a placeholder as long as its animation, which poses nothing - its
+		// animation's own layers do the playing - so the layers after it are placed, and moved, as they always were.
+		if (Layer.IsAnimationTrack())
+		{
+			Settings.Duration = Settings.PlacedRun;
+			Settings.Expander.Reset();
+			Settings.bMuted = true;
+			Settings.PlacementAnchor = AllocatePlacementChain();
+			AnimationTracks.Add(Index);
+		}
+
 		OutSettings.Add(MoveTemp(Settings));
+	}
+
+	if (AnimationTracks.Num() == 0)
+	{
+		return;
+	}
+
+	// Deep enough for any animation made of animations, and no deeper: an animation inserted into itself, however
+	// roundabout, stops here rather than building forever. The panel won't insert one; an asset edited by hand might.
+	static constexpr int32 MaxInsertDepth = 8;
+	static thread_local int32 InsertDepth = 0;
+	if (InsertDepth >= MaxInsertDepth)
+	{
+		return;
+	}
+	TGuardValue<int32> DepthGuard(InsertDepth, InsertDepth + 1);
+
+	const int32 FirstPlaceholder = OutSettings.Num() - Layers.Num();
+	for (const int32 Index : AnimationTracks)
+	{
+		const FWidgetAnimLayer& Track = Layers[Index];
+		const UWidgetAnimPresetAsset* Animation = Track.InsertedAnimation.Get();
+		if (!Animation)
+		{
+			continue;
+		}
+
+		// The inserted animation as it plays on its own - its own animations inserted in turn - then moved to where the
+		// track starts, at its own pace.
+		TArray<FWidgetAnimSettings> Inserted;
+		BuildLayerSettings(Animation->Layers, Inserted);
+
+		// Copied rather than referred to: OutSettings grows below.
+		const float TrackStart = OutSettings[FirstPlaceholder + Index].Delay;
+		const int32 TrackAnchor = OutSettings[FirstPlaceholder + Index].PlacementAnchor;
+		const float Speed = FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);
+		const int32 NumInsertedGroups = Animation->LayerGroups.Num();
+		const int32 NumOwn = Animation->Layers.Num();
+
+		OutSettings.Reserve(OutSettings.Num() + Inserted.Num());
+		for (int32 InsertedIndex = 0; InsertedIndex < Inserted.Num(); ++InsertedIndex)
+		{
+			FWidgetAnimSettings& Settings = Inserted[InsertedIndex];
+
+			// Its clock runs at the inserted animation's pace times whatever it already ran at, and its Delay - read in
+			// its own seconds - gets the track's start added in those seconds, so it starts exactly TrackStart into this
+			// list plus however far into the inserted animation it did.
+			Settings.NestedSpeed *= Speed;
+			Settings.Delay += TrackStart * Settings.NestedSpeed;
+
+			// It moves with the track, or with the track of its own it is in - which moves with this one in turn.
+			if (Settings.AnchoredTo == INDEX_NONE)
+			{
+				Settings.AnchoredTo = TrackAnchor;
+			}
+
+			// The group it plays in here: its own group in the inserted animation, as that animation's track says -
+			// or, for a layer inserted deeper, the group it was already given there - mapped by this track.
+			const int32 InsertedGroup = InsertedIndex < NumOwn
+				? GetLayerGroupIndex(Animation->Layers[InsertedIndex], NumInsertedGroups)
+				: Settings.InsertedGroup;
+			Settings.InsertedGroup = Track.InsertedGroups.IsValidIndex(InsertedGroup) && Track.InsertedGroups[InsertedGroup] >= 0
+				? Track.InsertedGroups[InsertedGroup]
+				: Track.LayerGroup;
+			Settings.InsertedFromLayer = Index;
+
+			// Which animation an event it fires names: the one it is authored in - or, inserted deeper, the one it already
+			// has. Its values still belong to the animation it plays as part of, stamped by whoever plays this list.
+			if (!Settings.AuthoredIn)
+			{
+				Settings.AuthoredIn = const_cast<UWidgetAnimPresetAsset*>(Animation);
+			}
+
+			OutSettings.Add(MoveTemp(Settings));
+		}
+	}
+}
+
+float UWidgetAnimLibrary::GetAnimationPassSeconds(const UWidgetAnimPresetAsset* Animation)
+{
+	// The same depth BuildLayerSettings stops inserting at: an animation inserted into itself has no length to find.
+	static constexpr int32 MaxInsertDepth = 8;
+	static thread_local int32 InsertDepth = 0;
+	if (!Animation || InsertDepth >= MaxInsertDepth)
+	{
+		return 0.f;
+	}
+	TGuardValue<int32> DepthGuard(InsertDepth, InsertDepth + 1);
+
+	TArray<float> Starts;
+	PlaceLayerStarts(Animation->Layers, TConstArrayView<float>(), Starts);
+
+	float End = 0.f;
+	for (int32 Index = 0; Index < Starts.Num(); ++Index)
+	{
+		End = FMath::Max(End, Starts[Index] + Animation->Layers[Index].GetRunLength());
+	}
+	return End / FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);
+}
+
+bool UWidgetAnimLibrary::AnimationPlays(const UWidgetAnimPresetAsset* Animation, const UObject* Other)
+{
+	if (!Animation || !Other)
+	{
+		return false;
+	}
+
+	// Breadth first over every animation it inserts, each looked into once, so a loop already in the data ends.
+	TArray<const UWidgetAnimPresetAsset*, TInlineAllocator<8>> Pending;
+	TSet<const UWidgetAnimPresetAsset*> Seen;
+	Pending.Add(Animation);
+	while (Pending.Num() > 0)
+	{
+		const UWidgetAnimPresetAsset* Current = Pending.Pop();
+		if (Current == Other)
+		{
+			return true;
+		}
+		if (Seen.Contains(Current))
+		{
+			continue;
+		}
+		Seen.Add(Current);
+
+		for (const FWidgetAnimLayer& Layer : Current->Layers)
+		{
+			if (Layer.InsertedAnimation)
+			{
+				Pending.Add(Layer.InsertedAnimation.Get());
+			}
+		}
+	}
+	return false;
+}
+
+void UWidgetAnimLibrary::ForEachLayerIncludingInserted(const TArray<FWidgetAnimLayer>& Layers, const UWidgetAnimPresetAsset* In, TFunctionRef<void(const UWidgetAnimPresetAsset*, const FWidgetAnimLayer&)> Visit)
+{
+	TArray<const UWidgetAnimPresetAsset*, TInlineAllocator<8>> Inserted;
+	for (const FWidgetAnimLayer& Layer : Layers)
+	{
+		Visit(In, Layer);
+		const UWidgetAnimPresetAsset* Animation = Layer.InsertedAnimation.Get();
+		if (Animation && Animation != In)
+		{
+			Inserted.AddUnique(Animation);
+		}
+	}
+
+	// Each inserted animation once, in the order first inserted, then whatever it inserts - never one twice.
+	TSet<const UWidgetAnimPresetAsset*> Seen;
+	if (In)
+	{
+		Seen.Add(In);
+	}
+	for (int32 Next = 0; Next < Inserted.Num(); ++Next)
+	{
+		const UWidgetAnimPresetAsset* Animation = Inserted[Next];
+		if (Seen.Contains(Animation))
+		{
+			continue;
+		}
+		Seen.Add(Animation);
+
+		for (const FWidgetAnimLayer& Layer : Animation->Layers)
+		{
+			Visit(Animation, Layer);
+			const UWidgetAnimPresetAsset* Deeper = Layer.InsertedAnimation.Get();
+			if (Deeper && !Seen.Contains(Deeper))
+			{
+				Inserted.AddUnique(Deeper);
+			}
+		}
 	}
 }
 
@@ -2038,6 +2574,11 @@ bool UWidgetAnimLibrary::TypeMovesParts(EWidgetAnimType AnimType)
 	default:
 		return false;
 	}
+}
+
+bool UWidgetAnimLibrary::TypeTakesParts(EWidgetAnimType AnimType, const FInstancedStruct& TypeParams)
+{
+	return TypeMovesParts(AnimType) || (AnimType == EWidgetAnimType::Custom && WidgetAnimIsRegisteredCue(TypeParams));
 }
 
 bool UWidgetAnimLibrary::HasExpanders(const TArray<FWidgetAnimSettings>& Settings)
@@ -2153,7 +2694,7 @@ int32 UWidgetAnimLibrary::CountExpandedItems(UWidget* FallbackWidget, const FWid
 	}
 
 	// A text stagger on a type that can't move a part plays on the whole widget: one item.
-	if (Expander->GathersParts() && !TypeMovesParts(Settings.AnimType))
+	if (Expander->GathersParts() && !TypeTakesParts(Settings.AnimType, Settings.TypeParams))
 	{
 		return 1;
 	}
@@ -2207,9 +2748,9 @@ bool UWidgetAnimLibrary::ExpandSettings(UWidget* FallbackWidget, const TArray<FW
 		const FWidgetAnimSettings& Layer = Settings[Index];
 		const FWidgetAnimExpander* Expander = Layer.Expander.GetPtr<FWidgetAnimExpander>();
 
-		// Letters can only be moved by what moves a render transform; on anything else the layer plays once, on the whole
-		// widget, as if it had no stagger.
-		if (!Expander || (Expander->GathersParts() && !TypeMovesParts(Layer.AnimType)))
+		// Letters can only be moved by what moves a render transform - or fired at, by a cue; on anything else the layer
+		// plays once, on the whole widget, as if it had no stagger.
+		if (!Expander || (Expander->GathersParts() && !TypeTakesParts(Layer.AnimType, Layer.TypeParams)))
 		{
 			continue;
 		}
@@ -2271,6 +2812,26 @@ bool UWidgetAnimLibrary::ExpandSettings(UWidget* FallbackWidget, const TArray<FW
 			const float StartBefore = Chain->Before.Place(Layer.bPlacedAfterPrevious, Layer.PlacedDelay, Layer.PlacedRun);
 			const float StartAfter = Chain->After.Place(Layer.bPlacedAfterPrevious, Layer.PlacedDelay, PreparedRun + Fans[Index].Extra);
 			Shift[Index] = StartAfter - StartBefore;
+		}
+
+		// A layer of an animation inserted as a track moves with its track too: a stagger fanning out before the track
+		// moves the whole inserted animation along. Its track's placeholder was built before it, so the placeholder's
+		// shift - its own track's included, however deep - is already final; it is taken into this layer's seconds.
+		for (int32 Index = 0; Index < NumLayers; ++Index)
+		{
+			const FWidgetAnimSettings& Layer = Settings[Index];
+			if (Layer.AnchoredTo == INDEX_NONE)
+			{
+				continue;
+			}
+			for (int32 Anchor = Index - 1; Anchor >= 0; --Anchor)
+			{
+				if (Settings[Anchor].PlacementAnchor == Layer.AnchoredTo)
+				{
+					Shift[Index] += Shift[Anchor] * Layer.NestedSpeed / FMath::Max(Settings[Anchor].NestedSpeed, 0.01f);
+					break;
+				}
+			}
 		}
 	}
 
@@ -2379,6 +2940,20 @@ void UWidgetAnimLibrary::MuteHiddenLayers(const TArray<FWidgetAnimLayer>& Layers
 			Settings[SettingIndex].bMuted = true;
 		}
 	}
+
+	// Then the layers of the animations inserted as tracks, right after them: hidden with their track.
+	for (int32 SettingIndex = FirstSetting + Layers.Num(); Settings.IsValidIndex(SettingIndex); ++SettingIndex)
+	{
+		FWidgetAnimSettings& Inserted = Settings[SettingIndex];
+		if (!Layers.IsValidIndex(Inserted.InsertedFromLayer))
+		{
+			break;
+		}
+		if (Layers[Inserted.InsertedFromLayer].bHiddenInEditor)
+		{
+			Inserted.bMuted = true;
+		}
+	}
 }
 #endif
 
@@ -2434,7 +3009,7 @@ float UWidgetAnimLibrary::GetKeyStackTime(const FWidgetAnimSettings& Layer, int3
 
 	// Same placement GetLayerSpan gives the layer - delay and key time both scaled by speed - so the result
 	// is a point on the very clock ApplyWidgetAnimationsAtAlpha and the playing modes run on.
-	const float Speed = FMath::Max(Layer.PlaybackSpeed, 0.01f);
+	const float Speed = Layer.GetPlaySpeed();
 	return (FMath::Max(Layer.Delay, 0.f) + KeyTime) / Speed;
 }
 
@@ -3669,6 +4244,10 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 		FWidgetAnimResult TrackResult;
 		bool bAllComplete = false;
 		Track.bSettled = TickAnimationsInto(Track.Settings, Track.States, DeltaTime * Track.Speed, Track.bIsOut, TrackResult, &bAllComplete, &Baselines, /*bDriveValueLayers=*/true);
+
+		// The cues it passed, handed on now - copied, so a track let go below still fires the ones on its last frame - and
+		// fired next frame, never while this player is in the middle of a tick.
+		WidgetAnimCues::Queue(TrackResult.CueFires, FallbackWidget, Track.AnimId);
 
 		if (bAllComplete)
 		{

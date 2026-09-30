@@ -36,7 +36,27 @@ namespace NameTBD
 			// Every Blueprint track type that doesn't set a Track Color of its own. Blueprint blue, so a type a
 			// designer made reads apart from the C++ ones at a glance.
 			inline const FLinearColor LayerBlueprintType(0.20f, 0.50f, 0.95f);
+			// Every cue track - Event, Sound, Play Animation, Blueprint cues - that doesn't set a color of its own. A warm
+			// red, apart from every type that moves something: a cue only makes something happen.
+			inline const FLinearColor LayerCue(0.92f, 0.36f, 0.30f);
 			inline const FLinearColor LayerUnknown(0.50f, 0.50f, 0.50f);
+			// An animation track - another Widget Animation inserted whole as one track. Not a setting: the animation
+			// orange is what says "a whole animation" everywhere in the panel.
+			inline const FLinearColor LayerAnimation(AnimationOrange_Normal);
+
+			// -------------------------------------------------------------------------------------------------
+			// An animation track opened up - the inserted animation's own groups and tracks, shown under it, read-only.
+			// Tinted with the animation orange so it reads as another animation's, not this one's:
+			//   NestedTint: laid over the rows it shows, in the Track Editor and in the list.
+			//   NestedHeaderTint: over its groups' rows, a little stronger, as a group's row is a header.
+			//   NestedEdge: the strip down the left of those rows, where a group's band would be, NestedEdgeWidth pixels wide.
+			//   NestedTrackOpacity: how strongly its tracks are drawn - plainly there, plainly not editable here.
+			// -------------------------------------------------------------------------------------------------
+			inline const FLinearColor NestedTint = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.06f);
+			inline const FLinearColor NestedHeaderTint = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.12f);
+			inline const FLinearColor NestedEdge = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.55f);
+			inline constexpr float NestedEdgeWidth = 3.0f;
+			inline constexpr float NestedTrackOpacity = 0.8f;
 
 			// -------------------------------------------------------------------------------------------------
 			// Layer groups - the band down the left of a group's rows, and its summary bar.
@@ -153,6 +173,15 @@ namespace NameTBD
 			inline constexpr float SectionStaggerTailOpacity = 0.35f;
 			inline constexpr float SectionStaggerTailHeight = 0.45f;
 			inline const FLinearColor SectionStaggerTick(1.00f, 1.00f, 1.00f, 0.35f);
+
+			/**
+			 * A cue track (see WidgetAnimCue.h) marks each point it fires at with a line down through the section - drawn
+			 * under the key - CueMarkerWidth pixels wide; a point it doesn't fire at (its end with Fire At End off) has no
+			 * line and a faded key, CueSilentKeyOpacity.
+			 */
+			inline const FLinearColor CueMarker(1.00f, 0.95f, 0.85f, 0.85f);
+			inline constexpr float CueMarkerWidth = 2.0f;
+			inline constexpr float CueSilentKeyOpacity = 0.35f;
 
 			// -------------------------------------------------------------------------------------------------
 			// Keys

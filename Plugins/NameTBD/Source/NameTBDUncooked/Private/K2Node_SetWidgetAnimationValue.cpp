@@ -577,9 +577,10 @@ void UK2Node_SetWidgetAnimationValue::GatherValueSources(const FWidgetAnimValueS
 		}
 	}
 
+	// The value tracks of animations inserted into these as tracks too: their values belong to the one they play in.
 	auto AddValues = [](FWidgetAnimValueSource& Source, const TArray<FWidgetAnimLayer>& Layers)
 	{
-		for (const FWidgetAnimLayer& Layer : Layers)
+		UWidgetAnimLibrary::ForEachLayerIncludingInserted(Layers, nullptr, [&Source](const UWidgetAnimPresetAsset*, const FWidgetAnimLayer& Layer)
 		{
 			if (Layer.IsValueDriven() && !Layer.ValueName.IsNone()
 				&& !Source.Values.ContainsByPredicate([&Layer](const FWidgetAnimValueChoice& Choice) { return Choice.ValueName == Layer.ValueName; }))
@@ -588,7 +589,7 @@ void UK2Node_SetWidgetAnimationValue::GatherValueSources(const FWidgetAnimValueS
 				Choice.ValueName = Layer.ValueName;
 				Choice.Kind = Layer.GetEffectiveValueKind();
 			}
-		}
+		});
 	};
 
 	FWidgetAnimValueSource Additive;

@@ -62,7 +62,9 @@ namespace
 
 			// Each layer on its own Target Widget - a path, resolved as an entry's are - or on the widget this
 			// component is on. A path that finds nothing falls back to that widget, as an entry's does.
-			UWidget* Target = Layers.IsValidIndex(Index) && !Layers[Index].TargetWidget.IsNone() ? Resolver(Layers[Index].TargetWidget) : nullptr;
+			// A layer of an animation inserted as a track moves its track's widget.
+			const int32 LayerIndex = Layers.IsValidIndex(Index) ? Index : Settings.InsertedFromLayer;
+			UWidget* Target = Layers.IsValidIndex(LayerIndex) && !Layers[LayerIndex].TargetWidget.IsNone() ? Resolver(Layers[LayerIndex].TargetWidget) : nullptr;
 			UWidget* Moved = Target ? Target : AnimatedWidget;
 
 			Settings.TargetWidget = Target;
@@ -1411,9 +1413,15 @@ bool UWidgetAnimationComponent::HasWidgetAnimationValue(const FWidgetAnimValueId
 		return false;
 	}
 
-	auto TakesIt = [&Id](const TArray<FWidgetAnimLayer>& Tracks, const UObject* Scope)
+	// An animation inserted as a track's value tracks too, whose values belong to the animation they play in.
+	auto TakesIt = [&Id](const TArray<FWidgetAnimLayer>& Tracks, const UWidgetAnimPresetAsset* Scope)
 	{
-		return Tracks.ContainsByPredicate([&Id, Scope](const FWidgetAnimLayer& Track) { return Track.IsValueDriven() && Id.Matches(Scope, Track.ValueName); });
+		bool bTakes = false;
+		UWidgetAnimLibrary::ForEachLayerIncludingInserted(Tracks, Scope, [&Id, Scope, &bTakes](const UWidgetAnimPresetAsset*, const FWidgetAnimLayer& Track)
+		{
+			bTakes = bTakes || (Track.IsValueDriven() && Id.Matches(Scope, Track.ValueName));
+		});
+		return bTakes;
 	};
 
 	for (const TArray<FWidgetAnimEntry>* List : { &AnimIn, &AnimOut })
@@ -1486,13 +1494,14 @@ bool UWidgetAnimationComponent::RefreshValueOverrides()
 		FInstancedStruct ValueInput;
 	};
 	TArray<FFoundValue> Found;
-	auto Gather = [&Found](UObject* Animation, const TArray<FWidgetAnimLayer>& Layers)
+	// An animation inserted into these as a track has its value tracks gathered too: they belong to the one it plays in.
+	auto Gather = [&Found](UWidgetAnimPresetAsset* Animation, const TArray<FWidgetAnimLayer>& Layers)
 	{
-		for (const FWidgetAnimLayer& Layer : Layers)
+		UWidgetAnimLibrary::ForEachLayerIncludingInserted(Layers, Animation, [&Found, Animation](const UWidgetAnimPresetAsset*, const FWidgetAnimLayer& Layer)
 		{
 			if (!Layer.IsValueDriven() || Layer.ValueName.IsNone())
 			{
-				continue;
+				return;
 			}
 			if (FFoundValue* Existing = Found.FindByPredicate([Animation, &Layer](const FFoundValue& Value) { return Value.Animation == Animation && Value.ValueName == Layer.ValueName; }))
 			{
@@ -1501,7 +1510,7 @@ bool UWidgetAnimationComponent::RefreshValueOverrides()
 				{
 					Existing->ValueInput = Layer.ValueInput;
 				}
-				continue;
+				return;
 			}
 
 			FFoundValue& Value = Found.AddDefaulted_GetRef();
@@ -1510,7 +1519,7 @@ bool UWidgetAnimationComponent::RefreshValueOverrides()
 			Value.Defaults = Layer.ValueOptions;
 			Value.Defaults.Kind = Layer.GetEffectiveValueKind();
 			Value.ValueInput = Layer.ValueInput;
-		}
+		});
 	};
 	for (const TArray<FWidgetAnimEntry>* Entries : { &AnimIn, &AnimOut })
 	{

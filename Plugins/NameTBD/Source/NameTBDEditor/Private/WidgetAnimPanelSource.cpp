@@ -327,6 +327,27 @@ void FWidgetAnimBuilderPanelSource::FocusKey(int32 FlatLayerIndex, int32 KeyInde
 	});
 }
 
+namespace WidgetAnimPreviewCues
+{
+	/**
+	 * Fires the cues a playing preview's clock passed this frame, from OldAlpha to NewAlpha along one pass: one stretch,
+	 * or two where a Loop wrapped round - on to the end, then on from the start. A stretch leaving the very start fires
+	 * what is exactly there too, so the first frame of a play hears the cues at 0. See WidgetAnimCue.h.
+	 */
+	void Fire(UWidget* Widget, const TArray<FWidgetAnimSettings>& Settings, float OldAlpha, float NewAlpha, bool bWasForward, bool bWrapped, bool bIsOutAnimation)
+	{
+		if (bWrapped)
+		{
+			UWidgetAnimLibrary::FirePreviewCues(Widget, Settings, OldAlpha, bWasForward ? 1.f : 0.f, bIsOutAnimation, /*bIncludeFrom=*/bWasForward && OldAlpha <= 0.f);
+			UWidgetAnimLibrary::FirePreviewCues(Widget, Settings, bWasForward ? 0.f : 1.f, NewAlpha, bIsOutAnimation, /*bIncludeFrom=*/bWasForward);
+		}
+		else if (NewAlpha != OldAlpha)
+		{
+			UWidgetAnimLibrary::FirePreviewCues(Widget, Settings, OldAlpha, NewAlpha, bIsOutAnimation, /*bIncludeFrom=*/bWasForward && OldAlpha <= 0.f);
+		}
+	}
+}
+
 namespace WidgetAnimPreparedRuns
 {
 	/** How long Layer runs on Widget when its length comes from there rather than its Duration; negative otherwise. */
@@ -863,8 +884,13 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 
 	// The clock. One pass is the animation at this Speed; Loop wraps it, Ping Pong bounces it.
 	const float PassSeconds = UWidgetAnimLibrary::GetStackPassDuration(Settings) / FMath::Max(Speed, 0.01f);
+	const float OldAlpha = Alpha;
+	const bool bWasForward = bPlayingForward;
+	bool bClockMoved = false;
+	bool bWrapped = false;
 	if (bPlaying && PassSeconds > KINDA_SMALL_NUMBER)
 	{
+		bClockMoved = true;
 		const float Step = DeltaTime / PassSeconds;
 		Alpha += bPlayingForward ? Step : -Step;
 
@@ -883,11 +909,18 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 			else
 			{
 				Alpha = FMath::Frac(Alpha);
+				bWrapped = true;
 			}
 		}
 	}
 
 	UWidgetAnimLibrary::ApplyWidgetAnimationsAtAlpha(Root, Settings, Alpha, /*bIsOutAnimation=*/false, Baselines);
+
+	// Cues the playing clock passed - sounds, heard as they are timed. Never on a scrub, which doesn't move the clock.
+	if (bClockMoved)
+	{
+		WidgetAnimPreviewCues::Fire(Root, Settings, OldAlpha, Alpha, bWasForward, bWrapped, /*bIsOutAnimation=*/false);
+	}
 
 	if (const TSharedPtr<SWidget> SlateWidget = Root->GetCachedWidget())
 	{
@@ -1178,7 +1211,9 @@ void FWidgetAnimLayerArrayPanelSource::BuildSettings(UWidget* Widget, TArray<FWi
 		FWidgetAnimSettings& Settings = Placed[Index];
 
 		// Each track on its own Target Widget, or on the widget itself - resolved as the component resolves it.
-		UWidget* Target = Layers->IsValidIndex(Index) ? ResolveLayerTarget(Widget, (*Layers)[Index].TargetWidget) : nullptr;
+		// A layer of an animation inserted as a track on its track's.
+		const int32 LayerIndex = Layers->IsValidIndex(Index) ? Index : Settings.InsertedFromLayer;
+		UWidget* Target = Layers->IsValidIndex(LayerIndex) ? ResolveLayerTarget(Widget, (*Layers)[LayerIndex].TargetWidget) : nullptr;
 		UWidget* Moved = Target ? Target : Widget;
 
 		Settings.TargetWidget = Target;
@@ -1411,8 +1446,13 @@ bool FWidgetAnimLayerArrayPanelSource::Tick(float DeltaTime)
 
 	// The clock. One pass is the list at this Speed; Loop wraps it, Ping Pong bounces it.
 	const float PassSeconds = UWidgetAnimLibrary::GetStackPassDuration(Settings) / FMath::Max(Speed, 0.01f);
+	const float OldAlpha = Alpha;
+	const bool bWasForward = bPlayingForward;
+	bool bClockMoved = false;
+	bool bWrapped = false;
 	if (bPlaying && PassSeconds > KINDA_SMALL_NUMBER)
 	{
+		bClockMoved = true;
 		const float Step = DeltaTime / PassSeconds;
 		Alpha += bPlayingForward ? Step : -Step;
 
@@ -1431,11 +1471,17 @@ bool FWidgetAnimLayerArrayPanelSource::Tick(float DeltaTime)
 			else
 			{
 				Alpha = FMath::Frac(Alpha);
+				bWrapped = true;
 			}
 		}
 	}
 
 	UWidgetAnimLibrary::ApplyWidgetAnimationsAtAlpha(Widget, Settings, Alpha, bPlaysAsOut, Baselines);
+
+	if (bClockMoved)
+	{
+		WidgetAnimPreviewCues::Fire(Widget, Settings, OldAlpha, Alpha, bWasForward, bWrapped, bPlaysAsOut);
+	}
 
 	if (const TSharedPtr<SWidget> SlateWidget = Widget->GetCachedWidget())
 	{

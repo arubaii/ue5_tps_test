@@ -147,9 +147,11 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 	for (int32 Index = 0; Index < Placed.Num(); ++Index)
 	{
 		FWidgetAnimSettings& Settings = Placed[Index];
+
+		// A layer of an animation inserted as a track plays in the group its track gives it - see BuildLayerSettings.
 		const int32 GroupIndex = Animation->Layers.IsValidIndex(Index)
 			? UWidgetAnimLibrary::GetLayerGroupIndex(Animation->Layers[Index], NumGroups)
-			: INDEX_NONE;
+			: (NumGroups > 0 && Settings.InsertedGroup != INDEX_NONE ? FMath::Clamp(Settings.InsertedGroup, 0, NumGroups - 1) : INDEX_NONE);
 		UWidget* Target = GroupWidgets.IsValidIndex(GroupIndex) ? GroupWidgets[GroupIndex] : nullptr;
 
 		Settings.bLoop = bLoop;
@@ -162,7 +164,8 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 		Settings.LoopGroup = LoopGroup;
 		Settings.TargetWidget = Target;
 
-		// What its value-driven tracks' values belong to: this animation. See FWidgetAnimValueId.
+		// What its value-driven tracks' values belong to: this animation - those of an animation inserted into it as a
+		// track included, set with this one's name as its own are. See FWidgetAnimValueId.
 		Settings.ValueScope = Animation;
 
 		// Only meaningful for the two material types, and harmless on the rest: the library ignores it
@@ -249,10 +252,18 @@ bool FWidgetAnimEntry::SyncGroupTargets(const TArray<FString>* TargetOptions)
 
 bool FWidgetAnimEntryBase::HasValueTrack(FName ValueName) const
 {
-	return Animation && !ValueName.IsNone() && Animation->Layers.ContainsByPredicate([ValueName](const FWidgetAnimLayer& Layer)
+	if (!Animation || ValueName.IsNone())
 	{
-		return Layer.IsValueDriven() && Layer.ValueName == ValueName;
+		return false;
+	}
+
+	// The animations inserted into it as tracks too: their value tracks play as part of it.
+	bool bFound = false;
+	UWidgetAnimLibrary::ForEachLayerIncludingInserted(Animation->Layers, Animation, [ValueName, &bFound](const UWidgetAnimPresetAsset*, const FWidgetAnimLayer& Layer)
+	{
+		bFound = bFound || (Layer.IsValueDriven() && Layer.ValueName == ValueName);
 	});
+	return bFound;
 }
 
 FName FWidgetAnimEntry::GetGroupTargetName(int32 GroupIndex) const

@@ -28,6 +28,10 @@
 #include "EdGraphUtilities.h"
 #include "WidgetAnimValuePinFactory.h"
 #include "WidgetAnimEntryCustomization.h"
+#include "WidgetAnimEditorSettings.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
+#include "Components/AudioComponent.h"
+#include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
 
@@ -76,10 +80,29 @@ void FNameTBDEditorModule::StartupModule()
 
 	ValuePinFactory = MakeShared<FWidgetAnimValuePinFactory>();
 	FEdGraphUtilities::RegisterVisualPinFactory(ValuePinFactory);
+
+	// Sound cues heard in the editor's previews, through the editor's own preview audio - the runtime module can't reach
+	// it, so it is handed this. One at a time: a new cue sound cuts off the last. See WidgetAnimCue.h.
+	WidgetAnimCues::SetPreviewSoundPlayer([](USoundBase* Sound, float Volume, float Pitch)
+	{
+		if (!GEditor || !Sound || !UWidgetAnimEditorSettings::Get().bPlayCueSoundsInPreviews)
+		{
+			return;
+		}
+
+		GEditor->PlayPreviewSound(Sound);
+		if (UAudioComponent* PreviewAudio = GEditor->GetPreviewAudioComponent())
+		{
+			PreviewAudio->SetVolumeMultiplier(Volume);
+			PreviewAudio->SetPitchMultiplier(Pitch);
+		}
+	});
 }
 
 void FNameTBDEditorModule::ShutdownModule()
 {
+	WidgetAnimCues::SetPreviewSoundPlayer(nullptr);
+
 	if (ValuePinFactory.IsValid())
 	{
 		FEdGraphUtilities::UnregisterVisualPinFactory(ValuePinFactory);

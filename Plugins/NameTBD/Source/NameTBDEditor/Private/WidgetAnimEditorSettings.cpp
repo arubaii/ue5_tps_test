@@ -9,6 +9,7 @@
 UWidgetAnimEditorSettings::UWidgetAnimEditorSettings()
 {
 	BlueprintTypeTrackColor = NameTBD::Colors::WidgetAnimEditor::LayerBlueprintType;
+	CueTrackColor = NameTBD::Colors::WidgetAnimEditor::LayerCue;
 	FillMissingTrackColors();
 }
 
@@ -93,7 +94,7 @@ FText UWidgetAnimEditorSettings::GetSectionText() const
 
 FText UWidgetAnimEditorSettings::GetSectionDescription() const
 {
-	return LOCTEXT("SectionDescription", "Track colours and track controls for the Widget Animations panel in the Widget Blueprint editor.");
+	return LOCTEXT("SectionDescription", "Track colors, track controls and previews for the Widget Animations panel in the Widget Blueprint editor.");
 }
 #endif
 
