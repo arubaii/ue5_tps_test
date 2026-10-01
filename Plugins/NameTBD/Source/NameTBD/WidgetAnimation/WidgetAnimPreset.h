@@ -75,6 +75,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Animation Speed Multiplier", ClampMin = "0.01", UIMin = "0.1", UIMax = "4.0"))
 	float AnimationSpeedMultiplier = 1.f;
 
+	/**
+	 * How long one pass of the animation runs at the least, in seconds as authored (the Animation Speed Multiplier
+	 * applies on top): time left after its last track ends, which the next loop, or whatever waits for the animation
+	 * to finish, waits out too. 0 - or anything its tracks already reach - runs exactly as long as its tracks. Set by
+	 * dragging the animation's end past its last track in the Widget Animations panel; dragging it back in lowers it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Minimum Length", ClampMin = "0", UIMin = "0", Units = "s"))
+	float MinimumLength = 0.f;
+
 	int32 GetNumLayers() const { return Layers.Num(); }
 
 	/**

@@ -249,10 +249,37 @@ void FWidgetAnimSoundCueEvaluator::Fire(const FWidgetAnimCueContext& Context) co
 	const float Jitter = SoundParams->PitchVariation > 0.f ? FMath::FRandRange(-SoundParams->PitchVariation, SoundParams->PitchVariation) : 0.f;
 	const float Pitch = FMath::Max(SoundParams->Pitch + Jitter, 0.01f);
 
+	// Fading: up from silence as it starts, and down to silence finishing as the track's run does - as the sound ends,
+	// with Length From Sound. Where the run's end isn't known (a value-driven track), or this is its very end (Fire At
+	// End), the sound's own end is used, and a looping sound with neither never fades out.
+	WidgetAnimCues::FSoundFade Fade;
+	Fade.FadeIn = FMath::Max(SoundParams->FadeIn, 0.f);
+	Fade.Curve = static_cast<uint8>(SoundParams->FadeCurve);
+	if (SoundParams->FadeOut > 0.f)
+	{
+		float End = Context.Info.SecondsToTrackEnd;
+		if (End <= KINDA_SMALL_NUMBER)
+		{
+			const float SoundSeconds = SoundParams->Sound->GetDuration();
+			End = SoundSeconds > 0.f && SoundSeconds < INDEFINITELY_LOOPING_DURATION ? SoundSeconds / Pitch : -1.f;
+		}
+		if (End > 0.f)
+		{
+			Fade.FadeOut = FMath::Min(SoundParams->FadeOut, End);
+			Fade.FadeOutAt = End - Fade.FadeOut;
+		}
+	}
+
 	// An editor preview has no game world to play in; the editor module plays it, if it has been told to.
 	if (Context.Info.bDesignTime)
 	{
-		WidgetAnimCues::PlayPreviewSound(SoundParams->Sound, Volume, Pitch);
+		WidgetAnimCues::PlayPreviewSound(SoundParams->Sound, Volume, Pitch, Fade);
+		return;
+	}
+
+	if (Fade.HasFade())
+	{
+		FUISoundPlayer::PlayFaded(Context.GetWorldContext(), SoundParams->Sound, Volume, Pitch, Fade.FadeIn, Fade.FadeOutAt, Fade.FadeOut, Fade.Curve);
 		return;
 	}
 

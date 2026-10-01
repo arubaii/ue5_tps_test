@@ -1,0 +1,181 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 99a074f..371b7b9 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -1951,7 +1951,8 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 
+ 		// A hidden track's text is in italics - the font's italic typeface, or slanted where it has none.
+ 		FSlateFontInfo LayerFont = SectionFont;
+-		const bool bSlantLayerText = Paint.bHidden && !ItalicOf(SectionFont, LayerFont);
++		// So is a collapsed track's name, as a collapsed graph node's is.
++		const bool bSlantLayerText = (Paint.bHidden || Paint.bCollapsedLook) && !ItalicOf(SectionFont, LayerFont);
+ 		const bool bWashedOut = Paint.bWashedOut;
+ 		const bool bBarHovered = bInteractive && Drag == EDrag::None && Hover.Layer == LayerIndex && Hover.Key == INDEX_NONE && Hover.Edge == EEdge::None && Hover.bOnSection;
+ 
+@@ -2022,8 +2023,12 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		// top. The gloss and spill textures are partly transparent; the body is what shows through them, the
+ 		// same on every section. Selection is the orange outline of a selected Blueprint node; hover lifts
+ 		// the color a touch.
+-		const float Lip = FMath::Clamp(BarHeight * Palette::SectionLipRatio, Palette::SectionLipMin, Palette::SectionLipMax);
+-		const float Frame = Palette::SectionFrameThickness;
++		// A collapsed track's body sits inside an even frame, rounded at every corner, as a collapsed graph node's does; every
++		// other track's frame shows only as a lip along its bottom.
++		const float Lip = Paint.bCollapsedLook
++			? Palette::CollapsedNodeBorder
++			: FMath::Clamp(BarHeight * Palette::SectionLipRatio, Palette::SectionLipMin, Palette::SectionLipMax);
++		const float Frame = Paint.bCollapsedLook ? Palette::CollapsedNodeBorder : Palette::SectionFrameThickness;
+ 		const float InnerX = BarX0 + Frame;
+ 		const float InnerTop = BarTop + Frame;
+ 		const float InnerWidth = BarWidth - Frame * 2.f;
+@@ -2041,7 +2046,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			BarWidth - Palette::SectionBleedWidth * 2.f, BarHeight - Palette::SectionBleedWidth * 2.f,
+ 			Palette::SectionBacking, BackingLayer, RoundedFill());
+ 
+-		Box(BarX0, BarTop, BarWidth, BarHeight, Palette::SectionFrame, FrameLayer, RoundedFill());
++		Box(BarX0, BarTop, BarWidth, BarHeight, Paint.bCollapsedLook ? Palette::CollapsedNodeFrame : Palette::SectionFrame, FrameLayer, RoundedFill(Paint.bCollapsedLook ? Palette::CollapsedNodeRadius : 3.f));
+ 
+ 		const bool bValueDriven = Layer && Layer->IsValueDriven();
+ 		const bool bDerivedLength = Layer && SWidgetAnimTimeline::HasDerivedLength(*Layer);
+@@ -2050,51 +2055,68 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		{
+ 			const FLinearColor Spill = WithAlpha(bBarHovered && !bWashedOut ? TypeColor * Palette::SectionHoverLift : TypeColor, bStriped ? Palette::SectionValueSpillOpacity : 1.f);
+ 
+-			Box(InnerX, InnerTop, InnerWidth, InnerHeight, Palette::SectionBody, BodyLayer, RoundedFill(2.f));
+ 			if (Paint.bCollapsedLook)
+ 			{
+-				// A collapsed track: a facsimile of the Blueprint collapsed graph node - the editor's own collapsed-node
+-				// body, blank, with its color spill fading in from the edges. No gloss, sheen or half-tone line: those are
+-				// a node title's, and a collapsed node is all body.
+-				const FLinearColor EdgeTint = bWashedOut
+-					? SWidgetAnimTimeline::GetLockedColor(Palette::CollapsedNodeSpill)
+-					: (bBarHovered ? Palette::CollapsedNodeSpill * Palette::SectionHoverLift : Palette::CollapsedNodeSpill);
+-				const FSlateBrush* CollapsedBody = PickBrush({ "Graph.CollapsedNode.Body" });
+-				const FSlateBrush* CollapsedSpill = PickBrush({ "Graph.CollapsedNode.BodyColorSpill" });
+-				if (CollapsedBody && CollapsedSpill)
++				// A collapsed track: a facsimile of the Blueprint collapsed graph node - a dark, blank body, rounded at every
++				// corner, with a soft gray glow in its middle fading out toward its edges. No gloss, sheen or half-tone line:
++				// those are a node title's, and a collapsed node is all body.
++				const float BodyRadius = FMath::Max(Palette::CollapsedNodeRadius - Frame, 1.f);
++				Box(InnerX, InnerTop, InnerWidth, InnerHeight, bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Palette::CollapsedNodeBody) : Palette::CollapsedNodeBody, BodyLayer, RoundedFill(BodyRadius));
++
++				// The glow, a row of pixels at a time: across each row, faded in from both ends over CollapsedNodeGlowReach of
++				// the width; down the rows, strongest in the middle and gone at the top and bottom. Clipped to the body.
++				FLinearColor Glow = bBarHovered && !bWashedOut ? Palette::CollapsedNodeGlow * Palette::SectionHoverLift : Palette::CollapsedNodeGlow;
++				if (bWashedOut)
+ 				{
+-					Box(InnerX, InnerTop, InnerWidth, InnerHeight, bWashedOut ? SWidgetAnimTimeline::GetLockedColor(FLinearColor::White) : FLinearColor::White, GlossLayer, CollapsedBody);
+-					Box(InnerX, InnerTop, InnerWidth, InnerHeight, EdgeTint, SpillLayer, CollapsedSpill);
++					Glow = SWidgetAnimTimeline::GetLockedColor(Glow);
+ 				}
+-				else
++				Glow.A = Palette::CollapsedNodeGlow.A;
++
++				const FGeometry CollapsedGeometry = AllottedGeometry.MakeChild(FVector2f(InnerWidth, InnerHeight), FSlateLayoutTransform(FVector2f(InnerX, InnerTop)));
++				OutDrawElements.PushClip(FSlateClippingZone(CollapsedGeometry));
++
++				// Only the stretch in view is drawn - a collapsed track can run far past either side of it.
++				const float GlowLeft = FMath::Max(InnerX, -8.f);
++				const float GlowRight = FMath::Min(InnerX + InnerWidth, Size.X + 8.f);
++				const float Reach = FMath::Clamp(InnerWidth * Palette::CollapsedNodeGlowReach, 4.f, Palette::CollapsedNodeGlowMaxReach);
++				const int32 NumRows = FMath::Max(FMath::CeilToInt(InnerHeight), 1);
++				if (GlowRight > GlowLeft)
+ 				{
+-					// An engine without those brushes: the same look drawn by hand - the color fading in from every edge
+-					// across CollapsedNodeFade pixels, over the plain body. Clipped to the body, so its corners stay round.
+-					const FGeometry CollapsedGeometry = AllottedGeometry.MakeChild(FVector2f(InnerWidth, InnerHeight), FSlateLayoutTransform(FVector2f(InnerX, InnerTop)));
+-					OutDrawElements.PushClip(FSlateClippingZone(CollapsedGeometry));
+-					const float Fade = FMath::Min(Palette::CollapsedNodeFade, FMath::Min(InnerWidth, InnerHeight) * 0.5f);
+-					auto FadeEdge = [&](float X, float Y, float W, float H, EOrientation Orientation, bool bColorFirst)
++					for (int32 Row = 0; Row < NumRows; ++Row)
+ 					{
+-						const float Length = Orientation == Orient_Vertical ? W : H;
+-						TArray<FSlateGradientStop> EdgeStops;
+-						EdgeStops.Add(FSlateGradientStop(FVector2D(0.0, 0.0), bColorFirst ? EdgeTint : EdgeTint.CopyWithNewOpacity(0.f)));
+-						EdgeStops.Add(FSlateGradientStop(Orientation == Orient_Vertical ? FVector2D(Length, 0.0) : FVector2D(0.0, Length), bColorFirst ? EdgeTint.CopyWithNewOpacity(0.f) : EdgeTint));
++						const float Down = (Row + 0.5f) / NumRows;
++						const float Strength = FMath::Pow(FMath::Sin(Down * PI), Palette::CollapsedNodeGlowFalloff);
++						if (Strength <= 0.01f)
++						{
++							continue;
++						}
++
++						// Its stops in the row's own space, which starts at the body's left edge.
++						auto At = [&](float BodyX, float Alpha)
++						{
++							return FSlateGradientStop(FVector2D(BodyX - GlowLeft, 0.0), Glow.CopyWithNewOpacity(Glow.A * Strength * Alpha));
++						};
++						const float BodyLeft = InnerX;
++						const float BodyRight = InnerX + InnerWidth;
++						TArray<FSlateGradientStop> GlowStops;
++						GlowStops.Add(At(BodyLeft, 0.f));
++						GlowStops.Add(At(BodyLeft + Reach * 0.5f, 0.35f));
++						GlowStops.Add(At(BodyLeft + Reach, 0.8f));
++						GlowStops.Add(At(BodyLeft + Reach * 1.6f, 1.f));
++						GlowStops.Add(At(BodyRight - Reach * 1.6f, 1.f));
++						GlowStops.Add(At(BodyRight - Reach, 0.8f));
++						GlowStops.Add(At(BodyRight - Reach * 0.5f, 0.35f));
++						GlowStops.Add(At(BodyRight, 0.f));
+ 						FSlateDrawElement::MakeGradient(OutDrawElements, SpillLayer,
+-							AllottedGeometry.ToPaintGeometry(FVector2f(W, H), FSlateLayoutTransform(FVector2f(X, Y))),
+-							MoveTemp(EdgeStops), Orientation, ESlateDrawEffect::None);
+-					};
+-					if (Fade > 0.5f)
+-					{
+-						FadeEdge(InnerX, InnerTop, Fade, InnerHeight, Orient_Vertical, /*bColorFirst=*/true);
+-						FadeEdge(InnerX + InnerWidth - Fade, InnerTop, Fade, InnerHeight, Orient_Vertical, /*bColorFirst=*/false);
+-						FadeEdge(InnerX, InnerTop, InnerWidth, Fade, Orient_Horizontal, /*bColorFirst=*/true);
+-						FadeEdge(InnerX, InnerTop + InnerHeight - Fade, InnerWidth, Fade, Orient_Horizontal, /*bColorFirst=*/false);
++							AllottedGeometry.ToPaintGeometry(FVector2f(GlowRight - GlowLeft, 1.f), FSlateLayoutTransform(FVector2f(GlowLeft, InnerTop + Row))),
++							MoveTemp(GlowStops), Orient_Vertical, ESlateDrawEffect::None);
+ 					}
+-					OutDrawElements.PopClip();
+ 				}
++				OutDrawElements.PopClip();
+ 			}
+ 			else
+ 			{
++				Box(InnerX, InnerTop, InnerWidth, InnerHeight, Palette::SectionBody, BodyLayer, RoundedFill(2.f));
+ 				Box(InnerX, InnerTop, InnerWidth, InnerHeight, bWashedOut ? SWidgetAnimTimeline::GetLockedColor(FLinearColor::White) : FLinearColor::White, GlossLayer, NodeTitleGloss());
+ 				Box(InnerX, InnerTop, InnerWidth, InnerHeight, Spill, SpillLayer, NodeColorSpill());
+ 				Box(InnerX, InnerTop, InnerWidth, FMath::Min(InnerHeight, Palette::SectionSheenHeight), FLinearColor::White, SheenLayer, NodeTitleHighlight());
+@@ -2296,7 +2318,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 
+ 		const FVector2f EasingSize = MeasureText(EasingLabel, LayerFont);
+ 		const float TextOpacity = bWashedOut ? Palette::LockedBrightness + 0.2f : 1.f;
+-		const FLinearColor TitleColor = NodeTitleStyle.ColorAndOpacity.GetSpecifiedColor() * FLinearColor(1.f, 1.f, 1.f, TextOpacity);
++		const FLinearColor TitleColor = (Paint.bCollapsedLook ? Palette::CollapsedNodeText : NodeTitleStyle.ColorAndOpacity.GetSpecifiedColor()) * FLinearColor(1.f, 1.f, 1.f, TextOpacity);
+ 
+ 		// At its own size when it fits; zoomed out, shrunk to fit or left out - see FitTrackText.
+ 		FSlateFontInfo TitleFont;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index b23ad1c..9e34f9a 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -365,11 +365,22 @@ namespace NameTBD
+ 			inline const FLinearColor LayerCollapsed(0.55f, 0.62f, 0.72f);
+ 			inline const FLinearColor CollapsedListTint(0.55f, 0.62f, 0.72f, 0.06f);
+ 
+-			// A collapsed track's section is a facsimile of the Blueprint collapsed graph node: the editor's collapsed-node
+-			// body, blank, with its color spill - CollapsedNodeSpill - fading in from the edges. Where the engine has no
+-			// such brushes it is drawn by hand, the color fading out across CollapsedNodeFade pixels from every edge.
+-			inline const FLinearColor CollapsedNodeSpill(1.00f, 1.00f, 1.00f, 1.00f);
+-			inline constexpr float CollapsedNodeFade = 10.0f;
++			// A collapsed track's section is a facsimile of the Blueprint collapsed graph node: a dark blank body inside an even
++			// frame, rounded at every corner, with a soft gray glow in its middle fading out toward its edges.
++			//   CollapsedNodeFrame / CollapsedNodeBorder / CollapsedNodeRadius: the frame, its width all round, its corners.
++			//   CollapsedNodeBody: the body. CollapsedNodeGlow: the glow at its strongest (its alpha is how strong).
++			//   CollapsedNodeGlowReach: how far in from each end the glow fades in, as a share of the width, up to
++			//   CollapsedNodeGlowMaxReach pixels. CollapsedNodeGlowFalloff: how quickly it fades toward the top and bottom.
++			//   CollapsedNodeText: its name and track count, in italics, as a collapsed node's name is.
++			inline const FLinearColor CollapsedNodeFrame = FLinearColor(FColor(14, 15, 14));
++			inline constexpr float CollapsedNodeBorder = 2.0f;
++			inline constexpr float CollapsedNodeRadius = 5.0f;
++			inline const FLinearColor CollapsedNodeBody = FLinearColor(FColor(27, 28, 26));
++			inline const FLinearColor CollapsedNodeGlow = FLinearColor(FColor(88, 90, 86));
++			inline constexpr float CollapsedNodeGlowReach = 0.22f;
++			inline constexpr float CollapsedNodeGlowMaxReach = 160.0f;
++			inline constexpr float CollapsedNodeGlowFalloff = 1.3f;
++			inline const FLinearColor CollapsedNodeText = FLinearColor(FColor(172, 171, 152));
+ 
+ 			// A collapsed track open on its own: the Track Editor's edges darkened, ScopeVignetteWidth pixels in, to
+ 			// ScopeVignette at the very edge (its alpha is how dark; 0 turns it off) - a nested editor - inside a thin

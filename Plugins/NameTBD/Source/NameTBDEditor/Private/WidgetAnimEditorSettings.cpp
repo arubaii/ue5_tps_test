@@ -60,6 +60,7 @@ FLinearColor UWidgetAnimEditorSettings::GetDefaultTrackColor(EWidgetAnimType Ani
 	case EWidgetAnimType::Slide:          return Palette::LayerSlide;
 	case EWidgetAnimType::Rotate:         return Palette::LayerRotate;
 	case EWidgetAnimType::Pulse:          return Palette::LayerPulse;
+	case EWidgetAnimType::Shake:          return Palette::LayerShake;
 	case EWidgetAnimType::MaterialScalar: return Palette::LayerMaterialScalar;
 	case EWidgetAnimType::MaterialVector: return Palette::LayerMaterialVector;
 	case EWidgetAnimType::Transform:      return Palette::LayerTransform;

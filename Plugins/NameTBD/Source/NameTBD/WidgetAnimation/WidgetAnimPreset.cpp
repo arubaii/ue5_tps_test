@@ -129,6 +129,9 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 	TArray<FWidgetAnimSettings> Placed;
 	UWidgetAnimLibrary::BuildLayerSettings(Animation->Layers, Placed);
 
+	// After every other setting, so setting N is still layer N: what keeps a pass going after its last track.
+	UWidgetAnimLibrary::AddMinimumLengthPlaceholder(Animation, Placed);
+
 	// One widget per group, resolved once each rather than once per layer.
 	const int32 NumGroups = Animation->LayerGroups.Num();
 	TArray<UWidget*, TInlineAllocator<4>> GroupWidgets;
@@ -157,7 +160,8 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 		Settings.bLoop = bLoop;
 		Settings.bPingPong = bPingPong;
 		Settings.LoopCount = LoopCount;
-		Settings.bInvertAnimation = bInvertAnimation;
+		// Or'd, not set: a track inverted on its own stays inverted when the whole animation is (see FWidgetAnimLayer::bInvertTrack).
+		Settings.bInvertAnimation = Settings.bInvertAnimation || bInvertAnimation;
 		Settings.bMirrorInOut = bMirrorInOut;
 		// The animation's own Speed Multiplier, then this use's Playback Speed on top.
 		Settings.PlaybackSpeed = PlaybackSpeed * FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);

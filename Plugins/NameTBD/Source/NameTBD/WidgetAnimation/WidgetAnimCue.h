@@ -157,6 +157,14 @@ struct NAMETBD_API FWidgetAnimCueInfo
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bPlayingBackward = false;
 
+	/**
+	 * How long until the track's run is over from this point, in seconds as it plays and the way the playhead is going: the
+	 * whole run from its start, nothing at its end. What a Sound cue's Fade Out is timed by. -1 on a value-driven track,
+	 * whose value decides when it is over.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	float SecondsToTrackEnd = -1.f;
+
 	/** Played inverted: Invert Animation, or as an exit. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bInverted = false;
@@ -231,6 +239,9 @@ struct NAMETBD_API FWidgetAnimCueFire
 	double Value = 0.0;
 	bool bBackward = false;
 	bool bInverted = false;
+
+	/** Seconds from this point to where the playhead leaves the track - see FWidgetAnimCueInfo::SecondsToTrackEnd. */
+	float SecondsToEnd = -1.f;
 
 	/** Which layer of its stack, and where along the frame's sweep - for firing in order, and once per point. */
 	int32 LayerIndex = INDEX_NONE;
@@ -315,14 +326,28 @@ namespace WidgetAnimCues
 	NAMETBD_API FWidgetAnimEventNative& OnEvent();
 
 	/**
+	 * How a sound fades in and out: FadeIn seconds up from silence as it starts; FadeOut seconds down to silence, starting
+	 * FadeOutAt seconds after it starts (none when negative). Curve is an EWidgetAnimSoundFadeCurve.
+	 */
+	struct FSoundFade
+	{
+		float FadeIn = 0.f;
+		float FadeOut = 0.f;
+		float FadeOutAt = -1.f;
+		uint8 Curve = 0;
+
+		bool HasFade() const { return FadeIn > 0.f || (FadeOut > 0.f && FadeOutAt >= 0.f); }
+	};
+
+	/**
 	 * How an editor preview plays a sound, set by the editor module - the runtime can't reach the editor's audio. Null
 	 * (the default, and in a game) plays nothing at design time.
 	 */
-	using FPreviewSoundPlayer = TFunction<void(USoundBase* /*Sound*/, float /*Volume*/, float /*Pitch*/)>;
+	using FPreviewSoundPlayer = TFunction<void(USoundBase* /*Sound*/, float /*Volume*/, float /*Pitch*/, const FSoundFade& /*Fade*/)>;
 	NAMETBD_API void SetPreviewSoundPlayer(FPreviewSoundPlayer Player);
 
 	/** Plays Sound through the editor's preview player. False when there is none. */
-	NAMETBD_API bool PlayPreviewSound(USoundBase* Sound, float Volume, float Pitch);
+	NAMETBD_API bool PlayPreviewSound(USoundBase* Sound, float Volume, float Pitch, const FSoundFade& Fade = FSoundFade());
 
 	/**
 	 * The points a cue track fires at, as (point, where along its run 0 - 1) - its start, its keys, its end, as its

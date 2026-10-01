@@ -16,6 +16,7 @@
 #include "WidgetAnimExpander.h"  // Staggers: FWidgetAnimExpander
 #include "WidgetAnimParts.h"     // Parts of a widget: FWidgetAnimPartKey
 #include "WidgetAnimCue.h"       // Cues: FWidgetAnimCueFire
+#include "WidgetAnimShake.h"     // Shake: FWidgetAnimShakeTrackParams
 #include "StructUtils/InstancedStruct.h"
 #include "WidgetAnimLibrary.generated.h"
 
@@ -56,7 +57,15 @@ enum class EWidgetAnimType : uint8
 	 * Appended last for the same reason as Transform. Timed, keyed and looped like any other track that travels
 	 * from a start value to an end value.
 	 */
-	Custom UMETA(DisplayName = "Registered Type")
+	Custom UMETA(DisplayName = "Registered Type"),
+
+	/**
+	 * Jitters the widget about where it is - a hit, an error, a rumble - moving and turning it along a smooth noise, and
+	 * lands exactly where it started. See WidgetAnimShake.h and FWidgetAnimShakeTrackParams.
+	 *
+	 * Appended last for the same reason as Transform.
+	 */
+	Shake
 };
 
 // EWidgetAnimEasing now lives in WidgetAnimEasing.h, included above, so anything that includes this
@@ -69,7 +78,17 @@ enum class EWidgetAnimType : uint8
  */
 inline bool WidgetAnimTypeSupportsSpring(EWidgetAnimType AnimType)
 {
-	return AnimType != EWidgetAnimType::Pulse;
+	return AnimType != EWidgetAnimType::Pulse && AnimType != EWidgetAnimType::Shake;
+}
+
+/**
+ * Whether tracks of this type move back and forth about where the widget is rather than from a start value to an end:
+ * a Pulse and a Shake. Such a track lands exactly where it started, has no keys and no spring, and value-driven, its value
+ * is how strong it is - it keeps going on its own clock for as long as it has any strength.
+ */
+inline bool WidgetAnimTypeOscillates(EWidgetAnimType AnimType)
+{
+	return AnimType == EWidgetAnimType::Pulse || AnimType == EWidgetAnimType::Shake;
 }
 
 /** Whether a track of this type offers Timing: every type does, though not every Timing - see WidgetAnimTimingAllowed. */
@@ -105,7 +124,7 @@ inline bool WidgetAnimValueKindAllowed(EWidgetAnimType AnimType, EWidgetAnimTran
  */
 inline bool WidgetAnimTypeSupportsValueKeys(EWidgetAnimType AnimType)
 {
-	return AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse;
+	return AnimType != EWidgetAnimType::Transform && !WidgetAnimTypeOscillates(AnimType);
 }
 
 /**
@@ -256,10 +275,10 @@ struct NAMETBD_API FWidgetAnimSettings
 	FInstancedStruct Expander;
 
 	/** Hidden on a Spring layer, whose spring is its motion. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Tween || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Tween && AnimType != EWidgetAnimType::Shake || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	EWidgetAnimEasing Easing = EWidgetAnimEasing::EaseOut;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Tween || Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Pulse", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Tween && AnimType != EWidgetAnimType::Shake || Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	UCurveFloat* CustomCurve = nullptr;
 
 	/** The spring a Spring layer travels by. See FWidgetSpringParams. */
@@ -320,7 +339,7 @@ struct NAMETBD_API FWidgetAnimSettings
 	FInstancedStruct ValueInput;
 
 	/** Keys between the start and end values, and the curves between them. See FWidgetAnimValueKeys. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse && AnimType != EWidgetAnimType::Shake", EditConditionHides))
 	FWidgetAnimValueKeys ValueKeys;
 
 	/**
@@ -520,6 +539,14 @@ struct NAMETBD_API FWidgetAnimSettings
 	float PulseScaleAmount = 0.05f;
 
 	// ------------------------------------------------------------------
+	// Shake
+	// ------------------------------------------------------------------
+
+	/** How a Shake track shakes. See FWidgetAnimShakeTrackParams. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shake", meta = (EditCondition = "AnimType == EWidgetAnimType::Shake", EditConditionHides, ShowOnlyInnerProperties))
+	FWidgetAnimShakeTrackParams Shake;
+
+	// ------------------------------------------------------------------
 	// Material Scalar / Vector
 	// ------------------------------------------------------------------
 
@@ -683,14 +710,22 @@ struct NAMETBD_API FWidgetAnimLayer
 	FInstancedStruct Expander;
 
 	/**
+	 * Plays this track backward - from its end values to its start - wherever the animation plays, as Invert Animation plays
+	 * a whole animation backward. A use of the animation set to invert leaves an inverted track inverted rather than turning
+	 * it round again.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Invert Track"))
+	bool bInvertTrack = false;
+
+	/**
 	 * How the track moves between its start and end values: the curve it follows over its Duration. With keys
 	 * between them - or on a Transform track - it is how each segment left at Track Easing moves from its key to
 	 * the next. Hidden on a Spring track, whose spring is its motion.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Tween || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Tween && AnimType != EWidgetAnimType::Shake || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	EWidgetAnimEasing Easing = EWidgetAnimEasing::EaseOut;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Tween || Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Pulse", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Tween && AnimType != EWidgetAnimType::Shake || Easing == EWidgetAnimEasing::Custom && Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || Easing == EWidgetAnimEasing::Custom && AnimType == EWidgetAnimType::Pulse", EditConditionHides))
 	TObjectPtr<UCurveFloat> CustomCurve = nullptr;
 
 	// Spring
@@ -759,7 +794,7 @@ struct NAMETBD_API FWidgetAnimLayer
 	// The values the track passes through between its start and its end, and the curve of each stretch between
 	// two of them. Added, moved and deleted on the track in the Widget Animations panel, and edited there by
 	// selecting a key - so the Selection panel never shows them as a list. See FWidgetAnimValueKeys.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Keys", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Keys", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse && AnimType != EWidgetAnimType::Shake", EditConditionHides))
 	FWidgetAnimValueKeys ValueKeys;
 
 	// Fade
@@ -808,6 +843,12 @@ struct NAMETBD_API FWidgetAnimLayer
 	// Pulse
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Pulse", meta = (EditCondition = "AnimType == EWidgetAnimType::Pulse", EditConditionHides, ClampMin = "0.0"))
 	float PulseScaleAmount = 0.05f;
+
+	// Shake
+	//
+	// One nested payload, as Transform and Spring are: see FWidgetAnimShakeTrackParams.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shake", meta = (EditCondition = "AnimType == EWidgetAnimType::Shake", EditConditionHides, ShowOnlyInnerProperties))
+	FWidgetAnimShakeTrackParams Shake;
 
 	// Material
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialScalar", EditConditionHides))
@@ -973,6 +1014,30 @@ struct NAMETBD_API FWidgetAnimLayer
 	 */
 	UPROPERTY()
 	FString InsertedFrom;
+
+	/**
+	 * Pinned in the Widget Animations panel: drawn at the top of the Track Editor, where it stays while the tracks under it
+	 * scroll, so it can't be lost while scrolling around a long animation. Authoring state only.
+	 */
+	UPROPERTY()
+	bool bPinnedInEditor = false;
+
+	/**
+	 * The collapsed track this one is folded into in the Widget Animations panel, by name - as a Blueprint folds part of a
+	 * graph into a collapsed node. Every track sharing the name is shown there as one track, whichever groups they are in,
+	 * and opened on its own by double-clicking it. None for a track shown as itself. Only how the panel shows it: the track
+	 * plays exactly as it would anywhere. Authoring state only.
+	 */
+	UPROPERTY()
+	FName CollapsedTrack;
+
+	/**
+	 * Left out of the editor's previews for now - the panel is showing a collapsed track on its own, and this track isn't in
+	 * it. Set and cleared by the panel as it goes into and out of one, never saved. Played like a hidden track: its place
+	 * in time counts, it poses nothing. See UWidgetAnimLibrary::MuteHiddenLayers.
+	 */
+	UPROPERTY(Transient)
+	bool bMutedByEditorScope = false;
 #endif
 
 	/** The reverse, for migrating data authored before animations were split into layers and entries. */
@@ -1693,6 +1758,13 @@ public:
 	 * them. What an animation track's run length is. 0 for none, or for an animation inserted too deep into itself.
 	 */
 	static float GetAnimationPassSeconds(const UWidgetAnimPresetAsset* Animation);
+
+	/**
+	 * Adds to settings BuildLayerSettings made from Animation's layers a muted placeholder ending at its Minimum Length
+	 * (UWidgetAnimPresetAsset::MinimumLength), so one pass runs at least that long though nothing plays at its end.
+	 * Nothing for an animation without one. FWidgetAnimEntryBase::BuildSettings adds it after every other setting.
+	 */
+	static void AddMinimumLengthPlaceholder(const UWidgetAnimPresetAsset* Animation, TArray<FWidgetAnimSettings>& OutSettings);
 
 	/**
 	 * Whether Animation plays Other: is it, or has a track inserting it - or an animation that does, however deep. What

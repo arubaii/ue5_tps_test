@@ -90,6 +90,10 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (DisplayName = "Animation Speed Multiplier", ClampMin = "0.01", UIMin = "0.1", UIMax = "4.0", EditCondition = "PreviewAnimation == nullptr"))
 	float AnimationSpeedMultiplier = 1.f;
 
+	/** How long one pass of the animation runs at the least, saved with it - see UWidgetAnimPresetAsset::MinimumLength. */
+	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (DisplayName = "Minimum Length", ClampMin = "0", UIMin = "0", Units = "s", EditCondition = "PreviewAnimation == nullptr"))
+	float MinimumLength = 0.f;
+
 	/**
 	 * The asset the Widget Animations panel's Edit Existing Asset is editing in place, played instead of the
 	 * builder's own layers. View Animation Preview on the asset sets it; switching the panel to New Animation

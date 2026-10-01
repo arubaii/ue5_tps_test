@@ -46,6 +46,31 @@ TArray<FString> IWidgetAnimPanelSource::GetTargetOptions() const
 	return Options;
 }
 
+FString IWidgetAnimPanelSource::FindTargetOptionFor(const UWidget* Widget) const
+{
+	UUserWidget* Root = GetPreviewRoot();
+	if (!Widget || !Root)
+	{
+		return FString();
+	}
+
+	// The preview itself is the widget the animation is played on: None.
+	if (Widget == Root)
+	{
+		return TEXT("None");
+	}
+
+	// Whichever path finds it - the same paths the dropdown offers, so what is picked here reads the same there.
+	for (const FString& Option : GetTargetOptions())
+	{
+		if (Option != TEXT("None") && ResolvePreviewTarget(FName(*Option)) == Widget)
+		{
+			return Option;
+		}
+	}
+	return FString();
+}
+
 UWidget* IWidgetAnimPanelSource::ResolvePreviewTarget(FName Path) const
 {
 	UUserWidget* Root = GetPreviewRoot();
@@ -72,6 +97,40 @@ float IWidgetAnimPanelSource::GetAnimationSpeedMultiplier() const
 		return FMath::Max(Builder->AnimationSpeedMultiplier, 0.01f);
 	}
 	return 1.f;
+}
+
+float IWidgetAnimPanelSource::GetMinimumLength() const
+{
+	const UObject* Edited = GetEditedObject();
+	if (const UWidgetAnimPresetAsset* Asset = Cast<UWidgetAnimPresetAsset>(Edited))
+	{
+		return FMath::Max(Asset->MinimumLength, 0.f);
+	}
+	if (const UWidgetAnimBuilder* Builder = Cast<UWidgetAnimBuilder>(Edited))
+	{
+		return FMath::Max(Builder->MinimumLength, 0.f);
+	}
+	return 0.f;
+}
+
+bool IWidgetAnimPanelSource::CanSetMinimumLength() const
+{
+	const UObject* Edited = GetEditedObject();
+	return Cast<UWidgetAnimPresetAsset>(Edited) || Cast<UWidgetAnimBuilder>(Edited);
+}
+
+void IWidgetAnimPanelSource::SetMinimumLength(float Seconds)
+{
+	UObject* Edited = GetEditedObject();
+	const float Length = FMath::Max(Seconds, 0.f);
+	if (UWidgetAnimPresetAsset* Asset = Cast<UWidgetAnimPresetAsset>(Edited))
+	{
+		Asset->MinimumLength = Length;
+	}
+	else if (UWidgetAnimBuilder* Builder = Cast<UWidgetAnimBuilder>(Edited))
+	{
+		Builder->MinimumLength = Length;
+	}
 }
 
 bool IWidgetAnimPanelSource::CanSaveAsNewAsset() const
@@ -692,6 +751,7 @@ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset()
 	NewAsset->LayerGroups = WorkingCopy->LayerGroups;
 	NewAsset->Layers = WorkingCopy->Layers;
 	NewAsset->AnimationSpeedMultiplier = WorkingCopy->AnimationSpeedMultiplier;
+	NewAsset->MinimumLength = WorkingCopy->MinimumLength;
 	NewAsset->PostEditChange();
 	NewAsset->MarkPackageDirty();
 
@@ -709,6 +769,7 @@ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset()
 	WorkingCopy->Description = FText::GetEmpty();
 	WorkingCopy->Layers.Reset();
 	WorkingCopy->AnimationSpeedMultiplier = 1.f;
+	WorkingCopy->MinimumLength = 0.f;
 	WorkingCopy->LayerGroups.Reset();
 	WorkingCopy->LayerGroups.AddDefaulted();
 
@@ -772,6 +833,19 @@ void FWidgetAnimAssetPanelSource::TogglePlay()
 
 	bPlayingForward = true;
 	bPlaying = true;
+}
+
+bool FWidgetAnimAssetPanelSource::PlayBackward()
+{
+	// From the end when at the very start, as Play from the end starts from the top.
+	if (Alpha <= KINDA_SMALL_NUMBER)
+	{
+		Alpha = 1.f;
+	}
+
+	bPlayingForward = false;
+	bPlaying = true;
+	return true;
 }
 
 void FWidgetAnimAssetPanelSource::NotifyPanelActive()
@@ -1219,7 +1293,9 @@ void FWidgetAnimLayerArrayPanelSource::BuildSettings(UWidget* Widget, TArray<FWi
 		Settings.TargetWidget = Target;
 		Settings.MaterialTargetImage = Cast<UImage>(Moved);
 		Settings.ShapeTargetBox = UWidgetAnimLibrary::ResolveShapeBox(Moved);
-		Settings.bInvertAnimation = (Settings.bInvertAnimation != bInvert) != GetContextInvert();
+		// The preview's Invert and the animation it plays within's inverts every track, as Invert Animation does at runtime -
+		// and never turns one inverted on its own (Invert Track) round again.
+		Settings.bInvertAnimation = Settings.bInvertAnimation || bInvert || GetContextInvert();
 		OutSettings.Add(MoveTemp(Settings));
 	}
 
@@ -1283,6 +1359,20 @@ void FWidgetAnimLayerArrayPanelSource::TogglePlay()
 
 	bPlayingForward = true;
 	bPlaying = true;
+}
+
+bool FWidgetAnimLayerArrayPanelSource::PlayBackward()
+{
+	Claim();
+
+	if (Alpha <= KINDA_SMALL_NUMBER)
+	{
+		Alpha = 1.f;
+	}
+
+	bPlayingForward = false;
+	bPlaying = true;
+	return true;
 }
 
 void FWidgetAnimLayerArrayPanelSource::NotifyPanelActive()

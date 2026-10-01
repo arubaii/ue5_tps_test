@@ -1,0 +1,706 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index adb9375..99a074f 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -1918,6 +1918,9 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		bool bInverted = false;
+ 		bool bNamesTarget = false;
+ 
++		/** Drawn as a collapsed graph node is - a blank body whose color fades in from its edges - not as a track. */
++		bool bCollapsedLook = false;
++
+ 		/** A collapsed track's look, when Layer is null: its color, its title and the text on its right, its glyph. */
+ 		FLinearColor Color = FLinearColor::White;
+ 		FString Title;
+@@ -2048,9 +2051,54 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			const FLinearColor Spill = WithAlpha(bBarHovered && !bWashedOut ? TypeColor * Palette::SectionHoverLift : TypeColor, bStriped ? Palette::SectionValueSpillOpacity : 1.f);
+ 
+ 			Box(InnerX, InnerTop, InnerWidth, InnerHeight, Palette::SectionBody, BodyLayer, RoundedFill(2.f));
+-			Box(InnerX, InnerTop, InnerWidth, InnerHeight, bWashedOut ? SWidgetAnimTimeline::GetLockedColor(FLinearColor::White) : FLinearColor::White, GlossLayer, NodeTitleGloss());
+-			Box(InnerX, InnerTop, InnerWidth, InnerHeight, Spill, SpillLayer, NodeColorSpill());
+-			Box(InnerX, InnerTop, InnerWidth, FMath::Min(InnerHeight, Palette::SectionSheenHeight), FLinearColor::White, SheenLayer, NodeTitleHighlight());
++			if (Paint.bCollapsedLook)
++			{
++				// A collapsed track: a facsimile of the Blueprint collapsed graph node - the editor's own collapsed-node
++				// body, blank, with its color spill fading in from the edges. No gloss, sheen or half-tone line: those are
++				// a node title's, and a collapsed node is all body.
++				const FLinearColor EdgeTint = bWashedOut
++					? SWidgetAnimTimeline::GetLockedColor(Palette::CollapsedNodeSpill)
++					: (bBarHovered ? Palette::CollapsedNodeSpill * Palette::SectionHoverLift : Palette::CollapsedNodeSpill);
++				const FSlateBrush* CollapsedBody = PickBrush({ "Graph.CollapsedNode.Body" });
++				const FSlateBrush* CollapsedSpill = PickBrush({ "Graph.CollapsedNode.BodyColorSpill" });
++				if (CollapsedBody && CollapsedSpill)
++				{
++					Box(InnerX, InnerTop, InnerWidth, InnerHeight, bWashedOut ? SWidgetAnimTimeline::GetLockedColor(FLinearColor::White) : FLinearColor::White, GlossLayer, CollapsedBody);
++					Box(InnerX, InnerTop, InnerWidth, InnerHeight, EdgeTint, SpillLayer, CollapsedSpill);
++				}
++				else
++				{
++					// An engine without those brushes: the same look drawn by hand - the color fading in from every edge
++					// across CollapsedNodeFade pixels, over the plain body. Clipped to the body, so its corners stay round.
++					const FGeometry CollapsedGeometry = AllottedGeometry.MakeChild(FVector2f(InnerWidth, InnerHeight), FSlateLayoutTransform(FVector2f(InnerX, InnerTop)));
++					OutDrawElements.PushClip(FSlateClippingZone(CollapsedGeometry));
++					const float Fade = FMath::Min(Palette::CollapsedNodeFade, FMath::Min(InnerWidth, InnerHeight) * 0.5f);
++					auto FadeEdge = [&](float X, float Y, float W, float H, EOrientation Orientation, bool bColorFirst)
++					{
++						const float Length = Orientation == Orient_Vertical ? W : H;
++						TArray<FSlateGradientStop> EdgeStops;
++						EdgeStops.Add(FSlateGradientStop(FVector2D(0.0, 0.0), bColorFirst ? EdgeTint : EdgeTint.CopyWithNewOpacity(0.f)));
++						EdgeStops.Add(FSlateGradientStop(Orientation == Orient_Vertical ? FVector2D(Length, 0.0) : FVector2D(0.0, Length), bColorFirst ? EdgeTint.CopyWithNewOpacity(0.f) : EdgeTint));
++						FSlateDrawElement::MakeGradient(OutDrawElements, SpillLayer,
++							AllottedGeometry.ToPaintGeometry(FVector2f(W, H), FSlateLayoutTransform(FVector2f(X, Y))),
++							MoveTemp(EdgeStops), Orientation, ESlateDrawEffect::None);
++					};
++					if (Fade > 0.5f)
++					{
++						FadeEdge(InnerX, InnerTop, Fade, InnerHeight, Orient_Vertical, /*bColorFirst=*/true);
++						FadeEdge(InnerX + InnerWidth - Fade, InnerTop, Fade, InnerHeight, Orient_Vertical, /*bColorFirst=*/false);
++						FadeEdge(InnerX, InnerTop, InnerWidth, Fade, Orient_Horizontal, /*bColorFirst=*/true);
++						FadeEdge(InnerX, InnerTop + InnerHeight - Fade, InnerWidth, Fade, Orient_Horizontal, /*bColorFirst=*/false);
++					}
++					OutDrawElements.PopClip();
++				}
++			}
++			else
++			{
++				Box(InnerX, InnerTop, InnerWidth, InnerHeight, bWashedOut ? SWidgetAnimTimeline::GetLockedColor(FLinearColor::White) : FLinearColor::White, GlossLayer, NodeTitleGloss());
++				Box(InnerX, InnerTop, InnerWidth, InnerHeight, Spill, SpillLayer, NodeColorSpill());
++				Box(InnerX, InnerTop, InnerWidth, FMath::Min(InnerHeight, Palette::SectionSheenHeight), FLinearColor::White, SheenLayer, NodeTitleHighlight());
++			}
+ 
+ 			// The macro node's half-tone line: across the body, part way down, everything below is a shade darker - most
+ 			// at the right end, fading out toward the middle, so the line disappears as it runs left. One gradient, so
+@@ -2062,7 +2110,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 				? FMath::Min(InnerWidth * Palette::SectionHalfToneReach, Palette::SectionHalfToneMaxReach)
+ 				: InnerWidth * Palette::SectionHalfToneReach;
+ 			const float HalfToneHeight = InnerTop + InnerHeight - HalfToneTop;
+-			if (Palette::SectionHalfTone.A > 0.f && HalfToneWidth >= 1.f && HalfToneHeight > 0.f)
++			if (!Paint.bCollapsedLook && Palette::SectionHalfTone.A > 0.f && HalfToneWidth >= 1.f && HalfToneHeight > 0.f)
+ 			{
+ 				const FGeometry HalfToneGeometry = AllottedGeometry.MakeChild(FVector2f(InnerWidth, InnerHeight), FSlateLayoutTransform(FVector2f(InnerX, InnerTop)));
+ 				OutDrawElements.PushClip(FSlateClippingZone(HalfToneGeometry));
+@@ -2666,6 +2714,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 					}
+ 
+ 					Paint.Color = Palette::LayerCollapsed;
++					Paint.bCollapsedLook = true;
+ 					Paint.Glyph = CollapsedBrush;
+ 					Paint.bSelected = bAnySelected;
+ 					Paint.bHidden = bAllHidden;
+@@ -5331,7 +5380,7 @@ SWidgetAnimTimeline::~SWidgetAnimTimeline()
+ 	}
+ 
+ 	// A pick waiting in the designer stops watching the mouse.
+-	CancelTargetPick();
++	EndTargetPick(/*bReleaseMouse=*/false);
+ 
+ 	// A collapsed track open on its own leaves every track playing again once the panel goes.
+ 	if (IsInCollapsedScope() || bScopeMutesApplied)
+@@ -10746,6 +10795,17 @@ void SWidgetAnimTimeline::DeleteGroup(int32 GroupIndex)
+ 	}
+ 	const int32 OldNum = Layers.Num();
+ 
++	// The groups its animation tracks play their animations in, other than this one - to go too, once nothing else uses
++	// them. Where they will be once this group is gone.
++	TArray<int32> InsertedGroups;
++	for (const int32 InsertedGroup : GetInsertedGroupsOf(Removed))
++	{
++		if (InsertedGroup != GroupIndex)
++		{
++			InsertedGroups.Add(InsertedGroup > GroupIndex ? InsertedGroup - 1 : InsertedGroup);
++		}
++	}
++
+ 	Layers.RemoveAll([GroupIndex, NumGroups](const FWidgetAnimLayer& Layer)
+ 	{
+ 		return UWidgetAnimLibrary::GetLayerGroupIndex(Layer, NumGroups) == GroupIndex;
+@@ -10778,6 +10838,8 @@ void SWidgetAnimTimeline::DeleteGroup(int32 GroupIndex)
+ 		*Collapsed = MoveTemp(Shifted);
+ 	}
+ 
++	RemoveGroupsLeftEmpty(InsertedGroups);
++
+ 	NotifyGroupsChanged(EPropertyChangeType::ArrayRemove);
+ 	RebuildRows();
+ 	ClearSelection();
+@@ -10994,10 +11056,14 @@ void SWidgetAnimTimeline::DeleteLayer(int32 LayerIndex)
+ 	// from the track above it and would otherwise jump.
+ 	TArray<float> OldStarts;
+ 	GetAuthoredStarts(OldStarts);
++	const TArray<int32> InsertedGroups = GetInsertedGroupsOf({ LayerIndex });
+ 	const int32 OldNum = Source->GetLayers()->Num();
+ 	Source->GetLayers()->RemoveAt(LayerIndex);
+ 	PinLayerStarts(OldStarts, OldIndicesAfterRemoving(OldNum, { LayerIndex }));
+ 
++	// An animation track's own groups - made for its animation's groups when it was inserted - go with it.
++	RemoveGroupsLeftEmpty(InsertedGroups);
++
+ 	NotifyGroupsChanged(EPropertyChangeType::ArrayRemove);
+ 	RebuildRows();
+ 	RemapSelectionAfterRemoving({ LayerIndex });
+@@ -11033,6 +11099,7 @@ void SWidgetAnimTimeline::DeleteSelectedLayers()
+ 	TArray<FWidgetAnimLayer>& Layers = *Source->GetLayers();
+ 	TArray<float> OldStarts;
+ 	GetAuthoredStarts(OldStarts);
++	const TArray<int32> InsertedGroups = GetInsertedGroupsOf(ToDelete);
+ 	const int32 OldNum = Layers.Num();
+ 	for (int32 Index = ToDelete.Num() - 1; Index >= 0; --Index)
+ 	{
+@@ -11040,11 +11107,106 @@ void SWidgetAnimTimeline::DeleteSelectedLayers()
+ 	}
+ 	PinLayerStarts(OldStarts, OldIndicesAfterRemoving(OldNum, ToDelete));
+ 
++	// Animation tracks' own groups go with them.
++	RemoveGroupsLeftEmpty(InsertedGroups);
++
+ 	NotifyGroupsChanged(EPropertyChangeType::ArrayRemove);
+ 	RebuildRows();
+ 	RemapSelectionAfterRemoving(ToDelete);
+ }
+ 
++TArray<int32> SWidgetAnimTimeline::GetInsertedGroupsOf(const TArray<int32>& LayerIndices) const
++{
++	// The groups animation tracks play their animations' groups in, other than the tracks' own groups.
++	TArray<int32> Result;
++	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
++	for (const int32 LayerIndex : LayerIndices)
++	{
++		if (!Layers || !Layers->IsValidIndex(LayerIndex) || !(*Layers)[LayerIndex].IsAnimationTrack())
++		{
++			continue;
++		}
++		const int32 OwnGroup = GetLayerGroup(LayerIndex);
++		for (const int32 InsertedGroup : (*Layers)[LayerIndex].InsertedGroups)
++		{
++			if (InsertedGroup >= 0 && InsertedGroup != OwnGroup)
++			{
++				Result.AddUnique(InsertedGroup);
++			}
++		}
++	}
++	return Result;
++}
++
++int32 SWidgetAnimTimeline::RemoveGroupsLeftEmpty(TArray<int32> Candidates)
++{
++	TArray<FWidgetAnimLayerGroup>* Groups = Source.IsValid() ? Source->GetGroups() : nullptr;
++	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
++	if (!Groups || !Layers)
++	{
++		return 0;
++	}
++
++	// From the last, so removing one leaves the indices of those still to look at as they were. A group still holding
++	// a track, or still played in by another animation track, stays; so does the last group of all.
++	Candidates.Sort(TGreater<int32>());
++	int32 NumRemoved = 0;
++	for (const int32 GroupIndex : Candidates)
++	{
++		const int32 NumGroups = Groups->Num();
++		if (!Groups->IsValidIndex(GroupIndex) || NumGroups <= 1)
++		{
++			continue;
++		}
++
++		const bool bInUse = Layers->ContainsByPredicate([GroupIndex, NumGroups](const FWidgetAnimLayer& Layer)
++		{
++			return UWidgetAnimLibrary::GetLayerGroupIndex(Layer, NumGroups) == GroupIndex || Layer.InsertedGroups.Contains(GroupIndex);
++		});
++		if (bInUse)
++		{
++			continue;
++		}
++
++		// Every later group's tracks, and every animation track's groups, follow their groups down one place - as
++		// DeleteGroup moves them.
++		for (FWidgetAnimLayer& Layer : *Layers)
++		{
++			const int32 InGroup = UWidgetAnimLibrary::GetLayerGroupIndex(Layer, NumGroups);
++			Layer.LayerGroup = InGroup > GroupIndex ? InGroup - 1 : InGroup;
++			for (int32& InsertedGroup : Layer.InsertedGroups)
++			{
++				InsertedGroup = InsertedGroup > GroupIndex ? InsertedGroup - 1 : InsertedGroup;
++			}
++		}
++		Groups->RemoveAt(GroupIndex);
++
++		for (TSet<int32>* Folded : { &TrackCollapsedGroups, &ListCollapsedGroups })
++		{
++			TSet<int32> Shifted;
++			for (const int32 FoldedGroup : *Folded)
++			{
++				if (FoldedGroup != GroupIndex)
++				{
++					Shifted.Add(FoldedGroup > GroupIndex ? FoldedGroup - 1 : FoldedGroup);
++				}
++			}
++			*Folded = MoveTemp(Shifted);
++		}
++		if (PickTargetGroup != INDEX_NONE)
++		{
++			CancelTargetPick();
++		}
++		++NumRemoved;
++	}
++
++	if (NumRemoved > 0 && Selection.Group != INDEX_NONE && Selection.Layer == INDEX_NONE)
++	{
++		ClearSelection();
++	}
++	return NumRemoved;
++}
++
+ void SWidgetAnimTimeline::RemapSelectionAfterRemoving(const TArray<int32>& Removed)
+ {
+ 	// Whatever stays selected keeps pointing at the same layers, which have moved up past the ones removed.
+@@ -13526,7 +13688,7 @@ void SWidgetAnimTimeline::SetLayersInverted(const TArray<int32>& LayerIndices, b
+ // Picking a Preview Target in the designer
+ // -----------------------------------------------------------------------------------------------------
+ 
+-UWidget* SWidgetAnimTimeline::GetDesignerSelectedWidget() const
++FWidgetBlueprintEditor* SWidgetAnimTimeline::FindWidgetBlueprintEditor() const
+ {
+ 	UWidgetBlueprint* Blueprint = Source.IsValid() ? Source->GetWidgetBlueprint() : nullptr;
+ 	UAssetEditorSubsystem* AssetEditors = GEditor && Blueprint ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr;
+@@ -13535,8 +13697,36 @@ UWidget* SWidgetAnimTimeline::GetDesignerSelectedWidget() const
+ 	{
+ 		return nullptr;
+ 	}
++	return static_cast<FWidgetBlueprintEditor*>(Instance);
++}
++
++UWidget* SWidgetAnimTimeline::ToPanelPreviewWidget(UWidget* DesignerWidget, FName TemplateName) const
++{
++	// The preview the panel poses may not be the designer's own: the same widget is found there by its name instead.
++	UUserWidget* Root = Source.IsValid() ? Source->GetPreviewRoot() : nullptr;
++	if (DesignerWidget && Source.IsValid() && !Source->FindTargetOptionFor(DesignerWidget).IsEmpty())
++	{
++		return DesignerWidget;
++	}
++	const FName Name = !TemplateName.IsNone() ? TemplateName : (DesignerWidget ? DesignerWidget->GetFName() : NAME_None);
++	if (Root && Root->WidgetTree && !Name.IsNone())
++	{
++		if (UWidget* Found = Root->WidgetTree->FindWidget(Name))
++		{
++			return Found;
++		}
++	}
++	return DesignerWidget;
++}
++
++UWidget* SWidgetAnimTimeline::GetDesignerSelectedWidget() const
++{
++	FWidgetBlueprintEditor* Editor = FindWidgetBlueprintEditor();
++	if (!Editor)
++	{
++		return nullptr;
++	}
+ 
+-	FWidgetBlueprintEditor* Editor = static_cast<FWidgetBlueprintEditor*>(Instance);
+ 	const TSet<FWidgetReference>& Selected = Editor->GetSelectedWidgets();
+ 	if (Selected.Num() != 1)
+ 	{
+@@ -13544,19 +13734,8 @@ UWidget* SWidgetAnimTimeline::GetDesignerSelectedWidget() const
+ 	}
+ 
+ 	const FWidgetReference& Reference = *Selected.CreateConstIterator();
+-	UWidget* Preview = Reference.GetPreview();
+-
+-	// The preview the panel poses may not be the designer's own: found there by the widget's name instead.
+-	UUserWidget* Root = Source->GetPreviewRoot();
+ 	const UWidget* Template = Reference.GetTemplate();
+-	if (Root && Template && (!Preview || Source->FindTargetOptionFor(Preview).IsEmpty()) && Root->WidgetTree)
+-	{
+-		if (UWidget* Found = Root->WidgetTree->FindWidget(Template->GetFName()))
+-		{
+-			return Found;
+-		}
+-	}
+-	return Preview;
++	return ToPanelPreviewWidget(Reference.GetPreview(), Template ? Template->GetFName() : NAME_None);
+ }
+ 
+ bool SWidgetAnimTimeline::CanPickTargetInDesigner() const
+@@ -13565,9 +13744,9 @@ bool SWidgetAnimTimeline::CanPickTargetInDesigner() const
+ }
+ 
+ /**
+- * Watches the mouse everywhere while a Preview Target is being picked: the widget under it in the designer's preview is
+- * named by the cursor, and a click on it picks it - the click taken, so the designer doesn't also select it. The cursor
+- * is an eyedropper the whole time; Escape calls the pick off. Registered only while a pick waits.
++ * While a Preview Target is being picked: Escape calls it off from anywhere, and - should the panel not hold the mouse
++ * (see BeginTargetPick) - the mouse is watched here instead, the cursor kept an eyedropper and a click on a widget taken
++ * as the pick. Registered only while a pick waits.
+  */
+ class FWidgetAnimTargetPickInput : public IInputProcessor
+ {
+@@ -13581,7 +13760,7 @@ public:
+ 	virtual void Tick(const float DeltaTime, FSlateApplication& SlateApp, TSharedRef<ICursor> Cursor) override
+ 	{
+ 		const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin();
+-		if (Pinned && Pinned->IsPickingAnyTarget())
++		if (Pinned && Pinned->IsPickingAnyTarget() && !Pinned->HasMouseCapture())
+ 		{
+ 			Cursor->SetType(EMouseCursor::EyeDropper);
+ 		}
+@@ -13589,7 +13768,8 @@ public:
+ 
+ 	virtual bool HandleMouseMoveEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+ 	{
+-		if (const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin())
++		const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin();
++		if (Pinned && Pinned->IsPickingAnyTarget() && !Pinned->HasMouseCapture())
+ 		{
+ 			Pinned->UpdatePickHover(MouseEvent.GetScreenSpacePosition());
+ 		}
+@@ -13599,7 +13779,7 @@ public:
+ 	virtual bool HandleMouseButtonDownEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+ 	{
+ 		const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin();
+-		if (!Pinned || MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
++		if (!Pinned || !Pinned->IsPickingAnyTarget() || Pinned->HasMouseCapture() || MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
+ 		{
+ 			return false;
+ 		}
+@@ -13671,9 +13851,33 @@ void SWidgetAnimTimeline::BeginTargetPick(int32 GroupIndex)
+ 			})
+ 		]);
+ 	FSlateApplication::Get().AddWindow(PickLabelWindow.ToSharedRef(), /*bShowImmediately=*/false);
++
++	// The panel holds the mouse until the pick is made or called off, as an eyedropper does: so the cursor is its
++	// eyedropper and nothing else's (the designer would set its own each frame, and it flickered between the two), the
++	// mouse is followed wherever it goes, and the click lands here rather than selecting in the designer.
++	CapturePickMouse();
++}
++
++void SWidgetAnimTimeline::CapturePickMouse()
++{
++	if (!FSlateApplication::IsInitialized() || PickTargetGroup == INDEX_NONE || HasMouseCapture())
++	{
++		return;
++	}
++
++	FWidgetPath PanelPath;
++	if (FSlateApplication::Get().FindPathToWidget(AsShared(), PanelPath))
++	{
++		FSlateApplication::Get().ProcessExternalReply(PanelPath, FReply::Handled().CaptureMouse(AsShared()), 0, static_cast<int32>(FSlateApplicationBase::CursorPointerIndex));
++	}
+ }
+ 
+ void SWidgetAnimTimeline::CancelTargetPick()
++{
++	EndTargetPick(/*bReleaseMouse=*/true);
++}
++
++void SWidgetAnimTimeline::EndTargetPick(bool bReleaseMouse)
+ {
+ 	if (PickTargetGroup == INDEX_NONE)
+ 	{
+@@ -13688,6 +13892,16 @@ void SWidgetAnimTimeline::CancelTargetPick()
+ 
+ 	if (FSlateApplication::IsInitialized())
+ 	{
++		// The mouse goes back to whatever is under it. (Not while the panel itself is going: Slate lets go of it then.)
++		if (bReleaseMouse && HasMouseCapture())
++		{
++			FWidgetPath PanelPath;
++			if (FSlateApplication::Get().FindPathToWidget(AsShared(), PanelPath))
++			{
++				FSlateApplication::Get().ProcessExternalReply(PanelPath, FReply::Handled().ReleaseMouseCapture(), 0, static_cast<int32>(FSlateApplicationBase::CursorPointerIndex));
++			}
++		}
++
+ 		// Taken off on the next tick, not now: this is often reached from inside the processor's own handling of a click,
+ 		// while Slate walks its list of processors. Until then it does nothing - nothing is being picked.
+ 		if (PickInput.IsValid())
+@@ -13713,6 +13927,51 @@ void SWidgetAnimTimeline::CancelTargetPick()
+ 	PickLabelWindow.Reset();
+ }
+ 
++FReply SWidgetAnimTimeline::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
++{
++	if (PickTargetGroup != INDEX_NONE && HasMouseCapture())
++	{
++		UpdatePickHover(MouseEvent.GetScreenSpacePosition());
++		return FReply::Handled();
++	}
++	return SCompoundWidget::OnMouseMove(MyGeometry, MouseEvent);
++}
++
++FReply SWidgetAnimTimeline::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
++{
++	if (PickTargetGroup != INDEX_NONE && HasMouseCapture())
++	{
++		// A left click on a widget of the preview picks it; any other click - elsewhere, or another button - calls it off.
++		UpdatePickHover(MouseEvent.GetScreenSpacePosition());
++		if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton || !CommitPickHover())
++		{
++			CancelTargetPick();
++		}
++		return FReply::Handled();
++	}
++	return SCompoundWidget::OnMouseButtonDown(MyGeometry, MouseEvent);
++}
++
++FCursorReply SWidgetAnimTimeline::OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const
++{
++	if (PickTargetGroup != INDEX_NONE)
++	{
++		return FCursorReply::Cursor(EMouseCursor::EyeDropper);
++	}
++	return SCompoundWidget::OnCursorQuery(MyGeometry, CursorEvent);
++}
++
++void SWidgetAnimTimeline::OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent)
++{
++	SCompoundWidget::OnMouseCaptureLost(CaptureLostEvent);
++
++	// Taken away - another window, Alt+Tab: the pick is called off rather than left waiting without the mouse.
++	if (PickTargetGroup != INDEX_NONE)
++	{
++		EndTargetPick(/*bReleaseMouse=*/false);
++	}
++}
++
+ FText SWidgetAnimTimeline::GetPickingTargetText() const
+ {
+ 	return PickHoverLabel.IsEmpty()
+@@ -13723,22 +13982,29 @@ FText SWidgetAnimTimeline::GetPickingTargetText() const
+ UWidget* SWidgetAnimTimeline::FindPreviewWidgetAt(const FVector2D& ScreenPosition, FString& OutOption) const
+ {
+ 	OutOption.Reset();
+-
+-	UUserWidget* Root = Source.IsValid() ? Source->GetPreviewRoot() : nullptr;
+-	const TSharedPtr<SWidget> RootSlate = Root ? Root->GetCachedWidget() : nullptr;
+-	if (!Root || !RootSlate.IsValid() || !FSlateApplication::IsInitialized())
++	if (!Source.IsValid() || !FSlateApplication::IsInitialized())
+ 	{
+ 		return nullptr;
+ 	}
+ 
+-	// Only over the designer's preview: the window under the mouse is the preview's, and the mouse isn't over this panel
+-	// (docked in the same window, it may sit over the preview's stretch of it).
+-	FSlateApplication& Slate = FSlateApplication::Get();
+-	const FWidgetPath Path = Slate.LocateWindowUnderMouse(ScreenPosition, Slate.GetInteractiveTopLevelWindows(), /*bIgnoreEnabledStatus=*/true);
+-	if (!Path.IsValid() || &Path.GetWindow().Get() != Slate.FindWidgetWindow(RootSlate.ToSharedRef()).Get())
++	// The preview the mouse is over is the designer's own - the editor's, when it is open; the panel's otherwise.
++	UUserWidget* DesignerRoot = nullptr;
++	if (FWidgetBlueprintEditor* Editor = FindWidgetBlueprintEditor())
++	{
++		DesignerRoot = Editor->GetPreview();
++	}
++	if (!DesignerRoot)
++	{
++		DesignerRoot = Source->GetPreviewRoot();
++	}
++	if (!DesignerRoot || !DesignerRoot->WidgetTree)
+ 	{
+ 		return nullptr;
+ 	}
++
++	// Never while over this panel - docked, it may sit beside or over the designer.
++	FSlateApplication& Slate = FSlateApplication::Get();
++	const FWidgetPath Path = Slate.LocateWindowUnderMouse(ScreenPosition, Slate.GetInteractiveTopLevelWindows(), /*bIgnoreEnabledStatus=*/true);
+ 	for (int32 Index = 0; Index < Path.Widgets.Num(); ++Index)
+ 	{
+ 		if (&Path.Widgets[Index].Widget.Get() == this)
+@@ -13746,52 +14012,76 @@ UWidget* SWidgetAnimTimeline::FindPreviewWidgetAt(const FVector2D& ScreenPositio
+ 			return nullptr;
+ 		}
+ 	}
+-	if (!Root->GetCachedGeometry().IsUnderLocation(ScreenPosition))
++
++	// A widget that can be a target, as the panel names it - nothing when it can't be.
++	auto Resolve = [this](UWidget* DesignerWidget, FString& OutResolvedOption) -> UWidget*
+ 	{
+-		return nullptr;
++		UWidget* PanelWidget = ToPanelPreviewWidget(DesignerWidget, NAME_None);
++		OutResolvedOption = PanelWidget ? Source->FindTargetOptionFor(PanelWidget) : FString();
++		return OutResolvedOption.IsEmpty() ? nullptr : PanelWidget;
++	};
++
++	// First by Slate's own hit testing: the deepest widget under the mouse that is one of the preview's.
++	TMap<const SWidget*, UWidget*> BySlate;
++	DesignerRoot->WidgetTree->ForEachWidget([&BySlate](UWidget* Candidate)
++	{
++		if (const TSharedPtr<SWidget> CandidateSlate = Candidate ? Candidate->GetCachedWidget() : nullptr)
++		{
++			BySlate.Add(CandidateSlate.Get(), Candidate);
++		}
++	});
++	for (int32 Index = Path.Widgets.Num() - 1; Index >= 0; --Index)
++	{
++		if (UWidget* const* Found = BySlate.Find(&Path.Widgets[Index].Widget.Get()))
++		{
++			if (UWidget* Resolved = Resolve(*Found, OutOption))
++			{
++				return Resolved;
++			}
++		}
+ 	}
+ 
+-	// The smallest visible widget under the mouse that can be a target - by where each is laid out, rather than by
+-	// Slate's hit testing, which the designer's own overlays may take over.
++	// Then by where each is laid out - the designer may lay its own overlays over the preview, out of Slate's hit testing:
++	// the smallest visible one under the mouse.
+ 	UWidget* Best = nullptr;
+ 	FString BestOption;
+ 	double BestArea = TNumericLimits<double>::Max();
+-	if (Root->WidgetTree)
++	DesignerRoot->WidgetTree->ForEachWidget([&ScreenPosition, &Resolve, &Best, &BestOption, &BestArea](UWidget* Candidate)
+ 	{
+-		Root->WidgetTree->ForEachWidget([this, &ScreenPosition, &Best, &BestOption, &BestArea](UWidget* Candidate)
++		const TSharedPtr<SWidget> CandidateSlate = Candidate ? Candidate->GetCachedWidget() : nullptr;
++		if (!CandidateSlate.IsValid() || !CandidateSlate->GetVisibility().IsVisible())
+ 		{
+-			const TSharedPtr<SWidget> CandidateSlate = Candidate ? Candidate->GetCachedWidget() : nullptr;
+-			if (!CandidateSlate.IsValid() || !CandidateSlate->GetVisibility().IsVisible())
+-			{
+-				return;
+-			}
+-			const FGeometry& Geometry = Candidate->GetCachedGeometry();
+-			if (!Geometry.IsUnderLocation(ScreenPosition))
+-			{
+-				return;
+-			}
+-			const FVector2D Extent(Geometry.GetAbsoluteSize());
+-			const double Area = Extent.X * Extent.Y;
+-			if (Area < BestArea)
++			return;
++		}
++		const FGeometry& Geometry = Candidate->GetCachedGeometry();
++		if (!Geometry.IsUnderLocation(ScreenPosition))
++		{
++			return;
++		}
++		const FVector2D Extent(Geometry.GetAbsoluteSize());
++		const double Area = Extent.X * Extent.Y;
++		if (Area < BestArea)
++		{
++			FString CandidateOption;
++			if (UWidget* Resolved = Resolve(Candidate, CandidateOption))
+ 			{
+-				const FString Option = Source->FindTargetOptionFor(Candidate);
+-				if (!Option.IsEmpty())
+-				{
+-					Best = Candidate;
+-					BestOption = Option;
+-					BestArea = Area;
+-				}
++				Best = Resolved;
++				BestOption = CandidateOption;
++				BestArea = Area;
+ 			}
+-		});
+-	}
++		}
++	});
+ 
+-	if (!Best)
++	// The preview itself, under the mouse but nothing in it: the widget the animation plays on.
++	if (!Best && DesignerRoot->GetCachedWidget().IsValid() && DesignerRoot->GetCachedGeometry().IsUnderLocation(ScreenPosition))
+ 	{
+-		Best = Root;
+-		BestOption = Source->FindTargetOptionFor(Root);
++		UUserWidget* PanelRoot = Source->GetPreviewRoot();
++		BestOption = PanelRoot ? Source->FindTargetOptionFor(PanelRoot) : FString();
++		Best = BestOption.IsEmpty() ? nullptr : PanelRoot;
+ 	}
++
+ 	OutOption = BestOption;
+-	return OutOption.IsEmpty() ? nullptr : Best;
++	return Best;
+ }
+ 
+ void SWidgetAnimTimeline::UpdatePickHover(const FVector2D& ScreenPosition)
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+index 5d5368e..c050a1d 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+@@ -103,7 +103,7 @@ public:
+ 	/** How tall the Track Editor's lines may be dragged, and how tall they start. */
+ 	static constexpr float MinRowHeight = 18.f;
+ 	static constexpr float MaxRowHeight = 64.f;
+-	static constexpr float DefaultRowHeight = 26.f;
++	static constexpr float DefaultRowHeight = 33.f;
+ 
+ 	/** Height of the time ruler across the top of the Track Editor. Slim: the strip above it already names the panel. */
+ 	static constexpr float RulerHeight = 24.f;
+@@ -219,6 +219,13 @@ public:
+ 	virtual bool SupportsKeyboardFocus() const override { return true; }
+ 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+ 
++	// While a Preview Target is picked in the designer the panel holds the mouse: the eyedropper cursor, the widget under
++	// it named, the click taken as the pick. Otherwise these leave everything to the panel's children. See BeginTargetPick.
++	virtual FReply OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
++	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
++	virtual FCursorReply OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const override;
++	virtual void OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent) override;
++
+ 	// ---------------------------------------------------------------------------------------------
+ 	// Reading the animation
+ 	// ---------------------------------------------------------------------------------------------
+@@ -1100,9 +1107,33 @@ private:
+ 	/** The designer's one selected widget in the preview, or null - for picking a target. */
+ 	class UWidget* GetDesignerSelectedWidget() const;
+ 
++	/** The groups the given animation tracks play their animations' groups in - other than the tracks' own. */
++	TArray<int32> GetInsertedGroupsOf(const TArray<int32>& LayerIndices) const;
++
++	/**
++	 * Removes those of Candidates no track is in and no animation track plays in any more - an animation track's own
++	 * groups, once it is deleted - inside the edit already open. Returns how many went.
++	 */
++	int32 RemoveGroupsLeftEmpty(TArray<int32> Candidates);
++
+ 	/** Watches the designer for the pick - see BeginTargetPick. */
+ 	void UpdateTargetPick();
+ 
++	/** The open Widget Blueprint editor of the source's Widget Blueprint, or null. */
++	class FWidgetBlueprintEditor* FindWidgetBlueprintEditor() const;
++
++	/**
++	 * A widget of the designer's preview as the panel's preview has it: itself when the panel can target it, else the
++	 * panel preview's widget of the same name (TemplateName, or its own).
++	 */
++	class UWidget* ToPanelPreviewWidget(class UWidget* DesignerWidget, FName TemplateName) const;
++
++	/** Takes the mouse for the pick - see BeginTargetPick. */
++	void CapturePickMouse();
++
++	/** Ends a pick: bReleaseMouse lets go of the mouse too (not while the panel is going, or has already lost it). */
++	void EndTargetPick(bool bReleaseMouse);
++
+ 	/** Makes Picked the picking group's Preview Target, in one undoable edit, and ends the pick. */
+ 	void ApplyPickedTarget(class UWidget* Picked);
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
+index 7622050..710ca2f 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
+@@ -129,7 +129,7 @@ public:
+ 	 * every panel.
+ 	 */
+ 	UPROPERTY(config, EditAnywhere, Category = "Track Display", meta = (DisplayName = "Default Track Height", ClampMin = "18", ClampMax = "64", UIMin = "18", UIMax = "64"))
+-	float DefaultTrackHeight = 26.f;
++	float DefaultTrackHeight = 33.f;
+ 
+ 	// -------------------------------------------------------------------------------------------------
+ 	// New tracks
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index 449573c..b23ad1c 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -365,6 +365,12 @@ namespace NameTBD
+ 			inline const FLinearColor LayerCollapsed(0.55f, 0.62f, 0.72f);
+ 			inline const FLinearColor CollapsedListTint(0.55f, 0.62f, 0.72f, 0.06f);
+ 
++			// A collapsed track's section is a facsimile of the Blueprint collapsed graph node: the editor's collapsed-node
++			// body, blank, with its color spill - CollapsedNodeSpill - fading in from the edges. Where the engine has no
++			// such brushes it is drawn by hand, the color fading out across CollapsedNodeFade pixels from every edge.
++			inline const FLinearColor CollapsedNodeSpill(1.00f, 1.00f, 1.00f, 1.00f);
++			inline constexpr float CollapsedNodeFade = 10.0f;
++
+ 			// A collapsed track open on its own: the Track Editor's edges darkened, ScopeVignetteWidth pixels in, to
+ 			// ScopeVignette at the very edge (its alpha is how dark; 0 turns it off) - a nested editor - inside a thin
+ 			// ScopeFrame line of the collapsed track's color.

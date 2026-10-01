@@ -146,6 +146,14 @@ struct NAMETBD_API FUISoundPlayer
 	/** Plays a sound outright, with no set, no repeat limit and no delay. For one-offs pushed in from Blueprint. */
 	static void PlayOneShot(const UObject* WorldContext, USoundBase* Sound, float VolumeMultiplier = 1.0f, float PitchMultiplier = 1.0f);
 
+	/**
+	 * Plays a sound outright, as PlayOneShot does, fading it: up from silence over FadeIn seconds as it starts, and down to
+	 * silence over FadeOut seconds starting FadeOutAt seconds after it starts (not at all when FadeOutAt is negative), each
+	 * along FadeCurve - an EAudioFaderCurve, passed as its value so this header needn't include the audio component's.
+	 * Real time: a paused game doesn't hold the fade back, as it doesn't hold a UI sound back.
+	 */
+	static void PlayFaded(const UObject* WorldContext, USoundBase* Sound, float VolumeMultiplier, float PitchMultiplier, float FadeIn, float FadeOutAt, float FadeOut, uint8 FadeCurve);
+
 	/** Drops a pending delayed sound. Call before the owner goes away, or the timer fires into a dead object. */
 	static void Cancel(const UObject* WorldContext, FUISoundRuntime& Runtime);
 

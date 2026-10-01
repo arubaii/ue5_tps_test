@@ -27,6 +27,7 @@ namespace NameTBD
 			inline const FLinearColor LayerSlide(0.20f, 0.75f, 0.80f);
 			inline const FLinearColor LayerRotate(0.75f, 0.45f, 0.90f);
 			inline const FLinearColor LayerPulse(0.90f, 0.45f, 0.60f);
+			inline const FLinearColor LayerShake(0.95f, 0.55f, 0.35f);
 			inline const FLinearColor LayerMaterialScalar(0.85f, 0.75f, 0.30f);
 			inline const FLinearColor LayerMaterialVector(0.85f, 0.60f, 0.30f);
 			inline const FLinearColor LayerTransform(AnimationOrange_Normal);
@@ -338,6 +339,92 @@ namespace NameTBD
 			inline const FLinearColor TrackTextShadow(0.00f, 0.00f, 0.00f, 0.55f);
 			// The smallest a track's text is shrunk to, zoomed out, before it is left out - as a share of its size.
 			inline constexpr float TrackTextMinShrink = 0.5f;
+
+			// -------------------------------------------------------------------------------------------------
+			// The Track Editor's strip - Save / Update Animation Asset, drawn in the animation orange with black text
+			// (see the AnimationOrange colors above), and grayed out while there is nothing to save; and the faint chip
+			// behind Fit, so it reads as a button to press rather than a toggle.
+			// -------------------------------------------------------------------------------------------------
+
+			//   SaveButtonNormal: at rest, a dimmed animation orange so it doesn't shout; SaveButtonHovered: the full orange
+			//   under the mouse; SaveButtonPressed: a touch darker while pressed.
+			inline const FLinearColor SaveButtonNormal = FLinearColor(AnimationOrange_Normal * 0.62f).CopyWithNewOpacity(1.f);
+			inline const FLinearColor SaveButtonHovered(AnimationOrange_Normal);
+			inline const FLinearColor SaveButtonPressed = FLinearColor(AnimationOrange_Normal * 0.82f).CopyWithNewOpacity(1.f);
+			inline const FLinearColor SaveButtonDisabled(0.16f, 0.13f, 0.09f);
+			inline const FLinearColor SaveButtonDisabledText(1.00f, 1.00f, 1.00f, 0.35f);
+			inline const FLinearColor FitButtonChip(1.00f, 1.00f, 1.00f, 0.07f);
+			inline const FLinearColor FitButtonChipHovered(1.00f, 1.00f, 1.00f, 0.14f);
+
+			// -------------------------------------------------------------------------------------------------
+			// Collapsed tracks - tracks folded into one, as a Blueprint collapses part of a graph.
+			//   LayerCollapsed: the collapsed track's own color - its section, its row's accent, its name.
+			//   CollapsedListTint: laid over its row in the Animation Tracks list, and its tracks' rows while open.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor LayerCollapsed(0.55f, 0.62f, 0.72f);
+			inline const FLinearColor CollapsedListTint(0.55f, 0.62f, 0.72f, 0.06f);
+
+			// A collapsed track's section is a facsimile of the Blueprint collapsed graph node: a dark blank body inside an even
+			// frame, rounded at every corner, with a soft gray glow in its middle fading out toward its edges.
+			//   CollapsedNodeFrame / CollapsedNodeBorder / CollapsedNodeRadius: the frame, its width all round, its corners.
+			//   CollapsedNodeBody: the body. CollapsedNodeGlow: the glow at its strongest (its alpha is how strong).
+			//   CollapsedNodeGlowReach: the glow's fade-in step from each end, as a share of the width, up to
+			//   CollapsedNodeGlowMaxReach pixels (it is full 2.2 steps in). CollapsedNodeGlowFalloff: how quickly it fades toward the top and bottom.
+			//   CollapsedNodeText: its name and track count, in italics, as a collapsed node's name is.
+			inline const FLinearColor CollapsedNodeFrame = FLinearColor(FColor(14, 15, 14));
+			inline constexpr float CollapsedNodeBorder = 2.0f;
+			inline constexpr float CollapsedNodeRadius = 5.0f;
+			inline const FLinearColor CollapsedNodeBody = FLinearColor(FColor(23, 24, 22));
+			inline const FLinearColor CollapsedNodeGlow = FLinearColor(FColor(72, 73, 70));
+			inline constexpr float CollapsedNodeGlowReach = 0.2f;
+			inline constexpr float CollapsedNodeGlowMaxReach = 170.0f;
+			inline constexpr float CollapsedNodeGlowFalloff = 1.7f;
+			inline const FLinearColor CollapsedNodeText = FLinearColor(FColor(172, 171, 152));
+
+			// A collapsed track open on its own: the Track Editor's edges darkened, ScopeVignetteWidth pixels in, to
+			// ScopeVignette at the very edge (its alpha is how dark; 0 turns it off) - a nested editor - inside a thin
+			// ScopeFrame line of the collapsed track's color.
+			inline const FLinearColor ScopeVignette(0.00f, 0.00f, 0.00f, 0.38f);
+			inline constexpr float ScopeVignetteWidth = 56.0f;
+			inline const FLinearColor ScopeFrame(0.55f, 0.62f, 0.72f, 0.55f);
+
+			// -------------------------------------------------------------------------------------------------
+			// Pinned tracks - drawn at the top of the Track Editor, under the ruler, where they stay while the rest scroll.
+			//   PinnedLineTint: laid over their lines. PinnedDivider: the line under the last of them.
+			//   ListPinnedIcon: a pinned track's pin in the list. ListQuietIcon: the list's eye while its track plays -
+			//   quiet, so a column of open eyes doesn't shout.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor PinnedLineTint(1.00f, 1.00f, 1.00f, 0.03f);
+			inline const FLinearColor PinnedDivider = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.45f);
+			inline const FLinearColor ListPinnedIcon(AnimationOrange_Normal);
+			inline const FLinearColor ListQuietIcon(1.00f, 1.00f, 1.00f, 0.22f);
+
+			// -------------------------------------------------------------------------------------------------
+			// Playing backward - an inverted track, or every track while the preview's Invert is on.
+			//   InvertChevron: the chevrons pointing back along an inverted track, InvertChevronSpacing pixels apart.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor InvertChevron(1.00f, 1.00f, 1.00f, 0.22f);
+			inline constexpr float InvertChevronSpacing = 14.0f;
+
+			// -------------------------------------------------------------------------------------------------
+			// The rest of this pass's odds and ends.
+			//   RangeHandleLit: the animation's start or end handle on the ruler, hovered or dragged.
+			//   SoundFadeLine: a Sound cue's fade in and fade out, drawn as ramps over its track.
+			//   PickingTargetText: a group's target while a widget is being picked for it in the designer.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor RangeHandleLit(AnimationOrange_Hovered);
+			inline const FLinearColor SoundFadeLine(1.00f, 1.00f, 1.00f, 0.75f);
+			inline const FLinearColor PickingTargetText(AnimationOrange_Normal);
+			// Behind the name of the widget under the eyedropper, beside the cursor, while a target is being picked.
+			inline const FLinearColor PickHoverBackground(0.02f, 0.02f, 0.02f, 0.90f);
+
+			// How much further in from its end an animation track's right-hand text sits than any other track's, in
+			// pixels - its "Widget Animation, N tracks" otherwise touches the section's rounded end.
+			inline constexpr float AnimationTrackTextRightPadding = 6.0f;
 		}
 	}
 }

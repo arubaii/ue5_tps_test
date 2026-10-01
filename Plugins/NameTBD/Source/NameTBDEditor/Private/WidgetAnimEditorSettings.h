@@ -110,6 +110,35 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Track Display", meta = (DisplayName = "Track Text When Zoomed Out"))
 	EWidgetAnimTrackTextZoomOut TrackTextZoomOut = EWidgetAnimTrackTextZoomOut::Shrink;
 
+	/**
+	 * The Track Editor's vertical scroll bar: shown while there are more tracks than fit, when this is on; never shown when
+	 * it is off - the mouse wheel still scrolls them.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Track Display", meta = (DisplayName = "Show Vertical Scroll Bar When Necessary"))
+	bool bShowVerticalScrollBarWhenNeeded = true;
+
+	/**
+	 * The Track Editor's horizontal scroll bar: shown while the view shows less than the whole animation, when this is on;
+	 * never shown when it is off - Shift + wheel, a right-drag, or Fit still move the view.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Track Display", meta = (DisplayName = "Show Horizontal Scroll Bar When Necessary"))
+	bool bShowHorizontalScrollBarWhenNeeded = true;
+
+	/**
+	 * How tall the Track Editor's lines are, in slate units. Dragging any line's edge in the Track Editor sets it too, for
+	 * every panel.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Track Display", meta = (DisplayName = "Default Track Height", ClampMin = "18", ClampMax = "64", UIMin = "18", UIMax = "64"))
+	float DefaultTrackHeight = 33.f;
+
+	// -------------------------------------------------------------------------------------------------
+	// New tracks
+	// -------------------------------------------------------------------------------------------------
+
+	/** How long a track added with Add Animation Track runs, in seconds - its Duration, before anything changes it. */
+	UPROPERTY(config, EditAnywhere, Category = "New Tracks", meta = (DisplayName = "Default Track Length", ClampMin = "0.01", UIMin = "0.05", UIMax = "5.0", Units = "s"))
+	float DefaultTrackLength = 0.3f;
+
 	// -------------------------------------------------------------------------------------------------
 
 	/** The color a layer type's tracks are drawn in: the user's, or the default for any type not set. */

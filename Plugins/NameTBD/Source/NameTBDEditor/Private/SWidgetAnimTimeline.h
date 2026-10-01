@@ -103,10 +103,10 @@ public:
 	/** How tall the Track Editor's lines may be dragged, and how tall they start. */
 	static constexpr float MinRowHeight = 18.f;
 	static constexpr float MaxRowHeight = 64.f;
-	static constexpr float DefaultRowHeight = 26.f;
+	static constexpr float DefaultRowHeight = 33.f;
 
-	/** Height of the time ruler across the top of the Track Editor. */
-	static constexpr float RulerHeight = 28.f;
+	/** Height of the time ruler across the top of the Track Editor. Slim: the strip above it already names the panel. */
+	static constexpr float RulerHeight = 24.f;
 
 	/** Height of a row of the Animation Layers list. */
 	static constexpr float ListRowHeight = 24.f;
@@ -152,6 +152,12 @@ public:
 		int32 NestedGroup = INDEX_NONE;
 		TArray<int32> NestedLayers;
 
+		/**
+		 * A pinned track's line (see FWidgetAnimLayer::bPinnedInEditor): one of the first lines, drawn under the ruler where
+		 * it stays while the lines below it scroll. One pinned track to a line, whichever group it is in.
+		 */
+		bool bPinned = false;
+
 		bool IsNested() const { return Kind == EKind::NestedGroup || Kind == EKind::NestedLane; }
 	};
 
@@ -193,7 +199,14 @@ public:
 		ResizeStart,
 
 		/** Moves its end edge, keeping its start. */
-		ResizeEnd
+		ResizeEnd,
+
+		/**
+		 * The animation's own start or end, dragged on the ruler - see BeginRangeDrag. Every track the new start or end cuts
+		 * into is shortened to fit.
+		 */
+		RangeStart,
+		RangeEnd
 	};
 
 	SWidgetAnimTimeline();
@@ -205,6 +218,13 @@ public:
 	// Escape, F, Space, Comma and Period.
 	virtual bool SupportsKeyboardFocus() const override { return true; }
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+
+	// While a Preview Target is picked in the designer the panel holds the mouse: the eyedropper cursor, the widget under
+	// it named, the click taken as the pick. Otherwise these leave everything to the panel's children. See BeginTargetPick.
+	virtual FReply OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	virtual FCursorReply OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const override;
+	virtual void OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent) override;
 
 	// ---------------------------------------------------------------------------------------------
 	// Reading the animation
@@ -374,9 +394,140 @@ public:
 	/** The inserted animation of an animation track, or null. */
 	const class UWidgetAnimPresetAsset* GetInsertedAnimation(int32 LayerIndex) const;
 
-	/** Height of the Track Editor's lines. Dragged from any line's edge - all of them at once - and remembered across sessions. */
-	float GetRowHeight() const { return RowHeight; }
+	// ---------------------------------------------------------------------------------------------
+	// Collapsed tracks
+	//
+	// Tracks folded into one, as a Blueprint folds part of a graph into a collapsed node: every track sharing a
+	// FWidgetAnimLayer::CollapsedTrack name is shown as one track - its name and the stretch they cover - on the line of
+	// the first of them, whichever groups they are in, and as one row in the list that opens onto them. Double-clicked,
+	// the panel shows only them - their own tracks, their own groups, the preview playing only them - with a way back
+	// along the top, as a collapsed graph opens in its own tab. Only how the panel shows them: each is still a track of
+	// the animation, in its own group, playing exactly as it did; a group changed or removed changes or removes its
+	// tracks in a collapsed track too.
+	// ---------------------------------------------------------------------------------------------
+
+	/** Whether the panel shows one collapsed track on its own - see EnterCollapsed - and which. */
+	bool IsInCollapsedScope() const { return !ActiveCollapsed.IsNone(); }
+	FName GetActiveCollapsed() const { return ActiveCollapsed; }
+
+	/** Shows only the tracks of the collapsed track Name, and plays only them; ExitCollapsed goes back to the whole animation. */
+	void EnterCollapsed(FName Name);
+	void ExitCollapsed();
+
+	/** The collapsed track a layer is folded into, or None. */
+	FName GetLayerCollapsedName(int32 LayerIndex) const;
+
+	/**
+	 * Whether a layer is drawn as its collapsed track here - the first of its tracks, on whose line the collapsed track
+	 * sits - and whether it is folded away here, the rest of its tracks. Neither while that collapsed track is open.
+	 */
+	bool IsCollapsedHead(int32 LayerIndex) const;
+	bool IsFoldedIntoCollapsed(int32 LayerIndex) const;
+
+	/**
+	 * Whether a layer is shown in the panel right now: every layer, or - while a collapsed track is open on its own - only
+	 * its tracks.
+	 */
+	bool IsLayerInView(int32 LayerIndex) const;
+
+	/** Every track of the collapsed track Name, in sequence order. The first is its head. */
+	void GetCollapsedMembers(FName Name, TArray<int32>& OutMembers) const;
+
+	/**
+	 * Where a layer is drawn, in played seconds, X start and Y length: its own span - or, for a collapsed track's head, the
+	 * stretch every one of its tracks covers.
+	 */
+	FVector2f GetShownSpan(int32 LayerIndex) const;
+
+	/** Whether these tracks can be folded into one collapsed track: two or more of them, or one, editable. */
+	bool CanCollapseLayers(const TArray<int32>& LayerIndices) const;
+
+	/** Folds tracks into one new collapsed track - named "Collapsed Tracks", numbered to be its own - and selects it. */
+	void CollapseLayers(const TArray<int32>& LayerIndices);
+
+	/** Puts a collapsed track's tracks back where they are, each shown as itself again, and selects them. */
+	void ExpandCollapsed(FName Name);
+
+	/** Renames a collapsed track - numbered, if another has the name. */
+	void RenameCollapsed(FName OldName, const FString& NewName);
+
+	/** Selects every track of a collapsed track, its head the primary one - or, with bToggle, adds them or takes them out. */
+	void SelectCollapsed(FName Name, bool bToggle = false);
+
+	/** A collapsed track's tooltip: each of its tracks, by name, how long it runs and how it moves. */
+	TSharedRef<SWidget> MakeCollapsedToolTip(int32 HeadLayer) const;
+
+	// ---------------------------------------------------------------------------------------------
+	// Pinned tracks, inverted tracks, the animation's range, and picking a target in the designer
+	// ---------------------------------------------------------------------------------------------
+
+	/** Whether a track is pinned to the top of the Track Editor - see FWidgetAnimLayer::bPinnedInEditor. */
+	bool IsLayerPinned(int32 LayerIndex) const;
+
+	/** Pins tracks to the top of the Track Editor, or unpins them. Undoable, and allowed while read-only - it is a way of looking. */
+	void SetLayersPinned(const TArray<int32>& LayerIndices, bool bPinned);
+
+	/** How many lines are pinned to the top of the Track Editor. */
+	int32 GetNumPinnedLines() const { return NumPinnedLines; }
+
+	/** Whether a track plays backward in the preview: inverted on its own (Invert Track), or the preview's Invert is on. */
+	bool IsLayerInverted(int32 LayerIndex) const;
+
+	/** Whether a track is inverted on its own - see FWidgetAnimLayer::bInvertTrack. */
+	bool IsLayerInvertedOnItsOwn(int32 LayerIndex) const;
+
+	/** Inverts tracks on their own, or turns them back. One undoable edit. */
+	void SetLayersInverted(const TArray<int32>& LayerIndices, bool bInverted);
+
+	/**
+	 * Dragging the animation's start or end on the ruler: the end pulled in shortens every track it cuts into, and pulled
+	 * out lengthens the tracks ending where the animation does; the start
+	 * pushed in shortens every track starting before it and moves everything back to start at 0, and pulled out before 0
+	 * puts that much time in front of everything. A track that can't be shortened - or would be shorter than a track can
+	 * be - stops the drag there. One undoable step from press to release; EndLayerDrag ends it.
+	 */
+	bool BeginRangeDrag(bool bEnd);
+	void UpdateRangeDrag(float Seconds, float SnapThresholdSeconds);
+	bool IsDraggingRange() const { return IsDraggingLayers() && (LayerDrag.Mode == ELayerDrag::RangeStart || LayerDrag.Mode == ELayerDrag::RangeEnd); }
+
+	/**
+	 * Picking a group's Preview Target by clicking a widget in the designer: until a widget is clicked there - or the pick is
+	 * canceled - the next widget selected in the Widget Blueprint's designer becomes the group's target.
+	 */
+	bool CanPickTargetInDesigner() const;
+	void BeginTargetPick(int32 GroupIndex);
+	void CancelTargetPick();
+	bool IsPickingTarget(int32 GroupIndex) const { return PickTargetGroup != INDEX_NONE && PickTargetGroup == GroupIndex; }
+	bool IsPickingAnyTarget() const { return PickTargetGroup != INDEX_NONE; }
+
+	/** What a group being picked for says where its target is named: the widget under the eyedropper, or what to do. */
+	FText GetPickingTargetText() const;
+
+	/**
+	 * While picking: the widget of the designer's preview under ScreenPosition becomes the one the eyedropper names, and
+	 * CommitPickHover picks it - false when nothing that can be picked is under the mouse. See FWidgetAnimTargetPickInput.
+	 */
+	void UpdatePickHover(const FVector2D& ScreenPosition);
+	bool CommitPickHover();
+
+	/** Where a new track would start, in played seconds: AtSeconds if set, else after the selected track - or at the end. */
+	float GetNewTrackStart(TOptional<float> AtSeconds = TOptional<float>()) const;
+
+	/**
+	 * Whether a Stagger means anything on a track: one it could fan out to - its widget's children, or an Animated Text
+	 * Block's letters for a track that moves letters - and never a value-driven track or an animation track. A track that
+	 * already has one shows it, so it can be taken off.
+	 */
+	bool CanLayerStagger(int32 LayerIndex) const;
+
+	/**
+	 * Height of the Track Editor's lines: Default Track Height in the editor preferences (UWidgetAnimEditorSettings), so
+	 * every panel shares it. Dragged from any line's edge - all of them at once - which sets that preference, saved when
+	 * the drag ends (SaveRowHeight).
+	 */
+	float GetRowHeight() const;
 	void SetRowHeight(float NewHeight);
+	void SaveRowHeight();
 
 	/** Scrolls the Track Editor, in time and down its lines, until a layer's track - or a group's line - is in view. */
 	void RevealLayer(int32 LayerIndex);
@@ -398,6 +549,10 @@ public:
 
 	/** Moves the playhead to the previous (Direction -1) or next (+1) key, layer start or layer end. */
 	void StepToMarker(int32 Direction);
+
+	/** Go to Start, and Go to End - after which Play plays the animation backward, from its end to its start. */
+	void GoToStart();
+	void GoToEnd();
 
 	// ---------------------------------------------------------------------------------------------
 	// Selection
@@ -798,6 +953,18 @@ private:
 	/** The compact panel's header strip: the list's name, then Add Track, Save as Animation and Expand. */
 	TSharedRef<SWidget> MakeCompactHeader();
 
+	/** The Track Editor's horizontal scroll bar, in a box that shows it only when there is something to scroll to. */
+	TSharedRef<SWidget> MakeHorizontalScrollBarSlot();
+
+	/** The way back out of a collapsed track - its name after the animation's, and a back arrow - for the Track Editor's strip. */
+	TSharedRef<SWidget> MakeCollapsedBreadcrumb();
+
+	/** The list's rows for a collapsed track: its own row, and - while it is open in the list - a row for each of its tracks. */
+	void AddCollapsedListRows(FName Name, int32 GroupIndex);
+
+	/** One track's row in the list, Indent further in for a track of a collapsed track opened in the list. */
+	TSharedRef<SWidget> MakeListLayerRow(int32 LayerIndex, int32 GroupIndex, float Indent);
+
 	/** Save as Animation Asset, and - where the source offers it - saving and handing the tracks over to an entry. */
 	void SaveCompactList(bool bReplaceWithEntry);
 
@@ -851,7 +1018,12 @@ private:
 	void ValidateSelectedKeys();
 
 	TSharedRef<SWidget> MakeHeader();
-	TSharedRef<SWidget> MakeTransport();
+
+	/**
+	 * The transport - its buttons, the time, and one pill of controls: Loop, Ping Pong, Invert, Speed, Snapping and Linked
+	 * Edges. bStacked lays it out in two rows, for under the Animation Tracks list; otherwise in one, along the bottom.
+	 */
+	TSharedRef<SWidget> MakeTransport(bool bStacked = false);
 
 	/** The strip across the top of the list, and of the Track Editor: what it is, and its buttons. */
 	TSharedRef<SWidget> MakeLayerListHeader();
@@ -908,7 +1080,84 @@ private:
 
 	/** Per open animation track, where its animation's tracks run - see GetNestedSpans. */
 	TMap<int32, TArray<FVector2f>> NestedSpans;
-	float RowHeight = DefaultRowHeight;
+
+	/** The collapsed track shown on its own, or None for the whole animation - see EnterCollapsed. */
+	FName ActiveCollapsed;
+
+	/** Per collapsed track's head, the stretch its tracks cover - worked out with the lines. See GetShownSpan. */
+	TMap<int32, FVector2f> CollapsedSpans;
+
+	/** The collapsed tracks opened in the list, showing a row for each of their tracks. */
+	TSet<FName> ListOpenCollapsed;
+
+	/** Keeps every track's bMutedByEditorScope in step with the collapsed track shown on its own. */
+	void SyncScopeMutes();
+
+	/** Whether SyncScopeMutes last left any track muted - so leaving a collapsed track unmutes them once. */
+	bool bScopeMutesApplied = false;
+
+	/** How many lines at the top are pinned tracks' - see FTrackLine::bPinned. */
+	int32 NumPinnedLines = 0;
+
+	/** The group whose Preview Target the next widget clicked in the designer becomes, and what was selected there when it began. */
+	int32 PickTargetGroup = INDEX_NONE;
+	TWeakObjectPtr<class UWidget> PickStartSelection;
+	bool bPickStartedWithSelection = false;
+
+	/** The designer's one selected widget in the preview, or null - for picking a target. */
+	class UWidget* GetDesignerSelectedWidget() const;
+
+	/** The groups the given animation tracks play their animations' groups in - other than the tracks' own. */
+	TArray<int32> GetInsertedGroupsOf(const TArray<int32>& LayerIndices) const;
+
+	/**
+	 * Removes those of Candidates no track is in and no animation track plays in any more - an animation track's own
+	 * groups, once it is deleted - inside the edit already open. Returns how many went.
+	 */
+	int32 RemoveGroupsLeftEmpty(TArray<int32> Candidates);
+
+	/** Watches the designer for the pick - see BeginTargetPick. */
+	void UpdateTargetPick();
+
+	/** The open Widget Blueprint editor of the source's Widget Blueprint, or null. */
+	class FWidgetBlueprintEditor* FindWidgetBlueprintEditor() const;
+
+	/**
+	 * A widget of the designer's preview as the panel's preview has it: itself when the panel can target it, else the
+	 * panel preview's widget of the same name (TemplateName, or its own).
+	 */
+	class UWidget* ToPanelPreviewWidget(class UWidget* DesignerWidget, FName TemplateName) const;
+
+	/** Takes the mouse for the pick - see BeginTargetPick. */
+	void CapturePickMouse();
+
+	/** Ends a pick: bReleaseMouse lets go of the mouse too (not while the panel is going, or has already lost it). */
+	void EndTargetPick(bool bReleaseMouse);
+
+	/** Makes Picked the picking group's Preview Target, in one undoable edit, and ends the pick. */
+	void ApplyPickedTarget(class UWidget* Picked);
+
+	/**
+	 * The smallest visible widget of the designer's preview under ScreenPosition that can be a Preview Target, and its
+	 * target option in OutOption - or null, when the mouse isn't over the preview.
+	 */
+	class UWidget* FindPreviewWidgetAt(const FVector2D& ScreenPosition, FString& OutOption) const;
+
+	/** While picking: what watches the mouse, the widget under it and its name, and the window showing that by the cursor. */
+	TSharedPtr<class IInputProcessor> PickInput;
+	TWeakObjectPtr<class UWidget> PickHoverWidget;
+	FString PickHoverLabel;
+	TSharedPtr<class SWindow> PickLabelWindow;
+
+	/** Go to End was the last thing done with the playhead: Play plays backward from there. */
+	bool bPlayBackwardNext = false;
+
+	/**
+	 * Playing backward, walked by the panel itself - for a source that can't play backward (see
+	 * IWidgetAnimPanelSource::PlayBackward). The playhead, as a fraction of one pass.
+	 */
+	bool bPanelPlayingBackward = false;
+	float PanelBackwardAlpha = 0.f;
 
 	/**
 	 * How far along each of the panel's splitters sits - the Animation Tracks list, the Track Editor and the Selection
@@ -981,9 +1230,12 @@ private:
 		TArray<int32> OriginalLineOrdinals;
 		TArray<int32> OriginalGroupLineCounts;
 
-		/** Where the animation ended at the press. Moves stay inside it; resizes may only pass it from a track that ended there. */
+		/** Where the animation ended at the press. Moves stay inside it; a track's end can be pulled past it (bEndIsFree). */
 		float OriginalEnd = 0.f;
 		bool bEndIsFree = false;
+
+		/** A range drag: the animation's Minimum Length at the press, in played seconds (0 for none). */
+		float OriginalMinimumLength = 0.f;
 
 		/** Where the dragged edges can snap to, worked out once at the press. */
 		TArray<float> SnapTargets;

@@ -14,6 +14,8 @@
 #include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimBlueprintType.h"
 #include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimBlueprintCue.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimExpander.h"
+#include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimCues.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h"
 #include "NameTBDColors.h"
 #include "NameTBDStyle.h"
@@ -24,6 +26,8 @@
 #include "Misc/Base64.h"
 #include "Algo/Find.h"
 #include "Components/Widget.h"
+#include "Blueprint/UserWidget.h"
+#include "Blueprint/WidgetTree.h"
 #include "Slate/WidgetTransform.h"
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
@@ -35,6 +39,9 @@
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Application/IInputProcessor.h"
+#include "Containers/Ticker.h"
+#include "Widgets/SWindow.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "IDetailCustomization.h"
 #include "IDetailPropertyRow.h"
@@ -54,6 +61,9 @@
 #include "Brushes/SlateImageBrush.h"
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Interfaces/IPluginManager.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "WidgetBlueprint.h"
+#include "WidgetBlueprintEditor.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Misc/Paths.h"
@@ -61,6 +71,7 @@
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Input/STextComboBox.h"
 #include "Widgets/Layout/SBorder.h"
@@ -121,11 +132,11 @@ namespace WidgetAnimTimeline
 	constexpr float GroupBandWidth = 4.f;
 
 	/** Height of the strips naming the Animation Layers list and the Track Editor. */
-	constexpr float SectionHeaderHeight = 26.f;
+	constexpr float SectionHeaderHeight = 28.f;
 
 	/** Header icons are drawn at this size whatever size their brush was authored at; the transport's larger. */
 	constexpr float IconSize = 16.f;
-	constexpr float TransportIconSize = 22.f;
+	constexpr float TransportIconSize = 18.f;
 
 	/** The Track Editor's Fit button: a size up from the header icons, so it reads as the strip's one control. */
 	constexpr float FitIconSize = 18.f;
@@ -402,7 +413,7 @@ namespace WidgetAnimTimeline
 			[
 				SNew(SButton)
 				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
-				.ContentPadding(Size > IconSize ? FMargin(6.f, 3.f) : FMargin(4.f, 2.f))
+				.ContentPadding(Size > IconSize ? FMargin(4.f, 2.f) : FMargin(4.f, 2.f))
 				.VAlign(VAlign_Center)
 				.HAlign(HAlign_Center)
 				.OnClicked(OnClicked)
@@ -531,6 +542,121 @@ namespace WidgetAnimTimeline
 			[](const UObject& Default) { return CastChecked<UWidgetAnimBlueprintCue>(&Default)->GetCueDisplayName(); },
 			Visit);
 	}
+
+	/**
+	 * A layer's key times, in played seconds from its own start, for any layer - one of this animation's, or one of an
+	 * animation inserted as a track: a Transform layer's curve keys at KeyTimeScale (played seconds per authored one), or
+	 * any other keyed layer's start, keys and end along RunSeconds - once it has a key between its start and end. See
+	 * SWidgetAnimTimeline::GetKeyTimes.
+	 */
+	void GetLayerKeyTimes(const FWidgetAnimLayer& Layer, float RunSeconds, float KeyTimeScale, TArray<float>& OutTimes)
+	{
+		OutTimes.Reset();
+		if (Layer.IsAnimationTrack())
+		{
+			return;
+		}
+
+		if (Layer.AnimType == EWidgetAnimType::Transform)
+		{
+			if (const FRichCurve* Curve = Layer.Transform.GetActiveCurve())
+			{
+				for (const FRichCurveKey& Key : Curve->GetConstRefOfKeys())
+				{
+					OutTimes.Add(Key.Time * KeyTimeScale);
+				}
+			}
+			return;
+		}
+
+		if (WidgetAnimTypeSupportsValueKeys(Layer.AnimType) && Layer.ValueKeys.Keys.Num() > 0)
+		{
+			for (int32 Point = 0; Point < Layer.ValueKeys.NumPoints(); ++Point)
+			{
+				OutTimes.Add(Layer.ValueKeys.GetPointTime(Point) * RunSeconds);
+			}
+		}
+	}
+
+	/** The curve of segment Segment of a layer - see SWidgetAnimTimeline::GetSegmentCurve. */
+	const FWidgetAnimSegmentCurve* GetLayerSegmentCurve(const FWidgetAnimLayer& Layer, int32 Segment)
+	{
+		if (Segment < 0)
+		{
+			return nullptr;
+		}
+		if (Layer.AnimType == EWidgetAnimType::Transform)
+		{
+			return Segment + 1 < Layer.Transform.Keys.Num() ? &Layer.Transform.Keys[Segment].CurveToNext : nullptr;
+		}
+		if (WidgetAnimTypeSupportsValueKeys(Layer.AnimType) && Segment <= Layer.ValueKeys.Keys.Num())
+		{
+			return &Layer.ValueKeys.GetSegmentCurve(Segment);
+		}
+		return nullptr;
+	}
+
+	/** Whether a layer's segments are shaped at all, and whether any has a curve of its own - see SWidgetAnimTimeline. */
+	bool LayerUsesSegmentCurves(const FWidgetAnimLayer& Layer)
+	{
+		return (Layer.AnimType == EWidgetAnimType::Transform || WidgetAnimTypeSupportsValueKeys(Layer.AnimType))
+			&& !Layer.IsSpringTimed() && !SWidgetAnimTimeline::IsCueLayer(Layer);
+	}
+
+	bool LayerHasSegmentCurves(const FWidgetAnimLayer& Layer)
+	{
+		return Layer.AnimType == EWidgetAnimType::Transform
+			? Layer.Transform.HasSegmentCurves()
+			: WidgetAnimTypeSupportsValueKeys(Layer.AnimType) && Layer.ValueKeys.HasSegmentCurves();
+	}
+
+	/**
+	 * How far along a Sound cue's fade its volume is, 0 - 1, at T of the way through it - the engine's audio fader curves,
+	 * near enough to draw them. See EWidgetAnimSoundFadeCurve.
+	 */
+	float SoundFadeShape(EWidgetAnimSoundFadeCurve Curve, float T)
+	{
+		T = FMath::Clamp(T, 0.f, 1.f);
+		switch (Curve)
+		{
+		case EWidgetAnimSoundFadeCurve::Logarithmic: return FMath::LogX(10.f, 1.f + 9.f * T);
+		case EWidgetAnimSoundFadeCurve::SCurve:      return FMath::SmoothStep(0.f, 1.f, T);
+		case EWidgetAnimSoundFadeCurve::Sine:        return FMath::Sin(T * HALF_PI);
+		default:                                     return T;
+		}
+	}
+
+	/**
+	 * The Save / Update Animation Asset button: a dimmed animation orange, flat, with black text, lighting up to the full
+	 * orange under the mouse - not the editor's dark button tinted orange, which reads brown, nor the full orange at rest,
+	 * which shouts.
+	 */
+	const FButtonStyle& OrangeButtonStyle()
+	{
+		static const FButtonStyle Style = []()
+		{
+			FButtonStyle Out = FAppStyle::Get().GetWidgetStyle<FButtonStyle>("Button");
+			Out.SetNormal(FSlateRoundedBoxBrush(Palette::SaveButtonNormal, 4.f));
+			Out.SetHovered(FSlateRoundedBoxBrush(Palette::SaveButtonHovered, 4.f));
+			Out.SetPressed(FSlateRoundedBoxBrush(Palette::SaveButtonPressed, 4.f));
+			Out.SetDisabled(FSlateRoundedBoxBrush(Palette::SaveButtonDisabled, 4.f));
+			Out.SetNormalForeground(FSlateColor(FLinearColor::Black));
+			Out.SetHoveredForeground(FSlateColor(FLinearColor::Black));
+			Out.SetPressedForeground(FSlateColor(FLinearColor::Black));
+			Out.SetDisabledForeground(FSlateColor(Palette::SaveButtonDisabledText));
+			Out.SetNormalPadding(FMargin(10.f, 2.f));
+			Out.SetPressedPadding(FMargin(10.f, 3.f, 10.f, 1.f));
+			return Out;
+		}();
+		return Style;
+	}
+
+	/** A faint rounded chip behind a button's icon - so it reads as something to press, not as a toggle. */
+	const FSlateBrush* ChipBrush()
+	{
+		static const FSlateRoundedBoxBrush Brush(FLinearColor::White, 4.f);
+		return &Brush;
+	}
 }
 
 // =====================================================================================================
@@ -611,6 +737,9 @@ public:
 		SetToolTip(TSharedPtr<IToolTip>(TrackToolTip));
 	}
 
+	/** Whether the view shows less than the whole stretch the scroll bar covers - when there is anything to scroll to. */
+	bool IsHorizontalScrollNeeded() const { return bHorizontalScrollNeeded; }
+
 	/** Fit the whole animation into view again, and keep fitting it as it changes, until the next zoom or pan. */
 	void FitToAnimation()
 	{
@@ -661,9 +790,15 @@ public:
 			return;
 		}
 
+		// A pinned line is always in view: it doesn't scroll.
+		if (LineIndex < GetNumPinned())
+		{
+			return;
+		}
+
 		const float RowHeight = Owner->GetRowHeight();
-		const float ViewHeight = FMath::Max(LastSize.Y - SWidgetAnimTimeline::RulerHeight, RowHeight);
-		const float Top = (GetNumContextRows() + LineIndex) * RowHeight;
+		const float ViewHeight = FMath::Max(LastSize.Y - GetPinnedBottom(), RowHeight);
+		const float Top = (GetNumContextRows() + LineIndex - GetNumPinned()) * RowHeight;
 
 		if (Top < ScrollY)
 		{
@@ -736,7 +871,11 @@ private:
 		Pan,
 		ResizeRows,
 		MarqueePending,
-		Marquee
+		Marquee,
+
+		/** The animation's start or end, pressed in the ruler - dragged once it moves, else a click that scrubs. */
+		RangePending,
+		Range
 	};
 
 	/** Which edge of a section is under the mouse, for resizing it. */
@@ -773,6 +912,9 @@ private:
 
 		/** On a group line's fold arrow. */
 		bool bOnFold = false;
+
+		/** On a collapsed track - Layer is its head. */
+		bool bCollapsed = false;
 	};
 
 	/**
@@ -842,23 +984,41 @@ private:
 		return Owner ? Owner->GetNumContextRows() : 0;
 	}
 
+	/** How many of the first lines are pinned tracks' - drawn under the ruler, where they stay while the rest scroll. */
+	int32 GetNumPinned() const
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		return Owner ? FMath::Min(Owner->GetNumPinnedLines(), GetNumLines()) : 0;
+	}
+
+	/** Where the pinned lines end and the scrolling ones begin, in local pixels. The ruler's bottom when none are pinned. */
+	float GetPinnedBottom() const
+	{
+		return SWidgetAnimTimeline::RulerHeight + GetNumPinned() * GetRowHeight();
+	}
+
 	/** Where a context row's top is drawn, scrolled with the lines below it. */
 	float GetContextRowTop(int32 Row) const
 	{
-		return SWidgetAnimTimeline::RulerHeight + Row * GetRowHeight() - ScrollY;
+		return GetPinnedBottom() + Row * GetRowHeight() - ScrollY;
 	}
 
-	/** Where a line's top is drawn, in local pixels, with the lines scrolled - under any context rows. */
+	/** Where a line's top is drawn, in local pixels: a pinned one under the ruler, the rest scrolled - under any context rows. */
 	float GetLineTop(int32 LineIndex) const
 	{
-		return SWidgetAnimTimeline::RulerHeight + (GetNumContextRows() + LineIndex) * GetRowHeight() - ScrollY;
+		const int32 NumPinned = GetNumPinned();
+		if (LineIndex < NumPinned)
+		{
+			return SWidgetAnimTimeline::RulerHeight + LineIndex * GetRowHeight();
+		}
+		return GetPinnedBottom() + (GetNumContextRows() + LineIndex - NumPinned) * GetRowHeight() - ScrollY;
 	}
 
-	/** How far down the lines can be scrolled: to the last line, and one line's room below it. */
+	/** How far down the lines can be scrolled: to the last line, and one line's room below it. The pinned ones don't scroll. */
 	float GetMaxScrollY(float Height) const
 	{
-		const float Content = (GetNumContextRows() + GetNumLines() + 1) * GetRowHeight();
-		return FMath::Max(Content - (Height - SWidgetAnimTimeline::RulerHeight), 0.f);
+		const float Content = (GetNumContextRows() + GetNumLines() - GetNumPinned() + 1) * GetRowHeight();
+		return FMath::Max(Content - (Height - GetPinnedBottom()), 0.f);
 	}
 
 	void ClampScroll(float Height) const
@@ -874,8 +1034,17 @@ private:
 			return INDEX_NONE;
 		}
 
-		const int32 Line = FMath::FloorToInt((Y - SWidgetAnimTimeline::RulerHeight + ScrollY) / GetRowHeight()) - GetNumContextRows();
-		return Line >= 0 && Line < GetNumLines() ? Line : INDEX_NONE;
+		// The pinned lines first, where they stay; below them the rest, scrolled.
+		const int32 NumPinned = GetNumPinned();
+		const float PinnedBottom = GetPinnedBottom();
+		if (Y < PinnedBottom)
+		{
+			const int32 Pinned = FMath::FloorToInt((Y - SWidgetAnimTimeline::RulerHeight) / GetRowHeight());
+			return Pinned >= 0 && Pinned < NumPinned ? Pinned : INDEX_NONE;
+		}
+
+		const int32 Line = FMath::FloorToInt((Y - PinnedBottom + ScrollY) / GetRowHeight()) - GetNumContextRows() + NumPinned;
+		return Line >= NumPinned && Line < GetNumLines() ? Line : INDEX_NONE;
 	}
 
 	/**
@@ -895,7 +1064,7 @@ private:
 		const int32 Edge = GetNumLines();
 		const float EdgeY = GetLineTop(Edge);
 
-		return Edge >= 1 && EdgeY > SWidgetAnimTimeline::RulerHeight
+		return Edge >= 1 && EdgeY > GetPinnedBottom()
 			&& FMath::Abs(Y - EdgeY) <= WidgetAnimTimeline::RowEdgeGrabDistance
 			? Edge
 			: INDEX_NONE;
@@ -907,11 +1076,47 @@ private:
 		return Owner && Owner->GetTrackLines().IsValidIndex(LineIndex) ? &Owner->GetTrackLines()[LineIndex] : nullptr;
 	}
 
-	/** A layer's start and length, in seconds from the top. Zero when it has none. */
+	/**
+	 * A layer's start and length, in seconds from the top, as it is drawn - a collapsed track's head spanning all of its
+	 * tracks. Zero when it has none.
+	 */
 	FVector2f GetLayerSpan(int32 LayerIndex) const
 	{
 		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
-		return Owner && Owner->GetTrackSpans().IsValidIndex(LayerIndex) ? Owner->GetTrackSpans()[LayerIndex] : FVector2f::ZeroVector;
+		return Owner ? Owner->GetShownSpan(LayerIndex) : FVector2f::ZeroVector;
+	}
+
+	/** Whether a layer is drawn as a collapsed track here - its head. See SWidgetAnimTimeline::IsCollapsedHead. */
+	bool IsCollapsedBar(int32 LayerIndex) const
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		return Owner && Owner->IsCollapsedHead(LayerIndex);
+	}
+
+	/** How near, in pixels, the mouse has to be to the animation's start or end in the ruler to drag it. */
+	static constexpr float RangeGrabDistance = 5.f;
+
+	/** The animation's start (false) or end (true) under a point in the ruler, if either can be dragged there. */
+	TOptional<bool> RangeEdgeAt(const FVector2f& Local, float Width) const
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		if (!Owner || !Owner->CanEdit() || Local.Y >= SWidgetAnimTimeline::RulerHeight || !Owner->GetLayers() || Owner->GetLayers()->Num() == 0)
+		{
+			return TOptional<bool>();
+		}
+
+		// The end first: with nothing played yet the two sit together, and pulling the end in is the one that can move.
+		const float EndX = TimeToX(Owner->GetPassSeconds(), Width);
+		if (FMath::Abs(Local.X - EndX) <= RangeGrabDistance)
+		{
+			return TOptional<bool>(true);
+		}
+		const float StartX = TimeToX(0.f, Width);
+		if (FMath::Abs(Local.X - StartX) <= RangeGrabDistance)
+		{
+			return TOptional<bool>(false);
+		}
+		return TOptional<bool>();
 	}
 
 	/** A layer's section, in local pixels: left, right, top and bottom - exactly where OnPaint draws it. Invalid while its group is folded. */
@@ -931,12 +1136,24 @@ private:
 		return FBox2f(FVector2f(Left, Top), FVector2f(Right, Top + GetRowHeight() - 7.f));
 	}
 
-	/** The arrow that opens an animation track, at the start of its section - SectionRect, from GetSectionRect. */
+	/** The arrow opening an animation track: a size up from a group's, so it reads as the track's own control. */
+	static constexpr float AnimationFoldArrowSize = 13.f;
+
+	/**
+	 * The arrow that opens an animation track, at the start of its section - SectionRect, from GetSectionRect. Centered on
+	 * the section's body, where its text is, not on the whole section, whose frame shows as a lip along its bottom.
+	 */
 	FBox2f GetAnimationFoldRect(const FBox2f& SectionRect) const
 	{
-		const float CenterY = (SectionRect.Min.Y + SectionRect.Max.Y) * 0.5f;
+		namespace Palette = NameTBD::Colors::WidgetAnimEditor;
+		const float Height = SectionRect.Max.Y - SectionRect.Min.Y;
+		const float Lip = FMath::Clamp(Height * Palette::SectionLipRatio, Palette::SectionLipMin, Palette::SectionLipMax);
+		const float BodyTop = SectionRect.Min.Y + Palette::SectionFrameThickness;
+		const float BodyHeight = Height - Palette::SectionFrameThickness - Lip;
+		const float CenterY = BodyTop + BodyHeight * 0.5f;
+		const float Size = FMath::Min(AnimationFoldArrowSize, FMath::Max(BodyHeight, 6.f));
 		const float X = SectionRect.Min.X + 5.f;
-		return FBox2f(FVector2f(X, CenterY - FoldArrowSize * 0.5f), FVector2f(X + FoldArrowSize, CenterY + FoldArrowSize * 0.5f));
+		return FBox2f(FVector2f(X, CenterY - Size * 0.5f), FVector2f(X + Size, CenterY + Size * 0.5f));
 	}
 
 	/** Where an open animation track's nested group header draws its fold arrow: just inside where the track starts. */
@@ -1021,6 +1238,13 @@ private:
 			Hit.Layer = LayerIndex;
 			Hit.bOnSection = true;
 
+			// A collapsed track is grabbed whole: no keys, edges or arrows of its own. Double-clicked, it opens.
+			if (IsCollapsedBar(LayerIndex))
+			{
+				Hit.bCollapsed = true;
+				return Hit;
+			}
+
 			// An animation track's arrow opens it; it has no keys or edges to grab.
 			if (const TArray<FWidgetAnimLayer>* Layers = Owner->GetLayers(); Layers && Layers->IsValidIndex(LayerIndex) && (*Layers)[LayerIndex].IsAnimationTrack())
 			{
@@ -1073,6 +1297,10 @@ private:
 		{
 			for (const int32 LayerIndex : Line->Layers)
 			{
+				if (IsCollapsedBar(LayerIndex))
+				{
+					continue;
+				}
 				const int32 Key = KeyAt(LayerIndex, Local.X, Width);
 				if (Key != INDEX_NONE)
 				{
@@ -1097,12 +1325,24 @@ private:
 		return (Drag == EDrag::KeyPending || Drag == EDrag::Key) && PressLayer == LayerIndex && PressKey == Key;
 	}
 
-	/** The selection box, corners in order however it was dragged. */
+	/**
+	 * The selection box, corners in order however it was dragged. Its first corner is held where it was pressed in the
+	 * timeline - its time, and its line scrolled with the lines - so the box grows as the view scrolls after the mouse.
+	 */
 	FBox2f GetMarqueeRect() const
 	{
+		FVector2f Start = MarqueeStart;
+		if (LastSize.X > 1.f)
+		{
+			Start.X = TimeToX(MarqueeStartTime, LastSize.X);
+		}
+		if (!bMarqueeStartPinned)
+		{
+			Start.Y = MarqueeStart.Y - (ScrollY - MarqueeStartScrollY);
+		}
 		return FBox2f(
-			FVector2f(FMath::Min(MarqueeStart.X, MarqueeEnd.X), FMath::Min(MarqueeStart.Y, MarqueeEnd.Y)),
-			FVector2f(FMath::Max(MarqueeStart.X, MarqueeEnd.X), FMath::Max(MarqueeStart.Y, MarqueeEnd.Y)));
+			FVector2f(FMath::Min(Start.X, MarqueeEnd.X), FMath::Min(Start.Y, MarqueeEnd.Y)),
+			FVector2f(FMath::Max(Start.X, MarqueeEnd.X), FMath::Max(Start.Y, MarqueeEnd.Y)));
 	}
 
 	/**
@@ -1141,6 +1381,12 @@ private:
 
 				OutLayers.Add(LayerIndex);
 				bAnyWhole |= Rect.Min.X >= Marquee.Min.X && Rect.Max.X <= Marquee.Max.X && Rect.Min.Y >= Marquee.Min.Y && Rect.Max.Y <= Marquee.Max.Y;
+
+				// A collapsed track has no keys of its own to box.
+				if (IsCollapsedBar(LayerIndex))
+				{
+					continue;
+				}
 
 				// A key is in the box when its diamond's center is - the middle of the section, at its time.
 				TArray<float> KeyTimes;
@@ -1194,7 +1440,11 @@ private:
 		{
 			return SNullWidget::NullWidget;
 		}
-		return TipKey != INDEX_NONE ? Owner->MakeKeyToolTip(TipLayer, TipKey) : Owner->MakeLayerToolTip(TipLayer);
+		if (TipKey != INDEX_NONE)
+		{
+			return Owner->MakeKeyToolTip(TipLayer, TipKey);
+		}
+		return IsCollapsedBar(TipLayer) ? Owner->MakeCollapsedToolTip(TipLayer) : Owner->MakeLayerToolTip(TipLayer);
 	}
 
 	/**
@@ -1223,6 +1473,7 @@ private:
 		Hover = FHit();
 		HoverRowEdge = INDEX_NONE;
 		HoverX = -1.f;
+		HoverRange.Reset();
 		SetToolTipTarget(INDEX_NONE, INDEX_NONE);
 	}
 
@@ -1248,11 +1499,20 @@ private:
 	/** Where the mouse last was during a scrub, key drag or track drag - what the view scrolls after at an edge. */
 	TOptional<FVector2f> LastDragLocal;
 
+	/** Whether the view is narrower than what the horizontal scroll bar covers, worked out each tick - see IsHorizontalScrollNeeded. */
+	bool bHorizontalScrollNeeded = false;
+
 	/** A scrub, key drag or track drag carried to the mouse at Local - on a move, or after the view scrolled under it. */
 	void ApplyDragAt(const FVector2f& Local, float Width);
 
 	/** What a press on a section will do once it moves far enough to be a drag. */
 	ELayerDrag PendingLayerDrag = ELayerDrag::Move;
+
+	/** Which of the animation's edges a range drag has: its end, or its start. */
+	bool bRangeEnd = true;
+
+	/** The animation's start (false) or end (true) under the mouse in the ruler, while nothing is dragged - lit, to be grabbed. */
+	TOptional<bool> HoverRange;
 
 	/**
 	 * A plain press on a layer that is one of several selected keeps them all selected, so they can be dragged
@@ -1282,6 +1542,11 @@ private:
 	/** The selection box: where it was started and where the mouse is now, in local pixels, and the modifiers it started with. */
 	FVector2f MarqueeStart = FVector2f::ZeroVector;
 	FVector2f MarqueeEnd = FVector2f::ZeroVector;
+
+	/** Where the selection box was pressed in the timeline: its time, the scroll then, and whether on a pinned line. */
+	float MarqueeStartTime = 0.f;
+	float MarqueeStartScrollY = 0.f;
+	bool bMarqueeStartPinned = false;
 	bool bMarqueeAdd = false;
 	bool bMarqueeToggle = false;
 
@@ -1309,7 +1574,35 @@ void SWidgetAnimTimelineTracks::Tick(const FGeometry& AllottedGeometry, const do
 
 	// A scrub, key or track dragged to an edge - or past it - scrolls the view after it, faster the further out the
 	// mouse is, and the drag follows the time now under the mouse. Held still at the edge, it keeps going.
-	const bool bEdgeScrolling = (Drag == EDrag::Scrub || Drag == EDrag::Key || Drag == EDrag::Layer) && HasMouseCapture() && LastDragLocal.IsSet();
+	// A selection box does the same, and up and down too: held against the top or bottom, the lines scroll under it.
+	const bool bEdgeScrolling = (Drag == EDrag::Scrub || Drag == EDrag::Key || Drag == EDrag::Layer || Drag == EDrag::Range || Drag == EDrag::Marquee) && HasMouseCapture() && LastDragLocal.IsSet();
+	if (bEdgeScrolling && Drag == EDrag::Marquee && LastSize.Y > 1.f)
+	{
+		constexpr float EdgeZoneY = 20.f;
+		const float MouseY = LastDragLocal->Y;
+		const float TopEdge = GetPinnedBottom();
+		float PushY = 0.f;
+		if (MouseY < TopEdge + EdgeZoneY)
+		{
+			PushY = -FMath::Min((TopEdge + EdgeZoneY - MouseY) / EdgeZoneY, 4.f);
+		}
+		else if (MouseY > LastSize.Y - EdgeZoneY)
+		{
+			PushY = FMath::Min((MouseY - (LastSize.Y - EdgeZoneY)) / EdgeZoneY, 4.f);
+		}
+
+		if (PushY != 0.f)
+		{
+			// Eight lines a second at the edge itself, more past it.
+			const float OldScroll = ScrollY;
+			ScrollY += GetRowHeight() * 8.f * PushY * InDeltaTime;
+			ClampScroll(LastSize.Y);
+			if (!FMath::IsNearlyEqual(OldScroll, ScrollY))
+			{
+				ApplyDragAt(LastDragLocal.GetValue(), LastSize.X);
+			}
+		}
+	}
 	if (bEdgeScrolling && LastSize.X > 1.f)
 	{
 		constexpr float EdgeZone = 24.f;
@@ -1360,7 +1653,9 @@ void SWidgetAnimTimelineTracks::Tick(const FGeometry& AllottedGeometry, const do
 		float RangeMax = 1.f;
 		GetScrollRange(PassSeconds, RangeMin, RangeMax);
 		const float Range = FMath::Max(RangeMax - RangeMin, KINDA_SMALL_NUMBER);
-		HorizontalScrollBar->SetState((ViewMin - RangeMin) / Range, FMath::Clamp((ViewMax - ViewMin) / Range, 0.f, 1.f));
+		const float ThumbFraction = FMath::Clamp((ViewMax - ViewMin) / Range, 0.f, 1.f);
+		HorizontalScrollBar->SetState((ViewMin - RangeMin) / Range, ThumbFraction);
+		bHorizontalScrollNeeded = ThumbFraction < 0.999f;
 	}
 }
 
@@ -1574,476 +1869,432 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 	const float KeyDiamond = FMath::Clamp(RowHeight * Palette::KeySizeRatio, Palette::KeySizeMin, Palette::KeySizeMax);
 	const float SummaryDiamond = FMath::Min(FMath::Max(KeyDiamond * 0.85f, 4.f), KeyDiamond);
 
-	// ---- Lines, clipped to below the ruler so they scroll under it -----------------------------------------
+	// ---- Lines ---------------------------------------------------------------------------------------------------
+	//
+	// Drawn in two passes, each clipped to its own band: the lines that scroll, under the pinned tracks' lines; then the
+	// pinned tracks' lines, under the ruler, where they stay whatever the rest are scrolled to.
 
-	const FGeometry RowsGeometry = AllottedGeometry.MakeChild(
-		FVector2f(Size.X, FMath::Max(Size.Y - RulerHeight, 0.f)),
-		FSlateLayoutTransform(FVector2f(0.f, RulerHeight)));
-	OutDrawElements.PushClip(FSlateClippingZone(RowsGeometry));
+	const int32 NumPinned = GetNumPinned();
+	const float PinnedBottom = GetPinnedBottom();
 
-	auto IsLineVisible = [&](int32 LineIndex)
-	{
-		const float Top = GetLineTop(LineIndex);
-		return Top + RowHeight >= RulerHeight && Top <= Size.Y;
-	};
-
-	for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
-	{
-		if (!IsLineVisible(LineIndex))
-		{
-			continue;
-		}
-
-		const FTrackLine& Line = Lines[LineIndex];
-		const float Y = GetLineTop(LineIndex);
-		const bool bGroupLine = Line.Kind == FTrackLine::EKind::Group || Line.Kind == FTrackLine::EKind::NestedGroup;
-
-		// Group lines read as headers, like Sequencer's folder rows; track lines alternate very gently.
-		const FLinearColor Base = bGroupLine
-			? HeaderColor()
-			: (Line.Ordinal % 2 == 0 ? BackgroundColor() : FMath::Lerp(BackgroundColor(), RecessedColor(), 0.5f));
-		Box(0.f, Y, Size.X, RowHeight, Base, RowLayer);
-
-		// An open animation track's lines are another animation's: tinted its orange, with an orange strip beside the
-		// group's band, so they never read as this animation's own.
-		if (Line.IsNested())
-		{
-			Box(0.f, Y, Size.X, RowHeight, Line.Kind == FTrackLine::EKind::NestedGroup ? Palette::NestedHeaderTint : Palette::NestedTint, RowLayer);
-			Box(GroupBandWidth, Y, Palette::NestedEdgeWidth, RowHeight, Palette::NestedEdge, GridLayer);
-		}
-
-		const bool bGroupSelected = Line.Kind == FTrackLine::EKind::Group && Selection.Group == Line.Group && Selection.Layer == INDEX_NONE;
-		bool bDropTarget = false;
-		for (const int32 LayerIndex : Line.Layers)
-		{
-			bDropTarget |= Owner->IsDraggingLayers() && Owner->IsLayerBeingDragged(LayerIndex);
-		}
-
-		if (bGroupSelected)
-		{
-			Box(0.f, Y, Size.X, RowHeight, WithAlpha(SelectColor(), Palette::RowSelectedTintAlpha), RowLayer);
-		}
-		else if (bDropTarget)
-		{
-			Box(0.f, Y, Size.X, RowHeight, Palette::LineDropTarget, RowLayer);
-		}
-		else if (LineIndex == Hover.Line && Drag == EDrag::None)
-		{
-			Box(0.f, Y, Size.X, RowHeight, WithAlpha(HoverColor(), Palette::RowHoveredTintAlpha * 0.5f), RowLayer);
-		}
-
-		// A thin line under every line, as between Sequencer's tracks, and the group's color down its left edge.
-		Box(0.f, Y + RowHeight - 1.f, Size.X, 1.f, SeparatorColor, RowLayer);
-		Box(0.f, Y, GroupBandWidth, RowHeight, SWidgetAnimTimeline::GetGroupColor(Line.Group), GridLayer);
-	}
-
-	// The animation the list plays within: its tracks, grayed and out of reach, on rows of their own above the list's,
-	// so the list's tracks can be placed against it. Nothing here can be selected, dragged or edited.
-	const int32 NumContextRows = GetNumContextRows();
-	const TArray<FWidgetAnimLayer>* ContextLayers = Owner->GetContextLayers();
-	if (NumContextRows > 0 && ContextLayers)
-	{
-		for (int32 Row = 0; Row < NumContextRows; ++Row)
-		{
-			const float Y = GetContextRowTop(Row);
-			if (Y + RowHeight >= RulerHeight && Y <= Size.Y)
-			{
-				Box(0.f, Y, Size.X, RowHeight, Palette::ContextRowBackground, RowLayer);
-				Box(0.f, Y + RowHeight - 1.f, Size.X, 1.f, Row == NumContextRows - 1 ? Palette::ContextRowsDivider : SeparatorColor, RowLayer);
-			}
-		}
-
-		const FSlateFontInfo ContextFont = FCoreStyle::GetDefaultFontStyle("Regular", 8);
-		const TArray<FVector2f>& ContextSpans = Owner->GetContextSpans();
-		for (int32 Index = 0; Index < ContextSpans.Num() && ContextLayers->IsValidIndex(Index); ++Index)
-		{
-			const float Y = GetContextRowTop(Owner->GetContextRow(Index));
-			if (Y + RowHeight < RulerHeight || Y > Size.Y)
-			{
-				continue;
-			}
-
-			const FVector2f Span = ContextSpans[Index];
-			const float X0 = TimeToX(Span.X, Size.X);
-			const float X1 = TimeToX(Span.X + Span.Y, Size.X);
-			const float BarWidth = FMath::Max(X1 - X0, 2.f);
-			const FWidgetAnimLayer& ContextLayer = (*ContextLayers)[Index];
-			const FLinearColor BarColor = SWidgetAnimTimeline::GetLockedColor(SWidgetAnimTimeline::GetLayerTypeColor(ContextLayer)).CopyWithNewOpacity(Palette::ContextTrackOpacity);
-			Box(X0, Y + 4.f, BarWidth, RowHeight - 8.f, BarColor, FrameLayer, RoundedFill(3.f));
-
-			const FString ContextLabel = SWidgetAnimTimeline::GetLayerTypeName(ContextLayer).ToString();
-			const FVector2f ContextLabelSize = MeasureText(ContextLabel, ContextFont);
-			if (ContextLabelSize.X + 10.f <= BarWidth)
-			{
-				Text(ContextLabel, X0 + 5.f + Palette::TrackTextShadowOffset, Y + (RowHeight - ContextLabelSize.Y) * 0.5f + Palette::TrackTextShadowOffset, ContextFont,
-					WithAlpha(Palette::TrackTextShadow, Palette::TrackTextShadow.A * Palette::ContextTrackText.A), LabelLayer - 1);
-				Text(ContextLabel, X0 + 5.f, Y + (RowHeight - ContextLabelSize.Y) * 0.5f, ContextFont, Palette::ContextTrackText, LabelLayer);
-			}
-		}
-	}
-
-	// Outside the animation - before its start, after its end - is shaded, the way the native track area
-	// shades outside the playback range.
-	Box(0.f, RulerHeight, StartX, RowsBottom - RulerHeight, Palette::OutOfRangeShade, GridLayer);
-	Box(EndX, RulerHeight, Size.X - EndX, RowsBottom - RulerHeight, Palette::OutOfRangeShade, GridLayer);
-
-	// Grid down the lines, stepped by index rather than by adding floats, so it never drifts off the ruler's labels.
+	// The grid's steps, stepped by index rather than by adding floats, so it never drifts off the ruler's labels.
 	const float PixelsPerSecond = Size.X / FMath::Max(ViewMax - ViewMin, KINDA_SMALL_NUMBER);
 	const float Step = ChooseTickStep(PixelsPerSecond, 72.f);
 	const int32 MinorPerMajor = 5;
 	const float MinorStep = Step / MinorPerMajor;
 	const int64 FirstTick = FMath::FloorToInt64(ViewMin / MinorStep);
 
-	for (int64 TickIndex = FirstTick; TickIndex * MinorStep <= ViewMax; ++TickIndex)
-	{
-		const float X = TimeToX(TickIndex * MinorStep, Size.X);
-		const bool bMajor = ((TickIndex % MinorPerMajor) + MinorPerMajor) % MinorPerMajor == 0;
-		Box(X, RulerHeight, 1.f, RowsBottom - RulerHeight, bMajor ? Palette::GridMajor : Palette::GridMinor, GridLayer);
-	}
-
-	// ---- Group lines: name, span and key summary ----------------------------------------------------------
-
 	const FSlateFontInfo GroupFont = FCoreStyle::GetDefaultFontStyle("Bold", 9);
 	const FSlateFontInfo GroupTargetFont = FCoreStyle::GetDefaultFontStyle("Regular", 8);
-
-	for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
-	{
-		const FTrackLine& Line = Lines[LineIndex];
-		if (Line.Kind != FTrackLine::EKind::Group || !IsLineVisible(LineIndex))
-		{
-			continue;
-		}
-
-		const float LineTop = GetLineTop(LineIndex);
-		const float CenterY = LineTop + RowHeight * 0.5f;
-		const FVector2f GroupSpan = Owner->GetGroupSpan(Line.Group);
-		const FLinearColor GroupColor = SWidgetAnimTimeline::GetGroupColor(Line.Group);
-
-		if (GroupSpan.Y >= GroupSpan.X)
-		{
-			// The stretch the group is moving: a slim rounded bar in its (muted) color, as a parent row
-			// summarizes its children in Sequencer.
-			const float X0 = TimeToX(GroupSpan.X, Size.X);
-			const float X1 = TimeToX(GroupSpan.Y, Size.X);
-			Box(X0, CenterY - 3.f, FMath::Max(X1 - X0, 4.f), 6.f, bReadOnly ? SWidgetAnimTimeline::GetLockedColor(GroupColor) : GroupColor, FrameLayer, RoundedFill(2.f));
-
-			// Every key of the group's layers, light and dark-outlined so they read on any group color.
-			for (int32 LayerIndex = 0; Layers && LayerIndex < Layers->Num() && Spans.IsValidIndex(LayerIndex); ++LayerIndex)
-			{
-				if (Owner->GetLayerGroup(LayerIndex) != Line.Group)
-				{
-					continue;
-				}
-
-				TArray<float> KeyTimes;
-				Owner->GetKeyTimes(LayerIndex, KeyTimes);
-				for (const float KeyTime : KeyTimes)
-				{
-					const float X = TimeToX(Spans[LayerIndex].X + KeyTime, Size.X);
-					Diamond(X, CenterY, SummaryDiamond + 2.f, Palette::KeySummaryOutline, KeyOutlineLayer);
-					Diamond(X, CenterY, SummaryDiamond, Palette::KeySummary, KeyFillLayer);
-				}
-			}
-		}
-
-		// Embedded in the timeline rather than pinned to the panel: a small fold arrow just before the group's
-		// bar, and its name - and the widget it animates - just after it, quiet, with no backing of their own.
-		// Both travel with the bar as the view pans and zooms.
-		const bool bFoldHovered = Hover.Line == LineIndex && Hover.bOnFold && Drag == EDrag::None;
-		if (const FSlateBrush* Arrow = Owner->IsTrackGroupCollapsed(Line.Group)
-			? PickBrush({ "TreeArrow_Collapsed", "Icons.ChevronRight" })
-			: PickBrush({ "TreeArrow_Expanded", "Icons.ChevronDown" }))
-		{
-			Box(GetFoldX(Line.Group, Size.X), CenterY - FoldArrowSize * 0.5f, FoldArrowSize, FoldArrowSize,
-				WithAlpha(ForegroundColor(), bFoldHovered ? 0.95f : 0.45f), LabelLayer + 1, Arrow);
-		}
-
-		const FString Name = Owner->GetGroupName(Line.Group).ToString();
-		const FString Target = FString::Printf(TEXT("  %s"), *Owner->GetGroupTargetLabel(Line.Group).ToString());
-		const FVector2f NameSize = MeasureText(Name, GroupFont);
-		const FVector2f TargetSize = MeasureText(Target, GroupTargetFont);
-		const float NameX = GroupSpan.Y >= GroupSpan.X
-			? TimeToX(GroupSpan.Y, Size.X) + 8.f
-			: GetFoldX(Line.Group, Size.X) + FoldArrowSize + 4.f;
-		Text(Name, NameX, CenterY - NameSize.Y * 0.5f, GroupFont, WithAlpha(ForegroundColor(), 0.7f), LabelLayer + 1);
-		Text(Target, NameX + NameSize.X, CenterY - TargetSize.Y * 0.5f, GroupTargetFont, WithAlpha(ForegroundColor(), 0.4f), LabelLayer + 1);
-	}
-
-	// ---- Track lines: sections ----------------------------------------------------------------------------
-
 	const FSlateBrush* LockBrush = PickBrush({ "Icons.Lock", "PropertyWindow.Locked" });
 	const FSlateBrush* HiddenBrush = PickBrush({ "Icons.Hidden", "Level.NotVisibleIcon16x" });
+	const FSlateBrush* PinBrush = PickBrush({ "Icons.Pinned", "Icons.Pin", "PropertyWindow.Favorites_Enabled" });
+	const FSlateBrush* CollapsedBrush = PickBrush({ "GraphEditor.SubGraph_16x", "Icons.FolderClosed" });
+	const float TimeScale = Owner->GetTimeScale();
 
-	for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
+	/**
+	 * How one section is drawn: a track of this animation, one of an animation inserted as a track (shown only), or a
+	 * collapsed track standing for several (Layer null, its look given outright).
+	 */
+	struct FSectionPaint
 	{
-		const FTrackLine& Line = Lines[LineIndex];
-		if (Line.Kind != FTrackLine::EKind::Lane || !IsLineVisible(LineIndex))
+		const FWidgetAnimLayer* Layer = nullptr;
+
+		/** This animation's layer, for its selection, hover, lit edges and keys. INDEX_NONE: shown only. */
+		int32 LayerIndex = INDEX_NONE;
+
+		FBox2f Rect;
+		FVector2f Span = FVector2f::ZeroVector;
+		TArray<float> KeyTimes;
+		float FanSeconds = 0.f;
+		int32 FanCount = INDEX_NONE;
+
+		bool bSelected = false;
+		bool bLocked = false;
+		bool bHidden = false;
+		bool bPinned = false;
+		bool bWashedOut = false;
+		bool bKeysEditable = false;
+		bool bInverted = false;
+		bool bNamesTarget = false;
+
+		/** Drawn as a collapsed graph node is - a blank body whose color fades in from its edges - not as a track. */
+		bool bCollapsedLook = false;
+
+		/** A collapsed track's look, when Layer is null: its color, its title and the text on its right, its glyph. */
+		FLinearColor Color = FLinearColor::White;
+		FString Title;
+		FString Secondary;
+		const FSlateBrush* Glyph = nullptr;
+
+	};
+
+	auto DrawSection = [&](const FSectionPaint& Paint)
+	{
+		const FWidgetAnimLayer* Layer = Paint.Layer;
+		const int32 LayerIndex = Paint.LayerIndex;
+		const bool bInteractive = LayerIndex != INDEX_NONE;
+		const FVector2f Span = Paint.Span;
+		const float BarX0 = Paint.Rect.Min.X;
+		const float BarTop = Paint.Rect.Min.Y;
+		const float BarWidth = Paint.Rect.Max.X - Paint.Rect.Min.X;
+		const float BarHeight = Paint.Rect.Max.Y - Paint.Rect.Min.Y;
+
+		// A stagger reaches on past its first item, to where its last item ends: a tail drawn after the section.
+		const float TailRight = Paint.FanSeconds > 0.f ? TimeToX(Span.X + Span.Y + Paint.FanSeconds, Size.X) : BarX0 + BarWidth;
+
+		// Nowhere near the view: nothing of it to draw.
+		if (BarX0 > Size.X + 8.f || FMath::Max(BarX0 + BarWidth, TailRight) < -8.f)
 		{
-			continue;
+			return;
 		}
 
-		for (const int32 LayerIndex : Line.Layers)
+		// A hidden track's text is in italics - the font's italic typeface, or slanted where it has none.
+		FSlateFontInfo LayerFont = SectionFont;
+		// So is a collapsed track's name, as a collapsed graph node's is.
+		const bool bSlantLayerText = (Paint.bHidden || Paint.bCollapsedLook) && !ItalicOf(SectionFont, LayerFont);
+		const bool bWashedOut = Paint.bWashedOut;
+		const bool bBarHovered = bInteractive && Drag == EDrag::None && Hover.Layer == LayerIndex && Hover.Key == INDEX_NONE && Hover.Edge == EEdge::None && Hover.bOnSection;
+
+		FLinearColor TypeColor = Layer ? SWidgetAnimTimeline::GetLayerTypeColor(*Layer) : Paint.Color;
+		if (bWashedOut)
 		{
-			if (!Layers || !Layers->IsValidIndex(LayerIndex) || !Spans.IsValidIndex(LayerIndex))
+			TypeColor = SWidgetAnimTimeline::GetLockedColor(TypeColor);
+		}
+
+		// The stagger's tail: a thinner band of the track's color from the end of its first item to the end of its
+		// last, with a tick where each item after the first starts - when the preview has counted them. The ticks
+		// are left out once they would crowd into a smear.
+		if (Layer && TailRight > BarX0 + BarWidth + 0.5f)
+		{
+			const float TailHeight = BarHeight * Palette::SectionStaggerTailHeight;
+			const float TailTop = BarTop + (BarHeight - TailHeight) * 0.5f;
+			const float TailLeft = BarX0 + BarWidth;
+			Box(TailLeft, TailTop, TailRight - TailLeft, TailHeight, WithAlpha(TypeColor, Palette::SectionStaggerTailOpacity), BackingLayer, RoundedFill(2.f));
+
+			const FWidgetAnimExpander* Expander = Layer->Expander.GetPtr<FWidgetAnimExpander>();
+			const int32 NumItems = Paint.FanCount;
+			const float PixelsPerItem = (TailRight - BarX0) / FMath::Max(NumItems, 1);
+			if (Expander && NumItems > 1 && PixelsPerItem >= 3.f)
 			{
-				continue;
-			}
-
-			const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
-			const FVector2f Span = Spans[LayerIndex];
-			const FBox2f Rect = GetSectionRect(LayerIndex, Size.X);
-			const float BarX0 = Rect.Min.X;
-			const float BarTop = Rect.Min.Y;
-			const float BarWidth = Rect.Max.X - Rect.Min.X;
-			const float BarHeight = Rect.Max.Y - Rect.Min.Y;
-
-			// A stagger reaches on past its first item, to where its last item ends: a tail drawn after the section.
-			const float FanSeconds = Owner->GetLayerFanSeconds(LayerIndex);
-			const float TailRight = FanSeconds > 0.f ? TimeToX(Span.X + Span.Y + FanSeconds, Size.X) : BarX0 + BarWidth;
-
-			// Nowhere near the view: nothing of it to draw.
-			if (BarX0 > Size.X + 8.f || FMath::Max(BarX0 + BarWidth, TailRight) < -8.f)
-			{
-				continue;
-			}
-
-			const bool bLayerSelected = Owner->IsLayerSelected(LayerIndex);
-			const bool bTrackLocked = Owner->IsLayerLocked(LayerIndex);
-			const bool bTrackHidden = Owner->IsLayerHidden(LayerIndex);
-
-			// A hidden track's text is in italics - the font's italic typeface, or slanted where it has none.
-			FSlateFontInfo LayerFont = SectionFont;
-			const bool bSlantLayerText = bTrackHidden && !ItalicOf(SectionFont, LayerFont);
-			const bool bWashedOut = bReadOnly || bTrackLocked || bTrackHidden;
-			const bool bBarHovered = Drag == EDrag::None && Hover.Layer == LayerIndex && Hover.Key == INDEX_NONE && Hover.Edge == EEdge::None && Hover.bOnSection;
-
-			FLinearColor TypeColor = SWidgetAnimTimeline::GetLayerTypeColor(Layer);
-			if (bWashedOut)
-			{
-				TypeColor = SWidgetAnimTimeline::GetLockedColor(TypeColor);
-			}
-
-			// The stagger's tail: a thinner band of the track's color from the end of its first item to the end of its
-			// last, with a tick where each item after the first starts - when the preview has counted them. The ticks
-			// are left out once they would crowd into a smear.
-			if (TailRight > BarX0 + BarWidth + 0.5f)
-			{
-				const float TailHeight = BarHeight * Palette::SectionStaggerTailHeight;
-				const float TailTop = BarTop + (BarHeight - TailHeight) * 0.5f;
-				const float TailLeft = BarX0 + BarWidth;
-				Box(TailLeft, TailTop, TailRight - TailLeft, TailHeight, WithAlpha(TypeColor, Palette::SectionStaggerTailOpacity), BackingLayer, RoundedFill(2.f));
-
-				const FWidgetAnimExpander* Expander = Layer.Expander.GetPtr<FWidgetAnimExpander>();
-				const int32 NumItems = Owner->GetLayerFanCount(LayerIndex);
-				const float PixelsPerItem = (TailRight - BarX0) / FMath::Max(NumItems, 1);
-				if (Expander && NumItems > 1 && PixelsPerItem >= 3.f)
+				TArray<float> Offsets;
+				Expander->ComputeOffsets(NumItems, Offsets);
+				for (const float Offset : Offsets)
 				{
-					TArray<float> Offsets;
-					Expander->ComputeOffsets(NumItems, Offsets);
-					const float TimeScale = Owner->GetTimeScale();
-					for (const float Offset : Offsets)
+					if (Offset > 0.f)
 					{
-						if (Offset > 0.f)
-						{
-							const float TickX = TimeToX(Span.X + Offset * TimeScale, Size.X);
-							Box(TickX, TailTop, 1.f, TailHeight, Palette::SectionStaggerTick, BackingLayer + 1);
-						}
-					}
-				}
-
-				// What it fans out to, and how many, on the tail - where there's room for it.
-				if (Expander)
-				{
-					const FString Summary = Expander->GetSummary();
-					const FString TailLabel = NumItems != INDEX_NONE ? FString::Printf(TEXT("%s \u00D7%d"), *Summary, NumItems) : Summary;
-					FSlateFontInfo TailFont = FCoreStyle::GetDefaultFontStyle("Regular", 8);
-					const bool bSlantTail = bTrackHidden && !ItalicOf(FCoreStyle::GetDefaultFontStyle("Regular", 8), TailFont);
-					const FVector2f TailLabelSize = MeasureText(TailLabel, TailFont);
-					if (!TailLabel.IsEmpty() && TailLabelSize.X + 8.f <= TailRight - TailLeft)
-					{
-						// On the dark field beside the track rather than on it, so always light text over a dark shadow.
-						const FLinearColor TailColor = WithAlpha(ForegroundColor(), 0.75f);
-						const float TailX = TailLeft + 4.f;
-						const float TailY = BarTop + (BarHeight - TailLabelSize.Y) * 0.5f;
-						const FLinearColor TailShadow = WithAlpha(Palette::TrackTextShadow, Palette::TrackTextShadow.A * TailColor.A);
-						if (bSlantTail)
-						{
-							SlantedText(TailLabel, TailX + Palette::TrackTextShadowOffset, TailY + Palette::TrackTextShadowOffset, TailFont, TailShadow, LabelLayer - 1);
-							SlantedText(TailLabel, TailX, TailY, TailFont, TailColor, LabelLayer);
-						}
-						else
-						{
-							Text(TailLabel, TailX + Palette::TrackTextShadowOffset, TailY + Palette::TrackTextShadowOffset, TailFont, TailShadow, LabelLayer - 1);
-							Text(TailLabel, TailX, TailY, TailFont, TailColor, LabelLayer);
-						}
+						const float TickX = TimeToX(Span.X + Offset * TimeScale, Size.X);
+						Box(TickX, TailTop, 1.f, TailHeight, Palette::SectionStaggerTick, BackingLayer + 1);
 					}
 				}
 			}
 
-			// A section, drawn the way the editor draws a graph node's title: a dark rounded frame, an opaque body,
-			// and on the body the node gloss, the layer color spilled over it, and a highlight sheen along the
-			// top. The gloss and spill textures are partly transparent; the body is what shows through them, the
-			// same on every section. Selection is the orange outline of a selected Blueprint node; hover lifts
-			// the color a touch.
-			const float Lip = FMath::Clamp(BarHeight * Palette::SectionLipRatio, Palette::SectionLipMin, Palette::SectionLipMax);
-			const float Frame = Palette::SectionFrameThickness;
-			const float InnerX = BarX0 + Frame;
-			const float InnerTop = BarTop + Frame;
-			const float InnerWidth = BarWidth - Frame * 2.f;
-			const float InnerHeight = BarHeight - Frame - Lip;
-
-			if (bLayerSelected)
+			// What it fans out to, and how many, on the tail - where there's room for it.
+			if (Expander)
 			{
-				const float Rim = Palette::SectionSelectedOutlineSize;
-				const float Halo = Rim + Palette::SectionSelectedHaloSize;
-				Box(BarX0 - Halo, BarTop - Halo, BarWidth + Halo * 2.f, BarHeight + Halo * 2.f, Palette::SectionSelectedHalo, HaloLayer, RoundedFill(3.f + Halo));
-				Box(BarX0 - Rim, BarTop - Rim, BarWidth + Rim * 2.f, BarHeight + Rim * 2.f, Palette::SectionSelectedOutline, OutlineLayer, RoundedFill(3.f + Rim));
+				const FString Summary = Expander->GetSummary();
+				const FString TailLabel = NumItems != INDEX_NONE ? FString::Printf(TEXT("%s \u00D7%d"), *Summary, NumItems) : Summary;
+				FSlateFontInfo TailFont = FCoreStyle::GetDefaultFontStyle("Regular", 8);
+				const bool bSlantTail = Paint.bHidden && !ItalicOf(FCoreStyle::GetDefaultFontStyle("Regular", 8), TailFont);
+				const FVector2f TailLabelSize = MeasureText(TailLabel, TailFont);
+				if (!TailLabel.IsEmpty() && TailLabelSize.X + 8.f <= TailRight - TailLeft)
+				{
+					// On the dark field beside the track rather than on it, so always light text over a dark shadow.
+					const FLinearColor TailColor = WithAlpha(ForegroundColor(), 0.75f);
+					const float TailX = TailLeft + 4.f;
+					const float TailY = BarTop + (BarHeight - TailLabelSize.Y) * 0.5f;
+					const FLinearColor TailShadow = WithAlpha(Palette::TrackTextShadow, Palette::TrackTextShadow.A * TailColor.A);
+					if (bSlantTail)
+					{
+						SlantedText(TailLabel, TailX + Palette::TrackTextShadowOffset, TailY + Palette::TrackTextShadowOffset, TailFont, TailShadow, LabelLayer - 1);
+						SlantedText(TailLabel, TailX, TailY, TailFont, TailColor, LabelLayer);
+					}
+					else
+					{
+						Text(TailLabel, TailX + Palette::TrackTextShadowOffset, TailY + Palette::TrackTextShadowOffset, TailFont, TailShadow, LabelLayer - 1);
+						Text(TailLabel, TailX, TailY, TailFont, TailColor, LabelLayer);
+					}
+				}
 			}
+		}
 
-			Box(BarX0 + Palette::SectionBleedWidth, BarTop + Palette::SectionBleedWidth,
-				BarWidth - Palette::SectionBleedWidth * 2.f, BarHeight - Palette::SectionBleedWidth * 2.f,
-				Palette::SectionBacking, BackingLayer, RoundedFill());
+		// A section, drawn the way the editor draws a graph node's title: a dark rounded frame, an opaque body,
+		// and on the body the node gloss, the layer color spilled over it, and a highlight sheen along the
+		// top. The gloss and spill textures are partly transparent; the body is what shows through them, the
+		// same on every section. Selection is the orange outline of a selected Blueprint node; hover lifts
+		// the color a touch.
+		// A collapsed track's body sits inside an even frame, rounded at every corner, as a collapsed graph node's does; every
+		// other track's frame shows only as a lip along its bottom.
+		const float Lip = Paint.bCollapsedLook
+			? Palette::CollapsedNodeBorder
+			: FMath::Clamp(BarHeight * Palette::SectionLipRatio, Palette::SectionLipMin, Palette::SectionLipMax);
+		const float Frame = Paint.bCollapsedLook ? Palette::CollapsedNodeBorder : Palette::SectionFrameThickness;
+		const float InnerX = BarX0 + Frame;
+		const float InnerTop = BarTop + Frame;
+		const float InnerWidth = BarWidth - Frame * 2.f;
+		const float InnerHeight = BarHeight - Frame - Lip;
 
-			Box(BarX0, BarTop, BarWidth, BarHeight, Palette::SectionFrame, FrameLayer, RoundedFill());
+		if (Paint.bSelected)
+		{
+			const float Rim = Palette::SectionSelectedOutlineSize;
+			const float Halo = Rim + Palette::SectionSelectedHaloSize;
+			Box(BarX0 - Halo, BarTop - Halo, BarWidth + Halo * 2.f, BarHeight + Halo * 2.f, Palette::SectionSelectedHalo, HaloLayer, RoundedFill(3.f + Halo));
+			Box(BarX0 - Rim, BarTop - Rim, BarWidth + Rim * 2.f, BarHeight + Rim * 2.f, Palette::SectionSelectedOutline, OutlineLayer, RoundedFill(3.f + Rim));
+		}
 
-			const bool bValueDriven = Layer.IsValueDriven();
-			const bool bDerivedLength = SWidgetAnimTimeline::HasDerivedLength(Layer);
-			const bool bStriped = bValueDriven || bDerivedLength;
-			if (InnerWidth > 0.f && InnerHeight > 0.f)
+		Box(BarX0 + Palette::SectionBleedWidth, BarTop + Palette::SectionBleedWidth,
+			BarWidth - Palette::SectionBleedWidth * 2.f, BarHeight - Palette::SectionBleedWidth * 2.f,
+			Palette::SectionBacking, BackingLayer, RoundedFill());
+
+		Box(BarX0, BarTop, BarWidth, BarHeight, Paint.bCollapsedLook ? Palette::CollapsedNodeFrame : Palette::SectionFrame, FrameLayer, RoundedFill(Paint.bCollapsedLook ? Palette::CollapsedNodeRadius : 3.f));
+
+		const bool bValueDriven = Layer && Layer->IsValueDriven();
+		const bool bDerivedLength = Layer && SWidgetAnimTimeline::HasDerivedLength(*Layer);
+		const bool bStriped = bValueDriven || bDerivedLength;
+		if (InnerWidth > 0.f && InnerHeight > 0.f)
+		{
+			const FLinearColor Spill = WithAlpha(bBarHovered && !bWashedOut ? TypeColor * Palette::SectionHoverLift : TypeColor, bStriped ? Palette::SectionValueSpillOpacity : 1.f);
+
+			if (Paint.bCollapsedLook)
 			{
-				const FLinearColor Spill = WithAlpha(bBarHovered && !bWashedOut ? TypeColor * Palette::SectionHoverLift : TypeColor, bStriped ? Palette::SectionValueSpillOpacity : 1.f);
+				// A collapsed track: a facsimile of the Blueprint collapsed graph node - a dark, blank body, rounded at every
+				// corner, with a soft gray glow in its middle fading out toward its edges. No gloss, sheen or half-tone line:
+				// those are a node title's, and a collapsed node is all body.
+				const float BodyRadius = FMath::Max(Palette::CollapsedNodeRadius - Frame, 1.f);
+				Box(InnerX, InnerTop, InnerWidth, InnerHeight, bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Palette::CollapsedNodeBody) : Palette::CollapsedNodeBody, BodyLayer, RoundedFill(BodyRadius));
 
+				// The glow, a row of pixels at a time: across each row, faded in from both ends over CollapsedNodeGlowReach of
+				// the width; down the rows, strongest in the middle and gone at the top and bottom. Clipped to the body.
+				FLinearColor Glow = bBarHovered && !bWashedOut ? Palette::CollapsedNodeGlow * Palette::SectionHoverLift : Palette::CollapsedNodeGlow;
+				if (bWashedOut)
+				{
+					Glow = SWidgetAnimTimeline::GetLockedColor(Glow);
+				}
+				Glow.A = Palette::CollapsedNodeGlow.A;
+
+				const FGeometry CollapsedGeometry = AllottedGeometry.MakeChild(FVector2f(InnerWidth, InnerHeight), FSlateLayoutTransform(FVector2f(InnerX, InnerTop)));
+				OutDrawElements.PushClip(FSlateClippingZone(CollapsedGeometry));
+
+				// Only the stretch in view is drawn - a collapsed track can run far past either side of it.
+				const float GlowLeft = FMath::Max(InnerX, -8.f);
+				const float GlowRight = FMath::Min(InnerX + InnerWidth, Size.X + 8.f);
+				// Never so far in that the two ends' stops cross, however narrow the track is.
+				const float Reach = FMath::Min(FMath::Clamp(InnerWidth * Palette::CollapsedNodeGlowReach, 4.f, Palette::CollapsedNodeGlowMaxReach), InnerWidth / 4.5f);
+				const int32 NumRows = FMath::Max(FMath::CeilToInt(InnerHeight), 1);
+				if (GlowRight > GlowLeft)
+				{
+					for (int32 Row = 0; Row < NumRows; ++Row)
+					{
+						const float Down = (Row + 0.5f) / NumRows;
+						const float Strength = FMath::Pow(FMath::Sin(Down * PI), Palette::CollapsedNodeGlowFalloff);
+						if (Strength <= 0.01f)
+						{
+							continue;
+						}
+
+						// Its stops in the row's own space, which starts at the body's left edge.
+						auto At = [&](float BodyX, float Alpha)
+						{
+							return FSlateGradientStop(FVector2D(BodyX - GlowLeft, 0.0), Glow.CopyWithNewOpacity(Glow.A * Strength * Alpha));
+						};
+						const float BodyLeft = InnerX;
+						const float BodyRight = InnerX + InnerWidth;
+						TArray<FSlateGradientStop> GlowStops;
+						// Slow out of the dark at each end and only full in the middle, so the edges stay near black.
+						GlowStops.Add(At(BodyLeft, 0.f));
+						GlowStops.Add(At(BodyLeft + Reach * 0.5f, 0.15f));
+						GlowStops.Add(At(BodyLeft + Reach, 0.45f));
+						GlowStops.Add(At(BodyLeft + Reach * 1.6f, 0.8f));
+						GlowStops.Add(At(BodyLeft + Reach * 2.2f, 1.f));
+						GlowStops.Add(At(BodyRight - Reach * 2.2f, 1.f));
+						GlowStops.Add(At(BodyRight - Reach * 1.6f, 0.8f));
+						GlowStops.Add(At(BodyRight - Reach, 0.45f));
+						GlowStops.Add(At(BodyRight - Reach * 0.5f, 0.15f));
+						GlowStops.Add(At(BodyRight, 0.f));
+						FSlateDrawElement::MakeGradient(OutDrawElements, SpillLayer,
+							AllottedGeometry.ToPaintGeometry(FVector2f(GlowRight - GlowLeft, 1.f), FSlateLayoutTransform(FVector2f(GlowLeft, InnerTop + Row))),
+							MoveTemp(GlowStops), Orient_Vertical, ESlateDrawEffect::None);
+					}
+				}
+				OutDrawElements.PopClip();
+			}
+			else
+			{
 				Box(InnerX, InnerTop, InnerWidth, InnerHeight, Palette::SectionBody, BodyLayer, RoundedFill(2.f));
 				Box(InnerX, InnerTop, InnerWidth, InnerHeight, bWashedOut ? SWidgetAnimTimeline::GetLockedColor(FLinearColor::White) : FLinearColor::White, GlossLayer, NodeTitleGloss());
 				Box(InnerX, InnerTop, InnerWidth, InnerHeight, Spill, SpillLayer, NodeColorSpill());
 				Box(InnerX, InnerTop, InnerWidth, FMath::Min(InnerHeight, Palette::SectionSheenHeight), FLinearColor::White, SheenLayer, NodeTitleHighlight());
+			}
 
-				// The macro node's half-tone line: across the body, part way down, everything below is a shade darker - most
-				// at the right end, fading out toward the middle, so the line disappears as it runs left. One gradient, so
-				// the fade is smooth with no seams, clipped to the body so its rounded corners stay round. Over the sheen
-				// rather than on its layer: Slate only promises the order of different layers.
-				const float HalfToneTop = InnerTop + FMath::RoundToFloat(InnerHeight * Palette::SectionHalfToneLine);
-				// In proportion to the track, as the node stretches its texture - capped only if SectionHalfToneMaxReach is set.
-				const float HalfToneWidth = Palette::SectionHalfToneMaxReach > 0.f
-					? FMath::Min(InnerWidth * Palette::SectionHalfToneReach, Palette::SectionHalfToneMaxReach)
-					: InnerWidth * Palette::SectionHalfToneReach;
-				const float HalfToneHeight = InnerTop + InnerHeight - HalfToneTop;
-				if (Palette::SectionHalfTone.A > 0.f && HalfToneWidth >= 1.f && HalfToneHeight > 0.f)
+			// The macro node's half-tone line: across the body, part way down, everything below is a shade darker - most
+			// at the right end, fading out toward the middle, so the line disappears as it runs left. One gradient, so
+			// the fade is smooth with no seams, clipped to the body so its rounded corners stay round. Over the sheen
+			// rather than on its layer: Slate only promises the order of different layers.
+			const float HalfToneTop = InnerTop + FMath::RoundToFloat(InnerHeight * Palette::SectionHalfToneLine);
+			// In proportion to the track, as the node stretches its texture - capped only if SectionHalfToneMaxReach is set.
+			const float HalfToneWidth = Palette::SectionHalfToneMaxReach > 0.f
+				? FMath::Min(InnerWidth * Palette::SectionHalfToneReach, Palette::SectionHalfToneMaxReach)
+				: InnerWidth * Palette::SectionHalfToneReach;
+			const float HalfToneHeight = InnerTop + InnerHeight - HalfToneTop;
+			if (!Paint.bCollapsedLook && Palette::SectionHalfTone.A > 0.f && HalfToneWidth >= 1.f && HalfToneHeight > 0.f)
+			{
+				const FGeometry HalfToneGeometry = AllottedGeometry.MakeChild(FVector2f(InnerWidth, InnerHeight), FSlateLayoutTransform(FVector2f(InnerX, InnerTop)));
+				OutDrawElements.PushClip(FSlateClippingZone(HalfToneGeometry));
+
+				// Stops along its width - Orient_Vertical puts them along X - enough to follow the falloff's curve.
+				const float HalfToneOpacity = Palette::SectionHalfTone.A * (bWashedOut ? Palette::LockedBrightness : 1.f);
+				constexpr int32 NumStops = 9;
+				TArray<FSlateGradientStop> Stops;
+				Stops.Reserve(NumStops);
+				for (int32 Stop = 0; Stop < NumStops; ++Stop)
 				{
-					const FGeometry HalfToneGeometry = AllottedGeometry.MakeChild(FVector2f(InnerWidth, InnerHeight), FSlateLayoutTransform(FVector2f(InnerX, InnerTop)));
-					OutDrawElements.PushClip(FSlateClippingZone(HalfToneGeometry));
-
-					// Stops along its width - Orient_Vertical puts them along X - enough to follow the falloff's curve.
-					const float HalfToneOpacity = Palette::SectionHalfTone.A * (bWashedOut ? Palette::LockedBrightness : 1.f);
-					constexpr int32 NumStops = 9;
-					TArray<FSlateGradientStop> Stops;
-					Stops.Reserve(NumStops);
-					for (int32 Stop = 0; Stop < NumStops; ++Stop)
-					{
-						const float Along = static_cast<float>(Stop) / (NumStops - 1);
-						const float Strength = FMath::Pow(Along, Palette::SectionHalfToneFalloff);
-						Stops.Add(FSlateGradientStop(FVector2D(Along * HalfToneWidth, 0.f), WithAlpha(Palette::SectionHalfTone, HalfToneOpacity * Strength)));
-					}
-
-					FSlateDrawElement::MakeGradient(
-						OutDrawElements,
-						SectionOverlayLayer,
-						AllottedGeometry.ToPaintGeometry(FVector2f(HalfToneWidth, HalfToneHeight), FSlateLayoutTransform(FVector2f(InnerX + InnerWidth - HalfToneWidth, HalfToneTop))),
-						MoveTemp(Stops),
-						Orient_Vertical,
-						ESlateDrawEffect::None);
-
-					OutDrawElements.PopClip();
+					const float Along = static_cast<float>(Stop) / (NumStops - 1);
+					const float Strength = FMath::Pow(Along, Palette::SectionHalfToneFalloff);
+					Stops.Add(FSlateGradientStop(FVector2D(Along * HalfToneWidth, 0.f), WithAlpha(Palette::SectionHalfTone, HalfToneOpacity * Strength)));
 				}
 
-				// A value-driven track is striped, so its place and length on the timeline don't read as when it
-				// plays: gameplay's value decides that. So is one whose length its widget decides - a text typed at its
-				// Typing Speed - since its Duration means nothing. Diagonal bands, clipped to the body, only those in view.
-				if (bStriped)
-				{
-					const FGeometry BodyGeometry = AllottedGeometry.MakeChild(FVector2f(InnerWidth, InnerHeight), FSlateLayoutTransform(FVector2f(InnerX, InnerTop)));
-					OutDrawElements.PushClip(FSlateClippingZone(BodyGeometry));
+				FSlateDrawElement::MakeGradient(
+					OutDrawElements,
+					SectionOverlayLayer,
+					AllottedGeometry.ToPaintGeometry(FVector2f(HalfToneWidth, HalfToneHeight), FSlateLayoutTransform(FVector2f(InnerX + InnerWidth - HalfToneWidth, HalfToneTop))),
+					MoveTemp(Stops),
+					Orient_Vertical,
+					ESlateDrawEffect::None);
 
-					const float StripeLength = InnerHeight * UE_SQRT_2 + Palette::SectionValueStripeWidth * 2.f;
-					const float FirstX = FMath::Max(InnerX - InnerHeight, -InnerHeight);
-					const float LastX = FMath::Min(InnerX + InnerWidth, Size.X);
-					const FLinearColor StripeColor = bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Palette::SectionValueStripe) : Palette::SectionValueStripe;
-					for (float StripeX = FirstX - FMath::Fmod(FirstX - InnerX, Palette::SectionValueStripeSpacing); StripeX < LastX; StripeX += Palette::SectionValueStripeSpacing)
+				OutDrawElements.PopClip();
+			}
+
+			// A value-driven track is striped, so its place and length on the timeline don't read as when it
+			// plays: gameplay's value decides that. So is one whose length its widget decides - a text typed at its
+			// Typing Speed - since its Duration means nothing. Diagonal bands, clipped to the body, only those in view.
+			if (bStriped)
+			{
+				const FGeometry BodyGeometry = AllottedGeometry.MakeChild(FVector2f(InnerWidth, InnerHeight), FSlateLayoutTransform(FVector2f(InnerX, InnerTop)));
+				OutDrawElements.PushClip(FSlateClippingZone(BodyGeometry));
+
+				const float StripeLength = InnerHeight * UE_SQRT_2 + Palette::SectionValueStripeWidth * 2.f;
+				const float FirstX = FMath::Max(InnerX - InnerHeight, -InnerHeight);
+				const float LastX = FMath::Min(InnerX + InnerWidth, Size.X);
+				const FLinearColor StripeColor = bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Palette::SectionValueStripe) : Palette::SectionValueStripe;
+				for (float StripeX = FirstX - FMath::Fmod(FirstX - InnerX, Palette::SectionValueStripeSpacing); StripeX < LastX; StripeX += Palette::SectionValueStripeSpacing)
+				{
+					// Each band is a thin upright box turned 45 degrees about its middle, which sits on the body's
+					// vertical center - so it crosses the whole height whatever the row's height.
+					FSlateDrawElement::MakeBox(
+						OutDrawElements,
+						SectionOverlayLayer,
+						AllottedGeometry.ToPaintGeometry(
+							FVector2f(Palette::SectionValueStripeWidth, StripeLength),
+							FSlateLayoutTransform(FVector2f(StripeX + InnerHeight * 0.5f - Palette::SectionValueStripeWidth * 0.5f, InnerTop + InnerHeight * 0.5f - StripeLength * 0.5f)),
+							FSlateRenderTransform(FQuat2f(FMath::DegreesToRadians(45.f))),
+							FVector2f(0.5f, 0.5f)),
+						Flat,
+						ESlateDrawEffect::None,
+						StripeColor);
+				}
+
+				OutDrawElements.PopClip();
+			}
+
+			// A track playing backward - inverted on its own, or the preview's Invert on - wears a row of faint chevrons
+			// pointing back along it, so which way it runs reads at a glance. Clipped to the body; only those in view.
+			if (Paint.bInverted && InnerHeight >= 8.f)
+			{
+				const FGeometry BodyGeometry = AllottedGeometry.MakeChild(FVector2f(InnerWidth, InnerHeight), FSlateLayoutTransform(FVector2f(InnerX, InnerTop)));
+				OutDrawElements.PushClip(FSlateClippingZone(BodyGeometry));
+
+				const float Arm = FMath::Clamp(InnerHeight * 0.22f, 3.f, 6.f);
+				const float Stroke = 1.5f;
+				const float StrokeLength = Arm * UE_SQRT_2;
+				const float CenterY = InnerTop + InnerHeight * 0.5f;
+				const FLinearColor ChevronColor = bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Palette::InvertChevron) : Palette::InvertChevron;
+				// From the section's start, skipping those left of the view.
+				const float Spacing = Palette::InvertChevronSpacing;
+				float TipX = InnerX + Spacing * 0.5f;
+				if (TipX < -Spacing)
+				{
+					TipX += FMath::CeilToFloat((-Spacing - TipX) / Spacing) * Spacing;
+				}
+				for (; TipX < FMath::Min(InnerX + InnerWidth - Arm, Size.X + Arm); TipX += Spacing)
+				{
+					// A "<": two short strokes meeting at its tip on the left, each turned 45 degrees about its middle.
+					for (const float Sign : { -1.f, 1.f })
 					{
-						// Each band is a thin upright box turned 45 degrees about its middle, which sits on the body's
-						// vertical center - so it crosses the whole height whatever the row's height.
 						FSlateDrawElement::MakeBox(
 							OutDrawElements,
 							SectionOverlayLayer,
 							AllottedGeometry.ToPaintGeometry(
-								FVector2f(Palette::SectionValueStripeWidth, StripeLength),
-								FSlateLayoutTransform(FVector2f(StripeX + InnerHeight * 0.5f - Palette::SectionValueStripeWidth * 0.5f, InnerTop + InnerHeight * 0.5f - StripeLength * 0.5f)),
-								FSlateRenderTransform(FQuat2f(FMath::DegreesToRadians(45.f))),
+								FVector2f(StrokeLength, Stroke),
+								FSlateLayoutTransform(FVector2f(TipX + Arm * 0.5f - StrokeLength * 0.5f, CenterY + Sign * Arm * 0.5f - Stroke * 0.5f)),
+								FSlateRenderTransform(FQuat2f(FMath::DegreesToRadians(Sign * 45.f))),
 								FVector2f(0.5f, 0.5f)),
 							Flat,
 							ESlateDrawEffect::None,
-							StripeColor);
+							ChevronColor);
 					}
-
-					OutDrawElements.PopClip();
 				}
+
+				OutDrawElements.PopClip();
 			}
+		}
 
-			// The resize handle: a lit strip along the edge under the mouse, or the one being dragged.
-			const EEdge LitEdge = GetLitEdge(LayerIndex);
-			if (LitEdge != EEdge::None)
+		// The resize handle: a lit strip along the edge under the mouse, or the one being dragged.
+		const EEdge LitEdge = bInteractive ? GetLitEdge(LayerIndex) : EEdge::None;
+		if (LitEdge != EEdge::None)
+		{
+			const float HandleX = LitEdge == EEdge::Start ? BarX0 : BarX0 + BarWidth - Palette::SectionEdgeHandleWidth;
+			Box(HandleX, BarTop, Palette::SectionEdgeHandleWidth, BarHeight, Palette::SectionEdgeHandle, SectionOverlayLayer);
+		}
+
+		// A hidden track wears a closed eye at its start, a locked one a lock, a pinned one a pin - any of them, if it is
+		// more than one - and its text moves along to make room. A collapsed track wears its own glyph first.
+		const float Padding = Palette::SectionTextPadding;
+		float TextLeft = BarX0 + Padding;
+		float GlyphX = BarX0 + Padding * 0.5f;
+
+		// An animation track opens from an arrow at its start - see GetAnimationFoldRect - and everything else on it
+		// moves along to make room.
+		if (Layer && Layer->IsAnimationTrack() && bInteractive)
+		{
+			const FBox2f FoldRect = GetAnimationFoldRect(Paint.Rect);
+			const bool bArrowHovered = Drag == EDrag::None && Hover.Layer == LayerIndex && Hover.bOnFold;
+			if (const FSlateBrush* Arrow = Owner->IsAnimationTrackExpanded(LayerIndex)
+				? PickBrush({ "TreeArrow_Expanded", "Icons.ChevronDown" })
+				: PickBrush({ "TreeArrow_Collapsed", "Icons.ChevronRight" }))
 			{
-				const float HandleX = LitEdge == EEdge::Start ? BarX0 : BarX0 + BarWidth - Palette::SectionEdgeHandleWidth;
-				Box(HandleX, BarTop, Palette::SectionEdgeHandleWidth, BarHeight, Palette::SectionEdgeHandle, SectionOverlayLayer);
-			}
-
-			// A hidden track wears a closed eye at its start, a locked one a lock - both, if it is both - and its
-			// text moves along to make room.
-			const float Padding = Palette::SectionTextPadding;
-			float TextLeft = BarX0 + Padding;
-			float GlyphX = BarX0 + Padding * 0.5f;
-
-			// An animation track opens from an arrow at its start - see GetAnimationFoldRect - and everything else on it
-			// moves along to make room.
-			if (Layer.IsAnimationTrack())
-			{
-				const FBox2f FoldRect = GetAnimationFoldRect(Rect);
-				const bool bArrowHovered = Drag == EDrag::None && Hover.Layer == LayerIndex && Hover.bOnFold;
-				if (const FSlateBrush* Arrow = Owner->IsAnimationTrackExpanded(LayerIndex)
-					? PickBrush({ "TreeArrow_Expanded", "Icons.ChevronDown" })
-					: PickBrush({ "TreeArrow_Collapsed", "Icons.ChevronRight" }))
+				if (FoldRect.Max.X <= BarX0 + BarWidth)
 				{
-					if (FoldRect.Max.X <= BarX0 + BarWidth)
-					{
-						Box(FoldRect.Min.X, FoldRect.Min.Y, FoldArrowSize, FoldArrowSize, WithAlpha(FLinearColor::White, bArrowHovered ? 1.f : 0.8f), SectionOverlayLayer, Arrow);
-					}
+					Box(FoldRect.Min.X, FoldRect.Min.Y, FoldRect.Max.X - FoldRect.Min.X, FoldRect.Max.Y - FoldRect.Min.Y, WithAlpha(FLinearColor::White, bArrowHovered ? 1.f : 0.8f), SectionOverlayLayer, Arrow);
 				}
-				GlyphX = FoldRect.Max.X + 4.f;
+			}
+			GlyphX = FoldRect.Max.X + 4.f;
+			TextLeft = GlyphX + Padding * 0.5f;
+		}
+		for (const FSlateBrush* Glyph : { Paint.Glyph, Paint.bHidden ? HiddenBrush : nullptr, Paint.bLocked ? LockBrush : nullptr, Paint.bPinned ? PinBrush : nullptr })
+		{
+			if (Glyph && GlyphX - BarX0 + Palette::LockedGlyphSize + Padding <= BarWidth)
+			{
+				const float GlyphSize = FMath::Min(Palette::LockedGlyphSize, InnerHeight);
+				Box(GlyphX, InnerTop + (InnerHeight - GlyphSize) * 0.5f, GlyphSize, GlyphSize, Palette::LockedGlyph, SectionOverlayLayer, Glyph);
+				GlyphX += GlyphSize + 3.f;
 				TextLeft = GlyphX + Padding * 0.5f;
 			}
-			for (const FSlateBrush* Glyph : { bTrackHidden ? HiddenBrush : nullptr, bTrackLocked ? LockBrush : nullptr })
-			{
-				if (Glyph && GlyphX - BarX0 + Palette::LockedGlyphSize + Padding <= BarWidth)
-				{
-					const float GlyphSize = FMath::Min(Palette::LockedGlyphSize, InnerHeight);
-					Box(GlyphX, InnerTop + (InnerHeight - GlyphSize) * 0.5f, GlyphSize, GlyphSize, Palette::LockedGlyph, SectionOverlayLayer, Glyph);
-					GlyphX += GlyphSize + 3.f;
-					TextLeft = GlyphX + Padding * 0.5f;
-				}
-			}
+		}
 
-			// Every key of the track, in seconds from its start - its start and end among them on a keyed track.
-			TArray<float> KeyTimes;
-			Owner->GetKeyTimes(LayerIndex, KeyTimes);
+		const TArray<float>& KeyTimes = Paint.KeyTimes;
 
-			// A track some of whose segments have curves of their own has no one easing to name: each segment names
-			// its own curve instead, small, in the middle of its stretch - see below.
-			const bool bLabelSegments = Owner->UsesSegmentCurves(LayerIndex) && Owner->HasSegmentCurves(LayerIndex) && KeyTimes.Num() >= 2;
+		// A track some of whose segments have curves of their own has no one easing to name: each segment names
+		// its own curve instead, small, in the middle of its stretch - see below.
+		const bool bLabelSegments = Layer && WidgetAnimTimeline::LayerUsesSegmentCurves(*Layer) && WidgetAnimTimeline::LayerHasSegmentCurves(*Layer) && KeyTimes.Num() >= 2;
 
-			// Inside it: its type and length on the left, its easing - or Spring - on the right, in the graph node
-			// title's own text style. Whichever doesn't fit is dropped, the easing first, so text never spills out.
-			// On a plain list, a track moving another widget than the list's own says which.
-			const bool bNamesTarget = Owner->GetSource() && Owner->GetSource()->SupportsLayerTargets() && !Layer.TargetWidget.IsNone();
+		// Inside it: its type and length on the left, its easing - or Spring - on the right, in the graph node
+		// title's own text style. Whichever doesn't fit is dropped, the easing first, so text never spills out.
+		// On a plain list, a track moving another widget than the list's own says which.
+		FString Label = Paint.Title;
+		FString EasingLabel = Paint.Secondary;
+		const bool bCue = Layer && SWidgetAnimTimeline::IsCueLayer(*Layer);
+		if (Layer)
+		{
 			// A value-driven track says so in place of its length, which only times its preview sweep.
 			// One whose length its widget decides says what decides it, beside the length the preview works out.
 			FString LengthLabel = bValueDriven
@@ -2051,241 +2302,566 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 				: FString::Printf(TEXT("%.2fs"), Span.Y);
 			if (bDerivedLength)
 			{
-				const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator();
-				const FText DerivedLabel = Evaluator ? Evaluator->GetDerivedLengthLabel(Layer.TypeParams) : FText::GetEmpty();
+				const FWidgetAnimEvaluator* Evaluator = Layer->FindEvaluator();
+				const FText DerivedLabel = Evaluator ? Evaluator->GetDerivedLengthLabel(Layer->TypeParams) : FText::GetEmpty();
 				if (!DerivedLabel.IsEmpty())
 				{
 					LengthLabel = FString::Printf(TEXT("%s (%s)"), *LengthLabel, *DerivedLabel.ToString());
 				}
 			}
-			const FString Label = bNamesTarget
-				? FString::Printf(TEXT("%s \u2192 %s  %s"), *SWidgetAnimTimeline::GetLayerTypeName(Layer).ToString(), *Layer.TargetWidget.ToString(), *LengthLabel)
-				: FString::Printf(TEXT("%s  %s"), *SWidgetAnimTimeline::GetLayerTypeName(Layer).ToString(), *LengthLabel);
+			Label = Paint.bNamesTarget
+				? FString::Printf(TEXT("%s \u2192 %s  %s"), *SWidgetAnimTimeline::GetLayerTypeName(*Layer).ToString(), *Layer->TargetWidget.ToString(), *LengthLabel)
+				: FString::Printf(TEXT("%s  %s"), *SWidgetAnimTimeline::GetLayerTypeName(*Layer).ToString(), *LengthLabel);
+
 			// A cue has no easing - it fires at points, not along a curve - so it says what it does there instead.
-			const bool bCue = SWidgetAnimTimeline::IsCueLayer(Layer);
-			const FWidgetAnimEvaluator* CueEvaluator = bCue ? Layer.FindEvaluator() : nullptr;
-			const FString EasingLabel = CueEvaluator
-				? CueEvaluator->GetTrackSummary(Layer.TypeParams).ToString()
-				: SWidgetAnimTimeline::GetEasingName(Layer).ToString();
-			const FVector2f EasingSize = MeasureText(EasingLabel, LayerFont);
-			const float TextOpacity = bWashedOut ? Palette::LockedBrightness + 0.2f : 1.f;
-			const FLinearColor TitleColor = NodeTitleStyle.ColorAndOpacity.GetSpecifiedColor() * FLinearColor(1.f, 1.f, 1.f, TextOpacity);
+			const FWidgetAnimEvaluator* CueEvaluator = bCue ? Layer->FindEvaluator() : nullptr;
+			EasingLabel = CueEvaluator
+				? CueEvaluator->GetTrackSummary(Layer->TypeParams).ToString()
+				: SWidgetAnimTimeline::GetEasingName(*Layer).ToString();
+		}
 
-			// At its own size when it fits; zoomed out, shrunk to fit or left out - see FitTrackText.
-			FSlateFontInfo TitleFont;
-			FVector2f LabelSize;
-			const bool bTitleShown = FitTrackText(Label, LayerFont, BarWidth - (TextLeft - BarX0) - Padding, TitleFont, LabelSize);
-			const bool bTitleFullSize = bTitleShown && TitleFont.Size == LayerFont.Size;
-			const float TextY = InnerTop + (InnerHeight - LabelSize.Y) * 0.5f;
-			// The full-size title's line, which the segment names and the easing sit on, even while the title is shrunk.
-			const float FullTextY = InnerTop + (InnerHeight - MeasureText(Label, LayerFont).Y) * 0.5f;
-			if (bTitleShown)
+		const FVector2f EasingSize = MeasureText(EasingLabel, LayerFont);
+		const float TextOpacity = bWashedOut ? Palette::LockedBrightness + 0.2f : 1.f;
+		const FLinearColor TitleColor = (Paint.bCollapsedLook ? Palette::CollapsedNodeText : NodeTitleStyle.ColorAndOpacity.GetSpecifiedColor()) * FLinearColor(1.f, 1.f, 1.f, TextOpacity);
+
+		// At its own size when it fits; zoomed out, shrunk to fit or left out - see FitTrackText.
+		FSlateFontInfo TitleFont;
+		FVector2f LabelSize;
+		const bool bTitleShown = FitTrackText(Label, LayerFont, BarWidth - (TextLeft - BarX0) - Padding, TitleFont, LabelSize);
+		const bool bTitleFullSize = bTitleShown && TitleFont.Size == LayerFont.Size;
+		const float TextY = InnerTop + (InnerHeight - LabelSize.Y) * 0.5f;
+		// The full-size title's line, which the segment names and the easing sit on, even while the title is shrunk.
+		const float FullTextY = InnerTop + (InnerHeight - MeasureText(Label, LayerFont).Y) * 0.5f;
+		if (bTitleShown)
+		{
+			TrackText(Label, TextLeft, TextY, TitleFont, TitleColor, bSlantLayerText);
+		}
+
+		// Each segment's curve, named in the middle of its stretch - a segment with a curve of its own brighter
+		// than one left at the track's Easing. Any that doesn't fit between its keys, clear of the title, is left
+		// unnamed; its tooltip still lists every segment's curve.
+		if (bLabelSegments)
+		{
+			FSlateFontInfo SegmentFont = FCoreStyle::GetDefaultFontStyle("Regular", 9);
+			const bool bSlantSegmentText = Paint.bHidden && !ItalicOf(FCoreStyle::GetDefaultFontStyle("Regular", 9), SegmentFont);
+
+			// On the title's baseline, so the two read as one line of text. Centering each by its measured height
+			// doesn't: a line's height includes the room below the baseline for descenders, so a smaller font
+			// centered that way sits visibly higher than a larger one beside it.
+			const float TitleBaselineY = FullTextY + Measure->GetMaxCharacterHeight(LayerFont) + Measure->GetBaseline(LayerFont);
+			const float SegmentAscent = Measure->GetMaxCharacterHeight(SegmentFont) + Measure->GetBaseline(SegmentFont);
+			const float TitleRight = bTitleShown ? TextLeft + LabelSize.X + 8.f : TextLeft;
+			const float KeyClearance = KeyDiamond * 0.5f + 4.f;
+
+			for (int32 Segment = 0; Segment + 1 < KeyTimes.Num(); ++Segment)
 			{
-				TrackText(Label, TextLeft, TextY, TitleFont, TitleColor, bSlantLayerText);
-			}
-
-			// Each segment's curve, named in the middle of its stretch - a segment with a curve of its own brighter
-			// than one left at the track's Easing. Any that doesn't fit between its keys, clear of the title, is left
-			// unnamed; its tooltip still lists every segment's curve.
-			if (bLabelSegments)
-			{
-				FSlateFontInfo SegmentFont = FCoreStyle::GetDefaultFontStyle("Regular", 9);
-				const bool bSlantSegmentText = bTrackHidden && !ItalicOf(FCoreStyle::GetDefaultFontStyle("Regular", 9), SegmentFont);
-
-				// On the title's baseline, so the two read as one line of text. Centering each by its measured height
-				// doesn't: a line's height includes the room below the baseline for descenders, so a smaller font
-				// centered that way sits visibly higher than a larger one beside it.
-				const float TitleBaselineY = FullTextY + Measure->GetMaxCharacterHeight(LayerFont) + Measure->GetBaseline(LayerFont);
-				const float SegmentAscent = Measure->GetMaxCharacterHeight(SegmentFont) + Measure->GetBaseline(SegmentFont);
-				const float TitleRight = bTitleShown ? TextLeft + LabelSize.X + 8.f : TextLeft;
-				const float KeyClearance = KeyDiamond * 0.5f + 4.f;
-
-				for (int32 Segment = 0; Segment + 1 < KeyTimes.Num(); ++Segment)
+				const FWidgetAnimSegmentCurve* Curve = WidgetAnimTimeline::GetLayerSegmentCurve(*Layer, Segment);
+				if (!Curve)
 				{
-					const FWidgetAnimSegmentCurve* Curve = Owner->GetSegmentCurve(LayerIndex, Segment);
-					if (!Curve)
-					{
-						continue;
-					}
-
-					const FString CurveName = Curve->IsTrackEasing()
-						? SWidgetAnimTimeline::GetEasingName(Layer).ToString()
-						: SWidgetAnimTimeline::GetSegmentCurveName(*Curve).ToString();
-					const FVector2f CurveNameSize = MeasureText(CurveName, SegmentFont);
-
-					const float SegmentLeft = FMath::Max(TimeToX(Span.X + KeyTimes[Segment], Size.X) + KeyClearance, TitleRight);
-					const float SegmentRight = FMath::Min(TimeToX(Span.X + KeyTimes[Segment + 1], Size.X) - KeyClearance, BarX0 + BarWidth - 4.f);
-					if (SegmentRight - SegmentLeft < CurveNameSize.X)
-					{
-						continue;
-					}
-
-					const float CurveNameX = FMath::Clamp((SegmentLeft + SegmentRight - CurveNameSize.X) * 0.5f, SegmentLeft, SegmentRight - CurveNameSize.X);
-					const float CurveNameY = TitleBaselineY - SegmentAscent;
-					const float Opacity = TextOpacity * (Curve->IsTrackEasing() ? Palette::SegmentLabelTrackEasingOpacity : Palette::SegmentLabelOwnCurveOpacity);
-
-					TrackText(CurveName, CurveNameX, CurveNameY, SegmentFont, FLinearColor(1.f, 1.f, 1.f, Opacity), bSlantSegmentText);
+					continue;
 				}
-			}
 
-			// Only beside a title at its full size: once the title has to shrink, the easing gives way to it.
-			if (!bLabelSegments && bTitleFullSize && TextLeft - BarX0 + LabelSize.X + EasingSize.X + Padding * 2.f + 12.f <= BarWidth)
-			{
-				TrackText(EasingLabel, BarX0 + BarWidth - Padding - EasingSize.X, TextY, LayerFont, TitleColor * FLinearColor(1.f, 1.f, 1.f, Palette::SectionSecondaryTextOpacity), bSlantLayerText);
-			}
+				const FString CurveName = Curve->IsTrackEasing()
+					? SWidgetAnimTimeline::GetEasingName(*Layer).ToString()
+					: SWidgetAnimTimeline::GetSegmentCurveName(*Curve).ToString();
+				const FVector2f CurveNameSize = MeasureText(CurveName, SegmentFont);
 
-			// Keys: diamonds, button-like - normal, hovered (lighter, bigger), pressed (darker), selected (orange,
-			// with a glow). A key that can't be edited is drawn grayed.
-			const bool bKeysEditable = Owner->CanEditKeys(LayerIndex);
-			const float KeyY = InnerTop + InnerHeight * 0.5f;
-
-			// A cue's points it fires at: a line down through the section under each one's key. A point it doesn't fire
-			// at - its end, unless Fire At End - keeps its key, faded, so it can still be dragged to set the length.
-			TArray<TPair<int32, float>, TInlineAllocator<8>> CuePoints;
-			if (bCue)
-			{
-				WidgetAnimCues::GetFiringPoints(Layer.TypeParams, Layer.ValueKeys, CuePoints);
-				const FLinearColor MarkerColor = bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Palette::CueMarker) : Palette::CueMarker;
-				for (const TPair<int32, float>& CuePoint : CuePoints)
+				const float SegmentLeft = FMath::Max(TimeToX(Span.X + KeyTimes[Segment], Size.X) + KeyClearance, TitleRight);
+				const float SegmentRight = FMath::Min(TimeToX(Span.X + KeyTimes[Segment + 1], Size.X) - KeyClearance, BarX0 + BarWidth - 4.f);
+				if (SegmentRight - SegmentLeft < CurveNameSize.X)
 				{
-					if (KeyTimes.IsValidIndex(CuePoint.Key))
-					{
-						const float MarkerX = TimeToX(Span.X + KeyTimes[CuePoint.Key], Size.X);
-						Box(MarkerX - Palette::CueMarkerWidth * 0.5f, InnerTop, Palette::CueMarkerWidth, InnerHeight, MarkerColor, SectionOverlayLayer);
-					}
+					continue;
 				}
-			}
 
-			for (int32 Key = 0; Key < KeyTimes.Num(); ++Key)
-			{
-				const float X = TimeToX(Span.X + KeyTimes[Key], Size.X);
-				const bool bSilentCueKey = bCue && !CuePoints.ContainsByPredicate([Key](const TPair<int32, float>& CuePoint) { return CuePoint.Key == Key; });
+				const float CurveNameX = FMath::Clamp((SegmentLeft + SegmentRight - CurveNameSize.X) * 0.5f, SegmentLeft, SegmentRight - CurveNameSize.X);
+				const float CurveNameY = TitleBaselineY - SegmentAscent;
+				const float Opacity = TextOpacity * (Curve->IsTrackEasing() ? Palette::SegmentLabelTrackEasingOpacity : Palette::SegmentLabelOwnCurveOpacity);
 
-				const bool bSelected = Owner->IsKeySelected(LayerIndex, Key);
-				const bool bPressed = bKeysEditable && IsKeyPressed(LayerIndex, Key);
-				const bool bHovered = !bPressed && Drag == EDrag::None && Hover.Layer == LayerIndex && Hover.Key == Key;
-
-				FLinearColor Color = bKeysEditable ? Palette::Key : Palette::KeyReadOnly;
-				float Scale = 1.f;
-
-				if (bSelected)
-				{
-					Color = Palette::KeySelected;
-				}
-				if (bHovered)
-				{
-					Color = bSelected ? Palette::KeySelected * 1.2f : (bKeysEditable ? Palette::KeyHovered : Palette::Key);
-					Scale = 1.15f;
-				}
-				if (bPressed)
-				{
-					Color = (bSelected ? Palette::KeySelected : Palette::Key) * 0.7f;
-					Scale = 0.95f;
-				}
-				Color.A = bSilentCueKey && !bSelected ? Palette::CueSilentKeyOpacity : 1.f;
-
-				if (bSelected)
-				{
-					Diamond(X, KeyY, KeyDiamond * Scale + 5.f, Palette::KeySelectedGlow, KeyGlowLayer);
-				}
-				Diamond(X, KeyY, KeyDiamond * Scale + 2.f, Palette::KeyOutline, KeyOutlineLayer);
-				Diamond(X, KeyY, KeyDiamond * Scale, Color, KeyFillLayer);
+				TrackText(CurveName, CurveNameX, CurveNameY, SegmentFont, FLinearColor(1.f, 1.f, 1.f, Opacity), bSlantSegmentText);
 			}
 		}
-	}
 
-	// ---- An open animation track's lines: its animation's groups and tracks, shown only ------------------------
+		// Only beside a title at its full size: once the title has to shrink, the easing gives way to it. An animation
+		// track's - "Widget Animation, 3 tracks" - sits a little further in from its end, where its font's last letters
+		// otherwise touch the section's rounded edge.
+		const float RightPadding = Layer && Layer->IsAnimationTrack() ? Padding + Palette::AnimationTrackTextRightPadding : Padding;
+		if (!bLabelSegments && bTitleFullSize && !EasingLabel.IsEmpty() && TextLeft - BarX0 + LabelSize.X + EasingSize.X + Padding + RightPadding + 12.f <= BarWidth)
+		{
+			TrackText(EasingLabel, BarX0 + BarWidth - RightPadding - EasingSize.X, TextY, LayerFont, TitleColor * FLinearColor(1.f, 1.f, 1.f, Palette::SectionSecondaryTextOpacity), bSlantLayerText);
+		}
 
-	const FSlateFontInfo NestedFont = FCoreStyle::GetDefaultFontStyle("Regular", 8);
-	const FSlateFontInfo NestedGroupFont = FCoreStyle::GetDefaultFontStyle("Bold", 8);
-	for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
+		// A Sound cue's fades: the volume's ramp up from silence at its start and down to silence at its end, drawn as a
+		// line across the body along its Fade Curve - how loud it is along the track, as an audio editor draws a fade.
+		if (const FWidgetAnimSoundCueParams* Sound = Layer && bCue ? Layer->TypeParams.GetPtr<FWidgetAnimSoundCueParams>() : nullptr)
+		{
+			const FLinearColor FadeColor = bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Palette::SoundFadeLine) : Palette::SoundFadeLine;
+			const float FadeTop = InnerTop + 2.f;
+			const float FadeBottom = InnerTop + InnerHeight - 1.f;
+			auto DrawFade = [&](float FromSeconds, float Length, bool bFadingIn)
+			{
+				if (Length <= 0.f || FadeBottom - FadeTop < 4.f)
+				{
+					return;
+				}
+
+				constexpr int32 NumSteps = 12;
+				TArray<FVector2f> Points;
+				Points.Reserve(NumSteps + 1);
+				for (int32 StepIndex = 0; StepIndex <= NumSteps; ++StepIndex)
+				{
+					const float T = static_cast<float>(StepIndex) / NumSteps;
+					const float Volume = WidgetAnimTimeline::SoundFadeShape(Sound->FadeCurve, bFadingIn ? T : 1.f - T);
+					Points.Add(FVector2f(TimeToX(FromSeconds + T * Length, Size.X), FMath::Lerp(FadeBottom, FadeTop, Volume)));
+				}
+				FSlateDrawElement::MakeLines(OutDrawElements, SectionOverlayLayer, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None, FadeColor, /*bAntialias=*/true, 1.5f);
+			};
+
+			// In the track's played seconds, never past its ends. The fade out finishes as the track does.
+			const float FadeIn = FMath::Min(FMath::Max(Sound->FadeIn, 0.f), Span.Y);
+			const float FadeOut = FMath::Min(FMath::Max(Sound->FadeOut, 0.f), Span.Y);
+			DrawFade(Span.X, FadeIn, /*bFadingIn=*/true);
+			DrawFade(Span.X + Span.Y - FadeOut, FadeOut, /*bFadingIn=*/false);
+		}
+
+		// Keys: diamonds, button-like - normal, hovered (lighter, bigger), pressed (darker), selected (orange,
+		// with a glow). A key that can't be edited is drawn grayed.
+		const bool bKeysEditable = Paint.bKeysEditable;
+		const float KeyY = InnerTop + InnerHeight * 0.5f;
+
+		// A cue's points it fires at: a line down through the section under each one's key. A point it doesn't fire
+		// at - its end, unless Fire At End - keeps its key, faded, so it can still be dragged to set the length.
+		TArray<TPair<int32, float>, TInlineAllocator<8>> CuePoints;
+		if (bCue)
+		{
+			WidgetAnimCues::GetFiringPoints(Layer->TypeParams, Layer->ValueKeys, CuePoints);
+			const FLinearColor MarkerColor = bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Palette::CueMarker) : Palette::CueMarker;
+			for (const TPair<int32, float>& CuePoint : CuePoints)
+			{
+				if (KeyTimes.IsValidIndex(CuePoint.Key))
+				{
+					const float MarkerX = TimeToX(Span.X + KeyTimes[CuePoint.Key], Size.X);
+					Box(MarkerX - Palette::CueMarkerWidth * 0.5f, InnerTop, Palette::CueMarkerWidth, InnerHeight, MarkerColor, SectionOverlayLayer);
+				}
+			}
+		}
+
+		for (int32 Key = 0; Key < KeyTimes.Num(); ++Key)
+		{
+			const float X = TimeToX(Span.X + KeyTimes[Key], Size.X);
+			const bool bSilentCueKey = bCue && !CuePoints.ContainsByPredicate([Key](const TPair<int32, float>& CuePoint) { return CuePoint.Key == Key; });
+
+			const bool bSelected = bInteractive && Owner->IsKeySelected(LayerIndex, Key);
+			const bool bPressed = bInteractive && bKeysEditable && IsKeyPressed(LayerIndex, Key);
+			const bool bHovered = bInteractive && !bPressed && Drag == EDrag::None && Hover.Layer == LayerIndex && Hover.Key == Key;
+
+			FLinearColor Color = bKeysEditable ? Palette::Key : Palette::KeyReadOnly;
+			float Scale = 1.f;
+
+			if (bSelected)
+			{
+				Color = Palette::KeySelected;
+			}
+			if (bHovered)
+			{
+				Color = bSelected ? Palette::KeySelected * 1.2f : (bKeysEditable ? Palette::KeyHovered : Palette::Key);
+				Scale = 1.15f;
+			}
+			if (bPressed)
+			{
+				Color = (bSelected ? Palette::KeySelected : Palette::Key) * 0.7f;
+				Scale = 0.95f;
+			}
+			Color.A = bSilentCueKey && !bSelected ? Palette::CueSilentKeyOpacity : 1.f;
+
+			if (bSelected)
+			{
+				Diamond(X, KeyY, KeyDiamond * Scale + 5.f, Palette::KeySelectedGlow, KeyGlowLayer);
+			}
+			Diamond(X, KeyY, KeyDiamond * Scale + 2.f, Palette::KeyOutline, KeyOutlineLayer);
+			Diamond(X, KeyY, KeyDiamond * Scale, Color, KeyFillLayer);
+		}
+	};
+
+	auto PaintLines = [&](bool bPinnedPass)
 	{
-		const FTrackLine& Line = Lines[LineIndex];
-		const TArray<FVector2f>* NestedSpans = Line.IsNested() ? Owner->GetNestedSpans(Line.AnimationLayer) : nullptr;
-		const UWidgetAnimPresetAsset* Animation = Line.IsNested() ? Owner->GetInsertedAnimation(Line.AnimationLayer) : nullptr;
-		if (!NestedSpans || !Animation || !IsLineVisible(LineIndex))
+		const float ClipTop = bPinnedPass ? RulerHeight : PinnedBottom;
+		const float ClipBottom = bPinnedPass ? PinnedBottom : Size.Y;
+		if (ClipBottom <= ClipTop)
 		{
-			continue;
+			return;
 		}
 
-		const float LineTop = GetLineTop(LineIndex);
-		const float CenterY = LineTop + RowHeight * 0.5f;
+		const FGeometry ClipGeometry = AllottedGeometry.MakeChild(FVector2f(Size.X, ClipBottom - ClipTop), FSlateLayoutTransform(FVector2f(0.f, ClipTop)));
+		OutDrawElements.PushClip(FSlateClippingZone(ClipGeometry));
 
-		if (Line.Kind == FTrackLine::EKind::NestedGroup)
+		// Where this pass's lines end: the bottom of its last line, or of the band.
+		const float PassBottom = bPinnedPass ? PinnedBottom : FMath::Min(RowsBottom, Size.Y);
+
+		auto IsLineVisible = [&](int32 LineIndex)
 		{
-			// Its fold arrow, and its name - the animation's own name for it - where the track starts, over a slim bar
-			// of the stretch the group moves, in the animation orange.
-			FVector2f GroupSpan(TNumericLimits<float>::Max(), -TNumericLimits<float>::Max());
-			for (int32 Index = 0; Index < Animation->Layers.Num() && NestedSpans->IsValidIndex(Index); ++Index)
+			if ((LineIndex < NumPinned) != bPinnedPass)
 			{
-				if (UWidgetAnimLibrary::GetLayerGroupIndex(Animation->Layers[Index], Animation->LayerGroups.Num()) == Line.NestedGroup || Animation->LayerGroups.Num() == 0)
+				return false;
+			}
+			const float Top = GetLineTop(LineIndex);
+			return Top + RowHeight >= ClipTop && Top <= ClipBottom;
+		};
+
+		for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
+		{
+			if (!IsLineVisible(LineIndex))
+			{
+				continue;
+			}
+
+			const FTrackLine& Line = Lines[LineIndex];
+			const float Y = GetLineTop(LineIndex);
+			const bool bGroupLine = Line.Kind == FTrackLine::EKind::Group || Line.Kind == FTrackLine::EKind::NestedGroup;
+
+			// Group lines read as headers, like Sequencer's folder rows; track lines alternate very gently. Pinned lines
+			// alternate by where they are, since they come from any group.
+			const int32 Parity = Line.bPinned ? LineIndex : Line.Ordinal;
+			const FLinearColor Base = bGroupLine
+				? HeaderColor()
+				: (Parity % 2 == 0 ? BackgroundColor() : FMath::Lerp(BackgroundColor(), RecessedColor(), 0.5f));
+			Box(0.f, Y, Size.X, RowHeight, Base, RowLayer);
+
+			// A pinned line is lifted a shade, so the band reads as apart from what scrolls under it.
+			if (Line.bPinned)
+			{
+				Box(0.f, Y, Size.X, RowHeight, Palette::PinnedLineTint, RowLayer);
+			}
+
+			// An open animation track's lines are another animation's: tinted its orange, with an orange strip beside the
+			// group's band, so they never read as this animation's own.
+			if (Line.IsNested())
+			{
+				Box(0.f, Y, Size.X, RowHeight, Line.Kind == FTrackLine::EKind::NestedGroup ? Palette::NestedHeaderTint : Palette::NestedTint, RowLayer);
+				Box(GroupBandWidth, Y, Palette::NestedEdgeWidth, RowHeight, Palette::NestedEdge, GridLayer);
+			}
+
+			const bool bGroupSelected = Line.Kind == FTrackLine::EKind::Group && Selection.Group == Line.Group && Selection.Layer == INDEX_NONE;
+			bool bDropTarget = false;
+			for (const int32 LayerIndex : Line.Layers)
+			{
+				bDropTarget |= Owner->IsDraggingLayers() && Owner->IsLayerBeingDragged(LayerIndex);
+			}
+
+			if (bGroupSelected)
+			{
+				Box(0.f, Y, Size.X, RowHeight, WithAlpha(SelectColor(), Palette::RowSelectedTintAlpha), RowLayer);
+			}
+			else if (bDropTarget)
+			{
+				Box(0.f, Y, Size.X, RowHeight, Palette::LineDropTarget, RowLayer);
+			}
+			else if (LineIndex == Hover.Line && Drag == EDrag::None)
+			{
+				Box(0.f, Y, Size.X, RowHeight, WithAlpha(HoverColor(), Palette::RowHoveredTintAlpha * 0.5f), RowLayer);
+			}
+
+			// A thin line under every line, as between Sequencer's tracks, and the group's color down its left edge.
+			Box(0.f, Y + RowHeight - 1.f, Size.X, 1.f, SeparatorColor, RowLayer);
+			Box(0.f, Y, GroupBandWidth, RowHeight, SWidgetAnimTimeline::GetGroupColor(Line.Group), GridLayer);
+		}
+
+		// The animation the list plays within: its tracks, grayed and out of reach, on rows of their own above the list's,
+		// so the list's tracks can be placed against it. Nothing here can be selected, dragged or edited.
+		const int32 NumContextRows = GetNumContextRows();
+		const TArray<FWidgetAnimLayer>* ContextLayers = Owner->GetContextLayers();
+		if (!bPinnedPass && NumContextRows > 0 && ContextLayers)
+		{
+			for (int32 Row = 0; Row < NumContextRows; ++Row)
+			{
+				const float Y = GetContextRowTop(Row);
+				if (Y + RowHeight >= ClipTop && Y <= Size.Y)
 				{
-					GroupSpan.X = FMath::Min(GroupSpan.X, (*NestedSpans)[Index].X);
-					GroupSpan.Y = FMath::Max(GroupSpan.Y, (*NestedSpans)[Index].X + (*NestedSpans)[Index].Y);
+					Box(0.f, Y, Size.X, RowHeight, Palette::ContextRowBackground, RowLayer);
+					Box(0.f, Y + RowHeight - 1.f, Size.X, 1.f, Row == NumContextRows - 1 ? Palette::ContextRowsDivider : SeparatorColor, RowLayer);
 				}
 			}
+
+			const FSlateFontInfo ContextFont = FCoreStyle::GetDefaultFontStyle("Regular", 8);
+			const TArray<FVector2f>& ContextSpans = Owner->GetContextSpans();
+			for (int32 Index = 0; Index < ContextSpans.Num() && ContextLayers->IsValidIndex(Index); ++Index)
+			{
+				const float Y = GetContextRowTop(Owner->GetContextRow(Index));
+				if (Y + RowHeight < ClipTop || Y > Size.Y)
+				{
+					continue;
+				}
+
+				const FVector2f Span = ContextSpans[Index];
+				const float X0 = TimeToX(Span.X, Size.X);
+				const float X1 = TimeToX(Span.X + Span.Y, Size.X);
+				const float BarWidth = FMath::Max(X1 - X0, 2.f);
+				const FWidgetAnimLayer& ContextLayer = (*ContextLayers)[Index];
+				const FLinearColor BarColor = SWidgetAnimTimeline::GetLockedColor(SWidgetAnimTimeline::GetLayerTypeColor(ContextLayer)).CopyWithNewOpacity(Palette::ContextTrackOpacity);
+				Box(X0, Y + 4.f, BarWidth, RowHeight - 8.f, BarColor, FrameLayer, RoundedFill(3.f));
+
+				const FString ContextLabel = SWidgetAnimTimeline::GetLayerTypeName(ContextLayer).ToString();
+				const FVector2f ContextLabelSize = MeasureText(ContextLabel, ContextFont);
+				if (ContextLabelSize.X + 10.f <= BarWidth)
+				{
+					Text(ContextLabel, X0 + 5.f + Palette::TrackTextShadowOffset, Y + (RowHeight - ContextLabelSize.Y) * 0.5f + Palette::TrackTextShadowOffset, ContextFont,
+						WithAlpha(Palette::TrackTextShadow, Palette::TrackTextShadow.A * Palette::ContextTrackText.A), LabelLayer - 1);
+					Text(ContextLabel, X0 + 5.f, Y + (RowHeight - ContextLabelSize.Y) * 0.5f, ContextFont, Palette::ContextTrackText, LabelLayer);
+				}
+			}
+		}
+
+		// Outside the animation - before its start, after its end - is shaded, the way the native track area
+		// shades outside the playback range.
+		Box(0.f, ClipTop, StartX, PassBottom - ClipTop, Palette::OutOfRangeShade, GridLayer);
+		Box(EndX, ClipTop, Size.X - EndX, PassBottom - ClipTop, Palette::OutOfRangeShade, GridLayer);
+
+		for (int64 TickIndex = FirstTick; TickIndex * MinorStep <= ViewMax; ++TickIndex)
+		{
+			const float X = TimeToX(TickIndex * MinorStep, Size.X);
+			const bool bMajor = ((TickIndex % MinorPerMajor) + MinorPerMajor) % MinorPerMajor == 0;
+			Box(X, ClipTop, 1.f, PassBottom - ClipTop, bMajor ? Palette::GridMajor : Palette::GridMinor, GridLayer);
+		}
+
+		// ---- Group lines: name, span and key summary ----------------------------------------------------------
+
+		for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
+		{
+			const FTrackLine& Line = Lines[LineIndex];
+			if (Line.Kind != FTrackLine::EKind::Group || !IsLineVisible(LineIndex))
+			{
+				continue;
+			}
+
+			const float LineTop = GetLineTop(LineIndex);
+			const float CenterY = LineTop + RowHeight * 0.5f;
+			const FVector2f GroupSpan = Owner->GetGroupSpan(Line.Group);
+			const FLinearColor GroupColor = SWidgetAnimTimeline::GetGroupColor(Line.Group);
+
 			if (GroupSpan.Y >= GroupSpan.X)
 			{
+				// The stretch the group is moving: a slim rounded bar in its (muted) color, as a parent row
+				// summarizes its children in Sequencer.
 				const float X0 = TimeToX(GroupSpan.X, Size.X);
 				const float X1 = TimeToX(GroupSpan.Y, Size.X);
-				Box(X0, CenterY + RowHeight * 0.25f, FMath::Max(X1 - X0, 4.f), 3.f, WithAlpha(Palette::LayerAnimation, 0.45f), FrameLayer, RoundedFill(1.5f));
+				Box(X0, CenterY - 3.f, FMath::Max(X1 - X0, 4.f), 6.f, bReadOnly ? SWidgetAnimTimeline::GetLockedColor(GroupColor) : GroupColor, FrameLayer, RoundedFill(2.f));
+
+				// Every key of the group's layers shown here, light and dark-outlined so they read on any group color.
+				for (int32 LayerIndex = 0; Layers && LayerIndex < Layers->Num() && Spans.IsValidIndex(LayerIndex); ++LayerIndex)
+				{
+					if (Owner->GetLayerGroup(LayerIndex) != Line.Group || !Owner->IsLayerInView(LayerIndex))
+					{
+						continue;
+					}
+
+					TArray<float> KeyTimes;
+					Owner->GetKeyTimes(LayerIndex, KeyTimes);
+					for (const float KeyTime : KeyTimes)
+					{
+						const float X = TimeToX(Spans[LayerIndex].X + KeyTime, Size.X);
+						Diamond(X, CenterY, SummaryDiamond + 2.f, Palette::KeySummaryOutline, KeyOutlineLayer);
+						Diamond(X, CenterY, SummaryDiamond, Palette::KeySummary, KeyFillLayer);
+					}
+				}
 			}
 
-			const float FoldX = GetNestedFoldX(Line, Size.X);
+			// Embedded in the timeline rather than pinned to the panel: a small fold arrow just before the group's
+			// bar, and its name - and the widget it animates - just after it, quiet, with no backing of their own.
+			// Both travel with the bar as the view pans and zooms.
 			const bool bFoldHovered = Hover.Line == LineIndex && Hover.bOnFold && Drag == EDrag::None;
-			if (const FSlateBrush* Arrow = Owner->IsNestedGroupFolded(Line.AnimationLayer, Line.NestedGroup)
+			if (const FSlateBrush* Arrow = Owner->IsTrackGroupCollapsed(Line.Group)
 				? PickBrush({ "TreeArrow_Collapsed", "Icons.ChevronRight" })
 				: PickBrush({ "TreeArrow_Expanded", "Icons.ChevronDown" }))
 			{
-				Box(FoldX, CenterY - FoldArrowSize * 0.5f, FoldArrowSize, FoldArrowSize, WithAlpha(ForegroundColor(), bFoldHovered ? 0.95f : 0.45f), LabelLayer + 1, Arrow);
+				Box(GetFoldX(Line.Group, Size.X), CenterY - FoldArrowSize * 0.5f, FoldArrowSize, FoldArrowSize,
+					WithAlpha(ForegroundColor(), bFoldHovered ? 0.95f : 0.45f), LabelLayer + 1, Arrow);
 			}
 
-			const FString GroupName = Animation->LayerGroups.IsValidIndex(Line.NestedGroup)
-				? Animation->LayerGroups[Line.NestedGroup].GetDisplayName(Line.NestedGroup)
-				: FWidgetAnimLayerGroup::MakeDefaultName(Line.NestedGroup);
-			const FString Label = FString::Printf(TEXT("%s \u203A %s"), *Animation->GetName(), *GroupName);
-			const FVector2f LabelSize = MeasureText(Label, NestedGroupFont);
-			Text(Label, FoldX + FoldArrowSize + 4.f, CenterY - LabelSize.Y * 0.5f, NestedGroupFont, WithAlpha(Palette::LayerAnimation, 0.85f), LabelLayer + 1);
-			continue;
+			// While its target is being picked in the designer, it says so where the target is named.
+			const bool bPicking = Owner->IsPickingTarget(Line.Group);
+			const FString Name = Owner->GetGroupName(Line.Group).ToString();
+			const FString Target = bPicking
+				? FString::Printf(TEXT("  %s"), *Owner->GetPickingTargetText().ToString())
+				: FString::Printf(TEXT("  %s"), *Owner->GetGroupTargetLabel(Line.Group).ToString());
+			const FVector2f NameSize = MeasureText(Name, GroupFont);
+			const FVector2f TargetSize = MeasureText(Target, GroupTargetFont);
+			const float NameX = GroupSpan.Y >= GroupSpan.X
+				? TimeToX(GroupSpan.Y, Size.X) + 8.f
+				: GetFoldX(Line.Group, Size.X) + FoldArrowSize + 4.f;
+			Text(Name, NameX, CenterY - NameSize.Y * 0.5f, GroupFont, WithAlpha(ForegroundColor(), 0.7f), LabelLayer + 1);
+			Text(Target, NameX + NameSize.X, CenterY - TargetSize.Y * 0.5f, GroupTargetFont, bPicking ? Palette::PickingTargetText : WithAlpha(ForegroundColor(), 0.4f), LabelLayer + 1);
 		}
 
-		// Its tracks: flat bars in their own colors, softened, each named where it fits - no keys, edges or handles,
-		// since nothing here is this animation's to edit.
-		for (const int32 Index : Line.NestedLayers)
+		// ---- Track lines: sections ----------------------------------------------------------------------------
+
+		for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
 		{
-			if (!Animation->Layers.IsValidIndex(Index) || !NestedSpans->IsValidIndex(Index))
+			const FTrackLine& Line = Lines[LineIndex];
+			if (Line.Kind != FTrackLine::EKind::Lane || !IsLineVisible(LineIndex))
 			{
 				continue;
 			}
 
-			const FWidgetAnimLayer& NestedLayer = Animation->Layers[Index];
-			const FVector2f Span = (*NestedSpans)[Index];
-			const float X0 = TimeToX(Span.X, Size.X);
-			const float X1 = TimeToX(Span.X + Span.Y, Size.X);
-			if (X0 > Size.X + 8.f || X1 < -8.f)
+			for (const int32 LayerIndex : Line.Layers)
 			{
-				continue;
-			}
+				if (!Layers || !Layers->IsValidIndex(LayerIndex) || !Spans.IsValidIndex(LayerIndex))
+				{
+					continue;
+				}
 
-			const float BarWidth = FMath::Max(X1 - X0, 3.f);
-			const float BarTop = LineTop + 4.f;
-			const float BarHeight = RowHeight - 8.f;
-			FLinearColor BarColor = SWidgetAnimTimeline::GetLayerTypeColor(NestedLayer);
-			if (bReadOnly || NestedLayer.bHiddenInEditor)
-			{
-				BarColor = SWidgetAnimTimeline::GetLockedColor(BarColor);
-			}
-			Box(X0, BarTop, BarWidth, BarHeight, Palette::SectionFrame, BackingLayer, RoundedFill(3.f));
-			Box(X0 + 1.f, BarTop + 1.f, BarWidth - 2.f, BarHeight - 2.f, WithAlpha(BarColor, Palette::NestedTrackOpacity), FrameLayer, RoundedFill(2.f));
+				const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+				const bool bTrackLocked = Owner->IsLayerLocked(LayerIndex);
+				const bool bTrackHidden = Owner->IsLayerHidden(LayerIndex);
 
-			const FString NestedLabel = SWidgetAnimTimeline::GetLayerTypeName(NestedLayer).ToString();
-			const FVector2f NestedLabelSize = MeasureText(NestedLabel, NestedFont);
-			if (NestedLabelSize.X + 10.f <= BarWidth)
-			{
-				TrackText(NestedLabel, X0 + 5.f, BarTop + (BarHeight - NestedLabelSize.Y) * 0.5f, NestedFont, FLinearColor(1.f, 1.f, 1.f, 0.9f));
+				FSectionPaint Paint;
+				Paint.LayerIndex = LayerIndex;
+				Paint.Rect = GetSectionRect(LayerIndex, Size.X);
+				Paint.Span = GetLayerSpan(LayerIndex);
+				Paint.bSelected = Owner->IsLayerSelected(LayerIndex);
+				Paint.bLocked = bTrackLocked;
+				Paint.bHidden = bTrackHidden;
+				Paint.bPinned = Owner->IsLayerPinned(LayerIndex);
+				Paint.bWashedOut = bReadOnly || bTrackLocked || bTrackHidden;
+
+				// A collapsed track: its name and how many tracks it holds, across their stretch - plain, so it doesn't clutter.
+				if (IsCollapsedBar(LayerIndex))
+				{
+					const FName CollapsedName = Owner->GetLayerCollapsedName(LayerIndex);
+					TArray<int32> Members;
+					Owner->GetCollapsedMembers(CollapsedName, Members);
+
+					bool bAllHidden = Members.Num() > 0;
+					bool bAllLocked = Members.Num() > 0;
+					bool bAnySelected = false;
+					for (const int32 Member : Members)
+					{
+						bAllHidden = bAllHidden && Owner->IsLayerHidden(Member);
+						bAllLocked = bAllLocked && Owner->IsLayerLocked(Member);
+						bAnySelected = bAnySelected || Owner->IsLayerSelected(Member);
+					}
+
+					Paint.Color = Palette::LayerCollapsed;
+					Paint.bCollapsedLook = true;
+					Paint.Glyph = CollapsedBrush;
+					Paint.bSelected = bAnySelected;
+					Paint.bHidden = bAllHidden;
+					Paint.bLocked = bAllLocked;
+					Paint.bWashedOut = bReadOnly || bAllHidden || bAllLocked;
+					Paint.Title = FString::Printf(TEXT("%s  %.2fs"), *CollapsedName.ToString(), Paint.Span.Y);
+					Paint.Secondary = FText::Format(LOCTEXT("CollapsedSectionCount", "{0} {0}|plural(one=track,other=tracks)"), FText::AsNumber(Members.Num())).ToString();
+					DrawSection(Paint);
+					continue;
+				}
+
+				Paint.Layer = &Layer;
+				Owner->GetKeyTimes(LayerIndex, Paint.KeyTimes);
+				Paint.FanSeconds = Owner->GetLayerFanSeconds(LayerIndex);
+				Paint.FanCount = Owner->GetLayerFanCount(LayerIndex);
+				Paint.bKeysEditable = Owner->CanEditKeys(LayerIndex);
+				Paint.bInverted = Owner->IsLayerInverted(LayerIndex);
+				Paint.bNamesTarget = Owner->GetSource() && Owner->GetSource()->SupportsLayerTargets() && !Layer.TargetWidget.IsNone();
+				DrawSection(Paint);
 			}
 		}
+
+		// ---- An open animation track's lines: its animation's groups and tracks, shown only ------------------------
+
+		const FSlateFontInfo NestedGroupFont = FCoreStyle::GetDefaultFontStyle("Bold", 8);
+		for (int32 LineIndex = 0; LineIndex < Lines.Num(); ++LineIndex)
+		{
+			const FTrackLine& Line = Lines[LineIndex];
+			const TArray<FVector2f>* NestedSpans = Line.IsNested() ? Owner->GetNestedSpans(Line.AnimationLayer) : nullptr;
+			const UWidgetAnimPresetAsset* Animation = Line.IsNested() ? Owner->GetInsertedAnimation(Line.AnimationLayer) : nullptr;
+			if (!NestedSpans || !Animation || !IsLineVisible(LineIndex))
+			{
+				continue;
+			}
+
+			const float LineTop = GetLineTop(LineIndex);
+			const float CenterY = LineTop + RowHeight * 0.5f;
+
+			if (Line.Kind == FTrackLine::EKind::NestedGroup)
+			{
+				// Its fold arrow, and its name - the animation's own name for it - where the track starts, over a slim bar
+				// of the stretch the group moves, in the animation orange.
+				FVector2f GroupSpan(TNumericLimits<float>::Max(), -TNumericLimits<float>::Max());
+				for (int32 Index = 0; Index < Animation->Layers.Num() && NestedSpans->IsValidIndex(Index); ++Index)
+				{
+					if (UWidgetAnimLibrary::GetLayerGroupIndex(Animation->Layers[Index], Animation->LayerGroups.Num()) == Line.NestedGroup || Animation->LayerGroups.Num() == 0)
+					{
+						GroupSpan.X = FMath::Min(GroupSpan.X, (*NestedSpans)[Index].X);
+						GroupSpan.Y = FMath::Max(GroupSpan.Y, (*NestedSpans)[Index].X + (*NestedSpans)[Index].Y);
+					}
+				}
+				if (GroupSpan.Y >= GroupSpan.X)
+				{
+					const float X0 = TimeToX(GroupSpan.X, Size.X);
+					const float X1 = TimeToX(GroupSpan.Y, Size.X);
+					Box(X0, CenterY + RowHeight * 0.25f, FMath::Max(X1 - X0, 4.f), 3.f, WithAlpha(Palette::LayerAnimation, 0.45f), FrameLayer, RoundedFill(1.5f));
+				}
+
+				const float FoldX = GetNestedFoldX(Line, Size.X);
+				const bool bFoldHovered = Hover.Line == LineIndex && Hover.bOnFold && Drag == EDrag::None;
+				if (const FSlateBrush* Arrow = Owner->IsNestedGroupFolded(Line.AnimationLayer, Line.NestedGroup)
+					? PickBrush({ "TreeArrow_Collapsed", "Icons.ChevronRight" })
+					: PickBrush({ "TreeArrow_Expanded", "Icons.ChevronDown" }))
+				{
+					Box(FoldX, CenterY - FoldArrowSize * 0.5f, FoldArrowSize, FoldArrowSize, WithAlpha(ForegroundColor(), bFoldHovered ? 0.95f : 0.45f), LabelLayer + 1, Arrow);
+				}
+
+				const FString GroupName = Animation->LayerGroups.IsValidIndex(Line.NestedGroup)
+					? Animation->LayerGroups[Line.NestedGroup].GetDisplayName(Line.NestedGroup)
+					: FWidgetAnimLayerGroup::MakeDefaultName(Line.NestedGroup);
+				const FString Label = FString::Printf(TEXT("%s \u203A %s"), *Animation->GetName(), *GroupName);
+				const FVector2f LabelSize = MeasureText(Label, NestedGroupFont);
+				Text(Label, FoldX + FoldArrowSize + 4.f, CenterY - LabelSize.Y * 0.5f, NestedGroupFont, WithAlpha(Palette::LayerAnimation, 0.85f), LabelLayer + 1);
+				continue;
+			}
+
+			// Its tracks: drawn as any track is - name, length, easing, keys - but grayed, and with nothing to grab: they are
+			// the inserted animation's, edited there, or here once the track is unraveled.
+			const float NestedKeyScale = TimeScale / FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);
+			for (const int32 Index : Line.NestedLayers)
+			{
+				if (!Animation->Layers.IsValidIndex(Index) || !NestedSpans->IsValidIndex(Index))
+				{
+					continue;
+				}
+
+				const FWidgetAnimLayer& NestedLayer = Animation->Layers[Index];
+				const FVector2f Span = (*NestedSpans)[Index];
+				const float Top = LineTop + 3.f;
+				const float Left = TimeToX(Span.X, Size.X);
+				const float Right = Left + FMath::Max(TimeToX(Span.X + Span.Y, Size.X) - Left, 4.f);
+
+				FSectionPaint Paint;
+				Paint.Layer = &NestedLayer;
+				Paint.Rect = FBox2f(FVector2f(Left, Top), FVector2f(Right, Top + RowHeight - 7.f));
+				Paint.Span = Span;
+				Paint.bHidden = NestedLayer.bHiddenInEditor;
+				Paint.bWashedOut = true;
+				Paint.bInverted = NestedLayer.bInvertTrack || (Owner->GetSource() && Owner->GetSource()->GetInvert());
+				WidgetAnimTimeline::GetLayerKeyTimes(NestedLayer, Span.Y, NestedKeyScale, Paint.KeyTimes);
+				DrawSection(Paint);
+			}
+		}
+
+		OutDrawElements.PopClip();
+	};
+
+	PaintLines(/*bPinnedPass=*/false);
+	PaintLines(/*bPinnedPass=*/true);
+
+	// The pinned band's lower edge, so what scrolls under it reads as going under it.
+	if (NumPinned > 0)
+	{
+		Box(0.f, PinnedBottom - 1.f, Size.X, 1.f, Palette::PinnedDivider, RangeLayer);
 	}
+
+	// Everything drawn over the lines from here on stays below the ruler.
+	const FGeometry RowsGeometry = AllottedGeometry.MakeChild(
+		FVector2f(Size.X, FMath::Max(Size.Y - RulerHeight, 0.f)),
+		FSlateLayoutTransform(FVector2f(0.f, RulerHeight)));
+	OutDrawElements.PushClip(FSlateClippingZone(RowsGeometry));
 
 	// Where the drag snapped to, and where the mouse is in time - faintly, which makes lining a key up against
 	// another line easier.
@@ -2312,6 +2888,44 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 		Box(Marquee.Min.X, Marquee.Max.Y - 1.f, MarqueeSize.X, 1.f, Palette::MarqueeOutline, RangeLayer + 1);
 		Box(Marquee.Min.X, Marquee.Min.Y, 1.f, MarqueeSize.Y, Palette::MarqueeOutline, RangeLayer + 1);
 		Box(Marquee.Max.X - 1.f, Marquee.Min.Y, 1.f, MarqueeSize.Y, Palette::MarqueeOutline, RangeLayer + 1);
+	}
+
+	// A collapsed track open on its own: the edges darkened toward the frame, and a thin line of its color around it - a
+	// nested editor, as a collapsed graph reads as one. Over the tracks, under the playhead.
+	if (Owner->IsInCollapsedScope())
+	{
+		const float Reach = FMath::Min(Palette::ScopeVignetteWidth, FMath::Min(Size.X, Size.Y - RulerHeight) * 0.5f);
+		if (Reach > 1.f)
+		{
+			const FLinearColor Dark = Palette::ScopeVignette;
+			const FLinearColor Clear = Dark.CopyWithNewOpacity(0.f);
+			const float FieldHeight = Size.Y - RulerHeight;
+
+			// One gradient per edge, darkest at the edge. Orient_Vertical runs the stops along X, Orient_Horizontal along Y.
+			auto Edge = [&](float X, float Y, float W, float H, EOrientation Orientation, bool bDarkFirst)
+			{
+				const float Length = Orientation == Orient_Vertical ? W : H;
+				TArray<FSlateGradientStop> Stops;
+				Stops.Add(FSlateGradientStop(FVector2D(0.0, 0.0), bDarkFirst ? Dark : Clear));
+				Stops.Add(FSlateGradientStop(Orientation == Orient_Vertical ? FVector2D(Length, 0.0) : FVector2D(0.0, Length), bDarkFirst ? Clear : Dark));
+				FSlateDrawElement::MakeGradient(
+					OutDrawElements,
+					LabelLayer + 2,
+					AllottedGeometry.ToPaintGeometry(FVector2f(W, H), FSlateLayoutTransform(FVector2f(X, Y))),
+					MoveTemp(Stops),
+					Orientation,
+					ESlateDrawEffect::None);
+			};
+			Edge(0.f, RulerHeight, Reach, FieldHeight, Orient_Vertical, /*bDarkFirst=*/true);
+			Edge(Size.X - Reach, RulerHeight, Reach, FieldHeight, Orient_Vertical, /*bDarkFirst=*/false);
+			Edge(0.f, RulerHeight, Size.X, Reach, Orient_Horizontal, /*bDarkFirst=*/true);
+			Edge(0.f, Size.Y - Reach, Size.X, Reach, Orient_Horizontal, /*bDarkFirst=*/false);
+		}
+
+		Box(0.f, RulerHeight, Size.X, 1.f, Palette::ScopeFrame, LabelLayer + 3);
+		Box(0.f, Size.Y - 1.f, Size.X, 1.f, Palette::ScopeFrame, LabelLayer + 3);
+		Box(0.f, RulerHeight, 1.f, Size.Y - RulerHeight, Palette::ScopeFrame, LabelLayer + 3);
+		Box(Size.X - 1.f, RulerHeight, 1.f, Size.Y - RulerHeight, Palette::ScopeFrame, LabelLayer + 3);
 	}
 
 	OutDrawElements.PopClip();
@@ -2342,11 +2956,22 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 		}
 	}
 
-	// Start and end of the animation: green and red, through the ruler and the lines, as in the native editor.
+	// Start and end of the animation: green and red, through the ruler and the lines, as in the native editor - each with
+	// a handle in the ruler to drag it by, lit while the mouse is on it or it is being dragged.
 	Box(StartX, 0.f, 1.f, Size.Y, Palette::RangeStart, RangeLayer);
 	Box(EndX, 0.f, 1.f, Size.Y, Palette::RangeEnd, RangeLayer);
-	Box(StartX, RulerHeight - 10.f, 5.f, 2.f, Palette::RangeStart, RangeLayer);
-	Box(EndX - 4.f, RulerHeight - 10.f, 5.f, 2.f, Palette::RangeEnd, RangeLayer);
+	{
+		const bool bCanDragRange = Owner->CanEdit() && Layers && Layers->Num() > 0;
+		const bool bDraggingRange = Drag == EDrag::Range || Drag == EDrag::RangePending;
+		const bool bStartLit = bDraggingRange ? !bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && !HoverRange.GetValue());
+		const bool bEndLit = bDraggingRange ? bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && HoverRange.GetValue());
+		const float HandleHeight = RulerHeight * 0.5f;
+		const float HandleTop = RulerHeight - HandleHeight - 1.f;
+		const float StartHandleWidth = bCanDragRange ? (bStartLit ? 7.f : 5.f) : 5.f;
+		const float EndHandleWidth = bCanDragRange ? (bEndLit ? 7.f : 5.f) : 5.f;
+		Box(StartX, HandleTop, StartHandleWidth, bCanDragRange ? HandleHeight : 2.f, bStartLit ? Palette::RangeHandleLit : Palette::RangeStart, RangeLayer, RoundedFill(2.f));
+		Box(EndX - EndHandleWidth + 1.f, HandleTop, EndHandleWidth, bCanDragRange ? HandleHeight : 2.f, bEndLit ? Palette::RangeHandleLit : Palette::RangeEnd, RangeLayer, RoundedFill(2.f));
+	}
 
 	if (const TOptional<float> Snap = Owner->GetSnapIndicator(); Snap.IsSet())
 	{
@@ -2371,12 +2996,12 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 
 	// When the lines run past the bottom: a slim bar down the right edge showing where they are scrolled to.
 	const float MaxScroll = GetMaxScrollY(Size.Y);
-	if (MaxScroll > 0.f && !(Owner && Owner->IsInline()))
+	if (MaxScroll > 0.f && !(Owner && Owner->IsInline()) && UWidgetAnimEditorSettings::Get().bShowVerticalScrollBarWhenNeeded)
 	{
-		const float TrackHeight = Size.Y - RulerHeight - 4.f;
+		const float TrackHeight = Size.Y - PinnedBottom - 4.f;
 		const float ContentHeight = TrackHeight + MaxScroll;
 		const float ThumbHeight = FMath::Max(TrackHeight * TrackHeight / ContentHeight, 16.f);
-		const float ThumbY = RulerHeight + 2.f + (TrackHeight - ThumbHeight) * (ScrollY / MaxScroll);
+		const float ThumbY = PinnedBottom + 2.f + (TrackHeight - ThumbHeight) * (ScrollY / MaxScroll);
 		Box(Size.X - 5.f, ThumbY, 3.f, ThumbHeight, Palette::ScrollIndicator, PlayheadLayer + 1, RoundedFill(2.f));
 	}
 
@@ -2421,6 +3046,15 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonDown(const FGeometry& MyGeometry,
 
 	if (Local.Y < SWidgetAnimTimeline::RulerHeight)
 	{
+		// On the animation's start or end: drag it - once the mouse moves. Let go in place, it was a click, which scrubs.
+		const TOptional<bool> RangeEdge = RangeEdgeAt(Local, Width);
+		if (RangeEdge.IsSet())
+		{
+			bRangeEnd = RangeEdge.GetValue();
+			Drag = EDrag::RangePending;
+			return Reply;
+		}
+
 		Drag = EDrag::Scrub;
 		Owner->ScrubToSeconds(XToTime(Local.X, Width));
 		return Reply;
@@ -2450,6 +3084,9 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonDown(const FGeometry& MyGeometry,
 	{
 		MarqueeStart = Local;
 		MarqueeEnd = Local;
+		MarqueeStartTime = XToTime(Local.X, Width);
+		MarqueeStartScrollY = ScrollY;
+		bMarqueeStartPinned = Local.Y < GetPinnedBottom();
 		bMarqueeAdd = bRange;
 		bMarqueeToggle = bToggle;
 		Drag = EDrag::MarqueePending;
@@ -2479,6 +3116,36 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonDown(const FGeometry& MyGeometry,
 		else
 		{
 			Owner->SelectLayer(Line->AnimationLayer);
+		}
+		return Reply;
+	}
+
+	// A collapsed track: picked whole - every one of its tracks - and moved whole. Shift or Ctrl / Cmd adds it or takes it
+	// out; a plain press on it while it is part of a larger selection keeps that, to drag it all - unless it is a click.
+	if (Hit.bCollapsed && Hit.Layer != INDEX_NONE)
+	{
+		const FName CollapsedName = Owner->GetLayerCollapsedName(Hit.Layer);
+		if (bRange || bToggle)
+		{
+			Owner->SelectCollapsed(CollapsedName, /*bToggle=*/true);
+			return Reply;
+		}
+
+		PressLayer = Hit.Layer;
+		PressTime = XToTime(Local.X, Width);
+		if (Owner->IsMultiSelection() && Owner->IsLayerSelected(Hit.Layer))
+		{
+			bCollapseSelectionOnRelease = true;
+		}
+		else
+		{
+			Owner->SelectCollapsed(CollapsedName);
+		}
+
+		if (Owner->CanMoveLayer(Hit.Layer))
+		{
+			PendingLayerDrag = ELayerDrag::Move;
+			Drag = EDrag::LayerPending;
 		}
 		return Reply;
 	}
@@ -2586,6 +3253,14 @@ void SWidgetAnimTimelineTracks::ApplyDragAt(const FVector2f& Local, float Width)
 		Owner->UpdateKeyDrag(XToTime(Local.X, Width) + PressKeyOffset - GetLayerSpan(PressLayer).X, GetSnapThresholdSeconds(Width));
 		break;
 
+	case EDrag::Range:
+		Owner->UpdateRangeDrag(XToTime(Local.X, Width), GetSnapThresholdSeconds(Width));
+		break;
+
+	case EDrag::Marquee:
+		MarqueeEnd = Local;
+		break;
+
 	case EDrag::Layer:
 	{
 		// Up and down a whole line at a time, once the mouse is more than half a line away.
@@ -2613,6 +3288,7 @@ FReply SWidgetAnimTimelineTracks::OnMouseMove(const FGeometry& MyGeometry, const
 		HoverRowEdge = RowEdgeAt(Local.Y);
 		Hover = HoverRowEdge == INDEX_NONE ? HitTest(Local, Width) : FHit();
 		HoverX = Local.Y >= SWidgetAnimTimeline::RulerHeight ? Local.X : -1.f;
+		HoverRange = RangeEdgeAt(Local, Width);
 
 		// The tooltip is about a key, or a track's body - not its edges, which are for resizing.
 		if (Hover.Key != INDEX_NONE)
@@ -2641,8 +3317,27 @@ FReply SWidgetAnimTimelineTracks::OnMouseMove(const FGeometry& MyGeometry, const
 	case EDrag::Scrub:
 	case EDrag::Key:
 	case EDrag::Layer:
+	case EDrag::Range:
 		LastDragLocal = Local;
 		ApplyDragAt(Local, Width);
+		break;
+
+	case EDrag::RangePending:
+		if (bPastThreshold)
+		{
+			// Can't be dragged - nothing to trim, or read-only - so it scrubs as the ruler does anywhere else.
+			if (Owner->BeginRangeDrag(bRangeEnd))
+			{
+				Drag = EDrag::Range;
+				LastDragLocal = Local;
+				ApplyDragAt(Local, Width);
+			}
+			else
+			{
+				Drag = EDrag::Scrub;
+				Owner->ScrubToSeconds(XToTime(Local.X, Width));
+			}
+		}
 		break;
 
 	case EDrag::KeyPending:
@@ -2681,6 +3376,7 @@ FReply SWidgetAnimTimelineTracks::OnMouseMove(const FGeometry& MyGeometry, const
 		break;
 
 	case EDrag::Marquee:
+		LastDragLocal = Local;
 		MarqueeEnd = Local;
 		break;
 
@@ -2730,15 +3426,35 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonUp(const FGeometry& MyGeometry, c
 		Owner->EndKeyDrag();
 	}
 
-	if (Owner && Ended == EDrag::Layer)
+	if (Owner && (Ended == EDrag::Layer || Ended == EDrag::Range))
 	{
 		Owner->EndLayerDrag();
 	}
 
-	// Pressed on one of several selected layers and let go without dragging: a click, which selects it alone.
+	// The lines' new height, remembered once they are let go rather than on every step of the drag.
+	if (Owner && Ended == EDrag::ResizeRows)
+	{
+		Owner->SaveRowHeight();
+	}
+
+	// The animation's start or end pressed and let go in place: a click on the ruler, which scrubs there.
+	if (Owner && Ended == EDrag::RangePending)
+	{
+		Owner->ScrubToSeconds(XToTime(MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()).X, MyGeometry.GetLocalSize().X));
+	}
+
+	// Pressed on one of several selected layers and let go without dragging: a click, which selects it alone - or, on a
+	// collapsed track, every one of its tracks.
 	if (Owner && bCollapseSelectionOnRelease && (Ended == EDrag::LayerPending || Ended == EDrag::None))
 	{
-		Owner->SelectLayer(PressLayer);
+		if (IsCollapsedBar(PressLayer))
+		{
+			Owner->SelectCollapsed(Owner->GetLayerCollapsedName(PressLayer));
+		}
+		else
+		{
+			Owner->SelectLayer(PressLayer);
+		}
 	}
 	bCollapseSelectionOnRelease = false;
 
@@ -2802,6 +3518,7 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonUp(const FGeometry& MyGeometry, c
 			else
 			{
 				// A right-click on one of several selected layers - or keys - keeps them all, so the menu acts on all of them.
+				// A collapsed track's is about every one of its tracks.
 				if (Hit.Key != INDEX_NONE)
 				{
 					if (!Owner->IsKeySelected(Hit.Layer, Hit.Key))
@@ -2809,12 +3526,19 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonUp(const FGeometry& MyGeometry, c
 						Owner->SelectKey(Hit.Layer, Hit.Key);
 					}
 				}
+				else if (Hit.bCollapsed)
+				{
+					if (!Owner->IsLayerSelected(Hit.Layer))
+					{
+						Owner->SelectCollapsed(Owner->GetLayerCollapsedName(Hit.Layer));
+					}
+				}
 				else if (!Owner->IsLayerSelected(Hit.Layer))
 				{
 					Owner->SelectLayer(Hit.Layer);
 				}
 
-				const TOptional<float> LocalSeconds = Hit.bOnSection
+				const TOptional<float> LocalSeconds = Hit.bOnSection && !Hit.bCollapsed
 					? TOptional<float>(XToTime(Local.X, Width) - GetLayerSpan(Hit.Layer).X)
 					: TOptional<float>();
 				PushMenu(MouseEvent, Owner->MakeLayerContextMenu(Hit.Layer, Hit.Key, LocalSeconds, ClickSeconds));
@@ -2845,6 +3569,14 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonDoubleClick(const FGeometry& MyGe
 	// A click on the fold arrow soon after another click arrives here rather than as a press - which is what
 	// made folding take two clicks - so it folds here too.
 	const FHit Hit = HitTest(Local, Width);
+
+	// A collapsed track opens on its own - only its tracks, and the preview only playing them - as a collapsed graph does.
+	if (Hit.bCollapsed && Hit.Layer != INDEX_NONE)
+	{
+		Owner->EnterCollapsed(Owner->GetLayerCollapsedName(Hit.Layer));
+		return FReply::Handled();
+	}
+
 	if (Hit.bOnFold)
 	{
 		if (const FTrackLine* Line = GetLine(Hit.Line))
@@ -2945,6 +3677,8 @@ FCursorReply SWidgetAnimTimelineTracks::OnCursorQuery(const FGeometry& MyGeometr
 		return FCursorReply::Cursor(PendingLayerDrag == ELayerDrag::Move ? EMouseCursor::GrabHandClosed : EMouseCursor::ResizeLeftRight);
 
 	case EDrag::Scrub:
+	case EDrag::Range:
+	case EDrag::RangePending:
 		return FCursorReply::Cursor(EMouseCursor::ResizeLeftRight);
 
 	case EDrag::ResizeRows:
@@ -3140,6 +3874,7 @@ private:
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, AnimationName), BuilderClass));
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Description), BuilderClass));
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, AnimationSpeedMultiplier), BuilderClass));
+			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, MinimumLength), BuilderClass));
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, SaveFolder), BuilderClass));
 
 			// No Preview Animation row: which asset is edited is the header's Edit Existing Asset picker.
@@ -3148,6 +3883,7 @@ private:
 		{
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimPresetAsset, Description), UWidgetAnimPresetAsset::StaticClass()));
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimPresetAsset, AnimationSpeedMultiplier), UWidgetAnimPresetAsset::StaticClass()));
+			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimPresetAsset, MinimumLength), UWidgetAnimPresetAsset::StaticClass()));
 		}
 	}
 
@@ -3194,6 +3930,9 @@ private:
 		}
 
 		const TSharedRef<IPropertyHandle> Target = TargetHandle.ToSharedRef();
+		const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Panel;
+		const TSharedPtr<SWidgetAnimTimeline> PickOwner = Panel.Pin();
+		const int32 GroupIndex = PickOwner ? PickOwner->GetSelection().Group : INDEX_NONE;
 		Category.AddProperty(TargetHandle).CustomWidget()
 			.NameContent()
 			[
@@ -3202,18 +3941,85 @@ private:
 			.ValueContent()
 			.MinDesiredWidth(220.f)
 			[
-				SNew(STextComboBox)
-				.IsEnabled_Lambda([WeakOwner = Panel]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanEdit(); })
-				.OptionsSource(TargetOptions.Get())
-				.InitiallySelectedItem(Initial)
-				.ToolTipText(WidgetAnimTips::PreviewTargetTooltip())
-				.OnSelectionChanged_Lambda([Target](TSharedPtr<FString> Item, ESelectInfo::Type)
-				{
-					if (Item.IsValid())
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextComboBox)
+					.IsEnabled_Lambda([WeakOwner]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanEdit(); })
+					.OptionsSource(TargetOptions.Get())
+					.InitiallySelectedItem(Initial)
+					.ToolTipText(WidgetAnimTips::PreviewTargetTooltip())
+					.OnSelectionChanged_Lambda([Target](TSharedPtr<FString> Item, ESelectInfo::Type)
 					{
-						Target->SetValue(*Item == TEXT("None") ? FName(NAME_None) : FName(**Item));
-					}
-				})
+						if (Item.IsValid())
+						{
+							Target->SetValue(*Item == TEXT("None") ? FName(NAME_None) : FName(**Item));
+						}
+					})
+				]
+
+				// Pick it by clicking the widget in the designer instead: lit while it waits for that click.
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+				[
+					SNew(SButton)
+					.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+					.ContentPadding(FMargin(3.f, 2.f))
+					.Visibility_Lambda([WeakOwner]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanPickTargetInDesigner() ? EVisibility::Visible : EVisibility::Collapsed; })
+					.IsEnabled_Lambda([WeakOwner]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanEdit(); })
+					.ToolTipText(WidgetAnimTips::PickTargetInDesignerTooltip())
+					.OnClicked_Lambda([WeakOwner, GroupIndex]()
+					{
+						if (const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin())
+						{
+							if (Pinned->IsPickingTarget(GroupIndex))
+							{
+								Pinned->CancelTargetPick();
+							}
+							else
+							{
+								Pinned->BeginTargetPick(GroupIndex);
+							}
+						}
+						return FReply::Handled();
+					})
+					[
+						WidgetAnimTimeline::MakeFixedIcon(
+							WidgetAnimTimeline::PickBrush({ "Icons.EyeDropper", "ColorPicker.EyeDropper", "Icons.Picker", "Icons.Search" }),
+							TAttribute<FSlateColor>::CreateLambda([WeakOwner, GroupIndex]()
+							{
+								const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+								return Pinned && Pinned->IsPickingTarget(GroupIndex)
+									? FSlateColor(NameTBD::Colors::AnimationOrange_Normal)
+									: FSlateColor::UseForeground();
+							}))
+					]
+				]
+			];
+
+		// While a pick waits for its click, say where to click.
+		Category.AddCustomRow(WidgetAnimTips::PickingTargetNote())
+			.Visibility(TAttribute<EVisibility>::CreateLambda([WeakOwner, GroupIndex]()
+			{
+				const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+				return Pinned && Pinned->IsPickingTarget(GroupIndex) ? EVisibility::Visible : EVisibility::Collapsed;
+			}))
+			.WholeRowContent()
+			[
+				SNew(SBox)
+				.Padding(FMargin(0.f, 4.f))
+				[
+					SNew(STextBlock)
+					.AutoWrapText(true)
+					.Font(IDetailLayoutBuilder::GetDetailFontItalic())
+					.ColorAndOpacity(FSlateColor(NameTBD::Colors::AnimationOrange_Normal))
+					.Text(WidgetAnimTips::PickingTargetNote())
+				]
 			];
 	}
 
@@ -3348,8 +4154,11 @@ private:
 		const FName ValueKeysName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueKeys);
 		const FName OvershootName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Overshoot);
 		const FName SlideOvershootName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, SlideOvershoot);
+		const FName ExpanderName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Expander);
+		const FName ShakeName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Shake);
 
 		const TArray<FWidgetAnimLayer>* CurrentLayers = Owner ? Owner->GetLayers() : nullptr;
+		const bool bIsShake = CurrentLayers && CurrentLayers->IsValidIndex(LayerIndex) && (*CurrentLayers)[LayerIndex].AnimType == EWidgetAnimType::Shake;
 		const bool bHasValueKeys = CurrentLayers && CurrentLayers->IsValidIndex(LayerIndex) && (*CurrentLayers)[LayerIndex].ValueKeys.Keys.Num() > 0;
 
 		// A cue fires at points in time - no easing, curve or spring shapes anything on it.
@@ -3376,6 +4185,22 @@ private:
 			// A track's keys are selected on the track, one at a time, never listed here.
 			if (ChildProperty->GetFName() == ValueKeysName)
 			{
+				continue;
+			}
+
+			// A Stagger only where it can fan the track out - see SWidgetAnimTimeline::CanLayerStagger.
+			if (ChildProperty->GetFName() == ExpanderName && Owner && !Owner->CanLayerStagger(LayerIndex))
+			{
+				continue;
+			}
+
+			// A Shake's settings laid out flat, as Transform's are, and only on a Shake track.
+			if (ChildProperty->GetFName() == ShakeName)
+			{
+				if (bIsShake)
+				{
+					AddChildren(Category, Child.ToSharedRef(), [](FName) { return true; }, false);
+				}
 				continue;
 			}
 
@@ -3759,12 +4584,15 @@ public:
 
 		TSet<EWidgetAnimType> Types;
 		TArray<const FWidgetAnimLayer*> ProxyLayers;
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		bool bAllCanStagger = true;
 		for (const TWeakObjectPtr<UObject>& Object : Objects)
 		{
 			if (const UWidgetAnimLayerEditProxy* Proxy = Cast<UWidgetAnimLayerEditProxy>(Object.Get()))
 			{
 				Types.Add(Proxy->Layer.AnimType);
 				ProxyLayers.Add(&Proxy->Layer);
+				bAllCanStagger = bAllCanStagger && (!Owner || Owner->CanLayerStagger(Proxy->LayerIndex));
 			}
 		}
 
@@ -3818,6 +4646,9 @@ public:
 		const FName TransformName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Transform);
 		const FName KeysName = GET_MEMBER_NAME_CHECKED(FWidgetTransformAnim, Keys);
 		const FName ValueKeysName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueKeys);
+		const FName ExpanderName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Expander);
+		const FName ShakeName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Shake);
+		const bool bAllShake = bSameType && Types.Contains(EWidgetAnimType::Shake);
 		// Timing, and what it brings - the spring, the value settings - is on every type, so on a mix of them too.
 		// Each hides itself by its EditCondition where it doesn't apply, and a Timing or Value Type that doesn't
 		// apply to every selected track is left out of its dropdown.
@@ -3851,6 +4682,27 @@ public:
 			// Each layer's keys are its own.
 			if (Name == ValueKeysName)
 			{
+				continue;
+			}
+
+			// A Stagger only where every selected track can fan out - see SWidgetAnimTimeline::CanLayerStagger.
+			if (Name == ExpanderName && !bAllCanStagger)
+			{
+				continue;
+			}
+
+			// A Shake's settings flat, as the single-track panel lays them out, when every track selected is a Shake.
+			if (Name == ShakeName)
+			{
+				if (bAllShake)
+				{
+					uint32 NumShakeChildren = 0;
+					Child->GetNumChildren(NumShakeChildren);
+					for (uint32 ShakeIndex = 0; ShakeIndex < NumShakeChildren; ++ShakeIndex)
+					{
+						Category.AddProperty(Child->GetChildHandle(ShakeIndex));
+					}
+				}
 				continue;
 			}
 
@@ -3922,11 +4774,13 @@ public:
 		SLATE_DEFAULT_SLOT(FArguments, Content)
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, TWeakPtr<SWidgetAnimTimeline> InPanel, int32 InGroup, int32 InLayer)
+	/** InCollapsed: the row stands for a collapsed track - InLayer its head - and picks every one of its tracks. */
+	void Construct(const FArguments& InArgs, TWeakPtr<SWidgetAnimTimeline> InPanel, int32 InGroup, int32 InLayer, FName InCollapsed = NAME_None)
 	{
 		Panel = InPanel;
 		Group = InGroup;
 		Layer = InLayer;
+		Collapsed = InCollapsed;
 
 		ChildSlot
 		[
@@ -3972,6 +4826,14 @@ public:
 		// Shift and Ctrl / Cmd pick layers the way a file browser picks files.
 		const bool bRange = MouseEvent.IsShiftDown();
 		const bool bToggle = MouseEvent.IsControlDown() || MouseEvent.IsCommandDown();
+
+		// A collapsed track's row picks every one of its tracks - or, with a modifier, adds them or takes them out.
+		if (!Collapsed.IsNone())
+		{
+			Owner->SelectCollapsed(Collapsed, /*bToggle=*/bRange || bToggle);
+			Owner->RevealLayer(Layer);
+			return Reply;
+		}
 		if (!bRight && (bRange || bToggle))
 		{
 			Owner->SelectLayerWithModifiers(Layer, bRange, bToggle);
@@ -4005,6 +4867,11 @@ public:
 			bMenuPending = false;
 			if (Owner)
 			{
+				// A collapsed track's menu is about every one of its tracks.
+				if (!Collapsed.IsNone() && !Owner->IsLayerSelected(Layer))
+				{
+					Owner->SelectCollapsed(Collapsed);
+				}
 				PushMenu(MouseEvent, IsGroupRow()
 					? Owner->MakeGroupContextMenu(Group)
 					: Owner->MakeLayerContextMenu(Layer, INDEX_NONE, TOptional<float>()));
@@ -4030,6 +4897,13 @@ public:
 			Owner->ToggleListGroupCollapsed(Group);
 			return FReply::Handled();
 		}
+
+		// A collapsed track opens on its own, as it does from the Track Editor.
+		if (Owner && !Collapsed.IsNone())
+		{
+			Owner->EnterCollapsed(Collapsed);
+			return FReply::Handled();
+		}
 		return FReply::Unhandled();
 	}
 
@@ -4044,6 +4918,9 @@ private:
 	TWeakPtr<SWidgetAnimTimeline> Panel;
 	int32 Group = INDEX_NONE;
 	int32 Layer = INDEX_NONE;
+
+	/** The collapsed track this row stands for, or None. */
+	FName Collapsed;
 
 	/** Pressed on one of several selected layers: released without a drag, it selects that layer alone. */
 	bool bCollapseSelectionOnRelease = false;
@@ -4480,9 +5357,11 @@ namespace WidgetAnimToolTip
 
 namespace
 {
-	/** Where the row height is remembered: the editor's per-project user settings. */
+	/**
+	 * Where the panel's layout is remembered - its splitters, the Value Watcher - in the editor's per-project user settings.
+	 * (The row height, once kept here too, is Default Track Height in UWidgetAnimEditorSettings now.)
+	 */
 	const TCHAR* RowHeightConfigSection = TEXT("NameTBD.WidgetAnimations");
-	const TCHAR* RowHeightConfigKey = TEXT("RowHeight");
 	const TCHAR* WatcherExpandedConfigKey = TEXT("ValueWatcherExpanded");
 
 	// How the panel's splitters divide it, per layout - see SWidgetAnimTimeline::GetSplitSize. The full panel's keys
@@ -4526,6 +5405,16 @@ SWidgetAnimTimeline::~SWidgetAnimTimeline()
 	if (bCompact)
 	{
 		SaveCompactState();
+	}
+
+	// A pick waiting in the designer stops watching the mouse.
+	EndTargetPick(/*bReleaseMouse=*/false);
+
+	// A collapsed track open on its own leaves every track playing again once the panel goes.
+	if (IsInCollapsedScope() || bScopeMutesApplied)
+	{
+		ActiveCollapsed = NAME_None;
+		SyncScopeMutes();
 	}
 }
 
@@ -4629,12 +5518,6 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 	CompactTitleToolTip = InArgs._TitleToolTip;
 	OnExpand = InArgs._OnExpand;
 
-	float SavedRowHeight = DefaultRowHeight;
-	if (GConfig->GetFloat(RowHeightConfigSection, RowHeightConfigKey, SavedRowHeight, GEditorPerProjectIni))
-	{
-		RowHeight = FMath::Clamp(SavedRowHeight, MinRowHeight, MaxRowHeight);
-	}
-
 	// The Selection panel: the edited object, laid out by FWidgetAnimSelectionDetails. No notify hook, so
 	// UMG's designer never hears of an edit made here - which is what keeps it from rebuilding its preview,
 	// and every Details panel with it, on every commit.
@@ -4703,8 +5586,6 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 			return IsBodyCollapsed() ? EVisibility::Collapsed : EVisibility::Visible;
 		});
 
-		TracksHorizontalScrollBar->SetVisibility(IsInline() ? EVisibility::Collapsed : EVisibility::Visible);
-
 		ChildSlot
 		[
 			SNew(SVerticalBox)
@@ -4749,7 +5630,7 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 								+ SVerticalBox::Slot()
 								.AutoHeight()
 								[
-									TracksHorizontalScrollBar.ToSharedRef()
+									MakeHorizontalScrollBarSlot()
 								]
 							]
 
@@ -4810,15 +5691,11 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 		return;
 	}
 
+	// No header row of its own: what the panel works on, and its buttons, sit in the Track Editor's strip - so the tracks
+	// start right under it. The transport sits under the Animation Tracks list, and the Track Editor runs to the bottom.
 	ChildSlot
 	[
 		SNew(SVerticalBox)
-
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		[
-			MakeHeader()
-		]
 
 		+ SVerticalBox::Slot()
 		.FillHeight(1.f)
@@ -4886,6 +5763,13 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 							[
 								MakeAnimationPropertiesButton()
 							]
+
+							// The transport and the controls, under the list.
+							+ SVerticalBox::Slot()
+							.AutoHeight()
+							[
+								MakeTransport(/*bStacked=*/true)
+							]
 						]
 
 						+ SSplitter::Slot()
@@ -4909,7 +5793,7 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 							+ SVerticalBox::Slot()
 							.AutoHeight()
 							[
-								TracksHorizontalScrollBar.ToSharedRef()
+								MakeHorizontalScrollBarSlot()
 							]
 						]
 					]
@@ -4924,12 +5808,6 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 						.Text(WidgetAnimTips::NothingToEdit())
 						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 					]
-				]
-
-				+ SVerticalBox::Slot()
-				.AutoHeight()
-				[
-					MakeTransport()
 				]
 			]
 
@@ -5102,7 +5980,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeInlineTransport()
 	};
 
 	Add(MakeSmallButton(PickBrush({ "Animation.Backward_End", "Sequencer.Transport.GoToFront.Normal" }), LOCTEXT("InlineToStart", "|<"), WidgetAnimTips::ToStartTooltip(),
-		FSlateColor::UseForeground(), [this]() { ScrubToSeconds(0.f); }), FMargin(0.f));
+		FSlateColor::UseForeground(), [this]() { GoToStart(); }), FMargin(0.f));
 	Add(MakeSmallButton(PickBrush({ "Animation.Backward_Step", "Sequencer.Transport.StepBackwards.Normal" }), LOCTEXT("InlinePrevKey", "<"), WidgetAnimTips::PrevKeyTooltip(),
 		FSlateColor::UseForeground(), [this]() { StepToMarker(-1); }), FMargin(0.f));
 	Add(MakeSmallButton(
@@ -5119,7 +5997,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeInlineTransport()
 	Add(MakeSmallButton(PickBrush({ "Animation.Forward_Step", "Sequencer.Transport.StepForward.Normal" }), LOCTEXT("InlineNextKey", ">"), WidgetAnimTips::NextKeyTooltip(),
 		FSlateColor::UseForeground(), [this]() { StepToMarker(1); }), FMargin(0.f));
 	Add(MakeSmallButton(PickBrush({ "Animation.Forward_End", "Sequencer.Transport.GoToEnd.Normal" }), LOCTEXT("InlineToEnd", ">|"), WidgetAnimTips::ToEndTooltip(),
-		FSlateColor::UseForeground(), [this]() { ScrubToSeconds(GetPassSeconds()); }), FMargin(0.f));
+		FSlateColor::UseForeground(), [this]() { GoToEnd(); }), FMargin(0.f));
 
 	// The time, right beside the buttons.
 	Add(SNew(STextBlock)
@@ -5166,6 +6044,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 	.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
 	[
 		SNew(SComboButton)
+		.ContentPadding(FMargin(4.f, 0.f))
 		.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::ModeTooltip()))
 		.OnGetMenuContent_Lambda([SwitchMode]()
 		{
@@ -5199,7 +6078,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 	.VAlign(VAlign_Center)
 	[
 		SNew(SBox)
-		.WidthOverride(320.f)
+		.WidthOverride(260.f)
 		.Visibility_Lambda([IsEditingExisting]() { return IsEditingExisting() ? EVisibility::Visible : EVisibility::Collapsed; })
 		[
 			SNew(SObjectPropertyEntryBox)
@@ -5240,6 +6119,15 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 		})
 	];
 
+	// Inside a collapsed track: its name, and the way back out.
+	Header->AddSlot()
+	.AutoWidth()
+	.VAlign(VAlign_Center)
+	.Padding(FMargin(8.f, 0.f, 0.f, 0.f))
+	[
+		MakeCollapsedBreadcrumb()
+	];
+
 	Header->AddSlot()
 	.FillWidth(1.f)
 	[
@@ -5252,8 +6140,10 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 	.VAlign(VAlign_Center)
 	.Padding(FMargin(4.f, 0.f))
 	[
+		// In the animation orange, with black text - the one button here that writes an asset.
 		SNew(SButton)
-		.ButtonColorAndOpacity(FLinearColor(NameTBD::Colors::AnimationOrange_Normal))
+		.ButtonStyle(&OrangeButtonStyle())
+		.ContentPadding(FMargin(0.f))
 		.IsEnabled_Lambda([this, IsEditingExisting]()
 		{
 			return Source.IsValid() && (IsEditingExisting() ? Source->CanUpdateAsset() : Source->CanSaveAsNewAsset());
@@ -5288,7 +6178,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 		})
 		[
 			SNew(STextBlock)
-			.ColorAndOpacity(FLinearColor::Black)
+			.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+			.ColorAndOpacity(FSlateColor::UseForeground())
 			.Text_Lambda([IsEditingExisting]()
 			{
 				return IsEditingExisting() ? LOCTEXT("UpdateAsset", "Update Animation Asset") : LOCTEXT("SaveAsAsset", "Save as Animation Asset");
@@ -5383,11 +6274,66 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 		]
 	];
 
-	return SNew(SBorder)
-		.BorderImage(FAppStyle::GetBrush("Brushes.Panel"))
-		.Padding(FMargin(8.f, 4.f))
+	// Fit: the whole animation back in view - the F key, or a double-click on the ruler, does the same. On a faint chip,
+	// so it reads as a button to press - not a toggle, which the lit chips of the controls pill are. The graph editors'
+	// own Zoom to Fit icon, under whichever name this engine version has it; "Fit" if it has none.
+	{
+		const FSlateBrush* FitIcon = PickBrush({ "GraphEditor.ZoomToFit", "GenericCurveEditor.ZoomToFit", "CurveEditor.ZoomToFit", "Icons.ZoomToFit", "Sequencer.ZoomToFit" });
+		const TSharedRef<TWeakPtr<SWidget>> FitWidget = MakeShared<TWeakPtr<SWidget>>();
+		const TSharedRef<SButton> FitButton = SNew(SButton)
+			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+			.ContentPadding(FMargin(0.f))
+			.OnClicked_Lambda([this]()
+			{
+				if (Tracks.IsValid())
+				{
+					Tracks->FitToAnimation();
+				}
+				return FReply::Handled();
+			})
+			[
+				SNew(SBorder)
+				.BorderImage(ChipBrush())
+				.BorderBackgroundColor_Lambda([FitWidget]()
+				{
+					const TSharedPtr<SWidget> Pinned = FitWidget->Pin();
+					return FSlateColor(Pinned.IsValid() && Pinned->IsHovered() ? Palette::FitButtonChipHovered : Palette::FitButtonChip);
+				})
+				.Padding(FMargin(5.f, 2.f))
+				.HAlign(HAlign_Center)
+				.VAlign(VAlign_Center)
+				[
+					FitIcon
+						? MakeFixedIcon(FitIcon, FSlateColor::UseForeground(), FitIconSize)
+						: StaticCastSharedRef<SWidget>(SNew(STextBlock).Text(LOCTEXT("Fit", "Fit")))
+				]
+			];
+		*FitWidget = FitButton;
+
+		Header->AddSlot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(6.f, 0.f, 0.f, 0.f))
 		[
-			Header
+			SNew(SWidgetAnimAnchoredTip)
+			.Text(WidgetAnimTips::FitTooltip())
+			[
+				FitButton
+			]
+		];
+	}
+
+	// The Track Editor's strip - one slim strip, level with the Animation Tracks list's.
+	return SNew(SBorder)
+		.BorderImage(FAppStyle::GetBrush("Brushes.Header"))
+		.Padding(FMargin(6.f, 0.f, 4.f, 0.f))
+		[
+			SNew(SBox)
+			.HeightOverride(SectionHeaderHeight)
+			.VAlign(VAlign_Center)
+			[
+				Header
+			]
 		];
 }
 
@@ -5518,6 +6464,15 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeCompactHeader()
 						.Text(CompactTitle)
 						.ToolTipText(CompactTitleToolTip)
 					]
+				]
+
+				// Inside a collapsed track: its name, and the way back out.
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(4.f, 0.f))
+				[
+					MakeCollapsedBreadcrumb()
 				]
 
 				// When the list starts: right away, or within one of the animations it plays alongside.
@@ -5802,16 +6757,34 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerListHeader()
 		]);
 }
 
+TSharedRef<SWidget> SWidgetAnimTimeline::MakeHorizontalScrollBarSlot()
+{
+	// Shown only while the view shows less than the whole animation, and only with Show Horizontal Scroll Bar When
+	// Necessary on in the editor preferences. Never inside a Details panel, where the panel is too short to spare it.
+	return SNew(SBox)
+		.Visibility_Lambda([this]()
+		{
+			const bool bShown = !IsInline()
+				&& UWidgetAnimEditorSettings::Get().bShowHorizontalScrollBarWhenNeeded
+				&& Tracks.IsValid() && Tracks->IsHorizontalScrollNeeded();
+			return bShown ? EVisibility::Visible : EVisibility::Collapsed;
+		})
+		[
+			TracksHorizontalScrollBar.ToSharedRef()
+		];
+}
+
 TSharedRef<SWidget> SWidgetAnimTimeline::MakeAnimationPropertiesButton()
 {
 	using namespace WidgetAnimTimeline;
 
 	// Italic, and a faint orange until hovered - a quiet way into the animation's own settings (its Speed
-	// Multiplier, its description), which clicking off every track also selects.
+	// Multiplier, its description), which clicking off every track also selects. A real button, edges and all, so it
+	// reads as one to press rather than as a label.
 	const TSharedRef<TWeakPtr<SWidget>> ButtonWidget = MakeShared<TWeakPtr<SWidget>>();
 	const TSharedRef<SButton> Button = SNew(SButton)
-		.ButtonStyle(FAppStyle::Get(), "SimpleButton")
-		.ContentPadding(FMargin(8.f, 5.f))
+		.ButtonStyle(FAppStyle::Get(), "Button")
+		.ContentPadding(FMargin(8.f, 2.f))
 		.HAlign(HAlign_Center)
 		.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::AnimationPropertiesTooltip()))
 		.OnClicked_Lambda([this]()
@@ -5852,7 +6825,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeAnimationPropertiesButton()
 		[
 			SNew(SBorder)
 			.BorderImage(FAppStyle::GetBrush("Brushes.Header"))
-			.Padding(FMargin(0.f))
+			.Padding(FMargin(6.f, 4.f))
 			[
 				Button
 			]
@@ -5863,29 +6836,89 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTrackEditorHeader()
 {
 	using namespace WidgetAnimTimeline;
 
-	// Fit: the whole animation back in view - the F key, or a double-click on the ruler, does the same. The graph
-	// editors' own Zoom to Fit icon, under whichever name this engine version has it; "Fit" if it has none.
-	return MakeSectionHeader(LOCTEXT("TrackEditorHeader", "Track Editor"),
-		MakeIconButton(
-			{ "GraphEditor.ZoomToFit", "GenericCurveEditor.ZoomToFit", "CurveEditor.ZoomToFit", "Icons.ZoomToFit", "Sequencer.ZoomToFit" },
-			LOCTEXT("Fit", "Fit"),
-			WidgetAnimTips::FitTooltip(),
-			FOnClicked::CreateLambda([this]()
-			{
-				if (Tracks.IsValid())
-				{
-					Tracks->FitToAnimation();
-				}
-				return FReply::Handled();
-			}),
-			FitIconSize));
+	// What the panel works on, a collapsed track's way back out, Save, Dock in Layout, the lock and Fit - all in one strip.
+	return MakeHeader();
 }
 
-TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport()
+TSharedRef<SWidget> SWidgetAnimTimeline::MakeCollapsedBreadcrumb()
 {
 	using namespace WidgetAnimTimeline;
 
-	// One segment of a controls pill: an icon when there is one, else its text, lit with a rounded chip while on.
+	// As a collapsed graph's tab reads: the whole animation, then the collapsed track open on its own. The back arrow -
+	// or the whole animation's name, or Escape - goes back out.
+	return SNew(SHorizontalBox)
+		.Visibility_Lambda([this]() { return IsInCollapsedScope() ? EVisibility::Visible : EVisibility::Collapsed; })
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			SNew(SButton)
+			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+			.ContentPadding(FMargin(3.f, 1.f))
+			.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::LeaveCollapsedTooltip()))
+			.OnClicked_Lambda([this]()
+			{
+				ExitCollapsed();
+				return FReply::Handled();
+			})
+			[
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+				[
+					MakeFixedIcon(PickBrush({ "Icons.ArrowLeft", "Icons.ChevronLeft", "GenericCommands.Undo" }), FSlateColor::UseSubduedForeground(), 12.f)
+				]
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+					.Text(LOCTEXT("BreadcrumbAllTracks", "All Tracks"))
+				]
+			]
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(3.f, 0.f))
+		[
+			MakeFixedIcon(PickBrush({ "Icons.ChevronRight", "TreeArrow_Collapsed" }), FSlateColor::UseSubduedForeground(), 10.f)
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+		[
+			MakeFixedIcon(PickBrush({ "GraphEditor.SubGraph_16x", "Icons.FolderClosed" }), FSlateColor(Palette::LayerCollapsed), 12.f)
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.MaxWidth(220.f)
+		.VAlign(VAlign_Center)
+		[
+			SNew(STextBlock)
+			.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+			.ColorAndOpacity(Palette::LayerCollapsed)
+			.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+			.Text_Lambda([this]() { return FText::FromName(ActiveCollapsed); })
+		];
+}
+
+TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
+{
+	using namespace WidgetAnimTimeline;
+
+	// One segment of the controls pill: an icon when there is one, else its text, lit with a rounded chip while on.
 	auto MakePillToggle = [](const FText& Label, const FText& ToolTip,
 		TFunction<bool()> IsOn,
 		TFunction<void(bool)> SetOn,
@@ -5916,7 +6949,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport()
 					SNew(SBorder)
 					.BorderImage(ControlsSegmentBrush())
 					.BorderBackgroundColor_Lambda([IsOn]() { return FSlateColor(IsOn() ? Palette::ToggleOnBackground : FLinearColor::Transparent); })
-					.Padding(Icon ? FMargin(9.f, 3.f) : FMargin(12.f, 3.f))
+					.Padding(Icon ? FMargin(7.f, 3.f) : FMargin(10.f, 3.f))
 					.HAlign(HAlign_Center)
 					.VAlign(VAlign_Center)
 					[
@@ -5926,8 +6959,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport()
 			];
 	};
 
-	// A segment of the Animation Controls pill: how the preview plays, which the source keeps. Shown as an
-	// icon - the plugin's own from Resources if one has been dropped in, else the editor's - or as its text.
+	// A segment for how the preview plays, which the source keeps. Shown as an icon - the plugin's own from Resources
+	// if one has been dropped in, else the editor's - or as its text.
 	auto MakeSegment = [this, MakePillToggle](const FText& Label, const FText& ToolTip,
 		TFunction<bool(const IWidgetAnimPanelSource&)> Getter,
 		TFunction<void(IWidgetAnimPanelSource&, bool)> Setter,
@@ -5955,286 +6988,210 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport()
 			];
 	};
 
-	return SNew(SBorder)
-		.BorderImage(FAppStyle::GetBrush("Brushes.Panel"))
-		.Padding(FMargin(8.f, 4.f))
+	// ---- One pill of controls: how the preview plays - Loop, Ping Pong, Invert, Speed - then how tracks behave when
+	// dragged - Snapping, Linked Edges. -------------------------------------------------------------------------------
+
+	const TSharedRef<SHorizontalBox> PillRow = SNew(SHorizontalBox);
+	auto AddToPill = [&PillRow](const TSharedRef<SWidget>& Widget, const FMargin& Padding = FMargin(0.f))
+	{
+		PillRow->AddSlot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(Padding)
+		[
+			Widget
+		];
+	};
+
+	AddToPill(MakeSegment(LOCTEXT("Loop", "Loop"),
+		WidgetAnimTips::LoopTooltip(),
+		[](const IWidgetAnimPanelSource& In) { return In.GetLoop(); },
+		[](IWidgetAnimPanelSource& In, bool bValue) { In.SetLoop(bValue); },
+		nullptr,
+		FindControlIcon(TEXT("WidgetAnim_Loop"), { "Animation.Loop.Enabled", "Animation.Loop", "Icons.Loop", "GenericLoop" })));
+	AddToPill(MakeDivider(), FMargin(2.f, 0.f));
+	AddToPill(MakeSegment(LOCTEXT("PingPong", "Ping Pong"),
+		WidgetAnimTips::PingPongTooltip(),
+		[](const IWidgetAnimPanelSource& In) { return In.GetPingPong(); },
+		[](IWidgetAnimPanelSource& In, bool bValue) { In.SetPingPong(bValue); },
+		[](const IWidgetAnimPanelSource& In) { return In.GetLoop(); },
+		FindControlIcon(TEXT("WidgetAnim_PingPong"), { "Animation.PingPong", "Icons.PingPong" })));
+	AddToPill(MakeDivider(), FMargin(2.f, 0.f));
+	AddToPill(MakeSegment(LOCTEXT("Invert", "Invert"),
+		WidgetAnimTips::InvertTooltip(),
+		[](const IWidgetAnimPanelSource& In) { return In.GetInvert(); },
+		[](IWidgetAnimPanelSource& In, bool bValue) { In.SetInvert(bValue); },
+		nullptr,
+		FindControlIcon(TEXT("WidgetAnim_Invert"), { "Icons.Reverse", "Animation.Backward" })));
+	AddToPill(MakeDivider(), FMargin(2.f, 0.f));
+
+	// Speed: its label styled as the segments are, and a compact number beside it - both tipped "Preview Speed".
+	AddToPill(
+		SNew(SWidgetAnimAnchoredTip)
+		.Text(WidgetAnimTips::SpeedTooltip())
+		[
+			SNew(STextBlock)
+			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+			.ColorAndOpacity(Palette::ToggleOffText)
+			.Text(LOCTEXT("Speed", "Speed"))
+		],
+		FMargin(8.f, 0.f, 5.f, 0.f));
+	AddToPill(
+		SNew(SWidgetAnimAnchoredTip)
+		.Text(WidgetAnimTips::SpeedTooltip())
+		[
+			SNew(SBox)
+			.WidthOverride(48.f)
+			[
+				SNew(SSpinBox<float>)
+				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+				.MinValue(0.01f)
+				.MaxValue(10.f)
+				.MinSliderValue(0.1f)
+				.MaxSliderValue(4.f)
+				.Delta(0.05f)
+				.Value_Lambda([this]() { return Source.IsValid() ? Source->GetSpeed() : 1.f; })
+				.OnValueChanged_Lambda([this](float NewValue) { if (Source.IsValid()) { Source->SetSpeed(NewValue); } })
+				.OnValueCommitted_Lambda([this](float NewValue, ETextCommit::Type) { if (Source.IsValid()) { Source->SetSpeed(NewValue); } })
+			]
+		],
+		FMargin(0.f, 0.f, 4.f, 0.f));
+	AddToPill(MakeDivider(), FMargin(2.f, 0.f));
+	AddToPill(MakePillToggle(LOCTEXT("TrackSnapping", "Snapping"),
+		WidgetAnimTips::TrackSnappingTooltip(),
+		[]() { return UWidgetAnimEditorSettings::Get().bTrackSnapping; },
+		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetTrackSnapping(bValue); },
+		[]() { return true; },
+		FindControlIcon(TEXT("WidgetAnim_Snapping"), { "Sequencer.ToggleIsSnapEnabled", "EditorViewport.LocationGridSnap", "GenericCurveEditor.ToggleSnapping", "Icons.Snap" })));
+	AddToPill(MakeDivider(), FMargin(2.f, 0.f));
+	AddToPill(MakePillToggle(LOCTEXT("LinkedEdges", "Linked Edges"),
+		WidgetAnimTips::LinkedEdgesTooltip(),
+		[]() { return UWidgetAnimEditorSettings::Get().bLinkedEdges; },
+		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetLinkedEdges(bValue); },
+		[]() { return true; },
+		FindControlIcon(TEXT("WidgetAnim_LinkedEdges"), { "Icons.Link", "Icons.Chain" })));
+
+	const TSharedRef<SWidget> Pill = SNew(SBorder)
+		.BorderImage(ControlsPillBrush())
+		.Padding(FMargin(3.f, 2.f))
+		[
+			PillRow
+		];
+
+	// ---- The transport: Go to Start, the previous key, Play, the next key, Go to End - tight together. -------------------
+
+	const TSharedRef<SWidget> Buttons = SNew(SHorizontalBox)
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			MakeIconButton({ "Animation.Backward_End", "Sequencer.Transport.GoToFront.Normal" }, LOCTEXT("ToStart", "|<"), WidgetAnimTips::ToStartTooltip(),
+				FOnClicked::CreateLambda([this]() { GoToStart(); return FReply::Handled(); }), TransportIconSize)
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			MakeIconButton({ "Animation.Backward_Step", "Sequencer.Transport.StepBackwards.Normal" }, LOCTEXT("PrevKey", "<"), WidgetAnimTips::PrevKeyTooltip(),
+				FOnClicked::CreateLambda([this]() { StepToMarker(-1); return FReply::Handled(); }), TransportIconSize)
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(2.f, 0.f))
+		[
+			SNew(SWidgetAnimAnchoredTip)
+			.Text_Lambda([this]()
+			{
+				return IsPlaying()
+					? WidgetAnimTips::PauseTooltip()
+					: WidgetAnimTips::PlayTooltip();
+			})
+			[
+				SNew(SButton)
+				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+				.ContentPadding(FMargin(4.f, 2.f))
+				.VAlign(VAlign_Center)
+				.HAlign(HAlign_Center)
+				.OnClicked_Lambda([this]() { TogglePlay(); return FReply::Handled(); })
+				[
+					MakeFixedIcon(
+						TAttribute<const FSlateBrush*>::CreateLambda([this]()
+						{
+							return IsPlaying()
+								? PickBrush({ "Icons.Pause", "PlayWorld.PausePlaySession", "GenericPause" })
+								: PickBrush({ "Icons.Play", "PlayWorld.ResumePlaySession", "GenericPlay" });
+						}),
+						TAttribute<FSlateColor>::CreateLambda([this]()
+						{
+							return FSlateColor(IsPlaying() ? PauseTint : PlayTint);
+						}),
+						TransportIconSize + 2.f)
+				]
+			]
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			MakeIconButton({ "Animation.Forward_Step", "Sequencer.Transport.StepForward.Normal" }, LOCTEXT("NextKey", ">"), WidgetAnimTips::NextKeyTooltip(),
+				FOnClicked::CreateLambda([this]() { StepToMarker(1); return FReply::Handled(); }), TransportIconSize)
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			MakeIconButton({ "Animation.Forward_End", "Sequencer.Transport.GoToEnd.Normal" }, LOCTEXT("ToEnd", ">|"), WidgetAnimTips::ToEndTooltip(),
+				FOnClicked::CreateLambda([this]() { GoToEnd(); return FReply::Handled(); }), TransportIconSize)
+		];
+
+	// ---- The time, in a recessed readout like the native editor's current-time box. ------------------------------------
+
+	const TSharedRef<SWidget> Time = SNew(SBorder)
+		.BorderImage(FAppStyle::GetBrush("Brushes.Recessed"))
+		.Padding(FMargin(8.f, 2.f))
 		[
 			SNew(SHorizontalBox)
 
-			// Left third: how it plays, as an entry using it would - one pill, like a media player's controls.
-			+ SHorizontalBox::Slot()
-			.FillWidth(1.f)
-			.HAlign(HAlign_Left)
-			.VAlign(VAlign_Center)
-			[
-				SNew(SHorizontalBox)
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(FMargin(0.f, 0.f, 8.f, 0.f))
-				[
-					SNew(STextBlock)
-					.Visibility(bCompact ? EVisibility::Collapsed : EVisibility::Visible)
-					.Text(LOCTEXT("AnimationControls", "Animation Controls"))
-					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				[
-					SNew(SBorder)
-					.BorderImage(ControlsPillBrush())
-					.Padding(FMargin(3.f, 2.f))
-					[
-						SNew(SHorizontalBox)
-
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						[
-							MakeSegment(LOCTEXT("Loop", "Loop"),
-								WidgetAnimTips::LoopTooltip(),
-								[](const IWidgetAnimPanelSource& In) { return In.GetLoop(); },
-								[](IWidgetAnimPanelSource& In, bool bValue) { In.SetLoop(bValue); },
-								nullptr,
-								FindControlIcon(TEXT("WidgetAnim_Loop"), { "Animation.Loop.Enabled", "Animation.Loop", "Icons.Loop", "GenericLoop" }))
-						]
-
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(FMargin(3.f, 0.f))
-						[
-							MakeDivider()
-						]
-
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						[
-							MakeSegment(LOCTEXT("PingPong", "Ping Pong"),
-								WidgetAnimTips::PingPongTooltip(),
-								[](const IWidgetAnimPanelSource& In) { return In.GetPingPong(); },
-								[](IWidgetAnimPanelSource& In, bool bValue) { In.SetPingPong(bValue); },
-								[](const IWidgetAnimPanelSource& In) { return In.GetLoop(); },
-								FindControlIcon(TEXT("WidgetAnim_PingPong"), { "Animation.PingPong", "Icons.PingPong" }))
-						]
-
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(FMargin(3.f, 0.f))
-						[
-							MakeDivider()
-						]
-
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						[
-							MakeSegment(LOCTEXT("Invert", "Invert"),
-								WidgetAnimTips::InvertTooltip(),
-								[](const IWidgetAnimPanelSource& In) { return In.GetInvert(); },
-								[](IWidgetAnimPanelSource& In, bool bValue) { In.SetInvert(bValue); },
-								nullptr,
-								FindControlIcon(TEXT("WidgetAnim_Invert"), { "Icons.Reverse", "Animation.Backward" }))
-						]
-
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(FMargin(3.f, 0.f))
-						[
-							MakeDivider()
-						]
-
-						// Speed, as the last segment: its label styled as the others, and a compact number beside it.
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(FMargin(12.f, 0.f, 6.f, 0.f))
-						[
-							SNew(STextBlock)
-							.Visibility(bCompact ? EVisibility::Collapsed : EVisibility::Visible)
-							.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-							.ColorAndOpacity(Palette::ToggleOffText)
-							.Text(LOCTEXT("PlaybackSpeed", "Playback Speed"))
-						]
-
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
-						[
-							SNew(SWidgetAnimAnchoredTip)
-							.Text(WidgetAnimTips::SpeedTooltip())
-							[
-							SNew(SBox)
-							.WidthOverride(52.f)
-							[
-								SNew(SSpinBox<float>)
-								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-								.MinValue(0.01f)
-								.MaxValue(10.f)
-								.MinSliderValue(0.1f)
-								.MaxSliderValue(4.f)
-								.Delta(0.05f)
-								.Value_Lambda([this]() { return Source.IsValid() ? Source->GetSpeed() : 1.f; })
-								.OnValueChanged_Lambda([this](float NewValue) { if (Source.IsValid()) { Source->SetSpeed(NewValue); } })
-								.OnValueCommitted_Lambda([this](float NewValue, ETextCommit::Type) { if (Source.IsValid()) { Source->SetSpeed(NewValue); } })
-							]
-							]
-						]
-					]
-				]
-			]
-
-			// Middle: the transport, centered under the tracks as in the native editor, and a size up from the
-			// rest of the panel's icons - they are the controls used most.
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
 			.VAlign(VAlign_Center)
 			[
-				SNew(SHorizontalBox)
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					MakeIconButton({ "Animation.Backward_End", "Sequencer.Transport.GoToFront.Normal" }, LOCTEXT("ToStart", "|<"), WidgetAnimTips::ToStartTooltip(),
-						FOnClicked::CreateLambda([this]() { ScrubToSeconds(0.f); return FReply::Handled(); }), TransportIconSize)
-				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					MakeIconButton({ "Animation.Backward_Step", "Sequencer.Transport.StepBackwards.Normal" }, LOCTEXT("PrevKey", "<"), WidgetAnimTips::PrevKeyTooltip(),
-						FOnClicked::CreateLambda([this]() { StepToMarker(-1); return FReply::Handled(); }), TransportIconSize)
-				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.Padding(FMargin(4.f, 0.f))
-				[
-					SNew(SWidgetAnimAnchoredTip)
-					.Text_Lambda([this]()
-					{
-						return IsPlaying()
-							? WidgetAnimTips::PauseTooltip()
-							: WidgetAnimTips::PlayTooltip();
-					})
-					[
-					SNew(SButton)
-					.ButtonStyle(FAppStyle::Get(), "SimpleButton")
-					.ContentPadding(FMargin(6.f, 3.f))
-					.VAlign(VAlign_Center)
-					.HAlign(HAlign_Center)
-					.OnClicked_Lambda([this]() { TogglePlay(); return FReply::Handled(); })
-					[
-						MakeFixedIcon(
-							TAttribute<const FSlateBrush*>::CreateLambda([this]()
-							{
-								return IsPlaying()
-									? PickBrush({ "Icons.Pause", "PlayWorld.PausePlaySession", "GenericPause" })
-									: PickBrush({ "Icons.Play", "PlayWorld.ResumePlaySession", "GenericPlay" });
-							}),
-							TAttribute<FSlateColor>::CreateLambda([this]()
-							{
-								return FSlateColor(IsPlaying() ? PauseTint : PlayTint);
-							}),
-							TransportIconSize + 4.f)
-					]
-					]
-				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					MakeIconButton({ "Animation.Forward_Step", "Sequencer.Transport.StepForward.Normal" }, LOCTEXT("NextKey", ">"), WidgetAnimTips::NextKeyTooltip(),
-						FOnClicked::CreateLambda([this]() { StepToMarker(1); return FReply::Handled(); }), TransportIconSize)
-				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				[
-					MakeIconButton({ "Animation.Forward_End", "Sequencer.Transport.GoToEnd.Normal" }, LOCTEXT("ToEnd", ">|"), WidgetAnimTips::ToEndTooltip(),
-						FOnClicked::CreateLambda([this]() { ScrubToSeconds(GetPassSeconds()); return FReply::Handled(); }), TransportIconSize)
-				]
+				SNew(STextBlock)
+				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+				.Text_Lambda([this]() { return FText::FromString(FString::Printf(TEXT("%.2f"), GetPlayheadSeconds())); })
 			]
 
-			// Right third: how tracks behave when dragged, then the time in a recessed readout like the native
-			// editor's current-time box.
 			+ SHorizontalBox::Slot()
-			.FillWidth(1.f)
-			.HAlign(HAlign_Right)
+			.AutoWidth()
 			.VAlign(VAlign_Center)
 			[
-				SNew(SHorizontalBox)
+				SNew(STextBlock)
+				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				.Text_Lambda([this]() { return FText::FromString(FString::Printf(TEXT(" / %.2f s"), GetPassSeconds())); })
+			]
+		];
 
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(FMargin(0.f, 0.f, 8.f, 0.f))
-				[
-					SNew(STextBlock)
-					.Visibility(bCompact ? EVisibility::Collapsed : EVisibility::Visible)
-					.Text(LOCTEXT("TrackControls", "Track Controls"))
-					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-				]
+	// Under the Animation Tracks list: the transport and the time on one row, the pill under them - so the Track Editor
+	// runs all the way down beside them. The two rows share one width, centered: the buttons line up with the pill's
+	// left end and the time with its right, rather than the time pushing the buttons off center.
+	if (bStacked)
+	{
+		return SNew(SBorder)
+			.BorderImage(FAppStyle::GetBrush("Brushes.Panel"))
+			.Padding(FMargin(6.f, 3.f, 6.f, 5.f))
+			.HAlign(HAlign_Center)
+			[
+				SNew(SVerticalBox)
 
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(FMargin(0.f, 0.f, 12.f, 0.f))
-				[
-					SNew(SBorder)
-					.BorderImage(ControlsPillBrush())
-					.Padding(FMargin(3.f, 2.f))
-					[
-						SNew(SHorizontalBox)
-
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						[
-							MakePillToggle(LOCTEXT("TrackSnapping", "Snapping"),
-								WidgetAnimTips::TrackSnappingTooltip(),
-								[]() { return UWidgetAnimEditorSettings::Get().bTrackSnapping; },
-								[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetTrackSnapping(bValue); },
-								[]() { return true; },
-								FindControlIcon(TEXT("WidgetAnim_Snapping"), { "Sequencer.ToggleIsSnapEnabled", "EditorViewport.LocationGridSnap", "GenericCurveEditor.ToggleSnapping", "Icons.Snap" }))
-						]
-
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(FMargin(3.f, 0.f))
-						[
-							MakeDivider()
-						]
-
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						[
-							MakePillToggle(LOCTEXT("LinkedEdges", "Linked Edges"),
-								WidgetAnimTips::LinkedEdgesTooltip(),
-								[]() { return UWidgetAnimEditorSettings::Get().bLinkedEdges; },
-								[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetLinkedEdges(bValue); },
-								[]() { return true; },
-								FindControlIcon(TEXT("WidgetAnim_LinkedEdges"), { "Icons.Link", "Icons.Chain" }))
-						]
-					]
-				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				[
-				SNew(SBorder)
-				.BorderImage(FAppStyle::GetBrush("Brushes.Recessed"))
-				.Padding(FMargin(10.f, 3.f))
+				+ SVerticalBox::Slot()
+				.AutoHeight()
 				[
 					SNew(SHorizontalBox)
 
@@ -6242,22 +7199,63 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport()
 					.AutoWidth()
 					.VAlign(VAlign_Center)
 					[
-						SNew(STextBlock)
-						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
-						.Text_Lambda([this]() { return FText::FromString(FString::Printf(TEXT("%.2f"), GetPlayheadSeconds())); })
+						Buttons
+					]
+
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.f)
+					[
+						SNew(SSpacer)
+						.Size(FVector2D(6.f, 0.f))
 					]
 
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					.VAlign(VAlign_Center)
 					[
-						SNew(STextBlock)
-						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
-						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-						.Text_Lambda([this]() { return FText::FromString(FString::Printf(TEXT(" / %.2f s"), GetPassSeconds())); })
+						Time
 					]
 				]
+
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.HAlign(HAlign_Center)
+				.Padding(FMargin(0.f, 3.f, 0.f, 0.f))
+				[
+					Pill
 				]
+			];
+	}
+
+	// Along the bottom: the pill on the left, the transport in the middle, the time on the right.
+	return SNew(SBorder)
+		.BorderImage(FAppStyle::GetBrush("Brushes.Panel"))
+		.Padding(FMargin(8.f, 3.f))
+		[
+			SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.f)
+			.HAlign(HAlign_Left)
+			.VAlign(VAlign_Center)
+			[
+				Pill
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(8.f, 0.f))
+			[
+				Buttons
+			]
+
+			+ SHorizontalBox::Slot()
+			.FillWidth(1.f)
+			.HAlign(HAlign_Right)
+			.VAlign(VAlign_Center)
+			[
+				Time
 			]
 		];
 }
@@ -6417,9 +7415,10 @@ bool SWidgetAnimTimeline::CanResizeLayer(int32 LayerIndex, bool bStartEdge) cons
 		return false;
 	}
 
-	// An animation track is as long as the animation it plays: dragged along, never stretched.
+	// An animation track is as long as the animation it plays: dragged along, never stretched. A collapsed track is as
+	// long as its tracks: each is resized on its own, inside it.
 	const FWidgetAnimLayer& Layer = (*GetLayers())[LayerIndex];
-	if (Layer.IsAnimationTrack())
+	if (Layer.IsAnimationTrack() || IsCollapsedHead(LayerIndex))
 	{
 		return false;
 	}
@@ -6599,7 +7598,7 @@ FVector2f SWidgetAnimTimeline::GetGroupSpan(int32 GroupIndex) const
 	FVector2f Range(TNumericLimits<float>::Max(), -TNumericLimits<float>::Max());
 	for (int32 LayerIndex = 0; LayerIndex < Spans.Num(); ++LayerIndex)
 	{
-		if (GetLayerGroup(LayerIndex) == GroupIndex)
+		if (GetLayerGroup(LayerIndex) == GroupIndex && IsLayerInView(LayerIndex))
 		{
 			Range.X = FMath::Min(Range.X, Spans[LayerIndex].X);
 			Range.Y = FMath::Max(Range.Y, Spans[LayerIndex].X + Spans[LayerIndex].Y);
@@ -6624,6 +7623,12 @@ float SWidgetAnimTimeline::GetPassSeconds() const
 	for (const FVector2f& Span : ContextSpans)
 	{
 		End = FMath::Max(End, Span.X + Span.Y);
+	}
+
+	// And on past its last track to its Minimum Length, when the animation's end was pulled out there.
+	if (Source.IsValid())
+	{
+		End = FMath::Max(End, Source->GetMinimumLength() * GetTimeScale());
 	}
 	return End;
 }
@@ -6770,24 +7775,32 @@ FText SWidgetAnimTimeline::GetGroupTargetLabel(int32 GroupIndex) const
 		: FText::Format(LOCTEXT("TargetMissing", "{0} (not in this widget)"), FText::FromName(Target));
 }
 
+float SWidgetAnimTimeline::GetRowHeight() const
+{
+	return FMath::Clamp(FMath::RoundToFloat(UWidgetAnimEditorSettings::Get().DefaultTrackHeight), MinRowHeight, MaxRowHeight);
+}
+
 void SWidgetAnimTimeline::SetRowHeight(float NewHeight)
 {
 	NewHeight = FMath::Clamp(FMath::RoundToFloat(NewHeight), MinRowHeight, MaxRowHeight);
-	if (FMath::IsNearlyEqual(NewHeight, RowHeight))
+	if (FMath::IsNearlyEqual(NewHeight, GetRowHeight()))
 	{
 		return;
 	}
 
-	RowHeight = NewHeight;
-
-	// Remembered for next time, per user and project, like any other editor layout preference.
-	GConfig->SetFloat(RowHeightConfigSection, RowHeightConfigKey, RowHeight, GEditorPerProjectIni);
+	// The preference itself, so every open panel follows; written to disk once the drag ends - see SaveRowHeight.
+	UWidgetAnimEditorSettings::GetMutable().DefaultTrackHeight = NewHeight;
 
 	// The Track Editor reads it live; it just needs laying out again.
 	if (Tracks.IsValid())
 	{
 		Tracks->Invalidate(EInvalidateWidgetReason::Layout);
 	}
+}
+
+void SWidgetAnimTimeline::SaveRowHeight()
+{
+	UWidgetAnimEditorSettings::GetMutable().SaveConfig();
 }
 
 void SWidgetAnimTimeline::ToggleTrackGroupCollapsed(int32 GroupIndex)
@@ -6824,6 +7837,10 @@ void SWidgetAnimTimeline::ToggleListGroupCollapsed(int32 GroupIndex)
 
 void SWidgetAnimTimeline::ScrubToSeconds(float Seconds)
 {
+	// The playhead moved by hand: Play plays forward again, and a backward play walked by the panel stops.
+	bPlayBackwardNext = false;
+	bPanelPlayingBackward = false;
+
 	const float PassSeconds = GetPassSeconds();
 	if (Source.IsValid())
 	{
@@ -6833,15 +7850,39 @@ void SWidgetAnimTimeline::ScrubToSeconds(float Seconds)
 
 void SWidgetAnimTimeline::TogglePlay()
 {
-	if (Source.IsValid())
+	if (!Source.IsValid())
 	{
-		Source->TogglePlay();
+		return;
 	}
+
+	// Playing backward, walked by the panel: stops where it is.
+	if (bPanelPlayingBackward)
+	{
+		bPanelPlayingBackward = false;
+		return;
+	}
+
+	// After Go to End, Play plays the animation from its end back to its start - by the source where it can, else walked
+	// by the panel itself, a frame at a time. See OnRefreshTimer.
+	if (bPlayBackwardNext && !Source->IsPlaying())
+	{
+		bPlayBackwardNext = false;
+		if (!Source->PlayBackward())
+		{
+			const float Alpha = Source->GetPlayheadAlpha();
+			PanelBackwardAlpha = Alpha > KINDA_SMALL_NUMBER ? Alpha : 1.f;
+			bPanelPlayingBackward = true;
+		}
+		return;
+	}
+
+	bPlayBackwardNext = false;
+	Source->TogglePlay();
 }
 
 bool SWidgetAnimTimeline::IsPlaying() const
 {
-	return Source.IsValid() && Source->IsPlaying();
+	return bPanelPlayingBackward || (Source.IsValid() && Source->IsPlaying());
 }
 
 void SWidgetAnimTimeline::StepToMarker(int32 Direction)
@@ -7044,11 +8085,19 @@ void SWidgetAnimTimeline::SelectAllLayers()
 	SelectedLayers.Reset();
 	for (int32 Index = 0; Index < Layers->Num(); ++Index)
 	{
-		SelectedLayers.Add(Index);
+		// Inside a collapsed track, every one of its tracks - the ones shown.
+		if (IsLayerInView(Index))
+		{
+			SelectedLayers.Add(Index);
+		}
+	}
+	if (SelectedLayers.Num() == 0)
+	{
+		return;
 	}
 
 	FSelection NewSelection;
-	NewSelection.Layer = Layers->IsValidIndex(Selection.Layer) ? Selection.Layer : 0;
+	NewSelection.Layer = SelectedLayers.Contains(Selection.Layer) ? Selection.Layer : SelectedLayers[0];
 	Selection = Validate(NewSelection);
 	SelectionAnchor = Selection.Layer;
 	RefreshDetails();
@@ -7155,8 +8204,27 @@ void SWidgetAnimTimeline::SelectInBox(const TArray<FKeyRef>& Keys, const TArray<
 
 	if (Layers.Num() > 0)
 	{
-		TArray<int32> NewLayers = (bKeep && SelectedKeys.Num() == 0) ? SelectedLayers : TArray<int32>();
+		// A collapsed track taken in is every one of its tracks.
+		TArray<int32> Taken;
 		for (const int32 LayerIndex : Layers)
+		{
+			if (IsCollapsedHead(LayerIndex))
+			{
+				TArray<int32> Members;
+				GetCollapsedMembers(GetLayerCollapsedName(LayerIndex), Members);
+				for (const int32 Member : Members)
+				{
+					Taken.AddUnique(Member);
+				}
+			}
+			else
+			{
+				Taken.AddUnique(LayerIndex);
+			}
+		}
+
+		TArray<int32> NewLayers = (bKeep && SelectedKeys.Num() == 0) ? SelectedLayers : TArray<int32>();
+		for (const int32 LayerIndex : Taken)
 		{
 			if (bToggle && NewLayers.Contains(LayerIndex))
 			{
@@ -7726,11 +8794,32 @@ uint32 SWidgetAnimTimeline::ComputeLayoutSignature() const
 	}
 	Hash = HashCombine(Hash, FoldHash);
 
+	// Which collapsed track is open on its own, and which are opened in the list, decide the rows too.
+	Hash = HashCombine(Hash, GetTypeHash(ActiveCollapsed));
+	uint32 OpenHash = 0;
+	for (const FName& Open : ListOpenCollapsed)
+	{
+		OpenHash += HashCombine(GetTypeHash(Open), 0xC2B2AE35u);
+	}
+	Hash = HashCombine(Hash, OpenHash);
+
+	// A group's widget decides whether its tracks have anything to stagger over.
+	for (const FWidgetAnimLayerGroup& Group : *Groups)
+	{
+		Hash = HashCombine(Hash, GetTypeHash(Group.PreviewTarget));
+	}
+
 	Hash = HashCombine(Hash, GetTypeHash(Layers->Num()));
 	for (const FWidgetAnimLayer& Layer : *Layers)
 	{
 		Hash = HashCombine(Hash, GetTypeHash(static_cast<uint8>(Layer.AnimType)));
 		Hash = HashCombine(Hash, GetTypeHash(Layer.LayerGroup));
+
+#if WITH_EDITORONLY_DATA
+		// Folded into a collapsed track, and pinned: which rows and lines it has, and where.
+		Hash = HashCombine(Hash, GetTypeHash(Layer.CollapsedTrack));
+		Hash = HashCombine(Hash, GetTypeHash(Layer.bPinnedInEditor));
+#endif
 
 		// A lock changes what the row offers - its grip, its delete button - and whether its fields are editable.
 		Hash = HashCombine(Hash, GetTypeHash(Layer.bLockedInEditor));
@@ -7781,6 +8870,39 @@ EActiveTimerReturnType SWidgetAnimTimeline::OnRefreshTimer(double InCurrentTime,
 	if (Source.IsValid() && !IsBodyCollapsed())
 	{
 		Source->NotifyPanelActive();
+	}
+
+	// A collapsed track open on its own that is gone - undone, or expanded elsewhere - closes; while one is open, a track
+	// added from anywhere else is left out of the previews with the rest.
+	if (IsInCollapsedScope())
+	{
+		TArray<int32> Members;
+		GetCollapsedMembers(ActiveCollapsed, Members);
+		if (Members.Num() == 0)
+		{
+			ExitCollapsed();
+		}
+	}
+	if (IsInCollapsedScope() || bScopeMutesApplied)
+	{
+		SyncScopeMutes();
+	}
+
+	// A Preview Target being picked in the designer: the widget clicked there.
+	UpdateTargetPick();
+
+	// Playing backward from the end, walked by the panel for a source that can't: a frame's worth further back each tick,
+	// at the preview's speed, stopping at the start.
+	if (bPanelPlayingBackward && Source.IsValid())
+	{
+		const float PassSeconds = GetPassSeconds();
+		PanelBackwardAlpha -= PassSeconds > KINDA_SMALL_NUMBER ? InDeltaTime * FMath::Max(Source->GetSpeed(), 0.01f) / PassSeconds : 1.f;
+		if (PanelBackwardAlpha <= 0.f)
+		{
+			PanelBackwardAlpha = 0.f;
+			bPanelPlayingBackward = false;
+		}
+		Source->ScrubToAlpha(PanelBackwardAlpha);
 	}
 
 	// Edits made through the multi-selection proxies, told to the source once for every proxy that made them.
@@ -7923,32 +9045,19 @@ void SWidgetAnimTimeline::RebuildLayerList()
 	TArray<int32> Order;
 	GetListOrder(Order);
 
-	// A thin line under every row.
-	auto Separator = []()
-	{
-		return SNew(SBox)
-			.HeightOverride(1.f)
-			[
-				SNew(SImage)
-				.Image(WhiteBrush())
-				.ColorAndOpacity(SeparatorColor)
-			];
-	};
-
-	// The group's color, down the left of its row and every one of its layers' rows.
-	auto Band = [](int32 GroupIndex)
-	{
-		return SNew(SBox)
-			.WidthOverride(GroupBandWidth)
-			[
-				SNew(SImage)
-				.Image(WhiteBrush())
-				.ColorAndOpacity(GetGroupColor(GroupIndex))
-			];
-	};
-
 	for (int32 GroupIndex = 0; GroupIndex < Groups->Num(); ++GroupIndex)
 	{
+		// Inside a collapsed track, only the groups its tracks are in.
+		bool bAnyInView = !IsInCollapsedScope();
+		for (int32 LayerIndex = 0; !bAnyInView && LayerIndex < Layers->Num(); ++LayerIndex)
+		{
+			bAnyInView = GetLayerGroup(LayerIndex) == GroupIndex && IsLayerInView(LayerIndex);
+		}
+		if (!bAnyInView)
+		{
+			continue;
+		}
+
 		// ---- The group: fold arrow, name, and the widget it animates -------------------------------------
 
 		const TSharedRef<TWeakPtr<SWidget>> GroupRowWidget = MakeShared<TWeakPtr<SWidget>>();
@@ -7989,7 +9098,13 @@ void SWidgetAnimTimeline::RebuildLayerList()
 						+ SHorizontalBox::Slot()
 						.AutoWidth()
 						[
-							Band(GroupIndex)
+							SNew(SBox)
+							.WidthOverride(GroupBandWidth)
+							[
+								SNew(SImage)
+								.Image(WhiteBrush())
+								.ColorAndOpacity(GetGroupColor(GroupIndex))
+							]
 						]
 
 						// Fold open / shut: shows or hides this group's layers in the list.
@@ -8023,10 +9138,10 @@ void SWidgetAnimTimeline::RebuildLayerList()
 							.Text_Lambda([this, GroupIndex]() { return GetGroupName(GroupIndex); })
 						]
 
-						// The widget it animates, as a small pill on the right.
+						// The widget it animates, as a small pill on the right - or, while it is being picked in the designer, what to do.
 						+ SHorizontalBox::Slot()
 						.AutoWidth()
-						.MaxWidth(120.f)
+						.MaxWidth(140.f)
 						.VAlign(VAlign_Center)
 						.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
 						[
@@ -8036,9 +9151,9 @@ void SWidgetAnimTimeline::RebuildLayerList()
 							.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::GroupTargetTooltip()))
 							[
 								SNew(STextBlock)
-								.Text_Lambda([this, GroupIndex]() { return GetGroupTargetLabel(GroupIndex); })
+								.Text_Lambda([this, GroupIndex]() { return IsPickingTarget(GroupIndex) ? GetPickingTargetText() : GetGroupTargetLabel(GroupIndex); })
 								.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
-								.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+								.ColorAndOpacity_Lambda([this, GroupIndex]() { return IsPickingTarget(GroupIndex) ? FSlateColor(Palette::PickingTargetText) : FSlateColor::UseSubduedForeground(); })
 								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
 							]
 						]
@@ -8047,7 +9162,13 @@ void SWidgetAnimTimeline::RebuildLayerList()
 					+ SOverlay::Slot()
 					.VAlign(VAlign_Bottom)
 					[
-						Separator()
+						SNew(SBox)
+						.HeightOverride(1.f)
+						[
+							SNew(SImage)
+							.Image(WhiteBrush())
+							.ColorAndOpacity(SeparatorColor)
+						]
 					]
 				]
 			];
@@ -8065,210 +9186,571 @@ void SWidgetAnimTimeline::RebuildLayerList()
 		}
 
 		// ---- Its layers, in the order they play: what, and when ----------------------------------------------
+		//
+		// A collapsed track is one row, in the group of its first track, opening onto a row for each of its tracks; the
+		// rest of its tracks aren't listed in their own groups.
 
 		for (const int32 LayerIndex : Order)
 		{
-			if (GetLayerGroup(LayerIndex) != GroupIndex)
+			if (GetLayerGroup(LayerIndex) != GroupIndex || !IsLayerInView(LayerIndex) || IsFoldedIntoCollapsed(LayerIndex))
 			{
 				continue;
 			}
 
-			const TSharedRef<TWeakPtr<SWidget>> RowWidget = MakeShared<TWeakPtr<SWidget>>();
-			auto IsWashedOut = [this, LayerIndex]() { return IsReadOnly() || IsLayerLocked(LayerIndex) || IsLayerHidden(LayerIndex); };
-			const bool bAnimationTrack = GetInsertedAnimation(LayerIndex) != nullptr;
-
-			const TSharedRef<SWidgetAnimListRow> LayerRow = SNew(SWidgetAnimListRow, WeakThisPtr, GroupIndex, LayerIndex)
-				.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::ListLayerRowTooltip()))
-				[
-					SNew(SBox)
-					.HeightOverride(ListRowHeight)
-					[
-						SNew(SOverlay)
-
-						+ SOverlay::Slot()
-						[
-							SNew(SImage)
-							.Image(WhiteBrush())
-							.ColorAndOpacity(BackgroundColor())
-						]
-
-						// The list's own highlight: a light tint on the rows picked here or in the Track Editor, and
-						// on the one under the mouse.
-						+ SOverlay::Slot()
-						[
-							SNew(SImage)
-							.Image(WhiteBrush())
-							.ColorAndOpacity_Lambda([this, LayerIndex, RowWidget]()
-							{
-								const TSharedPtr<SWidget> Pinned = RowWidget->Pin();
-								if (IsLayerSelected(LayerIndex))
-								{
-									return FSlateColor(WithAlpha(SelectColor(), Palette::RowSelectedTintAlpha * 0.6f));
-								}
-								return FSlateColor(Pinned.IsValid() && Pinned->IsHovered() ? WithAlpha(HoverColor(), Palette::RowHoveredTintAlpha) : FLinearColor::Transparent);
-							})
-						]
-
-						+ SOverlay::Slot()
-						[
-							SNew(SHorizontalBox)
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							[
-								Band(GroupIndex)
-							]
-
-							// A slim accent beside the band while the layer is selected.
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							[
-								SNew(SBox)
-								.WidthOverride(2.f)
-								[
-									SNew(SImage)
-									.Image(WhiteBrush())
-									.ColorAndOpacity_Lambda([this, LayerIndex]()
-									{
-										return FSlateColor(IsLayerSelected(LayerIndex) ? Palette::ListSelectedAccent : FLinearColor::Transparent);
-									})
-								]
-							]
-
-							// An animation track opens here, to show its animation's groups and tracks under it.
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.VAlign(VAlign_Center)
-							.Padding(FMargin(bAnimationTrack ? 4.f : 0.f, 0.f, 0.f, 0.f))
-							[
-								SNew(SButton)
-								.Visibility(bAnimationTrack ? EVisibility::Visible : EVisibility::Collapsed)
-								.ButtonStyle(FAppStyle::Get(), "NoBorder")
-								.ContentPadding(FMargin(1.f, 0.f))
-								.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::AnimationTrackFoldTooltip()))
-								.OnClicked_Lambda([this, LayerIndex]() { ToggleAnimationTrackExpanded(LayerIndex); return FReply::Handled(); })
-								[
-									SNew(SImage)
-									.Image(IsAnimationTrackExpanded(LayerIndex)
-										? PickBrush({ "TreeArrow_Expanded", "Icons.ChevronDown" })
-										: PickBrush({ "TreeArrow_Collapsed", "Icons.ChevronRight" }))
-									.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-								]
-							]
-
-							// Its type - and, for a track brought in with Insert Existing Widget Animation, the
-							// animation it came from, in italics. An animation track is named for its animation, in its orange.
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.VAlign(VAlign_Center)
-							.Padding(FMargin(bAnimationTrack ? 3.f : 18.f, 0.f, 0.f, 0.f))
-							[
-								SNew(STextBlock)
-								.ColorAndOpacity_Lambda([IsWashedOut, bAnimationTrack]()
-								{
-									if (bAnimationTrack)
-									{
-										return FSlateColor(IsWashedOut() ? GetLockedColor(Palette::LayerAnimation) : Palette::LayerAnimation);
-									}
-									return IsWashedOut() ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground();
-								})
-								.Text_Lambda([this, LayerIndex]()
-								{
-									const TArray<FWidgetAnimLayer>* Current = GetLayers();
-									return Current && Current->IsValidIndex(LayerIndex)
-										? GetLayerTypeName((*Current)[LayerIndex])
-										: FText::GetEmpty();
-								})
-							]
-
-							+ SHorizontalBox::Slot()
-							.FillWidth(1.f)
-							.VAlign(VAlign_Center)
-							.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
-							[
-								SNew(STextBlock)
-								.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
-								.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
-								.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-								.Text_Lambda([this, LayerIndex]()
-								{
-									const TArray<FWidgetAnimLayer>* Current = GetLayers();
-									return Current && Current->IsValidIndex(LayerIndex) && !(*Current)[LayerIndex].InsertedFrom.IsEmpty()
-										? FText::Format(LOCTEXT("ListInsertedFrom", " \u2013 {0}"), FText::FromString((*Current)[LayerIndex].InsertedFrom))
-										: FText::GetEmpty();
-								})
-							]
-
-							// A hidden track's closed eye, always shown. Clicking it shows the track again.
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.VAlign(VAlign_Center)
-							[
-								SNew(SButton)
-								.ButtonStyle(FAppStyle::Get(), "SimpleButton")
-								.ContentPadding(FMargin(2.f, 0.f))
-								.Visibility_Lambda([this, LayerIndex]() { return IsLayerHidden(LayerIndex) ? EVisibility::Visible : EVisibility::Collapsed; })
-								.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::ShowHiddenTrackTooltip()))
-								.OnClicked_Lambda([this, LayerIndex]()
-								{
-									SetLayersHidden({ LayerIndex }, /*bHidden=*/false);
-									return FReply::Handled();
-								})
-								[
-									MakeFixedIcon(PickBrush({ "Icons.Hidden", "Level.NotVisibleIcon16x" }), FSlateColor::UseSubduedForeground(), 12.f)
-								]
-							]
-
-							// A locked track's lock, always shown. Clicking it unlocks the track - unless the whole panel is locked.
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.VAlign(VAlign_Center)
-							[
-								SNew(SButton)
-								.ButtonStyle(FAppStyle::Get(), "SimpleButton")
-								.ContentPadding(FMargin(2.f, 0.f))
-								.Visibility_Lambda([this, LayerIndex]() { return IsLayerLocked(LayerIndex) ? EVisibility::Visible : EVisibility::Collapsed; })
-								.IsEnabled_Lambda([this]() { return CanEdit(); })
-								.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::UnlockTrackTooltip()))
-								.OnClicked_Lambda([this, LayerIndex]()
-								{
-									SetLayersLocked({ LayerIndex }, /*bLocked=*/false);
-									return FReply::Handled();
-								})
-								[
-									MakeFixedIcon(PickBrush({ "Icons.Lock", "PropertyWindow.Locked" }), FSlateColor::UseSubduedForeground(), 12.f)
-								]
-							]
-
-							// When it runs, from the top of the animation.
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.VAlign(VAlign_Center)
-							.Padding(FMargin(6.f, 0.f, 8.f, 0.f))
-							[
-								SNew(STextBlock)
-								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-								.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-								.Text_Lambda([this, LayerIndex]() { return GetLayerTimeRange(LayerIndex); })
-							]
-						]
-
-						+ SOverlay::Slot()
-						.VAlign(VAlign_Bottom)
-						[
-							Separator()
-						]
-					]
-				];
-			*RowWidget = LayerRow;
+			if (IsCollapsedHead(LayerIndex))
+			{
+				AddCollapsedListRows(GetLayerCollapsedName(LayerIndex), GroupIndex);
+				continue;
+			}
 
 			LayerList->AddSlot()
 			.AutoHeight()
 			[
-				LayerRow
+				MakeListLayerRow(LayerIndex, GroupIndex, 0.f)
 			];
 
 			AddNestedListRows(LayerIndex, GroupIndex);
+		}
+	}
+}
+
+TSharedRef<SWidget> SWidgetAnimTimeline::MakeListLayerRow(int32 LayerIndex, int32 GroupIndex, float Indent)
+{
+	using namespace WidgetAnimTimeline;
+
+	const TWeakPtr<SWidgetAnimTimeline> WeakThisPtr = SharedThis(this);
+	const TSharedRef<TWeakPtr<SWidget>> RowWidget = MakeShared<TWeakPtr<SWidget>>();
+	auto IsWashedOut = [this, LayerIndex]() { return IsReadOnly() || IsLayerLocked(LayerIndex) || IsLayerHidden(LayerIndex); };
+	auto IsRowHovered = [RowWidget]() { const TSharedPtr<SWidget> Pinned = RowWidget->Pin(); return Pinned.IsValid() && Pinned->IsHovered(); };
+	const bool bAnimationTrack = GetInsertedAnimation(LayerIndex) != nullptr;
+
+	const TSharedRef<SWidgetAnimListRow> LayerRow = SNew(SWidgetAnimListRow, WeakThisPtr, GroupIndex, LayerIndex)
+		.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::ListLayerRowTooltip()))
+		[
+			SNew(SBox)
+			.HeightOverride(ListRowHeight)
+			[
+				SNew(SOverlay)
+
+				+ SOverlay::Slot()
+				[
+					SNew(SImage)
+					.Image(WhiteBrush())
+					.ColorAndOpacity(BackgroundColor())
+				]
+
+				// A track of a collapsed track, opened in the list: tinted as the collapsed track is.
+				+ SOverlay::Slot()
+				[
+					SNew(SImage)
+					.Image(WhiteBrush())
+					.ColorAndOpacity(Indent > 0.f ? Palette::CollapsedListTint : FLinearColor::Transparent)
+				]
+
+				// The list's own highlight: a light tint on the rows picked here or in the Track Editor, and
+				// on the one under the mouse.
+				+ SOverlay::Slot()
+				[
+					SNew(SImage)
+					.Image(WhiteBrush())
+					.ColorAndOpacity_Lambda([this, LayerIndex, IsRowHovered]()
+					{
+						if (IsLayerSelected(LayerIndex))
+						{
+							return FSlateColor(WithAlpha(SelectColor(), Palette::RowSelectedTintAlpha * 0.6f));
+						}
+						return FSlateColor(IsRowHovered() ? WithAlpha(HoverColor(), Palette::RowHoveredTintAlpha) : FLinearColor::Transparent);
+					})
+				]
+
+				+ SOverlay::Slot()
+				[
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SBox)
+						.WidthOverride(GroupBandWidth)
+						[
+							SNew(SImage)
+							.Image(WhiteBrush())
+							.ColorAndOpacity(GetGroupColor(GroupIndex))
+						]
+					]
+
+					// A slim accent beside the band while the layer is selected.
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SBox)
+						.WidthOverride(2.f)
+						[
+							SNew(SImage)
+							.Image(WhiteBrush())
+							.ColorAndOpacity_Lambda([this, LayerIndex]()
+							{
+								return FSlateColor(IsLayerSelected(LayerIndex) ? Palette::ListSelectedAccent : FLinearColor::Transparent);
+							})
+						]
+					]
+
+					// An animation track opens here, to show its animation's groups and tracks under it.
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(Indent + (bAnimationTrack ? 4.f : 0.f), 0.f, 0.f, 0.f))
+					[
+						SNew(SButton)
+						.Visibility(bAnimationTrack ? EVisibility::Visible : EVisibility::Collapsed)
+						.ButtonStyle(FAppStyle::Get(), "NoBorder")
+						.ContentPadding(FMargin(1.f, 0.f))
+						.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::AnimationTrackFoldTooltip()))
+						.OnClicked_Lambda([this, LayerIndex]() { ToggleAnimationTrackExpanded(LayerIndex); return FReply::Handled(); })
+						[
+							SNew(SImage)
+							.Image(IsAnimationTrackExpanded(LayerIndex)
+								? PickBrush({ "TreeArrow_Expanded", "Icons.ChevronDown" })
+								: PickBrush({ "TreeArrow_Collapsed", "Icons.ChevronRight" }))
+							.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+						]
+					]
+
+					// Its type - and, for a track brought in with Insert Existing Widget Animation, the
+					// animation it came from, in italics. An animation track is named for its animation, in its orange.
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(bAnimationTrack ? 3.f : 18.f, 0.f, 0.f, 0.f))
+					[
+						SNew(STextBlock)
+						.ColorAndOpacity_Lambda([IsWashedOut, bAnimationTrack]()
+						{
+							if (bAnimationTrack)
+							{
+								return FSlateColor(IsWashedOut() ? GetLockedColor(Palette::LayerAnimation) : Palette::LayerAnimation);
+							}
+							return IsWashedOut() ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground();
+						})
+						.Text_Lambda([this, LayerIndex]()
+						{
+							const TArray<FWidgetAnimLayer>* Current = GetLayers();
+							return Current && Current->IsValidIndex(LayerIndex)
+								? GetLayerTypeName((*Current)[LayerIndex])
+								: FText::GetEmpty();
+						})
+					]
+
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.f)
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
+					[
+						SNew(STextBlock)
+						.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+						.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
+						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+						.Text_Lambda([this, LayerIndex]()
+						{
+							const TArray<FWidgetAnimLayer>* Current = GetLayers();
+							return Current && Current->IsValidIndex(LayerIndex) && !(*Current)[LayerIndex].InsertedFrom.IsEmpty()
+								? FText::Format(LOCTEXT("ListInsertedFrom", " \u2013 {0}"), FText::FromString((*Current)[LayerIndex].InsertedFrom))
+								: FText::GetEmpty();
+						})
+					]
+
+					// Pin: to the top of the Track Editor. Shown while the row is hovered, and always while pinned.
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(SButton)
+						.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+						.ContentPadding(FMargin(2.f, 0.f))
+						.Visibility_Lambda([this, LayerIndex, IsRowHovered]() { return IsLayerPinned(LayerIndex) || IsRowHovered() ? EVisibility::Visible : EVisibility::Hidden; })
+						.ToolTip(WidgetAnimTimeline::MakePanelToolTip(TAttribute<FText>::CreateLambda([this, LayerIndex]()
+						{
+							return IsLayerPinned(LayerIndex) ? WidgetAnimTips::UnpinTrackTooltip() : WidgetAnimTips::PinTrackTooltip();
+						})))
+						.OnClicked_Lambda([this, LayerIndex]()
+						{
+							SetLayersPinned({ LayerIndex }, !IsLayerPinned(LayerIndex));
+							return FReply::Handled();
+						})
+						[
+							MakeFixedIcon(
+								TAttribute<const FSlateBrush*>::CreateLambda([this, LayerIndex]()
+								{
+									return IsLayerPinned(LayerIndex)
+										? PickBrush({ "Icons.Pinned", "Icons.Pin", "PropertyWindow.Favorites_Enabled" })
+										: PickBrush({ "Icons.Unpinned", "Icons.Pin", "PropertyWindow.Favorites_Disabled" });
+								}),
+								TAttribute<FSlateColor>::CreateLambda([this, LayerIndex]()
+								{
+									return IsLayerPinned(LayerIndex) ? FSlateColor(Palette::ListPinnedIcon) : FSlateColor::UseSubduedForeground();
+								}),
+								12.f)
+						]
+					]
+
+					// Show or hide: the eye, always there - open while the track plays in the previews, shut while it is hidden.
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(SButton)
+						.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+						.ContentPadding(FMargin(2.f, 0.f))
+						.ToolTip(WidgetAnimTimeline::MakePanelToolTip(TAttribute<FText>::CreateLambda([this, LayerIndex]()
+						{
+							return IsLayerHidden(LayerIndex) ? WidgetAnimTips::ShowHiddenTrackTooltip() : WidgetAnimTips::HideTrackButtonTooltip();
+						})))
+						.OnClicked_Lambda([this, LayerIndex]()
+						{
+							SetLayersHidden({ LayerIndex }, !IsLayerHidden(LayerIndex));
+							return FReply::Handled();
+						})
+						[
+							MakeFixedIcon(
+								TAttribute<const FSlateBrush*>::CreateLambda([this, LayerIndex]()
+								{
+									return IsLayerHidden(LayerIndex)
+										? PickBrush({ "Icons.Hidden", "Level.NotVisibleIcon16x" })
+										: PickBrush({ "Icons.Visible", "Level.VisibleIcon16x" });
+								}),
+								TAttribute<FSlateColor>::CreateLambda([this, LayerIndex, IsRowHovered]()
+								{
+									// Quiet while the track plays, so a column of open eyes doesn't shout; plain once hidden, or hovered.
+									return IsLayerHidden(LayerIndex) || IsRowHovered()
+										? FSlateColor::UseSubduedForeground()
+										: FSlateColor(Palette::ListQuietIcon);
+								}),
+								12.f)
+						]
+					]
+
+					// A locked track's lock, always shown. Clicking it unlocks the track - unless the whole panel is locked.
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(SButton)
+						.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+						.ContentPadding(FMargin(2.f, 0.f))
+						.Visibility_Lambda([this, LayerIndex]() { return IsLayerLocked(LayerIndex) ? EVisibility::Visible : EVisibility::Collapsed; })
+						.IsEnabled_Lambda([this]() { return CanEdit(); })
+						.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::UnlockTrackTooltip()))
+						.OnClicked_Lambda([this, LayerIndex]()
+						{
+							SetLayersLocked({ LayerIndex }, /*bLocked=*/false);
+							return FReply::Handled();
+						})
+						[
+							MakeFixedIcon(PickBrush({ "Icons.Lock", "PropertyWindow.Locked" }), FSlateColor::UseSubduedForeground(), 12.f)
+						]
+					]
+
+					// When it runs, from the top of the animation.
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(6.f, 0.f, 8.f, 0.f))
+					[
+						SNew(STextBlock)
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+						.Text_Lambda([this, LayerIndex]() { return GetLayerTimeRange(LayerIndex); })
+					]
+				]
+
+				+ SOverlay::Slot()
+				.VAlign(VAlign_Bottom)
+				[
+					SNew(SBox)
+					.HeightOverride(1.f)
+					[
+						SNew(SImage)
+						.Image(WhiteBrush())
+						.ColorAndOpacity(SeparatorColor)
+					]
+				]
+			]
+		];
+	*RowWidget = LayerRow;
+	return LayerRow;
+}
+
+void SWidgetAnimTimeline::AddCollapsedListRows(FName Name, int32 GroupIndex)
+{
+	using namespace WidgetAnimTimeline;
+
+	TArray<int32> Members;
+	GetCollapsedMembers(Name, Members);
+	if (Members.Num() == 0 || !LayerList.IsValid())
+	{
+		return;
+	}
+
+	const TWeakPtr<SWidgetAnimTimeline> WeakThisPtr = SharedThis(this);
+	const int32 Head = Members[0];
+	const bool bOpen = ListOpenCollapsed.Contains(Name);
+	const TSharedRef<TWeakPtr<SWidget>> RowWidget = MakeShared<TWeakPtr<SWidget>>();
+	auto IsRowHovered = [RowWidget]() { const TSharedPtr<SWidget> Pinned = RowWidget->Pin(); return Pinned.IsValid() && Pinned->IsHovered(); };
+
+	// Read live, so a change to any of its tracks shows without the list being built again.
+	auto AllSelected = [this, Name]()
+	{
+		TArray<int32> Current;
+		GetCollapsedMembers(Name, Current);
+		return Current.Num() > 0 && Algo::AllOf(Current, [this](int32 Member) { return IsLayerSelected(Member); });
+	};
+	auto AllHidden = [this, Name]()
+	{
+		TArray<int32> Current;
+		GetCollapsedMembers(Name, Current);
+		return Current.Num() > 0 && Algo::AllOf(Current, [this](int32 Member) { return IsLayerHidden(Member); });
+	};
+	auto AnyPinned = [this, Name]()
+	{
+		TArray<int32> Current;
+		GetCollapsedMembers(Name, Current);
+		return Current.ContainsByPredicate([this](int32 Member) { return IsLayerPinned(Member); });
+	};
+
+	const TSharedRef<SWidgetAnimListRow> Row = SNew(SWidgetAnimListRow, WeakThisPtr, GroupIndex, Head, Name)
+		.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::ListCollapsedRowTooltip()))
+		[
+			SNew(SBox)
+			.HeightOverride(ListRowHeight)
+			[
+				SNew(SOverlay)
+
+				+ SOverlay::Slot()
+				[
+					SNew(SImage)
+					.Image(WhiteBrush())
+					.ColorAndOpacity(BackgroundColor())
+				]
+
+				+ SOverlay::Slot()
+				[
+					SNew(SImage)
+					.Image(WhiteBrush())
+					.ColorAndOpacity(Palette::CollapsedListTint)
+				]
+
+				+ SOverlay::Slot()
+				[
+					SNew(SImage)
+					.Image(WhiteBrush())
+					.ColorAndOpacity_Lambda([AllSelected, IsRowHovered]()
+					{
+						if (AllSelected())
+						{
+							return FSlateColor(WithAlpha(SelectColor(), Palette::RowSelectedTintAlpha * 0.6f));
+						}
+						return FSlateColor(IsRowHovered() ? WithAlpha(HoverColor(), Palette::RowHoveredTintAlpha) : FLinearColor::Transparent);
+					})
+				]
+
+				+ SOverlay::Slot()
+				[
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SBox)
+						.WidthOverride(GroupBandWidth)
+						[
+							SNew(SImage)
+							.Image(WhiteBrush())
+							.ColorAndOpacity(GetGroupColor(GroupIndex))
+						]
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					[
+						SNew(SBox)
+						.WidthOverride(2.f)
+						[
+							SNew(SImage)
+							.Image(WhiteBrush())
+							.ColorAndOpacity_Lambda([AllSelected]() { return FSlateColor(AllSelected() ? Palette::ListSelectedAccent : Palette::LayerCollapsed); })
+						]
+					]
+
+					// Its dropdown: a row for each of its tracks, under it.
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+					[
+						SNew(SButton)
+						.ButtonStyle(FAppStyle::Get(), "NoBorder")
+						.ContentPadding(FMargin(1.f, 0.f))
+						.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::CollapsedListFoldTooltip()))
+						.OnClicked_Lambda([this, Name]()
+						{
+							if (ListOpenCollapsed.Contains(Name))
+							{
+								ListOpenCollapsed.Remove(Name);
+							}
+							else
+							{
+								ListOpenCollapsed.Add(Name);
+							}
+							RebuildLayerList();
+							return FReply::Handled();
+						})
+						[
+							SNew(SImage)
+							.Image(bOpen
+								? PickBrush({ "TreeArrow_Expanded", "Icons.ChevronDown" })
+								: PickBrush({ "TreeArrow_Collapsed", "Icons.ChevronRight" }))
+							.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+						]
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(3.f, 0.f, 4.f, 0.f))
+					[
+						MakeFixedIcon(PickBrush({ "GraphEditor.SubGraph_16x", "Icons.FolderClosed" }), FSlateColor(Palette::LayerCollapsed), 12.f)
+					]
+
+					// Its name, bold, and how many tracks it holds.
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.f)
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
+					[
+						SNew(STextBlock)
+						.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+						.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+						.ColorAndOpacity_Lambda([this, AllHidden]() { return IsReadOnly() || AllHidden() ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground(); })
+						.Text(FText::Format(LOCTEXT("CollapsedListName", "{0}  ({1})"), FText::FromName(Name), FText::AsNumber(Members.Num())))
+					]
+
+					// Pin every one of its tracks - or unpin them.
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(SButton)
+						.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+						.ContentPadding(FMargin(2.f, 0.f))
+						.Visibility_Lambda([AnyPinned, IsRowHovered]() { return AnyPinned() || IsRowHovered() ? EVisibility::Visible : EVisibility::Hidden; })
+						.ToolTip(WidgetAnimTimeline::MakePanelToolTip(TAttribute<FText>::CreateLambda([AnyPinned]()
+						{
+							return AnyPinned() ? WidgetAnimTips::UnpinTrackTooltip() : WidgetAnimTips::PinTrackTooltip();
+						})))
+						.OnClicked_Lambda([this, Name, AnyPinned]()
+						{
+							TArray<int32> Current;
+							GetCollapsedMembers(Name, Current);
+							SetLayersPinned(Current, !AnyPinned());
+							return FReply::Handled();
+						})
+						[
+							MakeFixedIcon(
+								TAttribute<const FSlateBrush*>::CreateLambda([AnyPinned]()
+								{
+									return AnyPinned()
+										? PickBrush({ "Icons.Pinned", "Icons.Pin", "PropertyWindow.Favorites_Enabled" })
+										: PickBrush({ "Icons.Unpinned", "Icons.Pin", "PropertyWindow.Favorites_Disabled" });
+								}),
+								TAttribute<FSlateColor>::CreateLambda([AnyPinned]() { return AnyPinned() ? FSlateColor(Palette::ListPinnedIcon) : FSlateColor::UseSubduedForeground(); }),
+								12.f)
+						]
+					]
+
+					// Show or hide every one of its tracks.
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(SButton)
+						.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+						.ContentPadding(FMargin(2.f, 0.f))
+						.ToolTip(WidgetAnimTimeline::MakePanelToolTip(TAttribute<FText>::CreateLambda([AllHidden]()
+						{
+							return AllHidden() ? WidgetAnimTips::ShowHiddenTrackTooltip() : WidgetAnimTips::HideTrackButtonTooltip();
+						})))
+						.OnClicked_Lambda([this, Name, AllHidden]()
+						{
+							TArray<int32> Current;
+							GetCollapsedMembers(Name, Current);
+							SetLayersHidden(Current, !AllHidden());
+							return FReply::Handled();
+						})
+						[
+							MakeFixedIcon(
+								TAttribute<const FSlateBrush*>::CreateLambda([AllHidden]()
+								{
+									return AllHidden()
+										? PickBrush({ "Icons.Hidden", "Level.NotVisibleIcon16x" })
+										: PickBrush({ "Icons.Visible", "Level.VisibleIcon16x" });
+								}),
+								TAttribute<FSlateColor>::CreateLambda([AllHidden, IsRowHovered]()
+								{
+									return AllHidden() || IsRowHovered() ? FSlateColor::UseSubduedForeground() : FSlateColor(Palette::ListQuietIcon);
+								}),
+								12.f)
+						]
+					]
+
+					// When it runs: from its first track's start to its last one's end.
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(6.f, 0.f, 8.f, 0.f))
+					[
+						SNew(STextBlock)
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+						.Text_Lambda([this, Head]()
+						{
+							const FVector2f Span = GetShownSpan(Head);
+							return FText::FromString(FString::Printf(TEXT("%.2f - %.2f s"), Span.X, Span.X + Span.Y));
+						})
+					]
+				]
+
+				+ SOverlay::Slot()
+				.VAlign(VAlign_Bottom)
+				[
+					SNew(SBox)
+					.HeightOverride(1.f)
+					[
+						SNew(SImage)
+						.Image(WhiteBrush())
+						.ColorAndOpacity(SeparatorColor)
+					]
+				]
+			]
+		];
+	*RowWidget = Row;
+
+	LayerList->AddSlot()
+	.AutoHeight()
+	[
+		Row
+	];
+
+	// Open: a row for each of its tracks, in the order they play, each in its own group's color - picked one by one, to
+	// see or change one; double-clicking the collapsed track opens it whole.
+	if (bOpen)
+	{
+		for (const int32 Member : Members)
+		{
+			LayerList->AddSlot()
+			.AutoHeight()
+			[
+				MakeListLayerRow(Member, GetLayerGroup(Member), 14.f)
+			];
 		}
 	}
 }
@@ -8510,6 +9992,78 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 	LayerToLine.Init(INDEX_NONE, Layers->Num());
 	LayerLineOrdinals.Init(0, Layers->Num());
 	GroupLineCounts.Init(0, Groups->Num());
+	CollapsedSpans.Reset();
+	NumPinnedLines = 0;
+
+	// Each collapsed track's stretch: from where its first track starts to where its last one ends, staggers and all -
+	// drawn as one track on its head's line, and kept clear of the tracks beside it there as one.
+	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+	{
+		if (!IsCollapsedHead(LayerIndex))
+		{
+			continue;
+		}
+
+		TArray<int32> Members;
+		GetCollapsedMembers((*Layers)[LayerIndex].CollapsedTrack, Members);
+		float First = TNumericLimits<float>::Max();
+		float Last = -TNumericLimits<float>::Max();
+		for (const int32 Member : Members)
+		{
+			if (TrackSpans.IsValidIndex(Member))
+			{
+				First = FMath::Min(First, TrackSpans[Member].X);
+				Last = FMath::Max(Last, TrackSpans[Member].X + TrackSpans[Member].Y + GetLayerFanSeconds(Member));
+			}
+		}
+		if (First <= Last)
+		{
+			CollapsedSpans.Add(LayerIndex, FVector2f(First, Last - First));
+		}
+	}
+
+	// Pinned: at the top, a line each, above every group - in the order the list shows them. Not a track folded into a
+	// collapsed track, which is shown by it.
+	auto IsPinnedHere = [this](int32 LayerIndex)
+	{
+		return IsLayerPinned(LayerIndex) && IsLayerInView(LayerIndex) && !IsFoldedIntoCollapsed(LayerIndex);
+	};
+
+	// Whether a track is laid out in its group: shown here, not folded into a collapsed track, and not pinned above. The
+	// rest keep the lines they were given, for when they are back.
+	auto IsOnGroupLine = [this, &IsPinnedHere](int32 LayerIndex)
+	{
+		return IsLayerInView(LayerIndex) && !IsFoldedIntoCollapsed(LayerIndex) && !IsPinnedHere(LayerIndex);
+	};
+
+	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+	{
+		if (!IsOnGroupLine(LayerIndex))
+		{
+			LayerLineOrdinals[LayerIndex] = (*Layers)[LayerIndex].EditorLine;
+		}
+	}
+
+	{
+		TArray<int32> Order;
+		GetListOrder(Order);
+		for (const int32 LayerIndex : Order)
+		{
+			if (!IsPinnedHere(LayerIndex))
+			{
+				continue;
+			}
+
+			FTrackLine& Line = TrackLines.AddDefaulted_GetRef();
+			Line.Kind = FTrackLine::EKind::Lane;
+			Line.Group = GetLayerGroup(LayerIndex);
+			Line.Ordinal = 0;
+			Line.Layers = { LayerIndex };
+			Line.bPinned = true;
+			LayerToLine[LayerIndex] = TrackLines.Num() - 1;
+		}
+		NumPinnedLines = TrackLines.Num();
+	}
 
 	// Where a layer asks to be. A layer with no line of its own set comes after every line that is set, in its
 	// order in the sequence - which is how older animations lay out: one track per line, as they always did.
@@ -8519,22 +10073,34 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 		return Line >= 0 ? Line : 1000000 + LayerIndex;
 	};
 
-	auto Overlaps = [this](int32 A, int32 B)
+	// Where a track is drawn - a collapsed track's head across all of its tracks - and where it ends, a stagger's tail
+	// included: another track on its line starts after it.
+	auto StartOf = [this](int32 LayerIndex)
+	{
+		if (const FVector2f* Collapsed = CollapsedSpans.Find(LayerIndex))
+		{
+			return Collapsed->X;
+		}
+		return TrackSpans.IsValidIndex(LayerIndex) ? TrackSpans[LayerIndex].X : 0.f;
+	};
+	auto EndOf = [this](int32 LayerIndex)
+	{
+		if (const FVector2f* Collapsed = CollapsedSpans.Find(LayerIndex))
+		{
+			return Collapsed->X + Collapsed->Y;
+		}
+		return TrackSpans.IsValidIndex(LayerIndex) ? TrackSpans[LayerIndex].X + TrackSpans[LayerIndex].Y + GetLayerFanSeconds(LayerIndex) : 0.f;
+	};
+
+	auto Overlaps = [this, &StartOf, &EndOf](int32 A, int32 B)
 	{
 		if (!TrackSpans.IsValidIndex(A) || !TrackSpans.IsValidIndex(B))
 		{
 			return false;
 		}
-		// A stagger's tail is part of the track: another track on its line starts after it.
 		constexpr float Tolerance = 0.0005f;
-		const FVector2f SpanA = TrackSpans[A];
-		const FVector2f SpanB = TrackSpans[B];
-		const float EndA = SpanA.X + SpanA.Y + GetLayerFanSeconds(A);
-		const float EndB = SpanB.X + SpanB.Y + GetLayerFanSeconds(B);
-		return SpanA.X < EndB - Tolerance && SpanB.X < EndA - Tolerance;
+		return StartOf(A) < EndOf(B) - Tolerance && StartOf(B) < EndOf(A) - Tolerance;
 	};
-
-	auto StartOf = [this](int32 LayerIndex) { return TrackSpans.IsValidIndex(LayerIndex) ? TrackSpans[LayerIndex].X : 0.f; };
 
 	for (int32 GroupIndex = 0; GroupIndex < Groups->Num(); ++GroupIndex)
 	{
@@ -8542,13 +10108,27 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 		TArray<int32> Keys;
 		for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
 		{
-			if (GetLayerGroup(LayerIndex) == GroupIndex)
+			if (GetLayerGroup(LayerIndex) == GroupIndex && IsOnGroupLine(LayerIndex))
 			{
 				Members.Add(LayerIndex);
 				Keys.AddUnique(LineKey(LayerIndex));
 			}
 		}
 		Keys.Sort();
+
+		// Inside a collapsed track, only the groups its tracks are in - pinned ones included.
+		if (IsInCollapsedScope() && Members.Num() == 0)
+		{
+			bool bAnyPinned = false;
+			for (int32 LayerIndex = 0; LayerIndex < Layers->Num() && !bAnyPinned; ++LayerIndex)
+			{
+				bAnyPinned = GetLayerGroup(LayerIndex) == GroupIndex && IsLayerInView(LayerIndex);
+			}
+			if (!bAnyPinned)
+			{
+				continue;
+			}
+		}
 
 		// Each line the group's layers ask for, in order. On it, the tracks that stay put first - so a track
 		// being dragged is the one that gives way - then by when they start. A track overlapping one already
@@ -8624,10 +10204,14 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 				LayerToLine[LayerIndex] = TrackLines.Num() - 1;
 			}
 
-			// Under the line, each open animation track on it, in the order they start.
+			// Under the line, each open animation track on it, in the order they start - not one folded into a collapsed
+			// track, whose line is the collapsed track's.
 			for (const int32 LayerIndex : GroupLines[Ordinal])
 			{
-				AddNestedLines(LayerIndex, GroupIndex);
+				if (!IsCollapsedHead(LayerIndex))
+				{
+					AddNestedLines(LayerIndex, GroupIndex);
+				}
 			}
 		}
 	}
@@ -8818,6 +10402,17 @@ void SWidgetAnimTimeline::RevealLayer(int32 LayerIndex)
 		return;
 	}
 
+	// A track folded into a collapsed track is shown by the collapsed track.
+	if (IsFoldedIntoCollapsed(LayerIndex))
+	{
+		TArray<int32> Members;
+		GetCollapsedMembers(GetLayerCollapsedName(LayerIndex), Members);
+		if (Members.Num() > 0)
+		{
+			LayerIndex = Members[0];
+		}
+	}
+
 	// A track folded away in the Track Editor is unfolded to be shown.
 	const int32 GroupIndex = GetLayerGroup(LayerIndex);
 	if (IsTrackGroupCollapsed(GroupIndex))
@@ -8827,10 +10422,8 @@ void SWidgetAnimTimeline::RevealLayer(int32 LayerIndex)
 	UpdateTrackLayout();
 
 	Tracks->RevealLine(GetLayerLine(LayerIndex));
-	if (TrackSpans.IsValidIndex(LayerIndex))
-	{
-		Tracks->RevealTime(TrackSpans[LayerIndex].X, TrackSpans[LayerIndex].X + TrackSpans[LayerIndex].Y);
-	}
+	const FVector2f Span = GetShownSpan(LayerIndex);
+	Tracks->RevealTime(Span.X, Span.X + Span.Y);
 }
 
 void SWidgetAnimTimeline::RevealGroup(int32 GroupIndex)
@@ -8918,6 +10511,18 @@ FReply SWidgetAnimTimeline::OnKeyDown(const FGeometry& MyGeometry, const FKeyEve
 
 	if (Key == EKeys::Escape)
 	{
+		// A pick in the designer is called off first; then what is selected; then, with nothing selected, a collapsed track
+		// open on its own is left, as a collapsed graph is.
+		if (PickTargetGroup != INDEX_NONE)
+		{
+			CancelTargetPick();
+			return FReply::Handled();
+		}
+		if (IsInCollapsedScope() && SelectedLayers.Num() == 0 && SelectedKeys.Num() == 0 && Selection.Group == INDEX_NONE)
+		{
+			ExitCollapsed();
+			return FReply::Handled();
+		}
 		ClearSelection();
 		return FReply::Handled();
 	}
@@ -8949,6 +10554,35 @@ FReply SWidgetAnimTimeline::OnKeyDown(const FGeometry& MyGeometry, const FKeyEve
 // -----------------------------------------------------------------------------------------------------
 // Editing
 // -----------------------------------------------------------------------------------------------------
+
+namespace WidgetAnimCollapsed
+{
+	/** The name a collapsed track is shown by, made its own: numbered if another collapsed track has it. Ignore is the one being renamed. */
+	FName MakeUniqueName(const TArray<FWidgetAnimLayer>& Layers, const FString& Base, FName Ignore = NAME_None, const TSet<FName>& AlsoTaken = TSet<FName>())
+	{
+		FString Trimmed = Base.TrimStartAndEnd();
+		if (Trimmed.IsEmpty())
+		{
+			Trimmed = TEXT("Collapsed Tracks");
+		}
+
+		auto IsTaken = [&Layers, &AlsoTaken, Ignore](FName Candidate)
+		{
+			if (Candidate == Ignore)
+			{
+				return false;
+			}
+			return AlsoTaken.Contains(Candidate) || Layers.ContainsByPredicate([Candidate](const FWidgetAnimLayer& Layer) { return Layer.CollapsedTrack == Candidate; });
+		};
+
+		FName Candidate(*Trimmed);
+		for (int32 Suffix = 2; IsTaken(Candidate); ++Suffix)
+		{
+			Candidate = FName(*FString::Printf(TEXT("%s %d"), *Trimmed, Suffix));
+		}
+		return Candidate;
+	}
+}
 
 UObject* SWidgetAnimTimeline::BeginEdit()
 {
@@ -9195,6 +10829,17 @@ void SWidgetAnimTimeline::DeleteGroup(int32 GroupIndex)
 	}
 	const int32 OldNum = Layers.Num();
 
+	// The groups its animation tracks play their animations in, other than this one - to go too, once nothing else uses
+	// them. Where they will be once this group is gone.
+	TArray<int32> InsertedGroups;
+	for (const int32 InsertedGroup : GetInsertedGroupsOf(Removed))
+	{
+		if (InsertedGroup != GroupIndex)
+		{
+			InsertedGroups.Add(InsertedGroup > GroupIndex ? InsertedGroup - 1 : InsertedGroup);
+		}
+	}
+
 	Layers.RemoveAll([GroupIndex, NumGroups](const FWidgetAnimLayer& Layer)
 	{
 		return UWidgetAnimLibrary::GetLayerGroupIndex(Layer, NumGroups) == GroupIndex;
@@ -9226,6 +10871,8 @@ void SWidgetAnimTimeline::DeleteGroup(int32 GroupIndex)
 		}
 		*Collapsed = MoveTemp(Shifted);
 	}
+
+	RemoveGroupsLeftEmpty(InsertedGroups);
 
 	NotifyGroupsChanged(EPropertyChangeType::ArrayRemove);
 	RebuildRows();
@@ -9337,6 +10984,12 @@ void SWidgetAnimTimeline::AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, c
 	NewLayer.AnimType = AnimType;
 	NewLayer.LayerGroup = GroupIndex;
 
+	// As long as the editor preferences' Default Track Length says - in the animation's own seconds, as Duration is.
+	NewLayer.Duration = FMath::Max(UWidgetAnimEditorSettings::Get().DefaultTrackLength, MinLayerSeconds);
+
+	// Added inside a collapsed track open on its own: one of its tracks.
+	NewLayer.CollapsedTrack = ActiveCollapsed;
+
 	// A registered type is its settings struct, so a new track of one starts from the settings it was picked with.
 	if (AnimType == EWidgetAnimType::Custom && InitialTypeParams)
 	{
@@ -9404,6 +11057,7 @@ void SWidgetAnimTimeline::DuplicateLayer(int32 LayerIndex)
 	Copy.bLockedInEditor = false;
 	Copy.bHiddenInEditor = false;
 	Copy.bHiddenByFocus = false;
+	Copy.bPinnedInEditor = false;
 
 	TArray<float> OldStarts;
 	GetAuthoredStarts(OldStarts);
@@ -9436,9 +11090,13 @@ void SWidgetAnimTimeline::DeleteLayer(int32 LayerIndex)
 	// from the track above it and would otherwise jump.
 	TArray<float> OldStarts;
 	GetAuthoredStarts(OldStarts);
+	const TArray<int32> InsertedGroups = GetInsertedGroupsOf({ LayerIndex });
 	const int32 OldNum = Source->GetLayers()->Num();
 	Source->GetLayers()->RemoveAt(LayerIndex);
 	PinLayerStarts(OldStarts, OldIndicesAfterRemoving(OldNum, { LayerIndex }));
+
+	// An animation track's own groups - made for its animation's groups when it was inserted - go with it.
+	RemoveGroupsLeftEmpty(InsertedGroups);
 
 	NotifyGroupsChanged(EPropertyChangeType::ArrayRemove);
 	RebuildRows();
@@ -9475,6 +11133,7 @@ void SWidgetAnimTimeline::DeleteSelectedLayers()
 	TArray<FWidgetAnimLayer>& Layers = *Source->GetLayers();
 	TArray<float> OldStarts;
 	GetAuthoredStarts(OldStarts);
+	const TArray<int32> InsertedGroups = GetInsertedGroupsOf(ToDelete);
 	const int32 OldNum = Layers.Num();
 	for (int32 Index = ToDelete.Num() - 1; Index >= 0; --Index)
 	{
@@ -9482,9 +11141,104 @@ void SWidgetAnimTimeline::DeleteSelectedLayers()
 	}
 	PinLayerStarts(OldStarts, OldIndicesAfterRemoving(OldNum, ToDelete));
 
+	// Animation tracks' own groups go with them.
+	RemoveGroupsLeftEmpty(InsertedGroups);
+
 	NotifyGroupsChanged(EPropertyChangeType::ArrayRemove);
 	RebuildRows();
 	RemapSelectionAfterRemoving(ToDelete);
+}
+
+TArray<int32> SWidgetAnimTimeline::GetInsertedGroupsOf(const TArray<int32>& LayerIndices) const
+{
+	// The groups animation tracks play their animations' groups in, other than the tracks' own groups.
+	TArray<int32> Result;
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	for (const int32 LayerIndex : LayerIndices)
+	{
+		if (!Layers || !Layers->IsValidIndex(LayerIndex) || !(*Layers)[LayerIndex].IsAnimationTrack())
+		{
+			continue;
+		}
+		const int32 OwnGroup = GetLayerGroup(LayerIndex);
+		for (const int32 InsertedGroup : (*Layers)[LayerIndex].InsertedGroups)
+		{
+			if (InsertedGroup >= 0 && InsertedGroup != OwnGroup)
+			{
+				Result.AddUnique(InsertedGroup);
+			}
+		}
+	}
+	return Result;
+}
+
+int32 SWidgetAnimTimeline::RemoveGroupsLeftEmpty(TArray<int32> Candidates)
+{
+	TArray<FWidgetAnimLayerGroup>* Groups = Source.IsValid() ? Source->GetGroups() : nullptr;
+	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
+	if (!Groups || !Layers)
+	{
+		return 0;
+	}
+
+	// From the last, so removing one leaves the indices of those still to look at as they were. A group still holding
+	// a track, or still played in by another animation track, stays; so does the last group of all.
+	Candidates.Sort(TGreater<int32>());
+	int32 NumRemoved = 0;
+	for (const int32 GroupIndex : Candidates)
+	{
+		const int32 NumGroups = Groups->Num();
+		if (!Groups->IsValidIndex(GroupIndex) || NumGroups <= 1)
+		{
+			continue;
+		}
+
+		const bool bInUse = Layers->ContainsByPredicate([GroupIndex, NumGroups](const FWidgetAnimLayer& Layer)
+		{
+			return UWidgetAnimLibrary::GetLayerGroupIndex(Layer, NumGroups) == GroupIndex || Layer.InsertedGroups.Contains(GroupIndex);
+		});
+		if (bInUse)
+		{
+			continue;
+		}
+
+		// Every later group's tracks, and every animation track's groups, follow their groups down one place - as
+		// DeleteGroup moves them.
+		for (FWidgetAnimLayer& Layer : *Layers)
+		{
+			const int32 InGroup = UWidgetAnimLibrary::GetLayerGroupIndex(Layer, NumGroups);
+			Layer.LayerGroup = InGroup > GroupIndex ? InGroup - 1 : InGroup;
+			for (int32& InsertedGroup : Layer.InsertedGroups)
+			{
+				InsertedGroup = InsertedGroup > GroupIndex ? InsertedGroup - 1 : InsertedGroup;
+			}
+		}
+		Groups->RemoveAt(GroupIndex);
+
+		for (TSet<int32>* Folded : { &TrackCollapsedGroups, &ListCollapsedGroups })
+		{
+			TSet<int32> Shifted;
+			for (const int32 FoldedGroup : *Folded)
+			{
+				if (FoldedGroup != GroupIndex)
+				{
+					Shifted.Add(FoldedGroup > GroupIndex ? FoldedGroup - 1 : FoldedGroup);
+				}
+			}
+			*Folded = MoveTemp(Shifted);
+		}
+		if (PickTargetGroup != INDEX_NONE)
+		{
+			CancelTargetPick();
+		}
+		++NumRemoved;
+	}
+
+	if (NumRemoved > 0 && Selection.Group != INDEX_NONE && Selection.Layer == INDEX_NONE)
+	{
+		ClearSelection();
+	}
+	return NumRemoved;
 }
 
 void SWidgetAnimTimeline::RemapSelectionAfterRemoving(const TArray<int32>& Removed)
@@ -9821,6 +11575,21 @@ void SWidgetAnimTimeline::PasteLayers(int32 GroupIndex, TOptional<float> AtSecon
 	GetAuthoredStarts(OldStarts);
 	const int32 InsertAt = FMath::Clamp(GetInsertIndex(), 0, Layers.Num());
 
+	// Pasted inside a collapsed track open on its own: its tracks. Otherwise a collapsed track copied whole comes back as
+	// a collapsed track of its own - renamed, when this animation already has one by its name.
+	TMap<FName, FName> CollapsedRenames;
+	TSet<FName> NewNames;
+	for (const WidgetAnimTrackClipboard::FEntry& Entry : Entries)
+	{
+		const FName Copied = Entry.Layer.CollapsedTrack;
+		if (!IsInCollapsedScope() && !Copied.IsNone() && !CollapsedRenames.Contains(Copied))
+		{
+			const FName Renamed = WidgetAnimCollapsed::MakeUniqueName(Layers, Copied.ToString(), NAME_None, NewNames);
+			CollapsedRenames.Add(Copied, Renamed);
+			NewNames.Add(Renamed);
+		}
+	}
+
 	// Each With the one above it and delayed from its start, so it lands exactly where it was relative to the rest of
 	// what was copied - the start is the one thing known exactly; an After Previous delay would hang on lengths.
 	float AnchorStart = OldStarts.IsValidIndex(InsertAt - 1) ? OldStarts[InsertAt - 1] : 0.f;
@@ -9839,11 +11608,21 @@ void SWidgetAnimTimeline::PasteLayers(int32 GroupIndex, TOptional<float> AtSecon
 			Layer.LayerGroup = 0;
 		}
 
-		// Pasted to be worked on: on lines of their own, unlocked and shown.
+		// Pasted to be worked on: on lines of their own, unlocked, shown and unpinned.
 		Layer.EditorLine = INDEX_NONE;
 		Layer.bLockedInEditor = false;
 		Layer.bHiddenInEditor = false;
 		Layer.bHiddenByFocus = false;
+		Layer.bPinnedInEditor = false;
+		Layer.bMutedByEditorScope = false;
+		if (IsInCollapsedScope())
+		{
+			Layer.CollapsedTrack = ActiveCollapsed;
+		}
+		else if (const FName* Renamed = CollapsedRenames.Find(Layer.CollapsedTrack))
+		{
+			Layer.CollapsedTrack = *Renamed;
+		}
 
 		Layers.Insert(Layer, InsertAt + EntryIndex);
 		TrackCollapsedGroups.Remove(Layer.LayerGroup);
@@ -10086,6 +11865,7 @@ void SWidgetAnimTimeline::InsertAnimation(const UWidgetAnimPresetAsset* Animatio
 	Track.AnimType = EWidgetAnimType::Custom;
 	Track.InsertedAnimation = const_cast<UWidgetAnimPresetAsset*>(Animation);
 	Track.LayerGroup = GroupIndex;
+	Track.CollapsedTrack = ActiveCollapsed;
 
 	// Where the inserted animation's groups play. One group - a single-widget animation - plays in the group it was
 	// inserted into, and follows the track to another. Several get groups of their own here, named after the
@@ -10202,6 +11982,23 @@ void SWidgetAnimTimeline::UnravelAnimationTrack(int32 LayerIndex)
 		LineOffsets.Add(GetGroupLineCount(GroupIndex));
 	}
 
+	// Collapsed tracks of the animation keep to themselves here - renamed, where this animation already has one by the name.
+	// Unraveled from inside a collapsed track, every copy is one of its tracks.
+	TMap<FName, FName> CollapsedRenames;
+	TSet<FName> NewNames;
+	if (Track.CollapsedTrack.IsNone())
+	{
+		for (const FWidgetAnimLayer& Inner : Animation->Layers)
+		{
+			if (!Inner.CollapsedTrack.IsNone() && !CollapsedRenames.Contains(Inner.CollapsedTrack))
+			{
+				const FName Renamed = WidgetAnimCollapsed::MakeUniqueName(Layers, Inner.CollapsedTrack.ToString(), NAME_None, NewNames);
+				CollapsedRenames.Add(Inner.CollapsedTrack, Renamed);
+				NewNames.Add(Renamed);
+			}
+		}
+	}
+
 	const float Speed = FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);
 	TArray<FWidgetAnimLayer> Copies;
 	for (int32 Index = 0; Index < Animation->Layers.Num(); ++Index)
@@ -10213,6 +12010,16 @@ void SWidgetAnimTimeline::UnravelAnimationTrack(int32 LayerIndex)
 		Copy.bLockedInEditor = Track.bLockedInEditor;
 		Copy.bHiddenInEditor = Copy.bHiddenInEditor || Track.bHiddenInEditor;
 		Copy.bHiddenByFocus = false;
+		Copy.bPinnedInEditor = Track.bPinnedInEditor;
+		Copy.bMutedByEditorScope = false;
+		if (!Track.CollapsedTrack.IsNone())
+		{
+			Copy.CollapsedTrack = Track.CollapsedTrack;
+		}
+		else if (const FName* Renamed = CollapsedRenames.Find(Copy.CollapsedTrack))
+		{
+			Copy.CollapsedTrack = *Renamed;
+		}
 		Copy.InsertedFrom = Animation->GetName();
 		WidgetAnimUnravel::Retime(Copy, Speed);
 
@@ -10867,6 +12674,10 @@ bool SWidgetAnimTimeline::BeginLayerDrag(int32 PressedLayer, ELayerDrag Mode)
 				State.EndEdges.Add(LayerIndex);
 			}
 			break;
+
+		// The animation's own start or end: see BeginRangeDrag.
+		default:
+			break;
 		}
 	}
 
@@ -10876,16 +12687,11 @@ bool SWidgetAnimTimeline::BeginLayerDrag(int32 PressedLayer, ELayerDrag Mode)
 		return false;
 	}
 
-	// A track that ends where the animation ends can be pulled past it, making the animation longer. Any other
-	// resize - and every move - stays inside the animation as it is.
-	if (Mode == ELayerDrag::ResizeEnd)
-	{
-		for (const int32 LayerIndex : State.EndEdges)
-		{
-			const float End = State.OriginalStarts[LayerIndex] + State.OriginalLengths[LayerIndex];
-			State.bEndIsFree |= FMath::IsNearlyEqual(End, State.OriginalEnd, WidgetAnimTimeline::EdgeAlignTolerance);
-		}
-	}
+	// A track's end can be pulled out past the animation's end, making the animation longer - the animation is as long
+	// as its tracks, or its Minimum Length where that is longer. (Only a track that already ended exactly there could, once: one whose stagger, or the animation it
+	// plays within, reached further never counted as ending there, and couldn't be lengthened at all.) A move stays
+	// inside the animation as it is.
+	State.bEndIsFree = Mode == ELayerDrag::ResizeEnd;
 
 	// Linked Edges: tracks below each resized one whose start or end lines up with the edge being dragged
 	// come along - that edge of theirs moves, the other stays.
@@ -11070,7 +12876,9 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines, 
 		{
 			int32 NewLine = State.OriginalEditorLines[LayerIndex];
 
-			if (DeltaLines != 0 && State.OriginalLineOrdinals.IsValidIndex(LayerIndex))
+			// A pinned track, and one folded into a collapsed track, keep their lines in their groups: they aren't shown there.
+			const bool bOffItsLine = IsLayerPinned(LayerIndex) || IsFoldedIntoCollapsed(LayerIndex) || !IsLayerInView(LayerIndex);
+			if (DeltaLines != 0 && State.OriginalLineOrdinals.IsValidIndex(LayerIndex) && !bOffItsLine)
 			{
 				const int32 Ordinal = State.OriginalLineOrdinals[LayerIndex];
 				NewLine = Ordinal;
@@ -11201,6 +13009,1356 @@ bool SWidgetAnimTimeline::IsLayerBeingDragged(int32 LayerIndex) const
 }
 
 // -----------------------------------------------------------------------------------------------------
+// The animation's range, dragged on the ruler
+// -----------------------------------------------------------------------------------------------------
+
+bool SWidgetAnimTimeline::BeginRangeDrag(bool bEnd)
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!CanEdit() || IsDragging() || !Layers || Layers->Num() == 0)
+	{
+		return false;
+	}
+
+	FLayerDragState State;
+	State.Mode = bEnd ? ELayerDrag::RangeEnd : ELayerDrag::RangeStart;
+
+	// Every track as it is now, as a track drag measures from: what each frame of the drag works from, so it never compounds.
+	TArray<FVector2f> Spans;
+	GetLayerSpans(Spans);
+	const int32 NumLayers = Spans.Num();
+	State.OriginalStarts.SetNum(NumLayers);
+	State.OriginalLengths.SetNum(NumLayers);
+	State.OriginalKeyTimes.SetNum(NumLayers);
+	for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
+	{
+		State.OriginalStarts[LayerIndex] = Spans[LayerIndex].X;
+		State.OriginalLengths[LayerIndex] = Spans[LayerIndex].Y;
+		GetKeyTimes(LayerIndex, State.OriginalKeyTimes[LayerIndex]);
+	}
+	State.OriginalEnd = GetPassSeconds();
+	State.OriginalMinimumLength = Source.IsValid() ? Source->GetMinimumLength() * GetTimeScale() : 0.f;
+
+	// The start or end snaps to where tracks start and end.
+	GatherSnapTargets(TSet<int32>(), /*bIncludeKeys=*/false, State.SnapTargets);
+
+	UpdateTrackLayout();
+	State.OriginalLineOrdinals = LayerLineOrdinals;
+	State.OriginalGroupLineCounts = GroupLineCounts;
+	State.OriginalEditorLines.SetNum(NumLayers);
+	for (int32 LayerIndex = 0; LayerIndex < NumLayers && Layers->IsValidIndex(LayerIndex); ++LayerIndex)
+	{
+		State.OriginalEditorLines[LayerIndex] = (*Layers)[LayerIndex].EditorLine;
+	}
+
+	LayerDrag = MoveTemp(State);
+	SnapIndicator.Reset();
+
+	// One undo step for the whole drag, however many frames it moves through.
+	LayerDragTransaction = MakeUnique<FScopedTransaction>(bEnd
+		? LOCTEXT("DragAnimationEndTransaction", "Change Animation End")
+		: LOCTEXT("DragAnimationStartTransaction", "Change Animation Start"));
+	BeginEdit();
+	bLayerDragChanged = false;
+	return true;
+}
+
+void SWidgetAnimTimeline::UpdateRangeDrag(float Seconds, float SnapThresholdSeconds)
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!IsDraggingRange() || !CanEdit() || !Layers || Layers->Num() != LayerDrag.OriginalStarts.Num())
+	{
+		return;
+	}
+
+	const FLayerDragState& State = LayerDrag;
+	const bool bEnd = State.Mode == ELayerDrag::RangeEnd;
+	const int32 NumLayers = Layers->Num();
+	constexpr float MaxSeconds = 600.f;
+	constexpr float Tolerance = 0.0005f;
+
+	SnapIndicator.Reset();
+	float Wanted = RoundSeconds(Seconds);
+	float Adjust = 0.f;
+	float Target = 0.f;
+	if (SnapThresholdSeconds > 0.f && FindSnap(State.SnapTargets, { Seconds }, SnapThresholdSeconds, Adjust, Target))
+	{
+		Wanted = Seconds + Adjust;
+		SnapIndicator = Target;
+	}
+
+	TArray<float> NewStarts = State.OriginalStarts;
+	TArray<float> NewLengths = State.OriginalLengths;
+	float Applied = 0.f;
+
+	// The animation's Minimum Length after this frame of the drag, in played seconds: where its end is, when that is past
+	// its last track. Only an animation keeps one - an asset's, the builder's - not a component's tracks.
+	const bool bKeepsMinimumLength = Source.IsValid() && Source->CanSetMinimumLength();
+	float NewMinimumLength = State.OriginalMinimumLength;
+	auto GetTracksEnd = [this, &NewStarts, &NewLengths, NumLayers]()
+	{
+		float TracksEnd = 0.f;
+		for (const FVector2f& Span : ContextSpans)
+		{
+			TracksEnd = FMath::Max(TracksEnd, Span.X + Span.Y);
+		}
+		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
+		{
+			TracksEnd = FMath::Max(TracksEnd, NewStarts[LayerIndex] + NewLengths[LayerIndex] + GetLayerFanSeconds(LayerIndex));
+		}
+		return TracksEnd;
+	};
+
+	if (bEnd)
+	{
+		// Pulled in, every track the end cuts into is shortened to end there - down to the shortest a track can be, and
+		// never one whose end can't move (a Spring, an animation track, a text typed at its own pace, a locked track): the
+		// end stops there instead. Pulled out, only the animation gets longer - time after its last track, kept as its
+		// Minimum Length - and every track stays exactly as it is. Tracks that aren't an animation (a component's) are
+		// only as long as they are, so there the end goes no further out.
+		float Lowest = 0.f;
+		for (const FVector2f& Span : ContextSpans)
+		{
+			Lowest = FMath::Max(Lowest, Span.X + Span.Y);
+		}
+		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
+		{
+			const float Fan = GetLayerFanSeconds(LayerIndex);
+			const float Start = State.OriginalStarts[LayerIndex];
+			const float End = Start + State.OriginalLengths[LayerIndex] + Fan;
+			Lowest = FMath::Max(Lowest, CanResizeLayer(LayerIndex, /*bStartEdge=*/false) ? Start + MinLayerSeconds + Fan : End);
+		}
+
+		const float Highest = bKeepsMinimumLength ? State.OriginalEnd + MaxSeconds : State.OriginalEnd;
+		const float NewEnd = Lowest <= Highest ? FMath::Clamp(Wanted, Lowest, Highest) : Highest;
+		if (SnapIndicator.IsSet() && !FMath::IsNearlyEqual(NewEnd, Wanted, Tolerance))
+		{
+			SnapIndicator.Reset();
+		}
+
+		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
+		{
+			const float Fan = GetLayerFanSeconds(LayerIndex);
+			const float Start = State.OriginalStarts[LayerIndex];
+			if (Start + State.OriginalLengths[LayerIndex] + Fan > NewEnd + Tolerance)
+			{
+				NewLengths[LayerIndex] = FMath::Max(NewEnd - Start - Fan, MinLayerSeconds);
+			}
+		}
+
+		// Past where the tracks now end, the rest is the animation's own time; back on them, it has none of its own.
+		NewMinimumLength = NewEnd > GetTracksEnd() + Tolerance ? NewEnd : 0.f;
+		Applied = State.OriginalEnd - NewEnd;
+	}
+	else
+	{
+		// The start: pulled out before 0, everything moves later by that much - time in front of it all; pushed in, every
+		// track starting before it is shortened to start there, and everything moves back to start at 0. A track whose
+		// start can't move - or would leave it shorter than a track can be - stops it there. With a locked track, nothing
+		// can move at all.
+		float Lowest = -MaxSeconds;
+		float Highest = MaxSeconds;
+		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
+		{
+			if (!CanEditLayer(LayerIndex))
+			{
+				Lowest = 0.f;
+				Highest = 0.f;
+				break;
+			}
+
+			const float Start = State.OriginalStarts[LayerIndex];
+			const bool bCanTrim = CanResizeLayer(LayerIndex, /*bStartEdge=*/true) && !HasDerivedLength((*Layers)[LayerIndex]);
+			Highest = FMath::Min(Highest, bCanTrim ? Start + State.OriginalLengths[LayerIndex] - MinLayerSeconds : Start);
+		}
+
+		const float NewStart = Lowest <= Highest ? FMath::Clamp(Wanted, Lowest, Highest) : 0.f;
+		if (SnapIndicator.IsSet() && !FMath::IsNearlyEqual(NewStart, Wanted, Tolerance))
+		{
+			SnapIndicator.Reset();
+		}
+
+		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
+		{
+			const float Start = State.OriginalStarts[LayerIndex];
+			const float End = Start + State.OriginalLengths[LayerIndex];
+			if (Start < NewStart - Tolerance)
+			{
+				NewStarts[LayerIndex] = 0.f;
+				NewLengths[LayerIndex] = FMath::Max(End - NewStart, MinLayerSeconds);
+			}
+			else
+			{
+				NewStarts[LayerIndex] = Start - NewStart;
+			}
+		}
+
+		// Time after the last track moves with everything else, so it still ends that far past the tracks - and, pushed
+		// in until the tracks reach it, is gone.
+		if (State.OriginalMinimumLength > 0.f)
+		{
+			const float Moved = State.OriginalMinimumLength - NewStart;
+			NewMinimumLength = Moved > GetTracksEnd() + Tolerance ? Moved : 0.f;
+		}
+		Applied = NewStart;
+	}
+
+	ApplyLayerSpans(NewStarts, NewLengths);
+	if (bKeepsMinimumLength)
+	{
+		// Kept in seconds as authored, as every track's timing is; the panel shows them as played.
+		Source->SetMinimumLength(NewMinimumLength / GetTimeScale());
+	}
+	bLayerDragChanged |= !FMath::IsNearlyZero(Applied, Tolerance);
+	UpdateTrackLayout();
+
+	// Interactive, as a Details panel drag is: the preview follows every frame of it.
+	NotifyGroupsChanged(EPropertyChangeType::Interactive);
+}
+
+// -----------------------------------------------------------------------------------------------------
+// Collapsed tracks
+// -----------------------------------------------------------------------------------------------------
+
+FName SWidgetAnimTimeline::GetLayerCollapsedName(int32 LayerIndex) const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	return Layers && Layers->IsValidIndex(LayerIndex) ? (*Layers)[LayerIndex].CollapsedTrack : NAME_None;
+}
+
+bool SWidgetAnimTimeline::IsLayerInView(int32 LayerIndex) const
+{
+	return !IsInCollapsedScope() || GetLayerCollapsedName(LayerIndex) == ActiveCollapsed;
+}
+
+void SWidgetAnimTimeline::GetCollapsedMembers(FName Name, TArray<int32>& OutMembers) const
+{
+	OutMembers.Reset();
+
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!Layers || Name.IsNone())
+	{
+		return;
+	}
+	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+	{
+		if ((*Layers)[LayerIndex].CollapsedTrack == Name)
+		{
+			OutMembers.Add(LayerIndex);
+		}
+	}
+}
+
+bool SWidgetAnimTimeline::IsCollapsedHead(int32 LayerIndex) const
+{
+	const FName Name = GetLayerCollapsedName(LayerIndex);
+	if (Name.IsNone() || Name == ActiveCollapsed)
+	{
+		return false;
+	}
+
+	// The first of its tracks in the sequence.
+	const TArray<FWidgetAnimLayer>& Layers = *GetLayers();
+	for (int32 Index = 0; Index < LayerIndex; ++Index)
+	{
+		if (Layers[Index].CollapsedTrack == Name)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+bool SWidgetAnimTimeline::IsFoldedIntoCollapsed(int32 LayerIndex) const
+{
+	const FName Name = GetLayerCollapsedName(LayerIndex);
+	return !Name.IsNone() && Name != ActiveCollapsed && !IsCollapsedHead(LayerIndex);
+}
+
+FVector2f SWidgetAnimTimeline::GetShownSpan(int32 LayerIndex) const
+{
+	if (IsCollapsedHead(LayerIndex))
+	{
+		if (const FVector2f* Collapsed = CollapsedSpans.Find(LayerIndex))
+		{
+			return *Collapsed;
+		}
+	}
+	if (TrackSpans.IsValidIndex(LayerIndex))
+	{
+		return TrackSpans[LayerIndex];
+	}
+
+	TArray<FVector2f> Spans;
+	GetLayerSpans(Spans);
+	return Spans.IsValidIndex(LayerIndex) ? Spans[LayerIndex] : FVector2f::ZeroVector;
+}
+
+bool SWidgetAnimTimeline::CanCollapseLayers(const TArray<int32>& LayerIndices) const
+{
+	// Not inside one: a collapsed track holds tracks, never another collapsed track.
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!CanEdit() || !Layers || IsInCollapsedScope())
+	{
+		return false;
+	}
+
+	// Something to fold - and not just the tracks of one collapsed track, folded again as they already are.
+	TSet<FName> Names;
+	int32 NumValid = 0;
+	for (const int32 LayerIndex : LayerIndices)
+	{
+		if (Layers->IsValidIndex(LayerIndex))
+		{
+			++NumValid;
+			Names.Add((*Layers)[LayerIndex].CollapsedTrack);
+		}
+	}
+	if (NumValid == 0)
+	{
+		return false;
+	}
+	if (Names.Num() == 1 && !Names.Contains(NAME_None))
+	{
+		TArray<int32> Members;
+		GetCollapsedMembers(*Names.CreateConstIterator(), Members);
+		return Members.Num() != NumValid;
+	}
+	return true;
+}
+
+void SWidgetAnimTimeline::CollapseLayers(const TArray<int32>& LayerIndices)
+{
+	if (!CanCollapseLayers(LayerIndices))
+	{
+		return;
+	}
+
+	const FScopedTransaction Transaction(LOCTEXT("CollapseTracksTransaction", "Collapse Tracks"));
+	if (!BeginEdit())
+	{
+		return;
+	}
+
+	TArray<FWidgetAnimLayer>& Layers = *Source->GetLayers();
+	const FName Name = WidgetAnimCollapsed::MakeUniqueName(Layers, TEXT("Collapsed Tracks"));
+	for (const int32 LayerIndex : LayerIndices)
+	{
+		if (Layers.IsValidIndex(LayerIndex))
+		{
+			Layers[LayerIndex].CollapsedTrack = Name;
+		}
+	}
+
+	// Only how the panel shows them: the preview plays exactly as it did.
+	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	RebuildRows();
+	SelectCollapsed(Name);
+}
+
+void SWidgetAnimTimeline::ExpandCollapsed(FName Name)
+{
+	TArray<int32> Members;
+	GetCollapsedMembers(Name, Members);
+	if (Members.Num() == 0 || !CanEdit())
+	{
+		return;
+	}
+
+	const FScopedTransaction Transaction(LOCTEXT("ExpandCollapsedTransaction", "Expand Collapsed Track"));
+	if (!BeginEdit())
+	{
+		return;
+	}
+
+	if (ActiveCollapsed == Name)
+	{
+		ActiveCollapsed = NAME_None;
+		SyncScopeMutes();
+	}
+	ListOpenCollapsed.Remove(Name);
+
+	TArray<FWidgetAnimLayer>& Layers = *Source->GetLayers();
+	for (const int32 LayerIndex : Members)
+	{
+		Layers[LayerIndex].CollapsedTrack = NAME_None;
+	}
+
+	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	RebuildRows();
+	SelectInBox({}, Members, /*bAdd=*/false, /*bToggle=*/false);
+}
+
+void SWidgetAnimTimeline::RenameCollapsed(FName OldName, const FString& NewName)
+{
+	TArray<int32> Members;
+	GetCollapsedMembers(OldName, Members);
+	const TArray<FWidgetAnimLayer>* Current = GetLayers();
+	if (Members.Num() == 0 || !Current || NewName.TrimStartAndEnd().IsEmpty() || !CanEdit())
+	{
+		return;
+	}
+
+	const FName Unique = WidgetAnimCollapsed::MakeUniqueName(*Current, NewName, OldName);
+	if (Unique.ToString().Equals(OldName.ToString(), ESearchCase::CaseSensitive))
+	{
+		return;
+	}
+
+	const FScopedTransaction Transaction(LOCTEXT("RenameCollapsedTransaction", "Rename Collapsed Track"));
+	if (!BeginEdit())
+	{
+		return;
+	}
+
+	TArray<FWidgetAnimLayer>& Layers = *Source->GetLayers();
+	for (const int32 LayerIndex : Members)
+	{
+		Layers[LayerIndex].CollapsedTrack = Unique;
+	}
+	if (ActiveCollapsed == OldName)
+	{
+		ActiveCollapsed = Unique;
+	}
+	if (ListOpenCollapsed.Remove(OldName) > 0)
+	{
+		ListOpenCollapsed.Add(Unique);
+	}
+
+	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	RebuildRows();
+}
+
+void SWidgetAnimTimeline::SelectCollapsed(FName Name, bool bToggle)
+{
+	TArray<int32> Members;
+	GetCollapsedMembers(Name, Members);
+	if (Members.Num() == 0)
+	{
+		return;
+	}
+
+	TArray<int32> NewLayers;
+	if (bToggle && SelectedKeys.Num() == 0)
+	{
+		// Added to what is selected - or, when every one of its tracks already is, taken out.
+		NewLayers = SelectedLayers;
+		const bool bAllIn = Algo::AllOf(Members, [this](int32 Member) { return SelectedLayers.Contains(Member); });
+		for (const int32 Member : Members)
+		{
+			if (bAllIn)
+			{
+				NewLayers.Remove(Member);
+			}
+			else
+			{
+				NewLayers.AddUnique(Member);
+			}
+		}
+	}
+	else
+	{
+		NewLayers = Members;
+	}
+
+	if (NewLayers.Num() == 0)
+	{
+		ClearSelection();
+		return;
+	}
+
+	NewLayers.Sort();
+	SelectedKeys.Reset();
+	SelectedLayers = MoveTemp(NewLayers);
+
+	// Its head is the primary one - what the title and a one-track action name - while it is selected.
+	FSelection NewSelection;
+	NewSelection.Layer = SelectedLayers.Contains(Members[0]) ? Members[0] : SelectedLayers.Last();
+	Selection = Validate(NewSelection);
+	SelectionAnchor = Selection.Layer;
+	ValidateSelectedLayers();
+	RefreshDetails();
+}
+
+void SWidgetAnimTimeline::EnterCollapsed(FName Name)
+{
+	TArray<int32> Members;
+	GetCollapsedMembers(Name, Members);
+	if (Members.Num() == 0 || Name == ActiveCollapsed)
+	{
+		return;
+	}
+
+	// Where it is, to bring into view once it is open.
+	const FVector2f Span = GetShownSpan(Members[0]);
+
+	if (IsDragging())
+	{
+		IsDraggingKey() ? EndKeyDrag() : EndLayerDrag();
+	}
+
+	ActiveCollapsed = Name;
+	ClearSelection();
+	SyncScopeMutes();
+	RebuildRows();
+
+	if (Tracks.IsValid() && Span.Y > 0.f)
+	{
+		Tracks->RevealTime(Span.X, Span.X + Span.Y);
+	}
+}
+
+void SWidgetAnimTimeline::ExitCollapsed()
+{
+	if (!IsInCollapsedScope())
+	{
+		return;
+	}
+
+	if (IsDragging())
+	{
+		IsDraggingKey() ? EndKeyDrag() : EndLayerDrag();
+	}
+
+	const FName Was = ActiveCollapsed;
+	ActiveCollapsed = NAME_None;
+	SyncScopeMutes();
+	RebuildRows();
+
+	// Back out as a collapsed graph is left: on the collapsed track, selected.
+	SelectCollapsed(Was);
+}
+
+void SWidgetAnimTimeline::SyncScopeMutes()
+{
+	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
+	if (!Layers)
+	{
+		bScopeMutesApplied = false;
+		return;
+	}
+
+	// Not an edit: a transient flag, set and cleared as the panel goes in and out, and never saved or undone.
+	bool bChanged = false;
+	bool bAnyMuted = false;
+	for (FWidgetAnimLayer& Layer : *Layers)
+	{
+		const bool bMuted = IsInCollapsedScope() && Layer.CollapsedTrack != ActiveCollapsed;
+		bAnyMuted |= bMuted;
+		if (Layer.bMutedByEditorScope != bMuted)
+		{
+			Layer.bMutedByEditorScope = bMuted;
+			bChanged = true;
+		}
+	}
+	bScopeMutesApplied = bAnyMuted;
+
+	// The previews play only what is shown - as a hidden track, its place in time counted and nothing posed.
+	if (bChanged)
+	{
+		NotifyGroupsChanged(EPropertyChangeType::Interactive);
+	}
+}
+
+TSharedRef<SWidget> SWidgetAnimTimeline::MakeCollapsedToolTip(int32 HeadLayer) const
+{
+	using namespace WidgetAnimToolTip;
+
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	const FName Name = GetLayerCollapsedName(HeadLayer);
+	TArray<int32> Members;
+	GetCollapsedMembers(Name, Members);
+	if (!Layers || Members.Num() == 0)
+	{
+		return SNullWidget::NullWidget;
+	}
+
+	TArray<FVector2f> Spans;
+	GetLayerSpans(Spans);
+
+	// Each of its tracks, in the order they play, as its section reads on the Track Editor: its name, how long it runs,
+	// and how it moves.
+	Members.StableSort([&Spans](int32 A, int32 B)
+	{
+		return (Spans.IsValidIndex(A) ? Spans[A].X : 0.f) < (Spans.IsValidIndex(B) ? Spans[B].X : 0.f);
+	});
+
+	const TSharedRef<SGridPanel> Table = SNew(SGridPanel).FillColumn(1, 1.f);
+	int32 Row = 0;
+	for (const int32 Member : Members)
+	{
+		const FWidgetAnimLayer& Layer = (*Layers)[Member];
+		const bool bWashedOut = IsLayerHidden(Member) || IsLayerLocked(Member);
+		const FLinearColor Color = bWashedOut ? GetLockedColor(GetLayerTypeColor(Layer)) : GetLayerTypeColor(Layer);
+		const float Length = Spans.IsValidIndex(Member) ? Spans[Member].Y : 0.f;
+
+		Table->AddSlot(0, Row)
+			.Padding(FMargin(0.f, 2.f, 6.f, 2.f))
+			.VAlign(VAlign_Center)
+			[
+				Swatch(Color)
+			];
+		Table->AddSlot(1, Row)
+			.Padding(FMargin(0.f, 2.f, 14.f, 2.f))
+			.VAlign(VAlign_Center)
+			[
+				Text(GetLayerTypeName(Layer).ToString(), bWashedOut ? Palette::TooltipLabel : Palette::TooltipValue, ValueFont())
+			];
+		Table->AddSlot(2, Row)
+			.Padding(FMargin(0.f, 2.f, 14.f, 2.f))
+			.VAlign(VAlign_Center)
+			[
+				Text(Seconds(Length), Palette::TooltipValue, ValueFont())
+			];
+		Table->AddSlot(3, Row)
+			.Padding(FMargin(0.f, 2.f))
+			.VAlign(VAlign_Center)
+			[
+				Text(IsCueLayer(Layer) ? FString() : GetEasingName(Layer).ToString(), Palette::TooltipLabel, SmallFont())
+			];
+		++Row;
+	}
+
+	const TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
+	Body->AddSlot()
+	.AutoHeight()
+	[
+		Table
+	];
+	Body->AddSlot()
+	.AutoHeight()
+	[
+		Note(WidgetAnimTips::CollapsedTrackNote().ToString())
+	];
+
+	const FVector2f Span = GetShownSpan(HeadLayer);
+	return Frame(
+		Palette::LayerCollapsed,
+		Name.ToString(),
+		FString::Printf(TEXT("%d %s"), Members.Num(), Members.Num() == 1 ? TEXT("track") : TEXT("tracks")),
+		FString::Printf(TEXT("%.2f - %.2f s"), Span.X, Span.X + Span.Y),
+		Body);
+}
+
+// -----------------------------------------------------------------------------------------------------
+// Pinned and inverted tracks
+// -----------------------------------------------------------------------------------------------------
+
+bool SWidgetAnimTimeline::IsLayerPinned(int32 LayerIndex) const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	return Layers && Layers->IsValidIndex(LayerIndex) && (*Layers)[LayerIndex].bPinnedInEditor;
+}
+
+void SWidgetAnimTimeline::SetLayersPinned(const TArray<int32>& LayerIndices, bool bPinned)
+{
+	const TArray<FWidgetAnimLayer>* Current = GetLayers();
+	if (!Current)
+	{
+		return;
+	}
+
+	TArray<int32> ToChange;
+	for (const int32 LayerIndex : LayerIndices)
+	{
+		if (Current->IsValidIndex(LayerIndex) && (*Current)[LayerIndex].bPinnedInEditor != bPinned)
+		{
+			ToChange.Add(LayerIndex);
+		}
+	}
+	if (ToChange.Num() == 0)
+	{
+		return;
+	}
+
+	// A way of looking, as hiding is: allowed while read-only, and nothing the previews play changes.
+	const FScopedTransaction Transaction(bPinned
+		? LOCTEXT("PinTracksTransaction", "Pin Tracks")
+		: LOCTEXT("UnpinTracksTransaction", "Unpin Tracks"));
+	if (!BeginEditIgnoringReadOnly())
+	{
+		return;
+	}
+
+	TArray<FWidgetAnimLayer>& Layers = *Source->GetLayers();
+	for (const int32 LayerIndex : ToChange)
+	{
+		Layers[LayerIndex].bPinnedInEditor = bPinned;
+	}
+
+	RebuildRows();
+}
+
+bool SWidgetAnimTimeline::IsLayerInvertedOnItsOwn(int32 LayerIndex) const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	return Layers && Layers->IsValidIndex(LayerIndex) && (*Layers)[LayerIndex].bInvertTrack;
+}
+
+bool SWidgetAnimTimeline::IsLayerInverted(int32 LayerIndex) const
+{
+	// The preview's Invert inverts every track - and never turns one inverted on its own back.
+	return IsLayerInvertedOnItsOwn(LayerIndex) || (Source.IsValid() && Source->GetInvert());
+}
+
+void SWidgetAnimTimeline::SetLayersInverted(const TArray<int32>& LayerIndices, bool bInverted)
+{
+	const TArray<FWidgetAnimLayer>* Current = GetLayers();
+	if (!Current)
+	{
+		return;
+	}
+
+	TArray<int32> ToChange;
+	for (const int32 LayerIndex : LayerIndices)
+	{
+		if (CanEditLayer(LayerIndex) && (*Current)[LayerIndex].bInvertTrack != bInverted)
+		{
+			ToChange.Add(LayerIndex);
+		}
+	}
+	if (ToChange.Num() == 0)
+	{
+		return;
+	}
+
+	const FScopedTransaction Transaction(bInverted
+		? LOCTEXT("InvertTracksTransaction", "Invert Tracks")
+		: LOCTEXT("UninvertTracksTransaction", "Turn Tracks Back"));
+	if (!BeginEdit())
+	{
+		return;
+	}
+
+	TArray<FWidgetAnimLayer>& Layers = *Source->GetLayers();
+	for (const int32 LayerIndex : ToChange)
+	{
+		Layers[LayerIndex].bInvertTrack = bInverted;
+	}
+
+	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	RebuildRows();
+	RefreshDetails();
+}
+
+// -----------------------------------------------------------------------------------------------------
+// Picking a Preview Target in the designer
+// -----------------------------------------------------------------------------------------------------
+
+FWidgetBlueprintEditor* SWidgetAnimTimeline::FindWidgetBlueprintEditor() const
+{
+	UWidgetBlueprint* Blueprint = Source.IsValid() ? Source->GetWidgetBlueprint() : nullptr;
+	UAssetEditorSubsystem* AssetEditors = GEditor && Blueprint ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr;
+	IAssetEditorInstance* Instance = AssetEditors ? AssetEditors->FindEditorForAsset(Blueprint, /*bFocusIfOpen=*/false) : nullptr;
+	if (!Instance || Instance->GetEditorName() != FName(TEXT("WidgetBlueprintEditor")))
+	{
+		return nullptr;
+	}
+	return static_cast<FWidgetBlueprintEditor*>(Instance);
+}
+
+UWidget* SWidgetAnimTimeline::ToPanelPreviewWidget(UWidget* DesignerWidget, FName TemplateName) const
+{
+	// The preview the panel poses may not be the designer's own: the same widget is found there by its name instead.
+	UUserWidget* Root = Source.IsValid() ? Source->GetPreviewRoot() : nullptr;
+	if (DesignerWidget && Source.IsValid() && !Source->FindTargetOptionFor(DesignerWidget).IsEmpty())
+	{
+		return DesignerWidget;
+	}
+	const FName Name = !TemplateName.IsNone() ? TemplateName : (DesignerWidget ? DesignerWidget->GetFName() : NAME_None);
+	if (Root && Root->WidgetTree && !Name.IsNone())
+	{
+		if (UWidget* Found = Root->WidgetTree->FindWidget(Name))
+		{
+			return Found;
+		}
+	}
+	return DesignerWidget;
+}
+
+UWidget* SWidgetAnimTimeline::GetDesignerSelectedWidget() const
+{
+	FWidgetBlueprintEditor* Editor = FindWidgetBlueprintEditor();
+	if (!Editor)
+	{
+		return nullptr;
+	}
+
+	const TSet<FWidgetReference>& Selected = Editor->GetSelectedWidgets();
+	if (Selected.Num() != 1)
+	{
+		return nullptr;
+	}
+
+	const FWidgetReference& Reference = *Selected.CreateConstIterator();
+	const UWidget* Template = Reference.GetTemplate();
+	return ToPanelPreviewWidget(Reference.GetPreview(), Template ? Template->GetFName() : NAME_None);
+}
+
+bool SWidgetAnimTimeline::CanPickTargetInDesigner() const
+{
+	return CanEdit() && Source->SupportsLayerGroups() && Source->GetWidgetBlueprint() != nullptr && Source->GetPreviewRoot() != nullptr;
+}
+
+/**
+ * While a Preview Target is being picked: Escape calls it off from anywhere, and - should the panel not hold the mouse
+ * (see BeginTargetPick) - the mouse is watched here instead, the cursor kept an eyedropper and a click on a widget taken
+ * as the pick. Registered only while a pick waits.
+ */
+class FWidgetAnimTargetPickInput : public IInputProcessor
+{
+public:
+
+	explicit FWidgetAnimTargetPickInput(TWeakPtr<SWidgetAnimTimeline> InPanel)
+		: Panel(InPanel)
+	{
+	}
+
+	virtual void Tick(const float DeltaTime, FSlateApplication& SlateApp, TSharedRef<ICursor> Cursor) override
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin();
+		if (Pinned && Pinned->IsPickingAnyTarget() && !Pinned->HasMouseCapture())
+		{
+			Cursor->SetType(EMouseCursor::EyeDropper);
+		}
+	}
+
+	virtual bool HandleMouseMoveEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin();
+		if (Pinned && Pinned->IsPickingAnyTarget() && !Pinned->HasMouseCapture())
+		{
+			Pinned->UpdatePickHover(MouseEvent.GetScreenSpacePosition());
+		}
+		return false;
+	}
+
+	virtual bool HandleMouseButtonDownEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin();
+		if (!Pinned || !Pinned->IsPickingAnyTarget() || Pinned->HasMouseCapture() || MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
+		{
+			return false;
+		}
+		Pinned->UpdatePickHover(MouseEvent.GetScreenSpacePosition());
+		return Pinned->CommitPickHover();
+	}
+
+	virtual bool HandleKeyDownEvent(FSlateApplication& SlateApp, const FKeyEvent& InKeyEvent) override
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin();
+		if (Pinned && Pinned->IsPickingAnyTarget() && InKeyEvent.GetKey() == EKeys::Escape)
+		{
+			Pinned->CancelTargetPick();
+			return true;
+		}
+		return false;
+	}
+
+	virtual const TCHAR* GetDebugName() const override { return TEXT("WidgetAnimTargetPick"); }
+
+private:
+
+	TWeakPtr<SWidgetAnimTimeline> Panel;
+};
+
+void SWidgetAnimTimeline::BeginTargetPick(int32 GroupIndex)
+{
+	using namespace WidgetAnimTimeline;
+
+	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
+	if (!CanPickTargetInDesigner() || !Groups || !Groups->IsValidIndex(GroupIndex))
+	{
+		return;
+	}
+
+	// A pick for another group gives way to this one.
+	CancelTargetPick();
+
+	// What is selected there now doesn't count: the next widget selected does - or, under the eyedropper, the one clicked.
+	PickTargetGroup = GroupIndex;
+	UWidget* Current = GetDesignerSelectedWidget();
+	PickStartSelection = Current;
+	bPickStartedWithSelection = Current != nullptr;
+
+	if (!FSlateApplication::IsInitialized())
+	{
+		return;
+	}
+
+	PickInput = MakeShared<FWidgetAnimTargetPickInput>(SharedThis(this));
+	FSlateApplication::Get().RegisterInputPreProcessor(PickInput);
+
+	// The name of the widget under the mouse, in orange beside the cursor - so it is known before the click. Hidden
+	// while nothing that can be picked is under it.
+	PickLabelWindow = SWindow::MakeCursorDecorator();
+	PickLabelWindow->SetContent(
+		SNew(SBorder)
+		.BorderImage(RoundedFill(3.f))
+		.BorderBackgroundColor(Palette::PickHoverBackground)
+		.Padding(FMargin(6.f, 2.f))
+		[
+			SNew(STextBlock)
+			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+			.ColorAndOpacity(Palette::PickingTargetText)
+			.Text_Lambda([WeakPanel = TWeakPtr<SWidgetAnimTimeline>(SharedThis(this))]()
+			{
+				const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakPanel.Pin();
+				return Pinned ? FText::FromString(Pinned->PickHoverLabel) : FText::GetEmpty();
+			})
+		]);
+	FSlateApplication::Get().AddWindow(PickLabelWindow.ToSharedRef(), /*bShowImmediately=*/false);
+
+	// The panel holds the mouse until the pick is made or called off, as an eyedropper does: so the cursor is its
+	// eyedropper and nothing else's (the designer would set its own each frame, and it flickered between the two), the
+	// mouse is followed wherever it goes, and the click lands here rather than selecting in the designer.
+	CapturePickMouse();
+}
+
+void SWidgetAnimTimeline::CapturePickMouse()
+{
+	if (!FSlateApplication::IsInitialized() || PickTargetGroup == INDEX_NONE || HasMouseCapture())
+	{
+		return;
+	}
+
+	FWidgetPath PanelPath;
+	if (FSlateApplication::Get().FindPathToWidget(AsShared(), PanelPath))
+	{
+		FSlateApplication::Get().ProcessExternalReply(PanelPath, FReply::Handled().CaptureMouse(AsShared()), 0, static_cast<int32>(FSlateApplicationBase::CursorPointerIndex));
+	}
+}
+
+void SWidgetAnimTimeline::CancelTargetPick()
+{
+	EndTargetPick(/*bReleaseMouse=*/true);
+}
+
+void SWidgetAnimTimeline::EndTargetPick(bool bReleaseMouse)
+{
+	if (PickTargetGroup == INDEX_NONE)
+	{
+		return;
+	}
+
+	PickTargetGroup = INDEX_NONE;
+	PickStartSelection.Reset();
+	bPickStartedWithSelection = false;
+	PickHoverWidget.Reset();
+	PickHoverLabel.Reset();
+
+	if (FSlateApplication::IsInitialized())
+	{
+		// The mouse goes back to whatever is under it. (Not while the panel itself is going: Slate lets go of it then.)
+		if (bReleaseMouse && HasMouseCapture())
+		{
+			FWidgetPath PanelPath;
+			if (FSlateApplication::Get().FindPathToWidget(AsShared(), PanelPath))
+			{
+				FSlateApplication::Get().ProcessExternalReply(PanelPath, FReply::Handled().ReleaseMouseCapture(), 0, static_cast<int32>(FSlateApplicationBase::CursorPointerIndex));
+			}
+		}
+
+		// Taken off on the next tick, not now: this is often reached from inside the processor's own handling of a click,
+		// while Slate walks its list of processors. Until then it does nothing - nothing is being picked.
+		if (PickInput.IsValid())
+		{
+			const TWeakPtr<IInputProcessor> WeakInput = PickInput;
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakInput](float)
+			{
+				const TSharedPtr<IInputProcessor> Input = WeakInput.Pin();
+				if (Input.IsValid() && FSlateApplication::IsInitialized())
+				{
+					FSlateApplication::Get().UnregisterInputPreProcessor(Input);
+				}
+				return false;
+			}));
+		}
+		if (PickLabelWindow.IsValid())
+		{
+			PickLabelWindow->HideWindow();
+			PickLabelWindow->RequestDestroyWindow();
+		}
+	}
+	PickInput.Reset();
+	PickLabelWindow.Reset();
+}
+
+FReply SWidgetAnimTimeline::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	if (PickTargetGroup != INDEX_NONE && HasMouseCapture())
+	{
+		UpdatePickHover(MouseEvent.GetScreenSpacePosition());
+		return FReply::Handled();
+	}
+	return SCompoundWidget::OnMouseMove(MyGeometry, MouseEvent);
+}
+
+FReply SWidgetAnimTimeline::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	if (PickTargetGroup != INDEX_NONE && HasMouseCapture())
+	{
+		// A left click on a widget of the preview picks it; any other click - elsewhere, or another button - calls it off.
+		UpdatePickHover(MouseEvent.GetScreenSpacePosition());
+		if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton || !CommitPickHover())
+		{
+			CancelTargetPick();
+		}
+		return FReply::Handled();
+	}
+	return SCompoundWidget::OnMouseButtonDown(MyGeometry, MouseEvent);
+}
+
+FCursorReply SWidgetAnimTimeline::OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const
+{
+	if (PickTargetGroup != INDEX_NONE)
+	{
+		return FCursorReply::Cursor(EMouseCursor::EyeDropper);
+	}
+	return SCompoundWidget::OnCursorQuery(MyGeometry, CursorEvent);
+}
+
+void SWidgetAnimTimeline::OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent)
+{
+	SCompoundWidget::OnMouseCaptureLost(CaptureLostEvent);
+
+	// Taken away - another window, Alt+Tab: the pick is called off rather than left waiting without the mouse.
+	if (PickTargetGroup != INDEX_NONE)
+	{
+		EndTargetPick(/*bReleaseMouse=*/false);
+	}
+}
+
+FText SWidgetAnimTimeline::GetPickingTargetText() const
+{
+	return PickHoverLabel.IsEmpty()
+		? WidgetAnimTips::PickingTargetLabel()
+		: FText::Format(LOCTEXT("PickingTargetHovered", "Pick: {0}"), FText::FromString(PickHoverLabel));
+}
+
+UWidget* SWidgetAnimTimeline::FindPreviewWidgetAt(const FVector2D& ScreenPosition, FString& OutOption) const
+{
+	OutOption.Reset();
+	if (!Source.IsValid() || !FSlateApplication::IsInitialized())
+	{
+		return nullptr;
+	}
+
+	// The preview the mouse is over is the designer's own - the editor's, when it is open; the panel's otherwise.
+	UUserWidget* DesignerRoot = nullptr;
+	if (FWidgetBlueprintEditor* Editor = FindWidgetBlueprintEditor())
+	{
+		DesignerRoot = Editor->GetPreview();
+	}
+	if (!DesignerRoot)
+	{
+		DesignerRoot = Source->GetPreviewRoot();
+	}
+	if (!DesignerRoot || !DesignerRoot->WidgetTree)
+	{
+		return nullptr;
+	}
+
+	// Never while over this panel - docked, it may sit beside or over the designer.
+	FSlateApplication& Slate = FSlateApplication::Get();
+	const FWidgetPath Path = Slate.LocateWindowUnderMouse(ScreenPosition, Slate.GetInteractiveTopLevelWindows(), /*bIgnoreEnabledStatus=*/true);
+	for (int32 Index = 0; Index < Path.Widgets.Num(); ++Index)
+	{
+		if (&Path.Widgets[Index].Widget.Get() == this)
+		{
+			return nullptr;
+		}
+	}
+
+	// A widget that can be a target, as the panel names it - nothing when it can't be.
+	auto Resolve = [this](UWidget* DesignerWidget, FString& OutResolvedOption) -> UWidget*
+	{
+		UWidget* PanelWidget = ToPanelPreviewWidget(DesignerWidget, NAME_None);
+		OutResolvedOption = PanelWidget ? Source->FindTargetOptionFor(PanelWidget) : FString();
+		return OutResolvedOption.IsEmpty() ? nullptr : PanelWidget;
+	};
+
+	// First by Slate's own hit testing: the deepest widget under the mouse that is one of the preview's.
+	TMap<const SWidget*, UWidget*> BySlate;
+	DesignerRoot->WidgetTree->ForEachWidget([&BySlate](UWidget* Candidate)
+	{
+		if (const TSharedPtr<SWidget> CandidateSlate = Candidate ? Candidate->GetCachedWidget() : nullptr)
+		{
+			BySlate.Add(CandidateSlate.Get(), Candidate);
+		}
+	});
+	for (int32 Index = Path.Widgets.Num() - 1; Index >= 0; --Index)
+	{
+		if (UWidget* const* Found = BySlate.Find(&Path.Widgets[Index].Widget.Get()))
+		{
+			if (UWidget* Resolved = Resolve(*Found, OutOption))
+			{
+				return Resolved;
+			}
+		}
+	}
+
+	// Then by where each is laid out - the designer may lay its own overlays over the preview, out of Slate's hit testing:
+	// the smallest visible one under the mouse.
+	UWidget* Best = nullptr;
+	FString BestOption;
+	double BestArea = TNumericLimits<double>::Max();
+	DesignerRoot->WidgetTree->ForEachWidget([&ScreenPosition, &Resolve, &Best, &BestOption, &BestArea](UWidget* Candidate)
+	{
+		const TSharedPtr<SWidget> CandidateSlate = Candidate ? Candidate->GetCachedWidget() : nullptr;
+		if (!CandidateSlate.IsValid() || !CandidateSlate->GetVisibility().IsVisible())
+		{
+			return;
+		}
+		const FGeometry& Geometry = Candidate->GetCachedGeometry();
+		if (!Geometry.IsUnderLocation(ScreenPosition))
+		{
+			return;
+		}
+		const FVector2D Extent(Geometry.GetAbsoluteSize());
+		const double Area = Extent.X * Extent.Y;
+		if (Area < BestArea)
+		{
+			FString CandidateOption;
+			if (UWidget* Resolved = Resolve(Candidate, CandidateOption))
+			{
+				Best = Resolved;
+				BestOption = CandidateOption;
+				BestArea = Area;
+			}
+		}
+	});
+
+	// The preview itself, under the mouse but nothing in it: the widget the animation plays on.
+	if (!Best && DesignerRoot->GetCachedWidget().IsValid() && DesignerRoot->GetCachedGeometry().IsUnderLocation(ScreenPosition))
+	{
+		UUserWidget* PanelRoot = Source->GetPreviewRoot();
+		BestOption = PanelRoot ? Source->FindTargetOptionFor(PanelRoot) : FString();
+		Best = BestOption.IsEmpty() ? nullptr : PanelRoot;
+	}
+
+	OutOption = BestOption;
+	return Best;
+}
+
+void SWidgetAnimTimeline::UpdatePickHover(const FVector2D& ScreenPosition)
+{
+	if (PickTargetGroup == INDEX_NONE)
+	{
+		return;
+	}
+
+	FString Option;
+	UWidget* Hovered = FindPreviewWidgetAt(ScreenPosition, Option);
+	PickHoverWidget = Hovered;
+	PickHoverLabel = !Hovered ? FString() : Option == TEXT("None") ? Hovered->GetName() : Option;
+
+	if (PickLabelWindow.IsValid())
+	{
+		if (Hovered)
+		{
+			PickLabelWindow->MoveWindowTo(ScreenPosition + FVector2D(18.0, 18.0));
+			if (!PickLabelWindow->IsVisible())
+			{
+				PickLabelWindow->ShowWindow();
+			}
+		}
+		else if (PickLabelWindow->IsVisible())
+		{
+			PickLabelWindow->HideWindow();
+		}
+	}
+}
+
+bool SWidgetAnimTimeline::CommitPickHover()
+{
+	UWidget* Hovered = PickHoverWidget.Get();
+	if (PickTargetGroup == INDEX_NONE || !Hovered)
+	{
+		return false;
+	}
+
+	ApplyPickedTarget(Hovered);
+	return true;
+}
+
+void SWidgetAnimTimeline::UpdateTargetPick()
+{
+	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
+	if (PickTargetGroup == INDEX_NONE)
+	{
+		return;
+	}
+	if (!Groups || !Groups->IsValidIndex(PickTargetGroup) || !CanPickTargetInDesigner())
+	{
+		CancelTargetPick();
+		return;
+	}
+
+	// The eyedropper's click is the pick (see FWidgetAnimTargetPickInput); a widget selected in the designer some other
+	// way - its hierarchy, say - picks it too.
+	UWidget* Now = GetDesignerSelectedWidget();
+	if (bPickStartedWithSelection)
+	{
+		// Still what was selected when the pick began: not picked yet. Anything else - even nothing - and the next
+		// selection is the pick, the first one again included.
+		if (Now == PickStartSelection.Get())
+		{
+			return;
+		}
+		bPickStartedWithSelection = false;
+	}
+	if (Now)
+	{
+		ApplyPickedTarget(Now);
+	}
+}
+
+void SWidgetAnimTimeline::ApplyPickedTarget(UWidget* Picked)
+{
+	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
+	const int32 GroupIndex = PickTargetGroup;
+	CancelTargetPick();
+	if (!Picked || !Groups || !Groups->IsValidIndex(GroupIndex) || !Source.IsValid())
+	{
+		return;
+	}
+
+	const FString Option = Source->FindTargetOptionFor(Picked);
+	if (Option.IsEmpty())
+	{
+		FNotificationInfo Info(WidgetAnimTips::PickTargetNotFoundNote());
+		Info.ExpireDuration = 4.f;
+		FSlateNotificationManager::Get().AddNotification(Info);
+		return;
+	}
+
+	const FName NewTarget = Option == TEXT("None") ? NAME_None : FName(*Option);
+	if ((*Groups)[GroupIndex].PreviewTarget == NewTarget)
+	{
+		return;
+	}
+
+	const FScopedTransaction Transaction(LOCTEXT("PickTargetTransaction", "Set Preview Target"));
+	if (!BeginEdit())
+	{
+		return;
+	}
+
+	(*Source->GetGroups())[GroupIndex].PreviewTarget = NewTarget;
+	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	RebuildRows();
+	RefreshDetails();
+}
+
+// -----------------------------------------------------------------------------------------------------
+// Where a new track goes, and what can stagger
+// -----------------------------------------------------------------------------------------------------
+
+float SWidgetAnimTimeline::GetNewTrackStart(TOptional<float> AtSeconds) const
+{
+	// Added from a menu opened on the Track Editor: where the menu was opened. Otherwise after the track it follows in the
+	// sequence - the selected one, or the last - as AddLayer places it, or at 0 for the first.
+	if (AtSeconds.IsSet())
+	{
+		return FMath::Max(AtSeconds.GetValue(), 0.f);
+	}
+
+	const int32 InsertAt = GetInsertIndex();
+	TArray<FVector2f> Spans;
+	GetLayerSpans(Spans);
+	if (InsertAt > 0 && Spans.IsValidIndex(InsertAt - 1))
+	{
+		return Spans[InsertAt - 1].X + Spans[InsertAt - 1].Y + GetLayerFanSeconds(InsertAt - 1);
+	}
+	return 0.f;
+}
+
+bool SWidgetAnimTimeline::CanLayerStagger(int32 LayerIndex) const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!Layers || !Layers->IsValidIndex(LayerIndex))
+	{
+		return false;
+	}
+
+	// One it already has stays in view, so it can be seen and taken off.
+	const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+	if (Layer.Expander.IsValid())
+	{
+		return true;
+	}
+
+	// A value-driven track follows one value, an animation track staggers inside its own animation, a cue fires once.
+	if (Layer.IsAnimationTrack() || Layer.IsValueDriven() || IsCueLayer(Layer))
+	{
+		return false;
+	}
+
+	// The widget it plays on, in the preview: its group's target, or its own on a list that sets one per track.
+	UWidget* Target = nullptr;
+	if (Source.IsValid())
+	{
+		FName Path = NAME_None;
+		const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
+		const int32 GroupIndex = GetLayerGroup(LayerIndex);
+		if (Source->SupportsLayerTargets())
+		{
+			Path = Layer.TargetWidget;
+		}
+		else if (Groups && Groups->IsValidIndex(GroupIndex))
+		{
+			Path = (*Groups)[GroupIndex].PreviewTarget;
+		}
+		Target = Path.IsNone() ? Source->GetPreviewRoot() : Source->ResolvePreviewTarget(Path);
+	}
+
+	// Nothing to look at - no preview open - so it stays offered.
+	if (!Target)
+	{
+		return true;
+	}
+
+	// Something to fan out to: its children, or - on a track that moves letters - an Animated Text Block's letters.
+	TArray<FWidgetAnimExpandedItem> Items;
+	FWidgetAnimExpander_EachChild().GatherItems(Target, Items);
+	if (Items.Num() > 0)
+	{
+		return true;
+	}
+
+	if (UWidgetAnimLibrary::TypeTakesParts(Layer.AnimType, Layer.TypeParams))
+	{
+		FWidgetAnimExpander_EachTextPart Parts;
+		if (!Parts.IsReadyToExpand(Target))
+		{
+			return true;
+		}
+		Items.Reset();
+		Parts.GatherItems(Target, Items);
+		return Items.Num() > 0;
+	}
+	return false;
+}
+
+// -----------------------------------------------------------------------------------------------------
+// Playing from the end
+// -----------------------------------------------------------------------------------------------------
+
+void SWidgetAnimTimeline::GoToStart()
+{
+	ScrubToSeconds(0.f);
+}
+
+void SWidgetAnimTimeline::GoToEnd()
+{
+	ScrubToSeconds(GetPassSeconds());
+
+	// Play goes back the way it came - from the end to the start - until the playhead is moved some other way.
+	bPlayBackwardNext = true;
+}
+
+// -----------------------------------------------------------------------------------------------------
 // Menus
 // -----------------------------------------------------------------------------------------------------
 
@@ -11264,9 +14422,11 @@ void SWidgetAnimTimeline::AddTrackSubMenu(FMenuBuilder& Menu, int32 GroupIndex, 
 	// Named after its group only where there are groups to tell apart.
 	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
 	const bool bNameGroup = Groups && Groups->IsValidIndex(GroupIndex) && (!Source.IsValid() || Source->SupportsLayerGroups());
+	// With when it will start: where the menu was opened, or after the track it follows.
+	const FText StartsAt = FText::FromString(FString::Printf(TEXT("%.2f s"), GetNewTrackStart(AtSeconds)));
 	const FText Label = bNameGroup
-		? FText::Format(LOCTEXT("AddTrackToGroup", "Add Animation Track to {0}"), GetGroupName(GroupIndex))
-		: LOCTEXT("AddTrack", "Add Animation Track");
+		? FText::Format(LOCTEXT("AddTrackToGroupAt", "Add Animation Track to {0} ({1})"), GetGroupName(GroupIndex), StartsAt)
+		: FText::Format(LOCTEXT("AddTrackAt", "Add Animation Track ({0})"), StartsAt);
 
 	Menu.AddSubMenu(
 		Label,
@@ -11404,7 +14564,10 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeAddMenu(int32 GroupIndex, bool bWit
 	if (!Source->SupportsLayerGroups())
 	{
 		// Loose entries rather than a section of their own: the registered and Blueprint types open sections of
-		// their own, and a menu section can't be opened inside another.
+		// their own, and a menu section can't be opened inside another. Headed with when the track will start.
+		AddMenuHeading(Menu,
+			FText::Format(LOCTEXT("AddTrackHeadingAt", "Add Animation Track ({0})"), FText::FromString(FString::Printf(TEXT("%.2f s"), GetNewTrackStart(AtSeconds)))),
+			WidgetAnimTimeline::Palette::MenuAddIconTint);
 		AddTrackTypeEntries(Menu, GetDefaultGroup(GroupIndex), AtSeconds);
 
 		Menu.BeginSection("Existing", LOCTEXT("ExistingSection", "Build On"));
@@ -11595,6 +14758,16 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeGroupContextMenu(int32 GroupIndex, 
 
 	Menu.BeginSection("Group", LOCTEXT("GroupSectionContext", "Layer Group"));
 
+	// Its Preview Target, by clicking the widget in the designer.
+	if (CanPickTargetInDesigner())
+	{
+		Menu.AddMenuEntry(
+			LOCTEXT("PickTargetInDesigner", "Pick Preview Target in Designer"),
+			WidgetAnimTips::PickTargetInDesignerTooltip(),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.EyeDropper"),
+			FUIAction(FExecuteAction::CreateLambda([this, GroupIndex]() { BeginTargetPick(GroupIndex); })));
+	}
+
 	Menu.AddMenuEntry(
 		LOCTEXT("DuplicateGroup", "Duplicate Group"),
 		WidgetAnimTips::DuplicateGroupTooltip(),
@@ -11749,15 +14922,129 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 		}
 	};
 
-	// What the menu acts on, first: the track and its group - or, for several, just that.
+	// A collapsed track - opened from its section on the Track Editor or its row in the list - is what the menu is about.
+	const FName CollapsedName = GetLayerCollapsedName(LayerIndex);
+	const bool bOnCollapsed = !CollapsedName.IsNone() && CollapsedName != ActiveCollapsed;
+
+	// Pinning, like hiding, is a way of looking: offered even while the panel is locked read-only.
+	bool bAnyPinned = false;
+	bool bAnyUnpinned = false;
+	for (const int32 Index : ActedOn)
+	{
+		(IsLayerPinned(Index) ? bAnyPinned : bAnyUnpinned) = true;
+	}
+	auto AddPinEntries = [this, &Menu, &ActedOn, bAnyPinned, bAnyUnpinned]()
+	{
+		const bool bSeveral = ActedOn.Num() > 1;
+		if (bAnyUnpinned)
+		{
+			Menu.AddMenuEntry(
+				bSeveral ? LOCTEXT("PinTracks", "Pin Tracks") : LOCTEXT("PinTrack", "Pin Track"),
+				WidgetAnimTips::PinTrackTooltip(),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Pinned"),
+				FUIAction(FExecuteAction::CreateLambda([this, ActedOn]() { SetLayersPinned(ActedOn, /*bPinned=*/true); })));
+		}
+		if (bAnyPinned)
+		{
+			Menu.AddMenuEntry(
+				bSeveral ? LOCTEXT("UnpinTracks", "Unpin Tracks") : LOCTEXT("UnpinTrack", "Unpin Track"),
+				WidgetAnimTips::UnpinTrackTooltip(),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Unpinned"),
+				FUIAction(FExecuteAction::CreateLambda([this, ActedOn]() { SetLayersPinned(ActedOn, /*bPinned=*/false); })));
+		}
+	};
+
+	// Invert Track: plays it from its end back to its start - ticked while every one acted on is inverted on its own.
+	auto AddInvertEntry = [this, &Menu, &ActedOn]()
+	{
+		const bool bAllInverted = ActedOn.Num() > 0 && Algo::AllOf(ActedOn, [this](int32 Index) { return IsLayerInvertedOnItsOwn(Index); });
+		bool bAnyEditable = false;
+		for (const int32 Index : ActedOn)
+		{
+			bAnyEditable |= CanEditLayer(Index);
+		}
+		Menu.AddMenuEntry(
+			ActedOn.Num() > 1 ? LOCTEXT("InvertTracks", "Invert Tracks") : LOCTEXT("InvertTrack", "Invert Track"),
+			WidgetAnimTips::InvertTrackTooltip(),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateLambda([this, ActedOn, bAllInverted]() { SetLayersInverted(ActedOn, !bAllInverted); }),
+				FCanExecuteAction::CreateLambda([bAnyEditable]() { return bAnyEditable; }),
+				FIsActionChecked::CreateLambda([bAllInverted]() { return bAllInverted; })),
+			NAME_None,
+			EUserInterfaceActionType::ToggleButton);
+	};
+
+	// Folding tracks into a collapsed track - or, on one, opening it, expanding it and renaming it.
+	auto AddCollapseEntries = [this, &Menu, &ActedOn, bOnCollapsed, CollapsedName]()
+	{
+		if (bOnCollapsed)
+		{
+			Menu.AddMenuEntry(
+				LOCTEXT("OpenCollapsed", "Open Collapsed Track"),
+				WidgetAnimTips::OpenCollapsedTooltip(),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Search"),
+				FUIAction(FExecuteAction::CreateLambda([this, CollapsedName]() { EnterCollapsed(CollapsedName); })));
+			Menu.AddMenuEntry(
+				LOCTEXT("ExpandCollapsed", "Expand Collapsed Track"),
+				WidgetAnimTips::ExpandCollapsedTooltip(),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Expand"),
+				FUIAction(
+					FExecuteAction::CreateLambda([this, CollapsedName]() { ExpandCollapsed(CollapsedName); }),
+					FCanExecuteAction::CreateLambda([this]() { return CanEdit(); })));
+
+			// Renamed right here, as a Blueprint node's title is: typed, and taken on Enter.
+			if (CanEdit())
+			{
+				Menu.AddWidget(
+					SNew(SBox)
+					.WidthOverride(180.f)
+					.Padding(FMargin(0.f, 2.f, 8.f, 2.f))
+					[
+						SNew(SEditableTextBox)
+						.Text(FText::FromName(CollapsedName))
+						.SelectAllTextWhenFocused(true)
+						.ToolTipText(WidgetAnimTips::RenameCollapsedTooltip())
+						.OnTextCommitted_Lambda([this, CollapsedName](const FText& NewText, ETextCommit::Type CommitType)
+						{
+							if (CommitType == ETextCommit::OnEnter)
+							{
+								RenameCollapsed(CollapsedName, NewText.ToString());
+								FSlateApplication::Get().DismissAllMenus();
+							}
+						})
+					],
+					LOCTEXT("RenameCollapsedLabel", "Name"));
+			}
+			return;
+		}
+
+		if (CanCollapseLayers(ActedOn))
+		{
+			Menu.AddMenuEntry(
+				ActedOn.Num() > 1 ? LOCTEXT("CollapseTracks", "Collapse Tracks") : LOCTEXT("CollapseTrack", "Collapse Track"),
+				WidgetAnimTips::CollapseTracksTooltip(),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Collapse"),
+				FUIAction(FExecuteAction::CreateLambda([this, ActedOn]() { CollapseLayers(ActedOn); })));
+		}
+	};
+
+	// What the menu acts on, first: the track and its group - a collapsed track by its name - or, for several, just that.
 	{
 		const TArray<FWidgetAnimLayer>* HeadingLayers = GetLayers();
 		const bool bOne = ActedOn.Num() == 1 && HeadingLayers && HeadingLayers->IsValidIndex(LayerIndex);
-		AddMenuHeading(Menu,
-			bOne
-				? FText::Format(LOCTEXT("TrackMenuHeading", "{0}  ({1})"), GetLayerTypeName((*HeadingLayers)[LayerIndex]), GetLayerWhereName(LayerIndex))
-				: LOCTEXT("MultipleTracksMenuHeading", "Multiple Tracks"),
-			bOne ? GetLayerTypeColor((*HeadingLayers)[LayerIndex]) : GetGroupColor(GroupIndex));
+		if (bOnCollapsed)
+		{
+			AddMenuHeading(Menu, FText::FromName(CollapsedName), WidgetAnimTimeline::Palette::LayerCollapsed);
+		}
+		else
+		{
+			AddMenuHeading(Menu,
+				bOne
+					? FText::Format(LOCTEXT("TrackMenuHeading", "{0}  ({1})"), GetLayerTypeName((*HeadingLayers)[LayerIndex]), GetLayerWhereName(LayerIndex))
+					: LOCTEXT("MultipleTracksMenuHeading", "Multiple Tracks"),
+				bOne ? GetLayerTypeColor((*HeadingLayers)[LayerIndex]) : GetGroupColor(GroupIndex));
+		}
 	}
 
 	// Jumping there only looks at the animation, so it is offered whatever can be edited.
@@ -11775,7 +15062,12 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 		Menu.BeginSection("View", LOCTEXT("ViewSection", "Preview"));
 		AddJumpEntry();
 		AddHideEntries();
+		AddPinEntries();
 		AddFocusEntries(Menu, ActedOn);
+		if (bOnCollapsed)
+		{
+			AddCollapseEntries();
+		}
 		Menu.EndSection();
 
 		// Copying only reads the animation, so it is offered while it can't be edited.
@@ -11898,13 +15190,27 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 		Menu.EndSection();
 	}
 
+	// A collapsed track: open it, expand it, rename it - before what its tracks can do together.
+	if (bOnCollapsed)
+	{
+		Menu.BeginSection("Collapsed", LOCTEXT("CollapsedSection", "Collapsed Track"));
+		AddCollapseEntries();
+		Menu.EndSection();
+	}
+
 	// Several tracks selected, this one among them: what they can all do together.
 	if (ActedOn.Num() > 1)
 	{
 		Menu.BeginSection("Selected", FText::Format(LOCTEXT("SelectedTracksSection", "{0} Selected Tracks"), FText::AsNumber(ActedOn.Num())));
 
 		AddHideEntries();
+		AddPinEntries();
 		AddFocusEntries(Menu, ActedOn);
+		AddInvertEntry();
+		if (!bOnCollapsed)
+		{
+			AddCollapseEntries();
+		}
 
 		if (bAnyUnlocked)
 		{
@@ -11949,7 +15255,13 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 
 	AddJumpEntry();
 	AddHideEntries();
+	AddPinEntries();
 	AddFocusEntries(Menu, ActedOn);
+	AddInvertEntry();
+	if (!bOnCollapsed)
+	{
+		AddCollapseEntries();
+	}
 
 	// Locking: the track stays selectable - its settings can be looked at - but nothing moves or edits it.
 	Menu.AddMenuEntry(
@@ -12371,6 +15683,13 @@ FText SWidgetAnimTimeline::GetEasingName(const FWidgetAnimLayer& Layer)
 			: FText::Format(LOCTEXT("ValueEasingName", "Value: {0}"), FText::FromName(Layer.ValueName));
 	}
 
+	// A Shake has no easing - its Falloff is how its strength changes over its run - so it is named by that.
+	if (Layer.AnimType == EWidgetAnimType::Shake)
+	{
+		const UEnum* FalloffEnum = StaticEnum<EWidgetAnimShakeFalloff>();
+		return FalloffEnum ? FalloffEnum->GetDisplayNameTextByValue(static_cast<int64>(Layer.Shake.Falloff)) : FText::GetEmpty();
+	}
+
 	// A Custom easing is a Curve asset - Custom Curve - so it is shown by that asset's own name.
 	const UEnum* EasingEnum = StaticEnum<EWidgetAnimEasing>();
 	const FText EasingName = Layer.Easing == EWidgetAnimEasing::Custom && Layer.CustomCurve
@@ -12505,6 +15824,23 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 	case EWidgetAnimType::Pulse:
 		Rows.Add(TEXT("Scale Amount"), FString::Printf(TEXT("%s  (\u00B1%s%%)"), *Number(Layer.PulseScaleAmount, 3), *Number(Layer.PulseScaleAmount * 100.f, 1)));
 		break;
+
+	case EWidgetAnimType::Shake:
+	{
+		Rows.Add(TEXT("Distance"), TEXT("\u00B1") + Pair(Layer.Shake.Distance, /*bCollapseUniform=*/true));
+		Rows.Add(TEXT("Angle"), TEXT("\u00B1") + Angle(Layer.Shake.Angle));
+		Rows.Add(TEXT("Shakes Per Second"), Number(Layer.Shake.Frequency, 1));
+		if (!Layer.IsValueDriven())
+		{
+			const UEnum* FalloffEnum = StaticEnum<EWidgetAnimShakeFalloff>();
+			Rows.Add(TEXT("Falloff"), FalloffEnum ? FalloffEnum->GetDisplayNameTextByValue(static_cast<int64>(Layer.Shake.Falloff)).ToString() : FString());
+		}
+		if (Layer.Shake.Seed != 0)
+		{
+			Rows.Add(TEXT("Seed"), FString::FromInt(Layer.Shake.Seed));
+		}
+		break;
+	}
 
 	case EWidgetAnimType::MaterialScalar:
 		Rows.Add(TEXT("Parameter"), Layer.ScalarParameterName.IsNone() ? FString(TEXT("(none)")) : Layer.ScalarParameterName.ToString());
@@ -12820,7 +16156,9 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 		Body->AddSlot()
 		.AutoHeight()
 		[
-			Note((Layer.AnimType == EWidgetAnimType::Pulse ? WidgetAnimTips::ValueDrivenPulseNote() : WidgetAnimTips::ValueDrivenTrackNote()).ToString())
+			Note((Layer.AnimType == EWidgetAnimType::Pulse ? WidgetAnimTips::ValueDrivenPulseNote()
+				: Layer.AnimType == EWidgetAnimType::Shake ? WidgetAnimTips::ValueDrivenShakeNote()
+				: WidgetAnimTips::ValueDrivenTrackNote()).ToString())
 		];
 	}
 
@@ -12847,6 +16185,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 	switch (Layer.AnimType)
 	{
 	case EWidgetAnimType::Pulse:          Blurb = WidgetAnimTips::PulseBlurbTooltip(); break;
+	case EWidgetAnimType::Shake:          Blurb = WidgetAnimTips::ShakeBlurbTooltip(); break;
 	case EWidgetAnimType::MaterialScalar: Blurb = WidgetAnimTips::MaterialScalarBlurbTooltip(); break;
 	case EWidgetAnimType::MaterialVector: Blurb = WidgetAnimTips::MaterialVectorBlurbTooltip(); break;
 	case EWidgetAnimType::Transform:      Blurb = WidgetAnimTips::TransformBlurbTooltip(); break;
@@ -13174,6 +16513,10 @@ namespace
 
 		case EWidgetAnimType::Rotate:
 			return Value == EWatched::Rotation && bPointsVary;
+
+		case EWidgetAnimType::Shake:
+			return (Value == EWatched::Translation && !Layer.Shake.Distance.IsNearlyZero())
+				|| (Value == EWatched::Rotation && Layer.Shake.Angle > KINDA_SMALL_NUMBER);
 
 		case EWidgetAnimType::Transform:
 			switch (Value)

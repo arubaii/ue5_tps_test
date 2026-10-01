@@ -70,7 +70,7 @@ namespace NameTBD::Tooltips
 		inline FText StaggerPartsTypeNote()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "StaggerPartsTypeNote",
-				"Letters, words and lines can only be moved by Fade, Scale, Slide, Rotate, Pulse and Transform tracks. This track plays once, on the whole widget.");
+				"Letters, words and lines can only be moved by Fade, Scale, Slide, Rotate, Pulse, Shake and Transform tracks. This track plays once, on the whole widget.");
 		}
 
 		inline FText StaggerNoTextNote()
@@ -107,6 +107,12 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ValueDrivenPulseNote",
 				"Value driven: gameplay's value is how strongly this Pulse pulses, from none at the start of its range to full at the end. It keeps its own beat, its Duration, however long it runs.");
+		}
+
+		inline FText ValueDrivenShakeNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ValueDrivenShakeNote",
+				"Value driven: gameplay's value is how strongly this Shake shakes - a trauma meter - from none at the start of its range to full at the end. It shakes on its own clock for as long as it has any strength; its Falloff is left to the value.");
 		}
 
 		// -------------------------------------------------------------------------------------------------
@@ -254,7 +260,7 @@ namespace NameTBD::Tooltips
 		inline FText SpeedTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "SpeedTooltip",
-				"Playback Speed: How fast the preview plays, as an entry's own Playback Speed would play it - delays included. Only the preview: the animation's own Animation Speed Multiplier is in Animation Properties.");
+				"Preview Speed: How fast the preview plays, as an entry's own Playback Speed would play it - delays included. Only the preview: the animation's own Animation Speed Multiplier is in Animation Properties.");
 		}
 
 		inline FText ToStartTooltip()
@@ -290,7 +296,7 @@ namespace NameTBD::Tooltips
 		inline FText ToEndTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ToEndTooltip",
-				"Go to End");
+				"Go to End. Play then plays the animation backward, from its end to its start.");
 		}
 
 		inline FText TrackSnappingTooltip()
@@ -324,7 +330,7 @@ namespace NameTBD::Tooltips
 		inline FText GroupTargetTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GroupTargetTooltip",
-				"The widget this group animates here. Change it by selecting the group.");
+				"The widget this group animates here. Change it by selecting the group - or pick it by clicking it in the designer, from the group's menu or the eyedropper beside its Preview Target.");
 		}
 
 		inline FText ListLayerRowTooltip()
@@ -641,6 +647,120 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PulseBlurbTooltip",
 				"Swells by its Scale Amount and settles back once per play - loop it for a steady beat.");
+		}
+
+		inline FText ShakeBlurbTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ShakeBlurbTooltip",
+				"Jitters the widget about where it is - a hit, an error, a rumble - moving it up to its Distance and turning it up to its Angle, strongest where its Falloff says. It lands exactly where it started, and adds to whatever else moves the widget. The same Seed always shakes the same way.");
+		}
+
+		// -------------------------------------------------------------------------------------------------
+		// Collapsed tracks
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText CollapsedTrackNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CollapsedTrackNote",
+				"A collapsed track - these tracks, shown as one. Double-click it to open it on its own, with only its tracks in the previews. Each is still a track of its own group, playing exactly as it would anywhere.");
+		}
+
+		inline FText CollapseTracksTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CollapseTracksTooltip",
+				"Fold these tracks into one collapsed track, as a Blueprint collapses part of a graph: shown as one track and one row, whichever groups they are in, and opened on their own by double-clicking it. Only how the panel shows them - they play exactly as they did. Copy it to copy all of them.");
+		}
+
+		inline FText OpenCollapsedTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "OpenCollapsedTooltip",
+				"Show only this collapsed track's tracks - their own groups, and the previews playing only them - as a collapsed graph opens in its own tab. All Tracks, at the top, or Escape goes back. Double-clicking it does the same.");
+		}
+
+		inline FText ExpandCollapsedTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ExpandCollapsedTooltip",
+				"Put this collapsed track's tracks back as tracks of their own, each where it is.");
+		}
+
+		inline FText RenameCollapsedTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "RenameCollapsedTooltip",
+				"Its name, shown on its track and its row. Press Enter to rename it; a name another collapsed track has is numbered.");
+		}
+
+		inline FText LeaveCollapsedTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "LeaveCollapsedTooltip",
+				"Back to all the tracks (Escape, with nothing selected).");
+		}
+
+		inline FText ListCollapsedRowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ListCollapsedRowTooltip",
+				"A collapsed track. Click to select every one of its tracks; double-click to open it on its own; right-click for its menu. The arrow lists its tracks under it.");
+		}
+
+		inline FText CollapsedListFoldTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CollapsedListFoldTooltip",
+				"Show or hide a row for each of its tracks here, to pick one of them on its own.");
+		}
+
+		// -------------------------------------------------------------------------------------------------
+		// Pinning, showing and hiding, and inverting tracks
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText PinTrackTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PinTrackTooltip",
+				"Pin to the top of the Track Editor, where it stays in view while the other tracks scroll.");
+		}
+
+		inline FText UnpinTrackTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "UnpinTrackTooltip",
+				"Unpin - back to its own line in its group.");
+		}
+
+		inline FText HideTrackButtonTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "HideTrackButtonTooltip",
+				"Hide: the previews play without it, everything else staying where it is. A game still plays it.");
+		}
+
+		inline FText InvertTrackTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "InvertTrackTooltip",
+				"Play this track from its end back to its start, in its place - in the previews and in game. The preview's Invert inverts every track; one already inverted stays inverted.");
+		}
+
+		// -------------------------------------------------------------------------------------------------
+		// Picking a Preview Target in the designer
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText PickTargetInDesignerTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PickTargetInDesignerTooltip",
+				"Pick the widget this group animates by clicking it in the designer with the eyedropper, which names the widget under it. Escape calls it off.");
+		}
+
+		inline FText PickingTargetLabel()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PickingTargetLabel",
+				"Click a widget in the designer...");
+		}
+
+		inline FText PickingTargetNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PickingTargetNote",
+				"Point at the widget in the designer that this group should animate - its name shows by the eyedropper - and click it. Escape, or the button again, calls it off.");
+		}
+
+		inline FText PickTargetNotFoundNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PickTargetNotFoundNote",
+				"That widget can't be a Preview Target here: it isn't in this widget's tree.");
 		}
 
 		inline FText MaterialScalarBlurbTooltip()

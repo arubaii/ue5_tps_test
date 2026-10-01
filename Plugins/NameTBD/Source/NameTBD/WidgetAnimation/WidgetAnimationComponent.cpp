@@ -557,7 +557,7 @@ void UWidgetAnimationComponent::AppendLinkedAdditive(int32 EffectiveIndex, bool 
 		Stamped.bLoop = Entry.bLoop;
 		Stamped.bPingPong = Entry.bPingPong;
 		Stamped.LoopCount = Entry.LoopCount;
-		Stamped.bInvertAnimation = Entry.bInvertAnimation;
+		Stamped.bInvertAnimation = Stamped.bInvertAnimation || Entry.bInvertAnimation;
 		Stamped.bMirrorInOut = Entry.bMirrorInOut;
 		Stamped.PlaybackSpeed = FMath::Max(Entry.PlaybackSpeed, 0.01f);
 		Stamped.LoopGroup = LoopGroup;

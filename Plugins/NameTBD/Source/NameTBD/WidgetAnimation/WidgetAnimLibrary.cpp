@@ -436,6 +436,27 @@ namespace
 	}
 }
 
+namespace
+{
+	/**
+	 * What tells a Shake's items apart: each widget by its name, each letter by its place - so a Shake staggered over a
+	 * panel's children or a text's letters doesn't move every item as one.
+	 */
+	int32 GetShakeItemSeed(const FWidgetAnimSettings& Settings)
+	{
+		uint32 Seed = 0;
+		if (Settings.Part.IsSet())
+		{
+			Seed = HashCombine(GetTypeHash(Settings.Part.Unit), GetTypeHash(Settings.Part.Index + 1));
+		}
+		if (Settings.TargetWidget)
+		{
+			Seed = HashCombine(Seed, GetTypeHash(Settings.TargetWidget->GetFName()));
+		}
+		return static_cast<int32>(Seed & 0x7fffffff);
+	}
+}
+
 void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& Settings, float DirectedAlpha, FWidgetAnimResult& OutResult, const FWidgetAnimBaselineSet* Baselines, bool bTowardStart)
 {
 	// Every type that travels from a start value to an end value does it the same way: through its points -
@@ -508,6 +529,21 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 		const float ScaleMultiplier = (DirectedAlpha <= 0.f || DirectedAlpha >= 1.f) ? 1.f : 1.f + Settings.PulseScaleAmount * FMath::Sin(Phase);
 		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget, Settings.Part);
 		Transform.Scale *= FVector2D(ScaleMultiplier, ScaleMultiplier);
+		break;
+	}
+
+	case EWidgetAnimType::Shake:
+	{
+		// Time into its run rather than the eased alpha: the noise is paced by Shakes Per Second, and bending time would
+		// only speed it up and slow it down. Strength follows its Falloff, and is exactly nothing at either end, so a
+		// Shake lands where it started.
+		const float Alpha = FMath::Clamp(DirectedAlpha, 0.f, 1.f);
+		FVector2D Offset;
+		float Angle = 0.f;
+		Settings.Shake.Sample(Alpha * FMath::Max(Settings.Duration, KINDA_SMALL_NUMBER), Settings.Shake.GetEnvelope(Alpha), GetShakeItemSeed(Settings), Offset, Angle);
+		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget, Settings.Part);
+		Transform.Translation += Offset;
+		Transform.Angle += Angle;
 		break;
 	}
 
@@ -1089,7 +1125,7 @@ namespace WidgetAnimLoop
 	}
 
 	/** Adds one fire to Result, unless this point of this track has already fired this frame. */
-	static void AddCueFire(FWidgetAnimResult& Result, const FWidgetAnimSettings& Settings, int32 LayerIndex, int32 Point, bool bBackward, bool bInverted, float Order)
+	static void AddCueFire(FWidgetAnimResult& Result, const FWidgetAnimSettings& Settings, int32 LayerIndex, int32 Point, bool bBackward, bool bInverted, float Order, float SecondsToEnd = -1.f)
 	{
 		const bool bAlreadyFired = Result.CueFires.ContainsByPredicate([&Settings, Point](const FWidgetAnimCueFire& Fire)
 		{
@@ -1112,6 +1148,7 @@ namespace WidgetAnimLoop
 		Fire.bInverted = bInverted;
 		Fire.LayerIndex = LayerIndex;
 		Fire.Order = Order;
+		Fire.SecondsToEnd = SecondsToEnd;
 	}
 
 	/**
@@ -1189,7 +1226,11 @@ namespace WidgetAnimLoop
 
 				// In the order the playhead met them: stretch by stretch, and along each the way it was going.
 				const float Along = Piece.bForward ? At - Piece.From : Piece.From - At;
-				AddCueFire(Result, Settings, LayerIndex, Point.Key, /*bBackward=*/!Piece.bForward && !bAtTurn, bInvert, PieceIndex * 100000.f + Along);
+
+				// How much of the track the playhead has still to pass, the way it is going - what a sound's fade out is
+				// timed by.
+				const float SecondsToEnd = Piece.bForward ? Span.Start + Span.Length - At : At - Span.Start;
+				AddCueFire(Result, Settings, LayerIndex, Point.Key, /*bBackward=*/!Piece.bForward && !bAtTurn, bInvert, PieceIndex * 100000.f + Along, FMath::Max(SecondsToEnd, 0.f));
 			}
 		}
 	}
@@ -1381,10 +1422,11 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 			State.bFinished = WidgetAnimValue::Advance(Settings.ValueOptions, Settings.GetValueMotion(), State.ValueState, ValueDeltaTime);
 
 			// A Pulse's value is its strength; it pulses on its own clock, one pulse per Duration, for as long as it has
-			// any strength - and only then counts as at rest.
-			if (Settings.AnimType == EWidgetAnimType::Pulse)
+			// any strength - and only then counts as at rest. So is a Shake's, whose noise never repeats: its clock only
+			// wraps after a long while, where the noise is as smooth as anywhere.
+			if (WidgetAnimTypeOscillates(Settings.AnimType))
 			{
-				const float Period = FMath::Max(Settings.Duration, KINDA_SMALL_NUMBER);
+				const float Period = Settings.AnimType == EWidgetAnimType::Shake ? 3600.f : FMath::Max(Settings.Duration, KINDA_SMALL_NUMBER);
 				State.ValueState.PulseTime = FMath::Fmod(State.ValueState.PulseTime + ValueDeltaTime, Period);
 				State.bFinished = State.bFinished && State.ValueState.Progress.X <= 0.f;
 			}
@@ -2478,7 +2520,27 @@ float UWidgetAnimLibrary::GetAnimationPassSeconds(const UWidgetAnimPresetAsset* 
 	{
 		End = FMath::Max(End, Starts[Index] + Animation->Layers[Index].GetRunLength());
 	}
+
+	// Time after its last track, when it has some - see AddMinimumLengthPlaceholder.
+	End = FMath::Max(End, Animation->MinimumLength);
 	return End / FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);
+}
+
+void UWidgetAnimLibrary::AddMinimumLengthPlaceholder(const UWidgetAnimPresetAsset* Animation, TArray<FWidgetAnimSettings>& OutSettings)
+{
+	if (!Animation || Animation->MinimumLength <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	// Muted, so it poses nothing, and on no placement chain, so a stagger fanning out never moves it: the animation's
+	// clock runs to its Minimum Length - however its tracks end - and on past it with them where they end later. Its
+	// span is the shortest a layer's can be, ending right on the length, so it never moves where a loop starts again.
+	FWidgetAnimSettings Settings;
+	Settings.Duration = KINDA_SMALL_NUMBER;
+	Settings.Delay = FMath::Max(Animation->MinimumLength - Settings.Duration, 0.f);
+	Settings.bMuted = true;
+	OutSettings.Add(MoveTemp(Settings));
 }
 
 bool UWidgetAnimLibrary::AnimationPlays(const UWidgetAnimPresetAsset* Animation, const UObject* Other)
@@ -2570,6 +2632,7 @@ bool UWidgetAnimLibrary::TypeMovesParts(EWidgetAnimType AnimType)
 	case EWidgetAnimType::Rotate:
 	case EWidgetAnimType::Pulse:
 	case EWidgetAnimType::Transform:
+	case EWidgetAnimType::Shake:
 		return true;
 	default:
 		return false;
@@ -2935,7 +2998,7 @@ void UWidgetAnimLibrary::MuteHiddenLayers(const TArray<FWidgetAnimLayer>& Layers
 	for (int32 LayerIndex = 0; LayerIndex < Layers.Num(); ++LayerIndex)
 	{
 		const int32 SettingIndex = FirstSetting + LayerIndex;
-		if (Settings.IsValidIndex(SettingIndex) && Layers[LayerIndex].bHiddenInEditor)
+		if (Settings.IsValidIndex(SettingIndex) && (Layers[LayerIndex].bHiddenInEditor || Layers[LayerIndex].bMutedByEditorScope))
 		{
 			Settings[SettingIndex].bMuted = true;
 		}
@@ -2949,7 +3012,7 @@ void UWidgetAnimLibrary::MuteHiddenLayers(const TArray<FWidgetAnimLayer>& Layers
 		{
 			break;
 		}
-		if (Layers[Inserted.InsertedFromLayer].bHiddenInEditor)
+		if (Layers[Inserted.InsertedFromLayer].bHiddenInEditor || Layers[Inserted.InsertedFromLayer].bMutedByEditorScope)
 		{
 			Inserted.bMuted = true;
 		}
@@ -3350,6 +3413,10 @@ FWidgetAnimSettings FWidgetAnimLayer::ToSettings() const
 	Out.EndAngle = EndAngle;
 
 	Out.PulseScaleAmount = PulseScaleAmount;
+	Out.Shake = Shake;
+
+	// A track inverted on its own: the one per-use flag a layer carries itself. Every use ORs its own Invert onto it.
+	Out.bInvertAnimation = bInvertTrack;
 
 	Out.ScalarParameterName = ScalarParameterName;
 	Out.StartScalarValue = StartScalarValue;
@@ -3409,6 +3476,7 @@ FWidgetAnimLayer FWidgetAnimLayer::FromSettings(const FWidgetAnimSettings& Setti
 	Out.EndAngle = Settings.EndAngle;
 
 	Out.PulseScaleAmount = Settings.PulseScaleAmount;
+	Out.Shake = Settings.Shake;
 
 	Out.ScalarParameterName = Settings.ScalarParameterName;
 	Out.StartScalarValue = Settings.StartScalarValue;
@@ -3563,8 +3631,8 @@ int32 UWidgetAnimLibrary::SetWidgetAnimTrackValue(FWidgetAnimPlayer& Player, con
 				Track.bFinished = false;
 			}
 
-			// A Pulse given strength pulses on: its track runs until the strength is back to nothing.
-			if (Layer.AnimType == EWidgetAnimType::Pulse && State.ValueState.Target.X > 0.f)
+			// A Pulse or Shake given strength goes on: its track runs until the strength is back to nothing.
+			if (WidgetAnimTypeOscillates(Layer.AnimType) && State.ValueState.Target.X > 0.f)
 			{
 				State.bFinished = false;
 				Track.bFinished = false;
@@ -3698,8 +3766,8 @@ namespace
 	/** Whether an exit starting now would have to wait for this value-driven layer. */
 	bool ValueLayerHoldsExit(const FWidgetAnimSettings& Layer, const FWidgetAnimValueState& State)
 	{
-		// A Pulse's value is how strong it pulses, not somewhere it is going: nothing for an exit to wait for.
-		if (Layer.AnimType == EWidgetAnimType::Pulse)
+		// A Pulse's value is how strong it pulses, not somewhere it is going: nothing for an exit to wait for. A Shake's too.
+		if (WidgetAnimTypeOscillates(Layer.AnimType))
 		{
 			return false;
 		}
@@ -3751,7 +3819,7 @@ bool UWidgetAnimLibrary::PrepareValueLayersForExit(FWidgetAnimPlayer& Player)
 			}
 
 			FWidgetAnimState& State = Track.States[Index];
-			if (Layer.AnimType != EWidgetAnimType::Pulse && Layer.ValueOptions.OnExit == EWidgetAnimValueExit::CompleteFirst
+			if (!WidgetAnimTypeOscillates(Layer.AnimType) && Layer.ValueOptions.OnExit == EWidgetAnimValueExit::CompleteFirst
 				&& WidgetAnimValue::SetTarget(Layer.ValueOptions, Layer.GetValueMotion(), State.ValueState, FVector4f(1.f, 1.f, 1.f, 1.f), /*bSnap=*/false)
 				&& State.ValueState.IsMoving())
 			{
@@ -3842,6 +3910,18 @@ void UWidgetAnimLibrary::ApplyValueLayerContribution(const FWidgetAnimSettings& 
 		const float Progress = FMath::Clamp(ValueState.Progress[Channel], 0.f, 1.f);
 		return Settings.bInvertAnimation ? 1.f - Progress : Progress;
 	};
+
+	// A Shake: its noise at its own clock, as strong as the value says - no falloff over a run, since it has none.
+	if (Settings.AnimType == EWidgetAnimType::Shake)
+	{
+		FVector2D Offset;
+		float Angle = 0.f;
+		Settings.Shake.Sample(ValueState.PulseTime, Directed(0), GetShakeItemSeed(Settings), Offset, Angle);
+		FWidgetAnimTargetedTransform& Into = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget, Settings.Part);
+		Into.Translation += Offset;
+		Into.Angle += Angle;
+		return;
+	}
 
 	// A Pulse: one pulse of its own clock, its size scaled by how strong the value says it is.
 	if (Settings.AnimType == EWidgetAnimType::Pulse)

@@ -62,6 +62,16 @@ protected:
 // Sound
 // -----------------------------------------------------------------------------------------------------
 
+/** How a Sound cue's volume moves while it fades in or out - the engine's audio fader curves, in their order. */
+UENUM(BlueprintType)
+enum class EWidgetAnimSoundFadeCurve : uint8
+{
+	Linear UMETA(ToolTip = "Evenly, from start to finish."),
+	Logarithmic UMETA(ToolTip = "As loudness is heard: evenly to the ear."),
+	SCurve UMETA(DisplayName = "S-Curve", ToolTip = "Gently at first and last, quickest in the middle."),
+	Sine UMETA(ToolTip = "Along a quarter sine: quickly at first, easing into its end.")
+};
+
 /**
  * Sound: plays a sound, in 2D, as a UI sound does - a whoosh as a panel slides in, a thud as a card lands. Staggered over
  * a title's letters, a blip per letter. Heard in the editor's previews too (Editor Preferences > Plugins > Widget
@@ -95,6 +105,21 @@ struct NAMETBD_API FWidgetAnimSoundCueParams : public FWidgetAnimCueParams
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (DisplayName = "Pitch Variation", ClampMin = "0.0", UIMax = "0.5"))
 	float PitchVariation = 0.f;
+
+	/** Seconds the sound takes to rise from silence as it starts. 0 starts it at full volume. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (DisplayName = "Fade In", ClampMin = "0.0", UIMax = "5.0", Units = "s"))
+	float FadeIn = 0.f;
+
+	/**
+	 * Seconds the sound takes to fall to silence, finishing as the track's run does - as the sound ends, with Length From
+	 * Sound. Drawn on the track as a ramp. 0 lets it play out.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (DisplayName = "Fade Out", ClampMin = "0.0", UIMax = "5.0", Units = "s"))
+	float FadeOut = 0.f;
+
+	/** How its volume moves while it fades in and out. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (DisplayName = "Fade Curve", EditCondition = "FadeIn > 0 || FadeOut > 0"))
+	EWidgetAnimSoundFadeCurve FadeCurve = EWidgetAnimSoundFadeCurve::Linear;
 };
 
 class NAMETBD_API FWidgetAnimSoundCueEvaluator : public TWidgetAnimCueEvaluator<FWidgetAnimSoundCueParams>

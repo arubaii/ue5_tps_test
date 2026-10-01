@@ -124,6 +124,18 @@ public:
 	/** Every widget a group can target, as paths, "None" first. */
 	TArray<FString> GetTargetOptions() const;
 
+	/**
+	 * The Widget Blueprint whose designer the preview is in - whose editor's selection picks a target by clicking a widget in
+	 * the designer. Null where there is none to pick from.
+	 */
+	virtual UWidgetBlueprint* GetWidgetBlueprint() const { return nullptr; }
+
+	/**
+	 * The target option - one of GetTargetOptions, "None" for the preview itself - that names Widget, a widget of the
+	 * designer's preview. Empty when none does.
+	 */
+	FString FindTargetOptionFor(const UWidget* Widget) const;
+
 	/** The widget a group's Preview Target resolves to on the preview, for labeling. Null for "the widget itself". */
 	UWidget* ResolvePreviewTarget(FName Path) const;
 
@@ -158,6 +170,13 @@ public:
 
 	/** Play forward, first frame to last - or freeze, if playing. */
 	virtual void TogglePlay() = 0;
+
+	/**
+	 * Play backward from where it is - the end, when it is at the very start - to the first frame: what Play does after Go
+	 * To End. False when the source can't, and the panel walks the playhead back itself instead, scrubbing - which poses
+	 * the same frames but fires no cues.
+	 */
+	virtual bool PlayBackward() { return false; }
 
 	virtual bool GetLoop() const = 0;
 	virtual void SetLoop(bool bValue) = 0;
@@ -204,6 +223,18 @@ public:
 	 * used. The panel shows time as played, so everything on the timeline is divided by it.
 	 */
 	float GetAnimationSpeedMultiplier() const;
+
+	/**
+	 * The edited animation's Minimum Length (UWidgetAnimPresetAsset::MinimumLength), in seconds as authored: how long
+	 * one pass runs at the least, whatever its tracks. 0 for none, and for tracks that aren't an animation (a component's).
+	 */
+	float GetMinimumLength() const;
+
+	/** Whether the edited tracks are an animation that keeps a Minimum Length: an asset's, or the builder's. */
+	bool CanSetMinimumLength() const;
+
+	/** Sets the Minimum Length, in seconds as authored. The caller has called Modify on GetEditedObject already. */
+	void SetMinimumLength(float Seconds);
 
 	/** Whether there is something to save as a new asset, or unsaved changes to update the asset with. */
 	bool CanSaveAsNewAsset() const;
@@ -279,6 +310,7 @@ public:
 
 	virtual bool IsBuilder() const override { return true; }
 	virtual UWidgetAnimBuilder* GetBuilder() const override;
+	virtual UWidgetBlueprint* GetWidgetBlueprint() const override { return Blueprint.Get(); }
 
 private:
 
@@ -327,6 +359,7 @@ public:
 	virtual float GetPreparedRun(int32 FlatLayerIndex) const override { return PreparedRuns.IsValidIndex(FlatLayerIndex) ? PreparedRuns[FlatLayerIndex] : -1.f; }
 	virtual bool IsPlaying() const override { return bPlaying; }
 	virtual void TogglePlay() override;
+	virtual bool PlayBackward() override;
 	virtual bool GetLoop() const override { return bLoop; }
 	virtual void SetLoop(bool bValue) override { bLoop = bValue; }
 	virtual bool GetPingPong() const override { return bPingPong; }
@@ -343,6 +376,7 @@ public:
 	virtual UWidgetAnimPresetAsset* GetAsset() const override { return Mode == EMode::EditExistingAsset ? Asset.Get() : nullptr; }
 	virtual void SetAsset(UWidgetAnimPresetAsset* InAsset) override;
 	virtual UWidgetAnimPresetAsset* SaveAsNewAsset() override;
+	virtual UWidgetBlueprint* GetWidgetBlueprint() const override { return Blueprint.Get(); }
 
 private:
 
@@ -447,6 +481,7 @@ public:
 	virtual float GetPreparedRun(int32 FlatLayerIndex) const override { return PreparedRuns.IsValidIndex(FlatLayerIndex) ? PreparedRuns[FlatLayerIndex] : -1.f; }
 	virtual bool IsPlaying() const override { return bPlaying; }
 	virtual void TogglePlay() override;
+	virtual bool PlayBackward() override;
 	virtual bool GetLoop() const override { return bLoop; }
 	virtual void SetLoop(bool bValue) override { bLoop = bValue; }
 	virtual bool GetPingPong() const override { return bPingPong; }

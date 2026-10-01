@@ -647,13 +647,14 @@ namespace
 			});
 
 			// At the list's timing - the entry's Playback Speed taken off, as it scales the list too - with the preview's
-			// Invert on top of the entry's own, and looping left to the preview's clock.
+			// Invert on top of the entry's own (inverting every track, never turning one round again), and looping left to
+			// the preview's clock.
 			const float EntrySpeed = FMath::Max(Entry->PlaybackSpeed, 0.01f);
 			for (int32 Index = First; Index < OutSettings.Num(); ++Index)
 			{
 				FWidgetAnimSettings& Settings = OutSettings[Index];
 				Settings.PlaybackSpeed /= EntrySpeed;
-				Settings.bInvertAnimation = Settings.bInvertAnimation != GetInvert();
+				Settings.bInvertAnimation = Settings.bInvertAnimation || GetInvert();
 				Settings.bLoop = false;
 				Settings.LoopCount = 0;
 			}

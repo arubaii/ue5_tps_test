@@ -1,0 +1,1200 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index cd25f2e..adb9375 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -39,6 +39,9 @@
+ #include "Fonts/FontMeasure.h"
+ #include "Framework/Application/SlateApplication.h"
+ #include "Framework/MultiBox/MultiBoxBuilder.h"
++#include "Framework/Application/IInputProcessor.h"
++#include "Containers/Ticker.h"
++#include "Widgets/SWindow.h"
+ #include "Framework/Notifications/NotificationManager.h"
+ #include "IDetailCustomization.h"
+ #include "IDetailPropertyRow.h"
+@@ -624,17 +627,18 @@ namespace WidgetAnimTimeline
+ 	}
+ 
+ 	/**
+-	 * The Save / Update Animation Asset button: the animation orange, flat, with black text - not the editor's dark button
+-	 * tinted orange, which reads brown.
++	 * The Save / Update Animation Asset button: a dimmed animation orange, flat, with black text, lighting up to the full
++	 * orange under the mouse - not the editor's dark button tinted orange, which reads brown, nor the full orange at rest,
++	 * which shouts.
+ 	 */
+ 	const FButtonStyle& OrangeButtonStyle()
+ 	{
+ 		static const FButtonStyle Style = []()
+ 		{
+ 			FButtonStyle Out = FAppStyle::Get().GetWidgetStyle<FButtonStyle>("Button");
+-			Out.SetNormal(FSlateRoundedBoxBrush(NameTBD::Colors::AnimationOrange_Normal, 4.f));
+-			Out.SetHovered(FSlateRoundedBoxBrush(NameTBD::Colors::AnimationOrange_Hovered, 4.f));
+-			Out.SetPressed(FSlateRoundedBoxBrush(NameTBD::Colors::AnimationOrange_Pressed, 4.f));
++			Out.SetNormal(FSlateRoundedBoxBrush(Palette::SaveButtonNormal, 4.f));
++			Out.SetHovered(FSlateRoundedBoxBrush(Palette::SaveButtonHovered, 4.f));
++			Out.SetPressed(FSlateRoundedBoxBrush(Palette::SaveButtonPressed, 4.f));
+ 			Out.SetDisabled(FSlateRoundedBoxBrush(Palette::SaveButtonDisabled, 4.f));
+ 			Out.SetNormalForeground(FSlateColor(FLinearColor::Black));
+ 			Out.SetHoveredForeground(FSlateColor(FLinearColor::Black));
+@@ -733,6 +737,9 @@ public:
+ 		SetToolTip(TSharedPtr<IToolTip>(TrackToolTip));
+ 	}
+ 
++	/** Whether the view shows less than the whole stretch the scroll bar covers - when there is anything to scroll to. */
++	bool IsHorizontalScrollNeeded() const { return bHorizontalScrollNeeded; }
++
+ 	/** Fit the whole animation into view again, and keep fitting it as it changes, until the next zoom or pan. */
+ 	void FitToAnimation()
+ 	{
+@@ -1129,12 +1136,24 @@ private:
+ 		return FBox2f(FVector2f(Left, Top), FVector2f(Right, Top + GetRowHeight() - 7.f));
+ 	}
+ 
+-	/** The arrow that opens an animation track, at the start of its section - SectionRect, from GetSectionRect. */
++	/** The arrow opening an animation track: a size up from a group's, so it reads as the track's own control. */
++	static constexpr float AnimationFoldArrowSize = 13.f;
++
++	/**
++	 * The arrow that opens an animation track, at the start of its section - SectionRect, from GetSectionRect. Centered on
++	 * the section's body, where its text is, not on the whole section, whose frame shows as a lip along its bottom.
++	 */
+ 	FBox2f GetAnimationFoldRect(const FBox2f& SectionRect) const
+ 	{
+-		const float CenterY = (SectionRect.Min.Y + SectionRect.Max.Y) * 0.5f;
++		namespace Palette = NameTBD::Colors::WidgetAnimEditor;
++		const float Height = SectionRect.Max.Y - SectionRect.Min.Y;
++		const float Lip = FMath::Clamp(Height * Palette::SectionLipRatio, Palette::SectionLipMin, Palette::SectionLipMax);
++		const float BodyTop = SectionRect.Min.Y + Palette::SectionFrameThickness;
++		const float BodyHeight = Height - Palette::SectionFrameThickness - Lip;
++		const float CenterY = BodyTop + BodyHeight * 0.5f;
++		const float Size = FMath::Min(AnimationFoldArrowSize, FMath::Max(BodyHeight, 6.f));
+ 		const float X = SectionRect.Min.X + 5.f;
+-		return FBox2f(FVector2f(X, CenterY - FoldArrowSize * 0.5f), FVector2f(X + FoldArrowSize, CenterY + FoldArrowSize * 0.5f));
++		return FBox2f(FVector2f(X, CenterY - Size * 0.5f), FVector2f(X + Size, CenterY + Size * 0.5f));
+ 	}
+ 
+ 	/** Where an open animation track's nested group header draws its fold arrow: just inside where the track starts. */
+@@ -1306,12 +1325,24 @@ private:
+ 		return (Drag == EDrag::KeyPending || Drag == EDrag::Key) && PressLayer == LayerIndex && PressKey == Key;
+ 	}
+ 
+-	/** The selection box, corners in order however it was dragged. */
++	/**
++	 * The selection box, corners in order however it was dragged. Its first corner is held where it was pressed in the
++	 * timeline - its time, and its line scrolled with the lines - so the box grows as the view scrolls after the mouse.
++	 */
+ 	FBox2f GetMarqueeRect() const
+ 	{
++		FVector2f Start = MarqueeStart;
++		if (LastSize.X > 1.f)
++		{
++			Start.X = TimeToX(MarqueeStartTime, LastSize.X);
++		}
++		if (!bMarqueeStartPinned)
++		{
++			Start.Y = MarqueeStart.Y - (ScrollY - MarqueeStartScrollY);
++		}
+ 		return FBox2f(
+-			FVector2f(FMath::Min(MarqueeStart.X, MarqueeEnd.X), FMath::Min(MarqueeStart.Y, MarqueeEnd.Y)),
+-			FVector2f(FMath::Max(MarqueeStart.X, MarqueeEnd.X), FMath::Max(MarqueeStart.Y, MarqueeEnd.Y)));
++			FVector2f(FMath::Min(Start.X, MarqueeEnd.X), FMath::Min(Start.Y, MarqueeEnd.Y)),
++			FVector2f(FMath::Max(Start.X, MarqueeEnd.X), FMath::Max(Start.Y, MarqueeEnd.Y)));
+ 	}
+ 
+ 	/**
+@@ -1468,6 +1499,9 @@ private:
+ 	/** Where the mouse last was during a scrub, key drag or track drag - what the view scrolls after at an edge. */
+ 	TOptional<FVector2f> LastDragLocal;
+ 
++	/** Whether the view is narrower than what the horizontal scroll bar covers, worked out each tick - see IsHorizontalScrollNeeded. */
++	bool bHorizontalScrollNeeded = false;
++
+ 	/** A scrub, key drag or track drag carried to the mouse at Local - on a move, or after the view scrolled under it. */
+ 	void ApplyDragAt(const FVector2f& Local, float Width);
+ 
+@@ -1508,6 +1542,11 @@ private:
+ 	/** The selection box: where it was started and where the mouse is now, in local pixels, and the modifiers it started with. */
+ 	FVector2f MarqueeStart = FVector2f::ZeroVector;
+ 	FVector2f MarqueeEnd = FVector2f::ZeroVector;
++
++	/** Where the selection box was pressed in the timeline: its time, the scroll then, and whether on a pinned line. */
++	float MarqueeStartTime = 0.f;
++	float MarqueeStartScrollY = 0.f;
++	bool bMarqueeStartPinned = false;
+ 	bool bMarqueeAdd = false;
+ 	bool bMarqueeToggle = false;
+ 
+@@ -1535,7 +1574,35 @@ void SWidgetAnimTimelineTracks::Tick(const FGeometry& AllottedGeometry, const do
+ 
+ 	// A scrub, key or track dragged to an edge - or past it - scrolls the view after it, faster the further out the
+ 	// mouse is, and the drag follows the time now under the mouse. Held still at the edge, it keeps going.
+-	const bool bEdgeScrolling = (Drag == EDrag::Scrub || Drag == EDrag::Key || Drag == EDrag::Layer || Drag == EDrag::Range) && HasMouseCapture() && LastDragLocal.IsSet();
++	// A selection box does the same, and up and down too: held against the top or bottom, the lines scroll under it.
++	const bool bEdgeScrolling = (Drag == EDrag::Scrub || Drag == EDrag::Key || Drag == EDrag::Layer || Drag == EDrag::Range || Drag == EDrag::Marquee) && HasMouseCapture() && LastDragLocal.IsSet();
++	if (bEdgeScrolling && Drag == EDrag::Marquee && LastSize.Y > 1.f)
++	{
++		constexpr float EdgeZoneY = 20.f;
++		const float MouseY = LastDragLocal->Y;
++		const float TopEdge = GetPinnedBottom();
++		float PushY = 0.f;
++		if (MouseY < TopEdge + EdgeZoneY)
++		{
++			PushY = -FMath::Min((TopEdge + EdgeZoneY - MouseY) / EdgeZoneY, 4.f);
++		}
++		else if (MouseY > LastSize.Y - EdgeZoneY)
++		{
++			PushY = FMath::Min((MouseY - (LastSize.Y - EdgeZoneY)) / EdgeZoneY, 4.f);
++		}
++
++		if (PushY != 0.f)
++		{
++			// Eight lines a second at the edge itself, more past it.
++			const float OldScroll = ScrollY;
++			ScrollY += GetRowHeight() * 8.f * PushY * InDeltaTime;
++			ClampScroll(LastSize.Y);
++			if (!FMath::IsNearlyEqual(OldScroll, ScrollY))
++			{
++				ApplyDragAt(LastDragLocal.GetValue(), LastSize.X);
++			}
++		}
++	}
+ 	if (bEdgeScrolling && LastSize.X > 1.f)
+ 	{
+ 		constexpr float EdgeZone = 24.f;
+@@ -1586,7 +1653,9 @@ void SWidgetAnimTimelineTracks::Tick(const FGeometry& AllottedGeometry, const do
+ 		float RangeMax = 1.f;
+ 		GetScrollRange(PassSeconds, RangeMin, RangeMax);
+ 		const float Range = FMath::Max(RangeMax - RangeMin, KINDA_SMALL_NUMBER);
+-		HorizontalScrollBar->SetState((ViewMin - RangeMin) / Range, FMath::Clamp((ViewMax - ViewMin) / Range, 0.f, 1.f));
++		const float ThumbFraction = FMath::Clamp((ViewMax - ViewMin) / Range, 0.f, 1.f);
++		HorizontalScrollBar->SetState((ViewMin - RangeMin) / Range, ThumbFraction);
++		bHorizontalScrollNeeded = ThumbFraction < 0.999f;
+ 	}
+ }
+ 
+@@ -1855,8 +1924,6 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		FString Secondary;
+ 		const FSlateBrush* Glyph = nullptr;
+ 
+-		/** A collapsed track's tracks, drawn small inside it where each runs, in their own colors. */
+-		TArray<TPair<FVector2f, FLinearColor>> MiniTracks;
+ 	};
+ 
+ 	auto DrawSection = [&](const FSectionPaint& Paint)
+@@ -2095,26 +2162,6 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 
+ 				OutDrawElements.PopClip();
+ 			}
+-
+-			// A collapsed track's own tracks, small, in their colors, where each runs - a map of what it holds.
+-			if (Paint.MiniTracks.Num() > 0)
+-			{
+-				const float MiniHeight = FMath::Clamp(InnerHeight * 0.14f, 2.f, 3.f);
+-				const float MiniBottom = InnerTop + InnerHeight - 2.f;
+-				const int32 NumRows = FMath::Clamp(Paint.MiniTracks.Num(), 1, 3);
+-				for (int32 Index = 0; Index < Paint.MiniTracks.Num(); ++Index)
+-				{
+-					const FVector2f MiniSpan = Paint.MiniTracks[Index].Key;
+-					const float MiniX0 = FMath::Max(TimeToX(MiniSpan.X, Size.X), InnerX + 1.f);
+-					const float MiniX1 = FMath::Min(TimeToX(MiniSpan.X + MiniSpan.Y, Size.X), InnerX + InnerWidth - 1.f);
+-					const float MiniY = MiniBottom - (Index % NumRows + 1) * (MiniHeight + 1.f);
+-					if (MiniX1 > MiniX0 && MiniY > InnerTop)
+-					{
+-						const FLinearColor MiniColor = bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Paint.MiniTracks[Index].Value) : Paint.MiniTracks[Index].Value;
+-						Box(MiniX0, MiniY, FMath::Max(MiniX1 - MiniX0, 2.f), MiniHeight, WithAlpha(MiniColor, Palette::CollapsedMiniTrackOpacity), SectionOverlayLayer, RoundedFill(1.f));
+-					}
+-				}
+-			}
+ 		}
+ 
+ 		// The resize handle: a lit strip along the edge under the mouse, or the one being dragged.
+@@ -2143,7 +2190,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			{
+ 				if (FoldRect.Max.X <= BarX0 + BarWidth)
+ 				{
+-					Box(FoldRect.Min.X, FoldRect.Min.Y, FoldArrowSize, FoldArrowSize, WithAlpha(FLinearColor::White, bArrowHovered ? 1.f : 0.8f), SectionOverlayLayer, Arrow);
++					Box(FoldRect.Min.X, FoldRect.Min.Y, FoldRect.Max.X - FoldRect.Min.X, FoldRect.Max.Y - FoldRect.Min.Y, WithAlpha(FLinearColor::White, bArrowHovered ? 1.f : 0.8f), SectionOverlayLayer, Arrow);
+ 				}
+ 			}
+ 			GlyphX = FoldRect.Max.X + 4.f;
+@@ -2197,10 +2244,6 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			EasingLabel = CueEvaluator
+ 				? CueEvaluator->GetTrackSummary(Layer->TypeParams).ToString()
+ 				: SWidgetAnimTimeline::GetEasingName(*Layer).ToString();
+-			if (Paint.bInverted)
+-			{
+-				EasingLabel = FString::Printf(TEXT("%s  \u00B7  %s"), *LOCTEXT("InvertedSectionLabel", "Backward").ToString(), *EasingLabel);
+-			}
+ 		}
+ 
+ 		const FVector2f EasingSize = MeasureText(EasingLabel, LayerFont);
+@@ -2264,10 +2307,13 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			}
+ 		}
+ 
+-		// Only beside a title at its full size: once the title has to shrink, the easing gives way to it.
+-		if (!bLabelSegments && bTitleFullSize && !EasingLabel.IsEmpty() && TextLeft - BarX0 + LabelSize.X + EasingSize.X + Padding * 2.f + 12.f <= BarWidth)
++		// Only beside a title at its full size: once the title has to shrink, the easing gives way to it. An animation
++		// track's - "Widget Animation, 3 tracks" - sits a little further in from its end, where its font's last letters
++		// otherwise touch the section's rounded edge.
++		const float RightPadding = Layer && Layer->IsAnimationTrack() ? Padding + Palette::AnimationTrackTextRightPadding : Padding;
++		if (!bLabelSegments && bTitleFullSize && !EasingLabel.IsEmpty() && TextLeft - BarX0 + LabelSize.X + EasingSize.X + Padding + RightPadding + 12.f <= BarWidth)
+ 		{
+-			TrackText(EasingLabel, BarX0 + BarWidth - Padding - EasingSize.X, TextY, LayerFont, TitleColor * FLinearColor(1.f, 1.f, 1.f, Palette::SectionSecondaryTextOpacity), bSlantLayerText);
++			TrackText(EasingLabel, BarX0 + BarWidth - RightPadding - EasingSize.X, TextY, LayerFont, TitleColor * FLinearColor(1.f, 1.f, 1.f, Palette::SectionSecondaryTextOpacity), bSlantLayerText);
+ 		}
+ 
+ 		// A Sound cue's fades: the volume's ramp up from silence at its start and down to silence at its end, drawn as a
+@@ -2560,7 +2606,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			const bool bPicking = Owner->IsPickingTarget(Line.Group);
+ 			const FString Name = Owner->GetGroupName(Line.Group).ToString();
+ 			const FString Target = bPicking
+-				? FString::Printf(TEXT("  %s"), *WidgetAnimTips::PickingTargetLabel().ToString())
++				? FString::Printf(TEXT("  %s"), *Owner->GetPickingTargetText().ToString())
+ 				: FString::Printf(TEXT("  %s"), *Owner->GetGroupTargetLabel(Line.Group).ToString());
+ 			const FVector2f NameSize = MeasureText(Name, GroupFont);
+ 			const FVector2f TargetSize = MeasureText(Target, GroupTargetFont);
+@@ -2602,7 +2648,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 				Paint.bPinned = Owner->IsLayerPinned(LayerIndex);
+ 				Paint.bWashedOut = bReadOnly || bTrackLocked || bTrackHidden;
+ 
+-				// A collapsed track: its name and how many tracks it holds, their stretch, and a small map of them inside.
++				// A collapsed track: its name and how many tracks it holds, across their stretch - plain, so it doesn't clutter.
+ 				if (IsCollapsedBar(LayerIndex))
+ 				{
+ 					const FName CollapsedName = Owner->GetLayerCollapsedName(LayerIndex);
+@@ -2617,10 +2663,6 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 						bAllHidden = bAllHidden && Owner->IsLayerHidden(Member);
+ 						bAllLocked = bAllLocked && Owner->IsLayerLocked(Member);
+ 						bAnySelected = bAnySelected || Owner->IsLayerSelected(Member);
+-						if (Spans.IsValidIndex(Member) && Layers->IsValidIndex(Member))
+-						{
+-							Paint.MiniTracks.Emplace(Spans[Member], SWidgetAnimTimeline::GetLayerTypeColor((*Layers)[Member]));
+-						}
+ 					}
+ 
+ 					Paint.Color = Palette::LayerCollapsed;
+@@ -2773,6 +2815,44 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		Box(Marquee.Max.X - 1.f, Marquee.Min.Y, 1.f, MarqueeSize.Y, Palette::MarqueeOutline, RangeLayer + 1);
+ 	}
+ 
++	// A collapsed track open on its own: the edges darkened toward the frame, and a thin line of its color around it - a
++	// nested editor, as a collapsed graph reads as one. Over the tracks, under the playhead.
++	if (Owner->IsInCollapsedScope())
++	{
++		const float Reach = FMath::Min(Palette::ScopeVignetteWidth, FMath::Min(Size.X, Size.Y - RulerHeight) * 0.5f);
++		if (Reach > 1.f)
++		{
++			const FLinearColor Dark = Palette::ScopeVignette;
++			const FLinearColor Clear = Dark.CopyWithNewOpacity(0.f);
++			const float FieldHeight = Size.Y - RulerHeight;
++
++			// One gradient per edge, darkest at the edge. Orient_Vertical runs the stops along X, Orient_Horizontal along Y.
++			auto Edge = [&](float X, float Y, float W, float H, EOrientation Orientation, bool bDarkFirst)
++			{
++				const float Length = Orientation == Orient_Vertical ? W : H;
++				TArray<FSlateGradientStop> Stops;
++				Stops.Add(FSlateGradientStop(FVector2D(0.0, 0.0), bDarkFirst ? Dark : Clear));
++				Stops.Add(FSlateGradientStop(Orientation == Orient_Vertical ? FVector2D(Length, 0.0) : FVector2D(0.0, Length), bDarkFirst ? Clear : Dark));
++				FSlateDrawElement::MakeGradient(
++					OutDrawElements,
++					LabelLayer + 2,
++					AllottedGeometry.ToPaintGeometry(FVector2f(W, H), FSlateLayoutTransform(FVector2f(X, Y))),
++					MoveTemp(Stops),
++					Orientation,
++					ESlateDrawEffect::None);
++			};
++			Edge(0.f, RulerHeight, Reach, FieldHeight, Orient_Vertical, /*bDarkFirst=*/true);
++			Edge(Size.X - Reach, RulerHeight, Reach, FieldHeight, Orient_Vertical, /*bDarkFirst=*/false);
++			Edge(0.f, RulerHeight, Size.X, Reach, Orient_Horizontal, /*bDarkFirst=*/true);
++			Edge(0.f, Size.Y - Reach, Size.X, Reach, Orient_Horizontal, /*bDarkFirst=*/false);
++		}
++
++		Box(0.f, RulerHeight, Size.X, 1.f, Palette::ScopeFrame, LabelLayer + 3);
++		Box(0.f, Size.Y - 1.f, Size.X, 1.f, Palette::ScopeFrame, LabelLayer + 3);
++		Box(0.f, RulerHeight, 1.f, Size.Y - RulerHeight, Palette::ScopeFrame, LabelLayer + 3);
++		Box(Size.X - 1.f, RulerHeight, 1.f, Size.Y - RulerHeight, Palette::ScopeFrame, LabelLayer + 3);
++	}
++
+ 	OutDrawElements.PopClip();
+ 
+ 	// ---- Ruler, pinned over the top -------------------------------------------------------------------------
+@@ -2818,17 +2898,6 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		Box(EndX - EndHandleWidth + 1.f, HandleTop, EndHandleWidth, bCanDragRange ? HandleHeight : 2.f, bEndLit ? Palette::RangeHandleLit : Palette::RangeEnd, RangeLayer, RoundedFill(2.f));
+ 	}
+ 
+-	// Playing backward - the preview's Invert on - is said in the ruler's corner too, as well as on every track.
+-	if (Owner->GetSource() && Owner->GetSource()->GetInvert())
+-	{
+-		const FSlateFontInfo BadgeFont = FCoreStyle::GetDefaultFontStyle("Bold", 7);
+-		const FString BadgeText = LOCTEXT("InvertedRulerBadge", "PLAYING BACKWARD").ToString();
+-		const FVector2f BadgeSize = MeasureText(BadgeText, BadgeFont);
+-		const float BadgeX = Size.X - BadgeSize.X - 14.f;
+-		Box(BadgeX - 5.f, 3.f, BadgeSize.X + 10.f, BadgeSize.Y + 2.f, Palette::InvertedBadge, RulerLayer + 2, RoundedFill(3.f));
+-		Text(BadgeText, BadgeX, 4.f, BadgeFont, Palette::InvertedBadgeText, RulerLayer + 3);
+-	}
+-
+ 	if (const TOptional<float> Snap = Owner->GetSnapIndicator(); Snap.IsSet())
+ 	{
+ 		Box(TimeToX(Snap.GetValue(), Size.X) - 3.f, RulerHeight - 6.f, 7.f, 6.f, Palette::SnapLine, RangeLayer, RoundedFill(2.f));
+@@ -2852,7 +2921,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 
+ 	// When the lines run past the bottom: a slim bar down the right edge showing where they are scrolled to.
+ 	const float MaxScroll = GetMaxScrollY(Size.Y);
+-	if (MaxScroll > 0.f && !(Owner && Owner->IsInline()))
++	if (MaxScroll > 0.f && !(Owner && Owner->IsInline()) && UWidgetAnimEditorSettings::Get().bShowVerticalScrollBarWhenNeeded)
+ 	{
+ 		const float TrackHeight = Size.Y - PinnedBottom - 4.f;
+ 		const float ContentHeight = TrackHeight + MaxScroll;
+@@ -2940,6 +3009,9 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonDown(const FGeometry& MyGeometry,
+ 	{
+ 		MarqueeStart = Local;
+ 		MarqueeEnd = Local;
++		MarqueeStartTime = XToTime(Local.X, Width);
++		MarqueeStartScrollY = ScrollY;
++		bMarqueeStartPinned = Local.Y < GetPinnedBottom();
+ 		bMarqueeAdd = bRange;
+ 		bMarqueeToggle = bToggle;
+ 		Drag = EDrag::MarqueePending;
+@@ -3110,6 +3182,10 @@ void SWidgetAnimTimelineTracks::ApplyDragAt(const FVector2f& Local, float Width)
+ 		Owner->UpdateRangeDrag(XToTime(Local.X, Width), GetSnapThresholdSeconds(Width));
+ 		break;
+ 
++	case EDrag::Marquee:
++		MarqueeEnd = Local;
++		break;
++
+ 	case EDrag::Layer:
+ 	{
+ 		// Up and down a whole line at a time, once the mouse is more than half a line away.
+@@ -3225,6 +3301,7 @@ FReply SWidgetAnimTimelineTracks::OnMouseMove(const FGeometry& MyGeometry, const
+ 		break;
+ 
+ 	case EDrag::Marquee:
++		LastDragLocal = Local;
+ 		MarqueeEnd = Local;
+ 		break;
+ 
+@@ -3279,6 +3356,12 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonUp(const FGeometry& MyGeometry, c
+ 		Owner->EndLayerDrag();
+ 	}
+ 
++	// The lines' new height, remembered once they are let go rather than on every step of the drag.
++	if (Owner && Ended == EDrag::ResizeRows)
++	{
++		Owner->SaveRowHeight();
++	}
++
+ 	// The animation's start or end pressed and let go in place: a click on the ruler, which scrubs there.
+ 	if (Owner && Ended == EDrag::RangePending)
+ 	{
+@@ -5197,9 +5280,11 @@ namespace WidgetAnimToolTip
+ 
+ namespace
+ {
+-	/** Where the row height is remembered: the editor's per-project user settings. */
++	/**
++	 * Where the panel's layout is remembered - its splitters, the Value Watcher - in the editor's per-project user settings.
++	 * (The row height, once kept here too, is Default Track Height in UWidgetAnimEditorSettings now.)
++	 */
+ 	const TCHAR* RowHeightConfigSection = TEXT("NameTBD.WidgetAnimations");
+-	const TCHAR* RowHeightConfigKey = TEXT("RowHeight");
+ 	const TCHAR* WatcherExpandedConfigKey = TEXT("ValueWatcherExpanded");
+ 
+ 	// How the panel's splitters divide it, per layout - see SWidgetAnimTimeline::GetSplitSize. The full panel's keys
+@@ -5245,6 +5330,9 @@ SWidgetAnimTimeline::~SWidgetAnimTimeline()
+ 		SaveCompactState();
+ 	}
+ 
++	// A pick waiting in the designer stops watching the mouse.
++	CancelTargetPick();
++
+ 	// A collapsed track open on its own leaves every track playing again once the panel goes.
+ 	if (IsInCollapsedScope() || bScopeMutesApplied)
+ 	{
+@@ -5353,12 +5441,6 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
+ 	CompactTitleToolTip = InArgs._TitleToolTip;
+ 	OnExpand = InArgs._OnExpand;
+ 
+-	float SavedRowHeight = DefaultRowHeight;
+-	if (GConfig->GetFloat(RowHeightConfigSection, RowHeightConfigKey, SavedRowHeight, GEditorPerProjectIni))
+-	{
+-		RowHeight = FMath::Clamp(SavedRowHeight, MinRowHeight, MaxRowHeight);
+-	}
+-
+ 	// The Selection panel: the edited object, laid out by FWidgetAnimSelectionDetails. No notify hook, so
+ 	// UMG's designer never hears of an edit made here - which is what keeps it from rebuilding its preview,
+ 	// and every Details panel with it, on every commit.
+@@ -5427,8 +5509,6 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
+ 			return IsBodyCollapsed() ? EVisibility::Collapsed : EVisibility::Visible;
+ 		});
+ 
+-		TracksHorizontalScrollBar->SetVisibility(IsInline() ? EVisibility::Collapsed : EVisibility::Visible);
+-
+ 		ChildSlot
+ 		[
+ 			SNew(SVerticalBox)
+@@ -5473,7 +5553,7 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
+ 								+ SVerticalBox::Slot()
+ 								.AutoHeight()
+ 								[
+-									TracksHorizontalScrollBar.ToSharedRef()
++									MakeHorizontalScrollBarSlot()
+ 								]
+ 							]
+ 
+@@ -5636,7 +5716,7 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
+ 							+ SVerticalBox::Slot()
+ 							.AutoHeight()
+ 							[
+-								TracksHorizontalScrollBar.ToSharedRef()
++								MakeHorizontalScrollBarSlot()
+ 							]
+ 						]
+ 					]
+@@ -6600,16 +6680,34 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerListHeader()
+ 		]);
+ }
+ 
++TSharedRef<SWidget> SWidgetAnimTimeline::MakeHorizontalScrollBarSlot()
++{
++	// Shown only while the view shows less than the whole animation, and only with Show Horizontal Scroll Bar When
++	// Necessary on in the editor preferences. Never inside a Details panel, where the panel is too short to spare it.
++	return SNew(SBox)
++		.Visibility_Lambda([this]()
++		{
++			const bool bShown = !IsInline()
++				&& UWidgetAnimEditorSettings::Get().bShowHorizontalScrollBarWhenNeeded
++				&& Tracks.IsValid() && Tracks->IsHorizontalScrollNeeded();
++			return bShown ? EVisibility::Visible : EVisibility::Collapsed;
++		})
++		[
++			TracksHorizontalScrollBar.ToSharedRef()
++		];
++}
++
+ TSharedRef<SWidget> SWidgetAnimTimeline::MakeAnimationPropertiesButton()
+ {
+ 	using namespace WidgetAnimTimeline;
+ 
+ 	// Italic, and a faint orange until hovered - a quiet way into the animation's own settings (its Speed
+-	// Multiplier, its description), which clicking off every track also selects.
++	// Multiplier, its description), which clicking off every track also selects. A real button, edges and all, so it
++	// reads as one to press rather than as a label.
+ 	const TSharedRef<TWeakPtr<SWidget>> ButtonWidget = MakeShared<TWeakPtr<SWidget>>();
+ 	const TSharedRef<SButton> Button = SNew(SButton)
+-		.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+-		.ContentPadding(FMargin(8.f, 5.f))
++		.ButtonStyle(FAppStyle::Get(), "Button")
++		.ContentPadding(FMargin(8.f, 2.f))
+ 		.HAlign(HAlign_Center)
+ 		.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::AnimationPropertiesTooltip()))
+ 		.OnClicked_Lambda([this]()
+@@ -6650,7 +6748,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeAnimationPropertiesButton()
+ 		[
+ 			SNew(SBorder)
+ 			.BorderImage(FAppStyle::GetBrush("Brushes.Header"))
+-			.Padding(FMargin(0.f))
++			.Padding(FMargin(6.f, 4.f))
+ 			[
+ 				Button
+ 			]
+@@ -7004,18 +7102,19 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
+ 		];
+ 
+ 	// Under the Animation Tracks list: the transport and the time on one row, the pill under them - so the Track Editor
+-	// runs all the way down beside them.
++	// runs all the way down beside them. The two rows share one width, centered: the buttons line up with the pill's
++	// left end and the time with its right, rather than the time pushing the buttons off center.
+ 	if (bStacked)
+ 	{
+ 		return SNew(SBorder)
+ 			.BorderImage(FAppStyle::GetBrush("Brushes.Panel"))
+ 			.Padding(FMargin(6.f, 3.f, 6.f, 5.f))
++			.HAlign(HAlign_Center)
+ 			[
+ 				SNew(SVerticalBox)
+ 
+ 				+ SVerticalBox::Slot()
+ 				.AutoHeight()
+-				.HAlign(HAlign_Center)
+ 				[
+ 					SNew(SHorizontalBox)
+ 
+@@ -7026,10 +7125,16 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
+ 						Buttons
+ 					]
+ 
++					+ SHorizontalBox::Slot()
++					.FillWidth(1.f)
++					[
++						SNew(SSpacer)
++						.Size(FVector2D(6.f, 0.f))
++					]
++
+ 					+ SHorizontalBox::Slot()
+ 					.AutoWidth()
+ 					.VAlign(VAlign_Center)
+-					.Padding(FMargin(6.f, 0.f, 0.f, 0.f))
+ 					[
+ 						Time
+ 					]
+@@ -7587,18 +7692,21 @@ FText SWidgetAnimTimeline::GetGroupTargetLabel(int32 GroupIndex) const
+ 		: FText::Format(LOCTEXT("TargetMissing", "{0} (not in this widget)"), FText::FromName(Target));
+ }
+ 
++float SWidgetAnimTimeline::GetRowHeight() const
++{
++	return FMath::Clamp(FMath::RoundToFloat(UWidgetAnimEditorSettings::Get().DefaultTrackHeight), MinRowHeight, MaxRowHeight);
++}
++
+ void SWidgetAnimTimeline::SetRowHeight(float NewHeight)
+ {
+ 	NewHeight = FMath::Clamp(FMath::RoundToFloat(NewHeight), MinRowHeight, MaxRowHeight);
+-	if (FMath::IsNearlyEqual(NewHeight, RowHeight))
++	if (FMath::IsNearlyEqual(NewHeight, GetRowHeight()))
+ 	{
+ 		return;
+ 	}
+ 
+-	RowHeight = NewHeight;
+-
+-	// Remembered for next time, per user and project, like any other editor layout preference.
+-	GConfig->SetFloat(RowHeightConfigSection, RowHeightConfigKey, RowHeight, GEditorPerProjectIni);
++	// The preference itself, so every open panel follows; written to disk once the drag ends - see SaveRowHeight.
++	UWidgetAnimEditorSettings::GetMutable().DefaultTrackHeight = NewHeight;
+ 
+ 	// The Track Editor reads it live; it just needs laying out again.
+ 	if (Tracks.IsValid())
+@@ -7607,6 +7715,11 @@ void SWidgetAnimTimeline::SetRowHeight(float NewHeight)
+ 	}
+ }
+ 
++void SWidgetAnimTimeline::SaveRowHeight()
++{
++	UWidgetAnimEditorSettings::GetMutable().SaveConfig();
++}
++
+ void SWidgetAnimTimeline::ToggleTrackGroupCollapsed(int32 GroupIndex)
+ {
+ 	if (TrackCollapsedGroups.Contains(GroupIndex))
+@@ -8955,7 +9068,7 @@ void SWidgetAnimTimeline::RebuildLayerList()
+ 							.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::GroupTargetTooltip()))
+ 							[
+ 								SNew(STextBlock)
+-								.Text_Lambda([this, GroupIndex]() { return IsPickingTarget(GroupIndex) ? WidgetAnimTips::PickingTargetLabel() : GetGroupTargetLabel(GroupIndex); })
++								.Text_Lambda([this, GroupIndex]() { return IsPickingTarget(GroupIndex) ? GetPickingTargetText() : GetGroupTargetLabel(GroupIndex); })
+ 								.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+ 								.ColorAndOpacity_Lambda([this, GroupIndex]() { return IsPickingTarget(GroupIndex) ? FSlateColor(Palette::PickingTargetText) : FSlateColor::UseSubduedForeground(); })
+ 								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+@@ -10775,6 +10888,9 @@ void SWidgetAnimTimeline::AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, c
+ 	NewLayer.AnimType = AnimType;
+ 	NewLayer.LayerGroup = GroupIndex;
+ 
++	// As long as the editor preferences' Default Track Length says - in the animation's own seconds, as Duration is.
++	NewLayer.Duration = FMath::Max(UWidgetAnimEditorSettings::Get().DefaultTrackLength, MinLayerSeconds);
++
+ 	// Added inside a collapsed track open on its own: one of its tracks.
+ 	NewLayer.CollapsedTrack = ActiveCollapsed;
+ 
+@@ -12375,16 +12491,11 @@ bool SWidgetAnimTimeline::BeginLayerDrag(int32 PressedLayer, ELayerDrag Mode)
+ 		return false;
+ 	}
+ 
+-	// A track that ends where the animation ends can be pulled past it, making the animation longer. Any other
+-	// resize - and every move - stays inside the animation as it is.
+-	if (Mode == ELayerDrag::ResizeEnd)
+-	{
+-		for (const int32 LayerIndex : State.EndEdges)
+-		{
+-			const float End = State.OriginalStarts[LayerIndex] + State.OriginalLengths[LayerIndex];
+-			State.bEndIsFree |= FMath::IsNearlyEqual(End, State.OriginalEnd, WidgetAnimTimeline::EdgeAlignTolerance);
+-		}
+-	}
++	// A track's end can be pulled out past the animation's end, making the animation longer - the animation is as long
++	// as its tracks. (Only a track that already ended exactly there could, once: one whose stagger, or the animation it
++	// plays within, reached further never counted as ending there, and couldn't be lengthened at all.) A move stays
++	// inside the animation as it is.
++	State.bEndIsFree = Mode == ELayerDrag::ResizeEnd;
+ 
+ 	// Linked Edges: tracks below each resized one whose start or end lines up with the edge being dragged
+ 	// come along - that edge of theirs moves, the other stays.
+@@ -12785,9 +12896,10 @@ void SWidgetAnimTimeline::UpdateRangeDrag(float Seconds, float SnapThresholdSeco
+ 
+ 	if (bEnd)
+ 	{
+-		// The end comes in, never goes out: the animation is as long as its tracks. Every track it cuts into is shortened to
+-		// end there - down to the shortest a track can be, and never one whose end can't move (a Spring, an animation
+-		// track, a text typed at its own pace, a locked track): the end stops there instead.
++		// Pulled in, every track the end cuts into is shortened to end there - down to the shortest a track can be, and
++		// never one whose end can't move (a Spring, an animation track, a text typed at its own pace, a locked track): the
++		// end stops there instead. Pulled out, the tracks ending at the animation's end are lengthened with it - those that
++		// can be; with none, the end stays where it is, as the animation is only as long as its tracks.
+ 		float Lowest = 0.f;
+ 		for (const FVector2f& Span : ContextSpans)
+ 		{
+@@ -12801,7 +12913,18 @@ void SWidgetAnimTimeline::UpdateRangeDrag(float Seconds, float SnapThresholdSeco
+ 			Lowest = FMath::Max(Lowest, CanResizeLayer(LayerIndex, /*bStartEdge=*/false) ? Start + MinLayerSeconds + Fan : End);
+ 		}
+ 
+-		const float Highest = State.OriginalEnd;
++		// The tracks that end where the animation does, and can be lengthened from their end.
++		TArray<int32> AtEnd;
++		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
++		{
++			const float End = State.OriginalStarts[LayerIndex] + State.OriginalLengths[LayerIndex] + GetLayerFanSeconds(LayerIndex);
++			if (FMath::IsNearlyEqual(End, State.OriginalEnd, WidgetAnimTimeline::EdgeAlignTolerance) && CanResizeLayer(LayerIndex, /*bStartEdge=*/false))
++			{
++				AtEnd.Add(LayerIndex);
++			}
++		}
++
++		const float Highest = AtEnd.Num() > 0 ? State.OriginalEnd + MaxSeconds : State.OriginalEnd;
+ 		const float NewEnd = Lowest <= Highest ? FMath::Clamp(Wanted, Lowest, Highest) : Highest;
+ 		if (SnapIndicator.IsSet() && !FMath::IsNearlyEqual(NewEnd, Wanted, Tolerance))
+ 		{
+@@ -12812,7 +12935,9 @@ void SWidgetAnimTimeline::UpdateRangeDrag(float Seconds, float SnapThresholdSeco
+ 		{
+ 			const float Fan = GetLayerFanSeconds(LayerIndex);
+ 			const float Start = State.OriginalStarts[LayerIndex];
+-			if (Start + State.OriginalLengths[LayerIndex] + Fan > NewEnd + Tolerance)
++			const bool bCut = Start + State.OriginalLengths[LayerIndex] + Fan > NewEnd + Tolerance;
++			const bool bLengthened = NewEnd > State.OriginalEnd + Tolerance && AtEnd.Contains(LayerIndex);
++			if (bCut || bLengthened)
+ 			{
+ 				NewLengths[LayerIndex] = FMath::Max(NewEnd - Start - Fan, MinLayerSeconds);
+ 			}
+@@ -13439,19 +13564,113 @@ bool SWidgetAnimTimeline::CanPickTargetInDesigner() const
+ 	return CanEdit() && Source->SupportsLayerGroups() && Source->GetWidgetBlueprint() != nullptr && Source->GetPreviewRoot() != nullptr;
+ }
+ 
++/**
++ * Watches the mouse everywhere while a Preview Target is being picked: the widget under it in the designer's preview is
++ * named by the cursor, and a click on it picks it - the click taken, so the designer doesn't also select it. The cursor
++ * is an eyedropper the whole time; Escape calls the pick off. Registered only while a pick waits.
++ */
++class FWidgetAnimTargetPickInput : public IInputProcessor
++{
++public:
++
++	explicit FWidgetAnimTargetPickInput(TWeakPtr<SWidgetAnimTimeline> InPanel)
++		: Panel(InPanel)
++	{
++	}
++
++	virtual void Tick(const float DeltaTime, FSlateApplication& SlateApp, TSharedRef<ICursor> Cursor) override
++	{
++		const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin();
++		if (Pinned && Pinned->IsPickingAnyTarget())
++		{
++			Cursor->SetType(EMouseCursor::EyeDropper);
++		}
++	}
++
++	virtual bool HandleMouseMoveEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
++	{
++		if (const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin())
++		{
++			Pinned->UpdatePickHover(MouseEvent.GetScreenSpacePosition());
++		}
++		return false;
++	}
++
++	virtual bool HandleMouseButtonDownEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
++	{
++		const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin();
++		if (!Pinned || MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
++		{
++			return false;
++		}
++		Pinned->UpdatePickHover(MouseEvent.GetScreenSpacePosition());
++		return Pinned->CommitPickHover();
++	}
++
++	virtual bool HandleKeyDownEvent(FSlateApplication& SlateApp, const FKeyEvent& InKeyEvent) override
++	{
++		const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin();
++		if (Pinned && Pinned->IsPickingAnyTarget() && InKeyEvent.GetKey() == EKeys::Escape)
++		{
++			Pinned->CancelTargetPick();
++			return true;
++		}
++		return false;
++	}
++
++	virtual const TCHAR* GetDebugName() const override { return TEXT("WidgetAnimTargetPick"); }
++
++private:
++
++	TWeakPtr<SWidgetAnimTimeline> Panel;
++};
++
+ void SWidgetAnimTimeline::BeginTargetPick(int32 GroupIndex)
+ {
++	using namespace WidgetAnimTimeline;
++
+ 	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
+ 	if (!CanPickTargetInDesigner() || !Groups || !Groups->IsValidIndex(GroupIndex))
+ 	{
+ 		return;
+ 	}
+ 
+-	// What is selected there now doesn't count: the next widget selected does.
++	// A pick for another group gives way to this one.
++	CancelTargetPick();
++
++	// What is selected there now doesn't count: the next widget selected does - or, under the eyedropper, the one clicked.
+ 	PickTargetGroup = GroupIndex;
+ 	UWidget* Current = GetDesignerSelectedWidget();
+ 	PickStartSelection = Current;
+ 	bPickStartedWithSelection = Current != nullptr;
++
++	if (!FSlateApplication::IsInitialized())
++	{
++		return;
++	}
++
++	PickInput = MakeShared<FWidgetAnimTargetPickInput>(SharedThis(this));
++	FSlateApplication::Get().RegisterInputPreProcessor(PickInput);
++
++	// The name of the widget under the mouse, in orange beside the cursor - so it is known before the click. Hidden
++	// while nothing that can be picked is under it.
++	PickLabelWindow = SWindow::MakeCursorDecorator();
++	PickLabelWindow->SetContent(
++		SNew(SBorder)
++		.BorderImage(RoundedFill(3.f))
++		.BorderBackgroundColor(Palette::PickHoverBackground)
++		.Padding(FMargin(6.f, 2.f))
++		[
++			SNew(STextBlock)
++			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
++			.ColorAndOpacity(Palette::PickingTargetText)
++			.Text_Lambda([WeakPanel = TWeakPtr<SWidgetAnimTimeline>(SharedThis(this))]()
++			{
++				const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakPanel.Pin();
++				return Pinned ? FText::FromString(Pinned->PickHoverLabel) : FText::GetEmpty();
++			})
++		]);
++	FSlateApplication::Get().AddWindow(PickLabelWindow.ToSharedRef(), /*bShowImmediately=*/false);
+ }
+ 
+ void SWidgetAnimTimeline::CancelTargetPick()
+@@ -13464,6 +13683,156 @@ void SWidgetAnimTimeline::CancelTargetPick()
+ 	PickTargetGroup = INDEX_NONE;
+ 	PickStartSelection.Reset();
+ 	bPickStartedWithSelection = false;
++	PickHoverWidget.Reset();
++	PickHoverLabel.Reset();
++
++	if (FSlateApplication::IsInitialized())
++	{
++		// Taken off on the next tick, not now: this is often reached from inside the processor's own handling of a click,
++		// while Slate walks its list of processors. Until then it does nothing - nothing is being picked.
++		if (PickInput.IsValid())
++		{
++			const TWeakPtr<IInputProcessor> WeakInput = PickInput;
++			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakInput](float)
++			{
++				const TSharedPtr<IInputProcessor> Input = WeakInput.Pin();
++				if (Input.IsValid() && FSlateApplication::IsInitialized())
++				{
++					FSlateApplication::Get().UnregisterInputPreProcessor(Input);
++				}
++				return false;
++			}));
++		}
++		if (PickLabelWindow.IsValid())
++		{
++			PickLabelWindow->HideWindow();
++			PickLabelWindow->RequestDestroyWindow();
++		}
++	}
++	PickInput.Reset();
++	PickLabelWindow.Reset();
++}
++
++FText SWidgetAnimTimeline::GetPickingTargetText() const
++{
++	return PickHoverLabel.IsEmpty()
++		? WidgetAnimTips::PickingTargetLabel()
++		: FText::Format(LOCTEXT("PickingTargetHovered", "Pick: {0}"), FText::FromString(PickHoverLabel));
++}
++
++UWidget* SWidgetAnimTimeline::FindPreviewWidgetAt(const FVector2D& ScreenPosition, FString& OutOption) const
++{
++	OutOption.Reset();
++
++	UUserWidget* Root = Source.IsValid() ? Source->GetPreviewRoot() : nullptr;
++	const TSharedPtr<SWidget> RootSlate = Root ? Root->GetCachedWidget() : nullptr;
++	if (!Root || !RootSlate.IsValid() || !FSlateApplication::IsInitialized())
++	{
++		return nullptr;
++	}
++
++	// Only over the designer's preview: the window under the mouse is the preview's, and the mouse isn't over this panel
++	// (docked in the same window, it may sit over the preview's stretch of it).
++	FSlateApplication& Slate = FSlateApplication::Get();
++	const FWidgetPath Path = Slate.LocateWindowUnderMouse(ScreenPosition, Slate.GetInteractiveTopLevelWindows(), /*bIgnoreEnabledStatus=*/true);
++	if (!Path.IsValid() || &Path.GetWindow().Get() != Slate.FindWidgetWindow(RootSlate.ToSharedRef()).Get())
++	{
++		return nullptr;
++	}
++	for (int32 Index = 0; Index < Path.Widgets.Num(); ++Index)
++	{
++		if (&Path.Widgets[Index].Widget.Get() == this)
++		{
++			return nullptr;
++		}
++	}
++	if (!Root->GetCachedGeometry().IsUnderLocation(ScreenPosition))
++	{
++		return nullptr;
++	}
++
++	// The smallest visible widget under the mouse that can be a target - by where each is laid out, rather than by
++	// Slate's hit testing, which the designer's own overlays may take over.
++	UWidget* Best = nullptr;
++	FString BestOption;
++	double BestArea = TNumericLimits<double>::Max();
++	if (Root->WidgetTree)
++	{
++		Root->WidgetTree->ForEachWidget([this, &ScreenPosition, &Best, &BestOption, &BestArea](UWidget* Candidate)
++		{
++			const TSharedPtr<SWidget> CandidateSlate = Candidate ? Candidate->GetCachedWidget() : nullptr;
++			if (!CandidateSlate.IsValid() || !CandidateSlate->GetVisibility().IsVisible())
++			{
++				return;
++			}
++			const FGeometry& Geometry = Candidate->GetCachedGeometry();
++			if (!Geometry.IsUnderLocation(ScreenPosition))
++			{
++				return;
++			}
++			const FVector2D Extent(Geometry.GetAbsoluteSize());
++			const double Area = Extent.X * Extent.Y;
++			if (Area < BestArea)
++			{
++				const FString Option = Source->FindTargetOptionFor(Candidate);
++				if (!Option.IsEmpty())
++				{
++					Best = Candidate;
++					BestOption = Option;
++					BestArea = Area;
++				}
++			}
++		});
++	}
++
++	if (!Best)
++	{
++		Best = Root;
++		BestOption = Source->FindTargetOptionFor(Root);
++	}
++	OutOption = BestOption;
++	return OutOption.IsEmpty() ? nullptr : Best;
++}
++
++void SWidgetAnimTimeline::UpdatePickHover(const FVector2D& ScreenPosition)
++{
++	if (PickTargetGroup == INDEX_NONE)
++	{
++		return;
++	}
++
++	FString Option;
++	UWidget* Hovered = FindPreviewWidgetAt(ScreenPosition, Option);
++	PickHoverWidget = Hovered;
++	PickHoverLabel = !Hovered ? FString() : Option == TEXT("None") ? Hovered->GetName() : Option;
++
++	if (PickLabelWindow.IsValid())
++	{
++		if (Hovered)
++		{
++			PickLabelWindow->MoveWindowTo(ScreenPosition + FVector2D(18.0, 18.0));
++			if (!PickLabelWindow->IsVisible())
++			{
++				PickLabelWindow->ShowWindow();
++			}
++		}
++		else if (PickLabelWindow->IsVisible())
++		{
++			PickLabelWindow->HideWindow();
++		}
++	}
++}
++
++bool SWidgetAnimTimeline::CommitPickHover()
++{
++	UWidget* Hovered = PickHoverWidget.Get();
++	if (PickTargetGroup == INDEX_NONE || !Hovered)
++	{
++		return false;
++	}
++
++	ApplyPickedTarget(Hovered);
++	return true;
+ }
+ 
+ void SWidgetAnimTimeline::UpdateTargetPick()
+@@ -13479,6 +13848,8 @@ void SWidgetAnimTimeline::UpdateTargetPick()
+ 		return;
+ 	}
+ 
++	// The eyedropper's click is the pick (see FWidgetAnimTargetPickInput); a widget selected in the designer some other
++	// way - its hierarchy, say - picks it too.
+ 	UWidget* Now = GetDesignerSelectedWidget();
+ 	if (bPickStartedWithSelection)
+ 	{
+@@ -13490,15 +13861,23 @@ void SWidgetAnimTimeline::UpdateTargetPick()
+ 		}
+ 		bPickStartedWithSelection = false;
+ 	}
+-	if (!Now)
++	if (Now)
+ 	{
+-		return;
++		ApplyPickedTarget(Now);
+ 	}
++}
+ 
+-	const FString Option = Source->FindTargetOptionFor(Now);
++void SWidgetAnimTimeline::ApplyPickedTarget(UWidget* Picked)
++{
++	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
+ 	const int32 GroupIndex = PickTargetGroup;
+ 	CancelTargetPick();
++	if (!Picked || !Groups || !Groups->IsValidIndex(GroupIndex) || !Source.IsValid())
++	{
++		return;
++	}
+ 
++	const FString Option = Source->FindTargetOptionFor(Picked);
+ 	if (Option.IsEmpty())
+ 	{
+ 		FNotificationInfo Info(WidgetAnimTips::PickTargetNotFoundNote());
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+index bdaa36f..5d5368e 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+@@ -473,7 +473,8 @@ public:
+ 	void SetLayersInverted(const TArray<int32>& LayerIndices, bool bInverted);
+ 
+ 	/**
+-	 * Dragging the animation's start or end on the ruler: the end pulled in shortens every track it cuts into; the start
++	 * Dragging the animation's start or end on the ruler: the end pulled in shortens every track it cuts into, and pulled
++	 * out lengthens the tracks ending where the animation does; the start
+ 	 * pushed in shortens every track starting before it and moves everything back to start at 0, and pulled out before 0
+ 	 * puts that much time in front of everything. A track that can't be shortened - or would be shorter than a track can
+ 	 * be - stops the drag there. One undoable step from press to release; EndLayerDrag ends it.
+@@ -490,6 +491,17 @@ public:
+ 	void BeginTargetPick(int32 GroupIndex);
+ 	void CancelTargetPick();
+ 	bool IsPickingTarget(int32 GroupIndex) const { return PickTargetGroup != INDEX_NONE && PickTargetGroup == GroupIndex; }
++	bool IsPickingAnyTarget() const { return PickTargetGroup != INDEX_NONE; }
++
++	/** What a group being picked for says where its target is named: the widget under the eyedropper, or what to do. */
++	FText GetPickingTargetText() const;
++
++	/**
++	 * While picking: the widget of the designer's preview under ScreenPosition becomes the one the eyedropper names, and
++	 * CommitPickHover picks it - false when nothing that can be picked is under the mouse. See FWidgetAnimTargetPickInput.
++	 */
++	void UpdatePickHover(const FVector2D& ScreenPosition);
++	bool CommitPickHover();
+ 
+ 	/** Where a new track would start, in played seconds: AtSeconds if set, else after the selected track - or at the end. */
+ 	float GetNewTrackStart(TOptional<float> AtSeconds = TOptional<float>()) const;
+@@ -501,9 +513,14 @@ public:
+ 	 */
+ 	bool CanLayerStagger(int32 LayerIndex) const;
+ 
+-	/** Height of the Track Editor's lines. Dragged from any line's edge - all of them at once - and remembered across sessions. */
+-	float GetRowHeight() const { return RowHeight; }
++	/**
++	 * Height of the Track Editor's lines: Default Track Height in the editor preferences (UWidgetAnimEditorSettings), so
++	 * every panel shares it. Dragged from any line's edge - all of them at once - which sets that preference, saved when
++	 * the drag ends (SaveRowHeight).
++	 */
++	float GetRowHeight() const;
+ 	void SetRowHeight(float NewHeight);
++	void SaveRowHeight();
+ 
+ 	/** Scrolls the Track Editor, in time and down its lines, until a layer's track - or a group's line - is in view. */
+ 	void RevealLayer(int32 LayerIndex);
+@@ -929,6 +946,9 @@ private:
+ 	/** The compact panel's header strip: the list's name, then Add Track, Save as Animation and Expand. */
+ 	TSharedRef<SWidget> MakeCompactHeader();
+ 
++	/** The Track Editor's horizontal scroll bar, in a box that shows it only when there is something to scroll to. */
++	TSharedRef<SWidget> MakeHorizontalScrollBarSlot();
++
+ 	/** The way back out of a collapsed track - its name after the animation's, and a back arrow - for the Track Editor's strip. */
+ 	TSharedRef<SWidget> MakeCollapsedBreadcrumb();
+ 
+@@ -1053,7 +1073,6 @@ private:
+ 
+ 	/** Per open animation track, where its animation's tracks run - see GetNestedSpans. */
+ 	TMap<int32, TArray<FVector2f>> NestedSpans;
+-	float RowHeight = DefaultRowHeight;
+ 
+ 	/** The collapsed track shown on its own, or None for the whole animation - see EnterCollapsed. */
+ 	FName ActiveCollapsed;
+@@ -1084,6 +1103,21 @@ private:
+ 	/** Watches the designer for the pick - see BeginTargetPick. */
+ 	void UpdateTargetPick();
+ 
++	/** Makes Picked the picking group's Preview Target, in one undoable edit, and ends the pick. */
++	void ApplyPickedTarget(class UWidget* Picked);
++
++	/**
++	 * The smallest visible widget of the designer's preview under ScreenPosition that can be a Preview Target, and its
++	 * target option in OutOption - or null, when the mouse isn't over the preview.
++	 */
++	class UWidget* FindPreviewWidgetAt(const FVector2D& ScreenPosition, FString& OutOption) const;
++
++	/** While picking: what watches the mouse, the widget under it and its name, and the window showing that by the cursor. */
++	TSharedPtr<class IInputProcessor> PickInput;
++	TWeakObjectPtr<class UWidget> PickHoverWidget;
++	FString PickHoverLabel;
++	TSharedPtr<class SWindow> PickLabelWindow;
++
+ 	/** Go to End was the last thing done with the playhead: Play plays backward from there. */
+ 	bool bPlayBackwardNext = false;
+ 
+@@ -1165,7 +1199,7 @@ private:
+ 		TArray<int32> OriginalLineOrdinals;
+ 		TArray<int32> OriginalGroupLineCounts;
+ 
+-		/** Where the animation ended at the press. Moves stay inside it; resizes may only pass it from a track that ended there. */
++		/** Where the animation ended at the press. Moves stay inside it; a track's end can be pulled past it (bEndIsFree). */
+ 		float OriginalEnd = 0.f;
+ 		bool bEndIsFree = false;
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
+index ce9baf9..7622050 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
+@@ -110,6 +110,35 @@ public:
+ 	UPROPERTY(config, EditAnywhere, Category = "Track Display", meta = (DisplayName = "Track Text When Zoomed Out"))
+ 	EWidgetAnimTrackTextZoomOut TrackTextZoomOut = EWidgetAnimTrackTextZoomOut::Shrink;
+ 
++	/**
++	 * The Track Editor's vertical scroll bar: shown while there are more tracks than fit, when this is on; never shown when
++	 * it is off - the mouse wheel still scrolls them.
++	 */
++	UPROPERTY(config, EditAnywhere, Category = "Track Display", meta = (DisplayName = "Show Vertical Scroll Bar When Necessary"))
++	bool bShowVerticalScrollBarWhenNeeded = true;
++
++	/**
++	 * The Track Editor's horizontal scroll bar: shown while the view shows less than the whole animation, when this is on;
++	 * never shown when it is off - Shift + wheel, a right-drag, or Fit still move the view.
++	 */
++	UPROPERTY(config, EditAnywhere, Category = "Track Display", meta = (DisplayName = "Show Horizontal Scroll Bar When Necessary"))
++	bool bShowHorizontalScrollBarWhenNeeded = true;
++
++	/**
++	 * How tall the Track Editor's lines are, in slate units. Dragging any line's edge in the Track Editor sets it too, for
++	 * every panel.
++	 */
++	UPROPERTY(config, EditAnywhere, Category = "Track Display", meta = (DisplayName = "Default Track Height", ClampMin = "18", ClampMax = "64", UIMin = "18", UIMax = "64"))
++	float DefaultTrackHeight = 26.f;
++
++	// -------------------------------------------------------------------------------------------------
++	// New tracks
++	// -------------------------------------------------------------------------------------------------
++
++	/** How long a track added with Add Animation Track runs, in seconds - its Duration, before anything changes it. */
++	UPROPERTY(config, EditAnywhere, Category = "New Tracks", meta = (DisplayName = "Default Track Length", ClampMin = "0.01", UIMin = "0.05", UIMax = "5.0", Units = "s"))
++	float DefaultTrackLength = 0.3f;
++
+ 	// -------------------------------------------------------------------------------------------------
+ 
+ 	/** The color a layer type's tracks are drawn in: the user's, or the default for any type not set. */
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index 161c31e..449573c 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -346,6 +346,11 @@ namespace NameTBD
+ 			// behind Fit, so it reads as a button to press rather than a toggle.
+ 			// -------------------------------------------------------------------------------------------------
+ 
++			//   SaveButtonNormal: at rest, a dimmed animation orange so it doesn't shout; SaveButtonHovered: the full orange
++			//   under the mouse; SaveButtonPressed: a touch darker while pressed.
++			inline const FLinearColor SaveButtonNormal = FLinearColor(AnimationOrange_Normal * 0.62f).CopyWithNewOpacity(1.f);
++			inline const FLinearColor SaveButtonHovered(AnimationOrange_Normal);
++			inline const FLinearColor SaveButtonPressed = FLinearColor(AnimationOrange_Normal * 0.82f).CopyWithNewOpacity(1.f);
+ 			inline const FLinearColor SaveButtonDisabled(0.16f, 0.13f, 0.09f);
+ 			inline const FLinearColor SaveButtonDisabledText(1.00f, 1.00f, 1.00f, 0.35f);
+ 			inline const FLinearColor FitButtonChip(1.00f, 1.00f, 1.00f, 0.07f);
+@@ -354,14 +359,19 @@ namespace NameTBD
+ 			// -------------------------------------------------------------------------------------------------
+ 			// Collapsed tracks - tracks folded into one, as a Blueprint collapses part of a graph.
+ 			//   LayerCollapsed: the collapsed track's own color - its section, its row's accent, its name.
+-			//   CollapsedMiniTrackOpacity: how strongly its tracks are drawn in miniature inside its section.
+ 			//   CollapsedListTint: laid over its row in the Animation Tracks list, and its tracks' rows while open.
+ 			// -------------------------------------------------------------------------------------------------
+ 
+ 			inline const FLinearColor LayerCollapsed(0.55f, 0.62f, 0.72f);
+-			inline constexpr float CollapsedMiniTrackOpacity = 0.85f;
+ 			inline const FLinearColor CollapsedListTint(0.55f, 0.62f, 0.72f, 0.06f);
+ 
++			// A collapsed track open on its own: the Track Editor's edges darkened, ScopeVignetteWidth pixels in, to
++			// ScopeVignette at the very edge (its alpha is how dark; 0 turns it off) - a nested editor - inside a thin
++			// ScopeFrame line of the collapsed track's color.
++			inline const FLinearColor ScopeVignette(0.00f, 0.00f, 0.00f, 0.38f);
++			inline constexpr float ScopeVignetteWidth = 56.0f;
++			inline const FLinearColor ScopeFrame(0.55f, 0.62f, 0.72f, 0.55f);
++
+ 			// -------------------------------------------------------------------------------------------------
+ 			// Pinned tracks - drawn at the top of the Track Editor, under the ruler, where they stay while the rest scroll.
+ 			//   PinnedLineTint: laid over their lines. PinnedDivider: the line under the last of them.
+@@ -377,13 +387,10 @@ namespace NameTBD
+ 			// -------------------------------------------------------------------------------------------------
+ 			// Playing backward - an inverted track, or every track while the preview's Invert is on.
+ 			//   InvertChevron: the chevrons pointing back along an inverted track, InvertChevronSpacing pixels apart.
+-			//   InvertedBadge / InvertedBadgeText: the "Playing Backward" badge on the ruler while Invert is on.
+ 			// -------------------------------------------------------------------------------------------------
+ 
+ 			inline const FLinearColor InvertChevron(1.00f, 1.00f, 1.00f, 0.22f);
+ 			inline constexpr float InvertChevronSpacing = 14.0f;
+-			inline const FLinearColor InvertedBadge = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.85f);
+-			inline const FLinearColor InvertedBadgeText(0.00f, 0.00f, 0.00f, 1.00f);
+ 
+ 			// -------------------------------------------------------------------------------------------------
+ 			// The rest of this pass's odds and ends.
+@@ -395,6 +402,12 @@ namespace NameTBD
+ 			inline const FLinearColor RangeHandleLit(AnimationOrange_Hovered);
+ 			inline const FLinearColor SoundFadeLine(1.00f, 1.00f, 1.00f, 0.75f);
+ 			inline const FLinearColor PickingTargetText(AnimationOrange_Normal);
++			// Behind the name of the widget under the eyedropper, beside the cursor, while a target is being picked.
++			inline const FLinearColor PickHoverBackground(0.02f, 0.02f, 0.02f, 0.90f);
++
++			// How much further in from its end an animation track's right-hand text sits than any other track's, in
++			// pixels - its "Widget Animation, N tracks" otherwise touches the section's rounded end.
++			inline constexpr float AnimationTrackTextRightPadding = 6.0f;
+ 		}
+ 	}
+ }
+\ No newline at end of file
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index 4c791a5..899f7a5 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -742,7 +742,7 @@ namespace NameTBD::Tooltips
+ 		inline FText PickTargetInDesignerTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PickTargetInDesignerTooltip",
+-				"Pick the widget this group animates by clicking it in the designer. Escape calls it off.");
++				"Pick the widget this group animates by clicking it in the designer with the eyedropper, which names the widget under it. Escape calls it off.");
+ 		}
+ 
+ 		inline FText PickingTargetLabel()
+@@ -754,7 +754,7 @@ namespace NameTBD::Tooltips
+ 		inline FText PickingTargetNote()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PickingTargetNote",
+-				"Click the widget in the designer that this group should animate. Escape, or the button again, calls it off.");
++				"Point at the widget in the designer that this group should animate - its name shows by the eyedropper - and click it. Escape, or the button again, calls it off.");
+ 		}
+ 
+ 		inline FText PickTargetNotFoundNote()

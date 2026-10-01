@@ -48,6 +48,7 @@ namespace WidgetAnimCues
 			bool bBackward = false;
 			bool bInverted = false;
 			bool bDesignTime = false;
+			float SecondsToEnd = -1.f;
 		};
 
 		TArray<FQueuedCue>& GetPending()
@@ -100,6 +101,7 @@ namespace WidgetAnimCues
 				Context.Info.bPlayingBackward = Cue.bBackward;
 				Context.Info.bInverted = Cue.bInverted;
 				Context.Info.bDesignTime = Cue.bDesignTime;
+				Context.Info.SecondsToTrackEnd = Cue.SecondsToEnd;
 
 				Evaluator->Fire(Context);
 			}
@@ -151,6 +153,7 @@ namespace WidgetAnimCues
 			Cue.bBackward = Fire.bBackward;
 			Cue.bInverted = Fire.bInverted;
 			Cue.bDesignTime = bDesignTime;
+			Cue.SecondsToEnd = Fire.SecondsToEnd;
 		}
 
 		// The same deferral an <event> in a Text Reveal's text gets: the next tick of the core ticker, which runs in the
@@ -277,14 +280,14 @@ namespace WidgetAnimCues
 		GetPreviewSoundPlayer() = MoveTemp(Player);
 	}
 
-	bool PlayPreviewSound(USoundBase* Sound, float Volume, float Pitch)
+	bool PlayPreviewSound(USoundBase* Sound, float Volume, float Pitch, const FSoundFade& Fade)
 	{
 		const FPreviewSoundPlayer& Player = GetPreviewSoundPlayer();
 		if (!Sound || !Player)
 		{
 			return false;
 		}
-		Player(Sound, Volume, Pitch);
+		Player(Sound, Volume, Pitch, Fade);
 		return true;
 	}
 

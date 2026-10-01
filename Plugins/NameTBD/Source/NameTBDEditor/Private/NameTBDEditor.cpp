@@ -31,6 +31,7 @@
 #include "WidgetAnimEditorSettings.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
 #include "Components/AudioComponent.h"
+#include "Containers/Ticker.h"
 #include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
@@ -83,7 +84,7 @@ void FNameTBDEditorModule::StartupModule()
 
 	// Sound cues heard in the editor's previews, through the editor's own preview audio - the runtime module can't reach
 	// it, so it is handed this. One at a time: a new cue sound cuts off the last. See WidgetAnimCue.h.
-	WidgetAnimCues::SetPreviewSoundPlayer([](USoundBase* Sound, float Volume, float Pitch)
+	WidgetAnimCues::SetPreviewSoundPlayer([](USoundBase* Sound, float Volume, float Pitch, const WidgetAnimCues::FSoundFade& Fade)
 	{
 		if (!GEditor || !Sound || !UWidgetAnimEditorSettings::Get().bPlayCueSoundsInPreviews)
 		{
@@ -91,10 +92,37 @@ void FNameTBDEditorModule::StartupModule()
 		}
 
 		GEditor->PlayPreviewSound(Sound);
-		if (UAudioComponent* PreviewAudio = GEditor->GetPreviewAudioComponent())
+		UAudioComponent* PreviewAudio = GEditor->GetPreviewAudioComponent();
+		if (!PreviewAudio)
 		{
-			PreviewAudio->SetVolumeMultiplier(Volume);
-			PreviewAudio->SetPitchMultiplier(Pitch);
+			return;
+		}
+
+		PreviewAudio->SetVolumeMultiplier(Volume);
+		PreviewAudio->SetPitchMultiplier(Pitch);
+
+		// A Sound cue's fades, as the game plays them. Fading in starts it again, from silence.
+		const EAudioFaderCurve Curve = static_cast<EAudioFaderCurve>(FMath::Min<uint8>(Fade.Curve, static_cast<uint8>(EAudioFaderCurve::Sin)));
+		if (Fade.FadeIn > 0.f)
+		{
+			PreviewAudio->FadeIn(Fade.FadeIn, 1.f, 0.f, Curve);
+		}
+		if (Fade.FadeOut > 0.f && Fade.FadeOutAt >= 0.f)
+		{
+			// Later, on the core ticker. The preview has one audio component, which a newer cue sound may have taken over
+			// by then; the fade is only for this one.
+			const TWeakObjectPtr<UAudioComponent> WeakAudio = PreviewAudio;
+			const TWeakObjectPtr<USoundBase> WeakSound = Sound;
+			const float FadeOut = Fade.FadeOut;
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakAudio, WeakSound, FadeOut, Curve](float)
+			{
+				UAudioComponent* Live = WeakAudio.Get();
+				if (Live && Live->IsPlaying() && Live->Sound == WeakSound.Get())
+				{
+					Live->FadeOut(FadeOut, 0.f, Curve);
+				}
+				return false;
+			}), FMath::Max(Fade.FadeOutAt, 0.001f));
 		}
 	});
 }

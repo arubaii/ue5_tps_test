@@ -2,6 +2,8 @@
 
 #include "UISoundTypes.h"
 
+#include "Components/AudioComponent.h"
+#include "Containers/Ticker.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
 #include "Kismet/GameplayStatics.h"
@@ -125,6 +127,65 @@ void FUISoundPlayer::PlayOneShot(const UObject* WorldContext, USoundBase* Sound,
 	if (UWorld* World = UISoundTypesLocal::ResolvePlayableWorld(WorldContext))
 	{
 		UGameplayStatics::PlaySound2D(World, Sound, FMath::Max(0.0f, VolumeMultiplier), FMath::Max(0.01f, PitchMultiplier));
+	}
+}
+
+void FUISoundPlayer::PlayFaded(const UObject* WorldContext, USoundBase* Sound, float VolumeMultiplier, float PitchMultiplier, float FadeIn, float FadeOutAt, float FadeOut, uint8 FadeCurveValue)
+{
+	const EAudioFaderCurve FadeCurve = static_cast<EAudioFaderCurve>(FMath::Min<uint8>(FadeCurveValue, static_cast<uint8>(EAudioFaderCurve::Sin)));
+	if (!Sound)
+	{
+		return;
+	}
+
+	UWorld* World = UISoundTypesLocal::ResolvePlayableWorld(WorldContext);
+	if (!World)
+	{
+		return;
+	}
+
+	// An audio component rather than a fire-and-forget sound: the fades are the component's. Destroyed when it finishes.
+	UAudioComponent* Audio = UGameplayStatics::CreateSound2D(World, Sound, FMath::Max(0.0f, VolumeMultiplier), FMath::Max(0.01f, PitchMultiplier),
+		/*StartTime=*/0.f, /*ConcurrencySettings=*/nullptr, /*bPersistAcrossLevelTransition=*/false, /*bAutoDestroy=*/true);
+	if (!Audio)
+	{
+		return;
+	}
+
+	if (FadeIn > 0.f)
+	{
+		Audio->FadeIn(FadeIn, 1.f, 0.f, FadeCurve);
+	}
+	else
+	{
+		Audio->Play();
+	}
+
+	if (FadeOut <= 0.f || FadeOutAt < 0.f)
+	{
+		return;
+	}
+
+	// Started later, on the core ticker, so it runs on the same clock the sound plays on whatever the game does meanwhile.
+	// Weak: the sound may have finished, and its component gone, by then.
+	const TWeakObjectPtr<UAudioComponent> WeakAudio = Audio;
+	auto StartFadeOut = [WeakAudio, FadeOut, FadeCurve](float) -> bool
+	{
+		UAudioComponent* Live = WeakAudio.Get();
+		if (Live && Live->IsPlaying())
+		{
+			Live->FadeOut(FadeOut, 0.f, FadeCurve);
+		}
+		return false;
+	};
+
+	if (FadeOutAt <= 0.f)
+	{
+		StartFadeOut(0.f);
+	}
+	else
+	{
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda(StartFadeOut), FadeOutAt);
 	}
 }
 
