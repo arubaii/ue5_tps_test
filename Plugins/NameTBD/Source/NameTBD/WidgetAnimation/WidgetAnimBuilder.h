@@ -65,7 +65,8 @@ public:
 	FText Description;
 
 	/**
-	 * Content folder the asset is created in. Empty puts it beside the Widget Blueprint this was edited in.
+	 * Content folder the asset is created in. Empty uses the project's Default Save Folder (Project Settings > Plugins >
+	 * Widget Animations), or - with none set - puts it beside the Widget Blueprint this was edited in.
 	 */
 	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (DisplayName = "Save Folder", EditCondition = "PreviewAnimation == nullptr", ContentDir))
 	FDirectoryPath SaveFolder;

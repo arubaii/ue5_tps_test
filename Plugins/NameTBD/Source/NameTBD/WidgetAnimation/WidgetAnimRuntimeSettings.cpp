@@ -25,3 +25,33 @@ void UWidgetAnimRuntimeSettings::PostEditChangeProperty(FPropertyChangedEvent& P
 	}
 }
 #endif
+
+FString UWidgetAnimRuntimeSettings::GetDefaultSavePackagePath() const
+{
+#if WITH_EDITORONLY_DATA
+	return NormalizeContentFolder(DefaultSaveFolder.Path);
+#else
+	return FString();
+#endif
+}
+
+FString UWidgetAnimRuntimeSettings::NormalizeContentFolder(FString Folder)
+{
+	Folder.TrimStartAndEndInline();
+	Folder.ReplaceInline(TEXT("\\"), TEXT("/"));
+	if (Folder.IsEmpty())
+	{
+		return Folder;
+	}
+
+	// The picker stores /Game/... paths; anything typed by hand relative to Content is taken as such.
+	if (!Folder.StartsWith(TEXT("/")))
+	{
+		Folder = FString(TEXT("/Game/")) + Folder;
+	}
+	while (Folder.Len() > 1 && Folder.EndsWith(TEXT("/")))
+	{
+		Folder.LeftChopInline(1);
+	}
+	return Folder;
+}

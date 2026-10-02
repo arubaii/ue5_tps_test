@@ -1,0 +1,2 @@
+# Python caches what it imports here; never commit them.
+__pycache__/

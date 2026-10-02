@@ -2,6 +2,7 @@
 
 #include "WidgetAnimBuilder.h"
 #include "WidgetAnimTransform.h"
+#include "WidgetAnimRuntimeSettings.h"
 
 #include "Components/Image.h"
 
@@ -1226,24 +1227,16 @@ void UWidgetAnimBuilder::NotifyAnimationAssetEdited(const UWidgetAnimPresetAsset
 
 FString UWidgetAnimBuilder::GetSavePackagePath() const
 {
-	FString Folder = SaveFolder.Path;
-	Folder.TrimStartAndEndInline();
-	Folder.ReplaceInline(TEXT("\\"), TEXT("/"));
-
+	// Its own Save Folder, else the project's Default Save Folder (Project Settings > Plugins > Widget Animations).
+	const FString Folder = UWidgetAnimRuntimeSettings::NormalizeContentFolder(SaveFolder.Path);
 	if (!Folder.IsEmpty())
 	{
-		// The picker stores /Game/... paths; anything typed by hand relative to Content is taken as such.
-		if (!Folder.StartsWith(TEXT("/")))
-		{
-			Folder = FString(TEXT("/Game/")) + Folder;
-		}
-
-		while (Folder.Len() > 1 && Folder.EndsWith(TEXT("/")))
-		{
-			Folder.LeftChopInline(1);
-		}
-
 		return Folder;
+	}
+	const FString ProjectFolder = UWidgetAnimRuntimeSettings::Get().GetDefaultSavePackagePath();
+	if (!ProjectFolder.IsEmpty())
+	{
+		return ProjectFolder;
 	}
 
 	// Beside the Widget Blueprint being edited. The designer's own preview instances live in a transient

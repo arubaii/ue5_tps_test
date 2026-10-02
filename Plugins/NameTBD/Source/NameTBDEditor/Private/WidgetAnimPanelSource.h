@@ -139,6 +139,13 @@ public:
 	/** The widget a group's Preview Target resolves to on the preview, for labeling. Null for "the widget itself". */
 	UWidget* ResolvePreviewTarget(FName Path) const;
 
+	/**
+	 * The widget of the designer's preview that the track at LayerIndex (of GetLayers) plays on - whose material a material
+	 * track drives - for checking the track against it: the Material dropdown's parameters, the warnings when the widget has no
+	 * such material. By default its group's Preview Target, or the preview itself for None. Null while there is no preview.
+	 */
+	virtual UWidget* GetLayerPreviewWidget(int32 LayerIndex) const;
+
 	// ---------------------------------------------------------------------------------------------
 	// Playing it
 	// ---------------------------------------------------------------------------------------------
@@ -468,6 +475,9 @@ public:
 
 	virtual FName GetGroupsPropertyName() const override { return NAME_None; }
 	virtual FName GetLayersPropertyName() const override { return ArrayPropertyName; }
+
+	/** The track's Target Widget on the preview widget, or the preview widget itself - as BuildSettings aims it. */
+	virtual UWidget* GetLayerPreviewWidget(int32 LayerIndex) const override;
 	virtual bool SupportsLayerGroups() const override { return false; }
 	virtual bool SupportsLayerTargets() const override { return true; }
 

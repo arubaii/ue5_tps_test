@@ -15,6 +15,13 @@ public:
 	static inline const FName MenuAddIcon = TEXT("NameTBD.Menu.Add");
 	static inline const FName MenuDeleteIcon = TEXT("NameTBD.Menu.Delete");
 
+	/**
+	 * A check box drawn as a menu icon, for an on/off entry such as Invert Track: a menu's own check box sits left of the
+	 * column its icons are in, so an entry with these as its icon lines up with the rest of the menu.
+	 */
+	static inline const FName MenuCheckedIcon = TEXT("NameTBD.Menu.Checked");
+	static inline const FName MenuUncheckedIcon = TEXT("NameTBD.Menu.Unchecked");
+
 	/** The Widget Animations panel's icon - its tab and its status-bar drawer: the shooting star in the editor's grays. */
 	static inline const FName WidgetAnimationsIcon = TEXT("NameTBD.WidgetAnimationsIcon");
 	

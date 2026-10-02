@@ -16,10 +16,12 @@
 class IDetailsView;
 class IWidgetAnimPanelSource;
 class SScrollBar;
+class SWindow;
 class SVerticalBox;
 class SWidgetAnimTimelineTracks;
 class FScopedTransaction;
 struct FPropertyChangedChainEvent;
+namespace WidgetAnimTrackPresets { struct FPreset; }
 
 /**
  * The Widget Animations panel: an animation laid out the way the native Animations panel lays out a UMG
@@ -33,7 +35,7 @@ struct FPropertyChangedChainEvent;
  * Middle, the Track Editor: a time ruler, and under it each group's line - its name and the span it moves -
  * followed by its tracks, on lines of their own or sharing a line one after another. Tracks are dragged along
  * the timeline, up and down between their group's lines, resized from either edge and snapped to their
- * neighbours; every track's keys are selected, dragged, added and deleted there, and the stretch between two
+ * neighbors; every track's keys are selected, dragged, added and deleted there, and the stretch between two
  * keys can be given a curve of its own. Layers are selected one at a time, or several with Shift (a range) and
  * Ctrl / Cmd (one more), and several move and resize together; keys likewise. A box dragged out over empty space
  * selects the tracks it takes in - or, when it holds no whole track, the keys inside it.
@@ -232,6 +234,31 @@ public:
 
 	IWidgetAnimPanelSource* GetSource() const { return Source.Get(); }
 
+	// ---------------------------------------------------------------------------------------------
+	// The Script area - Python that makes tracks, under the Track Editor (the full panel only)
+	// ---------------------------------------------------------------------------------------------
+
+	/** Whether the Script area is open (see SWidgetAnimScriptPanel). Remembered between sessions. */
+	bool IsScriptOpen() const { return bScriptOpen; }
+	void SetScriptOpen(bool bOpen);
+
+	/** The Script area in a window of its own, in place of under the Track Editor - or that window brought to front. */
+	void OpenScriptWindow();
+	bool IsScriptWindowOpen() const { return ScriptWindow.IsValid(); }
+
+	/**
+	 * The Script area as a tab of the editor's layout - put beside the Details panel, with its output under the code - or
+	 * that tab brought forward. Without a Details panel to dock beside, it opens in a window of its own instead.
+	 */
+	void DockScript();
+	bool IsScriptDocked() const { return ScriptTab.IsValid(); }
+
+	/**
+	 * A script just ran on the animation (see WidgetAnimScripting::RunPanelScript): the list, the Track Editor and the
+	 * Selection panel follow it, and the tracks it added are selected.
+	 */
+	void OnScriptRan(int32 TracksBefore, int32 TracksAfter, int32 GroupsBefore, int32 GroupsAfter);
+
 	/** Whether this is the compact panel - see FArguments::Compact - and whether it is inline, in a Details panel. */
 	bool IsCompact() const { return bCompact; }
 	bool IsInline() const { return bCompact && bInline; }
@@ -344,6 +371,29 @@ public:
 	/** A group's name as shown: its Group Name, or "Layer Group N". */
 	FText GetGroupName(int32 GroupIndex) const;
 
+	// ---------------------------------------------------------------------------------------------
+	// Folders - see FWidgetAnimLayerGroup::EditorFolder. Only the list reads them; nothing about playing changes.
+	// ---------------------------------------------------------------------------------------------
+
+	/** The folder a group is listed under, trimmed - empty when none, or where the source has no groups of its own. */
+	FString GetGroupFolder(int32 GroupIndex) const;
+
+	/** Every folder in use, in the order the list shows them. */
+	void GetFolders(TArray<FString>& OutFolders) const;
+
+	/** The groups in a folder, in order. */
+	void GetFolderGroups(const FString& Folder, TArray<int32>& OutGroups) const;
+
+	/**
+	 * The groups in the order the list shows them: each folder where its first group is, its groups gathered under it, the
+	 * rest where they are. What a Shift-click on a group ranges over.
+	 */
+	void GetGroupListOrder(TArray<int32>& OutGroups) const;
+
+	/** A folder folded in the list shows only its own row. Per panel, like a group's fold. */
+	bool IsListFolderCollapsed(const FString& Folder) const { return ListCollapsedFolders.Contains(Folder); }
+	void ToggleListFolderCollapsed(const FString& Folder);
+
 	/** When a layer runs, as the list shows it: "0.27 - 0.50 s". */
 	FText GetLayerTimeRange(int32 LayerIndex) const;
 
@@ -450,6 +500,12 @@ public:
 
 	/** Renames a collapsed track - numbered, if another has the name. */
 	void RenameCollapsed(FName OldName, const FString& NewName);
+
+	/**
+	 * Gives a track a name of its own (FWidgetAnimLayer::TrackName) - numbered if another renamed track has it. Empty
+	 * names it by its type again.
+	 */
+	void RenameLayer(int32 LayerIndex, const FString& NewName);
 
 	/** Selects every track of a collapsed track, its head the primary one - or, with bToggle, adds them or takes them out. */
 	void SelectCollapsed(FName Name, bool bToggle = false);
@@ -571,6 +627,21 @@ public:
 	void SelectLayer(int32 LayerIndex);
 
 	/**
+	 * A click on a group with the file browser's modifiers, as SelectLayerWithModifiers is for tracks: Shift selects every
+	 * group from the last one clicked to this one, in the list's order; Ctrl (Cmd on a Mac) adds this one or takes it out.
+	 */
+	void SelectGroupWithModifiers(int32 GroupIndex, bool bRange, bool bToggle);
+
+	/** Exactly these groups - Primary the one the Selection panel shows, one of them. */
+	void SelectGroups(const TArray<int32>& GroupIndices, int32 Primary);
+
+	/** Whether a group is selected, as a group - alone or among several. */
+	bool IsGroupSelected(int32 GroupIndex) const;
+
+	/** Every group selected as a group, in order. Empty when the selection is a track, a key or nothing. */
+	TArray<int32> GetSelectedGroups() const;
+
+	/**
 	 * A click on a layer with the file browser's modifiers: Shift selects every layer from the last one clicked to
 	 * this one, in the Animation Layers list's order; Ctrl (Cmd on a Mac) adds this one, or takes it out if it was
 	 * in. Neither is a plain click, which selects it alone.
@@ -624,6 +695,15 @@ public:
 	void DuplicateGroup(int32 GroupIndex);
 	void DeleteGroup(int32 GroupIndex);
 
+	/** Several groups and their tracks, as one undoable edit. */
+	void DeleteGroups(TArray<int32> GroupIndices);
+
+	/** Lists the groups under Folder - none takes them out of their folder. One undoable edit; nothing about playing changes. */
+	void SetGroupsFolder(const TArray<int32>& GroupIndices, const FString& Folder);
+
+	/** Renames a folder: every group in it moves to NewName - joining a folder of that name, if there is one. */
+	void RenameFolder(const FString& Folder, const FString& NewName);
+
 	/** Moves a group so it sits before InsertBefore. Num() means last. */
 	void MoveGroupTo(int32 GroupIndex, int32 InsertBefore);
 
@@ -636,8 +716,11 @@ public:
 	 *
 	 * AtSeconds, when set, is where on the Track Editor's time axis (played seconds) the menu that added it was
 	 * opened: the new track starts right there, With the track above it and delayed to that time, rather than After it.
+	 *
+	 * Preset, when given, is a track preset (see WidgetAnimTrackPresets.h) the new track is made from - its type and
+	 * settings, placed as any new track is. AnimType and InitialTypeParams are then the preset's.
 	 */
-	void AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, const FInstancedStruct* InitialTypeParams = nullptr, TOptional<float> AtSeconds = TOptional<float>());
+	void AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, const FInstancedStruct* InitialTypeParams = nullptr, TOptional<float> AtSeconds = TOptional<float>(), const FWidgetAnimLayer* Preset = nullptr);
 	void DuplicateLayer(int32 LayerIndex);
 	void DeleteLayer(int32 LayerIndex);
 
@@ -703,9 +786,10 @@ public:
 
 	/**
 	 * Unwraps an existing Widget Animation's layers into this one, where a new layer would go. An animation with
-	 * one group puts its layers in GroupIndex; one with several brings its groups along as new groups.
+	 * one group puts its layers in GroupIndex; one with several brings its groups along as new groups. AtSeconds, when set,
+	 * is where on the Track Editor's time axis the menu was opened: it starts there, as AddLayer places a track.
 	 */
-	void InsertAnimation(const class UWidgetAnimPresetAsset* Animation, int32 GroupIndex);
+	void InsertAnimation(const class UWidgetAnimPresetAsset* Animation, int32 GroupIndex, TOptional<float> AtSeconds = TOptional<float>());
 
 	/**
 	 * Unravel: replaces an animation track with a copy of every track of the animation it plays, each in the group the
@@ -717,7 +801,7 @@ public:
 
 	/**
 	 * Adds a key at LocalSeconds on a layer. On a Transform layer the new key starts at the pose already there; on
-	 * any other keyed layer at the value on the way between its neighbours, and with the curve of the segment it
+	 * any other keyed layer at the value on the way between its neighbors, and with the curve of the segment it
 	 * splits - so adding a key changes nothing until it is edited.
 	 */
 	void AddKey(int32 LayerIndex, float LocalSeconds);
@@ -732,7 +816,7 @@ public:
 	 * A key drag: one transaction from press to release, the preview following every move in between. With
 	 * Track Snapping on, the key snaps to other tracks' edges, their keys and the playhead within
 	 * SnapThresholdSeconds. Pressed on one of several selected keys, every one of them that can move goes with
-	 * it, by the same amount - none past a neighbour that isn't moving.
+	 * it, by the same amount - none past a neighbor that isn't moving.
 	 */
 	void BeginKeyDrag(int32 LayerIndex, int32 KeyIndex);
 	void UpdateKeyDrag(float LocalSeconds, float SnapThresholdSeconds);
@@ -777,6 +861,40 @@ public:
 
 	/** AtSeconds: where on the time axis the group's line was right-clicked, for tracks added from the menu. */
 	TSharedRef<SWidget> MakeGroupContextMenu(int32 GroupIndex, TOptional<float> AtSeconds = TOptional<float>());
+
+	/** For several selected groups at once: showing, folding, folders and deleting. */
+	TSharedRef<SWidget> MakeGroupsContextMenu(const TArray<int32>& GroupIndices);
+
+	/** A folder's row in the list: its groups, renaming it, and taking its groups out of it. */
+	TSharedRef<SWidget> MakeFolderContextMenu(const FString& Folder);
+
+	/**
+	 * Track presets (see WidgetAnimTrackPresets.h) for LayerIndices: with bApply, every single-track preset to put on them (the
+	 * Selection panel's Preset dropdown); then Save as Preset - under the track's or collapsed track's name, see
+	 * GetPresetSource - Delete Preset and Open Presets Folder (the track's menu has only these).
+	 */
+	void AddPresetEntries(class FMenuBuilder& Menu, const TArray<int32>& LayerIndices, bool bApply);
+
+	/**
+	 * What saving LayerIndices as a preset saves, and under what name: one renamed track, under its name; or every track of a
+	 * renamed collapsed track, under the collapsed track's (bOutCollapsed). False, with OutWhyNot, for anything else - a track
+	 * still called by its type, a collapsed track still called "Collapsed Tracks", several tracks that aren't one collapsed
+	 * track, an animation track.
+	 */
+	bool GetPresetSource(const TArray<int32>& LayerIndices, FString& OutName, TArray<int32>& OutLayers, bool& bOutCollapsed, FText& OutWhyNot) const;
+
+	/** Puts a preset's settings on the tracks, as one undoable edit - where each track is, and its name, stay its own. */
+	void ApplyLayerPreset(const TArray<int32>& LayerIndices, const FWidgetAnimLayer& Preset, const FString& PresetName);
+
+	/** Saves LayerIndices as a preset, as GetPresetSource says - asking first before replacing one. */
+	void SaveLayersAsPreset(const TArray<int32>& LayerIndices);
+
+	/**
+	 * Adds a preset's tracks, as one undoable edit, starting where a new track would (see AddLayer): a single track's named
+	 * after it; a collapsed track's as a collapsed track of the preset's name, each at its time relative to the first.
+	 */
+	void AddLayersFromPreset(int32 GroupIndex, const WidgetAnimTrackPresets::FPreset& Preset, TOptional<float> AtSeconds);
+
 	/** LocalSeconds: where on the track's bar it was right-clicked. ClickSeconds: where on the time axis, for tracks added from it. */
 	TSharedRef<SWidget> MakeLayerContextMenu(int32 LayerIndex, int32 KeyIndex, TOptional<float> LocalSeconds, TOptional<float> ClickSeconds = TOptional<float>());
 
@@ -796,6 +914,18 @@ public:
 	 * ("Count"), since every registered type shares the one enum value.
 	 */
 	static FText GetLayerTypeName(const FWidgetAnimLayer& Layer);
+
+	/** What a track is shown as: the name it was given (see RenameLayer), else GetLayerTypeName. */
+	static FText GetLayerDisplayName(const FWidgetAnimLayer& Layer);
+
+	/**
+	 * Base - trimmed - or, when another renamed track in Layers (other than the one at IgnoreIndex) has it, "Base 2",
+	 * "Base 3"... Names compare ignoring case. Empty stays empty.
+	 */
+	static FString MakeUniqueTrackName(const TArray<FWidgetAnimLayer>& Layers, const FString& Base, int32 IgnoreIndex = INDEX_NONE);
+
+	/** Numbers the name of the track at Index if another renamed track has it - for a track just copied in. */
+	static void EnsureUniqueTrackName(TArray<FWidgetAnimLayer>& Layers, int32 Index);
 
 	/**
 	 * Whether a track's length comes from its widget rather than its Duration - a text typed at a Typing Speed (see
@@ -933,7 +1063,10 @@ private:
 	void ApplyLayerSpans(const TArray<float>& NewStarts, const TArray<float>& NewLengths);
 
 	/** The Insert Existing Widget Animation picker. */
-	void AddInsertAnimationEntry(class FMenuBuilder& Menu, int32 GroupIndex);
+	void AddInsertAnimationEntry(class FMenuBuilder& Menu, int32 GroupIndex, TOptional<float> AtSeconds = TOptional<float>());
+
+	/** Move to Folder (a submenu: the folders there are, and a new one) and Remove from Folder, for GroupIndices. */
+	void AddFolderEntries(class FMenuBuilder& Menu, const TArray<int32>& GroupIndices);
 
 	/** Paste, into GroupIndex (INDEX_NONE: see PasteLayers) from AtSeconds - disabled while nothing copied is on the clipboard. */
 	void AddPasteEntry(class FMenuBuilder& Menu, int32 GroupIndex, TOptional<float> AtSeconds);
@@ -964,6 +1097,9 @@ private:
 
 	/** One track's row in the list, Indent further in for a track of a collapsed track opened in the list. */
 	TSharedRef<SWidget> MakeListLayerRow(int32 LayerIndex, int32 GroupIndex, float Indent);
+
+	/** A folder's row in the list: fold arrow, icon, name and how many groups it holds. */
+	TSharedRef<SWidget> MakeListFolderRow(const FString& Folder);
 
 	/** Save as Animation Asset, and - where the source offers it - saving and handing the tracks over to an entry. */
 	void SaveCompactList(bool bReplaceWithEntry);
@@ -1073,6 +1209,9 @@ private:
 	TSet<int32> TrackCollapsedGroups;
 	TSet<int32> ListCollapsedGroups;
 
+	/** The folders folded in the list, by name. */
+	TSet<FString> ListCollapsedFolders;
+
 	/** The open animation tracks, and their folded groups - see IsAnimationTrackExpanded - by position, as groups fold. */
 	TSet<int32> ExpandedAnimationTracks;
 	TSet<uint64> FoldedNestedGroups;
@@ -1095,6 +1234,13 @@ private:
 
 	/** Whether SyncScopeMutes last left any track muted - so leaving a collapsed track unmutes them once. */
 	bool bScopeMutesApplied = false;
+
+	/** Whether the Script area is open - see IsScriptOpen - and its window, while it is in one. */
+	bool bScriptOpen = false;
+	TWeakPtr<SWindow> ScriptWindow;
+
+	/** The Script area's tab, while it is docked - see DockScript. */
+	TWeakPtr<class SDockTab> ScriptTab;
 
 	/** How many lines at the top are pinned tracks' - see FTrackLine::bPinned. */
 	int32 NumPinnedLines = 0;
@@ -1189,6 +1335,13 @@ private:
 	/** Every selected layer, in sequence order, and the one a Shift-click ranges from. */
 	TArray<int32> SelectedLayers;
 	int32 SelectionAnchor = INDEX_NONE;
+
+	/**
+	 * Every selected group while the selection is groups - Selection.Group, the one the Selection panel shows, among them -
+	 * and the one a Shift-click on a group ranges from. Read only while Selection is a group: see IsGroupSelected.
+	 */
+	TArray<int32> SelectedGroups;
+	int32 GroupSelectionAnchor = INDEX_NONE;
 
 	uint32 LayoutSignature = 0;
 	uint32 ListSignature = 0;

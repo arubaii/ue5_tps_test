@@ -1,6 +1,7 @@
 ﻿// Copyright AR GameSystems 2026. All rights reserved.
 
 #include "WidgetAnimPanelSource.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h"
 
 #include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimEvaluator.h"
@@ -75,6 +76,22 @@ UWidget* IWidgetAnimPanelSource::ResolvePreviewTarget(FName Path) const
 {
 	UUserWidget* Root = GetPreviewRoot();
 	return Root && !Path.IsNone() ? UWidgetAnimLibrary::FindWidgetByPathInTree(Root, Path) : nullptr;
+}
+
+UWidget* IWidgetAnimPanelSource::GetLayerPreviewWidget(int32 LayerIndex) const
+{
+	UUserWidget* Root = GetPreviewRoot();
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!Root || !Layers || !Layers->IsValidIndex(LayerIndex))
+	{
+		return nullptr;
+	}
+
+	// Its group's Preview Target - what a new entry's Target Widgets start from - or the widget the animation plays on.
+	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
+	const int32 GroupIndex = Groups ? UWidgetAnimLibrary::GetLayerGroupIndex((*Layers)[LayerIndex], Groups->Num()) : INDEX_NONE;
+	UWidget* Target = Groups && Groups->IsValidIndex(GroupIndex) ? ResolvePreviewTarget((*Groups)[GroupIndex].PreviewTarget) : nullptr;
+	return Target ? Target : Root;
 }
 
 void IWidgetAnimPanelSource::UpdateAsset()
@@ -722,8 +739,10 @@ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset()
 		return nullptr;
 	}
 
-	// Beside the Widget Blueprint, named after it: WBP_Card -> WA_Card, numbered on a clash so the prefix survives.
-	const FString PackagePath = FPackageName::GetLongPackagePath(WidgetBlueprint->GetOutermost()->GetName());
+	// In the project's Default Save Folder, else beside the Widget Blueprint - named after it: WBP_Card -> WA_Card,
+	// numbered on a clash so the prefix survives.
+	const FString ProjectFolder = UWidgetAnimRuntimeSettings::Get().GetDefaultSavePackagePath();
+	const FString PackagePath = !ProjectFolder.IsEmpty() ? ProjectFolder : FPackageName::GetLongPackagePath(WidgetBlueprint->GetOutermost()->GetName());
 	FString BaseName = WidgetBlueprint->GetName();
 	BaseName.RemoveFromStart(TEXT("WBP_"));
 	BaseName.RemoveFromStart(TEXT("W_"));
@@ -1234,6 +1253,18 @@ UWidget* FWidgetAnimLayerArrayPanelSource::ResolveLayerTarget(UWidget* Widget, F
 	return Root ? UWidgetAnimLibrary::FindWidgetByPathInTree(Root, Path) : nullptr;
 }
 
+UWidget* FWidgetAnimLayerArrayPanelSource::GetLayerPreviewWidget(int32 LayerIndex) const
+{
+	UWidget* Widget = GetPreviewWidget();
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!Widget || !Layers || !Layers->IsValidIndex(LayerIndex))
+	{
+		return nullptr;
+	}
+	UWidget* Target = ResolveLayerTarget(Widget, (*Layers)[LayerIndex].TargetWidget);
+	return Target ? Target : Widget;
+}
+
 UWidget* FWidgetAnimLayerArrayPanelSource::GetPreviewWidget() const
 {
 	// Only while it is on screen - see FWidgetAnimAssetPanelSource::GetPreviewRoot.
@@ -1291,7 +1322,7 @@ void FWidgetAnimLayerArrayPanelSource::BuildSettings(UWidget* Widget, TArray<FWi
 		UWidget* Moved = Target ? Target : Widget;
 
 		Settings.TargetWidget = Target;
-		Settings.MaterialTargetImage = Cast<UImage>(Moved);
+		Settings.MaterialTargetWidget = Moved;
 		Settings.ShapeTargetBox = UWidgetAnimLibrary::ResolveShapeBox(Moved);
 		// The preview's Invert and the animation it plays within's inverts every track, as Invert Animation does at runtime -
 		// and never turns one inverted on its own (Invert Track) round again.
@@ -1593,7 +1624,12 @@ bool FWidgetAnimLayerArrayPanelSource::Tick(float DeltaTime)
 
 FString FWidgetAnimLayerArrayPanelSource::GetNewAssetPackagePath() const
 {
-	// Beside the Widget Blueprint (or whatever asset) the list lives in.
+	// In the project's Default Save Folder, else beside the Widget Blueprint (or whatever asset) the list lives in.
+	const FString ProjectFolder = UWidgetAnimRuntimeSettings::Get().GetDefaultSavePackagePath();
+	if (!ProjectFolder.IsEmpty())
+	{
+		return ProjectFolder;
+	}
 	const UObject* Object = Owner.Get();
 	return Object ? FPackageName::GetLongPackagePath(Object->GetOutermost()->GetName()) : FString(TEXT("/Game"));
 }

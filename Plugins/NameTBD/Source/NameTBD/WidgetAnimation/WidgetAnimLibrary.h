@@ -91,6 +91,20 @@ inline bool WidgetAnimTypeOscillates(EWidgetAnimType AnimType)
 	return AnimType == EWidgetAnimType::Pulse || AnimType == EWidgetAnimType::Shake;
 }
 
+/**
+ * Which material of its widget a Material Scalar or Vector track drives. A widget can carry several - a Text Block its
+ * font's and its outline's - and the track names which by kind, never by asset: the widget's own material, as the
+ * designer set it, is the one animated, so one animation fits every widget whose material has the parameter.
+ */
+UENUM(BlueprintType)
+enum class EWidgetAnimMaterialSlot : uint8
+{
+	Brush UMETA(ToolTip = "The widget's brush: an Image's, or a Border's background. Its brush has to be a material, not a plain texture."),
+	Font UMETA(DisplayName = "Font", ToolTip = "A Text Block's font material - the letters themselves. Set it under the Text Block's Font > Font Material."),
+	FontOutline UMETA(DisplayName = "Font Outline", ToolTip = "A Text Block's outline material. Set it under the Text Block's Font > Outline Settings > Outline Material, with an Outline Size above 0."),
+	Effect UMETA(DisplayName = "Retainer Effect", ToolTip = "A Retainer Box's Effect Material, drawn over everything inside it - a whole panel dissolving, blurring or glowing at once.")
+};
+
 /** Whether a track of this type offers Timing: every type does, though not every Timing - see WidgetAnimTimingAllowed. */
 inline bool WidgetAnimTimingAllowed(EWidgetAnimType AnimType, EWidgetAnimTiming Timing)
 {
@@ -550,9 +564,23 @@ struct NAMETBD_API FWidgetAnimSettings
 	// Material Scalar / Vector
 	// ------------------------------------------------------------------
 
-	/** Reverted to native UImage pointer for Designer dropdowns */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialScalar || AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
+	/**
+	 * The widget whose material a Material Scalar or Vector setting drives - set from the track's widget wherever settings
+	 * are built. Null: the widget the animation plays on.
+	 */
+	UPROPERTY(BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialScalar || AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
+	TObjectPtr<UWidget> MaterialTargetWidget = nullptr;
+
+	/** Which of that widget's materials. See EWidgetAnimMaterialSlot. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (DisplayName = "Material", EditCondition = "AnimType == EWidgetAnimType::MaterialScalar || AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
+	EWidgetAnimMaterialSlot MaterialSlot = EWidgetAnimMaterialSlot::Brush;
+
+	/** Settings made before MaterialTargetWidget: their Image, used when MaterialTargetWidget is null. */
+	UPROPERTY(BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialScalar || AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
 	TObjectPtr<UImage> MaterialTargetImage = nullptr;
+
+	/** The widget a material setting drives: MaterialTargetWidget, else MaterialTargetImage, else its TargetWidget. Null for the widget it plays on. */
+	UWidget* GetMaterialWidget() const;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialScalar", EditConditionHides))
 	FName ScalarParameterName;
@@ -563,7 +591,7 @@ struct NAMETBD_API FWidgetAnimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialScalar", EditConditionHides))
 	float EndScalarValue = 1.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (DisplayName = "Parameter", EditCondition = "AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
 	FName VectorParameterName;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
@@ -851,7 +879,16 @@ struct NAMETBD_API FWidgetAnimLayer
 	FWidgetAnimShakeTrackParams Shake;
 
 	// Material
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialScalar", EditConditionHides))
+	//
+	// A Material Scalar or Vector track drives a parameter of its widget's own material - which of the widget's materials
+	// is Material, and the widget is the track's (its group's, or its Target Widget). See EWidgetAnimMaterialSlot.
+
+	/** Which of the widget's materials: its brush (an Image or Border), a Text Block's font or outline, a Retainer Box's effect. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (DisplayName = "Material", EditCondition = "AnimType == EWidgetAnimType::MaterialScalar || AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
+	EWidgetAnimMaterialSlot MaterialSlot = EWidgetAnimMaterialSlot::Brush;
+
+	/** The scalar parameter it drives, by name - picked from the widget's material in the Widget Animations panel. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (DisplayName = "Parameter", EditCondition = "AnimType == EWidgetAnimType::MaterialScalar", EditConditionHides))
 	FName ScalarParameterName;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialScalar", EditConditionHides))
@@ -860,7 +897,7 @@ struct NAMETBD_API FWidgetAnimLayer
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialScalar", EditConditionHides))
 	float EndScalarValue = 1.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (DisplayName = "Parameter", EditCondition = "AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
 	FName VectorParameterName;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
@@ -1032,6 +1069,14 @@ struct NAMETBD_API FWidgetAnimLayer
 	FName CollapsedTrack;
 
 	/**
+	 * The name this track is shown by in the Widget Animations panel, given with Rename - empty shows its type's name
+	 * ("Scale"). No two renamed tracks in one animation share a name; tracks still called by their type can. Authoring
+	 * state only: how the track plays never reads it.
+	 */
+	UPROPERTY()
+	FString TrackName;
+
+	/**
 	 * Left out of the editor's previews for now - the panel is showing a collapsed track on its own, and this track isn't in
 	 * it. Set and cleared by the panel as it goes into and out of one, never saved. Played like a hidden track: its place
 	 * in time counts, it poses nothing. See UWidgetAnimLibrary::MuteHiddenLayers.
@@ -1154,6 +1199,16 @@ struct NAMETBD_API FWidgetAnimLayerGroup
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer Group", meta = (DisplayName = "Preview Target"))
 	FName PreviewTarget;
+
+#if WITH_EDITORONLY_DATA
+	/**
+	 * Optional. A List Folder this group is shown under in the Widget Animations panel's Animation Tracks list, to keep a
+	 * long list of groups tidy - not a folder in the Content Browser or on disk. Groups with the same List Folder name share
+	 * one. Only the panel reads it: it changes nothing about how the animation plays.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Layer Group", meta = (DisplayName = "List Folder"))
+	FString EditorFolder;
+#endif
 
 	/**
 	 * Only from the brief format where each group held its own layers. Moved into the animation's single list on
@@ -1288,11 +1343,22 @@ struct NAMETBD_API FWidgetAnimScalarTarget
 {
 	GENERATED_BODY()
 
+	/** The widget whose material it is. Null: the widget the result is applied to. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
-	UImage* TargetImage = nullptr;
+	TObjectPtr<UWidget> TargetWidget = nullptr;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	EWidgetAnimMaterialSlot Slot = EWidgetAnimMaterialSlot::Brush;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	FName ParameterName;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	float Value = 0.f;
+
+	/** The value it had before it was animated, written by a track that hasn't started - which any track that has replaces. */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	bool bIsBaseline = false;
 };
 
 USTRUCT(BlueprintType)
@@ -1300,11 +1366,22 @@ struct NAMETBD_API FWidgetAnimVectorTarget
 {
 	GENERATED_BODY()
 
+	/** The widget whose material it is. Null: the widget the result is applied to. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
-	UImage* TargetImage = nullptr;
+	TObjectPtr<UWidget> TargetWidget = nullptr;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	EWidgetAnimMaterialSlot Slot = EWidgetAnimMaterialSlot::Brush;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	FName ParameterName;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	FLinearColor Value = FLinearColor::White;
+
+	/** See FWidgetAnimScalarTarget::bIsBaseline. */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	bool bIsBaseline = false;
 };
 
 USTRUCT(BlueprintType)
@@ -1315,11 +1392,22 @@ struct NAMETBD_API FWidgetAnimResult
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	TArray<FWidgetAnimTargetedTransform> TargetedTransforms;
 
+	/**
+	 * Material parameters written this frame: one per widget, material and parameter - so two Images both animating a
+	 * "Hover" parameter each get their own, and the last track to write one wins.
+	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
-	TMap<FName, FWidgetAnimScalarTarget> ScalarParameters;
+	TArray<FWidgetAnimScalarTarget> ScalarParameters;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
-	TMap<FName, FWidgetAnimVectorTarget> VectorParameters;
+	TArray<FWidgetAnimVectorTarget> VectorParameters;
+
+	/** The scalar parameter of Widget's material in Slot written this frame - added, at 0, if none is. */
+	FWidgetAnimScalarTarget& FindOrAddScalar(UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter);
+	FWidgetAnimVectorTarget& FindOrAddVector(UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter);
+
+	/** Folds Other's material parameters in, as a later track's: each replaces this frame's, unless it is only a baseline and this frame already has one written. */
+	void FoldMaterialParameters(const FWidgetAnimResult& Other);
 
 	/** Shape Box outlines written this frame. Empty unless a Transform layer has Animate Shape on. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
@@ -1530,6 +1618,38 @@ struct NAMETBD_API FWidgetAnimShapeBaseline
 	bool bIsFallback = false;
 };
 
+/**
+ * What one material parameter of one widget held before an animation drove it - so a scrub back before the track starts,
+ * or the animation being let go, puts it back. Read off the widget's material when baselines are captured.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimMaterialBaseline
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	TObjectPtr<UWidget> Widget = nullptr;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	EWidgetAnimMaterialSlot Slot = EWidgetAnimMaterialSlot::Brush;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	FName ParameterName;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	bool bVector = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	float Scalar = 0.f;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	FLinearColor Vector = FLinearColor::White;
+
+	/** Captured for settings naming no widget: the widget the animation plays on. */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	bool bIsFallback = false;
+};
+
 USTRUCT(BlueprintType)
 struct NAMETBD_API FWidgetAnimBaselineSet
 {
@@ -1549,6 +1669,19 @@ struct NAMETBD_API FWidgetAnimBaselineSet
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	TArray<FWidgetAnimAuthoritativeBaseline> AuthoritativeBaselines;
 
+	/** What every animated material parameter held before it was animated. Usually empty. */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	TArray<FWidgetAnimMaterialBaseline> MaterialBaselines;
+
+	/** The captured value of Widget's parameter in Slot, or null. A null Widget finds the fallback capture. */
+	const FWidgetAnimMaterialBaseline* FindMaterialBaseline(const UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter, bool bVector) const
+	{
+		return MaterialBaselines.FindByPredicate([Widget, Slot, Parameter, bVector](const FWidgetAnimMaterialBaseline& Baseline)
+		{
+			return (Widget ? Baseline.Widget == Widget : Baseline.bIsFallback) && Baseline.Slot == Slot && Baseline.ParameterName == Parameter && Baseline.bVector == bVector;
+		});
+	}
+
 	/** Set by the first capture, so a later pass can't re-capture a pose the animation itself just wrote. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bCaptured = false;
@@ -1558,6 +1691,7 @@ struct NAMETBD_API FWidgetAnimBaselineSet
 		Baselines.Reset();
 		ShapeBaselines.Reset();
 		AuthoritativeBaselines.Reset();
+		MaterialBaselines.Reset();
 		bCaptured = false;
 	}
 
@@ -1700,8 +1834,25 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Widget Animation")
 	static void ApplyWidgetAnimResult(UWidget* FallbackWidget, const FWidgetAnimResult& Result);
 
+	/** Sets every material parameter in Result on its widget's material. FallbackWidget is the widget for parameters naming none. */
 	UFUNCTION(BlueprintCallable, Category = "Widget Animation")
-	static void ApplyMaterialAnimResult(const FWidgetAnimResult& Result);
+	static void ApplyMaterialAnimResult(const FWidgetAnimResult& Result, UWidget* FallbackWidget = nullptr);
+
+	/**
+	 * Widget's material in Slot as it is - an Image's or Border's brush material, a Text Block's font or outline material, a
+	 * Retainer Box's effect material - or null when it has none there, or isn't a widget that has that slot. Nothing is
+	 * changed: what the editor reads parameters off, and baselines are captured from.
+	 */
+	static UMaterialInterface* FindWidgetMaterial(const UWidget* Widget, EWidgetAnimMaterialSlot Slot);
+
+	/**
+	 * Widget's material in Slot as a dynamic instance of its own - made the first time, as the widget's own Get Dynamic
+	 * Material does - which is what animating it sets parameters on. Null when FindWidgetMaterial is.
+	 */
+	static UMaterialInstanceDynamic* GetWidgetDynamicMaterial(UWidget* Widget, EWidgetAnimMaterialSlot Slot);
+
+	/** Whether Widget has a material slot of that kind at all - an Image or Border's brush, a Text Block's font. */
+	static bool WidgetHasMaterialSlot(const UWidget* Widget, EWidgetAnimMaterialSlot Slot);
 
 	/**
 	 * Pushes every Shape Box outline in Result onto its box.
@@ -2202,6 +2353,9 @@ private:
 
 	/** Records Box's authored outline, if it isn't already recorded. The Shape Box half of CaptureOne. */
 	static void CaptureOneShape(FWidgetAnimBaselineSet& Baselines, UShapeBox* Box, bool bIsFallback = false);
+
+	/** Keeps what a material setting's parameter holds on its widget's material - FallbackWidget's, when it names no widget. */
+	static void CaptureOneMaterialParameter(FWidgetAnimBaselineSet& Baselines, const FWidgetAnimSettings& Settings, UWidget* FallbackWidget);
 
 	// Baseline-aware cores. The original entry points forward to these with a null set, which is the
 	// absolute (pre-baseline) behavior every existing caller already relies on.

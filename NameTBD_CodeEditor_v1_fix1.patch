@@ -1,0 +1,25 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp
+index 2e49f2b..dbe80ad 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp
+@@ -7,7 +7,7 @@
+ 
+ #include "HAL/FileManager.h"
+ #include "HAL/PlatformTime.h"
+-#include "IWebBrowserModule.h"
++#include "WebBrowserModule.h"   // IWebBrowserModule
+ #include "Interfaces/IPluginManager.h"
+ #include "Misc/Paths.h"
+ #include "SWebBrowser.h"
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp
+index acbaee3..6721ec8 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp
+@@ -6,6 +6,7 @@
+ #include "SWidgetAnimMonacoEditor.h"
+ #include "WidgetAnimEditorSettings.h"
+ #include "SWidgetAnimTimeline.h"
++#include "WidgetAnimPanelSource.h"
+ #include "NameTBDColors.h"
+ #include "NameTBDTooltips.h"
+ 

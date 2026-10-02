@@ -36,6 +36,7 @@ public class NameTBDEditor : ModuleRules
 			"DeveloperSettings", // UWidgetAnimEditorSettings - track colors and track controls
 			"GraphEditor",       // SGraphPin, for the Set Widget Animation Value node's dropdown pins
 			"NameTBDUncooked",   // that node
+			"WebBrowser",        // the Script area's code editor (Monaco), shown in the editor's web browser
 		});
 		if (Target.bBuildEditor)
 		{

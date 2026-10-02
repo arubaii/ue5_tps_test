@@ -20,6 +20,18 @@ enum class EWidgetAnimTrackTextZoomOut : uint8
 	Disappear
 };
 
+/** The colors of the Script area's code editor. */
+UENUM()
+enum class EWidgetAnimScriptEditorTheme : uint8
+{
+	/** The panel's own: its dark background, and the animation orange for the scripting API's names. */
+	Unreal UMETA(DisplayName = "Unreal"),
+
+	Dark UMETA(DisplayName = "VS Code Dark"),
+	Light UMETA(DisplayName = "VS Code Light"),
+	HighContrast UMETA(DisplayName = "High Contrast")
+};
+
 /**
  * The Widget Animations panel's per-user preferences: Editor Preferences > Plugins > Widget Animations Editor.
  *
@@ -138,6 +150,56 @@ public:
 	/** How long a track added with Add Animation Track runs, in seconds - its Duration, before anything changes it. */
 	UPROPERTY(config, EditAnywhere, Category = "New Tracks", meta = (DisplayName = "Default Track Length", ClampMin = "0.01", UIMin = "0.05", UIMax = "5.0", Units = "s"))
 	float DefaultTrackLength = 0.3f;
+
+	// -------------------------------------------------------------------------------------------------
+	// Script editor - the code editor in the panel's Script area
+	// -------------------------------------------------------------------------------------------------
+
+	/**
+	 * Scripts are written in a code editor - Monaco, the editor in VS Code: find and replace, multi-cursor, bracket matching,
+	 * folding, and suggestions for the scripting API. Off: the plain code box, which only colors the code. The plain box is
+	 * used anyway where the code editor can't run.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Script Editor", meta = (DisplayName = "Use Code Editor"))
+	bool bUseCodeEditor = true;
+
+	/** The code editor's colors. Unreal matches the panel; the others are VS Code's own. */
+	UPROPERTY(config, EditAnywhere, Category = "Script Editor", meta = (DisplayName = "Theme", EditCondition = "bUseCodeEditor"))
+	EWidgetAnimScriptEditorTheme ScriptEditorTheme = EWidgetAnimScriptEditorTheme::Unreal;
+
+	/** The code editor's text size, in pixels. Ctrl + mouse wheel in the editor changes it for now; this is what it starts at. */
+	UPROPERTY(config, EditAnywhere, Category = "Script Editor", meta = (DisplayName = "Font Size", ClampMin = "8", ClampMax = "32", EditCondition = "bUseCodeEditor"))
+	int32 ScriptEditorFontSize = 13;
+
+	/** The code editor's fonts, first choice first, as in CSS. Fonts not installed are skipped. */
+	UPROPERTY(config, EditAnywhere, Category = "Script Editor", meta = (DisplayName = "Font", EditCondition = "bUseCodeEditor"))
+	FString ScriptEditorFontFamily = TEXT("'Cascadia Code', Consolas, 'Courier New', monospace");
+
+	/** How many spaces Tab puts in, and how deep a block indents. Tabs are always spaces, as Python is written. */
+	UPROPERTY(config, EditAnywhere, Category = "Script Editor", meta = (DisplayName = "Tab Size", ClampMin = "1", ClampMax = "8", EditCondition = "bUseCodeEditor"))
+	int32 ScriptEditorTabSize = 4;
+
+	UPROPERTY(config, EditAnywhere, Category = "Script Editor", meta = (DisplayName = "Line Numbers", EditCondition = "bUseCodeEditor"))
+	bool bScriptEditorLineNumbers = true;
+
+	/** The small overview of the whole script down the editor's right side. */
+	UPROPERTY(config, EditAnywhere, Category = "Script Editor", meta = (DisplayName = "Minimap", EditCondition = "bUseCodeEditor"))
+	bool bScriptEditorMinimap = false;
+
+	/** Long lines wrap onto the next rather than running off to the right. */
+	UPROPERTY(config, EditAnywhere, Category = "Script Editor", meta = (DisplayName = "Word Wrap", EditCondition = "bUseCodeEditor"))
+	bool bScriptEditorWordWrap = false;
+
+	/** Typing ( [ { or a quote puts in the closing one too. */
+	UPROPERTY(config, EditAnywhere, Category = "Script Editor", meta = (DisplayName = "Close Brackets And Quotes", EditCondition = "bUseCodeEditor"))
+	bool bScriptEditorAutoClose = true;
+
+	/**
+	 * Suggestions as you type: after "anim." its members, after "TrackType." the types, inside target="..." the Widget
+	 * Blueprint's widgets - with a line of help for each, and more on hovering a name. Ctrl+Space asks for them anywhere.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Script Editor", meta = (DisplayName = "Suggestions", EditCondition = "bUseCodeEditor"))
+	bool bScriptEditorSuggestions = true;
 
 	// -------------------------------------------------------------------------------------------------
 

@@ -172,9 +172,9 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 		// track included, set with this one's name as its own are. See FWidgetAnimValueId.
 		Settings.ValueScope = Animation;
 
-		// Only meaningful for the two material types, and harmless on the rest: the library ignores it
-		// unless the layer is a material layer. One picker per group instead of two is why it's derived here.
-		Settings.MaterialTargetImage = Cast<UImage>(Target);
+		// Only meaningful for the two material types, and harmless on the rest: the widget whose material a material track
+		// drives is the group's - an Image, a Border, a Text Block, a Retainer Box. Null: the widget it plays on.
+		Settings.MaterialTargetWidget = Target;
 
 		// Same idea for a Transform layer's Animate Shape: the group's target, or the Shape Box it sits in.
 		// Null when no target was named; the library then resolves the widget the animation is played on.

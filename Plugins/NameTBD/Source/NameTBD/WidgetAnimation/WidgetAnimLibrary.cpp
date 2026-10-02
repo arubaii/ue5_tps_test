@@ -4,7 +4,14 @@
 
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
+#include "Components/Border.h"
+#include "Components/Image.h"
 #include "Components/PanelWidget.h"
+#include "Components/RetainerBox.h"
+#include "Components/TextBlock.h"
+#include "Materials/MaterialParameters.h"
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "Algo/StableSort.h"
 #include "Framework/Application/SlateApplication.h"
 #include "UObject/ObjectKey.h"
@@ -551,9 +558,9 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 	{
 		if (!Settings.ScalarParameterName.IsNone())
 		{
-			FWidgetAnimScalarTarget& Target = OutResult.ScalarParameters.FindOrAdd(Settings.ScalarParameterName);
-			Target.TargetImage = Settings.MaterialTargetImage;
+			FWidgetAnimScalarTarget& Target = OutResult.FindOrAddScalar(Settings.GetMaterialWidget(), Settings.MaterialSlot, Settings.ScalarParameterName);
 			Target.Value = LerpValue();
+			Target.bIsBaseline = false;
 		}
 		break;
 	}
@@ -563,9 +570,9 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 		if (!Settings.VectorParameterName.IsNone())
 		{
 			const FLinearColor Value = FMath::Lerp(WidgetAnimKeyPoints::GetColor(Settings, Segment), WidgetAnimKeyPoints::GetColor(Settings, Segment + 1), SegmentAlpha);
-			FWidgetAnimVectorTarget& Target = OutResult.VectorParameters.FindOrAdd(Settings.VectorParameterName);
-			Target.TargetImage = Settings.MaterialTargetImage;
+			FWidgetAnimVectorTarget& Target = OutResult.FindOrAddVector(Settings.GetMaterialWidget(), Settings.MaterialSlot, Settings.VectorParameterName);
 			Target.Value = Value;
+			Target.bIsBaseline = false;
 		}
 		break;
 	}
@@ -688,10 +695,44 @@ bool UWidgetAnimLibrary::GetEffectiveInvert(const FWidgetAnimSettings& Settings,
 
 void UWidgetAnimLibrary::TouchLayerTargets(const FWidgetAnimSettings& Settings, FWidgetAnimResult& OutResult, const FWidgetAnimBaselineSet& Baselines)
 {
-	// Material parameters have no baseline to go back to - nothing records what a material was authored at - so
-	// a material layer that hasn't started is still left alone.
+	// A material layer that hasn't started puts its parameter back at what the material held before it was animated - so
+	// a scrub back before it starts shows the material as designed - unless another track writes it this frame.
 	if (Settings.AnimType == EWidgetAnimType::MaterialScalar || Settings.AnimType == EWidgetAnimType::MaterialVector)
 	{
+		const bool bVector = Settings.AnimType == EWidgetAnimType::MaterialVector;
+		const FName Parameter = bVector ? Settings.VectorParameterName : Settings.ScalarParameterName;
+		UWidget* MaterialWidget = Settings.GetMaterialWidget();
+		const FWidgetAnimMaterialBaseline* Baseline = Parameter.IsNone() ? nullptr : Baselines.FindMaterialBaseline(MaterialWidget, Settings.MaterialSlot, Parameter, bVector);
+		if (!Baseline)
+		{
+			return;
+		}
+		if (bVector)
+		{
+			const bool bWritten = OutResult.VectorParameters.ContainsByPredicate([MaterialWidget, &Settings, Parameter](const FWidgetAnimVectorTarget& Target)
+			{
+				return Target.TargetWidget == MaterialWidget && Target.Slot == Settings.MaterialSlot && Target.ParameterName == Parameter;
+			});
+			if (!bWritten)
+			{
+				FWidgetAnimVectorTarget& Target = OutResult.FindOrAddVector(MaterialWidget, Settings.MaterialSlot, Parameter);
+				Target.Value = Baseline->Vector;
+				Target.bIsBaseline = true;
+			}
+		}
+		else
+		{
+			const bool bWritten = OutResult.ScalarParameters.ContainsByPredicate([MaterialWidget, &Settings, Parameter](const FWidgetAnimScalarTarget& Target)
+			{
+				return Target.TargetWidget == MaterialWidget && Target.Slot == Settings.MaterialSlot && Target.ParameterName == Parameter;
+			});
+			if (!bWritten)
+			{
+				FWidgetAnimScalarTarget& Target = OutResult.FindOrAddScalar(MaterialWidget, Settings.MaterialSlot, Parameter);
+				Target.Value = Baseline->Scalar;
+				Target.bIsBaseline = true;
+			}
+		}
 		return;
 	}
 
@@ -1722,33 +1763,217 @@ void UWidgetAnimLibrary::ApplyWidgetAnimResultOver(UWidget* FallbackWidget, cons
 	ApplyResultInternal(FallbackWidget, Result, &Baselines);
 }
 
-void UWidgetAnimLibrary::ApplyMaterialAnimResult(const FWidgetAnimResult& Result)
+void UWidgetAnimLibrary::ApplyMaterialAnimResult(const FWidgetAnimResult& Result, UWidget* FallbackWidget)
 {
-	for (const TPair<FName, FWidgetAnimScalarTarget>& Pair : Result.ScalarParameters)
+	for (const FWidgetAnimScalarTarget& Scalar : Result.ScalarParameters)
 	{
-		UImage* TargetImage = Pair.Value.TargetImage;
-		if (!TargetImage)
+		UWidget* Widget = Scalar.TargetWidget ? Scalar.TargetWidget.Get() : FallbackWidget;
+		if (UMaterialInstanceDynamic* MID = GetWidgetDynamicMaterial(Widget, Scalar.Slot))
 		{
-			continue;
-		}
-
-		if (UMaterialInstanceDynamic* MID = TargetImage->GetDynamicMaterial())
-		{
-			MID->SetScalarParameterValue(Pair.Key, Pair.Value.Value);
+			MID->SetScalarParameterValue(Scalar.ParameterName, Scalar.Value);
 		}
 	}
 
-	for (const TPair<FName, FWidgetAnimVectorTarget>& Pair : Result.VectorParameters)
+	for (const FWidgetAnimVectorTarget& Vector : Result.VectorParameters)
 	{
-		UImage* TargetImage = Pair.Value.TargetImage;
-		if (!TargetImage)
+		UWidget* Widget = Vector.TargetWidget ? Vector.TargetWidget.Get() : FallbackWidget;
+		if (UMaterialInstanceDynamic* MID = GetWidgetDynamicMaterial(Widget, Vector.Slot))
 		{
-			continue;
+			MID->SetVectorParameterValue(Vector.ParameterName, Vector.Value);
 		}
+	}
+}
 
-		if (UMaterialInstanceDynamic* MID = TargetImage->GetDynamicMaterial())
+namespace WidgetAnimMaterials
+{
+	/** A brush held in a property of Widget's class by name - read through reflection, as the property may be deprecated to touch directly. */
+	const FSlateBrush* FindBrushProperty(const UWidget* Widget, FName PropertyName)
+	{
+		const FStructProperty* Property = Widget ? FindFProperty<FStructProperty>(Widget->GetClass(), PropertyName) : nullptr;
+		return Property && Property->Struct == FSlateBrush::StaticStruct() ? Property->ContainerPtrToValuePtr<FSlateBrush>(Widget) : nullptr;
+	}
+
+	UMaterialInterface* FindObjectProperty(const UWidget* Widget, FName PropertyName)
+	{
+		const FObjectPropertyBase* Property = Widget ? FindFProperty<FObjectPropertyBase>(Widget->GetClass(), PropertyName) : nullptr;
+		return Property ? Cast<UMaterialInterface>(Property->GetObjectPropertyValue_InContainer(Widget)) : nullptr;
+	}
+}
+
+bool UWidgetAnimLibrary::WidgetHasMaterialSlot(const UWidget* Widget, EWidgetAnimMaterialSlot Slot)
+{
+	switch (Slot)
+	{
+	case EWidgetAnimMaterialSlot::Brush:       return Widget && (Widget->IsA<UImage>() || Widget->IsA<UBorder>());
+	case EWidgetAnimMaterialSlot::Font:
+	case EWidgetAnimMaterialSlot::FontOutline: return Widget && Widget->IsA<UTextBlock>();
+	case EWidgetAnimMaterialSlot::Effect:      return Widget && Widget->IsA<URetainerBox>();
+	default:                                   return false;
+	}
+}
+
+UMaterialInterface* UWidgetAnimLibrary::FindWidgetMaterial(const UWidget* Widget, EWidgetAnimMaterialSlot Slot)
+{
+	using namespace WidgetAnimMaterials;
+
+	if (!Widget)
+	{
+		return nullptr;
+	}
+	switch (Slot)
+	{
+	case EWidgetAnimMaterialSlot::Brush:
+		if (const UImage* Image = Cast<UImage>(Widget))
 		{
-			MID->SetVectorParameterValue(Pair.Key, Pair.Value.Value);
+			return Cast<UMaterialInterface>(Image->GetBrush().GetResourceObject());
+		}
+		if (Widget->IsA<UBorder>())
+		{
+			const FSlateBrush* Brush = FindBrushProperty(Widget, TEXT("Background"));
+			return Brush ? Cast<UMaterialInterface>(Brush->GetResourceObject()) : nullptr;
+		}
+		return nullptr;
+
+	case EWidgetAnimMaterialSlot::Font:
+		if (const UTextBlock* Text = Cast<UTextBlock>(Widget))
+		{
+			return Cast<UMaterialInterface>(Text->GetFont().FontMaterial);
+		}
+		return nullptr;
+
+	case EWidgetAnimMaterialSlot::FontOutline:
+		if (const UTextBlock* Text = Cast<UTextBlock>(Widget))
+		{
+			return Cast<UMaterialInterface>(Text->GetFont().OutlineSettings.OutlineMaterial);
+		}
+		return nullptr;
+
+	case EWidgetAnimMaterialSlot::Effect:
+		if (const URetainerBox* Retainer = Cast<URetainerBox>(Widget))
+		{
+			if (UMaterialInterface* Live = Retainer->GetEffectMaterial())
+			{
+				return Live;
+			}
+			return FindObjectProperty(Widget, TEXT("EffectMaterial"));
+		}
+		return nullptr;
+
+	default:
+		return nullptr;
+	}
+}
+
+UMaterialInstanceDynamic* UWidgetAnimLibrary::GetWidgetDynamicMaterial(UWidget* Widget, EWidgetAnimMaterialSlot Slot)
+{
+	// Only where there is a material to begin with: the widgets' own Get Dynamic Material would otherwise make an instance
+	// of nothing, or of the default material.
+	if (!Widget || !FindWidgetMaterial(Widget, Slot))
+	{
+		return nullptr;
+	}
+	switch (Slot)
+	{
+	case EWidgetAnimMaterialSlot::Brush:
+		if (UImage* Image = Cast<UImage>(Widget))
+		{
+			return Image->GetDynamicMaterial();
+		}
+		if (UBorder* Border = Cast<UBorder>(Widget))
+		{
+			return Border->GetDynamicMaterial();
+		}
+		return nullptr;
+	case EWidgetAnimMaterialSlot::Font:
+		if (UTextBlock* Text = Cast<UTextBlock>(Widget))
+		{
+			return Text->GetDynamicFontMaterial();
+		}
+		return nullptr;
+	case EWidgetAnimMaterialSlot::FontOutline:
+		if (UTextBlock* Text = Cast<UTextBlock>(Widget))
+		{
+			return Text->GetDynamicOutlineMaterial();
+		}
+		return nullptr;
+	case EWidgetAnimMaterialSlot::Effect:
+		if (URetainerBox* Retainer = Cast<URetainerBox>(Widget))
+		{
+			return Retainer->GetEffectMaterial();
+		}
+		return nullptr;
+	default:
+		return nullptr;
+	}
+}
+
+UWidget* FWidgetAnimSettings::GetMaterialWidget() const
+{
+	if (MaterialTargetWidget)
+	{
+		return MaterialTargetWidget;
+	}
+	if (MaterialTargetImage)
+	{
+		return MaterialTargetImage;
+	}
+	return TargetWidget;
+}
+
+FWidgetAnimScalarTarget& FWidgetAnimResult::FindOrAddScalar(UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter)
+{
+	FWidgetAnimScalarTarget* Found = ScalarParameters.FindByPredicate([Widget, Slot, Parameter](const FWidgetAnimScalarTarget& Target)
+	{
+		return Target.TargetWidget == Widget && Target.Slot == Slot && Target.ParameterName == Parameter;
+	});
+	if (Found)
+	{
+		return *Found;
+	}
+	FWidgetAnimScalarTarget& Added = ScalarParameters.AddDefaulted_GetRef();
+	Added.TargetWidget = Widget;
+	Added.Slot = Slot;
+	Added.ParameterName = Parameter;
+	return Added;
+}
+
+FWidgetAnimVectorTarget& FWidgetAnimResult::FindOrAddVector(UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter)
+{
+	FWidgetAnimVectorTarget* Found = VectorParameters.FindByPredicate([Widget, Slot, Parameter](const FWidgetAnimVectorTarget& Target)
+	{
+		return Target.TargetWidget == Widget && Target.Slot == Slot && Target.ParameterName == Parameter;
+	});
+	if (Found)
+	{
+		return *Found;
+	}
+	FWidgetAnimVectorTarget& Added = VectorParameters.AddDefaulted_GetRef();
+	Added.TargetWidget = Widget;
+	Added.Slot = Slot;
+	Added.ParameterName = Parameter;
+	return Added;
+}
+
+void FWidgetAnimResult::FoldMaterialParameters(const FWidgetAnimResult& Other)
+{
+	for (const FWidgetAnimScalarTarget& Scalar : Other.ScalarParameters)
+	{
+		const int32 Before = ScalarParameters.Num();
+		FWidgetAnimScalarTarget& Into = FindOrAddScalar(Scalar.TargetWidget, Scalar.Slot, Scalar.ParameterName);
+		const bool bNew = ScalarParameters.Num() != Before;
+		if (bNew || !Scalar.bIsBaseline || Into.bIsBaseline)
+		{
+			Into = Scalar;
+		}
+	}
+	for (const FWidgetAnimVectorTarget& Vector : Other.VectorParameters)
+	{
+		const int32 Before = VectorParameters.Num();
+		FWidgetAnimVectorTarget& Into = FindOrAddVector(Vector.TargetWidget, Vector.Slot, Vector.ParameterName);
+		const bool bNew = VectorParameters.Num() != Before;
+		if (bNew || !Vector.bIsBaseline || Into.bIsBaseline)
+		{
+			Into = Vector;
 		}
 	}
 }
@@ -1766,7 +1991,7 @@ void UWidgetAnimLibrary::PlayInternal(UWidget* FallbackWidget, const TArray<FWid
 	Result.bAllFinished = TickAnimationsInto(Animations, States, DeltaTime, bIsOutAnimation, Result, nullptr, Baselines);
 
 	ApplyResultInternal(FallbackWidget, Result, Baselines);
-	ApplyMaterialAnimResult(Result);
+	ApplyMaterialAnimResult(Result, FallbackWidget);
 
 	// Fired next frame - see WidgetAnimCue.h. No Anim ID here: these stacks are played without entries' names.
 	WidgetAnimCues::Queue(Result.CueFires, FallbackWidget, NAME_None);
@@ -1815,7 +2040,7 @@ void UWidgetAnimLibrary::InitializeInternal(UWidget* FallbackWidget, const TArra
 	}
 
 	ApplyResultInternal(FallbackWidget, StartResult, Baselines);
-	ApplyMaterialAnimResult(StartResult);
+	ApplyMaterialAnimResult(StartResult, FallbackWidget);
 }
 
 void UWidgetAnimLibrary::InitializeWidgetAnimations(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Animations, TArray<FWidgetAnimState>& States)
@@ -1978,6 +2203,36 @@ void UWidgetAnimLibrary::CaptureOne(FWidgetAnimBaselineSet& Baselines, UWidget* 
 	Baseline.Angle = Transform.Angle;
 }
 
+void UWidgetAnimLibrary::CaptureOneMaterialParameter(FWidgetAnimBaselineSet& Baselines, const FWidgetAnimSettings& Settings, UWidget* FallbackWidget)
+{
+	const bool bVector = Settings.AnimType == EWidgetAnimType::MaterialVector;
+	const FName Parameter = bVector ? Settings.VectorParameterName : Settings.ScalarParameterName;
+	UWidget* Named = Settings.GetMaterialWidget();
+	UWidget* Widget = Named ? Named : FallbackWidget;
+	UMaterialInterface* Material = FindWidgetMaterial(Widget, Settings.MaterialSlot);
+	if (Parameter.IsNone() || !Material || Baselines.FindMaterialBaseline(Named, Settings.MaterialSlot, Parameter, bVector))
+	{
+		return;
+	}
+
+	FWidgetAnimMaterialBaseline& Baseline = Baselines.MaterialBaselines.AddDefaulted_GetRef();
+	Baseline.Widget = Widget;
+	Baseline.Slot = Settings.MaterialSlot;
+	Baseline.ParameterName = Parameter;
+	Baseline.bVector = bVector;
+	Baseline.bIsFallback = Named == nullptr;
+
+	const FHashedMaterialParameterInfo Info(Parameter);
+	if (bVector)
+	{
+		Material->GetVectorParameterValue(Info, Baseline.Vector);
+	}
+	else
+	{
+		Material->GetScalarParameterValue(Info, Baseline.Scalar);
+	}
+}
+
 void UWidgetAnimLibrary::CaptureOneShape(FWidgetAnimBaselineSet& Baselines, UShapeBox* Box, bool bIsFallback)
 {
 	if (!Box)
@@ -2063,7 +2318,9 @@ void UWidgetAnimLibrary::CaptureWidgetAnimBaselines(UWidget* FallbackWidget, con
 
 			if (Settings.AnimType == EWidgetAnimType::MaterialScalar || Settings.AnimType == EWidgetAnimType::MaterialVector)
 			{
-				// Material entries write parameters, not a transform, so there is no pose to restore.
+				// Material entries write parameters, not a transform: what the parameter held is kept instead, read off the
+				// widget's material, to go back to when the track hasn't started or the animation is let go.
+				CaptureOneMaterialParameter(Baselines, Settings, FallbackWidget);
 				continue;
 			}
 
@@ -2120,6 +2377,26 @@ void UWidgetAnimLibrary::RestoreWidgetAnimBaselines(const FWidgetAnimBaselineSet
 	for (const FWidgetAnimShapeBaseline& ShapeBaseline : Baselines.ShapeBaselines)
 	{
 		ApplyShapeToBox(ShapeBaseline.Box, ShapeBaseline.Shape);
+	}
+
+	// Material parameters go back to what they held - on the widget's own dynamic material, where an animation set them.
+	// A widget whose material was never made dynamic was never changed, and is left as it is.
+	for (const FWidgetAnimMaterialBaseline& Baseline : Baselines.MaterialBaselines)
+	{
+		UWidget* Widget = Baseline.Widget;
+		UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(FindWidgetMaterial(Widget, Baseline.Slot));
+		if (!MID)
+		{
+			continue;
+		}
+		if (Baseline.bVector)
+		{
+			MID->SetVectorParameterValue(Baseline.ParameterName, Baseline.Vector);
+		}
+		else
+		{
+			MID->SetScalarParameterValue(Baseline.ParameterName, Baseline.Scalar);
+		}
 	}
 
 	// Registered types' channels go back whole too, each by the type that captured it.
@@ -2203,7 +2480,7 @@ void UWidgetAnimLibrary::ApplyWidgetAnimationsAtAlpha(UWidget* FallbackWidget, c
 	}
 
 	ApplyResultInternal(FallbackWidget, Result, Baselines.bCaptured ? &Baselines : nullptr);
-	ApplyMaterialAnimResult(Result);
+	ApplyMaterialAnimResult(Result, FallbackWidget);
 }
 
 void UWidgetAnimLibrary::FirePreviewCues(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& InAnimations, float FromAlpha, float ToAlpha, bool bIsOutAnimation, bool bIncludeFrom)
@@ -2942,7 +3219,8 @@ bool UWidgetAnimLibrary::ExpandSettings(UWidget* FallbackWidget, const TArray<FW
 			// outline, not the list's.
 			if (!Item.Part.IsSet())
 			{
-				Copy.MaterialTargetImage = Cast<UImage>(Item.Widget);
+				Copy.MaterialTargetWidget = Item.Widget;
+				Copy.MaterialTargetImage = nullptr;
 				Copy.ShapeTargetBox = ResolveShapeBox(Item.Widget);
 
 				// And prepared on its own widget - each child's own text counted, not the list's first. The layers after
@@ -3418,6 +3696,7 @@ FWidgetAnimSettings FWidgetAnimLayer::ToSettings() const
 	// A track inverted on its own: the one per-use flag a layer carries itself. Every use ORs its own Invert onto it.
 	Out.bInvertAnimation = bInvertTrack;
 
+	Out.MaterialSlot = MaterialSlot;
 	Out.ScalarParameterName = ScalarParameterName;
 	Out.StartScalarValue = StartScalarValue;
 	Out.EndScalarValue = EndScalarValue;
@@ -3478,6 +3757,7 @@ FWidgetAnimLayer FWidgetAnimLayer::FromSettings(const FWidgetAnimSettings& Setti
 	Out.PulseScaleAmount = Settings.PulseScaleAmount;
 	Out.Shake = Settings.Shake;
 
+	Out.MaterialSlot = Settings.MaterialSlot;
 	Out.ScalarParameterName = Settings.ScalarParameterName;
 	Out.StartScalarValue = Settings.StartScalarValue;
 	Out.EndScalarValue = Settings.EndScalarValue;
@@ -4000,22 +4280,27 @@ void UWidgetAnimLibrary::ApplyValueLayerContribution(const FWidgetAnimSettings& 
 		Into.Angle += Combined.Angle;
 	}
 
-	for (const TPair<FName, FWidgetAnimScalarTarget>& Pair : First.ScalarParameters)
+	for (const FWidgetAnimScalarTarget& Scalar : First.ScalarParameters)
 	{
-		OutResult.ScalarParameters.Add(Pair.Key, Pair.Value);
+		FWidgetAnimScalarTarget& Into = OutResult.FindOrAddScalar(Scalar.TargetWidget, Scalar.Slot, Scalar.ParameterName);
+		Into = Scalar;
 	}
 
-	for (const TPair<FName, FWidgetAnimVectorTarget>& Pair : First.VectorParameters)
+	for (const FWidgetAnimVectorTarget& Vector : First.VectorParameters)
 	{
-		FWidgetAnimVectorTarget Combined = Pair.Value;
+		FWidgetAnimVectorTarget Combined = Vector;
 		for (int32 Channel = 1; Channel < NumChannels && Channel < 4; ++Channel)
 		{
-			if (const FWidgetAnimVectorTarget* ChannelPose = Parts[Channel].VectorParameters.Find(Pair.Key))
+			const FWidgetAnimVectorTarget* ChannelPose = Parts[Channel].VectorParameters.FindByPredicate([&Vector](const FWidgetAnimVectorTarget& Other)
+			{
+				return Other.TargetWidget == Vector.TargetWidget && Other.Slot == Vector.Slot && Other.ParameterName == Vector.ParameterName;
+			});
+			if (ChannelPose)
 			{
 				Combined.Value.Component(Channel) = ChannelPose->Value.Component(Channel);
 			}
 		}
-		OutResult.VectorParameters.Add(Pair.Key, Combined);
+		OutResult.FindOrAddVector(Combined.TargetWidget, Combined.Slot, Combined.ParameterName) = Combined;
 	}
 
 	// The outline: whole on the whole path; on a shape setting, that setting from the keys - X from the first channel's
@@ -4391,14 +4676,7 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 			Combined.Shear += Contribution.Shear;
 			Combined.Angle += Contribution.Angle;
 		}
-		for (const TPair<FName, FWidgetAnimScalarTarget>& Pair : TrackResult.ScalarParameters)
-		{
-			Result.ScalarParameters.Add(Pair.Key, Pair.Value);
-		}
-		for (const TPair<FName, FWidgetAnimVectorTarget>& Pair : TrackResult.VectorParameters)
-		{
-			Result.VectorParameters.Add(Pair.Key, Pair.Value);
-		}
+		Result.FoldMaterialParameters(TrackResult);
 		for (const FWidgetAnimShapeTarget& Shape : TrackResult.ShapeTargets)
 		{
 			// Only an authored outline - a layer not started yet - never replaces one another track is animating.
@@ -4439,7 +4717,7 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 	// One apply for the whole player. Two animations touching the same widget therefore combine - opacity
 	// and scale multiply, translation and angle add - instead of the later one erasing the earlier one.
 	ApplyResultInternal(FallbackWidget, Result, Baselines.bCaptured ? &Baselines : nullptr);
-	ApplyMaterialAnimResult(Result);
+	ApplyMaterialAnimResult(Result, FallbackWidget);
 
 	Player.Tracks.RemoveAll([](const FWidgetAnimTrack& Track) { return Track.bFinished && !Track.bHoldWhenFinished; });
 

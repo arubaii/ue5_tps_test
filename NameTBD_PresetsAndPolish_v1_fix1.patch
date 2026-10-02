@@ -1,0 +1,168 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index d187193..3ea7830 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -15745,6 +15745,81 @@ void SWidgetAnimTimeline::AddInsertAnimationEntry(FMenuBuilder& Menu, int32 Grou
+ 		FSlateIcon(FNameTBDStyle::GetStyleSetName(), "ClassIcon.WidgetAnimPresetAsset"));
+ }
+ 
++namespace WidgetAnimPresetMenu
++{
++	/** The name a collapsed track is given when it is made - and numbered from - which says nothing about what it does. */
++	bool IsDefaultCollapsedName(const FString& Name)
++	{
++		const FString Default = TEXT("Collapsed Tracks");
++		if (Name.Equals(Default, ESearchCase::IgnoreCase))
++		{
++			return true;
++		}
++		return Name.StartsWith(Default + TEXT(" "), ESearchCase::IgnoreCase) && Name.Mid(Default.Len() + 1).IsNumeric();
++	}
++
++	/** A preset's tracks, as the menus describe them: a single track's type, or how many a collapsed one holds. */
++	FText Describe(const WidgetAnimTrackPresets::FPreset& Preset)
++	{
++		return Preset.bCollapsed
++			? FText::Format(LOCTEXT("CollapsedPresetDescription", "Collapsed, {0} {0}|plural(one=track,other=tracks)"), FText::AsNumber(Preset.Layers.Num()))
++			: SWidgetAnimTimeline::GetLayerTypeName(Preset.Layers[0]);
++	}
++
++	/** A menu row for a preset: a bar in its track's color, its name, and what it is, subdued. */
++	TSharedRef<SWidget> MakeRow(const WidgetAnimTrackPresets::FPreset& Preset)
++	{
++		const FLinearColor Color = Preset.bCollapsed ? NameTBD::Colors::WidgetAnimEditor::LayerCollapsed : SWidgetAnimTimeline::GetLayerTypeColor(Preset.Layers[0]);
++		return SNew(SHorizontalBox)
++			+ SHorizontalBox::Slot()
++			.AutoWidth()
++			.VAlign(VAlign_Center)
++			.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
++			[
++				SNew(SBox)
++				.WidthOverride(3.f)
++				.HeightOverride(12.f)
++				[
++					SNew(SImage)
++					.Image(WidgetAnimTimeline::WhiteBrush())
++					.ColorAndOpacity(Color)
++				]
++			]
++			+ SHorizontalBox::Slot()
++			.FillWidth(1.f)
++			.VAlign(VAlign_Center)
++			.Padding(FMargin(0.f, 0.f, 16.f, 0.f))
++			[
++				SNew(STextBlock)
++				.Text(FText::FromString(Preset.Name))
++			]
++			+ SHorizontalBox::Slot()
++			.AutoWidth()
++			.VAlign(VAlign_Center)
++			[
++				SNew(STextBlock)
++				.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
++				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
++				.Text(Describe(Preset))
++			];
++	}
++
++	/** A note in a menu, where there is nothing to list. */
++	TSharedRef<SWidget> MakeNote(const FText& Text)
++	{
++		return SNew(SBox)
++			.Padding(FMargin(8.f, 2.f, 8.f, 4.f))
++			.MaxDesiredWidth(300.f)
++			[
++				SNew(STextBlock)
++				.AutoWrapText(true)
++				.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
++				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
++				.Text(Text)
++			];
++	}
++}
++
+ void SWidgetAnimTimeline::AddTrackSubMenu(FMenuBuilder& Menu, int32 GroupIndex, TOptional<float> AtSeconds)
+ {
+ 	// Named after its group only where there are groups to tell apart.
+@@ -16055,81 +16130,6 @@ void SWidgetAnimTimeline::AddFocusEntries(FMenuBuilder& Menu, const TArray<int32
+ 	}
+ }
+ 
+-namespace WidgetAnimPresetMenu
+-{
+-	/** The name a collapsed track is given when it is made - and numbered from - which says nothing about what it does. */
+-	bool IsDefaultCollapsedName(const FString& Name)
+-	{
+-		const FString Default = TEXT("Collapsed Tracks");
+-		if (Name.Equals(Default, ESearchCase::IgnoreCase))
+-		{
+-			return true;
+-		}
+-		return Name.StartsWith(Default + TEXT(" "), ESearchCase::IgnoreCase) && Name.Mid(Default.Len() + 1).IsNumeric();
+-	}
+-
+-	/** A preset's tracks, as the menus describe them: a single track's type, or how many a collapsed one holds. */
+-	FText Describe(const WidgetAnimTrackPresets::FPreset& Preset)
+-	{
+-		return Preset.bCollapsed
+-			? FText::Format(LOCTEXT("CollapsedPresetDescription", "Collapsed, {0} {0}|plural(one=track,other=tracks)"), FText::AsNumber(Preset.Layers.Num()))
+-			: SWidgetAnimTimeline::GetLayerTypeName(Preset.Layers[0]);
+-	}
+-
+-	/** A menu row for a preset: a bar in its track's color, its name, and what it is, subdued. */
+-	TSharedRef<SWidget> MakeRow(const WidgetAnimTrackPresets::FPreset& Preset)
+-	{
+-		const FLinearColor Color = Preset.bCollapsed ? NameTBD::Colors::WidgetAnimEditor::LayerCollapsed : SWidgetAnimTimeline::GetLayerTypeColor(Preset.Layers[0]);
+-		return SNew(SHorizontalBox)
+-			+ SHorizontalBox::Slot()
+-			.AutoWidth()
+-			.VAlign(VAlign_Center)
+-			.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
+-			[
+-				SNew(SBox)
+-				.WidthOverride(3.f)
+-				.HeightOverride(12.f)
+-				[
+-					SNew(SImage)
+-					.Image(WidgetAnimTimeline::WhiteBrush())
+-					.ColorAndOpacity(Color)
+-				]
+-			]
+-			+ SHorizontalBox::Slot()
+-			.FillWidth(1.f)
+-			.VAlign(VAlign_Center)
+-			.Padding(FMargin(0.f, 0.f, 16.f, 0.f))
+-			[
+-				SNew(STextBlock)
+-				.Text(FText::FromString(Preset.Name))
+-			]
+-			+ SHorizontalBox::Slot()
+-			.AutoWidth()
+-			.VAlign(VAlign_Center)
+-			[
+-				SNew(STextBlock)
+-				.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
+-				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+-				.Text(Describe(Preset))
+-			];
+-	}
+-
+-	/** A note in a menu, where there is nothing to list. */
+-	TSharedRef<SWidget> MakeNote(const FText& Text)
+-	{
+-		return SNew(SBox)
+-			.Padding(FMargin(8.f, 2.f, 8.f, 4.f))
+-			.MaxDesiredWidth(300.f)
+-			[
+-				SNew(STextBlock)
+-				.AutoWrapText(true)
+-				.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
+-				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+-				.Text(Text)
+-			];
+-	}
+-}
+-
+ bool SWidgetAnimTimeline::GetPresetSource(const TArray<int32>& LayerIndices, FString& OutName, TArray<int32>& OutLayers, bool& bOutCollapsed, FText& OutWhyNot) const
+ {
+ 	OutName.Reset();

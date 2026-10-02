@@ -1,0 +1,206 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 3ea7830..fd73af7 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -72,6 +72,7 @@
+ #include "WidgetBlueprintEditor.h"
+ #include "Framework/Docking/TabManager.h"
+ #include "Widgets/Docking/SDockTab.h"
++#include "StatusBarSubsystem.h"
+ #include "AssetRegistry/AssetRegistryModule.h"
+ #include "AssetRegistry/IAssetRegistry.h"
+ #include "Misc/Paths.h"
+@@ -103,6 +104,8 @@
+ 
+ #define LOCTEXT_NAMESPACE "WidgetAnimTimeline"
+ 
++DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimScriptDock, Log, All);
++
+ // Every tooltip and help line the panel shows lives in NameTBDTooltips.h, so they can be read and reworded in one
+ // place - as every fixed color lives in NameTBDColors.h.
+ namespace WidgetAnimTips = NameTBD::Tooltips::WidgetAnimEditor;
+@@ -4597,33 +4600,28 @@ private:
+ 						Menu.BeginSection("Parameters", FText::FromString(WidgetAnimMaterialCheck::GetDefaultsMaterial(Material)->GetName()));
+ 						for (const WidgetAnimMaterialCheck::FParameter& Parameter : Parameters)
+ 						{
+-							// The default beside the name: a number, or a swatch and its hex.
++							// The default beside the name: a number, or a rounded square of its color.
+ 							TSharedRef<SWidget> Default = SNullWidget::NullWidget;
+ 							if (bVector)
+ 							{
+-								Default = SNew(SHorizontalBox)
+-									+ SHorizontalBox::Slot()
+-									.AutoWidth()
+-									.VAlign(VAlign_Center)
+-									.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
++								Default = SNew(SBox)
++									.WidthOverride(14.f)
++									.HeightOverride(14.f)
+ 									[
+-										SNew(SBox)
+-										.WidthOverride(12.f)
+-										.HeightOverride(12.f)
++										SNew(SOverlay)
++										+ SOverlay::Slot()
++										[
++											SNew(SImage)
++											.Image(RoundedFill(3.f))
++											.ColorAndOpacity(FLinearColor(0.f, 0.f, 0.f, 0.6f))
++										]
++										+ SOverlay::Slot()
++										.Padding(FMargin(1.f))
+ 										[
+ 											SNew(SImage)
+-											.Image(WhiteBrush())
++											.Image(RoundedFill(2.f))
+ 											.ColorAndOpacity(FLinearColor(Parameter.Vector.R, Parameter.Vector.G, Parameter.Vector.B, 1.f))
+ 										]
+-									]
+-									+ SHorizontalBox::Slot()
+-									.AutoWidth()
+-									.VAlign(VAlign_Center)
+-									[
+-										SNew(STextBlock)
+-										.Font(IDetailLayoutBuilder::GetDetailFont())
+-										.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+-										.Text(FText::FromString(TEXT("#") + Parameter.Vector.ToFColor(true).ToHex().Left(6)))
+ 									];
+ 							}
+ 							else
+@@ -5696,6 +5694,33 @@ namespace WidgetAnimToolTip
+ 			];
+ 	}
+ 
++	/**
++	 * A color, as a small rounded square of it - the way a color reads at a glance, where a hex code has to be decoded. A
++	 * thin dark rim keeps a color close to the tooltip's own from vanishing into it.
++	 */
++	TSharedRef<SWidget> ColorSquare(const FLinearColor& Color)
++	{
++		return SNew(SBox)
++			.WidthOverride(14.f)
++			.HeightOverride(14.f)
++			[
++				SNew(SOverlay)
++				+ SOverlay::Slot()
++				[
++					SNew(SImage)
++					.Image(WidgetAnimTimeline::RoundedFill(3.f))
++					.ColorAndOpacity(FLinearColor(0.f, 0.f, 0.f, 0.6f))
++				]
++				+ SOverlay::Slot()
++				.Padding(FMargin(1.f))
++				[
++					SNew(SImage)
++					.Image(WidgetAnimTimeline::RoundedFill(2.f))
++					.ColorAndOpacity(Color.CopyWithNewOpacity(1.f))
++				]
++			];
++	}
++
+ 	/**
+ 	 * A long right arrow, drawn rather than typed: a line and an arrowhead, centered on the text beside it. The
+ 	 * arrow characters sit on the font's baseline, and the long one isn't in every font.
+@@ -5941,7 +5966,7 @@ namespace WidgetAnimToolTip
+ 		return Channels;
+ 	}
+ 
+-	/** How a keyed track's value reads in a tooltip, by type: an angle in degrees, a color as a swatch and hex, a number. */
++	/** How a keyed track's value reads in a tooltip, by type: an angle in degrees, a color as a rounded square of it, a number. */
+ 	TSharedRef<SWidget> KeyValue(const FWidgetAnimLayer& Layer, int32 Point, const FLinearColor& TextColor)
+ 	{
+ 		// A color: a Material Vector's value, or the color a registered type's key holds (beside its value, when it has one).
+@@ -5950,9 +5975,8 @@ namespace WidgetAnimToolTip
+ 			const FLinearColor Color = WidgetAnimKeyPoints::GetColor(Layer, Point);
+ 			const bool bWithValue = Layer.AnimType == EWidgetAnimType::Custom && WidgetAnimGetRegisteredKeyContent(Layer.TypeParams) == EWidgetAnimKeyContent::ValueAndColor;
+ 			return SNew(SHorizontalBox)
+-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 5.f, 0.f))[ Swatch(Color) ]
+-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ Text(TEXT("#") + Color.ToFColor(true).ToHex().Left(6), TextColor, ValueFont()) ]
+-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(7.f, 0.f, 0.f, 0.f))
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ ColorSquare(Color) ]
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(bWithValue ? 6.f : 0.f, 0.f, 0.f, 0.f))
+ 				[
+ 					Text(bWithValue ? Number(WidgetAnimKeyPoints::GetValue(Layer, Point)) : FString(), TextColor, ValueFont())
+ 				];
+@@ -18041,18 +18065,12 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
+ 		Rows.Add(TEXT("Material"), WidgetAnimMaterialCheck::GetSlotName(Layer.MaterialSlot).ToString());
+ 		Rows.Add(TEXT("Parameter"), Layer.VectorParameterName.IsNone() ? FString(TEXT("(none)")) : Layer.VectorParameterName.ToString());
+ 
+-		auto ColorChip = [](const FLinearColor& Color, const FLinearColor& TextColor)
+-		{
+-			return SNew(SHorizontalBox)
+-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 0.f, 5.f, 0.f))[ Swatch(Color) ]
+-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ Text(TEXT("#") + Color.ToFColor(true).ToHex().Left(6), TextColor, ValueFont()) ];
+-		};
+-
++		// Each end as a rounded square of its color, start to end.
+ 		Rows.Add(TEXT("Value"),
+ 			SNew(SHorizontalBox)
+-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ ColorChip(Layer.StartVectorValue, Palette::TooltipStartValue) ]
++			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ ColorSquare(Layer.StartVectorValue) ]
+ 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(7.f, 0.f))[ Arrow() ]
+-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ ColorChip(Layer.EndVectorValue, Palette::TooltipEndValue) ]);
++			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[ ColorSquare(Layer.EndVectorValue) ]);
+ 		break;
+ 	}
+ 
+@@ -19127,10 +19145,20 @@ void SWidgetAnimTimeline::DockScript()
+ 	if (const TSharedPtr<SDockTab> Existing = ScriptTab.Pin())
+ 	{
+ 		Existing->ActivateInParent(ETabActivationCause::SetDirectly);
+-		Existing->DrawAttention();
++		if (const TSharedPtr<FTabManager> ExistingManager = Existing->GetTabManagerPtr())
++		{
++			ExistingManager->DrawAttention(Existing.ToSharedRef());
++		}
+ 		return;
+ 	}
+ 
++	// The drawer first, as the panel's own Dock in Layout does: it slides up over the editor, and a tab opened while it
++	// is up can look as if nothing happened at all.
++	if (UStatusBarSubsystem* StatusBars = GEditor ? GEditor->GetEditorSubsystem<UStatusBarSubsystem>() : nullptr)
++	{
++		StatusBars->ForceDismissDrawer();
++	}
++
+ 	// The editor the panel is part of: the Widget Blueprint's, else whichever editor has the edited asset open.
+ 	TSharedPtr<FTabManager> TabManager;
+ 	if (FWidgetBlueprintEditor* BlueprintEditor = FindWidgetBlueprintEditor())
+@@ -19160,12 +19188,13 @@ void SWidgetAnimTimeline::DockScript()
+ 	// Nothing to dock beside: a window of its own, which can be dragged anywhere.
+ 	if (DockBeside.IsNone())
+ 	{
++		UE_LOG(LogWidgetAnimScriptDock, Log, TEXT("Dock as Tab: %s - opening the script editor in a window instead."),
++			TabManager.IsValid() ? TEXT("no Details tab is open in this editor") : TEXT("no editor tab manager was found for the panel"));
+ 		OpenScriptWindow();
+ 		return;
+ 	}
+ 
+ 	// Out from under the Track Editor, and out of its window - the script goes with it, being one for the session.
+-	SetScriptOpen(false);
+ 	if (const TSharedPtr<SWindow> Window = ScriptWindow.Pin())
+ 	{
+ 		Window->RequestDestroyWindow();
+@@ -19192,8 +19221,22 @@ void SWidgetAnimTimeline::DockScript()
+ 		}));
+ 
+ 	TabManager->InsertNewDocumentTab(WidgetAnimScriptDock::ScriptDockedTabId, FTabManager::FLiveTabSearch(DockBeside), Tab);
++
++	// Placed: brought forward in its tab well, and the area under the Track Editor closed - only now, so a dock that
++	// didn't take never leaves the script nowhere. Not placed: a window after all.
++	if (!Tab->GetParentWindow().IsValid())
++	{
++		UE_LOG(LogWidgetAnimScriptDock, Warning, TEXT("Dock as Tab: the tab couldn't be placed beside %s - opening the script editor in a window instead."), *DockBeside.ToString());
++		Tab->RequestCloseTab();
++		OpenScriptWindow();
++		return;
++	}
++
++	SetScriptOpen(false);
+ 	Tab->ActivateInParent(ETabActivationCause::SetDirectly);
++	TabManager->DrawAttention(Tab);
+ 	ScriptTab = Tab;
++	UE_LOG(LogWidgetAnimScriptDock, Log, TEXT("Dock as Tab: docked beside %s."), *DockBeside.ToString());
+ }
+ 
+ void SWidgetAnimTimeline::OnScriptRan(int32 TracksBefore, int32 TracksAfter, int32 GroupsBefore, int32 GroupsAfter)

@@ -5420,8 +5420,9 @@ void UContextMenuButton::RebuildEffectiveButtonAnimations()
 	UWidgetAnimEntryLibrary::FlattenEntries(EffectiveInEntries, Resolver, FlattenedAnimIn);
 	UWidgetAnimEntryLibrary::FlattenEntries(EffectiveOutEntries, Resolver, FlattenedAnimOut);
 
-	// Only Material layers can be dropped, and only for want of an Image to drive: a scalar or vector
-	// parameter needs a material instance, and there is nothing sensible to fall back to. Every other
+	// Only Material layers can be dropped, and only for want of a widget with a material of that kind to drive - an
+	// Image or Border's brush, a Text Block's font: a scalar or vector parameter needs a material instance, and there is
+	// nothing sensible to fall back to. Every other
 	// layer is kept - a layer naming no target animates the button itself, which the shape system composes
 	// into the Slate widget rather than fighting over UWidget::RenderTransform.
 	auto DropUndrivableMaterialLayers = [](TArray<FWidgetAnimSettings>& Stack) -> int32
@@ -5431,7 +5432,7 @@ void UContextMenuButton::RebuildEffectiveButtonAnimations()
 		Stack.RemoveAll([](const FWidgetAnimSettings& Settings)
 		{
 			const bool bIsMaterialEntry = Settings.AnimType == EWidgetAnimType::MaterialScalar || Settings.AnimType == EWidgetAnimType::MaterialVector;
-			return bIsMaterialEntry && Settings.MaterialTargetImage == nullptr;
+			return bIsMaterialEntry && !UWidgetAnimLibrary::WidgetHasMaterialSlot(Settings.GetMaterialWidget(), Settings.MaterialSlot);
 		});
 
 		return Before - Stack.Num();

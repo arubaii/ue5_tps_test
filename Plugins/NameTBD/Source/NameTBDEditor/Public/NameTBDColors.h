@@ -251,6 +251,13 @@ namespace NameTBD
 			/** The thin bar down the left of a track picked in the list. */
 			inline const FLinearColor ListSelectedAccent(AnimationOrange_Normal);
 
+			/**
+			 * A folder of groups in the Animation Tracks list (see FWidgetAnimLayerGroup::EditorFolder): the strip down the left
+			 * of the groups in it, and its icon and menu heading.
+			 */
+			inline const FLinearColor ListFolderStrip(0.00f, 0.00f, 0.00f, 0.22f);
+			inline const FLinearColor ListFolderAccent(0.86f, 0.72f, 0.40f, 1.00f);
+
 			/** The name of the control a pinned tooltip is for - "Ping Pong" - bold, above what it does. */
 			inline const FLinearColor TooltipControlName(AnimationOrange_Normal);
 
@@ -425,6 +432,47 @@ namespace NameTBD
 			// How much further in from its end an animation track's right-hand text sits than any other track's, in
 			// pixels - its "Widget Animation, N tracks" otherwise touches the section's rounded end.
 			inline constexpr float AnimationTrackTextRightPadding = 6.0f;
+
+			// -------------------------------------------------------------------------------------------------
+			// The Script area under the Track Editor - Python that makes tracks. See SWidgetAnimScriptPanel.
+			//   ScriptPlain ... ScriptOperator: the code, colored as Python - quiet for the plain words, brighter for what
+			//     shapes the code (keywords), and the animation orange for the scripting API's own names (anim, TrackType),
+			//     so what a script can reach stands out.
+			//   ScriptCodeBackground / ScriptOutputBackground: behind the code and behind what the last run printed.
+			//   ScriptOutputInfo / Warning / Error: printed lines, warnings, errors and tracebacks.
+			//   ScriptStatusDone / ScriptStatusFailed: the last line of a run - how it went.
+			//   ScriptToggleOn: the Script button in the Track Editor's strip while the area is open.
+			//   ScriptUnavailableText: what to do when Python isn't there.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor ScriptPlain(0.84f, 0.85f, 0.86f);
+			inline const FLinearColor ScriptKeyword(0.78f, 0.52f, 0.92f);
+			inline const FLinearColor ScriptConstant(0.40f, 0.64f, 1.00f);
+			inline const FLinearColor ScriptString(0.62f, 0.82f, 0.45f);
+			inline const FLinearColor ScriptComment(0.46f, 0.53f, 0.47f);
+			inline const FLinearColor ScriptNumber(0.95f, 0.72f, 0.45f);
+			inline const FLinearColor ScriptBuiltin(0.40f, 0.80f, 0.86f);
+			inline const FLinearColor ScriptApi(AnimationOrange_Normal);
+			inline const FLinearColor ScriptDefinition(0.98f, 0.86f, 0.45f);
+			inline const FLinearColor ScriptOperator(0.66f, 0.68f, 0.72f);
+			inline const FLinearColor ScriptCodeBackground(0.012f, 0.012f, 0.014f);
+			inline const FLinearColor ScriptOutputBackground(0.020f, 0.020f, 0.022f);
+			inline const FLinearColor ScriptOutputInfo(0.80f, 0.80f, 0.80f);
+			inline const FLinearColor ScriptOutputWarning(0.98f, 0.80f, 0.30f);
+			inline const FLinearColor ScriptOutputError(1.00f, 0.42f, 0.38f);
+			inline const FLinearColor ScriptStatusDone(0.45f, 0.86f, 0.52f);
+			inline const FLinearColor ScriptStatusFailed(1.00f, 0.42f, 0.38f);
+			inline const FLinearColor ScriptToggleOn(AnimationOrange_Normal);
+			inline const FLinearColor ScriptUnavailableText(0.85f, 0.85f, 0.85f);
+
+			// The code editor (Monaco) in its Unreal theme - everything else it takes from the Script* colors above:
+			//   ScriptLineHighlight: behind the line the cursor is on. ScriptLineNumber / ScriptLineNumberActive: the gutter's
+			//   numbers, and the cursor line's. ScriptSelection: behind selected text. ScriptCursor: the cursor itself.
+			inline const FLinearColor ScriptLineHighlight(0.020f, 0.020f, 0.024f);
+			inline const FLinearColor ScriptLineNumber(0.10f, 0.10f, 0.11f);
+			inline const FLinearColor ScriptLineNumberActive(0.36f, 0.36f, 0.38f);
+			inline const FLinearColor ScriptSelection(0.03f, 0.08f, 0.18f);
+			inline const FLinearColor ScriptCursor(AnimationOrange_Normal);
 		}
 	}
 }

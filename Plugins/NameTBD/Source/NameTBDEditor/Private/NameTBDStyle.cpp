@@ -1,6 +1,8 @@
 #include "NameTBDStyle.h"
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/AppStyle.h"
+#include "Styling/SlateTypes.h"
+#include "Brushes/SlateImageBrush.h"
 #include "NameTBDColors.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/PackageName.h"
@@ -111,6 +113,28 @@ TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
     };
     AddTintedCopy(MenuAddIcon, "Icons.Plus", NameTBD::Colors::WidgetAnimEditor::MenuAddIconTint);
     AddTintedCopy(MenuDeleteIcon, "Icons.Delete", NameTBD::Colors::WidgetAnimEditor::MenuDeleteIconTint);
+
+    // Check boxes as menu icons - see MenuCheckedIcon. The plugin's own SVGs; the editor's check box images if those are missing.
+    {
+       const TSharedPtr<IPlugin> CheckPlugin = IPluginManager::Get().FindPlugin(TEXT("NameTBD"));
+       const FCheckBoxStyle& EditorCheckBox = FAppStyle::Get().GetWidgetStyle<FCheckBoxStyle>("Checkbox");
+       auto AddCheckIcon = [&Style, &CheckPlugin](const FName Name, const TCHAR* File, const FSlateBrush& Fallback)
+       {
+          const FString Path = CheckPlugin.IsValid() ? CheckPlugin->GetBaseDir() / TEXT("Resources") / File : FString();
+          if (!Path.IsEmpty() && FPaths::FileExists(Path))
+          {
+             Style->Set(Name, new FSlateVectorImageBrush(Path, FVector2D(16.0f, 16.0f)));
+          }
+          else
+          {
+             FSlateBrush* Brush = new FSlateBrush(Fallback);
+             Brush->ImageSize = FVector2D(16.0f, 16.0f);
+             Style->Set(Name, Brush);
+          }
+       };
+       AddCheckIcon(MenuCheckedIcon, TEXT("WidgetAnim_MenuChecked.svg"), EditorCheckBox.CheckedImage);
+       AddCheckIcon(MenuUncheckedIcon, TEXT("WidgetAnim_MenuUnchecked.svg"), EditorCheckBox.UncheckedImage);
+    }
 
     return Style;
 }

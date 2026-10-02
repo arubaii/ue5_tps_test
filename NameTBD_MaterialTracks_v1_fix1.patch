@@ -1,0 +1,26 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
+index 0335a3f..afd0b6e 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
+@@ -9,7 +9,7 @@
+ #include "Components/PanelWidget.h"
+ #include "Components/RetainerBox.h"
+ #include "Components/TextBlock.h"
+-#include "MaterialTypes.h"
++#include "Materials/MaterialParameters.h"
+ #include "Materials/MaterialInstanceDynamic.h"
+ #include "Materials/MaterialInterface.h"
+ #include "Algo/StableSort.h"
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 035a989..1bbde33 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -60,7 +60,7 @@
+ #include "Styling/CoreStyle.h"
+ #include "Styling/StyleColors.h"
+ #include "Curves/CurveFloat.h"
+-#include "MaterialTypes.h"
++#include "Materials/MaterialParameters.h"
+ #include "Materials/MaterialInstanceDynamic.h"
+ #include "Materials/MaterialInterface.h"
+ #include "Brushes/SlateImageBrush.h"

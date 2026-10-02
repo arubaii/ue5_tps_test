@@ -358,7 +358,7 @@ namespace NameTBD::Tooltips
 		inline FText InsertAnimationTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "InsertAnimationTooltip",
-				"Plays another Widget Animation as one track of this one, where a new track would go - after the selected track, or at the end. It plays exactly as it does on its own, and follows every change made to it. Open it with its arrow to see its groups and tracks; right-click it and Unravel to copy its tracks in, to edit them here.");
+				"Plays another Widget Animation as one track of this one, where a new track would go - at the time shown: where the menu was opened, or after the selected track. It plays exactly as it does on its own, and follows every change made to it. Open it with its arrow to see its groups and tracks; right-click it and Unravel to copy its tracks in, to edit them here.");
 		}
 
 		// -------------------------------------------------------------------------------------------------
@@ -368,7 +368,13 @@ namespace NameTBD::Tooltips
 		inline FText AnimationTrackNote()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AnimationTrackNote",
-				"This track plays another Widget Animation whole, as long as it runs: only when it starts is set here. Edit the animation itself (Edit Existing Asset) to change what it does - every animation it is inserted into follows. To edit its tracks here instead, right-click the track and Unravel it.");
+				"Only when it starts is set here. To change what it does, edit the animation itself - every animation it is inserted into follows - or right-click the track and Unravel it to edit its tracks here.");
+		}
+
+		inline FText AnimationTrackShortNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AnimationTrackShortNote",
+				"Plays another Widget Animation whole. Give that animation a Description, and it shows here and on the track.");
 		}
 
 		inline FText AnimationTrackBrowseTooltip()
@@ -736,6 +742,269 @@ namespace NameTBD::Tooltips
 		}
 
 		// -------------------------------------------------------------------------------------------------
+		// Material tracks: the material they drive, checked against the preview
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText MaterialParameterTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MaterialParameterTooltip",
+				"The parameter this track drives, by name. The arrow lists the parameters of the widget's material, each with its default value; a name can also be typed.");
+		}
+
+		inline FText MaterialParameterPickTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MaterialParameterPickTooltip",
+				"Pick from the parameters of {0}, the material of {1} - its default value beside each.");
+		}
+
+		inline FText MaterialParameterNoMaterialTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MaterialParameterNoMaterialTooltip",
+				"Nothing to list: the track's widget has no material in this slot on the preview.");
+		}
+
+		inline FText MaterialNoPreviewNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MaterialNoPreviewNote",
+				"Open this Widget Blueprint in the designer to check the track against the widget it plays on.");
+		}
+
+		inline FText MaterialNoSlotNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MaterialNoSlotNote",
+				"{0} ({1}) has no {2} material: Brush is an Image's or a Border's, Font and Font Outline a Text Block's, Retainer Effect a Retainer Box's. Aim the track at one of those - its group's target, or its Target Widget - or pick the material the widget has.");
+		}
+
+		inline FText MaterialNotSetNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MaterialNotSetNote",
+				"{0} has no material in its {1} yet, so this track has nothing to drive. Set one on the widget in the designer.");
+		}
+
+		inline FText MaterialNoParameterNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MaterialNoParameterNote",
+				"Pick the parameter to drive - the arrow beside Parameter lists those of {0}.");
+		}
+
+		inline FText MaterialMissingParameterNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MaterialMissingParameterNote",
+				"{0} has no {1} parameter named {2}, so this track does nothing. Pick one from the arrow beside Parameter.");
+		}
+
+		inline FText MaterialNoParametersNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MaterialNoParametersNote",
+				"{0} has no {1} parameters to drive.");
+		}
+
+		// -------------------------------------------------------------------------------------------------
+		// Track names and track presets
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText RenameTrackTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "RenameTrackTooltip",
+				"A name of its own for this track, shown in the list, on the track and in its tooltip - Enter to apply. No two renamed tracks share a name: a name another has gets a number. Cleared, the track is called by its type again.");
+		}
+
+		inline FText TrackPresetsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TrackPresetsTooltip",
+				"Put a saved single-track preset's settings on this track - its type, values, timing, easing and keys - or save this track as a preset, under its name. Where the track is and what it is called stay its own.");
+		}
+
+		inline FText SaveTrackPresetsMenuTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "SaveTrackPresetsMenuTooltip",
+				"Save this track - or this collapsed track, with every track in it - as a preset, under the name it was given. Add it again from Add Animation Track > From Preset.");
+		}
+
+		inline FText PresetRenameTrackNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PresetRenameTrackNote",
+				"Rename the track first: a preset is saved under the track's own name, so a track still called by its type can't be one.");
+		}
+
+		inline FText PresetRenameCollapsedNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PresetRenameCollapsedNote",
+				"Rename the collapsed track first: a preset of several tracks is saved under the collapsed track's name, so one still called \"Collapsed Tracks\" can't be one.");
+		}
+
+		inline FText PresetSeveralTracksNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PresetSeveralTracksNote",
+				"Several tracks are saved as one preset from a collapsed track: collapse them, rename the collapsed track, and save that.");
+		}
+
+		inline FText PresetAnimationTrackNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PresetAnimationTrackNote",
+				"A track that plays another animation can't be in a preset: its settings are that animation's.");
+		}
+
+		inline FText AddCollapsedFromNamedPresetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AddCollapsedFromNamedPresetTooltip",
+				"Add the tracks of the preset {0}, each at its time relative to the first, as a collapsed track of that name.");
+		}
+
+		inline FText ApplyTrackPresetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ApplyTrackPresetTooltip",
+				"Put the preset {0} on the track: its type, values, timing, easing and keys. Its Starts, Delay, group, name and lock stay as they are. Ctrl+Z takes it back.");
+		}
+
+		inline FText AddTrackFromPresetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AddTrackFromPresetTooltip",
+				"Add tracks made from one of your saved presets - a single track named after it, or a collapsed track of several - starting where a new track would.");
+		}
+
+		inline FText AddTrackFromNamedPresetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AddTrackFromNamedPresetTooltip",
+				"Add a track made from the preset {0}, named after it.");
+		}
+
+		inline FText NoTrackPresetsToAddNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NoTrackPresetsToAddNote",
+				"No track presets yet. Rename a track - or a collapsed track - and save it from its menu's Track Presets.");
+		}
+
+		inline FText NoTrackPresetsNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NoTrackPresetsNote",
+				"No single-track presets yet. Rename a track and save it as one below.");
+		}
+
+		inline FText SaveTrackPresetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "SaveTrackPresetTooltip",
+				"Save as a preset under this name, to add again from Add Animation Track > From Preset. Presets are files in the project's Content/WidgetAnimTrackPresets folder, so they can be shared through source control.");
+		}
+
+		inline FText DeleteTrackPresetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DeleteTrackPresetTooltip",
+				"Delete a saved preset. Tracks made from it keep their settings.");
+		}
+
+		inline FText OpenTrackPresetsFolderTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "OpenTrackPresetsFolderTooltip",
+				"Open the folder the project's track presets are saved in.");
+		}
+
+		// -------------------------------------------------------------------------------------------------
+		// The Script area docked as a tab
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText DockScriptTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DockScriptTooltip",
+				"Dock as Tab: open the script editor as a tab of the editor's layout - beside the Details panel to start with - with the output under the code. Drag it anywhere, like any tab.");
+		}
+
+		inline FText ScriptTabTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptTabTooltip",
+				"The Widget Animations panel's script editor, docked as a tab. It runs on the animation open in the panel that docked it.");
+		}
+
+		inline FText ScriptTabCloseTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptTabCloseTooltip",
+				"Close: close this tab. The script is kept - the Script button in the Widget Animations panel opens it again.");
+		}
+
+
+		// -------------------------------------------------------------------------------------------------
+		// Folders of layer groups in the Animation Tracks list
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText MoveToFolderTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MoveToFolderTooltip",
+				"Group these layer groups under a List Folder - a folder in this panel's Animation Tracks list only, to keep a long list tidy. It isn't a folder in the Content Browser or on disk, and nothing about the animation changes.");
+		}
+
+		inline FText NewFolderHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewFolderHint",
+				"New List Folder name - Enter to make it");
+		}
+
+		inline FText RemoveFromFolderTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "RemoveFromFolderTooltip",
+				"List the group on its own again, out of its List Folder. The group and its tracks stay as they are.");
+		}
+
+		inline FText ListFolderRowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ListFolderRowTooltip",
+				"A List Folder: layer groups gathered under one row of this list, to keep it tidy - it isn't a folder in the Content Browser or on disk, and changes nothing about the animation. Click to select its groups, double-click or the arrow to fold it, right-click for its menu.");
+		}
+
+		inline FText ListFolderFoldTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ListFolderFoldTooltip",
+				"Fold the List Folder shut, or open it again, in this list.");
+		}
+
+		inline FText SelectFolderGroupsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "SelectFolderGroupsTooltip",
+				"Select every group in the List Folder.");
+		}
+
+		inline FText RenameFolderTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "RenameFolderTooltip",
+				"Rename the List Folder - Enter to apply. A name another List Folder already has joins the two.");
+		}
+
+		inline FText AddGroupToFolderTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AddGroupToFolderTooltip",
+				"Add a new layer group, listed in this List Folder.");
+		}
+
+		inline FText RemoveFolderTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "RemoveFolderTooltip",
+				"Take every group out of this List Folder and list them on their own. The groups and their tracks stay as they are.");
+		}
+
+		inline FText DeleteFolderTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DeleteFolderTooltip",
+				"Delete every group in this List Folder, with all of their tracks.");
+		}
+
+		inline FText FoldFolderGroupsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "FoldFolderGroupsTooltip",
+				"Fold every group of the List Folder in the Track Editor, or open them all again.");
+		}
+
+		inline FText DeleteGroupsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DeleteGroupsTooltip",
+				"Delete the selected groups, with all of their tracks.");
+		}
+
+		inline FText MultipleGroupsSelectedNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MultipleGroupsSelectedNote",
+				"{0} layer groups selected - the settings below are {1}'s. Right-click any of them to put them all in a List Folder, hide, fold or delete them; Delete deletes them.");
+		}
+
+		// -------------------------------------------------------------------------------------------------
 		// Picking a Preview Target in the designer
 		// -------------------------------------------------------------------------------------------------
 
@@ -1009,6 +1278,149 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AdditiveLayersWindowTitle",
 				"{0} - {1}");
+		}
+
+		// -------------------------------------------------------------------------------------------------
+		// The Script area - Python that makes tracks
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText ScriptToggleTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptToggleTooltip",
+				"Script: Python that makes and changes tracks - patterns over many widgets in one go. Opens under the Track Editor.");
+		}
+
+		inline FText ScriptRunTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptRunTooltip",
+				"Run (Ctrl+Enter): runs the script on this animation. One run is one undoable edit, and a run that stops with an error changes nothing.");
+		}
+
+		inline FText ScriptSnippetsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptSnippetsTooltip",
+				"Snippets: ready-made scripts to start from, and your own - save the script as one, or delete one. Your functions are here too.");
+		}
+
+		inline FText ScriptSnippetEntryTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptSnippetEntryTooltip",
+				"Puts this script in the code box in place of what is there. Restore Previous Script brings that back.");
+		}
+
+		inline FText ScriptNoSnippets()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptNoSnippets",
+				"No .py files in the plugin's or this project's Content/Python/WidgetAnimSnippets.");
+		}
+
+		inline FText ScriptRestorePreviousTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptRestorePreviousTooltip",
+				"Puts back the script the last snippet replaced.");
+		}
+
+		inline FText ScriptApiReferenceTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptApiReferenceTooltip",
+				"API Reference: lists everything a script can use - anim, its tracks and groups, the widgets - in the output.");
+		}
+
+		inline FText ScriptClearOutputTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptClearOutputTooltip",
+				"Clear Output: empties the output beside the code.");
+		}
+
+		inline FText ScriptCloseTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptCloseTooltip",
+				"Close: hides the Script area. The script is kept.");
+		}
+
+		inline FText ScriptTabScriptTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptTabScriptTooltip",
+				"Script: the script Run runs.");
+		}
+
+		inline FText ScriptTabFunctionsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptTabFunctionsTooltip",
+				"Functions: your own functions, in the project's Content/Python/WidgetAnimFunctions/my_functions.py. Every run loads them first, so a script can use them by name - and they can use anim, TrackType and the rest. Run still runs the script.");
+		}
+
+		inline FText ScriptSaveSnippetHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptSaveSnippetHint",
+				"Name, then Enter");
+		}
+
+		inline FText ScriptSaveSnippetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptSaveSnippetTooltip",
+				"Saves the script as a snippet of this project's - a .py file in Content/Python/WidgetAnimSnippets, so it can go into source control with the rest of the project.");
+		}
+
+		inline FText ScriptOpenSnippetsFolderTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptOpenSnippetsFolderTooltip",
+				"Opens this project's snippets folder. Any .py file put there shows up under This Project's Snippets.");
+		}
+
+		inline FText ScriptDeleteSnippetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptDeleteSnippetTooltip",
+				"Deletes one of this project's snippets, after asking.");
+		}
+
+		inline FText ScriptOpenFunctionsFolderTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptOpenFunctionsFolderTooltip",
+				"Opens the folder your functions are in. Every .py file there is loaded before each script - my_functions.py first, then the rest by name.");
+		}
+
+		inline FText ScriptPopOutTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptPopOutTooltip",
+				"Open in Window: moves the Script area into a window of its own, which can go anywhere - another monitor. The Script button brings it back to front.");
+		}
+
+		inline FText ScriptWindowCloseTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptWindowCloseTooltip",
+				"Close: closes this window. The script is kept; the Script button opens it under the Track Editor again.");
+		}
+
+		inline FText ScriptCodeHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptCodeHint",
+				"Python that makes tracks - anim is this animation. Snippets has examples to start from.");
+		}
+
+		inline FText ScriptOutputHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptOutputHint",
+				"Output Log");
+		}
+
+		inline FText ScriptPythonUnavailable()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptPythonUnavailable",
+				"Scripts need Python. Turn on the Python Editor Script Plugin (Edit > Plugins) and restart the editor - nothing else in the panel needs it.");
+		}
+
+		inline FText ScriptEditorFailed()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptEditorFailed",
+				"The code editor couldn't start, so the plain code box is in its place. The Output Log says why. Use Code Editor is in Editor Preferences > Plugins > Widget Animations Editor > Script Editor.");
+		}
+
+		/** What the code box holds the first time it is opened - a script, so written as one. */
+		inline FText ScriptStarter()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptStarter",
+				"# Python that makes and changes this animation's tracks. Run (Ctrl+Enter) - one Ctrl+Z takes a run back.\n# anim is the animation, selection what is selected in the panel.\n# Snippets has scripts to start from; API Reference lists everything.\n\nanim.print_tracks()\n");
 		}
 	}
 

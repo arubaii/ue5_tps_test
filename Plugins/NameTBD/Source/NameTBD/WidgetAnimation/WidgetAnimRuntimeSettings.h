@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
+#include "Engine/EngineTypes.h"
 #include "UObject/SoftObjectPtr.h"
 #include "NameTBD/WidgetAnimation/Text/WidgetAnimTextMarkup.h" // FWidgetAnimTextTag
 #include "WidgetAnimRuntimeSettings.generated.h"
@@ -138,6 +139,27 @@ public:
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Blueprint Types", meta = (EditCondition = "bWarnAboutExpensiveBlueprintTypes", ClampMin = "0.25", UIMax = "5.0", Units = "s"))
 	float MeasurementWindowSeconds = 1.f;
+
+	// New animations
+
+#if WITH_EDITORONLY_DATA
+	/**
+	 * The Content folder new Widget Animation assets are saved in - made with New Animation in the Widget Animations panel,
+	 * Save as Animation under a component's tracks, or a builder's Create Widget Animation. Empty saves each beside the
+	 * Widget Blueprint it was made in. A builder's own Save Folder, when it sets one, comes first.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "New Animations", meta = (DisplayName = "Default Save Folder", ContentDir))
+	FDirectoryPath DefaultSaveFolder;
+#endif
+
+	/** Default Save Folder as a long package path ("/Game/UI/Animations") - empty when none is set, and outside the editor. */
+	FString GetDefaultSavePackagePath() const;
+
+	/**
+	 * A Content folder as typed or picked, as a long package path: "/Game/..." kept, a path relative to Content given
+	 * "/Game/", backslashes and trailing slashes tidied. Empty stays empty.
+	 */
+	static FString NormalizeContentFolder(FString Folder);
 
 	// Text widgets
 	//

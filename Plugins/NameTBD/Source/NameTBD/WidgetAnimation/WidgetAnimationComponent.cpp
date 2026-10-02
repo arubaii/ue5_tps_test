@@ -68,7 +68,7 @@ namespace
 			UWidget* Moved = Target ? Target : AnimatedWidget;
 
 			Settings.TargetWidget = Target;
-			Settings.MaterialTargetImage = Cast<UImage>(Moved);
+			Settings.MaterialTargetWidget = Moved;
 
 			// The widget itself when it is a Shape Box, or the Shape Box it sits in - so a component on an Image
 			// inside a Shape Box animates the box's outline while it moves the Image.
