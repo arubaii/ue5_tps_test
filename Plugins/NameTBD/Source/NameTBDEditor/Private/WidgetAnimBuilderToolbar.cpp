@@ -446,6 +446,13 @@ namespace
 		return StaticCastSharedRef<SWidgetAnimTimeline>(GetOrMakeDrawerPanel(DrawerContent, PanelSource, WeakToolkit));
 	}
 
+	/** This editor's panel source - what its Widget Animations panels edit - without building a panel. Null once the editor is gone. */
+	TSharedPtr<IWidgetAnimPanelSource> FindScriptedSource(const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
+	{
+		const TSharedPtr<FAssetEditorToolkit> Toolkit = WeakToolkit.Pin();
+		return Toolkit.IsValid() ? TSharedPtr<IWidgetAnimPanelSource>(GetPanelSource(Toolkit.ToSharedRef())) : nullptr;
+	}
+
 	/** Hands the tab manager the very tab to dock beside, rather than an id for it to look up - a missed lookup floats the new tab in a window. */
 	class FScriptingDockBesideTab : public FTabManager::FSearchPreference
 	{
@@ -635,6 +642,7 @@ namespace
 
 		return SNew(SWidgetAnimScriptPanel)
 			.FindPanel([WeakToolkit]() { return FindScriptedPanel(WeakToolkit); })
+			.FindSource([WeakToolkit]() { return FindScriptedSource(WeakToolkit); })
 			.ScriptKey(GetScriptingKey(WeakToolkit))
 			.Docked(true)
 			.OnClose_Lambda([WeakToolkit]() { CloseScriptingTab(WeakToolkit); });
@@ -795,6 +803,7 @@ namespace
 
 		return SNew(SWidgetAnimScriptPanel)
 			.FindPanel([WeakToolkit]() { return FindScriptedPanel(WeakToolkit); })
+			.FindSource([WeakToolkit]() { return FindScriptedSource(WeakToolkit); })
 			.ScriptKey(GetScriptingKey(WeakToolkit))
 			.InDrawer(true)
 			.OnClose_Lambda(DismissDrawer)

@@ -15,6 +15,7 @@ class SMultiLineEditableTextBox;
 class SWidgetAnimMonacoEditor;
 struct FPropertyChangedEvent;
 class SWidgetAnimTimeline;
+class IWidgetAnimPanelSource;
 
 /**
  * Colors Python as it is typed: keywords, strings (single, double, triple-quoted - across lines - and prefixed ones such as
@@ -107,6 +108,12 @@ public:
 		 * drawer and its docked tab): asked for the panel each time one is needed, so it is whichever is there.
 		 */
 		SLATE_ARGUMENT(TFunction<TSharedPtr<SWidgetAnimTimeline>()>, FindPanel)
+
+		/**
+		 * With FindPanel: the editor's panel source, which the strip names the animation of (see GetTargetName) - cheap to
+		 * ask while painting, unlike FindPanel, which may build a panel.
+		 */
+		SLATE_ARGUMENT(TFunction<TSharedPtr<IWidgetAnimPanelSource>()>, FindSource)
 
 		/** In the Widget Animation Scripting drawer: the dock button reads Dock in Layout, as on the editor's own drawers. */
 		SLATE_ARGUMENT(bool, InDrawer)
@@ -230,6 +237,17 @@ private:
 
 	TWeakPtr<SWidgetAnimTimeline> Panel;
 	TFunction<TSharedPtr<SWidgetAnimTimeline>()> FindPanel;
+	TFunction<TSharedPtr<IWidgetAnimPanelSource>()> FindSource;
+
+	/**
+	 * What the strip says a run edits: the timeline or asset open in the panel - its name, and whether it is a timeline
+	 * (for its icon). Empty with no panel to ask.
+	 */
+	FText GetTargetName() const;
+	bool IsTargetTimeline() const;
+
+	/** The source of the panel this area runs on, without building one: Panel's, else FindSource's. */
+	IWidgetAnimPanelSource* FindTargetSource(TSharedPtr<IWidgetAnimPanelSource>& OutKeepAlive) const;
 	bool bInDrawer = false;
 	FString ScriptKey;
 	FSimpleDelegate OnClose;

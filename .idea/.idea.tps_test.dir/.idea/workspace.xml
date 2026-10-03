@@ -9,18 +9,51 @@
   <component name="ChangeListManager">
     <list default="true" id="dc1934b2-75b5-4bee-9119-3fe06808e968" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Resources/ScriptEditor/script_editor.js" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Resources/ScriptEditor/script_editor.js" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_AddFromPreset_v1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_CodeEditor_v1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_CodeEditor_v1_fix1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_CodeEditor_v2.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_DockAndSwatches_v1 (1).patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_DockAndSwatches_v1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_DockScriptFix_v1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_DockScriptFix_v1_fix1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_DockScriptFix_v1_fix2.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_DockScriptFix_v1_fix3.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_DockScriptFix_v1_fix4.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_DockScriptFix_v1_fix5.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_DockScriptFix_v1_fix6.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_DockScriptFix_v1_fix7.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_DockScriptFix_v1_fix8.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_EditorRefinement_v1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_EditorRefinement_v1_fix1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_EditorRefinement_v1_fix2.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_EditorRefinement_v1_fix3.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_EditorRefinement_v1_fix4.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_EditorRefinement_v1_fix5.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_EditorTweaks_v1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_MaterialTracks_v1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_MaterialTracks_v1_fix1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_PresetsAndPolish_v1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_PresetsAndPolish_v1_fix1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_TrackScripting_v1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/NameTBD_UMGScripting_v1.patch" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/NewWidgetBlueprint.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/NewWidgetBlueprint.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WidgetAnimationBuilder.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WidgetAnimationBuilder.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimScripting.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimScripting.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimScripting.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimScripting.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDUncooked/NameTBDUncooked.Build.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDUncooked/NameTBDUncooked.Build.cs" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -54,7 +87,9 @@
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Editor/Sequencer/Private/SequencerEdMode.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Editor/UMGEditor/Private/Nodes/K2Node_PlayAnimation.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Editor/UMGEditor/Private/WidgetBlueprintCompiler.cpp" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Editor/UnrealEd/Private/Commandlets/MergeShaderPipelineCachesCommandlet.cpp" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Editor/UnrealEd/Private/Cooker/CompactBinaryTCP.h" root0="FORCE_HIGHLIGHTING" />
+    <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Editor/UnrealEd/Public/Editor.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Editor/UnrealEd/Public/LODCluster.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/AssetRegistry/Public/AssetRegistry/IAssetRegistry.h" root0="FORCE_HIGHLIGHTING" />
     <setting file="file://$PROJECT_DIR$/../../../../Program Files/Epic Games/UE_5.7/Engine/Source/Runtime/Core/Public/Templates/SharedPointer.h" root0="FORCE_HIGHLIGHTING" />

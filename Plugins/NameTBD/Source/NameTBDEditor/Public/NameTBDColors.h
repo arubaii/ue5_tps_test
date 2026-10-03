@@ -434,6 +434,16 @@ namespace NameTBD
 			inline constexpr float AnimationTrackTextRightPadding = 6.0f;
 
 			// -------------------------------------------------------------------------------------------------
+			// Animation timelines - a Widget Blueprint's own animations.
+			//   NoTimelineText: the timeline picker's "No timeline" while the Widget Blueprint has none - the orange of
+			//     the one thing to click.
+			//   ScriptTargetName: the name of the timeline or asset a script runs on, in the Script area's strip.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor NoTimelineText(AnimationOrange_Normal);
+			inline const FLinearColor ScriptTargetName(AnimationOrange_Normal);
+
+			// -------------------------------------------------------------------------------------------------
 			// The Script area under the Track Editor - Python that makes tracks. See SWidgetAnimScriptPanel.
 			//   ScriptPlain ... ScriptOperator: the code, colored as Python - quiet for the plain words, brighter for what
 			//     shapes the code (keywords), and the animation orange for the scripting API's own names (anim, TrackType),

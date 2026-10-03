@@ -1,0 +1,2030 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.h
+index 9f205d5..0b8cfaf 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.h
+@@ -97,7 +97,7 @@ public:
+ 
+ 	/**
+ 	 * The asset the Widget Animations panel's Edit Existing Asset is editing in place, played instead of the
+-	 * builder's own layers. View Animation Preview on the asset sets it; switching the panel to New Animation
++	 * builder's own layers. View Animation Preview on the asset sets it; switching the panel to Animation Timeline
+ 	 * clears it.
+ 	 */
+ 	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (DisplayName = "Preview Animation"))
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h
+index 14e3e0f..a8033bc 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h
+@@ -35,9 +35,9 @@ class UWidget;
+  * saves it.
+  *
+  * MAKING ONE
+- * In any Widget Blueprint: open the Widget Animations drawer on the status bar, leave it on New Animation,
+- * build it against that Widget Blueprint's own widgets - each Layer Group animating the widget it is pointed
+- * at - and press Save as Animation Asset. For something generic meant for many places, do the same in
++ * In any Widget Blueprint: open the Widget Animations drawer on the status bar, on Animation Timeline make
++ * or open one of that Widget Blueprint's timelines, build it against its own widgets - each Layer Group
++ * animating the widget it is pointed at - and press Save as Animation Asset. For something generic meant for many places, do the same in
+  * WidgetAnimationBuilder, whose Animation Name and Save Folder decide where it is saved.
+  *
+  * LAYER GROUPS
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h
+index 31baf5e..2c53c9c 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h
+@@ -144,7 +144,7 @@ public:
+ 
+ #if WITH_EDITORONLY_DATA
+ 	/**
+-	 * The Content folder new Widget Animation assets are saved in - made with New Animation in the Widget Animations panel,
++	 * The Content folder new Widget Animation assets are saved in - made from an Animation Timeline in the Widget Animations panel,
+ 	 * Save as Animation under a component's tracks, or a builder's Create Widget Animation. Empty saves each beside the
+ 	 * Widget Blueprint it was made in. A builder's own Save Folder, when it sets one, comes first.
+ 	 */
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp
+index f23ad0d..e3ecfb5 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp
+@@ -8,6 +8,7 @@
+ #include "SWidgetAnimTimeline.h"
+ #include "WidgetAnimPanelSource.h"
+ #include "NameTBDColors.h"
++#include "NameTBDStyle.h"
+ #include "NameTBDTooltips.h"
+ 
+ #include "Framework/Application/SlateApplication.h"
+@@ -553,6 +554,7 @@ void SWidgetAnimScriptPanel::Construct(const FArguments& InArgs)
+ 	Panel = InArgs._Panel;
+ 	ScriptKey = InArgs._ScriptKey;
+ 	FindPanel = InArgs._FindPanel;
++	FindSource = InArgs._FindSource;
+ 	bInDrawer = InArgs._InDrawer;
+ 	OnClose = InArgs._OnClose;
+ 	bInWindow = InArgs._InWindow;
+@@ -582,6 +584,11 @@ void SWidgetAnimScriptPanel::Construct(const FArguments& InArgs)
+ 	const FSlateBrush* DockIcon = PickBrush({ TEXT("Icons.Layout"), TEXT("Icons.Dock"), TEXT("LevelEditor.Tabs.Details") });
+ 	const FSlateBrush* CloseIcon = PickBrush({ TEXT("Icons.X"), TEXT("Icons.Close"), TEXT("Symbols.X") });
+ 
++	// What a run edits: a timeline by the panel's timeline icon, an asset by its class icon.
++	const FSlateBrush* TimelineIcon = PickBrush({ TEXT("GraphEditor.Timeline_16x"), TEXT("ClassIcon.TimelineTemplate"), TEXT("ClassIcon.LevelSequence") });
++	const FSlateBrush* OwnAssetIcon = FNameTBDStyle::Get().GetOptionalBrush("ClassIcon.WidgetAnimPresetAsset", nullptr, nullptr);
++	const FSlateBrush* AssetIcon = OwnAssetIcon ? OwnAssetIcon : PickBrush({ TEXT("ClassIcon.DataAsset") });
++
+ 	ChildSlot
+ 	[
+ 		SNew(SBorder)
+@@ -700,10 +707,55 @@ void SWidgetAnimScriptPanel::Construct(const FArguments& InArgs)
+ 						]
+ 					]
+ 
++					// Runs on: the timeline (or asset) open in the Widget Animations panel, which is what a run edits.
+ 					+ SHorizontalBox::Slot()
+ 					.FillWidth(1.f)
++					.VAlign(VAlign_Center)
++					.Padding(FMargin(12.f, 0.f, 0.f, 0.f))
+ 					[
+-						SNew(SSpacer)
++						SNew(SWidgetAnimAnchoredTip)
++						.Text(ScriptTips::ScriptTargetTooltip())
++						.Visibility_Lambda([this]() { return GetTargetName().IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible; })
++						[
++							SNew(SHorizontalBox)
++
++							+ SHorizontalBox::Slot()
++							.AutoWidth()
++							.VAlign(VAlign_Center)
++							.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
++							[
++								SNew(STextBlock)
++								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
++								.ColorAndOpacity(FSlateColor::UseSubduedForeground())
++								.Text(LOCTEXT("RunsOn", "Runs on"))
++							]
++
++							+ SHorizontalBox::Slot()
++							.AutoWidth()
++							.VAlign(VAlign_Center)
++							.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
++							[
++								SNew(SBox)
++								.WidthOverride(14.f)
++								.HeightOverride(14.f)
++								[
++									SNew(SImage)
++									.Image_Lambda([this, TimelineIcon, AssetIcon]() { return IsTargetTimeline() ? TimelineIcon : AssetIcon; })
++									.ColorAndOpacity(FSlateColor::UseForeground())
++								]
++							]
++
++							+ SHorizontalBox::Slot()
++							.FillWidth(1.f)
++							.VAlign(VAlign_Center)
++							[
++								SNew(STextBlock)
++								.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
++								.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
++								.ColorAndOpacity(FSlateColor(ScriptPalette::ScriptTargetName))
++								.Text(this, &SWidgetAnimScriptPanel::GetTargetName)
++							]
++						]
+ 					]
+ 
+ 					+ SHorizontalBox::Slot()
+@@ -888,6 +940,30 @@ TSharedPtr<SWidgetAnimTimeline> SWidgetAnimScriptPanel::GetPanel() const
+ 	return FindPanel ? FindPanel() : nullptr;
+ }
+ 
++IWidgetAnimPanelSource* SWidgetAnimScriptPanel::FindTargetSource(TSharedPtr<IWidgetAnimPanelSource>& OutKeepAlive) const
++{
++	if (const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin())
++	{
++		return Pinned->GetSource();
++	}
++	OutKeepAlive = FindSource ? FindSource() : nullptr;
++	return OutKeepAlive.Get();
++}
++
++FText SWidgetAnimScriptPanel::GetTargetName() const
++{
++	TSharedPtr<IWidgetAnimPanelSource> KeepAlive;
++	const IWidgetAnimPanelSource* Target = FindTargetSource(KeepAlive);
++	return Target ? Target->GetEditedName() : FText::GetEmpty();
++}
++
++bool SWidgetAnimScriptPanel::IsTargetTimeline() const
++{
++	TSharedPtr<IWidgetAnimPanelSource> KeepAlive;
++	const IWidgetAnimPanelSource* Target = FindTargetSource(KeepAlive);
++	return Target && Target->GetMode() == IWidgetAnimPanelSource::EMode::Timeline;
++}
++
+ bool SWidgetAnimScriptPanel::CanRun() const
+ {
+ 	using namespace WidgetAnimScriptPanelImpl;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.h
+index 5e001ab..05fe672 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.h
+@@ -15,6 +15,7 @@ class SMultiLineEditableTextBox;
+ class SWidgetAnimMonacoEditor;
+ struct FPropertyChangedEvent;
+ class SWidgetAnimTimeline;
++class IWidgetAnimPanelSource;
+ 
+ /**
+  * Colors Python as it is typed: keywords, strings (single, double, triple-quoted - across lines - and prefixed ones such as
+@@ -108,6 +109,12 @@ public:
+ 		 */
+ 		SLATE_ARGUMENT(TFunction<TSharedPtr<SWidgetAnimTimeline>()>, FindPanel)
+ 
++		/**
++		 * With FindPanel: the editor's panel source, which the strip names the animation of (see GetTargetName) - cheap to
++		 * ask while painting, unlike FindPanel, which may build a panel.
++		 */
++		SLATE_ARGUMENT(TFunction<TSharedPtr<IWidgetAnimPanelSource>()>, FindSource)
++
+ 		/** In the Widget Animation Scripting drawer: the dock button reads Dock in Layout, as on the editor's own drawers. */
+ 		SLATE_ARGUMENT(bool, InDrawer)
+ 
+@@ -230,6 +237,17 @@ private:
+ 
+ 	TWeakPtr<SWidgetAnimTimeline> Panel;
+ 	TFunction<TSharedPtr<SWidgetAnimTimeline>()> FindPanel;
++	TFunction<TSharedPtr<IWidgetAnimPanelSource>()> FindSource;
++
++	/**
++	 * What the strip says a run edits: the timeline or asset open in the panel - its name, and whether it is a timeline
++	 * (for its icon). Empty with no panel to ask.
++	 */
++	FText GetTargetName() const;
++	bool IsTargetTimeline() const;
++
++	/** The source of the panel this area runs on, without building one: Panel's, else FindSource's. */
++	IWidgetAnimPanelSource* FindTargetSource(TSharedPtr<IWidgetAnimPanelSource>& OutKeepAlive) const;
+ 	bool bInDrawer = false;
+ 	FString ScriptKey;
+ 	FSimpleDelegate OnClose;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 40434e1..8c6e1e9 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -367,6 +367,23 @@ namespace WidgetAnimTimeline
+ 		return nullptr;
+ 	}
+ 
++	/**
++	 * An animation timeline's icon, wherever one is named: the editor's own Blueprint Timeline icon - the closest thing
++	 * it has to an animation kept inside a Blueprint - else a sequence's.
++	 */
++	const FSlateBrush* TimelineIcon()
++	{
++		static const FSlateBrush* Icon = PickBrush({ "GraphEditor.Timeline_16x", "ClassIcon.TimelineTemplate", "ClassIcon.LevelSequence" });
++		return Icon;
++	}
++
++	/** A Widget Animation asset's icon, as the Content Browser shows it. */
++	const FSlateBrush* AnimationAssetIcon()
++	{
++		const FSlateBrush* Own = FNameTBDStyle::Get().GetOptionalBrush("ClassIcon.WidgetAnimPresetAsset", nullptr, nullptr);
++		return Own ? Own : PickBrush({ "ClassIcon.DataAsset" });
++	}
++
+ 	/**
+ 	 * An icon for one of the Animation Controls: the plugin's own, if a file named Name (.svg or .png) has been
+ 	 * dropped into NameTBD/Resources; else the first of the editor's Candidates that exists; else null, and the
+@@ -2550,9 +2567,9 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			const float Y = GetLineTop(LineIndex);
+ 			const bool bGroupLine = Line.Kind == FTrackLine::EKind::Group || Line.Kind == FTrackLine::EKind::NestedGroup;
+ 
+-			// Group lines read as headers, like Sequencer's folder rows; track lines alternate very gently. Pinned lines
+-			// alternate by where they are, since they come from any group.
+-			const int32 Parity = Line.bPinned ? LineIndex : Line.Ordinal;
++			// Group lines read as headers, like Sequencer's folder rows; track lines alternate very gently. Pinned and loose
++			// lines alternate by where they are, since they come from any group.
++			const int32 Parity = Line.bPinned || Line.bLoose ? LineIndex : Line.Ordinal;
+ 			const FLinearColor Base = bGroupLine
+ 				? HeaderColor()
+ 				: (Parity % 2 == 0 ? BackgroundColor() : FMath::Lerp(BackgroundColor(), RecessedColor(), 0.5f));
+@@ -2592,9 +2609,10 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 				Box(0.f, Y, Size.X, RowHeight, WithAlpha(HoverColor(), Palette::RowHoveredTintAlpha * 0.5f), RowLayer);
+ 			}
+ 
+-			// A thin line under every line, as between Sequencer's tracks, and the group's color down its left edge.
++			// A thin line under every line, as between Sequencer's tracks, and the group's color down its left edge - a loose
++			// collapsed track's own color, since its group isn't shown.
+ 			Box(0.f, Y + RowHeight - 1.f, Size.X, 1.f, SeparatorColor, RowLayer);
+-			Box(0.f, Y, GroupBandWidth, RowHeight, SWidgetAnimTimeline::GetGroupColor(Line.Group), GridLayer);
++			Box(0.f, Y, GroupBandWidth, RowHeight, Line.bLoose ? Palette::LayerCollapsed : SWidgetAnimTimeline::GetGroupColor(Line.Group), GridLayer);
+ 		}
+ 
+ 		// The animation the list plays within: its tracks, grayed and out of reach, on rows of their own above the list's,
+@@ -6500,15 +6518,66 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
+ 						]
+ 					]
+ 
+-					// With no animation to show - an asset editor that hasn't picked one yet - say what to do.
++					// With no animation to show - no asset picked yet, or no timeline made yet - say what to do. A Widget
++					// Blueprint with no timelines gets the button that makes its first.
+ 					+ SOverlay::Slot()
+ 					.HAlign(HAlign_Center)
+ 					.VAlign(VAlign_Center)
+ 					[
+-						SNew(STextBlock)
+-						.Visibility_Lambda([this]() { return GetGroups() ? EVisibility::Collapsed : EVisibility::HitTestInvisible; })
+-						.Text(WidgetAnimTips::NothingToEdit())
+-						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
++						SNew(SVerticalBox)
++						.Visibility_Lambda([this]() { return GetGroups() ? EVisibility::Collapsed : EVisibility::SelfHitTestInvisible; })
++
++						+ SVerticalBox::Slot()
++						.AutoHeight()
++						.HAlign(HAlign_Center)
++						[
++							SNew(STextBlock)
++							.Text_Lambda([this]()
++							{
++								return Source.IsValid() && Source->IsEditingTimeline() ? WidgetAnimTips::NoTimelineYet() : WidgetAnimTips::NothingToEdit();
++							})
++							.ColorAndOpacity(FSlateColor::UseSubduedForeground())
++						]
++
++						+ SVerticalBox::Slot()
++						.AutoHeight()
++						.HAlign(HAlign_Center)
++						.Padding(FMargin(0.f, 8.f, 0.f, 0.f))
++						[
++							SNew(SButton)
++							.ButtonStyle(&OrangeButtonStyle())
++							.ContentPadding(FMargin(10.f, 3.f))
++							.Visibility_Lambda([this]() { return Source.IsValid() && Source->IsEditingTimeline() ? EVisibility::Visible : EVisibility::Collapsed; })
++							.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::TimelineModeTooltip()))
++							.OnClicked_Lambda([this]()
++							{
++								if (Source.IsValid())
++								{
++									SwitchEditedAnimation([this]() { Source->CreateTimeline(FString()); });
++								}
++								return FReply::Handled();
++							})
++							[
++								SNew(SHorizontalBox)
++
++								+ SHorizontalBox::Slot()
++								.AutoWidth()
++								.VAlign(VAlign_Center)
++								.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
++								[
++									WidgetAnimTimeline::MakeFixedIcon(WidgetAnimTimeline::TimelineIcon(), FSlateColor::UseForeground())
++								]
++
++								+ SHorizontalBox::Slot()
++								.AutoWidth()
++								.VAlign(VAlign_Center)
++								[
++									SNew(STextBlock)
++									.Font(FAppStyle::GetFontStyle("NormalFontBold"))
++									.Text(LOCTEXT("MakeFirstTimeline", "New Timeline"))
++								]
++							]
++						]
+ 					]
+ 				]
+ 			]
+@@ -6736,13 +6805,11 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
+ 	{
+ 		if (Source.IsValid() && Source->GetMode() != Mode)
+ 		{
+-			Source->SetMode(Mode);
+-			ClearSelection();
+-			RebuildRows();
++			SwitchEditedAnimation([this, Mode]() { Source->SetMode(Mode); });
+ 		}
+ 	};
+ 
+-	// New Animation or Edit Existing Asset: what the panel is working on.
++	// Animation Timeline or Edit Existing Asset: what the panel is working on.
+ 	Header->AddSlot()
+ 	.AutoWidth()
+ 	.VAlign(VAlign_Center)
+@@ -6755,10 +6822,10 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
+ 		{
+ 			FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+ 			Menu.AddMenuEntry(
+-				LOCTEXT("NewAnimation", "New Animation"),
+-				WidgetAnimTips::NewAnimationTooltip(),
++				LOCTEXT("AnimationTimeline", "Animation Timeline"),
++				WidgetAnimTips::TimelineModeTooltip(),
+ 				FSlateIcon(),
+-				FUIAction(FExecuteAction::CreateLambda([SwitchMode]() { SwitchMode(EMode::NewAnimation); })));
++				FUIAction(FExecuteAction::CreateLambda([SwitchMode]() { SwitchMode(EMode::Timeline); })));
+ 			Menu.AddMenuEntry(
+ 				LOCTEXT("EditExistingAsset", "Edit Existing Asset"),
+ 				WidgetAnimTips::EditExistingAssetTooltip(),
+@@ -6768,14 +6835,41 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
+ 		})
+ 		.ButtonContent()
+ 		[
+-			SNew(STextBlock)
+-			.Text_Lambda([IsEditingExisting]()
+-			{
+-				return IsEditingExisting() ? LOCTEXT("EditExistingAsset", "Edit Existing Asset") : LOCTEXT("NewAnimation", "New Animation");
+-			})
++			SNew(SHorizontalBox)
++
++			+ SHorizontalBox::Slot()
++			.AutoWidth()
++			.VAlign(VAlign_Center)
++			.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
++			[
++				MakeFixedIcon(TAttribute<const FSlateBrush*>::CreateLambda([IsEditingExisting]()
++				{
++					return IsEditingExisting() ? AnimationAssetIcon() : TimelineIcon();
++				}))
++			]
++
++			+ SHorizontalBox::Slot()
++			.AutoWidth()
++			.VAlign(VAlign_Center)
++			[
++				SNew(STextBlock)
++				.Text_Lambda([IsEditingExisting]()
++				{
++					return IsEditingExisting() ? LOCTEXT("EditExistingAsset", "Edit Existing Asset") : LOCTEXT("AnimationTimeline", "Animation Timeline");
++				})
++			]
+ 		]
+ 	];
+ 
++	// Animation Timeline in a Widget Blueprint: which of its timelines - and making, renaming and deleting them.
++	Header->AddSlot()
++	.AutoWidth()
++	.VAlign(VAlign_Center)
++	.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
++	[
++		MakeTimelinePicker()
++	];
++
+ 	// Edit Existing Asset: which asset. A fixed width, not a capped fill - a capped fill slot leaves the rest
+ 	// of its share of the row unused, which pushed Dock in Layout and the lock in from the right edge.
+ 	Header->AddSlot()
+@@ -6799,15 +6893,14 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
+ 			{
+ 				if (Source.IsValid())
+ 				{
+-					Source->SetAsset(Cast<UWidgetAnimPresetAsset>(AssetData.GetAsset()));
+-					ClearSelection();
+-					RebuildRows();
++					UWidgetAnimPresetAsset* Picked = Cast<UWidgetAnimPresetAsset>(AssetData.GetAsset());
++					SwitchEditedAnimation([this, Picked]() { Source->SetAsset(Picked); });
+ 				}
+ 			})
+ 		]
+ 	];
+ 
+-	// New Animation in a builder: the name it will be saved under, from Selection: Animation.
++	// Animation Timeline in a builder: the name it will be saved under, from Selection: Animation.
+ 	Header->AddSlot()
+ 	.AutoWidth()
+ 	.VAlign(VAlign_Center)
+@@ -6877,7 +6970,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
+ 		]
+ 	];
+ 
+-	// Save as Animation Asset in New Animation; Update Animation Asset in Edit Existing Asset.
++	// Save as Animation Asset in Animation Timeline; Update Animation Asset in Edit Existing Asset.
+ 	Header->AddSlot()
+ 	.AutoWidth()
+ 	.VAlign(VAlign_Center)
+@@ -6912,10 +7005,14 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
+ 			{
+ 				Source->UpdateAsset();
+ 			}
+-			else if (Source->SaveAsNewAsset())
++			else
+ 			{
+-				ClearSelection();
+-				RebuildRows();
++				// The builder goes on to edit what it saved; a Widget Blueprint's timeline stays open as it was.
++				const UObject* Before = Source->GetEditedObject();
++				if (Source->SaveAsNewAsset() && Source->GetEditedObject() != Before)
++				{
++					SwitchEditedAnimation([]() {});
++				}
+ 			}
+ 			return FReply::Handled();
+ 		})
+@@ -9969,9 +10066,14 @@ uint32 SWidgetAnimTimeline::ComputeListSignature() const
+ 	GetListOrder(Order);
+ 
+ 	uint32 Hash = GetTypeHash(Order.Num());
++
++	// Each track's group and collapsed track, which decide its row - and whether its group is shown at all (see
++	// IsGroupAllCollapsed) - changed by a collapse, an expand, or an undo of either.
+ 	for (const int32 LayerIndex : Order)
+ 	{
+ 		Hash = HashCombine(Hash, GetTypeHash(LayerIndex));
++		Hash = HashCombine(Hash, GetTypeHash(GetLayerGroup(LayerIndex)));
++		Hash = HashCombine(Hash, GetTypeHash(GetLayerCollapsedName(LayerIndex)));
+ 	}
+ 
+ 	// The folders the groups are in, which make rows of their own - changed in the Selection panel, or by an undo.
+@@ -10028,10 +10130,25 @@ void SWidgetAnimTimeline::RebuildLayerList()
+ 	const TSharedPtr<SVerticalBox> ListRoot = LayerList;
+ 	FString OpenFolder;
+ 
++	// First, the collapsed tracks whose groups aren't shown - every track of those groups is in a collapsed track - each
++	// a row of its own, as the Track Editor draws them loose at the top.
++	for (const int32 LayerIndex : Order)
++	{
++		if (IsLooseCollapsedHead(LayerIndex) && IsLayerInView(LayerIndex))
++		{
++			AddCollapsedListRows(GetLayerCollapsedName(LayerIndex), GetLayerGroup(LayerIndex));
++		}
++	}
++
+ 	TArray<int32> GroupOrder;
+ 	GetGroupListOrder(GroupOrder);
+ 	for (const int32 GroupIndex : GroupOrder)
+ 	{
++		if (IsGroupAllCollapsed(GroupIndex))
++		{
++			continue;
++		}
++
+ 		// Inside a collapsed track, only the groups its tracks are in.
+ 		bool bAnyInView = !IsInCollapsedScope();
+ 		for (int32 LayerIndex = 0; !bAnyInView && LayerIndex < Layers->Num(); ++LayerIndex)
+@@ -11237,11 +11354,12 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
+ 		return IsLayerPinned(LayerIndex) && IsLayerInView(LayerIndex) && !IsFoldedIntoCollapsed(LayerIndex);
+ 	};
+ 
+-	// Whether a track is laid out in its group: shown here, not folded into a collapsed track, and not pinned above. The
+-	// rest keep the lines they were given, for when they are back.
++	// Whether a track is laid out in its group: shown here, not folded into a collapsed track, not pinned above, and not a
++	// collapsed track drawn loose because its group isn't shown. The rest keep the lines they were given, for when they
++	// are back.
+ 	auto IsOnGroupLine = [this, &IsPinnedHere](int32 LayerIndex)
+ 	{
+-		return IsLayerInView(LayerIndex) && !IsFoldedIntoCollapsed(LayerIndex) && !IsPinnedHere(LayerIndex);
++		return IsLayerInView(LayerIndex) && !IsFoldedIntoCollapsed(LayerIndex) && !IsPinnedHere(LayerIndex) && !IsLooseCollapsedHead(LayerIndex);
+ 	};
+ 
+ 	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+@@ -11271,6 +11389,23 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
+ 			LayerToLine[LayerIndex] = TrackLines.Num() - 1;
+ 		}
+ 		NumPinnedLines = TrackLines.Num();
++
++		// Under them, scrolling with the rest: the collapsed tracks whose groups aren't shown, a line each, in list order.
++		for (const int32 LayerIndex : Order)
++		{
++			if (!IsLooseCollapsedHead(LayerIndex) || !IsLayerInView(LayerIndex) || IsPinnedHere(LayerIndex))
++			{
++				continue;
++			}
++
++			FTrackLine& Line = TrackLines.AddDefaulted_GetRef();
++			Line.Kind = FTrackLine::EKind::Lane;
++			Line.Group = GetLayerGroup(LayerIndex);
++			Line.Ordinal = 0;
++			Line.Layers = { LayerIndex };
++			Line.bLoose = true;
++			LayerToLine[LayerIndex] = TrackLines.Num() - 1;
++		}
+ 	}
+ 
+ 	// Where a layer asks to be. A layer with no line of its own set comes after every line that is set, in its
+@@ -11379,6 +11514,12 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
+ 
+ 		GroupLineCounts[GroupIndex] = GroupLines.Num();
+ 
++		// A group whose tracks are all in collapsed tracks isn't shown: its collapsed tracks are drawn loose above.
++		if (IsGroupAllCollapsed(GroupIndex))
++		{
++			continue;
++		}
++
+ 		// The compact panel has no Layer Groups to show: no group's own line, and nothing folded - its tracks'
+ 		// lines follow one another straight from the top.
+ 		if (!bCompact)
+@@ -12805,6 +12946,32 @@ void SWidgetAnimTimeline::CopyLayers(const TArray<int32>& LayerIndices)
+ 	TArray<float> Starts;
+ 	GetAuthoredStarts(Starts);
+ 
++	// A collapsed track is copied as one only when it is copied whole, from outside it: every one of its tracks, picked by
++	// clicking the collapsed track. Tracks copied from inside a collapsed track open on its own - or only some of a
++	// collapsed track's tracks - are copied as the tracks they are, so pasting them anywhere makes plain tracks (or, pasted
++	// inside a collapsed track, that one's) rather than a new collapsed track named after where they came from.
++	TSet<FName> CopiedWhole;
++	if (!IsInCollapsedScope())
++	{
++		TSet<FName> Seen;
++		for (const int32 LayerIndex : Sorted)
++		{
++			const FName Name = GetLayerCollapsedName(LayerIndex);
++			if (Name.IsNone() || Seen.Contains(Name))
++			{
++				continue;
++			}
++			Seen.Add(Name);
++
++			TArray<int32> Members;
++			GetCollapsedMembers(Name, Members);
++			if (Algo::AllOf(Members, [&Sorted](int32 Member) { return Sorted.Contains(Member); }))
++			{
++				CopiedWhole.Add(Name);
++			}
++		}
++	}
++
+ 	FString Clipboard = WidgetAnimTrackClipboard::Header;
+ 	int32 NumCopied = 0;
+ 	for (const int32 LayerIndex : Sorted)
+@@ -12814,8 +12981,14 @@ void SWidgetAnimTimeline::CopyLayers(const TArray<int32>& LayerIndices)
+ 			continue;
+ 		}
+ 
++		FWidgetAnimLayer Copied = (*Layers)[LayerIndex];
++		if (!CopiedWhole.Contains(Copied.CollapsedTrack))
++		{
++			Copied.CollapsedTrack = NAME_None;
++		}
++
+ 		FString Exported;
+-		FWidgetAnimLayer::StaticStruct()->ExportText(Exported, &(*Layers)[LayerIndex], nullptr, nullptr, PPF_Copy, nullptr);
++		FWidgetAnimLayer::StaticStruct()->ExportText(Exported, &Copied, nullptr, nullptr, PPF_Copy, nullptr);
+ 		Clipboard += FString::Printf(TEXT("\n%f\t%d\t"), Starts.IsValidIndex(LayerIndex) ? Starts[LayerIndex] : 0.f, GetLayerGroup(LayerIndex));
+ 		Clipboard += FBase64::Encode(Exported);
+ 		++NumCopied;
+@@ -14225,8 +14398,9 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines,
+ 		{
+ 			int32 NewLine = State.OriginalEditorLines[LayerIndex];
+ 
+-			// A pinned track, and one folded into a collapsed track, keep their lines in their groups: they aren't shown there.
+-			const bool bOffItsLine = IsLayerPinned(LayerIndex) || IsFoldedIntoCollapsed(LayerIndex) || !IsLayerInView(LayerIndex);
++			// A pinned track, one folded into a collapsed track and a collapsed track drawn loose keep their lines in their
++			// groups: they aren't shown there.
++			const bool bOffItsLine = IsLayerPinned(LayerIndex) || IsFoldedIntoCollapsed(LayerIndex) || !IsLayerInView(LayerIndex) || IsLooseCollapsedHead(LayerIndex);
+ 			if (DeltaLines != 0 && State.OriginalLineOrdinals.IsValidIndex(LayerIndex) && !bOffItsLine)
+ 			{
+ 				const int32 Ordinal = State.OriginalLineOrdinals[LayerIndex];
+@@ -14624,6 +14798,36 @@ bool SWidgetAnimTimeline::IsFoldedIntoCollapsed(int32 LayerIndex) const
+ 	return !Name.IsNone() && Name != ActiveCollapsed && !IsCollapsedHead(LayerIndex);
+ }
+ 
++bool SWidgetAnimTimeline::IsGroupAllCollapsed(int32 GroupIndex) const
++{
++	// Open on its own, a collapsed track shows its groups - that is how a hidden group's settings are reached.
++	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
++	if (bCompact || IsInCollapsedScope() || !Layers)
++	{
++		return false;
++	}
++
++	bool bAnyTrack = false;
++	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
++	{
++		if (GetLayerGroup(LayerIndex) != GroupIndex)
++		{
++			continue;
++		}
++		if ((*Layers)[LayerIndex].CollapsedTrack.IsNone())
++		{
++			return false;
++		}
++		bAnyTrack = true;
++	}
++	return bAnyTrack;
++}
++
++bool SWidgetAnimTimeline::IsLooseCollapsedHead(int32 LayerIndex) const
++{
++	return IsCollapsedHead(LayerIndex) && IsGroupAllCollapsed(GetLayerGroup(LayerIndex));
++}
++
+ FVector2f SWidgetAnimTimeline::GetShownSpan(int32 LayerIndex) const
+ {
+ 	if (IsCollapsedHead(LayerIndex))
+@@ -19205,4 +19409,199 @@ void SWidgetAnimTimeline::OnScriptRan(int32 TracksBefore, int32 TracksAfter, int
+ 	}
+ }
+ 
++// -----------------------------------------------------------------------------------------------------
++// Animation timelines - a Widget Blueprint's own animations
++// -----------------------------------------------------------------------------------------------------
++
++void SWidgetAnimTimeline::SwitchEditedAnimation(TFunctionRef<void()> Switch)
++{
++	// Out of a collapsed track first, while its mutes are still on the animation they were set on - the next one has
++	// none, and a mute left behind would silence that track in this one's previews.
++	if (IsDragging())
++	{
++		IsDraggingKey() ? EndKeyDrag() : EndLayerDrag();
++	}
++	if (IsInCollapsedScope())
++	{
++		ActiveCollapsed = NAME_None;
++		SyncScopeMutes();
++	}
++
++	Switch();
++
++	// Fold state is kept by index, which means nothing in another animation.
++	ExpandedAnimationTracks.Reset();
++	FoldedNestedGroups.Reset();
++	ClearSelection();
++	RebuildRows();
++	RefreshDetails();
++}
++
++TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelinePicker()
++{
++	using namespace WidgetAnimTimeline;
++
++	return SNew(SComboButton)
++		.Visibility_Lambda([this]() { return Source.IsValid() && Source->IsEditingTimeline() ? EVisibility::Visible : EVisibility::Collapsed; })
++		.ContentPadding(FMargin(4.f, 0.f))
++		.ToolTip(MakePanelToolTip(WidgetAnimTips::TimelinePickerTooltip()))
++		.OnGetMenuContent(this, &SWidgetAnimTimeline::MakeTimelineMenu)
++		.ButtonContent()
++		[
++			SNew(SBox)
++			.MinDesiredWidth(140.f)
++			.MaxDesiredWidth(260.f)
++			[
++				SNew(SHorizontalBox)
++
++				+ SHorizontalBox::Slot()
++				.AutoWidth()
++				.VAlign(VAlign_Center)
++				.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
++				[
++					MakeFixedIcon(TimelineIcon())
++				]
++
++				+ SHorizontalBox::Slot()
++				.FillWidth(1.f)
++				.VAlign(VAlign_Center)
++				[
++					SNew(STextBlock)
++					.Font(FAppStyle::GetFontStyle("NormalFontBold"))
++					.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
++					.Text_Lambda([this]() { return Source.IsValid() ? Source->GetEditedName() : FText::GetEmpty(); })
++					.ColorAndOpacity_Lambda([this]()
++					{
++						// None yet: the name reads as the thing to click.
++						const bool bNone = Source.IsValid() && Source->GetTimelineName().IsEmpty();
++						return bNone ? FSlateColor(Palette::NoTimelineText) : FSlateColor::UseForeground();
++					})
++				]
++			]
++		];
++}
++
++TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelineMenu()
++{
++	using namespace WidgetAnimTimeline;
++
++	FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
++	if (!Source.IsValid() || !Source->SupportsTimelines())
++	{
++		return Menu.MakeWidget();
++	}
++
++	TArray<FString> Names;
++	Source->GetTimelineNames(Names);
++	const FString Open = Source->GetTimelineName();
++
++	// Every timeline of the Widget Blueprint, the open one checked.
++	if (Names.Num() > 0)
++	{
++		Menu.BeginSection("Timelines", LOCTEXT("TimelinesSection", "Timelines in This Widget Blueprint"));
++		for (const FString& Name : Names)
++		{
++			Menu.AddMenuEntry(
++				FText::FromString(Name),
++				WidgetAnimTips::OpenTimelineTooltip(),
++				FSlateIcon(),
++				FUIAction(
++					FExecuteAction::CreateLambda([this, Name]()
++					{
++						if (Source.IsValid() && Source->GetTimelineName() != Name)
++						{
++							SwitchEditedAnimation([this, &Name]() { Source->OpenTimeline(Name); });
++						}
++					}),
++					FCanExecuteAction(),
++					FIsActionChecked::CreateLambda([this, Name]() { return Source.IsValid() && Source->GetTimelineName() == Name; })),
++				NAME_None,
++				EUserInterfaceActionType::RadioButton);
++		}
++		Menu.EndSection();
++	}
++
++	Menu.BeginSection("Timeline", LOCTEXT("TimelineSection", "Timeline"));
++
++	// A new one, named as it is made.
++	Menu.AddSubMenu(
++		LOCTEXT("NewTimelineEntry", "New Timeline"),
++		WidgetAnimTips::NewTimelineTooltip(),
++		FNewMenuDelegate::CreateLambda([this](FMenuBuilder& SubMenu)
++		{
++			SubMenu.AddWidget(
++				WidgetAnimFolderMenu::MakeNameBox(FText::GetEmpty(), WidgetAnimTips::NewTimelineHint(), [this](const FString& Name)
++				{
++					if (Source.IsValid())
++					{
++						SwitchEditedAnimation([this, &Name]() { Source->CreateTimeline(Name); });
++					}
++				}),
++				FText::GetEmpty(), /*bNoIndent=*/true);
++		}),
++		false,
++		FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::MenuAddIcon));
++
++	if (!Open.IsEmpty())
++	{
++		Menu.AddSubMenu(
++			FText::Format(LOCTEXT("RenameTimelineEntry", "Rename \"{0}\""), FText::FromString(Open)),
++			WidgetAnimTips::RenameTimelineTooltip(),
++			FNewMenuDelegate::CreateLambda([this, Open](FMenuBuilder& SubMenu)
++			{
++				SubMenu.AddWidget(
++					WidgetAnimFolderMenu::MakeNameBox(FText::FromString(Open), WidgetAnimTips::RenameTimelineHint(), [this, Open](const FString& Name)
++					{
++						if (Source.IsValid())
++						{
++							Source->RenameTimeline(Open, Name);
++						}
++					}),
++					FText::GetEmpty(), /*bNoIndent=*/true);
++			}),
++			false,
++			FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCommands.Rename"));
++
++		Menu.AddMenuEntry(
++			FText::Format(LOCTEXT("DuplicateTimelineEntry", "Duplicate \"{0}\""), FText::FromString(Open)),
++			WidgetAnimTips::DuplicateTimelineTooltip(),
++			FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCommands.Duplicate"),
++			FUIAction(FExecuteAction::CreateLambda([this, Open]()
++			{
++				if (Source.IsValid())
++				{
++					SwitchEditedAnimation([this, &Open]() { Source->CreateTimeline(Open, Open); });
++				}
++			})));
++
++		Menu.AddMenuEntry(
++			FText::Format(LOCTEXT("DeleteTimelineEntry", "Delete \"{0}\""), FText::FromString(Open)),
++			WidgetAnimTips::DeleteTimelineTooltip(),
++			FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::MenuDeleteIcon),
++			FUIAction(FExecuteAction::CreateLambda([this, Open]()
++			{
++				if (!Source.IsValid())
++				{
++					return;
++				}
++
++				// Asked first when it has tracks: they go with it. Undo still brings it back.
++				const TArray<FWidgetAnimLayer>* Layers = Source->GetLayers();
++				const int32 NumTracks = Layers ? Layers->Num() : 0;
++				if (NumTracks > 0)
++				{
++					const FText Question = FText::Format(WidgetAnimTips::DeleteTimelineQuestion(), FText::FromString(Open), FText::AsNumber(NumTracks));
++					if (FMessageDialog::Open(EAppMsgType::YesNo, Question) != EAppReturnType::Yes)
++					{
++						return;
++					}
++				}
++				SwitchEditedAnimation([this, &Open]() { Source->DeleteTimeline(Open); });
++			})));
++	}
++	Menu.EndSection();
++
++	return Menu.MakeWidget();
++}
++
+ #undef LOCTEXT_NAMESPACE
+\ No newline at end of file
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+index 0a9c2aa..cc764f1 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+@@ -73,7 +73,7 @@ public:
+ 		/**
+ 		 * The compact panel, for a plain list of tracks inside a Details panel - a component's Additive Anim Layers.
+ 		 * Just the Track Editor, the transport and a small Selection panel beside the tracks: no Animation Tracks
+-		 * list, no Layer Groups, no New Animation / Edit Existing Asset, no Dock in Layout, no Value Watcher. Its
++		 * list, no Layer Groups, no Animation Timeline / Edit Existing Asset, no Dock in Layout, no Value Watcher. Its
+ 		 * own header strip names the list and holds Add Track, Save as Animation and Expand.
+ 		 */
+ 		SLATE_ARGUMENT(bool, Compact)
+@@ -160,6 +160,12 @@ public:
+ 		 */
+ 		bool bPinned = false;
+ 
++		/**
++		 * A collapsed track whose group isn't shown - every track of the group is folded into collapsed tracks (see
++		 * IsGroupAllCollapsed) - on a line of its own at the top, under the pinned lines and above every group.
++		 */
++		bool bLoose = false;
++
+ 		bool IsNested() const { return Kind == EKind::NestedGroup || Kind == EKind::NestedLane; }
+ 	};
+ 
+@@ -478,6 +484,17 @@ public:
+ 	bool IsCollapsedHead(int32 LayerIndex) const;
+ 	bool IsFoldedIntoCollapsed(int32 LayerIndex) const;
+ 
++	/**
++	 * Whether every track of a group is folded into collapsed tracks, outside a collapsed track open on its own. Such a
++	 * group isn't shown - in the Track Editor or the Animation Tracks list - since there is nothing of its own to see: its
++	 * collapsed tracks are listed loose at the top instead, and opening one shows the group again. Never an empty group,
++	 * which is shown so tracks can be added to it, nor in the compact panel, which shows no groups.
++	 */
++	bool IsGroupAllCollapsed(int32 GroupIndex) const;
++
++	/** A collapsed track's head whose group isn't shown (IsGroupAllCollapsed): drawn and listed loose, at the top. */
++	bool IsLooseCollapsedHead(int32 LayerIndex) const;
++
+ 	/**
+ 	 * Whether a layer is shown in the panel right now: every layer, or - while a collapsed track is open on its own - only
+ 	 * its tracks.
+@@ -1159,6 +1176,19 @@ private:
+ 
+ 	TSharedRef<SWidget> MakeHeader();
+ 
++	/**
++	 * Moves the panel to another animation - another timeline, the other mode, another asset - by running Switch: out of
++	 * an open collapsed track first (its mutes cleared while still on the animation they were set on), then the selection,
++	 * fold state kept by index and the rows all started over for what is now edited.
++	 */
++	void SwitchEditedAnimation(TFunctionRef<void()> Switch);
++
++	/** The header's timeline picker: the open timeline's name and icon, shown in Animation Timeline in a Widget Blueprint. */
++	TSharedRef<SWidget> MakeTimelinePicker();
++
++	/** The timeline picker's menu: every timeline of the Widget Blueprint to open, then New, Rename, Duplicate and Delete. */
++	TSharedRef<SWidget> MakeTimelineMenu();
++
+ 	/**
+ 	 * The transport - its buttons, the time, and one pill of controls: Loop, Ping Pong, Invert, Speed, Snapping and Linked
+ 	 * Edges. bStacked lays it out in two rows, for under the Animation Tracks list; otherwise in one, along the bottom.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp
+index 9b6dcfe..21d920b 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp
+@@ -446,6 +446,13 @@ namespace
+ 		return StaticCastSharedRef<SWidgetAnimTimeline>(GetOrMakeDrawerPanel(DrawerContent, PanelSource, WeakToolkit));
+ 	}
+ 
++	/** This editor's panel source - what its Widget Animations panels edit - without building a panel. Null once the editor is gone. */
++	TSharedPtr<IWidgetAnimPanelSource> FindScriptedSource(const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
++	{
++		const TSharedPtr<FAssetEditorToolkit> Toolkit = WeakToolkit.Pin();
++		return Toolkit.IsValid() ? TSharedPtr<IWidgetAnimPanelSource>(GetPanelSource(Toolkit.ToSharedRef())) : nullptr;
++	}
++
+ 	/** Hands the tab manager the very tab to dock beside, rather than an id for it to look up - a missed lookup floats the new tab in a window. */
+ 	class FScriptingDockBesideTab : public FTabManager::FSearchPreference
+ 	{
+@@ -635,6 +642,7 @@ namespace
+ 
+ 		return SNew(SWidgetAnimScriptPanel)
+ 			.FindPanel([WeakToolkit]() { return FindScriptedPanel(WeakToolkit); })
++			.FindSource([WeakToolkit]() { return FindScriptedSource(WeakToolkit); })
+ 			.ScriptKey(GetScriptingKey(WeakToolkit))
+ 			.Docked(true)
+ 			.OnClose_Lambda([WeakToolkit]() { CloseScriptingTab(WeakToolkit); });
+@@ -795,6 +803,7 @@ namespace
+ 
+ 		return SNew(SWidgetAnimScriptPanel)
+ 			.FindPanel([WeakToolkit]() { return FindScriptedPanel(WeakToolkit); })
++			.FindSource([WeakToolkit]() { return FindScriptedSource(WeakToolkit); })
+ 			.ScriptKey(GetScriptingKey(WeakToolkit))
+ 			.InDrawer(true)
+ 			.OnClose_Lambda(DismissDrawer)
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
+index db59a24..023e309 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
+@@ -26,6 +26,11 @@
+ #include "ScopedTransaction.h"
+ #include "UObject/UObjectIterator.h"
+ #include "WidgetBlueprint.h"
++#include "WidgetAnimTimelines.h"
++#include "Framework/Notifications/NotificationManager.h"
++#include "Misc/ConfigCacheIni.h"
++#include "Misc/Paths.h"
++#include "Widgets/Notifications/SNotificationList.h"
+ 
+ #define LOCTEXT_NAMESPACE "WidgetAnimPanelSource"
+ 
+@@ -150,10 +155,35 @@ void IWidgetAnimPanelSource::SetMinimumLength(float Seconds)
+ 	}
+ }
+ 
++FText IWidgetAnimPanelSource::GetEditedName() const
++{
++	if (GetMode() == EMode::EditExistingAsset)
++	{
++		const UWidgetAnimPresetAsset* Edited = GetAsset();
++		return Edited ? FText::FromString(Edited->GetName()) : LOCTEXT("NoAssetPicked", "No asset picked");
++	}
++	if (SupportsTimelines())
++	{
++		const FString Name = GetTimelineName();
++		return Name.IsEmpty() ? LOCTEXT("NoTimeline", "No timeline") : FText::FromString(Name);
++	}
++	if (const UWidgetAnimBuilder* Builder = GetBuilder())
++	{
++		return Builder->AnimationName.IsEmpty() ? LOCTEXT("BuilderAnimation", "Widget Animation") : FText::FromString(Builder->AnimationName);
++	}
++	if (!SupportsLayerGroups())
++	{
++		const UObject* Owner = GetEditedObject();
++		return FText::FromString(FName::NameToDisplayString(GetLayersPropertyName().ToString(), false)
++			+ (Owner ? FString::Printf(TEXT(" (%s)"), *Owner->GetName()) : FString()));
++	}
++	return FText::GetEmpty();
++}
++
+ bool IWidgetAnimPanelSource::CanSaveAsNewAsset() const
+ {
+ 	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+-	return GetMode() == EMode::NewAnimation && Layers && Layers->Num() > 0;
++	return GetMode() == EMode::Timeline && Layers && Layers->Num() > 0;
+ }
+ 
+ bool IWidgetAnimPanelSource::CanUpdateAsset() const
+@@ -251,7 +281,7 @@ UWidgetAnimBuilder* FWidgetAnimBuilderPanelSource::GetBuilder() const
+ FWidgetAnimBuilderPanelSource::EMode FWidgetAnimBuilderPanelSource::GetMode() const
+ {
+ 	const UWidgetAnimBuilder* Builder = GetBuilder();
+-	return (Builder && Builder->PreviewAnimation) || bEditExistingPicked ? EMode::EditExistingAsset : EMode::NewAnimation;
++	return (Builder && Builder->PreviewAnimation) || bEditExistingPicked ? EMode::EditExistingAsset : EMode::Timeline;
+ }
+ 
+ void FWidgetAnimBuilderPanelSource::SetMode(EMode Mode)
+@@ -260,7 +290,7 @@ void FWidgetAnimBuilderPanelSource::SetMode(EMode Mode)
+ 
+ 	// Back to the builder's own layers: the asset being edited is let go of. Going the other way waits for one
+ 	// to be picked.
+-	if (Mode == EMode::NewAnimation)
++	if (Mode == EMode::Timeline)
+ 	{
+ 		SetPreviewAnimation(nullptr);
+ 	}
+@@ -299,7 +329,7 @@ void FWidgetAnimBuilderPanelSource::SetPreviewAnimation(UWidgetAnimPresetAsset*
+ UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::SaveAsNewAsset()
+ {
+ 	UWidgetAnimBuilder* Builder = GetBuilder();
+-	if (!Builder || GetMode() != EMode::NewAnimation)
++	if (!Builder || GetMode() != EMode::Timeline)
+ 	{
+ 		return nullptr;
+ 	}
+@@ -316,7 +346,7 @@ UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::SaveAsNewAsset()
+ 
+ UObject* FWidgetAnimBuilderPanelSource::GetEditedObject() const
+ {
+-	// Edit Existing Asset: the asset (none until one is picked). New Animation: the builder's working copy.
++	// Edit Existing Asset: the asset (none until one is picked). Animation Timeline: the builder's working copy.
+ 	if (GetMode() == EMode::EditExistingAsset)
+ 	{
+ 		return GetAsset();
+@@ -575,38 +605,41 @@ void FWidgetAnimBuilderPanelSource::SetSpeed(float Speed)
+ 
+ namespace
+ {
+-	/** The asset each Widget Blueprint was last editing, so reopening the drawer - or docking it - picks up where it was. For this session only. */
+-	TMap<FSoftObjectPath, TWeakObjectPtr<UWidgetAnimPresetAsset>>& GetLastEditedAssets()
+-	{
+-		static TMap<FSoftObjectPath, TWeakObjectPtr<UWidgetAnimPresetAsset>> LastEdited;
+-		return LastEdited;
+-	}
+-
+-	/** Each Widget Blueprint's New Animation working copy, for this session. */
+-	TMap<FSoftObjectPath, TStrongObjectPtr<UWidgetAnimPresetAsset>>& GetWorkingCopies()
+-	{
+-		static TMap<FSoftObjectPath, TStrongObjectPtr<UWidgetAnimPresetAsset>> WorkingCopies;
+-		return WorkingCopies;
+-	}
++	/**
++	 * Which timeline or asset each Widget Blueprint had open, in the editor's per-project settings: the Widget Blueprint's
++	 * path, then "Timeline:<name>" or "Asset:<object path>". Kept there rather than in the Widget Blueprint, so opening
++	 * another timeline never marks the Widget Blueprint as changed.
++	 */
++	const TCHAR* OpenStateSection = TEXT("NameTBD.WidgetAnimations.OpenTimelines");
++	const TCHAR* OpenTimelinePrefix = TEXT("Timeline:");
++	const TCHAR* OpenAssetPrefix = TEXT("Asset:");
+ 
+ 	/** After this long without the panel on screen, the preview is put back as authored. */
+ 	constexpr double PanelIdleSeconds = 0.25;
+ 
+ 	/** How often a missing designer preview is looked for again. */
+ 	constexpr double RootSearchInterval = 0.5;
+-}
+ 
+-FWidgetAnimAssetPanelSource::FWidgetAnimAssetPanelSource(TWeakObjectPtr<UWidgetBlueprint> InBlueprint)
+-	: Blueprint(InBlueprint)
+-{
+-	if (const UWidgetBlueprint* WidgetBlueprint = Blueprint.Get())
++	/** A new timeline's name when none is given: "Timeline", numbered by the extension when taken. */
++	const TCHAR* DefaultTimelineName = TEXT("Timeline");
++
++	/** Tells the person in a toast at the bottom of the editor, as saving does elsewhere. */
++	void ShowPanelNote(const FText& Text, bool bSuccess)
+ 	{
+-		if (const TWeakObjectPtr<UWidgetAnimPresetAsset>* Last = GetLastEditedAssets().Find(FSoftObjectPath(WidgetBlueprint)))
++		FNotificationInfo Info(Text);
++		Info.ExpireDuration = 5.f;
++		Info.bUseSuccessFailIcons = true;
++		if (const TSharedPtr<SNotificationItem> Item = FSlateNotificationManager::Get().AddNotification(Info))
+ 		{
+-			Asset = *Last;
++			Item->SetCompletionState(bSuccess ? SNotificationItem::CS_Success : SNotificationItem::CS_Fail);
+ 		}
+ 	}
++}
+ 
++FWidgetAnimAssetPanelSource::FWidgetAnimAssetPanelSource(TWeakObjectPtr<UWidgetBlueprint> InBlueprint)
++	: Blueprint(InBlueprint)
++{
++	RestoreOpenState();
+ 	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FWidgetAnimAssetPanelSource::Tick));
+ }
+ 
+@@ -616,28 +649,232 @@ FWidgetAnimAssetPanelSource::~FWidgetAnimAssetPanelSource()
+ 	RestorePreview();
+ }
+ 
+-UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::GetWorkingCopy() const
++void FWidgetAnimAssetPanelSource::SaveOpenState() const
+ {
+ 	const UWidgetBlueprint* WidgetBlueprint = Blueprint.Get();
+-	if (!WidgetBlueprint)
++	if (!WidgetBlueprint || !GConfig)
++	{
++		return;
++	}
++
++	FString Value;
++	if (Mode == EMode::EditExistingAsset)
++	{
++		const UWidgetAnimPresetAsset* Picked = Asset.Get();
++		Value = OpenAssetPrefix + (Picked ? Picked->GetPathName() : FString());
++	}
++	else
++	{
++		Value = OpenTimelinePrefix + OpenTimelineName;
++	}
++	GConfig->SetString(OpenStateSection, *WidgetBlueprint->GetPathName(), *Value, GEditorPerProjectIni);
++}
++
++void FWidgetAnimAssetPanelSource::RestoreOpenState()
++{
++	const UWidgetBlueprint* WidgetBlueprint = Blueprint.Get();
++	FString Value;
++	if (!WidgetBlueprint || !GConfig || !GConfig->GetString(OpenStateSection, *WidgetBlueprint->GetPathName(), Value, GEditorPerProjectIni))
++	{
++		return;
++	}
++
++	if (Value.StartsWith(OpenAssetPrefix))
++	{
++		// An asset since deleted or moved is simply not found: the panel then waits for one to be picked, as before.
++		Mode = EMode::EditExistingAsset;
++		const FString Path = Value.Mid(FCString::Strlen(OpenAssetPrefix));
++		Asset = Path.IsEmpty() ? nullptr : LoadObject<UWidgetAnimPresetAsset>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet);
++	}
++	else if (Value.StartsWith(OpenTimelinePrefix))
++	{
++		Mode = EMode::Timeline;
++		OpenTimelineName = Value.Mid(FCString::Strlen(OpenTimelinePrefix));
++	}
++}
++
++void FWidgetAnimAssetPanelSource::ResetPlayback()
++{
++	RestorePreview();
++	Alpha = 0.f;
++	bPlaying = false;
++	bPlayingForward = true;
++}
++
++UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::GetOpenTimeline() const
++{
++	const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
++	if (!Timelines || Timelines->Timelines.Num() == 0)
+ 	{
+ 		return nullptr;
+ 	}
+ 
+-	// One per Widget Blueprint, kept for the session, so closing and reopening the drawer - or docking it -
+-	// finds the new animation as it was left. Never saved as such: Save as Animation Asset is what keeps it.
+-	TStrongObjectPtr<UWidgetAnimPresetAsset>& WorkingCopy = GetWorkingCopies().FindOrAdd(FSoftObjectPath(WidgetBlueprint));
+-	if (!WorkingCopy.IsValid())
++	// Asked every frame, so the cheap way first: the animation opened last, still one of the timelines. Its name is
++	// picked up again each time, so a rename - or an undone rename - is followed.
++	int32 Index = Timelines->IndexOf(OpenTimelineAnimation.Get());
++	if (Index == INDEX_NONE)
++	{
++		Index = Timelines->IndexOf(OpenTimelineName);
++	}
++	if (Index == INDEX_NONE || !Timelines->Timelines[Index].Animation)
++	{
++		Index = Timelines->Timelines.IndexOfByPredicate([](const FWidgetAnimTimeline& Timeline) { return Timeline.Animation != nullptr; });
++	}
++	if (Index == INDEX_NONE)
+ 	{
+-		WorkingCopy.Reset(NewObject<UWidgetAnimPresetAsset>(GetTransientPackage(), NAME_None, RF_Transient | RF_Transactional));
+-		WorkingCopy->LayerGroups.AddDefaulted();
++		return nullptr;
+ 	}
+-	return WorkingCopy.Get();
++
++	const FWidgetAnimTimeline& Timeline = Timelines->Timelines[Index];
++	OpenTimelineAnimation = Timeline.Animation.Get();
++	OpenTimelineName = Timeline.Name;
++	return Timeline.Animation.Get();
+ }
+ 
+ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::GetEditedAnimation() const
+ {
+-	return Mode == EMode::NewAnimation ? GetWorkingCopy() : Asset.Get();
++	return Mode == EMode::Timeline ? GetOpenTimeline() : Asset.Get();
++}
++
++void FWidgetAnimAssetPanelSource::GetTimelineNames(TArray<FString>& OutNames) const
++{
++	OutNames.Reset();
++	if (const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get()))
++	{
++		for (const FWidgetAnimTimeline& Timeline : Timelines->Timelines)
++		{
++			if (Timeline.Animation)
++			{
++				OutNames.Add(Timeline.Name);
++			}
++		}
++	}
++}
++
++FString FWidgetAnimAssetPanelSource::GetTimelineName() const
++{
++	return GetOpenTimeline() ? OpenTimelineName : FString();
++}
++
++bool FWidgetAnimAssetPanelSource::OpenTimeline(const FString& Name)
++{
++	const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
++	const int32 Index = Timelines ? Timelines->IndexOf(Name) : INDEX_NONE;
++	if (Index == INDEX_NONE || !Timelines->Timelines[Index].Animation)
++	{
++		return false;
++	}
++
++	const FWidgetAnimTimeline& Timeline = Timelines->Timelines[Index];
++	if (Mode != EMode::Timeline || GetOpenTimeline() != Timeline.Animation.Get())
++	{
++		// The last one's poses come off before the next one's go on.
++		ResetPlayback();
++	}
++	Mode = EMode::Timeline;
++	OpenTimelineAnimation = Timeline.Animation.Get();
++	OpenTimelineName = Timeline.Name;
++	SaveOpenState();
++	return true;
++}
++
++FString FWidgetAnimAssetPanelSource::CreateTimeline(const FString& Name, const FString& CopyOf)
++{
++	UWidgetBlueprint* WidgetBlueprint = Blueprint.Get();
++	if (!WidgetBlueprint)
++	{
++		return FString();
++	}
++
++	const UWidgetAnimTimelinesExtension* Existing = UWidgetAnimTimelinesExtension::Find(WidgetBlueprint);
++	const int32 CopyIndex = Existing && !CopyOf.IsEmpty() ? Existing->IndexOf(CopyOf) : INDEX_NONE;
++	const UWidgetAnimPresetAsset* CopyFrom = CopyIndex != INDEX_NONE ? Existing->Timelines[CopyIndex].Animation.Get() : nullptr;
++
++	const FScopedTransaction Transaction(CopyFrom
++		? LOCTEXT("DuplicateTimeline", "Duplicate Animation Timeline")
++		: LOCTEXT("NewTimeline", "New Animation Timeline"));
++	UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::FindOrAdd(WidgetBlueprint);
++	if (!Timelines)
++	{
++		return FString();
++	}
++	Timelines->Modify();
++
++	const FString Wanted = Name.TrimStartAndEnd().IsEmpty() ? FString(DefaultTimelineName) : Name;
++	const int32 Index = Timelines->AddTimeline(Wanted, CopyFrom);
++	if (Index == INDEX_NONE)
++	{
++		return FString();
++	}
++
++	const FString Made = Timelines->Timelines[Index].Name;
++	OpenTimeline(Made);
++	return Made;
++}
++
++FString FWidgetAnimAssetPanelSource::RenameTimeline(const FString& Name, const FString& NewName)
++{
++	UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
++	const int32 Index = Timelines ? Timelines->IndexOf(Name) : INDEX_NONE;
++	const FString Trimmed = NewName.TrimStartAndEnd();
++	if (Index == INDEX_NONE || Trimmed.IsEmpty())
++	{
++		return FString();
++	}
++
++	// Only the name changes; a new one taken by another timeline is numbered, as a new timeline's is.
++	const FString Unique = Timelines->MakeUniqueName(Trimmed, Index);
++	if (Unique == Timelines->Timelines[Index].Name)
++	{
++		return Unique;
++	}
++
++	const FScopedTransaction Transaction(LOCTEXT("RenameTimeline", "Rename Animation Timeline"));
++	Timelines->Modify();
++	const bool bWasOpen = Timelines->Timelines[Index].Animation.Get() == GetOpenTimeline();
++	Timelines->Timelines[Index].Name = Unique;
++	if (bWasOpen)
++	{
++		OpenTimelineName = Unique;
++		SaveOpenState();
++	}
++	return Unique;
++}
++
++bool FWidgetAnimAssetPanelSource::DeleteTimeline(const FString& Name)
++{
++	UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
++	const int32 Index = Timelines ? Timelines->IndexOf(Name) : INDEX_NONE;
++	if (Index == INDEX_NONE)
++	{
++		return false;
++	}
++
++	const bool bWasOpen = Timelines->Timelines[Index].Animation.Get() == GetOpenTimeline();
++	if (bWasOpen)
++	{
++		ResetPlayback();
++	}
++
++	// The animation object stays where it is, unreferenced, so an undo can put the timeline back as it was.
++	const FScopedTransaction Transaction(LOCTEXT("DeleteTimeline", "Delete Animation Timeline"));
++	Timelines->Modify();
++	Timelines->Timelines.RemoveAt(Index);
++
++	// The one after it opens in its place - or the one before, when it was the last.
++	if (bWasOpen)
++	{
++		OpenTimelineAnimation.Reset();
++		OpenTimelineName.Reset();
++		if (Timelines->Timelines.Num() > 0)
++		{
++			const FWidgetAnimTimeline& Next = Timelines->Timelines[FMath::Min(Index, Timelines->Timelines.Num() - 1)];
++			OpenTimelineAnimation = Next.Animation.Get();
++			OpenTimelineName = Next.Name;
++		}
++		SaveOpenState();
++	}
++	return true;
+ }
+ 
+ UObject* FWidgetAnimAssetPanelSource::GetEditedObject() const
+@@ -675,11 +912,9 @@ void FWidgetAnimAssetPanelSource::SetMode(EMode InMode)
+ 	}
+ 
+ 	// What was posed comes off before the other animation's poses go on.
+-	RestorePreview();
++	ResetPlayback();
+ 	Mode = InMode;
+-	Alpha = 0.f;
+-	bPlaying = false;
+-	bPlayingForward = true;
++	SaveOpenState();
+ }
+ 
+ UUserWidget* FWidgetAnimAssetPanelSource::GetPreviewRoot() const
+@@ -716,37 +951,35 @@ void FWidgetAnimAssetPanelSource::SetAsset(UWidgetAnimPresetAsset* InAsset)
+ 	}
+ 
+ 	// The last one's poses come off before the next one's go on.
+-	RestorePreview();
++	ResetPlayback();
+ 
+ 	Asset = InAsset;
+ 	Mode = EMode::EditExistingAsset;
+-	Alpha = 0.f;
+-	bPlaying = false;
+-	bPlayingForward = true;
+-
+-	if (const UWidgetBlueprint* WidgetBlueprint = Blueprint.Get())
+-	{
+-		GetLastEditedAssets().Add(FSoftObjectPath(WidgetBlueprint), Asset);
+-	}
++	SaveOpenState();
+ }
+ 
+ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset()
+ {
+ 	const UWidgetBlueprint* WidgetBlueprint = Blueprint.Get();
+-	UWidgetAnimPresetAsset* WorkingCopy = GetWorkingCopy();
+-	if (!WidgetBlueprint || !WorkingCopy || Mode != EMode::NewAnimation)
++	const UWidgetAnimPresetAsset* Timeline = Mode == EMode::Timeline ? GetOpenTimeline() : nullptr;
++	if (!WidgetBlueprint || !Timeline)
+ 	{
+ 		return nullptr;
+ 	}
+ 
+-	// In the project's Default Save Folder, else beside the Widget Blueprint - named after it: WBP_Card -> WA_Card,
+-	// numbered on a clash so the prefix survives.
++	// In the project's Default Save Folder, else beside the Widget Blueprint - named after it and the timeline:
++	// WBP_Card's Intro -> WA_Card_Intro, numbered on a clash so the prefix survives.
+ 	const FString ProjectFolder = UWidgetAnimRuntimeSettings::Get().GetDefaultSavePackagePath();
+ 	const FString PackagePath = !ProjectFolder.IsEmpty() ? ProjectFolder : FPackageName::GetLongPackagePath(WidgetBlueprint->GetOutermost()->GetName());
+ 	FString BaseName = WidgetBlueprint->GetName();
+ 	BaseName.RemoveFromStart(TEXT("WBP_"));
+ 	BaseName.RemoveFromStart(TEXT("W_"));
+ 	BaseName = TEXT("WA_") + BaseName;
++	const FString TimelinePart = FPaths::MakeValidFileName(OpenTimelineName.Replace(TEXT(" "), TEXT("")), TEXT('_'));
++	if (!TimelinePart.IsEmpty())
++	{
++		BaseName += TEXT("_") + TimelinePart;
++	}
+ 
+ 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
+ 
+@@ -766,11 +999,11 @@ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset()
+ 	}
+ 
+ 	NewAsset->Modify();
+-	NewAsset->Description = WorkingCopy->Description;
+-	NewAsset->LayerGroups = WorkingCopy->LayerGroups;
+-	NewAsset->Layers = WorkingCopy->Layers;
+-	NewAsset->AnimationSpeedMultiplier = WorkingCopy->AnimationSpeedMultiplier;
+-	NewAsset->MinimumLength = WorkingCopy->MinimumLength;
++	NewAsset->Description = Timeline->Description;
++	NewAsset->LayerGroups = Timeline->LayerGroups;
++	NewAsset->Layers = Timeline->Layers;
++	NewAsset->AnimationSpeedMultiplier = Timeline->AnimationSpeedMultiplier;
++	NewAsset->MinimumLength = Timeline->MinimumLength;
+ 	NewAsset->PostEditChange();
+ 	NewAsset->MarkPackageDirty();
+ 
+@@ -783,16 +1016,10 @@ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset()
+ 		GEditor->SyncBrowserToObjects(ToSelect);
+ 	}
+ 
+-	// The working copy starts over for the next new animation, and the panel moves on to the saved one, so
+-	// further changes are made to it and Update Animation Asset keeps them.
+-	WorkingCopy->Description = FText::GetEmpty();
+-	WorkingCopy->Layers.Reset();
+-	WorkingCopy->AnimationSpeedMultiplier = 1.f;
+-	WorkingCopy->MinimumLength = 0.f;
+-	WorkingCopy->LayerGroups.Reset();
+-	WorkingCopy->LayerGroups.AddDefaulted();
+-
+-	SetAsset(NewAsset);
++	// The timeline stays open and as it was: it is this Widget Blueprint's own, and the asset is a copy of it for other
++	// widgets to use. Further changes to the asset are made with Edit Existing Asset.
++	ShowPanelNote(FText::Format(LOCTEXT("SavedTimelineAsAsset", "Saved timeline {0} as {1}. The timeline is unchanged; edit the asset with Edit Existing Asset."),
++		FText::FromString(OpenTimelineName), FText::FromString(NewAsset->GetName())), true);
+ 	return NewAsset;
+ }
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
+index 27117bf..2227c2e 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
+@@ -198,30 +198,68 @@ public:
+ 	virtual void NotifyPanelActive() {}
+ 
+ 	// ---------------------------------------------------------------------------------------------
+-	// New animation, or an existing asset
++	// An animation timeline, or an existing asset
+ 	// ---------------------------------------------------------------------------------------------
+ 
+ 	/**
+-	 * What the panel is working on. New Animation is a working copy - the builder's own layers, or in any
+-	 * other Widget Blueprint a scratch animation kept for the session - saved with Save as Animation Asset.
+-	 * Edit Existing Asset edits the picked WA_ asset in place; Update Animation Asset saves it.
++	 * What the panel is working on. Animation Timeline is an animation kept in the Widget Blueprint itself - one of its
++	 * timelines (see SupportsTimelines), or the builder's own layers - saved with the Widget Blueprint, and made into a
++	 * WA_ asset with Save as Animation Asset. Edit Existing Asset edits the picked WA_ asset in place; Update Animation
++	 * Asset saves it.
+ 	 */
+ 	enum class EMode : uint8
+ 	{
+-		NewAnimation,
++		Timeline,
+ 		EditExistingAsset
+ 	};
+ 
+ 	virtual EMode GetMode() const = 0;
+ 	virtual void SetMode(EMode Mode) = 0;
+ 
+-	/** The asset being edited in Edit Existing Asset - null until one is picked, and in New Animation. */
++	/** The asset being edited in Edit Existing Asset - null until one is picked, and in Animation Timeline. */
+ 	virtual UWidgetAnimPresetAsset* GetAsset() const = 0;
+ 	virtual void SetAsset(UWidgetAnimPresetAsset* Asset) = 0;
+ 
+-	/** New Animation: saves the working copy as a new WA_ asset and switches to editing that asset. Null if nothing was saved. */
++	/**
++	 * Animation Timeline: saves it as a new WA_ asset. The builder then goes on to edit the asset; a Widget Blueprint
++	 * keeps its timeline open and as it was, so its own work isn't moved out from under it. Null if nothing was saved.
++	 */
+ 	virtual UWidgetAnimPresetAsset* SaveAsNewAsset() = 0;
+ 
++	// ---------------------------------------------------------------------------------------------
++	// Timelines: a Widget Blueprint's own animations (UWidgetAnimTimelinesExtension)
++	// ---------------------------------------------------------------------------------------------
++
++	/** Whether this source keeps several named timelines, made, renamed and deleted from the panel. Not the builder, or a plain list. */
++	virtual bool SupportsTimelines() const { return false; }
++
++	/** The timelines' names, in order. */
++	virtual void GetTimelineNames(TArray<FString>& OutNames) const {}
++
++	/** The timeline open in Animation Timeline - empty when there is none. The builder answers with its Animation Name. */
++	virtual FString GetTimelineName() const { return FString(); }
++
++	/** Opens the timeline called Name, in Animation Timeline. False if there is none. */
++	virtual bool OpenTimeline(const FString& Name) { return false; }
++
++	/**
++	 * Makes a timeline, named Name (numbered when taken) - a copy of the one called CopyOf when given - and opens it. One
++	 * undo step. Returns its name, or empty if none was made.
++	 */
++	virtual FString CreateTimeline(const FString& Name, const FString& CopyOf = FString()) { return FString(); }
++
++	/** Renames a timeline (numbered when taken). One undo step. Returns its new name, or empty if it wasn't renamed. */
++	virtual FString RenameTimeline(const FString& Name, const FString& NewName) { return FString(); }
++
++	/** Deletes a timeline and its animation. One undo step; an open one is replaced by the next. */
++	virtual bool DeleteTimeline(const FString& Name) { return false; }
++
++	/** Whether the panel is in Animation Timeline on a timeline of a Widget Blueprint (not the builder, not a plain list). */
++	bool IsEditingTimeline() const { return SupportsTimelines() && GetMode() == EMode::Timeline; }
++
++	/** What is being edited, named for the panel's and the Script area's headers: the timeline's name, the asset's, the builder's. */
++	FText GetEditedName() const;
++
+ 	/** Edit Existing Asset: saves the asset's changes to disk. */
+ 	void UpdateAsset();
+ 
+@@ -336,9 +374,13 @@ private:
+ };
+ 
+ /**
+- * In any other Widget Blueprint's editor: a new animation built on a working copy kept for the session and
+- * saved as a WA_ asset, or an existing WA_ asset edited directly - either played on the designer's preview
+- * of this Widget Blueprint with each group on its Preview Target.
++ * In any other Widget Blueprint's editor: one of the Widget Blueprint's own animation timelines - kept in it and saved
++ * with it (UWidgetAnimTimelinesExtension), made into a WA_ asset with Save as Animation Asset - or an existing WA_ asset
++ * edited directly. Either is played on the designer's preview of this Widget Blueprint with each group on its Preview
++ * Target.
++ *
++ * Which timeline or asset each Widget Blueprint had open is remembered across editor sessions (per project, in the
++ * editor's own settings - never in the Widget Blueprint, so looking at a timeline doesn't mark it changed).
+  *
+  * Plays it itself - there is no builder here to do it. Every frame the panel is on screen, the animation is
+  * rebuilt from the asset and posed at the playhead; when the panel goes away (the drawer closed, the tab
+@@ -385,16 +427,36 @@ public:
+ 	virtual UWidgetAnimPresetAsset* SaveAsNewAsset() override;
+ 	virtual UWidgetBlueprint* GetWidgetBlueprint() const override { return Blueprint.Get(); }
+ 
++	virtual bool SupportsTimelines() const override { return true; }
++	virtual void GetTimelineNames(TArray<FString>& OutNames) const override;
++	virtual FString GetTimelineName() const override;
++	virtual bool OpenTimeline(const FString& Name) override;
++	virtual FString CreateTimeline(const FString& Name, const FString& CopyOf = FString()) override;
++	virtual FString RenameTimeline(const FString& Name, const FString& NewName) override;
++	virtual bool DeleteTimeline(const FString& Name) override;
++
+ private:
+ 
+ 	/** The ticker: advances the clock and poses the preview while the panel is showing, restores it once it isn't. */
+ 	bool Tick(float DeltaTime);
+ 
+-	/** The animation being worked on: the working copy in New Animation, the picked asset in Edit Existing Asset. */
++	/** The animation being worked on: the open timeline in Animation Timeline, the picked asset in Edit Existing Asset. */
+ 	UWidgetAnimPresetAsset* GetEditedAnimation() const;
+ 
+-	/** This Widget Blueprint's working copy for New Animation, made on first use and kept for the session. */
+-	UWidgetAnimPresetAsset* GetWorkingCopy() const;
++	/**
++	 * The open timeline's animation: the one opened last while it is still among the Widget Blueprint's timelines (an undo
++	 * may have taken it away), else the one by its name, else the first. Null when the Widget Blueprint has none.
++	 */
++	UWidgetAnimPresetAsset* GetOpenTimeline() const;
++
++	/** What is shown changes: the poses come off and the clock starts over. */
++	void ResetPlayback();
++
++	/** Remembers which timeline or asset is open, for the next time this Widget Blueprint's panel opens - this session or a later one. */
++	void SaveOpenState() const;
++
++	/** Picks up what SaveOpenState remembered. */
++	void RestoreOpenState();
+ 
+ 	/** The animation as settings for this Widget Blueprint's preview: each group on its Preview Target. Invert stamped on, loops left to the clock here. */
+ 	void BuildFlattened(UUserWidget* Root, TArray<FWidgetAnimSettings>& OutSettings) const;
+@@ -404,7 +466,11 @@ private:
+ 
+ 	TWeakObjectPtr<UWidgetBlueprint> Blueprint;
+ 	TWeakObjectPtr<UWidgetAnimPresetAsset> Asset;
+-	EMode Mode = EMode::NewAnimation;
++	EMode Mode = EMode::Timeline;
++
++	/** The open timeline: its animation, and its name to find it again by when the animation is gone. See GetOpenTimeline. */
++	mutable TWeakObjectPtr<UWidgetAnimPresetAsset> OpenTimelineAnimation;
++	mutable FString OpenTimelineName;
+ 
+ 	/** The designer preview found last, and when it was last looked for - looking is a walk over every User Widget, so it isn't done every frame. */
+ 	mutable TWeakObjectPtr<UUserWidget> CachedRoot;
+@@ -504,7 +570,7 @@ public:
+ 	virtual void NotifyPanelActive() override;
+ 
+ 	/** Always a working list: there is no asset to switch to. Save as Animation copies it into a new one. */
+-	virtual EMode GetMode() const override { return EMode::NewAnimation; }
++	virtual EMode GetMode() const override { return EMode::Timeline; }
+ 	virtual void SetMode(EMode InMode) override {}
+ 	virtual UWidgetAnimPresetAsset* GetAsset() const override { return nullptr; }
+ 	virtual void SetAsset(UWidgetAnimPresetAsset* InAsset) override {}
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimScripting.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimScripting.cpp
+index 2109ff3..bb2cee2 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimScripting.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimScripting.cpp
+@@ -1079,16 +1079,21 @@ FString UWidgetAnimScriptAnimation::GetAnimationName() const
+ 	{
+ 		return Edited->GetName();
+ 	}
++	// A timeline by its name in the Widget Blueprint; the builder by its Animation Name.
++	if (Pinned->IsEditingTimeline())
++	{
++		return Pinned->GetTimelineName();
++	}
+ 	if (const UWidgetAnimBuilder* Builder = Pinned->GetBuilder())
+ 	{
+-		return Builder->AnimationName.IsEmpty() ? TEXT("New Animation") : Builder->AnimationName;
++		return Builder->AnimationName.IsEmpty() ? TEXT("Widget Animation") : Builder->AnimationName;
+ 	}
+ 	if (!Pinned->SupportsLayerGroups())
+ 	{
+ 		const UObject* Owner = Pinned->GetEditedObject();
+ 		return FString::Printf(TEXT("%s %s"), Owner ? *Owner->GetName() : TEXT(""), *Pinned->GetLayersPropertyName().ToString()).TrimStartAndEnd();
+ 	}
+-	return TEXT("New Animation");
++	return Pinned->GetEditedName().ToString();
+ }
+ 
+ bool UWidgetAnimScriptAnimation::SupportsGroups() const
+@@ -3544,7 +3549,18 @@ namespace WidgetAnimScripting
+ 		if (!Animation->IsEditable())
+ 		{
+ 			Result.bFailed = true;
+-			Result.Error = PanelSource->IsReadOnly() ? TEXT("The panel is locked: unlock it to run a script.") : TEXT("This animation can't be edited here.");
++			if (PanelSource->IsReadOnly())
++			{
++				Result.Error = TEXT("The panel is locked: unlock it to run a script.");
++			}
++			else if (PanelSource->IsEditingTimeline() && PanelSource->GetTimelineName().IsEmpty())
++			{
++				Result.Error = TEXT("This Widget Blueprint has no animation timeline yet: make one with New Timeline in the Widget Animations panel, then run the script on it.");
++			}
++			else
++			{
++				Result.Error = TEXT("This animation can't be edited here.");
++			}
+ 			return Result;
+ 		}
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index 6195ae7..7535013 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -433,6 +433,16 @@ namespace NameTBD
+ 			// pixels - its "Widget Animation, N tracks" otherwise touches the section's rounded end.
+ 			inline constexpr float AnimationTrackTextRightPadding = 6.0f;
+ 
++			// -------------------------------------------------------------------------------------------------
++			// Animation timelines - a Widget Blueprint's own animations.
++			//   NoTimelineText: the timeline picker's "No timeline" while the Widget Blueprint has none - the orange of
++			//     the one thing to click.
++			//   ScriptTargetName: the name of the timeline or asset a script runs on, in the Script area's strip.
++			// -------------------------------------------------------------------------------------------------
++
++			inline const FLinearColor NoTimelineText(AnimationOrange_Normal);
++			inline const FLinearColor ScriptTargetName(AnimationOrange_Normal);
++
+ 			// -------------------------------------------------------------------------------------------------
+ 			// The Script area under the Track Editor - Python that makes tracks. See SWidgetAnimScriptPanel.
+ 			//   ScriptPlain ... ScriptOperator: the code, colored as Python - quiet for the plain words, brighter for what
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index e998f0d..bee5960 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -138,7 +138,13 @@ namespace NameTBD::Tooltips
+ 		inline FText NothingToEdit()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NothingToEdit",
+-				"Pick the Widget Animation asset to edit above, or switch to New Animation.");
++				"Pick the Widget Animation asset to edit above, or switch to Animation Timeline.");
++		}
++
++		inline FText NoTimelineYet()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NoTimelineYet",
++				"This Widget Blueprint has no animation timelines yet. Make one to start animating its widgets.");
+ 		}
+ 
+ 		// -------------------------------------------------------------------------------------------------
+@@ -148,13 +154,65 @@ namespace NameTBD::Tooltips
+ 		inline FText ModeTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ModeTooltip",
+-				"New Animation builds a new one, saved with Save as Animation Asset. Edit Existing Asset edits a Widget Animation asset in place, saved with Update Animation Asset.");
++				"Animation Timeline edits this Widget Blueprint's own animations, saved with it; Save as Animation Asset makes one usable by other widgets. Edit Existing Asset edits a Widget Animation asset in place, saved with Update Animation Asset.");
++		}
++
++		inline FText TimelineModeTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TimelineModeTooltip",
++				"Make or edit this Widget Blueprint's own animation timelines. They are saved with it and belong to it; to use one in another widget, save it as a Widget Animation asset.");
++		}
++
++		inline FText TimelinePickerTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TimelinePickerTooltip",
++				"Timeline: which of this Widget Blueprint's animation timelines is open. Make, rename, duplicate or delete them here.");
+ 		}
+ 
+-		inline FText NewAnimationTooltip()
++		inline FText OpenTimelineTooltip()
+ 		{
+-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewAnimationTooltip",
+-				"Build a new animation, and save it as a new Widget Animation asset when it is ready.");
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "OpenTimelineTooltip",
++				"Open this timeline in the panel. Scripts run on it too.");
++		}
++
++		inline FText NewTimelineTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewTimelineTooltip",
++				"Type a name and press Enter: a new, empty timeline in this Widget Blueprint, opened straight away.");
++		}
++
++		inline FText NewTimelineHint()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewTimelineHint", "Timeline name");
++		}
++
++		inline FText RenameTimelineHint()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "RenameTimelineHint", "New name");
++		}
++
++		inline FText RenameTimelineTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "RenameTimelineTooltip",
++				"Type a new name for the open timeline and press Enter. A name another timeline has is numbered.");
++		}
++
++		inline FText DuplicateTimelineTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DuplicateTimelineTooltip",
++				"A copy of the open timeline, in this Widget Blueprint, opened straight away.");
++		}
++
++		inline FText DeleteTimelineTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DeleteTimelineTooltip",
++				"Delete the open timeline and its tracks from this Widget Blueprint. Undo brings it back.");
++		}
++
++		inline FText DeleteTimelineQuestion()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DeleteTimelineQuestion",
++				"Delete the animation timeline \"{0}\" and its {1} tracks from this Widget Blueprint?");
+ 		}
+ 
+ 		inline FText EditExistingAssetTooltip()
+@@ -178,7 +236,7 @@ namespace NameTBD::Tooltips
+ 		inline FText SaveAsTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "SaveAsTooltip",
+-				"Save this animation as a new WA_ Widget Animation asset beside this Widget Blueprint, and go on editing it.");
++				"Save this timeline as a new WA_ Widget Animation asset, so other widgets can use it. The timeline stays in this Widget Blueprint as it is.");
+ 		}
+ 
+ 		inline FText DockTooltip()
+@@ -416,7 +474,7 @@ namespace NameTBD::Tooltips
+ 		inline FText ReadOnlyAsset()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ReadOnlyAsset",
+-				"Pick the Widget Animation asset to edit, or switch to New Animation.");
++				"Pick the Widget Animation asset to edit, or switch to Animation Timeline.");
+ 		}
+ 
+ 		inline FText AddGroupTooltip()
+@@ -1306,6 +1364,12 @@ namespace NameTBD::Tooltips
+ 		// The Script area - Python that makes tracks
+ 		// -------------------------------------------------------------------------------------------------
+ 
++		inline FText ScriptTargetTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptTargetTooltip",
++				"Runs on: the animation this script edits - the timeline or asset open in this Widget Blueprint's Widget Animations panel.");
++		}
++
+ 		inline FText ScriptToggleTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptToggleTooltip",
+diff --git a/Plugins/NameTBD/Source/NameTBDUncooked/NameTBDUncooked.Build.cs b/Plugins/NameTBD/Source/NameTBDUncooked/NameTBDUncooked.Build.cs
+index 4ee32ac..3604d6a 100644
+--- a/Plugins/NameTBD/Source/NameTBDUncooked/NameTBDUncooked.Build.cs
++++ b/Plugins/NameTBD/Source/NameTBDUncooked/NameTBDUncooked.Build.cs
+@@ -5,6 +5,9 @@ using UnrealBuildTool;
+ // Blueprint nodes of the library: the Set Widget Animation Value node, with its animation and value dropdowns. Nodes
+ // must live in an UncookedOnly module - loaded by the editor and the cooker, never shipped - so they are here, apart
+ // from the runtime NameTBD module their calls compile down to. Their dropdown pins are drawn by NameTBDEditor.
++//
++// Also the Widget Blueprint extension holding a Widget Blueprint's animation timelines (WidgetAnimTimelines.h): data
++// saved with the Widget Blueprint, so its class must load wherever the Widget Blueprint does.
+ public class NameTBDUncooked : ModuleRules
+ {
+ 	public NameTBDUncooked(ReadOnlyTargetRules Target) : base(Target)
+@@ -18,7 +21,9 @@ public class NameTBDUncooked : ModuleRules
+ 				"CoreUObject",
+ 				"Engine",
+ 				"BlueprintGraph",
+-				"NameTBD"
++				"NameTBD",
++				"UMG",
++				"UMGEditor"    // UWidgetBlueprint and its widget tree, and UWidgetBlueprintExtension - what the timelines are kept in
+ 			}
+ 		);
+ 
+@@ -27,8 +32,6 @@ public class NameTBDUncooked : ModuleRules
+ 			{
+ 				"KismetCompiler",
+ 				"UnrealEd",
+-				"UMG",
+-				"UMGEditor",   // UWidgetBlueprint's widget tree, to tell which widget a component is on
+ 				"Slate",
+ 				"SlateCore"
+ 			}
+diff --git a/Plugins/NameTBD/Source/NameTBDUncooked/Private/WidgetAnimTimelines.cpp b/Plugins/NameTBD/Source/NameTBDUncooked/Private/WidgetAnimTimelines.cpp
+new file mode 100644
+index 0000000..f3a187e
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDUncooked/Private/WidgetAnimTimelines.cpp
+@@ -0,0 +1,115 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "WidgetAnimTimelines.h"
++
++#include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
++#include "UObject/Package.h"
++#include "WidgetBlueprint.h"
++
++UWidgetAnimTimelinesExtension* UWidgetAnimTimelinesExtension::Find(const UWidgetBlueprint* WidgetBlueprint)
++{
++	return WidgetBlueprint ? UWidgetBlueprintExtension::GetExtension<UWidgetAnimTimelinesExtension>(WidgetBlueprint) : nullptr;
++}
++
++UWidgetAnimTimelinesExtension* UWidgetAnimTimelinesExtension::FindOrAdd(UWidgetBlueprint* WidgetBlueprint)
++{
++	if (!WidgetBlueprint)
++	{
++		return nullptr;
++	}
++	if (UWidgetAnimTimelinesExtension* Existing = Find(WidgetBlueprint))
++	{
++		return Existing;
++	}
++
++	// The Widget Blueprint's list of extensions is what changes, so it is what the transaction records: undone, the
++	// extension is off it again. The extension itself is made transactional so later edits to it undo too.
++	WidgetBlueprint->Modify();
++	UWidgetAnimTimelinesExtension* Extension = UWidgetBlueprintExtension::RequestExtension<UWidgetAnimTimelinesExtension>(WidgetBlueprint);
++	if (Extension)
++	{
++		Extension->SetFlags(RF_Transactional);
++	}
++	return Extension;
++}
++
++int32 UWidgetAnimTimelinesExtension::IndexOf(const FString& Name) const
++{
++	return Timelines.IndexOfByPredicate([&Name](const FWidgetAnimTimeline& Timeline)
++	{
++		return Timeline.Name.Equals(Name, ESearchCase::IgnoreCase);
++	});
++}
++
++int32 UWidgetAnimTimelinesExtension::IndexOf(const UWidgetAnimPresetAsset* Animation) const
++{
++	if (!Animation)
++	{
++		return INDEX_NONE;
++	}
++	return Timelines.IndexOfByPredicate([Animation](const FWidgetAnimTimeline& Timeline)
++	{
++		return Timeline.Animation == Animation;
++	});
++}
++
++FString UWidgetAnimTimelinesExtension::MakeUniqueName(const FString& Base, int32 Ignore) const
++{
++	FString Stem = Base.TrimStartAndEnd();
++	if (Stem.IsEmpty())
++	{
++		Stem = TEXT("Timeline");
++	}
++
++	auto IsTaken = [this, Ignore](const FString& Candidate)
++	{
++		const int32 Found = IndexOf(Candidate);
++		return Found != INDEX_NONE && Found != Ignore;
++	};
++	if (!IsTaken(Stem))
++	{
++		return Stem;
++	}
++
++	// "Intro 2" copied again is "Intro 3", not "Intro 2 2": a number already on the end is counted on from.
++	int32 Number = 2;
++	int32 Space = INDEX_NONE;
++	if (Stem.FindLastChar(TEXT(' '), Space) && Space > 0 && Stem.Mid(Space + 1).IsNumeric())
++	{
++		Number = FMath::Max(FCString::Atoi(*Stem.Mid(Space + 1)) + 1, 2);
++		Stem = Stem.Left(Space);
++	}
++	FString Candidate;
++	do
++	{
++		Candidate = FString::Printf(TEXT("%s %d"), *Stem, Number++);
++	}
++	while (IsTaken(Candidate));
++	return Candidate;
++}
++
++int32 UWidgetAnimTimelinesExtension::AddTimeline(const FString& Name, const UWidgetAnimPresetAsset* CopyFrom)
++{
++	// Named for what it is rather than after the timeline: renaming a timeline only changes its Name, never the object.
++	const FName ObjectName = MakeUniqueObjectName(this, UWidgetAnimPresetAsset::StaticClass(), TEXT("WidgetAnimTimeline"));
++	UWidgetAnimPresetAsset* Animation = CopyFrom
++		? DuplicateObject<UWidgetAnimPresetAsset>(CopyFrom, this, ObjectName)
++		: NewObject<UWidgetAnimPresetAsset>(this, ObjectName);
++	if (!Animation)
++	{
++		return INDEX_NONE;
++	}
++
++	// An object inside the Widget Blueprint, not an asset: never public or standalone, so nothing outside can pick it.
++	Animation->ClearFlags(RF_Public | RF_Standalone | RF_Transient);
++	Animation->SetFlags(RF_Transactional);
++	if (!CopyFrom && Animation->LayerGroups.Num() == 0)
++	{
++		Animation->LayerGroups.AddDefaulted();
++	}
++
++	FWidgetAnimTimeline& Timeline = Timelines.AddDefaulted_GetRef();
++	Timeline.Name = MakeUniqueName(Name);
++	Timeline.Animation = Animation;
++	return Timelines.Num() - 1;
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDUncooked/Public/WidgetAnimTimelines.h b/Plugins/NameTBD/Source/NameTBDUncooked/Public/WidgetAnimTimelines.h
+new file mode 100644
+index 0000000..aae1b3c
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDUncooked/Public/WidgetAnimTimelines.h
+@@ -0,0 +1,80 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "WidgetBlueprintExtension.h"
++
++#include "WidgetAnimTimelines.generated.h"
++
++class UWidgetAnimPresetAsset;
++class UWidgetBlueprint;
++
++/**
++ * One animation timeline: a name, and the animation itself - groups, tracks, speed and minimum length, exactly as a
++ * Widget Animation asset holds them.
++ */
++USTRUCT()
++struct NAMETBDUNCOOKED_API FWidgetAnimTimeline
++{
++	GENERATED_BODY()
++
++	/** What it is called in the Widget Animations panel, unique within its Widget Blueprint. */
++	UPROPERTY()
++	FString Name;
++
++	/**
++	 * The animation. A Widget Animation object kept inside the Widget Blueprint rather than an asset of its own - nothing
++	 * outside this Widget Blueprint can pick it - so that everything that edits and plays an asset edits and plays it too.
++	 */
++	UPROPERTY()
++	TObjectPtr<UWidgetAnimPresetAsset> Animation;
++};
++
++/**
++ * The animation timelines of one Widget Blueprint: animations authored in its Widget Animations panel against its own
++ * widgets, and saved with it.
++ *
++ * Why an extension of the Widget Blueprint: a timeline belongs to the Widget Blueprint it was made in - its groups name
++ * that Blueprint's widgets - so it is saved, duplicated, undone and dirtied with it, without being an asset anything
++ * else could pick. Moving one to another widget is Save as Animation Asset, which makes a Widget Animation asset of it.
++ *
++ * Editor data only: it lives on the Widget Blueprint, not its generated class, so nothing of it is cooked. Kept in this
++ * UncookedOnly module so a Widget Blueprint holding timelines still loads cleanly wherever the editor's own modules
++ * aren't loaded (a commandlet, the cooker).
++ */
++UCLASS()
++class NAMETBDUNCOOKED_API UWidgetAnimTimelinesExtension : public UWidgetBlueprintExtension
++{
++	GENERATED_BODY()
++
++public:
++
++	/** In the order the panel lists them. */
++	UPROPERTY()
++	TArray<FWidgetAnimTimeline> Timelines;
++
++	/** The Widget Blueprint's timelines, or null when it has never had one. Never makes one. */
++	static UWidgetAnimTimelinesExtension* Find(const UWidgetBlueprint* WidgetBlueprint);
++
++	/**
++	 * The Widget Blueprint's timelines, made when it has none - inside the caller's transaction, so undoing it takes the
++	 * extension back off. Null without a Widget Blueprint.
++	 */
++	static UWidgetAnimTimelinesExtension* FindOrAdd(UWidgetBlueprint* WidgetBlueprint);
++
++	/** The index of the timeline called Name (case ignored), or INDEX_NONE. */
++	int32 IndexOf(const FString& Name) const;
++
++	/** The index of the timeline playing Animation, or INDEX_NONE. */
++	int32 IndexOf(const UWidgetAnimPresetAsset* Animation) const;
++
++	/** Base, or Base numbered ("Intro 2") until no timeline is called that. Ignore is a timeline that may keep its name. */
++	FString MakeUniqueName(const FString& Base, int32 Ignore = INDEX_NONE) const;
++
++	/**
++	 * Adds a timeline called a unique version of Name: empty with one group, or a copy of CopyFrom's animation. The caller
++	 * has a transaction open and has called Modify on this. Returns its index.
++	 */
++	int32 AddTimeline(const FString& Name, const UWidgetAnimPresetAsset* CopyFrom = nullptr);
++};

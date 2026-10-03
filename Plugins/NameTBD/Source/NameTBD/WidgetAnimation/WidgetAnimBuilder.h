@@ -97,7 +97,7 @@ public:
 
 	/**
 	 * The asset the Widget Animations panel's Edit Existing Asset is editing in place, played instead of the
-	 * builder's own layers. View Animation Preview on the asset sets it; switching the panel to New Animation
+	 * builder's own layers. View Animation Preview on the asset sets it; switching the panel to Animation Timeline
 	 * clears it.
 	 */
 	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (DisplayName = "Preview Animation"))

@@ -110,6 +110,14 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Track Controls", meta = (DisplayName = "Linked Edges"))
 	bool bLinkedEdges = false;
 
+	/**
+	 * Moving selected tracks with the Left and Right arrow keys can take them past the animation's end - making it longer -
+	 * or before its start, where the rest of the animation moves later to make room. Off, they stop at the animation's
+	 * start and end, as a track dragged with the mouse does.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Track Controls", meta = (DisplayName = "Arrow Keys Can Extend the Animation"))
+	bool bArrowKeysExtendAnimation = true;
+
 	// -------------------------------------------------------------------------------------------------
 	// Track display
 	// -------------------------------------------------------------------------------------------------

@@ -1079,16 +1079,21 @@ FString UWidgetAnimScriptAnimation::GetAnimationName() const
 	{
 		return Edited->GetName();
 	}
+	// A timeline by its name in the Widget Blueprint; the builder by its Animation Name.
+	if (Pinned->IsEditingTimeline())
+	{
+		return Pinned->GetTimelineName();
+	}
 	if (const UWidgetAnimBuilder* Builder = Pinned->GetBuilder())
 	{
-		return Builder->AnimationName.IsEmpty() ? TEXT("New Animation") : Builder->AnimationName;
+		return Builder->AnimationName.IsEmpty() ? TEXT("Widget Animation") : Builder->AnimationName;
 	}
 	if (!Pinned->SupportsLayerGroups())
 	{
 		const UObject* Owner = Pinned->GetEditedObject();
 		return FString::Printf(TEXT("%s %s"), Owner ? *Owner->GetName() : TEXT(""), *Pinned->GetLayersPropertyName().ToString()).TrimStartAndEnd();
 	}
-	return TEXT("New Animation");
+	return Pinned->GetEditedName().ToString();
 }
 
 bool UWidgetAnimScriptAnimation::SupportsGroups() const
@@ -3544,7 +3549,18 @@ namespace WidgetAnimScripting
 		if (!Animation->IsEditable())
 		{
 			Result.bFailed = true;
-			Result.Error = PanelSource->IsReadOnly() ? TEXT("The panel is locked: unlock it to run a script.") : TEXT("This animation can't be edited here.");
+			if (PanelSource->IsReadOnly())
+			{
+				Result.Error = TEXT("The panel is locked: unlock it to run a script.");
+			}
+			else if (PanelSource->IsEditingTimeline() && PanelSource->GetTimelineName().IsEmpty())
+			{
+				Result.Error = TEXT("This Widget Blueprint has no animation timeline yet: make one with New Timeline in the Widget Animations panel, then run the script on it.");
+			}
+			else
+			{
+				Result.Error = TEXT("This animation can't be edited here.");
+			}
 			return Result;
 		}
 

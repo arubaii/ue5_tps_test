@@ -198,29 +198,67 @@ public:
 	virtual void NotifyPanelActive() {}
 
 	// ---------------------------------------------------------------------------------------------
-	// New animation, or an existing asset
+	// An animation timeline, or an existing asset
 	// ---------------------------------------------------------------------------------------------
 
 	/**
-	 * What the panel is working on. New Animation is a working copy - the builder's own layers, or in any
-	 * other Widget Blueprint a scratch animation kept for the session - saved with Save as Animation Asset.
-	 * Edit Existing Asset edits the picked WA_ asset in place; Update Animation Asset saves it.
+	 * What the panel is working on. Animation Timeline is an animation kept in the Widget Blueprint itself - one of its
+	 * timelines (see SupportsTimelines), or the builder's own layers - saved with the Widget Blueprint, and made into a
+	 * WA_ asset with Save as Animation Asset. Edit Existing Asset edits the picked WA_ asset in place; Update Animation
+	 * Asset saves it.
 	 */
 	enum class EMode : uint8
 	{
-		NewAnimation,
+		Timeline,
 		EditExistingAsset
 	};
 
 	virtual EMode GetMode() const = 0;
 	virtual void SetMode(EMode Mode) = 0;
 
-	/** The asset being edited in Edit Existing Asset - null until one is picked, and in New Animation. */
+	/** The asset being edited in Edit Existing Asset - null until one is picked, and in Animation Timeline. */
 	virtual UWidgetAnimPresetAsset* GetAsset() const = 0;
 	virtual void SetAsset(UWidgetAnimPresetAsset* Asset) = 0;
 
-	/** New Animation: saves the working copy as a new WA_ asset and switches to editing that asset. Null if nothing was saved. */
+	/**
+	 * Animation Timeline: saves it as a new WA_ asset. The builder then goes on to edit the asset; a Widget Blueprint
+	 * keeps its timeline open and as it was, so its own work isn't moved out from under it. Null if nothing was saved.
+	 */
 	virtual UWidgetAnimPresetAsset* SaveAsNewAsset() = 0;
+
+	// ---------------------------------------------------------------------------------------------
+	// Timelines: a Widget Blueprint's own animations (UWidgetAnimTimelinesExtension)
+	// ---------------------------------------------------------------------------------------------
+
+	/** Whether this source keeps several named timelines, made, renamed and deleted from the panel. Not the builder, or a plain list. */
+	virtual bool SupportsTimelines() const { return false; }
+
+	/** The timelines' names, in order. */
+	virtual void GetTimelineNames(TArray<FString>& OutNames) const {}
+
+	/** The timeline open in Animation Timeline - empty when there is none. The builder answers with its Animation Name. */
+	virtual FString GetTimelineName() const { return FString(); }
+
+	/** Opens the timeline called Name, in Animation Timeline. False if there is none. */
+	virtual bool OpenTimeline(const FString& Name) { return false; }
+
+	/**
+	 * Makes a timeline, named Name (numbered when taken), or with no Name the next of "Timeline 1", "Timeline 2"... - a copy
+	 * of the one called CopyOf when given - and opens it. One undo step. Returns its name, or empty if none was made.
+	 */
+	virtual FString CreateTimeline(const FString& Name, const FString& CopyOf = FString()) { return FString(); }
+
+	/** Renames a timeline (numbered when taken). One undo step. Returns its new name, or empty if it wasn't renamed. */
+	virtual FString RenameTimeline(const FString& Name, const FString& NewName) { return FString(); }
+
+	/** Deletes a timeline and its animation. One undo step; an open one is replaced by the next. */
+	virtual bool DeleteTimeline(const FString& Name) { return false; }
+
+	/** Whether the panel is in Animation Timeline on a timeline of a Widget Blueprint (not the builder, not a plain list). */
+	bool IsEditingTimeline() const { return SupportsTimelines() && GetMode() == EMode::Timeline; }
+
+	/** What is being edited, named for the panel's and the Script area's headers: the timeline's name, the asset's, the builder's. */
+	FText GetEditedName() const;
 
 	/** Edit Existing Asset: saves the asset's changes to disk. */
 	void UpdateAsset();
@@ -336,9 +374,13 @@ private:
 };
 
 /**
- * In any other Widget Blueprint's editor: a new animation built on a working copy kept for the session and
- * saved as a WA_ asset, or an existing WA_ asset edited directly - either played on the designer's preview
- * of this Widget Blueprint with each group on its Preview Target.
+ * In any other Widget Blueprint's editor: one of the Widget Blueprint's own animation timelines - kept in it and saved
+ * with it (UWidgetAnimTimelinesExtension), made into a WA_ asset with Save as Animation Asset - or an existing WA_ asset
+ * edited directly. Either is played on the designer's preview of this Widget Blueprint with each group on its Preview
+ * Target.
+ *
+ * Which timeline or asset each Widget Blueprint had open is remembered across editor sessions (per project, in the
+ * editor's own settings - never in the Widget Blueprint, so looking at a timeline doesn't mark it changed).
  *
  * Plays it itself - there is no builder here to do it. Every frame the panel is on screen, the animation is
  * rebuilt from the asset and posed at the playhead; when the panel goes away (the drawer closed, the tab
@@ -385,16 +427,36 @@ public:
 	virtual UWidgetAnimPresetAsset* SaveAsNewAsset() override;
 	virtual UWidgetBlueprint* GetWidgetBlueprint() const override { return Blueprint.Get(); }
 
+	virtual bool SupportsTimelines() const override { return true; }
+	virtual void GetTimelineNames(TArray<FString>& OutNames) const override;
+	virtual FString GetTimelineName() const override;
+	virtual bool OpenTimeline(const FString& Name) override;
+	virtual FString CreateTimeline(const FString& Name, const FString& CopyOf = FString()) override;
+	virtual FString RenameTimeline(const FString& Name, const FString& NewName) override;
+	virtual bool DeleteTimeline(const FString& Name) override;
+
 private:
 
 	/** The ticker: advances the clock and poses the preview while the panel is showing, restores it once it isn't. */
 	bool Tick(float DeltaTime);
 
-	/** The animation being worked on: the working copy in New Animation, the picked asset in Edit Existing Asset. */
+	/** The animation being worked on: the open timeline in Animation Timeline, the picked asset in Edit Existing Asset. */
 	UWidgetAnimPresetAsset* GetEditedAnimation() const;
 
-	/** This Widget Blueprint's working copy for New Animation, made on first use and kept for the session. */
-	UWidgetAnimPresetAsset* GetWorkingCopy() const;
+	/**
+	 * The open timeline's animation: the one opened last while it is still among the Widget Blueprint's timelines (an undo
+	 * may have taken it away), else the one by its name, else the first. Null when the Widget Blueprint has none.
+	 */
+	UWidgetAnimPresetAsset* GetOpenTimeline() const;
+
+	/** What is shown changes: the poses come off and the clock starts over. */
+	void ResetPlayback();
+
+	/** Remembers which timeline or asset is open, for the next time this Widget Blueprint's panel opens - this session or a later one. */
+	void SaveOpenState() const;
+
+	/** Picks up what SaveOpenState remembered. */
+	void RestoreOpenState();
 
 	/** The animation as settings for this Widget Blueprint's preview: each group on its Preview Target. Invert stamped on, loops left to the clock here. */
 	void BuildFlattened(UUserWidget* Root, TArray<FWidgetAnimSettings>& OutSettings) const;
@@ -404,7 +466,11 @@ private:
 
 	TWeakObjectPtr<UWidgetBlueprint> Blueprint;
 	TWeakObjectPtr<UWidgetAnimPresetAsset> Asset;
-	EMode Mode = EMode::NewAnimation;
+	EMode Mode = EMode::Timeline;
+
+	/** The open timeline: its animation, and its name to find it again by when the animation is gone. See GetOpenTimeline. */
+	mutable TWeakObjectPtr<UWidgetAnimPresetAsset> OpenTimelineAnimation;
+	mutable FString OpenTimelineName;
 
 	/** The designer preview found last, and when it was last looked for - looking is a walk over every User Widget, so it isn't done every frame. */
 	mutable TWeakObjectPtr<UUserWidget> CachedRoot;
@@ -504,7 +570,7 @@ public:
 	virtual void NotifyPanelActive() override;
 
 	/** Always a working list: there is no asset to switch to. Save as Animation copies it into a new one. */
-	virtual EMode GetMode() const override { return EMode::NewAnimation; }
+	virtual EMode GetMode() const override { return EMode::Timeline; }
 	virtual void SetMode(EMode InMode) override {}
 	virtual UWidgetAnimPresetAsset* GetAsset() const override { return nullptr; }
 	virtual void SetAsset(UWidgetAnimPresetAsset* InAsset) override {}

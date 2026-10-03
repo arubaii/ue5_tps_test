@@ -73,7 +73,7 @@ public:
 		/**
 		 * The compact panel, for a plain list of tracks inside a Details panel - a component's Additive Anim Layers.
 		 * Just the Track Editor, the transport and a small Selection panel beside the tracks: no Animation Tracks
-		 * list, no Layer Groups, no New Animation / Edit Existing Asset, no Dock in Layout, no Value Watcher. Its
+		 * list, no Layer Groups, no Animation Timeline / Edit Existing Asset, no Dock in Layout, no Value Watcher. Its
 		 * own header strip names the list and holds Add Track, Save as Animation and Expand.
 		 */
 		SLATE_ARGUMENT(bool, Compact)
@@ -160,6 +160,12 @@ public:
 		 */
 		bool bPinned = false;
 
+		/**
+		 * A collapsed track whose group isn't shown - every track of the group is folded into collapsed tracks (see
+		 * IsGroupAllCollapsed) - on a line of its own at the top, under the pinned lines and above every group.
+		 */
+		bool bLoose = false;
+
 		bool IsNested() const { return Kind == EKind::NestedGroup || Kind == EKind::NestedLane; }
 	};
 
@@ -220,6 +226,24 @@ public:
 	// Escape, F, Space, Comma and Period.
 	virtual bool SupportsKeyboardFocus() const override { return true; }
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+
+	/**
+	 * Left and Right, caught on their way in - before anything inside the panel, and before the editor turns an unhandled
+	 * arrow into a move to the next panel - while tracks are selected and the panel (not a text box in it) has the focus.
+	 */
+	virtual FReply OnPreviewKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+
+	/** The editor's own arrow-key navigation out of the panel: Up and Down always refused, Left and Right while they move tracks. */
+	virtual FNavigationReply OnNavigation(const FGeometry& MyGeometry, const FNavigationEvent& InNavigationEvent) override;
+
+	/** Whether Left and Right belong to the panel right now: something selected, and the focus on the panel or its Track Editor. */
+	bool ArrowKeysMoveTracks() const;
+
+	/** Letting go of Left or Right ends the keyboard move it started (see BeginKeyboardMove). */
+	virtual FReply OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+
+	/** The keyboard move ends with the focus too: a key let go elsewhere is never heard here. */
+	virtual void OnFocusLost(const FFocusEvent& InFocusEvent) override;
 
 	// While a Preview Target is picked in the designer the panel holds the mouse: the eyedropper cursor, the widget under
 	// it named, the click taken as the pick. Otherwise these leave everything to the panel's children. See BeginTargetPick.
@@ -477,6 +501,17 @@ public:
 	 */
 	bool IsCollapsedHead(int32 LayerIndex) const;
 	bool IsFoldedIntoCollapsed(int32 LayerIndex) const;
+
+	/**
+	 * Whether every track of a group is folded into collapsed tracks, outside a collapsed track open on its own. Such a
+	 * group isn't shown - in the Track Editor or the Animation Tracks list - since there is nothing of its own to see: its
+	 * collapsed tracks are listed loose at the top instead, and opening one shows the group again. Never an empty group,
+	 * which is shown so tracks can be added to it, nor in the compact panel, which shows no groups.
+	 */
+	bool IsGroupAllCollapsed(int32 GroupIndex) const;
+
+	/** A collapsed track's head whose group isn't shown (IsGroupAllCollapsed): drawn and listed loose, at the top. */
+	bool IsLooseCollapsedHead(int32 LayerIndex) const;
 
 	/**
 	 * Whether a layer is shown in the panel right now: every layer, or - while a collapsed track is open on its own - only
@@ -1160,6 +1195,19 @@ private:
 	TSharedRef<SWidget> MakeHeader();
 
 	/**
+	 * Moves the panel to another animation - another timeline, the other mode, another asset - by running Switch: out of
+	 * an open collapsed track first (its mutes cleared while still on the animation they were set on), then the selection,
+	 * fold state kept by index and the rows all started over for what is now edited.
+	 */
+	void SwitchEditedAnimation(TFunctionRef<void()> Switch);
+
+	/** The header's timeline picker: the open timeline's name and icon, shown in Animation Timeline in a Widget Blueprint. */
+	TSharedRef<SWidget> MakeTimelinePicker();
+
+	/** The timeline picker's menu: every timeline of the Widget Blueprint to open, then New, Rename, Duplicate and Delete. */
+	TSharedRef<SWidget> MakeTimelineMenu();
+
+	/**
 	 * The transport - its buttons, the time, and one pill of controls: Loop, Ping Pong, Invert, Speed, Snapping and Linked
 	 * Edges. bStacked lays it out in two rows, for under the Animation Tracks list; otherwise in one, along the bottom.
 	 */
@@ -1388,7 +1436,16 @@ private:
 		float OriginalEnd = 0.f;
 		bool bEndIsFree = false;
 
-		/** A range drag: the animation's Minimum Length at the press, in played seconds (0 for none). */
+		/**
+		 * A keyboard move (see BeginKeyboardMove) with Arrow Keys Can Extend the Animation on: its tracks can be taken before
+		 * the animation's start, the rest of the animation - and its Minimum Length - moving later to make room.
+		 */
+		bool bStartIsFree = false;
+
+		/**
+		 * A range drag: the animation's Minimum Length at the press, in played seconds (0 for none). A keyboard move that
+		 * can go before the start (bStartIsFree): the same, in authored seconds, as SetMinimumLength takes it.
+		 */
 		float OriginalMinimumLength = 0.f;
 
 		/** Where the dragged edges can snap to, worked out once at the press. */
@@ -1400,6 +1457,30 @@ private:
 
 	/** Whether the current track drag has moved anything yet - a press let go in place leaves no undo step. */
 	bool bLayerDragChanged = false;
+
+	/**
+	 * Moving the selected tracks with Left or Right (Direction -1 or 1): a track drag driven by the keyboard, so locks,
+	 * staggers, collapsed tracks and undo work as they do for the mouse. A press moves them a few pixels' worth (ten times
+	 * that with Shift); held, they keep going, slowly at first and then faster, until the key is let go - one undo step for
+	 * the whole move. Returns false when nothing selected can move.
+	 */
+	bool BeginKeyboardMove(int32 Direction, bool bLarge);
+	void EndKeyboardMove();
+	// Anything else that ends the drag - a switch to another animation, the panel locked - ends the keyboard move with it.
+	bool IsKeyboardMoving() const { return KeyboardMoveDirection != 0 && IsDraggingLayers(); }
+
+	/** While a keyboard move is held: carries the tracks on, faster the longer the key is down. */
+	EActiveTimerReturnType TickKeyboardMove(double CurrentTime, float DeltaTime);
+
+	/** How many played seconds one pixel of the Track Editor is, at its zoom now. */
+	float GetSecondsPerPixel() const;
+
+	/** The keyboard move under way: its direction (0 for none), how far it has gone, in played seconds, and since when. */
+	int32 KeyboardMoveDirection = 0;
+	float KeyboardMoveOffset = 0.f;
+	double KeyboardMoveStartTime = 0.0;
+	bool bKeyboardMoveLarge = false;
+	TSharedPtr<FActiveTimerHandle> KeyboardMoveTimer;
 
 	/** A key drag's layer start, and what the key can snap to - both worked out at the press. */
 	float KeyDragLayerStart = 0.f;

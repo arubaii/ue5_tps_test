@@ -368,6 +368,23 @@ namespace WidgetAnimTimeline
 	}
 
 	/**
+	 * An animation timeline's icon, wherever one is named: the editor's own Blueprint Timeline icon - the closest thing
+	 * it has to an animation kept inside a Blueprint - else a sequence's.
+	 */
+	const FSlateBrush* TimelineIcon()
+	{
+		static const FSlateBrush* Icon = PickBrush({ "GraphEditor.Timeline_16x", "ClassIcon.TimelineTemplate", "ClassIcon.LevelSequence" });
+		return Icon;
+	}
+
+	/** A Widget Animation asset's icon, as the Content Browser shows it. */
+	const FSlateBrush* AnimationAssetIcon()
+	{
+		const FSlateBrush* Own = FNameTBDStyle::Get().GetOptionalBrush("ClassIcon.WidgetAnimPresetAsset", nullptr, nullptr);
+		return Own ? Own : PickBrush({ "ClassIcon.DataAsset" });
+	}
+
+	/**
 	 * An icon for one of the Animation Controls: the plugin's own, if a file named Name (.svg or .png) has been
 	 * dropped into NameTBD/Resources; else the first of the editor's Candidates that exists; else null, and the
 	 * control shows its name instead. Looked up once each, and kept.
@@ -2550,9 +2567,9 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			const float Y = GetLineTop(LineIndex);
 			const bool bGroupLine = Line.Kind == FTrackLine::EKind::Group || Line.Kind == FTrackLine::EKind::NestedGroup;
 
-			// Group lines read as headers, like Sequencer's folder rows; track lines alternate very gently. Pinned lines
-			// alternate by where they are, since they come from any group.
-			const int32 Parity = Line.bPinned ? LineIndex : Line.Ordinal;
+			// Group lines read as headers, like Sequencer's folder rows; track lines alternate very gently. Pinned and loose
+			// lines alternate by where they are, since they come from any group.
+			const int32 Parity = Line.bPinned || Line.bLoose ? LineIndex : Line.Ordinal;
 			const FLinearColor Base = bGroupLine
 				? HeaderColor()
 				: (Parity % 2 == 0 ? BackgroundColor() : FMath::Lerp(BackgroundColor(), RecessedColor(), 0.5f));
@@ -2592,9 +2609,10 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 				Box(0.f, Y, Size.X, RowHeight, WithAlpha(HoverColor(), Palette::RowHoveredTintAlpha * 0.5f), RowLayer);
 			}
 
-			// A thin line under every line, as between Sequencer's tracks, and the group's color down its left edge.
+			// A thin line under every line, as between Sequencer's tracks, and the group's color down its left edge - a loose
+			// collapsed track's own color, since its group isn't shown.
 			Box(0.f, Y + RowHeight - 1.f, Size.X, 1.f, SeparatorColor, RowLayer);
-			Box(0.f, Y, GroupBandWidth, RowHeight, SWidgetAnimTimeline::GetGroupColor(Line.Group), GridLayer);
+			Box(0.f, Y, GroupBandWidth, RowHeight, Line.bLoose ? Palette::LayerCollapsed : SWidgetAnimTimeline::GetGroupColor(Line.Group), GridLayer);
 		}
 
 		// The animation the list plays within: its tracks, grayed and out of reach, on rows of their own above the list's,
@@ -2992,43 +3010,48 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 		}
 	}
 
-	// Start and end of the animation: green and red, through the ruler and the lines, as in the native editor - each with
-	// a handle in the ruler to drag it by, lit while the mouse is on it or it is being dragged.
-	Box(StartX, 0.f, 1.f, Size.Y, Palette::RangeStart, RangeLayer);
-	Box(EndX, 0.f, 1.f, Size.Y, Palette::RangeEnd, RangeLayer);
+	// With no animation - no timeline made yet, no asset picked - there is nothing to scrub or bound: no playhead, no start
+	// and end.
+	if (Owner->HasAnimation())
 	{
-		const bool bCanDragRange = Owner->CanEdit() && Layers && Layers->Num() > 0;
-		const bool bDraggingRange = Drag == EDrag::Range || Drag == EDrag::RangePending;
-		const bool bStartLit = bDraggingRange ? !bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && !HoverRange.GetValue());
-		const bool bEndLit = bDraggingRange ? bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && HoverRange.GetValue());
-		const float HandleHeight = RulerHeight * 0.5f;
-		const float HandleTop = RulerHeight - HandleHeight - 1.f;
-		const float StartHandleWidth = bCanDragRange ? (bStartLit ? 7.f : 5.f) : 5.f;
-		const float EndHandleWidth = bCanDragRange ? (bEndLit ? 7.f : 5.f) : 5.f;
-		Box(StartX, HandleTop, StartHandleWidth, bCanDragRange ? HandleHeight : 2.f, bStartLit ? Palette::RangeHandleLit : Palette::RangeStart, RangeLayer, RoundedFill(2.f));
-		Box(EndX - EndHandleWidth + 1.f, HandleTop, EndHandleWidth, bCanDragRange ? HandleHeight : 2.f, bEndLit ? Palette::RangeHandleLit : Palette::RangeEnd, RangeLayer, RoundedFill(2.f));
+		// Start and end of the animation: green and red, through the ruler and the lines, as in the native editor - each with
+		// a handle in the ruler to drag it by, lit while the mouse is on it or it is being dragged.
+		Box(StartX, 0.f, 1.f, Size.Y, Palette::RangeStart, RangeLayer);
+		Box(EndX, 0.f, 1.f, Size.Y, Palette::RangeEnd, RangeLayer);
+		{
+			const bool bCanDragRange = Owner->CanEdit() && Layers && Layers->Num() > 0;
+			const bool bDraggingRange = Drag == EDrag::Range || Drag == EDrag::RangePending;
+			const bool bStartLit = bDraggingRange ? !bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && !HoverRange.GetValue());
+			const bool bEndLit = bDraggingRange ? bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && HoverRange.GetValue());
+			const float HandleHeight = RulerHeight * 0.5f;
+			const float HandleTop = RulerHeight - HandleHeight - 1.f;
+			const float StartHandleWidth = bCanDragRange ? (bStartLit ? 7.f : 5.f) : 5.f;
+			const float EndHandleWidth = bCanDragRange ? (bEndLit ? 7.f : 5.f) : 5.f;
+			Box(StartX, HandleTop, StartHandleWidth, bCanDragRange ? HandleHeight : 2.f, bStartLit ? Palette::RangeHandleLit : Palette::RangeStart, RangeLayer, RoundedFill(2.f));
+			Box(EndX - EndHandleWidth + 1.f, HandleTop, EndHandleWidth, bCanDragRange ? HandleHeight : 2.f, bEndLit ? Palette::RangeHandleLit : Palette::RangeEnd, RangeLayer, RoundedFill(2.f));
+		}
+
+		if (const TOptional<float> Snap = Owner->GetSnapIndicator(); Snap.IsSet())
+		{
+			Box(TimeToX(Snap.GetValue(), Size.X) - 3.f, RulerHeight - 6.f, 7.f, 6.f, Palette::SnapLine, RangeLayer, RoundedFill(2.f));
+		}
+
+		// The playhead: a line through everything, and a red tag in the ruler reading the time - Sequencer's.
+		const float PlayheadSeconds = Owner->GetPlayheadSeconds();
+		const float PlayheadX = TimeToX(PlayheadSeconds, Size.X);
+		Box(PlayheadX, RulerHeight, 1.f, Size.Y - RulerHeight, Palette::Playhead, PlayheadLayer);
+
+		const FSlateFontInfo TagFont = FCoreStyle::GetDefaultFontStyle("Regular", 9);
+		const FString TagText = FString::Printf(TEXT("%.2f"), PlayheadSeconds);
+		const FVector2f TagTextSize = MeasureText(TagText, TagFont);
+		const float TagWidth = TagTextSize.X + 10.f;
+		const float TagHeight = TagTextSize.Y + 3.f;
+		const float TagX = FMath::Clamp(PlayheadX - TagWidth * 0.5f, 0.f, FMath::Max(Size.X - TagWidth, 0.f));
+		const float TagY = RulerHeight - TagHeight - 3.f;
+		Box(TagX, TagY, TagWidth, TagHeight, Palette::Playhead, PlayheadLayer, RoundedFill(2.f));
+		Box(PlayheadX, TagY + TagHeight, 1.f, RulerHeight - (TagY + TagHeight), Palette::Playhead, PlayheadLayer);
+		Text(TagText, TagX + 5.f, TagY + 1.5f, TagFont, Palette::PlayheadText, PlayheadLayer + 1);
 	}
-
-	if (const TOptional<float> Snap = Owner->GetSnapIndicator(); Snap.IsSet())
-	{
-		Box(TimeToX(Snap.GetValue(), Size.X) - 3.f, RulerHeight - 6.f, 7.f, 6.f, Palette::SnapLine, RangeLayer, RoundedFill(2.f));
-	}
-
-	// The playhead: a line through everything, and a red tag in the ruler reading the time - Sequencer's.
-	const float PlayheadSeconds = Owner->GetPlayheadSeconds();
-	const float PlayheadX = TimeToX(PlayheadSeconds, Size.X);
-	Box(PlayheadX, RulerHeight, 1.f, Size.Y - RulerHeight, Palette::Playhead, PlayheadLayer);
-
-	const FSlateFontInfo TagFont = FCoreStyle::GetDefaultFontStyle("Regular", 9);
-	const FString TagText = FString::Printf(TEXT("%.2f"), PlayheadSeconds);
-	const FVector2f TagTextSize = MeasureText(TagText, TagFont);
-	const float TagWidth = TagTextSize.X + 10.f;
-	const float TagHeight = TagTextSize.Y + 3.f;
-	const float TagX = FMath::Clamp(PlayheadX - TagWidth * 0.5f, 0.f, FMath::Max(Size.X - TagWidth, 0.f));
-	const float TagY = RulerHeight - TagHeight - 3.f;
-	Box(TagX, TagY, TagWidth, TagHeight, Palette::Playhead, PlayheadLayer, RoundedFill(2.f));
-	Box(PlayheadX, TagY + TagHeight, 1.f, RulerHeight - (TagY + TagHeight), Palette::Playhead, PlayheadLayer);
-	Text(TagText, TagX + 5.f, TagY + 1.5f, TagFont, Palette::PlayheadText, PlayheadLayer + 1);
 
 	// When the lines run past the bottom: a slim bar down the right edge showing where they are scrolled to.
 	const float MaxScroll = GetMaxScrollY(Size.Y);
@@ -6365,8 +6388,10 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 		return;
 	}
 
-	// The Script area open or closed as it was left.
-	GConfig->GetBool(RowHeightConfigSection, ScriptOpenConfigKey, bScriptOpen, GEditorPerProjectIni);
+	// The Script area under the Track Editor starts closed: the header has no button to open it any more - scripts are
+	// written in the editor's Widget Animation Scripting drawer, or the tab it docks into - so one left open last session
+	// isn't brought back with no way to bring it back again once closed.
+	bScriptOpen = false;
 
 	// No header row of its own: what the panel works on, and its buttons, sit in the Track Editor's strip - so the tracks
 	// start right under it. The transport sits under the Animation Tracks list, and the Track Editor runs to the bottom.
@@ -6473,7 +6498,78 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 								+ SVerticalBox::Slot()
 								.FillHeight(1.f)
 								[
-									Tracks.ToSharedRef()
+									SNew(SOverlay)
+
+									+ SOverlay::Slot()
+									[
+										Tracks.ToSharedRef()
+									]
+
+									// With no animation to show - no asset picked yet, or no timeline made yet - say what to do,
+									// centered in the Track Editor under its ruler. A Widget Blueprint with no timelines gets the
+									// button that makes its first.
+									+ SOverlay::Slot()
+									.HAlign(HAlign_Center)
+									.VAlign(VAlign_Center)
+									.Padding(FMargin(16.f, RulerHeight, 16.f, 0.f))
+									[
+										SNew(SVerticalBox)
+										.Visibility_Lambda([this]() { return GetGroups() ? EVisibility::Collapsed : EVisibility::SelfHitTestInvisible; })
+
+										+ SVerticalBox::Slot()
+										.AutoHeight()
+										.HAlign(HAlign_Center)
+										[
+											SNew(STextBlock)
+											.AutoWrapText(true)
+											.Justification(ETextJustify::Center)
+											.Text_Lambda([this]()
+											{
+												return Source.IsValid() && Source->IsEditingTimeline() ? WidgetAnimTips::NoTimelineYet() : WidgetAnimTips::NothingToEdit();
+											})
+											.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+										]
+
+										+ SVerticalBox::Slot()
+										.AutoHeight()
+										.HAlign(HAlign_Center)
+										.Padding(FMargin(0.f, 8.f, 0.f, 0.f))
+										[
+											SNew(SButton)
+											.ButtonStyle(&OrangeButtonStyle())
+											.ContentPadding(FMargin(10.f, 3.f))
+											.Visibility_Lambda([this]() { return Source.IsValid() && Source->IsEditingTimeline() ? EVisibility::Visible : EVisibility::Collapsed; })
+											.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::NewTimelineButtonTooltip()))
+											.OnClicked_Lambda([this]()
+											{
+												if (Source.IsValid())
+												{
+													SwitchEditedAnimation([this]() { Source->CreateTimeline(FString()); });
+												}
+												return FReply::Handled();
+											})
+											[
+												SNew(SHorizontalBox)
+
+												+ SHorizontalBox::Slot()
+												.AutoWidth()
+												.VAlign(VAlign_Center)
+												.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
+												[
+													WidgetAnimTimeline::MakeFixedIcon(WidgetAnimTimeline::TimelineIcon(), FSlateColor::UseForeground())
+												]
+
+												+ SHorizontalBox::Slot()
+												.AutoWidth()
+												.VAlign(VAlign_Center)
+												[
+													SNew(STextBlock)
+													.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+													.Text(LOCTEXT("MakeFirstTimeline", "New Timeline"))
+												]
+											]
+										]
+									]
 								]
 
 								+ SVerticalBox::Slot()
@@ -6498,17 +6594,6 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 								]
 							]
 						]
-					]
-
-					// With no animation to show - an asset editor that hasn't picked one yet - say what to do.
-					+ SOverlay::Slot()
-					.HAlign(HAlign_Center)
-					.VAlign(VAlign_Center)
-					[
-						SNew(STextBlock)
-						.Visibility_Lambda([this]() { return GetGroups() ? EVisibility::Collapsed : EVisibility::HitTestInvisible; })
-						.Text(WidgetAnimTips::NothingToEdit())
-						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 					]
 				]
 			]
@@ -6736,13 +6821,11 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 	{
 		if (Source.IsValid() && Source->GetMode() != Mode)
 		{
-			Source->SetMode(Mode);
-			ClearSelection();
-			RebuildRows();
+			SwitchEditedAnimation([this, Mode]() { Source->SetMode(Mode); });
 		}
 	};
 
-	// New Animation or Edit Existing Asset: what the panel is working on.
+	// Animation Timeline or Edit Existing Asset: what the panel is working on.
 	Header->AddSlot()
 	.AutoWidth()
 	.VAlign(VAlign_Center)
@@ -6755,10 +6838,10 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 		{
 			FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
 			Menu.AddMenuEntry(
-				LOCTEXT("NewAnimation", "New Animation"),
-				WidgetAnimTips::NewAnimationTooltip(),
+				LOCTEXT("AnimationTimeline", "Animation Timeline"),
+				WidgetAnimTips::TimelineModeTooltip(),
 				FSlateIcon(),
-				FUIAction(FExecuteAction::CreateLambda([SwitchMode]() { SwitchMode(EMode::NewAnimation); })));
+				FUIAction(FExecuteAction::CreateLambda([SwitchMode]() { SwitchMode(EMode::Timeline); })));
 			Menu.AddMenuEntry(
 				LOCTEXT("EditExistingAsset", "Edit Existing Asset"),
 				WidgetAnimTips::EditExistingAssetTooltip(),
@@ -6768,12 +6851,39 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 		})
 		.ButtonContent()
 		[
-			SNew(STextBlock)
-			.Text_Lambda([IsEditingExisting]()
-			{
-				return IsEditingExisting() ? LOCTEXT("EditExistingAsset", "Edit Existing Asset") : LOCTEXT("NewAnimation", "New Animation");
-			})
+			SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+			[
+				MakeFixedIcon(TAttribute<const FSlateBrush*>::CreateLambda([IsEditingExisting]()
+				{
+					return IsEditingExisting() ? AnimationAssetIcon() : TimelineIcon();
+				}))
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text_Lambda([IsEditingExisting]()
+				{
+					return IsEditingExisting() ? LOCTEXT("EditExistingAsset", "Edit Existing Asset") : LOCTEXT("AnimationTimeline", "Animation Timeline");
+				})
+			]
 		]
+	];
+
+	// Animation Timeline in a Widget Blueprint: which of its timelines - and making, renaming and deleting them.
+	Header->AddSlot()
+	.AutoWidth()
+	.VAlign(VAlign_Center)
+	.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
+	[
+		MakeTimelinePicker()
 	];
 
 	// Edit Existing Asset: which asset. A fixed width, not a capped fill - a capped fill slot leaves the rest
@@ -6799,15 +6909,14 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 			{
 				if (Source.IsValid())
 				{
-					Source->SetAsset(Cast<UWidgetAnimPresetAsset>(AssetData.GetAsset()));
-					ClearSelection();
-					RebuildRows();
+					UWidgetAnimPresetAsset* Picked = Cast<UWidgetAnimPresetAsset>(AssetData.GetAsset());
+					SwitchEditedAnimation([this, Picked]() { Source->SetAsset(Picked); });
 				}
 			})
 		]
 	];
 
-	// New Animation in a builder: the name it will be saved under, from Selection: Animation.
+	// Animation Timeline in a builder: the name it will be saved under, from Selection: Animation.
 	Header->AddSlot()
 	.AutoWidth()
 	.VAlign(VAlign_Center)
@@ -6839,45 +6948,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 		SNew(SSpacer)
 	];
 
-	// Script: Python that makes tracks, in an area under the Track Editor - lit while it is open.
-	Header->AddSlot()
-	.AutoWidth()
-	.VAlign(VAlign_Center)
-	.Padding(FMargin(4.f, 0.f))
-	[
-		SNew(SButton)
-		.ButtonStyle(FAppStyle::Get(), "SimpleButton")
-		.ContentPadding(FMargin(4.f, 2.f))
-		.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::ScriptToggleTooltip()))
-		.OnClicked_Lambda([this]()
-		{
-			// In its own window or docked as a tab: that, to the front. Otherwise open or close it under the Track Editor.
-			if (IsScriptDocked())
-			{
-				DockScript();
-			}
-			else if (IsScriptWindowOpen())
-			{
-				OpenScriptWindow();
-			}
-			else
-			{
-				SetScriptOpen(!bScriptOpen);
-			}
-			return FReply::Handled();
-		})
-		[
-			SNew(STextBlock)
-			.Font(FAppStyle::GetFontStyle("NormalFontBold"))
-			.Text(LOCTEXT("ScriptToggle", "Script"))
-			.ColorAndOpacity_Lambda([this]()
-			{
-				return bScriptOpen || IsScriptWindowOpen() || IsScriptDocked() ? FSlateColor(Palette::ScriptToggleOn) : FSlateColor::UseForeground();
-			})
-		]
-	];
-
-	// Save as Animation Asset in New Animation; Update Animation Asset in Edit Existing Asset.
+	// Save as Animation Asset in Animation Timeline; Update Animation Asset in Edit Existing Asset.
 	Header->AddSlot()
 	.AutoWidth()
 	.VAlign(VAlign_Center)
@@ -6912,21 +6983,42 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 			{
 				Source->UpdateAsset();
 			}
-			else if (Source->SaveAsNewAsset())
+			else
 			{
-				ClearSelection();
-				RebuildRows();
+				// The builder goes on to edit what it saved; a Widget Blueprint's timeline stays open as it was.
+				const UObject* Before = Source->GetEditedObject();
+				if (Source->SaveAsNewAsset() && Source->GetEditedObject() != Before)
+				{
+					SwitchEditedAnimation([]() {});
+				}
 			}
 			return FReply::Handled();
 		})
 		[
-			SNew(STextBlock)
-			.Font(FAppStyle::GetFontStyle("NormalFontBold"))
-			.ColorAndOpacity(FSlateColor::UseForeground())
-			.Text_Lambda([IsEditingExisting]()
-			{
-				return IsEditingExisting() ? LOCTEXT("UpdateAsset", "Update Animation Asset") : LOCTEXT("SaveAsAsset", "Save as Animation Asset");
-			})
+			// Named for what it saves - "Save Timeline 1 as Animation Asset", "Update WA_Card" - so with several timelines it is
+			// never a guess which one goes out. A long name is cut short rather than pushing the header's other buttons off.
+			SNew(SBox)
+			.MaxDesiredWidth(360.f)
+			[
+				SNew(STextBlock)
+				.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+				.ColorAndOpacity(FSlateColor::UseForeground())
+				.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+				.Text_Lambda([this, IsEditingExisting]()
+				{
+					if (IsEditingExisting())
+					{
+						const UWidgetAnimPresetAsset* Asset = Source.IsValid() ? Source->GetAsset() : nullptr;
+						return Asset
+							? FText::Format(LOCTEXT("UpdateNamedAsset", "Update {0}"), FText::FromString(Asset->GetName()))
+							: LOCTEXT("UpdateAsset", "Update Animation Asset");
+					}
+					const bool bNamed = Source.IsValid() && (Source->SupportsTimelines() ? !Source->GetTimelineName().IsEmpty() : Source->IsBuilder());
+					return bNamed
+						? FText::Format(LOCTEXT("SaveNamedAsAsset", "Save {0} as Animation Asset"), Source->GetEditedName())
+						: LOCTEXT("SaveAsAsset", "Save as Animation Asset");
+				})
+			]
 		]
 	];
 
@@ -9969,9 +10061,14 @@ uint32 SWidgetAnimTimeline::ComputeListSignature() const
 	GetListOrder(Order);
 
 	uint32 Hash = GetTypeHash(Order.Num());
+
+	// Each track's group and collapsed track, which decide its row - and whether its group is shown at all (see
+	// IsGroupAllCollapsed) - changed by a collapse, an expand, or an undo of either.
 	for (const int32 LayerIndex : Order)
 	{
 		Hash = HashCombine(Hash, GetTypeHash(LayerIndex));
+		Hash = HashCombine(Hash, GetTypeHash(GetLayerGroup(LayerIndex)));
+		Hash = HashCombine(Hash, GetTypeHash(GetLayerCollapsedName(LayerIndex)));
 	}
 
 	// The folders the groups are in, which make rows of their own - changed in the Selection panel, or by an undo.
@@ -10028,10 +10125,25 @@ void SWidgetAnimTimeline::RebuildLayerList()
 	const TSharedPtr<SVerticalBox> ListRoot = LayerList;
 	FString OpenFolder;
 
+	// First, the collapsed tracks whose groups aren't shown - every track of those groups is in a collapsed track - each
+	// a row of its own, as the Track Editor draws them loose at the top.
+	for (const int32 LayerIndex : Order)
+	{
+		if (IsLooseCollapsedHead(LayerIndex) && IsLayerInView(LayerIndex))
+		{
+			AddCollapsedListRows(GetLayerCollapsedName(LayerIndex), GetLayerGroup(LayerIndex));
+		}
+	}
+
 	TArray<int32> GroupOrder;
 	GetGroupListOrder(GroupOrder);
 	for (const int32 GroupIndex : GroupOrder)
 	{
+		if (IsGroupAllCollapsed(GroupIndex))
+		{
+			continue;
+		}
+
 		// Inside a collapsed track, only the groups its tracks are in.
 		bool bAnyInView = !IsInCollapsedScope();
 		for (int32 LayerIndex = 0; !bAnyInView && LayerIndex < Layers->Num(); ++LayerIndex)
@@ -11237,11 +11349,12 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 		return IsLayerPinned(LayerIndex) && IsLayerInView(LayerIndex) && !IsFoldedIntoCollapsed(LayerIndex);
 	};
 
-	// Whether a track is laid out in its group: shown here, not folded into a collapsed track, and not pinned above. The
-	// rest keep the lines they were given, for when they are back.
+	// Whether a track is laid out in its group: shown here, not folded into a collapsed track, not pinned above, and not a
+	// collapsed track drawn loose because its group isn't shown. The rest keep the lines they were given, for when they
+	// are back.
 	auto IsOnGroupLine = [this, &IsPinnedHere](int32 LayerIndex)
 	{
-		return IsLayerInView(LayerIndex) && !IsFoldedIntoCollapsed(LayerIndex) && !IsPinnedHere(LayerIndex);
+		return IsLayerInView(LayerIndex) && !IsFoldedIntoCollapsed(LayerIndex) && !IsPinnedHere(LayerIndex) && !IsLooseCollapsedHead(LayerIndex);
 	};
 
 	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
@@ -11271,6 +11384,23 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 			LayerToLine[LayerIndex] = TrackLines.Num() - 1;
 		}
 		NumPinnedLines = TrackLines.Num();
+
+		// Under them, scrolling with the rest: the collapsed tracks whose groups aren't shown, a line each, in list order.
+		for (const int32 LayerIndex : Order)
+		{
+			if (!IsLooseCollapsedHead(LayerIndex) || !IsLayerInView(LayerIndex) || IsPinnedHere(LayerIndex))
+			{
+				continue;
+			}
+
+			FTrackLine& Line = TrackLines.AddDefaulted_GetRef();
+			Line.Kind = FTrackLine::EKind::Lane;
+			Line.Group = GetLayerGroup(LayerIndex);
+			Line.Ordinal = 0;
+			Line.Layers = { LayerIndex };
+			Line.bLoose = true;
+			LayerToLine[LayerIndex] = TrackLines.Num() - 1;
+		}
 	}
 
 	// Where a layer asks to be. A layer with no line of its own set comes after every line that is set, in its
@@ -11378,6 +11508,12 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 		}
 
 		GroupLineCounts[GroupIndex] = GroupLines.Num();
+
+		// A group whose tracks are all in collapsed tracks isn't shown: its collapsed tracks are drawn loose above.
+		if (IsGroupAllCollapsed(GroupIndex))
+		{
+			continue;
+		}
 
 		// The compact panel has no Layer Groups to show: no group's own line, and nothing folded - its tracks'
 		// lines follow one another straight from the top.
@@ -11651,6 +11787,7 @@ void SWidgetAnimTimeline::RevealGroup(int32 GroupIndex)
 FReply SWidgetAnimTimeline::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
 {
 	const FKey Key = InKeyEvent.GetKey();
+
 
 	// Delete or Backspace: the selected keys if there are any, else every selected layer.
 	if (Key == EKeys::Delete || Key == EKeys::BackSpace)
@@ -12805,6 +12942,32 @@ void SWidgetAnimTimeline::CopyLayers(const TArray<int32>& LayerIndices)
 	TArray<float> Starts;
 	GetAuthoredStarts(Starts);
 
+	// A collapsed track is copied as one only when it is copied whole, from outside it: every one of its tracks, picked by
+	// clicking the collapsed track. Tracks copied from inside a collapsed track open on its own - or only some of a
+	// collapsed track's tracks - are copied as the tracks they are, so pasting them anywhere makes plain tracks (or, pasted
+	// inside a collapsed track, that one's) rather than a new collapsed track named after where they came from.
+	TSet<FName> CopiedWhole;
+	if (!IsInCollapsedScope())
+	{
+		TSet<FName> Seen;
+		for (const int32 LayerIndex : Sorted)
+		{
+			const FName Name = GetLayerCollapsedName(LayerIndex);
+			if (Name.IsNone() || Seen.Contains(Name))
+			{
+				continue;
+			}
+			Seen.Add(Name);
+
+			TArray<int32> Members;
+			GetCollapsedMembers(Name, Members);
+			if (Algo::AllOf(Members, [&Sorted](int32 Member) { return Sorted.Contains(Member); }))
+			{
+				CopiedWhole.Add(Name);
+			}
+		}
+	}
+
 	FString Clipboard = WidgetAnimTrackClipboard::Header;
 	int32 NumCopied = 0;
 	for (const int32 LayerIndex : Sorted)
@@ -12814,8 +12977,14 @@ void SWidgetAnimTimeline::CopyLayers(const TArray<int32>& LayerIndices)
 			continue;
 		}
 
+		FWidgetAnimLayer Copied = (*Layers)[LayerIndex];
+		if (!CopiedWhole.Contains(Copied.CollapsedTrack))
+		{
+			Copied.CollapsedTrack = NAME_None;
+		}
+
 		FString Exported;
-		FWidgetAnimLayer::StaticStruct()->ExportText(Exported, &(*Layers)[LayerIndex], nullptr, nullptr, PPF_Copy, nullptr);
+		FWidgetAnimLayer::StaticStruct()->ExportText(Exported, &Copied, nullptr, nullptr, PPF_Copy, nullptr);
 		Clipboard += FString::Printf(TEXT("\n%f\t%d\t"), Starts.IsValidIndex(LayerIndex) ? Starts[LayerIndex] : 0.f, GetLayerGroup(LayerIndex));
 		Clipboard += FBase64::Encode(Exported);
 		++NumCopied;
@@ -14121,6 +14290,10 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines, 
 	float Lowest = -MaxSeconds;
 	float Highest = MaxSeconds;
 
+	// How far back a move can go before its tracks reach the animation's start - only a limit when the start is fixed;
+	// with bStartIsFree, going further moves everything else later instead.
+	float StartFloor = -MaxSeconds;
+
 	TSet<int32> Moving(State.StartEdges);
 	Moving.Append(State.EndEdges);
 
@@ -14135,7 +14308,11 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines, 
 		// Nothing before the animation starts.
 		if (bStart)
 		{
-			Lowest = FMath::Max(Lowest, -Start);
+			StartFloor = FMath::Max(StartFloor, -Start);
+			if (!State.bStartIsFree)
+			{
+				Lowest = FMath::Max(Lowest, -Start);
+			}
 		}
 
 		// Nothing shorter than the shortest a layer can be.
@@ -14148,8 +14325,9 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines, 
 			Lowest = FMath::Max(Lowest, MinLayerSeconds - Length);
 		}
 
-		// Nothing past the animation's end, unless a track ending there is being lengthened.
-		if (bEnd && (State.Mode == ELayerDrag::Move || !State.bEndIsFree))
+		// Nothing past the animation's end, unless a track ending there is being lengthened - or a keyboard move may make
+		// the animation longer (bEndIsFree).
+		if (bEnd && !State.bEndIsFree)
 		{
 			Highest = FMath::Min(Highest, State.OriginalEnd - End);
 		}
@@ -14190,8 +14368,33 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines, 
 	// Limits that contradict each other - a selection pinned at both ends - mean nothing moves.
 	Delta = Lowest <= Highest ? FMath::Clamp(Delta, Lowest, Highest) : 0.f;
 
+	// Taken before the animation's start: the moved tracks stop at it, and everything else moves later by what is left -
+	// the same picture, the moved tracks ahead of the rest, with nothing before 0.
+	float LeadIn = 0.f;
+	if (State.bStartIsFree && Delta < StartFloor)
+	{
+		LeadIn = StartFloor - Delta;
+		Delta = StartFloor;
+	}
+
 	TArray<float> NewStarts = State.OriginalStarts;
 	TArray<float> NewLengths = State.OriginalLengths;
+	if (LeadIn > 0.f)
+	{
+		for (int32 LayerIndex = 0; LayerIndex < NewStarts.Num(); ++LayerIndex)
+		{
+			if (!Moving.Contains(LayerIndex))
+			{
+				NewStarts[LayerIndex] += LeadIn;
+			}
+		}
+	}
+
+	// A Minimum Length moves later with the rest, so the animation's end stays where it was against its tracks.
+	if (State.bStartIsFree && Source.IsValid() && Source->CanSetMinimumLength() && State.OriginalMinimumLength > 0.f)
+	{
+		Source->SetMinimumLength(State.OriginalMinimumLength + LeadIn / FMath::Max(GetTimeScale(), KINDA_SMALL_NUMBER));
+	}
 	for (const int32 LayerIndex : Moving)
 	{
 		const bool bStart = State.StartEdges.Contains(LayerIndex);
@@ -14225,8 +14428,9 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines, 
 		{
 			int32 NewLine = State.OriginalEditorLines[LayerIndex];
 
-			// A pinned track, and one folded into a collapsed track, keep their lines in their groups: they aren't shown there.
-			const bool bOffItsLine = IsLayerPinned(LayerIndex) || IsFoldedIntoCollapsed(LayerIndex) || !IsLayerInView(LayerIndex);
+			// A pinned track, one folded into a collapsed track and a collapsed track drawn loose keep their lines in their
+			// groups: they aren't shown there.
+			const bool bOffItsLine = IsLayerPinned(LayerIndex) || IsFoldedIntoCollapsed(LayerIndex) || !IsLayerInView(LayerIndex) || IsLooseCollapsedHead(LayerIndex);
 			if (DeltaLines != 0 && State.OriginalLineOrdinals.IsValidIndex(LayerIndex) && !bOffItsLine)
 			{
 				const int32 Ordinal = State.OriginalLineOrdinals[LayerIndex];
@@ -14622,6 +14826,36 @@ bool SWidgetAnimTimeline::IsFoldedIntoCollapsed(int32 LayerIndex) const
 {
 	const FName Name = GetLayerCollapsedName(LayerIndex);
 	return !Name.IsNone() && Name != ActiveCollapsed && !IsCollapsedHead(LayerIndex);
+}
+
+bool SWidgetAnimTimeline::IsGroupAllCollapsed(int32 GroupIndex) const
+{
+	// Open on its own, a collapsed track shows its groups - that is how a hidden group's settings are reached.
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (bCompact || IsInCollapsedScope() || !Layers)
+	{
+		return false;
+	}
+
+	bool bAnyTrack = false;
+	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+	{
+		if (GetLayerGroup(LayerIndex) != GroupIndex)
+		{
+			continue;
+		}
+		if ((*Layers)[LayerIndex].CollapsedTrack.IsNone())
+		{
+			return false;
+		}
+		bAnyTrack = true;
+	}
+	return bAnyTrack;
+}
+
+bool SWidgetAnimTimeline::IsLooseCollapsedHead(int32 LayerIndex) const
+{
+	return IsCollapsedHead(LayerIndex) && IsGroupAllCollapsed(GetLayerGroup(LayerIndex));
 }
 
 FVector2f SWidgetAnimTimeline::GetShownSpan(int32 LayerIndex) const
@@ -16474,7 +16708,7 @@ namespace WidgetAnimFolderMenu
 	 * A name typed into a menu - a new folder's, or a folder's new name: Enter applies it and closes the menu, Escape or
 	 * clicking away leaves things as they are.
 	 */
-	TSharedRef<SWidget> MakeNameBox(const FText& Initial, const FText& Hint, TFunction<void(const FString&)> OnCommit)
+	TSharedRef<SWidget> MakeNameBox(const FText& Initial, const FText& Hint, TFunction<void(const FString&)> OnCommit, bool bAllowEmpty = false)
 	{
 		return SNew(SBox)
 			.Padding(FMargin(8.f, 2.f, 8.f, 4.f))
@@ -16484,10 +16718,11 @@ namespace WidgetAnimFolderMenu
 				.Text(Initial)
 				.HintText(Hint)
 				.SelectAllTextWhenFocused(true)
-				.OnTextCommitted_Lambda([OnCommit](const FText& Text, ETextCommit::Type CommitType)
+				.OnTextCommitted_Lambda([OnCommit, bAllowEmpty](const FText& Text, ETextCommit::Type CommitType)
 				{
+					// bAllowEmpty: Enter with nothing typed still commits - the caller names it.
 					const FString Name = Text.ToString().TrimStartAndEnd();
-					if (CommitType != ETextCommit::OnEnter || Name.IsEmpty())
+					if (CommitType != ETextCommit::OnEnter || (Name.IsEmpty() && !bAllowEmpty))
 					{
 						return;
 					}
@@ -19203,6 +19438,412 @@ void SWidgetAnimTimeline::OnScriptRan(int32 TracksBefore, int32 TracksAfter, int
 		}
 		SelectInBox({}, Added, /*bAdd=*/false, /*bToggle=*/false);
 	}
+}
+
+// -----------------------------------------------------------------------------------------------------
+// Animation timelines - a Widget Blueprint's own animations
+// -----------------------------------------------------------------------------------------------------
+
+void SWidgetAnimTimeline::SwitchEditedAnimation(TFunctionRef<void()> Switch)
+{
+	// Out of a collapsed track first, while its mutes are still on the animation they were set on - the next one has
+	// none, and a mute left behind would silence that track in this one's previews.
+	if (IsDragging())
+	{
+		IsDraggingKey() ? EndKeyDrag() : EndLayerDrag();
+	}
+	if (IsInCollapsedScope())
+	{
+		ActiveCollapsed = NAME_None;
+		SyncScopeMutes();
+	}
+
+	Switch();
+
+	// Fold state is kept by index, which means nothing in another animation.
+	ExpandedAnimationTracks.Reset();
+	FoldedNestedGroups.Reset();
+	ClearSelection();
+	RebuildRows();
+	RefreshDetails();
+}
+
+TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelinePicker()
+{
+	using namespace WidgetAnimTimeline;
+
+	return SNew(SComboButton)
+		.Visibility_Lambda([this]() { return Source.IsValid() && Source->IsEditingTimeline() ? EVisibility::Visible : EVisibility::Collapsed; })
+		.ContentPadding(FMargin(4.f, 0.f))
+		.ToolTip(MakePanelToolTip(WidgetAnimTips::TimelinePickerTooltip()))
+		.OnGetMenuContent(this, &SWidgetAnimTimeline::MakeTimelineMenu)
+		.ButtonContent()
+		[
+			SNew(SBox)
+			.MinDesiredWidth(140.f)
+			.MaxDesiredWidth(260.f)
+			[
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+				[
+					MakeFixedIcon(TimelineIcon())
+				]
+
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+					.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+					.Text_Lambda([this]() { return Source.IsValid() ? Source->GetEditedName() : FText::GetEmpty(); })
+					.ColorAndOpacity_Lambda([this]()
+					{
+						// None yet: the name reads as the thing to click.
+						const bool bNone = Source.IsValid() && Source->GetTimelineName().IsEmpty();
+						return bNone ? FSlateColor(Palette::NoTimelineText) : FSlateColor::UseForeground();
+					})
+				]
+			]
+		];
+}
+
+TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelineMenu()
+{
+	using namespace WidgetAnimTimeline;
+
+	FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+	if (!Source.IsValid() || !Source->SupportsTimelines())
+	{
+		return Menu.MakeWidget();
+	}
+
+	TArray<FString> Names;
+	Source->GetTimelineNames(Names);
+	const FString Open = Source->GetTimelineName();
+
+	// Every timeline of the Widget Blueprint, the open one checked.
+	if (Names.Num() > 0)
+	{
+		Menu.BeginSection("Timelines", LOCTEXT("TimelinesSection", "Timelines in This Widget Blueprint"));
+		for (const FString& Name : Names)
+		{
+			Menu.AddMenuEntry(
+				FText::FromString(Name),
+				WidgetAnimTips::OpenTimelineTooltip(),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateLambda([this, Name]()
+					{
+						if (Source.IsValid() && Source->GetTimelineName() != Name)
+						{
+							SwitchEditedAnimation([this, &Name]() { Source->OpenTimeline(Name); });
+						}
+					}),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateLambda([this, Name]() { return Source.IsValid() && Source->GetTimelineName() == Name; })),
+				NAME_None,
+				EUserInterfaceActionType::RadioButton);
+		}
+		Menu.EndSection();
+	}
+
+	Menu.BeginSection("Timeline", LOCTEXT("TimelineSection", "Timeline"));
+
+	// A new one, named as it is made.
+	Menu.AddSubMenu(
+		LOCTEXT("NewTimelineEntry", "New Timeline"),
+		WidgetAnimTips::NewTimelineTooltip(),
+		FNewMenuDelegate::CreateLambda([this](FMenuBuilder& SubMenu)
+		{
+			SubMenu.AddWidget(
+				WidgetAnimFolderMenu::MakeNameBox(FText::GetEmpty(), WidgetAnimTips::NewTimelineHint(), [this](const FString& Name)
+				{
+					if (Source.IsValid())
+					{
+						SwitchEditedAnimation([this, &Name]() { Source->CreateTimeline(Name); });
+					}
+				}, /*bAllowEmpty=*/true),
+				FText::GetEmpty(), /*bNoIndent=*/true);
+		}),
+		false,
+		FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::MenuAddIcon));
+
+	if (!Open.IsEmpty())
+	{
+		Menu.AddSubMenu(
+			FText::Format(LOCTEXT("RenameTimelineEntry", "Rename \"{0}\""), FText::FromString(Open)),
+			WidgetAnimTips::RenameTimelineTooltip(),
+			FNewMenuDelegate::CreateLambda([this, Open](FMenuBuilder& SubMenu)
+			{
+				SubMenu.AddWidget(
+					WidgetAnimFolderMenu::MakeNameBox(FText::FromString(Open), WidgetAnimTips::RenameTimelineHint(), [this, Open](const FString& Name)
+					{
+						if (Source.IsValid())
+						{
+							Source->RenameTimeline(Open, Name);
+						}
+					}),
+					FText::GetEmpty(), /*bNoIndent=*/true);
+			}),
+			false,
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCommands.Rename"));
+
+		Menu.AddMenuEntry(
+			FText::Format(LOCTEXT("DuplicateTimelineEntry", "Duplicate \"{0}\""), FText::FromString(Open)),
+			WidgetAnimTips::DuplicateTimelineTooltip(),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCommands.Duplicate"),
+			FUIAction(FExecuteAction::CreateLambda([this, Open]()
+			{
+				if (Source.IsValid())
+				{
+					SwitchEditedAnimation([this, &Open]() { Source->CreateTimeline(Open, Open); });
+				}
+			})));
+
+		Menu.AddMenuEntry(
+			FText::Format(LOCTEXT("DeleteTimelineEntry", "Delete \"{0}\""), FText::FromString(Open)),
+			WidgetAnimTips::DeleteTimelineTooltip(),
+			FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::MenuDeleteIcon),
+			FUIAction(FExecuteAction::CreateLambda([this, Open]()
+			{
+				if (!Source.IsValid())
+				{
+					return;
+				}
+
+				// Asked first when it has tracks: they go with it. Undo still brings it back.
+				const TArray<FWidgetAnimLayer>* Layers = Source->GetLayers();
+				const int32 NumTracks = Layers ? Layers->Num() : 0;
+				if (NumTracks > 0)
+				{
+					const FText Question = FText::Format(WidgetAnimTips::DeleteTimelineQuestion(), FText::FromString(Open), FText::AsNumber(NumTracks));
+					if (FMessageDialog::Open(EAppMsgType::YesNo, Question) != EAppReturnType::Yes)
+					{
+						return;
+					}
+				}
+				SwitchEditedAnimation([this, &Open]() { Source->DeleteTimeline(Open); });
+			})));
+	}
+	Menu.EndSection();
+
+	return Menu.MakeWidget();
+}
+
+// -----------------------------------------------------------------------------------------------------
+// Moving tracks with the arrow keys
+// -----------------------------------------------------------------------------------------------------
+
+namespace WidgetAnimKeyboardMove
+{
+	/** A press moves the tracks this many pixels' worth of time at the zoom in force - ten times that with Shift. */
+	constexpr float StepPixels = 4.f;
+	constexpr float LargeStepFactor = 10.f;
+
+	/** Held this long, the tracks start moving on their own... */
+	constexpr double HoldDelaySeconds = 0.3;
+
+	/** ...at this many pixels a second, rising to the fastest over RampSeconds - fine at first, quick once it is clear the key is staying down. */
+	constexpr float SlowestPixelsPerSecond = 90.f;
+	constexpr float FastestPixelsPerSecond = 900.f;
+	constexpr float RampSeconds = 1.5f;
+}
+
+float SWidgetAnimTimeline::GetSecondsPerPixel() const
+{
+	if (!Tracks.IsValid())
+	{
+		return 0.01f;
+	}
+
+	FVector2f Range;
+	bool bUserView = false;
+	float ScrollY = 0.f;
+	Tracks->GetViewState(Range, bUserView, ScrollY);
+	const float Width = Tracks->GetCachedGeometry().GetLocalSize().X;
+	return Width > 1.f ? FMath::Max(Range.Y - Range.X, KINDA_SMALL_NUMBER) / Width : 0.01f;
+}
+
+bool SWidgetAnimTimeline::BeginKeyboardMove(int32 Direction, bool bLarge)
+{
+	using namespace WidgetAnimKeyboardMove;
+
+	// What is left of a move whose drag something else ended.
+	EndKeyboardMove();
+
+	// Tracks only: with keys picked, the arrows leave them be.
+	if (!CanEdit() || IsDragging() || IsKeyMultiSelection() || Selection.Key != INDEX_NONE)
+	{
+		return false;
+	}
+
+	// The first selected track that can move is the one "pressed"; the drag takes every selected one that can.
+	int32 Pressed = INDEX_NONE;
+	for (const int32 LayerIndex : GetClipboardLayers())
+	{
+		if (CanMoveLayer(LayerIndex))
+		{
+			Pressed = LayerIndex;
+			break;
+		}
+	}
+	if (Pressed == INDEX_NONE || !BeginLayerDrag(Pressed, ELayerDrag::Move))
+	{
+		return false;
+	}
+
+	// Arrow Keys Can Extend the Animation: past its end the animation grows; before its start the rest moves later. Not
+	// before the start when a track left behind is locked - it would be moved all the same, as a range drag refuses to.
+	if (UWidgetAnimEditorSettings::Get().bArrowKeysExtendAnimation)
+	{
+		LayerDrag.bEndIsFree = true;
+
+		bool bLockedLeftBehind = false;
+		const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+		for (int32 LayerIndex = 0; Layers && LayerIndex < Layers->Num() && !bLockedLeftBehind; ++LayerIndex)
+		{
+			bLockedLeftBehind = IsLayerLocked(LayerIndex) && !LayerDrag.StartEdges.Contains(LayerIndex);
+		}
+		LayerDrag.bStartIsFree = !bLockedLeftBehind;
+		LayerDrag.OriginalMinimumLength = Source.IsValid() ? Source->GetMinimumLength() : 0.f;
+	}
+
+	KeyboardMoveDirection = Direction;
+	bKeyboardMoveLarge = bLarge;
+	KeyboardMoveStartTime = FSlateApplication::Get().GetCurrentTime();
+	KeyboardMoveOffset = Direction * StepPixels * (bLarge ? LargeStepFactor : 1.f) * GetSecondsPerPixel();
+	UpdateLayerDrag(KeyboardMoveOffset, 0, /*SnapThresholdSeconds=*/0.f);
+
+	if (!KeyboardMoveTimer.IsValid())
+	{
+		KeyboardMoveTimer = RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateSP(this, &SWidgetAnimTimeline::TickKeyboardMove));
+	}
+	return true;
+}
+
+EActiveTimerReturnType SWidgetAnimTimeline::TickKeyboardMove(double CurrentTime, float DeltaTime)
+{
+	using namespace WidgetAnimKeyboardMove;
+
+	if (!IsKeyboardMoving())
+	{
+		KeyboardMoveDirection = 0;
+		KeyboardMoveTimer.Reset();
+		return EActiveTimerReturnType::Stop;
+	}
+
+	const double Held = CurrentTime - KeyboardMoveStartTime;
+	if (Held < HoldDelaySeconds)
+	{
+		return EActiveTimerReturnType::Continue;
+	}
+
+	// Faster the longer it is held - in pixels, so it feels the same at any zoom.
+	const float Ramp = FMath::Clamp(static_cast<float>(Held - HoldDelaySeconds) / RampSeconds, 0.f, 1.f);
+	const float PixelsPerSecond = FMath::Lerp(SlowestPixelsPerSecond, FastestPixelsPerSecond, Ramp * Ramp) * (bKeyboardMoveLarge ? 2.f : 1.f);
+	KeyboardMoveOffset += KeyboardMoveDirection * PixelsPerSecond * GetSecondsPerPixel() * DeltaTime;
+	UpdateLayerDrag(KeyboardMoveOffset, 0, /*SnapThresholdSeconds=*/0.f);
+
+	// The view follows what is moving, so a long hold doesn't carry it off screen.
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (Tracks.IsValid() && Layers && Layers->IsValidIndex(Selection.Layer))
+	{
+		const FVector2f Span = GetShownSpan(Selection.Layer);
+		Tracks->RevealTime(Span.X, Span.X + Span.Y);
+	}
+	return EActiveTimerReturnType::Continue;
+}
+
+void SWidgetAnimTimeline::EndKeyboardMove()
+{
+	if (KeyboardMoveDirection == 0)
+	{
+		return;
+	}
+
+	KeyboardMoveDirection = 0;
+	KeyboardMoveOffset = 0.f;
+	if (KeyboardMoveTimer.IsValid())
+	{
+		UnRegisterActiveTimer(KeyboardMoveTimer.ToSharedRef());
+		KeyboardMoveTimer.Reset();
+	}
+	if (IsDraggingLayers())
+	{
+		EndLayerDrag();
+	}
+}
+
+bool SWidgetAnimTimeline::ArrowKeysMoveTracks() const
+{
+	// The panel itself has the focus once a track or a list row is clicked; a text box in the Selection panel keeps its arrows.
+	const bool bFocusHere = HasKeyboardFocus() || (Tracks.IsValid() && Tracks->HasKeyboardFocus());
+	// Anything selected is enough to keep the arrows here - BeginKeyboardMove decides whether they move it (not keys, not a
+	// locked panel), and with nothing to move they simply do nothing rather than taking the focus elsewhere.
+	return bFocusHere && GetClipboardLayers().Num() > 0;
+}
+
+FReply SWidgetAnimTimeline::OnPreviewKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+	const FKey Key = InKeyEvent.GetKey();
+	const bool bArrow = (Key == EKeys::Left || Key == EKeys::Right) && !InKeyEvent.IsControlDown() && !InKeyEvent.IsCommandDown() && !InKeyEvent.IsAltDown();
+	if (!bArrow || (!IsKeyboardMoving() && !ArrowKeysMoveTracks()))
+	{
+		return SCompoundWidget::OnPreviewKeyDown(MyGeometry, InKeyEvent);
+	}
+
+	// Left or Right: the selected tracks move that way - a press a step, held they keep going. The key repeats the system
+	// sends while it is held are the move's own: it is carried on by its timer, not by them. Handled even when nothing
+	// could move (every selected track locked, say), so the key is never passed on as a move to another panel.
+	const int32 Direction = Key == EKeys::Right ? 1 : -1;
+	if (IsKeyboardMoving())
+	{
+		if (KeyboardMoveDirection == Direction)
+		{
+			return FReply::Handled();
+		}
+		EndKeyboardMove();
+	}
+	BeginKeyboardMove(Direction, InKeyEvent.IsShiftDown());
+	return FReply::Handled();
+}
+
+FNavigationReply SWidgetAnimTimeline::OnNavigation(const FGeometry& MyGeometry, const FNavigationEvent& InNavigationEvent)
+{
+	// Up and Down never take the focus out of the panel: something in it that uses them (the Selection panel's rows, a
+	// text box) has them first, and an arrow nothing used is not a reason to jump to another panel of the editor.
+	const EUINavigation Direction = InNavigationEvent.GetNavigationType();
+	if (Direction == EUINavigation::Up || Direction == EUINavigation::Down)
+	{
+		return FNavigationReply::Stop();
+	}
+	if ((Direction == EUINavigation::Left || Direction == EUINavigation::Right) && (IsKeyboardMoving() || ArrowKeysMoveTracks()))
+	{
+		return FNavigationReply::Stop();
+	}
+	return SCompoundWidget::OnNavigation(MyGeometry, InNavigationEvent);
+}
+
+FReply SWidgetAnimTimeline::OnKeyUp(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+	const FKey Key = InKeyEvent.GetKey();
+	if (IsKeyboardMoving() && (Key == EKeys::Left || Key == EKeys::Right) && (Key == EKeys::Right) == (KeyboardMoveDirection > 0))
+	{
+		EndKeyboardMove();
+		return FReply::Handled();
+	}
+	return SCompoundWidget::OnKeyUp(MyGeometry, InKeyEvent);
+}
+
+void SWidgetAnimTimeline::OnFocusLost(const FFocusEvent& InFocusEvent)
+{
+	EndKeyboardMove();
+	SCompoundWidget::OnFocusLost(InFocusEvent);
 }
 
 #undef LOCTEXT_NAMESPACE

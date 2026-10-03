@@ -144,7 +144,7 @@ public:
 
 #if WITH_EDITORONLY_DATA
 	/**
-	 * The Content folder new Widget Animation assets are saved in - made with New Animation in the Widget Animations panel,
+	 * The Content folder new Widget Animation assets are saved in - made from an Animation Timeline in the Widget Animations panel,
 	 * Save as Animation under a component's tracks, or a builder's Create Widget Animation. Empty saves each beside the
 	 * Widget Blueprint it was made in. A builder's own Save Folder, when it sets one, comes first.
 	 */

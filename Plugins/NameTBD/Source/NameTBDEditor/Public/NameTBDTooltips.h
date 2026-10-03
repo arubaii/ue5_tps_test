@@ -138,7 +138,13 @@ namespace NameTBD::Tooltips
 		inline FText NothingToEdit()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NothingToEdit",
-				"Pick the Widget Animation asset to edit above, or switch to New Animation.");
+				"Pick the Widget Animation asset to edit above, or switch to Animation Timeline.");
+		}
+
+		inline FText NoTimelineYet()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NoTimelineYet",
+				"This Widget Blueprint has no animation timelines yet. Make one to start animating its widgets.");
 		}
 
 		// -------------------------------------------------------------------------------------------------
@@ -148,13 +154,71 @@ namespace NameTBD::Tooltips
 		inline FText ModeTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ModeTooltip",
-				"New Animation builds a new one, saved with Save as Animation Asset. Edit Existing Asset edits a Widget Animation asset in place, saved with Update Animation Asset.");
+				"Animation Timeline edits this Widget Blueprint's own animations, saved with it; Save as Animation Asset makes one usable by other widgets. Edit Existing Asset edits a Widget Animation asset in place, saved with Update Animation Asset.");
 		}
 
-		inline FText NewAnimationTooltip()
+		inline FText TimelineModeTooltip()
 		{
-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewAnimationTooltip",
-				"Build a new animation, and save it as a new Widget Animation asset when it is ready.");
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TimelineModeTooltip",
+				"Make or edit this Widget Blueprint's own animation timelines. They are saved with it and belong to it; to use one in another widget, save it as a Widget Animation asset.");
+		}
+
+		inline FText TimelinePickerTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TimelinePickerTooltip",
+				"Timeline: which of this Widget Blueprint's animation timelines is open. Make, rename, duplicate or delete them here.");
+		}
+
+		inline FText OpenTimelineTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "OpenTimelineTooltip",
+				"Open this timeline in the panel. Scripts run on it too.");
+		}
+
+		inline FText NewTimelineTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewTimelineTooltip",
+				"Press Enter for a new, empty timeline in this Widget Blueprint - named Timeline 1, Timeline 2 and so on unless a name is typed - opened straight away.");
+		}
+
+		inline FText NewTimelineButtonTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewTimelineButtonTooltip",
+				"New Timeline: make this Widget Blueprint's first animation timeline, named Timeline 1. Rename it from the timeline picker above.");
+		}
+
+		inline FText NewTimelineHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewTimelineHint", "Name (Enter for Timeline N)");
+		}
+
+		inline FText RenameTimelineHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "RenameTimelineHint", "New name");
+		}
+
+		inline FText RenameTimelineTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "RenameTimelineTooltip",
+				"Type a new name for the open timeline and press Enter. A name another timeline has is numbered.");
+		}
+
+		inline FText DuplicateTimelineTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DuplicateTimelineTooltip",
+				"A copy of the open timeline, in this Widget Blueprint, opened straight away.");
+		}
+
+		inline FText DeleteTimelineTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DeleteTimelineTooltip",
+				"Delete the open timeline and its tracks from this Widget Blueprint. Undo brings it back.");
+		}
+
+		inline FText DeleteTimelineQuestion()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DeleteTimelineQuestion",
+				"Delete the animation timeline \"{0}\" and its {1} tracks from this Widget Blueprint?");
 		}
 
 		inline FText EditExistingAssetTooltip()
@@ -178,7 +242,7 @@ namespace NameTBD::Tooltips
 		inline FText SaveAsTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "SaveAsTooltip",
-				"Save this animation as a new WA_ Widget Animation asset beside this Widget Blueprint, and go on editing it.");
+				"Save this timeline as a new WA_ Widget Animation asset, so other widgets can use it. The timeline stays in this Widget Blueprint as it is.");
 		}
 
 		inline FText DockTooltip()
@@ -416,7 +480,7 @@ namespace NameTBD::Tooltips
 		inline FText ReadOnlyAsset()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ReadOnlyAsset",
-				"Pick the Widget Animation asset to edit, or switch to New Animation.");
+				"Pick the Widget Animation asset to edit, or switch to Animation Timeline.");
 		}
 
 		inline FText AddGroupTooltip()
@@ -1306,10 +1370,10 @@ namespace NameTBD::Tooltips
 		// The Script area - Python that makes tracks
 		// -------------------------------------------------------------------------------------------------
 
-		inline FText ScriptToggleTooltip()
+		inline FText ScriptTargetTooltip()
 		{
-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptToggleTooltip",
-				"Script: Python that makes and changes tracks - patterns over many widgets in one go. Opens under the Track Editor.");
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptTargetTooltip",
+				"Runs on: the animation this script edits - the timeline or asset open in this Widget Blueprint's Widget Animations panel.");
 		}
 
 		inline FText ScriptRunTooltip()

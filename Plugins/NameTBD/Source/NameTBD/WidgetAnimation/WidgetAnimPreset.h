@@ -35,9 +35,9 @@ class UWidget;
  * saves it.
  *
  * MAKING ONE
- * In any Widget Blueprint: open the Widget Animations drawer on the status bar, leave it on New Animation,
- * build it against that Widget Blueprint's own widgets - each Layer Group animating the widget it is pointed
- * at - and press Save as Animation Asset. For something generic meant for many places, do the same in
+ * In any Widget Blueprint: open the Widget Animations drawer on the status bar, on Animation Timeline make
+ * or open one of that Widget Blueprint's timelines, build it against its own widgets - each Layer Group
+ * animating the widget it is pointed at - and press Save as Animation Asset. For something generic meant for many places, do the same in
  * WidgetAnimationBuilder, whose Animation Name and Save Folder decide where it is saved.
  *
  * LAYER GROUPS

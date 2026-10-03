@@ -8,6 +8,7 @@
 #include "SWidgetAnimTimeline.h"
 #include "WidgetAnimPanelSource.h"
 #include "NameTBDColors.h"
+#include "NameTBDStyle.h"
 #include "NameTBDTooltips.h"
 
 #include "Framework/Application/SlateApplication.h"
@@ -553,6 +554,7 @@ void SWidgetAnimScriptPanel::Construct(const FArguments& InArgs)
 	Panel = InArgs._Panel;
 	ScriptKey = InArgs._ScriptKey;
 	FindPanel = InArgs._FindPanel;
+	FindSource = InArgs._FindSource;
 	bInDrawer = InArgs._InDrawer;
 	OnClose = InArgs._OnClose;
 	bInWindow = InArgs._InWindow;
@@ -581,6 +583,11 @@ void SWidgetAnimScriptPanel::Construct(const FArguments& InArgs)
 	const FSlateBrush* PopOutIcon = PickBrush({ TEXT("Icons.OpenInExternalEditor"), TEXT("Icons.OpenInBrowser"), TEXT("Icons.Fullscreen") });
 	const FSlateBrush* DockIcon = PickBrush({ TEXT("Icons.Layout"), TEXT("Icons.Dock"), TEXT("LevelEditor.Tabs.Details") });
 	const FSlateBrush* CloseIcon = PickBrush({ TEXT("Icons.X"), TEXT("Icons.Close"), TEXT("Symbols.X") });
+
+	// What a run edits: a timeline by the panel's timeline icon, an asset by its class icon.
+	const FSlateBrush* TimelineIcon = PickBrush({ TEXT("GraphEditor.Timeline_16x"), TEXT("ClassIcon.TimelineTemplate"), TEXT("ClassIcon.LevelSequence") });
+	const FSlateBrush* OwnAssetIcon = FNameTBDStyle::Get().GetOptionalBrush("ClassIcon.WidgetAnimPresetAsset", nullptr, nullptr);
+	const FSlateBrush* AssetIcon = OwnAssetIcon ? OwnAssetIcon : PickBrush({ TEXT("ClassIcon.DataAsset") });
 
 	ChildSlot
 	[
@@ -700,10 +707,55 @@ void SWidgetAnimScriptPanel::Construct(const FArguments& InArgs)
 						]
 					]
 
+					// Runs on: the timeline (or asset) open in the Widget Animations panel, which is what a run edits.
 					+ SHorizontalBox::Slot()
 					.FillWidth(1.f)
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(12.f, 0.f, 0.f, 0.f))
 					[
-						SNew(SSpacer)
+						SNew(SWidgetAnimAnchoredTip)
+						.Text(ScriptTips::ScriptTargetTooltip())
+						.Visibility_Lambda([this]() { return GetTargetName().IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible; })
+						[
+							SNew(SHorizontalBox)
+
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
+							[
+								SNew(STextBlock)
+								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+								.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+								.Text(LOCTEXT("RunsOn", "Runs on"))
+							]
+
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+							[
+								SNew(SBox)
+								.WidthOverride(14.f)
+								.HeightOverride(14.f)
+								[
+									SNew(SImage)
+									.Image_Lambda([this, TimelineIcon, AssetIcon]() { return IsTargetTimeline() ? TimelineIcon : AssetIcon; })
+									.ColorAndOpacity(FSlateColor::UseForeground())
+								]
+							]
+
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+								.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+								.ColorAndOpacity(FSlateColor(ScriptPalette::ScriptTargetName))
+								.Text(this, &SWidgetAnimScriptPanel::GetTargetName)
+							]
+						]
 					]
 
 					+ SHorizontalBox::Slot()
@@ -886,6 +938,30 @@ TSharedPtr<SWidgetAnimTimeline> SWidgetAnimScriptPanel::GetPanel() const
 		return Pinned;
 	}
 	return FindPanel ? FindPanel() : nullptr;
+}
+
+IWidgetAnimPanelSource* SWidgetAnimScriptPanel::FindTargetSource(TSharedPtr<IWidgetAnimPanelSource>& OutKeepAlive) const
+{
+	if (const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin())
+	{
+		return Pinned->GetSource();
+	}
+	OutKeepAlive = FindSource ? FindSource() : nullptr;
+	return OutKeepAlive.Get();
+}
+
+FText SWidgetAnimScriptPanel::GetTargetName() const
+{
+	TSharedPtr<IWidgetAnimPanelSource> KeepAlive;
+	const IWidgetAnimPanelSource* Target = FindTargetSource(KeepAlive);
+	return Target ? Target->GetEditedName() : FText::GetEmpty();
+}
+
+bool SWidgetAnimScriptPanel::IsTargetTimeline() const
+{
+	TSharedPtr<IWidgetAnimPanelSource> KeepAlive;
+	const IWidgetAnimPanelSource* Target = FindTargetSource(KeepAlive);
+	return Target && Target->GetMode() == IWidgetAnimPanelSource::EMode::Timeline;
 }
 
 bool SWidgetAnimScriptPanel::CanRun() const
