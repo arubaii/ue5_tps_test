@@ -17,6 +17,8 @@
 #include "HAL/FileManager.h"
 #include "HAL/PlatformTime.h"
 #include "Misc/FileHelper.h"
+#include "Misc/CoreDelegates.h"
+#include "Containers/Ticker.h"
 #include "Misc/MessageDialog.h"
 #include "HAL/PlatformProcess.h"
 #include "Widgets/Input/SEditableTextBox.h"
@@ -45,33 +47,119 @@ namespace WidgetAnimScriptPanelImpl
 	namespace ScriptPalette = NameTBD::Colors::WidgetAnimEditor;
 	namespace ScriptTips = NameTBD::Tooltips::WidgetAnimEditor;
 
-	/** Where the script is kept between sessions. */
-	FString GetScriptFilePath()
+	/**
+	 * Where a widget's script is kept between sessions: Saved/NameTBD/Scripts/<its package path, as a file name>.py. With no
+	 * key (no Widget Blueprint to go by), the one shared script of earlier versions, Saved/NameTBD/WidgetAnimScript.py.
+	 */
+	FString GetScriptFilePath(const FString& Key)
 	{
-		return FPaths::ProjectSavedDir() / TEXT("NameTBD/WidgetAnimScript.py");
+		if (Key.IsEmpty())
+		{
+			return FPaths::ProjectSavedDir() / TEXT("NameTBD/WidgetAnimScript.py");
+		}
+		FString FileName = Key;
+		FileName.RemoveFromStart(TEXT("/"));
+		FileName.ReplaceInline(TEXT("/"), TEXT("_"));
+		return FPaths::ProjectSavedDir() / TEXT("NameTBD/Scripts") / (FPaths::MakeValidFileName(FileName, TEXT('_')) + TEXT(".py"));
 	}
 
-	/** The script for this session, shared by every Script area - the drawer's and the docked tab's show the same one. */
-	TOptional<FString>& GetSessionScript()
+	/**
+	 * One widget's script for this session - shared by every Script area of that widget (its drawer, its docked tab, the area
+	 * under its Track Editor), and by no other widget's - with a count of its changes, so each area can tell when another
+	 * changed it.
+	 */
+	struct FSessionScript
 	{
-		static TOptional<FString> Script;
-		return Script;
+		TOptional<FString> Script;
+		uint32 Revision = 1;
+
+		/** Changed since it was last written to disk, and when. */
+		bool bUnsaved = false;
+		double ChangedAt = 0.0;
+	};
+
+	TMap<FString, FSessionScript>& GetSessions()
+	{
+		static TMap<FString, FSessionScript> Sessions;
+		return Sessions;
 	}
 
-	/** Counts every change to the session script, so each Script area can tell when another changed it. */
-	uint32& GetSessionRevision()
+	FSessionScript& GetSession(const FString& Key)
 	{
-		static uint32 Revision = 1;
-		return Revision;
+		return GetSessions().FindOrAdd(Key);
 	}
 
-	FString LoadSessionScript()
+	FString GetScriptFilePath(const FString& Key);
+
+	void WriteSession(const FString& Key, FSessionScript& Session)
 	{
-		TOptional<FString>& Script = GetSessionScript();
+		if (!Session.Script.IsSet())
+		{
+			return;
+		}
+		const FString Path = GetScriptFilePath(Key);
+		IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), /*Tree=*/true);
+		FFileHelper::SaveStringToFile(Session.Script.GetValue(), *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+		Session.bUnsaved = false;
+	}
+
+	/** Writes every script changed since it was last written - all of them, or only those left alone for a moment. */
+	void FlushSessions(bool bAll)
+	{
+		const double Now = FPlatformTime::Seconds();
+		for (TPair<FString, FSessionScript>& Pair : GetSessions())
+		{
+			if (Pair.Value.bUnsaved && (bAll || Now - Pair.Value.ChangedAt > 0.75))
+			{
+				WriteSession(Pair.Key, Pair.Value);
+			}
+		}
+	}
+
+	/**
+	 * A script changed: written to disk shortly after typing stops, and before the editor exits. Saving can't wait for its Script
+	 * area to close - the drawer's and the docked tab's live as long as their editor, and a closed editor's past the point an exit
+	 * would still write them.
+	 */
+	void NoteSessionChanged(const FString& Key)
+	{
+		FSessionScript& Session = GetSession(Key);
+		Session.bUnsaved = true;
+		Session.ChangedAt = FPlatformTime::Seconds();
+
+		static FTSTicker::FDelegateHandle TickerHandle;
+		if (!TickerHandle.IsValid())
+		{
+			TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float) -> bool
+			{
+				FlushSessions(/*bAll=*/false);
+				return true;
+			}), 0.5f);
+			FCoreDelegates::OnEnginePreExit.AddLambda([]()
+			{
+				FlushSessions(/*bAll=*/true);
+				FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+			});
+		}
+	}
+
+	TOptional<FString>& GetSessionScript(const FString& Key)
+	{
+		return GetSession(Key).Script;
+	}
+
+	uint32& GetSessionRevision(const FString& Key)
+	{
+		return GetSession(Key).Revision;
+	}
+
+	FString LoadSessionScript(const FString& Key)
+	{
+		TOptional<FString>& Script = GetSessionScript(Key);
 		if (!Script.IsSet())
 		{
 			FString Loaded;
-			if (!FFileHelper::LoadFileToString(Loaded, *GetScriptFilePath()))
+			if (!FFileHelper::LoadFileToString(Loaded, *GetScriptFilePath(Key)))
 			{
 				Loaded = ScriptTips::ScriptStarter().ToString();
 			}
@@ -463,14 +551,17 @@ void SWidgetAnimScriptPanel::Construct(const FArguments& InArgs)
 	using namespace WidgetAnimScriptPanelImpl;
 
 	Panel = InArgs._Panel;
+	ScriptKey = InArgs._ScriptKey;
+	FindPanel = InArgs._FindPanel;
+	bInDrawer = InArgs._InDrawer;
 	OnClose = InArgs._OnClose;
 	bInWindow = InArgs._InWindow;
 	OnPopOut = InArgs._OnPopOut;
 	bDocked = InArgs._Docked;
 	OnDock = InArgs._OnDock;
-	SeenScriptRevision = GetSessionRevision();
+	SeenScriptRevision = GetSessionRevision(ScriptKey);
 
-	CodeText = LoadSessionScript();
+	CodeText = LoadSessionScript(ScriptKey);
 
 	OutputMarshaller = MakeShared<FWidgetAnimScriptOutputMarshaller>(MakeCodeStyle(ScriptPalette::ScriptOutputInfo));
 
@@ -634,7 +725,7 @@ void SWidgetAnimScriptPanel::Construct(const FArguments& InArgs)
 					[
 						SNew(SWidgetAnimAnchoredTip)
 						.Visibility(!bDocked && OnDock.IsBound() ? EVisibility::Visible : EVisibility::Collapsed)
-						.Text(ScriptTips::DockScriptTooltip())
+						.Text(bInDrawer ? ScriptTips::ScriptingDockInLayoutTooltip() : ScriptTips::DockScriptTooltip())
 						[
 							SNew(SButton)
 							.ButtonStyle(FAppStyle::Get(), "SimpleButton")
@@ -686,7 +777,7 @@ void SWidgetAnimScriptPanel::Construct(const FArguments& InArgs)
 					.VAlign(VAlign_Center)
 					[
 						SNew(SWidgetAnimAnchoredTip)
-						.Text(bDocked ? ScriptTips::ScriptTabCloseTooltip() : bInWindow ? ScriptTips::ScriptWindowCloseTooltip() : ScriptTips::ScriptCloseTooltip())
+						.Text(bDocked ? ScriptTips::ScriptTabCloseTooltip() : bInWindow ? ScriptTips::ScriptWindowCloseTooltip() : bInDrawer ? ScriptTips::ScriptingDrawerCloseTooltip() : ScriptTips::ScriptCloseTooltip())
 						[
 							SNew(SButton)
 							.ButtonStyle(FAppStyle::Get(), "SimpleButton")
@@ -783,19 +874,36 @@ bool SWidgetAnimScriptPanel::IsPythonAvailableCached() const
 	return bPythonAvailable;
 }
 
+FString SWidgetAnimScriptPanel::MakeScriptKey(const UObject* Asset)
+{
+	return Asset ? Asset->GetOutermost()->GetName() : FString();
+}
+
+TSharedPtr<SWidgetAnimTimeline> SWidgetAnimScriptPanel::GetPanel() const
+{
+	if (const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin())
+	{
+		return Pinned;
+	}
+	return FindPanel ? FindPanel() : nullptr;
+}
+
 bool SWidgetAnimScriptPanel::CanRun() const
 {
 	using namespace WidgetAnimScriptPanelImpl;
 
+	// Not GetPanel: finding the panel may build one, and this is asked while painting. An area that finds its panel when it
+	// runs counts as having one.
 	const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin();
-	return Pinned.IsValid() && Pinned->GetSource() != nullptr && IsPythonAvailableCached();
+	const bool bHasPanel = Pinned.IsValid() ? Pinned->GetSource() != nullptr : static_cast<bool>(FindPanel);
+	return bHasPanel && IsPythonAvailableCached();
 }
 
 void SWidgetAnimScriptPanel::Run()
 {
 	using namespace WidgetAnimScriptPanelImpl;
 
-	const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin();
+	const TSharedPtr<SWidgetAnimTimeline> Pinned = GetPanel();
 	if (!Pinned.IsValid())
 	{
 		return;
@@ -1143,13 +1251,13 @@ void SWidgetAnimScriptPanel::SaveScript() const
 
 	// Only an area up to date with the session speaks for it: one hidden while another changed the script - closed with the
 	// editor, say - would otherwise save what it last saw over it.
-	if (SeenScriptRevision == GetSessionRevision())
+	if (SeenScriptRevision == GetSessionRevision(ScriptKey))
 	{
-		GetSessionScript() = CodeText;
+		GetSessionScript(ScriptKey) = CodeText;
 	}
-	const FString Script = GetSessionScript().Get(CodeText);
+	const FString Script = GetSessionScript(ScriptKey).Get(CodeText);
 
-	const FString Path = GetScriptFilePath();
+	const FString Path = GetScriptFilePath(ScriptKey);
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), /*Tree=*/true);
 	FFileHelper::SaveStringToFile(Script, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
 }
@@ -1336,7 +1444,10 @@ EActiveTimerReturnType SWidgetAnimScriptPanel::SyncCodeEditor(double InCurrentTi
 {
 	using namespace WidgetAnimScriptPanelImpl;
 
-	const TSharedPtr<SWidgetAnimTimeline> Pinned = Panel.Pin();
+	// Your functions, written as they are edited - like the script (see NoteSessionChanged).
+	SaveFunctions();
+
+	const TSharedPtr<SWidgetAnimTimeline> Pinned = GetPanel();
 	IWidgetAnimPanelSource* Source = Pinned.IsValid() ? Pinned->GetSource() : nullptr;
 	if (!CodeEditor.IsValid() || !Source)
 	{
@@ -1386,8 +1497,9 @@ void SWidgetAnimScriptPanel::PublishScript(const FString& Script)
 {
 	using namespace WidgetAnimScriptPanelImpl;
 
-	GetSessionScript() = Script;
-	SeenScriptRevision = ++GetSessionRevision();
+	GetSessionScript(ScriptKey) = Script;
+	SeenScriptRevision = ++GetSessionRevision(ScriptKey);
+	NoteSessionChanged(ScriptKey);
 }
 
 EActiveTimerReturnType SWidgetAnimScriptPanel::SyncFromSession(double InCurrentTime, float InDeltaTime)
@@ -1395,13 +1507,13 @@ EActiveTimerReturnType SWidgetAnimScriptPanel::SyncFromSession(double InCurrentT
 	using namespace WidgetAnimScriptPanelImpl;
 
 	// Runs only while this area is on screen: one shown again takes up what was written elsewhere meanwhile.
-	if (SeenScriptRevision == GetSessionRevision())
+	if (SeenScriptRevision == GetSessionRevision(ScriptKey))
 	{
 		return EActiveTimerReturnType::Continue;
 	}
-	SeenScriptRevision = GetSessionRevision();
+	SeenScriptRevision = GetSessionRevision(ScriptKey);
 
-	const FString Script = GetSessionScript().Get(FString());
+	const FString Script = GetSessionScript(ScriptKey).Get(FString());
 	if (Script != CodeText)
 	{
 		CodeText = Script;

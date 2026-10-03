@@ -1,0 +1,16 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.h
+index 417abf0..f4bb7fc 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.h
+@@ -94,9 +94,9 @@ class SWidgetAnimScriptPanel : public SCompoundWidget
+ public:
+ 
+ 	SLATE_BEGIN_ARGS(SWidgetAnimScriptPanel)
+-		: _InWindow(false)
++		: _InDrawer(false)
++		, _InWindow(false)
+ 		, _Docked(false)
+-		, _InDrawer(false)
+ 		{}
+ 
+ 		/** The panel the script runs on - its animation and what is selected in it. */

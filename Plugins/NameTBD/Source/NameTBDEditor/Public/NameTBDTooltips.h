@@ -906,13 +906,35 @@ namespace NameTBD::Tooltips
 		inline FText DockScriptTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DockScriptTooltip",
-				"Dock as Tab: open the script editor as a tab of the editor's layout - beside the Details panel to start with - with the output under the code. Drag it anywhere, like any tab.");
+				"Dock in Layout: open the script editor as a tab of the editor's layout - beside the Details panel to start with - with the output under the code. Drag it anywhere, like any tab.");
 		}
 
 		inline FText ScriptTabTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptTabTooltip",
-				"The Widget Animations panel's script editor, docked as a tab. It runs on the animation open in the panel that docked it.");
+				"Widget Animation Scripting, docked in the layout. It runs on the animation open in this editor's Widget Animations panel.");
+		}
+
+		// -------------------------------------------------------------------------------------------------
+		// The Widget Animation Scripting drawer
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText ScriptingDrawerTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptingDrawerTooltip",
+				"Widget Animation Scripting: Python that makes and changes tracks - patterns over many widgets in one go - run on the animation open in the Widget Animations panel.");
+		}
+
+		inline FText ScriptingDockInLayoutTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptingDockInLayoutTooltip",
+				"Dock in Layout: keep the script editor open as a tab beside the Details panel, with the output under the code. Drag it anywhere, like any tab.");
+		}
+
+		inline FText ScriptingDrawerCloseTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptingDrawerCloseTooltip",
+				"Close: close the drawer. The script is kept - Widget Animation Scripting on the status bar opens it again.");
 		}
 
 		inline FText ScriptTabCloseTooltip()

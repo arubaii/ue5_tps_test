@@ -699,6 +699,31 @@
 		}
 	};
 
+	// Input probe: the first few clicks, keys and focus changes the page receives, written to its console - which Unreal puts in
+	// the Output Log (LogWidgetAnimScriptEditor). Set against Unreal's own "a click reached it" lines, it says whether input
+	// stops before the page or inside it.
+	(function probeInput() {
+		var logged = { pointerdown: 0, mousedown: 0, keydown: 0, focus: 0 };
+		function describe(target) {
+			if (!target || !target.tagName) {
+				return String(target);
+			}
+			return target.tagName.toLowerCase() + (target.className && typeof target.className === "string" ? "." + target.className.split(" ").join(".") : "");
+		}
+		function probe(event) {
+			if (logged[event.type] >= 3) {
+				return;
+			}
+			logged[event.type]++;
+			console.log("widgetAnimEditor: page got " + event.type + " on " + describe(event.target) +
+				" (page focused: " + document.hasFocus() + ", editor ready: " + !!state.editor + ")");
+		}
+		window.addEventListener("pointerdown", probe, true);
+		window.addEventListener("mousedown", probe, true);
+		window.addEventListener("keydown", probe, true);
+		window.addEventListener("focus", probe, true);
+	})();
+
 	// The error line's tint and its marker in the gutter.
 	var style = document.createElement("style");
 	style.textContent =

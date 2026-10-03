@@ -1,0 +1,42 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index fd73af7..4602ee6 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -19174,6 +19174,24 @@ void SWidgetAnimTimeline::DockScript()
+ 			TabManager = Instance->GetAssociatedTabManager();
+ 		}
+ 	}
++	// Else the editor the panel sits in: the nearest tab around it - the panel's own docked tab belongs to the
++	// editor's layout, and an editor's major tab hands out the layout inside it.
++	TSharedPtr<SWidget> Walk;
++	if (!TabManager.IsValid())
++	{
++		Walk = AsShared();
++	}
++	for (; Walk.IsValid(); Walk = Walk->GetParentWidget())
++	{
++		if (Walk->GetType() == FName(TEXT("SDockTab")))
++		{
++			const TSharedPtr<SDockTab> AroundTab = StaticCastSharedPtr<SDockTab>(Walk);
++			TabManager = AroundTab->GetTabRole() == ETabRole::MajorTab
++				? FGlobalTabmanager::Get()->GetTabManagerForMajorTab(AroundTab)
++				: AroundTab->GetTabManagerPtr();
++			break;
++		}
++	}
+ 
+ 	FName DockBeside;
+ 	for (const FName CandidateId : WidgetAnimScriptDock::DockBesideTabIds)
+@@ -19224,7 +19242,11 @@ void SWidgetAnimTimeline::DockScript()
+ 
+ 	// Placed: brought forward in its tab well, and the area under the Track Editor closed - only now, so a dock that
+ 	// didn't take never leaves the script nowhere. Not placed: a window after all.
+-	if (!Tab->GetParentWindow().IsValid())
++	// Asked of the tab manager, not of the tab's window: an asset editor's layout is restored with no parent window
++	// (its dock area lives inside the editor's major tab), so GetParentWindow() is null even for a tab sitting right
++	// beside Details - which is what sent every dock to a window. Inserting gave the tab its exact layout id.
++	const bool bPlaced = TabManager->FindExistingLiveTab(Tab->GetLayoutIdentifier()) == Tab || Tab->GetParentWindow().IsValid();
++	if (!bPlaced)
+ 	{
+ 		UE_LOG(LogWidgetAnimScriptDock, Warning, TEXT("Dock as Tab: the tab couldn't be placed beside %s - opening the script editor in a window instead."), *DockBeside.ToString());
+ 		Tab->RequestCloseTab();

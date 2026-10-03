@@ -491,6 +491,9 @@ namespace WidgetAnimScripting
 	/** Called by a panel the user is working in, so GetOpenAnimation finds it. */
 	void NotePanelUsed(const TSharedRef<SWidgetAnimTimeline>& Panel);
 
+	/** The panel showing Source that was worked in last - null when none is open. */
+	TSharedPtr<SWidgetAnimTimeline> FindLastUsedPanelFor(const IWidgetAnimPanelSource* Source);
+
 	/** Whether Python can run here: the Python Editor Script Plugin loaded and working. */
 	bool IsPythonAvailable();
 

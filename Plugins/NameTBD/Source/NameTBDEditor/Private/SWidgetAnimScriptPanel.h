@@ -94,12 +94,28 @@ class SWidgetAnimScriptPanel : public SCompoundWidget
 public:
 
 	SLATE_BEGIN_ARGS(SWidgetAnimScriptPanel)
-		: _InWindow(false)
+		: _InDrawer(false)
+		, _InWindow(false)
 		, _Docked(false)
 		{}
 
 		/** The panel the script runs on - its animation and what is selected in it. */
 		SLATE_ARGUMENT(TWeakPtr<SWidgetAnimTimeline>, Panel)
+
+		/**
+		 * In place of Panel, for an area that belongs to the editor rather than to one panel (the Widget Animation Scripting
+		 * drawer and its docked tab): asked for the panel each time one is needed, so it is whichever is there.
+		 */
+		SLATE_ARGUMENT(TFunction<TSharedPtr<SWidgetAnimTimeline>()>, FindPanel)
+
+		/** In the Widget Animation Scripting drawer: the dock button reads Dock in Layout, as on the editor's own drawers. */
+		SLATE_ARGUMENT(bool, InDrawer)
+
+		/**
+		 * Whose script this area shows - see MakeScriptKey. Each Widget Blueprint has a script of its own, kept between sessions;
+		 * every area with the same key shows the same one. Empty: the one shared script.
+		 */
+		SLATE_ARGUMENT(FString, ScriptKey)
 
 		/** What the close button does: hides the area, or closes its window. */
 		SLATE_EVENT(FSimpleDelegate, OnClose)
@@ -123,6 +139,9 @@ public:
 
 	void Construct(const FArguments& InArgs);
 	virtual ~SWidgetAnimScriptPanel() override;
+
+	/** The ScriptKey of the script that belongs to Asset (a Widget Blueprint): its package path. */
+	static FString MakeScriptKey(const UObject* Asset);
 
 	/** Runs the script on the panel's animation. */
 	void Run();
@@ -206,7 +225,13 @@ private:
 	/** The output in the colors of the theme now in force. */
 	void RefreshOutputStyles();
 
+	/** The panel the script runs on: Panel, else what FindPanel finds. */
+	TSharedPtr<SWidgetAnimTimeline> GetPanel() const;
+
 	TWeakPtr<SWidgetAnimTimeline> Panel;
+	TFunction<TSharedPtr<SWidgetAnimTimeline>()> FindPanel;
+	bool bInDrawer = false;
+	FString ScriptKey;
 	FSimpleDelegate OnClose;
 
 	TSharedPtr<SMultiLineEditableTextBox> CodeBox;

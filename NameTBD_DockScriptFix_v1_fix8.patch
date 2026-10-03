@@ -1,0 +1,109 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp
+index 19796a3..f23ad0d 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimScriptPanel.cpp
+@@ -17,6 +17,8 @@
+ #include "HAL/FileManager.h"
+ #include "HAL/PlatformTime.h"
+ #include "Misc/FileHelper.h"
++#include "Misc/CoreDelegates.h"
++#include "Containers/Ticker.h"
+ #include "Misc/MessageDialog.h"
+ #include "HAL/PlatformProcess.h"
+ #include "Widgets/Input/SEditableTextBox.h"
+@@ -70,12 +72,75 @@ namespace WidgetAnimScriptPanelImpl
+ 	{
+ 		TOptional<FString> Script;
+ 		uint32 Revision = 1;
++
++		/** Changed since it was last written to disk, and when. */
++		bool bUnsaved = false;
++		double ChangedAt = 0.0;
+ 	};
+ 
+-	FSessionScript& GetSession(const FString& Key)
++	TMap<FString, FSessionScript>& GetSessions()
+ 	{
+ 		static TMap<FString, FSessionScript> Sessions;
+-		return Sessions.FindOrAdd(Key);
++		return Sessions;
++	}
++
++	FSessionScript& GetSession(const FString& Key)
++	{
++		return GetSessions().FindOrAdd(Key);
++	}
++
++	FString GetScriptFilePath(const FString& Key);
++
++	void WriteSession(const FString& Key, FSessionScript& Session)
++	{
++		if (!Session.Script.IsSet())
++		{
++			return;
++		}
++		const FString Path = GetScriptFilePath(Key);
++		IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), /*Tree=*/true);
++		FFileHelper::SaveStringToFile(Session.Script.GetValue(), *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
++		Session.bUnsaved = false;
++	}
++
++	/** Writes every script changed since it was last written - all of them, or only those left alone for a moment. */
++	void FlushSessions(bool bAll)
++	{
++		const double Now = FPlatformTime::Seconds();
++		for (TPair<FString, FSessionScript>& Pair : GetSessions())
++		{
++			if (Pair.Value.bUnsaved && (bAll || Now - Pair.Value.ChangedAt > 0.75))
++			{
++				WriteSession(Pair.Key, Pair.Value);
++			}
++		}
++	}
++
++	/**
++	 * A script changed: written to disk shortly after typing stops, and before the editor exits. Saving can't wait for its Script
++	 * area to close - the drawer's and the docked tab's live as long as their editor, and a closed editor's past the point an exit
++	 * would still write them.
++	 */
++	void NoteSessionChanged(const FString& Key)
++	{
++		FSessionScript& Session = GetSession(Key);
++		Session.bUnsaved = true;
++		Session.ChangedAt = FPlatformTime::Seconds();
++
++		static FTSTicker::FDelegateHandle TickerHandle;
++		if (!TickerHandle.IsValid())
++		{
++			TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float) -> bool
++			{
++				FlushSessions(/*bAll=*/false);
++				return true;
++			}), 0.5f);
++			FCoreDelegates::OnEnginePreExit.AddLambda([]()
++			{
++				FlushSessions(/*bAll=*/true);
++				FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
++			});
++		}
+ 	}
+ 
+ 	TOptional<FString>& GetSessionScript(const FString& Key)
+@@ -1379,6 +1444,9 @@ EActiveTimerReturnType SWidgetAnimScriptPanel::SyncCodeEditor(double InCurrentTi
+ {
+ 	using namespace WidgetAnimScriptPanelImpl;
+ 
++	// Your functions, written as they are edited - like the script (see NoteSessionChanged).
++	SaveFunctions();
++
+ 	const TSharedPtr<SWidgetAnimTimeline> Pinned = GetPanel();
+ 	IWidgetAnimPanelSource* Source = Pinned.IsValid() ? Pinned->GetSource() : nullptr;
+ 	if (!CodeEditor.IsValid() || !Source)
+@@ -1431,6 +1499,7 @@ void SWidgetAnimScriptPanel::PublishScript(const FString& Script)
+ 
+ 	GetSessionScript(ScriptKey) = Script;
+ 	SeenScriptRevision = ++GetSessionRevision(ScriptKey);
++	NoteSessionChanged(ScriptKey);
+ }
+ 
+ EActiveTimerReturnType SWidgetAnimScriptPanel::SyncFromSession(double InCurrentTime, float InDeltaTime)

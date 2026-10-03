@@ -1,0 +1,203 @@
+diff --git a/Plugins/NameTBD/Resources/ScriptEditor/script_editor.js b/Plugins/NameTBD/Resources/ScriptEditor/script_editor.js
+index f216e18..b2cddc8 100644
+--- a/Plugins/NameTBD/Resources/ScriptEditor/script_editor.js
++++ b/Plugins/NameTBD/Resources/ScriptEditor/script_editor.js
+@@ -699,6 +699,31 @@
+ 		}
+ 	};
+ 
++	// Input probe: the first few clicks, keys and focus changes the page receives, written to its console - which Unreal puts in
++	// the Output Log (LogWidgetAnimScriptEditor). Set against Unreal's own "a click reached it" lines, it says whether input
++	// stops before the page or inside it.
++	(function probeInput() {
++		var logged = { pointerdown: 0, mousedown: 0, keydown: 0, focus: 0 };
++		function describe(target) {
++			if (!target || !target.tagName) {
++				return String(target);
++			}
++			return target.tagName.toLowerCase() + (target.className && typeof target.className === "string" ? "." + target.className.split(" ").join(".") : "");
++		}
++		function probe(event) {
++			if (logged[event.type] >= 3) {
++				return;
++			}
++			logged[event.type]++;
++			console.log("widgetAnimEditor: page got " + event.type + " on " + describe(event.target) +
++				" (page focused: " + document.hasFocus() + ", editor ready: " + !!state.editor + ")");
++		}
++		window.addEventListener("pointerdown", probe, true);
++		window.addEventListener("mousedown", probe, true);
++		window.addEventListener("keydown", probe, true);
++		window.addEventListener("focus", probe, true);
++	})();
++
+ 	// The error line's tint and its marker in the gutter.
+ 	var style = document.createElement("style");
+ 	style.textContent =
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp
+index 2e08516..c98c597 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp
+@@ -198,6 +198,18 @@ void SWidgetAnimMonacoEditor::Construct(const FArguments& InArgs)
+ 		.BackgroundColor(Background)
+ 		.BrowserFrameRate(60)
+ 		.OnLoadError_Lambda([this]() { OnPageFailed(TEXT("the page couldn't load")); })
++		// The page's console in the Output Log: script errors, and the input probe in script_editor.js.
++		.OnConsoleMessage_Lambda([](const FString& Message, const FString& Source, int32 Line, EWebBrowserConsoleLogSeverity Severity)
++		{
++			if (Severity == EWebBrowserConsoleLogSeverity::Error || Severity == EWebBrowserConsoleLogSeverity::Fatal)
++			{
++				UE_LOG(LogWidgetAnimScriptEditor, Warning, TEXT("Code editor page: %s (%s:%d)"), *Message, *FPaths::GetCleanFilename(Source), Line);
++			}
++			else
++			{
++				UE_LOG(LogWidgetAnimScriptEditor, Log, TEXT("Code editor page: %s"), *Message);
++			}
++		})
+ 	];
+ 
+ 	// Bound for good, so it is there on the page however soon the page asks for it.
+@@ -227,6 +239,19 @@ SWidgetAnimMonacoEditor::~SWidgetAnimMonacoEditor()
+ 	}
+ }
+ 
++FReply SWidgetAnimMonacoEditor::OnPreviewMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
++{
++	// Whether Slate brings clicks here at all, and in what state - set against the page's own log of what it receives, it
++	// says on which side input stops. Only the first few, and the click goes on to the browser untouched.
++	if (LoggedClicks < 3)
++	{
++		++LoggedClicks;
++		UE_LOG(LogWidgetAnimScriptEditor, Log, TEXT("Code editor: a click reached it (enabled %d, page ready %d, focus inside %d)."),
++			IsEnabled() ? 1 : 0, bReady ? 1 : 0, HasAnyUserFocusOrFocusedDescendants() ? 1 : 0);
++	}
++	return FReply::Unhandled();
++}
++
+ EActiveTimerReturnType SWidgetAnimMonacoEditor::WaitForPage(double InCurrentTime, float InDeltaTime)
+ {
+ 	if (bReady || bFailed)
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.h
+index 028a013..1469bb0 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.h
+@@ -99,6 +99,9 @@ public:
+ 
+ 	FString GetText() const { return Text; }
+ 
++	// SWidget: only watched, to log whether clicks reach the code editor at all (see the .cpp).
++	virtual FReply OnPreviewMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
++
+ 	/** Replaces the text. bUndoable: as one edit Ctrl+Z takes back (a snippet picked), rather than a fresh start. */
+ 	void SetText(const FString& NewText, bool bUndoable);
+ 
+@@ -120,6 +123,9 @@ public:
+ 
+ private:
+ 
++	/** Clicks logged so far - only the first few are, so the log shows whether input arrives without filling up. */
++	int32 LoggedClicks = 0;
++
+ 	/** The page's index.html, as a file:// URL. */
+ 	static FString GetPageUrl();
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp
+index fff2cae..b86a04d 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimBuilderToolbar.cpp
+@@ -136,6 +136,13 @@ namespace
+ 
+ 		/** The Widget Animation Scripting drawer's script area, once built - kept for the editor's life, like the panel. */
+ 		TSharedRef<TSharedPtr<SWidget>> ScriptingDrawerContent = MakeShared<TSharedPtr<SWidget>>();
++
++		/**
++		 * Whether Dock in Layout was used in this editor. Every Widget Blueprint editor shares one saved layout, so a scripting
++		 * tab left open in one is restored into all of them; an editor that never docked it closes it again (see
++		 * MakeScriptingTabBody).
++		 */
++		bool bScriptingDocked = false;
+ 	};
+ 
+ 	TArray<FEditorWidgetAnimations>& GetEditorsWithDrawer()
+@@ -574,29 +581,55 @@ namespace
+ 		return Targets;
+ 	}
+ 
++	TSharedPtr<SDockTab> FindLiveScriptingTab(const TSharedPtr<FTabManager>& TabManager);
++
++	/** Whether Dock in Layout was used in this editor - see FEditorWidgetAnimations::bScriptingDocked. */
++	bool WasScriptingDocked(const TSharedPtr<FAssetEditorToolkit>& Toolkit)
++	{
++		const FEditorWidgetAnimations* Entry = GetEditorsWithDrawer().FindByPredicate([&Toolkit](const FEditorWidgetAnimations& Candidate)
++		{
++			return Candidate.Toolkit.Pin() == Toolkit;
++		});
++		return Entry && Entry->bScriptingDocked;
++	}
++
++	/** Closes this editor's scripting tab, wherever it is. */
++	void CloseScriptingTab(const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
++	{
++		const TSharedPtr<FAssetEditorToolkit> Toolkit = WeakToolkit.Pin();
++		if (const TSharedPtr<SDockTab> Live = Toolkit.IsValid() ? FindLiveScriptingTab(Toolkit->GetTabManager()) : nullptr)
++		{
++			Live->RequestCloseTab();
++		}
++	}
++
+ 	/**
+-	 * The script area for a tab: the output under the code, and its close button closes whichever tab holds it - the one
+-	 * docked beside Details or the one the Window menu opens.
++	 * The script area for a tab: the output under the code, and its close button closes the tab - the one docked beside Details
++	 * or the one the Window menu opens. (Asked of the tab manager: a tab's content isn't inside the tab widget, so the tab
++	 * can't be found by walking up from it.)
++	 *
++	 * The saved layout is shared by every Widget Blueprint editor, so a scripting tab docked in one comes back open in every
++	 * other one opened after it. Such a tab - in an editor where Dock in Layout was never used - closes itself on the next
++	 * frame, once it is in place.
+ 	 */
+ 	TSharedRef<SWidget> MakeScriptingTabBody(const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
+ 	{
+-		const TSharedRef<TWeakPtr<SWidget>> Self = MakeShared<TWeakPtr<SWidget>>();
+-		const TSharedRef<SWidget> Body = SNew(SWidgetAnimScriptPanel)
+-			.FindPanel([WeakToolkit]() { return FindScriptedPanel(WeakToolkit); })
+-			.Docked(true)
+-			.OnClose_Lambda([Self]()
++		if (!WasScriptingDocked(WeakToolkit.Pin()))
++		{
++			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakToolkit](float) -> bool
+ 			{
+-				for (TSharedPtr<SWidget> Walk = Self->Pin(); Walk.IsValid(); Walk = Walk->GetParentWidget())
++				if (!WasScriptingDocked(WeakToolkit.Pin()))
+ 				{
+-					if (Walk->GetType() == FName(TEXT("SDockTab")))
+-					{
+-						StaticCastSharedPtr<SDockTab>(Walk)->RequestCloseTab();
+-						return;
+-					}
++					CloseScriptingTab(WeakToolkit);
+ 				}
+-			});
+-		*Self = Body;
+-		return Body;
++				return false;
++			}));
++		}
++
++		return SNew(SWidgetAnimScriptPanel)
++			.FindPanel([WeakToolkit]() { return FindScriptedPanel(WeakToolkit); })
++			.Docked(true)
++			.OnClose_Lambda([WeakToolkit]() { CloseScriptingTab(WeakToolkit); });
+ 	}
+ 
+ 	TSharedRef<SDockTab> MakeScriptingTab(const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
+@@ -686,6 +719,9 @@ namespace
+ 			StatusBars->ForceDismissDrawer();
+ 		}
+ 
++		// This editor's from now on: a tab the layout restores here stays (see MakeScriptingTabBody).
++		FindOrAddEditor(Toolkit.ToSharedRef()).bScriptingDocked = true;
++
+ 		EnsureScriptingTabSpawner(TabManager, WeakToolkit);
+ 
+ 		auto BringForward = [](const TSharedRef<SDockTab>& Tab)

@@ -1,0 +1,208 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 4602ee6..4188ee4 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -19134,10 +19134,123 @@ namespace WidgetAnimScriptDock
+ 	const FName ScriptDockedTabId(TEXT("WidgetAnimBuilder.ScriptDocked"));
+ 
+ 	/**
+-	 * What it is docked beside: the first of these that is open - the Widget Blueprint Designer's Details, the Graph's, then
+-	 * the Details tabs other asset editors use.
++	 * The ids Details tabs go by - the Widget Blueprint Designer's, the Graph's, then other asset editors'. Only a tie-break
++	 * now: the tab is found by looking at the tabs actually on screen (see FindDetailsTab), so a different id in this engine
++	 * version doesn't stop the dock.
+ 	 */
+ 	const FName DockBesideTabIds[] = { TEXT("WidgetDetails"), TEXT("Inspector"), TEXT("DetailsTab"), TEXT("Details"), TEXT("PropertiesTab") };
++
++	/**
++	 * Hands the tab manager the very tab to dock beside, rather than an id for it to look up: an id search that misses
++	 * makes the tab manager float the new tab in a window of its own, which is exactly what docking is meant to avoid.
++	 */
++	class FBesideTab : public FTabManager::FSearchPreference
++	{
++	public:
++		explicit FBesideTab(const TSharedRef<SDockTab>& InBeside) : Beside(InBeside) {}
++
++		virtual TSharedPtr<SDockTab> Search(const FTabManager& Manager, FName PlaceholderId, const TSharedRef<SDockTab>& UnmanagedTab) const override
++		{
++			return Beside;
++		}
++
++	private:
++		TSharedRef<SDockTab> Beside;
++	};
++
++	/** Every tab in a widget tree. Tabs are their wells' children, so a Details tab behind another in its well is found too. */
++	void GatherTabs(const TSharedRef<SWidget>& Widget, TArray<TSharedRef<SDockTab>>& OutTabs, int32 Depth)
++	{
++		if (Depth > 256)
++		{
++			return;
++		}
++		if (Widget->GetType() == FName(TEXT("SDockTab")))
++		{
++			OutTabs.Add(StaticCastSharedRef<SDockTab>(Widget));
++		}
++		if (FChildren* Children = Widget->GetChildren())
++		{
++			for (int32 ChildIndex = 0; ChildIndex < Children->Num(); ++ChildIndex)
++			{
++				GatherTabs(Children->GetChildAt(ChildIndex), OutTabs, Depth + 1);
++			}
++		}
++	}
++
++	void GatherWindows(const TSharedRef<SWindow>& Window, TArray<TSharedRef<SWindow>>& OutWindows)
++	{
++		OutWindows.Add(Window);
++		for (const TSharedRef<SWindow>& Child : Window->GetChildWindows())
++		{
++			GatherWindows(Child, OutWindows);
++		}
++	}
++
++	/** -1 when the tab isn't a Details tab, else where its id falls in DockBesideTabIds (past the end for one only labeled so). */
++	int32 GetDetailsRank(const TSharedRef<SDockTab>& Tab)
++	{
++		if (Tab->GetTabRole() == ETabRole::MajorTab || Tab->GetLayoutIdentifier().TabType == ScriptDockedTabId)
++		{
++			return -1;
++		}
++		const FName TabType = Tab->GetLayoutIdentifier().TabType;
++		const int32 NumIds = static_cast<int32>(UE_ARRAY_COUNT(DockBesideTabIds));
++		for (int32 IdIndex = 0; IdIndex < NumIds; ++IdIndex)
++		{
++			if (TabType == DockBesideTabIds[IdIndex])
++			{
++				return IdIndex;
++			}
++		}
++		const FString TypeString = TabType.ToString();
++		if (TypeString.Contains(TEXT("Details")) || TypeString.Contains(TEXT("Inspector")) || Tab->GetTabLabel().ToString().Equals(TEXT("Details")))
++		{
++			return NumIds;
++		}
++		return -1;
++	}
++
++	/**
++	 * The Details tab of the editor the panel belongs to: one of that editor's own tabs if any (its tab manager is known),
++	 * else one in the panel's own window - never a Details tab of some other editor in another window.
++	 */
++	TSharedPtr<SDockTab> FindDetailsTab(const TSharedPtr<FTabManager>& EditorTabManager, const TSharedPtr<SWindow>& PanelWindow)
++	{
++		TArray<TSharedRef<SWindow>> Windows;
++		for (const TSharedRef<SWindow>& TopLevel : FSlateApplication::Get().GetTopLevelWindows())
++		{
++			GatherWindows(TopLevel, Windows);
++		}
++
++		TSharedPtr<SDockTab> Best;
++		int32 BestScore = 0;
++		for (const TSharedRef<SWindow>& Window : Windows)
++		{
++			TArray<TSharedRef<SDockTab>> Tabs;
++			GatherTabs(Window, Tabs, 0);
++			for (const TSharedRef<SDockTab>& Tab : Tabs)
++			{
++				const int32 Rank = GetDetailsRank(Tab);
++				if (Rank < 0)
++				{
++					continue;
++				}
++				const bool bEditorsOwn = EditorTabManager.IsValid() && Tab->GetTabManagerPtr() == EditorTabManager;
++				const bool bInPanelWindow = PanelWindow.IsValid() && Window == PanelWindow;
++				// Owner first, then window, then the id's place in the list.
++				const int32 Score = (bEditorsOwn ? 2000 : 0) + (bInPanelWindow ? 1000 : 0) + (100 - Rank);
++				UE_LOG(LogWidgetAnimScriptDock, Log, TEXT("Dock as Tab: candidate '%s' (%s)%s%s"), *Tab->GetTabLabel().ToString(),
++					*Tab->GetLayoutIdentifier().ToString(), bEditorsOwn ? TEXT(", this editor's") : TEXT(""), bInPanelWindow ? TEXT(", in the panel's window") : TEXT(""));
++				if ((bEditorsOwn || bInPanelWindow) && Score > BestScore)
++				{
++					Best = Tab;
++					BestScore = Score;
++				}
++			}
++		}
++		return Best;
++	}
+ }
+ 
+ void SWidgetAnimTimeline::DockScript()
+@@ -19193,24 +19306,31 @@ void SWidgetAnimTimeline::DockScript()
+ 		}
+ 	}
+ 
+-	FName DockBeside;
+-	for (const FName CandidateId : WidgetAnimScriptDock::DockBesideTabIds)
++	// The Details tab itself, found among the tabs on screen rather than asked for by id.
++	const TSharedPtr<SWindow> PanelWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
++	TSharedPtr<SDockTab> DetailsTab = WidgetAnimScriptDock::FindDetailsTab(TabManager, PanelWindow);
++	if (!DetailsTab.IsValid() && TabManager.IsValid())
+ 	{
+-		if (TabManager.IsValid() && TabManager->FindExistingLiveTab(FTabId(CandidateId)).IsValid())
++		for (const FName CandidateId : WidgetAnimScriptDock::DockBesideTabIds)
+ 		{
+-			DockBeside = CandidateId;
+-			break;
++			DetailsTab = TabManager->FindExistingLiveTab(FTabId(CandidateId));
++			if (DetailsTab.IsValid())
++			{
++				break;
++			}
+ 		}
+ 	}
++	const TSharedPtr<FTabManager> DockManager = DetailsTab.IsValid() && DetailsTab->GetTabManagerPtr().IsValid() ? DetailsTab->GetTabManagerPtr() : TabManager;
+ 
+ 	// Nothing to dock beside: a window of its own, which can be dragged anywhere.
+-	if (DockBeside.IsNone())
++	if (!DetailsTab.IsValid() || !DockManager.IsValid())
+ 	{
+-		UE_LOG(LogWidgetAnimScriptDock, Log, TEXT("Dock as Tab: %s - opening the script editor in a window instead."),
+-			TabManager.IsValid() ? TEXT("no Details tab is open in this editor") : TEXT("no editor tab manager was found for the panel"));
++		UE_LOG(LogWidgetAnimScriptDock, Warning, TEXT("Dock as Tab: %s - opening the script editor in a window instead."),
++			TabManager.IsValid() ? TEXT("no Details tab was found in this editor") : TEXT("no editor tab manager was found for the panel, and no Details tab in its window"));
+ 		OpenScriptWindow();
+ 		return;
+ 	}
++	const FString BesideName = DetailsTab->GetLayoutIdentifier().ToString();
+ 
+ 	// Out from under the Track Editor, and out of its window - the script goes with it, being one for the session.
+ 	if (const TSharedPtr<SWindow> Window = ScriptWindow.Pin())
+@@ -19238,17 +19358,18 @@ void SWidgetAnimTimeline::DockScript()
+ 			}
+ 		}));
+ 
+-	TabManager->InsertNewDocumentTab(WidgetAnimScriptDock::ScriptDockedTabId, FTabManager::FLiveTabSearch(DockBeside), Tab);
++	DockManager->InsertNewDocumentTab(WidgetAnimScriptDock::ScriptDockedTabId, WidgetAnimScriptDock::FBesideTab(DetailsTab.ToSharedRef()), Tab);
+ 
+ 	// Placed: brought forward in its tab well, and the area under the Track Editor closed - only now, so a dock that
+-	// didn't take never leaves the script nowhere. Not placed: a window after all.
+-	// Asked of the tab manager, not of the tab's window: an asset editor's layout is restored with no parent window
+-	// (its dock area lives inside the editor's major tab), so GetParentWindow() is null even for a tab sitting right
+-	// beside Details - which is what sent every dock to a window. Inserting gave the tab its exact layout id.
+-	const bool bPlaced = TabManager->FindExistingLiveTab(Tab->GetLayoutIdentifier()) == Tab || Tab->GetParentWindow().IsValid();
++	// didn't take never leaves the script nowhere. Not placed: a window after all. Asked of the tab's well and the tab
++	// manager, not the tab's window: an asset editor's layout is restored with no parent window, so GetParentWindow()
++	// is null even for a tab sitting right beside Details.
++	const TSharedPtr<SWidget> TabWell = Tab->GetParentWidget();
++	const bool bPlaced = (TabWell.IsValid() && TabWell == DetailsTab->GetParentWidget())
++		|| DockManager->FindExistingLiveTab(Tab->GetLayoutIdentifier()) == Tab;
+ 	if (!bPlaced)
+ 	{
+-		UE_LOG(LogWidgetAnimScriptDock, Warning, TEXT("Dock as Tab: the tab couldn't be placed beside %s - opening the script editor in a window instead."), *DockBeside.ToString());
++		UE_LOG(LogWidgetAnimScriptDock, Warning, TEXT("Dock as Tab: the tab couldn't be placed beside %s - opening the script editor in a window instead."), *BesideName);
+ 		Tab->RequestCloseTab();
+ 		OpenScriptWindow();
+ 		return;
+@@ -19256,9 +19377,9 @@ void SWidgetAnimTimeline::DockScript()
+ 
+ 	SetScriptOpen(false);
+ 	Tab->ActivateInParent(ETabActivationCause::SetDirectly);
+-	TabManager->DrawAttention(Tab);
++	DockManager->DrawAttention(Tab);
+ 	ScriptTab = Tab;
+-	UE_LOG(LogWidgetAnimScriptDock, Log, TEXT("Dock as Tab: docked beside %s."), *DockBeside.ToString());
++	UE_LOG(LogWidgetAnimScriptDock, Log, TEXT("Dock as Tab: docked beside %s."), *BesideName);
+ }
+ 
+ void SWidgetAnimTimeline::OnScriptRan(int32 TracksBefore, int32 TracksAfter, int32 GroupsBefore, int32 GroupsAfter)

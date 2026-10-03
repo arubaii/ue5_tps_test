@@ -11,6 +11,7 @@
 #include "Interfaces/IPluginManager.h"
 #include "Misc/Paths.h"
 #include "SWebBrowser.h"
+#include "IWebBrowserWindow.h"   // EWebBrowserConsoleLogSeverity (SWebBrowser.h only declares it)
 #include "UObject/Package.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimScriptEditor, Log, All);
@@ -198,6 +199,18 @@ void SWidgetAnimMonacoEditor::Construct(const FArguments& InArgs)
 		.BackgroundColor(Background)
 		.BrowserFrameRate(60)
 		.OnLoadError_Lambda([this]() { OnPageFailed(TEXT("the page couldn't load")); })
+		// The page's console in the Output Log: script errors, and the input probe in script_editor.js.
+		.OnConsoleMessage_Lambda([](const FString& Message, const FString& Source, int32 Line, EWebBrowserConsoleLogSeverity Severity)
+		{
+			if (Severity == EWebBrowserConsoleLogSeverity::Error || Severity == EWebBrowserConsoleLogSeverity::Fatal)
+			{
+				UE_LOG(LogWidgetAnimScriptEditor, Warning, TEXT("Code editor page: %s (%s:%d)"), *Message, *FPaths::GetCleanFilename(Source), Line);
+			}
+			else
+			{
+				UE_LOG(LogWidgetAnimScriptEditor, Log, TEXT("Code editor page: %s"), *Message);
+			}
+		})
 	];
 
 	// Bound for good, so it is there on the page however soon the page asks for it.
@@ -225,6 +238,19 @@ SWidgetAnimMonacoEditor::~SWidgetAnimMonacoEditor()
 			Browser->UnbindUObject(TEXT("scripteditor"), Bridge.Get(), /*bIsPermanent=*/true);
 		}
 	}
+}
+
+FReply SWidgetAnimMonacoEditor::OnPreviewMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	// Whether Slate brings clicks here at all, and in what state - set against the page's own log of what it receives, it
+	// says on which side input stops. Only the first few, and the click goes on to the browser untouched.
+	if (LoggedClicks < 3)
+	{
+		++LoggedClicks;
+		UE_LOG(LogWidgetAnimScriptEditor, Log, TEXT("Code editor: a click reached it (enabled %d, page ready %d, focus inside %d)."),
+			IsEnabled() ? 1 : 0, bReady ? 1 : 0, HasAnyUserFocusOrFocusedDescendants() ? 1 : 0);
+	}
+	return FReply::Unhandled();
 }
 
 EActiveTimerReturnType SWidgetAnimMonacoEditor::WaitForPage(double InCurrentTime, float InDeltaTime)

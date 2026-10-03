@@ -247,11 +247,15 @@ public:
 	bool IsScriptWindowOpen() const { return ScriptWindow.IsValid(); }
 
 	/**
-	 * The Script area as a tab of the editor's layout - put beside the Details panel, with its output under the code - or
-	 * that tab brought forward. Without a Details panel to dock beside, it opens in a window of its own instead.
+	 * The Script area docked in the editor's layout - the Widget Animation Scripting drawer's tab, beside the Details panel,
+	 * with its output under the code (see FWidgetAnimBuilderToolbar::DockScripting) - or that tab brought forward. Outside a
+	 * Widget Blueprint editor it opens in a window of its own instead.
 	 */
 	void DockScript();
-	bool IsScriptDocked() const { return ScriptTab.IsValid(); }
+	bool IsScriptDocked() const;
+
+	/** Whose script the panel's Script area shows: its Widget Blueprint's (see SWidgetAnimScriptPanel::MakeScriptKey). */
+	FString GetScriptKey() const;
 
 	/**
 	 * A script just ran on the animation (see WidgetAnimScripting::RunPanelScript): the list, the Track Editor and the
@@ -1238,9 +1242,6 @@ private:
 	/** Whether the Script area is open - see IsScriptOpen - and its window, while it is in one. */
 	bool bScriptOpen = false;
 	TWeakPtr<SWindow> ScriptWindow;
-
-	/** The Script area's tab, while it is docked - see DockScript. */
-	TWeakPtr<class SDockTab> ScriptTab;
 
 	/** How many lines at the top are pinned tracks' - see FTrackLine::bPinned. */
 	int32 NumPinnedLines = 0;

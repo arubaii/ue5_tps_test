@@ -4,12 +4,16 @@
 
 #include "CoreMinimal.h"
 
+class SDockTab;
+class UWidgetBlueprint;
+
 /**
  * The per-editor hook for the Widget Animations panel, and for the selected widget's preview controls. The
  * class keeps its old name so the module's startup code calling Register() needs no change.
  *
  * Extends the Widget Blueprint editor's toolbar with a dynamic entry that runs once per editor window, and
  * for every Widget Blueprint's editor adds a Widget Animations drawer to the status bar, beside Animations,
+ * and a Widget Animation Scripting drawer after it (the panel's Script area, docking beside the Details panel),
  * holding SWidgetAnimTimeline, and registers the tab its Dock in Layout button opens - through UMG's own tab
  * and layout hooks, so the tab is one of the Widget Blueprint editor's and docks beside Animations. In a
  * WidgetAnimationBuilder the panel builds a generic animation on the builder's working copy; in any other
@@ -37,4 +41,13 @@ public:
 	 * module can be unloaded while the editor runs; the toolbar extension is cleaned up by UToolMenus itself.
 	 */
 	static void Unregister();
+
+	/**
+	 * Docks the Widget Blueprint's editor's Widget Animation Scripting tab beside its Details panel - or brings it forward,
+	 * open already. Null when the Widget Blueprint has no editor open, or the tab couldn't be placed.
+	 */
+	static TSharedPtr<SDockTab> DockScripting(const UWidgetBlueprint* WidgetBlueprint);
+
+	/** Whether the Widget Blueprint's editor has its Widget Animation Scripting tab open. */
+	static bool IsScriptingDocked(const UWidgetBlueprint* WidgetBlueprint);
 };

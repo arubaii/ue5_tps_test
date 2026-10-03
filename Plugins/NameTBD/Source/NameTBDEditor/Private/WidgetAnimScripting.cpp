@@ -3240,6 +3240,22 @@ namespace WidgetAnimScripting
 		Panels.Add(TWeakPtr<SWidgetAnimTimeline>(Panel));
 	}
 
+	TSharedPtr<SWidgetAnimTimeline> FindLastUsedPanelFor(const IWidgetAnimPanelSource* Source)
+	{
+		TArray<TWeakPtr<SWidgetAnimTimeline>>& Panels = GetUsedPanels();
+		for (int32 Index = Panels.Num() - 1; Index >= 0; --Index)
+		{
+			if (const TSharedPtr<SWidgetAnimTimeline> Pinned = Panels[Index].Pin())
+			{
+				if (Source && Pinned->GetSource() == Source)
+				{
+					return Pinned;
+				}
+			}
+		}
+		return nullptr;
+	}
+
 	TSharedPtr<SWidgetAnimTimeline> FindLastUsedPanel()
 	{
 		TArray<TWeakPtr<SWidgetAnimTimeline>>& Panels = GetUsedPanels();

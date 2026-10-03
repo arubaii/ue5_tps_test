@@ -99,6 +99,9 @@ public:
 
 	FString GetText() const { return Text; }
 
+	// SWidget: only watched, to log whether clicks reach the code editor at all (see the .cpp).
+	virtual FReply OnPreviewMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+
 	/** Replaces the text. bUndoable: as one edit Ctrl+Z takes back (a snippet picked), rather than a fresh start. */
 	void SetText(const FString& NewText, bool bUndoable);
 
@@ -119,6 +122,9 @@ public:
 	int32 GetCursorColumn() const { return CursorColumn; }
 
 private:
+
+	/** Clicks logged so far - only the first few are, so the log shows whether input arrives without filling up. */
+	int32 LoggedClicks = 0;
 
 	/** The page's index.html, as a file:// URL. */
 	static FString GetPageUrl();

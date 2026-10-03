@@ -9,6 +9,7 @@
 #include "WidgetAnimPanelSource.h"
 #include "WidgetAnimScripting.h"
 #include "WidgetAnimTrackPresets.h"
+#include "WidgetAnimBuilderToolbar.h"
 #include "SWidgetAnimScriptPanel.h"
 
 #include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
@@ -6076,14 +6077,11 @@ SWidgetAnimTimeline::~SWidgetAnimTimeline()
 	// A pick waiting in the designer stops watching the mouse.
 	EndTargetPick(/*bReleaseMouse=*/false);
 
-	// The Script area's window - or tab - goes with the panel it scripts.
+	// The Script area's window goes with the panel it scripts. A docked tab stays: it belongs to the editor, and finds
+	// whichever panel is there to run on.
 	if (const TSharedPtr<SWindow> Window = ScriptWindow.Pin())
 	{
 		Window->RequestDestroyWindow();
-	}
-	if (const TSharedPtr<SDockTab> Tab = ScriptTab.Pin())
-	{
-		Tab->RequestCloseTab();
 	}
 
 	// A collapsed track open on its own leaves every track playing again once the panel goes.
@@ -6494,8 +6492,8 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 								[
 									SNew(SWidgetAnimScriptPanel)
 									.Panel(WeakThisPtr)
+									.ScriptKey(GetScriptKey())
 									.OnClose_Lambda([this]() { SetScriptOpen(false); })
-									.OnPopOut_Lambda([this]() { OpenScriptWindow(); })
 									.OnDock_Lambda([this]() { DockScript(); })
 								]
 							]
@@ -19105,6 +19103,7 @@ void SWidgetAnimTimeline::OpenScriptWindow()
 	Window->SetContent(
 		SNew(SWidgetAnimScriptPanel)
 		.Panel(SharedThis(this))
+		.ScriptKey(GetScriptKey())
 		.InWindow(true)
 		.OnClose_Lambda([WeakWindow]()
 		{
@@ -19128,115 +19127,44 @@ void SWidgetAnimTimeline::OpenScriptWindow()
 	ScriptWindow = Window;
 }
 
-namespace WidgetAnimScriptDock
+FString SWidgetAnimTimeline::GetScriptKey() const
 {
-	/** The id the docked Script area is given. Without a spawner, deliberately: a tab can only be put beside another under such an id. */
-	const FName ScriptDockedTabId(TEXT("WidgetAnimBuilder.ScriptDocked"));
+	// The Widget Blueprint the panel is part of, so its scripts are that widget's - else whatever the panel edits.
+	if (!Source.IsValid())
+	{
+		return FString();
+	}
+	if (const UWidgetBlueprint* Blueprint = Source->GetWidgetBlueprint())
+	{
+		return SWidgetAnimScriptPanel::MakeScriptKey(Blueprint);
+	}
+	return SWidgetAnimScriptPanel::MakeScriptKey(Source->GetEditedObject());
+}
 
-	/**
-	 * What it is docked beside: the first of these that is open - the Widget Blueprint Designer's Details, the Graph's, then
-	 * the Details tabs other asset editors use.
-	 */
-	const FName DockBesideTabIds[] = { TEXT("WidgetDetails"), TEXT("Inspector"), TEXT("DetailsTab"), TEXT("Details"), TEXT("PropertiesTab") };
+bool SWidgetAnimTimeline::IsScriptDocked() const
+{
+	return FWidgetAnimBuilderToolbar::IsScriptingDocked(Source.IsValid() ? Source->GetWidgetBlueprint() : nullptr);
 }
 
 void SWidgetAnimTimeline::DockScript()
 {
-	if (const TSharedPtr<SDockTab> Existing = ScriptTab.Pin())
+	// Docked by the editor, not by the panel: the Widget Animation Scripting drawer's tab, the one Dock in Layout opens from
+	// the drawer too. It finds the panel it runs on for itself, so it is the same tab whichever Script area docked it.
+	if (FWidgetAnimBuilderToolbar::DockScripting(Source.IsValid() ? Source->GetWidgetBlueprint() : nullptr))
 	{
-		Existing->ActivateInParent(ETabActivationCause::SetDirectly);
-		if (const TSharedPtr<FTabManager> ExistingManager = Existing->GetTabManagerPtr())
+		// Out from under the Track Editor, and out of its window - the script goes with it, being one for the session.
+		if (const TSharedPtr<SWindow> Window = ScriptWindow.Pin())
 		{
-			ExistingManager->DrawAttention(Existing.ToSharedRef());
+			Window->RequestDestroyWindow();
+			ScriptWindow.Reset();
 		}
+		SetScriptOpen(false);
 		return;
 	}
 
-	// The drawer first, as the panel's own Dock in Layout does: it slides up over the editor, and a tab opened while it
-	// is up can look as if nothing happened at all.
-	if (UStatusBarSubsystem* StatusBars = GEditor ? GEditor->GetEditorSubsystem<UStatusBarSubsystem>() : nullptr)
-	{
-		StatusBars->ForceDismissDrawer();
-	}
-
-	// The editor the panel is part of: the Widget Blueprint's, else whichever editor has the edited asset open.
-	TSharedPtr<FTabManager> TabManager;
-	if (FWidgetBlueprintEditor* BlueprintEditor = FindWidgetBlueprintEditor())
-	{
-		TabManager = BlueprintEditor->GetTabManager();
-	}
-	if (!TabManager.IsValid())
-	{
-		UObject* Edited = Source.IsValid() ? Source->GetEditedObject() : nullptr;
-		UAssetEditorSubsystem* AssetEditors = GEditor && Edited ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr;
-		if (IAssetEditorInstance* Instance = AssetEditors ? AssetEditors->FindEditorForAsset(Edited->GetOutermostObject(), /*bFocusIfOpen=*/false) : nullptr)
-		{
-			TabManager = Instance->GetAssociatedTabManager();
-		}
-	}
-
-	FName DockBeside;
-	for (const FName CandidateId : WidgetAnimScriptDock::DockBesideTabIds)
-	{
-		if (TabManager.IsValid() && TabManager->FindExistingLiveTab(FTabId(CandidateId)).IsValid())
-		{
-			DockBeside = CandidateId;
-			break;
-		}
-	}
-
-	// Nothing to dock beside: a window of its own, which can be dragged anywhere.
-	if (DockBeside.IsNone())
-	{
-		UE_LOG(LogWidgetAnimScriptDock, Log, TEXT("Dock as Tab: %s - opening the script editor in a window instead."),
-			TabManager.IsValid() ? TEXT("no Details tab is open in this editor") : TEXT("no editor tab manager was found for the panel"));
-		OpenScriptWindow();
-		return;
-	}
-
-	// Out from under the Track Editor, and out of its window - the script goes with it, being one for the session.
-	if (const TSharedPtr<SWindow> Window = ScriptWindow.Pin())
-	{
-		Window->RequestDestroyWindow();
-		ScriptWindow.Reset();
-	}
-
-	const TSharedRef<SDockTab> Tab = SNew(SDockTab)
-		.TabRole(ETabRole::PanelTab)
-		.Label(LOCTEXT("ScriptTabLabel", "Widget Animation Script"))
-		.ToolTipText(WidgetAnimTips::ScriptTabTooltip());
-	Tab->SetTabIcon(FNameTBDStyle::Get().GetBrush(FNameTBDStyle::WidgetAnimationsIcon));
-
-	const TWeakPtr<SDockTab> WeakTab = Tab;
-	Tab->SetContent(
-		SNew(SWidgetAnimScriptPanel)
-		.Panel(SharedThis(this))
-		.Docked(true)
-		.OnClose_Lambda([WeakTab]()
-		{
-			if (const TSharedPtr<SDockTab> Pinned = WeakTab.Pin())
-			{
-				Pinned->RequestCloseTab();
-			}
-		}));
-
-	TabManager->InsertNewDocumentTab(WidgetAnimScriptDock::ScriptDockedTabId, FTabManager::FLiveTabSearch(DockBeside), Tab);
-
-	// Placed: brought forward in its tab well, and the area under the Track Editor closed - only now, so a dock that
-	// didn't take never leaves the script nowhere. Not placed: a window after all.
-	if (!Tab->GetParentWindow().IsValid())
-	{
-		UE_LOG(LogWidgetAnimScriptDock, Warning, TEXT("Dock as Tab: the tab couldn't be placed beside %s - opening the script editor in a window instead."), *DockBeside.ToString());
-		Tab->RequestCloseTab();
-		OpenScriptWindow();
-		return;
-	}
-
-	SetScriptOpen(false);
-	Tab->ActivateInParent(ETabActivationCause::SetDirectly);
-	TabManager->DrawAttention(Tab);
-	ScriptTab = Tab;
-	UE_LOG(LogWidgetAnimScriptDock, Log, TEXT("Dock as Tab: docked beside %s."), *DockBeside.ToString());
+	// Not in a Widget Blueprint editor's layout (or it couldn't be placed): a window of its own, which can go anywhere.
+	UE_LOG(LogWidgetAnimScriptDock, Log, TEXT("Dock in Layout: no Widget Blueprint editor to dock the script editor in - opening it in a window instead."));
+	OpenScriptWindow();
 }
 
 void SWidgetAnimTimeline::OnScriptRan(int32 TracksBefore, int32 TracksAfter, int32 GroupsBefore, int32 GroupsAfter)

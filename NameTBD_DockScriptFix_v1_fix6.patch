@@ -1,0 +1,12 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp
+index c98c597..5ab88ec 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimMonacoEditor.cpp
+@@ -11,6 +11,7 @@
+ #include "Interfaces/IPluginManager.h"
+ #include "Misc/Paths.h"
+ #include "SWebBrowser.h"
++#include "IWebBrowserWindow.h"   // EWebBrowserConsoleLogSeverity (SWebBrowser.h only declares it)
+ #include "UObject/Package.h"
+ 
+ DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimScriptEditor, Log, All);
