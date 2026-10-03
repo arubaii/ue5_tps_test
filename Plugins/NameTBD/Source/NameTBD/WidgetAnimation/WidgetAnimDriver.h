@@ -358,6 +358,12 @@ struct NAMETBD_API FWidgetAnimValueId
 
 	FName ValueName;
 
+	/**
+	 * Only in tracks started by entries with this Anim ID: how a percentage animation's progress is set by the use of it
+	 * rather than by name (see Progress). None: any entry's.
+	 */
+	FName AnimId;
+
 	/** The name wherever it is used. */
 	static FWidgetAnimValueId Anywhere(FName InValueName)
 	{
@@ -365,6 +371,12 @@ struct NAMETBD_API FWidgetAnimValueId
 		Id.ValueName = InValueName;
 		return Id;
 	}
+
+	/**
+	 * The progress of the percentage animations played by entries with this Anim ID - every one of them with None. See
+	 * EWidgetAnimTimeUnit.
+	 */
+	static FWidgetAnimValueId Progress(FName InAnimId);
 
 	/** The name in one scope: an animation, or with a null one the additive tracks. */
 	static FWidgetAnimValueId In(const UObject* InAnimation, FName InValueName)
@@ -492,4 +504,141 @@ namespace WidgetAnimValue
 	inline FVector4 FromFloat(double Value) { return FVector4(Value, Value, Value, Value); }
 	inline FVector4 FromVector2D(const FVector2D& Value) { return FVector4(Value.X, Value.Y, 0.0, 1.0); }
 	inline FVector4 FromColor(const FLinearColor& Value) { return FVector4(Value.R, Value.G, Value.B, Value.A); }
+
+	/**
+	 * The name a percentage animation's own progress goes by, as a value: what FWidgetAnimValueId::Progress sets. Not a
+	 * Value Name any track is given.
+	 */
+	extern NAMETBD_API const FName ProgressValueName;
 }
+
+// =====================================================================================================
+// Percentage animations
+// =====================================================================================================
+//
+// Some animations aren't played over a stretch of time at all: a press-and-hold ring fills while the button is held, a
+// charge meter follows how charged a shot is. Driving every track of one by its own float value, and keeping their
+// lengths in step, is what this saves. An animation's Time In is Seconds or Percent; in Percent its timeline runs from 0%
+// to 100% instead of in seconds, and the whole animation - every track, its keys, staggers, cues and the animations
+// inserted into it - follows one progress value, 0 to 1. Stored, 100% is one second, so everything that places, plays and
+// previews tracks in seconds works on it unchanged: a preview sweeps it in a second, and a progress p is the timeline at
+// p seconds (see FWidgetAnimProgressDrive).
+//
+// Where the progress comes from, per use of the animation:
+//  - Set Widget Animation Progress, by the entry's Anim ID - from gameplay, a View Model, a hold timer.
+//  - The animation's own Progress Input (a press held, a pointer, a drag), with no code at all.
+//  - An entry's Progress Animation Duration: played like any animation, from 0% to 100% over that long - for a widget that
+//    plays it on construct or when it is hidden. A progress set while it plays takes over from there.
+//
+// Inserted into another animation as a track, a percentage animation is stretched across the track - resized like any
+// track - and follows the timeline it is in: a fill drawn from 20% to 60% of a percentage timeline, or played over the
+// track's seconds in a timeline in seconds. With Timing set to Value it follows a float value of its own instead, set
+// with Set Widget Animation Value by the track's Value Name - how a percentage animation is reused in a timeline in
+// seconds that otherwise plays on its clock.
+
+/** How an animation's timeline is measured: in seconds, or from 0% to 100% of a progress value. */
+UENUM(BlueprintType)
+enum class EWidgetAnimTimeUnit : uint8
+{
+	Seconds UMETA(ToolTip = "The animation plays over time: its tracks are placed and timed in seconds."),
+
+	Percent UMETA(DisplayName = "Percent", ToolTip = "The animation follows a progress value from 0% to 100% instead of time - a press-and-hold fill, a charge meter. Set its progress with Set Widget Animation Progress, from its Progress Input, or play it over an entry's Progress Animation Duration.")
+};
+
+/**
+ * How a percentage animation takes its progress: how it travels to each new value, and - optionally - where the value comes
+ * from with no code at all. Authored on the animation. See the note above.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimProgressSettings
+{
+	GENERATED_BODY()
+
+	/**
+	 * How the animation travels to each new progress it is given. Immediate for a progress that already moves smoothly - a
+	 * hold timer set every frame; Steady to fill at an even pace while a Progress Input is held.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Progress", meta = (DisplayName = "Smoothing"))
+	EWidgetAnimValueSmoothing Smoothing = EWidgetAnimValueSmoothing::Immediate;
+
+	/** Tween smoothing: how long each ease to a new progress takes, and its curve. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Progress", meta = (DisplayName = "Smoothing Time", ClampMin = "0.01", UIMax = "2.0", Units = "s", EditCondition = "Smoothing == EWidgetAnimValueSmoothing::Tween", EditConditionHides))
+	float SmoothingTime = 0.25f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Progress", meta = (DisplayName = "Smoothing Easing", EditCondition = "Smoothing == EWidgetAnimValueSmoothing::Tween", EditConditionHides))
+	EWidgetAnimEasing SmoothingEasing = EWidgetAnimEasing::EaseOut;
+
+	/** Spring smoothing: the spring that chases each new progress, keeping its speed when the progress changes again. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Progress", meta = (EditCondition = "Smoothing == EWidgetAnimValueSmoothing::Spring", EditConditionHides))
+	FWidgetSpringParams Spring;
+
+	/**
+	 * Steady smoothing: how much progress it moves a second - 0.5 fills from 0% to 100% in two seconds - speeding up only
+	 * when it would otherwise take longer than Catch Up Within. With a Hover, Press or Focus Progress Input this is a
+	 * press-and-hold: held, it fills at this pace; let go, it drains at it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Progress", meta = (DisplayName = "Steady Speed", ClampMin = "0.0", UIMax = "4.0", EditCondition = "Smoothing == EWidgetAnimValueSmoothing::Steady", EditConditionHides))
+	double SteadySpeed = 1.0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Progress", meta = (DisplayName = "Catch Up Within", ClampMin = "0.0", UIMax = "5.0", Units = "s", EditCondition = "Smoothing == EWidgetAnimValueSmoothing::Steady", EditConditionHides))
+	float SteadyCatchUpTime = 0.f;
+
+	/** Ignores a progress lower than the one it has, so it only ever moves forward. Snap still moves it back. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Progress", meta = (DisplayName = "Never Go Backwards"))
+	bool bNeverGoBackwards = false;
+
+	/** The shortest time it may take to travel from 0% to 100%: how fast it can move at most. 0 for no limit. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Progress", meta = (DisplayName = "Minimum Time To Fill", ClampMin = "0", UIMax = "5", Units = "s"))
+	float MinimumTimeToFill = 0.f;
+
+	/**
+	 * Where the progress comes from with no code: a press held, the pointer, a drag or a scroll, measured on the widget the
+	 * animation's first Layer Group plays on (or the widget it is played on). None: set it with Set Widget Animation
+	 * Progress. See WidgetAnimInput.h.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Progress", meta = (DisplayName = "Progress Input", BaseStruct = "/Script/NameTBD.WidgetAnimInputSource", ExcludeBaseStruct))
+	FInstancedStruct ProgressInput;
+};
+
+/**
+ * One progress clock, shared by every setting it moves (see FWidgetAnimSettings::ProgressDrive): a percentage animation as
+ * one use plays it, or a percentage animation inserted as a track and driven by its own value. Built where the settings are
+ * built and never saved; its state lives on the first setting it moves (see FWidgetAnimState::DriveState).
+ *
+ * Where the timeline is for a progress p: with no Anchor, p seconds into the animation as authored (100% is one second),
+ * at the settings' Playback Speed; with an Anchor, p of the way along the animation track's placeholder - the setting
+ * whose FWidgetAnimSettings::PlacementAnchor it is - which moves and stretches with the track.
+ */
+struct NAMETBD_API FWidgetAnimProgressDrive
+{
+	/** What sets it: WidgetAnimValue::ProgressValueName for an animation's own progress, or an animation track's Value Name. */
+	FName ValueName;
+
+	FWidgetAnimValueOptions Options;
+
+	EWidgetAnimValueSmoothing Smoothing = EWidgetAnimValueSmoothing::Immediate;
+	float TweenDuration = 0.25f;
+	EWidgetAnimEasing TweenEasing = EWidgetAnimEasing::EaseOut;
+	const UCurveFloat* TweenCurve = nullptr;
+	FWidgetSpringParams Spring;
+	double SteadySpeed = 1.0;
+	float SteadyCatchUpTime = 0.f;
+
+	/**
+	 * Above 0: until a progress is set, the animation plays on its clock as any other does - its settings sped up to run
+	 * from 0% to 100% in this many seconds - and a progress set takes over from wherever it had got to. An entry's Progress
+	 * Animation Duration. 0: it follows its progress from the start.
+	 */
+	float Duration = 0.f;
+
+	/** The placeholder the timeline maps onto, by its PlacementAnchor; INDEX_NONE for the animation's own 0% - 100%. */
+	int32 Anchor = INDEX_NONE;
+
+	/** Where the progress comes from with no code, or empty. Its runtime state lives in here, one per use. */
+	FInstancedStruct ValueInput;
+
+	FWidgetAnimValueMotion GetMotion() const;
+
+	/** A drive for an animation's own progress, as Settings authors it. */
+	static TSharedRef<FWidgetAnimProgressDrive> MakeFor(const FWidgetAnimProgressSettings& Settings, float InDuration);
+};

@@ -1,0 +1,60 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
+index 1d1e67d..d0e3d98 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
+@@ -2014,10 +2014,10 @@ namespace WidgetAnimPixelSnapping
+ 	/**
+ 	 * Pixel snapping, off on a widget while an animation scales, turns or shears it. Slate rounds a widget's edges - and
+ 	 * everything inside it - to whole screen pixels; under a fractional scale that rounding flips from one frame to the
+-	 * next, so a thin outline (a radio button's ring) shook by a pixel as it scaled. Turned off on the widget's Slate widget
+-	 * only while its pose isn't plain (scale 1, no angle, no shear) - children inherit it - and put back to what it was the
+-	 * moment it is, so a widget at rest draws exactly as authored. A widget whose Slate widget is rebuilt gets it again on
+-	 * the next write.
++	 * next, so a thin outline (a radio button's ring) shook by a pixel as it scaled. Turned off with the widget's own Pixel
++	 * Snapping (UWidget::SetPixelSnapping, which carries over a Slate rebuild) only while its pose isn't plain (scale 1, no
++	 * angle, no shear) - children inherit it - and put back to what it was the moment it is, so a widget at rest draws
++	 * exactly as authored.
+ 	 */
+ 	static TMap<TWeakObjectPtr<UWidget>, EWidgetPixelSnapping>& SavedMethods()
+ 	{
+@@ -2033,10 +2033,7 @@ namespace WidgetAnimPixelSnapping
+ 		{
+ 			return;
+ 		}
+-		if (const TSharedPtr<SWidget> Slate = Widget->GetCachedWidget())
+-		{
+-			Slate->SetPixelSnappingMethod(Original);
+-		}
++		Widget->SetPixelSnapping(Original);
+ 	}
+ 
+ 	/** Called with every pose written to a widget. */
+@@ -2054,13 +2051,13 @@ namespace WidgetAnimPixelSnapping
+ 			return;
+ 		}
+ 
+-		const TSharedPtr<SWidget> Slate = Widget->GetCachedWidget();
+-		if (!Slate.IsValid() || Slate->GetPixelSnappingMethod() == EWidgetPixelSnapping::Disabled)
++		const EWidgetPixelSnapping Current = Widget->GetPixelSnapping();
++		if (Current == EWidgetPixelSnapping::Disabled)
+ 		{
+ 			return;
+ 		}
+ 
+-		// Its own setting, kept the first time only: a rebuilt Slate widget comes back with the authored one again.
++		// Its own setting, kept the first time only.
+ 		TMap<TWeakObjectPtr<UWidget>, EWidgetPixelSnapping>& Saved = SavedMethods();
+ 		if (!Saved.Contains(Widget))
+ 		{
+@@ -2074,9 +2071,9 @@ namespace WidgetAnimPixelSnapping
+ 					}
+ 				}
+ 			}
+-			Saved.Add(Widget, Slate->GetPixelSnappingMethod());
++			Saved.Add(Widget, Current);
+ 		}
+-		Slate->SetPixelSnappingMethod(EWidgetPixelSnapping::Disabled);
++		Widget->SetPixelSnapping(EWidgetPixelSnapping::Disabled);
+ 	}
+ }
+ 

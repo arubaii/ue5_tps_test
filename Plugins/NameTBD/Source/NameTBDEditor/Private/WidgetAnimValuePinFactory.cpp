@@ -6,6 +6,7 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "HAL/PlatformTime.h"
 #include "K2Node_SetWidgetAnimationValue.h"
+#include "K2Node_SetWidgetAnimationProgress.h"
 #include "Misc/PackageName.h"
 #include "NameTBDTooltips.h"
 #include "SGraphPin.h"
@@ -116,6 +117,12 @@ private:
 		return GraphPinObj && !GraphPinObj->WasTrashed() ? Cast<UK2Node_SetWidgetAnimationValue>(GraphPinObj->GetOwningNodeUnchecked()) : nullptr;
 	}
 
+	/** Whether the node is Set Widget Animation Progress, which picks only percentage animations. */
+	bool IsProgressNode() const
+	{
+		return Cast<UK2Node_SetWidgetAnimationProgress>(GetNode()) != nullptr;
+	}
+
 	FString GetAnimationKey() const
 	{
 		const UK2Node_SetWidgetAnimationValue* Node = GetNode();
@@ -161,7 +168,7 @@ private:
 
 		if (bAnimationPin)
 		{
-			CachedTooltip = NameTBD::Tooltips::WidgetAnimValuePins::AnimationPicker();
+			CachedTooltip = IsProgressNode() ? NameTBD::Tooltips::WidgetAnimValuePins::ProgressAnimationPicker() : NameTBD::Tooltips::WidgetAnimValuePins::AnimationPicker();
 			if (Current.IsEmpty())
 			{
 				CachedText = LOCTEXT("PickAnimation", "Pick an Animation");
@@ -260,7 +267,14 @@ private:
 		}
 		if (!bAnyAnimation)
 		{
-			AddNote(Menu, LOCTEXT("NoAnimations", "No animations"), NameTBD::Tooltips::WidgetAnimValuePins::NoAnimations());
+			if (IsProgressNode())
+			{
+				AddNote(Menu, LOCTEXT("NoPercentAnimations", "No percentage animations"), NameTBD::Tooltips::WidgetAnimValuePins::NoPercentAnimations());
+			}
+			else
+			{
+				AddNote(Menu, LOCTEXT("NoAnimations", "No animations"), NameTBD::Tooltips::WidgetAnimValuePins::NoAnimations());
+			}
 
 			// Where it looked, in the Output Log, so an empty list can be told apart from a missed one.
 			if (const UK2Node_SetWidgetAnimationValue* Node = GetNode())
@@ -270,22 +284,21 @@ private:
 		}
 		Menu.EndSection();
 
-		Menu.BeginSection(NAME_None, LOCTEXT("AdditiveSection", "This Widget"));
-		for (const FWidgetAnimValueSource& Source : Sources)
+		// The additive tracks, when the node offers them - Set Widget Animation Progress doesn't.
+		const FWidgetAnimValueSource* Additive = Sources.FindByPredicate([](const FWidgetAnimValueSource& Source) { return Source.Key == UK2Node_SetWidgetAnimationValue::AdditiveTracksKey; });
+		if (Additive)
 		{
-			if (Source.Key == UK2Node_SetWidgetAnimationValue::AdditiveTracksKey)
-			{
-				AddAnimationEntry(Menu, Source);
-			}
+			Menu.BeginSection(NAME_None, LOCTEXT("AdditiveSection", "This Widget"));
+			AddAnimationEntry(Menu, *Additive);
+			Menu.EndSection();
 		}
-		Menu.EndSection();
 	}
 
 	void AddAnimationEntry(FMenuBuilder& Menu, const FWidgetAnimValueSource& Source)
 	{
 		Menu.AddMenuEntry(
 			Source.Label,
-			WidgetAnimValuePin::DescribeValues(Source),
+			IsProgressNode() ? NameTBD::Tooltips::WidgetAnimValuePins::ProgressAnimationPicker() : WidgetAnimValuePin::DescribeValues(Source),
 			FSlateIcon(),
 			FUIAction(
 				FExecuteAction::CreateSP(this, &SWidgetAnimValuePin::PickAnimation, Source.Key),

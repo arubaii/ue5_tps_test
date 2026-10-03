@@ -72,8 +72,20 @@ public:
 	 * - in half the time, 0.5 takes twice as long. Part of the animation itself, unlike an entry's Playback
 	 * Speed, which is one use's choice and multiplies on top of this.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Animation Speed Multiplier", ClampMin = "0.01", UIMin = "0.1", UIMax = "4.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Animation Speed Multiplier", ClampMin = "0.01", UIMin = "0.1", UIMax = "4.0", EditCondition = "TimeUnit == EWidgetAnimTimeUnit::Seconds", EditConditionHides))
 	float AnimationSpeedMultiplier = 1.f;
+
+	/**
+	 * Whether the animation plays over time (Seconds) or follows a progress value from 0% to 100% (Percent) - a
+	 * press-and-hold fill, a charge meter. Changing it converts the tracks: to Percent, the whole animation is fitted into
+	 * 0% - 100%; back to Seconds, 100% becomes one second. See EWidgetAnimTimeUnit.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Time In"))
+	EWidgetAnimTimeUnit TimeUnit = EWidgetAnimTimeUnit::Seconds;
+
+	/** How a percentage animation takes its progress, and where from. See FWidgetAnimProgressSettings. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Progress", EditCondition = "TimeUnit == EWidgetAnimTimeUnit::Percent", EditConditionHides))
+	FWidgetAnimProgressSettings Progress;
 
 	/**
 	 * How long one pass of the animation runs at the least, in seconds as authored (the Animation Speed Multiplier
@@ -81,10 +93,19 @@ public:
 	 * to finish, waits out too. 0 - or anything its tracks already reach - runs exactly as long as its tracks. Set by
 	 * dragging the animation's end past its last track in the Widget Animations panel; dragging it back in lowers it.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Minimum Length", ClampMin = "0", UIMin = "0", Units = "s"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Minimum Length", ClampMin = "0", UIMin = "0", Units = "s", EditCondition = "TimeUnit == EWidgetAnimTimeUnit::Seconds", EditConditionHides))
 	float MinimumLength = 0.f;
 
 	int32 GetNumLayers() const { return Layers.Num(); }
+
+	/** Whether this animation follows a progress value rather than time. See EWidgetAnimTimeUnit. */
+	bool IsPercentTime() const { return TimeUnit == EWidgetAnimTimeUnit::Percent; }
+
+	/** How fast it plays wherever it is used: its Animation Speed Multiplier - or 1 for a percentage animation, which has no pace of its own. */
+	float GetEffectiveSpeedMultiplier() const { return IsPercentTime() ? 1.f : FMath::Max(AnimationSpeedMultiplier, 0.01f); }
+
+	/** How long one pass runs at the least, as authored: its Minimum Length - or 100% (one second) for a percentage animation. */
+	float GetEffectiveMinimumLength() const { return IsPercentTime() ? 1.f : FMath::Max(MinimumLength, 0.f); }
 
 	/**
 	 * Opens WidgetAnimationBuilder playing this animation. Its Widget Animations panel opens on Edit Existing
@@ -104,10 +125,16 @@ public:
 	virtual void PostLoad() override;
 
 #if WITH_EDITOR
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
 private:
+
+#if WITH_EDITORONLY_DATA
+	/** Time In as it was before an edit to it, so the edit converts the tracks from it. See PreEditChange. */
+	EWidgetAnimTimeUnit TimeUnitBeforeEdit = EWidgetAnimTimeUnit::Seconds;
+#endif
 
 	/** AnimIn / AnimOut from before layers, into Layers. */
 	void MigrateSettingsStacks();
@@ -197,6 +224,17 @@ struct NAMETBD_API FWidgetAnimEntryBase
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Playback Speed", ClampMin = "0.01", UIMin = "0.1", UIMax = "4.0"))
 	float PlaybackSpeed = 1.f;
+
+	/**
+	 * For a percentage animation (see EWidgetAnimTimeUnit): played - on construct, when hidden, or by Play Widget Animation -
+	 * it runs from 0% to 100% over this many seconds, like any animation, with no progress value set. A progress set while
+	 * it plays (Set Widget Animation Progress) takes over from wherever it has got to. 0: it waits at 0% for its progress.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Progress Animation Duration", ClampMin = "0", UIMin = "0", UIMax = "5", Units = "s"))
+	float ProgressAnimationDuration = 0.f;
+
+	/** Whether the animation played is a percentage animation. */
+	bool IsPercentAnimation() const;
 
 	bool IsUsable() const { return Animation != nullptr && Animation->GetNumLayers() > 0; }
 
@@ -324,6 +362,14 @@ struct NAMETBD_API FWidgetAnimEntry : public FWidgetAnimEntryBase
 
 	/** The target path group GroupIndex animates: its row if it has one, else the default a new row would get. None for (This Widget). */
 	FName GetGroupTargetName(int32 GroupIndex) const;
+
+	/**
+	 * Whether Progress Animation Duration means anything here, so is shown: a percentage animation played on construct, when
+	 * the widget's visibility changes, or when its text changes - whichever of those this entry offers (see
+	 * bShowConstructTrigger) and has on. Worked out from the entry as it is now, so it follows an animation switched to
+	 * Percent after the entry was set up. The Details show the field only then.
+	 */
+	bool ShowsProgressDuration() const;
 
 	/** BuildSettings with each group's target path resolved by Resolver. */
 	void BuildSettingsResolved(TArray<FWidgetAnimSettings>& OutSettings, TFunctionRef<UWidget*(FName)> Resolver) const;

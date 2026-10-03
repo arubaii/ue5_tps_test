@@ -4,6 +4,7 @@
 
 #include "DetailWidgetRow.h"
 #include "IDetailChildrenBuilder.h"
+#include "IDetailPropertyRow.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
 #include "PropertyHandle.h"
 
@@ -55,10 +56,33 @@ void FWidgetAnimEntryCustomization::CustomizeChildren(TSharedRef<IPropertyHandle
 		}
 	}
 
+	// Progress Animation Duration only where it means something - a percentage animation played on construct or when
+	// hidden - worked out from the entry each time it is drawn, so it appears the moment either trigger is ticked or the
+	// animation is switched to Percent. See FWidgetAnimEntry::ShowsProgressDuration.
+	const FName ProgressDurationName = GET_MEMBER_NAME_CHECKED(FWidgetAnimEntryBase, ProgressAnimationDuration);
+	const TSharedRef<IPropertyHandle> EntryHandle = PropertyHandle;
+	auto ProgressDurationVisibility = [EntryHandle]()
+	{
+		TArray<void*> RawData;
+		EntryHandle->AccessRawData(RawData);
+		for (const void* Raw : RawData)
+		{
+			if (Raw && static_cast<const FWidgetAnimEntry*>(Raw)->ShowsProgressDuration())
+			{
+				return EVisibility::Visible;
+			}
+		}
+		return EVisibility::Collapsed;
+	};
+
 	for (const TSharedRef<IPropertyHandle>& Child : Children)
 	{
 		const FName Name = NameOf(Child);
-		if (Name != AnimationName && Name != GroupTargetsName)
+		if (Name == ProgressDurationName)
+		{
+			ChildBuilder.AddProperty(Child).Visibility(TAttribute<EVisibility>::CreateLambda(ProgressDurationVisibility));
+		}
+		else if (Name != AnimationName && Name != GroupTargetsName)
 		{
 			ChildBuilder.AddProperty(Child);
 		}

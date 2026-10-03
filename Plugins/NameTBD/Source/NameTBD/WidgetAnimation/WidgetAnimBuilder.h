@@ -88,12 +88,20 @@ public:
 	TArray<FWidgetAnimLayer> Layers;
 
 	/** How fast the whole animation plays, saved with it - see UWidgetAnimPresetAsset::AnimationSpeedMultiplier. */
-	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (DisplayName = "Animation Speed Multiplier", ClampMin = "0.01", UIMin = "0.1", UIMax = "4.0", EditCondition = "PreviewAnimation == nullptr"))
+	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (DisplayName = "Animation Speed Multiplier", ClampMin = "0.01", UIMin = "0.1", UIMax = "4.0", EditCondition = "PreviewAnimation == nullptr && TimeUnit == EWidgetAnimTimeUnit::Seconds", EditConditionHides))
 	float AnimationSpeedMultiplier = 1.f;
 
 	/** How long one pass of the animation runs at the least, saved with it - see UWidgetAnimPresetAsset::MinimumLength. */
-	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (DisplayName = "Minimum Length", ClampMin = "0", UIMin = "0", Units = "s", EditCondition = "PreviewAnimation == nullptr"))
+	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (DisplayName = "Minimum Length", ClampMin = "0", UIMin = "0", Units = "s", EditCondition = "PreviewAnimation == nullptr && TimeUnit == EWidgetAnimTimeUnit::Seconds", EditConditionHides))
 	float MinimumLength = 0.f;
+
+	/** Seconds or Percent, saved with it - see UWidgetAnimPresetAsset::TimeUnit. Changing it converts the tracks. */
+	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (DisplayName = "Time In", EditCondition = "PreviewAnimation == nullptr"))
+	EWidgetAnimTimeUnit TimeUnit = EWidgetAnimTimeUnit::Seconds;
+
+	/** How a percentage animation takes its progress, saved with it - see UWidgetAnimPresetAsset::Progress. */
+	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (DisplayName = "Progress", EditCondition = "PreviewAnimation == nullptr && TimeUnit == EWidgetAnimTimeUnit::Percent", EditConditionHides))
+	FWidgetAnimProgressSettings Progress;
 
 	/**
 	 * The asset the Widget Animations panel's Edit Existing Asset is editing in place, played instead of the
@@ -262,7 +270,11 @@ public:
 	virtual void PostLoad() override;
 
 #if WITH_EDITOR
+	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+
+	/** Time In as it was before an edit to it, so the edit converts the tracks from it. */
+	EWidgetAnimTimeUnit TimeUnitBeforeEdit = EWidgetAnimTimeUnit::Seconds;
 
 	/** Where editing a keyframe is recognised - the property chain says which layer and which key. */
 	virtual void PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent) override;

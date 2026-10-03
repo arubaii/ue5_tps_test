@@ -1,0 +1,291 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
+index db51b32..77e2d32 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
+@@ -1837,35 +1837,26 @@ FWidgetAnimResult UWidgetAnimLibrary::TickWidgetAnimations(const TArray<FWidgetA
+ namespace WidgetAnimTransformDebug
+ {
+ 	/**
+-	 * WidgetAnim.DebugTransforms: for chasing a pose that flickers at runtime. 1 logs a warning whenever a widget's render
+-	 * transform is found changed by something else since this library last wrote it (another writer - a button's own hover
+-	 * scale, a UMG animation, a second component - fighting over it), or is written twice in one frame with different
+-	 * poses. 2 also logs every write. Off by default; costs nothing then.
++	 * WidgetAnim.DebugTransforms: warnings for a widget pose that is wrong at runtime - each fires only on an actual fault,
++	 * never on normal playback, so it is on by default and silent while all is well. 0 turns it off.
++	 *  - A player ticked with time twice in one frame (the second tick is played as a re-pose - see TickWidgetAnimPlayer).
++	 *  - One widget posed in one frame by two different players with different poses: they fight over it, and whichever
++	 *    writes last is drawn.
++	 *  - A pose that jumps for exactly one frame and comes back while its clock runs evenly: a flicker.
++	 * Each comes with the call stack of the write that caused it, and is reported at most once a second per widget.
+ 	 */
+ 	static TAutoConsoleVariable<int32> CVarDebugTransforms(
+ 		TEXT("WidgetAnim.DebugTransforms"),
+-		0,
+-		TEXT("Widget Animations: 1 logs when a widget's render transform was changed by something else between two of its animation's writes, or written twice in a frame with different poses. 2 also logs every write."),
++		1,
++		TEXT("Widget Animations: 1 (default) warns, with a call stack, when a widget's animated pose is actually wrong - a player ticked twice in a frame, two players fighting over one widget, or a one-frame flicker. 0 turns it off."),
+ 		ECVF_Default);
+ 
+-	struct FLastWrite
+-	{
+-		uint64 Frame = 0;
+-		FWidgetTransform Pose;
+-		float Opacity = 1.f;
+-		FString Writer;
+-
+-		/** The pose before this one, and its frame - for telling a one-frame spike from a steady motion. */
+-		uint64 PreviousFrame = 0;
+-		FWidgetTransform PreviousPose;
+-	};
+-
+-	/** The player posing right now: the widget it plays on, and the time it was ticked with. Set by TickWidgetAnimPlayer. */
++	/** The player posing right now, and the time it was ticked with. Set by TickWidgetAnimPlayer for as long as it applies. */
+ 	struct FWriter
+ 	{
++		const void* Player = nullptr;
+ 		const UWidget* Host = nullptr;
+ 		float DeltaTime = 0.f;
+-		bool bSet = false;
+ 	};
+ 	static FWriter& CurrentWriter()
+ 	{
+@@ -1876,12 +1867,12 @@ namespace WidgetAnimTransformDebug
+ 	struct FWriterScope
+ 	{
+ 		FWriter Saved;
+-		FWriterScope(const UWidget* Host, float DeltaTime)
++		FWriterScope(const void* Player, const UWidget* Host, float DeltaTime)
+ 			: Saved(CurrentWriter())
+ 		{
++			CurrentWriter().Player = Player;
+ 			CurrentWriter().Host = Host;
+ 			CurrentWriter().DeltaTime = DeltaTime;
+-			CurrentWriter().bSet = true;
+ 		}
+ 		~FWriterScope()
+ 		{
+@@ -1889,103 +1880,132 @@ namespace WidgetAnimTransformDebug
+ 		}
+ 	};
+ 
+-	static FString DescribeWriter()
++	static FString DescribeWriter(const FWriter& Writer)
+ 	{
+-		const FWriter& Writer = CurrentWriter();
+-		if (!Writer.bSet)
++		return Writer.Player
++			? FString::Printf(TEXT("the player on %s, ticked with %.4f s"), Writer.Host ? *Writer.Host->GetName() : TEXT("(none)"), Writer.DeltaTime)
++			: FString(TEXT("a direct apply (a Blueprint, a scrub)"));
++	}
++
++	static FString Describe(const FWidgetTransform& Pose)
++	{
++		return FString::Printf(TEXT("translation (%.2f, %.2f) scale (%.4f, %.4f) shear (%.3f, %.3f) angle %.2f"),
++			Pose.Translation.X, Pose.Translation.Y, Pose.Scale.X, Pose.Scale.Y, Pose.Shear.X, Pose.Shear.Y, Pose.Angle);
++	}
++
++	static bool SamePose(const FWidgetTransform& A, const FWidgetTransform& B)
++	{
++		return A.Translation.Equals(B.Translation, 0.01) && A.Scale.Equals(B.Scale, 0.0001) && A.Shear.Equals(B.Shear, 0.0001) && FMath::IsNearlyEqual(A.Angle, B.Angle, 0.01f);
++	}
++
++	static bool IsEnabled()
++	{
++		return CVarDebugTransforms.GetValueOnGameThread() > 0;
++	}
++
++	/** At most once a second per widget and kind of fault, so a fault every frame doesn't bury the log. */
++	static bool ShouldReport(const void* Key, int32 Kind)
++	{
++		static TMap<TPair<const void*, int32>, double> LastReported;
++		if (LastReported.Num() > 1024)
+ 		{
+-			return TEXT("a direct apply (preview, scrub or Blueprint)");
++			LastReported.Reset();
++		}
++		const double Now = FPlatformTime::Seconds();
++		double& Last = LastReported.FindOrAdd(TPair<const void*, int32>(Key, Kind), -1000.0);
++		if (Now - Last < 1.0)
++		{
++			return false;
+ 		}
+-		return FString::Printf(TEXT("the player on %s, ticked with %.4f s"), Writer.Host ? *Writer.Host->GetName() : TEXT("(none)"), Writer.DeltaTime);
++		Last = Now;
++		return true;
+ 	}
+ 
+-	/** A player ticked with time twice in one frame - see TickWidgetAnimPlayer. */
+-	static void NoteSecondAdvance(const UWidget* Host, float DeltaTime)
++	/** A player ticked with time a second time in one frame - see TickWidgetAnimPlayer. A fault in whatever ticked it. */
++	static void NoteSecondAdvance(const void* Player, const UWidget* Host, float DeltaTime)
+ 	{
+-		if (CVarDebugTransforms.GetValueOnGameThread() > 0)
++		if (IsEnabled() && ShouldReport(Player, 0))
+ 		{
+-			UE_LOG(LogTemp, Warning, TEXT("WidgetAnim.DebugTransforms: the player on %s was ticked with time (%.4f s) a second time in frame %llu - played as a re-pose instead. Call stack follows."),
++			UE_LOG(LogTemp, Warning, TEXT("WidgetAnim.DebugTransforms: the player on %s was ticked with time (%.4f s) a second time in frame %llu - played as a re-pose instead, so nothing jumps. Whatever made the second tick is in this call stack:"),
+ 				Host ? *Host->GetPathName() : TEXT("(none)"), DeltaTime, GFrameCounter);
+ 			FDebug::DumpStackTraceToLog(ELogVerbosity::Warning);
+ 		}
+ 	}
+ 
+-	static bool SamePose(const FWidgetTransform& A, const FWidgetTransform& B)
++	struct FWrite
+ 	{
+-		return A.Translation.Equals(B.Translation, 0.01) && A.Scale.Equals(B.Scale, 0.0001) && A.Shear.Equals(B.Shear, 0.0001) && FMath::IsNearlyEqual(A.Angle, B.Angle, 0.01f);
+-	}
++		uint64 Frame = 0;
++		FWidgetTransform Pose;
++		FWriter Writer;
++	};
+ 
+-	static FString Describe(const FWidgetTransform& Pose, float Opacity)
++	/** The last two frames' writes to one widget, for the checks below. */
++	struct FHistory
+ 	{
+-		return FString::Printf(TEXT("translation (%.2f, %.2f) scale (%.4f, %.4f) shear (%.3f, %.3f) angle %.2f opacity %.3f"),
+-			Pose.Translation.X, Pose.Translation.Y, Pose.Scale.X, Pose.Scale.Y, Pose.Shear.X, Pose.Shear.Y, Pose.Angle, Opacity);
+-	}
++		FWrite Last;
++		FWrite BeforeLast;
++	};
+ 
+-	/** Called just before Target is posed: compares what it holds with what was last written, then remembers this write. */
+-	static void Check(UWidget* Target, const FWidgetTransform& Pose, float Opacity)
++	/** Called just before Target is posed by the track player, with the pose about to be written. */
++	static void Check(UWidget* Target, const FWidgetTransform& Pose)
+ 	{
+-		const int32 Level = CVarDebugTransforms.GetValueOnGameThread();
+-		if (Level <= 0 || !Target)
++		const FWriter& Writer = CurrentWriter();
++		if (!IsEnabled() || !Target || !Writer.Player || Target->IsDesignTime())
+ 		{
+ 			return;
+ 		}
+ 
+-		static TMap<TWeakObjectPtr<UWidget>, FLastWrite> LastWrites;
+-		if (LastWrites.Num() > 4096)
++		static TMap<TWeakObjectPtr<UWidget>, FHistory> Histories;
++		if (Histories.Num() > 4096)
+ 		{
+-			LastWrites.Reset();
++			Histories.Reset();
+ 		}
++		FHistory& History = Histories.FindOrAdd(Target);
+ 
+-		const FWidgetTransform& Held = Target->GetRenderTransform();
+-		if (FLastWrite* Last = LastWrites.Find(Target))
++		// Two different players posing one widget differently in one frame: they fight over it. One player posing it
++		// again in the same frame - right after starting a track - is how it is meant to work, and isn't reported.
++		if (History.Last.Frame == GFrameCounter && History.Last.Writer.Player != Writer.Player && !SamePose(History.Last.Pose, Pose)
++			&& ShouldReport(Target, 1))
+ 		{
+-			if (!SamePose(Held, Last->Pose))
+-			{
+-				UE_LOG(LogTemp, Warning, TEXT("WidgetAnim.DebugTransforms: %s was changed by something else since frame %llu. Wrote %s; found %s."),
+-					*Target->GetPathName(), Last->Frame, *Describe(Last->Pose, Last->Opacity), *Describe(Held, Target->GetRenderOpacity()));
+-			}
+-			if (Last->Frame == GFrameCounter && !SamePose(Pose, Last->Pose))
+-			{
+-				UE_LOG(LogTemp, Warning, TEXT("WidgetAnim.DebugTransforms: %s posed twice in frame %llu: %s by %s, then %s by %s. Call stack of the second follows."),
+-					*Target->GetPathName(), GFrameCounter, *Describe(Last->Pose, Last->Opacity), *Last->Writer, *Describe(Pose, Opacity), *DescribeWriter());
+-				FDebug::DumpStackTraceToLog(ELogVerbosity::Warning);
+-			}
++			UE_LOG(LogTemp, Warning, TEXT("WidgetAnim.DebugTransforms: %s is posed by two players in frame %llu, and they disagree: %s by %s, then %s by %s. Only the last is drawn. The second's call stack:"),
++				*Target->GetPathName(), GFrameCounter, *Describe(History.Last.Pose), *DescribeWriter(History.Last.Writer), *Describe(Pose), *DescribeWriter(Writer));
++			FDebug::DumpStackTraceToLog(ELogVerbosity::Warning);
++		}
+ 
+-			// A spike: the frame before last and this one agree, and last frame stood out from both - the widget jumped
+-			// for one frame and came back. Scale and angle, the two a flicker shows in.
+-			if (Last->Frame + 1 == GFrameCounter && Last->PreviousFrame + 2 == GFrameCounter)
++		// A one-frame jump: three frames in a row from the same player, each moved on by time, where the middle one stands
++		// well outside the other two while they agree with each other. Smooth motion - a spring's bounce included - never
++		// does that; a loop starting again jumps and stays.
++		const bool bEvenRun = History.Last.Frame + 1 == GFrameCounter && History.BeforeLast.Frame + 2 == GFrameCounter
++			&& History.Last.Writer.Player == Writer.Player && History.BeforeLast.Writer.Player == Writer.Player
++			&& Writer.DeltaTime > 0.f && History.Last.Writer.DeltaTime > 0.f;
++		if (bEvenRun)
++		{
++			auto Spiked = [](double Before, double During, double After, double Tolerance)
+ 			{
+-				auto Spiked = [](double Before, double During, double After, double Tolerance)
+-				{
+-					const double Low = FMath::Min(Before, After) - Tolerance;
+-					const double High = FMath::Max(Before, After) + Tolerance;
+-					const double Step = FMath::Abs(After - Before);
+-					return (During < Low || During > High) && FMath::Abs(During - Before) > Step * 3.0 + Tolerance;
+-				};
+-				const FWidgetTransform& Before = Last->PreviousPose;
+-				const FWidgetTransform& During = Last->Pose;
+-				if (Spiked(Before.Scale.X, During.Scale.X, Pose.Scale.X, 0.01) || Spiked(Before.Scale.Y, During.Scale.Y, Pose.Scale.Y, 0.01) || Spiked(Before.Angle, During.Angle, Pose.Angle, 1.0))
+-				{
+-					UE_LOG(LogTemp, Warning, TEXT("WidgetAnim.DebugTransforms: %s spiked for frame %llu: %s, then %s (by %s), then %s."),
+-						*Target->GetPathName(), Last->Frame, *Describe(Before, Opacity), *Describe(During, Last->Opacity), *Last->Writer, *Describe(Pose, Opacity));
+-				}
++				const double Low = FMath::Min(Before, After) - Tolerance;
++				const double High = FMath::Max(Before, After) + Tolerance;
++				const double Step = FMath::Abs(After - Before);
++				return (During < Low || During > High) && FMath::Min(FMath::Abs(During - Before), FMath::Abs(During - After)) > Step * 2.0 + Tolerance;
++			};
++			const FWidgetTransform& Before = History.BeforeLast.Pose;
++			const FWidgetTransform& During = History.Last.Pose;
++			const bool bSpike = Spiked(Before.Scale.X, During.Scale.X, Pose.Scale.X, 0.02) || Spiked(Before.Scale.Y, During.Scale.Y, Pose.Scale.Y, 0.02)
++				|| Spiked(Before.Angle, During.Angle, Pose.Angle, 2.0)
++				|| Spiked(Before.Translation.X, During.Translation.X, Pose.Translation.X, 2.0) || Spiked(Before.Translation.Y, During.Translation.Y, Pose.Translation.Y, 2.0);
++			if (bSpike && ShouldReport(Target, 2))
++			{
++				UE_LOG(LogTemp, Warning, TEXT("WidgetAnim.DebugTransforms: %s flickered in frame %llu: %s, then %s (ticked with %.4f s), then %s (ticked with %.4f s)."),
++					*Target->GetPathName(), History.Last.Frame, *Describe(Before), *Describe(During), History.Last.Writer.DeltaTime, *Describe(Pose), Writer.DeltaTime);
+ 			}
+ 		}
+-		if (Level >= 2)
+-		{
+-			UE_LOG(LogTemp, Log, TEXT("WidgetAnim.DebugTransforms: frame %llu %s: %s by %s"), GFrameCounter, *Target->GetName(), *Describe(Pose, Opacity), *DescribeWriter());
+-		}
+ 
+-		FLastWrite& Write = LastWrites.FindOrAdd(Target);
+-		if (Write.Frame != GFrameCounter)
++		if (History.Last.Frame != GFrameCounter)
+ 		{
+-			Write.PreviousFrame = Write.Frame;
+-			Write.PreviousPose = Write.Pose;
++			History.BeforeLast = History.Last;
+ 		}
+-		Write.Frame = GFrameCounter;
+-		Write.Pose = Pose;
+-		Write.Opacity = Opacity;
+-		Write.Writer = DescribeWriter();
++		History.Last.Frame = GFrameCounter;
++		History.Last.Pose = Pose;
++		History.Last.Writer = Writer;
+ 	}
+ }
+ 
+@@ -2063,7 +2083,7 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
+ 		// pushed a transform of its own to Slate and invalidated the widget four times a frame - scale with last frame's
+ 		// angle, then the new translation, and so on - which, under invalidation (Global Invalidation, an Invalidation or
+ 		// Retainer Box), was the suspect for a rotating widget flashing up larger for a frame or two at runtime only.
+-		WidgetAnimTransformDebug::Check(Target, Pose, Opacity);
++		WidgetAnimTransformDebug::Check(Target, Pose);
+ 
+ 		if (!FMath::IsNearlyEqual(Target->GetRenderOpacity(), Opacity))
+ 		{
+@@ -5265,7 +5285,7 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
+ 	{
+ 		if (Player.LastAdvanceFrame == GFrameCounter)
+ 		{
+-			WidgetAnimTransformDebug::NoteSecondAdvance(FallbackWidget, DeltaTime);
++			WidgetAnimTransformDebug::NoteSecondAdvance(&Player, FallbackWidget, DeltaTime);
+ 			DeltaTime = 0.f;
+ 		}
+ 		else
+@@ -5275,7 +5295,7 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
+ 	}
+ 
+ 	// Who is writing, for WidgetAnim.DebugTransforms.
+-	const WidgetAnimTransformDebug::FWriterScope Writer(FallbackWidget, DeltaTime);
++	const WidgetAnimTransformDebug::FWriterScope Writer(&Player, FallbackWidget, DeltaTime);
+ 
+ 	// Staggers of tracks just started fan out first, on this widget, so everything below sees their items.
+ 	for (FWidgetAnimTrack& Track : Player.Tracks)

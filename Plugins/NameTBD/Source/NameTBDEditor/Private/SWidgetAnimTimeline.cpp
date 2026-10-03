@@ -30,6 +30,9 @@
 #include "Misc/Base64.h"
 #include "Algo/Find.h"
 #include "Components/Widget.h"
+#include "Components/CanvasPanelSlot.h"
+#include "Components/PanelWidget.h"
+#include "Algo/StableSort.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Slate/WidgetTransform.h"
@@ -84,6 +87,9 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Views/SListView.h"
 #include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Input/STextComboBox.h"
 #include "Widgets/Layout/SBorder.h"
@@ -471,8 +477,15 @@ namespace WidgetAnimTimeline
 		return 60.f;
 	}
 
-	FString FormatSeconds(float Seconds, float Step)
+	FString FormatSeconds(float Seconds, float Step, bool bPercent = false)
 	{
+		// On a percentage timeline 100% is one second: a tick a hundredth of a second apart is a whole percent.
+		if (bPercent)
+		{
+			const float PercentStep = Step * 100.f;
+			const int32 PercentDecimals = PercentStep >= 1.f ? 0 : (PercentStep >= 0.1f ? 1 : 2);
+			return FString::Printf(TEXT("%.*f%%"), PercentDecimals, Seconds * 100.f);
+		}
 		const int32 Decimals = Step >= 1.f ? 0 : (Step >= 0.1f ? 1 : (Step >= 0.01f ? 2 : 3));
 		return FString::Printf(TEXT("%.*f"), Decimals, Seconds);
 	}
@@ -2333,7 +2346,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			// One whose length its widget decides says what decides it, beside the length the preview works out.
 			FString LengthLabel = bValueDriven
 				? LOCTEXT("ValueDrivenSectionLength", "(Value Driven)").ToString()
-				: FString::Printf(TEXT("%.2fs"), Span.Y);
+				: (Owner->IsPercentTime() ? SWidgetAnimTimeline::FormatPercent(Span.Y) : FString::Printf(TEXT("%.2fs"), Span.Y));
 			if (bDerivedLength)
 			{
 				const FWidgetAnimEvaluator* Evaluator = Layer->FindEvaluator();
@@ -2353,8 +2366,9 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 				? CueEvaluator->GetTrackSummary(Layer->TypeParams).ToString()
 				: SWidgetAnimTimeline::GetEasingName(*Layer).ToString();
 
-			// An animation track says what its animation is for - its Description's first line - when it has one.
-			if (Layer->IsAnimationTrack())
+			// An animation track says what its animation is for - its Description's first line - when it has one; one following
+			// a float value always names the value instead, which is what moves it.
+			if (Layer->IsAnimationTrack() && !Layer->IsValueDriven())
 			{
 				FString Description = Layer->InsertedAnimation->Description.ToString().TrimStartAndEnd();
 				int32 LineEnd = INDEX_NONE;
@@ -2665,6 +2679,13 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 		Box(0.f, ClipTop, StartX, PassBottom - ClipTop, Palette::OutOfRangeShade, GridLayer);
 		Box(EndX, ClipTop, Size.X - EndX, PassBottom - ClipTop, Palette::OutOfRangeShade, GridLayer);
 
+		// A percentage timeline ends at 100% - one second as stored - however far its tracks reach: past it is never played.
+		if (Owner->IsPercentTime() && PassSeconds > 1.f + KINDA_SMALL_NUMBER)
+		{
+			const float HundredX = TimeToX(1.f, Size.X);
+			Box(HundredX, ClipTop, EndX - HundredX, PassBottom - ClipTop, Palette::PercentPastEndShade, GridLayer);
+		}
+
 		for (int64 TickIndex = FirstTick; TickIndex * MinorStep <= ViewMax; ++TickIndex)
 		{
 			const float X = TimeToX(TickIndex * MinorStep, Size.X);
@@ -2800,7 +2821,9 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 					Paint.bHidden = bAllHidden;
 					Paint.bLocked = bAllLocked;
 					Paint.bWashedOut = bReadOnly || bAllHidden || bAllLocked;
-					Paint.Title = FString::Printf(TEXT("%s  %.2fs"), *CollapsedName.ToString(), Paint.Span.Y);
+					Paint.Title = Owner->IsPercentTime()
+						? FString::Printf(TEXT("%s  %s"), *CollapsedName.ToString(), *SWidgetAnimTimeline::FormatPercent(Paint.Span.Y))
+						: FString::Printf(TEXT("%s  %.2fs"), *CollapsedName.ToString(), Paint.Span.Y);
 					Paint.Secondary = FText::Format(LOCTEXT("CollapsedSectionCount", "{0} {0}|plural(one=track,other=tracks)"), FText::AsNumber(Members.Num())).ToString();
 					DrawSection(Paint);
 					continue;
@@ -2873,7 +2896,10 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 
 			// Its tracks: drawn as any track is - name, length, easing, keys - but grayed, and with nothing to grab: they are
 			// the inserted animation's, edited there, or here once the track is unraveled.
-			const float NestedKeyScale = TimeScale / FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);
+			const TArray<FWidgetAnimLayer>* OwnerLayers = Owner->GetLayers();
+			const float NestedKeyScale = TimeScale / (OwnerLayers && OwnerLayers->IsValidIndex(Line.AnimationLayer)
+				? UWidgetAnimLibrary::GetInsertedPlaySpeed((*OwnerLayers)[Line.AnimationLayer])
+				: FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f));
 			for (const int32 Index : Line.NestedLayers)
 			{
 				if (!Animation->Layers.IsValidIndex(Index) || !NestedSpans->IsValidIndex(Index))
@@ -3002,7 +3028,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 		if (bMajor)
 		{
 			Box(X, RulerHeight - 9.f, 1.f, 9.f, RulerTick, RulerLayer + 1);
-			Text(FormatSeconds(FMath::IsNearlyZero(Tick, MinorStep * 0.25f) ? 0.f : Tick, Step), X + 4.f, 4.f, RulerFont, RulerText, RulerLayer + 1);
+			Text(FormatSeconds(FMath::IsNearlyZero(Tick, MinorStep * 0.25f) ? 0.f : Tick, Step, Owner->IsPercentTime()), X + 4.f, 4.f, RulerFont, RulerText, RulerLayer + 1);
 		}
 		else
 		{
@@ -3018,6 +3044,10 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 		// a handle in the ruler to drag it by, lit while the mouse is on it or it is being dragged.
 		Box(StartX, 0.f, 1.f, Size.Y, Palette::RangeStart, RangeLayer);
 		Box(EndX, 0.f, 1.f, Size.Y, Palette::RangeEnd, RangeLayer);
+		if (Owner->IsPercentTime() && PassSeconds > 1.f + KINDA_SMALL_NUMBER)
+		{
+			Box(TimeToX(1.f, Size.X), 0.f, 1.f, Size.Y, Palette::PercentEndLine, RangeLayer);
+		}
 		{
 			const bool bCanDragRange = Owner->CanEdit() && Layers && Layers->Num() > 0;
 			const bool bDraggingRange = Drag == EDrag::Range || Drag == EDrag::RangePending;
@@ -4078,6 +4108,8 @@ private:
 			const UClass* BuilderClass = UWidgetAnimBuilder::StaticClass();
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, AnimationName), BuilderClass));
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Description), BuilderClass));
+			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, TimeUnit), BuilderClass));
+			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Progress), BuilderClass)).ShouldAutoExpand(true);
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, AnimationSpeedMultiplier), BuilderClass));
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, MinimumLength), BuilderClass));
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, SaveFolder), BuilderClass));
@@ -4087,9 +4119,125 @@ private:
 		else
 		{
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimPresetAsset, Description), UWidgetAnimPresetAsset::StaticClass()));
+			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimPresetAsset, TimeUnit), UWidgetAnimPresetAsset::StaticClass()));
+			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimPresetAsset, Progress), UWidgetAnimPresetAsset::StaticClass())).ShouldAutoExpand(true);
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimPresetAsset, AnimationSpeedMultiplier), UWidgetAnimPresetAsset::StaticClass()));
 			Animation.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimPresetAsset, MinimumLength), UWidgetAnimPresetAsset::StaticClass()));
 		}
+	}
+
+	/**
+	 * A dropdown of widget paths with a search box at its top: typing narrows the list to the paths containing what is typed
+	 * (any case), Enter picks the first one left, and the list scrolls once there are more than fit. What a Widget Blueprint
+	 * with many widgets needs to find the one it wants. Options is kept alive by the dropdown.
+	 */
+	static TSharedRef<SWidget> MakeSearchablePicker(const TSharedRef<TArray<TSharedPtr<FString>>>& Options, const TAttribute<FText>& Current, TFunction<void(const FString&)> OnPicked, const TAttribute<bool>& Enabled, const FText& ToolTip)
+	{
+		struct FPickerState
+		{
+			TArray<TSharedPtr<FString>> Filtered;
+			TSharedPtr<SListView<TSharedPtr<FString>>> List;
+			TWeakPtr<SComboButton> Combo;
+		};
+		const TSharedRef<FPickerState> State = MakeShared<FPickerState>();
+
+		auto Pick = [State, OnPicked](const TSharedPtr<FString>& Item)
+		{
+			if (Item.IsValid())
+			{
+				OnPicked(*Item);
+			}
+			if (const TSharedPtr<SComboButton> Combo = State->Combo.Pin())
+			{
+				Combo->SetIsOpen(false);
+			}
+		};
+
+		auto Filter = [State, Options](const FString& Text)
+		{
+			State->Filtered.Reset();
+			const FString Needle = Text.TrimStartAndEnd();
+			for (const TSharedPtr<FString>& Option : *Options)
+			{
+				if (Option.IsValid() && (Needle.IsEmpty() || Option->Contains(Needle, ESearchCase::IgnoreCase)))
+				{
+					State->Filtered.Add(Option);
+				}
+			}
+			if (State->List.IsValid())
+			{
+				State->List->RequestListRefresh();
+			}
+		};
+
+		const TSharedRef<SComboButton> Combo = SNew(SComboButton)
+			.IsEnabled(Enabled)
+			.ToolTipText(ToolTip)
+			.ButtonContent()
+			[
+				SNew(STextBlock)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.Text(Current)
+			];
+
+		Combo->SetOnGetMenuContent(FOnGetContent::CreateLambda([State, Filter, Pick, Current]() -> TSharedRef<SWidget>
+		{
+			Filter(FString());
+
+			const TSharedRef<SSearchBox> Search = SNew(SSearchBox)
+				.HintText(LOCTEXT("SearchWidgetsHint", "Search widgets"))
+				.OnTextChanged_Lambda([Filter](const FText& Text) { Filter(Text.ToString()); })
+				.OnTextCommitted_Lambda([State, Pick](const FText&, ETextCommit::Type CommitType)
+				{
+					if (CommitType == ETextCommit::OnEnter && State->Filtered.Num() > 0)
+					{
+						Pick(State->Filtered[0]);
+					}
+				});
+
+			const FString CurrentText = Current.Get().ToString();
+			State->List = SNew(SListView<TSharedPtr<FString>>)
+				.ListItemsSource(&State->Filtered)
+				.SelectionMode(ESelectionMode::Single)
+				.OnGenerateRow_Lambda([CurrentText](TSharedPtr<FString> Item, const TSharedRef<STableViewBase>& Owner)
+				{
+					const bool bCurrent = Item.IsValid() && *Item == CurrentText;
+					return SNew(STableRow<TSharedPtr<FString>>, Owner)
+						.Padding(FMargin(6.f, 2.f))
+						[
+							SNew(STextBlock)
+							.Font(bCurrent ? IDetailLayoutBuilder::GetDetailFontBold() : IDetailLayoutBuilder::GetDetailFont())
+							.Text(FText::FromString(Item.IsValid() ? *Item : FString()))
+						];
+				})
+				.OnMouseButtonClick_Lambda([Pick](TSharedPtr<FString> Item) { Pick(Item); });
+
+			if (const TSharedPtr<SComboButton> Pinned = State->Combo.Pin())
+			{
+				Pinned->SetMenuContentWidgetToFocus(Search);
+			}
+
+			return SNew(SBox)
+				.MinDesiredWidth(240.f)
+				.MaxDesiredHeight(360.f)
+				.Padding(FMargin(4.f))
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(FMargin(0.f, 0.f, 0.f, 4.f))
+					[
+						Search
+					]
+					+ SVerticalBox::Slot()
+					.FillHeight(1.f)
+					[
+						State->List.ToSharedRef()
+					]
+				];
+		}));
+		State->Combo = Combo;
+		return Combo;
 	}
 
 	/** A group: its name, and the widget it animates here - picked from this Widget Blueprint's own widgets. */
@@ -4159,18 +4307,20 @@ private:
 				.FillWidth(1.f)
 				.VAlign(VAlign_Center)
 				[
-					SNew(STextComboBox)
-					.IsEnabled_Lambda([WeakOwner]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanEdit(); })
-					.OptionsSource(TargetOptions.Get())
-					.InitiallySelectedItem(Initial)
-					.ToolTipText(WidgetAnimTips::PreviewTargetTooltip())
-					.OnSelectionChanged_Lambda([Target](TSharedPtr<FString> Item, ESelectInfo::Type)
-					{
-						if (Item.IsValid())
+					MakeSearchablePicker(
+						TargetOptions.ToSharedRef(),
+						TAttribute<FText>::CreateLambda([Target]()
 						{
-							Target->SetValue(*Item == TEXT("None") ? FName(NAME_None) : FName(**Item));
-						}
-					})
+							FName Value;
+							Target->GetValue(Value);
+							return FText::FromString(Value.IsNone() ? FString(TEXT("None")) : Value.ToString());
+						}),
+						[Target](const FString& Picked)
+						{
+							Target->SetValue(Picked == TEXT("None") ? FName(NAME_None) : FName(*Picked));
+						},
+						TAttribute<bool>::CreateLambda([WeakOwner]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanEdit(); }),
+						WidgetAnimTips::PreviewTargetTooltip())
 				]
 
 				// Pick it by clicking the widget in the designer instead: lit while it waits for that click.
@@ -4337,20 +4487,24 @@ private:
 				.ValueContent()
 				.MinDesiredWidth(180.f)
 				[
-					SNew(STextComboBox)
-					.IsEnabled_Lambda([WeakTargetOwner, LayerIndex]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin(); return Pinned && Pinned->CanEditLayer(LayerIndex); })
-					.OptionsSource(LayerTargetOptions.Get())
-					.InitiallySelectedItem(InitialTarget)
-					.ToolTipText(WidgetAnimTips::LayerTargetWidgetTooltip())
-					.OnSelectionChanged_Lambda([WeakTargetOwner, LayerIndex](TSharedPtr<FString> Item, ESelectInfo::Type SelectInfo)
-					{
-						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin();
-						if (!Pinned || !Item.IsValid() || SelectInfo == ESelectInfo::Direct)
+					MakeSearchablePicker(
+						LayerTargetOptions.ToSharedRef(),
+						TAttribute<FText>::CreateLambda([WeakTargetOwner, LayerIndex]()
 						{
-							return;
-						}
-						Pinned->SetLayerTarget(LayerIndex, *Item == TEXT("None") ? FName(NAME_None) : FName(**Item));
-					})
+							const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin();
+							const TArray<FWidgetAnimLayer>* Layers = Pinned ? Pinned->GetLayers() : nullptr;
+							const FName Value = Layers && Layers->IsValidIndex(LayerIndex) ? (*Layers)[LayerIndex].TargetWidget : FName(NAME_None);
+							return FText::FromString(Value.IsNone() ? FString(TEXT("None")) : Value.ToString());
+						}),
+						[WeakTargetOwner, LayerIndex](const FString& Picked)
+						{
+							if (const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin())
+							{
+								Pinned->SetLayerTarget(LayerIndex, Picked == TEXT("None") ? FName(NAME_None) : FName(*Picked));
+							}
+						},
+						TAttribute<bool>::CreateLambda([WeakTargetOwner, LayerIndex]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin(); return Pinned && Pinned->CanEditLayer(LayerIndex); }),
+						WidgetAnimTips::LayerTargetWidgetTooltip())
 				];
 		}
 
@@ -4433,7 +4587,7 @@ private:
 		// An animation track plays another animation whole: only when it starts is its own to set here.
 		if (TargetLayers && TargetLayers->IsValidIndex(LayerIndex) && (*TargetLayers)[LayerIndex].IsAnimationTrack())
 		{
-			CustomizeAnimationTrack(Category, LayerHandle, (*TargetLayers)[LayerIndex]);
+			CustomizeAnimationTrack(Category, LayerHandle, (*TargetLayers)[LayerIndex], LayerIndex);
 			return;
 		}
 
@@ -4530,6 +4684,14 @@ private:
 				continue;
 			}
 
+			// On a percentage timeline a track's length and delay are percentages of it.
+			if (Owner && Owner->IsPercentTime()
+				&& (ChildProperty->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Duration) || ChildProperty->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Delay)))
+			{
+				AddPercentTimeRow(Category, Child.ToSharedRef(), LayerIndex);
+				continue;
+			}
+
 			// Everything else hides itself by type through its own EditCondition, wherever it is added - and a Timing
 			// or Value Type the type can't use is left out of its dropdown.
 			Category.AddProperty(Child);
@@ -4543,6 +4705,81 @@ private:
 		{
 			AddMaterialWarningRow(Category, LayerIndex);
 		}
+	}
+
+	/**
+	 * A track's Duration or Delay on a percentage timeline, shown and typed as a percentage of it - 100% is one second as
+	 * stored. Shown where the stock row would be: Duration only where it times the track, as its EditCondition says.
+	 */
+	void AddPercentTimeRow(IDetailCategoryBuilder& Category, const TSharedRef<IPropertyHandle>& Handle, int32 LayerIndex)
+	{
+		const bool bDuration = Handle->GetProperty() && Handle->GetProperty()->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Duration);
+		const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Panel;
+
+		Category.AddProperty(Handle).CustomWidget()
+			.Visibility(TAttribute<EVisibility>::CreateLambda([WeakOwner, LayerIndex, bDuration]()
+			{
+				if (!bDuration)
+				{
+					return EVisibility::Visible;
+				}
+
+				// Duration's own EditCondition: it times a Tween (not a Transform, whose keys do), a Pulse, a value's ease -
+				// or an animation track stretched across it.
+				const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+				const TArray<FWidgetAnimLayer>* Layers = Pinned ? Pinned->GetLayers() : nullptr;
+				if (!Layers || !Layers->IsValidIndex(LayerIndex))
+				{
+					return EVisibility::Collapsed;
+				}
+				const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+				const bool bShown = Layer.FitsAnimationToTrack()
+					|| (Layer.AnimType != EWidgetAnimType::Transform && Layer.Timing != EWidgetAnimTiming::Spring)
+					|| Layer.AnimType == EWidgetAnimType::Pulse
+					|| (Layer.Timing == EWidgetAnimTiming::Value && Layer.ValueSmoothing == EWidgetAnimValueSmoothing::Tween);
+				return bShown ? EVisibility::Visible : EVisibility::Collapsed;
+			}))
+			.NameContent()
+			[
+				Handle->CreatePropertyNameWidget()
+			]
+			.ValueContent()
+			.MinDesiredWidth(120.f)
+			[
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SNumericEntryBox<float>)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.AllowSpin(false)
+					.MinValue(bDuration ? TOptional<float>(0.1f) : TOptional<float>())
+					.IsEnabled_Lambda([WeakOwner, LayerIndex]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanEditLayer(LayerIndex); })
+					.Value_Lambda([Handle]() -> TOptional<float>
+					{
+						float Seconds = 0.f;
+						// Rounded to two places, as everywhere else a percentage is shown.
+						return Handle->GetValue(Seconds) == FPropertyAccess::Success ? TOptional<float>(FMath::RoundHalfFromZero(Seconds * 10000.f) / 100.f) : TOptional<float>();
+					})
+					.OnValueCommitted_Lambda([Handle](float Percent, ETextCommit::Type)
+					{
+						Handle->SetValue(Percent / 100.f);
+					})
+				]
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+				[
+					SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+					.Text(LOCTEXT("PercentUnit", "%"))
+				]
+			];
 	}
 
 	/**
@@ -4805,15 +5042,151 @@ private:
 	 * runs and a button that finds it in the Content Browser - and how to edit its tracks. Everything else about it is the
 	 * inserted animation's, edited there.
 	 */
-	static void CustomizeAnimationTrack(IDetailCategoryBuilder& Category, const TSharedRef<IPropertyHandle>& LayerHandle, const FWidgetAnimLayer& Layer)
+	void CustomizeAnimationTrack(IDetailCategoryBuilder& Category, const TSharedRef<IPropertyHandle>& LayerHandle, const FWidgetAnimLayer& Layer, int32 LayerIndex)
 	{
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		const bool bPercent = Owner && Owner->IsPercentTime();
+		const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Panel;
+
 		for (const FName Name : { GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Start), GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Delay) })
 		{
 			const TSharedPtr<IPropertyHandle> Child = LayerHandle->GetChildHandle(Name);
 			if (Child.IsValid() && Child->IsValidHandle())
 			{
-				Category.AddProperty(Child);
+				if (bPercent && Name == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Delay))
+				{
+					AddPercentTimeRow(Category, Child.ToSharedRef(), LayerIndex);
+				}
+				else
+				{
+					Category.AddProperty(Child);
+				}
 			}
+		}
+
+		// Stretched across the track - always for a percentage animation, or in a percentage timeline - or played at its own
+		// length. Stretched, its length is the track's own, resized here or by its edges.
+		const bool bInsertsPercent = Layer.InsertedAnimation && Layer.InsertedAnimation->IsPercentTime();
+		const bool bFitForced = bInsertsPercent || bPercent || Layer.IsValueDriven();
+		Category.AddCustomRow(LOCTEXT("AnimationTrackFitRow", "Stretch Across Track"))
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("AnimationTrackFitLabel", "Stretch Across Track"))
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.ToolTipText(WidgetAnimTips::AnimationTrackFitTooltip())
+			]
+			.ValueContent()
+			[
+				SNew(SCheckBox)
+				.ToolTipText(WidgetAnimTips::AnimationTrackFitTooltip())
+				.IsEnabled_Lambda([WeakOwner, LayerIndex, bFitForced]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return !bFitForced && Pinned && Pinned->CanEditLayer(LayerIndex); })
+				.IsChecked_Lambda([WeakOwner, LayerIndex]()
+				{
+					const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+					const TArray<FWidgetAnimLayer>* Layers = Pinned ? Pinned->GetLayers() : nullptr;
+					return Layers && Layers->IsValidIndex(LayerIndex) && (*Layers)[LayerIndex].FitsAnimationToTrack() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+				})
+				.OnCheckStateChanged_Lambda([WeakOwner, LayerIndex](ECheckBoxState State)
+				{
+					if (const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin())
+					{
+						Pinned->SetAnimationTrackFit(LayerIndex, State == ECheckBoxState::Checked);
+					}
+				})
+			];
+
+		if (Layer.FitsAnimationToTrack())
+		{
+			const TSharedPtr<IPropertyHandle> DurationHandle = LayerHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Duration));
+			if (DurationHandle.IsValid() && DurationHandle->IsValidHandle())
+			{
+				if (bPercent)
+				{
+					AddPercentTimeRow(Category, DurationHandle.ToSharedRef(), LayerIndex);
+				}
+				else
+				{
+					Category.AddProperty(DurationHandle);
+				}
+			}
+		}
+
+		// What moves it along the track: the timeline passing it, or a float value of its own.
+		Category.AddCustomRow(LOCTEXT("AnimationTrackDriveRow", "Moved By"))
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("AnimationTrackDriveLabel", "Moved By"))
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.ToolTipText(WidgetAnimTips::AnimationTrackDriveTooltip())
+			]
+			.ValueContent()
+			.MinDesiredWidth(180.f)
+			[
+				SNew(SComboButton)
+				.ToolTipText(WidgetAnimTips::AnimationTrackDriveTooltip())
+				.IsEnabled_Lambda([WeakOwner, LayerIndex]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanEditLayer(LayerIndex); })
+				.OnGetMenuContent_Lambda([WeakOwner, LayerIndex]() -> TSharedRef<SWidget>
+				{
+					FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+					for (const bool bValue : { false, true })
+					{
+						Menu.AddMenuEntry(
+							bValue ? LOCTEXT("AnimationTrackDriveValue", "Float Value") : LOCTEXT("AnimationTrackDriveClock", "Across the Track"),
+							WidgetAnimTips::AnimationTrackDriveTooltip(),
+							FSlateIcon(),
+							FUIAction(
+								FExecuteAction::CreateLambda([WeakOwner, LayerIndex, bValue]()
+								{
+									if (const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin())
+									{
+										Pinned->SetAnimationTrackValueDriven(LayerIndex, bValue);
+									}
+								}),
+								FCanExecuteAction(),
+								FIsActionChecked::CreateLambda([WeakOwner, LayerIndex, bValue]()
+								{
+									const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+									const TArray<FWidgetAnimLayer>* Layers = Pinned ? Pinned->GetLayers() : nullptr;
+									return Layers && Layers->IsValidIndex(LayerIndex) && (*Layers)[LayerIndex].IsValueDriven() == bValue;
+								})),
+							NAME_None,
+							EUserInterfaceActionType::RadioButton);
+					}
+					return Menu.MakeWidget();
+				})
+				.ButtonContent()
+				[
+					SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.Text(Layer.IsValueDriven() ? LOCTEXT("AnimationTrackDriveValue", "Float Value") : LOCTEXT("AnimationTrackDriveClock", "Across the Track"))
+				]
+			];
+
+		// Following a value: its name, how it travels and what feeds it - the value-track settings, as any value track has them.
+		if (Layer.IsValueDriven())
+		{
+			static const FName ValueNames[] =
+			{
+				GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueName),
+				GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueSmoothing),
+				GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Spring),
+				GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, SteadySpeed),
+				GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, SteadyCatchUpTime),
+				GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueOptions),
+				GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueInput),
+			};
+			for (const FName Name : ValueNames)
+			{
+				const TSharedPtr<IPropertyHandle> Child = LayerHandle->GetChildHandle(Name);
+				if (Child.IsValid() && Child->IsValidHandle())
+				{
+					Category.AddProperty(Child);
+					WidgetAnimTimeline::RestrictLayerChoices(Child, { &Layer });
+				}
+			}
+			AddNoteRow(Category, WidgetAnimTips::AnimationTrackValueNote());
 		}
 
 		const TWeakObjectPtr<UWidgetAnimPresetAsset> WeakAnimation = Layer.InsertedAnimation.Get();
@@ -4839,7 +5212,9 @@ private:
 					SNew(STextBlock)
 					.Font(IDetailLayoutBuilder::GetDetailFont())
 					.ColorAndOpacity(FSlateColor(NameTBD::Colors::AnimationOrange_Normal))
-					.Text(FText::Format(LOCTEXT("AnimationTrackValue", "{0}  ({1} s)"), AnimationName, FText::AsNumber(Layer.GetRunLength(), &Seconds)))
+					.Text(Layer.InsertedAnimation && Layer.InsertedAnimation->IsPercentTime()
+						? FText::Format(LOCTEXT("AnimationTrackValuePercent", "{0}  (0 - 100%)"), AnimationName)
+						: FText::Format(LOCTEXT("AnimationTrackValue", "{0}  ({1} s)"), AnimationName, FText::AsNumber(UWidgetAnimLibrary::GetAnimationPassSeconds(Layer.InsertedAnimation.Get()), &Seconds)))
 				]
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
@@ -6792,12 +7167,12 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeInlineTransport()
 	// The time, right beside the buttons.
 	Add(SNew(STextBlock)
 		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
-		.Text_Lambda([this]() { return FText::FromString(FString::Printf(TEXT("%.2f"), GetPlayheadSeconds())); }),
+		.Text_Lambda([this]() { return FText::FromString(IsPercentTime() ? FormatPercent(GetPlayheadSeconds()) : FString::Printf(TEXT("%.2f"), GetPlayheadSeconds())); }),
 		FMargin(6.f, 0.f, 0.f, 0.f));
 	Add(SNew(STextBlock)
 		.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
 		.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-		.Text_Lambda([this]() { return FText::FromString(FString::Printf(TEXT(" / %.2f s"), GetPassSeconds())); }),
+		.Text_Lambda([this]() { return FText::FromString(TEXT(" / ") + FormatTime(GetPassSeconds())); }),
 		FMargin(0.f));
 
 	return SNew(SBorder)
@@ -7108,6 +7483,59 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 			]
 		]
 	];
+
+	// Time In: Seconds or Percent - an animation that follows a progress value instead of time. Only where the animation
+	// keeps one: an asset or a timeline, the builder; never a component's plain list. In the animation orange while in
+	// Percent, so a percentage timeline reads as one at a glance.
+	{
+		auto TimeUnitName = [](EWidgetAnimTimeUnit Unit)
+		{
+			return Unit == EWidgetAnimTimeUnit::Percent ? LOCTEXT("TimeInPercent", "Percent") : LOCTEXT("TimeInSeconds", "Seconds");
+		};
+
+		Header->AddSlot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(6.f, 0.f, 0.f, 0.f))
+		[
+			SNew(SWidgetAnimAnchoredTip)
+			.Text(WidgetAnimTips::TimeUnitTooltip())
+			.Visibility_Lambda([this]() { return !bCompact && HasAnimation() && Source.IsValid() && Source->CanSetTimeUnit() ? EVisibility::Visible : EVisibility::Collapsed; })
+			[
+				SNew(SComboButton)
+				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+				.ContentPadding(FMargin(4.f, 1.f))
+				.IsEnabled_Lambda([this]() { return CanEdit(); })
+				.OnGetMenuContent_Lambda([this, TimeUnitName]() -> TSharedRef<SWidget>
+				{
+					FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+					Menu.BeginSection("TimeIn", LOCTEXT("TimeInHeading", "Time In"));
+					for (const EWidgetAnimTimeUnit Unit : { EWidgetAnimTimeUnit::Seconds, EWidgetAnimTimeUnit::Percent })
+					{
+						Menu.AddMenuEntry(
+							TimeUnitName(Unit),
+							Unit == EWidgetAnimTimeUnit::Percent ? WidgetAnimTips::TimeInPercentTooltip() : WidgetAnimTips::TimeInSecondsTooltip(),
+							FSlateIcon(),
+							FUIAction(
+								FExecuteAction::CreateLambda([this, Unit]() { SetTimeUnit(Unit); }),
+								FCanExecuteAction::CreateLambda([this]() { return CanEdit(); }),
+								FIsActionChecked::CreateLambda([this, Unit]() { return Source.IsValid() && Source->GetTimeUnit() == Unit; })),
+							NAME_None,
+							EUserInterfaceActionType::RadioButton);
+					}
+					Menu.EndSection();
+					return Menu.MakeWidget();
+				})
+				.ButtonContent()
+				[
+					SNew(STextBlock)
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+					.ColorAndOpacity_Lambda([this]() { return IsPercentTime() ? FSlateColor(NameTBD::Colors::AnimationOrange_Normal) : FSlateColor::UseSubduedForeground(); })
+					.Text_Lambda([this]() { return IsPercentTime() ? LOCTEXT("TimeInPercentShort", "0 - 100%") : LOCTEXT("TimeInSecondsShort", "Seconds"); })
+				]
+			]
+		];
+	}
 
 	// Fit: the whole animation back in view - the F key, or a double-click on the ruler, does the same. On a faint chip,
 	// so it reads as a button to press - not a toggle, which the lit chips of the controls pill are. The graph editors'
@@ -7999,7 +8427,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 			[
 				SNew(STextBlock)
 				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-				.Text_Lambda([this]() { return FText::FromString(FString::Printf(TEXT("%.2f"), GetPlayheadSeconds())); })
+				.Text_Lambda([this]() { return FText::FromString(IsPercentTime() ? FormatPercent(GetPlayheadSeconds()) : FString::Printf(TEXT("%.2f"), GetPlayheadSeconds())); })
 			]
 
 			+ SHorizontalBox::Slot()
@@ -8009,7 +8437,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 				SNew(STextBlock)
 				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
 				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-				.Text_Lambda([this]() { return FText::FromString(FString::Printf(TEXT(" / %.2f s"), GetPassSeconds())); })
+				.Text_Lambda([this]() { return FText::FromString(TEXT(" / ") + FormatTime(GetPassSeconds())); })
 			]
 		];
 
@@ -8175,6 +8603,79 @@ float SWidgetAnimTimeline::GetTimeScale() const
 	return Source.IsValid() ? 1.f / Source->GetAnimationSpeedMultiplier() : 1.f;
 }
 
+bool SWidgetAnimTimeline::IsPercentTime() const
+{
+	return Source.IsValid() && Source->GetTimeUnit() == EWidgetAnimTimeUnit::Percent;
+}
+
+FString SWidgetAnimTimeline::FormatTime(float Seconds, int32 Decimals) const
+{
+	if (IsPercentTime())
+	{
+		return FormatPercent(Seconds);
+	}
+	return FString::Printf(TEXT("%.*f s"), Decimals, Seconds);
+}
+
+FString SWidgetAnimTimeline::FormatSpan(float Start, float End) const
+{
+	if (IsPercentTime())
+	{
+		FString Text = FormatPercent(Start);
+		Text.LeftChopInline(1);
+		return Text + TEXT(" - ") + FormatPercent(End);
+	}
+	return FString::Printf(TEXT("%.2f - %.2f s"), Start, End);
+}
+
+FString SWidgetAnimTimeline::FormatPercent(float Seconds)
+{
+	// Rounded to two places, then trailing zeros - and a point left with nothing after it - dropped: 25%, 12.5%, 33.33%.
+	const double Percent = FMath::RoundHalfFromZero(static_cast<double>(Seconds) * 10000.0) / 100.0;
+	FString Text = FString::Printf(TEXT("%.2f"), Percent);
+	Text.TrimToNullTerminator();
+	while (Text.EndsWith(TEXT("0")))
+	{
+		Text.LeftChopInline(1);
+	}
+	if (Text.EndsWith(TEXT(".")))
+	{
+		Text.LeftChopInline(1);
+	}
+	if (Text == TEXT("-0"))
+	{
+		Text = TEXT("0");
+	}
+	return Text + TEXT("%");
+}
+
+void SWidgetAnimTimeline::SetTimeUnit(EWidgetAnimTimeUnit Unit)
+{
+	if (!Source.IsValid() || !Source->CanSetTimeUnit() || Source->GetTimeUnit() == Unit || !CanEdit())
+	{
+		return;
+	}
+
+	const FScopedTransaction Transaction(Unit == EWidgetAnimTimeUnit::Percent
+		? LOCTEXT("TimeInPercentTransaction", "Time In Percent")
+		: LOCTEXT("TimeInSecondsTransaction", "Time In Seconds"));
+	if (!BeginEdit())
+	{
+		return;
+	}
+
+	// Every track retimed at once, as the Details panel's Time In does - the playhead and view follow the new length.
+	Source->SetTimeUnit(Unit);
+	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	ScrubToSeconds(0.f);
+	RefreshDetails();
+	RebuildRows();
+	if (Tracks.IsValid())
+	{
+		Tracks->FitToAnimation();
+	}
+}
+
 bool SWidgetAnimTimeline::CanEditLayer(int32 LayerIndex) const
 {
 	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
@@ -8250,12 +8751,17 @@ bool SWidgetAnimTimeline::CanResizeLayer(int32 LayerIndex, bool bStartEdge) cons
 		return false;
 	}
 
-	// An animation track is as long as the animation it plays: dragged along, never stretched. A collapsed track is as
-	// long as its tracks: each is resized on its own, inside it.
+	// An animation track is as long as the animation it plays: dragged along, never stretched - unless it plays its
+	// animation stretched across itself, a percentage animation's always does. A collapsed track is as long as its tracks:
+	// each is resized on its own, inside it.
 	const FWidgetAnimLayer& Layer = (*GetLayers())[LayerIndex];
-	if (Layer.IsAnimationTrack() || IsCollapsedHead(LayerIndex))
+	if ((Layer.IsAnimationTrack() && !Layer.FitsAnimationToTrack()) || IsCollapsedHead(LayerIndex))
 	{
 		return false;
+	}
+	if (Layer.IsAnimationTrack())
+	{
+		return true;
 	}
 
 	// Stretching a Transform layer stretches its keys, and a shared Curve asset's keys aren't this animation's.
@@ -9863,6 +10369,10 @@ uint32 SWidgetAnimTimeline::ComputeLayoutSignature() const
 	}
 
 	Hash = HashCombine(Hash, GetTypeHash(Layers->Num()));
+
+	// Seconds or Percent decides how every time in the Selection panel is shown.
+	Hash = HashCombine(Hash, GetTypeHash(IsPercentTime()));
+
 	for (const FWidgetAnimLayer& Layer : *Layers)
 	{
 		Hash = HashCombine(Hash, GetTypeHash(static_cast<uint8>(Layer.AnimType)));
@@ -9892,6 +10402,9 @@ uint32 SWidgetAnimTimeline::ComputeLayoutSignature() const
 			Hash = HashCombine(Hash, PointerHash(Layer.InsertedAnimation.Get()));
 			Hash = HashCombine(Hash, GetTypeHash(Layer.InsertedAnimation->Layers.Num()));
 			Hash = HashCombine(Hash, GetTypeHash(Layer.InsertedAnimation->LayerGroups.Num()));
+
+			// Stretched across the track or not decides whether it has a length of its own to show.
+			Hash = HashCombine(Hash, GetTypeHash(Layer.FitsAnimationToTrack()));
 		}
 
 		// What a value-driven Transform drives decides which Value Types it offers, and its Value Type which of
@@ -10092,7 +10605,7 @@ FText SWidgetAnimTimeline::GetLayerTimeRange(int32 LayerIndex) const
 	}
 
 	const FVector2f Span = Spans[LayerIndex];
-	return FText::FromString(FString::Printf(TEXT("%.2f - %.2f s"), Span.X, Span.X + Span.Y));
+	return FText::FromString(FormatSpan(Span.X, Span.X + Span.Y));
 }
 
 void SWidgetAnimTimeline::RebuildLayerList()
@@ -11034,7 +11547,7 @@ void SWidgetAnimTimeline::AddCollapsedListRows(FName Name, int32 GroupIndex)
 						.Text_Lambda([this, Head]()
 						{
 							const FVector2f Span = GetShownSpan(Head);
-							return FText::FromString(FString::Printf(TEXT("%.2f - %.2f s"), Span.X, Span.X + Span.Y));
+							return FText::FromString(FormatSpan(Span.X, Span.X + Span.Y));
 						})
 					]
 				]
@@ -11257,7 +11770,7 @@ void SWidgetAnimTimeline::AddNestedListRows(int32 LayerIndex, int32 GroupIndex)
 							return FText::GetEmpty();
 						}
 						const FVector2f Span = (*Spans)[Index];
-						return FText::FromString(FString::Printf(TEXT("%.2f - %.2f s"), Span.X, Span.X + Span.Y));
+						return FText::FromString(FormatSpan(Span.X, Span.X + Span.Y));
 					})
 				]);
 		}
@@ -11679,7 +12192,7 @@ void SWidgetAnimTimeline::UpdateNestedSpans()
 		// starts, in this panel's seconds.
 		TArray<float> Starts;
 		UWidgetAnimLibrary::PlaceLayerStarts(Animation->Layers, TConstArrayView<float>(), Starts);
-		const float Scale = TimeScale / FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);
+		const float Scale = TimeScale / UWidgetAnimLibrary::GetInsertedPlaySpeed((*GetLayers())[LayerIndex]);
 		const float TrackStart = TrackSpans[LayerIndex].X;
 
 		TArray<FVector2f>& Spans = NestedSpans.Add(LayerIndex);
@@ -13307,6 +13820,94 @@ void SWidgetAnimTimeline::SetLayerGroup(int32 LayerIndex, int32 GroupIndex)
 	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
 }
 
+void SWidgetAnimTimeline::SetAnimationTrackFit(int32 LayerIndex, bool bFit)
+{
+	const TArray<FWidgetAnimLayer>* Current = GetLayers();
+	if (!Current || !Current->IsValidIndex(LayerIndex) || !CanEditLayer(LayerIndex) || !(*Current)[LayerIndex].IsAnimationTrack()
+		|| (*Current)[LayerIndex].bFitToTrack == bFit)
+	{
+		return;
+	}
+
+	const FScopedTransaction Transaction(LOCTEXT("SetAnimationTrackFitTransaction", "Stretch Animation Across Track"));
+	if (!BeginEdit())
+	{
+		return;
+	}
+
+	// Stretched, it starts out exactly as long as it played, so nothing moves until its edges are dragged.
+	TArray<float> OldStarts;
+	GetAuthoredStarts(OldStarts);
+	FWidgetAnimLayer& Layer = (*Source->GetLayers())[LayerIndex];
+	if (bFit)
+	{
+		Layer.Duration = Layer.GetRunLength();
+	}
+	Layer.bFitToTrack = bFit;
+	TArray<int32> SameIndices;
+	for (int32 Index = 0; Index < OldStarts.Num(); ++Index)
+	{
+		SameIndices.Add(Index);
+	}
+	PinLayerStarts(OldStarts, SameIndices);
+
+	// The layout signature brings the Selection panel along next frame: this comes from inside it.
+	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	RebuildRows();
+}
+
+void SWidgetAnimTimeline::SetAnimationTrackValueDriven(int32 LayerIndex, bool bValueDriven)
+{
+	const TArray<FWidgetAnimLayer>* Current = GetLayers();
+	if (!Current || !Current->IsValidIndex(LayerIndex) || !CanEditLayer(LayerIndex) || !(*Current)[LayerIndex].IsAnimationTrack()
+		|| (*Current)[LayerIndex].IsValueDriven() == bValueDriven)
+	{
+		return;
+	}
+
+	const FScopedTransaction Transaction(bValueDriven
+		? LOCTEXT("AnimationTrackValueTransaction", "Animation Track Follows a Value")
+		: LOCTEXT("AnimationTrackClockTransaction", "Animation Track Plays Across the Track"));
+	if (!BeginEdit())
+	{
+		return;
+	}
+
+	TArray<float> OldStarts;
+	GetAuthoredStarts(OldStarts);
+	TArray<FWidgetAnimLayer>& Layers = *Source->GetLayers();
+	FWidgetAnimLayer& Layer = Layers[LayerIndex];
+
+	// Stretched across the track either way from here on, at the length it has now.
+	if (!Layer.FitsAnimationToTrack())
+	{
+		Layer.Duration = Layer.GetRunLength();
+	}
+	Layer.bFitToTrack = true;
+
+	if (bValueDriven)
+	{
+		// A progress usually arrives already smooth - a hold timer, a slider: jumped to unless the track says otherwise.
+		Layer.Timing = EWidgetAnimTiming::Value;
+		Layer.ValueSmoothing = EWidgetAnimValueSmoothing::Immediate;
+		Layer.ValueOptions.Kind = EWidgetAnimValueKind::Float;
+		UWidgetAnimLibrary::AssignDefaultValueNames(Layers);
+	}
+	else
+	{
+		Layer.Timing = EWidgetAnimTiming::Tween;
+	}
+	TArray<int32> SameIndices;
+	for (int32 Index = 0; Index < OldStarts.Num(); ++Index)
+	{
+		SameIndices.Add(Index);
+	}
+	PinLayerStarts(OldStarts, SameIndices);
+
+	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	RebuildRows();
+}
+
 void SWidgetAnimTimeline::SetLayerTarget(int32 LayerIndex, FName Target)
 {
 	const TArray<FWidgetAnimLayer>* Current = GetLayers();
@@ -13373,6 +13974,24 @@ void SWidgetAnimTimeline::InsertAnimation(const UWidgetAnimPresetAsset* Animatio
 	Track.LayerGroup = GroupIndex;
 	Track.CollapsedTrack = ActiveCollapsed;
 
+	// Into a percentage timeline, any animation is stretched across the track - it has no seconds to play in - and runs to
+	// 100% from where it starts (a quarter of it, at the least). A percentage animation into a timeline in seconds plays over
+	// one second, following a float value of its own: Set Widget Animation Value by its Value Name moves it along.
+	if (IsPercentTime())
+	{
+		const float StartsAt = GetNewTrackStart(AtSeconds) / FMath::Max(GetTimeScale(), KINDA_SMALL_NUMBER);
+		Track.bFitToTrack = true;
+		Track.Duration = FMath::Clamp(1.f - StartsAt, 0.25f, 1.f);
+	}
+	else if (Animation->IsPercentTime())
+	{
+		Track.bFitToTrack = true;
+		Track.Duration = 1.f;
+		Track.Timing = EWidgetAnimTiming::Value;
+		Track.ValueSmoothing = EWidgetAnimValueSmoothing::Immediate;
+		Track.ValueOptions.Kind = EWidgetAnimValueKind::Float;
+	}
+
 	// Where the inserted animation's groups play. One group - a single-widget animation - plays in the group it was
 	// inserted into, and follows the track to another. Several get groups of their own here, named after the
 	// animation, so each widget it moves can be pointed at its own - as every use of this animation will. A plain list
@@ -13408,6 +14027,10 @@ void SWidgetAnimTimeline::InsertAnimation(const UWidgetAnimPresetAsset* Animatio
 	}
 	Layers.Insert(Track, InsertAt);
 	PinLayerStarts(OldStarts, OldIndicesAfterInserting(Layers.Num(), InsertAt, 1));
+	if (Track.IsValueDriven())
+	{
+		UWidgetAnimLibrary::AssignDefaultValueNames(Layers);
+	}
 	TrackCollapsedGroups.Remove(GroupIndex);
 	ListCollapsedGroups.Remove(GroupIndex);
 
@@ -13420,33 +14043,13 @@ namespace WidgetAnimUnravel
 {
 	/**
 	 * A copy of an inserted animation's track, made to play in this animation's seconds as it played inside the track:
-	 * its times divided by the inserted animation's Speed Multiplier - Duration, Delay, a Transform's keys, a spring's
-	 * frequency. Keys along a track are shares of its run, and follow its Duration.
+	 * its times divided by how fast the track played it (its Speed Multiplier, or stretched across the track) - Duration,
+	 * Delay, a Transform's keys, a spring's frequency, a stagger's spacing. Keys along a track are shares of its run, and
+	 * follow its Duration. See UWidgetAnimLibrary::RetimeLayer.
 	 */
 	void Retime(FWidgetAnimLayer& Layer, float Speed)
 	{
-		if (FMath::IsNearlyEqual(Speed, 1.f) || Speed <= KINDA_SMALL_NUMBER)
-		{
-			return;
-		}
-
-		Layer.Duration = FMath::Max(Layer.Duration / Speed, SWidgetAnimTimeline::MinLayerSeconds);
-		Layer.Delay /= Speed;
-		if (FRichCurve* Curve = Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.Curve.ExternalCurve == nullptr ? Layer.Transform.Curve.GetRichCurve() : nullptr)
-		{
-			for (FRichCurveKey& Key : Curve->Keys)
-			{
-				Key.Time /= Speed;
-			}
-		}
-		if (Layer.IsSpringTimed())
-		{
-			// The same spring, Speed times faster: see UWidgetAnimLibrary::RetimeWidgetAnimation.
-			Layer.Spring.VisualDuration = FMath::Max(Layer.Spring.VisualDuration / Speed, 0.02f);
-			Layer.Spring.Stiffness *= Speed * Speed;
-			Layer.Spring.Damping *= Speed;
-			Layer.Spring.InitialVelocity *= Speed;
-		}
+		UWidgetAnimLibrary::RetimeLayer(Layer, Speed, SWidgetAnimTimeline::MinLayerSeconds);
 	}
 }
 
@@ -13513,7 +14116,8 @@ void SWidgetAnimTimeline::UnravelAnimationTrack(int32 LayerIndex)
 		}
 	}
 
-	const float Speed = FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);
+	// As fast as it played inside the track - stretched across it, or at its own Speed Multiplier.
+	const float Speed = UWidgetAnimLibrary::GetInsertedPlaySpeed(Track);
 	TArray<FWidgetAnimLayer> Copies;
 	for (int32 Index = 0; Index < Animation->Layers.Num(); ++Index)
 	{
@@ -14211,6 +14815,12 @@ bool SWidgetAnimTimeline::BeginLayerDrag(int32 PressedLayer, ELayerDrag Mode)
 	// inside the animation as it is.
 	State.bEndIsFree = Mode == ELayerDrag::ResizeEnd;
 
+	// A percentage timeline ends at 100%, however its tracks are pulled.
+	if (IsPercentTime())
+	{
+		State.bEndIsFree = false;
+	}
+
 	// Linked Edges: tracks below each resized one whose start or end lines up with the edge being dragged
 	// come along - that edge of theirs moves, the other stays.
 	if (Mode != ELayerDrag::Move && UWidgetAnimEditorSettings::Get().bLinkedEdges)
@@ -14507,7 +15117,7 @@ void SWidgetAnimTimeline::ApplyLayerSpans(const TArray<float>& NewStarts, const 
 				}
 			}
 		}
-		else if (!Layer.IsAnimationTrack() && !Layer.IsSpringTimed() && !HasDerivedLength(Layer) && !FMath::IsNearlyEqual(Layer.Duration, Length, 1.e-5f))
+		else if ((!Layer.IsAnimationTrack() || Layer.FitsAnimationToTrack()) && !Layer.IsSpringTimed() && !HasDerivedLength(Layer) && !FMath::IsNearlyEqual(Layer.Duration, Length, 1.e-5f))
 		{
 			// Not on a Spring track, whose length is its spring's: its Duration is only kept for going back to a
 			// Tween, and a move must not quietly overwrite it with the settle time.
@@ -15191,7 +15801,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeCollapsedToolTip(int32 HeadLayer) c
 			.Padding(FMargin(0.f, 2.f, 14.f, 2.f))
 			.VAlign(VAlign_Center)
 			[
-				Text(Seconds(Length), Palette::TooltipValue, ValueFont())
+				Text(FormatTime(Length), Palette::TooltipValue, ValueFont())
 			];
 		Table->AddSlot(3, Row)
 			.Padding(FMargin(0.f, 2.f))
@@ -15219,7 +15829,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeCollapsedToolTip(int32 HeadLayer) c
 		Palette::LayerCollapsed,
 		Name.ToString(),
 		FString::Printf(TEXT("%d %s"), Members.Num(), Members.Num() == 1 ? TEXT("track") : TEXT("tracks")),
-		FString::Printf(TEXT("%.2f - %.2f s"), Span.X, Span.X + Span.Y),
+		FormatSpan(Span.X, Span.X + Span.Y),
 		Body);
 }
 
@@ -15661,56 +16271,71 @@ UWidget* SWidgetAnimTimeline::FindPreviewWidgetAt(const FVector2D& ScreenPositio
 		return OutResolvedOption.IsEmpty() ? nullptr : PanelWidget;
 	};
 
-	// First by Slate's own hit testing: the deepest widget under the mouse that is one of the preview's.
-	TMap<const SWidget*, UWidget*> BySlate;
-	DesignerRoot->WidgetTree->ForEachWidget([&BySlate](UWidget* Candidate)
-	{
-		if (const TSharedPtr<SWidget> CandidateSlate = Candidate ? Candidate->GetCachedWidget() : nullptr)
-		{
-			BySlate.Add(CandidateSlate.Get(), Candidate);
-		}
-	});
-	for (int32 Index = Path.Widgets.Num() - 1; Index >= 0; --Index)
-	{
-		if (UWidget* const* Found = BySlate.Find(&Path.Widgets[Index].Widget.Get()))
-		{
-			if (UWidget* Resolved = Resolve(*Found, OutOption))
-			{
-				return Resolved;
-			}
-		}
-	}
-
-	// Then by where each is laid out - the designer may lay its own overlays over the preview, out of Slate's hit testing:
-	// the smallest visible one under the mouse.
+	// The widget drawn on top under the mouse: of every visible widget of the preview whose box holds the point, the last
+	// in paint order - children after their parent, later siblings after earlier ones - that can be a target. Not Slate's
+	// hit testing, which only finds widgets that take the mouse: a Text Block or an Image set Not Hit-Testable, the usual
+	// for decoration, was skipped for the Canvas Panel or Overlay around it, or for nothing at all. A widget hidden or
+	// collapsed hides everything inside it, and a Canvas Panel's children are taken in their Z Order, as it draws them.
 	UWidget* Best = nullptr;
 	FString BestOption;
-	double BestArea = TNumericLimits<double>::Max();
-	DesignerRoot->WidgetTree->ForEachWidget([&ScreenPosition, &Resolve, &Best, &BestOption, &BestArea](UWidget* Candidate)
+	TFunction<void(UWidget*, int32)> Visit;
+	Visit = [&](UWidget* Candidate, int32 Depth)
 	{
-		const TSharedPtr<SWidget> CandidateSlate = Candidate ? Candidate->GetCachedWidget() : nullptr;
+		if (!Candidate || Depth > 64)
+		{
+			return;
+		}
+		const TSharedPtr<SWidget> CandidateSlate = Candidate->GetCachedWidget();
 		if (!CandidateSlate.IsValid() || !CandidateSlate->GetVisibility().IsVisible())
 		{
 			return;
 		}
+
 		const FGeometry& Geometry = Candidate->GetCachedGeometry();
-		if (!Geometry.IsUnderLocation(ScreenPosition))
-		{
-			return;
-		}
 		const FVector2D Extent(Geometry.GetAbsoluteSize());
-		const double Area = Extent.X * Extent.Y;
-		if (Area < BestArea)
+		if (Extent.X > 0.0 && Extent.Y > 0.0 && Geometry.IsUnderLocation(ScreenPosition))
 		{
 			FString CandidateOption;
 			if (UWidget* Resolved = Resolve(Candidate, CandidateOption))
 			{
 				Best = Resolved;
 				BestOption = CandidateOption;
-				BestArea = Area;
 			}
 		}
-	});
+
+		// A nested User Widget's own widgets, then a panel's children in the order they are drawn.
+		if (const UUserWidget* Nested = Cast<UUserWidget>(Candidate))
+		{
+			if (Nested != DesignerRoot && Nested->WidgetTree)
+			{
+				Visit(Nested->WidgetTree->RootWidget, Depth + 1);
+			}
+			return;
+		}
+		if (const UPanelWidget* Panel = Cast<UPanelWidget>(Candidate))
+		{
+			TArray<UWidget*, TInlineAllocator<16>> Children;
+			TArray<int32, TInlineAllocator<16>> Orders;
+			for (int32 ChildIndex = 0; ChildIndex < Panel->GetChildrenCount(); ++ChildIndex)
+			{
+				UWidget* Child = Panel->GetChildAt(ChildIndex);
+				const UCanvasPanelSlot* CanvasSlot = Child ? Cast<UCanvasPanelSlot>(Child->Slot) : nullptr;
+				Children.Add(Child);
+				Orders.Add(CanvasSlot ? CanvasSlot->GetZOrder() : 0);
+			}
+			TArray<int32, TInlineAllocator<16>> Sorted;
+			for (int32 ChildIndex = 0; ChildIndex < Children.Num(); ++ChildIndex)
+			{
+				Sorted.Add(ChildIndex);
+			}
+			Algo::StableSort(Sorted, [&Orders](int32 A, int32 B) { return Orders[A] < Orders[B]; });
+			for (const int32 ChildIndex : Sorted)
+			{
+				Visit(Children[ChildIndex], Depth + 1);
+			}
+		}
+	};
+	Visit(DesignerRoot->WidgetTree->RootWidget, 0);
 
 	// The preview itself, under the mouse but nothing in it: the widget the animation plays on.
 	if (!Best && DesignerRoot->GetCachedWidget().IsValid() && DesignerRoot->GetCachedGeometry().IsUnderLocation(ScreenPosition))
@@ -15949,7 +16574,7 @@ void SWidgetAnimTimeline::AddInsertAnimationEntry(FMenuBuilder& Menu, int32 Grou
 {
 	// With when it will start, as Add Animation Track says: where the menu was opened, or after the track it follows.
 	Menu.AddSubMenu(
-		FText::Format(LOCTEXT("InsertAnimationAt", "Insert Existing Widget Animation ({0})"), FText::FromString(FString::Printf(TEXT("%.2f s"), GetNewTrackStart(AtSeconds)))),
+		FText::Format(LOCTEXT("InsertAnimationAt", "Insert Existing Widget Animation ({0})"), FText::FromString(FormatTime(GetNewTrackStart(AtSeconds)))),
 		WidgetAnimTips::InsertAnimationTooltip(),
 		FNewMenuDelegate::CreateLambda([this, GroupIndex, AtSeconds](FMenuBuilder& SubMenu)
 		{
@@ -16082,7 +16707,7 @@ void SWidgetAnimTimeline::AddTrackSubMenu(FMenuBuilder& Menu, int32 GroupIndex, 
 	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
 	const bool bNameGroup = Groups && Groups->IsValidIndex(GroupIndex) && (!Source.IsValid() || Source->SupportsLayerGroups());
 	// With when it will start: where the menu was opened, or after the track it follows.
-	const FText StartsAt = FText::FromString(FString::Printf(TEXT("%.2f s"), GetNewTrackStart(AtSeconds)));
+	const FText StartsAt = FText::FromString(FormatTime(GetNewTrackStart(AtSeconds)));
 	const FText Label = bNameGroup
 		? FText::Format(LOCTEXT("AddTrackToGroupAt", "Add Animation Track to {0} ({1})"), GetGroupName(GroupIndex), StartsAt)
 		: FText::Format(LOCTEXT("AddTrackAt", "Add Animation Track ({0})"), StartsAt);
@@ -16264,7 +16889,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeAddMenu(int32 GroupIndex, bool bWit
 		// Loose entries rather than a section of their own: the registered and Blueprint types open sections of
 		// their own, and a menu section can't be opened inside another. Headed with when the track will start.
 		AddMenuHeading(Menu,
-			FText::Format(LOCTEXT("AddTrackHeadingAt", "Add Animation Track ({0})"), FText::FromString(FString::Printf(TEXT("%.2f s"), GetNewTrackStart(AtSeconds)))),
+			FText::Format(LOCTEXT("AddTrackHeadingAt", "Add Animation Track ({0})"), FText::FromString(FormatTime(GetNewTrackStart(AtSeconds)))),
 			WidgetAnimTimeline::Palette::MenuAddIconTint);
 		AddTrackTypeEntries(Menu, GetDefaultGroup(GroupIndex), AtSeconds);
 
@@ -17477,7 +18102,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 			GetLayerSpans(MenuSpans);
 			const float AnimationSeconds = (MenuSpans.IsValidIndex(LayerIndex) ? MenuSpans[LayerIndex].X : 0.f) + Seconds;
 			Menu.AddMenuEntry(
-				FText::Format(LOCTEXT("AddKeyHereAt", "Add Key Here ({0} s)"), FText::FromString(FString::Printf(TEXT("%.2f"), AnimationSeconds))),
+				FText::Format(LOCTEXT("AddKeyHereAtTime", "Add Key Here ({0})"), FText::FromString(FormatTime(AnimationSeconds))),
 				WidgetAnimTips::AddKeyHereTooltip(),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.PlusCircle"),
 				FUIAction(FExecuteAction::CreateLambda([this, LayerIndex, Seconds]() { AddKey(LayerIndex, Seconds); })));
@@ -17492,7 +18117,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 			{
 				const float Seconds = Playhead - MenuSpans[LayerIndex].X;
 				Menu.AddMenuEntry(
-					FText::Format(LOCTEXT("AddKeyAtPlayhead", "Add Key at Playhead ({0} s)"), FText::FromString(FString::Printf(TEXT("%.2f"), Playhead))),
+					FText::Format(LOCTEXT("AddKeyAtPlayheadTime", "Add Key at Playhead ({0})"), FText::FromString(FormatTime(Playhead))),
 					WidgetAnimTips::AddKeyAtPlayheadTooltip(),
 					FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.PlusCircle"),
 					FUIAction(FExecuteAction::CreateLambda([this, LayerIndex, Seconds]() { AddKey(LayerIndex, Seconds); })));
@@ -18104,8 +18729,18 @@ FText SWidgetAnimTimeline::GetEasingName(const FWidgetAnimLayer& Layer)
 	// An animation track has no easing of its own - each of its animation's tracks has its own - so it says what it is.
 	if (Layer.IsAnimationTrack())
 	{
+		// One following a float value names it: what gameplay sets to move it along.
+		if (Layer.IsValueDriven())
+		{
+			return Layer.ValueName.IsNone()
+				? LOCTEXT("AnimationTrackFloatValueUnnamed", "Float Value (no name)")
+				: FText::Format(LOCTEXT("AnimationTrackFloatValue", "Float Value: {0}"), FText::FromName(Layer.ValueName));
+		}
+
 		const int32 NumTracks = Layer.InsertedAnimation->Layers.Num();
-		return FText::Format(LOCTEXT("AnimationTrackEasingName", "Widget Animation, {0} {0}|plural(one=track,other=tracks)"), NumTracks);
+		return Layer.InsertedAnimation->IsPercentTime()
+			? FText::Format(LOCTEXT("AnimationTrackPercentEasingName", "Percentage Animation, {0} {0}|plural(one=track,other=tracks)"), NumTracks)
+			: FText::Format(LOCTEXT("AnimationTrackEasingName", "Widget Animation, {0} {0}|plural(one=track,other=tracks)"), NumTracks);
 	}
 
 	// A Spring track has no easing - its spring is its motion, and its Easing is hidden - so it says so.
@@ -18314,9 +18949,21 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 			const UWidgetAnimPresetAsset* Inserted = Layer.InsertedAnimation;
 			Rows.Add(TEXT("Plays"), Inserted->GetName());
 			Rows.Add(TEXT("Tracks"), FString::Printf(TEXT("%d, in %d %s"), Inserted->Layers.Num(), FMath::Max(Inserted->LayerGroups.Num(), 1), Inserted->LayerGroups.Num() > 1 ? TEXT("groups") : TEXT("group")));
-			if (!FMath::IsNearlyEqual(Inserted->AnimationSpeedMultiplier, 1.f))
+			if (Inserted->IsPercentTime())
 			{
-				Rows.Add(TEXT("Speed"), Number(Inserted->AnimationSpeedMultiplier));
+				Rows.Add(TEXT("Time In"), TEXT("Percent (0 - 100%)"));
+			}
+			if (Layer.IsValueDriven())
+			{
+				Rows.Add(TEXT("Moved By"), Layer.ValueName.IsNone() ? FString(TEXT("Float Value (no name)")) : FString::Printf(TEXT("Float Value: %s"), *Layer.ValueName.ToString()));
+			}
+			else if (Layer.FitsAnimationToTrack())
+			{
+				Rows.Add(TEXT("Moved By"), TEXT("Across the Track"));
+			}
+			if (!FMath::IsNearlyEqual(UWidgetAnimLibrary::GetInsertedPlaySpeed(Layer), 1.f))
+			{
+				Rows.Add(TEXT("Speed"), Number(UWidgetAnimLibrary::GetInsertedPlaySpeed(Layer)));
 			}
 			break;
 		}
@@ -18557,7 +19204,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 				const float Time = KeyTimes.IsValidIndex(Key) ? KeyTimes[Key] : Keyframe.Time;
 
 				Cell(0, Row, Text(FString::FromInt(Key + 1), Palette::TooltipLabel, ValueFont()), false);
-				Cell(1, Row, Text(Seconds(Span.X + Time), KeyValueColor(Key, NumKeys, false), ValueFont()), false);
+				Cell(1, Row, Text(FormatTime(Span.X + Time), KeyValueColor(Key, NumKeys, false), ValueFont()), false);
 				for (int32 Column = 0; Column < Shown.Num(); ++Column)
 				{
 					const FChannel& Channel = Shown[Column];
@@ -18777,7 +19424,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyToolTip(int32 LayerIndex, int32 
 		const FString PointWhere = KeyIndex == 0 ? TEXT("Start") : KeyIndex == NumPoints - 1 ? TEXT("End") : GetLayerTypeName(Layer).ToString();
 		const FString PointSubtitle = FString::Printf(TEXT("%s  \u00B7  %s"), *PointWhere, *GetLayerWhereName(LayerIndex).ToString());
 
-		return Frame(GetLayerTypeColor(Layer), PointTitle, PointSubtitle, Seconds(Spans[LayerIndex].X + PointTime), PointBody);
+		return Frame(GetLayerTypeColor(Layer), PointTitle, PointSubtitle, FormatTime(Spans[LayerIndex].X + PointTime), PointBody);
 	}
 
 	const TArray<FWidgetTransformKeyframe>& Keys = Layer.Transform.Keys;
@@ -18836,7 +19483,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyToolTip(int32 LayerIndex, int32 
 	const FString Where = KeyIndex == 0 ? TEXT("First key") : KeyIndex == NumKeys - 1 ? TEXT("Last key") : GetLayerTypeName(Layer).ToString();
 	const FString Subtitle = FString::Printf(TEXT("%s  \u00B7  %s"), *Where, *GetLayerWhereName(LayerIndex).ToString());
 
-	return Frame(GetLayerTypeColor(Layer), Title, Subtitle, Seconds(Spans[LayerIndex].X + LocalTime), Body);
+	return Frame(GetLayerTypeColor(Layer), Title, Subtitle, FormatTime(Spans[LayerIndex].X + LocalTime), Body);
 }
 
 // -----------------------------------------------------------------------------------------------------
@@ -19699,7 +20346,7 @@ bool SWidgetAnimTimeline::BeginKeyboardMove(int32 Direction, bool bLarge)
 
 	// Arrow Keys Can Extend the Animation: past its end the animation grows; before its start the rest moves later. Not
 	// before the start when a track left behind is locked - it would be moved all the same, as a range drag refuses to.
-	if (UWidgetAnimEditorSettings::Get().bArrowKeysExtendAnimation)
+	if (UWidgetAnimEditorSettings::Get().bArrowKeysExtendAnimation && !IsPercentTime())
 	{
 		LayerDrag.bEndIsFree = true;
 

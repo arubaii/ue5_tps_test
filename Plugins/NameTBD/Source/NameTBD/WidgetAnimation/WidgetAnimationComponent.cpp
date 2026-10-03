@@ -1377,6 +1377,16 @@ bool UWidgetAnimationComponent::SetWidgetAnimationValues(const FWidgetAnimValueI
 	return Taken > 0;
 }
 
+bool UWidgetAnimationComponent::SetWidgetAnimationProgress(FName AnimId, float Progress, bool bSnap, bool bStartIfNotPlaying)
+{
+	return SetWidgetAnimationValues(FWidgetAnimValueId::Progress(AnimId), WidgetAnimValue::FromFloat(Progress), bSnap, bStartIfNotPlaying);
+}
+
+float UWidgetAnimationComponent::GetWidgetAnimationProgress(FName AnimId, bool bTargetProgress) const
+{
+	return static_cast<float>(GetWidgetAnimationValues(FWidgetAnimValueId::Progress(AnimId), bTargetProgress).X);
+}
+
 FVector4 UWidgetAnimationComponent::GetWidgetAnimationValues(const FWidgetAnimValueId& Id, bool bTargetValue) const
 {
 	FVector4 Value(0.0, 0.0, 0.0, 0.0);
@@ -1410,6 +1420,22 @@ bool UWidgetAnimationComponent::HasWidgetAnimationValue(const FWidgetAnimValueId
 {
 	if (Id.ValueName.IsNone())
 	{
+		return false;
+	}
+
+	// A percentage animation's progress: an entry with the Anim ID playing one.
+	if (Id.ValueName == WidgetAnimValue::ProgressValueName)
+	{
+		for (const TArray<FWidgetAnimEntry>* List : { &AnimIn, &AnimOut })
+		{
+			for (const FWidgetAnimEntry& Candidate : *List)
+			{
+				if (Candidate.IsPercentAnimation() && (Id.AnimId.IsNone() || Candidate.AnimId == Id.AnimId) && (Id.IsAnywhere() || Candidate.Animation.Get() == Id.Animation))
+				{
+					return true;
+				}
+			}
+		}
 		return false;
 	}
 
@@ -1452,6 +1478,37 @@ void UWidgetAnimationComponent::ApplyValueOverrides(TArray<FWidgetAnimSettings>&
 	if (ValueOverrides.Num() == 0)
 	{
 		return;
+	}
+
+	// An animation track following a value (see FWidgetAnimProgressDrive) is overridden too: one copy of its drive with
+	// this widget's settings, handed to every layer that shares it.
+	TMap<const FWidgetAnimProgressDrive*, TSharedPtr<FWidgetAnimProgressDrive>> OverriddenDrives;
+	for (FWidgetAnimSettings& Layer : Settings)
+	{
+		const FWidgetAnimProgressDrive* Drive = Layer.ProgressDrive.Get();
+		if (!Drive || Drive->ValueName == WidgetAnimValue::ProgressValueName)
+		{
+			continue;
+		}
+
+		if (const TSharedPtr<FWidgetAnimProgressDrive>* Done = OverriddenDrives.Find(Drive))
+		{
+			Layer.ProgressDrive = *Done;
+			continue;
+		}
+
+		const FWidgetAnimValueOverride* DriveRow = ValueOverrides.FindByPredicate([&Layer, Drive](const FWidgetAnimValueOverride& Candidate)
+		{
+			return Candidate.bOverride && Candidate.ValueName == Drive->ValueName && Candidate.Animation.Get() == Layer.ValueScope.Get();
+		});
+		if (DriveRow)
+		{
+			TSharedPtr<FWidgetAnimProgressDrive> Copy = MakeShared<FWidgetAnimProgressDrive>(*Drive);
+			Copy->Options = DriveRow->Options;
+			Copy->Options.Kind = EWidgetAnimValueKind::Float;
+			OverriddenDrives.Add(Drive, Copy);
+			Layer.ProgressDrive = Copy;
+		}
 	}
 
 	for (FWidgetAnimSettings& Layer : Settings)

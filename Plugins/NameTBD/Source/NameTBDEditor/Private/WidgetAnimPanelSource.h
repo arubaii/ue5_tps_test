@@ -281,6 +281,21 @@ public:
 	/** Sets the Minimum Length, in seconds as authored. The caller has called Modify on GetEditedObject already. */
 	void SetMinimumLength(float Seconds);
 
+	/**
+	 * The edited animation's Time In - Seconds, or Percent for one that follows a progress value (see EWidgetAnimTimeUnit).
+	 * Seconds for tracks that aren't an animation (a component's).
+	 */
+	EWidgetAnimTimeUnit GetTimeUnit() const;
+
+	/** Whether the edited tracks are an animation whose Time In can be changed: an asset's, or the builder's. */
+	bool CanSetTimeUnit() const;
+
+	/**
+	 * Changes the Time In, converting the tracks to it (UWidgetAnimLibrary::ConvertTimeUnit). The caller has called Modify
+	 * on GetEditedObject already, and notifies the change.
+	 */
+	void SetTimeUnit(EWidgetAnimTimeUnit Unit);
+
 	/** Whether there is something to save as a new asset, or unsaved changes to update the asset with. */
 	bool CanSaveAsNewAsset() const;
 	bool CanUpdateAsset() const;

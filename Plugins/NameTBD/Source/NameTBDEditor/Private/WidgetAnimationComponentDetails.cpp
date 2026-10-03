@@ -617,7 +617,7 @@ namespace
 		virtual float GetContextTimeScale() const override
 		{
 			const FWidgetAnimEntry* Entry = FindStartEntry();
-			return Entry && Entry->Animation ? 1.f / FMath::Max(Entry->Animation->AnimationSpeedMultiplier, 0.01f) : 1.f;
+			return Entry && Entry->Animation ? 1.f / Entry->Animation->GetEffectiveSpeedMultiplier() : 1.f;
 		}
 
 		virtual bool GetContextInvert() const override

@@ -15,6 +15,7 @@
 #include "Algo/StableSort.h"
 #include "Framework/Application/SlateApplication.h"
 #include "UObject/ObjectKey.h"
+#include "HAL/IConsoleManager.h"
 #include "NameTBD/Widgets/ShapeBox.h"
 #include "WidgetAnimTransform.h"
 #include "WidgetAnimSpring.h"
@@ -1323,6 +1324,127 @@ namespace WidgetAnimLoop
 	}
 }
 
+namespace WidgetAnimDrives
+{
+	/**
+	 * The first layer of Settings that Drive moves - where its state is kept. Value-driven layers follow their own values
+	 * whatever the animation they are in does, so they are never moved by one.
+	 */
+	static int32 FindLeader(const TArray<FWidgetAnimSettings>& Settings, const FWidgetAnimProgressDrive* Drive)
+	{
+		for (int32 Index = 0; Index < Settings.Num(); ++Index)
+		{
+			if (Settings[Index].ProgressDrive.Get() == Drive && !Settings[Index].IsValueDriven())
+			{
+				return Index;
+			}
+		}
+		return INDEX_NONE;
+	}
+
+	/**
+	 * Where on its timeline - in the clock's seconds, as CycleTime counts them - a progress clock puts its layers for a
+	 * progress: across the placeholder of the animation track it plays in, or, for an animation's own progress, that many
+	 * seconds into the animation as authored (100% is one second) at its Playback Speed. Leader is the drive's first layer.
+	 */
+	static float GetTime(const TArray<FWidgetAnimSettings>& Settings, int32 Leader, float Progress)
+	{
+		const FWidgetAnimSettings& Layer = Settings[Leader];
+		const FWidgetAnimProgressDrive& Drive = *Layer.ProgressDrive;
+		if (Drive.Anchor != INDEX_NONE)
+		{
+			for (const FWidgetAnimSettings& Candidate : Settings)
+			{
+				if (Candidate.PlacementAnchor == Drive.Anchor)
+				{
+					const WidgetAnimLoop::FLayerSpan Span = WidgetAnimLoop::GetLayerSpan(Candidate);
+					return Span.Start + Progress * Span.Length;
+				}
+			}
+		}
+		return Progress / FMath::Max(Layer.PlaybackSpeed, 0.01f);
+	}
+
+	/** Whether Id names the progress clock Layer follows, in Track. */
+	static bool Names(const FWidgetAnimValueId& Id, FName TrackAnimId, const FWidgetAnimSettings& Layer)
+	{
+		const FWidgetAnimProgressDrive* Drive = Layer.ProgressDrive.Get();
+		return Drive && !Layer.IsValueDriven() && !Id.ValueName.IsNone() && Drive->ValueName == Id.ValueName
+			&& (Id.IsAnywhere() || Layer.ValueScope.Get() == Id.Animation)
+			&& (Id.AnimId.IsNone() || TrackAnimId == Id.AnimId);
+	}
+
+	/**
+	 * How far along a drive still playing on its clock (one with a Duration, no progress set yet) has got: where the clock
+	 * of the loop group its first layer is in has reached, as a progress. 0 before the clock has run.
+	 */
+	static float GetClockProgress(const TArray<FWidgetAnimSettings>& Settings, const TArray<FWidgetAnimState>& States, int32 Leader)
+	{
+		if (!States.IsValidIndex(Leader))
+		{
+			return 0.f;
+		}
+
+		// The loop group's clock lives on its first layer that plays on the clock - see TickAnimationsInto.
+		int32 Clock = Leader;
+		const int32 Group = Settings[Leader].LoopGroup;
+		if (Group != INDEX_NONE)
+		{
+			for (int32 Index = 0; Index < Settings.Num() && Index < States.Num(); ++Index)
+			{
+				if (Settings[Index].LoopGroup == Group && !Settings[Index].IsValueDriven())
+				{
+					Clock = Index;
+					break;
+				}
+			}
+		}
+
+		const FWidgetAnimState& ClockState = States[Clock];
+		if (!ClockState.bCueClockStarted)
+		{
+			return 0.f;
+		}
+		const float Progress = ClockState.CycleTime * FMath::Max(Settings[Leader].PlaybackSpeed, 0.01f);
+		return FMath::Clamp(Progress, 0.f, 1.f);
+	}
+
+	/** The progress a drive shows now: its own once it has taken over from the clock, else where the clock has got to. */
+	static float GetProgress(const TArray<FWidgetAnimSettings>& Settings, const TArray<FWidgetAnimState>& States, int32 Leader, bool bTarget)
+	{
+		if (!States.IsValidIndex(Leader))
+		{
+			return 0.f;
+		}
+		const FWidgetAnimState& State = States[Leader];
+		if (State.bDriveTaken)
+		{
+			return bTarget ? State.DriveState.Target.X : State.DriveState.Progress.X;
+		}
+		return GetClockProgress(Settings, States, Leader);
+	}
+
+	/**
+	 * Hands a drive still on its clock over to its progress, from wherever the clock had got to, so setting a progress
+	 * while an entry plays over its Progress Animation Duration carries on from there rather than jumping.
+	 */
+	static void TakeOver(const TArray<FWidgetAnimSettings>& Settings, TArray<FWidgetAnimState>& States, int32 Leader)
+	{
+		FWidgetAnimState& State = States[Leader];
+		if (State.bDriveTaken)
+		{
+			return;
+		}
+
+		const float Progress = GetClockProgress(Settings, States, Leader);
+		WidgetAnimValue::Snap(State.DriveState, FVector4f(Progress, Progress, Progress, Progress));
+		State.DriveTime = GetTime(Settings, Leader, Progress);
+		// A clock that had already run has fired what lies behind it; one that hadn't leaves the start for the drive's first frame.
+		State.bDriveStarted = Progress > 0.f;
+		State.bDriveTaken = true;
+	}
+}
+
 bool UWidgetAnimLibrary::IsEndlessLoop(const FWidgetAnimSettings& Settings)
 {
 	return Settings.bLoop && Settings.LoopCount <= 0;
@@ -1392,6 +1514,40 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 	// nor stretch one, so the rest of the animation times, loops and finishes exactly as if they weren't there.
 	auto FollowsValue = [&Animations, bDriveValueLayers](int32 Index) { return bDriveValueLayers && Animations[Index].IsValueDriven(); };
 
+	// Layers following a progress clock (see FWidgetAnimProgressDrive) are off the clock too, each with the first layer its
+	// drive moves, where the drive's state is. A drive with a Duration stays on the clock until a progress is set; and,
+	// like value-driven layers, none follows its progress outside the track player - every preview plays it on the clock.
+	TArray<int32, TInlineAllocator<16>> DriveLeaderOf;
+	DriveLeaderOf.Init(INDEX_NONE, NumLayers);
+	bool bHasDrives = false;
+	if (bDriveValueLayers)
+	{
+		TArray<TPair<const FWidgetAnimProgressDrive*, int32>, TInlineAllocator<4>> DriveLeaders;
+		for (int32 Index = 0; Index < NumLayers; ++Index)
+		{
+			const FWidgetAnimProgressDrive* Drive = Animations[Index].ProgressDrive.Get();
+			if (!Drive || Animations[Index].IsValueDriven())
+			{
+				continue;
+			}
+
+			const TPair<const FWidgetAnimProgressDrive*, int32>* Known = DriveLeaders.FindByPredicate([Drive](const TPair<const FWidgetAnimProgressDrive*, int32>& Pair) { return Pair.Key == Drive; });
+			const int32 Leader = Known ? Known->Value : Index;
+			if (!Known)
+			{
+				DriveLeaders.Emplace(Drive, Index);
+			}
+
+			if (Drive->Duration > 0.f && !States[Leader].bDriveTaken)
+			{
+				continue;
+			}
+			DriveLeaderOf[Index] = Leader;
+			bHasDrives = true;
+		}
+	}
+	auto OffClock = [&FollowsValue, &DriveLeaderOf](int32 Index) { return FollowsValue(Index) || DriveLeaderOf[Index] != INDEX_NONE; };
+
 	// Cues fire from the stretches of timeline the clocks cross, so those are recorded - but only when the stack has a
 	// cue in it; everything else plays exactly as it did. See WidgetAnimCue.h.
 	TArray<bool, TInlineAllocator<16>> IsCueLayer;
@@ -1412,7 +1568,7 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 	for (int32 Index = 0; Index < NumLayers; ++Index)
 	{
 		LeaderOf[Index] = Index;
-		if (FollowsValue(Index))
+		if (OffClock(Index))
 		{
 			continue;
 		}
@@ -1422,7 +1578,7 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 		{
 			for (int32 Earlier = 0; Earlier < Index; ++Earlier)
 			{
-				if (Animations[Earlier].LoopGroup == Group && !FollowsValue(Earlier))
+				if (Animations[Earlier].LoopGroup == Group && !OffClock(Earlier))
 				{
 					LeaderOf[Index] = LeaderOf[Earlier];
 					break;
@@ -1440,9 +1596,43 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 	// One advance per group, on its leader.
 	for (int32 Index = 0; Index < NumLayers; ++Index)
 	{
-		if (LeaderOf[Index] == Index && !FollowsValue(Index))
+		if (LeaderOf[Index] == Index && !OffClock(Index))
 		{
 			WidgetAnimLoop::AdvanceTimeline(Animations[Index], States[Index], GroupLead[Index], GroupEnd[Index], DeltaTime, bHasCues ? &ClockPieces : nullptr, Index);
+		}
+	}
+
+	// One advance per progress clock, on its first layer: its progress moves toward the last one set the way the animation
+	// says, in real time - not at the layers' speed, which is the animation's pace on the clock - and puts the timeline
+	// there. The stretch it crossed is recorded like a clock's, so cues fire as the progress passes them, either way.
+	if (bHasDrives)
+	{
+		for (int32 Index = 0; Index < NumLayers; ++Index)
+		{
+			if (DriveLeaderOf[Index] != Index)
+			{
+				continue;
+			}
+
+			FWidgetAnimState& State = States[Index];
+			const FWidgetAnimProgressDrive& Drive = *Animations[Index].ProgressDrive;
+			WidgetAnimValue::Advance(Drive.Options, Drive.GetMotion(), State.DriveState, DeltaTime);
+
+			const float Progress = FMath::Clamp(State.DriveState.Progress.X, 0.f, 1.f);
+			const float To = WidgetAnimDrives::GetTime(Animations, Index, Progress);
+			const float From = State.bDriveStarted ? State.DriveTime : To;
+			if (bHasCues && (!State.bDriveStarted || From != To))
+			{
+				WidgetAnimLoop::FClockPiece& Piece = ClockPieces.AddDefaulted_GetRef();
+				Piece.Leader = Index;
+				Piece.From = From;
+				Piece.To = To;
+				Piece.bForward = To >= From;
+				Piece.bIncludeFrom = !State.bDriveStarted;
+				Piece.LegEnd = WidgetAnimDrives::GetTime(Animations, Index, 1.f);
+			}
+			State.DriveTime = To;
+			State.bDriveStarted = true;
 		}
 	}
 
@@ -1493,6 +1683,49 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 			}
 
 			bAllComplete = bAllComplete && State.bFinished;
+			continue;
+		}
+
+		if (DriveLeaderOf[Index] != INDEX_NONE)
+		{
+			// Posed where its progress clock puts the timeline, exactly as a scrub there would pose it - so it looks the
+			// same whichever way the progress got there - and at rest whenever the progress is. It never holds the stack
+			// from settling: like a value, a progress is shown until the next one.
+			const int32 DriveLeader = DriveLeaderOf[Index];
+			const FWidgetAnimState& DriveClock = States[DriveLeader];
+			const WidgetAnimLoop::FLayerSpan DrivenSpan = WidgetAnimLoop::GetLayerSpan(Settings);
+			const float DrivenTime = DriveClock.DriveTime - DrivenSpan.Start;
+			const bool bDriveAtRest = !DriveClock.DriveState.IsMoving();
+			const bool bDrivenInvert = GetEffectiveInvert(Settings, bIsOutAnimation);
+			const float DrivenAlpha = WidgetAnimLoop::GetLayerAlpha(DrivenTime, DrivenSpan);
+
+			FWidgetAnimState& State = States[Index];
+			State.bFinished = bDriveAtRest;
+			State.bPlayingForward = true;
+			State.DelayRemaining = FMath::Max(-DrivenTime, 0.f);
+			State.CycleTime = FMath::Clamp(DrivenTime, 0.f, DrivenSpan.Length);
+
+			if (IsCueLayer[Index])
+			{
+				if (!Settings.bMuted)
+				{
+					WidgetAnimLoop::GatherClockCues(Settings, Index, DrivenSpan, bDrivenInvert, DriveLeader, ClockPieces, OutResult);
+				}
+			}
+			else if (!Settings.bMuted && (DrivenTime >= 0.f || bDrivenInvert))
+			{
+				ApplyAnimationContribution(Settings, bDrivenInvert ? 1.f - DrivenAlpha : DrivenAlpha, OutResult, Baselines, /*bTowardStart=*/bDrivenInvert);
+			}
+			else if (Settings.bHoldStartPose && !Settings.bMuted)
+			{
+				ApplyAnimationContribution(Settings, 0.f, OutResult, Baselines, /*bTowardStart=*/false);
+			}
+			else if (Baselines && Baselines->bCaptured)
+			{
+				TouchLayerTargets(Settings, OutResult, *Baselines);
+			}
+
+			bAllComplete = bAllComplete && bDriveAtRest;
 			continue;
 		}
 
@@ -1601,6 +1834,249 @@ FWidgetAnimResult UWidgetAnimLibrary::TickWidgetAnimations(const TArray<FWidgetA
 	return Result;
 }
 
+namespace WidgetAnimTransformDebug
+{
+	/**
+	 * WidgetAnim.DebugTransforms: warnings for a widget pose that is wrong at runtime - each fires only on an actual fault,
+	 * never on normal playback, so it is on by default and silent while all is well. 0 turns it off.
+	 *  - A player ticked with time twice in one frame (the second tick is played as a re-pose - see TickWidgetAnimPlayer).
+	 *  - One widget posed in one frame by two different players with different poses: they fight over it, and whichever
+	 *    writes last is drawn.
+	 *  - A pose that jumps for exactly one frame and comes back while its clock runs evenly: a flicker.
+	 * Each comes with the call stack of the write that caused it, and is reported at most once a second per widget.
+	 */
+	static TAutoConsoleVariable<int32> CVarDebugTransforms(
+		TEXT("WidgetAnim.DebugTransforms"),
+		1,
+		TEXT("Widget Animations: 1 (default) warns, with a call stack, when a widget's animated pose is actually wrong - a player ticked twice in a frame, two players fighting over one widget, or a one-frame flicker. 0 turns it off."),
+		ECVF_Default);
+
+	/** The player posing right now, and the time it was ticked with. Set by TickWidgetAnimPlayer for as long as it applies. */
+	struct FWriter
+	{
+		const void* Player = nullptr;
+		const UWidget* Host = nullptr;
+		float DeltaTime = 0.f;
+	};
+	static FWriter& CurrentWriter()
+	{
+		static FWriter Writer;
+		return Writer;
+	}
+
+	struct FWriterScope
+	{
+		FWriter Saved;
+		FWriterScope(const void* Player, const UWidget* Host, float DeltaTime)
+			: Saved(CurrentWriter())
+		{
+			CurrentWriter().Player = Player;
+			CurrentWriter().Host = Host;
+			CurrentWriter().DeltaTime = DeltaTime;
+		}
+		~FWriterScope()
+		{
+			CurrentWriter() = Saved;
+		}
+	};
+
+	static FString DescribeWriter(const FWriter& Writer)
+	{
+		return Writer.Player
+			? FString::Printf(TEXT("the player on %s, ticked with %.4f s"), Writer.Host ? *Writer.Host->GetName() : TEXT("(none)"), Writer.DeltaTime)
+			: FString(TEXT("a direct apply (a Blueprint, a scrub)"));
+	}
+
+	static FString Describe(const FWidgetTransform& Pose)
+	{
+		return FString::Printf(TEXT("translation (%.2f, %.2f) scale (%.4f, %.4f) shear (%.3f, %.3f) angle %.2f"),
+			Pose.Translation.X, Pose.Translation.Y, Pose.Scale.X, Pose.Scale.Y, Pose.Shear.X, Pose.Shear.Y, Pose.Angle);
+	}
+
+	static bool SamePose(const FWidgetTransform& A, const FWidgetTransform& B)
+	{
+		return A.Translation.Equals(B.Translation, 0.01) && A.Scale.Equals(B.Scale, 0.0001) && A.Shear.Equals(B.Shear, 0.0001) && FMath::IsNearlyEqual(A.Angle, B.Angle, 0.01f);
+	}
+
+	static bool IsEnabled()
+	{
+		return CVarDebugTransforms.GetValueOnGameThread() > 0;
+	}
+
+	/** At most once a second per widget and kind of fault, so a fault every frame doesn't bury the log. */
+	static bool ShouldReport(const void* Key, int32 Kind)
+	{
+		static TMap<TPair<const void*, int32>, double> LastReported;
+		if (LastReported.Num() > 1024)
+		{
+			LastReported.Reset();
+		}
+		const double Now = FPlatformTime::Seconds();
+		double& Last = LastReported.FindOrAdd(TPair<const void*, int32>(Key, Kind), -1000.0);
+		if (Now - Last < 1.0)
+		{
+			return false;
+		}
+		Last = Now;
+		return true;
+	}
+
+	/** A player ticked with time a second time in one frame - see TickWidgetAnimPlayer. A fault in whatever ticked it. */
+	static void NoteSecondAdvance(const void* Player, const UWidget* Host, float DeltaTime)
+	{
+		if (IsEnabled() && ShouldReport(Player, 0))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("WidgetAnim.DebugTransforms: the player on %s was ticked with time (%.4f s) a second time in frame %llu - played as a re-pose instead, so nothing jumps. Whatever made the second tick is in this call stack:"),
+				Host ? *Host->GetPathName() : TEXT("(none)"), DeltaTime, GFrameCounter);
+			FDebug::DumpStackTraceToLog(ELogVerbosity::Warning);
+		}
+	}
+
+	struct FWrite
+	{
+		uint64 Frame = 0;
+		FWidgetTransform Pose;
+		FWriter Writer;
+	};
+
+	/** The last two frames' writes to one widget, for the checks below. */
+	struct FHistory
+	{
+		FWrite Last;
+		FWrite BeforeLast;
+	};
+
+	/** Called just before Target is posed by the track player, with the pose about to be written. */
+	static void Check(UWidget* Target, const FWidgetTransform& Pose)
+	{
+		const FWriter& Writer = CurrentWriter();
+		if (!IsEnabled() || !Target || !Writer.Player || Target->IsDesignTime())
+		{
+			return;
+		}
+
+		static TMap<TWeakObjectPtr<UWidget>, FHistory> Histories;
+		if (Histories.Num() > 4096)
+		{
+			Histories.Reset();
+		}
+		FHistory& History = Histories.FindOrAdd(Target);
+
+		// Two different players posing one widget differently in one frame: they fight over it. One player posing it
+		// again in the same frame - right after starting a track - is how it is meant to work, and isn't reported.
+		if (History.Last.Frame == GFrameCounter && History.Last.Writer.Player != Writer.Player && !SamePose(History.Last.Pose, Pose)
+			&& ShouldReport(Target, 1))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("WidgetAnim.DebugTransforms: %s is posed by two players in frame %llu, and they disagree: %s by %s, then %s by %s. Only the last is drawn. The second's call stack:"),
+				*Target->GetPathName(), GFrameCounter, *Describe(History.Last.Pose), *DescribeWriter(History.Last.Writer), *Describe(Pose), *DescribeWriter(Writer));
+			FDebug::DumpStackTraceToLog(ELogVerbosity::Warning);
+		}
+
+		// A one-frame jump: three frames in a row from the same player, each moved on by time, where the middle one stands
+		// well outside the other two while they agree with each other. Smooth motion - a spring's bounce included - never
+		// does that; a loop starting again jumps and stays.
+		const bool bEvenRun = History.Last.Frame + 1 == GFrameCounter && History.BeforeLast.Frame + 2 == GFrameCounter
+			&& History.Last.Writer.Player == Writer.Player && History.BeforeLast.Writer.Player == Writer.Player
+			&& Writer.DeltaTime > 0.f && History.Last.Writer.DeltaTime > 0.f;
+		if (bEvenRun)
+		{
+			auto Spiked = [](double Before, double During, double After, double Tolerance)
+			{
+				const double Low = FMath::Min(Before, After) - Tolerance;
+				const double High = FMath::Max(Before, After) + Tolerance;
+				const double Step = FMath::Abs(After - Before);
+				return (During < Low || During > High) && FMath::Min(FMath::Abs(During - Before), FMath::Abs(During - After)) > Step * 2.0 + Tolerance;
+			};
+			const FWidgetTransform& Before = History.BeforeLast.Pose;
+			const FWidgetTransform& During = History.Last.Pose;
+			const bool bSpike = Spiked(Before.Scale.X, During.Scale.X, Pose.Scale.X, 0.02) || Spiked(Before.Scale.Y, During.Scale.Y, Pose.Scale.Y, 0.02)
+				|| Spiked(Before.Angle, During.Angle, Pose.Angle, 2.0)
+				|| Spiked(Before.Translation.X, During.Translation.X, Pose.Translation.X, 2.0) || Spiked(Before.Translation.Y, During.Translation.Y, Pose.Translation.Y, 2.0);
+			if (bSpike && ShouldReport(Target, 2))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("WidgetAnim.DebugTransforms: %s flickered in frame %llu: %s, then %s (ticked with %.4f s), then %s (ticked with %.4f s)."),
+					*Target->GetPathName(), History.Last.Frame, *Describe(Before), *Describe(During), History.Last.Writer.DeltaTime, *Describe(Pose), Writer.DeltaTime);
+			}
+		}
+
+		if (History.Last.Frame != GFrameCounter)
+		{
+			History.BeforeLast = History.Last;
+		}
+		History.Last.Frame = GFrameCounter;
+		History.Last.Pose = Pose;
+		History.Last.Writer = Writer;
+	}
+}
+
+namespace WidgetAnimPixelSnapping
+{
+	/**
+	 * Pixel snapping, off on a widget while an animation scales, turns or shears it. Slate rounds a widget's edges - and
+	 * everything inside it - to whole screen pixels; under a fractional scale that rounding flips from one frame to the
+	 * next, so a thin outline (a radio button's ring) shook by a pixel as it scaled. Turned off with the widget's own Pixel
+	 * Snapping (UWidget::SetPixelSnapping, which carries over a Slate rebuild) only while its pose isn't plain (scale 1, no
+	 * angle, no shear) - children inherit it - and put back to what it was the moment it is, so a widget at rest draws
+	 * exactly as authored.
+	 */
+	static TMap<TWeakObjectPtr<UWidget>, EWidgetPixelSnapping>& SavedMethods()
+	{
+		static TMap<TWeakObjectPtr<UWidget>, EWidgetPixelSnapping> Saved;
+		return Saved;
+	}
+
+	/** Puts back the snapping a widget had before an animation turned it off. Nothing for one it never touched. */
+	static void Restore(UWidget* Widget)
+	{
+		EWidgetPixelSnapping Original;
+		if (!Widget || !SavedMethods().RemoveAndCopyValue(Widget, Original))
+		{
+			return;
+		}
+		Widget->SetPixelSnapping(Original);
+	}
+
+	/** Called with every pose written to a widget. */
+	static void Update(UWidget* Widget, const FWidgetTransform& Pose)
+	{
+		if (!Widget)
+		{
+			return;
+		}
+
+		const bool bPlain = Pose.Scale.Equals(FVector2D(1.0, 1.0), 1.e-4) && FMath::IsNearlyZero(Pose.Angle, 1.e-3f) && Pose.Shear.IsNearlyZero(1.e-4);
+		if (bPlain)
+		{
+			Restore(Widget);
+			return;
+		}
+
+		const EWidgetPixelSnapping Current = Widget->GetPixelSnapping();
+		if (Current == EWidgetPixelSnapping::Disabled)
+		{
+			return;
+		}
+
+		// Its own setting, kept the first time only.
+		TMap<TWeakObjectPtr<UWidget>, EWidgetPixelSnapping>& Saved = SavedMethods();
+		if (!Saved.Contains(Widget))
+		{
+			if (Saved.Num() > 4096)
+			{
+				for (auto It = Saved.CreateIterator(); It; ++It)
+				{
+					if (!It->Key.IsValid())
+					{
+						It.RemoveCurrent();
+					}
+				}
+			}
+			Saved.Add(Widget, Current);
+		}
+		Widget->SetPixelSnapping(EWidgetPixelSnapping::Disabled);
+	}
+}
+
 namespace
 {
 	/**
@@ -1660,23 +2136,34 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
 			continue;
 		}
 
+		// Composed over a baseline when there is one: the animation says "half as bright, eight pixels up", not "opacity
+		// 0.5, y = -8".
+		float Opacity = Transform.Opacity;
+		FWidgetTransform Pose(Transform.Translation, MakeInvertibleScale(Transform.Scale), Transform.Shear, Transform.Angle);
 		if (Baselines)
 		{
-			// Composed: the animation says "half as bright, eight pixels up", not "opacity 0.5, y = -8".
 			const FWidgetAnimBaseline Baseline = FindBaselineFor(*Baselines, Target);
-			Target->SetRenderOpacity(Baseline.Opacity * Transform.Opacity);
-			Target->SetRenderScale(MakeInvertibleScale(Baseline.Scale * Transform.Scale));
-			Target->SetRenderTranslation(Baseline.Translation + Transform.Translation);
-			Target->SetRenderShear(Baseline.Shear + Transform.Shear);
-			Target->SetRenderTransformAngle(Baseline.Angle + Transform.Angle);
+			Opacity = Baseline.Opacity * Transform.Opacity;
+			Pose = FWidgetTransform(Baseline.Translation + Transform.Translation, MakeInvertibleScale(Baseline.Scale * Transform.Scale), Baseline.Shear + Transform.Shear, Baseline.Angle + Transform.Angle);
 		}
-		else
+
+		// The whole render transform in one write, and only when it changed. Set field by field, each of the four setters
+		// pushed a transform of its own to Slate and invalidated the widget four times a frame - scale with last frame's
+		// angle, then the new translation, and so on - which, under invalidation (Global Invalidation, an Invalidation or
+		// Retainer Box), was the suspect for a rotating widget flashing up larger for a frame or two at runtime only.
+		WidgetAnimTransformDebug::Check(Target, Pose);
+
+		if (!FMath::IsNearlyEqual(Target->GetRenderOpacity(), Opacity))
 		{
-			Target->SetRenderOpacity(Transform.Opacity);
-			Target->SetRenderScale(MakeInvertibleScale(Transform.Scale));
-			Target->SetRenderTranslation(Transform.Translation);
-			Target->SetRenderShear(Transform.Shear);
-			Target->SetRenderTransformAngle(Transform.Angle);
+			Target->SetRenderOpacity(Opacity);
+		}
+		// Snapping off while it scales or turns, so its edges don't shake by a pixel. See WidgetAnimPixelSnapping.
+		WidgetAnimPixelSnapping::Update(Target, Pose);
+
+		const FWidgetTransform& Current = Target->GetRenderTransform();
+		if (!Current.Translation.Equals(Pose.Translation) || !Current.Scale.Equals(Pose.Scale) || !Current.Shear.Equals(Pose.Shear) || !FMath::IsNearlyEqual(Current.Angle, Pose.Angle))
+		{
+			Target->SetRenderTransform(Pose);
 		}
 	}
 
@@ -2364,6 +2851,7 @@ void UWidgetAnimLibrary::RestoreWidgetAnimBaselines(const FWidgetAnimBaselineSet
 		Widget->SetRenderTranslation(Baseline.Translation);
 		Widget->SetRenderShear(Baseline.Shear);
 		Widget->SetRenderTransformAngle(Baseline.Angle);
+		WidgetAnimPixelSnapping::Restore(Widget);
 
 		// Its parts too: a part at rest is where the widget lays it out, which is all there is to put back.
 		if (IWidgetAnimPartHost* PartHost = Cast<IWidgetAnimPartHost>(Widget))
@@ -2424,6 +2912,7 @@ void UWidgetAnimLibrary::ResetWidgetRenderState(UWidget* Widget)
 	Widget->SetRenderTranslation(FVector2D::ZeroVector);
 	Widget->SetRenderShear(FVector2D::ZeroVector);
 	Widget->SetRenderTransformAngle(0.f);
+	WidgetAnimPixelSnapping::Restore(Widget);
 
 	if (IWidgetAnimPartHost* PartHost = Cast<IWidgetAnimPartHost>(Widget))
 	{
@@ -2531,12 +3020,19 @@ void UWidgetAnimLibrary::FirePreviewCues(UWidget* FallbackWidget, const TArray<F
 	WidgetAnimCues::Queue(Result.CueFires, FallbackWidget, NAME_None, /*bPreview=*/true);
 }
 
+bool FWidgetAnimLayer::FitsAnimationToTrack() const
+{
+	return IsAnimationTrack() && (bFitToTrack || IsValueDriven() || InsertedAnimation->IsPercentTime());
+}
+
 float FWidgetAnimLayer::GetRunLength() const
 {
-	// An animation track is as long as its animation plays, and can't be made longer or shorter.
+	// An animation track is as long as its animation plays - or, stretched across the track, as long as the track is.
 	if (IsAnimationTrack())
 	{
-		return FMath::Max(UWidgetAnimLibrary::GetAnimationPassSeconds(InsertedAnimation.Get()), KINDA_SMALL_NUMBER);
+		return FitsAnimationToTrack()
+			? FMath::Max(Duration, KINDA_SMALL_NUMBER)
+			: FMath::Max(UWidgetAnimLibrary::GetAnimationPassSeconds(InsertedAnimation.Get()), KINDA_SMALL_NUMBER);
 	}
 
 	if (AnimType == EWidgetAnimType::Transform)
@@ -2697,6 +3193,10 @@ void UWidgetAnimLibrary::BuildLayerSettings(const TArray<FWidgetAnimLayer>& Laye
 			Settings.bMuted = true;
 			Settings.PlacementAnchor = AllocatePlacementChain();
 			AnimationTracks.Add(Index);
+
+			// Its Value timing is its animation's - a value moving it along the track (see below) - not one of its own:
+			// the placeholder keeps its place on the clock like any track.
+			Settings.Timing = EWidgetAnimTiming::Tween;
 		}
 
 		OutSettings.Add(MoveTemp(Settings));
@@ -2735,9 +3235,31 @@ void UWidgetAnimLibrary::BuildLayerSettings(const TArray<FWidgetAnimLayer>& Laye
 		// Copied rather than referred to: OutSettings grows below.
 		const float TrackStart = OutSettings[FirstPlaceholder + Index].Delay;
 		const int32 TrackAnchor = OutSettings[FirstPlaceholder + Index].PlacementAnchor;
-		const float Speed = FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);
+		const float Speed = GetInsertedPlaySpeed(Track);
 		const int32 NumInsertedGroups = Animation->LayerGroups.Num();
 		const int32 NumOwn = Animation->Layers.Num();
+
+		// Timing set to Value: the animation follows a float value of its own along the track, from 0 at its start to 1 at
+		// its end - set by the track's Value Name, smoothed and limited as the track says - rather than the clock of the list
+		// it is in. One progress clock for all of it, anchored to the track. See FWidgetAnimProgressDrive.
+		TSharedPtr<FWidgetAnimProgressDrive> Drive;
+		if (Track.IsValueDriven() && !Track.ValueName.IsNone())
+		{
+			Drive = MakeShared<FWidgetAnimProgressDrive>();
+			Drive->ValueName = Track.ValueName;
+			Drive->Options = Track.ValueOptions;
+			Drive->Options.Kind = EWidgetAnimValueKind::Float;
+			const FWidgetAnimValueMotion Motion = Track.GetValueMotion();
+			Drive->Smoothing = Motion.Smoothing;
+			Drive->TweenDuration = Motion.TweenDuration;
+			Drive->TweenEasing = Motion.TweenEasing;
+			Drive->TweenCurve = Motion.TweenCurve;
+			Drive->Spring = Track.Spring;
+			Drive->SteadySpeed = Motion.SteadySpeed;
+			Drive->SteadyCatchUpTime = Motion.SteadyCatchUpTime;
+			Drive->Anchor = TrackAnchor;
+			Drive->ValueInput = Track.ValueInput;
+		}
 
 		OutSettings.Reserve(OutSettings.Num() + Inserted.Num());
 		for (int32 InsertedIndex = 0; InsertedIndex < Inserted.Num(); ++InsertedIndex)
@@ -2773,6 +3295,13 @@ void UWidgetAnimLibrary::BuildLayerSettings(const TArray<FWidgetAnimLayer>& Laye
 				Settings.AuthoredIn = const_cast<UWidgetAnimPresetAsset*>(Animation);
 			}
 
+			// Following the track's value - unless an animation inserted deeper follows one of its own, or the layer is a
+			// value track, which follows its own value wherever it is.
+			if (Drive && !Settings.ProgressDrive && !Settings.IsValueDriven())
+			{
+				Settings.ProgressDrive = Drive;
+			}
+
 			OutSettings.Add(MoveTemp(Settings));
 		}
 	}
@@ -2799,13 +3328,133 @@ float UWidgetAnimLibrary::GetAnimationPassSeconds(const UWidgetAnimPresetAsset* 
 	}
 
 	// Time after its last track, when it has some - see AddMinimumLengthPlaceholder.
-	End = FMath::Max(End, Animation->MinimumLength);
-	return End / FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);
+	End = FMath::Max(End, Animation->GetEffectiveMinimumLength());
+	return End / Animation->GetEffectiveSpeedMultiplier();
+}
+
+float UWidgetAnimLibrary::GetAnimationAuthoredLength(const UWidgetAnimPresetAsset* Animation)
+{
+	if (!Animation)
+	{
+		return 0.f;
+	}
+
+	// 100%, whatever its tracks reach: a progress of 1 is one second into it.
+	if (Animation->IsPercentTime())
+	{
+		return 1.f;
+	}
+	return GetAnimationPassSeconds(Animation) * Animation->GetEffectiveSpeedMultiplier();
+}
+
+float UWidgetAnimLibrary::GetInsertedPlaySpeed(const FWidgetAnimLayer& Track)
+{
+	const UWidgetAnimPresetAsset* Animation = Track.InsertedAnimation.Get();
+	if (!Animation)
+	{
+		return 1.f;
+	}
+
+	if (Track.FitsAnimationToTrack())
+	{
+		const float Length = GetAnimationAuthoredLength(Animation);
+		return Length > KINDA_SMALL_NUMBER ? FMath::Max(Length / FMath::Max(Track.Duration, KINDA_SMALL_NUMBER), 0.0001f) : 1.f;
+	}
+	return Animation->GetEffectiveSpeedMultiplier();
+}
+
+void UWidgetAnimLibrary::RetimeLayer(FWidgetAnimLayer& Layer, float Speed, float MinSeconds)
+{
+	if (FMath::IsNearlyEqual(Speed, 1.f) || Speed <= KINDA_SMALL_NUMBER)
+	{
+		return;
+	}
+
+	// An animation track is retimed by stretching its animation across its new length.
+	if (Layer.IsAnimationTrack() && !Layer.FitsAnimationToTrack())
+	{
+		Layer.Duration = Layer.GetRunLength();
+		Layer.bFitToTrack = true;
+	}
+
+	Layer.Duration = FMath::Max(Layer.Duration / Speed, MinSeconds);
+	Layer.Delay /= Speed;
+	if (FRichCurve* Curve = Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.Curve.ExternalCurve == nullptr ? Layer.Transform.Curve.GetRichCurve() : nullptr)
+	{
+		for (FRichCurveKey& Key : Curve->Keys)
+		{
+			Key.Time /= Speed;
+		}
+	}
+	if (Layer.IsSpringTimed())
+	{
+		// The same spring, Speed times faster: see RetimeWidgetAnimation.
+		Layer.Spring.VisualDuration = FMath::Max(Layer.Spring.VisualDuration / Speed, 0.02f);
+		Layer.Spring.Stiffness *= Speed * Speed;
+		Layer.Spring.Damping *= Speed;
+		Layer.Spring.InitialVelocity *= Speed;
+	}
+	if (FWidgetAnimExpander* Stagger = Layer.Expander.GetMutablePtr<FWidgetAnimExpander>())
+	{
+		Stagger->Interval /= Speed;
+		Stagger->Spread /= Speed;
+	}
+	if (Layer.AnimType == EWidgetAnimType::Shake)
+	{
+		Layer.Shake.Frequency *= Speed;
+	}
+}
+
+void UWidgetAnimLibrary::ConvertTimeUnit(TArray<FWidgetAnimLayer>& Layers, EWidgetAnimTimeUnit From, EWidgetAnimTimeUnit To, float& InOutMinimumLength, float& InOutSpeedMultiplier)
+{
+	if (From == To)
+	{
+		return;
+	}
+
+	if (To == EWidgetAnimTimeUnit::Seconds)
+	{
+		// 100% is one second already: nothing moves, and the animation keeps running its full second.
+		InOutMinimumLength = 1.f;
+		InOutSpeedMultiplier = 1.f;
+		return;
+	}
+
+	// The whole of one pass as authored - to its last track's end, or its Minimum Length - becomes 0% - 100%.
+	TArray<float> Starts;
+	PlaceLayerStarts(Layers, TConstArrayView<float>(), Starts);
+	float End = FMath::Max(InOutMinimumLength, 0.f);
+	for (int32 Index = 0; Index < Layers.Num(); ++Index)
+	{
+		End = FMath::Max(End, Starts[Index] + Layers[Index].GetRunLength());
+	}
+
+	// Every animation track is stretched across its place now, as everything in a percentage timeline is.
+	for (FWidgetAnimLayer& Layer : Layers)
+	{
+		if (Layer.IsAnimationTrack() && !Layer.FitsAnimationToTrack())
+		{
+			Layer.Duration = Layer.GetRunLength();
+			Layer.bFitToTrack = true;
+		}
+	}
+
+	if (End > KINDA_SMALL_NUMBER)
+	{
+		for (FWidgetAnimLayer& Layer : Layers)
+		{
+			RetimeLayer(Layer, End);
+		}
+	}
+
+	// Its pace is folded into where its tracks now are, and its end is 100%.
+	InOutMinimumLength = 0.f;
+	InOutSpeedMultiplier = 1.f;
 }
 
 void UWidgetAnimLibrary::AddMinimumLengthPlaceholder(const UWidgetAnimPresetAsset* Animation, TArray<FWidgetAnimSettings>& OutSettings)
 {
-	if (!Animation || Animation->MinimumLength <= KINDA_SMALL_NUMBER)
+	if (!Animation || Animation->GetEffectiveMinimumLength() <= KINDA_SMALL_NUMBER)
 	{
 		return;
 	}
@@ -2815,7 +3464,7 @@ void UWidgetAnimLibrary::AddMinimumLengthPlaceholder(const UWidgetAnimPresetAsse
 	// span is the shortest a layer's can be, ending right on the length, so it never moves where a loop starts again.
 	FWidgetAnimSettings Settings;
 	Settings.Duration = KINDA_SMALL_NUMBER;
-	Settings.Delay = FMath::Max(Animation->MinimumLength - Settings.Duration, 0.f);
+	Settings.Delay = FMath::Max(Animation->GetEffectiveMinimumLength() - Settings.Duration, 0.f);
 	Settings.bMuted = true;
 	OutSettings.Add(MoveTemp(Settings));
 }
@@ -3262,11 +3911,33 @@ bool UWidgetAnimLibrary::ExpandTrack(UWidget* FallbackWidget, const FWidgetAnimP
 		return false;
 	}
 
+	// A progress set before the track fanned out - set right after it was started - is kept: progress isn't remembered by
+	// name, as values are, so it would otherwise be lost.
+	TArray<TPair<const FWidgetAnimProgressDrive*, FWidgetAnimState>, TInlineAllocator<2>> DriveStates;
+	for (int32 Index = 0; Index < Track.Settings.Num() && Index < Track.States.Num(); ++Index)
+	{
+		const FWidgetAnimProgressDrive* Drive = Track.Settings[Index].ProgressDrive.Get();
+		if (Drive && Track.States[Index].bDriveTaken && WidgetAnimDrives::FindLeader(Track.Settings, Drive) == Index)
+		{
+			DriveStates.Emplace(Drive, Track.States[Index]);
+		}
+	}
+
 	Track.Settings = MoveTemp(Expanded);
 	Track.bNeedsExpansion = false;
 	Track.ExpansionFirstFrame = 0;
 	ResetWidgetAnimations(Track.Settings, Track.States);
 	InitializeValueLayers(Player, Track);
+
+	for (const TPair<const FWidgetAnimProgressDrive*, FWidgetAnimState>& Kept : DriveStates)
+	{
+		const int32 Leader = WidgetAnimDrives::FindLeader(Track.Settings, Kept.Key);
+		if (Track.States.IsValidIndex(Leader))
+		{
+			Track.States[Leader].DriveState = Kept.Value.DriveState;
+			Track.States[Leader].bDriveTaken = true;
+		}
+	}
 	return true;
 }
 
@@ -3826,8 +4497,8 @@ void UWidgetAnimLibrary::StartWidgetAnimTrack(FWidgetAnimPlayer& Player, FName A
 	InitializeValueLayers(Player, Track);
 
 	// A value shown is shown until the next one: a track with value-driven layers always holds, or letting go would
-	// snap its widgets back the moment its clock layers and values came to rest.
-	if (Track.Settings.ContainsByPredicate([](const FWidgetAnimSettings& Layer) { return Layer.IsValueDriven(); }))
+	// snap its widgets back the moment its clock layers and values came to rest. A progress the same.
+	if (Track.Settings.ContainsByPredicate([](const FWidgetAnimSettings& Layer) { return Layer.IsValueDriven() || Layer.IsProgressDriven(); }))
 	{
 		Track.bHoldWhenFinished = true;
 	}
@@ -3847,6 +4518,23 @@ void UWidgetAnimLibrary::InitializeValueLayers(const FWidgetAnimPlayer& Player, 
 		// Start Value. Each layer maps the raw value onto itself through its own range.
 		const FWidgetAnimRememberedValue* Remembered = FindRememberedValue(Player, Layer.ValueScope, Layer.ValueName);
 		WidgetAnimValue::Snap(Track.States[Index].ValueState, Layer.ValueOptions.ToProgress(Remembered ? Remembered->Value : Layer.ValueOptions.GetStartValue()));
+	}
+
+	// Progress clocks the same, on the first layer each moves - one that plays on its clock first (a Duration) starts there
+	// instead, and is handed its progress only once one is set. An animation's own progress always starts at 0%.
+	for (int32 Index = 0; Index < Track.Settings.Num() && Index < Track.States.Num(); ++Index)
+	{
+		const FWidgetAnimSettings& Layer = Track.Settings[Index];
+		const FWidgetAnimProgressDrive* Drive = Layer.ProgressDrive.Get();
+		if (!Drive || Drive->Duration > 0.f || WidgetAnimDrives::FindLeader(Track.Settings, Drive) != Index)
+		{
+			continue;
+		}
+
+		const FWidgetAnimRememberedValue* Remembered = Drive->ValueName == WidgetAnimValue::ProgressValueName ? nullptr : FindRememberedValue(Player, Layer.ValueScope, Drive->ValueName);
+		FWidgetAnimState& State = Track.States[Index];
+		WidgetAnimValue::Snap(State.DriveState, Drive->Options.ToProgress(Remembered ? Remembered->Value : Drive->Options.GetStartValue()));
+		State.bDriveTaken = true;
 	}
 }
 
@@ -3887,10 +4575,43 @@ int32 UWidgetAnimLibrary::SetWidgetAnimTrackValue(FWidgetAnimPlayer& Player, con
 	int32 Taken = 0;
 	for (FWidgetAnimTrack& Track : Player.Tracks)
 	{
+		// Each progress clock Id names once, on its first layer: every layer it moves follows that one progress.
+		TArray<const FWidgetAnimProgressDrive*, TInlineAllocator<4>> DrivesSet;
+
 		for (int32 Index = 0; Index < Track.Settings.Num(); ++Index)
 		{
 			const FWidgetAnimSettings& Layer = Track.Settings[Index];
-			if (!Layer.IsValueDriven() || !Id.Matches(Layer.ValueScope, Layer.ValueName))
+			if (WidgetAnimDrives::Names(Id, Track.AnimId, Layer) && !DrivesSet.Contains(Layer.ProgressDrive.Get()))
+			{
+				const FWidgetAnimProgressDrive* Drive = Layer.ProgressDrive.Get();
+				DrivesSet.Add(Drive);
+
+				if (Track.States.Num() != Track.Settings.Num())
+				{
+					ResetWidgetAnimations(Track.Settings, Track.States);
+					InitializeValueLayers(Player, Track);
+				}
+
+				const int32 Leader = WidgetAnimDrives::FindLeader(Track.Settings, Drive);
+				if (Leader == INDEX_NONE)
+				{
+					continue;
+				}
+
+				// Played over its Progress Animation Duration until now: it carries on from where its clock had got to.
+				WidgetAnimDrives::TakeOver(Track.Settings, Track.States, Leader);
+
+				++Taken;
+				FWidgetAnimState& State = Track.States[Leader];
+				WidgetAnimValue::SetTarget(Drive->Options, Drive->GetMotion(), State.DriveState, Drive->Options.ToProgress(Value), bSnap);
+
+				// Run again to get there - and a snap, which moves nothing over time, is posed by the next tick all the same.
+				State.bFinished = false;
+				Track.bFinished = false;
+				continue;
+			}
+
+			if (!Layer.IsValueDriven() || !Id.Matches(Layer.ValueScope, Layer.ValueName) || (!Id.AnimId.IsNone() && Track.AnimId != Id.AnimId))
 			{
 				continue;
 			}
@@ -3918,6 +4639,12 @@ int32 UWidgetAnimLibrary::SetWidgetAnimTrackValue(FWidgetAnimPlayer& Player, con
 				Track.bFinished = false;
 			}
 		}
+	}
+
+	// An animation's own progress belongs to the use of it playing, and goes with it: never remembered.
+	if (Id.ValueName == WidgetAnimValue::ProgressValueName)
+	{
+		return Taken;
 	}
 
 	// Remembered in the scope it was set in, replacing what was remembered there.
@@ -3956,7 +4683,15 @@ bool UWidgetAnimLibrary::GetWidgetAnimTrackValue(const FWidgetAnimPlayer& Player
 		for (int32 Index = 0; Index < Track.Settings.Num() && Index < Track.States.Num(); ++Index)
 		{
 			const FWidgetAnimSettings& Layer = Track.Settings[Index];
-			if (Layer.IsValueDriven() && Id.Matches(Layer.ValueScope, Layer.ValueName))
+			if (WidgetAnimDrives::Names(Id, Track.AnimId, Layer))
+			{
+				const int32 Leader = WidgetAnimDrives::FindLeader(Track.Settings, Layer.ProgressDrive.Get());
+				const float Progress = WidgetAnimDrives::GetProgress(Track.Settings, Track.States, Leader, bTargetValue);
+				OutValue = Layer.ProgressDrive->Options.FromProgress(FVector4f(Progress, Progress, Progress, Progress));
+				return true;
+			}
+
+			if (Layer.IsValueDriven() && Id.Matches(Layer.ValueScope, Layer.ValueName) && (Id.AnimId.IsNone() || Track.AnimId == Id.AnimId))
 			{
 				const FWidgetAnimValueState& State = Track.States[Index].ValueState;
 				OutValue = Layer.ValueOptions.FromProgress(bTargetValue ? State.Target : State.Progress);
@@ -3983,7 +4718,7 @@ bool UWidgetAnimLibrary::HasValueLayer(const TArray<FWidgetAnimSettings>& Settin
 {
 	return Settings.ContainsByPredicate([&Id](const FWidgetAnimSettings& Layer)
 	{
-		return Layer.IsValueDriven() && Id.Matches(Layer.ValueScope, Layer.ValueName);
+		return (Layer.IsValueDriven() && Id.Matches(Layer.ValueScope, Layer.ValueName)) || WidgetAnimDrives::Names(Id, Id.AnimId, Layer);
 	});
 }
 
@@ -4009,9 +4744,16 @@ bool UWidgetAnimLibrary::AssignDefaultValueNames(TArray<FWidgetAnimLayer>& Layer
 			continue;
 		}
 
-		// The type's name: its registered type's, or the built-in one's display name.
+		// The type's name: its registered type's, or the built-in one's display name - or, for an animation track, its
+		// animation's ("Hold Ring" for WA_Hold_Ring).
 		FString Base;
-		if (Layer.AnimType == EWidgetAnimType::Custom)
+		if (Layer.IsAnimationTrack())
+		{
+			Base = Layer.InsertedAnimation->GetName();
+			Base.RemoveFromStart(TEXT("WA_"));
+			Base.ReplaceInline(TEXT("_"), TEXT(" "));
+		}
+		else if (Layer.AnimType == EWidgetAnimType::Custom)
 		{
 			const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator();
 			Base = Evaluator ? Evaluator->GetTrackDisplayName(Layer.TypeParams).ToString() : FString(TEXT("Value"));
@@ -4539,6 +5281,50 @@ void UWidgetAnimLibrary::ReadValueInputs(UWidget* HostWidget, FWidgetAnimPlayer&
 			State.InputLastValue = Value;
 			State.bInputSent = true;
 		}
+
+		// A progress clock's Progress Input - an animation's own, or an animation track's - read the same way, on the first
+		// layer it moves. An animation's own progress is set for this track's entry only, by its Anim ID.
+		TArray<const FWidgetAnimProgressDrive*, TInlineAllocator<4>> DrivesRead;
+		for (int32 Index = 0; Index < Track.Settings.Num(); ++Index)
+		{
+			const FWidgetAnimSettings& Layer = Track.Settings[Index];
+			FWidgetAnimProgressDrive* Drive = Layer.ProgressDrive.Get();
+			FWidgetAnimInputSource* Source = Drive && !Layer.IsValueDriven() && !Drive->ValueName.IsNone() ? Drive->ValueInput.GetMutablePtr<FWidgetAnimInputSource>() : nullptr;
+			if (!Source || DrivesRead.Contains(Drive))
+			{
+				continue;
+			}
+			DrivesRead.Add(Drive);
+
+			FWidgetAnimState& State = Track.States[Index];
+			if (DeltaTime <= 0.f && State.bDriveInputSent)
+			{
+				continue;
+			}
+
+			Context.MeasuredWidget = Layer.TargetWidget ? Layer.TargetWidget.Get() : HostWidget;
+			if (!Context.MeasuredWidget)
+			{
+				continue;
+			}
+
+			FVector4 Value;
+			if (!Source->Sample(Context, Value) || (State.bDriveInputSent && Value == State.DriveInputLastValue))
+			{
+				continue;
+			}
+
+			FFeed& Feed = Feeds.AddDefaulted_GetRef();
+			Feed.Id = FWidgetAnimValueId::In(Layer.ValueScope.Get(), Drive->ValueName);
+			if (Drive->ValueName == WidgetAnimValue::ProgressValueName)
+			{
+				Feed.Id.AnimId = Track.AnimId;
+			}
+			Feed.Value = Value;
+			Feed.bSnap = !State.bDriveInputSent;
+			State.DriveInputLastValue = Value;
+			State.bDriveInputSent = true;
+		}
 	}
 
 	for (const FFeed& Feed : Feeds)
@@ -4551,7 +5337,7 @@ bool UWidgetAnimLibrary::HasValueInputs(const FWidgetAnimPlayer& Player)
 {
 	for (const FWidgetAnimTrack& Track : Player.Tracks)
 	{
-		if (Track.Settings.ContainsByPredicate([](const FWidgetAnimSettings& Layer) { return Layer.IsValueDriven() && Layer.ValueInput.IsValid(); }))
+		if (Track.Settings.ContainsByPredicate([](const FWidgetAnimSettings& Layer) { return (Layer.IsValueDriven() && Layer.ValueInput.IsValid()) || (Layer.ProgressDrive.IsValid() && Layer.ProgressDrive->ValueInput.IsValid()); }))
 		{
 			return true;
 		}
@@ -4562,6 +5348,27 @@ bool UWidgetAnimLibrary::HasValueInputs(const FWidgetAnimPlayer& Player)
 bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAnimPlayer& Player, const FWidgetAnimBaselineSet& Baselines, float DeltaTime, TArray<FName>& OutJustFinished)
 {
 	OutJustFinished.Reset();
+
+	// Time moves a player once a frame. Ticked again with time in the same frame, it re-poses where it is instead: a
+	// second advance put every track a frame ahead for that frame - the widget drawn a step further on - and, if the extra
+	// tick came from something that only runs now and then, looked like a one-frame jump. Never in the editor's
+	// previews, which clock their players by hand.
+	const bool bRuntime = !FallbackWidget || !FallbackWidget->IsDesignTime();
+	if (DeltaTime > 0.f && bRuntime)
+	{
+		if (Player.LastAdvanceFrame == GFrameCounter)
+		{
+			WidgetAnimTransformDebug::NoteSecondAdvance(&Player, FallbackWidget, DeltaTime);
+			DeltaTime = 0.f;
+		}
+		else
+		{
+			Player.LastAdvanceFrame = GFrameCounter;
+		}
+	}
+
+	// Who is writing, for WidgetAnim.DebugTransforms.
+	const WidgetAnimTransformDebug::FWriterScope Writer(&Player, FallbackWidget, DeltaTime);
 
 	// Staggers of tracks just started fan out first, on this widget, so everything below sees their items.
 	for (FWidgetAnimTrack& Track : Player.Tracks)

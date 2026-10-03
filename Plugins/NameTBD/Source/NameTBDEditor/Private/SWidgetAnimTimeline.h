@@ -325,6 +325,30 @@ public:
 	 */
 	float GetTimeScale() const;
 
+	/**
+	 * Whether the animation on screen is a percentage animation (see EWidgetAnimTimeUnit): its timeline runs from 0% to
+	 * 100%, one second as stored, and every time the panel shows is a percentage.
+	 */
+	bool IsPercentTime() const;
+
+	/**
+	 * A time on the timeline, as the panel shows it: "0.25 s" with Decimals places, or on a percentage timeline "25%" -
+	 * "12.5%" where it has a fractional part (see FormatPercent).
+	 */
+	FString FormatTime(float Seconds, int32 Decimals = 2) const;
+
+	/**
+	 * A time on a percentage timeline as a percentage: "25%", or "12.5%" and "33.33%" where it has a fractional part -
+	 * rounded to two places, with no trailing zeros. 100% is one second as stored.
+	 */
+	static FString FormatPercent(float Seconds);
+
+	/** A length on the timeline, the same way, for spans: "0.25 - 0.50 s", or "25 - 50%". */
+	FString FormatSpan(float Start, float End) const;
+
+	/** Changes the animation's Time In, converting its tracks - one undoable step. See IWidgetAnimPanelSource::SetTimeUnit. */
+	void SetTimeUnit(EWidgetAnimTimeUnit Unit);
+
 	/** Whether a layer can be edited at all: the animation can be, and the track isn't locked. */
 	bool CanEditLayer(int32 LayerIndex) const;
 
@@ -816,6 +840,19 @@ public:
 
 	/** A plain list's track pointed at another widget - see FWidgetAnimLayer::TargetWidget. None is the list's own widget. */
 	void SetLayerTarget(int32 LayerIndex, FName Target);
+
+	/**
+	 * An animation track's Stretch Across Track (FWidgetAnimLayer::bFitToTrack): on, its animation plays across the track's
+	 * own length, which keeps the length it had so nothing moves; off, at the animation's own length.
+	 */
+	void SetAnimationTrackFit(int32 LayerIndex, bool bFit);
+
+	/**
+	 * Whether an animation track follows a float value of its own (Timing set to Value - see FWidgetAnimProgressDrive) or
+	 * plays across the track as the timeline passes it. Following a value, it is named after its animation when it has no
+	 * Value Name yet.
+	 */
+	void SetAnimationTrackValueDriven(int32 LayerIndex, bool bValueDriven);
 
 	/**
 	 * Which widget a track moves, as tooltips and menus name it: its group's name - or, on a plain list, its Target

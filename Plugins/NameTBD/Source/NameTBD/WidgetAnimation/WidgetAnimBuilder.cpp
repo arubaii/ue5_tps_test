@@ -197,6 +197,8 @@ void UWidgetAnimBuilder::RebuildPreviewAnimations()
 		PreviewAsset->Layers = Layers;
 		PreviewAsset->AnimationSpeedMultiplier = AnimationSpeedMultiplier;
 		PreviewAsset->MinimumLength = MinimumLength;
+		PreviewAsset->TimeUnit = TimeUnit;
+		PreviewAsset->Progress = Progress;
 		AnimationToPlay = PreviewAsset;
 	}
 
@@ -869,6 +871,8 @@ bool UWidgetAnimBuilder::CopyAuthoredStateFrom(const UWidgetAnimBuilder& Source)
 		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Layers),
 		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, AnimationSpeedMultiplier),
 		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, MinimumLength),
+		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, TimeUnit),
+		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Progress),
 		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Preview),
 		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, bPreviewLoop),
 		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, bPreviewPingPong),
@@ -956,8 +960,21 @@ void UWidgetAnimBuilder::HandleTransformAnimsSynced(UObject* Object, bool /*bRes
 	}
 }
 
+void UWidgetAnimBuilder::PreEditChange(FProperty* PropertyAboutToChange)
+{
+	Super::PreEditChange(PropertyAboutToChange);
+	TimeUnitBeforeEdit = TimeUnit;
+}
+
 void UWidgetAnimBuilder::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
+	// Time In changed: the tracks are converted to it first, so everything below sees them as they now are.
+	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, TimeUnit) && TimeUnitBeforeEdit != TimeUnit)
+	{
+		UWidgetAnimLibrary::ConvertTimeUnit(Layers, TimeUnitBeforeEdit, TimeUnit, MinimumLength, AnimationSpeedMultiplier);
+		TimeUnitBeforeEdit = TimeUnit;
+	}
+
 	// Also runs SynchronizeProperties when this object is itself on screen, which re-poses it.
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
@@ -997,6 +1014,8 @@ void UWidgetAnimBuilder::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Layers)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, AnimationSpeedMultiplier)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, MinimumLength)
+		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, TimeUnit)
+		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Progress)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, PreviewAnimation)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Description)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, bPreviewLoop)
@@ -1332,6 +1351,8 @@ UWidgetAnimPresetAsset* UWidgetAnimBuilder::CreateWidgetAnimation()
 	Asset->Layers = Layers;
 	Asset->AnimationSpeedMultiplier = AnimationSpeedMultiplier;
 	Asset->MinimumLength = MinimumLength;
+	Asset->TimeUnit = TimeUnit;
+	Asset->Progress = Progress;
 	Asset->PostEditChange();
 	Asset->MarkPackageDirty();
 

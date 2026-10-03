@@ -227,6 +227,11 @@ namespace NameTBD
 			inline const FLinearColor RangeStart(0.20f, 0.62f, 0.24f);
 			inline const FLinearColor RangeEnd(0.72f, 0.10f, 0.08f);
 			inline const FLinearColor OutOfRangeShade(0.00f, 0.00f, 0.00f, 0.28f);
+
+			// On a percentage timeline with tracks reaching past 100%: what lies beyond it, which a progress of 1 never
+			// reaches - shaded like outside the animation, and its 100% line in a quieter red than the end's.
+			inline const FLinearColor PercentPastEndShade(0.00f, 0.00f, 0.00f, 0.20f);
+			inline const FLinearColor PercentEndLine(0.72f, 0.10f, 0.08f, 0.55f);
 			inline const FLinearColor GridMajor(1.00f, 1.00f, 1.00f, 0.055f);
 			inline const FLinearColor GridMinor(1.00f, 1.00f, 1.00f, 0.022f);
 			inline const FLinearColor HoverTimeLine(1.00f, 1.00f, 1.00f, 0.12f);

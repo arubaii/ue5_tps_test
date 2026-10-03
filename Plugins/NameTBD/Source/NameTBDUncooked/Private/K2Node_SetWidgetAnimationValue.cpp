@@ -617,6 +617,7 @@ void UK2Node_SetWidgetAnimationValue::GatherValueSources(const FWidgetAnimValueS
 				FWidgetAnimValueSource& Source = OutSources.AddDefaulted_GetRef();
 				Source.Key = Key;
 				Source.Label = FText::FromString(Animation->GetName());
+				Source.bPercent = Animation->IsPercentTime();
 				AddValues(Source, Animation->Layers);
 			}
 		}

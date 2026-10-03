@@ -63,9 +63,22 @@ void UWidgetAnimPresetAsset::ViewAnimationPreview()
 }
 
 #if WITH_EDITOR
+void UWidgetAnimPresetAsset::PreEditChange(FProperty* PropertyAboutToChange)
+{
+	Super::PreEditChange(PropertyAboutToChange);
+	TimeUnitBeforeEdit = TimeUnit;
+}
+
 void UWidgetAnimPresetAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	// Time In changed in the Details panel: the tracks are converted to it, as the Widget Animations panel's switch does.
+	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UWidgetAnimPresetAsset, TimeUnit) && TimeUnitBeforeEdit != TimeUnit)
+	{
+		UWidgetAnimLibrary::ConvertTimeUnit(Layers, TimeUnitBeforeEdit, TimeUnit, MinimumLength, AnimationSpeedMultiplier);
+		TimeUnitBeforeEdit = TimeUnit;
+	}
 
 	// Keys follow the curve on the next tick, once this edit has unwound. See RequestSyncTransformAnims.
 	UWidgetAnimTransformLibrary::RequestSyncTransformAnims(this, PropertyChangedEvent);
@@ -147,6 +160,18 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 	// was authored as, its groups staying in step with each other.
 	const int32 LoopGroup = AllocateLoopGroup();
 
+	// A percentage animation follows one progress, set for this use (see EWidgetAnimTimeUnit) - or, with a Progress
+	// Animation Duration, plays on its clock from 0% to 100% in that long until a progress is set: 100% is one second as
+	// authored, so its pace is one over that many seconds. It has no Speed Multiplier of its own.
+	const bool bPercent = Animation->IsPercentTime();
+	TSharedPtr<FWidgetAnimProgressDrive> Drive;
+	float Pace = FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);
+	if (bPercent)
+	{
+		Drive = FWidgetAnimProgressDrive::MakeFor(Animation->Progress, ProgressAnimationDuration);
+		Pace = ProgressAnimationDuration > KINDA_SMALL_NUMBER ? 1.f / ProgressAnimationDuration : 1.f;
+	}
+
 	for (int32 Index = 0; Index < Placed.Num(); ++Index)
 	{
 		FWidgetAnimSettings& Settings = Placed[Index];
@@ -164,7 +189,7 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 		Settings.bInvertAnimation = Settings.bInvertAnimation || bInvertAnimation;
 		Settings.bMirrorInOut = bMirrorInOut;
 		// The animation's own Speed Multiplier, then this use's Playback Speed on top.
-		Settings.PlaybackSpeed = PlaybackSpeed * FMath::Max(Animation->AnimationSpeedMultiplier, 0.01f);
+		Settings.PlaybackSpeed = PlaybackSpeed * Pace;
 		Settings.LoopGroup = LoopGroup;
 		Settings.TargetWidget = Target;
 
@@ -179,6 +204,13 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 		// Same idea for a Transform layer's Animate Shape: the group's target, or the Shape Box it sits in.
 		// Null when no target was named; the library then resolves the widget the animation is played on.
 		Settings.ShapeTargetBox = UWidgetAnimLibrary::ResolveShapeBox(Target);
+
+		// Following this use's progress - but a value track follows its own value, and an animation inserted with its own
+		// value (Timing set to Value on its track) follows that.
+		if (Drive && !Settings.ProgressDrive && !Settings.IsValueDriven())
+		{
+			Settings.ProgressDrive = Drive;
+		}
 
 		OutSettings.Add(MoveTemp(Settings));
 	}
@@ -254,11 +286,30 @@ bool FWidgetAnimEntry::SyncGroupTargets(const TArray<FString>* TargetOptions)
 	return bChanged;
 }
 
+bool FWidgetAnimEntryBase::IsPercentAnimation() const
+{
+	return Animation && Animation->IsPercentTime();
+}
+
+bool FWidgetAnimEntry::ShowsProgressDuration() const
+{
+	return IsPercentAnimation()
+		&& ((bShowConstructTrigger && bPlayInAnimationOnConstruct)
+			|| (bShowVisibilityTrigger && bPlayAnimationOnVisibilityHidden)
+			|| (bShowTextChangeTrigger && bPlayOnTextChange));
+}
+
 bool FWidgetAnimEntryBase::HasValueTrack(FName ValueName) const
 {
 	if (!Animation || ValueName.IsNone())
 	{
 		return false;
+	}
+
+	// A percentage animation's own progress is a value it takes.
+	if (ValueName == WidgetAnimValue::ProgressValueName)
+	{
+		return Animation->IsPercentTime();
 	}
 
 	// The animations inserted into it as tracks too: their value tracks play as part of it.
@@ -402,7 +453,7 @@ int32 UWidgetAnimEntryLibrary::SetEntriesValue(FWidgetAnimPlayer& Player, const 
 		// one whose clock tracks have finished, keeps its pose rather than playing its clock tracks again.
 		auto NeedsStart = [&Player, &InEntries, &Id](const FWidgetAnimEntry& Entry)
 		{
-			if (!Entry.HasValueTrack(Id.ValueName) || (!Id.IsAnywhere() && Entry.Animation.Get() != Id.Animation))
+			if (!Entry.HasValueTrack(Id.ValueName) || (!Id.IsAnywhere() && Entry.Animation.Get() != Id.Animation) || (!Id.AnimId.IsNone() && Entry.AnimId != Id.AnimId))
 			{
 				return false;
 			}

@@ -1108,7 +1108,7 @@ float UWidgetAnimScriptAnimation::GetSpeedMultiplier() const
 	{
 		return Pinned->GetAnimationSpeedMultiplier();
 	}
-	return Asset ? FMath::Max(Asset->AnimationSpeedMultiplier, 0.01f) : 1.f;
+	return Asset ? Asset->GetEffectiveSpeedMultiplier() : 1.f;
 }
 
 float UWidgetAnimScriptAnimation::GetLength() const
@@ -1132,7 +1132,7 @@ float UWidgetAnimScriptAnimation::GetLength() const
 	}
 	else if (Asset)
 	{
-		MinimumLength = FMath::Max(Asset->MinimumLength, 0.f);
+		MinimumLength = Asset->GetEffectiveMinimumLength();
 	}
 	return FMath::Max(Length, MinimumLength);
 }

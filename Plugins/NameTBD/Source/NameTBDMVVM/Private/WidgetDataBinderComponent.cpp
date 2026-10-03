@@ -797,7 +797,7 @@ void UWidgetDataBinderComponent::EvaluateTrigger(int32 TriggerIndex, bool bIniti
 		return;
 	}
 
-	if (Trigger.Action == EWidgetDataTriggerAction::SetValue)
+	if (Trigger.Action == EWidgetDataTriggerAction::SetValue || Trigger.Action == EWidgetDataTriggerAction::SetProgress)
 	{
 		// No condition and no edge: every change of the field is a value, as it is - each track maps it onto itself. A
 		// Vector 2D or Linear Color field carries its channels; a number or bool (0 and 1) is one value.
@@ -1028,22 +1028,43 @@ void UWidgetDataBinderComponent::PlayOrStop(const FWidgetFieldTrigger& Trigger, 
 
 void UWidgetDataBinderComponent::SetAnimationValue(const FWidgetFieldTrigger& Trigger, const FVector4& Value, bool bSnap)
 {
+	const bool bProgress = Trigger.Action == EWidgetDataTriggerAction::SetProgress;
 	UWidgetAnimationComponent* Component = nullptr;
 	IWidgetAnimHost* Host = nullptr;
-	if (Trigger.ValueName.IsNone() || !FindAnimationOwner(Trigger, Component, Host))
+	if ((!bProgress && Trigger.ValueName.IsNone()) || !FindAnimationOwner(Trigger, Component, Host))
 	{
 		return;
 	}
 
-	// By name alone: every animation's tracks with this Value Name follow the field.
-	const FWidgetAnimValueId Id = FWidgetAnimValueId::Anywhere(Trigger.ValueName);
-	if (Component)
+	// By name alone: every animation's tracks with this Value Name follow the field. A progress goes to the percentage
+	// animations of the entries with the Anim IDs, or of every entry.
+	TArray<FWidgetAnimValueId, TInlineAllocator<2>> Ids;
+	if (!bProgress)
 	{
-		Component->SetWidgetAnimationValues(Id, Value, bSnap, /*bStartIfNotPlaying=*/true);
+		Ids.Add(FWidgetAnimValueId::Anywhere(Trigger.ValueName));
+	}
+	else if (Trigger.AnimIds.Num() == 0)
+	{
+		Ids.Add(FWidgetAnimValueId::Progress(NAME_None));
 	}
 	else
 	{
-		Host->SetWidgetAnimationValues(Id, Value, bSnap, /*bStartIfNotPlaying=*/true);
+		for (const FName AnimId : Trigger.AnimIds)
+		{
+			Ids.Add(FWidgetAnimValueId::Progress(AnimId));
+		}
+	}
+
+	for (const FWidgetAnimValueId& Id : Ids)
+	{
+		if (Component)
+		{
+			Component->SetWidgetAnimationValues(Id, Value, bSnap, /*bStartIfNotPlaying=*/true);
+		}
+		else
+		{
+			Host->SetWidgetAnimationValues(Id, Value, bSnap, /*bStartIfNotPlaying=*/true);
+		}
 	}
 }
 

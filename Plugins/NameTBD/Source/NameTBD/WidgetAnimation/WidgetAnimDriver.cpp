@@ -364,3 +364,55 @@ bool WidgetAnimValue::IsShapePart(EWidgetAnimTransformPart Part)
 		&& Part != EWidgetAnimTransformPart::Shear
 		&& Part != EWidgetAnimTransformPart::Angle;
 }
+
+// =====================================================================================================
+// Percentage animations
+// =====================================================================================================
+
+const FName WidgetAnimValue::ProgressValueName(TEXT("Animation Progress"));
+
+FWidgetAnimValueId FWidgetAnimValueId::Progress(FName InAnimId)
+{
+	FWidgetAnimValueId Id = Anywhere(WidgetAnimValue::ProgressValueName);
+	Id.AnimId = InAnimId;
+	return Id;
+}
+
+FWidgetAnimValueMotion FWidgetAnimProgressDrive::GetMotion() const
+{
+	FWidgetAnimValueMotion Motion;
+	Motion.Smoothing = Smoothing;
+	Motion.TweenDuration = TweenDuration;
+	Motion.TweenEasing = TweenEasing;
+	Motion.TweenCurve = TweenCurve;
+	Motion.Spring = &Spring;
+	Motion.SteadySpeed = SteadySpeed;
+	Motion.SteadyCatchUpTime = SteadyCatchUpTime;
+	Motion.NumChannels = 1;
+	return Motion;
+}
+
+TSharedRef<FWidgetAnimProgressDrive> FWidgetAnimProgressDrive::MakeFor(const FWidgetAnimProgressSettings& Settings, float InDuration)
+{
+	TSharedRef<FWidgetAnimProgressDrive> Drive = MakeShared<FWidgetAnimProgressDrive>();
+	Drive->ValueName = WidgetAnimValue::ProgressValueName;
+
+	// One number, 0 at 0% and 1 at 100%, starting at 0.
+	Drive->Options.Kind = EWidgetAnimValueKind::Float;
+	Drive->Options.ValueAtStart = 0.0;
+	Drive->Options.ValueAtEnd = 1.0;
+	Drive->Options.StartValue = 0.0;
+	Drive->Options.bNeverGoBackwards = Settings.bNeverGoBackwards;
+	Drive->Options.MinimumTimeToFill = Settings.MinimumTimeToFill;
+	Drive->Options.OnExit = EWidgetAnimValueExit::ExitRightAway;
+
+	Drive->Smoothing = Settings.Smoothing;
+	Drive->TweenDuration = FMath::Max(Settings.SmoothingTime, 0.01f);
+	Drive->TweenEasing = Settings.SmoothingEasing;
+	Drive->Spring = Settings.Spring;
+	Drive->SteadySpeed = Settings.SteadySpeed;
+	Drive->SteadyCatchUpTime = Settings.SteadyCatchUpTime;
+	Drive->Duration = FMath::Max(InDuration, 0.f);
+	Drive->ValueInput = Settings.ProgressInput;
+	return Drive;
+}

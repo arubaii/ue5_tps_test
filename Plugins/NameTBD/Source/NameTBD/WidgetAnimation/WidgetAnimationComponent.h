@@ -381,6 +381,29 @@ public:
 	/** The raw value behind the four getters, for the value Id names. */
 	FVector4 GetWidgetAnimationValues(const FWidgetAnimValueId& Id, bool bTargetValue) const;
 
+	// Percentage animations
+	// -------------------------------------------------------------------------------------------------
+
+	/**
+	 * Sets how far along the percentage animations played by the entries with this Anim ID are (see EWidgetAnimTimeUnit):
+	 * 0 is 0%, 1 is 100% - a hold timer's elapsed share, a charge level. Every track of the animation follows it - its
+	 * keys, staggers, cues and the animations inserted into it - travelling there by the animation's Smoothing. Call it as
+	 * often as the progress changes. An Anim ID of None sets every percentage animation here.
+	 *
+	 * Snap jumps straight to it, even backwards where the animation never goes backwards. Start If Not Playing starts the
+	 * Anim In entries with that Anim ID that haven't played yet. An entry playing over its Progress Animation Duration
+	 * carries on from wherever it has got to. Returns whether a running animation took the progress.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Animation|Progress", meta = (DisplayName = "Set Widget Animation Progress By Id", AdvancedDisplay = "bSnap,bStartIfNotPlaying"))
+	bool SetWidgetAnimationProgress(FName AnimId, float Progress, bool bSnap = false, bool bStartIfNotPlaying = true);
+
+	/**
+	 * How far along the percentage animation an entry with this Anim ID plays is now, 0 - 1 - or, with Target Progress,
+	 * where it is heading (the last progress set). 0 when none is playing.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Animation|Progress", meta = (DisplayName = "Get Widget Animation Progress By Id"))
+	float GetWidgetAnimationProgress(FName AnimId, bool bTargetProgress = false) const;
+
 	/**
 	 * Whether any animation here - an Anim In or Anim Out entry's, or the additive tracks - has a value-driven track
 	 * that takes the value Id names. What the Set Widget Animation Value node looks for among the components on and

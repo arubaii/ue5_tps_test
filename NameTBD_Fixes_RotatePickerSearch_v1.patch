@@ -1,0 +1,364 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
+index 3a2b6b7..e72fd18 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
+@@ -1892,23 +1892,29 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
+ 			continue;
+ 		}
+ 
++		// Composed over a baseline when there is one: the animation says "half as bright, eight pixels up", not "opacity
++		// 0.5, y = -8".
++		float Opacity = Transform.Opacity;
++		FWidgetTransform Pose(Transform.Translation, MakeInvertibleScale(Transform.Scale), Transform.Shear, Transform.Angle);
+ 		if (Baselines)
+ 		{
+-			// Composed: the animation says "half as bright, eight pixels up", not "opacity 0.5, y = -8".
+ 			const FWidgetAnimBaseline Baseline = FindBaselineFor(*Baselines, Target);
+-			Target->SetRenderOpacity(Baseline.Opacity * Transform.Opacity);
+-			Target->SetRenderScale(MakeInvertibleScale(Baseline.Scale * Transform.Scale));
+-			Target->SetRenderTranslation(Baseline.Translation + Transform.Translation);
+-			Target->SetRenderShear(Baseline.Shear + Transform.Shear);
+-			Target->SetRenderTransformAngle(Baseline.Angle + Transform.Angle);
++			Opacity = Baseline.Opacity * Transform.Opacity;
++			Pose = FWidgetTransform(Baseline.Translation + Transform.Translation, MakeInvertibleScale(Baseline.Scale * Transform.Scale), Baseline.Shear + Transform.Shear, Baseline.Angle + Transform.Angle);
+ 		}
+-		else
++
++		// The whole render transform in one write, and only when it changed. Set field by field, each of the four setters
++		// pushed a transform of its own to Slate and invalidated the widget four times a frame - scale with last frame's
++		// angle, then the new translation, and so on - which, under invalidation (Global Invalidation, an Invalidation or
++		// Retainer Box), was the suspect for a rotating widget flashing up larger for a frame or two at runtime only.
++		if (!FMath::IsNearlyEqual(Target->GetRenderOpacity(), Opacity))
++		{
++			Target->SetRenderOpacity(Opacity);
++		}
++		const FWidgetTransform& Current = Target->GetRenderTransform();
++		if (!Current.Translation.Equals(Pose.Translation) || !Current.Scale.Equals(Pose.Scale) || !Current.Shear.Equals(Pose.Shear) || !FMath::IsNearlyEqual(Current.Angle, Pose.Angle))
+ 		{
+-			Target->SetRenderOpacity(Transform.Opacity);
+-			Target->SetRenderScale(MakeInvertibleScale(Transform.Scale));
+-			Target->SetRenderTranslation(Transform.Translation);
+-			Target->SetRenderShear(Transform.Shear);
+-			Target->SetRenderTransformAngle(Transform.Angle);
++			Target->SetRenderTransform(Pose);
+ 		}
+ 	}
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 715a661..ccfbe33 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -30,6 +30,9 @@
+ #include "Misc/Base64.h"
+ #include "Algo/Find.h"
+ #include "Components/Widget.h"
++#include "Components/CanvasPanelSlot.h"
++#include "Components/PanelWidget.h"
++#include "Algo/StableSort.h"
+ #include "Blueprint/UserWidget.h"
+ #include "Blueprint/WidgetTree.h"
+ #include "Slate/WidgetTransform.h"
+@@ -85,6 +88,8 @@
+ #include "Widgets/Input/SComboButton.h"
+ #include "Widgets/Input/SEditableTextBox.h"
+ #include "Widgets/Input/SNumericEntryBox.h"
++#include "Widgets/Input/SSearchBox.h"
++#include "Widgets/Views/SListView.h"
+ #include "Widgets/Input/SSpinBox.h"
+ #include "Widgets/Input/STextComboBox.h"
+ #include "Widgets/Layout/SBorder.h"
+@@ -4121,6 +4126,120 @@ private:
+ 		}
+ 	}
+ 
++	/**
++	 * A dropdown of widget paths with a search box at its top: typing narrows the list to the paths containing what is typed
++	 * (any case), Enter picks the first one left, and the list scrolls once there are more than fit. What a Widget Blueprint
++	 * with many widgets needs to find the one it wants. Options is kept alive by the dropdown.
++	 */
++	static TSharedRef<SWidget> MakeSearchablePicker(const TSharedRef<TArray<TSharedPtr<FString>>>& Options, const TAttribute<FText>& Current, TFunction<void(const FString&)> OnPicked, const TAttribute<bool>& Enabled, const FText& ToolTip)
++	{
++		struct FPickerState
++		{
++			TArray<TSharedPtr<FString>> Filtered;
++			TSharedPtr<SListView<TSharedPtr<FString>>> List;
++			TWeakPtr<SComboButton> Combo;
++		};
++		const TSharedRef<FPickerState> State = MakeShared<FPickerState>();
++
++		auto Pick = [State, OnPicked](const TSharedPtr<FString>& Item)
++		{
++			if (Item.IsValid())
++			{
++				OnPicked(*Item);
++			}
++			if (const TSharedPtr<SComboButton> Combo = State->Combo.Pin())
++			{
++				Combo->SetIsOpen(false);
++			}
++		};
++
++		auto Filter = [State, Options](const FString& Text)
++		{
++			State->Filtered.Reset();
++			const FString Needle = Text.TrimStartAndEnd();
++			for (const TSharedPtr<FString>& Option : *Options)
++			{
++				if (Option.IsValid() && (Needle.IsEmpty() || Option->Contains(Needle, ESearchCase::IgnoreCase)))
++				{
++					State->Filtered.Add(Option);
++				}
++			}
++			if (State->List.IsValid())
++			{
++				State->List->RequestListRefresh();
++			}
++		};
++
++		const TSharedRef<SComboButton> Combo = SNew(SComboButton)
++			.IsEnabled(Enabled)
++			.ToolTipText(ToolTip)
++			.ButtonContent()
++			[
++				SNew(STextBlock)
++				.Font(IDetailLayoutBuilder::GetDetailFont())
++				.Text(Current)
++			];
++
++		Combo->SetOnGetMenuContent(FOnGetContent::CreateLambda([State, Filter, Pick, Current]() -> TSharedRef<SWidget>
++		{
++			Filter(FString());
++
++			const TSharedRef<SSearchBox> Search = SNew(SSearchBox)
++				.HintText(LOCTEXT("SearchWidgetsHint", "Search widgets"))
++				.OnTextChanged_Lambda([Filter](const FText& Text) { Filter(Text.ToString()); })
++				.OnTextCommitted_Lambda([State, Pick](const FText&, ETextCommit::Type CommitType)
++				{
++					if (CommitType == ETextCommit::OnEnter && State->Filtered.Num() > 0)
++					{
++						Pick(State->Filtered[0]);
++					}
++				});
++
++			const FString CurrentText = Current.Get().ToString();
++			State->List = SNew(SListView<TSharedPtr<FString>>)
++				.ListItemsSource(&State->Filtered)
++				.SelectionMode(ESelectionMode::Single)
++				.OnGenerateRow_Lambda([CurrentText](TSharedPtr<FString> Item, const TSharedRef<STableViewBase>& Owner)
++				{
++					const bool bCurrent = Item.IsValid() && *Item == CurrentText;
++					return SNew(STableRow<TSharedPtr<FString>>, Owner)
++						.Padding(FMargin(6.f, 2.f))
++						[
++							SNew(STextBlock)
++							.Font(bCurrent ? IDetailLayoutBuilder::GetDetailFontBold() : IDetailLayoutBuilder::GetDetailFont())
++							.Text(FText::FromString(Item.IsValid() ? *Item : FString()))
++						];
++				})
++				.OnMouseButtonClick_Lambda([Pick](TSharedPtr<FString> Item) { Pick(Item); });
++
++			if (const TSharedPtr<SComboButton> Pinned = State->Combo.Pin())
++			{
++				Pinned->SetMenuContentWidgetToFocus(Search);
++			}
++
++			return SNew(SBox)
++				.MinDesiredWidth(240.f)
++				.MaxDesiredHeight(360.f)
++				.Padding(FMargin(4.f))
++				[
++					SNew(SVerticalBox)
++					+ SVerticalBox::Slot()
++					.AutoHeight()
++					.Padding(FMargin(0.f, 0.f, 0.f, 4.f))
++					[
++						Search
++					]
++					+ SVerticalBox::Slot()
++					.FillHeight(1.f)
++					[
++						State->List.ToSharedRef()
++					]
++				];
++		}));
++		State->Combo = Combo;
++		return Combo;
++	}
++
+ 	/** A group: its name, and the widget it animates here - picked from this Widget Blueprint's own widgets. */
+ 	void CustomizeGroup(IDetailLayoutBuilder& DetailBuilder, const TSharedRef<IPropertyHandle>& GroupHandle, const IWidgetAnimPanelSource& Source)
+ 	{
+@@ -4188,18 +4307,20 @@ private:
+ 				.FillWidth(1.f)
+ 				.VAlign(VAlign_Center)
+ 				[
+-					SNew(STextComboBox)
+-					.IsEnabled_Lambda([WeakOwner]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanEdit(); })
+-					.OptionsSource(TargetOptions.Get())
+-					.InitiallySelectedItem(Initial)
+-					.ToolTipText(WidgetAnimTips::PreviewTargetTooltip())
+-					.OnSelectionChanged_Lambda([Target](TSharedPtr<FString> Item, ESelectInfo::Type)
+-					{
+-						if (Item.IsValid())
++					MakeSearchablePicker(
++						TargetOptions.ToSharedRef(),
++						TAttribute<FText>::CreateLambda([Target]()
+ 						{
+-							Target->SetValue(*Item == TEXT("None") ? FName(NAME_None) : FName(**Item));
+-						}
+-					})
++							FName Value;
++							Target->GetValue(Value);
++							return FText::FromString(Value.IsNone() ? FString(TEXT("None")) : Value.ToString());
++						}),
++						[Target](const FString& Picked)
++						{
++							Target->SetValue(Picked == TEXT("None") ? FName(NAME_None) : FName(*Picked));
++						},
++						TAttribute<bool>::CreateLambda([WeakOwner]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanEdit(); }),
++						WidgetAnimTips::PreviewTargetTooltip())
+ 				]
+ 
+ 				// Pick it by clicking the widget in the designer instead: lit while it waits for that click.
+@@ -4366,20 +4487,24 @@ private:
+ 				.ValueContent()
+ 				.MinDesiredWidth(180.f)
+ 				[
+-					SNew(STextComboBox)
+-					.IsEnabled_Lambda([WeakTargetOwner, LayerIndex]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin(); return Pinned && Pinned->CanEditLayer(LayerIndex); })
+-					.OptionsSource(LayerTargetOptions.Get())
+-					.InitiallySelectedItem(InitialTarget)
+-					.ToolTipText(WidgetAnimTips::LayerTargetWidgetTooltip())
+-					.OnSelectionChanged_Lambda([WeakTargetOwner, LayerIndex](TSharedPtr<FString> Item, ESelectInfo::Type SelectInfo)
+-					{
+-						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin();
+-						if (!Pinned || !Item.IsValid() || SelectInfo == ESelectInfo::Direct)
++					MakeSearchablePicker(
++						LayerTargetOptions.ToSharedRef(),
++						TAttribute<FText>::CreateLambda([WeakTargetOwner, LayerIndex]()
+ 						{
+-							return;
+-						}
+-						Pinned->SetLayerTarget(LayerIndex, *Item == TEXT("None") ? FName(NAME_None) : FName(**Item));
+-					})
++							const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin();
++							const TArray<FWidgetAnimLayer>* Layers = Pinned ? Pinned->GetLayers() : nullptr;
++							const FName Value = Layers && Layers->IsValidIndex(LayerIndex) ? (*Layers)[LayerIndex].TargetWidget : FName(NAME_None);
++							return FText::FromString(Value.IsNone() ? FString(TEXT("None")) : Value.ToString());
++						}),
++						[WeakTargetOwner, LayerIndex](const FString& Picked)
++						{
++							if (const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin())
++							{
++								Pinned->SetLayerTarget(LayerIndex, Picked == TEXT("None") ? FName(NAME_None) : FName(*Picked));
++							}
++						},
++						TAttribute<bool>::CreateLambda([WeakTargetOwner, LayerIndex]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin(); return Pinned && Pinned->CanEditLayer(LayerIndex); }),
++						WidgetAnimTips::LayerTargetWidgetTooltip())
+ 				];
+ 		}
+ 
+@@ -16146,56 +16271,71 @@ UWidget* SWidgetAnimTimeline::FindPreviewWidgetAt(const FVector2D& ScreenPositio
+ 		return OutResolvedOption.IsEmpty() ? nullptr : PanelWidget;
+ 	};
+ 
+-	// First by Slate's own hit testing: the deepest widget under the mouse that is one of the preview's.
+-	TMap<const SWidget*, UWidget*> BySlate;
+-	DesignerRoot->WidgetTree->ForEachWidget([&BySlate](UWidget* Candidate)
+-	{
+-		if (const TSharedPtr<SWidget> CandidateSlate = Candidate ? Candidate->GetCachedWidget() : nullptr)
+-		{
+-			BySlate.Add(CandidateSlate.Get(), Candidate);
+-		}
+-	});
+-	for (int32 Index = Path.Widgets.Num() - 1; Index >= 0; --Index)
+-	{
+-		if (UWidget* const* Found = BySlate.Find(&Path.Widgets[Index].Widget.Get()))
+-		{
+-			if (UWidget* Resolved = Resolve(*Found, OutOption))
+-			{
+-				return Resolved;
+-			}
+-		}
+-	}
+-
+-	// Then by where each is laid out - the designer may lay its own overlays over the preview, out of Slate's hit testing:
+-	// the smallest visible one under the mouse.
++	// The widget drawn on top under the mouse: of every visible widget of the preview whose box holds the point, the last
++	// in paint order - children after their parent, later siblings after earlier ones - that can be a target. Not Slate's
++	// hit testing, which only finds widgets that take the mouse: a Text Block or an Image set Not Hit-Testable, the usual
++	// for decoration, was skipped for the Canvas Panel or Overlay around it, or for nothing at all. A widget hidden or
++	// collapsed hides everything inside it, and a Canvas Panel's children are taken in their Z Order, as it draws them.
+ 	UWidget* Best = nullptr;
+ 	FString BestOption;
+-	double BestArea = TNumericLimits<double>::Max();
+-	DesignerRoot->WidgetTree->ForEachWidget([&ScreenPosition, &Resolve, &Best, &BestOption, &BestArea](UWidget* Candidate)
++	TFunction<void(UWidget*, int32)> Visit;
++	Visit = [&](UWidget* Candidate, int32 Depth)
+ 	{
+-		const TSharedPtr<SWidget> CandidateSlate = Candidate ? Candidate->GetCachedWidget() : nullptr;
+-		if (!CandidateSlate.IsValid() || !CandidateSlate->GetVisibility().IsVisible())
++		if (!Candidate || Depth > 64)
+ 		{
+ 			return;
+ 		}
+-		const FGeometry& Geometry = Candidate->GetCachedGeometry();
+-		if (!Geometry.IsUnderLocation(ScreenPosition))
++		const TSharedPtr<SWidget> CandidateSlate = Candidate->GetCachedWidget();
++		if (!CandidateSlate.IsValid() || !CandidateSlate->GetVisibility().IsVisible())
+ 		{
+ 			return;
+ 		}
++
++		const FGeometry& Geometry = Candidate->GetCachedGeometry();
+ 		const FVector2D Extent(Geometry.GetAbsoluteSize());
+-		const double Area = Extent.X * Extent.Y;
+-		if (Area < BestArea)
++		if (Extent.X > 0.0 && Extent.Y > 0.0 && Geometry.IsUnderLocation(ScreenPosition))
+ 		{
+ 			FString CandidateOption;
+ 			if (UWidget* Resolved = Resolve(Candidate, CandidateOption))
+ 			{
+ 				Best = Resolved;
+ 				BestOption = CandidateOption;
+-				BestArea = Area;
+ 			}
+ 		}
+-	});
++
++		// A nested User Widget's own widgets, then a panel's children in the order they are drawn.
++		if (const UUserWidget* Nested = Cast<UUserWidget>(Candidate))
++		{
++			if (Nested != DesignerRoot && Nested->WidgetTree)
++			{
++				Visit(Nested->WidgetTree->RootWidget, Depth + 1);
++			}
++			return;
++		}
++		if (const UPanelWidget* Panel = Cast<UPanelWidget>(Candidate))
++		{
++			TArray<UWidget*, TInlineAllocator<16>> Children;
++			TArray<int32, TInlineAllocator<16>> Orders;
++			for (int32 ChildIndex = 0; ChildIndex < Panel->GetChildrenCount(); ++ChildIndex)
++			{
++				UWidget* Child = Panel->GetChildAt(ChildIndex);
++				const UCanvasPanelSlot* CanvasSlot = Child ? Cast<UCanvasPanelSlot>(Child->Slot) : nullptr;
++				Children.Add(Child);
++				Orders.Add(CanvasSlot ? CanvasSlot->GetZOrder() : 0);
++			}
++			TArray<int32, TInlineAllocator<16>> Sorted;
++			for (int32 ChildIndex = 0; ChildIndex < Children.Num(); ++ChildIndex)
++			{
++				Sorted.Add(ChildIndex);
++			}
++			Algo::StableSort(Sorted, [&Orders](int32 A, int32 B) { return Orders[A] < Orders[B]; });
++			for (const int32 ChildIndex : Sorted)
++			{
++				Visit(Children[ChildIndex], Depth + 1);
++			}
++		}
++	};
++	Visit(DesignerRoot->WidgetTree->RootWidget, 0);
+ 
+ 	// The preview itself, under the mouse but nothing in it: the widget the animation plays on.
+ 	if (!Best && DesignerRoot->GetCachedWidget().IsValid() && DesignerRoot->GetCachedGeometry().IsUnderLocation(ScreenPosition))

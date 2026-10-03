@@ -278,6 +278,37 @@ bool UWidgetAnimPlayLibrary::SetScopedValueColor(UObject* Target, UWidgetAnimPre
 	return SetScopedValueOn(Target, MakeScopedId(Animation, bAdditiveTracks, ValueName), WidgetAnimValue::FromColor(Value), bSnap, bStartIfNotPlaying, bSearchParentWidgets, bSetAllMatches);
 }
 
+bool UWidgetAnimPlayLibrary::SetWidgetAnimationProgress(UObject* Target, FName AnimId, float Progress, bool bSnap, bool bStartIfNotPlaying, bool bSearchParentWidgets)
+{
+	// The component on or under Target that plays a percentage animation with this Anim ID - a screen holding the widget
+	// with it reaches it - else outwards from Target, as Set Widget Animation Value goes.
+	return SetScopedValueOn(Target, FWidgetAnimValueId::Progress(AnimId), WidgetAnimValue::FromFloat(Progress), bSnap, bStartIfNotPlaying, bSearchParentWidgets, /*bSetAllMatches=*/false);
+}
+
+float UWidgetAnimPlayLibrary::GetWidgetAnimationProgress(UObject* Target, FName AnimId, bool bTargetProgress, bool bSearchParentWidgets)
+{
+	return static_cast<float>(GetValueFrom(Target, FWidgetAnimValueId::Progress(AnimId), bTargetProgress, bSearchParentWidgets).X);
+}
+
+namespace
+{
+	/** The progress of the entries playing Animation - every percentage animation's with none. */
+	FWidgetAnimValueId MakeProgressId(const UWidgetAnimPresetAsset* Animation)
+	{
+		return Animation ? FWidgetAnimValueId::In(Animation, WidgetAnimValue::ProgressValueName) : FWidgetAnimValueId::Progress(NAME_None);
+	}
+}
+
+bool UWidgetAnimPlayLibrary::SetScopedProgress(UObject* Target, UWidgetAnimPresetAsset* Animation, double Progress, bool bSnap, bool bStartIfNotPlaying, bool bSearchParentWidgets, bool bSetAllMatches)
+{
+	return SetScopedValueOn(Target, MakeProgressId(Animation), WidgetAnimValue::FromFloat(Progress), bSnap, bStartIfNotPlaying, bSearchParentWidgets, bSetAllMatches);
+}
+
+float UWidgetAnimPlayLibrary::GetWidgetAnimationProgressOf(UObject* Target, UWidgetAnimPresetAsset* Animation, bool bTargetProgress, bool bSearchParentWidgets)
+{
+	return static_cast<float>(GetValueFrom(Target, MakeProgressId(Animation), bTargetProgress, bSearchParentWidgets).X);
+}
+
 float UWidgetAnimPlayLibrary::GetWidgetAnimationValue(UObject* Target, FName ValueName, bool bTargetValue, bool bSearchParentWidgets)
 {
 	return static_cast<float>(GetValueFrom(Target, FWidgetAnimValueId::Anywhere(ValueName), bTargetValue, bSearchParentWidgets).X);

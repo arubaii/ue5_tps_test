@@ -490,6 +490,17 @@ struct NAMETBD_API FWidgetAnimSettings
 	/** The speed this layer's clock runs at: Playback Speed, times NestedSpeed. What every span and clock is read by. */
 	float GetPlaySpeed() const { return FMath::Max(PlaybackSpeed * NestedSpeed, 0.01f); }
 
+	/**
+	 * For a layer of a percentage animation (see EWidgetAnimTimeUnit): the progress clock it follows, shared with every
+	 * other layer that follows it - while it is taking its progress, where it is on its timeline comes from the progress
+	 * rather than from time. Null for every other layer. Stamped by FWidgetAnimEntryBase::BuildSettings for an animation's
+	 * own progress, and by UWidgetAnimLibrary::BuildLayerSettings for an animation track driven by a value. Never saved.
+	 */
+	TSharedPtr<FWidgetAnimProgressDrive> ProgressDrive;
+
+	/** Whether this layer follows a progress clock - see ProgressDrive. */
+	bool IsProgressDriven() const { return ProgressDrive.IsValid(); }
+
 	// ------------------------------------------------------------------
 	// Fade
 	// ------------------------------------------------------------------
@@ -991,8 +1002,23 @@ struct NAMETBD_API FWidgetAnimLayer
 	UPROPERTY()
 	TArray<int32> InsertedGroups;
 
+	/**
+	 * For an animation track: the inserted animation is stretched across the track - played from its start to its end over
+	 * the track's own Duration, which can be resized like any track's - rather than played at its own length. Always so for
+	 * a percentage animation (see EWidgetAnimTimeUnit), whatever this says, and for every animation track of a percentage
+	 * timeline, which has no seconds to play one in. Set from the Widget Animations panel.
+	 */
+	UPROPERTY()
+	bool bFitToTrack = false;
+
 	/** Whether this track plays another Widget Animation - see InsertedAnimation. */
 	bool IsAnimationTrack() const { return InsertedAnimation != nullptr; }
+
+	/**
+	 * Whether this animation track plays its animation stretched across its own Duration: bFitToTrack, or a percentage
+	 * animation - or Timing set to Value, which follows a value along the track. False for any other track.
+	 */
+	bool FitsAnimationToTrack() const;
 
 	/**
 	 * Which Layer Group of its animation this layer belongs to - which widget it moves - by the group's
@@ -1279,6 +1305,19 @@ struct NAMETBD_API FWidgetAnimState
 	bool bCueClockStarted = false;
 	float CueProgress = 0.f;
 	bool bCueProgressSet = false;
+
+	/**
+	 * On the first layer a progress clock moves (see FWidgetAnimSettings::ProgressDrive): the progress, where it is and
+	 * where it is heading; whether it has taken over from the clock (a drive with a Duration plays on the clock until a
+	 * progress is set); where on the timeline it put the layers last frame, in the clock's seconds, and whether it has had
+	 * its first frame; and its Progress Input's last value, as InputLastValue is a value layer's. Never saved.
+	 */
+	FWidgetAnimValueState DriveState;
+	bool bDriveTaken = false;
+	bool bDriveStarted = false;
+	float DriveTime = 0.f;
+	FVector4 DriveInputLastValue = FVector4(0.0, 0.0, 0.0, 0.0);
+	bool bDriveInputSent = false;
 };
 
 USTRUCT(BlueprintType)
@@ -1549,6 +1588,13 @@ struct NAMETBD_API FWidgetAnimPlayer
 	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	TArray<FWidgetAnimRememberedValue> Values;
+
+	/**
+	 * The frame (GFrameCounter) this player's clocks last moved on. A second tick with time in the same frame - a
+	 * Blueprint calling Tick Animation Playback on top of the component's own tick, say - is played as a re-pose instead
+	 * (no time), so its tracks never jump a frame ahead and back. See UWidgetAnimLibrary::TickWidgetAnimPlayer. Never saved.
+	 */
+	uint64 LastAdvanceFrame = 0;
 };
 
 // =====================================================================================================
@@ -1916,6 +1962,34 @@ public:
 	 * Nothing for an animation without one. FWidgetAnimEntryBase::BuildSettings adds it after every other setting.
 	 */
 	static void AddMinimumLengthPlaceholder(const UWidgetAnimPresetAsset* Animation, TArray<FWidgetAnimSettings>& OutSettings);
+
+	/**
+	 * How long an animation is as authored, before its speed: the end of its last track or its Minimum Length - or exactly
+	 * one second, its 100%, for a percentage animation. What an animation stretched across a track is stretched from.
+	 */
+	static float GetAnimationAuthoredLength(const UWidgetAnimPresetAsset* Animation);
+
+	/**
+	 * How much faster than the list it is in an animation track plays the animation it inserts: its Speed Multiplier - or,
+	 * stretched across the track (FWidgetAnimLayer::FitsAnimationToTrack), however much faster its authored length fits
+	 * into the track's Duration. 1 for a track that inserts nothing.
+	 */
+	static float GetInsertedPlaySpeed(const FWidgetAnimLayer& Track);
+
+	/**
+	 * Retimes one track to play Speed times faster, the same motion: Duration and Delay divided by it, a Transform's keys, a
+	 * spring's frequency, a stagger's spacing and a Shake's shakes with them. Keys along a track are shares of its run, and
+	 * follow its Duration. An animation track is stretched across its new length (FWidgetAnimLayer::bFitToTrack).
+	 */
+	static void RetimeLayer(FWidgetAnimLayer& Layer, float Speed, float MinSeconds = 0.001f);
+
+	/**
+	 * Converts an animation's tracks from one Time In to the other (see EWidgetAnimTimeUnit). To Percent, the whole animation
+	 * - to its last track's end, or its Minimum Length - is fitted into 0% - 100%, its Speed Multiplier and Minimum Length
+	 * folded in; back to Seconds, 100% becomes one second, kept as its Minimum Length. Changes nothing when From and To are
+	 * the same.
+	 */
+	static void ConvertTimeUnit(TArray<FWidgetAnimLayer>& Layers, EWidgetAnimTimeUnit From, EWidgetAnimTimeUnit To, float& InOutMinimumLength, float& InOutSpeedMultiplier);
 
 	/**
 	 * Whether Animation plays Other: is it, or has a track inserting it - or an animation that does, however deep. What

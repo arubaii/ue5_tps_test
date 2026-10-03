@@ -293,6 +293,24 @@ namespace NameTBD::Tooltips
 				"Fit: The whole animation into view (F). Double-click anywhere to move the playhead there; right-drag pans along the timeline and down the lines; the wheel zooms, Shift + wheel scrolls the lines.");
 		}
 
+		inline FText TimeUnitTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TimeUnitTooltip",
+				"Time In: Whether this animation plays over time, in seconds, or follows a progress value from 0% to 100% - a press-and-hold fill, a charge meter. Switching converts every track; one undo step takes it back.");
+		}
+
+		inline FText TimeInSecondsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TimeInSecondsTooltip",
+				"Plays over time, like any animation. From Percent, 100% becomes one second - nothing moves.");
+		}
+
+		inline FText TimeInPercentTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TimeInPercentTooltip",
+				"Follows one progress value, 0 to 1, instead of time: every track, key, stagger and cue is placed between 0% and 100%. The whole animation as it is now is fitted into 0% - 100%. Set its progress with Set Widget Animation Progress, from the Progress Input in Animation Properties, or play it over an entry's Progress Animation Duration.");
+		}
+
 		// -------------------------------------------------------------------------------------------------
 		// Animation Controls
 		// -------------------------------------------------------------------------------------------------
@@ -433,6 +451,24 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AnimationTrackNote",
 				"Only when it starts is set here. To change what it does, edit the animation itself - every animation it is inserted into follows - or right-click the track and Unravel it to edit its tracks here.");
+		}
+
+		inline FText AnimationTrackFitTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AnimationTrackFitTooltip",
+				"Stretches the animation across the track: it plays from its start to its end over the track's length, which can then be resized like any track's. Off, it plays at its own length. A percentage animation is always stretched, as is every animation track of a percentage timeline.");
+		}
+
+		inline FText AnimationTrackDriveTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AnimationTrackDriveTooltip",
+				"What moves the animation along the track. Across the Track: it plays across the track as the timeline passes it. Float Value: it follows a value of its own, 0 at the track's start and 1 at its end, set with Set Widget Animation Value by its Value Name - so a percentage animation can be reused in a timeline that plays in seconds.");
+		}
+
+		inline FText AnimationTrackValueNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AnimationTrackValueNote",
+				"Follows a float value: Set Widget Animation Value with its Value Name moves it from its start (Value At Start) to its end (Value At End). Its place on the timeline is only where the previews sweep it.");
 		}
 
 		inline FText AnimationTrackShortNote()
@@ -1517,6 +1553,18 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "AnimationPicker",
 				"The Widget Animation the value belongs to: one of those played in Anim In and Anim Out by the Widget Animation Components on the Target and inside it, or their Additive Tracks. Only that animation's tracks take the value, so the same Value Name in another animation is left alone.");
+		}
+
+		inline FText ProgressAnimationPicker()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "ProgressAnimationPicker",
+				"The percentage animation (Time In Percent) to move: one of those played in Anim In and Anim Out by the Widget Animation Components on the Target and inside it. Only the entries playing it take the progress.");
+		}
+
+		inline FText NoPercentAnimations()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "NoPercentAnimations",
+				"No Widget Animation Component on the Target or inside it plays a percentage animation in Anim In or Anim Out. Set an animation's Time In to Percent in the Widget Animations editor and it shows up.");
 		}
 
 		inline FText ValuePicker()

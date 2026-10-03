@@ -153,6 +153,37 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Widget Animation|Value", meta = (DisplayName = "Get Widget Animation Value (Color)", DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
 	static FLinearColor GetWidgetAnimationValueColor(UObject* Target, FName ValueName, bool bTargetValue = false, bool bSearchParentWidgets = true);
 
+	/**
+	 * Sets how far along the percentage animations played by the entries with this Anim ID are, 0 (0%) to 1 (100%) - a
+	 * press-and-hold's held share, a charge level. Every track of the animation follows it, travelling there by the
+	 * animation's Smoothing; call it as often as the progress changes. An Anim ID of None sets every percentage animation
+	 * on Target. See EWidgetAnimTimeUnit.
+	 *
+	 * Target is found as Set Widget Animation Value finds it. Snap jumps straight to it, even backwards; Start If Not
+	 * Playing starts the Anim In entries with that Anim ID that haven't played yet, so no Play call is needed. An entry
+	 * playing over its Progress Animation Duration carries on from wherever it has got to. True if an animation took it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Progress", meta = (DisplayName = "Set Widget Animation Progress By Id", DefaultToSelf = "Target", AdvancedDisplay = "bSnap,bStartIfNotPlaying,bSearchParentWidgets"))
+	static bool SetWidgetAnimationProgress(UObject* Target, FName AnimId, float Progress, bool bSnap = false, bool bStartIfNotPlaying = true, bool bSearchParentWidgets = true);
+
+	/** How far along the percentage animation an entry with this Anim ID plays is now, 0 - 1 - or, with Target Progress, where it is heading. */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Progress", meta = (DisplayName = "Get Widget Animation Progress By Id", DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
+	static float GetWidgetAnimationProgress(UObject* Target, FName AnimId, bool bTargetProgress = false, bool bSearchParentWidgets = true);
+
+	/**
+	 * What the Set Widget Animation Progress node compiles to: the progress of the entries playing Animation (every
+	 * percentage animation with none), set through SetScopedValueOn. Not for calling by hand - the node sets it up.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Progress", meta = (BlueprintInternalUseOnly = "true", DefaultToSelf = "Target"))
+	static bool SetScopedProgress(UObject* Target, UWidgetAnimPresetAsset* Animation, double Progress, bool bSnap, bool bStartIfNotPlaying, bool bSearchParentWidgets, bool bSetAllMatches);
+
+	/**
+	 * How far along Animation is on Target, 0 - 1, as its entry plays it - or, with Target Progress, where it is heading.
+	 * Picked like the Set Widget Animation Progress node's animation; Get Widget Animation Progress By Id goes by Anim ID.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Progress", meta = (DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
+	static float GetWidgetAnimationProgressOf(UObject* Target, UWidgetAnimPresetAsset* Animation, bool bTargetProgress = false, bool bSearchParentWidgets = true);
+
 	/** The setters' shared path, raw: whatever owns Target's animations takes Value. */
 	static bool SetValueOn(UObject* Target, const FWidgetAnimValueId& Id, const FVector4& Value, bool bSnap, bool bStartIfNotPlaying, bool bSearchParentWidgets);
 

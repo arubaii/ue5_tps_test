@@ -27,6 +27,9 @@ struct NAMETBDUNCOOKED_API FWidgetAnimValueSource
 	/** What its dropdown shows. */
 	FText Label;
 
+	/** Whether it is a percentage animation (see EWidgetAnimTimeUnit): what Set Widget Animation Progress picks from. */
+	bool bPercent = false;
+
 	TArray<FWidgetAnimValueChoice> Values;
 };
 
@@ -86,7 +89,7 @@ public:
 	virtual void ExpandNode(class FKismetCompilerContext& CompilerContext, UEdGraph* SourceGraph) override;
 
 	/** Every animation - and the additive tracks - the node can pick from, with their values. For the dropdowns. */
-	void GetValueSources(TArray<FWidgetAnimValueSource>& OutSources) const;
+	virtual void GetValueSources(TArray<FWidgetAnimValueSource>& OutSources) const;
 
 	/** The values in the picked animation. Empty when none is picked, or it has none. */
 	void GetValueChoices(TArray<FWidgetAnimValueChoice>& OutChoices) const;
@@ -98,7 +101,7 @@ public:
 	 */
 	void LogValueSourceSearch() const;
 
-private:
+protected:
 
 	/** The type the Value pin has: the picked track's. Saved, so the pin is right before anything is looked up. */
 	UPROPERTY()

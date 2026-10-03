@@ -109,6 +109,12 @@ void IWidgetAnimPanelSource::UpdateAsset()
 
 float IWidgetAnimPanelSource::GetAnimationSpeedMultiplier() const
 {
+	// A percentage animation has no pace of its own: 100% is one second, however its multiplier was left.
+	if (GetTimeUnit() == EWidgetAnimTimeUnit::Percent)
+	{
+		return 1.f;
+	}
+
 	const UObject* Edited = GetEditedObject();
 	if (const UWidgetAnimPresetAsset* Asset = Cast<UWidgetAnimPresetAsset>(Edited))
 	{
@@ -123,6 +129,12 @@ float IWidgetAnimPanelSource::GetAnimationSpeedMultiplier() const
 
 float IWidgetAnimPanelSource::GetMinimumLength() const
 {
+	// A percentage animation always runs to its 100%.
+	if (GetTimeUnit() == EWidgetAnimTimeUnit::Percent)
+	{
+		return 1.f;
+	}
+
 	const UObject* Edited = GetEditedObject();
 	if (const UWidgetAnimPresetAsset* Asset = Cast<UWidgetAnimPresetAsset>(Edited))
 	{
@@ -137,8 +149,44 @@ float IWidgetAnimPanelSource::GetMinimumLength() const
 
 bool IWidgetAnimPanelSource::CanSetMinimumLength() const
 {
+	// 0% to 100% is a percentage animation's whole length: its end isn't dragged out.
+	const UObject* Edited = GetEditedObject();
+	return (Cast<UWidgetAnimPresetAsset>(Edited) || Cast<UWidgetAnimBuilder>(Edited)) && GetTimeUnit() == EWidgetAnimTimeUnit::Seconds;
+}
+
+EWidgetAnimTimeUnit IWidgetAnimPanelSource::GetTimeUnit() const
+{
+	const UObject* Edited = GetEditedObject();
+	if (const UWidgetAnimPresetAsset* Asset = Cast<UWidgetAnimPresetAsset>(Edited))
+	{
+		return Asset->TimeUnit;
+	}
+	if (const UWidgetAnimBuilder* Builder = Cast<UWidgetAnimBuilder>(Edited))
+	{
+		return Builder->TimeUnit;
+	}
+	return EWidgetAnimTimeUnit::Seconds;
+}
+
+bool IWidgetAnimPanelSource::CanSetTimeUnit() const
+{
 	const UObject* Edited = GetEditedObject();
 	return Cast<UWidgetAnimPresetAsset>(Edited) || Cast<UWidgetAnimBuilder>(Edited);
+}
+
+void IWidgetAnimPanelSource::SetTimeUnit(EWidgetAnimTimeUnit Unit)
+{
+	UObject* Edited = GetEditedObject();
+	if (UWidgetAnimPresetAsset* Asset = Cast<UWidgetAnimPresetAsset>(Edited))
+	{
+		UWidgetAnimLibrary::ConvertTimeUnit(Asset->Layers, Asset->TimeUnit, Unit, Asset->MinimumLength, Asset->AnimationSpeedMultiplier);
+		Asset->TimeUnit = Unit;
+	}
+	else if (UWidgetAnimBuilder* Builder = Cast<UWidgetAnimBuilder>(Edited))
+	{
+		UWidgetAnimLibrary::ConvertTimeUnit(Builder->Layers, Builder->TimeUnit, Unit, Builder->MinimumLength, Builder->AnimationSpeedMultiplier);
+		Builder->TimeUnit = Unit;
+	}
 }
 
 void IWidgetAnimPanelSource::SetMinimumLength(float Seconds)
@@ -1001,6 +1049,8 @@ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset()
 	NewAsset->Layers = Timeline->Layers;
 	NewAsset->AnimationSpeedMultiplier = Timeline->AnimationSpeedMultiplier;
 	NewAsset->MinimumLength = Timeline->MinimumLength;
+	NewAsset->TimeUnit = Timeline->TimeUnit;
+	NewAsset->Progress = Timeline->Progress;
 	NewAsset->PostEditChange();
 	NewAsset->MarkPackageDirty();
 
