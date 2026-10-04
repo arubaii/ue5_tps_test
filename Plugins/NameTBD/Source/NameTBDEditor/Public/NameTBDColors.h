@@ -578,8 +578,10 @@ namespace NameTBD
 			// A selected transition node, as the graph editor shows a selected node - measured off a selected state - but round:
 			// a crisp solid band TransitionSelectedWidth thick, starting TransitionSelectedOverlap inside the disc's edge (so no
 			// gap shows), shading from TransitionSelectedTop at the top to TransitionSelectedBottom at the bottom. No glow.
-			inline constexpr float TransitionSelectedWidth = 5.0f;
-			inline constexpr float TransitionSelectedOverlap = 1.0f;
+			// In graph units - it grows with the zoom, as the editor's selection does: 3 units is the 5 pixels a selected state's
+			// band measures at the zoom the screenshots were taken at.
+			inline constexpr float TransitionSelectedWidth = 3.0f;
+			inline constexpr float TransitionSelectedOverlap = 0.75f;
 			inline const FLinearColor TransitionSelectedTop = FLinearColor(FColor(223, 159, 0));
 			inline const FLinearColor TransitionSelectedBottom = FLinearColor(FColor(210, 116, 0));
 			inline constexpr float TransitionIdleDim = 0.45f;
