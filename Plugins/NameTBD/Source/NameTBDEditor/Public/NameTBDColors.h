@@ -628,6 +628,9 @@ namespace NameTBD
 			inline constexpr float ActiveRingMax = 1.0f;
 			inline constexpr float ActiveRingPeriod = 3.0f;
 			inline constexpr float ActiveRingLeaving = 0.45f;
+			// How far toward white the line on the rim of a glowing state goes while the mouse is over its edge (the edge's
+			// own hover look is held back then: its corners would poke out past the glow).
+			inline constexpr float ActiveRingHoverLift = 0.45f;
 
 			// A state's middle while its animation's progress fills it: square-cornered, near black - the rounded one's dark.
 			inline const FLinearColor StateTitleSharp(0.010f, 0.010f, 0.011f, 1.0f);

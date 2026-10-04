@@ -1726,6 +1726,15 @@ public:
 			.Cursor(this, &SWidgetAnimMachineOutputPin::GetPinCursor));
 	}
 
+	/**
+	 * While this returns true - its state glowing, in play - the edge doesn't light up under the mouse itself: its hover brush
+	 * has tighter corners than the glow laid over the rim, and they would poke out past it. The glow brightens instead.
+	 */
+	void SetHoverShownElsewhere(TFunction<bool()> InHoverShownElsewhere)
+	{
+		HoverShownElsewhere = MoveTemp(InHoverShownElsewhere);
+	}
+
 protected:
 
 	virtual TSharedRef<SWidget> GetDefaultValueWidget() override
@@ -1733,18 +1742,27 @@ protected:
 		return SNew(STextBlock);
 	}
 
+	bool ShowsHover() const
+	{
+		return IsHovered() && !(HoverShownElsewhere && HoverShownElsewhere());
+	}
+
 	/** The Animation Blueprint state's own edge - see-through, so the node's color shows through it. */
 	const FSlateBrush* GetPinBorder() const
 	{
-		return IsHovered()
+		return ShowsHover()
 			? FindBrush({ TEXT("Graph.StateNode.Pin.BackgroundHovered") })
 			: FindBrush({ TEXT("Graph.StateNode.Pin.Background") });
 	}
 
 	FSlateColor GetPinBorderColor() const
 	{
-		return IsHovered() ? MachineColors::StateEdgeHovered : MachineColors::StateEdge;
+		return ShowsHover() ? MachineColors::StateEdgeHovered : MachineColors::StateEdge;
 	}
+
+private:
+
+	TFunction<bool()> HoverShownElsewhere;
 };
 
 /** A bar rising left to right across what it sits on, clipped to its share of it - a state's progress. Never takes the mouse. */
@@ -1974,12 +1992,15 @@ public:
 		SLATE_ATTRIBUTE(float, Strength)
 		/** Whether the state is selected: while the glow shows, its selection outline is drawn with it. */
 		SLATE_ATTRIBUTE(bool, Selected)
+		/** Whether the mouse is over the state's edge - where a transition is dragged from: the line on the rim brightens. */
+		SLATE_ATTRIBUTE(bool, Hovered)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs)
 	{
 		Strength = InArgs._Strength;
 		Selected = InArgs._Selected;
+		Hovered = InArgs._Hovered;
 		SetVisibility(EVisibility::HitTestInvisible);
 	}
 
@@ -2032,7 +2053,11 @@ public:
 		{
 			Lines.Add({ SelectionOffset, MachineColors::StateSelectedOutlineWidth, Selection });
 		}
-		Lines.Add({ RimOffset, RimWidth, Glow.CopyWithNewOpacity(Glow.A * Amount) });
+		// Its edge under the mouse: the line on the rim lit up, as the edge itself lights up on a state not in play.
+		const FLinearColor Rim = Hovered.Get()
+			? FMath::Lerp(Glow, FLinearColor::White, MachineColors::ActiveRingHoverLift).CopyWithNewOpacity(Glow.A)
+			: Glow.CopyWithNewOpacity(Glow.A * Amount);
+		Lines.Add({ RimOffset, RimWidth, Rim });
 
 		TArray<FVector2f> Points;
 		for (const FLine& Line : Lines)
@@ -2073,6 +2098,7 @@ private:
 
 	TAttribute<float> Strength;
 	TAttribute<bool> Selected;
+	TAttribute<bool> Hovered;
 };
 
 /**
@@ -2130,6 +2156,7 @@ public:
 						SNew(SWidgetAnimMachineActiveRing)
 						.Strength(this, &SWidgetAnimMachineStateNode::GetRingStrength)
 						.Selected(this, &SWidgetAnimMachineStateNode::IsNodeSelected)
+						.Hovered(this, &SWidgetAnimMachineStateNode::IsEdgeHovered)
 					]
 
 					// The edge: where transitions are dragged from.
@@ -2290,7 +2317,15 @@ public:
 		UEdGraphPin* Out = Node->GetOutputPin();
 		if (Out && !Out->bHidden)
 		{
-			AddPin(SNew(SWidgetAnimMachineOutputPin, Out));
+			// While it glows, the edge's hover shows on the glow (see GetRingHovered), not on the edge's own brush.
+			const TSharedRef<SWidgetAnimMachineOutputPin> Pin = SNew(SWidgetAnimMachineOutputPin, Out);
+			const TWeakPtr<SWidgetAnimMachineStateNode> WeakSelf = SharedThis(this);
+			Pin->SetHoverShownElsewhere([WeakSelf]()
+			{
+				const TSharedPtr<SWidgetAnimMachineStateNode> Self = WeakSelf.Pin();
+				return Self.IsValid() && Self->GetRingStrength() > 0.f;
+			});
+			AddPin(Pin);
 		}
 	}
 
@@ -2418,6 +2453,12 @@ private:
 			return FMath::Lerp(MachineColors::ActiveRingMin, MachineColors::ActiveRingMax, Wave);
 		}
 		return IsLeaving() ? MachineColors::ActiveRingLeaving : 0.f;
+	}
+
+	/** Whether the mouse is over its edge - the output pin under it all. */
+	bool IsEdgeHovered() const
+	{
+		return OutputPins.Num() > 0 && OutputPins[0]->IsHovered();
 	}
 
 	bool IsNodeSelected() const
