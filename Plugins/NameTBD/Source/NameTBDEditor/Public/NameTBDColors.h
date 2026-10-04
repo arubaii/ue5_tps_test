@@ -545,7 +545,7 @@ namespace NameTBD
 			//     WireBubble: the dots that run along it, as they run along a wire in Blueprint simulation - bigger than the wire
 			//     is thick, so they read as beads on it. WireBubbleSize / WireBubbleSpacing / WireBubbleSpeed:
 			//     their size, how far apart they run and how fast, in graph units (and per second). WireLinger: seconds the effect
-			//     fades out over once the transition is done, so a short blend is still seen to run.
+			//     fades out over once the transition is done - visual only, after the blend has finished.
 			//   WireThickness / WireActiveThickness: in graph units.
 			// -------------------------------------------------------------------------------------------------
 
@@ -554,7 +554,7 @@ namespace NameTBD
 			inline constexpr float WireBubbleSize = 9.0f;
 			inline constexpr float WireBubbleSpacing = 32.0f;
 			inline constexpr float WireBubbleSpeed = 90.0f;
-			inline constexpr float WireLinger = 0.8f;
+			inline constexpr float WireLinger = 0.2f;
 			inline constexpr float WireThickness = 1.5f;
 			inline constexpr float WireActiveThickness = 4.0f;
 
