@@ -15,6 +15,7 @@ class UEdGraphNode_Comment;
 class UWidgetAnimStateMachineAsset;
 class UWidgetAnimMachineGraphNode;
 class UWidgetAnimMachineTransitionNode;
+class UWidgetAnimMachineRerouteNode;
 
 // =====================================================================================================
 // The Widget Animation State Machine editor's graph
@@ -29,7 +30,7 @@ class UWidgetAnimMachineTransitionNode;
 // It looks like a Blueprint graph with an Animation Blueprint's state machine in it: states as rounded nodes, transitions as
 // Blueprint wires with a round transition node in the middle that points the way the transition goes and shows how it blends;
 // drag from a state's edge to another state to connect them, double-click a state to open its animation, right-click to add
-// a state, C for a comment box, Q to straighten wires.
+// a state, C for a comment box, Q to straighten wires, double-click a wire for a reroute point on it.
 
 /** What the clipboard holds for states copied from a layer: the states, the transitions between them, and comment boxes. */
 USTRUCT()
@@ -62,8 +63,24 @@ namespace WidgetAnimMachineEdits
 	/** Whether a transition can go from one node to the other: not into Entry or Any State, not out of Exit, not to itself. */
 	bool CanConnect(const UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& From, const FGuid& To);
 
-	/** Deletes states - never Entry, Any State or Exit - transitions and comment boxes; transitions of a deleted state go too. */
-	void Delete(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& States, const TArray<FGuid>& Transitions, const TArray<FGuid>& Comments = TArray<FGuid>());
+	/**
+	 * Deletes states - never Entry, Any State or Exit - transitions, comment boxes and reroute points (by transition, their
+	 * indices on its wire); transitions of a deleted state go too.
+	 */
+	void Delete(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& States, const TArray<FGuid>& Transitions,
+		const TArray<FGuid>& Comments = TArray<FGuid>(), const TMap<FGuid, TArray<int32>>& Reroutes = TMap<FGuid, TArray<int32>>());
+
+	/**
+	 * Adds a reroute point to a transition's wire, Index-th from the node it leaves, at Offset (from GetPlacementAnchor, as
+	 * the transition node's own). Returns whether it was added.
+	 */
+	bool AddReroute(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Transition, int32 Index, const FVector2D& Offset);
+
+	/** Takes every reroute point off transitions' wires. */
+	void ClearReroutes(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& Transitions);
+
+	/** Puts transitions' reroute points where the graph has them - dragged. Not told to anyone: the graph already shows them. */
+	void MoveReroutes(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TMap<FGuid, TArray<FVector2D>>& Points);
 
 	/** Renames a state, made unique in its layer. */
 	void RenameState(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& State, const FString& NewName);
@@ -144,23 +161,28 @@ namespace WidgetAnimMachineEdits
 /**
  * Where a transition's wire runs: a Blueprint spline - a Hermite curve, leaving the side or corner of one state that faces the
  * other and arriving at the side or corner of that one facing back - and where on it the transition node sits. Wires between
- * the same two states run side by side, parallel, each in a lane of its own. A transition node dragged somewhere of its own
- * splits its wire in two there: one curve into it, one out, meeting smoothly (bThroughNode).
+ * the same two states run side by side, parallel, each in a lane of its own. A wire routed through points of its own - reroute
+ * points, and its transition node where that was dragged - is a chain of curves, one from each point to the next, meeting
+ * smoothly at each, as a Blueprint wire runs through its reroute nodes.
  */
 struct FWidgetAnimMachineWire
 {
-	FVector2f Start = FVector2f::ZeroVector;
-	FVector2f StartTangent = FVector2f::ZeroVector;
-	FVector2f End = FVector2f::ZeroVector;
-	FVector2f EndTangent = FVector2f::ZeroVector;
+	/** One curve of the wire: from Start, leaving along StartTangent, to End, arriving along EndTangent. */
+	struct FSegment
+	{
+		FVector2f Start = FVector2f::ZeroVector;
+		FVector2f StartTangent = FVector2f::ZeroVector;
+		FVector2f End = FVector2f::ZeroVector;
+		FVector2f EndTangent = FVector2f::ZeroVector;
 
-	/** Through a dragged transition node: two curves, Start to Mid and Mid to End, Mid's tangent arriving and leaving. */
-	bool bThroughNode = false;
-	FVector2f Mid = FVector2f::ZeroVector;
-	FVector2f MidTangentIn = FVector2f::ZeroVector;
-	FVector2f MidTangentOut = FVector2f::ZeroVector;
+		/** How many reroute points the wire has run through before this curve: where one added on it goes in the transition's list. */
+		int32 ReroutesBefore = 0;
+	};
 
-	/** How far along the wire the transition node sits, 0 - 1. */
+	/** Its curves, end to end, the way the transition goes: one for a plain wire, one more for each point it runs through. */
+	TArray<FSegment, TInlineAllocator<4>> Segments;
+
+	/** How far along the wire the transition node sits, 0 - 1 - each curve an equal share of the way. */
 	float NodeT = 0.5f;
 
 	FVector2f NodePoint = FVector2f::ZeroVector;
@@ -170,6 +192,12 @@ struct FWidgetAnimMachineWire
 
 	FVector2f Evaluate(float T) const;
 	FVector2f Derivative(float T) const;
+
+	/** The same wire on screen: every point through Origin + Point * Scale, every tangent scaled. */
+	void Transform(const FVector2f& Origin, float Scale);
+
+	/** How far Point is from the wire, the curve it is nearest and the nearest point on it - for a click on the wire. Big with no curves. */
+	float GetDistance(const FVector2f& Point, int32& OutSegment, FVector2f* OutNearest = nullptr) const;
 };
 
 namespace WidgetAnimMachineWires
@@ -189,12 +217,23 @@ namespace WidgetAnimMachineWires
 	 */
 	constexpr float CornerRatio = 6.f;
 
+	/** A reroute point's dot, and the square round it that takes the mouse, in graph units. */
+	constexpr float RerouteDiameter = 10.f;
+	constexpr float RerouteHitSize = 16.f;
+
+	/** How close to a wire, in pixels on screen, a double-click puts a reroute point on it. */
+	constexpr float WireHitDistance = 7.f;
+
 	/**
 	 * Lays out the wire of a transition between two nodes, given as boxes in graph space. Lane and LaneCount: where it is among
 	 * the wires between the two (see GetLane); bReversed: it runs from Second to First, not First to Second. NodePoint: where
-	 * its transition node was dragged, if it was - the wire then runs through it, and lanes don't apply.
+	 * its transition node was dragged, if it was. Reroutes: the points it is routed through, in order the way it goes. Through
+	 * either, the wire runs through them all - the dragged node wherever along the way it adds least - and lanes don't apply.
+	 * Through reroute points the wire is sharp: straight from point to point, turning at each, as a routed wire is drawn; it
+	 * leaves and enters its states from the middle of a side (or a corner), as every wire does.
 	 */
-	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed, const FVector2f* NodePoint = nullptr);
+	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed,
+		const FVector2f* NodePoint = nullptr, TConstArrayView<FVector2f> Reroutes = TConstArrayView<FVector2f>());
 
 	/**
 	 * The side or corner of Box that faces Toward - (1,0) right, (0,1) bottom, (1,1) bottom-right and so on: where a wire to it
@@ -244,6 +283,12 @@ public:
 
 	/** Where a transition's wire is among those between its two nodes, how many there are, and whether it runs against the pair's own order. */
 	void GetLane(const UWidgetAnimMachineTransitionNode* Node, int32& OutLane, int32& OutCount, bool& bOutReversed) const;
+
+	/**
+	 * A transition's wire in graph space, given its pair's two nodes' boxes (see GetPairOrder): in its lane, or through where its
+	 * node was dragged and its reroute points. What its transition node is placed on, its reroute points follow, and is drawn.
+	 */
+	FWidgetAnimMachineWire ComputeWire(const UWidgetAnimMachineTransitionNode* Node, const FBox2f& FirstBox, const FBox2f& SecondBox) const;
 
 	/** The canonical first and second node of a transition's pair - the order its lanes are counted in. */
 	static void GetPairOrder(const UWidgetAnimMachineTransitionNode* Node, FGuid& OutFirst, FGuid& OutSecond);
@@ -333,6 +378,12 @@ public:
 	bool bPlaced = false;
 	FVector2f PlacedOffset = FVector2f::ZeroVector;
 
+	/**
+	 * The reroute points its wire runs through, in order the way it goes, each from GetPlacementAnchor. From the machine as the
+	 * graph is made; changed as its reroute nodes are dragged, and written back into the machine once the mouse is let go.
+	 */
+	TArray<FVector2f> RerouteOffsets;
+
 	const FWidgetAnimMachineTransition* GetTransition() const;
 	UWidgetAnimMachineGraph* GetMachineGraph() const;
 
@@ -353,6 +404,39 @@ public:
 
 	// UEdGraphNode
 	virtual void AllocateDefaultPins() override;
+	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
+	virtual FText GetTooltipText() const override;
+	virtual bool CanDuplicateNode() const override { return false; }
+	virtual TSharedPtr<class SGraphNode> CreateVisualWidget() override;
+	virtual void GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
+};
+
+/**
+ * A reroute point on a transition's wire - a Blueprint reroute node's dot: the wire runs through it, so wires can be led round
+ * states and kept tidy. Made by double-clicking a wire; dragged, deleted, selected with others like any node. Nothing at runtime:
+ * the points are the transition's own (FWidgetAnimMachineTransition::EditorReroutePoints).
+ */
+UCLASS()
+class UWidgetAnimMachineRerouteNode : public UEdGraphNode
+{
+	GENERATED_BODY()
+
+public:
+
+	UPROPERTY()
+	FGuid TransitionId;
+
+	/** Which of its transition's reroute points it is, counted from the node the transition leaves. */
+	UPROPERTY()
+	int32 RerouteIndex = 0;
+
+	/** The transition node of the wire it is on. */
+	UPROPERTY()
+	TObjectPtr<UWidgetAnimMachineTransitionNode> TransitionNode = nullptr;
+
+	UWidgetAnimMachineGraph* GetMachineGraph() const;
+
+	// UEdGraphNode
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
 	virtual FText GetTooltipText() const override;
 	virtual bool CanDuplicateNode() const override { return false; }
@@ -387,9 +471,19 @@ public:
 
 	/**
 	 * The states the Add State menus offer ready-named, one for each built-in input a state is usually made for - Hovered,
-	 * Pressed, Selected, Focused, Disabled - and Idle. Each paired with the input it is for (None for Idle).
+	 * Pressed, Selected, Focused, Disabled - and Idle and Holding. Each paired with the input it is for (None for Idle and
+	 * Holding - Holding's is the machine's Press And Hold).
 	 */
 	static const TArray<TPair<FName, FName>>& GetPresetStates();
+
+	/**
+	 * The Holding preset: a state played while the machine's Press And Hold is held - made for it if it has none. Dragged from
+	 * a state, joined there on Is Held and back on Is Let Go, so a hold let go early blends back.
+	 */
+	static const FName HoldingPreset;
+
+	/** What a preset state is for, for its menu entry. */
+	static FText GetPresetTooltip(const TPair<FName, FName>& Preset);
 
 	/**
 	 * Adds a preset state - or a plain one, for None - at Location: named for it, and, dragged from a state, joined from that

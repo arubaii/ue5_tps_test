@@ -1,0 +1,496 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+index 26f2b81..ad8817f 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+@@ -28,6 +28,7 @@
+ #include "EdGraphUtilities.h"
+ #include "WidgetAnimValuePinFactory.h"
+ #include "WidgetAnimEntryCustomization.h"
++#include "WidgetAnimMachineConditionCustomization.h"
+ #include "WidgetAnimEditorSettings.h"
+ #include "WidgetAnimStateMachineAssetEditor.h"
+ #include "SWidgetAnimStateMachineEditor.h"
+@@ -84,6 +85,11 @@ void FNameTBDEditorModule::StartupModule()
+ 	PropertyModule.RegisterCustomPropertyTypeLayout(
+ 		FWidgetAnimEntry::StaticStruct()->GetFName(),
+ 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FWidgetAnimEntryCustomization::MakeInstance));
++
++	// A state machine transition's conditions: Compare offers only what the picked input can be asked.
++	PropertyModule.RegisterCustomPropertyTypeLayout(
++		FWidgetAnimMachineCondition::StaticStruct()->GetFName(),
++		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FWidgetAnimMachineConditionCustomization::MakeInstance));
+ 	PropertyModule.NotifyCustomizationModuleChanged();
+ 
+ 	ValuePinFactory = MakeShared<FWidgetAnimValuePinFactory>();
+@@ -167,6 +173,7 @@ void FNameTBDEditorModule::ShutdownModule()
+ 		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimBuilder"));
+ 		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimationComponent"));
+ 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimEntry"));
++		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimMachineCondition"));
+ 
+ 	}
+ 	
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+index dc589c0..e3db1c3 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+@@ -2583,9 +2583,7 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeAddStateMenu()
+ 		const bool bExists = Layer && Layer->FindStateIndexByName(PresetName) != INDEX_NONE;
+ 		const FText ToolTip = bExists
+ 			? FText::Format(MachineTips::PresetStateExistsTooltip(), FText::FromName(PresetName))
+-			: Preset.Value.IsNone()
+-				? MachineTips::AddIdleStateTooltip()
+-				: FText::Format(MachineTips::AddPresetStateTooltip(), FText::FromName(PresetName), FText::FromName(Preset.Value));
++			: UWidgetAnimMachineGraphSchema::GetPresetTooltip(Preset);
+ 		Menu.AddMenuEntry(
+ 			FText::FromName(PresetName),
+ 			ToolTip,
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMachineConditionCustomization.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMachineConditionCustomization.cpp
+new file mode 100644
+index 0000000..fa739cc
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMachineConditionCustomization.cpp
+@@ -0,0 +1,290 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "WidgetAnimMachineConditionCustomization.h"
++
++#include "DetailLayoutBuilder.h"
++#include "DetailWidgetRow.h"
++#include "Framework/MultiBox/MultiBoxBuilder.h"
++#include "IDetailChildrenBuilder.h"
++#include "IDetailPropertyRow.h"
++#include "PropertyHandle.h"
++#include "SWidgetAnimStateMachineEditor.h"
++#include "Widgets/Input/SComboButton.h"
++#include "Widgets/Text/STextBlock.h"
++
++#define LOCTEXT_NAMESPACE "WidgetAnimMachineConditionCustomization"
++
++namespace
++{
++	/** What kind of value a condition's input holds - which comparisons it can make. */
++	enum class EConditionInputKind : uint8
++	{
++		Unknown,
++		Bool,
++		Number,
++		Trigger,
++		Hold
++	};
++
++	EConditionInputKind GetInputKind(const UWidgetAnimStateMachineAsset* Machine, FName Input)
++	{
++		// The built-in inputs - Hovered, Pressed, Closing and the rest - are all true or false.
++		if (WidgetAnimMachineInputs::IsBuiltIn(Input))
++		{
++			return EConditionInputKind::Bool;
++		}
++		const FWidgetAnimMachineInput* Definition = Machine && !Input.IsNone() ? Machine->FindInput(Input) : nullptr;
++		if (!Definition)
++		{
++			return EConditionInputKind::Unknown;
++		}
++		switch (Definition->Type)
++		{
++		case EWidgetAnimMachineInputType::Number:  return EConditionInputKind::Number;
++		case EWidgetAnimMachineInputType::Trigger: return EConditionInputKind::Trigger;
++		case EWidgetAnimMachineInputType::Hold:    return EConditionInputKind::Hold;
++		default:                                    return EConditionInputKind::Bool;
++		}
++	}
++
++	/** The machine a condition belongs to: the State Machine editor's transition, or the asset's own Details. */
++	const UWidgetAnimStateMachineAsset* FindMachine(const TSharedRef<IPropertyHandle>& Handle)
++	{
++		TArray<UObject*> Outers;
++		Handle->GetOuterObjects(Outers);
++		for (const UObject* Outer : Outers)
++		{
++			if (const UWidgetAnimMachineTransitionProxy* Proxy = Cast<UWidgetAnimMachineTransitionProxy>(Outer))
++			{
++				if (const UWidgetAnimStateMachineAsset* Machine = Proxy->Machine.Get())
++				{
++					return Machine;
++				}
++			}
++			if (const UWidgetAnimStateMachineAsset* Asset = Cast<UWidgetAnimStateMachineAsset>(Outer))
++			{
++				return Asset;
++			}
++		}
++		return nullptr;
++	}
++
++	/** The input a condition tests, or None while several conditions with different inputs are shown at once. */
++	FName GetInput(const TSharedPtr<IPropertyHandle>& InputHandle)
++	{
++		FName Input;
++		return InputHandle.IsValid() && InputHandle->GetValue(Input) == FPropertyAccess::Success ? Input : FName();
++	}
++
++	bool GetCompare(const TSharedPtr<IPropertyHandle>& CompareHandle, EWidgetAnimMachineCompare& OutCompare)
++	{
++		uint8 Value = 0;
++		if (!CompareHandle.IsValid() || CompareHandle->GetValue(Value) != FPropertyAccess::Success)
++		{
++			return false;
++		}
++		OutCompare = static_cast<EWidgetAnimMachineCompare>(Value);
++		return true;
++	}
++
++	/** What a comparison does, for its tooltip in the list - on a Press And Hold, in its own words. */
++	FText GetCompareTooltip(EConditionInputKind Kind, EWidgetAnimMachineCompare Compare)
++	{
++		if (Kind == EConditionInputKind::Hold)
++		{
++			switch (Compare)
++			{
++			case EWidgetAnimMachineCompare::IsTrue:
++				return LOCTEXT("HeldTip", "While it is being held, until it has been held for its Hold Time: the way into the state that plays as it is held.");
++			case EWidgetAnimMachineCompare::IsFalse:
++				return LOCTEXT("LetGoTip", "Once it is let go before its Hold Time - or isn't held at all: the way back, the hold not completed. Never the frame it completes.");
++			case EWidgetAnimMachineCompare::Fired:
++				return LOCTEXT("CompletedTip", "The frame it has been held for its whole Hold Time: the way on, the hold done.");
++			default:
++				break;
++			}
++		}
++		return StaticEnum<EWidgetAnimMachineCompare>()->GetToolTipTextByIndex(static_cast<int32>(Compare));
++	}
++}
++
++TSharedRef<IPropertyTypeCustomization> FWidgetAnimMachineConditionCustomization::MakeInstance()
++{
++	return MakeShared<FWidgetAnimMachineConditionCustomization>();
++}
++
++TArray<EWidgetAnimMachineCompare> FWidgetAnimMachineConditionCustomization::GetCompares(const UWidgetAnimStateMachineAsset* Machine, FName Input)
++{
++	switch (GetInputKind(Machine, Input))
++	{
++	case EConditionInputKind::Bool:
++		return { EWidgetAnimMachineCompare::IsTrue, EWidgetAnimMachineCompare::IsFalse };
++	case EConditionInputKind::Trigger:
++		return { EWidgetAnimMachineCompare::Fired };
++	case EConditionInputKind::Hold:
++		return { EWidgetAnimMachineCompare::IsTrue, EWidgetAnimMachineCompare::IsFalse, EWidgetAnimMachineCompare::Fired };
++	case EConditionInputKind::Number:
++		return { EWidgetAnimMachineCompare::Equal, EWidgetAnimMachineCompare::NotEqual, EWidgetAnimMachineCompare::Less,
++			EWidgetAnimMachineCompare::LessOrEqual, EWidgetAnimMachineCompare::Greater, EWidgetAnimMachineCompare::GreaterOrEqual };
++	default:
++	{
++		TArray<EWidgetAnimMachineCompare> All;
++		const UEnum* Enum = StaticEnum<EWidgetAnimMachineCompare>();
++		for (int32 Index = 0; Index < Enum->NumEnums() - 1; ++Index)
++		{
++			All.Add(static_cast<EWidgetAnimMachineCompare>(Enum->GetValueByIndex(Index)));
++		}
++		return All;
++	}
++	}
++}
++
++FText FWidgetAnimMachineConditionCustomization::GetCompareLabel(const UWidgetAnimStateMachineAsset* Machine, FName Input, EWidgetAnimMachineCompare Compare)
++{
++	if (GetInputKind(Machine, Input) == EConditionInputKind::Hold)
++	{
++		switch (Compare)
++		{
++		case EWidgetAnimMachineCompare::IsTrue:  return LOCTEXT("IsHeld", "Is Held");
++		case EWidgetAnimMachineCompare::IsFalse: return LOCTEXT("IsLetGo", "Is Let Go");
++		case EWidgetAnimMachineCompare::Fired:   return LOCTEXT("Completed", "Completed");
++		default: break;
++		}
++	}
++	return StaticEnum<EWidgetAnimMachineCompare>()->GetDisplayNameTextByValue(static_cast<int64>(Compare));
++}
++
++void FWidgetAnimMachineConditionCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
++{
++	// The name, and the condition in a few words beside it - "Hold Is Held", "Charge >= 0.5" - so a folded list reads.
++	const TSharedPtr<IPropertyHandle> InputHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineCondition, Input));
++	const TSharedPtr<IPropertyHandle> CompareHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineCondition, Compare));
++	const TSharedPtr<IPropertyHandle> ValueHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineCondition, Value));
++	const TWeakObjectPtr<const UWidgetAnimStateMachineAsset> WeakMachine(FindMachine(PropertyHandle));
++
++	HeaderRow
++	.NameContent()
++	[
++		PropertyHandle->CreatePropertyNameWidget()
++	]
++	.ValueContent()
++	.MinDesiredWidth(200.f)
++	[
++		SNew(STextBlock)
++		.Font(IDetailLayoutBuilder::GetDetailFont())
++		.ColorAndOpacity(FSlateColor::UseSubduedForeground())
++		.Text_Lambda([InputHandle, CompareHandle, ValueHandle, WeakMachine]()
++		{
++			const FName Input = GetInput(InputHandle);
++			EWidgetAnimMachineCompare Compare = EWidgetAnimMachineCompare::IsTrue;
++			if (Input.IsNone() || !GetCompare(CompareHandle, Compare))
++			{
++				return FText::GetEmpty();
++			}
++			const FText Label = GetCompareLabel(WeakMachine.Get(), Input, Compare);
++			if (GetInputKind(WeakMachine.Get(), Input) == EConditionInputKind::Number)
++			{
++				float Value = 0.f;
++				if (ValueHandle.IsValid())
++				{
++					ValueHandle->GetValue(Value);
++				}
++				return FText::Format(LOCTEXT("SummaryNumber", "{0} {1} {2}"), FText::FromName(Input), Label, FText::AsNumber(Value));
++			}
++			return FText::Format(LOCTEXT("Summary", "{0} {1}"), FText::FromName(Input), Label);
++		})
++	];
++}
++
++void FWidgetAnimMachineConditionCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
++{
++	const TSharedPtr<IPropertyHandle> InputHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineCondition, Input));
++	const TSharedPtr<IPropertyHandle> CompareHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineCondition, Compare));
++	const TSharedPtr<IPropertyHandle> ValueHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineCondition, Value));
++	if (!InputHandle.IsValid() || !CompareHandle.IsValid())
++	{
++		return;
++	}
++	const TWeakObjectPtr<const UWidgetAnimStateMachineAsset> WeakMachine(FindMachine(PropertyHandle));
++
++	// Input: as it is - its dropdown of the machine's inputs and the built-in ones. Picked, Compare is put right for it: the
++	// one it had, if it still applies, else the first that does.
++	ChildBuilder.AddProperty(InputHandle.ToSharedRef());
++	const TWeakPtr<IPropertyHandle> WeakInput = InputHandle;
++	const TWeakPtr<IPropertyHandle> WeakCompare = CompareHandle;
++	InputHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([WeakInput, WeakCompare, WeakMachine]()
++	{
++		const TSharedPtr<IPropertyHandle> Input = WeakInput.Pin();
++		const TSharedPtr<IPropertyHandle> Compare = WeakCompare.Pin();
++		const FName InputName = GetInput(Input);
++		EWidgetAnimMachineCompare Current = EWidgetAnimMachineCompare::IsTrue;
++		if (!Compare.IsValid() || InputName.IsNone() || !GetCompare(Compare, Current))
++		{
++			return;
++		}
++		const TArray<EWidgetAnimMachineCompare> Allowed = GetCompares(WeakMachine.Get(), InputName);
++		if (Allowed.Num() > 0 && !Allowed.Contains(Current))
++		{
++			Compare->SetValue(static_cast<uint8>(Allowed[0]));
++		}
++	}));
++
++	// Compare: only what the input can be asked, in its words.
++	IDetailPropertyRow& CompareRow = ChildBuilder.AddProperty(CompareHandle.ToSharedRef());
++	CompareRow.CustomWidget()
++	.NameContent()
++	[
++		CompareHandle->CreatePropertyNameWidget()
++	]
++	.ValueContent()
++	.MinDesiredWidth(140.f)
++	[
++		SNew(SComboButton)
++		.OnGetMenuContent_Lambda([InputHandle, CompareHandle, WeakMachine]()
++		{
++			FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
++			const FName Input = GetInput(InputHandle);
++			const EConditionInputKind Kind = GetInputKind(WeakMachine.Get(), Input);
++			for (const EWidgetAnimMachineCompare Compare : GetCompares(WeakMachine.Get(), Input))
++			{
++				Menu.AddMenuEntry(
++					GetCompareLabel(WeakMachine.Get(), Input, Compare),
++					GetCompareTooltip(Kind, Compare),
++					FSlateIcon(),
++					FUIAction(
++						FExecuteAction::CreateLambda([CompareHandle, Compare]() { CompareHandle->SetValue(static_cast<uint8>(Compare)); }),
++						FCanExecuteAction(),
++						FIsActionChecked::CreateLambda([CompareHandle, Compare]()
++						{
++							EWidgetAnimMachineCompare Current = EWidgetAnimMachineCompare::IsTrue;
++							return GetCompare(CompareHandle, Current) && Current == Compare;
++						})),
++					NAME_None,
++					EUserInterfaceActionType::RadioButton);
++			}
++			return Menu.MakeWidget();
++		})
++		.ButtonContent()
++		[
++			SNew(STextBlock)
++			.Font(IDetailLayoutBuilder::GetDetailFont())
++			.Text_Lambda([InputHandle, CompareHandle, WeakMachine]()
++			{
++				EWidgetAnimMachineCompare Current = EWidgetAnimMachineCompare::IsTrue;
++				if (!GetCompare(CompareHandle, Current))
++				{
++					return LOCTEXT("MultipleCompares", "Multiple Values");
++				}
++				return GetCompareLabel(WeakMachine.Get(), GetInput(InputHandle), Current);
++			})
++		]
++	];
++
++	// Value: as it is - shown only for a comparison of numbers (its own EditCondition).
++	if (ValueHandle.IsValid())
++	{
++		ChildBuilder.AddProperty(ValueHandle.ToSharedRef());
++	}
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMachineConditionCustomization.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMachineConditionCustomization.h
+new file mode 100644
+index 0000000..134a92c
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMachineConditionCustomization.h
+@@ -0,0 +1,27 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "IPropertyTypeCustomization.h"
++#include "NameTBD/WidgetAnimation/WidgetAnimStateMachine.h"
++
++/**
++ * A transition's condition (FWidgetAnimMachineCondition) in the Details: Compare offers only what makes sense for the input
++ * picked, in its words - Is True / Is False for a Bool or a built-in input, Fired for a Trigger, the comparisons for a Number,
++ * Is Held / Is Let Go / Completed for a Press And Hold. Picking another input puts Compare right for it.
++ */
++class FWidgetAnimMachineConditionCustomization : public IPropertyTypeCustomization
++{
++public:
++	static TSharedRef<IPropertyTypeCustomization> MakeInstance();
++
++	virtual void CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
++	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
++
++	/** The comparisons a condition on Input can make, in order: all of them for an input the machine doesn't have. */
++	static TArray<EWidgetAnimMachineCompare> GetCompares(const UWidgetAnimStateMachineAsset* Machine, FName Input);
++
++	/** What a comparison reads as on Input: "Is Held" on a Press And Hold, "Is True" on a Bool. */
++	static FText GetCompareLabel(const UWidgetAnimStateMachineAsset* Machine, FName Input, EWidgetAnimMachineCompare Compare);
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+index a4ed471..ca4904e 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+@@ -1942,6 +1942,19 @@ UWidgetAnimMachineGraphNode* UWidgetAnimMachineGraphSchema::GetStateNode(const U
+ 	return Pin ? Cast<UWidgetAnimMachineGraphNode>(Pin->GetOwningNode()) : nullptr;
+ }
+ 
++const FName UWidgetAnimMachineGraphSchema::HoldingPreset(TEXT("Holding"));
++
++FText UWidgetAnimMachineGraphSchema::GetPresetTooltip(const TPair<FName, FName>& Preset)
++{
++	if (Preset.Key == HoldingPreset)
++	{
++		return MachineTips::AddHoldingStateTooltip();
++	}
++	return Preset.Value.IsNone()
++		? MachineTips::AddIdleStateTooltip()
++		: FText::Format(MachineTips::AddPresetStateTooltip(), FText::FromName(Preset.Key), FText::FromName(Preset.Value));
++}
++
+ const TArray<TPair<FName, FName>>& UWidgetAnimMachineGraphSchema::GetPresetStates()
+ {
+ 	static const TArray<TPair<FName, FName>> Presets =
+@@ -1949,6 +1962,7 @@ const TArray<TPair<FName, FName>>& UWidgetAnimMachineGraphSchema::GetPresetState
+ 		TPair<FName, FName>(TEXT("Idle"), NAME_None),
+ 		TPair<FName, FName>(WidgetAnimMachineInputs::Hovered, WidgetAnimMachineInputs::Hovered),
+ 		TPair<FName, FName>(WidgetAnimMachineInputs::Pressed, WidgetAnimMachineInputs::Pressed),
++		TPair<FName, FName>(HoldingPreset, NAME_None),
+ 		TPair<FName, FName>(WidgetAnimMachineInputs::Selected, WidgetAnimMachineInputs::Selected),
+ 		TPair<FName, FName>(WidgetAnimMachineInputs::Focused, WidgetAnimMachineInputs::Focused),
+ 		TPair<FName, FName>(WidgetAnimMachineInputs::Disabled, WidgetAnimMachineInputs::Disabled),
+@@ -1971,6 +1985,15 @@ FGuid UWidgetAnimMachineGraphSchema::AddPresetState(UWidgetAnimMachineGraph* Gra
+ 
+ 	// One undo for all of it.
+ 	const FScopedTransaction Transaction(LOCTEXT("AddStateFromMenu", "Add State"));
++
++	// Holding: played while the machine's Press And Hold is held - its first, or a new one made for it.
++	const bool bHolding = Preset == HoldingPreset;
++	if (bHolding)
++	{
++		const FWidgetAnimMachineInput* Hold = Graph->Machine->Inputs.FindByPredicate([](const FWidgetAnimMachineInput& Candidate) { return Candidate.Type == EWidgetAnimMachineInputType::Hold; });
++		Input = Hold ? Hold->Name : WidgetAnimMachineEdits::AddInput(Graph->Machine, EWidgetAnimMachineInputType::Hold);
++	}
++
+ 	const FGuid StateId = WidgetAnimMachineEdits::AddState(Graph->Machine, Graph->LayerIndex, Preset, Location);
+ 	if (From && StateId.IsValid())
+ 	{
+@@ -1979,6 +2002,17 @@ FGuid UWidgetAnimMachineGraphSchema::AddPresetState(UWidgetAnimMachineGraph* Gra
+ 		{
+ 			WidgetAnimMachineEdits::AddCondition(Graph->Machine, Graph->LayerIndex, TransitionId, Input, EWidgetAnimMachineCompare::IsTrue);
+ 		}
++
++		// Holding: and back again when it is let go before its Hold Time - the hold not completed, blended back from wherever
++		// the state had got to. (Not to Entry or Any State: nothing goes back into those.)
++		if (bHolding && !Input.IsNone())
++		{
++			const FGuid BackId = WidgetAnimMachineEdits::AddTransition(Graph->Machine, Graph->LayerIndex, StateId, From->StateId);
++			if (BackId.IsValid())
++			{
++				WidgetAnimMachineEdits::AddCondition(Graph->Machine, Graph->LayerIndex, BackId, Input, EWidgetAnimMachineCompare::IsFalse);
++			}
++		}
+ 	}
+ 	Graph->RequestRebuild();
+ 	return StateId;
+@@ -2005,9 +2039,7 @@ void UWidgetAnimMachineGraphSchema::GetGraphContextActions(FGraphContextMenuBuil
+ 			continue;
+ 		}
+ 		const FText Name = FText::Format(LOCTEXT("AddPresetState", "Add {0} State"), FText::FromName(Preset.Key));
+-		const FText ToolTip = Preset.Value.IsNone()
+-			? MachineTips::AddIdleStateTooltip()
+-			: FText::Format(MachineTips::AddPresetStateTooltip(), FText::FromName(Preset.Key), FText::FromName(Preset.Value));
++		const FText ToolTip = GetPresetTooltip(Preset);
+ 		ContextMenuBuilder.AddAction(MakeShared<FWidgetAnimMachineAction_AddState>(Preset.Key, LOCTEXT("CommonStatesCategory", "State Machine|Common States"), Name, ToolTip, 1));
+ 	}
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h
+index 8f09231..3800273 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h
+@@ -471,10 +471,20 @@ public:
+ 
+ 	/**
+ 	 * The states the Add State menus offer ready-named, one for each built-in input a state is usually made for - Hovered,
+-	 * Pressed, Selected, Focused, Disabled - and Idle. Each paired with the input it is for (None for Idle).
++	 * Pressed, Selected, Focused, Disabled - and Idle and Holding. Each paired with the input it is for (None for Idle and
++	 * Holding - Holding's is the machine's Press And Hold).
+ 	 */
+ 	static const TArray<TPair<FName, FName>>& GetPresetStates();
+ 
++	/**
++	 * The Holding preset: a state played while the machine's Press And Hold is held - made for it if it has none. Dragged from
++	 * a state, joined there on Is Held and back on Is Let Go, so a hold let go early blends back.
++	 */
++	static const FName HoldingPreset;
++
++	/** What a preset state is for, for its menu entry. */
++	static FText GetPresetTooltip(const TPair<FName, FName>& Preset);
++
+ 	/**
+ 	 * Adds a preset state - or a plain one, for None - at Location: named for it, and, dragged from a state, joined from that
+ 	 * state by a transition that tests its input. Returns its id.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index 830e6f0..38edcdc 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -1943,6 +1943,12 @@ namespace NameTBD::Tooltips
+ 				"Idle: the state at rest - where Entry usually goes, and where the others come back to.");
+ 		}
+ 
++		inline FText AddHoldingStateTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddHoldingStateTooltip",
++				"Holding: a state played while the widget is pressed and held - a button growing and shaking as it charges. It uses the machine's Press And Hold input, made for it if there is none. Dragged from a state, it is joined from there on Is Held and back on Is Let Go: let go before the Hold Time, it blends back. Add a transition on Completed for where a finished hold goes.");
++		}
++
+ 		inline FText AddPresetStateTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddPresetStateTooltip",

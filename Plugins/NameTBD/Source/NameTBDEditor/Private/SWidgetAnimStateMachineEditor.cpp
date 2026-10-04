@@ -61,6 +61,7 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Notifications/SProgressBar.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SSearchBox.h"
@@ -196,18 +197,20 @@ void UWidgetAnimMachineTransitionProxy::PostEditChangeProperty(FPropertyChangedE
 		return;
 	}
 
-	// Its ends - and where its node was dragged - are the graph's to change.
+	// Its ends - and where its node was dragged, and its wire's reroute points - are the graph's to change.
 	FWidgetAnimMachineTransition& Target = Layer->Transitions[Index];
 	const FGuid From = Target.From;
 	const FGuid To = Target.To;
 	const bool bNodePlaced = Target.bEditorNodePlaced;
 	const FVector2D NodeOffset = Target.EditorNodeOffset;
+	const TArray<FVector2D> ReroutePoints = Target.EditorReroutePoints;
 	Target = Transition;
 	Target.Id = TransitionId;
 	Target.From = From;
 	Target.To = To;
 	Target.bEditorNodePlaced = bNodePlaced;
 	Target.EditorNodeOffset = NodeOffset;
+	Target.EditorReroutePoints = ReroutePoints;
 
 	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
@@ -584,7 +587,11 @@ public:
 		switch (Type)
 		{
 		case EWidgetAnimMachineInputType::Number:
+		case EWidgetAnimMachineInputType::Integer:
 			WidgetAnimStateMachines::SetNumber(Instance, Input, Value);
+			break;
+		case EWidgetAnimMachineInputType::Choice:
+			WidgetAnimStateMachines::SetFromNumber(Instance, Input, Value);
 			break;
 		case EWidgetAnimMachineInputType::Trigger:
 			if (Value != 0.f)
@@ -595,6 +602,14 @@ public:
 		default:
 			WidgetAnimStateMachines::SetBool(Instance, Input, Value > 0.5f);
 			break;
+		}
+	}
+
+	void SetVector(FName Input, const FVector2D& Value)
+	{
+		if (bRunning)
+		{
+			WidgetAnimStateMachines::SetVector2D(Instance, Input, Value);
 		}
 	}
 
@@ -730,7 +745,8 @@ private:
 
 /**
  * Lets the mouse wheel zoom the graph in past 1:1 - a little, to MaxGraphZoom - without Ctrl held, which the graph editor
- * otherwise wants for anything past 1:1. Seen before the graph editor, since it handles the wheel itself.
+ * otherwise wants for anything past 1:1. Seen before the graph editor, since it handles the wheel itself. Also takes a
+ * double-click on a wire, for a reroute point there (see HandleGraphDoubleClick).
  */
 class FWidgetAnimMachineZoomInput : public IInputProcessor
 {
@@ -749,6 +765,13 @@ public:
 	{
 		const TSharedPtr<SWidgetAnimStateMachineEditor> Pinned = Editor.Pin();
 		return Pinned.IsValid() && InGestureEvent == nullptr && Pinned->HandleGraphWheel(InWheelEvent);
+	}
+
+	/** A double-click on a wire: the graph editor never hears of it (the wires are drawn by the graph, not its pins). */
+	virtual bool HandleMouseButtonDoubleClickEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+	{
+		const TSharedPtr<SWidgetAnimStateMachineEditor> Pinned = Editor.Pin();
+		return Pinned.IsValid() && Pinned->HandleGraphDoubleClick(MouseEvent);
 	}
 
 	virtual const TCHAR* GetDebugName() const override { return TEXT("WidgetAnimMachineZoom"); }
@@ -831,8 +854,12 @@ namespace
 	{
 		switch (Type)
 		{
-		case EWidgetAnimMachineInputType::Number:  return LOCTEXT("NumberType", "Number");
-		case EWidgetAnimMachineInputType::Trigger: return LOCTEXT("TriggerType", "Trigger");
+		case EWidgetAnimMachineInputType::Number:   return LOCTEXT("FloatType", "Float");
+		case EWidgetAnimMachineInputType::Integer:  return LOCTEXT("IntegerType", "Integer");
+		case EWidgetAnimMachineInputType::Trigger:  return LOCTEXT("TriggerType", "Trigger");
+		case EWidgetAnimMachineInputType::Hold:     return LOCTEXT("HoldType", "Hold");
+		case EWidgetAnimMachineInputType::Choice:   return LOCTEXT("ChoiceType", "Choice");
+		case EWidgetAnimMachineInputType::Vector2D: return LOCTEXT("Vector2DType", "Vector 2D");
 		default:                                    return LOCTEXT("BoolType", "Bool");
 		}
 	}
@@ -843,6 +870,10 @@ namespace
 		{
 		case EWidgetAnimMachineInputType::Number:  return MachineColors::InputNumber;
 		case EWidgetAnimMachineInputType::Trigger: return MachineColors::InputTrigger;
+		case EWidgetAnimMachineInputType::Hold:    return MachineColors::InputHold;
+		case EWidgetAnimMachineInputType::Integer: return MachineColors::InputInteger;
+		case EWidgetAnimMachineInputType::Choice:  return MachineColors::InputChoice;
+		case EWidgetAnimMachineInputType::Vector2D: return MachineColors::InputVector2D;
 		default:                                    return MachineColors::InputBool;
 		}
 	}
@@ -1305,7 +1336,10 @@ void SWidgetAnimStateMachineEditor::SetMachine(UWidgetAnimStateMachineAsset* InM
 		Machine->Normalize();
 		for (const FWidgetAnimMachineInput& Input : Machine->Inputs)
 		{
-			InputValues.Add(Input.Name, Input.Type == EWidgetAnimMachineInputType::Number ? Input.DefaultNumber : (Input.bDefaultBool ? 1.f : 0.f));
+			// A Press And Hold starts let go, whatever a Default left from when it was a Bool says.
+			InputValues.Add(Input.Name, Input.Type == EWidgetAnimMachineInputType::Hold || Input.Type == EWidgetAnimMachineInputType::Choice ? 0.f
+				: Input.Type == EWidgetAnimMachineInputType::Integer ? static_cast<float>(Input.DefaultInteger)
+				: Input.Type == EWidgetAnimMachineInputType::Number ? Input.DefaultNumber : (Input.bDefaultBool ? 1.f : 0.f));
 		}
 		ShowLayer(0);
 	}
@@ -1578,7 +1612,8 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 		.OnGetMenuContent_Lambda([this]()
 		{
 			FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
-			for (const EWidgetAnimMachineInputType Type : { EWidgetAnimMachineInputType::Bool, EWidgetAnimMachineInputType::Number, EWidgetAnimMachineInputType::Trigger })
+			for (const EWidgetAnimMachineInputType Type : { EWidgetAnimMachineInputType::Bool, EWidgetAnimMachineInputType::Number, EWidgetAnimMachineInputType::Integer, EWidgetAnimMachineInputType::Trigger,
+				EWidgetAnimMachineInputType::Hold, EWidgetAnimMachineInputType::Choice, EWidgetAnimMachineInputType::Vector2D })
 			{
 				Menu.AddMenuEntry(
 					GetTypeLabel(Type),
@@ -1632,6 +1667,111 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 				.Text(LOCTEXT("Fire", "Fire"))
 				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::FireTooltip()))
 				.OnClicked_Lambda([this, Name]() { FireInput(Name); return FReply::Handled(); });
+			break;
+		case EWidgetAnimMachineInputType::Integer:
+			Control = SNew(SBox)
+				.WidthOverride(80.f)
+				[
+					SNew(SSpinBox<int32>)
+					.Value_Lambda([this, Name]() { return FMath::RoundToInt32(GetShownInputValue(Name)); })
+					.OnValueChanged_Lambda([this, Name](int32 Value) { SetInputValue(Name, static_cast<float>(Value)); })
+				];
+			break;
+		case EWidgetAnimMachineInputType::Choice:
+			// Its options, by name.
+			Control = SNew(SComboButton)
+				.OnGetMenuContent_Lambda([this, Name]()
+				{
+					FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+					const FWidgetAnimMachineInput* Definition = Machine ? Machine->FindInput(Name) : nullptr;
+					const TArray<FName> Options = Definition ? Definition->Options : TArray<FName>();
+					for (int32 Index = 0; Index < Options.Num(); ++Index)
+					{
+						Menu.AddMenuEntry(FText::FromName(Options[Index]), FText::GetEmpty(), FSlateIcon(),
+							FUIAction(
+								FExecuteAction::CreateLambda([this, Name, Index]() { SetInputValue(Name, static_cast<float>(Index)); }),
+								FCanExecuteAction(),
+								FIsActionChecked::CreateLambda([this, Name, Index]() { return FMath::RoundToInt32(GetShownInputValue(Name)) == Index; })),
+							NAME_None, EUserInterfaceActionType::RadioButton);
+					}
+					if (Options.Num() == 0)
+					{
+						Menu.AddMenuEntry(LOCTEXT("NoChoiceOptions", "No options"), MachineTips::ChoiceNoOptionsTooltip(), FSlateIcon(),
+							FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([]() { return false; })));
+					}
+					return Menu.MakeWidget();
+				})
+				.ButtonContent()
+				[
+					SNew(STextBlock)
+					.Text_Lambda([this, Name]()
+					{
+						const FWidgetAnimMachineInput* Definition = Machine ? Machine->FindInput(Name) : nullptr;
+						const int32 Index = FMath::RoundToInt32(GetShownInputValue(Name));
+						return Definition && Definition->Options.IsValidIndex(Index) ? FText::FromName(Definition->Options[Index]) : LOCTEXT("NoChoice", "-");
+					})
+				];
+			break;
+		case EWidgetAnimMachineInputType::Vector2D:
+			// X and Y.
+			Control = SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(FMargin(0.f, 0.f, 2.f, 0.f))
+				[
+					SNew(SBox)
+					.WidthOverride(52.f)
+					[
+						SNew(SSpinBox<float>)
+						.ToolTipText(LOCTEXT("VectorX", "X"))
+						.Delta(0.01f)
+						.Value_Lambda([this, Name]() { return static_cast<float>(GetShownVector(Name).X); })
+						.OnValueChanged_Lambda([this, Name](float Value) { SetVectorValue(Name, FVector2D(Value, GetShownVector(Name).Y)); })
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SBox)
+					.WidthOverride(52.f)
+					[
+						SNew(SSpinBox<float>)
+						.ToolTipText(LOCTEXT("VectorY", "Y (negative is up)"))
+						.Delta(0.01f)
+						.Value_Lambda([this, Name]() { return static_cast<float>(GetShownVector(Name).Y); })
+						.OnValueChanged_Lambda([this, Name](float Value) { SetVectorValue(Name, FVector2D(GetShownVector(Name).X, Value)); })
+					]
+				];
+			break;
+		case EWidgetAnimMachineInputType::Hold:
+			// Held while the mouse is down on it - let go early and the hold doesn't complete - filling as it is held.
+			Control = SNew(SButton)
+				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::HoldButtonTooltip()))
+				.ContentPadding(FMargin(0.f))
+				.OnPressed_Lambda([this, Name]() { SetInputValue(Name, 1.f); })
+				.OnReleased_Lambda([this, Name]() { SetInputValue(Name, 0.f); })
+				[
+					SNew(SBox)
+					.WidthOverride(56.f)
+					[
+						SNew(SOverlay)
+						+ SOverlay::Slot()
+						[
+							SNew(SProgressBar)
+							.Percent_Lambda([this, Name]() { return TOptional<float>(GetShownHoldProgress(Name)); })
+							.FillColorAndOpacity(FSlateColor(MachineColors::InputHold))
+							.BackgroundImage(FAppStyle::GetNoBrush())
+						]
+						+ SOverlay::Slot()
+						.HAlign(HAlign_Center)
+						.VAlign(VAlign_Center)
+						.Padding(FMargin(4.f, 2.f))
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("HoldButton", "Hold"))
+						]
+					]
+				];
 			break;
 		default:
 			Control = SNew(SCheckBox)
@@ -1774,6 +1914,24 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 		const FText Tip = bUsed
 			? WidgetAnimMachineInputs::GetBuiltInDescription(BuiltIn)
 			: FText::Format(MachineTips::BuiltInUnusedTooltip(), FText::FromName(BuiltIn), WidgetAnimMachineInputs::GetBuiltInDescription(BuiltIn));
+		// Clicked is a pulse: fired, not ticked.
+		TSharedRef<SWidget> BuiltInControl = SNullWidget::NullWidget;
+		if (BuiltIn == WidgetAnimMachineInputs::Clicked)
+		{
+			BuiltInControl = SNew(SButton)
+				.Text(LOCTEXT("FireClicked", "Fire"))
+				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::FireTooltip()))
+				.IsEnabled_Lambda([this, bUsed]() { return bUsed && !IsDebuggingPlay(); })
+				.OnClicked_Lambda([this, BuiltIn]() { FireBuiltIn(BuiltIn); return FReply::Handled(); });
+		}
+		else
+		{
+			BuiltInControl = SNew(SCheckBox)
+				.IsEnabled_Lambda([this, bUsed]() { return bUsed && !IsDebuggingPlay(); })
+				.IsChecked_Lambda([this, BuiltIn, bUsed]() { return bUsed && GetShownBuiltInValue(BuiltIn) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+				.OnCheckStateChanged_Lambda([this, BuiltIn, bUsed](ECheckBoxState State) { SetBuiltInValue(BuiltIn, bUsed && State == ECheckBoxState::Checked); });
+		}
+
 		InputsBox->AddSlot()
 			.AutoHeight()
 			.Padding(FMargin(4.f, 2.f))
@@ -1793,10 +1951,7 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
 				[
-					SNew(SCheckBox)
-					.IsEnabled_Lambda([this, bUsed]() { return bUsed && !IsDebuggingPlay(); })
-					.IsChecked_Lambda([this, BuiltIn, bUsed]() { return bUsed && GetShownBuiltInValue(BuiltIn) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
-					.OnCheckStateChanged_Lambda([this, BuiltIn, bUsed](ECheckBoxState State) { SetBuiltInValue(BuiltIn, bUsed && State == ECheckBoxState::Checked); })
+					BuiltInControl
 				]
 			];
 	}
@@ -2191,6 +2346,18 @@ void SWidgetAnimStateMachineEditor::OnSelectionChanged(const TSet<UObject*>& Sel
 				return;
 			}
 		}
+		else if (const UWidgetAnimMachineRerouteNode* RerouteNode = Cast<UWidgetAnimMachineRerouteNode>(Selected))
+		{
+			// A reroute point: the transition whose wire it is on.
+			TransitionProxy->Machine = Machine;
+			TransitionProxy->LayerIndex = ShownLayer;
+			TransitionProxy->TransitionId = RerouteNode->TransitionId;
+			if (TransitionProxy->Load())
+			{
+				DetailsView->SetObject(TransitionProxy, /*bForceRefresh=*/true);
+				return;
+			}
+		}
 		else if (UEdGraphNode_Comment* CommentNode = Cast<UEdGraphNode_Comment>(Selected))
 		{
 			// The comment box itself: its color, font size, and how it moves. Written into the machine as it changes.
@@ -2255,6 +2422,7 @@ void SWidgetAnimStateMachineEditor::DeleteSelected()
 	TArray<FGuid> States;
 	TArray<FGuid> Transitions;
 	TArray<FGuid> Comments;
+	TMap<FGuid, TArray<int32>> Reroutes;
 	for (UObject* Selected : Editor->GetSelectedNodes())
 	{
 		if (const UWidgetAnimMachineGraphNode* StateNode = Cast<UWidgetAnimMachineGraphNode>(Selected))
@@ -2263,6 +2431,10 @@ void SWidgetAnimStateMachineEditor::DeleteSelected()
 			{
 				States.Add(StateNode->StateId);
 			}
+		}
+		else if (const UWidgetAnimMachineRerouteNode* RerouteNode = Cast<UWidgetAnimMachineRerouteNode>(Selected))
+		{
+			Reroutes.FindOrAdd(RerouteNode->TransitionId).AddUnique(RerouteNode->RerouteIndex);
 		}
 		else if (const UWidgetAnimMachineTransitionNode* TransitionNode = Cast<UWidgetAnimMachineTransitionNode>(Selected))
 		{
@@ -2274,7 +2446,7 @@ void SWidgetAnimStateMachineEditor::DeleteSelected()
 		}
 	}
 	Editor->ClearSelectionSet();
-	WidgetAnimMachineEdits::Delete(Machine, ShownLayer, States, Transitions, Comments);
+	WidgetAnimMachineEdits::Delete(Machine, ShownLayer, States, Transitions, Comments, Reroutes);
 	ShowLayerDetails();
 }
 
@@ -2521,9 +2693,7 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeAddStateMenu()
 		const bool bExists = Layer && Layer->FindStateIndexByName(PresetName) != INDEX_NONE;
 		const FText ToolTip = bExists
 			? FText::Format(MachineTips::PresetStateExistsTooltip(), FText::FromName(PresetName))
-			: Preset.Value.IsNone()
-				? MachineTips::AddIdleStateTooltip()
-				: FText::Format(MachineTips::AddPresetStateTooltip(), FText::FromName(PresetName), FText::FromName(Preset.Value));
+			: UWidgetAnimMachineGraphSchema::GetPresetTooltip(Preset);
 		Menu.AddMenuEntry(
 			FText::FromName(PresetName),
 			ToolTip,
@@ -2577,6 +2747,29 @@ namespace
 		}
 	}
 
+	/**
+	 * Lines Point up with Neighbour - a reroute point, or a state's middle - on whichever axis they already nearly share: the
+	 * same height when they lie side by side, the same X when one is above the other. Each axis once: bInOutX / bInOutY say
+	 * it is done, so a second neighbour only lines it up the other way.
+	 */
+	void LevelRoutePoint(FVector2f& Point, const FVector2f& Neighbour, bool& bInOutX, bool& bInOutY)
+	{
+		const FVector2f Delta = Point - Neighbour;
+		if (FMath::Abs(Delta.X) >= FMath::Abs(Delta.Y))
+		{
+			if (!bInOutY)
+			{
+				Point.Y = Neighbour.Y;
+				bInOutY = true;
+			}
+		}
+		else if (!bInOutX)
+		{
+			Point.X = Neighbour.X;
+			bInOutX = true;
+		}
+	}
+
 	/** Whether Box would land on any state but Except. */
 	bool LandsOnOther(const TArray<FArrangeState>& All, int32 Except, const FBox2f& Box)
 	{
@@ -2616,6 +2809,71 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 			}
 		}
 		WidgetAnimMachineEdits::PlaceTransitions(Machine, ShownLayer, Reset);
+
+		// Selected reroute points are lined up with the points either side of them on their wire - the reroute point before
+		// or after, or the middle of the state the wire leaves or goes into - so the straight lines between run straight across
+		// or straight up and down, out of the middle of a state's side. Level with the one before it first, across or above or
+		// below whichever way it already lies; then, the other way, with the one after it - a corner of the route. First to
+		// last along each wire, so a run of them lines up.
+		TArray<UWidgetAnimMachineRerouteNode*> Reroutes;
+		for (UObject* SelectedNode : Editor->GetSelectedNodes())
+		{
+			UWidgetAnimMachineRerouteNode* RerouteNode = Cast<UWidgetAnimMachineRerouteNode>(SelectedNode);
+			if (RerouteNode && RerouteNode->TransitionNode && RerouteNode->TransitionNode->RerouteOffsets.IsValidIndex(RerouteNode->RerouteIndex))
+			{
+				Reroutes.Add(RerouteNode);
+			}
+		}
+		Reroutes.Sort([](const UWidgetAnimMachineRerouteNode& A, const UWidgetAnimMachineRerouteNode& B) { return A.RerouteIndex < B.RerouteIndex; });
+
+		TMap<FGuid, TArray<FVector2D>> Leveled;
+		for (UWidgetAnimMachineRerouteNode* RerouteNode : Reroutes)
+		{
+			UWidgetAnimMachineTransitionNode* TransitionNode = RerouteNode->TransitionNode;
+			FGuid FirstId;
+			FGuid SecondId;
+			UWidgetAnimMachineGraph::GetPairOrder(TransitionNode, FirstId, SecondId);
+			FBox2f FirstBox;
+			FBox2f SecondBox;
+			FBox2f FromBox;
+			FBox2f ToBox;
+			if (!GetNodeBox(Editor, Graph->FindStateNode(FirstId), FirstBox) || !GetNodeBox(Editor, Graph->FindStateNode(SecondId), SecondBox)
+				|| !GetNodeBox(Editor, Graph->FindStateNode(TransitionNode->FromId), FromBox) || !GetNodeBox(Editor, Graph->FindStateNode(TransitionNode->ToId), ToBox))
+			{
+				continue;
+			}
+			const FVector2f Anchor = WidgetAnimMachineWires::GetPlacementAnchor(FirstBox, SecondBox);
+			TArray<FVector2f>& Offsets = TransitionNode->RerouteOffsets;
+			const int32 Index = RerouteNode->RerouteIndex;
+			FVector2f Point = Anchor + Offsets[Index];
+			bool bLeveledX = false;
+			bool bLeveledY = false;
+			if (Index > 0)
+			{
+				LevelRoutePoint(Point, Anchor + Offsets[Index - 1], bLeveledX, bLeveledY);
+			}
+			else
+			{
+				LevelRoutePoint(Point, FromBox.GetCenter(), bLeveledX, bLeveledY);
+			}
+			if (Index < Offsets.Num() - 1)
+			{
+				LevelRoutePoint(Point, Anchor + Offsets[Index + 1], bLeveledX, bLeveledY);
+			}
+			else
+			{
+				LevelRoutePoint(Point, ToBox.GetCenter(), bLeveledX, bLeveledY);
+			}
+			Offsets[Index] = Point - Anchor;
+
+			TArray<FVector2D>& Points = Leveled.FindOrAdd(TransitionNode->TransitionId);
+			Points.Reset();
+			for (const FVector2f& Offset : Offsets)
+			{
+				Points.Add(FVector2D(Offset));
+			}
+		}
+		WidgetAnimMachineEdits::MoveReroutes(Machine, ShownLayer, Leveled);
 	}
 
 	TArray<FArrangeState> All;
@@ -2639,7 +2897,8 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 		const FGuid Own = All[Selected[0]].Node->StateId;
 		for (const FWidgetAnimMachineTransition& Transition : Layer->Transitions)
 		{
-			const FGuid Other = Transition.From == Own ? Transition.To : (Transition.To == Own ? Transition.From : FGuid());
+			// A wire routed through reroute points doesn't run between the two: its state lines up with its points instead (below).
+			const FGuid Other = Transition.EditorReroutePoints.Num() > 0 ? FGuid() : (Transition.From == Own ? Transition.To : (Transition.To == Own ? Transition.From : FGuid()));
 			const int32 OtherIndex = Other.IsValid() ? IndexOf(Other) : INDEX_NONE;
 			if (OtherIndex != INDEX_NONE)
 			{
@@ -2656,12 +2915,11 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 				BestCount = Entry.Value;
 			}
 		}
-		if (Best == INDEX_NONE)
+		if (Best != INDEX_NONE)
 		{
-			return;
+			Selected.Insert(Best, 0);
+			Fixed.Add(Best);
 		}
-		Selected.Insert(Best, 0);
-		Fixed.Add(Best);
 	}
 
 	// The wires between the selected states, each pair once.
@@ -2670,7 +2928,7 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 	{
 		const int32 From = IndexOf(Transition.From);
 		const int32 To = IndexOf(Transition.To);
-		if (From == INDEX_NONE || To == INDEX_NONE || !Selected.Contains(From) || !Selected.Contains(To))
+		if (From == INDEX_NONE || To == INDEX_NONE || !Selected.Contains(From) || !Selected.Contains(To) || Transition.EditorReroutePoints.Num() > 0)
 		{
 			continue;
 		}
@@ -2776,6 +3034,78 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 		}
 	}
 
+	// A selected state with no straight wire to the others but a routed one: its middle lined up with the reroute point next
+	// to it on that wire - across from it or above or below it, whichever way it lies - so the wire leaves the middle of its
+	// side straight. Not if it would land on another state.
+	auto AnchorOf = [&All, &IndexOf](const FWidgetAnimMachineTransition& Transition, bool bOriginal, FVector2f& OutAnchor)
+	{
+		const bool bFromFirst = Transition.From < Transition.To;
+		const int32 First = IndexOf(bFromFirst ? Transition.From : Transition.To);
+		const int32 Second = IndexOf(bFromFirst ? Transition.To : Transition.From);
+		if (First == INDEX_NONE || Second == INDEX_NONE)
+		{
+			return false;
+		}
+		OutAnchor = bOriginal
+			? WidgetAnimMachineWires::GetPlacementAnchor(All[First].Original, All[Second].Original)
+			: WidgetAnimMachineWires::GetPlacementAnchor(All[First].Box, All[Second].Box);
+		return true;
+	};
+	for (const int32 StateIndex : Selected)
+	{
+		if (Fixed.Contains(StateIndex) || Links.Contains(StateIndex))
+		{
+			continue;
+		}
+		const FGuid StateId = All[StateIndex].Node->StateId;
+		const FWidgetAnimMachineTransition* Routed = Layer->Transitions.FindByPredicate([&StateId](const FWidgetAnimMachineTransition& Transition)
+		{
+			return Transition.EditorReroutePoints.Num() > 0 && (Transition.From == StateId || Transition.To == StateId) && Transition.From != Transition.To;
+		});
+		const UWidgetAnimMachineTransitionNode* RoutedNode = Routed ? Graph->FindTransitionNode(Routed->Id) : nullptr;
+		FVector2f RouteAnchor;
+		if (!RoutedNode || RoutedNode->RerouteOffsets.Num() == 0 || !AnchorOf(*Routed, /*bOriginal=*/true, RouteAnchor))
+		{
+			continue;
+		}
+		const FVector2f Knot = RouteAnchor + (Routed->From == StateId ? RoutedNode->RerouteOffsets[0] : RoutedNode->RerouteOffsets.Last());
+		FVector2f Center = All[StateIndex].Box.GetCenter();
+		bool bLeveledX = false;
+		bool bLeveledY = false;
+		const FVector2f Before = Center;
+		LevelRoutePoint(Center, Knot, bLeveledX, bLeveledY);
+		if (Center.Equals(Before, 0.25f))
+		{
+			continue;
+		}
+		const FBox2f Candidate = ShiftBox(All[StateIndex].Box, Center - Before);
+		if (!LandsOnOther(All, StateIndex, Candidate))
+		{
+			All[StateIndex].Box = Candidate;
+		}
+	}
+
+	// Reroute points stay where they are while their states move: they are kept from halfway between the two states, so each
+	// is moved back by what that halfway point moved - the routes Q has just made straight stay straight.
+	TMap<FGuid, TArray<FVector2D>> Kept;
+	for (const FWidgetAnimMachineTransition& Transition : Layer->Transitions)
+	{
+		UWidgetAnimMachineTransitionNode* TransitionNode = Transition.EditorReroutePoints.Num() > 0 ? Graph->FindTransitionNode(Transition.Id) : nullptr;
+		FVector2f Before;
+		FVector2f After;
+		if (!TransitionNode || !AnchorOf(Transition, /*bOriginal=*/true, Before) || !AnchorOf(Transition, /*bOriginal=*/false, After) || Before.Equals(After, 0.25f))
+		{
+			continue;
+		}
+		TArray<FVector2D>& Points = Kept.Add(Transition.Id);
+		for (FVector2f& Offset : TransitionNode->RerouteOffsets)
+		{
+			Offset += Before - After;
+			Points.Add(FVector2D(Offset));
+		}
+	}
+	WidgetAnimMachineEdits::MoveReroutes(Machine, ShownLayer, Kept);
+
 	// Into the machine, and the graph.
 	TMap<FGuid, FVector2D> Positions;
 	for (const FArrangeState& Entry : All)
@@ -2807,6 +3137,7 @@ void SWidgetAnimStateMachineEditor::CommitGraphEdits()
 
 	TMap<FGuid, FVector2D> Moved;
 	TMap<FGuid, TOptional<FVector2D>> Placed;
+	TMap<FGuid, TArray<FVector2D>> Rerouted;
 	TArray<FWidgetAnimMachineComment> ChangedComments;
 	for (const UEdGraphNode* Node : Graph->Nodes)
 	{
@@ -2835,6 +3166,22 @@ void SWidgetAnimStateMachineEditor::CommitGraphEdits()
 			{
 				Placed.Add(TransitionNode->TransitionId, TransitionNode->bPlaced ? TOptional<FVector2D>(Offset) : TOptional<FVector2D>());
 			}
+
+			// Its wire's reroute points, dragged. (Added or taken off, the machine has them already: the graph is made again.)
+			if (TransitionNode->RerouteOffsets.Num() == Transition.EditorReroutePoints.Num())
+			{
+				TArray<FVector2D> Points;
+				bool bMoved = false;
+				for (int32 Point = 0; Point < TransitionNode->RerouteOffsets.Num(); ++Point)
+				{
+					Points.Add(FVector2D(TransitionNode->RerouteOffsets[Point]));
+					bMoved |= !Points.Last().Equals(Transition.EditorReroutePoints[Point], 0.5);
+				}
+				if (bMoved)
+				{
+					Rerouted.Add(TransitionNode->TransitionId, MoveTemp(Points));
+				}
+			}
 		}
 		else if (const UEdGraphNode_Comment* CommentNode = Cast<UEdGraphNode_Comment>(Node))
 		{
@@ -2861,6 +3208,7 @@ void SWidgetAnimStateMachineEditor::CommitGraphEdits()
 	}
 	WidgetAnimMachineEdits::MoveStates(Machine, ShownLayer, Moved);
 	WidgetAnimMachineEdits::PlaceTransitions(Machine, ShownLayer, Placed);
+	WidgetAnimMachineEdits::MoveReroutes(Machine, ShownLayer, Rerouted);
 	WidgetAnimMachineEdits::UpdateComments(Machine, ShownLayer, ChangedComments);
 }
 
@@ -2924,10 +3272,25 @@ void SWidgetAnimStateMachineEditor::Tick(const FGeometry& AllottedGeometry, cons
 		// on to the old ones.
 		const TSharedPtr<SGraphEditor> GraphEditor = GraphEditors.IsValidIndex(LayerIndex) ? GraphEditors[LayerIndex] : nullptr;
 		TSet<FGuid> SelectedIds;
+		// Reroute points by their transition and place on its wire - and how many the wire had, so a point added or taken off
+		// before it doesn't leave its neighbour picked instead.
+		struct FSelectedReroute
+		{
+			FGuid TransitionId;
+			int32 Index = 0;
+			int32 Count = 0;
+		};
+		TArray<FSelectedReroute> SelectedReroutes;
 		if (GraphEditor.IsValid())
 		{
 			for (UObject* Selected : GraphEditor->GetSelectedNodes())
 			{
+				if (const UWidgetAnimMachineRerouteNode* RerouteNode = Cast<UWidgetAnimMachineRerouteNode>(Selected))
+				{
+					const int32 Count = RerouteNode->TransitionNode ? RerouteNode->TransitionNode->RerouteOffsets.Num() : 0;
+					SelectedReroutes.Add({ RerouteNode->TransitionId, RerouteNode->RerouteIndex, Count });
+					continue;
+				}
 				if (const UWidgetAnimMachineGraphNode* StateNode = Cast<UWidgetAnimMachineGraphNode>(Selected))
 				{
 					SelectedIds.Add(StateNode->StateId);
@@ -2967,6 +3330,22 @@ void SWidgetAnimStateMachineEditor::Tick(const FGeometry& AllottedGeometry, cons
 			SelectedIds.Reset();
 			SelectedIds.Append(PendingSelection);
 			PendingSelection.Reset();
+		}
+
+		if (GraphEditor.IsValid() && !bTakePending && SelectedReroutes.Num() > 0)
+		{
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				const UWidgetAnimMachineRerouteNode* RerouteNode = Cast<UWidgetAnimMachineRerouteNode>(Node);
+				const int32 Count = RerouteNode && RerouteNode->TransitionNode ? RerouteNode->TransitionNode->RerouteOffsets.Num() : 0;
+				if (RerouteNode && SelectedReroutes.ContainsByPredicate([RerouteNode, Count](const FSelectedReroute& Was)
+				{
+					return Was.TransitionId == RerouteNode->TransitionId && Was.Index == RerouteNode->RerouteIndex && Was.Count == Count;
+				}))
+				{
+					GraphEditor->SetNodeSelection(Node, true);
+				}
+			}
 		}
 
 		if (GraphEditor.IsValid() && SelectedIds.Num() > 0)
@@ -3279,6 +3658,19 @@ bool SWidgetAnimStateMachineEditor::IsGraphAnimating() const
 		return true;
 	}
 
+	// A Press And Hold filling: its Hold button in the Inputs panel fills with it.
+	if (Machine)
+	{
+		for (const FWidgetAnimMachineInput& Input : Machine->Inputs)
+		{
+			const float Progress = Input.Type == EWidgetAnimMachineInputType::Hold ? GetShownHoldProgress(Input.Name) : 0.f;
+			if (Progress > 0.f && Progress < 1.f)
+			{
+				return true;
+			}
+		}
+	}
+
 	// A wire's dots fading out after its transition.
 	const UWidgetAnimMachineGraph* Graph = Graphs.IsValidIndex(ShownLayer) ? Graphs[ShownLayer].Get() : nullptr;
 	if (Graph)
@@ -3360,6 +3752,109 @@ bool SWidgetAnimStateMachineEditor::HandleGraphWheel(const FPointerEvent& WheelE
 	const FVector2f Local = Editor->GetCachedGeometry().AbsoluteToLocal(FVector2f(WheelEvent.GetScreenSpacePosition()));
 	const FVector2f Under = ViewLocation + Local / FMath::Max(Zoom, 0.05f);
 	Editor->SetViewLocation(Under - Local / Next, Next);
+	return true;
+}
+
+bool SWidgetAnimStateMachineEditor::HandleGraphDoubleClick(const FPointerEvent& MouseEvent)
+{
+	if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton || MouseEvent.IsAltDown() || MouseEvent.IsControlDown() || MouseEvent.IsShiftDown()
+		|| !Machine || !FSlateApplication::IsInitialized())
+	{
+		return false;
+	}
+	const TSharedPtr<SGraphEditor> Editor = GetShownGraphEditor();
+	UWidgetAnimMachineGraph* Graph = GetShownGraph();
+	if (!Editor.IsValid() || !Graph)
+	{
+		return false;
+	}
+
+	// Only on the graph itself - not a menu or window over it, and not a name or comment title (a double-click there renames).
+	FSlateApplication& Slate = FSlateApplication::Get();
+	const FWidgetPath Path = Slate.LocateWindowUnderMouse(MouseEvent.GetScreenSpacePosition(), Slate.GetInteractiveTopLevelWindows());
+	bool bOverGraph = false;
+	for (int32 Index = Path.Widgets.Num() - 1; Index >= 0 && !bOverGraph; --Index)
+	{
+		const SWidget& Widget = Path.Widgets[Index].Widget.Get();
+		bOverGraph = &Widget == Editor.Get();
+		if (!bOverGraph && Widget.GetType().ToString().Contains(TEXT("EditableText")))
+		{
+			return false;
+		}
+	}
+	if (!bOverGraph)
+	{
+		return false;
+	}
+
+	// Where in the graph: as the wheel's zoom works it out.
+	FVector2f ViewLocation;
+	float Zoom = 1.f;
+	Editor->GetViewLocation(ViewLocation, Zoom);
+	Zoom = FMath::Max(Zoom, 0.05f);
+	const FVector2f Local = Editor->GetCachedGeometry().AbsoluteToLocal(FVector2f(MouseEvent.GetScreenSpacePosition()));
+	const FVector2f Point = ViewLocation + Local / Zoom;
+
+	// On a node - a state, a transition node, a reroute point: that node's own double-click (a state opens its animation).
+	for (const UEdGraphNode* Node : Graph->Nodes)
+	{
+		FBox2f Box;
+		if (!Node || Node->IsA<UEdGraphNode_Comment>() || !GetNodeBox(Editor, Node, Box))
+		{
+			continue;
+		}
+		if (Box.ExpandBy(2.f).IsInside(Point))
+		{
+			return false;
+		}
+	}
+
+	// The wire nearest the click, if it is close enough - a few pixels on screen, however far the graph is zoomed.
+	const float Reach = (WidgetAnimMachineWires::WireHitDistance + NameTBD::Colors::StateMachineEditor::WireThickness * 0.5f * Zoom) / Zoom;
+	const UWidgetAnimMachineTransitionNode* Hit = nullptr;
+	FWidgetAnimMachineWire HitWire;
+	int32 HitSegment = INDEX_NONE;
+	FVector2f HitPoint = Point;
+	FVector2f HitAnchor = FVector2f::ZeroVector;
+	float HitDistance = Reach;
+	for (const UEdGraphNode* Node : Graph->Nodes)
+	{
+		const UWidgetAnimMachineTransitionNode* TransitionNode = Cast<UWidgetAnimMachineTransitionNode>(Node);
+		if (!TransitionNode)
+		{
+			continue;
+		}
+		FGuid FirstId;
+		FGuid SecondId;
+		UWidgetAnimMachineGraph::GetPairOrder(TransitionNode, FirstId, SecondId);
+		FBox2f FirstBox;
+		FBox2f SecondBox;
+		if (!GetNodeBox(Editor, Graph->FindStateNode(FirstId), FirstBox) || !GetNodeBox(Editor, Graph->FindStateNode(SecondId), SecondBox))
+		{
+			continue;
+		}
+		const FWidgetAnimMachineWire Wire = Graph->ComputeWire(TransitionNode, FirstBox, SecondBox);
+		int32 Segment = INDEX_NONE;
+		FVector2f Nearest = Point;
+		const float Distance = Wire.GetDistance(Point, Segment, &Nearest);
+		if (Segment != INDEX_NONE && Distance <= HitDistance)
+		{
+			Hit = TransitionNode;
+			HitWire = Wire;
+			HitSegment = Segment;
+			HitPoint = Nearest;
+			HitAnchor = WidgetAnimMachineWires::GetPlacementAnchor(FirstBox, SecondBox);
+			HitDistance = Distance;
+		}
+	}
+	if (!Hit || !HitWire.Segments.IsValidIndex(HitSegment))
+	{
+		return false;
+	}
+
+	// On the wire where it was clicked, between the points either side of it - kept, as the transition node's own place is,
+	// from halfway between the two states' corners.
+	WidgetAnimMachineEdits::AddReroute(Machine, ShownLayer, Hit->TransitionId, HitWire.Segments[HitSegment].ReroutesBefore, FVector2D(HitPoint - HitAnchor));
 	return true;
 }
 
@@ -3556,7 +4051,11 @@ void SWidgetAnimStateMachineEditor::PushInputs(UWidgetAnimationComponent* Compon
 	}
 	for (const FWidgetAnimMachineInput& Input : Machine->Inputs)
 	{
-		if (Input.Type != EWidgetAnimMachineInputType::Trigger)
+		if (Input.Type == EWidgetAnimMachineInputType::Vector2D)
+		{
+			Component->SetStateMachineVector2D(Input.Name, GetShownVector(Input.Name), Machine);
+		}
+		else if (Input.Type != EWidgetAnimMachineInputType::Trigger)
 		{
 			Component->SetStateMachineInputValue(Input.Name, GetShownInputValue(Input.Name), Machine);
 		}
@@ -3575,7 +4074,11 @@ void SWidgetAnimStateMachineEditor::PushInputsToHost() const
 	}
 	for (const FWidgetAnimMachineInput& Input : Machine->Inputs)
 	{
-		if (Input.Type != EWidgetAnimMachineInputType::Trigger)
+		if (Input.Type == EWidgetAnimMachineInputType::Vector2D)
+		{
+			PreviewHost->SetVector(Input.Name, GetShownVector(Input.Name));
+		}
+		else if (Input.Type != EWidgetAnimMachineInputType::Trigger)
 		{
 			PreviewHost->SetInput(Input.Name, Input.Type, GetShownInputValue(Input.Name));
 		}
@@ -3608,6 +4111,60 @@ void SWidgetAnimStateMachineEditor::SetInputValue(FName Input, float Value)
 		if (UWidgetAnimationComponent* Live = Weak.Get())
 		{
 			Live->SetStateMachineInputValue(Input, Value, Machine);
+		}
+	}
+}
+
+void SWidgetAnimStateMachineEditor::SetVectorValue(FName Input, const FVector2D& Value)
+{
+	VectorValues.Add(Input, Value);
+
+	// In Play In Editor, onto the widget watched; in the designer, onto the preview.
+	if (IsDebuggingPlay())
+	{
+		if (UWidgetAnimationComponent* Watched = GetWatchedComponent())
+		{
+			Watched->SetStateMachineVector2D(Input, Value, Machine);
+		}
+		return;
+	}
+	PreviewHost->SetVector(Input, Value);
+	for (const TWeakObjectPtr<UWidgetAnimationComponent>& Weak : PreviewComponents)
+	{
+		if (UWidgetAnimationComponent* Live = Weak.Get())
+		{
+			Live->SetStateMachineVector2D(Input, Value, Machine);
+		}
+	}
+}
+
+FVector2D SWidgetAnimStateMachineEditor::GetShownVector(FName Input) const
+{
+	if (IsDebuggingPlay())
+	{
+		const UWidgetAnimationComponent* Watched = GetWatchedComponent();
+		return Watched ? Watched->GetStateMachineVector2D(Input, Machine) : FVector2D::ZeroVector;
+	}
+	if (const FVector2D* Value = VectorValues.Find(Input))
+	{
+		return *Value;
+	}
+	const FWidgetAnimMachineInput* Definition = Machine ? Machine->FindInput(Input) : nullptr;
+	return Definition ? Definition->DefaultVector2D : FVector2D::ZeroVector;
+}
+
+void SWidgetAnimStateMachineEditor::FireBuiltIn(FName Input)
+{
+	if (IsDebuggingPlay())
+	{
+		return;
+	}
+	PreviewHost->SetBuiltIn(Input, true);
+	for (const TWeakObjectPtr<UWidgetAnimationComponent>& Weak : PreviewComponents)
+	{
+		if (UWidgetAnimationComponent* Live = Weak.Get())
+		{
+			Live->SetDesignerStateMachineBuiltIn(Input, true, Machine);
 		}
 	}
 }
@@ -3653,7 +4210,8 @@ float SWidgetAnimStateMachineEditor::GetShownInputValue(FName Input) const
 		if (const UWidgetAnimationComponent* Watched = GetWatchedComponent())
 		{
 			const FWidgetAnimMachineInput* Definition = Machine ? Machine->FindInput(Input) : nullptr;
-			if (Definition && Definition->Type == EWidgetAnimMachineInputType::Number)
+			if (Definition && (Definition->Type == EWidgetAnimMachineInputType::Number || Definition->Type == EWidgetAnimMachineInputType::Integer
+				|| Definition->Type == EWidgetAnimMachineInputType::Choice))
 			{
 				return Watched->GetStateMachineNumber(Input, Machine);
 			}
@@ -3665,7 +4223,39 @@ float SWidgetAnimStateMachineEditor::GetShownInputValue(FName Input) const
 		return *Value;
 	}
 	const FWidgetAnimMachineInput* Definition = Machine ? Machine->FindInput(Input) : nullptr;
-	return Definition ? (Definition->Type == EWidgetAnimMachineInputType::Number ? Definition->DefaultNumber : (Definition->bDefaultBool ? 1.f : 0.f)) : 0.f;
+	if (!Definition || Definition->Type == EWidgetAnimMachineInputType::Hold || Definition->Type == EWidgetAnimMachineInputType::Choice)
+	{
+		return 0.f;
+	}
+	if (Definition->Type == EWidgetAnimMachineInputType::Integer)
+	{
+		return static_cast<float>(Definition->DefaultInteger);
+	}
+	return Definition->Type == EWidgetAnimMachineInputType::Number ? Definition->DefaultNumber : (Definition->bDefaultBool ? 1.f : 0.f);
+}
+
+float SWidgetAnimStateMachineEditor::GetShownHoldProgress(FName Input) const
+{
+	// How far through its Hold Time a Press And Hold is, in whatever is playing the machine: the watched widget in Play In
+	// Editor, else the designer's preview.
+	if (IsDebuggingPlay())
+	{
+		const UWidgetAnimationComponent* Watched = GetWatchedComponent();
+		return Watched ? Watched->GetStateMachineNumber(Input, Machine) : 0.f;
+	}
+	float Progress = 0.f;
+	if (PreviewHost.IsValid() && PreviewHost->IsRunning() && WidgetAnimStateMachines::GetNumber(PreviewHost->GetInstance(), Input, Progress))
+	{
+		return Progress;
+	}
+	for (const TWeakObjectPtr<UWidgetAnimationComponent>& Weak : PreviewComponents)
+	{
+		if (const UWidgetAnimationComponent* Live = Weak.Get())
+		{
+			return Live->GetStateMachineNumber(Input, Machine);
+		}
+	}
+	return 0.f;
 }
 
 bool SWidgetAnimStateMachineEditor::GetShownBuiltInValue(FName Input) const

@@ -4,6 +4,7 @@
 
 #include "Blueprint/UserWidget.h"
 #include "Components/CheckBox.h"
+#include "NameTBD/Buttons/ContextMenuButton.h"
 #include "Components/PanelWidget.h"
 #include "Components/Widget.h"
 #include "Framework/Application/SlateApplication.h"
@@ -488,11 +489,31 @@ namespace WidgetAnimStateMachines
 			{
 				return Instance.WidgetState.bDisabled;
 			}
+			if (Name == WidgetAnimMachineInputs::Clicked)
+			{
+				return Instance.WidgetState.bClicked;
+			}
 			return false;
 		}
 
-		/** An input as a number - a Bool or a Trigger as 0 or 1 - and whether there is one of that name. */
-		bool ReadAsNumber(const FWidgetAnimMachineInstance& Instance, FName Name, float& OutNumber, bool& OutTruthy)
+		/** The number a condition reads off a Vector 2D. */
+		float GetVectorPart(const FVector2f& Vector, EWidgetAnimMachineVectorPart Part)
+		{
+			switch (Part)
+			{
+			case EWidgetAnimMachineVectorPart::X: return Vector.X;
+			case EWidgetAnimMachineVectorPart::Y: return Vector.Y;
+			default:                               return Vector.Size();
+			}
+		}
+
+		/**
+		 * An input as a number - a Bool or a Trigger as 0 or 1, a Choice as its option's number, a Vector 2D as Part of it (its
+		 * Length by default) - and whether it is "true". bPrevious: as the machine last ran, for Increased, Decreased and Changed.
+		 * False when there is no input of that name.
+		 */
+		bool ReadAsNumber(const FWidgetAnimMachineInstance& Instance, FName Name, float& OutNumber, bool& OutTruthy,
+			EWidgetAnimMachineVectorPart Part = EWidgetAnimMachineVectorPart::Length, bool bPrevious = false)
 		{
 			if (WidgetAnimMachineInputs::IsBuiltIn(Name))
 			{
@@ -516,22 +537,150 @@ namespace WidgetAnimStateMachines
 				OutTruthy = Input->bFired;
 				OutNumber = Input->bFired ? 1.f : 0.f;
 				break;
+			case EWidgetAnimMachineInputType::Hold:
+				// Truthy while being held toward its Hold Time; as a number, how far through it.
+				OutTruthy = Input->bValue;
+				OutNumber = bPrevious ? Input->PreviousNumber : Input->Number;
+				break;
+			case EWidgetAnimMachineInputType::Vector2D:
+				OutNumber = GetVectorPart(bPrevious ? Input->PreviousVector : Input->Vector, Part);
+				OutTruthy = !(bPrevious ? Input->PreviousVector : Input->Vector).IsNearlyZero();
+				break;
 			default:
-				OutNumber = Input->Number;
-				OutTruthy = !FMath::IsNearlyZero(Input->Number);
+				// Float, Integer, Choice.
+				OutNumber = bPrevious ? Input->PreviousNumber : Input->Number;
+				OutTruthy = !FMath::IsNearlyZero(OutNumber);
 				break;
 			}
 			return true;
 		}
 
+		/** A Choice's option now, by name: None when it has none, or Input isn't a Choice. */
+		FName GetChoiceOption(const FWidgetAnimMachineInputState* Input)
+		{
+			if (!Input || Input->Type != EWidgetAnimMachineInputType::Choice)
+			{
+				return NAME_None;
+			}
+			const int32 Index = FMath::RoundToInt32(Input->Number);
+			return Input->Options.IsValidIndex(Index) ? Input->Options[Index] : FName();
+		}
+
+		/** Whether Vector points Direction - screen space, Up being negative Y - and is at least DeadZone long. */
+		bool PointsTo(const FVector2f& Vector, EWidgetAnimMachineDirection Direction, float DeadZone)
+		{
+			if (Vector.Size() < FMath::Max(DeadZone, KINDA_SMALL_NUMBER))
+			{
+				return false;
+			}
+			// Four quarters about the axes: a diagonal exactly between two goes to the side.
+			const float Across = FMath::Abs(Vector.X);
+			const float Down = FMath::Abs(Vector.Y);
+			switch (Direction)
+			{
+			case EWidgetAnimMachineDirection::Up:    return Vector.Y < 0.f && Down > Across;
+			case EWidgetAnimMachineDirection::Down:  return Vector.Y > 0.f && Down > Across;
+			case EWidgetAnimMachineDirection::Left:  return Vector.X < 0.f && Across >= Down;
+			default:                                  return Vector.X > 0.f && Across >= Down;
+			}
+		}
+
 		bool EvaluateCondition(const FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineCondition& Condition)
 		{
+			const FWidgetAnimMachineInputState* Input = Instance.FindInput(Condition.Input);
+			const bool bAgainstInput = Condition.CompareTo == EWidgetAnimMachineCompareTo::Input;
+
+			if (Input)
+			{
+				switch (Input->Type)
+				{
+				case EWidgetAnimMachineInputType::Hold:
+					// Fired the frame it completes; Is False while it isn't held - but never that frame, so the way back from the
+					// state it held is never taken as the hold completes, whatever order the two transitions are in.
+					if (Condition.Compare == EWidgetAnimMachineCompare::Fired)
+					{
+						return Input->bFired;
+					}
+					if (Condition.Compare == EWidgetAnimMachineCompare::IsFalse)
+					{
+						return !Input->bValue && !Input->bFired;
+					}
+					break;
+
+				case EWidgetAnimMachineInputType::Choice:
+				{
+					// By name: the option it has against the one typed - or another Choice's.
+					if (Condition.Compare == EWidgetAnimMachineCompare::Changed)
+					{
+						return FMath::RoundToInt32(Input->Number) != FMath::RoundToInt32(Input->PreviousNumber);
+					}
+					const FName Mine = GetChoiceOption(Input);
+					const FName Theirs = bAgainstInput ? GetChoiceOption(Instance.FindInput(Condition.OtherInput)) : Condition.Option;
+					if (bAgainstInput && Theirs.IsNone())
+					{
+						return false;
+					}
+					if (Condition.Compare == EWidgetAnimMachineCompare::Equal)
+					{
+						return Mine == Theirs;
+					}
+					if (Condition.Compare == EWidgetAnimMachineCompare::NotEqual)
+					{
+						return Mine != Theirs;
+					}
+					return false;
+				}
+
+				case EWidgetAnimMachineInputType::Vector2D:
+					if (Condition.Compare == EWidgetAnimMachineCompare::Points)
+					{
+						return PointsTo(Input->Vector, Condition.Direction, Condition.DeadZone);
+					}
+					if (Condition.Compare == EWidgetAnimMachineCompare::Changed)
+					{
+						return !Input->Vector.Equals(Input->PreviousVector, 1e-4f);
+					}
+					break;
+
+				default:
+					break;
+				}
+
+				// The frame it moved: against the value as the machine last ran.
+				if (Condition.Compare == EWidgetAnimMachineCompare::Increased || Condition.Compare == EWidgetAnimMachineCompare::Decreased
+					|| Condition.Compare == EWidgetAnimMachineCompare::Changed)
+				{
+					float Now = 0.f;
+					float Was = 0.f;
+					bool bUnused = false;
+					ReadAsNumber(Instance, Condition.Input, Now, bUnused, Condition.Part);
+					ReadAsNumber(Instance, Condition.Input, Was, bUnused, Condition.Part, /*bPrevious=*/true);
+					switch (Condition.Compare)
+					{
+					case EWidgetAnimMachineCompare::Increased: return Now > Was + 1e-5f;
+					case EWidgetAnimMachineCompare::Decreased: return Now < Was - 1e-5f;
+					default:                                    return !FMath::IsNearlyEqual(Now, Was, 1e-5f);
+					}
+				}
+			}
+
 			float Number = 0.f;
 			bool bTruthy = false;
-			if (!ReadAsNumber(Instance, Condition.Input, Number, bTruthy))
+			if (!ReadAsNumber(Instance, Condition.Input, Number, bTruthy, Condition.Part))
 			{
 				// An input the machine doesn't have - removed since the condition was made - never holds.
 				return false;
+			}
+
+			// What it is compared against: the value typed, or another input as it is now.
+			float Against = Condition.Value;
+			if (bAgainstInput)
+			{
+				bool bOtherTruthy = false;
+				if (!ReadAsNumber(Instance, Condition.OtherInput, Against, bOtherTruthy, Condition.OtherPart))
+				{
+					return false;
+				}
 			}
 
 			switch (Condition.Compare)
@@ -539,12 +688,12 @@ namespace WidgetAnimStateMachines
 			case EWidgetAnimMachineCompare::IsTrue:         return bTruthy;
 			case EWidgetAnimMachineCompare::IsFalse:        return !bTruthy;
 			case EWidgetAnimMachineCompare::Fired:          return bTruthy;
-			case EWidgetAnimMachineCompare::Equal:          return FMath::IsNearlyEqual(Number, Condition.Value, 1e-4f);
-			case EWidgetAnimMachineCompare::NotEqual:       return !FMath::IsNearlyEqual(Number, Condition.Value, 1e-4f);
-			case EWidgetAnimMachineCompare::Less:           return Number < Condition.Value;
-			case EWidgetAnimMachineCompare::LessOrEqual:    return Number <= Condition.Value;
-			case EWidgetAnimMachineCompare::Greater:        return Number > Condition.Value;
-			case EWidgetAnimMachineCompare::GreaterOrEqual: return Number >= Condition.Value;
+			case EWidgetAnimMachineCompare::Equal:          return FMath::IsNearlyEqual(Number, Against, 1e-4f);
+			case EWidgetAnimMachineCompare::NotEqual:       return !FMath::IsNearlyEqual(Number, Against, 1e-4f);
+			case EWidgetAnimMachineCompare::Less:           return Number < Against;
+			case EWidgetAnimMachineCompare::LessOrEqual:    return Number <= Against;
+			case EWidgetAnimMachineCompare::Greater:        return Number > Against;
+			case EWidgetAnimMachineCompare::GreaterOrEqual: return Number >= Against;
 			default:                                         return false;
 			}
 		}
@@ -599,6 +748,18 @@ namespace WidgetAnimStateMachines
 			{
 				OutState.bSelected = CheckBox->IsChecked();
 			}
+			else if (UContextMenuButton* Button = Cast<UContextMenuButton>(InputContext.MeasuredWidget))
+			{
+				// A Context Menu Button that can be enabled: Selected while it is - toggled on, or the one picked in its group.
+				OutState.bSelected = Button->GetEnabledState();
+
+				// Clicked: its action went off since last read - on press or on release, as it is set, and every repeat of a
+				// Hold button. Its own count, so a press dragged off, or one during a cooldown, isn't a click.
+				const uint32 Count = Button->GetActionCount();
+				OutState.bClicked = Instance.bHasClickCount && Count != Instance.LastClickCount;
+				Instance.LastClickCount = Count;
+				Instance.bHasClickCount = true;
+			}
 			OutState.bDisabled = IsDisabledInTree(InputContext.MeasuredWidget);
 		}
 
@@ -640,6 +801,33 @@ namespace WidgetAnimStateMachines
 
 				switch (Input.Type)
 				{
+				case EWidgetAnimMachineInputType::Vector2D:
+				{
+					// Both parts: a Pointer Position or a Drag gives X and Y.
+					const FVector2f Now(static_cast<float>(Value.X), static_cast<float>(Value.Y));
+					if (!Now.Equals(Input.Vector, 1e-5f))
+					{
+						Input.Vector = Now;
+						Instance.bInputsChanged = true;
+					}
+					break;
+				}
+				case EWidgetAnimMachineInputType::Integer:
+				case EWidgetAnimMachineInputType::Choice:
+				{
+					// A whole number - for a Choice, its option's, held to the options it has.
+					float Whole = static_cast<float>(FMath::RoundToInt32(Sample));
+					if (Input.Type == EWidgetAnimMachineInputType::Choice)
+					{
+						Whole = FMath::Clamp(Whole, 0.f, static_cast<float>(FMath::Max(Input.Options.Num() - 1, 0)));
+					}
+					if (Whole != Input.Number)
+					{
+						Input.Number = Whole;
+						Instance.bInputsChanged = true;
+					}
+					break;
+				}
 				case EWidgetAnimMachineInputType::Bool:
 				{
 					const bool bNow = Sample > 0.5f;
@@ -657,6 +845,10 @@ namespace WidgetAnimStateMachines
 						Input.bFired = true;
 						Instance.bInputsChanged = true;
 					}
+					break;
+				case EWidgetAnimMachineInputType::Hold:
+					// Held while the value is over 0.5 - timed in UpdateHolds.
+					Input.bHoldSourceDown = Sample > 0.5f;
 					break;
 				default:
 					if (Sample != Input.Number)
@@ -680,9 +872,76 @@ namespace WidgetAnimStateMachines
 					ReadPlainWidgetState(Instance, InputContext, State);
 				}
 				const FWidgetAnimMachineWidgetState& Was = Instance.WidgetState;
-				if (State.bHovered != Was.bHovered || State.bPressed != Was.bPressed || State.bFocused != Was.bFocused || State.bSelected != Was.bSelected || State.bDisabled != Was.bDisabled)
+
+				// Clicked, where nothing said: a press let go while the widget is still hovered or focused - as a Button counts a
+				// click. A press dragged off and let go elsewhere isn't one.
+				if (!State.bClicked && !Instance.bHasClickCount && Was.bPressed && !State.bPressed && (State.bHovered || State.bFocused))
+				{
+					State.bClicked = true;
+				}
+
+				if (State.bHovered != Was.bHovered || State.bPressed != Was.bPressed || State.bFocused != Was.bFocused || State.bSelected != Was.bSelected
+					|| State.bDisabled != Was.bDisabled || State.bClicked != Was.bClicked)
 				{
 					Instance.WidgetState = State;
+					Instance.bInputsChanged = true;
+				}
+			}
+		}
+
+		/**
+		 * Times every Press And Hold: held down - by its Driven By, else by the widget's own pressed state, or from Blueprint
+		 * or the Inputs panel - it counts up to its Hold Time, and fires once it gets there; let go, it starts again. Runs at
+		 * design time too, where the Inputs panel's Pressed (or the input's own Hold button) holds it, and not at all while the
+		 * preview is paused (DeltaTime 0).
+		 */
+		void UpdateHolds(FWidgetAnimMachineInstance& Instance, float DeltaTime)
+		{
+			for (FWidgetAnimMachineInputState& Input : Instance.Inputs)
+			{
+				if (Input.Type != EWidgetAnimMachineInputType::Hold)
+				{
+					continue;
+				}
+
+				const bool bSourced = Input.Source.IsValid() && Input.bHasSample;
+				const bool bDown = Input.bHoldSetDown || (bSourced ? Input.bHoldSourceDown : Instance.WidgetState.bPressed);
+				if (!bDown)
+				{
+					// Let go - complete or not: ready for the next press.
+					if (Input.bValue || Input.bHoldDone || Input.HoldElapsed > 0.f || Input.Number != 0.f)
+					{
+						Input.bValue = false;
+						Input.bHoldDone = false;
+						Input.HoldElapsed = 0.f;
+						Input.Number = 0.f;
+						Instance.bInputsChanged = true;
+					}
+					continue;
+				}
+				if (Input.bHoldDone)
+				{
+					// Held all the way already: nothing more until it is let go.
+					continue;
+				}
+
+				Input.HoldElapsed += FMath::Max(DeltaTime, 0.f);
+				const float HoldTime = FMath::Max(Input.HoldTime, 0.05f);
+				if (Input.HoldElapsed >= HoldTime)
+				{
+					Input.bHoldDone = true;
+					Input.bFired = true;
+					Input.bValue = false;
+					Input.Number = 1.f;
+					Instance.bInputsChanged = true;
+					continue;
+				}
+
+				const float Progress = Input.HoldElapsed / HoldTime;
+				if (!Input.bValue || Progress != Input.Number)
+				{
+					Input.bValue = true;
+					Input.Number = Progress;
 					Instance.bInputsChanged = true;
 				}
 			}
@@ -1520,6 +1779,10 @@ namespace WidgetAnimStateMachines
 					for (const FWidgetAnimMachineCondition& Condition : Transition.Conditions)
 					{
 						Used |= WidgetAnimMachineInputs::GetBuiltInBit(Condition.Input);
+						if (Condition.CompareTo == EWidgetAnimMachineCompareTo::Input)
+						{
+							Used |= WidgetAnimMachineInputs::GetBuiltInBit(Condition.OtherInput);
+						}
 					}
 				}
 			}
@@ -1560,6 +1823,30 @@ namespace WidgetAnimStateMachines
 			const FWidgetAnimMachineInputOverride* Override = Row.FindInputOverride(Definition.Name);
 			Input.bValue = Override ? Override->bDefaultBool : Definition.bDefaultBool;
 			Input.Number = Override ? Override->DefaultNumber : Definition.DefaultNumber;
+			Input.HoldTime = Override ? Override->HoldTime : Definition.HoldTime;
+			Input.Options = Definition.Options;
+			switch (Definition.Type)
+			{
+			case EWidgetAnimMachineInputType::Hold:
+				// Not held, nothing done: a hold starts from nothing, whatever the defaults say.
+				Input.bValue = false;
+				Input.Number = 0.f;
+				break;
+			case EWidgetAnimMachineInputType::Integer:
+				Input.Number = static_cast<float>(Override ? Override->DefaultInteger : Definition.DefaultInteger);
+				break;
+			case EWidgetAnimMachineInputType::Choice:
+				// Its first option.
+				Input.Number = 0.f;
+				break;
+			case EWidgetAnimMachineInputType::Vector2D:
+				Input.Vector = FVector2f(Override ? Override->DefaultVector2D : Definition.DefaultVector2D);
+				break;
+			default:
+				break;
+			}
+			Input.PreviousNumber = Input.Number;
+			Input.PreviousVector = Input.Vector;
 			Input.Source = Override ? Override->Source : Definition.Source;
 			if (Override)
 			{
@@ -1572,6 +1859,20 @@ namespace WidgetAnimStateMachines
 		}
 
 		Instance.UsedBuiltIns = FindUsedBuiltIns(*Machine);
+
+		// A Press And Hold with nothing driving it is held by the widget's own pressed state: that is read too.
+		if (Instance.Inputs.ContainsByPredicate([](const FWidgetAnimMachineInputState& Input) { return Input.Type == EWidgetAnimMachineInputType::Hold && !Input.Source.IsValid(); }))
+		{
+			Instance.UsedBuiltIns |= WidgetAnimMachineInputs::GetBuiltInBit(WidgetAnimMachineInputs::Pressed);
+		}
+
+		// Clicked is worked out from the press, hover and focus: those are read too.
+		if (Instance.UsedBuiltIns & WidgetAnimMachineInputs::GetBuiltInBit(WidgetAnimMachineInputs::Clicked))
+		{
+			Instance.UsedBuiltIns |= WidgetAnimMachineInputs::GetBuiltInBit(WidgetAnimMachineInputs::Pressed)
+				| WidgetAnimMachineInputs::GetBuiltInBit(WidgetAnimMachineInputs::Hovered)
+				| WidgetAnimMachineInputs::GetBuiltInBit(WidgetAnimMachineInputs::Focused);
+		}
 		Instance.HoverReader.State = EWidgetAnimInteractionState::Hovered;
 		Instance.PressReader.State = EWidgetAnimInteractionState::Pressed;
 		Instance.FocusReader.State = EWidgetAnimInteractionState::Focused;
@@ -1600,6 +1901,7 @@ namespace WidgetAnimStateMachines
 
 		// What the widget is now - hovered already, disabled already - before Entry picks the first state.
 		ReadInputs(Instance, Context, 0.f);
+		UpdateHolds(Instance, 0.f);
 
 		for (int32 LayerIndex = 0; LayerIndex < Instance.Layers.Num(); ++LayerIndex)
 		{
@@ -1637,6 +1939,7 @@ namespace WidgetAnimStateMachines
 		}
 
 		ReadInputs(Instance, Context, DeltaTime);
+		UpdateHolds(Instance, DeltaTime);
 
 		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
 		{
@@ -1652,11 +1955,15 @@ namespace WidgetAnimStateMachines
 			TickLayer(Instance, LayerIndex, Context, DeltaTime);
 		}
 
-		// Triggers are one-frame pulses: spent whether or not anything took them.
+		// Triggers are one-frame pulses: spent whether or not anything took them. And the values as they were this time, for
+		// Increased, Decreased and Changed next time - which so hold for the one frame something moved.
 		for (FWidgetAnimMachineInputState& Input : Instance.Inputs)
 		{
 			Input.bFired = false;
+			Input.PreviousNumber = Input.Number;
+			Input.PreviousVector = Input.Vector;
 		}
+		Instance.WidgetState.bClicked = false;
 		Instance.bInputsChanged = false;
 	}
 
@@ -1769,6 +2076,16 @@ namespace WidgetAnimStateMachines
 	bool SetBool(FWidgetAnimMachineInstance& Instance, FName Input, bool bValue)
 	{
 		FWidgetAnimMachineInputState* State = Instance.FindInput(Input);
+		if (State && State->Type == EWidgetAnimMachineInputType::Hold)
+		{
+			// Pressed (true) or let go (false) from outside - timed with the widget's own press, on the next Tick.
+			if (State->bHoldSetDown != bValue)
+			{
+				State->bHoldSetDown = bValue;
+				Instance.bInputsChanged = true;
+			}
+			return true;
+		}
 		if (!State || State->Type != EWidgetAnimMachineInputType::Bool)
 		{
 			return false;
@@ -1784,13 +2101,59 @@ namespace WidgetAnimStateMachines
 	bool SetNumber(FWidgetAnimMachineInstance& Instance, FName Input, float Value)
 	{
 		FWidgetAnimMachineInputState* State = Instance.FindInput(Input);
-		if (!State || State->Type != EWidgetAnimMachineInputType::Number)
+		if (!State || (State->Type != EWidgetAnimMachineInputType::Number && State->Type != EWidgetAnimMachineInputType::Integer))
 		{
 			return false;
 		}
-		if (State->Number != Value)
+		// An Integer holds whole numbers only.
+		const float Kept = State->Type == EWidgetAnimMachineInputType::Integer ? static_cast<float>(FMath::RoundToInt32(Value)) : Value;
+		if (State->Number != Kept)
 		{
-			State->Number = Value;
+			State->Number = Kept;
+			Instance.bInputsChanged = true;
+		}
+		return true;
+	}
+
+	bool SetInteger(FWidgetAnimMachineInstance& Instance, FName Input, int32 Value)
+	{
+		return SetNumber(Instance, Input, static_cast<float>(Value));
+	}
+
+	/** A Choice's option, by its number: held to the options it has. */
+	static bool SetChoiceIndex(FWidgetAnimMachineInstance& Instance, FWidgetAnimMachineInputState& State, int32 Index)
+	{
+		if (State.Options.Num() == 0)
+		{
+			return false;
+		}
+		const float Kept = static_cast<float>(FMath::Clamp(Index, 0, State.Options.Num() - 1));
+		if (State.Number != Kept)
+		{
+			State.Number = Kept;
+			Instance.bInputsChanged = true;
+		}
+		return true;
+	}
+
+	bool SetChoice(FWidgetAnimMachineInstance& Instance, FName Input, FName Option)
+	{
+		FWidgetAnimMachineInputState* State = Instance.FindInput(Input);
+		const int32 Index = State && State->Type == EWidgetAnimMachineInputType::Choice ? State->Options.IndexOfByKey(Option) : INDEX_NONE;
+		return Index != INDEX_NONE && SetChoiceIndex(Instance, *State, Index);
+	}
+
+	bool SetVector2D(FWidgetAnimMachineInstance& Instance, FName Input, const FVector2D& Value)
+	{
+		FWidgetAnimMachineInputState* State = Instance.FindInput(Input);
+		if (!State || State->Type != EWidgetAnimMachineInputType::Vector2D)
+		{
+			return false;
+		}
+		const FVector2f Now(Value);
+		if (!Now.Equals(State->Vector, 1e-6f))
+		{
+			State->Vector = Now;
 			Instance.bInputsChanged = true;
 		}
 		return true;
@@ -1818,9 +2181,14 @@ namespace WidgetAnimStateMachines
 		switch (State->Type)
 		{
 		case EWidgetAnimMachineInputType::Bool:
+		case EWidgetAnimMachineInputType::Hold:
 			return SetBool(Instance, Input, !FMath::IsNearlyZero(Value));
 		case EWidgetAnimMachineInputType::Trigger:
 			return FMath::IsNearlyZero(Value) || FireTrigger(Instance, Input);
+		case EWidgetAnimMachineInputType::Choice:
+			return SetChoiceIndex(Instance, *Instance.FindInput(Input), FMath::RoundToInt32(Value));
+		case EWidgetAnimMachineInputType::Vector2D:
+			return false;
 		default:
 			return SetNumber(Instance, Input, static_cast<float>(Value));
 		}
@@ -1838,6 +2206,28 @@ namespace WidgetAnimStateMachines
 		return ReadAsNumber(Instance, Input, OutValue, bTruthy);
 	}
 
+	bool GetChoice(const FWidgetAnimMachineInstance& Instance, FName Input, FName& OutOption)
+	{
+		const FWidgetAnimMachineInputState* State = Instance.FindInput(Input);
+		if (!State || State->Type != EWidgetAnimMachineInputType::Choice)
+		{
+			return false;
+		}
+		OutOption = GetChoiceOption(State);
+		return true;
+	}
+
+	bool GetVector2D(const FWidgetAnimMachineInstance& Instance, FName Input, FVector2D& OutValue)
+	{
+		const FWidgetAnimMachineInputState* State = Instance.FindInput(Input);
+		if (!State || State->Type != EWidgetAnimMachineInputType::Vector2D)
+		{
+			return false;
+		}
+		OutValue = FVector2D(State->Vector);
+		return true;
+	}
+
 	void SetBuiltIn(FWidgetAnimMachineInstance& Instance, FName Input, bool bValue)
 	{
 		FWidgetAnimMachineWidgetState& State = Instance.WidgetState;
@@ -1847,6 +2237,7 @@ namespace WidgetAnimStateMachines
 			: Input == WidgetAnimMachineInputs::Selected ? &State.bSelected
 			: Input == WidgetAnimMachineInputs::Disabled ? &State.bDisabled
 			: Input == WidgetAnimMachineInputs::Closing ? &Instance.bClosing
+			: Input == WidgetAnimMachineInputs::Clicked ? &State.bClicked
 			: nullptr;
 		if (Field && *Field != bValue)
 		{

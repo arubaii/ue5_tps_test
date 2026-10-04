@@ -1,0 +1,200 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+index 15e3e5f..1c7deab 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+@@ -2605,35 +2605,24 @@ namespace
+ 	}
+ 
+ 	/**
+-	 * Lines Point up with Neighbour - a point, or a state's box - on whichever axis they already nearly share: the same height
+-	 * when they lie side by side, the same X when one is above the other. Each axis once: bInOutX / bInOutY say it is done, so
+-	 * a second neighbour only lines it up the other way. Beside a state, a point already level with some part of its side
+-	 * (clear of its corners) is left as it is - a straight wire leaves the side right there.
++	 * Lines Point up with Neighbour - a reroute point, or a state's middle - on whichever axis they already nearly share: the
++	 * same height when they lie side by side, the same X when one is above the other. Each axis once: bInOutX / bInOutY say
++	 * it is done, so a second neighbour only lines it up the other way.
+ 	 */
+-	void LevelRoutePoint(FVector2f& Point, const FVector2f& Neighbour, const FBox2f* NeighbourBox, bool& bInOutX, bool& bInOutY)
++	void LevelRoutePoint(FVector2f& Point, const FVector2f& Neighbour, bool& bInOutX, bool& bInOutY)
+ 	{
+ 		const FVector2f Delta = Point - Neighbour;
+-		auto AlongSide = [](float Value, float Min, float Max)
+-		{
+-			return Max - Min > WidgetAnimMachineWires::SideInset * 2.f && Value >= Min + WidgetAnimMachineWires::SideInset && Value <= Max - WidgetAnimMachineWires::SideInset;
+-		};
+ 		if (FMath::Abs(Delta.X) >= FMath::Abs(Delta.Y))
+ 		{
+ 			if (!bInOutY)
+ 			{
+-				if (!NeighbourBox || !AlongSide(Point.Y, NeighbourBox->Min.Y, NeighbourBox->Max.Y))
+-				{
+-					Point.Y = Neighbour.Y;
+-				}
++				Point.Y = Neighbour.Y;
+ 				bInOutY = true;
+ 			}
+ 		}
+ 		else if (!bInOutX)
+ 		{
+-			if (!NeighbourBox || !AlongSide(Point.X, NeighbourBox->Min.X, NeighbourBox->Max.X))
+-			{
+-				Point.X = Neighbour.X;
+-			}
++			Point.X = Neighbour.X;
+ 			bInOutX = true;
+ 		}
+ 	}
+@@ -2679,10 +2668,10 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 		WidgetAnimMachineEdits::PlaceTransitions(Machine, ShownLayer, Reset);
+ 
+ 		// Selected reroute points are lined up with the points either side of them on their wire - the reroute point before
+-		// or after, or the state the wire leaves or goes into - so the straight lines between run straight across or straight
+-		// up and down. Level with the one before it first, across or above or below whichever way it already lies; then, the
+-		// other way, with the one after it - a corner of the route. Beside a state, a point already level with some part of
+-		// its side stays: the wire leaves the side right there. First to last along each wire, so a run of them lines up.
++		// or after, or the middle of the state the wire leaves or goes into - so the straight lines between run straight across
++		// or straight up and down, out of the middle of a state's side. Level with the one before it first, across or above or
++		// below whichever way it already lies; then, the other way, with the one after it - a corner of the route. First to
++		// last along each wire, so a run of them lines up.
+ 		TArray<UWidgetAnimMachineRerouteNode*> Reroutes;
+ 		for (UObject* SelectedNode : Editor->GetSelectedNodes())
+ 		{
+@@ -2718,19 +2707,19 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 			bool bLeveledY = false;
+ 			if (Index > 0)
+ 			{
+-				LevelRoutePoint(Point, Anchor + Offsets[Index - 1], nullptr, bLeveledX, bLeveledY);
++				LevelRoutePoint(Point, Anchor + Offsets[Index - 1], bLeveledX, bLeveledY);
+ 			}
+ 			else
+ 			{
+-				LevelRoutePoint(Point, FromBox.GetCenter(), &FromBox, bLeveledX, bLeveledY);
++				LevelRoutePoint(Point, FromBox.GetCenter(), bLeveledX, bLeveledY);
+ 			}
+ 			if (Index < Offsets.Num() - 1)
+ 			{
+-				LevelRoutePoint(Point, Anchor + Offsets[Index + 1], nullptr, bLeveledX, bLeveledY);
++				LevelRoutePoint(Point, Anchor + Offsets[Index + 1], bLeveledX, bLeveledY);
+ 			}
+ 			else
+ 			{
+-				LevelRoutePoint(Point, ToBox.GetCenter(), &ToBox, bLeveledX, bLeveledY);
++				LevelRoutePoint(Point, ToBox.GetCenter(), bLeveledX, bLeveledY);
+ 			}
+ 			Offsets[Index] = Point - Anchor;
+ 
+@@ -2902,9 +2891,9 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 		}
+ 	}
+ 
+-	// A selected state with no straight wire to the others but a routed one: lined up with the reroute point next to it on that
+-	// wire - across from it or above or below it, whichever way it lies - so the wire leaves it straight. Not if it would land
+-	// on another state, nor if it already lines up.
++	// A selected state with no straight wire to the others but a routed one: its middle lined up with the reroute point next
++	// to it on that wire - across from it or above or below it, whichever way it lies - so the wire leaves the middle of its
++	// side straight. Not if it would land on another state.
+ 	auto AnchorOf = [&All, &IndexOf](const FWidgetAnimMachineTransition& Transition, bool bOriginal, FVector2f& OutAnchor)
+ 	{
+ 		const bool bFromFirst = Transition.From < Transition.To;
+@@ -2941,15 +2930,12 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 		bool bLeveledX = false;
+ 		bool bLeveledY = false;
+ 		const FVector2f Before = Center;
+-		LevelRoutePoint(Center, Knot, nullptr, bLeveledX, bLeveledY);
+-		// Already level with some part of its side: the wire leaves it straight as it is.
+-		const FBox2f& Box = All[StateIndex].Box;
+-		if ((bLeveledY && Knot.Y >= Box.Min.Y + WidgetAnimMachineWires::SideInset && Knot.Y <= Box.Max.Y - WidgetAnimMachineWires::SideInset)
+-			|| (bLeveledX && Knot.X >= Box.Min.X + WidgetAnimMachineWires::SideInset && Knot.X <= Box.Max.X - WidgetAnimMachineWires::SideInset))
++		LevelRoutePoint(Center, Knot, bLeveledX, bLeveledY);
++		if (Center.Equals(Before, 0.25f))
+ 		{
+ 			continue;
+ 		}
+-		const FBox2f Candidate = ShiftBox(Box, Center - Before);
++		const FBox2f Candidate = ShiftBox(All[StateIndex].Box, Center - Before);
+ 		if (!LandsOnOther(All, StateIndex, Candidate))
+ 		{
+ 			All[StateIndex].Box = Candidate;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+index e8c79cc..4421939 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+@@ -1001,29 +1001,6 @@ namespace WidgetAnimMachineWires
+ 		return Point;
+ 	}
+ 
+-	FVector2f GetSideToward(const FBox2f& Box, const FVector2f& Side, const FVector2f& Toward)
+-	{
+-		FVector2f Point = GetSideMiddle(Box, Side);
+-		if (Side.X != 0.f && Side.Y != 0.f)
+-		{
+-			return Point;
+-		}
+-		// Slid along the side to level with Toward, clear of the corners - the middle when the side is too short for that.
+-		auto Slide = [](float Min, float Max, float Wanted, float Middle)
+-		{
+-			return Max - Min > SideInset * 2.f ? FMath::Clamp(Wanted, Min + SideInset, Max - SideInset) : Middle;
+-		};
+-		if (Side.X != 0.f)
+-		{
+-			Point.Y = Slide(Box.Min.Y, Box.Max.Y, Toward.Y, Point.Y);
+-		}
+-		else
+-		{
+-			Point.X = Slide(Box.Min.X, Box.Max.X, Toward.X, Point.X);
+-		}
+-		return Point;
+-	}
+-
+ 	FVector2f GetPlacementAnchor(const FBox2f& First, const FBox2f& Second)
+ 	{
+ 		return (First.Min + Second.Min) * 0.5f;
+@@ -1066,15 +1043,15 @@ namespace WidgetAnimMachineWires
+ 		const FVector2f FromSide = GetFacingSide(From, Points[0]);
+ 		const FVector2f ToSide = GetFacingSide(To, Points.Last());
+ 
+-		// Through reroute points: sharp - straight lines from point to point, out of a state level with the point next to it.
+-		// Through only a dragged transition node: one smooth curve through it, as ever.
++		// Through reroute points: sharp - straight lines from point to point, out of the middle of a state's side (Q lines the
++		// points up with it). Through only a dragged transition node: one smooth curve through it, as ever.
+ 		const bool bSharp = Reroutes.Num() > 0;
+ 
+ 		// Every point of the wire, ends and all, and which way it runs at each.
+ 		TArray<FVector2f, TInlineAllocator<10>> Full;
+-		Full.Add(bSharp ? GetSideToward(From, FromSide, Points[0]) : GetSideMiddle(From, FromSide));
++		Full.Add(GetSideMiddle(From, FromSide));
+ 		Full.Append(Points);
+-		Full.Add(bSharp ? GetSideToward(To, ToSide, Points.Last()) : GetSideMiddle(To, ToSide));
++		Full.Add(GetSideMiddle(To, ToSide));
+ 		TArray<FVector2f, TInlineAllocator<10>> Directions;
+ 		Directions.SetNumZeroed(Full.Num());
+ 		for (int32 Index = 1; Index < Full.Num() - 1; ++Index)
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h
+index 79d6a74..8f09231 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h
+@@ -230,7 +230,7 @@ namespace WidgetAnimMachineWires
+ 	 * its transition node was dragged, if it was. Reroutes: the points it is routed through, in order the way it goes. Through
+ 	 * either, the wire runs through them all - the dragged node wherever along the way it adds least - and lanes don't apply.
+ 	 * Through reroute points the wire is sharp: straight from point to point, turning at each, as a routed wire is drawn; it
+-	 * leaves and enters its states straight across from, or straight above or below, the point next to them where it can.
++	 * leaves and enters its states from the middle of a side (or a corner), as every wire does.
+ 	 */
+ 	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed,
+ 		const FVector2f* NodePoint = nullptr, TConstArrayView<FVector2f> Reroutes = TConstArrayView<FVector2f>());
+@@ -249,15 +249,6 @@ namespace WidgetAnimMachineWires
+ 	/** Where a wire leaves Side, Offset along it - for a corner, along whichever edge the offset leads onto. Across: which way is positive. */
+ 	FVector2f GetAnchor(const FBox2f& Box, const FVector2f& Side, float Offset, const FVector2f& Across);
+ 
+-	/**
+-	 * Where a straight wire to Toward leaves Side of Box: a corner as GetSideMiddle has it; a side at the point level with
+-	 * Toward - straight across from it, or straight above or below it - kept SideInset clear of the rounded corners.
+-	 */
+-	FVector2f GetSideToward(const FBox2f& Box, const FVector2f& Side, const FVector2f& Toward);
+-
+-	/** How far from a state's corners a straight wire may leave its side: clear of the rounded corner. */
+-	constexpr float SideInset = 10.f;
+-
+ 	/** What a dragged transition node's offset is measured from: halfway between its two nodes' top-left corners. */
+ 	FVector2f GetPlacementAnchor(const FBox2f& First, const FBox2f& Second);
+ }

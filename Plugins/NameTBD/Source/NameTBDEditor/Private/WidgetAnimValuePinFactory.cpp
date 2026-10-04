@@ -407,6 +407,7 @@ public:
 	void Construct(const FArguments& InArgs, UEdGraphPin* InGraphPinObj)
 	{
 		bMachinePin = InGraphPinObj && InGraphPinObj->PinName == UK2Node_SetStateMachineInput::StateMachinePinName;
+		bOptionPin = InGraphPinObj && InGraphPinObj->PinName == UK2Node_SetStateMachineInput::ValuePinName;
 		SGraphPin::Construct(SGraphPin::FArguments(), InGraphPinObj);
 	}
 
@@ -430,8 +431,9 @@ protected:
 
 private:
 
-	/** Which of the node's two dropdown pins this is: the State Machine, or the Input. */
+	/** Which of the node's dropdown pins this is: the State Machine, the Input - or the Value, for a Choice input: its options. */
 	bool bMachinePin = false;
+	bool bOptionPin = false;
 
 	mutable FString CachedFor;
 	mutable double CachedAt = -1.0;
@@ -485,6 +487,7 @@ private:
 		const FString MachineKey = GetMachineKey();
 		const FString Current = GraphPinObj->DefaultValue;
 		const FString CacheKey = bMachinePin ? Current : MachineKey + TEXT("|") + Current;
+
 		const double Now = FPlatformTime::Seconds();
 		if (CacheKey == CachedFor && CachedAt >= 0.0 && Now - CachedAt < WidgetAnimValuePin::LabelLifetimeSeconds)
 		{
@@ -492,6 +495,19 @@ private:
 		}
 		CachedFor = CacheKey;
 		CachedAt = Now;
+
+		// A Choice's option: by name, as it is.
+		if (bOptionPin)
+		{
+			const FName Option(*Current);
+			TArray<FName> Options;
+			Node->GetChoiceOptions(Options);
+			CachedTooltip = LOCTEXT("OptionPickerTip", "Option\nOne of the Choice input's options.");
+			CachedText = Option.IsNone() ? LOCTEXT("PickOption", "Pick an Option")
+				: Options.Contains(Option) ? FText::FromName(Option)
+				: FText::Format(LOCTEXT("OptionMissing", "{0}  (not an option)"), FText::FromName(Option));
+			return;
+		}
 
 		if (bMachinePin)
 		{
@@ -541,6 +557,33 @@ private:
 		const UK2Node_SetStateMachineInput* Node = GetNode();
 		if (!Node)
 		{
+			return Menu.MakeWidget();
+		}
+
+		if (bOptionPin)
+		{
+			TArray<FName> Options;
+			Node->GetChoiceOptions(Options);
+			Menu.BeginSection(NAME_None, LOCTEXT("OptionsSection", "Options"));
+			for (const FName Option : Options)
+			{
+				const FString Key = Option.ToString();
+				Menu.AddMenuEntry(
+					FText::FromName(Option),
+					FText::GetEmpty(),
+					FSlateIcon(),
+					FUIAction(
+						FExecuteAction::CreateSP(this, &SWidgetAnimMachinePin::Pick, Key),
+						FCanExecuteAction(),
+						FIsActionChecked::CreateSP(this, &SWidgetAnimMachinePin::IsPicked, Key)),
+					NAME_None,
+					EUserInterfaceActionType::RadioButton);
+			}
+			if (Options.Num() == 0)
+			{
+				AddNote(Menu, LOCTEXT("NoOptions", "No options"), LOCTEXT("NoOptionsTip", "Give the Choice input its Options in the State Machine editor."));
+			}
+			Menu.EndSection();
 			return Menu.MakeWidget();
 		}
 
@@ -616,7 +659,9 @@ private:
 
 	void Pick(FString Key)
 	{
-		const FScopedTransaction Transaction(bMachinePin ? LOCTEXT("PickMachineTransaction", "Pick State Machine") : LOCTEXT("PickInputTransaction", "Pick State Machine Input"));
+		const FScopedTransaction Transaction(bMachinePin ? LOCTEXT("PickMachineTransaction", "Pick State Machine")
+			: bOptionPin ? LOCTEXT("PickOptionTransaction", "Pick State Machine Choice Option")
+			: LOCTEXT("PickInputTransaction", "Pick State Machine Input"));
 		if (UK2Node_SetStateMachineInput* Node = GetNode())
 		{
 			Node->Modify();
@@ -628,10 +673,14 @@ private:
 
 TSharedPtr<SGraphPin> FWidgetAnimValuePinFactory::CreatePin(UEdGraphPin* Pin) const
 {
-	if (Pin && Pin->Direction == EGPD_Input && Cast<UK2Node_SetStateMachineInput>(Pin->GetOwningNodeUnchecked())
-		&& (Pin->PinName == UK2Node_SetStateMachineInput::StateMachinePinName || Pin->PinName == UK2Node_SetStateMachineInput::InputPinName))
+	if (const UK2Node_SetStateMachineInput* MachineNode = Pin && Pin->Direction == EGPD_Input ? Cast<UK2Node_SetStateMachineInput>(Pin->GetOwningNodeUnchecked()) : nullptr)
 	{
-		return SNew(SWidgetAnimMachinePin, Pin);
+		// Its State Machine and Input pins - and a Choice input's Value, as a dropdown of its options.
+		if (Pin->PinName == UK2Node_SetStateMachineInput::StateMachinePinName || Pin->PinName == UK2Node_SetStateMachineInput::InputPinName
+			|| (Pin->PinName == UK2Node_SetStateMachineInput::ValuePinName && MachineNode->GetInputType() == EWidgetAnimMachineInputType::Choice))
+		{
+			return SNew(SWidgetAnimMachinePin, Pin);
+		}
 	}
 
 	if (!Pin || Pin->Direction != EGPD_Input || !Cast<UK2Node_SetWidgetAnimationValue>(Pin->GetOwningNodeUnchecked()))

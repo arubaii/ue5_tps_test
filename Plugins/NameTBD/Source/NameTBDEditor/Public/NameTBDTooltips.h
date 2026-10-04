@@ -1721,6 +1721,24 @@ namespace NameTBD::Tooltips
 				"Reset Node Position: puts the transition node back on the middle of its wire, where it was before it was dragged. Q does the same for selected transition nodes.");
 		}
 
+		inline FText RerouteNodeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "RerouteNodeTooltip",
+				"The wire runs through this point. Drag it to lead the wire where you want it; Q lines it up with the point before it. Delete, or Alt+click, takes it off. Double-click a wire to add another.");
+		}
+
+		inline FText RemoveRerouteTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "RemoveRerouteTooltip",
+				"Remove Reroute Point: takes this point off its wire. The wire runs straight on from the points either side of it.");
+		}
+
+		inline FText ClearReroutesTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "ClearReroutesTooltip",
+				"Remove Reroute Points: takes every reroute point off this transition's wire, so it runs straight from state to state again.");
+		}
+
 		inline FText RaisePriorityTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "RaisePriorityTooltip",
@@ -1773,6 +1791,18 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "NoInputsNote",
 				"No inputs yet. Add one with +, or test the built-in ones below.");
+		}
+
+		inline FText ChoiceNoOptionsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "ChoiceNoOptionsTooltip",
+				"The Choice has no options yet: give it some in its Details (click its row).");
+		}
+
+		inline FText HoldButtonTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "HoldButtonTooltip",
+				"Hold: press and keep the mouse down to hold the input - it fills as it goes. Let go before its Hold Time and the hold doesn't complete; keep holding and it fires. Ticking the built-in Pressed below holds it too, as the widget's own press does at runtime.");
 		}
 
 		inline FText FireTooltip()
@@ -1917,6 +1947,12 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddIdleStateTooltip",
 				"Idle: the state at rest - where Entry usually goes, and where the others come back to.");
+		}
+
+		inline FText AddHoldingStateTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddHoldingStateTooltip",
+				"Holding: a state played while the widget is pressed and held - a button growing and shaking as it charges. It uses the machine's Press And Hold input, made for it if there is none. Dragged from a state, it is joined from there on Is Held and back on Is Let Go: let go before the Hold Time, it blends back. Add a transition on Completed for where a finished hold goes.");
 		}
 
 		inline FText AddPresetStateTooltip()

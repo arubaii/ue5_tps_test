@@ -538,6 +538,13 @@ namespace NameTBD
 			inline const FLinearColor InputBool(0.30f, 0.0f, 0.0f);
 			inline const FLinearColor InputNumber(0.357667f, 1.0f, 0.06f);
 			inline const FLinearColor InputTrigger(1.0f, 1.0f, 1.0f);
+			// A Press And Hold: the animation orange - it fills as it is held, as a hold ring would.
+			inline const FLinearColor InputHold(AnimationOrange_Normal);
+			// Integer: the Blueprint integer pin's teal. Choice: an enum's green, lighter so its label reads. Vector 2D: the
+			// Blueprint vector pin's gold.
+			inline const FLinearColor InputInteger(0.013575f, 0.770000f, 0.429609f);
+			inline const FLinearColor InputChoice(0.10f, 0.55f, 0.45f);
+			inline const FLinearColor InputVector2D(1.0f, 0.74f, 0.10f);
 
 			// -------------------------------------------------------------------------------------------------
 			// Wires - Blueprint splines from state to state.
@@ -575,11 +582,13 @@ namespace NameTBD
 			inline const FLinearColor TransitionArrow(0.03f, 0.03f, 0.035f, 0.90f);
 			inline constexpr float TransitionArrowSize = 11.0f;
 			inline const FLinearColor TransitionSelected(1.0f, 1.0f, 1.0f, 0.95f);
+			
 			// A selected transition node, as the graph editor shows a selected node - measured off a selected state - but round:
 			// a crisp solid band TransitionSelectedWidth thick, starting TransitionSelectedOverlap inside the disc's edge (so no
 			// gap shows), shading from TransitionSelectedTop at the top to TransitionSelectedBottom at the bottom. No glow.
 			// In graph units - it grows with the zoom, as the editor's selection does: 3 units is the 5 pixels a selected state's
 			// band measures at the zoom the screenshots were taken at.
+			
 			inline constexpr float TransitionSelectedWidth = 3.0f;
 			inline constexpr float TransitionSelectedOverlap = 0.75f;
 			inline const FLinearColor TransitionSelectedTop = FLinearColor(FColor(223, 159, 0));

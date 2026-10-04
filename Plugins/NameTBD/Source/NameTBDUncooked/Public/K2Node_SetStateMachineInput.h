@@ -24,10 +24,12 @@ struct NAMETBDUNCOOKED_API FWidgetAnimMachineChoice
 
 /**
  * Set State Machine Input, picked from dropdowns: the State Machine - one of those the Widget Animation Components on the
- * Target and inside it play - then one of its Inputs. A Bool input takes a bool, a Number a float, and a Trigger nothing: the
+ * Target and inside it play - then one of its Inputs. A Bool input takes a bool, a Float a float, an Integer an integer, a
+ * Choice one of its options by name, a Vector 2D a vector, a Press And Hold a bool (true presses it), and a Trigger nothing: the
  * node fires it. The lists are looked for as Set Widget Animation Value looks for its animations.
  *
- * Compiles to UWidgetAnimStateMachineLibrary::SetStateMachineBool, SetStateMachineNumber or FireStateMachineTrigger. Set All
+ * Compiles to UWidgetAnimStateMachineLibrary::SetStateMachineBool, SetStateMachineNumber, SetStateMachineInteger,
+ * SetStateMachineChoice, SetStateMachineVector2D or FireStateMachineTrigger. Set All
  * Matches sets it in every component found that plays the machine, rather than the first - for a screen of many buttons.
  */
 UCLASS()
@@ -64,6 +66,9 @@ public:
 
 	/** The inputs of the picked machine. Empty when none is picked. */
 	void GetInputChoices(TArray<TPair<FName, EWidgetAnimMachineInputType>>& OutInputs) const;
+
+	/** The picked Choice input's options, for the Value pin's dropdown. Empty for any other input. */
+	void GetChoiceOptions(TArray<FName>& OutOptions) const;
 
 	EWidgetAnimMachineInputType GetInputType() const { return InputType; }
 

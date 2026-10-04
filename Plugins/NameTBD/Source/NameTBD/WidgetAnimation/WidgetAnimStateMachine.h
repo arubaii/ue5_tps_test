@@ -27,7 +27,8 @@ class UWidgetAnimStateMachineAsset;
 // serves every button, each Widget Animation Component that plays it mapping the machine's targets onto its own widgets.
 //
 // THE PARTS
-//  - Inputs: the machine's public interface. Bool, Number and Trigger (a one-frame pulse). Set from Blueprint (Set State
+//  - Inputs: the machine's public interface. Bool, Number, Trigger (a one-frame pulse) and Press And Hold (held for a
+//    time to complete; let go early, it doesn't - and the state it held blends back). Set from Blueprint (Set State
 //    Machine Input), from a View Model (the Widget Data Binder's Set Input), from a Value Input (Hover, Press or Focus,
 //    Pointer, Drag, Scroll) with no code at all - or read from the widget itself: the built-in inputs Hovered, Pressed,
 //    Focused, Selected and Disabled need no declaring, and on a Common UI button are the button's own states. Closing is
@@ -58,9 +59,44 @@ enum class EWidgetAnimMachineInputType : uint8
 {
 	Bool UMETA(ToolTip = "True or false: Hovered, Selected, Has Notification."),
 
-	Number UMETA(ToolTip = "Any number: a charge level, a count, a progress for a percentage animation, a layer's weight."),
+	Number UMETA(DisplayName = "Float", ToolTip = "A number with a fraction: a charge level, a progress for a percentage animation, a layer's weight, a ratio. Compared with == != < <= > >=, or Increased / Decreased / Changed the frame it moves."),
 
-	Trigger UMETA(ToolTip = "A one-frame pulse: Clicked, Rewarded, Error. Fired, it is true for the next frame the machine runs, then false again.")
+	Trigger UMETA(ToolTip = "A one-frame pulse: Clicked, Rewarded, Error. Fired, it is true for the next frame the machine runs, then false again."),
+
+	Hold UMETA(DisplayName = "Press And Hold", ToolTip = "Press and hold: Is True while the widget is held down, until it has been held for Hold Time - then it is Fired, once, as a Trigger is. Let go before that, it is false again: the hold didn't complete, and the state it held blends back. As a number it is how far through Hold Time the hold is, 0 - 1: a state's Progress Input can follow it. Held by the widget's own pressed state (the built-in Pressed), by Driven By, or from Blueprint (Set State Machine Input: true to press, false to let go)."),
+
+	Integer UMETA(ToolTip = "A whole number: a count, stacks, a level, an index - which list item or tab this is. Compared exactly, so Index == Selected Index can be trusted; or Increased / Decreased / Changed the frame it moves."),
+
+	Choice UMETA(ToolTip = "One of a list of named Options: a rarity (Common, Rare, Epic), a tab (Home, Shop, Profile), a mood. Compared with Is / Is Not, or Changed the frame it switches. Starts at its first option. Set by name from Blueprint, or by its option's number (0 for the first) from a View Model."),
+
+	Vector2D UMETA(DisplayName = "Vector 2D", ToolTip = "Two numbers together, X and Y: a stick, a drag, the pointer over a widget, a swipe. Asked which way it Points (Up, Down, Left, Right - screen space: Up is toward the top, negative Y), or its Length, X or Y compared, or Changed the frame it moves. Driven By takes both parts of a Pointer Position or Drag.")
+};
+
+/** Which way a Vector 2D points, for a Points condition - screen space, as the pointer and a drag measure it: Up is negative Y. */
+UENUM(BlueprintType)
+enum class EWidgetAnimMachineDirection : uint8
+{
+	Up UMETA(ToolTip = "Toward the top of the screen: Y below 0, and further up than it is to either side."),
+	Down UMETA(ToolTip = "Toward the bottom of the screen: Y above 0, and further down than it is to either side."),
+	Left UMETA(ToolTip = "X below 0, and further to the side than it is up or down."),
+	Right UMETA(ToolTip = "X above 0, and further to the side than it is up or down.")
+};
+
+/** What number a condition reads off a Vector 2D. */
+UENUM(BlueprintType)
+enum class EWidgetAnimMachineVectorPart : uint8
+{
+	Length UMETA(ToolTip = "How far from 0, whichever way: how far a stick is pushed, how far a drag has gone."),
+	X,
+	Y
+};
+
+/** What a comparison of numbers - or of choices - is made against. */
+UENUM(BlueprintType)
+enum class EWidgetAnimMachineCompareTo : uint8
+{
+	Value UMETA(ToolTip = "A value typed here: Charge >= 0.5, Rarity Is Epic."),
+	Input UMETA(DisplayName = "Another Input", ToolTip = "Another input's value as it is now: Index == Selected Index, Charge >= Charge Needed, Hovered Tab Is Current Tab.")
 };
 
 /** What a node of a layer's graph is. */
@@ -93,15 +129,19 @@ enum class EWidgetAnimMachineStatePlayback : uint8
 UENUM(BlueprintType)
 enum class EWidgetAnimMachineCompare : uint8
 {
-	IsTrue UMETA(DisplayName = "Is True"),
-	IsFalse UMETA(DisplayName = "Is False"),
-	Fired UMETA(ToolTip = "A Trigger was fired since the machine last ran."),
-	Equal UMETA(DisplayName = "=="),
-	NotEqual UMETA(DisplayName = "!="),
+	IsTrue UMETA(DisplayName = "Is True", ToolTip = "A Bool is true. A Press And Hold is being held, and hasn't been held for its Hold Time yet."),
+	IsFalse UMETA(DisplayName = "Is False", ToolTip = "A Bool is false. A Press And Hold isn't being held: let go before its Hold Time, or never pressed - never the frame it completes."),
+	Fired UMETA(ToolTip = "A Trigger was fired since the machine last ran. A Press And Hold has just been held for its whole Hold Time."),
+	Equal UMETA(DisplayName = "==", ToolTip = "Equal - for a Choice, Is: the option picked is that one."),
+	NotEqual UMETA(DisplayName = "!=", ToolTip = "Not equal - for a Choice, Is Not."),
 	Less UMETA(DisplayName = "<"),
 	LessOrEqual UMETA(DisplayName = "<="),
 	Greater UMETA(DisplayName = ">"),
-	GreaterOrEqual UMETA(DisplayName = ">=")
+	GreaterOrEqual UMETA(DisplayName = ">="),
+	Increased UMETA(ToolTip = "The frame a Float, Integer or Vector 2D's Length/X/Y goes up: a counter popping as gold comes in. Like a Trigger, it holds for that one frame."),
+	Decreased UMETA(ToolTip = "The frame a Float, Integer or Vector 2D's Length/X/Y goes down: a health bar flashing as it drops. Holds for that one frame."),
+	Changed UMETA(ToolTip = "The frame the value changes at all - a Choice switching option, a Vector 2D moving. Holds for that one frame."),
+	Points UMETA(ToolTip = "A Vector 2D points that way, and is at least Dead Zone long: a stick pushed left, a drag pulled down, a swipe up.")
 };
 
 /** How a transition gets the layer from the pose it is in to the next state. */
@@ -169,10 +209,26 @@ struct NAMETBD_API FWidgetAnimMachineInput
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Default", EditCondition = "Type == EWidgetAnimMachineInputType::Number", EditConditionHides))
 	float DefaultNumber = 0.f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Default", EditCondition = "Type == EWidgetAnimMachineInputType::Integer", EditConditionHides))
+	int32 DefaultInteger = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Default", EditCondition = "Type == EWidgetAnimMachineInputType::Vector2D", EditConditionHides))
+	FVector2D DefaultVector2D = FVector2D::ZeroVector;
+
+	/** A Choice's options, by name. It starts at the first. Conditions ask Is / Is Not one of them. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (EditCondition = "Type == EWidgetAnimMachineInputType::Choice", EditConditionHides))
+	TArray<FName> Options;
+
+	/** How long a Press And Hold has to be held to complete. Let go sooner, it doesn't. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Hold Time", ClampMin = "0.05", UIMin = "0.1", UIMax = "3", Units = "s", EditCondition = "Type == EWidgetAnimMachineInputType::Hold", EditConditionHides))
+	float HoldTime = 1.f;
+
 	/**
 	 * Where the input is read from, every frame, with no code: a Value Input - the pointer over a widget, it being hovered,
 	 * pressed or focused, a drag, a scroll. A Bool is true while the value is over 0.5; a Trigger fires as it rises past 0.5;
-	 * a Number is the value. None: it is set from Blueprint or a View Model. Read at runtime only - in the editor, the
+	 * a Float is the value, an Integer the value rounded, a Choice the option of that number; a Vector 2D takes both parts of
+	 * the value (a Pointer Position or a Drag with Output X and Y); a Press And Hold is held while it is over 0.5 (None: while
+	 * the widget is pressed). None: it is set from Blueprint or a View Model. Read at runtime only - in the editor, the
 	 * Inputs panel sets it.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Driven By", BaseStruct = "/Script/NameTBD.WidgetAnimInputSource", ExcludeBaseStruct))
@@ -196,17 +252,49 @@ struct NAMETBD_API FWidgetAnimMachineCondition
 {
 	GENERATED_BODY()
 
-	/** The input tested: one of the machine's, or a built-in one (Hovered, Pressed, Focused, Selected, Disabled, Closing). */
+	/** The input tested: one of the machine's, or a built-in one (Hovered, Pressed, Focused, Selected, Disabled, Closing, Clicked). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition", meta = (GetOptions = "GetInputNameOptions"))
 	FName Input;
 
-	/** Is True / Is False for a Bool, Fired for a Trigger, a comparison for a Number. */
+	/**
+	 * What is asked of it - only what fits its type is offered in the editor: Is True / Is False for a Bool, Fired for a
+	 * Trigger, the comparisons and Increased / Decreased / Changed for a Float or Integer, Is / Is Not / Changed for a Choice,
+	 * Points and the comparisons for a Vector 2D, Is Held / Is Let Go / Completed for a Press And Hold.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition")
 	EWidgetAnimMachineCompare Compare = EWidgetAnimMachineCompare::IsTrue;
 
-	/** What a Number is compared against. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition", meta = (EditCondition = "Compare != EWidgetAnimMachineCompare::IsTrue && Compare != EWidgetAnimMachineCompare::IsFalse && Compare != EWidgetAnimMachineCompare::Fired", EditConditionHides))
+	/** For a Vector 2D: the number compared - its Length, X or Y. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition")
+	EWidgetAnimMachineVectorPart Part = EWidgetAnimMachineVectorPart::Length;
+
+	/** For a Points condition: which way. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition")
+	EWidgetAnimMachineDirection Direction = EWidgetAnimMachineDirection::Right;
+
+	/** For a Points condition: how long the Vector 2D has to be to point anywhere - a stick at rest, a drag just begun, don't. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition", meta = (ClampMin = "0", UIMin = "0", UIMax = "1"))
+	float DeadZone = 0.25f;
+
+	/** A comparison against a value typed here, or against another input. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition", meta = (DisplayName = "Compare To"))
+	EWidgetAnimMachineCompareTo CompareTo = EWidgetAnimMachineCompareTo::Value;
+
+	/** What a number is compared against. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition")
 	float Value = 0.f;
+
+	/** What a Choice is compared against: one of its options. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition")
+	FName Option;
+
+	/** Compared against another input: which - a number for a number, the same kind of Choice for a Choice. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition", meta = (DisplayName = "Other Input", GetOptions = "GetInputNameOptions"))
+	FName OtherInput;
+
+	/** The other input, a Vector 2D: the number compared - its Length, X or Y. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition", meta = (DisplayName = "Other Part"))
+	EWidgetAnimMachineVectorPart OtherPart = EWidgetAnimMachineVectorPart::Length;
 };
 
 /** An arrow between two nodes of a layer: when it is taken, and how the layer gets to where it points. */
@@ -321,6 +409,14 @@ struct NAMETBD_API FWidgetAnimMachineTransition
 	/** Where it was dragged: its node's middle, from halfway between its two nodes' corners - so it follows them as they move. */
 	UPROPERTY()
 	FVector2D EditorNodeOffset = FVector2D::ZeroVector;
+
+	/**
+	 * The reroute points its wire runs through in the graph, in order from the node it leaves to the node it goes to - each
+	 * measured, as EditorNodeOffset is, from halfway between its two nodes' corners, so they follow the nodes as they move.
+	 * Added by double-clicking the wire. Only how the graph looks: nothing at runtime.
+	 */
+	UPROPERTY()
+	TArray<FVector2D> EditorReroutePoints;
 #endif
 };
 
@@ -390,7 +486,7 @@ struct NAMETBD_API FWidgetAnimMachineState
 
 	/**
 	 * For a percentage animation (Time In Percent): the Number input its progress follows, 0 for 0% and 1 for 100% - a charge
-	 * meter, a hold ring. None: it plays from 0% to 100% over one second.
+	 * meter - or a Press And Hold, filling as it is held: a hold ring. None: it plays from 0% to 100% over one second.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State", meta = (DisplayName = "Progress Input", GetOptions = "GetNumberInputOptions", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
 	FName ProgressInput;
@@ -554,7 +650,7 @@ public:
 	UFUNCTION()
 	TArray<FString> GetTargetNameOptions() const;
 
-	/** Backs the Weight Input and Progress Input dropdowns: None, then every Number input. */
+	/** Backs the Weight Input and Progress Input dropdowns: None, then every Number and Press And Hold input. */
 	UFUNCTION()
 	TArray<FString> GetNumberInputOptions() const;
 
@@ -594,7 +690,14 @@ namespace WidgetAnimMachineInputs
 	/** True while the widget plays out - Play Out, or hidden with Set Visibility Animated - and false again as it plays in. */
 	NAMETBD_API extern const FName Closing;
 
-	/** All six, in that order. */
+	/**
+	 * Fires the frame the widget is clicked: a Context Menu Button's action going off (on release or on press, as it is set,
+	 * and on every repeat while a Hold button is held); anything else let go while hovered or focused after being pressed.
+	 * A pulse, as a Trigger is.
+	 */
+	NAMETBD_API extern const FName Clicked;
+
+	/** All seven, in that order. */
 	NAMETBD_API const TArray<FName>& GetBuiltIns();
 
 	/** Which bit of a built-in mask Name is, or 0 for an input that isn't built in. */
@@ -614,6 +717,9 @@ struct NAMETBD_API FWidgetAnimMachineWidgetState
 	bool bFocused = false;
 	bool bSelected = false;
 	bool bDisabled = false;
+
+	/** Clicked this frame - a pulse. A provider that knows sets it; otherwise it is a press let go over the widget. */
+	bool bClicked = false;
 };
 
 /**
@@ -704,6 +810,16 @@ struct NAMETBD_API FWidgetAnimMachineInputOverride
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Default", EditCondition = "bOverride && Type == EWidgetAnimMachineInputType::Number", EditConditionHides))
 	float DefaultNumber = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Default", EditCondition = "bOverride && Type == EWidgetAnimMachineInputType::Integer", EditConditionHides))
+	int32 DefaultInteger = 0;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Default", EditCondition = "bOverride && Type == EWidgetAnimMachineInputType::Vector2D", EditConditionHides))
+	FVector2D DefaultVector2D = FVector2D::ZeroVector;
+
+	/** How long this widget's Press And Hold has to be held. See FWidgetAnimMachineInput::HoldTime. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Hold Time", ClampMin = "0.05", UIMin = "0.1", UIMax = "3", Units = "s", EditCondition = "bOverride && Type == EWidgetAnimMachineInputType::Hold", EditConditionHides))
+	float HoldTime = 1.f;
 
 	/** Where it is read from on this widget. See FWidgetAnimMachineInput::Source. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Driven By", EditCondition = "bOverride", BaseStruct = "/Script/NameTBD.WidgetAnimInputSource", ExcludeBaseStruct))

@@ -38,10 +38,24 @@ void UK2Node_SetStateMachineInput::CreateValuePin(EWidgetAnimMachineInputType Ty
 
 	const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
 	UEdGraphPin* ValuePin = nullptr;
-	if (Type == EWidgetAnimMachineInputType::Bool)
+	if (Type == EWidgetAnimMachineInputType::Bool || Type == EWidgetAnimMachineInputType::Hold)
 	{
-		// Named bValue on the function; the pin keeps one name whatever its type, and expansion maps it.
+		// Named bValue on the function; the pin keeps one name whatever its type, and expansion maps it. A Press And Hold
+		// takes a bool too: true presses it, false lets go.
 		ValuePin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Boolean, ValuePinName);
+	}
+	else if (Type == EWidgetAnimMachineInputType::Integer)
+	{
+		ValuePin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Int, ValuePinName);
+	}
+	else if (Type == EWidgetAnimMachineInputType::Choice)
+	{
+		// The option's name - picked from the input's options (see the pin's dropdown), or wired in.
+		ValuePin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Name, ValuePinName);
+	}
+	else if (Type == EWidgetAnimMachineInputType::Vector2D)
+	{
+		ValuePin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Struct, TBaseStructure<FVector2D>::Get(), ValuePinName);
 	}
 	else
 	{
@@ -270,6 +284,23 @@ void UK2Node_SetStateMachineInput::GetInputChoices(TArray<TPair<FName, EWidgetAn
 	}
 }
 
+void UK2Node_SetStateMachineInput::GetChoiceOptions(TArray<FName>& OutOptions) const
+{
+	OutOptions.Reset();
+	const UEdGraphPin* MachinePin = FindPin(StateMachinePinName);
+	const UEdGraphPin* InputPin = FindPin(InputPinName);
+	if (!MachinePin || !InputPin || MachinePin->DefaultValue.IsEmpty())
+	{
+		return;
+	}
+	const UWidgetAnimStateMachineAsset* Machine = LoadObject<UWidgetAnimStateMachineAsset>(nullptr, *MachinePin->DefaultValue);
+	const FWidgetAnimMachineInput* Input = Machine ? Machine->FindInput(FName(*InputPin->DefaultValue)) : nullptr;
+	if (Input && Input->Type == EWidgetAnimMachineInputType::Choice)
+	{
+		OutOptions = Input->Options;
+	}
+}
+
 bool UK2Node_SetStateMachineInput::FindInputType(const UEdGraphPin* TargetPin, const FString& MachineKey, FName Name, EWidgetAnimMachineInputType& OutType) const
 {
 	if (MachineKey.IsEmpty() || Name.IsNone())
@@ -299,7 +330,7 @@ FText UK2Node_SetStateMachineInput::GetNodeTitle(ENodeTitleType::Type TitleType)
 
 FText UK2Node_SetStateMachineInput::GetTooltipText() const
 {
-	return LOCTEXT("Tooltip", "Sets an input of a Widget Animation State Machine: pick the State Machine - one of those the Widget Animation Components on the Target and inside it play - then one of its Inputs. A Bool takes a bool, a Number a float; a Trigger is fired.\n\nLooks on the Target and inside it, and sets the first component that plays the machine - or every one with Set All Matches.");
+	return LOCTEXT("Tooltip", "Sets an input of a Widget Animation State Machine: pick the State Machine - one of those the Widget Animation Components on the Target and inside it play - then one of its Inputs. A Bool takes a bool, a Float a float, an Integer an integer, a Choice one of its options' names, a Vector 2D a vector; a Trigger is fired; a Press And Hold takes a bool - true presses it, false lets it go.\n\nLooks on the Target and inside it, and sets the first component that plays the machine - or every one with Set All Matches.");
 }
 
 FText UK2Node_SetStateMachineInput::GetMenuCategory() const
@@ -371,6 +402,18 @@ void UK2Node_SetStateMachineInput::ExpandNode(FKismetCompilerContext& CompilerCo
 		break;
 	case EWidgetAnimMachineInputType::Number:
 		FunctionName = GET_FUNCTION_NAME_CHECKED(UWidgetAnimStateMachineLibrary, SetStateMachineNumber);
+		FunctionValuePin = TEXT("Value");
+		break;
+	case EWidgetAnimMachineInputType::Integer:
+		FunctionName = GET_FUNCTION_NAME_CHECKED(UWidgetAnimStateMachineLibrary, SetStateMachineInteger);
+		FunctionValuePin = TEXT("Value");
+		break;
+	case EWidgetAnimMachineInputType::Choice:
+		FunctionName = GET_FUNCTION_NAME_CHECKED(UWidgetAnimStateMachineLibrary, SetStateMachineChoice);
+		FunctionValuePin = TEXT("Option");
+		break;
+	case EWidgetAnimMachineInputType::Vector2D:
+		FunctionName = GET_FUNCTION_NAME_CHECKED(UWidgetAnimStateMachineLibrary, SetStateMachineVector2D);
 		FunctionValuePin = TEXT("Value");
 		break;
 	default:

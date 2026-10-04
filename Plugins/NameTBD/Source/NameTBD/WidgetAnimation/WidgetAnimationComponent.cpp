@@ -2425,10 +2425,18 @@ void UWidgetAnimationComponent::InitializeMachines()
 		for (const FKeptInput& Entry : Kept)
 		{
 			FWidgetAnimMachineInputState* Input = Entry.Machine == Instance.Machine ? Instance.FindInput(Entry.Input.Name) : nullptr;
-			if (Input && Input->Type == Entry.Input.Type)
+			if (Input && Input->Type == EWidgetAnimMachineInputType::Hold && Entry.Input.Type == EWidgetAnimMachineInputType::Hold)
+			{
+				// A Press And Hold is timed again from whether it is held: only a hold set from Blueprint carries over.
+				Input->bHoldSetDown = Entry.Input.bHoldSetDown;
+			}
+			else if (Input && Input->Type == Entry.Input.Type)
 			{
 				Input->bValue = Entry.Input.bValue;
 				Input->Number = Entry.Input.Number;
+				Input->Vector = Entry.Input.Vector;
+				Input->PreviousNumber = Input->Number;
+				Input->PreviousVector = Input->Vector;
 			}
 		}
 	}
@@ -2636,6 +2644,47 @@ bool UWidgetAnimationComponent::SetStateMachineBool(FName Input, bool bValue, UW
 bool UWidgetAnimationComponent::SetStateMachineNumber(FName Input, float Value, UWidgetAnimStateMachineAsset* StateMachine)
 {
 	return ForEachMachine(StateMachine, [Input, Value](FWidgetAnimMachineInstance& Instance) { return WidgetAnimStateMachines::SetNumber(Instance, Input, Value); });
+}
+
+bool UWidgetAnimationComponent::SetStateMachineInteger(FName Input, int32 Value, UWidgetAnimStateMachineAsset* StateMachine)
+{
+	return ForEachMachine(StateMachine, [Input, Value](FWidgetAnimMachineInstance& Instance) { return WidgetAnimStateMachines::SetInteger(Instance, Input, Value); });
+}
+
+bool UWidgetAnimationComponent::SetStateMachineChoice(FName Input, FName Option, UWidgetAnimStateMachineAsset* StateMachine)
+{
+	return ForEachMachine(StateMachine, [Input, Option](FWidgetAnimMachineInstance& Instance) { return WidgetAnimStateMachines::SetChoice(Instance, Input, Option); });
+}
+
+bool UWidgetAnimationComponent::SetStateMachineVector2D(FName Input, FVector2D Value, UWidgetAnimStateMachineAsset* StateMachine)
+{
+	return ForEachMachine(StateMachine, [Input, Value](FWidgetAnimMachineInstance& Instance) { return WidgetAnimStateMachines::SetVector2D(Instance, Input, Value); });
+}
+
+FName UWidgetAnimationComponent::GetStateMachineChoice(FName Input, UWidgetAnimStateMachineAsset* StateMachine) const
+{
+	FName Option;
+	for (const FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		if ((!StateMachine || Instance.Machine == StateMachine) && WidgetAnimStateMachines::GetChoice(Instance, Input, Option))
+		{
+			return Option;
+		}
+	}
+	return NAME_None;
+}
+
+FVector2D UWidgetAnimationComponent::GetStateMachineVector2D(FName Input, UWidgetAnimStateMachineAsset* StateMachine) const
+{
+	FVector2D Value = FVector2D::ZeroVector;
+	for (const FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		if ((!StateMachine || Instance.Machine == StateMachine) && WidgetAnimStateMachines::GetVector2D(Instance, Input, Value))
+		{
+			return Value;
+		}
+	}
+	return FVector2D::ZeroVector;
 }
 
 bool UWidgetAnimationComponent::FireStateMachineTrigger(FName Input, UWidgetAnimStateMachineAsset* StateMachine)

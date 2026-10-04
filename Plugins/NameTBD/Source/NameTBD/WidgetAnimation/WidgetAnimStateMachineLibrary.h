@@ -29,15 +29,36 @@ public:
 	static bool SetStateMachineNumber(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, double Value, bool bSearchParentWidgets = true, bool bSetAllMatches = false);
 
 	UFUNCTION(BlueprintCallable, Category = "Widget Animation|State Machine", meta = (BlueprintInternalUseOnly = "true", DefaultToSelf = "Target"))
+	static bool SetStateMachineInteger(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, int32 Value, bool bSearchParentWidgets = true, bool bSetAllMatches = false);
+
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|State Machine", meta = (BlueprintInternalUseOnly = "true", DefaultToSelf = "Target"))
+	static bool SetStateMachineChoice(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, FName Option, bool bSearchParentWidgets = true, bool bSetAllMatches = false);
+
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|State Machine", meta = (BlueprintInternalUseOnly = "true", DefaultToSelf = "Target"))
+	static bool SetStateMachineVector2D(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, FVector2D Value, bool bSearchParentWidgets = true, bool bSetAllMatches = false);
+
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|State Machine", meta = (BlueprintInternalUseOnly = "true", DefaultToSelf = "Target"))
 	static bool FireStateMachineTrigger(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, bool bSearchParentWidgets = true, bool bSetAllMatches = false);
 
 	/** A Bool input of the state machine on or in Target - a built-in one's too: Hovered, Pressed, Focused, Selected, Disabled, Closing. */
 	UFUNCTION(BlueprintPure, Category = "Widget Animation|State Machine", meta = (DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
 	static bool GetStateMachineBool(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, bool bSearchParentWidgets = true);
 
-	/** A Number input of the state machine on or in Target. */
+	/** A number input of the state machine on or in Target: a Float or Integer, a Choice's option number, a Vector 2D's length, a Press And Hold's progress. */
 	UFUNCTION(BlueprintPure, Category = "Widget Animation|State Machine", meta = (DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
 	static float GetStateMachineNumber(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, bool bSearchParentWidgets = true);
+
+	/** An Integer input of the state machine on or in Target. */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|State Machine", meta = (DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
+	static int32 GetStateMachineInteger(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, bool bSearchParentWidgets = true);
+
+	/** A Choice input's option, of the state machine on or in Target. */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|State Machine", meta = (DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
+	static FName GetStateMachineChoice(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, bool bSearchParentWidgets = true);
+
+	/** A Vector 2D input of the state machine on or in Target. */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|State Machine", meta = (DisplayName = "Get State Machine Vector 2D", DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
+	static FVector2D GetStateMachineVector2D(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, bool bSearchParentWidgets = true);
 
 	/**
 	 * Whether the state machine on or in Target is in State - or on its way there - on Layer, or on any layer when Layer is
