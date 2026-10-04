@@ -28,6 +28,7 @@
 #include "GraphEditor.h"
 #include "GraphEditorActions.h"
 #include "HAL/PlatformApplicationMisc.h"
+#include "Misc/ConfigCacheIni.h"
 #include "IAssetTools.h"
 #include "IDetailCustomization.h"
 #include "IDetailPropertyRow.h"
@@ -78,6 +79,8 @@
 #include "Widgets/Views/STableRow.h"
 #include "WorkflowOrientedApp/WorkflowTabFactory.h"
 #include "WorkflowOrientedApp/WorkflowTabManager.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimStateMachineDock, Log, All);
 
 #define LOCTEXT_NAMESPACE "SWidgetAnimStateMachineEditor"
 
@@ -1003,6 +1006,61 @@ namespace
 	constexpr float ArrangeMargin = 24.f;
 }
 
+namespace
+{
+	/**
+	 * How wide the editor's three columns were left - inputs, graph, Details - kept in the editor's per-project settings as
+	 * they are dragged, so the editor opens the way it was left: after a close, a dock or undock, a restart. The drawer and the
+	 * docked tab each keep their own, being shaped so differently.
+	 */
+	const TCHAR* LayoutConfigSection = TEXT("NameTBD.WidgetAnimationStateMachineEditor");
+
+	TMap<FName, float>& GetKnownSplits()
+	{
+		static TMap<FName, float> Known;
+		return Known;
+	}
+
+	float GetSplit(FName Key, float Default)
+	{
+		if (const float* Known = GetKnownSplits().Find(Key))
+		{
+			return *Known;
+		}
+		float Saved = Default;
+		if (!GConfig || !GConfig->GetFloat(LayoutConfigSection, *Key.ToString(), Saved, GEditorPerProjectIni) || Saved <= 0.f)
+		{
+			Saved = Default;
+		}
+		GetKnownSplits().Add(Key, Saved);
+		return Saved;
+	}
+
+	void SetSplit(FName Key, float NewSize)
+	{
+		GetKnownSplits().Add(Key, NewSize);
+		if (GConfig)
+		{
+			GConfig->SetFloat(LayoutConfigSection, *Key.ToString(), NewSize, GEditorPerProjectIni);
+		}
+	}
+
+	FName MakeSplitKey(bool bInDrawer, const TCHAR* Column)
+	{
+		return FName(FString::Printf(TEXT("%s.%s"), bInDrawer ? TEXT("Drawer") : TEXT("Tab"), Column));
+	}
+
+	TAttribute<float> SplitSize(FName Key, float Default)
+	{
+		return TAttribute<float>::CreateLambda([Key, Default]() { return GetSplit(Key, Default); });
+	}
+
+	SSplitter::FOnSlotResized SplitResized(FName Key)
+	{
+		return SSplitter::FOnSlotResized::CreateLambda([Key](float NewSize) { SetSplit(Key, NewSize); });
+	}
+}
+
 void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
 {
 	WidgetBlueprint = InArgs._WidgetBlueprint;
@@ -1045,7 +1103,8 @@ void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
 
 			// Preview targets and inputs: the machine's, live, and the widget's own.
 			+ SSplitter::Slot()
-			.Value(0.2f)
+			.Value(SplitSize(MakeSplitKey(bInDrawer, TEXT("Inputs")), 0.2f))
+			.OnSlotResized(SplitResized(MakeSplitKey(bInDrawer, TEXT("Inputs"))))
 			[
 				SNew(SBorder)
 				.BorderImage(FAppStyle::GetBrush(TEXT("ToolPanel.GroupBorder")))
@@ -1065,7 +1124,8 @@ void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
 
 			// The layers, as graphs.
 			+ SSplitter::Slot()
-			.Value(0.55f)
+			.Value(SplitSize(MakeSplitKey(bInDrawer, TEXT("Graph")), 0.55f))
+			.OnSlotResized(SplitResized(MakeSplitKey(bInDrawer, TEXT("Graph"))))
 			[
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot()
@@ -1117,7 +1177,8 @@ void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
 
 			// What is picked.
 			+ SSplitter::Slot()
-			.Value(0.25f)
+			.Value(SplitSize(MakeSplitKey(bInDrawer, TEXT("Details")), 0.25f))
+			.OnSlotResized(SplitResized(MakeSplitKey(bInDrawer, TEXT("Details"))))
 			[
 				DetailsView.ToSharedRef()
 			]
@@ -4337,7 +4398,9 @@ namespace WidgetAnimStateMachineEditorHooks
 	namespace
 	{
 		const FName DrawerId(TEXT("WidgetAnimBuilder.WidgetAnimationStateMachine"));
-		const FName TabId(TEXT("WidgetAnimBuilder.WidgetAnimationStateMachinePanel"));
+		// A new id from fix17: under the old one, the saved layout of anyone whose tab once ended up floating kept it there - and
+		// reopened it there, floating, every time after.
+		const FName TabId(TEXT("WidgetAnimBuilder.WidgetAnimationStateMachineTab"));
 		const FName DockedTabId(TEXT("WidgetAnimBuilder.WidgetAnimationStateMachineDocked"));
 
 		/**
@@ -4508,9 +4571,10 @@ namespace WidgetAnimStateMachineEditorHooks
 
 		/**
 		 * Where the tab may go, best first - the tab well along the bottom of the editor, which runs the editor's whole width:
-		 * beside one of its known tabs, found among the tabs inside the editor itself (so it never depends on the id an engine
-		 * version gives them) or asked of the tab manager by id; then the lowest tab whose well is at least half the editor
-		 * wide.
+		 * beside one of its known tabs that is open - Widget Animations docked there, the native Animations tab, Compiler
+		 * Results - found among the tabs inside the editor itself (so it never depends on the id an engine version gives them)
+		 * or asked of the tab manager by id. Then, for a bottom well whose tabs go by other ids, the lowest tab in the bottom
+		 * half of the editor whose well runs nearly its whole width (never the designer, which shares its row).
 		 */
 		TArray<TSharedRef<SDockTab>> FindDockTargets(const TSharedRef<FAssetEditorToolkit>& Toolkit, const TSharedPtr<FTabManager>& TabManager)
 		{
@@ -4520,63 +4584,81 @@ namespace WidgetAnimStateMachineEditorHooks
 			{
 				HostWidget = Toolkit->GetToolkitHost()->GetParentWidget();
 				GatherTabs(HostWidget.ToSharedRef(), Tabs, 0);
-			}
-			if (Tabs.Num() == 0 && HostWidget.IsValid())
-			{
-				if (const TSharedPtr<SWindow> HostWindow = FSlateApplication::Get().FindWidgetWindow(HostWidget.ToSharedRef()))
+				if (Tabs.Num() == 0)
 				{
-					GatherTabs(HostWindow.ToSharedRef(), Tabs, 0);
+					if (const TSharedPtr<SWindow> HostWindow = FSlateApplication::Get().FindWidgetWindow(HostWidget.ToSharedRef()))
+					{
+						GatherTabs(HostWindow.ToSharedRef(), Tabs, 0);
+					}
 				}
 			}
-			const float HostWidth = HostWidget.IsValid() ? FVector2f(HostWidget->GetTickSpaceGeometry().GetAbsoluteSize()).X : 0.f;
+			const FGeometry HostGeometry = HostWidget.IsValid() ? HostWidget->GetTickSpaceGeometry() : FGeometry();
+			const FVector2f HostPosition(HostGeometry.GetAbsolutePosition());
+			const FVector2f HostSize(HostGeometry.GetAbsoluteSize());
+
+			// What there is to dock beside, for the log - so a dock that goes wrong can be told about.
+			UE_LOG(LogWidgetAnimStateMachineDock, Log, TEXT("Dock in Layout: %d tabs in the editor (%.0f x %.0f)."), Tabs.Num(), HostSize.X, HostSize.Y);
+			for (const TSharedRef<SDockTab>& Tab : Tabs)
+			{
+				const FGeometry& Geometry = Tab->GetContent()->GetTickSpaceGeometry();
+				UE_LOG(LogWidgetAnimStateMachineDock, Log, TEXT("Dock in Layout:   '%s' (%s)%s, at %.0f,%.0f size %.0f x %.0f."),
+					*Tab->GetTabLabel().ToString(), *Tab->GetLayoutIdentifier().ToString(), Tab->GetParentWindow().IsValid() ? TEXT(" floating") : TEXT(""),
+					FVector2f(Geometry.GetAbsolutePosition()).X, FVector2f(Geometry.GetAbsolutePosition()).Y, FVector2f(Geometry.GetAbsoluteSize()).X, FVector2f(Geometry.GetAbsoluteSize()).Y);
+			}
 
 			TArray<TSharedRef<SDockTab>> Targets;
-			auto IsOurs = [](const TSharedRef<SDockTab>& Tab)
-			{
-				const FName Type = Tab->GetLayoutIdentifier().TabType;
-				return Tab->GetTabRole() == ETabRole::MajorTab || Type == TabId || Type == DockedTabId;
-			};
-
-			// The bottom well's known tabs, in order.
 			for (const FName WantedId : BottomWellTabIds)
 			{
 				for (const TSharedRef<SDockTab>& Tab : Tabs)
 				{
-					if (!IsOurs(Tab) && Tab->GetLayoutIdentifier().TabType == WantedId)
+					// Not one floating in a window of its own: only a floating tab's area reports a window.
+					if (Tab->GetLayoutIdentifier().TabType == WantedId && !Tab->GetParentWindow().IsValid())
 					{
 						Targets.AddUnique(Tab);
 					}
 				}
 				if (TabManager.IsValid())
 				{
-					if (const TSharedPtr<SDockTab> ById = TabManager->FindExistingLiveTab(FTabId(WantedId)))
+					const TSharedPtr<SDockTab> ById = TabManager->FindExistingLiveTab(FTabId(WantedId));
+					if (ById.IsValid() && !ById->GetParentWindow().IsValid())
 					{
 						Targets.AddUnique(ById.ToSharedRef());
 					}
 				}
 			}
 
-			// Then whichever tab's well sits lowest, among those spanning at least half the editor.
-			TSharedPtr<SDockTab> Lowest;
-			float LowestBottom = -FLT_MAX;
-			for (const TSharedRef<SDockTab>& Tab : Tabs)
+			// The bottom well by its shape.
+			if (HostSize.X > 0.f)
 			{
-				if (IsOurs(Tab))
+				TSharedPtr<SDockTab> Lowest;
+				float LowestBottom = -FLT_MAX;
+				for (const TSharedRef<SDockTab>& Tab : Tabs)
 				{
-					continue;
+					const FName Type = Tab->GetLayoutIdentifier().TabType;
+					if (Tab->GetTabRole() == ETabRole::MajorTab || Type == TabId || Type == DockedTabId || Tab->GetParentWindow().IsValid())
+					{
+						continue;
+					}
+					const FGeometry& Geometry = Tab->GetContent()->GetTickSpaceGeometry();
+					const FVector2f Position(Geometry.GetAbsolutePosition());
+					const FVector2f Size(Geometry.GetAbsoluteSize());
+					const bool bWide = Size.X >= HostSize.X * 0.85f;
+					const bool bLow = Position.Y >= HostPosition.Y + HostSize.Y * 0.5f;
+					if (bWide && bLow && Position.Y + Size.Y > LowestBottom)
+					{
+						Lowest = Tab;
+						LowestBottom = Position.Y + Size.Y;
+					}
 				}
-				const FGeometry& Geometry = Tab->GetContent()->GetTickSpaceGeometry();
-				const FVector2f Size(Geometry.GetAbsoluteSize());
-				const float Bottom = FVector2f(Geometry.GetAbsolutePosition()).Y + Size.Y;
-				if (Size.X > 0.f && (HostWidth <= 0.f || Size.X >= HostWidth * 0.5f) && Bottom > LowestBottom)
+				if (Lowest.IsValid())
 				{
-					Lowest = Tab;
-					LowestBottom = Bottom;
+					Targets.AddUnique(Lowest.ToSharedRef());
 				}
 			}
-			if (Lowest.IsValid())
+
+			for (const TSharedRef<SDockTab>& Target : Targets)
 			{
-				Targets.AddUnique(Lowest.ToSharedRef());
+				UE_LOG(LogWidgetAnimStateMachineDock, Log, TEXT("Dock in Layout: may dock beside '%s' (%s)."), *Target->GetTabLabel().ToString(), *Target->GetLayoutIdentifier().ToString());
 			}
 			return Targets;
 		}
@@ -4647,18 +4729,24 @@ namespace WidgetAnimStateMachineEditorHooks
 				DockManager->InsertNewDocumentTab(DockedTabId, FDockBesideTab(Beside), Tab);
 
 				const TSharedPtr<SWidget> TabWell = Tab->GetParentWidget();
-				if ((TabWell.IsValid() && TabWell == Beside->GetParentWidget()) || DockManager->FindExistingLiveTab(Tab->GetLayoutIdentifier()) == Tab)
+				if (((TabWell.IsValid() && TabWell == Beside->GetParentWidget()) || DockManager->FindExistingLiveTab(Tab->GetLayoutIdentifier()) == Tab)
+					&& !Tab->GetParentWindow().IsValid())
 				{
 					BringForward(Tab);
+					UE_LOG(LogWidgetAnimStateMachineDock, Log, TEXT("Dock in Layout: docked beside '%s' (%s)."), *Beside->GetTabLabel().ToString(), *Beside->GetLayoutIdentifier().ToString());
 					return;
 				}
+				UE_LOG(LogWidgetAnimStateMachineDock, Warning, TEXT("Dock in Layout: couldn't put the tab beside '%s' (%s)."), *Beside->GetTabLabel().ToString(), *Beside->GetLayoutIdentifier().ToString());
 				Tab->RequestCloseTab();
 			}
 
-			// Its own slot in the layout, wherever that is.
+			// Its own slot in the layout: the bottom well, after Animations, where the layout extension put it - as Widget
+			// Animations' Dock in Layout falls back to its own.
 			if (const TSharedPtr<SDockTab> Opened = TabManager->TryInvokeTab(FTabId(TabId)))
 			{
 				BringForward(Opened.ToSharedRef());
+				UE_LOG(LogWidgetAnimStateMachineDock, Warning, TEXT("Dock in Layout: nothing open in the bottom well to dock beside - opened in the tab's own slot of the layout%s."),
+					Opened->GetParentWindow().IsValid() ? TEXT(", which floats (the layout has no Animations tab to put it after)") : TEXT(""));
 			}
 		}
 	}
