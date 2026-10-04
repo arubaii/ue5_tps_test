@@ -196,18 +196,20 @@ void UWidgetAnimMachineTransitionProxy::PostEditChangeProperty(FPropertyChangedE
 		return;
 	}
 
-	// Its ends - and where its node was dragged - are the graph's to change.
+	// Its ends - and where its node was dragged, and its wire's reroute points - are the graph's to change.
 	FWidgetAnimMachineTransition& Target = Layer->Transitions[Index];
 	const FGuid From = Target.From;
 	const FGuid To = Target.To;
 	const bool bNodePlaced = Target.bEditorNodePlaced;
 	const FVector2D NodeOffset = Target.EditorNodeOffset;
+	const TArray<FVector2D> ReroutePoints = Target.EditorReroutePoints;
 	Target = Transition;
 	Target.Id = TransitionId;
 	Target.From = From;
 	Target.To = To;
 	Target.bEditorNodePlaced = bNodePlaced;
 	Target.EditorNodeOffset = NodeOffset;
+	Target.EditorReroutePoints = ReroutePoints;
 
 	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
@@ -730,7 +732,8 @@ private:
 
 /**
  * Lets the mouse wheel zoom the graph in past 1:1 - a little, to MaxGraphZoom - without Ctrl held, which the graph editor
- * otherwise wants for anything past 1:1. Seen before the graph editor, since it handles the wheel itself.
+ * otherwise wants for anything past 1:1. Seen before the graph editor, since it handles the wheel itself. Also takes a
+ * double-click on a wire, for a reroute point there (see HandleGraphDoubleClick).
  */
 class FWidgetAnimMachineZoomInput : public IInputProcessor
 {
@@ -749,6 +752,13 @@ public:
 	{
 		const TSharedPtr<SWidgetAnimStateMachineEditor> Pinned = Editor.Pin();
 		return Pinned.IsValid() && InGestureEvent == nullptr && Pinned->HandleGraphWheel(InWheelEvent);
+	}
+
+	/** A double-click on a wire: the graph editor never hears of it (the wires are drawn by the graph, not its pins). */
+	virtual bool HandleMouseButtonDoubleClickEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+	{
+		const TSharedPtr<SWidgetAnimStateMachineEditor> Pinned = Editor.Pin();
+		return Pinned.IsValid() && Pinned->HandleGraphDoubleClick(MouseEvent);
 	}
 
 	virtual const TCHAR* GetDebugName() const override { return TEXT("WidgetAnimMachineZoom"); }
@@ -2191,6 +2201,18 @@ void SWidgetAnimStateMachineEditor::OnSelectionChanged(const TSet<UObject*>& Sel
 				return;
 			}
 		}
+		else if (const UWidgetAnimMachineRerouteNode* RerouteNode = Cast<UWidgetAnimMachineRerouteNode>(Selected))
+		{
+			// A reroute point: the transition whose wire it is on.
+			TransitionProxy->Machine = Machine;
+			TransitionProxy->LayerIndex = ShownLayer;
+			TransitionProxy->TransitionId = RerouteNode->TransitionId;
+			if (TransitionProxy->Load())
+			{
+				DetailsView->SetObject(TransitionProxy, /*bForceRefresh=*/true);
+				return;
+			}
+		}
 		else if (UEdGraphNode_Comment* CommentNode = Cast<UEdGraphNode_Comment>(Selected))
 		{
 			// The comment box itself: its color, font size, and how it moves. Written into the machine as it changes.
@@ -2255,6 +2277,7 @@ void SWidgetAnimStateMachineEditor::DeleteSelected()
 	TArray<FGuid> States;
 	TArray<FGuid> Transitions;
 	TArray<FGuid> Comments;
+	TMap<FGuid, TArray<int32>> Reroutes;
 	for (UObject* Selected : Editor->GetSelectedNodes())
 	{
 		if (const UWidgetAnimMachineGraphNode* StateNode = Cast<UWidgetAnimMachineGraphNode>(Selected))
@@ -2263,6 +2286,10 @@ void SWidgetAnimStateMachineEditor::DeleteSelected()
 			{
 				States.Add(StateNode->StateId);
 			}
+		}
+		else if (const UWidgetAnimMachineRerouteNode* RerouteNode = Cast<UWidgetAnimMachineRerouteNode>(Selected))
+		{
+			Reroutes.FindOrAdd(RerouteNode->TransitionId).AddUnique(RerouteNode->RerouteIndex);
 		}
 		else if (const UWidgetAnimMachineTransitionNode* TransitionNode = Cast<UWidgetAnimMachineTransitionNode>(Selected))
 		{
@@ -2274,7 +2301,7 @@ void SWidgetAnimStateMachineEditor::DeleteSelected()
 		}
 	}
 	Editor->ClearSelectionSet();
-	WidgetAnimMachineEdits::Delete(Machine, ShownLayer, States, Transitions, Comments);
+	WidgetAnimMachineEdits::Delete(Machine, ShownLayer, States, Transitions, Comments, Reroutes);
 	ShowLayerDetails();
 }
 
@@ -2616,6 +2643,53 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 			}
 		}
 		WidgetAnimMachineEdits::PlaceTransitions(Machine, ShownLayer, Reset);
+
+		// Selected reroute points are leveled with the point before them on their wire - the one before, or the state the wire
+		// leaves - across from it or above or below it, whichever way it already lies, so the wire between runs straight.
+		// First to last along each wire, so a run of them lines up.
+		TArray<UWidgetAnimMachineRerouteNode*> Reroutes;
+		for (UObject* SelectedNode : Editor->GetSelectedNodes())
+		{
+			UWidgetAnimMachineRerouteNode* RerouteNode = Cast<UWidgetAnimMachineRerouteNode>(SelectedNode);
+			if (RerouteNode && RerouteNode->TransitionNode && RerouteNode->TransitionNode->RerouteOffsets.IsValidIndex(RerouteNode->RerouteIndex))
+			{
+				Reroutes.Add(RerouteNode);
+			}
+		}
+		Reroutes.Sort([](const UWidgetAnimMachineRerouteNode& A, const UWidgetAnimMachineRerouteNode& B) { return A.RerouteIndex < B.RerouteIndex; });
+
+		TMap<FGuid, TArray<FVector2D>> Leveled;
+		for (UWidgetAnimMachineRerouteNode* RerouteNode : Reroutes)
+		{
+			UWidgetAnimMachineTransitionNode* TransitionNode = RerouteNode->TransitionNode;
+			FGuid FirstId;
+			FGuid SecondId;
+			UWidgetAnimMachineGraph::GetPairOrder(TransitionNode, FirstId, SecondId);
+			FBox2f FirstBox;
+			FBox2f SecondBox;
+			FBox2f FromBox;
+			if (!GetNodeBox(Editor, Graph->FindStateNode(FirstId), FirstBox) || !GetNodeBox(Editor, Graph->FindStateNode(SecondId), SecondBox)
+				|| !GetNodeBox(Editor, Graph->FindStateNode(TransitionNode->FromId), FromBox))
+			{
+				continue;
+			}
+			const FVector2f Anchor = WidgetAnimMachineWires::GetPlacementAnchor(FirstBox, SecondBox);
+			TArray<FVector2f>& Offsets = TransitionNode->RerouteOffsets;
+			const int32 Index = RerouteNode->RerouteIndex;
+			const FVector2f Before = Index > 0 ? Anchor + Offsets[Index - 1] : FromBox.GetCenter();
+			const FVector2f Point = Anchor + Offsets[Index];
+			const FVector2f Delta = Point - Before;
+			const FVector2f Level = FMath::Abs(Delta.X) >= FMath::Abs(Delta.Y) ? FVector2f(Point.X, Before.Y) : FVector2f(Before.X, Point.Y);
+			Offsets[Index] = Level - Anchor;
+
+			TArray<FVector2D>& Points = Leveled.FindOrAdd(TransitionNode->TransitionId);
+			Points.Reset();
+			for (const FVector2f& Offset : Offsets)
+			{
+				Points.Add(FVector2D(Offset));
+			}
+		}
+		WidgetAnimMachineEdits::MoveReroutes(Machine, ShownLayer, Leveled);
 	}
 
 	TArray<FArrangeState> All;
@@ -2807,6 +2881,7 @@ void SWidgetAnimStateMachineEditor::CommitGraphEdits()
 
 	TMap<FGuid, FVector2D> Moved;
 	TMap<FGuid, TOptional<FVector2D>> Placed;
+	TMap<FGuid, TArray<FVector2D>> Rerouted;
 	TArray<FWidgetAnimMachineComment> ChangedComments;
 	for (const UEdGraphNode* Node : Graph->Nodes)
 	{
@@ -2835,6 +2910,22 @@ void SWidgetAnimStateMachineEditor::CommitGraphEdits()
 			{
 				Placed.Add(TransitionNode->TransitionId, TransitionNode->bPlaced ? TOptional<FVector2D>(Offset) : TOptional<FVector2D>());
 			}
+
+			// Its wire's reroute points, dragged. (Added or taken off, the machine has them already: the graph is made again.)
+			if (TransitionNode->RerouteOffsets.Num() == Transition.EditorReroutePoints.Num())
+			{
+				TArray<FVector2D> Points;
+				bool bMoved = false;
+				for (int32 Point = 0; Point < TransitionNode->RerouteOffsets.Num(); ++Point)
+				{
+					Points.Add(FVector2D(TransitionNode->RerouteOffsets[Point]));
+					bMoved |= !Points.Last().Equals(Transition.EditorReroutePoints[Point], 0.5);
+				}
+				if (bMoved)
+				{
+					Rerouted.Add(TransitionNode->TransitionId, MoveTemp(Points));
+				}
+			}
 		}
 		else if (const UEdGraphNode_Comment* CommentNode = Cast<UEdGraphNode_Comment>(Node))
 		{
@@ -2861,6 +2952,7 @@ void SWidgetAnimStateMachineEditor::CommitGraphEdits()
 	}
 	WidgetAnimMachineEdits::MoveStates(Machine, ShownLayer, Moved);
 	WidgetAnimMachineEdits::PlaceTransitions(Machine, ShownLayer, Placed);
+	WidgetAnimMachineEdits::MoveReroutes(Machine, ShownLayer, Rerouted);
 	WidgetAnimMachineEdits::UpdateComments(Machine, ShownLayer, ChangedComments);
 }
 
@@ -2924,10 +3016,25 @@ void SWidgetAnimStateMachineEditor::Tick(const FGeometry& AllottedGeometry, cons
 		// on to the old ones.
 		const TSharedPtr<SGraphEditor> GraphEditor = GraphEditors.IsValidIndex(LayerIndex) ? GraphEditors[LayerIndex] : nullptr;
 		TSet<FGuid> SelectedIds;
+		// Reroute points by their transition and place on its wire - and how many the wire had, so a point added or taken off
+		// before it doesn't leave its neighbour picked instead.
+		struct FSelectedReroute
+		{
+			FGuid TransitionId;
+			int32 Index = 0;
+			int32 Count = 0;
+		};
+		TArray<FSelectedReroute> SelectedReroutes;
 		if (GraphEditor.IsValid())
 		{
 			for (UObject* Selected : GraphEditor->GetSelectedNodes())
 			{
+				if (const UWidgetAnimMachineRerouteNode* RerouteNode = Cast<UWidgetAnimMachineRerouteNode>(Selected))
+				{
+					const int32 Count = RerouteNode->TransitionNode ? RerouteNode->TransitionNode->RerouteOffsets.Num() : 0;
+					SelectedReroutes.Add({ RerouteNode->TransitionId, RerouteNode->RerouteIndex, Count });
+					continue;
+				}
 				if (const UWidgetAnimMachineGraphNode* StateNode = Cast<UWidgetAnimMachineGraphNode>(Selected))
 				{
 					SelectedIds.Add(StateNode->StateId);
@@ -2967,6 +3074,22 @@ void SWidgetAnimStateMachineEditor::Tick(const FGeometry& AllottedGeometry, cons
 			SelectedIds.Reset();
 			SelectedIds.Append(PendingSelection);
 			PendingSelection.Reset();
+		}
+
+		if (GraphEditor.IsValid() && !bTakePending && SelectedReroutes.Num() > 0)
+		{
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				const UWidgetAnimMachineRerouteNode* RerouteNode = Cast<UWidgetAnimMachineRerouteNode>(Node);
+				const int32 Count = RerouteNode && RerouteNode->TransitionNode ? RerouteNode->TransitionNode->RerouteOffsets.Num() : 0;
+				if (RerouteNode && SelectedReroutes.ContainsByPredicate([RerouteNode, Count](const FSelectedReroute& Was)
+				{
+					return Was.TransitionId == RerouteNode->TransitionId && Was.Index == RerouteNode->RerouteIndex && Was.Count == Count;
+				}))
+				{
+					GraphEditor->SetNodeSelection(Node, true);
+				}
+			}
 		}
 
 		if (GraphEditor.IsValid() && SelectedIds.Num() > 0)
@@ -3360,6 +3483,109 @@ bool SWidgetAnimStateMachineEditor::HandleGraphWheel(const FPointerEvent& WheelE
 	const FVector2f Local = Editor->GetCachedGeometry().AbsoluteToLocal(FVector2f(WheelEvent.GetScreenSpacePosition()));
 	const FVector2f Under = ViewLocation + Local / FMath::Max(Zoom, 0.05f);
 	Editor->SetViewLocation(Under - Local / Next, Next);
+	return true;
+}
+
+bool SWidgetAnimStateMachineEditor::HandleGraphDoubleClick(const FPointerEvent& MouseEvent)
+{
+	if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton || MouseEvent.IsAltDown() || MouseEvent.IsControlDown() || MouseEvent.IsShiftDown()
+		|| !Machine || !FSlateApplication::IsInitialized())
+	{
+		return false;
+	}
+	const TSharedPtr<SGraphEditor> Editor = GetShownGraphEditor();
+	UWidgetAnimMachineGraph* Graph = GetShownGraph();
+	if (!Editor.IsValid() || !Graph)
+	{
+		return false;
+	}
+
+	// Only on the graph itself - not a menu or window over it, and not a name or comment title (a double-click there renames).
+	FSlateApplication& Slate = FSlateApplication::Get();
+	const FWidgetPath Path = Slate.LocateWindowUnderMouse(MouseEvent.GetScreenSpacePosition(), Slate.GetInteractiveTopLevelWindows());
+	bool bOverGraph = false;
+	for (int32 Index = Path.Widgets.Num() - 1; Index >= 0 && !bOverGraph; --Index)
+	{
+		const SWidget& Widget = Path.Widgets[Index].Widget.Get();
+		bOverGraph = &Widget == Editor.Get();
+		if (!bOverGraph && Widget.GetType().ToString().Contains(TEXT("EditableText")))
+		{
+			return false;
+		}
+	}
+	if (!bOverGraph)
+	{
+		return false;
+	}
+
+	// Where in the graph: as the wheel's zoom works it out.
+	FVector2f ViewLocation;
+	float Zoom = 1.f;
+	Editor->GetViewLocation(ViewLocation, Zoom);
+	Zoom = FMath::Max(Zoom, 0.05f);
+	const FVector2f Local = Editor->GetCachedGeometry().AbsoluteToLocal(FVector2f(MouseEvent.GetScreenSpacePosition()));
+	const FVector2f Point = ViewLocation + Local / Zoom;
+
+	// On a node - a state, a transition node, a reroute point: that node's own double-click (a state opens its animation).
+	for (const UEdGraphNode* Node : Graph->Nodes)
+	{
+		FBox2f Box;
+		if (!Node || Node->IsA<UEdGraphNode_Comment>() || !GetNodeBox(Editor, Node, Box))
+		{
+			continue;
+		}
+		if (Box.ExpandBy(2.f).IsInside(Point))
+		{
+			return false;
+		}
+	}
+
+	// The wire nearest the click, if it is close enough - a few pixels on screen, however far the graph is zoomed.
+	const float Reach = (WidgetAnimMachineWires::WireHitDistance + NameTBD::Colors::StateMachineEditor::WireThickness * 0.5f * Zoom) / Zoom;
+	const UWidgetAnimMachineTransitionNode* Hit = nullptr;
+	FWidgetAnimMachineWire HitWire;
+	int32 HitSegment = INDEX_NONE;
+	FVector2f HitPoint = Point;
+	FVector2f HitAnchor = FVector2f::ZeroVector;
+	float HitDistance = Reach;
+	for (const UEdGraphNode* Node : Graph->Nodes)
+	{
+		const UWidgetAnimMachineTransitionNode* TransitionNode = Cast<UWidgetAnimMachineTransitionNode>(Node);
+		if (!TransitionNode)
+		{
+			continue;
+		}
+		FGuid FirstId;
+		FGuid SecondId;
+		UWidgetAnimMachineGraph::GetPairOrder(TransitionNode, FirstId, SecondId);
+		FBox2f FirstBox;
+		FBox2f SecondBox;
+		if (!GetNodeBox(Editor, Graph->FindStateNode(FirstId), FirstBox) || !GetNodeBox(Editor, Graph->FindStateNode(SecondId), SecondBox))
+		{
+			continue;
+		}
+		const FWidgetAnimMachineWire Wire = Graph->ComputeWire(TransitionNode, FirstBox, SecondBox);
+		int32 Segment = INDEX_NONE;
+		FVector2f Nearest = Point;
+		const float Distance = Wire.GetDistance(Point, Segment, &Nearest);
+		if (Segment != INDEX_NONE && Distance <= HitDistance)
+		{
+			Hit = TransitionNode;
+			HitWire = Wire;
+			HitSegment = Segment;
+			HitPoint = Nearest;
+			HitAnchor = WidgetAnimMachineWires::GetPlacementAnchor(FirstBox, SecondBox);
+			HitDistance = Distance;
+		}
+	}
+	if (!Hit || !HitWire.Segments.IsValidIndex(HitSegment))
+	{
+		return false;
+	}
+
+	// On the wire where it was clicked, between the points either side of it - kept, as the transition node's own place is,
+	// from halfway between the two states' corners.
+	WidgetAnimMachineEdits::AddReroute(Machine, ShownLayer, Hit->TransitionId, HitWire.Segments[HitSegment].ReroutesBefore, FVector2D(HitPoint - HitAnchor));
 	return true;
 }
 

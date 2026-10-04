@@ -1721,6 +1721,24 @@ namespace NameTBD::Tooltips
 				"Reset Node Position: puts the transition node back on the middle of its wire, where it was before it was dragged. Q does the same for selected transition nodes.");
 		}
 
+		inline FText RerouteNodeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "RerouteNodeTooltip",
+				"The wire runs through this point. Drag it to lead the wire where you want it; Q lines it up with the point before it. Delete, or Alt+click, takes it off. Double-click a wire to add another.");
+		}
+
+		inline FText RemoveRerouteTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "RemoveRerouteTooltip",
+				"Remove Reroute Point: takes this point off its wire. The wire runs straight on from the points either side of it.");
+		}
+
+		inline FText ClearReroutesTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "ClearReroutesTooltip",
+				"Remove Reroute Points: takes every reroute point off this transition's wire, so it runs straight from state to state again.");
+		}
+
 		inline FText RaisePriorityTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "RaisePriorityTooltip",

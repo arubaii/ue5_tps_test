@@ -321,6 +321,14 @@ struct NAMETBD_API FWidgetAnimMachineTransition
 	/** Where it was dragged: its node's middle, from halfway between its two nodes' corners - so it follows them as they move. */
 	UPROPERTY()
 	FVector2D EditorNodeOffset = FVector2D::ZeroVector;
+
+	/**
+	 * The reroute points its wire runs through in the graph, in order from the node it leaves to the node it goes to - each
+	 * measured, as EditorNodeOffset is, from halfway between its two nodes' corners, so they follow the nodes as they move.
+	 * Added by double-clicking the wire. Only how the graph looks: nothing at runtime.
+	 */
+	UPROPERTY()
+	TArray<FVector2D> EditorReroutePoints;
 #endif
 };
 

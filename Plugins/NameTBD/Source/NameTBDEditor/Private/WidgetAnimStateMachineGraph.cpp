@@ -223,22 +223,105 @@ namespace WidgetAnimMachineEdits
 		FinishEdit(Machine);
 	}
 
-	void Delete(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& States, const TArray<FGuid>& Transitions, const TArray<FGuid>& Comments)
+	void Delete(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& States, const TArray<FGuid>& Transitions,
+		const TArray<FGuid>& Comments, const TMap<FGuid, TArray<int32>>& Reroutes)
 	{
 		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
-		if (!Layer || (States.Num() == 0 && Transitions.Num() == 0 && Comments.Num() == 0))
+		if (!Layer || (States.Num() == 0 && Transitions.Num() == 0 && Comments.Num() == 0 && Reroutes.Num() == 0))
 		{
 			return;
 		}
 
 		const FScopedTransaction Transaction(LOCTEXT("DeleteNodes", "Delete From State Machine"));
 		Machine->Modify();
+
+		// Reroute points first, while every transition is still where its indices were counted. Last first, so the earlier
+		// ones keep their places.
+		for (const TPair<FGuid, TArray<int32>>& Points : Reroutes)
+		{
+			const int32 Index = Layer->FindTransitionIndex(Points.Key);
+			if (Index == INDEX_NONE)
+			{
+				continue;
+			}
+			TArray<FVector2D>& Route = Layer->Transitions[Index].EditorReroutePoints;
+			TArray<int32> Sorted = Points.Value;
+			Sorted.Sort(TGreater<int32>());
+			for (const int32 Point : Sorted)
+			{
+				if (Route.IsValidIndex(Point))
+				{
+					Route.RemoveAt(Point);
+				}
+			}
+		}
+
 		Layer->States.RemoveAll([&States](const FWidgetAnimMachineState& State) { return State.Kind == EWidgetAnimMachineNodeKind::State && States.Contains(State.Id); });
 		Layer->Transitions.RemoveAll([&Transitions](const FWidgetAnimMachineTransition& Transition) { return Transitions.Contains(Transition.Id); });
 		Layer->Comments.RemoveAll([&Comments](const FWidgetAnimMachineComment& Comment) { return Comments.Contains(Comment.Id); });
 
 		// Normalize drops the transitions whose state went.
 		FinishEdit(Machine);
+	}
+
+	bool AddReroute(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Transition, int32 Index, const FVector2D& Offset)
+	{
+		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
+		const int32 TransitionIndex = Layer ? Layer->FindTransitionIndex(Transition) : INDEX_NONE;
+		if (TransitionIndex == INDEX_NONE)
+		{
+			return false;
+		}
+
+		const FScopedTransaction ScopedTransaction(LOCTEXT("AddReroute", "Add Reroute Point"));
+		Machine->Modify();
+		TArray<FVector2D>& Route = Layer->Transitions[TransitionIndex].EditorReroutePoints;
+		Route.Insert(Offset, FMath::Clamp(Index, 0, Route.Num()));
+		FinishEdit(Machine);
+		return true;
+	}
+
+	void ClearReroutes(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& Transitions)
+	{
+		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
+		if (!Layer || !Layer->Transitions.ContainsByPredicate([&Transitions](const FWidgetAnimMachineTransition& Transition)
+		{
+			return Transitions.Contains(Transition.Id) && Transition.EditorReroutePoints.Num() > 0;
+		}))
+		{
+			return;
+		}
+
+		const FScopedTransaction Transaction(LOCTEXT("ClearReroutes", "Remove Reroute Points"));
+		Machine->Modify();
+		for (FWidgetAnimMachineTransition& Transition : Layer->Transitions)
+		{
+			if (Transitions.Contains(Transition.Id))
+			{
+				Transition.EditorReroutePoints.Reset();
+			}
+		}
+		FinishEdit(Machine);
+	}
+
+	void MoveReroutes(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TMap<FGuid, TArray<FVector2D>>& Points)
+	{
+		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
+		if (!Layer || Points.Num() == 0)
+		{
+			return;
+		}
+
+		const FScopedTransaction Transaction(LOCTEXT("MoveReroutes", "Move Reroute Point"));
+		Machine->Modify();
+		for (FWidgetAnimMachineTransition& Transition : Layer->Transitions)
+		{
+			if (const TArray<FVector2D>* Route = Points.Find(Transition.Id))
+			{
+				Transition.EditorReroutePoints = *Route;
+			}
+		}
+		Machine->MarkPackageDirty();
 	}
 
 	void RenameState(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& State, const FString& NewName)
@@ -757,27 +840,84 @@ namespace
 	}
 }
 
+namespace
+{
+	/** Which curve of a wire of Count curves T falls on, and how far along that curve: each curve an equal share of the way. */
+	int32 SplitWireT(float T, int32 Count, float& OutLocalT)
+	{
+		const float Scaled = FMath::Clamp(T, 0.f, 1.f) * Count;
+		const int32 Segment = FMath::Clamp(FMath::FloorToInt32(Scaled), 0, Count - 1);
+		OutLocalT = Scaled - Segment;
+		return Segment;
+	}
+
+	/** How many points along each curve a wire is measured by - for its dots, its middle, and clicks on it. */
+	constexpr int32 WireSamplesPerSegment = 24;
+}
+
 FVector2f FWidgetAnimMachineWire::Evaluate(float T) const
 {
-	if (!bThroughNode)
+	if (Segments.Num() == 0)
 	{
-		return HermitePoint(Start, StartTangent, End, EndTangent, T);
+		return FVector2f::ZeroVector;
 	}
-	// Through a dragged node: the first half of the way is the curve into it, the second the curve out of it.
-	return T < 0.5f
-		? HermitePoint(Start, StartTangent, Mid, MidTangentIn, T * 2.f)
-		: HermitePoint(Mid, MidTangentOut, End, EndTangent, T * 2.f - 1.f);
+	float Local = 0.f;
+	const FSegment& Segment = Segments[SplitWireT(T, Segments.Num(), Local)];
+	return HermitePoint(Segment.Start, Segment.StartTangent, Segment.End, Segment.EndTangent, Local);
 }
 
 FVector2f FWidgetAnimMachineWire::Derivative(float T) const
 {
-	if (!bThroughNode)
+	if (Segments.Num() == 0)
 	{
-		return HermiteDerivative(Start, StartTangent, End, EndTangent, T);
+		return FVector2f::ZeroVector;
 	}
-	return T < 0.5f
-		? HermiteDerivative(Start, StartTangent, Mid, MidTangentIn, T * 2.f) * 2.f
-		: HermiteDerivative(Mid, MidTangentOut, End, EndTangent, T * 2.f - 1.f) * 2.f;
+	float Local = 0.f;
+	const FSegment& Segment = Segments[SplitWireT(T, Segments.Num(), Local)];
+	return HermiteDerivative(Segment.Start, Segment.StartTangent, Segment.End, Segment.EndTangent, Local) * static_cast<float>(Segments.Num());
+}
+
+void FWidgetAnimMachineWire::Transform(const FVector2f& Origin, float Scale)
+{
+	for (FSegment& Segment : Segments)
+	{
+		Segment.Start = Origin + Segment.Start * Scale;
+		Segment.End = Origin + Segment.End * Scale;
+		Segment.StartTangent *= Scale;
+		Segment.EndTangent *= Scale;
+	}
+	NodePoint = Origin + NodePoint * Scale;
+}
+
+float FWidgetAnimMachineWire::GetDistance(const FVector2f& Point, int32& OutSegment, FVector2f* OutNearest) const
+{
+	OutSegment = INDEX_NONE;
+	float Best = TNumericLimits<float>::Max();
+	for (int32 SegmentIndex = 0; SegmentIndex < Segments.Num(); ++SegmentIndex)
+	{
+		const FSegment& Segment = Segments[SegmentIndex];
+		FVector2f Previous = Segment.Start;
+		for (int32 Sample = 1; Sample <= WireSamplesPerSegment; ++Sample)
+		{
+			const FVector2f Next = HermitePoint(Segment.Start, Segment.StartTangent, Segment.End, Segment.EndTangent, static_cast<float>(Sample) / WireSamplesPerSegment);
+			const FVector2f Along = Next - Previous;
+			const float LengthSquared = Along.SizeSquared();
+			const float Fraction = LengthSquared > KINDA_SMALL_NUMBER ? FMath::Clamp(FVector2f::DotProduct(Point - Previous, Along) / LengthSquared, 0.f, 1.f) : 0.f;
+			const FVector2f OnWire = Previous + Along * Fraction;
+			const float Distance = (Point - OnWire).Size();
+			if (Distance < Best)
+			{
+				Best = Distance;
+				OutSegment = SegmentIndex;
+				if (OutNearest)
+				{
+					*OutNearest = OnWire;
+				}
+			}
+			Previous = Next;
+		}
+	}
+	return Best;
 }
 
 namespace WidgetAnimMachineWires
@@ -866,42 +1006,134 @@ namespace WidgetAnimMachineWires
 		return (First.Min + Second.Min) * 0.5f;
 	}
 
-	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed, const FVector2f* NodePoint)
+	/**
+	 * A wire routed through points of its own - reroute points, and its transition node where that was dragged: out of the
+	 * side or corner of the state it leaves that faces the first point, through each point in turn, and into the side or
+	 * corner of the other state that faces the last - one smooth curve from each point to the next, as through Blueprint
+	 * reroute nodes. At each point the wire runs the way from the point before it to the point after it.
+	 */
+	FWidgetAnimMachineWire ComputeRouted(const FBox2f& From, const FBox2f& To, const FVector2f* NodePoint, TConstArrayView<FVector2f> Reroutes)
 	{
 		FWidgetAnimMachineWire Wire;
 
+		// The points it runs through, the way it goes: the reroute points in their order, and the dragged transition node
+		// wherever along the way it adds least - so it sits on whichever part of the wire it was dragged nearest.
+		TArray<FVector2f, TInlineAllocator<8>> Points(Reroutes.GetData(), Reroutes.Num());
+		TArray<bool, TInlineAllocator<8>> IsReroute;
+		IsReroute.Init(true, Points.Num());
+		int32 NodeIndex = INDEX_NONE;
 		if (NodePoint)
 		{
-			// Through where its node was dragged: out of the side or corner of the state it leaves that faces the node, into
-			// the node, and on out of it into the side or corner of the other that faces it - a smooth curve through the node,
-			// as through a reroute.
-			const FBox2f& From = bReversed ? Second : First;
-			const FBox2f& To = bReversed ? First : Second;
-			const FVector2f FromSide = GetFacingSide(From, *NodePoint);
-			const FVector2f ToSide = GetFacingSide(To, *NodePoint);
-			const FVector2f StartPoint = GetSideMiddle(From, FromSide);
-			const FVector2f EndPoint = GetSideMiddle(To, ToSide);
-			const float InLength = FMath::Max((*NodePoint - StartPoint).Size(), 1.f);
-			const float OutLength = FMath::Max((EndPoint - *NodePoint).Size(), 1.f);
-			FVector2f Through = (EndPoint - StartPoint).GetSafeNormal();
+			float BestCost = TNumericLimits<float>::Max();
+			for (int32 Index = 0; Index <= Points.Num(); ++Index)
+			{
+				const FVector2f Before = Index == 0 ? From.GetCenter() : Points[Index - 1];
+				const FVector2f After = Index == Points.Num() ? To.GetCenter() : Points[Index];
+				const float Cost = (*NodePoint - Before).Size() + (After - *NodePoint).Size() - (After - Before).Size();
+				if (Cost < BestCost - KINDA_SMALL_NUMBER)
+				{
+					BestCost = Cost;
+					NodeIndex = Index;
+				}
+			}
+			Points.Insert(*NodePoint, NodeIndex);
+			IsReroute.Insert(false, NodeIndex);
+		}
+
+		const FVector2f FromSide = GetFacingSide(From, Points[0]);
+		const FVector2f ToSide = GetFacingSide(To, Points.Last());
+
+		// Every point of the wire, ends and all, and which way it runs at each.
+		TArray<FVector2f, TInlineAllocator<10>> Full;
+		Full.Add(GetSideMiddle(From, FromSide));
+		Full.Append(Points);
+		Full.Add(GetSideMiddle(To, ToSide));
+		TArray<FVector2f, TInlineAllocator<10>> Directions;
+		Directions.SetNumZeroed(Full.Num());
+		for (int32 Index = 1; Index < Full.Num() - 1; ++Index)
+		{
+			FVector2f Through = (Full[Index + 1] - Full[Index - 1]).GetSafeNormal();
 			if (Through.IsNearlyZero())
 			{
-				Through = (*NodePoint - StartPoint).GetSafeNormal();
+				Through = (Full[Index] - Full[Index - 1]).GetSafeNormal();
 			}
+			Directions[Index] = Through.IsNearlyZero() ? FVector2f(1.f, 0.f) : Through;
+		}
 
-			Wire.bThroughNode = true;
-			Wire.Start = StartPoint;
-			Wire.StartTangent = FromSide.GetSafeNormal() * FMath::Max(InLength, 36.f);
-			Wire.Mid = *NodePoint;
-			Wire.MidTangentIn = Through * InLength;
-			Wire.MidTangentOut = Through * OutLength;
-			Wire.End = EndPoint;
-			Wire.EndTangent = -ToSide.GetSafeNormal() * FMath::Max(OutLength, 36.f);
-			Wire.NodeT = 0.5f;
+		int32 ReroutesSoFar = 0;
+		for (int32 Index = 0; Index < Full.Num() - 1; ++Index)
+		{
+			const float Length = FMath::Max((Full[Index + 1] - Full[Index]).Size(), 1.f);
+			FWidgetAnimMachineWire::FSegment& Segment = Wire.Segments.AddDefaulted_GetRef();
+			Segment.Start = Full[Index];
+			Segment.End = Full[Index + 1];
+			// Out of a state and into one as a Blueprint wire leaves and enters its pins; through a point at the pace of the
+			// curve on either side of it, so the two meet smoothly.
+			Segment.StartTangent = Index == 0 ? FromSide.GetSafeNormal() * FMath::Max(Length, 36.f) : Directions[Index] * Length;
+			Segment.EndTangent = Index == Full.Num() - 2 ? -ToSide.GetSafeNormal() * FMath::Max(Length, 36.f) : Directions[Index + 1] * Length;
+			Segment.ReroutesBefore = ReroutesSoFar;
+			if (IsReroute.IsValidIndex(Index) && IsReroute[Index])
+			{
+				++ReroutesSoFar;
+			}
+		}
+
+		const int32 Count = Wire.Segments.Num();
+		if (NodeIndex != INDEX_NONE)
+		{
+			// The dragged node: where the curve into it ends.
+			Wire.NodeT = static_cast<float>(NodeIndex + 1) / Count;
 			Wire.NodePoint = *NodePoint;
-			Wire.NodeDirection = Through.IsNearlyZero() ? FVector2f(1.f, 0.f) : Through;
+			Wire.NodeDirection = Directions[NodeIndex + 1];
 			return Wire;
 		}
+
+		// Not dragged: halfway along the wire, measured along it - but never on a reroute point, kept clear of it by a node's width.
+		TArray<float, TInlineAllocator<128>> Lengths;
+		Lengths.Reserve(Count * WireSamplesPerSegment + 1);
+		Lengths.Add(0.f);
+		FVector2f Previous = Wire.Segments[0].Start;
+		for (int32 Sample = 1; Sample <= Count * WireSamplesPerSegment; ++Sample)
+		{
+			const FVector2f Next = Wire.Evaluate(static_cast<float>(Sample) / (Count * WireSamplesPerSegment));
+			Lengths.Add(Lengths.Last() + (Next - Previous).Size());
+			Previous = Next;
+		}
+		const float Total = Lengths.Last();
+		float Middle = Total * 0.5f;
+		const float Clear = NodeDiameter * 0.5f + RerouteDiameter * 0.5f + 4.f;
+		for (int32 Point = 1; Point < Count; ++Point)
+		{
+			const float At = Lengths[Point * WireSamplesPerSegment];
+			if (FMath::Abs(Middle - At) < Clear)
+			{
+				Middle = Middle >= At ? At + Clear : At - Clear;
+			}
+		}
+		Middle = Total > Clear * 2.f ? FMath::Clamp(Middle, Clear, Total - Clear) : Total * 0.5f;
+
+		int32 Sample = 1;
+		while (Sample < Lengths.Num() - 1 && Lengths[Sample] < Middle)
+		{
+			++Sample;
+		}
+		const float Span = FMath::Max(Lengths[Sample] - Lengths[Sample - 1], KINDA_SMALL_NUMBER);
+		const float Fraction = FMath::Clamp((Middle - Lengths[Sample - 1]) / Span, 0.f, 1.f);
+		Wire.NodeT = (Sample - 1 + Fraction) / (Count * WireSamplesPerSegment);
+		Wire.NodePoint = Wire.Evaluate(Wire.NodeT);
+		const FVector2f Direction = Wire.Derivative(Wire.NodeT);
+		Wire.NodeDirection = Direction.IsNearlyZero() ? Directions[1] : Direction.GetSafeNormal();
+		return Wire;
+	}
+
+	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed, const FVector2f* NodePoint, TConstArrayView<FVector2f> Reroutes)
+	{
+		if (NodePoint || Reroutes.Num() > 0)
+		{
+			return ComputeRouted(bReversed ? Second : First, bReversed ? First : Second, NodePoint, Reroutes);
+		}
+
+		FWidgetAnimMachineWire Wire;
 
 		const FVector2f FirstCenter = First.GetCenter();
 		const FVector2f SecondCenter = Second.GetCenter();
@@ -947,25 +1179,26 @@ namespace WidgetAnimMachineWires
 			NodeT = FMath::Clamp(0.5f + (Lane - (LaneCount - 1) * 0.5f) * Step, 0.12f, 0.88f);
 		}
 
-		Wire.Start = FirstPoint;
-		Wire.StartTangent = FirstTangent;
-		Wire.End = SecondPoint;
-		Wire.EndTangent = SecondTangent;
+		FWidgetAnimMachineWire::FSegment& Segment = Wire.Segments.AddDefaulted_GetRef();
+		Segment.Start = FirstPoint;
+		Segment.StartTangent = FirstTangent;
+		Segment.End = SecondPoint;
+		Segment.EndTangent = SecondTangent;
 		Wire.NodeT = NodeT;
 
 		// Running the other way: the same curve, traced from its far end.
 		if (bReversed)
 		{
-			Wire.Start = SecondPoint;
-			Wire.End = FirstPoint;
-			Wire.StartTangent = -SecondTangent;
-			Wire.EndTangent = -FirstTangent;
+			Segment.Start = SecondPoint;
+			Segment.End = FirstPoint;
+			Segment.StartTangent = -SecondTangent;
+			Segment.EndTangent = -FirstTangent;
 			Wire.NodeT = 1.f - NodeT;
 		}
 
 		Wire.NodePoint = Wire.Evaluate(Wire.NodeT);
 		const FVector2f Direction = Wire.Derivative(Wire.NodeT);
-		Wire.NodeDirection = Direction.IsNearlyZero() ? (Wire.End - Wire.Start).GetSafeNormal() : Direction.GetSafeNormal();
+		Wire.NodeDirection = Direction.IsNearlyZero() ? (Segment.End - Segment.Start).GetSafeNormal() : Direction.GetSafeNormal();
 		return Wire;
 	}
 }
@@ -1043,8 +1276,9 @@ void UWidgetAnimMachineGraph::GetLane(const UWidgetAnimMachineTransitionNode* No
 			continue;
 		}
 		const bool bSamePair = (Sibling->FromId == First && Sibling->ToId == Second) || (Sibling->FromId == Second && Sibling->ToId == First);
-		// A node dragged somewhere of its own takes no lane: its wire runs through it instead.
-		if (!bSamePair || (Sibling->bPlaced && Sibling != Node))
+		// A node dragged somewhere of its own, or a wire routed through reroute points, takes no lane: its wire runs through
+		// its points instead.
+		if (!bSamePair || ((Sibling->bPlaced || Sibling->RerouteOffsets.Num() > 0) && Sibling != Node))
 		{
 			continue;
 		}
@@ -1055,6 +1289,25 @@ void UWidgetAnimMachineGraph::GetLane(const UWidgetAnimMachineTransitionNode* No
 		++OutCount;
 	}
 	OutCount = FMath::Max(OutCount, 1);
+}
+
+FWidgetAnimMachineWire UWidgetAnimMachineGraph::ComputeWire(const UWidgetAnimMachineTransitionNode* Node, const FBox2f& FirstBox, const FBox2f& SecondBox) const
+{
+	int32 Lane = 0;
+	int32 Count = 1;
+	bool bReversed = false;
+	GetLane(Node, Lane, Count, bReversed);
+
+	// Its dragged node and reroute points are kept from halfway between the two nodes' corners, so they follow them.
+	const FVector2f Anchor = WidgetAnimMachineWires::GetPlacementAnchor(FirstBox, SecondBox);
+	const FVector2f PlacedPoint = Anchor + Node->PlacedOffset;
+	TArray<FVector2f, TInlineAllocator<8>> Reroutes;
+	Reroutes.Reserve(Node->RerouteOffsets.Num());
+	for (const FVector2f& Offset : Node->RerouteOffsets)
+	{
+		Reroutes.Add(Anchor + Offset);
+	}
+	return WidgetAnimMachineWires::Compute(FirstBox, SecondBox, Lane, Count, bReversed, Node->bPlaced ? &PlacedPoint : nullptr, Reroutes);
 }
 
 bool UWidgetAnimMachineGraph::IsDebugging() const
@@ -1133,6 +1386,10 @@ void UWidgetAnimMachineGraph::RebuildFromMachine()
 		Node->ToId = Transition.To;
 		Node->bPlaced = Transition.bEditorNodePlaced;
 		Node->PlacedOffset = FVector2f(Transition.EditorNodeOffset);
+		for (const FVector2D& Point : Transition.EditorReroutePoints)
+		{
+			Node->RerouteOffsets.Add(FVector2f(Point));
+		}
 		// Halfway, until its widget places it exactly (see SWidgetAnimMachineTransitionNode::PerformSecondPassLayout).
 		Node->NodePosX = (From->NodePosX + To->NodePosX) / 2;
 		Node->NodePosY = (From->NodePosY + To->NodePosY) / 2;
@@ -1146,6 +1403,20 @@ void UWidgetAnimMachineGraph::RebuildFromMachine()
 		if (Node->GetOutputPin() && To->GetInputPin())
 		{
 			Node->GetOutputPin()->MakeLinkTo(To->GetInputPin());
+		}
+
+		// Its wire's reroute points, each a node of its own - over the wires, as a Blueprint reroute node is.
+		for (int32 RerouteIndex = 0; RerouteIndex < Node->RerouteOffsets.Num(); ++RerouteIndex)
+		{
+			UWidgetAnimMachineRerouteNode* Reroute = NewObject<UWidgetAnimMachineRerouteNode>(this, NAME_None, RF_Transient);
+			Reroute->CreateNewGuid();
+			Reroute->TransitionId = Transition.Id;
+			Reroute->RerouteIndex = RerouteIndex;
+			Reroute->TransitionNode = Node;
+			// Where it is, until its widget places it exactly (see SWidgetAnimMachineRerouteNode::PerformSecondPassLayout).
+			Reroute->NodePosX = Node->NodePosX;
+			Reroute->NodePosY = Node->NodePosY;
+			AddNode(Reroute, /*bUserAction=*/false, /*bSelectNewNode=*/false);
 		}
 	}
 
@@ -1504,6 +1775,78 @@ void UWidgetAnimMachineTransitionNode::GetNodeContextMenuActions(UToolMenu* Menu
 				}
 			})));
 	}
+	// Routed through reroute points: back to a plain wire.
+	if (RerouteOffsets.Num() > 0)
+	{
+		Section.AddMenuEntry(
+			TEXT("ClearReroutes"),
+			LOCTEXT("ClearReroutes", "Remove Reroute Points"),
+			MachineTips::ClearReroutesTooltip(),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([WeakSelf]()
+			{
+				const UWidgetAnimMachineTransitionNode* Node = WeakSelf.Get();
+				UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+				if (Graph)
+				{
+					WidgetAnimMachineEdits::ClearReroutes(Graph->Machine, Graph->LayerIndex, { Node->TransitionId });
+				}
+			})));
+	}
+	Section.AddMenuEntry(FGenericCommands::Get().Delete);
+}
+
+UWidgetAnimMachineGraph* UWidgetAnimMachineRerouteNode::GetMachineGraph() const
+{
+	return Cast<UWidgetAnimMachineGraph>(GetGraph());
+}
+
+FText UWidgetAnimMachineRerouteNode::GetNodeTitle(ENodeTitleType::Type TitleType) const
+{
+	return LOCTEXT("RerouteTitle", "Reroute Point");
+}
+
+FText UWidgetAnimMachineRerouteNode::GetTooltipText() const
+{
+	return TransitionNode
+		? FText::Format(LOCTEXT("RerouteTooltip", "Reroute point on {0}"), TransitionNode->GetNodeTitle(ENodeTitleType::FullTitle))
+		: GetNodeTitle(ENodeTitleType::FullTitle);
+}
+
+void UWidgetAnimMachineRerouteNode::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
+{
+	FToolMenuSection& Section = Menu->AddSection(TEXT("WidgetAnimMachineReroute"), LOCTEXT("RerouteSection", "Reroute Point"));
+	const TWeakObjectPtr<const UWidgetAnimMachineRerouteNode> WeakSelf(this);
+	Section.AddMenuEntry(
+		TEXT("RemoveReroute"),
+		LOCTEXT("RemoveReroute", "Remove Reroute Point"),
+		MachineTips::RemoveRerouteTooltip(),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([WeakSelf]()
+		{
+			const UWidgetAnimMachineRerouteNode* Node = WeakSelf.Get();
+			UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+			if (Graph)
+			{
+				TMap<FGuid, TArray<int32>> Reroutes;
+				Reroutes.Add(Node->TransitionId, TArray<int32>{ Node->RerouteIndex });
+				WidgetAnimMachineEdits::Delete(Graph->Machine, Graph->LayerIndex, TArray<FGuid>(), TArray<FGuid>(), TArray<FGuid>(), Reroutes);
+			}
+		})));
+	Section.AddMenuEntry(
+		TEXT("ClearReroutesOnWire"),
+		LOCTEXT("ClearReroutesOnWire", "Remove All Reroute Points On Wire"),
+		MachineTips::ClearReroutesTooltip(),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([WeakSelf]()
+		{
+			const UWidgetAnimMachineRerouteNode* Node = WeakSelf.Get();
+			UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+			if (Graph)
+			{
+				WidgetAnimMachineEdits::ClearReroutes(Graph->Machine, Graph->LayerIndex, { Node->TransitionId });
+			}
+		})));
 	Section.AddMenuEntry(FGenericCommands::Get().Delete);
 }
 
@@ -2770,6 +3113,56 @@ private:
 	TFunction<bool()> IsNodeSelected;
 };
 
+namespace
+{
+	/**
+	 * The boxes of the two nodes a transition joins, in graph space, in its pair's order (see GetPairOrder) - where its
+	 * transition node and reroute points are placed from. False until both are laid out.
+	 */
+	bool GetPairBoxes(const TSharedPtr<SGraphPanel>& Panel, const UWidgetAnimMachineGraph* Graph, const UWidgetAnimMachineTransitionNode* Node, FBox2f& OutFirst, FBox2f& OutSecond)
+	{
+		if (!Panel.IsValid() || !Graph || !Node)
+		{
+			return false;
+		}
+		FGuid FirstId;
+		FGuid SecondId;
+		UWidgetAnimMachineGraph::GetPairOrder(Node, FirstId, SecondId);
+		const UWidgetAnimMachineGraphNode* First = Graph->FindStateNode(FirstId);
+		const UWidgetAnimMachineGraphNode* Second = Graph->FindStateNode(SecondId);
+		const TSharedPtr<SGraphNode> FirstWidget = First ? Panel->GetNodeWidgetFromGuid(First->NodeGuid) : nullptr;
+		const TSharedPtr<SGraphNode> SecondWidget = Second ? Panel->GetNodeWidgetFromGuid(Second->NodeGuid) : nullptr;
+		if (!FirstWidget.IsValid() || !SecondWidget.IsValid())
+		{
+			return false;
+		}
+		auto BoxOf = [](const UEdGraphNode* StateNode, const TSharedPtr<SGraphNode>& Widget)
+		{
+			const FVector2f Min(static_cast<float>(StateNode->NodePosX), static_cast<float>(StateNode->NodePosY));
+			return FBox2f(Min, Min + FVector2f(FVector2D(Widget->GetDesiredSize())));
+		};
+		OutFirst = BoxOf(First, FirstWidget);
+		OutSecond = BoxOf(Second, SecondWidget);
+		return true;
+	}
+
+	/** How lit a transition's wire is: 1 while the watched widget takes it, fading to 0 over WireLinger after (see the wires). */
+	float GetWireGlow(const UWidgetAnimMachineGraph* Graph, const FGuid& TransitionId)
+	{
+		if (!Graph)
+		{
+			return 0.f;
+		}
+		FWidgetAnimMachineLayerDebug Debug;
+		if (Graph->GetDebug && Graph->GetDebug(Debug) && Debug.ActiveTransition == TransitionId)
+		{
+			return 1.f;
+		}
+		const double* LastActive = Graph->LastActiveTimes.Find(TransitionId);
+		return LastActive ? FMath::Clamp(1.f - static_cast<float>(FPlatformTime::Seconds() - *LastActive) / MachineColors::WireLinger, 0.f, 1.f) : 0.f;
+	}
+}
+
 /** A transition's node, on its wire - see FWidgetAnimMachineConnectionDrawingPolicy, which draws the wire. */
 class SWidgetAnimMachineTransitionNode : public SGraphNode
 {
@@ -2871,26 +3264,12 @@ public:
 			return;
 		}
 
-		FGuid FirstId;
-		FGuid SecondId;
-		UWidgetAnimMachineGraph::GetPairOrder(Node, FirstId, SecondId);
-		const UWidgetAnimMachineGraphNode* First = Graph->FindStateNode(FirstId);
-		const UWidgetAnimMachineGraphNode* Second = Graph->FindStateNode(SecondId);
-		const TSharedPtr<SGraphNode> FirstWidget = First ? Panel->GetNodeWidgetFromGuid(First->NodeGuid) : nullptr;
-		const TSharedPtr<SGraphNode> SecondWidget = Second ? Panel->GetNodeWidgetFromGuid(Second->NodeGuid) : nullptr;
-		if (!FirstWidget.IsValid() || !SecondWidget.IsValid())
+		FBox2f FirstBox;
+		FBox2f SecondBox;
+		if (!GetPairBoxes(Panel, Graph, Node, FirstBox, SecondBox))
 		{
 			return;
 		}
-
-		auto BoxOf = [](const UEdGraphNode* StateNode, const TSharedPtr<SGraphNode>& Widget)
-		{
-			const FVector2f Min(static_cast<float>(StateNode->NodePosX), static_cast<float>(StateNode->NodePosY));
-			return FBox2f(Min, Min + FVector2f(FVector2D(Widget->GetDesiredSize())));
-		};
-
-		const FBox2f FirstBox = BoxOf(First, FirstWidget);
-		const FBox2f SecondBox = BoxOf(Second, SecondWidget);
 		const FVector2f Anchor = WidgetAnimMachineWires::GetPlacementAnchor(FirstBox, SecondBox);
 		const FVector2f MySize = FVector2f(FVector2D(GetDesiredSize()));
 
@@ -2902,12 +3281,7 @@ public:
 			Node->PlacedOffset = FVector2f(static_cast<float>(Current.X), static_cast<float>(Current.Y)) + MySize * 0.5f - Anchor;
 		}
 
-		int32 Lane = 0;
-		int32 Count = 1;
-		bool bReversed = false;
-		Graph->GetLane(Node, Lane, Count, bReversed);
-		const FVector2f PlacedPoint = Anchor + Node->PlacedOffset;
-		const FWidgetAnimMachineWire Wire = WidgetAnimMachineWires::Compute(FirstBox, SecondBox, Lane, Count, bReversed, Node->bPlaced ? &PlacedPoint : nullptr);
+		const FWidgetAnimMachineWire Wire = Graph->ComputeWire(Node, FirstBox, SecondBox);
 		Direction = Wire.NodeDirection;
 
 		const FVector2f Position = Wire.NodePoint - MySize * 0.5f;
@@ -2999,9 +3373,240 @@ private:
 	}
 };
 
+/**
+ * What a reroute point draws: a dot on its wire, as a Blueprint reroute node is - in the wire's own color, lit as the wire is
+ * while its transition is taken, lighter under the mouse, and ringed in the selection orange while selected.
+ */
+class SWidgetAnimMachineRerouteGlyph : public SLeafWidget
+{
+public:
+
+	SLATE_BEGIN_ARGS(SWidgetAnimMachineRerouteGlyph) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs, TWeakObjectPtr<UWidgetAnimMachineRerouteNode> InNode, TFunction<bool()> InIsSelected)
+	{
+		Node = InNode;
+		IsNodeSelected = MoveTemp(InIsSelected);
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override
+	{
+		return FVector2D(WidgetAnimMachineWires::RerouteHitSize, WidgetAnimMachineWires::RerouteHitSize);
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+	{
+		const UWidgetAnimMachineRerouteNode* RerouteNode = Node.Get();
+		const UWidgetAnimMachineTransitionNode* TransitionNode = RerouteNode ? RerouteNode->TransitionNode.Get() : nullptr;
+		const FWidgetAnimMachineTransition* Transition = TransitionNode ? TransitionNode->GetTransition() : nullptr;
+		if (!Transition)
+		{
+			return LayerId;
+		}
+
+		// The wire's own color, as the wires are drawn.
+		const float Glow = GetWireGlow(RerouteNode->GetMachineGraph(), RerouteNode->TransitionId);
+		FLinearColor Color = MachineColors::TransitionLine.CopyWithNewOpacity(1.f);
+		if (Glow > 0.f)
+		{
+			Color = FMath::Lerp(Color, MachineColors::WireActive, Glow);
+		}
+		else if (!Transition->bEnabled)
+		{
+			Color = MachineColors::TransitionDisabled;
+		}
+		if (IsHovered())
+		{
+			Color = FMath::Lerp(Color, FLinearColor::White, 0.35f);
+		}
+		const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
+
+		const FVector2f Center = AllottedGeometry.GetLocalSize() * 0.5f;
+		const FSlateBrush* Round = WidgetAnimMachineStyle::RoundBrush();
+		auto DrawCircle = [&](int32 Layer, float Radius, const FLinearColor& CircleColor)
+		{
+			const FVector2f CircleSize(Radius * 2.f, Radius * 2.f);
+			FSlateDrawElement::MakeBox(OutDrawElements, Layer,
+				AllottedGeometry.ToPaintGeometry(CircleSize, FSlateLayoutTransform(Center - CircleSize * 0.5f)), Round, ESlateDrawEffect::NoPixelSnapping, CircleColor);
+		};
+
+		const float Radius = WidgetAnimMachineWires::RerouteDiameter * 0.5f;
+		if (IsNodeSelected && IsNodeSelected())
+		{
+			// Selected: a band of the selection orange round it, as round a selected transition node.
+			DrawCircle(LayerId, Radius + MachineColors::TransitionSelectedWidth - MachineColors::TransitionSelectedOverlap,
+				FMath::Lerp(MachineColors::TransitionSelectedTop, MachineColors::TransitionSelectedBottom, 0.5f) * Tint);
+		}
+		else
+		{
+			// A thin dark rim, so it reads against the wire it sits on.
+			DrawCircle(LayerId, Radius + 1.f, MachineColors::TransitionArrow * Tint);
+		}
+		DrawCircle(LayerId + 1, Radius, Color * Tint);
+		return LayerId + 2;
+	}
+
+private:
+
+	TWeakObjectPtr<UWidgetAnimMachineRerouteNode> Node;
+	TFunction<bool()> IsNodeSelected;
+};
+
+/** A reroute point on a transition's wire: dragged like any node, its wire running through it. */
+class SWidgetAnimMachineRerouteNode : public SGraphNode
+{
+public:
+
+	SLATE_BEGIN_ARGS(SWidgetAnimMachineRerouteNode) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs, UWidgetAnimMachineRerouteNode* InNode)
+	{
+		GraphNode = InNode;
+		SetCursor(EMouseCursor::CardinalCross);
+		UpdateGraphNode();
+	}
+
+	virtual void UpdateGraphNode() override
+	{
+		InputPins.Empty();
+		OutputPins.Empty();
+		RightNodeBox.Reset();
+		LeftNodeBox.Reset();
+
+		const TWeakPtr<SWidgetAnimMachineRerouteNode> WeakSelf = SharedThis(this);
+		this->ContentScale.Bind(this, &SGraphNode::GetContentScale);
+		this->GetOrAddSlot(ENodeZone::Center)
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Center)
+			[
+				SNew(SWidgetAnimMachineRerouteGlyph,
+					TWeakObjectPtr<UWidgetAnimMachineRerouteNode>(Cast<UWidgetAnimMachineRerouteNode>(GraphNode)),
+					[WeakSelf]() { const TSharedPtr<SWidgetAnimMachineRerouteNode> Self = WeakSelf.Pin(); return Self.IsValid() && Self->IsSelected(); })
+				.ToolTip(WidgetAnimMachineStyle::MakeDynamicToolTip([WeakSelf]() -> TSharedPtr<SWidget>
+				{
+					const TSharedPtr<SWidgetAnimMachineRerouteNode> Self = WeakSelf.Pin();
+					return Self.IsValid() ? Self->MakeToolTipContent() : nullptr;
+				}))
+			];
+	}
+
+	virtual void CreatePinWidgets() override
+	{
+		// None: the wire is drawn through it (see the wires).
+	}
+
+	/** No selection brush from the graph editor - a rounded box round a dot. The dot draws its own ring (see the glyph). */
+	virtual const FSlateBrush* GetShadowBrush(bool bSelected) const override
+	{
+		return FAppStyle::GetNoBrush();
+	}
+
+	virtual bool RequiresSecondPassLayout() const override
+	{
+		return true;
+	}
+
+	/** Dragged by the graph - taken here, as the transition node takes its own (see SWidgetAnimMachineTransitionNode::MoveTo). */
+	virtual void MoveTo(const FVector2f& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty = true) override
+	{
+		if (!GraphNode || NodeFilter.Find(SharedThis(this)))
+		{
+			return;
+		}
+		NodeFilter.Add(SharedThis(this));
+		GraphNode->NodePosX = FMath::RoundToInt32(NewPosition.X);
+		GraphNode->NodePosY = FMath::RoundToInt32(NewPosition.Y);
+	}
+
+	/** Alt+click: takes the point off its wire. */
+	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && MouseEvent.IsAltDown())
+		{
+			const UWidgetAnimMachineRerouteNode* Node = Cast<UWidgetAnimMachineRerouteNode>(GraphNode);
+			UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+			if (Graph)
+			{
+				TMap<FGuid, TArray<int32>> Reroutes;
+				Reroutes.Add(Node->TransitionId, TArray<int32>{ Node->RerouteIndex });
+				WidgetAnimMachineEdits::Delete(Graph->Machine, Graph->LayerIndex, TArray<FGuid>(), TArray<FGuid>(), TArray<FGuid>(), Reroutes);
+				return FReply::Handled();
+			}
+		}
+		return SGraphNode::OnMouseButtonDown(MyGeometry, MouseEvent);
+	}
+
+	/**
+	 * Where its transition keeps it, from halfway between the two nodes the transition joins - so it follows them. Dragged
+	 * (moved by the graph since it was last put here), it stays where it was dropped, and its transition keeps it there.
+	 */
+	virtual void PerformSecondPassLayout(const TMap<UObject*, TSharedRef<SNodePanel::SNode>>& NodeToWidgetLookup) const override
+	{
+		UWidgetAnimMachineRerouteNode* Node = Cast<UWidgetAnimMachineRerouteNode>(GraphNode);
+		UWidgetAnimMachineTransitionNode* TransitionNode = Node ? Node->TransitionNode.Get() : nullptr;
+		const UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+		FBox2f FirstBox;
+		FBox2f SecondBox;
+		if (!TransitionNode || !TransitionNode->RerouteOffsets.IsValidIndex(Node->RerouteIndex) || !GetPairBoxes(OwnerGraphPanelPtr.Pin(), Graph, TransitionNode, FirstBox, SecondBox))
+		{
+			return;
+		}
+
+		const FVector2f Anchor = WidgetAnimMachineWires::GetPlacementAnchor(FirstBox, SecondBox);
+		const FVector2f MySize = FVector2f(FVector2D(GetDesiredSize()));
+		FVector2f& PointOffset = TransitionNode->RerouteOffsets[Node->RerouteIndex];
+
+		const FIntPoint Current(GraphNode->NodePosX, GraphNode->NodePosY);
+		if (bLaidOut && Current != LastLaidOut)
+		{
+			PointOffset = FVector2f(static_cast<float>(Current.X), static_cast<float>(Current.Y)) + MySize * 0.5f - Anchor;
+		}
+
+		const FVector2f Position = Anchor + PointOffset - MySize * 0.5f;
+		GraphNode->NodePosX = FMath::RoundToInt32(Position.X);
+		GraphNode->NodePosY = FMath::RoundToInt32(Position.Y);
+		LastLaidOut = FIntPoint(GraphNode->NodePosX, GraphNode->NodePosY);
+		bLaidOut = true;
+	}
+
+private:
+
+	/** Where it was last put, so a move by the graph - a drag - is told from its own placing. */
+	mutable FIntPoint LastLaidOut = FIntPoint::ZeroValue;
+	mutable bool bLaidOut = false;
+
+	bool IsSelected() const
+	{
+		const TSharedPtr<SGraphPanel> Panel = OwnerGraphPanelPtr.Pin();
+		return Panel.IsValid() && GraphNode && Panel->SelectionManager.IsNodeSelected(GraphNode);
+	}
+
+	TSharedPtr<SWidget> MakeToolTipContent() const
+	{
+		const UWidgetAnimMachineRerouteNode* Node = Cast<UWidgetAnimMachineRerouteNode>(GraphNode);
+		if (!Node || !Node->TransitionNode)
+		{
+			return nullptr;
+		}
+		WidgetAnimMachineStyle::FTipBuilder Tip;
+		Tip.Title(Node->TransitionNode->GetNodeTitle(ENodeTitleType::FullTitle), TipPalette::TooltipControlName);
+		Tip.Kind(LOCTEXT("RerouteKind", "Reroute Point"));
+		Tip.Paragraph(MachineTips::RerouteNodeTooltip());
+		return Tip.Build();
+	}
+};
+
 TSharedPtr<SGraphNode> UWidgetAnimMachineGraphNode::CreateVisualWidget()
 {
 	return SNew(SWidgetAnimMachineStateNode, this);
+}
+
+TSharedPtr<SGraphNode> UWidgetAnimMachineRerouteNode::CreateVisualWidget()
+{
+	return SNew(SWidgetAnimMachineRerouteNode, this);
 }
 
 TSharedPtr<SGraphNode> UWidgetAnimMachineTransitionNode::CreateVisualWidget()
@@ -3066,7 +3671,6 @@ public:
 		{
 			return;
 		}
-		auto ToScreen = [Scale, Origin](const FVector2f& GraphPoint) { return Origin + GraphPoint * Scale; };
 
 		FWidgetAnimMachineLayerDebug Debug;
 		const bool bDebugging = Graph->GetDebug && Graph->GetDebug(Debug);
@@ -3100,22 +3704,9 @@ public:
 				continue;
 			}
 
-			int32 Lane = 0;
-			int32 Count = 1;
-			bool bReversed = false;
-			Graph->GetLane(Transition, Lane, Count, bReversed);
-			const FVector2f PlacedPoint = WidgetAnimMachineWires::GetPlacementAnchor(*FirstBox, *SecondBox) + Transition->PlacedOffset;
-			FWidgetAnimMachineWire Wire = WidgetAnimMachineWires::Compute(*FirstBox, *SecondBox, Lane, Count, bReversed, Transition->bPlaced ? &PlacedPoint : nullptr);
-
 			// On screen: the same curve, scaled.
-			Wire.Start = ToScreen(Wire.Start);
-			Wire.End = ToScreen(Wire.End);
-			Wire.Mid = ToScreen(Wire.Mid);
-			Wire.StartTangent *= Scale;
-			Wire.EndTangent *= Scale;
-			Wire.MidTangentIn *= Scale;
-			Wire.MidTangentOut *= Scale;
-			Wire.NodePoint = ToScreen(Wire.NodePoint);
+			FWidgetAnimMachineWire Wire = Graph->ComputeWire(Transition, *FirstBox, *SecondBox);
+			Wire.Transform(Origin, Scale);
 
 			const FWidgetAnimMachineTransition* Data = Transition->GetTransition();
 			const bool bActive = bDebugging && Debug.ActiveTransition == Transition->TransitionId;
@@ -3141,15 +3732,10 @@ public:
 				Color = MachineColors::TransitionDisabled;
 			}
 
-			if (Wire.bThroughNode)
+			// Curve by curve: through the dragged node and every reroute point, if it has any.
+			for (const FWidgetAnimMachineWire::FSegment& Segment : Wire.Segments)
 			{
-				// Into the dragged node, and on out of it.
-				FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Wire.Start, Wire.StartTangent, Wire.Mid, Wire.MidTangentIn, Thickness * Scale, ESlateDrawEffect::None, Color);
-				FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Wire.Mid, Wire.MidTangentOut, Wire.End, Wire.EndTangent, Thickness * Scale, ESlateDrawEffect::None, Color);
-			}
-			else
-			{
-				FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Wire.Start, Wire.StartTangent, Wire.End, Wire.EndTangent, Thickness * Scale, ESlateDrawEffect::None, Color);
+				FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Segment.Start, Segment.StartTangent, Segment.End, Segment.EndTangent, Thickness * Scale, ESlateDrawEffect::None, Color);
 			}
 
 			// Dots running along it, the way it goes, as along a wire in Blueprint simulation.
@@ -3233,7 +3819,7 @@ private:
 		const FSlateBrush* BubbleBrush = FindBrush({ TEXT("Graph.ExecutionBubble") });
 
 		// The wire as a polyline, measured, so the dots move at an even pace along its length.
-		constexpr int32 Segments = 32;
+		const int32 Segments = 32 * FMath::Max(Wire.Segments.Num(), 1);
 		TArray<FVector2f> Points;
 		TArray<float> Lengths;
 		Points.Reserve(Segments + 1);

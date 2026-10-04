@@ -191,6 +191,12 @@ public:
 	/** How far the wheel zooms the graph in, without Ctrl: a little past 1:1. */
 	static constexpr float MaxGraphZoom = 1.5f;
 
+	/**
+	 * A double-click over the graph, before the graph editor sees it: on a transition's wire - not on a node - it puts a reroute
+	 * point there, as a double-click on a Blueprint wire adds a reroute node. True if taken.
+	 */
+	bool HandleGraphDoubleClick(const FPointerEvent& MouseEvent);
+
 	// Picking a preview target in the designer - see FWidgetAnimMachinePickInput.
 	bool IsPickingTarget() const { return PickingTarget.IsSet(); }
 	void UpdatePickHover(const FVector2D& ScreenPosition);
