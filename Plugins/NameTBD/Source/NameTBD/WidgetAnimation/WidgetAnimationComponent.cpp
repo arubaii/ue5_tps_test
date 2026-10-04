@@ -18,6 +18,7 @@
 #include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 #include "Widgets/SWidget.h"
+#include "WidgetAnimStateMachineRuntime.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimationComponent, Log, All);
 
@@ -199,6 +200,18 @@ void UWidgetAnimationComponent::BeginDestroy()
 {
 	StopRuntimeTicking();
 	StopDesignerPreview();
+	if (StateEventTickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(StateEventTickerHandle);
+		StateEventTickerHandle.Reset();
+	}
+	if (const TSharedPtr<FActiveTimerHandle> Handle = MachinePreviewTimerHandle.Pin())
+	{
+		if (const TSharedPtr<SWidget> Widget = MachinePreviewTimerWidget.Pin())
+		{
+			Widget->UnRegisterActiveTimer(Handle.ToSharedRef());
+		}
+	}
 	Unregister();
 	Super::BeginDestroy();
 }
@@ -787,6 +800,10 @@ void UWidgetAnimationComponent::NotifyOwnerConstructed()
 	bLastSeenVisible = IsVisibleState(AnimatedWidget->GetVisibility());
 
 	RebuildEffectiveAnimations();
+
+	// Set up before the baselines are captured, so the widgets they animate are captured too.
+	InitializeMachines();
+
 	EnsureRuntimeBaselines();
 	StartRuntimeTicking();
 
@@ -798,6 +815,13 @@ void UWidgetAnimationComponent::NotifyOwnerConstructed()
 	{
 		// Only the Anim In entries set to Play In Animation On Construct.
 		PlayForTrigger(EEntryTrigger::Construct, /*bOut=*/false);
+	}
+
+	// The state machines start at their Entry - posed now, before the widget is first drawn.
+	StartMachines(/*bOnlyOnConstruct=*/true);
+	if (AreMachinesRunning())
+	{
+		ApplyCurrentAnimPose();
 	}
 }
 
@@ -816,6 +840,14 @@ void UWidgetAnimationComponent::NotifyOwnerDestructed()
 	// A widget can be constructed again (removed and re-added); it should start from a clean player.
 	UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
 	AnimPlayer.Phase = EWidgetAnimPhase::Idle;
+
+	// And clean machines, started again at their Entry - their inputs kept (a Selected set from a Blueprint, a View Model's
+	// value), which InitializeMachines carries over on the next construct.
+	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		WidgetAnimStateMachines::Stop(Instance);
+	}
+	MachineLastPosed.Reset();
 }
 
 void UWidgetAnimationComponent::StartRuntimeTicking()
@@ -855,7 +887,7 @@ void UWidgetAnimationComponent::RuntimeTick(float DeltaTime)
 
 	// A component cannot intercept its owner's SetVisibility, so becoming visible is noticed here instead.
 	// The pose is applied in the same frame (see ApplyCurrentAnimPose), before Slate draws the widget.
-	if (bAnyVisibilityTrigger && !bPlayOnlyOnConstructAndDestruct)
+	if (ReactsToVisibility() && !bPlayOnlyOnConstructAndDestruct)
 	{
 		const bool bVisibleNow = IsVisibleState(AnimatedWidget->GetVisibility());
 		if (bVisibleNow && !bLastSeenVisible && !bIsDeferringVisibility)
@@ -887,17 +919,26 @@ void UWidgetAnimationComponent::EnsureRuntimeBaselines()
 		return;
 	}
 
+	// The state machines' widgets are captured too - in the same first call, since there is no second.
+	TArray<FWidgetAnimSettings> MachineSettings;
+	if (StateMachines.Num() > 0 && !(bPreserveAuthoredTransforms ? AnimBaselines.bCaptured : ResetPoseBaselines.bCaptured))
+	{
+		MachineSettings = FlattenedIn;
+		GatherMachineSettings(MachineSettings);
+	}
+	const TArray<FWidgetAnimSettings>& InToCapture = MachineSettings.Num() > 0 ? MachineSettings : FlattenedIn;
+
 	// No-ops after the first call. Capturing again would read back a pose the animation itself wrote.
 	if (bPreserveAuthoredTransforms)
 	{
-		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(AnimatedWidget, FlattenedIn, FlattenedOut, AnimBaselines);
+		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(AnimatedWidget, InToCapture, FlattenedOut, AnimBaselines);
 	}
 	else
 	{
 		// Not composed over - Preserve Authored Transforms is off - but still needed to put widgets back when an
 		// animation is stopped with Reset To Start. Without it that reset had nothing to restore, so the widget
 		// stayed wherever the animation had gotten to.
-		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(AnimatedWidget, FlattenedIn, FlattenedOut, ResetPoseBaselines);
+		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(AnimatedWidget, InToCapture, FlattenedOut, ResetPoseBaselines);
 	}
 }
 
@@ -918,7 +959,24 @@ void UWidgetAnimationComponent::ApplyCurrentAnimPose()
 void UWidgetAnimationComponent::TickPlayer(UWidget* AnimatedWidget, float DeltaTime, TArray<FName>& OutJustFinished)
 {
 	++PlayerTickDepth;
-	UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, OutJustFinished);
+	if (AreMachinesRunning() || MachineLastPosed.Num() > 0)
+	{
+		// The tracks and the state machines worked out into one result, applied once: a machine's pose and a one-shot played
+		// by ID on the same widget compose instead of taking turns.
+		FWidgetAnimResult Result;
+		UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, OutJustFinished, Result);
+		TickAndComposeMachines(DeltaTime, Result);
+		UWidgetAnimLibrary::ApplyComposedResult(AnimatedWidget, Result, AnimBaselines);
+		UWidgetAnimLibrary::ReleaseFinishedTracks(AnimPlayer);
+		for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+		{
+			WidgetAnimStateMachines::ReleaseFinishedTracks(Instance);
+		}
+	}
+	else
+	{
+		UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, OutJustFinished);
+	}
 	--PlayerTickDepth;
 
 	if (PlayerTickDepth == 0 && bTextChangePending)
@@ -1015,8 +1073,26 @@ bool UWidgetAnimationComponent::PlayForTrigger(EEntryTrigger Trigger, bool bOut)
 	const bool bAnyEntryAnswers = Entries.ContainsByPredicate([&Answers](const FWidgetAnimEntry& Entry) { return Entry.IsUsable() && Answers(Entry); });
 	const TArray<FWidgetAnimSettings>& Unnamed = bOut ? UnnamedAnimOut : UnnamedAnimIn;
 	const bool bUnnamedOnly = !bAnyEntryAnswers && Trigger == EEntryTrigger::Construct && Entries.Num() == 0 && Unnamed.Num() > 0;
+
+	// The state machines hear of it as their Closing input: their way to Exit, or back in through Entry - whether or not an
+	// entry answers the trigger too.
+	if (Trigger == EEntryTrigger::Visibility)
+	{
+		SetMachinesClosing(bOut);
+	}
+
 	if (!bAnyEntryAnswers && !bUnnamedOnly)
 	{
+		// Only a state machine's way to Exit plays: the hide waits for it all the same.
+		if (Trigger == EEntryTrigger::Visibility && bOut && AreMachinesExiting())
+		{
+			AnimPlayer.Phase = EWidgetAnimPhase::PlayingOut;
+			return true;
+		}
+		if (Trigger == EEntryTrigger::Visibility && !bOut && AnimPlayer.Phase != EWidgetAnimPhase::PlayingIn && AreMachinesRunning())
+		{
+			AnimPlayer.Phase = EWidgetAnimPhase::Shown;
+		}
 		return false;
 	}
 
@@ -1125,6 +1201,10 @@ void UWidgetAnimationComponent::PlayIn(bool bCascadeToChildren)
 	// The entrance after all: whatever exit was waiting for a value is not going to happen.
 	PendingExit = EPendingExit::None;
 
+	// The state machines come back in through their Entry - and start, if they were waiting for Play In.
+	SetMachinesClosing(false);
+	StartMachines(/*bOnlyOnConstruct=*/false);
+
 	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
 
 	UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
@@ -1184,6 +1264,9 @@ void UWidgetAnimationComponent::PlayOut(bool bCascadeToChildren)
 			return;
 		}
 	}
+
+	// The state machines take their way to Exit.
+	SetMachinesClosing(true);
 
 	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
 
@@ -1293,7 +1376,7 @@ bool UWidgetAnimationComponent::TickAnimationPlayback(float DeltaTime)
 	{
 		AnimPlayer.Phase = EWidgetAnimPhase::Shown;
 	}
-	else if (AnimPlayer.Phase == EWidgetAnimPhase::PlayingOut && !IsSettlingInDirection(/*bIsOut=*/true))
+	else if (AnimPlayer.Phase == EWidgetAnimPhase::PlayingOut && !IsSettlingInDirection(/*bIsOut=*/true) && !AreMachinesExiting())
 	{
 		AnimPlayer.Phase = EWidgetAnimPhase::Hidden;
 		HandleOutAnimationFinished();
@@ -1370,7 +1453,16 @@ bool UWidgetAnimationComponent::SetWidgetAnimationValues(const FWidgetAnimValueI
 		UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, UnnamedAnimIn, /*bIsOut=*/false, /*Speed=*/1.f, /*bRestartIfPlaying=*/false, /*bHoldWhenFinished=*/true);
 	}
 
-	const int32 Taken = UWidgetAnimEntryLibrary::SetEntriesValue(AnimPlayer, EffectiveInEntries, Resolver, Id, Value, bSnap, bStartIfNotPlaying, &AppendExtra);
+	int32 Taken = UWidgetAnimEntryLibrary::SetEntriesValue(AnimPlayer, EffectiveInEntries, Resolver, Id, Value, bSnap, bStartIfNotPlaying, &AppendExtra);
+
+	// The value tracks the state machines' states play take it too. A percentage state's progress is its Progress Input's.
+	if (Id.ValueName != WidgetAnimValue::ProgressValueName)
+	{
+		for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+		{
+			Taken += WidgetAnimStateMachines::SetTrackValue(Instance, Id, Value, bSnap);
+		}
+	}
 
 	// Shown this frame: a snap, or a track just started at its value. The ticker takes it from here.
 	ApplyCurrentAnimPose();
@@ -1470,7 +1562,8 @@ bool UWidgetAnimationComponent::HasWidgetAnimationValue(const FWidgetAnimValueId
 
 bool UWidgetAnimationComponent::HasExitToPlay() const
 {
-	return FlattenedOut.Num() > 0 || PendingExit != EPendingExit::None || UWidgetAnimLibrary::IsAnyValueLayerHoldingExit(AnimPlayer);
+	return FlattenedOut.Num() > 0 || PendingExit != EPendingExit::None || UWidgetAnimLibrary::IsAnyValueLayerHoldingExit(AnimPlayer)
+		|| MachineInstances.ContainsByPredicate([](const FWidgetAnimMachineInstance& Instance) { return Instance.bStarted && Instance.Machine && Instance.Machine->HasExitPath(); });
 }
 
 void UWidgetAnimationComponent::ApplyValueOverrides(TArray<FWidgetAnimSettings>& Settings) const
@@ -1708,7 +1801,7 @@ void UWidgetAnimationComponent::SetVisibilityAnimated(ESlateVisibility InVisibil
 		return;
 	}
 
-	if (bAnyVisibilityTrigger && !bPlayOnlyOnConstructAndDestruct && bOwnerConstructed)
+	if (ReactsToVisibility() && !bPlayOnlyOnConstructAndDestruct && bOwnerConstructed)
 	{
 		const bool bIsBecomingInvisible = !IsVisibleState(InVisibility);
 		const bool bWasVisible = IsVisibleState(AnimatedWidget->GetVisibility());
@@ -1852,6 +1945,12 @@ void UWidgetAnimationComponent::NotifyOwnerDesignTimeRefresh()
 		return;
 	}
 
+	// The state machine preview starts again too, when the panel asks for it - the widget it posed may be a new one.
+	if (bMachinePreviewing)
+	{
+		StopDesignerStateMachinePreview();
+	}
+
 	// Put back whatever a previous preview left before reading the authored pose again.
 	if (AnimBaselines.bCaptured)
 	{
@@ -1973,6 +2072,12 @@ void UWidgetAnimationComponent::PlayDesignerPreviewOverride(bool bOut, const FWi
 {
 	// The exit is only ever seen after the entrance has settled, so Play Out plays from the settled pose.
 	// Looping is the stamped layers' own - endless, with Ping Pong if asked - so the mode is always Once.
+	// The toolbar's preview and the state machine preview pose the same widgets: the one asked for last plays.
+	if (bMachinePreviewing)
+	{
+		StopDesignerStateMachinePreview();
+	}
+
 	DesignerPreviewOptions = Options;
 	DesignerPreviewModeOverride = bOut ? EWidgetAnimPreviewMode::PlayOut : EWidgetAnimPreviewMode::PlayIn;
 	bDesignerPreviewScrubOut = bOut;
@@ -1985,6 +2090,11 @@ void UWidgetAnimationComponent::PlayDesignerPreviewOverride(bool bOut, const FWi
 
 void UWidgetAnimationComponent::ScrubDesignerPreviewOverride(float Alpha, const FWidgetAnimDesignerPlayback& Options)
 {
+	if (bMachinePreviewing)
+	{
+		StopDesignerStateMachinePreview();
+	}
+
 	const bool bWasDriving = DesignerPreviewModeOverride.IsSet();
 
 	DesignerPreviewOptions = Options;
@@ -2188,6 +2298,7 @@ void UWidgetAnimationComponent::PostLoad()
 	RefreshAdditiveStarts();
 	AssignAdditiveValueNames();
 	RefreshValueOverrides();
+	SyncStateMachines();
 }
 
 bool UWidgetAnimationComponent::SyncEntryGroupTargets()
@@ -2234,6 +2345,9 @@ void UWidgetAnimationComponent::PostEditChangeProperty(FPropertyChangedEvent& Pr
 	{
 		AssignAdditiveValueNames();
 		RefreshValueOverrides();
+
+		// A machine picked or swapped: its Target Widgets and Inputs get a row each.
+		SyncStateMachines();
 	}
 
 	// Keeps each Transform layer's Keys list one-to-one with its curve: a key added on the curve gets an
@@ -2242,3 +2356,535 @@ void UWidgetAnimationComponent::PostEditChangeProperty(FPropertyChangedEvent& Pr
 	UWidgetAnimTransformLibrary::RequestSyncTransformAnims(this, PropertyChangedEvent);
 }
 #endif
+// =====================================================================================================
+// State machines
+// =====================================================================================================
+
+const FWidgetAnimMachineContext& UWidgetAnimationComponent::GetMachineContext()
+{
+	UWidget* AnimatedWidget = AnimOwner.Get();
+	MachineContext.Host = AnimatedWidget;
+	MachineContext.bDesignTime = AnimatedWidget && AnimatedWidget->IsDesignTime();
+	MachineContext.Baselines = &AnimBaselines;
+	MachineContext.RestBaselines = AnimBaselines.bCaptured ? &AnimBaselines : &ResetPoseBaselines;
+
+	// Made once: weak, so a machine never keeps the component alive or calls into one that is gone.
+	if (!MachineContext.ResolvePath)
+	{
+		const TWeakObjectPtr<UWidgetAnimationComponent> WeakThis(this);
+		MachineContext.ResolvePath = [WeakThis](FName Path) -> UWidget*
+		{
+			const UWidgetAnimationComponent* Self = WeakThis.Get();
+			return Self ? Self->ResolveAnimTarget(Path) : nullptr;
+		};
+		MachineContext.OnStateEvent = [WeakThis](const FWidgetAnimStateEventInfo& Info)
+		{
+			if (UWidgetAnimationComponent* Self = WeakThis.Get())
+			{
+				Self->QueueStateEvent(Info);
+			}
+		};
+	}
+	return MachineContext;
+}
+
+void UWidgetAnimationComponent::InitializeMachines()
+{
+	// Inputs set before the widget was constructed - a View Model bound early, a Blueprint setting a Selected - carry over.
+	struct FKeptInput
+	{
+		const UWidgetAnimStateMachineAsset* Machine = nullptr;
+		FWidgetAnimMachineInputState Input;
+	};
+	TArray<FKeptInput> Kept;
+	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		for (const FWidgetAnimMachineInputState& Input : Instance.Inputs)
+		{
+			if (Input.Type != EWidgetAnimMachineInputType::Trigger)
+			{
+				FKeptInput& Entry = Kept.AddDefaulted_GetRef();
+				Entry.Machine = Instance.Machine;
+				Entry.Input = Input;
+			}
+		}
+		WidgetAnimStateMachines::Stop(Instance);
+	}
+
+	MachineInstances.Reset();
+	MachineLastPosed.Reset();
+	for (int32 RowIndex = 0; RowIndex < StateMachines.Num(); ++RowIndex)
+	{
+		if (!StateMachines[RowIndex].StateMachine)
+		{
+			continue;
+		}
+		FWidgetAnimMachineInstance& Instance = MachineInstances.AddDefaulted_GetRef();
+		WidgetAnimStateMachines::Initialize(Instance, StateMachines[RowIndex], RowIndex);
+
+		for (const FKeptInput& Entry : Kept)
+		{
+			FWidgetAnimMachineInputState* Input = Entry.Machine == Instance.Machine ? Instance.FindInput(Entry.Input.Name) : nullptr;
+			if (Input && Input->Type == Entry.Input.Type)
+			{
+				Input->bValue = Entry.Input.bValue;
+				Input->Number = Entry.Input.Number;
+			}
+		}
+	}
+}
+
+void UWidgetAnimationComponent::StartMachines(bool bOnlyOnConstruct)
+{
+	if (!AnimOwner.IsValid())
+	{
+		return;
+	}
+	if (MachineInstances.Num() == 0 && StateMachines.Num() > 0)
+	{
+		InitializeMachines();
+	}
+
+	const FWidgetAnimMachineContext& Context = GetMachineContext();
+	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		const bool bAsked = !bOnlyOnConstruct || (StateMachines.IsValidIndex(Instance.RowIndex) && StateMachines[Instance.RowIndex].bStartOnConstruct);
+		if (!Instance.bStarted && bAsked)
+		{
+			WidgetAnimStateMachines::Start(Instance, Context);
+		}
+	}
+}
+
+bool UWidgetAnimationComponent::AreMachinesRunning() const
+{
+	return MachineInstances.ContainsByPredicate([](const FWidgetAnimMachineInstance& Instance) { return Instance.bStarted; });
+}
+
+bool UWidgetAnimationComponent::ReactsToVisibility() const
+{
+	// Entries set to play on visibility - or a state machine with a way to Exit, which plays as the widget is hidden.
+	return bAnyVisibilityTrigger || MachineInstances.ContainsByPredicate([](const FWidgetAnimMachineInstance& Instance)
+	{
+		return Instance.bStarted && Instance.Machine && Instance.Machine->HasExitPath();
+	});
+}
+
+bool UWidgetAnimationComponent::AreMachinesExiting() const
+{
+	return MachineInstances.ContainsByPredicate([](const FWidgetAnimMachineInstance& Instance)
+	{
+		return Instance.bClosing && WidgetAnimStateMachines::IsExitPending(Instance);
+	});
+}
+
+void UWidgetAnimationComponent::GatherMachineSettings(TArray<FWidgetAnimSettings>& OutSettings)
+{
+	const FWidgetAnimMachineContext& Context = GetMachineContext();
+	for (const FWidgetAnimStateMachineEntry& Row : StateMachines)
+	{
+		WidgetAnimStateMachines::GatherAllSettings(Row, Context, OutSettings);
+	}
+}
+
+void UWidgetAnimationComponent::SetMachinesClosing(bool bClosing)
+{
+	if (MachineInstances.Num() == 0)
+	{
+		return;
+	}
+	const FWidgetAnimMachineContext& Context = GetMachineContext();
+	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		WidgetAnimStateMachines::SetClosing(Instance, Context, bClosing);
+	}
+}
+
+bool UWidgetAnimationComponent::ForEachMachine(const UWidgetAnimStateMachineAsset* StateMachine, TFunctionRef<bool(FWidgetAnimMachineInstance&)> Visit)
+{
+	// Set before the widget is constructed - a View Model bound early, a Blueprint setting Selected in Pre Construct: the
+	// instances are made now, not started, so the value is there when they start (InitializeMachines keeps it).
+	if (MachineInstances.Num() == 0 && StateMachines.Num() > 0)
+	{
+		InitializeMachines();
+	}
+
+	bool bAny = false;
+	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		if (!StateMachine || Instance.Machine == StateMachine)
+		{
+			bAny |= Visit(Instance);
+		}
+	}
+	return bAny;
+}
+
+const FWidgetAnimMachineInstance* UWidgetAnimationComponent::FindMachine(const UWidgetAnimStateMachineAsset* StateMachine) const
+{
+	return MachineInstances.FindByPredicate([StateMachine](const FWidgetAnimMachineInstance& Instance) { return !StateMachine || Instance.Machine == StateMachine; });
+}
+
+void UWidgetAnimationComponent::TickAndComposeMachines(float DeltaTime, FWidgetAnimResult& Result)
+{
+	const FWidgetAnimMachineContext& Context = GetMachineContext();
+
+	// Moved once a frame at runtime, as the track player is: a second tick in the same frame re-poses.
+	if (!Context.bDesignTime && DeltaTime > 0.f)
+	{
+		if (MachinesLastAdvanceFrame == GFrameCounter)
+		{
+			DeltaTime = 0.f;
+		}
+		else
+		{
+			MachinesLastAdvanceFrame = GFrameCounter;
+		}
+	}
+
+	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		WidgetAnimStateMachines::Tick(Instance, Context, DeltaTime);
+	}
+	WidgetAnimStateMachines::Compose(MakeArrayView(MachineInstances), TracksWithStateMachines, Context, Result, MachineLastPosed);
+}
+
+void UWidgetAnimationComponent::QueueStateEvent(const FWidgetAnimStateEventInfo& Info)
+{
+	PendingStateEvents.Add(Info);
+
+	// The next frame, never in the middle of a frame being applied: a handler may change anything, the widget included.
+	if (!StateEventTickerHandle.IsValid())
+	{
+		StateEventTickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this, [this](float)
+		{
+			StateEventTickerHandle.Reset();
+			FlushStateEvents();
+			return false;
+		}));
+	}
+}
+
+namespace WidgetAnimComponentStateEvents
+{
+	/** Calls Owner's function of this name - a state's Custom Event - with its parameters filled by type. True if it had one. */
+	bool CallStateEvent(UObject* EventOwner, FName FunctionName, const FWidgetAnimStateEventInfo& Info)
+	{
+		UFunction* Function = EventOwner->FindFunction(FunctionName);
+		if (!Function)
+		{
+			return false;
+		}
+
+		// The whole frame, not only the parameters: a function of that name (rather than the Custom Event) may have locals,
+		// and InitializeStruct covers them too.
+		uint8* Params = static_cast<uint8*>(FMemory_Alloca_Aligned(FMath::Max<int32>(Function->GetStructureSize(), 1), Function->GetMinAlignment()));
+		Function->InitializeStruct(Params);
+		for (TFieldIterator<FProperty> It(Function); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+		{
+			if (const FStructProperty* StructProperty = CastField<FStructProperty>(*It))
+			{
+				if (StructProperty->Struct == FWidgetAnimStateEventInfo::StaticStruct())
+				{
+					StructProperty->CopyCompleteValue(StructProperty->ContainerPtrToValuePtr<void>(Params), &Info);
+				}
+			}
+			else if (const FNameProperty* NameProperty = CastField<FNameProperty>(*It))
+			{
+				NameProperty->SetPropertyValue_InContainer(Params, Info.State);
+			}
+		}
+		EventOwner->ProcessEvent(Function, Params);
+		Function->DestroyStruct(Params);
+		return true;
+	}
+}
+
+void UWidgetAnimationComponent::FlushStateEvents()
+{
+	TArray<FWidgetAnimStateEventInfo> Events = MoveTemp(PendingStateEvents);
+	PendingStateEvents.Reset();
+
+	for (const FWidgetAnimStateEventInfo& Info : Events)
+	{
+		OnStateMachineStateChanged.Broadcast(Info);
+
+		// Its Custom Event - On <Machine> Entered <State> - on the nearest User Widget around the widget playing the machine
+		// that has one: the Widget Blueprint the component was set up in, usually.
+		const FName FunctionName = WidgetAnimMachineEvents::GetStateEventFunctionName(Info.Machine, Info.State, Info.bEntered);
+		if (FunctionName.IsNone())
+		{
+			continue;
+		}
+		static constexpr int32 MaxOwnerDepth = 64;
+		UObject* EventOwner = Info.Host;
+		for (int32 Depth = 0; EventOwner && Depth < MaxOwnerDepth; ++Depth, EventOwner = EventOwner->GetOuter())
+		{
+			if (EventOwner->IsA<UUserWidget>() && WidgetAnimComponentStateEvents::CallStateEvent(EventOwner, FunctionName, Info))
+			{
+				break;
+			}
+		}
+	}
+}
+
+bool UWidgetAnimationComponent::SetStateMachineBool(FName Input, bool bValue, UWidgetAnimStateMachineAsset* StateMachine)
+{
+	return ForEachMachine(StateMachine, [Input, bValue](FWidgetAnimMachineInstance& Instance) { return WidgetAnimStateMachines::SetBool(Instance, Input, bValue); });
+}
+
+bool UWidgetAnimationComponent::SetStateMachineNumber(FName Input, float Value, UWidgetAnimStateMachineAsset* StateMachine)
+{
+	return ForEachMachine(StateMachine, [Input, Value](FWidgetAnimMachineInstance& Instance) { return WidgetAnimStateMachines::SetNumber(Instance, Input, Value); });
+}
+
+bool UWidgetAnimationComponent::FireStateMachineTrigger(FName Input, UWidgetAnimStateMachineAsset* StateMachine)
+{
+	return ForEachMachine(StateMachine, [Input](FWidgetAnimMachineInstance& Instance) { return WidgetAnimStateMachines::FireTrigger(Instance, Input); });
+}
+
+bool UWidgetAnimationComponent::SetStateMachineInputValue(FName Input, double Value, UWidgetAnimStateMachineAsset* StateMachine)
+{
+	return ForEachMachine(StateMachine, [Input, Value](FWidgetAnimMachineInstance& Instance) { return WidgetAnimStateMachines::SetFromNumber(Instance, Input, Value); });
+}
+
+bool UWidgetAnimationComponent::GetStateMachineBool(FName Input, UWidgetAnimStateMachineAsset* StateMachine) const
+{
+	bool bValue = false;
+	for (const FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		if ((!StateMachine || Instance.Machine == StateMachine) && WidgetAnimStateMachines::GetBool(Instance, Input, bValue))
+		{
+			return bValue;
+		}
+	}
+	return false;
+}
+
+float UWidgetAnimationComponent::GetStateMachineNumber(FName Input, UWidgetAnimStateMachineAsset* StateMachine) const
+{
+	float Value = 0.f;
+	for (const FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		if ((!StateMachine || Instance.Machine == StateMachine) && WidgetAnimStateMachines::GetNumber(Instance, Input, Value))
+		{
+			return Value;
+		}
+	}
+	return 0.f;
+}
+
+bool UWidgetAnimationComponent::IsInState(FName State, UWidgetAnimStateMachineAsset* StateMachine, FName Layer) const
+{
+	return MachineInstances.ContainsByPredicate([State, StateMachine, Layer](const FWidgetAnimMachineInstance& Instance)
+	{
+		return (!StateMachine || Instance.Machine == StateMachine) && WidgetAnimStateMachines::IsInState(Instance, State, Layer);
+	});
+}
+
+FName UWidgetAnimationComponent::GetCurrentStateOfLayer(UWidgetAnimStateMachineAsset* StateMachine, FName Layer) const
+{
+	for (const FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		if ((!StateMachine || Instance.Machine == StateMachine) && Instance.bStarted)
+		{
+			// Of a machine with that layer: the first that has it.
+			if (!Layer.IsNone() && Instance.Machine && Instance.Machine->FindLayerIndex(Layer) == INDEX_NONE)
+			{
+				continue;
+			}
+			return WidgetAnimStateMachines::GetCurrentState(Instance, Layer);
+		}
+	}
+	return NAME_None;
+}
+
+void UWidgetAnimationComponent::StartStateMachines()
+{
+	if (!bOwnerConstructed || !AnimOwner.IsValid())
+	{
+		return;
+	}
+	EnsureRuntimeBaselines();
+	StartMachines(/*bOnlyOnConstruct=*/false);
+	ApplyCurrentAnimPose();
+}
+
+void UWidgetAnimationComponent::StopStateMachines()
+{
+	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		WidgetAnimStateMachines::Stop(Instance);
+	}
+
+	// The widgets they posed go back to what the rest says, this frame.
+	if (bOwnerConstructed)
+	{
+		ApplyCurrentAnimPose();
+	}
+}
+
+bool UWidgetAnimationComponent::HasStateMachineInput(const UWidgetAnimStateMachineAsset* StateMachine, FName Input) const
+{
+	if (Input.IsNone())
+	{
+		return false;
+	}
+	for (const FWidgetAnimStateMachineEntry& Row : StateMachines)
+	{
+		if (Row.StateMachine && (!StateMachine || Row.StateMachine == StateMachine) && (Row.StateMachine->FindInput(Input) || WidgetAnimMachineInputs::IsBuiltIn(Input)))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool UWidgetAnimationComponent::PlaysStateMachine(const UWidgetAnimStateMachineAsset* StateMachine) const
+{
+	return StateMachine && StateMachines.ContainsByPredicate([StateMachine](const FWidgetAnimStateMachineEntry& Row) { return Row.StateMachine == StateMachine; });
+}
+
+bool UWidgetAnimationComponent::SyncStateMachines()
+{
+	if (StateMachines.Num() == 0)
+	{
+		return false;
+	}
+
+	// New rows are checked against what this widget's tree has - see FWidgetAnimEntry::SyncGroupTargets.
+	const TArray<FString> TargetOptions = GetAnimTargetWidgetOptions();
+	bool bChanged = false;
+	for (FWidgetAnimStateMachineEntry& Row : StateMachines)
+	{
+		bChanged |= Row.SyncToMachine(&TargetOptions);
+	}
+	return bChanged;
+}
+
+// =====================================================================================================
+// State machines in the designer
+// =====================================================================================================
+
+bool UWidgetAnimationComponent::StartDesignerStateMachinePreview()
+{
+	UWidget* AnimatedWidget = AnimOwner.Get();
+	if (!AnimatedWidget || !AnimatedWidget->IsDesignTime() || StateMachines.Num() == 0)
+	{
+		return false;
+	}
+	if (bMachinePreviewing)
+	{
+		return true;
+	}
+
+	const TSharedPtr<SWidget> SlateWidget = AnimatedWidget->GetCachedWidget();
+	if (!SlateWidget.IsValid())
+	{
+		return false;
+	}
+
+	// The toolbar's preview gives way: the two pose the same widgets.
+	DesignerPreviewModeOverride.Reset();
+	StopDesignerPreview();
+
+	// From the authored pose, read again with the machines' widgets in it.
+	if (AnimBaselines.bCaptured)
+	{
+		UWidgetAnimLibrary::RestoreWidgetAnimBaselines(AnimBaselines);
+	}
+	AnimBaselines.ResetBaselines();
+	RebuildEffectiveAnimations();
+	SyncStateMachines();
+	InitializeMachines();
+	TArray<FWidgetAnimSettings> InToCapture = FlattenedIn;
+	GatherMachineSettings(InToCapture);
+	UWidgetAnimLibrary::CaptureWidgetAnimBaselines(AnimatedWidget, InToCapture, FlattenedOut, AnimBaselines);
+
+	bMachinePreviewing = true;
+	const FWidgetAnimMachineContext& Context = GetMachineContext();
+	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		WidgetAnimStateMachines::Start(Instance, Context);
+	}
+	TickDesignerMachines(0.f);
+
+	// An active timer, which is also what keeps the designer repainting while the machines move.
+	const TSharedRef<FActiveTimerHandle> Handle = SlateWidget->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateWeakLambda(this,
+		[this](double /*CurrentTime*/, float DeltaTime) -> EActiveTimerReturnType
+		{
+			if (!bMachinePreviewing || !AnimOwner.IsValid())
+			{
+				return EActiveTimerReturnType::Stop;
+			}
+			TickDesignerMachines(DeltaTime);
+			return EActiveTimerReturnType::Continue;
+		}));
+	MachinePreviewTimerHandle = Handle;
+	MachinePreviewTimerWidget = SlateWidget;
+	return true;
+}
+
+void UWidgetAnimationComponent::StopDesignerStateMachinePreview()
+{
+	if (!bMachinePreviewing)
+	{
+		return;
+	}
+	bMachinePreviewing = false;
+
+	const TSharedPtr<FActiveTimerHandle> Handle = MachinePreviewTimerHandle.Pin();
+	const TSharedPtr<SWidget> Widget = MachinePreviewTimerWidget.Pin();
+	if (Handle.IsValid() && Widget.IsValid())
+	{
+		Widget->UnRegisterActiveTimer(Handle.ToSharedRef());
+	}
+	MachinePreviewTimerHandle.Reset();
+	MachinePreviewTimerWidget.Reset();
+
+	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		WidgetAnimStateMachines::Stop(Instance);
+	}
+	MachineInstances.Reset();
+	MachineLastPosed.Reset();
+
+	if (AnimBaselines.bCaptured)
+	{
+		UWidgetAnimLibrary::RestoreWidgetAnimBaselines(AnimBaselines);
+	}
+}
+
+void UWidgetAnimationComponent::TickDesignerMachines(float DeltaTime)
+{
+	UWidget* AnimatedWidget = AnimOwner.Get();
+	if (!AnimatedWidget)
+	{
+		return;
+	}
+
+	FWidgetAnimResult Result;
+	TickAndComposeMachines(DeltaTime, Result);
+	UWidgetAnimLibrary::ApplyComposedResult(AnimatedWidget, Result, AnimBaselines);
+	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		WidgetAnimStateMachines::ReleaseFinishedTracks(Instance);
+	}
+}
+
+void UWidgetAnimationComponent::SetDesignerStateMachineBuiltIn(FName Input, bool bValue, const UWidgetAnimStateMachineAsset* StateMachine)
+{
+	const FWidgetAnimMachineContext& Context = GetMachineContext();
+	ForEachMachine(StateMachine, [&Context, Input, bValue](FWidgetAnimMachineInstance& Instance)
+	{
+		if (Input == WidgetAnimMachineInputs::Closing)
+		{
+			WidgetAnimStateMachines::SetClosing(Instance, Context, bValue);
+		}
+		else
+		{
+			WidgetAnimStateMachines::SetBuiltIn(Instance, Input, bValue);
+		}
+		return true;
+	});
+}

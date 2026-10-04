@@ -55,7 +55,9 @@ enum class EWidgetDataTriggerAction : uint8
 	Stop UMETA(ToolTip = "Stops the animations when the condition becomes true."),
 	SetValue UMETA(DisplayName = "Set Value", ToolTip = "Drives value-driven tracks (Timing = Value) with the field: every change sets the value of Value Name - a number or bool, a Vector 2D or a Linear Color, as it is. Each track maps it onto itself through its own Value At Start and Value At End. A loading bar following Load Progress, a health bar following Health. Condition is not used."),
 
-	SetProgress UMETA(DisplayName = "Set Progress", ToolTip = "Drives percentage animations (Time In Percent) with the field: every change sets the progress of the entries with the Anim IDs - every percentage animation when empty - 0 for 0% and 1 for 100%; a bool is 0 or 1. A hold ring following Hold Progress, a charge meter following Charge. Condition is not used.")
+	SetProgress UMETA(DisplayName = "Set Progress", ToolTip = "Drives percentage animations (Time In Percent) with the field: every change sets the progress of the entries with the Anim IDs - every percentage animation when empty - 0 for 0% and 1 for 100%; a bool is 0 or 1. A hold ring following Hold Progress, a charge meter following Charge. Condition is not used."),
+
+	SetInput UMETA(DisplayName = "Set State Machine Input", ToolTip = "Drives a Widget Animation State Machine's input with the field: every change sets the input named Input Name on the machine the Animation Widget plays. A Bool input is true while the field is (a non-zero number, a set bool); a Number takes the number; a Trigger fires each time the field changes to something true. Is Selected, Has Unread, Charge. Condition is not used.")
 };
 
 /**
@@ -117,15 +119,15 @@ struct NAMETBDMVVM_API FWidgetFieldTrigger
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (DisplayName = "ViewModel Field", GetOptions = "GetViewModelFieldOptions"))
 	FName ViewModelField;
 
-	/** Not used by Set Value, which acts on every change of the field. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress", EditConditionHides))
+	/** Not used by Set Value, Set Progress or Set State Machine Input, which act on every change of the field. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput", EditConditionHides))
 	EWidgetDataTriggerCondition Condition = EWidgetDataTriggerCondition::IsTrue;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput", EditConditionHides))
 	EWidgetDataComparison Comparison = EWidgetDataComparison::Less;
 
 	/** The value the field is compared against. Bools are 0 and 1, enums their numeric value. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput", EditConditionHides))
 	double Threshold = 0.0;
 
 	/**
@@ -133,7 +135,7 @@ struct NAMETBDMVVM_API FWidgetFieldTrigger
 	 * value hovering on the threshold doesn't flicker the animation on and off. With < 0.25 and Hysteresis
 	 * 0.05, Low Health starts below 0.25 and stops only above 0.30. Used by <, <=, > and >=.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress", EditConditionHides, ClampMin = "0", UIMin = "0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput", EditConditionHides, ClampMin = "0", UIMin = "0"))
 	double Hysteresis = 0.0;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger")
@@ -150,8 +152,15 @@ struct NAMETBDMVVM_API FWidgetFieldTrigger
 	 * The Anim IDs to play or stop - or, for Set Progress, whose percentage animations the field drives. Empty means every
 	 * Anim In entry, the same as Play Widget Animation.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (DisplayName = "Anim IDs", EditCondition = "Action != EWidgetDataTriggerAction::SetValue", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (DisplayName = "Anim IDs", EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetInput", EditConditionHides))
 	TArray<FName> AnimIds;
+
+	/**
+	 * Set State Machine Input: the input of the state machine the field drives - an input of a Widget Animation State Machine
+	 * played by the Animation Widget's Widget Animation Component (or one inside it, or outwards from it).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (DisplayName = "Input Name", EditCondition = "Action == EWidgetDataTriggerAction::SetInput", EditConditionHides))
+	FName InputName;
 
 	/**
 	 * The widget whose Widget Animation Component (or animation host) owns the Anim IDs. None is the widget
@@ -171,21 +180,21 @@ struct NAMETBDMVVM_API FWidgetFieldTrigger
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger")
 	bool bEvaluateOnBind = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput", EditConditionHides))
 	EWidgetAnimPlayDirection Direction = EWidgetAnimPlayDirection::Forward;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress", EditConditionHides, ClampMin = "0.01", UIMin = "0.01"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput", EditConditionHides, ClampMin = "0.01", UIMin = "0.01"))
 	float PlaybackSpeed = 1.f;
 
 	/** Off: a one-shot returns the widget to normal when it ends. On: it stays on its final pose. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput", EditConditionHides))
 	bool bHoldFinalPose = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput", EditConditionHides))
 	bool bRestartIfPlaying = true;
 
 	/** When stopping: snap the widgets back to where they were before the animation began, rather than holding them where it got to. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::Play && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::Play && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput", EditConditionHides))
 	bool bResetToStartOnStop = true;
 };
 

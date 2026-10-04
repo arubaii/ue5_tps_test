@@ -489,5 +489,55 @@ namespace NameTBD
 			inline const FLinearColor ScriptSelection(0.03f, 0.08f, 0.18f);
 			inline const FLinearColor ScriptCursor(AnimationOrange_Normal);
 		}
+
+		// =================================================================================================
+		// The Widget Animation State Machine editor - see SWidgetAnimStateMachineEditor and WidgetAnimStateMachineGraph.
+		// Laid out like an Animation Blueprint's state machine, so it reads the same at a glance.
+		// =================================================================================================
+		namespace StateMachineEditor
+		{
+			// -------------------------------------------------------------------------------------------------
+			// Transitions - the arrows between states, and the rule icon in their middle.
+			//   TransitionLine: an arrow at rest. TransitionActive: the transition being taken in the watched widget - the
+			//     animation orange, the one moving thing. TransitionDisabled: one switched off (Enabled unticked).
+			//   TransitionIcon: the round rule icon in an arrow's middle.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor TransitionLine(0.78f, 0.78f, 0.80f, 0.90f);
+			inline const FLinearColor TransitionActive(AnimationOrange_Normal);
+			inline const FLinearColor TransitionDisabled(0.30f, 0.30f, 0.32f, 0.70f);
+			inline const FLinearColor TransitionIcon(0.86f, 0.86f, 0.88f);
+
+			// -------------------------------------------------------------------------------------------------
+			// States.
+			//   StateEdge / StateEdgeHovered: the ring round a state that a transition is dragged from - brighter under the
+			//     mouse, so it reads as the thing to drag.
+			//   StateBody: a state at rest. StateActive: the state the watched widget is in. StateLeaving: the state it is
+			//     blending out of, while a transition plays.
+			//   EntryBody / ExitBody / AnyStateBody: the three special nodes - green for where it starts, red for where it
+			//     ends (Anim Out), blue for the transitions that can be taken from anywhere.
+			//   StateTitle / StateTitleActive: a state's name, and the name of the one in play.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor StateEdge(0.12f, 0.12f, 0.13f);
+			inline const FLinearColor StateEdgeHovered(0.55f, 0.55f, 0.58f);
+			inline const FLinearColor StateBody(0.06f, 0.06f, 0.065f);
+			inline const FLinearColor StateActive(AnimationOrange_Normal * FLinearColor(0.55f, 0.55f, 0.55f, 1.0f));
+			inline const FLinearColor StateLeaving(0.22f, 0.16f, 0.07f);
+			inline const FLinearColor EntryBody(0.06f, 0.22f, 0.08f);
+			inline const FLinearColor ExitBody(0.26f, 0.05f, 0.05f);
+			inline const FLinearColor AnyStateBody(0.05f, 0.12f, 0.26f);
+			inline const FLinearColor StateTitle(0.90f, 0.90f, 0.90f);
+			inline const FLinearColor StateTitleActive(1.0f, 1.0f, 1.0f);
+
+			// -------------------------------------------------------------------------------------------------
+			// The Inputs panel - each input's type as a small colored dot, matching the Blueprint pin colors of the
+			// same types (Boolean red, Float green, an exec-like white for a Trigger), so they read as what they are.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor InputBool(0.30f, 0.0f, 0.0f);
+			inline const FLinearColor InputNumber(0.357667f, 1.0f, 0.06f);
+			inline const FLinearColor InputTrigger(1.0f, 1.0f, 1.0f);
+		}
 	}
 }

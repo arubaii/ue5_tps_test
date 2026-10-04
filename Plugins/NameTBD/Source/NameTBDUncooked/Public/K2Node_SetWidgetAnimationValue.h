@@ -101,6 +101,18 @@ public:
 	 */
 	void LogValueSourceSearch() const;
 
+	/**
+	 * The scope Node's Target pin reaches - see the class comment. Shared with the other nodes that pick from what a widget's
+	 * components play: Set State Machine Input.
+	 */
+	static FWidgetAnimValueSourceScope FindScopeFor(const UK2Node* Node, const UEdGraphPin* TargetPin);
+
+	/**
+	 * The Widget Animation Components in Scope: those of the designer preview when its editor is open, then those the
+	 * Blueprints store, nested User Widgets' Blueprints included. The same component may be listed more than once.
+	 */
+	static void GatherComponentsInScope(const FWidgetAnimValueSourceScope& Scope, TArray<const class UWidgetAnimationComponent*>& OutComponents);
+
 protected:
 
 	/** The type the Value pin has: the picked track's. Saved, so the pin is right before anything is looked up. */

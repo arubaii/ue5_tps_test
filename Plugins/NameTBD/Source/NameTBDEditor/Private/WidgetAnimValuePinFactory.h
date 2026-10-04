@@ -7,7 +7,8 @@
 
 /**
  * Draws the Set Widget Animation Value node's Animation and Value Name pins as dropdowns: the animations the widget's
- * Widget Animation Components play, and the value-driven tracks in the picked one. Every other pin is left to the
+ * Widget Animation Components play, and the value-driven tracks in the picked one - and the Set State Machine Input node's
+ * State Machine and Input pins: the machines they play, and the picked machine's inputs. Every other pin is left to the
  * engine's own factories.
  */
 class FWidgetAnimValuePinFactory : public FGraphPanelPinFactory

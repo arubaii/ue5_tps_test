@@ -29,6 +29,8 @@
 #include "WidgetAnimValuePinFactory.h"
 #include "WidgetAnimEntryCustomization.h"
 #include "WidgetAnimEditorSettings.h"
+#include "WidgetAnimStateMachineAssetEditor.h"
+#include "SWidgetAnimStateMachineEditor.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
 #include "Components/AudioComponent.h"
 #include "Containers/Ticker.h"
@@ -57,7 +59,12 @@ void FNameTBDEditorModule::StartupModule()
 	TSharedPtr<IAssetTypeActions> CustomAction = MakeShareable(new FNameTBDAssetTypeActions());
 	AssetTools.RegisterAssetTypeActions(CustomAction.ToSharedRef());
 	RegisteredAssetTypeActions.Add(CustomAction);
-	
+
+	// Widget Animation State Machines (WASM_): opened in their own editor on a double-click.
+	TSharedPtr<IAssetTypeActions> MachineAction = MakeShared<FWidgetAnimStateMachineAssetTypeActions>();
+	AssetTools.RegisterAssetTypeActions(MachineAction.ToSharedRef());
+	RegisteredAssetTypeActions.Add(MachineAction);
+
 	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateLambda([]()
 	{
 		FToolMenuOwnerScoped OwnerScoped(TEXT("NameTBDEditor"));
@@ -129,6 +136,9 @@ void FNameTBDEditorModule::StartupModule()
 
 void FNameTBDEditorModule::ShutdownModule()
 {
+	// The State Machine editors kept for the status bar drawers, while what they hold on to is still there.
+	WidgetAnimStateMachineEditorHooks::Shutdown();
+
 	WidgetAnimCues::SetPreviewSoundPlayer(nullptr);
 
 	if (ValuePinFactory.IsValid())
