@@ -497,10 +497,10 @@ namespace NameTBD
 		namespace StateMachineEditor
 		{
 			// -------------------------------------------------------------------------------------------------
-			// Transitions - the arrows between states, and the rule icon in their middle.
-			//   TransitionLine: an arrow at rest. TransitionActive: the transition being taken in the watched widget - the
-			//     animation orange, the one moving thing. TransitionDisabled: one switched off (Enabled unticked).
-			//   TransitionIcon: the round rule icon in an arrow's middle.
+			// Transitions - the wires between states.
+			//   TransitionLine: a wire at rest. TransitionDisabled: one switched off (Enabled unticked).
+			//   TransitionActive / TransitionIcon: no longer drawn - a wire in play runs with WireBubble dots now, and the
+			//     transition node's colors are further down (TransitionTween and on). Kept for anything reading them.
 			// -------------------------------------------------------------------------------------------------
 
 			inline const FLinearColor TransitionLine(0.78f, 0.78f, 0.80f, 0.90f);
@@ -538,6 +538,77 @@ namespace NameTBD
 			inline const FLinearColor InputBool(0.30f, 0.0f, 0.0f);
 			inline const FLinearColor InputNumber(0.357667f, 1.0f, 0.06f);
 			inline const FLinearColor InputTrigger(1.0f, 1.0f, 1.0f);
+
+			// -------------------------------------------------------------------------------------------------
+			// Wires - Blueprint splines from state to state.
+			//   WireActive: the wire of the transition being taken, a touch brighter; WireBubble: the dots that run along it,
+			//     as they run along a wire in Blueprint simulation. WireBubbleSize / WireBubbleSpacing / WireBubbleSpeed: their
+			//     size, how far apart they run and how fast, in graph units (and per second).
+			//   WireThickness / WireActiveThickness: in graph units.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor WireActive(0.95f, 0.95f, 0.97f, 1.0f);
+			inline const FLinearColor WireBubble(AnimationOrange_Normal);
+			inline constexpr float WireBubbleSize = 7.0f;
+			inline constexpr float WireBubbleSpacing = 40.0f;
+			inline constexpr float WireBubbleSpeed = 120.0f;
+			inline constexpr float WireThickness = 1.5f;
+			inline constexpr float WireActiveThickness = 2.5f;
+
+			// -------------------------------------------------------------------------------------------------
+			// The transition node - the round node on a wire. Its color says how it blends:
+			//   TransitionTween: blue. TransitionSpring: violet, with a second ring round it, like a coil. TransitionAnimation:
+			//   the animation orange, striped like a value-driven track (TransitionStripe, TransitionStripeWidth / Spacing).
+			//   TransitionCut: gray, a bar in front of its arrow.
+			//   TransitionArrow: the chevron pointing the way it goes. TransitionRing: its outline; TransitionSelected: the
+			//   ring while it is selected; TransitionPlaying: the ring while the watched widget takes it.
+			//   TransitionIdleDim: how much of its color it shows while not playing, in the debugger - the fill is the full
+			//   color, rising across it like a progress bar as it plays.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor TransitionTween(0.30f, 0.60f, 0.98f);
+			inline const FLinearColor TransitionSpring(0.66f, 0.48f, 0.98f);
+			inline const FLinearColor TransitionAnimation(AnimationOrange_Normal);
+			inline const FLinearColor TransitionCut(0.58f, 0.58f, 0.62f);
+			inline const FLinearColor TransitionStripe(1.0f, 1.0f, 1.0f, 0.32f);
+			inline constexpr float TransitionStripeWidth = 2.0f;
+			inline constexpr float TransitionStripeSpacing = 5.0f;
+			inline const FLinearColor TransitionArrow(0.03f, 0.03f, 0.035f, 0.92f);
+			inline const FLinearColor TransitionRing(0.0f, 0.0f, 0.0f, 0.55f);
+			inline const FLinearColor TransitionSelected(1.0f, 1.0f, 1.0f, 0.95f);
+			inline const FLinearColor TransitionPlaying(AnimationOrange_Hovered);
+			inline constexpr float TransitionIdleDim = 0.38f;
+
+			// -------------------------------------------------------------------------------------------------
+			// The length label beside a transition node: how long the transition takes. Text, and the dark pill behind it.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor LengthLabelText(1.0f, 1.0f, 1.0f, 0.78f);
+			inline const FLinearColor LengthLabelBackground(0.015f, 0.015f, 0.018f, 0.78f);
+
+			// -------------------------------------------------------------------------------------------------
+			// States, in more detail. StateProgress: the fill rising across a state while its animation plays, in the
+			// debugger. StateSelected: the outline of a selected state.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor StateProgress = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.42f);
+			inline const FLinearColor StateSelected(1.0f, 1.0f, 1.0f, 0.85f);
+
+			// -------------------------------------------------------------------------------------------------
+			// The Inputs panel. InputRowSelected: behind the input whose settings the Details show. BuiltInUnused: a built-in
+			// input the machine doesn't read.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor InputRowSelected = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.16f);
+			inline const FLinearColor InputRowHovered(1.0f, 1.0f, 1.0f, 0.04f);
+			inline const FLinearColor BuiltInUnused(1.0f, 1.0f, 1.0f, 0.32f);
+
+			// -------------------------------------------------------------------------------------------------
+			// Picking a preview target in the designer: the label beside the eyedropper.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor PickLabelBackground(0.02f, 0.02f, 0.02f, 0.92f);
+			inline const FLinearColor PickLabelText(AnimationOrange_Normal);
 		}
 	}
 }

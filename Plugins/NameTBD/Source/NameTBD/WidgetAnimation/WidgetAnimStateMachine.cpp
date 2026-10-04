@@ -3,7 +3,9 @@
 #include "WidgetAnimStateMachine.h"
 
 #include "Components/Widget.h"
+#include "WidgetAnimLibrary.h"
 #include "WidgetAnimPreset.h"
+#include "WidgetAnimSpring.h"
 
 #define LOCTEXT_NAMESPACE "WidgetAnimStateMachine"
 
@@ -25,10 +27,54 @@ float FWidgetAnimMachineTransition::GetBlendSeconds() const
 	case EWidgetAnimMachineBlend::Cut:
 		return 0.f;
 	case EWidgetAnimMachineBlend::Spring:
-		return Spring.VisualDuration;
+		return UWidgetAnimSpringLibrary::GetVisualDuration(Spring);
+	case EWidgetAnimMachineBlend::Animation:
+		// No animation: the transition is only its blend.
+		return TransitionAnimation ? GetTransitionAnimationSeconds() + GetTweenSeconds() : GetTweenSeconds();
 	default:
-		return FMath::Max(Duration, 0.f);
+		return GetTweenSeconds();
 	}
+}
+
+float FWidgetAnimMachineTransition::GetTweenSeconds() const
+{
+	return FMath::Max(Blend == EWidgetAnimMachineBlend::Animation ? AnimationBlendTime : Duration, 0.f);
+}
+
+float FWidgetAnimMachineTransition::GetTransitionAnimationLength() const
+{
+	if (!TransitionAnimation)
+	{
+		return 0.f;
+	}
+
+	// One pass of it as a use plays it: every group on no widget in particular - the length doesn't depend on which.
+	FWidgetAnimEntry Use;
+	Use.Animation = TransitionAnimation;
+	Use.PlaybackSpeed = 1.f;
+	Use.ProgressAnimationDuration = 1.f;
+	TArray<FWidgetAnimSettings> Settings;
+	Use.BuildSettings(Settings, [](int32) -> UWidget* { return nullptr; });
+	return Settings.Num() > 0 ? UWidgetAnimLibrary::GetStackPassDuration(Settings) : 0.f;
+}
+
+float FWidgetAnimMachineTransition::GetTransitionAnimationSeconds() const
+{
+	if (bOverrideAnimationDuration)
+	{
+		return FMath::Max(AnimationDuration, 0.01f);
+	}
+	return GetTransitionAnimationLength() / FMath::Max(TransitionAnimationSpeed, 0.01f);
+}
+
+float FWidgetAnimMachineTransition::GetTransitionAnimationSpeed() const
+{
+	if (!bOverrideAnimationDuration)
+	{
+		return FMath::Max(TransitionAnimationSpeed, 0.01f);
+	}
+	const float Length = GetTransitionAnimationLength();
+	return Length > KINDA_SMALL_NUMBER ? FMath::Max(Length / FMath::Max(AnimationDuration, 0.01f), 0.01f) : 1.f;
 }
 
 FWidgetAnimMachineState::FWidgetAnimMachineState()
@@ -385,6 +431,25 @@ bool UWidgetAnimStateMachineAsset::Normalize()
 				bChanged = true;
 			}
 		}
+
+#if WITH_EDITORONLY_DATA
+		// Comment boxes: an id each, as the graph knows them by.
+		TSet<FGuid> SeenComments;
+		for (FWidgetAnimMachineComment& Comment : Layer.Comments)
+		{
+			bool bSeen = false;
+			if (Comment.Id.IsValid())
+			{
+				SeenComments.Add(Comment.Id, &bSeen);
+			}
+			if (!Comment.Id.IsValid() || bSeen)
+			{
+				Comment.Id = FGuid::NewGuid();
+				SeenComments.Add(Comment.Id);
+				bChanged = true;
+			}
+		}
+#endif
 	}
 
 	// Inputs: a name each, unique, and never one of the built-in ones.

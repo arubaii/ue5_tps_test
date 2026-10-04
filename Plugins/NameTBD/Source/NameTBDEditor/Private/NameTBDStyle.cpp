@@ -136,5 +136,15 @@ TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
        AddCheckIcon(MenuUncheckedIcon, TEXT("WidgetAnim_MenuUnchecked.svg"), EditorCheckBox.UncheckedImage);
     }
 
+    // The State Machine editor's Exit node. Left unset when the file is missing: the node falls back to an editor icon.
+    {
+       const TSharedPtr<IPlugin> ExitPlugin = IPluginManager::Get().FindPlugin(TEXT("NameTBD"));
+       const FString ExitPath = ExitPlugin.IsValid() ? ExitPlugin->GetBaseDir() / TEXT("Resources/WidgetAnim_StateMachineExit.svg") : FString();
+       if (!ExitPath.IsEmpty() && FPaths::FileExists(ExitPath))
+       {
+          Style->Set(StateMachineExitIcon, new FSlateVectorImageBrush(ExitPath, FVector2D(16.0f, 16.0f)));
+       }
+    }
+
     return Style;
 }

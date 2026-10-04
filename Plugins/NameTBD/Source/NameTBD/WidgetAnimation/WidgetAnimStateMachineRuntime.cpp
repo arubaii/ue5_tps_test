@@ -8,6 +8,7 @@
 #include "Components/Widget.h"
 #include "Framework/Application/SlateApplication.h"
 #include "WidgetAnimPreset.h"
+#include "WidgetAnimSpring.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimStateMachine, Log, All);
 
@@ -882,6 +883,7 @@ namespace WidgetAnimStateMachines
 			Layer.Current = ToIndex;
 			Layer.Transition = TransitionIndex;
 			Layer.BlendElapsed = 0.f;
+			Layer.TransitionAnimationSeconds = 0.f;
 			Layer.bExited = false;
 			Layer.bSettled = false;
 			Layer.bStateTrackStarted = false;
@@ -898,9 +900,11 @@ namespace WidgetAnimStateMachines
 			if (Transition.Blend == EWidgetAnimMachineBlend::Animation && Transition.TransitionAnimation)
 			{
 				TArray<FWidgetAnimSettings> Settings;
-				BuildAnimationSettings(Transition.TransitionAnimation, Instance.TargetPaths, Context, EWidgetAnimMachineStatePlayback::Once, Transition.TransitionAnimationSpeed, /*bFollowsProgress=*/false, Settings);
+				// At its own length - or sped up or slowed down to fit the Animation Duration it is given.
+				BuildAnimationSettings(Transition.TransitionAnimation, Instance.TargetPaths, Context, EWidgetAnimMachineStatePlayback::Once, Transition.GetTransitionAnimationSpeed(), /*bFollowsProgress=*/false, Settings);
 				if (Settings.Num() > 0)
 				{
+					Layer.TransitionAnimationSeconds = UWidgetAnimLibrary::GetStackPassDuration(Settings);
 					UWidgetAnimLibrary::StartWidgetAnimTrack(Layer.Player, GetTransitionTrackId(Def, Transition), /*SourceIndex=*/1, Settings, /*bIsOut=*/false, /*Speed=*/1.f, /*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
 					Layer.Phase = EWidgetAnimMachineBlendPhase::TransitionAnimation;
 				}
@@ -910,7 +914,7 @@ namespace WidgetAnimStateMachines
 			{
 				StartStateTrack(Instance, Def, Layer, Context);
 				const bool bInstant = Transition.Blend == EWidgetAnimMachineBlend::Cut
-					|| (Transition.Blend != EWidgetAnimMachineBlend::Spring && Transition.Duration <= KINDA_SMALL_NUMBER);
+					|| (Transition.Blend != EWidgetAnimMachineBlend::Spring && Transition.GetTweenSeconds() <= KINDA_SMALL_NUMBER);
 				Layer.Phase = bInstant ? EWidgetAnimMachineBlendPhase::None : EWidgetAnimMachineBlendPhase::Blending;
 			}
 
@@ -1230,7 +1234,7 @@ namespace WidgetAnimStateMachines
 				else
 				{
 					Layer.BlendElapsed += DeltaTime;
-					const float Duration = FMath::Max(Transition->Duration, KINDA_SMALL_NUMBER);
+					const float Duration = FMath::Max(Transition->GetTweenSeconds(), KINDA_SMALL_NUMBER);
 					const float Linear = FMath::Clamp(Layer.BlendElapsed / Duration, 0.f, 1.f);
 					const float Alpha = WidgetAnimEasing::Evaluate(Transition->Easing, Transition->CustomCurve, Linear);
 					FWidgetAnimMachinePose Blended;
@@ -1251,7 +1255,7 @@ namespace WidgetAnimStateMachines
 			case EWidgetAnimMachineBlendPhase::TransitionAnimation:
 			{
 				Layer.BlendElapsed += DeltaTime;
-				const float BlendIn = Transition ? FMath::Max(Transition->Duration, 0.f) : 0.f;
+				const float BlendIn = Transition ? Transition->GetTweenSeconds() : 0.f;
 				const float Linear = BlendIn > KINDA_SMALL_NUMBER ? FMath::Clamp(Layer.BlendElapsed / BlendIn, 0.f, 1.f) : 1.f;
 				const float Alpha = Transition ? WidgetAnimEasing::Evaluate(Transition->Easing, Transition->CustomCurve, Linear) : 1.f;
 				FWidgetAnimMachinePose Blended;
@@ -1276,7 +1280,7 @@ namespace WidgetAnimStateMachines
 						Layer.FromPose = Layer.Output;
 						StartStateTrack(Instance, Def, Layer, Context);
 						Layer.BlendElapsed = 0.f;
-						Layer.Phase = Transition && Transition->Duration > KINDA_SMALL_NUMBER ? EWidgetAnimMachineBlendPhase::BlendingAfterAnimation : EWidgetAnimMachineBlendPhase::None;
+						Layer.Phase = Transition && Transition->GetTweenSeconds() > KINDA_SMALL_NUMBER ? EWidgetAnimMachineBlendPhase::BlendingAfterAnimation : EWidgetAnimMachineBlendPhase::None;
 						if (Layer.Phase == EWidgetAnimMachineBlendPhase::None)
 						{
 							FinishTransition(Def, Layer);
@@ -1966,10 +1970,53 @@ namespace WidgetAnimStateMachines
 			Debug.ActiveTransition = Def.Transitions.IsValidIndex(Layer.Transition) ? Def.Transitions[Layer.Transition].Id : FGuid();
 			if (Def.Transitions.IsValidIndex(Layer.Transition))
 			{
-				const float Seconds = FMath::Max(Def.Transitions[Layer.Transition].GetBlendSeconds(), KINDA_SMALL_NUMBER);
-				Debug.TransitionAlpha = FMath::Clamp(Layer.BlendElapsed / Seconds, 0.f, 1.f);
+				// The whole way: a transition animation, then the blend out of it, read as one bar.
+				const FWidgetAnimMachineTransition& Transition = Def.Transitions[Layer.Transition];
+				const float Blend = Transition.Blend == EWidgetAnimMachineBlend::Spring ? UWidgetAnimSpringLibrary::GetVisualDuration(Transition.Spring) : Transition.GetTweenSeconds();
+				float Elapsed = Layer.BlendElapsed;
+				float Total = Blend;
+				if (Layer.Phase == EWidgetAnimMachineBlendPhase::TransitionAnimation || Layer.Phase == EWidgetAnimMachineBlendPhase::BlendingAfterAnimation)
+				{
+					Total = Layer.TransitionAnimationSeconds + Transition.GetTweenSeconds();
+					Elapsed = Layer.Phase == EWidgetAnimMachineBlendPhase::TransitionAnimation
+						? FMath::Min(Layer.BlendElapsed, Layer.TransitionAnimationSeconds)
+						: Layer.TransitionAnimationSeconds + Layer.BlendElapsed;
+				}
+				Debug.TransitionAlpha = Total > KINDA_SMALL_NUMBER ? FMath::Clamp(Elapsed / Total, 0.f, 1.f) : 1.f;
 			}
-			Debug.StateAlpha = Layer.PassSeconds > KINDA_SMALL_NUMBER ? FMath::Clamp(Layer.TimeInState / Layer.PassSeconds, 0.f, 1.f) : (Layer.bStatePlayed ? 1.f : 0.f);
+
+			// Through the pass it is on: a looping state's bar runs again each pass, a ping-pong's back and forth.
+			const FWidgetAnimMachineState* StateDef = Def.States.IsValidIndex(Layer.Current) ? &Def.States[Layer.Current] : nullptr;
+			const EWidgetAnimMachineStatePlayback Playback = StateDef ? StateDef->Playback : EWidgetAnimMachineStatePlayback::Once;
+			if (Layer.PassSeconds > KINDA_SMALL_NUMBER)
+			{
+				const float Passes = Layer.TimeInState / Layer.PassSeconds;
+				switch (Playback)
+				{
+				case EWidgetAnimMachineStatePlayback::Loop:
+					Debug.StateAlpha = FMath::Frac(Passes);
+					break;
+				case EWidgetAnimMachineStatePlayback::PingPong:
+				{
+					const float Cycle = FMath::Fmod(Passes, 2.f);
+					Debug.StateAlpha = Cycle <= 1.f ? Cycle : 2.f - Cycle;
+					break;
+				}
+				case EWidgetAnimMachineStatePlayback::Pose:
+					Debug.StateAlpha = 1.f;
+					break;
+				default:
+					Debug.StateAlpha = FMath::Clamp(Passes, 0.f, 1.f);
+					break;
+				}
+			}
+			else
+			{
+				Debug.StateAlpha = Layer.bStatePlayed ? 1.f : 0.f;
+			}
+			Debug.bStatePlaying = StateDef && StateDef->Kind == EWidgetAnimMachineNodeKind::State && StateDef->Animation
+				&& Layer.bStateTrackStarted && Playback != EWidgetAnimMachineStatePlayback::Pose && Layer.PassSeconds > KINDA_SMALL_NUMBER
+				&& !(Playback == EWidgetAnimMachineStatePlayback::Once && Layer.bStatePlayed);
 			Debug.bExited = Layer.bExited;
 			Debug.Weight = Layer.Weight;
 		}
