@@ -1,0 +1,177 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+index 34e85f7..ad55a87 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+@@ -1042,7 +1042,7 @@ FText UWidgetAnimMachineGraphNode::GetTooltipText() const
+ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
+ {
+ 	FToolMenuSection& Section = Menu->AddSection(TEXT("WidgetAnimMachineState"), LOCTEXT("StateSection", "State"));
+-	const TWeakObjectPtr<const UWidgetAnimMachineGraphNode> WeakThis(this);
++	const TWeakObjectPtr<const UWidgetAnimMachineGraphNode> WeakSelf(this);
+ 	if (Kind == EWidgetAnimMachineNodeKind::State)
+ 	{
+ 		Section.AddMenuEntry(
+@@ -1050,9 +1050,9 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
+ 			LOCTEXT("SetEntryStateMenu", "Set As Entry State"),
+ 			MachineTips::SetEntryStateTooltip(),
+ 			FSlateIcon(),
+-			FUIAction(FExecuteAction::CreateLambda([WeakThis]()
++			FUIAction(FExecuteAction::CreateLambda([WeakSelf]()
+ 			{
+-				const UWidgetAnimMachineGraphNode* Node = WeakThis.Get();
++				const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+ 				UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+ 				if (Graph)
+ 				{
+@@ -1064,9 +1064,9 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
+ 			LOCTEXT("OpenStateAnimation", "Open Animation"),
+ 			MachineTips::OpenStateAnimationTooltip(),
+ 			FSlateIcon(),
+-			FUIAction(FExecuteAction::CreateLambda([WeakThis]()
++			FUIAction(FExecuteAction::CreateLambda([WeakSelf]()
+ 			{
+-				const UWidgetAnimMachineGraphNode* Node = WeakThis.Get();
++				const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+ 				UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+ 				if (Graph && Graph->OnOpenState)
+ 				{
+@@ -1092,9 +1092,9 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
+ 				.Text(FText::FromString(State ? State->Comment : FString()))
+ 				.HintText(LOCTEXT("NodeCommentHint", "A note shown over the state"))
+ 				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::NodeCommentTooltip()))
+-				.OnTextCommitted_Lambda([WeakThis](const FText& NewText, ETextCommit::Type CommitType)
++				.OnTextCommitted_Lambda([WeakSelf](const FText& NewText, ETextCommit::Type CommitType)
+ 				{
+-					const UWidgetAnimMachineGraphNode* Node = WeakThis.Get();
++					const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+ 					UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+ 					if (Graph)
+ 					{
+@@ -1264,10 +1264,10 @@ FText UWidgetAnimMachineTransitionNode::GetTooltipText() const
+ void UWidgetAnimMachineTransitionNode::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
+ {
+ 	FToolMenuSection& Section = Menu->AddSection(TEXT("WidgetAnimMachineTransition"), LOCTEXT("TransitionSection", "Transition"));
+-	const TWeakObjectPtr<const UWidgetAnimMachineTransitionNode> WeakThis(this);
+-	auto MovePriority = [WeakThis](int32 Delta)
++	const TWeakObjectPtr<const UWidgetAnimMachineTransitionNode> WeakSelf(this);
++	auto MovePriority = [WeakSelf](int32 Delta)
+ 	{
+-		const UWidgetAnimMachineTransitionNode* Node = WeakThis.Get();
++		const UWidgetAnimMachineTransitionNode* Node = WeakSelf.Get();
+ 		UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+ 		if (Graph)
+ 		{
+@@ -1294,9 +1294,9 @@ void UWidgetAnimMachineTransitionNode::GetNodeContextMenuActions(UToolMenu* Menu
+ 		bEnabled ? LOCTEXT("DisableTransition", "Disable Transition") : LOCTEXT("EnableTransition", "Enable Transition"),
+ 		MachineTips::ToggleTransitionTooltip(),
+ 		FSlateIcon(),
+-		FUIAction(FExecuteAction::CreateLambda([WeakThis, bEnabled]()
++		FUIAction(FExecuteAction::CreateLambda([WeakSelf, bEnabled]()
+ 		{
+-			const UWidgetAnimMachineTransitionNode* Node = WeakThis.Get();
++			const UWidgetAnimMachineTransitionNode* Node = WeakSelf.Get();
+ 			UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+ 			if (Graph)
+ 			{
+@@ -1629,9 +1629,9 @@ public:
+ 			.VAlign(VAlign_Center)
+ 			[
+ 				SNew(SOverlay)
+-				.ToolTip(WidgetAnimMachineStyle::MakeDynamicToolTip([WeakThis = TWeakPtr<SWidgetAnimMachineStateNode>(SharedThis(this))]() -> TSharedPtr<SWidget>
++				.ToolTip(WidgetAnimMachineStyle::MakeDynamicToolTip([WeakSelf = TWeakPtr<SWidgetAnimMachineStateNode>(SharedThis(this))]() -> TSharedPtr<SWidget>
+ 				{
+-					const TSharedPtr<SWidgetAnimMachineStateNode> Self = WeakThis.Pin();
++					const TSharedPtr<SWidgetAnimMachineStateNode> Self = WeakSelf.Pin();
+ 					return Self.IsValid() ? Self->MakeToolTipContent() : nullptr;
+ 				}))
+ 
+@@ -1752,26 +1752,36 @@ public:
+ 					}
+ 				});
+ 			const TWeakPtr<SCommentBubble> WeakBubble = Bubble;
+-			SNodePanel::SNode::FNodeSlot& BubbleSlot = GetOrAddSlot(ENodeZone::TopCenter);
+-			BubbleSlot.SetSlotOffset(TAttribute<FVector2f>::CreateLambda([WeakBubble]()
+-			{
+-				const TSharedPtr<SCommentBubble> Pinned = WeakBubble.Pin();
+-				return Pinned.IsValid() ? Pinned->GetOffset2f() : FVector2f::ZeroVector;
+-			}));
+-			BubbleSlot.SetSlotSize(TAttribute<FVector2f>::CreateLambda([WeakBubble]()
+-			{
+-				const TSharedPtr<SCommentBubble> Pinned = WeakBubble.Pin();
+-				return Pinned.IsValid() ? Pinned->GetSize2f() : FVector2f::ZeroVector;
+-			}));
+-			BubbleSlot.SetAllowScaling(TAttribute<bool>::CreateLambda([WeakBubble]()
++			GetOrAddSlot(ENodeZone::TopCenter)
++				.VAlign(VAlign_Top)
++				[
++					Bubble
++				];
++
++			// Where it sits, and how big it is, as the bubble says - set on the slot itself, once it is made.
++			for (int32 SlotIndex = 0; SlotIndex < Children.Num(); ++SlotIndex)
+ 			{
+-				const TSharedPtr<SCommentBubble> Pinned = WeakBubble.Pin();
+-				return Pinned.IsValid() && Pinned->IsScalingAllowed();
+-			}));
+-			BubbleSlot.VAlign(VAlign_Top)
+-			[
+-				Bubble
+-			];
++				FNodeSlot& BubbleSlot = Children[SlotIndex];
++				if (BubbleSlot.GetZoneType() != ENodeZone::TopCenter)
++				{
++					continue;
++				}
++				BubbleSlot.SetSlotOffset(TAttribute<FVector2f>::CreateLambda([WeakBubble]()
++				{
++					const TSharedPtr<SCommentBubble> Pinned = WeakBubble.Pin();
++					return Pinned.IsValid() ? FVector2f(Pinned->GetOffset2f()) : FVector2f::ZeroVector;
++				}));
++				BubbleSlot.SetSlotSize(TAttribute<FVector2f>::CreateLambda([WeakBubble]()
++				{
++					const TSharedPtr<SCommentBubble> Pinned = WeakBubble.Pin();
++					return Pinned.IsValid() ? FVector2f(Pinned->GetSize2f()) : FVector2f::ZeroVector;
++				}));
++				BubbleSlot.SetAllowScaling(TAttribute<bool>::CreateLambda([WeakBubble]()
++				{
++					const TSharedPtr<SCommentBubble> Pinned = WeakBubble.Pin();
++					return Pinned.IsValid() && Pinned->IsScalingAllowed();
++				}));
++			}
+ 		}
+ 
+ 		CreatePinWidgets();
+@@ -2129,7 +2139,7 @@ public:
+ 		RightNodeBox.Reset();
+ 		LeftNodeBox.Reset();
+ 
+-		const TWeakPtr<SWidgetAnimMachineTransitionNode> WeakThis = SharedThis(this);
++		const TWeakPtr<SWidgetAnimMachineTransitionNode> WeakSelf = SharedThis(this);
+ 		this->ContentScale.Bind(this, &SGraphNode::GetContentScale);
+ 		this->GetOrAddSlot(ENodeZone::Center)
+ 			.HAlign(HAlign_Center)
+@@ -2137,11 +2147,11 @@ public:
+ 			[
+ 				SNew(SWidgetAnimMachineTransitionGlyph,
+ 					TWeakObjectPtr<UWidgetAnimMachineTransitionNode>(Cast<UWidgetAnimMachineTransitionNode>(GraphNode)),
+-					[WeakThis]() { const TSharedPtr<SWidgetAnimMachineTransitionNode> Self = WeakThis.Pin(); return Self.IsValid() ? Self->Direction : FVector2f(1.f, 0.f); },
+-					[WeakThis]() { const TSharedPtr<SWidgetAnimMachineTransitionNode> Self = WeakThis.Pin(); return Self.IsValid() && Self->IsSelected(); })
+-				.ToolTip(WidgetAnimMachineStyle::MakeDynamicToolTip([WeakThis]() -> TSharedPtr<SWidget>
++					[WeakSelf]() { const TSharedPtr<SWidgetAnimMachineTransitionNode> Self = WeakSelf.Pin(); return Self.IsValid() ? Self->Direction : FVector2f(1.f, 0.f); },
++					[WeakSelf]() { const TSharedPtr<SWidgetAnimMachineTransitionNode> Self = WeakSelf.Pin(); return Self.IsValid() && Self->IsSelected(); })
++				.ToolTip(WidgetAnimMachineStyle::MakeDynamicToolTip([WeakSelf]() -> TSharedPtr<SWidget>
+ 				{
+-					const TSharedPtr<SWidgetAnimMachineTransitionNode> Self = WeakThis.Pin();
++					const TSharedPtr<SWidgetAnimMachineTransitionNode> Self = WeakSelf.Pin();
+ 					return Self.IsValid() ? Self->MakeToolTipContent() : nullptr;
+ 				}))
+ 			];
+@@ -2193,7 +2203,7 @@ public:
+ 		const FWidgetAnimMachineWire Wire = WidgetAnimMachineWires::Compute(BoxOf(First, FirstWidget), BoxOf(Second, SecondWidget), Lane, Count, bReversed);
+ 		Direction = Wire.NodeDirection;
+ 
+-		const FVector2f MySize(FVector2D(GetDesiredSize()));
++		const FVector2f MySize = FVector2f(FVector2D(GetDesiredSize()));
+ 		const FVector2f Position = Wire.NodePoint - MySize * 0.5f;
+ 		GraphNode->NodePosX = FMath::RoundToInt32(Position.X);
+ 		GraphNode->NodePosY = FMath::RoundToInt32(Position.Y);
