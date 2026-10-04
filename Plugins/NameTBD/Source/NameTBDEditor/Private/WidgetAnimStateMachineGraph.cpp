@@ -2027,7 +2027,10 @@ public:
 					Points.Add(Centers[Corner] + FVector2f(FMath::Cos(Angle), FMath::Sin(Angle)) * Radius);
 				}
 			}
-			Points.Add(Points[0]);
+			// Closed back on its first point - copied out first: adding an array's own element to it is refused (it may move
+			// as the array grows).
+			const FVector2f First = Points[0];
+			Points.Add(First);
 			FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None,
 				Base.CopyWithNewOpacity(Base.A * Line.Opacity * Amount), /*bAntialias=*/true, Line.Thickness);
 		}
