@@ -2688,13 +2688,15 @@ public:
 		const float Progress = bPlaying ? FMath::Clamp(Debug.TransitionAlpha, 0.f, 1.f) : 0.f;
 		const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
 
-		// A true circle, Radius about the middle, at any zoom: a rounded box rounded by half its height.
+		// A true circle, Radius about the middle, at any zoom: a rounded box rounded by half its height. Not snapped to whole
+		// pixels: snapped, each circle's box rounds its own way - the band's and the node's by different amounts - and the
+		// band shows thicker on one side than the other, differently wherever the node sits.
 		const FSlateBrush* Round = WidgetAnimMachineStyle::RoundBrush();
 		auto DrawCircle = [&](int32 Layer, float CircleRadius, const FLinearColor& CircleColor)
 		{
 			const FVector2f CircleSize(CircleRadius * 2.f, CircleRadius * 2.f);
 			FSlateDrawElement::MakeBox(OutDrawElements, Layer,
-				AllottedGeometry.ToPaintGeometry(CircleSize, FSlateLayoutTransform(Center - CircleSize * 0.5f)), Round, ESlateDrawEffect::None, CircleColor);
+				AllottedGeometry.ToPaintGeometry(CircleSize, FSlateLayoutTransform(Center - CircleSize * 0.5f)), Round, ESlateDrawEffect::NoPixelSnapping, CircleColor);
 		};
 		auto ClipLeftPart = [&](float Amount)
 		{
