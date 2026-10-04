@@ -28,6 +28,7 @@
 #include "EdGraphUtilities.h"
 #include "WidgetAnimValuePinFactory.h"
 #include "WidgetAnimEntryCustomization.h"
+#include "WidgetAnimMachineConditionCustomization.h"
 #include "WidgetAnimEditorSettings.h"
 #include "WidgetAnimStateMachineAssetEditor.h"
 #include "SWidgetAnimStateMachineEditor.h"
@@ -84,6 +85,11 @@ void FNameTBDEditorModule::StartupModule()
 	PropertyModule.RegisterCustomPropertyTypeLayout(
 		FWidgetAnimEntry::StaticStruct()->GetFName(),
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FWidgetAnimEntryCustomization::MakeInstance));
+
+	// A state machine transition's conditions: Compare offers only what the picked input can be asked.
+	PropertyModule.RegisterCustomPropertyTypeLayout(
+		FWidgetAnimMachineCondition::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FWidgetAnimMachineConditionCustomization::MakeInstance));
 	PropertyModule.NotifyCustomizationModuleChanged();
 
 	ValuePinFactory = MakeShared<FWidgetAnimValuePinFactory>();
@@ -167,6 +173,7 @@ void FNameTBDEditorModule::ShutdownModule()
 		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimBuilder"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimationComponent"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimEntry"));
+		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimMachineCondition"));
 
 	}
 	

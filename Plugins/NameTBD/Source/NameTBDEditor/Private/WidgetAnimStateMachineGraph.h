@@ -471,9 +471,19 @@ public:
 
 	/**
 	 * The states the Add State menus offer ready-named, one for each built-in input a state is usually made for - Hovered,
-	 * Pressed, Selected, Focused, Disabled - and Idle. Each paired with the input it is for (None for Idle).
+	 * Pressed, Selected, Focused, Disabled - and Idle and Holding. Each paired with the input it is for (None for Idle and
+	 * Holding - Holding's is the machine's Press And Hold).
 	 */
 	static const TArray<TPair<FName, FName>>& GetPresetStates();
+
+	/**
+	 * The Holding preset: a state played while the machine's Press And Hold is held - made for it if it has none. Dragged from
+	 * a state, joined there on Is Held and back on Is Let Go, so a hold let go early blends back.
+	 */
+	static const FName HoldingPreset;
+
+	/** What a preset state is for, for its menu entry. */
+	static FText GetPresetTooltip(const TPair<FName, FName>& Preset);
 
 	/**
 	 * Adds a preset state - or a plain one, for None - at Location: named for it, and, dragged from a state, joined from that

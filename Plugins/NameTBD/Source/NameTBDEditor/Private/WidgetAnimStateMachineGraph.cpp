@@ -1942,6 +1942,19 @@ UWidgetAnimMachineGraphNode* UWidgetAnimMachineGraphSchema::GetStateNode(const U
 	return Pin ? Cast<UWidgetAnimMachineGraphNode>(Pin->GetOwningNode()) : nullptr;
 }
 
+const FName UWidgetAnimMachineGraphSchema::HoldingPreset(TEXT("Holding"));
+
+FText UWidgetAnimMachineGraphSchema::GetPresetTooltip(const TPair<FName, FName>& Preset)
+{
+	if (Preset.Key == HoldingPreset)
+	{
+		return MachineTips::AddHoldingStateTooltip();
+	}
+	return Preset.Value.IsNone()
+		? MachineTips::AddIdleStateTooltip()
+		: FText::Format(MachineTips::AddPresetStateTooltip(), FText::FromName(Preset.Key), FText::FromName(Preset.Value));
+}
+
 const TArray<TPair<FName, FName>>& UWidgetAnimMachineGraphSchema::GetPresetStates()
 {
 	static const TArray<TPair<FName, FName>> Presets =
@@ -1949,6 +1962,7 @@ const TArray<TPair<FName, FName>>& UWidgetAnimMachineGraphSchema::GetPresetState
 		TPair<FName, FName>(TEXT("Idle"), NAME_None),
 		TPair<FName, FName>(WidgetAnimMachineInputs::Hovered, WidgetAnimMachineInputs::Hovered),
 		TPair<FName, FName>(WidgetAnimMachineInputs::Pressed, WidgetAnimMachineInputs::Pressed),
+		TPair<FName, FName>(HoldingPreset, NAME_None),
 		TPair<FName, FName>(WidgetAnimMachineInputs::Selected, WidgetAnimMachineInputs::Selected),
 		TPair<FName, FName>(WidgetAnimMachineInputs::Focused, WidgetAnimMachineInputs::Focused),
 		TPair<FName, FName>(WidgetAnimMachineInputs::Disabled, WidgetAnimMachineInputs::Disabled),
@@ -1971,6 +1985,15 @@ FGuid UWidgetAnimMachineGraphSchema::AddPresetState(UWidgetAnimMachineGraph* Gra
 
 	// One undo for all of it.
 	const FScopedTransaction Transaction(LOCTEXT("AddStateFromMenu", "Add State"));
+
+	// Holding: played while the machine's Press And Hold is held - its first, or a new one made for it.
+	const bool bHolding = Preset == HoldingPreset;
+	if (bHolding)
+	{
+		const FWidgetAnimMachineInput* Hold = Graph->Machine->Inputs.FindByPredicate([](const FWidgetAnimMachineInput& Candidate) { return Candidate.Type == EWidgetAnimMachineInputType::Hold; });
+		Input = Hold ? Hold->Name : WidgetAnimMachineEdits::AddInput(Graph->Machine, EWidgetAnimMachineInputType::Hold);
+	}
+
 	const FGuid StateId = WidgetAnimMachineEdits::AddState(Graph->Machine, Graph->LayerIndex, Preset, Location);
 	if (From && StateId.IsValid())
 	{
@@ -1978,6 +2001,17 @@ FGuid UWidgetAnimMachineGraphSchema::AddPresetState(UWidgetAnimMachineGraph* Gra
 		if (TransitionId.IsValid() && !Input.IsNone())
 		{
 			WidgetAnimMachineEdits::AddCondition(Graph->Machine, Graph->LayerIndex, TransitionId, Input, EWidgetAnimMachineCompare::IsTrue);
+		}
+
+		// Holding: and back again when it is let go before its Hold Time - the hold not completed, blended back from wherever
+		// the state had got to. (Not to Entry or Any State: nothing goes back into those.)
+		if (bHolding && !Input.IsNone())
+		{
+			const FGuid BackId = WidgetAnimMachineEdits::AddTransition(Graph->Machine, Graph->LayerIndex, StateId, From->StateId);
+			if (BackId.IsValid())
+			{
+				WidgetAnimMachineEdits::AddCondition(Graph->Machine, Graph->LayerIndex, BackId, Input, EWidgetAnimMachineCompare::IsFalse);
+			}
 		}
 	}
 	Graph->RequestRebuild();
@@ -2005,9 +2039,7 @@ void UWidgetAnimMachineGraphSchema::GetGraphContextActions(FGraphContextMenuBuil
 			continue;
 		}
 		const FText Name = FText::Format(LOCTEXT("AddPresetState", "Add {0} State"), FText::FromName(Preset.Key));
-		const FText ToolTip = Preset.Value.IsNone()
-			? MachineTips::AddIdleStateTooltip()
-			: FText::Format(MachineTips::AddPresetStateTooltip(), FText::FromName(Preset.Key), FText::FromName(Preset.Value));
+		const FText ToolTip = GetPresetTooltip(Preset);
 		ContextMenuBuilder.AddAction(MakeShared<FWidgetAnimMachineAction_AddState>(Preset.Key, LOCTEXT("CommonStatesCategory", "State Machine|Common States"), Name, ToolTip, 1));
 	}
 

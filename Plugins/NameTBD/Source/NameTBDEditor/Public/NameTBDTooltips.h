@@ -1943,6 +1943,12 @@ namespace NameTBD::Tooltips
 				"Idle: the state at rest - where Entry usually goes, and where the others come back to.");
 		}
 
+		inline FText AddHoldingStateTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddHoldingStateTooltip",
+				"Holding: a state played while the widget is pressed and held - a button growing and shaking as it charges. It uses the machine's Press And Hold input, made for it if there is none. Dragged from a state, it is joined from there on Is Held and back on Is Let Go: let go before the Hold Time, it blends back. Add a transition on Completed for where a finished hold goes.");
+		}
+
 		inline FText AddPresetStateTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddPresetStateTooltip",

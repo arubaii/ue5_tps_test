@@ -2583,9 +2583,7 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeAddStateMenu()
 		const bool bExists = Layer && Layer->FindStateIndexByName(PresetName) != INDEX_NONE;
 		const FText ToolTip = bExists
 			? FText::Format(MachineTips::PresetStateExistsTooltip(), FText::FromName(PresetName))
-			: Preset.Value.IsNone()
-				? MachineTips::AddIdleStateTooltip()
-				: FText::Format(MachineTips::AddPresetStateTooltip(), FText::FromName(PresetName), FText::FromName(Preset.Value));
+			: UWidgetAnimMachineGraphSchema::GetPresetTooltip(Preset);
 		Menu.AddMenuEntry(
 			FText::FromName(PresetName),
 			ToolTip,
