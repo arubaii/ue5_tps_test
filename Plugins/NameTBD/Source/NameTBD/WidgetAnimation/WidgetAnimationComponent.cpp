@@ -2817,7 +2817,8 @@ bool UWidgetAnimationComponent::StartDesignerStateMachinePreview()
 			{
 				return EActiveTimerReturnType::Stop;
 			}
-			TickDesignerMachines(DeltaTime);
+			// Paused: posed where it is, its time standing still.
+			TickDesignerMachines(bMachinePreviewPaused ? 0.f : DeltaTime);
 			return EActiveTimerReturnType::Continue;
 		}));
 	MachinePreviewTimerHandle = Handle;

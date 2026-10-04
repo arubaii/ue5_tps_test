@@ -11,6 +11,7 @@
 
 #include "WidgetAnimStateMachineGraph.generated.h"
 
+class UEdGraphNode_Comment;
 class UWidgetAnimStateMachineAsset;
 class UWidgetAnimMachineGraphNode;
 class UWidgetAnimMachineTransitionNode;
@@ -19,14 +20,32 @@ class UWidgetAnimMachineTransitionNode;
 // The Widget Animation State Machine editor's graph
 // =====================================================================================================
 //
-// The machine asset is the truth: its layers' states and transitions, and where each state sits. A graph is only a view of
-// one layer, rebuilt from the asset whenever it changes - so an edit made anywhere (the graph, the Details, an undo) shows
-// everywhere, and nothing about the graph is ever saved. Every edit made in the graph is made to the asset, in a
-// transaction, and the graph rebuilt from it (see WidgetAnimMachineEdits).
+// The machine asset is the truth: its layers' states, transitions and comment boxes, and where each sits. A graph is only a
+// view of one layer, rebuilt from the asset whenever it changes - so an edit made anywhere (the graph, the Details, an undo)
+// shows everywhere, and nothing about the graph is ever saved. Every edit made in the graph is made to the asset, in a
+// transaction, and the graph rebuilt from it (see WidgetAnimMachineEdits). What the graph's own widgets change in place -
+// a dragged node, a resized comment, a comment bubble typed into - is written back by the editor once the mouse is let go.
 //
-// It looks and behaves like an Animation Blueprint's state machine: states as rounded nodes, transitions as arrows with a
-// rule icon in the middle; drag from a state's edge to another state to connect them, double-click a state to open its
-// animation, right-click to add a state.
+// It looks like a Blueprint graph with an Animation Blueprint's state machine in it: states as rounded nodes, transitions as
+// Blueprint wires with a round transition node in the middle that points the way the transition goes and shows how it blends;
+// drag from a state's edge to another state to connect them, double-click a state to open its animation, right-click to add
+// a state, C for a comment box, Q to straighten wires.
+
+/** What the clipboard holds for states copied from a layer: the states, the transitions between them, and comment boxes. */
+USTRUCT()
+struct FWidgetAnimMachineClipboard
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FWidgetAnimMachineState> States;
+
+	UPROPERTY()
+	TArray<FWidgetAnimMachineTransition> Transitions;
+
+	UPROPERTY()
+	TArray<FWidgetAnimMachineComment> Comments;
+};
 
 /** Every edit the editor makes to a machine: each in its own transaction, the machine normalized and told after. */
 namespace WidgetAnimMachineEdits
@@ -37,17 +56,26 @@ namespace WidgetAnimMachineEdits
 	/** Adds a transition between two nodes of Layer, set up for where it goes - a Cut from Entry, Closing Is True to Exit - and returns its id. Invalid when the two can't be joined. */
 	FGuid AddTransition(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& From, const FGuid& To);
 
+	/** Gives a transition one more condition. */
+	void AddCondition(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Transition, FName Input, EWidgetAnimMachineCompare Compare);
+
 	/** Whether a transition can go from one node to the other: not into Entry or Any State, not out of Exit, not to itself. */
 	bool CanConnect(const UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& From, const FGuid& To);
 
-	/** Deletes states - never Entry, Any State or Exit - and transitions; transitions of a deleted state go too. */
-	void Delete(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& States, const TArray<FGuid>& Transitions);
+	/** Deletes states - never Entry, Any State or Exit - transitions and comment boxes; transitions of a deleted state go too. */
+	void Delete(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& States, const TArray<FGuid>& Transitions, const TArray<FGuid>& Comments = TArray<FGuid>());
 
 	/** Renames a state, made unique in its layer. */
 	void RenameState(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& State, const FString& NewName);
 
-	/** Moves states to where the graph has them. */
+	/** Moves states to where the graph has them. Not told to anyone: the graph already shows them. */
 	void MoveStates(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TMap<FGuid, FVector2D>& Positions);
+
+	/**
+	 * Puts transition nodes where they were dragged - an offset from halfway between their two nodes (see
+	 * WidgetAnimMachineWires::GetPlacementAnchor) - or, unset, back on their wire's own middle. Not told to anyone either.
+	 */
+	void PlaceTransitions(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TMap<FGuid, TOptional<FVector2D>>& Offsets);
 
 	/** Makes State the one Entry goes to: Entry's first transition points at it, or a new one is made. */
 	void SetEntryState(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& State);
@@ -55,11 +83,17 @@ namespace WidgetAnimMachineEdits
 	/** Moves a transition one place up (Delta -1) or down in priority among those leaving the same node. */
 	void MoveTransitionPriority(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Transition, int32 Delta);
 
+	/** Switches transitions on or off. */
+	void SetTransitionsEnabled(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& Transitions, bool bEnabled);
+
 	/** Adds a layer, its Entry, Any State and Exit placed, and returns its index. */
 	int32 AddLayer(UWidgetAnimStateMachineAsset* Machine);
 
 	/** Removes a layer - never the last. */
 	void RemoveLayer(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex);
+
+	/** Renames a layer, made unique in the machine. */
+	void RenameLayer(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FString& NewName);
 
 	/** Adds an input of Type, named for it, and returns its name. */
 	FName AddInput(UWidgetAnimStateMachineAsset* Machine, EWidgetAnimMachineInputType Type);
@@ -67,8 +101,117 @@ namespace WidgetAnimMachineEdits
 	/** Removes an input; the conditions that test it stay, and never hold, until they are changed. */
 	void RemoveInput(UWidgetAnimStateMachineAsset* Machine, FName Input);
 
+	/**
+	 * Renames an input, and every condition, Progress Input and Weight Input that reads it - made unique, never a built-in
+	 * name. Returns the name it got: the old one when nothing changed.
+	 */
+	FName RenameInput(UWidgetAnimStateMachineAsset* Machine, FName Input, const FString& NewName);
+
+	/** Why NewName can't be an input's new name, or empty when it can. */
+	FText ValidateInputName(const UWidgetAnimStateMachineAsset* Machine, FName Input, const FString& NewName);
+
+	/** Every place an input is read: renames them all from Old to New, in place. No transaction - see RenameInput. */
+	void ReplaceInputReferences(UWidgetAnimStateMachineAsset* Machine, FName Old, FName New);
+
+	/** A state's comment bubble: its text, and whether it is shown. */
+	void SetStateComment(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& State, const FString& Comment, bool bVisible);
+
+	/** Adds a comment box round Bounds, and returns its id. */
+	FGuid AddComment(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FBox2D& Bounds, const FString& Text);
+
+	/**
+	 * Writes comment boxes as the graph has them now - moved, resized, retitled, recolored - into the layer. Not told to anyone:
+	 * the graph already shows them. False when nothing changed.
+	 */
+	bool UpdateComments(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FWidgetAnimMachineComment>& Comments);
+
+	/** The states, the transitions among them and the comment boxes, as text for the clipboard. Entry, Any State and Exit are left out. */
+	FString CopyToText(const UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& States, const TArray<FGuid>& Comments);
+
+	/** Whether Text is something CopyToText made. */
+	bool CanPasteText(const FString& Text);
+
+	/**
+	 * Adds what Text holds to the layer as new states, transitions and comment boxes - new ids, unique names - with the top
+	 * left of what was copied at Location. Returns the new states' and comments' ids.
+	 */
+	TArray<FGuid> PasteText(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FString& Text, const FVector2D& Location);
+
 	/** A new machine's content: one layer with an Idle state that Entry goes to. */
 	void SetUpNewMachine(UWidgetAnimStateMachineAsset* Machine);
+}
+
+/**
+ * Where a transition's wire runs: a Blueprint spline - a Hermite curve, leaving the side or corner of one state that faces the
+ * other and arriving at the side or corner of that one facing back - and where on it the transition node sits. Wires between
+ * the same two states run side by side, parallel, each in a lane of its own. A transition node dragged somewhere of its own
+ * splits its wire in two there: one curve into it, one out, meeting smoothly (bThroughNode).
+ */
+struct FWidgetAnimMachineWire
+{
+	FVector2f Start = FVector2f::ZeroVector;
+	FVector2f StartTangent = FVector2f::ZeroVector;
+	FVector2f End = FVector2f::ZeroVector;
+	FVector2f EndTangent = FVector2f::ZeroVector;
+
+	/** Through a dragged transition node: two curves, Start to Mid and Mid to End, Mid's tangent arriving and leaving. */
+	bool bThroughNode = false;
+	FVector2f Mid = FVector2f::ZeroVector;
+	FVector2f MidTangentIn = FVector2f::ZeroVector;
+	FVector2f MidTangentOut = FVector2f::ZeroVector;
+
+	/** How far along the wire the transition node sits, 0 - 1. */
+	float NodeT = 0.5f;
+
+	FVector2f NodePoint = FVector2f::ZeroVector;
+
+	/** The way the wire runs through the transition node, unit length. */
+	FVector2f NodeDirection = FVector2f(1.f, 0.f);
+
+	FVector2f Evaluate(float T) const;
+	FVector2f Derivative(float T) const;
+};
+
+namespace WidgetAnimMachineWires
+{
+	/** The transition node's size, in graph units. */
+	constexpr float NodeDiameter = 24.f;
+
+	/** How far apart parallel wires run, at most, in graph units: far enough that their transition nodes sit side by side. */
+	constexpr float LaneSpacing = 30.f;
+
+	/** How far a corner a wire leaves from is pulled in from the box's corner, onto the state's rounded corner. */
+	constexpr float CornerInset = 3.f;
+
+	/**
+	 * Of two nodes apart both ways, how much further apart one way must be than the other for the wire to leave a side rather
+	 * than a corner.
+	 */
+	constexpr float CornerRatio = 6.f;
+
+	/**
+	 * Lays out the wire of a transition between two nodes, given as boxes in graph space. Lane and LaneCount: where it is among
+	 * the wires between the two (see GetLane); bReversed: it runs from Second to First, not First to Second. NodePoint: where
+	 * its transition node was dragged, if it was - the wire then runs through it, and lanes don't apply.
+	 */
+	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed, const FVector2f* NodePoint = nullptr);
+
+	/**
+	 * The side or corner of Box that faces Toward - (1,0) right, (0,1) bottom, (1,1) bottom-right and so on: where a wire to it
+	 * leaves from. A side when the two overlap across it or lie much further apart one way than the other; a corner when they
+	 * lie diagonally.
+	 */
+	FVector2f GetFacingSide(const FBox2f& Box, const FBox2f& Toward);
+	FVector2f GetFacingSide(const FBox2f& Box, const FVector2f& Toward);
+
+	/** The middle of that side - or that corner, pulled in by CornerInset. */
+	FVector2f GetSideMiddle(const FBox2f& Box, const FVector2f& Side);
+
+	/** Where a wire leaves Side, Offset along it - for a corner, along whichever edge the offset leads onto. Across: which way is positive. */
+	FVector2f GetAnchor(const FBox2f& Box, const FVector2f& Side, float Offset, const FVector2f& Across);
+
+	/** What a dragged transition node's offset is measured from: halfway between its two nodes' top-left corners. */
+	FVector2f GetPlacementAnchor(const FBox2f& First, const FBox2f& Second);
 }
 
 /**
@@ -96,18 +239,38 @@ public:
 	const FWidgetAnimMachineLayer* GetLayer() const;
 
 	UWidgetAnimMachineGraphNode* FindStateNode(const FGuid& StateId) const;
+	UWidgetAnimMachineTransitionNode* FindTransitionNode(const FGuid& TransitionId) const;
+	UEdGraphNode_Comment* FindCommentNode(const FGuid& CommentId) const;
+
+	/** Where a transition's wire is among those between its two nodes, how many there are, and whether it runs against the pair's own order. */
+	void GetLane(const UWidgetAnimMachineTransitionNode* Node, int32& OutLane, int32& OutCount, bool& bOutReversed) const;
+
+	/** The canonical first and second node of a transition's pair - the order its lanes are counted in. */
+	static void GetPairOrder(const UWidgetAnimMachineTransitionNode* Node, FGuid& OutFirst, FGuid& OutSecond);
 
 	/**
 	 * What the layer is doing in the widget being watched - the designer preview, or a widget in Play In Editor. False when
-	 * nothing is. Set by the editor; read by the nodes and arrows to light up the state and transition in play.
+	 * nothing is. Set by the editor; read by the nodes and wires to light up the state and transition in play.
 	 */
 	TFunction<bool(FWidgetAnimMachineLayerDebug& /*OutDebug*/)> GetDebug;
 
 	/** A state node was double-clicked: the editor opens its animation. */
 	TFunction<void(const FGuid& /*StateId*/)> OnOpenState;
 
+	/** Q, or the node menu's Straighten Connections: the editor lines the selected states up. */
+	TFunction<void()> OnStraighten;
+
 	/** Whether the graph is being looked at in Play In Editor - its states then show where the widget is. */
 	bool IsDebugging() const;
+
+	/**
+	 * When each transition was last being taken, in FPlatformTime seconds - so the dots running along its wire stay a moment
+	 * after a short blend, and fade, rather than flashing for a frame or two. Kept by the wires as they are drawn.
+	 */
+	TMap<FGuid, double> LastActiveTimes;
+
+	/** Seconds the stripes on the state in play have scrolled for - moved on by the editor every frame, but not while the preview is paused. */
+	double StripeClock = 0.0;
 
 private:
 
@@ -141,12 +304,12 @@ public:
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
 	virtual FText GetTooltipText() const override;
 	virtual bool CanUserDeleteNode() const override { return Kind == EWidgetAnimMachineNodeKind::State; }
-	virtual bool CanDuplicateNode() const override { return false; }
+	virtual bool CanDuplicateNode() const override { return Kind == EWidgetAnimMachineNodeKind::State; }
 	virtual TSharedPtr<class SGraphNode> CreateVisualWidget() override;
 	virtual void GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
 };
 
-/** A transition: drawn as the arrow between its two nodes, with its rule icon in the middle. */
+/** A transition: drawn as the wire between its two nodes, with its transition node in the middle. */
 UCLASS()
 class UWidgetAnimMachineTransitionNode : public UEdGraphNode
 {
@@ -163,14 +326,30 @@ public:
 	UPROPERTY()
 	FGuid ToId;
 
+	/**
+	 * Whether its node was dragged somewhere of its own, and where: its middle, from GetPlacementAnchor. From the machine as
+	 * the graph is made; changed by a drag, and written back into the machine once the mouse is let go.
+	 */
+	bool bPlaced = false;
+	FVector2f PlacedOffset = FVector2f::ZeroVector;
+
 	const FWidgetAnimMachineTransition* GetTransition() const;
 	UWidgetAnimMachineGraph* GetMachineGraph() const;
 
 	UEdGraphPin* GetInputPin() const { return Pins.IsValidIndex(0) ? Pins[0] : nullptr; }
 	UEdGraphPin* GetOutputPin() const { return Pins.IsValidIndex(1) ? Pins[1] : nullptr; }
 
-	/** Its conditions and blend in words, one line each - its tooltip, and what the editor shows for it. */
+	/** Its conditions and blend in words, one line each. */
 	FText DescribeRule() const;
+
+	/** Its conditions in words, joined by "and" - "Always" with none. */
+	FText DescribeConditions() const;
+
+	/** How long it takes, short, for the label beside it: "0.2s", "0.5s + 0.1s" for a transition animation, "Cut". */
+	FString GetLengthLabel() const;
+
+	/** Its priority among the transitions leaving the same node: 1 for the first checked. And how many there are. */
+	void GetPriority(int32& OutPriority, int32& OutCount) const;
 
 	// UEdGraphNode
 	virtual void AllocateDefaultPins() override;
@@ -205,4 +384,16 @@ public:
 
 	/** The state node a pin belongs to, and its graph. */
 	static UWidgetAnimMachineGraphNode* GetStateNode(const UEdGraphPin* Pin);
+
+	/**
+	 * The states the Add State menus offer ready-named, one for each built-in input a state is usually made for - Hovered,
+	 * Pressed, Selected, Focused, Disabled - and Idle. Each paired with the input it is for (None for Idle).
+	 */
+	static const TArray<TPair<FName, FName>>& GetPresetStates();
+
+	/**
+	 * Adds a preset state - or a plain one, for None - at Location: named for it, and, dragged from a state, joined from that
+	 * state by a transition that tests its input. Returns its id.
+	 */
+	static FGuid AddPresetState(UWidgetAnimMachineGraph* Graph, FName Preset, const FVector2D& Location, const UWidgetAnimMachineGraphNode* From);
 };

@@ -531,6 +531,10 @@ public:
 
 	bool IsDesignerStateMachinePreviewing() const { return bMachinePreviewing; }
 
+	/** Holds the designer's state machine preview still where it is (the State Machine editor's pause), or lets it run on. */
+	void SetDesignerStateMachinePreviewPaused(bool bPaused) { bMachinePreviewPaused = bPaused; }
+	bool IsDesignerStateMachinePreviewPaused() const { return bMachinePreviewPaused; }
+
 	/** Sets a built-in input (Hovered, Pressed, Focused, Selected, Disabled, Closing) of the machines playing in the designer. */
 	void SetDesignerStateMachineBuiltIn(FName Input, bool bValue, const UWidgetAnimStateMachineAsset* StateMachine = nullptr);
 
@@ -954,6 +958,7 @@ private:
 
 	/** The designer's state machine preview: whether it runs, and its clock. */
 	bool bMachinePreviewing = false;
+	bool bMachinePreviewPaused = false;
 	TWeakPtr<FActiveTimerHandle> MachinePreviewTimerHandle;
 	TWeakPtr<SWidget> MachinePreviewTimerWidget;
 

@@ -1715,6 +1715,12 @@ namespace NameTBD::Tooltips
 				"Open Animation: opens the animation this state plays in the Widget Animations editor.");
 		}
 
+		inline FText ResetTransitionNodeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "ResetTransitionNodeTooltip",
+				"Reset Node Position: puts the transition node back on the middle of its wire, where it was before it was dragged. Q does the same for selected transition nodes.");
+		}
+
 		inline FText RaisePriorityTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "RaisePriorityTooltip",
@@ -1736,7 +1742,7 @@ namespace NameTBD::Tooltips
 		inline FText LayerTabTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "LayerTabTooltip",
-				"Layer {0}\nBlend: {1}, Weight {2}\n\nEach layer is its own state machine, playing at the same time as the others: Override layers replace what the layers under them animate, Additive ones add to it.");
+				"Layer {0}: {1}, weight {2}. Each layer is its own state machine, playing at the same time as the others - Override layers replace what the layers under them animate, Additive ones add to it. Click for its settings; double-click to rename it.");
 		}
 
 		inline FText AddLayerTooltip()
@@ -1802,7 +1808,25 @@ namespace NameTBD::Tooltips
 		inline FText PreviewToggleTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewToggleTooltip",
-				"Preview In Designer: plays the machine on the designer's widgets that use it - only the selected widget's, when it has the machine - driven by the Inputs panel.");
+				"Preview In Designer: plays the machine in the designer, driven by the Inputs panel - on its Preview Targets, or on the widgets whose Widget Animation Component plays it (see Preview, on the left).");
+		}
+
+		inline FText JumpToActiveTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "JumpToActiveTooltip",
+				"Jump to Active State: brings the state the watched widget is in into view - switching to its layer if the shown one isn't in a state.");
+		}
+
+		inline FText PreviewPauseTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewPauseTooltip",
+				"Pause: holds the designer preview where it is - its state, its transition, its animations. Inputs still change, and take effect once it plays on.");
+		}
+
+		inline FText PreviewPlayTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewPlayTooltip",
+				"Play: lets the paused designer preview run on from where it was held.");
 		}
 
 		inline FText DebugMenuTooltip()
@@ -1862,7 +1886,151 @@ namespace NameTBD::Tooltips
 		inline FText NothingToPreviewStatus()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "NothingToPreviewStatus",
-				"No widget in the designer plays this machine");
+				"Pick where the preview plays, under Preview");
+		}
+
+		inline FText PreviewingTargetsStatus()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewingTargetsStatus",
+				"Previewing on {0}");
+		}
+
+		inline FText NoComponentsStatus()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "NoComponentsStatus",
+				"No Widget Animation Component in the designer plays this machine");
+		}
+
+		inline FText MachinePickerTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "MachinePickerTooltip",
+				"State Machine: the Widget Animation State Machine (WASM_) edited here. Any one - not only those this Widget Blueprint plays.");
+		}
+
+		inline FText AddStateButtonTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddStateButtonTooltip",
+				"Add State: a state in the middle of the view - a plain one, or one ready-named for a built-in input: Hovered, Pressed, Selected, Focused, Disabled. Right-click the graph for the same, where you click.");
+		}
+
+		inline FText AddIdleStateTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddIdleStateTooltip",
+				"Idle: the state at rest - where Entry usually goes, and where the others come back to.");
+		}
+
+		inline FText AddPresetStateTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddPresetStateTooltip",
+				"{0}: a state for the built-in {1} input. Dragged from a state, its transition comes with the condition {1} Is True.");
+		}
+
+		inline FText PresetStateExistsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PresetStateExistsTooltip",
+				"{0}: this layer has a {0} state already.");
+		}
+
+		inline FText AddCommentTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddCommentTooltip",
+				"Add Comment: a comment box here, as in a Blueprint graph. Select states first and press C to put one round them.");
+		}
+
+		inline FText NodeCommentTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "NodeCommentTooltip",
+				"Node Comment: a note shown in a bubble over the state. Empty it to take the bubble away.");
+		}
+
+		inline FText ToggleTransitionTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "ToggleTransitionTooltip",
+				"Enable / Disable: a disabled transition is never taken - for trying the machine without it, without deleting it.");
+		}
+
+		inline FText StraightenTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "StraightenTooltip",
+				"Straighten Connections (Q): lines the selected states up with the states they connect to, so their wires run straight. With one state selected, it lines up with the state it shares the most transitions with. Nothing is moved onto another state.");
+		}
+
+		inline FText StateNodeHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "StateNodeHint",
+				"Double-click to open its animation. Drag from its edge to another state to add a transition.");
+		}
+
+		inline FText InputRowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "InputRowTooltip",
+				"{0}: {1}\n\nClick for its settings. Double-click its name to rename it - the conditions that test it follow.");
+		}
+
+		inline FText BuiltInUnusedTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "BuiltInUnusedTooltip",
+				"{0}: no transition or setting of this machine reads it, so it can't be set here. {1}");
+		}
+
+		inline FText PreviewPanelTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewPanelTooltip",
+				"Preview: where the machine plays in the designer. Targets plays it on widgets picked here - no Widget Animation Component needed. Components plays it on the widgets whose Widget Animation Component plays it.");
+		}
+
+		inline FText PreviewTargetsSourceTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewTargetsSourceTooltip",
+				"Targets: the preview plays on the widgets picked below - the widget the machine plays on, and one for each of its targets.");
+		}
+
+		inline FText PreviewComponentsSourceTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewComponentsSourceTooltip",
+				"Components: the preview plays on every widget of the designer whose Widget Animation Component plays this machine - only the selected one's, when it has the machine.");
+		}
+
+		inline FText PreviewComponentsNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewComponentsNote",
+				"Playing on the widgets whose Widget Animation Component plays this machine, with their own Target Widgets.");
+		}
+
+		inline FText PreviewHostTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewHostTooltip",
+				"Plays On: the widget the machine plays on in the preview - what its targets fall back to, as a component's widget would be. None: the Widget Blueprint itself.");
+		}
+
+		inline FText PreviewTargetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewTargetTooltip",
+				"{0}: the widget the machine's {0} target moves in the preview. Starts on the Preview Target of the animation group it is named for. None: the widget it plays on.");
+		}
+
+		inline FText NoPreviewTargetsNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "NoPreviewTargetsNote",
+				"No targets yet: they are the Layer Groups of the animations the states play, and appear here once a state plays one.");
+		}
+
+		inline FText PickTargetInDesignerTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PickTargetInDesignerTooltip",
+				"Pick in Designer: click the widget in the designer - or select it in its hierarchy. Escape, or click this again, to stop.");
+		}
+
+		inline FText PickingTargetNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PickingTargetNote",
+				"Click the widget in the designer. Escape to stop.");
+		}
+
+		inline FText PickTargetNotFoundNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PickTargetNotFoundNote",
+				"That widget can't be a preview target - pick one of this Widget Blueprint's own.");
 		}
 
 		inline FText StateMachineDrawerTooltip()

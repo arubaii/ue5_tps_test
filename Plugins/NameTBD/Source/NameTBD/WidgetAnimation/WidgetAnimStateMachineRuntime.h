@@ -134,6 +134,9 @@ struct NAMETBD_API FWidgetAnimMachineLayerInstance
 	EWidgetAnimMachineBlendPhase Phase = EWidgetAnimMachineBlendPhase::None;
 	float BlendElapsed = 0.f;
 
+	/** How long the running transition's animation plays, in seconds - for the editor's progress read-out. */
+	float TransitionAnimationSeconds = 0.f;
+
 	/** Seconds since the state it is in was entered, at the state's own speed, and how long one pass of its animation is. */
 	float TimeInState = 0.f;
 	float PassSeconds = 0.f;
@@ -269,8 +272,11 @@ struct NAMETBD_API FWidgetAnimMachineLayerDebug
 	/** How far through the running transition, 0 - 1. */
 	float TransitionAlpha = 0.f;
 
-	/** How far through the state's animation, 0 - 1 for one pass. */
+	/** How far through the state's animation, 0 - 1: through its first pass, or - looping - through the pass it is on. */
 	float StateAlpha = 0.f;
+
+	/** Whether the state is playing an animation that moves - not a pose, not done - for the editor's progress fill. */
+	bool bStatePlaying = false;
 
 	bool bExited = false;
 	float Weight = 1.f;

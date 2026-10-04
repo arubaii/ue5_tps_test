@@ -24,6 +24,9 @@ public:
 
 	/** The Widget Animations panel's icon - its tab and its status-bar drawer: the shooting star in the editor's grays. */
 	static inline const FName WidgetAnimationsIcon = TEXT("NameTBD.WidgetAnimationsIcon");
+
+	/** The State Machine editor's Exit node: a door with the way out (Resources/WidgetAnim_StateMachineExit.svg). */
+	static inline const FName StateMachineExitIcon = TEXT("NameTBD.StateMachine.ExitIcon");
 	
 
 private:

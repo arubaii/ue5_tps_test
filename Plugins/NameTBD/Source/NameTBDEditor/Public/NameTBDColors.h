@@ -497,10 +497,10 @@ namespace NameTBD
 		namespace StateMachineEditor
 		{
 			// -------------------------------------------------------------------------------------------------
-			// Transitions - the arrows between states, and the rule icon in their middle.
-			//   TransitionLine: an arrow at rest. TransitionActive: the transition being taken in the watched widget - the
-			//     animation orange, the one moving thing. TransitionDisabled: one switched off (Enabled unticked).
-			//   TransitionIcon: the round rule icon in an arrow's middle.
+			// Transitions - the wires between states.
+			//   TransitionLine: a wire at rest. TransitionDisabled: one switched off (Enabled unticked).
+			//   TransitionActive / TransitionIcon: no longer drawn - a wire in play runs with WireBubble dots now, and the
+			//     transition node's colors are further down (TransitionTween and on). Kept for anything reading them.
 			// -------------------------------------------------------------------------------------------------
 
 			inline const FLinearColor TransitionLine(0.78f, 0.78f, 0.80f, 0.90f);
@@ -512,8 +512,8 @@ namespace NameTBD
 			// States.
 			//   StateEdge / StateEdgeHovered: the ring round a state that a transition is dragged from - brighter under the
 			//     mouse, so it reads as the thing to drag.
-			//   StateBody: a state at rest. StateActive: the state the watched widget is in. StateLeaving: the state it is
-			//     blending out of, while a transition plays.
+			//   StateBody: a state at rest. StateActive / StateLeaving: no longer used by the graph (the state in play wears the
+			//     track's stripes instead - see ActiveTrack*); kept for anything else that lights a state.
 			//   EntryBody / ExitBody / AnyStateBody: the three special nodes - green for where it starts, red for where it
 			//     ends (Anim Out), blue for the transitions that can be taken from anywhere.
 			//   StateTitle / StateTitleActive: a state's name, and the name of the one in play.
@@ -538,6 +538,130 @@ namespace NameTBD
 			inline const FLinearColor InputBool(0.30f, 0.0f, 0.0f);
 			inline const FLinearColor InputNumber(0.357667f, 1.0f, 0.06f);
 			inline const FLinearColor InputTrigger(1.0f, 1.0f, 1.0f);
+
+			// -------------------------------------------------------------------------------------------------
+			// Wires - Blueprint splines from state to state.
+			//   WireActive: the wire of the transition being taken - the dots' own orange, and thicker (WireActiveThickness);
+			//     WireBubble: the dots that run along it, as they run along a wire in Blueprint simulation - bigger than the wire
+			//     is thick, so they read as beads on it. WireBubbleSize / WireBubbleSpacing / WireBubbleSpeed:
+			//     their size, how far apart they run and how fast, in graph units (and per second). WireLinger: seconds the effect
+			//     fades out over once the transition is done, so a short blend is still seen to run.
+			//   WireThickness / WireActiveThickness: in graph units.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor WireActive(AnimationOrange_Hovered);
+			inline const FLinearColor WireBubble(AnimationOrange_Hovered);
+			inline constexpr float WireBubbleSize = 9.0f;
+			inline constexpr float WireBubbleSpacing = 32.0f;
+			inline constexpr float WireBubbleSpeed = 90.0f;
+			inline constexpr float WireLinger = 0.2f;
+			inline constexpr float WireThickness = 1.5f;
+			inline constexpr float WireActiveThickness = 4.0f;
+
+			// -------------------------------------------------------------------------------------------------
+			// The transition node - the Animation Blueprint's round transition node, tinted by how it blends:
+			//   TransitionTween: the light gray it always was. TransitionSpring: mint. TransitionAnimation: the animation orange.
+			//   TransitionCut: dark gray.
+			//   TransitionArrow: the arrowhead pointing the way it goes (the state machine wires' own, Graph.Arrow), and
+			//   TransitionArrowSize its size in graph units. TransitionSelected: the ring round it while selected.
+			//   TransitionIdleDim: how much of its color it shows under its progress while it plays - the full color rises
+			//   across it like a progress bar.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor TransitionTween(0.86f, 0.86f, 0.88f);
+			inline const FLinearColor TransitionSpring(0.45f, 0.88f, 0.70f);
+			inline const FLinearColor TransitionAnimation(AnimationOrange_Normal);
+			inline const FLinearColor TransitionCut(0.42f, 0.42f, 0.45f);
+			inline const FLinearColor TransitionArrow(0.03f, 0.03f, 0.035f, 0.90f);
+			inline constexpr float TransitionArrowSize = 11.0f;
+			inline const FLinearColor TransitionSelected(1.0f, 1.0f, 1.0f, 0.95f);
+			// A selected transition node, as the graph editor shows a selected node - measured off a selected state - but round:
+			// a crisp solid band TransitionSelectedWidth thick, starting TransitionSelectedOverlap inside the disc's edge (so no
+			// gap shows), shading from TransitionSelectedTop at the top to TransitionSelectedBottom at the bottom. No glow.
+			// In graph units - it grows with the zoom, as the editor's selection does: 3 units is the 5 pixels a selected state's
+			// band measures at the zoom the screenshots were taken at.
+			inline constexpr float TransitionSelectedWidth = 3.0f;
+			inline constexpr float TransitionSelectedOverlap = 0.75f;
+			inline const FLinearColor TransitionSelectedTop = FLinearColor(FColor(223, 159, 0));
+			inline const FLinearColor TransitionSelectedBottom = FLinearColor(FColor(210, 116, 0));
+			inline constexpr float TransitionIdleDim = 0.45f;
+
+			// -------------------------------------------------------------------------------------------------
+			// The length label beside a transition node: how long the transition takes. Text, and the dark pill behind it.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor LengthLabelText(1.0f, 1.0f, 1.0f, 0.78f);
+			inline const FLinearColor LengthLabelBackground(0.015f, 0.015f, 0.018f, 0.78f);
+
+			// -------------------------------------------------------------------------------------------------
+			// States, in more detail.
+			//   StateProgress: the fill rising across a state's middle while its animation plays, in the debugger - for a state
+			//     with its own Node Color, that color brightened instead. StateProgressOpacity: how much of it shows (the name
+			//     stays readable over it). StateProgressEdge / StateProgressEdgeWidth: the bright line at its front.
+			//   StateProgressMinBrightness: how bright (HSV value) a Node Color is lifted to for its fill and its lit body.
+			//   ActiveTrack*: the state the watched widget is in wears a value-driven track's diagonal bands from the Widget
+			//     Animations panel - the track's width and spacing (WidgetAnimEditor::SectionValueStripe*) - over its own colors,
+			//     scrolling right at ActiveTrackStripeSpeed graph units a second. ActiveTrackStripe: a touch stronger than the
+			//     track's, which sit on a bright color. Mid-transition no state wears them.
+			//     ActiveTrackRadius: the state's corners, which they stay inside.
+			//   StateSelected: the outline of a selected state.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor StateProgress(AnimationOrange_Normal);
+			inline constexpr float StateProgressOpacity = 0.72f;
+			inline const FLinearColor StateProgressEdge(1.0f, 0.93f, 0.80f, 0.95f);
+			inline constexpr float StateProgressEdgeWidth = 2.0f;
+			inline constexpr float StateProgressMinBrightness = 0.80f;
+			inline const FLinearColor ActiveTrackStripe(1.0f, 1.0f, 1.0f, 0.10f);
+			inline constexpr float ActiveTrackStripeSpeed = 8.0f;
+			inline constexpr float ActiveTrackStripeWidth = WidgetAnimEditor::SectionValueStripeWidth;
+			inline constexpr float ActiveTrackStripeSpacing = WidgetAnimEditor::SectionValueStripeSpacing;
+			inline constexpr float ActiveTrackRadius = 10.0f;
+
+			// The glow round the state in play: ActiveRing, a line ActiveRingWidth thick laid over the node's outer rim
+			// (ActiveRingInset: its middle that far out from the node's edge - the body brush draws its rim a little past the
+			// node's box, so the line covers it entirely), following the edge's rounded corners (ActiveRingRadius, measured off
+			// the state body brush), and a soft glow fading out beyond it over ActiveRingHaloReach in ActiveRingHaloSteps thin
+			// lines, ActiveRingHaloOpacity at its brightest. It breathes
+			// between ActiveRingMin and ActiveRingMax every ActiveRingPeriod seconds. Mid-transition no state glows.
+			inline const FLinearColor ActiveRing(AnimationOrange_Normal);
+			inline constexpr float ActiveRingWidth = 3.0f;
+			inline constexpr float ActiveRingInset = 0.5f;
+			inline constexpr float ActiveRingRadius = 12.0f;
+			inline constexpr float ActiveRingHaloReach = 6.0f;
+			inline constexpr int32 ActiveRingHaloSteps = 6;
+			inline constexpr float ActiveRingHaloOpacity = 0.35f;
+			inline constexpr float ActiveRingMin = 0.55f;
+			inline constexpr float ActiveRingMax = 1.0f;
+			inline constexpr float ActiveRingPeriod = 3.0f;
+			// How far toward white the line on the rim of a glowing state goes while the mouse is over its edge (the edge's
+			// own hover look is held back then: its corners would poke out past the glow).
+			inline constexpr float ActiveRingHoverLift = 0.45f;
+
+			// A state's middle while its animation's progress fills it: square-cornered, near black - the rounded one's dark.
+			inline const FLinearColor StateTitleSharp(0.010f, 0.010f, 0.011f, 1.0f);
+			inline const FLinearColor StateSelected(1.0f, 1.0f, 1.0f, 0.85f);
+
+			// A selected state's outline while it glows (in play), drawn on its own rounded edge just outside the glow line: the
+			// graph editor's selection orange, and how thick. A selected state not in play keeps the editor's own selection glow.
+			inline const FLinearColor StateSelectedOutline = FLinearColor(FColor(242, 177, 0));
+			inline constexpr float StateSelectedOutlineWidth = 2.5f;
+
+			// -------------------------------------------------------------------------------------------------
+			// The Inputs panel. InputRowSelected: behind the input whose settings the Details show. BuiltInUnused: a built-in
+			// input the machine doesn't read.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor InputRowSelected = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.16f);
+			inline const FLinearColor InputRowHovered(1.0f, 1.0f, 1.0f, 0.04f);
+			inline const FLinearColor BuiltInUnused(1.0f, 1.0f, 1.0f, 0.32f);
+
+			// -------------------------------------------------------------------------------------------------
+			// Picking a preview target in the designer: the label beside the eyedropper.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor PickLabelBackground(0.02f, 0.02f, 0.02f, 0.92f);
+			inline const FLinearColor PickLabelText(AnimationOrange_Normal);
 		}
 	}
 }

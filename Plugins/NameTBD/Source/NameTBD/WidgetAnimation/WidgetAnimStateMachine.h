@@ -239,9 +239,32 @@ struct NAMETBD_API FWidgetAnimMachineTransition
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend")
 	EWidgetAnimMachineBlend Blend = EWidgetAnimMachineBlend::Tween;
 
-	/** How long the blend takes. With a transition animation, how long it takes to blend into it, and then out of it into the next state. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (ClampMin = "0", UIMax = "2", Units = "s", EditCondition = "Blend == EWidgetAnimMachineBlend::Tween || Blend == EWidgetAnimMachineBlend::Animation", EditConditionHides))
+	/** How long the blend takes. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (ClampMin = "0", UIMax = "2", Units = "s", EditCondition = "Blend == EWidgetAnimMachineBlend::Tween", EditConditionHides))
 	float Duration = 0.2f;
+
+	/** The animation played on the way: a press squash, a pop between two states, Anim Out on the way to Exit. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (EditCondition = "Blend == EWidgetAnimMachineBlend::Animation", EditConditionHides))
+	TObjectPtr<UWidgetAnimPresetAsset> TransitionAnimation = nullptr;
+
+	/** Ticked: the transition animation is played in Animation Duration, sped up or slowed down to fit. Unticked: it plays at its own length. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (InlineEditConditionToggle))
+	bool bOverrideAnimationDuration = false;
+
+	/**
+	 * How long the transition animation plays. Unticked, it is the animation's own length (at Animation Speed) - shown here
+	 * once an animation is picked. Ticked, the animation is played in exactly this long. (Shown only for Play Transition
+	 * Animation: the State Machine editor's Details lay it out.)
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (DisplayName = "Animation Duration", ClampMin = "0.01", UIMax = "2", Units = "s", EditCondition = "bOverrideAnimationDuration"))
+	float AnimationDuration = 0.3f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (DisplayName = "Animation Speed", ClampMin = "0.01", UIMin = "0.1", UIMax = "4", EditCondition = "Blend == EWidgetAnimMachineBlend::Animation && !bOverrideAnimationDuration", EditConditionHides))
+	float TransitionAnimationSpeed = 1.f;
+
+	/** How long it takes to blend into the transition animation from the pose the widget is in, and out of it into the next state. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (DisplayName = "Blend In And Out", ClampMin = "0", UIMax = "1", Units = "s", EditCondition = "Blend == EWidgetAnimMachineBlend::Animation", EditConditionHides))
+	float AnimationBlendTime = 0.1f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (EditCondition = "Blend == EWidgetAnimMachineBlend::Tween || Blend == EWidgetAnimMachineBlend::Animation", EditConditionHides))
 	EWidgetAnimEasing Easing = EWidgetAnimEasing::EaseOut;
@@ -249,16 +272,12 @@ struct NAMETBD_API FWidgetAnimMachineTransition
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (EditCondition = "Easing == EWidgetAnimEasing::Custom && (Blend == EWidgetAnimMachineBlend::Tween || Blend == EWidgetAnimMachineBlend::Animation)", EditConditionHides))
 	TObjectPtr<UCurveFloat> CustomCurve = nullptr;
 
-	/** The spring every channel follows. Visual Duration is roughly how long it takes; Bounce how much it overshoots. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (EditCondition = "Blend == EWidgetAnimMachineBlend::Spring", EditConditionHides, ShowOnlyInnerProperties))
+	/**
+	 * The spring every channel follows. Visual Duration is roughly how long it takes; Bounce how much it overshoots. Its fields
+	 * are shown in Blend, and only while Blend is Spring - the editor's Details lay them out (see the State Machine editor).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (EditCondition = "Blend == EWidgetAnimMachineBlend::Spring", EditConditionHides))
 	FWidgetSpringParams Spring;
-
-	/** The animation played on the way: a press squash, a pop between two states, Anim Out on the way to Exit. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (EditCondition = "Blend == EWidgetAnimMachineBlend::Animation", EditConditionHides))
-	TObjectPtr<UWidgetAnimPresetAsset> TransitionAnimation = nullptr;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blend", meta = (DisplayName = "Animation Speed", ClampMin = "0.01", UIMin = "0.1", UIMax = "4", EditCondition = "Blend == EWidgetAnimMachineBlend::Animation", EditConditionHides))
-	float TransitionAnimationSpeed = 1.f;
 
 	/** When it may be taken: whenever its conditions hold, or only after part - or all - of the state has played. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Timing", meta = (DisplayName = "Exit Time"))
@@ -275,8 +294,70 @@ struct NAMETBD_API FWidgetAnimMachineTransition
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Timing", meta = (DisplayName = "Interruptible"))
 	bool bInterruptible = true;
 
-	/** How long the blend runs as it starts: 0 for a Cut, Duration otherwise. A spring runs until it settles. */
+	/**
+	 * How long the whole transition takes, from leaving one state to being in the next: 0 for a Cut, Duration for a Tween,
+	 * the spring's Visual Duration (it may run on a little as it settles), and for a transition animation its length plus the
+	 * blend out of it. What the editor labels the transition with.
+	 */
 	float GetBlendSeconds() const;
+
+	/** How long a Tween - or the blend into and out of a transition animation - takes. */
+	float GetTweenSeconds() const;
+
+	/** The transition animation's own length at speed 1, in seconds: 0 with none. */
+	float GetTransitionAnimationLength() const;
+
+	/** How long the transition animation plays: Animation Duration when overridden, else its length at Animation Speed. */
+	float GetTransitionAnimationSeconds() const;
+
+	/** The speed the transition animation is played at, so it takes GetTransitionAnimationSeconds. */
+	float GetTransitionAnimationSpeed() const;
+
+#if WITH_EDITORONLY_DATA
+	/** Whether its transition node was dragged somewhere of its own in the graph: the wire then runs through it. */
+	UPROPERTY()
+	bool bEditorNodePlaced = false;
+
+	/** Where it was dragged: its node's middle, from halfway between its two nodes' corners - so it follows them as they move. */
+	UPROPERTY()
+	FVector2D EditorNodeOffset = FVector2D::ZeroVector;
+#endif
+};
+
+/** A comment box on a layer's graph, as Blueprint graphs have: a note, and a frame round the nodes it is about. Editor only. */
+USTRUCT()
+struct NAMETBD_API FWidgetAnimMachineComment
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FGuid Id;
+
+	UPROPERTY()
+	FString Text;
+
+	UPROPERTY()
+	FVector2D Position = FVector2D::ZeroVector;
+
+	UPROPERTY()
+	FVector2D Size = FVector2D(400.0, 200.0);
+
+	UPROPERTY()
+	FLinearColor Color = FLinearColor::White;
+
+	UPROPERTY()
+	int32 FontSize = 18;
+
+	/** Moving the comment moves the nodes in it. */
+	UPROPERTY()
+	bool bGroupMovement = true;
+
+	/** The comment bubble shown when zoomed out. */
+	UPROPERTY()
+	bool bShowBubbleWhenZoomed = true;
+
+	UPROPERTY()
+	bool bColorBubble = false;
 };
 
 /** One node of a layer: a state, or one of the special nodes. */
@@ -291,7 +372,7 @@ struct NAMETBD_API FWidgetAnimMachineState
 	FGuid Id;
 
 	/** What it is called: in the graph, in conditions' events (On Button Entered Hovered), and to Is In State. Unique in its layer. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State", meta = (EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
 	FName Name;
 
 	UPROPERTY()
@@ -319,9 +400,24 @@ struct NAMETBD_API FWidgetAnimMachineState
 	UPROPERTY()
 	FVector2D EditorPosition = FVector2D::ZeroVector;
 
-	/** A note, shown on the node. */
-	UPROPERTY(EditAnywhere, Category = "State", meta = (MultiLine = true))
+	/** A note, shown in a bubble over the node - as a Blueprint node's comment is. */
+	UPROPERTY(EditAnywhere, Category = "State", meta = (MultiLine = true, EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
 	FString Comment;
+
+	/** Whether the comment's bubble is shown. */
+	UPROPERTY()
+	bool bCommentBubbleVisible = true;
+
+	/** Whether the node wears Node Color instead of its own (dark gray for a state, green Entry, red Exit, blue Any State). */
+	UPROPERTY(EditAnywhere, Category = "State", meta = (InlineEditConditionToggle))
+	bool bOverrideNodeColor = false;
+
+	/**
+	 * The node's color in the graph - to group states by what they are for. Only how the graph looks: nothing at runtime. While
+	 * the watched widget is in the state it is lit brighter in this color, and its animation's progress fills it in it.
+	 */
+	UPROPERTY(EditAnywhere, Category = "State", meta = (EditCondition = "bOverrideNodeColor", DisplayName = "Node Color", HideAlphaChannel))
+	FLinearColor NodeColor = FLinearColor(0.10f, 0.22f, 0.40f);
 #endif
 
 	bool IsSpecial() const { return Kind != EWidgetAnimMachineNodeKind::State; }
@@ -356,6 +452,12 @@ struct NAMETBD_API FWidgetAnimMachineLayer
 	/** Its arrows, in priority order: of two that could be taken from one node, the earlier is. Edited in the graph. */
 	UPROPERTY()
 	TArray<FWidgetAnimMachineTransition> Transitions;
+
+#if WITH_EDITORONLY_DATA
+	/** The comment boxes on its graph. */
+	UPROPERTY()
+	TArray<FWidgetAnimMachineComment> Comments;
+#endif
 
 	int32 FindStateIndex(const FGuid& Id) const;
 	int32 FindStateIndexByName(FName StateName) const;
@@ -394,6 +496,20 @@ public:
 	/** Its layers, first to last: later layers win where two Override layers animate the same channel. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "State Machine", meta = (TitleProperty = "Name"))
 	TArray<FWidgetAnimMachineLayer> Layers;
+
+#if WITH_EDITORONLY_DATA
+	/**
+	 * Where the State Machine editor previews the machine in a designer that has no Widget Animation Component playing it: the
+	 * widget it plays on, as a path into the Widget Blueprint (None: the Widget Blueprint itself), and a widget for each of
+	 * its targets - by default the Preview Target of the animation group the target is named for. Picked in the editor's
+	 * Preview Targets.
+	 */
+	UPROPERTY()
+	FName PreviewHostPath;
+
+	UPROPERTY()
+	TMap<FName, FName> PreviewTargetPaths;
+#endif
 
 	/** The machine's name in events and messages: the asset's name without WASM_ (WASM_Button is Button). */
 	FString GetMachineDisplayName() const;
