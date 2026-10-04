@@ -1999,14 +1999,16 @@ public:
 		TArray<FVector2f> Points;
 		struct FLine { float Offset; float Thickness; float Opacity; };
 
-		// The glow: thin lines one after another out from the edge, each fainter - overlapping, they fade smoothly out
-		// rather than in bands. Then the bright line itself, on the node's dark rim, so the glow hugs the node.
+		// The glow: thin lines one after another out from the bright line's outer side, each fainter - overlapping, they fade
+		// smoothly out rather than in bands. Then the bright line itself, over the node's whole outer rim - wide enough that
+		// none of the rim shows outside it, at the corners least of all - so the glow hugs the node.
 		TArray<FLine, TInlineAllocator<12>> Lines;
 		const int32 HaloSteps = FMath::Max(MachineColors::ActiveRingHaloSteps, 1);
+		const float HaloStart = MachineColors::ActiveRingInset + MachineColors::ActiveRingWidth * 0.5f;
 		for (int32 Step = HaloSteps; Step >= 1; --Step)
 		{
 			const float Out = static_cast<float>(Step) / HaloSteps;
-			Lines.Add({ MachineColors::ActiveRingHaloReach * Out, MachineColors::ActiveRingHaloReach / HaloSteps + 0.75f, MachineColors::ActiveRingHaloOpacity * FMath::Square(1.f - Out + 1.f / HaloSteps) });
+			Lines.Add({ HaloStart + MachineColors::ActiveRingHaloReach * Out, MachineColors::ActiveRingHaloReach / HaloSteps + 0.75f, MachineColors::ActiveRingHaloOpacity * FMath::Square(1.f - Out + 1.f / HaloSteps) });
 		}
 		Lines.Add({ MachineColors::ActiveRingInset, MachineColors::ActiveRingWidth, 1.f });
 		for (const FLine& Line : Lines)
