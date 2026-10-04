@@ -279,6 +279,27 @@ namespace WidgetAnimMachineEdits
 		// Positions are the graph's own: nothing else needs to hear of them, and the graph already shows them.
 	}
 
+	void PlaceTransitions(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TMap<FGuid, TOptional<FVector2D>>& Offsets)
+	{
+		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
+		if (!Layer || Offsets.Num() == 0)
+		{
+			return;
+		}
+
+		const FScopedTransaction Transaction(LOCTEXT("PlaceTransitions", "Move Transition Node"));
+		Machine->Modify();
+		for (FWidgetAnimMachineTransition& Transition : Layer->Transitions)
+		{
+			if (const TOptional<FVector2D>* Offset = Offsets.Find(Transition.Id))
+			{
+				Transition.bEditorNodePlaced = Offset->IsSet();
+				Transition.EditorNodeOffset = Offset->IsSet() ? Offset->GetValue() : FVector2D::ZeroVector;
+			}
+		}
+		Machine->MarkPackageDirty();
+	}
+
 	void SetEntryState(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& State)
 	{
 		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
@@ -713,96 +734,212 @@ namespace WidgetAnimMachineEdits
 // Wires
 // =====================================================================================================
 
+namespace
+{
+	/** A point on a Hermite curve, as Slate draws a spline from two points and their tangents. */
+	FVector2f HermitePoint(const FVector2f& P0, const FVector2f& T0, const FVector2f& P1, const FVector2f& T1, float T)
+	{
+		const float T2 = T * T;
+		const float T3 = T2 * T;
+		return P0 * (2.f * T3 - 3.f * T2 + 1.f)
+			+ T0 * (T3 - 2.f * T2 + T)
+			+ P1 * (-2.f * T3 + 3.f * T2)
+			+ T1 * (T3 - T2);
+	}
+
+	FVector2f HermiteDerivative(const FVector2f& P0, const FVector2f& T0, const FVector2f& P1, const FVector2f& T1, float T)
+	{
+		const float T2 = T * T;
+		return P0 * (6.f * T2 - 6.f * T)
+			+ T0 * (3.f * T2 - 4.f * T + 1.f)
+			+ P1 * (-6.f * T2 + 6.f * T)
+			+ T1 * (3.f * T2 - 2.f * T);
+	}
+}
+
 FVector2f FWidgetAnimMachineWire::Evaluate(float T) const
 {
-	// Hermite, as Slate draws a spline from two points and their tangents.
-	const float T2 = T * T;
-	const float T3 = T2 * T;
-	return Start * (2.f * T3 - 3.f * T2 + 1.f)
-		+ StartTangent * (T3 - 2.f * T2 + T)
-		+ End * (-2.f * T3 + 3.f * T2)
-		+ EndTangent * (T3 - T2);
+	if (!bThroughNode)
+	{
+		return HermitePoint(Start, StartTangent, End, EndTangent, T);
+	}
+	// Through a dragged node: the first half of the way is the curve into it, the second the curve out of it.
+	return T < 0.5f
+		? HermitePoint(Start, StartTangent, Mid, MidTangentIn, T * 2.f)
+		: HermitePoint(Mid, MidTangentOut, End, EndTangent, T * 2.f - 1.f);
 }
 
 FVector2f FWidgetAnimMachineWire::Derivative(float T) const
 {
-	const float T2 = T * T;
-	return Start * (6.f * T2 - 6.f * T)
-		+ StartTangent * (3.f * T2 - 4.f * T + 1.f)
-		+ End * (-6.f * T2 + 6.f * T)
-		+ EndTangent * (3.f * T2 - 2.f * T);
+	if (!bThroughNode)
+	{
+		return HermiteDerivative(Start, StartTangent, End, EndTangent, T);
+	}
+	return T < 0.5f
+		? HermiteDerivative(Start, StartTangent, Mid, MidTangentIn, T * 2.f) * 2.f
+		: HermiteDerivative(Mid, MidTangentOut, End, EndTangent, T * 2.f - 1.f) * 2.f;
 }
 
 namespace WidgetAnimMachineWires
 {
-	FVector2f GetFacingSide(const FBox2f& Box, const FVector2f& Toward)
+	FVector2f GetFacingSide(const FBox2f& Box, const FBox2f& Toward)
 	{
-		// The edge the line from the box's middle toward the point crosses - measured against the box's own shape, so a wide
-		// state is left from its bottom only when the point is well below it.
-		const FVector2f Center = Box.GetCenter();
+		const FVector2f Delta = Toward.GetCenter() - Box.GetCenter();
+		const float SignX = Delta.X >= 0.f ? 1.f : -1.f;
+		const float SignY = Delta.Y >= 0.f ? 1.f : -1.f;
+
+		// The space between them each way - negative where they overlap.
+		const float GapX = SignX > 0.f ? Toward.Min.X - Box.Max.X : Box.Min.X - Toward.Max.X;
+		const float GapY = SignY > 0.f ? Toward.Min.Y - Box.Max.Y : Box.Min.Y - Toward.Max.Y;
+
+		// Apart both ways - diagonal: out of the corner facing it, unless it lies far more one way than the other.
+		if (GapX > 0.f && GapY > 0.f)
+		{
+			if (GapX > GapY * CornerRatio)
+			{
+				return FVector2f(SignX, 0.f);
+			}
+			if (GapY > GapX * CornerRatio)
+			{
+				return FVector2f(0.f, SignY);
+			}
+			return FVector2f(SignX, SignY);
+		}
+
+		// Apart one way only: straight out of that side.
+		if (GapX > 0.f || GapY > 0.f)
+		{
+			return GapX > GapY ? FVector2f(SignX, 0.f) : FVector2f(0.f, SignY);
+		}
+
+		// On top of each other: whichever side the line between their middles crosses, for Box's own shape.
 		const FVector2f HalfSize = Box.GetSize() * 0.5f;
-		const FVector2f Delta = Toward - Center;
 		if (FMath::Abs(Delta.X) * FMath::Max(HalfSize.Y, 1.f) >= FMath::Abs(Delta.Y) * FMath::Max(HalfSize.X, 1.f))
 		{
-			return FVector2f(Delta.X >= 0.f ? 1.f : -1.f, 0.f);
+			return FVector2f(SignX, 0.f);
 		}
-		return FVector2f(0.f, Delta.Y >= 0.f ? 1.f : -1.f);
+		return FVector2f(0.f, SignY);
+	}
+
+	FVector2f GetFacingSide(const FBox2f& Box, const FVector2f& Toward)
+	{
+		return GetFacingSide(Box, FBox2f(Toward, Toward));
 	}
 
 	FVector2f GetSideMiddle(const FBox2f& Box, const FVector2f& Side)
 	{
-		const FVector2f Center = Box.GetCenter();
 		const FVector2f HalfSize = Box.GetSize() * 0.5f;
-		return Center + FVector2f(Side.X * HalfSize.X, Side.Y * HalfSize.Y);
+		const bool bCorner = Side.X != 0.f && Side.Y != 0.f;
+		// A corner pulled in onto the state's rounded corner, where the wire meets what is drawn.
+		const FVector2f Reach = bCorner
+			? FVector2f(FMath::Max(HalfSize.X - CornerInset, 0.f), FMath::Max(HalfSize.Y - CornerInset, 0.f))
+			: HalfSize;
+		return Box.GetCenter() + Side * Reach;
 	}
 
-	FVector2f GetTangent(const FVector2f& From, const FVector2f& FromSide, const FVector2f& To, const FVector2f& ToSide, FVector2f& OutEndTangent)
+	FVector2f GetAnchor(const FBox2f& Box, const FVector2f& Side, float Offset, const FVector2f& Across)
 	{
-		// Out of the side it leaves, into the side it arrives at - as a Blueprint wire leaves and enters its pins - long enough
-		// to curve smoothly round a corner, never so short that it kinks between states that nearly touch.
-		const float Chord = (To - From).Size();
-		const float Length = FMath::Max(Chord * 0.6f, 36.f);
-		OutEndTangent = -ToSide * Length;
-		return FromSide * Length;
+		FVector2f Point = GetSideMiddle(Box, Side);
+		if (FMath::IsNearlyZero(Offset))
+		{
+			return Point;
+		}
+		FVector2f Along = FVector2f(-Side.Y, Side.X).GetSafeNormal();
+		if (FVector2f::DotProduct(Along, Across) < 0.f)
+		{
+			Along = -Along;
+		}
+		if (Side.X == 0.f || Side.Y == 0.f)
+		{
+			return Point + Along * Offset;
+		}
+
+		// A corner: off it along whichever of its two edges the offset leads onto - the step out past the other edge held on it.
+		Point += Along * (Offset * UE_SQRT_2);
+		Point.X = FMath::Clamp(Point.X, Box.Min.X, Box.Max.X);
+		Point.Y = FMath::Clamp(Point.Y, Box.Min.Y, Box.Max.Y);
+		return Point;
 	}
 
-	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed)
+	FVector2f GetPlacementAnchor(const FBox2f& First, const FBox2f& Second)
+	{
+		return (First.Min + Second.Min) * 0.5f;
+	}
+
+	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed, const FVector2f* NodePoint)
 	{
 		FWidgetAnimMachineWire Wire;
+
+		if (NodePoint)
+		{
+			// Through where its node was dragged: out of the side or corner of the state it leaves that faces the node, into
+			// the node, and on out of it into the side or corner of the other that faces it - a smooth curve through the node,
+			// as through a reroute.
+			const FBox2f& From = bReversed ? Second : First;
+			const FBox2f& To = bReversed ? First : Second;
+			const FVector2f FromSide = GetFacingSide(From, *NodePoint);
+			const FVector2f ToSide = GetFacingSide(To, *NodePoint);
+			const FVector2f StartPoint = GetSideMiddle(From, FromSide);
+			const FVector2f EndPoint = GetSideMiddle(To, ToSide);
+			const float InLength = FMath::Max((*NodePoint - StartPoint).Size(), 1.f);
+			const float OutLength = FMath::Max((EndPoint - *NodePoint).Size(), 1.f);
+			FVector2f Through = (EndPoint - StartPoint).GetSafeNormal();
+			if (Through.IsNearlyZero())
+			{
+				Through = (*NodePoint - StartPoint).GetSafeNormal();
+			}
+
+			Wire.bThroughNode = true;
+			Wire.Start = StartPoint;
+			Wire.StartTangent = FromSide.GetSafeNormal() * FMath::Max(InLength, 36.f);
+			Wire.Mid = *NodePoint;
+			Wire.MidTangentIn = Through * InLength;
+			Wire.MidTangentOut = Through * OutLength;
+			Wire.End = EndPoint;
+			Wire.EndTangent = -ToSide.GetSafeNormal() * FMath::Max(OutLength, 36.f);
+			Wire.NodeT = 0.5f;
+			Wire.NodePoint = *NodePoint;
+			Wire.NodeDirection = Through.IsNearlyZero() ? FVector2f(1.f, 0.f) : Through;
+			return Wire;
+		}
+
 		const FVector2f FirstCenter = First.GetCenter();
 		const FVector2f SecondCenter = Second.GetCenter();
 
-		// Each end leaves the side of its state that faces the other state: straight across, straight down, or - between
-		// states that lie diagonally - out of one side and round into another.
-		const FVector2f FirstSide = GetFacingSide(First, SecondCenter);
-		const FVector2f SecondSide = GetFacingSide(Second, FirstCenter);
+		// Each end leaves the side of its state that faces the other state - straight across, straight down - or, between
+		// states that lie diagonally, the corner that faces it.
+		const FVector2f FirstSide = GetFacingSide(First, Second);
+		const FVector2f SecondSide = GetFacingSide(Second, First);
 
 		// Lanes: every wire between the two states in one of its own, side by side along the edges, all offset the same way
 		// across the line between the two states - closer together when more of them than fit the shorter edge.
 		const FVector2f Between = (SecondCenter - FirstCenter).GetSafeNormal();
 		const FVector2f Across = Between.IsNearlyZero() ? FVector2f(0.f, 1.f) : FVector2f(-Between.Y, Between.X);
-		auto EdgeAlong = [&Across](const FVector2f& Side)
-		{
-			const FVector2f Along(-Side.Y, Side.X);
-			return FVector2f::DotProduct(Along, Across) >= 0.f ? Along : -Along;
-		};
 		auto EdgeLength = [](const FBox2f& Box, const FVector2f& Side)
 		{
+			if (Side.X != 0.f && Side.Y != 0.f)
+			{
+				return FMath::Min(Box.GetSize().X, Box.GetSize().Y);
+			}
 			return Side.X != 0.f ? Box.GetSize().Y : Box.GetSize().X;
 		};
 		const float Room = FMath::Max(FMath::Min(EdgeLength(First, FirstSide), EdgeLength(Second, SecondSide)) - 12.f, 0.f);
 		const float Spacing = LaneCount > 1 ? FMath::Min(LaneSpacing, Room / (LaneCount - 1)) : 0.f;
 		const float LaneOffset = (Lane - (LaneCount - 1) * 0.5f) * Spacing;
 
-		const FVector2f FirstPoint = GetSideMiddle(First, FirstSide) + EdgeAlong(FirstSide) * LaneOffset;
-		const FVector2f SecondPoint = GetSideMiddle(Second, SecondSide) + EdgeAlong(SecondSide) * LaneOffset;
-		FVector2f SecondTangent;
-		const FVector2f FirstTangent = GetTangent(FirstPoint, FirstSide, SecondPoint, SecondSide, SecondTangent);
+		const FVector2f FirstPoint = GetAnchor(First, FirstSide, LaneOffset, Across);
+		const FVector2f SecondPoint = GetAnchor(Second, SecondSide, LaneOffset, Across);
+
+		// Out of the side or corner it leaves, into the one it arrives at - as a Blueprint wire leaves and enters its pins -
+		// long enough to curve smoothly, never so short that it kinks between states that nearly touch.
+		const float Chord = FMath::Max((SecondPoint - FirstPoint).Size(), 1.f);
+		const float TangentLength = FMath::Max(Chord * 0.6f, 36.f);
+		const FVector2f FirstTangent = FirstSide.GetSafeNormal() * TangentLength;
+		const FVector2f SecondTangent = -SecondSide.GetSafeNormal() * TangentLength;
 
 		// Where the transition node sits: halfway. Lanes closer than a node is wide stagger their nodes along the wire, so no
 		// two nodes land on each other however many wires there are.
 		float NodeT = 0.5f;
-		const float Chord = FMath::Max((SecondPoint - FirstPoint).Size(), 1.f);
 		if (LaneCount > 1 && Spacing < NodeDiameter + 2.f)
 		{
 			const float Needed = NodeDiameter + 2.f;
@@ -906,7 +1043,8 @@ void UWidgetAnimMachineGraph::GetLane(const UWidgetAnimMachineTransitionNode* No
 			continue;
 		}
 		const bool bSamePair = (Sibling->FromId == First && Sibling->ToId == Second) || (Sibling->FromId == Second && Sibling->ToId == First);
-		if (!bSamePair)
+		// A node dragged somewhere of its own takes no lane: its wire runs through it instead.
+		if (!bSamePair || (Sibling->bPlaced && Sibling != Node))
 		{
 			continue;
 		}
@@ -993,6 +1131,8 @@ void UWidgetAnimMachineGraph::RebuildFromMachine()
 		Node->TransitionId = Transition.Id;
 		Node->FromId = Transition.From;
 		Node->ToId = Transition.To;
+		Node->bPlaced = Transition.bEditorNodePlaced;
+		Node->PlacedOffset = FVector2f(Transition.EditorNodeOffset);
 		// Halfway, until its widget places it exactly (see SWidgetAnimMachineTransitionNode::PerformSecondPassLayout).
 		Node->NodePosX = (From->NodePosX + To->NodePosX) / 2;
 		Node->NodePosY = (From->NodePosY + To->NodePosY) / 2;
@@ -1341,6 +1481,29 @@ void UWidgetAnimMachineTransitionNode::GetNodeContextMenuActions(UToolMenu* Menu
 				WidgetAnimMachineEdits::SetTransitionsEnabled(Graph->Machine, Graph->LayerIndex, { Node->TransitionId }, !bEnabled);
 			}
 		})));
+	// Dragged somewhere of its own: back onto the middle of its wire.
+	if (bPlaced)
+	{
+		const TWeakObjectPtr<UWidgetAnimMachineTransitionNode> WeakMutable(const_cast<UWidgetAnimMachineTransitionNode*>(this));
+		Section.AddMenuEntry(
+			TEXT("ResetTransitionNode"),
+			LOCTEXT("ResetTransitionNode", "Reset Node Position"),
+			MachineTips::ResetTransitionNodeTooltip(),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([WeakMutable]()
+			{
+				UWidgetAnimMachineTransitionNode* Node = WeakMutable.Get();
+				UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+				if (Graph)
+				{
+					Node->bPlaced = false;
+					Node->PlacedOffset = FVector2f::ZeroVector;
+					TMap<FGuid, TOptional<FVector2D>> Offsets;
+					Offsets.Add(Node->TransitionId, TOptional<FVector2D>());
+					WidgetAnimMachineEdits::PlaceTransitions(Graph->Machine, Graph->LayerIndex, Offsets);
+				}
+			})));
+	}
 	Section.AddMenuEntry(FGenericCommands::Get().Delete);
 }
 
@@ -1657,9 +1820,93 @@ private:
 };
 
 /**
+ * A value-driven track's look from the Widget Animations panel, filling what it sits on: the track's dark body, its color spill
+ * dimmed, and faint diagonal bands across it - drawn as SWidgetAnimTimeline draws a striped track. Behind the state the watched
+ * widget is in. Never takes the mouse.
+ */
+class SWidgetAnimMachineTrackPattern : public SLeafWidget
+{
+public:
+
+	SLATE_BEGIN_ARGS(SWidgetAnimMachineTrackPattern)
+		: _Opacity(0.f)
+		, _Color(FLinearColor::White)
+	{}
+		SLATE_ATTRIBUTE(float, Opacity)
+		SLATE_ATTRIBUTE(FLinearColor, Color)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		Opacity = InArgs._Opacity;
+		Color = InArgs._Color;
+		SetVisibility(EVisibility::HitTestInvisible);
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override
+	{
+		return FVector2D::ZeroVector;
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+	{
+		const float Amount = FMath::Clamp(Opacity.Get(), 0.f, 1.f);
+		const FVector2f Size = AllottedGeometry.GetLocalSize();
+		if (Amount <= 0.f || Size.X <= 0.f || Size.Y <= 0.f)
+		{
+			return LayerId;
+		}
+		const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
+		const FSlateBrush* Rounded = WidgetAnimMachineStyle::RoundedBrush(MachineColors::ActiveTrackRadius);
+
+		// The track's body, and its color spill over it - dimmed, as a value-driven track's is under its bands.
+		const FLinearColor Body = MachineColors::ActiveTrackBody;
+		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Rounded, ESlateDrawEffect::None,
+			Body.CopyWithNewOpacity(Body.A * Amount) * Tint);
+		const FLinearColor Spill = Color.Get();
+		FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1, AllottedGeometry.ToPaintGeometry(), Rounded, ESlateDrawEffect::None,
+			Spill.CopyWithNewOpacity(MachineColors::ActiveTrackSpillOpacity * Amount) * Tint);
+
+		// The bands: each a thin upright box turned 45 degrees about its middle, which sits on the vertical center - so it
+		// crosses the whole height - clipped inside the rounded corners.
+		const float Inset = MachineColors::ActiveTrackRadius * 0.5f;
+		const FGeometry Inner = AllottedGeometry.MakeChild(Size - FVector2f(Inset * 2.f, Inset * 2.f), FSlateLayoutTransform(FVector2f(Inset, Inset)));
+		OutDrawElements.PushClip(FSlateClippingZone(Inner));
+		const FLinearColor Stripe = MachineColors::ActiveTrackStripe;
+		const float Width = MachineColors::ActiveTrackStripeWidth;
+		const float Spacing = MachineColors::ActiveTrackStripeSpacing;
+		const float Length = Size.Y * UE_SQRT_2 + Width * 2.f;
+		const float FirstX = -FMath::CeilToFloat(Size.Y / Spacing) * Spacing;
+		for (float StripeX = FirstX; StripeX < Size.X; StripeX += Spacing)
+		{
+			FSlateDrawElement::MakeBox(
+				OutDrawElements,
+				LayerId + 2,
+				AllottedGeometry.ToPaintGeometry(
+					FVector2f(Width, Length),
+					FSlateLayoutTransform(FVector2f(StripeX + Size.Y * 0.5f - Width * 0.5f, Size.Y * 0.5f - Length * 0.5f)),
+					FSlateRenderTransform(FQuat2f(FMath::DegreesToRadians(45.f))),
+					FVector2f(0.5f, 0.5f)),
+				FAppStyle::GetBrush(TEXT("WhiteBrush")),
+				ESlateDrawEffect::None,
+				Stripe.CopyWithNewOpacity(Stripe.A * Amount) * Tint);
+		}
+		OutDrawElements.PopClip();
+		return LayerId + 3;
+	}
+
+private:
+
+	TAttribute<float> Opacity;
+	TAttribute<FLinearColor> Color;
+};
+
+/**
  * A state node: rounded, its name in the middle and its animation under it. Its ring is where a transition is dragged from; its
  * colored interior - all of it - takes clicks, so it is selected and moved from anywhere inside. While the watched widget is in
- * it, it is lit, and its animation's progress rises across it.
+ * it, it wears a value-driven track's striped look behind it (SWidgetAnimMachineTrackPattern), and its animation's progress
+ * rises across its middle.
  */
 class SWidgetAnimMachineStateNode : public SGraphNode
 {
@@ -1701,6 +1948,16 @@ public:
 				}))
 				[
 					SNew(SOverlay)
+
+					// While the watched widget is in it: a value-driven track's look behind it all.
+					+ SOverlay::Slot()
+					.HAlign(HAlign_Fill)
+					.VAlign(VAlign_Fill)
+					[
+						SNew(SWidgetAnimMachineTrackPattern)
+						.Opacity(this, &SWidgetAnimMachineStateNode::GetTrackOpacity)
+						.Color(this, &SWidgetAnimMachineStateNode::GetTrackColor)
+					]
 
 					// The edge: where transitions are dragged from.
 					+ SOverlay::Slot()
@@ -1938,28 +2195,11 @@ private:
 			return MachineColors::StateBody;
 		}
 
-		// Its own color, if given one - lit brighter in it while the watched widget is in it, half way while leaving it.
+		// Its own color, if given one. In play it keeps its color: the track look behind it is what shows it is in play.
 		FLinearColor Custom;
 		if (GetCustomColor(Custom))
 		{
-			if (IsActive())
-			{
-				return FMath::Lerp(Custom, Brighten(Custom), 0.55f);
-			}
-			if (IsLeaving())
-			{
-				return FMath::Lerp(Custom, Brighten(Custom), 0.25f);
-			}
 			return Custom;
-		}
-
-		if (IsActive())
-		{
-			return MachineColors::StateActive;
-		}
-		if (IsLeaving())
-		{
-			return MachineColors::StateLeaving;
 		}
 		switch (Node->Kind)
 		{
@@ -1968,6 +2208,23 @@ private:
 		case EWidgetAnimMachineNodeKind::AnyState: return MachineColors::AnyStateBody;
 		default:                                    return MachineColors::StateBody;
 		}
+	}
+
+	/** The track look behind it: all of it while the watched widget is in it, some while leaving it, none otherwise. */
+	float GetTrackOpacity() const
+	{
+		if (IsActive())
+		{
+			return 1.f;
+		}
+		return IsLeaving() ? MachineColors::ActiveTrackLeavingOpacity : 0.f;
+	}
+
+	/** The track's color: the animation orange, or the node's own color brightened. */
+	FLinearColor GetTrackColor() const
+	{
+		FLinearColor Custom;
+		return GetCustomColor(Custom) ? Brighten(Custom) : MachineColors::StateProgress;
 	}
 
 	/** The progress fill: the animation orange, or the node's own color brightened. */
@@ -2100,10 +2357,9 @@ private:
 
 /**
  * What a transition node draws: the Animation Blueprint's own round transition node, tinted by how it blends - a Tween the
- * plain light gray it always was, a Spring mint, a Cut dark gray, a transition animation striped as a value-driven track is in
- * the Widget Animations panel (its orange dimmed, crossed by faint light bands) - and, in place of its double-arrow icon, the
- * state machine wires' own arrowhead, turned the way the transition goes along its wire. While the watched widget takes it,
- * its color rises across it like a progress bar.
+ * plain light gray it always was, a Spring mint, a Cut dark gray, a transition animation the animation orange - and, in place
+ * of its double-arrow icon, the state machine wires' own arrowhead, turned the way the transition goes along its wire. While
+ * the watched widget takes it, its color rises across it like a progress bar.
  */
 class SWidgetAnimMachineTransitionGlyph : public SLeafWidget
 {
@@ -2153,20 +2409,14 @@ public:
 		FWidgetAnimMachineLayerDebug Debug;
 		const bool bPlaying = Graph && Graph->GetDebug && Graph->GetDebug(Debug) && Debug.ActiveTransition == TransitionNode->TransitionId;
 
-		// A transition animation's orange is dimmed under its stripes, as a value-driven track's spill is.
-		const bool bStriped = Transition->Blend == EWidgetAnimMachineBlend::Animation && Transition->bEnabled;
 		FLinearColor Color = GetBlendColor(Transition->Blend);
-		if (bStriped)
-		{
-			Color = (Color * MachineColors::TransitionAnimationSpill).CopyWithNewOpacity(1.f);
-		}
 		if (!Transition->bEnabled)
 		{
 			Color = MachineColors::TransitionDisabled;
 		}
 		else if (IsHovered() || (IsNodeSelected && IsNodeSelected()))
 		{
-			Color = FMath::Lerp(Color, FLinearColor::White, bStriped ? 0.2f : 0.35f);
+			Color = FMath::Lerp(Color, FLinearColor::White, 0.35f);
 		}
 
 		// The disc: dimmed under its progress while it plays, its full color rising across it.
@@ -2179,13 +2429,6 @@ public:
 			OutDrawElements.PushClip(FSlateClippingZone(Filled));
 			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1, AllottedGeometry.ToPaintGeometry(), Disc, ESlateDrawEffect::None, Color);
 			OutDrawElements.PopClip();
-		}
-
-		// A transition animation is striped, as a value-driven track is: faint light bands running up to the right.
-		if (bStriped)
-		{
-			WidgetAnimMachineStyle::DrawStripesInCircle(OutDrawElements, LayerId + 2, AllottedGeometry, Center, Radius - 1.5f, MachineColors::TransitionStripe,
-				MachineColors::TransitionStripeWidth, MachineColors::TransitionStripeSpacing);
 		}
 
 		// Selected: a thin white ring round it.
@@ -2268,10 +2511,29 @@ public:
 		return true;
 	}
 
-	/** On its wire, where WidgetAnimMachineWires::Compute puts it - the same place the wire is drawn through. */
+	/** Alt+click: deletes the transition - as Alt+click breaks a Blueprint wire. */
+	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && MouseEvent.IsAltDown())
+		{
+			const UWidgetAnimMachineTransitionNode* Node = Cast<UWidgetAnimMachineTransitionNode>(GraphNode);
+			UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+			if (Graph)
+			{
+				WidgetAnimMachineEdits::Delete(Graph->Machine, Graph->LayerIndex, TArray<FGuid>(), { Node->TransitionId });
+				return FReply::Handled();
+			}
+		}
+		return SGraphNode::OnMouseButtonDown(MyGeometry, MouseEvent);
+	}
+
+	/**
+	 * On its wire, where WidgetAnimMachineWires::Compute puts it - the same place the wire is drawn through. Dragged (moved by
+	 * the graph since it was last put here), it stays where it was dropped, and its wire runs through it from then on.
+	 */
 	virtual void PerformSecondPassLayout(const TMap<UObject*, TSharedRef<SNodePanel::SNode>>& NodeToWidgetLookup) const override
 	{
-		const UWidgetAnimMachineTransitionNode* Node = Cast<UWidgetAnimMachineTransitionNode>(GraphNode);
+		UWidgetAnimMachineTransitionNode* Node = Cast<UWidgetAnimMachineTransitionNode>(GraphNode);
 		const UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
 		const TSharedPtr<SGraphPanel> Panel = OwnerGraphPanelPtr.Pin();
 		if (!Node || !Graph || !Panel.IsValid())
@@ -2297,23 +2559,42 @@ public:
 			return FBox2f(Min, Min + FVector2f(FVector2D(Widget->GetDesiredSize())));
 		};
 
+		const FBox2f FirstBox = BoxOf(First, FirstWidget);
+		const FBox2f SecondBox = BoxOf(Second, SecondWidget);
+		const FVector2f Anchor = WidgetAnimMachineWires::GetPlacementAnchor(FirstBox, SecondBox);
+		const FVector2f MySize = FVector2f(FVector2D(GetDesiredSize()));
+
+		// Moved since it was put here: dragged - on its own or with others. It stays where it was dropped.
+		const FIntPoint Current(GraphNode->NodePosX, GraphNode->NodePosY);
+		if (bLaidOut && Current != LastLaidOut)
+		{
+			Node->bPlaced = true;
+			Node->PlacedOffset = FVector2f(static_cast<float>(Current.X), static_cast<float>(Current.Y)) + MySize * 0.5f - Anchor;
+		}
+
 		int32 Lane = 0;
 		int32 Count = 1;
 		bool bReversed = false;
 		Graph->GetLane(Node, Lane, Count, bReversed);
-		const FWidgetAnimMachineWire Wire = WidgetAnimMachineWires::Compute(BoxOf(First, FirstWidget), BoxOf(Second, SecondWidget), Lane, Count, bReversed);
+		const FVector2f PlacedPoint = Anchor + Node->PlacedOffset;
+		const FWidgetAnimMachineWire Wire = WidgetAnimMachineWires::Compute(FirstBox, SecondBox, Lane, Count, bReversed, Node->bPlaced ? &PlacedPoint : nullptr);
 		Direction = Wire.NodeDirection;
 
-		const FVector2f MySize = FVector2f(FVector2D(GetDesiredSize()));
 		const FVector2f Position = Wire.NodePoint - MySize * 0.5f;
 		GraphNode->NodePosX = FMath::RoundToInt32(Position.X);
 		GraphNode->NodePosY = FMath::RoundToInt32(Position.Y);
+		LastLaidOut = FIntPoint(GraphNode->NodePosX, GraphNode->NodePosY);
+		bLaidOut = true;
 	}
 
 private:
 
 	/** The way its wire runs through it - set as it is placed, read as it is drawn. */
 	mutable FVector2f Direction = FVector2f(1.f, 0.f);
+
+	/** Where it was last put, so a move by the graph - a drag - is told from its own placing. */
+	mutable FIntPoint LastLaidOut = FIntPoint::ZeroValue;
+	mutable bool bLaidOut = false;
 
 	bool IsSelected() const
 	{
@@ -2493,13 +2774,17 @@ public:
 			int32 Count = 1;
 			bool bReversed = false;
 			Graph->GetLane(Transition, Lane, Count, bReversed);
-			FWidgetAnimMachineWire Wire = WidgetAnimMachineWires::Compute(*FirstBox, *SecondBox, Lane, Count, bReversed);
+			const FVector2f PlacedPoint = WidgetAnimMachineWires::GetPlacementAnchor(*FirstBox, *SecondBox) + Transition->PlacedOffset;
+			FWidgetAnimMachineWire Wire = WidgetAnimMachineWires::Compute(*FirstBox, *SecondBox, Lane, Count, bReversed, Transition->bPlaced ? &PlacedPoint : nullptr);
 
 			// On screen: the same curve, scaled.
 			Wire.Start = ToScreen(Wire.Start);
 			Wire.End = ToScreen(Wire.End);
+			Wire.Mid = ToScreen(Wire.Mid);
 			Wire.StartTangent *= Scale;
 			Wire.EndTangent *= Scale;
+			Wire.MidTangentIn *= Scale;
+			Wire.MidTangentOut *= Scale;
 			Wire.NodePoint = ToScreen(Wire.NodePoint);
 
 			const FWidgetAnimMachineTransition* Data = Transition->GetTransition();
@@ -2526,7 +2811,16 @@ public:
 				Color = MachineColors::TransitionDisabled;
 			}
 
-			FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Wire.Start, Wire.StartTangent, Wire.End, Wire.EndTangent, Thickness * Scale, ESlateDrawEffect::None, Color);
+			if (Wire.bThroughNode)
+			{
+				// Into the dragged node, and on out of it.
+				FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Wire.Start, Wire.StartTangent, Wire.Mid, Wire.MidTangentIn, Thickness * Scale, ESlateDrawEffect::None, Color);
+				FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Wire.Mid, Wire.MidTangentOut, Wire.End, Wire.EndTangent, Thickness * Scale, ESlateDrawEffect::None, Color);
+			}
+			else
+			{
+				FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Wire.Start, Wire.StartTangent, Wire.End, Wire.EndTangent, Thickness * Scale, ESlateDrawEffect::None, Color);
+			}
 
 			// Dots running along it, the way it goes, as along a wire in Blueprint simulation.
 			if (Glow > 0.f)
@@ -2563,8 +2857,8 @@ public:
 	using FConnectionDrawingPolicy::DrawPreviewConnector;
 
 	/**
-	 * The wire being dragged out of a state: out of whichever side of it faces the mouse - its bottom when dragged down, its
-	 * side when dragged across, round from one into the other when dragged off diagonally - as the wire it makes will be.
+	 * The wire being dragged out of a state: out of whichever side or corner of it faces the mouse - its bottom when dragged
+	 * down, its side when dragged across, its corner when dragged off diagonally - as the wire it makes will be.
 	 */
 	virtual void DrawPreviewConnector(const FGeometry& PinGeometry, const FVector2f& StartPoint, const FVector2f& EndPoint, UEdGraphPin* Pin) override
 	{
@@ -2583,7 +2877,7 @@ public:
 		const FVector2f Side = WidgetAnimMachineWires::GetFacingSide(Box, Mouse);
 		const FVector2f Edge = WidgetAnimMachineWires::GetSideMiddle(Box, Side);
 		const float Length = FMath::Max((Mouse - Edge).Size() * 0.6f, 36.f * ZoomFactor);
-		const FVector2f Tangent = Side * Length;
+		const FVector2f Tangent = Side.GetSafeNormal() * Length;
 
 		FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Edge, Tangent, Mouse, Tangent,
 			MachineColors::WireThickness * ZoomFactor, ESlateDrawEffect::None, MachineColors::TransitionLine);

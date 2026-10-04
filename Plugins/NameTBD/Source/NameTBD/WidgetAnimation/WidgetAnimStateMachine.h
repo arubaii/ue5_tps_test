@@ -312,6 +312,16 @@ struct NAMETBD_API FWidgetAnimMachineTransition
 
 	/** The speed the transition animation is played at, so it takes GetTransitionAnimationSeconds. */
 	float GetTransitionAnimationSpeed() const;
+
+#if WITH_EDITORONLY_DATA
+	/** Whether its transition node was dragged somewhere of its own in the graph: the wire then runs through it. */
+	UPROPERTY()
+	bool bEditorNodePlaced = false;
+
+	/** Where it was dragged: its node's middle, from halfway between its two nodes' corners - so it follows them as they move. */
+	UPROPERTY()
+	FVector2D EditorNodeOffset = FVector2D::ZeroVector;
+#endif
 };
 
 /** A comment box on a layer's graph, as Blueprint graphs have: a note, and a frame round the nodes it is about. Editor only. */

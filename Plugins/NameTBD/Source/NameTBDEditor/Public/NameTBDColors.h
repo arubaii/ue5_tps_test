@@ -512,8 +512,8 @@ namespace NameTBD
 			// States.
 			//   StateEdge / StateEdgeHovered: the ring round a state that a transition is dragged from - brighter under the
 			//     mouse, so it reads as the thing to drag.
-			//   StateBody: a state at rest. StateActive: the state the watched widget is in. StateLeaving: the state it is
-			//     blending out of, while a transition plays.
+			//   StateBody: a state at rest. StateActive / StateLeaving: no longer used by the graph (the state in play wears the
+			//     track look instead - see ActiveTrack*); kept for anything else that lights a state.
 			//   EntryBody / ExitBody / AnyStateBody: the three special nodes - green for where it starts, red for where it
 			//     ends (Anim Out), blue for the transitions that can be taken from anywhere.
 			//   StateTitle / StateTitleActive: a state's name, and the name of the one in play.
@@ -559,10 +559,8 @@ namespace NameTBD
 
 			// -------------------------------------------------------------------------------------------------
 			// The transition node - the Animation Blueprint's round transition node, tinted by how it blends:
-			//   TransitionTween: the light gray it always was. TransitionSpring: mint. TransitionAnimation: the animation orange -
-			//   striped as a value-driven track is in the Widget Animations panel: its orange dimmed (TransitionAnimationSpill, as
-			//   the track's SectionValueSpillOpacity), crossed by faint light bands (TransitionStripe, TransitionStripeWidth /
-			//   Spacing) running up to the right. TransitionCut: dark gray.
+			//   TransitionTween: the light gray it always was. TransitionSpring: mint. TransitionAnimation: the animation orange.
+			//   TransitionCut: dark gray.
 			//   TransitionArrow: the arrowhead pointing the way it goes (the state machine wires' own, Graph.Arrow), and
 			//   TransitionArrowSize its size in graph units. TransitionSelected: the ring round it while selected.
 			//   TransitionIdleDim: how much of its color it shows under its progress while it plays - the full color rises
@@ -573,10 +571,6 @@ namespace NameTBD
 			inline const FLinearColor TransitionSpring(0.45f, 0.88f, 0.70f);
 			inline const FLinearColor TransitionAnimation(AnimationOrange_Normal);
 			inline const FLinearColor TransitionCut(0.42f, 0.42f, 0.45f);
-			inline constexpr float TransitionAnimationSpill = 0.6f;
-			inline const FLinearColor TransitionStripe(1.0f, 1.0f, 1.0f, 0.13f);
-			inline constexpr float TransitionStripeWidth = 2.5f;
-			inline constexpr float TransitionStripeSpacing = 6.5f;
 			inline const FLinearColor TransitionArrow(0.03f, 0.03f, 0.035f, 0.90f);
 			inline constexpr float TransitionArrowSize = 11.0f;
 			inline const FLinearColor TransitionSelected(1.0f, 1.0f, 1.0f, 0.95f);
@@ -595,6 +589,11 @@ namespace NameTBD
 			//     with its own Node Color, that color brightened instead. StateProgressOpacity: how much of it shows (the name
 			//     stays readable over it). StateProgressEdge / StateProgressEdgeWidth: the bright line at its front.
 			//   StateProgressMinBrightness: how bright (HSV value) a Node Color is lifted to for its fill and its lit body.
+			//   ActiveTrack*: the state the watched widget is in wears a value-driven track's look from the Widget Animations
+			//     panel behind it - the track's dark body, its color spill dimmed (ActiveTrackSpillOpacity) in the animation
+			//     orange (or the node's own color, brightened), and the track's faint diagonal bands. The same values as the track
+			//     (WidgetAnimEditor::SectionValue*). ActiveTrackLeavingOpacity: how much of it the state being left shows while
+			//     the transition out of it plays. ActiveTrackRadius: its corners, as the state's.
 			//   StateSelected: the outline of a selected state.
 			// -------------------------------------------------------------------------------------------------
 
@@ -603,6 +602,13 @@ namespace NameTBD
 			inline const FLinearColor StateProgressEdge(1.0f, 0.93f, 0.80f, 0.95f);
 			inline constexpr float StateProgressEdgeWidth = 2.0f;
 			inline constexpr float StateProgressMinBrightness = 0.80f;
+			inline const FLinearColor ActiveTrackBody(WidgetAnimEditor::SectionBody);
+			inline constexpr float ActiveTrackSpillOpacity = WidgetAnimEditor::SectionValueSpillOpacity;
+			inline const FLinearColor ActiveTrackStripe(WidgetAnimEditor::SectionValueStripe);
+			inline constexpr float ActiveTrackStripeWidth = WidgetAnimEditor::SectionValueStripeWidth;
+			inline constexpr float ActiveTrackStripeSpacing = WidgetAnimEditor::SectionValueStripeSpacing;
+			inline constexpr float ActiveTrackLeavingOpacity = 0.5f;
+			inline constexpr float ActiveTrackRadius = 5.0f;
 			inline const FLinearColor StateSelected(1.0f, 1.0f, 1.0f, 0.85f);
 
 			// -------------------------------------------------------------------------------------------------

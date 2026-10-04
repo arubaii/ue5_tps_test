@@ -1715,6 +1715,12 @@ namespace NameTBD::Tooltips
 				"Open Animation: opens the animation this state plays in the Widget Animations editor.");
 		}
 
+		inline FText ResetTransitionNodeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "ResetTransitionNodeTooltip",
+				"Reset Node Position: puts the transition node back on the middle of its wire, where it was before it was dragged. Q does the same for selected transition nodes.");
+		}
+
 		inline FText RaisePriorityTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "RaisePriorityTooltip",

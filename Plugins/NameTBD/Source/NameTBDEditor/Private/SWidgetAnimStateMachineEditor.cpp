@@ -193,14 +193,18 @@ void UWidgetAnimMachineTransitionProxy::PostEditChangeProperty(FPropertyChangedE
 		return;
 	}
 
-	// Its ends are the graph's to change.
+	// Its ends - and where its node was dragged - are the graph's to change.
 	FWidgetAnimMachineTransition& Target = Layer->Transitions[Index];
 	const FGuid From = Target.From;
 	const FGuid To = Target.To;
+	const bool bNodePlaced = Target.bEditorNodePlaced;
+	const FVector2D NodeOffset = Target.EditorNodeOffset;
 	Target = Transition;
 	Target.Id = TransitionId;
 	Target.From = From;
 	Target.To = To;
+	Target.bEditorNodePlaced = bNodePlaced;
+	Target.EditorNodeOffset = NodeOffset;
 
 	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
@@ -2532,6 +2536,23 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 		return;
 	}
 
+	// Selected transition nodes that were dragged somewhere of their own go back onto the middle of their wires.
+	if (Editor.IsValid())
+	{
+		TMap<FGuid, TOptional<FVector2D>> Reset;
+		for (UObject* SelectedNode : Editor->GetSelectedNodes())
+		{
+			UWidgetAnimMachineTransitionNode* TransitionNode = Cast<UWidgetAnimMachineTransitionNode>(SelectedNode);
+			if (TransitionNode && TransitionNode->bPlaced)
+			{
+				TransitionNode->bPlaced = false;
+				TransitionNode->PlacedOffset = FVector2f::ZeroVector;
+				Reset.Add(TransitionNode->TransitionId, TOptional<FVector2D>());
+			}
+		}
+		WidgetAnimMachineEdits::PlaceTransitions(Machine, ShownLayer, Reset);
+	}
+
 	TArray<FArrangeState> All;
 	TArray<int32> Selected;
 	GatherArrangeStates(Editor, Graph, All, Selected);
@@ -2699,6 +2720,7 @@ void SWidgetAnimStateMachineEditor::CommitGraphEdits()
 	}
 
 	TMap<FGuid, FVector2D> Moved;
+	TMap<FGuid, TOptional<FVector2D>> Placed;
 	TArray<FWidgetAnimMachineComment> ChangedComments;
 	for (const UEdGraphNode* Node : Graph->Nodes)
 	{
@@ -2709,6 +2731,23 @@ void SWidgetAnimStateMachineEditor::CommitGraphEdits()
 			if (State && !Position.Equals(State->EditorPosition, 0.5))
 			{
 				Moved.Add(StateNode->StateId, Position);
+			}
+		}
+		else if (const UWidgetAnimMachineTransitionNode* TransitionNode = Cast<UWidgetAnimMachineTransitionNode>(Node))
+		{
+			// A transition node dragged somewhere of its own - or put back on its wire.
+			const int32 Index = Layer->FindTransitionIndex(TransitionNode->TransitionId);
+			if (Index == INDEX_NONE)
+			{
+				continue;
+			}
+			const FWidgetAnimMachineTransition& Transition = Layer->Transitions[Index];
+			const FVector2D Offset(TransitionNode->PlacedOffset);
+			const bool bChanged = TransitionNode->bPlaced != Transition.bEditorNodePlaced
+				|| (TransitionNode->bPlaced && !Offset.Equals(Transition.EditorNodeOffset, 0.5));
+			if (bChanged)
+			{
+				Placed.Add(TransitionNode->TransitionId, TransitionNode->bPlaced ? TOptional<FVector2D>(Offset) : TOptional<FVector2D>());
 			}
 		}
 		else if (const UEdGraphNode_Comment* CommentNode = Cast<UEdGraphNode_Comment>(Node))
@@ -2735,6 +2774,7 @@ void SWidgetAnimStateMachineEditor::CommitGraphEdits()
 		}
 	}
 	WidgetAnimMachineEdits::MoveStates(Machine, ShownLayer, Moved);
+	WidgetAnimMachineEdits::PlaceTransitions(Machine, ShownLayer, Placed);
 	WidgetAnimMachineEdits::UpdateComments(Machine, ShownLayer, ChangedComments);
 }
 

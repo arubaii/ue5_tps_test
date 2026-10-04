@@ -71,6 +71,12 @@ namespace WidgetAnimMachineEdits
 	/** Moves states to where the graph has them. Not told to anyone: the graph already shows them. */
 	void MoveStates(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TMap<FGuid, FVector2D>& Positions);
 
+	/**
+	 * Puts transition nodes where they were dragged - an offset from halfway between their two nodes (see
+	 * WidgetAnimMachineWires::GetPlacementAnchor) - or, unset, back on their wire's own middle. Not told to anyone either.
+	 */
+	void PlaceTransitions(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TMap<FGuid, TOptional<FVector2D>>& Offsets);
+
 	/** Makes State the one Entry goes to: Entry's first transition points at it, or a new one is made. */
 	void SetEntryState(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& State);
 
@@ -136,9 +142,10 @@ namespace WidgetAnimMachineEdits
 }
 
 /**
- * Where a transition's wire runs: a Blueprint spline - a Hermite curve, leaving the side of one state that faces the other and
- * arriving at the side of that one facing back - from the edge of one state to the edge of the other, and where on it the transition node sits. Wires between the same two
- * states run side by side, parallel, each in a lane of its own.
+ * Where a transition's wire runs: a Blueprint spline - a Hermite curve, leaving the side or corner of one state that faces the
+ * other and arriving at the side or corner of that one facing back - and where on it the transition node sits. Wires between
+ * the same two states run side by side, parallel, each in a lane of its own. A transition node dragged somewhere of its own
+ * splits its wire in two there: one curve into it, one out, meeting smoothly (bThroughNode).
  */
 struct FWidgetAnimMachineWire
 {
@@ -146,6 +153,12 @@ struct FWidgetAnimMachineWire
 	FVector2f StartTangent = FVector2f::ZeroVector;
 	FVector2f End = FVector2f::ZeroVector;
 	FVector2f EndTangent = FVector2f::ZeroVector;
+
+	/** Through a dragged transition node: two curves, Start to Mid and Mid to End, Mid's tangent arriving and leaving. */
+	bool bThroughNode = false;
+	FVector2f Mid = FVector2f::ZeroVector;
+	FVector2f MidTangentIn = FVector2f::ZeroVector;
+	FVector2f MidTangentOut = FVector2f::ZeroVector;
 
 	/** How far along the wire the transition node sits, 0 - 1. */
 	float NodeT = 0.5f;
@@ -167,20 +180,38 @@ namespace WidgetAnimMachineWires
 	/** How far apart parallel wires run, at most, in graph units: far enough that their transition nodes sit side by side. */
 	constexpr float LaneSpacing = 30.f;
 
+	/** How far a corner a wire leaves from is pulled in from the box's corner, onto the state's rounded corner. */
+	constexpr float CornerInset = 3.f;
+
+	/**
+	 * Of two nodes apart both ways, how much further apart one way must be than the other for the wire to leave a side rather
+	 * than a corner.
+	 */
+	constexpr float CornerRatio = 2.5f;
+
 	/**
 	 * Lays out the wire of a transition between two nodes, given as boxes in graph space. Lane and LaneCount: where it is among
-	 * the wires between the two (see GetLane); bReversed: it runs from Second to First, not First to Second.
+	 * the wires between the two (see GetLane); bReversed: it runs from Second to First, not First to Second. NodePoint: where
+	 * its transition node was dragged, if it was - the wire then runs through it, and lanes don't apply.
 	 */
-	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed);
+	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed, const FVector2f* NodePoint = nullptr);
 
-	/** The side of Box - (1,0) right, (0,1) bottom, and so on - that faces Toward: the side a wire to it leaves from. */
+	/**
+	 * The side or corner of Box that faces Toward - (1,0) right, (0,1) bottom, (1,1) bottom-right and so on: where a wire to it
+	 * leaves from. A side when the two overlap across it or lie much further apart one way than the other; a corner when they
+	 * lie diagonally.
+	 */
+	FVector2f GetFacingSide(const FBox2f& Box, const FBox2f& Toward);
 	FVector2f GetFacingSide(const FBox2f& Box, const FVector2f& Toward);
 
-	/** The middle of that side. */
+	/** The middle of that side - or that corner, pulled in by CornerInset. */
 	FVector2f GetSideMiddle(const FBox2f& Box, const FVector2f& Side);
 
-	/** A wire's tangents, out of the side it leaves and into the side it arrives at. Returns the start's; the end's in OutEndTangent. */
-	FVector2f GetTangent(const FVector2f& From, const FVector2f& FromSide, const FVector2f& To, const FVector2f& ToSide, FVector2f& OutEndTangent);
+	/** Where a wire leaves Side, Offset along it - for a corner, along whichever edge the offset leads onto. Across: which way is positive. */
+	FVector2f GetAnchor(const FBox2f& Box, const FVector2f& Side, float Offset, const FVector2f& Across);
+
+	/** What a dragged transition node's offset is measured from: halfway between its two nodes' top-left corners. */
+	FVector2f GetPlacementAnchor(const FBox2f& First, const FBox2f& Second);
 }
 
 /**
@@ -292,6 +323,13 @@ public:
 	UPROPERTY()
 	FGuid ToId;
 
+	/**
+	 * Whether its node was dragged somewhere of its own, and where: its middle, from GetPlacementAnchor. From the machine as
+	 * the graph is made; changed by a drag, and written back into the machine once the mouse is let go.
+	 */
+	bool bPlaced = false;
+	FVector2f PlacedOffset = FVector2f::ZeroVector;
+
 	const FWidgetAnimMachineTransition* GetTransition() const;
 	UWidgetAnimMachineGraph* GetMachineGraph() const;
 
@@ -304,7 +342,7 @@ public:
 	/** Its conditions in words, joined by "and" - "Always" with none. */
 	FText DescribeConditions() const;
 
-	/** How long it takes, short, for the label beside it: "0.2s", "~0.3s" for a spring, "Cut". */
+	/** How long it takes, short, for the label beside it: "0.2s", "0.5s + 0.1s" for a transition animation, "Cut". */
 	FString GetLengthLabel() const;
 
 	/** Its priority among the transitions leaving the same node: 1 for the first checked. And how many there are. */
