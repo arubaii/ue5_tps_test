@@ -1925,6 +1925,12 @@ namespace NameTBD::Tooltips
 				"Enable / Disable: a disabled transition is never taken - for trying the machine without it, without deleting it.");
 		}
 
+		inline FText StraightenTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "StraightenTooltip",
+				"Straighten Connections (Q): lines the selected states up with the states they connect to, so their wires run straight. With one state selected, it lines up with the state it shares the most transitions with. Nothing is moved onto another state.");
+		}
+
 		inline FText StateNodeHint()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "StateNodeHint",
@@ -1934,7 +1940,7 @@ namespace NameTBD::Tooltips
 		inline FText TransitionNodeHint()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "TransitionNodeHint",
-				"Its color is how it blends: blue Tween, violet Spring, orange striped Play Transition Animation, gray Cut. Click for its settings.");
+				"Its color is how it blends: light gray Tween, mint Spring, orange striped Play Transition Animation, dark gray Cut. Its arrow points the way it goes. Click for its settings.");
 		}
 
 		inline FText InputRowTooltip()

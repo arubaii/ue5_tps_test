@@ -173,6 +173,7 @@ public:
 	virtual ~SWidgetAnimStateMachineEditor() override;
 
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
+	virtual FReply OnPreviewKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 
 	// FGCObject
@@ -291,11 +292,11 @@ private:
 	/** Adds a state - a preset's, for a built-in input, or a plain one for None - in the middle of the view, and selects it. */
 	void AddStateAtViewCenter(FName Preset);
 
-	// Lining states up. Every one keeps the selected states from landing on each other or on the states around them.
-	enum class EAlign : uint8 { Left, Center, Right, Top, Middle, Bottom };
+	/** Q: the selected states lined up with the states they connect to - never onto another state. */
 	void StraightenSelected();
-	void AlignSelected(EAlign Align);
-	void DistributeSelected(bool bHorizontal);
+
+	/** Keys handled before the graph editor's own bindings - see MapGraphCommands. */
+	TSharedPtr<FUICommandList> PreviewCommands;
 
 	/** Positions dragged in the graph and comment boxes changed in place, written into the machine once the mouse is let go. */
 	void CommitGraphEdits();

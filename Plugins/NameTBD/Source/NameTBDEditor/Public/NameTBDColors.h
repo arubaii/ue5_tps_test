@@ -541,43 +541,41 @@ namespace NameTBD
 
 			// -------------------------------------------------------------------------------------------------
 			// Wires - Blueprint splines from state to state.
-			//   WireActive: the wire of the transition being taken, a touch brighter; WireBubble: the dots that run along it,
-			//     as they run along a wire in Blueprint simulation. WireBubbleSize / WireBubbleSpacing / WireBubbleSpeed: their
-			//     size, how far apart they run and how fast, in graph units (and per second).
+			//   WireActive: the wire of the transition being taken, brighter and a touch thicker; WireBubble: the dots that run
+			//     along it, as they run along a wire in Blueprint simulation. WireBubbleSize / WireBubbleSpacing / WireBubbleSpeed:
+			//     their size, how far apart they run and how fast, in graph units (and per second). WireLinger: seconds the effect
+			//     fades out over once the transition is done, so a short blend is still seen to run.
 			//   WireThickness / WireActiveThickness: in graph units.
 			// -------------------------------------------------------------------------------------------------
 
-			inline const FLinearColor WireActive(0.95f, 0.95f, 0.97f, 1.0f);
-			inline const FLinearColor WireBubble(AnimationOrange_Normal);
-			inline constexpr float WireBubbleSize = 7.0f;
-			inline constexpr float WireBubbleSpacing = 40.0f;
-			inline constexpr float WireBubbleSpeed = 120.0f;
+			inline const FLinearColor WireActive(0.98f, 0.98f, 1.00f, 1.0f);
+			inline const FLinearColor WireBubble(AnimationOrange_Hovered);
+			inline constexpr float WireBubbleSize = 8.0f;
+			inline constexpr float WireBubbleSpacing = 36.0f;
+			inline constexpr float WireBubbleSpeed = 110.0f;
+			inline constexpr float WireLinger = 0.8f;
 			inline constexpr float WireThickness = 1.5f;
 			inline constexpr float WireActiveThickness = 2.5f;
 
 			// -------------------------------------------------------------------------------------------------
-			// The transition node - the round node on a wire. Its color says how it blends:
-			//   TransitionTween: blue. TransitionSpring: violet, with a second ring round it, like a coil. TransitionAnimation:
-			//   the animation orange, striped like a value-driven track (TransitionStripe, TransitionStripeWidth / Spacing).
-			//   TransitionCut: gray, a bar in front of its arrow.
-			//   TransitionArrow: the chevron pointing the way it goes. TransitionRing: its outline; TransitionSelected: the
-			//   ring while it is selected; TransitionPlaying: the ring while the watched widget takes it.
-			//   TransitionIdleDim: how much of its color it shows while not playing, in the debugger - the fill is the full
-			//   color, rising across it like a progress bar as it plays.
+			// The transition node - the Animation Blueprint's round transition node, tinted by how it blends:
+			//   TransitionTween: the light gray it always was. TransitionSpring: mint. TransitionAnimation: the animation orange,
+			//   striped like a value-driven track (TransitionStripe, TransitionStripeWidth / Spacing). TransitionCut: dark gray.
+			//   TransitionArrow: the chevron pointing the way it goes. TransitionSelected: the ring round it while selected.
+			//   TransitionIdleDim: how much of its color it shows under its progress while it plays - the full color rises
+			//   across it like a progress bar.
 			// -------------------------------------------------------------------------------------------------
 
-			inline const FLinearColor TransitionTween(0.30f, 0.60f, 0.98f);
-			inline const FLinearColor TransitionSpring(0.66f, 0.48f, 0.98f);
+			inline const FLinearColor TransitionTween(0.86f, 0.86f, 0.88f);
+			inline const FLinearColor TransitionSpring(0.45f, 0.88f, 0.70f);
 			inline const FLinearColor TransitionAnimation(AnimationOrange_Normal);
-			inline const FLinearColor TransitionCut(0.58f, 0.58f, 0.62f);
-			inline const FLinearColor TransitionStripe(1.0f, 1.0f, 1.0f, 0.32f);
+			inline const FLinearColor TransitionCut(0.42f, 0.42f, 0.45f);
+			inline const FLinearColor TransitionStripe(0.0f, 0.0f, 0.0f, 0.30f);
 			inline constexpr float TransitionStripeWidth = 2.0f;
-			inline constexpr float TransitionStripeSpacing = 5.0f;
-			inline const FLinearColor TransitionArrow(0.03f, 0.03f, 0.035f, 0.92f);
-			inline const FLinearColor TransitionRing(0.0f, 0.0f, 0.0f, 0.55f);
+			inline constexpr float TransitionStripeSpacing = 4.5f;
+			inline const FLinearColor TransitionArrow(0.04f, 0.04f, 0.045f, 0.95f);
 			inline const FLinearColor TransitionSelected(1.0f, 1.0f, 1.0f, 0.95f);
-			inline const FLinearColor TransitionPlaying(AnimationOrange_Hovered);
-			inline constexpr float TransitionIdleDim = 0.38f;
+			inline constexpr float TransitionIdleDim = 0.45f;
 
 			// -------------------------------------------------------------------------------------------------
 			// The length label beside a transition node: how long the transition takes. Text, and the dark pill behind it.

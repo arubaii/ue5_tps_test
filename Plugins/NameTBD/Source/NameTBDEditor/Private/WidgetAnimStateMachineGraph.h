@@ -164,8 +164,8 @@ namespace WidgetAnimMachineWires
 	/** The transition node's size, in graph units. */
 	constexpr float NodeDiameter = 24.f;
 
-	/** How far apart parallel wires run, at most, in graph units. */
-	constexpr float LaneSpacing = 16.f;
+	/** How far apart parallel wires run, at most, in graph units: far enough that their transition nodes sit side by side. */
+	constexpr float LaneSpacing = 30.f;
 
 	/**
 	 * Lays out the wire of a transition between two nodes, given as boxes in graph space. Lane and LaneCount: where it is among
@@ -217,8 +217,17 @@ public:
 	/** A state node was double-clicked: the editor opens its animation. */
 	TFunction<void(const FGuid& /*StateId*/)> OnOpenState;
 
+	/** Q, or the node menu's Straighten Connections: the editor lines the selected states up. */
+	TFunction<void()> OnStraighten;
+
 	/** Whether the graph is being looked at in Play In Editor - its states then show where the widget is. */
 	bool IsDebugging() const;
+
+	/**
+	 * When each transition was last being taken, in FPlatformTime seconds - so the dots running along its wire stay a moment
+	 * after a short blend, and fade, rather than flashing for a frame or two. Kept by the wires as they are drawn.
+	 */
+	TMap<FGuid, double> LastActiveTimes;
 
 private:
 

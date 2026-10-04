@@ -1152,18 +1152,20 @@ void SWidgetAnimStateMachineEditor::MapGraphCommands()
 		FExecuteAction::CreateSP(this, &SWidgetAnimStateMachineEditor::DuplicateSelected),
 		FCanExecuteAction::CreateSP(this, &SWidgetAnimStateMachineEditor::CanCopySelected));
 
-	// The Blueprint graph's own organizing keys: C, Q, and the Shift alignments.
+	// C for a comment box, as in a Blueprint graph.
 	const FGraphEditorCommandsImpl& Graph = FGraphEditorCommands::Get();
 	GraphCommands->MapAction(Graph.CreateComment, FExecuteAction::CreateSP(this, &SWidgetAnimStateMachineEditor::AddCommentAroundSelection));
-	GraphCommands->MapAction(Graph.StraightenConnections, FExecuteAction::CreateSP(this, &SWidgetAnimStateMachineEditor::StraightenSelected));
-	GraphCommands->MapAction(Graph.AlignNodesLeft, FExecuteAction::CreateLambda([this]() { AlignSelected(EAlign::Left); }));
-	GraphCommands->MapAction(Graph.AlignNodesCenter, FExecuteAction::CreateLambda([this]() { AlignSelected(EAlign::Center); }));
-	GraphCommands->MapAction(Graph.AlignNodesRight, FExecuteAction::CreateLambda([this]() { AlignSelected(EAlign::Right); }));
-	GraphCommands->MapAction(Graph.AlignNodesTop, FExecuteAction::CreateLambda([this]() { AlignSelected(EAlign::Top); }));
-	GraphCommands->MapAction(Graph.AlignNodesMiddle, FExecuteAction::CreateLambda([this]() { AlignSelected(EAlign::Middle); }));
-	GraphCommands->MapAction(Graph.AlignNodesBottom, FExecuteAction::CreateLambda([this]() { AlignSelected(EAlign::Bottom); }));
-	GraphCommands->MapAction(Graph.DistributeNodesHorizontally, FExecuteAction::CreateLambda([this]() { DistributeSelected(/*bHorizontal=*/true); }));
-	GraphCommands->MapAction(Graph.DistributeNodesVertically, FExecuteAction::CreateLambda([this]() { DistributeSelected(/*bHorizontal=*/false); }));
+
+	// Keys taken before the graph editor sees them (see OnPreviewKeyDown). The graph editor binds Q to its own Straighten
+	// Connections, which lines nodes up by their pins, and its binding wins over ours - so Q is caught first and does ours. The
+	// align and distribute keys are caught too, and do nothing: the graph editor's own versions stack states on each other.
+	PreviewCommands = MakeShared<FUICommandList>();
+	PreviewCommands->MapAction(Graph.StraightenConnections, FExecuteAction::CreateSP(this, &SWidgetAnimStateMachineEditor::StraightenSelected));
+	for (const TSharedPtr<FUICommandInfo>& Blocked : { Graph.AlignNodesLeft, Graph.AlignNodesCenter, Graph.AlignNodesRight, Graph.AlignNodesTop,
+		Graph.AlignNodesMiddle, Graph.AlignNodesBottom, Graph.DistributeNodesHorizontally, Graph.DistributeNodesVertically })
+	{
+		PreviewCommands->MapAction(Blocked, FExecuteAction::CreateLambda([]() {}));
+	}
 	GraphCommands->MapAction(Graph.EnableNodes,
 		FExecuteAction::CreateLambda([this]() { SetSelectedTransitionsEnabled(true); }),
 		FCanExecuteAction::CreateSP(this, &SWidgetAnimStateMachineEditor::HasSelectedTransitions));
@@ -1241,6 +1243,13 @@ UWidgetAnimMachineGraph* SWidgetAnimStateMachineEditor::GetOrMakeGraph(int32 Lay
 		// The graph's layer as it is now - layers move when one before them is removed.
 		const TSharedPtr<SWidgetAnimStateMachineEditor> Self = WeakSelf.Pin();
 		return Self.IsValid() && Self->GetLayerDebug(Graph->LayerIndex, OutDebug);
+	};
+	Graph->OnStraighten = [WeakSelf]()
+	{
+		if (const TSharedPtr<SWidgetAnimStateMachineEditor> Self = WeakSelf.Pin())
+		{
+			Self->StraightenSelected();
+		}
 	};
 	Graph->OnOpenState = [WeakSelf](const FGuid& StateId)
 	{
@@ -2636,129 +2645,6 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 	WidgetAnimMachineEdits::MoveStates(Machine, ShownLayer, Positions);
 }
 
-void SWidgetAnimStateMachineEditor::AlignSelected(EAlign Align)
-{
-	const TSharedPtr<SGraphEditor> Editor = GetShownGraphEditor();
-	UWidgetAnimMachineGraph* Graph = GetShownGraph();
-	TArray<FArrangeState> All;
-	TArray<int32> Selected;
-	GatherArrangeStates(Editor, Graph, All, Selected);
-	if (!Machine || Selected.Num() < 2)
-	{
-		return;
-	}
-
-	const bool bAlignX = Align == EAlign::Left || Align == EAlign::Center || Align == EAlign::Right;
-	float Target = 0.f;
-	switch (Align)
-	{
-	case EAlign::Left:   Target = TNumericLimits<float>::Max(); for (const int32 Index : Selected) { Target = FMath::Min(Target, All[Index].Box.Min.X); } break;
-	case EAlign::Right:  Target = -TNumericLimits<float>::Max(); for (const int32 Index : Selected) { Target = FMath::Max(Target, All[Index].Box.Max.X); } break;
-	case EAlign::Top:    Target = TNumericLimits<float>::Max(); for (const int32 Index : Selected) { Target = FMath::Min(Target, All[Index].Box.Min.Y); } break;
-	case EAlign::Bottom: Target = -TNumericLimits<float>::Max(); for (const int32 Index : Selected) { Target = FMath::Max(Target, All[Index].Box.Max.Y); } break;
-	case EAlign::Center: for (const int32 Index : Selected) { Target += All[Index].Box.GetCenter().X / Selected.Num(); } break;
-	case EAlign::Middle: for (const int32 Index : Selected) { Target += All[Index].Box.GetCenter().Y / Selected.Num(); } break;
-	}
-
-	for (const int32 Index : Selected)
-	{
-		FArrangeState& Entry = All[Index];
-		float Shift = 0.f;
-		switch (Align)
-		{
-		case EAlign::Left:   Shift = Target - Entry.Box.Min.X; break;
-		case EAlign::Right:  Shift = Target - Entry.Box.Max.X; break;
-		case EAlign::Center: Shift = Target - Entry.Box.GetCenter().X; break;
-		case EAlign::Top:    Shift = Target - Entry.Box.Min.Y; break;
-		case EAlign::Bottom: Shift = Target - Entry.Box.Max.Y; break;
-		case EAlign::Middle: Shift = Target - Entry.Box.GetCenter().Y; break;
-		}
-		Entry.Box = ShiftBox(Entry.Box, bAlignX ? FVector2f(Shift, 0.f) : FVector2f(0.f, Shift));
-	}
-
-	// Lined up in a column (or a row), states that now sit on each other are spread out down it (or along it), in the order
-	// they were in - never stacked.
-	TArray<int32> Order = Selected;
-	Algo::StableSort(Order, [&All, bAlignX](int32 A, int32 B)
-	{
-		return bAlignX ? All[A].Original.GetCenter().Y < All[B].Original.GetCenter().Y : All[A].Original.GetCenter().X < All[B].Original.GetCenter().X;
-	});
-	for (int32 OrderIndex = 1; OrderIndex < Order.Num(); ++OrderIndex)
-	{
-		FArrangeState& Entry = All[Order[OrderIndex]];
-		for (int32 Before = 0; Before < OrderIndex; ++Before)
-		{
-			const FArrangeState& Prior = All[Order[Before]];
-			if (BoxesOverlap(Entry.Box, Prior.Box, ArrangeMargin * 0.5f))
-			{
-				const FVector2f Push = bAlignX
-					? FVector2f(0.f, Prior.Box.Max.Y + ArrangeMargin - Entry.Box.Min.Y)
-					: FVector2f(Prior.Box.Max.X + ArrangeMargin - Entry.Box.Min.X, 0.f);
-				Entry.Box = ShiftBox(Entry.Box, Push);
-			}
-		}
-	}
-
-	TMap<FGuid, FVector2D> Positions;
-	for (const int32 Index : Selected)
-	{
-		FArrangeState& Entry = All[Index];
-		const FVector2f Move = Entry.Box.Min - Entry.Original.Min;
-		Entry.Node->NodePosX += FMath::RoundToInt32(Move.X);
-		Entry.Node->NodePosY += FMath::RoundToInt32(Move.Y);
-		Positions.Add(Entry.Node->StateId, FVector2D(Entry.Node->NodePosX, Entry.Node->NodePosY));
-	}
-	WidgetAnimMachineEdits::MoveStates(Machine, ShownLayer, Positions);
-}
-
-void SWidgetAnimStateMachineEditor::DistributeSelected(bool bHorizontal)
-{
-	const TSharedPtr<SGraphEditor> Editor = GetShownGraphEditor();
-	UWidgetAnimMachineGraph* Graph = GetShownGraph();
-	TArray<FArrangeState> All;
-	TArray<int32> Selected;
-	GatherArrangeStates(Editor, Graph, All, Selected);
-	if (!Machine || Selected.Num() < 3)
-	{
-		return;
-	}
-
-	TArray<int32> Order = Selected;
-	Algo::StableSort(Order, [&All, bHorizontal](int32 A, int32 B)
-	{
-		return bHorizontal ? All[A].Box.GetCenter().X < All[B].Box.GetCenter().X : All[A].Box.GetCenter().Y < All[B].Box.GetCenter().Y;
-	});
-
-	// Even gaps between the first and the last - at least the margin, so none of them touch.
-	float Total = 0.f;
-	for (const int32 Index : Order)
-	{
-		Total += bHorizontal ? All[Index].Box.GetSize().X : All[Index].Box.GetSize().Y;
-	}
-	const FBox2f& First = All[Order[0]].Box;
-	const FBox2f& Last = All[Order.Last()].Box;
-	const float Span = bHorizontal ? Last.Max.X - First.Min.X : Last.Max.Y - First.Min.Y;
-	const float Gap = FMath::Max((Span - Total) / (Order.Num() - 1), ArrangeMargin);
-
-	float Cursor = bHorizontal ? First.Min.X : First.Min.Y;
-	TMap<FGuid, FVector2D> Positions;
-	for (const int32 Index : Order)
-	{
-		FArrangeState& Entry = All[Index];
-		const float Start = bHorizontal ? Entry.Box.Min.X : Entry.Box.Min.Y;
-		const float Shift = Cursor - Start;
-		Cursor += (bHorizontal ? Entry.Box.GetSize().X : Entry.Box.GetSize().Y) + Gap;
-		if (FMath::IsNearlyZero(Shift, 0.5f))
-		{
-			continue;
-		}
-		Entry.Node->NodePosX += bHorizontal ? FMath::RoundToInt32(Shift) : 0;
-		Entry.Node->NodePosY += bHorizontal ? 0 : FMath::RoundToInt32(Shift);
-		Positions.Add(Entry.Node->StateId, FVector2D(Entry.Node->NodePosX, Entry.Node->NodePosY));
-	}
-	WidgetAnimMachineEdits::MoveStates(Machine, ShownLayer, Positions);
-}
-
 void SWidgetAnimStateMachineEditor::CommitGraphEdits()
 {
 	// Once the mouse is let go: a drag moves nodes every frame, and is one move.
@@ -2945,6 +2831,22 @@ void SWidgetAnimStateMachineEditor::Tick(const FGeometry& AllottedGeometry, cons
 	CommitGraphEdits();
 	UpdatePreviews();
 	UpdateTargetPick();
+}
+
+FReply SWidgetAnimStateMachineEditor::OnPreviewKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+	// Only while the graph has the keyboard, and never while a name or a comment is being typed.
+	const TSharedPtr<SGraphEditor> Editor = GetShownGraphEditor();
+	if (Editor.IsValid() && PreviewCommands.IsValid() && (Editor->HasKeyboardFocus() || Editor->HasFocusedDescendants()))
+	{
+		const TSharedPtr<SWidget> Focused = FSlateApplication::Get().GetKeyboardFocusedWidget();
+		const bool bTyping = Focused.IsValid() && Focused->GetType().ToString().Contains(TEXT("EditableText"));
+		if (!bTyping && PreviewCommands->ProcessCommandBindings(InKeyEvent))
+		{
+			return FReply::Handled();
+		}
+	}
+	return SCompoundWidget::OnPreviewKeyDown(MyGeometry, InKeyEvent);
 }
 
 FReply SWidgetAnimStateMachineEditor::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)

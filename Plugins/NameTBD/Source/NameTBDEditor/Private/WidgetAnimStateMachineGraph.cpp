@@ -1106,17 +1106,23 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
 			/*bNoIndent=*/true));
 	}
 
-	// Lining the selection up.
+	// Lining the selection up: Q, as in a Blueprint graph. A menu entry of its own - the engine's Straighten Connections
+	// command straightens by pins, which a state machine's nodes don't line up by.
 	FToolMenuSection& Organize = Menu->AddSection(TEXT("WidgetAnimMachineOrganize"), LOCTEXT("OrganizeSection", "Organize"));
-	Organize.AddMenuEntry(FGraphEditorCommands::Get().StraightenConnections);
-	Organize.AddMenuEntry(FGraphEditorCommands::Get().AlignNodesLeft);
-	Organize.AddMenuEntry(FGraphEditorCommands::Get().AlignNodesCenter);
-	Organize.AddMenuEntry(FGraphEditorCommands::Get().AlignNodesRight);
-	Organize.AddMenuEntry(FGraphEditorCommands::Get().AlignNodesTop);
-	Organize.AddMenuEntry(FGraphEditorCommands::Get().AlignNodesMiddle);
-	Organize.AddMenuEntry(FGraphEditorCommands::Get().AlignNodesBottom);
-	Organize.AddMenuEntry(FGraphEditorCommands::Get().DistributeNodesHorizontally);
-	Organize.AddMenuEntry(FGraphEditorCommands::Get().DistributeNodesVertically);
+	Organize.AddMenuEntry(
+		TEXT("StraightenStates"),
+		LOCTEXT("StraightenStates", "Straighten Connections (Q)"),
+		MachineTips::StraightenTooltip(),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([WeakSelf]()
+		{
+			const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+			UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+			if (Graph && Graph->OnStraighten)
+			{
+				Graph->OnStraighten();
+			}
+		})));
 	Organize.AddMenuEntry(FGraphEditorCommands::Get().CreateComment);
 }
 
@@ -1603,9 +1609,6 @@ public:
 	SLATE_BEGIN_ARGS(SWidgetAnimMachineStateNode) {}
 	SLATE_END_ARGS()
 
-	/** How thick the ring a transition is dragged from is. */
-	static constexpr float RingWidth = 6.f;
-
 	void Construct(const FArguments& InArgs, UWidgetAnimMachineGraphNode* InNode)
 	{
 		GraphNode = InNode;
@@ -1628,106 +1631,96 @@ public:
 			.HAlign(HAlign_Center)
 			.VAlign(VAlign_Center)
 			[
-				SNew(SOverlay)
+				SNew(SBorder)
+				.BorderImage(FindBrush({ TEXT("Graph.StateNode.Body") }))
+				.Padding(0.f)
+				.BorderBackgroundColor(this, &SWidgetAnimMachineStateNode::GetBodyColor)
 				.ToolTip(WidgetAnimMachineStyle::MakeDynamicToolTip([WeakSelf = TWeakPtr<SWidgetAnimMachineStateNode>(SharedThis(this))]() -> TSharedPtr<SWidget>
 				{
 					const TSharedPtr<SWidgetAnimMachineStateNode> Self = WeakSelf.Pin();
 					return Self.IsValid() ? Self->MakeToolTipContent() : nullptr;
 				}))
-
-				// The ring: where transitions are dragged from, and dropped on.
-				+ SOverlay::Slot()
-				.HAlign(HAlign_Fill)
-				.VAlign(VAlign_Fill)
-				[
-					SAssignNew(RightNodeBox, SVerticalBox)
-				]
-
-				// The interior, inside the ring: it takes the mouse - every click in it selects and drags the node, never
-				// starts a transition - as the pin under it would otherwise.
-				+ SOverlay::Slot()
-				.HAlign(HAlign_Fill)
-				.VAlign(VAlign_Fill)
-				.Padding(RingWidth)
 				[
 					SNew(SOverlay)
 
+					// The edge: where transitions are dragged from.
 					+ SOverlay::Slot()
+					.HAlign(HAlign_Fill)
+					.VAlign(VAlign_Fill)
 					[
-						SNew(SImage)
-						.Visibility(EVisibility::Visible)
-						.Image(WidgetAnimMachineStyle::RoundedBrush(5.f))
-						.ColorAndOpacity(this, &SWidgetAnimMachineStateNode::GetInteriorColor)
+						SAssignNew(RightNodeBox, SVerticalBox)
 					]
 
-					// Its animation's progress, while the watched widget plays it.
-					+ SOverlay::Slot()
-					[
-						SNew(SWidgetAnimMachineFill)
-						.Brush(WidgetAnimMachineStyle::RoundedBrush(5.f))
-						.Alpha(this, &SWidgetAnimMachineStateNode::GetProgress)
-						.Color(MachineColors::StateProgress)
-					]
-
-					// The name, and the animation under it.
+					// The name, and the animation under it. The whole colored part takes the mouse - a click anywhere in it
+					// selects and drags the node; only the edge round it starts a transition.
 					+ SOverlay::Slot()
 					.HAlign(HAlign_Center)
 					.VAlign(VAlign_Center)
-					.Padding(FMargin(10.f, 6.f))
+					.Padding(10.f)
 					[
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						.Padding(0.f, 0.f, 5.f, 0.f)
+						SNew(SBorder)
+						.BorderImage(FindBrush({ TEXT("Graph.StateNode.ColorSpill") }))
+						.BorderBackgroundColor(this, &SWidgetAnimMachineStateNode::GetTitleColor)
+						.HAlign(HAlign_Fill)
+						.VAlign(VAlign_Fill)
+						.Visibility(EVisibility::Visible)
+						.Padding(0.f)
 						[
-							SNew(SBox)
-							.WidthOverride(16.f)
-							.HeightOverride(16.f)
+							SNew(SOverlay)
+
+							// Its animation's progress, while the watched widget plays it.
+							+ SOverlay::Slot()
 							[
-								SNew(SImage)
-								.Image(this, &SWidgetAnimMachineStateNode::GetIcon)
-								.ColorAndOpacity(FSlateColor::UseForeground())
+								SNew(SWidgetAnimMachineFill)
+								.Brush(FindBrush({ TEXT("Graph.StateNode.ColorSpill") }))
+								.Alpha(this, &SWidgetAnimMachineStateNode::GetProgress)
+								.Color(MachineColors::StateProgress)
 							]
-						]
-						+ SHorizontalBox::Slot()
-						.AutoWidth()
-						.VAlign(VAlign_Center)
-						[
-							SNew(SVerticalBox)
-							+ SVerticalBox::Slot()
-							.AutoHeight()
+
+							+ SOverlay::Slot()
+							.HAlign(HAlign_Center)
+							.VAlign(VAlign_Center)
+							.Padding(FMargin(8.f, 4.f))
 							[
-								SAssignNew(InlineEditableText, SInlineEditableTextBlock)
-								.Style(FAppStyle::Get(), "Graph.StateNode.NodeTitleInlineEditableText")
-								.Text(this, &SWidgetAnimMachineStateNode::GetName)
-								.OnVerifyTextChanged(this, &SWidgetAnimMachineStateNode::OnVerifyNameTextChanged)
-								.OnTextCommitted(this, &SWidgetAnimMachineStateNode::OnNameTextCommited)
-								.IsReadOnly(this, &SWidgetAnimMachineStateNode::IsNameReadOnly)
-								.IsSelected(this, &SWidgetAnimMachineStateNode::IsSelectedExclusively)
-							]
-							+ SVerticalBox::Slot()
-							.AutoHeight()
-							[
-								SNew(STextBlock)
-								.Font(FAppStyle::GetFontStyle(TEXT("SmallFont")))
-								.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-								.Text(this, &SWidgetAnimMachineStateNode::GetSubtitle)
-								.Visibility(bIsState ? EVisibility::Visible : EVisibility::Collapsed)
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot()
+								.AutoWidth()
+								.VAlign(VAlign_Center)
+								.Padding(0.f, 0.f, 4.f, 0.f)
+								[
+									SNew(SImage)
+									.Image(this, &SWidgetAnimMachineStateNode::GetIcon)
+									.ColorAndOpacity(FSlateColor::UseForeground())
+								]
+								+ SHorizontalBox::Slot()
+								.AutoWidth()
+								.VAlign(VAlign_Center)
+								[
+									SNew(SVerticalBox)
+									+ SVerticalBox::Slot()
+									.AutoHeight()
+									[
+										SAssignNew(InlineEditableText, SInlineEditableTextBlock)
+										.Style(FAppStyle::Get(), "Graph.StateNode.NodeTitleInlineEditableText")
+										.Text(this, &SWidgetAnimMachineStateNode::GetName)
+										.OnVerifyTextChanged(this, &SWidgetAnimMachineStateNode::OnVerifyNameTextChanged)
+										.OnTextCommitted(this, &SWidgetAnimMachineStateNode::OnNameTextCommited)
+										.IsReadOnly(this, &SWidgetAnimMachineStateNode::IsNameReadOnly)
+										.IsSelected(this, &SWidgetAnimMachineStateNode::IsSelectedExclusively)
+									]
+									+ SVerticalBox::Slot()
+									.AutoHeight()
+									[
+										SNew(STextBlock)
+										.Font(FAppStyle::GetFontStyle(TEXT("SmallFont")))
+										.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+										.Text(this, &SWidgetAnimMachineStateNode::GetSubtitle)
+										.Visibility(bIsState ? EVisibility::Visible : EVisibility::Collapsed)
+									]
+								]
 							]
 						]
 					]
-				]
-
-				// Selected: an outline round it all.
-				+ SOverlay::Slot()
-				.HAlign(HAlign_Fill)
-				.VAlign(VAlign_Fill)
-				[
-					SNew(SImage)
-					.Visibility(EVisibility::HitTestInvisible)
-					.Image(WidgetAnimMachineStyle::RoundedOutlineBrush(8.f))
-					.ColorAndOpacity(this, &SWidgetAnimMachineStateNode::GetOutlineColor)
 				]
 			];
 
@@ -1853,13 +1846,7 @@ private:
 		return Node && GetDebug(Debug) && Debug.ActiveTransition.IsValid() && Debug.PreviousState == Node->StateId;
 	}
 
-	bool IsSelected() const
-	{
-		const TSharedPtr<SGraphPanel> Panel = OwnerGraphPanelPtr.Pin();
-		return Panel.IsValid() && GraphNode && Panel->SelectionManager.IsNodeSelected(GraphNode);
-	}
-
-	FSlateColor GetInteriorColor() const
+	FSlateColor GetBodyColor() const
 	{
 		const UWidgetAnimMachineGraphNode* Node = GetMachineNode();
 		if (!Node)
@@ -1883,9 +1870,9 @@ private:
 		}
 	}
 
-	FSlateColor GetOutlineColor() const
+	FSlateColor GetTitleColor() const
 	{
-		return IsSelected() ? MachineColors::StateSelected : FLinearColor::Transparent;
+		return IsActive() ? MachineColors::StateTitleActive : MachineColors::StateTitle;
 	}
 
 	/** The state's animation's progress while the watched widget is in it - and nothing while it isn't, or it holds still. */
@@ -2004,9 +1991,11 @@ private:
 };
 
 /**
- * What a transition node draws: a disc in its blend's color - Tween blue, Spring violet with a coil round it, a transition
- * animation orange and striped, a Cut gray - with a chevron pointing the way the transition goes. While the watched widget takes
- * it, its color rises across it like a progress bar.
+ * What a transition node draws: the Animation Blueprint's own round transition node, tinted by how it blends - a Tween the
+ * plain light gray it always was, a Spring mint, a Cut dark gray, a transition animation the animation orange with the slanted
+ * stripes a value-driven track wears in the Widget Animations panel - and, in place of its double-arrow icon, a chevron
+ * pointing the way the transition goes along its wire. While the watched widget takes it, its color rises across it like a
+ * progress bar.
  */
 class SWidgetAnimMachineTransitionGlyph : public SLeafWidget
 {
@@ -2022,9 +2011,18 @@ public:
 		IsNodeSelected = MoveTemp(InIsSelected);
 	}
 
+	/** The round brush - the Animation Blueprint transition node's. */
+	static const FSlateBrush* GetDiscBrush()
+	{
+		return FindBrush({ TEXT("Graph.TransitionNode.ColorSpill") });
+	}
+
 	virtual FVector2D ComputeDesiredSize(float) const override
 	{
-		return FVector2D(WidgetAnimMachineWires::NodeDiameter, WidgetAnimMachineWires::NodeDiameter);
+		// As big as the editor draws its own transition node - never smaller than the wires' layout expects.
+		const FVector2D BrushSize(GetDiscBrush()->ImageSize);
+		const double Side = FMath::Max3(BrushSize.X, BrushSize.Y, static_cast<double>(WidgetAnimMachineWires::NodeDiameter));
+		return FVector2D(Side, Side);
 	}
 
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
@@ -2040,6 +2038,7 @@ public:
 		const FVector2f Size = AllottedGeometry.GetLocalSize();
 		const FVector2f Center = Size * 0.5f;
 		const float Radius = FMath::Min(Size.X, Size.Y) * 0.5f;
+		const FSlateBrush* Disc = GetDiscBrush();
 
 		// What the watched widget is doing with it.
 		const UWidgetAnimMachineGraph* Graph = TransitionNode->GetMachineGraph();
@@ -2049,67 +2048,52 @@ public:
 		FLinearColor Color = GetBlendColor(Transition->Blend);
 		if (!Transition->bEnabled)
 		{
-			Color = FLinearColor::LerpUsingHSV(Color, MachineColors::TransitionDisabled, 0.75f).CopyWithNewOpacity(0.55f);
+			Color = MachineColors::TransitionDisabled;
 		}
-		if (IsHovered())
+		else if (IsHovered() || (IsNodeSelected && IsNodeSelected()))
 		{
-			Color = (Color * 1.15f).CopyWithNewOpacity(Color.A);
+			Color = FMath::Lerp(Color, FLinearColor::White, 0.35f);
 		}
 
 		// The disc: dimmed under its progress while it plays, its full color rising across it.
 		const FLinearColor Base = bPlaying ? (Color * MachineColors::TransitionIdleDim).CopyWithNewOpacity(1.f) : Color;
-		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), WidgetAnimMachineStyle::CircleBrush(Size.X), ESlateDrawEffect::None, Base);
+		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Disc, ESlateDrawEffect::None, Base);
 		if (bPlaying)
 		{
 			const float Alpha = FMath::Clamp(Debug.TransitionAlpha, 0.f, 1.f);
 			const FGeometry Filled = AllottedGeometry.MakeChild(FVector2f(Size.X * Alpha, Size.Y), FSlateLayoutTransform());
 			OutDrawElements.PushClip(FSlateClippingZone(Filled));
-			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1, AllottedGeometry.ToPaintGeometry(), WidgetAnimMachineStyle::CircleBrush(Size.X), ESlateDrawEffect::None, Color);
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1, AllottedGeometry.ToPaintGeometry(), Disc, ESlateDrawEffect::None, Color);
 			OutDrawElements.PopClip();
 		}
 
-		// A transition animation is striped, as a value-driven track is in the Widget Animations panel.
+		// A transition animation is striped, as a value-driven track is.
 		if (Transition->Blend == EWidgetAnimMachineBlend::Animation)
 		{
-			WidgetAnimMachineStyle::DrawStripesInCircle(OutDrawElements, LayerId + 2, AllottedGeometry, Center, Radius, MachineColors::TransitionStripe,
+			WidgetAnimMachineStyle::DrawStripesInCircle(OutDrawElements, LayerId + 2, AllottedGeometry, Center, Radius - 2.f, MachineColors::TransitionStripe,
 				MachineColors::TransitionStripeWidth, MachineColors::TransitionStripeSpacing);
 		}
 
-		// A spring has a coil round it.
-		if (Transition->Blend == EWidgetAnimMachineBlend::Spring)
+		// Selected: a thin white ring round it.
+		if (IsNodeSelected && IsNodeSelected())
 		{
-			const float Coil = 3.f;
-			const FVector2f CoilSize = Size + FVector2f(Coil * 2.f, Coil * 2.f);
-			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 2,
-				AllottedGeometry.ToPaintGeometry(CoilSize, FSlateLayoutTransform(FVector2f(-Coil, -Coil))),
-				WidgetAnimMachineStyle::RingBrush(CoilSize.X, 1.f), ESlateDrawEffect::None, Color.CopyWithNewOpacity(Color.A * 0.8f));
+			const FVector2f RingSize = Size + FVector2f(4.f, 4.f);
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 3,
+				AllottedGeometry.ToPaintGeometry(RingSize, FSlateLayoutTransform(FVector2f(-2.f, -2.f))),
+				WidgetAnimMachineStyle::RingBrush(RingSize.X, 1.5f), ESlateDrawEffect::None, MachineColors::TransitionSelected);
 		}
-
-		// Its outline: dark at rest, white when selected, the animation orange while it plays.
-		const FLinearColor Ring = IsNodeSelected && IsNodeSelected() ? MachineColors::TransitionSelected : (bPlaying ? MachineColors::TransitionPlaying : MachineColors::TransitionRing);
-		FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 3, AllottedGeometry.ToPaintGeometry(), WidgetAnimMachineStyle::RingBrush(Size.X, 1.5f), ESlateDrawEffect::None, Ring);
 
 		// The chevron, pointing the way the transition goes along its wire.
 		FVector2f Direction = GetDirection ? GetDirection() : FVector2f(1.f, 0.f);
 		Direction = Direction.IsNearlyZero() ? FVector2f(1.f, 0.f) : Direction.GetSafeNormal();
 		const FVector2f Side(-Direction.Y, Direction.X);
-		const float Arm = Radius * 0.42f;
-		const FVector2f Tip = Center + Direction * (Arm * 0.75f);
+		const float Arm = Radius * 0.36f;
+		const FVector2f Tip = Center + Direction * (Arm * 0.7f);
 		TArray<FVector2f> Chevron;
 		Chevron.Add(Tip - Direction * Arm + Side * Arm);
 		Chevron.Add(Tip);
 		Chevron.Add(Tip - Direction * Arm - Side * Arm);
-		FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 4, AllottedGeometry.ToPaintGeometry(), Chevron, ESlateDrawEffect::None, MachineColors::TransitionArrow, /*bAntialias=*/true, 2.2f);
-
-		// A cut: a bar in front of the chevron - it stops dead, and starts again.
-		if (Transition->Blend == EWidgetAnimMachineBlend::Cut)
-		{
-			const FVector2f BarCenter = Center - Direction * (Arm * 0.85f);
-			TArray<FVector2f> Bar;
-			Bar.Add(BarCenter + Side * Arm);
-			Bar.Add(BarCenter - Side * Arm);
-			FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 4, AllottedGeometry.ToPaintGeometry(), Bar, ESlateDrawEffect::None, MachineColors::TransitionArrow, /*bAntialias=*/true, 2.f);
-		}
+		FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 4, AllottedGeometry.ToPaintGeometry(), Chevron, ESlateDrawEffect::None, MachineColors::TransitionArrow, /*bAntialias=*/true, 2.5f);
 		return LayerId + 5;
 	}
 
@@ -2393,12 +2377,22 @@ public:
 
 			const FWidgetAnimMachineTransition* Data = Transition->GetTransition();
 			const bool bActive = bDebugging && Debug.ActiveTransition == Transition->TransitionId;
-			FLinearColor Color = MachineColors::TransitionLine;
-			float Thickness = MachineColors::WireThickness;
+
+			// Taken now, or a moment ago: the effect fades out over WireLinger after the blend ends, so even a 0.2s tween is
+			// seen to run.
 			if (bActive)
 			{
-				Color = MachineColors::WireActive;
-				Thickness = MachineColors::WireActiveThickness;
+				Graph->LastActiveTimes.Add(Transition->TransitionId, Now);
+			}
+			const double* LastActive = Graph->LastActiveTimes.Find(Transition->TransitionId);
+			const float Glow = bActive ? 1.f : (LastActive ? FMath::Clamp(1.f - static_cast<float>(Now - *LastActive) / MachineColors::WireLinger, 0.f, 1.f) : 0.f);
+
+			FLinearColor Color = MachineColors::TransitionLine;
+			float Thickness = MachineColors::WireThickness;
+			if (Glow > 0.f)
+			{
+				Color = FMath::Lerp(MachineColors::TransitionLine, MachineColors::WireActive, Glow);
+				Thickness = FMath::Lerp(MachineColors::WireThickness, MachineColors::WireActiveThickness, Glow);
 			}
 			else if (Data && !Data->bEnabled)
 			{
@@ -2407,10 +2401,10 @@ public:
 
 			FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Wire.Start, Wire.StartTangent, Wire.End, Wire.EndTangent, Thickness * Scale, ESlateDrawEffect::None, Color);
 
-			// Taken now: dots running along it, the way it goes, as along a wire in Blueprint simulation.
-			if (bActive)
+			// Dots running along it, the way it goes, as along a wire in Blueprint simulation.
+			if (Glow > 0.f)
 			{
-				DrawBubbles(Wire, Scale, Now);
+				DrawBubbles(Wire, Scale, Now, Glow);
 			}
 
 			if (Data && Scale >= 0.4f)
@@ -2446,12 +2440,15 @@ private:
 	/** Paint geometry at an absolute position: Size on screen, drawn at Scale - what text is sized by. */
 	static FPaintGeometry MakeScreenGeometry(const FVector2f& Position, const FVector2f& Size, float Scale)
 	{
+		// The render transform is what places it: the same as the layout one, here - a paint geometry built with an identity
+		// render transform is drawn at the window's corner.
 		const float SafeScale = FMath::Max(Scale, KINDA_SMALL_NUMBER);
-		return FPaintGeometry(FSlateLayoutTransform(SafeScale, Position), FSlateRenderTransform(), Size / SafeScale, /*bInHasRenderTransform=*/false);
+		const FSlateLayoutTransform Layout(SafeScale, Position);
+		return FPaintGeometry(Layout, TransformCast<FSlateRenderTransform>(Layout), Size / SafeScale, /*bInHasRenderTransform=*/false);
 	}
 
 	/** Dots at even spacing along the wire, moving from its start to its end. */
-	void DrawBubbles(const FWidgetAnimMachineWire& Wire, float Scale, double Now)
+	void DrawBubbles(const FWidgetAnimMachineWire& Wire, float Scale, double Now, float Glow)
 	{
 		const FSlateBrush* BubbleBrush = FindBrush({ TEXT("Graph.ExecutionBubble") });
 
@@ -2491,7 +2488,7 @@ private:
 			const float T = FMath::Clamp((Distance - Lengths[Segment - 1]) / SegmentLength, 0.f, 1.f);
 			const FVector2f Point = FMath::Lerp(Points[Segment - 1], Points[Segment], T);
 			const FVector2f TopLeft = Point - FVector2f(BubbleSize, BubbleSize) * 0.5f;
-			FSlateDrawElement::MakeBox(DrawElementsList, WireLayerID + 1, MakeScreenGeometry(TopLeft, FVector2f(BubbleSize, BubbleSize), 1.f), BubbleBrush, ESlateDrawEffect::None, MachineColors::WireBubble);
+			FSlateDrawElement::MakeBox(DrawElementsList, WireLayerID + 1, MakeScreenGeometry(TopLeft, FVector2f(BubbleSize, BubbleSize), 1.f), BubbleBrush, ESlateDrawEffect::None, MachineColors::WireBubble.CopyWithNewOpacity(MachineColors::WireBubble.A * Glow));
 		}
 	}
 
