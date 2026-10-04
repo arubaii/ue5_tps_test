@@ -593,8 +593,8 @@ namespace NameTBD
 			//   ActiveTrack*: the state the watched widget is in wears a value-driven track's diagonal bands from the Widget
 			//     Animations panel - the track's width and spacing (WidgetAnimEditor::SectionValueStripe*) - over its own colors,
 			//     scrolling right at ActiveTrackStripeSpeed graph units a second. ActiveTrackStripe: a touch stronger than the
-			//     track's, which sit on a bright color. ActiveTrackLeavingOpacity: how much of them the state being left shows
-			//     while the transition out of it plays. ActiveTrackRadius: the state's corners, which they stay inside.
+			//     track's, which sit on a bright color. Mid-transition no state wears them.
+			//     ActiveTrackRadius: the state's corners, which they stay inside.
 			//   StateSelected: the outline of a selected state.
 			// -------------------------------------------------------------------------------------------------
 
@@ -607,7 +607,6 @@ namespace NameTBD
 			inline constexpr float ActiveTrackStripeSpeed = 8.0f;
 			inline constexpr float ActiveTrackStripeWidth = WidgetAnimEditor::SectionValueStripeWidth;
 			inline constexpr float ActiveTrackStripeSpacing = WidgetAnimEditor::SectionValueStripeSpacing;
-			inline constexpr float ActiveTrackLeavingOpacity = 0.5f;
 			inline constexpr float ActiveTrackRadius = 10.0f;
 
 			// The glow round the state in play: ActiveRing, a line ActiveRingWidth thick laid over the node's outer rim
@@ -615,8 +614,7 @@ namespace NameTBD
 			// node's box, so the line covers it entirely), following the edge's rounded corners (ActiveRingRadius, measured off
 			// the state body brush), and a soft glow fading out beyond it over ActiveRingHaloReach in ActiveRingHaloSteps thin
 			// lines, ActiveRingHaloOpacity at its brightest. It breathes
-			// between ActiveRingMin and ActiveRingMax every ActiveRingPeriod seconds; the state being left shows it steady at
-			// ActiveRingLeaving.
+			// between ActiveRingMin and ActiveRingMax every ActiveRingPeriod seconds. Mid-transition no state glows.
 			inline const FLinearColor ActiveRing(AnimationOrange_Normal);
 			inline constexpr float ActiveRingWidth = 3.0f;
 			inline constexpr float ActiveRingInset = 0.5f;
@@ -627,7 +625,6 @@ namespace NameTBD
 			inline constexpr float ActiveRingMin = 0.55f;
 			inline constexpr float ActiveRingMax = 1.0f;
 			inline constexpr float ActiveRingPeriod = 3.0f;
-			inline constexpr float ActiveRingLeaving = 0.45f;
 			// How far toward white the line on the rim of a glowing state goes while the mouse is over its edge (the edge's
 			// own hover look is held back then: its corners would poke out past the glow).
 			inline constexpr float ActiveRingHoverLift = 0.45f;

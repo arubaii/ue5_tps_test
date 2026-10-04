@@ -1988,7 +1988,7 @@ public:
 		: _Strength(0.f)
 		, _Selected(false)
 	{}
-		/** How strongly the glow shows, 0 - 1: pulsing while in the state, steady and fainter while leaving it, 0 otherwise. */
+		/** How strongly the glow shows, 0 - 1: pulsing while settled in the state, 0 otherwise. */
 		SLATE_ATTRIBUTE(float, Strength)
 		/** Whether the state is selected: while the glow shows, its selection outline is drawn with it. */
 		SLATE_ATTRIBUTE(bool, Selected)
@@ -2379,19 +2379,18 @@ private:
 		return Graph && Graph->GetDebug && Graph->GetDebug(OutDebug);
 	}
 
+	/**
+	 * Whether the watched widget is in this state - settled in it: not while a transition plays. Mid-transition no state wears
+	 * the active look - the one being left loses it the moment the transition starts, the one being entered takes it on once
+	 * the transition is done; the wire shows the transition meanwhile.
+	 */
 	bool IsActive() const
 	{
 		FWidgetAnimMachineLayerDebug Debug;
 		const UWidgetAnimMachineGraphNode* Node = GetMachineNode();
-		return Node && GetDebug(Debug) && Debug.CurrentState == Node->StateId;
+		return Node && GetDebug(Debug) && Debug.CurrentState == Node->StateId && !Debug.ActiveTransition.IsValid();
 	}
 
-	bool IsLeaving() const
-	{
-		FWidgetAnimMachineLayerDebug Debug;
-		const UWidgetAnimMachineGraphNode* Node = GetMachineNode();
-		return Node && GetDebug(Debug) && Debug.ActiveTransition.IsValid() && Debug.PreviousState == Node->StateId;
-	}
 
 	/** The node's own Node Color, if it is given one. */
 	bool GetCustomColor(FLinearColor& OutColor) const
@@ -2441,8 +2440,8 @@ private:
 
 	/**
 	 * The glow round it: pulsing between ActiveRingMin and ActiveRingMax every ActiveRingPeriod seconds while the watched
-	 * widget is in it - on the graph's clock, so it holds still while the preview is paused - steady at ActiveRingLeaving while
-	 * the transition out of it plays, none otherwise.
+	 * widget is settled in it (see IsActive) - on the graph's clock, so it holds still while the preview is paused - none
+	 * otherwise.
 	 */
 	float GetRingStrength() const
 	{
@@ -2452,7 +2451,7 @@ private:
 			const float Wave = 0.5f - 0.5f * FMath::Cos(static_cast<float>(Phase) * UE_TWO_PI);
 			return FMath::Lerp(MachineColors::ActiveRingMin, MachineColors::ActiveRingMax, Wave);
 		}
-		return IsLeaving() ? MachineColors::ActiveRingLeaving : 0.f;
+		return 0.f;
 	}
 
 	/** Whether the mouse is over its edge - the output pin under it all. */
@@ -2467,14 +2466,10 @@ private:
 		return Panel.IsValid() && GraphNode && Panel->SelectionManager.IsNodeSelected(GraphNode);
 	}
 
-	/** The stripes: fully while the watched widget is in it, fainter while leaving it, none otherwise. */
+	/** The stripes: while the watched widget is settled in it (see IsActive), none otherwise. */
 	float GetTrackOpacity() const
 	{
-		if (IsActive())
-		{
-			return 1.f;
-		}
-		return IsLeaving() ? MachineColors::ActiveTrackLeavingOpacity : 0.f;
+		return IsActive() ? 1.f : 0.f;
 	}
 
 	/** The progress fill: the animation orange, or the node's own color brightened. */
@@ -2513,7 +2508,7 @@ private:
 	{
 		FWidgetAnimMachineLayerDebug Debug;
 		const UWidgetAnimMachineGraphNode* Node = GetMachineNode();
-		if (!Node || !GetDebug(Debug) || Debug.CurrentState != Node->StateId || !Debug.bStatePlaying)
+		if (!Node || !GetDebug(Debug) || Debug.CurrentState != Node->StateId || !Debug.bStatePlaying || Debug.ActiveTransition.IsValid())
 		{
 			return 0.f;
 		}
