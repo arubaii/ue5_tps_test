@@ -476,6 +476,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Animation|State Machine", meta = (DisplayName = "Set State Machine Number"))
 	bool SetStateMachineNumber(FName Input, float Value, UWidgetAnimStateMachineAsset* StateMachine = nullptr);
 
+	/** Sets an Integer input of the state machines here. */
+	UFUNCTION(BlueprintCallable, Category = "Animation|State Machine", meta = (DisplayName = "Set State Machine Integer"))
+	bool SetStateMachineInteger(FName Input, int32 Value, UWidgetAnimStateMachineAsset* StateMachine = nullptr);
+
+	/** Sets a Choice input of the state machines here to one of its options, by name. False when no machine had it. */
+	UFUNCTION(BlueprintCallable, Category = "Animation|State Machine", meta = (DisplayName = "Set State Machine Choice"))
+	bool SetStateMachineChoice(FName Input, FName Option, UWidgetAnimStateMachineAsset* StateMachine = nullptr);
+
+	/** Sets a Vector 2D input of the state machines here: a stick, a swipe. Up is negative Y, as on screen. */
+	UFUNCTION(BlueprintCallable, Category = "Animation|State Machine", meta = (DisplayName = "Set State Machine Vector 2D"))
+	bool SetStateMachineVector2D(FName Input, FVector2D Value, UWidgetAnimStateMachineAsset* StateMachine = nullptr);
+
 	/** Fires a Trigger input of the state machines here: true for the next frame the machines run, then false again. */
 	UFUNCTION(BlueprintCallable, Category = "Animation|State Machine", meta = (DisplayName = "Fire State Machine Trigger"))
 	bool FireStateMachineTrigger(FName Input, UWidgetAnimStateMachineAsset* StateMachine = nullptr);
@@ -487,7 +499,15 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Animation|State Machine", meta = (DisplayName = "Get State Machine Bool"))
 	bool GetStateMachineBool(FName Input, UWidgetAnimStateMachineAsset* StateMachine = nullptr) const;
 
-	/** A Number input's value. 0 when there is none. */
+	/** A Choice input's option. None when there is none. */
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machine", meta = (DisplayName = "Get State Machine Choice"))
+	FName GetStateMachineChoice(FName Input, UWidgetAnimStateMachineAsset* StateMachine = nullptr) const;
+
+	/** A Vector 2D input's value. Zero when there is none. */
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machine", meta = (DisplayName = "Get State Machine Vector 2D"))
+	FVector2D GetStateMachineVector2D(FName Input, UWidgetAnimStateMachineAsset* StateMachine = nullptr) const;
+
+	/** A number input's value: a Float or Integer, a Choice's option number, a Vector 2D's length, a Press And Hold's progress. 0 when there is none. */
 	UFUNCTION(BlueprintPure, Category = "Animation|State Machine", meta = (DisplayName = "Get State Machine Number"))
 	float GetStateMachineNumber(FName Input, UWidgetAnimStateMachineAsset* StateMachine = nullptr) const;
 

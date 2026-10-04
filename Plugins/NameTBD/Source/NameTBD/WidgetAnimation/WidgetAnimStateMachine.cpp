@@ -222,6 +222,13 @@ bool UWidgetAnimStateMachineAsset::UsesInput(FName InputName) const
 		return true;
 	}
 
+	// Clicked is read off the widget's press, hover and focus.
+	if ((InputName == WidgetAnimMachineInputs::Pressed || InputName == WidgetAnimMachineInputs::Hovered || InputName == WidgetAnimMachineInputs::Focused)
+		&& InputName != WidgetAnimMachineInputs::Clicked && UsesInput(WidgetAnimMachineInputs::Clicked))
+	{
+		return true;
+	}
+
 	for (const FWidgetAnimMachineLayer& Layer : Layers)
 	{
 		if (Layer.WeightInput == InputName)
@@ -237,7 +244,10 @@ bool UWidgetAnimStateMachineAsset::UsesInput(FName InputName) const
 		}
 		for (const FWidgetAnimMachineTransition& Transition : Layer.Transitions)
 		{
-			if (Transition.Conditions.ContainsByPredicate([InputName](const FWidgetAnimMachineCondition& Condition) { return Condition.Input == InputName; }))
+			if (Transition.Conditions.ContainsByPredicate([InputName](const FWidgetAnimMachineCondition& Condition)
+			{
+				return Condition.Input == InputName || (Condition.CompareTo == EWidgetAnimMachineCompareTo::Input && Condition.OtherInput == InputName);
+			}))
 			{
 				return true;
 			}
@@ -581,10 +591,11 @@ namespace WidgetAnimMachineInputs
 	const FName Selected(TEXT("Selected"));
 	const FName Disabled(TEXT("Disabled"));
 	const FName Closing(TEXT("Closing"));
+	const FName Clicked(TEXT("Clicked"));
 
 	const TArray<FName>& GetBuiltIns()
 	{
-		static const TArray<FName> BuiltIns = { Hovered, Pressed, Focused, Selected, Disabled, Closing };
+		static const TArray<FName> BuiltIns = { Hovered, Pressed, Focused, Selected, Disabled, Closing, Clicked };
 		return BuiltIns;
 	}
 
@@ -615,7 +626,7 @@ namespace WidgetAnimMachineInputs
 		}
 		if (Name == Selected)
 		{
-			return LOCTEXT("SelectedBuiltIn", "Built in: a Common UI button is selected, or a Check Box is checked.");
+			return LOCTEXT("SelectedBuiltIn", "Built in: a Common UI button is selected, a Context Menu Button is enabled (toggled on, or the one picked in its group), or a Check Box is checked.");
 		}
 		if (Name == Disabled)
 		{
@@ -624,6 +635,10 @@ namespace WidgetAnimMachineInputs
 		if (Name == Closing)
 		{
 			return LOCTEXT("ClosingBuiltIn", "Built in: the widget is playing out - Play Out, a screen closing, or hidden with Set Visibility Animated. False again as it plays in. What transitions to Exit test.");
+		}
+		if (Name == Clicked)
+		{
+			return LOCTEXT("ClickedBuiltIn", "Built in, Fired the frame the widget is clicked: a Context Menu Button's action going off - on release or on press, as it is set, and every repeat of a Hold button - or any other widget let go while hovered or focused after being pressed. Not when the press is dragged off.");
 		}
 		return FText::GetEmpty();
 	}
@@ -831,6 +846,8 @@ bool FWidgetAnimStateMachineEntry::SyncToMachine(const TArray<FString>* TargetOp
 				Row.bDefaultBool = Input.bDefaultBool;
 				Row.DefaultNumber = Input.DefaultNumber;
 				Row.HoldTime = Input.HoldTime;
+				Row.DefaultInteger = Input.DefaultInteger;
+				Row.DefaultVector2D = Input.DefaultVector2D;
 				Row.Source = Input.Source;
 			}
 			Row.Input = Input.Name;
@@ -845,7 +862,7 @@ bool FWidgetAnimStateMachineEntry::SyncToMachine(const TArray<FString>* TargetOp
 			const FWidgetAnimMachineInputOverride& A = NewInputs[Index];
 			const FWidgetAnimMachineInputOverride& B = InputOverrides[Index];
 			if (A.Input != B.Input || A.Type != B.Type || A.bOverride != B.bOverride || A.bDefaultBool != B.bDefaultBool || A.DefaultNumber != B.DefaultNumber
-				|| A.HoldTime != B.HoldTime || A.MeasuredOnWidget != B.MeasuredOnWidget || !(A.Source == B.Source))
+				|| A.HoldTime != B.HoldTime || A.DefaultInteger != B.DefaultInteger || A.DefaultVector2D != B.DefaultVector2D || A.MeasuredOnWidget != B.MeasuredOnWidget || !(A.Source == B.Source))
 			{
 				return true;
 			}

@@ -25,6 +25,7 @@
 #include "Styling/AppStyle.h"
 #include "ToolMenu.h"
 #include "ToolMenuSection.h"
+#include "WidgetAnimMachineConditionCustomization.h"
 #include "WidgetAnimMachineEditorStyle.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
@@ -73,33 +74,10 @@ namespace
 		return Machine && Machine->Layers.IsValidIndex(LayerIndex) ? &Machine->Layers[LayerIndex] : nullptr;
 	}
 
+	/** A condition in a few words, as its Details say it: "Hovered", "Charge >= 0.5", "Rarity is Epic", "Hold held 1s". */
 	FText DescribeCondition(const FWidgetAnimMachineCondition& Condition, const UWidgetAnimStateMachineAsset* Machine = nullptr)
 	{
-		const FText InputName = Condition.Input.IsNone() ? LOCTEXT("NoInput", "(no input)") : FText::FromName(Condition.Input);
-
-		// A Press And Hold: held, let go, or held all the way.
-		const FWidgetAnimMachineInput* Input = Machine ? Machine->FindInput(Condition.Input) : nullptr;
-		if (Input && Input->Type == EWidgetAnimMachineInputType::Hold)
-		{
-			switch (Condition.Compare)
-			{
-			case EWidgetAnimMachineCompare::IsTrue:  return FText::Format(LOCTEXT("CondHolding", "{0} held"), InputName);
-			case EWidgetAnimMachineCompare::IsFalse: return FText::Format(LOCTEXT("CondLetGo", "{0} let go"), InputName);
-			case EWidgetAnimMachineCompare::Fired:   return FText::Format(LOCTEXT("CondHoldDone", "{0} held {1}"), InputName, FText::FromString(WidgetAnimMachineStyle::FormatSeconds(Input->HoldTime)));
-			default: break;
-			}
-		}
-
-		switch (Condition.Compare)
-		{
-		case EWidgetAnimMachineCompare::IsTrue:  return FText::Format(LOCTEXT("CondTrue", "{0}"), InputName);
-		case EWidgetAnimMachineCompare::IsFalse: return FText::Format(LOCTEXT("CondFalse", "not {0}"), InputName);
-		case EWidgetAnimMachineCompare::Fired:   return FText::Format(LOCTEXT("CondFired", "{0} fired"), InputName);
-		default:
-			return FText::Format(LOCTEXT("CondCompare", "{0} {1} {2}"), InputName,
-				StaticEnum<EWidgetAnimMachineCompare>()->GetDisplayNameTextByValue(static_cast<int64>(Condition.Compare)),
-				FText::AsNumber(Condition.Value));
-		}
+		return FWidgetAnimMachineConditionCustomization::Describe(Machine, Condition);
 	}
 
 	/** What the clipboard text starts with - so only something copied from a state machine is ever pasted into one. */
@@ -521,10 +499,18 @@ namespace WidgetAnimMachineEdits
 		Machine->Modify();
 		FWidgetAnimMachineInput& Input = Machine->Inputs.AddDefaulted_GetRef();
 		Input.Type = Type;
-		const TCHAR* Base = Type == EWidgetAnimMachineInputType::Number ? TEXT("Number")
+		const TCHAR* Base = Type == EWidgetAnimMachineInputType::Number ? TEXT("Float")
+			: Type == EWidgetAnimMachineInputType::Integer ? TEXT("Integer")
 			: Type == EWidgetAnimMachineInputType::Trigger ? TEXT("Trigger")
 			: Type == EWidgetAnimMachineInputType::Hold ? TEXT("Hold")
+			: Type == EWidgetAnimMachineInputType::Choice ? TEXT("Choice")
+			: Type == EWidgetAnimMachineInputType::Vector2D ? TEXT("Vector")
 			: TEXT("Bool");
+		if (Type == EWidgetAnimMachineInputType::Choice)
+		{
+			// Something to pick from straight away - renamed and added to in its Details.
+			Input.Options = { FName(TEXT("Option1")), FName(TEXT("Option2")) };
+		}
 		Input.Name = Machine->MakeUniqueInputName(FName(Base), Machine->Inputs.Num() - 1);
 		const FName Name = Input.Name;
 		FinishEdit(Machine);
@@ -569,6 +555,10 @@ namespace WidgetAnimMachineEdits
 					if (Condition.Input == Old)
 					{
 						Condition.Input = New;
+					}
+					if (Condition.OtherInput == Old)
+					{
+						Condition.OtherInput = New;
 					}
 				}
 			}

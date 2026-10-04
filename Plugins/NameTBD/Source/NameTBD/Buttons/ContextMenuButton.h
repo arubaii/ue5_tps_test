@@ -2011,6 +2011,12 @@ public:
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Context Menu Button|State")
 	float GetElapsedHoldTime() const;
 
+	/**
+	 * How many times the button's action has gone off - every click, every repeat of a Hold button - since it was made. What a
+	 * state machine's built-in Clicked input watches.
+	 */
+	uint32 GetActionCount() const { return ActionCount; }
+
 	/** True while this button is enabled. Always false if Button Can Be Enabled is off or the button is disabled (Is Enabled false). */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Context Menu Button|State")
 	bool GetEnabledState() const;
@@ -2501,6 +2507,9 @@ protected:
 	bool bIsPressDurationActive = false;
 	double PressDurationStartTime = 0.0;
 	uint32 PressDurationSerial = 0;
+
+	/** See GetActionCount. */
+	uint32 ActionCount = 0;
 
 	UPROPERTY(Transient)
 	float CurrentHoldFrequency = 0.0f;

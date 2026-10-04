@@ -134,6 +134,42 @@ bool UWidgetAnimStateMachineLibrary::SetStateMachineNumber(UObject* Target, UWid
 	return bTaken;
 }
 
+bool UWidgetAnimStateMachineLibrary::SetStateMachineInteger(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, int32 Value, bool bSearchParentWidgets, bool bSetAllMatches)
+{
+	TArray<UWidgetAnimationComponent*> Components;
+	FindComponents(Target, StateMachine, Input, bSearchParentWidgets, bSetAllMatches, Components);
+	bool bTaken = false;
+	for (UWidgetAnimationComponent* Component : Components)
+	{
+		bTaken |= Component->SetStateMachineInteger(Input, Value, StateMachine);
+	}
+	return bTaken;
+}
+
+bool UWidgetAnimStateMachineLibrary::SetStateMachineChoice(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, FName Option, bool bSearchParentWidgets, bool bSetAllMatches)
+{
+	TArray<UWidgetAnimationComponent*> Components;
+	FindComponents(Target, StateMachine, Input, bSearchParentWidgets, bSetAllMatches, Components);
+	bool bTaken = false;
+	for (UWidgetAnimationComponent* Component : Components)
+	{
+		bTaken |= Component->SetStateMachineChoice(Input, Option, StateMachine);
+	}
+	return bTaken;
+}
+
+bool UWidgetAnimStateMachineLibrary::SetStateMachineVector2D(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, FVector2D Value, bool bSearchParentWidgets, bool bSetAllMatches)
+{
+	TArray<UWidgetAnimationComponent*> Components;
+	FindComponents(Target, StateMachine, Input, bSearchParentWidgets, bSetAllMatches, Components);
+	bool bTaken = false;
+	for (UWidgetAnimationComponent* Component : Components)
+	{
+		bTaken |= Component->SetStateMachineVector2D(Input, Value, StateMachine);
+	}
+	return bTaken;
+}
+
 bool UWidgetAnimStateMachineLibrary::FireStateMachineTrigger(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, bool bSearchParentWidgets, bool bSetAllMatches)
 {
 	TArray<UWidgetAnimationComponent*> Components;
@@ -158,6 +194,25 @@ float UWidgetAnimStateMachineLibrary::GetStateMachineNumber(UObject* Target, UWi
 	TArray<UWidgetAnimationComponent*> Components;
 	FindComponents(Target, StateMachine, Input, bSearchParentWidgets, /*bAll=*/false, Components);
 	return Components.Num() > 0 ? Components[0]->GetStateMachineNumber(Input, StateMachine) : 0.f;
+}
+
+int32 UWidgetAnimStateMachineLibrary::GetStateMachineInteger(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, bool bSearchParentWidgets)
+{
+	return FMath::RoundToInt32(GetStateMachineNumber(Target, StateMachine, Input, bSearchParentWidgets));
+}
+
+FName UWidgetAnimStateMachineLibrary::GetStateMachineChoice(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, bool bSearchParentWidgets)
+{
+	TArray<UWidgetAnimationComponent*> Components;
+	FindComponents(Target, StateMachine, Input, bSearchParentWidgets, /*bAll=*/false, Components);
+	return Components.Num() > 0 ? Components[0]->GetStateMachineChoice(Input, StateMachine) : FName();
+}
+
+FVector2D UWidgetAnimStateMachineLibrary::GetStateMachineVector2D(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName Input, bool bSearchParentWidgets)
+{
+	TArray<UWidgetAnimationComponent*> Components;
+	FindComponents(Target, StateMachine, Input, bSearchParentWidgets, /*bAll=*/false, Components);
+	return Components.Num() > 0 ? Components[0]->GetStateMachineVector2D(Input, StateMachine) : FVector2D::ZeroVector;
 }
 
 bool UWidgetAnimStateMachineLibrary::IsWidgetInState(UObject* Target, UWidgetAnimStateMachineAsset* StateMachine, FName State, FName Layer, bool bSearchParentWidgets)

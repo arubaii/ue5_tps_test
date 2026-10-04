@@ -176,7 +176,19 @@ struct FWidgetAnimMachineInputState
 	EWidgetAnimMachineInputType Type = EWidgetAnimMachineInputType::Bool;
 
 	bool bValue = false;
+
+	/** A Float's or Integer's value (an Integer's whole), a Choice's option as its index in Options. */
 	float Number = 0.f;
+
+	/** A Vector 2D's value. */
+	FVector2f Vector = FVector2f::ZeroVector;
+
+	/** A Choice's options, from the machine. */
+	TArray<FName> Options;
+
+	/** The value as the machine last ran - what Increased, Decreased and Changed compare against. */
+	float PreviousNumber = 0.f;
+	FVector2f PreviousVector = FVector2f::ZeroVector;
 
 	/** A Trigger fired since the machine last ran. */
 	bool bFired = false;
@@ -236,6 +248,10 @@ struct NAMETBD_API FWidgetAnimMachineInstance
 	/** The built-in inputs the machine reads (WidgetAnimMachineInputs::GetBuiltInBit), and what they read last. */
 	uint8 UsedBuiltIns = 0;
 	FWidgetAnimMachineWidgetState WidgetState;
+
+	/** How many times a Context Menu Button the machine plays on had gone off when last read - for the built-in Clicked. */
+	uint32 LastClickCount = 0;
+	bool bHasClickCount = false;
 
 	/** The plain-widget readers of the built-in inputs, when no provider answers for the widget. */
 	FWidgetAnimInput_Interaction HoverReader;
@@ -337,15 +353,34 @@ namespace WidgetAnimStateMachines
 
 	/** Sets an input. False when the machine has no input of that name and type. */
 	NAMETBD_API bool SetBool(FWidgetAnimMachineInstance& Instance, FName Input, bool bValue);
+
+	/** A Float, or an Integer (rounded). */
 	NAMETBD_API bool SetNumber(FWidgetAnimMachineInstance& Instance, FName Input, float Value);
+	NAMETBD_API bool SetInteger(FWidgetAnimMachineInstance& Instance, FName Input, int32 Value);
+
+	/** A Choice, by its option's name. False when the input has no such option. */
+	NAMETBD_API bool SetChoice(FWidgetAnimMachineInstance& Instance, FName Input, FName Option);
+
+	NAMETBD_API bool SetVector2D(FWidgetAnimMachineInstance& Instance, FName Input, const FVector2D& Value);
 	NAMETBD_API bool FireTrigger(FWidgetAnimMachineInstance& Instance, FName Input);
 
-	/** Sets an input of any type from one number: a Bool is true when it isn't 0, a Trigger fires when it isn't 0. */
+	/**
+	 * Sets an input of any type from one number: a Bool is true when it isn't 0, a Trigger fires when it isn't 0, an Integer is
+	 * rounded, a Choice takes the option of that number (0 for the first), a Press And Hold is pressed when it isn't 0. Not a
+	 * Vector 2D.
+	 */
 	NAMETBD_API bool SetFromNumber(FWidgetAnimMachineInstance& Instance, FName Input, double Value);
 
 	/** An input's value - a built-in one's too. False when there is none of that name. */
 	NAMETBD_API bool GetBool(const FWidgetAnimMachineInstance& Instance, FName Input, bool& OutValue);
+
+	/** A number: a Float or Integer, a Choice's option number, a Vector 2D's length, a Press And Hold's progress. */
 	NAMETBD_API bool GetNumber(const FWidgetAnimMachineInstance& Instance, FName Input, float& OutValue);
+
+	/** A Choice's option. */
+	NAMETBD_API bool GetChoice(const FWidgetAnimMachineInstance& Instance, FName Input, FName& OutOption);
+
+	NAMETBD_API bool GetVector2D(const FWidgetAnimMachineInstance& Instance, FName Input, FVector2D& OutValue);
 
 	/** Sets the built-in inputs from outside - the editor's Inputs panel, at design time. */
 	NAMETBD_API void SetBuiltIn(FWidgetAnimMachineInstance& Instance, FName Input, bool bValue);

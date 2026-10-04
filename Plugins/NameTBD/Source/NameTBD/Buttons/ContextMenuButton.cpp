@@ -2653,9 +2653,13 @@ void UContextMenuButton::HandleReleased()
 	{
 		if (bIsPressDurationActive)
 		{
+			// Back to empty for whatever shows the progress. (Only the progress: Press Duration, the time a press takes, is
+			// the button's setting and stays as it is - zeroing it made every press after the first complete at once.)
 			if (bPressDurationProgressResetsOnCancelled)
-				PressDuration = 0.0f;
-			
+			{
+				OnContextPressDurationProgress.Broadcast(0.0f);
+			}
+
 			OnContextPressDurationCancelled.Broadcast();
 		}
 
@@ -2725,10 +2729,13 @@ void UContextMenuButton::StartHoldFrequencyTimer()
 	StopPressDuration();
 	OnContextPressDurationProgress.Broadcast(1.0f);
 	
-	if (bPressDurationProgressResetsOnCompleted)
-		PressDuration = 0.0f;
-	
 	OnContextPressDurationCompleted.Broadcast();
+
+	// Back to empty once it has completed - the progress only, as on cancel.
+	if (bPressDurationProgressResetsOnCompleted)
+	{
+		OnContextPressDurationProgress.Broadcast(0.0f);
+	}
 
 	BroadcastToOwnerDispatchers(EContextMenuButtonEvent::PressDurationCompleted);
 
@@ -2771,6 +2778,9 @@ void UContextMenuButton::ExecuteButtonAction()
 	{
 		return;
 	}
+
+	// Counted for a state machine playing on the button: its built-in Clicked fires as this goes up.
+	++ActionCount;
 
 	UInfoCardWidget* Card = bShouldDestroyCard ? GetOwningCard() : nullptr;
 

@@ -332,6 +332,9 @@ private:
 	TMap<FName, float> InputValues;
 	TMap<FName, bool> BuiltInValues;
 
+	/** The Vector 2D inputs' values the Inputs panel holds. */
+	TMap<FName, FVector2D> VectorValues;
+
 	/** The widget being watched in Play In Editor, picked in the Debug menu - or the first one found. */
 	TWeakObjectPtr<UWidgetAnimationComponent> DebugComponent;
 	bool bDebugPickedByHand = false;
@@ -363,8 +366,13 @@ private:
 	bool GetLayerDebug(int32 LayerIndex, struct FWidgetAnimMachineLayerDebug& OutDebug) const;
 
 	void SetInputValue(FName Input, float Value);
+	void SetVectorValue(FName Input, const FVector2D& Value);
+	FVector2D GetShownVector(FName Input) const;
 	void FireInput(FName Input);
 	void SetBuiltInValue(FName Input, bool bValue);
+
+	/** Fires the built-in Clicked on the preview - a pulse: nothing is kept to push again. */
+	void FireBuiltIn(FName Input);
 	float GetShownInputValue(FName Input) const;
 	bool GetShownBuiltInValue(FName Input) const;
 

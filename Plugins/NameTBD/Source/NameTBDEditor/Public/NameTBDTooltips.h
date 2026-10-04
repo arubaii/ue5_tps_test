@@ -1793,6 +1793,12 @@ namespace NameTBD::Tooltips
 				"No inputs yet. Add one with +, or test the built-in ones below.");
 		}
 
+		inline FText ChoiceNoOptionsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "ChoiceNoOptionsTooltip",
+				"The Choice has no options yet: give it some in its Details (click its row).");
+		}
+
 		inline FText HoldButtonTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "HoldButtonTooltip",

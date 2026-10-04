@@ -587,7 +587,11 @@ public:
 		switch (Type)
 		{
 		case EWidgetAnimMachineInputType::Number:
+		case EWidgetAnimMachineInputType::Integer:
 			WidgetAnimStateMachines::SetNumber(Instance, Input, Value);
+			break;
+		case EWidgetAnimMachineInputType::Choice:
+			WidgetAnimStateMachines::SetFromNumber(Instance, Input, Value);
 			break;
 		case EWidgetAnimMachineInputType::Trigger:
 			if (Value != 0.f)
@@ -598,6 +602,14 @@ public:
 		default:
 			WidgetAnimStateMachines::SetBool(Instance, Input, Value > 0.5f);
 			break;
+		}
+	}
+
+	void SetVector(FName Input, const FVector2D& Value)
+	{
+		if (bRunning)
+		{
+			WidgetAnimStateMachines::SetVector2D(Instance, Input, Value);
 		}
 	}
 
@@ -842,9 +854,12 @@ namespace
 	{
 		switch (Type)
 		{
-		case EWidgetAnimMachineInputType::Number:  return LOCTEXT("NumberType", "Number");
-		case EWidgetAnimMachineInputType::Trigger: return LOCTEXT("TriggerType", "Trigger");
-		case EWidgetAnimMachineInputType::Hold:    return LOCTEXT("HoldType", "Hold");
+		case EWidgetAnimMachineInputType::Number:   return LOCTEXT("FloatType", "Float");
+		case EWidgetAnimMachineInputType::Integer:  return LOCTEXT("IntegerType", "Integer");
+		case EWidgetAnimMachineInputType::Trigger:  return LOCTEXT("TriggerType", "Trigger");
+		case EWidgetAnimMachineInputType::Hold:     return LOCTEXT("HoldType", "Hold");
+		case EWidgetAnimMachineInputType::Choice:   return LOCTEXT("ChoiceType", "Choice");
+		case EWidgetAnimMachineInputType::Vector2D: return LOCTEXT("Vector2DType", "Vector 2D");
 		default:                                    return LOCTEXT("BoolType", "Bool");
 		}
 	}
@@ -856,6 +871,9 @@ namespace
 		case EWidgetAnimMachineInputType::Number:  return MachineColors::InputNumber;
 		case EWidgetAnimMachineInputType::Trigger: return MachineColors::InputTrigger;
 		case EWidgetAnimMachineInputType::Hold:    return MachineColors::InputHold;
+		case EWidgetAnimMachineInputType::Integer: return MachineColors::InputInteger;
+		case EWidgetAnimMachineInputType::Choice:  return MachineColors::InputChoice;
+		case EWidgetAnimMachineInputType::Vector2D: return MachineColors::InputVector2D;
 		default:                                    return MachineColors::InputBool;
 		}
 	}
@@ -1319,7 +1337,8 @@ void SWidgetAnimStateMachineEditor::SetMachine(UWidgetAnimStateMachineAsset* InM
 		for (const FWidgetAnimMachineInput& Input : Machine->Inputs)
 		{
 			// A Press And Hold starts let go, whatever a Default left from when it was a Bool says.
-			InputValues.Add(Input.Name, Input.Type == EWidgetAnimMachineInputType::Hold ? 0.f
+			InputValues.Add(Input.Name, Input.Type == EWidgetAnimMachineInputType::Hold || Input.Type == EWidgetAnimMachineInputType::Choice ? 0.f
+				: Input.Type == EWidgetAnimMachineInputType::Integer ? static_cast<float>(Input.DefaultInteger)
 				: Input.Type == EWidgetAnimMachineInputType::Number ? Input.DefaultNumber : (Input.bDefaultBool ? 1.f : 0.f));
 		}
 		ShowLayer(0);
@@ -1593,7 +1612,8 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 		.OnGetMenuContent_Lambda([this]()
 		{
 			FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
-			for (const EWidgetAnimMachineInputType Type : { EWidgetAnimMachineInputType::Bool, EWidgetAnimMachineInputType::Number, EWidgetAnimMachineInputType::Trigger, EWidgetAnimMachineInputType::Hold })
+			for (const EWidgetAnimMachineInputType Type : { EWidgetAnimMachineInputType::Bool, EWidgetAnimMachineInputType::Number, EWidgetAnimMachineInputType::Integer, EWidgetAnimMachineInputType::Trigger,
+				EWidgetAnimMachineInputType::Hold, EWidgetAnimMachineInputType::Choice, EWidgetAnimMachineInputType::Vector2D })
 			{
 				Menu.AddMenuEntry(
 					GetTypeLabel(Type),
@@ -1647,6 +1667,81 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 				.Text(LOCTEXT("Fire", "Fire"))
 				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::FireTooltip()))
 				.OnClicked_Lambda([this, Name]() { FireInput(Name); return FReply::Handled(); });
+			break;
+		case EWidgetAnimMachineInputType::Integer:
+			Control = SNew(SBox)
+				.WidthOverride(80.f)
+				[
+					SNew(SSpinBox<int32>)
+					.Value_Lambda([this, Name]() { return FMath::RoundToInt32(GetShownInputValue(Name)); })
+					.OnValueChanged_Lambda([this, Name](int32 Value) { SetInputValue(Name, static_cast<float>(Value)); })
+				];
+			break;
+		case EWidgetAnimMachineInputType::Choice:
+			// Its options, by name.
+			Control = SNew(SComboButton)
+				.OnGetMenuContent_Lambda([this, Name]()
+				{
+					FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+					const FWidgetAnimMachineInput* Definition = Machine ? Machine->FindInput(Name) : nullptr;
+					const TArray<FName> Options = Definition ? Definition->Options : TArray<FName>();
+					for (int32 Index = 0; Index < Options.Num(); ++Index)
+					{
+						Menu.AddMenuEntry(FText::FromName(Options[Index]), FText::GetEmpty(), FSlateIcon(),
+							FUIAction(
+								FExecuteAction::CreateLambda([this, Name, Index]() { SetInputValue(Name, static_cast<float>(Index)); }),
+								FCanExecuteAction(),
+								FIsActionChecked::CreateLambda([this, Name, Index]() { return FMath::RoundToInt32(GetShownInputValue(Name)) == Index; })),
+							NAME_None, EUserInterfaceActionType::RadioButton);
+					}
+					if (Options.Num() == 0)
+					{
+						Menu.AddMenuEntry(LOCTEXT("NoChoiceOptions", "No options"), MachineTips::ChoiceNoOptionsTooltip(), FSlateIcon(),
+							FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([]() { return false; })));
+					}
+					return Menu.MakeWidget();
+				})
+				.ButtonContent()
+				[
+					SNew(STextBlock)
+					.Text_Lambda([this, Name]()
+					{
+						const FWidgetAnimMachineInput* Definition = Machine ? Machine->FindInput(Name) : nullptr;
+						const int32 Index = FMath::RoundToInt32(GetShownInputValue(Name));
+						return Definition && Definition->Options.IsValidIndex(Index) ? FText::FromName(Definition->Options[Index]) : LOCTEXT("NoChoice", "-");
+					})
+				];
+			break;
+		case EWidgetAnimMachineInputType::Vector2D:
+			// X and Y.
+			Control = SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(FMargin(0.f, 0.f, 2.f, 0.f))
+				[
+					SNew(SBox)
+					.WidthOverride(52.f)
+					[
+						SNew(SSpinBox<float>)
+						.ToolTipText(LOCTEXT("VectorX", "X"))
+						.Delta(0.01f)
+						.Value_Lambda([this, Name]() { return static_cast<float>(GetShownVector(Name).X); })
+						.OnValueChanged_Lambda([this, Name](float Value) { SetVectorValue(Name, FVector2D(Value, GetShownVector(Name).Y)); })
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SBox)
+					.WidthOverride(52.f)
+					[
+						SNew(SSpinBox<float>)
+						.ToolTipText(LOCTEXT("VectorY", "Y (negative is up)"))
+						.Delta(0.01f)
+						.Value_Lambda([this, Name]() { return static_cast<float>(GetShownVector(Name).Y); })
+						.OnValueChanged_Lambda([this, Name](float Value) { SetVectorValue(Name, FVector2D(GetShownVector(Name).X, Value)); })
+					]
+				];
 			break;
 		case EWidgetAnimMachineInputType::Hold:
 			// Held while the mouse is down on it - let go early and the hold doesn't complete - filling as it is held.
@@ -1819,6 +1914,24 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 		const FText Tip = bUsed
 			? WidgetAnimMachineInputs::GetBuiltInDescription(BuiltIn)
 			: FText::Format(MachineTips::BuiltInUnusedTooltip(), FText::FromName(BuiltIn), WidgetAnimMachineInputs::GetBuiltInDescription(BuiltIn));
+		// Clicked is a pulse: fired, not ticked.
+		TSharedRef<SWidget> BuiltInControl = SNullWidget::NullWidget;
+		if (BuiltIn == WidgetAnimMachineInputs::Clicked)
+		{
+			BuiltInControl = SNew(SButton)
+				.Text(LOCTEXT("FireClicked", "Fire"))
+				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::FireTooltip()))
+				.IsEnabled_Lambda([this, bUsed]() { return bUsed && !IsDebuggingPlay(); })
+				.OnClicked_Lambda([this, BuiltIn]() { FireBuiltIn(BuiltIn); return FReply::Handled(); });
+		}
+		else
+		{
+			BuiltInControl = SNew(SCheckBox)
+				.IsEnabled_Lambda([this, bUsed]() { return bUsed && !IsDebuggingPlay(); })
+				.IsChecked_Lambda([this, BuiltIn, bUsed]() { return bUsed && GetShownBuiltInValue(BuiltIn) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+				.OnCheckStateChanged_Lambda([this, BuiltIn, bUsed](ECheckBoxState State) { SetBuiltInValue(BuiltIn, bUsed && State == ECheckBoxState::Checked); });
+		}
+
 		InputsBox->AddSlot()
 			.AutoHeight()
 			.Padding(FMargin(4.f, 2.f))
@@ -1838,10 +1951,7 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
 				[
-					SNew(SCheckBox)
-					.IsEnabled_Lambda([this, bUsed]() { return bUsed && !IsDebuggingPlay(); })
-					.IsChecked_Lambda([this, BuiltIn, bUsed]() { return bUsed && GetShownBuiltInValue(BuiltIn) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
-					.OnCheckStateChanged_Lambda([this, BuiltIn, bUsed](ECheckBoxState State) { SetBuiltInValue(BuiltIn, bUsed && State == ECheckBoxState::Checked); })
+					BuiltInControl
 				]
 			];
 	}
@@ -3941,7 +4051,11 @@ void SWidgetAnimStateMachineEditor::PushInputs(UWidgetAnimationComponent* Compon
 	}
 	for (const FWidgetAnimMachineInput& Input : Machine->Inputs)
 	{
-		if (Input.Type != EWidgetAnimMachineInputType::Trigger)
+		if (Input.Type == EWidgetAnimMachineInputType::Vector2D)
+		{
+			Component->SetStateMachineVector2D(Input.Name, GetShownVector(Input.Name), Machine);
+		}
+		else if (Input.Type != EWidgetAnimMachineInputType::Trigger)
 		{
 			Component->SetStateMachineInputValue(Input.Name, GetShownInputValue(Input.Name), Machine);
 		}
@@ -3960,7 +4074,11 @@ void SWidgetAnimStateMachineEditor::PushInputsToHost() const
 	}
 	for (const FWidgetAnimMachineInput& Input : Machine->Inputs)
 	{
-		if (Input.Type != EWidgetAnimMachineInputType::Trigger)
+		if (Input.Type == EWidgetAnimMachineInputType::Vector2D)
+		{
+			PreviewHost->SetVector(Input.Name, GetShownVector(Input.Name));
+		}
+		else if (Input.Type != EWidgetAnimMachineInputType::Trigger)
 		{
 			PreviewHost->SetInput(Input.Name, Input.Type, GetShownInputValue(Input.Name));
 		}
@@ -3993,6 +4111,60 @@ void SWidgetAnimStateMachineEditor::SetInputValue(FName Input, float Value)
 		if (UWidgetAnimationComponent* Live = Weak.Get())
 		{
 			Live->SetStateMachineInputValue(Input, Value, Machine);
+		}
+	}
+}
+
+void SWidgetAnimStateMachineEditor::SetVectorValue(FName Input, const FVector2D& Value)
+{
+	VectorValues.Add(Input, Value);
+
+	// In Play In Editor, onto the widget watched; in the designer, onto the preview.
+	if (IsDebuggingPlay())
+	{
+		if (UWidgetAnimationComponent* Watched = GetWatchedComponent())
+		{
+			Watched->SetStateMachineVector2D(Input, Value, Machine);
+		}
+		return;
+	}
+	PreviewHost->SetVector(Input, Value);
+	for (const TWeakObjectPtr<UWidgetAnimationComponent>& Weak : PreviewComponents)
+	{
+		if (UWidgetAnimationComponent* Live = Weak.Get())
+		{
+			Live->SetStateMachineVector2D(Input, Value, Machine);
+		}
+	}
+}
+
+FVector2D SWidgetAnimStateMachineEditor::GetShownVector(FName Input) const
+{
+	if (IsDebuggingPlay())
+	{
+		const UWidgetAnimationComponent* Watched = GetWatchedComponent();
+		return Watched ? Watched->GetStateMachineVector2D(Input, Machine) : FVector2D::ZeroVector;
+	}
+	if (const FVector2D* Value = VectorValues.Find(Input))
+	{
+		return *Value;
+	}
+	const FWidgetAnimMachineInput* Definition = Machine ? Machine->FindInput(Input) : nullptr;
+	return Definition ? Definition->DefaultVector2D : FVector2D::ZeroVector;
+}
+
+void SWidgetAnimStateMachineEditor::FireBuiltIn(FName Input)
+{
+	if (IsDebuggingPlay())
+	{
+		return;
+	}
+	PreviewHost->SetBuiltIn(Input, true);
+	for (const TWeakObjectPtr<UWidgetAnimationComponent>& Weak : PreviewComponents)
+	{
+		if (UWidgetAnimationComponent* Live = Weak.Get())
+		{
+			Live->SetDesignerStateMachineBuiltIn(Input, true, Machine);
 		}
 	}
 }
@@ -4038,7 +4210,8 @@ float SWidgetAnimStateMachineEditor::GetShownInputValue(FName Input) const
 		if (const UWidgetAnimationComponent* Watched = GetWatchedComponent())
 		{
 			const FWidgetAnimMachineInput* Definition = Machine ? Machine->FindInput(Input) : nullptr;
-			if (Definition && Definition->Type == EWidgetAnimMachineInputType::Number)
+			if (Definition && (Definition->Type == EWidgetAnimMachineInputType::Number || Definition->Type == EWidgetAnimMachineInputType::Integer
+				|| Definition->Type == EWidgetAnimMachineInputType::Choice))
 			{
 				return Watched->GetStateMachineNumber(Input, Machine);
 			}
@@ -4050,9 +4223,13 @@ float SWidgetAnimStateMachineEditor::GetShownInputValue(FName Input) const
 		return *Value;
 	}
 	const FWidgetAnimMachineInput* Definition = Machine ? Machine->FindInput(Input) : nullptr;
-	if (!Definition || Definition->Type == EWidgetAnimMachineInputType::Hold)
+	if (!Definition || Definition->Type == EWidgetAnimMachineInputType::Hold || Definition->Type == EWidgetAnimMachineInputType::Choice)
 	{
 		return 0.f;
+	}
+	if (Definition->Type == EWidgetAnimMachineInputType::Integer)
+	{
+		return static_cast<float>(Definition->DefaultInteger);
 	}
 	return Definition->Type == EWidgetAnimMachineInputType::Number ? Definition->DefaultNumber : (Definition->bDefaultBool ? 1.f : 0.f);
 }

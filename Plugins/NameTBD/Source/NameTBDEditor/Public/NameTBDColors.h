@@ -540,6 +540,11 @@ namespace NameTBD
 			inline const FLinearColor InputTrigger(1.0f, 1.0f, 1.0f);
 			// A Press And Hold: the animation orange - it fills as it is held, as a hold ring would.
 			inline const FLinearColor InputHold(AnimationOrange_Normal);
+			// Integer: the Blueprint integer pin's teal. Choice: an enum's green, lighter so its label reads. Vector 2D: the
+			// Blueprint vector pin's gold.
+			inline const FLinearColor InputInteger(0.013575f, 0.770000f, 0.429609f);
+			inline const FLinearColor InputChoice(0.10f, 0.55f, 0.45f);
+			inline const FLinearColor InputVector2D(1.0f, 0.74f, 0.10f);
 
 			// -------------------------------------------------------------------------------------------------
 			// Wires - Blueprint splines from state to state.
