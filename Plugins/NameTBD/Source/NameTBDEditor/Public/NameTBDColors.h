@@ -575,6 +575,10 @@ namespace NameTBD
 			inline const FLinearColor TransitionArrow(0.03f, 0.03f, 0.035f, 0.90f);
 			inline constexpr float TransitionArrowSize = 11.0f;
 			inline const FLinearColor TransitionSelected(1.0f, 1.0f, 1.0f, 0.95f);
+			// A selected transition node's circle, in StateSelectedOutline (the editor's selection orange): how far outside the
+			// node, and how thick.
+			inline constexpr float TransitionSelectedGap = 1.0f;
+			inline constexpr float TransitionSelectedWidth = 2.0f;
 			inline constexpr float TransitionIdleDim = 0.45f;
 
 			// -------------------------------------------------------------------------------------------------

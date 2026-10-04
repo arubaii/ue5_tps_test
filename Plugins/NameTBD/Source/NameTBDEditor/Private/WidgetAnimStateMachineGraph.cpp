@@ -2694,13 +2694,21 @@ public:
 			OutDrawElements.PopClip();
 		}
 
-		// Selected: a thin white ring round it.
+		// Selected: a circle round it in the editor's selection orange - drawn as an antialiased closed path, so it is exactly
+		// round and exactly that color (the graph editor's own selection brush, a rounded box, is held back: see GetShadowBrush).
 		if (IsNodeSelected && IsNodeSelected())
 		{
-			const FVector2f RingSize = Size + FVector2f(4.f, 4.f);
-			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 3,
-				AllottedGeometry.ToPaintGeometry(RingSize, FSlateLayoutTransform(FVector2f(-2.f, -2.f))),
-				WidgetAnimMachineStyle::RingBrush(RingSize.X, 1.5f), ESlateDrawEffect::None, MachineColors::TransitionSelected);
+			constexpr int32 Segments = 40;
+			const float RingRadius = Radius + MachineColors::TransitionSelectedGap + MachineColors::TransitionSelectedWidth * 0.5f;
+			TArray<FVector2f> Ring;
+			Ring.Reserve(Segments + 1);
+			for (int32 Segment = 0; Segment <= Segments; ++Segment)
+			{
+				const float Angle = UE_TWO_PI * Segment / Segments;
+				Ring.Add(Center + FVector2f(FMath::Cos(Angle), FMath::Sin(Angle)) * RingRadius);
+			}
+			FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 3, AllottedGeometry.ToPaintGeometry(), Ring, ESlateDrawEffect::None,
+				MachineColors::StateSelectedOutline * InWidgetStyle.GetColorAndOpacityTint(), /*bAntialias=*/true, MachineColors::TransitionSelectedWidth);
 		}
 
 		// The arrowhead - the one an Animation Blueprint state machine's wires end in - turned to point the way the transition
@@ -2768,6 +2776,12 @@ public:
 	virtual void CreatePinWidgets() override
 	{
 		// Its pins are where the wire goes in and out: never drawn, never dragged.
+	}
+
+	/** No selection brush from the graph editor - a rounded box round a round node. The node draws its own circle (see the glyph). */
+	virtual const FSlateBrush* GetShadowBrush(bool bSelected) const override
+	{
+		return FAppStyle::GetNoBrush();
 	}
 
 	virtual bool RequiresSecondPassLayout() const override
