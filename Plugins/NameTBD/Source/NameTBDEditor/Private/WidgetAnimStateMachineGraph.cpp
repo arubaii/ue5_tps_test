@@ -1001,29 +1001,6 @@ namespace WidgetAnimMachineWires
 		return Point;
 	}
 
-	FVector2f GetSideToward(const FBox2f& Box, const FVector2f& Side, const FVector2f& Toward)
-	{
-		FVector2f Point = GetSideMiddle(Box, Side);
-		if (Side.X != 0.f && Side.Y != 0.f)
-		{
-			return Point;
-		}
-		// Slid along the side to level with Toward, clear of the corners - the middle when the side is too short for that.
-		auto Slide = [](float Min, float Max, float Wanted, float Middle)
-		{
-			return Max - Min > SideInset * 2.f ? FMath::Clamp(Wanted, Min + SideInset, Max - SideInset) : Middle;
-		};
-		if (Side.X != 0.f)
-		{
-			Point.Y = Slide(Box.Min.Y, Box.Max.Y, Toward.Y, Point.Y);
-		}
-		else
-		{
-			Point.X = Slide(Box.Min.X, Box.Max.X, Toward.X, Point.X);
-		}
-		return Point;
-	}
-
 	FVector2f GetPlacementAnchor(const FBox2f& First, const FBox2f& Second)
 	{
 		return (First.Min + Second.Min) * 0.5f;
@@ -1066,15 +1043,15 @@ namespace WidgetAnimMachineWires
 		const FVector2f FromSide = GetFacingSide(From, Points[0]);
 		const FVector2f ToSide = GetFacingSide(To, Points.Last());
 
-		// Through reroute points: sharp - straight lines from point to point, out of a state level with the point next to it.
-		// Through only a dragged transition node: one smooth curve through it, as ever.
+		// Through reroute points: sharp - straight lines from point to point, out of the middle of a state's side (Q lines the
+		// points up with it). Through only a dragged transition node: one smooth curve through it, as ever.
 		const bool bSharp = Reroutes.Num() > 0;
 
 		// Every point of the wire, ends and all, and which way it runs at each.
 		TArray<FVector2f, TInlineAllocator<10>> Full;
-		Full.Add(bSharp ? GetSideToward(From, FromSide, Points[0]) : GetSideMiddle(From, FromSide));
+		Full.Add(GetSideMiddle(From, FromSide));
 		Full.Append(Points);
-		Full.Add(bSharp ? GetSideToward(To, ToSide, Points.Last()) : GetSideMiddle(To, ToSide));
+		Full.Add(GetSideMiddle(To, ToSide));
 		TArray<FVector2f, TInlineAllocator<10>> Directions;
 		Directions.SetNumZeroed(Full.Num());
 		for (int32 Index = 1; Index < Full.Num() - 1; ++Index)

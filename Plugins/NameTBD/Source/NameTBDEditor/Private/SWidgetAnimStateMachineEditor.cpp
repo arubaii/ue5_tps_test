@@ -2605,35 +2605,24 @@ namespace
 	}
 
 	/**
-	 * Lines Point up with Neighbour - a point, or a state's box - on whichever axis they already nearly share: the same height
-	 * when they lie side by side, the same X when one is above the other. Each axis once: bInOutX / bInOutY say it is done, so
-	 * a second neighbour only lines it up the other way. Beside a state, a point already level with some part of its side
-	 * (clear of its corners) is left as it is - a straight wire leaves the side right there.
+	 * Lines Point up with Neighbour - a reroute point, or a state's middle - on whichever axis they already nearly share: the
+	 * same height when they lie side by side, the same X when one is above the other. Each axis once: bInOutX / bInOutY say
+	 * it is done, so a second neighbour only lines it up the other way.
 	 */
-	void LevelRoutePoint(FVector2f& Point, const FVector2f& Neighbour, const FBox2f* NeighbourBox, bool& bInOutX, bool& bInOutY)
+	void LevelRoutePoint(FVector2f& Point, const FVector2f& Neighbour, bool& bInOutX, bool& bInOutY)
 	{
 		const FVector2f Delta = Point - Neighbour;
-		auto AlongSide = [](float Value, float Min, float Max)
-		{
-			return Max - Min > WidgetAnimMachineWires::SideInset * 2.f && Value >= Min + WidgetAnimMachineWires::SideInset && Value <= Max - WidgetAnimMachineWires::SideInset;
-		};
 		if (FMath::Abs(Delta.X) >= FMath::Abs(Delta.Y))
 		{
 			if (!bInOutY)
 			{
-				if (!NeighbourBox || !AlongSide(Point.Y, NeighbourBox->Min.Y, NeighbourBox->Max.Y))
-				{
-					Point.Y = Neighbour.Y;
-				}
+				Point.Y = Neighbour.Y;
 				bInOutY = true;
 			}
 		}
 		else if (!bInOutX)
 		{
-			if (!NeighbourBox || !AlongSide(Point.X, NeighbourBox->Min.X, NeighbourBox->Max.X))
-			{
-				Point.X = Neighbour.X;
-			}
+			Point.X = Neighbour.X;
 			bInOutX = true;
 		}
 	}
@@ -2679,10 +2668,10 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 		WidgetAnimMachineEdits::PlaceTransitions(Machine, ShownLayer, Reset);
 
 		// Selected reroute points are lined up with the points either side of them on their wire - the reroute point before
-		// or after, or the state the wire leaves or goes into - so the straight lines between run straight across or straight
-		// up and down. Level with the one before it first, across or above or below whichever way it already lies; then, the
-		// other way, with the one after it - a corner of the route. Beside a state, a point already level with some part of
-		// its side stays: the wire leaves the side right there. First to last along each wire, so a run of them lines up.
+		// or after, or the middle of the state the wire leaves or goes into - so the straight lines between run straight across
+		// or straight up and down, out of the middle of a state's side. Level with the one before it first, across or above or
+		// below whichever way it already lies; then, the other way, with the one after it - a corner of the route. First to
+		// last along each wire, so a run of them lines up.
 		TArray<UWidgetAnimMachineRerouteNode*> Reroutes;
 		for (UObject* SelectedNode : Editor->GetSelectedNodes())
 		{
@@ -2718,19 +2707,19 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 			bool bLeveledY = false;
 			if (Index > 0)
 			{
-				LevelRoutePoint(Point, Anchor + Offsets[Index - 1], nullptr, bLeveledX, bLeveledY);
+				LevelRoutePoint(Point, Anchor + Offsets[Index - 1], bLeveledX, bLeveledY);
 			}
 			else
 			{
-				LevelRoutePoint(Point, FromBox.GetCenter(), &FromBox, bLeveledX, bLeveledY);
+				LevelRoutePoint(Point, FromBox.GetCenter(), bLeveledX, bLeveledY);
 			}
 			if (Index < Offsets.Num() - 1)
 			{
-				LevelRoutePoint(Point, Anchor + Offsets[Index + 1], nullptr, bLeveledX, bLeveledY);
+				LevelRoutePoint(Point, Anchor + Offsets[Index + 1], bLeveledX, bLeveledY);
 			}
 			else
 			{
-				LevelRoutePoint(Point, ToBox.GetCenter(), &ToBox, bLeveledX, bLeveledY);
+				LevelRoutePoint(Point, ToBox.GetCenter(), bLeveledX, bLeveledY);
 			}
 			Offsets[Index] = Point - Anchor;
 
@@ -2902,9 +2891,9 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 		}
 	}
 
-	// A selected state with no straight wire to the others but a routed one: lined up with the reroute point next to it on that
-	// wire - across from it or above or below it, whichever way it lies - so the wire leaves it straight. Not if it would land
-	// on another state, nor if it already lines up.
+	// A selected state with no straight wire to the others but a routed one: its middle lined up with the reroute point next
+	// to it on that wire - across from it or above or below it, whichever way it lies - so the wire leaves the middle of its
+	// side straight. Not if it would land on another state.
 	auto AnchorOf = [&All, &IndexOf](const FWidgetAnimMachineTransition& Transition, bool bOriginal, FVector2f& OutAnchor)
 	{
 		const bool bFromFirst = Transition.From < Transition.To;
@@ -2941,15 +2930,12 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 		bool bLeveledX = false;
 		bool bLeveledY = false;
 		const FVector2f Before = Center;
-		LevelRoutePoint(Center, Knot, nullptr, bLeveledX, bLeveledY);
-		// Already level with some part of its side: the wire leaves it straight as it is.
-		const FBox2f& Box = All[StateIndex].Box;
-		if ((bLeveledY && Knot.Y >= Box.Min.Y + WidgetAnimMachineWires::SideInset && Knot.Y <= Box.Max.Y - WidgetAnimMachineWires::SideInset)
-			|| (bLeveledX && Knot.X >= Box.Min.X + WidgetAnimMachineWires::SideInset && Knot.X <= Box.Max.X - WidgetAnimMachineWires::SideInset))
+		LevelRoutePoint(Center, Knot, bLeveledX, bLeveledY);
+		if (Center.Equals(Before, 0.25f))
 		{
 			continue;
 		}
-		const FBox2f Candidate = ShiftBox(Box, Center - Before);
+		const FBox2f Candidate = ShiftBox(All[StateIndex].Box, Center - Before);
 		if (!LandsOnOther(All, StateIndex, Candidate))
 		{
 			All[StateIndex].Box = Candidate;

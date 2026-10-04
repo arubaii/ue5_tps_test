@@ -230,7 +230,7 @@ namespace WidgetAnimMachineWires
 	 * its transition node was dragged, if it was. Reroutes: the points it is routed through, in order the way it goes. Through
 	 * either, the wire runs through them all - the dragged node wherever along the way it adds least - and lanes don't apply.
 	 * Through reroute points the wire is sharp: straight from point to point, turning at each, as a routed wire is drawn; it
-	 * leaves and enters its states straight across from, or straight above or below, the point next to them where it can.
+	 * leaves and enters its states from the middle of a side (or a corner), as every wire does.
 	 */
 	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed,
 		const FVector2f* NodePoint = nullptr, TConstArrayView<FVector2f> Reroutes = TConstArrayView<FVector2f>());
@@ -248,15 +248,6 @@ namespace WidgetAnimMachineWires
 
 	/** Where a wire leaves Side, Offset along it - for a corner, along whichever edge the offset leads onto. Across: which way is positive. */
 	FVector2f GetAnchor(const FBox2f& Box, const FVector2f& Side, float Offset, const FVector2f& Across);
-
-	/**
-	 * Where a straight wire to Toward leaves Side of Box: a corner as GetSideMiddle has it; a side at the point level with
-	 * Toward - straight across from it, or straight above or below it - kept SideInset clear of the rounded corners.
-	 */
-	FVector2f GetSideToward(const FBox2f& Box, const FVector2f& Side, const FVector2f& Toward);
-
-	/** How far from a state's corners a straight wire may leave its side: clear of the rounded corner. */
-	constexpr float SideInset = 10.f;
 
 	/** What a dragged transition node's offset is measured from: halfway between its two nodes' top-left corners. */
 	FVector2f GetPlacementAnchor(const FBox2f& First, const FBox2f& Second);
