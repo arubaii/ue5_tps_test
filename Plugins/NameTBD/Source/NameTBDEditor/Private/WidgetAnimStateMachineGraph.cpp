@@ -1955,6 +1955,91 @@ private:
 };
 
 /**
+ * A soft glow round the state the watched widget is in: a thin bright line just outside its rounded edge, with fainter, wider
+ * ones further out - so which state is in play shows at a glance, even zoomed out. Drawn outside what it sits on; the node's
+ * own colors untouched. Never takes the mouse.
+ */
+class SWidgetAnimMachineActiveRing : public SLeafWidget
+{
+public:
+
+	SLATE_BEGIN_ARGS(SWidgetAnimMachineActiveRing)
+		: _Strength(0.f)
+	{}
+		/** How strongly it shows, 0 - 1: pulsing while in the state, steady and fainter while leaving it, 0 otherwise. */
+		SLATE_ATTRIBUTE(float, Strength)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		Strength = InArgs._Strength;
+		SetVisibility(EVisibility::HitTestInvisible);
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override
+	{
+		return FVector2D::ZeroVector;
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+	{
+		const float Amount = FMath::Clamp(Strength.Get(), 0.f, 1.f);
+		const FVector2f Size = AllottedGeometry.GetLocalSize();
+		if (Amount <= 0.f || Size.X <= 0.f || Size.Y <= 0.f)
+		{
+			return LayerId;
+		}
+
+		// Each line the node's rounded outline pushed out by its offset - corners as arcs - drawn antialiased as one closed
+		// path, so its color is exactly what is asked (a rounded box brush's outline isn't tinted).
+		const float NodeRadius = FMath::Min(MachineColors::ActiveTrackRadius, FMath::Min(Size.X, Size.Y) * 0.5f);
+		const FLinearColor Base = MachineColors::ActiveRing * InWidgetStyle.GetColorAndOpacityTint();
+		TArray<FVector2f> Points;
+		struct FLine { float Offset; float Thickness; float Opacity; };
+		const FLine Lines[] =
+		{
+			{ MachineColors::ActiveRingGap + MachineColors::ActiveRingWidth * 2.5f, MachineColors::ActiveRingWidth * 2.f, MachineColors::ActiveRingHaloOpacity * 0.45f },
+			{ MachineColors::ActiveRingGap + MachineColors::ActiveRingWidth * 1.25f, MachineColors::ActiveRingWidth * 1.5f, MachineColors::ActiveRingHaloOpacity },
+			{ MachineColors::ActiveRingGap, MachineColors::ActiveRingWidth, 1.f },
+		};
+		for (const FLine& Line : Lines)
+		{
+			const float Radius = NodeRadius + Line.Offset;
+			const FVector2f Min(-Line.Offset, -Line.Offset);
+			const FVector2f Max = Size + FVector2f(Line.Offset, Line.Offset);
+			const FVector2f Centers[] =
+			{
+				FVector2f(Max.X - Radius, Min.Y + Radius),
+				FVector2f(Max.X - Radius, Max.Y - Radius),
+				FVector2f(Min.X + Radius, Max.Y - Radius),
+				FVector2f(Min.X + Radius, Min.Y + Radius),
+			};
+			// Round from the top-right corner, clockwise: each corner a quarter turn starting where the last left off.
+			constexpr int32 ArcSegments = 8;
+			Points.Reset();
+			for (int32 Corner = 0; Corner < 4; ++Corner)
+			{
+				const float StartAngle = -UE_HALF_PI + Corner * UE_HALF_PI;
+				for (int32 Segment = 0; Segment <= ArcSegments; ++Segment)
+				{
+					const float Angle = StartAngle + UE_HALF_PI * Segment / ArcSegments;
+					Points.Add(Centers[Corner] + FVector2f(FMath::Cos(Angle), FMath::Sin(Angle)) * Radius);
+				}
+			}
+			Points.Add(Points[0]);
+			FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None,
+				Base.CopyWithNewOpacity(Base.A * Line.Opacity * Amount), /*bAntialias=*/true, Line.Thickness);
+		}
+		return LayerId + 1;
+	}
+
+private:
+
+	TAttribute<float> Strength;
+};
+
+/**
  * A state node: rounded, its name in the middle and its animation under it. Its ring is where a transition is dragged from; its
  * colored interior - all of it - takes clicks, so it is selected and moved from anywhere inside. While the watched widget is in
  * it, a value-driven track's stripes scroll across it (SWidgetAnimMachineTrackPattern) - its color unchanged - and its
@@ -2000,6 +2085,15 @@ public:
 				}))
 				[
 					SNew(SOverlay)
+
+					// While the watched widget is in it: a soft glow just outside it, pulsing.
+					+ SOverlay::Slot()
+					.HAlign(HAlign_Fill)
+					.VAlign(VAlign_Fill)
+					[
+						SNew(SWidgetAnimMachineActiveRing)
+						.Strength(this, &SWidgetAnimMachineStateNode::GetRingStrength)
+					]
 
 					// The edge: where transitions are dragged from.
 					+ SOverlay::Slot()
@@ -2261,6 +2355,22 @@ private:
 		case EWidgetAnimMachineNodeKind::AnyState: return MachineColors::AnyStateBody;
 		default:                                    return MachineColors::StateBody;
 		}
+	}
+
+	/**
+	 * The glow round it: pulsing between ActiveRingMin and ActiveRingMax every ActiveRingPeriod seconds while the watched
+	 * widget is in it - on the graph's clock, so it holds still while the preview is paused - steady at ActiveRingLeaving while
+	 * the transition out of it plays, none otherwise.
+	 */
+	float GetRingStrength() const
+	{
+		if (IsActive())
+		{
+			const double Phase = FMath::Fmod(GetStripeClock(), static_cast<double>(MachineColors::ActiveRingPeriod)) / MachineColors::ActiveRingPeriod;
+			const float Wave = 0.5f - 0.5f * FMath::Cos(static_cast<float>(Phase) * UE_TWO_PI);
+			return FMath::Lerp(MachineColors::ActiveRingMin, MachineColors::ActiveRingMax, Wave);
+		}
+		return IsLeaving() ? MachineColors::ActiveRingLeaving : 0.f;
 	}
 
 	/** The stripes: fully while the watched widget is in it, fainter while leaving it, none otherwise. */

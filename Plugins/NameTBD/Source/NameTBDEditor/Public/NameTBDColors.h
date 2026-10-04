@@ -610,6 +610,18 @@ namespace NameTBD
 			inline constexpr float ActiveTrackLeavingOpacity = 0.5f;
 			inline constexpr float ActiveTrackRadius = 10.0f;
 
+			// The glow round the state in play: ActiveRing, a line ActiveRingWidth thick, ActiveRingGap outside the node's edge,
+			// with two fainter, wider ones further out (ActiveRingHaloOpacity). It pulses between ActiveRingMin and
+			// ActiveRingMax every ActiveRingPeriod seconds; the state being left shows it steady at ActiveRingLeaving.
+			inline const FLinearColor ActiveRing(AnimationOrange_Normal);
+			inline constexpr float ActiveRingWidth = 2.0f;
+			inline constexpr float ActiveRingGap = 2.0f;
+			inline constexpr float ActiveRingHaloOpacity = 0.30f;
+			inline constexpr float ActiveRingMin = 0.40f;
+			inline constexpr float ActiveRingMax = 0.90f;
+			inline constexpr float ActiveRingPeriod = 1.5f;
+			inline constexpr float ActiveRingLeaving = 0.45f;
+
 			// A state's middle while its animation's progress fills it: square-cornered, near black - the rounded one's dark.
 			inline const FLinearColor StateTitleSharp(0.010f, 0.010f, 0.011f, 1.0f);
 			inline const FLinearColor StateSelected(1.0f, 1.0f, 1.0f, 0.85f);
