@@ -5347,6 +5347,64 @@ bool UWidgetAnimLibrary::HasValueInputs(const FWidgetAnimPlayer& Player)
 
 bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAnimPlayer& Player, const FWidgetAnimBaselineSet& Baselines, float DeltaTime, TArray<FName>& OutJustFinished)
 {
+	FWidgetAnimResult Result;
+	const bool bAnyPlaying = EvaluateWidgetAnimPlayer(FallbackWidget, Player, Baselines, DeltaTime, OutJustFinished, Result);
+
+	// One apply for the whole player. Two animations touching the same widget therefore combine - opacity
+	// and scale multiply, translation and angle add - instead of the later one erasing the earlier one.
+	{
+		// Who is writing, for WidgetAnim.DebugTransforms.
+		const WidgetAnimTransformDebug::FWriterScope Writer(&Player, FallbackWidget, DeltaTime);
+		ApplyComposedResult(FallbackWidget, Result, Baselines);
+	}
+
+	ReleaseFinishedTracks(Player);
+	return bAnyPlaying;
+}
+
+void UWidgetAnimLibrary::ApplyComposedResult(UWidget* FallbackWidget, const FWidgetAnimResult& Result, const FWidgetAnimBaselineSet& Baselines)
+{
+	ApplyResultInternal(FallbackWidget, Result, Baselines.bCaptured ? &Baselines : nullptr);
+	ApplyMaterialAnimResult(Result, FallbackWidget);
+}
+
+void UWidgetAnimLibrary::ReleaseFinishedTracks(FWidgetAnimPlayer& Player)
+{
+	Player.Tracks.RemoveAll([](const FWidgetAnimTrack& Track) { return Track.bFinished && !Track.bHoldWhenFinished; });
+}
+
+bool UWidgetAnimLibrary::SettleWidgetAnimTrack(FWidgetAnimTrack& Track, const FWidgetAnimBaselineSet& Baselines)
+{
+	if (Track.bNeedsExpansion)
+	{
+		return false;
+	}
+
+	// A pose has no loop: every layer ends where one pass ends.
+	for (FWidgetAnimSettings& Layer : Track.Settings)
+	{
+		Layer.bLoop = false;
+		Layer.LoopCount = 0;
+	}
+
+	// Long steps, their cues thrown away: a spring settles within a few seconds, and jumping to a pose passes nothing.
+	static constexpr int32 MaxSteps = 32;
+	for (int32 Step = 0; Step < MaxSteps && !Track.bFinished; ++Step)
+	{
+		FWidgetAnimResult Discarded;
+		bool bAllComplete = false;
+		Track.bSettled = TickAnimationsInto(Track.Settings, Track.States, 1.f, Track.bIsOut, Discarded, &bAllComplete, &Baselines, /*bDriveValueLayers=*/true);
+		if (bAllComplete)
+		{
+			Track.bFinished = true;
+			Track.bSettled = true;
+		}
+	}
+	return true;
+}
+
+bool UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAnimPlayer& Player, const FWidgetAnimBaselineSet& Baselines, float DeltaTime, TArray<FName>& OutJustFinished, FWidgetAnimResult& OutResult)
+{
 	OutJustFinished.Reset();
 
 	// Time moves a player once a frame. Ticked again with time in the same frame, it re-poses where it is instead: a
@@ -5382,7 +5440,7 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 	// Value Inputs first, so this frame's tracks move toward what the pointer or the scroll says now.
 	ReadValueInputs(FallbackWidget, Player, DeltaTime);
 
-	FWidgetAnimResult Result;
+	FWidgetAnimResult& Result = OutResult;
 	bool bAnyPlaying = false;
 
 	for (FWidgetAnimTrack& Track : Player.Tracks)
@@ -5520,13 +5578,6 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 			}
 		}
 	}
-
-	// One apply for the whole player. Two animations touching the same widget therefore combine - opacity
-	// and scale multiply, translation and angle add - instead of the later one erasing the earlier one.
-	ApplyResultInternal(FallbackWidget, Result, Baselines.bCaptured ? &Baselines : nullptr);
-	ApplyMaterialAnimResult(Result, FallbackWidget);
-
-	Player.Tracks.RemoveAll([](const FWidgetAnimTrack& Track) { return Track.bFinished && !Track.bHoldWhenFinished; });
 
 	return bAnyPlaying;
 }

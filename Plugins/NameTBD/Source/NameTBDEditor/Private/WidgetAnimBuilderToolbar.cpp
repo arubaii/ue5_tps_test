@@ -14,6 +14,7 @@
 #include "Widgets/SWindow.h"
 #include "SWidgetAnimTimeline.h"
 #include "SWidgetAnimScriptPanel.h"
+#include "SWidgetAnimStateMachineEditor.h"
 #include "WidgetAnimScripting.h"
 #include "WidgetAnimPanelSource.h"
 #include "StatusBarSubsystem.h"
@@ -929,6 +930,9 @@ namespace
 
 			PlaceDrawer(LiveToolkit.ToSharedRef(), *Entry);
 			PlaceScriptingDrawer(LiveToolkit.ToSharedRef(), *Entry);
+
+			// The Widget Animation State Machine editor's drawer, right after Widget Animation Scripting - its tab spawner too.
+			WidgetAnimStateMachineEditorHooks::PlaceDrawer(LiveToolkit.ToSharedRef(), WidgetAnimationScriptingDrawerSlot + 1);
 			return false; // one shot
 		}));
 	}
@@ -1347,6 +1351,7 @@ void FWidgetAnimBuilderToolbar::Register()
 			{
 				TabFactories.RegisterFactory(MakeShared<FWidgetAnimationsTabSummoner>(ApplicationMode.GetBlueprintEditor()));
 				TabFactories.RegisterFactory(MakeShared<FWidgetAnimationScriptingTabSummoner>(ApplicationMode.GetBlueprintEditor()));
+				WidgetAnimStateMachineEditorHooks::RegisterTabFactory(ApplicationMode, TabFactories);
 			});
 		}
 
@@ -1361,6 +1366,9 @@ void FWidgetAnimBuilderToolbar::Register()
 
 				// Widget Animation Scripting's slot: in the Details panel's well.
 				Extender.ExtendLayout(FTabId(ScriptingLayoutBesideTabId), ELayoutExtensionPosition::After, FTabManager::FTab(FTabId(WidgetAnimationScriptingTabId), ETabState::ClosedTab));
+
+				// Widget Animation State Machine's slot: in the bottom well, after Animations.
+				WidgetAnimStateMachineEditorHooks::ExtendLayout(Extender);
 			});
 		}
 	}
@@ -1404,6 +1412,27 @@ bool FWidgetAnimBuilderToolbar::IsScriptingDocked(const UWidgetBlueprint* Widget
 	return Toolkit.IsValid() && FindLiveScriptingTab(Toolkit->GetTabManager()).IsValid();
 }
 
+bool FWidgetAnimBuilderToolbar::OpenAnimationInPanel(const UWidgetBlueprint* WidgetBlueprint, UWidgetAnimPresetAsset* Animation)
+{
+	const TSharedPtr<FAssetEditorToolkit> Toolkit = FindToolkitFor(WidgetBlueprint);
+	if (!Toolkit.IsValid() || !Animation)
+	{
+		return false;
+	}
+
+	// The panel edits the asset itself - Edit Existing Asset - and is docked, or brought forward if it is open already.
+	const TSharedRef<IWidgetAnimPanelSource> PanelSource = GetPanelSource(Toolkit.ToSharedRef());
+	PanelSource->SetMode(IWidgetAnimPanelSource::EMode::EditExistingAsset);
+	PanelSource->SetAsset(Animation);
+	if (PanelSource->GetAsset() != Animation)
+	{
+		// A builder's panel edits its own working copy, never an asset.
+		return false;
+	}
+	DockInLayout(Toolkit, PanelSource);
+	return true;
+}
+
 void FWidgetAnimBuilderToolbar::Unregister()
 {
 	if (IUMGEditorModule* UMGEditor = FModuleManager::GetModulePtr<IUMGEditorModule>(TEXT("UMGEditor")))
@@ -1413,6 +1442,7 @@ void FWidgetAnimBuilderToolbar::Unregister()
 	}
 	RegisterTabsHandle.Reset();
 	RegisterLayoutHandle.Reset();
+	WidgetAnimStateMachineEditorHooks::Shutdown();
 }
 
 #undef LOCTEXT_NAMESPACE

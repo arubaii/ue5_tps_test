@@ -2335,6 +2335,27 @@ public:
 	static bool TickWidgetAnimPlayer(UWidget* FallbackWidget, UPARAM(ref) FWidgetAnimPlayer& Player, const FWidgetAnimBaselineSet& Baselines, float DeltaTime, TArray<FName>& OutJustFinished);
 
 	/**
+	 * TickWidgetAnimPlayer without the apply: advances every track and combines them into OutResult, which the caller folds
+	 * more into - a state machine's layers - and applies once with ApplyComposedResult. Finished tracks that don't hold are
+	 * left in the player, their writes pointing at their settings, until ReleaseFinishedTracks - call it after applying.
+	 * Their cues are queued as TickWidgetAnimPlayer queues them.
+	 */
+	static bool EvaluateWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAnimPlayer& Player, const FWidgetAnimBaselineSet& Baselines, float DeltaTime, TArray<FName>& OutJustFinished, FWidgetAnimResult& OutResult);
+
+	/** Drops the tracks that finished and don't hold - see EvaluateWidgetAnimPlayer. */
+	static void ReleaseFinishedTracks(FWidgetAnimPlayer& Player);
+
+	/** Applies a result put together from EvaluateWidgetAnimPlayer and more, as TickWidgetAnimPlayer applies its own: composed over Baselines when they were captured. */
+	static void ApplyComposedResult(UWidget* FallbackWidget, const FWidgetAnimResult& Result, const FWidgetAnimBaselineSet& Baselines);
+
+	/**
+	 * Plays Track to its end at once, silently - no cue fires - so it holds its end pose: a state machine's state that is a
+	 * pose. Every endless loop it has is ended first. False while its staggers are still waiting to fan out; try again on a
+	 * later frame.
+	 */
+	static bool SettleWidgetAnimTrack(FWidgetAnimTrack& Track, const FWidgetAnimBaselineSet& Baselines);
+
+	/**
 	 * Reads the Value Input of every value-driven layer that has one - measured on the widget the layer animates, or
 	 * HostWidget when it has no target - and sets what changed on the layer's Value Name in its animation, as Set Widget
 	 * Animation Value would. The first read since a track started is snapped to. Called by TickWidgetAnimPlayer before

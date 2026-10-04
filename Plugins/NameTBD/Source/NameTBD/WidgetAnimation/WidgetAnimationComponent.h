@@ -10,6 +10,8 @@
 #include "Blueprint/UserWidget.h"
 #include "WidgetAnimLibrary.h"
 #include "WidgetAnimPreset.h"
+#include "WidgetAnimStateMachine.h"
+#include "WidgetAnimStateMachineRuntime.h"
 #include "WidgetAnimationComponent.generated.h"
 
 class SWidget;
@@ -100,6 +102,7 @@ struct NAMETBD_API FWidgetAnimAdditiveStart
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FWidgetAnimationComponentEvent, UWidgetAnimationComponent*, Component);
 DECLARE_MULTICAST_DELEGATE_OneParam(FWidgetAnimationComponentNativeEvent, UWidgetAnimationComponent* /*Component*/);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FWidgetAnimationComponentCueEvent, FName, EventName, const FWidgetAnimCueInfo&, Info);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FWidgetAnimationComponentStateEvent, const FWidgetAnimStateEventInfo&, Info);
 
 // =====================================================================================================
 // Component
@@ -203,6 +206,22 @@ public:
 	TArray<FWidgetAnimValueOverride> ValueOverrides;
 
 	/**
+	 * State machines this widget plays: each a Widget Animation State Machine (WASM_) - states, transitions and inputs - with
+	 * a widget picked for each of its targets. A machine moves the widget between its states on its own as its inputs change:
+	 * hovered, pressed, selected, a value from a View Model. Its Entry plays as the widget is constructed (or with Play In),
+	 * and its way to Exit as the widget closes, which a screen closing waits for. See WidgetAnimStateMachine.h.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "State Machines", TitleProperty = "StateMachine"))
+	TArray<FWidgetAnimStateMachineEntry> StateMachines;
+
+	/**
+	 * How Anim In, Anim Out and everything played by Anim ID compose with the state machines: on top of them (the default), or
+	 * under them - covered wherever an Override layer of a machine animates. See EWidgetAnimTracksWithMachines.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Animations With State Machines"))
+	EWidgetAnimTracksWithMachines TracksWithStateMachines = EWidgetAnimTracksWithMachines::AddOnTop;
+
+	/**
 	 * Whether animations compose over whatever each target was authored as, instead of replacing it.
 	 *
 	 * Off (the default): a Fade ending at 1 means opacity 1, full stop, even on a widget authored at 0.5.
@@ -236,6 +255,14 @@ public:
 	 */
 	UPROPERTY(BlueprintAssignable, Category = "Animation")
 	FWidgetAnimationComponentCueEvent OnAnimationEvent;
+
+	/**
+	 * A state machine here entered or exited a state: which machine, layer and state, and where it came from or goes. Fired a
+	 * frame later, so anything may be done here. In a Widget Blueprint use the state's own Custom Event instead - On <Machine>
+	 * Entered <State> - added with the + in these Details' Events.
+	 */
+	UPROPERTY(BlueprintAssignable, Category = "Animation|State Machine")
+	FWidgetAnimationComponentStateEvent OnStateMachineStateChanged;
 
 	// -------------------------------------------------------------------------------------------------
 	// Playback
@@ -433,6 +460,79 @@ public:
 	 * What a screen closing asks before deciding it has an exit to wait for.
 	 */
 	bool HasExitToPlay() const;
+
+	// -------------------------------------------------------------------------------------------------
+	// State machines
+	// -------------------------------------------------------------------------------------------------
+
+	/**
+	 * Sets a Bool input of the state machines here - of StateMachine only, when one is given. Returns whether a machine had
+	 * the input.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Animation|State Machine", meta = (DisplayName = "Set State Machine Bool"))
+	bool SetStateMachineBool(FName Input, bool bValue, UWidgetAnimStateMachineAsset* StateMachine = nullptr);
+
+	/** Sets a Number input of the state machines here - of StateMachine only, when one is given. */
+	UFUNCTION(BlueprintCallable, Category = "Animation|State Machine", meta = (DisplayName = "Set State Machine Number"))
+	bool SetStateMachineNumber(FName Input, float Value, UWidgetAnimStateMachineAsset* StateMachine = nullptr);
+
+	/** Fires a Trigger input of the state machines here: true for the next frame the machines run, then false again. */
+	UFUNCTION(BlueprintCallable, Category = "Animation|State Machine", meta = (DisplayName = "Fire State Machine Trigger"))
+	bool FireStateMachineTrigger(FName Input, UWidgetAnimStateMachineAsset* StateMachine = nullptr);
+
+	/** Sets an input of any type from a number: a Bool is true when it isn't 0, a Trigger fires when it isn't 0. What a View Model's Set Input calls. */
+	bool SetStateMachineInputValue(FName Input, double Value, UWidgetAnimStateMachineAsset* StateMachine = nullptr);
+
+	/** A Bool input's value - a built-in one's too (Hovered, Pressed, Focused, Selected, Disabled, Closing). False when there is none. */
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machine", meta = (DisplayName = "Get State Machine Bool"))
+	bool GetStateMachineBool(FName Input, UWidgetAnimStateMachineAsset* StateMachine = nullptr) const;
+
+	/** A Number input's value. 0 when there is none. */
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machine", meta = (DisplayName = "Get State Machine Number"))
+	float GetStateMachineNumber(FName Input, UWidgetAnimStateMachineAsset* StateMachine = nullptr) const;
+
+	/** Whether a state machine here is in State - or on its way there - on Layer, or on any layer when Layer is None. */
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machine")
+	bool IsInState(FName State, UWidgetAnimStateMachineAsset* StateMachine = nullptr, FName Layer = NAME_None) const;
+
+	/** The state Layer of a state machine here is in, or on its way to - its first layer when Layer is None. None when it isn't playing. */
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machine")
+	FName GetCurrentStateOfLayer(UWidgetAnimStateMachineAsset* StateMachine = nullptr, FName Layer = NAME_None) const;
+
+	/** Starts every state machine here that isn't playing - those not set to Start On Construct. Each starts at its Entry. */
+	UFUNCTION(BlueprintCallable, Category = "Animation|State Machine")
+	void StartStateMachines();
+
+	/** Stops every state machine here, leaving the widgets as the rest of the animations say. Start State Machines starts them again. */
+	UFUNCTION(BlueprintCallable, Category = "Animation|State Machine")
+	void StopStateMachines();
+
+	/** Whether a machine here - StateMachine, or any when null - has an input of that name, declared or built in. */
+	bool HasStateMachineInput(const UWidgetAnimStateMachineAsset* StateMachine, FName Input) const;
+
+	/** Whether StateMachine is one of the State Machines here. */
+	bool PlaysStateMachine(const UWidgetAnimStateMachineAsset* StateMachine) const;
+
+	/** The machines as they play, for the editor's graph to show where each is. */
+	const TArray<FWidgetAnimMachineInstance>& GetStateMachineInstances() const { return MachineInstances; }
+
+	/** Sizes every State Machines row's targets and inputs to its machine - see FWidgetAnimStateMachineEntry::SyncToMachine. */
+	bool SyncStateMachines();
+
+	/**
+	 * For the State Machine editor's Inputs panel: plays this component's state machines in the designer, from their Entry,
+	 * for the panel to drive. The toolbar's own preview stops. False when the designer hasn't made the widget's Slate widget
+	 * yet - ask again on a later frame.
+	 */
+	bool StartDesignerStateMachinePreview();
+
+	/** Stops the designer's state machine preview and puts the widgets back as authored. */
+	void StopDesignerStateMachinePreview();
+
+	bool IsDesignerStateMachinePreviewing() const { return bMachinePreviewing; }
+
+	/** Sets a built-in input (Hovered, Pressed, Focused, Selected, Disabled, Closing) of the machines playing in the designer. */
+	void SetDesignerStateMachineBuiltIn(FName Input, bool bValue, const UWidgetAnimStateMachineAsset* StateMachine = nullptr);
 
 	// -------------------------------------------------------------------------------------------------
 	// Owner and lookup
@@ -828,4 +928,70 @@ private:
 	bool ReportConflictsIn(const TArray<FName>& AnimIds) const;
 
 	static bool IsVisibleState(ESlateVisibility Visibility);
+
+	// -------------------------------------------------------------------------------------------------
+	// State machines
+	// -------------------------------------------------------------------------------------------------
+
+	/** The machines as they play, one per State Machines row with a machine. */
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimMachineInstance> MachineInstances;
+
+	/** The widgets the machines posed last frame - put back at rest when they stop posing them. */
+	TArray<TPair<TWeakObjectPtr<UWidget>, FWidgetAnimPartKey>> MachineLastPosed;
+
+	/** State events waiting for the next frame, and the ticker that fires them. Held, so the widgets they name are too. */
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimStateEventInfo> PendingStateEvents;
+
+	FTSTicker::FDelegateHandle StateEventTickerHandle;
+
+	/** What the machines are handed every frame - see GetMachineContext. */
+	FWidgetAnimMachineContext MachineContext;
+
+	/** The frame the machines last moved on, so a second tick with time in one frame re-poses instead - as the track player does. */
+	uint64 MachinesLastAdvanceFrame = 0;
+
+	/** The designer's state machine preview: whether it runs, and its clock. */
+	bool bMachinePreviewing = false;
+	TWeakPtr<FActiveTimerHandle> MachinePreviewTimerHandle;
+	TWeakPtr<SWidget> MachinePreviewTimerWidget;
+
+	/** What the machines need from here: the widget, the paths, the baselines, where events go. */
+	const FWidgetAnimMachineContext& GetMachineContext();
+
+	/** One instance per row with a machine, set up and not started. */
+	void InitializeMachines();
+
+	/** Starts the machines - only those set to Start On Construct when bOnlyOnConstruct. */
+	void StartMachines(bool bOnlyOnConstruct);
+
+	/** Whether any machine is playing. */
+	bool AreMachinesRunning() const;
+
+	/** Whether a machine with a way to Exit hasn't got there yet - what Playing Out waits on besides the exit's tracks. */
+	bool AreMachinesExiting() const;
+
+	/** Whether a visibility change plays anything: an entry set to play on it, or a state machine with a way to Exit. */
+	bool ReactsToVisibility() const;
+
+	/** Every setting the machines can play, for baselines to be captured from. */
+	void GatherMachineSettings(TArray<FWidgetAnimSettings>& OutSettings);
+
+	/** The Closing input of every machine. */
+	void SetMachinesClosing(bool bClosing);
+
+	/** Calls Visit for every running machine, or StateMachine's only. True if any was visited. */
+	bool ForEachMachine(const UWidgetAnimStateMachineAsset* StateMachine, TFunctionRef<bool(FWidgetAnimMachineInstance&)> Visit);
+	const FWidgetAnimMachineInstance* FindMachine(const UWidgetAnimStateMachineAsset* StateMachine) const;
+
+	/** Ticks the machines and folds them into Result - the frame's other tracks - as Tracks With State Machines says. */
+	void TickAndComposeMachines(float DeltaTime, FWidgetAnimResult& Result);
+
+	/** A state was entered or exited: sent next frame. */
+	void QueueStateEvent(const FWidgetAnimStateEventInfo& Info);
+	void FlushStateEvents();
+
+	/** The designer's state machine clock. */
+	void TickDesignerMachines(float DeltaTime);
 };

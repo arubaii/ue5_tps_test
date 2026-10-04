@@ -485,7 +485,16 @@ namespace SetWidgetAnimationValueNode
 
 FWidgetAnimValueSourceScope UK2Node_SetWidgetAnimationValue::FindSourceScope(const UEdGraphPin* TargetPin) const
 {
+	return FindScopeFor(this, TargetPin);
+}
+
+FWidgetAnimValueSourceScope UK2Node_SetWidgetAnimationValue::FindScopeFor(const UK2Node* Node, const UEdGraphPin* TargetPin)
+{
 	FWidgetAnimValueSourceScope Scope;
+	if (!Node)
+	{
+		return Scope;
+	}
 
 	// What Target is wired to, through any reroute nodes on the way.
 	const UEdGraphPin* Wired = TargetPin && TargetPin->LinkedTo.Num() > 0 ? TargetPin->LinkedTo[0] : nullptr;
@@ -503,14 +512,14 @@ FWidgetAnimValueSourceScope UK2Node_SetWidgetAnimationValue::FindSourceScope(con
 	// Unconnected, or wired to Self: this Widget Blueprint, all of it.
 	if (!Wired || Wired->PinType.PinSubCategory == UEdGraphSchema_K2::PSC_Self)
 	{
-		Scope.Blueprint = GetBlueprint();
+		Scope.Blueprint = Node->GetBlueprint();
 		return Scope;
 	}
 
 	// One of this Blueprint's own designer widgets, read from its variable: that widget and what is inside it.
 	if (const UK2Node_VariableGet* Getter = Cast<UK2Node_VariableGet>(Wired->GetOwningNode()))
 	{
-		const UWidgetBlueprint* Own = Cast<UWidgetBlueprint>(GetBlueprint());
+		const UWidgetBlueprint* Own = Cast<UWidgetBlueprint>(Node->GetBlueprint());
 		if (Own && Own->WidgetTree && Getter->VariableReference.IsSelfContext() && Own->WidgetTree->FindWidget(Getter->GetVarName()))
 		{
 			Scope.Blueprint = Own;
@@ -527,15 +536,12 @@ FWidgetAnimValueSourceScope UK2Node_SetWidgetAnimationValue::FindSourceScope(con
 	return Scope;
 }
 
-void UK2Node_SetWidgetAnimationValue::GatherValueSources(const FWidgetAnimValueSourceScope& Scope, TArray<FWidgetAnimValueSource>& OutSources)
+void UK2Node_SetWidgetAnimationValue::GatherComponentsInScope(const FWidgetAnimValueSourceScope& Scope, TArray<const UWidgetAnimationComponent*>& Components)
 {
-	OutSources.Reset();
 	if (!Scope.Blueprint)
 	{
 		return;
 	}
-
-	TArray<const UWidgetAnimationComponent*> Components;
 
 	// First what the designer preview has, when the Blueprint's editor is open: the components as they are attached,
 	// found exactly as the node's runtime search finds them.
@@ -576,6 +582,18 @@ void UK2Node_SetWidgetAnimationValue::GatherValueSources(const FWidgetAnimValueS
 			Pending.Add(Inner);
 		}
 	}
+}
+
+void UK2Node_SetWidgetAnimationValue::GatherValueSources(const FWidgetAnimValueSourceScope& Scope, TArray<FWidgetAnimValueSource>& OutSources)
+{
+	OutSources.Reset();
+	if (!Scope.Blueprint)
+	{
+		return;
+	}
+
+	TArray<const UWidgetAnimationComponent*> Components;
+	GatherComponentsInScope(Scope, Components);
 
 	// The value tracks of animations inserted into these as tracks too: their values belong to the one they play in.
 	auto AddValues = [](FWidgetAnimValueSource& Source, const TArray<FWidgetAnimLayer>& Layers)

@@ -7,6 +7,7 @@
 
 #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimStateMachine.h"
 #include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimCues.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
 #include "EdGraphSchema_K2.h"
@@ -1045,6 +1046,77 @@ namespace WidgetAnimComponentEvents
 		}
 		FromLayers(Component.AdditiveAnimLayersIn, nullptr);
 		FromLayers(Component.AdditiveAnimLayersOut, nullptr);
+
+		// The Event tracks of the animations its state machines' states play - they fire as the state plays them.
+		for (const FWidgetAnimStateMachineEntry& Entry : Component.StateMachines)
+		{
+			if (!Entry.StateMachine)
+			{
+				continue;
+			}
+			TArray<UWidgetAnimPresetAsset*> Animations;
+			Entry.StateMachine->GatherAnimations(Animations);
+			for (const UWidgetAnimPresetAsset* Animation : Animations)
+			{
+				if (Animation)
+				{
+					FromLayers(Animation->Layers, Animation);
+				}
+			}
+		}
+	}
+
+	/** One state event of a state machine the component plays: its Custom Event's name, and what it is - for its tooltip. */
+	struct FStateEventRow
+	{
+		FName FunctionName;
+		FText Machine;
+		FText Layer;
+		FText State;
+		bool bEntered = true;
+	};
+
+	/**
+	 * Every state's Entered and Exited event, of every state machine the component plays, once each - "On Button Entered
+	 * Hovered". See WidgetAnimMachineEvents::GetStateEventFunctionName.
+	 */
+	void GatherStateEvents(const UWidgetAnimationComponent& Component, TArray<FStateEventRow>& OutRows)
+	{
+		TSet<FName> Seen;
+		for (const FWidgetAnimStateMachineEntry& Entry : Component.StateMachines)
+		{
+			const UWidgetAnimStateMachineAsset* Machine = Entry.StateMachine;
+			if (!Machine)
+			{
+				continue;
+			}
+			for (const FWidgetAnimMachineLayer& Layer : Machine->Layers)
+			{
+				for (const FWidgetAnimMachineState& State : Layer.States)
+				{
+					if (State.IsSpecial())
+					{
+						continue;
+					}
+					for (const bool bEntered : { true, false })
+					{
+						const FName FunctionName = WidgetAnimMachineEvents::GetStateEventFunctionName(Machine, State.Name, bEntered);
+						bool bAlreadySeen = false;
+						Seen.Add(FunctionName, &bAlreadySeen);
+						if (FunctionName.IsNone() || bAlreadySeen)
+						{
+							continue;
+						}
+						FStateEventRow& Row = OutRows.AddDefaulted_GetRef();
+						Row.FunctionName = FunctionName;
+						Row.Machine = FText::FromString(Machine->GetMachineDisplayName());
+						Row.Layer = FText::FromName(Layer.Name);
+						Row.State = FText::FromName(State.Name);
+						Row.bEntered = bEntered;
+					}
+				}
+			}
+		}
 	}
 
 	/** Blueprint's Custom Event named FunctionName - an Event track's, see WidgetAnimCues::GetEventFunctionName - or null. */
@@ -1065,10 +1137,11 @@ namespace WidgetAnimComponentEvents
 	}
 
 	/**
-	 * Blueprint's Custom Event named FunctionName - added to its event graph, with an Info pin, if there is none yet -
-	 * shown in the graph editor, as a widget event's + does.
+	 * Blueprint's Custom Event named FunctionName - added to its event graph, with an Info pin of InfoStruct (an Event
+	 * track's FWidgetAnimCueInfo when none is given), if there is none yet - shown in the graph editor, as a widget event's
+	 * + does.
 	 */
-	void FindOrAddEventAndFocus(UBlueprint* Blueprint, FName FunctionName)
+	void FindOrAddEventAndFocus(UBlueprint* Blueprint, FName FunctionName, UScriptStruct* InfoStruct = nullptr)
 	{
 		if (!Blueprint || FunctionName.IsNone())
 		{
@@ -1097,7 +1170,7 @@ namespace WidgetAnimComponentEvents
 
 			FEdGraphPinType InfoType;
 			InfoType.PinCategory = UEdGraphSchema_K2::PC_Struct;
-			InfoType.PinSubCategoryObject = FWidgetAnimCueInfo::StaticStruct();
+			InfoType.PinSubCategoryObject = InfoStruct ? InfoStruct : FWidgetAnimCueInfo::StaticStruct();
 			Event->CreateUserDefinedPin(TEXT("Info"), InfoType, EGPD_Output);
 
 			const auto Place = EventGraph->GetGoodPlaceForNewNode();
@@ -1116,13 +1189,15 @@ void FWidgetAnimationComponentDetails::AddEventRows(IDetailCategoryBuilder& Cate
 {
 	const UWidgetAnimationComponent* Component = Objects.Num() == 1 ? Cast<UWidgetAnimationComponent>(Objects[0].Get()) : nullptr;
 	TArray<FName> FunctionNames;
+	TArray<WidgetAnimComponentEvents::FStateEventRow> StateEvents;
 	if (Component)
 	{
 		WidgetAnimComponentEvents::GatherEvents(*Component, FunctionNames);
+		WidgetAnimComponentEvents::GatherStateEvents(*Component, StateEvents);
 	}
-	if (FunctionNames.Num() == 0)
+	if (FunctionNames.Num() == 0 && StateEvents.Num() == 0)
 	{
-		// No Event track, no Events: the group only appears when there is something to bind.
+		// No Event track and no state machine, no Events: the group only appears when there is something to bind.
 		return;
 	}
 
@@ -1131,8 +1206,29 @@ void FWidgetAnimationComponentDetails::AddEventRows(IDetailCategoryBuilder& Cate
 	IDetailGroup& Group = Category.AddGroup(TEXT("Events"), LOCTEXT("EventsGroup", "Events"), /*bForAdvanced=*/false, /*bStartExpanded=*/true);
 	const TWeakObjectPtr<UWidgetBlueprint> WeakBlueprint = FindOwningWidgetBlueprint(Component);
 
+	// One row per event: the Event tracks' first, then the state machines' - each with its Info struct and tooltip.
+	struct FRow
+	{
+		FName FunctionName;
+		UScriptStruct* InfoStruct = nullptr;
+		FText Tooltip;
+	};
+	TArray<FRow> Rows;
 	for (const FName FunctionName : FunctionNames)
 	{
+		Rows.Add({ FunctionName, FWidgetAnimCueInfo::StaticStruct(), WidgetAnimTips::TrackEventRowTooltip() });
+	}
+	for (const WidgetAnimComponentEvents::FStateEventRow& StateEvent : StateEvents)
+	{
+		Rows.Add({ StateEvent.FunctionName, FWidgetAnimStateEventInfo::StaticStruct(),
+			FText::Format(StateEvent.bEntered ? WidgetAnimTips::StateEnteredEventTooltip() : WidgetAnimTips::StateExitedEventTooltip(),
+				StateEvent.Machine, StateEvent.Layer, StateEvent.State) });
+	}
+
+	for (const FRow& Row : Rows)
+	{
+		const FName FunctionName = Row.FunctionName;
+		UScriptStruct* const InfoStruct = Row.InfoStruct;
 		const FText Title = FText::FromName(FunctionName);
 		auto IsBound = [WeakBlueprint, FunctionName]() { return WidgetAnimComponentEvents::FindEvent(WeakBlueprint.Get(), FunctionName) != nullptr; };
 
@@ -1143,7 +1239,7 @@ void FWidgetAnimationComponentDetails::AddEventRows(IDetailCategoryBuilder& Cate
 			.NameContent()
 			[
 				SNew(SHorizontalBox)
-				.ToolTipText(WidgetAnimTips::TrackEventRowTooltip())
+				.ToolTipText(Row.Tooltip)
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
@@ -1169,9 +1265,9 @@ void FWidgetAnimationComponentDetails::AddEventRows(IDetailCategoryBuilder& Cate
 				.ForegroundColor(FSlateColor::UseForeground())
 				.IsEnabled_Lambda([WeakBlueprint]() { return WeakBlueprint.IsValid(); })
 				.ToolTipText_Lambda([IsBound]() { return IsBound() ? WidgetAnimTips::TrackEventViewTooltip() : WidgetAnimTips::TrackEventAddTooltip(); })
-				.OnClicked_Lambda([WeakBlueprint, FunctionName]()
+				.OnClicked_Lambda([WeakBlueprint, FunctionName, InfoStruct]()
 				{
-					WidgetAnimComponentEvents::FindOrAddEventAndFocus(WeakBlueprint.Get(), FunctionName);
+					WidgetAnimComponentEvents::FindOrAddEventAndFocus(WeakBlueprint.Get(), FunctionName, InfoStruct);
 					return FReply::Handled();
 				})
 				[
@@ -1232,6 +1328,10 @@ void FWidgetAnimationComponentDetails::CustomizeDetails(IDetailLayoutBuilder& De
 	{
 		Category.AddProperty(ValuesHandle);
 	}
+
+	// The state machines it plays, and how its other animations compose with them.
+	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, StateMachines)));
+	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, TracksWithStateMachines)));
 
 	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, bPreserveAuthoredTransforms)));
 

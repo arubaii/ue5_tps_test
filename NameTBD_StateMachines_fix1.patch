@@ -1,0 +1,13 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+index e63b6d0..7edf662 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+@@ -1133,7 +1133,7 @@ public:
+ 	 * Halfway between its two states - and to one side, when the two are joined both ways or more than once, so every icon
+ 	 * of a pair sits on its own arrow.
+ 	 */
+-	virtual void PerformSecondPassLayout(const TMap<UObject*, int32>& NodeToWidgetLookup) const override
++	virtual void PerformSecondPassLayout(const TMap<UObject*, TSharedRef<SNodePanel::SNode>>& NodeToWidgetLookup) const override
+ 	{
+ 		const UWidgetAnimMachineTransitionNode* Node = Cast<UWidgetAnimMachineTransitionNode>(GraphNode);
+ 		const UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;

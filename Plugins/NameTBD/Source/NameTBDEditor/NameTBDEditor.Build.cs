@@ -25,6 +25,7 @@ public class NameTBDEditor : ModuleRules
 			"UnrealEd",
 			"PropertyEditor",
 			"StatusBar",
+			"ToolWidgets",       // FWidgetDrawerConfig, for the status bar drawers
 			"BlueprintGraph",   // UK2Node_FunctionEntry, for adding the dispatcher's parameters
 			"KismetCompiler",
 			"UMG",

@@ -6,6 +6,7 @@
 
 class SDockTab;
 class UWidgetBlueprint;
+class UWidgetAnimPresetAsset;
 
 /**
  * The per-editor hook for the Widget Animations panel, and for the selected widget's preview controls. The
@@ -50,4 +51,11 @@ public:
 
 	/** Whether the Widget Blueprint's editor has its Widget Animation Scripting tab open. */
 	static bool IsScriptingDocked(const UWidgetBlueprint* WidgetBlueprint);
+
+	/**
+	 * Opens Animation in the Widget Blueprint's editor's Widget Animations panel - Edit Existing Asset - and docks the panel,
+	 * or brings it forward. What double-clicking a state in the State Machine editor does. False when the Widget Blueprint has
+	 * no editor open, or its panel can't edit an asset (a builder's).
+	 */
+	static bool OpenAnimationInPanel(const UWidgetBlueprint* WidgetBlueprint, UWidgetAnimPresetAsset* Animation);
 };

@@ -11,6 +11,7 @@
 #include "NameTBD/WidgetAnimation/WidgetAnimHost.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimLibrary.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimStateMachineLibrary.h"
 #include "UObject/UnrealType.h"
 #include "View/MVVMView.h"
 #include "WidgetDataBinderEventProxy.h"
@@ -797,7 +798,7 @@ void UWidgetDataBinderComponent::EvaluateTrigger(int32 TriggerIndex, bool bIniti
 		return;
 	}
 
-	if (Trigger.Action == EWidgetDataTriggerAction::SetValue || Trigger.Action == EWidgetDataTriggerAction::SetProgress)
+	if (Trigger.Action == EWidgetDataTriggerAction::SetValue || Trigger.Action == EWidgetDataTriggerAction::SetProgress || Trigger.Action == EWidgetDataTriggerAction::SetInput)
 	{
 		// No condition and no edge: every change of the field is a value, as it is - each track maps it onto itself. A
 		// Vector 2D or Linear Color field carries its channels; a number or bool (0 and 1) is one value.
@@ -827,12 +828,26 @@ void UWidgetDataBinderComponent::EvaluateTrigger(int32 TriggerIndex, bool bIniti
 		{
 			if (Trigger.bEvaluateOnBind)
 			{
-				SetAnimationValue(Trigger, Raw, /*bSnap=*/true);
+				if (Trigger.Action == EWidgetDataTriggerAction::SetInput)
+				{
+					SetMachineInput(Trigger, Raw.X);
+				}
+				else
+				{
+					SetAnimationValue(Trigger, Raw, /*bSnap=*/true);
+				}
 			}
 		}
 		else if (!State.bHasLastValue || State.LastValue != Raw)
 		{
-			SetAnimationValue(Trigger, Raw, /*bSnap=*/false);
+			if (Trigger.Action == EWidgetDataTriggerAction::SetInput)
+			{
+				SetMachineInput(Trigger, Raw.X);
+			}
+			else
+			{
+				SetAnimationValue(Trigger, Raw, /*bSnap=*/false);
+			}
 		}
 
 		State.bHasLastValue = true;
@@ -1065,6 +1080,29 @@ void UWidgetDataBinderComponent::SetAnimationValue(const FWidgetFieldTrigger& Tr
 		{
 			Host->SetWidgetAnimationValues(Id, Value, bSnap, /*bStartIfNotPlaying=*/true);
 		}
+	}
+}
+
+void UWidgetDataBinderComponent::SetMachineInput(const FWidgetFieldTrigger& Trigger, double Value)
+{
+	if (Trigger.InputName.IsNone())
+	{
+		return;
+	}
+
+	// The machine on the picked widget, or inside it, or outwards from it, that has the input - as Set State Machine Input
+	// finds it from a graph.
+	TArray<UWidgetAnimationComponent*> Components;
+	UWidgetAnimStateMachineLibrary::FindComponents(ResolveAnimationWidget(Trigger.AnimationWidget), nullptr, Trigger.InputName, /*bSearchParentWidgets=*/true, /*bAll=*/false, Components);
+	if (Components.Num() == 0)
+	{
+		UE_LOG(LogWidgetDataBinder, Warning, TEXT("%s: trigger '%s' found no state machine with an input '%s' at, in or above the Animation Widget."),
+			*DescribeForLog(), *Trigger.TriggerName.ToString(), *Trigger.InputName.ToString());
+		return;
+	}
+	for (UWidgetAnimationComponent* Component : Components)
+	{
+		Component->SetStateMachineInputValue(Trigger.InputName, Value);
 	}
 }
 
