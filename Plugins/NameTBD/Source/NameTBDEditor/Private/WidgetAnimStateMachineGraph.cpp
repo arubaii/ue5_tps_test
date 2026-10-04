@@ -2685,42 +2685,65 @@ public:
 
 		// The disc: dimmed under its progress while it plays, its full color rising across it.
 		const FLinearColor Base = bPlaying ? (Color * MachineColors::TransitionIdleDim).CopyWithNewOpacity(1.f) : Color;
-		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Disc, ESlateDrawEffect::None, Base);
-		if (bPlaying)
-		{
-			const float Alpha = FMath::Clamp(Debug.TransitionAlpha, 0.f, 1.f);
-			const FGeometry Filled = AllottedGeometry.MakeChild(FVector2f(Size.X * Alpha, Size.Y), FSlateLayoutTransform());
-			OutDrawElements.PushClip(FSlateClippingZone(Filled));
-			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1, AllottedGeometry.ToPaintGeometry(), Disc, ESlateDrawEffect::None, Color);
-			OutDrawElements.PopClip();
-		}
+		const float Progress = bPlaying ? FMath::Clamp(Debug.TransitionAlpha, 0.f, 1.f) : 0.f;
+		const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
 
-		// Selected: the graph editor's own selection look, measured off a selected state, made round - a crisp solid band of
-		// the selection orange over the node's edge and just outside it, shading from yellower at the top to deeper orange at
-		// the bottom as the editor's selection brush does; no glow beyond it. Drawn as one antialiased closed path with a color
-		// at each point, so it is exactly round (the graph editor's own selection brush, a rounded box, is held back: see
-		// GetShadowBrush).
+		// A true circle, Radius about the middle, at any zoom: a rounded box rounded by half its height.
+		const FSlateBrush* Round = WidgetAnimMachineStyle::RoundBrush();
+		auto DrawCircle = [&](int32 Layer, float CircleRadius, const FLinearColor& CircleColor)
+		{
+			const FVector2f CircleSize(CircleRadius * 2.f, CircleRadius * 2.f);
+			FSlateDrawElement::MakeBox(OutDrawElements, Layer,
+				AllottedGeometry.ToPaintGeometry(CircleSize, FSlateLayoutTransform(Center - CircleSize * 0.5f)), Round, ESlateDrawEffect::None, CircleColor);
+		};
+		auto ClipLeftPart = [&](float Amount)
+		{
+			const FGeometry Filled = AllottedGeometry.MakeChild(FVector2f(Size.X * Amount, Size.Y), FSlateLayoutTransform());
+			OutDrawElements.PushClip(FSlateClippingZone(Filled));
+		};
+
 		if (IsNodeSelected && IsNodeSelected())
 		{
-			const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
+			// Selected: the graph editor's own selection look, measured off a selected state, made round - a crisp solid band
+			// of the selection orange over the node's edge and just outside it, shading from yellower at the top to deeper
+			// orange at the bottom as the editor's selection brush does, with no glow beyond it. A filled circle under a
+			// smaller one in the node's color - each a true circle, so the band is perfectly round, even, and whole (the graph
+			// editor's own selection brush, a rounded box, is held back: see GetShadowBrush). Its shading in thin horizontal
+			// strips, too fine to see as steps.
 			const float BandInner = Radius - MachineColors::TransitionSelectedOverlap;
-			const float BandRadius = BandInner + MachineColors::TransitionSelectedWidth * 0.5f;
-			constexpr int32 Segments = 48;
-			TArray<FVector2f> Ring;
-			TArray<FLinearColor> RingColors;
-			Ring.Reserve(Segments + 1);
-			RingColors.Reserve(Segments + 1);
-			for (int32 Segment = 0; Segment <= Segments; ++Segment)
+			const float BandOuter = BandInner + MachineColors::TransitionSelectedWidth;
+			constexpr int32 Strips = 16;
+			const float Top = Center.Y - BandOuter;
+			const float StripHeight = BandOuter * 2.f / Strips;
+			for (int32 Strip = 0; Strip < Strips; ++Strip)
 			{
-				const float Angle = UE_TWO_PI * Segment / Segments;
-				const FVector2f Along(FMath::Cos(Angle), FMath::Sin(Angle));
-				Ring.Add(Center + Along * BandRadius);
-				// Top (-1) to bottom (+1).
-				const float Down = (Along.Y + 1.f) * 0.5f;
-				RingColors.Add(FMath::Lerp(MachineColors::TransitionSelectedTop, MachineColors::TransitionSelectedBottom, Down) * Tint);
+				const FGeometry StripGeometry = AllottedGeometry.MakeChild(
+					FVector2f(Size.X + BandOuter * 4.f, StripHeight + 0.5f),
+					FSlateLayoutTransform(FVector2f(-BandOuter * 2.f, Top + StripHeight * Strip)));
+				OutDrawElements.PushClip(FSlateClippingZone(StripGeometry));
+				const float Down = (Strip + 0.5f) / Strips;
+				DrawCircle(LayerId, BandOuter, FMath::Lerp(MachineColors::TransitionSelectedTop, MachineColors::TransitionSelectedBottom, Down) * Tint);
+				OutDrawElements.PopClip();
 			}
-			FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 3, AllottedGeometry.ToPaintGeometry(), MoveTemp(Ring), MoveTemp(RingColors),
-				ESlateDrawEffect::None, FLinearColor::White, /*bAntialias=*/true, MachineColors::TransitionSelectedWidth);
+
+			// The node inside the band, its own rim covered as a selected state's is.
+			DrawCircle(LayerId + 1, BandInner, Base * Tint);
+			if (Progress > 0.f)
+			{
+				ClipLeftPart(Progress);
+				DrawCircle(LayerId + 2, BandInner, Color * Tint);
+				OutDrawElements.PopClip();
+			}
+		}
+		else
+		{
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1, AllottedGeometry.ToPaintGeometry(), Disc, ESlateDrawEffect::None, Base);
+			if (Progress > 0.f)
+			{
+				ClipLeftPart(Progress);
+				FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 2, AllottedGeometry.ToPaintGeometry(), Disc, ESlateDrawEffect::None, Color);
+				OutDrawElements.PopClip();
+			}
 		}
 
 		// The arrowhead - the one an Animation Blueprint state machine's wires end in - turned to point the way the transition

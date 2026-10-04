@@ -344,6 +344,13 @@ namespace WidgetAnimMachineStyle
 	FSlateFontInfo BodyBoldFont() { return FCoreStyle::GetDefaultFontStyle("Bold", 9); }
 	FSlateFontInfo SmallFont() { return FCoreStyle::GetDefaultFontStyle("Regular", 8); }
 
+	const FSlateBrush* RoundBrush()
+	{
+		// No radius given: rounded by half its height, whatever size it is drawn - so square, it is a circle.
+		static const FSlateRoundedBoxBrush Brush(FLinearColor::White);
+		return &Brush;
+	}
+
 	const FSlateBrush* CircleBrush(float Diameter)
 	{
 		// Rounded right round: a box whose corners are half its size is a disc.

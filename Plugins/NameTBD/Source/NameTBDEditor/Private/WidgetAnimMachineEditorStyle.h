@@ -75,6 +75,9 @@ namespace WidgetAnimMachineStyle
 	// Shapes
 	// -------------------------------------------------------------------------------------------------
 
+	/** A white box rounded by half its height - a true circle drawn square, at any size and zoom. Tinted where drawn. */
+	const FSlateBrush* RoundBrush();
+
 	/** A white disc Diameter across, tinted where drawn - a transition node. Made once per size, and kept. */
 	const FSlateBrush* CircleBrush(float Diameter);
 
