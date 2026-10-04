@@ -1820,9 +1820,9 @@ private:
 };
 
 /**
- * A value-driven track's look from the Widget Animations panel, filling what it sits on: the track's dark body, its color spill
- * dimmed, and faint diagonal bands across it - drawn as SWidgetAnimTimeline draws a striped track. Behind the state the watched
- * widget is in. Never takes the mouse.
+ * A value-driven track's stripes from the Widget Animations panel - faint diagonal bands, drawn as SWidgetAnimTimeline draws a
+ * striped track's - across what it sits on, scrolling slowly to the right. Over the state the watched widget is in; nothing
+ * under them is recolored. Never takes the mouse.
  */
 class SWidgetAnimMachineTrackPattern : public SLeafWidget
 {
@@ -1830,16 +1830,13 @@ public:
 
 	SLATE_BEGIN_ARGS(SWidgetAnimMachineTrackPattern)
 		: _Opacity(0.f)
-		, _Color(FLinearColor::White)
 	{}
 		SLATE_ATTRIBUTE(float, Opacity)
-		SLATE_ATTRIBUTE(FLinearColor, Color)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs)
 	{
 		Opacity = InArgs._Opacity;
-		Color = InArgs._Color;
 		SetVisibility(EVisibility::HitTestInvisible);
 	}
 
@@ -1857,19 +1854,10 @@ public:
 		{
 			return LayerId;
 		}
-		const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
-		const FSlateBrush* Rounded = WidgetAnimMachineStyle::RoundedBrush(MachineColors::ActiveTrackRadius);
-
-		// The track's body, and its color spill over it - dimmed, as a value-driven track's is under its bands.
-		const FLinearColor Body = MachineColors::ActiveTrackBody;
-		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Rounded, ESlateDrawEffect::None,
-			Body.CopyWithNewOpacity(Body.A * Amount) * Tint);
-		const FLinearColor Spill = Color.Get();
-		FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1, AllottedGeometry.ToPaintGeometry(), Rounded, ESlateDrawEffect::None,
-			Spill.CopyWithNewOpacity(MachineColors::ActiveTrackSpillOpacity * Amount) * Tint);
 
 		// The bands: each a thin upright box turned 45 degrees about its middle, which sits on the vertical center - so it
-		// crosses the whole height - clipped inside the rounded corners.
+		// crosses the whole height - clipped inside the rounded corners. Moving right at ActiveTrackStripeSpeed, worked out in
+		// double so they glide rather than step.
 		const float Inset = MachineColors::ActiveTrackRadius * 0.5f;
 		const FGeometry Inner = AllottedGeometry.MakeChild(Size - FVector2f(Inset * 2.f, Inset * 2.f), FSlateLayoutTransform(FVector2f(Inset, Inset)));
 		OutDrawElements.PushClip(FSlateClippingZone(Inner));
@@ -1877,12 +1865,13 @@ public:
 		const float Width = MachineColors::ActiveTrackStripeWidth;
 		const float Spacing = MachineColors::ActiveTrackStripeSpacing;
 		const float Length = Size.Y * UE_SQRT_2 + Width * 2.f;
-		const float FirstX = -FMath::CeilToFloat(Size.Y / Spacing) * Spacing;
+		const float Scroll = static_cast<float>(FMath::Fmod(FPlatformTime::Seconds() * MachineColors::ActiveTrackStripeSpeed, static_cast<double>(Spacing)));
+		const float FirstX = -FMath::CeilToFloat(Size.Y / Spacing + 1.f) * Spacing + Scroll;
 		for (float StripeX = FirstX; StripeX < Size.X; StripeX += Spacing)
 		{
 			FSlateDrawElement::MakeBox(
 				OutDrawElements,
-				LayerId + 2,
+				LayerId,
 				AllottedGeometry.ToPaintGeometry(
 					FVector2f(Width, Length),
 					FSlateLayoutTransform(FVector2f(StripeX + Size.Y * 0.5f - Width * 0.5f, Size.Y * 0.5f - Length * 0.5f)),
@@ -1890,23 +1879,22 @@ public:
 					FVector2f(0.5f, 0.5f)),
 				FAppStyle::GetBrush(TEXT("WhiteBrush")),
 				ESlateDrawEffect::None,
-				Stripe.CopyWithNewOpacity(Stripe.A * Amount) * Tint);
+				Stripe.CopyWithNewOpacity(Stripe.A * Amount) * InWidgetStyle.GetColorAndOpacityTint());
 		}
 		OutDrawElements.PopClip();
-		return LayerId + 3;
+		return LayerId + 1;
 	}
 
 private:
 
 	TAttribute<float> Opacity;
-	TAttribute<FLinearColor> Color;
 };
 
 /**
  * A state node: rounded, its name in the middle and its animation under it. Its ring is where a transition is dragged from; its
  * colored interior - all of it - takes clicks, so it is selected and moved from anywhere inside. While the watched widget is in
- * it, it wears a value-driven track's striped look behind it (SWidgetAnimMachineTrackPattern), and its animation's progress
- * rises across its middle.
+ * it, a value-driven track's stripes scroll across it (SWidgetAnimMachineTrackPattern) - its color unchanged - and its
+ * animation's progress rises across its middle.
  */
 class SWidgetAnimMachineStateNode : public SGraphNode
 {
@@ -1949,22 +1937,22 @@ public:
 				[
 					SNew(SOverlay)
 
-					// While the watched widget is in it: a value-driven track's look behind it all.
-					+ SOverlay::Slot()
-					.HAlign(HAlign_Fill)
-					.VAlign(VAlign_Fill)
-					[
-						SNew(SWidgetAnimMachineTrackPattern)
-						.Opacity(this, &SWidgetAnimMachineStateNode::GetTrackOpacity)
-						.Color(this, &SWidgetAnimMachineStateNode::GetTrackColor)
-					]
-
 					// The edge: where transitions are dragged from.
 					+ SOverlay::Slot()
 					.HAlign(HAlign_Fill)
 					.VAlign(VAlign_Fill)
 					[
 						SAssignNew(RightNodeBox, SVerticalBox)
+					]
+
+					// While the watched widget is in it: a value-driven track's stripes across it, scrolling right. Over the edge,
+					// under the name; the mouse goes straight through them.
+					+ SOverlay::Slot()
+					.HAlign(HAlign_Fill)
+					.VAlign(VAlign_Fill)
+					[
+						SNew(SWidgetAnimMachineTrackPattern)
+						.Opacity(this, &SWidgetAnimMachineStateNode::GetTrackOpacity)
 					]
 
 					// The name, and the animation under it. The whole colored part takes the mouse - a click anywhere in it
@@ -2195,7 +2183,7 @@ private:
 			return MachineColors::StateBody;
 		}
 
-		// Its own color, if given one. In play it keeps its color: the track look behind it is what shows it is in play.
+		// Its own color, if given one. In play it keeps its color: the stripes over it are what show it is in play.
 		FLinearColor Custom;
 		if (GetCustomColor(Custom))
 		{
@@ -2210,7 +2198,7 @@ private:
 		}
 	}
 
-	/** The track look behind it: all of it while the watched widget is in it, some while leaving it, none otherwise. */
+	/** The stripes: fully while the watched widget is in it, fainter while leaving it, none otherwise. */
 	float GetTrackOpacity() const
 	{
 		if (IsActive())
@@ -2218,13 +2206,6 @@ private:
 			return 1.f;
 		}
 		return IsLeaving() ? MachineColors::ActiveTrackLeavingOpacity : 0.f;
-	}
-
-	/** The track's color: the animation orange, or the node's own color brightened. */
-	FLinearColor GetTrackColor() const
-	{
-		FLinearColor Custom;
-		return GetCustomColor(Custom) ? Brighten(Custom) : MachineColors::StateProgress;
 	}
 
 	/** The progress fill: the animation orange, or the node's own color brightened. */
@@ -2473,6 +2454,7 @@ public:
 	void Construct(const FArguments& InArgs, UWidgetAnimMachineTransitionNode* InNode)
 	{
 		GraphNode = InNode;
+		SetCursor(EMouseCursor::CardinalCross);
 		UpdateGraphNode();
 	}
 
@@ -2509,6 +2491,21 @@ public:
 	virtual bool RequiresSecondPassLayout() const override
 	{
 		return true;
+	}
+
+	/**
+	 * Dragged by the graph. The graph editor's own MoveTo leaves alone any node it lays out itself (as this one is, on its
+	 * wire) - so this one takes the move, and PerformSecondPassLayout keeps it there from then on.
+	 */
+	virtual void MoveTo(const FVector2f& NewPosition, FNodeSet& NodeFilter, bool bMarkDirty = true) override
+	{
+		if (!GraphNode || NodeFilter.Find(SharedThis(this)))
+		{
+			return;
+		}
+		NodeFilter.Add(SharedThis(this));
+		GraphNode->NodePosX = FMath::RoundToInt32(NewPosition.X);
+		GraphNode->NodePosY = FMath::RoundToInt32(NewPosition.Y);
 	}
 
 	/** Alt+click: deletes the transition - as Alt+click breaks a Blueprint wire. */

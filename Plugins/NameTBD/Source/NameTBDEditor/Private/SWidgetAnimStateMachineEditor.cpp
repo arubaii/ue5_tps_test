@@ -3102,8 +3102,9 @@ bool SWidgetAnimStateMachineEditor::IsDebuggingPlay() const
 
 bool SWidgetAnimStateMachineEditor::IsGraphAnimating() const
 {
+	// A state in play: its stripes scroll for as long as it is.
 	FWidgetAnimMachineLayerDebug Debug;
-	if (GetLayerDebug(ShownLayer, Debug) && (Debug.ActiveTransition.IsValid() || Debug.bStatePlaying))
+	if (GetLayerDebug(ShownLayer, Debug) && (Debug.CurrentState.IsValid() || Debug.ActiveTransition.IsValid() || Debug.bStatePlaying))
 	{
 		return true;
 	}

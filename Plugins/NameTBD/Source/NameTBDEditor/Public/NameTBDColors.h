@@ -513,7 +513,7 @@ namespace NameTBD
 			//   StateEdge / StateEdgeHovered: the ring round a state that a transition is dragged from - brighter under the
 			//     mouse, so it reads as the thing to drag.
 			//   StateBody: a state at rest. StateActive / StateLeaving: no longer used by the graph (the state in play wears the
-			//     track look instead - see ActiveTrack*); kept for anything else that lights a state.
+			//     track's stripes instead - see ActiveTrack*); kept for anything else that lights a state.
 			//   EntryBody / ExitBody / AnyStateBody: the three special nodes - green for where it starts, red for where it
 			//     ends (Anim Out), blue for the transitions that can be taken from anywhere.
 			//   StateTitle / StateTitleActive: a state's name, and the name of the one in play.
@@ -589,11 +589,11 @@ namespace NameTBD
 			//     with its own Node Color, that color brightened instead. StateProgressOpacity: how much of it shows (the name
 			//     stays readable over it). StateProgressEdge / StateProgressEdgeWidth: the bright line at its front.
 			//   StateProgressMinBrightness: how bright (HSV value) a Node Color is lifted to for its fill and its lit body.
-			//   ActiveTrack*: the state the watched widget is in wears a value-driven track's look from the Widget Animations
-			//     panel behind it - the track's dark body, its color spill dimmed (ActiveTrackSpillOpacity) in the animation
-			//     orange (or the node's own color, brightened), and the track's faint diagonal bands. The same values as the track
-			//     (WidgetAnimEditor::SectionValue*). ActiveTrackLeavingOpacity: how much of it the state being left shows while
-			//     the transition out of it plays. ActiveTrackRadius: its corners, as the state's.
+			//   ActiveTrack*: the state the watched widget is in wears a value-driven track's diagonal bands from the Widget
+			//     Animations panel - the track's width and spacing (WidgetAnimEditor::SectionValueStripe*) - over its own colors,
+			//     scrolling right at ActiveTrackStripeSpeed graph units a second. ActiveTrackStripe: a touch stronger than the
+			//     track's, which sit on a bright color. ActiveTrackLeavingOpacity: how much of them the state being left shows
+			//     while the transition out of it plays. ActiveTrackRadius: the state's corners, which they stay inside.
 			//   StateSelected: the outline of a selected state.
 			// -------------------------------------------------------------------------------------------------
 
@@ -602,9 +602,8 @@ namespace NameTBD
 			inline const FLinearColor StateProgressEdge(1.0f, 0.93f, 0.80f, 0.95f);
 			inline constexpr float StateProgressEdgeWidth = 2.0f;
 			inline constexpr float StateProgressMinBrightness = 0.80f;
-			inline const FLinearColor ActiveTrackBody(WidgetAnimEditor::SectionBody);
-			inline constexpr float ActiveTrackSpillOpacity = WidgetAnimEditor::SectionValueSpillOpacity;
-			inline const FLinearColor ActiveTrackStripe(WidgetAnimEditor::SectionValueStripe);
+			inline const FLinearColor ActiveTrackStripe(1.0f, 1.0f, 1.0f, 0.10f);
+			inline constexpr float ActiveTrackStripeSpeed = 6.0f;
 			inline constexpr float ActiveTrackStripeWidth = WidgetAnimEditor::SectionValueStripeWidth;
 			inline constexpr float ActiveTrackStripeSpacing = WidgetAnimEditor::SectionValueStripeSpacing;
 			inline constexpr float ActiveTrackLeavingOpacity = 0.5f;

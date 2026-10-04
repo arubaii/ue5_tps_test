@@ -187,7 +187,7 @@ namespace WidgetAnimMachineWires
 	 * Of two nodes apart both ways, how much further apart one way must be than the other for the wire to leave a side rather
 	 * than a corner.
 	 */
-	constexpr float CornerRatio = 2.5f;
+	constexpr float CornerRatio = 6.f;
 
 	/**
 	 * Lays out the wire of a transition between two nodes, given as boxes in graph space. Lane and LaneCount: where it is among
