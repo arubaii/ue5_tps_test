@@ -3137,6 +3137,72 @@ bool SWidgetAnimStateMachineEditor::IsDebuggingPlay() const
 	return Widget && !Widget->IsDesignTime();
 }
 
+bool SWidgetAnimStateMachineEditor::FindActiveState(int32& OutLayer, FGuid& OutState) const
+{
+	OutLayer = INDEX_NONE;
+	OutState.Invalidate();
+	if (!Machine)
+	{
+		return false;
+	}
+	FWidgetAnimMachineLayerDebug Debug;
+	if (GetLayerDebug(ShownLayer, Debug) && Debug.CurrentState.IsValid())
+	{
+		OutLayer = ShownLayer;
+		OutState = Debug.CurrentState;
+		return true;
+	}
+	for (int32 LayerIndex = 0; LayerIndex < Machine->Layers.Num(); ++LayerIndex)
+	{
+		if (GetLayerDebug(LayerIndex, Debug) && Debug.CurrentState.IsValid())
+		{
+			OutLayer = LayerIndex;
+			OutState = Debug.CurrentState;
+			return true;
+		}
+	}
+	return false;
+}
+
+FText SWidgetAnimStateMachineEditor::GetJumpToActiveLabel() const
+{
+	int32 LayerIndex = INDEX_NONE;
+	FGuid StateId;
+	const FWidgetAnimMachineState* State = FindActiveState(LayerIndex, StateId) && Machine->Layers.IsValidIndex(LayerIndex)
+		? Machine->Layers[LayerIndex].FindState(StateId)
+		: nullptr;
+	if (!State)
+	{
+		return LOCTEXT("JumpToActiveNone", "Jump to Active State");
+	}
+	const FText Name = State->IsSpecial()
+		? StaticEnum<EWidgetAnimMachineNodeKind>()->GetDisplayNameTextByValue(static_cast<int64>(State->Kind))
+		: FText::FromName(State->Name);
+	return FText::Format(LOCTEXT("JumpToActive", "Jump to Active State ({0})"), Name);
+}
+
+void SWidgetAnimStateMachineEditor::JumpToActiveState()
+{
+	int32 LayerIndex = INDEX_NONE;
+	FGuid StateId;
+	if (!FindActiveState(LayerIndex, StateId))
+	{
+		return;
+	}
+	if (LayerIndex != ShownLayer)
+	{
+		ShowLayer(LayerIndex);
+	}
+	const TSharedPtr<SGraphEditor> Editor = GetShownGraphEditor();
+	const UWidgetAnimMachineGraph* Graph = GetShownGraph();
+	const UWidgetAnimMachineGraphNode* Node = Graph ? Graph->FindStateNode(StateId) : nullptr;
+	if (Editor.IsValid() && Node)
+	{
+		// Brought into view, not selected: the Details keep showing what they show.
+		Editor->JumpToNode(Node, /*bRequestRename=*/false, /*bSelectNode=*/false);
+	}
+}
+
 bool SWidgetAnimStateMachineEditor::IsPreviewPaused() const
 {
 	// Only the designer preview pauses: a widget watched in Play In Editor runs as the game does.
@@ -4063,6 +4129,53 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeToolbar()
 			.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 			.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
 			.Text(this, &SWidgetAnimStateMachineEditor::GetPreviewStatus)
+		]
+
+		// Back to the state in play, for when the graph has been scrolled away from it.
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(4.f, 2.f))
+		[
+			SNew(SButton)
+			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+			.ContentPadding(FMargin(4.f, 2.f))
+			.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::JumpToActiveTooltip()))
+			.Visibility_Lambda([this]()
+			{
+				int32 Layer = INDEX_NONE;
+				FGuid State;
+				return FindActiveState(Layer, State) ? EVisibility::Visible : EVisibility::Collapsed;
+			})
+			.OnClicked_Lambda([this]()
+			{
+				JumpToActiveState();
+				return FReply::Handled();
+			})
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(SBox)
+					.WidthOverride(16.f)
+					.HeightOverride(16.f)
+					[
+						SNew(SImage)
+						.ColorAndOpacity(FSlateColor::UseForeground())
+						.Image(FindEditorBrush({ TEXT("Icons.Search"), TEXT("GraphEditor.ZoomToFit"), TEXT("Icons.ArrowRight") }))
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+				[
+					SNew(STextBlock)
+					.Text(this, &SWidgetAnimStateMachineEditor::GetJumpToActiveLabel)
+				]
+			]
 		]
 
 		// Play In Editor: the widget watched.

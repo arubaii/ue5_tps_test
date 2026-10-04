@@ -1864,32 +1864,29 @@ public:
 		const float Width = MachineColors::ActiveTrackStripeWidth;
 		const float Spacing = MachineColors::ActiveTrackStripeSpacing;
 
-		// The node's rounded outline, pulled in by half a band so each band's ends stay inside its corners.
+		// The node's rounded outline, pulled in by half a band so each band's ends stay inside its corners - as a signed
+		// distance: below 0 inside, above outside. On a small node its corners are no rounder than half its height.
 		const float Pull = Width * 0.5f + 0.5f;
-		const FVector2f Min(Pull, Pull);
-		const FVector2f Max = Size - FVector2f(Pull, Pull);
-		const float Radius = FMath::Max(MachineColors::ActiveTrackRadius - Pull, 0.f);
-		if (Max.X <= Min.X || Max.Y <= Min.Y)
+		const FVector2f Half = Size * 0.5f - FVector2f(Pull, Pull);
+		if (Half.X <= 0.f || Half.Y <= 0.f)
 		{
 			return LayerId;
 		}
-		auto IsInside = [&](const FVector2f& Point)
+		const FVector2f Middle = Size * 0.5f;
+		const float Radius = FMath::Clamp(MachineColors::ActiveTrackRadius - Pull, 0.f, FMath::Min(Half.X, Half.Y));
+		auto Distance = [&](const FVector2f& Point)
 		{
-			if (Point.X < Min.X || Point.Y < Min.Y || Point.X > Max.X || Point.Y > Max.Y)
-			{
-				return false;
-			}
-			const FVector2f Nearest(
-				FMath::Clamp(Point.X, Min.X + Radius, Max.X - Radius),
-				FMath::Clamp(Point.Y, Min.Y + Radius, Max.Y - Radius));
-			return FVector2f::DistSquared(Point, Nearest) <= Radius * Radius;
+			const FVector2f Q(FMath::Abs(Point.X - Middle.X) - (Half.X - Radius), FMath::Abs(Point.Y - Middle.Y) - (Half.Y - Radius));
+			const FVector2f Outside(FMath::Max(Q.X, 0.f), FMath::Max(Q.Y, 0.f));
+			return Outside.Size() + FMath::Min(FMath::Max(Q.X, Q.Y), 0.f) - Radius;
 		};
 
 		// Each band a line up to the right through (CenterX, middle), drawn antialiased - so it glides a fraction of a pixel a
-		// frame rather than stepping a whole one - from where it enters the outline to where it leaves it (one stretch: the
-		// outline is convex).
+		// frame rather than stepping a whole one - from exactly where it enters the outline to where it leaves it. The outline
+		// is convex, so along a band its distance dips once: its lowest point is found, then each edge either side of it. A
+		// band only grazing a corner is short - it fades with its length, rather than popping out.
 		const FVector2f Along(UE_INV_SQRT_2, -UE_INV_SQRT_2);
-		const float Reach = (Size.X + Size.Y);
+		const float Reach = Size.X + Size.Y;
 		const float Scroll = static_cast<float>(FMath::Fmod(Clock.Get() * static_cast<double>(MachineColors::ActiveTrackStripeSpeed), static_cast<double>(Spacing)));
 		const float MiddleY = Size.Y * 0.5f;
 		const float FirstX = -FMath::CeilToFloat(MiddleY / Spacing + 1.f) * Spacing + Scroll;
@@ -1899,21 +1896,26 @@ public:
 		for (float CenterX = FirstX; CenterX < LastX; CenterX += Spacing)
 		{
 			const FVector2f Center(CenterX, MiddleY);
+			auto DistanceAt = [&](float At) { return Distance(Center + Along * At); };
 
-			// A point of the band inside the outline, if it has one.
-			constexpr int32 Samples = 24;
-			float InsideAt = 0.f;
-			bool bAny = false;
-			for (int32 Sample = 0; Sample <= Samples && !bAny; ++Sample)
+			// The deepest point along it.
+			float Low = -Reach;
+			float High = Reach;
+			for (int32 Step = 0; Step < 40; ++Step)
 			{
-				const float At = -Reach + 2.f * Reach * Sample / Samples;
-				if (IsInside(Center + Along * At))
+				const float A = Low + (High - Low) / 3.f;
+				const float B = High - (High - Low) / 3.f;
+				if (DistanceAt(A) < DistanceAt(B))
 				{
-					InsideAt = At;
-					bAny = true;
+					High = B;
+				}
+				else
+				{
+					Low = A;
 				}
 			}
-			if (!bAny)
+			const float Deepest = (Low + High) * 0.5f;
+			if (DistanceAt(Deepest) >= 0.f)
 			{
 				continue;
 			}
@@ -1921,22 +1923,27 @@ public:
 			// Out from it each way to the outline.
 			auto Edge = [&](float Outside)
 			{
-				float In = InsideAt;
+				float In = Deepest;
 				float Out = Outside;
-				for (int32 Step = 0; Step < 14; ++Step)
+				for (int32 Step = 0; Step < 20; ++Step)
 				{
 					const float Mid = (In + Out) * 0.5f;
-					(IsInside(Center + Along * Mid) ? In : Out) = Mid;
+					(DistanceAt(Mid) < 0.f ? In : Out) = Mid;
 				}
 				return In;
 			};
-			Points[0] = Center + Along * Edge(-Reach);
-			Points[1] = Center + Along * Edge(Reach);
-			if (FVector2f::DistSquared(Points[0], Points[1]) < 1.f)
+			const float Start = Edge(-Reach);
+			const float End = Edge(Reach);
+			const float Length = End - Start;
+			if (Length <= KINDA_SMALL_NUMBER)
 			{
 				continue;
 			}
-			FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None, Color, /*bAntialias=*/true, Width);
+			Points[0] = Center + Along * Start;
+			Points[1] = Center + Along * End;
+			const float Fade = FMath::Clamp(Length / (Width * 3.f), 0.f, 1.f);
+			FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None,
+				Color.CopyWithNewOpacity(Color.A * Fade), /*bAntialias=*/true, FMath::Min(Width, FMath::Max(Length, 1.f)));
 		}
 		return LayerId + 1;
 	}

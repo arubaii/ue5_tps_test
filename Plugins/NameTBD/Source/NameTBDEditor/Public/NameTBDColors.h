@@ -541,21 +541,22 @@ namespace NameTBD
 
 			// -------------------------------------------------------------------------------------------------
 			// Wires - Blueprint splines from state to state.
-			//   WireActive: the wire of the transition being taken, brighter and a touch thicker; WireBubble: the dots that run
-			//     along it, as they run along a wire in Blueprint simulation. WireBubbleSize / WireBubbleSpacing / WireBubbleSpeed:
+			//   WireActive: the wire of the transition being taken - the dots' own orange, and thicker (WireActiveThickness);
+			//     WireBubble: the dots that run along it, as they run along a wire in Blueprint simulation - bigger than the wire
+			//     is thick, so they read as beads on it. WireBubbleSize / WireBubbleSpacing / WireBubbleSpeed:
 			//     their size, how far apart they run and how fast, in graph units (and per second). WireLinger: seconds the effect
 			//     fades out over once the transition is done, so a short blend is still seen to run.
 			//   WireThickness / WireActiveThickness: in graph units.
 			// -------------------------------------------------------------------------------------------------
 
-			inline const FLinearColor WireActive(0.98f, 0.98f, 1.00f, 1.0f);
+			inline const FLinearColor WireActive(AnimationOrange_Hovered);
 			inline const FLinearColor WireBubble(AnimationOrange_Hovered);
-			inline constexpr float WireBubbleSize = 8.0f;
+			inline constexpr float WireBubbleSize = 9.0f;
 			inline constexpr float WireBubbleSpacing = 32.0f;
 			inline constexpr float WireBubbleSpeed = 90.0f;
 			inline constexpr float WireLinger = 0.8f;
 			inline constexpr float WireThickness = 1.5f;
-			inline constexpr float WireActiveThickness = 2.5f;
+			inline constexpr float WireActiveThickness = 4.0f;
 
 			// -------------------------------------------------------------------------------------------------
 			// The transition node - the Animation Blueprint's round transition node, tinted by how it blends:

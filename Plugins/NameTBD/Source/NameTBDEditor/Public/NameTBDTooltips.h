@@ -1811,6 +1811,12 @@ namespace NameTBD::Tooltips
 				"Preview In Designer: plays the machine in the designer, driven by the Inputs panel - on its Preview Targets, or on the widgets whose Widget Animation Component plays it (see Preview, on the left).");
 		}
 
+		inline FText JumpToActiveTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "JumpToActiveTooltip",
+				"Jump to Active State: brings the state the watched widget is in into view - switching to its layer if the shown one isn't in a state.");
+		}
+
 		inline FText PreviewPauseTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewPauseTooltip",

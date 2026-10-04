@@ -418,6 +418,18 @@ private:
 	TSharedRef<SWidget> MakeAddStateMenu();
 	FText GetPreviewStatus() const;
 	FText GetDebugLabel() const;
+
+	/**
+	 * The layer and state the watched widget is in: the shown layer's, if it is in one, else the first layer's that is. False
+	 * when nothing is watched.
+	 */
+	bool FindActiveState(int32& OutLayer, FGuid& OutState) const;
+
+	/** "Jump to Active State (Hovered)" - what the toolbar button reads. */
+	FText GetJumpToActiveLabel() const;
+
+	/** Shows the active state's layer and brings its state into view. */
+	void JumpToActiveState();
 	void CreateNewMachine();
 	void SaveMachine();
 
