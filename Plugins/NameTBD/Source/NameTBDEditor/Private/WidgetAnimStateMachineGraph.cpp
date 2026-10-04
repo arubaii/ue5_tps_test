@@ -1001,6 +1001,29 @@ namespace WidgetAnimMachineWires
 		return Point;
 	}
 
+	FVector2f GetSideToward(const FBox2f& Box, const FVector2f& Side, const FVector2f& Toward)
+	{
+		FVector2f Point = GetSideMiddle(Box, Side);
+		if (Side.X != 0.f && Side.Y != 0.f)
+		{
+			return Point;
+		}
+		// Slid along the side to level with Toward, clear of the corners - the middle when the side is too short for that.
+		auto Slide = [](float Min, float Max, float Wanted, float Middle)
+		{
+			return Max - Min > SideInset * 2.f ? FMath::Clamp(Wanted, Min + SideInset, Max - SideInset) : Middle;
+		};
+		if (Side.X != 0.f)
+		{
+			Point.Y = Slide(Box.Min.Y, Box.Max.Y, Toward.Y, Point.Y);
+		}
+		else
+		{
+			Point.X = Slide(Box.Min.X, Box.Max.X, Toward.X, Point.X);
+		}
+		return Point;
+	}
+
 	FVector2f GetPlacementAnchor(const FBox2f& First, const FBox2f& Second)
 	{
 		return (First.Min + Second.Min) * 0.5f;
@@ -1043,11 +1066,15 @@ namespace WidgetAnimMachineWires
 		const FVector2f FromSide = GetFacingSide(From, Points[0]);
 		const FVector2f ToSide = GetFacingSide(To, Points.Last());
 
+		// Through reroute points: sharp - straight lines from point to point, out of a state level with the point next to it.
+		// Through only a dragged transition node: one smooth curve through it, as ever.
+		const bool bSharp = Reroutes.Num() > 0;
+
 		// Every point of the wire, ends and all, and which way it runs at each.
 		TArray<FVector2f, TInlineAllocator<10>> Full;
-		Full.Add(GetSideMiddle(From, FromSide));
+		Full.Add(bSharp ? GetSideToward(From, FromSide, Points[0]) : GetSideMiddle(From, FromSide));
 		Full.Append(Points);
-		Full.Add(GetSideMiddle(To, ToSide));
+		Full.Add(bSharp ? GetSideToward(To, ToSide, Points.Last()) : GetSideMiddle(To, ToSide));
 		TArray<FVector2f, TInlineAllocator<10>> Directions;
 		Directions.SetNumZeroed(Full.Num());
 		for (int32 Index = 1; Index < Full.Num() - 1; ++Index)
@@ -1069,8 +1096,17 @@ namespace WidgetAnimMachineWires
 			Segment.End = Full[Index + 1];
 			// Out of a state and into one as a Blueprint wire leaves and enters its pins; through a point at the pace of the
 			// curve on either side of it, so the two meet smoothly.
-			Segment.StartTangent = Index == 0 ? FromSide.GetSafeNormal() * FMath::Max(Length, 36.f) : Directions[Index] * Length;
-			Segment.EndTangent = Index == Full.Num() - 2 ? -ToSide.GetSafeNormal() * FMath::Max(Length, 36.f) : Directions[Index + 1] * Length;
+			if (bSharp)
+			{
+				// A straight line: a Hermite curve whose tangents are both the line itself.
+				Segment.StartTangent = Segment.End - Segment.Start;
+				Segment.EndTangent = Segment.End - Segment.Start;
+			}
+			else
+			{
+				Segment.StartTangent = Index == 0 ? FromSide.GetSafeNormal() * FMath::Max(Length, 36.f) : Directions[Index] * Length;
+				Segment.EndTangent = Index == Full.Num() - 2 ? -ToSide.GetSafeNormal() * FMath::Max(Length, 36.f) : Directions[Index + 1] * Length;
+			}
 			Segment.ReroutesBefore = ReroutesSoFar;
 			if (IsReroute.IsValidIndex(Index) && IsReroute[Index])
 			{
@@ -1081,10 +1117,11 @@ namespace WidgetAnimMachineWires
 		const int32 Count = Wire.Segments.Num();
 		if (NodeIndex != INDEX_NONE)
 		{
-			// The dragged node: where the curve into it ends.
+			// The dragged node: where the curve into it ends. On a sharp wire it points along the line out of it.
 			Wire.NodeT = static_cast<float>(NodeIndex + 1) / Count;
 			Wire.NodePoint = *NodePoint;
-			Wire.NodeDirection = Directions[NodeIndex + 1];
+			const FVector2f Out = (Full[NodeIndex + 2] - Full[NodeIndex + 1]).GetSafeNormal();
+			Wire.NodeDirection = bSharp && !Out.IsNearlyZero() ? Out : Directions[NodeIndex + 1];
 			return Wire;
 		}
 

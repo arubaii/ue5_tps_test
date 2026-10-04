@@ -2604,6 +2604,40 @@ namespace
 		}
 	}
 
+	/**
+	 * Lines Point up with Neighbour - a point, or a state's box - on whichever axis they already nearly share: the same height
+	 * when they lie side by side, the same X when one is above the other. Each axis once: bInOutX / bInOutY say it is done, so
+	 * a second neighbour only lines it up the other way. Beside a state, a point already level with some part of its side
+	 * (clear of its corners) is left as it is - a straight wire leaves the side right there.
+	 */
+	void LevelRoutePoint(FVector2f& Point, const FVector2f& Neighbour, const FBox2f* NeighbourBox, bool& bInOutX, bool& bInOutY)
+	{
+		const FVector2f Delta = Point - Neighbour;
+		auto AlongSide = [](float Value, float Min, float Max)
+		{
+			return Max - Min > WidgetAnimMachineWires::SideInset * 2.f && Value >= Min + WidgetAnimMachineWires::SideInset && Value <= Max - WidgetAnimMachineWires::SideInset;
+		};
+		if (FMath::Abs(Delta.X) >= FMath::Abs(Delta.Y))
+		{
+			if (!bInOutY)
+			{
+				if (!NeighbourBox || !AlongSide(Point.Y, NeighbourBox->Min.Y, NeighbourBox->Max.Y))
+				{
+					Point.Y = Neighbour.Y;
+				}
+				bInOutY = true;
+			}
+		}
+		else if (!bInOutX)
+		{
+			if (!NeighbourBox || !AlongSide(Point.X, NeighbourBox->Min.X, NeighbourBox->Max.X))
+			{
+				Point.X = Neighbour.X;
+			}
+			bInOutX = true;
+		}
+	}
+
 	/** Whether Box would land on any state but Except. */
 	bool LandsOnOther(const TArray<FArrangeState>& All, int32 Except, const FBox2f& Box)
 	{
@@ -2644,9 +2678,11 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 		}
 		WidgetAnimMachineEdits::PlaceTransitions(Machine, ShownLayer, Reset);
 
-		// Selected reroute points are leveled with the point before them on their wire - the one before, or the state the wire
-		// leaves - across from it or above or below it, whichever way it already lies, so the wire between runs straight.
-		// First to last along each wire, so a run of them lines up.
+		// Selected reroute points are lined up with the points either side of them on their wire - the reroute point before
+		// or after, or the state the wire leaves or goes into - so the straight lines between run straight across or straight
+		// up and down. Level with the one before it first, across or above or below whichever way it already lies; then, the
+		// other way, with the one after it - a corner of the route. Beside a state, a point already level with some part of
+		// its side stays: the wire leaves the side right there. First to last along each wire, so a run of them lines up.
 		TArray<UWidgetAnimMachineRerouteNode*> Reroutes;
 		for (UObject* SelectedNode : Editor->GetSelectedNodes())
 		{
@@ -2668,19 +2704,35 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 			FBox2f FirstBox;
 			FBox2f SecondBox;
 			FBox2f FromBox;
+			FBox2f ToBox;
 			if (!GetNodeBox(Editor, Graph->FindStateNode(FirstId), FirstBox) || !GetNodeBox(Editor, Graph->FindStateNode(SecondId), SecondBox)
-				|| !GetNodeBox(Editor, Graph->FindStateNode(TransitionNode->FromId), FromBox))
+				|| !GetNodeBox(Editor, Graph->FindStateNode(TransitionNode->FromId), FromBox) || !GetNodeBox(Editor, Graph->FindStateNode(TransitionNode->ToId), ToBox))
 			{
 				continue;
 			}
 			const FVector2f Anchor = WidgetAnimMachineWires::GetPlacementAnchor(FirstBox, SecondBox);
 			TArray<FVector2f>& Offsets = TransitionNode->RerouteOffsets;
 			const int32 Index = RerouteNode->RerouteIndex;
-			const FVector2f Before = Index > 0 ? Anchor + Offsets[Index - 1] : FromBox.GetCenter();
-			const FVector2f Point = Anchor + Offsets[Index];
-			const FVector2f Delta = Point - Before;
-			const FVector2f Level = FMath::Abs(Delta.X) >= FMath::Abs(Delta.Y) ? FVector2f(Point.X, Before.Y) : FVector2f(Before.X, Point.Y);
-			Offsets[Index] = Level - Anchor;
+			FVector2f Point = Anchor + Offsets[Index];
+			bool bLeveledX = false;
+			bool bLeveledY = false;
+			if (Index > 0)
+			{
+				LevelRoutePoint(Point, Anchor + Offsets[Index - 1], nullptr, bLeveledX, bLeveledY);
+			}
+			else
+			{
+				LevelRoutePoint(Point, FromBox.GetCenter(), &FromBox, bLeveledX, bLeveledY);
+			}
+			if (Index < Offsets.Num() - 1)
+			{
+				LevelRoutePoint(Point, Anchor + Offsets[Index + 1], nullptr, bLeveledX, bLeveledY);
+			}
+			else
+			{
+				LevelRoutePoint(Point, ToBox.GetCenter(), &ToBox, bLeveledX, bLeveledY);
+			}
+			Offsets[Index] = Point - Anchor;
 
 			TArray<FVector2D>& Points = Leveled.FindOrAdd(TransitionNode->TransitionId);
 			Points.Reset();
@@ -2713,7 +2765,8 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 		const FGuid Own = All[Selected[0]].Node->StateId;
 		for (const FWidgetAnimMachineTransition& Transition : Layer->Transitions)
 		{
-			const FGuid Other = Transition.From == Own ? Transition.To : (Transition.To == Own ? Transition.From : FGuid());
+			// A wire routed through reroute points doesn't run between the two: its state lines up with its points instead (below).
+			const FGuid Other = Transition.EditorReroutePoints.Num() > 0 ? FGuid() : (Transition.From == Own ? Transition.To : (Transition.To == Own ? Transition.From : FGuid()));
 			const int32 OtherIndex = Other.IsValid() ? IndexOf(Other) : INDEX_NONE;
 			if (OtherIndex != INDEX_NONE)
 			{
@@ -2730,12 +2783,11 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 				BestCount = Entry.Value;
 			}
 		}
-		if (Best == INDEX_NONE)
+		if (Best != INDEX_NONE)
 		{
-			return;
+			Selected.Insert(Best, 0);
+			Fixed.Add(Best);
 		}
-		Selected.Insert(Best, 0);
-		Fixed.Add(Best);
 	}
 
 	// The wires between the selected states, each pair once.
@@ -2744,7 +2796,7 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 	{
 		const int32 From = IndexOf(Transition.From);
 		const int32 To = IndexOf(Transition.To);
-		if (From == INDEX_NONE || To == INDEX_NONE || !Selected.Contains(From) || !Selected.Contains(To))
+		if (From == INDEX_NONE || To == INDEX_NONE || !Selected.Contains(From) || !Selected.Contains(To) || Transition.EditorReroutePoints.Num() > 0)
 		{
 			continue;
 		}
@@ -2849,6 +2901,81 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 			}
 		}
 	}
+
+	// A selected state with no straight wire to the others but a routed one: lined up with the reroute point next to it on that
+	// wire - across from it or above or below it, whichever way it lies - so the wire leaves it straight. Not if it would land
+	// on another state, nor if it already lines up.
+	auto AnchorOf = [&All, &IndexOf](const FWidgetAnimMachineTransition& Transition, bool bOriginal, FVector2f& OutAnchor)
+	{
+		const bool bFromFirst = Transition.From < Transition.To;
+		const int32 First = IndexOf(bFromFirst ? Transition.From : Transition.To);
+		const int32 Second = IndexOf(bFromFirst ? Transition.To : Transition.From);
+		if (First == INDEX_NONE || Second == INDEX_NONE)
+		{
+			return false;
+		}
+		OutAnchor = bOriginal
+			? WidgetAnimMachineWires::GetPlacementAnchor(All[First].Original, All[Second].Original)
+			: WidgetAnimMachineWires::GetPlacementAnchor(All[First].Box, All[Second].Box);
+		return true;
+	};
+	for (const int32 StateIndex : Selected)
+	{
+		if (Fixed.Contains(StateIndex) || Links.Contains(StateIndex))
+		{
+			continue;
+		}
+		const FGuid StateId = All[StateIndex].Node->StateId;
+		const FWidgetAnimMachineTransition* Routed = Layer->Transitions.FindByPredicate([&StateId](const FWidgetAnimMachineTransition& Transition)
+		{
+			return Transition.EditorReroutePoints.Num() > 0 && (Transition.From == StateId || Transition.To == StateId) && Transition.From != Transition.To;
+		});
+		const UWidgetAnimMachineTransitionNode* RoutedNode = Routed ? Graph->FindTransitionNode(Routed->Id) : nullptr;
+		FVector2f RouteAnchor;
+		if (!RoutedNode || RoutedNode->RerouteOffsets.Num() == 0 || !AnchorOf(*Routed, /*bOriginal=*/true, RouteAnchor))
+		{
+			continue;
+		}
+		const FVector2f Knot = RouteAnchor + (Routed->From == StateId ? RoutedNode->RerouteOffsets[0] : RoutedNode->RerouteOffsets.Last());
+		FVector2f Center = All[StateIndex].Box.GetCenter();
+		bool bLeveledX = false;
+		bool bLeveledY = false;
+		const FVector2f Before = Center;
+		LevelRoutePoint(Center, Knot, nullptr, bLeveledX, bLeveledY);
+		// Already level with some part of its side: the wire leaves it straight as it is.
+		const FBox2f& Box = All[StateIndex].Box;
+		if ((bLeveledY && Knot.Y >= Box.Min.Y + WidgetAnimMachineWires::SideInset && Knot.Y <= Box.Max.Y - WidgetAnimMachineWires::SideInset)
+			|| (bLeveledX && Knot.X >= Box.Min.X + WidgetAnimMachineWires::SideInset && Knot.X <= Box.Max.X - WidgetAnimMachineWires::SideInset))
+		{
+			continue;
+		}
+		const FBox2f Candidate = ShiftBox(Box, Center - Before);
+		if (!LandsOnOther(All, StateIndex, Candidate))
+		{
+			All[StateIndex].Box = Candidate;
+		}
+	}
+
+	// Reroute points stay where they are while their states move: they are kept from halfway between the two states, so each
+	// is moved back by what that halfway point moved - the routes Q has just made straight stay straight.
+	TMap<FGuid, TArray<FVector2D>> Kept;
+	for (const FWidgetAnimMachineTransition& Transition : Layer->Transitions)
+	{
+		UWidgetAnimMachineTransitionNode* TransitionNode = Transition.EditorReroutePoints.Num() > 0 ? Graph->FindTransitionNode(Transition.Id) : nullptr;
+		FVector2f Before;
+		FVector2f After;
+		if (!TransitionNode || !AnchorOf(Transition, /*bOriginal=*/true, Before) || !AnchorOf(Transition, /*bOriginal=*/false, After) || Before.Equals(After, 0.25f))
+		{
+			continue;
+		}
+		TArray<FVector2D>& Points = Kept.Add(Transition.Id);
+		for (FVector2f& Offset : TransitionNode->RerouteOffsets)
+		{
+			Offset += Before - After;
+			Points.Add(FVector2D(Offset));
+		}
+	}
+	WidgetAnimMachineEdits::MoveReroutes(Machine, ShownLayer, Kept);
 
 	// Into the machine, and the graph.
 	TMap<FGuid, FVector2D> Positions;
