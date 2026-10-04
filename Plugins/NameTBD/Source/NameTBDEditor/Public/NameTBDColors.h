@@ -610,16 +610,22 @@ namespace NameTBD
 			inline constexpr float ActiveTrackLeavingOpacity = 0.5f;
 			inline constexpr float ActiveTrackRadius = 10.0f;
 
-			// The glow round the state in play: ActiveRing, a line ActiveRingWidth thick, ActiveRingGap outside the node's edge,
-			// with two fainter, wider ones further out (ActiveRingHaloOpacity). It pulses between ActiveRingMin and
-			// ActiveRingMax every ActiveRingPeriod seconds; the state being left shows it steady at ActiveRingLeaving.
+			// The glow round the state in play: ActiveRing, a line ActiveRingWidth thick laid on the node's dark rim
+			// (ActiveRingInset: its middle that far in from the node's edge - negative is inside), following the edge's
+			// rounded corners (ActiveRingRadius, measured off the state body brush), and a soft glow fading out from it over
+			// ActiveRingHaloReach in ActiveRingHaloSteps thin lines, ActiveRingHaloOpacity at its brightest. It breathes
+			// between ActiveRingMin and ActiveRingMax every ActiveRingPeriod seconds; the state being left shows it steady at
+			// ActiveRingLeaving.
 			inline const FLinearColor ActiveRing(AnimationOrange_Normal);
 			inline constexpr float ActiveRingWidth = 2.0f;
-			inline constexpr float ActiveRingGap = 2.0f;
-			inline constexpr float ActiveRingHaloOpacity = 0.30f;
-			inline constexpr float ActiveRingMin = 0.40f;
-			inline constexpr float ActiveRingMax = 0.90f;
-			inline constexpr float ActiveRingPeriod = 1.5f;
+			inline constexpr float ActiveRingInset = -1.25f;
+			inline constexpr float ActiveRingRadius = 12.0f;
+			inline constexpr float ActiveRingHaloReach = 6.0f;
+			inline constexpr int32 ActiveRingHaloSteps = 6;
+			inline constexpr float ActiveRingHaloOpacity = 0.35f;
+			inline constexpr float ActiveRingMin = 0.55f;
+			inline constexpr float ActiveRingMax = 1.0f;
+			inline constexpr float ActiveRingPeriod = 3.0f;
 			inline constexpr float ActiveRingLeaving = 0.45f;
 
 			// A state's middle while its animation's progress fills it: square-cornered, near black - the rounded one's dark.

@@ -1955,8 +1955,8 @@ private:
 };
 
 /**
- * A soft glow round the state the watched widget is in: a thin bright line just outside its rounded edge, with fainter, wider
- * ones further out - so which state is in play shows at a glance, even zoomed out. Drawn outside what it sits on; the node's
+ * A soft glow round the state the watched widget is in: a bright line laid on its rounded edge, fading out smoothly beyond it -
+ * so which state is in play shows at a glance, even zoomed out. Drawn outside what it sits on; the node's
  * own colors untouched. Never takes the mouse.
  */
 class SWidgetAnimMachineActiveRing : public SLeafWidget
@@ -1993,19 +1993,25 @@ public:
 
 		// Each line the node's rounded outline pushed out by its offset - corners as arcs - drawn antialiased as one closed
 		// path, so its color is exactly what is asked (a rounded box brush's outline isn't tinted).
-		const float NodeRadius = FMath::Min(MachineColors::ActiveTrackRadius, FMath::Min(Size.X, Size.Y) * 0.5f);
+		// The node's own outline: its edge - the dark rim its body brush draws - and that edge's corner radius.
+		const float NodeRadius = FMath::Min(MachineColors::ActiveRingRadius, FMath::Min(Size.X, Size.Y) * 0.5f);
 		const FLinearColor Base = MachineColors::ActiveRing * InWidgetStyle.GetColorAndOpacityTint();
 		TArray<FVector2f> Points;
 		struct FLine { float Offset; float Thickness; float Opacity; };
-		const FLine Lines[] =
+
+		// The glow: thin lines one after another out from the edge, each fainter - overlapping, they fade smoothly out
+		// rather than in bands. Then the bright line itself, on the node's dark rim, so the glow hugs the node.
+		TArray<FLine, TInlineAllocator<12>> Lines;
+		const int32 HaloSteps = FMath::Max(MachineColors::ActiveRingHaloSteps, 1);
+		for (int32 Step = HaloSteps; Step >= 1; --Step)
 		{
-			{ MachineColors::ActiveRingGap + MachineColors::ActiveRingWidth * 2.5f, MachineColors::ActiveRingWidth * 2.f, MachineColors::ActiveRingHaloOpacity * 0.45f },
-			{ MachineColors::ActiveRingGap + MachineColors::ActiveRingWidth * 1.25f, MachineColors::ActiveRingWidth * 1.5f, MachineColors::ActiveRingHaloOpacity },
-			{ MachineColors::ActiveRingGap, MachineColors::ActiveRingWidth, 1.f },
-		};
+			const float Out = static_cast<float>(Step) / HaloSteps;
+			Lines.Add({ MachineColors::ActiveRingHaloReach * Out, MachineColors::ActiveRingHaloReach / HaloSteps + 0.75f, MachineColors::ActiveRingHaloOpacity * FMath::Square(1.f - Out + 1.f / HaloSteps) });
+		}
+		Lines.Add({ MachineColors::ActiveRingInset, MachineColors::ActiveRingWidth, 1.f });
 		for (const FLine& Line : Lines)
 		{
-			const float Radius = NodeRadius + Line.Offset;
+			const float Radius = FMath::Max(NodeRadius + Line.Offset, 0.5f);
 			const FVector2f Min(-Line.Offset, -Line.Offset);
 			const FVector2f Max = Size + FVector2f(Line.Offset, Line.Offset);
 			const FVector2f Centers[] =
