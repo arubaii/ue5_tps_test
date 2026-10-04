@@ -633,8 +633,8 @@ namespace NameTBD
 			inline const FLinearColor StateTitleSharp(0.010f, 0.010f, 0.011f, 1.0f);
 			inline const FLinearColor StateSelected(1.0f, 1.0f, 1.0f, 0.85f);
 
-			// A selected state's outline, on its own rounded edge: the graph editor's selection orange, and how thick it is
-			// drawn outside the glow line of a selected state in play (on its own it is as thick as that line).
+			// A selected state's outline while it glows (in play), drawn on its own rounded edge just outside the glow line: the
+			// graph editor's selection orange, and how thick. A selected state not in play keeps the editor's own selection glow.
 			inline const FLinearColor StateSelectedOutline = FLinearColor(FColor(242, 177, 0));
 			inline constexpr float StateSelectedOutlineWidth = 2.5f;
 
