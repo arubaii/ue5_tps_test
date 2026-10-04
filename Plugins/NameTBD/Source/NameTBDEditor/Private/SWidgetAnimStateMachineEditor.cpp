@@ -61,6 +61,7 @@
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Notifications/SProgressBar.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SSearchBox.h"
@@ -843,6 +844,7 @@ namespace
 		{
 		case EWidgetAnimMachineInputType::Number:  return LOCTEXT("NumberType", "Number");
 		case EWidgetAnimMachineInputType::Trigger: return LOCTEXT("TriggerType", "Trigger");
+		case EWidgetAnimMachineInputType::Hold:    return LOCTEXT("HoldType", "Hold");
 		default:                                    return LOCTEXT("BoolType", "Bool");
 		}
 	}
@@ -853,6 +855,7 @@ namespace
 		{
 		case EWidgetAnimMachineInputType::Number:  return MachineColors::InputNumber;
 		case EWidgetAnimMachineInputType::Trigger: return MachineColors::InputTrigger;
+		case EWidgetAnimMachineInputType::Hold:    return MachineColors::InputHold;
 		default:                                    return MachineColors::InputBool;
 		}
 	}
@@ -1315,7 +1318,9 @@ void SWidgetAnimStateMachineEditor::SetMachine(UWidgetAnimStateMachineAsset* InM
 		Machine->Normalize();
 		for (const FWidgetAnimMachineInput& Input : Machine->Inputs)
 		{
-			InputValues.Add(Input.Name, Input.Type == EWidgetAnimMachineInputType::Number ? Input.DefaultNumber : (Input.bDefaultBool ? 1.f : 0.f));
+			// A Press And Hold starts let go, whatever a Default left from when it was a Bool says.
+			InputValues.Add(Input.Name, Input.Type == EWidgetAnimMachineInputType::Hold ? 0.f
+				: Input.Type == EWidgetAnimMachineInputType::Number ? Input.DefaultNumber : (Input.bDefaultBool ? 1.f : 0.f));
 		}
 		ShowLayer(0);
 	}
@@ -1588,7 +1593,7 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 		.OnGetMenuContent_Lambda([this]()
 		{
 			FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
-			for (const EWidgetAnimMachineInputType Type : { EWidgetAnimMachineInputType::Bool, EWidgetAnimMachineInputType::Number, EWidgetAnimMachineInputType::Trigger })
+			for (const EWidgetAnimMachineInputType Type : { EWidgetAnimMachineInputType::Bool, EWidgetAnimMachineInputType::Number, EWidgetAnimMachineInputType::Trigger, EWidgetAnimMachineInputType::Hold })
 			{
 				Menu.AddMenuEntry(
 					GetTypeLabel(Type),
@@ -1642,6 +1647,36 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 				.Text(LOCTEXT("Fire", "Fire"))
 				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::FireTooltip()))
 				.OnClicked_Lambda([this, Name]() { FireInput(Name); return FReply::Handled(); });
+			break;
+		case EWidgetAnimMachineInputType::Hold:
+			// Held while the mouse is down on it - let go early and the hold doesn't complete - filling as it is held.
+			Control = SNew(SButton)
+				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::HoldButtonTooltip()))
+				.ContentPadding(FMargin(0.f))
+				.OnPressed_Lambda([this, Name]() { SetInputValue(Name, 1.f); })
+				.OnReleased_Lambda([this, Name]() { SetInputValue(Name, 0.f); })
+				[
+					SNew(SBox)
+					.WidthOverride(56.f)
+					[
+						SNew(SOverlay)
+						+ SOverlay::Slot()
+						[
+							SNew(SProgressBar)
+							.Percent_Lambda([this, Name]() { return TOptional<float>(GetShownHoldProgress(Name)); })
+							.FillColorAndOpacity(FSlateColor(MachineColors::InputHold))
+							.BackgroundImage(FAppStyle::GetNoBrush())
+						]
+						+ SOverlay::Slot()
+						.HAlign(HAlign_Center)
+						.VAlign(VAlign_Center)
+						.Padding(FMargin(4.f, 2.f))
+						[
+							SNew(STextBlock)
+							.Text(LOCTEXT("HoldButton", "Hold"))
+						]
+					]
+				];
 			break;
 		default:
 			Control = SNew(SCheckBox)
@@ -3515,6 +3550,19 @@ bool SWidgetAnimStateMachineEditor::IsGraphAnimating() const
 		return true;
 	}
 
+	// A Press And Hold filling: its Hold button in the Inputs panel fills with it.
+	if (Machine)
+	{
+		for (const FWidgetAnimMachineInput& Input : Machine->Inputs)
+		{
+			const float Progress = Input.Type == EWidgetAnimMachineInputType::Hold ? GetShownHoldProgress(Input.Name) : 0.f;
+			if (Progress > 0.f && Progress < 1.f)
+			{
+				return true;
+			}
+		}
+	}
+
 	// A wire's dots fading out after its transition.
 	const UWidgetAnimMachineGraph* Graph = Graphs.IsValidIndex(ShownLayer) ? Graphs[ShownLayer].Get() : nullptr;
 	if (Graph)
@@ -4004,7 +4052,35 @@ float SWidgetAnimStateMachineEditor::GetShownInputValue(FName Input) const
 		return *Value;
 	}
 	const FWidgetAnimMachineInput* Definition = Machine ? Machine->FindInput(Input) : nullptr;
-	return Definition ? (Definition->Type == EWidgetAnimMachineInputType::Number ? Definition->DefaultNumber : (Definition->bDefaultBool ? 1.f : 0.f)) : 0.f;
+	if (!Definition || Definition->Type == EWidgetAnimMachineInputType::Hold)
+	{
+		return 0.f;
+	}
+	return Definition->Type == EWidgetAnimMachineInputType::Number ? Definition->DefaultNumber : (Definition->bDefaultBool ? 1.f : 0.f);
+}
+
+float SWidgetAnimStateMachineEditor::GetShownHoldProgress(FName Input) const
+{
+	// How far through its Hold Time a Press And Hold is, in whatever is playing the machine: the watched widget in Play In
+	// Editor, else the designer's preview.
+	if (IsDebuggingPlay())
+	{
+		const UWidgetAnimationComponent* Watched = GetWatchedComponent();
+		return Watched ? Watched->GetStateMachineNumber(Input, Machine) : 0.f;
+	}
+	float Progress = 0.f;
+	if (PreviewHost.IsValid() && PreviewHost->IsRunning() && WidgetAnimStateMachines::GetNumber(PreviewHost->GetInstance(), Input, Progress))
+	{
+		return Progress;
+	}
+	for (const TWeakObjectPtr<UWidgetAnimationComponent>& Weak : PreviewComponents)
+	{
+		if (const UWidgetAnimationComponent* Live = Weak.Get())
+		{
+			return Live->GetStateMachineNumber(Input, Machine);
+		}
+	}
+	return 0.f;
 }
 
 bool SWidgetAnimStateMachineEditor::GetShownBuiltInValue(FName Input) const

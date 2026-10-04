@@ -190,6 +190,22 @@ struct FWidgetAnimMachineInputState
 	/** The last value Source gave, for a Trigger's rising edge. */
 	float LastSample = 0.f;
 	bool bHasSample = false;
+
+	// A Press And Hold: bValue is "being held, not yet complete", Number how far through HoldTime, bFired the frame it
+	// completes - worked out each Tick from whether it is held down (see UpdateHolds in the .cpp).
+
+	/** How long it has to be held, and has been. */
+	float HoldTime = 1.f;
+	float HoldElapsed = 0.f;
+
+	/** Held down from Blueprint or the editor's Inputs panel (Set to true, let go with false) - on top of the widget's own press. */
+	bool bHoldSetDown = false;
+
+	/** Held down by Source, as last read. */
+	bool bHoldSourceDown = false;
+
+	/** Held all the way this press: it doesn't count again until it is let go. */
+	bool bHoldDone = false;
 };
 
 /** One state machine as a Widget Animation Component plays it. */

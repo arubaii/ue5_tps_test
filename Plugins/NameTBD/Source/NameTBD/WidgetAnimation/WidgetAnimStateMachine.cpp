@@ -213,6 +213,15 @@ bool UWidgetAnimStateMachineAsset::UsesInput(FName InputName) const
 		return false;
 	}
 
+	// A Press And Hold with nothing driving it is held by the widget's own pressed state.
+	if (InputName == WidgetAnimMachineInputs::Pressed && Inputs.ContainsByPredicate([](const FWidgetAnimMachineInput& Input)
+	{
+		return Input.Type == EWidgetAnimMachineInputType::Hold && !Input.Source.IsValid();
+	}))
+	{
+		return true;
+	}
+
 	for (const FWidgetAnimMachineLayer& Layer : Layers)
 	{
 		if (Layer.WeightInput == InputName)
@@ -486,7 +495,8 @@ TArray<FString> UWidgetAnimStateMachineAsset::GetNumberInputOptions() const
 	Options.Add(TEXT("None"));
 	for (const FWidgetAnimMachineInput& Input : Inputs)
 	{
-		if (Input.Type == EWidgetAnimMachineInputType::Number && !Input.Name.IsNone())
+		// A Press And Hold too: how far through its hold - a charge ring's fill.
+		if ((Input.Type == EWidgetAnimMachineInputType::Number || Input.Type == EWidgetAnimMachineInputType::Hold) && !Input.Name.IsNone())
 		{
 			Options.Add(Input.Name.ToString());
 		}
@@ -820,6 +830,7 @@ bool FWidgetAnimStateMachineEntry::SyncToMachine(const TArray<FString>* TargetOp
 				// Not overridden: the machine's own settings, so the row always shows what will be used.
 				Row.bDefaultBool = Input.bDefaultBool;
 				Row.DefaultNumber = Input.DefaultNumber;
+				Row.HoldTime = Input.HoldTime;
 				Row.Source = Input.Source;
 			}
 			Row.Input = Input.Name;
@@ -834,7 +845,7 @@ bool FWidgetAnimStateMachineEntry::SyncToMachine(const TArray<FString>* TargetOp
 			const FWidgetAnimMachineInputOverride& A = NewInputs[Index];
 			const FWidgetAnimMachineInputOverride& B = InputOverrides[Index];
 			if (A.Input != B.Input || A.Type != B.Type || A.bOverride != B.bOverride || A.bDefaultBool != B.bDefaultBool || A.DefaultNumber != B.DefaultNumber
-				|| A.MeasuredOnWidget != B.MeasuredOnWidget || !(A.Source == B.Source))
+				|| A.HoldTime != B.HoldTime || A.MeasuredOnWidget != B.MeasuredOnWidget || !(A.Source == B.Source))
 			{
 				return true;
 			}

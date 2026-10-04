@@ -2425,7 +2425,12 @@ void UWidgetAnimationComponent::InitializeMachines()
 		for (const FKeptInput& Entry : Kept)
 		{
 			FWidgetAnimMachineInputState* Input = Entry.Machine == Instance.Machine ? Instance.FindInput(Entry.Input.Name) : nullptr;
-			if (Input && Input->Type == Entry.Input.Type)
+			if (Input && Input->Type == EWidgetAnimMachineInputType::Hold && Entry.Input.Type == EWidgetAnimMachineInputType::Hold)
+			{
+				// A Press And Hold is timed again from whether it is held: only a hold set from Blueprint carries over.
+				Input->bHoldSetDown = Entry.Input.bHoldSetDown;
+			}
+			else if (Input && Input->Type == Entry.Input.Type)
 			{
 				Input->bValue = Entry.Input.bValue;
 				Input->Number = Entry.Input.Number;

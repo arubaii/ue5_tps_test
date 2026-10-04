@@ -516,6 +516,11 @@ namespace WidgetAnimStateMachines
 				OutTruthy = Input->bFired;
 				OutNumber = Input->bFired ? 1.f : 0.f;
 				break;
+			case EWidgetAnimMachineInputType::Hold:
+				// Truthy while being held toward its Hold Time; as a number, how far through it.
+				OutTruthy = Input->bValue;
+				OutNumber = Input->Number;
+				break;
 			default:
 				OutNumber = Input->Number;
 				OutTruthy = !FMath::IsNearlyZero(Input->Number);
@@ -526,6 +531,23 @@ namespace WidgetAnimStateMachines
 
 		bool EvaluateCondition(const FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineCondition& Condition)
 		{
+			// A Press And Hold: Fired the frame it completes; Is False while it isn't held - but never that frame, so the way
+			// back from the state it held is never taken as the hold completes, whatever order the two transitions are in.
+			if (const FWidgetAnimMachineInputState* Hold = Instance.FindInput(Condition.Input))
+			{
+				if (Hold->Type == EWidgetAnimMachineInputType::Hold)
+				{
+					if (Condition.Compare == EWidgetAnimMachineCompare::Fired)
+					{
+						return Hold->bFired;
+					}
+					if (Condition.Compare == EWidgetAnimMachineCompare::IsFalse)
+					{
+						return !Hold->bValue && !Hold->bFired;
+					}
+				}
+			}
+
 			float Number = 0.f;
 			bool bTruthy = false;
 			if (!ReadAsNumber(Instance, Condition.Input, Number, bTruthy))
@@ -658,6 +680,10 @@ namespace WidgetAnimStateMachines
 						Instance.bInputsChanged = true;
 					}
 					break;
+				case EWidgetAnimMachineInputType::Hold:
+					// Held while the value is over 0.5 - timed in UpdateHolds.
+					Input.bHoldSourceDown = Sample > 0.5f;
+					break;
 				default:
 					if (Sample != Input.Number)
 					{
@@ -683,6 +709,64 @@ namespace WidgetAnimStateMachines
 				if (State.bHovered != Was.bHovered || State.bPressed != Was.bPressed || State.bFocused != Was.bFocused || State.bSelected != Was.bSelected || State.bDisabled != Was.bDisabled)
 				{
 					Instance.WidgetState = State;
+					Instance.bInputsChanged = true;
+				}
+			}
+		}
+
+		/**
+		 * Times every Press And Hold: held down - by its Driven By, else by the widget's own pressed state, or from Blueprint
+		 * or the Inputs panel - it counts up to its Hold Time, and fires once it gets there; let go, it starts again. Runs at
+		 * design time too, where the Inputs panel's Pressed (or the input's own Hold button) holds it, and not at all while the
+		 * preview is paused (DeltaTime 0).
+		 */
+		void UpdateHolds(FWidgetAnimMachineInstance& Instance, float DeltaTime)
+		{
+			for (FWidgetAnimMachineInputState& Input : Instance.Inputs)
+			{
+				if (Input.Type != EWidgetAnimMachineInputType::Hold)
+				{
+					continue;
+				}
+
+				const bool bSourced = Input.Source.IsValid() && Input.bHasSample;
+				const bool bDown = Input.bHoldSetDown || (bSourced ? Input.bHoldSourceDown : Instance.WidgetState.bPressed);
+				if (!bDown)
+				{
+					// Let go - complete or not: ready for the next press.
+					if (Input.bValue || Input.bHoldDone || Input.HoldElapsed > 0.f || Input.Number != 0.f)
+					{
+						Input.bValue = false;
+						Input.bHoldDone = false;
+						Input.HoldElapsed = 0.f;
+						Input.Number = 0.f;
+						Instance.bInputsChanged = true;
+					}
+					continue;
+				}
+				if (Input.bHoldDone)
+				{
+					// Held all the way already: nothing more until it is let go.
+					continue;
+				}
+
+				Input.HoldElapsed += FMath::Max(DeltaTime, 0.f);
+				const float HoldTime = FMath::Max(Input.HoldTime, 0.05f);
+				if (Input.HoldElapsed >= HoldTime)
+				{
+					Input.bHoldDone = true;
+					Input.bFired = true;
+					Input.bValue = false;
+					Input.Number = 1.f;
+					Instance.bInputsChanged = true;
+					continue;
+				}
+
+				const float Progress = Input.HoldElapsed / HoldTime;
+				if (!Input.bValue || Progress != Input.Number)
+				{
+					Input.bValue = true;
+					Input.Number = Progress;
 					Instance.bInputsChanged = true;
 				}
 			}
@@ -1560,6 +1644,13 @@ namespace WidgetAnimStateMachines
 			const FWidgetAnimMachineInputOverride* Override = Row.FindInputOverride(Definition.Name);
 			Input.bValue = Override ? Override->bDefaultBool : Definition.bDefaultBool;
 			Input.Number = Override ? Override->DefaultNumber : Definition.DefaultNumber;
+			Input.HoldTime = Override ? Override->HoldTime : Definition.HoldTime;
+			if (Definition.Type == EWidgetAnimMachineInputType::Hold)
+			{
+				// Not held, nothing done: a hold starts from nothing, whatever the defaults say.
+				Input.bValue = false;
+				Input.Number = 0.f;
+			}
 			Input.Source = Override ? Override->Source : Definition.Source;
 			if (Override)
 			{
@@ -1572,6 +1663,12 @@ namespace WidgetAnimStateMachines
 		}
 
 		Instance.UsedBuiltIns = FindUsedBuiltIns(*Machine);
+
+		// A Press And Hold with nothing driving it is held by the widget's own pressed state: that is read too.
+		if (Instance.Inputs.ContainsByPredicate([](const FWidgetAnimMachineInputState& Input) { return Input.Type == EWidgetAnimMachineInputType::Hold && !Input.Source.IsValid(); }))
+		{
+			Instance.UsedBuiltIns |= WidgetAnimMachineInputs::GetBuiltInBit(WidgetAnimMachineInputs::Pressed);
+		}
 		Instance.HoverReader.State = EWidgetAnimInteractionState::Hovered;
 		Instance.PressReader.State = EWidgetAnimInteractionState::Pressed;
 		Instance.FocusReader.State = EWidgetAnimInteractionState::Focused;
@@ -1600,6 +1697,7 @@ namespace WidgetAnimStateMachines
 
 		// What the widget is now - hovered already, disabled already - before Entry picks the first state.
 		ReadInputs(Instance, Context, 0.f);
+		UpdateHolds(Instance, 0.f);
 
 		for (int32 LayerIndex = 0; LayerIndex < Instance.Layers.Num(); ++LayerIndex)
 		{
@@ -1637,6 +1735,7 @@ namespace WidgetAnimStateMachines
 		}
 
 		ReadInputs(Instance, Context, DeltaTime);
+		UpdateHolds(Instance, DeltaTime);
 
 		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
 		{
@@ -1769,6 +1868,16 @@ namespace WidgetAnimStateMachines
 	bool SetBool(FWidgetAnimMachineInstance& Instance, FName Input, bool bValue)
 	{
 		FWidgetAnimMachineInputState* State = Instance.FindInput(Input);
+		if (State && State->Type == EWidgetAnimMachineInputType::Hold)
+		{
+			// Pressed (true) or let go (false) from outside - timed with the widget's own press, on the next Tick.
+			if (State->bHoldSetDown != bValue)
+			{
+				State->bHoldSetDown = bValue;
+				Instance.bInputsChanged = true;
+			}
+			return true;
+		}
 		if (!State || State->Type != EWidgetAnimMachineInputType::Bool)
 		{
 			return false;
@@ -1818,6 +1927,7 @@ namespace WidgetAnimStateMachines
 		switch (State->Type)
 		{
 		case EWidgetAnimMachineInputType::Bool:
+		case EWidgetAnimMachineInputType::Hold:
 			return SetBool(Instance, Input, !FMath::IsNearlyZero(Value));
 		case EWidgetAnimMachineInputType::Trigger:
 			return FMath::IsNearlyZero(Value) || FireTrigger(Instance, Input);

@@ -1793,6 +1793,12 @@ namespace NameTBD::Tooltips
 				"No inputs yet. Add one with +, or test the built-in ones below.");
 		}
 
+		inline FText HoldButtonTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "HoldButtonTooltip",
+				"Hold: press and keep the mouse down to hold the input - it fills as it goes. Let go before its Hold Time and the hold doesn't complete; keep holding and it fires. Ticking the built-in Pressed below holds it too, as the widget's own press does at runtime.");
+		}
+
 		inline FText FireTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "FireTooltip",

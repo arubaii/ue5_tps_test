@@ -27,7 +27,8 @@ class UWidgetAnimStateMachineAsset;
 // serves every button, each Widget Animation Component that plays it mapping the machine's targets onto its own widgets.
 //
 // THE PARTS
-//  - Inputs: the machine's public interface. Bool, Number and Trigger (a one-frame pulse). Set from Blueprint (Set State
+//  - Inputs: the machine's public interface. Bool, Number, Trigger (a one-frame pulse) and Press And Hold (held for a
+//    time to complete; let go early, it doesn't - and the state it held blends back). Set from Blueprint (Set State
 //    Machine Input), from a View Model (the Widget Data Binder's Set Input), from a Value Input (Hover, Press or Focus,
 //    Pointer, Drag, Scroll) with no code at all - or read from the widget itself: the built-in inputs Hovered, Pressed,
 //    Focused, Selected and Disabled need no declaring, and on a Common UI button are the button's own states. Closing is
@@ -60,7 +61,9 @@ enum class EWidgetAnimMachineInputType : uint8
 
 	Number UMETA(ToolTip = "Any number: a charge level, a count, a progress for a percentage animation, a layer's weight."),
 
-	Trigger UMETA(ToolTip = "A one-frame pulse: Clicked, Rewarded, Error. Fired, it is true for the next frame the machine runs, then false again.")
+	Trigger UMETA(ToolTip = "A one-frame pulse: Clicked, Rewarded, Error. Fired, it is true for the next frame the machine runs, then false again."),
+
+	Hold UMETA(DisplayName = "Press And Hold", ToolTip = "Press and hold: Is True while the widget is held down, until it has been held for Hold Time - then it is Fired, once, as a Trigger is. Let go before that, it is false again: the hold didn't complete, and the state it held blends back. As a number it is how far through Hold Time the hold is, 0 - 1: a state's Progress Input can follow it. Held by the widget's own pressed state (the built-in Pressed), by Driven By, or from Blueprint (Set State Machine Input: true to press, false to let go).")
 };
 
 /** What a node of a layer's graph is. */
@@ -93,9 +96,9 @@ enum class EWidgetAnimMachineStatePlayback : uint8
 UENUM(BlueprintType)
 enum class EWidgetAnimMachineCompare : uint8
 {
-	IsTrue UMETA(DisplayName = "Is True"),
-	IsFalse UMETA(DisplayName = "Is False"),
-	Fired UMETA(ToolTip = "A Trigger was fired since the machine last ran."),
+	IsTrue UMETA(DisplayName = "Is True", ToolTip = "A Bool is true. A Press And Hold is being held, and hasn't been held for its Hold Time yet."),
+	IsFalse UMETA(DisplayName = "Is False", ToolTip = "A Bool is false. A Press And Hold isn't being held: let go before its Hold Time, or never pressed - never the frame it completes."),
+	Fired UMETA(ToolTip = "A Trigger was fired since the machine last ran. A Press And Hold has just been held for its whole Hold Time."),
 	Equal UMETA(DisplayName = "=="),
 	NotEqual UMETA(DisplayName = "!="),
 	Less UMETA(DisplayName = "<"),
@@ -169,11 +172,15 @@ struct NAMETBD_API FWidgetAnimMachineInput
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Default", EditCondition = "Type == EWidgetAnimMachineInputType::Number", EditConditionHides))
 	float DefaultNumber = 0.f;
 
+	/** How long a Press And Hold has to be held to complete. Let go sooner, it doesn't. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Hold Time", ClampMin = "0.05", UIMin = "0.1", UIMax = "3", Units = "s", EditCondition = "Type == EWidgetAnimMachineInputType::Hold", EditConditionHides))
+	float HoldTime = 1.f;
+
 	/**
 	 * Where the input is read from, every frame, with no code: a Value Input - the pointer over a widget, it being hovered,
 	 * pressed or focused, a drag, a scroll. A Bool is true while the value is over 0.5; a Trigger fires as it rises past 0.5;
-	 * a Number is the value. None: it is set from Blueprint or a View Model. Read at runtime only - in the editor, the
-	 * Inputs panel sets it.
+	 * a Number is the value; a Press And Hold is held while it is over 0.5 (None: while the widget is pressed). None: it is
+	 * set from Blueprint or a View Model. Read at runtime only - in the editor, the Inputs panel sets it.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Driven By", BaseStruct = "/Script/NameTBD.WidgetAnimInputSource", ExcludeBaseStruct))
 	FInstancedStruct Source;
@@ -398,7 +405,7 @@ struct NAMETBD_API FWidgetAnimMachineState
 
 	/**
 	 * For a percentage animation (Time In Percent): the Number input its progress follows, 0 for 0% and 1 for 100% - a charge
-	 * meter, a hold ring. None: it plays from 0% to 100% over one second.
+	 * meter - or a Press And Hold, filling as it is held: a hold ring. None: it plays from 0% to 100% over one second.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State", meta = (DisplayName = "Progress Input", GetOptions = "GetNumberInputOptions", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
 	FName ProgressInput;
@@ -562,7 +569,7 @@ public:
 	UFUNCTION()
 	TArray<FString> GetTargetNameOptions() const;
 
-	/** Backs the Weight Input and Progress Input dropdowns: None, then every Number input. */
+	/** Backs the Weight Input and Progress Input dropdowns: None, then every Number and Press And Hold input. */
 	UFUNCTION()
 	TArray<FString> GetNumberInputOptions() const;
 
@@ -712,6 +719,10 @@ struct NAMETBD_API FWidgetAnimMachineInputOverride
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Default", EditCondition = "bOverride && Type == EWidgetAnimMachineInputType::Number", EditConditionHides))
 	float DefaultNumber = 0.f;
+
+	/** How long this widget's Press And Hold has to be held. See FWidgetAnimMachineInput::HoldTime. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Hold Time", ClampMin = "0.05", UIMin = "0.1", UIMax = "3", Units = "s", EditCondition = "bOverride && Type == EWidgetAnimMachineInputType::Hold", EditConditionHides))
+	float HoldTime = 1.f;
 
 	/** Where it is read from on this widget. See FWidgetAnimMachineInput::Source. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Driven By", EditCondition = "bOverride", BaseStruct = "/Script/NameTBD.WidgetAnimInputSource", ExcludeBaseStruct))

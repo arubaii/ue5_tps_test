@@ -38,9 +38,10 @@ void UK2Node_SetStateMachineInput::CreateValuePin(EWidgetAnimMachineInputType Ty
 
 	const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
 	UEdGraphPin* ValuePin = nullptr;
-	if (Type == EWidgetAnimMachineInputType::Bool)
+	if (Type == EWidgetAnimMachineInputType::Bool || Type == EWidgetAnimMachineInputType::Hold)
 	{
-		// Named bValue on the function; the pin keeps one name whatever its type, and expansion maps it.
+		// Named bValue on the function; the pin keeps one name whatever its type, and expansion maps it. A Press And Hold
+		// takes a bool too: true presses it, false lets go.
 		ValuePin = CreatePin(EGPD_Input, UEdGraphSchema_K2::PC_Boolean, ValuePinName);
 	}
 	else
@@ -299,7 +300,7 @@ FText UK2Node_SetStateMachineInput::GetNodeTitle(ENodeTitleType::Type TitleType)
 
 FText UK2Node_SetStateMachineInput::GetTooltipText() const
 {
-	return LOCTEXT("Tooltip", "Sets an input of a Widget Animation State Machine: pick the State Machine - one of those the Widget Animation Components on the Target and inside it play - then one of its Inputs. A Bool takes a bool, a Number a float; a Trigger is fired.\n\nLooks on the Target and inside it, and sets the first component that plays the machine - or every one with Set All Matches.");
+	return LOCTEXT("Tooltip", "Sets an input of a Widget Animation State Machine: pick the State Machine - one of those the Widget Animation Components on the Target and inside it play - then one of its Inputs. A Bool takes a bool, a Number a float; a Trigger is fired; a Press And Hold takes a bool - true presses it, false lets it go.\n\nLooks on the Target and inside it, and sets the first component that plays the machine - or every one with Set All Matches.");
 }
 
 FText UK2Node_SetStateMachineInput::GetMenuCategory() const

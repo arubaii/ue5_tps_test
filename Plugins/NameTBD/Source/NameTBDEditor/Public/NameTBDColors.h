@@ -538,6 +538,8 @@ namespace NameTBD
 			inline const FLinearColor InputBool(0.30f, 0.0f, 0.0f);
 			inline const FLinearColor InputNumber(0.357667f, 1.0f, 0.06f);
 			inline const FLinearColor InputTrigger(1.0f, 1.0f, 1.0f);
+			// A Press And Hold: the animation orange - it fills as it is held, as a hold ring would.
+			inline const FLinearColor InputHold(AnimationOrange_Normal);
 
 			// -------------------------------------------------------------------------------------------------
 			// Wires - Blueprint splines from state to state.

@@ -73,9 +73,23 @@ namespace
 		return Machine && Machine->Layers.IsValidIndex(LayerIndex) ? &Machine->Layers[LayerIndex] : nullptr;
 	}
 
-	FText DescribeCondition(const FWidgetAnimMachineCondition& Condition)
+	FText DescribeCondition(const FWidgetAnimMachineCondition& Condition, const UWidgetAnimStateMachineAsset* Machine = nullptr)
 	{
 		const FText InputName = Condition.Input.IsNone() ? LOCTEXT("NoInput", "(no input)") : FText::FromName(Condition.Input);
+
+		// A Press And Hold: held, let go, or held all the way.
+		const FWidgetAnimMachineInput* Input = Machine ? Machine->FindInput(Condition.Input) : nullptr;
+		if (Input && Input->Type == EWidgetAnimMachineInputType::Hold)
+		{
+			switch (Condition.Compare)
+			{
+			case EWidgetAnimMachineCompare::IsTrue:  return FText::Format(LOCTEXT("CondHolding", "{0} held"), InputName);
+			case EWidgetAnimMachineCompare::IsFalse: return FText::Format(LOCTEXT("CondLetGo", "{0} let go"), InputName);
+			case EWidgetAnimMachineCompare::Fired:   return FText::Format(LOCTEXT("CondHoldDone", "{0} held {1}"), InputName, FText::FromString(WidgetAnimMachineStyle::FormatSeconds(Input->HoldTime)));
+			default: break;
+			}
+		}
+
 		switch (Condition.Compare)
 		{
 		case EWidgetAnimMachineCompare::IsTrue:  return FText::Format(LOCTEXT("CondTrue", "{0}"), InputName);
@@ -507,7 +521,10 @@ namespace WidgetAnimMachineEdits
 		Machine->Modify();
 		FWidgetAnimMachineInput& Input = Machine->Inputs.AddDefaulted_GetRef();
 		Input.Type = Type;
-		const TCHAR* Base = Type == EWidgetAnimMachineInputType::Number ? TEXT("Number") : Type == EWidgetAnimMachineInputType::Trigger ? TEXT("Trigger") : TEXT("Bool");
+		const TCHAR* Base = Type == EWidgetAnimMachineInputType::Number ? TEXT("Number")
+			: Type == EWidgetAnimMachineInputType::Trigger ? TEXT("Trigger")
+			: Type == EWidgetAnimMachineInputType::Hold ? TEXT("Hold")
+			: TEXT("Bool");
 		Input.Name = Machine->MakeUniqueInputName(FName(Base), Machine->Inputs.Num() - 1);
 		const FName Name = Input.Name;
 		FinishEdit(Machine);
@@ -1609,7 +1626,7 @@ FText UWidgetAnimMachineTransitionNode::DescribeConditions() const
 	TArray<FText> Conditions;
 	for (const FWidgetAnimMachineCondition& Condition : Transition->Conditions)
 	{
-		Conditions.Add(DescribeCondition(Condition));
+		Conditions.Add(DescribeCondition(Condition, GetMachineGraph() ? GetMachineGraph()->Machine.Get() : nullptr));
 	}
 	return FText::Join(LOCTEXT("And", " and "), Conditions);
 }

@@ -367,6 +367,9 @@ private:
 	void SetBuiltInValue(FName Input, bool bValue);
 	float GetShownInputValue(FName Input) const;
 	bool GetShownBuiltInValue(FName Input) const;
+
+	/** How far through its Hold Time a Press And Hold is, 0 - 1, in the widget watched or previewed - for its Hold button. */
+	float GetShownHoldProgress(FName Input) const;
 	bool IsDebuggingPlay() const;
 
 	// -------------------------------------------------------------------------------------------------
