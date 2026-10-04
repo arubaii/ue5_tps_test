@@ -2694,21 +2694,40 @@ public:
 			OutDrawElements.PopClip();
 		}
 
-		// Selected: a circle round it in the editor's selection orange - drawn as an antialiased closed path, so it is exactly
-		// round and exactly that color (the graph editor's own selection brush, a rounded box, is held back: see GetShadowBrush).
+		// Selected: the graph editor's selection look - a solid band of its selection orange hugging the edge, with a soft glow
+		// fading out beyond it - made round. Drawn as antialiased closed paths, so it is exactly round and exactly that color
+		// (the graph editor's own selection brush, a rounded box, is held back: see GetShadowBrush).
 		if (IsNodeSelected && IsNodeSelected())
 		{
-			constexpr int32 Segments = 40;
-			const float RingRadius = Radius + MachineColors::TransitionSelectedGap + MachineColors::TransitionSelectedWidth * 0.5f;
-			TArray<FVector2f> Ring;
-			Ring.Reserve(Segments + 1);
-			for (int32 Segment = 0; Segment <= Segments; ++Segment)
+			const FLinearColor Selection = MachineColors::StateSelectedOutline * InWidgetStyle.GetColorAndOpacityTint();
+			auto Circle = [&](float CircleRadius, float Thickness, const FLinearColor& CircleColor)
 			{
-				const float Angle = UE_TWO_PI * Segment / Segments;
-				Ring.Add(Center + FVector2f(FMath::Cos(Angle), FMath::Sin(Angle)) * RingRadius);
+				constexpr int32 Segments = 48;
+				TArray<FVector2f> Ring;
+				Ring.Reserve(Segments + 1);
+				for (int32 Segment = 0; Segment <= Segments; ++Segment)
+				{
+					const float Angle = UE_TWO_PI * Segment / Segments;
+					Ring.Add(Center + FVector2f(FMath::Cos(Angle), FMath::Sin(Angle)) * CircleRadius);
+				}
+				FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 3, AllottedGeometry.ToPaintGeometry(), Ring, ESlateDrawEffect::None,
+					CircleColor, /*bAntialias=*/true, Thickness);
+			};
+
+			// The band: from just inside the disc's edge - no gap - outward.
+			const float BandInner = Radius - MachineColors::TransitionSelectedOverlap;
+			const float BandOuter = BandInner + MachineColors::TransitionSelectedWidth;
+
+			// The glow beyond it, outermost first: thin overlapping circles, each fainter.
+			const int32 GlowSteps = FMath::Max(MachineColors::TransitionSelectedGlowSteps, 1);
+			for (int32 Step = GlowSteps; Step >= 1; --Step)
+			{
+				const float Out = static_cast<float>(Step) / GlowSteps;
+				const float Opacity = MachineColors::TransitionSelectedGlowOpacity * FMath::Square(1.f - Out + 1.f / GlowSteps);
+				Circle(BandOuter + MachineColors::TransitionSelectedGlowReach * Out - MachineColors::TransitionSelectedGlowReach / GlowSteps * 0.5f,
+					MachineColors::TransitionSelectedGlowReach / GlowSteps + 0.75f, Selection.CopyWithNewOpacity(Selection.A * Opacity));
 			}
-			FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 3, AllottedGeometry.ToPaintGeometry(), Ring, ESlateDrawEffect::None,
-				MachineColors::StateSelectedOutline * InWidgetStyle.GetColorAndOpacityTint(), /*bAntialias=*/true, MachineColors::TransitionSelectedWidth);
+			Circle((BandInner + BandOuter) * 0.5f, MachineColors::TransitionSelectedWidth, Selection);
 		}
 
 		// The arrowhead - the one an Animation Blueprint state machine's wires end in - turned to point the way the transition
