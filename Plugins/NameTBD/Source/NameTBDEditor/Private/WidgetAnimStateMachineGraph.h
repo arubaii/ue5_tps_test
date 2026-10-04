@@ -269,6 +269,9 @@ public:
 	 */
 	TMap<FGuid, double> LastActiveTimes;
 
+	/** Seconds the stripes on the state in play have scrolled for - moved on by the editor every frame, but not while the preview is paused. */
+	double StripeClock = 0.0;
+
 private:
 
 	bool bRebuildRequested = false;

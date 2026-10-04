@@ -84,6 +84,9 @@ namespace WidgetAnimMachineStyle
 	/** White rounded boxes - a state's body, its interior, its progress fill. */
 	const FSlateBrush* RoundedBrush(float Radius);
 
+	/** A white box with square corners and a thin black outline - a state's middle while its progress fills it. */
+	const FSlateBrush* SharpBoxBrush();
+
 	/** A rounded outline - a selected state. */
 	const FSlateBrush* RoundedOutlineBrush(float Radius);
 

@@ -603,11 +603,14 @@ namespace NameTBD
 			inline constexpr float StateProgressEdgeWidth = 2.0f;
 			inline constexpr float StateProgressMinBrightness = 0.80f;
 			inline const FLinearColor ActiveTrackStripe(1.0f, 1.0f, 1.0f, 0.10f);
-			inline constexpr float ActiveTrackStripeSpeed = 6.0f;
+			inline constexpr float ActiveTrackStripeSpeed = 8.0f;
 			inline constexpr float ActiveTrackStripeWidth = WidgetAnimEditor::SectionValueStripeWidth;
 			inline constexpr float ActiveTrackStripeSpacing = WidgetAnimEditor::SectionValueStripeSpacing;
 			inline constexpr float ActiveTrackLeavingOpacity = 0.5f;
-			inline constexpr float ActiveTrackRadius = 5.0f;
+			inline constexpr float ActiveTrackRadius = 10.0f;
+
+			// A state's middle while its animation's progress fills it: square-cornered, near black - the rounded one's dark.
+			inline const FLinearColor StateTitleSharp(0.010f, 0.010f, 0.011f, 1.0f);
 			inline const FLinearColor StateSelected(1.0f, 1.0f, 1.0f, 0.85f);
 
 			// -------------------------------------------------------------------------------------------------

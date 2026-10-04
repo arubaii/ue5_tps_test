@@ -1811,6 +1811,18 @@ namespace NameTBD::Tooltips
 				"Preview In Designer: plays the machine in the designer, driven by the Inputs panel - on its Preview Targets, or on the widgets whose Widget Animation Component plays it (see Preview, on the left).");
 		}
 
+		inline FText PreviewPauseTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewPauseTooltip",
+				"Pause: holds the designer preview where it is - its state, its transition, its animations. Inputs still change, and take effect once it plays on.");
+		}
+
+		inline FText PreviewPlayTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewPlayTooltip",
+				"Play: lets the paused designer preview run on from where it was held.");
+		}
+
 		inline FText DebugMenuTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "DebugMenuTooltip",

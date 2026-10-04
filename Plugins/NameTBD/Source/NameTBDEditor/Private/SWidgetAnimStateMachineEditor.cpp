@@ -565,6 +565,9 @@ public:
 	}
 
 	bool IsRunning() const { return bRunning && Root.IsValid() && Host.IsValid(); }
+
+	/** Paused: posed where it is, its time standing still - inputs still reach it, and take effect once it runs on. */
+	void SetPaused(bool bInPaused) { bPaused = bInPaused; }
 	UUserWidget* GetRoot() const { return Root.Get(); }
 	UWidget* GetHost() const { return Host.Get(); }
 	const FWidgetAnimMachineInstance& GetInstance() const { return Instance; }
@@ -624,7 +627,7 @@ private:
 		{
 			return EActiveTimerReturnType::Stop;
 		}
-		Tick(InDeltaTime);
+		Tick(bPaused ? 0.f : InDeltaTime);
 		return EActiveTimerReturnType::Continue;
 	}
 
@@ -652,6 +655,7 @@ private:
 	TWeakPtr<FActiveTimerHandle> TimerHandle;
 	TWeakPtr<SWidget> TimerWidget;
 	bool bRunning = false;
+	bool bPaused = false;
 };
 
 /**
@@ -2662,14 +2666,35 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
 				const FVector2f ToCenter = All[To].Box.GetCenter();
 				const FVector2f Delta = ToCenter - FromCenter;
 				const bool bAcross = FMath::Abs(Delta.X) >= FMath::Abs(Delta.Y);
-				const FVector2f Level = bAcross ? FVector2f(0.f, FromCenter.Y - ToCenter.Y) : FVector2f(FromCenter.X - ToCenter.X, 0.f);
+
+				// Wired corner to corner - the two lie diagonally: put on the 45-degree line through the corner its wire leaves,
+				// so the wire runs straight from corner to corner. Otherwise level with it, across or above or below.
+				const FVector2f Side = WidgetAnimMachineWires::GetFacingSide(All[From].Box, All[To].Box);
+				const bool bDiagonal = Side.X != 0.f && Side.Y != 0.f;
+				FVector2f Level;
+				if (bDiagonal)
+				{
+					const FVector2f FromCorner = WidgetAnimMachineWires::GetSideMiddle(All[From].Box, Side);
+					const FVector2f ToCorner = WidgetAnimMachineWires::GetSideMiddle(All[To].Box, -Side);
+					const FVector2f Gap = ToCorner - FromCorner;
+					const float Even = (FMath::Abs(Gap.X) + FMath::Abs(Gap.Y)) * 0.5f;
+					Level = FVector2f(Side.X * Even, Side.Y * Even) - Gap;
+				}
+				else
+				{
+					Level = bAcross ? FVector2f(0.f, FromCenter.Y - ToCenter.Y) : FVector2f(FromCenter.X - ToCenter.X, 0.f);
+				}
 				FBox2f Candidate = ShiftBox(All[To].Box, Level);
 
 				if (LandsOnOther(All, To, Candidate))
 				{
 					// Further along the way it lies, a node's length at a time.
-					const FVector2f Away = bAcross ? FVector2f(Delta.X >= 0.f ? 1.f : -1.f, 0.f) : FVector2f(0.f, Delta.Y >= 0.f ? 1.f : -1.f);
-					const float Step = (bAcross ? Candidate.GetSize().X : Candidate.GetSize().Y) + ArrangeMargin;
+					const FVector2f Away = bDiagonal
+						? Side
+						: (bAcross ? FVector2f(Delta.X >= 0.f ? 1.f : -1.f, 0.f) : FVector2f(0.f, Delta.Y >= 0.f ? 1.f : -1.f));
+					const float Step = bDiagonal
+						? (Candidate.GetSize().X + Candidate.GetSize().Y) * 0.5f + ArrangeMargin
+						: (bAcross ? Candidate.GetSize().X : Candidate.GetSize().Y) + ArrangeMargin;
 					bool bFound = false;
 					for (int32 Try = 1; Try <= 6 && !bFound; ++Try)
 					{
@@ -2789,6 +2814,18 @@ void SWidgetAnimStateMachineEditor::Tick(const FGeometry& AllottedGeometry, cons
 	if (!Machine)
 	{
 		return;
+	}
+
+	// The stripes on the state in play scroll on - unless the designer preview is paused.
+	if (!IsPreviewPaused())
+	{
+		for (UWidgetAnimMachineGraph* Graph : Graphs)
+		{
+			if (Graph)
+			{
+				Graph->StripeClock += InDeltaTime;
+			}
+		}
 	}
 
 	// While something in the shown graph moves - a wire's dots, a fill - the editor is kept drawing every frame, so they run
@@ -3100,6 +3137,12 @@ bool SWidgetAnimStateMachineEditor::IsDebuggingPlay() const
 	return Widget && !Widget->IsDesignTime();
 }
 
+bool SWidgetAnimStateMachineEditor::IsPreviewPaused() const
+{
+	// Only the designer preview pauses: a widget watched in Play In Editor runs as the game does.
+	return bPreviewPaused && bPreviewInDesigner && !(GEditor && GEditor->PlayWorld) && !IsDebuggingPlay();
+}
+
 bool SWidgetAnimStateMachineEditor::IsGraphAnimating() const
 {
 	// A state in play: its stripes scroll for as long as it is.
@@ -3313,6 +3356,7 @@ void SWidgetAnimStateMachineEditor::UpdatePreviews()
 				PushInputsToHost();
 			}
 		}
+		PreviewHost->SetPaused(bPreviewPaused);
 		return;
 	}
 
@@ -3350,6 +3394,7 @@ void SWidgetAnimStateMachineEditor::UpdatePreviews()
 		{
 			PushInputs(Live);
 		}
+		Live->SetDesignerStateMachinePreviewPaused(bPreviewPaused);
 	}
 }
 
@@ -3359,6 +3404,7 @@ void SWidgetAnimStateMachineEditor::StopComponentPreviews()
 	{
 		if (UWidgetAnimationComponent* Live = Weak.Get())
 		{
+			Live->SetDesignerStateMachinePreviewPaused(false);
 			Live->StopDesignerStateMachinePreview();
 		}
 	}
@@ -3969,6 +4015,43 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeToolbar()
 			[
 				SNew(STextBlock)
 				.Text(LOCTEXT("PreviewInDesigner", "Preview In Designer"))
+			]
+		]
+
+		// Pause / play the whole designer preview.
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(0.f, 2.f, 4.f, 2.f))
+		[
+			SNew(SButton)
+			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+			.ContentPadding(FMargin(4.f, 2.f))
+			.ToolTip(WidgetAnimMachineStyle::MakeToolTip(TAttribute<FText>::CreateLambda([this]()
+			{
+				return bPreviewPaused ? MachineTips::PreviewPlayTooltip() : MachineTips::PreviewPauseTooltip();
+			})))
+			.Visibility_Lambda([this]() { return WidgetBlueprint.IsValid() ? EVisibility::Visible : EVisibility::Collapsed; })
+			.IsEnabled_Lambda([this]() { return bPreviewInDesigner && !(GEditor && GEditor->PlayWorld); })
+			.OnClicked_Lambda([this]()
+			{
+				bPreviewPaused = !bPreviewPaused;
+				return FReply::Handled();
+			})
+			[
+				SNew(SBox)
+				.WidthOverride(16.f)
+				.HeightOverride(16.f)
+				[
+					SNew(SImage)
+					.ColorAndOpacity(FSlateColor::UseForeground())
+					.Image_Lambda([this]()
+					{
+						return bPreviewPaused
+							? FindEditorBrush({ TEXT("Icons.Play"), TEXT("PlayWorld.ResumePlaySession"), TEXT("GenericPlay") })
+							: FindEditorBrush({ TEXT("Icons.Pause"), TEXT("PlayWorld.PausePlaySession"), TEXT("GenericPause") });
+					})
+				]
 			]
 		]
 		+ SHorizontalBox::Slot()

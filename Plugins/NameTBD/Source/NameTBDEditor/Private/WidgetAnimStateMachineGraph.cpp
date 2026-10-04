@@ -1820,8 +1820,8 @@ private:
 };
 
 /**
- * A value-driven track's stripes from the Widget Animations panel - faint diagonal bands, drawn as SWidgetAnimTimeline draws a
- * striped track's - across what it sits on, scrolling slowly to the right. Over the state the watched widget is in; nothing
+ * A value-driven track's stripes from the Widget Animations panel - faint diagonal bands, the track's width and spacing - across
+ * what it sits on, inside its rounded corners, scrolling slowly to the right. Over the state the watched widget is in; nothing
  * under them is recolored. Never takes the mouse.
  */
 class SWidgetAnimMachineTrackPattern : public SLeafWidget
@@ -1830,13 +1830,17 @@ public:
 
 	SLATE_BEGIN_ARGS(SWidgetAnimMachineTrackPattern)
 		: _Opacity(0.f)
+		, _Clock(0.0)
 	{}
 		SLATE_ATTRIBUTE(float, Opacity)
+		/** Seconds the stripes have scrolled for: they stand still while it does (the preview paused). */
+		SLATE_ATTRIBUTE(double, Clock)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs)
 	{
 		Opacity = InArgs._Opacity;
+		Clock = InArgs._Clock;
 		SetVisibility(EVisibility::HitTestInvisible);
 	}
 
@@ -1855,39 +1859,92 @@ public:
 			return LayerId;
 		}
 
-		// The bands: each a thin upright box turned 45 degrees about its middle, which sits on the vertical center - so it
-		// crosses the whole height - clipped inside the rounded corners. Moving right at ActiveTrackStripeSpeed, worked out in
-		// double so they glide rather than step.
-		const float Inset = MachineColors::ActiveTrackRadius * 0.5f;
-		const FGeometry Inner = AllottedGeometry.MakeChild(Size - FVector2f(Inset * 2.f, Inset * 2.f), FSlateLayoutTransform(FVector2f(Inset, Inset)));
-		OutDrawElements.PushClip(FSlateClippingZone(Inner));
 		const FLinearColor Stripe = MachineColors::ActiveTrackStripe;
+		const FLinearColor Color = Stripe.CopyWithNewOpacity(Stripe.A * Amount) * InWidgetStyle.GetColorAndOpacityTint();
 		const float Width = MachineColors::ActiveTrackStripeWidth;
 		const float Spacing = MachineColors::ActiveTrackStripeSpacing;
-		const float Length = Size.Y * UE_SQRT_2 + Width * 2.f;
-		const float Scroll = static_cast<float>(FMath::Fmod(FPlatformTime::Seconds() * MachineColors::ActiveTrackStripeSpeed, static_cast<double>(Spacing)));
-		const float FirstX = -FMath::CeilToFloat(Size.Y / Spacing + 1.f) * Spacing + Scroll;
-		for (float StripeX = FirstX; StripeX < Size.X; StripeX += Spacing)
+
+		// The node's rounded outline, pulled in by half a band so each band's ends stay inside its corners.
+		const float Pull = Width * 0.5f + 0.5f;
+		const FVector2f Min(Pull, Pull);
+		const FVector2f Max = Size - FVector2f(Pull, Pull);
+		const float Radius = FMath::Max(MachineColors::ActiveTrackRadius - Pull, 0.f);
+		if (Max.X <= Min.X || Max.Y <= Min.Y)
 		{
-			FSlateDrawElement::MakeBox(
-				OutDrawElements,
-				LayerId,
-				AllottedGeometry.ToPaintGeometry(
-					FVector2f(Width, Length),
-					FSlateLayoutTransform(FVector2f(StripeX + Size.Y * 0.5f - Width * 0.5f, Size.Y * 0.5f - Length * 0.5f)),
-					FSlateRenderTransform(FQuat2f(FMath::DegreesToRadians(45.f))),
-					FVector2f(0.5f, 0.5f)),
-				FAppStyle::GetBrush(TEXT("WhiteBrush")),
-				ESlateDrawEffect::None,
-				Stripe.CopyWithNewOpacity(Stripe.A * Amount) * InWidgetStyle.GetColorAndOpacityTint());
+			return LayerId;
 		}
-		OutDrawElements.PopClip();
+		auto IsInside = [&](const FVector2f& Point)
+		{
+			if (Point.X < Min.X || Point.Y < Min.Y || Point.X > Max.X || Point.Y > Max.Y)
+			{
+				return false;
+			}
+			const FVector2f Nearest(
+				FMath::Clamp(Point.X, Min.X + Radius, Max.X - Radius),
+				FMath::Clamp(Point.Y, Min.Y + Radius, Max.Y - Radius));
+			return FVector2f::DistSquared(Point, Nearest) <= Radius * Radius;
+		};
+
+		// Each band a line up to the right through (CenterX, middle), drawn antialiased - so it glides a fraction of a pixel a
+		// frame rather than stepping a whole one - from where it enters the outline to where it leaves it (one stretch: the
+		// outline is convex).
+		const FVector2f Along(UE_INV_SQRT_2, -UE_INV_SQRT_2);
+		const float Reach = (Size.X + Size.Y);
+		const float Scroll = static_cast<float>(FMath::Fmod(Clock.Get() * static_cast<double>(MachineColors::ActiveTrackStripeSpeed), static_cast<double>(Spacing)));
+		const float MiddleY = Size.Y * 0.5f;
+		const float FirstX = -FMath::CeilToFloat(MiddleY / Spacing + 1.f) * Spacing + Scroll;
+		const float LastX = Size.X + MiddleY + Spacing;
+		TArray<FVector2f> Points;
+		Points.SetNum(2);
+		for (float CenterX = FirstX; CenterX < LastX; CenterX += Spacing)
+		{
+			const FVector2f Center(CenterX, MiddleY);
+
+			// A point of the band inside the outline, if it has one.
+			constexpr int32 Samples = 24;
+			float InsideAt = 0.f;
+			bool bAny = false;
+			for (int32 Sample = 0; Sample <= Samples && !bAny; ++Sample)
+			{
+				const float At = -Reach + 2.f * Reach * Sample / Samples;
+				if (IsInside(Center + Along * At))
+				{
+					InsideAt = At;
+					bAny = true;
+				}
+			}
+			if (!bAny)
+			{
+				continue;
+			}
+
+			// Out from it each way to the outline.
+			auto Edge = [&](float Outside)
+			{
+				float In = InsideAt;
+				float Out = Outside;
+				for (int32 Step = 0; Step < 14; ++Step)
+				{
+					const float Mid = (In + Out) * 0.5f;
+					(IsInside(Center + Along * Mid) ? In : Out) = Mid;
+				}
+				return In;
+			};
+			Points[0] = Center + Along * Edge(-Reach);
+			Points[1] = Center + Along * Edge(Reach);
+			if (FVector2f::DistSquared(Points[0], Points[1]) < 1.f)
+			{
+				continue;
+			}
+			FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None, Color, /*bAntialias=*/true, Width);
+		}
 		return LayerId + 1;
 	}
 
 private:
 
 	TAttribute<float> Opacity;
+	TAttribute<double> Clock;
 };
 
 /**
@@ -1953,6 +2010,7 @@ public:
 					[
 						SNew(SWidgetAnimMachineTrackPattern)
 						.Opacity(this, &SWidgetAnimMachineStateNode::GetTrackOpacity)
+						.Clock(this, &SWidgetAnimMachineStateNode::GetStripeClock)
 					]
 
 					// The name, and the animation under it. The whole colored part takes the mouse - a click anywhere in it
@@ -1963,7 +2021,7 @@ public:
 					.Padding(10.f)
 					[
 						SNew(SBorder)
-						.BorderImage(FindBrush({ TEXT("Graph.StateNode.ColorSpill") }))
+						.BorderImage(this, &SWidgetAnimMachineStateNode::GetTitleBrush)
 						.BorderBackgroundColor(this, &SWidgetAnimMachineStateNode::GetTitleColor)
 						.HAlign(HAlign_Fill)
 						.VAlign(VAlign_Fill)
@@ -1976,7 +2034,7 @@ public:
 							+ SOverlay::Slot()
 							[
 								SNew(SWidgetAnimMachineFill)
-								.Brush(WidgetAnimMachineStyle::RoundedBrush(3.f))
+								.Brush(FAppStyle::GetBrush(TEXT("WhiteBrush")))
 								.Alpha(this, &SWidgetAnimMachineStateNode::GetProgress)
 								.Color(this, &SWidgetAnimMachineStateNode::GetProgressColor)
 								.EdgeColor(MachineColors::StateProgressEdge)
@@ -2216,9 +2274,27 @@ private:
 		return Color.CopyWithNewOpacity(MachineColors::StateProgressOpacity);
 	}
 
+	/** Its middle: the Animation Blueprint state's rounded one - square-cornered while its animation's progress fills it. */
+	const FSlateBrush* GetTitleBrush() const
+	{
+		return GetProgress() > 0.f ? WidgetAnimMachineStyle::SharpBoxBrush() : FindBrush({ TEXT("Graph.StateNode.ColorSpill") });
+	}
+
 	FSlateColor GetTitleColor() const
 	{
+		if (GetProgress() > 0.f)
+		{
+			return MachineColors::StateTitleSharp;
+		}
 		return IsActive() ? MachineColors::StateTitleActive : MachineColors::StateTitle;
+	}
+
+	/** How far its stripes have scrolled: the graph's own clock, which stands still while the preview is paused. */
+	double GetStripeClock() const
+	{
+		const UWidgetAnimMachineGraphNode* Node = GetMachineNode();
+		const UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+		return Graph ? Graph->StripeClock : 0.0;
 	}
 
 	/** The state's animation's progress while the watched widget is in it - and nothing while it isn't, or it holds still. */

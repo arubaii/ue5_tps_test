@@ -395,6 +395,10 @@ private:
 	/** Keeps the editor drawing every frame while something in the shown graph moves - see IsGraphAnimating. */
 	TSharedPtr<FActiveTimerHandle> AnimateTimer;
 	bool IsGraphAnimating() const;
+
+	/** The designer preview paused from the toolbar: the machines hold where they are. */
+	bool bPreviewPaused = false;
+	bool IsPreviewPaused() const;
 	EActiveTimerReturnType OnAnimateGraph(double InCurrentTime, float InDeltaTime);
 	TSharedPtr<SWindow> PickLabelWindow;
 

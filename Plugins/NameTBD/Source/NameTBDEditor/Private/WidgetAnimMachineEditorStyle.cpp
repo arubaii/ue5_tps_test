@@ -379,6 +379,12 @@ namespace WidgetAnimMachineStyle
 		return &Brush8;
 	}
 
+	const FSlateBrush* SharpBoxBrush()
+	{
+		static const FSlateRoundedBoxBrush Brush(FLinearColor::White, 0.f, FLinearColor::Black, 1.f);
+		return &Brush;
+	}
+
 	const FSlateBrush* RoundedOutlineBrush(float Radius)
 	{
 		static const FSlateRoundedBoxBrush Brush5(FLinearColor::Transparent, 5.f, FLinearColor::White, 1.5f);
