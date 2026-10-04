@@ -136,8 +136,8 @@ namespace WidgetAnimMachineEdits
 }
 
 /**
- * Where a transition's wire runs: a Blueprint spline - a Hermite curve, its tangents along the way the two states lie - from
- * the edge of one state to the edge of the other, and where on it the transition node sits. Wires between the same two
+ * Where a transition's wire runs: a Blueprint spline - a Hermite curve, leaving the side of one state that faces the other and
+ * arriving at the side of that one facing back - from the edge of one state to the edge of the other, and where on it the transition node sits. Wires between the same two
  * states run side by side, parallel, each in a lane of its own.
  */
 struct FWidgetAnimMachineWire
@@ -172,6 +172,15 @@ namespace WidgetAnimMachineWires
 	 * the wires between the two (see GetLane); bReversed: it runs from Second to First, not First to Second.
 	 */
 	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed);
+
+	/** The side of Box - (1,0) right, (0,1) bottom, and so on - that faces Toward: the side a wire to it leaves from. */
+	FVector2f GetFacingSide(const FBox2f& Box, const FVector2f& Toward);
+
+	/** The middle of that side. */
+	FVector2f GetSideMiddle(const FBox2f& Box, const FVector2f& Side);
+
+	/** A wire's tangents, out of the side it leaves and into the side it arrives at. Returns the start's; the end's in OutEndTangent. */
+	FVector2f GetTangent(const FVector2f& From, const FVector2f& FromSide, const FVector2f& To, const FVector2f& ToSide, FVector2f& OutEndTangent);
 }
 
 /**

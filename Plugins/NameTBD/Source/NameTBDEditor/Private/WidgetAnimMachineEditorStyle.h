@@ -42,6 +42,8 @@ namespace WidgetAnimMachineStyle
 		FTipBuilder& Kind(const FText& Text);
 		FTipBuilder& Row(const FText& Label, const FText& Value, const FLinearColor& ValueColor);
 		FTipBuilder& Row(const FText& Label, const FText& Value);
+		/** A row whose value is Value followed by Bold, in bold - "Animation: Fade In" with the name in bold. */
+		FTipBuilder& Row(const FText& Label, const FText& Value, const FText& Bold, const FLinearColor& ValueColor);
 		FTipBuilder& Paragraph(const FText& Text);
 		FTipBuilder& Hint(const FText& Text);
 		FTipBuilder& Divider();
@@ -56,6 +58,7 @@ namespace WidgetAnimMachineStyle
 			EType Type = EType::Paragraph;
 			FText Label;
 			FText Value;
+			FText Bold;
 			FLinearColor Color = FLinearColor::White;
 		};
 		TArray<FLine> Lines;
@@ -65,6 +68,7 @@ namespace WidgetAnimMachineStyle
 	const FSlateBrush* ToolTipBrush();
 	FSlateFontInfo TitleFont();
 	FSlateFontInfo BodyFont();
+	FSlateFontInfo BodyBoldFont();
 	FSlateFontInfo SmallFont();
 
 	// -------------------------------------------------------------------------------------------------

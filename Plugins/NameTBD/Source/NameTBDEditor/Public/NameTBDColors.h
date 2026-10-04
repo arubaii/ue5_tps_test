@@ -551,17 +551,20 @@ namespace NameTBD
 			inline const FLinearColor WireActive(0.98f, 0.98f, 1.00f, 1.0f);
 			inline const FLinearColor WireBubble(AnimationOrange_Hovered);
 			inline constexpr float WireBubbleSize = 8.0f;
-			inline constexpr float WireBubbleSpacing = 36.0f;
-			inline constexpr float WireBubbleSpeed = 110.0f;
+			inline constexpr float WireBubbleSpacing = 32.0f;
+			inline constexpr float WireBubbleSpeed = 90.0f;
 			inline constexpr float WireLinger = 0.8f;
 			inline constexpr float WireThickness = 1.5f;
 			inline constexpr float WireActiveThickness = 2.5f;
 
 			// -------------------------------------------------------------------------------------------------
 			// The transition node - the Animation Blueprint's round transition node, tinted by how it blends:
-			//   TransitionTween: the light gray it always was. TransitionSpring: mint. TransitionAnimation: the animation orange,
-			//   striped like a value-driven track (TransitionStripe, TransitionStripeWidth / Spacing). TransitionCut: dark gray.
-			//   TransitionArrow: the chevron pointing the way it goes. TransitionSelected: the ring round it while selected.
+			//   TransitionTween: the light gray it always was. TransitionSpring: mint. TransitionAnimation: the animation orange -
+			//   striped as a value-driven track is in the Widget Animations panel: its orange dimmed (TransitionAnimationSpill, as
+			//   the track's SectionValueSpillOpacity), crossed by faint light bands (TransitionStripe, TransitionStripeWidth /
+			//   Spacing) running up to the right. TransitionCut: dark gray.
+			//   TransitionArrow: the arrowhead pointing the way it goes (the state machine wires' own, Graph.Arrow), and
+			//   TransitionArrowSize its size in graph units. TransitionSelected: the ring round it while selected.
 			//   TransitionIdleDim: how much of its color it shows under its progress while it plays - the full color rises
 			//   across it like a progress bar.
 			// -------------------------------------------------------------------------------------------------
@@ -570,10 +573,12 @@ namespace NameTBD
 			inline const FLinearColor TransitionSpring(0.45f, 0.88f, 0.70f);
 			inline const FLinearColor TransitionAnimation(AnimationOrange_Normal);
 			inline const FLinearColor TransitionCut(0.42f, 0.42f, 0.45f);
-			inline const FLinearColor TransitionStripe(0.0f, 0.0f, 0.0f, 0.30f);
-			inline constexpr float TransitionStripeWidth = 2.0f;
-			inline constexpr float TransitionStripeSpacing = 4.5f;
-			inline const FLinearColor TransitionArrow(0.04f, 0.04f, 0.045f, 0.95f);
+			inline constexpr float TransitionAnimationSpill = 0.6f;
+			inline const FLinearColor TransitionStripe(1.0f, 1.0f, 1.0f, 0.13f);
+			inline constexpr float TransitionStripeWidth = 2.5f;
+			inline constexpr float TransitionStripeSpacing = 6.5f;
+			inline const FLinearColor TransitionArrow(0.03f, 0.03f, 0.035f, 0.90f);
+			inline constexpr float TransitionArrowSize = 11.0f;
 			inline const FLinearColor TransitionSelected(1.0f, 1.0f, 1.0f, 0.95f);
 			inline constexpr float TransitionIdleDim = 0.45f;
 
@@ -585,11 +590,19 @@ namespace NameTBD
 			inline const FLinearColor LengthLabelBackground(0.015f, 0.015f, 0.018f, 0.78f);
 
 			// -------------------------------------------------------------------------------------------------
-			// States, in more detail. StateProgress: the fill rising across a state while its animation plays, in the
-			// debugger. StateSelected: the outline of a selected state.
+			// States, in more detail.
+			//   StateProgress: the fill rising across a state's middle while its animation plays, in the debugger - for a state
+			//     with its own Node Color, that color brightened instead. StateProgressOpacity: how much of it shows (the name
+			//     stays readable over it). StateProgressEdge / StateProgressEdgeWidth: the bright line at its front.
+			//   StateProgressMinBrightness: how bright (HSV value) a Node Color is lifted to for its fill and its lit body.
+			//   StateSelected: the outline of a selected state.
 			// -------------------------------------------------------------------------------------------------
 
-			inline const FLinearColor StateProgress = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.42f);
+			inline const FLinearColor StateProgress(AnimationOrange_Normal);
+			inline constexpr float StateProgressOpacity = 0.72f;
+			inline const FLinearColor StateProgressEdge(1.0f, 0.93f, 0.80f, 0.95f);
+			inline constexpr float StateProgressEdgeWidth = 2.0f;
+			inline constexpr float StateProgressMinBrightness = 0.80f;
 			inline const FLinearColor StateSelected(1.0f, 1.0f, 1.0f, 0.85f);
 
 			// -------------------------------------------------------------------------------------------------

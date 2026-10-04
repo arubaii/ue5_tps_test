@@ -362,7 +362,7 @@ struct NAMETBD_API FWidgetAnimMachineState
 	FGuid Id;
 
 	/** What it is called: in the graph, in conditions' events (On Button Entered Hovered), and to Is In State. Unique in its layer. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State", meta = (EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
 	FName Name;
 
 	UPROPERTY()
@@ -391,12 +391,23 @@ struct NAMETBD_API FWidgetAnimMachineState
 	FVector2D EditorPosition = FVector2D::ZeroVector;
 
 	/** A note, shown in a bubble over the node - as a Blueprint node's comment is. */
-	UPROPERTY(EditAnywhere, Category = "State", meta = (MultiLine = true))
+	UPROPERTY(EditAnywhere, Category = "State", meta = (MultiLine = true, EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
 	FString Comment;
 
 	/** Whether the comment's bubble is shown. */
 	UPROPERTY()
 	bool bCommentBubbleVisible = true;
+
+	/** Whether the node wears Node Color instead of its own (dark gray for a state, green Entry, red Exit, blue Any State). */
+	UPROPERTY(EditAnywhere, Category = "State", meta = (InlineEditConditionToggle))
+	bool bOverrideNodeColor = false;
+
+	/**
+	 * The node's color in the graph - to group states by what they are for. Only how the graph looks: nothing at runtime. While
+	 * the watched widget is in the state it is lit brighter in this color, and its animation's progress fills it in it.
+	 */
+	UPROPERTY(EditAnywhere, Category = "State", meta = (EditCondition = "bOverrideNodeColor", DisplayName = "Node Color", HideAlphaChannel))
+	FLinearColor NodeColor = FLinearColor(0.10f, 0.22f, 0.40f);
 #endif
 
 	bool IsSpecial() const { return Kind != EWidgetAnimMachineNodeKind::State; }

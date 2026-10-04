@@ -16,6 +16,7 @@ class FWidgetAnimMachinePickInput;
 class FWidgetBlueprintApplicationMode;
 class FWorkflowAllowedTabSet;
 class IDetailsView;
+class IInputProcessor;
 class SHorizontalBox;
 class SBox;
 class SGraphEditor;
@@ -183,6 +184,12 @@ public:
 	/** Edits Machine from now on. */
 	void SetMachine(UWidgetAnimStateMachineAsset* Machine);
 	UWidgetAnimStateMachineAsset* GetMachine() const { return Machine; }
+
+	/** The mouse wheel over the graph, before the graph editor sees it: zooms in past 1:1, to MaxGraphZoom. True if taken. */
+	bool HandleGraphWheel(const FPointerEvent& WheelEvent);
+
+	/** How far the wheel zooms the graph in, without Ctrl: a little past 1:1. */
+	static constexpr float MaxGraphZoom = 1.5f;
 
 	// Picking a preview target in the designer - see FWidgetAnimMachinePickInput.
 	bool IsPickingTarget() const { return PickingTarget.IsSet(); }
@@ -383,6 +390,12 @@ private:
 	TWeakObjectPtr<UWidget> PickStartSelection;
 	bool bPickStartedWithSelection = false;
 	TSharedPtr<FWidgetAnimMachinePickInput> PickInput;
+	TSharedPtr<IInputProcessor> ZoomInput;
+
+	/** Keeps the editor drawing every frame while something in the shown graph moves - see IsGraphAnimating. */
+	TSharedPtr<FActiveTimerHandle> AnimateTimer;
+	bool IsGraphAnimating() const;
+	EActiveTimerReturnType OnAnimateGraph(double InCurrentTime, float InDeltaTime);
 	TSharedPtr<SWindow> PickLabelWindow;
 
 	void BeginTargetPick(FName Target);

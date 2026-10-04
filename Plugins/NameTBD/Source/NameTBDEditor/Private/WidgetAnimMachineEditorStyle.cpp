@@ -155,6 +155,13 @@ namespace WidgetAnimMachineStyle
 		return Row(Label, Value, Palette::TooltipValue);
 	}
 
+	FTipBuilder& FTipBuilder::Row(const FText& Label, const FText& Value, const FText& Bold, const FLinearColor& ValueColor)
+	{
+		Row(Label, Value, ValueColor);
+		Lines.Last().Bold = Bold;
+		return *this;
+	}
+
 	FTipBuilder& FTipBuilder::Paragraph(const FText& Text)
 	{
 		FLine& Line = Lines.AddDefaulted_GetRef();
@@ -229,12 +236,34 @@ namespace WidgetAnimMachineStyle
 					[
 						MakeText(Line.Label, BodyFont(), Palette::TooltipLabel)
 					];
-				ValueColumn->AddSlot()
-					.AutoHeight()
-					.Padding(FMargin(0.f, 1.f))
-					[
-						MakeText(Line.Value, BodyFont(), Line.Color, 300.f)
-					];
+				if (Line.Bold.IsEmpty())
+				{
+					ValueColumn->AddSlot()
+						.AutoHeight()
+						.Padding(FMargin(0.f, 1.f))
+						[
+							MakeText(Line.Value, BodyFont(), Line.Color, 300.f)
+						];
+				}
+				else
+				{
+					ValueColumn->AddSlot()
+						.AutoHeight()
+						.Padding(FMargin(0.f, 1.f))
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							[
+								MakeText(Line.Value, BodyFont(), Line.Color, 300.f)
+							]
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							[
+								MakeText(Line.Bold, BodyBoldFont(), Line.Color, 300.f)
+							]
+						];
+				}
 				continue;
 			}
 
@@ -312,6 +341,7 @@ namespace WidgetAnimMachineStyle
 
 	FSlateFontInfo TitleFont() { return FCoreStyle::GetDefaultFontStyle("Bold", 10); }
 	FSlateFontInfo BodyFont() { return FCoreStyle::GetDefaultFontStyle("Regular", 9); }
+	FSlateFontInfo BodyBoldFont() { return FCoreStyle::GetDefaultFontStyle("Bold", 9); }
 	FSlateFontInfo SmallFont() { return FCoreStyle::GetDefaultFontStyle("Regular", 8); }
 
 	const FSlateBrush* CircleBrush(float Diameter)

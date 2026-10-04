@@ -717,6 +717,36 @@ private:
 	TWeakPtr<SWidgetAnimStateMachineEditor> Editor;
 };
 
+/**
+ * Lets the mouse wheel zoom the graph in past 1:1 - a little, to MaxGraphZoom - without Ctrl held, which the graph editor
+ * otherwise wants for anything past 1:1. Seen before the graph editor, since it handles the wheel itself.
+ */
+class FWidgetAnimMachineZoomInput : public IInputProcessor
+{
+public:
+
+	explicit FWidgetAnimMachineZoomInput(TWeakPtr<SWidgetAnimStateMachineEditor> InEditor)
+		: Editor(InEditor)
+	{
+	}
+
+	virtual void Tick(const float DeltaTime, FSlateApplication& SlateApp, TSharedRef<ICursor> Cursor) override
+	{
+	}
+
+	virtual bool HandleMouseWheelOrGestureEvent(FSlateApplication& SlateApp, const FPointerEvent& InWheelEvent, const FPointerEvent* InGestureEvent) override
+	{
+		const TSharedPtr<SWidgetAnimStateMachineEditor> Pinned = Editor.Pin();
+		return Pinned.IsValid() && InGestureEvent == nullptr && Pinned->HandleGraphWheel(InWheelEvent);
+	}
+
+	virtual const TCHAR* GetDebugName() const override { return TEXT("WidgetAnimMachineZoom"); }
+
+private:
+
+	TWeakPtr<SWidgetAnimStateMachineEditor> Editor;
+};
+
 // =====================================================================================================
 // SWidgetAnimStateMachineEditor
 // =====================================================================================================
@@ -1092,10 +1122,19 @@ void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
 		Start = FindMachineInWidgetBlueprint();
 	}
 	SetMachine(Start);
+
+	// The wheel zooms in a little past 1:1 - see FWidgetAnimMachineZoomInput.
+	ZoomInput = MakeShared<FWidgetAnimMachineZoomInput>(SharedThis(this));
+	FSlateApplication::Get().RegisterInputPreProcessor(ZoomInput);
 }
 
 SWidgetAnimStateMachineEditor::~SWidgetAnimStateMachineEditor()
 {
+	if (ZoomInput.IsValid() && FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().UnregisterInputPreProcessor(ZoomInput);
+	}
+	ZoomInput.Reset();
 	UWidgetAnimStateMachineAsset::OnMachineChanged().Remove(MachineChangedHandle);
 	CancelTargetPick();
 	StopPreviews();
@@ -2060,7 +2099,7 @@ void SWidgetAnimStateMachineEditor::OnSelectionChanged(const TSet<UObject*>& Sel
 		UObject* Selected = *Selection.CreateConstIterator();
 		if (const UWidgetAnimMachineGraphNode* StateNode = Cast<UWidgetAnimMachineGraphNode>(Selected))
 		{
-			if (StateNode->Kind == EWidgetAnimMachineNodeKind::State)
+			// Entry, Exit and Any State too: they show only their Node Color (the rest is a state's alone).
 			{
 				StateProxy->Machine = Machine;
 				StateProxy->LayerIndex = ShownLayer;
@@ -2712,6 +2751,13 @@ void SWidgetAnimStateMachineEditor::Tick(const FGeometry& AllottedGeometry, cons
 		return;
 	}
 
+	// While something in the shown graph moves - a wire's dots, a fill - the editor is kept drawing every frame, so they run
+	// smoothly rather than in steps whenever something else happens to redraw.
+	if (!AnimateTimer.IsValid() && IsGraphAnimating())
+	{
+		AnimateTimer = RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateSP(this, &SWidgetAnimStateMachineEditor::OnAnimateGraph));
+	}
+
 	if (bLayersChanged)
 	{
 		bLayersChanged = false;
@@ -3012,6 +3058,98 @@ bool SWidgetAnimStateMachineEditor::IsDebuggingPlay() const
 	const UWidgetAnimationComponent* Watched = GetWatchedComponent();
 	const UWidget* Widget = Watched ? Watched->GetAnimatedWidget() : nullptr;
 	return Widget && !Widget->IsDesignTime();
+}
+
+bool SWidgetAnimStateMachineEditor::IsGraphAnimating() const
+{
+	FWidgetAnimMachineLayerDebug Debug;
+	if (GetLayerDebug(ShownLayer, Debug) && (Debug.ActiveTransition.IsValid() || Debug.bStatePlaying))
+	{
+		return true;
+	}
+
+	// A wire's dots fading out after its transition.
+	const UWidgetAnimMachineGraph* Graph = Graphs.IsValidIndex(ShownLayer) ? Graphs[ShownLayer].Get() : nullptr;
+	if (Graph)
+	{
+		const double Now = FPlatformTime::Seconds();
+		for (const TPair<FGuid, double>& Active : Graph->LastActiveTimes)
+		{
+			if (Now - Active.Value < NameTBD::Colors::StateMachineEditor::WireLinger + 0.1)
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+EActiveTimerReturnType SWidgetAnimStateMachineEditor::OnAnimateGraph(double InCurrentTime, float InDeltaTime)
+{
+	if (IsGraphAnimating())
+	{
+		return EActiveTimerReturnType::Continue;
+	}
+	AnimateTimer.Reset();
+	return EActiveTimerReturnType::Stop;
+}
+
+bool SWidgetAnimStateMachineEditor::HandleGraphWheel(const FPointerEvent& WheelEvent)
+{
+	// Ctrl: the graph editor's own full range. Out: the graph editor's own, which is free once past 1:1.
+	if (WheelEvent.IsControlDown() || WheelEvent.GetWheelDelta() <= 0.f || !FSlateApplication::IsInitialized())
+	{
+		return false;
+	}
+	const TSharedPtr<SGraphEditor> Editor = GetShownGraphEditor();
+	if (!Editor.IsValid())
+	{
+		return false;
+	}
+
+	// Only over the graph itself - not a menu or window over it.
+	FSlateApplication& Slate = FSlateApplication::Get();
+	const FWidgetPath Path = Slate.LocateWindowUnderMouse(WheelEvent.GetScreenSpacePosition(), Slate.GetInteractiveTopLevelWindows());
+	bool bOverGraph = false;
+	for (int32 Index = Path.Widgets.Num() - 1; Index >= 0 && !bOverGraph; --Index)
+	{
+		bOverGraph = &Path.Widgets[Index].Widget.Get() == Editor.Get();
+	}
+	if (!bOverGraph)
+	{
+		return false;
+	}
+
+	FVector2f ViewLocation;
+	float Zoom = 1.f;
+	Editor->GetViewLocation(ViewLocation, Zoom);
+	if (Zoom < 0.99f)
+	{
+		// Below 1:1 the graph editor zooms as it always does.
+		return false;
+	}
+
+	// The graph editor's own steps past 1:1, as far as MaxGraphZoom. At the last, the wheel does nothing more.
+	static const float Steps[] = { 1.25f, 1.375f, 1.5f };
+	float Next = 0.f;
+	for (const float Step : Steps)
+	{
+		if (Step > Zoom + 0.01f && Step <= MaxGraphZoom + 0.01f)
+		{
+			Next = Step;
+			break;
+		}
+	}
+	if (Next <= 0.f)
+	{
+		return true;
+	}
+
+	// Zoomed about the mouse: the point under it stays under it.
+	const FVector2f Local = Editor->GetCachedGeometry().AbsoluteToLocal(FVector2f(WheelEvent.GetScreenSpacePosition()));
+	const FVector2f Under = ViewLocation + Local / FMath::Max(Zoom, 0.05f);
+	Editor->SetViewLocation(Under - Local / Next, Next);
+	return true;
 }
 
 bool SWidgetAnimStateMachineEditor::GetLayerDebug(int32 LayerIndex, FWidgetAnimMachineLayerDebug& OutDebug) const

@@ -1937,12 +1937,6 @@ namespace NameTBD::Tooltips
 				"Double-click to open its animation. Drag from its edge to another state to add a transition.");
 		}
 
-		inline FText TransitionNodeHint()
-		{
-			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "TransitionNodeHint",
-				"Its color is how it blends: light gray Tween, mint Spring, orange striped Play Transition Animation, dark gray Cut. Its arrow points the way it goes. Click for its settings.");
-		}
-
 		inline FText InputRowTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "InputRowTooltip",
