@@ -1,0 +1,20 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+index ad55a87..34cb4a0 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+@@ -1758,10 +1758,12 @@ public:
+ 					Bubble
+ 				];
+ 
+-			// Where it sits, and how big it is, as the bubble says - set on the slot itself, once it is made.
+-			for (int32 SlotIndex = 0; SlotIndex < Children.Num(); ++SlotIndex)
++			// Where it sits, and how big it is, as the bubble says - set on the slot itself, once it is made. (The node's slot
++			// list is private: reached through its children, every one of which is a node slot.)
++			FChildren* NodeChildren = GetChildren();
++			for (int32 SlotIndex = 0; NodeChildren && SlotIndex < NodeChildren->Num(); ++SlotIndex)
+ 			{
+-				FNodeSlot& BubbleSlot = Children[SlotIndex];
++				FNodeSlot& BubbleSlot = const_cast<FNodeSlot&>(static_cast<const FNodeSlot&>(NodeChildren->GetSlotAt(SlotIndex)));
+ 				if (BubbleSlot.GetZoneType() != ENodeZone::TopCenter)
+ 				{
+ 					continue;

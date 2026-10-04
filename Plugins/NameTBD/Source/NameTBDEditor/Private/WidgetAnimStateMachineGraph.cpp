@@ -1758,10 +1758,12 @@ public:
 					Bubble
 				];
 
-			// Where it sits, and how big it is, as the bubble says - set on the slot itself, once it is made.
-			for (int32 SlotIndex = 0; SlotIndex < Children.Num(); ++SlotIndex)
+			// Where it sits, and how big it is, as the bubble says - set on the slot itself, once it is made. (The node's slot
+			// list is private: reached through its children, every one of which is a node slot.)
+			FChildren* NodeChildren = GetChildren();
+			for (int32 SlotIndex = 0; NodeChildren && SlotIndex < NodeChildren->Num(); ++SlotIndex)
 			{
-				FNodeSlot& BubbleSlot = Children[SlotIndex];
+				FNodeSlot& BubbleSlot = const_cast<FNodeSlot&>(static_cast<const FNodeSlot&>(NodeChildren->GetSlotAt(SlotIndex)));
 				if (BubbleSlot.GetZoneType() != ENodeZone::TopCenter)
 				{
 					continue;
