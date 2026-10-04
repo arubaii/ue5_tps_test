@@ -2677,8 +2677,9 @@ public:
 		{
 			Color = MachineColors::TransitionDisabled;
 		}
-		else if (IsHovered() || (IsNodeSelected && IsNodeSelected()))
+		else if (IsHovered())
 		{
+			// Lighter under the mouse. Selected, it keeps its color - as a selected state does - and wears the selection band.
 			Color = FMath::Lerp(Color, FLinearColor::White, 0.35f);
 		}
 
@@ -2694,40 +2695,32 @@ public:
 			OutDrawElements.PopClip();
 		}
 
-		// Selected: the graph editor's selection look - a solid band of its selection orange hugging the edge, with a soft glow
-		// fading out beyond it - made round. Drawn as antialiased closed paths, so it is exactly round and exactly that color
-		// (the graph editor's own selection brush, a rounded box, is held back: see GetShadowBrush).
+		// Selected: the graph editor's own selection look, measured off a selected state, made round - a crisp solid band of
+		// the selection orange over the node's edge and just outside it, shading from yellower at the top to deeper orange at
+		// the bottom as the editor's selection brush does; no glow beyond it. Drawn as one antialiased closed path with a color
+		// at each point, so it is exactly round (the graph editor's own selection brush, a rounded box, is held back: see
+		// GetShadowBrush).
 		if (IsNodeSelected && IsNodeSelected())
 		{
-			const FLinearColor Selection = MachineColors::StateSelectedOutline * InWidgetStyle.GetColorAndOpacityTint();
-			auto Circle = [&](float CircleRadius, float Thickness, const FLinearColor& CircleColor)
-			{
-				constexpr int32 Segments = 48;
-				TArray<FVector2f> Ring;
-				Ring.Reserve(Segments + 1);
-				for (int32 Segment = 0; Segment <= Segments; ++Segment)
-				{
-					const float Angle = UE_TWO_PI * Segment / Segments;
-					Ring.Add(Center + FVector2f(FMath::Cos(Angle), FMath::Sin(Angle)) * CircleRadius);
-				}
-				FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 3, AllottedGeometry.ToPaintGeometry(), Ring, ESlateDrawEffect::None,
-					CircleColor, /*bAntialias=*/true, Thickness);
-			};
-
-			// The band: from just inside the disc's edge - no gap - outward.
+			const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
 			const float BandInner = Radius - MachineColors::TransitionSelectedOverlap;
-			const float BandOuter = BandInner + MachineColors::TransitionSelectedWidth;
-
-			// The glow beyond it, outermost first: thin overlapping circles, each fainter.
-			const int32 GlowSteps = FMath::Max(MachineColors::TransitionSelectedGlowSteps, 1);
-			for (int32 Step = GlowSteps; Step >= 1; --Step)
+			const float BandRadius = BandInner + MachineColors::TransitionSelectedWidth * 0.5f;
+			constexpr int32 Segments = 48;
+			TArray<FVector2f> Ring;
+			TArray<FLinearColor> RingColors;
+			Ring.Reserve(Segments + 1);
+			RingColors.Reserve(Segments + 1);
+			for (int32 Segment = 0; Segment <= Segments; ++Segment)
 			{
-				const float Out = static_cast<float>(Step) / GlowSteps;
-				const float Opacity = MachineColors::TransitionSelectedGlowOpacity * FMath::Square(1.f - Out + 1.f / GlowSteps);
-				Circle(BandOuter + MachineColors::TransitionSelectedGlowReach * Out - MachineColors::TransitionSelectedGlowReach / GlowSteps * 0.5f,
-					MachineColors::TransitionSelectedGlowReach / GlowSteps + 0.75f, Selection.CopyWithNewOpacity(Selection.A * Opacity));
+				const float Angle = UE_TWO_PI * Segment / Segments;
+				const FVector2f Along(FMath::Cos(Angle), FMath::Sin(Angle));
+				Ring.Add(Center + Along * BandRadius);
+				// Top (-1) to bottom (+1).
+				const float Down = (Along.Y + 1.f) * 0.5f;
+				RingColors.Add(FMath::Lerp(MachineColors::TransitionSelectedTop, MachineColors::TransitionSelectedBottom, Down) * Tint);
 			}
-			Circle((BandInner + BandOuter) * 0.5f, MachineColors::TransitionSelectedWidth, Selection);
+			FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 3, AllottedGeometry.ToPaintGeometry(), MoveTemp(Ring), MoveTemp(RingColors),
+				ESlateDrawEffect::None, FLinearColor::White, /*bAntialias=*/true, MachineColors::TransitionSelectedWidth);
 		}
 
 		// The arrowhead - the one an Animation Blueprint state machine's wires end in - turned to point the way the transition

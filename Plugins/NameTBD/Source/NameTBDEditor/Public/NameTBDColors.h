@@ -575,15 +575,13 @@ namespace NameTBD
 			inline const FLinearColor TransitionArrow(0.03f, 0.03f, 0.035f, 0.90f);
 			inline constexpr float TransitionArrowSize = 11.0f;
 			inline const FLinearColor TransitionSelected(1.0f, 1.0f, 1.0f, 0.95f);
-			// A selected transition node, as the graph editor shows a selected node but round: a solid band of
-			// StateSelectedOutline (the editor's selection orange) TransitionSelectedWidth thick, starting
-			// TransitionSelectedOverlap inside the disc's edge so no gap shows, and a soft glow fading out beyond it over
-			// TransitionSelectedGlowReach in TransitionSelectedGlowSteps thin circles, TransitionSelectedGlowOpacity at its brightest.
-			inline constexpr float TransitionSelectedWidth = 3.5f;
-			inline constexpr float TransitionSelectedOverlap = 0.75f;
-			inline constexpr float TransitionSelectedGlowReach = 7.0f;
-			inline constexpr int32 TransitionSelectedGlowSteps = 7;
-			inline constexpr float TransitionSelectedGlowOpacity = 0.28f;
+			// A selected transition node, as the graph editor shows a selected node - measured off a selected state - but round:
+			// a crisp solid band TransitionSelectedWidth thick, starting TransitionSelectedOverlap inside the disc's edge (so no
+			// gap shows), shading from TransitionSelectedTop at the top to TransitionSelectedBottom at the bottom. No glow.
+			inline constexpr float TransitionSelectedWidth = 5.0f;
+			inline constexpr float TransitionSelectedOverlap = 1.0f;
+			inline const FLinearColor TransitionSelectedTop = FLinearColor(FColor(223, 159, 0));
+			inline const FLinearColor TransitionSelectedBottom = FLinearColor(FColor(210, 116, 0));
 			inline constexpr float TransitionIdleDim = 0.45f;
 
 			// -------------------------------------------------------------------------------------------------
