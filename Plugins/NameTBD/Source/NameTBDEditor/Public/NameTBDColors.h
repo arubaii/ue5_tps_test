@@ -633,6 +633,11 @@ namespace NameTBD
 			inline const FLinearColor StateTitleSharp(0.010f, 0.010f, 0.011f, 1.0f);
 			inline const FLinearColor StateSelected(1.0f, 1.0f, 1.0f, 0.85f);
 
+			// A selected state's outline, on its own rounded edge: the graph editor's selection orange, and how thick it is
+			// drawn outside the glow line of a selected state in play (on its own it is as thick as that line).
+			inline const FLinearColor StateSelectedOutline = FLinearColor(FColor(242, 177, 0));
+			inline constexpr float StateSelectedOutlineWidth = 2.5f;
+
 			// -------------------------------------------------------------------------------------------------
 			// The Inputs panel. InputRowSelected: behind the input whose settings the Details show. BuiltInUnused: a built-in
 			// input the machine doesn't read.

@@ -1955,9 +1955,11 @@ private:
 };
 
 /**
- * A soft glow round the state the watched widget is in: a bright line laid on its rounded edge, fading out smoothly beyond it -
- * so which state is in play shows at a glance, even zoomed out. Drawn outside what it sits on; the node's
- * own colors untouched. Never takes the mouse.
+ * What is drawn round a state's edge, on the same rounded path as the node itself - so every line hugs it and its corners
+ * match: while the watched widget is in it, a bright line laid on its rim fading out smoothly beyond it (so which state is in
+ * play shows at a glance, even zoomed out); and while it is selected, the selection outline - drawn here rather than by the
+ * graph editor, whose selection brush has corners of its own that never matched the state's. Drawn outside what it sits on;
+ * the node's own colors untouched. Never takes the mouse.
  */
 class SWidgetAnimMachineActiveRing : public SLeafWidget
 {
@@ -1965,14 +1967,18 @@ public:
 
 	SLATE_BEGIN_ARGS(SWidgetAnimMachineActiveRing)
 		: _Strength(0.f)
+		, _Selected(false)
 	{}
-		/** How strongly it shows, 0 - 1: pulsing while in the state, steady and fainter while leaving it, 0 otherwise. */
+		/** How strongly the glow shows, 0 - 1: pulsing while in the state, steady and fainter while leaving it, 0 otherwise. */
 		SLATE_ATTRIBUTE(float, Strength)
+		/** Whether the state is selected: its selection outline is drawn. */
+		SLATE_ATTRIBUTE(bool, Selected)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs)
 	{
 		Strength = InArgs._Strength;
+		Selected = InArgs._Selected;
 		SetVisibility(EVisibility::HitTestInvisible);
 	}
 
@@ -1985,32 +1991,58 @@ public:
 		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
 	{
 		const float Amount = FMath::Clamp(Strength.Get(), 0.f, 1.f);
+		const bool bSelected = Selected.Get();
 		const FVector2f Size = AllottedGeometry.GetLocalSize();
-		if (Amount <= 0.f || Size.X <= 0.f || Size.Y <= 0.f)
+		if ((Amount <= 0.f && !bSelected) || Size.X <= 0.f || Size.Y <= 0.f)
 		{
 			return LayerId;
 		}
 
-		// Each line the node's rounded outline pushed out by its offset - corners as arcs - drawn antialiased as one closed
-		// path, so its color is exactly what is asked (a rounded box brush's outline isn't tinted).
-		// The node's own outline: its edge - the dark rim its body brush draws - and that edge's corner radius.
+		// Each line is the node's rounded outline pushed out by its offset - corners as arcs round the same corner radius
+		// grown by the same offset, so every line is concentric with the node - drawn antialiased as one closed path, so its
+		// color is exactly what is asked (a rounded box brush's outline isn't tinted).
 		const float NodeRadius = FMath::Min(MachineColors::ActiveRingRadius, FMath::Min(Size.X, Size.Y) * 0.5f);
-		const FLinearColor Base = MachineColors::ActiveRing * InWidgetStyle.GetColorAndOpacityTint();
-		TArray<FVector2f> Points;
-		struct FLine { float Offset; float Thickness; float Opacity; };
-
-		// The glow: thin lines one after another out from the bright line's outer side, each fainter - overlapping, they fade
-		// smoothly out rather than in bands. Then the bright line itself, over the node's whole outer rim - wide enough that
-		// none of the rim shows outside it, at the corners least of all - so the glow hugs the node.
+		const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
+		const FLinearColor Glow = MachineColors::ActiveRing * Tint;
+		const FLinearColor Selection = MachineColors::StateSelectedOutline * Tint;
+		struct FLine { float Offset; float Thickness; FLinearColor Color; };
 		TArray<FLine, TInlineAllocator<12>> Lines;
-		const int32 HaloSteps = FMath::Max(MachineColors::ActiveRingHaloSteps, 1);
-		const float HaloStart = MachineColors::ActiveRingInset + MachineColors::ActiveRingWidth * 0.5f;
-		for (int32 Step = HaloSteps; Step >= 1; --Step)
+
+		// Over the node's rim: the bright line while in play, else the selection outline. Selected while in play, the
+		// selection outline goes just outside the bright line instead, both whole.
+		const float RimOffset = MachineColors::ActiveRingInset;
+		const float RimWidth = MachineColors::ActiveRingWidth;
+		float Outer = RimOffset + RimWidth * 0.5f;
+		const bool bGlow = Amount > 0.f;
+		float SelectionOffset = RimOffset;
+		if (bGlow && bSelected)
 		{
-			const float Out = static_cast<float>(Step) / HaloSteps;
-			Lines.Add({ HaloStart + MachineColors::ActiveRingHaloReach * Out, MachineColors::ActiveRingHaloReach / HaloSteps + 0.75f, MachineColors::ActiveRingHaloOpacity * FMath::Square(1.f - Out + 1.f / HaloSteps) });
+			SelectionOffset = Outer + MachineColors::StateSelectedOutlineWidth * 0.5f;
+			Outer += MachineColors::StateSelectedOutlineWidth;
 		}
-		Lines.Add({ MachineColors::ActiveRingInset, MachineColors::ActiveRingWidth, 1.f });
+
+		// The glow: thin lines one after another out from the outermost line, each fainter - overlapping, they fade smoothly
+		// out rather than in bands. Outermost first, so the lines over the rim are drawn last.
+		if (bGlow)
+		{
+			const int32 HaloSteps = FMath::Max(MachineColors::ActiveRingHaloSteps, 1);
+			for (int32 Step = HaloSteps; Step >= 1; --Step)
+			{
+				const float Out = static_cast<float>(Step) / HaloSteps;
+				const float Opacity = MachineColors::ActiveRingHaloOpacity * FMath::Square(1.f - Out + 1.f / HaloSteps) * Amount;
+				Lines.Add({ Outer + MachineColors::ActiveRingHaloReach * Out, MachineColors::ActiveRingHaloReach / HaloSteps + 0.75f, Glow.CopyWithNewOpacity(Glow.A * Opacity) });
+			}
+		}
+		if (bSelected)
+		{
+			Lines.Add({ SelectionOffset, bGlow ? MachineColors::StateSelectedOutlineWidth : RimWidth, Selection });
+		}
+		if (bGlow)
+		{
+			Lines.Add({ RimOffset, RimWidth, Glow.CopyWithNewOpacity(Glow.A * Amount) });
+		}
+
+		TArray<FVector2f> Points;
 		for (const FLine& Line : Lines)
 		{
 			const float Radius = FMath::Max(NodeRadius + Line.Offset, 0.5f);
@@ -2024,7 +2056,7 @@ public:
 				FVector2f(Min.X + Radius, Min.Y + Radius),
 			};
 			// Round from the top-right corner, clockwise: each corner a quarter turn starting where the last left off.
-			constexpr int32 ArcSegments = 8;
+			constexpr int32 ArcSegments = 10;
 			Points.Reset();
 			for (int32 Corner = 0; Corner < 4; ++Corner)
 			{
@@ -2040,7 +2072,7 @@ public:
 			const FVector2f First = Points[0];
 			Points.Add(First);
 			FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None,
-				Base.CopyWithNewOpacity(Base.A * Line.Opacity * Amount), /*bAntialias=*/true, Line.Thickness);
+				Line.Color, /*bAntialias=*/true, Line.Thickness);
 		}
 		return LayerId + 1;
 	}
@@ -2048,6 +2080,7 @@ public:
 private:
 
 	TAttribute<float> Strength;
+	TAttribute<bool> Selected;
 };
 
 /**
@@ -2104,6 +2137,7 @@ public:
 					[
 						SNew(SWidgetAnimMachineActiveRing)
 						.Strength(this, &SWidgetAnimMachineStateNode::GetRingStrength)
+						.Selected(this, &SWidgetAnimMachineStateNode::IsNodeSelected)
 					]
 
 					// The edge: where transitions are dragged from.
@@ -2281,6 +2315,15 @@ public:
 		OutputPins.Add(PinToAdd);
 	}
 
+	/**
+	 * Selected: no selection brush from the graph editor - its corners are its own and never matched the state's. The state's
+	 * selection outline is drawn on its own rounded edge instead (SWidgetAnimMachineActiveRing).
+	 */
+	virtual const FSlateBrush* GetShadowBrush(bool bSelected) const override
+	{
+		return bSelected ? FAppStyle::GetNoBrush() : SGraphNode::GetShadowBrush(bSelected);
+	}
+
 	virtual FReply OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent) override
 	{
 		UWidgetAnimMachineGraphNode* Node = Cast<UWidgetAnimMachineGraphNode>(GraphNode);
@@ -2382,6 +2425,12 @@ private:
 			return FMath::Lerp(MachineColors::ActiveRingMin, MachineColors::ActiveRingMax, Wave);
 		}
 		return IsLeaving() ? MachineColors::ActiveRingLeaving : 0.f;
+	}
+
+	bool IsNodeSelected() const
+	{
+		const TSharedPtr<SGraphPanel> Panel = OwnerGraphPanelPtr.Pin();
+		return Panel.IsValid() && GraphNode && Panel->SelectionManager.IsNodeSelected(GraphNode);
 	}
 
 	/** The stripes: fully while the watched widget is in it, fainter while leaving it, none otherwise. */
