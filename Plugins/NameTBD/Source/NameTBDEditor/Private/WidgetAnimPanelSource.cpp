@@ -255,7 +255,23 @@ namespace
 			return;
 		}
 
-		UWidgetAnimTransformLibrary::SyncAllTransformAnims(Object);
+		// An animation's keys are its Transform tracks' own, so only those are synced: walking every property of every
+		// track to find them cost more than anything else in an edit to an animation of hundreds of tracks - every frame of
+		// a drag. A track turned into a Transform is synced by the edit that turned it.
+		if (UWidgetAnimPresetAsset* Animation = Cast<UWidgetAnimPresetAsset>(Object))
+		{
+			for (FWidgetAnimLayer& Layer : Animation->Layers)
+			{
+				if (Layer.AnimType == EWidgetAnimType::Transform)
+				{
+					Layer.Transform.SyncKeysToCurve();
+				}
+			}
+		}
+		else
+		{
+			UWidgetAnimTransformLibrary::SyncAllTransformAnims(Object);
+		}
 
 		// As an edit to Layers: that is what both a builder and an asset refresh their previews for, and a
 		// group edit changes what the layers play on just the same.
@@ -1272,9 +1288,13 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 	}
 
 	// The animation as settings for this preview, built again only when something it was built from changed. See Flattened.
+	// Built again on a timer too, for an edit that tells no one - which, only then, is shown by posing again: the counts it
+	// gathers for the Track Editor are wanted either way, but posing on the timer alone would take the widgets back from
+	// the designer toolbar's preview twice a second.
 	if (bFlattenedStale || FlattenedAnimation.Get() != Edited || FlattenedRoot.Get() != Root || bFlattenedInvert != bInvert
 		|| Now - FlattenedTime > FlattenedRefreshSeconds)
 	{
+		bPoseStale = bPoseStale || bFlattenedStale || FlattenedAnimation.Get() != Edited || FlattenedRoot.Get() != Root || bFlattenedInvert != bInvert;
 		Flattened.Reset();
 		BuildFlattened(Root, Flattened);
 		FlattenedAnimation = Edited;
@@ -1318,6 +1338,7 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(Root, Settings, TArray<FWidgetAnimSettings>(), Baselines);
 		PosedRoot = Root;
 		PosedSignature = FlattenedSignature;
+		bPoseStale = true;
 	}
 
 	// The clock. One pass is the animation at this Speed; Loop wraps it, Ping Pong bounces it.
@@ -1351,6 +1372,14 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 			}
 		}
 	}
+
+	// Posed when the clock moved, a scrub put it somewhere else, or anything it is posed from changed - see PosedAlpha.
+	if (!bPoseStale && !bClockMoved && Alpha == PosedAlpha)
+	{
+		return true;
+	}
+	bPoseStale = false;
+	PosedAlpha = Alpha;
 
 	UWidgetAnimLibrary::ApplyWidgetAnimationsAtAlpha(Root, Settings, Alpha, /*bIsOutAnimation=*/false, Baselines);
 

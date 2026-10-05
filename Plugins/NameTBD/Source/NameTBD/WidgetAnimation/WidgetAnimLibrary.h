@@ -1478,6 +1478,49 @@ struct FWidgetAnimTransformLookup
 	}
 };
 
+/** Which material parameter an entry of FWidgetAnimResult::ScalarParameters or VectorParameters is for. */
+struct FWidgetAnimMaterialKey
+{
+	const UWidget* Widget = nullptr;
+	EWidgetAnimMaterialSlot Slot = EWidgetAnimMaterialSlot::Brush;
+	FName Parameter;
+
+	bool operator==(const FWidgetAnimMaterialKey& Other) const { return Widget == Other.Widget && Slot == Other.Slot && Parameter == Other.Parameter; }
+
+	friend uint32 GetTypeHash(const FWidgetAnimMaterialKey& Key)
+	{
+		return HashCombine(HashCombine(::PointerHash(Key.Widget), ::GetTypeHash(static_cast<uint8>(Key.Slot))), GetTypeHash(Key.Parameter));
+	}
+};
+
+/**
+ * Where each parameter's entry is in a result's ScalarParameters or VectorParameters, for a result with many of them: a
+ * material track on each of hundreds of widgets. Looked up by walking the array, writing such a result, folding one track's
+ * parameters into the frame's and putting back those of the tracks not started yet each cost the square of its size, every
+ * frame. Trusted exactly as FWidgetAnimTransformLookup is: only as far as it was built, thrown away by a copy, a move or an
+ * array shorter than what it indexed, and rebuilt when an entry it points at isn't the one asked for. Plain C++, never saved
+ * or reflected.
+ */
+struct FWidgetAnimMaterialLookup
+{
+	TMap<FWidgetAnimMaterialKey, int32> Index;
+
+	/** How many of the array's entries, from the first, are in Index. */
+	int32 Indexed = 0;
+
+	FWidgetAnimMaterialLookup() = default;
+	FWidgetAnimMaterialLookup(const FWidgetAnimMaterialLookup&) {}
+	FWidgetAnimMaterialLookup(FWidgetAnimMaterialLookup&&) {}
+	FWidgetAnimMaterialLookup& operator=(const FWidgetAnimMaterialLookup&) { Reset(); return *this; }
+	FWidgetAnimMaterialLookup& operator=(FWidgetAnimMaterialLookup&&) { Reset(); return *this; }
+
+	void Reset()
+	{
+		Index.Reset();
+		Indexed = 0;
+	}
+};
+
 USTRUCT(BlueprintType)
 struct NAMETBD_API FWidgetAnimResult
 {
@@ -1494,13 +1537,24 @@ struct NAMETBD_API FWidgetAnimResult
 
 	void InvalidateTransformLookup() { TransformLookup.Reset(); }
 
+	/**
+	 * Whole widgets a track touched this frame without posing them - one not started yet, or one that let go - when its
+	 * baselines are only put back, never composed over (see FWidgetAnimBaselineSet::bComposeTransforms). Each is written at
+	 * its captured pose unless a track poses it this frame, so what is on screen never depends on the last frame that did.
+	 * Null is the widget the result is applied to. May repeat. Not reflected.
+	 */
+	TArray<UWidget*> RestingWidgets;
+
 	/** Empties every array, keeping what each had grown to - for a result reused frame after frame. */
 	void ResetKeepingCapacity()
 	{
 		TargetedTransforms.Reset();
 		TransformLookup.Reset();
+		RestingWidgets.Reset();
 		ScalarParameters.Reset();
 		VectorParameters.Reset();
+		ScalarLookup.Reset();
+		VectorLookup.Reset();
 		ShapeTargets.Reset();
 		AuthoritativeWrites.Reset();
 		CueFires.Reset();
@@ -1520,6 +1574,14 @@ struct NAMETBD_API FWidgetAnimResult
 	/** The scalar parameter of Widget's material in Slot written this frame - added, at 0, if none is. */
 	FWidgetAnimScalarTarget& FindOrAddScalar(UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter);
 	FWidgetAnimVectorTarget& FindOrAddVector(UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter);
+
+	/** The scalar or vector parameter of Widget's material in Slot written this frame, or null. */
+	FWidgetAnimScalarTarget* FindScalar(const UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter);
+	FWidgetAnimVectorTarget* FindVector(const UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter);
+
+	/** See FWidgetAnimMaterialLookup. Kept in step by the finds above; anything else that removes entries or changes one's key in place resets it. */
+	FWidgetAnimMaterialLookup ScalarLookup;
+	FWidgetAnimMaterialLookup VectorLookup;
 
 	/** Folds Other's material parameters in, as a later track's: each replaces this frame's, unless it is only a baseline and this frame already has one written. */
 	void FoldMaterialParameters(const FWidgetAnimResult& Other);
@@ -1788,6 +1850,25 @@ struct NAMETBD_API FWidgetAnimMaterialBaseline
 	bool bIsFallback = false;
 };
 
+/** Which parameter an entry of FWidgetAnimBaselineSet::MaterialBaselines captured - see FWidgetAnimBaselineSet::FindMaterialBaseline. */
+struct FWidgetAnimMaterialBaselineKey
+{
+	const UWidget* Widget = nullptr;
+	EWidgetAnimMaterialSlot Slot = EWidgetAnimMaterialSlot::Brush;
+	FName Parameter;
+	bool bVector = false;
+
+	bool operator==(const FWidgetAnimMaterialBaselineKey& Other) const
+	{
+		return Widget == Other.Widget && Slot == Other.Slot && Parameter == Other.Parameter && bVector == Other.bVector;
+	}
+
+	friend uint32 GetTypeHash(const FWidgetAnimMaterialBaselineKey& Key)
+	{
+		return HashCombine(HashCombine(HashCombine(::PointerHash(Key.Widget), ::GetTypeHash(static_cast<uint8>(Key.Slot))), GetTypeHash(Key.Parameter)), ::GetTypeHash(Key.bVector));
+	}
+};
+
 USTRUCT(BlueprintType)
 struct NAMETBD_API FWidgetAnimBaselineSet
 {
@@ -1814,15 +1895,73 @@ struct NAMETBD_API FWidgetAnimBaselineSet
 	/** The captured value of Widget's parameter in Slot, or null. A null Widget finds the fallback capture. */
 	const FWidgetAnimMaterialBaseline* FindMaterialBaseline(const UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter, bool bVector) const
 	{
-		return MaterialBaselines.FindByPredicate([Widget, Slot, Parameter, bVector](const FWidgetAnimMaterialBaseline& Baseline)
+		auto Matches = [Widget, Slot, Parameter, bVector](const FWidgetAnimMaterialBaseline& Baseline)
 		{
 			return (Widget ? Baseline.Widget == Widget : Baseline.bIsFallback) && Baseline.Slot == Slot && Baseline.ParameterName == Parameter && Baseline.bVector == bVector;
-		});
+		};
+
+		// Asked for every material track not started yet, every frame: walked, a set of hundreds of parameters cost the square
+		// of that. Past a handful, looked up instead - indexed as far as the set has grown, since captures only ever add to it.
+		const int32 Num = MaterialBaselines.Num();
+		static constexpr int32 LookupThreshold = 16;
+		if (Num < LookupThreshold)
+		{
+			return MaterialBaselines.FindByPredicate(Matches);
+		}
+		if (MaterialBaselineIndexed > Num)
+		{
+			MaterialBaselineIndex.Reset();
+			MaterialBaselineIndexed = 0;
+		}
+		for (int32 Index = MaterialBaselineIndexed; Index < Num; ++Index)
+		{
+			// Under its widget - and, captured for settings naming none, under no widget too, as the walk finds it either way.
+			// The first capture for a key is the one a walk would find.
+			const FWidgetAnimMaterialBaseline& Baseline = MaterialBaselines[Index];
+			const FWidgetAnimMaterialBaselineKey Key{ Baseline.Widget.Get(), Baseline.Slot, Baseline.ParameterName, Baseline.bVector };
+			if (Key.Widget && !MaterialBaselineIndex.Contains(Key))
+			{
+				MaterialBaselineIndex.Add(Key, Index);
+			}
+			if (Baseline.bIsFallback)
+			{
+				const FWidgetAnimMaterialBaselineKey FallbackKey{ nullptr, Baseline.Slot, Baseline.ParameterName, Baseline.bVector };
+				if (!MaterialBaselineIndex.Contains(FallbackKey))
+				{
+					MaterialBaselineIndex.Add(FallbackKey, Index);
+				}
+			}
+		}
+		MaterialBaselineIndexed = Num;
+
+		const int32* Found = MaterialBaselineIndex.Find(FWidgetAnimMaterialBaselineKey{ Widget, Slot, Parameter, bVector });
+		if (!Found)
+		{
+			return nullptr;
+		}
+		if (MaterialBaselines.IsValidIndex(*Found) && Matches(MaterialBaselines[*Found]))
+		{
+			return &MaterialBaselines[*Found];
+		}
+
+		// An entry changed since it was indexed: walked, as it always was, and indexed again from nothing next time.
+		MaterialBaselineIndexed = MAX_int32;
+		return MaterialBaselines.FindByPredicate(Matches);
 	}
 
 	/** Set by the first capture, so a later pass can't re-capture a pose the animation itself just wrote. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bCaptured = false;
+
+	/**
+	 * Whether results are composed over these baselines - opacity and scale multiplied in, translation, shear and angle added
+	 * (Preserve Authored Transforms) - or written as they are, the captures only ever put back: by a reset, and on every widget
+	 * a track touches without posing it this frame - one that hasn't started, or that let go - so the pose is a pure function
+	 * of time either way. A component whose transforms aren't preserved hands its track player such a set; without one, a
+	 * track the clock runs back past - a ping-pong's return leg - kept whatever its last frame had posed, a hair short of
+	 * where it starts. Not reflected; never changed by a capture or a reset.
+	 */
+	bool bComposeTransforms = true;
 
 	void ResetBaselines()
 	{
@@ -1830,8 +1969,14 @@ struct NAMETBD_API FWidgetAnimBaselineSet
 		ShapeBaselines.Reset();
 		AuthoritativeBaselines.Reset();
 		MaterialBaselines.Reset();
+		MaterialBaselineIndex.Reset();
+		MaterialBaselineIndexed = 0;
 		bCaptured = false;
 	}
+
+	/** See FindMaterialBaseline: where each capture is, for the first MaterialBaselineIndexed of them. Not reflected. */
+	mutable TMap<FWidgetAnimMaterialBaselineKey, int32> MaterialBaselineIndex;
+	mutable int32 MaterialBaselineIndexed = 0;
 
 	/** The captured value of Target's Channel, or null if nothing captured one. */
 	const FWidgetAnimAuthoritativeBaseline* FindAuthoritativeBaseline(const UObject* Target, FName Channel) const

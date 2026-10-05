@@ -530,6 +530,15 @@ private:
 	uint32 FlattenedSignature = 0;
 	float FlattenedPassSeconds = 0.f;
 
+	/**
+	 * Where the preview was last posed, and whether anything it was posed from has changed since: an edit, another root,
+	 * the clock. Posed again only then - not every frame: posing every track of a large animation, its material parameters
+	 * read back and the whole preview invalidated, cost every frame the panel was open, paused or not; and it took the
+	 * widgets back from the designer toolbar's preview every frame, so that one stuttered while the panel was open.
+	 */
+	float PosedAlpha = -1.f;
+	bool bPoseStale = true;
+
 	FDelegateHandle PropertyChangedHandle;
 
 	FTSTicker::FDelegateHandle TickerHandle;

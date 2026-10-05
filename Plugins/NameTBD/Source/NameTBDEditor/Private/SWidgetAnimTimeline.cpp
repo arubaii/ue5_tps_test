@@ -5521,14 +5521,35 @@ public:
 		TSet<EWidgetAnimType> Types;
 		TArray<const FWidgetAnimLayer*> ProxyLayers;
 		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		const TArray<FWidgetAnimLayer>* RealLayers = Owner ? Owner->GetLayers() : nullptr;
 		bool bAllCanStagger = true;
+		bool bRepresented = false;
+		int32 NumTracks = 0;
 		for (const TWeakObjectPtr<UObject>& Object : Objects)
 		{
 			if (const UWidgetAnimLayerEditProxy* Proxy = Cast<UWidgetAnimLayerEditProxy>(Object.Get()))
 			{
+				// One proxy standing in for a large selection: what is shown is decided by every track it stands for.
+				if (Proxy->RepresentedLayers.Num() > 0 && RealLayers)
+				{
+					bRepresented = true;
+					for (const int32 LayerIndex : Proxy->RepresentedLayers)
+					{
+						if (RealLayers->IsValidIndex(LayerIndex))
+						{
+							Types.Add((*RealLayers)[LayerIndex].AnimType);
+							ProxyLayers.Add(&(*RealLayers)[LayerIndex]);
+							bAllCanStagger = bAllCanStagger && Owner->CanLayerStagger(LayerIndex);
+							++NumTracks;
+						}
+					}
+					continue;
+				}
+
 				Types.Add(Proxy->Layer.AnimType);
 				ProxyLayers.Add(&Proxy->Layer);
 				bAllCanStagger = bAllCanStagger && (!Owner || Owner->CanLayerStagger(Proxy->LayerIndex));
+				++NumTracks;
 			}
 		}
 
@@ -5540,7 +5561,7 @@ public:
 		}
 
 		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Layers",
-			FText::Format(LOCTEXT("LayersCategory", "{0} Tracks"), FText::AsNumber(Objects.Num())));
+			FText::Format(LOCTEXT("LayersCategory", "{0} Tracks"), FText::AsNumber(NumTracks)));
 
 		const bool bSameType = Types.Num() == 1;
 		const bool bAllTransform = bSameType && Types.Contains(EWidgetAnimType::Transform);
@@ -5556,10 +5577,12 @@ public:
 					.AutoWrapText(true)
 					.Font(IDetailLayoutBuilder::GetDetailFontItalic())
 					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-					.Text(FText::Format(bSameType
+					.Text(FText::Format(bRepresented
+						? WidgetAnimTips::MultipleShowsFirstTrack()
+						: bSameType
 						? WidgetAnimTips::MultipleSameType()
 						: WidgetAnimTips::MultipleMixedTypes(),
-						FText::AsNumber(Objects.Num())))
+						FText::AsNumber(NumTracks)))
 				]
 			];
 
@@ -6587,6 +6610,8 @@ SWidgetAnimTimeline::SWidgetAnimTimeline() = default;
 
 SWidgetAnimTimeline::~SWidgetAnimTimeline()
 {
+	FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(ObjectChangedHandle);
+
 	if (bCompact)
 	{
 		SaveCompactState();
@@ -6709,6 +6734,9 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 	CompactTitle = InArgs._Title;
 	CompactTitleToolTip = InArgs._TitleToolTip;
 	OnExpand = InArgs._OnExpand;
+
+	// Edits made anywhere - here, in the Selection panel, a script, an undo - tell the Track Editor its lines are due.
+	ObjectChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP(this, &SWidgetAnimTimeline::OnObjectChangedForLayout);
 
 	// The Selection panel: the edited object, laid out by FWidgetAnimSelectionDetails. No notify hook, so
 	// UMG's designer never hears of an edit made here - which is what keeps it from rebuilding its preview,
@@ -10177,14 +10205,26 @@ bool SWidgetAnimTimeline::IsSelectionEditable() const
 		return false;
 	}
 
+	// Asked by every field of the Selection panel, every frame - so answered once a frame: each asking walked the whole
+	// selection, hundreds of tracks of it with a big collapsed track picked.
+	if (EditableAnswerFrame == GFrameCounter && EditableAnswerCount == SelectedLayers.Num())
+	{
+		return bEditableAnswer;
+	}
+
+	bool bEditable = true;
 	for (const int32 LayerIndex : SelectedLayers)
 	{
 		if (IsLayerLocked(LayerIndex))
 		{
-			return false;
+			bEditable = false;
+			break;
 		}
 	}
-	return true;
+	EditableAnswerFrame = GFrameCounter;
+	EditableAnswerCount = SelectedLayers.Num();
+	bEditableAnswer = bEditable;
+	return bEditable;
 }
 
 void SWidgetAnimTimeline::RefreshDetails()
@@ -10269,6 +10309,36 @@ void SWidgetAnimTimeline::RebuildLayerProxies()
 	}
 
 	const TWeakPtr<SWidgetAnimTimeline> WeakThisPtr = SharedThis(this);
+
+	// Past a few dozen, one proxy stands in for them all - the primary track's, an edit to it copied onto every one. One
+	// proxy each, shown together, makes the details view read every field of every one of them every frame to tell
+	// whether they agree, and copy every one into each edit's undo step: a big collapsed track picked whole made the
+	// panel crawl for as long as it stayed selected.
+	constexpr int32 MaxProxiedLayers = 64;
+	if (SelectedLayers.Num() > MaxProxiedLayers)
+	{
+		TArray<int32> Represented;
+		Represented.Reserve(SelectedLayers.Num());
+		for (const int32 LayerIndex : SelectedLayers)
+		{
+			if (Layers->IsValidIndex(LayerIndex))
+			{
+				Represented.Add(LayerIndex);
+			}
+		}
+		if (Represented.Num() > 0)
+		{
+			const int32 Primary = Represented.Contains(Selection.Layer) ? Selection.Layer : Represented[0];
+			UWidgetAnimLayerEditProxy* Proxy = NewObject<UWidgetAnimLayerEditProxy>(GetTransientPackage(), NAME_None, RF_Transient);
+			Proxy->Layer = (*Layers)[Primary];
+			Proxy->LayerIndex = Primary;
+			Proxy->RepresentedLayers = MoveTemp(Represented);
+			Proxy->Panel = WeakThisPtr;
+			LayerProxies.Emplace(Proxy);
+		}
+		return;
+	}
+
 	for (const int32 LayerIndex : SelectedLayers)
 	{
 		if (!Layers->IsValidIndex(LayerIndex))
@@ -10377,6 +10447,17 @@ void SWidgetAnimTimeline::OnProxyEdited(UWidgetAnimLayerEditProxy* Proxy, FPrope
 	if (!BeginEdit())
 	{
 		return;
+	}
+
+	// Standing in for a whole large selection: the one property copied onto every other track it stands for, as one proxy
+	// each would have copied it. A change that can't be followed to one property goes onto its own track alone - copied
+	// whole onto the rest, it would give them all its timing and targets.
+	for (const int32 Represented : Proxy->RepresentedLayers)
+	{
+		if (Represented != Proxy->LayerIndex && Layers->IsValidIndex(Represented) && CanEditLayer(Represented))
+		{
+			CopyEditedLayerProperty(PropertyChangedEvent.PropertyChain, Proxy->Layer, (*Layers)[Represented]);
+		}
 	}
 
 	FWidgetAnimLayer& Layer = (*Layers)[Proxy->LayerIndex];
@@ -10833,8 +10914,12 @@ EActiveTimerReturnType SWidgetAnimTimeline::OnRefreshTimer(double InCurrentTime,
 	// The Selection panel's stand-in for the asset, likewise.
 	SyncSelectionShadow();
 
-	// The Track Editor's lines follow every edit, wherever it was made - they are cheap to work out.
-	UpdateTrackLayout();
+	// The Track Editor's lines follow every edit, wherever it was made - worked out again whenever one may have changed
+	// them. See IsTrackLayoutDue.
+	if (IsTrackLayoutDue())
+	{
+		UpdateTrackLayout();
+	}
 
 	// A drag is its own source of truth until it ends; refreshing the list or the Selection panel under it would
 	// only rebuild them every frame.
@@ -10868,15 +10953,80 @@ EActiveTimerReturnType SWidgetAnimTimeline::OnRefreshTimer(double InCurrentTime,
 		Selection = Validate(Selection);
 		RebuildRows();
 		RefreshDetails();
+		bListCheckPending = false;
 	}
-	else if (ComputeListSignature(LayoutIndex, TrackSpans) != ListSignature)
+	else if (bListCheckPending)
 	{
-		// Only the order things play in changed - a Delay typed in the Selection panel, say. The list follows;
-		// the Selection panel is left alone, since that may be exactly where the typing is going on.
-		RebuildLayerList();
+		// Asked once each time the lines are worked out again - the order comes from the same spans - rather than every
+		// frame, which sorted every group's tracks for nothing.
+		bListCheckPending = false;
+		if (ComputeListSignature(LayoutIndex, TrackSpans) != ListSignature)
+		{
+			// Only the order things play in changed - a Delay typed in the Selection panel, say. The list follows;
+			// the Selection panel is left alone, since that may be exactly where the typing is going on.
+			RebuildLayerList();
+		}
 	}
 
 	return EActiveTimerReturnType::Continue;
+}
+
+bool SWidgetAnimTimeline::IsTrackLayoutDue() const
+{
+	// After a drag, once - its tracks give way to the rest only while it is on; a drag lays its own steps out as it makes
+	// them. A quarter of a second at most otherwise, for what is read off the preview without telling anyone: how many
+	// items a stagger fans out to, how long a text takes to type.
+	static constexpr double TrackLayoutRefreshSeconds = 0.25;
+	return (bLaidOutWhileDragging && !IsDragging())
+		|| TrackLayoutRevision != LaidOutRevision
+		|| !IsTrackLayoutCurrent()
+		|| FPlatformTime::Seconds() - LastTrackLayoutTime >= TrackLayoutRefreshSeconds
+		|| ComputeTrackViewHash() != LaidOutViewHash;
+}
+
+uint32 SWidgetAnimTimeline::ComputeTrackViewHash() const
+{
+	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	const TArray<FWidgetAnimLayer>* ContextLayers = GetContextLayers();
+
+	uint32 Hash = PointerHash(Layers);
+	Hash = HashCombine(Hash, GetTypeHash(Layers ? Layers->Num() : INDEX_NONE));
+	Hash = HashCombine(Hash, PointerHash(Groups));
+	Hash = HashCombine(Hash, GetTypeHash(Groups ? Groups->Num() : INDEX_NONE));
+	Hash = HashCombine(Hash, PointerHash(ContextLayers));
+	Hash = HashCombine(Hash, GetTypeHash(ContextLayers ? ContextLayers->Num() : INDEX_NONE));
+	Hash = HashCombine(Hash, GetTypeHash(ActiveCollapsed));
+	Hash = HashCombine(Hash, GetTypeHash(bCompact));
+	Hash = HashCombine(Hash, GetTypeHash(IsPercentTime()));
+	Hash = HashCombine(Hash, GetTypeHash(GetTimeScale()));
+
+	// Folded groups, open animation tracks and their folded groups. Summed, so the order a set happens to hold them in
+	// doesn't count.
+	uint32 FoldHash = 0;
+	for (const int32 Folded : TrackCollapsedGroups)
+	{
+		FoldHash += HashCombine(GetTypeHash(Folded), 0x9E3779B9u);
+	}
+	for (const int32 Expanded : ExpandedAnimationTracks)
+	{
+		FoldHash += HashCombine(GetTypeHash(Expanded), 0x85EBCA6Bu);
+	}
+	for (const uint64 Folded : FoldedNestedGroups)
+	{
+		FoldHash += HashCombine(GetTypeHash(Folded), 0xC2B2AE35u);
+	}
+	Hash = HashCombine(Hash, FoldHash);
+	Hash = HashCombine(Hash, GetTypeHash(TrackCollapsedGroups.Num() + ExpandedAnimationTracks.Num() * 7 + FoldedNestedGroups.Num() * 31));
+	return Hash;
+}
+
+void SWidgetAnimTimeline::OnObjectChangedForLayout(UObject* Object, FPropertyChangedEvent& Event)
+{
+	if (Object && (Object->IsA<UWidgetAnimPresetAsset>() || (Source.IsValid() && Object == Source->GetEditedObject())))
+	{
+		++TrackLayoutRevision;
+	}
 }
 
 void SWidgetAnimTimeline::RebuildRows()
@@ -12177,6 +12327,13 @@ void SWidgetAnimTimeline::AddNestedListRows(int32 LayerIndex, int32 GroupIndex)
 void SWidgetAnimTimeline::UpdateTrackLayout()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimPanelTrackLayout);
+
+	// What these lines are worked out from, for IsTrackLayoutDue - and the list's order is to be checked against them.
+	LaidOutRevision = TrackLayoutRevision;
+	LaidOutViewHash = ComputeTrackViewHash();
+	LastTrackLayoutTime = FPlatformTime::Seconds();
+	bLaidOutWhileDragging = IsDragging();
+	bListCheckPending = true;
 	// The context tracks: placed as their animation places them, at the speed it plays, and packed onto as few rows
 	// as keep them from overlapping.
 	ContextSpans.Reset();
@@ -15347,6 +15504,24 @@ bool SWidgetAnimTimeline::BeginLayerDrag(int32 PressedLayer, ELayerDrag Mode)
 		State.OriginalEditorLines[LayerIndex] = (*Layers)[LayerIndex].EditorLine;
 	}
 
+	// The edges as bits, for every frame of the drag. See FLayerDragState::StartBits.
+	State.StartBits.Init(false, NumLayers);
+	State.EndBits.Init(false, NumLayers);
+	for (const int32 LayerIndex : State.StartEdges)
+	{
+		if (State.StartBits.IsValidIndex(LayerIndex))
+		{
+			State.StartBits[LayerIndex] = true;
+		}
+	}
+	for (const int32 LayerIndex : State.EndEdges)
+	{
+		if (State.EndBits.IsValidIndex(LayerIndex))
+		{
+			State.EndBits[LayerIndex] = true;
+		}
+	}
+
 	LayerDrag = MoveTemp(State);
 	SnapIndicator.Reset();
 
@@ -15384,8 +15559,8 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines, 
 
 	for (const int32 LayerIndex : Moving)
 	{
-		const bool bStart = State.StartEdges.Contains(LayerIndex);
-		const bool bEnd = State.EndEdges.Contains(LayerIndex);
+		const bool bStart = State.IsStartEdge(LayerIndex);
+		const bool bEnd = State.IsEndEdge(LayerIndex);
 		const float Start = State.OriginalStarts[LayerIndex];
 		const float Length = State.OriginalLengths[LayerIndex];
 		const float End = Start + Length;
@@ -15427,11 +15602,11 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines, 
 		TArray<float> Edges;
 		for (const int32 LayerIndex : Moving)
 		{
-			if (State.StartEdges.Contains(LayerIndex))
+			if (State.IsStartEdge(LayerIndex))
 			{
 				Edges.Add(State.OriginalStarts[LayerIndex] + DeltaSeconds);
 			}
-			if (State.EndEdges.Contains(LayerIndex))
+			if (State.IsEndEdge(LayerIndex))
 			{
 				Edges.Add(State.OriginalStarts[LayerIndex] + State.OriginalLengths[LayerIndex] + DeltaSeconds);
 			}
@@ -15482,8 +15657,8 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines, 
 	}
 	for (const int32 LayerIndex : Moving)
 	{
-		const bool bStart = State.StartEdges.Contains(LayerIndex);
-		const bool bEnd = State.EndEdges.Contains(LayerIndex);
+		const bool bStart = State.IsStartEdge(LayerIndex);
+		const bool bEnd = State.IsEndEdge(LayerIndex);
 
 		if (bStart)
 		{
@@ -15508,6 +15683,12 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines, 
 	// go keeps it there. See UpdateTrackLayout and CommitTrackLines.
 	if (State.Mode == ELayerDrag::Move)
 	{
+		// Every layer's collapsed track, group and view read once. Asked one layer at a time, each asked about every other
+		// one - which is the first of its collapsed track, whether its whole group is collapsed - so a move in an animation
+		// of hundreds of tracks cost the square of that on every frame of the drag.
+		FLayoutIndex Index;
+		BuildLayoutIndex(Index);
+
 		TArray<FWidgetAnimLayer>& MutableLayers = *Source->GetLayers();
 		for (int32 LayerIndex = 0; LayerIndex < MutableLayers.Num() && State.OriginalEditorLines.IsValidIndex(LayerIndex); ++LayerIndex)
 		{
@@ -15515,13 +15696,17 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines, 
 
 			// A pinned track, one folded into a collapsed track and a collapsed track drawn loose keep their lines in their
 			// groups: they aren't shown there.
-			const bool bOffItsLine = IsLayerPinned(LayerIndex) || IsFoldedIntoCollapsed(LayerIndex) || !IsLayerInView(LayerIndex) || IsLooseCollapsedHead(LayerIndex);
+			const bool bIndexed = Index.InView.IsValidIndex(LayerIndex);
+			const bool bOffItsLine = IsLayerPinned(LayerIndex)
+				|| (bIndexed
+					? (static_cast<bool>(Index.FoldedIntoCollapsed[LayerIndex]) || !static_cast<bool>(Index.InView[LayerIndex]) || Index.IsLooseCollapsedHead(LayerIndex))
+					: (IsFoldedIntoCollapsed(LayerIndex) || !IsLayerInView(LayerIndex) || IsLooseCollapsedHead(LayerIndex)));
 			if (DeltaLines != 0 && State.OriginalLineOrdinals.IsValidIndex(LayerIndex) && !bOffItsLine)
 			{
 				const int32 Ordinal = State.OriginalLineOrdinals[LayerIndex];
 				NewLine = Ordinal;
 
-				if (State.StartEdges.Contains(LayerIndex))
+				if (State.IsStartEdge(LayerIndex))
 				{
 					const int32 GroupIndex = GetLayerGroup(LayerIndex);
 					const int32 LineCount = State.OriginalGroupLineCounts.IsValidIndex(GroupIndex) ? State.OriginalGroupLineCounts[GroupIndex] : 0;
@@ -15537,10 +15722,10 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines, 
 		}
 	}
 
-	UpdateTrackLayout();
-
-	// Interactive, as a Details panel drag is: the preview follows every frame of it.
+	// Interactive, as a Details panel drag is: the preview follows every frame of it. Told before the lines are worked out,
+	// so they are worked out once for this step, not again on the next refresh - see IsTrackLayoutDue.
 	NotifyGroupsChanged(EPropertyChangeType::Interactive);
+	UpdateTrackLayout();
 }
 
 void SWidgetAnimTimeline::ApplyLayerSpans(const TArray<float>& NewStarts, const TArray<float>& NewLengths)
@@ -15643,7 +15828,7 @@ void SWidgetAnimTimeline::EndLayerDrag()
 
 bool SWidgetAnimTimeline::IsLayerBeingDragged(int32 LayerIndex) const
 {
-	return IsDraggingLayers() && (LayerDrag.StartEdges.Contains(LayerIndex) || LayerDrag.EndEdges.Contains(LayerIndex));
+	return IsDraggingLayers() && (LayerDrag.IsStartEdge(LayerIndex) || LayerDrag.IsEndEdge(LayerIndex));
 }
 
 // -----------------------------------------------------------------------------------------------------
@@ -21000,7 +21185,7 @@ bool SWidgetAnimTimeline::BeginKeyboardMove(int32 Direction, bool bLarge)
 		const TArray<FWidgetAnimLayer>* Layers = GetLayers();
 		for (int32 LayerIndex = 0; Layers && LayerIndex < Layers->Num() && !bLockedLeftBehind; ++LayerIndex)
 		{
-			bLockedLeftBehind = IsLayerLocked(LayerIndex) && !LayerDrag.StartEdges.Contains(LayerIndex);
+			bLockedLeftBehind = IsLayerLocked(LayerIndex) && !LayerDrag.IsStartEdge(LayerIndex);
 		}
 		LayerDrag.bStartIsFree = !bLockedLeftBehind;
 		LayerDrag.OriginalMinimumLength = Source.IsValid() ? Source->GetMinimumLength() : 0.f;

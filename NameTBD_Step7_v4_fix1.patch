@@ -1,0 +1,22 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.h
+index fe946be..0beb1fe 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.h
+@@ -1489,7 +1489,7 @@ struct FWidgetAnimMaterialKey
+ 
+ 	friend uint32 GetTypeHash(const FWidgetAnimMaterialKey& Key)
+ 	{
+-		return HashCombine(HashCombine(::PointerHash(Key.Widget), ::GetTypeHash(static_cast<uint8>(Key.Slot))), ::GetTypeHash(Key.Parameter));
++		return HashCombine(HashCombine(::PointerHash(Key.Widget), ::GetTypeHash(static_cast<uint8>(Key.Slot))), GetTypeHash(Key.Parameter));
+ 	}
+ };
+ 
+@@ -1865,7 +1865,7 @@ struct FWidgetAnimMaterialBaselineKey
+ 
+ 	friend uint32 GetTypeHash(const FWidgetAnimMaterialBaselineKey& Key)
+ 	{
+-		return HashCombine(HashCombine(HashCombine(::PointerHash(Key.Widget), ::GetTypeHash(static_cast<uint8>(Key.Slot))), ::GetTypeHash(Key.Parameter)), ::GetTypeHash(Key.bVector));
++		return HashCombine(HashCombine(HashCombine(::PointerHash(Key.Widget), ::GetTypeHash(static_cast<uint8>(Key.Slot))), GetTypeHash(Key.Parameter)), ::GetTypeHash(Key.bVector));
+ 	}
+ };
+ 

@@ -131,6 +131,13 @@ namespace NameTBD::Tooltips
 				"{0} tracks of different types selected. Only the settings they all have are shown; one they don't agree on reads Multiple Values.");
 		}
 
+		/** A selection too large to show every track's values side by side. {0} is the count. */
+		inline FText MultipleShowsFirstTrack()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MultipleShowsFirstTrack",
+				"{0} tracks selected. The values shown are the first track's; a setting changed here is set on all {0}.");
+		}
+
 		// -------------------------------------------------------------------------------------------------
 		// Panel
 		// -------------------------------------------------------------------------------------------------

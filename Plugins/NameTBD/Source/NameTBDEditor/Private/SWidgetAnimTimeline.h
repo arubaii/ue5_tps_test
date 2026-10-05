@@ -21,6 +21,7 @@ class SVerticalBox;
 class SWidgetAnimTimelineTracks;
 class FScopedTransaction;
 struct FPropertyChangedChainEvent;
+struct FPropertyChangedEvent;
 namespace WidgetAnimTrackPresets { struct FPreset; }
 
 /**
@@ -1134,9 +1135,24 @@ private:
 	/**
 	 * Works out the Track Editor's lines from the layers' groups, their EditorLine and their times: each group's
 	 * layers by line, and on each line in time order, a track that would overlap one already there moved to a
-	 * line of its own just below. Cheap, and done every frame, so the lines follow every edit.
+	 * line of its own just below. Done whenever anything it reads may have changed - see IsTrackLayoutDue - so the
+	 * lines follow every edit.
 	 */
 	void UpdateTrackLayout();
+
+	/**
+	 * Whether the Track Editor's lines may be out of date: an edit anywhere since they were worked out (see
+	 * OnObjectChangedForLayout), a drag just ended, the view changed (see ComputeTrackViewHash), or a quarter second gone
+	 * by, for what is read off the preview. Worked out every frame regardless, an animation of hundreds of tracks paid for laying
+	 * every one of them out sixty times a second with nothing changing.
+	 */
+	bool IsTrackLayoutDue() const;
+
+	/** What the lines are worked out from besides the layers themselves: which animation, its size, folds, the open collapsed track, its pace. */
+	uint32 ComputeTrackViewHash() const;
+
+	/** Any animation changed - an animation track's own tracks are laid out too - or whatever the panel edits: the lines are due. */
+	void OnObjectChangedForLayout(UObject* Object, FPropertyChangedEvent& Event);
 
 	/** Works out NestedSpans for the open animation tracks, from TrackSpans - and forgets any that no longer is one. */
 	void UpdateNestedSpans();
@@ -1543,6 +1559,23 @@ private:
 	uint32 LayoutSignature = 0;
 	uint32 ListSignature = 0;
 
+	/**
+	 * See IsTrackLayoutDue: edits counted as they are told (TrackLayoutRevision), and what the lines were last worked out
+	 * from - that count, the view, when, and whether a drag was on. The list's order is checked once after each.
+	 */
+	uint64 TrackLayoutRevision = 0;
+	uint64 LaidOutRevision = MAX_uint64;
+	uint32 LaidOutViewHash = 0;
+	double LastTrackLayoutTime = -1.0;
+	bool bLaidOutWhileDragging = false;
+	bool bListCheckPending = true;
+	FDelegateHandle ObjectChangedHandle;
+
+	/** IsSelectionEditable's answer this frame, for a selection of this many tracks. */
+	mutable uint64 EditableAnswerFrame = MAX_uint64;
+	mutable int32 EditableAnswerCount = INDEX_NONE;
+	mutable bool bEditableAnswer = true;
+
 	/** The key being dragged, and the transaction the whole drag is one step of. */
 	int32 DragLayer = INDEX_NONE;
 	int32 DragKey = INDEX_NONE;
@@ -1569,6 +1602,32 @@ private:
 		/** Which edges of which layers the drag moves. A move takes both edges of a layer. */
 		TArray<int32> StartEdges;
 		TArray<int32> EndEdges;
+
+		/**
+		 * The same as bits, one per layer, set once the drag has begun: asked of every moved layer, several times over, on
+		 * every frame of the drag - searched for in the lists, a collapsed track of hundreds of tracks cost the square of
+		 * that each time.
+		 */
+		TBitArray<> StartBits;
+		TBitArray<> EndBits;
+
+		bool IsStartEdge(int32 LayerIndex) const
+		{
+			if (StartBits.IsValidIndex(LayerIndex))
+			{
+				return static_cast<bool>(StartBits[LayerIndex]);
+			}
+			return StartEdges.Contains(LayerIndex);
+		}
+
+		bool IsEndEdge(int32 LayerIndex) const
+		{
+			if (EndBits.IsValidIndex(LayerIndex))
+			{
+				return static_cast<bool>(EndBits[LayerIndex]);
+			}
+			return EndEdges.Contains(LayerIndex);
+		}
 
 		/** Every layer at the press: start and length in seconds, and a Transform layer's key times. */
 		TArray<float> OriginalStarts;

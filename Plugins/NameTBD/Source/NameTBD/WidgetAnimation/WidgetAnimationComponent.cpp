@@ -1008,7 +1008,11 @@ void UWidgetAnimationComponent::EnsureRuntimeBaselines()
 	{
 		// Not composed over - Preserve Authored Transforms is off - but still needed to put widgets back when an
 		// animation is stopped with Reset To Start. Without it that reset had nothing to restore, so the widget
-		// stayed wherever the animation had gotten to.
+		// stayed wherever the animation had gotten to. The track player poses with it too, so a track not posing its
+		// widget this frame - not started yet, or run back past its start by a ping-pong's return leg - puts it back
+		// rather than leaving it wherever its last frame had it: a cell a hair short of its full size, its glow not
+		// quite off.
+		ResetPoseBaselines.bComposeTransforms = false;
 		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(AnimatedWidget, InToCapture, FlattenedOut, ResetPoseBaselines);
 	}
 }
@@ -1058,13 +1062,13 @@ void UWidgetAnimationComponent::TickPlayer(UWidget* AnimatedWidget, float DeltaT
 			// The tracks and the state machines worked out into one result, applied once: a machine's pose and a one-shot
 			// played by ID on the same widget compose instead of taking turns.
 			FWidgetAnimResult Result;
-			UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, OutJustFinished, Result);
+			UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(AnimatedWidget, AnimPlayer, GetPlayerBaselines(), DeltaTime, OutJustFinished, Result);
 			if (!bMachinesTicked)
 			{
 				TickMachines(DeltaTime);
 			}
 			ComposeMachines(Result);
-			UWidgetAnimLibrary::ApplyComposedResult(AnimatedWidget, Result, AnimBaselines);
+			UWidgetAnimLibrary::ApplyComposedResult(AnimatedWidget, Result, GetPlayerBaselines());
 			UWidgetAnimLibrary::ReleaseFinishedTracks(AnimPlayer);
 			for (FWidgetAnimMachineInstance& Instance : MachineInstances)
 			{
@@ -1081,7 +1085,7 @@ void UWidgetAnimationComponent::TickPlayer(UWidget* AnimatedWidget, float DeltaT
 	}
 	else
 	{
-		UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, OutJustFinished);
+		UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, GetPlayerBaselines(), DeltaTime, OutJustFinished);
 		NoteTracksAfterTick();
 	}
 	--PlayerTickDepth;

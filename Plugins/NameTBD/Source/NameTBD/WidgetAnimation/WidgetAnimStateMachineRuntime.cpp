@@ -240,6 +240,10 @@ namespace WidgetAnimStateMachines
 				return A.TargetWidget == B.TargetWidget && A.Slot == B.Slot && A.ParameterName == B.ParameterName;
 			});
 
+			// Keys changed in place and entries removed: see FWidgetAnimMaterialLookup.
+			Result.ScalarLookup.Reset();
+			Result.VectorLookup.Reset();
+
 			for (FWidgetAnimAuthoritativeWrite& Write : Result.AuthoritativeWrites)
 			{
 				if (!Write.TargetWidget)

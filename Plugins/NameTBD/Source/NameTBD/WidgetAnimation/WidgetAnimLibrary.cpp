@@ -840,11 +840,7 @@ void UWidgetAnimLibrary::TouchLayerTargets(const FWidgetAnimSettings& Settings, 
 		}
 		if (bVector)
 		{
-			const bool bWritten = OutResult.VectorParameters.ContainsByPredicate([MaterialWidget, &Settings, Parameter](const FWidgetAnimVectorTarget& Target)
-			{
-				return Target.TargetWidget == MaterialWidget && Target.Slot == Settings.MaterialSlot && Target.ParameterName == Parameter;
-			});
-			if (!bWritten)
+			if (!OutResult.FindVector(MaterialWidget, Settings.MaterialSlot, Parameter))
 			{
 				FWidgetAnimVectorTarget& Target = OutResult.FindOrAddVector(MaterialWidget, Settings.MaterialSlot, Parameter);
 				Target.Value = Baseline->Vector;
@@ -853,11 +849,7 @@ void UWidgetAnimLibrary::TouchLayerTargets(const FWidgetAnimSettings& Settings, 
 		}
 		else
 		{
-			const bool bWritten = OutResult.ScalarParameters.ContainsByPredicate([MaterialWidget, &Settings, Parameter](const FWidgetAnimScalarTarget& Target)
-			{
-				return Target.TargetWidget == MaterialWidget && Target.Slot == Settings.MaterialSlot && Target.ParameterName == Parameter;
-			});
-			if (!bWritten)
+			if (!OutResult.FindScalar(MaterialWidget, Settings.MaterialSlot, Parameter))
 			{
 				FWidgetAnimScalarTarget& Target = OutResult.FindOrAddScalar(MaterialWidget, Settings.MaterialSlot, Parameter);
 				Target.Value = Baseline->Scalar;
@@ -880,8 +872,18 @@ void UWidgetAnimLibrary::TouchLayerTargets(const FWidgetAnimSettings& Settings, 
 	}
 
 	// The identity: multiplies and adds nothing, so a layer that IS contributing to the same widget this frame
-	// is untouched by it - but the widget is written, at its baseline, even when nothing else is.
-	FindOrAddTargetedTransform(OutResult, Settings.TargetWidget, Settings.Part);
+	// is untouched by it - but the widget is written, at its baseline, even when nothing else is. Over baselines that are
+	// only put back, the identity would be written as it is - a widget authored at half opacity shown at full - so the
+	// widget is noted instead, and written at its captured pose unless a track poses it. A part is never captured: at rest
+	// it is where its widget lays it out, which is the identity either way.
+	if (!Baselines.bComposeTransforms && !Settings.Part.IsSet())
+	{
+		OutResult.RestingWidgets.Add(Settings.TargetWidget.Get());
+	}
+	else
+	{
+		FindOrAddTargetedTransform(OutResult, Settings.TargetWidget, Settings.Part);
+	}
 
 	// A shape is assigned rather than composed, so the authored outline only goes in where no other layer has
 	// put one this frame - and a later layer that does still replaces it.
@@ -980,6 +982,9 @@ namespace WidgetAnimLoop
 		OutGroupLead.Init(TNumericLimits<float>::Max(), NumLayers);
 		OutGroupEnd.Init(0.f, NumLayers);
 
+		// Each group's leader remembered as it is met, as TickAnimationsInto does: looking back over every earlier layer for
+		// it cost the square of the layer count - and the designer's readouts ask this several times a frame.
+		TArray<TPair<int32, int32>, TInlineAllocator<8>> GroupLeaders;
 		for (int32 Index = 0; Index < NumLayers; ++Index)
 		{
 			OutLeaderOf[Index] = Index;
@@ -987,13 +992,14 @@ namespace WidgetAnimLoop
 			const int32 Group = Animations[Index].LoopGroup;
 			if (Group != INDEX_NONE)
 			{
-				for (int32 Earlier = 0; Earlier < Index; ++Earlier)
+				const TPair<int32, int32>* Known = GroupLeaders.FindByPredicate([Group](const TPair<int32, int32>& Pair) { return Pair.Key == Group; });
+				if (Known)
 				{
-					if (Animations[Earlier].LoopGroup == Group)
-					{
-						OutLeaderOf[Index] = OutLeaderOf[Earlier];
-						break;
-					}
+					OutLeaderOf[Index] = Known->Value;
+				}
+				else
+				{
+					GroupLeaders.Emplace(Group, Index);
 				}
 			}
 
@@ -2280,6 +2286,46 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
 	// built by walking the same settings), so the next one is nearly always right after it - a staggered list of hundreds
 	// of children doesn't search every baseline for every child.
 	int32 BaselineHint = 0;
+	auto FindBaseline = [Baselines, &BaselineHint](const UWidget* Target) -> const FWidgetAnimBaseline*
+	{
+		const TArray<FWidgetAnimBaseline>& All = Baselines->Baselines;
+		for (int32 Step = 0; Step < All.Num(); ++Step)
+		{
+			const int32 Index = (BaselineHint + Step) % All.Num();
+			if (All[Index].Widget.Get() == Target)
+			{
+				BaselineHint = Index + 1;
+				return &All[Index];
+			}
+		}
+		return nullptr;
+	};
+
+	// The whole render transform in one write, and only when it changed. Set field by field, each of the four setters pushed
+	// a transform of its own to Slate and invalidated the widget four times a frame - scale with last frame's angle, then the
+	// new translation, and so on - which, under invalidation (Global Invalidation, an Invalidation or Retainer Box), was the
+	// suspect for a rotating widget flashing up larger for a frame or two at runtime only. "Changed" is exact: compared
+	// within a tolerance, a scale landing on 1 from 0.99995 was never written, and the widget kept the last frame's.
+	auto WritePose = [](UWidget* Target, float Opacity, const FWidgetTransform& Pose)
+	{
+		WidgetAnimTransformDebug::Check(Target, Pose);
+
+		if (Target->GetRenderOpacity() != Opacity)
+		{
+			Target->SetRenderOpacity(Opacity);
+		}
+		// Snapping off while it scales or turns, so its edges don't shake by a pixel. See WidgetAnimPixelSnapping.
+		WidgetAnimPixelSnapping::Update(Target, Pose);
+
+		const FWidgetTransform& Current = Target->GetRenderTransform();
+		if (Current.Translation != Pose.Translation || Current.Scale != Pose.Scale || Current.Shear != Pose.Shear || Current.Angle != Pose.Angle)
+		{
+			Target->SetRenderTransform(Pose);
+		}
+	};
+
+	// Composed over the baselines only when they are composed over - see FWidgetAnimBaselineSet::bComposeTransforms.
+	const bool bCompose = Baselines && Baselines->bComposeTransforms;
 
 	for (const FWidgetAnimTargetedTransform& Transform : Result.TargetedTransforms)
 	{
@@ -2315,45 +2361,47 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
 		// 0.5, y = -8".
 		float Opacity = Transform.Opacity;
 		FWidgetTransform Pose(Transform.Translation, MakeInvertibleScale(Transform.Scale), Transform.Shear, Transform.Angle);
-		if (Baselines)
+		if (bCompose)
 		{
-			const FWidgetAnimBaseline* Found = nullptr;
-			const TArray<FWidgetAnimBaseline>& All = Baselines->Baselines;
-			for (int32 Step = 0; Step < All.Num(); ++Step)
-			{
-				const int32 Index = (BaselineHint + Step) % All.Num();
-				if (All[Index].Widget == Target)
-				{
-					Found = &All[Index];
-					BaselineHint = Index + 1;
-					break;
-				}
-			}
-
 			// Identity: a widget nobody captured is animated exactly the way it always was.
 			static const FWidgetAnimBaseline Identity;
+			const FWidgetAnimBaseline* Found = FindBaseline(Target);
 			const FWidgetAnimBaseline& Baseline = Found ? *Found : Identity;
 			Opacity = Baseline.Opacity * Transform.Opacity;
 			Pose = FWidgetTransform(Baseline.Translation + Transform.Translation, MakeInvertibleScale(Baseline.Scale * Transform.Scale), Baseline.Shear + Transform.Shear, Baseline.Angle + Transform.Angle);
 		}
 
-		// The whole render transform in one write, and only when it changed. Set field by field, each of the four setters
-		// pushed a transform of its own to Slate and invalidated the widget four times a frame - scale with last frame's
-		// angle, then the new translation, and so on - which, under invalidation (Global Invalidation, an Invalidation or
-		// Retainer Box), was the suspect for a rotating widget flashing up larger for a frame or two at runtime only.
-		WidgetAnimTransformDebug::Check(Target, Pose);
+		WritePose(Target, Opacity, Pose);
+	}
 
-		if (!FMath::IsNearlyEqual(Target->GetRenderOpacity(), Opacity))
+	// Widgets touched without being posed, over baselines only put back: at their captured pose - exactly where they were
+	// before anything animated them - unless a track posed them above. A widget nobody captured is left as it is.
+	if (Baselines && !bCompose && Result.RestingWidgets.Num() > 0)
+	{
+		TSet<const UWidget*> Written;
+		Written.Reserve(Result.TargetedTransforms.Num() + Result.RestingWidgets.Num());
+		for (const FWidgetAnimTargetedTransform& Transform : Result.TargetedTransforms)
 		{
-			Target->SetRenderOpacity(Opacity);
+			if (!Transform.Part.IsSet())
+			{
+				Written.Add(Transform.TargetWidget ? Transform.TargetWidget : FallbackWidget);
+			}
 		}
-		// Snapping off while it scales or turns, so its edges don't shake by a pixel. See WidgetAnimPixelSnapping.
-		WidgetAnimPixelSnapping::Update(Target, Pose);
 
-		const FWidgetTransform& Current = Target->GetRenderTransform();
-		if (!Current.Translation.Equals(Pose.Translation) || !Current.Scale.Equals(Pose.Scale) || !Current.Shear.Equals(Pose.Shear) || !FMath::IsNearlyEqual(Current.Angle, Pose.Angle))
+		for (UWidget* Resting : Result.RestingWidgets)
 		{
-			Target->SetRenderTransform(Pose);
+			UWidget* Target = Resting ? Resting : FallbackWidget;
+			bool bAlreadyWritten = false;
+			Written.Add(Target, &bAlreadyWritten);
+			if (!Target || bAlreadyWritten)
+			{
+				continue;
+			}
+
+			if (const FWidgetAnimBaseline* Baseline = FindBaseline(Target))
+			{
+				WritePose(Target, Baseline->Opacity, FWidgetTransform(Baseline->Translation, MakeInvertibleScale(Baseline->Scale), Baseline->Shear, Baseline->Angle));
+			}
 		}
 	}
 
@@ -2516,7 +2564,11 @@ UMaterialInterface* UWidgetAnimLibrary::FindWidgetMaterial(const UWidget* Widget
 		}
 		if (Widget->IsA<UBorder>())
 		{
-			const FSlateBrush* Brush = FindBrushProperty(Widget, TEXT("Background"));
+			// Found once, not by name every time: asked for every material parameter written, every frame.
+			static const FStructProperty* const BackgroundProperty = FindFProperty<FStructProperty>(UBorder::StaticClass(), TEXT("Background"));
+			const FSlateBrush* Brush = BackgroundProperty && BackgroundProperty->Struct == FSlateBrush::StaticStruct()
+				? BackgroundProperty->ContainerPtrToValuePtr<FSlateBrush>(Widget)
+				: FindBrushProperty(Widget, TEXT("Background"));
 			return Brush ? Cast<UMaterialInterface>(Brush->GetResourceObject()) : nullptr;
 		}
 		return nullptr;
@@ -2607,13 +2659,71 @@ UWidget* FWidgetAnimSettings::GetMaterialWidget() const
 	return TargetWidget;
 }
 
+namespace WidgetAnimMaterialLookups
+{
+	/**
+	 * The entry for Widget's Parameter in Slot, or null - walked while there are a few, looked up past that. See
+	 * FWidgetAnimMaterialLookup.
+	 */
+	template <typename TTarget>
+	TTarget* Find(TArray<TTarget>& Targets, FWidgetAnimMaterialLookup& Lookup, const UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter)
+	{
+		auto Matches = [Widget, Slot, Parameter](const TTarget& Target)
+		{
+			return Target.TargetWidget.Get() == Widget && Target.Slot == Slot && Target.ParameterName == Parameter;
+		};
+
+		const int32 Num = Targets.Num();
+		static constexpr int32 LookupThreshold = 16;
+		if (Num < LookupThreshold)
+		{
+			return Targets.FindByPredicate(Matches);
+		}
+
+		if (Lookup.Indexed > Num)
+		{
+			Lookup.Reset();
+		}
+		for (int32 Index = Lookup.Indexed; Index < Num; ++Index)
+		{
+			// The first entry for a parameter is the one a walk would find.
+			const FWidgetAnimMaterialKey EntryKey{ Targets[Index].TargetWidget.Get(), Targets[Index].Slot, Targets[Index].ParameterName };
+			if (!Lookup.Index.Contains(EntryKey))
+			{
+				Lookup.Index.Add(EntryKey, Index);
+			}
+		}
+		Lookup.Indexed = Num;
+
+		const int32* Found = Lookup.Index.Find(FWidgetAnimMaterialKey{ Widget, Slot, Parameter });
+		if (!Found)
+		{
+			return nullptr;
+		}
+		if (Targets.IsValidIndex(*Found) && Matches(Targets[*Found]))
+		{
+			return &Targets[*Found];
+		}
+
+		// Moved since it was indexed: walked, and indexed again from nothing next time.
+		Lookup.Reset();
+		return Targets.FindByPredicate(Matches);
+	}
+}
+
+FWidgetAnimScalarTarget* FWidgetAnimResult::FindScalar(const UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter)
+{
+	return WidgetAnimMaterialLookups::Find(ScalarParameters, ScalarLookup, Widget, Slot, Parameter);
+}
+
+FWidgetAnimVectorTarget* FWidgetAnimResult::FindVector(const UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter)
+{
+	return WidgetAnimMaterialLookups::Find(VectorParameters, VectorLookup, Widget, Slot, Parameter);
+}
+
 FWidgetAnimScalarTarget& FWidgetAnimResult::FindOrAddScalar(UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter)
 {
-	FWidgetAnimScalarTarget* Found = ScalarParameters.FindByPredicate([Widget, Slot, Parameter](const FWidgetAnimScalarTarget& Target)
-	{
-		return Target.TargetWidget == Widget && Target.Slot == Slot && Target.ParameterName == Parameter;
-	});
-	if (Found)
+	if (FWidgetAnimScalarTarget* Found = FindScalar(Widget, Slot, Parameter))
 	{
 		return *Found;
 	}
@@ -2626,11 +2736,7 @@ FWidgetAnimScalarTarget& FWidgetAnimResult::FindOrAddScalar(UWidget* Widget, EWi
 
 FWidgetAnimVectorTarget& FWidgetAnimResult::FindOrAddVector(UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter)
 {
-	FWidgetAnimVectorTarget* Found = VectorParameters.FindByPredicate([Widget, Slot, Parameter](const FWidgetAnimVectorTarget& Target)
-	{
-		return Target.TargetWidget == Widget && Target.Slot == Slot && Target.ParameterName == Parameter;
-	});
-	if (Found)
+	if (FWidgetAnimVectorTarget* Found = FindVector(Widget, Slot, Parameter))
 	{
 		return *Found;
 	}
@@ -5931,12 +6037,22 @@ bool UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(UWidget* FallbackWidget, FWidg
 			// Done, and not holding: its widgets go back to what the other tracks and their baselines say, this
 			// frame. Its end pose used to be applied on this last frame and then nothing ever wrote the widget
 			// again, so a track that was meant to let go left its end pose behind for good. Touched as the
-			// identity, so they are written even when no other track is moving them. Material parameters have
-			// nothing to go back to and keep the value they ended on.
+			// identity, so they are written even when no other track is moving them - or, over baselines only put back
+			// (Preserve Authored Transforms off), noted as resting, so they are written at their captured pose rather than
+			// at an identity that was never authored. Material parameters have nothing to go back to and keep the value
+			// they ended on.
 			for (const FWidgetAnimTargetedTransform& Touched : TrackResult.TargetedTransforms)
 			{
-				FindOrAddTargetedTransform(Result, Touched.TargetWidget, Touched.Part);
+				if (Baselines.bCaptured && !Baselines.bComposeTransforms && !Touched.Part.IsSet())
+				{
+					Result.RestingWidgets.Add(Touched.TargetWidget);
+				}
+				else
+				{
+					FindOrAddTargetedTransform(Result, Touched.TargetWidget, Touched.Part);
+				}
 			}
+			Result.RestingWidgets.Append(TrackResult.RestingWidgets);
 
 			if (Baselines.bCaptured)
 			{
@@ -5977,6 +6093,7 @@ bool UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(UWidget* FallbackWidget, FWidg
 			Combined.Shear += Contribution.Shear;
 			Combined.Angle += Contribution.Angle;
 		}
+		Result.RestingWidgets.Append(TrackResult.RestingWidgets);
 		Result.FoldMaterialParameters(TrackResult);
 		for (const FWidgetAnimShapeTarget& Shape : TrackResult.ShapeTargets)
 		{

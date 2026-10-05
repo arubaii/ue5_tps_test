@@ -1,0 +1,1261 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
+index 614964f..bd95873 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.cpp
+@@ -840,11 +840,7 @@ void UWidgetAnimLibrary::TouchLayerTargets(const FWidgetAnimSettings& Settings,
+ 		}
+ 		if (bVector)
+ 		{
+-			const bool bWritten = OutResult.VectorParameters.ContainsByPredicate([MaterialWidget, &Settings, Parameter](const FWidgetAnimVectorTarget& Target)
+-			{
+-				return Target.TargetWidget == MaterialWidget && Target.Slot == Settings.MaterialSlot && Target.ParameterName == Parameter;
+-			});
+-			if (!bWritten)
++			if (!OutResult.FindVector(MaterialWidget, Settings.MaterialSlot, Parameter))
+ 			{
+ 				FWidgetAnimVectorTarget& Target = OutResult.FindOrAddVector(MaterialWidget, Settings.MaterialSlot, Parameter);
+ 				Target.Value = Baseline->Vector;
+@@ -853,11 +849,7 @@ void UWidgetAnimLibrary::TouchLayerTargets(const FWidgetAnimSettings& Settings,
+ 		}
+ 		else
+ 		{
+-			const bool bWritten = OutResult.ScalarParameters.ContainsByPredicate([MaterialWidget, &Settings, Parameter](const FWidgetAnimScalarTarget& Target)
+-			{
+-				return Target.TargetWidget == MaterialWidget && Target.Slot == Settings.MaterialSlot && Target.ParameterName == Parameter;
+-			});
+-			if (!bWritten)
++			if (!OutResult.FindScalar(MaterialWidget, Settings.MaterialSlot, Parameter))
+ 			{
+ 				FWidgetAnimScalarTarget& Target = OutResult.FindOrAddScalar(MaterialWidget, Settings.MaterialSlot, Parameter);
+ 				Target.Value = Baseline->Scalar;
+@@ -880,8 +872,18 @@ void UWidgetAnimLibrary::TouchLayerTargets(const FWidgetAnimSettings& Settings,
+ 	}
+ 
+ 	// The identity: multiplies and adds nothing, so a layer that IS contributing to the same widget this frame
+-	// is untouched by it - but the widget is written, at its baseline, even when nothing else is.
+-	FindOrAddTargetedTransform(OutResult, Settings.TargetWidget, Settings.Part);
++	// is untouched by it - but the widget is written, at its baseline, even when nothing else is. Over baselines that are
++	// only put back, the identity would be written as it is - a widget authored at half opacity shown at full - so the
++	// widget is noted instead, and written at its captured pose unless a track poses it. A part is never captured: at rest
++	// it is where its widget lays it out, which is the identity either way.
++	if (!Baselines.bComposeTransforms && !Settings.Part.IsSet())
++	{
++		OutResult.RestingWidgets.Add(Settings.TargetWidget.Get());
++	}
++	else
++	{
++		FindOrAddTargetedTransform(OutResult, Settings.TargetWidget, Settings.Part);
++	}
+ 
+ 	// A shape is assigned rather than composed, so the authored outline only goes in where no other layer has
+ 	// put one this frame - and a later layer that does still replaces it.
+@@ -980,6 +982,9 @@ namespace WidgetAnimLoop
+ 		OutGroupLead.Init(TNumericLimits<float>::Max(), NumLayers);
+ 		OutGroupEnd.Init(0.f, NumLayers);
+ 
++		// Each group's leader remembered as it is met, as TickAnimationsInto does: looking back over every earlier layer for
++		// it cost the square of the layer count - and the designer's readouts ask this several times a frame.
++		TArray<TPair<int32, int32>, TInlineAllocator<8>> GroupLeaders;
+ 		for (int32 Index = 0; Index < NumLayers; ++Index)
+ 		{
+ 			OutLeaderOf[Index] = Index;
+@@ -987,13 +992,14 @@ namespace WidgetAnimLoop
+ 			const int32 Group = Animations[Index].LoopGroup;
+ 			if (Group != INDEX_NONE)
+ 			{
+-				for (int32 Earlier = 0; Earlier < Index; ++Earlier)
++				const TPair<int32, int32>* Known = GroupLeaders.FindByPredicate([Group](const TPair<int32, int32>& Pair) { return Pair.Key == Group; });
++				if (Known)
+ 				{
+-					if (Animations[Earlier].LoopGroup == Group)
+-					{
+-						OutLeaderOf[Index] = OutLeaderOf[Earlier];
+-						break;
+-					}
++					OutLeaderOf[Index] = Known->Value;
++				}
++				else
++				{
++					GroupLeaders.Emplace(Group, Index);
+ 				}
+ 			}
+ 
+@@ -2280,6 +2286,46 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
+ 	// built by walking the same settings), so the next one is nearly always right after it - a staggered list of hundreds
+ 	// of children doesn't search every baseline for every child.
+ 	int32 BaselineHint = 0;
++	auto FindBaseline = [Baselines, &BaselineHint](const UWidget* Target) -> const FWidgetAnimBaseline*
++	{
++		const TArray<FWidgetAnimBaseline>& All = Baselines->Baselines;
++		for (int32 Step = 0; Step < All.Num(); ++Step)
++		{
++			const int32 Index = (BaselineHint + Step) % All.Num();
++			if (All[Index].Widget.Get() == Target)
++			{
++				BaselineHint = Index + 1;
++				return &All[Index];
++			}
++		}
++		return nullptr;
++	};
++
++	// The whole render transform in one write, and only when it changed. Set field by field, each of the four setters pushed
++	// a transform of its own to Slate and invalidated the widget four times a frame - scale with last frame's angle, then the
++	// new translation, and so on - which, under invalidation (Global Invalidation, an Invalidation or Retainer Box), was the
++	// suspect for a rotating widget flashing up larger for a frame or two at runtime only. "Changed" is exact: compared
++	// within a tolerance, a scale landing on 1 from 0.99995 was never written, and the widget kept the last frame's.
++	auto WritePose = [](UWidget* Target, float Opacity, const FWidgetTransform& Pose)
++	{
++		WidgetAnimTransformDebug::Check(Target, Pose);
++
++		if (Target->GetRenderOpacity() != Opacity)
++		{
++			Target->SetRenderOpacity(Opacity);
++		}
++		// Snapping off while it scales or turns, so its edges don't shake by a pixel. See WidgetAnimPixelSnapping.
++		WidgetAnimPixelSnapping::Update(Target, Pose);
++
++		const FWidgetTransform& Current = Target->GetRenderTransform();
++		if (Current.Translation != Pose.Translation || Current.Scale != Pose.Scale || Current.Shear != Pose.Shear || Current.Angle != Pose.Angle)
++		{
++			Target->SetRenderTransform(Pose);
++		}
++	};
++
++	// Composed over the baselines only when they are composed over - see FWidgetAnimBaselineSet::bComposeTransforms.
++	const bool bCompose = Baselines && Baselines->bComposeTransforms;
+ 
+ 	for (const FWidgetAnimTargetedTransform& Transform : Result.TargetedTransforms)
+ 	{
+@@ -2315,45 +2361,47 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
+ 		// 0.5, y = -8".
+ 		float Opacity = Transform.Opacity;
+ 		FWidgetTransform Pose(Transform.Translation, MakeInvertibleScale(Transform.Scale), Transform.Shear, Transform.Angle);
+-		if (Baselines)
++		if (bCompose)
+ 		{
+-			const FWidgetAnimBaseline* Found = nullptr;
+-			const TArray<FWidgetAnimBaseline>& All = Baselines->Baselines;
+-			for (int32 Step = 0; Step < All.Num(); ++Step)
+-			{
+-				const int32 Index = (BaselineHint + Step) % All.Num();
+-				if (All[Index].Widget == Target)
+-				{
+-					Found = &All[Index];
+-					BaselineHint = Index + 1;
+-					break;
+-				}
+-			}
+-
+ 			// Identity: a widget nobody captured is animated exactly the way it always was.
+ 			static const FWidgetAnimBaseline Identity;
++			const FWidgetAnimBaseline* Found = FindBaseline(Target);
+ 			const FWidgetAnimBaseline& Baseline = Found ? *Found : Identity;
+ 			Opacity = Baseline.Opacity * Transform.Opacity;
+ 			Pose = FWidgetTransform(Baseline.Translation + Transform.Translation, MakeInvertibleScale(Baseline.Scale * Transform.Scale), Baseline.Shear + Transform.Shear, Baseline.Angle + Transform.Angle);
+ 		}
+ 
+-		// The whole render transform in one write, and only when it changed. Set field by field, each of the four setters
+-		// pushed a transform of its own to Slate and invalidated the widget four times a frame - scale with last frame's
+-		// angle, then the new translation, and so on - which, under invalidation (Global Invalidation, an Invalidation or
+-		// Retainer Box), was the suspect for a rotating widget flashing up larger for a frame or two at runtime only.
+-		WidgetAnimTransformDebug::Check(Target, Pose);
++		WritePose(Target, Opacity, Pose);
++	}
+ 
+-		if (!FMath::IsNearlyEqual(Target->GetRenderOpacity(), Opacity))
++	// Widgets touched without being posed, over baselines only put back: at their captured pose - exactly where they were
++	// before anything animated them - unless a track posed them above. A widget nobody captured is left as it is.
++	if (Baselines && !bCompose && Result.RestingWidgets.Num() > 0)
++	{
++		TSet<const UWidget*> Written;
++		Written.Reserve(Result.TargetedTransforms.Num() + Result.RestingWidgets.Num());
++		for (const FWidgetAnimTargetedTransform& Transform : Result.TargetedTransforms)
+ 		{
+-			Target->SetRenderOpacity(Opacity);
++			if (!Transform.Part.IsSet())
++			{
++				Written.Add(Transform.TargetWidget ? Transform.TargetWidget : FallbackWidget);
++			}
+ 		}
+-		// Snapping off while it scales or turns, so its edges don't shake by a pixel. See WidgetAnimPixelSnapping.
+-		WidgetAnimPixelSnapping::Update(Target, Pose);
+ 
+-		const FWidgetTransform& Current = Target->GetRenderTransform();
+-		if (!Current.Translation.Equals(Pose.Translation) || !Current.Scale.Equals(Pose.Scale) || !Current.Shear.Equals(Pose.Shear) || !FMath::IsNearlyEqual(Current.Angle, Pose.Angle))
++		for (UWidget* Resting : Result.RestingWidgets)
+ 		{
+-			Target->SetRenderTransform(Pose);
++			UWidget* Target = Resting ? Resting : FallbackWidget;
++			bool bAlreadyWritten = false;
++			Written.Add(Target, &bAlreadyWritten);
++			if (!Target || bAlreadyWritten)
++			{
++				continue;
++			}
++
++			if (const FWidgetAnimBaseline* Baseline = FindBaseline(Target))
++			{
++				WritePose(Target, Baseline->Opacity, FWidgetTransform(Baseline->Translation, MakeInvertibleScale(Baseline->Scale), Baseline->Shear, Baseline->Angle));
++			}
+ 		}
+ 	}
+ 
+@@ -2516,7 +2564,11 @@ UMaterialInterface* UWidgetAnimLibrary::FindWidgetMaterial(const UWidget* Widget
+ 		}
+ 		if (Widget->IsA<UBorder>())
+ 		{
+-			const FSlateBrush* Brush = FindBrushProperty(Widget, TEXT("Background"));
++			// Found once, not by name every time: asked for every material parameter written, every frame.
++			static const FStructProperty* const BackgroundProperty = FindFProperty<FStructProperty>(UBorder::StaticClass(), TEXT("Background"));
++			const FSlateBrush* Brush = BackgroundProperty && BackgroundProperty->Struct == FSlateBrush::StaticStruct()
++				? BackgroundProperty->ContainerPtrToValuePtr<FSlateBrush>(Widget)
++				: FindBrushProperty(Widget, TEXT("Background"));
+ 			return Brush ? Cast<UMaterialInterface>(Brush->GetResourceObject()) : nullptr;
+ 		}
+ 		return nullptr;
+@@ -2607,13 +2659,71 @@ UWidget* FWidgetAnimSettings::GetMaterialWidget() const
+ 	return TargetWidget;
+ }
+ 
+-FWidgetAnimScalarTarget& FWidgetAnimResult::FindOrAddScalar(UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter)
++namespace WidgetAnimMaterialLookups
+ {
+-	FWidgetAnimScalarTarget* Found = ScalarParameters.FindByPredicate([Widget, Slot, Parameter](const FWidgetAnimScalarTarget& Target)
++	/**
++	 * The entry for Widget's Parameter in Slot, or null - walked while there are a few, looked up past that. See
++	 * FWidgetAnimMaterialLookup.
++	 */
++	template <typename TTarget>
++	TTarget* Find(TArray<TTarget>& Targets, FWidgetAnimMaterialLookup& Lookup, const UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter)
+ 	{
+-		return Target.TargetWidget == Widget && Target.Slot == Slot && Target.ParameterName == Parameter;
+-	});
+-	if (Found)
++		auto Matches = [Widget, Slot, Parameter](const TTarget& Target)
++		{
++			return Target.TargetWidget.Get() == Widget && Target.Slot == Slot && Target.ParameterName == Parameter;
++		};
++
++		const int32 Num = Targets.Num();
++		static constexpr int32 LookupThreshold = 16;
++		if (Num < LookupThreshold)
++		{
++			return Targets.FindByPredicate(Matches);
++		}
++
++		if (Lookup.Indexed > Num)
++		{
++			Lookup.Reset();
++		}
++		for (int32 Index = Lookup.Indexed; Index < Num; ++Index)
++		{
++			// The first entry for a parameter is the one a walk would find.
++			const FWidgetAnimMaterialKey EntryKey{ Targets[Index].TargetWidget.Get(), Targets[Index].Slot, Targets[Index].ParameterName };
++			if (!Lookup.Index.Contains(EntryKey))
++			{
++				Lookup.Index.Add(EntryKey, Index);
++			}
++		}
++		Lookup.Indexed = Num;
++
++		const int32* Found = Lookup.Index.Find(FWidgetAnimMaterialKey{ Widget, Slot, Parameter });
++		if (!Found)
++		{
++			return nullptr;
++		}
++		if (Targets.IsValidIndex(*Found) && Matches(Targets[*Found]))
++		{
++			return &Targets[*Found];
++		}
++
++		// Moved since it was indexed: walked, and indexed again from nothing next time.
++		Lookup.Reset();
++		return Targets.FindByPredicate(Matches);
++	}
++}
++
++FWidgetAnimScalarTarget* FWidgetAnimResult::FindScalar(const UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter)
++{
++	return WidgetAnimMaterialLookups::Find(ScalarParameters, ScalarLookup, Widget, Slot, Parameter);
++}
++
++FWidgetAnimVectorTarget* FWidgetAnimResult::FindVector(const UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter)
++{
++	return WidgetAnimMaterialLookups::Find(VectorParameters, VectorLookup, Widget, Slot, Parameter);
++}
++
++FWidgetAnimScalarTarget& FWidgetAnimResult::FindOrAddScalar(UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter)
++{
++	if (FWidgetAnimScalarTarget* Found = FindScalar(Widget, Slot, Parameter))
+ 	{
+ 		return *Found;
+ 	}
+@@ -2626,11 +2736,7 @@ FWidgetAnimScalarTarget& FWidgetAnimResult::FindOrAddScalar(UWidget* Widget, EWi
+ 
+ FWidgetAnimVectorTarget& FWidgetAnimResult::FindOrAddVector(UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter)
+ {
+-	FWidgetAnimVectorTarget* Found = VectorParameters.FindByPredicate([Widget, Slot, Parameter](const FWidgetAnimVectorTarget& Target)
+-	{
+-		return Target.TargetWidget == Widget && Target.Slot == Slot && Target.ParameterName == Parameter;
+-	});
+-	if (Found)
++	if (FWidgetAnimVectorTarget* Found = FindVector(Widget, Slot, Parameter))
+ 	{
+ 		return *Found;
+ 	}
+@@ -5931,12 +6037,22 @@ bool UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(UWidget* FallbackWidget, FWidg
+ 			// Done, and not holding: its widgets go back to what the other tracks and their baselines say, this
+ 			// frame. Its end pose used to be applied on this last frame and then nothing ever wrote the widget
+ 			// again, so a track that was meant to let go left its end pose behind for good. Touched as the
+-			// identity, so they are written even when no other track is moving them. Material parameters have
+-			// nothing to go back to and keep the value they ended on.
++			// identity, so they are written even when no other track is moving them - or, over baselines only put back
++			// (Preserve Authored Transforms off), noted as resting, so they are written at their captured pose rather than
++			// at an identity that was never authored. Material parameters have nothing to go back to and keep the value
++			// they ended on.
+ 			for (const FWidgetAnimTargetedTransform& Touched : TrackResult.TargetedTransforms)
+ 			{
+-				FindOrAddTargetedTransform(Result, Touched.TargetWidget, Touched.Part);
++				if (Baselines.bCaptured && !Baselines.bComposeTransforms && !Touched.Part.IsSet())
++				{
++					Result.RestingWidgets.Add(Touched.TargetWidget);
++				}
++				else
++				{
++					FindOrAddTargetedTransform(Result, Touched.TargetWidget, Touched.Part);
++				}
+ 			}
++			Result.RestingWidgets.Append(TrackResult.RestingWidgets);
+ 
+ 			if (Baselines.bCaptured)
+ 			{
+@@ -5977,6 +6093,7 @@ bool UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(UWidget* FallbackWidget, FWidg
+ 			Combined.Shear += Contribution.Shear;
+ 			Combined.Angle += Contribution.Angle;
+ 		}
++		Result.RestingWidgets.Append(TrackResult.RestingWidgets);
+ 		Result.FoldMaterialParameters(TrackResult);
+ 		for (const FWidgetAnimShapeTarget& Shape : TrackResult.ShapeTargets)
+ 		{
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.h
+index 832a8e3..fe946be 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimLibrary.h
+@@ -1478,6 +1478,49 @@ struct FWidgetAnimTransformLookup
+ 	}
+ };
+ 
++/** Which material parameter an entry of FWidgetAnimResult::ScalarParameters or VectorParameters is for. */
++struct FWidgetAnimMaterialKey
++{
++	const UWidget* Widget = nullptr;
++	EWidgetAnimMaterialSlot Slot = EWidgetAnimMaterialSlot::Brush;
++	FName Parameter;
++
++	bool operator==(const FWidgetAnimMaterialKey& Other) const { return Widget == Other.Widget && Slot == Other.Slot && Parameter == Other.Parameter; }
++
++	friend uint32 GetTypeHash(const FWidgetAnimMaterialKey& Key)
++	{
++		return HashCombine(HashCombine(::PointerHash(Key.Widget), ::GetTypeHash(static_cast<uint8>(Key.Slot))), ::GetTypeHash(Key.Parameter));
++	}
++};
++
++/**
++ * Where each parameter's entry is in a result's ScalarParameters or VectorParameters, for a result with many of them: a
++ * material track on each of hundreds of widgets. Looked up by walking the array, writing such a result, folding one track's
++ * parameters into the frame's and putting back those of the tracks not started yet each cost the square of its size, every
++ * frame. Trusted exactly as FWidgetAnimTransformLookup is: only as far as it was built, thrown away by a copy, a move or an
++ * array shorter than what it indexed, and rebuilt when an entry it points at isn't the one asked for. Plain C++, never saved
++ * or reflected.
++ */
++struct FWidgetAnimMaterialLookup
++{
++	TMap<FWidgetAnimMaterialKey, int32> Index;
++
++	/** How many of the array's entries, from the first, are in Index. */
++	int32 Indexed = 0;
++
++	FWidgetAnimMaterialLookup() = default;
++	FWidgetAnimMaterialLookup(const FWidgetAnimMaterialLookup&) {}
++	FWidgetAnimMaterialLookup(FWidgetAnimMaterialLookup&&) {}
++	FWidgetAnimMaterialLookup& operator=(const FWidgetAnimMaterialLookup&) { Reset(); return *this; }
++	FWidgetAnimMaterialLookup& operator=(FWidgetAnimMaterialLookup&&) { Reset(); return *this; }
++
++	void Reset()
++	{
++		Index.Reset();
++		Indexed = 0;
++	}
++};
++
+ USTRUCT(BlueprintType)
+ struct NAMETBD_API FWidgetAnimResult
+ {
+@@ -1494,13 +1537,24 @@ struct NAMETBD_API FWidgetAnimResult
+ 
+ 	void InvalidateTransformLookup() { TransformLookup.Reset(); }
+ 
++	/**
++	 * Whole widgets a track touched this frame without posing them - one not started yet, or one that let go - when its
++	 * baselines are only put back, never composed over (see FWidgetAnimBaselineSet::bComposeTransforms). Each is written at
++	 * its captured pose unless a track poses it this frame, so what is on screen never depends on the last frame that did.
++	 * Null is the widget the result is applied to. May repeat. Not reflected.
++	 */
++	TArray<UWidget*> RestingWidgets;
++
+ 	/** Empties every array, keeping what each had grown to - for a result reused frame after frame. */
+ 	void ResetKeepingCapacity()
+ 	{
+ 		TargetedTransforms.Reset();
+ 		TransformLookup.Reset();
++		RestingWidgets.Reset();
+ 		ScalarParameters.Reset();
+ 		VectorParameters.Reset();
++		ScalarLookup.Reset();
++		VectorLookup.Reset();
+ 		ShapeTargets.Reset();
+ 		AuthoritativeWrites.Reset();
+ 		CueFires.Reset();
+@@ -1521,6 +1575,14 @@ struct NAMETBD_API FWidgetAnimResult
+ 	FWidgetAnimScalarTarget& FindOrAddScalar(UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter);
+ 	FWidgetAnimVectorTarget& FindOrAddVector(UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter);
+ 
++	/** The scalar or vector parameter of Widget's material in Slot written this frame, or null. */
++	FWidgetAnimScalarTarget* FindScalar(const UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter);
++	FWidgetAnimVectorTarget* FindVector(const UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter);
++
++	/** See FWidgetAnimMaterialLookup. Kept in step by the finds above; anything else that removes entries or changes one's key in place resets it. */
++	FWidgetAnimMaterialLookup ScalarLookup;
++	FWidgetAnimMaterialLookup VectorLookup;
++
+ 	/** Folds Other's material parameters in, as a later track's: each replaces this frame's, unless it is only a baseline and this frame already has one written. */
+ 	void FoldMaterialParameters(const FWidgetAnimResult& Other);
+ 
+@@ -1788,6 +1850,25 @@ struct NAMETBD_API FWidgetAnimMaterialBaseline
+ 	bool bIsFallback = false;
+ };
+ 
++/** Which parameter an entry of FWidgetAnimBaselineSet::MaterialBaselines captured - see FWidgetAnimBaselineSet::FindMaterialBaseline. */
++struct FWidgetAnimMaterialBaselineKey
++{
++	const UWidget* Widget = nullptr;
++	EWidgetAnimMaterialSlot Slot = EWidgetAnimMaterialSlot::Brush;
++	FName Parameter;
++	bool bVector = false;
++
++	bool operator==(const FWidgetAnimMaterialBaselineKey& Other) const
++	{
++		return Widget == Other.Widget && Slot == Other.Slot && Parameter == Other.Parameter && bVector == Other.bVector;
++	}
++
++	friend uint32 GetTypeHash(const FWidgetAnimMaterialBaselineKey& Key)
++	{
++		return HashCombine(HashCombine(HashCombine(::PointerHash(Key.Widget), ::GetTypeHash(static_cast<uint8>(Key.Slot))), ::GetTypeHash(Key.Parameter)), ::GetTypeHash(Key.bVector));
++	}
++};
++
+ USTRUCT(BlueprintType)
+ struct NAMETBD_API FWidgetAnimBaselineSet
+ {
+@@ -1814,25 +1895,89 @@ struct NAMETBD_API FWidgetAnimBaselineSet
+ 	/** The captured value of Widget's parameter in Slot, or null. A null Widget finds the fallback capture. */
+ 	const FWidgetAnimMaterialBaseline* FindMaterialBaseline(const UWidget* Widget, EWidgetAnimMaterialSlot Slot, FName Parameter, bool bVector) const
+ 	{
+-		return MaterialBaselines.FindByPredicate([Widget, Slot, Parameter, bVector](const FWidgetAnimMaterialBaseline& Baseline)
++		auto Matches = [Widget, Slot, Parameter, bVector](const FWidgetAnimMaterialBaseline& Baseline)
+ 		{
+ 			return (Widget ? Baseline.Widget == Widget : Baseline.bIsFallback) && Baseline.Slot == Slot && Baseline.ParameterName == Parameter && Baseline.bVector == bVector;
+-		});
++		};
++
++		// Asked for every material track not started yet, every frame: walked, a set of hundreds of parameters cost the square
++		// of that. Past a handful, looked up instead - indexed as far as the set has grown, since captures only ever add to it.
++		const int32 Num = MaterialBaselines.Num();
++		static constexpr int32 LookupThreshold = 16;
++		if (Num < LookupThreshold)
++		{
++			return MaterialBaselines.FindByPredicate(Matches);
++		}
++		if (MaterialBaselineIndexed > Num)
++		{
++			MaterialBaselineIndex.Reset();
++			MaterialBaselineIndexed = 0;
++		}
++		for (int32 Index = MaterialBaselineIndexed; Index < Num; ++Index)
++		{
++			// Under its widget - and, captured for settings naming none, under no widget too, as the walk finds it either way.
++			// The first capture for a key is the one a walk would find.
++			const FWidgetAnimMaterialBaseline& Baseline = MaterialBaselines[Index];
++			const FWidgetAnimMaterialBaselineKey Key{ Baseline.Widget.Get(), Baseline.Slot, Baseline.ParameterName, Baseline.bVector };
++			if (Key.Widget && !MaterialBaselineIndex.Contains(Key))
++			{
++				MaterialBaselineIndex.Add(Key, Index);
++			}
++			if (Baseline.bIsFallback)
++			{
++				const FWidgetAnimMaterialBaselineKey FallbackKey{ nullptr, Baseline.Slot, Baseline.ParameterName, Baseline.bVector };
++				if (!MaterialBaselineIndex.Contains(FallbackKey))
++				{
++					MaterialBaselineIndex.Add(FallbackKey, Index);
++				}
++			}
++		}
++		MaterialBaselineIndexed = Num;
++
++		const int32* Found = MaterialBaselineIndex.Find(FWidgetAnimMaterialBaselineKey{ Widget, Slot, Parameter, bVector });
++		if (!Found)
++		{
++			return nullptr;
++		}
++		if (MaterialBaselines.IsValidIndex(*Found) && Matches(MaterialBaselines[*Found]))
++		{
++			return &MaterialBaselines[*Found];
++		}
++
++		// An entry changed since it was indexed: walked, as it always was, and indexed again from nothing next time.
++		MaterialBaselineIndexed = MAX_int32;
++		return MaterialBaselines.FindByPredicate(Matches);
+ 	}
+ 
+ 	/** Set by the first capture, so a later pass can't re-capture a pose the animation itself just wrote. */
+ 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+ 	bool bCaptured = false;
+ 
++	/**
++	 * Whether results are composed over these baselines - opacity and scale multiplied in, translation, shear and angle added
++	 * (Preserve Authored Transforms) - or written as they are, the captures only ever put back: by a reset, and on every widget
++	 * a track touches without posing it this frame - one that hasn't started, or that let go - so the pose is a pure function
++	 * of time either way. A component whose transforms aren't preserved hands its track player such a set; without one, a
++	 * track the clock runs back past - a ping-pong's return leg - kept whatever its last frame had posed, a hair short of
++	 * where it starts. Not reflected; never changed by a capture or a reset.
++	 */
++	bool bComposeTransforms = true;
++
+ 	void ResetBaselines()
+ 	{
+ 		Baselines.Reset();
+ 		ShapeBaselines.Reset();
+ 		AuthoritativeBaselines.Reset();
+ 		MaterialBaselines.Reset();
++		MaterialBaselineIndex.Reset();
++		MaterialBaselineIndexed = 0;
+ 		bCaptured = false;
+ 	}
+ 
++	/** See FindMaterialBaseline: where each capture is, for the first MaterialBaselineIndexed of them. Not reflected. */
++	mutable TMap<FWidgetAnimMaterialBaselineKey, int32> MaterialBaselineIndex;
++	mutable int32 MaterialBaselineIndexed = 0;
++
+ 	/** The captured value of Target's Channel, or null if nothing captured one. */
+ 	const FWidgetAnimAuthoritativeBaseline* FindAuthoritativeBaseline(const UObject* Target, FName Channel) const
+ 	{
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimStateMachineRuntime.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimStateMachineRuntime.cpp
+index 869adaa..ca1ad16 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimStateMachineRuntime.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimStateMachineRuntime.cpp
+@@ -240,6 +240,10 @@ namespace WidgetAnimStateMachines
+ 				return A.TargetWidget == B.TargetWidget && A.Slot == B.Slot && A.ParameterName == B.ParameterName;
+ 			});
+ 
++			// Keys changed in place and entries removed: see FWidgetAnimMaterialLookup.
++			Result.ScalarLookup.Reset();
++			Result.VectorLookup.Reset();
++
+ 			for (FWidgetAnimAuthoritativeWrite& Write : Result.AuthoritativeWrites)
+ 			{
+ 				if (!Write.TargetWidget)
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp
+index 0fbea4d..0c9e8a3 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp
+@@ -1008,7 +1008,11 @@ void UWidgetAnimationComponent::EnsureRuntimeBaselines()
+ 	{
+ 		// Not composed over - Preserve Authored Transforms is off - but still needed to put widgets back when an
+ 		// animation is stopped with Reset To Start. Without it that reset had nothing to restore, so the widget
+-		// stayed wherever the animation had gotten to.
++		// stayed wherever the animation had gotten to. The track player poses with it too, so a track not posing its
++		// widget this frame - not started yet, or run back past its start by a ping-pong's return leg - puts it back
++		// rather than leaving it wherever its last frame had it: a cell a hair short of its full size, its glow not
++		// quite off.
++		ResetPoseBaselines.bComposeTransforms = false;
+ 		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(AnimatedWidget, InToCapture, FlattenedOut, ResetPoseBaselines);
+ 	}
+ }
+@@ -1058,13 +1062,13 @@ void UWidgetAnimationComponent::TickPlayer(UWidget* AnimatedWidget, float DeltaT
+ 			// The tracks and the state machines worked out into one result, applied once: a machine's pose and a one-shot
+ 			// played by ID on the same widget compose instead of taking turns.
+ 			FWidgetAnimResult Result;
+-			UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, OutJustFinished, Result);
++			UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(AnimatedWidget, AnimPlayer, GetPlayerBaselines(), DeltaTime, OutJustFinished, Result);
+ 			if (!bMachinesTicked)
+ 			{
+ 				TickMachines(DeltaTime);
+ 			}
+ 			ComposeMachines(Result);
+-			UWidgetAnimLibrary::ApplyComposedResult(AnimatedWidget, Result, AnimBaselines);
++			UWidgetAnimLibrary::ApplyComposedResult(AnimatedWidget, Result, GetPlayerBaselines());
+ 			UWidgetAnimLibrary::ReleaseFinishedTracks(AnimPlayer);
+ 			for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+ 			{
+@@ -1081,7 +1085,7 @@ void UWidgetAnimationComponent::TickPlayer(UWidget* AnimatedWidget, float DeltaT
+ 	}
+ 	else
+ 	{
+-		UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, OutJustFinished);
++		UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, GetPlayerBaselines(), DeltaTime, OutJustFinished);
+ 		NoteTracksAfterTick();
+ 	}
+ 	--PlayerTickDepth;
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h
+index 045cbd3..578aa2d 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h
+@@ -801,12 +801,19 @@ private:
+ 
+ 	/**
+ 	 * The authored pose again, captured at runtime when Preserve Authored Transforms is off and AnimBaselines
+-	 * therefore isn't. Only for putting widgets back - Stop with Reset To Start - never composed over, so animations
+-	 * still replace the authored pose exactly as that setting says.
++	 * therefore isn't. Only for putting widgets back - Stop with Reset To Start, and every frame on the widgets of
++	 * tracks that aren't posing them (see FWidgetAnimBaselineSet::bComposeTransforms) - never composed over, so
++	 * animations still replace the authored pose exactly as that setting says.
+ 	 */
+ 	UPROPERTY(Transient)
+ 	FWidgetAnimBaselineSet ResetPoseBaselines;
+ 
++	/**
++	 * What the track player poses with: AnimBaselines, composed over, with Preserve Authored Transforms - else
++	 * ResetPoseBaselines, only put back.
++	 */
++	const FWidgetAnimBaselineSet& GetPlayerBaselines() const { return AnimBaselines.bCaptured ? AnimBaselines : ResetPoseBaselines; }
++
+ 	/** Whether any Anim In or Anim Out entry plays on a visibility change - what the visibility watch is for. */
+ 	bool bAnyVisibilityTrigger = false;
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index ff2aba8..b221ab8 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -5521,14 +5521,35 @@ public:
+ 		TSet<EWidgetAnimType> Types;
+ 		TArray<const FWidgetAnimLayer*> ProxyLayers;
+ 		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
++		const TArray<FWidgetAnimLayer>* RealLayers = Owner ? Owner->GetLayers() : nullptr;
+ 		bool bAllCanStagger = true;
++		bool bRepresented = false;
++		int32 NumTracks = 0;
+ 		for (const TWeakObjectPtr<UObject>& Object : Objects)
+ 		{
+ 			if (const UWidgetAnimLayerEditProxy* Proxy = Cast<UWidgetAnimLayerEditProxy>(Object.Get()))
+ 			{
++				// One proxy standing in for a large selection: what is shown is decided by every track it stands for.
++				if (Proxy->RepresentedLayers.Num() > 0 && RealLayers)
++				{
++					bRepresented = true;
++					for (const int32 LayerIndex : Proxy->RepresentedLayers)
++					{
++						if (RealLayers->IsValidIndex(LayerIndex))
++						{
++							Types.Add((*RealLayers)[LayerIndex].AnimType);
++							ProxyLayers.Add(&(*RealLayers)[LayerIndex]);
++							bAllCanStagger = bAllCanStagger && Owner->CanLayerStagger(LayerIndex);
++							++NumTracks;
++						}
++					}
++					continue;
++				}
++
+ 				Types.Add(Proxy->Layer.AnimType);
+ 				ProxyLayers.Add(&Proxy->Layer);
+ 				bAllCanStagger = bAllCanStagger && (!Owner || Owner->CanLayerStagger(Proxy->LayerIndex));
++				++NumTracks;
+ 			}
+ 		}
+ 
+@@ -5540,7 +5561,7 @@ public:
+ 		}
+ 
+ 		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Layers",
+-			FText::Format(LOCTEXT("LayersCategory", "{0} Tracks"), FText::AsNumber(Objects.Num())));
++			FText::Format(LOCTEXT("LayersCategory", "{0} Tracks"), FText::AsNumber(NumTracks)));
+ 
+ 		const bool bSameType = Types.Num() == 1;
+ 		const bool bAllTransform = bSameType && Types.Contains(EWidgetAnimType::Transform);
+@@ -5556,10 +5577,12 @@ public:
+ 					.AutoWrapText(true)
+ 					.Font(IDetailLayoutBuilder::GetDetailFontItalic())
+ 					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+-					.Text(FText::Format(bSameType
++					.Text(FText::Format(bRepresented
++						? WidgetAnimTips::MultipleShowsFirstTrack()
++						: bSameType
+ 						? WidgetAnimTips::MultipleSameType()
+ 						: WidgetAnimTips::MultipleMixedTypes(),
+-						FText::AsNumber(Objects.Num())))
++						FText::AsNumber(NumTracks)))
+ 				]
+ 			];
+ 
+@@ -6587,6 +6610,8 @@ SWidgetAnimTimeline::SWidgetAnimTimeline() = default;
+ 
+ SWidgetAnimTimeline::~SWidgetAnimTimeline()
+ {
++	FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(ObjectChangedHandle);
++
+ 	if (bCompact)
+ 	{
+ 		SaveCompactState();
+@@ -6710,6 +6735,9 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
+ 	CompactTitleToolTip = InArgs._TitleToolTip;
+ 	OnExpand = InArgs._OnExpand;
+ 
++	// Edits made anywhere - here, in the Selection panel, a script, an undo - tell the Track Editor its lines are due.
++	ObjectChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP(this, &SWidgetAnimTimeline::OnObjectChangedForLayout);
++
+ 	// The Selection panel: the edited object, laid out by FWidgetAnimSelectionDetails. No notify hook, so
+ 	// UMG's designer never hears of an edit made here - which is what keeps it from rebuilding its preview,
+ 	// and every Details panel with it, on every commit.
+@@ -10177,14 +10205,26 @@ bool SWidgetAnimTimeline::IsSelectionEditable() const
+ 		return false;
+ 	}
+ 
++	// Asked by every field of the Selection panel, every frame - so answered once a frame: each asking walked the whole
++	// selection, hundreds of tracks of it with a big collapsed track picked.
++	if (EditableAnswerFrame == GFrameCounter && EditableAnswerCount == SelectedLayers.Num())
++	{
++		return bEditableAnswer;
++	}
++
++	bool bEditable = true;
+ 	for (const int32 LayerIndex : SelectedLayers)
+ 	{
+ 		if (IsLayerLocked(LayerIndex))
+ 		{
+-			return false;
++			bEditable = false;
++			break;
+ 		}
+ 	}
+-	return true;
++	EditableAnswerFrame = GFrameCounter;
++	EditableAnswerCount = SelectedLayers.Num();
++	bEditableAnswer = bEditable;
++	return bEditable;
+ }
+ 
+ void SWidgetAnimTimeline::RefreshDetails()
+@@ -10269,6 +10309,36 @@ void SWidgetAnimTimeline::RebuildLayerProxies()
+ 	}
+ 
+ 	const TWeakPtr<SWidgetAnimTimeline> WeakThisPtr = SharedThis(this);
++
++	// Past a few dozen, one proxy stands in for them all - the primary track's, an edit to it copied onto every one. One
++	// proxy each, shown together, makes the details view read every field of every one of them every frame to tell
++	// whether they agree, and copy every one into each edit's undo step: a big collapsed track picked whole made the
++	// panel crawl for as long as it stayed selected.
++	constexpr int32 MaxProxiedLayers = 64;
++	if (SelectedLayers.Num() > MaxProxiedLayers)
++	{
++		TArray<int32> Represented;
++		Represented.Reserve(SelectedLayers.Num());
++		for (const int32 LayerIndex : SelectedLayers)
++		{
++			if (Layers->IsValidIndex(LayerIndex))
++			{
++				Represented.Add(LayerIndex);
++			}
++		}
++		if (Represented.Num() > 0)
++		{
++			const int32 Primary = Represented.Contains(Selection.Layer) ? Selection.Layer : Represented[0];
++			UWidgetAnimLayerEditProxy* Proxy = NewObject<UWidgetAnimLayerEditProxy>(GetTransientPackage(), NAME_None, RF_Transient);
++			Proxy->Layer = (*Layers)[Primary];
++			Proxy->LayerIndex = Primary;
++			Proxy->RepresentedLayers = MoveTemp(Represented);
++			Proxy->Panel = WeakThisPtr;
++			LayerProxies.Emplace(Proxy);
++		}
++		return;
++	}
++
+ 	for (const int32 LayerIndex : SelectedLayers)
+ 	{
+ 		if (!Layers->IsValidIndex(LayerIndex))
+@@ -10379,6 +10449,17 @@ void SWidgetAnimTimeline::OnProxyEdited(UWidgetAnimLayerEditProxy* Proxy, FPrope
+ 		return;
+ 	}
+ 
++	// Standing in for a whole large selection: the one property copied onto every other track it stands for, as one proxy
++	// each would have copied it. A change that can't be followed to one property goes onto its own track alone - copied
++	// whole onto the rest, it would give them all its timing and targets.
++	for (const int32 Represented : Proxy->RepresentedLayers)
++	{
++		if (Represented != Proxy->LayerIndex && Layers->IsValidIndex(Represented) && CanEditLayer(Represented))
++		{
++			CopyEditedLayerProperty(PropertyChangedEvent.PropertyChain, Proxy->Layer, (*Layers)[Represented]);
++		}
++	}
++
+ 	FWidgetAnimLayer& Layer = (*Layers)[Proxy->LayerIndex];
+ 	if (!CopyEditedLayerProperty(PropertyChangedEvent.PropertyChain, Proxy->Layer, Layer))
+ 	{
+@@ -10833,8 +10914,12 @@ EActiveTimerReturnType SWidgetAnimTimeline::OnRefreshTimer(double InCurrentTime,
+ 	// The Selection panel's stand-in for the asset, likewise.
+ 	SyncSelectionShadow();
+ 
+-	// The Track Editor's lines follow every edit, wherever it was made - they are cheap to work out.
+-	UpdateTrackLayout();
++	// The Track Editor's lines follow every edit, wherever it was made - worked out again whenever one may have changed
++	// them. See IsTrackLayoutDue.
++	if (IsTrackLayoutDue())
++	{
++		UpdateTrackLayout();
++	}
+ 
+ 	// A drag is its own source of truth until it ends; refreshing the list or the Selection panel under it would
+ 	// only rebuild them every frame.
+@@ -10868,17 +10953,82 @@ EActiveTimerReturnType SWidgetAnimTimeline::OnRefreshTimer(double InCurrentTime,
+ 		Selection = Validate(Selection);
+ 		RebuildRows();
+ 		RefreshDetails();
++		bListCheckPending = false;
+ 	}
+-	else if (ComputeListSignature(LayoutIndex, TrackSpans) != ListSignature)
++	else if (bListCheckPending)
+ 	{
+-		// Only the order things play in changed - a Delay typed in the Selection panel, say. The list follows;
+-		// the Selection panel is left alone, since that may be exactly where the typing is going on.
+-		RebuildLayerList();
++		// Asked once each time the lines are worked out again - the order comes from the same spans - rather than every
++		// frame, which sorted every group's tracks for nothing.
++		bListCheckPending = false;
++		if (ComputeListSignature(LayoutIndex, TrackSpans) != ListSignature)
++		{
++			// Only the order things play in changed - a Delay typed in the Selection panel, say. The list follows;
++			// the Selection panel is left alone, since that may be exactly where the typing is going on.
++			RebuildLayerList();
++		}
+ 	}
+ 
+ 	return EActiveTimerReturnType::Continue;
+ }
+ 
++bool SWidgetAnimTimeline::IsTrackLayoutDue() const
++{
++	// After a drag, once - its tracks give way to the rest only while it is on; a drag lays its own steps out as it makes
++	// them. A quarter of a second at most otherwise, for what is read off the preview without telling anyone: how many
++	// items a stagger fans out to, how long a text takes to type.
++	static constexpr double TrackLayoutRefreshSeconds = 0.25;
++	return (bLaidOutWhileDragging && !IsDragging())
++		|| TrackLayoutRevision != LaidOutRevision
++		|| !IsTrackLayoutCurrent()
++		|| FPlatformTime::Seconds() - LastTrackLayoutTime >= TrackLayoutRefreshSeconds
++		|| ComputeTrackViewHash() != LaidOutViewHash;
++}
++
++uint32 SWidgetAnimTimeline::ComputeTrackViewHash() const
++{
++	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
++	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
++	const TArray<FWidgetAnimLayer>* ContextLayers = GetContextLayers();
++
++	uint32 Hash = PointerHash(Layers);
++	Hash = HashCombine(Hash, GetTypeHash(Layers ? Layers->Num() : INDEX_NONE));
++	Hash = HashCombine(Hash, PointerHash(Groups));
++	Hash = HashCombine(Hash, GetTypeHash(Groups ? Groups->Num() : INDEX_NONE));
++	Hash = HashCombine(Hash, PointerHash(ContextLayers));
++	Hash = HashCombine(Hash, GetTypeHash(ContextLayers ? ContextLayers->Num() : INDEX_NONE));
++	Hash = HashCombine(Hash, GetTypeHash(ActiveCollapsed));
++	Hash = HashCombine(Hash, GetTypeHash(bCompact));
++	Hash = HashCombine(Hash, GetTypeHash(IsPercentTime()));
++	Hash = HashCombine(Hash, GetTypeHash(GetTimeScale()));
++
++	// Folded groups, open animation tracks and their folded groups. Summed, so the order a set happens to hold them in
++	// doesn't count.
++	uint32 FoldHash = 0;
++	for (const int32 Folded : TrackCollapsedGroups)
++	{
++		FoldHash += HashCombine(GetTypeHash(Folded), 0x9E3779B9u);
++	}
++	for (const int32 Expanded : ExpandedAnimationTracks)
++	{
++		FoldHash += HashCombine(GetTypeHash(Expanded), 0x85EBCA6Bu);
++	}
++	for (const uint64 Folded : FoldedNestedGroups)
++	{
++		FoldHash += HashCombine(GetTypeHash(Folded), 0xC2B2AE35u);
++	}
++	Hash = HashCombine(Hash, FoldHash);
++	Hash = HashCombine(Hash, GetTypeHash(TrackCollapsedGroups.Num() + ExpandedAnimationTracks.Num() * 7 + FoldedNestedGroups.Num() * 31));
++	return Hash;
++}
++
++void SWidgetAnimTimeline::OnObjectChangedForLayout(UObject* Object, FPropertyChangedEvent& Event)
++{
++	if (Object && (Object->IsA<UWidgetAnimPresetAsset>() || (Source.IsValid() && Object == Source->GetEditedObject())))
++	{
++		++TrackLayoutRevision;
++	}
++}
++
+ void SWidgetAnimTimeline::RebuildRows()
+ {
+ 	LayoutSignature = ComputeLayoutSignature();
+@@ -12177,6 +12327,13 @@ void SWidgetAnimTimeline::AddNestedListRows(int32 LayerIndex, int32 GroupIndex)
+ void SWidgetAnimTimeline::UpdateTrackLayout()
+ {
+ 	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimPanelTrackLayout);
++
++	// What these lines are worked out from, for IsTrackLayoutDue - and the list's order is to be checked against them.
++	LaidOutRevision = TrackLayoutRevision;
++	LaidOutViewHash = ComputeTrackViewHash();
++	LastTrackLayoutTime = FPlatformTime::Seconds();
++	bLaidOutWhileDragging = IsDragging();
++	bListCheckPending = true;
+ 	// The context tracks: placed as their animation places them, at the speed it plays, and packed onto as few rows
+ 	// as keep them from overlapping.
+ 	ContextSpans.Reset();
+@@ -15347,6 +15504,24 @@ bool SWidgetAnimTimeline::BeginLayerDrag(int32 PressedLayer, ELayerDrag Mode)
+ 		State.OriginalEditorLines[LayerIndex] = (*Layers)[LayerIndex].EditorLine;
+ 	}
+ 
++	// The edges as bits, for every frame of the drag. See FLayerDragState::StartBits.
++	State.StartBits.Init(false, NumLayers);
++	State.EndBits.Init(false, NumLayers);
++	for (const int32 LayerIndex : State.StartEdges)
++	{
++		if (State.StartBits.IsValidIndex(LayerIndex))
++		{
++			State.StartBits[LayerIndex] = true;
++		}
++	}
++	for (const int32 LayerIndex : State.EndEdges)
++	{
++		if (State.EndBits.IsValidIndex(LayerIndex))
++		{
++			State.EndBits[LayerIndex] = true;
++		}
++	}
++
+ 	LayerDrag = MoveTemp(State);
+ 	SnapIndicator.Reset();
+ 
+@@ -15384,8 +15559,8 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines,
+ 
+ 	for (const int32 LayerIndex : Moving)
+ 	{
+-		const bool bStart = State.StartEdges.Contains(LayerIndex);
+-		const bool bEnd = State.EndEdges.Contains(LayerIndex);
++		const bool bStart = State.IsStartEdge(LayerIndex);
++		const bool bEnd = State.IsEndEdge(LayerIndex);
+ 		const float Start = State.OriginalStarts[LayerIndex];
+ 		const float Length = State.OriginalLengths[LayerIndex];
+ 		const float End = Start + Length;
+@@ -15427,11 +15602,11 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines,
+ 		TArray<float> Edges;
+ 		for (const int32 LayerIndex : Moving)
+ 		{
+-			if (State.StartEdges.Contains(LayerIndex))
++			if (State.IsStartEdge(LayerIndex))
+ 			{
+ 				Edges.Add(State.OriginalStarts[LayerIndex] + DeltaSeconds);
+ 			}
+-			if (State.EndEdges.Contains(LayerIndex))
++			if (State.IsEndEdge(LayerIndex))
+ 			{
+ 				Edges.Add(State.OriginalStarts[LayerIndex] + State.OriginalLengths[LayerIndex] + DeltaSeconds);
+ 			}
+@@ -15482,8 +15657,8 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines,
+ 	}
+ 	for (const int32 LayerIndex : Moving)
+ 	{
+-		const bool bStart = State.StartEdges.Contains(LayerIndex);
+-		const bool bEnd = State.EndEdges.Contains(LayerIndex);
++		const bool bStart = State.IsStartEdge(LayerIndex);
++		const bool bEnd = State.IsEndEdge(LayerIndex);
+ 
+ 		if (bStart)
+ 		{
+@@ -15508,6 +15683,12 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines,
+ 	// go keeps it there. See UpdateTrackLayout and CommitTrackLines.
+ 	if (State.Mode == ELayerDrag::Move)
+ 	{
++		// Every layer's collapsed track, group and view read once. Asked one layer at a time, each asked about every other
++		// one - which is the first of its collapsed track, whether its whole group is collapsed - so a move in an animation
++		// of hundreds of tracks cost the square of that on every frame of the drag.
++		FLayoutIndex Index;
++		BuildLayoutIndex(Index);
++
+ 		TArray<FWidgetAnimLayer>& MutableLayers = *Source->GetLayers();
+ 		for (int32 LayerIndex = 0; LayerIndex < MutableLayers.Num() && State.OriginalEditorLines.IsValidIndex(LayerIndex); ++LayerIndex)
+ 		{
+@@ -15515,13 +15696,17 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines,
+ 
+ 			// A pinned track, one folded into a collapsed track and a collapsed track drawn loose keep their lines in their
+ 			// groups: they aren't shown there.
+-			const bool bOffItsLine = IsLayerPinned(LayerIndex) || IsFoldedIntoCollapsed(LayerIndex) || !IsLayerInView(LayerIndex) || IsLooseCollapsedHead(LayerIndex);
++			const bool bIndexed = Index.InView.IsValidIndex(LayerIndex);
++			const bool bOffItsLine = IsLayerPinned(LayerIndex)
++				|| (bIndexed
++					? (static_cast<bool>(Index.FoldedIntoCollapsed[LayerIndex]) || !static_cast<bool>(Index.InView[LayerIndex]) || Index.IsLooseCollapsedHead(LayerIndex))
++					: (IsFoldedIntoCollapsed(LayerIndex) || !IsLayerInView(LayerIndex) || IsLooseCollapsedHead(LayerIndex)));
+ 			if (DeltaLines != 0 && State.OriginalLineOrdinals.IsValidIndex(LayerIndex) && !bOffItsLine)
+ 			{
+ 				const int32 Ordinal = State.OriginalLineOrdinals[LayerIndex];
+ 				NewLine = Ordinal;
+ 
+-				if (State.StartEdges.Contains(LayerIndex))
++				if (State.IsStartEdge(LayerIndex))
+ 				{
+ 					const int32 GroupIndex = GetLayerGroup(LayerIndex);
+ 					const int32 LineCount = State.OriginalGroupLineCounts.IsValidIndex(GroupIndex) ? State.OriginalGroupLineCounts[GroupIndex] : 0;
+@@ -15537,10 +15722,10 @@ void SWidgetAnimTimeline::UpdateLayerDrag(float DeltaSeconds, int32 DeltaLines,
+ 		}
+ 	}
+ 
+-	UpdateTrackLayout();
+-
+-	// Interactive, as a Details panel drag is: the preview follows every frame of it.
++	// Interactive, as a Details panel drag is: the preview follows every frame of it. Told before the lines are worked out,
++	// so they are worked out once for this step, not again on the next refresh - see IsTrackLayoutDue.
+ 	NotifyGroupsChanged(EPropertyChangeType::Interactive);
++	UpdateTrackLayout();
+ }
+ 
+ void SWidgetAnimTimeline::ApplyLayerSpans(const TArray<float>& NewStarts, const TArray<float>& NewLengths)
+@@ -15643,7 +15828,7 @@ void SWidgetAnimTimeline::EndLayerDrag()
+ 
+ bool SWidgetAnimTimeline::IsLayerBeingDragged(int32 LayerIndex) const
+ {
+-	return IsDraggingLayers() && (LayerDrag.StartEdges.Contains(LayerIndex) || LayerDrag.EndEdges.Contains(LayerIndex));
++	return IsDraggingLayers() && (LayerDrag.IsStartEdge(LayerIndex) || LayerDrag.IsEndEdge(LayerIndex));
+ }
+ 
+ // -----------------------------------------------------------------------------------------------------
+@@ -21000,7 +21185,7 @@ bool SWidgetAnimTimeline::BeginKeyboardMove(int32 Direction, bool bLarge)
+ 		const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+ 		for (int32 LayerIndex = 0; Layers && LayerIndex < Layers->Num() && !bLockedLeftBehind; ++LayerIndex)
+ 		{
+-			bLockedLeftBehind = IsLayerLocked(LayerIndex) && !LayerDrag.StartEdges.Contains(LayerIndex);
++			bLockedLeftBehind = IsLayerLocked(LayerIndex) && !LayerDrag.IsStartEdge(LayerIndex);
+ 		}
+ 		LayerDrag.bStartIsFree = !bLockedLeftBehind;
+ 		LayerDrag.OriginalMinimumLength = Source.IsValid() ? Source->GetMinimumLength() : 0.f;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+index 5b4bdd3..1e4d90d 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+@@ -21,6 +21,7 @@ class SVerticalBox;
+ class SWidgetAnimTimelineTracks;
+ class FScopedTransaction;
+ struct FPropertyChangedChainEvent;
++struct FPropertyChangedEvent;
+ namespace WidgetAnimTrackPresets { struct FPreset; }
+ 
+ /**
+@@ -1134,10 +1135,25 @@ private:
+ 	/**
+ 	 * Works out the Track Editor's lines from the layers' groups, their EditorLine and their times: each group's
+ 	 * layers by line, and on each line in time order, a track that would overlap one already there moved to a
+-	 * line of its own just below. Cheap, and done every frame, so the lines follow every edit.
++	 * line of its own just below. Done whenever anything it reads may have changed - see IsTrackLayoutDue - so the
++	 * lines follow every edit.
+ 	 */
+ 	void UpdateTrackLayout();
+ 
++	/**
++	 * Whether the Track Editor's lines may be out of date: an edit anywhere since they were worked out (see
++	 * OnObjectChangedForLayout), a drag just ended, the view changed (see ComputeTrackViewHash), or a quarter second gone
++	 * by, for what is read off the preview. Worked out every frame regardless, an animation of hundreds of tracks paid for laying
++	 * every one of them out sixty times a second with nothing changing.
++	 */
++	bool IsTrackLayoutDue() const;
++
++	/** What the lines are worked out from besides the layers themselves: which animation, its size, folds, the open collapsed track, its pace. */
++	uint32 ComputeTrackViewHash() const;
++
++	/** Any animation changed - an animation track's own tracks are laid out too - or whatever the panel edits: the lines are due. */
++	void OnObjectChangedForLayout(UObject* Object, FPropertyChangedEvent& Event);
++
+ 	/** Works out NestedSpans for the open animation tracks, from TrackSpans - and forgets any that no longer is one. */
+ 	void UpdateNestedSpans();
+ 
+@@ -1543,6 +1559,23 @@ private:
+ 	uint32 LayoutSignature = 0;
+ 	uint32 ListSignature = 0;
+ 
++	/**
++	 * See IsTrackLayoutDue: edits counted as they are told (TrackLayoutRevision), and what the lines were last worked out
++	 * from - that count, the view, when, and whether a drag was on. The list's order is checked once after each.
++	 */
++	uint64 TrackLayoutRevision = 0;
++	uint64 LaidOutRevision = MAX_uint64;
++	uint32 LaidOutViewHash = 0;
++	double LastTrackLayoutTime = -1.0;
++	bool bLaidOutWhileDragging = false;
++	bool bListCheckPending = true;
++	FDelegateHandle ObjectChangedHandle;
++
++	/** IsSelectionEditable's answer this frame, for a selection of this many tracks. */
++	mutable uint64 EditableAnswerFrame = MAX_uint64;
++	mutable int32 EditableAnswerCount = INDEX_NONE;
++	mutable bool bEditableAnswer = true;
++
+ 	/** The key being dragged, and the transaction the whole drag is one step of. */
+ 	int32 DragLayer = INDEX_NONE;
+ 	int32 DragKey = INDEX_NONE;
+@@ -1570,6 +1603,32 @@ private:
+ 		TArray<int32> StartEdges;
+ 		TArray<int32> EndEdges;
+ 
++		/**
++		 * The same as bits, one per layer, set once the drag has begun: asked of every moved layer, several times over, on
++		 * every frame of the drag - searched for in the lists, a collapsed track of hundreds of tracks cost the square of
++		 * that each time.
++		 */
++		TBitArray<> StartBits;
++		TBitArray<> EndBits;
++
++		bool IsStartEdge(int32 LayerIndex) const
++		{
++			if (StartBits.IsValidIndex(LayerIndex))
++			{
++				return static_cast<bool>(StartBits[LayerIndex]);
++			}
++			return StartEdges.Contains(LayerIndex);
++		}
++
++		bool IsEndEdge(int32 LayerIndex) const
++		{
++			if (EndBits.IsValidIndex(LayerIndex))
++			{
++				return static_cast<bool>(EndBits[LayerIndex]);
++			}
++			return EndEdges.Contains(LayerIndex);
++		}
++
+ 		/** Every layer at the press: start and length in seconds, and a Transform layer's key times. */
+ 		TArray<float> OriginalStarts;
+ 		TArray<float> OriginalLengths;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimLayerEditProxy.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimLayerEditProxy.h
+index b0002fc..145a14b 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimLayerEditProxy.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimLayerEditProxy.h
+@@ -36,6 +36,12 @@ public:
+ 	/** Which layer of the edited animation this stands in for. */
+ 	int32 LayerIndex = INDEX_NONE;
+ 
++	/**
++	 * Every layer an edit made here is copied onto, when this one proxy stands in for a whole large selection - see
++	 * SWidgetAnimTimeline::RebuildLayerProxies. Empty when it stands in for its own layer alone.
++	 */
++	TArray<int32> RepresentedLayers;
++
+ 	/** The panel that made it, and is told of every edit. */
+ 	TWeakPtr<SWidgetAnimTimeline> Panel;
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
+index b622549..a51916b 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
+@@ -255,7 +255,23 @@ namespace
+ 			return;
+ 		}
+ 
+-		UWidgetAnimTransformLibrary::SyncAllTransformAnims(Object);
++		// An animation's keys are its Transform tracks' own, so only those are synced: walking every property of every
++		// track to find them cost more than anything else in an edit to an animation of hundreds of tracks - every frame of
++		// a drag. A track turned into a Transform is synced by the edit that turned it.
++		if (UWidgetAnimPresetAsset* Animation = Cast<UWidgetAnimPresetAsset>(Object))
++		{
++			for (FWidgetAnimLayer& Layer : Animation->Layers)
++			{
++				if (Layer.AnimType == EWidgetAnimType::Transform)
++				{
++					Layer.Transform.SyncKeysToCurve();
++				}
++			}
++		}
++		else
++		{
++			UWidgetAnimTransformLibrary::SyncAllTransformAnims(Object);
++		}
+ 
+ 		// As an edit to Layers: that is what both a builder and an asset refresh their previews for, and a
+ 		// group edit changes what the layers play on just the same.
+@@ -1272,9 +1288,13 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
+ 	}
+ 
+ 	// The animation as settings for this preview, built again only when something it was built from changed. See Flattened.
++	// Built again on a timer too, for an edit that tells no one - which, only then, is shown by posing again: the counts it
++	// gathers for the Track Editor are wanted either way, but posing on the timer alone would take the widgets back from
++	// the designer toolbar's preview twice a second.
+ 	if (bFlattenedStale || FlattenedAnimation.Get() != Edited || FlattenedRoot.Get() != Root || bFlattenedInvert != bInvert
+ 		|| Now - FlattenedTime > FlattenedRefreshSeconds)
+ 	{
++		bPoseStale = bPoseStale || bFlattenedStale || FlattenedAnimation.Get() != Edited || FlattenedRoot.Get() != Root || bFlattenedInvert != bInvert;
+ 		Flattened.Reset();
+ 		BuildFlattened(Root, Flattened);
+ 		FlattenedAnimation = Edited;
+@@ -1318,6 +1338,7 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
+ 		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(Root, Settings, TArray<FWidgetAnimSettings>(), Baselines);
+ 		PosedRoot = Root;
+ 		PosedSignature = FlattenedSignature;
++		bPoseStale = true;
+ 	}
+ 
+ 	// The clock. One pass is the animation at this Speed; Loop wraps it, Ping Pong bounces it.
+@@ -1352,6 +1373,14 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
+ 		}
+ 	}
+ 
++	// Posed when the clock moved, a scrub put it somewhere else, or anything it is posed from changed - see PosedAlpha.
++	if (!bPoseStale && !bClockMoved && Alpha == PosedAlpha)
++	{
++		return true;
++	}
++	bPoseStale = false;
++	PosedAlpha = Alpha;
++
+ 	UWidgetAnimLibrary::ApplyWidgetAnimationsAtAlpha(Root, Settings, Alpha, /*bIsOutAnimation=*/false, Baselines);
+ 
+ 	// Cues the playing clock passed - sounds, heard as they are timed. Never on a scrub, which doesn't move the clock.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
+index a6db351..3de8cdf 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
+@@ -530,6 +530,15 @@ private:
+ 	uint32 FlattenedSignature = 0;
+ 	float FlattenedPassSeconds = 0.f;
+ 
++	/**
++	 * Where the preview was last posed, and whether anything it was posed from has changed since: an edit, another root,
++	 * the clock. Posed again only then - not every frame: posing every track of a large animation, its material parameters
++	 * read back and the whole preview invalidated, cost every frame the panel was open, paused or not; and it took the
++	 * widgets back from the designer toolbar's preview every frame, so that one stuttered while the panel was open.
++	 */
++	float PosedAlpha = -1.f;
++	bool bPoseStale = true;
++
+ 	FDelegateHandle PropertyChangedHandle;
+ 
+ 	FTSTicker::FDelegateHandle TickerHandle;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index 0fbb777..30bf4d5 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -131,6 +131,13 @@ namespace NameTBD::Tooltips
+ 				"{0} tracks of different types selected. Only the settings they all have are shown; one they don't agree on reads Multiple Values.");
+ 		}
+ 
++		/** A selection too large to show every track's values side by side. {0} is the count. */
++		inline FText MultipleShowsFirstTrack()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MultipleShowsFirstTrack",
++				"{0} tracks selected. The values shown are the first track's; a setting changed here is set on all {0}.");
++		}
++
+ 		// -------------------------------------------------------------------------------------------------
+ 		// Panel
+ 		// -------------------------------------------------------------------------------------------------

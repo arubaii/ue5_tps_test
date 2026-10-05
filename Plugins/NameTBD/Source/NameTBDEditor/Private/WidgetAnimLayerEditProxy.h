@@ -36,6 +36,12 @@ public:
 	/** Which layer of the edited animation this stands in for. */
 	int32 LayerIndex = INDEX_NONE;
 
+	/**
+	 * Every layer an edit made here is copied onto, when this one proxy stands in for a whole large selection - see
+	 * SWidgetAnimTimeline::RebuildLayerProxies. Empty when it stands in for its own layer alone.
+	 */
+	TArray<int32> RepresentedLayers;
+
 	/** The panel that made it, and is told of every edit. */
 	TWeakPtr<SWidgetAnimTimeline> Panel;
 

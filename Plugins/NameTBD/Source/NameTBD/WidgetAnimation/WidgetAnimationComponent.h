@@ -801,11 +801,18 @@ private:
 
 	/**
 	 * The authored pose again, captured at runtime when Preserve Authored Transforms is off and AnimBaselines
-	 * therefore isn't. Only for putting widgets back - Stop with Reset To Start - never composed over, so animations
-	 * still replace the authored pose exactly as that setting says.
+	 * therefore isn't. Only for putting widgets back - Stop with Reset To Start, and every frame on the widgets of
+	 * tracks that aren't posing them (see FWidgetAnimBaselineSet::bComposeTransforms) - never composed over, so
+	 * animations still replace the authored pose exactly as that setting says.
 	 */
 	UPROPERTY(Transient)
 	FWidgetAnimBaselineSet ResetPoseBaselines;
+
+	/**
+	 * What the track player poses with: AnimBaselines, composed over, with Preserve Authored Transforms - else
+	 * ResetPoseBaselines, only put back.
+	 */
+	const FWidgetAnimBaselineSet& GetPlayerBaselines() const { return AnimBaselines.bCaptured ? AnimBaselines : ResetPoseBaselines; }
 
 	/** Whether any Anim In or Anim Out entry plays on a visibility change - what the visibility watch is for. */
 	bool bAnyVisibilityTrigger = false;
