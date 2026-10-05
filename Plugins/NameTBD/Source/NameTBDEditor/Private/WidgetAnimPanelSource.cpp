@@ -27,6 +27,7 @@
 #include "UObject/UObjectIterator.h"
 #include "WidgetBlueprint.h"
 #include "WidgetAnimTimelines.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
@@ -668,6 +669,12 @@ namespace
 	/** How often a missing designer preview is looked for again. */
 	constexpr double RootSearchInterval = 0.5;
 
+	/**
+	 * How long the preview's flattened animation is kept, at most, before it is built again even with nothing noticed
+	 * changing - for an edit that tells no one. See FWidgetAnimAssetPanelSource::Flattened.
+	 */
+	constexpr double FlattenedRefreshSeconds = 0.5;
+
 	/** Tells the person in a toast at the bottom of the editor, as saving does elsewhere. */
 	void ShowPanelNote(const FText& Text, bool bSuccess)
 	{
@@ -686,12 +693,24 @@ FWidgetAnimAssetPanelSource::FWidgetAnimAssetPanelSource(TWeakObjectPtr<UWidgetB
 {
 	RestoreOpenState();
 	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FWidgetAnimAssetPanelSource::Tick));
+	PropertyChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddRaw(this, &FWidgetAnimAssetPanelSource::OnObjectPropertyChanged);
 }
 
 FWidgetAnimAssetPanelSource::~FWidgetAnimAssetPanelSource()
 {
 	FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+	FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(PropertyChangedHandle);
 	RestorePreview();
+}
+
+void FWidgetAnimAssetPanelSource::OnObjectPropertyChanged(UObject* Object, FPropertyChangedEvent& Event)
+{
+	// Any animation, not only the one shown: an animation track reads its animation's tracks into the settings too. An
+	// undo tells the object it put back through here as well.
+	if (Object && Object->IsA<UWidgetAnimPresetAsset>())
+	{
+		bFlattenedStale = true;
+	}
 }
 
 void FWidgetAnimAssetPanelSource::SaveOpenState() const
@@ -741,6 +760,7 @@ void FWidgetAnimAssetPanelSource::RestoreOpenState()
 void FWidgetAnimAssetPanelSource::ResetPlayback()
 {
 	RestorePreview();
+	bFlattenedStale = true;
 	Alpha = 0.f;
 	bPlaying = false;
 	bPlayingForward = true;
@@ -748,6 +768,21 @@ void FWidgetAnimAssetPanelSource::ResetPlayback()
 
 UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::GetOpenTimeline() const
 {
+	// Where it was found last, while it is still there. See FoundTimelines.
+	if (const UWidgetAnimTimelinesExtension* Found = Cast<UWidgetAnimTimelinesExtension>(FoundTimelines.Get()))
+	{
+		if (Found->Timelines.IsValidIndex(FoundTimelineIndex))
+		{
+			UWidgetAnimPresetAsset* Animation = Found->Timelines[FoundTimelineIndex].Animation.Get();
+			if (Animation && Animation == OpenTimelineAnimation.Get())
+			{
+				return Animation;
+			}
+		}
+	}
+	FoundTimelines.Reset();
+	FoundTimelineIndex = INDEX_NONE;
+
 	const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
 	if (!Timelines || Timelines->Timelines.Num() == 0)
 	{
@@ -770,10 +805,20 @@ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::GetOpenTimeline() const
 		return nullptr;
 	}
 
+	// Only written when it changed: asked this often, copying the name every time was a cost of its own.
 	const FWidgetAnimTimeline& Timeline = Timelines->Timelines[Index];
-	OpenTimelineAnimation = Timeline.Animation.Get();
-	OpenTimelineName = Timeline.Name;
-	return Timeline.Animation.Get();
+	UWidgetAnimPresetAsset* Animation = Timeline.Animation.Get();
+	if (OpenTimelineAnimation.Get() != Animation)
+	{
+		OpenTimelineAnimation = Animation;
+	}
+	if (!OpenTimelineName.Equals(Timeline.Name, ESearchCase::CaseSensitive))
+	{
+		OpenTimelineName = Timeline.Name;
+	}
+	FoundTimelines = Timelines;
+	FoundTimelineIndex = Index;
+	return Animation;
 }
 
 UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::GetEditedAnimation() const
@@ -946,6 +991,7 @@ bool FWidgetAnimAssetPanelSource::CanEdit() const
 
 void FWidgetAnimAssetPanelSource::NotifyGroupsChanged(EPropertyChangeType::Type ChangeType)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimPanelNotifyEdit);
 	NotifyLayerGroupsChanged(GetEditedAnimation(), ChangeType);
 }
 
@@ -1194,16 +1240,28 @@ void FWidgetAnimAssetPanelSource::RestorePreview()
 
 bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 {
-	const bool bPanelActive = LastPanelActiveTime >= 0.0 && FPlatformTime::Seconds() - LastPanelActiveTime < PanelIdleSeconds;
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimPanelPreview);
+	// Looked for afresh once a tick: a rename, an undo, a timeline taken away are all caught within a frame.
+	FoundTimelines.Reset();
+	FoundTimelineIndex = INDEX_NONE;
 
-	// Not on screen: nothing is being judged, so nothing stays posed.
-	if (!bPanelActive || !GetEditedAnimation())
+	const double Now = FPlatformTime::Seconds();
+	const bool bPanelActive = LastPanelActiveTime >= 0.0 && Now - LastPanelActiveTime < PanelIdleSeconds;
+
+	// Not on screen: nothing is being judged, so nothing stays posed - nor kept.
+	UWidgetAnimPresetAsset* Edited = GetEditedAnimation();
+	if (!bPanelActive || !Edited)
 	{
 		if (PosedRoot.IsValid() || Baselines.Baselines.Num() > 0 || Baselines.AuthoritativeBaselines.Num() > 0)
 		{
 			RestorePreview();
 		}
 		bPlaying = false;
+		if (Flattened.Num() > 0)
+		{
+			Flattened.Empty();
+		}
+		bFlattenedStale = true;
 		return true;
 	}
 
@@ -1213,44 +1271,57 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 		return true;
 	}
 
-	TArray<FWidgetAnimSettings> Settings;
-	BuildFlattened(Root, Settings);
-
-	// How many items each staggered layer fans out to here, for the Track Editor - one setting per layer, in order.
-	ExpandedCounts.Reset(Settings.Num());
-	PreparedRuns.Reset(Settings.Num());
-	for (const FWidgetAnimSettings& Layer : Settings)
+	// The animation as settings for this preview, built again only when something it was built from changed. See Flattened.
+	if (bFlattenedStale || FlattenedAnimation.Get() != Edited || FlattenedRoot.Get() != Root || bFlattenedInvert != bInvert
+		|| Now - FlattenedTime > FlattenedRefreshSeconds)
 	{
-		ExpandedCounts.Add(UWidgetAnimLibrary::CountExpandedItems(Root, Layer));
-		PreparedRuns.Add(WidgetAnimPreparedRuns::Get(Root, Layer));
-	}
+		Flattened.Reset();
+		BuildFlattened(Root, Flattened);
+		FlattenedAnimation = Edited;
+		FlattenedRoot = Root;
+		bFlattenedInvert = bInvert;
+		bFlattenedStale = false;
+		FlattenedTime = Now;
 
-	// Which widgets are moved, and how: when that changes - a group pointed elsewhere, a layer type swapped,
-	// a new preview instance - the old poses come off and the authored state is read again before posing.
-	uint32 Signature = PointerHash(Root);
-	for (int32 Index = 0; Index < Settings.Num(); ++Index)
-	{
-		const FWidgetAnimSettings& Layer = Settings[Index];
-		Signature = HashCombine(Signature, PointerHash(Layer.TargetWidget.Get()));
-		Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType)));
-		Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.bAnimateShape)));
-		// Which registered type, too: swapping a Count for another type may write another channel of the target.
-		Signature = HashCombine(Signature, PointerHash(Layer.TypeParams.GetScriptStruct()));
-		// And which stagger, and how many items: a stagger moves each child, or each letter, which are captured one by one.
-		Signature = HashCombine(Signature, PointerHash(Layer.Expander.GetScriptStruct()));
-		Signature = HashCombine(Signature, GetTypeHash(ExpandedCounts[Index]));
-	}
+		// How many items each staggered layer fans out to here, for the Track Editor - one setting per layer, in order.
+		ExpandedCounts.Reset(Flattened.Num());
+		PreparedRuns.Reset(Flattened.Num());
+		for (const FWidgetAnimSettings& Layer : Flattened)
+		{
+			ExpandedCounts.Add(UWidgetAnimLibrary::CountExpandedItems(Root, Layer));
+			PreparedRuns.Add(WidgetAnimPreparedRuns::Get(Root, Layer));
+		}
 
-	if (PosedRoot.Get() != Root || Signature != PosedSignature)
+		// Which widgets are moved, and how: when that changes - a group pointed elsewhere, a layer type swapped,
+		// a new preview instance - the old poses come off and the authored state is read again before posing.
+		uint32 Signature = PointerHash(Root);
+		for (int32 Index = 0; Index < Flattened.Num(); ++Index)
+		{
+			const FWidgetAnimSettings& Layer = Flattened[Index];
+			Signature = HashCombine(Signature, PointerHash(Layer.TargetWidget.Get()));
+			Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType)));
+			Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.bAnimateShape)));
+			// Which registered type, too: swapping a Count for another type may write another channel of the target.
+			Signature = HashCombine(Signature, PointerHash(Layer.TypeParams.GetScriptStruct()));
+			// And which stagger, and how many items: a stagger moves each child, or each letter, which are captured one by one.
+			Signature = HashCombine(Signature, PointerHash(Layer.Expander.GetScriptStruct()));
+			Signature = HashCombine(Signature, GetTypeHash(ExpandedCounts[Index]));
+		}
+		FlattenedSignature = Signature;
+		FlattenedPassSeconds = UWidgetAnimLibrary::GetStackPassDuration(Flattened);
+	}
+	const TArray<FWidgetAnimSettings>& Settings = Flattened;
+
+	if (PosedRoot.Get() != Root || FlattenedSignature != PosedSignature)
 	{
 		RestorePreview();
 		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(Root, Settings, TArray<FWidgetAnimSettings>(), Baselines);
 		PosedRoot = Root;
-		PosedSignature = Signature;
+		PosedSignature = FlattenedSignature;
 	}
 
 	// The clock. One pass is the animation at this Speed; Loop wraps it, Ping Pong bounces it.
-	const float PassSeconds = UWidgetAnimLibrary::GetStackPassDuration(Settings) / FMath::Max(Speed, 0.01f);
+	const float PassSeconds = FlattenedPassSeconds / FMath::Max(Speed, 0.01f);
 	const float OldAlpha = Alpha;
 	const bool bWasForward = bPlayingForward;
 	bool bClockMoved = false;
@@ -1790,28 +1861,37 @@ bool FWidgetAnimLayerArrayPanelSource::Tick(float DeltaTime)
 	int32 FirstOwn = 0;
 	BuildSettings(Widget, Settings, &FirstOwn);
 
-	// How many items each of the list's staggered tracks fans out to here, for the Track Editor - after the animation
-	// the list plays within, one setting per track, in order.
+	// How many items each staggered track fans out to here - counted once, for both uses below: a stagger gathers its
+	// items afresh each time it is counted.
+	TArray<int32> Counts;
+	Counts.Reserve(Settings.Num());
+	for (const FWidgetAnimSettings& Layer : Settings)
+	{
+		Counts.Add(UWidgetAnimLibrary::CountExpandedItems(Widget, Layer));
+	}
+
+	// For the Track Editor - after the animation the list plays within, one setting per track, in order.
 	ExpandedCounts.Reset();
 	PreparedRuns.Reset();
 	for (int32 Index = FirstOwn; Index < Settings.Num(); ++Index)
 	{
-		ExpandedCounts.Add(UWidgetAnimLibrary::CountExpandedItems(Widget, Settings[Index]));
+		ExpandedCounts.Add(Counts[Index]);
 		PreparedRuns.Add(WidgetAnimPreparedRuns::Get(Widget, Settings[Index]));
 	}
 
 	// What is moved, and how: when that changes - a track type swapped, a new preview instance - the old poses
 	// come off and the authored state is read again before posing.
 	uint32 Signature = PointerHash(Widget);
-	for (const FWidgetAnimSettings& Layer : Settings)
+	for (int32 Index = 0; Index < Settings.Num(); ++Index)
 	{
+		const FWidgetAnimSettings& Layer = Settings[Index];
 		Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType)));
 		Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.bAnimateShape)));
 		Signature = HashCombine(Signature, PointerHash(Layer.TypeParams.GetScriptStruct()));
 		Signature = HashCombine(Signature, PointerHash(Layer.TargetWidget.Get()));
 		// A stagger moves each child, or each letter, which are captured one by one.
 		Signature = HashCombine(Signature, PointerHash(Layer.Expander.GetScriptStruct()));
-		Signature = HashCombine(Signature, GetTypeHash(UWidgetAnimLibrary::CountExpandedItems(Widget, Layer)));
+		Signature = HashCombine(Signature, GetTypeHash(Counts[Index]));
 	}
 
 	if (PosedWidget.Get() != Widget || Signature != PosedSignature)

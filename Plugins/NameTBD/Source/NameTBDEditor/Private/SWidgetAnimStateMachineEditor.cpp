@@ -3877,34 +3877,92 @@ bool SWidgetAnimStateMachineEditor::GetLayerDebug(int32 LayerIndex, FWidgetAnimM
 	return true;
 }
 
-FString SWidgetAnimStateMachineEditor::MakePreviewSignature() const
+uint32 SWidgetAnimStateMachineEditor::MakePreviewSignature() const
 {
 	// What a preview has to start again for: the inputs it was set up with, the layers it has, the animations it captured
 	// its widgets for - and, on Preview Targets, the widgets it plays on. Durations, conditions and the rest are read live.
+	// Hashed in one walk over the machine, every frame: written out as text, with every target's default found by walking
+	// every animation again, it cost more the bigger the machine grew - most of all with many states.
 	if (!Machine)
 	{
-		return FString();
+		return 0;
 	}
-	FString Signature = Machine->GetPathName();
+
+	// Each object by itself, its name and its package: what its path names.
+	auto HashObject = [](uint32 InHash, const UObject* Object)
+	{
+		InHash = HashCombine(InHash, PointerHash(Object));
+		InHash = HashCombine(InHash, GetTypeHash(Object->GetFName()));
+		return HashCombine(InHash, GetTypeHash(Object->GetPackage()->GetFName()));
+	};
+
+	uint32 Signature = HashObject(0, Machine);
 	for (const FWidgetAnimMachineInput& Input : Machine->Inputs)
 	{
-		Signature += FString::Printf(TEXT("|%s:%d"), *Input.Name.ToString(), static_cast<int32>(Input.Type));
+		Signature = HashCombine(Signature, GetTypeHash(Input.Name));
+		Signature = HashCombine(Signature, GetTypeHash(static_cast<int32>(Input.Type)));
 	}
-	Signature += FString::Printf(TEXT("|L%d"), Machine->Layers.Num());
-	TArray<UWidgetAnimPresetAsset*> Animations;
-	Machine->GatherAnimations(Animations);
+	Signature = HashCombine(Signature, GetTypeHash(Machine->Layers.Num()));
+
+	// Every animation it plays, each once, in the order the machine first names it - as GatherAnimations gathers them.
+	TArray<const UWidgetAnimPresetAsset*, TInlineAllocator<32>> Animations;
+	TSet<const UWidgetAnimPresetAsset*> Gathered;
+	auto Gather = [&Animations, &Gathered](const UWidgetAnimPresetAsset* Animation)
+	{
+		bool bAlready = false;
+		Gathered.Add(Animation, &bAlready);
+		if (!bAlready)
+		{
+			Animations.Add(Animation);
+		}
+	};
+	for (const FWidgetAnimMachineLayer& Layer : Machine->Layers)
+	{
+		for (const FWidgetAnimMachineState& State : Layer.States)
+		{
+			if (State.Animation && State.Kind == EWidgetAnimMachineNodeKind::State)
+			{
+				Gather(State.Animation);
+			}
+		}
+		for (const FWidgetAnimMachineTransition& Transition : Layer.Transitions)
+		{
+			if (Transition.TransitionAnimation && Transition.Blend == EWidgetAnimMachineBlend::Animation)
+			{
+				Gather(Transition.TransitionAnimation);
+			}
+		}
+	}
 	for (const UWidgetAnimPresetAsset* Animation : Animations)
 	{
-		Signature += TEXT("|") + Animation->GetPathName();
+		Signature = HashObject(Signature, Animation);
 	}
+
 	if (PreviewSource == EPreviewSource::Targets)
 	{
-		Signature += TEXT("|@") + GetPreviewHostPath().ToString();
-		TArray<FName> TargetNames;
-		Machine->GetTargetNames(TargetNames);
+		Signature = HashCombine(Signature, GetTypeHash(GetPreviewHostPath()));
+
+		// Each target - the animations' groups, matched by name, as GetTargetNames has them - and where it previews: picked here,
+		// else the Preview Target of the first group of that name (GetTargetDefault), read in the same walk.
+		TArray<FName, TInlineAllocator<32>> TargetNames;
+		TMap<FName, FName> TargetDefaults;
+		for (const UWidgetAnimPresetAsset* Animation : Animations)
+		{
+			for (int32 GroupIndex = 0; GroupIndex < Animation->LayerGroups.Num(); ++GroupIndex)
+			{
+				const FName TargetName(*Animation->LayerGroups[GroupIndex].GetDisplayName(GroupIndex));
+				if (!TargetDefaults.Contains(TargetName))
+				{
+					TargetDefaults.Add(TargetName, Animation->LayerGroups[GroupIndex].PreviewTarget);
+					TargetNames.Add(TargetName);
+				}
+			}
+		}
 		for (const FName TargetName : TargetNames)
 		{
-			Signature += FString::Printf(TEXT("|%s=%s"), *TargetName.ToString(), *GetPreviewTargetPath(TargetName).ToString());
+			const FName* Picked = Machine->PreviewTargetPaths.Find(TargetName);
+			Signature = HashCombine(Signature, GetTypeHash(TargetName));
+			Signature = HashCombine(Signature, GetTypeHash(Picked ? *Picked : TargetDefaults.FindRef(TargetName)));
 		}
 	}
 	return Signature;
@@ -3945,8 +4003,8 @@ void SWidgetAnimStateMachineEditor::UpdatePreviews()
 		}
 	}
 
-	const FString Signature = MakePreviewSignature();
-	const bool bRestart = Signature != PreviewSignature;
+	const uint32 Signature = MakePreviewSignature();
+	const bool bRestart = !PreviewSignature.IsSet() || Signature != PreviewSignature.GetValue();
 	PreviewSignature = Signature;
 
 	if (PreviewSource == EPreviewSource::Targets)

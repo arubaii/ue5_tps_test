@@ -1905,13 +1905,12 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 		}
 		else if (!bBeforeStart)
 		{
-			// Heading back toward the start values: inverted on a forward leg, or not inverted on a ping-pong's
-			// return leg. A finished clock always rests at the end of a forward leg. Only springs read it - see
+			// Heading back toward the start values because the track is inverted - only then. A ping-pong's return leg is
+			// the same track played backwards, exactly as the editor's preview plays it: the timeline runs back, the alpha
+			// falls with it, and every key and curve is met in reverse. Taking the return leg as "toward the start" ran a
+			// spring forward to its start instead - an inverted track, not the track rewound. Only springs read it - see
 			// ApplyAnimationContribution.
-			const bool bReturnLeg = !Clock.bFinished && !Clock.bPlayingForward;
-			const bool bTowardStart = bInvert != bReturnLeg;
-
-			ApplyAnimationContribution(Settings, bInvert ? 1.f - LinearAlpha : LinearAlpha, OutResult, Baselines, bTowardStart);
+			ApplyAnimationContribution(Settings, bInvert ? 1.f - LinearAlpha : LinearAlpha, OutResult, Baselines, /*bTowardStart=*/bInvert);
 		}
 		else if (Settings.bHoldStartPose && !Settings.bMuted)
 		{
@@ -2865,6 +2864,116 @@ FWidgetAnimBaseline UWidgetAnimLibrary::FindBaselineFor(const FWidgetAnimBaselin
 	return FWidgetAnimBaseline();
 }
 
+namespace WidgetAnimAuthoredPoses
+{
+	/**
+	 * What each design-time widget was authored as, shared by every preview that poses it - the Widget Animations panel's,
+	 * a Widget Animation Component's toolbar preview, a state machine's. A preview reads a widget's pose as authored when
+	 * it starts, then composes every frame over that; started while another preview had the widget mid-animation, it read
+	 * that preview's pose instead - a cell at 0.97 of its size - and played every frame of its own scaled by it, so it ended
+	 * short of where it should and never quite put the widget back. Read once, by whichever preview takes the widget first,
+	 * and handed to each one after it until the last lets go. Only at design time: a playing game has one player per widget.
+	 */
+	struct FHeldPose
+	{
+		FWidgetAnimBaseline Pose;
+		int32 Holders = 0;
+	};
+
+	struct FParameterKey
+	{
+		TWeakObjectPtr<UWidget> Widget;
+		EWidgetAnimMaterialSlot Slot = EWidgetAnimMaterialSlot::Brush;
+		FName Parameter;
+		bool bVector = false;
+
+		bool operator==(const FParameterKey& Other) const
+		{
+			return Widget == Other.Widget && Slot == Other.Slot && Parameter == Other.Parameter && bVector == Other.bVector;
+		}
+
+		friend uint32 GetTypeHash(const FParameterKey& Key)
+		{
+			return HashCombine(HashCombine(GetTypeHash(Key.Widget), GetTypeHash(static_cast<uint8>(Key.Slot))), HashCombine(GetTypeHash(Key.Parameter), GetTypeHash(Key.bVector)));
+		}
+	};
+
+	struct FHeldParameter
+	{
+		float Scalar = 0.f;
+		FLinearColor Vector = FLinearColor::White;
+		int32 Holders = 0;
+	};
+
+	static TMap<TWeakObjectPtr<UWidget>, FHeldPose>& Poses()
+	{
+		static TMap<TWeakObjectPtr<UWidget>, FHeldPose> Held;
+		return Held;
+	}
+
+	static TMap<FParameterKey, FHeldParameter>& Parameters()
+	{
+		static TMap<FParameterKey, FHeldParameter> Held;
+		return Held;
+	}
+
+	static bool IsShared(const UWidget* Widget)
+	{
+		return Widget && Widget->IsDesignTime();
+	}
+
+	/** Every entry for a widget that is gone - design-time widgets are thrown away and made again all the time. */
+	static void Compact()
+	{
+		for (auto It = Poses().CreateIterator(); It; ++It)
+		{
+			if (!It->Key.IsValid())
+			{
+				It.RemoveCurrent();
+			}
+		}
+		for (auto It = Parameters().CreateIterator(); It; ++It)
+		{
+			if (!It->Key.Widget.IsValid())
+			{
+				It.RemoveCurrent();
+			}
+		}
+	}
+
+	static void ReleasePose(const UWidget* Widget)
+	{
+		if (!IsShared(Widget))
+		{
+			return;
+		}
+		const TWeakObjectPtr<UWidget> Key(const_cast<UWidget*>(Widget));
+		if (FHeldPose* Held = Poses().Find(Key))
+		{
+			if (--Held->Holders <= 0)
+			{
+				Poses().Remove(Key);
+			}
+		}
+	}
+
+	static void ReleaseParameter(const FWidgetAnimMaterialBaseline& Baseline)
+	{
+		if (!IsShared(Baseline.Widget))
+		{
+			return;
+		}
+		const FParameterKey Key{ Baseline.Widget.Get(), Baseline.Slot, Baseline.ParameterName, Baseline.bVector };
+		if (FHeldParameter* Held = Parameters().Find(Key))
+		{
+			if (--Held->Holders <= 0)
+			{
+				Parameters().Remove(Key);
+			}
+		}
+	}
+}
+
 void UWidgetAnimLibrary::CaptureOne(FWidgetAnimBaselineSet& Baselines, UWidget* Widget)
 {
 	if (!Widget)
@@ -2880,15 +2989,38 @@ void UWidgetAnimLibrary::CaptureOne(FWidgetAnimBaselineSet& Baselines, UWidget* 
 		}
 	}
 
-	const FWidgetTransform& Transform = Widget->GetRenderTransform();
-
 	FWidgetAnimBaseline& Baseline = Baselines.Baselines.AddDefaulted_GetRef();
+
+	// Held by another preview already: what it read before it posed the widget, not the pose it has it in now.
+	if (WidgetAnimAuthoredPoses::IsShared(Widget))
+	{
+		if (WidgetAnimAuthoredPoses::FHeldPose* Held = WidgetAnimAuthoredPoses::Poses().Find(Widget))
+		{
+			++Held->Holders;
+			Baseline = Held->Pose;
+			Baseline.Widget = Widget;
+			return;
+		}
+	}
+
+	const FWidgetTransform& Transform = Widget->GetRenderTransform();
 	Baseline.Widget = Widget;
 	Baseline.Opacity = Widget->GetRenderOpacity();
 	Baseline.Scale = Transform.Scale;
 	Baseline.Translation = Transform.Translation;
 	Baseline.Shear = Transform.Shear;
 	Baseline.Angle = Transform.Angle;
+
+	if (WidgetAnimAuthoredPoses::IsShared(Widget))
+	{
+		if (WidgetAnimAuthoredPoses::Poses().Num() > 4096)
+		{
+			WidgetAnimAuthoredPoses::Compact();
+		}
+		WidgetAnimAuthoredPoses::FHeldPose& Held = WidgetAnimAuthoredPoses::Poses().Add(Widget);
+		Held.Pose = Baseline;
+		Held.Holders = 1;
+	}
 }
 
 void UWidgetAnimLibrary::CaptureOneMaterialParameter(FWidgetAnimBaselineSet& Baselines, const FWidgetAnimSettings& Settings, UWidget* FallbackWidget)
@@ -2910,6 +3042,20 @@ void UWidgetAnimLibrary::CaptureOneMaterialParameter(FWidgetAnimBaselineSet& Bas
 	Baseline.bVector = bVector;
 	Baseline.bIsFallback = Named == nullptr;
 
+	// Held by another preview already: what the material held before that preview drove it. See WidgetAnimAuthoredPoses.
+	const bool bShared = WidgetAnimAuthoredPoses::IsShared(Widget);
+	const WidgetAnimAuthoredPoses::FParameterKey Key{ Widget, Settings.MaterialSlot, Parameter, bVector };
+	if (bShared)
+	{
+		if (WidgetAnimAuthoredPoses::FHeldParameter* Held = WidgetAnimAuthoredPoses::Parameters().Find(Key))
+		{
+			++Held->Holders;
+			Baseline.Scalar = Held->Scalar;
+			Baseline.Vector = Held->Vector;
+			return;
+		}
+	}
+
 	const FHashedMaterialParameterInfo Info(Parameter);
 	if (bVector)
 	{
@@ -2918,6 +3064,18 @@ void UWidgetAnimLibrary::CaptureOneMaterialParameter(FWidgetAnimBaselineSet& Bas
 	else
 	{
 		Material->GetScalarParameterValue(Info, Baseline.Scalar);
+	}
+
+	if (bShared)
+	{
+		if (WidgetAnimAuthoredPoses::Parameters().Num() > 4096)
+		{
+			WidgetAnimAuthoredPoses::Compact();
+		}
+		WidgetAnimAuthoredPoses::FHeldParameter& Held = WidgetAnimAuthoredPoses::Parameters().Add(Key);
+		Held.Scalar = Baseline.Scalar;
+		Held.Vector = Baseline.Vector;
+		Held.Holders = 1;
 	}
 }
 
@@ -2947,6 +3105,7 @@ void UWidgetAnimLibrary::CaptureOneShape(FWidgetAnimBaselineSet& Baselines, USha
 
 void UWidgetAnimLibrary::CaptureWidgetAnimBaselines(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& InAnimationsToExpand, const TArray<FWidgetAnimSettings>& OutAnimationsToExpand, FWidgetAnimBaselineSet& Baselines)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimCaptureBaselines);
 	// Fanned out first, so a stagger's children are captured one by one - each composes over, and goes back to, its own
 	// authored pose - and a text stagger's Animated Text Block is captured, so putting it back also puts its letters back.
 	// Children added after this capture have none, and are composed over no pose of their own.
@@ -2971,7 +3130,12 @@ void UWidgetAnimLibrary::CaptureWidgetAnimBaselines(UWidget* FallbackWidget, con
 	bool bNeedsFallback = false;
 	bool bNeedsShapeFallback = false;
 
-	auto Gather = [&Baselines, &bNeedsFallback, &bNeedsShapeFallback, FallbackWidget](const TArray<FWidgetAnimSettings>& Animations)
+	// What has been captured already, so each widget and each parameter is looked for in the set only once: hundreds of tracks
+	// on the same widgets would otherwise search every baseline taken so far, for every track.
+	TSet<const UWidget*> CapturedWidgets;
+	TSet<TTuple<const UWidget*, uint8, FName, bool>> CapturedParameters;
+
+	auto Gather = [&Baselines, &bNeedsFallback, &bNeedsShapeFallback, &CapturedWidgets, &CapturedParameters, FallbackWidget](const TArray<FWidgetAnimSettings>& Animations)
 	{
 		for (const FWidgetAnimSettings& Settings : Animations)
 		{
@@ -3008,13 +3172,26 @@ void UWidgetAnimLibrary::CaptureWidgetAnimBaselines(UWidget* FallbackWidget, con
 			{
 				// Material entries write parameters, not a transform: what the parameter held is kept instead, read off the
 				// widget's material, to go back to when the track hasn't started or the animation is let go.
-				CaptureOneMaterialParameter(Baselines, Settings, FallbackWidget);
+				const bool bVector = Settings.AnimType == EWidgetAnimType::MaterialVector;
+				const TTuple<const UWidget*, uint8, FName, bool> Key(Settings.GetMaterialWidget(), static_cast<uint8>(Settings.MaterialSlot),
+					bVector ? Settings.VectorParameterName : Settings.ScalarParameterName, bVector);
+				bool bAlready = false;
+				CapturedParameters.Add(Key, &bAlready);
+				if (!bAlready)
+				{
+					CaptureOneMaterialParameter(Baselines, Settings, FallbackWidget);
+				}
 				continue;
 			}
 
 			if (Settings.TargetWidget)
 			{
-				CaptureOne(Baselines, Settings.TargetWidget);
+				bool bAlready = false;
+				CapturedWidgets.Add(Settings.TargetWidget.Get(), &bAlready);
+				if (!bAlready)
+				{
+					CaptureOne(Baselines, Settings.TargetWidget);
+				}
 			}
 			else
 			{
@@ -3047,6 +3224,9 @@ void UWidgetAnimLibrary::RestoreWidgetAnimBaselines(const FWidgetAnimBaselineSet
 			continue;
 		}
 
+		// No longer posed by this preview - see WidgetAnimAuthoredPoses.
+		WidgetAnimAuthoredPoses::ReleasePose(Widget);
+
 		Widget->SetRenderOpacity(Baseline.Opacity);
 		Widget->SetRenderScale(Baseline.Scale);
 		Widget->SetRenderTranslation(Baseline.Translation);
@@ -3072,6 +3252,8 @@ void UWidgetAnimLibrary::RestoreWidgetAnimBaselines(const FWidgetAnimBaselineSet
 	// A widget whose material was never made dynamic was never changed, and is left as it is.
 	for (const FWidgetAnimMaterialBaseline& Baseline : Baselines.MaterialBaselines)
 	{
+		WidgetAnimAuthoredPoses::ReleaseParameter(Baseline);
+
 		UWidget* Widget = Baseline.Widget;
 		UMaterialInstanceDynamic* MID = Cast<UMaterialInstanceDynamic>(FindWidgetMaterial(Widget, Baseline.Slot));
 		if (!MID)
@@ -3127,6 +3309,7 @@ void UWidgetAnimLibrary::ResetWidgetRenderState(UWidget* Widget)
 
 void UWidgetAnimLibrary::ApplyWidgetAnimationsAtAlpha(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& InAnimations, float Alpha, bool bIsOutAnimation, const FWidgetAnimBaselineSet& Baselines)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimApplyAtAlpha);
 	// Alpha is along the pass with every stagger fanned out, which is the pass the Widget Animations editor shows.
 	TArray<FWidgetAnimSettings> Expanded;
 	const TArray<FWidgetAnimSettings>& Animations = ExpandSettings(FallbackWidget, InAnimations, Expanded) ? Expanded : InAnimations;
@@ -4240,6 +4423,7 @@ void UWidgetAnimLibrary::RestartWidgetAnimPreview(FWidgetAnimPreviewState& State
 
 bool UWidgetAnimLibrary::TickWidgetAnimPreview(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& InAnimationsToExpand, const TArray<FWidgetAnimSettings>& OutAnimationsToExpand, FWidgetAnimPreviewState& State, const FWidgetAnimPreviewSettings& Settings, const FWidgetAnimBaselineSet& Baselines, float DeltaTime)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimTickDesignerPreview);
 	// Fanned out once for the whole frame, so every pose and every state below lines up with the same layers.
 	TArray<FWidgetAnimSettings> ExpandedIn;
 	TArray<FWidgetAnimSettings> ExpandedOut;

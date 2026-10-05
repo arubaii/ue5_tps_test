@@ -249,8 +249,8 @@ private:
 	/** What to select once the shown graph is next rebuilt - what was just pasted, duplicated or added. */
 	TArray<FGuid> PendingSelection;
 
-	/** The inputs the previews were started with: a change restarts them, so they have the new inputs. */
-	FString PreviewSignature;
+	/** The inputs the previews were started with: a change restarts them, so they have the new inputs. Unset: start them again. */
+	TOptional<uint32> PreviewSignature;
 
 	UWidgetAnimMachineGraph* GetOrMakeGraph(int32 LayerIndex);
 	TSharedPtr<SGraphEditor> GetShownGraphEditor() const;
@@ -367,7 +367,7 @@ private:
 	void StopComponentPreviews();
 	void PushInputs(UWidgetAnimationComponent* Component) const;
 	void PushInputsToHost() const;
-	FString MakePreviewSignature() const;
+	uint32 MakePreviewSignature() const;
 
 	/** The watched machine's state of the layer, for the graph to light. */
 	bool GetLayerDebug(int32 LayerIndex, struct FWidgetAnimMachineLayerDebug& OutDebug) const;

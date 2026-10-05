@@ -476,6 +476,9 @@ private:
 	/** The animation as settings for this Widget Blueprint's preview: each group on its Preview Target. Invert stamped on, loops left to the clock here. */
 	void BuildFlattened(UUserWidget* Root, TArray<FWidgetAnimSettings>& OutSettings) const;
 
+	/** Any animation edited - this one, or one it plays as an animation track: Flattened is built again on the next tick. */
+	void OnObjectPropertyChanged(UObject* Object, struct FPropertyChangedEvent& Event);
+
 	/** Every widget moved put back as authored, and forgotten. */
 	void RestorePreview();
 
@@ -486,6 +489,13 @@ private:
 	/** The open timeline: its animation, and its name to find it again by when the animation is gone. See GetOpenTimeline. */
 	mutable TWeakObjectPtr<UWidgetAnimPresetAsset> OpenTimelineAnimation;
 	mutable FString OpenTimelineName;
+
+	/**
+	 * Where the open timeline was found last, and on what - so the many times a frame it is asked for (every track's row asks
+	 * through GetLayers) cost a check rather than a search. Forgotten every tick, so anything that moved it is found again.
+	 */
+	mutable TWeakObjectPtr<const UObject> FoundTimelines;
+	mutable int32 FoundTimelineIndex = INDEX_NONE;
 
 	/** The designer preview found last, and when it was last looked for - looking is a walk over every User Widget, so it isn't done every frame. */
 	mutable TWeakObjectPtr<UUserWidget> CachedRoot;
@@ -501,6 +511,26 @@ private:
 	/** How long each layer whose length comes from its widget runs on the preview, every tick. See GetPreparedRun. */
 	TArray<float> PreparedRuns;
 	FWidgetAnimBaselineSet Baselines;
+
+	/**
+	 * The animation flattened for the preview (BuildFlattened), kept from tick to tick with what it was built for, and built
+	 * again only when that changes: an animation edited (OnObjectPropertyChanged), another preview or animation, Invert -
+	 * or, whatever happened, FlattenedRefreshSeconds after it was last built. Built every tick, it read every track and found
+	 * every group's widget by its path every frame: most of what posing an animation of hundreds of tracks cost. Emptied
+	 * while the panel isn't showing. ExpandedCounts and PreparedRuns are counted with it.
+	 */
+	TArray<FWidgetAnimSettings> Flattened;
+	TWeakObjectPtr<UWidgetAnimPresetAsset> FlattenedAnimation;
+	TWeakObjectPtr<UUserWidget> FlattenedRoot;
+	bool bFlattenedInvert = false;
+	bool bFlattenedStale = true;
+	double FlattenedTime = -1.0;
+
+	/** Worked out with Flattened: what its poses are captured for (see PosedSignature), and one pass of it, in seconds. */
+	uint32 FlattenedSignature = 0;
+	float FlattenedPassSeconds = 0.f;
+
+	FDelegateHandle PropertyChangedHandle;
 
 	FTSTicker::FDelegateHandle TickerHandle;
 	double LastPanelActiveTime = -1.0;

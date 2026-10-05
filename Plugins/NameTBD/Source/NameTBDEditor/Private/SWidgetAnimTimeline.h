@@ -457,6 +457,76 @@ public:
 	const TArray<FTrackLine>& GetTrackLines() const { return TrackLines; }
 
 	/**
+	 * What the passes over every layer ask of each one, read in one walk over the layers as they are now: its group,
+	 * whether it heads a collapsed track or is folded into one, whether it is in view - and of each group, its layers and
+	 * whether every one of them is in a collapsed track. Asking each layer through the accessors (GetLayerGroup,
+	 * IsCollapsedHead, IsGroupAllCollapsed) walks the layers again - and asks the source for them - every time, which made
+	 * laying out an animation of hundreds of tracks cost the square of that, every frame. The same answers as the
+	 * accessors, as long as nothing is edited in between. See BuildLayoutIndex.
+	 */
+	struct FLayoutIndex
+	{
+		/** Per layer: GetLayerGroup, IsCollapsedHead, IsFoldedIntoCollapsed and IsLayerInView. */
+		TArray<int32> LayerGroups;
+		TBitArray<> CollapsedHeads;
+		TBitArray<> FoldedIntoCollapsed;
+		TBitArray<> InView;
+
+		/** Per group: its layers, in the order they sit in the sequence, and IsGroupAllCollapsed. */
+		TArray<TArray<int32>> GroupMembers;
+		TBitArray<> GroupsAllCollapsed;
+
+		/** IsGroupAllCollapsed of INDEX_NONE - the group of every layer while there are no groups. */
+		bool bUngroupedAllCollapsed = false;
+
+		bool IsGroupAllCollapsed(int32 GroupIndex) const
+		{
+			return GroupsAllCollapsed.IsValidIndex(GroupIndex) ? static_cast<bool>(GroupsAllCollapsed[GroupIndex]) : GroupIndex == INDEX_NONE && bUngroupedAllCollapsed;
+		}
+
+		bool IsLooseCollapsedHead(int32 LayerIndex) const
+		{
+			return CollapsedHeads.IsValidIndex(LayerIndex) && CollapsedHeads[LayerIndex] && IsGroupAllCollapsed(LayerGroups[LayerIndex]);
+		}
+
+		/** Empties it, keeping what each array had grown to - it is built again every frame. */
+		void Reset();
+	};
+
+	/** Reads every layer and group once into OutIndex, as they are now. */
+	void BuildLayoutIndex(FLayoutIndex& OutIndex) const;
+
+	/**
+	 * The index the Track Editor was laid out with this frame - what it draws and hit-tests against, like GetTrackSpans.
+	 * Only to be read while it still matches the layers: IsTrackLayoutCurrent.
+	 */
+	const FLayoutIndex& GetTrackLayoutIndex() const { return LayoutIndex; }
+
+	/** Whether this frame's layout was worked out for as many layers and groups as there are now. */
+	bool IsTrackLayoutCurrent() const;
+
+	/** IsCollapsedHead as this frame's layout has it - what the Track Editor draws, and finds under the mouse. */
+	bool IsCollapsedHeadShown(int32 LayerIndex) const;
+
+	/** GetGroupSpan as this frame's layout has it - what the Track Editor draws. */
+	FVector2f GetShownGroupSpan(int32 GroupIndex) const;
+
+	/**
+	 * A collapsed track's tracks, read in one walk: how many, whether every one is hidden, locked or selected, whether any
+	 * is pinned or selected. What its row in the list and its section in the Track Editor show, every frame.
+	 */
+	struct FCollapsedState
+	{
+		int32 NumMembers = 0;
+		bool bAllHidden = false;
+		bool bAllLocked = false;
+		bool bAllSelected = false;
+		bool bAnySelected = false;
+		bool bAnyPinned = false;
+	};
+	FCollapsedState GetCollapsedState(FName Name) const;
+
+	/**
 	 * The read-only tracks of the animation the list plays within - see IWidgetAnimPanelSource::GetContextLayers -
 	 * drawn grayed on rows of their own above the list's lines, packed so tracks that don't overlap share a row.
 	 * Their spans are in the list's seconds; row is which context row each is on.
@@ -931,6 +1001,16 @@ public:
 	/** Told by a multi-selection proxy that one of its properties was edited. Copies that property back onto the real layer. */
 	void OnProxyEdited(UWidgetAnimLayerEditProxy* Proxy, FPropertyChangedChainEvent& PropertyChangedEvent);
 
+	/**
+	 * Told by the Selection panel's stand-in for the animation (see UWidgetAnimPresetSelectionShadow) that a property is about
+	 * to change, and that it did: the real asset is readied, then given the edit and told of it.
+	 */
+	void OnShadowPreEdit(UWidgetAnimPresetSelectionShadow* Shadow, FEditPropertyChain& PropertyAboutToChange);
+	void OnShadowEdited(UWidgetAnimPresetSelectionShadow* Shadow, FPropertyChangedChainEvent& PropertyChangedEvent);
+
+	/** Where the Selection panel finds the selected track among the Layers it is shown: 0 on the stand-in, else its own place. */
+	int32 GetDetailsLayerIndex() const;
+
 	// ---------------------------------------------------------------------------------------------
 	// Menus
 	// ---------------------------------------------------------------------------------------------
@@ -1085,6 +1165,12 @@ private:
 	/** Every layer, group by group, in the order it starts - the list's order, and what Shift-click ranges over. */
 	void GetListOrder(TArray<int32>& OutOrder) const;
 
+	/**
+	 * The same, from an index and spans already read - and, when asked, where each group's layers are in it: per group,
+	 * the first of them and how many, INDEX_NONE and 0 for a group the list doesn't order.
+	 */
+	void GetListOrder(TArray<int32>& OutOrder, const FLayoutIndex& Index, const TArray<FVector2f>& Spans, TArray<TPair<int32, int32>>* OutGroupSlices = nullptr) const;
+
 	/** Every edit made here, told to the source: keys synced to curves, previews refreshed. */
 	void NotifyGroupsChanged(EPropertyChangeType::Type ChangeType);
 
@@ -1096,6 +1182,15 @@ private:
 
 	/** Copies the real layers onto their proxies where they differ - after a drag, an undo, or an edit elsewhere. */
 	void SyncLayerProxies();
+
+	/**
+	 * Makes the Selection panel's stand-in match the edited asset and the selection - see UWidgetAnimPresetSelectionShadow.
+	 * Null when what is edited isn't an animation asset, which is then shown itself.
+	 */
+	UObject* UpdateSelectionShadow();
+
+	/** Copies onto the stand-in whatever of the asset changed since - an edit elsewhere, a drag, an undo. Every frame, cheaply. */
+	void SyncSelectionShadow();
 
 	/** Whether the Selection panel's fields can be edited: the animation can be, and nothing selected is locked. */
 	bool IsSelectionEditable() const;
@@ -1116,6 +1211,9 @@ private:
 
 	/** The list's order: a change means the list is rebuilt - and only the list. */
 	uint32 ComputeListSignature() const;
+
+	/** The same, from an index and spans already read - this frame's layout's, say. */
+	uint32 ComputeListSignature(const FLayoutIndex& Index, const TArray<FVector2f>& Spans) const;
 
 	/** The edited object, Modify()'d for an edit - null unless editable. Its groups and layers are GetSource()'s. */
 	UObject* BeginEdit();
@@ -1284,6 +1382,10 @@ private:
 	TArray<int32> GroupLineCounts;
 	TArray<FVector2f> TrackSpans;
 
+	/** What the lines were worked out from this frame, and each group's span on them - see GetTrackLayoutIndex. */
+	FLayoutIndex LayoutIndex;
+	TArray<FVector2f> TrackGroupSpans;
+
 	/**
 	 * Per layer, how much further its stagger reaches, in authored seconds, and how many items the preview counted for
 	 * it - worked out at the start of every UpdateTrackLayout, and what every placement in the panel lengthens a
@@ -1415,6 +1517,15 @@ private:
 
 	/** One per selected layer while several are selected - what MultiDetailsView shows. */
 	TArray<TStrongObjectPtr<UWidgetAnimLayerEditProxy>> LayerProxies;
+
+	/** The proxy SyncLayerProxies compares next, once there are too many to compare every one every frame. */
+	int32 NextProxyToSync = 0;
+
+	/** The animation the panel last showed - a different one drops the selection. See OnRefreshTimer. */
+	TWeakObjectPtr<UObject> LastEditedObject;
+
+	/** What the Selection panel shows for an animation asset. Made once, filled for each selection. */
+	TStrongObjectPtr<UWidgetAnimPresetSelectionShadow> SelectionShadow;
 
 	FSelection Selection;
 

@@ -6,6 +6,10 @@
 
 #include "WidgetAnimEditorSettings.h"
 #include "WidgetAnimLayerEditProxy.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "CoreGlobals.h"
+#include "Layout/Children.h"
+#include "Widgets/SPanel.h"
 #include "WidgetAnimPanelSource.h"
 #include "WidgetAnimScripting.h"
 #include "WidgetAnimTrackPresets.h"
@@ -939,7 +943,7 @@ private:
 	float GetFoldX(int32 GroupIndex, float Width) const
 	{
 		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
-		const FVector2f GroupSpan = Owner ? Owner->GetGroupSpan(GroupIndex) : FVector2f(0.f, -1.f);
+		const FVector2f GroupSpan = Owner ? Owner->GetShownGroupSpan(GroupIndex) : FVector2f(0.f, -1.f);
 		const float BarStart = TimeToX(GroupSpan.Y >= GroupSpan.X ? GroupSpan.X : 0.f, Width);
 		return FMath::Max(BarStart - FoldArrowSize - 5.f, WidgetAnimTimeline::GroupBandWidth + 2.f);
 	}
@@ -1137,7 +1141,7 @@ private:
 	bool IsCollapsedBar(int32 LayerIndex) const
 	{
 		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
-		return Owner && Owner->IsCollapsedHead(LayerIndex);
+		return Owner && Owner->IsCollapsedHeadShown(LayerIndex);
 	}
 
 	/** How near, in pixels, the mouse has to be to the animation's start or end in the ruler to drag it. */
@@ -1709,6 +1713,7 @@ void SWidgetAnimTimelineTracks::Tick(const FGeometry& AllottedGeometry, const do
 int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
 	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimTrackEditorPaint);
 	using namespace WidgetAnimTimeline;
 
 	const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
@@ -2705,7 +2710,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 
 			const float LineTop = GetLineTop(LineIndex);
 			const float CenterY = LineTop + RowHeight * 0.5f;
-			const FVector2f GroupSpan = Owner->GetGroupSpan(Line.Group);
+			const FVector2f GroupSpan = Owner->GetShownGroupSpan(Line.Group);
 			const FLinearColor GroupColor = SWidgetAnimTimeline::GetGroupColor(Line.Group);
 
 			if (GroupSpan.Y >= GroupSpan.X)
@@ -2716,15 +2721,34 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 				const float X1 = TimeToX(GroupSpan.Y, Size.X);
 				Box(X0, CenterY - 3.f, FMath::Max(X1 - X0, 4.f), 6.f, bReadOnly ? SWidgetAnimTimeline::GetLockedColor(GroupColor) : GroupColor, FrameLayer, RoundedFill(2.f));
 
-				// Every key of the group's layers shown here, light and dark-outlined so they read on any group color.
-				for (int32 LayerIndex = 0; Layers && LayerIndex < Layers->Num() && Spans.IsValidIndex(LayerIndex); ++LayerIndex)
+				// Every key of the group's layers shown here, light and dark-outlined so they read on any group color. Only
+				// the group's own layers, as this frame's layout has them - not every layer asked whether it is the group's.
+				const bool bLayoutCurrent = Owner->IsTrackLayoutCurrent();
+				const SWidgetAnimTimeline::FLayoutIndex& ShownIndex = Owner->GetTrackLayoutIndex();
+				TArray<int32> AllLayers;
+				if (!bLayoutCurrent && Layers)
 				{
-					if (Owner->GetLayerGroup(LayerIndex) != Line.Group || !Owner->IsLayerInView(LayerIndex))
+					for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+					{
+						if (Owner->GetLayerGroup(LayerIndex) == Line.Group && Owner->IsLayerInView(LayerIndex))
+						{
+							AllLayers.Add(LayerIndex);
+						}
+					}
+				}
+				static const TArray<int32> NoLayers;
+				const TArray<int32>& GroupLayers = !bLayoutCurrent ? AllLayers
+					: ShownIndex.GroupMembers.IsValidIndex(Line.Group) ? ShownIndex.GroupMembers[Line.Group]
+					: NoLayers;
+
+				TArray<float> KeyTimes;
+				for (const int32 LayerIndex : GroupLayers)
+				{
+					if (!Spans.IsValidIndex(LayerIndex) || (bLayoutCurrent && !ShownIndex.InView[LayerIndex]))
 					{
 						continue;
 					}
 
-					TArray<float> KeyTimes;
 					Owner->GetKeyTimes(LayerIndex, KeyTimes);
 					for (const float KeyTime : KeyTimes)
 					{
@@ -2801,30 +2825,19 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 				if (IsCollapsedBar(LayerIndex))
 				{
 					const FName CollapsedName = Owner->GetLayerCollapsedName(LayerIndex);
-					TArray<int32> Members;
-					Owner->GetCollapsedMembers(CollapsedName, Members);
-
-					bool bAllHidden = Members.Num() > 0;
-					bool bAllLocked = Members.Num() > 0;
-					bool bAnySelected = false;
-					for (const int32 Member : Members)
-					{
-						bAllHidden = bAllHidden && Owner->IsLayerHidden(Member);
-						bAllLocked = bAllLocked && Owner->IsLayerLocked(Member);
-						bAnySelected = bAnySelected || Owner->IsLayerSelected(Member);
-					}
+					const SWidgetAnimTimeline::FCollapsedState Collapsed = Owner->GetCollapsedState(CollapsedName);
 
 					Paint.Color = Palette::LayerCollapsed;
 					Paint.bCollapsedLook = true;
 					Paint.Glyph = CollapsedBrush;
-					Paint.bSelected = bAnySelected;
-					Paint.bHidden = bAllHidden;
-					Paint.bLocked = bAllLocked;
-					Paint.bWashedOut = bReadOnly || bAllHidden || bAllLocked;
+					Paint.bSelected = Collapsed.bAnySelected;
+					Paint.bHidden = Collapsed.bAllHidden;
+					Paint.bLocked = Collapsed.bAllLocked;
+					Paint.bWashedOut = bReadOnly || Collapsed.bAllHidden || Collapsed.bAllLocked;
 					Paint.Title = Owner->IsPercentTime()
 						? FString::Printf(TEXT("%s  %s"), *CollapsedName.ToString(), *SWidgetAnimTimeline::FormatPercent(Paint.Span.Y))
 						: FString::Printf(TEXT("%s  %.2fs"), *CollapsedName.ToString(), Paint.Span.Y);
-					Paint.Secondary = FText::Format(LOCTEXT("CollapsedSectionCount", "{0} {0}|plural(one=track,other=tracks)"), FText::AsNumber(Members.Num())).ToString();
+					Paint.Secondary = FText::Format(LOCTEXT("CollapsedSectionCount", "{0} {0}|plural(one=track,other=tracks)"), FText::AsNumber(Collapsed.NumMembers)).ToString();
 					DrawSection(Paint);
 					continue;
 				}
@@ -4035,7 +4048,7 @@ public:
 
 		// A layer or a key: its row in the single list of Layers.
 		const TSharedRef<IPropertyHandle> LayersHandle = DetailBuilder.GetProperty(LayersName, PropertyClass);
-		const TSharedPtr<IPropertyHandle> LayerHandle = LayersHandle->IsValidHandle() ? LayersHandle->GetChildHandle(static_cast<uint32>(Selection.Layer)) : nullptr;
+		const TSharedPtr<IPropertyHandle> LayerHandle = LayersHandle->IsValidHandle() ? LayersHandle->GetChildHandle(static_cast<uint32>(Owner->GetDetailsLayerIndex())) : nullptr;
 		if (!LayerHandle.IsValid() || !LayerHandle->IsValidHandle())
 		{
 			CustomizeAnimation(DetailBuilder, Edited);
@@ -5679,6 +5692,28 @@ void UWidgetAnimLayerEditProxy::PostEditChangeChainProperty(FPropertyChangedChai
 	}
 }
 
+void UWidgetAnimPresetSelectionShadow::PreEditChange(FEditPropertyChain& PropertyAboutToChange)
+{
+	// UObject's, by name: the asset's own PreEditChange takes a property, and hides this one.
+	UObject::PreEditChange(PropertyAboutToChange);
+
+	if (const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin())
+	{
+		Owner->OnShadowPreEdit(this, PropertyAboutToChange);
+	}
+}
+
+void UWidgetAnimPresetSelectionShadow::PostEditChangeChainProperty(FPropertyChangedChainEvent& PropertyChangedEvent)
+{
+	// The real asset is given the edit and does what an edit to it does. The stand-in itself only says it changed: run on
+	// its one track, the asset's own handling would only work out what the real asset is about to tell it anyway.
+	if (const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin())
+	{
+		Owner->OnShadowEdited(this, PropertyChangedEvent);
+	}
+	UObject::PostEditChangeProperty(PropertyChangedEvent);
+}
+
 // =====================================================================================================
 // The Animation Layers list: one row per group, and under it one per layer, in the order they play
 // =====================================================================================================
@@ -5689,6 +5724,91 @@ void UWidgetAnimLayerEditProxy::PostEditChangeChainProperty(FPropertyChangedChai
  * and Ctrl / Cmd as a file browser has them - brings it into view in the Track Editor, and offers the
  * layer's menu. Nothing here is dragged: the list is a reading of the animation, in the order it plays.
  */
+/**
+ * A row of the Animation Tracks list that rests while it is out of view.
+ *
+ * The list is a plain box of rows, not a virtual list: with a big collapsed track open it holds a row for each of hundreds of
+ * tracks, and Slate measures every row - reading every color, text and icon bound on it - every frame, seen or not. A row
+ * that wasn't drawn last frame hands Slate nothing inside it to measure and keeps the size it last had; the frame it is
+ * drawn again it is measured first, so it is never drawn stale.
+ */
+class SWidgetAnimRestingRow : public SPanel
+{
+public:
+
+	SLATE_BEGIN_ARGS(SWidgetAnimRestingRow) {}
+		SLATE_DEFAULT_SLOT(FArguments, Content)
+	SLATE_END_ARGS()
+
+	SWidgetAnimRestingRow()
+		: Children(this)
+	{
+	}
+
+	void Construct(const FArguments& InArgs)
+	{
+		Content = InArgs._Content.Widget;
+		Children.Add(InArgs._Content.Widget);
+	}
+
+	virtual FChildren* GetChildren() override
+	{
+		if (IsResting())
+		{
+			return &FNoChildren::NoChildrenInstance;
+		}
+		return &Children;
+	}
+
+	virtual void OnArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const override
+	{
+		if (Content.IsValid())
+		{
+			ArrangedChildren.AddWidget(AllottedGeometry.MakeChild(Content.ToSharedRef(), AllottedGeometry.GetLocalSize(), FSlateLayoutTransform()));
+		}
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+	{
+		// Back in view: measured now, before it is laid out and drawn.
+		if (IsResting() && Content.IsValid())
+		{
+			Content->SlatePrepass(AllottedGeometry.Scale);
+		}
+		LastPaintFrame = GFrameCounter;
+		return SPanel::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+	}
+
+protected:
+
+	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override
+	{
+		if (!IsResting() && Content.IsValid())
+		{
+			LastDesiredSize = FVector2D(Content->GetDesiredSize());
+			bMeasured = true;
+		}
+		return LastDesiredSize;
+	}
+
+private:
+
+	/** Measured once, and not drawn last frame - so out of view. */
+	bool IsResting() const
+	{
+		return bMeasured && GFrameCounter > LastPaintFrame + 1;
+	}
+
+	TSlotlessChildren<SWidget> Children;
+
+	/** The row itself - Children's one widget, kept to reach from the const passes. */
+	TSharedPtr<SWidget> Content;
+	mutable uint64 LastPaintFrame = 0;
+	mutable FVector2D LastDesiredSize = FVector2D::ZeroVector;
+	mutable bool bMeasured = false;
+};
+
 class SWidgetAnimListRow : public SCompoundWidget
 {
 public:
@@ -8808,10 +8928,14 @@ void SWidgetAnimTimeline::GetLayerSpans(TArray<FVector2f>& OutSpans) const
 	UWidgetAnimLibrary::PlaceLayerStarts(*Layers, Extras, Starts);
 	const float TimeScale = GetTimeScale();
 
+	// GetShownRunLength, from the layers already in hand: asked through it, every layer asked the source for them again.
 	OutSpans.Reserve(Starts.Num());
 	for (int32 Index = 0; Index < Starts.Num(); ++Index)
 	{
-		OutSpans.Add(FVector2f(Starts[Index], GetShownRunLength(Index)) * TimeScale);
+		const float Run = TrackRuns.IsValidIndex(Index) && TrackRuns[Index] >= 0.f
+			? TrackRuns[Index]
+			: (Layers->IsValidIndex(Index) ? (*Layers)[Index].GetRunLength() : 0.f);
+		OutSpans.Add(FVector2f(Starts[Index], Run) * TimeScale);
 	}
 }
 
@@ -8936,10 +9060,15 @@ FVector2f SWidgetAnimTimeline::GetGroupSpan(int32 GroupIndex) const
 	TArray<FVector2f> Spans;
 	GetLayerSpans(Spans);
 
+	// The layers and groups read once, rather than through GetLayerGroup and IsLayerInView for every layer.
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
 	FVector2f Range(TNumericLimits<float>::Max(), -TNumericLimits<float>::Max());
-	for (int32 LayerIndex = 0; LayerIndex < Spans.Num(); ++LayerIndex)
+	for (int32 LayerIndex = 0; Layers && LayerIndex < Spans.Num() && LayerIndex < Layers->Num(); ++LayerIndex)
 	{
-		if (GetLayerGroup(LayerIndex) == GroupIndex && IsLayerInView(LayerIndex))
+		const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+		const int32 LayerGroup = Groups ? UWidgetAnimLibrary::GetLayerGroupIndex(Layer, Groups->Num()) : INDEX_NONE;
+		if (LayerGroup == GroupIndex && (!IsInCollapsedScope() || Layer.CollapsedTrack == ActiveCollapsed))
 		{
 			Range.X = FMath::Min(Range.X, Spans[LayerIndex].X);
 			Range.Y = FMath::Max(Range.Y, Spans[LayerIndex].X + Spans[LayerIndex].Y);
@@ -8953,11 +9082,13 @@ float SWidgetAnimTimeline::GetPassSeconds() const
 	TArray<FVector2f> Spans;
 	GetLayerSpans(Spans);
 
-	// To where the last item of a stagger ends, too.
+	// To where the last item of a stagger ends, too - GetLayerFanSeconds, with the time scale read once.
+	const float TimeScale = GetTimeScale();
 	float End = 0.f;
 	for (int32 LayerIndex = 0; LayerIndex < Spans.Num(); ++LayerIndex)
 	{
-		End = FMath::Max(End, Spans[LayerIndex].X + Spans[LayerIndex].Y + GetLayerFanSeconds(LayerIndex));
+		const float Fan = TrackFans.IsValidIndex(LayerIndex) ? TrackFans[LayerIndex] * TimeScale : 0.f;
+		End = FMath::Max(End, Spans[LayerIndex].X + Spans[LayerIndex].Y + Fan);
 	}
 
 	// Played within another animation, one pass runs until both have ended - the preview's pass is the same.
@@ -8969,7 +9100,7 @@ float SWidgetAnimTimeline::GetPassSeconds() const
 	// And on past its last track to its Minimum Length, when the animation's end was pulled out there.
 	if (Source.IsValid())
 	{
-		End = FMath::Max(End, Source->GetMinimumLength() * GetTimeScale());
+		End = FMath::Max(End, Source->GetMinimumLength() * TimeScale);
 	}
 	return End;
 }
@@ -9114,27 +9245,38 @@ void SWidgetAnimTimeline::GetGroupListOrder(TArray<int32>& OutGroups) const
 		return;
 	}
 
-	// Each folder where its first group is, with every group in it gathered under it in order; the rest in place.
-	TSet<FString> Gathered;
+	// Each folder where its first group is, with every group in it gathered under it in order; the rest in place. Each
+	// group's folder is read once (see GetGroupFolder) - read again for every group, hundreds of groups in folders cost the
+	// square of that, every frame.
+	const bool bFolders = Source.IsValid() && Source->SupportsLayerGroups();
+	TArray<FString> Folders;
+	Folders.SetNum(Groups->Num());
+	TMap<FString, TArray<int32>> FolderGroups;
 	for (int32 GroupIndex = 0; GroupIndex < Groups->Num(); ++GroupIndex)
 	{
-		const FString Folder = GetGroupFolder(GroupIndex);
+		if (bFolders)
+		{
+			Folders[GroupIndex] = (*Groups)[GroupIndex].EditorFolder.TrimStartAndEnd();
+		}
+		if (!Folders[GroupIndex].IsEmpty())
+		{
+			FolderGroups.FindOrAdd(Folders[GroupIndex]).Add(GroupIndex);
+		}
+	}
+
+	OutGroups.Reserve(Groups->Num());
+	for (int32 GroupIndex = 0; GroupIndex < Groups->Num(); ++GroupIndex)
+	{
+		const FString& Folder = Folders[GroupIndex];
 		if (Folder.IsEmpty())
 		{
 			OutGroups.Add(GroupIndex);
 			continue;
 		}
-		if (Gathered.Contains(Folder))
+		if (const TArray<int32>* InFolder = FolderGroups.Find(Folder))
 		{
-			continue;
-		}
-		Gathered.Add(Folder);
-		for (int32 Member = GroupIndex; Member < Groups->Num(); ++Member)
-		{
-			if (GetGroupFolder(Member) == Folder)
-			{
-				OutGroups.Add(Member);
-			}
+			OutGroups.Append(*InFolder);
+			FolderGroups.Remove(Folder);
 		}
 	}
 }
@@ -10047,6 +10189,7 @@ bool SWidgetAnimTimeline::IsSelectionEditable() const
 
 void SWidgetAnimTimeline::RefreshDetails()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimPanelRefreshDetails);
 	if (!DetailsView.IsValid() || !MultiDetailsView.IsValid())
 	{
 		return;
@@ -10088,18 +10231,27 @@ void SWidgetAnimTimeline::RefreshDetails()
 	}
 
 	UObject* Edited = Source.IsValid() ? Source->GetEditedObject() : nullptr;
-	if (DetailsObject.Get() != Edited)
+
+	// An animation asset is shown through its stand-in - its settings, its groups, and only the selected track - never
+	// whole. See UWidgetAnimPresetSelectionShadow.
+	UObject* Shown = Edited;
+	if (UObject* Shadow = UpdateSelectionShadow())
+	{
+		Shown = Shadow;
+	}
+
+	if (DetailsObject.Get() != Shown)
 	{
 		// Any other object - one holding a plain list of tracks - is laid out by the same customization. Registered
-		// for its class before it is bound; a builder and an asset have theirs from the start.
-		if (Edited && !Edited->IsA<UWidgetAnimBuilder>() && !Edited->IsA<UWidgetAnimPresetAsset>())
+		// for its class before it is bound; a builder and an asset (and the asset's stand-in, one) have theirs from the start.
+		if (Edited && Shown == Edited && !Edited->IsA<UWidgetAnimBuilder>() && !Edited->IsA<UWidgetAnimPresetAsset>())
 		{
 			DetailsView->RegisterInstancedCustomPropertyLayout(Edited->GetClass(), SelectionLayout);
 		}
 
 		// Binding a new object lays the view out from scratch anyway.
-		DetailsObject = Edited;
-		DetailsView->SetObject(Edited, /*bForceRefresh=*/true);
+		DetailsObject = Shown;
+		DetailsView->SetObject(Shown, /*bForceRefresh=*/true);
 		return;
 	}
 
@@ -10140,15 +10292,29 @@ void SWidgetAnimTimeline::SyncLayerProxies()
 		return;
 	}
 
-	const UScriptStruct* LayerStruct = FWidgetAnimLayer::StaticStruct();
-	for (const TStrongObjectPtr<UWidgetAnimLayerEditProxy>& Proxy : LayerProxies)
+	// Each compare is a whole track's, property by property. With hundreds of tracks selected - a big collapsed track,
+	// picked whole - comparing every one every frame cost more than the rest of the panel together, so past a few dozen
+	// they are compared a few dozen a frame, in turn: each is caught up within a few frames, and anything that changes
+	// which tracks are selected, or what they are, makes them afresh (RefreshDetails).
+	constexpr int32 MaxSyncedPerFrame = 48;
+	const int32 NumProxies = LayerProxies.Num();
+	const int32 NumToSync = FMath::Min(NumProxies, MaxSyncedPerFrame);
+	if (NextProxyToSync >= NumProxies)
 	{
+		NextProxyToSync = 0;
+	}
+
+	const UScriptStruct* LayerStruct = FWidgetAnimLayer::StaticStruct();
+	for (int32 Step = 0; Step < NumToSync; ++Step)
+	{
+		const TStrongObjectPtr<UWidgetAnimLayerEditProxy>& Proxy = LayerProxies[(NextProxyToSync + Step) % NumProxies];
 		if (Proxy.IsValid() && Layers->IsValidIndex(Proxy->LayerIndex)
 			&& !LayerStruct->CompareScriptStruct(&Proxy->Layer, &(*Layers)[Proxy->LayerIndex], PPF_None))
 		{
 			Proxy->Layer = (*Layers)[Proxy->LayerIndex];
 		}
 	}
+	NextProxyToSync = NumProxies > 0 ? (NextProxyToSync + NumToSync) % NumProxies : 0;
 }
 
 namespace
@@ -10240,6 +10406,177 @@ void SWidgetAnimTimeline::OnProxyEdited(UWidgetAnimLayerEditProxy* Proxy, FPrope
 	PendingProxyNotify = (PendingProxyNotify.IsSet() && PendingProxyNotify.GetValue() != EPropertyChangeType::Interactive)
 		? PendingProxyNotify.GetValue()
 		: ChangeType;
+}
+
+namespace WidgetAnimSelectionShadow
+{
+	/** The asset's own settings and groups, as UPROPERTYs of its class - everything but Layers, which the stand-in holds one of. */
+	template<typename VisitType>
+	void ForEachSetting(VisitType&& Visit)
+	{
+		const FName LayersName = GET_MEMBER_NAME_CHECKED(UWidgetAnimPresetAsset, Layers);
+		for (TFieldIterator<FProperty> It(UWidgetAnimPresetAsset::StaticClass(), EFieldIteratorFlags::ExcludeSuper); It; ++It)
+		{
+			if (It->GetFName() != LayersName)
+			{
+				Visit(*It);
+			}
+		}
+	}
+
+	/** Copies from Asset onto Shadow every setting that differs. */
+	void CopySettings(const UWidgetAnimPresetAsset* Asset, UWidgetAnimPresetAsset* Shadow)
+	{
+		ForEachSetting([Asset, Shadow](const FProperty* Property)
+		{
+			if (!Property->Identical_InContainer(Shadow, Asset))
+			{
+				Property->CopyCompleteValue_InContainer(Shadow, Asset);
+			}
+		});
+	}
+}
+
+UObject* SWidgetAnimTimeline::UpdateSelectionShadow()
+{
+	UWidgetAnimPresetAsset* Asset = Source.IsValid() ? Cast<UWidgetAnimPresetAsset>(Source->GetEditedObject()) : nullptr;
+	if (!Asset || Source->GetLayers() != &Asset->Layers || Source->GetGroups() != &Asset->LayerGroups)
+	{
+		return nullptr;
+	}
+
+	if (!SelectionShadow.IsValid())
+	{
+		SelectionShadow.Reset(NewObject<UWidgetAnimPresetSelectionShadow>(GetTransientPackage(), NAME_None, RF_Transient));
+		SelectionShadow->Panel = SharedThis(this);
+	}
+
+	UWidgetAnimPresetSelectionShadow* Shadow = SelectionShadow.Get();
+	Shadow->ShadowOf = Asset;
+	Shadow->LayerIndex = Asset->Layers.IsValidIndex(Selection.Layer) ? Selection.Layer : INDEX_NONE;
+	Shadow->Layers.Reset();
+	if (Shadow->LayerIndex != INDEX_NONE)
+	{
+		Shadow->Layers.Add(Asset->Layers[Shadow->LayerIndex]);
+	}
+	WidgetAnimSelectionShadow::CopySettings(Asset, Shadow);
+	return Shadow;
+}
+
+void SWidgetAnimTimeline::SyncSelectionShadow()
+{
+	UWidgetAnimPresetSelectionShadow* Shadow = SelectionShadow.Get();
+	if (!Shadow || DetailsObject.Get() != Shadow)
+	{
+		return;
+	}
+	const UWidgetAnimPresetAsset* Asset = Shadow->ShadowOf.Get();
+	if (!Asset)
+	{
+		return;
+	}
+
+	// The settings and groups - a handful of properties - and the one track: cheap enough for every frame.
+	WidgetAnimSelectionShadow::CopySettings(Asset, Shadow);
+	if (Shadow->LayerIndex != INDEX_NONE && Shadow->Layers.Num() == 1 && Asset->Layers.IsValidIndex(Shadow->LayerIndex)
+		&& !FWidgetAnimLayer::StaticStruct()->CompareScriptStruct(&Shadow->Layers[0], &Asset->Layers[Shadow->LayerIndex], PPF_None))
+	{
+		Shadow->Layers[0] = Asset->Layers[Shadow->LayerIndex];
+	}
+}
+
+int32 SWidgetAnimTimeline::GetDetailsLayerIndex() const
+{
+	const UWidgetAnimPresetSelectionShadow* Shadow = SelectionShadow.Get();
+	return Shadow && DetailsObject.Get() == Shadow && Shadow->LayerIndex == Selection.Layer ? 0 : Selection.Layer;
+}
+
+void SWidgetAnimTimeline::OnShadowPreEdit(UWidgetAnimPresetSelectionShadow* Shadow, FEditPropertyChain& PropertyAboutToChange)
+{
+	UWidgetAnimPresetAsset* Asset = Shadow ? Shadow->ShadowOf.Get() : nullptr;
+	if (!Asset || !Source.IsValid() || Source->GetEditedObject() != Asset)
+	{
+		return;
+	}
+
+	// Recorded in the transaction the details view already has open for this edit - and readied as an edit to it would
+	// ready it: its Time In remembered, for one.
+	if (BeginEdit())
+	{
+		static_cast<UObject*>(Asset)->PreEditChange(PropertyAboutToChange);
+	}
+}
+
+void SWidgetAnimTimeline::OnShadowEdited(UWidgetAnimPresetSelectionShadow* Shadow, FPropertyChangedChainEvent& PropertyChangedEvent)
+{
+	UWidgetAnimPresetAsset* Asset = Shadow ? Shadow->ShadowOf.Get() : nullptr;
+	if (!Asset || !Source.IsValid() || Source->GetEditedObject() != Asset || !BeginEdit())
+	{
+		return;
+	}
+
+	const FEditPropertyChain::TDoubleLinkedListNode* MemberNode = PropertyChangedEvent.PropertyChain.GetActiveMemberNode();
+	const FProperty* Member = MemberNode ? MemberNode->GetValue() : PropertyChangedEvent.MemberProperty;
+	if (!Member)
+	{
+		return;
+	}
+
+	// Which element of each array the edit was in, as the edit had them - the track's put at its real place below.
+	TArray<TMap<FString, int32>> ArrayIndices;
+	TMap<FString, int32>& Indices = ArrayIndices.AddDefaulted_GetRef();
+	for (const FEditPropertyChain::TDoubleLinkedListNode* Node = PropertyChangedEvent.PropertyChain.GetHead(); Node; Node = Node->GetNextNode())
+	{
+		if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Node->GetValue()))
+		{
+			const int32 Index = PropertyChangedEvent.GetArrayIndex(ArrayProperty->GetName());
+			if (Index != INDEX_NONE)
+			{
+				Indices.Add(ArrayProperty->GetName(), Index);
+			}
+		}
+	}
+
+	if (Member->GetFName() == GET_MEMBER_NAME_CHECKED(UWidgetAnimPresetAsset, Layers))
+	{
+		// The shown track's edit, onto the real track: the one property, as a proxy's is.
+		const int32 LayerIndex = Shadow->LayerIndex;
+		if (!Shadow->Layers.IsValidIndex(0) || !Asset->Layers.IsValidIndex(LayerIndex) || !CanEditLayer(LayerIndex))
+		{
+			return;
+		}
+
+		FWidgetAnimLayer& Layer = Asset->Layers[LayerIndex];
+		if (!CopyEditedLayerProperty(PropertyChangedEvent.PropertyChain, Shadow->Layers[0], Layer))
+		{
+			// Nothing to follow: the whole track, but for what only the panel sets.
+			const int32 LayerGroup = Layer.LayerGroup;
+			const bool bLocked = Layer.bLockedInEditor;
+			const int32 EditorLine = Layer.EditorLine;
+			const bool bHidden = Layer.bHiddenInEditor;
+			const bool bHiddenByFocus = Layer.bHiddenByFocus;
+			const FString InsertedFrom = Layer.InsertedFrom;
+			Layer = Shadow->Layers[0];
+			Layer.LayerGroup = LayerGroup;
+			Layer.bLockedInEditor = bLocked;
+			Layer.EditorLine = EditorLine;
+			Layer.bHiddenInEditor = bHidden;
+			Layer.bHiddenByFocus = bHiddenByFocus;
+			Layer.InsertedFrom = InsertedFrom;
+		}
+		Indices.Add(Member->GetName(), LayerIndex);
+	}
+	else
+	{
+		// One of the asset's own settings, or its groups: what the stand-in holds of them is all of them.
+		Member->CopyCompleteValue_InContainer(Asset, Shadow);
+	}
+
+	// Told as a Details edit to it would tell it - at the real track's place - so it does all it does for one.
+	FPropertyChangedChainEvent AssetEvent(PropertyChangedEvent.PropertyChain, PropertyChangedEvent);
+	AssetEvent.ObjectIteratorIndex = 0;
+	AssetEvent.SetArrayIndexPerObject(ArrayIndices);
+	Asset->PostEditChangeChainProperty(AssetEvent);
 }
 
 FText SWidgetAnimTimeline::GetDetailsTitle() const
@@ -10431,6 +10768,7 @@ uint32 SWidgetAnimTimeline::ComputeLayoutSignature() const
 
 EActiveTimerReturnType SWidgetAnimTimeline::OnRefreshTimer(double InCurrentTime, float InDeltaTime)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimPanelRefresh);
 	// Tells a source that plays the preview itself that it is wanted; it stops, and puts everything back
 	// as authored, soon after this stops being called.
 	if (Source.IsValid() && !IsBodyCollapsed())
@@ -10492,6 +10830,9 @@ EActiveTimerReturnType SWidgetAnimTimeline::OnRefreshTimer(double InCurrentTime,
 		SyncLayerProxies();
 	}
 
+	// The Selection panel's stand-in for the asset, likewise.
+	SyncSelectionShadow();
+
 	// The Track Editor's lines follow every edit, wherever it was made - they are cheap to work out.
 	UpdateTrackLayout();
 
@@ -10507,11 +10848,28 @@ EActiveTimerReturnType SWidgetAnimTimeline::OnRefreshTimer(double InCurrentTime,
 	const uint32 NewSignature = ComputeLayoutSignature();
 	if (NewSignature != LayoutSignature)
 	{
+		// Another animation altogether - a timeline opened, another asset picked: nothing selected carries over. Kept by
+		// position, a selection of hundreds of tracks went on selecting whatever sat at those places in the new one, and
+		// the Selection panel made a proxy for each of them before anything was shown. Only between animation assets: a
+		// builder's compile hands the panel new Class Defaults of the same animation, and keeps what is selected.
+		UObject* Edited = Source.IsValid() ? Source->GetEditedObject() : nullptr;
+		UObject* Previous = LastEditedObject.Get();
+		LastEditedObject = Edited;
+		if (Edited != Previous && Cast<UWidgetAnimPresetAsset>(Edited) && Cast<UWidgetAnimPresetAsset>(Previous))
+		{
+			Selection = FSelection();
+			SelectedKeys.Reset();
+			SelectedLayers.Reset();
+			SelectionAnchor = INDEX_NONE;
+			SelectedGroups.Reset();
+			GroupSelectionAnchor = INDEX_NONE;
+		}
+
 		Selection = Validate(Selection);
 		RebuildRows();
 		RefreshDetails();
 	}
-	else if (ComputeListSignature() != ListSignature)
+	else if (ComputeListSignature(LayoutIndex, TrackSpans) != ListSignature)
 	{
 		// Only the order things play in changed - a Delay typed in the Selection panel, say. The list follows;
 		// the Selection panel is left alone, since that may be exactly where the typing is going on.
@@ -10531,32 +10889,40 @@ void SWidgetAnimTimeline::RebuildRows()
 void SWidgetAnimTimeline::GetListOrder(TArray<int32>& OutOrder) const
 {
 	OutOrder.Reset();
-
-	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
-	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
-	if (!Groups || !Layers)
+	if (!GetGroups() || !GetLayers())
 	{
 		return;
 	}
 
 	TArray<FVector2f> Spans;
 	GetLayerSpans(Spans);
+	FLayoutIndex Index;
+	BuildLayoutIndex(Index);
+	GetListOrder(OutOrder, Index, Spans);
+}
+
+void SWidgetAnimTimeline::GetListOrder(TArray<int32>& OutOrder, const FLayoutIndex& Index, const TArray<FVector2f>& Spans, TArray<TPair<int32, int32>>* OutGroupSlices) const
+{
+	OutOrder.Reset();
+	if (OutGroupSlices)
+	{
+		OutGroupSlices->Init(TPair<int32, int32>(INDEX_NONE, 0), Index.GroupMembers.Num());
+	}
 
 	// Group by group, in the order the list shows them - folders gathered - and in each the order its layers start - the
 	// order the animation plays them - ties in the order they sit in the sequence.
 	TArray<int32> GroupOrder;
 	GetGroupListOrder(GroupOrder);
+
+	TArray<int32> Members;
 	for (const int32 GroupIndex : GroupOrder)
 	{
-		TArray<int32> Members;
-		for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+		if (!Index.GroupMembers.IsValidIndex(GroupIndex))
 		{
-			if (GetLayerGroup(LayerIndex) == GroupIndex)
-			{
-				Members.Add(LayerIndex);
-			}
+			continue;
 		}
 
+		Members = Index.GroupMembers[GroupIndex];
 		Members.StableSort([&Spans](int32 A, int32 B)
 		{
 			const float StartA = Spans.IsValidIndex(A) ? Spans[A].X : 0.f;
@@ -10564,32 +10930,49 @@ void SWidgetAnimTimeline::GetListOrder(TArray<int32>& OutOrder) const
 			return StartA < StartB - KINDA_SMALL_NUMBER;
 		});
 
+		if (OutGroupSlices)
+		{
+			(*OutGroupSlices)[GroupIndex] = TPair<int32, int32>(OutOrder.Num(), Members.Num());
+		}
 		OutOrder.Append(Members);
 	}
 }
 
 uint32 SWidgetAnimTimeline::ComputeListSignature() const
 {
+	TArray<FVector2f> Spans;
+	GetLayerSpans(Spans);
+	FLayoutIndex Index;
+	BuildLayoutIndex(Index);
+	return ComputeListSignature(Index, Spans);
+}
+
+uint32 SWidgetAnimTimeline::ComputeListSignature(const FLayoutIndex& Index, const TArray<FVector2f>& Spans) const
+{
 	TArray<int32> Order;
-	GetListOrder(Order);
+	GetListOrder(Order, Index, Spans);
 
 	uint32 Hash = GetTypeHash(Order.Num());
 
 	// Each track's group and collapsed track, which decide its row - and whether its group is shown at all (see
 	// IsGroupAllCollapsed) - changed by a collapse, an expand, or an undo of either.
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
 	for (const int32 LayerIndex : Order)
 	{
 		Hash = HashCombine(Hash, GetTypeHash(LayerIndex));
-		Hash = HashCombine(Hash, GetTypeHash(GetLayerGroup(LayerIndex)));
-		Hash = HashCombine(Hash, GetTypeHash(GetLayerCollapsedName(LayerIndex)));
+		Hash = HashCombine(Hash, GetTypeHash(Index.LayerGroups.IsValidIndex(LayerIndex) ? Index.LayerGroups[LayerIndex] : INDEX_NONE));
+		Hash = HashCombine(Hash, GetTypeHash(Layers && Layers->IsValidIndex(LayerIndex) ? (*Layers)[LayerIndex].CollapsedTrack : FName()));
 	}
 
-	// The folders the groups are in, which make rows of their own - changed in the Selection panel, or by an undo.
+	// The folders the groups are in, which make rows of their own - changed in the Selection panel, or by an undo. As
+	// stored, rather than trimmed as GetGroupFolder shows them, so nothing is copied every frame: a change that only adds
+	// a space rebuilds the list once for nothing.
 	if (const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups())
 	{
-		for (int32 GroupIndex = 0; GroupIndex < Groups->Num(); ++GroupIndex)
+		const bool bFolders = Source.IsValid() && Source->SupportsLayerGroups();
+		for (const FWidgetAnimLayerGroup& Group : *Groups)
 		{
-			Hash = HashCombine(Hash, GetTypeHash(GetGroupFolder(GroupIndex)));
+			Hash = HashCombine(Hash, bFolders ? GetTypeHash(Group.EditorFolder) : 0u);
 		}
 	}
 	return Hash;
@@ -10597,22 +10980,38 @@ uint32 SWidgetAnimTimeline::ComputeListSignature() const
 
 FText SWidgetAnimTimeline::GetLayerTimeRange(int32 LayerIndex) const
 {
-	TArray<FVector2f> Spans;
-	GetLayerSpans(Spans);
-	if (!Spans.IsValidIndex(LayerIndex))
+	// Asked by every row of the list, every frame: the spans worked out for this frame's layout, as GetShownSpan reads
+	// them. Working every span out again for each row cost the square of the track count.
+	FVector2f Span;
+	if (TrackSpans.IsValidIndex(LayerIndex))
 	{
-		return FText::GetEmpty();
+		Span = TrackSpans[LayerIndex];
 	}
-
-	const FVector2f Span = Spans[LayerIndex];
+	else
+	{
+		TArray<FVector2f> Spans;
+		GetLayerSpans(Spans);
+		if (!Spans.IsValidIndex(LayerIndex))
+		{
+			return FText::GetEmpty();
+		}
+		Span = Spans[LayerIndex];
+	}
 	return FText::FromString(FormatSpan(Span.X, Span.X + Span.Y));
 }
 
 void SWidgetAnimTimeline::RebuildLayerList()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimPanelRebuildList);
 	using namespace WidgetAnimTimeline;
 
-	ListSignature = ComputeListSignature();
+	// Every layer's group and collapsed track read once, and the list's order worked out from them - asked of every layer
+	// for every group, a list of hundreds of tracks took the square of that to build.
+	TArray<FVector2f> Spans;
+	GetLayerSpans(Spans);
+	FLayoutIndex Index;
+	BuildLayoutIndex(Index);
+	ListSignature = ComputeListSignature(Index, Spans);
 
 	if (!LayerList.IsValid())
 	{
@@ -10630,8 +11029,10 @@ void SWidgetAnimTimeline::RebuildLayerList()
 
 	const TWeakPtr<SWidgetAnimTimeline> WeakThisPtr = SharedThis(this);
 
+	// The order, and where each group's layers are in it.
 	TArray<int32> Order;
-	GetListOrder(Order);
+	TArray<TPair<int32, int32>> GroupSlices;
+	GetListOrder(Order, Index, Spans, &GroupSlices);
 
 	// Groups in a folder are listed under its row, in a box of their own with the folder's strip down its left: the rows of
 	// each are added to that box, as LayerList, while they are made. See GetGroupListOrder.
@@ -10642,9 +11043,9 @@ void SWidgetAnimTimeline::RebuildLayerList()
 	// a row of its own, as the Track Editor draws them loose at the top.
 	for (const int32 LayerIndex : Order)
 	{
-		if (IsLooseCollapsedHead(LayerIndex) && IsLayerInView(LayerIndex))
+		if (Index.IsLooseCollapsedHead(LayerIndex) && Index.InView[LayerIndex])
 		{
-			AddCollapsedListRows(GetLayerCollapsedName(LayerIndex), GetLayerGroup(LayerIndex));
+			AddCollapsedListRows((*Layers)[LayerIndex].CollapsedTrack, Index.LayerGroups[LayerIndex]);
 		}
 	}
 
@@ -10652,17 +11053,16 @@ void SWidgetAnimTimeline::RebuildLayerList()
 	GetGroupListOrder(GroupOrder);
 	for (const int32 GroupIndex : GroupOrder)
 	{
-		if (IsGroupAllCollapsed(GroupIndex))
+		if (Index.IsGroupAllCollapsed(GroupIndex) || !Index.GroupMembers.IsValidIndex(GroupIndex))
 		{
 			continue;
 		}
 
 		// Inside a collapsed track, only the groups its tracks are in.
-		bool bAnyInView = !IsInCollapsedScope();
-		for (int32 LayerIndex = 0; !bAnyInView && LayerIndex < Layers->Num(); ++LayerIndex)
+		const bool bAnyInView = !IsInCollapsedScope() || Index.GroupMembers[GroupIndex].ContainsByPredicate([&Index](int32 LayerIndex)
 		{
-			bAnyInView = GetLayerGroup(LayerIndex) == GroupIndex && IsLayerInView(LayerIndex);
-		}
+			return static_cast<bool>(Index.InView[LayerIndex]);
+		});
 		if (!bAnyInView)
 		{
 			continue;
@@ -10860,7 +11260,10 @@ void SWidgetAnimTimeline::RebuildLayerList()
 		LayerList->AddSlot()
 		.AutoHeight()
 		[
-			GroupRow
+			SNew(SWidgetAnimRestingRow)
+			[
+				GroupRow
+			]
 		];
 
 		if (IsListGroupCollapsed(GroupIndex))
@@ -10873,16 +11276,18 @@ void SWidgetAnimTimeline::RebuildLayerList()
 		// A collapsed track is one row, in the group of its first track, opening onto a row for each of its tracks; the
 		// rest of its tracks aren't listed in their own groups.
 
-		for (const int32 LayerIndex : Order)
+		const TPair<int32, int32> Slice = GroupSlices.IsValidIndex(GroupIndex) ? GroupSlices[GroupIndex] : TPair<int32, int32>(INDEX_NONE, 0);
+		for (int32 Position = FMath::Max(Slice.Key, 0); Position < Slice.Key + Slice.Value; ++Position)
 		{
-			if (GetLayerGroup(LayerIndex) != GroupIndex || !IsLayerInView(LayerIndex) || IsFoldedIntoCollapsed(LayerIndex))
+			const int32 LayerIndex = Order[Position];
+			if (!Index.InView[LayerIndex] || Index.FoldedIntoCollapsed[LayerIndex])
 			{
 				continue;
 			}
 
-			if (IsCollapsedHead(LayerIndex))
+			if (Index.CollapsedHeads[LayerIndex])
 			{
-				AddCollapsedListRows(GetLayerCollapsedName(LayerIndex), GroupIndex);
+				AddCollapsedListRows((*Layers)[LayerIndex].CollapsedTrack, GroupIndex);
 				continue;
 			}
 
@@ -11310,7 +11715,10 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeListLayerRow(int32 LayerIndex, int3
 			]
 		];
 	*RowWidget = LayerRow;
-	return LayerRow;
+	return SNew(SWidgetAnimRestingRow)
+		[
+			LayerRow
+		];
 }
 
 void SWidgetAnimTimeline::AddCollapsedListRows(FName Name, int32 GroupIndex)
@@ -11330,25 +11738,11 @@ void SWidgetAnimTimeline::AddCollapsedListRows(FName Name, int32 GroupIndex)
 	const TSharedRef<TWeakPtr<SWidget>> RowWidget = MakeShared<TWeakPtr<SWidget>>();
 	auto IsRowHovered = [RowWidget]() { const TSharedPtr<SWidget> Pinned = RowWidget->Pin(); return Pinned.IsValid() && Pinned->IsHovered(); };
 
-	// Read live, so a change to any of its tracks shows without the list being built again.
-	auto AllSelected = [this, Name]()
-	{
-		TArray<int32> Current;
-		GetCollapsedMembers(Name, Current);
-		return Current.Num() > 0 && Algo::AllOf(Current, [this](int32 Member) { return IsLayerSelected(Member); });
-	};
-	auto AllHidden = [this, Name]()
-	{
-		TArray<int32> Current;
-		GetCollapsedMembers(Name, Current);
-		return Current.Num() > 0 && Algo::AllOf(Current, [this](int32 Member) { return IsLayerHidden(Member); });
-	};
-	auto AnyPinned = [this, Name]()
-	{
-		TArray<int32> Current;
-		GetCollapsedMembers(Name, Current);
-		return Current.ContainsByPredicate([this](int32 Member) { return IsLayerPinned(Member); });
-	};
+	// Read live, so a change to any of its tracks shows without the list being built again - each in one walk over the
+	// layers (see GetCollapsedState), as they are asked every frame.
+	auto AllSelected = [this, Name]() { return GetCollapsedState(Name).bAllSelected; };
+	auto AllHidden = [this, Name]() { return GetCollapsedState(Name).bAllHidden; };
+	auto AnyPinned = [this, Name]() { return GetCollapsedState(Name).bAnyPinned; };
 
 	const TSharedRef<SWidgetAnimListRow> Row = SNew(SWidgetAnimListRow, WeakThisPtr, GroupIndex, Head, Name)
 		.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::ListCollapsedRowTooltip()))
@@ -11570,7 +11964,10 @@ void SWidgetAnimTimeline::AddCollapsedListRows(FName Name, int32 GroupIndex)
 	LayerList->AddSlot()
 	.AutoHeight()
 	[
-		Row
+		SNew(SWidgetAnimRestingRow)
+		[
+			Row
+		]
 	];
 
 	// Open: a row for each of its tracks, in the order they play, each in its own group's color - picked one by one, to
@@ -11779,6 +12176,7 @@ void SWidgetAnimTimeline::AddNestedListRows(int32 LayerIndex, int32 GroupIndex)
 
 void SWidgetAnimTimeline::UpdateTrackLayout()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimPanelTrackLayout);
 	// The context tracks: placed as their animation places them, at the speed it plays, and packed onto as few rows
 	// as keep them from overlapping.
 	ContextSpans.Reset();
@@ -11811,9 +12209,15 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 	LayerToLine.Reset();
 	LayerLineOrdinals.Reset();
 	GroupLineCounts.Reset();
+	TrackGroupSpans.Reset();
 	UpdateStaggerFans();
 	GetLayerSpans(TrackSpans);
 	UpdateNestedSpans();
+
+	// Every layer's group, collapsed track and view, read once: everything below asks them of every layer, and of every
+	// group's layers - asked one by one, that cost the square of the track count, every frame.
+	BuildLayoutIndex(LayoutIndex);
+	const FLayoutIndex& Index = LayoutIndex;
 
 	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
 	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
@@ -11822,55 +12226,83 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 		return;
 	}
 
-	LayerToLine.Init(INDEX_NONE, Layers->Num());
-	LayerLineOrdinals.Init(0, Layers->Num());
-	GroupLineCounts.Init(0, Groups->Num());
+	const int32 NumLayers = Layers->Num();
+	const int32 NumGroups = Groups->Num();
+	LayerToLine.Init(INDEX_NONE, NumLayers);
+	LayerLineOrdinals.Init(0, NumLayers);
+	GroupLineCounts.Init(0, NumGroups);
 	CollapsedSpans.Reset();
 	NumPinnedLines = 0;
 
+	// GetLayerFanSeconds, with the time scale read once.
+	const float TimeScale = GetTimeScale();
+	auto FanSeconds = [this, TimeScale](int32 LayerIndex)
+	{
+		return TrackFans.IsValidIndex(LayerIndex) ? TrackFans[LayerIndex] * TimeScale : 0.f;
+	};
+
 	// Each collapsed track's stretch: from where its first track starts to where its last one ends, staggers and all -
 	// drawn as one track on its head's line, and kept clear of the tracks beside it there as one.
-	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
 	{
-		if (!IsCollapsedHead(LayerIndex))
+		TMap<FName, FVector2f> Stretches;
+		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
 		{
-			continue;
+			const FName Collapsed = (*Layers)[LayerIndex].CollapsedTrack;
+			if (Collapsed.IsNone() || Collapsed == ActiveCollapsed || !TrackSpans.IsValidIndex(LayerIndex))
+			{
+				continue;
+			}
+
+			FVector2f* Stretch = Stretches.Find(Collapsed);
+			if (!Stretch)
+			{
+				Stretch = &Stretches.Add(Collapsed, FVector2f(TNumericLimits<float>::Max(), -TNumericLimits<float>::Max()));
+			}
+			Stretch->X = FMath::Min(Stretch->X, TrackSpans[LayerIndex].X);
+			Stretch->Y = FMath::Max(Stretch->Y, TrackSpans[LayerIndex].X + TrackSpans[LayerIndex].Y + FanSeconds(LayerIndex));
 		}
 
-		TArray<int32> Members;
-		GetCollapsedMembers((*Layers)[LayerIndex].CollapsedTrack, Members);
-		float First = TNumericLimits<float>::Max();
-		float Last = -TNumericLimits<float>::Max();
-		for (const int32 Member : Members)
+		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
 		{
-			if (TrackSpans.IsValidIndex(Member))
+			const FVector2f* Stretch = Index.CollapsedHeads[LayerIndex] ? Stretches.Find((*Layers)[LayerIndex].CollapsedTrack) : nullptr;
+			if (Stretch && Stretch->X <= Stretch->Y)
 			{
-				First = FMath::Min(First, TrackSpans[Member].X);
-				Last = FMath::Max(Last, TrackSpans[Member].X + TrackSpans[Member].Y + GetLayerFanSeconds(Member));
+				CollapsedSpans.Add(LayerIndex, FVector2f(Stretch->X, Stretch->Y - Stretch->X));
 			}
 		}
-		if (First <= Last)
+	}
+
+	// Each group's stretch, as GetGroupSpan has it - what its line draws. See GetShownGroupSpan.
+	TrackGroupSpans.Init(FVector2f(TNumericLimits<float>::Max(), -TNumericLimits<float>::Max()), NumGroups);
+	for (int32 GroupIndex = 0; GroupIndex < NumGroups; ++GroupIndex)
+	{
+		FVector2f& Range = TrackGroupSpans[GroupIndex];
+		for (const int32 LayerIndex : Index.GroupMembers[GroupIndex])
 		{
-			CollapsedSpans.Add(LayerIndex, FVector2f(First, Last - First));
+			if (Index.InView[LayerIndex] && TrackSpans.IsValidIndex(LayerIndex))
+			{
+				Range.X = FMath::Min(Range.X, TrackSpans[LayerIndex].X);
+				Range.Y = FMath::Max(Range.Y, TrackSpans[LayerIndex].X + TrackSpans[LayerIndex].Y);
+			}
 		}
 	}
 
 	// Pinned: at the top, a line each, above every group - in the order the list shows them. Not a track folded into a
 	// collapsed track, which is shown by it.
-	auto IsPinnedHere = [this](int32 LayerIndex)
+	auto IsPinnedHere = [Layers, &Index](int32 LayerIndex)
 	{
-		return IsLayerPinned(LayerIndex) && IsLayerInView(LayerIndex) && !IsFoldedIntoCollapsed(LayerIndex);
+		return (*Layers)[LayerIndex].bPinnedInEditor && Index.InView[LayerIndex] && !Index.FoldedIntoCollapsed[LayerIndex];
 	};
 
 	// Whether a track is laid out in its group: shown here, not folded into a collapsed track, not pinned above, and not a
 	// collapsed track drawn loose because its group isn't shown. The rest keep the lines they were given, for when they
 	// are back.
-	auto IsOnGroupLine = [this, &IsPinnedHere](int32 LayerIndex)
+	auto IsOnGroupLine = [&Index, &IsPinnedHere](int32 LayerIndex)
 	{
-		return IsLayerInView(LayerIndex) && !IsFoldedIntoCollapsed(LayerIndex) && !IsPinnedHere(LayerIndex) && !IsLooseCollapsedHead(LayerIndex);
+		return Index.InView[LayerIndex] && !Index.FoldedIntoCollapsed[LayerIndex] && !IsPinnedHere(LayerIndex) && !Index.IsLooseCollapsedHead(LayerIndex);
 	};
 
-	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+	for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
 	{
 		if (!IsOnGroupLine(LayerIndex))
 		{
@@ -11880,7 +12312,7 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 
 	{
 		TArray<int32> Order;
-		GetListOrder(Order);
+		GetListOrder(Order, Index, TrackSpans);
 		for (const int32 LayerIndex : Order)
 		{
 			if (!IsPinnedHere(LayerIndex))
@@ -11890,7 +12322,7 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 
 			FTrackLine& Line = TrackLines.AddDefaulted_GetRef();
 			Line.Kind = FTrackLine::EKind::Lane;
-			Line.Group = GetLayerGroup(LayerIndex);
+			Line.Group = Index.LayerGroups[LayerIndex];
 			Line.Ordinal = 0;
 			Line.Layers = { LayerIndex };
 			Line.bPinned = true;
@@ -11901,14 +12333,14 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 		// Under them, scrolling with the rest: the collapsed tracks whose groups aren't shown, a line each, in list order.
 		for (const int32 LayerIndex : Order)
 		{
-			if (!IsLooseCollapsedHead(LayerIndex) || !IsLayerInView(LayerIndex) || IsPinnedHere(LayerIndex))
+			if (!Index.IsLooseCollapsedHead(LayerIndex) || !Index.InView[LayerIndex] || IsPinnedHere(LayerIndex))
 			{
 				continue;
 			}
 
 			FTrackLine& Line = TrackLines.AddDefaulted_GetRef();
 			Line.Kind = FTrackLine::EKind::Lane;
-			Line.Group = GetLayerGroup(LayerIndex);
+			Line.Group = Index.LayerGroups[LayerIndex];
 			Line.Ordinal = 0;
 			Line.Layers = { LayerIndex };
 			Line.bLoose = true;
@@ -11925,56 +12357,77 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 	};
 
 	// Where a track is drawn - a collapsed track's head across all of its tracks - and where it ends, a stagger's tail
-	// included: another track on its line starts after it.
-	auto StartOf = [this](int32 LayerIndex)
+	// included: another track on its line starts after it. Read once for every track, as the packing below asks again
+	// and again.
+	TArray<float> Starts;
+	TArray<float> Ends;
+	Starts.SetNumUninitialized(NumLayers);
+	Ends.SetNumUninitialized(NumLayers);
+	for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
 	{
 		if (const FVector2f* Collapsed = CollapsedSpans.Find(LayerIndex))
 		{
-			return Collapsed->X;
+			Starts[LayerIndex] = Collapsed->X;
+			Ends[LayerIndex] = Collapsed->X + Collapsed->Y;
 		}
-		return TrackSpans.IsValidIndex(LayerIndex) ? TrackSpans[LayerIndex].X : 0.f;
-	};
-	auto EndOf = [this](int32 LayerIndex)
-	{
-		if (const FVector2f* Collapsed = CollapsedSpans.Find(LayerIndex))
+		else if (TrackSpans.IsValidIndex(LayerIndex))
 		{
-			return Collapsed->X + Collapsed->Y;
+			Starts[LayerIndex] = TrackSpans[LayerIndex].X;
+			Ends[LayerIndex] = TrackSpans[LayerIndex].X + TrackSpans[LayerIndex].Y + FanSeconds(LayerIndex);
 		}
-		return TrackSpans.IsValidIndex(LayerIndex) ? TrackSpans[LayerIndex].X + TrackSpans[LayerIndex].Y + GetLayerFanSeconds(LayerIndex) : 0.f;
-	};
+		else
+		{
+			Starts[LayerIndex] = 0.f;
+			Ends[LayerIndex] = 0.f;
+		}
+	}
+	auto StartOf = [&Starts](int32 LayerIndex) { return Starts[LayerIndex]; };
 
-	auto Overlaps = [this, &StartOf, &EndOf](int32 A, int32 B)
+	static constexpr float OverlapTolerance = 0.0005f;
+	auto Overlaps = [this, &Starts, &Ends](int32 A, int32 B)
 	{
 		if (!TrackSpans.IsValidIndex(A) || !TrackSpans.IsValidIndex(B))
 		{
 			return false;
 		}
-		constexpr float Tolerance = 0.0005f;
-		return StartOf(A) < EndOf(B) - Tolerance && StartOf(B) < EndOf(A) - Tolerance;
+		return Starts[A] < Ends[B] - OverlapTolerance && Starts[B] < Ends[A] - OverlapTolerance;
 	};
 
-	for (int32 GroupIndex = 0; GroupIndex < Groups->Num(); ++GroupIndex)
+	// The tracks being dragged, which give way to the rest - asked of every pair the packing sorts.
+	TBitArray<> Dragged(false, NumLayers);
+	if (IsDraggingLayers())
 	{
-		TArray<int32> Members;
-		TArray<int32> Keys;
-		for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+		for (const TArray<int32>* Edges : { &LayerDrag.StartEdges, &LayerDrag.EndEdges })
 		{
-			if (GetLayerGroup(LayerIndex) == GroupIndex && IsOnGroupLine(LayerIndex))
+			for (const int32 LayerIndex : *Edges)
 			{
-				Members.Add(LayerIndex);
-				Keys.AddUnique(LineKey(LayerIndex));
+				if (Dragged.IsValidIndex(LayerIndex))
+				{
+					Dragged[LayerIndex] = true;
+				}
 			}
 		}
-		Keys.Sort();
+	}
+
+	TArray<int32> Members;
+	for (int32 GroupIndex = 0; GroupIndex < NumGroups; ++GroupIndex)
+	{
+		Members.Reset();
+		for (const int32 LayerIndex : Index.GroupMembers[GroupIndex])
+		{
+			if (IsOnGroupLine(LayerIndex))
+			{
+				Members.Add(LayerIndex);
+			}
+		}
 
 		// Inside a collapsed track, only the groups its tracks are in - pinned ones included.
 		if (IsInCollapsedScope() && Members.Num() == 0)
 		{
-			bool bAnyPinned = false;
-			for (int32 LayerIndex = 0; LayerIndex < Layers->Num() && !bAnyPinned; ++LayerIndex)
+			const bool bAnyPinned = Index.GroupMembers[GroupIndex].ContainsByPredicate([&Index](int32 LayerIndex)
 			{
-				bAnyPinned = GetLayerGroup(LayerIndex) == GroupIndex && IsLayerInView(LayerIndex);
-			}
+				return static_cast<bool>(Index.InView[LayerIndex]);
+			});
 			if (!bAnyPinned)
 			{
 				continue;
@@ -11983,29 +12436,47 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 
 		// Each line the group's layers ask for, in order. On it, the tracks that stay put first - so a track
 		// being dragged is the one that gives way - then by when they start. A track overlapping one already
-		// placed goes on a line of its own just below.
-		TArray<TArray<int32>> GroupLines;
-		for (const int32 Key : Keys)
+		// placed goes on a line of its own just below. Sorted once by all three, then packed one asked-for line at a time.
+		Members.StableSort([&LineKey, &Dragged, &StartOf](int32 A, int32 B)
 		{
-			TArray<int32> OnLine = Members.FilterByPredicate([&LineKey, Key](int32 LayerIndex) { return LineKey(LayerIndex) == Key; });
-			OnLine.StableSort([this, &StartOf](int32 A, int32 B)
+			const int32 KeyA = LineKey(A);
+			const int32 KeyB = LineKey(B);
+			if (KeyA != KeyB)
 			{
-				const bool bDraggedA = IsLayerBeingDragged(A);
-				const bool bDraggedB = IsLayerBeingDragged(B);
-				if (bDraggedA != bDraggedB)
-				{
-					return !bDraggedA;
-				}
-				return StartOf(A) < StartOf(B);
-			});
+				return KeyA < KeyB;
+			}
+			const bool bDraggedA = Dragged[A];
+			const bool bDraggedB = Dragged[B];
+			if (bDraggedA != bDraggedB)
+			{
+				return !bDraggedA;
+			}
+			return StartOf(A) < StartOf(B);
+		});
+
+		// Each line's earliest start and latest end, so a track clear of all of it is placed without checking it against
+		// every track already there - only one that falls inside that stretch is.
+		TArray<TArray<int32>> GroupLines;
+		TArray<FVector2f> LineBounds;
+		for (int32 RunStart = 0; RunStart < Members.Num();)
+		{
+			const int32 Key = LineKey(Members[RunStart]);
+			int32 RunEnd = RunStart + 1;
+			while (RunEnd < Members.Num() && LineKey(Members[RunEnd]) == Key)
+			{
+				++RunEnd;
+			}
 
 			const int32 FirstLine = GroupLines.Num();
-			for (const int32 LayerIndex : OnLine)
+			for (int32 Position = RunStart; Position < RunEnd; ++Position)
 			{
+				const int32 LayerIndex = Members[Position];
 				int32 Placed = INDEX_NONE;
 				for (int32 Candidate = FirstLine; Candidate < GroupLines.Num() && Placed == INDEX_NONE; ++Candidate)
 				{
-					const bool bFree = !GroupLines[Candidate].ContainsByPredicate([&Overlaps, LayerIndex](int32 Other) { return Overlaps(LayerIndex, Other); });
+					const FVector2f Bounds = LineBounds[Candidate];
+					const bool bClearOfAll = Starts[LayerIndex] >= Bounds.Y - OverlapTolerance || Ends[LayerIndex] <= Bounds.X + OverlapTolerance;
+					const bool bFree = bClearOfAll || !GroupLines[Candidate].ContainsByPredicate([&Overlaps, LayerIndex](int32 Other) { return Overlaps(LayerIndex, Other); });
 					if (bFree)
 					{
 						Placed = Candidate;
@@ -12015,15 +12486,19 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 				if (Placed == INDEX_NONE)
 				{
 					Placed = GroupLines.AddDefaulted();
+					LineBounds.Add(FVector2f(TNumericLimits<float>::Max(), -TNumericLimits<float>::Max()));
 				}
 				GroupLines[Placed].Add(LayerIndex);
+				LineBounds[Placed].X = FMath::Min(LineBounds[Placed].X, Starts[LayerIndex]);
+				LineBounds[Placed].Y = FMath::Max(LineBounds[Placed].Y, Ends[LayerIndex]);
 			}
+			RunStart = RunEnd;
 		}
 
 		GroupLineCounts[GroupIndex] = GroupLines.Num();
 
 		// A group whose tracks are all in collapsed tracks isn't shown: its collapsed tracks are drawn loose above.
-		if (IsGroupAllCollapsed(GroupIndex))
+		if (Index.IsGroupAllCollapsed(GroupIndex))
 		{
 			continue;
 		}
@@ -12065,7 +12540,7 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 			// track, whose line is the collapsed track's.
 			for (const int32 LayerIndex : GroupLines[Ordinal])
 			{
-				if (!IsCollapsedHead(LayerIndex))
+				if (!Index.CollapsedHeads[LayerIndex])
 				{
 					AddNestedLines(LayerIndex, GroupIndex);
 				}
@@ -15468,9 +15943,166 @@ bool SWidgetAnimTimeline::IsLooseCollapsedHead(int32 LayerIndex) const
 	return IsCollapsedHead(LayerIndex) && IsGroupAllCollapsed(GetLayerGroup(LayerIndex));
 }
 
+void SWidgetAnimTimeline::FLayoutIndex::Reset()
+{
+	LayerGroups.Reset();
+	CollapsedHeads.Reset();
+	FoldedIntoCollapsed.Reset();
+	InView.Reset();
+	for (TArray<int32>& Members : GroupMembers)
+	{
+		Members.Reset();
+	}
+	GroupsAllCollapsed.Reset();
+	bUngroupedAllCollapsed = false;
+}
+
+void SWidgetAnimTimeline::BuildLayoutIndex(FLayoutIndex& OutIndex) const
+{
+	OutIndex.Reset();
+
+	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!Groups || !Layers)
+	{
+		OutIndex.GroupMembers.Reset();
+		return;
+	}
+
+	const int32 NumLayers = Layers->Num();
+	const int32 NumGroups = Groups->Num();
+	const bool bInScope = IsInCollapsedScope();
+
+	OutIndex.LayerGroups.SetNumUninitialized(NumLayers);
+	OutIndex.CollapsedHeads.Init(false, NumLayers);
+	OutIndex.FoldedIntoCollapsed.Init(false, NumLayers);
+	OutIndex.InView.Init(false, NumLayers);
+	OutIndex.GroupMembers.SetNum(NumGroups);
+
+	// Per group - and for the layers of no group - whether it has a track at all, and one in no collapsed track.
+	constexpr uint8 HasTrack = 1;
+	constexpr uint8 HasLooseTrack = 2;
+	TArray<uint8, TInlineAllocator<64>> GroupState;
+	GroupState.SetNumZeroed(NumGroups);
+	uint8 UngroupedState = 0;
+
+	// A collapsed track's head is the first of its tracks in the sequence: the first time its name comes up.
+	TSet<FName, DefaultKeyFuncs<FName>, TInlineSetAllocator<16>> SeenCollapsed;
+
+	for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
+	{
+		const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+		const int32 GroupIndex = UWidgetAnimLibrary::GetLayerGroupIndex(Layer, NumGroups);
+		OutIndex.LayerGroups[LayerIndex] = GroupIndex;
+
+		const FName Collapsed = Layer.CollapsedTrack;
+		OutIndex.InView[LayerIndex] = !bInScope || Collapsed == ActiveCollapsed;
+		if (!Collapsed.IsNone() && Collapsed != ActiveCollapsed)
+		{
+			bool bSeen = false;
+			SeenCollapsed.Add(Collapsed, &bSeen);
+			OutIndex.CollapsedHeads[LayerIndex] = !bSeen;
+			OutIndex.FoldedIntoCollapsed[LayerIndex] = bSeen;
+		}
+
+		uint8& State = OutIndex.GroupMembers.IsValidIndex(GroupIndex) ? GroupState[GroupIndex] : UngroupedState;
+		State |= static_cast<uint8>(HasTrack | (Collapsed.IsNone() ? HasLooseTrack : 0));
+		if (OutIndex.GroupMembers.IsValidIndex(GroupIndex))
+		{
+			OutIndex.GroupMembers[GroupIndex].Add(LayerIndex);
+		}
+	}
+
+	// See IsGroupAllCollapsed: never in the compact panel, nor inside a collapsed track open on its own.
+	const bool bCanHideGroups = !bCompact && !bInScope;
+	OutIndex.GroupsAllCollapsed.Init(false, NumGroups);
+	for (int32 GroupIndex = 0; GroupIndex < NumGroups; ++GroupIndex)
+	{
+		OutIndex.GroupsAllCollapsed[GroupIndex] = bCanHideGroups && GroupState[GroupIndex] == HasTrack;
+	}
+	OutIndex.bUngroupedAllCollapsed = bCanHideGroups && UngroupedState == HasTrack;
+}
+
+bool SWidgetAnimTimeline::IsTrackLayoutCurrent() const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
+	return Layers && Groups
+		&& LayoutIndex.LayerGroups.Num() == Layers->Num()
+		&& LayoutIndex.GroupsAllCollapsed.Num() == Groups->Num()
+		&& TrackSpans.Num() == Layers->Num();
+}
+
+bool SWidgetAnimTimeline::IsCollapsedHeadShown(int32 LayerIndex) const
+{
+	if (IsTrackLayoutCurrent())
+	{
+		return LayoutIndex.CollapsedHeads.IsValidIndex(LayerIndex) && LayoutIndex.CollapsedHeads[LayerIndex];
+	}
+	return IsCollapsedHead(LayerIndex);
+}
+
+FVector2f SWidgetAnimTimeline::GetShownGroupSpan(int32 GroupIndex) const
+{
+	if (TrackGroupSpans.IsValidIndex(GroupIndex) && IsTrackLayoutCurrent())
+	{
+		return TrackGroupSpans[GroupIndex];
+	}
+	return GetGroupSpan(GroupIndex);
+}
+
+SWidgetAnimTimeline::FCollapsedState SWidgetAnimTimeline::GetCollapsedState(FName Name) const
+{
+	FCollapsedState State;
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!Layers || Name.IsNone())
+	{
+		return State;
+	}
+
+	// The selection as a set of bits, so each track's question is one lookup - a collapsed track of hundreds of tracks,
+	// all of them selected, would otherwise search the selection once for every one of them.
+	TBitArray<> Selected(false, Layers->Num());
+	for (const int32 LayerIndex : SelectedLayers)
+	{
+		if (Selected.IsValidIndex(LayerIndex))
+		{
+			Selected[LayerIndex] = true;
+		}
+	}
+
+	State.bAllHidden = true;
+	State.bAllLocked = true;
+	State.bAllSelected = true;
+	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+	{
+		const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+		if (Layer.CollapsedTrack != Name)
+		{
+			continue;
+		}
+
+		const bool bSelected = Selected[LayerIndex];
+		++State.NumMembers;
+		State.bAllHidden = State.bAllHidden && Layer.bHiddenInEditor;
+		State.bAllLocked = State.bAllLocked && Layer.bLockedInEditor;
+		State.bAllSelected = State.bAllSelected && bSelected;
+		State.bAnySelected = State.bAnySelected || bSelected;
+		State.bAnyPinned = State.bAnyPinned || Layer.bPinnedInEditor;
+	}
+
+	if (State.NumMembers == 0)
+	{
+		State.bAllHidden = false;
+		State.bAllLocked = false;
+		State.bAllSelected = false;
+	}
+	return State;
+}
+
 FVector2f SWidgetAnimTimeline::GetShownSpan(int32 LayerIndex) const
 {
-	if (IsCollapsedHead(LayerIndex))
+	if (IsCollapsedHeadShown(LayerIndex))
 	{
 		if (const FVector2f* Collapsed = CollapsedSpans.Find(LayerIndex))
 		{
@@ -15776,12 +16408,18 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeCollapsedToolTip(int32 HeadLayer) c
 		return (Spans.IsValidIndex(A) ? Spans[A].X : 0.f) < (Spans.IsValidIndex(B) ? Spans[B].X : 0.f);
 	});
 
+	// The first few dozen: a collapsed track of hundreds of tracks would otherwise make a tooltip taller than the screen,
+	// and thousands of widgets, every time the mouse came to rest on it.
+	constexpr int32 MaxRows = 24;
+	const int32 NumShown = FMath::Min(Members.Num(), MaxRows);
+
 	const TSharedRef<SGridPanel> Table = SNew(SGridPanel).FillColumn(1, 1.f);
 	int32 Row = 0;
-	for (const int32 Member : Members)
+	for (int32 Position = 0; Position < NumShown; ++Position)
 	{
+		const int32 Member = Members[Position];
 		const FWidgetAnimLayer& Layer = (*Layers)[Member];
-		const bool bWashedOut = IsLayerHidden(Member) || IsLayerLocked(Member);
+		const bool bWashedOut = Layer.bHiddenInEditor || Layer.bLockedInEditor;
 		const FLinearColor Color = bWashedOut ? GetLockedColor(GetLayerTypeColor(Layer)) : GetLayerTypeColor(Layer);
 		const float Length = Spans.IsValidIndex(Member) ? Spans[Member].Y : 0.f;
 
@@ -15818,6 +16456,14 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeCollapsedToolTip(int32 HeadLayer) c
 	[
 		Table
 	];
+	if (Members.Num() > NumShown)
+	{
+		Body->AddSlot()
+		.AutoHeight()
+		[
+			Note(FText::Format(WidgetAnimTips::CollapsedTrackMoreNote(), FText::AsNumber(Members.Num() - NumShown)).ToString())
+		];
+	}
 	Body->AddSlot()
 	.AutoHeight()
 	[

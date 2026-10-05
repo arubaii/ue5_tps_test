@@ -218,7 +218,7 @@ public:
 	 * what reversing a curve means. A spring rewound would start with the wobble and end with a sudden launch
 	 * from rest, which no spring does, so instead it runs forward in time toward its START value: the value is
 	 * 1 - progress(1 - Alpha). Alpha still runs 1 -> 0 on the way back, so the rest of the library needs no
-	 * special case. Used for inverted tracks, Play Out, and a ping-pong's return leg.
+	 * special case. Used for inverted tracks and Play Out - a ping-pong's return leg rewinds the track instead.
 	 */
 	static float EvaluateDirectedProgress(const FWidgetSpringParams& Params, float Alpha, bool bTowardStart);
 

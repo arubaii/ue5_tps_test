@@ -3,6 +3,7 @@
 #include "WidgetAnimStateMachineGraph.h"
 
 #include "ConnectionDrawingPolicy.h"
+#include "CoreGlobals.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphNode_Comment.h"
 #include "Fonts/FontMeasure.h"
@@ -1233,30 +1234,86 @@ const FWidgetAnimMachineLayer* UWidgetAnimMachineGraph::GetLayer() const
 	return Machine && Machine->Layers.IsValidIndex(LayerIndex) ? &Machine->Layers[LayerIndex] : nullptr;
 }
 
+namespace WidgetAnimMachineLookups
+{
+	/**
+	 * The index in Items of the first item whose id (IdOf, unset for an item that has none) is Id: through Indices, checked
+	 * against Items, and Indices made again from Items when it doesn't check out. INDEX_NONE when no item has it.
+	 */
+	template<typename ItemArrayType, typename IdOfType>
+	int32 Find(TMap<FGuid, int32>& Indices, const ItemArrayType& Items, const FGuid& Id, IdOfType IdOf)
+	{
+		if (const int32* Found = Indices.Find(Id))
+		{
+			const TOptional<FGuid> FoundId = Items.IsValidIndex(*Found) ? IdOf(Items[*Found]) : TOptional<FGuid>();
+			if (FoundId.IsSet() && FoundId.GetValue() == Id)
+			{
+				return *Found;
+			}
+		}
+
+		Indices.Reset();
+		for (int32 Index = 0; Index < Items.Num(); ++Index)
+		{
+			const TOptional<FGuid> ItemId = IdOf(Items[Index]);
+			if (ItemId.IsSet() && !Indices.Contains(ItemId.GetValue()))
+			{
+				Indices.Add(ItemId.GetValue(), Index);
+			}
+		}
+		const int32* Again = Indices.Find(Id);
+		return Again ? *Again : INDEX_NONE;
+	}
+}
+
 UWidgetAnimMachineGraphNode* UWidgetAnimMachineGraph::FindStateNode(const FGuid& StateId) const
 {
-	for (UEdGraphNode* Node : Nodes)
+	const int32 Index = WidgetAnimMachineLookups::Find(StateNodeIndices, Nodes, StateId, [](const auto& Node)
 	{
-		UWidgetAnimMachineGraphNode* StateNode = Cast<UWidgetAnimMachineGraphNode>(Node);
-		if (StateNode && StateNode->StateId == StateId)
-		{
-			return StateNode;
-		}
-	}
-	return nullptr;
+		const UWidgetAnimMachineGraphNode* StateNode = Cast<UWidgetAnimMachineGraphNode>(Node);
+		return StateNode ? TOptional<FGuid>(StateNode->StateId) : TOptional<FGuid>();
+	});
+	return Index != INDEX_NONE ? Cast<UWidgetAnimMachineGraphNode>(Nodes[Index]) : nullptr;
 }
 
 UWidgetAnimMachineTransitionNode* UWidgetAnimMachineGraph::FindTransitionNode(const FGuid& TransitionId) const
 {
-	for (UEdGraphNode* Node : Nodes)
+	const int32 Index = WidgetAnimMachineLookups::Find(TransitionNodeIndices, Nodes, TransitionId, [](const auto& Node)
 	{
-		UWidgetAnimMachineTransitionNode* TransitionNode = Cast<UWidgetAnimMachineTransitionNode>(Node);
-		if (TransitionNode && TransitionNode->TransitionId == TransitionId)
-		{
-			return TransitionNode;
-		}
+		const UWidgetAnimMachineTransitionNode* TransitionNode = Cast<UWidgetAnimMachineTransitionNode>(Node);
+		return TransitionNode ? TOptional<FGuid>(TransitionNode->TransitionId) : TOptional<FGuid>();
+	});
+	return Index != INDEX_NONE ? Cast<UWidgetAnimMachineTransitionNode>(Nodes[Index]) : nullptr;
+}
+
+const FWidgetAnimMachineState* UWidgetAnimMachineGraph::FindLayerState(const FGuid& StateId) const
+{
+	// No id finds nothing, as the layer's own FindStateIndex has it.
+	const FWidgetAnimMachineLayer* Layer = GetLayer();
+	if (!Layer || !StateId.IsValid())
+	{
+		return nullptr;
 	}
-	return nullptr;
+	const int32 Index = WidgetAnimMachineLookups::Find(StateIndices, Layer->States, StateId, [](const FWidgetAnimMachineState& State)
+	{
+		return TOptional<FGuid>(State.Id);
+	});
+	return Index != INDEX_NONE ? &Layer->States[Index] : nullptr;
+}
+
+const FWidgetAnimMachineTransition* UWidgetAnimMachineGraph::FindLayerTransition(const FGuid& TransitionId) const
+{
+	// No id finds nothing, as the layer's own FindTransitionIndex has it.
+	const FWidgetAnimMachineLayer* Layer = GetLayer();
+	if (!Layer || !TransitionId.IsValid())
+	{
+		return nullptr;
+	}
+	const int32 Index = WidgetAnimMachineLookups::Find(TransitionIndices, Layer->Transitions, TransitionId, [](const FWidgetAnimMachineTransition& Transition)
+	{
+		return TOptional<FGuid>(Transition.Id);
+	});
+	return Index != INDEX_NONE ? &Layer->Transitions[Index] : nullptr;
 }
 
 UEdGraphNode_Comment* UWidgetAnimMachineGraph::FindCommentNode(const FGuid& CommentId) const
@@ -1289,17 +1346,32 @@ void UWidgetAnimMachineGraph::GetLane(const UWidgetAnimMachineTransitionNode* No
 	GetPairOrder(Node, First, Second);
 	bOutReversed = Node->FromId != First;
 
-	for (const UEdGraphNode* Other : Nodes)
+	// Only the transitions between the same two nodes: gathered by pair once a frame, rather than every node gone through for
+	// every wire.
+	if (PairNodesFrame != GFrameCounter || PairNodesCount != Nodes.Num())
 	{
-		const UWidgetAnimMachineTransitionNode* Sibling = Cast<UWidgetAnimMachineTransitionNode>(Other);
-		if (!Sibling)
+		PairNodes.Reset();
+		for (const UEdGraphNode* Other : Nodes)
 		{
-			continue;
+			if (const UWidgetAnimMachineTransitionNode* Transition = Cast<UWidgetAnimMachineTransitionNode>(Other))
+			{
+				FGuid PairFirst;
+				FGuid PairSecond;
+				GetPairOrder(Transition, PairFirst, PairSecond);
+				PairNodes.FindOrAdd(TPair<FGuid, FGuid>(PairFirst, PairSecond)).Add(Transition);
+			}
 		}
-		const bool bSamePair = (Sibling->FromId == First && Sibling->ToId == Second) || (Sibling->FromId == Second && Sibling->ToId == First);
+		PairNodesFrame = GFrameCounter;
+		PairNodesCount = Nodes.Num();
+	}
+
+	static const TArray<const UWidgetAnimMachineTransitionNode*, TInlineAllocator<2>> NoSiblings;
+	const TArray<const UWidgetAnimMachineTransitionNode*, TInlineAllocator<2>>* Siblings = PairNodes.Find(TPair<FGuid, FGuid>(First, Second));
+	for (const UWidgetAnimMachineTransitionNode* Sibling : Siblings ? *Siblings : NoSiblings)
+	{
 		// A node dragged somewhere of its own, or a wire routed through reroute points, takes no lane: its wire runs through
 		// its points instead.
-		if (!bSamePair || ((Sibling->bPlaced || Sibling->RerouteOffsets.Num() > 0) && Sibling != Node))
+		if ((Sibling->bPlaced || Sibling->RerouteOffsets.Num() > 0) && Sibling != Node)
 		{
 			continue;
 		}
@@ -1339,6 +1411,11 @@ bool UWidgetAnimMachineGraph::IsDebugging() const
 
 void UWidgetAnimMachineGraph::RebuildFromMachine()
 {
+	// Nothing found before is where it was.
+	PairNodes.Reset();
+	PairNodesFrame = MAX_uint64;
+	PairNodesCount = INDEX_NONE;
+
 	// Every node made again: the asset is the truth, and a graph this size is quicker to make than to reconcile.
 	const TArray<UEdGraphNode*> OldNodes = Nodes;
 	for (UEdGraphNode* Node : OldNodes)
@@ -1456,8 +1533,7 @@ UWidgetAnimMachineGraph* UWidgetAnimMachineGraphNode::GetMachineGraph() const
 const FWidgetAnimMachineState* UWidgetAnimMachineGraphNode::GetState() const
 {
 	const UWidgetAnimMachineGraph* Graph = GetMachineGraph();
-	const FWidgetAnimMachineLayer* Layer = Graph ? Graph->GetLayer() : nullptr;
-	return Layer ? Layer->FindState(StateId) : nullptr;
+	return Graph ? Graph->FindLayerState(StateId) : nullptr;
 }
 
 void UWidgetAnimMachineGraphNode::AllocateDefaultPins()
@@ -1593,9 +1669,7 @@ UWidgetAnimMachineGraph* UWidgetAnimMachineTransitionNode::GetMachineGraph() con
 const FWidgetAnimMachineTransition* UWidgetAnimMachineTransitionNode::GetTransition() const
 {
 	const UWidgetAnimMachineGraph* Graph = GetMachineGraph();
-	const FWidgetAnimMachineLayer* Layer = Graph ? Graph->GetLayer() : nullptr;
-	const int32 Index = Layer ? Layer->FindTransitionIndex(TransitionId) : INDEX_NONE;
-	return Index != INDEX_NONE ? &Layer->Transitions[Index] : nullptr;
+	return Graph ? Graph->FindLayerTransition(TransitionId) : nullptr;
 }
 
 void UWidgetAnimMachineTransitionNode::AllocateDefaultPins()
@@ -3729,8 +3803,6 @@ public:
 		const bool bDebugging = Graph->GetDebug && Graph->GetDebug(Debug);
 		const double Now = FPlatformTime::Seconds();
 
-		// Placed labels, so the next one keeps clear of them.
-		TArray<FBox2f> Labels;
 		struct FLabelJob
 		{
 			FString Text;
@@ -3785,16 +3857,21 @@ public:
 				Color = MachineColors::TransitionDisabled;
 			}
 
-			// Curve by curve: through the dragged node and every reroute point, if it has any.
-			for (const FWidgetAnimMachineWire::FSegment& Segment : Wire.Segments)
+			// Only a wire that can show: each curve lies within its four control points, so one whose points' box - with room
+			// for its width and its dots - is off screen draws nothing. A big machine has most of its wires off screen.
+			if (IsWireOnScreen(Wire, FMath::Max(Thickness, MachineColors::WireBubbleSize) * Scale))
 			{
-				FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Segment.Start, Segment.StartTangent, Segment.End, Segment.EndTangent, Thickness * Scale, ESlateDrawEffect::None, Color);
-			}
+				// Curve by curve: through the dragged node and every reroute point, if it has any.
+				for (const FWidgetAnimMachineWire::FSegment& Segment : Wire.Segments)
+				{
+					FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Segment.Start, Segment.StartTangent, Segment.End, Segment.EndTangent, Thickness * Scale, ESlateDrawEffect::None, Color);
+				}
 
-			// Dots running along it, the way it goes, as along a wire in Blueprint simulation.
-			if (Glow > 0.f)
-			{
-				DrawBubbles(Wire, Scale, Now, Glow);
+				// Dots running along it, the way it goes, as along a wire in Blueprint simulation.
+				if (Glow > 0.f)
+				{
+					DrawBubbles(Wire, Scale, Now, Glow);
+				}
 			}
 
 			if (Data && Scale >= 0.4f)
@@ -3807,8 +3884,9 @@ public:
 			}
 		}
 
-		// The labels last, once every wire is known, each where it is clearest.
-		TArray<FBox2f> Obstacles;
+		// The labels last, once every wire is known, each where it is clearest. The nodes and the labels placed so far kept in
+		// grids, so each label is weighed against what is near it - not against every node and label there is.
+		FBoxGrid Obstacles(LabelGridCell * Scale);
 		for (const TPair<const UEdGraphNode*, FBox2f>& Box : ScreenBoxes)
 		{
 			// Comment boxes are frames round nodes, not in the way of a label.
@@ -3817,6 +3895,7 @@ public:
 				Obstacles.Add(Box.Value);
 			}
 		}
+		FBoxGrid Labels(LabelGridCell * Scale);
 		for (const FLabelJob& Job : LabelJobs)
 		{
 			DrawLengthLabel(Job.Text, Job.Point, Job.Direction, Scale, Obstacles, Labels);
@@ -3855,6 +3934,132 @@ public:
 private:
 
 	UWidgetAnimMachineGraph* Graph = nullptr;
+
+	/** The grids' cell, in graph units: about a label's size, so a label looks through a cell or two of each. */
+	static constexpr float LabelGridCell = 64.f;
+
+	/**
+	 * Boxes kept in a coarse grid, so those near a box are found without going through them all - each once, however many of
+	 * its cells it shares with the box asked about. A box too big for the grid is kept apart, and always looked at.
+	 */
+	class FBoxGrid
+	{
+	public:
+
+		explicit FBoxGrid(float InCellSize)
+			: CellSize(FMath::Max(InCellSize, 1.f))
+		{
+		}
+
+		void Add(const FBox2f& Box)
+		{
+			const int32 Index = Boxes.Add(Box);
+			Visited.Add(0);
+			const bool bGridded = ForEachCell(Box, [this, Index](const FIntPoint& Cell)
+			{
+				Cells.FindOrAdd(Cell).Add(Index);
+			});
+			if (!bGridded)
+			{
+				Large.Add(Index);
+			}
+		}
+
+		/** Every box that may overlap Box: none that does is left out. */
+		template<typename VisitType>
+		void ForEachNear(const FBox2f& Box, VisitType&& Visit)
+		{
+			++Query;
+			auto VisitIndex = [this, &Visit](int32 Index)
+			{
+				if (Visited[Index] != Query)
+				{
+					Visited[Index] = Query;
+					Visit(Boxes[Index]);
+				}
+			};
+
+			for (const int32 Index : Large)
+			{
+				VisitIndex(Index);
+			}
+			const bool bGridded = ForEachCell(Box, [this, &VisitIndex](const FIntPoint& Cell)
+			{
+				if (const TArray<int32>* InCell = Cells.Find(Cell))
+				{
+					for (const int32 Index : *InCell)
+					{
+						VisitIndex(Index);
+					}
+				}
+			});
+			if (!bGridded)
+			{
+				for (int32 Index = 0; Index < Boxes.Num(); ++Index)
+				{
+					VisitIndex(Index);
+				}
+			}
+		}
+
+	private:
+
+		/** Most cells one box is filed under; past it - or off any sensible scale - it isn't, and false is returned. */
+		static constexpr int64 MaxCellsPerBox = 256;
+
+		template<typename CellVisitType>
+		bool ForEachCell(const FBox2f& Box, CellVisitType&& VisitCell) const
+		{
+			const double MinX = FMath::FloorToDouble(Box.Min.X / CellSize);
+			const double MinY = FMath::FloorToDouble(Box.Min.Y / CellSize);
+			const double MaxX = FMath::FloorToDouble(Box.Max.X / CellSize);
+			const double MaxY = FMath::FloorToDouble(Box.Max.Y / CellSize);
+			constexpr double Limit = 1.0e8;
+			if (!(FMath::Abs(MinX) < Limit && FMath::Abs(MinY) < Limit && FMath::Abs(MaxX) < Limit && FMath::Abs(MaxY) < Limit)
+				|| MaxX < MinX || MaxY < MinY
+				|| (static_cast<int64>(MaxX - MinX) + 1) * (static_cast<int64>(MaxY - MinY) + 1) > MaxCellsPerBox)
+			{
+				return false;
+			}
+
+			for (int32 Y = static_cast<int32>(MinY); Y <= static_cast<int32>(MaxY); ++Y)
+			{
+				for (int32 X = static_cast<int32>(MinX); X <= static_cast<int32>(MaxX); ++X)
+				{
+					VisitCell(FIntPoint(X, Y));
+				}
+			}
+			return true;
+		}
+
+		float CellSize = 1.f;
+		TArray<FBox2f> Boxes;
+		TArray<uint32> Visited;
+		uint32 Query = 0;
+		TMap<FIntPoint, TArray<int32>> Cells;
+		TArray<int32> Large;
+	};
+
+	/** Whether any of a wire can be on screen: its curves' control points, grown by Margin, against what is drawn. */
+	bool IsWireOnScreen(const FWidgetAnimMachineWire& Wire, float Margin) const
+	{
+		if (Wire.Segments.Num() == 0)
+		{
+			return false;
+		}
+
+		// A segment's Bezier control points from its ends and tangents, as the spline is drawn from them.
+		FBox2f Bounds(ForceInit);
+		for (const FWidgetAnimMachineWire::FSegment& Segment : Wire.Segments)
+		{
+			Bounds += Segment.Start;
+			Bounds += Segment.End;
+			Bounds += Segment.Start + Segment.StartTangent / 3.f;
+			Bounds += Segment.End - Segment.EndTangent / 3.f;
+		}
+		const FSlateRect WireRect(Bounds.Min.X - Margin, Bounds.Min.Y - Margin, Bounds.Max.X + Margin, Bounds.Max.Y + Margin);
+		return FSlateRect::DoRectanglesIntersect(WireRect, ClippingRect);
+	}
 
 	/** Paint geometry at an absolute position: Size on screen, drawn at Scale - what text is sized by. */
 	static FPaintGeometry MakeScreenGeometry(const FVector2f& Position, const FVector2f& Size, float Scale)
@@ -3918,7 +4123,7 @@ private:
 	 * How long the transition takes, beside its node: off the wire's side - above a wire that runs across, to the right of one
 	 * that runs down - or, if something is there, the other side, then the corners, then further out. Wherever overlaps least.
 	 */
-	void DrawLengthLabel(const FString& Text, const FVector2f& Point, const FVector2f& Direction, float Scale, const TArray<FBox2f>& Obstacles, TArray<FBox2f>& InOutLabels)
+	void DrawLengthLabel(const FString& Text, const FVector2f& Point, const FVector2f& Direction, float Scale, FBoxGrid& Obstacles, FBoxGrid& InOutLabels)
 	{
 		if (Text.IsEmpty() || !FSlateApplication::IsInitialized())
 		{
@@ -3978,14 +4183,14 @@ private:
 		{
 			const FBox2f Box(Candidate - BoxSize * 0.5f, Candidate + BoxSize * 0.5f);
 			float Score = 0.f;
-			for (const FBox2f& Obstacle : Obstacles)
+			Obstacles.ForEachNear(Box, [&Score, &Box, &Overlap](const FBox2f& Obstacle)
 			{
 				Score += Overlap(Box, Obstacle);
-			}
-			for (const FBox2f& Label : InOutLabels)
+			});
+			InOutLabels.ForEachNear(Box, [&Score, &Box, &Overlap](const FBox2f& Label)
 			{
 				Score += Overlap(Box, Label) * 2.f;
-			}
+			});
 			if (Score < BestScore - KINDA_SMALL_NUMBER)
 			{
 				BestScore = Score;

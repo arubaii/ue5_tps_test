@@ -2524,9 +2524,9 @@ private:
 	 * Baselines is optional and only the Transform family reads it, to resolve its keys' Use
 	 * Authored Shape against the outline the baseline captured. Every other type ignores it.
 	 *
-	 * bTowardStart says the layer is traveling back toward its start values right now - inverted, or on a
-	 * ping-pong's return leg, but not both. Only Spring layers read it: they run their spring forward in time
-	 * toward the start instead of rewinding it. See UWidgetAnimSpringLibrary::EvaluateDirectedProgress.
+	 * bTowardStart says the layer plays inverted - toward its start values. A ping-pong's return leg is not that: it
+	 * is the track rewound, as the editor's preview plays it. Only Spring layers read it: they run their spring
+	 * forward in time toward the start instead of rewinding it. See UWidgetAnimSpringLibrary::EvaluateDirectedProgress.
 	 */
 	static void ApplyAnimationContribution(const FWidgetAnimSettings& Settings, float DirectedAlpha, FWidgetAnimResult& OutResult, const FWidgetAnimBaselineSet* Baselines = nullptr, bool bTowardStart = false);
 

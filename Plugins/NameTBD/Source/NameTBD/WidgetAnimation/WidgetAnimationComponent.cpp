@@ -586,6 +586,7 @@ void UWidgetAnimationComponent::AppendLinkedAdditive(int32 EffectiveIndex, bool 
 
 void UWidgetAnimationComponent::RebuildEffectiveAnimations()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimComponentRebuildAnimations);
 	EffectiveInEntries.Reset();
 	EffectiveOutEntries.Reset();
 
@@ -679,6 +680,7 @@ void UWidgetAnimationComponent::RebuildEffectiveAnimations()
 
 void UWidgetAnimationComponent::RefreshAnimIdConflicts()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimComponentAnimIdConflicts);
 	TArray<FName> Found;
 	UWidget* AnimatedWidget = AnimOwner.Get();
 
@@ -2044,6 +2046,7 @@ void UWidgetAnimationComponent::EndLoopingAnimation(FName AnimId, bool bSoftSett
 
 void UWidgetAnimationComponent::NotifyOwnerDesignTimeRefresh()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimComponentDesignTimeRefresh);
 	UWidget* AnimatedWidget = AnimOwner.Get();
 	if (!AnimatedWidget || !AnimatedWidget->IsDesignTime())
 	{
@@ -2429,6 +2432,7 @@ bool UWidgetAnimationComponent::SyncEntryGroupTargets()
 #if WITH_EDITOR
 void UWidgetAnimationComponent::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimComponentPostEditChange);
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
 	// An animation picked, swapped or cleared: its Target Widgets get a row per Layer Group. Only once the

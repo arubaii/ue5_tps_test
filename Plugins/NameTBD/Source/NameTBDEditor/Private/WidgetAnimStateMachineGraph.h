@@ -281,6 +281,10 @@ public:
 	UWidgetAnimMachineTransitionNode* FindTransitionNode(const FGuid& TransitionId) const;
 	UEdGraphNode_Comment* FindCommentNode(const FGuid& CommentId) const;
 
+	/** The layer's state, and transition, with an id - what each node shows, read every frame. Null when it is gone. */
+	const FWidgetAnimMachineState* FindLayerState(const FGuid& StateId) const;
+	const FWidgetAnimMachineTransition* FindLayerTransition(const FGuid& TransitionId) const;
+
 	/** Where a transition's wire is among those between its two nodes, how many there are, and whether it runs against the pair's own order. */
 	void GetLane(const UWidgetAnimMachineTransitionNode* Node, int32& OutLane, int32& OutCount, bool& bOutReversed) const;
 
@@ -320,6 +324,25 @@ public:
 private:
 
 	bool bRebuildRequested = false;
+
+	/**
+	 * Where each node is in Nodes, and each state and transition in the layer, by id - asked by every node and every wire,
+	 * every frame, which searched them all for each one: a machine of hundreds of states and transitions cost the square of
+	 * that. Only trusted as far as it checks out: an entry pointing anywhere else, or an id it doesn't have, makes it again
+	 * from what is there now. Plain C++, never saved.
+	 */
+	mutable TMap<FGuid, int32> StateNodeIndices;
+	mutable TMap<FGuid, int32> TransitionNodeIndices;
+	mutable TMap<FGuid, int32> StateIndices;
+	mutable TMap<FGuid, int32> TransitionIndices;
+
+	/**
+	 * Per pair of nodes (see GetPairOrder), the transition nodes between them, in Nodes order - for GetLane, which every wire
+	 * asks every frame. Gathered again each frame it is asked in, whenever Nodes changes size, and on RebuildFromMachine.
+	 */
+	mutable TMap<TPair<FGuid, FGuid>, TArray<const UWidgetAnimMachineTransitionNode*, TInlineAllocator<2>>> PairNodes;
+	mutable uint64 PairNodesFrame = MAX_uint64;
+	mutable int32 PairNodesCount = INDEX_NONE;
 };
 
 /** A node of the layer: a state, Entry, Any State or Exit. */

@@ -771,6 +771,13 @@ namespace NameTBD::Tooltips
 				"A collapsed track - these tracks, shown as one. Double-click it to open it on its own, with only its tracks in the previews. Each is still a track of its own group, playing exactly as it would anywhere.");
 		}
 
+		/** Under the first of a big collapsed track's tracks in its tooltip: how many more there are. {0} is the count. */
+		inline FText CollapsedTrackMoreNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CollapsedTrackMoreNote",
+				"...and {0} {0}|plural(one=more track,other=more tracks). Open it in the Animation Tracks list, or double-click it, to see every one.");
+		}
+
 		inline FText CollapseTracksTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "CollapseTracksTooltip",

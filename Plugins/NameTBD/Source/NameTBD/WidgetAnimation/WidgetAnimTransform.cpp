@@ -2,6 +2,8 @@
 
 #include "WidgetAnimTransform.h"
 
+#include "UObject/EnumProperty.h"
+#include "UObject/TextProperty.h"
 #include "UObject/UnrealType.h"
 
 #if WITH_EDITOR
@@ -287,6 +289,71 @@ FWidgetTransformAnimResult UWidgetAnimTransformLibrary::Evaluate(const FWidgetTr
 	return Result;
 }
 
+namespace WidgetAnimTransformSync
+{
+	/**
+	 * Which properties can hold an FWidgetTransformAnim somewhere inside them - each struct worked out once, for one sync. A
+	 * property of a kind not known here is taken to, so nothing that might hold one is ever passed by.
+	 */
+	struct FReach
+	{
+		TMap<const UStruct*, bool> Known;
+
+		bool Struct(const UStruct* InStruct)
+		{
+			if (!InStruct)
+			{
+				return false;
+			}
+			if (InStruct == FWidgetTransformAnim::StaticStruct())
+			{
+				return true;
+			}
+			if (const bool* Found = Known.Find(InStruct))
+			{
+				return *Found;
+			}
+
+			// Reached again from inside itself: taken to, until it is known.
+			Known.Add(InStruct, true);
+			bool bCan = false;
+			for (TFieldIterator<FProperty> It(InStruct); It && !bCan; ++It)
+			{
+				bCan = Property(*It);
+			}
+			Known.Add(InStruct, bCan);
+			return bCan;
+		}
+
+		bool Property(const FProperty* InProperty)
+		{
+			if (const FStructProperty* StructProperty = CastField<FStructProperty>(InProperty))
+			{
+				return Struct(StructProperty->Struct);
+			}
+			if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(InProperty))
+			{
+				return Property(ArrayProperty->Inner);
+			}
+			if (const FSetProperty* SetProperty = CastField<FSetProperty>(InProperty))
+			{
+				return Property(SetProperty->ElementProp);
+			}
+			if (const FMapProperty* MapProperty = CastField<FMapProperty>(InProperty))
+			{
+				return Property(MapProperty->KeyProp) || Property(MapProperty->ValueProp);
+			}
+
+			// Plain values, with nothing inside - and object references, which a sync never follows.
+			const bool bPlain = InProperty->IsA<FNumericProperty>() || InProperty->IsA<FBoolProperty>() || InProperty->IsA<FEnumProperty>()
+				|| InProperty->IsA<FStrProperty>() || InProperty->IsA<FNameProperty>() || InProperty->IsA<FTextProperty>()
+				|| InProperty->IsA<FObjectPropertyBase>() || InProperty->IsA<FInterfaceProperty>()
+				|| InProperty->IsA<FDelegateProperty>() || InProperty->IsA<FMulticastDelegateProperty>();
+			return !bPlain;
+		}
+	};
+}
+
 bool UWidgetAnimTransformLibrary::SyncAllTransformAnims(UObject* Object, bool* bOutResized)
 {
 	if (!Object)
@@ -297,14 +364,22 @@ bool UWidgetAnimTransformLibrary::SyncAllTransformAnims(UObject* Object, bool* b
 	bool bChanged = false;
 
 	// Every FWidgetTransformAnim at any depth - inside layer arrays, inside entries, inside nested structs.
-	// Object references are not followed, so each authoring object only ever syncs its own data.
-	for (TPropertyValueIterator<FStructProperty> It(Object->GetClass(), Object); It; ++It)
+	// Object references are not followed, so each authoring object only ever syncs its own data. Nothing that can't hold one
+	// is gone into: walking every property of every track - nearly none of which can - cost the most of every edit to an
+	// animation of hundreds of tracks, and is done on every frame of a drag.
+	WidgetAnimTransformSync::FReach Reach;
+	for (TPropertyValueIterator<FProperty> It(Object->GetClass(), Object); It; ++It)
 	{
-		const FStructProperty* StructProperty = It.Key();
+		const FProperty* Property = It.Key();
+		const FStructProperty* StructProperty = CastField<FStructProperty>(Property);
 		if (StructProperty && StructProperty->Struct == FWidgetTransformAnim::StaticStruct())
 		{
 			FWidgetTransformAnim* Anim = static_cast<FWidgetTransformAnim*>(const_cast<void*>(It.Value()));
 			bChanged |= Anim->SyncKeysToCurve(bOutResized);
+		}
+		else if (Property && !Reach.Property(Property))
+		{
+			It.SkipRecursiveProperty();
 		}
 	}
 
