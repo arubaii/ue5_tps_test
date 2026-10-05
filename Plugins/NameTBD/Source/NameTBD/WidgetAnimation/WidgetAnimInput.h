@@ -285,8 +285,14 @@ namespace WidgetAnimInput
 	/** A desktop-space offset in Widget's local units, the same way. */
 	NAMETBD_API FVector2f ToUnanimatedLocalVector(const UWidget* Widget, const FVector2f& DesktopVector);
 
-	/** Whether a mouse button is held. */
+	/** Whether a mouse button is held. Asked of Slate once a frame, however many inputs ask. */
 	NAMETBD_API bool IsMouseButtonDown(const FKey& Button);
+
+	/**
+	 * Where the pointer is on the desktop this frame - false with no Slate application to ask. Asked of the platform once a
+	 * frame and shared: every player, machine and input reading it used to ask the operating system itself, every frame.
+	 */
+	NAMETBD_API bool GetPointerPosition(FVector2f& OutPosition);
 
 	/** A two-axis value as the value Axes asks for. */
 	NAMETBD_API FVector4 FromAxes(EWidgetAnimInputAxes Axes, const FVector2D& Value);

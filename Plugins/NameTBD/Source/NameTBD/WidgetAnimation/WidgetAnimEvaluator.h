@@ -176,6 +176,14 @@ public:
 	 */
 	virtual double GetQuantizeStep(const FInstancedStruct& Params) const { return 0.0; }
 
+	/**
+	 * Whether a track of this type keeps changing what its target shows while its value stands still - a Scramble's
+	 * stand-in characters picked afresh several times a second, from the clock, at any value short of settled. A host
+	 * whose tracks have all finished stops working them out every frame (see UWidgetAnimationComponent::TickPlayer),
+	 * unless one of them says so here. False for a type whose look follows only its value - nearly every type.
+	 */
+	virtual bool AnimatesAtRest(const FInstancedStruct& Params) const { return false; }
+
 	// ---------------------------------------------------------------------------------------------
 	// Play-time length
 	// ---------------------------------------------------------------------------------------------

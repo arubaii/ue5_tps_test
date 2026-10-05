@@ -210,6 +210,9 @@ public:
 	virtual double GetEndpointValue(const FInstancedStruct& Params, bool bStart) const override;
 	virtual void Apply(UObject* Target, const FInstancedStruct& Params, double Value) const override;
 
+	/** With Changes Per Second, the stand-in characters keep changing at any value short of settled - held there or not. */
+	virtual bool AnimatesAtRest(const FInstancedStruct& Params) const override;
+
 	virtual bool CaptureBaseline(UObject* Target, const FInstancedStruct& Params, FInstancedStruct& OutBaseline) const override;
 	virtual void RestoreBaseline(UObject* Target, const FInstancedStruct& Baseline) const override;
 

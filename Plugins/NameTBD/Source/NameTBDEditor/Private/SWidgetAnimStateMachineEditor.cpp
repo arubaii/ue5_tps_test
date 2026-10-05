@@ -3521,8 +3521,10 @@ UWidgetAnimationComponent* SWidgetAnimStateMachineEditor::GetWatchedComponent() 
 		{
 			return Picked;
 		}
-		if (!bDebugPickedByHand)
+		const double Now = FPlatformTime::Seconds();
+		if (!bDebugPickedByHand && (LastDebugSearchTime < 0.0 || Now - LastDebugSearchTime >= 0.25))
 		{
+			LastDebugSearchTime = Now;
 			TArray<UWidgetAnimationComponent*> Candidates;
 			FindDebugCandidates(Candidates);
 			if (Candidates.Num() > 0)

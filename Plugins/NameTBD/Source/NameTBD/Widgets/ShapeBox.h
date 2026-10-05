@@ -248,6 +248,18 @@ public:
 	/** Texture resolution relative to the screen while warped. Raise above 1 if heavily bent content looks soft. */
 	void SetRenderScale(float InRenderScale);
 
+	/**
+	 * Warped, the content is drawn offscreen into a texture - a whole Slate render of it - and that texture bent into the
+	 * shape. By default it is drawn again on every paint, since the content may be anything and may be animating. A box
+	 * whose owner knows exactly when its content changes (a button's brush layer, which only ever shows one brush) can
+	 * say so: it is then only drawn again when MarkContentChanged is called, or the texture's size, scale or the box's
+	 * enabled state changes - and a screen of warped buttons stops rendering every one of them offscreen every frame.
+	 */
+	void SetRedrawContentOnlyWhenChanged(bool bInOnlyWhenChanged);
+
+	/** The content looks different: drawn again on the next paint. See SetRedrawContentOnlyWhenChanged. */
+	void MarkContentChanged() { bContentChanged = true; }
+
 	/** Where a point of the content (0..1 across the extruded/inset box) is drawn, in this widget's local space. */
 	FVector2D GetWarpedLocalPosition(const FVector2D& NormalizedPoint) const;
 
@@ -327,6 +339,33 @@ private:
 
 	mutable FVector2D LastVirtualPixel = FVector2D::ZeroVector;
 	mutable bool bHasLastVirtualPixel = false;
+
+	/**
+	 * What the mesh and the hit cells were last built for. Both are a pure function of the shape, the box's size and the
+	 * scales it is painted at, and were rebuilt on every paint - thousands of evaluated, clipped vertices per box per frame,
+	 * for a box whose shape hadn't moved. Built again only when one of these changes (or the warp state is cleared).
+	 */
+	mutable bool bMeshBuilt = false;
+	mutable FShapeBoxShape MeshBuiltShape;
+	mutable FVector2D MeshBuiltSize = FVector2D::ZeroVector;
+	mutable float MeshBuiltPaintScale = 0.f;
+	mutable float MeshBuiltPixelScale = 0.f;
+	mutable FIntPoint MeshBuiltTargetSize = FIntPoint::ZeroValue;
+	mutable int32 MeshBuiltPadding = 0;
+
+	mutable bool bHitCellsBuilt = false;
+	mutable FShapeBoxShape HitCellsBuiltShape;
+	mutable FVector2D HitCellsBuiltSize = FVector2D::ZeroVector;
+
+	/** See SetRedrawContentOnlyWhenChanged: whether the content is drawn again only when it changed, and what it was last drawn at. */
+	bool bRedrawOnlyWhenChanged = false;
+	mutable bool bContentChanged = true;
+	mutable bool bContentDrawn = false;
+	mutable FIntPoint ContentDrawnTarget = FIntPoint::ZeroValue;
+	mutable float ContentDrawnScale = 0.f;
+	mutable int32 ContentDrawnPadding = 0;
+	mutable FVector2D ContentDrawnSize = FVector2D::ZeroVector;
+	mutable bool bContentDrawnEnabled = true;
 };
 
 // =====================================================================================================

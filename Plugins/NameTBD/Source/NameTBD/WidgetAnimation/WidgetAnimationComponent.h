@@ -570,6 +570,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Animation")
 	static UWidgetAnimationComponent* FindWidgetAnimationComponent(const UWidget* Widget);
 
+	/** Takes the shared runtime clock off the core ticker - the module shutting down. */
+	static void ShutdownRuntimeClock();
+
 	/**
 	 * Supplies Anim In and Anim Out entries for a component whose own lists are both empty - how an animated text widget
 	 * plays the project's default text animations (Project Settings > Widget Animations > Text Widgets) until it is
@@ -884,8 +887,39 @@ private:
 	/** Whether the preview is on the exit: playing it, or holding after it. */
 	bool IsDesignerPreviewShowingOut() const;
 
-	/** Runtime clock: the core ticker, registered while the owner is constructed. */
-	FTSTicker::FDelegateHandle RuntimeTickHandle;
+	/**
+	 * Runtime clock: one core ticker shared by every constructed component (see TickRuntimeClock), which this one is on
+	 * while its owner is constructed. bOnRuntimeClock is whether it wants ticks; bInRuntimeClockList whether it is still
+	 * in the clock's list - left there, flagged off, until the clock next drops it, so leaving is free.
+	 */
+	bool bOnRuntimeClock = false;
+	bool bInRuntimeClockList = false;
+
+	static TArray<TWeakObjectPtr<UWidgetAnimationComponent>> RuntimeClockComponents;
+	static FTSTicker::FDelegateHandle RuntimeClockHandle;
+
+	/** The shared clock's one tick: every component on it, in the order they joined. */
+	static bool TickRuntimeClock(float DeltaTime);
+
+	/**
+	 * Resting - see TickPlayer. Once every track has finished and holds its end pose, and two frames in a row have posed
+	 * the same with nothing touching the player between (AnimPlayer.Revision unchanged), the tracks' pose can only be
+	 * the one already applied: the frame's evaluation is skipped until anything changes. Their Value Inputs, if they have
+	 * any, are still read every frame - a read that moves a value wakes them.
+	 */
+	uint32 RestRevision = 0;
+	bool bTracksHeldLastTick = false;
+	bool bTracksResting = false;
+	bool bRestReadsInputs = false;
+
+	/** Whether every track has finished and holds still - no stagger waiting to fan out. Whether any reads a Value Input. */
+	bool AreTracksHolding(bool& bOutReadsInputs) const;
+
+	/** After a tick that worked the tracks out: whether they rest from the next frame. */
+	void NoteTracksAfterTick();
+
+	/** Whether this frame's evaluation of the tracks can be skipped - see bTracksResting. Reads their inputs, when they have any. */
+	bool CanSkipTrackEvaluation(UWidget* AnimatedWidget, float DeltaTime);
 
 	/** Designer clock: an active timer on the owner's Slate widget, which is also what keeps the designer repainting. */
 	TWeakPtr<FActiveTimerHandle> PreviewTimerHandle;
@@ -1012,6 +1046,12 @@ private:
 
 	/** Ticks the machines and folds them into Result - the frame's other tracks - as Tracks With State Machines says. */
 	void TickAndComposeMachines(float DeltaTime, FWidgetAnimResult& Result);
+
+	/** Moves the machines DeltaTime on, once a frame at runtime. Whether any of them now poses differently - see FWidgetAnimMachineInstance::bPoseChanged. */
+	bool TickMachines(float DeltaTime);
+
+	/** Folds the machines' poses into Result - the frame's other tracks - as Tracks With State Machines says. */
+	void ComposeMachines(FWidgetAnimResult& Result);
 
 	/** A state was entered or exited: sent next frame. */
 	void QueueStateEvent(const FWidgetAnimStateEventInfo& Info);

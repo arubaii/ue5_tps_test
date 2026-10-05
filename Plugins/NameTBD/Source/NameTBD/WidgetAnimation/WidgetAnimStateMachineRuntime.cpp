@@ -167,6 +167,9 @@ namespace WidgetAnimStateMachines
 		 */
 		void NormalizeTargets(FWidgetAnimResult& Result, UWidget* Host)
 		{
+			// Entries are re-aimed and merged in place below: the result's lookup of them can't be trusted after.
+			Result.InvalidateTransformLookup();
+
 			TArray<FWidgetAnimTargetedTransform>& Transforms = Result.TargetedTransforms;
 			for (FWidgetAnimTargetedTransform& Transform : Transforms)
 			{
@@ -774,12 +777,7 @@ namespace WidgetAnimStateMachines
 			FWidgetAnimInputContext InputContext;
 			InputContext.HostWidget = Context.Host;
 			InputContext.DeltaTime = DeltaTime;
-			if (FSlateApplication::IsInitialized())
-			{
-				const FVector2D Pointer = FSlateApplication::Get().GetCursorPos();
-				InputContext.PointerPosition = FVector2f(static_cast<float>(Pointer.X), static_cast<float>(Pointer.Y));
-				InputContext.bHasPointer = true;
-			}
+			InputContext.bHasPointer = WidgetAnimInput::GetPointerPosition(InputContext.PointerPosition);
 
 			for (FWidgetAnimMachineInputState& Input : Instance.Inputs)
 			{
@@ -1416,6 +1414,9 @@ namespace WidgetAnimStateMachines
 				return;
 			}
 
+			// Worked out again below: what the machine poses may differ from what its host last applied.
+			Instance.bPoseChanged = true;
+
 			// A pose state shows its end pose: its track is played to its end at once - once its staggers have fanned out,
 			// which a zero-time evaluation sees to first.
 			if (Layer.bStateTrackStarted && !Layer.bPoseSettled && Def.States.IsValidIndex(Layer.Current) && Def.States[Layer.Current].Playback == EWidgetAnimMachineStatePlayback::Pose)
@@ -1898,6 +1899,7 @@ namespace WidgetAnimStateMachines
 		Instance.bStarted = true;
 		Instance.bClosing = false;
 		Instance.bInputsChanged = true;
+		Instance.bPoseChanged = true;
 
 		// What the widget is now - hovered already, disabled already - before Entry picks the first state.
 		ReadInputs(Instance, Context, 0.f);
@@ -1917,6 +1919,9 @@ namespace WidgetAnimStateMachines
 			Layer = FWidgetAnimMachineLayerInstance();
 		}
 		Instance.bStarted = false;
+
+		// What it posed goes back to rest on its host's next compose.
+		Instance.bPoseChanged = true;
 	}
 
 	void Tick(FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineContext& Context, float DeltaTime)

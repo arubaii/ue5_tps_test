@@ -18,7 +18,20 @@
 #include "WidgetAnimCue.h"       // Cues: FWidgetAnimCueFire
 #include "WidgetAnimShake.h"     // Shake: FWidgetAnimShakeTrackParams
 #include "StructUtils/InstancedStruct.h"
+#include "Stats/Stats.h"
 #include "WidgetAnimLibrary.generated.h"
+
+/**
+ * stat WidgetAnim: what the library costs a frame, and how much of it is resting. For profiling a screen of many animated
+ * widgets - the same scopes show in Unreal Insights' CPU track.
+ */
+DECLARE_STATS_GROUP(TEXT("Widget Animations"), STATGROUP_WidgetAnim, STATCAT_Advanced);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Runtime Clock (all components)"), STAT_WidgetAnimRuntimeClock, STATGROUP_WidgetAnim, NAMETBD_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Evaluate Players"), STAT_WidgetAnimEvaluate, STATGROUP_WidgetAnim, NAMETBD_API);
+DECLARE_CYCLE_STAT_EXTERN(TEXT("Apply Poses"), STAT_WidgetAnimApply, STATGROUP_WidgetAnim, NAMETBD_API);
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Components On The Clock"), STAT_WidgetAnimComponents, STATGROUP_WidgetAnim, NAMETBD_API);
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Components Resting"), STAT_WidgetAnimComponentsResting, STATGROUP_WidgetAnim, NAMETBD_API);
+DECLARE_DWORD_COUNTER_STAT_EXTERN(TEXT("Tracks Evaluated"), STAT_WidgetAnimTracksEvaluated, STATGROUP_WidgetAnim, NAMETBD_API);
 
 class UMaterialInstanceDynamic;
 class UUserWidget;
@@ -1423,6 +1436,48 @@ struct NAMETBD_API FWidgetAnimVectorTarget
 	bool bIsBaseline = false;
 };
 
+/** Which widget - and which part of it - an entry of FWidgetAnimResult::TargetedTransforms is for. */
+struct FWidgetAnimTransformKey
+{
+	const UWidget* Widget = nullptr;
+	FWidgetAnimPartKey Part;
+
+	bool operator==(const FWidgetAnimTransformKey& Other) const { return Widget == Other.Widget && Part == Other.Part; }
+
+	friend uint32 GetTypeHash(const FWidgetAnimTransformKey& Key)
+	{
+		return HashCombine(HashCombine(::PointerHash(Key.Widget), GetTypeHash(Key.Part.Unit)), ::GetTypeHash(Key.Part.Index));
+	}
+};
+
+/**
+ * Where each widget's entry is in a result's TargetedTransforms, for a result with many of them: a stagger over hundreds of
+ * children, or a text's every letter. Looking an entry up by walking the array made building such a result cost the square
+ * of its size, every frame. Only built once a result is past a handful of entries (see
+ * UWidgetAnimLibrary::FindOrAddTargetedTransform), and only ever trusted as far as it was built: a copy or a move of the
+ * result starts its lookup again from nothing, an array shorter than what was indexed throws it away, and an entry it points
+ * at that isn't the one asked for rebuilds it. Plain C++, never saved or reflected.
+ */
+struct FWidgetAnimTransformLookup
+{
+	TMap<FWidgetAnimTransformKey, int32> Index;
+
+	/** How many of the array's entries, from the first, are in Index. */
+	int32 Indexed = 0;
+
+	FWidgetAnimTransformLookup() = default;
+	FWidgetAnimTransformLookup(const FWidgetAnimTransformLookup&) {}
+	FWidgetAnimTransformLookup(FWidgetAnimTransformLookup&&) {}
+	FWidgetAnimTransformLookup& operator=(const FWidgetAnimTransformLookup&) { Reset(); return *this; }
+	FWidgetAnimTransformLookup& operator=(FWidgetAnimTransformLookup&&) { Reset(); return *this; }
+
+	void Reset()
+	{
+		Index.Reset();
+		Indexed = 0;
+	}
+};
+
 USTRUCT(BlueprintType)
 struct NAMETBD_API FWidgetAnimResult
 {
@@ -1430,6 +1485,27 @@ struct NAMETBD_API FWidgetAnimResult
 
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	TArray<FWidgetAnimTargetedTransform> TargetedTransforms;
+
+	/**
+	 * See FWidgetAnimTransformLookup. Anything that changes an entry's widget or part in place, or removes entries, calls
+	 * InvalidateTransformLookup - adding through FindOrAddTargetedTransform keeps it in step by itself.
+	 */
+	FWidgetAnimTransformLookup TransformLookup;
+
+	void InvalidateTransformLookup() { TransformLookup.Reset(); }
+
+	/** Empties every array, keeping what each had grown to - for a result reused frame after frame. */
+	void ResetKeepingCapacity()
+	{
+		TargetedTransforms.Reset();
+		TransformLookup.Reset();
+		ScalarParameters.Reset();
+		VectorParameters.Reset();
+		ShapeTargets.Reset();
+		AuthoritativeWrites.Reset();
+		CueFires.Reset();
+		bAllFinished = false;
+	}
 
 	/**
 	 * Material parameters written this frame: one per widget, material and parameter - so two Images both animating a
@@ -1595,6 +1671,22 @@ struct NAMETBD_API FWidgetAnimPlayer
 	 * (no time), so its tracks never jump a frame ahead and back. See UWidgetAnimLibrary::TickWidgetAnimPlayer. Never saved.
 	 */
 	uint64 LastAdvanceFrame = 0;
+
+	/**
+	 * The frame its tracks' Value Inputs were last read with time. Read again with time in the same frame - a host
+	 * checking its inputs before deciding to tick, then the tick itself - they are read as a pose applied mid-frame is:
+	 * only those that haven't read yet, so a Speed or a Drag is never measured twice over one frame. Never saved.
+	 */
+	uint64 LastInputReadFrame = 0;
+
+	/**
+	 * Goes up whenever anything changes what the player would pose: a track started, stopped or told to end its loop, a
+	 * value or a progress set. A host whose tracks have all come to rest compares it to skip working out a pose that can
+	 * only be the one it applied last (see UWidgetAnimationComponent::TickPlayer). Never saved.
+	 */
+	uint32 Revision = 0;
+
+	void MarkChanged() { ++Revision; }
 };
 
 // =====================================================================================================
@@ -2370,6 +2462,12 @@ public:
 	 * playing keeps it going while this is true, so the input is still read at rest.
 	 */
 	static bool HasValueInputs(const FWidgetAnimPlayer& Player);
+
+	/**
+	 * Whether any track in Player is of a type that keeps changing its target while its value stands still (see
+	 * FWidgetAnimEvaluator::AnimatesAtRest): a host never lets such a player rest, however finished its tracks are.
+	 */
+	static bool AnimatesAtRest(const FWidgetAnimPlayer& Player);
 
 	// -------------------------------------------------------------------------------------------------
 	// Widget targeting

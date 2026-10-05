@@ -19,12 +19,15 @@
 #include "UObject/UnrealType.h"
 #include "Widgets/SWidget.h"
 #include "WidgetAnimStateMachineRuntime.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimationComponent, Log, All);
 
 const FGuid FWidgetAnimationComponentVersion::GUID(0x4E86197C, 0x6A5440B8, 0x9235D438, 0x82E3D644);
 
 TMap<TObjectKey<UWidget>, TWeakObjectPtr<UWidgetAnimationComponent>> UWidgetAnimationComponent::ComponentsByWidget;
+TArray<TWeakObjectPtr<UWidgetAnimationComponent>> UWidgetAnimationComponent::RuntimeClockComponents;
+FTSTicker::FDelegateHandle UWidgetAnimationComponent::RuntimeClockHandle;
 
 namespace
 {
@@ -852,28 +855,94 @@ void UWidgetAnimationComponent::NotifyOwnerDestructed()
 
 void UWidgetAnimationComponent::StartRuntimeTicking()
 {
-	if (RuntimeTickHandle.IsValid())
+	if (bOnRuntimeClock)
 	{
 		return;
+	}
+	bOnRuntimeClock = true;
+
+	// Fresh: nothing is known to rest until it has been worked out again.
+	bTracksResting = false;
+	bTracksHeldLastTick = false;
+
+	if (!bInRuntimeClockList)
+	{
+		bInRuntimeClockList = true;
+		RuntimeClockComponents.Add(this);
 	}
 
 	// The core ticker rather than the owner's tick: a UI Component can sit on any widget, most of which
 	// never tick, and the core ticker runs before Slate lays out the frame, so a pose written here is the
 	// pose that frame is drawn with. It keeps running while the game is paused, as UI tick always has.
-	RuntimeTickHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this, [this](float DeltaTime)
+	// One ticker for every component rather than one each: a screen of a thousand animated widgets is one call into
+	// the ticker a frame, not a thousand.
+	if (!RuntimeClockHandle.IsValid())
 	{
-		RuntimeTick(DeltaTime);
-		return true;
-	}));
+		RuntimeClockHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateStatic(&UWidgetAnimationComponent::TickRuntimeClock));
+	}
 }
 
 void UWidgetAnimationComponent::StopRuntimeTicking()
 {
-	if (RuntimeTickHandle.IsValid())
+	// Left in the clock's list, flagged off: the clock drops it on its next tick. Leaving costs nothing, however many
+	// widgets are removed at once.
+	bOnRuntimeClock = false;
+}
+
+bool UWidgetAnimationComponent::TickRuntimeClock(float DeltaTime)
+{
+	SCOPE_CYCLE_COUNTER(STAT_WidgetAnimRuntimeClock);
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimRuntimeClock);
+
+	TArray<TWeakObjectPtr<UWidgetAnimationComponent>>& Components = RuntimeClockComponents;
+
+	// Those that join during this tick (a widget constructed by another's animation event) start next frame, as a ticker
+	// added during a tick always did; those that leave are dropped as the list is walked, keeping everyone's order.
+	const int32 NumAtStart = Components.Num();
+	int32 Kept = 0;
+	for (int32 Index = 0; Index < NumAtStart; ++Index)
 	{
-		FTSTicker::GetCoreTicker().RemoveTicker(RuntimeTickHandle);
-		RuntimeTickHandle.Reset();
+		UWidgetAnimationComponent* Component = Components[Index].Get();
+		if (!Component || !Component->bOnRuntimeClock)
+		{
+			if (Component)
+			{
+				Component->bInRuntimeClockList = false;
+			}
+			continue;
+		}
+
+		// Kept before it ticks: its tick may add components to the end of the list, never remove any from it.
+		Components[Kept++] = Components[Index];
+		Component->RuntimeTick(DeltaTime);
 	}
+
+	// Those that joined during the tick move down behind the ones kept.
+	const int32 NumJoined = Components.Num() - NumAtStart;
+	for (int32 Joined = 0; Joined < NumJoined; ++Joined)
+	{
+		Components[Kept + Joined] = Components[NumAtStart + Joined];
+	}
+	Components.SetNum(Kept + NumJoined);
+	SET_DWORD_STAT(STAT_WidgetAnimComponents, Kept);
+
+	if (Components.Num() == 0)
+	{
+		// Nothing on the clock: off the core ticker until something is again.
+		RuntimeClockHandle.Reset();
+		return false;
+	}
+	return true;
+}
+
+void UWidgetAnimationComponent::ShutdownRuntimeClock()
+{
+	if (RuntimeClockHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(RuntimeClockHandle);
+		RuntimeClockHandle.Reset();
+	}
+	RuntimeClockComponents.Empty();
 }
 
 void UWidgetAnimationComponent::RuntimeTick(float DeltaTime)
@@ -959,23 +1028,59 @@ void UWidgetAnimationComponent::ApplyCurrentAnimPose()
 void UWidgetAnimationComponent::TickPlayer(UWidget* AnimatedWidget, float DeltaTime, TArray<FName>& OutJustFinished)
 {
 	++PlayerTickDepth;
-	if (AreMachinesRunning() || MachineLastPosed.Num() > 0)
+
+	// A frame with time, while everything rests, is skipped: the pose it would work out is the one already applied. A
+	// pose asked for outright (no time: a track just started, a reset) is always worked out and applied. See
+	// bTracksResting - this is what lets a screen hold thousands of widgets that have finished animating, or wait in a
+	// state-machine state, and pay next to nothing for them each frame.
+	const bool bMachinesRunning = AreMachinesRunning();
+	if (bMachinesRunning || MachineLastPosed.Num() > 0)
 	{
-		// The tracks and the state machines worked out into one result, applied once: a machine's pose and a one-shot played
-		// by ID on the same widget compose instead of taking turns.
-		FWidgetAnimResult Result;
-		UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, OutJustFinished, Result);
-		TickAndComposeMachines(DeltaTime, Result);
-		UWidgetAnimLibrary::ApplyComposedResult(AnimatedWidget, Result, AnimBaselines);
-		UWidgetAnimLibrary::ReleaseFinishedTracks(AnimPlayer);
-		for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+		bool bMachinesTicked = false;
+		bool bSkip = false;
+		if (bMachinesRunning && CanSkipTrackEvaluation(AnimatedWidget, DeltaTime))
 		{
-			WidgetAnimStateMachines::ReleaseFinishedTracks(Instance);
+			// The machines read their inputs and move on first; only if one of them now poses differently is the frame
+			// worked out and applied.
+			bMachinesTicked = true;
+			bSkip = !TickMachines(DeltaTime);
 		}
+
+		if (bSkip)
+		{
+			OutJustFinished.Reset();
+			INC_DWORD_STAT(STAT_WidgetAnimComponentsResting);
+		}
+		else
+		{
+			// The tracks and the state machines worked out into one result, applied once: a machine's pose and a one-shot
+			// played by ID on the same widget compose instead of taking turns.
+			FWidgetAnimResult Result;
+			UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, OutJustFinished, Result);
+			if (!bMachinesTicked)
+			{
+				TickMachines(DeltaTime);
+			}
+			ComposeMachines(Result);
+			UWidgetAnimLibrary::ApplyComposedResult(AnimatedWidget, Result, AnimBaselines);
+			UWidgetAnimLibrary::ReleaseFinishedTracks(AnimPlayer);
+			for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+			{
+				WidgetAnimStateMachines::ReleaseFinishedTracks(Instance);
+				Instance.bPoseChanged = false;
+			}
+			NoteTracksAfterTick();
+		}
+	}
+	else if (CanSkipTrackEvaluation(AnimatedWidget, DeltaTime))
+	{
+		OutJustFinished.Reset();
+		INC_DWORD_STAT(STAT_WidgetAnimComponentsResting);
 	}
 	else
 	{
 		UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, AnimBaselines, DeltaTime, OutJustFinished);
+		NoteTracksAfterTick();
 	}
 	--PlayerTickDepth;
 
@@ -2535,6 +2640,16 @@ const FWidgetAnimMachineInstance* UWidgetAnimationComponent::FindMachine(const U
 
 void UWidgetAnimationComponent::TickAndComposeMachines(float DeltaTime, FWidgetAnimResult& Result)
 {
+	TickMachines(DeltaTime);
+	ComposeMachines(Result);
+	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		Instance.bPoseChanged = false;
+	}
+}
+
+bool UWidgetAnimationComponent::TickMachines(float DeltaTime)
+{
 	const FWidgetAnimMachineContext& Context = GetMachineContext();
 
 	// Moved once a frame at runtime, as the track player is: a second tick in the same frame re-poses.
@@ -2550,11 +2665,81 @@ void UWidgetAnimationComponent::TickAndComposeMachines(float DeltaTime, FWidgetA
 		}
 	}
 
+	bool bPoseChanged = false;
 	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
 	{
 		WidgetAnimStateMachines::Tick(Instance, Context, DeltaTime);
+		bPoseChanged = bPoseChanged || Instance.bPoseChanged;
 	}
-	WidgetAnimStateMachines::Compose(MakeArrayView(MachineInstances), TracksWithStateMachines, Context, Result, MachineLastPosed);
+	return bPoseChanged;
+}
+
+void UWidgetAnimationComponent::ComposeMachines(FWidgetAnimResult& Result)
+{
+	WidgetAnimStateMachines::Compose(MakeArrayView(MachineInstances), TracksWithStateMachines, GetMachineContext(), Result, MachineLastPosed);
+}
+
+bool UWidgetAnimationComponent::AreTracksHolding(bool& bOutReadsInputs) const
+{
+	bOutReadsInputs = false;
+	for (const FWidgetAnimTrack& Track : AnimPlayer.Tracks)
+	{
+		if (!Track.bFinished || !Track.bHoldWhenFinished || Track.bNeedsExpansion)
+		{
+			return false;
+		}
+	}
+	// A type that changes its target by itself while its value stands still - a Scramble still flickering - never rests.
+	if (UWidgetAnimLibrary::AnimatesAtRest(AnimPlayer))
+	{
+		return false;
+	}
+	bOutReadsInputs = UWidgetAnimLibrary::HasValueInputs(AnimPlayer);
+	return true;
+}
+
+void UWidgetAnimationComponent::NoteTracksAfterTick()
+{
+	// Resting once the tracks have held still through two ticks in a row with nothing touching them in between: the
+	// second one posed them where they now stay, and every later frame would pose them exactly there again.
+	bool bReadsInputs = false;
+	const bool bHolding = AreTracksHolding(bReadsInputs);
+	bTracksResting = bHolding && bTracksHeldLastTick && RestRevision == AnimPlayer.Revision;
+	bTracksHeldLastTick = bHolding;
+	bRestReadsInputs = bReadsInputs;
+	RestRevision = AnimPlayer.Revision;
+}
+
+bool UWidgetAnimationComponent::CanSkipTrackEvaluation(UWidget* AnimatedWidget, float DeltaTime)
+{
+	if (DeltaTime <= 0.f || !bTracksResting || RestRevision != AnimPlayer.Revision)
+	{
+		return false;
+	}
+
+	// Checked again - cheaply, on flags - whatever touched the player: a track started, restarted or unfinished in any
+	// way that didn't count as a change wakes it all the same.
+	for (const FWidgetAnimTrack& Track : AnimPlayer.Tracks)
+	{
+		if (!Track.bFinished || !Track.bHoldWhenFinished || Track.bNeedsExpansion)
+		{
+			bTracksResting = false;
+			return false;
+		}
+	}
+
+	// Tracks following a Value Input - a card tilting toward the pointer - read it every frame, resting or not; a read
+	// that moves a value sets it, which counts as a change, and the frame is worked out after all.
+	if (bRestReadsInputs)
+	{
+		UWidgetAnimLibrary::ReadValueInputs(AnimatedWidget, AnimPlayer, DeltaTime);
+		if (RestRevision != AnimPlayer.Revision)
+		{
+			bTracksResting = false;
+			return false;
+		}
+	}
+	return true;
 }
 
 void UWidgetAnimationComponent::QueueStateEvent(const FWidgetAnimStateEventInfo& Info)

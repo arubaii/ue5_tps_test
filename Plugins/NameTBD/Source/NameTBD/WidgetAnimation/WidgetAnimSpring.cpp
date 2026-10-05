@@ -41,7 +41,7 @@ namespace
 		double SettleSeconds = WidgetAnimSpring::MinSettleSeconds;
 	};
 
-	FResolvedTrackSpring ResolveTrackSpring(const FWidgetSpringParams& Params)
+	FResolvedTrackSpring ResolveTrackSpringUncached(const FWidgetSpringParams& Params)
 	{
 		FResolvedTrackSpring Resolved;
 		Resolved.Coefficients = WidgetAnimSpring::ResolveCoefficients(Params);
@@ -50,6 +50,48 @@ namespace
 		const double Settle = WidgetAnimSpring::ComputeSettleTime(Resolved.Coefficients, TrackStartDisplacement, Resolved.InitialVelocity, Params.RestThreshold);
 		Resolved.SettleSeconds = FMath::Clamp(Settle, (double)WidgetAnimSpring::MinSettleSeconds, (double)WidgetAnimSpring::MaxSettleSeconds);
 		return Resolved;
+	}
+
+	bool IsSameTrackSpring(const FWidgetSpringParams& A, const FWidgetSpringParams& B)
+	{
+		return A.Mode == B.Mode && A.VisualDuration == B.VisualDuration && A.Bounce == B.Bounce && A.Stiffness == B.Stiffness
+			&& A.Damping == B.Damping && A.Mass == B.Mass && A.InitialVelocity == B.InitialVelocity && A.RestThreshold == B.RestThreshold;
+	}
+
+	/**
+	 * A track's spring, resolved - remembered for the springs met most recently. Every spring-timed track asks for it
+	 * several times a frame (its length to place it on the clock, its progress to pose it), and the settle time can be a
+	 * forty-step search: across hundreds of springing widgets that was a real share of the frame, for the same handful of
+	 * springs every time. Exactly the same answer: an entry is only used for exactly the same parameters.
+	 */
+	FResolvedTrackSpring ResolveTrackSpring(const FWidgetSpringParams& Params)
+	{
+		struct FCacheEntry
+		{
+			FWidgetSpringParams Params;
+			FResolvedTrackSpring Resolved;
+			bool bValid = false;
+		};
+		static constexpr uint32 CacheSize = 64;
+		thread_local FCacheEntry Cache[CacheSize];
+
+		uint32 Hash = GetTypeHash(static_cast<uint8>(Params.Mode));
+		Hash = HashCombine(Hash, GetTypeHash(Params.VisualDuration));
+		Hash = HashCombine(Hash, GetTypeHash(Params.Bounce));
+		Hash = HashCombine(Hash, GetTypeHash(Params.Stiffness));
+		Hash = HashCombine(Hash, GetTypeHash(Params.Damping));
+		Hash = HashCombine(Hash, GetTypeHash(Params.Mass));
+		Hash = HashCombine(Hash, GetTypeHash(Params.InitialVelocity));
+		Hash = HashCombine(Hash, GetTypeHash(Params.RestThreshold));
+
+		FCacheEntry& Entry = Cache[Hash % CacheSize];
+		if (!Entry.bValid || !IsSameTrackSpring(Entry.Params, Params))
+		{
+			Entry.Params = Params;
+			Entry.Resolved = ResolveTrackSpringUncached(Params);
+			Entry.bValid = true;
+		}
+		return Entry.Resolved;
 	}
 
 	/**

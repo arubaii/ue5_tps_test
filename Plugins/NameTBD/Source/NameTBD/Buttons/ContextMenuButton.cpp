@@ -671,12 +671,33 @@ public:
 		SetCanTick(false);
 	}
 
-	/** What to paint next. The brush belongs to the owning button's style, which outlives every paint that reads it. */
-	void SetBrush(const FSlateBrush* InBrush, ESlateDrawEffect InDrawEffects, const FLinearColor& InTint)
+	/**
+	 * What to paint next. The brush belongs to the owning button's style, which outlives every paint that reads it.
+	 * Returns whether that looks any different from what was painted last - another brush, a brush changed in place (a
+	 * design target writing its slot), another tint or effect - or may change by itself: any resource but a plain
+	 * texture (a material, which can animate; a render target or media texture, which are drawn into). What decides
+	 * whether a warped brush layer is drawn again (see SShapeBox::SetRedrawContentOnlyWhenChanged).
+	 */
+	bool SetBrush(const FSlateBrush* InBrush, ESlateDrawEffect InDrawEffects, const FLinearColor& InTint)
 	{
+		const UObject* Resource = InBrush ? InBrush->GetResourceObject() : nullptr;
+		const bool bLivesOnItsOwn = Resource && !Resource->IsA<UTexture2D>();
+		const bool bChanged = bLivesOnItsOwn
+			|| !bHasPainted
+			|| Brush != InBrush
+			|| DrawEffects != InDrawEffects
+			|| Tint != InTint
+			|| (InBrush && !(PaintedBrush == *InBrush));
+
 		Brush = InBrush;
 		DrawEffects = InDrawEffects;
 		Tint = InTint;
+		if (bChanged)
+		{
+			bHasPainted = true;
+			PaintedBrush = InBrush ? *InBrush : FSlateBrush();
+		}
+		return bChanged;
 	}
 
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
@@ -697,6 +718,10 @@ private:
 	const FSlateBrush* Brush = nullptr;
 	ESlateDrawEffect DrawEffects = ESlateDrawEffect::None;
 	FLinearColor Tint = FLinearColor::White;
+
+	/** The brush as it was when last set differently - to tell a brush changed in place from one that wasn't. */
+	FSlateBrush PaintedBrush;
+	bool bHasPainted = false;
 };
 
 // ==================================================================
@@ -718,6 +743,10 @@ void SContextMenuSlateButton::SetOwnerWidget(UContextMenuButton* InOwner)
 				BrushPainter.ToSharedRef()
 			];
 		BrushLayer->SetShape(ButtonShape);
+
+		// The layer only ever shows the one brush, so it knows when it changes (SetBrush): warped, it is drawn offscreen
+		// again only then, not on every paint of every button.
+		BrushLayer->SetRedrawContentOnlyWhenChanged(true);
 	}
 }
 
@@ -1061,7 +1090,10 @@ int32 SContextMenuSlateButton::OnPaint(const FPaintArgs& Args, const FGeometry& 
 
 	// The painter multiplies in the widget style's color and opacity itself (or, warped, the Shape Box does), so only
 	// the brush's own tint and the button's background color go in here.
-	BrushPainter->SetBrush(Brush, DrawEffects, Brush->GetTint(InWidgetStyle) * Owner->GetBackgroundColor());
+	if (BrushPainter->SetBrush(Brush, DrawEffects, Brush->GetTint(InWidgetStyle) * Owner->GetBackgroundColor()))
+	{
+		BrushLayer->MarkContentChanged();
+	}
 
 	// Painted with this button as its parent: that is what makes a hit anywhere on the drawn shape bubble to the
 	// button, even though the layer isn't one of its layout children.
@@ -5577,6 +5609,8 @@ void UContextMenuButton::StartButtonAnimTimer()
 	// what makes the animation visible in the designer viewport rather than only when something else
 	// happens to redraw it. Same mechanism the visual state transitions already use.
 	bIsButtonAnimTimerActive = true;
+	bButtonAnimsResting = false;
+	bButtonAnimsHeldLastTick = false;
 	SlateWidget->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateUObject(this, &UContextMenuButton::TickButtonAnimations));
 }
 
@@ -5613,16 +5647,37 @@ EActiveTimerReturnType UContextMenuButton::TickButtonAnimations(double InCurrent
 	}
 #endif
 
+	// At rest, following only its inputs: they are read, and the frame is worked out only if a read moved a value - the pose
+	// would otherwise be the one already applied.
+	if (bButtonAnimsResting && ButtonAnimRestRevision == ButtonAnimPlayer.Revision && InDeltaTime > 0.f)
+	{
+		UWidgetAnimLibrary::ReadValueInputs(this, ButtonAnimPlayer, InDeltaTime);
+		if (ButtonAnimRestRevision == ButtonAnimPlayer.Revision)
+		{
+			return EActiveTimerReturnType::Continue;
+		}
+	}
+
 	TArray<FName> JustFinished;
 	const bool bAnyPlaying = UWidgetAnimLibrary::TickWidgetAnimPlayer(this, ButtonAnimPlayer, ButtonAnimBaselines, InDeltaTime, JustFinished);
 
 	// A track following a Value Input - the pointer, a scroll - has to be read every frame even at rest, or it would stop
 	// following the moment it caught up.
-	if (!bAnyPlaying && !UWidgetAnimLibrary::HasValueInputs(ButtonAnimPlayer))
+	const bool bReadsInputs = UWidgetAnimLibrary::HasValueInputs(ButtonAnimPlayer);
+	if (!bAnyPlaying && !bReadsInputs)
 	{
+		bButtonAnimsResting = false;
+		bButtonAnimsHeldLastTick = false;
 		bIsButtonAnimTimerActive = false;
 		return EActiveTimerReturnType::Stop;
 	}
+
+	// Resting from the next frame once two ticks in a row have found every track at rest, with nothing touching the player
+	// in between.
+	const bool bHolding = !bAnyPlaying && !UWidgetAnimLibrary::AnimatesAtRest(ButtonAnimPlayer);
+	bButtonAnimsResting = bHolding && bButtonAnimsHeldLastTick && ButtonAnimRestRevision == ButtonAnimPlayer.Revision;
+	bButtonAnimsHeldLastTick = bHolding;
+	ButtonAnimRestRevision = ButtonAnimPlayer.Revision;
 
 	return EActiveTimerReturnType::Continue;
 }

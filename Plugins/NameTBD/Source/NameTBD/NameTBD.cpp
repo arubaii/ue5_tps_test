@@ -10,6 +10,7 @@
 #include "WidgetAnimation/Evaluators/WidgetAnimCues.h"
 #include "WidgetAnimation/Evaluators/WidgetAnimBlueprintCue.h"
 #include "WidgetAnimation/WidgetAnimCue.h"
+#include "WidgetAnimation/WidgetAnimationComponent.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDModule"
 
@@ -58,6 +59,7 @@ void FNameTBDModule::ShutdownModule()
 
 	// Cues passed on the last frame have nothing left to fire into.
 	WidgetAnimCues::DiscardPending();
+	UWidgetAnimationComponent::ShutdownRuntimeClock();
 }
 
 #undef LOCTEXT_NAMESPACE

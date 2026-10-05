@@ -325,6 +325,12 @@ void FWidgetAnimScrambleEvaluator::Apply(UObject* Target, const FInstancedStruct
 	WidgetAnimPlainText::NoteWritten(Target, ScrambleChannel, Shown);
 }
 
+bool FWidgetAnimScrambleEvaluator::AnimatesAtRest(const FInstancedStruct& Params) const
+{
+	const FWidgetAnimScrambleParams* Scramble = GetParams(Params);
+	return Scramble && Scramble->ChangesPerSecond > 0.f;
+}
+
 bool FWidgetAnimScrambleEvaluator::CaptureBaseline(UObject* Target, const FInstancedStruct& Params, FInstancedStruct& OutBaseline) const
 {
 	if (!WidgetAnimText::IsText(Target))

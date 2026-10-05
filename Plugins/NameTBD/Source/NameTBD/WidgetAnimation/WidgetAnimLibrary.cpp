@@ -16,6 +16,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "UObject/ObjectKey.h"
 #include "HAL/IConsoleManager.h"
+#include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "NameTBD/Widgets/ShapeBox.h"
 #include "WidgetAnimTransform.h"
 #include "WidgetAnimSpring.h"
@@ -28,6 +29,71 @@
 
 #include <atomic>
 #endif
+
+DEFINE_STAT(STAT_WidgetAnimRuntimeClock);
+DEFINE_STAT(STAT_WidgetAnimEvaluate);
+DEFINE_STAT(STAT_WidgetAnimApply);
+DEFINE_STAT(STAT_WidgetAnimComponents);
+DEFINE_STAT(STAT_WidgetAnimComponentsResting);
+DEFINE_STAT(STAT_WidgetAnimTracksEvaluated);
+
+namespace WidgetAnimScratch
+{
+	/**
+	 * Results reused frame after frame instead of built from nothing: emptied with their arrays kept at the size they grew
+	 * to, so a player ticked every frame stops allocating once it has played a frame. Hundreds of animated widgets used to
+	 * allocate a fresh result - and a fresh one per track - on every one of them, every frame.
+	 *
+	 * One per depth: applying a result can call out (a Blueprint type's Apply Value) to something that ticks another player
+	 * before this one is done with its own, which takes the next one down. Game thread only, as everything that plays is.
+	 */
+	TArray<TUniquePtr<FWidgetAnimResult>>& GetPool()
+	{
+		static TArray<TUniquePtr<FWidgetAnimResult>> Pool;
+		return Pool;
+	}
+
+	int32& GetDepth()
+	{
+		static int32 Depth = 0;
+		return Depth;
+	}
+
+	/** An empty result for as long as it is in scope. Never kept, returned, or moved out of. */
+	struct FScope
+	{
+		FWidgetAnimResult& Result;
+
+		FScope()
+			: Result(Acquire())
+		{
+		}
+
+		~FScope()
+		{
+			// Emptied as it is handed back, so nothing it pointed at is held on to between uses.
+			Result.ResetKeepingCapacity();
+			--GetDepth();
+		}
+
+		FScope(const FScope&) = delete;
+		FScope& operator=(const FScope&) = delete;
+
+	private:
+		static FWidgetAnimResult& Acquire()
+		{
+			TArray<TUniquePtr<FWidgetAnimResult>>& Pool = GetPool();
+			const int32 Depth = GetDepth()++;
+			while (Pool.Num() <= Depth)
+			{
+				Pool.Add(MakeUnique<FWidgetAnimResult>());
+			}
+			FWidgetAnimResult& Scratch = *Pool[Depth];
+			Scratch.ResetKeepingCapacity();
+			return Scratch;
+		}
+	};
+}
 
 // The easing maths moved to WidgetAnimEasing.h so the Transform family - and the spring and sequencing
 // families after it - share one implementation instead of each growing a copy. These two stay as thin
@@ -192,17 +258,72 @@ FWidgetAnimTargetedTransform& UWidgetAnimLibrary::FindOrAddTargetedTransform(FWi
 {
 	// A part of a widget is a slot of its own, apart from the widget's: a letter's fade composes with the other tracks
 	// on that letter, never with the text block's own opacity.
-	for (FWidgetAnimTargetedTransform& Existing : Result.TargetedTransforms)
+	TArray<FWidgetAnimTargetedTransform>& Transforms = Result.TargetedTransforms;
+	const int32 Num = Transforms.Num();
+
+	// A few entries - nearly every result - are found fastest by walking them. Past that (a stagger over a list's children,
+	// a text's letters) every new entry walked the whole array, so a result of N widgets cost N squared to build, every
+	// frame; there the entries are looked up instead. See FWidgetAnimTransformLookup.
+	static constexpr int32 LookupThreshold = 24;
+	if (Num < LookupThreshold)
 	{
-		if (Existing.TargetWidget == TargetWidget && Existing.Part == Part)
+		for (FWidgetAnimTargetedTransform& Existing : Transforms)
 		{
-			return Existing;
+			if (Existing.TargetWidget == TargetWidget && Existing.Part == Part)
+			{
+				return Existing;
+			}
+		}
+	}
+	else
+	{
+		FWidgetAnimTransformLookup& Lookup = Result.TransformLookup;
+		if (Lookup.Indexed > Num)
+		{
+			Lookup.Reset();
+		}
+		for (int32 Index = Lookup.Indexed; Index < Num; ++Index)
+		{
+			// The first entry for a widget is the one a walk would find.
+			const FWidgetAnimTransformKey EntryKey{ Transforms[Index].TargetWidget, Transforms[Index].Part };
+			if (!Lookup.Index.Contains(EntryKey))
+			{
+				Lookup.Index.Add(EntryKey, Index);
+			}
+		}
+		Lookup.Indexed = Num;
+
+		const FWidgetAnimTransformKey Key{ TargetWidget, Part };
+		if (const int32* Found = Lookup.Index.Find(Key))
+		{
+			if (Transforms.IsValidIndex(*Found) && Transforms[*Found].TargetWidget == TargetWidget && Transforms[*Found].Part == Part)
+			{
+				return Transforms[*Found];
+			}
+
+			// Out of step with the array - something changed an entry in place: walked this once, and indexed afresh next time.
+			Lookup.Reset();
+			for (FWidgetAnimTargetedTransform& Existing : Transforms)
+			{
+				if (Existing.TargetWidget == TargetWidget && Existing.Part == Part)
+				{
+					return Existing;
+				}
+			}
 		}
 	}
 
-	FWidgetAnimTargetedTransform& NewEntry = Result.TargetedTransforms.AddDefaulted_GetRef();
+	FWidgetAnimTargetedTransform& NewEntry = Transforms.AddDefaulted_GetRef();
 	NewEntry.TargetWidget = TargetWidget;
 	NewEntry.Part = Part;
+
+	// Kept in step: the new entry is the one the next lookup of this widget finds.
+	FWidgetAnimTransformLookup& Lookup = Result.TransformLookup;
+	if (Num >= LookupThreshold && Lookup.Indexed == Num)
+	{
+		Lookup.Index.Add(FWidgetAnimTransformKey{ TargetWidget, Part }, Num);
+		Lookup.Indexed = Num + 1;
+	}
 	return NewEntry;
 }
 
@@ -410,11 +531,20 @@ namespace
 
 					ApplyWrite(Write, Target, Params);
 
-					// Stale entries - widgets long gone - are dropped wholesale rather than tracked; a cleared cache
-					// only costs one extra apply per channel.
-					if (LastWrites.Num() > 4096)
+					// Entries for targets that are gone are dropped once the cache is large - not the whole cache, which with
+					// thousands of animated texts or Blueprint types emptied it every frame, and with it the point of it: every
+					// one of them was applied, Blueprint and all, every frame.
+					static int32 PruneAt = 4096;
+					if (LastWrites.Num() > PruneAt)
 					{
-						LastWrites.Reset();
+						for (auto It = LastWrites.CreateIterator(); It; ++It)
+						{
+							if (!It->Key.Key.ResolveObjectPtr())
+							{
+								It.RemoveCurrent();
+							}
+						}
+						PruneAt = FMath::Max(4096, LastWrites.Num() * 2);
 					}
 					FLastAuthoritativeWrite& Entry = LastWrites.FindOrAdd(Key);
 					Entry.Evaluator = Write.Evaluator;
@@ -1565,6 +1695,9 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 	WidgetAnimLoop::FClockPieces ClockPieces;
 	const int32 FirstCueFire = OutResult.CueFires.Num();
 
+	// Each loop group's leader is its first layer on the clock, remembered as it is met: looking back over every earlier
+	// layer for it made a staggered track of N items cost N squared every frame.
+	TArray<TPair<int32, int32>, TInlineAllocator<8>> GroupLeaders;
 	for (int32 Index = 0; Index < NumLayers; ++Index)
 	{
 		LeaderOf[Index] = Index;
@@ -1576,13 +1709,14 @@ bool UWidgetAnimLibrary::TickAnimationsInto(const TArray<FWidgetAnimSettings>& A
 		const int32 Group = Animations[Index].LoopGroup;
 		if (Group != INDEX_NONE)
 		{
-			for (int32 Earlier = 0; Earlier < Index; ++Earlier)
+			const TPair<int32, int32>* Known = GroupLeaders.FindByPredicate([Group](const TPair<int32, int32>& Pair) { return Pair.Key == Group; });
+			if (Known)
 			{
-				if (Animations[Earlier].LoopGroup == Group && !OffClock(Earlier))
-				{
-					LeaderOf[Index] = LeaderOf[Earlier];
-					break;
-				}
+				LeaderOf[Index] = Known->Value;
+			}
+			else
+			{
+				GroupLeaders.Emplace(Group, Index);
 			}
 		}
 
@@ -1921,6 +2055,25 @@ namespace WidgetAnimTransformDebug
 		return true;
 	}
 
+	/**
+	 * The call stack, for a fault just reported - at most every few seconds across all widgets. Walking and symbolizing a
+	 * stack takes many milliseconds in the editor: a fault repeating on a hundred widgets at once (two players fighting
+	 * over every button in a list) stalled the whole program, once a second, for each of them. The first stack says where
+	 * the fault comes from; the warnings themselves are still logged for every widget.
+	 */
+	static void DumpStackRarely()
+	{
+		static double LastDumped = -1000.0;
+		const double Now = FPlatformTime::Seconds();
+		if (Now - LastDumped < 5.0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("WidgetAnim.DebugTransforms: (call stack left out - one was logged in the last few seconds.)"));
+			return;
+		}
+		LastDumped = Now;
+		FDebug::DumpStackTraceToLog(ELogVerbosity::Warning);
+	}
+
 	/** A player ticked with time a second time in one frame - see TickWidgetAnimPlayer. A fault in whatever ticked it. */
 	static void NoteSecondAdvance(const void* Player, const UWidget* Host, float DeltaTime)
 	{
@@ -1928,7 +2081,7 @@ namespace WidgetAnimTransformDebug
 		{
 			UE_LOG(LogTemp, Warning, TEXT("WidgetAnim.DebugTransforms: the player on %s was ticked with time (%.4f s) a second time in frame %llu - played as a re-pose instead, so nothing jumps. Whatever made the second tick is in this call stack:"),
 				Host ? *Host->GetPathName() : TEXT("(none)"), DeltaTime, GFrameCounter);
-			FDebug::DumpStackTraceToLog(ELogVerbosity::Warning);
+			DumpStackRarely();
 		}
 	}
 
@@ -1949,18 +2102,31 @@ namespace WidgetAnimTransformDebug
 	/** Called just before Target is posed by the track player, with the pose about to be written. */
 	static void Check(UWidget* Target, const FWidgetTransform& Pose)
 	{
+		// A development aid: a shipped game pays nothing for it on every write.
+#if !(UE_BUILD_SHIPPING || UE_BUILD_TEST)
 		const FWriter& Writer = CurrentWriter();
 		if (!IsEnabled() || !Target || !Writer.Player || Target->IsDesignTime())
 		{
 			return;
 		}
 
-		static TMap<TWeakObjectPtr<UWidget>, FHistory> Histories;
-		if (Histories.Num() > 4096)
+		// Only the last two frames matter to the checks below, so once the map is large, widgets not posed in that time are
+		// dropped - every one of a few thousand animated widgets keeps its history. (It used to be emptied wholesale past
+		// 4096, which with more widgets than that animating emptied and refilled it every frame.)
+		static TMap<TObjectKey<UWidget>, FHistory> Histories;
+		static int32 PruneAt = 4096;
+		if (Histories.Num() > PruneAt)
 		{
-			Histories.Reset();
+			for (auto It = Histories.CreateIterator(); It; ++It)
+			{
+				if (It->Value.Last.Frame + 2 < GFrameCounter)
+				{
+					It.RemoveCurrent();
+				}
+			}
+			PruneAt = FMath::Max(4096, Histories.Num() * 2);
 		}
-		FHistory& History = Histories.FindOrAdd(Target);
+		FHistory& History = Histories.FindOrAdd(TObjectKey<UWidget>(Target));
 
 		// Two different players posing one widget differently in one frame: they fight over it. One player posing it
 		// again in the same frame - right after starting a track - is how it is meant to work, and isn't reported.
@@ -1969,7 +2135,7 @@ namespace WidgetAnimTransformDebug
 		{
 			UE_LOG(LogTemp, Warning, TEXT("WidgetAnim.DebugTransforms: %s is posed by two players in frame %llu, and they disagree: %s by %s, then %s by %s. Only the last is drawn. The second's call stack:"),
 				*Target->GetPathName(), GFrameCounter, *Describe(History.Last.Pose), *DescribeWriter(History.Last.Writer), *Describe(Pose), *DescribeWriter(Writer));
-			FDebug::DumpStackTraceToLog(ELogVerbosity::Warning);
+			DumpStackRarely();
 		}
 
 		// A one-frame jump: three frames in a row from the same player, each moved on by time, where the middle one stands
@@ -2006,6 +2172,7 @@ namespace WidgetAnimTransformDebug
 		History.Last.Frame = GFrameCounter;
 		History.Last.Pose = Pose;
 		History.Last.Writer = Writer;
+#endif
 	}
 }
 
@@ -2047,7 +2214,11 @@ namespace WidgetAnimPixelSnapping
 		const bool bPlain = Pose.Scale.Equals(FVector2D(1.0, 1.0), 1.e-4) && FMath::IsNearlyZero(Pose.Angle, 1.e-3f) && Pose.Shear.IsNearlyZero(1.e-4);
 		if (bPlain)
 		{
-			Restore(Widget);
+			// Nearly every write is plain and nothing is waiting to be put back: no lookup at all.
+			if (SavedMethods().Num() > 0)
+			{
+				Restore(Widget);
+			}
 			return;
 		}
 
@@ -2106,6 +2277,11 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
 	// in one call, and a part left out of it is at rest. Only allocated when a stagger is posing parts.
 	TArray<TPair<UWidget*, TArray<FWidgetAnimPartPose>>, TInlineAllocator<2>> PartPoses;
 
+	// Where the last widget's baseline was found: results and baseline sets list widgets in much the same order (both are
+	// built by walking the same settings), so the next one is nearly always right after it - a staggered list of hundreds
+	// of children doesn't search every baseline for every child.
+	int32 BaselineHint = 0;
+
 	for (const FWidgetAnimTargetedTransform& Transform : Result.TargetedTransforms)
 	{
 		UWidget* Target = Transform.TargetWidget ? Transform.TargetWidget : FallbackWidget;
@@ -2142,7 +2318,22 @@ void UWidgetAnimLibrary::ApplyResultInternal(UWidget* FallbackWidget, const FWid
 		FWidgetTransform Pose(Transform.Translation, MakeInvertibleScale(Transform.Scale), Transform.Shear, Transform.Angle);
 		if (Baselines)
 		{
-			const FWidgetAnimBaseline Baseline = FindBaselineFor(*Baselines, Target);
+			const FWidgetAnimBaseline* Found = nullptr;
+			const TArray<FWidgetAnimBaseline>& All = Baselines->Baselines;
+			for (int32 Step = 0; Step < All.Num(); ++Step)
+			{
+				const int32 Index = (BaselineHint + Step) % All.Num();
+				if (All[Index].Widget == Target)
+				{
+					Found = &All[Index];
+					BaselineHint = Index + 1;
+					break;
+				}
+			}
+
+			// Identity: a widget nobody captured is animated exactly the way it always was.
+			static const FWidgetAnimBaseline Identity;
+			const FWidgetAnimBaseline& Baseline = Found ? *Found : Identity;
 			Opacity = Baseline.Opacity * Transform.Opacity;
 			Pose = FWidgetTransform(Baseline.Translation + Transform.Translation, MakeInvertibleScale(Baseline.Scale * Transform.Scale), Baseline.Shear + Transform.Shear, Baseline.Angle + Transform.Angle);
 		}
@@ -2252,12 +2443,18 @@ void UWidgetAnimLibrary::ApplyWidgetAnimResultOver(UWidget* FallbackWidget, cons
 
 void UWidgetAnimLibrary::ApplyMaterialAnimResult(const FWidgetAnimResult& Result, UWidget* FallbackWidget)
 {
+	// Only a value that changed is set: setting one sends it to the render thread, every time, whatever it was - and a
+	// parameter held at its end, or not moving this frame, would otherwise be sent again for every widget, every frame.
 	for (const FWidgetAnimScalarTarget& Scalar : Result.ScalarParameters)
 	{
 		UWidget* Widget = Scalar.TargetWidget ? Scalar.TargetWidget.Get() : FallbackWidget;
 		if (UMaterialInstanceDynamic* MID = GetWidgetDynamicMaterial(Widget, Scalar.Slot))
 		{
-			MID->SetScalarParameterValue(Scalar.ParameterName, Scalar.Value);
+			float Current = 0.f;
+			if (!static_cast<const UMaterialInterface*>(MID)->GetScalarParameterValue(FHashedMaterialParameterInfo(Scalar.ParameterName), Current) || Current != Scalar.Value)
+			{
+				MID->SetScalarParameterValue(Scalar.ParameterName, Scalar.Value);
+			}
 		}
 	}
 
@@ -2266,7 +2463,11 @@ void UWidgetAnimLibrary::ApplyMaterialAnimResult(const FWidgetAnimResult& Result
 		UWidget* Widget = Vector.TargetWidget ? Vector.TargetWidget.Get() : FallbackWidget;
 		if (UMaterialInstanceDynamic* MID = GetWidgetDynamicMaterial(Widget, Vector.Slot))
 		{
-			MID->SetVectorParameterValue(Vector.ParameterName, Vector.Value);
+			FLinearColor Current;
+			if (!static_cast<const UMaterialInterface*>(MID)->GetVectorParameterValue(FHashedMaterialParameterInfo(Vector.ParameterName), Current) || Current != Vector.Value)
+			{
+				MID->SetVectorParameterValue(Vector.ParameterName, Vector.Value);
+			}
 		}
 	}
 }
@@ -4477,6 +4678,7 @@ void UWidgetAnimLibrary::StartWidgetAnimTrack(FWidgetAnimPlayer& Player, FName A
 		return;
 	}
 
+	Player.MarkChanged();
 	FWidgetAnimTrack& Track = Existing ? *Existing : Player.Tracks.AddDefaulted_GetRef();
 
 	Track.AnimId = AnimId;
@@ -4639,6 +4841,12 @@ int32 UWidgetAnimLibrary::SetWidgetAnimTrackValue(FWidgetAnimPlayer& Player, con
 				Track.bFinished = false;
 			}
 		}
+	}
+
+	// Something will be posed differently - a value on its way, or one snapped to, which moves nothing over time.
+	if (Taken > 0)
+	{
+		Player.MarkChanged();
 	}
 
 	// An animation's own progress belongs to the use of it playing, and goes with it: never remembered.
@@ -4824,6 +5032,7 @@ namespace
 bool UWidgetAnimLibrary::PrepareValueLayersForExit(FWidgetAnimPlayer& Player)
 {
 	bool bAnyHolding = false;
+	Player.MarkChanged();
 
 	for (FWidgetAnimTrack& Track : Player.Tracks)
 	{
@@ -5091,6 +5300,7 @@ void UWidgetAnimLibrary::ApplyValueLayerContribution(const FWidgetAnimSettings& 
 void UWidgetAnimLibrary::StopWidgetAnimTracks(FWidgetAnimPlayer& Player, const TArray<FName>& AnimIds, bool bRemoveTracks)
 {
 	const bool bAll = AnimIds.Num() == 0;
+	Player.MarkChanged();
 
 	for (int32 Index = Player.Tracks.Num() - 1; Index >= 0; --Index)
 	{
@@ -5169,6 +5379,10 @@ bool UWidgetAnimLibrary::EndWidgetAnimTrackLoops(FWidgetAnimPlayer& Player, FNam
 		bAnyAffected = true;
 	}
 
+	if (bAnyAffected)
+	{
+		Player.MarkChanged();
+	}
 	return bAnyAffected;
 }
 
@@ -5200,6 +5414,20 @@ void UWidgetAnimLibrary::ReadValueInputs(UWidget* HostWidget, FWidgetAnimPlayer&
 		return;
 	}
 
+	// Read with time once a frame: a second read with time in the same frame - a host checking its inputs before it decides
+	// to tick, then the tick - is read as a mid-frame pose is (below), so nothing is measured twice over one frame.
+	if (DeltaTime > 0.f)
+	{
+		if (Player.LastInputReadFrame == GFrameCounter)
+		{
+			DeltaTime = 0.f;
+		}
+		else
+		{
+			Player.LastInputReadFrame = GFrameCounter;
+		}
+	}
+
 	// Leaving: an entrance's inputs stop, so an exit waiting for a value to arrive (On Exit) isn't held open by a pointer
 	// that keeps moving, and the exit plays the way it was authored.
 	const bool bLeaving = Player.Phase == EWidgetAnimPhase::PlayingOut || Player.Phase == EWidgetAnimPhase::Hidden;
@@ -5207,12 +5435,7 @@ void UWidgetAnimLibrary::ReadValueInputs(UWidget* HostWidget, FWidgetAnimPlayer&
 	FWidgetAnimInputContext Context;
 	Context.HostWidget = HostWidget;
 	Context.DeltaTime = DeltaTime;
-	if (FSlateApplication::IsInitialized())
-	{
-		const FVector2D Pointer = FSlateApplication::Get().GetCursorPos();
-		Context.PointerPosition = FVector2f(static_cast<float>(Pointer.X), static_cast<float>(Pointer.Y));
-		Context.bHasPointer = true;
-	}
+	Context.bHasPointer = WidgetAnimInput::GetPointerPosition(Context.PointerPosition);
 
 	// Read first and set after: setting a value can size a track's states, which mustn't happen under the loop.
 	struct FFeed
@@ -5345,9 +5568,30 @@ bool UWidgetAnimLibrary::HasValueInputs(const FWidgetAnimPlayer& Player)
 	return false;
 }
 
+bool UWidgetAnimLibrary::AnimatesAtRest(const FWidgetAnimPlayer& Player)
+{
+	for (const FWidgetAnimTrack& Track : Player.Tracks)
+	{
+		for (const FWidgetAnimSettings& Layer : Track.Settings)
+		{
+			if (Layer.AnimType != EWidgetAnimType::Custom || Layer.bMuted)
+			{
+				continue;
+			}
+			const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator();
+			if (Evaluator && Evaluator->AnimatesAtRest(Layer.TypeParams))
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAnimPlayer& Player, const FWidgetAnimBaselineSet& Baselines, float DeltaTime, TArray<FName>& OutJustFinished)
 {
-	FWidgetAnimResult Result;
+	const WidgetAnimScratch::FScope Scratch;
+	FWidgetAnimResult& Result = Scratch.Result;
 	const bool bAnyPlaying = EvaluateWidgetAnimPlayer(FallbackWidget, Player, Baselines, DeltaTime, OutJustFinished, Result);
 
 	// One apply for the whole player. Two animations touching the same widget therefore combine - opacity
@@ -5364,6 +5608,9 @@ bool UWidgetAnimLibrary::TickWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAn
 
 void UWidgetAnimLibrary::ApplyComposedResult(UWidget* FallbackWidget, const FWidgetAnimResult& Result, const FWidgetAnimBaselineSet& Baselines)
 {
+	SCOPE_CYCLE_COUNTER(STAT_WidgetAnimApply);
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimApplyPoses);
+
 	ApplyResultInternal(FallbackWidget, Result, Baselines.bCaptured ? &Baselines : nullptr);
 	ApplyMaterialAnimResult(Result, FallbackWidget);
 }
@@ -5405,6 +5652,10 @@ bool UWidgetAnimLibrary::SettleWidgetAnimTrack(FWidgetAnimTrack& Track, const FW
 
 bool UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(UWidget* FallbackWidget, FWidgetAnimPlayer& Player, const FWidgetAnimBaselineSet& Baselines, float DeltaTime, TArray<FName>& OutJustFinished, FWidgetAnimResult& OutResult)
 {
+	SCOPE_CYCLE_COUNTER(STAT_WidgetAnimEvaluate);
+	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimEvaluatePlayer);
+	INC_DWORD_STAT_BY(STAT_WidgetAnimTracksEvaluated, Player.Tracks.Num());
+
 	OutJustFinished.Reset();
 
 	// Time moves a player once a frame. Ticked again with time in the same frame, it re-poses where it is instead: a
@@ -5471,7 +5722,8 @@ bool UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(UWidget* FallbackWidget, FWidg
 		//
 		// Evaluated on its own first, so that a track ending this frame without holding can hand back its
 		// widgets instead of its pose - see below.
-		FWidgetAnimResult TrackResult;
+		const WidgetAnimScratch::FScope TrackScratch;
+		FWidgetAnimResult& TrackResult = TrackScratch.Result;
 		bool bAllComplete = false;
 		Track.bSettled = TickAnimationsInto(Track.Settings, Track.States, DeltaTime * Track.Speed, Track.bIsOut, TrackResult, &bAllComplete, &Baselines, /*bDriveValueLayers=*/true);
 
@@ -5636,6 +5888,57 @@ void UWidgetAnimLibrary::GatherTargetableWidgetPaths(UWidget* Root, TArray<FStri
 	}
 }
 
+namespace WidgetAnimTree
+{
+	/**
+	 * The widget at Segments - one name per tree, as Gather writes a path - found by walking the trees by name: the widget
+	 * named Segments[0] in Widget's tree, then, inside it if it is a User Widget, the one named Segments[1], and so on. The
+	 * same widget Gather's list would give for the path, without building that list: every path as a string, for every
+	 * widget in the tree, on every lookup - and a lookup is made for every target of every animation started, and every
+	 * frame for a state machine input measured on a target.
+	 */
+	static UWidget* FindBySegments(UWidget* Widget, TConstArrayView<FName> Segments, int32 Depth = 0)
+	{
+		static constexpr int32 MaxDepth = 128;
+		if (!Widget || Depth > MaxDepth || Segments.Num() == 0)
+		{
+			return nullptr;
+		}
+
+		// FName comparison ignores case, as the string comparison did.
+		if (Widget->GetFName() == Segments[0])
+		{
+			if (Segments.Num() == 1)
+			{
+				return Widget;
+			}
+			if (const UUserWidget* NestedUserWidget = Cast<UUserWidget>(Widget))
+			{
+				if (NestedUserWidget->WidgetTree)
+				{
+					if (UWidget* Found = FindBySegments(NestedUserWidget->WidgetTree->RootWidget, Segments.RightChop(1), Depth + 1))
+					{
+						return Found;
+					}
+				}
+			}
+		}
+
+		// A panel's children are in its own tree: their paths go on from the same place.
+		if (const UPanelWidget* Panel = Cast<UPanelWidget>(Widget))
+		{
+			for (int32 Index = 0; Index < Panel->GetChildrenCount(); ++Index)
+			{
+				if (UWidget* Found = FindBySegments(Panel->GetChildAt(Index), Segments, Depth + 1))
+				{
+					return Found;
+				}
+			}
+		}
+		return nullptr;
+	}
+}
+
 UWidget* UWidgetAnimLibrary::FindWidgetByPath(UWidget* Root, FName Path)
 {
 	if (Path.IsNone() || !Root)
@@ -5643,19 +5946,26 @@ UWidget* UWidgetAnimLibrary::FindWidgetByPath(UWidget* Root, FName Path)
 		return nullptr;
 	}
 
-	TArray<TPair<FString, UWidget*>> All;
-	WidgetAnimTree::Gather(Root, FString(), All);
-
+	// One name per tree. A name no FName has ever held can't be any widget's: the lookup stops there.
+	TArray<FName, TInlineAllocator<4>> Segments;
 	const FString PathString = Path.ToString();
-	for (const TPair<FString, UWidget*>& Entry : All)
+	int32 Start = 0;
+	for (int32 Index = 0; Index <= PathString.Len(); ++Index)
 	{
-		if (Entry.Key.Equals(PathString, ESearchCase::IgnoreCase))
+		if (Index == PathString.Len() || PathString[Index] == TEXT('/'))
 		{
-			return Entry.Value;
+			const FString Segment = PathString.Mid(Start, Index - Start);
+			const FName SegmentName(*Segment, FNAME_Find);
+			if (Segment.IsEmpty() || SegmentName.IsNone())
+			{
+				return nullptr;
+			}
+			Segments.Add(SegmentName);
+			Start = Index + 1;
 		}
 	}
 
-	return nullptr;
+	return WidgetAnimTree::FindBySegments(Root, Segments);
 }
 
 void UWidgetAnimLibrary::GatherTargetableWidgetPathsInTree(UUserWidget* Owner, TArray<FString>& OutPaths)

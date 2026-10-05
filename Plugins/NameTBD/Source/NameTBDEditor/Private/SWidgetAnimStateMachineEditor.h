@@ -339,6 +339,13 @@ private:
 	TWeakObjectPtr<UWidgetAnimationComponent> DebugComponent;
 	bool bDebugPickedByHand = false;
 
+	/**
+	 * When the components in Play In Editor were last searched for one playing the machine, finding none. Searched again at
+	 * most a few times a second: every node of the graph asks for the watched widget as it paints, and with thousands of
+	 * animated widgets playing, a search on every one of those asks made the whole editor crawl.
+	 */
+	mutable double LastDebugSearchTime = -1.0;
+
 	/** The designer components previewing the machine. */
 	TArray<TWeakObjectPtr<UWidgetAnimationComponent>> PreviewComponents;
 	double LastPreviewSearch = -1.0;

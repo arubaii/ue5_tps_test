@@ -814,6 +814,7 @@ void SShapeBox::SetContent(const TSharedRef<SWidget>& InContent)
 		InContent
 	];
 	Window->SetContent(InContent);
+	bContentChanged = true;
 }
 
 void SShapeBox::SetShape(const TAttribute<FShapeBoxShape>& InShape)
@@ -824,6 +825,12 @@ void SShapeBox::SetShape(const TAttribute<FShapeBoxShape>& InShape)
 void SShapeBox::SetRenderScale(float InRenderScale)
 {
 	RenderScale = FMath::Clamp(InRenderScale, 0.25f, 4.0f);
+}
+
+void SShapeBox::SetRedrawContentOnlyWhenChanged(bool bInOnlyWhenChanged)
+{
+	bRedrawOnlyWhenChanged = bInOnlyWhenChanged;
+	bContentChanged = true;
 }
 
 FVector2D SShapeBox::GetWarpedLocalPosition(const FVector2D& NormalizedPoint) const
@@ -970,6 +977,11 @@ void SShapeBox::ClearWarpState() const
 	HitCellTransforms.Reset();
 	HitCellSizes.Reset();
 	bHasLastVirtualPixel = false;
+	bMeshBuilt = false;
+	bHitCellsBuilt = false;
+
+	// Not warped meanwhile: whatever the content became is drawn afresh when it is again.
+	bContentDrawn = false;
 }
 
 int32 SShapeBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
@@ -1024,7 +1036,25 @@ int32 SShapeBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeomet
 
 	// ---- Draw it as a mesh following the shape ----
 
-	BuildMesh(Size, AllottedGeometry.Scale);
+	// Built again only when what it is built from changed: a box held in its shape - a tilted card at rest - reuses it.
+	const bool bMeshCurrent = bMeshBuilt
+		&& MeshBuiltSize.Equals(Size, 0.0)
+		&& MeshBuiltPaintScale == AllottedGeometry.Scale
+		&& MeshBuiltPixelScale == PixelScale
+		&& MeshBuiltTargetSize == TargetSize
+		&& MeshBuiltPadding == Padding
+		&& MeshBuiltShape.Equals(PaintedShape);
+	if (!bMeshCurrent)
+	{
+		BuildMesh(Size, AllottedGeometry.Scale);
+		bMeshBuilt = true;
+		MeshBuiltShape = PaintedShape;
+		MeshBuiltSize = Size;
+		MeshBuiltPaintScale = AllottedGeometry.Scale;
+		MeshBuiltPixelScale = PixelScale;
+		MeshBuiltTargetSize = TargetSize;
+		MeshBuiltPadding = Padding;
+	}
 
 	const FSlateResourceHandle Handle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(SurfaceBrush);
 	if (Handle.IsValid() && MeshIndices.Num() > 0)
@@ -1050,7 +1080,13 @@ int32 SShapeBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeomet
 
 	// ---- Put the drawn shape into the hit-test grid ----
 
-	BuildHitCells(Size);
+	if (!bHitCellsBuilt || !HitCellsBuiltSize.Equals(Size, 0.0) || !HitCellsBuiltShape.Equals(PaintedShape))
+	{
+		BuildHitCells(Size);
+		bHitCellsBuilt = true;
+		HitCellsBuiltShape = PaintedShape;
+		HitCellsBuiltSize = Size;
+	}
 	PaintHitCells(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId + 1, InWidgetStyle, bEnabled);
 
 	return LayerId + 1;
@@ -1084,6 +1120,9 @@ bool SShapeBox::RenderContent(const FVector2D& ContentSize, float Scale, int32 I
 
 		Resources->RenderTarget = RenderTarget;
 		SurfaceBrush.SetResourceObject(RenderTarget);
+
+		// A new texture holds nothing yet.
+		bContentDrawn = false;
 	}
 	else if (RenderTarget->SizeX != Target.X || RenderTarget->SizeY != Target.Y)
 	{
@@ -1108,14 +1147,34 @@ bool SShapeBox::RenderContent(const FVector2D& ContentSize, float Scale, int32 I
 	// its hit-test grid included, lives in these texel coordinates.
 	WindowGeometry = FGeometry::MakeRoot(ContentSize, FSlateLayoutTransform(Scale, FVector2D(InPadding, InPadding)));
 
-	Resources->WidgetRenderer->DrawWindow(
-		RenderTarget,
-		Window->GetHittestGrid(),
-		Window.ToSharedRef(),
-		WindowGeometry,
-		FSlateRect(0.0f, 0.0f, static_cast<float>(Target.X), static_cast<float>(Target.Y)),
-		DeltaTime,
-		/*bDeferRenderTargetUpdate=*/false);
+	// Drawn again unless the owner has said the content only changes when it says so, and it hasn't, and the texture
+	// would be drawn exactly as last time - same size, scale and inset, and the same enabled state. The window's hit-test
+	// grid is the one that draw filled, still true for geometry that hasn't changed.
+	const bool bReuseContent = bRedrawOnlyWhenChanged && bContentDrawn && !bContentChanged
+		&& ContentDrawnTarget == Target
+		&& ContentDrawnScale == Scale
+		&& ContentDrawnPadding == InPadding
+		&& ContentDrawnSize.Equals(ContentSize, 0.0)
+		&& bContentDrawnEnabled == bLastWindowEnabled;
+	if (!bReuseContent)
+	{
+		Resources->WidgetRenderer->DrawWindow(
+			RenderTarget,
+			Window->GetHittestGrid(),
+			Window.ToSharedRef(),
+			WindowGeometry,
+			FSlateRect(0.0f, 0.0f, static_cast<float>(Target.X), static_cast<float>(Target.Y)),
+			DeltaTime,
+			/*bDeferRenderTargetUpdate=*/false);
+
+		bContentDrawn = true;
+		bContentChanged = false;
+		ContentDrawnTarget = Target;
+		ContentDrawnScale = Scale;
+		ContentDrawnPadding = InPadding;
+		ContentDrawnSize = ContentSize;
+		bContentDrawnEnabled = bLastWindowEnabled;
+	}
 
 	TargetSize = Target;
 	PixelScale = Scale;

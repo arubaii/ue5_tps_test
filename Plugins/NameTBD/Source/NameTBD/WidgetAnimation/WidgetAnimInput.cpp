@@ -2,6 +2,7 @@
 
 #include "WidgetAnimInput.h"
 
+#include "CoreGlobals.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
@@ -151,7 +152,39 @@ FVector2f WidgetAnimInput::ToUnanimatedLocalVector(const UWidget* Widget, const 
 
 bool WidgetAnimInput::IsMouseButtonDown(const FKey& Button)
 {
-	return FSlateApplication::IsInitialized() && FSlateApplication::Get().GetPressedMouseButtons().Contains(Button);
+	if (!FSlateApplication::IsInitialized())
+	{
+		return false;
+	}
+
+	// The buttons held don't change within a frame; the set is copied out of Slate once a frame rather than once per input.
+	static TSet<FKey> Pressed;
+	static uint64 PressedFrame = TNumericLimits<uint64>::Max();
+	if (PressedFrame != GFrameCounter)
+	{
+		PressedFrame = GFrameCounter;
+		Pressed = FSlateApplication::Get().GetPressedMouseButtons();
+	}
+	return Pressed.Contains(Button);
+}
+
+bool WidgetAnimInput::GetPointerPosition(FVector2f& OutPosition)
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		return false;
+	}
+
+	static FVector2f Position = FVector2f::ZeroVector;
+	static uint64 PositionFrame = TNumericLimits<uint64>::Max();
+	if (PositionFrame != GFrameCounter)
+	{
+		PositionFrame = GFrameCounter;
+		const FVector2D Cursor = FSlateApplication::Get().GetCursorPos();
+		Position = FVector2f(static_cast<float>(Cursor.X), static_cast<float>(Cursor.Y));
+	}
+	OutPosition = Position;
+	return true;
 }
 
 FVector4 WidgetAnimInput::FromAxes(EWidgetAnimInputAxes Axes, const FVector2D& Value)

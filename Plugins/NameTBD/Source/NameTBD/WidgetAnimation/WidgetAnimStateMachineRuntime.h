@@ -261,6 +261,14 @@ struct NAMETBD_API FWidgetAnimMachineInstance
 	/** An input changed since the layers last looked: a settled layer looks again. */
 	bool bInputsChanged = true;
 
+	/**
+	 * Whether what the machine poses may have changed since its host last composed it: a layer worked its pose out again,
+	 * or the machine was started or stopped. Cleared by the host once it has composed and applied the machines. A host
+	 * whose machines all have it clear, and whose own tracks rest, has nothing new to apply that frame - which is how a
+	 * screen of idle state-machine buttons costs only the reading of their inputs.
+	 */
+	bool bPoseChanged = true;
+
 	const FWidgetAnimMachineInputState* FindInput(FName Name) const
 	{
 		return Inputs.FindByPredicate([Name](const FWidgetAnimMachineInputState& Input) { return Input.Name == Name; });

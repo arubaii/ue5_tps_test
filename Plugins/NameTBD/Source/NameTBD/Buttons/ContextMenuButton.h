@@ -2362,6 +2362,16 @@ protected:
 
 	bool bIsButtonAnimTimerActive = false;
 
+	/**
+	 * The button's tracks at rest with only Value Inputs to follow - a tilt toward the pointer that has caught up: the
+	 * timer then only reads the inputs each frame, and works a frame out only when a read moves a value (the player's
+	 * Revision goes up). bButtonAnimsHeldLastTick: they were at rest after the last tick too, so its pose is the one that
+	 * stays. See UWidgetAnimationComponent::TickPlayer, which rests the same way.
+	 */
+	bool bButtonAnimsResting = false;
+	bool bButtonAnimsHeldLastTick = false;
+	uint32 ButtonAnimRestRevision = 0;
+
 	/** Finds a widget in this button's tree by the name/path stored in FContextMenuColorTarget::TargetWidgetName. */
 	UWidget* FindWidgetInButtonTree(FName WidgetPath);
 
