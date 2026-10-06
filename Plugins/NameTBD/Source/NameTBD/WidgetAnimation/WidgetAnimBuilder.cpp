@@ -338,6 +338,7 @@ uint32 UWidgetAnimBuilder::ComputeStructureSignature() const
 			const FRichCurve* Curve = Layer.Transform.GetActiveCurve();
 			Hash = HashCombine(Hash, GetTypeHash(Curve ? Curve->GetNumKeys() : 0));
 			Hash = HashCombine(Hash, PointerHash(Layer.Transform.ShapeKind.Get()));
+			Hash = HashCombine(Hash, PointerHash(Layer.Transform.DesignKind.Get()));
 		}
 	}
 

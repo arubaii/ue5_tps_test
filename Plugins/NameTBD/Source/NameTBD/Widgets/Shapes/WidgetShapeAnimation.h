@@ -32,6 +32,14 @@ namespace WidgetShapeAnimation
 	 */
 	NAMETBD_API bool LayOut(FInstancedPropertyBag& Bag, const UClass* Kind, const UObject* Source);
 
+	/**
+	 * LayOut, for any list of settings - a widget's look (see WidgetDesignAnimation.h) as well as a shape's: Bag laid out for
+	 * Properties, of Kind, values kept where it already held them and taken from Source - an object of Kind - or Kind's defaults.
+	 * IsLaidOutWith is IsLaidOutFor's half of it.
+	 */
+	NAMETBD_API bool LayOutWith(FInstancedPropertyBag& Bag, const UClass* Kind, const UObject* Source, const TArray<const FProperty*>& Properties);
+	NAMETBD_API bool IsLaidOutWith(const FInstancedPropertyBag& Bag, const TArray<const FProperty*>& Properties);
+
 	/** Bag's every value, read off Source by name. Values Source doesn't have are left as they are. */
 	NAMETBD_API void Capture(FInstancedPropertyBag& Bag, const UObject* Source);
 
@@ -51,5 +59,5 @@ namespace WidgetShapeAnimation
 	 * Writes the blend from A to B (each a value of Property, or null where a key has none - then the other's is used
 	 * alone) onto Shape's Property. Returns true if the shape changed. Nothing is written when both are null.
 	 */
-	NAMETBD_API bool WriteBlend(UShapeWidget* Shape, const FProperty* Property, const void* A, const void* B, float Alpha);
+	NAMETBD_API bool WriteBlend(UObject* Shape, const FProperty* Property, const void* A, const void* B, float Alpha);
 }

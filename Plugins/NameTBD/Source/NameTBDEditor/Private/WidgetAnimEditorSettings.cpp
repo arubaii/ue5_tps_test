@@ -66,6 +66,7 @@ FLinearColor UWidgetAnimEditorSettings::GetDefaultTrackColor(EWidgetAnimType Ani
 	case EWidgetAnimType::Transform:      return Palette::LayerTransform;
 	case EWidgetAnimType::ShapeBox:       return Palette::LayerShapeBox;
 	case EWidgetAnimType::Shape:          return Palette::LayerShape;
+	case EWidgetAnimType::Design:         return Palette::LayerDesign;
 	case EWidgetAnimType::Custom:         return Palette::LayerCustom;
 	default:                              return Palette::LayerUnknown;
 	}
@@ -85,6 +86,25 @@ void UWidgetAnimEditorSettings::SetLinkedEdges(bool bEnabled)
 	if (bLinkedEdges != bEnabled)
 	{
 		bLinkedEdges = bEnabled;
+		SaveConfig();
+	}
+}
+
+void UWidgetAnimEditorSettings::SetShowTimeInFrames(bool bEnabled)
+{
+	if (bShowTimeInFrames != bEnabled)
+	{
+		bShowTimeInFrames = bEnabled;
+		SaveConfig();
+	}
+}
+
+void UWidgetAnimEditorSettings::SetPreviewFrameRate(float FrameRate)
+{
+	const float Clamped = FMath::Clamp(FrameRate, 1.f, 1000.f);
+	if (!FMath::IsNearlyEqual(PreviewFrameRate, Clamped))
+	{
+		PreviewFrameRate = Clamped;
 		SaveConfig();
 	}
 }

@@ -12,6 +12,12 @@
 #include "NameTBD/WidgetAnimation/WidgetAnimLibrary.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimTransform.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimSpring.h"
+#include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimCues.h"
+#include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimShapeTrack.h"
+#include "NameTBD/Widgets/ShapeBox.h"
+
+#include "Blueprint/WidgetTree.h"
+#include "WidgetBlueprint.h"
 
 #include "Brushes/SlateRoundedBoxBrush.h"
 #include "Fonts/FontMeasure.h"
@@ -69,10 +75,50 @@ namespace WidgetAnimGraph
 		Angle,
 
 		/**
-		 * A Shape Box or Shape track's keys hold whole shapes, which have no one number to draw: such a track shows how far
-		 * through its keys it is - each key a step up - so its timing and easing can still be seen and shaped here.
+		 * The Ease view's curve: how far through its keys a track is - each key a step up - so its timing and easing can be
+		 * seen and shaped there. In the Values view only for a Shape Box or Shape track whose keys hold no number to draw.
 		 */
-		Progress
+		Progress,
+
+		/** A Sound cue's fades: how loud it is along its run, from its Fade In and Fade Out - 0 silent, 1 its full volume. */
+		FadeEnvelope,
+
+		/**
+		 * The first of a Shape Box or Shape track's own values - FieldBase + N is the track's Nth (see FFieldChannel): each
+		 * number its keys' shapes hold, a curve of its own, as a Transform track's translation and scale are.
+		 */
+		FieldBase = 32
+	};
+
+	/** Most of a track's shape values drawn as channels of their own - see EChannel::FieldBase. */
+	constexpr int32 MaxFieldChannels = 160;
+
+	bool IsFieldChannel(EChannel Channel) { return static_cast<uint8>(Channel) >= static_cast<uint8>(EChannel::FieldBase); }
+	int32 GetFieldIndex(EChannel Channel) { return static_cast<int32>(static_cast<uint8>(Channel)) - static_cast<int32>(EChannel::FieldBase); }
+	EChannel MakeFieldChannel(int32 Index) { return static_cast<EChannel>(static_cast<uint8>(EChannel::FieldBase) + static_cast<uint8>(Index)); }
+
+	/**
+	 * A Sound cue's fades as keys of the FadeEnvelope channel: where its fade in ends and where its fade out begins, dragged
+	 * in time to set them. Numbered past any key a track can have.
+	 */
+	constexpr int32 FadeInPoint = 100000;
+	constexpr int32 FadeOutPoint = 100001;
+
+	/**
+	 * One number a Shape Box or Shape track's keys hold: a setting of the key's shape (Root - by name, in a Shape track's bag),
+	 * and down through the structs inside it (Tail) to the number - a corner's Size X, a fill color's R.
+	 */
+	struct FFieldChannel
+	{
+		FText Name;
+		FName RootName;
+		const FProperty* RootProperty = nullptr;
+		TArray<const FProperty*> Tail;
+
+		const FNumericProperty* GetLeaf() const
+		{
+			return CastField<FNumericProperty>(Tail.Num() > 0 ? Tail.Last() : RootProperty);
+		}
 	};
 
 	/** The interpolations the graph's Curve To Next Key menu sets - the segment curves, less a Curve asset (see SetCurve). */
@@ -142,6 +188,14 @@ namespace WidgetAnimGraph
 		/** How many of those have values: a Transform track's keys can be briefly out of step with its curve. */
 		int32 NumValuePoints = 0;
 
+		/** A Sound cue: its volume at its points, and its fades (EChannel::FadeEnvelope). */
+		bool bSound = false;
+
+		/** A Shape Box or Shape track's numbers - see EChannel::FieldBase - and what its keys' Use Authored read them off. */
+		TArray<FFieldChannel> Fields;
+		TWeakObjectPtr<const UObject> AuthoredShape;
+		TOptional<FShapeBoxShape> AuthoredBox;
+
 		TArray<EChannel> Channels;
 		FLinearColor Color = FLinearColor::White;
 		FText Name;
@@ -210,6 +264,218 @@ namespace WidgetAnimGraph
 		}
 	}
 
+	// ---------------------------------------------------------------------------------------------
+	// A Shape Box or Shape track's numbers - see FFieldChannel
+	// ---------------------------------------------------------------------------------------------
+
+	/** Every number inside Property's value, down through its structs - a corner's Size X and Y, a color's R, G, B and A. */
+	void CollectFields(const FProperty* Root, FName RootName, const FProperty* Property, TArray<const FProperty*>& Tail, const FString& Label, int32 Depth, TArray<FFieldChannel>& OutFields)
+	{
+		if (OutFields.Num() >= MaxFieldChannels)
+		{
+			return;
+		}
+		if (const FNumericProperty* Numeric = CastField<FNumericProperty>(Property))
+		{
+			// A choice from a list is no number to draw.
+			if (!Numeric->IsEnum())
+			{
+				FFieldChannel& Field = OutFields.AddDefaulted_GetRef();
+				Field.Name = FText::FromString(Label);
+				Field.RootName = RootName;
+				Field.RootProperty = Root;
+				Field.Tail = Tail;
+			}
+			return;
+		}
+		const FStructProperty* StructProperty = CastField<FStructProperty>(Property);
+		if (!StructProperty || Depth >= 3 || StructProperty->Struct == FSlateBrush::StaticStruct())
+		{
+			return;
+		}
+		for (TFieldIterator<FProperty> It(StructProperty->Struct); It; ++It)
+		{
+			if (It->ArrayDim != 1)
+			{
+				continue;
+			}
+			Tail.Push(*It);
+			CollectFields(Root, RootName, *It, Tail, Label + TEXT(" ") + It->GetDisplayNameText().ToString(), Depth + 1, OutFields);
+			Tail.Pop();
+		}
+	}
+
+	/** A Shape Box track's numbers, from its outline's settings; a Shape track's, from its first key's - every key is laid out alike. */
+	void BuildFields(const FWidgetAnimLayer& Layer, TArray<FFieldChannel>& OutFields)
+	{
+		OutFields.Reset();
+		TArray<const FProperty*> Tail;
+		if (Layer.AnimType == EWidgetAnimType::ShapeBox)
+		{
+			for (TFieldIterator<FProperty> It(FShapeBoxShape::StaticStruct()); It; ++It)
+			{
+				if (It->ArrayDim == 1)
+				{
+					CollectFields(*It, It->GetFName(), *It, Tail, It->GetDisplayNameText().ToString(), 0, OutFields);
+				}
+			}
+			return;
+		}
+
+		const UPropertyBag* Layout = Layer.Transform.Keys.Num() > 0 ? Layer.Transform.Keys[0].ShapeValues.GetPropertyBagStruct() : nullptr;
+		if (!Layout)
+		{
+			return;
+		}
+		for (const FPropertyBagPropertyDesc& Desc : Layout->GetPropertyDescs())
+		{
+			if (Desc.CachedProperty)
+			{
+				CollectFields(Desc.CachedProperty, Desc.Name, Desc.CachedProperty, Tail, Desc.CachedProperty->GetDisplayNameText().ToString(), 0, OutFields);
+			}
+		}
+	}
+
+	/** What the key at Point's Use Authored reads its shape off: the shape as designed in the Widget Blueprint. Null when not known. */
+	const void* GetAuthoredRoot(const FLayerModel& Model, const FFieldChannel& Field)
+	{
+		if (Model.AuthoredBox.IsSet())
+		{
+			return Field.RootProperty->ContainerPtrToValuePtr<void>(&Model.AuthoredBox.GetValue());
+		}
+		const UObject* Shape = Model.AuthoredShape.Get();
+		const FProperty* OnShape = Shape ? FindFProperty<FProperty>(Shape->GetClass(), Field.RootName) : nullptr;
+		return OnShape && OnShape->SameType(Field.RootProperty) ? OnShape->ContainerPtrToValuePtr<void>(Shape) : nullptr;
+	}
+
+	/** Where the key at Point keeps Field's setting - its own, or with bAuthored the shape as designed - or null. */
+	const void* GetFieldRoot(const FWidgetAnimLayer& Layer, const FLayerModel& Model, int32 Point, const FFieldChannel& Field, bool bAuthored)
+	{
+		if (!Layer.Transform.Keys.IsValidIndex(Point) || !Field.RootProperty)
+		{
+			return nullptr;
+		}
+		const FWidgetTransformKeyframe& Key = Layer.Transform.Keys[Point];
+		if (bAuthored)
+		{
+			if (const void* Authored = GetAuthoredRoot(Model, Field))
+			{
+				return Authored;
+			}
+		}
+		if (Layer.AnimType == EWidgetAnimType::ShapeBox)
+		{
+			return Field.RootProperty->ContainerPtrToValuePtr<void>(&Key.Shape);
+		}
+		const FPropertyBagPropertyDesc* Desc = Key.ShapeValues.FindPropertyDescByName(Field.RootName);
+		const FConstStructView Values = Key.ShapeValues.GetValue();
+		return Desc && Desc->CachedProperty && Values.GetMemory() && Desc->CachedProperty->SameType(Field.RootProperty)
+			? Desc->CachedProperty->ContainerPtrToValuePtr<void>(Values.GetMemory())
+			: nullptr;
+	}
+
+	/** Down through Field's structs from its root to the number itself. */
+	const void* WalkField(const FFieldChannel& Field, const void* Root)
+	{
+		const void* At = Root;
+		for (const FProperty* Member : Field.Tail)
+		{
+			if (!At)
+			{
+				return nullptr;
+			}
+			At = Member->ContainerPtrToValuePtr<void>(At);
+		}
+		return At;
+	}
+
+	float ReadField(const FWidgetAnimLayer& Layer, const FLayerModel& Model, int32 Point, int32 FieldIndex)
+	{
+		const FFieldChannel* Field = Model.Fields.IsValidIndex(FieldIndex) ? &Model.Fields[FieldIndex] : nullptr;
+		const FNumericProperty* Leaf = Field ? Field->GetLeaf() : nullptr;
+		const int32 Clamped = FMath::Clamp(Point, 0, Model.NumValuePoints - 1);
+		const bool bAuthored = Layer.Transform.Keys.IsValidIndex(Clamped) && Layer.Transform.Keys[Clamped].bUseAuthoredShape;
+		const void* Value = Field ? WalkField(*Field, GetFieldRoot(Layer, Model, Clamped, *Field, bAuthored)) : nullptr;
+		if (!Leaf || !Value)
+		{
+			return 0.f;
+		}
+		return Leaf->IsFloatingPoint() ? static_cast<float>(Leaf->GetFloatingPointPropertyValue(Value)) : static_cast<float>(Leaf->GetSignedIntPropertyValue(Value));
+	}
+
+	void WriteField(FWidgetAnimLayer& Layer, const FLayerModel& Model, int32 Point, int32 FieldIndex, float NewValue)
+	{
+		const FFieldChannel* Field = Model.Fields.IsValidIndex(FieldIndex) ? &Model.Fields[FieldIndex] : nullptr;
+		const FNumericProperty* Leaf = Field ? Field->GetLeaf() : nullptr;
+		if (!Leaf || !Layer.Transform.Keys.IsValidIndex(Point) || Layer.Transform.Keys[Point].bUseAuthoredShape)
+		{
+			return;
+		}
+		void* Value = const_cast<void*>(WalkField(*Field, GetFieldRoot(Layer, Model, Point, *Field, /*bAuthored=*/false)));
+		if (!Value)
+		{
+			return;
+		}
+		if (Leaf->IsFloatingPoint())
+		{
+			Leaf->SetFloatingPointPropertyValue(Value, static_cast<double>(NewValue));
+		}
+		else
+		{
+			Leaf->SetIntPropertyValue(Value, static_cast<int64>(FMath::RoundToDouble(NewValue)));
+		}
+	}
+
+	/** Whether a Sound cue's fade envelope - see EChannel::FadeEnvelope. */
+	const FWidgetAnimSoundCueParams* GetSoundParams(const FWidgetAnimLayer& Layer)
+	{
+		return Layer.AnimType == EWidgetAnimType::Custom ? Layer.TypeParams.GetPtr<FWidgetAnimSoundCueParams>() : nullptr;
+	}
+
+	/** A fade's volume a share T of the way through it, along the Fade Curve - as the track draws its fades. */
+	float FadeShape(EWidgetAnimSoundFadeCurve Curve, float T)
+	{
+		T = FMath::Clamp(T, 0.f, 1.f);
+		switch (Curve)
+		{
+		case EWidgetAnimSoundFadeCurve::Logarithmic: return FMath::LogX(10.f, 1.f + 9.f * T);
+		case EWidgetAnimSoundFadeCurve::SCurve:      return FMath::SmoothStep(0.f, 1.f, T);
+		case EWidgetAnimSoundFadeCurve::Sine:        return FMath::Sin(T * HALF_PI);
+		default:                                     return T;
+		}
+	}
+
+	/** A Sound cue's fade in and out, in played seconds, held inside its run. */
+	void GetFades(const FWidgetAnimLayer& Layer, const FLayerModel& Model, float& OutFadeIn, float& OutFadeOut)
+	{
+		const FWidgetAnimSoundCueParams* Sound = GetSoundParams(Layer);
+		OutFadeIn = Sound ? FMath::Clamp(Sound->FadeIn, 0.f, Model.RunSeconds) : 0.f;
+		OutFadeOut = Sound ? FMath::Clamp(Sound->FadeOut, 0.f, Model.RunSeconds) : 0.f;
+	}
+
+	/** How loud a Sound cue is LocalSeconds into its run, as its fades have it: 0 silent, 1 its full volume. */
+	float EnvelopeAt(const FWidgetAnimLayer& Layer, const FLayerModel& Model, float LocalSeconds)
+	{
+		const FWidgetAnimSoundCueParams* Sound = GetSoundParams(Layer);
+		if (!Sound)
+		{
+			return 1.f;
+		}
+		float FadeIn = 0.f;
+		float FadeOut = 0.f;
+		GetFades(Layer, Model, FadeIn, FadeOut);
+		float Level = 1.f;
+		if (FadeIn > KINDA_SMALL_NUMBER && LocalSeconds < FadeIn)
+		{
+			Level = FMath::Min(Level, FadeShape(Sound->FadeCurve, LocalSeconds / FadeIn));
+		}
+		if (FadeOut > KINDA_SMALL_NUMBER && LocalSeconds > Model.RunSeconds - FadeOut)
+		{
+			Level = FMath::Min(Level, FadeShape(Sound->FadeCurve, (Model.RunSeconds - LocalSeconds) / FadeOut));
+		}
+		return FMath::Clamp(Level, 0.f, 1.f);
+	}
+
 	/** Point Point's value of Channel: on a keyed track, point 0 is its start value and the last its end value. */
 	float GetPointValue(const FWidgetAnimLayer& Layer, const FLayerModel& Model, int32 Point, EChannel Channel)
 	{
@@ -218,27 +484,47 @@ namespace WidgetAnimGraph
 		{
 			return NumPoints > 1 ? static_cast<float>(FMath::Clamp(Point, 0, NumPoints - 1)) / static_cast<float>(NumPoints - 1) : 0.f;
 		}
+		if (Channel == EChannel::FadeEnvelope)
+		{
+			return 1.f;
+		}
+		if (IsFieldChannel(Channel))
+		{
+			return ReadField(Layer, Model, Point, GetFieldIndex(Channel));
+		}
 		if (Model.bKeyframed)
 		{
+			// A key that Uses Authored Transform is the identity - the widget as designed.
 			const int32 Clamped = FMath::Clamp(Point, 0, NumPoints - 1);
-			return Layer.Transform.Keys.IsValidIndex(Clamped) ? ReadTransform(Layer.Transform.Keys[Clamped].Transform, Channel) : 0.f;
+			return Layer.Transform.Keys.IsValidIndex(Clamped) ? ReadTransform(Layer.Transform.GetKeyTransform(Clamped), Channel) : 0.f;
 		}
-		return IsColorChannel(Channel) ? ReadColor(WidgetAnimKeyPoints::GetColor(Layer, Point), Channel) : WidgetAnimKeyPoints::GetValue(Layer, Point);
+		if (IsColorChannel(Channel))
+		{
+			return ReadColor(WidgetAnimKeyPoints::GetColor(Layer, Point), Channel);
+		}
+		// A Scale's X and Y; every other track's one value.
+		return Channel == EChannel::ScaleY ? WidgetAnimKeyPoints::GetValueY(Layer, Point) : WidgetAnimKeyPoints::GetValue(Layer, Point);
 	}
 
 	/**
 	 * Whether a point's value of Channel can be set here. A registered type's start and end come from its own settings and
-	 * a Slide always ends where its widget sits, so those are the Selection panel's, or nobody's, to change.
+	 * a Slide always ends where its widget sits, so those are the Selection panel's, or nobody's, to change - but for a
+	 * Sound's, which are its Volume. A key that uses the authored transform or shape holds no values of its own to set.
 	 */
 	bool CanSetPointValue(const FWidgetAnimLayer& Layer, const FLayerModel& Model, int32 Point, EChannel Channel)
 	{
-		if (!Model.bEditable || Channel == EChannel::Progress || Point < 0 || Point >= Model.NumValuePoints)
+		if (!Model.bEditable || Channel == EChannel::Progress || Channel == EChannel::FadeEnvelope || Point < 0 || Point >= Model.NumValuePoints)
 		{
 			return false;
 		}
 		if (Model.bKeyframed)
 		{
-			return Layer.Transform.Keys.IsValidIndex(Point);
+			if (!Layer.Transform.Keys.IsValidIndex(Point))
+			{
+				return false;
+			}
+			const FWidgetTransformKeyframe& Key = Layer.Transform.Keys[Point];
+			return IsFieldChannel(Channel) ? !Key.bUseAuthoredShape : !Key.bUseAuthoredTransform;
 		}
 
 		const bool bEndpoint = Point == 0 || Point == Model.NumValuePoints - 1;
@@ -256,6 +542,8 @@ namespace WidgetAnimGraph
 			return true;
 		case EWidgetAnimType::Slide:
 			return Point == 0;
+		case EWidgetAnimType::Custom:
+			return GetSoundParams(Layer) != nullptr;
 		default:
 			return false;
 		}
@@ -263,9 +551,14 @@ namespace WidgetAnimGraph
 
 	void SetPointValue(FWidgetAnimLayer& Layer, const FLayerModel& Model, int32 Point, EChannel Channel, float Value)
 	{
+		if (IsFieldChannel(Channel))
+		{
+			WriteField(Layer, Model, Point, GetFieldIndex(Channel), Value);
+			return;
+		}
 		if (Model.bKeyframed)
 		{
-			if (Layer.Transform.Keys.IsValidIndex(Point))
+			if (Layer.Transform.Keys.IsValidIndex(Point) && !Layer.Transform.Keys[Point].bUseAuthoredTransform)
 			{
 				WriteTransform(Layer.Transform.Keys[Point].Transform, Channel, Value);
 			}
@@ -280,6 +573,10 @@ namespace WidgetAnimGraph
 			{
 				WriteColor(Key.Color, Channel, Value);
 			}
+			else if (Channel == EChannel::ScaleY)
+			{
+				Key.ValueY = Value;
+			}
 			else
 			{
 				Key.Value = Value;
@@ -291,19 +588,39 @@ namespace WidgetAnimGraph
 		switch (Layer.AnimType)
 		{
 		case EWidgetAnimType::Fade:           (bStart ? Layer.StartOpacity : Layer.EndOpacity) = Value; break;
-		case EWidgetAnimType::Scale:          (bStart ? Layer.StartScale : Layer.EndScale) = Value; break;
+		case EWidgetAnimType::Scale:
+		{
+			FVector2D& Scale = bStart ? Layer.StartScale : Layer.EndScale;
+			(Channel == EChannel::ScaleY ? Scale.Y : Scale.X) = Value;
+			break;
+		}
 		case EWidgetAnimType::Rotate:         (bStart ? Layer.StartAngle : Layer.EndAngle) = Value; break;
 		case EWidgetAnimType::MaterialScalar: (bStart ? Layer.StartScalarValue : Layer.EndScalarValue) = Value; break;
 		case EWidgetAnimType::MaterialVector: WriteColor(bStart ? Layer.StartVectorValue : Layer.EndVectorValue, Channel, Value); break;
 		// A Slide's Distance is how far away it starts - never less than nothing.
 		case EWidgetAnimType::Slide:          if (bStart) { Layer.SlideDistance = FMath::Max(Value, 0.f); } break;
+		// A Sound's start and end are its Volume - one setting, which both follow.
+		case EWidgetAnimType::Custom:
+			if (FWidgetAnimSoundCueParams* Sound = Layer.TypeParams.GetMutablePtr<FWidgetAnimSoundCueParams>())
+			{
+				Sound->Volume = FMath::Max(Value, 0.f);
+			}
+			break;
 		default: break;
 		}
 	}
 
-	/** What a channel is called in the list and on its curve. */
-	FText GetChannelName(const FWidgetAnimLayer& Layer, EChannel Channel)
+	/** What a channel is called in the list and on its curve - short, as the track it is on is named beside it: "B", "X". */
+	FText GetChannelName(const FWidgetAnimLayer& Layer, const FLayerModel& Model, EChannel Channel)
 	{
+		if (IsFieldChannel(Channel))
+		{
+			return Model.Fields.IsValidIndex(GetFieldIndex(Channel)) ? Model.Fields[GetFieldIndex(Channel)].Name : FText::GetEmpty();
+		}
+		if (Layer.AnimType == EWidgetAnimType::Scale && (Channel == EChannel::ScaleX || Channel == EChannel::ScaleY))
+		{
+			return Channel == EChannel::ScaleX ? LOCTEXT("ChannelX", "X") : LOCTEXT("ChannelY", "Y");
+		}
 		switch (Channel)
 		{
 		case EChannel::ColorR:       return LOCTEXT("ChannelR", "R");
@@ -318,6 +635,7 @@ namespace WidgetAnimGraph
 		case EChannel::ShearY:       return LOCTEXT("ChannelShearY", "Shear Y");
 		case EChannel::Angle:        return LOCTEXT("ChannelAngle", "Angle");
 		case EChannel::Progress:     return LOCTEXT("ChannelProgress", "Through Its Keys");
+		case EChannel::FadeEnvelope: return LOCTEXT("ChannelFade", "Fade");
 		default: break;
 		}
 
@@ -490,6 +808,23 @@ namespace WidgetAnimGraph
 			return;
 		}
 
+		// A Sound cue fires at its points; between them its volume is drawn straight, as nothing eases it there.
+		if (Model.bSound)
+		{
+			const int32 Last = Model.PointTimes.Num() - 1;
+			while (OutSegment < Last - 1 && LocalSeconds >= Model.PointTimes[OutSegment + 1])
+			{
+				++OutSegment;
+			}
+			if (Last >= 1)
+			{
+				const float From = Model.PointTimes[OutSegment];
+				const float To = Model.PointTimes[OutSegment + 1];
+				OutAlpha = To - From > KINDA_SMALL_NUMBER ? FMath::Clamp((LocalSeconds - From) / (To - From), 0.f, 1.f) : 1.f;
+			}
+			return;
+		}
+
 		const float Alpha = Model.RunSeconds > KINDA_SMALL_NUMBER ? FMath::Clamp(LocalSeconds / Model.RunSeconds, 0.f, 1.f) : 1.f;
 		UWidgetAnimLibrary::SampleValueKeys(Settings, Alpha, /*bTowardStart=*/false, OutSegment, OutAlpha);
 	}
@@ -501,6 +836,13 @@ namespace WidgetAnimGraph
 		{
 			const int32 Last = Model.NumValuePoints - 1;
 			return Last > 0 ? FMath::Clamp((static_cast<float>(Segment) + Alpha) / static_cast<float>(Last), -1.f, 2.f) : 0.f;
+		}
+		if (Channel == EChannel::FadeEnvelope)
+		{
+			// Back to a moment on the run - a Sound's segments are straight in time - and its fades there.
+			const float SegmentStart = Model.PointTimes.IsValidIndex(Segment) ? Model.PointTimes[Segment] : 0.f;
+			const float SegmentEnd = Model.PointTimes.IsValidIndex(Segment + 1) ? Model.PointTimes[Segment + 1] : SegmentStart;
+			return EnvelopeAt(Layer, Model, FMath::Lerp(SegmentStart, SegmentEnd, Alpha));
 		}
 		const float From = GetPointValue(Layer, Model, Segment, Channel);
 		const float To = GetPointValue(Layer, Model, Segment + 1, Channel);
@@ -607,10 +949,16 @@ struct FWidgetAnimGraphState
 
 	TSet<uint64> HiddenChannels;
 
-	/** The channel last picked in the list: drawn on top and brighter, and where a double-click adds its key's value. */
+	/** The channel last picked in the list: drawn on top and brighter. */
 	uint64 ActiveChannel = MAX_uint64;
 
 	TArray<WidgetAnimGraph::FGraphKey> SelectedKeys;
+
+	/**
+	 * The tracks whose shape values have had their first showing: only those the keys change, the rest hidden - a Shape Box
+	 * holds dozens, most of them never keyed. Once a track, until the graph is shown other tracks.
+	 */
+	TSet<int32> FieldDefaultsApplied;
 
 	bool IsChannelShown(int32 Layer, WidgetAnimGraph::EChannel Channel) const
 	{
@@ -777,7 +1125,6 @@ private:
 	void BeginHandleDrag();
 	void UpdateHandleDrag(const FVector2f& Local);
 	void EndDrag();
-	void AddKeyAt(const FVector2f& Local);
 	TSharedRef<SWidget> MakeContextMenu(const FVector2f& Local);
 	void SetCurve(const TArray<SWidgetAnimTimeline::FKeyRef>& Segments, WidgetAnimGraph::ECurvePreset Preset);
 	void PushMenu(const FPointerEvent& MouseEvent, const TSharedRef<SWidget>& Menu);
@@ -910,8 +1257,33 @@ void SWidgetAnimGraphCanvas::RebuildModels()
 			if (Layer.AnimType == EWidgetAnimType::Transform)
 			{
 				Model.Channels = { EChannel::TranslationX, EChannel::TranslationY, EChannel::ScaleX, EChannel::ScaleY, EChannel::ShearX, EChannel::ShearY, EChannel::Angle };
+				continue;
 			}
-			else
+
+			// A Shape Box or Shape track: every number its keys' shapes hold, each a channel of its own - and, for a key that
+			// Uses Authored Shape, the shape as it was designed in the Widget Blueprint to read them off.
+			BuildFields(Layer, Model.Fields);
+			IWidgetAnimPanelSource* Source = Panel->GetSource();
+			UWidget* Preview = Source ? Source->GetLayerPreviewWidget(LayerIndex) : nullptr;
+			UWidget* Target = Layer.AnimType == EWidgetAnimType::ShapeBox
+				? static_cast<UWidget*>(UWidgetAnimLibrary::ResolveShapeBox(Preview))
+				: static_cast<UWidget*>(WidgetAnimShapeTrack::ResolveShape(Preview, Layer.Transform.ShapeKind.Get()));
+			const UWidgetBlueprint* WidgetBlueprint = Source ? Source->GetWidgetBlueprint() : nullptr;
+			const UWidget* Designed = Target && WidgetBlueprint && WidgetBlueprint->WidgetTree ? WidgetBlueprint->WidgetTree->FindWidget(Target->GetFName()) : nullptr;
+			if (const UShapeBox* DesignedBox = Cast<UShapeBox>(Designed))
+			{
+				Model.AuthoredBox = DesignedBox->GetShape();
+			}
+			else if (Designed)
+			{
+				Model.AuthoredShape = Designed;
+			}
+
+			for (int32 FieldIndex = 0; FieldIndex < Model.Fields.Num(); ++FieldIndex)
+			{
+				Model.Channels.Add(MakeFieldChannel(FieldIndex));
+			}
+			if (Model.Channels.Num() == 0)
 			{
 				Model.Channels = { EChannel::Progress };
 			}
@@ -926,6 +1298,21 @@ void SWidgetAnimGraphCanvas::RebuildModels()
 		for (int32 Point = 0; Point < Model.NumValuePoints; ++Point)
 		{
 			Model.PointTimes.Add(Layer.ValueKeys.GetPointTime(Point) * Model.RunSeconds);
+		}
+
+		// A Sound cue: its volume at each point it fires, and its fades.
+		Model.bSound = GetSoundParams(Layer) != nullptr;
+		if (Model.bSound)
+		{
+			Model.Channels = { EChannel::Value, EChannel::FadeEnvelope };
+			continue;
+		}
+
+		// A Scale: its X and its Y.
+		if (WidgetAnimKeyPoints::HasTwoValues(Layer))
+		{
+			Model.Channels = { EChannel::ScaleX, EChannel::ScaleY };
+			continue;
 		}
 
 		const EWidgetAnimKeyContent Content = Layer.AnimType == EWidgetAnimType::Custom ? WidgetAnimGetRegisteredKeyContent(Layer.TypeParams) : EWidgetAnimKeyContent::Value;
@@ -960,6 +1347,16 @@ void SWidgetAnimGraphCanvas::UpdateNorms()
 		}
 		for (const EChannel Channel : Model.Channels)
 		{
+			// The fades are a share of the volume, 0 to 1, whatever the volume.
+			if (Channel == EChannel::FadeEnvelope)
+			{
+				FNorm Fade;
+				Fade.Offset = 0.f;
+				Fade.Scale = 1.f;
+				Norms.Add(ChannelId(Model.Layer, Channel), Fade);
+				continue;
+			}
+
 			float Min = TNumericLimits<float>::Max();
 			float Max = -TNumericLimits<float>::Max();
 			for (int32 Point = 0; Point < Model.NumValuePoints; ++Point)
@@ -1119,10 +1516,51 @@ void SWidgetAnimGraphCanvas::Tick(const FGeometry& AllottedGeometry, const doubl
 
 	RebuildModels();
 
+	// A Shape Box or Shape track's values, the first time it is shown: those its keys change, the rest hidden until wanted -
+	// or, keys changing none, its first few, so there is something to see.
+	for (const FLayerModel& Model : Models)
+	{
+		if (Model.Fields.Num() == 0 || State->FieldDefaultsApplied.Contains(Model.Layer))
+		{
+			continue;
+		}
+		State->FieldDefaultsApplied.Add(Model.Layer);
+		const FWidgetAnimLayer* Layer = GetLayer(Model.Layer);
+		if (!Layer)
+		{
+			continue;
+		}
+		TArray<uint64> Unchanging;
+		for (const EChannel Channel : Model.Channels)
+		{
+			float Min = TNumericLimits<float>::Max();
+			float Max = -TNumericLimits<float>::Max();
+			for (int32 Point = 0; Point < Model.NumValuePoints; ++Point)
+			{
+				const float Value = WidgetAnimGraph::GetPointValue(*Layer, Model, Point, Channel);
+				Min = FMath::Min(Min, Value);
+				Max = FMath::Max(Max, Value);
+			}
+			if (Max - Min <= KINDA_SMALL_NUMBER)
+			{
+				Unchanging.Add(WidgetAnimGraph::ChannelId(Model.Layer, Channel));
+			}
+		}
+		const int32 NumToHide = Unchanging.Num() == Model.Channels.Num() ? FMath::Max(Unchanging.Num() - 3, 0) : Unchanging.Num();
+		for (int32 Index = Unchanging.Num() - NumToHide; Index < Unchanging.Num(); ++Index)
+		{
+			State->HiddenChannels.Add(Unchanging[Index]);
+		}
+	}
+
 	// A key or a channel no longer there - an undo, a key deleted elsewhere - drops out of the selection.
 	State->SelectedKeys.RemoveAll([this](const FGraphKey& Key)
 	{
 		const int32 ModelIndex = FindModel(Key.Layer);
+		if (ModelIndex != INDEX_NONE && Key.Channel == EChannel::FadeEnvelope)
+		{
+			return !Models[ModelIndex].bSound || (Key.Point != WidgetAnimGraph::FadeInPoint && Key.Point != WidgetAnimGraph::FadeOutPoint);
+		}
 		return ModelIndex == INDEX_NONE || Key.Point < 0 || Key.Point >= Models[ModelIndex].NumValuePoints;
 	});
 
@@ -1194,6 +1632,20 @@ void SWidgetAnimGraphCanvas::UpdateFrame()
 				{
 					Times.Add(KeyTime);
 					Times.Add(FMath::Max(KeyTime - 1.e-4f, 0.f));
+				}
+			}
+			// A Sound's fades turn at their ends: sampled there too, so the corners are where they are.
+			if (Model.bSound)
+			{
+				float FadeIn = 0.f;
+				float FadeOut = 0.f;
+				GetFades(*Layer, Model, FadeIn, FadeOut);
+				for (const float FadeTime : { FadeIn, Model.RunSeconds - FadeOut })
+				{
+					if (FadeTime >= From && FadeTime <= To)
+					{
+						Times.Add(FadeTime);
+					}
 				}
 			}
 			Times.Sort();
@@ -1290,9 +1742,8 @@ void SWidgetAnimGraphCanvas::UpdateFrame()
 			Curve.Color = GetChannelColor(Model.Color, ChannelIndex);
 			Curve.bDashed = IsDashed(Channel);
 			Curve.bActive = State->ActiveChannel == ChannelId(Model.Layer, Channel);
-			Curve.Label = Model.Channels.Num() > 1 || Models.Num() > 1
-				? FText::Format(LOCTEXT("CurveLabel", "{0} {1}"), Model.Name, GetChannelName(*Layer, Channel))
-				: GetChannelName(*Layer, Channel);
+			// Just the channel - "B", not "Material Vector B": the graph shows one track at a time, named in the list beside it.
+			Curve.Label = GetChannelName(*Layer, Model, Channel);
 
 			for (const float Local : Times)
 			{
@@ -1303,9 +1754,13 @@ void SWidgetAnimGraphCanvas::UpdateFrame()
 				Curve.Points.Add(FVector2f(TimeToX(Model.SpanStart + Local), DisplayToY(ToDisplay(Model.Layer, Channel, Value))));
 			}
 
-			// Before it starts it holds its first value, and after it ends its last - drawn faintly to the view's edges.
-			const float FirstY = DisplayToY(ToDisplay(Model.Layer, Channel, GetPointValue(*Layer, Model, 0, Channel)));
-			const float LastY = DisplayToY(ToDisplay(Model.Layer, Channel, GetPointValue(*Layer, Model, Model.NumValuePoints - 1, Channel)));
+			// Before it starts it holds its first value, and after it ends its last - drawn faintly to the view's edges. A Sound's
+			// fades are silent either side of its run.
+			const bool bFade = Channel == EChannel::FadeEnvelope;
+			const float FirstValue = bFade ? EnvelopeAt(*Layer, Model, 0.f) : GetPointValue(*Layer, Model, 0, Channel);
+			const float LastValue = bFade ? EnvelopeAt(*Layer, Model, Model.RunSeconds) : GetPointValue(*Layer, Model, Model.NumValuePoints - 1, Channel);
+			const float FirstY = DisplayToY(ToDisplay(Model.Layer, Channel, FirstValue));
+			const float LastY = DisplayToY(ToDisplay(Model.Layer, Channel, LastValue));
 			const float StartX = TimeToX(Model.SpanStart);
 			const float EndX = TimeToX(Model.SpanStart + Model.RunSeconds);
 			if (StartX > PlotLeft)
@@ -1318,6 +1773,25 @@ void SWidgetAnimGraphCanvas::UpdateFrame()
 			}
 			Curve.LabelAt = FVector2f(FMath::Clamp(EndX, PlotLeft, PlotRight), LastY);
 			Curves.Add(Curve);
+
+			// A Sound's fades: a key where its fade in ends and one where its fade out begins, each dragged in time to set it.
+			if (bFade)
+			{
+				float FadeIn = 0.f;
+				float FadeOut = 0.f;
+				GetFades(*Layer, Model, FadeIn, FadeOut);
+				for (const int32 Point : { FadeInPoint, FadeOutPoint })
+				{
+					const float Local = Point == FadeInPoint ? FadeIn : Model.RunSeconds - FadeOut;
+					FKeyHit& Hit = KeyHits.AddDefaulted_GetRef();
+					Hit.Key = FGraphKey{ Model.Layer, Point, Channel };
+					Hit.Model = ModelIndex;
+					Hit.Position = FVector2f(TimeToX(Model.SpanStart + Local), DisplayToY(ToDisplay(Model.Layer, Channel, EnvelopeAt(*Layer, Model, Local))));
+					Hit.bTimeMovable = Model.bEditable;
+					Hit.bValueEditable = false;
+				}
+				continue;
+			}
 
 			for (int32 Point = 0; Point < Model.NumValuePoints; ++Point)
 			{
@@ -1428,9 +1902,11 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
 	{
 		FSlateDrawElement::MakeBox(OutDrawElements, Layer, AllottedGeometry.ToPaintGeometry(BoxSize, FSlateLayoutTransform(Position)), Brush, ESlateDrawEffect::None, Color);
 	};
+	// On whole pixels: text placed between two pixels is drawn smeared across both.
 	auto Text = [&](int32 Layer, const FString& String, const FVector2f& Position, const FSlateFontInfo& Font, const FLinearColor& Color)
 	{
-		FSlateDrawElement::MakeText(OutDrawElements, Layer, AllottedGeometry.ToPaintGeometry(FVector2f(600.f, 20.f), FSlateLayoutTransform(Position)), String, Font, ESlateDrawEffect::None, Color);
+		const FVector2f At(FMath::RoundToFloat(Position.X), FMath::RoundToFloat(Position.Y));
+		FSlateDrawElement::MakeText(OutDrawElements, Layer, AllottedGeometry.ToPaintGeometry(FVector2f(600.f, 20.f), FSlateLayoutTransform(At)), String, Font, ESlateDrawEffect::None, Color);
 	};
 	auto Lines = [&](int32 Layer, const TArray<FVector2f>& Points, const FLinearColor& Color, float Thickness)
 	{
@@ -1470,7 +1946,12 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
 
 	// Time grid and ruler.
 	const float SecondsPerPixel = (ViewTime.Y - ViewTime.X) / PlotWidth();
-	const float TimeStep = NiceStep(SecondsPerPixel * 90.f);
+	// In frames (the Time In dropdown's Frames), the steps are whole frames.
+	const bool bFrameTime = Panel && Panel->IsFrameTime();
+	const float FrameRate = SWidgetAnimTimeline::GetFrameRate();
+	const float TimeStep = bFrameTime
+		? FMath::Max(FMath::RoundToFloat(NiceStep(SecondsPerPixel * 90.f * FrameRate)), 1.f) / FrameRate
+		: NiceStep(SecondsPerPixel * 90.f);
 	Box(GridLayer, FVector2f::ZeroVector, FVector2f(Size.X, RulerHeight), WhiteBrush(), FStyleColors::Header.GetSpecifiedColor());
 	for (float Mark = FMath::CeilToFloat(ViewTime.X / TimeStep) * TimeStep; Mark <= ViewTime.Y; Mark += TimeStep)
 	{
@@ -1558,14 +2039,64 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
 			}
 			Lines(CurveLayer, Dash, Curve.Color, Thickness);
 		}
+	}
 
-		// Named where it ends, in its own color, while there is more than one curve to tell apart.
-		if (Curves.Num() > 1 && !Curve.Label.IsEmpty())
+	// Each curve named where it ends, in its own color, while there is more than one to tell apart. Curves ending on one
+	// another - R, G and B all at 1 - would write their names over each other into one unreadable glyph, so names that would
+	// overlap are written once, together: "R, G, B", each in its own color.
+	if (Curves.Num() > 1)
+	{
+		struct FLabel
 		{
-			const FString Label = Curve.Label.ToString();
-			const FVector2f LabelSize = FVector2f(Measure->Measure(Label, SmallFont));
-			const FVector2f At(FMath::Clamp(Curve.LabelAt.X + 6.f, GutterWidth + 2.f, Size.X - LabelSize.X - 4.f), FMath::Clamp(Curve.LabelAt.Y - LabelSize.Y - 2.f, RulerHeight + 2.f, Size.Y - LabelSize.Y - 2.f));
-			Text(CurveLayer + 1, Label, At, SmallFont, Curve.Color.CopyWithNewOpacity(Curve.bActive ? 1.f : 0.8f));
+			FVector2f At;
+			TArray<int32> Curves;
+		};
+		TArray<FLabel> Labels;
+		const float LabelHeight = FVector2f(Measure->Measure(TEXT("Xg"), SmallFont)).Y;
+		for (int32 Index = 0; Index < Curves.Num(); ++Index)
+		{
+			const FCurve& Curve = Curves[Index];
+			if (Curve.Label.IsEmpty())
+			{
+				continue;
+			}
+			const FVector2f At(Curve.LabelAt.X + 6.f, Curve.LabelAt.Y - LabelHeight - 2.f);
+			FLabel* Near = Labels.FindByPredicate([&At, LabelHeight](const FLabel& Existing)
+			{
+				return FMath::Abs(Existing.At.Y - At.Y) < LabelHeight && FMath::Abs(Existing.At.X - At.X) < 40.f;
+			});
+			if (Near)
+			{
+				Near->Curves.Add(Index);
+			}
+			else
+			{
+				Labels.Add(FLabel{ At, { Index } });
+			}
+		}
+
+		const FString Separator(TEXT(", "));
+		const float SeparatorWidth = FVector2f(Measure->Measure(Separator, SmallFont)).X;
+		for (const FLabel& Label : Labels)
+		{
+			float Width = 0.f;
+			for (int32 Part = 0; Part < Label.Curves.Num(); ++Part)
+			{
+				Width += FVector2f(Measure->Measure(Curves[Label.Curves[Part]].Label.ToString(), SmallFont)).X + (Part > 0 ? SeparatorWidth : 0.f);
+			}
+			FVector2f At(FMath::Clamp(Label.At.X, GutterWidth + 2.f, FMath::Max(Size.X - Width - 4.f, GutterWidth + 2.f)), FMath::Clamp(Label.At.Y, RulerHeight + 2.f, Size.Y - LabelHeight - 2.f));
+			for (int32 Part = 0; Part < Label.Curves.Num(); ++Part)
+			{
+				if (Part > 0)
+				{
+					Text(CurveLayer + 1, Separator, At, SmallFont, Palette::GraphRulerText);
+					At.X += SeparatorWidth;
+				}
+				const FCurve& Curve = Curves[Label.Curves[Part]];
+				const FString Name = Curve.Label.ToString();
+				Text(CurveLayer + 1, Name, At, SmallFont, Curve.Color.CopyWithNewOpacity(Curve.bActive ? 1.f : 0.85f));
+				At.X += FVector2f(Measure->Measure(Name, SmallFont)).X;
+			}
 		}
 	}
 
@@ -1601,14 +2132,14 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
 		Box(KeyLayer + 1, Hit.Position - KeySize * 0.5f, KeySize, CircleBrush(), Fill);
 	}
 
-	// The playhead, through everything, with its head in the ruler.
+	// The playhead, through everything, with its tag in the ruler - exactly as the Track Editor draws it.
 	if (Panel)
 	{
-		const float X = TimeToX(Panel->GetPlayheadSeconds());
+		const float PlayheadSeconds = Panel->GetPlayheadSeconds();
+		const float X = TimeToX(PlayheadSeconds);
 		if (X >= GutterWidth && X <= Size.X)
 		{
-			Box(OverlayLayer, FVector2f(X, RulerHeight), FVector2f(1.f, Size.Y - RulerHeight), WhiteBrush(), Palette::Playhead);
-			Box(OverlayLayer, FVector2f(X - 4.f, RulerHeight - 9.f), FVector2f(9.f, 9.f), WhiteBrush(), Palette::Playhead);
+			SWidgetAnimTimeline::PaintPlayhead(OutDrawElements, AllottedGeometry, OverlayLayer, X, RulerHeight, Size.Y, GutterWidth, Size.X, Panel->FormatPlayheadTag(PlayheadSeconds));
 		}
 	}
 
@@ -1631,22 +2162,36 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
 	{
 		const FLayerModel& Model = Models[Readout->Model];
 		const FWidgetAnimLayer* Layer = GetLayer(Model.Layer);
-		if (Layer && Model.PointTimes.IsValidIndex(Readout->Key.Point))
+		if (Layer && Readout->Key.Channel == EChannel::FadeEnvelope)
+		{
+			// A Sound's fade key: how long its fade is.
+			float FadeIn = 0.f;
+			float FadeOut = 0.f;
+			GetFades(*Layer, Model, FadeIn, FadeOut);
+			const bool bIn = Readout->Key.Point == FadeInPoint;
+			const FString Line = FString::Printf(TEXT("%s: %s"), bIn ? TEXT("Fade In") : TEXT("Fade Out"), *Panel->FormatTime(bIn ? FadeIn : FadeOut));
+			const FVector2f LineSize = FVector2f(Measure->Measure(Line, SmallFont));
+			const FVector2f BoxSize = LineSize + FVector2f(12.f, 6.f);
+			const FVector2f At(FMath::Clamp(Readout->Position.X + 10.f, 0.f, FMath::Max(Size.X - BoxSize.X, 0.f)), FMath::Clamp(Readout->Position.Y - BoxSize.Y - 8.f, 0.f, FMath::Max(Size.Y - BoxSize.Y, 0.f)));
+			Box(OverlayLayer + 4, At, BoxSize, ReadoutBrush(), FLinearColor::White);
+			Text(OverlayLayer + 5, Line, At + FVector2f(6.f, 3.f), SmallFont, Palette::TooltipValue);
+		}
+		else if (Layer && Model.PointTimes.IsValidIndex(Readout->Key.Point))
 		{
 			const float Seconds = Model.SpanStart + Model.PointTimes[Readout->Key.Point];
 			const FString Line = Readout->Key.Channel == EChannel::Progress
 				? FString::Printf(TEXT("%s  @ %s"), *Model.Name.ToString(), *Panel->FormatTime(Seconds))
-				: FString::Printf(TEXT("%s %s: %s  @ %s"), *Model.Name.ToString(), *GetChannelName(*Layer, Readout->Key.Channel).ToString(),
+				: FString::Printf(TEXT("%s: %s  @ %s"), *GetChannelName(*Layer, Model, Readout->Key.Channel).ToString(),
 					*FormatValue(GetPointValue(*Layer, Model, Readout->Key.Point, Readout->Key.Channel)), *Panel->FormatTime(Seconds));
 			const FVector2f LineSize = FVector2f(Measure->Measure(Line, SmallFont));
 			const FVector2f BoxSize = LineSize + FVector2f(12.f, 6.f);
 			const FVector2f At(FMath::Clamp(Readout->Position.X + 10.f, 0.f, FMath::Max(Size.X - BoxSize.X, 0.f)), FMath::Clamp(Readout->Position.Y - BoxSize.Y - 8.f, 0.f, FMath::Max(Size.Y - BoxSize.Y, 0.f)));
-			Box(OverlayLayer + 2, At, BoxSize, ReadoutBrush(), FLinearColor::White);
-			Text(OverlayLayer + 3, Line, At + FVector2f(6.f, 3.f), SmallFont, Palette::TooltipValue);
+			Box(OverlayLayer + 4, At, BoxSize, ReadoutBrush(), FLinearColor::White);
+			Text(OverlayLayer + 5, Line, At + FVector2f(6.f, 3.f), SmallFont, Palette::TooltipValue);
 		}
 	}
 
-	return OverlayLayer + 3;
+	return OverlayLayer + 5;
 }
 
 // -----------------------------------------------------------------------------------------------------
@@ -1764,7 +2309,7 @@ void SWidgetAnimGraphCanvas::MirrorSelectionToPanel()
 	{
 		TArray<float> KeyTimes;
 		Panel->GetKeyTimes(Key.Layer, KeyTimes);
-		if (KeyTimes.IsValidIndex(Key.Point))
+		if (KeyTimes.IsValidIndex(Key.Point) && Key.Channel != EChannel::FadeEnvelope)
 		{
 			Refs.AddUnique(SWidgetAnimTimeline::FKeyRef{ Key.Layer, Key.Point });
 		}
@@ -1827,7 +2372,8 @@ void SWidgetAnimGraphCanvas::BeginKeyDrag()
 			continue;
 		}
 		const FLayerModel& Model = Models[ModelIndex];
-		if (!Model.bEditable || !Model.PointTimes.IsValidIndex(Key.Point))
+		const bool bFadeKey = Key.Channel == EChannel::FadeEnvelope;
+		if (!Model.bEditable || (!bFadeKey && !Model.PointTimes.IsValidIndex(Key.Point)))
 		{
 			continue;
 		}
@@ -1835,6 +2381,18 @@ void SWidgetAnimGraphCanvas::BeginKeyDrag()
 		FMovingKey& Entry = Moving.AddDefaulted_GetRef();
 		Entry.Key = Key;
 		Entry.Model = ModelIndex;
+
+		// A Sound's fade key moves its fade's end in time, and only that.
+		if (bFadeKey)
+		{
+			float FadeIn = 0.f;
+			float FadeOut = 0.f;
+			GetFades(*Layer, Model, FadeIn, FadeOut);
+			Entry.OriginalTime = Key.Point == FadeInPoint ? FadeIn : Model.RunSeconds - FadeOut;
+			Entry.bTime = true;
+			Entry.bValue = false;
+			continue;
+		}
 		Entry.OriginalTime = Model.PointTimes[Key.Point];
 
 		// A key's moment is shared by every channel, so only one entry per key moves it in time.
@@ -1893,7 +2451,7 @@ void SWidgetAnimGraphCanvas::UpdateKeyDrag(const FVector2f& Local, bool bShift)
 	float Highest = 600.f;
 	for (const FMovingKey& Entry : Moving)
 	{
-		if (!Entry.bTime)
+		if (!Entry.bTime || Entry.Key.Channel == EChannel::FadeEnvelope)
 		{
 			continue;
 		}
@@ -1923,7 +2481,7 @@ void SWidgetAnimGraphCanvas::UpdateKeyDrag(const FVector2f& Local, bool bShift)
 	TArray<const FMovingKey*> TimeOrder;
 	for (const FMovingKey& Entry : Moving)
 	{
-		if (Entry.bTime)
+		if (Entry.bTime && Entry.Key.Channel != EChannel::FadeEnvelope)
 		{
 			TimeOrder.Add(&Entry);
 		}
@@ -1935,6 +2493,31 @@ void SWidgetAnimGraphCanvas::UpdateKeyDrag(const FVector2f& Local, bool bShift)
 	for (const FMovingKey* Entry : TimeOrder)
 	{
 		Panel->SetKeyTime(Entry->Key.Layer, Entry->Key.Point, Entry->OriginalTime + TimeDelta);
+	}
+
+	// A Sound's fades: where the fade in ends, or the fade out begins, moved - inside its run.
+	for (const FMovingKey& Entry : Moving)
+	{
+		if (Entry.Key.Channel != EChannel::FadeEnvelope)
+		{
+			continue;
+		}
+		FWidgetAnimLayer* Layer = GetMutableLayer(Entry.Key.Layer);
+		FWidgetAnimSoundCueParams* Sound = Layer ? Layer->TypeParams.GetMutablePtr<FWidgetAnimSoundCueParams>() : nullptr;
+		if (!Sound)
+		{
+			continue;
+		}
+		const float RunSeconds = Models[Entry.Model].RunSeconds;
+		const float FadeTime = FMath::Clamp(Entry.OriginalTime + FMath::RoundToFloat(DeltaTime * 1000.f) / 1000.f, 0.f, RunSeconds);
+		if (Entry.Key.Point == FadeInPoint)
+		{
+			Sound->FadeIn = FMath::RoundToFloat(FadeTime * 1000.f) / 1000.f;
+		}
+		else
+		{
+			Sound->FadeOut = FMath::RoundToFloat((RunSeconds - FadeTime) * 1000.f) / 1000.f;
+		}
 	}
 
 	// In value: each key's channel by the same amount on screen - normalized, by its own channel's range.
@@ -2055,93 +2638,6 @@ void SWidgetAnimGraphCanvas::EndDrag()
 	{
 		Panel->RefreshDetails();
 	}
-}
-
-void SWidgetAnimGraphCanvas::AddKeyAt(const FVector2f& Local)
-{
-	using namespace WidgetAnimGraph;
-
-	const TSharedPtr<SWidgetAnimTimeline> Panel = Owner.Pin();
-	if (!Panel || !Panel->CanEdit())
-	{
-		return;
-	}
-
-	// Which track and channel: the curve under the mouse; else the active channel's track, else the one track there is -
-	// when the mouse is within its run.
-	const float Seconds = XToTime(Local.X);
-	const FCurve* Under = FindCurveAt(Local);
-	int32 ModelIndex = Under ? Under->Model : INDEX_NONE;
-	EChannel Channel = Under ? Under->Channel : EChannel::Value;
-	if (ModelIndex == INDEX_NONE)
-	{
-		for (int32 Index = 0; Index < Models.Num(); ++Index)
-		{
-			const FLayerModel& Candidate = Models[Index];
-			const bool bWithin = Seconds >= Candidate.SpanStart && Seconds <= Candidate.SpanStart + Candidate.RunSeconds;
-			const bool bActive = Candidate.Channels.ContainsByPredicate([this, &Candidate](EChannel Each) { return State->ActiveChannel == ChannelId(Candidate.Layer, Each); });
-			if (bWithin && (bActive || ModelIndex == INDEX_NONE))
-			{
-				ModelIndex = Index;
-				Channel = Candidate.Channels.Num() > 0 ? Candidate.Channels[0] : EChannel::Value;
-				for (const EChannel Each : Candidate.Channels)
-				{
-					if (State->ActiveChannel == ChannelId(Candidate.Layer, Each))
-					{
-						Channel = Each;
-					}
-				}
-			}
-		}
-	}
-	if (ModelIndex == INDEX_NONE)
-	{
-		return;
-	}
-
-	const FLayerModel Model = Models[ModelIndex];
-	if (!Model.bEditable)
-	{
-		return;
-	}
-	const float LocalSeconds = Seconds - Model.SpanStart;
-	if (LocalSeconds < 0.f || (!Model.bKeyframed && LocalSeconds > Model.RunSeconds))
-	{
-		return;
-	}
-
-	// One undo step: the key, at the value already there, and - double-clicked off the curve, in the Values view - that
-	// channel's value where the mouse is.
-	FScopedTransaction Transaction(LOCTEXT("AddGraphKey", "Add Key"));
-	Panel->AddKey(Model.Layer, LocalSeconds);
-
-	// Refused - a key already there, say - leaves no undo step behind.
-	RebuildModels();
-	const int32 NewModel = FindModel(Model.Layer);
-	const SWidgetAnimTimeline::FSelection& Added = Panel->GetSelection();
-	if (NewModel == INDEX_NONE || Models[NewModel].NumValuePoints <= Model.NumValuePoints || Added.Layer != Model.Layer || Added.Key == INDEX_NONE)
-	{
-		Transaction.Cancel();
-		return;
-	}
-
-	const bool bValues = State->View == EView::Values && Channel != EChannel::Progress;
-	if (bValues && !Under)
-	{
-		FWidgetAnimLayer* Layer = GetMutableLayer(Model.Layer);
-		if (Layer && CanSetPointValue(*Layer, Models[NewModel], Added.Key, Channel) && Panel->BeginEdit())
-		{
-			SetPointValue(*Layer, Models[NewModel], Added.Key, Channel, RoundValue(FromDisplay(Model.Layer, Channel, YToDisplay(Local.Y))));
-			Panel->NotifyGroupsChanged(EPropertyChangeType::ValueSet);
-		}
-	}
-
-	State->SelectedKeys = { FGraphKey{ Model.Layer, Added.Key, bValues ? Channel : EChannel::Progress } };
-	if (bValues)
-	{
-		State->ActiveChannel = ChannelId(Model.Layer, Channel);
-	}
-	Panel->RefreshDetails();
 }
 
 void SWidgetAnimGraphCanvas::DeleteSelectedKeys()
@@ -2658,12 +3154,16 @@ FReply SWidgetAnimGraphCanvas::OnMouseButtonDoubleClick(const FGeometry& MyGeome
 		return FReply::Unhandled();
 	}
 
+	// The playhead to that moment, as a double-click on the Track Editor does - never a new key, which the menu adds.
 	const FVector2f Local = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
-	if (Local.Y < WidgetAnimGraph::RulerHeight || FindKeyAt(Local) || FindHandleAt(Local))
+	if (FindKeyAt(Local) || FindHandleAt(Local))
 	{
 		return FReply::Handled();
 	}
-	AddKeyAt(Local);
+	if (const TSharedPtr<SWidgetAnimTimeline> Panel = Owner.Pin())
+	{
+		Panel->ScrubToSeconds(XToTime(Local.X));
+	}
 	return FReply::Handled();
 }
 
@@ -2981,6 +3481,7 @@ void SWidgetAnimGraphEditor::OnLayersShown()
 {
 	State->SelectedKeys.Reset();
 	State->HiddenChannels.Reset();
+	State->FieldDefaultsApplied.Reset();
 	State->ActiveChannel = MAX_uint64;
 	ChannelSignature = 0;
 	if (Canvas.IsValid())
@@ -3259,7 +3760,7 @@ void SWidgetAnimGraphEditor::RebuildChannelList()
 						SNew(STextBlock)
 						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
 						.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
-						.Text(GetChannelName(Layer, Channel))
+						.Text(GetChannelName(Layer, Model, Channel))
 					]
 					+ SHorizontalBox::Slot()
 					.AutoWidth()

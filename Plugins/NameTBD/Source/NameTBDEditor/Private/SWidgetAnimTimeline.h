@@ -351,6 +351,34 @@ public:
 	/** A length on the timeline, the same way, for spans: "0.25 - 0.50 s", or "25 - 50%". */
 	FString FormatSpan(float Start, float End) const;
 
+	/**
+	 * Whether the panel shows its times in frames - the Time In dropdown's Frames (Preview Only): Show Time In Frames in the
+	 * editor preferences, on an animation timed in seconds. Only how times read; everything is still stored in seconds.
+	 */
+	bool IsFrameTime() const;
+
+	/** The frame rate frames are counted at while IsFrameTime - Frame Rate in the editor preferences, 60 to start. */
+	static float GetFrameRate();
+
+	/** Seconds as a frame number at FrameRate, rounded to two places with no trailing zeros: "30", "12.5". */
+	static FString FormatFrames(float Seconds, float FrameRate);
+
+	/** The playhead's time as its tag in the ruler reads it: "0.25", "25%" or, in frames, "15". Shared with the Graph Editor. */
+	FString FormatPlayheadTag(float Seconds) const;
+
+	/**
+	 * Draws the playhead as the Track Editor and the Graph Editor both draw it: a tag in the top of the ruler reading TagText,
+	 * kept between Left and Right, and from it a line down to Bottom that fades and tapers as it goes. X is where it is.
+	 * Draws on LayerId to LayerId + 3; returns the last.
+	 */
+	static int32 PaintPlayhead(FSlateWindowElementList& OutDrawElements, const FGeometry& Geometry, int32 LayerId, float X, float RulerWidgetHeight, float Bottom, float Left, float Right, const FString& TagText);
+
+	/**
+	 * The strip along the bottom of the Track Editor's ruler where the animation's start and end are drawn as flags and
+	 * dragged by - under the playhead's tag, so the two never cover each other.
+	 */
+	static constexpr float RangeStripHeight = 8.f;
+
 	/** Changes the animation's Time In, converting its tracks - one undoable step. See IWidgetAnimPanelSource::SetTimeUnit. */
 	void SetTimeUnit(EWidgetAnimTimeUnit Unit);
 
@@ -418,6 +446,9 @@ public:
 
 	/** The Shape track and target shape a kind was last matched for - see OnRefreshTimer - so each is matched once. */
 	TPair<int32, FObjectKey> LastShapeMatch = TPair<int32, FObjectKey>(INDEX_NONE, FObjectKey());
+
+	/** The Design track and target widget a kind was last matched for, the same way. */
+	TPair<int32, FObjectKey> LastDesignMatch = TPair<int32, FObjectKey>(INDEX_NONE, FObjectKey());
 
 	/**
 	 * The curve of segment Segment of a layer - from key Segment to the next - or null when there is no such
@@ -672,8 +703,11 @@ public:
 	// tracks it shows, and it follows the tracks selected in the list. See SWidgetAnimGraphEditor.
 	// ---------------------------------------------------------------------------------------------
 
-	/** At most this many tracks are shown in the graph at once - more would be unreadable, and slow to draw. */
-	static constexpr int32 MaxGraphLayers = 24;
+	/**
+	 * The graph shows one track at a time - the first of those picked it can show. Several tracks' curves over each other were
+	 * unreadable; picking another track in the list shows that one instead.
+	 */
+	static constexpr int32 MaxGraphLayers = 1;
 
 	/** Whether a track has curves to show: one that travels from a start value to an end value, or a keyframed one. */
 	bool CanGraphLayer(int32 LayerIndex) const;
@@ -838,8 +872,14 @@ public:
 	 * A click on a layer with the file browser's modifiers: Shift selects every layer from the last one clicked to
 	 * this one, in the Animation Layers list's order; Ctrl (Cmd on a Mac) adds this one, or takes it out if it was
 	 * in. Neither is a plain click, which selects it alone.
+	 *
+	 * RangeOrder, when given, is the order Shift ranges over instead of the list's - the Track Editor's, top to bottom, line
+	 * by line, so a range picked there is every track between the two clicks as the Track Editor shows them.
 	 */
-	void SelectLayerWithModifiers(int32 LayerIndex, bool bRange, bool bToggle);
+	void SelectLayerWithModifiers(int32 LayerIndex, bool bRange, bool bToggle, const TArray<int32>* RangeOrder = nullptr);
+
+	/** Every track in the order the Track Editor shows them: line by line from the top, each line's from the left. */
+	void GetTrackEditorOrder(TArray<int32>& OutOrder) const;
 
 	/** Every layer in the animation. */
 	void SelectAllLayers();
@@ -1001,6 +1041,15 @@ public:
 
 	/** Sets a Shape track's kind to its target shape's, when its target is a shape of another kind. */
 	void MatchShapeTrackToTarget(int32 LayerIndex);
+
+	/** The widget a Design track at LayerIndex plays on in the designer's preview: its group's target, or the widget itself. */
+	class UWidget* GetDesignTrackTarget(int32 LayerIndex) const;
+
+	/**
+	 * A Design track's kind of widget (FWidgetTransformAnim::DesignKind) set to its target's, when that is a widget of another
+	 * kind - so its keys hold the settings that widget has. Values its keys had that the new kind shares are kept.
+	 */
+	void MatchDesignTrackToTarget(int32 LayerIndex);
 
 	/**
 	 * Whether an animation track follows a float value of its own (Timing set to Value - see FWidgetAnimProgressDrive) or

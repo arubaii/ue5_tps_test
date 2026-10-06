@@ -21,6 +21,7 @@
 #include "WidgetAnimTransform.h"
 #include "WidgetAnimSpring.h"
 #include "Evaluators/WidgetAnimShapeTrack.h"
+#include "Evaluators/WidgetAnimDesignTrack.h"
 #include "Text/WidgetAnimTextHost.h"
 
 #if WITH_EDITOR
@@ -635,18 +636,21 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 
 	case EWidgetAnimType::Scale:
 	{
-		float ScaleValue = LerpValue();
+		// X and Y apart, each between its own points - the same segment, the same way, so they arrive together.
+		float ScaleX = LerpValue();
+		float ScaleY = FMath::Lerp(WidgetAnimKeyPoints::GetValueY(Settings, Segment), WidgetAnimKeyPoints::GetValueY(Settings, Segment + 1), SegmentAlpha);
 
 		// A scale that overshoots past 0 on its way to (or back to) nothing turns the widget inside out - a
 		// negative scale is a mirror image - so a spring's bounce near 0 flipped it for a frame. Held at 0 unless
 		// the track itself asks for a negative scale somewhere, which is a mirror on purpose.
 		if (WidgetAnimKeyPoints::GetMinValue(Settings) >= 0.f)
 		{
-			ScaleValue = FMath::Max(ScaleValue, 0.f);
+			ScaleX = FMath::Max(ScaleX, 0.f);
+			ScaleY = FMath::Max(ScaleY, 0.f);
 		}
 
 		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget, Settings.Part);
-		Transform.Scale *= FVector2D(ScaleValue, ScaleValue);
+		Transform.Scale *= FVector2D(ScaleX, ScaleY);
 		break;
 	}
 
@@ -768,12 +772,18 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 	}
 
 	case EWidgetAnimType::Shape:
+	case EWidgetAnimType::Design:
 	{
-		// Keyed and timed exactly as a Transform track is; what its keys hold - a shape's settings - is blended where it
-		// is applied, onto the shape, through the authoritative channel registered types write through: the key it is
-		// leaving and how far toward the next it is. See WidgetAnimShapeTrack.h. A letter has no shape of its own.
-		const FWidgetAnimEvaluator* Evaluator = WidgetAnimShapeTrack::FindEvaluator();
-		if (!Evaluator || Settings.Part.IsSet() || Settings.TypeParams.GetPtr<FWidgetAnimShapeKeysParams>() == nullptr)
+		// Keyed and timed exactly as a Transform track is; what its keys hold - a shape's settings, or a widget's look - is
+		// blended where it is applied, onto the widget, through the authoritative channel registered types write through:
+		// the key it is leaving and how far toward the next it is. See WidgetAnimShapeTrack.h and WidgetAnimDesignTrack.h.
+		// A letter has no shape or design of its own.
+		const bool bDesign = Settings.AnimType == EWidgetAnimType::Design;
+		const FWidgetAnimEvaluator* Evaluator = bDesign ? WidgetAnimDesignTrack::FindEvaluator() : WidgetAnimShapeTrack::FindEvaluator();
+		const bool bHasKeys = bDesign
+			? Settings.TypeParams.GetPtr<FWidgetAnimDesignKeysParams>() != nullptr
+			: Settings.TypeParams.GetPtr<FWidgetAnimShapeKeysParams>() != nullptr;
+		if (!Evaluator || Settings.Part.IsSet() || !bHasKeys)
 		{
 			break;
 		}
@@ -921,10 +931,11 @@ void UWidgetAnimLibrary::TouchLayerTargets(const FWidgetAnimSettings& Settings, 
 		return;
 	}
 
-	// A Shape track the same way: its shape's settings back as they were authored, the transform untouched.
-	if (Settings.AnimType == EWidgetAnimType::Shape)
+	// A Shape or Design track the same way: its shape's settings, or its widget's look, back as they were authored, the
+	// transform untouched.
+	if (Settings.AnimType == EWidgetAnimType::Shape || Settings.AnimType == EWidgetAnimType::Design)
 	{
-		const FWidgetAnimEvaluator* Evaluator = WidgetAnimShapeTrack::FindEvaluator();
+		const FWidgetAnimEvaluator* Evaluator = Settings.AnimType == EWidgetAnimType::Design ? WidgetAnimDesignTrack::FindEvaluator() : WidgetAnimShapeTrack::FindEvaluator();
 		if (Evaluator && !Settings.Part.IsSet())
 		{
 			AddAuthoritativeBaselineWrite(OutResult, Settings.TargetWidget, Evaluator->GetChannel(Settings.TypeParams), Evaluator, &Settings.TypeParams);
@@ -3345,10 +3356,10 @@ void UWidgetAnimLibrary::CaptureWidgetAnimBaselines(UWidget* FallbackWidget, con
 			}
 
 			// A Shape layer keeps its shape's settings as they were authored, the way a registered type keeps its
-			// channel - to put back, and for its keys' Use Authored Shape.
-			if (Settings.AnimType == EWidgetAnimType::Shape)
+			// channel - to put back, and for its keys' Use Authored Shape - and a Design layer its widget's look.
+			if (Settings.AnimType == EWidgetAnimType::Shape || Settings.AnimType == EWidgetAnimType::Design)
 			{
-				const FWidgetAnimEvaluator* Evaluator = WidgetAnimShapeTrack::FindEvaluator();
+				const FWidgetAnimEvaluator* Evaluator = Settings.AnimType == EWidgetAnimType::Design ? WidgetAnimDesignTrack::FindEvaluator() : WidgetAnimShapeTrack::FindEvaluator();
 				if (Evaluator && !Settings.Part.IsSet())
 				{
 					UWidget* Widget = Settings.TargetWidget ? Settings.TargetWidget.Get() : FallbackWidget;
@@ -5091,7 +5102,9 @@ FWidgetAnimSettings FWidgetAnimLayer::ToSettings() const
 	// And a registered type's settings are one value whatever the type, which is what makes the next family cost
 	// nothing here at all. A Shape track carries its keys' settings there, as its writes play them - see
 	// WidgetAnimShapeTrack.h.
-	Out.TypeParams = AnimType == EWidgetAnimType::Shape ? WidgetAnimShapeTrack::MakeParams(Transform) : TypeParams;
+	Out.TypeParams = AnimType == EWidgetAnimType::Shape ? WidgetAnimShapeTrack::MakeParams(Transform)
+		: AnimType == EWidgetAnimType::Design ? WidgetAnimDesignTrack::MakeParams(Transform)
+		: TypeParams;
 
 	// bLoop / bPingPong / LoopCount / bInvertAnimation / bMirrorInOut / the two targets are all decisions
 	// about ONE USE of this layer, so they are deliberately left at their defaults here and filled in by
@@ -5148,7 +5161,7 @@ FWidgetAnimLayer FWidgetAnimLayer::FromSettings(const FWidgetAnimSettings& Setti
 	Out.EndVectorValue = Settings.EndVectorValue;
 
 	Out.Transform = Settings.Transform;
-	Out.TypeParams = Settings.AnimType == EWidgetAnimType::Shape ? FInstancedStruct() : Settings.TypeParams;
+	Out.TypeParams = Settings.AnimType == EWidgetAnimType::Shape || Settings.AnimType == EWidgetAnimType::Design ? FInstancedStruct() : Settings.TypeParams;
 
 	return Out;
 }

@@ -336,6 +336,18 @@ namespace NameTBD::Tooltips
 				"Plays over time, like any animation. From Percent, 100% becomes one second - nothing moves.");
 		}
 
+		inline FText TimeInFramesTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TimeInFramesTooltip",
+				"Shows every time in the panel in frames at the Target FPS below - the ruler, the playhead, spans and keys - to author against a frame rate. Preview only: the animation is still timed in seconds, and plays at whatever rate the game runs.");
+		}
+
+		inline FText TimeInFramesRateTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TimeInFramesRateTooltip",
+				"Target FPS: the frame rate frames are counted at. 60 to start; kept in Editor Preferences > Plugins > Widget Animations Editor.");
+		}
+
 		inline FText TimeInPercentTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TimeInPercentTooltip",
@@ -651,7 +663,13 @@ namespace NameTBD::Tooltips
 		inline FText AddKeyHereTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AddKeyHereTooltip",
-				"Add a key at this moment, starting at the value the track already has there. Double-clicking the track does the same.");
+				"Add a key at this moment, starting at the value the track already has there.");
+		}
+
+		inline FText TrackCannotHaveKeysTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TrackCannotHaveKeysTooltip",
+				"This kind of track has no keys: a Pulse or a Shake moves about where the widget is with nothing to key, and an animation track plays another animation's keys, edited there.");
 		}
 
 		inline FText LockSelectedTooltip()
@@ -1222,6 +1240,18 @@ namespace NameTBD::Tooltips
 				"Sets a shape's settings at each key - its fill, stroke and trim, a Star's points, an Ellipse's sweep, a Custom Shape's path - and blends them between keys. A key set to Use Authored Shape is the shape as designed.");
 		}
 
+		inline FText DesignBlurbTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DesignBlurbTooltip",
+				"Keys the widget's look - an Image's brush and tint, a Text Block's color, font and shadow, a Border's background, a Button's colors - and blends from one designed look to the next. Its first key uses the widget as designed; set the keys after it to where the look goes.");
+		}
+
+		inline FText DesignNoWidgetNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DesignNoWidgetNote",
+				"No widget to read a design off yet: give the track's Layer Group a Preview Target, or open the animation in a Widget Blueprint's editor, and its keys take that widget's settings.");
+		}
+
 		// A registered type describes itself (FWidgetAnimEvaluator::GetDescription); these two are only for a
 		// Registered Type track that has no registered type to describe it.
 
@@ -1654,7 +1684,7 @@ namespace NameTBD::Tooltips
 		inline FText GraphEditorButtonTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphEditorButtonTooltip",
-				"Graph Editor: the selected tracks as curves - each value over time - in place of the Track Editor. Drag keys in time and value, double-click a curve to add a key, and drag the handles between two keys to shape how they ease. While it is open, Play plays only these tracks.");
+				"Graph Editor: the selected tracks as curves - each value over time - in place of the Track Editor. Drag keys in time and value, add keys from the right-click menu, and drag the handles between two keys to shape how they ease. While it is open, Play plays only these tracks.");
 		}
 
 		inline FText OpenGraphEditor()
@@ -1756,7 +1786,7 @@ namespace NameTBD::Tooltips
 		inline FText GraphValuesHint()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphValuesHint",
-				"Double-click a curve to add a key. Drag a key, or the handles of a selected one. Shift keeps a drag to one direction. Right-drag pans; the wheel zooms (Ctrl in time, Shift in value).");
+				"Right-click to add a key. Drag a key, or the handles of a selected one. Shift keeps a drag to one direction. Right-drag pans; the wheel zooms (Ctrl in time, Shift in value).");
 		}
 
 		inline FText GraphEaseHint()

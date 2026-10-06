@@ -238,6 +238,15 @@ public:
 	 */
 	virtual FString GetDefaultSaveFolder() const { return FString(); }
 
+	/**
+	 * Animation Timeline: the Widget Animation asset the open timeline was last saved as (see FWidgetAnimTimeline::SavedAsset),
+	 * while it still exists - what the panel's Save then updates, rather than asking again where to save. Null for anything else.
+	 */
+	virtual UWidgetAnimPresetAsset* GetSavedAsset() const { return nullptr; }
+
+	/** Animation Timeline: puts the open timeline into GetSavedAsset and saves that to disk. False when there is none. */
+	virtual bool SaveToSavedAsset() { return false; }
+
 	// ---------------------------------------------------------------------------------------------
 	// Timelines: a Widget Blueprint's own animations (UWidgetAnimTimelinesExtension)
 	// ---------------------------------------------------------------------------------------------
@@ -452,8 +461,14 @@ public:
 	virtual void SetMode(EMode InMode) override;
 	virtual UWidgetAnimPresetAsset* GetAsset() const override { return Mode == EMode::EditExistingAsset ? Asset.Get() : nullptr; }
 	virtual void SetAsset(UWidgetAnimPresetAsset* InAsset) override;
+	/**
+	 * Saves the open timeline as a new WA_ asset, named WA_ and the timeline's name - numbered when that is taken - and asked
+	 * for before it is made; remembered as the timeline's saved asset, which Save updates from then on.
+	 */
 	virtual UWidgetAnimPresetAsset* SaveAsNewAsset(bool bChooseLocation = false) override;
 	virtual FString GetDefaultSaveFolder() const override;
+	virtual UWidgetAnimPresetAsset* GetSavedAsset() const override;
+	virtual bool SaveToSavedAsset() override;
 	virtual UWidgetBlueprint* GetWidgetBlueprint() const override { return Blueprint.Get(); }
 
 	virtual bool SupportsTimelines() const override { return true; }
@@ -480,6 +495,12 @@ private:
 
 	/** What is shown changes: the poses come off and the clock starts over. */
 	void ResetPlayback();
+
+	/** The open timeline's entry in the Widget Blueprint's timelines, or null. */
+	struct FWidgetAnimTimeline* GetOpenTimelineEntry() const;
+
+	/** Saved assets looked for and not found, so a missing one isn't looked for on disk every frame. */
+	mutable TSet<FSoftObjectPath> MissingSavedAssets;
 
 	/** Remembers which timeline or asset is open, for the next time this Widget Blueprint's panel opens - this session or a later one. */
 	void SaveOpenState() const;
@@ -785,4 +806,22 @@ namespace WidgetAnimSaveLocation
 	 * (the window cancelled, say).
 	 */
 	UWidgetAnimPresetAsset* CreateAnimationAsset(const FString& Folder, const FString& BaseName, bool bChooseLocation);
+
+	/** Whether an asset - saved, or only made in memory so far - is called Name in Folder. */
+	bool DoesAssetExist(const FString& Folder, const FString& Name);
+
+	/**
+	 * BaseName, or - when Folder already has an asset called that - BaseName_1, BaseName_2...: the first free. Numbered with an
+	 * underscore rather than in brackets, which an asset's name can't hold.
+	 */
+	FString MakeNumberedAssetName(const FString& Folder, const FString& BaseName);
+
+	/** Text made fit to be an asset's name: spaces taken out, anything else an asset's name can't hold made an underscore. */
+	FString SanitizeAssetName(const FString& Text);
+
+	/**
+	 * Asks for a new animation's name in a small window, starting from DefaultName: Save takes it, Cancel or closing the
+	 * window doesn't. A name already taken in Folder, or one an asset can't have, can't be saved. False when cancelled.
+	 */
+	bool PromptForAssetName(const FString& Folder, const FString& DefaultName, FString& OutName);
 }

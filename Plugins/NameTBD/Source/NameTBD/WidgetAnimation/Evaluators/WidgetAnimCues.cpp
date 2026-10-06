@@ -129,7 +129,19 @@ FText FWidgetAnimEventCueEvaluator::GetDisplayName() const
 
 FText FWidgetAnimEventCueEvaluator::GetDescription() const
 {
-	return LOCTEXT("EventDescription", "Tells the game a moment has come, by name: heard by the playing component's On Animation Event, and by the nearest User Widget around it with the Widget Animation Event Listener interface.");
+	return LOCTEXT("EventDescriptionNamed", "Fires an event named by its Event Name. An event of that name appears in the Widget Animation Component that plays the animation - under Events in its Details - to add to the widget's graph and handle there.");
+}
+
+FText FWidgetAnimEventCueEvaluator::GetTrackDescription(const FInstancedStruct& Params) const
+{
+	// The event by its own name, as the component lists it.
+	const FWidgetAnimEventCueParams* EventParams = GetParams(Params);
+	if (!EventParams || EventParams->EventName.IsNone())
+	{
+		return GetDescription();
+	}
+	return FText::Format(LOCTEXT("EventTrackDescription", "An event named {0} appears in the Widget Animation Component that plays this animation - under Events in its Details, as On (animation) Event Track {0} Fired. Add it from there to handle it in the widget's graph."),
+		FText::FromName(EventParams->EventName));
 }
 
 FText FWidgetAnimEventCueEvaluator::GetTrackSummary(const FInstancedStruct& Params) const

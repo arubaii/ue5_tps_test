@@ -265,13 +265,19 @@ def _key_text(key):
         time, value = key[0], key[1]
         curve = key[2] if len(key) > 2 else None
         color = None
-        if isinstance(value, (tuple, list)):
+        if isinstance(value, (tuple, list)) and len(value) != 2:
             color, value = value, None
     if not _is_number(time):
         raise ScriptError("A key's time is a fraction of the track, 0 to 1 - not %r." % (time,))
     parts = ["Time=%r" % float(time)]
-    if value is not None:
+    if isinstance(value, (tuple, list)):
+        # Two numbers: a Scale key's X and Y.
+        parts.append("Value=%r" % float(value[0]))
+        parts.append("ValueY=%r" % float(value[1]))
+    elif value is not None:
+        # One number: on a Scale, both X and Y.
         parts.append("Value=%r" % float(value))
+        parts.append("ValueY=%r" % float(value))
     if color is not None:
         parts.append("Color=%s" % _text(color))
     parts.append("CurveToNext=%s" % _segment_curve_text(curve))
@@ -691,7 +697,7 @@ class Track:
     }
 
     def set_values(self, from_=None, to=None):
-        """Where it starts and ends: an opacity on a Fade, a scale on a Scale, an angle on a Rotate, a color on a
+        """Where it starts and ends: an opacity on a Fade, a scale on a Scale - one number, or (x, y) - an angle on a Rotate, a color on a
         Material Vector, a registered type's Start and End Value (or Color). On a Slide, from_ is how far away it
         starts; it always ends where the widget is. Leave one out to keep it. Returns the track."""
         type_key = re.sub(r"[\s_]", "", self.get("AnimType")).lower()
@@ -705,6 +711,10 @@ class Track:
             raise ScriptError("A %s has no start and end values; set its strength with set(...) - track.fields() lists them." % self.get("AnimType"))
         if type_key == "transform":
             raise ScriptError("A Transform track is set through its keys: track.set({\"Transform....\": ...}) - track.fields(\"Transform\") lists them.")
+        if type_key == "scale":
+            # X and Y apart: one number scales both alike, (x, y) each its own.
+            from_ = (from_, from_) if _is_number(from_) else from_
+            to = (to, to) if _is_number(to) else to
         if type_key in self._VALUE_FIELDS:
             start_field, end_field = self._VALUE_FIELDS[type_key]
         else:

@@ -15,6 +15,7 @@
 
 class UShapeBox;
 class UShapeWidget;
+class UWidget;
 
 /**
  * What the keys of a keyframed track hold - which of the three keyframed track types it is. The keys, their times and
@@ -30,7 +31,10 @@ enum class EWidgetKeyframeContent : uint8
 	ShapeBox UMETA(DisplayName = "Shape Box"),
 
 	/** A Shape track: a shape widget's settings at each key - an Ellipse's, a Star's, a Custom Shape's. */
-	Shape
+	Shape,
+
+	/** A Design track: a widget's look at each key - an Image's brush and tint, a Text Block's color and font. */
+	Design
 };
 
 // =====================================================================================================
@@ -59,20 +63,29 @@ struct NAMETBD_API FWidgetTransformKeyframe
 	float Time = 0.f;
 
 	/**
+	 * On a Transform track: the widget's render transform as it was authored, at this key, rather than the Transform below -
+	 * the widget exactly where and how it was designed. On by default for a new track's first key, so it starts from the
+	 * widget as it is, and off for the rest, which say where it goes.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (DisplayName = "Use Authored Transform", EditCondition = "Content == EWidgetKeyframeContent::Transform", EditConditionHides, HideEditConditionToggle))
+	bool bUseAuthoredTransform = false;
+
+	/**
 	 * The widget's render transform at this key, on a Transform track.
 	 *
 	 * Composes with every other layer the way the library always has: Translation, Shear and Angle add,
 	 * Scale multiplies. With Preserve Authored Transforms on, (30, 0) means thirty units right of wherever
 	 * the widget was authored.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (EditCondition = "Content == EWidgetKeyframeContent::Transform", EditConditionHides, HideEditConditionToggle))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (EditCondition = "Content == EWidgetKeyframeContent::Transform && !bUseAuthoredTransform", EditConditionHides, HideEditConditionToggle))
 	FWidgetTransform Transform;
 
 	/**
-	 * On a Shape Box or Shape track: the shape exactly as it was authored on the widget, at this key, rather than the
-	 * settings below - so no shape has to be set up again for a key that only lands back on it. The usual choice for the
-	 * last key of an entrance: whatever the shape is distorted from, it settles into its real self, and the same
-	 * animation works on every shape it is used on.
+	 * On a Shape Box, Shape or Design track: the shape - or the widget's look - exactly as it was authored on the widget, at
+	 * this key, rather than the settings below - so nothing has to be set up again for a key that only lands back on it, and
+	 * the same animation works on every widget it is used on. Shown as Use Authored Shape Box, Use Authored Shape or Use
+	 * Authored Design by the track's type. A new track's first key uses it - it starts from the widget as designed - and its
+	 * other keys don't, as they say where it goes.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (DisplayName = "Use Authored Shape", EditCondition = "Content != EWidgetKeyframeContent::Transform", EditConditionHides, HideEditConditionToggle))
 	bool bUseAuthoredShape = true;
@@ -88,7 +101,7 @@ struct NAMETBD_API FWidgetTransformKeyframe
 	 * morphs vertex by vertex when both keys have as many, and anything with nothing in between - an on/off, a choice
 	 * from a list - switches halfway.
 	 */
-	UPROPERTY(EditAnywhere, Category = "Key", meta = (DisplayName = "Shape", FixedLayout, EditCondition = "Content == EWidgetKeyframeContent::Shape && !bUseAuthoredShape", EditConditionHides, HideEditConditionToggle))
+	UPROPERTY(EditAnywhere, Category = "Key", meta = (DisplayName = "Shape", FixedLayout, EditCondition = "Content != EWidgetKeyframeContent::Transform && Content != EWidgetKeyframeContent::ShapeBox && !bUseAuthoredShape", EditConditionHides, HideEditConditionToggle))
 	FInstancedPropertyBag ShapeValues;
 
 	/**
@@ -164,6 +177,14 @@ struct NAMETBD_API FWidgetTransformAnim
 	UPROPERTY(BlueprintReadOnly, Category = "Transform")
 	TSubclassOf<UShapeWidget> ShapeKind;
 
+	/**
+	 * A Design track's kind of widget - Image, Text Block, Border - which decides the settings each key holds (see
+	 * WidgetDesignAnimation.h). Matched to the track's target widget in the Widget Animations panel. Played on a widget of
+	 * another kind, the settings the two share still animate.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Transform")
+	TSubclassOf<UWidget> DesignKind;
+
 	/** What the widget looks like at each curve key, in time order. Kept the same length as the curve. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, EditFixedSize, Category = "Transform", meta = (TitleProperty = "Time"))
 	TArray<FWidgetTransformKeyframe> Keys;
@@ -181,6 +202,7 @@ struct NAMETBD_API FWidgetTransformAnim
 	bool IsAnimatingTransform() const { return Content == EWidgetKeyframeContent::Transform; }
 	bool IsAnimatingShape() const { return Content == EWidgetKeyframeContent::ShapeBox; }
 	bool IsAnimatingShapeWidget() const { return Content == EWidgetKeyframeContent::Shape; }
+	bool IsAnimatingDesign() const { return Content == EWidgetKeyframeContent::Design; }
 
 	/**
 	 * Makes this a Shape track for shapes of InKind: every key's settings laid out for that kind, keeping each value a
@@ -188,6 +210,15 @@ struct NAMETBD_API FWidgetTransformAnim
 	 * settings - or the kind's defaults. Returns true if anything changed.
 	 */
 	bool SetShapeKind(UClass* InKind, const UObject* Source = nullptr);
+
+	/**
+	 * Makes this a Design track for widgets of InKind, as SetShapeKind does for shapes: every key's settings laid out for that
+	 * kind, keeping what the new kind shares and taking the rest from Source - a widget of that kind - or its defaults.
+	 */
+	bool SetDesignKind(UClass* InKind, const UObject* Source = nullptr);
+
+	/** The key at Index's render transform, as it plays: the identity - the widget as authored - when it Uses Authored Transform. */
+	FWidgetTransform GetKeyTransform(int32 Index) const;
 
 	/** Whether any key but the last has a Curve To Next Key of its own, rather than the layer's Easing. */
 	bool HasSegmentCurves() const

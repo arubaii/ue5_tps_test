@@ -158,6 +158,18 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Track Display", meta = (DisplayName = "Default Track Height", ClampMin = "18", ClampMax = "64", UIMin = "18", UIMax = "64"))
 	float DefaultTrackHeight = 33.f;
 
+	/**
+	 * Times in the Widget Animations panel - the ruler, the playhead, spans, keys - read in frames at Frame Rate rather than in
+	 * seconds: the Time In dropdown's Frames (Preview Only). Only how the panel shows time: tracks are still stored and played in
+	 * seconds, at whatever rate the game runs. Never on a percentage animation, which has no seconds to count frames of.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Track Display", meta = (DisplayName = "Show Time In Frames"))
+	bool bShowTimeInFrames = false;
+
+	/** The frame rate Show Time In Frames counts frames at - a target to author against, not a rate anything plays at. */
+	UPROPERTY(config, EditAnywhere, Category = "Track Display", meta = (DisplayName = "Frame Rate", ClampMin = "1", ClampMax = "1000", UIMin = "12", UIMax = "240", EditCondition = "bShowTimeInFrames"))
+	float PreviewFrameRate = 60.f;
+
 	// -------------------------------------------------------------------------------------------------
 	// New tracks
 	// -------------------------------------------------------------------------------------------------
@@ -226,6 +238,10 @@ public:
 
 	void SetTrackSnapping(bool bEnabled);
 	void SetLinkedEdges(bool bEnabled);
+
+	/** Show Time In Frames and its Frame Rate, saved - see bShowTimeInFrames. */
+	void SetShowTimeInFrames(bool bEnabled);
+	void SetPreviewFrameRate(float FrameRate);
 
 	static const UWidgetAnimEditorSettings& Get() { return *GetDefault<UWidgetAnimEditorSettings>(); }
 	static UWidgetAnimEditorSettings& GetMutable() { return *GetMutableDefault<UWidgetAnimEditorSettings>(); }

@@ -97,7 +97,18 @@ enum class EWidgetAnimType : uint8
 	 *
 	 * Appended last for the same reason as Transform.
 	 */
-	Shape
+	Shape,
+
+	/**
+	 * Keyframed visual design - an Image's brush and tint, a Text Block's color, font and shadow, a Border's background, a
+	 * Button's colors - key by key, blending one designed look into another, the way a Shape track keys a shape's settings.
+	 * Which settings its keys hold follows the widget it animates (see FWidgetTransformAnim::DesignKind and
+	 * WidgetDesignAnimation.h); a key can Use Authored Design - the widget exactly as designed - which a new track's first key
+	 * does, so only the looks it goes to need setting up.
+	 *
+	 * Appended last for the same reason as Transform.
+	 */
+	Design
 };
 
 /**
@@ -107,7 +118,7 @@ enum class EWidgetAnimType : uint8
  */
 inline bool WidgetAnimTypeIsKeyframed(EWidgetAnimType AnimType)
 {
-	return AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::ShapeBox || AnimType == EWidgetAnimType::Shape;
+	return AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::ShapeBox || AnimType == EWidgetAnimType::Shape || AnimType == EWidgetAnimType::Design;
 }
 
 /** What a keyframed track's keys hold, by its type. Transform for any type that isn't keyframed. */
@@ -117,6 +128,7 @@ inline EWidgetKeyframeContent WidgetAnimKeyframeContentFor(EWidgetAnimType AnimT
 	{
 	case EWidgetAnimType::ShapeBox: return EWidgetKeyframeContent::ShapeBox;
 	case EWidgetAnimType::Shape:    return EWidgetKeyframeContent::Shape;
+	case EWidgetAnimType::Design:   return EWidgetKeyframeContent::Design;
 	default:                        return EWidgetKeyframeContent::Transform;
 	}
 }
@@ -223,12 +235,16 @@ struct NAMETBD_API FWidgetAnimValueKey
 	float Time = 0.5f;
 
 	/**
-	 * The value at this key, in the track's own terms: an opacity on a Fade, a scale on a Scale, how far along
-	 * the slide on a Slide (its Distance at the start, 0 at the end), an angle on a Rotate, the parameter's value
-	 * on a Material Scalar.
+	 * The value at this key, in the track's own terms: an opacity on a Fade, the X scale on a Scale (ValueY is its Y), how far
+	 * along the slide on a Slide (its Distance at the start, 0 at the end), an angle on a Rotate, the parameter's value on a
+	 * Material Scalar.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key")
 	float Value = 0.f;
+
+	/** On a Scale track: the Y scale at this key, Value being its X. Unused on every other track. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (DisplayName = "Value Y"))
+	float ValueY = 0.f;
 
 	/** The value at this key on a Material Vector track. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key")
@@ -348,7 +364,7 @@ struct NAMETBD_API FWidgetAnimSettings
 	EWidgetAnimTiming Timing = EWidgetAnimTiming::Tween;
 
 	/** Hidden on a Transform layer, whose curve's last key sets how long it runs, and on a Spring one, which runs until it settles - but shown on any value-driven layer that tweens to its values, as how long each ease takes. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && Timing != EWidgetAnimTiming::Spring || AnimType == EWidgetAnimType::Pulse || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && AnimType != EWidgetAnimType::Design && Timing != EWidgetAnimTiming::Spring || AnimType == EWidgetAnimType::Pulse || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween", EditConditionHides))
 	float Duration = 0.3f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (ClampMin = "0.0"))
@@ -433,7 +449,7 @@ struct NAMETBD_API FWidgetAnimSettings
 	FInstancedStruct ValueInput;
 
 	/** Keys between the start and end values, and the curves between them. See FWidgetAnimValueKeys. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && AnimType != EWidgetAnimType::Pulse && AnimType != EWidgetAnimType::Shake", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && AnimType != EWidgetAnimType::Design && AnimType != EWidgetAnimType::Pulse && AnimType != EWidgetAnimType::Shake", EditConditionHides))
 	FWidgetAnimValueKeys ValueKeys;
 
 	/**
@@ -595,11 +611,13 @@ struct NAMETBD_API FWidgetAnimSettings
 	// Scale (pop-in)
 	// ------------------------------------------------------------------
 
+	/** The scale it starts at, X and Y apart - (0, 0) pops it in from nothing, (1, 0) unfolds it downward. A key's Value is its X, its Value Y its Y. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale", EditConditionHides))
-	float StartScale = 0.f;
+	FVector2D StartScale = FVector2D(0.0, 0.0);
 
+	/** The scale it ends at, X and Y apart. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale", EditConditionHides))
-	float EndScale = 1.f;
+	FVector2D EndScale = FVector2D(1.0, 1.0);
 
 	/**
 	 * How far past its end a Tween Scale pops before settling back. Replaces the Easing while set, and - like any
@@ -704,7 +722,7 @@ struct NAMETBD_API FWidgetAnimSettings
 	TObjectPtr<UShapeBox> ShapeTargetBox = nullptr;
 
 	/** The keys of a Transform, Shape Box or Shape layer - see WidgetAnimTypeIsKeyframed. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::ShapeBox || AnimType == EWidgetAnimType::Shape", EditConditionHides, ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::ShapeBox || AnimType == EWidgetAnimType::Shape || AnimType == EWidgetAnimType::Design", EditConditionHides, ShowOnlyInnerProperties))
 	FWidgetTransformAnim Transform;
 
 	// ------------------------------------------------------------------
@@ -804,7 +822,7 @@ struct NAMETBD_API FWidgetAnimLayer
 	 * and on a Spring track, which runs until its spring settles. On a value-driven track that tweens to its values
 	 * (Value Smoothing = Tween), how long each ease to a new value takes - shown on a Transform track then too.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && Timing != EWidgetAnimTiming::Spring || AnimType == EWidgetAnimType::Pulse || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && AnimType != EWidgetAnimType::Design && Timing != EWidgetAnimTiming::Spring || AnimType == EWidgetAnimType::Pulse || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween", EditConditionHides))
 	float Duration = 0.3f;
 
 	/**
@@ -922,7 +940,7 @@ struct NAMETBD_API FWidgetAnimLayer
 	// The values the track passes through between its start and its end, and the curve of each stretch between
 	// two of them. Added, moved and deleted on the track in the Widget Animations panel, and edited there by
 	// selecting a key - so the Selection panel never shows them as a list. See FWidgetAnimValueKeys.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Keys", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && AnimType != EWidgetAnimType::Pulse && AnimType != EWidgetAnimType::Shake", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Keys", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && AnimType != EWidgetAnimType::Design && AnimType != EWidgetAnimType::Pulse && AnimType != EWidgetAnimType::Shake", EditConditionHides))
 	FWidgetAnimValueKeys ValueKeys;
 
 	// Fade
@@ -933,11 +951,13 @@ struct NAMETBD_API FWidgetAnimLayer
 	float EndOpacity = 1.f;
 
 	// Scale
+	/** The scale it starts at, X and Y apart - (0, 0) pops it in from nothing, (1, 0) unfolds it downward. A key's Value is its X, its Value Y its Y. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale", EditConditionHides))
-	float StartScale = 0.f;
+	FVector2D StartScale = FVector2D(0.0, 0.0);
 
+	/** The scale it ends at, X and Y apart. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scale", meta = (EditCondition = "AnimType == EWidgetAnimType::Scale", EditConditionHides))
-	float EndScale = 1.f;
+	FVector2D EndScale = FVector2D(1.0, 1.0);
 
 	/**
 	 * How far past its end a Tween Scale pops before settling back. Replaces the Easing while set, and - like any
@@ -1011,7 +1031,7 @@ struct NAMETBD_API FWidgetAnimLayer
 	// One nested payload instead of a dozen more flat fields. That is the point of the shape: an unused
 	// channel collapses to a single row, and the next family costs one property here rather than twelve. The three
 	// keyframed types share it - its Content says what their keys hold.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::ShapeBox || AnimType == EWidgetAnimType::Shape", EditConditionHides, ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::ShapeBox || AnimType == EWidgetAnimType::Shape || AnimType == EWidgetAnimType::Design", EditConditionHides, ShowOnlyInnerProperties))
 	FWidgetTransformAnim Transform;
 
 	// Registered types
@@ -1225,7 +1245,7 @@ namespace WidgetAnimKeyPoints
 		switch (Track.AnimType)
 		{
 		case EWidgetAnimType::Fade:           return bStart ? Track.StartOpacity : Track.EndOpacity;
-		case EWidgetAnimType::Scale:          return bStart ? Track.StartScale : Track.EndScale;
+		case EWidgetAnimType::Scale:          return static_cast<float>(bStart ? Track.StartScale.X : Track.EndScale.X);
 		case EWidgetAnimType::Slide:          return bStart ? Track.SlideDistance : 0.f;
 		case EWidgetAnimType::Rotate:         return bStart ? Track.StartAngle : Track.EndAngle;
 		case EWidgetAnimType::MaterialScalar: return bStart ? Track.StartScalarValue : Track.EndScalarValue;
@@ -1235,6 +1255,32 @@ namespace WidgetAnimKeyPoints
 		case EWidgetAnimType::Custom:         return static_cast<float>(WidgetAnimGetRegisteredEndpoint(Track.TypeParams, bStart));
 		default:                              return 0.f;
 		}
+	}
+
+	/**
+	 * A point's second value, on a track that has one: a Scale's Y - GetValue being its X. Every other track's is its one value,
+	 * GetValue's.
+	 */
+	template <typename TTrack>
+	float GetValueY(const TTrack& Track, int32 Point)
+	{
+		if (Track.AnimType != EWidgetAnimType::Scale)
+		{
+			return GetValue(Track, Point);
+		}
+		const int32 NumKeys = Track.ValueKeys.Keys.Num();
+		if (Point > 0 && Point <= NumKeys)
+		{
+			return Track.ValueKeys.Keys[Point - 1].ValueY;
+		}
+		return static_cast<float>(Point <= 0 ? Track.StartScale.Y : Track.EndScale.Y);
+	}
+
+	/** Whether the track's points hold two values, X and Y: a Scale. See GetValueY. */
+	template <typename TTrack>
+	bool HasTwoValues(const TTrack& Track)
+	{
+		return Track.AnimType == EWidgetAnimType::Scale;
 	}
 
 	template <typename TTrack>
@@ -1261,26 +1307,36 @@ namespace WidgetAnimKeyPoints
 			|| (Track.AnimType == EWidgetAnimType::Custom && WidgetAnimGetRegisteredKeyContent(Track.TypeParams) != EWidgetAnimKeyContent::Value);
 	}
 
-	/** The lowest value any point of the track has - what decides whether a value can sensibly go below zero. */
+	/** The lowest value any point of the track has - what decides whether a value can sensibly go below zero. A Scale's Y counts too. */
 	template <typename TTrack>
 	float GetMinValue(const TTrack& Track)
 	{
-		float Min = GetValue(Track, 0);
+		const bool bTwo = HasTwoValues(Track);
+		float Min = bTwo ? FMath::Min(GetValue(Track, 0), GetValueY(Track, 0)) : GetValue(Track, 0);
 		for (int32 Point = 1; Point < Track.ValueKeys.NumPoints(); ++Point)
 		{
 			Min = FMath::Min(Min, GetValue(Track, Point));
+			if (bTwo)
+			{
+				Min = FMath::Min(Min, GetValueY(Track, Point));
+			}
 		}
 		return Min;
 	}
 
-	/** The highest value any point of the track has. */
+	/** The highest value any point of the track has. A Scale's Y counts too. */
 	template <typename TTrack>
 	float GetMaxValue(const TTrack& Track)
 	{
-		float Max = GetValue(Track, 0);
+		const bool bTwo = HasTwoValues(Track);
+		float Max = bTwo ? FMath::Max(GetValue(Track, 0), GetValueY(Track, 0)) : GetValue(Track, 0);
 		for (int32 Point = 1; Point < Track.ValueKeys.NumPoints(); ++Point)
 		{
 			Max = FMath::Max(Max, GetValue(Track, Point));
+			if (bTwo)
+			{
+				Max = FMath::Max(Max, GetValueY(Track, Point));
+			}
 		}
 		return Max;
 	}

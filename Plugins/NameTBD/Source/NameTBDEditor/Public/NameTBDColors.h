@@ -34,6 +34,7 @@ namespace NameTBD
 			// The keyframed shape tracks: a Shape Box track's outline, and a Shape track's shape settings.
 			inline const FLinearColor LayerShapeBox(0.95f, 0.75f, 0.40f);
 			inline const FLinearColor LayerShape(0.40f, 0.85f, 0.70f);
+			inline const FLinearColor LayerDesign(0.88f, 0.52f, 0.86f);
 			// Every registered track type - the text tracks and any a game adds - shares this one, as they share the one
 			// Registered Type slot; their names tell them apart.
 			inline const FLinearColor LayerCustom(0.90f, 0.85f, 0.85f);
@@ -227,8 +228,27 @@ namespace NameTBD
 			/** The playhead - the scrubber - in the animation orange of the Play button, so it never reads as the end line. */
 			inline const FLinearColor Playhead(AnimationOrange_Normal);
 			inline const FLinearColor PlayheadText(0.02f, 0.02f, 0.02f);
-			inline const FLinearColor RangeStart(0.20f, 0.62f, 0.24f);
-			inline const FLinearColor RangeEnd(0.72f, 0.10f, 0.08f);
+			// The animation's start and end: bright, so they read at once against the tracks and apart from the playhead's
+			// orange. Each is a line through the tracks and a flag in the ruler's bottom strip - where it is dragged by, below
+			// the playhead's tag, so the two never sit in each other's way. RangeLine is how strongly the line is drawn.
+			// A group's line in the Track Editor: the stretch its tracks run as a quiet band of its color - GroupBandHeightRatio of
+			// the line's height, filled at GroupBandFillOpacity, a hairline along its top and bottom at GroupBandEdgeOpacity, and
+			// a solid cap GroupBandCapWidth pixels wide at each end.
+			inline constexpr float GroupBandHeightRatio = 0.42f;
+			inline constexpr float GroupBandFillOpacity = 0.28f;
+			inline constexpr float GroupBandEdgeOpacity = 0.70f;
+			inline constexpr float GroupBandCapWidth = 2.0f;
+
+			inline const FLinearColor RangeStart(0.18f, 1.00f, 0.32f);
+			inline const FLinearColor RangeEnd(1.00f, 0.16f, 0.12f);
+			inline constexpr float RangeLineOpacity = 0.80f;
+
+			// The playhead's line under the ruler: strongest at the top and fading down the tracks to PlayheadFadeTo of its
+			// color, PlayheadTopWidth pixels wide where it leaves its tag, tapering to one pixel by PlayheadTaper of the way down.
+			inline constexpr float PlayheadFadeTo = 0.10f;
+			inline constexpr float PlayheadTopWidth = 2.0f;
+			inline constexpr float PlayheadTaper = 0.30f;
+			inline constexpr float PlayheadGlowOpacity = 0.22f;
 			inline const FLinearColor OutOfRangeShade(0.00f, 0.00f, 0.00f, 0.28f);
 
 			// On a percentage timeline with tracks reaching past 100%: what lies beyond it, which a progress of 1 never

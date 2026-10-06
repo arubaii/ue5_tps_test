@@ -29,6 +29,14 @@ struct NAMETBDUNCOOKED_API FWidgetAnimTimeline
 	 */
 	UPROPERTY()
 	TObjectPtr<UWidgetAnimPresetAsset> Animation;
+
+	/**
+	 * The Widget Animation asset this timeline was last saved as, from the Widget Animations panel's Save Animation To - so
+	 * saving it again updates that asset rather than asking where to make another. None until it has been saved once, and
+	 * once that asset is gone.
+	 */
+	UPROPERTY()
+	TSoftObjectPtr<UWidgetAnimPresetAsset> SavedAsset;
 };
 
 /**

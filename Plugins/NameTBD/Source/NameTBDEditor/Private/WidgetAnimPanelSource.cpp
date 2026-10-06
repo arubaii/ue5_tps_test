@@ -34,6 +34,15 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Misc/Paths.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/SBoxPanel.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Styling/AppStyle.h"
+#include "Styling/StyleColors.h"
 
 #define LOCTEXT_NAMESPACE "WidgetAnimPanelSource"
 
@@ -1098,6 +1107,77 @@ FString FWidgetAnimAssetPanelSource::GetDefaultSaveFolder() const
 	return FPackageName::GetLongPackagePath(WidgetBlueprint->GetOutermost()->GetName());
 }
 
+namespace
+{
+	/** Puts a timeline's animation - everything of it but what it is - into Target, a Widget Animation asset, and tells it. */
+	void CopyTimelineInto(const UWidgetAnimPresetAsset& Timeline, UWidgetAnimPresetAsset& Target)
+	{
+		Target.Modify();
+		Target.Description = Timeline.Description;
+		Target.LayerGroups = Timeline.LayerGroups;
+		Target.Layers = Timeline.Layers;
+		Target.AnimationSpeedMultiplier = Timeline.AnimationSpeedMultiplier;
+		Target.MinimumLength = Timeline.MinimumLength;
+		Target.TimeUnit = Timeline.TimeUnit;
+		Target.Progress = Timeline.Progress;
+		Target.PostEditChange();
+		Target.MarkPackageDirty();
+	}
+}
+
+FWidgetAnimTimeline* FWidgetAnimAssetPanelSource::GetOpenTimelineEntry() const
+{
+	UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
+	const UWidgetAnimPresetAsset* Timeline = Mode == EMode::Timeline ? GetOpenTimeline() : nullptr;
+	const int32 Index = Timelines && Timeline ? Timelines->IndexOf(Timeline) : INDEX_NONE;
+	return Index != INDEX_NONE ? &Timelines->Timelines[Index] : nullptr;
+}
+
+UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::GetSavedAsset() const
+{
+	const FWidgetAnimTimeline* Entry = GetOpenTimelineEntry();
+	if (!Entry || Entry->SavedAsset.IsNull())
+	{
+		return nullptr;
+	}
+	if (UWidgetAnimPresetAsset* Loaded = Entry->SavedAsset.Get())
+	{
+		return Loaded;
+	}
+
+	// Saved in an earlier session: loaded once, when first asked for. One that is gone is remembered as gone, rather than
+	// looked for on disk every frame the Save button is drawn.
+	const FSoftObjectPath Path = Entry->SavedAsset.ToSoftObjectPath();
+	if (MissingSavedAssets.Contains(Path))
+	{
+		return nullptr;
+	}
+	UWidgetAnimPresetAsset* Loaded = Entry->SavedAsset.LoadSynchronous();
+	if (!Loaded)
+	{
+		MissingSavedAssets.Add(Path);
+	}
+	return Loaded;
+}
+
+bool FWidgetAnimAssetPanelSource::SaveToSavedAsset()
+{
+	const UWidgetAnimPresetAsset* Timeline = Mode == EMode::Timeline ? GetOpenTimeline() : nullptr;
+	UWidgetAnimPresetAsset* Saved = GetSavedAsset();
+	if (!Timeline || !Saved)
+	{
+		return false;
+	}
+
+	CopyTimelineInto(*Timeline, *Saved);
+	const bool bWritten = UEditorLoadingAndSavingUtils::SavePackages({ Saved->GetPackage() }, /*bOnlyDirty=*/false);
+	ShowPanelNote(bWritten
+		? FText::Format(LOCTEXT("SavedTimelineToAsset", "Saved timeline {0} to {1}."), FText::FromString(OpenTimelineName), FText::FromString(Saved->GetName()))
+		: FText::Format(LOCTEXT("SaveTimelineToAssetFailed", "Couldn't save {0}."), FText::FromString(Saved->GetName())),
+		bWritten);
+	return bWritten;
+}
+
 UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset(bool bChooseLocation)
 {
 	const UWidgetBlueprint* WidgetBlueprint = Blueprint.Get();
@@ -1107,38 +1187,52 @@ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset(bool bChoose
 		return nullptr;
 	}
 
-	// Named after the Widget Blueprint and the timeline: WBP_Card's Intro -> WA_Card_Intro, numbered on a clash so the
-	// prefix survives.
-	FString BaseName = WidgetBlueprint->GetName();
-	BaseName.RemoveFromStart(TEXT("WBP_"));
-	BaseName.RemoveFromStart(TEXT("W_"));
-	BaseName = TEXT("WA_") + BaseName;
-	const FString TimelinePart = FPaths::MakeValidFileName(OpenTimelineName.Replace(TEXT(" "), TEXT("")), TEXT('_'));
-	if (!TimelinePart.IsEmpty())
+	// Named after the timeline - Intro -> WA_Intro - numbered when that is taken (WA_Intro_1), and asked for before it is made:
+	// in the editor's Save Asset As window for a Custom Location, in a small window of its own for the Default Folder.
+	const FString Folder = GetDefaultSaveFolder().IsEmpty() ? FString(TEXT("/Game")) : GetDefaultSaveFolder();
+	FString TimelinePart = WidgetAnimSaveLocation::SanitizeAssetName(OpenTimelineName);
+	if (TimelinePart.IsEmpty())
 	{
-		BaseName += TEXT("_") + TimelinePart;
+		TimelinePart = TEXT("Timeline");
 	}
+	const FString DefaultName = WidgetAnimSaveLocation::MakeNumberedAssetName(Folder, TEXT("WA_") + TimelinePart);
 
-	UWidgetAnimPresetAsset* NewAsset = WidgetAnimSaveLocation::CreateAnimationAsset(GetDefaultSaveFolder(), BaseName, bChooseLocation);
+	UWidgetAnimPresetAsset* NewAsset = nullptr;
+	if (bChooseLocation)
+	{
+		NewAsset = WidgetAnimSaveLocation::CreateAnimationAsset(Folder, DefaultName, /*bChooseLocation=*/true);
+	}
+	else
+	{
+		FString Name;
+		if (!WidgetAnimSaveLocation::PromptForAssetName(Folder, DefaultName, Name))
+		{
+			return nullptr;
+		}
+		NewAsset = WidgetAnimSaveLocation::CreateAnimationAsset(Folder, Name, /*bChooseLocation=*/false);
+	}
 
 	if (!NewAsset)
 	{
 		return nullptr;
 	}
 
-	NewAsset->Modify();
-	NewAsset->Description = Timeline->Description;
-	NewAsset->LayerGroups = Timeline->LayerGroups;
-	NewAsset->Layers = Timeline->Layers;
-	NewAsset->AnimationSpeedMultiplier = Timeline->AnimationSpeedMultiplier;
-	NewAsset->MinimumLength = Timeline->MinimumLength;
-	NewAsset->TimeUnit = Timeline->TimeUnit;
-	NewAsset->Progress = Timeline->Progress;
-	NewAsset->PostEditChange();
-	NewAsset->MarkPackageDirty();
+	CopyTimelineInto(*Timeline, *NewAsset);
 
 	// Saved straight away, as the builder's Create does, so closing the editor can't quietly lose it.
 	UEditorLoadingAndSavingUtils::SavePackages({ NewAsset->GetPackage() }, /*bOnlyDirty=*/false);
+
+	// Remembered as the timeline's own asset: Save updates it from now on, rather than asking where to make another.
+	if (UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get()))
+	{
+		const int32 Index = Timelines->IndexOf(Timeline);
+		if (Index != INDEX_NONE)
+		{
+			Timelines->Modify();
+			Timelines->Timelines[Index].SavedAsset = NewAsset;
+			MissingSavedAssets.Remove(FSoftObjectPath(NewAsset));
+		}
+	}
 
 	if (GEditor)
 	{
@@ -1147,8 +1241,8 @@ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset(bool bChoose
 	}
 
 	// The timeline stays open and as it was: it is this Widget Blueprint's own, and the asset is a copy of it for other
-	// widgets to use. Further changes to the asset are made with Edit Existing Asset.
-	ShowPanelNote(FText::Format(LOCTEXT("SavedTimelineAsAsset", "Saved timeline {0} as {1}. The timeline is unchanged; edit the asset with Edit Existing Asset."),
+	// widgets to use - kept up to date by Save.
+	ShowPanelNote(FText::Format(LOCTEXT("SavedTimelineAsAssetLinked", "Saved timeline {0} as {1}. Save updates it from now on."),
 		FText::FromString(OpenTimelineName), FText::FromString(NewAsset->GetName())), true);
 	return NewAsset;
 }
@@ -1342,6 +1436,7 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 			Signature = HashCombine(Signature, PointerHash(Layer.TargetWidget.Get()));
 			Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType)));
 			Signature = HashCombine(Signature, PointerHash(Layer.AnimType == EWidgetAnimType::Shape ? Layer.Transform.ShapeKind.Get() : nullptr));
+			Signature = HashCombine(Signature, PointerHash(Layer.AnimType == EWidgetAnimType::Design ? Layer.Transform.DesignKind.Get() : nullptr));
 			// Which registered type, too: swapping a Count for another type may write another channel of the target.
 			Signature = HashCombine(Signature, PointerHash(Layer.TypeParams.GetScriptStruct()));
 			// And which stagger, and how many items: a stagger moves each child, or each letter, which are captured one by one.
@@ -1943,6 +2038,7 @@ bool FWidgetAnimLayerArrayPanelSource::Tick(float DeltaTime)
 		const FWidgetAnimSettings& Layer = Settings[Index];
 		Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType)));
 		Signature = HashCombine(Signature, PointerHash(Layer.AnimType == EWidgetAnimType::Shape ? Layer.Transform.ShapeKind.Get() : nullptr));
+		Signature = HashCombine(Signature, PointerHash(Layer.AnimType == EWidgetAnimType::Design ? Layer.Transform.DesignKind.Get() : nullptr));
 		Signature = HashCombine(Signature, PointerHash(Layer.TypeParams.GetScriptStruct()));
 		Signature = HashCombine(Signature, PointerHash(Layer.TargetWidget.Get()));
 		// A stagger moves each child, or each letter, which are captured one by one.
@@ -2111,16 +2207,195 @@ UWidgetAnimPresetAsset* FWidgetAnimLayerArrayPanelSource::SaveAsNewAsset(bool bC
 
 #undef LOCTEXT_NAMESPACE
 
+#define LOCTEXT_NAMESPACE "WidgetAnimSaveLocation"
+
 namespace WidgetAnimSaveLocation
 {
+	bool DoesAssetExist(const FString& Folder, const FString& Name)
+	{
+		const FString PackageName = (Folder.IsEmpty() ? FString(TEXT("/Game")) : Folder) / Name;
+		return FindPackage(nullptr, *PackageName) != nullptr || FPackageName::DoesPackageExist(PackageName);
+	}
+
+	FString MakeNumberedAssetName(const FString& Folder, const FString& BaseName)
+	{
+		if (!DoesAssetExist(Folder, BaseName))
+		{
+			return BaseName;
+		}
+		for (int32 Number = 1; Number < 10000; ++Number)
+		{
+			const FString Candidate = FString::Printf(TEXT("%s_%d"), *BaseName, Number);
+			if (!DoesAssetExist(Folder, Candidate))
+			{
+				return Candidate;
+			}
+		}
+		return BaseName;
+	}
+
+	FString SanitizeAssetName(const FString& Text)
+	{
+		FString Out = Text.TrimStartAndEnd().Replace(TEXT(" "), TEXT(""));
+		const FString Invalid = FString(INVALID_OBJECTNAME_CHARACTERS) + INVALID_LONGPACKAGE_CHARACTERS;
+		for (TCHAR& Char : Out)
+		{
+			int32 Found = INDEX_NONE;
+			if (Invalid.FindChar(Char, Found))
+			{
+				Char = TEXT('_');
+			}
+		}
+		return Out;
+	}
+
+	bool PromptForAssetName(const FString& Folder, const FString& DefaultName, FString& OutName)
+	{
+		const FString StartFolder = Folder.IsEmpty() ? FString(TEXT("/Game")) : Folder;
+		const TSharedRef<FString> Name = MakeShared<FString>(DefaultName);
+		const TSharedRef<bool> bAccepted = MakeShared<bool>(false);
+
+		// Why a name can't be saved - empty, holding what an asset's name can't, or already taken there. Empty when it can.
+		auto WhyNot = [StartFolder](const FString& Candidate) -> FText
+		{
+			const FString Trimmed = Candidate.TrimStartAndEnd();
+			if (Trimmed.IsEmpty())
+			{
+				return LOCTEXT("NameEmpty", "Give the animation a name.");
+			}
+			FText Reason;
+			if (!FName::IsValidXName(Trimmed, FString(INVALID_OBJECTNAME_CHARACTERS) + INVALID_LONGPACKAGE_CHARACTERS, &Reason))
+			{
+				return Reason.IsEmpty() ? LOCTEXT("NameInvalid", "An asset's name can't hold that.") : Reason;
+			}
+			if (DoesAssetExist(StartFolder, Trimmed))
+			{
+				return FText::Format(LOCTEXT("NameTaken", "{0} already exists there."), FText::FromString(Trimmed));
+			}
+			return FText::GetEmpty();
+		};
+
+		const TSharedRef<SWindow> Window = SNew(SWindow)
+			.Title(LOCTEXT("NameAnimationTitle", "Save Animation"))
+			.SizingRule(ESizingRule::Autosized)
+			.SupportsMinimize(false)
+			.SupportsMaximize(false);
+		const TWeakPtr<SWindow> WeakWindow = Window;
+
+		auto Accept = [Name, bAccepted, WeakWindow, WhyNot]()
+		{
+			if (WhyNot(*Name).IsEmpty())
+			{
+				*bAccepted = true;
+				if (const TSharedPtr<SWindow> Pinned = WeakWindow.Pin())
+				{
+					Pinned->RequestDestroyWindow();
+				}
+			}
+		};
+
+		TSharedPtr<SEditableTextBox> NameBox;
+		Window->SetContent(
+			SNew(SBorder)
+			.BorderImage(FAppStyle::GetBrush("Brushes.Panel"))
+			.Padding(FMargin(16.f, 14.f))
+			[
+				SNew(SBox)
+				.MinDesiredWidth(360.f)
+				[
+					SNew(SVerticalBox)
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(STextBlock)
+						.Text(FText::Format(LOCTEXT("NameAnimationPrompt", "Name the new Widget Animation. It is saved in {0}."), FText::FromString(StartFolder)))
+						.AutoWrapText(true)
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(FMargin(0.f, 10.f, 0.f, 0.f))
+					[
+						SAssignNew(NameBox, SEditableTextBox)
+						.Text(FText::FromString(DefaultName))
+						.SelectAllTextWhenFocused(true)
+						.OnTextChanged_Lambda([Name](const FText& Text) { *Name = Text.ToString(); })
+						.OnTextCommitted_Lambda([Name, Accept](const FText& Text, ETextCommit::Type CommitType)
+						{
+							*Name = Text.ToString();
+							if (CommitType == ETextCommit::OnEnter)
+							{
+								Accept();
+							}
+						})
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(FMargin(0.f, 4.f, 0.f, 0.f))
+					[
+						SNew(STextBlock)
+						.ColorAndOpacity(FStyleColors::Error)
+						.Text_Lambda([Name, WhyNot]() { return WhyNot(*Name); })
+					]
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.HAlign(HAlign_Right)
+					.Padding(FMargin(0.f, 12.f, 0.f, 0.f))
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						[
+							SNew(SButton)
+							.ButtonStyle(FAppStyle::Get(), "PrimaryButton")
+							.Text(LOCTEXT("NameAnimationSave", "Save"))
+							.IsEnabled_Lambda([Name, WhyNot]() { return WhyNot(*Name).IsEmpty(); })
+							.OnClicked_Lambda([Accept]() { Accept(); return FReply::Handled(); })
+						]
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.Padding(FMargin(8.f, 0.f, 0.f, 0.f))
+						[
+							SNew(SButton)
+							.Text(LOCTEXT("NameAnimationCancel", "Cancel"))
+							.OnClicked_Lambda([WeakWindow]()
+							{
+								if (const TSharedPtr<SWindow> Pinned = WeakWindow.Pin())
+								{
+									Pinned->RequestDestroyWindow();
+								}
+								return FReply::Handled();
+							})
+						]
+					]
+				]
+			]);
+		Window->SetWidgetToFocusOnActivate(NameBox);
+
+		FSlateApplication::Get().AddModalWindow(Window, FSlateApplication::Get().GetActiveTopLevelRegularWindow());
+		if (*bAccepted)
+		{
+			OutName = Name->TrimStartAndEnd();
+			return true;
+		}
+		return false;
+	}
+
 	UWidgetAnimPresetAsset* CreateAnimationAsset(const FString& Folder, const FString& BaseName, bool bChooseLocation)
 	{
 		const FString StartFolder = Folder.IsEmpty() ? FString(TEXT("/Game")) : Folder;
 		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
 
-		FString UniquePackageName;
-		FString UniqueAssetName;
-		AssetTools.CreateUniqueAssetName(StartFolder / BaseName, FString(), UniquePackageName, UniqueAssetName);
+		// The name as given while it is free - the panel numbers its own names - else made unique the editor's way.
+		FString UniqueAssetName = BaseName;
+		if (DoesAssetExist(StartFolder, BaseName))
+		{
+			FString UniquePackageName;
+			AssetTools.CreateUniqueAssetName(StartFolder / BaseName, FString(), UniquePackageName, UniqueAssetName);
+		}
 
 		UDataAssetFactory* Factory = NewObject<UDataAssetFactory>();
 		Factory->DataAssetClass = UWidgetAnimPresetAsset::StaticClass();
@@ -2134,3 +2409,5 @@ namespace WidgetAnimSaveLocation
 		return Cast<UWidgetAnimPresetAsset>(AssetTools.CreateAsset(UniqueAssetName, StartFolder, UWidgetAnimPresetAsset::StaticClass(), Factory));
 	}
 }
+
+#undef LOCTEXT_NAMESPACE

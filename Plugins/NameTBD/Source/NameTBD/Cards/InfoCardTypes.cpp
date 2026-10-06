@@ -114,8 +114,8 @@ FWidgetAnimSettings FInfoCardAdditiveAnimSettings::ToWidgetAnimSettings() const
 	Out.StartOpacity = StartOpacity;
 	Out.EndOpacity   = EndOpacity;
 
-	Out.StartScale = StartScale;
-	Out.EndScale   = EndScale;
+	Out.StartScale = FVector2D(StartScale, StartScale);
+	Out.EndScale   = FVector2D(EndScale, EndScale);
 	Out.Overshoot  = Overshoot;
 
 	Out.SlideFromDirection = SlideFromDirection;
@@ -160,8 +160,8 @@ bool FInfoCardAdditiveAnimSettings::FromLegacyWidgetAnimSettings(const FWidgetAn
 	Out.StartOpacity = Legacy.StartOpacity;
 	Out.EndOpacity   = Legacy.EndOpacity;
 
-	Out.StartScale = Legacy.StartScale;
-	Out.EndScale   = Legacy.EndScale;
+	Out.StartScale = static_cast<float>(Legacy.StartScale.X);
+	Out.EndScale   = static_cast<float>(Legacy.EndScale.X);
 	Out.Overshoot  = Legacy.Overshoot;
 
 	Out.SlideFromDirection = Legacy.SlideFromDirection;

@@ -10,6 +10,7 @@
 #include "WidgetAnimation/Evaluators/WidgetAnimCues.h"
 #include "WidgetAnimation/Evaluators/WidgetAnimBlueprintCue.h"
 #include "WidgetAnimation/Evaluators/WidgetAnimShapeTrack.h"
+#include "WidgetAnimation/Evaluators/WidgetAnimDesignTrack.h"
 #include "WidgetAnimation/WidgetAnimCue.h"
 #include "WidgetAnimation/WidgetAnimationComponent.h"
 
@@ -43,6 +44,9 @@ void FNameTBDModule::StartupModule()
 	// What plays a Shape track's keys onto its shape - not a type of its own in the Add Track menu, where the Shape track
 	// is built in; registered so the settings it captures can be put back by type. See WidgetAnimShapeTrack.h.
 	Registry.Register(MakeShared<FWidgetAnimShapeKeysEvaluator>());
+
+	// And a Design track's keys onto its widget, the same way. See WidgetAnimDesignTrack.h.
+	Registry.Register(MakeShared<FWidgetAnimDesignKeysEvaluator>());
 }
 
 void FNameTBDModule::ShutdownModule()
@@ -62,6 +66,7 @@ void FNameTBDModule::ShutdownModule()
 	Registry.Unregister(FWidgetAnimPlayCueParams::StaticStruct());
 	Registry.Unregister(FWidgetAnimBlueprintCueParams::StaticStruct());
 	Registry.Unregister(FWidgetAnimShapeKeysParams::StaticStruct());
+	Registry.Unregister(FWidgetAnimDesignKeysParams::StaticStruct());
 
 	// Cues passed on the last frame have nothing left to fire into.
 	WidgetAnimCues::DiscardPending();

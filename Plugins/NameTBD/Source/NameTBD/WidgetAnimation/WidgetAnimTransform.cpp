@@ -5,6 +5,8 @@
 #include "WidgetAnimLibrary.h"
 #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
 #include "NameTBD/Widgets/Shapes/WidgetShapeAnimation.h"
+#include "WidgetDesignAnimation.h"
+#include "Components/Widget.h"
 
 #include "UObject/EnumProperty.h"
 #include "UObject/TextProperty.h"
@@ -198,9 +200,16 @@ bool FWidgetTransformAnim::SyncKeysToCurve(bool* bOutResized)
 		}
 
 		// A Shape track's keys hold its kind's settings, laid out for it - a key added before the kind was picked, or one
-		// that came from another kind, catches up here. Anything else holds none.
-		const UClass* BagKind = Content == EWidgetKeyframeContent::Shape ? ShapeKind.Get() : nullptr;
-		bChanged |= WidgetShapeAnimation::LayOut(Key.ShapeValues, BagKind, nullptr);
+		// that came from another kind, catches up here - and a Design track's its kind of widget's. Anything else holds none.
+		if (Content == EWidgetKeyframeContent::Design)
+		{
+			bChanged |= WidgetDesignAnimation::LayOut(Key.ShapeValues, DesignKind.Get(), nullptr);
+		}
+		else
+		{
+			const UClass* BagKind = Content == EWidgetKeyframeContent::Shape ? ShapeKind.Get() : nullptr;
+			bChanged |= WidgetShapeAnimation::LayOut(Key.ShapeValues, BagKind, nullptr);
+		}
 	}
 
 	return bChanged;
@@ -212,11 +221,44 @@ bool FWidgetTransformAnim::SetShapeKind(UClass* InKind, const UObject* Source)
 	bool bChanged = ShapeKind.Get() != Kind;
 	ShapeKind = Kind;
 
+	// A Design track's keys hold a widget's look, laid out by SetDesignKind - never a shape's.
+	if (Content == EWidgetKeyframeContent::Design)
+	{
+		return bChanged;
+	}
 	for (FWidgetTransformKeyframe& Key : Keys)
 	{
 		bChanged |= WidgetShapeAnimation::LayOut(Key.ShapeValues, Content == EWidgetKeyframeContent::Shape ? Kind : nullptr, Source);
 	}
 	return bChanged;
+}
+
+bool FWidgetTransformAnim::SetDesignKind(UClass* InKind, const UObject* Source)
+{
+	// Its nearest native class - see WidgetDesignAnimation::GetDesignKind - which may be abstract (a User Widget): only its
+	// settings are read off it, never an instance made.
+	UClass* Kind = WidgetDesignAnimation::GetDesignKind(InKind);
+	bool bChanged = DesignKind.Get() != Kind;
+	DesignKind = Kind;
+
+	if (Content != EWidgetKeyframeContent::Design)
+	{
+		return bChanged;
+	}
+	for (FWidgetTransformKeyframe& Key : Keys)
+	{
+		bChanged |= WidgetDesignAnimation::LayOut(Key.ShapeValues, Kind, Source);
+	}
+	return bChanged;
+}
+
+FWidgetTransform FWidgetTransformAnim::GetKeyTransform(int32 Index) const
+{
+	if (!Keys.IsValidIndex(Index) || Keys[Index].bUseAuthoredTransform)
+	{
+		return FWidgetTransform();
+	}
+	return Keys[Index].Transform;
 }
 
 // =====================================================================================================
@@ -288,7 +330,7 @@ FWidgetTransformAnimResult UWidgetAnimTransformLibrary::Evaluate(const FWidgetTr
 	int32 Segment = 0;
 	float Alpha = 0.f;
 	const int32 NumKeys = FindSegment(Anim, LocalTime, TrackEase, bExtrapolate, Segment, Alpha);
-	if (NumKeys == 0 || Content == EWidgetKeyframeContent::Shape)
+	if (NumKeys == 0 || Content == EWidgetKeyframeContent::Shape || Content == EWidgetKeyframeContent::Design)
 	{
 		return Result;
 	}
@@ -298,7 +340,12 @@ FWidgetTransformAnimResult UWidgetAnimTransformLibrary::Evaluate(const FWidgetTr
 
 	if (Content == EWidgetKeyframeContent::Transform)
 	{
-		const FWidgetTransform Pose = NumKeys > 1 ? LerpWidgetTransform(KeyA.Transform, KeyB.Transform, Alpha) : KeyA.Transform;
+		// A key that Uses Authored Transform is the identity: composed over the widget's own render transform, that is the
+		// widget exactly as it was designed.
+		const int32 IndexB = NumKeys > 1 ? Segment + 1 : Segment;
+		const FWidgetTransform PoseA = Anim.GetKeyTransform(Segment);
+		const FWidgetTransform PoseB = Anim.GetKeyTransform(IndexB);
+		const FWidgetTransform Pose = NumKeys > 1 ? LerpWidgetTransform(PoseA, PoseB, Alpha) : PoseA;
 		Result.Translation = Pose.Translation;
 		Result.Scale       = Pose.Scale;
 		Result.Shear       = Pose.Shear;
@@ -482,7 +529,8 @@ namespace
 
 		return Owner == FWidgetTransformAnim::StaticStruct()
 			&& (Property->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetTransformAnim, Curve)
-				|| Property->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetTransformAnim, ShapeKind));
+				|| Property->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetTransformAnim, ShapeKind)
+				|| Property->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetTransformAnim, DesignKind));
 	}
 }
 

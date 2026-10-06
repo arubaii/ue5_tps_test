@@ -13,7 +13,8 @@ class USoundBase;
 // The first-party cues
 // =====================================================================================================
 //
-// Listed under Cues in the Add Track menu: Event, Sound and Play Animation. How and when every cue fires - its points,
+// Listed under Cues in the Add Track menu: Event and Sound. Play Animation is no longer offered - an existing animation is
+// inserted as a track of its own instead (Insert Existing Widget Animation) - but still plays wherever a track of it was made. How and when every cue fires - its points,
 // loops, ping-pong, inverted play, scrubbing - is in WidgetAnimCue.h; these only say what happens when one does. A
 // particle, a camera shake or anything else the game owns is an Event handled there, or a Blueprint cue type (see
 // UWidgetAnimBlueprintCue): UMG has no particle widget of its own to fire at.
@@ -35,7 +36,11 @@ struct NAMETBD_API FWidgetAnimEventCueParams : public FWidgetAnimCueParams
 {
 	GENERATED_BODY()
 
-	/** What the event is called, for whatever hears it to tell it from others. */
+	/**
+	 * What the event is called. An event of this name appears in the Events of the Widget Animation Component playing the
+	 * animation - in its Details, named after the animation and this: On Card Event Track Landed Fired for Landed in WA_Card -
+	 * where its + adds it to the widget's graph to handle.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Event", meta = (DisplayName = "Event Name"))
 	FName EventName = TEXT("Event");
 
@@ -50,6 +55,7 @@ public:
 
 	virtual FText GetDisplayName() const override;
 	virtual FText GetDescription() const override;
+	virtual FText GetTrackDescription(const FInstancedStruct& Params) const override;
 	virtual FText GetTrackSummary(const FInstancedStruct& Params) const override;
 	virtual void Fire(const FWidgetAnimCueContext& Context) const override;
 
@@ -161,11 +167,14 @@ enum class EWidgetAnimPlayCueOn : uint8
 };
 
 /**
- * Play Animation: plays other animations by Anim ID at a moment of this one - a glow once a card has landed, a shake as a
+ * Play Animation - no longer offered in the Add Track menu or the Type Params picker: inserting an existing animation as a
+ * track of its own does what it was for. Kept so tracks made with it still load and play.
+ *
+ * Plays other animations by Anim ID at a moment of this one - a glow once a card has landed, a shake as a
  * counter reaches its total, each child's own entrance as a list's stagger reaches it. Played the way Play Widget
  * Animation plays them.
  */
-USTRUCT(BlueprintType, meta = (DisplayName = "Play Animation"))
+USTRUCT(BlueprintType, meta = (DisplayName = "Play Animation", Hidden))
 struct NAMETBD_API FWidgetAnimPlayCueParams : public FWidgetAnimCueParams
 {
 	GENERATED_BODY()
@@ -198,6 +207,9 @@ struct NAMETBD_API FWidgetAnimPlayCueParams : public FWidgetAnimCueParams
 class NAMETBD_API FWidgetAnimPlayCueEvaluator : public TWidgetAnimCueEvaluator<FWidgetAnimPlayCueParams>
 {
 public:
+
+	/** Not offered any more - see FWidgetAnimPlayCueParams. */
+	virtual bool IsListedInAddMenu() const override { return false; }
 
 	virtual FText GetDisplayName() const override;
 	virtual FText GetDescription() const override;

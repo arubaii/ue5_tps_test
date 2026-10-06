@@ -1,0 +1,21 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimGraphEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimGraphEditor.cpp
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimGraphEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimGraphEditor.cpp
+@@ -2509,14 +2509,14 @@
+ 			continue;
+ 		}
+ 		const float RunSeconds = Models[Entry.Model].RunSeconds;
+-		const float Local = FMath::Clamp(Entry.OriginalTime + FMath::RoundToFloat(DeltaTime * 1000.f) / 1000.f, 0.f, RunSeconds);
++		const float FadeTime = FMath::Clamp(Entry.OriginalTime + FMath::RoundToFloat(DeltaTime * 1000.f) / 1000.f, 0.f, RunSeconds);
+ 		if (Entry.Key.Point == FadeInPoint)
+ 		{
+-			Sound->FadeIn = FMath::RoundToFloat(Local * 1000.f) / 1000.f;
++			Sound->FadeIn = FMath::RoundToFloat(FadeTime * 1000.f) / 1000.f;
+ 		}
+ 		else
+ 		{
+-			Sound->FadeOut = FMath::RoundToFloat((RunSeconds - Local) * 1000.f) / 1000.f;
++			Sound->FadeOut = FMath::RoundToFloat((RunSeconds - FadeTime) * 1000.f) / 1000.f;
+ 		}
+ 	}
+ 

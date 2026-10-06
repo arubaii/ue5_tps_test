@@ -84,7 +84,11 @@ namespace WidgetShapeAnimation
 	{
 		TArray<const FProperty*> Properties;
 		GetProperties(Kind, Properties);
+		return IsLaidOutWith(Bag, Properties);
+	}
 
+	bool IsLaidOutWith(const FInstancedPropertyBag& Bag, const TArray<const FProperty*>& Properties)
+	{
 		const UPropertyBag* Layout = Bag.GetPropertyBagStruct();
 		const int32 NumHeld = Layout ? Layout->GetPropertyDescs().Num() : 0;
 		if (NumHeld != Properties.Num())
@@ -112,13 +116,26 @@ namespace WidgetShapeAnimation
 			Bag.Reset();
 			return bHadAny;
 		}
-		if (IsLaidOutFor(Bag, Kind))
-		{
-			return false;
-		}
 
 		TArray<const FProperty*> Properties;
 		GetProperties(Kind, Properties);
+		return LayOutWith(Bag, Kind, Source, Properties);
+	}
+
+	bool LayOutWith(FInstancedPropertyBag& Bag, const UClass* Kind, const UObject* Source, const TArray<const FProperty*>& Properties)
+	{
+		using namespace WidgetShapeAnimationImpl;
+
+		if (!Kind)
+		{
+			const bool bHadAny = Bag.GetPropertyBagStruct() != nullptr;
+			Bag.Reset();
+			return bHadAny;
+		}
+		if (IsLaidOutWith(Bag, Properties))
+		{
+			return false;
+		}
 
 		TArray<FPropertyBagPropertyDesc> Descs;
 		Descs.Reserve(Properties.Num());
@@ -277,7 +294,7 @@ namespace WidgetShapeAnimation
 		return Desc->CachedProperty->ContainerPtrToValuePtr<void>(Values.GetMemory());
 	}
 
-	bool WriteBlend(UShapeWidget* Shape, const FProperty* Property, const void* A, const void* B, float Alpha)
+	bool WriteBlend(UObject* Shape, const FProperty* Property, const void* A, const void* B, float Alpha)
 	{
 		if (!Shape || !Property || (!A && !B))
 		{
