@@ -290,15 +290,26 @@ struct NAMETBD_API FWidgetAnimValueKeys
 	}
 
 	/**
+	 * Whether a track with no keys between its start and end moves by its one segment's own curve rather than its Easing:
+	 * only a Bezier, shaped by its handles in the Graph Editor. Any other curve left on that segment - by keys since
+	 * deleted - is not used, as it never was; a Bezier is new, so nothing authored before it plays differently.
+	 */
+	bool UsesStartCurveAlone() const
+	{
+		return Keys.Num() == 0 && StartCurve.IsBezier();
+	}
+
+	/**
 	 * Whether any segment has a curve of its own rather than the track's Easing - what the Widget Animations panel
-	 * names on the track, segment by segment. Never with no keys: a track that only goes from its start to its end
-	 * moves by its Easing, and a curve left behind on its one segment by keys since deleted is not used.
+	 * names on the track, segment by segment. With no keys, only a Bezier (see UsesStartCurveAlone): a track that only
+	 * goes from its start to its end moves by its Easing, and any other curve left behind on its one segment by keys
+	 * since deleted is not used.
 	 */
 	bool HasSegmentCurves() const
 	{
 		if (Keys.Num() == 0)
 		{
-			return false;
+			return UsesStartCurveAlone();
 		}
 		if (!StartCurve.IsTrackEasing())
 		{
@@ -349,6 +360,13 @@ struct NAMETBD_API FWidgetAnimSettings
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Stagger", BaseStruct = "/Script/NameTBD.WidgetAnimExpander", ExcludeBaseStruct))
 	FInstancedStruct Expander;
+
+	/**
+	 * On an animated text widget, the part of its text the layer animates - found as it starts, like a stagger's items. See
+	 * FWidgetAnimTextTarget and FWidgetAnimLayer::TextTarget.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Part of the Text"))
+	FWidgetAnimTextTarget TextTarget;
 
 	/** Hidden on a Spring layer, whose spring is its motion. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Tween && AnimType != EWidgetAnimType::Shake || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween || AnimType == EWidgetAnimType::Pulse", EditConditionHides))
@@ -810,6 +828,14 @@ struct NAMETBD_API FWidgetAnimLayer
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Stagger", BaseStruct = "/Script/NameTBD.WidgetAnimExpander", ExcludeBaseStruct))
 	FInstancedStruct Expander;
+
+	/**
+	 * On one of the plugin's animated text widgets, the part of its text this track animates, typed in as it reads - "World"
+	 * in "Hello World" - the rest left as it is. Empty: the whole text. Offered in the Widget Animations panel only when the
+	 * track's widget is an animated text widget, on the types that can be limited to letters. See FWidgetAnimTextTarget.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Part of the Text"))
+	FWidgetAnimTextTarget TextTarget;
 
 	/**
 	 * Plays this track backward - from its end values to its start - wherever the animation plays, as Invert Animation plays
@@ -1497,7 +1523,7 @@ struct FWidgetAnimTransformKey
 
 	friend uint32 GetTypeHash(const FWidgetAnimTransformKey& Key)
 	{
-		return HashCombine(HashCombine(::PointerHash(Key.Widget), GetTypeHash(Key.Part.Unit)), ::GetTypeHash(Key.Part.Index));
+		return HashCombine(HashCombine(HashCombine(::PointerHash(Key.Widget), GetTypeHash(Key.Part.Unit)), ::GetTypeHash(Key.Part.Index)), ::GetTypeHash(Key.Part.Count));
 	}
 };
 

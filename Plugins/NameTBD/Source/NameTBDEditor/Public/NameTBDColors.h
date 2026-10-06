@@ -491,6 +491,29 @@ namespace NameTBD
 			inline const FLinearColor ScriptLineNumberActive(0.36f, 0.36f, 0.38f);
 			inline const FLinearColor ScriptSelection(0.03f, 0.08f, 0.18f);
 			inline const FLinearColor ScriptCursor(AnimationOrange_Normal);
+
+			// -------------------------------------------------------------------------------------------------
+			// The Graph Editor - the selected tracks as curves, in place of the Track Editor (see SWidgetAnimGraphEditor).
+			// Curves and keys are in their track's own color; these are everything around them:
+			//   GraphTrackRunTint: how strongly each track's run is shaded in its color behind its curves.
+			//   GraphChannelShadeStep: how much lighter or darker each further channel of a track is drawn than the first.
+			//   GraphHoldOpacity: the faint lines holding a curve's first and last values out to the view's edges.
+			//   GraphGutter / GraphRulerTick / GraphRulerText: the value gutter down the left, the ruler's ticks and numbers.
+			//   GraphZeroLine: the value grid's line at 0, a little stronger than the rest.
+			//   GraphHandle / GraphHandleLine: a segment's Bezier handles and the lines to their keys.
+			// -------------------------------------------------------------------------------------------------
+			inline constexpr float GraphTrackRunTint = 0.045f;
+			inline constexpr float GraphChannelShadeStep = 0.22f;
+			inline constexpr float GraphHoldOpacity = 0.28f;
+			inline const FLinearColor GraphGutter(0.00f, 0.00f, 0.00f, 0.22f);
+			inline const FLinearColor GraphRulerTick(1.00f, 1.00f, 1.00f, 0.30f);
+			inline const FLinearColor GraphRulerText(0.62f, 0.62f, 0.62f);
+			inline const FLinearColor GraphZeroLine(1.00f, 1.00f, 1.00f, 0.14f);
+			inline const FLinearColor GraphHandle(0.95f, 0.95f, 0.95f);
+			inline const FLinearColor GraphHandleLine(1.00f, 1.00f, 1.00f, 0.45f);
+
+			// A track's Part of the Text that isn't in its text: the Selection panel's note under it, in a warning color.
+			inline const FLinearColor TextTargetMissing(0.98f, 0.62f, 0.30f);
 		}
 
 		// =================================================================================================

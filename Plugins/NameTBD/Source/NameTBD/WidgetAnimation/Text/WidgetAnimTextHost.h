@@ -301,6 +301,15 @@ struct NAMETBD_API FWidgetAnimTextEffects
 	FLinearColor Tint = FLinearColor::White;
 	bool bTintReplaces = false;
 
+	/**
+	 * The letters each of these effects is limited to - a track's Part of the Text (see FWidgetAnimTextTarget), each a first
+	 * letter (X) and how many (Y); see WidgetAnimTextParts::Covers. Empty: every letter, as always.
+	 */
+	TArray<FIntPoint> TintLetters;
+	TArray<FIntPoint> ShimmerLetters;
+	TArray<FIntPoint> WaveLetters;
+	TArray<FIntPoint> ShakeLetters;
+
 	// Shimmer --------------------------------------------------------------------------------------
 
 	bool bShimmer = false;

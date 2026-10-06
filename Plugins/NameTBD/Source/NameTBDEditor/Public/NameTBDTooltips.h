@@ -1646,6 +1646,176 @@ namespace NameTBD::Tooltips
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ScriptStarter",
 				"# Python that makes and changes this animation's tracks. Run (Ctrl+Enter) - one Ctrl+Z takes a run back.\n# anim is the animation, selection what is selected in the panel.\n# Snippets has scripts to start from; API Reference lists everything.\n\nanim.print_tracks()\n");
 		}
+
+		// -------------------------------------------------------------------------------------------------
+		// The Graph Editor - the selected tracks as curves, in place of the Track Editor (see SWidgetAnimGraphEditor)
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText GraphEditorButtonTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphEditorButtonTooltip",
+				"Graph Editor: the selected tracks as curves - each value over time - in place of the Track Editor. Drag keys in time and value, double-click a curve to add a key, and drag the handles between two keys to shape how they ease. While it is open, Play plays only these tracks.");
+		}
+
+		inline FText OpenGraphEditor()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "OpenGraphEditor",
+				"Open in Graph Editor");
+		}
+
+		inline FText OpenGraphEditorTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "OpenGraphEditorTooltip",
+				"Shows these tracks as curves in place of the Track Editor - their keys moved in time and value, and the motion between two keys shaped by its handles. Play plays only them while it is open.");
+		}
+
+		inline FText LeaveGraphTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "LeaveGraphTooltip",
+				"Back to the Track Editor (Escape, with no key selected in the graph).");
+		}
+
+		inline FText GraphAllTracksTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphAllTracksTooltip",
+				"Back to all the tracks, in the Track Editor.");
+		}
+
+		inline FText GraphNoTracks()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphNoTracks",
+				"Select a track with keys - any track that moves from a start value to an end value, or a keyframed one - to see its curves.");
+		}
+
+		inline FText GraphNormalizedLabel()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphNormalizedLabel",
+				"Normalized: each curve fills the height from its lowest key to its highest");
+		}
+
+		inline FText GraphValuesViewTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphValuesViewTooltip",
+				"Values: a curve for each value the keys hold - a Transform's Translation, Scale, Shear and Angle each on its own, a color's R, G, B and A. Drag a key up or down to change that one value; sideways to move the whole key, which every value shares.");
+		}
+
+		inline FText GraphEaseViewTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphEaseViewTooltip",
+				"Ease: how each stretch between two keys gets there, from 0 at one key to 1 at the next - the one curve every value of that stretch follows. Drag its handles to shape it, past either end for an overshoot or a wind-up.");
+		}
+
+		inline FText GraphNormalizeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphNormalizeTooltip",
+				"Normalize: with several channels shown, each is drawn from its lowest key to its highest, so a translation of hundreds and a scale of 1 can be read together. One channel shown is always drawn in its own values.");
+		}
+
+		inline FText GraphCurveTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphCurveTooltip",
+				"Curve To Next Key: how each selected key moves on to the next. Bezier keeps the shape it has now and gives it handles to drag. On a track with no keys, the presets set its Easing.");
+		}
+
+		inline FText GraphCurveNone()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphCurveNone",
+				"Select a key");
+		}
+
+		inline FText GraphFitTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphFitTooltip",
+				"Fit: every shown curve in view (F).");
+		}
+
+		inline FText GraphShowAllTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphShowAllTooltip",
+				"Show every channel of every track again.");
+		}
+
+		inline FText GraphDeleteKeysTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphDeleteKeysTooltip",
+				"Deletes the selected keys - never a track's start or end, nor the last two keys of a Transform track (Delete).");
+		}
+
+		inline FText GraphAddKeyTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphAddKeyTooltip",
+				"Adds a key here, at the value the track already has - so nothing changes until it is moved.");
+		}
+
+		inline FText GraphSpringNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphSpringNote",
+				"A Spring track's motion is its spring: its keys are points along it, and there are no handles to shape. Set its Timing to Tween to shape it here.");
+		}
+
+		inline FText GraphValuesHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphValuesHint",
+				"Double-click a curve to add a key. Drag a key, or the handles of a selected one. Shift keeps a drag to one direction. Right-drag pans; the wheel zooms (Ctrl in time, Shift in value).");
+		}
+
+		inline FText GraphEaseHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphEaseHint",
+				"Every stretch between two keys, from 0 to 1: drag its handles to shape how it eases. A hollow handle shows a curve with no handles of its own yet - dragging it gives it some.");
+		}
+
+		inline FText GraphTrackRowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphTrackRowTooltip",
+				"A track shown in the graph, in its own color. Select other tracks in the Animation Tracks list to show them instead.");
+		}
+
+		inline FText GraphTrackEyeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphTrackEyeTooltip",
+				"Shows or hides every channel of this track.");
+		}
+
+		inline FText GraphChannelTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphChannelTooltip",
+				"A value the track's keys hold, and its value at the playhead. Click to bring its curve to the front; double-click to show it alone.");
+		}
+
+		// -------------------------------------------------------------------------------------------------
+		// Part of the Text - a track on an animated text widget limited to some of its words (see FWidgetAnimTextTarget)
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText TextTargetEmptyNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextTargetEmptyNote",
+				"Type words of this text in Part of the Text to animate just those - the rest is left as it is.");
+		}
+
+		inline FText TextTargetNoTextNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextTargetNoTextNote",
+				"Part of the Text is only found on an animated text widget: this track's widget isn't one in the preview, so it plays on the whole text there.");
+		}
+
+		inline FText TextTargetMissingNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextTargetMissingNote",
+				"\"{0}\" isn't in the text (\"{1}\"), so this track plays on nothing. Check the spelling, Match Case and Whole Words Only.");
+		}
+
+		inline FText TextTargetFoundNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextTargetFoundNote",
+				"Found {0} {0}|plural(one=place,other=places) in the text - {1} {1}|plural(one=letter,other=letters) at the first.");
+		}
+
+		inline FText GraphChannelEyeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphChannelEyeTooltip",
+				"Shows or hides this channel's curve.");
+		}
 	}
 
 	/** The Set Widget Animation Value node's dropdown pins, in the Blueprint graph. */

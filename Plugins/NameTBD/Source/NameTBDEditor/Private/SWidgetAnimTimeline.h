@@ -20,6 +20,8 @@ class SScrollBar;
 class SWindow;
 class SVerticalBox;
 class SWidgetAnimTimelineTracks;
+class SWidgetAnimGraphEditor;
+class SWidgetAnimGraphCanvas;
 class FScopedTransaction;
 class UShapeWidget;
 struct FPropertyChangedChainEvent;
@@ -662,6 +664,33 @@ public:
 	TSharedRef<SWidget> MakeCollapsedToolTip(int32 HeadLayer) const;
 
 	// ---------------------------------------------------------------------------------------------
+	// The Graph Editor
+	//
+	// The selected tracks as curves, value over time, in place of the Track Editor - only the Track Editor: the Animation
+	// Tracks list, the Selection panel and the transport stay as they are. Opened from the Track Editor's strip or a track's
+	// menu, left by the strip's breadcrumb or Escape, as a collapsed track is. While it is open the previews play only the
+	// tracks it shows, and it follows the tracks selected in the list. See SWidgetAnimGraphEditor.
+	// ---------------------------------------------------------------------------------------------
+
+	/** At most this many tracks are shown in the graph at once - more would be unreadable, and slow to draw. */
+	static constexpr int32 MaxGraphLayers = 24;
+
+	/** Whether a track has curves to show: one that travels from a start value to an end value, or a keyframed one. */
+	bool CanGraphLayer(int32 LayerIndex) const;
+
+	/** Those of LayerIndices the graph can show, in order - at most MaxGraphLayers. */
+	TArray<int32> GetGraphableLayers(const TArray<int32>& LayerIndices) const;
+
+	/** Shows LayerIndices - those of them it can - in the Graph Editor, in place of the Track Editor. */
+	void OpenGraph(const TArray<int32>& LayerIndices);
+
+	/** Back to the Track Editor, every track playing again. */
+	void ExitGraph();
+
+	bool IsGraphOpen() const { return GraphLayers.Num() > 0; }
+	const TArray<int32>& GetGraphLayers() const { return GraphLayers; }
+
+	// ---------------------------------------------------------------------------------------------
 	// Pinned tracks, inverted tracks, the animation's range, and picking a target in the designer
 	// ---------------------------------------------------------------------------------------------
 
@@ -723,6 +752,22 @@ public:
 	 * already has one shows it, so it can be taken off.
 	 */
 	bool CanLayerStagger(int32 LayerIndex) const;
+
+	/**
+	 * Whether a track can be limited to part of its text - its Part of the Text (see FWidgetAnimTextTarget): its widget, on the
+	 * preview, is one of the plugin's animated text widgets, and its type moves letters (Fade, Scale, Slide, Rotate, Pulse,
+	 * Shake, Transform) or changes them (Text Color, Shimmer, Wave, the text Shake). One already typed is always shown.
+	 */
+	bool CanLayerTargetText(int32 LayerIndex) const;
+
+	/** The animated text widget a track plays on, on the preview - or null when it plays on anything else. */
+	class UWidget* GetLayerTextHost(int32 LayerIndex) const;
+
+	/** Where a track's Part of the Text is in the preview's text, in words for the Selection panel - or why it isn't there. */
+	FText GetTextTargetNote(int32 LayerIndex) const;
+
+	/** Whether a track's Part of the Text is typed and can't be found in its text - when it plays on nothing. */
+	bool IsTextTargetMissing(int32 LayerIndex) const;
 
 	/**
 	 * Height of the Track Editor's lines: Default Track Height in the editor preferences (UWidgetAnimEditorSettings), so
@@ -1475,8 +1520,26 @@ private:
 	/** The collapsed tracks opened in the list, showing a row for each of their tracks. */
 	TSet<FName> ListOpenCollapsed;
 
-	/** Keeps every track's bMutedByEditorScope in step with the collapsed track shown on its own. */
+	/**
+	 * Keeps every track's bMutedByEditorScope in step with what the panel shows on its own - the collapsed track open, the
+	 * tracks in the Graph Editor - so the previews play only them.
+	 */
 	void SyncScopeMutes();
+
+	/** The tracks the Graph Editor shows - none while it is closed - and the editor itself. */
+	TArray<int32> GraphLayers;
+	TSharedPtr<SWidgetAnimGraphEditor> GraphEditor;
+
+	/** Keeps the Graph Editor's tracks to ones there are, and to the tracks selected in the list. Once a frame while it is open. */
+	void SyncGraphLayers();
+
+	/** The Track Editor's strip's Graph Editor button: shown while a track it can show is selected and the graph is closed. */
+	TSharedRef<SWidget> MakeGraphButton();
+
+	// The Graph Editor edits keys through the panel's own edits - its transactions, key times and notifications - as the
+	// Track Editor does.
+	friend class SWidgetAnimGraphEditor;
+	friend class SWidgetAnimGraphCanvas;
 
 	/** Whether SyncScopeMutes last left any track muted - so leaving a collapsed track unmutes them once. */
 	bool bScopeMutesApplied = false;

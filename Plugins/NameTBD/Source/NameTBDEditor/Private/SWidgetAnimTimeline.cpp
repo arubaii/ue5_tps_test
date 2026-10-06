@@ -15,6 +15,7 @@
 #include "WidgetAnimTrackPresets.h"
 #include "WidgetAnimBuilderToolbar.h"
 #include "SWidgetAnimScriptPanel.h"
+#include "SWidgetAnimGraphEditor.h"
 
 #include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
@@ -23,6 +24,7 @@
 #include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimBlueprintCue.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimExpander.h"
+#include "NameTBD/WidgetAnimation/Text/WidgetAnimTextHost.h"
 #include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimCues.h"
 #include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimShapeTrack.h"
 #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
@@ -2390,9 +2392,15 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 					LengthLabel = FString::Printf(TEXT("%s (%s)"), *LengthLabel, *DerivedLabel.ToString());
 				}
 			}
+			// A track limited to part of its text names the words it moves.
+			FString TitleLabel = SWidgetAnimTimeline::GetLayerDisplayName(*Layer).ToString();
+			if (Layer->TextTarget.IsSet())
+			{
+				TitleLabel = FString::Printf(TEXT("%s \u201C%s\u201D"), *TitleLabel, *Layer->TextTarget.Text);
+			}
 			Label = Paint.bNamesTarget
-				? FString::Printf(TEXT("%s \u2192 %s  %s"), *SWidgetAnimTimeline::GetLayerDisplayName(*Layer).ToString(), *Layer->TargetWidget.ToString(), *LengthLabel)
-				: FString::Printf(TEXT("%s  %s"), *SWidgetAnimTimeline::GetLayerDisplayName(*Layer).ToString(), *LengthLabel);
+				? FString::Printf(TEXT("%s \u2192 %s  %s"), *TitleLabel, *Layer->TargetWidget.ToString(), *LengthLabel)
+				: FString::Printf(TEXT("%s  %s"), *TitleLabel, *LengthLabel);
 
 			// A cue has no easing - it fires at points, not along a curve - so it says what it does there instead.
 			const FWidgetAnimEvaluator* CueEvaluator = bCue ? Layer->FindEvaluator() : nullptr;
@@ -4686,6 +4694,43 @@ private:
 				continue;
 			}
 
+			// Part of the Text only on an animated text widget, on a type it can limit - and under it, where it is in the text.
+			if (ChildProperty->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, TextTarget))
+			{
+				if (Owner && Owner->CanLayerTargetText(LayerIndex))
+				{
+					Category.AddProperty(Child).ShouldAutoExpand(true);
+					const TWeakPtr<SWidgetAnimTimeline> WeakTextOwner = Owner;
+					Category.AddCustomRow(LOCTEXT("TextTargetNoteRow", "Part of the Text"))
+						.Visibility(TAttribute<EVisibility>::CreateLambda([WeakTextOwner, LayerIndex]()
+						{
+							const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTextOwner.Pin();
+							return Pinned && !Pinned->GetTextTargetNote(LayerIndex).IsEmpty() ? EVisibility::Visible : EVisibility::Collapsed;
+						}))
+						.WholeRowContent()
+						[
+							SNew(SBox)
+							.Padding(FMargin(0.f, 2.f))
+							[
+								SNew(STextBlock)
+								.AutoWrapText(true)
+								.Font(IDetailLayoutBuilder::GetDetailFontItalic())
+								.ColorAndOpacity_Lambda([WeakTextOwner, LayerIndex]()
+								{
+									const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTextOwner.Pin();
+									return Pinned && Pinned->IsTextTargetMissing(LayerIndex) ? FSlateColor(WidgetAnimTimeline::Palette::TextTargetMissing) : FSlateColor::UseSubduedForeground();
+								})
+								.Text_Lambda([WeakTextOwner, LayerIndex]()
+								{
+									const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTextOwner.Pin();
+									return Pinned ? Pinned->GetTextTargetNote(LayerIndex) : FText::GetEmpty();
+								})
+							]
+						];
+				}
+				continue;
+			}
+
 			// A Shake's settings laid out flat, as Transform's are, and only on a Shake track.
 			if (ChildProperty->GetFName() == ShakeName)
 			{
@@ -5683,6 +5728,7 @@ public:
 		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
 		const TArray<FWidgetAnimLayer>* RealLayers = Owner ? Owner->GetLayers() : nullptr;
 		bool bAllCanStagger = true;
+		bool bAllCanTargetText = true;
 		bool bRepresented = false;
 		int32 NumTracks = 0;
 		for (const TWeakObjectPtr<UObject>& Object : Objects)
@@ -5700,6 +5746,7 @@ public:
 							Types.Add((*RealLayers)[LayerIndex].AnimType);
 							ProxyLayers.Add(&(*RealLayers)[LayerIndex]);
 							bAllCanStagger = bAllCanStagger && Owner->CanLayerStagger(LayerIndex);
+							bAllCanTargetText = bAllCanTargetText && Owner->CanLayerTargetText(LayerIndex);
 							++NumTracks;
 						}
 					}
@@ -5709,6 +5756,7 @@ public:
 				Types.Add(Proxy->Layer.AnimType);
 				ProxyLayers.Add(&Proxy->Layer);
 				bAllCanStagger = bAllCanStagger && (!Owner || Owner->CanLayerStagger(Proxy->LayerIndex));
+				bAllCanTargetText = bAllCanTargetText && Owner && Owner->CanLayerTargetText(Proxy->LayerIndex);
 				++NumTracks;
 			}
 		}
@@ -5807,6 +5855,16 @@ public:
 			// A Stagger only where every selected track can fan out - see SWidgetAnimTimeline::CanLayerStagger.
 			if (Name == ExpanderName && !bAllCanStagger)
 			{
+				continue;
+			}
+
+			// Part of the Text only where every selected track is on an animated text widget - see CanLayerTargetText.
+			if (Name == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, TextTarget))
+			{
+				if (bAllCanTargetText)
+				{
+					Category.AddProperty(Child);
+				}
 				continue;
 			}
 
@@ -6788,10 +6846,11 @@ SWidgetAnimTimeline::~SWidgetAnimTimeline()
 		Window->RequestDestroyWindow();
 	}
 
-	// A collapsed track open on its own leaves every track playing again once the panel goes.
-	if (IsInCollapsedScope() || bScopeMutesApplied)
+	// A collapsed track open on its own - or the Graph Editor - leaves every track playing again once the panel goes.
+	if (IsInCollapsedScope() || IsGraphOpen() || bScopeMutesApplied)
 	{
 		ActiveCollapsed = NAME_None;
+		GraphLayers.Reset();
 		SyncScopeMutes();
 	}
 }
@@ -6957,6 +7016,25 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 
 	Tracks = SNew(SWidgetAnimTimelineTracks, WeakThisPtr, TracksHorizontalScrollBar);
 
+	// The Graph Editor takes the Track Editor's place while it is open - only its place: the list, the Selection panel and
+	// the transport stay. See OpenGraph.
+	GraphEditor = SNew(SWidgetAnimGraphEditor, WeakThisPtr);
+	auto MakeTrackArea = [this]() -> TSharedRef<SWidget>
+	{
+		return SNew(SWidgetSwitcher)
+			.WidgetIndex_Lambda([this]() { return IsGraphOpen() ? 1 : 0; })
+
+			+ SWidgetSwitcher::Slot()
+			[
+				Tracks.ToSharedRef()
+			]
+
+			+ SWidgetSwitcher::Slot()
+			[
+				GraphEditor.ToSharedRef()
+			];
+	};
+
 	if (bCompact)
 	{
 		// The compact panel: the tracks, with the Selection panel beside them, under its own header strip. Folded, only
@@ -7005,7 +7083,7 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 								+ SVerticalBox::Slot()
 								.FillHeight(1.f)
 								[
-									Tracks.ToSharedRef()
+									MakeTrackArea()
 								]
 
 								+ SVerticalBox::Slot()
@@ -7186,7 +7264,7 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 
 									+ SOverlay::Slot()
 									[
-										Tracks.ToSharedRef()
+										MakeTrackArea()
 									]
 
 									// With no animation to show - no asset picked yet, or no timeline made yet - say what to do,
@@ -7617,13 +7695,22 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 		})
 	];
 
-	// Inside a collapsed track: its name, and the way back out.
+	// Inside a collapsed track or the Graph Editor: where the panel is, and the way back out.
 	Header->AddSlot()
 	.AutoWidth()
 	.VAlign(VAlign_Center)
 	.Padding(FMargin(8.f, 0.f, 0.f, 0.f))
 	[
 		MakeCollapsedBreadcrumb()
+	];
+
+	// The Graph Editor, for the tracks selected.
+	Header->AddSlot()
+	.AutoWidth()
+	.VAlign(VAlign_Center)
+	.Padding(FMargin(8.f, 0.f, 0.f, 0.f))
+	[
+		MakeGraphButton()
 	];
 
 	Header->AddSlot()
@@ -7899,7 +7986,11 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 			.ContentPadding(FMargin(0.f))
 			.OnClicked_Lambda([this]()
 			{
-				if (Tracks.IsValid())
+				if (IsGraphOpen() && GraphEditor.IsValid())
+				{
+					GraphEditor->FitView();
+				}
+				else if (Tracks.IsValid())
 				{
 					Tracks->FitToAnimation();
 				}
@@ -8080,13 +8171,22 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeCompactHeader()
 					]
 				]
 
-				// Inside a collapsed track: its name, and the way back out.
+				// Inside a collapsed track or the Graph Editor: where the panel is, and the way back out.
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
 				.Padding(FMargin(4.f, 0.f))
 				[
 					MakeCollapsedBreadcrumb()
+				]
+
+				// The Graph Editor, for the tracks selected.
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(4.f, 0.f))
+				[
+					MakeGraphButton()
 				]
 
 				// When the list starts: right away, or within one of the animations it plays alongside.
@@ -8378,7 +8478,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHorizontalScrollBarSlot()
 	return SNew(SBox)
 		.Visibility_Lambda([this]()
 		{
-			const bool bShown = !IsInline()
+			const bool bShown = !IsInline() && !IsGraphOpen()
 				&& UWidgetAnimEditorSettings::Get().bShowHorizontalScrollBarWhenNeeded
 				&& Tracks.IsValid() && Tracks->IsHorizontalScrollNeeded();
 			return bShown ? EVisibility::Visible : EVisibility::Collapsed;
@@ -8458,10 +8558,25 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeCollapsedBreadcrumb()
 {
 	using namespace WidgetAnimTimeline;
 
-	// As a collapsed graph's tab reads: the whole animation, then the collapsed track open on its own. The back arrow -
-	// or the whole animation's name, or Escape - goes back out.
+	// As a collapsed graph's tab reads: the whole animation, then the collapsed track open on its own, then - in the Graph
+	// Editor - the tracks it shows. Each step is the way back to it: the back arrow and All Tracks to the whole animation,
+	// the collapsed track's name back to it from the graph. Escape goes back one step.
+	auto Chevron = []()
+	{
+		return MakeFixedIcon(PickBrush({ "Icons.ChevronRight", "TreeArrow_Collapsed" }), FSlateColor::UseSubduedForeground(), 10.f);
+	};
+
+	// The graph's step names its track - or, for several, how many - in the color the curves are drawn in.
+	auto GetGraphColor = [this]()
+	{
+		const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+		return GraphLayers.Num() > 0 && Layers && Layers->IsValidIndex(GraphLayers[0])
+			? FSlateColor(GetLayerTypeColor((*Layers)[GraphLayers[0]]))
+			: FSlateColor::UseForeground();
+	};
+
 	return SNew(SHorizontalBox)
-		.Visibility_Lambda([this]() { return IsInCollapsedScope() ? EVisibility::Visible : EVisibility::Collapsed; })
+		.Visibility_Lambda([this]() { return IsInCollapsedScope() || IsGraphOpen() ? EVisibility::Visible : EVisibility::Collapsed; })
 
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
@@ -8470,9 +8585,13 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeCollapsedBreadcrumb()
 			SNew(SButton)
 			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 			.ContentPadding(FMargin(3.f, 1.f))
-			.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::LeaveCollapsedTooltip()))
+			.ToolTip(WidgetAnimTimeline::MakePanelToolTip(TAttribute<FText>::CreateLambda([this]()
+			{
+				return IsGraphOpen() ? WidgetAnimTips::GraphAllTracksTooltip() : WidgetAnimTips::LeaveCollapsedTooltip();
+			})))
 			.OnClicked_Lambda([this]()
 			{
+				ExitGraph();
 				ExitCollapsed();
 				return FReply::Handled();
 			})
@@ -8499,33 +8618,257 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeCollapsedBreadcrumb()
 			]
 		]
 
+		// The collapsed track open on its own - from the graph, the way back to it.
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
 		.VAlign(VAlign_Center)
-		.Padding(FMargin(3.f, 0.f))
 		[
-			MakeFixedIcon(PickBrush({ "Icons.ChevronRight", "TreeArrow_Collapsed" }), FSlateColor::UseSubduedForeground(), 10.f)
+			SNew(SHorizontalBox)
+			.Visibility_Lambda([this]() { return IsInCollapsedScope() ? EVisibility::Visible : EVisibility::Collapsed; })
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(3.f, 0.f))
+			[
+				Chevron()
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(SButton)
+				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+				.ContentPadding(FMargin(2.f, 1.f))
+				.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::LeaveGraphTooltip()))
+				.OnClicked_Lambda([this]()
+				{
+					ExitGraph();
+					return FReply::Handled();
+				})
+				[
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+					[
+						MakeFixedIcon(PickBrush({ "GraphEditor.SubGraph_16x", "Icons.FolderClosed" }), FSlateColor(Palette::LayerCollapsed), 12.f)
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.MaxWidth(220.f)
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+						.ColorAndOpacity(Palette::LayerCollapsed)
+						.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+						.Text_Lambda([this]() { return FText::FromName(ActiveCollapsed); })
+					]
+				]
+			]
 		]
 
+		// The Graph Editor: the curve icon and the track it shows.
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
 		.VAlign(VAlign_Center)
-		.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
 		[
-			MakeFixedIcon(PickBrush({ "GraphEditor.SubGraph_16x", "Icons.FolderClosed" }), FSlateColor(Palette::LayerCollapsed), 12.f)
-		]
+			SNew(SHorizontalBox)
+			.Visibility_Lambda([this]() { return IsGraphOpen() ? EVisibility::Visible : EVisibility::Collapsed; })
 
-		+ SHorizontalBox::Slot()
-		.AutoWidth()
-		.MaxWidth(220.f)
-		.VAlign(VAlign_Center)
-		[
-			SNew(STextBlock)
-			.Font(FAppStyle::GetFontStyle("NormalFontBold"))
-			.ColorAndOpacity(Palette::LayerCollapsed)
-			.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
-			.Text_Lambda([this]() { return FText::FromName(ActiveCollapsed); })
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(3.f, 0.f))
+			[
+				Chevron()
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+			[
+				MakeFixedIcon(SWidgetAnimGraphEditor::GetGraphIcon(), TAttribute<FSlateColor>::CreateLambda(GetGraphColor), 12.f)
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.MaxWidth(260.f)
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+				.ColorAndOpacity_Lambda(GetGraphColor)
+				.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+				.Text_Lambda([this]()
+				{
+					const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+					if (GraphLayers.Num() == 1 && Layers && Layers->IsValidIndex(GraphLayers[0]))
+					{
+						return GetLayerDisplayName((*Layers)[GraphLayers[0]]);
+					}
+					return FText::Format(LOCTEXT("BreadcrumbGraphTracks", "{0} Tracks"), FText::AsNumber(GraphLayers.Num()));
+				})
+			]
 		];
+}
+
+TSharedRef<SWidget> SWidgetAnimTimeline::MakeGraphButton()
+{
+	using namespace WidgetAnimTimeline;
+
+	// The curve icon and its name, quiet until hovered - shown only while a track the graph can show is selected.
+	return SNew(SWidgetAnimAnchoredTip)
+		.Text(WidgetAnimTips::GraphEditorButtonTooltip())
+		.Visibility_Lambda([this]()
+		{
+			return !IsGraphOpen() && HasAnimation() && GetGraphableLayers(SelectedLayers).Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed;
+		})
+		[
+			SNew(SButton)
+			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+			.ContentPadding(FMargin(4.f, 1.f))
+			.OnClicked_Lambda([this]()
+			{
+				OpenGraph(SelectedLayers);
+				return FReply::Handled();
+			})
+			[
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+				[
+					MakeFixedIcon(SWidgetAnimGraphEditor::GetGraphIcon(), FSlateColor::UseForeground(), 14.f)
+				]
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+					.Text(LOCTEXT("GraphEditorButton", "Graph Editor"))
+				]
+			]
+		];
+}
+
+bool SWidgetAnimTimeline::CanGraphLayer(int32 LayerIndex) const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!Layers || !Layers->IsValidIndex(LayerIndex))
+	{
+		return false;
+	}
+
+	// Something with values along a curve: not a whole animation inserted as a track, not a cue - which fires at points and
+	// moves nothing - and not a Pulse or Shake, which move about where the widget is with no keys to shape.
+	const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+	if (Layer.IsAnimationTrack() || IsCueLayer(Layer))
+	{
+		return false;
+	}
+	return WidgetAnimTypeIsKeyframed(Layer.AnimType) || WidgetAnimTypeSupportsValueKeys(Layer.AnimType);
+}
+
+TArray<int32> SWidgetAnimTimeline::GetGraphableLayers(const TArray<int32>& LayerIndices) const
+{
+	TArray<int32> Out;
+	for (const int32 LayerIndex : LayerIndices)
+	{
+		if (Out.Num() >= MaxGraphLayers)
+		{
+			break;
+		}
+		if (CanGraphLayer(LayerIndex))
+		{
+			Out.AddUnique(LayerIndex);
+		}
+	}
+	return Out;
+}
+
+void SWidgetAnimTimeline::OpenGraph(const TArray<int32>& LayerIndices)
+{
+	const TArray<int32> Graphable = GetGraphableLayers(LayerIndices);
+	if (Graphable.Num() == 0 || !GraphEditor.IsValid())
+	{
+		return;
+	}
+
+	if (IsDragging())
+	{
+		IsDraggingKey() ? EndKeyDrag() : EndLayerDrag();
+	}
+
+	GraphLayers = Graphable;
+	GraphEditor->OnLayersShown();
+	SyncScopeMutes();
+
+	// The graph takes the keyboard, so F, Delete and Escape are its own from the start.
+	if (const TSharedPtr<SWidget> Focus = GraphEditor->GetFocusTarget())
+	{
+		FSlateApplication::Get().SetKeyboardFocus(Focus, EFocusCause::SetDirectly);
+	}
+}
+
+void SWidgetAnimTimeline::ExitGraph()
+{
+	if (!IsGraphOpen())
+	{
+		return;
+	}
+
+	const TArray<int32> Was = GraphLayers;
+	GraphLayers.Reset();
+	SyncScopeMutes();
+
+	// Back on the Track Editor, on the tracks the graph showed.
+	if (Was.Num() > 0 && GetLayers() && GetLayers()->IsValidIndex(Was[0]))
+	{
+		RevealLayer(Was[0]);
+	}
+	FSlateApplication::Get().SetKeyboardFocus(SharedThis(this), EFocusCause::SetDirectly);
+}
+
+void SWidgetAnimTimeline::SyncGraphLayers()
+{
+	// Tracks gone - an undo, a delete - or turned into something with no curves drop out of it; with none left, it closes.
+	const TArray<int32> Valid = GetGraphableLayers(GraphLayers);
+	if (Valid.Num() == 0)
+	{
+		ExitGraph();
+		return;
+	}
+	if (Valid != GraphLayers)
+	{
+		GraphLayers = Valid;
+	}
+
+	// Picking other tracks in the list shows them instead - as the graph's own key picks only ever select its own tracks,
+	// a selection reaching past them is one made elsewhere.
+	const bool bReachesPast = SelectedLayers.ContainsByPredicate([this](int32 LayerIndex) { return !GraphLayers.Contains(LayerIndex); });
+	if (bReachesPast)
+	{
+		const TArray<int32> Selected = GetGraphableLayers(SelectedLayers);
+		if (Selected.Num() > 0 && Selected != GraphLayers)
+		{
+			GraphLayers = Selected;
+			if (GraphEditor.IsValid())
+			{
+				GraphEditor->OnLayersShown();
+			}
+		}
+	}
 }
 
 TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
@@ -11073,7 +11416,12 @@ EActiveTimerReturnType SWidgetAnimTimeline::OnRefreshTimer(double InCurrentTime,
 			ExitCollapsed();
 		}
 	}
-	if (IsInCollapsedScope() || bScopeMutesApplied)
+	// The Graph Editor keeps to tracks there are, and follows the tracks picked in the list.
+	if (IsGraphOpen())
+	{
+		SyncGraphLayers();
+	}
+	if (IsInCollapsedScope() || IsGraphOpen() || bScopeMutesApplied)
 	{
 		SyncScopeMutes();
 	}
@@ -13286,6 +13634,20 @@ FReply SWidgetAnimTimeline::OnKeyDown(const FGeometry& MyGeometry, const FKeyEve
 			CancelTargetPick();
 			return FReply::Handled();
 		}
+		// The Graph Editor is left one step at a time too: the keys picked in it, then the graph itself - back to the Track
+		// Editor, with the tracks it showed still selected.
+		if (IsGraphOpen())
+		{
+			if (GraphEditor.IsValid() && GraphEditor->HasSelectedKeys())
+			{
+				GraphEditor->ClearSelectedKeys();
+			}
+			else
+			{
+				ExitGraph();
+			}
+			return FReply::Handled();
+		}
 		if (IsInCollapsedScope() && SelectedLayers.Num() == 0 && SelectedKeys.Num() == 0 && Selection.Group == INDEX_NONE)
 		{
 			ExitCollapsed();
@@ -13297,7 +13659,11 @@ FReply SWidgetAnimTimeline::OnKeyDown(const FGeometry& MyGeometry, const FKeyEve
 
 	if (Key == EKeys::F)
 	{
-		if (Tracks.IsValid())
+		if (IsGraphOpen() && GraphEditor.IsValid())
+		{
+			GraphEditor->FitView();
+		}
+		else if (Tracks.IsValid())
 		{
 			Tracks->FitToAnimation();
 		}
@@ -16877,6 +17243,9 @@ void SWidgetAnimTimeline::EnterCollapsed(FName Name)
 		IsDraggingKey() ? EndKeyDrag() : EndLayerDrag();
 	}
 
+	// Its tracks are shown in the Track Editor: out of the Graph Editor first.
+	GraphLayers.Reset();
+
 	ActiveCollapsed = Name;
 	ClearSelection();
 	SyncScopeMutes();
@@ -16918,12 +17287,24 @@ void SWidgetAnimTimeline::SyncScopeMutes()
 		return;
 	}
 
+	// The tracks the Graph Editor shows, while it is open: Play plays only them.
+	TBitArray<> InGraph(false, Layers->Num());
+	for (const int32 GraphLayer : GraphLayers)
+	{
+		if (InGraph.IsValidIndex(GraphLayer))
+		{
+			InGraph[GraphLayer] = true;
+		}
+	}
+	const bool bGraphScope = IsGraphOpen();
+
 	// Not an edit: a transient flag, set and cleared as the panel goes in and out, and never saved or undone.
 	bool bChanged = false;
 	bool bAnyMuted = false;
-	for (FWidgetAnimLayer& Layer : *Layers)
+	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
 	{
-		const bool bMuted = IsInCollapsedScope() && Layer.CollapsedTrack != ActiveCollapsed;
+		FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+		const bool bMuted = (IsInCollapsedScope() && Layer.CollapsedTrack != ActiveCollapsed) || (bGraphScope && !InGraph[LayerIndex]);
 		bAnyMuted |= bMuted;
 		if (Layer.bMutedByEditorScope != bMuted)
 		{
@@ -17748,6 +18129,87 @@ bool SWidgetAnimTimeline::CanLayerStagger(int32 LayerIndex) const
 		return Items.Num() > 0;
 	}
 	return false;
+}
+
+UWidget* SWidgetAnimTimeline::GetLayerTextHost(int32 LayerIndex) const
+{
+	IWidgetAnimPanelSource* PanelSource = Source.Get();
+	UWidget* Target = PanelSource ? PanelSource->GetLayerPreviewWidget(LayerIndex) : nullptr;
+
+	// One of the plugin's animated text widgets - Animated Text Block, Animated Rich Text Block, their Common UI kin - as the
+	// track's widget itself: the letters a Part of the Text is found in, and moved or changed.
+	return Target && Cast<IWidgetAnimTextHost>(Target) && Cast<IWidgetAnimPartHost>(Target) ? Target : nullptr;
+}
+
+bool SWidgetAnimTimeline::CanLayerTargetText(int32 LayerIndex) const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!Layers || !Layers->IsValidIndex(LayerIndex))
+	{
+		return false;
+	}
+
+	// One already typed stays in view, so it can be seen and cleared.
+	const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+	if (Layer.TextTarget.IsSet())
+	{
+		return true;
+	}
+
+	// A type that moves letters, or a text track that changes them; never an animation track or a cue.
+	if (Layer.IsAnimationTrack() || IsCueLayer(Layer))
+	{
+		return false;
+	}
+	const FWidgetAnimEvaluator* Evaluator = Layer.AnimType == EWidgetAnimType::Custom ? Layer.FindEvaluator() : nullptr;
+	if (!UWidgetAnimLibrary::TypeMovesParts(Layer.AnimType) && !(Evaluator && Evaluator->TakesTextRange(Layer.TypeParams)))
+	{
+		return false;
+	}
+	return GetLayerTextHost(LayerIndex) != nullptr;
+}
+
+bool SWidgetAnimTimeline::IsTextTargetMissing(int32 LayerIndex) const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	UWidget* Host = GetLayerTextHost(LayerIndex);
+	if (!Layers || !Layers->IsValidIndex(LayerIndex) || !Host || !(*Layers)[LayerIndex].TextTarget.IsSet())
+	{
+		return false;
+	}
+	TArray<FIntPoint> Ranges;
+	(*Layers)[LayerIndex].TextTarget.FindLetterRanges(WidgetAnimText::GetDisplayString(Host), Ranges);
+	return Ranges.Num() == 0;
+}
+
+FText SWidgetAnimTimeline::GetTextTargetNote(int32 LayerIndex) const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!Layers || !Layers->IsValidIndex(LayerIndex))
+	{
+		return FText::GetEmpty();
+	}
+
+	const FWidgetAnimTextTarget& TextTarget = (*Layers)[LayerIndex].TextTarget;
+	UWidget* Host = GetLayerTextHost(LayerIndex);
+	if (!TextTarget.IsSet())
+	{
+		return Host ? WidgetAnimTips::TextTargetEmptyNote() : FText::GetEmpty();
+	}
+	if (!Host)
+	{
+		return WidgetAnimTips::TextTargetNoTextNote();
+	}
+
+	// Where it is in the text the preview shows, in its own words: how many places, and the text around the first.
+	const FString Display = WidgetAnimText::GetDisplayString(Host);
+	TArray<FIntPoint> Ranges;
+	TextTarget.FindLetterRanges(Display, Ranges);
+	if (Ranges.Num() == 0)
+	{
+		return FText::Format(WidgetAnimTips::TextTargetMissingNote(), FText::FromString(TextTarget.Text), FText::FromString(Display.Left(80)));
+	}
+	return FText::Format(WidgetAnimTips::TextTargetFoundNote(), FText::AsNumber(Ranges.Num()), FText::AsNumber(Ranges[0].Y));
 }
 
 // -----------------------------------------------------------------------------------------------------
@@ -19185,6 +19647,21 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 		}
 	}
 
+	// The Graph Editor is a way of looking too - and of editing, where the tracks can be - so it is offered first, either way.
+	{
+		const TArray<int32> Graphable = GetGraphableLayers(ActedOn);
+		if (Graphable.Num() > 0 && !IsGraphOpen())
+		{
+			const bool bEngineIcon = FAppStyle::Get().GetOptionalBrush("GenericCurveEditor.TabIcon", nullptr, nullptr) != nullptr;
+			Menu.AddMenuEntry(
+				WidgetAnimTips::OpenGraphEditor(),
+				WidgetAnimTips::OpenGraphEditorTooltip(),
+				bEngineIcon ? FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCurveEditor.TabIcon") : FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::GraphEditorIcon),
+				FUIAction(FExecuteAction::CreateLambda([this, Graphable]() { OpenGraph(Graphable); })));
+			Menu.AddSeparator();
+		}
+	}
+
 	// Jumping there only looks at the animation, so it is offered whatever can be edited.
 	auto AddJumpEntry = [this, &Menu, LayerIndex]()
 	{
@@ -19963,6 +20440,12 @@ FText SWidgetAnimTimeline::GetEasingName(const FWidgetAnimLayer& Layer)
 	{
 		const UEnum* FalloffEnum = StaticEnum<EWidgetAnimShakeFalloff>();
 		return FalloffEnum ? FalloffEnum->GetDisplayNameTextByValue(static_cast<int64>(Layer.Shake.Falloff)) : FText::GetEmpty();
+	}
+
+	// A track with no keys shaped by handles dragged in the Graph Editor moves by them, not by its Easing.
+	if (WidgetAnimTypeSupportsValueKeys(Layer.AnimType) && Layer.ValueKeys.UsesStartCurveAlone())
+	{
+		return GetSegmentCurveName(Layer.ValueKeys.StartCurve);
 	}
 
 	// A Custom easing is a Curve asset - Custom Curve - so it is shown by that asset's own name.
@@ -21282,6 +21765,10 @@ void SWidgetAnimTimeline::OnScriptRan(int32 TracksBefore, int32 TracksAfter, int
 		ActiveCollapsed = NAME_None;
 		SyncScopeMutes();
 	}
+	if (IsGraphOpen() && TracksAfter != TracksBefore)
+	{
+		ExitGraph();
+	}
 
 	ClearSelection();
 	RebuildRows();
@@ -21311,9 +21798,10 @@ void SWidgetAnimTimeline::SwitchEditedAnimation(TFunctionRef<void()> Switch)
 	{
 		IsDraggingKey() ? EndKeyDrag() : EndLayerDrag();
 	}
-	if (IsInCollapsedScope())
+	if (IsInCollapsedScope() || IsGraphOpen())
 	{
 		ActiveCollapsed = NAME_None;
+		GraphLayers.Reset();
 		SyncScopeMutes();
 	}
 

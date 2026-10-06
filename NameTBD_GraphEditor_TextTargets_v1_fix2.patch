@@ -1,0 +1,14 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEasing.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEasing.h
+index fd5ba6a..258bea8 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEasing.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEasing.h
+@@ -89,9 +89,6 @@ enum class EWidgetAnimSegmentEasing : uint8
+ 	Hold      UMETA(ToolTip = "Stays on this key's value, then jumps to the next key's the moment it arrives."),
+ 	Custom    UMETA(ToolTip = "Follows a Curve asset from 0 to 1 across the segment."),
+ 
+-	// Shaped by two handles, dragged in the Widget Animations panel's Graph Editor. Appended last: enum properties serialize
+-	// by name, but anything that stored the raw byte keeps meaning what it meant before. (A line comment, not a doc comment:
+-	// UHT would take a doc comment as a second ToolTip.)
+ 	Bezier    UMETA(ToolTip = "Shaped by two handles, dragged in the Graph Editor: how fast it leaves this key and how it arrives at the next - past either end for an overshoot or a wind-up.")
+ };
+ 

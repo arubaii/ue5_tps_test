@@ -375,6 +375,9 @@ private:
 	mutable TArray<int32> WordPose;
 	mutable TArray<int32> LinePose;
 
+	/** The poses of runs of letters - a track's Part of the Text (see WidgetAnimPartUnits::Span) - in the order they came. */
+	mutable TArray<int32> SpanPoses;
+
 	float ArrangedWidth = -1.f;
 	bool bHasBeenArranged = false;
 	bool bWasVolatile = false;

@@ -21,6 +21,7 @@
 #include "WidgetAnimTransform.h"
 #include "WidgetAnimSpring.h"
 #include "Evaluators/WidgetAnimShapeTrack.h"
+#include "Text/WidgetAnimTextHost.h"
 
 #if WITH_EDITOR
 #include "UObject/UnrealType.h"
@@ -217,7 +218,14 @@ void UWidgetAnimLibrary::SampleValueKeys(const FWidgetAnimSettings& Settings, fl
 		return;
 	}
 
-	// A tween with no keys between its start and end: one segment, moving by the track's Easing (or overshoot).
+	// A tween with no keys between its start and end: one segment, moving by the track's Easing (or overshoot) - or by the
+	// handles it was given in the Graph Editor, which take the segment over as they do any keyed one.
+	if (LastSegment == 0 && ValueKeys.UsesStartCurveAlone())
+	{
+		OutSegment = 0;
+		OutAlpha = WidgetAnimEasing::EvaluateSegment(ValueKeys.StartCurve, DirectedAlpha, [](float Alpha) { return Alpha; });
+		return;
+	}
 	if (LastSegment == 0)
 	{
 		OutSegment = 0;
@@ -4139,7 +4147,7 @@ bool UWidgetAnimLibrary::HasExpanders(const TArray<FWidgetAnimSettings>& Setting
 {
 	for (const FWidgetAnimSettings& Layer : Settings)
 	{
-		if (Layer.Expander.IsValid() || NeedsPlayPreparation(Layer))
+		if (Layer.Expander.IsValid() || Layer.TextTarget.IsSet() || NeedsPlayPreparation(Layer))
 		{
 			return true;
 		}
@@ -4233,6 +4241,75 @@ namespace
 	}
 }
 
+namespace WidgetAnimTextTargets
+{
+	/**
+	 * Where a layer's Part of the Text is in its text, as letter ranges - see FWidgetAnimTextTarget. False when the layer isn't
+	 * limited to part of its text at all: none typed, a type that can't be (it plays on the whole text), or a widget that isn't
+	 * an animated text - whose text has no letters of its own to move. True with no ranges: typed, and not there.
+	 */
+	bool Find(const FWidgetAnimSettings& Layer, UWidget* Target, TArray<FIntPoint>& OutRanges)
+	{
+		OutRanges.Reset();
+		if (!Layer.TextTarget.IsSet())
+		{
+			return false;
+		}
+
+		// A type that moves letters finds them on the widget a text stagger would; one that changes them, on its own text.
+		const bool bMovesParts = UWidgetAnimLibrary::TypeMovesParts(Layer.AnimType);
+		const FWidgetAnimEvaluator* Evaluator = !bMovesParts && Layer.AnimType == EWidgetAnimType::Custom ? Layer.FindEvaluator() : nullptr;
+		if (!bMovesParts && !(Evaluator && Evaluator->TakesTextRange(Layer.TypeParams)))
+		{
+			return false;
+		}
+
+		UObject* Text = bMovesParts ? static_cast<UObject*>(WidgetAnimExpand::FindPartHost(Target)) : WidgetAnimText::ResolveTarget(Target);
+		if (!WidgetAnimText::AsHost(Text))
+		{
+			return false;
+		}
+		Layer.TextTarget.FindLetterRanges(WidgetAnimText::GetDisplayString(Text), OutRanges);
+		return true;
+	}
+
+	/**
+	 * A text stagger's items kept to a Part of the Text: the letters in it, or the words with a letter in it. Lines are left as
+	 * they are - which letters a line holds is only known once the text is laid out.
+	 */
+	void Filter(UWidget* Target, const TArray<FIntPoint>& Ranges, TArray<FWidgetAnimExpandedItem>& Items)
+	{
+		if (Items.Num() == 0 || !Items[0].Part.IsSet())
+		{
+			return;
+		}
+
+		const FName Unit = Items[0].Part.Unit;
+		if (Unit == WidgetAnimPartUnits::Letter)
+		{
+			Items.RemoveAll([&Ranges](const FWidgetAnimExpandedItem& Item) { return Ranges.Num() == 0 || !WidgetAnimTextParts::Covers(Ranges, Item.Part.Index); });
+			return;
+		}
+		if (Unit == WidgetAnimPartUnits::Word)
+		{
+			TArray<WidgetAnimTextParts::FRange> Letters;
+			TArray<WidgetAnimTextParts::FRange> Words;
+			TArray<int32> WordOfLetter;
+			WidgetAnimTextParts::GetLetters(WidgetAnimText::GetDisplayString(WidgetAnimExpand::FindPartHost(Target)), Letters);
+			WidgetAnimTextParts::GetWords(Letters, Words, &WordOfLetter);
+			TSet<int32> Kept;
+			for (int32 LetterIndex = 0; LetterIndex < WordOfLetter.Num(); ++LetterIndex)
+			{
+				if (Ranges.Num() > 0 && WidgetAnimTextParts::Covers(Ranges, LetterIndex))
+				{
+					Kept.Add(WordOfLetter[LetterIndex]);
+				}
+			}
+			Items.RemoveAll([&Kept](const FWidgetAnimExpandedItem& Item) { return !Kept.Contains(Item.Part.Index); });
+		}
+	}
+}
+
 float UWidgetAnimLibrary::GetPreparedRunLength(UWidget* FallbackWidget, const FWidgetAnimSettings& Layer)
 {
 	const FLayerPreparation Preparation = PrepareLayerForPlay(FallbackWidget, Layer);
@@ -4253,8 +4330,16 @@ int32 UWidgetAnimLibrary::CountExpandedItems(UWidget* FallbackWidget, const FWid
 		return 1;
 	}
 
+	UWidget* Target = Settings.TargetWidget ? Settings.TargetWidget.Get() : FallbackWidget;
 	TArray<FWidgetAnimExpandedItem> Items;
-	Expander->GatherItems(Settings.TargetWidget ? Settings.TargetWidget.Get() : FallbackWidget, Items);
+	Expander->GatherItems(Target, Items);
+
+	// A text stagger kept to a Part of the Text fans out over its letters or words only.
+	TArray<FIntPoint> TextRanges;
+	if (Expander->GathersParts() && WidgetAnimTextTargets::Find(Settings, Target, TextRanges))
+	{
+		WidgetAnimTextTargets::Filter(Target, TextRanges, Items);
+	}
 	return Items.Num();
 }
 
@@ -4293,23 +4378,57 @@ bool UWidgetAnimLibrary::ExpandSettings(UWidget* FallbackWidget, const TArray<FW
 		TArray<FWidgetAnimExpandedItem> Items;
 		TArray<float> Offsets;
 		float Extra = 0.f;
+
+		/** Fanned out to where its Part of the Text appears, each place as one piece - with no stagger, all at once. */
+		bool bText = false;
 	};
 	TArray<FFan> Fans;
 	Fans.SetNum(NumLayers);
+
+	// A layer limited to part of its text by a type that changes letters rather than moving them: the letters it is limited
+	// to, and whether it is limited at all (typed, and its type and widget can be) - with no letters, its text wasn't there.
+	TArray<TArray<FIntPoint>> TextLetters;
+	TArray<bool> bTextLimited;
+	TextLetters.SetNum(NumLayers);
+	bTextLimited.Init(false, NumLayers);
 
 	for (int32 Index = 0; Index < NumLayers; ++Index)
 	{
 		const FWidgetAnimSettings& Layer = Settings[Index];
 		const FWidgetAnimExpander* Expander = Layer.Expander.GetPtr<FWidgetAnimExpander>();
+		UWidget* Target = Layer.TargetWidget ? Layer.TargetWidget.Get() : FallbackWidget;
+
+		// Part of the Text: where it is in the layer's text right now - found every time it starts, like a stagger's items, so
+		// it follows text set since.
+		TArray<FIntPoint> TextRanges;
+		const bool bTextTargeted = WidgetAnimTextTargets::Find(Layer, Target, TextRanges);
+		const bool bMovesParts = TypeMovesParts(Layer.AnimType);
+		if (bTextTargeted && !bMovesParts)
+		{
+			bTextLimited[Index] = true;
+			TextLetters[Index] = TextRanges;
+		}
 
 		// Letters can only be moved by what moves a render transform - or fired at, by a cue; on anything else the layer
 		// plays once, on the whole widget, as if it had no stagger.
 		if (!Expander || (Expander->GathersParts() && !TypeTakesParts(Layer.AnimType, Layer.TypeParams)))
 		{
+			// Without a stagger, a Part of the Text is still parts: each place it appears, posed as one piece, together.
+			if (bTextTargeted && bMovesParts)
+			{
+				FFan& TextFan = Fans[Index];
+				TextFan.bText = true;
+				UWidget* Host = WidgetAnimExpand::FindPartHost(Target);
+				for (const FIntPoint& Range : TextRanges)
+				{
+					FWidgetAnimExpandedItem& Item = TextFan.Items.AddDefaulted_GetRef();
+					Item.Widget = Host;
+					Item.Part = FWidgetAnimPartKey(WidgetAnimPartUnits::Span, Range.X, Range.Y);
+				}
+			}
 			continue;
 		}
 
-		UWidget* Target = Layer.TargetWidget ? Layer.TargetWidget.Get() : FallbackWidget;
 		if (bOutReady && !Expander->IsReadyToExpand(Target))
 		{
 			*bOutReady = false;
@@ -4318,6 +4437,12 @@ bool UWidgetAnimLibrary::ExpandSettings(UWidget* FallbackWidget, const TArray<FW
 		FFan& Fan = Fans[Index];
 		Fan.Expander = Expander;
 		Expander->GatherItems(Target, Fan.Items);
+
+		// A text stagger kept to a Part of the Text: just its letters or words take their turns.
+		if (bTextTargeted && bMovesParts && Expander->GathersParts())
+		{
+			WidgetAnimTextTargets::Filter(Target, TextRanges, Fan.Items);
+		}
 
 		// A value-driven layer shows its value from the moment it starts, with no delay (see TickAnimationsInto), so its
 		// items follow the value together and nothing waits for them.
@@ -4398,11 +4523,26 @@ bool UWidgetAnimLibrary::ExpandSettings(UWidget* FallbackWidget, const TArray<FW
 		Layer.Delay = FMath::Max(Layer.Delay + Shift[Index], 0.f);
 		ApplyLayerPreparation(Preparations[Index], Layer);
 
-		// Fanned out, or not staggerable here: either way nothing is left to fan out, so doing it again does nothing.
+		// Fanned out, or not staggerable here: either way nothing is left to fan out, so doing it again does nothing. Its Part
+		// of the Text is found, too.
 		Layer.Expander.Reset();
+		Layer.TextTarget = FWidgetAnimTextTarget();
+
+		// A text track limited to part of its text: the letters, for it to read as it plays - or, not there, nothing to play on.
+		if (bTextLimited[Index])
+		{
+			if (TextLetters[Index].Num() == 0)
+			{
+				Layer.bMuted = true;
+			}
+			else if (FWidgetAnimTypeParams* TypeParams = Layer.TypeParams.GetMutablePtr<FWidgetAnimTypeParams>())
+			{
+				TypeParams->TextLetters = TextLetters[Index];
+			}
+		}
 
 		const FFan& Fan = Fans[Index];
-		if (!Fan.Expander)
+		if (!Fan.Expander && !Fan.bText)
 		{
 			OutSettings.Add(MoveTemp(Layer));
 			continue;
@@ -4423,7 +4563,7 @@ bool UWidgetAnimLibrary::ExpandSettings(UWidget* FallbackWidget, const TArray<FW
 			FWidgetAnimSettings& Copy = OutSettings.Add_GetRef(Layer);
 			Copy.TargetWidget = Item.Widget;
 			Copy.Part = Item.Part;
-			Copy.bHoldStartPose = Copy.bHoldStartPose || Fan.Expander->bHoldStartPose;
+			Copy.bHoldStartPose = Copy.bHoldStartPose || (Fan.Expander && Fan.Expander->bHoldStartPose);
 			if (Fan.Offsets.IsValidIndex(ItemIndex))
 			{
 				Copy.Delay += Fan.Offsets[ItemIndex];
@@ -4912,6 +5052,7 @@ FWidgetAnimSettings FWidgetAnimLayer::ToSettings() const
 	Out.ValueInput = ValueInput;
 	Out.ValueKeys = ValueKeys;
 	Out.Expander = Expander;
+	Out.TextTarget = TextTarget;
 
 	Out.StartOpacity = StartOpacity;
 	Out.EndOpacity = EndOpacity;
@@ -4978,6 +5119,7 @@ FWidgetAnimLayer FWidgetAnimLayer::FromSettings(const FWidgetAnimSettings& Setti
 	Out.ValueInput = Settings.ValueInput;
 	Out.ValueKeys = Settings.ValueKeys;
 	Out.Expander = Settings.Expander;
+	Out.TextTarget = Settings.TextTarget;
 
 	Out.StartOpacity = Settings.StartOpacity;
 	Out.EndOpacity = Settings.EndOpacity;

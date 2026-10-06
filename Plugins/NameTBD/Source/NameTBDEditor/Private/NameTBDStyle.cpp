@@ -151,7 +151,7 @@ TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
        }
     }
 
-    // The Custom Shape path editor's icons, and Save. Each left unset when its file is missing - see FindIcon.
+    // The Custom Shape path editor's icons, Save and the Graph Editor. Each left unset when its file is missing - see FindIcon.
     {
        const TSharedPtr<IPlugin> IconsPlugin = IPluginManager::Get().FindPlugin(TEXT("NameTBD"));
        const TPair<FName, const TCHAR*> Icons[] =
@@ -169,6 +169,7 @@ TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
           { ShapeDoneIcon, TEXT("ShapeEdit_Done.svg") },
           { ShapeEditIcon, TEXT("ShapeEdit_EditShape.svg") },
           { SaveIcon, TEXT("WidgetAnim_Save.svg") },
+          { GraphEditorIcon, TEXT("WidgetAnim_GraphEditor.svg") },
        };
        for (const TPair<FName, const TCHAR*>& Icon : Icons)
        {

@@ -452,6 +452,7 @@ void FWidgetAnimTextColorEvaluator::ApplyColor(UObject* Target, const FWidgetAni
 		Effects.bTint = true;
 		Effects.Tint = Color;
 		Effects.bTintReplaces = bReplace;
+		Effects.TintLetters = Params.TextLetters;
 		Host->OnWidgetAnimTextEffectsChanged();
 		return;
 	}
@@ -537,6 +538,7 @@ bool FWidgetAnimTextColorEvaluator::ClearEffects(FWidgetAnimTextEffects& Effects
 	Effects.bTint = false;
 	Effects.Tint = FLinearColor::White;
 	Effects.bTintReplaces = false;
+	Effects.TintLetters.Reset();
 	return bWasSet;
 }
 
@@ -594,13 +596,26 @@ void FWidgetAnimShimmerEvaluator::ApplyWithColor(UObject* Target, const FInstanc
 		return;
 	}
 
-	// From wholly before the first letter to wholly past the last, so the band enters and leaves off the text.
+	// From wholly before the first letter to wholly past the last, so the band enters and leaves off the text - or, limited to
+	// part of it, off that part.
 	const float Reach = FMath::Max(Shimmer->Width, 0.f) + FMath::Max(Shimmer->Softness, 0.f) + 0.5f;
-	const float Last = static_cast<float>(FMath::Max(CountLetters(Target) - 1, 0));
+	float First = 0.f;
+	float Last = static_cast<float>(FMath::Max(CountLetters(Target) - 1, 0));
+	if (Shimmer->TextLetters.Num() > 0)
+	{
+		First = static_cast<float>(Shimmer->TextLetters[0].X);
+		Last = First;
+		for (const FIntPoint& Range : Shimmer->TextLetters)
+		{
+			First = FMath::Min(First, static_cast<float>(Range.X));
+			Last = FMath::Max(Last, static_cast<float>(Range.X + Range.Y - 1));
+		}
+	}
 
 	FWidgetAnimTextEffects& Effects = Host->GetWidgetAnimTextEffects();
 	Effects.bShimmer = true;
-	Effects.ShimmerCenter = FMath::Lerp(-Reach, Last + Reach, static_cast<float>(Value));
+	Effects.ShimmerLetters = Shimmer->TextLetters;
+	Effects.ShimmerCenter = FMath::Lerp(First - Reach, Last + Reach, static_cast<float>(Value));
 	Effects.ShimmerWidth = FMath::Max(Shimmer->Width, 0.f);
 	Effects.ShimmerSoftness = FMath::Max(Shimmer->Softness, 0.f);
 	Effects.ShimmerColor = Color;
@@ -612,6 +627,7 @@ bool FWidgetAnimShimmerEvaluator::ClearEffects(FWidgetAnimTextEffects& Effects) 
 {
 	const bool bWasSet = Effects.bShimmer;
 	Effects.bShimmer = false;
+	Effects.ShimmerLetters.Reset();
 	return bWasSet;
 }
 
@@ -656,6 +672,7 @@ void FWidgetAnimWaveEvaluator::Apply(UObject* Target, const FInstancedStruct& Pa
 
 	FWidgetAnimTextEffects& Effects = Host->GetWidgetAnimTextEffects();
 	Effects.bWave = Value != 0.0;
+	Effects.WaveLetters = Wave->TextLetters;
 	Effects.WaveMotion = Wave->Motion;
 	Effects.WaveAmplitude = Wave->Amplitude * static_cast<float>(Value);
 	Effects.WaveLength = FMath::Max(Wave->Wavelength, 0.5f);
@@ -669,6 +686,7 @@ bool FWidgetAnimWaveEvaluator::ClearEffects(FWidgetAnimTextEffects& Effects) con
 	const bool bWasSet = Effects.bWave;
 	Effects.bWave = false;
 	Effects.WaveSpeed = 0.f;
+	Effects.WaveLetters.Reset();
 	return bWasSet;
 }
 
@@ -714,6 +732,7 @@ void FWidgetAnimShakeEvaluator::Apply(UObject* Target, const FInstancedStruct& P
 	const float Strength = FMath::Max(static_cast<float>(Value), 0.f);
 	FWidgetAnimTextEffects& Effects = Host->GetWidgetAnimTextEffects();
 	Effects.bShake = Strength > 0.f;
+	Effects.ShakeLetters = Shake->TextLetters;
 	Effects.ShakeAmount = Shake->Distance * Strength;
 	Effects.ShakeAngle = Shake->Angle * Strength;
 	Effects.ShakeRate = FMath::Max(Shake->Rate, 1.f);
@@ -725,6 +744,7 @@ bool FWidgetAnimShakeEvaluator::ClearEffects(FWidgetAnimTextEffects& Effects) co
 	const bool bWasSet = Effects.bShake;
 	Effects.bShake = false;
 	Effects.ShakeRate = 0.f;
+	Effects.ShakeLetters.Reset();
 	return bWasSet;
 }
 

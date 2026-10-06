@@ -264,6 +264,9 @@ public:
 	virtual FText GetValueLabel() const override;
 	virtual FName GetChannel(const FInstancedStruct& Params) const override;
 
+	/** Only the letters of a track's Part of the Text, on an animated text widget - see FWidgetAnimTextTarget. */
+	virtual bool TakesTextRange(const FInstancedStruct& Params) const override { return true; }
+
 	virtual double GetEndpointValue(const FInstancedStruct& Params, bool bStart) const override { return bStart ? 0.0 : 1.0; }
 	virtual void Apply(UObject* Target, const FInstancedStruct& Params, double Value) const override;
 
@@ -330,6 +333,10 @@ public:
 	virtual FText GetDescription() const override;
 	virtual FText GetValueLabel() const override;
 	virtual FName GetChannel(const FInstancedStruct& Params) const override;
+
+	/** Only the letters of a track's Part of the Text, on an animated text widget - see FWidgetAnimTextTarget. */
+	virtual bool TakesTextRange(const FInstancedStruct& Params) const override { return true; }
+
 	virtual bool PrefersLinearEasing() const override { return true; }
 
 	virtual double GetEndpointValue(const FInstancedStruct& Params, bool bStart) const override { return bStart ? 0.0 : 1.0; }
@@ -394,6 +401,9 @@ public:
 	virtual FText GetValueLabel() const override;
 	virtual FName GetChannel(const FInstancedStruct& Params) const override;
 
+	/** Only the letters of a track's Part of the Text, on an animated text widget - see FWidgetAnimTextTarget. */
+	virtual bool TakesTextRange(const FInstancedStruct& Params) const override { return true; }
+
 	virtual double GetEndpointValue(const FInstancedStruct& Params, bool bStart) const override;
 	virtual void Apply(UObject* Target, const FInstancedStruct& Params, double Value) const override;
 
@@ -444,6 +454,9 @@ public:
 	virtual FText GetDescription() const override;
 	virtual FText GetValueLabel() const override;
 	virtual FName GetChannel(const FInstancedStruct& Params) const override;
+
+	/** Only the letters of a track's Part of the Text, on an animated text widget - see FWidgetAnimTextTarget. */
+	virtual bool TakesTextRange(const FInstancedStruct& Params) const override { return true; }
 
 	virtual double GetEndpointValue(const FInstancedStruct& Params, bool bStart) const override;
 	virtual void Apply(UObject* Target, const FInstancedStruct& Params, double Value) const override;

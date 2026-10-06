@@ -86,6 +86,7 @@ class Curve:
     EASE_IN_OUT = "EaseInOut"
     HOLD = "Hold"
     CUSTOM = "Custom"
+    BEZIER = "Bezier"  # shaped by its LeaveHandle / ArriveHandle, as dragged in the Graph Editor
 
 
 class Starts:

@@ -765,10 +765,21 @@ void SWidgetAnimText::RebuildPoseIndex() const
 	LetterPose.Init(INDEX_NONE, Letters.Num());
 	WordPose.Init(INDEX_NONE, NumWords);
 	LinePose.Reset();
+	SpanPoses.Reset();
 
 	for (int32 PoseIndex = 0; PoseIndex < Poses.Num(); ++PoseIndex)
 	{
 		const FWidgetAnimPartKey& Part = Poses[PoseIndex].Part;
+
+		// A run of letters can overlap any other, so each is kept as it came, not by place.
+		if (Part.Unit == WidgetAnimPartUnits::Span)
+		{
+			if (Part.Index >= 0 && Part.Count > 0)
+			{
+				SpanPoses.Add(PoseIndex);
+			}
+			continue;
+		}
 		TArray<int32>* Index = Part.Unit == WidgetAnimPartUnits::Letter ? &LetterPose
 			: Part.Unit == WidgetAnimPartUnits::Word ? &WordPose
 			: Part.Unit == WidgetAnimPartUnits::Line ? &LinePose
@@ -1037,8 +1048,10 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 
 	const ESlateDrawEffect DrawEffects = ShouldBeEnabled(bParentEnabled) ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
 	FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
-	const bool bReplaceColor = Fx && Fx->bTint && Fx->bTintReplaces;
-	if (Fx && Fx->bTint && !bReplaceColor)
+	// Text Color limited to part of the text colors those letters one by one, below; otherwise the whole text, here.
+	const bool bTintLetters = Fx && Fx->bTint && Fx->TintLetters.Num() > 0;
+	const bool bReplaceColor = Fx && Fx->bTint && Fx->bTintReplaces && !bTintLetters;
+	if (Fx && Fx->bTint && !bReplaceColor && !bTintLetters)
 	{
 		Tint *= Fx->Tint;
 	}
@@ -1222,6 +1235,18 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 		}
 	}
 
+	// The box around each run of letters posed as one - a track's Part of the Text - whose middle it is turned and scaled about.
+	TArray<FBox2f, TInlineAllocator<4>> SpanBoxes;
+	SpanBoxes.Init(FBox2f(ForceInit), SpanPoses.Num());
+	for (int32 SpanAt = 0; SpanAt < SpanPoses.Num(); ++SpanAt)
+	{
+		const FWidgetAnimPartKey& SpanPart = Poses[SpanPoses[SpanAt]].Part;
+		for (int32 LetterIndex = FMath::Max(SpanPart.Index, 0); LetterIndex < FMath::Min(SpanPart.Index + SpanPart.Count, NumLetters); ++LetterIndex)
+		{
+			SpanBoxes[SpanAt] += LetterBoxes[LetterIndex];
+		}
+	}
+
 	// A reveal counts in letters, words or lines: which one a letter belongs to, and that one's box.
 	auto RevealPlace = [&](int32 LetterIndex, int32 Word, int32 LineIndex)
 	{
@@ -1320,6 +1345,23 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 		bool bStandIn = false;
 		FLinearColor Color = RunColors.IsValidIndex(Letter.Run) ? RunColors[Letter.Run] : FLinearColor::White;
 		bool bRecolored = false;
+
+		// Text Color on part of the text: its letters tinted - or, replacing, its color at the run's own opacity.
+		if (bTintLetters && WidgetAnimTextParts::Covers(Fx->TintLetters, LetterIndex))
+		{
+			if (Fx->bTintReplaces)
+			{
+				FLinearColor Replaced = Fx->Tint * Tint;
+				Replaced.A *= ResolvedRuns.IsValidIndex(Letter.Run) ? ResolvedRuns[Letter.Run].Color.GetColor(InWidgetStyle).A : 1.f;
+				Color = Replaced;
+			}
+			else
+			{
+				Color *= Fx->Tint;
+			}
+			bRecolored = true;
+		}
+
 		float Blur = 0.f;
 		FBox2f Clip(ForceInit);
 		bool bClip = false;
@@ -1340,7 +1382,7 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 		if (Fx)
 		{
 			// The letter's own effects, about its own middle: a wave, a shake, spacing.
-			if (Fx->bWave && Fx->WaveLength > KINDA_SMALL_NUMBER)
+			if (Fx->bWave && Fx->WaveLength > KINDA_SMALL_NUMBER && WidgetAnimTextParts::Covers(Fx->WaveLetters, LetterIndex))
 			{
 				const float Wave = FMath::Sin(2.f * PI * (WavePhase - LetterIndex / Fx->WaveLength));
 				switch (Fx->WaveMotion)
@@ -1355,7 +1397,7 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 				default:                                Offset.Y -= Wave * Fx->WaveAmplitude; break;
 				}
 			}
-			if (Fx->bShake)
+			if (Fx->bShake && WidgetAnimTextParts::Covers(Fx->ShakeLetters, LetterIndex))
 			{
 				Offset.X += WidgetAnimTextDraw::Random(LetterIndex, ShakeSeed, 0x1A2Bu) * Fx->ShakeAmount;
 				Offset.Y += WidgetAnimTextDraw::Random(LetterIndex, ShakeSeed, 0x3C4Du) * Fx->ShakeAmount;
@@ -1560,7 +1602,7 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 			}
 
 			// A shimmer: the band's color over the letters it passes, fading at its edges.
-			if (Fx->bShimmer)
+			if (Fx->bShimmer && WidgetAnimTextParts::Covers(Fx->ShimmerLetters, LetterIndex))
 			{
 				const float Distance = FMath::Abs(LetterIndex - Fx->ShimmerCenter);
 				const float Weight = FMath::Clamp(1.f - FMath::Max(Distance - Fx->ShimmerWidth, 0.f) / FMath::Max(Fx->ShimmerSoftness, KINDA_SMALL_NUMBER), 0.f, 1.f) * Fx->ShimmerStrength;
@@ -1591,6 +1633,14 @@ int32 SWidgetAnimText::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 		if (WordPose.IsValidIndex(Word) && WordBoxes.IsValidIndex(Word))
 		{
 			ApplyPose(WordPose[Word], WordBoxes[Word]);
+		}
+		for (int32 SpanAt = 0; SpanAt < SpanPoses.Num(); ++SpanAt)
+		{
+			const FWidgetAnimPartKey& SpanPart = Poses[SpanPoses[SpanAt]].Part;
+			if (LetterIndex >= SpanPart.Index && LetterIndex < SpanPart.Index + SpanPart.Count && SpanBoxes[SpanAt].bIsValid)
+			{
+				ApplyPose(SpanPoses[SpanAt], SpanBoxes[SpanAt]);
+			}
 		}
 		if (LinePose.IsValidIndex(Letter.Line) && LineBoxes.IsValidIndex(Letter.Line))
 		{

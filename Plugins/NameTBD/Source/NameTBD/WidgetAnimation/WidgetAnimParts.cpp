@@ -7,6 +7,7 @@
 const FName WidgetAnimPartUnits::Letter(TEXT("Letter"));
 const FName WidgetAnimPartUnits::Word(TEXT("Word"));
 const FName WidgetAnimPartUnits::Line(TEXT("Line"));
+const FName WidgetAnimPartUnits::Span(TEXT("Span"));
 
 void WidgetAnimTextParts::GetLetters(const FString& Text, TArray<FRange>& OutLetters)
 {
@@ -77,6 +78,83 @@ void WidgetAnimTextParts::GetWords(const TArray<FRange>& Letters, TArray<FRange>
 		if (OutWordOfLetter)
 		{
 			OutWordOfLetter->Add(OutWords.Num() - 1);
+		}
+	}
+}
+
+void FWidgetAnimTextTarget::FindLetterRanges(const FString& Display, TArray<FIntPoint>& OutRanges) const
+{
+	OutRanges.Reset();
+	if (Text.IsEmpty() || Display.IsEmpty())
+	{
+		return;
+	}
+
+	// Every place it is, in characters, one after another and never overlapping - "aa" in "aaaa" is two places, not three.
+	const ESearchCase::Type SearchCase = bMatchCase ? ESearchCase::CaseSensitive : ESearchCase::IgnoreCase;
+	TArray<FIntPoint, TInlineAllocator<4>> Places;
+	for (int32 From = 0; From <= Display.Len() - Text.Len();)
+	{
+		const int32 Found = Display.Find(Text, SearchCase, ESearchDir::FromStart, From);
+		if (Found == INDEX_NONE)
+		{
+			break;
+		}
+		const int32 End = Found + Text.Len();
+
+		// A whole word has no letter or digit right before it or right after it.
+		const bool bWholeWord = (Found == 0 || !FChar::IsAlnum(Display[Found - 1])) && (End >= Display.Len() || !FChar::IsAlnum(Display[End]));
+		if (!bWholeWords || bWholeWord)
+		{
+			Places.Add(FIntPoint(Found, End));
+			From = End;
+		}
+		else
+		{
+			From = Found + 1;
+		}
+	}
+	if (Places.Num() == 0)
+	{
+		return;
+	}
+
+	// The ones asked for.
+	int32 FirstPlace = 0;
+	int32 LastPlace = Places.Num() - 1;
+	switch (Occurrence)
+	{
+	case EWidgetAnimTextOccurrence::First:  LastPlace = 0; break;
+	case EWidgetAnimTextOccurrence::Last:   FirstPlace = LastPlace; break;
+	case EWidgetAnimTextOccurrence::Number:
+		if (!Places.IsValidIndex(Number - 1))
+		{
+			return;
+		}
+		FirstPlace = LastPlace = Number - 1;
+		break;
+	default: break;
+	}
+
+	// Each as the letters it covers - white space is never a letter, so "Hello World" is ten of them in one run.
+	TArray<WidgetAnimTextParts::FRange> Letters;
+	WidgetAnimTextParts::GetLetters(Display, Letters);
+	for (int32 Place = FirstPlace; Place <= LastPlace; ++Place)
+	{
+		const FIntPoint& Chars = Places[Place];
+		int32 First = INDEX_NONE;
+		int32 Count = 0;
+		for (int32 LetterIndex = 0; LetterIndex < Letters.Num(); ++LetterIndex)
+		{
+			if (Letters[LetterIndex].Begin < Chars.Y && Letters[LetterIndex].End > Chars.X)
+			{
+				First = First == INDEX_NONE ? LetterIndex : First;
+				++Count;
+			}
+		}
+		if (Count > 0)
+		{
+			OutRanges.Add(FIntPoint(First, Count));
 		}
 	}
 }

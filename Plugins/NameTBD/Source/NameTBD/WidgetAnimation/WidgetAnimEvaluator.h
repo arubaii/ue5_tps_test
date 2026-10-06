@@ -29,6 +29,13 @@ USTRUCT(BlueprintType)
 struct NAMETBD_API FWidgetAnimTypeParams
 {
 	GENERATED_BODY()
+
+	/**
+	 * The letters of its text a text track is limited to - each a first letter (X) and how many (Y) - found from its track's
+	 * Part of the Text (see FWidgetAnimTextTarget) as it starts, on the copy of its settings that plays. Empty: the whole text.
+	 * Read only by a type whose TakesTextRange says so. Not reflected: never saved, edited or compared.
+	 */
+	TArray<FIntPoint> TextLetters;
 };
 
 /**
@@ -184,6 +191,12 @@ public:
 	 * unless one of them says so here. False for a type whose look follows only its value - nearly every type.
 	 */
 	virtual bool AnimatesAtRest(const FInstancedStruct& Params) const { return false; }
+
+	/**
+	 * Whether the type can be limited to some of its text's letters - a track's Part of the Text (see FWidgetAnimTextTarget) -
+	 * reading them from FWidgetAnimTypeParams::TextLetters. False: such a track plays on the whole text, as before.
+	 */
+	virtual bool TakesTextRange(const FInstancedStruct& Params) const { return false; }
 
 	// ---------------------------------------------------------------------------------------------
 	// Play-time length
