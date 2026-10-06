@@ -1,6 +1,8 @@
 // Copyright AR GameSystems 2026. All rights reserved.
 
 #include "WidgetAnimBuilder.h"
+
+#include "NameTBD/Widgets/Shapes/ShapeWidget.h"
 #include "WidgetAnimTransform.h"
 #include "WidgetAnimRuntimeSettings.h"
 
@@ -329,13 +331,13 @@ uint32 UWidgetAnimBuilder::ComputeStructureSignature() const
 		// Not Invert: it plays the same animation from the other end, over the same span. Every layer's clock
 		// stays valid, so flipping it re-poses the preview where it is instead of starting it over at 0.00.
 
-		if (Layer.AnimType == EWidgetAnimType::Transform)
+		if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
 		{
 			// The curve's count rather than Keys': Keys only catches up a tick later, and counting it would
 			// restart the preview twice for one added key.
 			const FRichCurve* Curve = Layer.Transform.GetActiveCurve();
 			Hash = HashCombine(Hash, GetTypeHash(Curve ? Curve->GetNumKeys() : 0));
-			Hash = HashCombine(Hash, GetTypeHash(static_cast<uint8>(Layer.Transform.bAnimateShape)));
+			Hash = HashCombine(Hash, PointerHash(Layer.Transform.ShapeKind.Get()));
 		}
 	}
 
@@ -1302,7 +1304,16 @@ FString UWidgetAnimBuilder::GetPrefixedAssetName() const
 
 #endif // WITH_EDITOR
 
-UWidgetAnimPresetAsset* UWidgetAnimBuilder::CreateWidgetAnimation()
+FString UWidgetAnimBuilder::GetCreateFolder() const
+{
+#if WITH_EDITOR
+	return GetSavePackagePath();
+#else
+	return FString();
+#endif
+}
+
+UWidgetAnimPresetAsset* UWidgetAnimBuilder::CreateWidgetAnimation(bool bChooseLocation)
 {
 #if WITH_EDITOR
 	if (PreviewAnimation)
@@ -1333,8 +1344,16 @@ UWidgetAnimPresetAsset* UWidgetAnimBuilder::CreateWidgetAnimation()
 	UDataAssetFactory* Factory = NewObject<UDataAssetFactory>();
 	Factory->DataAssetClass = UWidgetAnimPresetAsset::StaticClass();
 
-	UWidgetAnimPresetAsset* Asset = Cast<UWidgetAnimPresetAsset>(
-		AssetTools.CreateAsset(UniqueAssetName, PackagePath, UWidgetAnimPresetAsset::StaticClass(), Factory));
+	// Custom Location: the editor's Save Asset As window, starting there - without the factory's own class picker,
+	// since the class is already known.
+	UWidgetAnimPresetAsset* Asset = bChooseLocation
+		? Cast<UWidgetAnimPresetAsset>(AssetTools.CreateAssetWithDialog(UniqueAssetName, PackagePath, UWidgetAnimPresetAsset::StaticClass(), Factory, NAME_None, /*bCallConfigureProperties=*/false))
+		: Cast<UWidgetAnimPresetAsset>(AssetTools.CreateAsset(UniqueAssetName, PackagePath, UWidgetAnimPresetAsset::StaticClass(), Factory));
+	if (!Asset && bChooseLocation)
+	{
+		// Cancelled.
+		return nullptr;
+	}
 
 	if (!Asset)
 	{
@@ -1366,7 +1385,7 @@ UWidgetAnimPresetAsset* UWidgetAnimBuilder::CreateWidgetAnimation()
 	}
 
 	ShowBuilderNotification(
-		FText::Format(LOCTEXT("Created", "Created {0}"), FText::FromString(UniquePackageName)),
+		FText::Format(LOCTEXT("Created", "Created {0}"), FText::FromString(Asset->GetPackage()->GetName())),
 		/*bSuccess=*/true);
 	return Asset;
 #else

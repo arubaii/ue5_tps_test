@@ -27,6 +27,27 @@ public:
 
 	/** The State Machine editor's Exit node: a door with the way out (Resources/WidgetAnim_StateMachineExit.svg). */
 	static inline const FName StateMachineExitIcon = TEXT("NameTBD.StateMachine.ExitIcon");
+
+	/**
+	 * The Custom Shape path editor's toolbar, and Save: the plugin's own SVGs in Resources (ShapeEdit_*.svg, WidgetAnim_Save.svg),
+	 * white so a button's text color tints them. Left unset when a file is missing; the button then shows its label alone.
+	 */
+	static inline const FName ShapeSelectIcon = TEXT("NameTBD.Shape.Select");
+	static inline const FName ShapePenIcon = TEXT("NameTBD.Shape.Pen");
+	static inline const FName ShapeStraightIcon = TEXT("NameTBD.Shape.Straight");
+	static inline const FName ShapeMirroredIcon = TEXT("NameTBD.Shape.Mirrored");
+	static inline const FName ShapeAsymmetricIcon = TEXT("NameTBD.Shape.Asymmetric");
+	static inline const FName ShapeDisconnectedIcon = TEXT("NameTBD.Shape.Disconnected");
+	static inline const FName ShapeClosePathIcon = TEXT("NameTBD.Shape.ClosePath");
+	static inline const FName ShapeOpenPathIcon = TEXT("NameTBD.Shape.OpenPath");
+	static inline const FName ShapeReverseIcon = TEXT("NameTBD.Shape.Reverse");
+	static inline const FName ShapeDeleteIcon = TEXT("NameTBD.Shape.Delete");
+	static inline const FName ShapeDoneIcon = TEXT("NameTBD.Shape.Done");
+	static inline const FName ShapeEditIcon = TEXT("NameTBD.Shape.Edit");
+	static inline const FName SaveIcon = TEXT("NameTBD.Save");
+
+	/** One of the plugin's own icons, or null when its file was missing at startup. */
+	static const FSlateBrush* FindIcon(FName Name);
 	
 
 private:

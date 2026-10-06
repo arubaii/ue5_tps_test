@@ -118,6 +118,13 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Track Controls", meta = (DisplayName = "Arrow Keys Can Extend the Animation"))
 	bool bArrowKeysExtendAnimation = true;
 
+	/**
+	 * Editing a key - its value, its curve, a Transform or Shape key's pose - jumps the preview to that key, so the change
+	 * shows as it is made. With a track selected rather than a key, editing its start or end value jumps to its start or end.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Track Controls", meta = (DisplayName = "Jump to Edited Key"))
+	bool bJumpToEditedKey = true;
+
 	// -------------------------------------------------------------------------------------------------
 	// Track display
 	// -------------------------------------------------------------------------------------------------

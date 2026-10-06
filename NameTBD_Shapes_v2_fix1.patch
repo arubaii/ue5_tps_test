@@ -1,0 +1,11 @@
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimTransform.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimTransform.h
+@@ -88,7 +88,7 @@
+ 	 * morphs vertex by vertex when both keys have as many, and anything with nothing in between - an on/off, a choice
+ 	 * from a list - switches halfway.
+ 	 */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (DisplayName = "Shape", FixedLayout, EditCondition = "Content == EWidgetKeyframeContent::Shape && !bUseAuthoredShape", EditConditionHides, HideEditConditionToggle))
++	UPROPERTY(EditAnywhere, Category = "Key", meta = (DisplayName = "Shape", FixedLayout, EditCondition = "Content == EWidgetKeyframeContent::Shape && !bUseAuthoredShape", EditConditionHides, HideEditConditionToggle))
+ 	FInstancedPropertyBag ShapeValues;
+ 
+ 	/**

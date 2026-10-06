@@ -36,6 +36,10 @@
 #include "Components/AudioComponent.h"
 #include "Containers/Ticker.h"
 #include "Editor.h"
+#include "UMGEditorModule.h"
+#include "WidgetShapeDetails.h"
+#include "WidgetShapePathEditor.h"
+#include "NameTBD/Widgets/Shapes/ShapeWidget.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
 
@@ -49,6 +53,13 @@ void FNameTBDEditorModule::StartupModule()
 		FOnGetDetailCustomizationInstance::CreateStatic(&FContextMenuButtonDetails::MakeInstance));
 
 	PropertyModule.NotifyCustomizationModuleChanged();
+
+	// A Shape track key's shape fields are a property bag, laid out by the engine's own property bag customization -
+	// loaded here in case nothing else in the editor has asked for it yet.
+	if (FModuleManager::Get().ModuleExists(TEXT("StructUtilsEditor")))
+	{
+		FModuleManager::Get().LoadModule(TEXT("StructUtilsEditor"));
+	}
 
 	// 2. Initialize the Slate Style for small UI icons
 	FNameTBDStyle::Initialize();
@@ -90,7 +101,17 @@ void FNameTBDEditorModule::StartupModule()
 	PropertyModule.RegisterCustomPropertyTypeLayout(
 		FWidgetAnimMachineCondition::StaticStruct()->GetFName(),
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FWidgetAnimMachineConditionCustomization::MakeInstance));
+
+	// Every shape widget's Details: presets, and a Custom Shape's outline tools.
+	PropertyModule.RegisterCustomClassLayout(
+		UShapeWidget::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetShapeDetails::MakeInstance));
 	PropertyModule.NotifyCustomizationModuleChanged();
+
+	// A Custom Shape's path editor, on the UMG designer's canvas.
+	IUMGEditorModule& UMGEditorModule = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
+	ShapePathEditorFactory = MakeShared<FWidgetShapePathEditorFactory>();
+	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(ShapePathEditorFactory.ToSharedRef());
 
 	ValuePinFactory = MakeShared<FWidgetAnimValuePinFactory>();
 	FEdGraphUtilities::RegisterVisualPinFactory(ValuePinFactory);
@@ -147,6 +168,15 @@ void FNameTBDEditorModule::ShutdownModule()
 
 	WidgetAnimCues::SetPreviewSoundPlayer(nullptr);
 
+	if (ShapePathEditorFactory.IsValid())
+	{
+		if (IUMGEditorModule* UMGEditorModule = FModuleManager::GetModulePtr<IUMGEditorModule>("UMGEditor"))
+		{
+			UMGEditorModule->GetDesignerExtensibilityManager()->RemoveDesignerExtensionFactory(ShapePathEditorFactory.ToSharedRef());
+		}
+		ShapePathEditorFactory.Reset();
+	}
+
 	if (ValuePinFactory.IsValid())
 	{
 		FEdGraphUtilities::UnregisterVisualPinFactory(ValuePinFactory);
@@ -174,6 +204,7 @@ void FNameTBDEditorModule::ShutdownModule()
 		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimationComponent"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimEntry"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimMachineCondition"));
+		PropertyModule->UnregisterCustomClassLayout(TEXT("ShapeWidget"));
 
 	}
 	

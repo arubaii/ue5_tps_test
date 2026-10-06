@@ -40,7 +40,8 @@ uint8 WidgetAnimMachineChannels::GetChannels(const FWidgetAnimSettings& Settings
 	case EWidgetAnimType::Transform:
 		return Scale | Translation | Shear | Angle;
 	default:
-		// Material parameters, registered types and cues write no transform; their channels are their own.
+		// Material parameters, Shape Box and Shape tracks, registered types and cues write no transform; their channels
+		// are their own.
 		return 0;
 	}
 }
@@ -440,7 +441,7 @@ namespace WidgetAnimStateMachines
 					Out.Result.AuthoritativeWrites.Add(Source);
 					continue;
 				}
-				if (Leaving->Evaluator == Source.Evaluator && !Leaving->bIsBaseline && !Source.bIsBaseline)
+				if (Leaving->Evaluator == Source.Evaluator && Source.Evaluator && Source.Evaluator->BlendsWriteValues() && !Leaving->bIsBaseline && !Source.bIsBaseline)
 				{
 					FWidgetAnimAuthoritativeWrite& Blended = Out.Result.AuthoritativeWrites.Add_GetRef(Source);
 					Blended.Value = FMath::Lerp(Leaving->Value, Source.Value, static_cast<double>(Alpha));
@@ -1704,8 +1705,18 @@ namespace WidgetAnimStateMachines
 				{
 					continue;
 				}
-				if (Existing && Weight < 1.f && Existing->Evaluator == Source.Evaluator && !Existing->bIsBaseline)
+				if (Existing && Weight < 1.f && Existing->Evaluator == Source.Evaluator && Source.Evaluator && !Existing->bIsBaseline)
 				{
+					// A write whose value only means something with the rest of it - a Shape track's place among its keys -
+					// can't be blended by its value: the heavier layer has it.
+					if (!Source.Evaluator->BlendsWriteValues())
+					{
+						if (Weight >= 0.5f)
+						{
+							*Existing = Source;
+						}
+						continue;
+					}
 					Existing->Value = FMath::Lerp(Existing->Value, Source.Value, static_cast<double>(Weight));
 					continue;
 				}

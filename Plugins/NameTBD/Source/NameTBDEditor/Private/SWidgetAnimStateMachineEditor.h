@@ -454,7 +454,11 @@ private:
 
 	/** Shows the active state's layer and brings its state into view. */
 	void JumpToActiveState();
-	void CreateNewMachine();
+	/** A new machine: in the Default Folder, or - bChooseLocation - wherever the editor's Save Asset As window says. */
+	void CreateNewMachine(bool bChooseLocation);
+
+	/** Where New puts a machine without asking: the project's Default Save Folder, else beside the Widget Blueprint. */
+	FString GetDefaultMachineFolder() const;
 	void SaveMachine();
 
 	/** A machine to start on: one the selected widget plays, else one any widget of the Widget Blueprint plays. */

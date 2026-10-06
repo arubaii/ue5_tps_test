@@ -39,6 +39,11 @@ const ISlateStyle& FNameTBDStyle::Get()
     return *StyleInstance;
 }
 
+const FSlateBrush* FNameTBDStyle::FindIcon(FName Name)
+{
+    return StyleInstance.IsValid() ? StyleInstance->GetOptionalBrush(Name, nullptr, nullptr) : nullptr;
+}
+
 TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
 {
     TSharedRef<FSlateStyleSet> Style = MakeShareable(new FSlateStyleSet(GetStyleSetName()));
@@ -143,6 +148,35 @@ TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
        if (!ExitPath.IsEmpty() && FPaths::FileExists(ExitPath))
        {
           Style->Set(StateMachineExitIcon, new FSlateVectorImageBrush(ExitPath, FVector2D(16.0f, 16.0f)));
+       }
+    }
+
+    // The Custom Shape path editor's icons, and Save. Each left unset when its file is missing - see FindIcon.
+    {
+       const TSharedPtr<IPlugin> IconsPlugin = IPluginManager::Get().FindPlugin(TEXT("NameTBD"));
+       const TPair<FName, const TCHAR*> Icons[] =
+       {
+          { ShapeSelectIcon, TEXT("ShapeEdit_Select.svg") },
+          { ShapePenIcon, TEXT("ShapeEdit_Pen.svg") },
+          { ShapeStraightIcon, TEXT("ShapeEdit_Straight.svg") },
+          { ShapeMirroredIcon, TEXT("ShapeEdit_Mirrored.svg") },
+          { ShapeAsymmetricIcon, TEXT("ShapeEdit_Asymmetric.svg") },
+          { ShapeDisconnectedIcon, TEXT("ShapeEdit_Disconnected.svg") },
+          { ShapeClosePathIcon, TEXT("ShapeEdit_ClosePath.svg") },
+          { ShapeOpenPathIcon, TEXT("ShapeEdit_OpenPath.svg") },
+          { ShapeReverseIcon, TEXT("ShapeEdit_Reverse.svg") },
+          { ShapeDeleteIcon, TEXT("ShapeEdit_Delete.svg") },
+          { ShapeDoneIcon, TEXT("ShapeEdit_Done.svg") },
+          { ShapeEditIcon, TEXT("ShapeEdit_EditShape.svg") },
+          { SaveIcon, TEXT("WidgetAnim_Save.svg") },
+       };
+       for (const TPair<FName, const TCHAR*>& Icon : Icons)
+       {
+          const FString Path = IconsPlugin.IsValid() ? IconsPlugin->GetBaseDir() / TEXT("Resources") / Icon.Value : FString();
+          if (!Path.IsEmpty() && FPaths::FileExists(Path))
+          {
+             Style->Set(Icon.Key, new FSlateVectorImageBrush(Path, FVector2D(16.0f, 16.0f)));
+          }
        }
     }
 

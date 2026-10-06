@@ -55,17 +55,17 @@ enum class EWidgetAnimValueKind : uint8
 };
 
 /**
- * What a value-driven Transform track's value moves: the whole path of its keys, or one field of the pose - the
- * widget's translation, scale, shear or angle, or one of the Shape Box's shape settings - whole or one axis of it.
+ * What a value-driven Transform or Shape Box track's value moves: the whole path of its keys, or one field of the pose -
+ * a Transform track's translation, scale, shear or angle, a Shape Box track's shape settings - whole or one axis of it.
  * The value still travels along the keys - they say what that field is at each point - and the rest of the keys is
- * left out. One value per track: add another Transform track for another. Listed alphabetically after Whole Path.
+ * left out. One value per track: add another track for another. Listed alphabetically after Whole Path.
  *
  * Saved by name, so entries can be reordered freely.
  */
 UENUM(BlueprintType)
 enum class EWidgetAnimTransformValueTarget : uint8
 {
-	WholePath UMETA(DisplayName = "Whole Path", ToolTip = "Everything the track's keys animate - translation, scale, shear, angle and shape - moves together along its keys. A Vector 2D value moves the X parts and the Y parts separately."),
+	WholePath UMETA(DisplayName = "Whole Path", ToolTip = "Everything the track's keys animate - a Transform track's translation, scale, shear and angle, a Shape Box track's whole outline - moves together along its keys. A Vector 2D value moves the X parts and the Y parts separately."),
 
 	Angle UMETA(ToolTip = "Only the widget's angle. Takes a Float or an Integer."),
 
@@ -75,71 +75,71 @@ enum class EWidgetAnimTransformValueTarget : uint8
 
 	ScaleY UMETA(DisplayName = "Scale Y", ToolTip = "Only the Y of the widget's scale. Takes a Float or an Integer."),
 
-	ShapeAngle UMETA(DisplayName = "Shape Angle", ToolTip = "Only the Shape Box's Angle, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeAngle UMETA(DisplayName = "Shape Angle", ToolTip = "Only the Shape Box's Angle, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeAngleX UMETA(DisplayName = "Shape Angle X", ToolTip = "Only the X of the Shape Box's Angle. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeAngleX UMETA(DisplayName = "Shape Angle X", ToolTip = "Only the X of the Shape Box's Angle. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeAngleY UMETA(DisplayName = "Shape Angle Y", ToolTip = "Only the Y of the Shape Box's Angle. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeAngleY UMETA(DisplayName = "Shape Angle Y", ToolTip = "Only the Y of the Shape Box's Angle. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeBend UMETA(DisplayName = "Shape Bend", ToolTip = "Only the Shape Box's Bend, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeBend UMETA(DisplayName = "Shape Bend", ToolTip = "Only the Shape Box's Bend, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeBendX UMETA(DisplayName = "Shape Bend X", ToolTip = "Only the X of the Shape Box's Bend. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeBendX UMETA(DisplayName = "Shape Bend X", ToolTip = "Only the X of the Shape Box's Bend. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeBendY UMETA(DisplayName = "Shape Bend Y", ToolTip = "Only the Y of the Shape Box's Bend. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeBendY UMETA(DisplayName = "Shape Bend Y", ToolTip = "Only the Y of the Shape Box's Bend. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeCornerBottomLeft UMETA(DisplayName = "Shape Corner Bottom Left", ToolTip = "Only the Shape Box's corner Bottom Left cut size, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeCornerBottomLeft UMETA(DisplayName = "Shape Corner Bottom Left", ToolTip = "Only the Shape Box's corner Bottom Left cut size, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeCornerBottomLeftX UMETA(DisplayName = "Shape Corner Bottom Left X", ToolTip = "Only the X of the Shape Box's corner Bottom Left cut size. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeCornerBottomLeftX UMETA(DisplayName = "Shape Corner Bottom Left X", ToolTip = "Only the X of the Shape Box's corner Bottom Left cut size. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeCornerBottomLeftY UMETA(DisplayName = "Shape Corner Bottom Left Y", ToolTip = "Only the Y of the Shape Box's corner Bottom Left cut size. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeCornerBottomLeftY UMETA(DisplayName = "Shape Corner Bottom Left Y", ToolTip = "Only the Y of the Shape Box's corner Bottom Left cut size. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeCornerBottomRight UMETA(DisplayName = "Shape Corner Bottom Right", ToolTip = "Only the Shape Box's corner Bottom Right cut size, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeCornerBottomRight UMETA(DisplayName = "Shape Corner Bottom Right", ToolTip = "Only the Shape Box's corner Bottom Right cut size, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeCornerBottomRightX UMETA(DisplayName = "Shape Corner Bottom Right X", ToolTip = "Only the X of the Shape Box's corner Bottom Right cut size. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeCornerBottomRightX UMETA(DisplayName = "Shape Corner Bottom Right X", ToolTip = "Only the X of the Shape Box's corner Bottom Right cut size. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeCornerBottomRightY UMETA(DisplayName = "Shape Corner Bottom Right Y", ToolTip = "Only the Y of the Shape Box's corner Bottom Right cut size. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeCornerBottomRightY UMETA(DisplayName = "Shape Corner Bottom Right Y", ToolTip = "Only the Y of the Shape Box's corner Bottom Right cut size. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeCornerTopLeft UMETA(DisplayName = "Shape Corner Top Left", ToolTip = "Only the Shape Box's corner Top Left cut size, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeCornerTopLeft UMETA(DisplayName = "Shape Corner Top Left", ToolTip = "Only the Shape Box's corner Top Left cut size, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeCornerTopLeftX UMETA(DisplayName = "Shape Corner Top Left X", ToolTip = "Only the X of the Shape Box's corner Top Left cut size. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeCornerTopLeftX UMETA(DisplayName = "Shape Corner Top Left X", ToolTip = "Only the X of the Shape Box's corner Top Left cut size. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeCornerTopLeftY UMETA(DisplayName = "Shape Corner Top Left Y", ToolTip = "Only the Y of the Shape Box's corner Top Left cut size. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeCornerTopLeftY UMETA(DisplayName = "Shape Corner Top Left Y", ToolTip = "Only the Y of the Shape Box's corner Top Left cut size. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeCornerTopRight UMETA(DisplayName = "Shape Corner Top Right", ToolTip = "Only the Shape Box's corner Top Right cut size, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeCornerTopRight UMETA(DisplayName = "Shape Corner Top Right", ToolTip = "Only the Shape Box's corner Top Right cut size, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeCornerTopRightX UMETA(DisplayName = "Shape Corner Top Right X", ToolTip = "Only the X of the Shape Box's corner Top Right cut size. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeCornerTopRightX UMETA(DisplayName = "Shape Corner Top Right X", ToolTip = "Only the X of the Shape Box's corner Top Right cut size. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeCornerTopRightY UMETA(DisplayName = "Shape Corner Top Right Y", ToolTip = "Only the Y of the Shape Box's corner Top Right cut size. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeCornerTopRightY UMETA(DisplayName = "Shape Corner Top Right Y", ToolTip = "Only the Y of the Shape Box's corner Top Right cut size. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeEdgeBowBottom UMETA(DisplayName = "Shape Edge Bow Bottom", ToolTip = "Only the Shape Box's Edge Bow Bottom. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeEdgeBowBottom UMETA(DisplayName = "Shape Edge Bow Bottom", ToolTip = "Only the Shape Box's Edge Bow Bottom. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeEdgeBowLeft UMETA(DisplayName = "Shape Edge Bow Left", ToolTip = "Only the Shape Box's Edge Bow Left. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeEdgeBowLeft UMETA(DisplayName = "Shape Edge Bow Left", ToolTip = "Only the Shape Box's Edge Bow Left. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeEdgeBowRight UMETA(DisplayName = "Shape Edge Bow Right", ToolTip = "Only the Shape Box's Edge Bow Right. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeEdgeBowRight UMETA(DisplayName = "Shape Edge Bow Right", ToolTip = "Only the Shape Box's Edge Bow Right. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeEdgeBowTop UMETA(DisplayName = "Shape Edge Bow Top", ToolTip = "Only the Shape Box's Edge Bow Top. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeEdgeBowTop UMETA(DisplayName = "Shape Edge Bow Top", ToolTip = "Only the Shape Box's Edge Bow Top. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeExtrude UMETA(DisplayName = "Shape Extrude", ToolTip = "Only the Shape Box's Extrude, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeExtrude UMETA(DisplayName = "Shape Extrude", ToolTip = "Only the Shape Box's Extrude, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeExtrudeX UMETA(DisplayName = "Shape Extrude X", ToolTip = "Only the X of the Shape Box's Extrude. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeExtrudeX UMETA(DisplayName = "Shape Extrude X", ToolTip = "Only the X of the Shape Box's Extrude. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeExtrudeY UMETA(DisplayName = "Shape Extrude Y", ToolTip = "Only the Y of the Shape Box's Extrude. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeExtrudeY UMETA(DisplayName = "Shape Extrude Y", ToolTip = "Only the Y of the Shape Box's Extrude. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeInset UMETA(DisplayName = "Shape Inset", ToolTip = "Only the Shape Box's Inset, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeInset UMETA(DisplayName = "Shape Inset", ToolTip = "Only the Shape Box's Inset, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeInsetX UMETA(DisplayName = "Shape Inset X", ToolTip = "Only the X of the Shape Box's Inset. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeInsetX UMETA(DisplayName = "Shape Inset X", ToolTip = "Only the X of the Shape Box's Inset. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeInsetY UMETA(DisplayName = "Shape Inset Y", ToolTip = "Only the Y of the Shape Box's Inset. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeInsetY UMETA(DisplayName = "Shape Inset Y", ToolTip = "Only the Y of the Shape Box's Inset. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapePerspective UMETA(DisplayName = "Shape Perspective", ToolTip = "Only the Shape Box's Perspective. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapePerspective UMETA(DisplayName = "Shape Perspective", ToolTip = "Only the Shape Box's Perspective. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeRotation UMETA(DisplayName = "Shape Rotation", ToolTip = "Only the Shape Box's Rotation. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeRotation UMETA(DisplayName = "Shape Rotation", ToolTip = "Only the Shape Box's Rotation. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeWrap UMETA(DisplayName = "Shape Wrap", ToolTip = "Only the Shape Box's Wrap, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeWrap UMETA(DisplayName = "Shape Wrap", ToolTip = "Only the Shape Box's Wrap, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeWrapX UMETA(DisplayName = "Shape Wrap X", ToolTip = "Only the X of the Shape Box's Wrap. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeWrapX UMETA(DisplayName = "Shape Wrap X", ToolTip = "Only the X of the Shape Box's Wrap. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
-	ShapeWrapY UMETA(DisplayName = "Shape Wrap Y", ToolTip = "Only the Y of the Shape Box's Wrap. Takes a Float or an Integer. Needs the track's Animate Shape on, and a Shape Box to animate."),
+	ShapeWrapY UMETA(DisplayName = "Shape Wrap Y", ToolTip = "Only the Y of the Shape Box's Wrap. Takes a Float or an Integer. On a Shape Box track, with a Shape Box to animate."),
 
 	Shear UMETA(ToolTip = "Only the widget's shear, X and Y. A Vector 2D value moves each on its own; a Float or an Integer moves both."),
 
@@ -482,7 +482,7 @@ namespace WidgetAnimValue
 	/** Whether Target has an X and a Y for a Vector 2D value to move one each: the whole path, or a whole two-axis field. */
 	NAMETBD_API bool TransformTargetTakesTwoAxes(EWidgetAnimTransformValueTarget Target);
 
-	/** Whether Part is one of the Shape Box's settings, which only move on a track with Animate Shape on. */
+	/** Whether Part is one of the Shape Box's settings, which only move on a Shape Box track. */
 	NAMETBD_API bool IsShapePart(EWidgetAnimTransformPart Part);
 
 	/** Puts a track at Progress, still, with nothing left to travel. Where a value track starts, and what a Snap does. */

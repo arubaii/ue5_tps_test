@@ -252,6 +252,30 @@ namespace NameTBD::Tooltips
 				"Save this timeline as a new WA_ Widget Animation asset, so other widgets can use it. The timeline stays in this Widget Blueprint as it is.");
 		}
 
+		inline FText SaveToDefaultFolder()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "SaveToDefaultFolder",
+				"Default Folder");
+		}
+
+		inline FText SaveToDefaultFolderTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "SaveToDefaultFolderTooltip",
+				"Save it in {0}, named after this widget and the timeline. Set the folder for the whole project in Project Settings > Widget Animations > Default Save Folder (a builder uses its own Save Folder).");
+		}
+
+		inline FText SaveToCustomLocation()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "SaveToCustomLocation",
+				"Custom Location...");
+		}
+
+		inline FText SaveToCustomLocationTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "SaveToCustomLocationTooltip",
+				"Pick the folder and name in the editor's Save Asset As window.");
+		}
+
 		inline FText DockTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DockTooltip",
@@ -1186,6 +1210,18 @@ namespace NameTBD::Tooltips
 				"Poses the widget's Render Transform at each key, and moves it between them.");
 		}
 
+		inline FText ShapeBoxBlurbTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ShapeBoxBlurbTooltip",
+				"Shapes a Shape Box's outline at each key - every Shape Box setting - and morphs it between them. A key set to Use Authored Shape is the box as designed.");
+		}
+
+		inline FText ShapeBlurbTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ShapeBlurbTooltip",
+				"Sets a shape's settings at each key - its fill, stroke and trim, a Star's points, an Ellipse's sweep, a Custom Shape's path - and blends them between keys. A key set to Use Authored Shape is the shape as designed.");
+		}
+
 		// A registered type describes itself (FWidgetAnimEvaluator::GetDescription); these two are only for a
 		// Registered Type track that has no registered type to describe it.
 
@@ -1216,7 +1252,47 @@ namespace NameTBD::Tooltips
 		inline FText TransformShapeBoxWarningTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TransformShapeBoxWarningTooltip",
-				"Animate Shape needs a Shape Box: the target widget itself, or the Shape Box it sits directly inside.");
+				"A Shape Box track needs a Shape Box: the target widget itself, or the Shape Box it sits directly inside.");
+		}
+
+		inline FText ShapeTrackTargetWarningTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ShapeTrackTargetWarningTooltip",
+				"A Shape track needs a shape - an Ellipse, Triangle, Star, N-gon or Custom Shape: the target widget itself, or the first one inside it.");
+		}
+
+		inline FText ShapeTrackKindTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ShapeTrackKindTooltip",
+				"Which kind of shape this track's keys are for - the settings each key holds. The track plays on the widget the animation is put on, so its kind isn't known until then: pick the kind of shape it will be. Played on another kind, the settings the two share - fill, stroke, trim, layout - still animate.");
+		}
+
+		inline FText ShapeTrackKindNone()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ShapeTrackKindNone", "Pick a kind of shape...");
+		}
+
+		inline FText ShapeTrackMatchedNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ShapeTrackMatchedNote",
+				"Keys {0} settings - the kind of shape this track's group targets.");
+		}
+
+		inline FText ShapeTrackNoFieldsNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ShapeTrackNoFieldsNote",
+				"No shape fields apply: this track's target, {0}, isn't a shape. Set the group's target to (this widget) or to a shape - an Ellipse, Triangle, Star, N-gon or Custom Shape.");
+		}
+
+		inline FText ShapeTrackPickKindNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ShapeTrackPickKindNote",
+				"Pick the kind of shape above to set this key's shape fields.");
+		}
+
+		inline FText SetShapeTrackKindTransaction()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "SetShapeTrackKindTransaction", "Set Shape Track Kind");
 		}
 
 		// -------------------------------------------------------------------------------------------------
@@ -2087,6 +2163,238 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "StateMachineDrawerTooltip",
 				"Widget Animation State Machine: states and transitions that move widgets on their own - hovered, pressed, selected, a value - built like an Animation Blueprint's state machine.");
+		}
+	}
+
+	/** Shape widgets (Ellipse, Triangle, Star, N-gon, Custom Shape): their Details rows and the designer's path editor. */
+	namespace ShapeEditor
+	{
+		inline FText EditShapeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "EditShapeTooltip",
+				"Edit Shape: edit the outline's vertices on the canvas. Drag vertices and handles; double-click an edge to add a vertex; Delete removes the selected; the Pen draws new ones. Enter or Escape when done.");
+		}
+
+		inline FText DoneTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "DoneTooltip",
+				"Done: stop editing the outline (Enter or Escape).");
+		}
+
+		inline FText SelectToolTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "SelectToolTooltip",
+				"Select (V): pick vertices and handles and drag them. Shift adds to the selection and keeps a drag straight; Ctrl while dragging turns snapping off; Ctrl-drag a Straight vertex to pull handles out of it; Alt-drag a handle to break it from its partner; double-click a vertex to switch it between Straight and Mirrored; double-click an edge to add a vertex there.");
+		}
+
+		inline FText PenToolTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PenToolTooltip",
+				"Pen (P): click to add vertices after the selected end of an open contour - or start a new contour - and drag as you click to pull out curve handles. Click the contour's first vertex to close it. Click an edge to add a vertex on it. Shift keeps each new edge to 45 degrees.");
+		}
+
+		inline FText StraightTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "StraightTooltip",
+				"Straight: no handles - straight edges meet at the vertex, and Corner Radius can round them.");
+		}
+
+		inline FText MirroredTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "MirroredTooltip",
+				"Mirrored: handles opposite each other and the same length - a smooth curve.");
+		}
+
+		inline FText AsymmetricTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "AsymmetricTooltip",
+				"Asymmetric: handles opposite each other, each its own length - smooth, pulled harder on one side.");
+		}
+
+		inline FText DisconnectedTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "DisconnectedTooltip",
+				"Disconnected: each handle its own direction and length - a sharp point between curves.");
+		}
+
+		inline FText CornerRadiusTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "CornerRadiusTooltip",
+				"Corner Radius: rounds the selected Straight vertices, in Slate units, along the edges either side - held to what fits.");
+		}
+
+		inline FText CloseContourTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "CloseContourTooltip",
+				"Close Path: join the selected contour's last vertex back to its first.");
+		}
+
+		inline FText OpenContourTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "OpenContourTooltip",
+				"Open Path: cut the selected contour between its last vertex and its first. Still filled across the gap; stroked with Caps at the ends.");
+		}
+
+		inline FText ReverseTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "ReverseTooltip",
+				"Reverse Direction: run the selected contours (or all of them) the other way - a Trim Path then draws them on from the other end.");
+		}
+
+		inline FText DeleteVerticesTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "DeleteVerticesTooltip",
+				"Delete: remove the selected vertices (Delete or Backspace).");
+		}
+
+		inline FText FitToBoxTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "FitToBoxTooltip",
+				"Fit To Widget: move and scale the outline so it fills the widget's box exactly.");
+		}
+
+		inline FText PresetRowName()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PresetRowName",
+				"Preset");
+		}
+
+		inline FText PresetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PresetTooltip",
+				"Shape presets of this kind of shape, saved for the project. Pick one to give this shape exactly its settings - outline, fill, stroke and trim. The arrow beside a preset applies only its outline.");
+		}
+
+		inline FText PresetComboEmpty()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PresetComboEmpty",
+				"Apply or Save a Preset...");
+		}
+
+		inline FText PresetNoneSaved()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PresetNoneSaved",
+				"No presets of this shape yet. Name the current settings below to save the first.");
+		}
+
+		inline FText PresetSaveHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PresetSaveHint",
+				"Name the current settings...");
+		}
+
+		inline FText PresetSaveTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PresetSaveTooltip",
+				"Save the selected shape's settings as a preset under this name, for every shape of this kind in the project. A preset of the same name is replaced.");
+		}
+
+		inline FText PresetApplyShapeOnlyTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PresetApplyShapeOnlyTooltip",
+				"Apply only the outline - keep this shape's own fill, stroke and trim.");
+		}
+
+		inline FText PresetDeleteTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PresetDeleteTooltip",
+				"Delete this preset. Shapes it was applied to keep their settings.");
+		}
+
+		inline FText PresetOpenFolder()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PresetOpenFolder",
+				"Open Presets Folder");
+		}
+
+		inline FText PresetOpenFolderTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PresetOpenFolderTooltip",
+				"Show the presets' files: one per preset in Content/WidgetShapePresets, shared through source control like any project file.");
+		}
+
+		inline FText PresetSaved()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PresetSaved",
+				"Saved shape preset \"{0}\".");
+		}
+
+		inline FText PresetReplaceConfirm()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PresetReplaceConfirm",
+				"A {0} preset named \"{1}\" already exists. Replace it?");
+		}
+
+		inline FText PresetMixedSelection()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PresetMixedSelection",
+				"Presets need shapes of one kind selected.");
+		}
+
+		inline FText ShapeToolsRow()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "ShapeToolsRow",
+				"Outline");
+		}
+
+		inline FText EditOnCanvas()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "EditOnCanvas",
+				"Edit Shape");
+		}
+
+		inline FText EditOnCanvasActive()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "EditOnCanvasActive",
+				"Editing...");
+		}
+
+		inline FText EditOnCanvasTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "EditOnCanvasTooltip",
+				"Edit the outline on the designer's canvas: vertices, handles and the Pen, as in a vector tool. Select the shape in the designer to see it.");
+		}
+
+		inline FText StartFromTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "StartFromTooltip",
+				"Start From: replace the outline with a shape's, as vertices to edit - a primitive with its settings, or one of this Widget Blueprint's own shape widgets, exactly as it is.");
+		}
+
+		inline FText StartFromLabel()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "StartFromLabel",
+				"Start From");
+		}
+
+		inline FText StartFromPrimitives()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "StartFromPrimitives",
+				"Shapes");
+		}
+
+		inline FText StartFromWidgets()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "StartFromWidgets",
+				"Shapes In This Widget");
+		}
+
+		inline FText FlipHorizontal()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "FlipHorizontal",
+				"Flip Horizontally");
+		}
+
+		inline FText FlipVertical()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "FlipVertical",
+				"Flip Vertically");
+		}
+
+		inline FText OutlineSummary()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "OutlineSummary",
+				"{0} vertices in {1} contours");
 		}
 	}
 

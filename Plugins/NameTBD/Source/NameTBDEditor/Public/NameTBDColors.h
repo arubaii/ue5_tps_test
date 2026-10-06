@@ -31,6 +31,9 @@ namespace NameTBD
 			inline const FLinearColor LayerMaterialScalar(0.85f, 0.75f, 0.30f);
 			inline const FLinearColor LayerMaterialVector(0.85f, 0.60f, 0.30f);
 			inline const FLinearColor LayerTransform(AnimationOrange_Normal);
+			// The keyframed shape tracks: a Shape Box track's outline, and a Shape track's shape settings.
+			inline const FLinearColor LayerShapeBox(0.95f, 0.75f, 0.40f);
+			inline const FLinearColor LayerShape(0.40f, 0.85f, 0.70f);
 			// Every registered track type - the text tracks and any a game adds - shares this one, as they share the one
 			// Registered Type slot; their names tell them apart.
 			inline const FLinearColor LayerCustom(0.90f, 0.85f, 0.85f);
@@ -671,6 +674,50 @@ namespace NameTBD
 
 			inline const FLinearColor PickLabelBackground(0.02f, 0.02f, 0.02f, 0.92f);
 			inline const FLinearColor PickLabelText(AnimationOrange_Normal);
+		}
+
+		namespace ShapeEditor
+		{
+			// -------------------------------------------------------------------------------------------------
+			// Editing a Custom Shape's path on the designer's canvas. The outline is drawn twice - a dark line under a light
+			// one - so it reads over any background the widget sits on. Selection is the animation orange, as everywhere
+			// else in the plugin's editors.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor PathUnderlay(0.0f, 0.0f, 0.0f, 0.75f);
+			inline const FLinearColor PathLine(0.92f, 0.92f, 0.92f, 1.0f);
+			inline const FLinearColor PathHovered(AnimationOrange_Hovered);
+			inline const FLinearColor Selected(AnimationOrange_Normal);
+			inline const FLinearColor VertexFill(1.0f, 1.0f, 1.0f, 1.0f);
+			inline const FLinearColor VertexOutline(0.05f, 0.05f, 0.05f, 1.0f);
+			inline const FLinearColor HandleLine(AnimationOrange_Normal.CopyWithNewOpacity(0.85f));
+			inline const FLinearColor HandleFill(1.0f, 1.0f, 1.0f, 1.0f);
+			inline const FLinearColor PenPreview(AnimationOrange_Normal.CopyWithNewOpacity(0.7f));
+			inline const FLinearColor CloseRing(AnimationOrange_Hovered);
+			inline const FLinearColor SnapGuide(1.0f, 0.25f, 0.55f, 0.9f);
+			inline const FLinearColor MarqueeFill(AnimationOrange_Normal.CopyWithNewOpacity(0.08f));
+			inline const FLinearColor MarqueeOutline(AnimationOrange_Normal.CopyWithNewOpacity(0.8f));
+			inline const FLinearColor ToolbarBackground(0.02f, 0.02f, 0.02f, 0.92f);
+			inline const FLinearColor ToolbarOutline(0.25f, 0.25f, 0.25f, 1.0f);
+			inline const FLinearColor ToolActive(AnimationOrange_Normal);
+			inline const FLinearColor ToolText(0.85f, 0.85f, 0.85f, 1.0f);
+			inline const FLinearColor ToolTextActive(0.0f, 0.0f, 0.0f, 1.0f);
+
+			// The toolbar's and the Details row's buttons ("chips"): a dimmed animation orange while a tool or kind is the
+			// active one, with dark text; a faint fill otherwise. Each a little brighter under the mouse.
+			inline const FLinearColor ChipActive(AnimationOrange_Normal.R * 0.78f, AnimationOrange_Normal.G * 0.78f, AnimationOrange_Normal.B * 0.78f, 1.0f);
+			inline const FLinearColor ChipActiveHovered(AnimationOrange_Normal);
+			inline const FLinearColor ChipIdle(1.0f, 1.0f, 1.0f, 0.07f);
+			inline const FLinearColor ChipIdleHovered(1.0f, 1.0f, 1.0f, 0.16f);
+			inline const FLinearColor ChipText(0.86f, 0.86f, 0.86f, 1.0f);
+			inline const FLinearColor ChipTextActive(0.04f, 0.04f, 0.04f, 1.0f);
+			inline constexpr float ChipDisabledOpacity = 0.35f;
+			inline constexpr float ChipHeight = 22.0f;
+
+			inline constexpr float VertexSize = 9.0f;
+			inline constexpr float HandleSize = 7.0f;
+			inline constexpr float PathThickness = 1.5f;
+			inline constexpr float HitRadius = 7.0f;
 		}
 	}
 }

@@ -146,6 +146,12 @@ public:
 	 */
 	virtual UWidget* GetLayerPreviewWidget(int32 LayerIndex) const;
 
+	/**
+	 * Whether the track at LayerIndex plays on the widget the animation is put on - (this widget) - rather than one it
+	 * names: its group's Preview Target is None. A Shape track there can't know its shape's kind from the designer.
+	 */
+	virtual bool IsLayerOnOwnWidget(int32 LayerIndex) const;
+
 	// ---------------------------------------------------------------------------------------------
 	// Playing it
 	// ---------------------------------------------------------------------------------------------
@@ -224,7 +230,13 @@ public:
 	 * Animation Timeline: saves it as a new WA_ asset. The builder then goes on to edit the asset; a Widget Blueprint
 	 * keeps its timeline open and as it was, so its own work isn't moved out from under it. Null if nothing was saved.
 	 */
-	virtual UWidgetAnimPresetAsset* SaveAsNewAsset() = 0;
+	virtual UWidgetAnimPresetAsset* SaveAsNewAsset(bool bChooseLocation = false) = 0;
+
+	/**
+	 * The folder SaveAsNewAsset puts a new asset in unless bChooseLocation - the project's Default Save Folder, the
+	 * builder's Save Folder, or beside the Widget Blueprint - for the Save Animation To menu to show. Empty: not known.
+	 */
+	virtual FString GetDefaultSaveFolder() const { return FString(); }
 
 	// ---------------------------------------------------------------------------------------------
 	// Timelines: a Widget Blueprint's own animations (UWidgetAnimTimelinesExtension)
@@ -365,8 +377,9 @@ public:
 	virtual UWidgetAnimPresetAsset* GetAsset() const override;
 	virtual void SetAsset(UWidgetAnimPresetAsset* Asset) override;
 
-	/** The builder's Create: Animation Name and Save Folder decide where it goes. */
-	virtual UWidgetAnimPresetAsset* SaveAsNewAsset() override;
+	/** The builder's Create: Animation Name and Save Folder decide where it goes, unless bChooseLocation. */
+	virtual UWidgetAnimPresetAsset* SaveAsNewAsset(bool bChooseLocation = false) override;
+	virtual FString GetDefaultSaveFolder() const override;
 
 	virtual bool IsBuilder() const override { return true; }
 	virtual UWidgetAnimBuilder* GetBuilder() const override;
@@ -439,7 +452,8 @@ public:
 	virtual void SetMode(EMode InMode) override;
 	virtual UWidgetAnimPresetAsset* GetAsset() const override { return Mode == EMode::EditExistingAsset ? Asset.Get() : nullptr; }
 	virtual void SetAsset(UWidgetAnimPresetAsset* InAsset) override;
-	virtual UWidgetAnimPresetAsset* SaveAsNewAsset() override;
+	virtual UWidgetAnimPresetAsset* SaveAsNewAsset(bool bChooseLocation = false) override;
+	virtual FString GetDefaultSaveFolder() const override;
 	virtual UWidgetBlueprint* GetWidgetBlueprint() const override { return Blueprint.Get(); }
 
 	virtual bool SupportsTimelines() const override { return true; }
@@ -598,6 +612,7 @@ public:
 
 	/** The track's Target Widget on the preview widget, or the preview widget itself - as BuildSettings aims it. */
 	virtual UWidget* GetLayerPreviewWidget(int32 LayerIndex) const override;
+	virtual bool IsLayerOnOwnWidget(int32 LayerIndex) const override;
 	virtual bool SupportsLayerGroups() const override { return false; }
 	virtual bool SupportsLayerTargets() const override { return true; }
 
@@ -633,7 +648,8 @@ public:
 	 * Copies the tracks into a new WA_ asset beside the Widget Blueprint (GetNewAssetPackagePath, named from
 	 * GetNewAssetBaseName), one group playing on whatever widget uses it. The list itself is left as it is.
 	 */
-	virtual UWidgetAnimPresetAsset* SaveAsNewAsset() override;
+	virtual UWidgetAnimPresetAsset* SaveAsNewAsset(bool bChooseLocation = false) override;
+	virtual FString GetDefaultSaveFolder() const override { return GetNewAssetPackagePath(); }
 
 	/** Puts the preview widget back as authored now, if this source is posing it. */
 	void RestorePreview();
@@ -759,3 +775,14 @@ private:
 	bool bInvert = false;
 	float Speed = 1.f;
 };
+
+/** Making the empty WA_ asset a panel saves into - one way for every panel source. */
+namespace WidgetAnimSaveLocation
+{
+	/**
+	 * A new, empty Widget Animation in Folder named BaseName (numbered on a clash, so the prefix survives) - or, when
+	 * bChooseLocation, wherever the editor's Save Asset As window says, starting from there. Null if none was made
+	 * (the window cancelled, say).
+	 */
+	UWidgetAnimPresetAsset* CreateAnimationAsset(const FString& Folder, const FString& BaseName, bool bChooseLocation);
+}

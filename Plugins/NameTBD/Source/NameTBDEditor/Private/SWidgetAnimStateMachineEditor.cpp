@@ -5,6 +5,9 @@
 #include "Algo/StableSort.h"
 #include "AssetRegistry/AssetData.h"
 #include "AssetToolsModule.h"
+#include "Misc/PackageName.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h"
+#include "NameTBDStyle.h"
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "BlueprintModes/WidgetBlueprintApplicationMode.h"
@@ -4761,13 +4764,63 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeToolbar()
 		.AutoWidth()
 		.VAlign(VAlign_Center)
 		[
-			MakeIconButton(FAppStyle::GetBrush(TEXT("Icons.Plus")), LOCTEXT("NewMachine", "New"), MachineTips::NewMachineTooltip(), [this]() { CreateNewMachine(); })
+			// New, saved where the Widget Animations panel saves: the Default Folder, or a Custom Location picked in the
+			// editor's Save Asset As window.
+			SNew(SComboButton)
+			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+			.ContentPadding(FMargin(4.f, 2.f))
+			.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::NewMachineTooltip()))
+			.OnGetMenuContent_Lambda([this]()
+			{
+				FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+				const FString Folder = GetDefaultMachineFolder();
+				Menu.AddMenuEntry(
+					FUIAction(FExecuteAction::CreateLambda([this]() { CreateNewMachine(/*bChooseLocation=*/false); })),
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(STextBlock).Text(NameTBD::Tooltips::WidgetAnimEditor::SaveToDefaultFolder())
+					]
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					[
+						SNew(STextBlock)
+						.Font(FAppStyle::GetFontStyle("SmallFont"))
+						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+						.Text(FText::FromString(Folder))
+					]);
+				Menu.AddMenuEntry(
+					NameTBD::Tooltips::WidgetAnimEditor::SaveToCustomLocation(),
+					NameTBD::Tooltips::WidgetAnimEditor::SaveToCustomLocationTooltip(),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateLambda([this]() { CreateNewMachine(/*bChooseLocation=*/true); })));
+				return Menu.MakeWidget();
+			})
+			.ButtonContent()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					MakeFixedIcon(FAppStyle::GetBrush(TEXT("Icons.Plus")))
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+				[
+					SNew(STextBlock).Text(LOCTEXT("NewMachineTo", "New Machine In"))
+				]
+			]
 		]
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
 		.VAlign(VAlign_Center)
 		[
-			MakeIconButton(FAppStyle::GetBrush(TEXT("Icons.Save")), LOCTEXT("SaveMachine", "Save"), MachineTips::SaveMachineTooltip(), [this]() { SaveMachine(); })
+			MakeIconButton(FNameTBDStyle::FindIcon(FNameTBDStyle::SaveIcon) ? FNameTBDStyle::FindIcon(FNameTBDStyle::SaveIcon) : FAppStyle::GetBrush(TEXT("Icons.Save")),
+				LOCTEXT("SaveMachine", "Save"), MachineTips::SaveMachineTooltip(), [this]() { SaveMachine(); })
 		]
 
 		// The designer preview: on or off, and what it plays on.
@@ -4988,13 +5041,38 @@ FText SWidgetAnimStateMachineEditor::GetDebugLabel() const
 	return Watched ? FText::Format(LOCTEXT("DebugLabel", "Debug: {0}"), DescribeMachineComponent(Watched)) : LOCTEXT("DebugNone", "Debug: nothing");
 }
 
-void SWidgetAnimStateMachineEditor::CreateNewMachine()
+FString SWidgetAnimStateMachineEditor::GetDefaultMachineFolder() const
+{
+	const FString ProjectFolder = UWidgetAnimRuntimeSettings::Get().GetDefaultSavePackagePath();
+	if (!ProjectFolder.IsEmpty())
+	{
+		return ProjectFolder;
+	}
+	const UWidgetBlueprint* Blueprint = WidgetBlueprint.Get();
+	return Blueprint ? FPackageName::GetLongPackagePath(Blueprint->GetOutermost()->GetName()) : FString(TEXT("/Game"));
+}
+
+void SWidgetAnimStateMachineEditor::CreateNewMachine(bool bChooseLocation)
 {
 	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
 	UWidgetAnimStateMachineFactory* Factory = NewObject<UWidgetAnimStateMachineFactory>();
-	if (UWidgetAnimStateMachineAsset* Created = Cast<UWidgetAnimStateMachineAsset>(AssetTools.CreateAssetWithDialog(UWidgetAnimStateMachineAsset::StaticClass(), Factory)))
+
+	const FString Folder = GetDefaultMachineFolder();
+	FString UniquePackageName;
+	FString UniqueAssetName;
+	AssetTools.CreateUniqueAssetName(Folder / TEXT("WASM_NewStateMachine"), FString(), UniquePackageName, UniqueAssetName);
+
+	UObject* Created = bChooseLocation
+		? AssetTools.CreateAssetWithDialog(UniqueAssetName, Folder, UWidgetAnimStateMachineAsset::StaticClass(), Factory)
+		: AssetTools.CreateAsset(UniqueAssetName, Folder, UWidgetAnimStateMachineAsset::StaticClass(), Factory);
+	if (UWidgetAnimStateMachineAsset* NewMachine = Cast<UWidgetAnimStateMachineAsset>(Created))
 	{
-		SetMachine(Created);
+		if (GEditor)
+		{
+			TArray<UObject*> ToSelect{ NewMachine };
+			GEditor->SyncBrowserToObjects(ToSelect);
+		}
+		SetMachine(NewMachine);
 	}
 }
 

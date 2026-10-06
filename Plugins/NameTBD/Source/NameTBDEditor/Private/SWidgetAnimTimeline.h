@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "EditorUndoClient.h"
 #include "PropertyEditorDelegates.h"
+#include "UObject/ObjectKey.h"
 #include "UObject/StrongObjectPtr.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Layout/SSplitter.h"
@@ -20,6 +21,7 @@ class SWindow;
 class SVerticalBox;
 class SWidgetAnimTimelineTracks;
 class FScopedTransaction;
+class UShapeWidget;
 struct FPropertyChangedChainEvent;
 struct FPropertyChangedEvent;
 namespace WidgetAnimTrackPresets { struct FPreset; }
@@ -402,6 +404,18 @@ public:
 	 * for a type with no keys (Pulse).
 	 */
 	void GetKeyTimes(int32 LayerIndex, TArray<float>& OutTimes) const;
+
+	/**
+	 * Jump to Edited Key (Editor Preferences): an edit to the selected key - or to the selected track's start or end value -
+	 * moves the preview there, so the change shows as it is made.
+	 */
+	void JumpToEditedKey(const FPropertyChangedEvent& Event);
+
+	/** Set while JumpToEditedKey moves the preview, so the edits that moving may cause don't move it again. */
+	bool bJumpingToEditedKey = false;
+
+	/** The Shape track and target shape a kind was last matched for - see OnRefreshTimer - so each is matched once. */
+	TPair<int32, FObjectKey> LastShapeMatch = TPair<int32, FObjectKey>(INDEX_NONE, FObjectKey());
 
 	/**
 	 * The curve of segment Segment of a layer - from key Segment to the next - or null when there is no such
@@ -917,6 +931,31 @@ public:
 	 * own length, which keeps the length it had so nothing moves; off, at the animation's own length.
 	 */
 	void SetAnimationTrackFit(int32 LayerIndex, bool bFit);
+
+	/** What a Shape track's target is, for which fields it shows - see GetShapeTrackTarget. */
+	enum class EShapeTrackTarget : uint8
+	{
+		/** The widget the animation is put on - (this widget) - whose kind of shape isn't known: picked on the track. */
+		OwnWidget,
+
+		/** A shape widget: the track keys that kind of shape's settings. */
+		Shape,
+
+		/** Some other widget: no shape fields apply. */
+		NotAShape
+	};
+
+	/** What the Shape track at LayerIndex plays on, by the designer's preview; OutShape is the shape when it is one. */
+	EShapeTrackTarget GetShapeTrackTarget(int32 LayerIndex, UShapeWidget** OutShape = nullptr) const;
+
+	/**
+	 * A Shape track's kind of shape (FWidgetTransformAnim::ShapeKind) - which settings its keys hold - in one undo step.
+	 * Values its keys had that the new kind shares are kept; the rest start from the target shape, or the kind's defaults.
+	 */
+	void SetShapeTrackKind(int32 LayerIndex, UClass* Kind);
+
+	/** Sets a Shape track's kind to its target shape's, when its target is a shape of another kind. */
+	void MatchShapeTrackToTarget(int32 LayerIndex);
 
 	/**
 	 * Whether an animation track follows a float value of its own (Timing set to Value - see FWidgetAnimProgressDrive) or

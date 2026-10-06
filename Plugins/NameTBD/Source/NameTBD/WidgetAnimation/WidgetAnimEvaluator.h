@@ -9,6 +9,7 @@
 class UWidget;
 class FWidgetAnimEvaluator;
 struct FWidgetAnimCueContext;
+struct FWidgetAnimAuthoritativeWrite;
 
 /**
  * The base every registered track type's settings derive from.
@@ -262,6 +263,21 @@ public:
 	 */
 	virtual void ApplyWithColor(UObject* Target, const FInstancedStruct& Params, double Value, const FLinearColor& Color) const { Apply(Target, Params, Value); }
 
+	/**
+	 * What applying one live write does: ApplyWithColor for a write carrying a color, Apply otherwise. Overridden by a
+	 * type that needs more of the write than its value - which key it is between (FWidgetAnimAuthoritativeWrite::
+	 * KeySegment), or what the target held before any animation (Captured: the baseline this type's CaptureBaseline
+	 * recorded for Target, or null when none was) - as the Shape track does for its keys' Use Authored Shape.
+	 */
+	virtual void ApplyWrite(UObject* Target, const FInstancedStruct& Params, const FWidgetAnimAuthoritativeWrite& Write, const FInstancedStruct* Captured) const;
+
+	/**
+	 * Whether two writes of this type to one channel can be blended by blending their values - a state machine's
+	 * cross-fade does. False for a type whose value only means something with the rest of its write (a key's place
+	 * along the keys): such writes change hands halfway instead.
+	 */
+	virtual bool BlendsWriteValues() const { return true; }
+
 	// ---------------------------------------------------------------------------------------------
 	// Baseline
 	// ---------------------------------------------------------------------------------------------
@@ -394,6 +410,12 @@ struct NAMETBD_API FWidgetAnimAuthoritativeWrite
 	FInstancedStruct OwnedParams;
 
 	double Value = 0.0;
+
+	/**
+	 * For a keyframed type that writes through this channel (the Shape track): the key the track is leaving, Value then
+	 * being how far toward the next it is. INDEX_NONE for every other write.
+	 */
+	int32 KeySegment = INDEX_NONE;
 
 	/** The color the track has blended to, for a type whose keys hold colors (bHasColor). */
 	FLinearColor Color = FLinearColor::White;

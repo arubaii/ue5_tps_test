@@ -50,7 +50,7 @@ enum class EWidgetAnimType : uint8
 	MaterialVector,
 
 	/**
-	 * Keyframed Render Transform (and optionally a Shape Box outline), driven by a curve.
+	 * Keyframed Render Transform, driven by a curve.
 	 *
 	 * The curve's keys are the keyframes and its shape between them is the interpolation - linear by
 	 * default - so Duration and Easing are hidden. Each key holds one Transform. The general form of Slide /
@@ -78,8 +78,57 @@ enum class EWidgetAnimType : uint8
 	 *
 	 * Appended last for the same reason as Transform.
 	 */
-	Shake
+	Shake,
+
+	/**
+	 * Keyframed Shape Box outline - every Shape Box property, key by key, the way a Transform track keys a render
+	 * transform: the same keys, curves and timing. Needs the track's widget to be (or hold) a Shape Box. Each key can
+	 * Use Authored Shape - the box exactly as designed - so only the keys that change it need setting up.
+	 *
+	 * Appended last for the same reason as Transform.
+	 */
+	ShapeBox UMETA(DisplayName = "Shape Box"),
+
+	/**
+	 * Keyframed shape settings - an Ellipse's sweep, a Star's points and radii, an N-gon's sides, a Custom Shape's path,
+	 * and every shape's fill, stroke, trim and layout - key by key, the way a Transform track keys a render transform.
+	 * Which settings its keys hold follows the shape it animates (see FWidgetTransformAnim::ShapeKind); each key can Use
+	 * Authored Shape - the shape exactly as designed - so only the keys that change it need setting up.
+	 *
+	 * Appended last for the same reason as Transform.
+	 */
+	Shape
 };
+
+/**
+ * Whether tracks of this type are keyframed - timed by their keys' curve, each key holding what the widget looks like
+ * there - rather than travelling from a start value to an end value: Transform, Shape Box and Shape. All three keep
+ * their keys in the same payload (FWidgetTransformAnim); see WidgetAnimKeyframeContentFor for what each key holds.
+ */
+inline bool WidgetAnimTypeIsKeyframed(EWidgetAnimType AnimType)
+{
+	return AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::ShapeBox || AnimType == EWidgetAnimType::Shape;
+}
+
+/** What a keyframed track's keys hold, by its type. Transform for any type that isn't keyframed. */
+inline EWidgetKeyframeContent WidgetAnimKeyframeContentFor(EWidgetAnimType AnimType)
+{
+	switch (AnimType)
+	{
+	case EWidgetAnimType::ShapeBox: return EWidgetKeyframeContent::ShapeBox;
+	case EWidgetAnimType::Shape:    return EWidgetKeyframeContent::Shape;
+	default:                        return EWidgetKeyframeContent::Transform;
+	}
+}
+
+/**
+ * Whether a value-driven track of this type can drive one field of its keys rather than the whole path (Value Drives):
+ * a Transform track one field of its render transform, a Shape Box track one setting of its outline.
+ */
+inline bool WidgetAnimTypeHasValueDrives(EWidgetAnimType AnimType)
+{
+	return AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::ShapeBox;
+}
 
 // EWidgetAnimEasing now lives in WidgetAnimEasing.h, included above, so anything that includes this
 // header still gets it and needs no include changed.
@@ -136,7 +185,7 @@ inline bool WidgetAnimValueKindAllowed(EWidgetAnimType AnimType, EWidgetAnimTran
 	{
 	case EWidgetAnimValueKind::Vector2D:
 		return AnimType == EWidgetAnimType::Scale
-			|| (AnimType == EWidgetAnimType::Transform && WidgetAnimValue::TransformTargetTakesTwoAxes(TransformTarget));
+			|| (WidgetAnimTypeHasValueDrives(AnimType) && WidgetAnimValue::TransformTargetTakesTwoAxes(TransformTarget));
 	case EWidgetAnimValueKind::Color:
 		return AnimType == EWidgetAnimType::MaterialVector;
 	default:
@@ -146,12 +195,12 @@ inline bool WidgetAnimValueKindAllowed(EWidgetAnimType AnimType, EWidgetAnimTran
 
 /**
  * Whether tracks of this type take keys between their start and their end: the same types that travel from a
- * start value to an end value. Transform has keys of its own (see FWidgetTransformAnim), and Pulse has no values
- * to key. See FWidgetAnimValueKeys.
+ * start value to an end value. The keyframed types have keys of their own (see FWidgetTransformAnim), and Pulse has no
+ * values to key. See FWidgetAnimValueKeys.
  */
 inline bool WidgetAnimTypeSupportsValueKeys(EWidgetAnimType AnimType)
 {
-	return AnimType != EWidgetAnimType::Transform && !WidgetAnimTypeOscillates(AnimType);
+	return !WidgetAnimTypeIsKeyframed(AnimType) && !WidgetAnimTypeOscillates(AnimType);
 }
 
 /**
@@ -288,7 +337,7 @@ struct NAMETBD_API FWidgetAnimSettings
 	EWidgetAnimTiming Timing = EWidgetAnimTiming::Tween;
 
 	/** Hidden on a Transform layer, whose curve's last key sets how long it runs, and on a Spring one, which runs until it settles - but shown on any value-driven layer that tweens to its values, as how long each ease takes. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && Timing != EWidgetAnimTiming::Spring || AnimType == EWidgetAnimType::Pulse || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && Timing != EWidgetAnimTiming::Spring || AnimType == EWidgetAnimType::Pulse || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween", EditConditionHides))
 	float Duration = 0.3f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (ClampMin = "0.0"))
@@ -345,7 +394,7 @@ struct NAMETBD_API FWidgetAnimSettings
 	 * On a value-driven Transform track: what its one value moves - the whole path of its keys, only their translation,
 	 * scale, shear or angle, or one axis of those. Another Transform track takes another value.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value && AnimType == EWidgetAnimType::Transform", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value && AnimType == EWidgetAnimType::Transform || Timing == EWidgetAnimTiming::Value && AnimType == EWidgetAnimType::ShapeBox", EditConditionHides))
 	EWidgetAnimTransformValueTarget ValueDrives = EWidgetAnimTransformValueTarget::WholePath;
 
 	/**
@@ -366,7 +415,7 @@ struct NAMETBD_API FWidgetAnimSettings
 	FInstancedStruct ValueInput;
 
 	/** Keys between the start and end values, and the curves between them. See FWidgetAnimValueKeys. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse && AnimType != EWidgetAnimType::Shake", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && AnimType != EWidgetAnimType::Pulse && AnimType != EWidgetAnimType::Shake", EditConditionHides))
 	FWidgetAnimValueKeys ValueKeys;
 
 	/**
@@ -629,14 +678,15 @@ struct NAMETBD_API FWidgetAnimSettings
 	// ------------------------------------------------------------------
 
 	/**
-	 * Which Shape Box a Transform layer with Animate Shape on drives, derived the same way
-	 * MaterialTargetImage is: the entry's Target Widget, narrowed. Null on anything that is not a Shape
-	 * Box, which is what makes Animate Shape quietly do nothing there rather than fail.
+	 * Which Shape Box a Shape Box layer drives, derived the same way MaterialTargetImage is: the entry's Target Widget,
+	 * narrowed. Null on anything that is not a Shape Box, which is what makes the track quietly do nothing there rather
+	 * than fail.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::ShapeBox", EditConditionHides))
 	TObjectPtr<UShapeBox> ShapeTargetBox = nullptr;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform", EditConditionHides, ShowOnlyInnerProperties))
+	/** The keys of a Transform, Shape Box or Shape layer - see WidgetAnimTypeIsKeyframed. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::ShapeBox || AnimType == EWidgetAnimType::Shape", EditConditionHides, ShowOnlyInnerProperties))
 	FWidgetTransformAnim Transform;
 
 	// ------------------------------------------------------------------
@@ -736,7 +786,7 @@ struct NAMETBD_API FWidgetAnimLayer
 	 * and on a Spring track, which runs until its spring settles. On a value-driven track that tweens to its values
 	 * (Value Smoothing = Tween), how long each ease to a new value takes - shown on a Transform track then too.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && Timing != EWidgetAnimTiming::Spring || AnimType == EWidgetAnimType::Pulse || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && Timing != EWidgetAnimTiming::Spring || AnimType == EWidgetAnimType::Pulse || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween", EditConditionHides))
 	float Duration = 0.3f;
 
 	/**
@@ -821,7 +871,7 @@ struct NAMETBD_API FWidgetAnimLayer
 	 * scale, shear or angle, or one axis of those. A Vector 2D value needs two axes to move. Another Transform track
 	 * takes another value.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value && AnimType == EWidgetAnimType::Transform", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value && AnimType == EWidgetAnimType::Transform || Timing == EWidgetAnimTiming::Value && AnimType == EWidgetAnimType::ShapeBox", EditConditionHides))
 	EWidgetAnimTransformValueTarget ValueDrives = EWidgetAnimTransformValueTarget::WholePath;
 
 	/**
@@ -846,7 +896,7 @@ struct NAMETBD_API FWidgetAnimLayer
 	// The values the track passes through between its start and its end, and the curve of each stretch between
 	// two of them. Added, moved and deleted on the track in the Widget Animations panel, and edited there by
 	// selecting a key - so the Selection panel never shows them as a list. See FWidgetAnimValueKeys.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Keys", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::Pulse && AnimType != EWidgetAnimType::Shake", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Keys", meta = (EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && AnimType != EWidgetAnimType::Pulse && AnimType != EWidgetAnimType::Shake", EditConditionHides))
 	FWidgetAnimValueKeys ValueKeys;
 
 	// Fade
@@ -930,11 +980,12 @@ struct NAMETBD_API FWidgetAnimLayer
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Material", meta = (EditCondition = "AnimType == EWidgetAnimType::MaterialVector", EditConditionHides))
 	FLinearColor EndVectorValue = FLinearColor::White;
 
-	// Transform
+	// Keys of a Transform, Shape Box or Shape track
 	//
 	// One nested payload instead of a dozen more flat fields. That is the point of the shape: an unused
-	// channel collapses to a single row, and the next family costs one property here rather than twelve.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform", EditConditionHides, ShowOnlyInnerProperties))
+	// channel collapses to a single row, and the next family costs one property here rather than twelve. The three
+	// keyframed types share it - its Content says what their keys hold.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (EditCondition = "AnimType == EWidgetAnimType::Transform || AnimType == EWidgetAnimType::ShapeBox || AnimType == EWidgetAnimType::Shape", EditConditionHides, ShowOnlyInnerProperties))
 	FWidgetTransformAnim Transform;
 
 	// Registered types
@@ -1586,7 +1637,7 @@ struct NAMETBD_API FWidgetAnimResult
 	/** Folds Other's material parameters in, as a later track's: each replaces this frame's, unless it is only a baseline and this frame already has one written. */
 	void FoldMaterialParameters(const FWidgetAnimResult& Other);
 
-	/** Shape Box outlines written this frame. Empty unless a Transform layer has Animate Shape on. */
+	/** Shape Box outlines written this frame. Empty unless a Shape Box track plays. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	TArray<FWidgetAnimShapeTarget> ShapeTargets;
 
@@ -1796,7 +1847,7 @@ struct NAMETBD_API FWidgetAnimBaseline
  *
  * Kept apart from FWidgetAnimBaseline because a shape is not part of the render transform and most
  * animated widgets are not Shape Boxes - there is no point carrying a whole FShapeBoxShape on every
- * baseline for the sake of the few that are. It is also what a Transform key's Use Authored
+ * baseline for the sake of the few that are. It is also what a Shape Box key's Use Authored
  * Shape resolves against.
  */
 USTRUCT(BlueprintType)

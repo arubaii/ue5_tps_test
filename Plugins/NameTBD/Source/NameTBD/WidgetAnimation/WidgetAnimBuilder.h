@@ -118,8 +118,14 @@ public:
 	 *
 	 * Not CallInEditor: the button is built by FWidgetAnimBuilderDetails instead, which is what lets it
 	 * be coloured. The function stays public so that customization can call it.
+	 *
+	 * bChooseLocation: asks where to save it, in the editor's Save Asset As window, starting from the Save Folder -
+	 * the Widget Animations panel's Save Animation To > Custom Location.
 	 */
-	UWidgetAnimPresetAsset* CreateWidgetAnimation();
+	UWidgetAnimPresetAsset* CreateWidgetAnimation(bool bChooseLocation = false);
+
+	/** Where Create Widget Animation saves to: Save Folder as a long package path, or the Widget Blueprint's folder. */
+	FString GetCreateFolder() const;
 
 	// -------------------------------------------------------------------------------------------------
 	// Preview - never written to the asset

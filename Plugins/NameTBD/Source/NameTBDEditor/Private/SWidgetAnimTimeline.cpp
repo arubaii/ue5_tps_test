@@ -24,6 +24,9 @@
 #include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimExpander.h"
 #include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimCues.h"
+#include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimShapeTrack.h"
+#include "NameTBD/Widgets/Shapes/ShapeWidget.h"
+#include "NameTBD/Widgets/Shapes/WidgetShapeAnimation.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h"
 #include "NameTBDColors.h"
 #include "NameTBDStyle.h"
@@ -84,6 +87,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Misc/Paths.h"
+#include "UObject/UObjectIterator.h"
 #include "Misc/MessageDialog.h"
 #include "HAL/PlatformProcess.h"
 #include "Widgets/Images/SImage.h"
@@ -214,8 +218,8 @@ namespace WidgetAnimTimeline
 	 * Leaves out of a track's Timing, Value Type and Value Drives dropdowns the choices that mean nothing on the tracks
 	 * being edited (on every one of them, when several are): Spring on a Pulse; a Value Type its type can't take - a
 	 * Color anywhere but a Material Vector, a Vector 2D anywhere but a Scale or a Transform driving two axes; and, on a
-	 * Transform, a Value Drives with only one axis while it takes a Vector 2D, and the Shape Box settings while its
-	 * Animate Shape is off. A choice already made still shows as it is; one
+	 * Transform or Shape Box, a Value Drives with only one axis while it takes a Vector 2D, and the fields of the other of
+	 * the two - a Shape Box's settings on a Transform track, a transform's on a Shape Box track. A choice already made still shows as it is; one
 	 * its type can't take is read as Float at runtime - see FWidgetAnimLayer::GetEffectiveValueKind.
 	 *
 	 * Worked out when the Selection panel is built, which it is again whenever a track's type, Timing, Value Type or
@@ -250,11 +254,15 @@ namespace WidgetAnimTimeline
 				const EWidgetAnimTransformValueTarget Target = static_cast<EWidgetAnimTransformValueTarget>(Value);
 				bool bX = true;
 				bool bY = true;
-				const bool bShapeField = WidgetAnimValue::IsShapePart(WidgetAnimValue::GetTransformPart(Target, bX, bY));
-				return Algo::AllOf(Layers, [Target, bShapeField](const FWidgetAnimLayer* Layer)
+				const EWidgetAnimTransformPart Part = WidgetAnimValue::GetTransformPart(Target, bX, bY);
+				const bool bShapeField = WidgetAnimValue::IsShapePart(Part);
+				const bool bWholePath = Part == EWidgetAnimTransformPart::WholePath;
+				return Algo::AllOf(Layers, [Target, bShapeField, bWholePath](const FWidgetAnimLayer* Layer)
 				{
+					// A Transform track drives its transform's fields, a Shape Box track its outline's.
+					const bool bFieldOfType = bWholePath || (bShapeField == (Layer->AnimType == EWidgetAnimType::ShapeBox));
 					return (Layer->ValueOptions.Kind != EWidgetAnimValueKind::Vector2D || WidgetAnimValue::TransformTargetTakesTwoAxes(Target))
-						&& (!bShapeField || Layer->Transform.IsAnimatingShape());
+						&& bFieldOfType;
 				});
 			});
 		}
@@ -513,6 +521,27 @@ namespace WidgetAnimTimeline
 		}
 	}
 
+	/** Every kind of shape a Shape track can key, by name: Ellipse, Triangle, Star, N-gon, Custom Shape, and any Blueprint shapes. */
+	void GetShapeKinds(TArray<UClass*>& OutKinds)
+	{
+		OutKinds.Reset();
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			UClass* Class = *It;
+			if (!Class->IsChildOf(UShapeWidget::StaticClass()) || Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists | CLASS_Hidden))
+			{
+				continue;
+			}
+			const FString Name = Class->GetName();
+			if (Name.StartsWith(TEXT("SKEL_")) || Name.StartsWith(TEXT("REINST_")))
+			{
+				continue;
+			}
+			OutKinds.Add(Class);
+		}
+		OutKinds.Sort([](const UClass& A, const UClass& B) { return A.GetDisplayNameText().CompareTo(B.GetDisplayNameText()) < 0; });
+	}
+
 	/**
 	 * Every C++ registered track type the Add menus offer, in name order - the text tracks, and any a game's own modules have
 	 * added. Not the Blueprint bridge, which is not a type of its own; see ForEachBlueprintType.
@@ -608,7 +637,7 @@ namespace WidgetAnimTimeline
 			return;
 		}
 
-		if (Layer.AnimType == EWidgetAnimType::Transform)
+		if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
 		{
 			if (const FRichCurve* Curve = Layer.Transform.GetActiveCurve())
 			{
@@ -636,7 +665,7 @@ namespace WidgetAnimTimeline
 		{
 			return nullptr;
 		}
-		if (Layer.AnimType == EWidgetAnimType::Transform)
+		if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
 		{
 			return Segment + 1 < Layer.Transform.Keys.Num() ? &Layer.Transform.Keys[Segment].CurveToNext : nullptr;
 		}
@@ -650,13 +679,13 @@ namespace WidgetAnimTimeline
 	/** Whether a layer's segments are shaped at all, and whether any has a curve of its own - see SWidgetAnimTimeline. */
 	bool LayerUsesSegmentCurves(const FWidgetAnimLayer& Layer)
 	{
-		return (Layer.AnimType == EWidgetAnimType::Transform || WidgetAnimTypeSupportsValueKeys(Layer.AnimType))
+		return (WidgetAnimTypeIsKeyframed(Layer.AnimType) || WidgetAnimTypeSupportsValueKeys(Layer.AnimType))
 			&& !Layer.IsSpringTimed() && !SWidgetAnimTimeline::IsCueLayer(Layer);
 	}
 
 	bool LayerHasSegmentCurves(const FWidgetAnimLayer& Layer)
 	{
-		return Layer.AnimType == EWidgetAnimType::Transform
+		return WidgetAnimTypeIsKeyframed(Layer.AnimType)
 			? Layer.Transform.HasSegmentCurves()
 			: WidgetAnimTypeSupportsValueKeys(Layer.AnimType) && Layer.ValueKeys.HasSegmentCurves();
 	}
@@ -4058,7 +4087,7 @@ public:
 		const TArray<FWidgetAnimLayer>* Layers = Owner->GetLayers();
 		const bool bIsTransform = Layers
 			&& Layers->IsValidIndex(Selection.Layer)
-			&& (*Layers)[Selection.Layer].AnimType == EWidgetAnimType::Transform;
+			&& WidgetAnimTypeIsKeyframed((*Layers)[Selection.Layer].AnimType);
 		const bool bIsValueKeyed = Layers
 			&& Layers->IsValidIndex(Selection.Layer)
 			&& WidgetAnimTypeSupportsValueKeys((*Layers)[Selection.Layer].AnimType);
@@ -4067,7 +4096,7 @@ public:
 		{
 			TArray<float> KeyTimes;
 			Owner->GetKeyTimes(Selection.Layer, KeyTimes);
-			CustomizeKey(DetailBuilder, LayerHandle.ToSharedRef(), Selection.Key, KeyTimes.Num(), (*Layers)[Selection.Layer].IsSpringTimed());
+			CustomizeKey(DetailBuilder, LayerHandle.ToSharedRef(), Selection.Layer, Selection.Key, KeyTimes.Num(), (*Layers)[Selection.Layer]);
 		}
 		else if (Selection.Key != INDEX_NONE && bIsValueKeyed)
 		{
@@ -4718,6 +4747,122 @@ private:
 		{
 			AddMaterialWarningRow(Category, LayerIndex);
 		}
+
+		// A Shape track: which kind of shape its keys are for - followed from its target, picked for (this widget), or
+		// why no fields apply.
+		if (CurrentType == EWidgetAnimType::Shape)
+		{
+			bool bApplies = true;
+			AddShapeTrackRows(Category, LayerIndex, /*bKey=*/false, bApplies);
+		}
+	}
+
+	/**
+	 * A Shape track's rows about its shape. On a shape: which kind it keys, followed from that shape. On (this widget): the
+	 * kind, picked here. On anything else: that no shape fields apply, and how to fix it. Returns whether the keys' shape
+	 * fields apply; bOutApplies is false when the target can't take a Shape track at all.
+	 */
+	bool AddShapeTrackRows(IDetailCategoryBuilder& Category, int32 LayerIndex, bool bKey, bool& bOutApplies)
+	{
+		bOutApplies = true;
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		const TArray<FWidgetAnimLayer>* Layers = Owner ? Owner->GetLayers() : nullptr;
+		if (!Owner || !Layers || !Layers->IsValidIndex(LayerIndex))
+		{
+			return false;
+		}
+
+		const UClass* Kind = (*Layers)[LayerIndex].Transform.ShapeKind.Get();
+		UShapeWidget* TargetShape = nullptr;
+		switch (Owner->GetShapeTrackTarget(LayerIndex, &TargetShape))
+		{
+		case SWidgetAnimTimeline::EShapeTrackTarget::NotAShape:
+		{
+			IWidgetAnimPanelSource* PanelSource = Owner->GetSource();
+			const UWidget* Target = PanelSource ? PanelSource->GetLayerPreviewWidget(LayerIndex) : nullptr;
+			AddNoteRow(Category, FText::Format(WidgetAnimTips::ShapeTrackNoFieldsNote(), Target ? FText::FromString(Target->GetName()) : FText::GetEmpty()));
+			bOutApplies = false;
+			return false;
+		}
+
+		case SWidgetAnimTimeline::EShapeTrackTarget::Shape:
+			if (!bKey && TargetShape)
+			{
+				AddNoteRow(Category, FText::Format(WidgetAnimTips::ShapeTrackMatchedNote(), TargetShape->GetClass()->GetDisplayNameText()));
+			}
+			return Kind != nullptr;
+
+		case SWidgetAnimTimeline::EShapeTrackTarget::OwnWidget:
+		default:
+			break;
+		}
+
+		const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Owner;
+		Category.AddCustomRow(LOCTEXT("ShapeKindRow", "Shape Fields"))
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("ShapeKindLabel", "Shape Fields"))
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.ToolTipText(WidgetAnimTips::ShapeTrackKindTooltip())
+			]
+			.ValueContent()
+			.MinDesiredWidth(180.f)
+			[
+				SNew(SComboButton)
+				.ToolTipText(WidgetAnimTips::ShapeTrackKindTooltip())
+				.IsEnabled_Lambda([WeakOwner, LayerIndex]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanEditLayer(LayerIndex); })
+				.OnGetMenuContent_Lambda([WeakOwner, LayerIndex]() -> TSharedRef<SWidget>
+				{
+					FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+					TArray<UClass*> Kinds;
+					WidgetAnimTimeline::GetShapeKinds(Kinds);
+					for (UClass* ShapeClass : Kinds)
+					{
+						const TWeakObjectPtr<UClass> WeakClass = ShapeClass;
+						Menu.AddMenuEntry(
+							ShapeClass->GetDisplayNameText(),
+							ShapeClass->GetToolTipText(),
+							FSlateIcon(),
+							FUIAction(
+								FExecuteAction::CreateLambda([WeakOwner, LayerIndex, WeakClass]()
+								{
+									if (const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin())
+									{
+										Pinned->SetShapeTrackKind(LayerIndex, WeakClass.Get());
+									}
+								}),
+								FCanExecuteAction(),
+								FIsActionChecked::CreateLambda([WeakOwner, LayerIndex, WeakClass]()
+								{
+									const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+									const TArray<FWidgetAnimLayer>* PinnedLayers = Pinned ? Pinned->GetLayers() : nullptr;
+									return PinnedLayers && PinnedLayers->IsValidIndex(LayerIndex) && (*PinnedLayers)[LayerIndex].Transform.ShapeKind.Get() == WeakClass.Get();
+								})),
+							NAME_None,
+							EUserInterfaceActionType::RadioButton);
+					}
+					return Menu.MakeWidget();
+				})
+				.ButtonContent()
+				[
+					SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.Text_Lambda([WeakOwner, LayerIndex]()
+					{
+						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+						const TArray<FWidgetAnimLayer>* PinnedLayers = Pinned ? Pinned->GetLayers() : nullptr;
+						const UClass* Current = PinnedLayers && PinnedLayers->IsValidIndex(LayerIndex) ? (*PinnedLayers)[LayerIndex].Transform.ShapeKind.Get() : nullptr;
+						return Current ? Current->GetDisplayNameText() : WidgetAnimTips::ShapeTrackKindNone();
+					})
+				]
+			];
+
+		if (!Kind && bKey)
+		{
+			AddNoteRow(Category, WidgetAnimTips::ShapeTrackPickKindNote());
+		}
+		return Kind != nullptr;
 	}
 
 	/**
@@ -4747,7 +4892,7 @@ private:
 				}
 				const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
 				const bool bShown = Layer.FitsAnimationToTrack()
-					|| (Layer.AnimType != EWidgetAnimType::Transform && Layer.Timing != EWidgetAnimTiming::Spring)
+					|| (!WidgetAnimTypeIsKeyframed(Layer.AnimType) && Layer.Timing != EWidgetAnimTiming::Spring)
 					|| Layer.AnimType == EWidgetAnimType::Pulse
 					|| (Layer.Timing == EWidgetAnimTiming::Value && Layer.ValueSmoothing == EWidgetAnimValueSmoothing::Tween);
 				return bShown ? EVisibility::Visible : EVisibility::Collapsed;
@@ -5022,8 +5167,9 @@ private:
 	 * from it to the next - laid out flat, and left out on the last key, which has no next. On a Spring track the
 	 * spring carries it across every key, so a note says so in place of the curve.
 	 */
-	static void CustomizeKey(IDetailLayoutBuilder& DetailBuilder, const TSharedRef<IPropertyHandle>& LayerHandle, int32 KeyIndex, int32 NumKeys, bool bSpring)
+	void CustomizeKey(IDetailLayoutBuilder& DetailBuilder, const TSharedRef<IPropertyHandle>& LayerHandle, int32 LayerIndex, int32 KeyIndex, int32 NumKeys, const FWidgetAnimLayer& Layer)
 	{
+		const bool bSpring = Layer.IsSpringTimed();
 		const TSharedPtr<IPropertyHandle> TransformHandle = LayerHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Transform));
 		const TSharedPtr<IPropertyHandle> KeysHandle = TransformHandle.IsValid() ? TransformHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FWidgetTransformAnim, Keys)) : nullptr;
 		const TSharedPtr<IPropertyHandle> KeyHandle = KeysHandle.IsValid() ? KeysHandle->GetChildHandle(static_cast<uint32>(KeyIndex)) : nullptr;
@@ -5035,7 +5181,21 @@ private:
 
 		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Key", LOCTEXT("KeyCategory", "Key"));
 		const FName CurveName = GET_MEMBER_NAME_CHECKED(FWidgetTransformKeyframe, CurveToNext);
-		AddChildren(Category, KeyHandle.ToSharedRef(), [CurveName](FName Name) { return Name != CurveName; }, /*bAutoExpand=*/true);
+
+		// A Shape track's key: its shape's fields only when they apply - a shape it targets, or a kind picked for the widget
+		// it is put on - and only a note saying why when they don't.
+		bool bShapeFields = true;
+		bool bShapeApplies = true;
+		if (Layer.AnimType == EWidgetAnimType::Shape)
+		{
+			bShapeFields = AddShapeTrackRows(Category, LayerIndex, /*bKey=*/true, bShapeApplies);
+		}
+		const FName ShapeValuesName = GET_MEMBER_NAME_CHECKED(FWidgetTransformKeyframe, ShapeValues);
+		const FName AuthoredName = GET_MEMBER_NAME_CHECKED(FWidgetTransformKeyframe, bUseAuthoredShape);
+		AddChildren(Category, KeyHandle.ToSharedRef(), [CurveName, ShapeValuesName, AuthoredName, bShapeFields, bShapeApplies](FName Name)
+		{
+			return Name != CurveName && (bShapeFields || Name != ShapeValuesName) && (bShapeApplies || Name != AuthoredName);
+		}, /*bAutoExpand=*/true);
 
 		if (KeyIndex + 1 < NumKeys && bSpring)
 		{
@@ -5564,8 +5724,8 @@ public:
 			FText::Format(LOCTEXT("LayersCategory", "{0} Tracks"), FText::AsNumber(NumTracks)));
 
 		const bool bSameType = Types.Num() == 1;
-		const bool bAllTransform = bSameType && Types.Contains(EWidgetAnimType::Transform);
-		const bool bAnyTransform = Types.Contains(EWidgetAnimType::Transform);
+		const bool bAllTransform = bSameType && Algo::AllOf(Types, [](EWidgetAnimType Type) { return WidgetAnimTypeIsKeyframed(Type); });
+		const bool bAnyTransform = !Algo::AllOf(Types, [](EWidgetAnimType Type) { return !WidgetAnimTypeIsKeyframed(Type); });
 
 		Category.AddCustomRow(LOCTEXT("MultipleLayersRow", "Multiple Tracks"))
 			.WholeRowContent()
@@ -6477,10 +6637,18 @@ namespace WidgetAnimToolTip
 		TFunction<bool(const FWidgetTransformKeyframe&)> IsDefault;
 	};
 
-	/** Translation, Scale, Shear, Angle - and Shape, when the layer animates a Shape Box's outline. */
-	TArray<FChannel> TransformChannels(bool bAnimatesShape)
+	/** A Transform track's Translation, Scale, Shear and Angle - or a Shape Box or Shape track's one Shape. */
+	TArray<FChannel> TransformChannels(EWidgetKeyframeContent Content)
 	{
 		TArray<FChannel> Channels;
+
+		if (Content != EWidgetKeyframeContent::Transform)
+		{
+			Channels.Add({ TEXT("Shape"),
+				[](const FWidgetTransformKeyframe& Key) { return Key.bUseAuthoredShape ? FString(TEXT("Authored")) : FString(TEXT("Custom")); },
+				[](const FWidgetTransformKeyframe& Key) { return Key.bUseAuthoredShape; } });
+			return Channels;
+		}
 
 		Channels.Add({ TEXT("Translation"),
 			[](const FWidgetTransformKeyframe& Key) { return Pair(Key.Transform.Translation, false); },
@@ -6497,13 +6665,6 @@ namespace WidgetAnimToolTip
 		Channels.Add({ TEXT("Angle"),
 			[](const FWidgetTransformKeyframe& Key) { return Angle(Key.Transform.Angle); },
 			[](const FWidgetTransformKeyframe& Key) { return FMath::IsNearlyZero(Key.Transform.Angle, 1.e-3f); } });
-
-		if (bAnimatesShape)
-		{
-			Channels.Add({ TEXT("Shape"),
-				[](const FWidgetTransformKeyframe& Key) { return Key.bUseAuthoredShape ? FString(TEXT("Authored")) : FString(TEXT("Custom")); },
-				[](const FWidgetTransformKeyframe& Key) { return Key.bUseAuthoredShape; } });
-		}
 
 		return Channels;
 	}
@@ -7471,77 +7632,119 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 		SNew(SSpacer)
 	];
 
-	// Save as Animation Asset in Animation Timeline; Update Animation Asset in Edit Existing Asset.
+	// Save. Editing an asset it saves that asset; a timeline or a builder's tracks not yet saved as one, Save Animation To
+	// asks where - the Default Folder, or a Custom Location picked in the editor's Save Asset As window.
+	auto SaveContent = [](TAttribute<FText> Label)
+	{
+		return SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
+			[
+				SNew(SImage)
+				.Image(FNameTBDStyle::FindIcon(FNameTBDStyle::SaveIcon) ? FNameTBDStyle::FindIcon(FNameTBDStyle::SaveIcon) : FAppStyle::GetBrush("Icons.Save"))
+				.DesiredSizeOverride(FVector2D(14.f, 14.f))
+				.ColorAndOpacity(FSlateColor::UseForeground())
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+				.ColorAndOpacity(FSlateColor::UseForeground())
+				.Text(Label)
+			];
+	};
+	auto SaveNew = [this](bool bChooseLocation)
+	{
+		if (!Source.IsValid())
+		{
+			return;
+		}
+		// The builder goes on to edit what it saved; a Widget Blueprint's timeline stays open as it was.
+		const UObject* Before = Source->GetEditedObject();
+		if (Source->SaveAsNewAsset(bChooseLocation) && Source->GetEditedObject() != Before)
+		{
+			SwitchEditedAnimation([]() {});
+		}
+	};
+
 	Header->AddSlot()
 	.AutoWidth()
 	.VAlign(VAlign_Center)
 	.Padding(FMargin(4.f, 0.f))
 	[
-		// In the animation orange, with black text - the one button here that writes an asset.
 		SNew(SButton)
 		.ButtonStyle(&OrangeButtonStyle())
-		.ContentPadding(FMargin(0.f))
-		.IsEnabled_Lambda([this, IsEditingExisting]()
+		.ContentPadding(FMargin(8.f, 2.f))
+		.Visibility_Lambda([IsEditingExisting]() { return IsEditingExisting() ? EVisibility::Visible : EVisibility::Collapsed; })
+		.IsEnabled_Lambda([this]() { return Source.IsValid() && Source->CanUpdateAsset(); })
+		.ToolTip(WidgetAnimTimeline::MakePanelToolTip(TAttribute<FText>::CreateLambda([this]()
 		{
-			return Source.IsValid() && (IsEditingExisting() ? Source->CanUpdateAsset() : Source->CanSaveAsNewAsset());
-		})
-		.ToolTip(WidgetAnimTimeline::MakePanelToolTip(TAttribute<FText>::CreateLambda([this, IsEditingExisting]()
-		{
-			if (IsEditingExisting())
-			{
-				return WidgetAnimTips::UpdateTooltip();
-			}
-			return Source.IsValid() && Source->IsBuilder()
-				? WidgetAnimTips::SaveAsBuilderTooltip()
-				: WidgetAnimTips::SaveAsTooltip();
+			const UWidgetAnimPresetAsset* Asset = Source.IsValid() ? Source->GetAsset() : nullptr;
+			return Asset ? FText::Format(LOCTEXT("SaveAssetNamed", "Save: save the changes made to {0}. Every widget using it plays them."), FText::FromString(Asset->GetName())) : WidgetAnimTips::UpdateTooltip();
 		})))
-		.OnClicked_Lambda([this, IsEditingExisting]()
+		.OnClicked_Lambda([this]()
 		{
-			if (!Source.IsValid())
-			{
-				return FReply::Handled();
-			}
-
-			if (IsEditingExisting())
+			if (Source.IsValid())
 			{
 				Source->UpdateAsset();
-			}
-			else
-			{
-				// The builder goes on to edit what it saved; a Widget Blueprint's timeline stays open as it was.
-				const UObject* Before = Source->GetEditedObject();
-				if (Source->SaveAsNewAsset() && Source->GetEditedObject() != Before)
-				{
-					SwitchEditedAnimation([]() {});
-				}
 			}
 			return FReply::Handled();
 		})
 		[
-			// Named for what it saves - "Save Timeline 1 as Animation Asset", "Update WA_Card" - so with several timelines it is
-			// never a guess which one goes out. A long name is cut short rather than pushing the header's other buttons off.
-			SNew(SBox)
-			.MaxDesiredWidth(360.f)
-			[
-				SNew(STextBlock)
-				.Font(FAppStyle::GetFontStyle("NormalFontBold"))
-				.ColorAndOpacity(FSlateColor::UseForeground())
-				.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
-				.Text_Lambda([this, IsEditingExisting]()
-				{
-					if (IsEditingExisting())
-					{
-						const UWidgetAnimPresetAsset* Asset = Source.IsValid() ? Source->GetAsset() : nullptr;
-						return Asset
-							? FText::Format(LOCTEXT("UpdateNamedAsset", "Update {0}"), FText::FromString(Asset->GetName()))
-							: LOCTEXT("UpdateAsset", "Update Animation Asset");
-					}
-					const bool bNamed = Source.IsValid() && (Source->SupportsTimelines() ? !Source->GetTimelineName().IsEmpty() : Source->IsBuilder());
-					return bNamed
-						? FText::Format(LOCTEXT("SaveNamedAsAsset", "Save {0} as Animation Asset"), Source->GetEditedName())
-						: LOCTEXT("SaveAsAsset", "Save as Animation Asset");
-				})
-			]
+			SaveContent(LOCTEXT("Save", "Save"))
+		]
+	];
+
+	Header->AddSlot()
+	.AutoWidth()
+	.VAlign(VAlign_Center)
+	.Padding(FMargin(4.f, 0.f))
+	[
+		SNew(SComboButton)
+		.ButtonStyle(&OrangeButtonStyle())
+		.ContentPadding(FMargin(8.f, 2.f))
+		.Visibility_Lambda([IsEditingExisting]() { return IsEditingExisting() ? EVisibility::Collapsed : EVisibility::Visible; })
+		.IsEnabled_Lambda([this]() { return Source.IsValid() && Source->CanSaveAsNewAsset(); })
+		.ToolTip(WidgetAnimTimeline::MakePanelToolTip(TAttribute<FText>::CreateLambda([this]()
+		{
+			return Source.IsValid() && Source->IsBuilder() ? WidgetAnimTips::SaveAsBuilderTooltip() : WidgetAnimTips::SaveAsTooltip();
+		})))
+		.OnGetMenuContent_Lambda([this, SaveNew]()
+		{
+			FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+			const FString Folder = Source.IsValid() ? Source->GetDefaultSaveFolder() : FString();
+			Menu.AddMenuEntry(
+				FUIAction(FExecuteAction::CreateLambda([SaveNew]() { SaveNew(/*bChooseLocation=*/false); })),
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(STextBlock).Text(WidgetAnimTips::SaveToDefaultFolder())
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(STextBlock)
+					.Font(FAppStyle::GetFontStyle("SmallFont"))
+					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+					.Text(FText::FromString(Folder.IsEmpty() ? FString(TEXT("/Game")) : Folder))
+				],
+				NAME_None,
+				FText::Format(WidgetAnimTips::SaveToDefaultFolderTooltip(), FText::FromString(Folder.IsEmpty() ? FString(TEXT("/Game")) : Folder)));
+			Menu.AddMenuEntry(
+				WidgetAnimTips::SaveToCustomLocation(),
+				WidgetAnimTips::SaveToCustomLocationTooltip(),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateLambda([SaveNew]() { SaveNew(/*bChooseLocation=*/true); })));
+			return Menu.MakeWidget();
+		})
+		.ButtonContent()
+		[
+			SaveContent(LOCTEXT("SaveAnimationTo", "Save Animation To"))
 		]
 	];
 
@@ -8844,7 +9047,7 @@ bool SWidgetAnimTimeline::CanEditKeys(int32 LayerIndex) const
 	{
 		return false;
 	}
-	if (Layer.AnimType == EWidgetAnimType::Transform)
+	if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
 	{
 		return Layer.Transform.Curve.ExternalCurve == nullptr;
 	}
@@ -8868,7 +9071,7 @@ bool SWidgetAnimTimeline::CanMoveKey(int32 LayerIndex, int32 KeyIndex) const
 
 	// A keyed track's first and last keys are its start and its end: where the track is, not points along it.
 	const FWidgetAnimLayer& Layer = (*GetLayers())[LayerIndex];
-	return Layer.AnimType == EWidgetAnimType::Transform || (KeyIndex > 0 && KeyIndex < KeyTimes.Num() - 1);
+	return WidgetAnimTypeIsKeyframed(Layer.AnimType) || (KeyIndex > 0 && KeyIndex < KeyTimes.Num() - 1);
 }
 
 bool SWidgetAnimTimeline::CanDeleteKey(int32 LayerIndex, int32 KeyIndex) const
@@ -8887,7 +9090,7 @@ bool SWidgetAnimTimeline::CanDeleteKey(int32 LayerIndex, int32 KeyIndex) const
 
 	// Two keys is the least a Transform track can move between; any other track always keeps its start and end.
 	const FWidgetAnimLayer& Layer = (*GetLayers())[LayerIndex];
-	return Layer.AnimType == EWidgetAnimType::Transform
+	return WidgetAnimTypeIsKeyframed(Layer.AnimType)
 		? KeyTimes.Num() > 2
 		: (KeyIndex > 0 && KeyIndex < KeyTimes.Num() - 1);
 }
@@ -8913,14 +9116,14 @@ bool SWidgetAnimTimeline::CanResizeLayer(int32 LayerIndex, bool bStartEdge) cons
 	}
 
 	// Stretching a Transform layer stretches its keys, and a shared Curve asset's keys aren't this animation's.
-	if (Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.Curve.ExternalCurve != nullptr)
+	if (WidgetAnimTypeIsKeyframed(Layer.AnimType) && Layer.Transform.Curve.ExternalCurve != nullptr)
 	{
 		return false;
 	}
 
 	// A Spring track is as long as its spring takes to settle - its spring decides that, not its edges. Not a
 	// Transform's: its spring is fitted to its keys, which stretch with it as a Tween's do.
-	if (Layer.IsSpringTimed() && Layer.AnimType != EWidgetAnimType::Transform)
+	if (Layer.IsSpringTimed() && !WidgetAnimTypeIsKeyframed(Layer.AnimType))
 	{
 		return false;
 	}
@@ -9158,7 +9361,7 @@ void SWidgetAnimTimeline::GetKeyTimes(int32 LayerIndex, TArray<float>& OutTimes)
 		return;
 	}
 
-	if (Layer.AnimType == EWidgetAnimType::Transform)
+	if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
 	{
 		if (const FRichCurve* Curve = Layer.Transform.GetActiveCurve())
 		{
@@ -9193,7 +9396,7 @@ const FWidgetAnimSegmentCurve* SWidgetAnimTimeline::GetSegmentCurve(int32 LayerI
 	}
 
 	const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
-	if (Layer.AnimType == EWidgetAnimType::Transform)
+	if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
 	{
 		// The last key has no next, so no segment of its own.
 		return Segment + 1 < Layer.Transform.Keys.Num() ? &Layer.Transform.Keys[Segment].CurveToNext : nullptr;
@@ -9215,7 +9418,7 @@ bool SWidgetAnimTimeline::HasSegmentCurves(int32 LayerIndex) const
 	}
 
 	const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
-	return Layer.AnimType == EWidgetAnimType::Transform
+	return WidgetAnimTypeIsKeyframed(Layer.AnimType)
 		? Layer.Transform.HasSegmentCurves()
 		: WidgetAnimTypeSupportsValueKeys(Layer.AnimType) && Layer.ValueKeys.HasSegmentCurves();
 }
@@ -9231,7 +9434,7 @@ bool SWidgetAnimTimeline::UsesSegmentCurves(int32 LayerIndex) const
 	// A spring springs across the whole run, keys and all - a Transform's too, fitted to its keys - so the curves
 	// between them wait for it to be a Tween again.
 	const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
-	return (Layer.AnimType == EWidgetAnimType::Transform || WidgetAnimTypeSupportsValueKeys(Layer.AnimType)) && !Layer.IsSpringTimed() && !IsCueLayer(Layer);
+	return (WidgetAnimTypeIsKeyframed(Layer.AnimType) || WidgetAnimTypeSupportsValueKeys(Layer.AnimType)) && !Layer.IsSpringTimed() && !IsCueLayer(Layer);
 }
 
 float SWidgetAnimTimeline::GetPlayheadSeconds() const
@@ -10047,7 +10250,7 @@ namespace
 			return nullptr;
 		}
 
-		if (Layer.AnimType == EWidgetAnimType::Transform)
+		if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
 		{
 			return Segment + 1 < Layer.Transform.Keys.Num() ? &Layer.Transform.Keys[Segment].CurveToNext : nullptr;
 		}
@@ -10836,11 +11039,13 @@ uint32 SWidgetAnimTimeline::ComputeLayoutSignature() const
 			Hash = HashCombine(Hash, PointerHash(Layer.ValueInput.GetScriptStruct()));
 		}
 
-		if (Layer.AnimType == EWidgetAnimType::Transform)
+		if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
 		{
-			// Key count matters (a selected key can vanish); animate-shape decides whether Shape rows exist.
+			// Key count matters (a selected key can vanish); a Shape track's kind decides which fields its keys have,
+			// and whether they've been laid out for it yet.
 			Hash = HashCombine(Hash, GetTypeHash(Layer.Transform.Keys.Num()));
-			Hash = HashCombine(Hash, GetTypeHash(static_cast<uint8>(Layer.Transform.bAnimateShape)));
+			Hash = HashCombine(Hash, PointerHash(Layer.Transform.ShapeKind.Get()));
+			Hash = HashCombine(Hash, PointerHash(Layer.Transform.Keys.Num() > 0 ? Layer.Transform.Keys[0].ShapeValues.GetPropertyBagStruct() : nullptr));
 			Hash = HashCombine(Hash, PointerHash(Layer.Transform.Curve.ExternalCurve.Get()));
 		}
 	}
@@ -10909,6 +11114,28 @@ EActiveTimerReturnType SWidgetAnimTimeline::OnRefreshTimer(double InCurrentTime,
 	if (IsMultiSelection())
 	{
 		SyncLayerProxies();
+	}
+
+	// A Shape track keys the settings of the shape it targets: retargeted - its group's Preview Target changed, or the
+	// track made a Shape track - it follows, so the Selection panel always shows that shape's fields.
+	// Tried once for each track and target it is seen with, never while an undo or redo is applied: undoing the match
+	// leaves it undone until the track is retargeted.
+	if (Selection.Layer != INDEX_NONE && !IsMultiSelection() && !GIsTransacting)
+	{
+		const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+		const bool bShapeTrack = Layers && Layers->IsValidIndex(Selection.Layer) && (*Layers)[Selection.Layer].AnimType == EWidgetAnimType::Shape;
+		UShapeWidget* TargetShape = nullptr;
+		const bool bShapeTarget = bShapeTrack && GetShapeTrackTarget(Selection.Layer, &TargetShape) == EShapeTrackTarget::Shape;
+		const TPair<int32, FObjectKey> MatchKey(Selection.Layer, FObjectKey(bShapeTarget ? TargetShape : nullptr));
+		if (bShapeTrack && MatchKey != LastShapeMatch)
+		{
+			LastShapeMatch = MatchKey;
+			MatchShapeTrackToTarget(Selection.Layer);
+		}
+		else if (!bShapeTrack)
+		{
+			LastShapeMatch = TPair<int32, FObjectKey>(INDEX_NONE, FObjectKey());
+		}
 	}
 
 	// The Selection panel's stand-in for the asset, likewise.
@@ -11026,6 +11253,49 @@ void SWidgetAnimTimeline::OnObjectChangedForLayout(UObject* Object, FPropertyCha
 	if (Object && (Object->IsA<UWidgetAnimPresetAsset>() || (Source.IsValid() && Object == Source->GetEditedObject())))
 	{
 		++TrackLayoutRevision;
+	}
+
+	if (Object && Source.IsValid() && Object == Source->GetEditedObject())
+	{
+		JumpToEditedKey(Event);
+	}
+}
+
+void SWidgetAnimTimeline::JumpToEditedKey(const FPropertyChangedEvent& Event)
+{
+	if (!UWidgetAnimEditorSettings::Get().bJumpToEditedKey || bJumpingToEditedKey || IsBodyCollapsed())
+	{
+		return;
+	}
+	TGuardValue<bool> Guard(bJumpingToEditedKey, true);
+
+	// A key shown in the Selection panel: whatever was edited there was that key.
+	if (SelectedKeys.Num() > 0)
+	{
+		const FKeyRef& Key = SelectedKeys.Last();
+		FocusPreviewOnKey(Key.Layer, Key.Key);
+		return;
+	}
+
+	// A track: its start value or its end value, by name - Start Opacity, End Scale, a registered type's Start Value. The
+	// slide's distance is where it starts from.
+	if (SelectedLayers.Num() != 1 || !Event.Property)
+	{
+		return;
+	}
+	const FString Name = Event.Property->GetName();
+	const bool bStart = (Name.StartsWith(TEXT("Start")) && Name != TEXT("Start")) || Name == TEXT("SlideDistance");
+	const bool bEnd = Name.StartsWith(TEXT("End"));
+	if (!bStart && !bEnd)
+	{
+		return;
+	}
+	const int32 LayerIndex = SelectedLayers[0];
+	TArray<float> KeyTimes;
+	GetKeyTimes(LayerIndex, KeyTimes);
+	if (KeyTimes.Num() > 0)
+	{
+		FocusPreviewOnKey(LayerIndex, bStart ? 0 : KeyTimes.Num() - 1);
 	}
 }
 
@@ -13643,6 +13913,20 @@ void SWidgetAnimTimeline::AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, c
 	// Every track already there stays where it is in time, the one below the new one included.
 	Layers.Insert(NewLayer, InsertAt);
 	EnsureUniqueTrackName(Layers, InsertAt);
+
+	// A keyframed track's keys hold what its type says - and a Shape track's, the settings of the shape it targets, as
+	// that shape has them now, so its keys start out as the shape already is.
+	FWidgetAnimLayer& Added = Layers[InsertAt];
+	if (WidgetAnimTypeIsKeyframed(Added.AnimType))
+	{
+		Added.Transform.Content = WidgetAnimKeyframeContentFor(Added.AnimType);
+		UShapeWidget* TargetShape = nullptr;
+		if (Added.AnimType == EWidgetAnimType::Shape && GetShapeTrackTarget(InsertAt, &TargetShape) == EShapeTrackTarget::Shape && TargetShape)
+		{
+			Added.Transform.SetShapeKind(TargetShape->GetClass(), TargetShape);
+		}
+		Added.Transform.SyncKeysToCurve();
+	}
 	PinLayerStarts(OldStarts, OldIndicesAfterInserting(Layers.Num(), InsertAt, 1));
 	TrackCollapsedGroups.Remove(GroupIndex);
 	ListCollapsedGroups.Remove(GroupIndex);
@@ -14488,6 +14772,92 @@ void SWidgetAnimTimeline::SetAnimationTrackFit(int32 LayerIndex, bool bFit)
 	RebuildRows();
 }
 
+namespace WidgetAnimTimeline
+{
+	/** Whether a Shape track already keys Kind's settings, every key laid out for them. */
+	bool IsShapeTrackLaidOutFor(const FWidgetTransformAnim& Anim, const UClass* Kind)
+	{
+		return Anim.ShapeKind.Get() == Kind && Algo::AllOf(Anim.Keys, [Kind](const FWidgetTransformKeyframe& Key)
+		{
+			return Kind ? WidgetShapeAnimation::IsLaidOutFor(Key.ShapeValues, Kind) : Key.ShapeValues.GetPropertyBagStruct() == nullptr;
+		});
+	}
+}
+
+SWidgetAnimTimeline::EShapeTrackTarget SWidgetAnimTimeline::GetShapeTrackTarget(int32 LayerIndex, UShapeWidget** OutShape) const
+{
+	if (OutShape)
+	{
+		*OutShape = nullptr;
+	}
+
+	UWidget* Target = Source.IsValid() ? Source->GetLayerPreviewWidget(LayerIndex) : nullptr;
+	const bool bOwnWidget = !Target || !Source.IsValid() || Source->IsLayerOnOwnWidget(LayerIndex);
+
+	// A shape - or, for a widget the group names, the shape inside it the track plays on, as it does at runtime. The
+	// widget the animation is put on is only known when it is a shape itself; otherwise the kind is picked on the track.
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	const UClass* Kind = Layers && Layers->IsValidIndex(LayerIndex) ? (*Layers)[LayerIndex].Transform.ShapeKind.Get() : nullptr;
+	UShapeWidget* Shape = Cast<UShapeWidget>(Target);
+	if (!Shape && !bOwnWidget)
+	{
+		Shape = WidgetAnimShapeTrack::ResolveShape(Target, Kind);
+	}
+	if (Shape)
+	{
+		if (OutShape)
+		{
+			*OutShape = Shape;
+		}
+		return EShapeTrackTarget::Shape;
+	}
+	return bOwnWidget ? EShapeTrackTarget::OwnWidget : EShapeTrackTarget::NotAShape;
+}
+
+void SWidgetAnimTimeline::SetShapeTrackKind(int32 LayerIndex, UClass* Kind)
+{
+	const TArray<FWidgetAnimLayer>* Current = GetLayers();
+	if (!Current || !Current->IsValidIndex(LayerIndex) || !CanEditLayer(LayerIndex) || (*Current)[LayerIndex].AnimType != EWidgetAnimType::Shape
+		|| WidgetAnimTimeline::IsShapeTrackLaidOutFor((*Current)[LayerIndex].Transform, Kind))
+	{
+		return;
+	}
+
+	const FScopedTransaction Transaction(WidgetAnimTips::SetShapeTrackKindTransaction());
+	if (!BeginEdit())
+	{
+		return;
+	}
+
+	// Values the keys don't have yet start from the shape it targets, when that is a shape of this kind.
+	UShapeWidget* TargetShape = nullptr;
+	GetShapeTrackTarget(LayerIndex, &TargetShape);
+	FWidgetAnimLayer& Layer = (*Source->GetLayers())[LayerIndex];
+	Layer.Transform.Content = EWidgetKeyframeContent::Shape;
+	Layer.Transform.SetShapeKind(Kind, TargetShape && Kind && TargetShape->IsA(Kind) ? TargetShape : nullptr);
+
+	// The layout signature brings the Selection panel along next frame, with the new kind's fields.
+	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+}
+
+void SWidgetAnimTimeline::MatchShapeTrackToTarget(int32 LayerIndex)
+{
+	const TArray<FWidgetAnimLayer>* Current = GetLayers();
+	if (IsReadOnly() || !Current || !Current->IsValidIndex(LayerIndex) || (*Current)[LayerIndex].AnimType != EWidgetAnimType::Shape || !CanEditLayer(LayerIndex))
+	{
+		return;
+	}
+
+	UShapeWidget* TargetShape = nullptr;
+	if (GetShapeTrackTarget(LayerIndex, &TargetShape) == EShapeTrackTarget::Shape && TargetShape)
+	{
+		if (!WidgetAnimTimeline::IsShapeTrackLaidOutFor((*Current)[LayerIndex].Transform, TargetShape->GetClass()))
+		{
+			SetShapeTrackKind(LayerIndex, TargetShape->GetClass());
+		}
+	}
+}
+
 void SWidgetAnimTimeline::SetAnimationTrackValueDriven(int32 LayerIndex, bool bValueDriven)
 {
 	const TArray<FWidgetAnimLayer>* Current = GetLayers();
@@ -14823,7 +15193,7 @@ void SWidgetAnimTimeline::AddKey(int32 LayerIndex, float LocalSeconds)
 
 	FWidgetAnimLayer& Layer = (*Source->GetLayers())[LayerIndex];
 
-	if (Layer.AnimType != EWidgetAnimType::Transform)
+	if (!WidgetAnimTypeIsKeyframed(Layer.AnimType))
 	{
 		// A keyed track's keys sit at fractions of its run, so they keep their places when it is resized.
 		// LocalSeconds is played time, as the timeline shows it.
@@ -14902,7 +15272,7 @@ void SWidgetAnimTimeline::AddKey(int32 LayerIndex, float LocalSeconds)
 		return;
 	}
 
-	const FScopedTransaction Transaction(LOCTEXT("AddKeyTransaction", "Add Transform Key"));
+	const FScopedTransaction Transaction(LOCTEXT("AddKeyTransaction", "Add Key"));
 	if (!BeginEdit())
 	{
 		return;
@@ -14946,7 +15316,7 @@ void SWidgetAnimTimeline::DeleteKey(int32 LayerIndex, int32 KeyIndex)
 
 	FWidgetAnimLayer& Layer = (*Source->GetLayers())[LayerIndex];
 
-	if (Layer.AnimType != EWidgetAnimType::Transform)
+	if (!WidgetAnimTypeIsKeyframed(Layer.AnimType))
 	{
 		const FScopedTransaction Transaction(LOCTEXT("DeleteValueKeyTransaction", "Delete Key"));
 		if (!BeginEdit())
@@ -15029,7 +15399,7 @@ void SWidgetAnimTimeline::DeleteSelectedKeys()
 	for (const FKeyRef& Ref : Doomed)
 	{
 		FWidgetAnimLayer& Layer = (*Layers)[Ref.Layer];
-		if (Layer.AnimType != EWidgetAnimType::Transform)
+		if (!WidgetAnimTypeIsKeyframed(Layer.AnimType))
 		{
 			if (Layer.ValueKeys.Keys.IsValidIndex(Ref.Key - 1))
 			{
@@ -15069,7 +15439,7 @@ void SWidgetAnimTimeline::SetKeyTime(int32 LayerIndex, int32 KeyIndex, float Loc
 	FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
 	const float TimeScale = FMath::Max(GetTimeScale(), KINDA_SMALL_NUMBER);
 
-	if (Layer.AnimType == EWidgetAnimType::Transform)
+	if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
 	{
 		FRichCurve* Curve = Layer.Transform.Curve.GetRichCurve();
 		if (!Curve || !Curve->GetConstRefOfKeys().IsValidIndex(KeyIndex))
@@ -15256,7 +15626,7 @@ void SWidgetAnimTimeline::BeginKeyDrag(int32 LayerIndex, int32 KeyIndex)
 	// One undo step for the whole drag, however many frames it moves through.
 	KeyDragTransaction = MakeUnique<FScopedTransaction>(DragKeys.Num() > 1
 		? LOCTEXT("MoveKeysTransaction", "Move Keys")
-		: (*GetLayers())[LayerIndex].AnimType == EWidgetAnimType::Transform
+		: WidgetAnimTypeIsKeyframed((*GetLayers())[LayerIndex].AnimType)
 			? LOCTEXT("MoveKeyTransaction", "Move Transform Key")
 			: LOCTEXT("MoveValueKeyTransaction", "Move Key"));
 	BeginEdit();
@@ -15754,7 +16124,7 @@ void SWidgetAnimTimeline::ApplyLayerSpans(const TArray<float>& NewStarts, const 
 		const float Start = FMath::Max(NewStarts[LayerIndex], 0.f) / TimeScale;
 		const float Length = PlayedLength / TimeScale;
 
-		if (Layer.AnimType == EWidgetAnimType::Transform)
+		if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
 		{
 			// A Transform layer is as long as its last key, so its keys are stretched to the new length - from
 			// where they were at the press, so a drag back and forth never drifts. A shared Curve asset is not
@@ -19939,7 +20309,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 				Rows.Add(TEXT("Input Note"), TEXT("The input gives one number; every channel of this track gets it."));
 			}
 		}
-		if (Layer.AnimType == EWidgetAnimType::Transform)
+		if (WidgetAnimTypeHasValueDrives(Layer.AnimType))
 		{
 			const UEnum* DrivesEnum = StaticEnum<EWidgetAnimTransformValueTarget>();
 			Rows.Add(TEXT("Drives"), DrivesEnum ? DrivesEnum->GetDisplayNameTextByValue(static_cast<int64>(Layer.ValueDrives)).ToString() : FString());
@@ -19950,7 +20320,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 	// the identity at some key, one column each, one row per key. Many keys show the first and last few.
 	TSharedPtr<SWidget> KeyTable;
 	FString KeyNote;
-	if (Layer.AnimType == EWidgetAnimType::Transform)
+	if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
 	{
 		const TArray<FWidgetTransformKeyframe>& Keys = Layer.Transform.Keys;
 		TArray<float> KeyTimes;
@@ -19964,7 +20334,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 		}
 
 		TArray<FChannel> Shown;
-		for (const FChannel& Channel : TransformChannels(Layer.Transform.IsAnimatingShape()))
+		for (const FChannel& Channel : TransformChannels(WidgetAnimKeyframeContentFor(Layer.AnimType)))
 		{
 			if (Keys.ContainsByPredicate([&Channel](const FWidgetTransformKeyframe& Key) { return !Channel.IsDefault(Key); }))
 			{
@@ -20127,6 +20497,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 	case EWidgetAnimType::MaterialScalar: Blurb = WidgetAnimTips::MaterialScalarBlurbTooltip(); break;
 	case EWidgetAnimType::MaterialVector: Blurb = WidgetAnimTips::MaterialVectorBlurbTooltip(); break;
 	case EWidgetAnimType::Transform:      Blurb = WidgetAnimTips::TransformBlurbTooltip(); break;
+	case EWidgetAnimType::ShapeBox:       Blurb = WidgetAnimTips::ShapeBoxBlurbTooltip(); break;
+	case EWidgetAnimType::Shape:          Blurb = WidgetAnimTips::ShapeBlurbTooltip(); break;
 	case EWidgetAnimType::Custom:
 	{
 		// A registered type describes itself - it may come from a module this plugin knows nothing about.
@@ -20181,14 +20553,23 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 		}
 	}
 
-	// Animate Shape acts through a Shape Box - see UWidgetAnimLibrary::ResolveShapeBox - and does nothing without one.
-	if (Layer.AnimType == EWidgetAnimType::Transform)
+	// A Shape Box track acts through a Shape Box - see UWidgetAnimLibrary::ResolveShapeBox - and does nothing without
+	// one; a Shape track through a shape. Said only when the preview shows its target isn't one.
+	if (Layer.AnimType == EWidgetAnimType::ShapeBox || Layer.AnimType == EWidgetAnimType::Shape)
 	{
-		Body->AddSlot()
-		.AutoHeight()
-		[
-			Warning(WidgetAnimTips::TransformShapeBoxWarningTooltip())
-		];
+		UWidget* Target = Source.IsValid() ? Source->GetLayerPreviewWidget(LayerIndex) : nullptr;
+		const bool bShapeBox = Layer.AnimType == EWidgetAnimType::ShapeBox;
+		const bool bMissing = Target && (bShapeBox
+			? UWidgetAnimLibrary::ResolveShapeBox(Target) == nullptr
+			: WidgetAnimShapeTrack::ResolveShape(Target, Layer.Transform.ShapeKind.Get()) == nullptr);
+		if (bMissing)
+		{
+			Body->AddSlot()
+			.AutoHeight()
+			[
+				Warning(bShapeBox ? WidgetAnimTips::TransformShapeBoxWarningTooltip() : WidgetAnimTips::ShapeTrackTargetWarningTooltip())
+			];
+		}
 	}
 
 	return Frame(
@@ -20215,7 +20596,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyToolTip(int32 LayerIndex, int32 
 
 	// A key of a track that travels from a start value to an end value: its first key is the start, its last the
 	// end, and each between is a value on the way.
-	if (Layer.AnimType != EWidgetAnimType::Transform)
+	if (!WidgetAnimTypeIsKeyframed(Layer.AnimType))
 	{
 		TArray<float> PointTimes;
 		GetKeyTimes(LayerIndex, PointTimes);
@@ -20280,7 +20661,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyToolTip(int32 LayerIndex, int32 
 
 	// Only what this key's pose changes from the identity - the start's in green, the end's in red.
 	FRows Pose;
-	for (const FChannel& Channel : TransformChannels(Layer.Transform.IsAnimatingShape()))
+	for (const FChannel& Channel : TransformChannels(WidgetAnimKeyframeContentFor(Layer.AnimType)))
 	{
 		if (!Channel.IsDefault(Keyframe))
 		{

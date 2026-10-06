@@ -20,6 +20,7 @@
 #include "NameTBD/Widgets/ShapeBox.h"
 #include "WidgetAnimTransform.h"
 #include "WidgetAnimSpring.h"
+#include "Evaluators/WidgetAnimShapeTrack.h"
 
 #if WITH_EDITOR
 #include "UObject/UnrealType.h"
@@ -461,17 +462,15 @@ namespace
 		Baseline.Captured = MoveTemp(Captured);
 	}
 
-	/** One live write onto its target: with the color it blended to, for a type whose keys hold colors. */
-	void ApplyWrite(const FWidgetAnimAuthoritativeWrite& Write, UObject* Target, const FInstancedStruct& Params)
+	/**
+	 * One live write onto its target, through its evaluator - with what the target held before it was animated, when this
+	 * type captured that, for a type that reads it (a Shape track's Use Authored Shape).
+	 */
+	void ApplyWrite(const FWidgetAnimAuthoritativeWrite& Write, UObject* Target, const FInstancedStruct& Params, const FWidgetAnimBaselineSet* Baselines)
 	{
-		if (Write.bHasColor)
-		{
-			Write.Evaluator->ApplyWithColor(Target, Params, Write.Value, Write.Color);
-		}
-		else
-		{
-			Write.Evaluator->Apply(Target, Params, Write.Value);
-		}
+		const FWidgetAnimAuthoritativeBaseline* Baseline = Baselines ? Baselines->FindAuthoritativeBaseline(Target, Write.Channel) : nullptr;
+		const bool bOwnCapture = Baseline && Baseline->CapturedBy.Get() == Write.Evaluator->GetParamsStruct();
+		Write.Evaluator->ApplyWrite(Target, Params, Write, bOwnCapture ? &Baseline->Captured : nullptr);
 	}
 
 	/**
@@ -524,12 +523,12 @@ namespace
 							continue;
 						}
 
-						ApplyWrite(Write, Target, Params);
+						ApplyWrite(Write, Target, Params, Baselines);
 						Last->AppliedValue = Write.Value;
 						continue;
 					}
 
-					ApplyWrite(Write, Target, Params);
+					ApplyWrite(Write, Target, Params, Baselines);
 
 					// Entries for targets that are gone are dropped once the cache is large - not the whole cache, which with
 					// thousands of animated texts or Blueprint types emptied it every frame, and with it the point of it: every
@@ -555,7 +554,7 @@ namespace
 				}
 				else
 				{
-					ApplyWrite(Write, Target, Params);
+					ApplyWrite(Write, Target, Params, Baselines);
 					LastWrites.Remove(Key);
 				}
 				continue;
@@ -709,6 +708,7 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 	}
 
 	case EWidgetAnimType::Transform:
+	case EWidgetAnimType::ShapeBox:
 	{
 		// Keyed like every other keyed layer: plain time finds the segment, so each key is reached exactly when
 		// the timeline shows it, and each segment is shaped by its key's Curve To Next Key - the layer's Easing,
@@ -721,7 +721,8 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 
 		// Null unless a baseline captured this Shape Box's authored outline, which is exactly when a key's
 		// Use Authored Shape has something to mean.
-		const FShapeBoxShape* AuthoredShape = Baselines ? Baselines->FindShapeBaseline(Settings.ShapeTargetBox) : nullptr;
+		const bool bShapeBox = Settings.AnimType == EWidgetAnimType::ShapeBox;
+		const FShapeBoxShape* AuthoredShape = bShapeBox && Baselines ? Baselines->FindShapeBaseline(Settings.ShapeTargetBox) : nullptr;
 
 		// A spring fitted to the keys: it runs the track's length, its progress walks the keys - each segment straight,
 		// the spring being the motion, as a spring track's value keys are points along its travel - and its overshoot
@@ -731,18 +732,22 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 			? UWidgetAnimSpringLibrary::EvaluateDirectedProgress(Settings.Spring, FMath::Clamp(DirectedAlpha, 0.f, 1.f), bTowardStart) * Duration
 			: FMath::Clamp(DirectedAlpha, 0.f, 1.f) * Duration;
 
-		const FWidgetTransformAnimResult Contribution =
-			UWidgetAnimTransformLibrary::Evaluate(Settings.Transform, LocalTime, AuthoredShape, bSpring ? nullptr : &TrackEase, /*bExtrapolate=*/bSpring);
+		const FWidgetTransformAnimResult Contribution = UWidgetAnimTransformLibrary::Evaluate(Settings.Transform,
+			bShapeBox ? EWidgetKeyframeContent::ShapeBox : EWidgetKeyframeContent::Transform, LocalTime, AuthoredShape, bSpring ? nullptr : &TrackEase, /*bExtrapolate=*/bSpring);
 
-		FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget, Settings.Part);
-		Transform.Translation += Contribution.Translation;
-		Transform.Scale       *= Contribution.Scale;
-		Transform.Shear       += Contribution.Shear;
-		Transform.Angle       += Contribution.Angle;
+		// A Shape Box track moves the outline only, never the widget.
+		if (!bShapeBox)
+		{
+			FWidgetAnimTargetedTransform& Transform = FindOrAddTargetedTransform(OutResult, Settings.TargetWidget, Settings.Part);
+			Transform.Translation += Contribution.Translation;
+			Transform.Scale       *= Contribution.Scale;
+			Transform.Shear       += Contribution.Shear;
+			Transform.Angle       += Contribution.Angle;
+		}
 
 		// Assigned, not accumulated - see FindOrAddShapeTarget. A null box is kept rather than dropped: it
 		// means "no target named", and is resolved against the fallback widget when the result is applied,
-		// exactly as a transform with no target is. Dropping it here is what made Animate Shape do nothing on
+		// exactly as a transform with no target is. Dropping it here is what made a Shape Box track do nothing on
 		// every entry left pointing at its own widget.
 		// A letter has no outline of its own: the shape belongs to the widget, and is left to its unstaggered tracks.
 		if (Contribution.bHasShape && !Settings.Part.IsSet())
@@ -751,6 +756,42 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 			ShapeTarget.Shape = Contribution.Shape;
 			ShapeTarget.bIsBaseline = false;
 		}
+		break;
+	}
+
+	case EWidgetAnimType::Shape:
+	{
+		// Keyed and timed exactly as a Transform track is; what its keys hold - a shape's settings - is blended where it
+		// is applied, onto the shape, through the authoritative channel registered types write through: the key it is
+		// leaving and how far toward the next it is. See WidgetAnimShapeTrack.h. A letter has no shape of its own.
+		const FWidgetAnimEvaluator* Evaluator = WidgetAnimShapeTrack::FindEvaluator();
+		if (!Evaluator || Settings.Part.IsSet() || Settings.TypeParams.GetPtr<FWidgetAnimShapeKeysParams>() == nullptr)
+		{
+			break;
+		}
+
+		const float Duration = Settings.Transform.GetDuration();
+		auto EaseSegment = [&Settings](float Alpha) { return EvaluateEasedAlpha(Settings, Alpha); };
+		const TFunctionRef<float(float)> TrackEase(EaseSegment);
+		const bool bSpring = Settings.IsSpringTimed();
+		const float LocalTime = bSpring
+			? UWidgetAnimSpringLibrary::EvaluateDirectedProgress(Settings.Spring, FMath::Clamp(DirectedAlpha, 0.f, 1.f), bTowardStart) * Duration
+			: FMath::Clamp(DirectedAlpha, 0.f, 1.f) * Duration;
+
+		int32 KeySegment = 0;
+		float KeyAlpha = 0.f;
+		if (UWidgetAnimTransformLibrary::FindSegment(Settings.Transform, LocalTime, bSpring ? nullptr : &TrackEase, /*bExtrapolate=*/bSpring, KeySegment, KeyAlpha) == 0)
+		{
+			break;
+		}
+
+		FWidgetAnimAuthoritativeWrite& Write = FindOrAddAuthoritativeWrite(OutResult, Settings.TargetWidget, Evaluator->GetChannel(Settings.TypeParams));
+		Write.Evaluator = Evaluator;
+		Write.Params = &Settings.TypeParams;
+		Write.Value = KeyAlpha;
+		Write.KeySegment = KeySegment;
+		Write.bHasColor = false;
+		Write.bIsBaseline = false;
 		break;
 	}
 
@@ -798,6 +839,7 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 			Write.Evaluator = Evaluator;
 			Write.Params = &Settings.TypeParams;
 			Write.Value = RegisteredValue;
+			Write.KeySegment = INDEX_NONE;
 			Write.bIsBaseline = false;
 
 			// Keys holding colors: blended between the same two points, the same way, exact at either end.
@@ -871,23 +913,38 @@ void UWidgetAnimLibrary::TouchLayerTargets(const FWidgetAnimSettings& Settings, 
 		return;
 	}
 
+	// A Shape track the same way: its shape's settings back as they were authored, the transform untouched.
+	if (Settings.AnimType == EWidgetAnimType::Shape)
+	{
+		const FWidgetAnimEvaluator* Evaluator = WidgetAnimShapeTrack::FindEvaluator();
+		if (Evaluator && !Settings.Part.IsSet())
+		{
+			AddAuthoritativeBaselineWrite(OutResult, Settings.TargetWidget, Evaluator->GetChannel(Settings.TypeParams), Evaluator, &Settings.TypeParams);
+		}
+		return;
+	}
+
 	// The identity: multiplies and adds nothing, so a layer that IS contributing to the same widget this frame
 	// is untouched by it - but the widget is written, at its baseline, even when nothing else is. Over baselines that are
 	// only put back, the identity would be written as it is - a widget authored at half opacity shown at full - so the
 	// widget is noted instead, and written at its captured pose unless a track poses it. A part is never captured: at rest
 	// it is where its widget lays it out, which is the identity either way.
-	if (!Baselines.bComposeTransforms && !Settings.Part.IsSet())
+	// A Shape Box track poses no transform, so it touches none - only its outline, below.
+	if (Settings.AnimType != EWidgetAnimType::ShapeBox)
 	{
-		OutResult.RestingWidgets.Add(Settings.TargetWidget.Get());
-	}
-	else
-	{
-		FindOrAddTargetedTransform(OutResult, Settings.TargetWidget, Settings.Part);
+		if (!Baselines.bComposeTransforms && !Settings.Part.IsSet())
+		{
+			OutResult.RestingWidgets.Add(Settings.TargetWidget.Get());
+		}
+		else
+		{
+			FindOrAddTargetedTransform(OutResult, Settings.TargetWidget, Settings.Part);
+		}
 	}
 
 	// A shape is assigned rather than composed, so the authored outline only goes in where no other layer has
 	// put one this frame - and a later layer that does still replaces it.
-	if (Settings.AnimType == EWidgetAnimType::Transform && Settings.Transform.IsAnimatingShape() && !Settings.Part.IsSet())
+	if (Settings.AnimType == EWidgetAnimType::ShapeBox && !Settings.Part.IsSet())
 	{
 		const bool bAlreadyWritten = OutResult.ShapeTargets.ContainsByPredicate([&Settings](const FWidgetAnimShapeTarget& Target)
 		{
@@ -916,7 +973,7 @@ namespace WidgetAnimLoop
 	};
 
 	/**
-	 * How long a layer runs. A Transform layer's is its curve's last key, a Spring layer's is its spring's
+	 * How long a layer runs. A keyframed layer's is its curve's last key, a Spring layer's is its spring's
 	 * settle time; for both, the Duration field is hidden and ignored.
 	 *
 	 * A spring's settle time is worked out from its parameters on every call rather than cached - a handful
@@ -925,7 +982,7 @@ namespace WidgetAnimLoop
 	 */
 	static float GetEffectiveLayerDuration(const FWidgetAnimSettings& Settings)
 	{
-		if (Settings.AnimType == EWidgetAnimType::Transform)
+		if (WidgetAnimTypeIsKeyframed(Settings.AnimType))
 		{
 			return Settings.Transform.GetDuration();
 		}
@@ -3260,10 +3317,14 @@ void UWidgetAnimLibrary::CaptureWidgetAnimBaselines(UWidget* FallbackWidget, con
 				continue;
 			}
 
-			// A Transform layer that animates a Shape Box needs the box's authored outline kept, both to
-			// restore it afterwards and because a key's Use Authored Shape resolves against it.
-			if (Settings.AnimType == EWidgetAnimType::Transform && Settings.Transform.IsAnimatingShape() && !Settings.Part.IsSet())
+			// A Shape Box layer needs the box's authored outline kept, both to restore it afterwards and because a
+			// key's Use Authored Shape resolves against it. It poses nothing else.
+			if (Settings.AnimType == EWidgetAnimType::ShapeBox)
 			{
+				if (Settings.Part.IsSet())
+				{
+					continue;
+				}
 				if (Settings.ShapeTargetBox)
 				{
 					CaptureOneShape(Baselines, Settings.ShapeTargetBox);
@@ -3272,6 +3333,20 @@ void UWidgetAnimLibrary::CaptureWidgetAnimBaselines(UWidget* FallbackWidget, con
 				{
 					bNeedsShapeFallback = true;
 				}
+				continue;
+			}
+
+			// A Shape layer keeps its shape's settings as they were authored, the way a registered type keeps its
+			// channel - to put back, and for its keys' Use Authored Shape.
+			if (Settings.AnimType == EWidgetAnimType::Shape)
+			{
+				const FWidgetAnimEvaluator* Evaluator = WidgetAnimShapeTrack::FindEvaluator();
+				if (Evaluator && !Settings.Part.IsSet())
+				{
+					UWidget* Widget = Settings.TargetWidget ? Settings.TargetWidget.Get() : FallbackWidget;
+					CaptureOneAuthoritative(Baselines, *Evaluator, Settings.TypeParams, Widget);
+				}
+				continue;
 			}
 
 			if (Settings.AnimType == EWidgetAnimType::MaterialScalar || Settings.AnimType == EWidgetAnimType::MaterialVector)
@@ -3347,7 +3422,7 @@ void UWidgetAnimLibrary::RestoreWidgetAnimBaselines(const FWidgetAnimBaselineSet
 		}
 	}
 
-	// Outlines go back whole. Nothing partial to undo: Animate Shape replaced the shape rather than
+	// Outlines go back whole. Nothing partial to undo: a Shape Box track replaced the shape rather than
 	// composing with it, so the authored one is the only thing there is to restore.
 	for (const FWidgetAnimShapeBaseline& ShapeBaseline : Baselines.ShapeBaselines)
 	{
@@ -3525,7 +3600,7 @@ float FWidgetAnimLayer::GetRunLength() const
 			: FMath::Max(UWidgetAnimLibrary::GetAnimationPassSeconds(InsertedAnimation.Get()), KINDA_SMALL_NUMBER);
 	}
 
-	if (AnimType == EWidgetAnimType::Transform)
+	if (WidgetAnimTypeIsKeyframed(AnimType))
 	{
 		return Transform.GetDuration();
 	}
@@ -3869,7 +3944,7 @@ void UWidgetAnimLibrary::RetimeLayer(FWidgetAnimLayer& Layer, float Speed, float
 
 	Layer.Duration = FMath::Max(Layer.Duration / Speed, MinSeconds);
 	Layer.Delay /= Speed;
-	if (FRichCurve* Curve = Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.Curve.ExternalCurve == nullptr ? Layer.Transform.Curve.GetRichCurve() : nullptr)
+	if (FRichCurve* Curve = WidgetAnimTypeIsKeyframed(Layer.AnimType) && Layer.Transform.Curve.ExternalCurve == nullptr ? Layer.Transform.Curve.GetRichCurve() : nullptr)
 	{
 		for (FRichCurveKey& Key : Curve->Keys)
 		{
@@ -4486,7 +4561,7 @@ float UWidgetAnimLibrary::GetKeyStackTime(const FWidgetAnimSettings& Layer, int3
 {
 	float KeyTime = -1.f;
 
-	if (Layer.AnimType == EWidgetAnimType::Transform)
+	if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
 	{
 		const FRichCurve* Curve = Layer.Transform.GetActiveCurve();
 		if (!Curve || !Curve->GetConstRefOfKeys().IsValidIndex(KeyIndex))
@@ -4868,12 +4943,14 @@ FWidgetAnimSettings FWidgetAnimLayer::ToSettings() const
 	Out.EndVectorValue = EndVectorValue;
 
 	// One line rather than a dozen, which is the whole point of the nested payload: the next family costs
-	// one line here too instead of a copy of every one of its fields.
+	// one line here too instead of a copy of every one of its fields. What its keys hold is the track's type's.
 	Out.Transform = Transform;
+	Out.Transform.Content = WidgetAnimKeyframeContentFor(AnimType);
 
 	// And a registered type's settings are one value whatever the type, which is what makes the next family cost
-	// nothing here at all.
-	Out.TypeParams = TypeParams;
+	// nothing here at all. A Shape track carries its keys' settings there, as its writes play them - see
+	// WidgetAnimShapeTrack.h.
+	Out.TypeParams = AnimType == EWidgetAnimType::Shape ? WidgetAnimShapeTrack::MakeParams(Transform) : TypeParams;
 
 	// bLoop / bPingPong / LoopCount / bInvertAnimation / bMirrorInOut / the two targets are all decisions
 	// about ONE USE of this layer, so they are deliberately left at their defaults here and filled in by
@@ -4929,7 +5006,7 @@ FWidgetAnimLayer FWidgetAnimLayer::FromSettings(const FWidgetAnimSettings& Setti
 	Out.EndVectorValue = Settings.EndVectorValue;
 
 	Out.Transform = Settings.Transform;
-	Out.TypeParams = Settings.TypeParams;
+	Out.TypeParams = Settings.AnimType == EWidgetAnimType::Shape ? FInstancedStruct() : Settings.TypeParams;
 
 	return Out;
 }
@@ -5461,7 +5538,7 @@ void UWidgetAnimLibrary::ApplyValueLayerContribution(const FWidgetAnimSettings& 
 	}
 
 	const int32 NumChannels = Settings.ValueOptions.GetNumChannels();
-	const bool bWholePath = Settings.AnimType != EWidgetAnimType::Transform || Settings.ValueDrives == EWidgetAnimTransformValueTarget::WholePath;
+	const bool bWholePath = !WidgetAnimTypeHasValueDrives(Settings.AnimType) || Settings.ValueDrives == EWidgetAnimTransformValueTarget::WholePath;
 	if (NumChannels <= 1 && bWholePath)
 	{
 		ApplyAnimationContribution(Settings, Directed(0), OutResult, Baselines, /*bTowardStart=*/false);

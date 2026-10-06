@@ -201,7 +201,7 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 		// drives is the group's - an Image, a Border, a Text Block, a Retainer Box. Null: the widget it plays on.
 		Settings.MaterialTargetWidget = Target;
 
-		// Same idea for a Transform layer's Animate Shape: the group's target, or the Shape Box it sits in.
+		// Same idea for a Shape Box layer: the group's target, or the Shape Box it sits in.
 		// Null when no target was named; the library then resolves the widget the animation is played on.
 		Settings.ShapeTargetBox = UWidgetAnimLibrary::ResolveShapeBox(Target);
 

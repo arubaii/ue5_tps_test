@@ -116,7 +116,7 @@ public:
 	 *   1. Create a widget blueprint parented to 'WidgetAnimBuilder'. It can go anywhere in your project.
 	 *   2. Add an image widget and name it 'PreviewImage'.
 	 *   3. Choose whatever image you like (T_FivePointStar set to a gold color looks good for preview).
-	 *   4. Optional, for previewing Animate Shape on Transform layers: wrap 'PreviewImage' in a Shape Box.
+	 *   4. Optional, for previewing Shape Box layers: wrap 'PreviewImage' in a Shape Box.
 	 *      The Image keeps getting the render transform; the Shape Box around it takes the outline.
 	 */
 	UFUNCTION(CallInEditor, Category = "Preview", meta = (DisplayName = "View Animation Preview"))

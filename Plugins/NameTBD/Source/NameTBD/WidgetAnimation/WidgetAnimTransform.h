@@ -6,20 +6,39 @@
 #include "Curves/CurveFloat.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "Slate/WidgetTransform.h"
+#include "StructUtils/PropertyBag.h"
 
-#include "NameTBD/Widgets/ShapeBox.h"   // FShapeBoxShape, for the optional Shape on each key
+#include "NameTBD/Widgets/ShapeBox.h"   // FShapeBoxShape, for a Shape Box track's keys
 #include "WidgetAnimEasing.h"           // FWidgetAnimSegmentCurve, for the curve from each key to the next
 
 #include "WidgetAnimTransform.generated.h"
 
 class UShapeBox;
+class UShapeWidget;
+
+/**
+ * What the keys of a keyframed track hold - which of the three keyframed track types it is. The keys, their times and
+ * the curves between them work the same way on all three; only what each key says the widget looks like differs.
+ */
+UENUM(BlueprintType)
+enum class EWidgetKeyframeContent : uint8
+{
+	/** A Transform track: the widget's render transform at each key. */
+	Transform,
+
+	/** A Shape Box track: a Shape Box's outline at each key. */
+	ShapeBox UMETA(DisplayName = "Shape Box"),
+
+	/** A Shape track: a shape widget's settings at each key - an Ellipse's, a Star's, a Custom Shape's. */
+	Shape
+};
 
 // =====================================================================================================
 // Keyframe
 // =====================================================================================================
 
 /**
- * What the widget looks like at one key of a Transform layer's curve.
+ * What the widget looks like at one key of a keyframed track's curve - a Transform, Shape Box or Shape track.
  *
  * Key N here is key N of the curve, counting in time order. The curve says WHEN each key happens and HOW
  * the motion travels between them; this says WHAT the widget looks like when it gets there.
@@ -40,26 +59,37 @@ struct NAMETBD_API FWidgetTransformKeyframe
 	float Time = 0.f;
 
 	/**
-	 * The widget's render transform at this key.
+	 * The widget's render transform at this key, on a Transform track.
 	 *
 	 * Composes with every other layer the way the library always has: Translation, Shear and Angle add,
 	 * Scale multiplies. With Preserve Authored Transforms on, (30, 0) means thirty units right of wherever
 	 * the widget was authored.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (EditCondition = "Content == EWidgetKeyframeContent::Transform", EditConditionHides, HideEditConditionToggle))
 	FWidgetTransform Transform;
 
 	/**
-	 * Uses the Shape Box's own authored outline at this key instead of the Shape below. The usual choice for
-	 * the last key of an entrance: whatever the panel is distorted from, it settles into its real shape, and
-	 * the same animation works on every Shape Box it is used on.
+	 * On a Shape Box or Shape track: the shape exactly as it was authored on the widget, at this key, rather than the
+	 * settings below - so no shape has to be set up again for a key that only lands back on it. The usual choice for the
+	 * last key of an entrance: whatever the shape is distorted from, it settles into its real self, and the same
+	 * animation works on every shape it is used on.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (DisplayName = "Use Authored Shape", EditCondition = "bShapeEnabled", EditConditionHides, HideEditConditionToggle))
-	bool bUseAuthoredShape = false;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (DisplayName = "Use Authored Shape", EditCondition = "Content != EWidgetKeyframeContent::Transform", EditConditionHides, HideEditConditionToggle))
+	bool bUseAuthoredShape = true;
 
-	/** The Shape Box outline at this key. Blended between keys with FShapeBoxShape::Lerp, so every Shape Box property animates. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (EditCondition = "bShapeEnabled && !bUseAuthoredShape", EditConditionHides, HideEditConditionToggle))
+	/** The Shape Box outline at this key, on a Shape Box track. Blended between keys with FShapeBoxShape::Lerp, so every Shape Box property animates. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (EditCondition = "Content == EWidgetKeyframeContent::ShapeBox && !bUseAuthoredShape", EditConditionHides, HideEditConditionToggle))
 	FShapeBoxShape Shape;
+
+	/**
+	 * The shape's settings at this key, on a Shape track: one field for each setting of the kind of shape the track
+	 * animates (see FWidgetTransformAnim::ShapeKind) - its fill, stroke, trim and layout, and a Star's points and radii,
+	 * an Ellipse's sweep, a Custom Shape's path. Blended between keys field by field: numbers and colors glide, a path
+	 * morphs vertex by vertex when both keys have as many, and anything with nothing in between - an on/off, a choice
+	 * from a list - switches halfway.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Key", meta = (DisplayName = "Shape", FixedLayout, EditCondition = "Content == EWidgetKeyframeContent::Shape && !bUseAuthoredShape", EditConditionHides, HideEditConditionToggle))
+	FInstancedPropertyBag ShapeValues;
 
 	/**
 	 * How the widget travels from this key to the next. Track Easing - the default - leaves it to the layer's
@@ -69,12 +99,12 @@ struct NAMETBD_API FWidgetTransformKeyframe
 	FWidgetAnimSegmentCurve CurveToNext;
 
 	/**
-	 * Details-panel only; no runtime effect. Mirrors the layer's Animate Shape, because an EditCondition
-	 * can only see properties on its own struct. The Context Menu Button's shape states use the same trick
-	 * (bIsApplicable) for the same reason. Evaluation reads the layer's flag, never this one.
+	 * Details-panel only; no runtime effect. Mirrors the track's type (FWidgetTransformAnim::Content), because an
+	 * EditCondition can only see properties on its own struct. The Context Menu Button's shape states use the same
+	 * trick (bIsApplicable) for the same reason. Evaluation reads the track's type, never this.
 	 */
 	UPROPERTY()
-	bool bShapeEnabled = false;
+	EWidgetKeyframeContent Content = EWidgetKeyframeContent::Transform;
 };
 
 // =====================================================================================================
@@ -82,7 +112,8 @@ struct NAMETBD_API FWidgetTransformKeyframe
 // =====================================================================================================
 
 /**
- * A keyframed Transform layer.
+ * A keyframed layer: a Transform track, a Shape Box track or a Shape track - which one is Content, set from the track's
+ * type. All three key, time and ease the same way; only what each key holds differs (see FWidgetTransformKeyframe).
  *
  * TIMING lives on the curve. Its keys' times are the keyframe times, so the last key's time is how long the
  * layer runs - which is why Duration and Easing are hidden on a Transform layer. The layer's Delay still
@@ -117,9 +148,21 @@ struct NAMETBD_API FWidgetTransformAnim
 	UPROPERTY()
 	FRuntimeFloatCurve Curve;
 
-	/** Also animates a Shape Box's whole outline, key by key. Needs this layer's Target Widget to be a Shape Box. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (DisplayName = "Animate Shape"))
-	bool bAnimateShape = false;
+	/**
+	 * What the keys hold - which keyframed track this is. Mirrors the track's type, which is what sets it (see
+	 * WidgetAnimKeyframeContentFor); never edited on its own.
+	 */
+	UPROPERTY()
+	EWidgetKeyframeContent Content = EWidgetKeyframeContent::Transform;
+
+	/**
+	 * A Shape track's kind of shape - Star, Ellipse, Custom Shape - which decides the settings each key holds. Matched to
+	 * the track's target widget in the Widget Animations panel, or picked there when the track plays on the widget the
+	 * animation is put on. Played on a shape of another kind, the settings the two kinds share (fill, stroke, trim,
+	 * layout) still animate.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Transform")
+	TSubclassOf<UShapeWidget> ShapeKind;
 
 	/** What the widget looks like at each curve key, in time order. Kept the same length as the curve. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, EditFixedSize, Category = "Transform", meta = (TitleProperty = "Time"))
@@ -134,7 +177,17 @@ struct NAMETBD_API FWidgetTransformAnim
 	 */
 	float GetDuration() const;
 
-	bool IsAnimatingShape() const { return bAnimateShape; }
+	/** Whether the keys hold render transforms, Shape Box outlines or shape settings. See Content. */
+	bool IsAnimatingTransform() const { return Content == EWidgetKeyframeContent::Transform; }
+	bool IsAnimatingShape() const { return Content == EWidgetKeyframeContent::ShapeBox; }
+	bool IsAnimatingShapeWidget() const { return Content == EWidgetKeyframeContent::Shape; }
+
+	/**
+	 * Makes this a Shape track for shapes of InKind: every key's settings laid out for that kind, keeping each value a
+	 * key already had that the new kind shares and taking the rest from Source - a shape of that kind, its current
+	 * settings - or the kind's defaults. Returns true if anything changed.
+	 */
+	bool SetShapeKind(UClass* InKind, const UObject* Source = nullptr);
 
 	/** Whether any key but the last has a Curve To Next Key of its own, rather than the layer's Easing. */
 	bool HasSegmentCurves() const
@@ -151,7 +204,7 @@ struct NAMETBD_API FWidgetTransformAnim
 
 	/**
 	 * Brings Keys back into step with the curve after an edit: one entry per curve key, times mirrored, the
-	 * Details-only shape flag mirrored. Existing values follow their key; a newly added key starts at the
+	 * Details-only Content mirrored, a Shape track's settings laid out for its kind. Existing values follow their key; a newly added key starts at the
 	 * pose the animation had at that time. Returns true if anything changed; bOutResized says whether the
 	 * number of keys did, which is the one change that adds or removes rows in the Details panel.
 	 *
@@ -184,7 +237,7 @@ struct NAMETBD_API FWidgetTransformAnimResult
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	float Angle = 0.f;
 
-	/** False unless the layer's Animate Shape is on, which is what keeps it from stamping over other layers. */
+	/** True only for a Shape Box track, which is what keeps every other keyframed track from stamping over its outline. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bHasShape = false;
 
@@ -216,7 +269,9 @@ class NAMETBD_API UWidgetAnimTransformLibrary : public UBlueprintFunctionLibrary
 public:
 
 	/**
-	 * The layer at LocalTime seconds, in the curve's own time.
+	 * The layer at LocalTime seconds, in the curve's own time: its render transform when Content is Transform, its
+	 * Shape Box outline when it is ShapeBox. A Shape track's settings are blended where they are applied instead - see
+	 * WidgetAnimShapeTrack.h - from the segment FindSegment finds.
 	 *
 	 * The layer's Delay and any inversion are already resolved by the caller, so a reversed layer simply
 	 * hands in a time that runs backwards. AuthoredShape is what a key's Use Authored Shape resolves to -
@@ -230,7 +285,15 @@ public:
 	 * bExtrapolate: a LocalTime before the first key or past the last carries on along the first or last segment,
 	 * in a straight line, instead of holding the key - how a spring-timed track overshoots its last key.
 	 */
-	static FWidgetTransformAnimResult Evaluate(const FWidgetTransformAnim& Anim, float LocalTime, const FShapeBoxShape* AuthoredShape = nullptr, const TFunctionRef<float(float)>* TrackEase = nullptr, bool bExtrapolate = false);
+	static FWidgetTransformAnimResult Evaluate(const FWidgetTransformAnim& Anim, EWidgetKeyframeContent Content, float LocalTime, const FShapeBoxShape* AuthoredShape = nullptr, const TFunctionRef<float(float)>* TrackEase = nullptr, bool bExtrapolate = false);
+
+	/**
+	 * Where LocalTime falls among the keys, the way Evaluate finds it: OutSegment is the key it is leaving (the last
+	 * key but one at most), OutAlpha how far toward the next it is - eased by TrackEase as Evaluate eases it, and past 0
+	 * or 1 only where bExtrapolate lets it run on. Returns how many keys there are to blend; 1 is a single key held
+	 * (OutSegment 0, OutAlpha 0), 0 nothing at all.
+	 */
+	static int32 FindSegment(const FWidgetTransformAnim& Anim, float LocalTime, const TFunctionRef<float(float)>* TrackEase, bool bExtrapolate, int32& OutSegment, float& OutAlpha);
 
 	/**
 	 * Runs SyncKeysToCurve on every FWidgetTransformAnim anywhere inside Object - in layer arrays, in

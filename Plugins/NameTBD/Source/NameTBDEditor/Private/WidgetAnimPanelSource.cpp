@@ -1,6 +1,8 @@
 ﻿// Copyright AR GameSystems 2026. All rights reserved.
 
 #include "WidgetAnimPanelSource.h"
+
+#include "NameTBD/Widgets/Shapes/ShapeWidget.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h"
 
 #include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
@@ -98,6 +100,18 @@ UWidget* IWidgetAnimPanelSource::GetLayerPreviewWidget(int32 LayerIndex) const
 	const int32 GroupIndex = Groups ? UWidgetAnimLibrary::GetLayerGroupIndex((*Layers)[LayerIndex], Groups->Num()) : INDEX_NONE;
 	UWidget* Target = Groups && Groups->IsValidIndex(GroupIndex) ? ResolvePreviewTarget((*Groups)[GroupIndex].PreviewTarget) : nullptr;
 	return Target ? Target : Root;
+}
+
+bool IWidgetAnimPanelSource::IsLayerOnOwnWidget(int32 LayerIndex) const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
+	if (!Layers || !Layers->IsValidIndex(LayerIndex))
+	{
+		return false;
+	}
+	const int32 GroupIndex = Groups ? UWidgetAnimLibrary::GetLayerGroupIndex((*Layers)[LayerIndex], Groups->Num()) : INDEX_NONE;
+	return !Groups || !Groups->IsValidIndex(GroupIndex) || (*Groups)[GroupIndex].PreviewTarget.IsNone();
 }
 
 void IWidgetAnimPanelSource::UpdateAsset()
@@ -255,15 +269,16 @@ namespace
 			return;
 		}
 
-		// An animation's keys are its Transform tracks' own, so only those are synced: walking every property of every
+		// An animation's keys are its keyframed tracks' own, so only those are synced: walking every property of every
 		// track to find them cost more than anything else in an edit to an animation of hundreds of tracks - every frame of
-		// a drag. A track turned into a Transform is synced by the edit that turned it.
+		// a drag. A track turned into a keyframed type is synced by the edit that turned it.
 		if (UWidgetAnimPresetAsset* Animation = Cast<UWidgetAnimPresetAsset>(Object))
 		{
 			for (FWidgetAnimLayer& Layer : Animation->Layers)
 			{
-				if (Layer.AnimType == EWidgetAnimType::Transform)
+				if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
 				{
+					Layer.Transform.Content = WidgetAnimKeyframeContentFor(Layer.AnimType);
 					Layer.Transform.SyncKeysToCurve();
 				}
 			}
@@ -391,7 +406,13 @@ void FWidgetAnimBuilderPanelSource::SetPreviewAnimation(UWidgetAnimPresetAsset* 
 	Builder->PostEditChangeProperty(Event);
 }
 
-UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::SaveAsNewAsset()
+FString FWidgetAnimBuilderPanelSource::GetDefaultSaveFolder() const
+{
+	const UWidgetAnimBuilder* Builder = GetBuilder();
+	return Builder ? Builder->GetCreateFolder() : FString();
+}
+
+UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::SaveAsNewAsset(bool bChooseLocation)
 {
 	UWidgetAnimBuilder* Builder = GetBuilder();
 	if (!Builder || GetMode() != EMode::Timeline)
@@ -401,7 +422,7 @@ UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::SaveAsNewAsset()
 
 	// The builder's own Create - named by Animation Name, in Save Folder - then straight on to editing what
 	// was saved, so further changes Update it. The working copy stays as it is for the next variant.
-	UWidgetAnimPresetAsset* Created = Builder->CreateWidgetAnimation();
+	UWidgetAnimPresetAsset* Created = Builder->CreateWidgetAnimation(bChooseLocation);
 	if (Created)
 	{
 		SetAsset(Created);
@@ -1065,7 +1086,19 @@ void FWidgetAnimAssetPanelSource::SetAsset(UWidgetAnimPresetAsset* InAsset)
 	SaveOpenState();
 }
 
-UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset()
+FString FWidgetAnimAssetPanelSource::GetDefaultSaveFolder() const
+{
+	// The project's Default Save Folder, else beside the Widget Blueprint.
+	const FString ProjectFolder = UWidgetAnimRuntimeSettings::Get().GetDefaultSavePackagePath();
+	const UWidgetBlueprint* WidgetBlueprint = Blueprint.Get();
+	if (!ProjectFolder.IsEmpty() || !WidgetBlueprint)
+	{
+		return ProjectFolder;
+	}
+	return FPackageName::GetLongPackagePath(WidgetBlueprint->GetOutermost()->GetName());
+}
+
+UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset(bool bChooseLocation)
 {
 	const UWidgetBlueprint* WidgetBlueprint = Blueprint.Get();
 	const UWidgetAnimPresetAsset* Timeline = Mode == EMode::Timeline ? GetOpenTimeline() : nullptr;
@@ -1074,10 +1107,8 @@ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset()
 		return nullptr;
 	}
 
-	// In the project's Default Save Folder, else beside the Widget Blueprint - named after it and the timeline:
-	// WBP_Card's Intro -> WA_Card_Intro, numbered on a clash so the prefix survives.
-	const FString ProjectFolder = UWidgetAnimRuntimeSettings::Get().GetDefaultSavePackagePath();
-	const FString PackagePath = !ProjectFolder.IsEmpty() ? ProjectFolder : FPackageName::GetLongPackagePath(WidgetBlueprint->GetOutermost()->GetName());
+	// Named after the Widget Blueprint and the timeline: WBP_Card's Intro -> WA_Card_Intro, numbered on a clash so the
+	// prefix survives.
 	FString BaseName = WidgetBlueprint->GetName();
 	BaseName.RemoveFromStart(TEXT("WBP_"));
 	BaseName.RemoveFromStart(TEXT("W_"));
@@ -1088,17 +1119,7 @@ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset()
 		BaseName += TEXT("_") + TimelinePart;
 	}
 
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
-
-	FString UniquePackageName;
-	FString UniqueAssetName;
-	AssetTools.CreateUniqueAssetName(PackagePath / BaseName, FString(), UniquePackageName, UniqueAssetName);
-
-	UDataAssetFactory* Factory = NewObject<UDataAssetFactory>();
-	Factory->DataAssetClass = UWidgetAnimPresetAsset::StaticClass();
-
-	UWidgetAnimPresetAsset* NewAsset = Cast<UWidgetAnimPresetAsset>(
-		AssetTools.CreateAsset(UniqueAssetName, PackagePath, UWidgetAnimPresetAsset::StaticClass(), Factory));
+	UWidgetAnimPresetAsset* NewAsset = WidgetAnimSaveLocation::CreateAnimationAsset(GetDefaultSaveFolder(), BaseName, bChooseLocation);
 
 	if (!NewAsset)
 	{
@@ -1320,7 +1341,7 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 			const FWidgetAnimSettings& Layer = Flattened[Index];
 			Signature = HashCombine(Signature, PointerHash(Layer.TargetWidget.Get()));
 			Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType)));
-			Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.bAnimateShape)));
+			Signature = HashCombine(Signature, PointerHash(Layer.AnimType == EWidgetAnimType::Shape ? Layer.Transform.ShapeKind.Get() : nullptr));
 			// Which registered type, too: swapping a Count for another type may write another channel of the target.
 			Signature = HashCombine(Signature, PointerHash(Layer.TypeParams.GetScriptStruct()));
 			// And which stagger, and how many items: a stagger moves each child, or each letter, which are captured one by one.
@@ -1639,6 +1660,12 @@ UWidget* FWidgetAnimLayerArrayPanelSource::GetLayerPreviewWidget(int32 LayerInde
 	return Target ? Target : Widget;
 }
 
+bool FWidgetAnimLayerArrayPanelSource::IsLayerOnOwnWidget(int32 LayerIndex) const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	return Layers && Layers->IsValidIndex(LayerIndex) && (*Layers)[LayerIndex].TargetWidget.IsNone();
+}
+
 UWidget* FWidgetAnimLayerArrayPanelSource::GetPreviewWidget() const
 {
 	// Only while it is on screen - see FWidgetAnimAssetPanelSource::GetPreviewRoot.
@@ -1915,7 +1942,7 @@ bool FWidgetAnimLayerArrayPanelSource::Tick(float DeltaTime)
 	{
 		const FWidgetAnimSettings& Layer = Settings[Index];
 		Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType)));
-		Signature = HashCombine(Signature, GetTypeHash(static_cast<uint8>(Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.bAnimateShape)));
+		Signature = HashCombine(Signature, PointerHash(Layer.AnimType == EWidgetAnimType::Shape ? Layer.Transform.ShapeKind.Get() : nullptr));
 		Signature = HashCombine(Signature, PointerHash(Layer.TypeParams.GetScriptStruct()));
 		Signature = HashCombine(Signature, PointerHash(Layer.TargetWidget.Get()));
 		// A stagger moves each child, or each letter, which are captured one by one.
@@ -2027,7 +2054,7 @@ FString FWidgetAnimLayerArrayPanelSource::GetNewAssetBaseName() const
 	return FString::Printf(TEXT("WA_%s_Tracks"), *BaseName);
 }
 
-UWidgetAnimPresetAsset* FWidgetAnimLayerArrayPanelSource::SaveAsNewAsset()
+UWidgetAnimPresetAsset* FWidgetAnimLayerArrayPanelSource::SaveAsNewAsset(bool bChooseLocation)
 {
 	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
 	if (!Layers || Layers->Num() == 0)
@@ -2035,19 +2062,7 @@ UWidgetAnimPresetAsset* FWidgetAnimLayerArrayPanelSource::SaveAsNewAsset()
 		return nullptr;
 	}
 
-	const FString PackagePath = GetNewAssetPackagePath();
-
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
-
-	FString UniquePackageName;
-	FString UniqueAssetName;
-	AssetTools.CreateUniqueAssetName(PackagePath / GetNewAssetBaseName(), FString(), UniquePackageName, UniqueAssetName);
-
-	UDataAssetFactory* Factory = NewObject<UDataAssetFactory>();
-	Factory->DataAssetClass = UWidgetAnimPresetAsset::StaticClass();
-
-	UWidgetAnimPresetAsset* NewAsset = Cast<UWidgetAnimPresetAsset>(
-		AssetTools.CreateAsset(UniqueAssetName, PackagePath, UWidgetAnimPresetAsset::StaticClass(), Factory));
+	UWidgetAnimPresetAsset* NewAsset = WidgetAnimSaveLocation::CreateAnimationAsset(GetNewAssetPackagePath(), GetNewAssetBaseName(), bChooseLocation);
 
 	if (!NewAsset)
 	{
@@ -2095,3 +2110,27 @@ UWidgetAnimPresetAsset* FWidgetAnimLayerArrayPanelSource::SaveAsNewAsset()
 
 
 #undef LOCTEXT_NAMESPACE
+
+namespace WidgetAnimSaveLocation
+{
+	UWidgetAnimPresetAsset* CreateAnimationAsset(const FString& Folder, const FString& BaseName, bool bChooseLocation)
+	{
+		const FString StartFolder = Folder.IsEmpty() ? FString(TEXT("/Game")) : Folder;
+		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
+
+		FString UniquePackageName;
+		FString UniqueAssetName;
+		AssetTools.CreateUniqueAssetName(StartFolder / BaseName, FString(), UniquePackageName, UniqueAssetName);
+
+		UDataAssetFactory* Factory = NewObject<UDataAssetFactory>();
+		Factory->DataAssetClass = UWidgetAnimPresetAsset::StaticClass();
+
+		// Custom Location: the editor's Save Asset As window, as the State Machine editor's New uses - without the data
+		// asset factory's own class picker, since the class is already known.
+		if (bChooseLocation)
+		{
+			return Cast<UWidgetAnimPresetAsset>(AssetTools.CreateAssetWithDialog(UniqueAssetName, StartFolder, UWidgetAnimPresetAsset::StaticClass(), Factory, NAME_None, /*bCallConfigureProperties=*/false));
+		}
+		return Cast<UWidgetAnimPresetAsset>(AssetTools.CreateAsset(UniqueAssetName, StartFolder, UWidgetAnimPresetAsset::StaticClass(), Factory));
+	}
+}

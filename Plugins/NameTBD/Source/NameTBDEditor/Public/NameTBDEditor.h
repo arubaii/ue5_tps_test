@@ -3,6 +3,7 @@
 #include "Modules/ModuleInterface.h"
 
 class IAssetTypeActions; 
+class FWidgetShapePathEditorFactory;
 struct FGraphPanelPinFactory;
 
 class FNameTBDEditorModule : public IModuleInterface
@@ -17,4 +18,7 @@ private:
 
 	// Draws the Set Widget Animation Value node's Animation and Value Name pins as dropdowns.
 	TSharedPtr<FGraphPanelPinFactory> ValuePinFactory;
+
+	// Puts the Custom Shape path editor on the UMG designer's canvas.
+	TSharedPtr<FWidgetShapePathEditorFactory> ShapePathEditorFactory;
 };

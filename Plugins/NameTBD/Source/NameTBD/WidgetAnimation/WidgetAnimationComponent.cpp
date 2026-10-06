@@ -50,7 +50,7 @@ namespace
 
 	/**
 	 * Additive layers as runtime settings. No Target Widget, so they animate the widget the component is
-	 * on; material layers use it too when it is an Image, and a Transform layer's Animate Shape uses it when
+	 * on; material layers use it too when it is an Image, and a Shape Box layer uses it when
 	 * it is a Shape Box - the same narrowing an entry with no target gets in FWidgetAnimEntryBase::BuildSettings.
 	 */
 	void AppendAdditiveLayers(const TArray<FWidgetAnimLayer>& Layers, UWidget* AnimatedWidget, TFunctionRef<UWidget*(FName)> Resolver, TArray<FWidgetAnimSettings>& OutSettings)

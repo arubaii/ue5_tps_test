@@ -2,6 +2,10 @@
 
 #include "WidgetAnimTransform.h"
 
+#include "WidgetAnimLibrary.h"
+#include "NameTBD/Widgets/Shapes/ShapeWidget.h"
+#include "NameTBD/Widgets/Shapes/WidgetShapeAnimation.h"
+
 #include "UObject/EnumProperty.h"
 #include "UObject/TextProperty.h"
 #include "UObject/UnrealType.h"
@@ -74,6 +78,7 @@ namespace
 			Blended.CurveToNext = A.CurveToNext;
 			Blended.Transform = LerpWidgetTransform(A.Transform, B.Transform, Alpha);
 			Blended.Shape = FShapeBoxShape::Lerp(A.Shape, B.Shape, Alpha);
+			Blended.ShapeValues = WidgetShapeAnimation::LerpBags(A.ShapeValues, B.ShapeValues, Alpha);
 			return Blended;
 		}
 
@@ -186,13 +191,31 @@ bool FWidgetTransformAnim::SyncKeysToCurve(bool* bOutResized)
 			bChanged = true;
 		}
 
-		if (Key.bShapeEnabled != bAnimateShape)
+		if (Key.Content != Content)
 		{
-			Key.bShapeEnabled = bAnimateShape;
+			Key.Content = Content;
 			bChanged = true;
 		}
+
+		// A Shape track's keys hold its kind's settings, laid out for it - a key added before the kind was picked, or one
+		// that came from another kind, catches up here. Anything else holds none.
+		const UClass* BagKind = Content == EWidgetKeyframeContent::Shape ? ShapeKind.Get() : nullptr;
+		bChanged |= WidgetShapeAnimation::LayOut(Key.ShapeValues, BagKind, nullptr);
 	}
 
+	return bChanged;
+}
+
+bool FWidgetTransformAnim::SetShapeKind(UClass* InKind, const UObject* Source)
+{
+	UClass* Kind = InKind && InKind->IsChildOf(UShapeWidget::StaticClass()) && !InKind->HasAnyClassFlags(CLASS_Abstract) ? InKind : nullptr;
+	bool bChanged = ShapeKind.Get() != Kind;
+	ShapeKind = Kind;
+
+	for (FWidgetTransformKeyframe& Key : Keys)
+	{
+		bChanged |= WidgetShapeAnimation::LayOut(Key.ShapeValues, Content == EWidgetKeyframeContent::Shape ? Kind : nullptr, Source);
+	}
 	return bChanged;
 }
 
@@ -200,14 +223,15 @@ bool FWidgetTransformAnim::SyncKeysToCurve(bool* bOutResized)
 // UWidgetAnimTransformLibrary
 // =====================================================================================================
 
-FWidgetTransformAnimResult UWidgetAnimTransformLibrary::Evaluate(const FWidgetTransformAnim& Anim, float LocalTime, const FShapeBoxShape* AuthoredShape, const TFunctionRef<float(float)>* TrackEase, bool bExtrapolate)
+int32 UWidgetAnimTransformLibrary::FindSegment(const FWidgetTransformAnim& Anim, float LocalTime, const TFunctionRef<float(float)>* TrackEase, bool bExtrapolate, int32& OutSegment, float& OutAlpha)
 {
-	FWidgetTransformAnimResult Result;
+	OutSegment = 0;
+	OutAlpha = 0.f;
 
 	const FRichCurve* Rich = Anim.GetActiveCurve();
 	if (!Rich)
 	{
-		return Result;
+		return 0;
 	}
 
 	const TArray<FRichCurveKey>& CurveKeys = Rich->GetConstRefOfKeys();
@@ -215,77 +239,80 @@ FWidgetTransformAnimResult UWidgetAnimTransformLibrary::Evaluate(const FWidgetTr
 	// Tolerant of the two lists being out of step - a Curve asset edited elsewhere, a layer built in code
 	// that never synced. Extra curve keys hold the last key that has a value; extra values are ignored.
 	const int32 NumKeys = FMath::Min(CurveKeys.Num(), Anim.Keys.Num());
-	if (NumKeys == 0)
+	if (NumKeys <= 1)
+	{
+		return NumKeys;
+	}
+
+	// The segment LocalTime falls in. Before the first key it is the first segment at alpha 0 (a hold on
+	// key 0); past the last key it is the last segment at alpha 1 (a hold on the final pose).
+	int32 Segment = 0;
+	while (Segment < NumKeys - 2 && LocalTime >= CurveKeys[Segment + 1].Time)
+	{
+		++Segment;
+	}
+
+	// Linear in time between the two keys, when the layer's Easing was already applied to LocalTime. Given a
+	// TrackEase instead, LocalTime is plain time and each segment is shaped here, by its own curve.
+	const float SegmentStart = CurveKeys[Segment].Time;
+	const float SegmentLength = FMath::Max(CurveKeys[Segment + 1].Time - SegmentStart, KINDA_SMALL_NUMBER);
+	float LinearAlpha = (LocalTime - SegmentStart) / SegmentLength;
+	if (bExtrapolate)
+	{
+		// Only the ends run on: before the first key along the first segment, past the last along the last. A
+		// time inside the run is inside a segment, as always.
+		LinearAlpha = Segment > 0 ? FMath::Max(LinearAlpha, 0.f) : LinearAlpha;
+		LinearAlpha = Segment < NumKeys - 2 ? FMath::Min(LinearAlpha, 1.f) : LinearAlpha;
+	}
+	else
+	{
+		LinearAlpha = FMath::Clamp(LinearAlpha, 0.f, 1.f);
+	}
+
+	// Pinned at the keys themselves, whatever a curve makes of its ends: at a key, the pose is that key's.
+	float Alpha = LinearAlpha;
+	if (TrackEase && LinearAlpha > 0.f && LinearAlpha < 1.f)
+	{
+		Alpha = WidgetAnimEasing::EvaluateSegment(Anim.Keys[Segment].CurveToNext, LinearAlpha, *TrackEase);
+	}
+
+	OutSegment = Segment;
+	OutAlpha = Alpha;
+	return NumKeys;
+}
+
+FWidgetTransformAnimResult UWidgetAnimTransformLibrary::Evaluate(const FWidgetTransformAnim& Anim, EWidgetKeyframeContent Content, float LocalTime, const FShapeBoxShape* AuthoredShape, const TFunctionRef<float(float)>* TrackEase, bool bExtrapolate)
+{
+	FWidgetTransformAnimResult Result;
+
+	int32 Segment = 0;
+	float Alpha = 0.f;
+	const int32 NumKeys = FindSegment(Anim, LocalTime, TrackEase, bExtrapolate, Segment, Alpha);
+	if (NumKeys == 0 || Content == EWidgetKeyframeContent::Shape)
 	{
 		return Result;
 	}
 
-	FWidgetTransform Pose;
-	FShapeBoxShape Shape;
+	const FWidgetTransformKeyframe& KeyA = Anim.Keys[Segment];
+	const FWidgetTransformKeyframe& KeyB = Anim.Keys[NumKeys > 1 ? Segment + 1 : Segment];
 
-	if (NumKeys == 1)
+	if (Content == EWidgetKeyframeContent::Transform)
 	{
-		Pose = Anim.Keys[0].Transform;
-		Shape = ResolveKeyShape(Anim.Keys[0], AuthoredShape);
-	}
-	else
-	{
-		// The segment LocalTime falls in. Before the first key it is the first segment at alpha 0 (a hold on
-		// key 0); past the last key it is the last segment at alpha 1 (a hold on the final pose).
-		int32 Segment = 0;
-		while (Segment < NumKeys - 2 && LocalTime >= CurveKeys[Segment + 1].Time)
-		{
-			++Segment;
-		}
-
-		// Linear in time between the two keys, when the layer's Easing was already applied to LocalTime. Given a
-		// TrackEase instead, LocalTime is plain time and each segment is shaped here, by its own curve.
-		const float SegmentStart = CurveKeys[Segment].Time;
-		const float SegmentLength = FMath::Max(CurveKeys[Segment + 1].Time - SegmentStart, KINDA_SMALL_NUMBER);
-		float LinearAlpha = (LocalTime - SegmentStart) / SegmentLength;
-		if (bExtrapolate)
-		{
-			// Only the ends run on: before the first key along the first segment, past the last along the last. A
-			// time inside the run is inside a segment, as always.
-			LinearAlpha = Segment > 0 ? FMath::Max(LinearAlpha, 0.f) : LinearAlpha;
-			LinearAlpha = Segment < NumKeys - 2 ? FMath::Min(LinearAlpha, 1.f) : LinearAlpha;
-		}
-		else
-		{
-			LinearAlpha = FMath::Clamp(LinearAlpha, 0.f, 1.f);
-		}
-
-		const FWidgetTransformKeyframe& KeyA = Anim.Keys[Segment];
-		const FWidgetTransformKeyframe& KeyB = Anim.Keys[Segment + 1];
-
-		// Pinned at the keys themselves, whatever a curve makes of its ends: at a key, the pose is that key's.
-		float Alpha = LinearAlpha;
-		if (TrackEase && LinearAlpha > 0.f && LinearAlpha < 1.f)
-		{
-			Alpha = WidgetAnimEasing::EvaluateSegment(KeyA.CurveToNext, LinearAlpha, *TrackEase);
-		}
-
-		Pose = LerpWidgetTransform(KeyA.Transform, KeyB.Transform, Alpha);
-
-		if (Anim.bAnimateShape)
-		{
-			// Blended by the shape itself, by reflection, so a property added to FShapeBoxShape later animates
-			// with no change here. Lerp extrapolates, so an overshooting segment overshoots the outline too.
-			Shape = FShapeBoxShape::Lerp(ResolveKeyShape(KeyA, AuthoredShape), ResolveKeyShape(KeyB, AuthoredShape), Alpha);
-		}
+		const FWidgetTransform Pose = NumKeys > 1 ? LerpWidgetTransform(KeyA.Transform, KeyB.Transform, Alpha) : KeyA.Transform;
+		Result.Translation = Pose.Translation;
+		Result.Scale       = Pose.Scale;
+		Result.Shear       = Pose.Shear;
+		Result.Angle       = Pose.Angle;
+		return Result;
 	}
 
-	Result.Translation = Pose.Translation;
-	Result.Scale       = Pose.Scale;
-	Result.Shear       = Pose.Shear;
-	Result.Angle       = Pose.Angle;
-
-	if (Anim.bAnimateShape)
-	{
-		Result.Shape = Shape;
-		Result.bHasShape = true;
-	}
-
+	// A Shape Box track: the outline only, the transform left at the identity. Blended by the shape itself, by
+	// reflection, so a property added to FShapeBoxShape later animates with no change here. Lerp extrapolates, so an
+	// overshooting segment overshoots the outline too.
+	Result.Shape = NumKeys > 1
+		? FShapeBoxShape::Lerp(ResolveKeyShape(KeyA, AuthoredShape), ResolveKeyShape(KeyB, AuthoredShape), Alpha)
+		: ResolveKeyShape(KeyA, AuthoredShape);
+	Result.bHasShape = true;
 	return Result;
 }
 
@@ -372,6 +399,24 @@ bool UWidgetAnimTransformLibrary::SyncAllTransformAnims(UObject* Object, bool* b
 	{
 		const FProperty* Property = It.Key();
 		const FStructProperty* StructProperty = CastField<FStructProperty>(Property);
+
+		// A track's keys hold what its type says they hold. Set on the way into the track, so the sync of its keys
+		// below - reached next, inside it - mirrors the type it has now.
+		if (StructProperty && StructProperty->Struct == FWidgetAnimLayer::StaticStruct())
+		{
+			FWidgetAnimLayer* Layer = static_cast<FWidgetAnimLayer*>(const_cast<void*>(It.Value()));
+			const EWidgetKeyframeContent Content = WidgetAnimKeyframeContentFor(Layer->AnimType);
+			bChanged |= Layer->Transform.Content != Content;
+			Layer->Transform.Content = Content;
+		}
+		else if (StructProperty && StructProperty->Struct == FWidgetAnimSettings::StaticStruct())
+		{
+			FWidgetAnimSettings* Settings = static_cast<FWidgetAnimSettings*>(const_cast<void*>(It.Value()));
+			const EWidgetKeyframeContent Content = WidgetAnimKeyframeContentFor(Settings->AnimType);
+			bChanged |= Settings->Transform.Content != Content;
+			Settings->Transform.Content = Content;
+		}
+
 		if (StructProperty && StructProperty->Struct == FWidgetTransformAnim::StaticStruct())
 		{
 			FWidgetTransformAnim* Anim = static_cast<FWidgetTransformAnim*>(const_cast<void*>(It.Value()));
@@ -399,8 +444,8 @@ namespace
 	bool bTransformSyncScheduled = false;
 
 	/**
-	 * Whether an edit could have put Keys out of step with its curve: the curve itself changed, Animate Shape
-	 * was toggled (the keys mirror it), or something structural happened - a layer added or duplicated, an
+	 * Whether an edit could have put Keys out of step with its curve: the curve itself changed, the track's type
+	 * changed (the keys mirror what it holds), or something structural happened - a layer added or duplicated, an
 	 * undo, a paste. A plain bool or enum or value inside a key cannot, so those do no work here at all.
 	 */
 	bool CouldAffectTransformKeys(const FPropertyChangedEvent& PropertyChangedEvent)
@@ -429,9 +474,15 @@ namespace
 			return true;
 		}
 
+		if ((Owner == FWidgetAnimLayer::StaticStruct() || Owner == FWidgetAnimSettings::StaticStruct())
+			&& Property->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, AnimType))
+		{
+			return true;
+		}
+
 		return Owner == FWidgetTransformAnim::StaticStruct()
 			&& (Property->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetTransformAnim, Curve)
-				|| Property->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetTransformAnim, bAnimateShape));
+				|| Property->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetTransformAnim, ShapeKind));
 	}
 }
 

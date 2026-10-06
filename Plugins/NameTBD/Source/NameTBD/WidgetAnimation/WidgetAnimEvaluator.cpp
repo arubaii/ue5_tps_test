@@ -23,6 +23,18 @@ FText FWidgetAnimEvaluator::GetKeyColorLabel(const FInstancedStruct& Params) con
 	return LOCTEXT("DefaultKeyColorLabel", "Color");
 }
 
+void FWidgetAnimEvaluator::ApplyWrite(UObject* Target, const FInstancedStruct& Params, const FWidgetAnimAuthoritativeWrite& Write, const FInstancedStruct* Captured) const
+{
+	if (Write.bHasColor)
+	{
+		ApplyWithColor(Target, Params, Write.Value, Write.Color);
+	}
+	else
+	{
+		Apply(Target, Params, Write.Value);
+	}
+}
+
 UClass* FWidgetAnimEvaluator::GetTargetClass() const
 {
 	return UWidget::StaticClass();

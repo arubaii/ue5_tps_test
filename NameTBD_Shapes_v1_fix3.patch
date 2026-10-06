@@ -1,0 +1,15 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.cpp
+index 326346f..960ee52 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.cpp
+@@ -137,7 +137,9 @@ namespace WidgetShapeGeometryPrivate
+ 			Points = InPoints;
+ 			if (bClosed && Points.Num() > 0)
+ 			{
+-				Points.Add(Points[0]);
++				// A copy first: Add may grow the array and move the element it was handed.
++				const FVector2f First = Points[0];
++				Points.Add(First);
+ 			}
+ 			Distances.SetNumUninitialized(Points.Num());
+ 			float Running = 0.f;
