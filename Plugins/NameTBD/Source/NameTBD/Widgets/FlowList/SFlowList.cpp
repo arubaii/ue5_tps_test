@@ -3,6 +3,7 @@
 #include "SFlowList.h"
 
 #include "Algo/BinarySearch.h"
+#include "Framework/Application/IInputProcessor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
 #include "Layout/ArrangedChildren.h"
@@ -136,13 +137,55 @@ float SFlowList::FPitchTable::At(int64 Segment) const
 // Construction and settings
 // =====================================================================================================
 
+/**
+ * Stick Scrolls: hands a list the stick's moves before Slate turns them into navigation - which the focused item, not the
+ * list, would otherwise make of them. The list takes only the axis along it, and only while it or an item has focus.
+ */
+class FFlowListStickInput : public IInputProcessor
+{
+public:
+	explicit FFlowListStickInput(SFlowList* InOwner) : Owner(InOwner) {}
+
+	virtual void Tick(const float DeltaTime, FSlateApplication& SlateApp, TSharedRef<ICursor> Cursor) override {}
+
+	virtual bool HandleAnalogInputEvent(FSlateApplication& SlateApp, const FAnalogInputEvent& InAnalogInputEvent) override
+	{
+		return Owner && Owner->HandleStickAnalog(InAnalogInputEvent);
+	}
+
+	virtual bool HandleKeyDownEvent(FSlateApplication& SlateApp, const FKeyEvent& InKeyEvent) override
+	{
+		return Owner && Owner->HandleStickKey(InKeyEvent);
+	}
+
+	virtual bool HandleKeyUpEvent(FSlateApplication& SlateApp, const FKeyEvent& InKeyEvent) override
+	{
+		return Owner && Owner->HandleStickKey(InKeyEvent);
+	}
+
+	virtual const TCHAR* GetDebugName() const override { return TEXT("FlowListStickInput"); }
+
+	/** Cleared as the list goes, before it is unregistered: input already on its way finds no one. */
+	SFlowList* Owner = nullptr;
+};
+
 SFlowList::SFlowList()
 	: Children(this)
 {
 	SetCanTick(false);
 }
 
-SFlowList::~SFlowList() = default;
+SFlowList::~SFlowList()
+{
+	if (StickInput.IsValid())
+	{
+		StickInput->Owner = nullptr;
+		if (FSlateApplication::IsInitialized())
+		{
+			FSlateApplication::Get().UnregisterInputPreProcessor(StickInput);
+		}
+	}
+}
 
 void SFlowList::Construct(const FArguments& InArgs)
 {
@@ -162,16 +205,73 @@ void SFlowList::SetSettings(const FFlowListLayout& InLayout, const FFlowListEffe
 	{
 		CachedContentEndScroll = -1.f;
 	}
+	UpdateStickInput();
 
 	// A list that stops looping may be somewhere past its ends; the next tick brings it back.
 	Invalidate(EInvalidateWidgetReason::Layout);
 	WakeUp();
 }
 
+void SFlowList::SetItemAnimationLengths(float InEnterSeconds, float InExitSeconds)
+{
+	ItemEnterSeconds = FMath::Max(InEnterSeconds, 0.f);
+	ItemExitSeconds = FMath::Max(InExitSeconds, 0.f);
+}
+
+void SFlowList::SetItemAnimationPose(const TSharedRef<SWidget>& Widget, const FSlateRenderTransform& Transform, float Opacity, const FVector2f& Pivot)
+{
+	for (int32 Index = 0; Index < Children.Num(); ++Index)
+	{
+		FSlot& Slot = Children[Index];
+		if (Slot.GetWidget() == Widget)
+		{
+			Slot.bHasAnimPose = true;
+			Slot.AnimTransform = Transform;
+			Slot.AnimOpacity = Opacity;
+			Slot.AnimPivot = Pivot;
+		}
+	}
+	++LayoutVersion;
+	Invalidate(EInvalidateWidgetReason::Layout);
+}
+
+bool SFlowList::GetItemTransition(const TSharedRef<SWidget>& Widget, bool& bOutEntering, bool& bOutExiting) const
+{
+	bOutEntering = false;
+	bOutExiting = false;
+	for (int32 Index = 0; Index < Children.Num(); ++Index)
+	{
+		const FSlot& Slot = Children[Index];
+		if (Slot.GetWidget() == Widget)
+		{
+			bOutEntering |= Slot.bEntering;
+			bOutExiting |= Slot.bExiting;
+		}
+	}
+	return bOutEntering || bOutExiting;
+}
+
+void SFlowList::ClearItemAnimationPose(const TSharedRef<SWidget>& Widget)
+{
+	for (int32 Index = 0; Index < Children.Num(); ++Index)
+	{
+		FSlot& Slot = Children[Index];
+		if (Slot.GetWidget() == Widget && Slot.bHasAnimPose)
+		{
+			Slot.bHasAnimPose = false;
+			Slot.AnimTransform = FSlateRenderTransform();
+			Slot.AnimOpacity = 1.f;
+			++LayoutVersion;
+			Invalidate(EInvalidateWidgetReason::Layout);
+		}
+	}
+}
+
 void SFlowList::SetDesignTime(bool bInDesignTime, bool bInShowPath)
 {
 	bDesignTime = bInDesignTime;
 	bShowPath = bInShowPath;
+	UpdateStickInput();
 	Invalidate(EInvalidateWidgetReason::Paint);
 }
 
@@ -233,7 +333,7 @@ SFlowList::FSlot* SFlowList::InsertChild(const TSharedRef<SWidget>& Widget, int3
 			EnterBatchFrame = GFrameCounter;
 			EnterBatchCount = 0;
 		}
-		StartEnter(*Slot, Transitions.Enter.Delay + Transitions.Stagger * static_cast<float>(EnterBatchCount++));
+		StartEnter(*Slot, GetEnterDelay() + GetBatchStagger() * static_cast<float>(EnterBatchCount++));
 	}
 	return Slot;
 }
@@ -252,22 +352,10 @@ bool SFlowList::RemoveChild(const TSharedRef<SWidget>& Widget, bool bAnimate)
 
 	FSlot& Slot = Children[ChildIndex];
 	const bool bLeaveAnimated = bAnimate && Transitions.bAnimateChanges && !bDesignTime && Slot.ItemIndex != INDEX_NONE && Slot.bPlaced
-		&& (Transitions.Exit.Duration + Transitions.Exit.Delay) > 0.f;
+		&& (GetExitSeconds() + GetExitDelay()) > 0.f;
 	if (bLeaveAnimated)
 	{
-		Slot.bExiting = true;
-		Slot.bEntering = false;
-		Slot.ItemIndex = INDEX_NONE;
-		Slot.TransitionTime = 0.f;
-		Slot.TransitionDelay = Transitions.Exit.Delay;
-
-		// Still drawn while it leaves, but no longer something to click.
-		const EVisibility Visibility = Widget->GetVisibility();
-		if (Visibility.IsVisible())
-		{
-			Slot.SavedVisibility = Visibility;
-			Widget->SetVisibility(EVisibility::HitTestInvisible);
-		}
+		StartExit(Slot);
 	}
 	else
 	{
@@ -548,8 +636,31 @@ int32 SFlowList::FindChild(const TSharedRef<SWidget>& Widget, bool bExiting) con
 void SFlowList::StartEnter(FSlot& Slot, float Delay)
 {
 	Slot.bEntering = true;
+	Slot.bPreviewLeaving = false;
+	Slot.bTransitionStarted = false;
 	Slot.TransitionTime = 0.f;
 	Slot.TransitionDelay = FMath::Max(Delay, 0.f);
+	++LayoutVersion;
+	WakeUp();
+}
+
+void SFlowList::StartExit(FSlot& Slot)
+{
+	Slot.bExiting = true;
+	Slot.bEntering = false;
+	Slot.bPreviewLeaving = false;
+	Slot.bTransitionStarted = false;
+	Slot.ItemIndex = INDEX_NONE;
+	Slot.TransitionTime = 0.f;
+	Slot.TransitionDelay = GetExitDelay();
+
+	// Still drawn while it leaves, but no longer something to click.
+	const EVisibility Visibility = Slot.GetWidget()->GetVisibility();
+	if (Visibility.IsVisible())
+	{
+		Slot.SavedVisibility = Visibility;
+		Slot.GetWidget()->SetVisibility(EVisibility::HitTestInvisible);
+	}
 	++LayoutVersion;
 	WakeUp();
 }
@@ -635,8 +746,120 @@ void SFlowList::PlayIntro()
 	Order.Sort([](const TPair<float, int32>& A, const TPair<float, int32>& B) { return A.Key < B.Key; });
 	for (int32 Rank = 0; Rank < Order.Num(); ++Rank)
 	{
-		StartEnter(Children[Order[Rank].Value], Transitions.Enter.Delay + Transitions.Stagger * static_cast<float>(Rank));
+		StartEnter(Children[Order[Rank].Value], GetEnterDelay() + Transitions.Intro.Stagger * static_cast<float>(Rank));
 	}
+}
+
+void SFlowList::UpdateViewCues()
+{
+	if (!UsesItemAnimations() || !Transitions.bPlayOnScrollIntoView)
+	{
+		bViewTracked = false;
+		return;
+	}
+	const FGeometry& Geometry = GetTickSpaceGeometry();
+	if (Geometry.GetLocalSize().X <= 0.f || Geometry.GetLocalSize().Y <= 0.f)
+	{
+		return;
+	}
+
+	// The layout this frame - what is drawn - says what is in view.
+	GetLayout(Geometry);
+	for (int32 Index = 0; Index < Children.Num(); ++Index)
+	{
+		FSlot& Slot = Children[Index];
+		if (Slot.bExiting || Slot.ItemIndex == INDEX_NONE)
+		{
+			continue;
+		}
+		const bool bNow = CachedInView.IsValidIndex(Index) && CachedInView[Index];
+		const bool bBusy = Slot.bEntering || Slot.bPreviewLeaving;
+		if (!Slot.bViewKnown)
+		{
+			// First seen: in view when the list first shows, it was just there. Coming into view later - a virtual list's entry
+			// made as it scrolls in, an item shown - it enters, unless it is already entering.
+			Slot.bViewKnown = true;
+			Slot.bInView = bNow;
+			if (bViewTracked && bNow && !bBusy)
+			{
+				PendingCues.Emplace(Slot.GetWidget(), true, EFlowListItemCue::View);
+			}
+			continue;
+		}
+		if (bNow != Slot.bInView)
+		{
+			Slot.bInView = bNow;
+			if (!bBusy)
+			{
+				PendingCues.Emplace(Slot.GetWidget(), bNow, EFlowListItemCue::View);
+			}
+		}
+	}
+	bViewTracked = true;
+}
+
+void SFlowList::FlushCues()
+{
+	if (PendingCues.Num() == 0)
+	{
+		return;
+	}
+	// Taken first: whoever hears may change the list, and with it the cues.
+	TArray<TTuple<TWeakPtr<SWidget>, bool, EFlowListItemCue>> Cues = MoveTemp(PendingCues);
+	PendingCues.Reset();
+	for (const TTuple<TWeakPtr<SWidget>, bool, EFlowListItemCue>& Cue : Cues)
+	{
+		if (const TSharedPtr<SWidget> Widget = Cue.Get<0>().Pin())
+		{
+			OnItemTransitionStarted.ExecuteIfBound(Widget.ToSharedRef(), Cue.Get<1>(), Cue.Get<2>());
+		}
+	}
+}
+
+void SFlowList::PlayItemPreview(const TSharedRef<SWidget>& Widget, bool bExit)
+{
+	const int32 Child = FindChild(Widget, /*bExiting=*/false);
+	if (Child == INDEX_NONE || Children[Child].ItemIndex == INDEX_NONE)
+	{
+		return;
+	}
+	FSlot& Slot = Children[Child];
+	if (!bExit)
+	{
+		StartEnter(Slot, GetEnterDelay());
+		return;
+	}
+	Slot.bEntering = false;
+	Slot.bPreviewLeaving = true;
+	Slot.bTransitionStarted = false;
+	Slot.TransitionTime = 0.f;
+	Slot.TransitionDelay = GetExitDelay();
+	++LayoutVersion;
+	WakeUp();
+}
+
+void SFlowList::PlayExitPreview()
+{
+	TArray<TPair<float, int32>> Order;
+	for (const int32 Child : LiveOrder)
+	{
+		if (Child != INDEX_NONE)
+		{
+			Order.Emplace(FMath::Abs(WrapDistance(Children[Child].Place - Scroll)), Child);
+		}
+	}
+	Order.Sort([](const TPair<float, int32>& A, const TPair<float, int32>& B) { return A.Key < B.Key; });
+	for (int32 Rank = 0; Rank < Order.Num(); ++Rank)
+	{
+		FSlot& Slot = Children[Order[Rank].Value];
+		Slot.bEntering = false;
+		Slot.bPreviewLeaving = true;
+		Slot.bTransitionStarted = false;
+		Slot.TransitionTime = 0.f;
+		Slot.TransitionDelay = GetExitDelay() + Transitions.Intro.Stagger * static_cast<float>(Rank);
+	}
+	++LayoutVersion;
+	WakeUp();
 }
 
 // =====================================================================================================
@@ -1005,7 +1228,12 @@ void SFlowList::SetScrollPosition(float Position, bool bAnimate)
 	Scroll = Position;
 	Target = Position;
 	NearestIndex = IndexAt(Scroll);
-	SetSelected(NearestIndex, false);
+
+	// Moved there outright - a scroll bar's thumb dragged, say: the item there is selected, unless scrolling doesn't select.
+	if (Scrolling.bSelectWhileScrolling)
+	{
+		SetSelected(NearestIndex, false);
+	}
 	Invalidate(EInvalidateWidgetReason::Layout);
 	WakeUp();
 }
@@ -1112,6 +1340,31 @@ bool SFlowList::StepScroll(float DeltaTime)
 		}
 		return Motion != EMotion::Idle;
 	}
+
+	case EMotion::Stick:
+	{
+		// At the speed UpdateStick worked out this frame. Held into an end it stops there - no rubber band to hold open.
+		Scroll += Velocity * DeltaTime;
+		if (!IsLooping())
+		{
+			const float Edge = FMath::Clamp(Scroll, GetMinScroll(), GetMaxScroll());
+			if (Edge != Scroll)
+			{
+				Scroll = Edge;
+				if (!bStickAtEdge)
+				{
+					bStickAtEdge = true;
+					ReachedEdge();
+				}
+			}
+			else
+			{
+				bStickAtEdge = false;
+			}
+		}
+		Target = Scroll;
+		return true;
+	}
 	}
 	return false;
 }
@@ -1123,6 +1376,23 @@ bool SFlowList::StepItems(float DeltaTime)
 	bool bBusy = false;
 	TArray<TSharedRef<SWidget>, TInlineAllocator<4>> Exited;
 
+	// Items whose own Widget Animations are to start this frame: an entrance or an exit past its delay.
+	TArray<TPair<TSharedRef<SWidget>, bool>, TInlineAllocator<4>> Started;
+
+	// Items an exit preview has finished with, by distance from the focus: they enter again, nearest first.
+	TArray<TPair<float, TSharedRef<SWidget>>, TInlineAllocator<4>> Returning;
+	auto NoteStart = [this, &Started](FSlot& Slot, bool bEnter)
+	{
+		if (!Slot.bTransitionStarted && Slot.TransitionTime >= Slot.TransitionDelay)
+		{
+			Slot.bTransitionStarted = true;
+			if (UsesItemAnimations())
+			{
+				Started.Emplace(Slot.GetWidget(), bEnter);
+			}
+		}
+	};
+
 	for (int32 Index = Children.Num() - 1; Index >= 0; --Index)
 	{
 		FSlot& Slot = Children[Index];
@@ -1130,7 +1400,8 @@ bool SFlowList::StepItems(float DeltaTime)
 		if (Slot.bExiting)
 		{
 			Slot.TransitionTime += DeltaTime;
-			if (Slot.TransitionTime >= Slot.TransitionDelay + Transitions.Exit.Duration)
+			NoteStart(Slot, /*bEnter=*/false);
+			if (Slot.TransitionTime >= Slot.TransitionDelay + GetExitSeconds())
 			{
 				Exited.Add(Slot.GetWidget());
 				RestoreVisibility(Slot);
@@ -1169,10 +1440,27 @@ bool SFlowList::StepItems(float DeltaTime)
 			}
 		}
 
+		// An exit preview: the item stays, and comes back in once its exit is done.
+		if (Slot.bPreviewLeaving)
+		{
+			Slot.TransitionTime += DeltaTime;
+			NoteStart(Slot, /*bEnter=*/false);
+			if (Slot.bTransitionStarted && Slot.TransitionTime >= Slot.TransitionDelay + GetExitSeconds())
+			{
+				Slot.bPreviewLeaving = false;
+				Returning.Emplace(FMath::Abs(WrapDistance(Slot.Place - Scroll)), Slot.GetWidget());
+			}
+			else
+			{
+				bBusy = true;
+			}
+		}
+
 		if (Slot.bEntering)
 		{
 			Slot.TransitionTime += DeltaTime;
-			if (Slot.TransitionTime >= Slot.TransitionDelay + Transitions.Enter.Duration)
+			NoteStart(Slot, /*bEnter=*/true);
+			if (Slot.bTransitionStarted && Slot.TransitionTime >= Slot.TransitionDelay + GetEnterSeconds())
 			{
 				Slot.bEntering = false;
 			}
@@ -1181,6 +1469,26 @@ bool SFlowList::StepItems(float DeltaTime)
 				bBusy = true;
 			}
 		}
+	}
+
+	if (Returning.Num() > 0)
+	{
+		Returning.Sort([](const TPair<float, TSharedRef<SWidget>>& A, const TPair<float, TSharedRef<SWidget>>& B) { return A.Key < B.Key; });
+		for (int32 Rank = 0; Rank < Returning.Num(); ++Rank)
+		{
+			const int32 Child = FindChild(Returning[Rank].Value, /*bExiting=*/false);
+			if (Child != INDEX_NONE)
+			{
+				StartEnter(Children[Child], GetEnterDelay() + Transitions.Intro.Stagger * static_cast<float>(Rank));
+			}
+		}
+		bBusy = true;
+	}
+
+	// Told before any exit below lets its widget go: an exit that starts and ends in one frame still starts.
+	for (const TPair<TSharedRef<SWidget>, bool>& Start : Started)
+	{
+		OnItemTransitionStarted.ExecuteIfBound(Start.Key, Start.Value, EFlowListItemCue::Transition);
 	}
 
 	if (Exited.Num() > 0)
@@ -1219,10 +1527,15 @@ void SFlowList::UpdateNearest()
 
 	// While a person moves the list, the selection follows whatever passes the focus - a dial clicking past each item.
 	// A list sent to an item by code or navigation already has it selected, and doesn't flicker through the ones between.
-	const bool bFollow = Motion == EMotion::Drag || Motion == EMotion::Coast || (Motion == EMotion::Spring && bSelectionFollowsSpring);
+	const bool bFollow = Motion == EMotion::Drag || Motion == EMotion::Coast || Motion == EMotion::Stick
+		|| (Motion == EMotion::Spring && bSelectionFollowsSpring);
 	if (bFollow)
 	{
-		SetSelected(Now, true);
+		// Select While Scrolling off: scrolling never selects.
+		if (Scrolling.bSelectWhileScrolling)
+		{
+			SetSelected(Now, true);
+		}
 	}
 }
 
@@ -1234,6 +1547,21 @@ void SFlowList::SetSelected(int32 Index, bool bMoveFocus, bool bForce)
 	}
 	const int32 Previous = SelectedIndex;
 	SelectedIndex = Index;
+
+	// Play On Selection: told on the next step, once whatever changed the selection is done changing the list.
+	if (UsesItemAnimations() && Transitions.bPlayOnSelection)
+	{
+		if (const FSlot* Old = FindItemSlot(Previous))
+		{
+			PendingCues.Emplace(Old->GetWidget(), false, EFlowListItemCue::Selection);
+		}
+		if (const FSlot* New = FindItemSlot(Index))
+		{
+			PendingCues.Emplace(New->GetWidget(), true, EFlowListItemCue::Selection);
+		}
+		WakeUp();
+	}
+
 	if (bMoveFocus)
 	{
 		MoveUserFocusTo(Index);
@@ -1398,6 +1726,11 @@ void SFlowList::EndPress(const FVector2f& Absolute)
 		if (Scrolling.bClickToFocus)
 		{
 			ScrollToIndex(PressedIndex, true);
+		}
+		else if (!Scrolling.bSelectWhileScrolling)
+		{
+			// Scrolling doesn't select: a click is how an item is chosen, brought to the focus or not.
+			SetSelected(PressedIndex, true);
 		}
 		OnItemClicked.ExecuteIfBound(PressedIndex);
 	}
@@ -1610,6 +1943,32 @@ FNavigationReply SFlowList::OnNavigation(const FGeometry& MyGeometry, const FNav
 
 	// Focus is moved by the reply, not by the selection changing under it.
 	TGuardValue<bool> Guard(bNavigating, true);
+
+	if (!Scrolling.bSelectWhileScrolling)
+	{
+		// A stick - navigation with no D-pad or arrow key behind it - scrolls, a notch an item, and selects nothing.
+		const bool bStep = StepKeyFrame == GFrameCounter;
+		if (!bStep)
+		{
+			return StepBy(static_cast<float>(Step), Scrolling.bWrapNavigation) ? FNavigationReply::Stop() : FNavigationReply::Escape();
+		}
+
+		// A step from where the list is: with the selection scrolled away, the first press selects the item at the focus.
+		const int32 AtFocus = IndexAt(Motion == EMotion::Spring ? Target : Scroll);
+		if (AtFocus != INDEX_NONE && AtFocus != SelectedIndex)
+		{
+			ScrollToIndex(AtFocus, true);
+			if (const FSlot* ItemSlot = FindItemSlot(SelectedIndex))
+			{
+				if (const TSharedPtr<SWidget> Focus = FlowListPrivate::FindFocusable(ItemSlot->GetWidget(), 0))
+				{
+					return FNavigationReply::Explicit(Focus);
+				}
+			}
+			return FNavigationReply::Stop();
+		}
+	}
+
 	if (!ScrollBy(Step, Scrolling.bWrapNavigation, /*bQuiet=*/true))
 	{
 		// At the end: navigation carries on out of the list, to whatever is that way - quietly, it isn't a bump.
@@ -1627,6 +1986,202 @@ FNavigationReply SFlowList::OnNavigation(const FGeometry& MyGeometry, const FNav
 		}
 	}
 	return FNavigationReply::Stop();
+}
+
+FReply SFlowList::OnPreviewKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+	// Noted, not handled: Slate turns the key into navigation after this, which OnNavigation reads as a step. A stick's
+	// own key events (some devices send them) are scrolling, as its analog navigation is.
+	const FKey Key = InKeyEvent.GetKey();
+	const bool bStick = Key == EKeys::Gamepad_LeftStick_Up || Key == EKeys::Gamepad_LeftStick_Down || Key == EKeys::Gamepad_LeftStick_Left
+		|| Key == EKeys::Gamepad_LeftStick_Right || Key == EKeys::Gamepad_RightStick_Up || Key == EKeys::Gamepad_RightStick_Down
+		|| Key == EKeys::Gamepad_RightStick_Left || Key == EKeys::Gamepad_RightStick_Right;
+	StepKeyFrame = bStick ? 0 : GFrameCounter;
+	return SPanel::OnPreviewKeyDown(MyGeometry, InKeyEvent);
+}
+
+// =====================================================================================================
+// Stick Scrolls
+// =====================================================================================================
+
+void SFlowList::UpdateStickInput()
+{
+	const bool bWanted = Scrolling.bStickScrolls && !bDesignTime && FSlateApplication::IsInitialized();
+	if (bWanted && !StickInput.IsValid())
+	{
+		StickInput = MakeShared<FFlowListStickInput>(this);
+		FSlateApplication::Get().RegisterInputPreProcessor(StickInput);
+	}
+	else if (!bWanted && StickInput.IsValid())
+	{
+		StickInput->Owner = nullptr;
+		if (FSlateApplication::IsInitialized())
+		{
+			FSlateApplication::Get().UnregisterInputPreProcessor(StickInput);
+		}
+		StickInput.Reset();
+		StickValue = 0.f;
+	}
+}
+
+FKey SFlowList::GetStickAxisKey() const
+{
+	const bool bRight = Scrolling.Stick == EFlowListStick::RightStick;
+	if (Layout.Orientation == Orient_Horizontal)
+	{
+		return bRight ? EKeys::Gamepad_RightX : EKeys::Gamepad_LeftX;
+	}
+	return bRight ? EKeys::Gamepad_RightY : EKeys::Gamepad_LeftY;
+}
+
+bool SFlowList::HasStickFocus(int32 UserIndex) const
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		return false;
+	}
+	const TSharedRef<const SWidget> Self = AsShared();
+	return HasUserFocus(UserIndex).IsSet() || FSlateApplication::Get().HasUserFocusedDescendants(Self, UserIndex);
+}
+
+bool SFlowList::HandleStickAnalog(const FAnalogInputEvent& Event)
+{
+	if (!Scrolling.bStickScrolls || bDesignTime || LiveOrder.Num() == 0 || Event.GetKey() != GetStickAxisKey())
+	{
+		return false;
+	}
+	const int32 User = static_cast<int32>(Event.GetUserIndex());
+	if (!HasStickFocus(User))
+	{
+		if (User == StickUser)
+		{
+			StickValue = 0.f;
+		}
+		return false;
+	}
+
+	// Kept, not acted on: a stick held still sends nothing more, and keeps scrolling at the value it last sent. Taken
+	// even inside the dead zone, so that axis never becomes navigation while the list has it.
+	StickUser = User;
+	StickValue = Event.GetAnalogValue();
+	if (FMath::Abs(StickValue) > Scrolling.StickDeadZone)
+	{
+		WakeUp();
+	}
+	return true;
+}
+
+bool SFlowList::HandleStickKey(const FKeyEvent& Event)
+{
+	// Some devices also send the stick as keys past a threshold - Left Stick Up and the rest - which would step. On the
+	// axis the list takes, they're swallowed with it.
+	if (!Scrolling.bStickScrolls || bDesignTime || LiveOrder.Num() == 0)
+	{
+		return false;
+	}
+	const FKey Key = Event.GetKey();
+	const FKey Axis = GetStickAxisKey();
+	const bool bOnAxis = (Axis == EKeys::Gamepad_LeftY && (Key == EKeys::Gamepad_LeftStick_Up || Key == EKeys::Gamepad_LeftStick_Down))
+		|| (Axis == EKeys::Gamepad_LeftX && (Key == EKeys::Gamepad_LeftStick_Left || Key == EKeys::Gamepad_LeftStick_Right))
+		|| (Axis == EKeys::Gamepad_RightY && (Key == EKeys::Gamepad_RightStick_Up || Key == EKeys::Gamepad_RightStick_Down))
+		|| (Axis == EKeys::Gamepad_RightX && (Key == EKeys::Gamepad_RightStick_Left || Key == EKeys::Gamepad_RightStick_Right));
+	return bOnAxis && HasStickFocus(static_cast<int32>(Event.GetUserIndex()));
+}
+
+void SFlowList::UpdateStick(float DeltaTime)
+{
+	// Focus went elsewhere while it was held, or the setting went off: whatever it was doing ends here.
+	if (StickValue != 0.f && (!Scrolling.bStickScrolls || !StickInput.IsValid() || !HasStickFocus(StickUser)))
+	{
+		StickValue = 0.f;
+	}
+
+	const float DeadZone = FMath::Clamp(Scrolling.StickDeadZone, 0.f, 0.9f);
+	const float Push = FMath::Clamp((FMath::Abs(StickValue) - DeadZone) / (1.f - DeadZone), 0.f, 1.f);
+	if (Push <= 0.f || LiveOrder.Num() == 0 || Press.bActive || bDesignTime)
+	{
+		StickHeld = 0.f;
+		if (Motion == EMotion::Stick)
+		{
+			ReleaseStick();
+		}
+		return;
+	}
+
+	// Up a vertical list goes back toward its first item, as Up navigates; right along a horizontal one goes on.
+	float Direction = FMath::Sign(StickValue) * (Layout.Orientation == Orient_Horizontal ? 1.f : -1.f);
+	if (Scrolling.bInvertStick)
+	{
+		Direction = -Direction;
+	}
+	if (Motion != EMotion::Stick || FMath::Sign(Velocity) != Direction)
+	{
+		// Starting, taking over from a spring or fling, or reversing: the acceleration starts over.
+		StickHeld = 0.f;
+		bStickAtEdge = false;
+	}
+
+	// Pushed part way it is slower, and climbs toward full speed more slowly.
+	const float Shaped = FMath::Pow(Push, FMath::Clamp(Scrolling.StickResponse, 0.5f, 4.f));
+	StickHeld += DeltaTime * Shaped;
+	float Speed = FMath::Max(Scrolling.StickSpeed, 0.1f);
+	if (Scrolling.StickAccelerationTime > 0.f)
+	{
+		const float Ramp = FMath::Clamp(StickHeld / Scrolling.StickAccelerationTime, 0.f, 1.f);
+		Speed = FMath::Lerp(Speed, FMath::Max(Scrolling.StickMaxSpeed, Speed), Ramp * Ramp);
+	}
+
+	Motion = EMotion::Stick;
+	Velocity = Direction * Speed * Shaped;
+	Target = Scroll;
+}
+
+void SFlowList::ReleaseStick()
+{
+	// Held into an end, there is no speed left to carry on with.
+	const float ReleaseVelocity = bStickAtEdge ? 0.f : Velocity;
+	bStickAtEdge = false;
+	Motion = EMotion::Idle;
+
+	if (LiveOrder.Num() == 0)
+	{
+		StopMotion();
+		return;
+	}
+
+	if (Scrolling.bSnapToItems)
+	{
+		// The item it was passing, or the next one ahead once it was a quarter of the way past - never back the way it came
+		// by more than that. The spring starts at the speed it was going, so it flows straight in.
+		float Snap = FMath::RoundToFloat(Scroll);
+		if (ReleaseVelocity > 0.f)
+		{
+			Snap = FMath::CeilToFloat(Scroll - 0.25f);
+		}
+		else if (ReleaseVelocity < 0.f)
+		{
+			Snap = FMath::FloorToFloat(Scroll + 0.25f);
+		}
+		if (!IsLooping())
+		{
+			Snap = FMath::Clamp(Snap, GetMinScroll(), GetMaxScroll());
+		}
+		SpringTo(Snap, ReleaseVelocity, true);
+		return;
+	}
+
+	// Without snapping it glides to a stop on whatever speed it had, as a fling does.
+	if (FMath::Abs(ReleaseVelocity) > 0.05f && Scrolling.FlingCoast > 0.f)
+	{
+		Motion = EMotion::Coast;
+		CoastOrigin = Scroll;
+		CoastVelocity = ReleaseVelocity;
+		CoastTime = 0.f;
+		Velocity = ReleaseVelocity;
+		WakeUp();
+		return;
+	}
+	StopMotion();
 }
 
 void SFlowList::OnFocusChanging(const FWeakWidgetPath& PreviousFocusPath, const FWidgetPath& NewWidgetPath, const FFocusEvent& InFocusEvent)
@@ -1755,7 +2310,7 @@ void SFlowList::NotifyVirtualInserted(int32 Index, bool bAnimate)
 				EnterBatchFrame = GFrameCounter;
 				EnterBatchCount = 0;
 			}
-			StartEnter(Children[LiveOrder[Index]], Transitions.Enter.Delay + Transitions.Stagger * static_cast<float>(EnterBatchCount++));
+			StartEnter(Children[LiveOrder[Index]], GetEnterDelay() + GetBatchStagger() * static_cast<float>(EnterBatchCount++));
 		}
 	}
 }
@@ -1775,19 +2330,9 @@ void SFlowList::NotifyVirtualRemoved(int32 Index, bool bAnimate)
 	{
 		const int32 Child = LiveOrder[Index];
 		FSlot& Slot = Children[Child];
-		if (bAnimate && Transitions.bAnimateChanges && !bDesignTime && (Transitions.Exit.Duration + Transitions.Exit.Delay) > 0.f)
+		if (bAnimate && Transitions.bAnimateChanges && !bDesignTime && (GetExitSeconds() + GetExitDelay()) > 0.f)
 		{
-			Slot.bExiting = true;
-			Slot.bEntering = false;
-			Slot.ItemIndex = INDEX_NONE;
-			Slot.TransitionTime = 0.f;
-			Slot.TransitionDelay = Transitions.Exit.Delay;
-			const EVisibility Visibility = Slot.GetWidget()->GetVisibility();
-			if (Visibility.IsVisible())
-			{
-				Slot.SavedVisibility = Visibility;
-				Slot.GetWidget()->SetVisibility(EVisibility::HitTestInvisible);
-			}
+			StartExit(Slot);
 		}
 		else
 		{
@@ -2261,41 +2806,12 @@ void SFlowList::BuildSpline(const FVector2f& Size) const
 	}
 	SplineBuiltHash = Hash;
 	SplineBuiltSize = Size;
-	SplinePoints.Reset();
 	SplineLengths.Reset();
 
-	// Fewer than two points is a line across the middle.
-	TArray<FVector2f, TInlineAllocator<16>> Controls;
-	if (Layout.SplinePoints.Num() >= 2)
-	{
-		for (const FVector2D& Point : Layout.SplinePoints)
-		{
-			Controls.Add(FVector2f(Point) * Size);
-		}
-	}
-	else
-	{
-		Controls.Add(FVector2f(0.f, 0.5f) * Size);
-		Controls.Add(FVector2f(1.f, 0.5f) * Size);
-	}
-
-	// Catmull-Rom through every point, the ends held by repeating them.
-	constexpr int32 StepsPerSpan = 16;
-	for (int32 Span = 0; Span < Controls.Num() - 1; ++Span)
-	{
-		const FVector2f P0 = Controls[FMath::Max(Span - 1, 0)];
-		const FVector2f P1 = Controls[Span];
-		const FVector2f P2 = Controls[Span + 1];
-		const FVector2f P3 = Controls[FMath::Min(Span + 2, Controls.Num() - 1)];
-		for (int32 Step = (Span == 0 ? 0 : 1); Step <= StepsPerSpan; ++Step)
-		{
-			const float T = static_cast<float>(Step) / static_cast<float>(StepsPerSpan);
-			const float T2 = T * T;
-			const float T3 = T2 * T;
-			const FVector2f Point = (P1 * 2.f + (P2 - P0) * T + (P0 * 2.f - P1 * 5.f + P2 * 4.f - P3) * T2 + (P1 * 3.f - P0 - P2 * 3.f + P3) * T3) * 0.5f;
-			SplinePoints.Add(Point);
-		}
-	}
+	// The same curve the designer's path editor draws - see FlowListTypes::BuildSplineCurve.
+	TArray<FVector2f> Curve;
+	FlowListTypes::BuildSplineCurve(Layout.SplinePoints, Size, Curve);
+	SplinePoints = MoveTemp(Curve);
 
 	float Length = 0.f;
 	for (int32 Index = 0; Index < SplinePoints.Num(); ++Index)
@@ -2413,7 +2929,18 @@ float SFlowList::ComputeContentEndScroll(const FPathFrame& Frame, const FPitchTa
 
 FFlowListTransitionState SFlowList::GetTransition(const FSlot& Slot) const
 {
-	if (Slot.bExiting)
+	// The items' own Widget Animations draw their entrances and exits. An item waiting for its entrance to begin isn't
+	// shown yet - it would otherwise sit there whole until its animation started and took it to its first pose.
+	if (UsesItemAnimations())
+	{
+		FFlowListTransitionState State;
+		if (Slot.bEntering && !Slot.bTransitionStarted)
+		{
+			State.Opacity = 0.f;
+		}
+		return State;
+	}
+	if (Slot.bExiting || Slot.bPreviewLeaving)
 	{
 		const float Alpha = (Slot.TransitionTime - Slot.TransitionDelay) / FMath::Max(Transitions.Exit.Duration, 0.001f);
 		return FlowListTypes::EvaluateTransition(Transitions.Exit, FMath::Clamp(Alpha, 0.f, 1.f), /*bEnter=*/false);
@@ -2433,6 +2960,7 @@ void SFlowList::ComputeLayout(const FGeometry& AllottedGeometry, TArray<FItemLay
 	Out.Reset();
 	const FVector2f Size(AllottedGeometry.GetLocalSize());
 	const FPathFrame Frame = MakeFrame(Size);
+	CachedInView.Init(false, Children.Num());
 	FPitchTable Pitch;
 	BuildPitch(Pitch);
 
@@ -2518,7 +3046,19 @@ void SFlowList::ComputeLayout(const FGeometry& AllottedGeometry, TArray<FItemLay
 			return;
 		}
 
-		float Opacity = FMath::Clamp(Effects.Opacity.Evaluate(Distance, 1.f), 0.f, 1.f) * Point.Opacity * FMath::Clamp(Transition.Opacity, 0.f, 1.f);
+		// In view: its box at the size the list gives it overlaps the list - whatever it is faded to, so an item its own exit
+		// animation faded out still counts as back in view when it scrolls back.
+		{
+			const FVector2f Half = GetItemSize(Slot) * (0.5f * FMath::Max(Effects.Scale.Evaluate(Distance, 1.f), 0.f));
+			const FVector2f Center = Point.Position + Point.Normal * (Effects.CrossOffset.Evaluate(Distance, 0.f) + Transition.Offset.Y);
+			if (CachedInView.IsValidIndex(Entry.Child))
+			{
+				CachedInView[Entry.Child] = Center.X + Half.X > 0.f && Center.X - Half.X < Size.X && Center.Y + Half.Y > 0.f && Center.Y - Half.Y < Size.Y;
+			}
+		}
+
+		float Opacity = FMath::Clamp(Effects.Opacity.Evaluate(Distance, 1.f), 0.f, 1.f) * Point.Opacity * FMath::Clamp(Transition.Opacity, 0.f, 1.f)
+			* (Slot.bHasAnimPose ? FMath::Clamp(Slot.AnimOpacity, 0.f, 1.f) : 1.f);
 		if (Effects.EdgeFade > 0.f)
 		{
 			const bool bAlongX = FMath::Abs(Frame.Dir.X) >= FMath::Abs(Frame.Dir.Y);
@@ -2560,6 +3100,14 @@ void SFlowList::ComputeLayout(const FGeometry& AllottedGeometry, TArray<FItemLay
 		// Turning and squashing go in the render transform, about the pivot, after any transform the item has of its own -
 		// a Widget Animation playing on it still plays.
 		FSlateRenderTransform RenderTransform = MakeItemTransform(FMath::DegreesToRadians(Degrees), Squash, bHorizontal, PivotOuter - PaddingOffset);
+
+		// The item's own entrance or exit animation, about its pivot, under the list's turn - and over its own transform.
+		if (Slot.bHasAnimPose)
+		{
+			const FVector2f AnimPivot = Slot.AnimPivot * ChildSize;
+			const FSlateRenderTransform AboutAnimPivot = ::Concatenate(::Concatenate(FSlateRenderTransform(-AnimPivot), Slot.AnimTransform), FSlateRenderTransform(AnimPivot));
+			RenderTransform = ::Concatenate(AboutAnimPivot, RenderTransform);
+		}
 		const TOptional<FSlateRenderTransform> OwnTransform = Widget->GetRenderTransformWithRespectToFlowDirection();
 		if (OwnTransform.IsSet())
 		{
@@ -2848,13 +3396,14 @@ EActiveTimerReturnType SFlowList::OnAnimate(double InCurrentTime, float InDeltaT
 				const int32 Child = FindChild(Shown[Rank]);
 				if (Child != INDEX_NONE)
 				{
-					StartEnter(Children[Child], Transitions.Enter.Delay + Transitions.Stagger * static_cast<float>(Rank));
+					StartEnter(Children[Child], GetEnterDelay() + GetBatchStagger() * static_cast<float>(Rank));
 				}
 			}
 		}
 	}
 
 	PollPointer();
+	UpdateStick(DeltaTime);
 	StepScroll(DeltaTime);
 	const bool bItemsBusy = StepItems(DeltaTime);
 
@@ -2865,7 +3414,7 @@ EActiveTimerReturnType SFlowList::OnAnimate(double InCurrentTime, float InDeltaT
 	{
 		FVector2f Pointer;
 		const bool bHasPointer = WidgetAnimInput::GetPointerPosition(Pointer);
-		const bool bScrolling = Motion == EMotion::Drag || Motion == EMotion::Coast;
+		const bool bScrolling = Motion == EMotion::Drag || Motion == EMotion::Coast || Motion == EMotion::Stick;
 		const bool bWanted = bHasPointer && IsHovered() && !(Effects.Magnify.bPauseWhileScrolling && bScrolling);
 		if (bHasPointer && bWanted)
 		{
@@ -2912,6 +3461,8 @@ EActiveTimerReturnType SFlowList::OnAnimate(double InCurrentTime, float InDeltaT
 	}
 
 	UpdateNearest();
+	UpdateViewCues();
+	FlushCues();
 
 	// Only a frame where something moved is told of: a list held under a resting pointer, ticking for Hover Magnify, isn't.
 	if (bItemsBusy || Motion != EMotion::Idle || Scroll != LastAnimatedScroll || MagnifyAmount != LastAnimatedMagnify || bWasMoving)

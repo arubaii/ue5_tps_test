@@ -1,0 +1,107 @@
+diff --git a/NameTBD_Handoff.md b/NameTBD_Handoff.md
+index 125262d..a06e6a7 100644
+--- a/NameTBD_Handoff.md
++++ b/NameTBD_Handoff.md
+@@ -161,7 +161,15 @@ In practice that means:
+ - **DEVELOPER ONLY settings** (Editor Preferences > Plugins > Widget Animations Editor): before publishing, remove the category and settle its values back into `NameTBDColors.h`.
+ - A literal "&&" can't be targeted by a text track's Part of the Text.
+ 
+-## Latest change set — `NameTBD_FlowList_v3_fix6.patch` (applies on top of `NameTBD_FlowList_v3_fix5.patch`; untested in editor)
++## Latest change set — `NameTBD_FlowList_v3_fix7.patch` (applies on top of `NameTBD_FlowList_v3_fix6.patch`; untested in editor)
++
++### Added
++- **Scrolling > Select While Scrolling** (default on, the old behavior). Off: dragging, flinging and wheeling only move the list - no select ticks, selection events, focus moves or Play On Selection animations for the items passed; the item at the focus is selected once the list comes to rest (`SFlowList::UpdateNearest` sets `bSelectionDueAtRest`, resolved where `OnSettled` fires). Navigation, clicks and Scroll To Index still select at once. Kept by Style Presets.
++
++### Files
++- Changed: `FlowListTypes.h/.cpp`, `SFlowList.h/.cpp`, `NameTBD_Handoff.md`.
++
++## Change set before — `NameTBD_FlowList_v3_fix6.patch` (applies on top of `NameTBD_FlowList_v3_fix5.patch`; untested in editor)
+ 
+ ### Changed (user's rule: Anim Enter Item = selected, Anim Exit Item = unselected)
+ - **Play On Selection is on by default** and listed first: the selected item plays Anim Enter Item, the one losing the selection Anim Exit Item. Add/Remove, Play Intro and Play As Items Scroll In And Out still play them too.
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListTypes.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListTypes.cpp
+index 0cd43b4..fe17c5e 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListTypes.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListTypes.cpp
+@@ -201,7 +201,9 @@ namespace FlowListTypes
+ 		const FFlowListTransitions Kept = Transitions;
+ 		Layout = FFlowListLayout();
+ 		Effects = FFlowListEffects();
++		const bool bSelectWhileScrolling = Scrolling.bSelectWhileScrolling;
+ 		Scrolling = FFlowListScrolling();
++		Scrolling.bSelectWhileScrolling = bSelectWhileScrolling;
+ 		Transitions = FFlowListTransitions();
+ 		Transitions.bAnimateChanges = Kept.bAnimateChanges;
+ 		Transitions.Intro.bPlayIntro = Kept.Intro.bPlayIntro;
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListTypes.h b/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListTypes.h
+index 263f526..0e15c4b 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListTypes.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListTypes.h
+@@ -494,6 +494,15 @@ struct NAMETBD_API FFlowListScrolling
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling|Navigation", meta = (DisplayName = "Focus Follows Selection"))
+ 	bool bFocusFollowsSelection = true;
+ 
++	/**
++	 * While the list is dragged, flung or wheeled, the selection follows whichever item passes the focus - a dial clicking
++	 * past each item, its select sound, selection events and Play On Selection animations with it. Off: scrolling only
++	 * moves the list, and the selection moves once, to the item at the focus, when the list comes to rest. Navigation,
++	 * clicks and Scroll To Index select as always.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling", meta = (DisplayName = "Select While Scrolling"))
++	bool bSelectWhileScrolling = true;
++
+ 	/** Clicking or tapping an item that isn't the focused one scrolls it to the focus. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling", meta = (DisplayName = "Click To Focus"))
+ 	bool bClickToFocus = true;
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/SFlowList.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/SFlowList.cpp
+index dfc79d7..e6a4cad 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/SFlowList.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/SFlowList.cpp
+@@ -1455,7 +1455,15 @@ void SFlowList::UpdateNearest()
+ 	const bool bFollow = Motion == EMotion::Drag || Motion == EMotion::Coast || (Motion == EMotion::Spring && bSelectionFollowsSpring);
+ 	if (bFollow)
+ 	{
+-		SetSelected(Now, true);
++		// Select While Scrolling off: it waits for the list to come to rest.
++		if (Scrolling.bSelectWhileScrolling)
++		{
++			SetSelected(Now, true);
++		}
++		else
++		{
++			bSelectionDueAtRest = true;
++		}
+ 	}
+ }
+ 
+@@ -3167,6 +3175,16 @@ EActiveTimerReturnType SFlowList::OnAnimate(double InCurrentTime, float InDeltaT
+ 	const bool bMoving = Motion != EMotion::Idle;
+ 	if (bWasMoving && !bMoving && LiveOrder.Num() > 0)
+ 	{
++		// At rest: the item at the focus is the selection now, if scrolling passed others without selecting them.
++		if (bSelectionDueAtRest)
++		{
++			bSelectionDueAtRest = false;
++			const int32 AtFocus = IndexAt(Scroll);
++			if (AtFocus != INDEX_NONE && AtFocus != SelectedIndex)
++			{
++				SetSelected(AtFocus, true);
++			}
++		}
+ 		OnSettled.ExecuteIfBound(SelectedIndex);
+ 	}
+ 	bWasMoving = bMoving;
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/SFlowList.h b/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/SFlowList.h
+index e18a4bb..710fa97 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/SFlowList.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/SFlowList.h
+@@ -543,6 +543,9 @@ private:
+ 	float CoastTime = 0.f;
+ 	float WheelRemainder = 0.f;
+ 	bool bSelectionFollowsSpring = true;
++
++	/** Select While Scrolling off: the selection passed over an item while the list moved, and is due when it rests. */
++	bool bSelectionDueAtRest = false;
+ 	bool bWasMoving = false;
+ 
+ 	int32 SelectedIndex = INDEX_NONE;

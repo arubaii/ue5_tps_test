@@ -75,6 +75,26 @@ FFlowListTransitions::FFlowListTransitions()
 	ReorderSpring = FlowListTypes::MakeSpring(0.4f, 0.12f);
 }
 
+void FFlowListTransitions::PostSerialize(const FArchive& Ar)
+{
+	if (!Ar.IsLoading())
+	{
+		return;
+	}
+
+	// Saved before Intro: Play Intro and Stagger sat beside the other transitions.
+	if (bPlayIntro)
+	{
+		Intro.bPlayIntro = true;
+		bPlayIntro = false;
+	}
+	if (Stagger >= 0.f)
+	{
+		Intro.Stagger = Stagger;
+		Stagger = -1.f;
+	}
+}
+
 namespace FlowListTypes
 {
 	FWidgetSpringParams MakeSpring(float VisualDuration, float Bounce)
@@ -84,6 +104,42 @@ namespace FlowListTypes
 		Spring.VisualDuration = VisualDuration;
 		Spring.Bounce = Bounce;
 		return Spring;
+	}
+
+	void BuildSplineCurve(const TArray<FVector2D>& Points, const FVector2f& Size, TArray<FVector2f>& OutCurve)
+	{
+		OutCurve.Reset();
+
+		// Fewer than two points is a line across the middle.
+		TArray<FVector2f, TInlineAllocator<16>> Controls;
+		if (Points.Num() >= 2)
+		{
+			for (const FVector2D& Point : Points)
+			{
+				Controls.Add(FVector2f(Point) * Size);
+			}
+		}
+		else
+		{
+			Controls.Add(FVector2f(0.f, 0.5f) * Size);
+			Controls.Add(FVector2f(1.f, 0.5f) * Size);
+		}
+
+		// Catmull-Rom through every point, the ends held by repeating them.
+		for (int32 Span = 0; Span < Controls.Num() - 1; ++Span)
+		{
+			const FVector2f P0 = Controls[FMath::Max(Span - 1, 0)];
+			const FVector2f P1 = Controls[Span];
+			const FVector2f P2 = Controls[Span + 1];
+			const FVector2f P3 = Controls[FMath::Min(Span + 2, Controls.Num() - 1)];
+			for (int32 Step = (Span == 0 ? 0 : 1); Step <= SplineStepsPerSpan; ++Step)
+			{
+				const float T = static_cast<float>(Step) / static_cast<float>(SplineStepsPerSpan);
+				const float T2 = T * T;
+				const float T3 = T2 * T;
+				OutCurve.Add((P1 * 2.f + (P2 - P0) * T + (P0 * 2.f - P1 * 5.f + P2 * 4.f - P3) * T2 + (P1 * 3.f - P0 - P2 * 3.f + P3) * T3) * 0.5f);
+			}
+		}
 	}
 
 	FFlowListTransitionState EvaluateTransition(const FFlowListTransition& Transition, float Alpha, bool bEnter)
@@ -141,14 +197,30 @@ namespace FlowListTypes
 
 		// Every preset starts from the defaults, so picking one after another never leaves the first one's settings behind.
 		// Whether changes animate and whether the intro plays are about the screen, not the look, so they are kept.
-		const bool bAnimateChanges = Transitions.bAnimateChanges;
-		const bool bPlayIntro = Transitions.bPlayIntro;
+		// So are an item's own Widget Animations.
+		const FFlowListTransitions Kept = Transitions;
 		Layout = FFlowListLayout();
 		Effects = FFlowListEffects();
+		// So is how the list is driven: whether scrolling selects, and the stick.
+		const FFlowListScrolling KeptScrolling = Scrolling;
 		Scrolling = FFlowListScrolling();
+		Scrolling.bSelectWhileScrolling = KeptScrolling.bSelectWhileScrolling;
+		Scrolling.bStickScrolls = KeptScrolling.bStickScrolls;
+		Scrolling.Stick = KeptScrolling.Stick;
+		Scrolling.StickSpeed = KeptScrolling.StickSpeed;
+		Scrolling.StickMaxSpeed = KeptScrolling.StickMaxSpeed;
+		Scrolling.StickAccelerationTime = KeptScrolling.StickAccelerationTime;
+		Scrolling.StickDeadZone = KeptScrolling.StickDeadZone;
+		Scrolling.StickResponse = KeptScrolling.StickResponse;
+		Scrolling.bInvertStick = KeptScrolling.bInvertStick;
 		Transitions = FFlowListTransitions();
-		Transitions.bAnimateChanges = bAnimateChanges;
-		Transitions.bPlayIntro = bPlayIntro;
+		Transitions.bAnimateChanges = Kept.bAnimateChanges;
+		Transitions.Intro.bPlayIntro = Kept.Intro.bPlayIntro;
+		Transitions.bUseBasicAnimations = Kept.bUseBasicAnimations;
+		Transitions.AnimEnterItem = Kept.AnimEnterItem;
+		Transitions.AnimExitItem = Kept.AnimExitItem;
+		Transitions.bPlayOnScrollIntoView = Kept.bPlayOnScrollIntoView;
+		Transitions.bPlayOnSelection = Kept.bPlayOnSelection;
 
 		switch (Preset)
 		{

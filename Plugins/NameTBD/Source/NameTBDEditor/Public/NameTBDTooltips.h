@@ -2747,4 +2747,74 @@ namespace NameTBD::Tooltips
 		}
 	}
 
+
+	namespace FlowListPathEditor
+	{
+		inline FText EditPathTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.FlowListPathEditor", "EditPathTooltip",
+				"Edit Path: edit the Spline path's points on the canvas - a Flow List's or a Flow List Scroll Bar's. Drag points, or the focus marker along the curve; double-click the curve to add a point; Delete removes the selected; the Pen adds points at the ends. Enter or Escape when done.");
+		}
+
+		inline FText DoneTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.FlowListPathEditor", "DoneTooltip",
+				"Done: stop editing the path (Enter or Escape).");
+		}
+
+		inline FText SelectToolTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.FlowListPathEditor", "SelectToolTooltip",
+				"Select (V): pick points and drag them - snapping to the list's edges and middle and to the other points' lines. Shift adds to the selection and keeps a drag straight; Ctrl while dragging turns snapping off; drag on empty space to box-select. Drag the focus marker along the curve to move the focus; Shift snaps it to quarters. Double-click the curve to add a point there.");
+		}
+
+		inline FText PenToolTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.FlowListPathEditor", "PenToolTooltip",
+				"Pen (P): click to add a point after the selected end of the path - or the end nearer the click - and drag as you click to place it. Click the curve to add a point on it. Shift keeps each new piece to 45 degrees.");
+		}
+
+		inline FText ReverseTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.FlowListPathEditor", "ReverseTooltip",
+				"Reverse Direction: run the path the other way - the first item then sits at the other end. The focus stays where it is on the curve.");
+		}
+
+		inline FText DeletePointsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.FlowListPathEditor", "DeletePointsTooltip",
+				"Delete: remove the selected points (Delete or Backspace). A path keeps at least two.");
+		}
+
+		inline FText PreviewEnterTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.FlowListPathEditor", "PreviewEnterTooltip",
+				"Enter: play every item's entrance in the preview, as Play Intro does - Enter, or Anim Enter Item without Use Basic Animations. Editing a transition plays it too.");
+		}
+
+		inline FText PreviewExitTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.FlowListPathEditor", "PreviewExitTooltip",
+				"Exit: play every item's exit in the preview - Exit, or Anim Exit Item without Use Basic Animations - then bring them back in. Nothing is removed.");
+		}
+
+		inline FText PreviewItemEnterTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.FlowListPathEditor", "PreviewItemEnterTooltip",
+				"Enter: play this item's entrance in the preview, as it arrives when added - Enter, or Anim Enter Item without Use Basic Animations.");
+		}
+
+		inline FText PreviewItemExitTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.FlowListPathEditor", "PreviewItemExitTooltip",
+				"Exit: play this item's exit in the preview, as it leaves when removed - Exit, or Anim Exit Item - then bring it back in. Nothing is removed.");
+		}
+
+		inline FText NotSplineTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.FlowListPathEditor", "NotSplineTooltip",
+				"Edit Path: only a Spline path has points to edit - set a Flow List's Layout > Type, or a Scroll Bar's Path, to Spline.");
+		}
+	}
+
 }

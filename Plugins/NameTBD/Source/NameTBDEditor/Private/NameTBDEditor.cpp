@@ -42,6 +42,8 @@
 #include "WidgetAnimTextCanvasEditor.h"
 #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
 #include "FlowListItemStyleDetails.h"
+#include "FlowListPathEditor.h"
+#include "WidgetSpringPresets.h"
 #include "NameTBD/Widgets/FlowList/FlowListItemStyle.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
@@ -110,6 +112,11 @@ void FNameTBDEditorModule::StartupModule()
 		UShapeWidget::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetShapeDetails::MakeInstance));
 
+	// Every spring's Details: its fields, and a Preset menu - the springs production tools ship with, and the project's own.
+	PropertyModule.RegisterCustomPropertyTypeLayout(
+		FWidgetSpringParams::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FWidgetSpringParamsCustomization::MakeInstance));
+
 	// A Flow List Item Style's looks, laid out for the widget it is on as its Details are shown.
 	PropertyModule.RegisterCustomClassLayout(
 		UFlowListItemStyle::StaticClass()->GetFName(),
@@ -124,6 +131,10 @@ void FNameTBDEditorModule::StartupModule()
 	// The animated texts' tag editor, on the same canvas: a toolbar that writes the rich text and Text Reveal tags.
 	TextEditorFactory = MakeShared<FWidgetAnimTextEditorFactory>();
 	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(TextEditorFactory.ToSharedRef());
+
+	// A Flow List's Spline path, edited on the same canvas as a Custom Shape's outline.
+	FlowListPathEditorFactory = MakeShared<FFlowListPathEditorFactory>();
+	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(FlowListPathEditorFactory.ToSharedRef());
 
 	ValuePinFactory = MakeShared<FWidgetAnimValuePinFactory>();
 	FEdGraphUtilities::RegisterVisualPinFactory(ValuePinFactory);
@@ -198,6 +209,15 @@ void FNameTBDEditorModule::ShutdownModule()
 		TextEditorFactory.Reset();
 	}
 
+	if (FlowListPathEditorFactory.IsValid())
+	{
+		if (IUMGEditorModule* UMGEditorModule = FModuleManager::GetModulePtr<IUMGEditorModule>("UMGEditor"))
+		{
+			UMGEditorModule->GetDesignerExtensibilityManager()->RemoveDesignerExtensionFactory(FlowListPathEditorFactory.ToSharedRef());
+		}
+		FlowListPathEditorFactory.Reset();
+	}
+
 	if (ValuePinFactory.IsValid())
 	{
 		FEdGraphUtilities::UnregisterVisualPinFactory(ValuePinFactory);
@@ -227,6 +247,7 @@ void FNameTBDEditorModule::ShutdownModule()
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimMachineCondition"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("ShapeWidget"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("FlowListItemStyle"));
+		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetSpringParams"));
 
 	}
 	

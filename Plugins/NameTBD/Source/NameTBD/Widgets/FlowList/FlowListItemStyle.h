@@ -83,8 +83,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Item Style")
 	EFlowListStyleTrigger Trigger = EFlowListStyleTrigger::Selected;
 
-	/** How the look moves when the trigger switches. Not used by Nearness To Focus, which follows the list itself. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Item Style", meta = (EditCondition = "Trigger != EFlowListStyleTrigger::Focus"))
+	/**
+	 * How the look moves when the trigger switches: a spring from one look to the other, keeping its speed if the trigger
+	 * switches back midway. Not used by Nearness To Focus, which follows the list itself.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Item Style", meta = (EditCondition = "Trigger != EFlowListStyleTrigger::Focus", EditConditionHides))
 	FWidgetSpringParams Transition;
 
 	/**
@@ -98,7 +101,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "Look", meta = (DisplayName = "Selected Look", FixedLayout))
 	FInstancedPropertyBag SelectedLook;
 
-	/** A shape widget's shape, or a Shape Box's outline, away from the trigger. Empty on other widgets. */
+	/** A shape widget's shape, or a Shape Box's outline, away from the trigger. Not shown on other widgets. */
 	UPROPERTY(EditAnywhere, Category = "Look|Shape", meta = (DisplayName = "Unselected Shape", FixedLayout))
 	FInstancedPropertyBag UnselectedShape;
 
@@ -158,11 +161,23 @@ public:
 	 */
 	bool SyncLooksToOwner();
 
+	/** The widget whose settings lay the looks out: the styled widget, or - for the Details' template - a live copy's or the authored one. */
+	UWidget* FindLayoutSource() const;
+
 	virtual void PostLoad() override;
 	virtual void BeginDestroy() override;
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
+private:
+#if WITH_EDITOR
+	/**
+	 * The designer's preview copies of this - the template its Details edit - take its settings at once and start again in
+	 * the look their list gives them, so a Transition or a look edited is seen without compiling.
+	 */
+	void PushEditsToPreviewCopies();
 #endif
 
 protected:
@@ -179,9 +194,6 @@ protected:
 private:
 	/** The widget styled: the UI Component's owner. */
 	UWidget* GetStyledWidget() const;
-
-	/** The widget whose settings lay the looks out: the styled widget, or - for the Details' template - a live copy's or the authored one. */
-	UWidget* FindLayoutSource() const;
 
 	void Start();
 	void Stop();

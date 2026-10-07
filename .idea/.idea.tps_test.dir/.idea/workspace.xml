@@ -12,7 +12,24 @@
       <change beforePath="$PROJECT_DIR$/NameTBD_Handoff.md" beforeDir="false" afterPath="$PROJECT_DIR$/NameTBD_Handoff.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/NewWidgetBlueprint.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/NewWidgetBlueprint.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WASM_NewStateMachine.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WASM_NewStateMachine.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_Menu_Example.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_Menu_Example.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_FlowList_Test.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_FlowList_Test.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WidgetAnimations/WA_FlyIn.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WidgetAnimations/WA_FlyIn.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WidgetAnimations/WA_Rotate.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/WidgetAnimations/WA_Rotate.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowList.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowList.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowList.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowList.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListItemStyle.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListItemStyle.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListItemStyle.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListItemStyle.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListScrollBar.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListScrollBar.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListScrollBar.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListScrollBar.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListTypes.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListTypes.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListTypes.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/FlowListTypes.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/SFlowList.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/SFlowList.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/SFlowList.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/FlowList/SFlowList.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/FlowListItemStyleDetails.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/FlowListItemStyleDetails.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/FlowListItemStyleDetails.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/FlowListItemStyleDetails.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />

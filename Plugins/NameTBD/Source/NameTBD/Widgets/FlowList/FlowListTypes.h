@@ -7,6 +7,7 @@
 #include "Types/SlateEnums.h"
 
 #include "NameTBD/WidgetAnimation/WidgetAnimEasing.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimPreset.h" // FWidgetAnimEntryBase
 #include "NameTBD/WidgetAnimation/WidgetAnimSpring.h"
 
 #include "FlowListTypes.generated.h"
@@ -79,6 +80,14 @@ enum class EFlowListOverscroll : uint8
 {
 	Elastic UMETA(ToolTip = "Rubber-bands past the end with growing resistance and springs back, as on iOS."),
 	Clamp UMETA(ToolTip = "Stops dead at the end.")
+};
+
+/** The gamepad stick that Stick Scrolls reads. */
+UENUM(BlueprintType)
+enum class EFlowListStick : uint8
+{
+	LeftStick UMETA(DisplayName = "Left Stick"),
+	RightStick UMETA(DisplayName = "Right Stick")
 };
 
 /** Starting points for the look of a Flow List. Picking one overwrites Layout, Effects, Scrolling and Transitions. */
@@ -376,7 +385,10 @@ struct NAMETBD_API FFlowListLayout
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Path", meta = (ClampMin = "0", UIMin = "0", UIMax = "0.01", EditCondition = "Type == EFlowListPathType::Wheel || Type == EFlowListPathType::Ring", EditConditionHides))
 	float Perspective = 0.0015f;
 
-	/** The curve's points, as fractions of the list's size (0,0 its top left, 1,1 its bottom right). It passes through each. */
+	/**
+	 * The curve's points, as fractions of the list's size (0,0 its top left, 1,1 its bottom right). It passes through each.
+	 * Easiest edited on the designer's canvas: select the list and click Edit Path above it.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Path|Spline", meta = (EditCondition = "Type == EFlowListPathType::Spline", EditConditionHides))
 	TArray<FVector2D> SplinePoints = { FVector2D(0.1, 0.85), FVector2D(0.35, 0.45), FVector2D(0.65, 0.35), FVector2D(0.9, 0.1) };
 
@@ -473,8 +485,8 @@ struct NAMETBD_API FFlowListScrolling
 	float WheelStep = 1.f;
 
 	/**
-	 * Keys and sticks along the list move one item. At either end, navigation leaves the list in that direction, so a
-	 * button below a vertical list is one press past its last item.
+	 * Keys and sticks along the list move one item - a stick scrolls instead with Stick Scrolls. At either end, navigation
+	 * leaves the list in that direction, so a button below a vertical list is one press past its last item.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling|Navigation", meta = (DisplayName = "Navigation"))
 	bool bNavigation = true;
@@ -489,6 +501,59 @@ struct NAMETBD_API FFlowListScrolling
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling|Navigation", meta = (DisplayName = "Focus Follows Selection"))
 	bool bFocusFollowsSelection = true;
+
+	/**
+	 * The stick along the list scrolls it smoothly, faster the further it is pushed and - with Stick Acceleration Time -
+	 * the longer it is held, instead of stepping an item at a time as navigation. Letting go settles on the item it was
+	 * passing or the next one ahead (Snap To Items), or glides to a stop like a fling. Only while the list or one of its
+	 * items has focus, and only the axis along the list: the other one still navigates out of it. While it scrolls, that
+	 * axis of that stick goes to the list alone - nothing behind the UI sees it. Whether it selects as it goes is Select
+	 * While Scrolling. The D-pad and arrow keys still step.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling|Stick", meta = (DisplayName = "Stick Scrolls"))
+	bool bStickScrolls = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling|Stick", meta = (EditCondition = "bStickScrolls"))
+	EFlowListStick Stick = EFlowListStick::LeftStick;
+
+	/** Items a second with the stick pushed all the way, before any acceleration. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling|Stick", meta = (ClampMin = "0.1", UIMin = "1", UIMax = "20", EditCondition = "bStickScrolls"))
+	float StickSpeed = 5.f;
+
+	/** Items a second once it has been held long enough to reach full speed - see Stick Acceleration Time. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling|Stick", meta = (ClampMin = "0.1", UIMin = "1", UIMax = "60", EditCondition = "bStickScrolls"))
+	float StickMaxSpeed = 20.f;
+
+	/**
+	 * Seconds held all the way over to climb from Stick Speed to Stick Max Speed, easing in - so a short push moves
+	 * carefully and a long hold races through a long list. Pushed part way it climbs more slowly; reversing or letting go
+	 * starts it over. 0: no acceleration, always Stick Speed.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling|Stick", meta = (ClampMin = "0", UIMin = "0", UIMax = "3", Units = "s", EditCondition = "bStickScrolls"))
+	float StickAccelerationTime = 1.5f;
+
+	/** How far the stick must be pushed, 0 to 1, before it scrolls. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling|Stick", meta = (ClampMin = "0", ClampMax = "0.9", EditCondition = "bStickScrolls"))
+	float StickDeadZone = 0.25f;
+
+	/** The push-to-speed curve: 1 is straight, 2 and up give finer control near the middle. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling|Stick", meta = (ClampMin = "0.5", ClampMax = "4", EditCondition = "bStickScrolls"))
+	float StickResponse = 2.f;
+
+	/** Pushing up (or right, along a horizontal list) goes the other way. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling|Stick", meta = (DisplayName = "Invert Stick", EditCondition = "bStickScrolls"))
+	bool bInvertStick = false;
+
+	/**
+	 * Scrolling selects: while the list is dragged, flung, wheeled, moved with a stick or by a scroll bar, the selection
+	 * follows whichever item passes the focus - a dial clicking past each item, its select sound, selection events and Play
+	 * On Selection animations with it. Off: scrolling only ever moves the list - it never selects, not even once it rests.
+	 * An item is selected by clicking it, or by stepping to it with the D-pad or the arrow keys (from the item at the focus,
+	 * if the selection has been scrolled away); a stick scrolls - an item a notch, or smoothly with Stick Scrolls. Scroll To
+	 * Index and Scroll By from Blueprint still select.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling", meta = (DisplayName = "Select While Scrolling"))
+	bool bSelectWhileScrolling = true;
 
 	/** Clicking or tapping an item that isn't the focused one scrolls it to the focus. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Scrolling", meta = (DisplayName = "Click To Focus"))
@@ -536,6 +601,28 @@ struct NAMETBD_API FFlowListTransition
 	float Rotation = 0.f;
 };
 
+/**
+ * The intro: every item playing its entrance when the list is first shown, the focused one first and the rest spreading
+ * out from it.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FFlowListIntro
+{
+	GENERATED_BODY()
+
+	/**
+	 * Plays every item's entrance - Enter, or Anim Enter Item without Use Basic Animations - when the list is first shown,
+	 * the focused item first and spreading out. Items added together in one frame (a list filled in Construct) enter one
+	 * after another too.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Intro", meta = (DisplayName = "Play Intro"))
+	bool bPlayIntro = false;
+
+	/** Seconds between the starts of items entering one after another. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Intro", meta = (EditCondition = "bPlayIntro", ClampMin = "0", UIMin = "0", UIMax = "0.2", Units = "s"))
+	float Stagger = 0.04f;
+};
+
 /** How items arrive, leave and make room for each other. */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FFlowListTransitions
@@ -548,25 +635,63 @@ struct NAMETBD_API FFlowListTransitions
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (DisplayName = "Animate Changes"))
 	bool bAnimateChanges = true;
 
+	/**
+	 * Items arrive and leave by Enter and Exit: a fade, a scale, an offset and a turn, set here. Off, each item plays
+	 * Widget Animations instead - Anim Enter Item and Anim Exit Item - as a Widget Animation Component's Anim In and Anim
+	 * Out play on the widget it is on.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (DisplayName = "Use Basic Animations"))
+	bool bUseBasicAnimations = true;
+
 	/** The state a new item grows from. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (EditCondition = "bAnimateChanges"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (EditCondition = "bUseBasicAnimations", EditConditionHides))
 	FFlowListTransition Enter;
 
 	/** The state a removed item fades to before it is let go. It can't be clicked while it leaves. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (EditCondition = "bAnimateChanges"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (EditCondition = "bUseBasicAnimations", EditConditionHides))
 	FFlowListTransition Exit;
 
-	/** Seconds between the starts of items entering together - added in one frame, or in Play Intro. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (ClampMin = "0", UIMin = "0", UIMax = "0.2", Units = "s"))
-	float Stagger = 0.04f;
+	/**
+	 * Widget Animations an item plays on itself as it becomes the selected item (Play On Selection), and as it arrives: added
+	 * or shown at runtime, in the intro (Play Intro), or scrolling into view (Play As Items Scroll In And Out). As a Widget
+	 * Animation Component's Anim In plays on the widget it is on. An entry set to Mirror In Out also plays, backwards, as the
+	 * item is deselected or leaves. The designer plays it whenever a transition is edited, and from Enter above the selected
+	 * list or item.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (DisplayName = "Anim Enter Item", EditCondition = "!bUseBasicAnimations", EditConditionHides))
+	TArray<FWidgetAnimEntryBase> AnimEnterItem;
+
+	/**
+	 * Widget Animations an item plays on itself as it stops being the selected item (Play On Selection), and as it leaves:
+	 * removed, or scrolling out of view (Play As Items Scroll In And Out). As a Widget Animation Component's Anim Out does. A
+	 * removed item stays drawn - and can't be clicked - until the longest of them ends. Empty: nothing plays then, and the
+	 * item keeps the pose its entrance left it in. Previewed in the designer from Exit above the selected list or item.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (DisplayName = "Anim Exit Item", EditCondition = "!bUseBasicAnimations", EditConditionHides))
+	TArray<FWidgetAnimEntryBase> AnimExitItem;
+
+	/**
+	 * The item that becomes selected plays Anim Enter Item, and the one that stops being selected plays Anim Exit Item - a
+	 * highlight made of Widget Animations, following the selection as the list scrolls. With no Anim Exit Item nothing plays
+	 * as an item is deselected: it keeps where its entrance left it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (DisplayName = "Play On Selection", EditCondition = "!bUseBasicAnimations", EditConditionHides))
+	bool bPlayOnSelection = true;
+
+	/**
+	 * Items also play Anim Enter Item as they scroll into view, and Anim Exit Item as they scroll out of it - a list whose
+	 * items animate in as they arrive on screen. Items in view when the list is first shown don't (Play Intro plays theirs).
+	 * With no Anim Exit Item nothing plays as an item scrolls out.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (DisplayName = "Play As Items Scroll In And Out", EditCondition = "!bUseBasicAnimations", EditConditionHides))
+	bool bPlayOnScrollIntoView = false;
 
 	/** How items slide to their new places when others arrive, leave or move. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions")
 	FWidgetSpringParams ReorderSpring;
 
-	/** Plays Enter on every item, the focused one first and spreading out, when the list is first shown. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (DisplayName = "Play Intro"))
-	bool bPlayIntro = false;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (DisplayName = "Intro"))
+	FFlowListIntro Intro;
 
 	/**
 	 * When items are added or removed before the focused item, the list shifts with them so the same item stays
@@ -574,6 +699,27 @@ struct NAMETBD_API FFlowListTransitions
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transitions", meta = (DisplayName = "Keep Focused Item"))
 	bool bKeepFocusedItem = true;
+
+	/**
+	 * Saved before Play Intro and Stagger moved into Intro: read once on load, into Intro, and never saved again. Stagger
+	 * is -1 when nothing was saved for it.
+	 */
+	UPROPERTY()
+	bool bPlayIntro = false;
+
+	UPROPERTY()
+	float Stagger = -1.f;
+
+	void PostSerialize(const FArchive& Ar);
+};
+
+template<>
+struct TStructOpsTypeTraits<FFlowListTransitions> : public TStructOpsTypeTraitsBase2<FFlowListTransitions>
+{
+	enum
+	{
+		WithPostSerialize = true,
+	};
 };
 
 /**
@@ -595,6 +741,15 @@ namespace FlowListTypes
 
 	/** Where an item is Alpha (0..1, unshaped) of the way through Transition. bEnter runs from the transition's state to rest. */
 	NAMETBD_API FFlowListTransitionState EvaluateTransition(const FFlowListTransition& Transition, float Alpha, bool bEnter);
+
+	/**
+	 * A Spline path's curve, flattened, in the list's local space for a list of Size: Catmull-Rom through each of Points
+	 * (fractions of Size), its ends held - or a line across the middle with fewer than two. Focus Offset not added.
+	 */
+	NAMETBD_API void BuildSplineCurve(const TArray<FVector2D>& Points, const FVector2f& Size, TArray<FVector2f>& OutCurve);
+
+	/** How many curve points BuildSplineCurve makes between two of Points. */
+	inline constexpr int32 SplineStepsPerSpan = 16;
 
 	/** Overwrites the four groups with a preset's look. Custom leaves them as they are. */
 	NAMETBD_API void ApplyPreset(EFlowListStylePreset Preset, FFlowListLayout& Layout, FFlowListEffects& Effects, FFlowListScrolling& Scrolling, FFlowListTransitions& Transitions);

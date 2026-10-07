@@ -411,13 +411,16 @@ bool UFlowListItemStyle::Advance(float DeltaTime)
 	int32 Index = INDEX_NONE;
 	const float Goal = ReadGoal(&List, &Index);
 
-	// Another item - a virtual list's entry reused - starts in its own look, as a new one would: no animation, no event.
+	// A widget handed another item - a virtual list's entry reused, an item first placed in a list or moved to another -
+	// starts in its own look, as a new one would: no animation, no event. A plain item whose index only shifts as others
+	// arrive or leave in front of it is still the same item: its look carries on gliding.
 	if (List != LastList.Get() || Index != LastItemIndex)
 	{
 		const bool bFirst = LastItemIndex == INDEX_NONE && !LastList.IsValid();
+		const bool bOtherItem = List != LastList.Get() || LastItemIndex == INDEX_NONE || Index == INDEX_NONE || (List && List->IsVirtual());
 		LastList = List;
 		LastItemIndex = Index;
-		if (!bFirst)
+		if (!bFirst && bOtherItem)
 		{
 			Amount = Goal;
 			Velocity = 0.f;
@@ -589,5 +592,57 @@ void UFlowListItemStyle::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 	SyncLooksToOwner();
 	bDifferencesGathered = false;
+	PushEditsToPreviewCopies();
+}
+
+void UFlowListItemStyle::PushEditsToPreviewCopies()
+{
+	// Only from the template the Details edit: the designer's preview copies were made from it before the edit, and aren't
+	// made again for an edit of a component - so a new Transition, or a look, would only be seen after compiling.
+	if (GetStyledWidget())
+	{
+		return;
+	}
+	for (TObjectIterator<UFlowListItemStyle> It(RF_ClassDefaultObject | RF_ArchetypeObject, /*bIncludeDerivedClasses=*/true, EInternalObjectFlags::Garbage); It; ++It)
+	{
+		UFlowListItemStyle* Copy = *It;
+		const UWidget* CopyWidget = Copy != this ? Copy->GetStyledWidget() : nullptr;
+		if (!CopyWidget || !CopyWidget->IsDesignTime())
+		{
+			continue;
+		}
+		bool bMadeFromThis = false;
+		for (const UObject* Archetype = Copy->GetArchetype(); Archetype; Archetype = Archetype->GetArchetype())
+		{
+			if (Archetype == this)
+			{
+				bMadeFromThis = true;
+				break;
+			}
+			if (Archetype->HasAnyFlags(RF_ClassDefaultObject))
+			{
+				break;
+			}
+		}
+		if (!bMadeFromThis)
+		{
+			continue;
+		}
+
+		// Back to the Unselected look - the widget as authored - for every setting the looks set differently until now, so one
+		// that no longer differs isn't left blended. Then the edited settings, and the look its list gives it.
+		Copy->Stop();
+		Copy->Amount = 0.f;
+		Copy->Apply(/*bForce=*/true);
+		for (TFieldIterator<FProperty> PropertyIt(UFlowListItemStyle::StaticClass(), EFieldIteratorFlags::ExcludeSuper); PropertyIt; ++PropertyIt)
+		{
+			const FProperty* Property = *PropertyIt;
+			if (Property->HasAnyPropertyFlags(CPF_Edit) && !Property->HasAnyPropertyFlags(CPF_Transient | CPF_EditConst))
+			{
+				Property->CopyCompleteValue_InContainer(Copy, this);
+			}
+		}
+		Copy->Start();
+	}
 }
 #endif

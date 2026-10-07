@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/PanelSlot.h"
+#include "Containers/Ticker.h"
 #include "Components/PanelWidget.h"
 #include "UObject/Interface.h"
 
@@ -90,6 +91,32 @@ struct FFlowListEntryWidget
 	TSharedPtr<SWidget> Slate;
 };
 
+/** An item playing the list's Anim Enter Item or Anim Exit Item - see FFlowListTransitions::bUseBasicAnimations. */
+USTRUCT()
+struct FFlowListItemAnimation
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TWeakObjectPtr<UWidget> Widget;
+
+	UPROPERTY()
+	FWidgetAnimPlayer Player;
+
+	/**
+	 * What the animations touch besides the item itself, as it was before its first animation here: put back once it has
+	 * left, so it is reused - or added again - clean. The item's own pose is drawn by the list and never written to it.
+	 */
+	UPROPERTY()
+	FWidgetAnimBaselineSet Baselines;
+
+	/** The Slate widget the list draws the item with, which its pose is handed to. */
+	TWeakPtr<SWidget> Slate;
+
+	/** Started by scrolling or the selection: its pose is the item's state, kept in the designer too once it ends. */
+	bool bHoldPose = false;
+};
+
 // =====================================================================================================
 // Slot
 // =====================================================================================================
@@ -135,6 +162,12 @@ private:
 
 	SFlowList::FSlot* Slot = nullptr;
 	TWeakPtr<SFlowList> List;
+
+	/**
+	 * The Slate widget the list was given for the item. Not always its Get Cached Widget: in the designer UMG hands a panel a
+	 * wrapper around some widgets, so the item is found by this.
+	 */
+	TWeakPtr<SWidget> SlateContent;
 
 };
 
@@ -286,8 +319,8 @@ public:
 	// ---------------------------------------------------------------------------------------------
 
 	/**
-	 * Adds an item at the end - Push Back. bAnimate plays its Enter transition; items added in the same frame enter one
-	 * after another, so filling a list in Construct plays as an intro. Pass false to fill it instantly.
+	 * Adds an item at the end - Push Back. bAnimate plays its Enter transition; with Play Intro on, items added in the same
+	 * frame enter one after another, so filling a list in Construct plays as an intro. Pass false to fill it instantly.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Flow List|Items", meta = (AdvancedDisplay = "bAnimate"))
 	UFlowListSlot* AddItem(UWidget* Content, bool bAnimate = true);
@@ -338,9 +371,26 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Flow List|Items")
 	float GetItemDistance(const UWidget* Item) const;
 
-	/** Plays Enter on every item, the focused one first and spreading out by Stagger. */
+	/** Plays every item's entrance - Enter, or Anim Enter Item - the focused one first and spreading out by the Intro's Stagger. */
 	UFUNCTION(BlueprintCallable, Category = "Flow List|Items")
 	void PlayIntro();
+
+	/** For the designer's preview: every item's entrance, as Play Intro plays it. */
+	void PreviewEntrances();
+
+	/** For the designer's preview: every item's exit - Exit, or Anim Exit Item - without removing any, then its entrance again. */
+	void PreviewExits();
+
+	/** For the designer's preview: one item's entrance, or its exit and then its entrance again. Item is one of this list's. */
+	void PreviewItem(UWidget* Item, bool bExit);
+
+#if WITH_EDITOR
+	/** The designer's previews of this list: itself when it is one, else the live preview copies of this template. */
+	TArray<UFlowList*> FindDesignerPreviews() const;
+
+	/** Plays the entrances (or the exits, then the entrances) in the designer's previews of this list, next frame. */
+	void PreviewInDesigner(bool bExits);
+#endif
 
 	/** The number standing for an item: its slot's Item Value, or its index when that is -1. -1 for no item. */
 	UFUNCTION(BlueprintPure, Category = "Flow List|Items")
@@ -521,12 +571,36 @@ private:
 	bool RemoveItemInternal(UWidget* Content, bool bAnimate);
 	UWidget* FindItemWidget(const TSharedPtr<SWidget>& Widget) const;
 
+	/** The Slate widget the Slate list holds for an item - a child or a virtual entry - see UFlowListSlot::SlateContent. */
+	TSharedPtr<SWidget> GetItemSlateWidget(const UWidget* Item) const;
+
 	void HandleSelectionChanged(int32 Index, int32 PreviousIndex);
 	void HandleSettled(int32 Index);
 	void HandleItemClicked(int32 Index);
 	void HandleItemExited(const TSharedRef<SWidget>& Widget);
 	void HandleEdgeReached();
 	void HandleAnimated();
+
+	// Items' own entrance and exit Widget Animations - see FFlowListTransitions::bUseBasicAnimations.
+	void HandleItemTransitionStarted(const TSharedRef<SWidget>& Widget, bool bEnter, EFlowListItemCue Cue);
+	void GetItemAnimationEntries(TArray<FWidgetAnimEntryBase>& OutEnter, TArray<FWidgetAnimEntryBase>& OutExit) const;
+	/**
+	 * Plays Anim Enter Item (bEnter) or Anim Exit Item on an item; with nothing to play that way, leaves it as it is.
+	 * bHoldPose: started by scrolling or the selection - the pose is the item's state, kept in the designer too.
+	 */
+	void StartItemAnimation(UWidget* Item, const TSharedRef<SWidget>& Slate, bool bEnter, bool bHoldPose = false);
+	bool TickItemAnimations(float DeltaTime);
+
+	/** Moves one item's animation on, hands the item's own pose to the Slate list and applies the rest. True while playing. */
+	bool PoseItemAnimation(FFlowListItemAnimation& Animation, float DeltaTime);
+	void ReleaseItemAnimation(int32 Index, bool bRestore);
+
+	/** Lets go of an item's animation; bRestore puts the item back as it was before it. */
+	void StopItemAnimation(const UWidget* Item, bool bRestore);
+	void StopAllItemAnimations();
+
+	/** An item - a child, a leaving child or a virtual entry - by the Slate widget it is drawn with. */
+	UWidget* FindAnyItemWidget(const TSharedRef<SWidget>& Widget) const;
 
 	void PlaySound(const FUISoundSlot& Sound, int32 RuntimeIndex);
 
@@ -568,6 +642,14 @@ private:
 
 	/** Set while the Slate list is being built, so the selection it starts on doesn't sound. */
 	bool bBuilding = false;
+
+	/** Items playing Anim Enter Item or Anim Exit Item, and the ticker playing them while any does. */
+	UPROPERTY(Transient)
+	TArray<FFlowListItemAnimation> ItemAnimations;
+	FTSTicker::FDelegateHandle ItemAnimationTicker;
+	bool bWarnedItemNotFound = false;
+	bool bWarnedNoAnimation = false;
+	bool bWarnedNoExit = false;
 
 	TWeakObjectPtr<UWidget> SelectedItem;
 	float LastReportedScroll = TNumericLimits<float>::Max();

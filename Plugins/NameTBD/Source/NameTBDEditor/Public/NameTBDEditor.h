@@ -5,6 +5,7 @@
 class IAssetTypeActions; 
 class FWidgetShapePathEditorFactory;
 class FWidgetAnimTextEditorFactory;
+class FFlowListPathEditorFactory;
 struct FGraphPanelPinFactory;
 
 class FNameTBDEditorModule : public IModuleInterface
@@ -25,4 +26,7 @@ private:
 
 	// Puts the animated texts' tag editor on the UMG designer's canvas.
 	TSharedPtr<FWidgetAnimTextEditorFactory> TextEditorFactory;
+
+	// Puts the Flow List's Spline path editor on the UMG designer's canvas.
+	TSharedPtr<FFlowListPathEditorFactory> FlowListPathEditorFactory;
 };

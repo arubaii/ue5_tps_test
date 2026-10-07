@@ -10,6 +10,8 @@
 
 #include "FlowListTypes.h"
 
+class FFlowListStickInput;
+
 /**
  * The Slate side of UFlowList: lays its items along a path by their distance from a scroll position measured in items,
  * styles each from that distance, and moves the scroll position with springs, drags and flings. See FlowListTypes.h for
@@ -23,6 +25,19 @@
  * Children that are leaving stay in the panel until their exit transition ends, drawn but not hit-testable, and are
  * not items: nothing indexes them. Collapsed children are not items either.
  */
+/** What starts an item's own entrance or exit Widget Animation - see SFlowList::OnItemTransitionStarted. */
+enum class EFlowListItemCue : uint8
+{
+	/** It was added, removed or shown, or the intro or a preview plays: its Enter or Exit. */
+	Transition,
+
+	/** It scrolled into view, or out of it (Play As Items Scroll In And Out). */
+	View,
+
+	/** It became the selected item, or stopped being it (Play On Selection). */
+	Selection
+};
+
 class NAMETBD_API SFlowList : public SPanel
 {
 public:
@@ -62,6 +77,25 @@ public:
 		float TransitionTime = 0.f;
 		float TransitionDelay = 0.f;
 
+		/** Whether its Enter or Exit has got past its delay - when an item's own Widget Animations are told to start. */
+		bool bTransitionStarted = false;
+
+		/** Playing its Exit for a preview (PlayExitPreview): still an item, and it enters again once the exit is done. */
+		bool bPreviewLeaving = false;
+
+		/**
+		 * Without Use Basic Animations: the pose the item's own Widget Animations give it this frame - drawn by the list, about
+		 * AnimPivot (a fraction of its size), on top of the item's own render transform. See SetItemAnimationPose.
+		 */
+		/** Whether it was last seen in view, for Play As Items Scroll In And Out; not known until its first layout. */
+		bool bViewKnown = false;
+		bool bInView = false;
+
+		bool bHasAnimPose = false;
+		FSlateRenderTransform AnimTransform;
+		float AnimOpacity = 1.f;
+		FVector2f AnimPivot = FVector2f(0.5f, 0.5f);
+
 		/** The visibility it had before it started leaving, put back if it is added again mid-exit. */
 		TOptional<EVisibility> SavedVisibility;
 	};
@@ -69,6 +103,7 @@ public:
 	DECLARE_DELEGATE_TwoParams(FOnSelectionChanged, int32 /*Index*/, int32 /*PreviousIndex*/);
 	DECLARE_DELEGATE_OneParam(FOnIndexEvent, int32 /*Index*/);
 	DECLARE_DELEGATE_OneParam(FOnWidgetEvent, const TSharedRef<SWidget>& /*Widget*/);
+	DECLARE_DELEGATE_ThreeParams(FOnItemTransition, const TSharedRef<SWidget>& /*Widget*/, bool /*bEnter*/, EFlowListItemCue /*Cue*/);
 	DECLARE_DELEGATE(FOnListEvent);
 
 	/** Virtual lists: the entry widget to show item Index, or null to show nothing there. */
@@ -92,6 +127,23 @@ public:
 	void SetSettings(const FFlowListLayout& InLayout, const FFlowListEffects& InEffects, const FFlowListScrolling& InScrolling, const FFlowListTransitions& InTransitions);
 	void SetDesignTime(bool bInDesignTime, bool bInShowPath);
 	void SetFocusable(bool bInFocusable) { bFocusable = bInFocusable; }
+
+	/**
+	 * Without Use Basic Animations: how long the items' own entrance and exit Widget Animations run, in seconds. An item
+	 * leaving stays drawn that long; nothing of Enter and Exit is drawn - the animations are. See OnItemTransitionStarted.
+	 */
+	void SetItemAnimationLengths(float InEnterSeconds, float InExitSeconds);
+
+	/**
+	 * The pose an item's entrance or exit Widget Animations give it, drawn by the list like an Enter or Exit is - so nothing
+	 * else writing the item's own render transform or opacity (its Widget Animation Component, an Item Style, the designer)
+	 * can undo it. Pivot is a fraction of the item's size. Leaving items included.
+	 */
+	void SetItemAnimationPose(const TSharedRef<SWidget>& Widget, const FSlateRenderTransform& Transform, float Opacity, const FVector2f& Pivot);
+	void ClearItemAnimationPose(const TSharedRef<SWidget>& Widget);
+
+	/** Whether the item drawn with Widget is entering or leaving, for logging. False when it is neither or isn't a child. */
+	bool GetItemTransition(const TSharedRef<SWidget>& Widget, bool& bOutEntering, bool& bOutExiting) const;
 
 	// ---------------------------------------------------------------------------------------------
 	// Items. Positions here count every child that isn't leaving - collapsed ones included - which is the
@@ -131,6 +183,15 @@ public:
 
 	/** Plays Enter on every item, the focused one first and spreading outward by Stagger. */
 	void PlayIntro();
+
+	/**
+	 * Plays Exit on every item without removing any - the focused one first, spreading out by the Intro's Stagger - and then
+	 * Enter again. For previewing the exit in the designer.
+	 */
+	void PlayExitPreview();
+
+	/** One item's entrance - or its exit, then its entrance again - for previewing it in the designer. */
+	void PlayItemPreview(const TSharedRef<SWidget>& Widget, bool bExit);
 
 	// ---------------------------------------------------------------------------------------------
 	// Virtual lists. Instead of a child per item, the list holds Count items by index and asks for an entry widget only
@@ -194,6 +255,13 @@ public:
 	/** Every frame the list moves or animates, after it has moved. */
 	FOnListEvent OnAnimated;
 
+	/**
+	 * Without Use Basic Animations: an item's entrance (bEnter) or exit begins - after its stagger, or as it scrolls into or
+	 * out of view, or gains or loses the selection - and its own Widget Animations are to start. Until a Transition entrance
+	 * begins an item isn't drawn.
+	 */
+	FOnItemTransition OnItemTransitionStarted;
+
 	// ---------------------------------------------------------------------------------------------
 	// SWidget
 	// ---------------------------------------------------------------------------------------------
@@ -215,18 +283,24 @@ public:
 	virtual void OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual void OnMouseLeave(const FPointerEvent& MouseEvent) override;
 	virtual FNavigationReply OnNavigation(const FGeometry& MyGeometry, const FNavigationEvent& InNavigationEvent) override;
+	virtual FReply OnPreviewKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual void OnFocusChanging(const FWeakWidgetPath& PreviousFocusPath, const FWidgetPath& NewWidgetPath, const FFocusEvent& InFocusEvent) override;
 
 protected:
 	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override;
 
 private:
+	friend class FFlowListStickInput;
+
 	enum class EMotion : uint8
 	{
 		Idle,
 		Drag,
 		Coast,
-		Spring
+		Spring,
+
+		/** Driven by the stick, at Velocity - see Stick Scrolls. */
+		Stick
 	};
 
 	/** The path's frame in the list's local space this frame. */
@@ -340,6 +414,16 @@ private:
 	void MoveUserFocusTo(int32 Index);
 	void ReachedEdge();
 
+	// Stick Scrolls. The stick is read before Slate turns it into navigation, by an input preprocessor kept registered
+	// while the setting is on outside the designer.
+	void UpdateStickInput();
+	bool HandleStickAnalog(const FAnalogInputEvent& Event);
+	bool HandleStickKey(const FKeyEvent& Event);
+	bool HasStickFocus(int32 UserIndex) const;
+	FKey GetStickAxisKey() const;
+	void UpdateStick(float DeltaTime);
+	void ReleaseStick();
+
 	// Pointer
 	void BeginPress(const FPointerEvent& Event);
 	bool HandlePointerMove(const FVector2f& Absolute);
@@ -384,6 +468,25 @@ private:
 	void BuildSpline(const FVector2f& Size) const;
 	FPathPoint SampleSpline(float Along) const;
 	FFlowListTransitionState GetTransition(const FSlot& Slot) const;
+
+	/** Enter's and Exit's delay and length - Basic Animations' own, or the items' Widget Animations' lengths without them. */
+	bool UsesItemAnimations() const { return !Transitions.bUseBasicAnimations; }
+	float GetEnterDelay() const { return UsesItemAnimations() ? 0.f : Transitions.Enter.Delay; }
+	float GetEnterSeconds() const { return UsesItemAnimations() ? ItemEnterSeconds : Transitions.Enter.Duration; }
+	float GetExitDelay() const { return UsesItemAnimations() ? 0.f : Transitions.Exit.Delay; }
+	float GetExitSeconds() const { return UsesItemAnimations() ? ItemExitSeconds : Transitions.Exit.Duration; }
+
+	/** Seconds between items entering together - added in one frame - which enter one after another with Play Intro on. */
+	float GetBatchStagger() const { return Transitions.Intro.bPlayIntro ? Transitions.Intro.Stagger : 0.f; }
+
+	/** Starts a slot's Exit: drawn, not hit-testable, no longer an item. */
+	void StartExit(FSlot& Slot);
+
+	/** Play As Items Scroll In And Out: an entrance for each item that came into view since last time, an exit for each that left. */
+	void UpdateViewCues();
+
+	/** Tells of the view and selection cues gathered since the last time - once the list is consistent, as it is each frame. */
+	void FlushCues();
 	int32 PaintPathGuide(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
 
 	void WakeUp();
@@ -399,6 +502,19 @@ private:
 	bool bDesignTime = false;
 	bool bShowPath = false;
 	bool bFocusable = false;
+
+	/** See SetItemAnimationLengths. */
+	float ItemEnterSeconds = 0.f;
+	float ItemExitSeconds = 0.f;
+
+	/** View and selection cues not yet told of: the item, and whether it enters. */
+	TArray<TTuple<TWeakPtr<SWidget>, bool, EFlowListItemCue>> PendingCues;
+
+	/** Whether the view has been looked at once: what is in view then is just there, and plays nothing. */
+	bool bViewTracked = false;
+
+	/** Per child, from the last layout: whether its box overlaps the list. Worked out whatever it is drawn at, faded or not. */
+	mutable TArray<bool> CachedInView;
 
 	/**
 	 * Child indices of the items, in item order. In a virtual list it has an entry per item, INDEX_NONE for the ones with no
@@ -445,7 +561,21 @@ private:
 	float CoastTime = 0.f;
 	float WheelRemainder = 0.f;
 	bool bSelectionFollowsSpring = true;
+
+	/**
+	 * The frame a D-pad or arrow key went down on - the navigation that follows in the same frame is a step, which selects.
+	 * Navigation with no key behind it (a stick) is scrolling. See Select While Scrolling.
+	 */
+	uint64 StepKeyFrame = 0;
 	bool bWasMoving = false;
+
+	// The stick, for Stick Scrolls: its last value along the list, whose it is, how long it has been held over, and whether
+	// it has run the list into an end.
+	TSharedPtr<FFlowListStickInput> StickInput;
+	float StickValue = 0.f;
+	int32 StickUser = 0;
+	float StickHeld = 0.f;
+	bool bStickAtEdge = false;
 
 	int32 SelectedIndex = INDEX_NONE;
 	int32 NearestIndex = INDEX_NONE;

@@ -4,10 +4,33 @@
 
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformTime.h"
+#include "Slate/WidgetTransform.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/SNullWidget.h"
 
+#if WITH_EDITORONLY_DATA
+#include "Engine/Blueprint.h"
+#endif
+
 #define LOCTEXT_NAMESPACE "FlowList"
+
+DEFINE_LOG_CATEGORY_STATIC(LogFlowList, Log, All);
+
+namespace FlowListAnimLog
+{
+	static TAutoConsoleVariable<int32> CVarLogItemAnimations(
+		TEXT("FlowList.LogItemAnimations"),
+		0,
+		TEXT("Logs Flow Lists' item Widget Animations (Anim Enter Item / Anim Exit Item) to LogFlowList: 1 each preview, entrance and exit; 2 also every frame's pose."),
+		ECVF_Default);
+
+	int32 Level()
+	{
+		return CVarLogItemAnimations.GetValueOnGameThread();
+	}
+}
 
 namespace FlowListRegistry
 {
@@ -65,7 +88,9 @@ void UFlowListSlot::SetSizeOverride(FVector2D InSizeOverride)
 void UFlowListSlot::BuildSlot(const TSharedRef<SFlowList>& InList, int32 Position, bool bAnimate)
 {
 	List = InList;
-	Slot = InList->InsertChild(Content ? Content->TakeWidget() : SNullWidget::NullWidget, Position, bAnimate);
+	const TSharedRef<SWidget> Widget = Content ? Content->TakeWidget() : SNullWidget::NullWidget;
+	SlateContent = Widget;
+	Slot = InList->InsertChild(Widget, Position, bAnimate);
 	SynchronizeProperties();
 }
 
@@ -80,6 +105,7 @@ void UFlowListSlot::ReleaseSlateResources(bool bReleaseChildren)
 	Super::ReleaseSlateResources(bReleaseChildren);
 	Slot = nullptr;
 	List.Reset();
+	SlateContent.Reset();
 }
 
 // =====================================================================================================
@@ -108,6 +134,7 @@ TSharedRef<SWidget> UFlowList::RebuildWidget()
 	MyFlowList->OnItemExited.BindUObject(this, &UFlowList::HandleItemExited);
 	MyFlowList->OnEdgeReached.BindUObject(this, &UFlowList::HandleEdgeReached);
 	MyFlowList->OnAnimated.BindUObject(this, &UFlowList::HandleAnimated);
+	MyFlowList->OnItemTransitionStarted.BindUObject(this, &UFlowList::HandleItemTransitionStarted);
 	PushSettings();
 
 	if (IsVirtual())
@@ -130,7 +157,7 @@ TSharedRef<SWidget> UFlowList::RebuildWidget()
 	}
 
 	MyFlowList->SetScrollPosition(ScrollPosition, /*bAnimate=*/false);
-	if (!IsDesignTime() && Transitions.bPlayIntro)
+	if (!IsDesignTime() && Transitions.Intro.bPlayIntro)
 	{
 		MyFlowList->PlayIntro();
 	}
@@ -158,6 +185,7 @@ void UFlowList::ReleaseSlateResources(bool bReleaseChildren)
 	}
 	Super::ReleaseSlateResources(bReleaseChildren);
 	MyFlowList.Reset();
+	StopAllItemAnimations();
 	LeavingItems.Reset();
 	LeavingSlateWidgets.Reset();
 	ReleaseEntries();
@@ -171,6 +199,46 @@ void UFlowList::PushSettings()
 		MyFlowList->SetSettings(ListLayout, Effects, Scrolling, Transitions);
 		MyFlowList->SetDesignTime(IsDesignTime(), bShowPathInDesigner);
 		MyFlowList->SetFocusable(bListIsFocusable);
+
+		// Without Basic Animations the items' own Widget Animations are the entrance and the exit: a leaving item is kept for
+		// as long as its exit runs.
+		if (!Transitions.bUseBasicAnimations)
+		{
+			auto Longest = [](const TArray<FWidgetAnimEntryBase>& Entries)
+			{
+				float Seconds = 0.f;
+				for (const FWidgetAnimEntryBase& Entry : Entries)
+				{
+					if (!Entry.IsUsable())
+					{
+						continue;
+					}
+					TArray<FWidgetAnimSettings> Settings;
+					Entry.BuildSettings(Settings, nullptr);
+					float Length = UWidgetAnimLibrary::GetStackDuration(Settings);
+					if (Length < 0.f)
+					{
+						// Loops forever: one pass, then it goes.
+						Length = UWidgetAnimLibrary::GetStackPassDuration(Settings);
+					}
+					Seconds = FMath::Max(Seconds, Length);
+				}
+				return Seconds;
+			};
+			TArray<FWidgetAnimEntryBase> EnterEntries;
+			TArray<FWidgetAnimEntryBase> ExitEntries;
+			GetItemAnimationEntries(EnterEntries, ExitEntries);
+
+			// A little over: the exit starts on the Slate list's clock a frame before the animation's own clock moves.
+			const float ExitSeconds = Longest(ExitEntries);
+			const float EnterSeconds = Longest(EnterEntries);
+			MyFlowList->SetItemAnimationLengths(EnterSeconds, ExitSeconds > 0.f ? ExitSeconds + 0.05f : 0.f);
+			if (FlowListAnimLog::Level() > 0)
+			{
+				UE_LOG(LogFlowList, Display, TEXT("%s: item animations - entrance %.2f s (%d entries), exit %.2f s (%d entries)."), *GetName(),
+					EnterSeconds, EnterEntries.Num(), ExitSeconds, ExitEntries.Num());
+			}
+		}
 	}
 }
 
@@ -193,12 +261,32 @@ void UFlowList::OnSlotAdded(UPanelSlot* InSlot)
 		}
 		LeavingItems.RemoveAt(Leaving);
 		LeavingSlateWidgets.RemoveAt(Leaving);
+		StopItemAnimation(InSlot->Content, /*bRestore=*/true);
 	}
 
 	if (MyFlowList.IsValid())
 	{
 		const int32 Position = PendingInsertIndex != INDEX_NONE ? PendingInsertIndex : Slots.Num() - 1;
-		CastChecked<UFlowListSlot>(InSlot)->BuildSlot(MyFlowList.ToSharedRef(), Position, bAnimateNextChange && !IsDesignTime());
+		UFlowListSlot* TypedSlot = CastChecked<UFlowListSlot>(InSlot);
+		TypedSlot->BuildSlot(MyFlowList.ToSharedRef(), Position, bAnimateNextChange && !IsDesignTime());
+		if (FlowListAnimLog::Level() > 0)
+		{
+			bool bEntering = false;
+			bool bExiting = false;
+			const TSharedPtr<SWidget> Widget = TypedSlot->SlateContent.Pin();
+			if (Widget.IsValid())
+			{
+				MyFlowList->GetItemTransition(Widget.ToSharedRef(), bEntering, bExiting);
+			}
+			UE_LOG(LogFlowList, Display, TEXT("%s: %s added at %d - asked to animate: %s, Animate Changes: %s, entrance started: %s."), *GetName(),
+				InSlot->Content ? *InSlot->Content->GetName() : TEXT("(nothing)"), Position, bAnimateNextChange ? TEXT("yes") : TEXT("no"),
+				Transitions.bAnimateChanges ? TEXT("on") : TEXT("off"), bEntering ? TEXT("yes") : TEXT("no"));
+		}
+	}
+	else if (FlowListAnimLog::Level() > 0)
+	{
+		UE_LOG(LogFlowList, Display, TEXT("%s: %s added before the list was built - it shows without an entrance (Play Intro plays one)."), *GetName(),
+			InSlot->Content ? *InSlot->Content->GetName() : TEXT("(nothing)"));
 	}
 }
 
@@ -208,15 +296,37 @@ void UFlowList::OnSlotRemoved(UPanelSlot* InSlot)
 	{
 		return;
 	}
-	const TSharedPtr<SWidget> Widget = InSlot->Content->GetCachedWidget();
+	// The content's slot is already cleared: the widget the list holds comes from the slot itself.
+	const UFlowListSlot* TypedSlot = Cast<UFlowListSlot>(InSlot);
+	const TSharedPtr<SWidget> Widget = TypedSlot && TypedSlot->SlateContent.IsValid() ? TypedSlot->SlateContent.Pin() : InSlot->Content->GetCachedWidget();
 	if (!Widget.IsValid())
 	{
 		return;
 	}
-	if (MyFlowList->RemoveChild(Widget.ToSharedRef(), bAnimateNextChange && !IsDesignTime()))
+	const bool bLeaving = MyFlowList->RemoveChild(Widget.ToSharedRef(), bAnimateNextChange && !IsDesignTime());
+	if (FlowListAnimLog::Level() > 0)
+	{
+		UE_LOG(LogFlowList, Display, TEXT("%s: %s removed - asked to animate: %s, Animate Changes: %s, exit started: %s."), *GetName(), *InSlot->Content->GetName(),
+			bAnimateNextChange ? TEXT("yes") : TEXT("no"), Transitions.bAnimateChanges ? TEXT("on") : TEXT("off"), bLeaving ? TEXT("yes") : TEXT("no"));
+	}
+	if (!bLeaving && bAnimateNextChange && Transitions.bAnimateChanges && !Transitions.bUseBasicAnimations && !bWarnedNoExit
+		&& !UWidgetAnimEntryLibrary::HasAnyUsableAnimation(Transitions.AnimExitItem)
+		&& !Transitions.AnimEnterItem.ContainsByPredicate([](const FWidgetAnimEntryBase& Entry) { return Entry.bMirrorInOut && Entry.IsUsable(); }))
+	{
+		// Said once: nothing to play as it leaves, so it goes at once.
+		bWarnedNoExit = true;
+		UE_LOG(LogFlowList, Warning, TEXT("%s: an item was removed with no exit to play - Anim Exit Item has no usable entry (and no Anim Enter Item entry is set to Mirror In Out), so it went at once."),
+			*GetPathName());
+	}
+	if (bLeaving)
 	{
 		LeavingItems.Add(InSlot->Content);
 		LeavingSlateWidgets.Add(Widget.Get());
+	}
+	else
+	{
+		// Gone at once: whatever its entrance left it at is undone.
+		StopItemAnimation(InSlot->Content, /*bRestore=*/true);
 	}
 }
 
@@ -311,7 +421,7 @@ void UFlowList::MoveItem(UWidget* Content, int32 Index)
 	ShiftChild(Position, Content);
 	if (MyFlowList.IsValid())
 	{
-		if (const TSharedPtr<SWidget> Widget = Content->GetCachedWidget())
+		if (const TSharedPtr<SWidget> Widget = GetItemSlateWidget(Content))
 		{
 			MyFlowList->MoveChild(Widget.ToSharedRef(), Position);
 		}
@@ -345,6 +455,29 @@ int32 UFlowList::GetItemCount() const
 	return Count;
 }
 
+TSharedPtr<SWidget> UFlowList::GetItemSlateWidget(const UWidget* Item) const
+{
+	if (!Item)
+	{
+		return nullptr;
+	}
+	if (const UFlowListSlot* TypedSlot = Cast<UFlowListSlot>(Item->Slot))
+	{
+		if (const TSharedPtr<SWidget> Held = TypedSlot->SlateContent.Pin())
+		{
+			return Held;
+		}
+	}
+	for (const FFlowListEntryWidget& Entry : ActiveEntries)
+	{
+		if (Entry.Widget == Item && Entry.Slate.IsValid())
+		{
+			return Entry.Slate;
+		}
+	}
+	return Item->GetCachedWidget();
+}
+
 UWidget* UFlowList::FindItemWidget(const TSharedPtr<SWidget>& Widget) const
 {
 	if (!Widget.IsValid())
@@ -353,7 +486,7 @@ UWidget* UFlowList::FindItemWidget(const TSharedPtr<SWidget>& Widget) const
 	}
 	for (const UPanelSlot* PanelSlot : Slots)
 	{
-		if (PanelSlot && PanelSlot->Content && PanelSlot->Content->GetCachedWidget() == Widget)
+		if (PanelSlot && PanelSlot->Content && GetItemSlateWidget(PanelSlot->Content) == Widget)
 		{
 			return PanelSlot->Content;
 		}
@@ -392,7 +525,7 @@ int32 UFlowList::GetIndexOfItem(const UWidget* Item) const
 	// A virtual list's entries aren't its children: they are found by the Slate widget they are drawn with.
 	if (Item && IsVirtual())
 	{
-		const TSharedPtr<SWidget> Widget = Item->GetCachedWidget();
+		const TSharedPtr<SWidget> Widget = GetItemSlateWidget(Item);
 		return Widget.IsValid() && MyFlowList.IsValid() && FindEntry(Widget) ? MyFlowList->GetItemIndex(Widget.ToSharedRef()) : INDEX_NONE;
 	}
 	if (!Item || Item->GetParent() != this)
@@ -401,7 +534,7 @@ int32 UFlowList::GetIndexOfItem(const UWidget* Item) const
 	}
 	if (MyFlowList.IsValid())
 	{
-		const TSharedPtr<SWidget> Widget = Item->GetCachedWidget();
+		const TSharedPtr<SWidget> Widget = GetItemSlateWidget(Item);
 		return Widget.IsValid() ? MyFlowList->GetItemIndex(Widget.ToSharedRef()) : INDEX_NONE;
 	}
 	int32 Seen = 0;
@@ -434,6 +567,37 @@ void UFlowList::PlayIntro()
 	if (MyFlowList.IsValid())
 	{
 		MyFlowList->PlayIntro();
+	}
+}
+
+void UFlowList::PreviewEntrances()
+{
+	if (FlowListAnimLog::Level() > 0)
+	{
+		UE_LOG(LogFlowList, Display, TEXT("%s: previewing %d items' entrances (%s)."), *GetName(), GetItemCount(),
+			Transitions.bUseBasicAnimations ? TEXT("Basic Animations") : TEXT("Anim Enter Item"));
+	}
+	PlayIntro();
+}
+
+void UFlowList::PreviewItem(UWidget* Item, bool bExit)
+{
+	const TSharedPtr<SWidget> Widget = GetItemSlateWidget(Item);
+	if (FlowListAnimLog::Level() > 0)
+	{
+		UE_LOG(LogFlowList, Display, TEXT("%s: previewing %s's %s."), *GetName(), Item ? *Item->GetName() : TEXT("(none)"), bExit ? TEXT("exit") : TEXT("entrance"));
+	}
+	if (MyFlowList.IsValid() && Widget.IsValid())
+	{
+		MyFlowList->PlayItemPreview(Widget.ToSharedRef(), bExit);
+	}
+}
+
+void UFlowList::PreviewExits()
+{
+	if (MyFlowList.IsValid())
+	{
+		MyFlowList->PlayExitPreview();
 	}
 }
 
@@ -798,6 +962,9 @@ void UFlowList::HandleReleaseEntry(int32 Index, const TSharedRef<SWidget>& Widge
 		{
 			IFlowListEntry::Execute_OnFlowListEntryReleased(Entry.Widget, this);
 		}
+
+		// Back to the pool as it was authored, whatever its entrance or exit left it at.
+		StopItemAnimation(Entry.Widget, /*bRestore=*/true);
 		EntryPool.Add(Entry);
 	}
 }
@@ -836,7 +1003,7 @@ UFlowList* UFlowList::FindFlowListOfItem(const UWidget* Widget, UWidget*& OutIte
 				if (UFlowList* List = Owner->Get())
 				{
 					OutItem = const_cast<UUserWidget*>(AsUserWidget);
-					const TSharedPtr<SWidget> Slate = AsUserWidget->GetCachedWidget();
+					const TSharedPtr<SWidget> Slate = List->GetItemSlateWidget(AsUserWidget);
 					OutIndex = Slate.IsValid() && List->MyFlowList.IsValid() ? List->MyFlowList->GetItemIndex(Slate.ToSharedRef()) : INDEX_NONE;
 					return List;
 				}
@@ -1007,6 +1174,7 @@ void UFlowList::HandleItemExited(const TSharedRef<SWidget>& Widget)
 	UWidget* Item = LeavingItems[Found];
 	LeavingItems.RemoveAt(Found);
 	LeavingSlateWidgets.RemoveAt(Found);
+	StopItemAnimation(Item, /*bRestore=*/true);
 	OnItemExited.Broadcast(Item);
 }
 
@@ -1043,7 +1211,7 @@ void UFlowList::HandleAnimated()
 	{
 		if (PanelSlot && PanelSlot->Content)
 		{
-			if (const TSharedPtr<SWidget> Widget = PanelSlot->Content->GetCachedWidget())
+			if (const TSharedPtr<SWidget> Widget = GetItemSlateWidget(PanelSlot->Content))
 			{
 				ItemsBySlateWidget.Add(Widget.Get(), PanelSlot->Content);
 			}
@@ -1094,6 +1262,285 @@ void UFlowList::HandleAnimated()
 	}
 }
 
+// ---------------------------------------------------------------------------------------------
+// Items' own entrance and exit animations
+// ---------------------------------------------------------------------------------------------
+
+UWidget* UFlowList::FindAnyItemWidget(const TSharedRef<SWidget>& Widget) const
+{
+	if (UWidget* Item = FindItemWidget(Widget))
+	{
+		return Item;
+	}
+	const int32 Leaving = LeavingSlateWidgets.IndexOfByKey(&Widget.Get());
+	return Leaving != INDEX_NONE ? LeavingItems[Leaving].Get() : nullptr;
+}
+
+void UFlowList::GetItemAnimationEntries(TArray<FWidgetAnimEntryBase>& OutEnter, TArray<FWidgetAnimEntryBase>& OutExit) const
+{
+	// As a Widget Animation Component pairs its Anim In and Anim Out: an entry set to Mirror In Out plays both ways.
+	OutEnter.Reset();
+	OutExit.Reset();
+	UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(Transitions.AnimEnterItem, OutEnter, OutExit);
+	UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(Transitions.AnimExitItem, OutExit, OutEnter);
+}
+
+void UFlowList::HandleItemTransitionStarted(const TSharedRef<SWidget>& Widget, bool bEnter, EFlowListItemCue Cue)
+{
+	// The designer's preview plays them too - see PreviewEntrances.
+	if (Transitions.bUseBasicAnimations)
+	{
+		return;
+	}
+	UWidget* Item = FindAnyItemWidget(Widget);
+	if (FlowListAnimLog::Level() > 0)
+	{
+		const TCHAR* Why = Cue == EFlowListItemCue::View ? (bEnter ? TEXT(" (scrolled into view)") : TEXT(" (scrolled out of view)"))
+			: Cue == EFlowListItemCue::Selection ? (bEnter ? TEXT(" (selected)") : TEXT(" (deselected)")) : TEXT("");
+		UE_LOG(LogFlowList, Display, TEXT("%s: %s %s for %s%s."), *GetName(), IsDesignTime() ? TEXT("[designer]") : TEXT("[runtime]"),
+			bEnter ? TEXT("entrance starts") : TEXT("exit starts"), Item ? *Item->GetName() : TEXT("an item that wasn't found"), Why);
+	}
+	if (Item)
+	{
+		StartItemAnimation(Item, Widget, bEnter, /*bHoldPose=*/Cue != EFlowListItemCue::Transition);
+	}
+	else if (!bWarnedItemNotFound)
+	{
+		// Said once: an item the Slate list drew but this list can't name has nothing to play its animation on.
+		bWarnedItemNotFound = true;
+		UE_LOG(LogFlowList, Warning, TEXT("%s: an item's %s started, but its widget wasn't found - its Widget Animations can't play."),
+			*GetPathName(), bEnter ? TEXT("entrance") : TEXT("exit"));
+	}
+}
+
+void UFlowList::StartItemAnimation(UWidget* Item, const TSharedRef<SWidget>& Slate, bool bEnter, bool bHoldPose)
+{
+	if (!Item)
+	{
+		return;
+	}
+
+	TArray<FWidgetAnimEntryBase> EnterEntries;
+	TArray<FWidgetAnimEntryBase> ExitEntries;
+	GetItemAnimationEntries(EnterEntries, ExitEntries);
+	const TArray<FWidgetAnimEntryBase>& Entries = bEnter ? EnterEntries : ExitEntries;
+
+	// Nothing to play this way: the item is left exactly as it is - an entrance's end pose stays, nothing plays as an exit.
+	// Only Anim Exit Item plays as an item is deselected, scrolls out of view or leaves.
+	if (!UWidgetAnimEntryLibrary::HasAnyUsableAnimation(Entries))
+	{
+		if (bEnter && !bWarnedNoAnimation)
+		{
+			// Said once: an entry with no animation set - or one with no tracks - plays nothing.
+			bWarnedNoAnimation = true;
+			UE_LOG(LogFlowList, Warning, TEXT("%s: Use Basic Animations is off, but Anim Enter Item has no entry with an animation that has tracks - nothing plays."),
+				*GetPathName());
+		}
+		if (FlowListAnimLog::Level() > 0)
+		{
+			UE_LOG(LogFlowList, Display, TEXT("%s: %s has nothing to play - %s stays as it is."), *GetName(), bEnter ? TEXT("Anim Enter Item") : TEXT("Anim Exit Item"),
+				*Item->GetName());
+		}
+		return;
+	}
+
+	int32 Found = ItemAnimations.IndexOfByPredicate([Item](const FFlowListItemAnimation& Animation) { return Animation.Widget.Get() == Item; });
+	if (Found == INDEX_NONE)
+	{
+		Found = ItemAnimations.AddDefaulted();
+		ItemAnimations[Found].Widget = Item;
+	}
+	FFlowListItemAnimation& Animation = ItemAnimations[Found];
+	Animation.Slate = Slate;
+	Animation.bHoldPose = bHoldPose;
+
+	// What the animations touch besides the item, as it is before they do: captured once, so an exit cut into an entrance
+	// doesn't take the entrance's pose for theirs. The item's own transform and opacity aren't among them: the list draws the
+	// item's pose itself (see PoseItemAnimation), so the item's own settings are never written.
+	TArray<FWidgetAnimSettings> AllEnter;
+	TArray<FWidgetAnimSettings> AllExit;
+	for (const FWidgetAnimEntryBase& Entry : EnterEntries)
+	{
+		Entry.BuildSettings(AllEnter, Item);
+	}
+	for (const FWidgetAnimEntryBase& Entry : ExitEntries)
+	{
+		Entry.BuildSettings(AllExit, Item);
+	}
+	if (!Animation.Baselines.bCaptured)
+	{
+		UWidgetAnimLibrary::CaptureWidgetAnimBaselines(Item, AllEnter, AllExit, Animation.Baselines);
+		Animation.Baselines.Baselines.RemoveAll([Item](const FWidgetAnimBaseline& Baseline) { return Baseline.Widget.Get() == Item; });
+	}
+
+	// One way at a time: an item removed while it still arrives leaves from there.
+	UWidgetAnimLibrary::StopWidgetAnimTracks(Animation.Player, TArray<FName>(), /*bRemoveTracks=*/true);
+	int32 Started = 0;
+	for (int32 Index = 0; Index < Entries.Num(); ++Index)
+	{
+		const FWidgetAnimEntryBase& Entry = Entries[Index];
+		if (!Entry.IsUsable())
+		{
+			continue;
+		}
+		TArray<FWidgetAnimSettings> Settings;
+		Entry.BuildSettings(Settings, Item);
+		if (Settings.Num() > 0)
+		{
+			UWidgetAnimLibrary::StartWidgetAnimTrack(Animation.Player, Entry.AnimId, Index, Settings, /*bIsOut=*/!bEnter, 1.f,
+				/*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
+			++Started;
+		}
+	}
+	if (FlowListAnimLog::Level() > 0)
+	{
+		UE_LOG(LogFlowList, Display, TEXT("%s: %s - %d of %d entries started on %s."), *GetName(), bEnter ? TEXT("Anim Enter Item") : TEXT("Anim Exit Item"),
+			Started, Entries.Num(), *Item->GetName());
+	}
+
+	// Posed now, at its first frame, before the item is drawn.
+	PoseItemAnimation(Animation, 0.f);
+
+	if (!ItemAnimationTicker.IsValid())
+	{
+		ItemAnimationTicker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UFlowList::TickItemAnimations));
+	}
+}
+
+bool UFlowList::PoseItemAnimation(FFlowListItemAnimation& Animation, float DeltaTime)
+{
+	UWidget* Item = Animation.Widget.Get();
+	if (!Item)
+	{
+		return false;
+	}
+
+	FWidgetAnimResult Result;
+	TArray<FName> JustFinished;
+	const bool bPlaying = UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(Item, Animation.Player, Animation.Baselines, DeltaTime, JustFinished, Result);
+
+	// The item's own pose - opacity, scale, move, turn, shear - is taken out of the result and drawn by the list, as an
+	// Enter is. Written onto the item instead, it was at the mercy of anything else writing the item's render transform or
+	// opacity (a Widget Animation Component on it, an Item Style, the designer syncing the preview).
+	bool bHasPose = false;
+	float Opacity = 1.f;
+	FVector2D Scale(1.0, 1.0);
+	FVector2D Translation = FVector2D::ZeroVector;
+	FVector2D Shear = FVector2D::ZeroVector;
+	float Angle = 0.f;
+	for (int32 Index = Result.TargetedTransforms.Num() - 1; Index >= 0; --Index)
+	{
+		const FWidgetAnimTargetedTransform& Transform = Result.TargetedTransforms[Index];
+		if ((!Transform.TargetWidget || Transform.TargetWidget == Item) && !Transform.Part.IsSet())
+		{
+			bHasPose = true;
+			Opacity *= Transform.Opacity;
+			Scale *= Transform.Scale;
+			Translation += Transform.Translation;
+			Shear += Transform.Shear;
+			Angle += Transform.Angle;
+			Result.TargetedTransforms.RemoveAt(Index);
+		}
+	}
+	Result.RestingWidgets.RemoveAll([Item](const UWidget* Resting) { return !Resting || Resting == Item; });
+
+	// Everything else - widgets inside the item, letters, materials, shapes - is applied as any player applies it.
+	UWidgetAnimLibrary::ApplyComposedResult(Item, Result, Animation.Baselines);
+	UWidgetAnimLibrary::ReleaseFinishedTracks(Animation.Player);
+
+	if (const TSharedPtr<SWidget> Slate = Animation.Slate.Pin())
+	{
+		if (MyFlowList.IsValid())
+		{
+			if (bHasPose)
+			{
+				const FWidgetTransform Pose(Translation, Scale, Shear, Angle);
+				MyFlowList->SetItemAnimationPose(Slate.ToSharedRef(), Pose.ToSlateRenderTransform(), Opacity, FVector2f(Item->GetRenderTransformPivot()));
+			}
+			else
+			{
+				MyFlowList->ClearItemAnimationPose(Slate.ToSharedRef());
+			}
+		}
+	}
+	if (FlowListAnimLog::Level() > 1)
+	{
+		UE_LOG(LogFlowList, Display, TEXT("%s: %s - opacity %.3f, scale %.3f x %.3f, move %.1f, %.1f, angle %.1f%s."), *GetName(), *Item->GetName(),
+			Opacity, Scale.X, Scale.Y, Translation.X, Translation.Y, Angle, bPlaying ? TEXT("") : TEXT(" (done)"));
+	}
+	return bPlaying;
+}
+
+bool UFlowList::TickItemAnimations(float DeltaTime)
+{
+	bool bPlaying = false;
+	for (int32 Index = ItemAnimations.Num() - 1; Index >= 0; --Index)
+	{
+		FFlowListItemAnimation& Animation = ItemAnimations[Index];
+		if (!Animation.Widget.IsValid())
+		{
+			ItemAnimations.RemoveAtSwap(Index);
+			continue;
+		}
+		const bool bItemPlaying = PoseItemAnimation(Animation, FMath::Min(DeltaTime, 0.1f));
+		bPlaying |= bItemPlaying;
+
+		// A preview in the designer leaves the items as they are authored once an entrance is over. An exit holds until the
+		// entrance after it starts, so the item isn't seen whole in between.
+		const bool bLeaving = Animation.Player.Tracks.ContainsByPredicate([](const FWidgetAnimTrack& Track) { return Track.bIsOut; });
+		if (!bItemPlaying && !bLeaving && !Animation.bHoldPose && IsDesignTime())
+		{
+			ReleaseItemAnimation(Index, /*bRestore=*/true);
+		}
+	}
+
+	// Finished entrances hold their last pose; nothing more to play until another starts.
+	if (!bPlaying)
+	{
+		ItemAnimationTicker.Reset();
+	}
+	return bPlaying;
+}
+
+void UFlowList::ReleaseItemAnimation(int32 Index, bool bRestore)
+{
+	if (!ItemAnimations.IsValidIndex(Index))
+	{
+		return;
+	}
+	FFlowListItemAnimation& Animation = ItemAnimations[Index];
+	if (bRestore)
+	{
+		UWidgetAnimLibrary::RestoreWidgetAnimBaselines(Animation.Baselines);
+	}
+	const TSharedPtr<SWidget> Slate = Animation.Slate.Pin();
+	if (Slate.IsValid() && MyFlowList.IsValid())
+	{
+		MyFlowList->ClearItemAnimationPose(Slate.ToSharedRef());
+	}
+	ItemAnimations.RemoveAtSwap(Index);
+}
+
+void UFlowList::StopItemAnimation(const UWidget* Item, bool bRestore)
+{
+	const int32 Found = Item ? ItemAnimations.IndexOfByPredicate([Item](const FFlowListItemAnimation& Animation) { return Animation.Widget.Get() == Item; }) : INDEX_NONE;
+	ReleaseItemAnimation(Found, bRestore);
+}
+
+void UFlowList::StopAllItemAnimations()
+{
+	if (ItemAnimationTicker.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(ItemAnimationTicker);
+		ItemAnimationTicker.Reset();
+	}
+	for (int32 Index = ItemAnimations.Num() - 1; Index >= 0; --Index)
+	{
+		ReleaseItemAnimation(Index, ItemAnimations[Index].Widget.IsValid());
+	}
+	ItemAnimations.Reset();
+}
+
 void UFlowList::PlaySound(const FUISoundSlot& Sound, int32 RuntimeIndex)
 {
 	if (IsDesignTime() || !Sound.IsValid())
@@ -1139,6 +1586,78 @@ void UFlowList::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEve
 		FlowListTypes::ApplyPreset(StylePreset, ListLayout, Effects, Scrolling, Transitions);
 	}
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	// A transition edited - an animation set, a duration changed - is played in the designer's preview straight away.
+	const bool bTransitions = PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UFlowList, Transitions);
+	if (bTransitions && (PropertyChangedEvent.ChangeType & EPropertyChangeType::Interactive) == 0)
+	{
+		PreviewInDesigner(/*bExits=*/false);
+	}
+}
+
+TArray<UFlowList*> UFlowList::FindDesignerPreviews() const
+{
+	TArray<UFlowList*> Previews;
+	if (IsDesignTime())
+	{
+		// Already the preview.
+		Previews.Add(const_cast<UFlowList*>(this));
+		return Previews;
+	}
+
+	// The template the Details edit sits in its Widget Blueprint; its preview is the designer's instance of that Blueprint's
+	// class, holding a list of the same name.
+	const UObject* Blueprint = nullptr;
+#if WITH_EDITORONLY_DATA
+	Blueprint = GetTypedOuter<UBlueprint>();
+	if (!Blueprint)
+	{
+		if (const UClass* AuthoredClass = GetTypedOuter<UClass>())
+		{
+			Blueprint = AuthoredClass->ClassGeneratedBy;
+		}
+	}
+#endif
+	for (TObjectIterator<UFlowList> It(RF_ClassDefaultObject | RF_ArchetypeObject, /*bIncludeDerivedClasses=*/true, EInternalObjectFlags::Garbage); It; ++It)
+	{
+		UFlowList* Candidate = *It;
+		if (Candidate == this || !Candidate->IsDesignTime() || Candidate->GetFName() != GetFName() || !Candidate->MyFlowList.IsValid())
+		{
+			continue;
+		}
+#if WITH_EDITORONLY_DATA
+		const UUserWidget* Owner = Candidate->GetTypedOuter<UUserWidget>();
+		if (Blueprint && (!Owner || Owner->GetClass()->ClassGeneratedBy != Blueprint))
+		{
+			continue;
+		}
+#endif
+		Previews.Add(Candidate);
+	}
+	return Previews;
+}
+
+void UFlowList::PreviewInDesigner(bool bExits)
+{
+	// Next frame: the designer copies the edit onto its preview - or builds the preview again - after this returns.
+	const TWeakObjectPtr<UFlowList> WeakThis = this;
+	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakThis, bExits](float)
+	{
+		if (const UFlowList* Template = WeakThis.Get())
+		{
+			const TArray<UFlowList*> Previews = Template->FindDesignerPreviews();
+			if (FlowListAnimLog::Level() > 0)
+			{
+				UE_LOG(LogFlowList, Display, TEXT("%s: a transition was edited - %d designer preview(s) found to play it in."), *Template->GetName(), Previews.Num());
+			}
+			for (UFlowList* Preview : Previews)
+			{
+				Preview->PushSettings();
+				bExits ? Preview->PreviewExits() : Preview->PreviewEntrances();
+			}
+		}
+		return false;
+	}));
 }
 #endif
 
