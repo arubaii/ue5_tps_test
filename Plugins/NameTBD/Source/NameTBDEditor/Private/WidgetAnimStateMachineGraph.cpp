@@ -1576,10 +1576,72 @@ FText UWidgetAnimMachineGraphNode::GetTooltipText() const
 
 void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
 {
+	// A wire right-clicked: the graph hands over the pin at one end of it - often a state's - so the transitions on the wires
+	// at that pin are offered here, each to switch on or off, as their own node's menu does.
+	if (Context && Context->Pin)
+	{
+		TArray<const UWidgetAnimMachineTransitionNode*, TInlineAllocator<4>> OnWire;
+		for (const UEdGraphPin* Linked : Context->Pin->LinkedTo)
+		{
+			if (const UWidgetAnimMachineTransitionNode* TransitionNode = Linked ? Cast<UWidgetAnimMachineTransitionNode>(Linked->GetOwningNode()) : nullptr)
+			{
+				OnWire.AddUnique(TransitionNode);
+			}
+		}
+		if (OnWire.Num() > 0)
+		{
+			FToolMenuSection& WireSection = Menu->AddSection(TEXT("WidgetAnimMachineWire"), LOCTEXT("WireSection", "Transitions On This Wire"));
+			for (const UWidgetAnimMachineTransitionNode* TransitionNode : OnWire)
+			{
+				const FWidgetAnimMachineTransition* Transition = TransitionNode->GetTransition();
+				UWidgetAnimMachineGraph* Graph = TransitionNode->GetMachineGraph();
+				if (!Transition || !Graph)
+				{
+					continue;
+				}
+				const UWidgetAnimMachineGraphNode* FromNode = Graph->FindStateNode(TransitionNode->FromId);
+				const UWidgetAnimMachineGraphNode* ToNode = Graph->FindStateNode(TransitionNode->ToId);
+				const FText Route = FText::Format(LOCTEXT("WireRoute", "{0} -> {1}"),
+					FromNode ? FromNode->GetNodeTitle(ENodeTitleType::ListView) : FText::GetEmpty(),
+					ToNode ? ToNode->GetNodeTitle(ENodeTitleType::ListView) : FText::GetEmpty());
+				const bool bEnabled = Transition->bEnabled;
+				const TWeakObjectPtr<const UWidgetAnimMachineTransitionNode> WeakTransition(TransitionNode);
+				WireSection.AddMenuEntry(
+					*FString::Printf(TEXT("ToggleWire_%s"), *TransitionNode->TransitionId.ToString()),
+					FText::Format(bEnabled ? LOCTEXT("DisableWireTransition", "Disable {0}") : LOCTEXT("EnableWireTransition", "Enable {0}"), Route),
+					MachineTips::ToggleTransitionTooltip(),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateLambda([WeakTransition, bEnabled]()
+					{
+						const UWidgetAnimMachineTransitionNode* Node = WeakTransition.Get();
+						UWidgetAnimMachineGraph* NodeGraph = Node ? Node->GetMachineGraph() : nullptr;
+						if (NodeGraph)
+						{
+							WidgetAnimMachineEdits::SetTransitionsEnabled(NodeGraph->Machine, NodeGraph->LayerIndex, { Node->TransitionId }, !bEnabled);
+						}
+					})));
+			}
+		}
+	}
+
 	FToolMenuSection& Section = Menu->AddSection(TEXT("WidgetAnimMachineState"), LOCTEXT("StateSection", "State"));
 	const TWeakObjectPtr<const UWidgetAnimMachineGraphNode> WeakSelf(this);
 	if (Kind == EWidgetAnimMachineNodeKind::State)
 	{
+		Section.AddMenuEntry(
+			TEXT("JumpToState"),
+			LOCTEXT("JumpToStateMenu", "Jump To State"),
+			MachineTips::JumpToStateTooltip(),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([WeakSelf]()
+			{
+				const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+				UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+				if (Graph && Graph->OnJumpToState)
+				{
+					Graph->OnJumpToState(Node->StateId);
+				}
+			})));
 		Section.AddMenuEntry(
 			TEXT("SetEntryState"),
 			LOCTEXT("SetEntryStateMenu", "Set As Entry State"),
@@ -1833,18 +1895,32 @@ void UWidgetAnimMachineTransitionNode::GetNodeContextMenuActions(UToolMenu* Menu
 
 	const FWidgetAnimMachineTransition* Transition = GetTransition();
 	const bool bEnabled = !Transition || Transition->bEnabled;
+
+	// Selected with other transitions: the whole selection is switched, as Blueprint's Disable acts on every node selected.
+	TArray<FGuid> Selected;
+	if (const UWidgetAnimMachineGraph* OwnGraph = GetMachineGraph())
+	{
+		if (OwnGraph->GetSelectedTransitions)
+		{
+			OwnGraph->GetSelectedTransitions(Selected);
+		}
+	}
+	TArray<FGuid> Targets = Selected.Contains(TransitionId) ? Selected : TArray<FGuid>{ TransitionId };
+	const bool bSeveral = Targets.Num() > 1;
 	Section.AddMenuEntry(
 		TEXT("ToggleTransition"),
-		bEnabled ? LOCTEXT("DisableTransition", "Disable Transition") : LOCTEXT("EnableTransition", "Enable Transition"),
+		bSeveral
+			? (bEnabled ? LOCTEXT("DisableTransitions", "Disable Selected Transitions") : LOCTEXT("EnableTransitions", "Enable Selected Transitions"))
+			: (bEnabled ? LOCTEXT("DisableTransition", "Disable Transition") : LOCTEXT("EnableTransition", "Enable Transition")),
 		MachineTips::ToggleTransitionTooltip(),
 		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateLambda([WeakSelf, bEnabled]()
+		FUIAction(FExecuteAction::CreateLambda([WeakSelf, bEnabled, Targets]()
 		{
 			const UWidgetAnimMachineTransitionNode* Node = WeakSelf.Get();
 			UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
 			if (Graph)
 			{
-				WidgetAnimMachineEdits::SetTransitionsEnabled(Graph->Machine, Graph->LayerIndex, { Node->TransitionId }, !bEnabled);
+				WidgetAnimMachineEdits::SetTransitionsEnabled(Graph->Machine, Graph->LayerIndex, Targets, !bEnabled);
 			}
 		})));
 	// Dragged somewhere of its own: back onto the middle of its wire.
@@ -2826,10 +2902,19 @@ public:
 	{
 		UWidgetAnimMachineGraphNode* Node = Cast<UWidgetAnimMachineGraphNode>(GraphNode);
 		UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
-		if (Node && Graph && Graph->OnOpenState && Node->Kind == EWidgetAnimMachineNodeKind::State)
+		if (Node && Graph && Node->Kind == EWidgetAnimMachineNodeKind::State)
 		{
-			Graph->OnOpenState(Node->StateId);
-			return FReply::Handled();
+			// Into the state, as the preview's inputs would take it there. Its animation opens from the node's menu.
+			if (Graph->OnJumpToState)
+			{
+				Graph->OnJumpToState(Node->StateId);
+				return FReply::Handled();
+			}
+			if (Graph->OnOpenState)
+			{
+				Graph->OnOpenState(Node->StateId);
+				return FReply::Handled();
+			}
 		}
 		return SGraphNode::OnMouseButtonDoubleClick(InMyGeometry, InMouseEvent);
 	}

@@ -2133,13 +2133,19 @@ namespace NameTBD::Tooltips
 		inline FText StateNodeTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "StateNodeTooltip",
-				"{0}\nPlays: {1}\nPlayback: {2}\n\nDouble-click to open its animation. Drag from its edge to another state to add a transition.");
+				"{0}\nPlays: {1}\nPlayback: {2}\n\nDouble-click to jump the preview into it; right-click to open its animation. Drag from its edge to another state to add a transition.");
 		}
 
 		inline FText SetEntryStateTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "SetEntryStateTooltip",
 				"Set As Entry State: the layer starts in this state.");
+		}
+
+		inline FText JumpToStateTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "JumpToStateTooltip",
+				"Jump To State (or double-click the state): sets the preview's inputs so the layer goes there by its own transitions - the fewest from where it is, played one after another - then leaves it there. Inputs the way there doesn't test go back to their defaults, and anything that would take the layer back out is set so it doesn't.");
 		}
 
 		inline FText OpenStateAnimationTooltip()

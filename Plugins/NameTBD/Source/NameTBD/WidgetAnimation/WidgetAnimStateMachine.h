@@ -739,6 +739,17 @@ namespace WidgetAnimMachineWidgetStates
 
 	/** Asks the providers about Widget. False when none answered. */
 	NAMETBD_API bool ReadFromProviders(UWidget* Widget, FWidgetAnimMachineWidgetState& OutState);
+
+	/**
+	 * Selection from outside the widget: something that selects whole widgets - a Flow List selecting its items - says
+	 * whether Widget is in the one selected. Asked only when the widget's own state doesn't say Selected, so a button inside
+	 * a Flow List's selected item reads Selected with no setup at all. Answers true when any provider does.
+	 */
+	using FSelectedProvider = TFunction<bool(UWidget* /*Widget*/)>;
+
+	NAMETBD_API int32 RegisterSelectedProvider(FSelectedProvider Provider);
+	NAMETBD_API void UnregisterSelectedProvider(int32 Handle);
+	NAMETBD_API bool IsSelectedByContainer(UWidget* Widget);
 }
 
 // =====================================================================================================

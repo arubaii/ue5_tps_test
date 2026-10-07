@@ -694,6 +694,51 @@ namespace WidgetAnimMachineWidgetStates
 		}
 		return false;
 	}
+
+	namespace
+	{
+		struct FRegisteredSelectedProvider
+		{
+			int32 Handle = INDEX_NONE;
+			FSelectedProvider Provider;
+		};
+
+		TArray<FRegisteredSelectedProvider>& GetSelectedProviders()
+		{
+			static TArray<FRegisteredSelectedProvider> Providers;
+			return Providers;
+		}
+	}
+
+	int32 RegisterSelectedProvider(FSelectedProvider Provider)
+	{
+		static int32 NextHandle = 1;
+		FRegisteredSelectedProvider& Entry = GetSelectedProviders().AddDefaulted_GetRef();
+		Entry.Handle = NextHandle++;
+		Entry.Provider = MoveTemp(Provider);
+		return Entry.Handle;
+	}
+
+	void UnregisterSelectedProvider(int32 Handle)
+	{
+		GetSelectedProviders().RemoveAll([Handle](const FRegisteredSelectedProvider& Entry) { return Entry.Handle == Handle; });
+	}
+
+	bool IsSelectedByContainer(UWidget* Widget)
+	{
+		if (!Widget)
+		{
+			return false;
+		}
+		for (const FRegisteredSelectedProvider& Entry : GetSelectedProviders())
+		{
+			if (Entry.Provider && Entry.Provider(Widget))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
 }
 
 // =====================================================================================================

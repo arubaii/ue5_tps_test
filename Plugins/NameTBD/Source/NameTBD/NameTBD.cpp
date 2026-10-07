@@ -13,8 +13,16 @@
 #include "WidgetAnimation/Evaluators/WidgetAnimDesignTrack.h"
 #include "WidgetAnimation/WidgetAnimCue.h"
 #include "WidgetAnimation/WidgetAnimationComponent.h"
+#include "WidgetAnimation/WidgetAnimStateMachine.h"
+#include "Widgets/FlowList/FlowList.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDModule"
+
+namespace NameTBDModuleLocal
+{
+	/** The Flow List's answer to "is this widget selected?" for state machines - see WidgetAnimMachineWidgetStates. */
+	int32 FlowListSelectedProvider = INDEX_NONE;
+}
 
 void FNameTBDModule::StartupModule()
 {
@@ -47,6 +55,12 @@ void FNameTBDModule::StartupModule()
 
 	// And a Design track's keys onto its widget, the same way. See WidgetAnimDesignTrack.h.
 	Registry.Register(MakeShared<FWidgetAnimDesignKeysEvaluator>());
+
+	// A widget in a Flow List's selected item reads Selected in every state machine - see UFlowList::IsInSelectedItem.
+	NameTBDModuleLocal::FlowListSelectedProvider = WidgetAnimMachineWidgetStates::RegisterSelectedProvider([](UWidget* Widget)
+	{
+		return UFlowList::IsInSelectedItem(Widget);
+	});
 }
 
 void FNameTBDModule::ShutdownModule()
@@ -67,6 +81,9 @@ void FNameTBDModule::ShutdownModule()
 	Registry.Unregister(FWidgetAnimBlueprintCueParams::StaticStruct());
 	Registry.Unregister(FWidgetAnimShapeKeysParams::StaticStruct());
 	Registry.Unregister(FWidgetAnimDesignKeysParams::StaticStruct());
+
+	WidgetAnimMachineWidgetStates::UnregisterSelectedProvider(NameTBDModuleLocal::FlowListSelectedProvider);
+	NameTBDModuleLocal::FlowListSelectedProvider = INDEX_NONE;
 
 	// Cues passed on the last frame have nothing left to fire into.
 	WidgetAnimCues::DiscardPending();

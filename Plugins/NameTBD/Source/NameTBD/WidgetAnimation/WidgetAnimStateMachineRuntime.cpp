@@ -869,10 +869,18 @@ namespace WidgetAnimStateMachines
 			if ((Instance.UsedBuiltIns & ~WidgetAnimMachineInputs::GetBuiltInBit(WidgetAnimMachineInputs::Closing)) != 0)
 			{
 				FWidgetAnimMachineWidgetState State;
-				if (!WidgetAnimMachineWidgetStates::ReadFromProviders(Context.Host, State))
+				const bool bProviderAnswered = WidgetAnimMachineWidgetStates::ReadFromProviders(Context.Host, State);
+				if (!bProviderAnswered)
 				{
 					InputContext.MeasuredWidget = Context.Host;
 					ReadPlainWidgetState(Instance, InputContext, State);
+				}
+
+				// Selected by what it sits in - a Flow List's selected item, and everything inside it - where the widget has no
+				// selection of its own: a provider's answer, or a Check Box's checked state, stands.
+				if (!State.bSelected && !bProviderAnswered && !Cast<UCheckBox>(Context.Host))
+				{
+					State.bSelected = WidgetAnimMachineWidgetStates::IsSelectedByContainer(Context.Host);
 				}
 				const FWidgetAnimMachineWidgetState& Was = Instance.WidgetState;
 

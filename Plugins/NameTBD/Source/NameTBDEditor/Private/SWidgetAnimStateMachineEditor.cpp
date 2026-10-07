@@ -1323,6 +1323,8 @@ void SWidgetAnimStateMachineEditor::SetMachine(UWidgetAnimStateMachineAsset* InM
 	PreviewSignature.Reset();
 
 	Machine = InMachine;
+	JumpSteps.Reset();
+	JumpStep = INDEX_NONE;
 	Graphs.Reset();
 	GraphEditors.Reset();
 	ShownLayer = 0;
@@ -1401,6 +1403,22 @@ UWidgetAnimMachineGraph* SWidgetAnimStateMachineEditor::GetOrMakeGraph(int32 Lay
 		if (const TSharedPtr<SWidgetAnimStateMachineEditor> Self = WeakSelf.Pin())
 		{
 			Self->OpenState(StateId);
+		}
+	};
+	Graph->OnJumpToState = [WeakSelf, Graph](const FGuid& StateId)
+	{
+		if (const TSharedPtr<SWidgetAnimStateMachineEditor> Self = WeakSelf.Pin())
+		{
+			Self->JumpToState(Graph->LayerIndex, StateId);
+		}
+	};
+	Graph->GetSelectedTransitions = [WeakSelf](TArray<FGuid>& OutTransitions)
+	{
+		if (const TSharedPtr<SWidgetAnimStateMachineEditor> Self = WeakSelf.Pin())
+		{
+			TArray<FGuid> States;
+			TArray<FGuid> Comments;
+			Self->GetSelectedIds(States, OutTransitions, Comments);
 		}
 	};
 	Graph->RebuildFromMachine();
@@ -3228,6 +3246,8 @@ void SWidgetAnimStateMachineEditor::Tick(const FGeometry& AllottedGeometry, cons
 		return;
 	}
 
+	TickJump();
+
 	// The stripes on the state in play scroll on - unless the designer preview is paused.
 	if (!IsPreviewPaused())
 	{
@@ -3573,6 +3593,120 @@ const FWidgetAnimMachineInstance* SWidgetAnimStateMachineEditor::GetWatchedInsta
 		return Instance.bStarted && Instance.Machine == Machine ? &Instance : nullptr;
 	}
 	return nullptr;
+}
+
+void SWidgetAnimStateMachineEditor::JumpToState(int32 LayerIndex, const FGuid& State)
+{
+	if (!Machine || !Machine->Layers.IsValidIndex(LayerIndex))
+	{
+		return;
+	}
+
+	// From where the watched widget's layer is now - or, with nothing watched, from where the layer starts.
+	FWidgetAnimMachineLayerDebug Debug;
+	const bool bWatched = GetLayerDebug(LayerIndex, Debug);
+	TArray<WidgetAnimMachineJump::FStep> Steps;
+	FText Problem;
+	WidgetAnimMachineJump::Plan(*Machine, LayerIndex, bWatched ? Debug.CurrentState : FGuid(), State,
+		InputValues, VectorValues, Steps, Problem);
+
+	// No way there, or a way that may stop short: said either way.
+	if (!Problem.IsEmpty())
+	{
+		FNotificationInfo Info(Problem);
+		Info.ExpireDuration = 4.f;
+		FSlateNotificationManager::Get().AddNotification(Info);
+	}
+
+	JumpStep = INDEX_NONE;
+	if (Steps.Num() == 0)
+	{
+		return;
+	}
+	JumpSteps = MoveTemp(Steps);
+	JumpLayer = LayerIndex;
+	if (!bWatched)
+	{
+		ApplyJumpPlan(JumpSteps.Last().Plan);
+		return;
+	}
+	JumpStep = 0;
+	JumpStepTime = FPlatformTime::Seconds();
+	ApplyJumpPlan(JumpSteps[0].Plan);
+}
+
+void SWidgetAnimStateMachineEditor::ApplyJumpPlan(const WidgetAnimMachineJump::FInputPlan& Plan)
+{
+	if (!Machine)
+	{
+		return;
+	}
+
+	// Values first, then the pulses - a trigger fired onto inputs already where the step needs them.
+	for (const FWidgetAnimMachineInput& Input : Machine->Inputs)
+	{
+		if (Input.Type == EWidgetAnimMachineInputType::Vector2D)
+		{
+			if (const FVector2D* Vector = Plan.Vectors.Find(Input.Name))
+			{
+				SetVectorValue(Input.Name, *Vector);
+			}
+		}
+		else if (Input.Type != EWidgetAnimMachineInputType::Trigger)
+		{
+			if (const float* Value = Plan.Values.Find(Input.Name))
+			{
+				SetInputValue(Input.Name, *Value);
+			}
+		}
+	}
+	for (const TPair<FName, bool>& BuiltIn : Plan.BuiltIns)
+	{
+		if (GetShownBuiltInValue(BuiltIn.Key) != BuiltIn.Value)
+		{
+			SetBuiltInValue(BuiltIn.Key, BuiltIn.Value);
+		}
+	}
+	for (const FWidgetAnimMachineInput& Input : Machine->Inputs)
+	{
+		if (Input.Type == EWidgetAnimMachineInputType::Trigger && Plan.Fire.Contains(Input.Name))
+		{
+			FireInput(Input.Name);
+		}
+	}
+	if (Plan.Fire.Contains(WidgetAnimMachineInputs::Clicked))
+	{
+		FireBuiltIn(WidgetAnimMachineInputs::Clicked);
+	}
+}
+
+void SWidgetAnimStateMachineEditor::TickJump()
+{
+	if (JumpStep == INDEX_NONE || !JumpSteps.IsValidIndex(JumpStep))
+	{
+		JumpStep = INDEX_NONE;
+		return;
+	}
+
+	// On once the layer is in the step's state and its transition has finished - or, if it never gets there (an Exit Time
+	// longer than expected, a Press And Hold still filling), after a few seconds anyway.
+	constexpr double GiveUpSeconds = 4.0;
+	FWidgetAnimMachineLayerDebug Debug;
+	const bool bWatched = GetLayerDebug(JumpLayer, Debug);
+	const bool bArrived = bWatched && Debug.CurrentState == JumpSteps[JumpStep].To && !Debug.ActiveTransition.IsValid();
+	const double Now = FPlatformTime::Seconds();
+	if (!bArrived && Now - JumpStepTime < GiveUpSeconds)
+	{
+		return;
+	}
+	++JumpStep;
+	if (!JumpSteps.IsValidIndex(JumpStep))
+	{
+		JumpStep = INDEX_NONE;
+		return;
+	}
+	JumpStepTime = Now;
+	ApplyJumpPlan(JumpSteps[JumpStep].Plan);
 }
 
 bool SWidgetAnimStateMachineEditor::IsDebuggingPlay() const

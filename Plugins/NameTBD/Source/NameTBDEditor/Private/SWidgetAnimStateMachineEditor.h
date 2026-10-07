@@ -6,6 +6,7 @@
 #include "UObject/GCObject.h"
 #include "Widgets/SCompoundWidget.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimStateMachine.h"
+#include "WidgetAnimMachineJump.h"
 
 #include "SWidgetAnimStateMachineEditor.generated.h"
 
@@ -454,6 +455,24 @@ private:
 
 	/** Shows the active state's layer and brings its state into view. */
 	void JumpToActiveState();
+
+	/**
+	 * Jump To State: plans the preview inputs that take a layer to State (see WidgetAnimMachineJump.h) and sets them a step at a
+	 * time - each step once the layer has arrived where the last one took it - so every transition on the way plays. With
+	 * nothing watched to follow, the last step's inputs are set at once.
+	 */
+	void JumpToState(int32 LayerIndex, const FGuid& State);
+
+	/** Sets the preview's inputs to a jump step's. */
+	void ApplyJumpPlan(const WidgetAnimMachineJump::FInputPlan& Plan);
+
+	/** Moves a jump in progress on to its next step once the layer has arrived - or given up waiting. */
+	void TickJump();
+
+	TArray<WidgetAnimMachineJump::FStep> JumpSteps;
+	int32 JumpStep = INDEX_NONE;
+	int32 JumpLayer = INDEX_NONE;
+	double JumpStepTime = 0.0;
 	/** A new machine: in the Default Folder, or - bChooseLocation - wherever the editor's Save Asset As window says. */
 	void CreateNewMachine(bool bChooseLocation);
 

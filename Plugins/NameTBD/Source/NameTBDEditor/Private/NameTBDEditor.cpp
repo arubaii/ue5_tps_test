@@ -41,6 +41,8 @@
 #include "WidgetShapePathEditor.h"
 #include "WidgetAnimTextCanvasEditor.h"
 #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
+#include "FlowListItemStyleDetails.h"
+#include "NameTBD/Widgets/FlowList/FlowListItemStyle.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
 
@@ -107,6 +109,11 @@ void FNameTBDEditorModule::StartupModule()
 	PropertyModule.RegisterCustomClassLayout(
 		UShapeWidget::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetShapeDetails::MakeInstance));
+
+	// A Flow List Item Style's looks, laid out for the widget it is on as its Details are shown.
+	PropertyModule.RegisterCustomClassLayout(
+		UFlowListItemStyle::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FFlowListItemStyleDetails::MakeInstance));
 	PropertyModule.NotifyCustomizationModuleChanged();
 
 	// A Custom Shape's path editor, on the UMG designer's canvas.
@@ -219,6 +226,7 @@ void FNameTBDEditorModule::ShutdownModule()
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimEntry"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimMachineCondition"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("ShapeWidget"));
+		PropertyModule->UnregisterCustomClassLayout(TEXT("FlowListItemStyle"));
 
 	}
 	

@@ -20,9 +20,9 @@ In practice that means:
   - `NameTBDEditor` (editor)
   - `NameTBDCommonUI`
   - `NameTBDMVVM`
-- Main area of work: the **Widget Animations** system.
-  - Runtime: `Source/NameTBD/WidgetAnimation/`
-  - Editor panel: `Source/NameTBDEditor/Private/SWidgetAnim*.cpp`
+- Main areas of work:
+  - The **Widget Animations** system. Runtime: `Source/NameTBD/WidgetAnimation/`. Editor panel: `Source/NameTBDEditor/Private/SWidgetAnim*.cpp`.
+  - **UI widgets** in `Source/NameTBD/Widgets/`: Shape Box, shape widgets, animated text, and the **Flow List** (new).
 
 ### Widget animation architecture (short)
 - **Data**
@@ -47,115 +47,190 @@ In practice that means:
 - **Editor settings**
   - `UWidgetAnimEditorSettings` holds track colors, snapping, linked edges, frames display and preview FPS.
 
-## Previous change set
+### Flow List architecture (short)
+- **What it is**: `UFlowList` (palette: NameTBD > Flow List) is a panel that lays its children along a **path** by each child's signed **distance from the focus**, measured in items, and styles each child from that distance. It covers scroll lists, carousels, cover flows, picker wheels, Persona-style dials and slanted menus, tapering push/pop lists, rings and stacks. Files are in `Source/NameTBD/Widgets/FlowList/`.
+- **Data** (`FlowListTypes.h`): four groups on the widget, all `BlueprintReadOnly` with setters, plus a `StylePreset` dropdown that fills them.
+  - `FFlowListLayout`: path `Type` (Line, Arc, Wheel, Ring, Spline), Orientation, Angle, Focus Anchor/Offset, Item Pivot, Align To Path, per-path settings, Spacing, Item Size, Pitch Override, Desired Size.
+  - `FFlowListEffects`: `FFlowListChannel`s for Scale, Squash, Opacity, Rotation, Cross Offset and Spread, plus Tint (`FFlowListColorChannel`), Spacing Follows Scale, Edge Fade, Z Order and Cull Distance. A channel is Off, Falloff (At Focus → At Edge over Distance items, with an easing and a Same/Opposite/Separate mirror for the items before the focus), or Curve (an `FRuntimeFloatCurve` over the signed distance).
+  - `FFlowListScrolling`: Snap To Items, Loop, Stop At Content End, drag (sensitivity, Fling Coast, Max Items Per Fling, Elastic/Clamp overscroll), `ScrollSpring` (`FWidgetSpringParams`), wheel, navigation, Focus Follows Selection, Click To Focus.
+  - `FFlowListTransitions`: Enter/Exit (`FFlowListTransition`: duration, delay, easing, opacity, scale, offset along/across the path, rotation), Stagger, `ReorderSpring`, Play Intro, Keep Focused Item.
+  - `FlowListTypes::ApplyPreset` holds the presets.
+- **Slate** (`SFlowList.h/.cpp`, an `SPanel`):
+  - Scroll position is in items. A slot's `Place` springs to its `ItemIndex`, which is how items slide aside on insert, remove and move.
+  - `ComputeLayout` sweeps outward from the focus, integrating each pitch scaled by Scale × Squash (Simpson's rule per item) when Spacing Follows Scale is on. That's what makes a taper pack into a curve.
+  - Uniform scale goes in the **layout** transform (text stays crisp). Turn and squash go in a **render** transform about the pivot, composed after the child's own render transform, so Widget Animations on items still play.
+  - Opacity and tint go through the child's `FWidgetStyle` in `OnPaint`. Each item paints at `MaxLayer + 1`.
+  - Motion states: Idle, Drag, Coast, Spring.
+    - Drag uses a UIScrollView rubber band past the ends.
+    - Release: with snapping, it springs to round(position + velocity × Fling Coast), starting at the release velocity. Without snapping, it coasts with exponential decay.
+    - Wheel and keys accumulate on the spring's target. Springs use `UWidgetAnimSpringLibrary::AdvanceSpring`.
+  - Ticking is an active timer that stops when idle.
+  - Pointer handling:
+    - The press is seen in `OnPreviewMouseButtonDown`.
+    - If a child (a button) holds the mouse, the list polls the cursor. Once past the drag threshold, along the list's axis, it calls `ReleaseAllPointerCapture` to take the drag, so grabbing a button never clicks it.
+    - A drag mostly across the list is left alone (nested scrolling).
+    - A press on a moving list catches it.
+  - Removed children stay in the panel as leaving ghosts: hit-test-invisible, playing Exit, not items. `RestoreAnchor` keeps the focused item in place across structure changes (`ShiftFrame`). Removing the focused item lets the next one slide in (push/pop).
+  - Navigation along the list's orientation moves one item, returns `Explicit` focus to the item's first focusable widget, and returns `Escape` at the ends. `OnFocusChanging` scrolls to an item that gains non-mouse focus.
+  - The designer draws the path and focus point (`Show Path In Designer`).
+- **UMG** (`FlowList.h/.cpp`):
+  - `UFlowList : UPanelWidget` with `UFlowListSlot` (Padding, Size Override).
+  - `IFlowListItem` (BlueprintNativeEvent `OnFlowListSelected`, and `OnFlowListDistanceChanged` when Report Item Distance is on).
+  - Events: OnSelectionChanged, OnSettled, OnItemClicked, OnScrolled, OnItemExited, OnEdgeReached.
+  - Sounds: Select tick (rate-limited in real time), Settle, Edge, through `FUISoundPlayer`.
+  - Item API: AddItem / PushFront / InsertItem / RemoveItem(At) / PopFront / PopBack / MoveItem / ClearItems. Scrolling API: ScrollToIndex / ScrollToItem / ScrollBy / Set/GetScrollPosition / Get/SetScrollFraction / GetViewFraction (for a custom scroll bar).
+  - Leaving UMG widgets are held in `LeavingItems` (a strong UPROPERTY) until their exit ends, because Image and Border hand Slate raw brush pointers.
+- **Performance** (v2):
+  - `SFlowList::GetLayout` works the layout out once per frame for a geometry, keyed on frame, `LayoutVersion`, scroll, size and render transform. Arrange, paint and every hit test share it.
+  - **Virtual list:** `UFlowList::EntryWidgetClass` plus `SetListItems`.
+    - The Slate side holds `VirtualCount` items by index. `LiveOrder` has one entry per item, `INDEX_NONE` where no entry is shown.
+    - `UpdateRealized` realizes the items within the view plus 2 (given back past +1.5) through `OnRealizeEntry` / `OnReleaseEntry`.
+    - The UMG side pools entries (`FFlowListEntryWidget`, kept with their Slate widget so reuse doesn't rebuild) and tells them their item through `IFlowListEntry`.
+    - Items are even: Item Size, or the first entry's size.
+    - `NotifyVirtualInserted/Removed` slide and keep focus like the child list. Entries leave through Exit before going back to the pool.
+- **Hover Magnify** (`FFlowListEffects::Magnify`):
+  - The pointer is projected onto the path's direction at the focus (`MagnifyCenter`, in items), and `MagnifyAt(d)` multiplies Scale and, through `SpacingFactor`, the spacing.
+  - `MagnifyAmount` eases with `FadeTime`. The active timer keeps running while the pointer is over the list.
+- **Finding lists:**
+  - `UFlowList::FindFlowListOfItem` walks up through panels, out of Widget Blueprints, and through the virtual entry registry (`FlowListRegistry::EntryLists`).
+  - `FindNearestFlowList` searches the item's list, then itself, then inside, then widens outward, or finds a list by name.
+  - `OnListUpdated` (native multicast) fires every animated frame and on item or selection changes.
+- **State machine plumbing:**
+  - `FWidgetAnimInput_FlowList` (`FlowListInput.h`) is a Value Input, offered in every Driven By and value track. Measures: Selected Index / Value, Scroll Position / Progress / Speed, Is Scrolling, Item Count, and, on an item, Item Index / Distance / Focus / Is Selected.
+  - `UFlowListSlot::ItemValue` gives an item a stable number for Selected Value.
+  - The built-in Selected input also reads `WidgetAnimMachineWidgetStates::IsSelectedByContainer`. The Flow List registers `UFlowList::IsInSelectedItem` with it in `FNameTBDModule::StartupModule`, so a widget inside the selected item is Selected in every machine.
+  - Best practice adopted: the list publishes, and the reacting widget owns the machine. A character portrait's Widget Animation Component has an Integer input Driven By Flow List (Selected Index or Value) and a state per character. The list knows nothing of it.
+- **Item looks:** `UFlowListItemStyle` (`FlowListItemStyle.h`) is a UI Component on an item or anything inside it. It's in the designer's Add Component.
+  - Trigger: Selected, Nearness To Focus, Hovered, or Selected Or Hovered. A spring `Transition` moves between the looks (Nearness follows the list directly).
+  - Looks are property bags, reusing the Design track's machinery: Selected/Unselected design settings (brush, outline, colors, font, padding; `WidgetDesignAnimation`) and shape settings (`WidgetShapeAnimation`, and Shape Box through `ApplyShapeToBox`).
+  - Also: material parameters, render opacity and transform, and Anim IDs played each way.
+  - Only settings that differ between the two looks are written.
+  - `FFlowListItemStyleDetails` (editor) lays the bags out for the owner widget as Details are shown. It finds the owner through a live preview copy or the authored tree, as the Widget Animation Component does.
+- **Scroll bar:** `UFlowListScrollBar` / `SFlowListScrollBar` (`FlowListScrollBar.h`).
+  - Styles: Bar (track and thumb brushes, hover thickening, Auto Hide) or Dots (gliding active dot, Max Dots window with shrinking edge dots).
+  - It follows its list by name or the nearest one, through `OnListUpdated`. Dragging the thumb calls `SetScrollFraction`, and letting go calls `SnapToNearestItem`.
+
+## Previous change sets
 - `NameTBD_TrackEditorPolish_v1.patch` (+ `_fix1`, `_fix2`): Scale X/Y, Sound curves in the curve editor, Design track, Frames display, save naming, Add Track menu groups, track editor polish. Committed.
+- `NameTBD_TrackEditorPolish_v2.patch` (+ `_fix1` … `_fix10`). Committed.
+  - Stagger only on text tracks. Duration shown on every track. Design track blends member by member and cross-fades images and fonts.
+  - Selection panel split into Track Properties / Track Values. Plugin-registered types laid out as native. "User-defined Track" naming. Read-only Type Params. Blueprint type Settings follow their struct.
+  - Hold easing. Frames preview with inline FPS.
+  - Text targets joined by `&&`. Canvas Text Editor (`WidgetAnimTextCanvasEditor.*`, Edit Text chip, own undo history).
+  - Ctrl+Z / Ctrl+Y in the track and graph editors.
+  - Start/end markers as an SVG triangle (`WidgetAnim_RangeMarker.svg`). Pixel-aligned markers and playhead (`SnapColumn`).
+- `NameTBD_FlowList_v1.patch`: the Flow List (`UFlowList`): paths, effects by distance, spring physics, push/pop transitions, and 9 presets.
 
-## Latest change set — `NameTBD_TrackEditorPolish_v2.patch` (uncompiled, untested in editor)
+## Open items carried forward
+- **DEVELOPER ONLY settings** (Editor Preferences > Plugins > Widget Animations Editor): before publishing, remove the category and settle its values back into `NameTBDColors.h`.
+- A literal "&&" can't be targeted by a text track's Part of the Text.
 
-### Bugs fixed
-- **Stagger** is only offered on text tracks: a type that moves letters (`TypeTakesParts`), played on one of the plugin's animated text widgets with letters to fan out over (`SWidgetAnimTimeline::CanLayerStagger`). A track that already has one still shows it.
-- **Duration is shown on every track.**
-  - Editable only where it times the track. Read-only elsewhere (keyframed tracks, Spring tracks, derived lengths such as Length From Sound), showing the real run length and a tooltip saying why.
-  - `SWidgetAnimTimeline::GetTrackDurationInfo` + `AddDurationRow`. `EditConditionHides` was dropped from `FWidgetAnimLayer::Duration`; the EditCondition stays.
-- **Design track blending.** It now blends member by member (a brush's tint, size and outline; a font's size; colors). Discrete settings (a brush's image, a font face, enums) change exactly when the next key is reached.
-  - Before, `WidgetShapeAnimation::LerpValue` switched a whole `FSlateBrush` at the eased halfway point, about 30% into a segment with the default Ease Out. That read as keys firing early and no blending.
-  - `WidgetDesignAnimationImpl::LerpDesignValue`. Shape tracks keep their halfway switch.
+## Latest change set — `NameTBD_FlowList_v1_to_v2.patch` (applies on top of v1; untested in editor)
 
-### Changes
-- **Selection panel, one track:** two categories.
-  - **Track Properties:** Layer Group, Target Widget, Name, Preset, Type, Starts, Timing, Duration, Delay, Stagger, Part of the Text, Invert, Easing, Custom Curve, Spring and the value-timing settings.
-  - **Track Values:** everything type-specific.
-  - Multi-select splits the same way.
-- **Keys added after a track's first** (Shape Box, Shape, Design, Transform) get Use Authored = false. Their values are sampled from the neighbors, and an authored neighbor is read off the preview widget (`SWidgetAnimTimeline::AddKey`).
-- **Plugin-registered types are treated as native**: Sound, Event, Count Up, the text tracks.
-  - No Type Params row: their fields are laid out flat through `WidgetAnimTimeline::FTypeParamsDetails`, a `FInstancedStructDataDetails` subclass. New module dependency: `StructUtilsEditor`.
-  - The Type row shows the type's name, read-only.
-  - `WidgetAnimTimeline::IsUserDefinedTrackType` defines "plugin": the struct's package starts with `/Script/NameTBD`, and it isn't the Blueprint type or cue wrapper.
-- **"Registered Type" is renamed "User-defined Track"** (`EWidgetAnimType::Custom` display name).
-  - Add Track menu: uncategorized non-plugin types go under "User-defined Tracks", uncategorized plugin types under "Other Tracks".
-  - The Type dropdown never offers User-defined Track on a built-in track.
-- **Type Params is read-only**: `StructTypeConst` on `FWidgetAnimLayer::TypeParams`, plus a read-only header row on user-defined tracks.
-- **Blueprint type and cue tracks.**
-  - `Settings` follow the type's Settings Struct: `SyncSettingsStruct` / `IsSettingsStructCurrent`, run on the selected track every refresh by `SWidgetAnimTimeline::SyncBlueprintTypeSettings`.
-  - `Settings` and `Type` are read-only, each with a Browse to Asset button.
-- **Sound track curve editor**: one Volume curve, eased by Fade In / Fade Out along the Fade Curve. The fade handles sit on that curve. The separate Fade curve is gone.
-- **Track bodies no longer draw any curve.** The Sound fade ramp was removed, with `SoundFadeShape` and `Palette::SoundFadeLine`.
-- **Playhead**: a compact rounded time head with a notch, and a solid 1px line. No glow, taper or fade.
-- **Start and end**: a quiet green/red line through the tracks, `[` and `]` brackets in the ruler's bottom strip, and a slim bar between them.
-  - Hit areas are unchanged (`RangeEdgeAt`, `RangeFlagWidth`, `RangeStripHeight`).
-  - Palette: `RangeBracket*`, `RangeBar*`, `PlayheadLineOpacity`.
+### Fixes after building
+- `NameTBD_FlowList_v2_fix1.patch` (apply after v1_to_v2): UHT rejected `BlueprintReadOnly` on the Item Style's four `FInstancedPropertyBag` looks ("Type 'FInstancedPropertyBag' is not supported by blueprint"). They are now `EditAnywhere` only, like the plugin's other bags (`FWidgetTransformKeyframe::ShapeValues`). Blueprint switches looks with Force Look / Clear Forced Look.
+- Rule for later work: never put `BlueprintReadOnly` / `BlueprintReadWrite` on an `FInstancedPropertyBag` UPROPERTY.
 
-### Features
-- **Hold easing**: `EWidgetAnimEasing::Hold`, appended last.
-  - It stays on the start value, then lands on the end the moment it arrives. On a keyframed track, each segment left at Track Easing holds.
-  - It beats a Scale or Slide Overshoot. The curve editor's preset menu offers it on keyless tracks. Python: `Ease.HOLD`.
-- **Time In → "Frames (Preview Only) [FPS] fps"**: one radio entry with the Target FPS field inline, replacing the separate Target FPS row.
+### Flow List
+- **Performance:**
+  - The layout is cached per frame.
+  - Virtual lists: Entry Widget Class, List Items, a pooled entry per item in view, `IFlowListEntry`, and Num Designer Preview Entries.
+  - Blueprint for virtual lists: Set / Add / Insert / Remove / Clear / Refresh List Items, Get List Item At, Get Selected List Item, Get Entry For List Item, Scroll To List Item.
+  - Even virtual lists compute the content end in closed form.
+- **Hover Magnify** in Effects: Scale, Radius, Easing, Fade Time, Pause While Scrolling.
+- **Flow List Scroll Bar** widget (Bar or Dots), and `UFlowList::SnapToNearestItem`.
+- **State machine plumbing:**
+  - The Flow List Value Input.
+  - Slot Item Value.
+  - Built-in Selected for widgets inside the selected item.
+  - `FindNearestFlowList`, `FindFlowListOfItem`, `IsInSelectedItem` and `GetItemValue` (Blueprint).
+- **Flow List Item Style** UI component, with its editor Details customization.
+
+### State machine editor
+- **Disabling transitions from the right-click menu.**
+  - Diagnosis: the "Disable Transition" entry existed, but only on the transition node's own menu. Right-clicking a wire usually hands the menu a state's pin, so the state's menu showed and the option looked missing.
+  - Now a state's menu opened from a pin lists **Transitions On This Wire**, each with Disable/Enable.
+  - The transition node's entry acts on the whole selection when the node is part of it ("Disable Selected Transitions").
+- **Jump To State:** double-click a state, or use its menu's Jump To State. Open Animation moved to the menu only.
+  - `WidgetAnimMachineJump::Plan` finds the fewest enabled transitions from the state the watched preview is in. Any State's transitions count from anywhere; Entry's only before start.
+  - For each step, every input is reset to its default ("unnecessary unset"), the transition's conditions are solved (number comparisons together, as an interval), and every other way out of the step's state is blocked where that doesn't undo a required input.
+  - The last step also blocks every way out of the target.
+  - `SWidgetAnimStateMachineEditor::TickJump` applies each step once the layer has arrived and its transition has finished, or after 4 s.
+  - Every step also blocks leaving the state it arrives at, so the layer doesn't run on before the next step is set.
+  - Increased / Decreased / Changed are moved from, and judged against, what the step before left (the current inputs for the first step).
+  - Inputs compared against another input are solved after those compared against fixed values; both sides count as required. Choices compare by option name, as the runtime does.
+  - Blocking repeats (up to 4 passes) until nothing more changes.
+  - With nothing watched, the last step is applied at once.
+  - Unreachable targets show a notification and set the conditions of a transition into the target. A step whose own transition stops holding after blocking also shows a notification ("the jump may stop short").
+
+### Files
+- New, runtime (`Source/NameTBD/Widgets/FlowList/`):
+  - `FlowListInput.h/.cpp`
+  - `FlowListScrollBar.h/.cpp`
+  - `FlowListItemStyle.h/.cpp`
+- New, editor:
+  - `FlowListItemStyleDetails.h/.cpp`
+  - `WidgetAnimMachineJump.h/.cpp`
+- Changed, Flow List: `FlowListTypes.h`, `SFlowList.h/.cpp`, `FlowList.h/.cpp`.
+- Changed, state machines and modules:
+  - `WidgetAnimStateMachine.h/.cpp`
+  - `WidgetAnimStateMachineRuntime.cpp`
+  - `NameTBD.cpp`
+  - `NameTBDEditor.cpp`
+- Changed, state machine editor:
+  - `WidgetAnimStateMachineGraph.h/.cpp`
+  - `SWidgetAnimStateMachineEditor.h/.cpp`
+  - `NameTBDTooltips.h`
+- `NameTBD_Handoff.md`.
+- No Build.cs changes.
+
+### Reviewed before delivery
+An independent review pass over the v2 diff found these, all fixed in this patch:
+- **Virtual list:**
+  - Entry releases are queued and fired after `LiveOrder` is rebuilt, so a release callback can't re-enter the list mid-update.
+  - The selected entry and any entry holding focus are never released, so gamepad focus isn't lost when scrolling.
+  - `RealizeIndex` gives the widget back if the re-check fails, so no entry leaks.
+  - Entries built or released at the selection call `OnFlowListSelected` (true/false) and keep `SelectedItem` right; pooled entries no longer keep a stale selection.
+  - The measured entry extent resets on Refresh and on `SetSettings`.
+- **Looping lists:** the scroll is normalized into one lap before any count change (virtual insert/remove/set, and plain insert/remove/move or visibility change), so the anchor isn't measured laps away.
+- **Painting:** `OnPaint` copies the cached layout rather than holding a reference into it. `OnAnimated` fires only when the scroll or magnify actually moved.
+- **Click:** a press and release must be on the same item widget.
+- **Slots:** `SetPadding` / `SetSizeOverride` invalidate the layout cache (`NotifySlotChanged`).
+- **Selected built-in:** the "selected by its Flow List" fallback applies only when no provider answered and the host isn't a Check Box, so a Check Box's checked state and Common UI's answers stand.
+- **Item Style:** a pooled entry given another item snaps to that item's look without animating or firing `OnSelectedChanged`.
+- **Jump To State planner:** see the State machine editor notes above (step-to-step Increased/Decreased/Changed, blocking at each arrival, input-vs-input ordering, repeated blocking, Choice names, warning when a step breaks).
+
+### Decisions made without asking
+- The state machine lives on whatever reacts (the portrait), not on the list. The list publishes through the Value Input and the built-in Selected. One list can drive any number of machines, and machines stay reusable assets.
+- The item style is a UI Component rather than a wrapper widget. It goes on any widget at any depth of the item, which covers the "text inside a button" case. Looks reuse the Design and Shape track bags, so anything those tracks can key, a style can switch.
+- Virtual lists assume even items. Variable-size virtual entries would need measuring every item and were left out.
+- Double-click on a state now jumps instead of opening its animation, as requested. Open Animation is still in the menu.
 
 ### Known risks / things to check after building
-- This patch wasn't compiled. Expect a `_fix1`.
-- Most likely spots:
-  - `FInstancedStructDataDetails` usage (`OnChildRowAdded`, `GetDefaultWidgets` + `CustomWidget(true)` on the Blueprint Settings row).
-  - `PropertyCustomizationHelpers::MakeBrowseButton`.
-  - `UClass::ClassGeneratedBy`.
-- Check these by hand:
-  - A Sound track with Length From Sound: Duration is read-only and shows the sound's length.
-  - Design track blending on an Image (tint) and a Text Block (color, font size).
-  - Adding a key between authored keys on Shape Box and Shape tracks.
-  - Blueprint type Settings follow the struct, and the browse buttons work.
-  - Bracket hover and drag, and the playhead over the brackets.
+- UHT passes as of `_fix1`; the C++ compile hasn't been seen yet. Expect more `_fix` patches.
+- APIs most likely to need a touch:
+  - `UUIComponent` overrides on 5.7 (as `UWidgetAnimationComponent` does).
+  - `FInstancedPropertyBag` with `meta = (FixedLayout)`.
+  - `CreateWidget<UUserWidget>(UWidget*, ...)`.
+  - `UWidget::SetDesignerFlags` / `GetDesignerFlags` (wrapped in `WITH_EDITOR`).
+  - `TPanelChildren::AddSlot`.
+  - `IPropertyUtilities::ForceRefresh`.
+  - `UGraphNodeContextMenuContext::Pin` in the state node's menu.
+  - `SWidget::HasAnyUserFocusOrFocusedDescendants` (used to keep focused entries alive).
+  - `TWeakObjectPtr<const UFlowList>` in `UFlowListItemStyle`.
+- Check by hand:
+  - A virtual list of 1,000 items: scroll fast, and check entries recycle with the right items.
+  - Add/Remove List Item animations.
+  - Gamepad navigation onto entries that aren't realized yet.
+  - Hover Magnify on Carousel and Scroll List.
+  - Scroll Bar: drag, track click, Auto Hide, and Dots with 30 items.
+  - Item Style on a Button, on the Text Block inside it, and on an Image with a material parameter. Also that its Details lay out the looks the first time they are shown.
+  - A portrait state machine Driven By Selected Index.
+  - Jump To State through a two-hop path with Bool, Float and Trigger conditions, and one with an Increased condition. Also right-click on a wire to disable it.
+  - A looping virtual list: insert and remove items after scrolling several laps.
+- Behavior to be aware of: the Item Style now snaps (no animation) whenever its item's index changes, including when an item is inserted in front of it in a plain list. The look is the same either way unless the selection also changed in that frame.
 
-### Follow-ups — `_fix1`, `_fix2` (UHT), `_fix3`
-- `_fix1` / `_fix2`: `EWidgetAnimEasing::Hold` keeps no comment above it. UHT reads any comment above an enum entry as its ToolTip, and a second ToolTip in UMETA fails the build.
-- `_fix3`:
-  - **Design track images and fonts.** A brush's image, or anything else of a brush or font that can't glide, now cross-fades through transparency: out to nothing halfway, then into the next key. A brush fades by its own tint and outline; a font fades by the text's ColorAndOpacity and ShadowColorAndOpacity. Everything numeric still glides. This is `WidgetDesignAnimation::WriteBlends`.
-  - **Design track and UMG Details.**
-    - The Design track never writes to a template or CDO, and it skips text settings a Common Text Style owns (`IsOwnedByStyle`).
-    - Editing a widget in UMG's Details while the preview is posed now restores the preview and carries the edit onto it. The authored state is captured again next tick (`FWidgetAnimAssetPanelSource::OnObjectPropertyChanged`).
-    - `MatchDesignTrackToTarget` is keyed on the target's class, not the preview instance.
-  - **Selection panel slider drags.** Interactive steps only refresh the preview (`IWidgetAnimPanelSource::NotifyInteractiveEdit`). The full `PostEditChange` waits for the drag's final ValueSet.
-  - **Start and end markers.** Godot-style solid lines (pure green 0,255,0 and pure red 255,0,0), each with an upside-down pixel triangle in the ruler's bottom strip. The hit area is the triangle (`RangeEdgeAt`), so it never overlaps the playhead's.
-- `_fix4`:
-  - **Start/end triangles.** Drawn as real triangles from three custom vertices (`WidgetAnimTimeline::MakeTriangle`), replacing the stacked pixel rows that came out malformed. The start and end lines are now 2px.
-  - **DEVELOPER ONLY settings.** Editor Preferences > Plugins > Widget Animations Editor now has a DEVELOPER ONLY category. It holds:
-    - start/end colors, line thickness and opacity;
-    - triangle size and hover lighten;
-    - playhead color, line thickness and opacity;
-    - out-of-range shade;
-    - grid colors;
-    - cue track icon size and tint.
-    These start from the `NameTBDColors.h` values. Before publishing, remove the category and settle the values back into the palette.
-  - **Cue track icons.** The Event track's name follows the editor's event icon (`GraphEditor.Event_16x`), and the Sound track's follows a sound icon (`ClassIcon.SoundWave`).
-- `_fix5`:
-  - **Several parts of a text, joined by `&&`.** A text track's Part of the Text may name several chunks, e.g. `Hello && Big World` in "Hello New Big World". Each part follows the same search and occurrence rules on its own. The ranges are merged and play as one target (`FWidgetAnimTextTarget::GetParts`, `FindLetterRanges`). The track's note reports the first part that isn't found. A literal "&&" can't be targeted.
-  - **Text Editor in the Details panel** (`FWidgetAnimTextDetails`, `WidgetAnimTextDetails.h/.cpp`). It's registered by class name for Animated Text Block, Animated Rich Text Block, Common Animated Text and Common Animated Rich Text. Under the stock Text row is a roomy text box with a word-processor-style toolbar above it:
-    - Style (rich text only: the widget's Text Style Set rows, minus Default) and Effect (the project's Text Tags);
-    - Color (swatches, the color picker, or a typed hex code or name), Size, Glow;
-    - Speed, Instant, Pause, Event, Play;
-    - Clear Tags.
-    A button wraps the selection in its tag and keeps the selection, so tags stack. With nothing selected, it puts an empty pair at the cursor. Pause, Event and Play go in at the cursor. A status line shows the tags around the cursor. Each action is one undoable Details edit of Text, on every selected widget, and keeps the text's localization key. The toolbar buttons never take focus, so the box keeps its selection.
-  - New dependency: `AppFramework` (the color picker).
-  - Check after building: `SMultiLineEditableTextBox::GetSelection/SelectText`, `FText::ChangeKey` + `FTextInspector`, `FColorPickerArgs` field names, and `SWrapBox::InnerSlotPadding`.
-- `_fix6` (build errors in `_fix5`):
-  - `SMultiLineEditableTextBox` has no `GetSelection`/`SelectText` in 5.7. The Text Editor now uses a bare `SMultiLineEditableText` in a text box's frame, with its own scroll bar. It reads the selection from `GetSelectedText` + `GetCursorLocation`.
-  - Locals no longer shadow `SWidget` members (`Tag`, `ToolTip`, `Cursor`, and `TSharedFromThis::WeakThis`), which were C4458 errors.
-- `_fix7`: **The Text Editor moved onto the canvas**, laid out like the Custom Shape editor. The Details-panel version (`WidgetAnimTextDetails.*`) is gone.
-  - `FWidgetAnimTextEditorExtension` (`WidgetAnimTextCanvasEditor.h/.cpp`) is a UMG designer extension, registered next to the shape path editor's.
-  - For a selected animated text, it puts an **Edit Text** chip above the widget, in the same spot and style as Edit Shape (`WidgetShapeEditorUI::MakeChip`).
-  - While editing, a card above the widget holds: Done | Style, Effect | Color, Size, Glow | Speed, Instant, Pause, Event, Play | Clear. Below those are the text box and the "In: ..." status line. Dropdown chips use an `SMenuAnchor`.
-  - Typing updates the designer's preview live, without touching the template. On commit (leaving the box, a toolbar action, Done or Escape), the Widget Blueprint's widget gets the text as one undo step, keeping the localization key.
-  - Writes go straight into the `Text` field, then `SynchronizeProperties` on the preview, the same way the shape editor's edits do. So the designer doesn't rebuild under the box.
-  - Editing state is kept by widget name (`WidgetAnimTextEditing`), so it survives designer refreshes.
-- `_fix8`: the canvas editor's menu fields and notes use `FCoreStyle` fonts. `IDetailLayoutBuilder`'s fonts were left over from the Details version, and its header wasn't included.
-- `_fix9`:
-  - **Undo / redo keys.**
-    - The track editor (`SWidgetAnimTimeline::OnKeyDown`) and the Graph Editor canvas now map Ctrl/Cmd+Z to `GEditor->UndoTransaction`, and Ctrl/Cmd+Y or Ctrl/Cmd+Shift+Z to redo. They skip this while a transaction is open (a drag). A text box inside either still gets the keys first.
-    - The canvas Text Editor keeps its own history per edit: typing is one step per run (a pause of more than a second starts a new step), and each toolbar action is one step. Ctrl+Z/Ctrl+Y walk that history through `OnPreviewKeyDown`, so the box's own undo, which knows nothing of the toolbar's tags, never runs.
-  - **Text Editor selection.**
-    - Toolbar chips act on mouse-down and never take keyboard focus (`FChip::bPressOnly`, new in `WidgetShapeEditorUI`).
-    - The selection the toolbar acts on is kept by widget name (`WidgetAnimTextEditing::FState`) and updated every frame the box has focus. A menu, the color picker, or the designer rebuilding the toolbar in the middle of a click no longer loses it, and a rebuilt editor puts the selection back.
-  - **Text Editor buttons.** Speed, Instant, Pause, Event and Play are gone; the editor only marks up text: Style, Effect, Color, Size, Glow, Clear.
-  - **Start and end markers.** The triangle is now an anti-aliased vector brush (`Resources/WidgetAnim_RangeMarker.svg`, `FNameTBDStyle::RangeMarkerIcon`), tinted. The line runs up into it in the triangle's own color, so the two read as one shape. The old three-vertex triangle (no anti-aliasing, so stair-stepped at this size) is now only a fallback if the SVG is missing, and it has its edges traced with anti-aliased lines.
-- `_fix10`: **Marker and playhead pixel alignment.**
-  - Start/end markers and the playhead (shared with the Graph Editor) are now laid out on whole physical pixels as one column (`WidgetAnimTimeline::SnapColumn`, `SnapX`, `SnapY`). Each line is a whole number of pixels wide, and its head (triangle, or tag + notch) is that many plus an even number, centered on it. Placed separately, the pieces were rounded to the screen's pixels independently, so at some zooms the line came out a pixel wide or narrow, or sat a pixel off the triangle's point.
-  - The playhead's notch is now the same smooth triangle as the markers (`MakeDownTriangle`), replacing the rotated square, and its time is centered in the tag.
-  - A start/end line now lights with its triangle when hovered.
+### Ideas for follow-ups
+- Variable-size virtual entries: measure on realize and cache per item.
+- A Widget Animation track keyed by item distance (Value Inputs already cover most of it).
+- Two-way: a Flow List Selected Index set from a View Model (the Widget Data Binder).

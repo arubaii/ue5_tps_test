@@ -303,8 +303,17 @@ public:
 	 */
 	TFunction<bool(FWidgetAnimMachineLayerDebug& /*OutDebug*/)> GetDebug;
 
-	/** A state node was double-clicked: the editor opens its animation. */
+	/** The node menu's Open Animation: the editor opens the state's animation. */
 	TFunction<void(const FGuid& /*StateId*/)> OnOpenState;
+
+	/**
+	 * A state node was double-clicked, or its menu's Jump To State picked: the editor sets the preview's inputs so the layer
+	 * goes to that state (see WidgetAnimMachineJump.h). Unset, a double-click opens the state's animation as before.
+	 */
+	TFunction<void(const FGuid& /*StateId*/)> OnJumpToState;
+
+	/** The transitions selected in the graph, for menus that act on the whole selection. */
+	TFunction<void(TArray<FGuid>& /*OutTransitions*/)> GetSelectedTransitions;
 
 	/** Q, or the node menu's Straighten Connections: the editor lines the selected states up. */
 	TFunction<void()> OnStraighten;
