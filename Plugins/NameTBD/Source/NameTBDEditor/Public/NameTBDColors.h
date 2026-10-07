@@ -36,7 +36,7 @@ namespace NameTBD
 			inline const FLinearColor LayerShape(0.40f, 0.85f, 0.70f);
 			inline const FLinearColor LayerDesign(0.88f, 0.52f, 0.86f);
 			// Every registered track type - the text tracks and any a game adds - shares this one, as they share the one
-			// Registered Type slot; their names tell them apart.
+			// User-defined Track slot of the track type; their names tell them apart.
 			inline const FLinearColor LayerCustom(0.90f, 0.85f, 0.85f);
 			// Every Blueprint track type that doesn't set a Track Color of its own. Blueprint blue, so a type a
 			// designer made reads apart from the C++ ones at a glance.
@@ -228,9 +228,10 @@ namespace NameTBD
 			/** The playhead - the scrubber - in the animation orange of the Play button, so it never reads as the end line. */
 			inline const FLinearColor Playhead(AnimationOrange_Normal);
 			inline const FLinearColor PlayheadText(0.02f, 0.02f, 0.02f);
-			// The animation's start and end: bright, so they read at once against the tracks and apart from the playhead's
-			// orange. Each is a line through the tracks and a flag in the ruler's bottom strip - where it is dragged by, below
-			// the playhead's tag, so the two never sit in each other's way. RangeLine is how strongly the line is drawn.
+			// The animation's start and end, as Godot marks a time: a solid line down through the tracks, pure green at the
+			// start and pure red at the end, with an upside-down triangle on top of it - RangeTriangleWidth pixels across and
+			// RangeTriangleHeight tall, a little bigger hovered or dragged - in the ruler's bottom strip. That strip is where
+			// they are dragged by, below the playhead's head, so the two never sit in each other's way.
 			// A group's line in the Track Editor: the stretch its tracks run as a quiet band of its color - GroupBandHeightRatio of
 			// the line's height, filled at GroupBandFillOpacity, a hairline along its top and bottom at GroupBandEdgeOpacity, and
 			// a solid cap GroupBandCapWidth pixels wide at each end.
@@ -239,16 +240,19 @@ namespace NameTBD
 			inline constexpr float GroupBandEdgeOpacity = 0.70f;
 			inline constexpr float GroupBandCapWidth = 2.0f;
 
-			inline const FLinearColor RangeStart(0.18f, 1.00f, 0.32f);
-			inline const FLinearColor RangeEnd(1.00f, 0.16f, 0.12f);
-			inline constexpr float RangeLineOpacity = 0.80f;
+			inline const FLinearColor RangeStart(0.00f, 1.00f, 0.00f);	// 0, 255, 0
+			inline const FLinearColor RangeEnd(1.00f, 0.00f, 0.00f);	// 255, 0, 0
+			inline constexpr float RangeLineOpacity = 1.00f;
 
-			// The playhead's line under the ruler: strongest at the top and fading down the tracks to PlayheadFadeTo of its
-			// color, PlayheadTopWidth pixels wide where it leaves its tag, tapering to one pixel by PlayheadTaper of the way down.
-			inline constexpr float PlayheadFadeTo = 0.10f;
-			inline constexpr float PlayheadTopWidth = 2.0f;
-			inline constexpr float PlayheadTaper = 0.30f;
-			inline constexpr float PlayheadGlowOpacity = 0.22f;
+			// The icon before a cue track's name: the Event track's event, the Sound track's speaker.
+			inline const FLinearColor CueTrackIcon(1.00f, 1.00f, 1.00f, 0.90f);
+
+			// Every value above from RangeStart down to here, and the playhead's, out-of-range shade and grid colors, is
+			// what UWidgetAnimEditorSettings' DEVELOPER ONLY settings start from while the plugin is developed.
+
+			// The playhead's line: one crisp pixel from under its head to the bottom, solid as every editor's is - no glow, no
+			// fade - at PlayheadLineOpacity, so it reads the same over any track.
+			inline constexpr float PlayheadLineOpacity = 0.95f;
 			inline const FLinearColor OutOfRangeShade(0.00f, 0.00f, 0.00f, 0.28f);
 
 			// On a percentage timeline with tracks reaching past 100%: what lies beyond it, which a progress of 1 never
@@ -447,12 +451,10 @@ namespace NameTBD
 			// -------------------------------------------------------------------------------------------------
 			// The rest of this pass's odds and ends.
 			//   RangeHandleLit: the animation's start or end handle on the ruler, hovered or dragged.
-			//   SoundFadeLine: a Sound cue's fade in and fade out, drawn as ramps over its track.
 			//   PickingTargetText: a group's target while a widget is being picked for it in the designer.
 			// -------------------------------------------------------------------------------------------------
 
 			inline const FLinearColor RangeHandleLit(AnimationOrange_Hovered);
-			inline const FLinearColor SoundFadeLine(1.00f, 1.00f, 1.00f, 0.75f);
 			inline const FLinearColor PickingTargetText(AnimationOrange_Normal);
 			// Behind the name of the widget under the eyedropper, beside the cursor, while a target is being picked.
 			inline const FLinearColor PickHoverBackground(0.02f, 0.02f, 0.02f, 0.90f);

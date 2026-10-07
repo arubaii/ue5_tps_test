@@ -1,0 +1,1320 @@
+diff --git a/NameTBD_Handoff.md b/NameTBD_Handoff.md
+index 86a20a0..18eca14 100644
+--- a/NameTBD_Handoff.md
++++ b/NameTBD_Handoff.md
+@@ -125,3 +125,13 @@ In practice that means:
+     - cue track icon size and tint.
+     These start from the `NameTBDColors.h` values. Before publishing, remove the category and settle the values back into the palette.
+   - **Cue track icons.** The Event track's name follows the editor's event icon (`GraphEditor.Event_16x`), and the Sound track's follows a sound icon (`ClassIcon.SoundWave`).
++- `_fix5`:
++  - **Several parts of a text, joined by `&&`.** A text track's Part of the Text may name several chunks, e.g. `Hello && Big World` in "Hello New Big World". Each part follows the same search and occurrence rules on its own. The ranges are merged and play as one target (`FWidgetAnimTextTarget::GetParts`, `FindLetterRanges`). The track's note reports the first part that isn't found. A literal "&&" can't be targeted.
++  - **Text Editor in the Details panel** (`FWidgetAnimTextDetails`, `WidgetAnimTextDetails.h/.cpp`). It's registered by class name for Animated Text Block, Animated Rich Text Block, Common Animated Text and Common Animated Rich Text. Under the stock Text row is a roomy text box with a word-processor-style toolbar above it:
++    - Style (rich text only: the widget's Text Style Set rows, minus Default) and Effect (the project's Text Tags);
++    - Color (swatches, the color picker, or a typed hex code or name), Size, Glow;
++    - Speed, Instant, Pause, Event, Play;
++    - Clear Tags.
++    A button wraps the selection in its tag and keeps the selection, so tags stack. With nothing selected, it puts an empty pair at the cursor. Pause, Event and Play go in at the cursor. A status line shows the tags around the cursor. Each action is one undoable Details edit of Text, on every selected widget, and keeps the text's localization key. The toolbar buttons never take focus, so the box keeps its selection.
++  - New dependency: `AppFramework` (the color picker).
++  - Check after building: `SMultiLineEditableTextBox::GetSelection/SelectText`, `FText::ChangeKey` + `FTextInspector`, `FColorPickerArgs` field names, and `SWrapBox::InnerSlotPadding`.
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParts.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParts.cpp
+index 4347fe4..f327d1f 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParts.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParts.cpp
+@@ -82,6 +82,21 @@ void WidgetAnimTextParts::GetWords(const TArray<FRange>& Letters, TArray<FRange>
+ 	}
+ }
+ 
++void FWidgetAnimTextTarget::GetParts(TArray<FString>& OutParts) const
++{
++	OutParts.Reset();
++	TArray<FString> Pieces;
++	Text.ParseIntoArray(Pieces, PartSeparator, /*bCullEmpty=*/false);
++	for (FString& Piece : Pieces)
++	{
++		Piece.TrimStartAndEndInline();
++		if (!Piece.IsEmpty())
++		{
++			OutParts.Add(MoveTemp(Piece));
++		}
++	}
++}
++
+ void FWidgetAnimTextTarget::FindLetterRanges(const FString& Display, TArray<FIntPoint>& OutRanges) const
+ {
+ 	OutRanges.Reset();
+@@ -90,58 +105,88 @@ void FWidgetAnimTextTarget::FindLetterRanges(const FString& Display, TArray<FInt
+ 		return;
+ 	}
+ 
+-	// Every place it is, in characters, one after another and never overlapping - "aa" in "aaaa" is two places, not three.
++	// Each part on its own - "Hello && Big World" is "Hello", then "Big World" - with every rule applied to each.
++	TArray<FString> Parts;
++	GetParts(Parts);
++
+ 	const ESearchCase::Type SearchCase = bMatchCase ? ESearchCase::CaseSensitive : ESearchCase::IgnoreCase;
+-	TArray<FIntPoint, TInlineAllocator<4>> Places;
+-	for (int32 From = 0; From <= Display.Len() - Text.Len();)
++	TArray<FIntPoint, TInlineAllocator<8>> Chosen;
++	for (const FString& Part : Parts)
+ 	{
+-		const int32 Found = Display.Find(Text, SearchCase, ESearchDir::FromStart, From);
+-		if (Found == INDEX_NONE)
++		// Every place it is, in characters, one after another and never overlapping - "aa" in "aaaa" is two places, not three.
++		TArray<FIntPoint, TInlineAllocator<4>> Places;
++		for (int32 From = 0; From <= Display.Len() - Part.Len();)
+ 		{
+-			break;
++			const int32 Found = Display.Find(Part, SearchCase, ESearchDir::FromStart, From);
++			if (Found == INDEX_NONE)
++			{
++				break;
++			}
++			const int32 End = Found + Part.Len();
++
++			// A whole word has no letter or digit right before it or right after it.
++			const bool bWholeWord = (Found == 0 || !FChar::IsAlnum(Display[Found - 1])) && (End >= Display.Len() || !FChar::IsAlnum(Display[End]));
++			if (!bWholeWords || bWholeWord)
++			{
++				Places.Add(FIntPoint(Found, End));
++				From = End;
++			}
++			else
++			{
++				From = Found + 1;
++			}
++		}
++		if (Places.Num() == 0)
++		{
++			continue;
+ 		}
+-		const int32 End = Found + Text.Len();
+ 
+-		// A whole word has no letter or digit right before it or right after it.
+-		const bool bWholeWord = (Found == 0 || !FChar::IsAlnum(Display[Found - 1])) && (End >= Display.Len() || !FChar::IsAlnum(Display[End]));
+-		if (!bWholeWords || bWholeWord)
++		// The ones asked for.
++		int32 FirstPlace = 0;
++		int32 LastPlace = Places.Num() - 1;
++		switch (Occurrence)
+ 		{
+-			Places.Add(FIntPoint(Found, End));
+-			From = End;
++		case EWidgetAnimTextOccurrence::First:  LastPlace = 0; break;
++		case EWidgetAnimTextOccurrence::Last:   FirstPlace = LastPlace; break;
++		case EWidgetAnimTextOccurrence::Number:
++			if (!Places.IsValidIndex(Number - 1))
++			{
++				continue;
++			}
++			FirstPlace = LastPlace = Number - 1;
++			break;
++		default: break;
+ 		}
+-		else
++		for (int32 Place = FirstPlace; Place <= LastPlace; ++Place)
+ 		{
+-			From = Found + 1;
++			Chosen.Add(Places[Place]);
+ 		}
+ 	}
+-	if (Places.Num() == 0)
++	if (Chosen.Num() == 0)
+ 	{
+ 		return;
+ 	}
+ 
+-	// The ones asked for.
+-	int32 FirstPlace = 0;
+-	int32 LastPlace = Places.Num() - 1;
+-	switch (Occurrence)
++	// In the order they are in the text, and two parts that overlap or touch are one place - each place moves as a piece.
++	Chosen.Sort([](const FIntPoint& A, const FIntPoint& B) { return A.X < B.X; });
++	TArray<FIntPoint, TInlineAllocator<8>> Merged;
++	for (const FIntPoint& Place : Chosen)
+ 	{
+-	case EWidgetAnimTextOccurrence::First:  LastPlace = 0; break;
+-	case EWidgetAnimTextOccurrence::Last:   FirstPlace = LastPlace; break;
+-	case EWidgetAnimTextOccurrence::Number:
+-		if (!Places.IsValidIndex(Number - 1))
++		if (Merged.Num() > 0 && Place.X <= Merged.Last().Y)
++		{
++			Merged.Last().Y = FMath::Max(Merged.Last().Y, Place.Y);
++		}
++		else
+ 		{
+-			return;
++			Merged.Add(Place);
+ 		}
+-		FirstPlace = LastPlace = Number - 1;
+-		break;
+-	default: break;
+ 	}
+ 
+ 	// Each as the letters it covers - white space is never a letter, so "Hello World" is ten of them in one run.
+ 	TArray<WidgetAnimTextParts::FRange> Letters;
+ 	WidgetAnimTextParts::GetLetters(Display, Letters);
+-	for (int32 Place = FirstPlace; Place <= LastPlace; ++Place)
++	for (const FIntPoint& Chars : Merged)
+ 	{
+-		const FIntPoint& Chars = Places[Place];
+ 		int32 First = INDEX_NONE;
+ 		int32 Count = 0;
+ 		for (int32 LetterIndex = 0; LetterIndex < Letters.Num(); ++LetterIndex)
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParts.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParts.h
+index 96f0ba0..000aaef 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParts.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParts.h
+@@ -189,6 +189,10 @@ struct NAMETBD_API FWidgetAnimTextTarget
+ 	/**
+ 	 * The words or letters to animate, typed as the text shows them - "World", "50%", "Press A". Style tags of a rich text are
+ 	 * not part of what it shows. Empty: the whole text.
++	 *
++	 * Several parts in different places are joined with && - "Hello && Big World" in "Hello New Big World" animates "Hello"
++	 * and "Big World", leaving "New" as it is. Spaces around each && are ignored; Match Case, Whole Words Only and Which apply
++	 * to each part on its own.
+ 	 */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Part of the Text", meta = (DisplayName = "Text"))
+ 	FString Text;
+@@ -212,6 +216,12 @@ struct NAMETBD_API FWidgetAnimTextTarget
+ 	/** Whether anything is typed - only then is the track limited to part of its text. */
+ 	bool IsSet() const { return !Text.IsEmpty(); }
+ 
++	/** What joins several parts of the text in Text: "Hello && Big World". */
++	static constexpr const TCHAR* PartSeparator = TEXT("&&");
++
++	/** The parts Text names, each trimmed of the spaces around it, in the order typed - one when it has no &&. Never empty ones. */
++	void GetParts(TArray<FString>& OutParts) const;
++
+ 	/**
+ 	 * Where it is in Display - a text as drawn - counted in letters as WidgetAnimTextParts counts them: each place a first
+ 	 * letter (X) and how many (Y), in order. Empty when it isn't there.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/NameTBDEditor.Build.cs b/Plugins/NameTBD/Source/NameTBDEditor/NameTBDEditor.Build.cs
+index 4471088..ea2cc03 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/NameTBDEditor.Build.cs
++++ b/Plugins/NameTBD/Source/NameTBDEditor/NameTBDEditor.Build.cs
+@@ -39,6 +39,7 @@ public class NameTBDEditor : ModuleRules
+ 			"NameTBDUncooked",   // that node
+ 			"WebBrowser",        // the Script area's code editor (Monaco), shown in the editor's web browser
+ 			"StructUtilsEditor", // FInstancedStructDataDetails, for a registered type's settings laid out field by field
++			"AppFramework",      // the color picker, for the Text Editor's Color menu
+ 		});
+ 		if (Target.bBuildEditor)
+ 		{
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+index 452520c..8bc1cda 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+@@ -39,6 +39,7 @@
+ #include "UMGEditorModule.h"
+ #include "WidgetShapeDetails.h"
+ #include "WidgetShapePathEditor.h"
++#include "WidgetAnimTextDetails.h"
+ #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
+ 
+ #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
+@@ -106,6 +107,14 @@ void FNameTBDEditorModule::StartupModule()
+ 	PropertyModule.RegisterCustomClassLayout(
+ 		UShapeWidget::StaticClass()->GetFName(),
+ 		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetShapeDetails::MakeInstance));
++
++	// The animated text widgets' Text Editor: a toolbar that writes the rich text and Text Reveal tags for the selection.
++	for (const FName& ClassName : FWidgetAnimTextDetails::GetCustomizedClassNames())
++	{
++		PropertyModule.RegisterCustomClassLayout(
++			ClassName,
++			FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetAnimTextDetails::MakeInstance));
++	}
+ 	PropertyModule.NotifyCustomizationModuleChanged();
+ 
+ 	// A Custom Shape's path editor, on the UMG designer's canvas.
+@@ -205,6 +214,10 @@ void FNameTBDEditorModule::ShutdownModule()
+ 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimEntry"));
+ 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimMachineCondition"));
+ 		PropertyModule->UnregisterCustomClassLayout(TEXT("ShapeWidget"));
++		for (const FName& ClassName : FWidgetAnimTextDetails::GetCustomizedClassNames())
++		{
++			PropertyModule->UnregisterCustomClassLayout(ClassName);
++		}
+ 
+ 	}
+ 	
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 5281436..919ccd0 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -19301,6 +19301,24 @@ FText SWidgetAnimTimeline::GetTextTargetNote(int32 LayerIndex) const
+ 	{
+ 		return FText::Format(WidgetAnimTips::TextTargetMissingNote(), FText::FromString(TextTarget.Text), FText::FromString(Display.Left(80)));
+ 	}
++
++	// Several parts joined with &&: any one of them not found is named, so a typo in one doesn't hide behind the rest.
++	TArray<FString> Parts;
++	TextTarget.GetParts(Parts);
++	if (Parts.Num() > 1)
++	{
++		for (const FString& Part : Parts)
++		{
++			FWidgetAnimTextTarget One = TextTarget;
++			One.Text = Part;
++			TArray<FIntPoint> PartRanges;
++			One.FindLetterRanges(Display, PartRanges);
++			if (PartRanges.Num() == 0)
++			{
++				return FText::Format(WidgetAnimTips::TextTargetPartMissingNote(), FText::AsNumber(Ranges.Num()), FText::FromString(Part));
++			}
++		}
++	}
+ 	return FText::Format(WidgetAnimTips::TextTargetFoundNote(), FText::AsNumber(Ranges.Num()), FText::AsNumber(Ranges[0].Y));
+ }
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextDetails.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextDetails.cpp
+new file mode 100644
+index 0000000..88757fb
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextDetails.cpp
+@@ -0,0 +1,865 @@
++﻿// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "WidgetAnimTextDetails.h"
++
++#include "NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h"
++#include "NameTBDTooltips.h"
++
++#include "DetailCategoryBuilder.h"
++#include "DetailLayoutBuilder.h"
++#include "DetailWidgetRow.h"
++#include "Engine/DataTable.h"
++#include "Framework/Application/SlateApplication.h"
++#include "Framework/MultiBox/MultiBoxBuilder.h"
++#include "Framework/Text/TextLayout.h"
++#include "Internationalization/Text.h"
++#include "Internationalization/TextKey.h"
++#include "PropertyHandle.h"
++#include "Styling/AppStyle.h"
++#include "Widgets/Colors/SColorPicker.h"
++#include "Widgets/Input/SButton.h"
++#include "Widgets/Input/SComboButton.h"
++#include "Widgets/Input/SEditableTextBox.h"
++#include "Widgets/Input/SMultiLineEditableTextBox.h"
++#include "Widgets/Layout/SBorder.h"
++#include "Widgets/Layout/SBox.h"
++#include "Widgets/Layout/SSeparator.h"
++#include "Widgets/Layout/SWrapBox.h"
++#include "Widgets/SBoxPanel.h"
++#include "Widgets/SCompoundWidget.h"
++#include "Widgets/Text/STextBlock.h"
++
++#define LOCTEXT_NAMESPACE "WidgetAnimTextDetails"
++
++namespace WidgetAnimTips = NameTBD::Tooltips::WidgetAnimEditor;
++
++namespace WidgetAnimTextEditor
++{
++	/** One tag in a text: where it is (End one past its '>'), its name, and what kind it is. */
++	struct FTag
++	{
++		int32 Start = 0;
++		int32 End = 0;
++		FString Name;
++		bool bClose = false;
++
++		/** Stands alone - <pause=0.5>, <event=Hit>, <play=Pop>, or anything written <.../> - rather than opening a run of text. */
++		bool bMoment = false;
++	};
++
++	/** An opening tag and the closing one that ends it: the text between them is what it tags. Close INDEX_NONE: to the end. */
++	struct FPair
++	{
++		int32 Open = INDEX_NONE;
++		int32 Close = INDEX_NONE;
++	};
++
++	bool IsMomentTag(const FString& Name)
++	{
++		return Name.Equals(TEXT("pause"), ESearchCase::IgnoreCase) || Name.Equals(TEXT("event"), ESearchCase::IgnoreCase) || Name.Equals(TEXT("play"), ESearchCase::IgnoreCase);
++	}
++
++	/** Every tag in Text, in order, as the text widgets read them: < up to the next >. */
++	void FindTags(const FString& Text, TArray<FTag>& OutTags)
++	{
++		OutTags.Reset();
++		for (int32 Index = 0; Index < Text.Len(); ++Index)
++		{
++			if (Text[Index] != TEXT('<'))
++			{
++				continue;
++			}
++			const int32 CloseAngle = Text.Find(TEXT(">"), ESearchCase::CaseSensitive, ESearchDir::FromStart, Index + 1);
++			if (CloseAngle == INDEX_NONE)
++			{
++				break;
++			}
++
++			FTag& Tag = OutTags.AddDefaulted_GetRef();
++			Tag.Start = Index;
++			Tag.End = CloseAngle + 1;
++			FString Inside = Text.Mid(Index + 1, CloseAngle - Index - 1).TrimStartAndEnd();
++			Tag.bClose = Inside.StartsWith(TEXT("/"));
++			const bool bSelfClosing = !Tag.bClose && Inside.EndsWith(TEXT("/"));
++			if (Tag.bClose)
++			{
++				Inside.RightChopInline(1);
++			}
++			int32 NameEnd = 0;
++			while (NameEnd < Inside.Len() && !FChar::IsWhitespace(Inside[NameEnd]) && Inside[NameEnd] != TEXT('=') && Inside[NameEnd] != TEXT('/'))
++			{
++				++NameEnd;
++			}
++			Tag.Name = Inside.Left(NameEnd);
++			Tag.bMoment = !Tag.bClose && (bSelfClosing || IsMomentTag(Tag.Name));
++			Index = CloseAngle;
++		}
++	}
++
++	/** Which tags open and close each run: </> closes the one opened last, </name> the last of that name. */
++	void PairTags(const TArray<FTag>& Tags, TArray<FPair>& OutPairs)
++	{
++		OutPairs.Reset();
++		TArray<int32> Open;
++		for (int32 Index = 0; Index < Tags.Num(); ++Index)
++		{
++			const FTag& Tag = Tags[Index];
++			if (Tag.bMoment)
++			{
++				continue;
++			}
++			if (!Tag.bClose)
++			{
++				Open.Add(Index);
++				continue;
++			}
++			int32 Match = INDEX_NONE;
++			for (int32 Stack = Open.Num() - 1; Stack >= 0; --Stack)
++			{
++				if (Tag.Name.IsEmpty() || Tags[Open[Stack]].Name.Equals(Tag.Name, ESearchCase::IgnoreCase))
++				{
++					Match = Stack;
++					break;
++				}
++			}
++			if (Match != INDEX_NONE)
++			{
++				OutPairs.Add({ Open[Match], Index });
++				Open.RemoveAt(Match);
++			}
++		}
++		for (const int32 Unclosed : Open)
++		{
++			OutPairs.Add({ Unclosed, INDEX_NONE });
++		}
++	}
++
++	/** Where each line of Text starts, as the text box breaks it: at \r\n, \r or \n. */
++	void GetLineStarts(const FString& Text, TArray<int32>& OutStarts)
++	{
++		OutStarts.Reset();
++		OutStarts.Add(0);
++		for (int32 Index = 0; Index < Text.Len(); ++Index)
++		{
++			if (Text[Index] == TEXT('\r'))
++			{
++				if (Index + 1 < Text.Len() && Text[Index + 1] == TEXT('\n'))
++				{
++					++Index;
++				}
++				OutStarts.Add(Index + 1);
++			}
++			else if (Text[Index] == TEXT('\n'))
++			{
++				OutStarts.Add(Index + 1);
++			}
++		}
++	}
++
++	int32 ToIndex(const FString& Text, const FTextLocation& Location)
++	{
++		TArray<int32> Starts;
++		GetLineStarts(Text, Starts);
++		const int32 Line = FMath::Clamp(Location.GetLineIndex(), 0, Starts.Num() - 1);
++		return FMath::Clamp(Starts[Line] + Location.GetOffset(), 0, Text.Len());
++	}
++
++	FTextLocation ToLocation(const FString& Text, int32 Index)
++	{
++		TArray<int32> Starts;
++		GetLineStarts(Text, Starts);
++		int32 Line = 0;
++		while (Line + 1 < Starts.Num() && Starts[Line + 1] <= Index)
++		{
++			++Line;
++		}
++		return FTextLocation(Line, Index - Starts[Line]);
++	}
++
++	/** A color as the color tag reads it: #RRGGBB. */
++	FString ToHex(const FLinearColor& Color)
++	{
++		const FColor SRGB = Color.ToFColor(/*bSRGB=*/true);
++		return FString::Printf(TEXT("#%02X%02X%02X"), SRGB.R, SRGB.G, SRGB.B);
++	}
++}
++
++/**
++ * The Text Editor row: a toolbar of tags over the text. See FWidgetAnimTextDetails. The text box is the source of truth while
++ * it is being typed in; it is written to the Text property on commit, and on every toolbar action.
++ */
++class SWidgetAnimTextEditor : public SCompoundWidget
++{
++public:
++	SLATE_BEGIN_ARGS(SWidgetAnimTextEditor) {}
++		SLATE_ARGUMENT(TSharedPtr<IPropertyHandle>, TextHandle)
++		SLATE_ARGUMENT(TArray<TWeakObjectPtr<UObject>>, Objects)
++	SLATE_END_ARGS()
++
++	void Construct(const FArguments& InArgs)
++	{
++		TextHandle = InArgs._TextHandle;
++		Objects = InArgs._Objects;
++		bRich = Objects.Num() > 0 && Objects[0].IsValid() && FindFProperty<FObjectPropertyBase>(Objects[0]->GetClass(), TEXT("TextStyleSet")) != nullptr;
++
++		const TSharedRef<SWrapBox> Toolbar = SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(2.0, 2.0));
++		auto AddGroupBreak = [&Toolbar]()
++		{
++			Toolbar->AddSlot()
++			.VAlign(VAlign_Center)
++			.Padding(FMargin(3.f, 0.f))
++			[
++				SNew(SBox)
++				.HeightOverride(16.f)
++				[
++					SNew(SSeparator).Orientation(Orient_Vertical).Thickness(1.f)
++				]
++			];
++		};
++
++		// Look: the project's own styles and effects first, then the built-in look tags.
++		if (bRich)
++		{
++			Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("StyleButton", "Style"), WidgetAnimTips::TextEditorStyleTooltip(), &SWidgetAnimTextEditor::MakeStyleMenu)];
++		}
++		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("EffectButton", "Effect"), WidgetAnimTips::TextEditorEffectTooltip(), &SWidgetAnimTextEditor::MakeEffectMenu)];
++		AddGroupBreak();
++		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("ColorButton", "Color"), WidgetAnimTips::TextEditorColorTooltip(), &SWidgetAnimTextEditor::MakeColorMenu)];
++		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("SizeButton", "Size"), WidgetAnimTips::TextEditorSizeTooltip(), &SWidgetAnimTextEditor::MakeSizeMenu)];
++		Toolbar->AddSlot()[MakeButton(LOCTEXT("GlowButton", "Glow"), WidgetAnimTips::TextEditorGlowTooltip(), [this]() { Wrap(TEXT("<glow>"), TEXT("</>")); })];
++		AddGroupBreak();
++
++		// Reveal: how a Text Reveal paces it, and what happens as it gets there.
++		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("SpeedButton", "Speed"), WidgetAnimTips::TextEditorSpeedTooltip(), &SWidgetAnimTextEditor::MakeSpeedMenu)];
++		Toolbar->AddSlot()[MakeButton(LOCTEXT("InstantButton", "Instant"), WidgetAnimTips::TextEditorInstantTooltip(), [this]() { Wrap(TEXT("<instant>"), TEXT("</>")); })];
++		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("PauseButton", "Pause"), WidgetAnimTips::TextEditorPauseTooltip(), &SWidgetAnimTextEditor::MakePauseMenu)];
++		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("EventButton", "Event"), WidgetAnimTips::TextEditorEventTooltip(), &SWidgetAnimTextEditor::MakeEventMenu)];
++		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("PlayButton", "Play"), WidgetAnimTips::TextEditorPlayTooltip(), &SWidgetAnimTextEditor::MakePlayMenu)];
++		AddGroupBreak();
++		Toolbar->AddSlot()[MakeButton(LOCTEXT("ClearButton", "Clear Tags"), WidgetAnimTips::TextEditorClearTooltip(), [this]() { ClearTags(); })];
++
++		ChildSlot
++		[
++			SNew(SVerticalBox)
++
++			+ SVerticalBox::Slot()
++			.AutoHeight()
++			[
++				SNew(SBorder)
++				.BorderImage(FAppStyle::GetBrush("Brushes.Header"))
++				.Padding(FMargin(4.f, 3.f))
++				.IsEnabled_Lambda([this]() { return IsEditable(); })
++				[
++					Toolbar
++				]
++			]
++
++			+ SVerticalBox::Slot()
++			.AutoHeight()
++			.Padding(FMargin(0.f, 2.f, 0.f, 0.f))
++			[
++				SNew(SBox)
++				.MinDesiredHeight(64.f)
++				.MaxDesiredHeight(220.f)
++				[
++					SAssignNew(Box, SMultiLineEditableTextBox)
++					.Font(IDetailLayoutBuilder::GetDetailFont())
++					.AutoWrapText(true)
++					.SelectAllTextWhenFocused(false)
++					.ClearTextSelectionOnFocusLoss(false)
++					.IsReadOnly_Lambda([this]() { return !IsEditable(); })
++					.ToolTipText(WidgetAnimTips::TextEditorBoxTooltip())
++					.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type)
++					{
++						Commit(NewText.ToString());
++					})
++				]
++			]
++
++			// Where the cursor is: the tags around it, innermost last - as a word processor shows the styles in force.
++			+ SVerticalBox::Slot()
++			.AutoHeight()
++			.Padding(FMargin(2.f, 2.f, 0.f, 0.f))
++			[
++				SNew(STextBlock)
++				.Font(IDetailLayoutBuilder::GetDetailFontItalic())
++				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
++				.Text_Lambda([this]() { return GetCursorTagsText(); })
++			]
++		];
++
++		Box->SetText(FText::FromString(ReadProperty()));
++	}
++
++	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override
++	{
++		SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
++
++		// The text edited elsewhere - the Text row above, an undo - is taken in, unless it is being typed in here.
++		if (Box.IsValid() && !Box->HasKeyboardFocus())
++		{
++			const FString Property = ReadProperty();
++			if (Property != Box->GetText().ToString())
++			{
++				Box->SetText(FText::FromString(Property));
++			}
++		}
++	}
++
++private:
++
++	TSharedPtr<IPropertyHandle> TextHandle;
++	TArray<TWeakObjectPtr<UObject>> Objects;
++	TSharedPtr<SMultiLineEditableTextBox> Box;
++	bool bRich = false;
++
++	/** Only with one value to edit: several widgets selected with different texts read Multiple Values. */
++	bool IsEditable() const
++	{
++		FText Value;
++		return TextHandle.IsValid() && TextHandle->IsValidHandle() && !TextHandle->IsEditConst() && TextHandle->GetValue(Value) == FPropertyAccess::Success;
++	}
++
++	FString ReadProperty() const
++	{
++		FText Value;
++		return TextHandle.IsValid() && TextHandle->IsValidHandle() && TextHandle->GetValue(Value) == FPropertyAccess::Success ? Value.ToString() : FString();
++	}
++
++	/** The text as typed so far, which the toolbar works on - not yet committed, it is still the newest. */
++	FString GetCurrentText() const
++	{
++		return Box.IsValid() ? Box->GetText().ToString() : ReadProperty();
++	}
++
++	/** The selection, as character indices into the current text: Start == End is the cursor alone. */
++	void GetSelectionRange(int32& OutStart, int32& OutEnd) const
++	{
++		const FString Text = GetCurrentText();
++		if (!Box.IsValid())
++		{
++			OutStart = OutEnd = Text.Len();
++			return;
++		}
++		const FTextSelection Selection = Box->GetSelection();
++		const int32 A = WidgetAnimTextEditor::ToIndex(Text, Selection.GetBeginning());
++		const int32 B = WidgetAnimTextEditor::ToIndex(Text, Selection.GetEnd());
++		if (A != B)
++		{
++			OutStart = FMath::Min(A, B);
++			OutEnd = FMath::Max(A, B);
++			return;
++		}
++		OutStart = OutEnd = WidgetAnimTextEditor::ToIndex(Text, Box->GetCursorLocation());
++	}
++
++	/**
++	 * The new text onto Text, as one Details edit - keeping its localization key, so a text already gathered for translation
++	 * stays the same text - and into the box, with SelectFrom - SelectTo selected.
++	 */
++	void Commit(const FString& NewString, int32 SelectFrom = INDEX_NONE, int32 SelectTo = INDEX_NONE)
++	{
++		if (!IsEditable())
++		{
++			return;
++		}
++
++		FText Old;
++		TextHandle->GetValue(Old);
++		if (Old.ToString() != NewString)
++		{
++			const TOptional<FString> Namespace = FTextInspector::GetNamespace(Old);
++			const TOptional<FString> Key = FTextInspector::GetKey(Old);
++			const FText NewText = Namespace.IsSet() && Key.IsSet() && !Old.IsCultureInvariant()
++				? FText::ChangeKey(FTextKey(*Namespace.GetValue()), FTextKey(*Key.GetValue()), FText::FromString(NewString))
++				: FText::FromString(NewString);
++			TextHandle->SetValue(NewText);
++		}
++
++		if (Box.IsValid())
++		{
++			if (Box->GetText().ToString() != NewString)
++			{
++				Box->SetText(FText::FromString(NewString));
++			}
++			if (SelectFrom != INDEX_NONE)
++			{
++				Box->SelectText(WidgetAnimTextEditor::ToLocation(NewString, SelectFrom), WidgetAnimTextEditor::ToLocation(NewString, SelectTo));
++			}
++		}
++	}
++
++	/** Open and Close around the selection, the selection kept on the same words - or an empty pair at the cursor, the cursor inside. */
++	void Wrap(const FString& Open, const FString& Close)
++	{
++		int32 Start = 0;
++		int32 End = 0;
++		GetSelectionRange(Start, End);
++		const FString Text = GetCurrentText();
++		const FString New = Text.Left(Start) + Open + Text.Mid(Start, End - Start) + Close + Text.Mid(End);
++		Commit(New, Start + Open.Len(), End + Open.Len());
++	}
++
++	/** Token at the cursor - or after the selection - the cursor left after it: a tag that marks a moment. */
++	void Insert(const FString& Token)
++	{
++		int32 Start = 0;
++		int32 End = 0;
++		GetSelectionRange(Start, End);
++		const FString Text = GetCurrentText();
++		const FString New = Text.Left(End) + Token + Text.Mid(End);
++		Commit(New, End + Token.Len(), End + Token.Len());
++	}
++
++	/**
++	 * The tags off the selection: every run whose tagged words it touches loses its opening and closing tags, and every tag
++	 * for a moment inside it goes. With nothing selected, the runs around the cursor.
++	 */
++	void ClearTags()
++	{
++		using namespace WidgetAnimTextEditor;
++
++		int32 Start = 0;
++		int32 End = 0;
++		GetSelectionRange(Start, End);
++		const FString Text = GetCurrentText();
++
++		TArray<FTag> Tags;
++		FindTags(Text, Tags);
++		TArray<FPair> Pairs;
++		PairTags(Tags, Pairs);
++
++		TArray<int32> Remove;
++		for (const FPair& Pair : Pairs)
++		{
++			const int32 ContentStart = Tags[Pair.Open].End;
++			const int32 ContentEnd = Pair.Close != INDEX_NONE ? Tags[Pair.Close].Start : Text.Len();
++			const bool bTouches = Start == End
++				? Start >= Tags[Pair.Open].Start && Start <= (Pair.Close != INDEX_NONE ? Tags[Pair.Close].End : Text.Len())
++				: ContentStart < End && ContentEnd > Start;
++			if (bTouches)
++			{
++				Remove.Add(Pair.Open);
++				if (Pair.Close != INDEX_NONE)
++				{
++					Remove.Add(Pair.Close);
++				}
++			}
++		}
++		for (int32 Index = 0; Index < Tags.Num(); ++Index)
++		{
++			if (Tags[Index].bMoment && Tags[Index].Start >= Start && Tags[Index].End <= FMath::Max(End, Start))
++			{
++				Remove.Add(Index);
++			}
++		}
++		if (Remove.Num() == 0)
++		{
++			return;
++		}
++
++		// Last first, so the places of the rest stay put; the selection follows the text it was on.
++		Remove.Sort([](int32 A, int32 B) { return A > B; });
++		FString New = Text;
++		int32 NewStart = Start;
++		int32 NewEnd = End;
++		for (const int32 Index : Remove)
++		{
++			const FTag& Tag = Tags[Index];
++			const int32 Length = Tag.End - Tag.Start;
++			New.RemoveAt(Tag.Start, Length);
++			NewStart -= Tag.End <= Start ? Length : 0;
++			NewEnd -= Tag.End <= End ? Length : 0;
++		}
++		Commit(New, FMath::Max(NewStart, 0), FMath::Max(NewEnd, 0));
++	}
++
++	/** "In: Bold › shake" - the runs the cursor is in, outermost first. Empty outside any. */
++	FText GetCursorTagsText() const
++	{
++		using namespace WidgetAnimTextEditor;
++
++		int32 Start = 0;
++		int32 End = 0;
++		GetSelectionRange(Start, End);
++		const FString Text = GetCurrentText();
++		TArray<FTag> Tags;
++		FindTags(Text, Tags);
++		TArray<FPair> Pairs;
++		PairTags(Tags, Pairs);
++		Pairs.Sort([&Tags](const FPair& A, const FPair& B) { return Tags[A.Open].Start < Tags[B.Open].Start; });
++
++		TArray<FString> Names;
++		for (const FPair& Pair : Pairs)
++		{
++			const int32 ContentStart = Tags[Pair.Open].End;
++			const int32 ContentEnd = Pair.Close != INDEX_NONE ? Tags[Pair.Close].Start : Text.Len();
++			if (Start >= ContentStart && Start <= ContentEnd)
++			{
++				Names.Add(Text.Mid(Tags[Pair.Open].Start + 1, Tags[Pair.Open].End - Tags[Pair.Open].Start - 2));
++			}
++		}
++		return Names.Num() > 0
++			? FText::Format(LOCTEXT("CursorTags", "In: {0}"), FText::FromString(FString::Join(Names, TEXT("  ›  "))))
++			: WidgetAnimTips::TextEditorHint();
++	}
++
++	// ---------------------------------------------------------------------------------------------
++	// Toolbar
++	// ---------------------------------------------------------------------------------------------
++
++	/**
++	 * A toolbar button: flat, and never taking the keyboard focus - so the text box keeps its selection, and the button acts
++	 * on it.
++	 */
++	TSharedRef<SWidget> MakeButton(const FText& Label, const FText& ToolTip, TFunction<void()> OnClick)
++	{
++		return SNew(SButton)
++			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
++			.IsFocusable(false)
++			.ContentPadding(FMargin(6.f, 2.f))
++			.ToolTipText(ToolTip)
++			.OnClicked_Lambda([OnClick]() { OnClick(); return FReply::Handled(); })
++			[
++				SNew(STextBlock)
++				.Font(IDetailLayoutBuilder::GetDetailFont())
++				.Text(Label)
++			];
++	}
++
++	TSharedRef<SWidget> MakeMenuButton(const FText& Label, const FText& ToolTip, TSharedRef<SWidget>(SWidgetAnimTextEditor::* MakeMenu)())
++	{
++		return SNew(SComboButton)
++			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
++			.IsFocusable(false)
++			.HasDownArrow(true)
++			.ContentPadding(FMargin(6.f, 2.f))
++			.ToolTipText(ToolTip)
++			.OnGetMenuContent_Lambda([this, MakeMenu]() { return (this->*MakeMenu)(); })
++			.ButtonContent()
++			[
++				SNew(STextBlock)
++				.Font(IDetailLayoutBuilder::GetDetailFont())
++				.Text(Label)
++			];
++	}
++
++	/** A menu entry that wraps the selection in Open ... Close. */
++	void AddWrapEntry(FMenuBuilder& Menu, const FText& Label, const FText& ToolTip, const FString& Open, const FString& Close)
++	{
++		Menu.AddMenuEntry(Label, ToolTip, FSlateIcon(), FUIAction(FExecuteAction::CreateLambda([this, Open, Close]() { Wrap(Open, Close); })));
++	}
++
++	/** A name typed into a menu, then put in by Apply: an Event's or Play's name. */
++	void AddNameEntry(FMenuBuilder& Menu, const FText& Hint, TFunction<void(const FString&)> Apply)
++	{
++		Menu.AddWidget(
++			SNew(SBox)
++			.WidthOverride(200.f)
++			.Padding(FMargin(8.f, 2.f))
++			[
++				SNew(SEditableTextBox)
++				.HintText(Hint)
++				.Font(IDetailLayoutBuilder::GetDetailFont())
++				.OnTextCommitted_Lambda([Apply](const FText& Text, ETextCommit::Type Type)
++				{
++					const FString Name = Text.ToString().TrimStartAndEnd();
++					if (Type == ETextCommit::OnEnter && !Name.IsEmpty())
++					{
++						Apply(Name.Replace(TEXT(" "), TEXT("")));
++						FSlateApplication::Get().DismissAllMenus();
++					}
++				})
++			],
++			FText::GetEmpty(), /*bNoIndent=*/true);
++	}
++
++	void AddNote(FMenuBuilder& Menu, const FText& Note)
++	{
++		Menu.AddWidget(
++			SNew(SBox)
++			.MaxDesiredWidth(280.f)
++			.Padding(FMargin(8.f, 4.f))
++			[
++				SNew(STextBlock)
++				.AutoWrapText(true)
++				.Font(IDetailLayoutBuilder::GetDetailFontItalic())
++				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
++				.Text(Note)
++			],
++			FText::GetEmpty(), /*bNoIndent=*/true);
++	}
++
++	/** The rows of the widget's Text Style Set - its own rich text styles - but its Default, which is all untagged text. */
++	TSharedRef<SWidget> MakeStyleMenu()
++	{
++		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
++		Menu.BeginSection("Styles", LOCTEXT("StylesHeading", "Text Style Set"));
++
++		const UObject* Widget = Objects.Num() > 0 ? Objects[0].Get() : nullptr;
++		const FObjectPropertyBase* StyleSetProperty = Widget ? FindFProperty<FObjectPropertyBase>(Widget->GetClass(), TEXT("TextStyleSet")) : nullptr;
++		const UDataTable* StyleSet = StyleSetProperty ? Cast<UDataTable>(StyleSetProperty->GetObjectPropertyValue_InContainer(Widget)) : nullptr;
++		int32 NumRows = 0;
++		if (StyleSet)
++		{
++			for (const FName& Row : StyleSet->GetRowNames())
++			{
++				if (Row.ToString().Equals(TEXT("Default"), ESearchCase::IgnoreCase))
++				{
++					continue;
++				}
++				const FString Name = Row.ToString();
++				AddWrapEntry(Menu, FText::FromName(Row), FText::Format(WidgetAnimTips::TextEditorStyleRowTooltip(), FText::FromString(Name)), FString::Printf(TEXT("<%s>"), *Name), TEXT("</>"));
++				++NumRows;
++			}
++		}
++		if (NumRows == 0)
++		{
++			AddNote(Menu, StyleSet ? WidgetAnimTips::TextEditorNoStyleRowsNote() : WidgetAnimTips::TextEditorNoStyleSetNote());
++		}
++		Menu.EndSection();
++		return Menu.MakeWidget();
++	}
++
++	/** The project's Text Tags, by name. */
++	TSharedRef<SWidget> MakeEffectMenu()
++	{
++		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
++		Menu.BeginSection("Effects", LOCTEXT("EffectsHeading", "Text Tags"));
++		const TArray<FWidgetAnimTextTag>& Tags = UWidgetAnimRuntimeSettings::Get().TextTags;
++		for (const FWidgetAnimTextTag& Tag : Tags)
++		{
++			if (Tag.Tag.IsNone())
++			{
++				continue;
++			}
++			const FString Name = Tag.Tag.ToString();
++			AddWrapEntry(Menu, FText::FromName(Tag.Tag), FText::Format(WidgetAnimTips::TextEditorEffectRowTooltip(), FText::FromString(Name)), FString::Printf(TEXT("<%s>"), *Name), TEXT("</>"));
++		}
++		if (Tags.Num() == 0)
++		{
++			AddNote(Menu, WidgetAnimTips::TextEditorNoEffectsNote());
++		}
++		Menu.EndSection();
++		return Menu.MakeWidget();
++	}
++
++	/** A palette of named colors, the editor's color picker for any other, and a hex code typed in. */
++	TSharedRef<SWidget> MakeColorMenu()
++	{
++		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
++		Menu.BeginSection("Colors", LOCTEXT("ColorsHeading", "Color"));
++
++		struct FNamedColor { const TCHAR* Name; FLinearColor Color; };
++		static const FNamedColor Named[] =
++		{
++			{ TEXT("Red"),    FLinearColor(FColor(0xE5, 0x3E, 0x3E)) },
++			{ TEXT("Orange"), FLinearColor(FColor(0xF2, 0x8C, 0x28)) },
++			{ TEXT("Yellow"), FLinearColor(FColor(0xF5, 0xD0, 0x3B)) },
++			{ TEXT("Green"),  FLinearColor(FColor(0x3F, 0xC1, 0x5A)) },
++			{ TEXT("Cyan"),   FLinearColor(FColor(0x3B, 0xC9, 0xDB)) },
++			{ TEXT("Blue"),   FLinearColor(FColor(0x3D, 0x7E, 0xF0)) },
++			{ TEXT("Purple"), FLinearColor(FColor(0x9B, 0x5D, 0xE5)) },
++			{ TEXT("Pink"),   FLinearColor(FColor(0xF0, 0x6E, 0xB4)) },
++			{ TEXT("White"),  FLinearColor::White },
++			{ TEXT("Gray"),   FLinearColor(FColor(0x9A, 0x9A, 0x9A)) },
++		};
++		for (const FNamedColor& Entry : Named)
++		{
++			const FString Open = FString::Printf(TEXT("<color=%s>"), *WidgetAnimTextEditor::ToHex(Entry.Color));
++			const FLinearColor Swatch = Entry.Color;
++			Menu.AddMenuEntry(
++				FUIAction(FExecuteAction::CreateLambda([this, Open]() { Wrap(Open, TEXT("</>")); })),
++				SNew(SHorizontalBox)
++				+ SHorizontalBox::Slot()
++				.AutoWidth()
++				.VAlign(VAlign_Center)
++				.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
++				[
++					SNew(SBorder)
++					.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
++					.BorderBackgroundColor(Swatch)
++					[
++						SNew(SBox).WidthOverride(12.f).HeightOverride(12.f)
++					]
++				]
++				+ SHorizontalBox::Slot()
++				.AutoWidth()
++				.VAlign(VAlign_Center)
++				[
++					SNew(STextBlock).Text(FText::FromString(Entry.Name))
++				]);
++		}
++		Menu.EndSection();
++
++		Menu.BeginSection("OtherColor", LOCTEXT("OtherColorHeading", "Other"));
++		{
++			// The selection is read now: the picker takes the keyboard, and with it what the box would say is selected.
++			int32 Start = 0;
++			int32 End = 0;
++			GetSelectionRange(Start, End);
++			const TWeakPtr<SWidgetAnimTextEditor> WeakThis = SharedThis(this);
++			Menu.AddMenuEntry(
++				LOCTEXT("PickColor", "Pick a Color..."),
++				WidgetAnimTips::TextEditorPickColorTooltip(),
++				FSlateIcon(),
++				FUIAction(FExecuteAction::CreateLambda([WeakThis, Start, End]()
++				{
++					const TSharedRef<FLinearColor> Picked = MakeShared<FLinearColor>(FLinearColor::White);
++					const TSharedRef<bool> bCancelled = MakeShared<bool>(false);
++					FColorPickerArgs Args;
++					Args.bUseAlpha = false;
++					Args.bIsModal = false;
++					Args.InitialColor = FLinearColor::White;
++					Args.OnColorCommitted = FOnLinearColorValueChanged::CreateLambda([Picked](FLinearColor Color) { *Picked = Color; });
++					Args.OnColorPickerCancelled = FOnColorPickerCancelled::CreateLambda([bCancelled](FLinearColor) { *bCancelled = true; });
++					Args.OnColorPickerWindowClosed = FOnWindowClosed::CreateLambda([WeakThis, Picked, bCancelled, Start, End](const TSharedRef<SWindow>&)
++					{
++						const TSharedPtr<SWidgetAnimTextEditor> Pinned = WeakThis.Pin();
++						if (Pinned && !*bCancelled)
++						{
++							Pinned->WrapRange(Start, End, FString::Printf(TEXT("<color=%s>"), *WidgetAnimTextEditor::ToHex(*Picked)), TEXT("</>"));
++						}
++					});
++					OpenColorPicker(Args);
++				})));
++			AddNameEntry(Menu, LOCTEXT("HexHint", "#RRGGBB or a color name"), [WeakThis, Start, End](const FString& Value)
++			{
++				if (const TSharedPtr<SWidgetAnimTextEditor> Pinned = WeakThis.Pin())
++				{
++					Pinned->WrapRange(Start, End, FString::Printf(TEXT("<color=%s>"), *Value), TEXT("</>"));
++				}
++			});
++		}
++		Menu.EndSection();
++		return Menu.MakeWidget();
++	}
++
++	/** Wrap, on a range read before the selection could be lost. */
++	void WrapRange(int32 Start, int32 End, const FString& Open, const FString& Close)
++	{
++		const FString Text = GetCurrentText();
++		Start = FMath::Clamp(Start, 0, Text.Len());
++		End = FMath::Clamp(End, Start, Text.Len());
++		const FString New = Text.Left(Start) + Open + Text.Mid(Start, End - Start) + Close + Text.Mid(End);
++		Commit(New, Start + Open.Len(), End + Open.Len());
++	}
++
++	TSharedRef<SWidget> MakeSizeMenu()
++	{
++		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
++		Menu.BeginSection("Sizes", LOCTEXT("SizesHeading", "Size"));
++		for (const TCHAR* Size : { TEXT("0.75"), TEXT("1.25"), TEXT("1.5"), TEXT("2") })
++		{
++			AddWrapEntry(Menu, FText::Format(LOCTEXT("SizeEntry", "{0}×"), FText::FromString(Size)), WidgetAnimTips::TextEditorSizeTooltip(), FString::Printf(TEXT("<size=%s>"), Size), TEXT("</>"));
++		}
++		Menu.EndSection();
++		return Menu.MakeWidget();
++	}
++
++	TSharedRef<SWidget> MakeSpeedMenu()
++	{
++		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
++		Menu.BeginSection("Speeds", LOCTEXT("SpeedsHeading", "Reveal Speed"));
++		for (const TCHAR* Speed : { TEXT("0.5"), TEXT("2"), TEXT("3") })
++		{
++			AddWrapEntry(Menu, FText::Format(LOCTEXT("SpeedEntry", "{0}× as fast"), FText::FromString(Speed)), WidgetAnimTips::TextEditorSpeedTooltip(), FString::Printf(TEXT("<speed=%s>"), Speed), TEXT("</>"));
++		}
++		Menu.EndSection();
++		return Menu.MakeWidget();
++	}
++
++	TSharedRef<SWidget> MakePauseMenu()
++	{
++		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
++		Menu.BeginSection("Pauses", LOCTEXT("PausesHeading", "Pause Here"));
++		for (const TCHAR* Seconds : { TEXT("0.25"), TEXT("0.5"), TEXT("1") })
++		{
++			const FString Token = FString::Printf(TEXT("<pause=%s>"), Seconds);
++			Menu.AddMenuEntry(FText::Format(LOCTEXT("PauseEntry", "{0} s"), FText::FromString(Seconds)), WidgetAnimTips::TextEditorPauseTooltip(), FSlateIcon(),
++				FUIAction(FExecuteAction::CreateLambda([this, Token]() { Insert(Token); })));
++		}
++		Menu.EndSection();
++		return Menu.MakeWidget();
++	}
++
++	TSharedRef<SWidget> MakeEventMenu()
++	{
++		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
++		Menu.BeginSection("Event", LOCTEXT("EventHeading", "Event Here"));
++		const TWeakPtr<SWidgetAnimTextEditor> WeakThis = SharedThis(this);
++		AddNameEntry(Menu, LOCTEXT("EventHint", "Event name, then Enter"), [WeakThis](const FString& Name)
++		{
++			if (const TSharedPtr<SWidgetAnimTextEditor> Pinned = WeakThis.Pin())
++			{
++				Pinned->Insert(FString::Printf(TEXT("<event=%s>"), *Name));
++			}
++		});
++		AddNote(Menu, WidgetAnimTips::TextEditorEventTooltip());
++		Menu.EndSection();
++		return Menu.MakeWidget();
++	}
++
++	TSharedRef<SWidget> MakePlayMenu()
++	{
++		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
++		Menu.BeginSection("Play", LOCTEXT("PlayHeading", "Play Animation Here"));
++		const TWeakPtr<SWidgetAnimTextEditor> WeakThis = SharedThis(this);
++		AddNameEntry(Menu, LOCTEXT("PlayHint", "Anim ID, then Enter"), [WeakThis](const FString& Name)
++		{
++			if (const TSharedPtr<SWidgetAnimTextEditor> Pinned = WeakThis.Pin())
++			{
++				Pinned->Insert(FString::Printf(TEXT("<play=%s>"), *Name));
++			}
++		});
++		AddNote(Menu, WidgetAnimTips::TextEditorPlayTooltip());
++		Menu.EndSection();
++		return Menu.MakeWidget();
++	}
++};
++
++// =====================================================================================================
++// FWidgetAnimTextDetails
++// =====================================================================================================
++
++TSharedRef<IDetailCustomization> FWidgetAnimTextDetails::MakeInstance()
++{
++	return MakeShared<FWidgetAnimTextDetails>();
++}
++
++const TArray<FName>& FWidgetAnimTextDetails::GetCustomizedClassNames()
++{
++	static const TArray<FName> Names =
++	{
++		TEXT("WidgetAnimTextBlock"),
++		TEXT("WidgetAnimRichTextBlock"),
++		TEXT("CommonAnimatedText"),
++		TEXT("CommonAnimatedRichText"),
++	};
++	return Names;
++}
++
++void FWidgetAnimTextDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
++{
++	const TSharedRef<IPropertyHandle> TextHandle = DetailBuilder.GetProperty(TEXT("Text"));
++	if (!TextHandle->IsValidHandle() || !CastField<FTextProperty>(TextHandle->GetProperty()))
++	{
++		return;
++	}
++
++	TArray<TWeakObjectPtr<UObject>> Objects;
++	DetailBuilder.GetObjectsBeingCustomized(Objects);
++
++	// The Text row where it always is, for its localization options - and the editor right under it.
++	IDetailCategoryBuilder& Content = DetailBuilder.EditCategory(TEXT("Content"));
++	Content.AddProperty(TextHandle);
++	Content.AddCustomRow(LOCTEXT("TextEditorRow", "Text Editor"))
++		.WholeRowContent()
++		[
++			SNew(SWidgetAnimTextEditor)
++			.TextHandle(TextHandle)
++			.Objects(Objects)
++		];
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextDetails.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextDetails.h
+new file mode 100644
+index 0000000..a6b70ba
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextDetails.h
+@@ -0,0 +1,36 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "IDetailCustomization.h"
++
++/**
++ * The Details panel of the plugin's animated text widgets - Animated Text Block, Animated Rich Text Block and their Common
++ * UI kin, registered by class name so this module needs no Common UI.
++ *
++ * Under the stock Text row - kept, for its localization options - a Text Editor: the text in a roomy box, and above it a
++ * toolbar, laid out as a word processor's is, that writes the tags for whatever is selected - so nobody types <Bold>...</>
++ * or <shake a=2>...</> by hand:
++ *
++ *   Style          - the rows of the widget's Text Style Set (a rich text only): the project's own rich text styles.
++ *   Effect         - the project's Text Tags (Project Settings > Plugins > Widget Animations > Text Tags): shake, wave...
++ *   Color, Size, Glow                       - the built-in look tags.
++ *   Speed, Instant, Pause, Event, Play      - the built-in Text Reveal tags: pacing, and what happens as it is reached.
++ *   Clear          - takes the tags around or inside the selection off again.
++ *
++ * Each wraps the selection in its tag - the selection kept, so several can be stacked - or, with nothing selected, puts an
++ * empty pair at the cursor, the cursor inside it. Pause, Event and Play, which tag a moment rather than words, go in at the
++ * cursor. Every change is one Details edit of Text: one undo step, on every selected widget, keeping the text's localization
++ * key.
++ */
++class FWidgetAnimTextDetails : public IDetailCustomization
++{
++public:
++	static TSharedRef<IDetailCustomization> MakeInstance();
++
++	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
++
++	/** The classes this lays out, by name: what the editor module registers it for. */
++	static const TArray<FName>& GetCustomizedClassNames();
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index ec7a4c5..2a2848f 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -1877,6 +1877,12 @@ namespace NameTBD::Tooltips
+ 				"\"{0}\" isn't in the text (\"{1}\"), so this track plays on nothing. Check the spelling, Match Case and Whole Words Only.");
+ 		}
+ 
++		inline FText TextTargetPartMissingNote()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextTargetPartMissingNote",
++				"Found {0} {0}|plural(one=place,other=places) - but \"{1}\" isn't in the text, so that part plays on nothing. Check its spelling between the &&.");
++		}
++
+ 		inline FText TextTargetFoundNote()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextTargetFoundNote",
+@@ -1888,6 +1894,120 @@ namespace NameTBD::Tooltips
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphChannelEyeTooltip",
+ 				"Shows or hides this channel's curve.");
+ 		}
++
++		inline FText TextEditorStyleTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorStyleTooltip",
++				"Wraps the selection in one of this widget's Text Style Set rows - your project's own rich text styles. With nothing selected, puts an empty pair at the cursor to type into.");
++		}
++
++		inline FText TextEditorStyleRowTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorStyleRowTooltip",
++				"Wraps the selection in <{0}>...</>, styled as the {0} row of the Text Style Set.");
++		}
++
++		inline FText TextEditorNoStyleSetNote()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorNoStyleSetNote",
++				"This widget has no Text Style Set. Set one under Appearance to list its styles here.");
++		}
++
++		inline FText TextEditorNoStyleRowsNote()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorNoStyleRowsNote",
++				"The Text Style Set has no rows besides Default.");
++		}
++
++		inline FText TextEditorEffectTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorEffectTooltip",
++				"Wraps the selection in one of the project's Text Tags - shake, wave and the rest - set in Project Settings > Plugins > Widget Animations > Text Tags.");
++		}
++
++		inline FText TextEditorEffectRowTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorEffectRowTooltip",
++				"Wraps the selection in <{0}>...</>, the {0} Text Tag.");
++		}
++
++		inline FText TextEditorNoEffectsNote()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorNoEffectsNote",
++				"No Text Tags yet. Add them in Project Settings > Plugins > Widget Animations > Text Tags.");
++		}
++
++		inline FText TextEditorColorTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorColorTooltip",
++				"Colors the selection: <color=#RRGGBB>...</>. Pick a swatch, a color, or type a hex code or color name.");
++		}
++
++		inline FText TextEditorPickColorTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorPickColorTooltip",
++				"Opens the color picker. The color is applied to the selection when the picker is closed with OK.");
++		}
++
++		inline FText TextEditorSizeTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorSizeTooltip",
++				"Scales the selection's size: <size=x>...</>.");
++		}
++
++		inline FText TextEditorGlowTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorGlowTooltip",
++				"Makes the selection glow: <glow>...</>.");
++		}
++
++		inline FText TextEditorSpeedTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorSpeedTooltip",
++				"Changes how fast the selection reveals: <speed=x>...</>, x times the reveal's own speed.");
++		}
++
++		inline FText TextEditorInstantTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorInstantTooltip",
++				"Shows the selection all at once as the reveal reaches it: <instant>...</>.");
++		}
++
++		inline FText TextEditorPauseTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorPauseTooltip",
++				"Holds the reveal at the cursor for a moment: <pause=seconds>.");
++		}
++
++		inline FText TextEditorEventTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorEventTooltip",
++				"Fires the named event as the reveal reaches the cursor: <event=Name>. Type a name and press Enter.");
++		}
++
++		inline FText TextEditorPlayTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorPlayTooltip",
++				"Plays the named animation of this widget as the reveal reaches the cursor: <play=Id>. Type its id and press Enter.");
++		}
++
++		inline FText TextEditorClearTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorClearTooltip",
++				"Takes off the tags around the selection, and any moment tags inside it - the words stay.");
++		}
++
++		inline FText TextEditorBoxTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorBoxTooltip",
++				"The text, tags and all. Select some of it and pick a tag above to wrap it. Changes apply when the box loses focus.");
++		}
++
++		inline FText TextEditorHint()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorHint",
++				"Select some text, then pick a tag above to wrap it.");
++		}
+ 	}
+ 
+ 	/** The Set Widget Animation Value node's dropdown pins, in the Blueprint graph. */

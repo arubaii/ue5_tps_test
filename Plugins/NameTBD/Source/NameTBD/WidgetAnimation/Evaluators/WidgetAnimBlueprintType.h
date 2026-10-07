@@ -166,12 +166,24 @@ struct NAMETBD_API FWidgetAnimBlueprintTypeParams : public FWidgetAnimTypeParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blueprint Type")
 	double EndValue = 1.0;
 
-	/** The type's own per-track settings - its Settings Struct - handed to every one of its functions. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blueprint Type")
+	/** The type's own per-track settings - its Settings Struct, which they always follow - handed to every one of its functions. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blueprint Type", meta = (StructTypeConst))
 	FInstancedStruct Settings;
 
 	/** The type's class default object, which is what is called. Null when no type is set. */
 	const UWidgetAnimBlueprintType* GetTypeObject() const;
+
+	/**
+	 * Whether Settings hold what the type's Settings Struct says they should: that struct, or nothing when it has none.
+	 * Always so with no type set.
+	 */
+	bool IsSettingsStructCurrent() const;
+
+	/**
+	 * Settings made afresh, at their defaults, for the type's Settings Struct when they aren't one - so a track's Settings
+	 * follow its type, never picked by hand. True if anything changed. See IsSettingsStructCurrent.
+	 */
+	bool SyncSettingsStruct();
 
 	/** Settings for a new track of InType: its default Start and End values, and its Settings Struct at its defaults. */
 	static FInstancedStruct MakeFor(TSubclassOf<UWidgetAnimBlueprintType> InType);

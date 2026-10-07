@@ -28,6 +28,9 @@ namespace WidgetAnimEasing
 			return FMath::InterpEaseInOut(0.f, 1.f, Alpha, 2.f);
 		case EWidgetAnimEasing::Custom:
 			return Curve ? Curve->GetFloatValue(Alpha) : Alpha;
+		case EWidgetAnimEasing::Hold:
+			// Only arriving counts as arriving: anything short of the end is still the start.
+			return Alpha >= 1.f ? 1.f : 0.f;
 		}
 
 		return Alpha;
@@ -37,7 +40,7 @@ namespace WidgetAnimEasing
 	{
 		// Deliberately not clamped before EaseOutBack: the whole point of the curve is that it leaves 0..1
 		// in the middle. It is still fed a clamped input, which the caller guarantees.
-		return Overshoot > 0.f
+		return Overshoot > 0.f && Easing != EWidgetAnimEasing::Hold
 			? EaseOutBack(FMath::Clamp(Alpha, 0.f, 1.f), Overshoot)
 			: Evaluate(Easing, Curve, Alpha);
 	}

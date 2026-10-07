@@ -21,7 +21,10 @@ enum class EWidgetAnimEasing : uint8
 	EaseIn,
 	EaseOut,
 	EaseInOut,
-	Custom
+	Custom,
+
+
+	Hold UMETA(ToolTip = "Stays on the value it starts from, then jumps to the next the moment it arrives - no travel in between.")
 };
 
 /**

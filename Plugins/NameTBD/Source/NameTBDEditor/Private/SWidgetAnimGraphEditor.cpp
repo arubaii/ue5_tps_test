@@ -20,10 +20,12 @@
 #include "WidgetBlueprint.h"
 
 #include "Brushes/SlateRoundedBoxBrush.h"
+#include "Editor.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Rendering/DrawElements.h"
+#include "WidgetAnimEditorSettings.h"
 #include "ScopedTransaction.h"
 #include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
@@ -80,7 +82,11 @@ namespace WidgetAnimGraph
 		 */
 		Progress,
 
-		/** A Sound cue's fades: how loud it is along its run, from its Fade In and Fade Out - 0 silent, 1 its full volume. */
+		/**
+		 * A Sound cue's fades: how loud it is along its run, from its Fade In and Fade Out - 0 silent, 1 its full volume. Never a
+		 * curve of its own: it eases the Volume curve (see ValueAt), and only its two keys - where the fade in ends and the fade
+		 * out begins - are kept by it, drawn on the Volume curve.
+		 */
 		FadeEnvelope,
 
 		/**
@@ -98,8 +104,8 @@ namespace WidgetAnimGraph
 	EChannel MakeFieldChannel(int32 Index) { return static_cast<EChannel>(static_cast<uint8>(EChannel::FieldBase) + static_cast<uint8>(Index)); }
 
 	/**
-	 * A Sound cue's fades as keys of the FadeEnvelope channel: where its fade in ends and where its fade out begins, dragged
-	 * in time to set them. Numbered past any key a track can have.
+	 * A Sound cue's fades as keys of the FadeEnvelope channel: where its fade in ends and where its fade out begins, drawn on
+	 * its Volume curve and dragged in time to set them. Numbered past any key a track can have.
 	 */
 	constexpr int32 FadeInPoint = 100000;
 	constexpr int32 FadeOutPoint = 100001;
@@ -188,7 +194,7 @@ namespace WidgetAnimGraph
 		/** How many of those have values: a Transform track's keys can be briefly out of step with its curve. */
 		int32 NumValuePoints = 0;
 
-		/** A Sound cue: its volume at its points, and its fades (EChannel::FadeEnvelope). */
+		/** A Sound cue: its volume at its points, eased by its fades (EChannel::FadeEnvelope) into one Volume curve. */
 		bool bSound = false;
 
 		/** A Shape Box or Shape track's numbers - see EChannel::FieldBase - and what its keys' Use Authored read them off. */
@@ -721,7 +727,7 @@ namespace WidgetAnimGraph
 	/** A Tween Scale or Slide's Overshoot, in force while it has no keys - which a pair of handles can't draw exactly. */
 	bool HasOvershoot(const FWidgetAnimLayer& Layer)
 	{
-		return Layer.Timing == EWidgetAnimTiming::Tween && Layer.ValueKeys.Keys.Num() == 0
+		return Layer.Timing == EWidgetAnimTiming::Tween && Layer.ValueKeys.Keys.Num() == 0 && Layer.Easing != EWidgetAnimEasing::Hold
 			&& ((Layer.AnimType == EWidgetAnimType::Scale && Layer.Overshoot > 0.f) || (Layer.AnimType == EWidgetAnimType::Slide && Layer.SlideOvershoot > 0.f));
 	}
 
@@ -837,16 +843,23 @@ namespace WidgetAnimGraph
 			const int32 Last = Model.NumValuePoints - 1;
 			return Last > 0 ? FMath::Clamp((static_cast<float>(Segment) + Alpha) / static_cast<float>(Last), -1.f, 2.f) : 0.f;
 		}
-		if (Channel == EChannel::FadeEnvelope)
+		// A Sound's fades at a moment on its run - its segments are straight in time - as a share of its volume.
+		auto EnvelopeHere = [&Layer, &Model, Segment, Alpha]()
 		{
-			// Back to a moment on the run - a Sound's segments are straight in time - and its fades there.
 			const float SegmentStart = Model.PointTimes.IsValidIndex(Segment) ? Model.PointTimes[Segment] : 0.f;
 			const float SegmentEnd = Model.PointTimes.IsValidIndex(Segment + 1) ? Model.PointTimes[Segment + 1] : SegmentStart;
 			return EnvelopeAt(Layer, Model, FMath::Lerp(SegmentStart, SegmentEnd, Alpha));
+		};
+		if (Channel == EChannel::FadeEnvelope)
+		{
+			return EnvelopeHere();
 		}
 		const float From = GetPointValue(Layer, Model, Segment, Channel);
 		const float To = GetPointValue(Layer, Model, Segment + 1, Channel);
-		return FMath::Lerp(From, To, Alpha);
+
+		// A Sound's Volume is one curve: its keys' volume, eased in and out by its Fade In and Fade Out along its Fade Curve.
+		const float Envelope = Model.bSound && Channel == EChannel::Value ? EnvelopeHere() : 1.f;
+		return FMath::Lerp(From, To, Alpha) * Envelope;
 	}
 
 	/** How far along a Spring track's run its spring is at LocalSeconds - one curve for its whole run, its keys points along it. */
@@ -1300,11 +1313,12 @@ void SWidgetAnimGraphCanvas::RebuildModels()
 			Model.PointTimes.Add(Layer.ValueKeys.GetPointTime(Point) * Model.RunSeconds);
 		}
 
-		// A Sound cue: its volume at each point it fires, and its fades.
+		// A Sound cue: its volume at each point it fires, eased in and out by its fades - one Volume curve, the fades its
+		// handles (see EChannel::FadeEnvelope).
 		Model.bSound = GetSoundParams(Layer) != nullptr;
 		if (Model.bSound)
 		{
-			Model.Channels = { EChannel::Value, EChannel::FadeEnvelope };
+			Model.Channels = { EChannel::Value };
 			continue;
 		}
 
@@ -1365,6 +1379,19 @@ void SWidgetAnimGraphCanvas::UpdateNorms()
 				Min = FMath::Min(Min, Value);
 				Max = FMath::Max(Max, Value);
 			}
+
+			// A Sound's Volume fades down to silence: the height takes in nothing, too, once it has a fade.
+			float FadeIn = 0.f;
+			float FadeOut = 0.f;
+			if (Model.bSound && Channel == EChannel::Value && Model.NumValuePoints > 0)
+			{
+				GetFades(*Layer, Model, FadeIn, FadeOut);
+				if (FadeIn > KINDA_SMALL_NUMBER || FadeOut > KINDA_SMALL_NUMBER)
+				{
+					Min = FMath::Min(Min, 0.f);
+				}
+			}
+
 			FNorm Norm;
 			if (Model.NumValuePoints == 0)
 			{
@@ -1755,10 +1782,10 @@ void SWidgetAnimGraphCanvas::UpdateFrame()
 			}
 
 			// Before it starts it holds its first value, and after it ends its last - drawn faintly to the view's edges. A Sound's
-			// fades are silent either side of its run.
-			const bool bFade = Channel == EChannel::FadeEnvelope;
-			const float FirstValue = bFade ? EnvelopeAt(*Layer, Model, 0.f) : GetPointValue(*Layer, Model, 0, Channel);
-			const float LastValue = bFade ? EnvelopeAt(*Layer, Model, Model.RunSeconds) : GetPointValue(*Layer, Model, Model.NumValuePoints - 1, Channel);
+			// Volume is eased by its fades there too: silent either side of its run once it fades.
+			const bool bSoundVolume = Model.bSound && Channel == EChannel::Value;
+			const float FirstValue = GetPointValue(*Layer, Model, 0, Channel) * (bSoundVolume ? EnvelopeAt(*Layer, Model, 0.f) : 1.f);
+			const float LastValue = GetPointValue(*Layer, Model, Model.NumValuePoints - 1, Channel) * (bSoundVolume ? EnvelopeAt(*Layer, Model, Model.RunSeconds) : 1.f);
 			const float FirstY = DisplayToY(ToDisplay(Model.Layer, Channel, FirstValue));
 			const float LastY = DisplayToY(ToDisplay(Model.Layer, Channel, LastValue));
 			const float StartX = TimeToX(Model.SpanStart);
@@ -1774,25 +1801,6 @@ void SWidgetAnimGraphCanvas::UpdateFrame()
 			Curve.LabelAt = FVector2f(FMath::Clamp(EndX, PlotLeft, PlotRight), LastY);
 			Curves.Add(Curve);
 
-			// A Sound's fades: a key where its fade in ends and one where its fade out begins, each dragged in time to set it.
-			if (bFade)
-			{
-				float FadeIn = 0.f;
-				float FadeOut = 0.f;
-				GetFades(*Layer, Model, FadeIn, FadeOut);
-				for (const int32 Point : { FadeInPoint, FadeOutPoint })
-				{
-					const float Local = Point == FadeInPoint ? FadeIn : Model.RunSeconds - FadeOut;
-					FKeyHit& Hit = KeyHits.AddDefaulted_GetRef();
-					Hit.Key = FGraphKey{ Model.Layer, Point, Channel };
-					Hit.Model = ModelIndex;
-					Hit.Position = FVector2f(TimeToX(Model.SpanStart + Local), DisplayToY(ToDisplay(Model.Layer, Channel, EnvelopeAt(*Layer, Model, Local))));
-					Hit.bTimeMovable = Model.bEditable;
-					Hit.bValueEditable = false;
-				}
-				continue;
-			}
-
 			for (int32 Point = 0; Point < Model.NumValuePoints; ++Point)
 			{
 				FKeyHit& Hit = KeyHits.AddDefaulted_GetRef();
@@ -1802,6 +1810,28 @@ void SWidgetAnimGraphCanvas::UpdateFrame()
 					DisplayToY(ToDisplay(Model.Layer, Channel, GetPointValue(*Layer, Model, Point, Channel))));
 				Hit.bTimeMovable = Model.bEditable && (Model.bKeyframed || (Point > 0 && Point < Model.NumValuePoints - 1));
 				Hit.bValueEditable = CanSetPointValue(*Layer, Model, Point, Channel);
+			}
+
+			// A Sound's fades, on its Volume curve: a key where its fade in ends and one where its fade out begins - where the
+			// curve eases off its volume - each dragged in time to set its Fade In or Fade Out.
+			if (bSoundVolume)
+			{
+				float FadeIn = 0.f;
+				float FadeOut = 0.f;
+				GetFades(*Layer, Model, FadeIn, FadeOut);
+				for (const int32 Point : { FadeInPoint, FadeOutPoint })
+				{
+					const float Local = Point == FadeInPoint ? FadeIn : Model.RunSeconds - FadeOut;
+					int32 Segment = 0;
+					float Alpha = 0.f;
+					Locate(Model, Local, Segment, Alpha);
+					FKeyHit& Hit = KeyHits.AddDefaulted_GetRef();
+					Hit.Key = FGraphKey{ Model.Layer, Point, EChannel::FadeEnvelope };
+					Hit.Model = ModelIndex;
+					Hit.Position = FVector2f(TimeToX(Model.SpanStart + Local), DisplayToY(ToDisplay(Model.Layer, Channel, ValueAt(*Layer, Model, Channel, Segment, Alpha))));
+					Hit.bTimeMovable = Model.bEditable;
+					Hit.bValueEditable = false;
+				}
 			}
 		}
 
@@ -1960,7 +1990,7 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
 		{
 			continue;
 		}
-		Box(GridLayer, FVector2f(X, RulerHeight), FVector2f(1.f, Size.Y - RulerHeight), WhiteBrush(), Palette::GridMajor);
+		Box(GridLayer, FVector2f(X, RulerHeight), FVector2f(1.f, Size.Y - RulerHeight), WhiteBrush(), UWidgetAnimEditorSettings::Get().GridMajorColor);
 		Box(GridLayer, FVector2f(X, RulerHeight - 6.f), FVector2f(1.f, 6.f), WhiteBrush(), Palette::GraphRulerTick);
 		const FString Label = Panel ? Panel->FormatTime(FMath::Abs(Mark) < TimeStep * 0.01f ? 0.f : Mark, TimeStep < 0.1f ? 2 : 1) : FString::SanitizeFloat(Mark);
 		Text(GridLayer + 1, Label, FVector2f(X + 3.f, 3.f), SmallFont, Palette::GraphRulerText);
@@ -1970,7 +2000,7 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
 		const float X = TimeToX(Mark);
 		if (X >= GutterWidth)
 		{
-			Box(GridLayer, FVector2f(X, RulerHeight), FVector2f(1.f, Size.Y - RulerHeight), WhiteBrush(), Palette::GridMinor);
+			Box(GridLayer, FVector2f(X, RulerHeight), FVector2f(1.f, Size.Y - RulerHeight), WhiteBrush(), UWidgetAnimEditorSettings::Get().GridMinorColor);
 		}
 	}
 
@@ -1986,7 +2016,7 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
 			continue;
 		}
 		const bool bZero = FMath::Abs(Mark) < ValueStep * 0.01f;
-		Box(GridLayer, FVector2f(GutterWidth, Y), FVector2f(Size.X - GutterWidth, 1.f), WhiteBrush(), bZero ? Palette::GraphZeroLine : Palette::GridMajor);
+		Box(GridLayer, FVector2f(GutterWidth, Y), FVector2f(Size.X - GutterWidth, 1.f), WhiteBrush(), bZero ? Palette::GraphZeroLine : UWidgetAnimEditorSettings::Get().GridMajorColor);
 		const FString Label = bEase || IsNormalized()
 			? FString::Printf(TEXT("%d%%"), FMath::RoundToInt(Mark * 100.f))
 			: FormatValue(bZero ? 0.f : Mark);
@@ -2288,7 +2318,8 @@ void SWidgetAnimGraphCanvas::SelectKey(const FGraphKey& Key, bool bAdd, bool bTo
 
 	if (Key.Channel != EChannel::Progress && Selected.Contains(Key))
 	{
-		State->ActiveChannel = WidgetAnimGraph::ChannelId(Key.Layer, Key.Channel);
+		// A Sound's fade key sits on its Volume curve, which is the channel it makes active.
+		State->ActiveChannel = WidgetAnimGraph::ChannelId(Key.Layer, Key.Channel == EChannel::FadeEnvelope ? EChannel::Value : Key.Channel);
 	}
 	MirrorSelectionToPanel();
 }
@@ -2724,6 +2755,7 @@ void SWidgetAnimGraphCanvas::SetCurve(const TArray<SWidgetAnimTimeline::FKeyRef>
 			case ECurvePreset::EaseIn:    Layer->Easing = EWidgetAnimEasing::EaseIn; break;
 			case ECurvePreset::EaseOut:   Layer->Easing = EWidgetAnimEasing::EaseOut; break;
 			case ECurvePreset::EaseInOut: Layer->Easing = EWidgetAnimEasing::EaseInOut; break;
+			case ECurvePreset::Hold:      Layer->Easing = EWidgetAnimEasing::Hold; break;
 			default: break;
 			}
 			continue;
@@ -2819,7 +2851,8 @@ TSharedRef<SWidget> SWidgetAnimGraphCanvas::MakeCurveMenu()
 	Menu.BeginSection("Curve", LOCTEXT("CurveToNextKeyHeading", "Curve To Next Key"));
 	for (const FEntry& Entry : Entries)
 	{
-		const bool bAllowed = Segments.Num() > 0 && !(bAnyKeyless && (Entry.Preset == ECurvePreset::TrackEasing || Entry.Preset == ECurvePreset::Hold));
+		// A track with no keys takes Hold as its own Easing - see SetCurve.
+		const bool bAllowed = Segments.Num() > 0 && !(bAnyKeyless && Entry.Preset == ECurvePreset::TrackEasing);
 		const ECurvePreset Preset = Entry.Preset;
 		Menu.AddMenuEntry(
 			EasingEnum ? EasingEnum->GetDisplayNameTextByValue(static_cast<int64>(Entry.Easing)) : FText::GetEmpty(),
@@ -3205,6 +3238,23 @@ FReply SWidgetAnimGraphCanvas::OnKeyDown(const FGeometry& MyGeometry, const FKey
 {
 	const FKey Key = InKeyEvent.GetKey();
 	const bool bCtrl = InKeyEvent.IsControlDown() || InKeyEvent.IsCommandDown();
+
+	// Ctrl / Cmd + Z, and Ctrl / Cmd + Y or Ctrl / Cmd + Shift + Z: the editor's undo and redo - not while a drag is still open.
+	if ((Key == EKeys::Z || Key == EKeys::Y) && bCtrl && !InKeyEvent.IsAltDown())
+	{
+		if (GEditor && !GEditor->IsTransactionActive())
+		{
+			if (Key == EKeys::Y || InKeyEvent.IsShiftDown())
+			{
+				GEditor->RedoTransaction();
+			}
+			else
+			{
+				GEditor->UndoTransaction();
+			}
+		}
+		return FReply::Handled();
+	}
 
 	if (Key == EKeys::Delete || Key == EKeys::BackSpace)
 	{

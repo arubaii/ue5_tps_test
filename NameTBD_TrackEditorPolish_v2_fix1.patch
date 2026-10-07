@@ -1,0 +1,18 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEasing.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEasing.h
+index d48bc75..7fac5ec 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEasing.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEasing.h
+@@ -23,10 +23,9 @@ enum class EWidgetAnimEasing : uint8
+ 	EaseInOut,
+ 	Custom,
+ 
+-	/**
+-	 * No travel at all: the track holds its start value, then lands on its end value - or each key on the next - the
+-	 * moment it arrives there. Appended last, so data saved before it existed reads exactly as it did.
+-	 */
++	// No travel at all: the track holds its start value, then lands on its end value - or each key on the next - the
++	// moment it arrives there. Appended last, so data saved before it existed reads exactly as it did. A line comment, not
++	// a doc comment: UHT would read that as a second ToolTip beside the one in its UMETA.
+ 	Hold UMETA(ToolTip = "Stays on the value it starts from, then jumps to the next the moment it arrives - no travel in between.")
+ };
+ 

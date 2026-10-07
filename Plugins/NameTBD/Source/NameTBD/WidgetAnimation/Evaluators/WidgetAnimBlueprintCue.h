@@ -125,12 +125,24 @@ struct NAMETBD_API FWidgetAnimBlueprintCueParams : public FWidgetAnimCueParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blueprint Cue")
 	double Value = 0.0;
 
-	/** The cue's own per-track settings - its Settings Struct - handed to On Cue. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blueprint Cue")
+	/** The cue's own per-track settings - its Settings Struct, which they always follow - handed to On Cue. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blueprint Cue", meta = (StructTypeConst))
 	FInstancedStruct Settings;
 
 	/** The cue's class default object, which is what is called. Null when no cue is set. */
 	const UWidgetAnimBlueprintCue* GetTypeObject() const;
+
+	/**
+	 * Whether Settings hold what the cue's Settings Struct says they should: that struct, or nothing when it has none.
+	 * Always so with no cue set.
+	 */
+	bool IsSettingsStructCurrent() const;
+
+	/**
+	 * Settings made afresh, at their defaults, for the cue's Settings Struct when they aren't one - so a track's Settings
+	 * follow its cue, never picked by hand. True if anything changed. See IsSettingsStructCurrent.
+	 */
+	bool SyncSettingsStruct();
 
 	/** Settings for a new track of InType: its default value, and its Settings Struct at its defaults. */
 	static FInstancedStruct MakeFor(TSubclassOf<UWidgetAnimBlueprintCue> InType);

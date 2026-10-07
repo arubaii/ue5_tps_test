@@ -65,10 +65,13 @@
 #include "IDetailPropertyRow.h"
 #include "IDetailsView.h"
 #include "PropertyCustomizationHelpers.h"
+#include "InstancedStructDetails.h"
 #include "PropertyEditorModule.h"
 #include "PropertyHandle.h"
 #include "PropertyRestriction.h"
 #include "Rendering/DrawElements.h"
+#include "Rendering/RenderingCommon.h"
+#include "Rendering/SlateRenderer.h"
 #include "ScopedTransaction.h"
 #include "Misc/ConfigCacheIni.h"
 #include "Editor.h"
@@ -238,7 +241,17 @@ namespace WidgetAnimTimeline
 		}
 
 		const FName Name = Property->GetFName();
-		if (Name == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Timing))
+		if (Name == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, AnimType))
+		{
+			// User-defined Track is not a type of its own to switch to - each registered type is added from the Add Track menu,
+			// as itself - so it is offered only while every track edited already is one.
+			const bool bAllRegistered = Algo::AllOf(Layers, [](const FWidgetAnimLayer* Layer) { return Layer->AnimType == EWidgetAnimType::Custom; });
+			HideEnumValues(Child, StaticEnum<EWidgetAnimType>(), [bAllRegistered](int64 Value)
+			{
+				return bAllRegistered || static_cast<EWidgetAnimType>(Value) != EWidgetAnimType::Custom;
+			});
+		}
+		else if (Name == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Timing))
 		{
 			HideEnumValues(Child, StaticEnum<EWidgetAnimTiming>(), [&Layers](int64 Value)
 			{
@@ -373,6 +386,105 @@ namespace WidgetAnimTimeline
 	const FSlateBrush* WhiteBrush()
 	{
 		return FAppStyle::GetBrush("WhiteBrush");
+	}
+
+	/**
+	 * A filled triangle through A, B and C - in Geometry's local space - drawn as one, from three vertices: a real triangle
+	 * with straight edges at any size and DPI, where one stacked from a row of boxes per pixel came out stepped and lopsided.
+	 */
+	void MakeTriangle(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& Geometry, const FVector2f& A, const FVector2f& B, const FVector2f& C, const FLinearColor& Color)
+	{
+		const FSlateResourceHandle Handle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(*WhiteBrush());
+		const FSlateRenderTransform& Transform = Geometry.GetAccumulatedRenderTransform();
+		const FColor VertexColor = Color.ToFColor(/*bSRGB=*/true);
+
+		TArray<FSlateVertex> Vertices;
+		Vertices.Reserve(3);
+		for (const FVector2f& Point : { A, B, C })
+		{
+			Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(Transform, Point, FVector2f(0.5f, 0.5f), VertexColor));
+		}
+		TArray<SlateIndex> Indices = { 0, 1, 2 };
+		FSlateDrawElement::MakeCustomVerts(OutDrawElements, LayerId, Handle, Vertices, Indices, nullptr, 0, 0);
+	}
+
+	/**
+	 * Where a vertical line and a head centered on it go - a start or end marker's triangle, the playhead's tag and notch -
+	 * on whole physical pixels, in a geometry's local units. Worked out together so the line keeps the same width and stays
+	 * on the head's middle at every zoom and DPI: placed each on its own, the two were rounded to the screen's pixels
+	 * separately, and could land a pixel apart, or the line come out a pixel wider or narrower than set.
+	 */
+	struct FPixelColumn
+	{
+		float LineLeft = 0.f;
+		float LineWidth = 1.f;
+		float HeadLeft = 0.f;
+		float HeadWidth = 1.f;
+	};
+
+	float PixelScale(const FGeometry& Geometry)
+	{
+		return FMath::Max(Geometry.GetAccumulatedLayoutTransform().GetScale(), UE_KINDA_SMALL_NUMBER);
+	}
+
+	/** CenterX is the line's middle; LineThickness and HeadWidth in local units, each made a whole number of pixels. */
+	FPixelColumn SnapColumn(const FGeometry& Geometry, float CenterX, float LineThickness, float HeadWidth)
+	{
+		const float Scale = PixelScale(Geometry);
+		const float Origin = Geometry.GetAccumulatedLayoutTransform().GetTranslation().X;
+		const int32 LinePixels = FMath::Max(1, FMath::RoundToInt(LineThickness * Scale));
+		int32 HeadPixels = FMath::Max(LinePixels, FMath::RoundToInt(HeadWidth * Scale));
+		// As many pixels of head either side of the line - an odd number over would leave one side a pixel wider.
+		if ((HeadPixels - LinePixels) % 2 != 0)
+		{
+			++HeadPixels;
+		}
+		const float LineLeftPixel = FMath::RoundToFloat(Origin + CenterX * Scale - LinePixels * 0.5f);
+		const float HeadLeftPixel = LineLeftPixel - static_cast<float>((HeadPixels - LinePixels) / 2);
+
+		FPixelColumn Column;
+		Column.LineLeft = (LineLeftPixel - Origin) / Scale;
+		Column.LineWidth = LinePixels / Scale;
+		Column.HeadLeft = (HeadLeftPixel - Origin) / Scale;
+		Column.HeadWidth = HeadPixels / Scale;
+		return Column;
+	}
+
+	/** X, in local units, moved onto the nearest whole physical pixel. */
+	float SnapX(const FGeometry& Geometry, float X)
+	{
+		const float Scale = PixelScale(Geometry);
+		const float Origin = Geometry.GetAccumulatedLayoutTransform().GetTranslation().X;
+		return (FMath::RoundToFloat(Origin + X * Scale) - Origin) / Scale;
+	}
+
+	/** Y, in local units, moved onto the nearest whole physical pixel. */
+	float SnapY(const FGeometry& Geometry, float Y)
+	{
+		const float Scale = PixelScale(Geometry);
+		const float Origin = Geometry.GetAccumulatedLayoutTransform().GetTranslation().Y;
+		return (FMath::RoundToFloat(Origin + Y * Scale) - Origin) / Scale;
+	}
+
+	/**
+	 * A head pointing down at its line - the plugin's smooth vector triangle, tinted; three plain vertices with their
+	 * slanted edges traced anti-aliased if that file is missing.
+	 */
+	void MakeDownTriangle(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& Geometry, float Left, float Top, float Width, float Height, const FLinearColor& Color)
+	{
+		if (const FSlateBrush* Brush = FNameTBDStyle::FindIcon(FNameTBDStyle::RangeMarkerIcon))
+		{
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+				Geometry.ToPaintGeometry(FVector2f(Width, Height), FSlateLayoutTransform(FVector2f(Left, Top))),
+				Brush, ESlateDrawEffect::None, Color);
+			return;
+		}
+		const FVector2f TopLeft(Left, Top);
+		const FVector2f TopRight(Left + Width, Top);
+		const FVector2f Point(Left + Width * 0.5f, Top + Height);
+		MakeTriangle(OutDrawElements, LayerId, Geometry, TopLeft, TopRight, Point, Color);
+		FSlateDrawElement::MakeLines(OutDrawElements, LayerId, Geometry.ToPaintGeometry(),
+			TArray<FVector2f>{ TopLeft, Point, TopRight }, ESlateDrawEffect::None, Color, /*bAntialias=*/true, 1.f);
 	}
 
 	/** The first of Candidates the app style has - icon names move between engine versions. Null if none do. */
@@ -719,20 +831,130 @@ namespace WidgetAnimTimeline
 	}
 
 	/**
-	 * How far along a Sound cue's fade its volume is, 0 - 1, at T of the way through it - the engine's audio fader curves,
-	 * near enough to draw them. See EWidgetAnimSoundFadeCurve.
+	 * Whether a registered type's settings struct makes a User-defined Track rather than one of the plugin's own: a Blueprint
+	 * type or cue, which wraps what a project made, or a type another module registers. Every type this plugin registers -
+	 * Sound, Event, Count Up, the text tracks - is a track type of its own, shown like a built-in one.
 	 */
-	float SoundFadeShape(EWidgetAnimSoundFadeCurve Curve, float T)
+	bool IsUserDefinedTrackType(const UScriptStruct* ParamsStruct)
 	{
-		T = FMath::Clamp(T, 0.f, 1.f);
-		switch (Curve)
+		if (!ParamsStruct)
 		{
-		case EWidgetAnimSoundFadeCurve::Logarithmic: return FMath::LogX(10.f, 1.f + 9.f * T);
-		case EWidgetAnimSoundFadeCurve::SCurve:      return FMath::SmoothStep(0.f, 1.f, T);
-		case EWidgetAnimSoundFadeCurve::Sine:        return FMath::Sin(T * HALF_PI);
-		default:                                     return T;
+			return false;
 		}
+		if (ParamsStruct->IsChildOf(FWidgetAnimBlueprintTypeParams::StaticStruct()) || ParamsStruct->IsChildOf(FWidgetAnimBlueprintCueParams::StaticStruct()))
+		{
+			return true;
+		}
+		// The plugin's modules are all NameTBD-something: /Script/NameTBD, /Script/NameTBDCommonUI...
+		return !ParamsStruct->GetPackage()->GetName().StartsWith(TEXT("/Script/NameTBD"));
 	}
+
+	/**
+	 * A registered type's settings, field by field, with no Type Params row of their own - the stock instanced struct's
+	 * children, laid out where they are added. On a Blueprint type's or cue's track, its Type and its Settings are read-only -
+	 * the Settings follow the type's Settings Struct (see SWidgetAnimTimeline::SyncBlueprintTypeSettings) - each with a button
+	 * beside it that finds its asset in the Content Browser.
+	 */
+	class FTypeParamsDetails : public FInstancedStructDataDetails
+	{
+	public:
+		explicit FTypeParamsDetails(TSharedPtr<IPropertyHandle> InStructProperty)
+			: FInstancedStructDataDetails(InStructProperty)
+		{
+		}
+
+		virtual void OnChildRowAdded(IDetailPropertyRow& ChildRow) override
+		{
+			const TSharedPtr<IPropertyHandle> Handle = ChildRow.GetPropertyHandle();
+			const FProperty* Property = Handle.IsValid() ? Handle->GetProperty() : nullptr;
+			const UStruct* Owner = Property ? Property->GetOwnerStruct() : nullptr;
+			const bool bBlueprintType = Owner == FWidgetAnimBlueprintTypeParams::StaticStruct();
+			const bool bBlueprintCue = Owner == FWidgetAnimBlueprintCueParams::StaticStruct();
+			if (!bBlueprintType && !bBlueprintCue)
+			{
+				return;
+			}
+
+			// The same two fields on a Blueprint type and a Blueprint cue.
+			const FName Name = Property->GetFName();
+			const bool bSettings = bBlueprintType ? Name == GET_MEMBER_NAME_CHECKED(FWidgetAnimBlueprintTypeParams, Settings) : Name == GET_MEMBER_NAME_CHECKED(FWidgetAnimBlueprintCueParams, Settings);
+			const bool bType = bBlueprintType ? Name == GET_MEMBER_NAME_CHECKED(FWidgetAnimBlueprintTypeParams, Type) : Name == GET_MEMBER_NAME_CHECKED(FWidgetAnimBlueprintCueParams, Type);
+			if (!bSettings && !bType)
+			{
+				return;
+			}
+
+			// The asset each names: the Settings' struct (a Blueprint Structure), or the Blueprint the type's class is made by.
+			auto FindAsset = [Handle, bSettings]() -> UObject*
+			{
+				if (!Handle.IsValid() || !Handle->IsValidHandle())
+				{
+					return nullptr;
+				}
+				if (bSettings)
+				{
+					TArray<void*> RawData;
+					Handle->AccessRawData(RawData);
+					const FInstancedStruct* Settings = RawData.Num() == 1 ? static_cast<const FInstancedStruct*>(RawData[0]) : nullptr;
+					UScriptStruct* SettingsStruct = Settings ? const_cast<UScriptStruct*>(Settings->GetScriptStruct()) : nullptr;
+					return SettingsStruct && SettingsStruct->IsAsset() ? SettingsStruct : nullptr;
+				}
+				UObject* Value = nullptr;
+				const UClass* TypeClass = Handle->GetValue(Value) == FPropertyAccess::Success ? Cast<UClass>(Value) : nullptr;
+				return TypeClass ? TypeClass->ClassGeneratedBy.Get() : nullptr;
+			};
+
+			TSharedPtr<SWidget> NameWidget;
+			TSharedPtr<SWidget> ValueWidget;
+			ChildRow.GetDefaultWidgets(NameWidget, ValueWidget, /*bAddWidgetDecoration=*/true);
+			if (!NameWidget.IsValid() || !ValueWidget.IsValid())
+			{
+				return;
+			}
+
+			ChildRow.CustomWidget(/*bShowChildren=*/bSettings)
+				.NameContent()
+				[
+					NameWidget.ToSharedRef()
+				]
+				.ValueContent()
+				.MinDesiredWidth(220.f)
+				[
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.f)
+					.VAlign(VAlign_Center)
+					[
+						SNew(SBox)
+						.IsEnabled(false)
+						.ToolTipText(bSettings ? WidgetAnimTips::BlueprintSettingsStructTooltip() : WidgetAnimTips::TypeNameTooltip())
+						[
+							ValueWidget.ToSharedRef()
+						]
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(2.f, 0.f, 0.f, 0.f))
+					[
+						PropertyCustomizationHelpers::MakeBrowseButton(
+							FSimpleDelegate::CreateLambda([FindAsset]()
+							{
+								if (UObject* Asset = FindAsset(); Asset && GEditor)
+								{
+									TArray<UObject*> Objects;
+									Objects.Add(Asset);
+									GEditor->SyncBrowserToObjects(Objects);
+								}
+							}),
+							bSettings ? WidgetAnimTips::BrowseToSettingsStructTooltip() : WidgetAnimTips::BrowseToBlueprintTypeTooltip(),
+							TAttribute<bool>::CreateLambda([FindAsset]() { return FindAsset() != nullptr; }))
+					]
+				];
+		}
+	};
 
 	/**
 	 * The Save / Update Animation Asset button: a dimmed animation orange, flat, with black text, lighting up to the full
@@ -1213,16 +1435,13 @@ private:
 		return Owner && Owner->IsCollapsedHeadShown(LayerIndex);
 	}
 
-	/** How far beyond its flag, in pixels, the mouse can be and still grab the animation's start or end. */
-	static constexpr float RangeGrabDistance = 3.f;
-
-	/** How wide the flags of the animation's start and end are in the ruler's bottom strip - see SWidgetAnimTimeline::RangeStripHeight. */
-	static constexpr float RangeFlagWidth = 10.f;
+	/** How far beyond its triangle, in pixels, the mouse can be and still grab the animation's start or end. */
+	static constexpr float RangeGrabDistance = 2.f;
 
 	/**
 	 * The animation's start (false) or end (true) under a point in the ruler, if either can be dragged there: only in the
-	 * strip along the ruler's bottom, on its flag - the rest of the ruler is the playhead's, so it can be grabbed and
-	 * scrubbed wherever it sits, start and end included.
+	 * strip along the ruler's bottom, on its triangle - the rest of the ruler is the playhead's, so it can be grabbed and
+	 * scrubbed wherever it sits, start and end included, and a click on a triangle never scrubs.
 	 */
 	TOptional<bool> RangeEdgeAt(const FVector2f& Local, float Width) const
 	{
@@ -1233,16 +1452,16 @@ private:
 			return TOptional<bool>();
 		}
 
-		// Each flag points into the animation from its line: the end's to its left, the start's to its right - so with the two
-		// together, which one is grabbed is the side pressed. The end first: with nothing played yet the two sit together, and
-		// pulling the end out is the one that can move.
+		// Each triangle is centered on its line. With the two together - nothing played yet - the side pressed picks: the end
+		// to the right, which is the one that can be pulled out.
 		const float EndX = TimeToX(Owner->GetPassSeconds(), Width);
 		const float StartX = TimeToX(0.f, Width);
-		const bool bOnEnd = Local.X >= EndX - RangeFlagWidth - RangeGrabDistance && Local.X <= EndX + 1.f + RangeGrabDistance;
-		const bool bOnStart = Local.X >= StartX - RangeGrabDistance && Local.X <= StartX + RangeFlagWidth + RangeGrabDistance;
+		const float HalfWidth = UWidgetAnimEditorSettings::Get().RangeTriangleWidth * 0.5f + RangeGrabDistance;
+		const bool bOnEnd = FMath::Abs(Local.X - (EndX + 0.5f)) <= HalfWidth;
+		const bool bOnStart = FMath::Abs(Local.X - (StartX + 0.5f)) <= HalfWidth;
 		if (bOnEnd && bOnStart)
 		{
-			return TOptional<bool>(Local.X <= EndX + 0.5f);
+			return TOptional<bool>(Local.X >= (StartX + EndX) * 0.5f);
 		}
 		if (bOnEnd)
 		{
@@ -2425,6 +2644,26 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			}
 		}
 
+		// An Event track's name follows the editor's own event icon - the one on a Blueprint's event nodes - and a Sound
+		// track's a sound's. Under whichever name this engine version has it; none drawn if it has none.
+		if (Layer && Layer->AnimType == EWidgetAnimType::Custom)
+		{
+			static const FSlateBrush* EventIcon = PickBrush({ "GraphEditor.Event_16x", "Graph.Event_16x", "Icons.Event", "GraphEditor.CustomEvent_16x" });
+			static const FSlateBrush* SoundIcon = PickBrush({ "ClassIcon.SoundWave", "ClassIcon.SoundCue", "ClassIcon.SoundBase", "Icons.Audio" });
+			const FSlateBrush* CueIcon = Layer->TypeParams.GetPtr<FWidgetAnimEventCueParams>() ? EventIcon
+				: Layer->TypeParams.GetPtr<FWidgetAnimSoundCueParams>() ? SoundIcon
+				: nullptr;
+			const UWidgetAnimEditorSettings& Look = UWidgetAnimEditorSettings::Get();
+			const float IconSizing = FMath::Min(Look.CueTrackIconSize, InnerHeight);
+			if (CueIcon && GlyphX - BarX0 + IconSizing + Padding <= BarWidth)
+			{
+				const FLinearColor IconTint = bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Look.CueTrackIconTint) : Look.CueTrackIconTint;
+				Box(GlyphX, InnerTop + (InnerHeight - IconSizing) * 0.5f, IconSizing, IconSizing, IconTint, SectionOverlayLayer, CueIcon);
+				GlyphX += IconSizing + 3.f;
+				TextLeft = GlyphX + Padding * 0.5f;
+			}
+		}
+
 		const TArray<float>& KeyTimes = Paint.KeyTimes;
 
 		// A track some of whose segments have curves of their own has no one easing to name: each segment names
@@ -2556,39 +2795,6 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 		if (!bLabelSegments && bTitleFullSize && !EasingLabel.IsEmpty() && TextLeft - BarX0 + LabelSize.X + EasingSize.X + Padding + RightPadding + 12.f <= BarWidth)
 		{
 			TrackText(EasingLabel, BarX0 + BarWidth - RightPadding - EasingSize.X, TextY, LayerFont, TitleColor * FLinearColor(1.f, 1.f, 1.f, Palette::SectionSecondaryTextOpacity), bSlantLayerText);
-		}
-
-		// A Sound cue's fades: the volume's ramp up from silence at its start and down to silence at its end, drawn as a
-		// line across the body along its Fade Curve - how loud it is along the track, as an audio editor draws a fade.
-		if (const FWidgetAnimSoundCueParams* Sound = Layer && bCue ? Layer->TypeParams.GetPtr<FWidgetAnimSoundCueParams>() : nullptr)
-		{
-			const FLinearColor FadeColor = bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Palette::SoundFadeLine) : Palette::SoundFadeLine;
-			const float FadeTop = InnerTop + 2.f;
-			const float FadeBottom = InnerTop + InnerHeight - 1.f;
-			auto DrawFade = [&](float FromSeconds, float Length, bool bFadingIn)
-			{
-				if (Length <= 0.f || FadeBottom - FadeTop < 4.f)
-				{
-					return;
-				}
-
-				constexpr int32 NumSteps = 12;
-				TArray<FVector2f> Points;
-				Points.Reserve(NumSteps + 1);
-				for (int32 StepIndex = 0; StepIndex <= NumSteps; ++StepIndex)
-				{
-					const float T = static_cast<float>(StepIndex) / NumSteps;
-					const float Volume = WidgetAnimTimeline::SoundFadeShape(Sound->FadeCurve, bFadingIn ? T : 1.f - T);
-					Points.Add(FVector2f(TimeToX(FromSeconds + T * Length, Size.X), FMath::Lerp(FadeBottom, FadeTop, Volume)));
-				}
-				FSlateDrawElement::MakeLines(OutDrawElements, SectionOverlayLayer, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None, FadeColor, /*bAntialias=*/true, 1.5f);
-			};
-
-			// In the track's played seconds, never past its ends. The fade out finishes as the track does.
-			const float FadeIn = FMath::Min(FMath::Max(Sound->FadeIn, 0.f), Span.Y);
-			const float FadeOut = FMath::Min(FMath::Max(Sound->FadeOut, 0.f), Span.Y);
-			DrawFade(Span.X, FadeIn, /*bFadingIn=*/true);
-			DrawFade(Span.X + Span.Y - FadeOut, FadeOut, /*bFadingIn=*/false);
 		}
 
 		// Keys: diamonds, button-like - normal, hovered (lighter, bigger), pressed (darker), selected (orange,
@@ -2781,8 +2987,9 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 
 		// Outside the animation - before its start, after its end - is shaded, the way the native track area
 		// shades outside the playback range.
-		Box(0.f, ClipTop, StartX, PassBottom - ClipTop, Palette::OutOfRangeShade, GridLayer);
-		Box(EndX, ClipTop, Size.X - EndX, PassBottom - ClipTop, Palette::OutOfRangeShade, GridLayer);
+		const FLinearColor OutOfRangeShade = UWidgetAnimEditorSettings::Get().OutOfRangeShade;
+		Box(0.f, ClipTop, StartX, PassBottom - ClipTop, OutOfRangeShade, GridLayer);
+		Box(EndX, ClipTop, Size.X - EndX, PassBottom - ClipTop, OutOfRangeShade, GridLayer);
 
 		// A percentage timeline ends at 100% - one second as stored - however far its tracks reach: past it is never played.
 		if (Owner->IsPercentTime() && PassSeconds > 1.f + KINDA_SMALL_NUMBER)
@@ -2795,7 +3002,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 		{
 			const float X = TimeToX(TickIndex * MinorStep, Size.X);
 			const bool bMajor = ((TickIndex % MinorPerMajor) + MinorPerMajor) % MinorPerMajor == 0;
-			Box(X, ClipTop, 1.f, PassBottom - ClipTop, bMajor ? Palette::GridMajor : Palette::GridMinor, GridLayer);
+			Box(X, ClipTop, 1.f, PassBottom - ClipTop, bMajor ? UWidgetAnimEditorSettings::Get().GridMajorColor : UWidgetAnimEditorSettings::Get().GridMinorColor, GridLayer);
 		}
 
 		// ---- Group lines: name, span and key summary ----------------------------------------------------------
@@ -3163,12 +3370,12 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 	// and end.
 	if (Owner->HasAnimation())
 	{
-		// Start and end of the animation: a bright green and red line down through the tracks, and in the strip along the
-		// ruler's bottom a flag on each pointing into the animation - what each is dragged by, lit while the mouse is on it or
-		// it is being dragged. Below the playhead's tag, so the playhead sitting on either never covers its flag.
-		const float StripTop = RulerHeight - SWidgetAnimTimeline::RangeStripHeight;
-		Box(StartX, StripTop, 1.f, Size.Y - StripTop, WithAlpha(Palette::RangeStart, Palette::RangeLineOpacity), RangeLayer);
-		Box(EndX, StripTop, 1.f, Size.Y - StripTop, WithAlpha(Palette::RangeEnd, Palette::RangeLineOpacity), RangeLayer);
+		// Start and end of the animation, as Godot marks a time: a solid line down through the tracks - pure green at the start,
+		// pure red at the end - under an upside-down triangle in the strip along the ruler's bottom, the only place either is
+		// grabbed, lit while the mouse is on it or it is being dragged. Below the playhead's head, so the playhead sitting on
+		// either never covers its triangle, and the two never take each other's clicks - see RangeEdgeAt.
+		const UWidgetAnimEditorSettings& Look = UWidgetAnimEditorSettings::Get();
+		const float LineThickness = FMath::Max(Look.RangeLineThickness, 1.f);
 		if (Owner->IsPercentTime() && PassSeconds > 1.f + KINDA_SMALL_NUMBER)
 		{
 			Box(TimeToX(1.f, Size.X), RulerHeight, 1.f, Size.Y - RulerHeight, Palette::PercentEndLine, RangeLayer);
@@ -3178,28 +3385,27 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			const bool bDraggingRange = Drag == EDrag::Range || Drag == EDrag::RangePending;
 			const bool bStartLit = bDraggingRange ? !bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && !HoverRange.GetValue());
 			const bool bEndLit = bDraggingRange ? bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && HoverRange.GetValue());
-			auto Flag = [&](float LineX, bool bEnd, bool bLit)
-			{
-				const FLinearColor Base = bEnd ? Palette::RangeEnd : Palette::RangeStart;
-				const FLinearColor Color = bLit ? FMath::Lerp(Base, FLinearColor::White, 0.35f) : Base;
-				const float FlagWidth = bCanDragRange ? (bLit ? RangeFlagWidth + 3.f : RangeFlagWidth) : 4.f;
-				const float FlagHeight = bCanDragRange ? SWidgetAnimTimeline::RangeStripHeight - 1.f : 3.f;
-				const float FlagX = bEnd ? LineX + 1.f - FlagWidth : LineX;
-				Box(FlagX, RulerHeight - FlagHeight, FlagWidth, FlagHeight, Color, RangeLayer + 1, RoundedFill(2.f));
-				Box(LineX, StripTop, 1.f, SWidgetAnimTimeline::RangeStripHeight, Color, RangeLayer + 1);
 
-				// A grip on a flag that can be dragged: two short dark lines across it.
-				if (bCanDragRange)
-				{
-					const float GripX = FlagX + FlagWidth * 0.5f - 1.5f;
-					for (const float Offset : { 0.f, 3.f })
-					{
-						Box(GripX + Offset, RulerHeight - FlagHeight + 2.f, 1.f, FlagHeight - 4.f, FLinearColor(0.f, 0.f, 0.f, 0.45f), RangeLayer + 2);
-					}
-				}
+			// One shape: the triangle - its flat side along the top, its point where the tracks start - and the line, which
+			// runs up into its middle and down through the tracks. Laid out together on whole pixels (SnapColumn), so at any
+			// zoom the line is the same width and right under the triangle's point. A fixed range - the panel locked, or
+			// nothing to bound - gets a smaller triangle. Lit - line and all - a little bigger and lighter.
+			auto Marker = [&](float LineX, bool bEnd, bool bLit)
+			{
+				const FLinearColor Base = bEnd ? Look.RangeEndColor : Look.RangeStartColor;
+				const FLinearColor Color = bLit ? FMath::Lerp(Base, FLinearColor::White, Look.RangeHoverLighten) : Base;
+				const float Scale = bCanDragRange ? (bLit ? 1.15f : 1.f) : 0.6f;
+				const float Height = FMath::Min(Look.RangeTriangleHeight * Scale, SWidgetAnimTimeline::RangeStripHeight);
+				const WidgetAnimTimeline::FPixelColumn Column = WidgetAnimTimeline::SnapColumn(AllottedGeometry, LineX + 0.5f, LineThickness, Look.RangeTriangleWidth * Scale);
+				const float Point = WidgetAnimTimeline::SnapY(AllottedGeometry, RulerHeight);
+				const float Top = WidgetAnimTimeline::SnapY(AllottedGeometry, RulerHeight - Height);
+				const float LineTop = WidgetAnimTimeline::SnapY(AllottedGeometry, (Top + Point) * 0.5f);
+
+				Box(Column.LineLeft, LineTop, Column.LineWidth, Size.Y - LineTop, WithAlpha(Color, Color.A * Look.RangeLineOpacity), RangeLayer);
+				WidgetAnimTimeline::MakeDownTriangle(OutDrawElements, RangeLayer + 1, AllottedGeometry, Column.HeadLeft, Top, Column.HeadWidth, Point - Top, Color);
 			};
-			Flag(StartX, /*bEnd=*/false, bStartLit);
-			Flag(EndX, /*bEnd=*/true, bEndLit);
+			Marker(StartX, /*bEnd=*/false, bStartLit);
+			Marker(EndX, /*bEnd=*/true, bEndLit);
 		}
 
 		if (const TOptional<float> Snap = Owner->GetSnapIndicator(); Snap.IsSet())
@@ -4521,7 +4727,10 @@ private:
 	 */
 	void CustomizeLayer(IDetailLayoutBuilder& DetailBuilder, const TSharedRef<IPropertyHandle>& LayerHandle, bool bIsTransform, int32 LayerIndex)
 	{
-		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Layer", LOCTEXT("LayerCategory", "Track"));
+		// Two categories: Track Properties - what every track has, from its Layer Group down to its Easing and timing - and
+		// Track Values, what only this kind of track has: a Fade's opacities, a Shape's fields, a registered type's settings.
+		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Layer", LOCTEXT("TrackPropertiesCategory", "Track Properties"));
+		IDetailCategoryBuilder& Values = DetailBuilder.EditCategory("WidgetAnimSelection_TrackValues", LOCTEXT("TrackValuesCategory", "Track Values"));
 
 		// Layer Group is not a Details property - it only means something next to the group list - so it is
 		// a row of its own here, changed through the panel like a drop on a group's row.
@@ -4728,13 +4937,18 @@ private:
 		const FName SlideOvershootName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, SlideOvershoot);
 		const FName ExpanderName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Expander);
 		const FName ShakeName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Shake);
+		const FName TypeParamsName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, TypeParams);
+		const FName AnimTypeName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, AnimType);
+		const FName DurationName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Duration);
+		const FName DelayName = GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Delay);
 
 		const TArray<FWidgetAnimLayer>* CurrentLayers = Owner ? Owner->GetLayers() : nullptr;
-		const bool bIsShake = CurrentLayers && CurrentLayers->IsValidIndex(LayerIndex) && (*CurrentLayers)[LayerIndex].AnimType == EWidgetAnimType::Shake;
-		const bool bHasValueKeys = CurrentLayers && CurrentLayers->IsValidIndex(LayerIndex) && (*CurrentLayers)[LayerIndex].ValueKeys.Keys.Num() > 0;
+		const FWidgetAnimLayer* CurrentLayer = CurrentLayers && CurrentLayers->IsValidIndex(LayerIndex) ? &(*CurrentLayers)[LayerIndex] : nullptr;
+		const bool bIsShake = CurrentLayer && CurrentLayer->AnimType == EWidgetAnimType::Shake;
+		const bool bHasValueKeys = CurrentLayer && CurrentLayer->ValueKeys.Keys.Num() > 0;
 
 		// A cue fires at points in time - no easing, curve or spring shapes anything on it.
-		const bool bIsCue = CurrentLayers && CurrentLayers->IsValidIndex(LayerIndex) && SWidgetAnimTimeline::IsCueLayer((*CurrentLayers)[LayerIndex]);
+		const bool bIsCue = CurrentLayer && SWidgetAnimTimeline::IsCueLayer(*CurrentLayer);
 		const FName CueHiddenNames[] =
 		{
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Easing),
@@ -4742,8 +4956,31 @@ private:
 			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Spring),
 		};
 
+		// What every track has, shown under Track Properties - everything else is this kind of track's own, under Track Values.
+		static const FName TrackPropertyNames[] =
+		{
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, AnimType),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Start),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Timing),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Duration),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Delay),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Expander),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, TextTarget),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, bInvertTrack),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Easing),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, CustomCurve),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Spring),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueName),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueSmoothing),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, SteadySpeed),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, SteadyCatchUpTime),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueDrives),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueOptions),
+			GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, ValueInput),
+		};
+
 		// A material track's Parameter: picked from the widget's material, and checked against it.
-		const EWidgetAnimType CurrentType = CurrentLayers && CurrentLayers->IsValidIndex(LayerIndex) ? (*CurrentLayers)[LayerIndex].AnimType : EWidgetAnimType::Fade;
+		const EWidgetAnimType CurrentType = CurrentLayer ? CurrentLayer->AnimType : EWidgetAnimType::Fade;
 		const bool bIsMaterial = CurrentType == EWidgetAnimType::MaterialScalar || CurrentType == EWidgetAnimType::MaterialVector;
 		const bool bIsMaterialVector = CurrentType == EWidgetAnimType::MaterialVector;
 		const FName MaterialParameterName = bIsMaterialVector
@@ -4762,26 +4999,37 @@ private:
 				continue;
 			}
 
+			const FName ChildName = ChildProperty->GetFName();
+			IDetailCategoryBuilder& Target = Algo::Find(TrackPropertyNames, ChildName) != nullptr ? Category : Values;
+
 			// A track's keys are selected on the track, one at a time, never listed here.
-			if (ChildProperty->GetFName() == ValueKeysName)
+			if (ChildName == ValueKeysName)
 			{
 				continue;
 			}
 
-			// A Stagger only where it can fan the track out - see SWidgetAnimTimeline::CanLayerStagger.
-			if (ChildProperty->GetFName() == ExpanderName && Owner && !Owner->CanLayerStagger(LayerIndex))
+			// A Stagger only on a text track - see SWidgetAnimTimeline::CanLayerStagger.
+			if (ChildName == ExpanderName && Owner && !Owner->CanLayerStagger(LayerIndex))
 			{
+				continue;
+			}
+
+			// A registered type's track is that type, picked when it was added - a Sound, a Count Up, a Blueprint type - so
+			// its type is named, not offered as a choice: the one Type every registered type shares means nothing to pick.
+			if (ChildName == AnimTypeName && CurrentLayer && CurrentLayer->AnimType == EWidgetAnimType::Custom)
+			{
+				AddTypeNameRow(Target, Child.ToSharedRef(), *CurrentLayer);
 				continue;
 			}
 
 			// Part of the Text only on an animated text widget, on a type it can limit - and under it, where it is in the text.
-			if (ChildProperty->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, TextTarget))
+			if (ChildName == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, TextTarget))
 			{
 				if (Owner && Owner->CanLayerTargetText(LayerIndex))
 				{
-					Category.AddProperty(Child).ShouldAutoExpand(true);
+					Target.AddProperty(Child).ShouldAutoExpand(true);
 					const TWeakPtr<SWidgetAnimTimeline> WeakTextOwner = Owner;
-					Category.AddCustomRow(LOCTEXT("TextTargetNoteRow", "Part of the Text"))
+					Target.AddCustomRow(LOCTEXT("TextTargetNoteRow", "Part of the Text"))
 						.Visibility(TAttribute<EVisibility>::CreateLambda([WeakTextOwner, LayerIndex]()
 						{
 							const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTextOwner.Pin();
@@ -4812,65 +5060,81 @@ private:
 			}
 
 			// A Shake's settings laid out flat, as Transform's are, and only on a Shake track.
-			if (ChildProperty->GetFName() == ShakeName)
+			if (ChildName == ShakeName)
 			{
 				if (bIsShake)
 				{
-					AddChildren(Category, Child.ToSharedRef(), [](FName) { return true; }, false);
+					AddChildren(Values, Child.ToSharedRef(), [](FName) { return true; }, false);
 				}
 				continue;
 			}
 
-			if (bIsCue && Algo::Find(CueHiddenNames, ChildProperty->GetFName()) != nullptr)
+			if (bIsCue && Algo::Find(CueHiddenNames, ChildName) != nullptr)
 			{
 				continue;
 			}
 
 			// Overshoot only applies to a track with no keys between its start and end - see EvaluateTrackEase - so
 			// a keyed track doesn't offer it.
-			if (bHasValueKeys && (ChildProperty->GetFName() == OvershootName || ChildProperty->GetFName() == SlideOvershootName))
+			if (bHasValueKeys && (ChildName == OvershootName || ChildName == SlideOvershootName))
 			{
 				continue;
 			}
 
-			if (ChildProperty->GetFName() == TransformName)
+			if (ChildName == TransformName)
 			{
 				// Laid out flat, as the layer's own ShowOnlyInnerProperties would, and only on a Transform
 				// layer: added one by one, its EditCondition on the layer type no longer hides it. Its key
 				// timing curve is not a Details property at all; keys are timed on the track.
 				if (bIsTransform)
 				{
-					AddChildren(Category, Child.ToSharedRef(), [KeysName](FName Name) { return Name != KeysName; }, false);
+					AddChildren(Values, Child.ToSharedRef(), [KeysName](FName Name) { return Name != KeysName; }, false);
 				}
 				continue;
 			}
 
-			if (bIsMaterial && ChildProperty->GetFName() == MaterialParameterName)
+			// A registered type's own settings: shown as a built-in type's are, or under its Type Params - see AddTypeParamsRows.
+			if (ChildName == TypeParamsName)
 			{
-				AddMaterialParameterRow(Category, Child.ToSharedRef(), LayerIndex, bIsMaterialVector);
+				if (CurrentLayer && CurrentLayer->AnimType == EWidgetAnimType::Custom)
+				{
+					AddTypeParamsRows(Values, Child.ToSharedRef(), *CurrentLayer);
+				}
 				continue;
 			}
 
-			// On a percentage timeline a track's length and delay are percentages of it.
-			if (Owner && Owner->IsPercentTime()
-				&& (ChildProperty->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Duration) || ChildProperty->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, Delay)))
+			if (bIsMaterial && ChildName == MaterialParameterName)
 			{
-				AddPercentTimeRow(Category, Child.ToSharedRef(), LayerIndex);
+				AddMaterialParameterRow(Values, Child.ToSharedRef(), LayerIndex, bIsMaterialVector);
 				continue;
 			}
 
-			// Everything else hides itself by type through its own EditCondition, wherever it is added - and a Timing
+			// Duration on every track: read-only, showing how long it really runs, where something else times it.
+			if (ChildName == DurationName)
+			{
+				AddDurationRow(Target, Child.ToSharedRef(), LayerIndex);
+				continue;
+			}
+
+			// On a percentage timeline a track's delay is a percentage of it.
+			if (Owner && Owner->IsPercentTime() && ChildName == DelayName)
+			{
+				AddPercentTimeRow(Target, Child.ToSharedRef(), LayerIndex);
+				continue;
+			}
+
+			// Everything else hides itself by type through its own EditCondition, wherever it is added - and a Type, Timing
 			// or Value Type the type can't use is left out of its dropdown.
-			Category.AddProperty(Child);
-			if (CurrentLayers && CurrentLayers->IsValidIndex(LayerIndex))
+			Target.AddProperty(Child);
+			if (CurrentLayer)
 			{
-				WidgetAnimTimeline::RestrictLayerChoices(Child, { &(*CurrentLayers)[LayerIndex] });
+				WidgetAnimTimeline::RestrictLayerChoices(Child, { CurrentLayer });
 			}
 		}
 
 		if (bIsMaterial)
 		{
-			AddMaterialWarningRow(Category, LayerIndex);
+			AddMaterialWarningRow(Values, LayerIndex);
 		}
 
 		// A Shape track: which kind of shape its keys are for - followed from its target, picked for (this widget), or
@@ -4878,14 +5142,14 @@ private:
 		if (CurrentType == EWidgetAnimType::Shape)
 		{
 			bool bApplies = true;
-			AddShapeTrackRows(Category, LayerIndex, /*bKey=*/false, bApplies);
+			AddShapeTrackRows(Values, LayerIndex, /*bKey=*/false, bApplies);
 		}
 
 		// A Design track: which kind of widget its keys hold the look of - followed from the widget it plays on.
-		if (CurrentType == EWidgetAnimType::Design && CurrentLayers && CurrentLayers->IsValidIndex(LayerIndex))
+		if (CurrentType == EWidgetAnimType::Design && CurrentLayer)
 		{
-			const UClass* Kind = (*CurrentLayers)[LayerIndex].Transform.DesignKind.Get();
-			Category.AddCustomRow(LOCTEXT("DesignKindRow", "Design Of"))
+			const UClass* Kind = CurrentLayer->Transform.DesignKind.Get();
+			Values.AddCustomRow(LOCTEXT("DesignKindRow", "Design Of"))
 				.NameContent()
 				[
 					SNew(STextBlock)
@@ -4901,6 +5165,71 @@ private:
 					.Text(Kind ? Kind->GetDisplayNameText() : LOCTEXT("DesignKindNone", "No widget yet"))
 				];
 		}
+	}
+
+	/** A registered type's track's Type: named, read-only - the type it was added as. See CustomizeLayer. */
+	void AddTypeNameRow(IDetailCategoryBuilder& Category, const TSharedRef<IPropertyHandle>& TypeHandle, const FWidgetAnimLayer& Layer)
+	{
+		Category.AddProperty(TypeHandle).CustomWidget()
+			.NameContent()
+			[
+				TypeHandle->CreatePropertyNameWidget()
+			]
+			.ValueContent()
+			.MinDesiredWidth(180.f)
+			[
+				SNew(SComboButton)
+				.IsEnabled(false)
+				.HasDownArrow(true)
+				.ToolTipText(WidgetAnimTips::TypeNameTooltip())
+				.ButtonContent()
+				[
+					SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.Text(SWidgetAnimTimeline::GetLayerTypeName(Layer))
+				]
+			];
+	}
+
+	/**
+	 * A registered type's own settings. A type the plugin itself registers - Sound, Event, Count Up, the text tracks - is a
+	 * track type like any built-in one, so its settings are shown as a built-in type's are: field by field, with no Type
+	 * Params around them. A User-defined Track - a Blueprint type or cue, or a type another module registers - keeps its Type
+	 * Params, whose type can't be changed: it is the track's type, picked when it was added. A Blueprint type's Settings
+	 * follow its Settings Struct, read-only, with a button beside them that finds the struct in the Content Browser.
+	 */
+	void AddTypeParamsRows(IDetailCategoryBuilder& Category, const TSharedRef<IPropertyHandle>& TypeParamsHandle, const FWidgetAnimLayer& Layer)
+	{
+		const UScriptStruct* ParamsStruct = Layer.TypeParams.GetScriptStruct();
+		if (!ParamsStruct)
+		{
+			Category.AddProperty(TypeParamsHandle);
+			return;
+		}
+
+		if (WidgetAnimTimeline::IsUserDefinedTrackType(ParamsStruct))
+		{
+			Category.AddCustomRow(LOCTEXT("TypeParamsRow", "Type Params"))
+				.NameContent()
+				[
+					TypeParamsHandle->CreatePropertyNameWidget()
+				]
+				.ValueContent()
+				.MinDesiredWidth(180.f)
+				[
+					SNew(SComboButton)
+					.IsEnabled(false)
+					.HasDownArrow(true)
+					.ToolTipText(WidgetAnimTips::TypeNameTooltip())
+					.ButtonContent()
+					[
+						SNew(STextBlock)
+						.Font(IDetailLayoutBuilder::GetDetailFont())
+						.Text(ParamsStruct->GetDisplayNameText())
+					]
+				];
+		}
+		Category.AddCustomBuilder(MakeShared<WidgetAnimTimeline::FTypeParamsDetails>(TypeParamsHandle));
 	}
 
 	/**
@@ -5009,6 +5338,90 @@ private:
 			AddNoteRow(Category, WidgetAnimTips::ShapeTrackPickKindNote());
 		}
 		return Kind != nullptr;
+	}
+
+	/**
+	 * A track's Duration, on every track: typed in where it times the track, and read-only where something else does - its
+	 * keys, its spring, a sound's length - showing how long the track really runs, kept up to date as that changes. A
+	 * percentage of the timeline on a percentage timeline. See SWidgetAnimTimeline::GetTrackDurationInfo.
+	 */
+	void AddDurationRow(IDetailCategoryBuilder& Category, const TSharedRef<IPropertyHandle>& Handle, int32 LayerIndex)
+	{
+		const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Panel;
+		auto IsEditable = [WeakOwner, LayerIndex]()
+		{
+			const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+			bool bEditable = false;
+			float Seconds = 0.f;
+			FText Why;
+			return Pinned && Pinned->GetTrackDurationInfo(LayerIndex, bEditable, Seconds, Why) && bEditable && Pinned->CanEditLayer(LayerIndex);
+		};
+
+		Category.AddProperty(Handle).CustomWidget()
+			.NameContent()
+			[
+				Handle->CreatePropertyNameWidget()
+			]
+			.ValueContent()
+			.MinDesiredWidth(120.f)
+			[
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SNumericEntryBox<float>)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.AllowSpin(false)
+					.MinValue(0.01f)
+					.IsEnabled_Lambda(IsEditable)
+					.ToolTipText_Lambda([WeakOwner, LayerIndex, Handle]()
+					{
+						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+						bool bEditable = false;
+						float Seconds = 0.f;
+						FText Why;
+						return Pinned && Pinned->GetTrackDurationInfo(LayerIndex, bEditable, Seconds, Why) && !bEditable ? Why : Handle->GetToolTipText();
+					})
+					.Value_Lambda([WeakOwner, LayerIndex]() -> TOptional<float>
+					{
+						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+						bool bEditable = false;
+						float Seconds = 0.f;
+						FText Why;
+						if (!Pinned || !Pinned->GetTrackDurationInfo(LayerIndex, bEditable, Seconds, Why))
+						{
+							return TOptional<float>();
+						}
+						// Rounded as everywhere else a time is shown: thousandths of a second, or hundredths of a percent.
+						return Pinned->IsPercentTime()
+							? FMath::RoundHalfFromZero(Seconds * 10000.f) / 100.f
+							: FMath::RoundHalfFromZero(Seconds * 1000.f) / 1000.f;
+					})
+					.OnValueCommitted_Lambda([WeakOwner, Handle](float Value, ETextCommit::Type)
+					{
+						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+						const float Seconds = Pinned && Pinned->IsPercentTime() ? Value / 100.f : Value;
+						Handle->SetValue(FMath::Max(Seconds, 0.01f));
+					})
+				]
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+				[
+					SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+					.Text_Lambda([WeakOwner]()
+					{
+						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+						return Pinned && Pinned->IsPercentTime() ? LOCTEXT("DurationPercentUnit", "%") : LOCTEXT("DurationSecondsUnit", "s");
+					})
+				]
+			];
 	}
 
 	/**
@@ -5699,6 +6112,14 @@ private:
 				}
 			}
 		};
+		auto AddLayerTypeParams = [this, &Category, &LayerHandle, &Layer]()
+		{
+			const TSharedPtr<IPropertyHandle> Handle = LayerHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, TypeParams));
+			if (Handle.IsValid() && Handle->IsValidHandle())
+			{
+				AddTypeParamsRows(Category, Handle.ToSharedRef(), Layer);
+			}
+		};
 
 		// When the key is, in the track and in the animation - read here, moved by dragging it on the track.
 		const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Panel;
@@ -5744,8 +6165,8 @@ private:
 				break;
 			case EWidgetAnimType::Custom:
 				// A registered type's start and end values are fields of its own settings, which only exist as one
-				// struct here - so its settings are shown whole, start value among them.
-				AddLayerProperty(GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, TypeParams), FText::GetEmpty());
+				// struct here - so its settings are shown whole, start value among them, as the track shows them.
+				AddLayerTypeParams();
 				break;
 			default:
 				break;
@@ -5764,7 +6185,7 @@ private:
 				AddNoteRow(Category, WidgetAnimTips::SlideEndNote());
 				break;
 			case EWidgetAnimType::Custom:
-				AddLayerProperty(GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, TypeParams), FText::GetEmpty());
+				AddLayerTypeParams();
 				break;
 			default:
 				break;
@@ -5929,6 +6350,9 @@ public:
 		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Layers",
 			FText::Format(LOCTEXT("LayersCategory", "{0} Tracks"), FText::AsNumber(NumTracks)));
 
+		// What only tracks of one type have - when every track selected is that type - apart, as one track's are.
+		IDetailCategoryBuilder& Values = DetailBuilder.EditCategory("WidgetAnimSelection_TrackValues", LOCTEXT("MultiTrackValuesCategory", "Track Values"));
+
 		const bool bSameType = Types.Num() == 1;
 		const bool bAllTransform = bSameType && Algo::AllOf(Types, [](EWidgetAnimType Type) { return WidgetAnimTypeIsKeyframed(Type); });
 		const bool bAnyTransform = !Algo::AllOf(Types, [](EWidgetAnimType Type) { return !WidgetAnimTypeIsKeyframed(Type); });
@@ -6035,7 +6459,7 @@ public:
 					Child->GetNumChildren(NumShakeChildren);
 					for (uint32 ShakeIndex = 0; ShakeIndex < NumShakeChildren; ++ShakeIndex)
 					{
-						Category.AddProperty(Child->GetChildHandle(ShakeIndex));
+						Values.AddProperty(Child->GetChildHandle(ShakeIndex));
 					}
 				}
 				continue;
@@ -6054,8 +6478,28 @@ public:
 						const FProperty* TransformProperty = TransformChild.IsValid() ? TransformChild->GetProperty() : nullptr;
 						if (TransformProperty && TransformProperty->GetFName() != KeysName)
 						{
-							Category.AddProperty(TransformChild);
+							Values.AddProperty(TransformChild);
 						}
+					}
+				}
+				continue;
+			}
+
+			// A registered type's settings, when every track is of one plugin type, field by field as one track shows them -
+			// see FWidgetAnimSelectionDetails::AddTypeParamsRows. Otherwise its Type Params, whose type can't be changed.
+			if (Name == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, TypeParams))
+			{
+				if (bSameType && Types.Contains(EWidgetAnimType::Custom))
+				{
+					const UScriptStruct* ParamsStruct = ProxyLayers.Num() > 0 ? ProxyLayers[0]->TypeParams.GetScriptStruct() : nullptr;
+					const bool bOneStruct = ParamsStruct && Algo::AllOf(ProxyLayers, [ParamsStruct](const FWidgetAnimLayer* Layer) { return Layer->TypeParams.GetScriptStruct() == ParamsStruct; });
+					if (bOneStruct && !WidgetAnimTimeline::IsUserDefinedTrackType(ParamsStruct))
+					{
+						Values.AddCustomBuilder(MakeShared<WidgetAnimTimeline::FTypeParamsDetails>(Child));
+					}
+					else
+					{
+						Values.AddProperty(Child);
 					}
 				}
 				continue;
@@ -6070,7 +6514,9 @@ public:
 
 			if (bShow)
 			{
-				Category.AddProperty(Child);
+				const bool bTrackProperty = bShared || Name == DurationName || Name == GET_MEMBER_NAME_CHECKED(FWidgetAnimLayer, bInvertTrack);
+				IDetailCategoryBuilder& Target = bTrackProperty ? Category : Values;
+				Target.AddProperty(Child);
 				WidgetAnimTimeline::RestrictLayerChoices(Child, ProxyLayers);
 			}
 		}
@@ -8187,10 +8633,9 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 
 					// Frames (Preview Only): seconds, shown as frames at a target frame rate - see IsFrameTime. Only how the panel
 					// reads time, so it is picked even while the animation can't be edited, unless that would mean leaving Percent.
+					// Its target frame rate is typed in the entry itself, beside its name: a click in the box types there, and leaves
+					// the menu open; a click anywhere else on the entry picks it.
 					Menu.AddMenuEntry(
-						LOCTEXT("TimeInFrames", "Frames (Preview Only)"),
-						WidgetAnimTips::TimeInFramesTooltip(),
-						FSlateIcon(),
 						FUIAction(
 							FExecuteAction::CreateLambda([this]()
 							{
@@ -8205,28 +8650,50 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 							}),
 							FCanExecuteAction::CreateLambda([this]() { return !IsPercentTime() || CanEdit(); }),
 							FIsActionChecked::CreateLambda([this]() { return IsFrameTime(); })),
-						NAME_None,
-						EUserInterfaceActionType::RadioButton);
+						SNew(SHorizontalBox)
 
-					// Its target frame rate, typed beside it.
-					Menu.AddWidget(
-						SNew(SBox)
-						.WidthOverride(110.f)
-						.Padding(FMargin(0.f, 2.f, 8.f, 2.f))
-						.ToolTipText(WidgetAnimTips::TimeInFramesRateTooltip())
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
 						[
-							SNew(SNumericEntryBox<float>)
-							.AllowSpin(true)
-							.MinValue(1.f)
-							.MaxValue(1000.f)
-							.MinSliderValue(12.f)
-							.MaxSliderValue(240.f)
-							.Delta(1.f)
-							.Value_Lambda([]() { return TOptional<float>(SWidgetAnimTimeline::GetFrameRate()); })
-							.OnValueChanged_Lambda([](float NewValue) { UWidgetAnimEditorSettings::GetMutable().SetPreviewFrameRate(FMath::RoundToFloat(NewValue)); })
-							.OnValueCommitted_Lambda([](float NewValue, ETextCommit::Type) { UWidgetAnimEditorSettings::GetMutable().SetPreviewFrameRate(NewValue); })
+							SNew(STextBlock)
+							.Text(LOCTEXT("TimeInFrames", "Frames (Preview Only)"))
+						]
+
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						.Padding(FMargin(8.f, 0.f, 0.f, 0.f))
+						[
+							SNew(SBox)
+							.WidthOverride(58.f)
+							.ToolTipText(WidgetAnimTips::TimeInFramesRateTooltip())
+							[
+								SNew(SNumericEntryBox<float>)
+								.AllowSpin(true)
+								.MinValue(1.f)
+								.MaxValue(1000.f)
+								.MinSliderValue(12.f)
+								.MaxSliderValue(240.f)
+								.Delta(1.f)
+								.Value_Lambda([]() { return TOptional<float>(SWidgetAnimTimeline::GetFrameRate()); })
+								.OnValueChanged_Lambda([](float NewValue) { UWidgetAnimEditorSettings::GetMutable().SetPreviewFrameRate(FMath::RoundToFloat(NewValue)); })
+								.OnValueCommitted_Lambda([](float NewValue, ETextCommit::Type) { UWidgetAnimEditorSettings::GetMutable().SetPreviewFrameRate(FMath::RoundToFloat(NewValue)); })
+							]
+						]
+
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+						[
+							SNew(STextBlock)
+							.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+							.Text(LOCTEXT("TimeInFramesRateUnit", "fps"))
 						],
-						LOCTEXT("TimeInFramesRate", "Target FPS"));
+						NAME_None,
+						WidgetAnimTips::TimeInFramesTooltip(),
+						EUserInterfaceActionType::RadioButton);
 					Menu.EndSection();
 					return Menu.MakeWidget();
 				})
@@ -9640,72 +10107,48 @@ FString SWidgetAnimTimeline::FormatFrames(float Seconds, float FrameRate)
 int32 SWidgetAnimTimeline::PaintPlayhead(FSlateWindowElementList& OutDrawElements, const FGeometry& Geometry, int32 LayerId, float X, float RulerWidgetHeight, float Bottom, float Left, float Right, const FString& TagText)
 {
 	using namespace WidgetAnimTimeline;
-	const FLinearColor Color = Palette::Playhead;
+	const UWidgetAnimEditorSettings& Look = UWidgetAnimEditorSettings::Get();
+	const FLinearColor Color = Look.PlayheadColor;
 
-	// A run of the line: Width pixels wide about X, from Top down Height, its color's opacity going FromAlpha to ToAlpha.
-	// Centered on the pixel at X, as the one-pixel line always was.
-	auto Run = [&](int32 Layer, float Top, float Height, float Width, float FromAlpha, float ToAlpha)
-	{
-		if (Height <= 0.f || Width <= 0.f)
-		{
-			return;
-		}
-		TArray<FSlateGradientStop> Stops;
-		Stops.Add(FSlateGradientStop(FVector2D(0.0, 0.0), Color.CopyWithNewOpacity(Color.A * FromAlpha)));
-		Stops.Add(FSlateGradientStop(FVector2D(0.0, Height), Color.CopyWithNewOpacity(Color.A * ToAlpha)));
-		FSlateDrawElement::MakeGradient(
-			OutDrawElements,
-			Layer,
-			Geometry.ToPaintGeometry(FVector2f(Width, Height), FSlateLayoutTransform(FVector2f(X + 0.5f - Width * 0.5f, Top))),
-			MoveTemp(Stops),
-			Orient_Horizontal,
-			ESlateDrawEffect::None);
-	};
-
-	// The line: a soft glow and a wider core where it leaves the ruler, narrowing to one pixel a little way down, and fading
-	// all the way to the bottom - so it reads strongly where the time is read, and stays out of the way of the tracks.
-	const float Height = Bottom - RulerWidgetHeight;
-	if (Height > 0.f)
-	{
-		const float TaperHeight = Height * Palette::PlayheadTaper;
-		const float AlphaAtTaper = FMath::Lerp(1.f, Palette::PlayheadFadeTo, Palette::PlayheadTaper);
-		Run(LayerId, RulerWidgetHeight, TaperHeight, Palette::PlayheadTopWidth + 4.f, Palette::PlayheadGlowOpacity, 0.f);
-		Run(LayerId + 1, RulerWidgetHeight, TaperHeight, Palette::PlayheadTopWidth, 1.f, AlphaAtTaper);
-		Run(LayerId + 1, RulerWidgetHeight + TaperHeight, Height - TaperHeight, 1.f, AlphaAtTaper, Palette::PlayheadFadeTo);
-	}
-
-	// The tag, in the top of the ruler: the time, on the playhead's color, pointing down into the line.
+	// The head, in the top of the ruler: the time on the playhead's color in a compact rounded tag - as the playheads of
+	// Premiere, Resolve and Sequencer read - with a notch under its middle pointing down at the line.
 	const TSharedRef<FSlateFontMeasure> Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 	const FSlateFontInfo TagFont = FCoreStyle::GetDefaultFontStyle("Regular", 8);
 	const FVector2f TextSize = FVector2f(Measure->Measure(TagText, TagFont));
-	const float TagWidth = TextSize.X + 10.f;
-	const float TagHeight = TextSize.Y + 2.f;
-	const float TagY = 2.f;
-	const float TagX = FMath::Clamp(X + 0.5f - TagWidth * 0.5f, Left, FMath::Max(Right - TagWidth, Left));
-	FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 2,
-		Geometry.ToPaintGeometry(FVector2f(TagWidth, TagHeight), FSlateLayoutTransform(FVector2f(TagX, TagY))),
+	const float LineThickness = FMath::Max(Look.PlayheadLineThickness, 1.f);
+
+	// Laid out on whole pixels, the tag and the notch each centered on the line (SnapColumn): at any zoom the line is the
+	// same width and runs out of the notch's point, which sits under the tag's middle.
+	const FPixelColumn TagColumn = SnapColumn(Geometry, X + 0.5f, LineThickness, TextSize.X + 10.f);
+	const float TagY = SnapY(Geometry, 2.f);
+	const float TagBottom = SnapY(Geometry, 2.f + TextSize.Y + 2.f);
+	const float TagX = SnapX(Geometry, FMath::Clamp(TagColumn.HeadLeft, Left, FMath::Max(Right - TagColumn.HeadWidth, Left)));
+	FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
+		Geometry.ToPaintGeometry(FVector2f(TagColumn.HeadWidth, TagBottom - TagY), FSlateLayoutTransform(FVector2f(TagX, TagY))),
 		RoundedFill(3.f), ESlateDrawEffect::None, Color);
 
-	// Its point: a small diamond under the tag's middle, and a stem from it to the line - the tag narrowing into the line.
-	const float PointSize = 6.f;
-	FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 2,
-		Geometry.ToPaintGeometry(
-			FVector2f(PointSize, PointSize),
-			FSlateLayoutTransform(FVector2f(X + 0.5f - PointSize * 0.5f, TagY + TagHeight - PointSize * 0.5f - 1.f)),
-			FSlateRenderTransform(FQuat2f(FMath::DegreesToRadians(45.f))),
-			FVector2f(0.5f, 0.5f)),
-		WhiteBrush(), ESlateDrawEffect::None, Color);
-	const float StemTop = TagY + TagHeight;
-	if (RulerWidgetHeight > StemTop)
+	// The notch: the start and end markers' triangle, small, tucked a pixel under the tag so no seam shows between them.
+	const FPixelColumn NotchColumn = SnapColumn(Geometry, X + 0.5f, LineThickness, 8.f);
+	const float NotchTop = SnapY(Geometry, TagBottom - 1.f);
+	const float NotchPoint = SnapY(Geometry, TagBottom + 4.f);
+	MakeDownTriangle(OutDrawElements, LayerId + 1, Geometry, NotchColumn.HeadLeft, NotchTop, NotchColumn.HeadWidth, NotchPoint - NotchTop, Color);
+
+	// The line: from inside the notch to the bottom - solid, no glow or fade, so it reads the same over the ruler, the start
+	// and end markers and every track.
+	const float LineTop = SnapY(Geometry, (NotchTop + NotchPoint) * 0.5f);
+	if (Bottom > LineTop)
 	{
-		Run(LayerId + 1, StemTop, RulerWidgetHeight - StemTop, Palette::PlayheadTopWidth, 1.f, 1.f);
+		FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+			Geometry.ToPaintGeometry(FVector2f(NotchColumn.LineWidth, Bottom - LineTop), FSlateLayoutTransform(FVector2f(NotchColumn.LineLeft, LineTop))),
+			WhiteBrush(), ESlateDrawEffect::None, Color.CopyWithNewOpacity(Color.A * Look.PlayheadLineOpacity));
 	}
 
-	FSlateDrawElement::MakeText(OutDrawElements, LayerId + 3,
-		Geometry.ToPaintGeometry(FVector2f(TextSize.X + 2.f, TextSize.Y), FSlateLayoutTransform(FVector2f(TagX + 5.f, TagY + 1.f))),
+	// The time, centered in the tag.
+	FSlateDrawElement::MakeText(OutDrawElements, LayerId + 2,
+		Geometry.ToPaintGeometry(FVector2f(TextSize.X + 2.f, TextSize.Y), FSlateLayoutTransform(FVector2f(TagX + (TagColumn.HeadWidth - TextSize.X) * 0.5f, TagY + 1.f))),
 		TagText, TagFont, ESlateDrawEffect::None, Palette::PlayheadText);
 
-	return LayerId + 3;
+	return LayerId + 2;
 }
 
 FString SWidgetAnimTimeline::FormatPlayheadTag(float Seconds) const
@@ -9976,6 +10419,70 @@ float SWidgetAnimTimeline::GetShownRunLength(int32 LayerIndex) const
 	}
 	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
 	return Layers && Layers->IsValidIndex(LayerIndex) ? (*Layers)[LayerIndex].GetRunLength() : 0.f;
+}
+
+bool SWidgetAnimTimeline::GetTrackDurationInfo(int32 LayerIndex, bool& bOutEditable, float& OutSeconds, FText& OutWhy) const
+{
+	bOutEditable = false;
+	OutSeconds = 0.f;
+	OutWhy = FText::GetEmpty();
+
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!Layers || !Layers->IsValidIndex(LayerIndex))
+	{
+		return false;
+	}
+	const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+
+	// What times the track instead of its Duration, if anything: an animation track stretched across it is timed by it, and
+	// a value-driven track that tweens to its values eases over it, whatever its type.
+	const bool bValueTween = !Layer.IsAnimationTrack() && Layer.IsValueDriven() && Layer.ValueSmoothing == EWidgetAnimValueSmoothing::Tween;
+	if (bValueTween)
+	{
+		bOutEditable = true;
+		OutSeconds = Layer.Duration;
+		return true;
+	}
+	if (Layer.IsAnimationTrack() && !Layer.FitsAnimationToTrack())
+	{
+		OutWhy = WidgetAnimTips::AnimationTrackFitTooltip();
+	}
+	else if (!Layer.IsAnimationTrack() && WidgetAnimTypeIsKeyframed(Layer.AnimType))
+	{
+		OutWhy = WidgetAnimTips::DurationFromKeysTooltip();
+	}
+	else if (Layer.IsSpringTimed())
+	{
+		OutWhy = WidgetAnimTips::DurationFromSpringTooltip();
+	}
+	else if (HasDerivedLength(Layer))
+	{
+		const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator();
+		const FText What = Evaluator ? Evaluator->GetDerivedLengthLabel(Layer.TypeParams) : FText::GetEmpty();
+		OutWhy = FText::Format(WidgetAnimTips::DurationDerivedTooltip(), What.IsEmpty() ? LOCTEXT("DurationDerivedWhat", "settings") : What);
+	}
+	else
+	{
+		bOutEditable = true;
+		OutSeconds = Layer.Duration;
+		return true;
+	}
+
+	// How long it really runs, as the bars are drawn: worked out on the preview where it is - a sound's length - else its own.
+	OutSeconds = GetShownRunLength(LayerIndex);
+	if (!(TrackRuns.IsValidIndex(LayerIndex) && TrackRuns[LayerIndex] >= 0.f))
+	{
+		// No preview has measured it yet: a sound says how long it is without one.
+		if (const FWidgetAnimSoundCueParams* Sound = Layer.AnimType == EWidgetAnimType::Custom ? Layer.TypeParams.GetPtr<FWidgetAnimSoundCueParams>() : nullptr)
+		{
+			const float SoundSeconds = Sound->bLengthFromSound ? FWidgetAnimSoundCueEvaluator::GetSoundLength(*Sound) : -1.f;
+			if (SoundSeconds > 0.f)
+			{
+				OutSeconds = SoundSeconds;
+			}
+		}
+	}
+	return true;
 }
 
 void SWidgetAnimTimeline::GetPlacementExtras(TArray<float>& OutExtras) const
@@ -11641,6 +12148,16 @@ void SWidgetAnimTimeline::OnShadowEdited(UWidgetAnimPresetSelectionShadow* Shado
 		Member->CopyCompleteValue_InContainer(Asset, Shadow);
 	}
 
+	// Mid-drag - a slider, a spin box - only the preview follows, and the Track Editor: the full tell, to the asset and
+	// through it to everything listening, waits for the drag to end, which sends one more edit, not Interactive. Told on every
+	// step, it made dragging a value stutter.
+	if (PropertyChangedEvent.ChangeType == EPropertyChangeType::Interactive)
+	{
+		++TrackLayoutRevision;
+		Source->NotifyInteractiveEdit();
+		return;
+	}
+
 	// Told as a Details edit to it would tell it - at the real track's place - so it does all it does for one.
 	FPropertyChangedChainEvent AssetEvent(PropertyChangedEvent.PropertyChain, PropertyChangedEvent);
 	AssetEvent.ObjectIteratorIndex = 0;
@@ -11802,6 +12319,20 @@ uint32 SWidgetAnimTimeline::ComputeLayoutSignature() const
 		// Which Stagger it has decides which of the stagger's own settings are shown.
 		Hash = HashCombine(Hash, PointerHash(Layer.Expander.GetScriptStruct()));
 
+		// A registered type's settings decide its Track Values - and a Blueprint type's or cue's Settings Struct, theirs.
+		if (Layer.AnimType == EWidgetAnimType::Custom)
+		{
+			Hash = HashCombine(Hash, PointerHash(Layer.TypeParams.GetScriptStruct()));
+			if (const FWidgetAnimBlueprintTypeParams* BlueprintType = Layer.TypeParams.GetPtr<FWidgetAnimBlueprintTypeParams>())
+			{
+				Hash = HashCombine(Hash, PointerHash(BlueprintType->Settings.GetScriptStruct()));
+			}
+			else if (const FWidgetAnimBlueprintCueParams* BlueprintCue = Layer.TypeParams.GetPtr<FWidgetAnimBlueprintCueParams>())
+			{
+				Hash = HashCombine(Hash, PointerHash(BlueprintCue->Settings.GetScriptStruct()));
+			}
+		}
+
 		// An animation track shows its animation's groups and tracks under it - which, and how many, decide those rows.
 		if (Layer.IsAnimationTrack())
 		{
@@ -11906,7 +12437,17 @@ EActiveTimerReturnType SWidgetAnimTimeline::OnRefreshTimer(double InCurrentTime,
 	{
 		const EPropertyChangeType::Type ChangeType = PendingProxyNotify.GetValue();
 		PendingProxyNotify.Reset();
-		NotifyGroupsChanged(ChangeType);
+
+		// Mid-drag, only the preview follows - see IWidgetAnimPanelSource::NotifyInteractiveEdit.
+		if (ChangeType == EPropertyChangeType::Interactive && Source.IsValid())
+		{
+			++TrackLayoutRevision;
+			Source->NotifyInteractiveEdit();
+		}
+		else
+		{
+			NotifyGroupsChanged(ChangeType);
+		}
 	}
 
 	// The proxies follow the real layers - a drag on the tracks, an undo - so what the Selection panel shows for
@@ -11937,9 +12478,12 @@ EActiveTimerReturnType SWidgetAnimTimeline::OnRefreshTimer(double InCurrentTime,
 			LastShapeMatch = TPair<int32, FObjectKey>(INDEX_NONE, FObjectKey());
 		}
 
-		// A Design track likewise keys the look of the widget it plays on: retargeted, it follows that widget's kind.
+		// A Design track likewise keys the look of the widget it plays on: retargeted, it follows that widget's kind. Tried
+		// once per kind of widget, not per preview instance: the designer rebuilds its preview after every edit, and matching
+		// again on each new one went round and round with the designer and its Details.
 		const bool bDesignTrack = Layers && Layers->IsValidIndex(Selection.Layer) && (*Layers)[Selection.Layer].AnimType == EWidgetAnimType::Design;
-		const TPair<int32, FObjectKey> DesignKey(Selection.Layer, FObjectKey(bDesignTrack ? Source->GetLayerPreviewWidget(Selection.Layer) : nullptr));
+		const UWidget* DesignTarget = bDesignTrack ? Source->GetLayerPreviewWidget(Selection.Layer) : nullptr;
+		const TPair<int32, FObjectKey> DesignKey(Selection.Layer, FObjectKey(DesignTarget ? DesignTarget->GetClass() : nullptr));
 		if (bDesignTrack && DesignKey != LastDesignMatch)
 		{
 			LastDesignMatch = DesignKey;
@@ -11949,6 +12493,9 @@ EActiveTimerReturnType SWidgetAnimTimeline::OnRefreshTimer(double InCurrentTime,
 		{
 			LastDesignMatch = TPair<int32, FObjectKey>(INDEX_NONE, FObjectKey());
 		}
+
+		// A Blueprint type's or cue's Settings follow its Settings Struct - set on the type, never picked on the track.
+		SyncBlueprintTypeSettings(Selection.Layer);
 	}
 
 	// The Selection panel's stand-in for the asset, likewise.
@@ -14053,6 +14600,25 @@ FReply SWidgetAnimTimeline::OnKeyDown(const FGeometry& MyGeometry, const FKeyEve
 		return FReply::Unhandled();
 	}
 
+	// Ctrl / Cmd + Z, and Ctrl / Cmd + Y or Ctrl / Cmd + Shift + Z: the editor's undo and redo, wherever the panel is docked -
+	// a text box in it has the keys first, for its own typing. Not in the middle of an edit (a drag), which is still open.
+	if ((Key == EKeys::Z || Key == EKeys::Y) && (InKeyEvent.IsControlDown() || InKeyEvent.IsCommandDown()) && !InKeyEvent.IsAltDown())
+	{
+		if (GEditor && !GEditor->IsTransactionActive())
+		{
+			const bool bRedo = Key == EKeys::Y || InKeyEvent.IsShiftDown();
+			if (bRedo)
+			{
+				GEditor->RedoTransaction();
+			}
+			else
+			{
+				GEditor->UndoTransaction();
+			}
+		}
+		return FReply::Handled();
+	}
+
 	// Ctrl / Cmd + A: every layer, as in a file browser.
 	if (Key == EKeys::A && (InKeyEvent.IsControlDown() || InKeyEvent.IsCommandDown()))
 	{
@@ -15757,6 +16323,43 @@ void SWidgetAnimTimeline::MatchDesignTrackToTarget(int32 LayerIndex)
 	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
 }
 
+void SWidgetAnimTimeline::SyncBlueprintTypeSettings(int32 LayerIndex)
+{
+	const TArray<FWidgetAnimLayer>* Current = GetLayers();
+	if (IsReadOnly() || !Current || !Current->IsValidIndex(LayerIndex) || (*Current)[LayerIndex].AnimType != EWidgetAnimType::Custom || !CanEditLayer(LayerIndex))
+	{
+		return;
+	}
+
+	// Checked in place, every frame the track is selected: only a track whose Settings are out of step is copied and edited.
+	const FInstancedStruct& Params = (*Current)[LayerIndex].TypeParams;
+	const FWidgetAnimBlueprintTypeParams* TypeParams = Params.GetPtr<FWidgetAnimBlueprintTypeParams>();
+	const FWidgetAnimBlueprintCueParams* CueParams = Params.GetPtr<FWidgetAnimBlueprintCueParams>();
+	if ((!TypeParams || TypeParams->IsSettingsStructCurrent()) && (!CueParams || CueParams->IsSettingsStructCurrent()))
+	{
+		return;
+	}
+
+	const FScopedTransaction Transaction(LOCTEXT("SyncBlueprintSettingsTransaction", "Match Track Settings to Its Blueprint Type"));
+	if (!BeginEdit())
+	{
+		return;
+	}
+
+	FInstancedStruct& Edited = (*Source->GetLayers())[LayerIndex].TypeParams;
+	if (FWidgetAnimBlueprintTypeParams* EditedType = Edited.GetMutablePtr<FWidgetAnimBlueprintTypeParams>())
+	{
+		EditedType->SyncSettingsStruct();
+	}
+	else if (FWidgetAnimBlueprintCueParams* EditedCue = Edited.GetMutablePtr<FWidgetAnimBlueprintCueParams>())
+	{
+		EditedCue->SyncSettingsStruct();
+	}
+
+	// The layout signature brings the Selection panel along next frame, with the struct's fields.
+	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+}
+
 void SWidgetAnimTimeline::SetAnimationTrackValueDriven(int32 LayerIndex, bool bValueDriven)
 {
 	const TArray<FWidgetAnimLayer>* Current = GetLayers();
@@ -16192,6 +16795,72 @@ void SWidgetAnimTimeline::AddKey(int32 LayerIndex, float LocalSeconds)
 	const float Value = Curve->Eval(Time);
 	const FKeyHandle NewKey = Curve->AddKey(Time, Value);
 	Curve->SetKeyInterpMode(NewKey, InterpMode);
+
+	// Its settings now rather than at the next sync: where the track already is at that moment, held as settings of its own.
+	// Only a track's first key uses the widget as authored (Use Authored Transform, Shape Box, Shape or Design) - a key added
+	// after it never does, even beside a key that does: such a neighbor is read off the preview's widget instead, so the new
+	// key still starts exactly where the track already was.
+	Layer.Transform.SyncKeysToCurve();
+	TArray<FWidgetTransformKeyframe>& Keyframes = Layer.Transform.Keys;
+	const int32 AddedIndex = Keyframes.IndexOfByPredicate([Time](const FWidgetTransformKeyframe& Key) { return FMath::IsNearlyEqual(Key.Time, Time, WidgetAnimTimeline::MinKeySpacing); });
+	if (AddedIndex > 0)
+	{
+		const int32 AfterIndex = Keyframes.IsValidIndex(AddedIndex + 1) ? AddedIndex + 1 : AddedIndex - 1;
+		const FWidgetTransformKeyframe& Before = Keyframes[AddedIndex - 1];
+		const FWidgetTransformKeyframe& After = Keyframes[AfterIndex];
+		const float Span = After.Time - Before.Time;
+		const float Alpha = Span > KINDA_SMALL_NUMBER ? FMath::Clamp((Time - Before.Time) / Span, 0.f, 1.f) : 0.f;
+
+		FWidgetTransformKeyframe Added = Keyframes[AddedIndex];
+		switch (Layer.AnimType)
+		{
+		case EWidgetAnimType::Transform:
+		{
+			const FWidgetTransform From = Layer.Transform.GetKeyTransform(AddedIndex - 1);
+			const FWidgetTransform To = Layer.Transform.GetKeyTransform(AfterIndex);
+			Added.Transform.Translation = FMath::Lerp(From.Translation, To.Translation, Alpha);
+			Added.Transform.Scale = FMath::Lerp(From.Scale, To.Scale, Alpha);
+			Added.Transform.Shear = FMath::Lerp(From.Shear, To.Shear, Alpha);
+			Added.Transform.Angle = FMath::Lerp(From.Angle, To.Angle, Alpha);
+			break;
+		}
+
+		case EWidgetAnimType::ShapeBox:
+		{
+			const UShapeBox* Box = UWidgetAnimLibrary::ResolveShapeBox(Source->GetLayerPreviewWidget(LayerIndex));
+			auto ShapeOf = [Box](const FWidgetTransformKeyframe& Key) { return Key.bUseAuthoredShape && Box ? Box->GetShape() : Key.Shape; };
+			Added.Shape = FShapeBoxShape::Lerp(ShapeOf(Before), ShapeOf(After), Alpha);
+			break;
+		}
+
+		case EWidgetAnimType::Shape:
+		case EWidgetAnimType::Design:
+		{
+			UShapeWidget* TargetShape = nullptr;
+			const UObject* Authored = Layer.AnimType == EWidgetAnimType::Design
+				? static_cast<const UObject*>(GetDesignTrackTarget(LayerIndex))
+				: (GetShapeTrackTarget(LayerIndex, &TargetShape) == EShapeTrackTarget::Shape ? TargetShape : nullptr);
+			auto BagOf = [Authored](const FWidgetTransformKeyframe& Key)
+			{
+				FInstancedPropertyBag Bag = Key.ShapeValues;
+				if (Key.bUseAuthoredShape && Authored)
+				{
+					WidgetShapeAnimation::Capture(Bag, Authored);
+				}
+				return Bag;
+			};
+			Added.ShapeValues = WidgetShapeAnimation::LerpBags(BagOf(Before), BagOf(After), Alpha);
+			break;
+		}
+
+		default:
+			break;
+		}
+
+		Added.bUseAuthoredShape = false;
+		Added.bUseAuthoredTransform = false;
+		Keyframes[AddedIndex] = MoveTemp(Added);
+	}
 
 	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
 
@@ -18619,50 +19288,34 @@ bool SWidgetAnimTimeline::CanLayerStagger(int32 LayerIndex) const
 		return false;
 	}
 
-	// The widget it plays on, in the preview: its group's target, or its own on a list that sets one per track.
-	UWidget* Target = nullptr;
-	if (Source.IsValid())
+	// Only a text track: a type that moves letters (see UWidgetAnimLibrary::TypeTakesParts), played on one of the plugin's
+	// animated text widgets, whose letters, words or lines it fans out over. Anywhere else it isn't offered.
+	if (!UWidgetAnimLibrary::TypeTakesParts(Layer.AnimType, Layer.TypeParams))
 	{
-		FName Path = NAME_None;
-		const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
-		const int32 GroupIndex = GetLayerGroup(LayerIndex);
-		if (Source->SupportsLayerTargets())
-		{
-			Path = Layer.TargetWidget;
-		}
-		else if (Groups && Groups->IsValidIndex(GroupIndex))
-		{
-			Path = (*Groups)[GroupIndex].PreviewTarget;
-		}
-		Target = Path.IsNone() ? Source->GetPreviewRoot() : Source->ResolvePreviewTarget(Path);
+		return false;
 	}
 
-	// Nothing to look at - no preview open - so it stays offered.
-	if (!Target)
+	// Nothing to look at - no preview open - so it stays offered on a type that can use it.
+	IWidgetAnimPanelSource* PanelSource = Source.Get();
+	if (!PanelSource || !PanelSource->GetLayerPreviewWidget(LayerIndex))
 	{
 		return true;
 	}
 
-	// Something to fan out to: its children, or - on a track that moves letters - an Animated Text Block's letters.
+	UWidget* TextHost = GetLayerTextHost(LayerIndex);
+	if (!TextHost)
+	{
+		return false;
+	}
+
+	FWidgetAnimExpander_EachTextPart Parts;
+	if (!Parts.IsReadyToExpand(TextHost))
+	{
+		return true;
+	}
 	TArray<FWidgetAnimExpandedItem> Items;
-	FWidgetAnimExpander_EachChild().GatherItems(Target, Items);
-	if (Items.Num() > 0)
-	{
-		return true;
-	}
-
-	if (UWidgetAnimLibrary::TypeTakesParts(Layer.AnimType, Layer.TypeParams))
-	{
-		FWidgetAnimExpander_EachTextPart Parts;
-		if (!Parts.IsReadyToExpand(Target))
-		{
-			return true;
-		}
-		Items.Reset();
-		Parts.GatherItems(Target, Items);
-		return Items.Num() > 0;
-	}
-	return false;
+	Parts.GatherItems(TextHost, Items);
+	return Items.Num() > 0;
 }
 
 UWidget* SWidgetAnimTimeline::GetLayerTextHost(int32 LayerIndex) const
@@ -18742,6 +19395,24 @@ FText SWidgetAnimTimeline::GetTextTargetNote(int32 LayerIndex) const
 	if (Ranges.Num() == 0)
 	{
 		return FText::Format(WidgetAnimTips::TextTargetMissingNote(), FText::FromString(TextTarget.Text), FText::FromString(Display.Left(80)));
+	}
+
+	// Several parts joined with &&: any one of them not found is named, so a typo in one doesn't hide behind the rest.
+	TArray<FString> Parts;
+	TextTarget.GetParts(Parts);
+	if (Parts.Num() > 1)
+	{
+		for (const FString& Part : Parts)
+		{
+			FWidgetAnimTextTarget One = TextTarget;
+			One.Text = Part;
+			TArray<FIntPoint> PartRanges;
+			One.FindLetterRanges(Display, PartRanges);
+			if (PartRanges.Num() == 0)
+			{
+				return FText::Format(WidgetAnimTips::TextTargetPartMissingNote(), FText::AsNumber(Ranges.Num()), FText::FromString(Part));
+			}
+		}
 	}
 	return FText::Format(WidgetAnimTips::TextTargetFoundNote(), FText::AsNumber(Ranges.Num()), FText::AsNumber(Ranges[0].Y));
 }
@@ -19010,13 +19681,20 @@ void SWidgetAnimTimeline::AddTrackTypeEntries(FMenuBuilder& Menu, int32 GroupInd
 	}
 
 	// Registered types after the built-in ones, under the heading each names for itself - Text for the text tracks -
-	// in heading order, and those naming none under Registered Types after the rest. Each is a type in its own right,
-	// whichever module it came from.
+	// in heading order. One of the plugin's own naming none is a track type like the built-in ones, under Other Tracks; one
+	// another module registers, naming none, is a User-defined Track, under that heading last. Each is a type in its own
+	// right, whichever module it came from.
+	static const FString PluginUncategorized(TEXT("@OtherTracks"));
+	static const FString UserUncategorized(TEXT("@UserDefinedTracks"));
 	TArray<FString> Categories;
 	TMap<FString, TArray<const FWidgetAnimEvaluator*>> ByCategory;
 	WidgetAnimTimeline::ForEachRegisteredType([&Categories, &ByCategory](const FWidgetAnimEvaluator& Evaluator)
 	{
-		const FString Category = Evaluator.GetCategory().ToString();
+		FString Category = Evaluator.GetCategory().ToString();
+		if (Category.IsEmpty())
+		{
+			Category = WidgetAnimTimeline::IsUserDefinedTrackType(Evaluator.GetParamsStruct()) ? UserUncategorized : PluginUncategorized;
+		}
 		if (!ByCategory.Contains(Category))
 		{
 			Categories.Add(Category);
@@ -19025,12 +19703,18 @@ void SWidgetAnimTimeline::AddTrackTypeEntries(FMenuBuilder& Menu, int32 GroupInd
 	});
 	Categories.Sort([](const FString& A, const FString& B)
 	{
-		return A.IsEmpty() != B.IsEmpty() ? B.IsEmpty() : A < B;
+		// The two headings of no name of their own after every named one, Other Tracks before User-defined Tracks.
+		const bool bUnnamedA = A == PluginUncategorized || A == UserUncategorized;
+		const bool bUnnamedB = B == PluginUncategorized || B == UserUncategorized;
+		return bUnnamedA != bUnnamedB ? bUnnamedB : A < B;
 	});
 
 	for (const FString& Category : Categories)
 	{
-		Menu.BeginSection(NAME_None, Category.IsEmpty() ? LOCTEXT("RegisteredTypesSection", "Registered Types") : FText::FromString(Category));
+		const FText Heading = Category == UserUncategorized ? LOCTEXT("UserDefinedTracksSection", "User-defined Tracks")
+			: Category == PluginUncategorized ? LOCTEXT("OtherTracksSection", "Other Tracks")
+			: FText::FromString(Category);
+		Menu.BeginSection(NAME_None, Heading);
 		for (const FWidgetAnimEvaluator* Evaluator : ByCategory.FindChecked(Category))
 		{
 			const UScriptStruct* ParamsStruct = Evaluator->GetParamsStruct();
@@ -21053,7 +21737,7 @@ FText SWidgetAnimTimeline::GetEasingName(const FWidgetAnimLayer& Layer)
 	const float Overshoot = Layer.AnimType == EWidgetAnimType::Scale ? Layer.Overshoot
 		: Layer.AnimType == EWidgetAnimType::Slide ? Layer.SlideOvershoot
 		: 0.f;
-	if (Overshoot > 0.f && Layer.ValueKeys.Keys.Num() == 0)
+	if (Overshoot > 0.f && Layer.ValueKeys.Keys.Num() == 0 && Layer.Easing != EWidgetAnimEasing::Hold)
 	{
 		FNumberFormattingOptions NumberFormat;
 		NumberFormat.SetUseGrouping(false).SetMaximumFractionalDigits(2);

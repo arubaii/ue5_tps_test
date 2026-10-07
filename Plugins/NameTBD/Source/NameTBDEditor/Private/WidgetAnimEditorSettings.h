@@ -62,7 +62,7 @@ public:
 
 	/**
 	 * The color of every Blueprint track type that doesn't set a Track Color of its own in its class defaults. Other
-	 * registered types - Count Up, and any C++ type - use Registered Type in Track Colors above.
+	 * registered types - Count Up, and any C++ type - use User-defined Track in Track Colors above.
 	 */
 	UPROPERTY(config, EditAnywhere, Category = "Track Colors", meta = (DisplayName = "Blueprint Type Track Color"))
 	FLinearColor BlueprintTypeTrackColor;
@@ -227,6 +227,71 @@ public:
 	 */
 	UPROPERTY(config, EditAnywhere, Category = "Script Editor", meta = (DisplayName = "Suggestions", EditCondition = "bUseCodeEditor"))
 	bool bScriptEditorSuggestions = true;
+
+	// -------------------------------------------------------------------------------------------------
+	// DEVELOPER ONLY
+	//
+	// Look-and-feel tunables of the Track Editor, set here while the plugin is being developed so they can be tried live.
+	// Taken out before the plugin is published, with the values settled on written into NameTBDColors.h as their defaults.
+	// -------------------------------------------------------------------------------------------------
+
+	/** The animation's start line and its triangle in the ruler. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Start Color"))
+	FLinearColor RangeStartColor;
+
+	/** The animation's end line and its triangle in the ruler. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "End Color"))
+	FLinearColor RangeEndColor;
+
+	/** How thick the start and end lines are drawn through the tracks, in pixels. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Start / End Line Thickness", ClampMin = "1", ClampMax = "6", UIMin = "1", UIMax = "6"))
+	float RangeLineThickness = 2.f;
+
+	/** How opaque the start and end lines are, 0 to 1. Their triangles are always solid. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Start / End Line Opacity", ClampMin = "0", ClampMax = "1"))
+	float RangeLineOpacity = 1.f;
+
+	/** How wide the start and end triangles are across their top, in pixels - also how wide they are grabbed. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Start / End Triangle Width", ClampMin = "4", ClampMax = "24"))
+	float RangeTriangleWidth = 12.f;
+
+	/** How tall the start and end triangles are, in pixels. Kept inside the ruler's bottom strip, under the playhead's head. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Start / End Triangle Height", ClampMin = "3", ClampMax = "8"))
+	float RangeTriangleHeight = 7.f;
+
+	/** How far toward white a start or end triangle turns while hovered or dragged, 0 to 1. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Start / End Hover Lighten", ClampMin = "0", ClampMax = "1"))
+	float RangeHoverLighten = 0.35f;
+
+	/** The playhead - its head in the ruler and its line - in the Track Editor and the Graph Editor. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Playhead Color"))
+	FLinearColor PlayheadColor;
+
+	/** How thick the playhead's line is, in pixels. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Playhead Line Thickness", ClampMin = "1", ClampMax = "6"))
+	float PlayheadLineThickness = 1.f;
+
+	/** How opaque the playhead's line is, 0 to 1. Its head is always solid. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Playhead Line Opacity", ClampMin = "0", ClampMax = "1"))
+	float PlayheadLineOpacity = 0.95f;
+
+	/** The shade over the Track Editor before the animation's start and after its end. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Outside Animation Shade"))
+	FLinearColor OutOfRangeShade;
+
+	/** The Track Editor's and Graph Editor's grid lines at each labeled time, and between them. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Grid Major Color"))
+	FLinearColor GridMajorColor;
+
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Grid Minor Color"))
+	FLinearColor GridMinorColor;
+
+	/** The icon before a cue track's name - the Event track's event, the Sound track's speaker - and its tint. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Cue Track Icon Size", ClampMin = "8", ClampMax = "24"))
+	float CueTrackIconSize = 12.f;
+
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Cue Track Icon Tint"))
+	FLinearColor CueTrackIconTint;
 
 	// -------------------------------------------------------------------------------------------------
 

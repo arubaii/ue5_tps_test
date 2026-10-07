@@ -170,6 +170,7 @@ TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
           { ShapeEditIcon, TEXT("ShapeEdit_EditShape.svg") },
           { SaveIcon, TEXT("WidgetAnim_Save.svg") },
           { GraphEditorIcon, TEXT("WidgetAnim_GraphEditor.svg") },
+          { RangeMarkerIcon, TEXT("WidgetAnim_RangeMarker.svg") },
        };
        for (const TPair<FName, const TCHAR*>& Icon : Icons)
        {

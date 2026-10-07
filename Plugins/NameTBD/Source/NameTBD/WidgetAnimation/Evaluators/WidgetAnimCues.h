@@ -112,13 +112,16 @@ struct NAMETBD_API FWidgetAnimSoundCueParams : public FWidgetAnimCueParams
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (DisplayName = "Pitch Variation", ClampMin = "0.0", UIMax = "0.5"))
 	float PitchVariation = 0.f;
 
-	/** Seconds the sound takes to rise from silence as it starts. 0 starts it at full volume. */
+	/**
+	 * Seconds the sound takes to rise from silence as it starts, along its Fade Curve. 0 starts it at full volume. Eases the
+	 * start of its Volume curve in the Widget Animations panel's Graph Editor.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (DisplayName = "Fade In", ClampMin = "0.0", UIMax = "5.0", Units = "s"))
 	float FadeIn = 0.f;
 
 	/**
 	 * Seconds the sound takes to fall to silence, finishing as the track's run does - as the sound ends, with Length From
-	 * Sound. Drawn on the track as a ramp. 0 lets it play out.
+	 * Sound. Eases the end of its Volume curve in the Graph Editor, along its Fade Curve. 0 lets it play out.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (DisplayName = "Fade Out", ClampMin = "0.0", UIMax = "5.0", Units = "s"))
 	float FadeOut = 0.f;

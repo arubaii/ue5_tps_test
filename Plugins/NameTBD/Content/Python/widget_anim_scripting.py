@@ -72,6 +72,7 @@ class Ease:
     EASE_OUT = "EaseOut"
     EASE_IN_OUT = "EaseInOut"
     CUSTOM = "Custom"
+    HOLD = "Hold"  # stays on its start, then jumps to its end the moment it arrives
     IN = EASE_IN
     OUT = EASE_OUT
     IN_OUT = EASE_IN_OUT

@@ -148,8 +148,8 @@ float UWidgetAnimLibrary::EvaluateTrackEase(const FWidgetAnimSettings& Settings,
 	// Spring layer already overshoots by its own physics, so there Overshoot is hidden and ignored - two
 	// different pops stacked on one value would be neither. So is a track with keys between its start and end:
 	// every segment would pop past its own key, which is a wobble, not a pop - its keys and their curves are how
-	// it is shaped instead.
-	if (Settings.Timing == EWidgetAnimTiming::Tween && Settings.ValueKeys.Keys.Num() == 0)
+	// it is shaped instead. Nor a Hold, which doesn't travel at all - it lands on its end the moment it arrives.
+	if (Settings.Timing == EWidgetAnimTiming::Tween && Settings.ValueKeys.Keys.Num() == 0 && Settings.Easing != EWidgetAnimEasing::Hold)
 	{
 		if (Settings.AnimType == EWidgetAnimType::Scale && Settings.Overshoot > 0.f)
 		{

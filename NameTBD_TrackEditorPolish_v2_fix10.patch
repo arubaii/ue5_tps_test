@@ -1,0 +1,228 @@
+diff --git a/NameTBD_Handoff.md b/NameTBD_Handoff.md
+index ae0859e..3e8cd97 100644
+--- a/NameTBD_Handoff.md
++++ b/NameTBD_Handoff.md
+@@ -155,3 +155,7 @@ In practice that means:
+     - The selection the toolbar acts on is kept by widget name (`WidgetAnimTextEditing::FState`) and updated every frame the box has focus. A menu, the color picker, or the designer rebuilding the toolbar in the middle of a click no longer loses it, and a rebuilt editor puts the selection back.
+   - **Text Editor buttons.** Speed, Instant, Pause, Event and Play are gone; the editor only marks up text: Style, Effect, Color, Size, Glow, Clear.
+   - **Start and end markers.** The triangle is now an anti-aliased vector brush (`Resources/WidgetAnim_RangeMarker.svg`, `FNameTBDStyle::RangeMarkerIcon`), tinted. The line runs up into it in the triangle's own color, so the two read as one shape. The old three-vertex triangle (no anti-aliasing, so stair-stepped at this size) is now only a fallback if the SVG is missing, and it has its edges traced with anti-aliased lines.
++- `_fix10`: **Marker and playhead pixel alignment.**
++  - Start/end markers and the playhead (shared with the Graph Editor) are now laid out on whole physical pixels as one column (`WidgetAnimTimeline::SnapColumn`, `SnapX`, `SnapY`). Each line is a whole number of pixels wide, and its head (triangle, or tag + notch) is that many plus an even number, centered on it. Placed separately, the pieces were rounded to the screen's pixels independently, so at some zooms the line came out a pixel wide or narrow, or sat a pixel off the triangle's point.
++  - The playhead's notch is now the same smooth triangle as the markers (`MakeDownTriangle`), replacing the rotated square, and its time is centered in the tag.
++  - A start/end line now lights with its triangle when hovered.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index ba47ec5..e7ff0e5 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -408,6 +408,85 @@ namespace WidgetAnimTimeline
+ 		FSlateDrawElement::MakeCustomVerts(OutDrawElements, LayerId, Handle, Vertices, Indices, nullptr, 0, 0);
+ 	}
+ 
++	/**
++	 * Where a vertical line and a head centered on it go - a start or end marker's triangle, the playhead's tag and notch -
++	 * on whole physical pixels, in a geometry's local units. Worked out together so the line keeps the same width and stays
++	 * on the head's middle at every zoom and DPI: placed each on its own, the two were rounded to the screen's pixels
++	 * separately, and could land a pixel apart, or the line come out a pixel wider or narrower than set.
++	 */
++	struct FPixelColumn
++	{
++		float LineLeft = 0.f;
++		float LineWidth = 1.f;
++		float HeadLeft = 0.f;
++		float HeadWidth = 1.f;
++	};
++
++	float PixelScale(const FGeometry& Geometry)
++	{
++		return FMath::Max(Geometry.GetAccumulatedLayoutTransform().GetScale(), UE_KINDA_SMALL_NUMBER);
++	}
++
++	/** CenterX is the line's middle; LineThickness and HeadWidth in local units, each made a whole number of pixels. */
++	FPixelColumn SnapColumn(const FGeometry& Geometry, float CenterX, float LineThickness, float HeadWidth)
++	{
++		const float Scale = PixelScale(Geometry);
++		const float Origin = Geometry.GetAccumulatedLayoutTransform().GetTranslation().X;
++		const int32 LinePixels = FMath::Max(1, FMath::RoundToInt(LineThickness * Scale));
++		int32 HeadPixels = FMath::Max(LinePixels, FMath::RoundToInt(HeadWidth * Scale));
++		// As many pixels of head either side of the line - an odd number over would leave one side a pixel wider.
++		if ((HeadPixels - LinePixels) % 2 != 0)
++		{
++			++HeadPixels;
++		}
++		const float LineLeftPixel = FMath::RoundToFloat(Origin + CenterX * Scale - LinePixels * 0.5f);
++		const float HeadLeftPixel = LineLeftPixel - static_cast<float>((HeadPixels - LinePixels) / 2);
++
++		FPixelColumn Column;
++		Column.LineLeft = (LineLeftPixel - Origin) / Scale;
++		Column.LineWidth = LinePixels / Scale;
++		Column.HeadLeft = (HeadLeftPixel - Origin) / Scale;
++		Column.HeadWidth = HeadPixels / Scale;
++		return Column;
++	}
++
++	/** X, in local units, moved onto the nearest whole physical pixel. */
++	float SnapX(const FGeometry& Geometry, float X)
++	{
++		const float Scale = PixelScale(Geometry);
++		const float Origin = Geometry.GetAccumulatedLayoutTransform().GetTranslation().X;
++		return (FMath::RoundToFloat(Origin + X * Scale) - Origin) / Scale;
++	}
++
++	/** Y, in local units, moved onto the nearest whole physical pixel. */
++	float SnapY(const FGeometry& Geometry, float Y)
++	{
++		const float Scale = PixelScale(Geometry);
++		const float Origin = Geometry.GetAccumulatedLayoutTransform().GetTranslation().Y;
++		return (FMath::RoundToFloat(Origin + Y * Scale) - Origin) / Scale;
++	}
++
++	/**
++	 * A head pointing down at its line - the plugin's smooth vector triangle, tinted; three plain vertices with their
++	 * slanted edges traced anti-aliased if that file is missing.
++	 */
++	void MakeDownTriangle(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& Geometry, float Left, float Top, float Width, float Height, const FLinearColor& Color)
++	{
++		if (const FSlateBrush* Brush = FNameTBDStyle::FindIcon(FNameTBDStyle::RangeMarkerIcon))
++		{
++			FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
++				Geometry.ToPaintGeometry(FVector2f(Width, Height), FSlateLayoutTransform(FVector2f(Left, Top))),
++				Brush, ESlateDrawEffect::None, Color);
++			return;
++		}
++		const FVector2f TopLeft(Left, Top);
++		const FVector2f TopRight(Left + Width, Top);
++		const FVector2f Point(Left + Width * 0.5f, Top + Height);
++		MakeTriangle(OutDrawElements, LayerId, Geometry, TopLeft, TopRight, Point, Color);
++		FSlateDrawElement::MakeLines(OutDrawElements, LayerId, Geometry.ToPaintGeometry(),
++			TArray<FVector2f>{ TopLeft, Point, TopRight }, ESlateDrawEffect::None, Color, /*bAntialias=*/true, 1.f);
++	}
++
+ 	/** The first of Candidates the app style has - icon names move between engine versions. Null if none do. */
+ 	const FSlateBrush* PickBrush(std::initializer_list<FName> Candidates)
+ 	{
+@@ -3297,13 +3376,6 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		// either never covers its triangle, and the two never take each other's clicks - see RangeEdgeAt.
+ 		const UWidgetAnimEditorSettings& Look = UWidgetAnimEditorSettings::Get();
+ 		const float LineThickness = FMath::Max(Look.RangeLineThickness, 1.f);
+-		auto RangeLine = [&](float LineX, const FLinearColor& Color)
+-		{
+-			// Centered on the time's pixel, however thick.
+-			Box(LineX + 0.5f - LineThickness * 0.5f, RulerHeight, LineThickness, Size.Y - RulerHeight, WithAlpha(Color, Color.A * Look.RangeLineOpacity), RangeLayer);
+-		};
+-		RangeLine(StartX, Look.RangeStartColor);
+-		RangeLine(EndX, Look.RangeEndColor);
+ 		if (Owner->IsPercentTime() && PassSeconds > 1.f + KINDA_SMALL_NUMBER)
+ 		{
+ 			Box(TimeToX(1.f, Size.X), RulerHeight, 1.f, Size.Y - RulerHeight, Palette::PercentEndLine, RangeLayer);
+@@ -3314,41 +3386,23 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			const bool bStartLit = bDraggingRange ? !bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && !HoverRange.GetValue());
+ 			const bool bEndLit = bDraggingRange ? bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && HoverRange.GetValue());
+ 
+-			// The triangle: its flat side along the top, its point on the line where it meets the tracks - one shape with the
+-			// line, which runs up into it in the triangle's own color, so the two never read as separate pieces. Drawn from the
+-			// plugin's vector triangle, rasterized smooth at the size and DPI it is shown at; three plain vertices - which have
+-			// no anti-aliasing, and at this size came out as a staircase - only if that file is missing. A fixed range - the
+-			// panel locked, or nothing to bound - gets a smaller one. Lit a little bigger and lighter.
+-			const FSlateBrush* MarkerBrush = FNameTBDStyle::FindIcon(FNameTBDStyle::RangeMarkerIcon);
++			// One shape: the triangle - its flat side along the top, its point where the tracks start - and the line, which
++			// runs up into its middle and down through the tracks. Laid out together on whole pixels (SnapColumn), so at any
++			// zoom the line is the same width and right under the triangle's point. A fixed range - the panel locked, or
++			// nothing to bound - gets a smaller triangle. Lit - line and all - a little bigger and lighter.
+ 			auto Marker = [&](float LineX, bool bEnd, bool bLit)
+ 			{
+ 				const FLinearColor Base = bEnd ? Look.RangeEndColor : Look.RangeStartColor;
+ 				const FLinearColor Color = bLit ? FMath::Lerp(Base, FLinearColor::White, Look.RangeHoverLighten) : Base;
+ 				const float Scale = bCanDragRange ? (bLit ? 1.15f : 1.f) : 0.6f;
+ 				const float Height = FMath::Min(Look.RangeTriangleHeight * Scale, SWidgetAnimTimeline::RangeStripHeight);
+-				const float HalfWidth = Look.RangeTriangleWidth * Scale * 0.5f;
+-				const float CenterX = LineX + 0.5f;
+-				const float Top = RulerHeight - Height;
+-
+-				// The neck: the line, solid, from the triangle's middle down to where the tracks start.
+-				Box(CenterX - LineThickness * 0.5f, Top + Height * 0.5f, LineThickness, Height * 0.5f + 1.f, Color, RangeLayer + 1);
++				const WidgetAnimTimeline::FPixelColumn Column = WidgetAnimTimeline::SnapColumn(AllottedGeometry, LineX + 0.5f, LineThickness, Look.RangeTriangleWidth * Scale);
++				const float Point = WidgetAnimTimeline::SnapY(AllottedGeometry, RulerHeight);
++				const float Top = WidgetAnimTimeline::SnapY(AllottedGeometry, RulerHeight - Height);
++				const float LineTop = WidgetAnimTimeline::SnapY(AllottedGeometry, (Top + Point) * 0.5f);
+ 
+-				if (MarkerBrush)
+-				{
+-					FSlateDrawElement::MakeBox(OutDrawElements, RangeLayer + 1,
+-						AllottedGeometry.ToPaintGeometry(FVector2f(HalfWidth * 2.f, Height), FSlateLayoutTransform(FVector2f(CenterX - HalfWidth, Top))),
+-						MarkerBrush, ESlateDrawEffect::None, Color);
+-				}
+-				else
+-				{
+-					const FVector2f Left(CenterX - HalfWidth, Top);
+-					const FVector2f Right(CenterX + HalfWidth, Top);
+-					const FVector2f Point(CenterX, RulerHeight);
+-					WidgetAnimTimeline::MakeTriangle(OutDrawElements, RangeLayer + 1, AllottedGeometry, Left, Right, Point, Color);
+-					// Its slanted edges traced with anti-aliased lines, to soften the steps.
+-					FSlateDrawElement::MakeLines(OutDrawElements, RangeLayer + 1, AllottedGeometry.ToPaintGeometry(),
+-						TArray<FVector2f>{ Left, Point, Right }, ESlateDrawEffect::None, Color, /*bAntialias=*/true, 1.f);
+-				}
++				Box(Column.LineLeft, LineTop, Column.LineWidth, Size.Y - LineTop, WithAlpha(Color, Color.A * Look.RangeLineOpacity), RangeLayer);
++				WidgetAnimTimeline::MakeDownTriangle(OutDrawElements, RangeLayer + 1, AllottedGeometry, Column.HeadLeft, Top, Column.HeadWidth, Point - Top, Color);
+ 			};
+ 			Marker(StartX, /*bEnd=*/false, bStartLit);
+ 			Marker(EndX, /*bEnd=*/true, bEndLit);
+@@ -10061,38 +10115,37 @@ int32 SWidgetAnimTimeline::PaintPlayhead(FSlateWindowElementList& OutDrawElement
+ 	const TSharedRef<FSlateFontMeasure> Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+ 	const FSlateFontInfo TagFont = FCoreStyle::GetDefaultFontStyle("Regular", 8);
+ 	const FVector2f TextSize = FVector2f(Measure->Measure(TagText, TagFont));
+-	const float TagWidth = TextSize.X + 10.f;
+-	const float TagHeight = TextSize.Y + 2.f;
+-	const float TagY = 2.f;
+-	const float TagX = FMath::Clamp(X + 0.5f - TagWidth * 0.5f, Left, FMath::Max(Right - TagWidth, Left));
++	const float LineThickness = FMath::Max(Look.PlayheadLineThickness, 1.f);
++
++	// Laid out on whole pixels, the tag and the notch each centered on the line (SnapColumn): at any zoom the line is the
++	// same width and runs out of the notch's point, which sits under the tag's middle.
++	const FPixelColumn TagColumn = SnapColumn(Geometry, X + 0.5f, LineThickness, TextSize.X + 10.f);
++	const float TagY = SnapY(Geometry, 2.f);
++	const float TagBottom = SnapY(Geometry, 2.f + TextSize.Y + 2.f);
++	const float TagX = SnapX(Geometry, FMath::Clamp(TagColumn.HeadLeft, Left, FMath::Max(Right - TagColumn.HeadWidth, Left)));
+ 	FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
+-		Geometry.ToPaintGeometry(FVector2f(TagWidth, TagHeight), FSlateLayoutTransform(FVector2f(TagX, TagY))),
++		Geometry.ToPaintGeometry(FVector2f(TagColumn.HeadWidth, TagBottom - TagY), FSlateLayoutTransform(FVector2f(TagX, TagY))),
+ 		RoundedFill(3.f), ESlateDrawEffect::None, Color);
+ 
+-	// The notch: a small square turned on its corner, half under the tag - the half below it a triangle.
+-	const float NotchSize = 6.f;
+-	const float NotchCenterY = TagY + TagHeight - 1.f;
+-	FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
+-		Geometry.ToPaintGeometry(
+-			FVector2f(NotchSize, NotchSize),
+-			FSlateLayoutTransform(FVector2f(X + 0.5f - NotchSize * 0.5f, NotchCenterY - NotchSize * 0.5f)),
+-			FSlateRenderTransform(FQuat2f(FMath::DegreesToRadians(45.f))),
+-			FVector2f(0.5f, 0.5f)),
+-		WhiteBrush(), ESlateDrawEffect::None, Color);
+-
+-	// The line: one crisp pixel from the notch's point to the bottom - solid, no glow or fade, so it reads the same over the
+-	// ruler, the start and end markers and every track.
+-	const float LineTop = NotchCenterY + NotchSize * 0.5f;
+-	const float LineThickness = FMath::Max(Look.PlayheadLineThickness, 1.f);
++	// The notch: the start and end markers' triangle, small, tucked a pixel under the tag so no seam shows between them.
++	const FPixelColumn NotchColumn = SnapColumn(Geometry, X + 0.5f, LineThickness, 8.f);
++	const float NotchTop = SnapY(Geometry, TagBottom - 1.f);
++	const float NotchPoint = SnapY(Geometry, TagBottom + 4.f);
++	MakeDownTriangle(OutDrawElements, LayerId + 1, Geometry, NotchColumn.HeadLeft, NotchTop, NotchColumn.HeadWidth, NotchPoint - NotchTop, Color);
++
++	// The line: from inside the notch to the bottom - solid, no glow or fade, so it reads the same over the ruler, the start
++	// and end markers and every track.
++	const float LineTop = SnapY(Geometry, (NotchTop + NotchPoint) * 0.5f);
+ 	if (Bottom > LineTop)
+ 	{
+ 		FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+-			Geometry.ToPaintGeometry(FVector2f(LineThickness, Bottom - LineTop), FSlateLayoutTransform(FVector2f(X + 0.5f - LineThickness * 0.5f, LineTop))),
++			Geometry.ToPaintGeometry(FVector2f(NotchColumn.LineWidth, Bottom - LineTop), FSlateLayoutTransform(FVector2f(NotchColumn.LineLeft, LineTop))),
+ 			WhiteBrush(), ESlateDrawEffect::None, Color.CopyWithNewOpacity(Color.A * Look.PlayheadLineOpacity));
+ 	}
+ 
++	// The time, centered in the tag.
+ 	FSlateDrawElement::MakeText(OutDrawElements, LayerId + 2,
+-		Geometry.ToPaintGeometry(FVector2f(TextSize.X + 2.f, TextSize.Y), FSlateLayoutTransform(FVector2f(TagX + 5.f, TagY + 1.f))),
++		Geometry.ToPaintGeometry(FVector2f(TextSize.X + 2.f, TextSize.Y), FSlateLayoutTransform(FVector2f(TagX + (TagColumn.HeadWidth - TextSize.X) * 0.5f, TagY + 1.f))),
+ 		TagText, TagFont, ESlateDrawEffect::None, Palette::PlayheadText);
+ 
+ 	return LayerId + 2;

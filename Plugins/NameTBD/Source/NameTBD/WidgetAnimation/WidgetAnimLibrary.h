@@ -70,7 +70,7 @@ enum class EWidgetAnimType : uint8
 	 * Appended last for the same reason as Transform. Timed, keyed and looped like any other track that travels
 	 * from a start value to an end value.
 	 */
-	Custom UMETA(DisplayName = "Registered Type"),
+	Custom UMETA(DisplayName = "User-defined Track"),
 
 	/**
 	 * Jitters the widget about where it is - a hit, an error, a rumble - moving and turning it along a smooth noise, and
@@ -818,11 +818,12 @@ struct NAMETBD_API FWidgetAnimLayer
 	EWidgetAnimTiming Timing = EWidgetAnimTiming::Tween;
 
 	/**
-	 * How long the track runs, in seconds. Hidden on a Transform track, whose last key sets how long it runs,
-	 * and on a Spring track, which runs until its spring settles. On a value-driven track that tweens to its values
-	 * (Value Smoothing = Tween), how long each ease to a new value takes - shown on a Transform track then too.
+	 * How long the track runs, in seconds. Read-only on a keyframed track, whose last key sets how long it runs, and on a
+	 * Spring track, which runs until its spring settles - the Widget Animations panel shows how long those really run here
+	 * instead. On a value-driven track that tweens to its values (Value Smoothing = Tween), how long each ease to a new value
+	 * takes - editable on a keyframed track then too.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && AnimType != EWidgetAnimType::Design && Timing != EWidgetAnimTiming::Spring || AnimType == EWidgetAnimType::Pulse || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (ClampMin = "0.01", EditCondition = "AnimType != EWidgetAnimType::Transform && AnimType != EWidgetAnimType::ShapeBox && AnimType != EWidgetAnimType::Shape && AnimType != EWidgetAnimType::Design && Timing != EWidgetAnimTiming::Spring || AnimType == EWidgetAnimType::Pulse || Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Tween"))
 	float Duration = 0.3f;
 
 	/**
@@ -1036,11 +1037,14 @@ struct NAMETBD_API FWidgetAnimLayer
 
 	// Registered types
 	//
-	// A Registered Type track's type and its settings, in one: the struct held here is the type (Count is an
+	// A registered type's track's type and its settings, in one: the struct held here is the type (Count is an
 	// FWidgetAnimCountUpParams), and its fields are that type's settings. Only this track's own type's fields are
 	// carried, which is how new families stop adding flat fields to every track. Empty on every built-in type, so
 	// assets authored before registered types existed load exactly as they were. See FWidgetAnimEvaluator.
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Type", meta = (DisplayName = "Type Params", BaseStruct = "/Script/NameTBD.WidgetAnimTypeParams", ExcludeBaseStruct, EditCondition = "AnimType == EWidgetAnimType::Custom", EditConditionHides))
+	//
+	// Its type is never picked here: it is the track's type, chosen from the Add Track menu when the track is added - so
+	// it is read-only (StructTypeConst), only its fields edited.
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Type", meta = (DisplayName = "Type Params", BaseStruct = "/Script/NameTBD.WidgetAnimTypeParams", ExcludeBaseStruct, StructTypeConst, EditCondition = "AnimType == EWidgetAnimType::Custom", EditConditionHides))
 	FInstancedStruct TypeParams;
 
 	/** The evaluator for a Registered Type track's type. Null on built-in types, and on a type whose module isn't loaded. */

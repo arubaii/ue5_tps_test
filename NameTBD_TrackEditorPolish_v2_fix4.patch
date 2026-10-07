@@ -1,0 +1,349 @@
+diff --git a/NameTBD_Handoff.md b/NameTBD_Handoff.md
+index 07f3339..86a20a0 100644
+--- a/NameTBD_Handoff.md
++++ b/NameTBD_Handoff.md
+@@ -114,3 +114,14 @@ In practice that means:
+     - `MatchDesignTrackToTarget` is keyed on the target's class, not the preview instance.
+   - **Selection panel slider drags.** Interactive steps only refresh the preview (`IWidgetAnimPanelSource::NotifyInteractiveEdit`). The full `PostEditChange` waits for the drag's final ValueSet.
+   - **Start and end markers.** Godot-style solid lines (pure green 0,255,0 and pure red 255,0,0), each with an upside-down pixel triangle in the ruler's bottom strip. The hit area is the triangle (`RangeEdgeAt`), so it never overlaps the playhead's.
++- `_fix4`:
++  - **Start/end triangles.** Drawn as real triangles from three custom vertices (`WidgetAnimTimeline::MakeTriangle`), replacing the stacked pixel rows that came out malformed. The start and end lines are now 2px.
++  - **DEVELOPER ONLY settings.** Editor Preferences > Plugins > Widget Animations Editor now has a DEVELOPER ONLY category. It holds:
++    - start/end colors, line thickness and opacity;
++    - triangle size and hover lighten;
++    - playhead color, line thickness and opacity;
++    - out-of-range shade;
++    - grid colors;
++    - cue track icon size and tint.
++    These start from the `NameTBDColors.h` values. Before publishing, remove the category and settle the values back into the palette.
++  - **Cue track icons.** The Event track's name follows the editor's event icon (`GraphEditor.Event_16x`), and the Sound track's follows a sound icon (`ClassIcon.SoundWave`).
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimGraphEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimGraphEditor.cpp
+index c62ab2a..b92128a 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimGraphEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimGraphEditor.cpp
+@@ -24,6 +24,7 @@
+ #include "Framework/Application/SlateApplication.h"
+ #include "Framework/MultiBox/MultiBoxBuilder.h"
+ #include "Rendering/DrawElements.h"
++#include "WidgetAnimEditorSettings.h"
+ #include "ScopedTransaction.h"
+ #include "Styling/AppStyle.h"
+ #include "Styling/CoreStyle.h"
+@@ -1988,7 +1989,7 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
+ 		{
+ 			continue;
+ 		}
+-		Box(GridLayer, FVector2f(X, RulerHeight), FVector2f(1.f, Size.Y - RulerHeight), WhiteBrush(), Palette::GridMajor);
++		Box(GridLayer, FVector2f(X, RulerHeight), FVector2f(1.f, Size.Y - RulerHeight), WhiteBrush(), UWidgetAnimEditorSettings::Get().GridMajorColor);
+ 		Box(GridLayer, FVector2f(X, RulerHeight - 6.f), FVector2f(1.f, 6.f), WhiteBrush(), Palette::GraphRulerTick);
+ 		const FString Label = Panel ? Panel->FormatTime(FMath::Abs(Mark) < TimeStep * 0.01f ? 0.f : Mark, TimeStep < 0.1f ? 2 : 1) : FString::SanitizeFloat(Mark);
+ 		Text(GridLayer + 1, Label, FVector2f(X + 3.f, 3.f), SmallFont, Palette::GraphRulerText);
+@@ -1998,7 +1999,7 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
+ 		const float X = TimeToX(Mark);
+ 		if (X >= GutterWidth)
+ 		{
+-			Box(GridLayer, FVector2f(X, RulerHeight), FVector2f(1.f, Size.Y - RulerHeight), WhiteBrush(), Palette::GridMinor);
++			Box(GridLayer, FVector2f(X, RulerHeight), FVector2f(1.f, Size.Y - RulerHeight), WhiteBrush(), UWidgetAnimEditorSettings::Get().GridMinorColor);
+ 		}
+ 	}
+ 
+@@ -2014,7 +2015,7 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
+ 			continue;
+ 		}
+ 		const bool bZero = FMath::Abs(Mark) < ValueStep * 0.01f;
+-		Box(GridLayer, FVector2f(GutterWidth, Y), FVector2f(Size.X - GutterWidth, 1.f), WhiteBrush(), bZero ? Palette::GraphZeroLine : Palette::GridMajor);
++		Box(GridLayer, FVector2f(GutterWidth, Y), FVector2f(Size.X - GutterWidth, 1.f), WhiteBrush(), bZero ? Palette::GraphZeroLine : UWidgetAnimEditorSettings::Get().GridMajorColor);
+ 		const FString Label = bEase || IsNormalized()
+ 			? FString::Printf(TEXT("%d%%"), FMath::RoundToInt(Mark * 100.f))
+ 			: FormatValue(bZero ? 0.f : Mark);
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 652f4ab..5281436 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -70,6 +70,8 @@
+ #include "PropertyHandle.h"
+ #include "PropertyRestriction.h"
+ #include "Rendering/DrawElements.h"
++#include "Rendering/RenderingCommon.h"
++#include "Rendering/SlateRenderer.h"
+ #include "ScopedTransaction.h"
+ #include "Misc/ConfigCacheIni.h"
+ #include "Editor.h"
+@@ -386,6 +388,26 @@ namespace WidgetAnimTimeline
+ 		return FAppStyle::GetBrush("WhiteBrush");
+ 	}
+ 
++	/**
++	 * A filled triangle through A, B and C - in Geometry's local space - drawn as one, from three vertices: a real triangle
++	 * with straight edges at any size and DPI, where one stacked from a row of boxes per pixel came out stepped and lopsided.
++	 */
++	void MakeTriangle(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& Geometry, const FVector2f& A, const FVector2f& B, const FVector2f& C, const FLinearColor& Color)
++	{
++		const FSlateResourceHandle Handle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(*WhiteBrush());
++		const FSlateRenderTransform& Transform = Geometry.GetAccumulatedRenderTransform();
++		const FColor VertexColor = Color.ToFColor(/*bSRGB=*/true);
++
++		TArray<FSlateVertex> Vertices;
++		Vertices.Reserve(3);
++		for (const FVector2f& Point : { A, B, C })
++		{
++			Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(Transform, Point, FVector2f(0.5f, 0.5f), VertexColor));
++		}
++		TArray<SlateIndex> Indices = { 0, 1, 2 };
++		FSlateDrawElement::MakeCustomVerts(OutDrawElements, LayerId, Handle, Vertices, Indices, nullptr, 0, 0);
++	}
++
+ 	/** The first of Candidates the app style has - icon names move between engine versions. Null if none do. */
+ 	const FSlateBrush* PickBrush(std::initializer_list<FName> Candidates)
+ 	{
+@@ -1355,7 +1377,7 @@ private:
+ 		// to the right, which is the one that can be pulled out.
+ 		const float EndX = TimeToX(Owner->GetPassSeconds(), Width);
+ 		const float StartX = TimeToX(0.f, Width);
+-		const float HalfWidth = static_cast<float>(NameTBD::Colors::WidgetAnimEditor::RangeTriangleWidth) * 0.5f + RangeGrabDistance;
++		const float HalfWidth = UWidgetAnimEditorSettings::Get().RangeTriangleWidth * 0.5f + RangeGrabDistance;
+ 		const bool bOnEnd = FMath::Abs(Local.X - (EndX + 0.5f)) <= HalfWidth;
+ 		const bool bOnStart = FMath::Abs(Local.X - (StartX + 0.5f)) <= HalfWidth;
+ 		if (bOnEnd && bOnStart)
+@@ -2543,6 +2565,26 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			}
+ 		}
+ 
++		// An Event track's name follows the editor's own event icon - the one on a Blueprint's event nodes - and a Sound
++		// track's a sound's. Under whichever name this engine version has it; none drawn if it has none.
++		if (Layer && Layer->AnimType == EWidgetAnimType::Custom)
++		{
++			static const FSlateBrush* EventIcon = PickBrush({ "GraphEditor.Event_16x", "Graph.Event_16x", "Icons.Event", "GraphEditor.CustomEvent_16x" });
++			static const FSlateBrush* SoundIcon = PickBrush({ "ClassIcon.SoundWave", "ClassIcon.SoundCue", "ClassIcon.SoundBase", "Icons.Audio" });
++			const FSlateBrush* CueIcon = Layer->TypeParams.GetPtr<FWidgetAnimEventCueParams>() ? EventIcon
++				: Layer->TypeParams.GetPtr<FWidgetAnimSoundCueParams>() ? SoundIcon
++				: nullptr;
++			const UWidgetAnimEditorSettings& Look = UWidgetAnimEditorSettings::Get();
++			const float IconSize = FMath::Min(Look.CueTrackIconSize, InnerHeight);
++			if (CueIcon && GlyphX - BarX0 + IconSize + Padding <= BarWidth)
++			{
++				const FLinearColor IconTint = bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Look.CueTrackIconTint) : Look.CueTrackIconTint;
++				Box(GlyphX, InnerTop + (InnerHeight - IconSize) * 0.5f, IconSize, IconSize, IconTint, SectionOverlayLayer, CueIcon);
++				GlyphX += IconSize + 3.f;
++				TextLeft = GlyphX + Padding * 0.5f;
++			}
++		}
++
+ 		const TArray<float>& KeyTimes = Paint.KeyTimes;
+ 
+ 		// A track some of whose segments have curves of their own has no one easing to name: each segment names
+@@ -2866,8 +2908,9 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 
+ 		// Outside the animation - before its start, after its end - is shaded, the way the native track area
+ 		// shades outside the playback range.
+-		Box(0.f, ClipTop, StartX, PassBottom - ClipTop, Palette::OutOfRangeShade, GridLayer);
+-		Box(EndX, ClipTop, Size.X - EndX, PassBottom - ClipTop, Palette::OutOfRangeShade, GridLayer);
++		const FLinearColor OutOfRangeShade = UWidgetAnimEditorSettings::Get().OutOfRangeShade;
++		Box(0.f, ClipTop, StartX, PassBottom - ClipTop, OutOfRangeShade, GridLayer);
++		Box(EndX, ClipTop, Size.X - EndX, PassBottom - ClipTop, OutOfRangeShade, GridLayer);
+ 
+ 		// A percentage timeline ends at 100% - one second as stored - however far its tracks reach: past it is never played.
+ 		if (Owner->IsPercentTime() && PassSeconds > 1.f + KINDA_SMALL_NUMBER)
+@@ -2880,7 +2923,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		{
+ 			const float X = TimeToX(TickIndex * MinorStep, Size.X);
+ 			const bool bMajor = ((TickIndex % MinorPerMajor) + MinorPerMajor) % MinorPerMajor == 0;
+-			Box(X, ClipTop, 1.f, PassBottom - ClipTop, bMajor ? Palette::GridMajor : Palette::GridMinor, GridLayer);
++			Box(X, ClipTop, 1.f, PassBottom - ClipTop, bMajor ? UWidgetAnimEditorSettings::Get().GridMajorColor : UWidgetAnimEditorSettings::Get().GridMinorColor, GridLayer);
+ 		}
+ 
+ 		// ---- Group lines: name, span and key summary ----------------------------------------------------------
+@@ -3252,8 +3295,15 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		// pure red at the end - under an upside-down triangle in the strip along the ruler's bottom, the only place either is
+ 		// grabbed, lit while the mouse is on it or it is being dragged. Below the playhead's head, so the playhead sitting on
+ 		// either never covers its triangle, and the two never take each other's clicks - see RangeEdgeAt.
+-		Box(StartX, RulerHeight, 1.f, Size.Y - RulerHeight, WithAlpha(Palette::RangeStart, Palette::RangeLineOpacity), RangeLayer);
+-		Box(EndX, RulerHeight, 1.f, Size.Y - RulerHeight, WithAlpha(Palette::RangeEnd, Palette::RangeLineOpacity), RangeLayer);
++		const UWidgetAnimEditorSettings& Look = UWidgetAnimEditorSettings::Get();
++		const float LineThickness = FMath::Max(Look.RangeLineThickness, 1.f);
++		auto RangeLine = [&](float LineX, const FLinearColor& Color)
++		{
++			// Centered on the time's pixel, however thick.
++			Box(LineX + 0.5f - LineThickness * 0.5f, RulerHeight, LineThickness, Size.Y - RulerHeight, WithAlpha(Color, Color.A * Look.RangeLineOpacity), RangeLayer);
++		};
++		RangeLine(StartX, Look.RangeStartColor);
++		RangeLine(EndX, Look.RangeEndColor);
+ 		if (Owner->IsPercentTime() && PassSeconds > 1.f + KINDA_SMALL_NUMBER)
+ 		{
+ 			Box(TimeToX(1.f, Size.X), RulerHeight, 1.f, Size.Y - RulerHeight, Palette::PercentEndLine, RangeLayer);
+@@ -3264,22 +3314,18 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			const bool bStartLit = bDraggingRange ? !bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && !HoverRange.GetValue());
+ 			const bool bEndLit = bDraggingRange ? bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && HoverRange.GetValue());
+ 
+-			// The triangle, drawn a row of pixels at a time - each row two narrower than the one above, down to the line's own
+-			// pixel - so its edges are crisp at any zoom, its point sitting on the line. Its own line, through the strip, joins
+-			// the two.
++			// The triangle: its flat side along the top, its point on the line where it meets the tracks. A fixed range - the
++			// panel locked, or nothing to bound - gets a smaller one. Lit a little bigger and lighter.
+ 			auto Marker = [&](float LineX, bool bEnd, bool bLit)
+ 			{
+-				const FLinearColor Base = bEnd ? Palette::RangeEnd : Palette::RangeStart;
+-				const FLinearColor Color = bLit ? FMath::Lerp(Base, FLinearColor::White, 0.35f) : Base;
+-				const int32 Grow = bLit ? 1 : 0;
+-				const int32 Rows = bCanDragRange ? Palette::RangeTriangleHeight + Grow : 3;
+-				const int32 TopWidth = bCanDragRange ? Palette::RangeTriangleWidth + Grow * 2 : 5;
+-				const float Top = RulerHeight - static_cast<float>(Rows);
+-				for (int32 Row = 0; Row < Rows; ++Row)
+-				{
+-					const int32 Width = FMath::Max(TopWidth - Row * 2, 1);
+-					Box(LineX - static_cast<float>((Width - 1) / 2), Top + static_cast<float>(Row), static_cast<float>(Width), 1.f, Color, RangeLayer + 1);
+-				}
++				const FLinearColor Base = bEnd ? Look.RangeEndColor : Look.RangeStartColor;
++				const FLinearColor Color = bLit ? FMath::Lerp(Base, FLinearColor::White, Look.RangeHoverLighten) : Base;
++				const float Scale = bCanDragRange ? (bLit ? 1.15f : 1.f) : 0.6f;
++				const float Height = FMath::Min(Look.RangeTriangleHeight * Scale, SWidgetAnimTimeline::RangeStripHeight);
++				const float HalfWidth = Look.RangeTriangleWidth * Scale * 0.5f;
++				const float CenterX = LineX + 0.5f;
++				WidgetAnimTimeline::MakeTriangle(OutDrawElements, RangeLayer + 1, AllottedGeometry,
++					FVector2f(CenterX - HalfWidth, RulerHeight - Height), FVector2f(CenterX + HalfWidth, RulerHeight - Height), FVector2f(CenterX, RulerHeight), Color);
+ 			};
+ 			Marker(StartX, /*bEnd=*/false, bStartLit);
+ 			Marker(EndX, /*bEnd=*/true, bEndLit);
+@@ -9984,7 +10030,8 @@ FString SWidgetAnimTimeline::FormatFrames(float Seconds, float FrameRate)
+ int32 SWidgetAnimTimeline::PaintPlayhead(FSlateWindowElementList& OutDrawElements, const FGeometry& Geometry, int32 LayerId, float X, float RulerWidgetHeight, float Bottom, float Left, float Right, const FString& TagText)
+ {
+ 	using namespace WidgetAnimTimeline;
+-	const FLinearColor Color = Palette::Playhead;
++	const UWidgetAnimEditorSettings& Look = UWidgetAnimEditorSettings::Get();
++	const FLinearColor Color = Look.PlayheadColor;
+ 
+ 	// The head, in the top of the ruler: the time on the playhead's color in a compact rounded tag - as the playheads of
+ 	// Premiere, Resolve and Sequencer read - with a notch under its middle pointing down at the line.
+@@ -10013,11 +10060,12 @@ int32 SWidgetAnimTimeline::PaintPlayhead(FSlateWindowElementList& OutDrawElement
+ 	// The line: one crisp pixel from the notch's point to the bottom - solid, no glow or fade, so it reads the same over the
+ 	// ruler, the start and end markers and every track.
+ 	const float LineTop = NotchCenterY + NotchSize * 0.5f;
++	const float LineThickness = FMath::Max(Look.PlayheadLineThickness, 1.f);
+ 	if (Bottom > LineTop)
+ 	{
+ 		FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+-			Geometry.ToPaintGeometry(FVector2f(1.f, Bottom - LineTop), FSlateLayoutTransform(FVector2f(X, LineTop))),
+-			WhiteBrush(), ESlateDrawEffect::None, Color.CopyWithNewOpacity(Color.A * Palette::PlayheadLineOpacity));
++			Geometry.ToPaintGeometry(FVector2f(LineThickness, Bottom - LineTop), FSlateLayoutTransform(FVector2f(X + 0.5f - LineThickness * 0.5f, LineTop))),
++			WhiteBrush(), ESlateDrawEffect::None, Color.CopyWithNewOpacity(Color.A * Look.PlayheadLineOpacity));
+ 	}
+ 
+ 	FSlateDrawElement::MakeText(OutDrawElements, LayerId + 2,
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.cpp
+index fae1b98..caca7b0 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.cpp
+@@ -10,6 +10,18 @@ UWidgetAnimEditorSettings::UWidgetAnimEditorSettings()
+ {
+ 	BlueprintTypeTrackColor = NameTBD::Colors::WidgetAnimEditor::LayerBlueprintType;
+ 	CueTrackColor = NameTBD::Colors::WidgetAnimEditor::LayerCue;
++
++	// DEVELOPER ONLY: the palette's values to start from - see the header.
++	RangeStartColor = NameTBD::Colors::WidgetAnimEditor::RangeStart;
++	RangeEndColor = NameTBD::Colors::WidgetAnimEditor::RangeEnd;
++	RangeLineOpacity = NameTBD::Colors::WidgetAnimEditor::RangeLineOpacity;
++	PlayheadColor = NameTBD::Colors::WidgetAnimEditor::Playhead;
++	PlayheadLineOpacity = NameTBD::Colors::WidgetAnimEditor::PlayheadLineOpacity;
++	OutOfRangeShade = NameTBD::Colors::WidgetAnimEditor::OutOfRangeShade;
++	GridMajorColor = NameTBD::Colors::WidgetAnimEditor::GridMajor;
++	GridMinorColor = NameTBD::Colors::WidgetAnimEditor::GridMinor;
++	CueTrackIconTint = NameTBD::Colors::WidgetAnimEditor::CueTrackIcon;
++
+ 	FillMissingTrackColors();
+ }
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
+index b4f86e7..1399060 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
+@@ -228,6 +228,71 @@ public:
+ 	UPROPERTY(config, EditAnywhere, Category = "Script Editor", meta = (DisplayName = "Suggestions", EditCondition = "bUseCodeEditor"))
+ 	bool bScriptEditorSuggestions = true;
+ 
++	// -------------------------------------------------------------------------------------------------
++	// DEVELOPER ONLY
++	//
++	// Look-and-feel tunables of the Track Editor, set here while the plugin is being developed so they can be tried live.
++	// Taken out before the plugin is published, with the values settled on written into NameTBDColors.h as their defaults.
++	// -------------------------------------------------------------------------------------------------
++
++	/** The animation's start line and its triangle in the ruler. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Start Color"))
++	FLinearColor RangeStartColor;
++
++	/** The animation's end line and its triangle in the ruler. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "End Color"))
++	FLinearColor RangeEndColor;
++
++	/** How thick the start and end lines are drawn through the tracks, in pixels. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Start / End Line Thickness", ClampMin = "1", ClampMax = "6", UIMin = "1", UIMax = "6"))
++	float RangeLineThickness = 2.f;
++
++	/** How opaque the start and end lines are, 0 to 1. Their triangles are always solid. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Start / End Line Opacity", ClampMin = "0", ClampMax = "1"))
++	float RangeLineOpacity = 1.f;
++
++	/** How wide the start and end triangles are across their top, in pixels - also how wide they are grabbed. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Start / End Triangle Width", ClampMin = "4", ClampMax = "24"))
++	float RangeTriangleWidth = 12.f;
++
++	/** How tall the start and end triangles are, in pixels. Kept inside the ruler's bottom strip, under the playhead's head. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Start / End Triangle Height", ClampMin = "3", ClampMax = "8"))
++	float RangeTriangleHeight = 7.f;
++
++	/** How far toward white a start or end triangle turns while hovered or dragged, 0 to 1. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Start / End Hover Lighten", ClampMin = "0", ClampMax = "1"))
++	float RangeHoverLighten = 0.35f;
++
++	/** The playhead - its head in the ruler and its line - in the Track Editor and the Graph Editor. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Playhead Color"))
++	FLinearColor PlayheadColor;
++
++	/** How thick the playhead's line is, in pixels. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Playhead Line Thickness", ClampMin = "1", ClampMax = "6"))
++	float PlayheadLineThickness = 1.f;
++
++	/** How opaque the playhead's line is, 0 to 1. Its head is always solid. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Playhead Line Opacity", ClampMin = "0", ClampMax = "1"))
++	float PlayheadLineOpacity = 0.95f;
++
++	/** The shade over the Track Editor before the animation's start and after its end. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Outside Animation Shade"))
++	FLinearColor OutOfRangeShade;
++
++	/** The Track Editor's and Graph Editor's grid lines at each labeled time, and between them. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Grid Major Color"))
++	FLinearColor GridMajorColor;
++
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Grid Minor Color"))
++	FLinearColor GridMinorColor;
++
++	/** The icon before a cue track's name - the Event track's event, the Sound track's speaker - and its tint. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Cue Track Icon Size", ClampMin = "8", ClampMax = "24"))
++	float CueTrackIconSize = 12.f;
++
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Cue Track Icon Tint"))
++	FLinearColor CueTrackIconTint;
++
+ 	// -------------------------------------------------------------------------------------------------
+ 
+ 	/** The color a layer type's tracks are drawn in: the user's, or the default for any type not set. */
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index dba66c7..5437d4a 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -243,8 +243,12 @@ namespace NameTBD
+ 			inline const FLinearColor RangeStart(0.00f, 1.00f, 0.00f);	// 0, 255, 0
+ 			inline const FLinearColor RangeEnd(1.00f, 0.00f, 0.00f);	// 255, 0, 0
+ 			inline constexpr float RangeLineOpacity = 1.00f;
+-			inline constexpr int32 RangeTriangleWidth = 11;
+-			inline constexpr int32 RangeTriangleHeight = 6;
++
++			// The icon before a cue track's name: the Event track's event, the Sound track's speaker.
++			inline const FLinearColor CueTrackIcon(1.00f, 1.00f, 1.00f, 0.90f);
++
++			// Every value above from RangeStart down to here, and the playhead's, out-of-range shade and grid colors, is
++			// what UWidgetAnimEditorSettings' DEVELOPER ONLY settings start from while the plugin is developed.
+ 
+ 			// The playhead's line: one crisp pixel from under its head to the bottom, solid as every editor's is - no glow, no
+ 			// fade - at PlayheadLineOpacity, so it reads the same over any track.

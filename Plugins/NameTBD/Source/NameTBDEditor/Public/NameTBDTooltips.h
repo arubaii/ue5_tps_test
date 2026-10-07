@@ -39,6 +39,48 @@ namespace NameTBD::Tooltips
 				"Which group - which widget - this track moves. Its place in time stays where it is.");
 		}
 
+		inline FText DurationFromKeysTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DurationFromKeysTooltip",
+				"How long the track runs, set by its keys: it ends on its last key. Move that key on the track to change it.");
+		}
+
+		inline FText DurationFromSpringTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DurationFromSpringTooltip",
+				"How long the track runs, set by its spring: it ends once the spring settles. Change the spring to change it.");
+		}
+
+		inline FText DurationDerivedTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DurationDerivedTooltip",
+				"How long the track runs, worked out from its {0}. Change that to change it.");
+		}
+
+		inline FText TypeNameTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TypeNameTooltip",
+				"What kind of track this is. Picked when the track was added, from the Add Track menu.");
+		}
+
+		inline FText BlueprintSettingsStructTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "BlueprintSettingsStructTooltip",
+				"Filled in from the Settings Struct of this track's Blueprint type, and kept matching it. Change the struct on the type's class defaults.");
+		}
+
+		inline FText BrowseToSettingsStructTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "BrowseToSettingsStructTooltip",
+				"Browse to the Settings Struct in the Content Browser.");
+		}
+
+		inline FText BrowseToBlueprintTypeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "BrowseToBlueprintTypeTooltip",
+				"Browse to this track's Blueprint type in the Content Browser.");
+		}
+
 		inline FText KeyTimeTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyTimeTooltip",
@@ -339,13 +381,13 @@ namespace NameTBD::Tooltips
 		inline FText TimeInFramesTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TimeInFramesTooltip",
-				"Shows every time in the panel in frames at the Target FPS below - the ruler, the playhead, spans and keys - to author against a frame rate. Preview only: the animation is still timed in seconds, and plays at whatever rate the game runs.");
+				"Shows every time in the panel in frames at the frame rate typed beside it - the ruler, the playhead, spans and keys - to author against a frame rate. Preview only: the animation is still timed in seconds, and plays at whatever rate the game runs.");
 		}
 
 		inline FText TimeInFramesRateTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TimeInFramesRateTooltip",
-				"Target FPS: the frame rate frames are counted at. 60 to start; kept in Editor Preferences > Plugins > Widget Animations Editor.");
+				"Target FPS: the frame rate frames are counted at. 60 to start; kept in Editor Preferences > Plugins > Widget Animations Editor. Typing it leaves the menu open.");
 		}
 
 		inline FText TimeInPercentTooltip()
@@ -1099,7 +1141,6 @@ namespace NameTBD::Tooltips
 				"Close: close this tab. The script is kept - the Script button in the Widget Animations panel opens it again.");
 		}
 
-
 		// -------------------------------------------------------------------------------------------------
 		// Folders of layer groups in the Animation Tracks list
 		// -------------------------------------------------------------------------------------------------
@@ -1276,7 +1317,7 @@ namespace NameTBD::Tooltips
 		inline FText NoRegisteredTypeBlurbTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NoRegisteredTypeBlurbTooltip",
-				"Pick which registered type this track is in its Type Params, in the Selection panel. Until then it does nothing.");
+				"This track has no type, so it does nothing. Add a track of the type you want from the Add Track menu, and delete this one.");
 		}
 
 		inline FText TransformShapeBoxWarningTooltip()
@@ -1835,6 +1876,12 @@ namespace NameTBD::Tooltips
 				"\"{0}\" isn't in the text (\"{1}\"), so this track plays on nothing. Check the spelling, Match Case and Whole Words Only.");
 		}
 
+		inline FText TextTargetPartMissingNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextTargetPartMissingNote",
+				"Found {0} {0}|plural(one=place,other=places) - but \"{1}\" isn't in the text, so that part plays on nothing. Check its spelling between the &&.");
+		}
+
 		inline FText TextTargetFoundNote()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextTargetFoundNote",
@@ -1845,6 +1892,102 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphChannelEyeTooltip",
 				"Shows or hides this channel's curve.");
+		}
+
+		inline FText TextEditorEditTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorEditTooltip",
+				"Edit Text: the text and its tags, with buttons that write the tags for you - select some words, then pick a style, effect or color. Ctrl+Z / Ctrl+Y undo and redo.");
+		}
+
+		inline FText TextEditorDoneTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorDoneTooltip",
+				"Done: stop editing the text (Escape).");
+		}
+
+		inline FText TextEditorStyleTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorStyleTooltip",
+				"Wraps the selection in one of this widget's Text Style Set rows - your project's own rich text styles. With nothing selected, puts an empty pair at the cursor to type into.");
+		}
+
+		inline FText TextEditorStyleRowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorStyleRowTooltip",
+				"Wraps the selection in <{0}>...</>, styled as the {0} row of the Text Style Set.");
+		}
+
+		inline FText TextEditorNoStyleSetNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorNoStyleSetNote",
+				"This widget has no Text Style Set. Set one under Appearance to list its styles here.");
+		}
+
+		inline FText TextEditorNoStyleRowsNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorNoStyleRowsNote",
+				"The Text Style Set has no rows besides Default.");
+		}
+
+		inline FText TextEditorEffectTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorEffectTooltip",
+				"Wraps the selection in one of the project's Text Tags - shake, wave and the rest - set in Project Settings > Plugins > Widget Animations > Text Tags.");
+		}
+
+		inline FText TextEditorEffectRowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorEffectRowTooltip",
+				"Wraps the selection in <{0}>...</>, the {0} Text Tag.");
+		}
+
+		inline FText TextEditorNoEffectsNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorNoEffectsNote",
+				"No Text Tags yet. Add them in Project Settings > Plugins > Widget Animations > Text Tags.");
+		}
+
+		inline FText TextEditorColorTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorColorTooltip",
+				"Colors the selection: <color=#RRGGBB>...</>. Pick a swatch, a color, or type a hex code or color name.");
+		}
+
+		inline FText TextEditorPickColorTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorPickColorTooltip",
+				"Opens the color picker. The color is applied to the selection when the picker is closed with OK.");
+		}
+
+		inline FText TextEditorSizeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorSizeTooltip",
+				"Scales the selection's size: <size=x>...</>.");
+		}
+
+		inline FText TextEditorGlowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorGlowTooltip",
+				"Makes the selection glow: <glow>...</>.");
+		}
+
+		inline FText TextEditorClearTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorClearTooltip",
+				"Takes off the tags around the selection, and any inside it - the words stay.");
+		}
+
+		inline FText TextEditorBoxTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorBoxTooltip",
+				"The text, tags and all. Select some of it and pick a tag above to wrap it. The widget follows as you type; Escape or Done when finished.");
+		}
+
+		inline FText TextEditorHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorHint",
+				"Select some text, then pick a tag above to wrap it.");
 		}
 	}
 

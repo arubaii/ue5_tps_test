@@ -28,6 +28,13 @@ namespace WidgetShapeEditorUI
 		TFunction<bool()> IsActive;
 		TFunction<bool()> IsEnabled;
 		TFunction<void()> OnClick;
+
+		/**
+		 * Acts as the mouse goes down, and never takes the keyboard focus - for a chip that works on what another widget
+		 * has selected (the text editor's), which a click that moved the focus, or waited for the mouse to come up, could
+		 * lose.
+		 */
+		bool bPressOnly = false;
 	};
 
 	TSharedRef<SWidget> MakeChip(const FChip& Chip);

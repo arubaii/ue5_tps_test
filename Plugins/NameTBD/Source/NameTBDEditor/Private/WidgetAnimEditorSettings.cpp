@@ -10,6 +10,18 @@ UWidgetAnimEditorSettings::UWidgetAnimEditorSettings()
 {
 	BlueprintTypeTrackColor = NameTBD::Colors::WidgetAnimEditor::LayerBlueprintType;
 	CueTrackColor = NameTBD::Colors::WidgetAnimEditor::LayerCue;
+
+	// DEVELOPER ONLY: the palette's values to start from - see the header.
+	RangeStartColor = NameTBD::Colors::WidgetAnimEditor::RangeStart;
+	RangeEndColor = NameTBD::Colors::WidgetAnimEditor::RangeEnd;
+	RangeLineOpacity = NameTBD::Colors::WidgetAnimEditor::RangeLineOpacity;
+	PlayheadColor = NameTBD::Colors::WidgetAnimEditor::Playhead;
+	PlayheadLineOpacity = NameTBD::Colors::WidgetAnimEditor::PlayheadLineOpacity;
+	OutOfRangeShade = NameTBD::Colors::WidgetAnimEditor::OutOfRangeShade;
+	GridMajorColor = NameTBD::Colors::WidgetAnimEditor::GridMajor;
+	GridMinorColor = NameTBD::Colors::WidgetAnimEditor::GridMinor;
+	CueTrackIconTint = NameTBD::Colors::WidgetAnimEditor::CueTrackIcon;
+
 	FillMissingTrackColors();
 }
 

@@ -757,6 +757,31 @@ void FWidgetAnimAssetPanelSource::OnObjectPropertyChanged(UObject* Object, FProp
 	{
 		bFlattenedStale = true;
 	}
+
+	// A widget of this Widget Blueprint edited in UMG's Details while the preview is posed. The preview's authored state was
+	// read before the edit, so a track posing that setting - a Design track's colors, a Transform's render transform - went
+	// on showing what it was, and putting the preview back put the old value back over the edit: the field seemed not to
+	// take at all. So the poses come off, the edit is carried onto the preview, and the authored state is read again next
+	// tick, the edit in it. Not mid-drag: once, as it is committed.
+	UWidget* Template = Cast<UWidget>(Object);
+	UWidgetBlueprint* WidgetBlueprint = Blueprint.Get();
+	UUserWidget* Root = PosedRoot.Get();
+	if (!Template || !WidgetBlueprint || !Root || !IsValid(Root) || Event.ChangeType == EPropertyChangeType::Interactive || !Template->IsIn(WidgetBlueprint))
+	{
+		return;
+	}
+
+	RestorePreview();
+	bPoseStale = true;
+
+	UWidget* Preview = Root->WidgetTree ? Root->WidgetTree->FindWidget(Template->GetFName()) : nullptr;
+	const FProperty* Member = Event.MemberProperty;
+	const UClass* MemberOwner = Member ? Member->GetOwnerClass() : nullptr;
+	if (Preview && Preview != Template && MemberOwner && Template->IsA(MemberOwner) && Preview->IsA(MemberOwner))
+	{
+		Member->CopyCompleteValue_InContainer(Preview, Template);
+		Preview->SynchronizeProperties();
+	}
 }
 
 void FWidgetAnimAssetPanelSource::SaveOpenState() const

@@ -189,6 +189,10 @@ struct NAMETBD_API FWidgetAnimTextTarget
 	/**
 	 * The words or letters to animate, typed as the text shows them - "World", "50%", "Press A". Style tags of a rich text are
 	 * not part of what it shows. Empty: the whole text.
+	 *
+	 * Several parts in different places are joined with && - "Hello && Big World" in "Hello New Big World" animates "Hello"
+	 * and "Big World", leaving "New" as it is. Spaces around each && are ignored; Match Case, Whole Words Only and Which apply
+	 * to each part on its own.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Part of the Text", meta = (DisplayName = "Text"))
 	FString Text;
@@ -211,6 +215,12 @@ struct NAMETBD_API FWidgetAnimTextTarget
 
 	/** Whether anything is typed - only then is the track limited to part of its text. */
 	bool IsSet() const { return !Text.IsEmpty(); }
+
+	/** What joins several parts of the text in Text: "Hello && Big World". */
+	static constexpr const TCHAR* PartSeparator = TEXT("&&");
+
+	/** The parts Text names, each trimmed of the spaces around it, in the order typed - one when it has no &&. Never empty ones. */
+	void GetParts(TArray<FString>& OutParts) const;
 
 	/**
 	 * Where it is in Display - a text as drawn - counted in letters as WidgetAnimTextParts counts them: each place a first

@@ -39,6 +39,7 @@
 #include "UMGEditorModule.h"
 #include "WidgetShapeDetails.h"
 #include "WidgetShapePathEditor.h"
+#include "WidgetAnimTextCanvasEditor.h"
 #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
@@ -113,6 +114,10 @@ void FNameTBDEditorModule::StartupModule()
 	ShapePathEditorFactory = MakeShared<FWidgetShapePathEditorFactory>();
 	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(ShapePathEditorFactory.ToSharedRef());
 
+	// The animated texts' tag editor, on the same canvas: a toolbar that writes the rich text and Text Reveal tags.
+	TextEditorFactory = MakeShared<FWidgetAnimTextEditorFactory>();
+	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(TextEditorFactory.ToSharedRef());
+
 	ValuePinFactory = MakeShared<FWidgetAnimValuePinFactory>();
 	FEdGraphUtilities::RegisterVisualPinFactory(ValuePinFactory);
 
@@ -175,6 +180,15 @@ void FNameTBDEditorModule::ShutdownModule()
 			UMGEditorModule->GetDesignerExtensibilityManager()->RemoveDesignerExtensionFactory(ShapePathEditorFactory.ToSharedRef());
 		}
 		ShapePathEditorFactory.Reset();
+	}
+
+	if (TextEditorFactory.IsValid())
+	{
+		if (IUMGEditorModule* UMGEditorModule = FModuleManager::GetModulePtr<IUMGEditorModule>("UMGEditor"))
+		{
+			UMGEditorModule->GetDesignerExtensibilityManager()->RemoveDesignerExtensionFactory(TextEditorFactory.ToSharedRef());
+		}
+		TextEditorFactory.Reset();
 	}
 
 	if (ValuePinFactory.IsValid())

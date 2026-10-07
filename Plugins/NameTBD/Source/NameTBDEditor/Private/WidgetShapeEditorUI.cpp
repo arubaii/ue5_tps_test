@@ -125,6 +125,8 @@ namespace WidgetShapeEditorUI
 		TSharedRef<SButton> Button = SNew(SButton)
 			.ButtonStyle(&BareButtonStyle())
 			.ContentPadding(FMargin(0.f))
+			.IsFocusable(!Chip.bPressOnly)
+			.ClickMethod(Chip.bPressOnly ? EButtonClickMethod::MouseDown : EButtonClickMethod::DownAndUp)
 			.IsEnabled_Lambda(Enabled)
 			.ToolTipText_Lambda([Chip]() { return Chip.GetToolTip ? Chip.GetToolTip() : Chip.ToolTip; })
 			.OnClicked_Lambda([Chip]()

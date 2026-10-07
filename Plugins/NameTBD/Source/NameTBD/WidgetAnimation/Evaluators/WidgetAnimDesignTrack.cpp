@@ -112,11 +112,19 @@ void FWidgetAnimDesignKeysEvaluator::ApplyKeys(UWidget* Target, const FWidgetAni
 	TArray<const FProperty*> Properties;
 	WidgetDesignAnimation::GetProperties(Target->GetClass(), Properties);
 
-	bool bNeedsSync = false;
+	// All of them at once: a font changing face cross-fades the colors its text is drawn in. See WidgetDesignAnimation::WriteBlends.
+	TArray<const void*> From;
+	TArray<const void*> To;
+	From.Reserve(Properties.Num());
+	To.Reserve(Properties.Num());
 	for (const FProperty* Property : Properties)
 	{
-		WidgetDesignAnimation::WriteBlend(Target, Property, ValueOf(KeyA, Property), ValueOf(KeyB, Property), IndexA == IndexB ? 0.f : Alpha, bNeedsSync);
+		From.Add(ValueOf(KeyA, Property));
+		To.Add(ValueOf(KeyB, Property));
 	}
+
+	bool bNeedsSync = false;
+	WidgetDesignAnimation::WriteBlends(Target, Properties, From, To, IndexA == IndexB ? 0.f : Alpha, nullptr, &bNeedsSync);
 	if (bNeedsSync)
 	{
 		Target->SynchronizeProperties();

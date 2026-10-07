@@ -38,6 +38,8 @@ public class NameTBDEditor : ModuleRules
 			"GraphEditor",       // SGraphPin, for the Set Widget Animation Value node's dropdown pins
 			"NameTBDUncooked",   // that node
 			"WebBrowser",        // the Script area's code editor (Monaco), shown in the editor's web browser
+			"StructUtilsEditor", // FInstancedStructDataDetails, for a registered type's settings laid out field by field
+			"AppFramework",      // the color picker, for the Text Editor's Color menu
 		});
 		if (Target.bBuildEditor)
 		{

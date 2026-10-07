@@ -1,0 +1,760 @@
+diff --git a/NameTBD_Handoff.md b/NameTBD_Handoff.md
+index 1598bd3..ae0859e 100644
+--- a/NameTBD_Handoff.md
++++ b/NameTBD_Handoff.md
+@@ -146,3 +146,12 @@ In practice that means:
+   - Writes go straight into the `Text` field, then `SynchronizeProperties` on the preview, the same way the shape editor's edits do. So the designer doesn't rebuild under the box.
+   - Editing state is kept by widget name (`WidgetAnimTextEditing`), so it survives designer refreshes.
+ - `_fix8`: the canvas editor's menu fields and notes use `FCoreStyle` fonts. `IDetailLayoutBuilder`'s fonts were left over from the Details version, and its header wasn't included.
++- `_fix9`:
++  - **Undo / redo keys.**
++    - The track editor (`SWidgetAnimTimeline::OnKeyDown`) and the Graph Editor canvas now map Ctrl/Cmd+Z to `GEditor->UndoTransaction`, and Ctrl/Cmd+Y or Ctrl/Cmd+Shift+Z to redo. They skip this while a transaction is open (a drag). A text box inside either still gets the keys first.
++    - The canvas Text Editor keeps its own history per edit: typing is one step per run (a pause of more than a second starts a new step), and each toolbar action is one step. Ctrl+Z/Ctrl+Y walk that history through `OnPreviewKeyDown`, so the box's own undo, which knows nothing of the toolbar's tags, never runs.
++  - **Text Editor selection.**
++    - Toolbar chips act on mouse-down and never take keyboard focus (`FChip::bPressOnly`, new in `WidgetShapeEditorUI`).
++    - The selection the toolbar acts on is kept by widget name (`WidgetAnimTextEditing::FState`) and updated every frame the box has focus. A menu, the color picker, or the designer rebuilding the toolbar in the middle of a click no longer loses it, and a rebuilt editor puts the selection back.
++  - **Text Editor buttons.** Speed, Instant, Pause, Event and Play are gone; the editor only marks up text: Style, Effect, Color, Size, Glow, Clear.
++  - **Start and end markers.** The triangle is now an anti-aliased vector brush (`Resources/WidgetAnim_RangeMarker.svg`, `FNameTBDStyle::RangeMarkerIcon`), tinted. The line runs up into it in the triangle's own color, so the two read as one shape. The old three-vertex triangle (no anti-aliasing, so stair-stepped at this size) is now only a fallback if the SVG is missing, and it has its edges traced with anti-aliased lines.
+diff --git a/Plugins/NameTBD/Resources/WidgetAnim_RangeMarker.svg b/Plugins/NameTBD/Resources/WidgetAnim_RangeMarker.svg
+new file mode 100644
+index 0000000..1372ea1
+--- /dev/null
++++ b/Plugins/NameTBD/Resources/WidgetAnim_RangeMarker.svg
+@@ -0,0 +1,3 @@
++<svg width="24" height="16" viewBox="0 0 24 16" fill="none" xmlns="http://www.w3.org/2000/svg">
++<path d="M2.2 0H21.8C23.6 0 24.5 2.1 23.3 3.4L13.5 15.1C12.7 16 11.3 16 10.5 15.1L0.7 3.4C-0.5 2.1 0.4 0 2.2 0Z" fill="white"/>
++</svg>
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp
+index e22035f..0898853 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp
+@@ -170,6 +170,7 @@ TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
+           { ShapeEditIcon, TEXT("ShapeEdit_EditShape.svg") },
+           { SaveIcon, TEXT("WidgetAnim_Save.svg") },
+           { GraphEditorIcon, TEXT("WidgetAnim_GraphEditor.svg") },
++          { RangeMarkerIcon, TEXT("WidgetAnim_RangeMarker.svg") },
+        };
+        for (const TPair<FName, const TCHAR*>& Icon : Icons)
+        {
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimGraphEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimGraphEditor.cpp
+index b92128a..db8ec0b 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimGraphEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimGraphEditor.cpp
+@@ -20,6 +20,7 @@
+ #include "WidgetBlueprint.h"
+ 
+ #include "Brushes/SlateRoundedBoxBrush.h"
++#include "Editor.h"
+ #include "Fonts/FontMeasure.h"
+ #include "Framework/Application/SlateApplication.h"
+ #include "Framework/MultiBox/MultiBoxBuilder.h"
+@@ -3238,6 +3239,23 @@ FReply SWidgetAnimGraphCanvas::OnKeyDown(const FGeometry& MyGeometry, const FKey
+ 	const FKey Key = InKeyEvent.GetKey();
+ 	const bool bCtrl = InKeyEvent.IsControlDown() || InKeyEvent.IsCommandDown();
+ 
++	// Ctrl / Cmd + Z, and Ctrl / Cmd + Y or Ctrl / Cmd + Shift + Z: the editor's undo and redo - not while a drag is still open.
++	if ((Key == EKeys::Z || Key == EKeys::Y) && bCtrl && !InKeyEvent.IsAltDown())
++	{
++		if (GEditor && !GEditor->IsTransactionActive())
++		{
++			if (Key == EKeys::Y || InKeyEvent.IsShiftDown())
++			{
++				GEditor->RedoTransaction();
++			}
++			else
++			{
++				GEditor->UndoTransaction();
++			}
++		}
++		return FReply::Handled();
++	}
++
+ 	if (Key == EKeys::Delete || Key == EKeys::BackSpace)
+ 	{
+ 		DeleteSelectedKeys();
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 919ccd0..ba47ec5 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -3314,8 +3314,12 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			const bool bStartLit = bDraggingRange ? !bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && !HoverRange.GetValue());
+ 			const bool bEndLit = bDraggingRange ? bRangeEnd : (Drag == EDrag::None && HoverRange.IsSet() && HoverRange.GetValue());
+ 
+-			// The triangle: its flat side along the top, its point on the line where it meets the tracks. A fixed range - the
++			// The triangle: its flat side along the top, its point on the line where it meets the tracks - one shape with the
++			// line, which runs up into it in the triangle's own color, so the two never read as separate pieces. Drawn from the
++			// plugin's vector triangle, rasterized smooth at the size and DPI it is shown at; three plain vertices - which have
++			// no anti-aliasing, and at this size came out as a staircase - only if that file is missing. A fixed range - the
+ 			// panel locked, or nothing to bound - gets a smaller one. Lit a little bigger and lighter.
++			const FSlateBrush* MarkerBrush = FNameTBDStyle::FindIcon(FNameTBDStyle::RangeMarkerIcon);
+ 			auto Marker = [&](float LineX, bool bEnd, bool bLit)
+ 			{
+ 				const FLinearColor Base = bEnd ? Look.RangeEndColor : Look.RangeStartColor;
+@@ -3324,8 +3328,27 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 				const float Height = FMath::Min(Look.RangeTriangleHeight * Scale, SWidgetAnimTimeline::RangeStripHeight);
+ 				const float HalfWidth = Look.RangeTriangleWidth * Scale * 0.5f;
+ 				const float CenterX = LineX + 0.5f;
+-				WidgetAnimTimeline::MakeTriangle(OutDrawElements, RangeLayer + 1, AllottedGeometry,
+-					FVector2f(CenterX - HalfWidth, RulerHeight - Height), FVector2f(CenterX + HalfWidth, RulerHeight - Height), FVector2f(CenterX, RulerHeight), Color);
++				const float Top = RulerHeight - Height;
++
++				// The neck: the line, solid, from the triangle's middle down to where the tracks start.
++				Box(CenterX - LineThickness * 0.5f, Top + Height * 0.5f, LineThickness, Height * 0.5f + 1.f, Color, RangeLayer + 1);
++
++				if (MarkerBrush)
++				{
++					FSlateDrawElement::MakeBox(OutDrawElements, RangeLayer + 1,
++						AllottedGeometry.ToPaintGeometry(FVector2f(HalfWidth * 2.f, Height), FSlateLayoutTransform(FVector2f(CenterX - HalfWidth, Top))),
++						MarkerBrush, ESlateDrawEffect::None, Color);
++				}
++				else
++				{
++					const FVector2f Left(CenterX - HalfWidth, Top);
++					const FVector2f Right(CenterX + HalfWidth, Top);
++					const FVector2f Point(CenterX, RulerHeight);
++					WidgetAnimTimeline::MakeTriangle(OutDrawElements, RangeLayer + 1, AllottedGeometry, Left, Right, Point, Color);
++					// Its slanted edges traced with anti-aliased lines, to soften the steps.
++					FSlateDrawElement::MakeLines(OutDrawElements, RangeLayer + 1, AllottedGeometry.ToPaintGeometry(),
++						TArray<FVector2f>{ Left, Point, Right }, ESlateDrawEffect::None, Color, /*bAntialias=*/true, 1.f);
++				}
+ 			};
+ 			Marker(StartX, /*bEnd=*/false, bStartLit);
+ 			Marker(EndX, /*bEnd=*/true, bEndLit);
+@@ -14524,6 +14547,25 @@ FReply SWidgetAnimTimeline::OnKeyDown(const FGeometry& MyGeometry, const FKeyEve
+ 		return FReply::Unhandled();
+ 	}
+ 
++	// Ctrl / Cmd + Z, and Ctrl / Cmd + Y or Ctrl / Cmd + Shift + Z: the editor's undo and redo, wherever the panel is docked -
++	// a text box in it has the keys first, for its own typing. Not in the middle of an edit (a drag), which is still open.
++	if ((Key == EKeys::Z || Key == EKeys::Y) && (InKeyEvent.IsControlDown() || InKeyEvent.IsCommandDown()) && !InKeyEvent.IsAltDown())
++	{
++		if (GEditor && !GEditor->IsTransactionActive())
++		{
++			const bool bRedo = Key == EKeys::Y || InKeyEvent.IsShiftDown();
++			if (bRedo)
++			{
++				GEditor->RedoTransaction();
++			}
++			else
++			{
++				GEditor->UndoTransaction();
++			}
++		}
++		return FReply::Handled();
++	}
++
+ 	// Ctrl / Cmd + A: every layer, as in a file browser.
+ 	if (Key == EKeys::A && (InKeyEvent.IsControlDown() || InKeyEvent.IsCommandDown()))
+ 	{
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.cpp
+index b78145b..9fd311b 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.cpp
+@@ -41,15 +41,46 @@ namespace WidgetAnimTips = NameTBD::Tooltips::WidgetAnimEditor;
+ 
+ namespace WidgetAnimTextEditing
+ {
+-	static TSet<FName>& EditingNames()
++	/** What the text box held at a step of the edit, for undo and redo: its text and selection. */
++	struct FSnapshot
+ 	{
+-		static TSet<FName> Names;
+-		return Names;
++		FString Text;
++		int32 Start = 0;
++		int32 End = 0;
++	};
++
++	/**
++	 * One widget's edit. Kept here, by the widget's name, rather than in the canvas widgets - which the designer throws away
++	 * and builds again whenever it refreshes, a click on the toolbar included - so neither the selection the toolbar acts on
++	 * nor the undo history is lost to a refresh.
++	 */
++	struct FState
++	{
++		bool bEditing = false;
++
++		/** The selection the toolbar acts on, in characters: the box's, kept while the keyboard is elsewhere. */
++		int32 SelectionStart = INDEX_NONE;
++		int32 SelectionEnd = INDEX_NONE;
++
++		TArray<FSnapshot> Undo;
++		TArray<FSnapshot> Redo;
++
++		/** When typing last changed the text: typing after a pause longer than a second is a new undo step. */
++		double LastTypingTime = -1.0;
++	};
++
++	/** How many steps back the history keeps. */
++	constexpr int32 MaxHistory = 200;
++
++	static FState& GetState(FName WidgetName)
++	{
++		static TMap<FName, FState> States;
++		return States.FindOrAdd(WidgetName);
+ 	}
+ 
+ 	bool IsEditing(FName WidgetName)
+ 	{
+-		return !WidgetName.IsNone() && EditingNames().Contains(WidgetName);
++		return !WidgetName.IsNone() && GetState(WidgetName).bEditing;
+ 	}
+ 
+ 	void SetEditing(FName WidgetName, bool bEditing)
+@@ -58,14 +89,10 @@ namespace WidgetAnimTextEditing
+ 		{
+ 			return;
+ 		}
+-		if (bEditing)
+-		{
+-			EditingNames().Add(WidgetName);
+-		}
+-		else
+-		{
+-			EditingNames().Remove(WidgetName);
+-		}
++		// Each edit starts afresh: no selection carried in, nothing to undo from the last one.
++		FState& State = GetState(WidgetName);
++		State = FState();
++		State.bEditing = bEditing;
+ 	}
+ 
+ 	const TArray<FName>& GetEditableClassNames()
+@@ -355,6 +382,7 @@ public:
+ 			Chip.Label = LOCTEXT("Done", "Done");
+ 			Chip.ToolTip = WidgetAnimTips::TextEditorDoneTooltip();
+ 			Chip.IsActive = []() { return true; };
++			Chip.bPressOnly = true;
+ 			Chip.OnClick = Do([](SWidgetAnimTextCanvasEditor& Editor) { Editor.FinishEditing(); });
+ 			Add(MakeChip(Chip), 0.f);
+ 		}
+@@ -370,14 +398,6 @@ public:
+ 		Add(MakeMenuChip(LOCTEXT("ColorButton", "Color"), WidgetAnimTips::TextEditorColorTooltip(), &SWidgetAnimTextCanvasEditor::MakeColorMenu), 6.f);
+ 		Add(MakeMenuChip(LOCTEXT("SizeButton", "Size"), WidgetAnimTips::TextEditorSizeTooltip(), &SWidgetAnimTextCanvasEditor::MakeSizeMenu));
+ 		Add(MakeActionChip(LOCTEXT("GlowButton", "Glow"), WidgetAnimTips::TextEditorGlowTooltip(), [](SWidgetAnimTextCanvasEditor& Editor) { Editor.Wrap(TEXT("<glow>"), TEXT("</>")); }));
+-
+-		// Reveal: how a Text Reveal paces it, and what happens as it gets there.
+-		Add(Divider(), 6.f);
+-		Add(MakeMenuChip(LOCTEXT("SpeedButton", "Speed"), WidgetAnimTips::TextEditorSpeedTooltip(), &SWidgetAnimTextCanvasEditor::MakeSpeedMenu), 6.f);
+-		Add(MakeActionChip(LOCTEXT("InstantButton", "Instant"), WidgetAnimTips::TextEditorInstantTooltip(), [](SWidgetAnimTextCanvasEditor& Editor) { Editor.Wrap(TEXT("<instant>"), TEXT("</>")); }));
+-		Add(MakeMenuChip(LOCTEXT("PauseButton", "Pause"), WidgetAnimTips::TextEditorPauseTooltip(), &SWidgetAnimTextCanvasEditor::MakePauseMenu));
+-		Add(MakeMenuChip(LOCTEXT("EventButton", "Event"), WidgetAnimTips::TextEditorEventTooltip(), &SWidgetAnimTextCanvasEditor::MakeEventMenu));
+-		Add(MakeMenuChip(LOCTEXT("PlayButton", "Play"), WidgetAnimTips::TextEditorPlayTooltip(), &SWidgetAnimTextCanvasEditor::MakePlayMenu));
+ 		Add(Divider(), 6.f);
+ 		Add(MakeActionChip(LOCTEXT("ClearButton", "Clear"), WidgetAnimTips::TextEditorClearTooltip(), [](SWidgetAnimTextCanvasEditor& Editor) { Editor.ClearTags(); }), 6.f);
+ 
+@@ -449,8 +469,8 @@ public:
+ 									.ClearTextSelectionOnFocusLoss(false)
+ 									.VScrollBar(ScrollBar)
+ 									.ToolTipText(WidgetAnimTips::TextEditorBoxTooltip())
+-									.OnTextChanged_Lambda([this](const FText& NewText) { PreviewText(NewText.ToString()); })
+-									.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type) { Commit(NewText.ToString()); })
++									.OnTextChanged_Lambda([this](const FText& NewText) { OnTyped(NewText.ToString()); })
++									.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type) { Commit(NewText.ToString(), INDEX_NONE, INDEX_NONE, /*bRecord=*/false); })
+ 								]
+ 								+ SHorizontalBox::Slot()
+ 								.AutoWidth()
+@@ -476,7 +496,7 @@ public:
+ 			]
+ 		];
+ 
+-		Box->SetText(FText::FromString(ReadTemplate()));
++		SetBoxText(ReadTemplate());
+ 		bFocusBox = IsEditing();
+ 	}
+ 
+@@ -491,19 +511,52 @@ public:
+ 		// The text changed elsewhere - the Details panel, an undo - is taken in, unless it is being typed in here.
+ 		if (!Box->HasKeyboardFocus())
+ 		{
++			// Compared with every line break alike: the box may give its lines back joined differently from how they went in.
+ 			const FString Template = ReadTemplate();
+-			if (Template != Box->GetText().ToString())
++			if (Template.Replace(TEXT("\r\n"), TEXT("\n")) != Box->GetText().ToString().Replace(TEXT("\r\n"), TEXT("\n")))
+ 			{
+-				Box->SetText(FText::FromString(Template));
++				SetBoxText(Template);
+ 			}
+ 		}
++		else
++		{
++			// The selection, as it is now, for the toolbar - which may be clicked after the keyboard has gone elsewhere, or
++			// after the designer has built this editor again.
++			int32 Start = 0;
++			int32 End = 0;
++			GetSelectionRange(Start, End);
++			State().SelectionStart = Start;
++			State().SelectionEnd = End;
++		}
+ 
+-		// Into the box as editing starts, once it is shown and can take the keyboard.
++		// Into the box as editing starts - or as this editor is built again in the middle of one - once it is shown and can
++		// take the keyboard, with the selection it had.
+ 		if (bFocusBox && IsEditing())
+ 		{
+ 			bFocusBox = false;
+ 			FSlateApplication::Get().SetKeyboardFocus(Box, EFocusCause::SetDirectly);
++			const WidgetAnimTextEditing::FState& Edit = State();
++			if (Edit.SelectionStart != INDEX_NONE)
++			{
++				const FString Text = GetCurrentText();
++				const int32 Start = FMath::Clamp(Edit.SelectionStart, 0, Text.Len());
++				const int32 End = FMath::Clamp(Edit.SelectionEnd, Start, Text.Len());
++				Box->SelectText(WidgetAnimTextEditor::ToLocation(Text, Start), WidgetAnimTextEditor::ToLocation(Text, End));
++			}
++		}
++	}
++
++	virtual FReply OnPreviewKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override
++	{
++		// Ctrl / Cmd + Z, and Ctrl / Cmd + Y or Ctrl / Cmd + Shift + Z: this edit's own undo and redo - typing and tags alike -
++		// ahead of the box's, which knows nothing of the tags the toolbar wrote.
++		const FKey Key = InKeyEvent.GetKey();
++		if (IsEditing() && (Key == EKeys::Z || Key == EKeys::Y) && (InKeyEvent.IsControlDown() || InKeyEvent.IsCommandDown()) && !InKeyEvent.IsAltDown())
++		{
++			StepHistory(/*bRedo=*/Key == EKeys::Y || InKeyEvent.IsShiftDown());
++			return FReply::Handled();
+ 		}
++		return SCompoundWidget::OnPreviewKeyDown(MyGeometry, InKeyEvent);
+ 	}
+ 
+ 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override
+@@ -525,9 +578,97 @@ private:
+ 	bool bRich = false;
+ 	bool bFocusBox = false;
+ 
++	/** What the box showed before the latest change typed into it - the step undo goes back to. */
++	FString ShownText;
++
++	/** Set while the box is given text from here, which is not typing. */
++	bool bSettingText = false;
++
+ 	UWidget* GetTemplate() const { return Reference.GetTemplate(); }
+ 	UWidget* GetPreview() const { return Reference.GetPreview(); }
+ 	bool IsEditing() const { return WidgetAnimTextEditing::IsEditing(WidgetName); }
++	WidgetAnimTextEditing::FState& State() const { return WidgetAnimTextEditing::GetState(WidgetName); }
++
++	void SetBoxText(const FString& Text)
++	{
++		ShownText = Text;
++		if (Box.IsValid())
++		{
++			TGuardValue<bool> Guard(bSettingText, true);
++			Box->SetText(FText::FromString(Text));
++		}
++	}
++
++	/**
++	 * The range the toolbar acts on: the box's selection while it has the keyboard, else the one it last had - which a
++	 * chip, a menu or the color picker taking the keyboard, or the designer building this editor again, doesn't lose. With
++	 * none, the end of the text.
++	 */
++	void GetActionRange(int32& OutStart, int32& OutEnd) const
++	{
++		const FString Text = GetCurrentText();
++		if (Box.IsValid() && Box->HasKeyboardFocus())
++		{
++			GetSelectionRange(OutStart, OutEnd);
++			return;
++		}
++		const WidgetAnimTextEditing::FState& Edit = State();
++		if (Edit.SelectionStart == INDEX_NONE)
++		{
++			OutStart = OutEnd = Text.Len();
++			return;
++		}
++		OutStart = FMath::Clamp(Edit.SelectionStart, 0, Text.Len());
++		OutEnd = FMath::Clamp(Edit.SelectionEnd, OutStart, Text.Len());
++	}
++
++	void PushHistory(TArray<WidgetAnimTextEditing::FSnapshot>& History, const FString& Text, int32 Start, int32 End)
++	{
++		if (History.Num() >= WidgetAnimTextEditing::MaxHistory)
++		{
++			History.RemoveAt(0);
++		}
++		History.Add({ Text, Start, End });
++	}
++
++	/** Typing: the preview follows at once, and a run of it - until a pause, or a tag - is one undo step. */
++	void OnTyped(const FString& NewString)
++	{
++		if (!bSettingText && NewString != ShownText)
++		{
++			WidgetAnimTextEditing::FState& Edit = State();
++			const double Now = FPlatformTime::Seconds();
++			if (Edit.LastTypingTime < 0.0 || Now - Edit.LastTypingTime > 1.0)
++			{
++				const int32 Start = Edit.SelectionStart != INDEX_NONE ? FMath::Clamp(Edit.SelectionStart, 0, ShownText.Len()) : ShownText.Len();
++				const int32 End = Edit.SelectionStart != INDEX_NONE ? FMath::Clamp(Edit.SelectionEnd, Start, ShownText.Len()) : Start;
++				PushHistory(Edit.Undo, ShownText, Start, End);
++				Edit.Redo.Reset();
++			}
++			Edit.LastTypingTime = Now;
++		}
++		ShownText = NewString;
++		PreviewText(NewString);
++	}
++
++	/** One step back - or forward again - through this edit: the text and the selection it had. */
++	void StepHistory(bool bRedo)
++	{
++		WidgetAnimTextEditing::FState& Edit = State();
++		TArray<WidgetAnimTextEditing::FSnapshot>& From = bRedo ? Edit.Redo : Edit.Undo;
++		TArray<WidgetAnimTextEditing::FSnapshot>& To = bRedo ? Edit.Undo : Edit.Redo;
++		if (From.Num() == 0)
++		{
++			return;
++		}
++		const WidgetAnimTextEditing::FSnapshot Step = From.Pop();
++		int32 Start = 0;
++		int32 End = 0;
++		GetActionRange(Start, End);
++		PushHistory(To, GetCurrentText(), Start, End);
++		Edit.LastTypingTime = -1.0;
++		Commit(Step.Text, Step.Start, Step.End, /*bRecord=*/false);
++	}
+ 
+ 	FString ReadTemplate() const
+ 	{
+@@ -550,7 +691,7 @@ private:
+ 	{
+ 		if (Box.IsValid())
+ 		{
+-			Commit(Box->GetText().ToString());
++			Commit(Box->GetText().ToString(), INDEX_NONE, INDEX_NONE, /*bRecord=*/false);
+ 		}
+ 		WidgetAnimTextEditing::SetEditing(WidgetName, false);
+ 		FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::Cleared);
+@@ -571,7 +712,7 @@ private:
+ 	 * preview - written straight in, as the Custom Shape's edits are, so the designer doesn't rebuild under the box - then into
+ 	 * the box, with SelectFrom - SelectTo selected.
+ 	 */
+-	void Commit(const FString& NewString, int32 SelectFrom = INDEX_NONE, int32 SelectTo = INDEX_NONE)
++	void Commit(const FString& NewString, int32 SelectFrom = INDEX_NONE, int32 SelectTo = INDEX_NONE, bool bRecord = true)
+ 	{
+ 		using namespace WidgetAnimTextCanvasEditorImpl;
+ 
+@@ -581,6 +722,19 @@ private:
+ 			return;
+ 		}
+ 
++		// A toolbar change is a step of its own in the edit's history, ending any run of typing before it.
++		const FString Before = GetCurrentText();
++		if (bRecord && Before != NewString)
++		{
++			int32 Start = 0;
++			int32 End = 0;
++			GetActionRange(Start, End);
++			WidgetAnimTextEditing::FState& Edit = State();
++			PushHistory(Edit.Undo, Before, Start, End);
++			Edit.Redo.Reset();
++			Edit.LastTypingTime = -1.0;
++		}
++
+ 		const FText Old = ReadText(Template);
+ 		if (Old.ToString() != NewString)
+ 		{
+@@ -606,11 +760,13 @@ private:
+ 		{
+ 			if (Box->GetText().ToString() != NewString)
+ 			{
+-				Box->SetText(FText::FromString(NewString));
++				SetBoxText(NewString);
+ 			}
+ 			if (SelectFrom != INDEX_NONE)
+ 			{
+-				// Back into the box - a chip took the keyboard - with the same words selected, ready for the next tag.
++				// Back into the box - a menu or the picker took the keyboard - with the same words selected, ready for the next tag.
++				State().SelectionStart = SelectFrom;
++				State().SelectionEnd = SelectTo;
+ 				FSlateApplication::Get().SetKeyboardFocus(Box, EFocusCause::SetDirectly);
+ 				Box->SelectText(WidgetAnimTextEditor::ToLocation(NewString, SelectFrom), WidgetAnimTextEditor::ToLocation(NewString, SelectTo));
+ 			}
+@@ -653,23 +809,12 @@ private:
+ 	{
+ 		int32 Start = 0;
+ 		int32 End = 0;
+-		GetSelectionRange(Start, End);
++		GetActionRange(Start, End);
+ 		const FString Text = GetCurrentText();
+ 		const FString New = Text.Left(Start) + Open + Text.Mid(Start, End - Start) + Close + Text.Mid(End);
+ 		Commit(New, Start + Open.Len(), End + Open.Len());
+ 	}
+ 
+-	/** Token at the cursor - or after the selection - the cursor left after it: a tag that marks a moment. */
+-	void Insert(const FString& Token)
+-	{
+-		int32 Start = 0;
+-		int32 End = 0;
+-		GetSelectionRange(Start, End);
+-		const FString Text = GetCurrentText();
+-		const FString New = Text.Left(End) + Token + Text.Mid(End);
+-		Commit(New, End + Token.Len(), End + Token.Len());
+-	}
+-
+ 	/**
+ 	 * The tags off the selection: every run whose tagged words it touches loses its opening and closing tags, and every tag
+ 	 * for a moment inside it goes. With nothing selected, the runs around the cursor.
+@@ -680,7 +825,7 @@ private:
+ 
+ 		int32 Start = 0;
+ 		int32 End = 0;
+-		GetSelectionRange(Start, End);
++		GetActionRange(Start, End);
+ 		const FString Text = GetCurrentText();
+ 
+ 		TArray<FTag> Tags;
+@@ -740,7 +885,7 @@ private:
+ 
+ 		int32 Start = 0;
+ 		int32 End = 0;
+-		GetSelectionRange(Start, End);
++		GetActionRange(Start, End);
+ 		const FString Text = GetCurrentText();
+ 		TArray<FTag> Tags;
+ 		FindTags(Text, Tags);
+@@ -785,6 +930,7 @@ private:
+ 		WidgetShapeEditorUI::FChip Chip;
+ 		Chip.Label = Label;
+ 		Chip.ToolTip = Tip;
++		Chip.bPressOnly = true;
+ 		Chip.OnClick = Do(MoveTemp(Action));
+ 		return WidgetShapeEditorUI::MakeChip(Chip);
+ 	}
+@@ -797,6 +943,7 @@ private:
+ 		WidgetShapeEditorUI::FChip Chip;
+ 		Chip.Label = Label;
+ 		Chip.ToolTip = Tip;
++		Chip.bPressOnly = true;
+ 		Chip.IsActive = [Anchor]() { const TSharedPtr<SMenuAnchor> Menu = Anchor->Pin(); return Menu.IsValid() && Menu->IsOpen(); };
+ 		Chip.OnClick = [Anchor]()
+ 		{
+@@ -822,7 +969,7 @@ private:
+ 		Menu.AddMenuEntry(Label, Tip, FSlateIcon(), FUIAction(FExecuteAction::CreateLambda([this, Open, Close]() { Wrap(Open, Close); })));
+ 	}
+ 
+-	/** A name typed into a menu, then put in by Apply: an Event's or Play's name. */
++	/** A value typed into a menu, then put in by Apply on Enter: a color's hex code or name. */
+ 	void AddNameEntry(FMenuBuilder& Menu, const FText& Hint, TFunction<void(const FString&)> Apply)
+ 	{
+ 		Menu.AddWidget(
+@@ -969,7 +1116,7 @@ private:
+ 			// The selection is read now: the picker takes the keyboard, and with it what the box would say is selected.
+ 			int32 Start = 0;
+ 			int32 End = 0;
+-			GetSelectionRange(Start, End);
++			GetActionRange(Start, End);
+ 			const TWeakPtr<SWidgetAnimTextCanvasEditor> WeakEditor = SharedThis(this);
+ 			Menu.AddMenuEntry(
+ 				LOCTEXT("PickColor", "Pick a Color..."),
+@@ -1028,66 +1175,6 @@ private:
+ 		Menu.EndSection();
+ 		return Menu.MakeWidget();
+ 	}
+-
+-	TSharedRef<SWidget> MakeSpeedMenu()
+-	{
+-		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+-		Menu.BeginSection("Speeds", LOCTEXT("SpeedsHeading", "Reveal Speed"));
+-		for (const TCHAR* Speed : { TEXT("0.5"), TEXT("2"), TEXT("3") })
+-		{
+-			AddWrapEntry(Menu, FText::Format(LOCTEXT("SpeedEntry", "{0}× as fast"), FText::FromString(Speed)), WidgetAnimTips::TextEditorSpeedTooltip(), FString::Printf(TEXT("<speed=%s>"), Speed), TEXT("</>"));
+-		}
+-		Menu.EndSection();
+-		return Menu.MakeWidget();
+-	}
+-
+-	TSharedRef<SWidget> MakePauseMenu()
+-	{
+-		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+-		Menu.BeginSection("Pauses", LOCTEXT("PausesHeading", "Pause Here"));
+-		for (const TCHAR* Seconds : { TEXT("0.25"), TEXT("0.5"), TEXT("1") })
+-		{
+-			const FString Token = FString::Printf(TEXT("<pause=%s>"), Seconds);
+-			Menu.AddMenuEntry(FText::Format(LOCTEXT("PauseEntry", "{0} s"), FText::FromString(Seconds)), WidgetAnimTips::TextEditorPauseTooltip(), FSlateIcon(),
+-				FUIAction(FExecuteAction::CreateLambda([this, Token]() { Insert(Token); })));
+-		}
+-		Menu.EndSection();
+-		return Menu.MakeWidget();
+-	}
+-
+-	TSharedRef<SWidget> MakeEventMenu()
+-	{
+-		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+-		Menu.BeginSection("Event", LOCTEXT("EventHeading", "Event Here"));
+-		const TWeakPtr<SWidgetAnimTextCanvasEditor> WeakEditor = SharedThis(this);
+-		AddNameEntry(Menu, LOCTEXT("EventHint", "Event name, then Enter"), [WeakEditor](const FString& Name)
+-		{
+-			if (const TSharedPtr<SWidgetAnimTextCanvasEditor> Pinned = WeakEditor.Pin())
+-			{
+-				Pinned->Insert(FString::Printf(TEXT("<event=%s>"), *Name));
+-			}
+-		});
+-		AddNote(Menu, WidgetAnimTips::TextEditorEventTooltip());
+-		Menu.EndSection();
+-		return Menu.MakeWidget();
+-	}
+-
+-	TSharedRef<SWidget> MakePlayMenu()
+-	{
+-		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+-		Menu.BeginSection("Play", LOCTEXT("PlayHeading", "Play Animation Here"));
+-		const TWeakPtr<SWidgetAnimTextCanvasEditor> WeakEditor = SharedThis(this);
+-		AddNameEntry(Menu, LOCTEXT("PlayHint", "Anim ID, then Enter"), [WeakEditor](const FString& Name)
+-		{
+-			if (const TSharedPtr<SWidgetAnimTextCanvasEditor> Pinned = WeakEditor.Pin())
+-			{
+-				Pinned->Insert(FString::Printf(TEXT("<play=%s>"), *Name));
+-			}
+-		});
+-		AddNote(Menu, WidgetAnimTips::TextEditorPlayTooltip());
+-		Menu.EndSection();
+-		return Menu.MakeWidget();
+-	}
+ };
+ 
+ // =====================================================================================================
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.h
+index 736b892..3fd909f 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.h
+@@ -13,19 +13,21 @@
+  *
+  * A designer extension puts a toolbar above a selected Animated Text Block, Animated Rich Text Block or their Common UI
+  * kin (matched by class name, so this module needs no Common UI). It shows Edit Text; while editing, it shows a card
+- * holding the text - tags and all - and, laid out as a word processor's, the buttons that write the tags for whatever is
+- * selected in it, so nobody types <Bold>...</> or <shake>...</> by hand:
++ * holding the text - tags and all - and, laid out as a word processor's, the buttons that mark it up, so nobody types
++ * <Bold>...</> or <shake>...</> by hand:
+  *
+  *   Done
+- *   Style, Effect                      - the widget's Text Style Set rows (a rich text only), the project's Text Tags.
+- *   Color, Size, Glow                  - the built-in look tags.
+- *   Speed, Instant, Pause, Event, Play - the built-in Text Reveal tags: pacing, and what happens as it is reached.
+- *   Clear                              - takes the tags around or inside the selection off again.
++ *   Style, Effect      - the widget's Text Style Set rows (a rich text only), the project's Text Tags.
++ *   Color, Size, Glow  - the built-in look tags.
++ *   Clear              - takes the tags around or inside the selection off again.
+  *
+  * Each wraps the selection in its tag - the selection kept, so several can be stacked - or, with nothing selected, puts an
+- * empty pair at the cursor. Pause, Event and Play, which tag a moment rather than words, go in at the cursor. The widget on
+- * the canvas follows as you type; every toolbar action, and the typing when the box is left, is one undo step on the
+- * Widget Blueprint's widget, keeping the text's localization key.
++ * empty pair at the cursor. The buttons act as the mouse goes down and never take the keyboard, and the selection they act
++ * on is kept by the widget's name, so it holds through a menu, the color picker or the designer rebuilding the toolbar.
++ * Ctrl+Z and Ctrl+Y (or Ctrl+Shift+Z) step back and forward through the edit - typing and tags alike.
++ *
++ * The widget on the canvas follows as you type; every toolbar action, and the typing when the box is left, is one undo
++ * step on the Widget Blueprint's widget, keeping the text's localization key.
+  *
+  * Whether a widget is being edited is kept here by its name, not in the canvas widgets, which the designer throws away and
+  * builds again whenever it refreshes.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapeEditorUI.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapeEditorUI.cpp
+index e78c58d..570d64b 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapeEditorUI.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapeEditorUI.cpp
+@@ -125,6 +125,8 @@ namespace WidgetShapeEditorUI
+ 		TSharedRef<SButton> Button = SNew(SButton)
+ 			.ButtonStyle(&BareButtonStyle())
+ 			.ContentPadding(FMargin(0.f))
++			.IsFocusable(!Chip.bPressOnly)
++			.ClickMethod(Chip.bPressOnly ? EButtonClickMethod::MouseDown : EButtonClickMethod::DownAndUp)
+ 			.IsEnabled_Lambda(Enabled)
+ 			.ToolTipText_Lambda([Chip]() { return Chip.GetToolTip ? Chip.GetToolTip() : Chip.ToolTip; })
+ 			.OnClicked_Lambda([Chip]()
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapeEditorUI.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapeEditorUI.h
+index 8732007..88bb513 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapeEditorUI.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapeEditorUI.h
+@@ -28,6 +28,13 @@ namespace WidgetShapeEditorUI
+ 		TFunction<bool()> IsActive;
+ 		TFunction<bool()> IsEnabled;
+ 		TFunction<void()> OnClick;
++
++		/**
++		 * Acts as the mouse goes down, and never takes the keyboard focus - for a chip that works on what another widget
++		 * has selected (the text editor's), which a click that moved the focus, or waited for the mouse to come up, could
++		 * lose.
++		 */
++		bool bPressOnly = false;
+ 	};
+ 
+ 	TSharedRef<SWidget> MakeChip(const FChip& Chip);
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.h
+index 7aa5483..9fc615d 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.h
+@@ -49,6 +49,9 @@ public:
+ 	/** The Widget Animations panel's Graph Editor, where the editor has no Curve Editor icon of its own. */
+ 	static inline const FName GraphEditorIcon = TEXT("NameTBD.GraphEditor");
+ 
++	/** The timeline's start and end markers: an upside-down triangle, white to be tinted, drawn smooth at any size. */
++	static inline const FName RangeMarkerIcon = TEXT("NameTBD.Timeline.RangeMarker");
++
+ 	/** One of the plugin's own icons, or null when its file was missing at startup. */
+ 	static const FSlateBrush* FindIcon(FName Name);
+ 	
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index d12313b..339d6ca 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -1141,7 +1141,6 @@ namespace NameTBD::Tooltips
+ 				"Close: close this tab. The script is kept - the Script button in the Widget Animations panel opens it again.");
+ 		}
+ 
+-
+ 		// -------------------------------------------------------------------------------------------------
+ 		// Folders of layer groups in the Animation Tracks list
+ 		// -------------------------------------------------------------------------------------------------
+@@ -1898,7 +1897,7 @@ namespace NameTBD::Tooltips
+ 		inline FText TextEditorEditTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorEditTooltip",
+-				"Edit Text: the text and its tags, with buttons that write the tags for you - select some words, then pick a style, effect, color or reveal tag.");
++				"Edit Text: the text and its tags, with buttons that write the tags for you - select some words, then pick a style, effect or color. Ctrl+Z / Ctrl+Y undo and redo.");
+ 		}
+ 
+ 		inline FText TextEditorDoneTooltip()
+@@ -1973,40 +1972,10 @@ namespace NameTBD::Tooltips
+ 				"Makes the selection glow: <glow>...</>.");
+ 		}
+ 
+-		inline FText TextEditorSpeedTooltip()
+-		{
+-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorSpeedTooltip",
+-				"Changes how fast the selection reveals: <speed=x>...</>, x times the reveal's own speed.");
+-		}
+-
+-		inline FText TextEditorInstantTooltip()
+-		{
+-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorInstantTooltip",
+-				"Shows the selection all at once as the reveal reaches it: <instant>...</>.");
+-		}
+-
+-		inline FText TextEditorPauseTooltip()
+-		{
+-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorPauseTooltip",
+-				"Holds the reveal at the cursor for a moment: <pause=seconds>.");
+-		}
+-
+-		inline FText TextEditorEventTooltip()
+-		{
+-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorEventTooltip",
+-				"Fires the named event as the reveal reaches the cursor: <event=Name>. Type a name and press Enter.");
+-		}
+-
+-		inline FText TextEditorPlayTooltip()
+-		{
+-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorPlayTooltip",
+-				"Plays the named animation of this widget as the reveal reaches the cursor: <play=Id>. Type its id and press Enter.");
+-		}
+-
+ 		inline FText TextEditorClearTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorClearTooltip",
+-				"Takes off the tags around the selection, and any moment tags inside it - the words stay.");
++				"Takes off the tags around the selection, and any inside it - the words stay.");
+ 		}
+ 
+ 		inline FText TextEditorBoxTooltip()

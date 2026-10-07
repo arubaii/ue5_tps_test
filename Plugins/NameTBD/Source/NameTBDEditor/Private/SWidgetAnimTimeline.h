@@ -367,15 +367,15 @@ public:
 	FString FormatPlayheadTag(float Seconds) const;
 
 	/**
-	 * Draws the playhead as the Track Editor and the Graph Editor both draw it: a tag in the top of the ruler reading TagText,
-	 * kept between Left and Right, and from it a line down to Bottom that fades and tapers as it goes. X is where it is.
-	 * Draws on LayerId to LayerId + 3; returns the last.
+	 * Draws the playhead as the Track Editor and the Graph Editor both draw it: a compact head in the top of the ruler reading
+	 * TagText, kept between Left and Right, notched toward a solid one-pixel line from it down to Bottom. X is where it is.
+	 * Draws on LayerId to LayerId + 2; returns the last.
 	 */
 	static int32 PaintPlayhead(FSlateWindowElementList& OutDrawElements, const FGeometry& Geometry, int32 LayerId, float X, float RulerWidgetHeight, float Bottom, float Left, float Right, const FString& TagText);
 
 	/**
-	 * The strip along the bottom of the Track Editor's ruler where the animation's start and end are drawn as flags and
-	 * dragged by - under the playhead's tag, so the two never cover each other.
+	 * The strip along the bottom of the Track Editor's ruler where the animation's start and end are drawn as triangles on top
+	 * of their lines, and dragged by - under the playhead's head, so the two never cover each other or take each other's clicks.
 	 */
 	static constexpr float RangeStripHeight = 8.f;
 
@@ -781,9 +781,9 @@ public:
 	float GetNewTrackStart(TOptional<float> AtSeconds = TOptional<float>()) const;
 
 	/**
-	 * Whether a Stagger means anything on a track: one it could fan out to - its widget's children, or an Animated Text
-	 * Block's letters for a track that moves letters - and never a value-driven track or an animation track. A track that
-	 * already has one shows it, so it can be taken off.
+	 * Whether a Stagger is offered on a track: only on a text track - a type that moves letters, played on one of the
+	 * plugin's animated text widgets, with letters to fan out over - and never a value-driven track, a cue or an animation
+	 * track. A track that already has one shows it, so it can be taken off.
 	 */
 	bool CanLayerStagger(int32 LayerIndex) const;
 
@@ -1052,6 +1052,12 @@ public:
 	void MatchDesignTrackToTarget(int32 LayerIndex);
 
 	/**
+	 * A Blueprint type's or cue's track's Settings made afresh for its type's Settings Struct, when they hold another struct
+	 * or none - so they always follow the type, never picked by hand. See FWidgetAnimBlueprintTypeParams::SyncSettingsStruct.
+	 */
+	void SyncBlueprintTypeSettings(int32 LayerIndex);
+
+	/**
 	 * Whether an animation track follows a float value of its own (Timing set to Value - see FWidgetAnimProgressDrive) or
 	 * plays across the track as the timeline passes it. Following a value, it is named after its animation when it has no
 	 * Value Name yet.
@@ -1222,6 +1228,13 @@ public:
 	 * FWidgetAnimEvaluator::HasDerivedLength). Drawn striped, its end not draggable.
 	 */
 	static bool HasDerivedLength(const FWidgetAnimLayer& Layer);
+
+	/**
+	 * A track's Duration as the Selection panel shows it: whether it is typed in there (bOutEditable) - only where it times
+	 * the track - and otherwise how long the track really runs, in the animation's own seconds, and why it can't be typed:
+	 * its keys, its spring, or what its length is worked out from (a sound's length). False for no such track.
+	 */
+	bool GetTrackDurationInfo(int32 LayerIndex, bool& bOutEditable, float& OutSeconds, FText& OutWhy) const;
 
 	/**
 	 * What color a layer is drawn in: its type's - or, on a Blueprint type's track, that type's own Track Color if it

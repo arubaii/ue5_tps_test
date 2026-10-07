@@ -49,6 +49,9 @@ public:
 	/** The Widget Animations panel's Graph Editor, where the editor has no Curve Editor icon of its own. */
 	static inline const FName GraphEditorIcon = TEXT("NameTBD.GraphEditor");
 
+	/** The timeline's start and end markers: an upside-down triangle, white to be tinted, drawn smooth at any size. */
+	static inline const FName RangeMarkerIcon = TEXT("NameTBD.Timeline.RangeMarker");
+
 	/** One of the plugin's own icons, or null when its file was missing at startup. */
 	static const FSlateBrush* FindIcon(FName Name);
 	

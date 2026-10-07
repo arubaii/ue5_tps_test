@@ -1,0 +1,1119 @@
+diff --git a/NameTBD_Handoff.md b/NameTBD_Handoff.md
+index 7c6496b..7b48525 100644
+--- a/NameTBD_Handoff.md
++++ b/NameTBD_Handoff.md
+@@ -138,3 +138,10 @@ In practice that means:
+ - `_fix6` (build errors in `_fix5`):
+   - `SMultiLineEditableTextBox` has no `GetSelection`/`SelectText` in 5.7. The Text Editor now uses a bare `SMultiLineEditableText` in a text box's frame, with its own scroll bar. It reads the selection from `GetSelectedText` + `GetCursorLocation`.
+   - Locals no longer shadow `SWidget` members (`Tag`, `ToolTip`, `Cursor`, and `TSharedFromThis::WeakThis`), which were C4458 errors.
++- `_fix7`: **The Text Editor moved onto the canvas**, laid out like the Custom Shape editor. The Details-panel version (`WidgetAnimTextDetails.*`) is gone.
++  - `FWidgetAnimTextEditorExtension` (`WidgetAnimTextCanvasEditor.h/.cpp`) is a UMG designer extension, registered next to the shape path editor's.
++  - For a selected animated text, it puts an **Edit Text** chip above the widget, in the same spot and style as Edit Shape (`WidgetShapeEditorUI::MakeChip`).
++  - While editing, a card above the widget holds: Done | Style, Effect | Color, Size, Glow | Speed, Instant, Pause, Event, Play | Clear. Below those are the text box and the "In: ..." status line. Dropdown chips use an `SMenuAnchor`.
++  - Typing updates the designer's preview live, without touching the template. On commit (leaving the box, a toolbar action, Done or Escape), the Widget Blueprint's widget gets the text as one undo step, keeping the localization key.
++  - Writes go straight into the `Text` field, then `SynchronizeProperties` on the preview, the same way the shape editor's edits do. So the designer doesn't rebuild under the box.
++  - Editing state is kept by widget name (`WidgetAnimTextEditing`), so it survives designer refreshes.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+index 8bc1cda..4874834 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+@@ -39,7 +39,7 @@
+ #include "UMGEditorModule.h"
+ #include "WidgetShapeDetails.h"
+ #include "WidgetShapePathEditor.h"
+-#include "WidgetAnimTextDetails.h"
++#include "WidgetAnimTextCanvasEditor.h"
+ #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
+ 
+ #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
+@@ -107,14 +107,6 @@ void FNameTBDEditorModule::StartupModule()
+ 	PropertyModule.RegisterCustomClassLayout(
+ 		UShapeWidget::StaticClass()->GetFName(),
+ 		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetShapeDetails::MakeInstance));
+-
+-	// The animated text widgets' Text Editor: a toolbar that writes the rich text and Text Reveal tags for the selection.
+-	for (const FName& ClassName : FWidgetAnimTextDetails::GetCustomizedClassNames())
+-	{
+-		PropertyModule.RegisterCustomClassLayout(
+-			ClassName,
+-			FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetAnimTextDetails::MakeInstance));
+-	}
+ 	PropertyModule.NotifyCustomizationModuleChanged();
+ 
+ 	// A Custom Shape's path editor, on the UMG designer's canvas.
+@@ -122,6 +114,10 @@ void FNameTBDEditorModule::StartupModule()
+ 	ShapePathEditorFactory = MakeShared<FWidgetShapePathEditorFactory>();
+ 	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(ShapePathEditorFactory.ToSharedRef());
+ 
++	// The animated texts' tag editor, on the same canvas: a toolbar that writes the rich text and Text Reveal tags.
++	TextEditorFactory = MakeShared<FWidgetAnimTextEditorFactory>();
++	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(TextEditorFactory.ToSharedRef());
++
+ 	ValuePinFactory = MakeShared<FWidgetAnimValuePinFactory>();
+ 	FEdGraphUtilities::RegisterVisualPinFactory(ValuePinFactory);
+ 
+@@ -186,6 +182,15 @@ void FNameTBDEditorModule::ShutdownModule()
+ 		ShapePathEditorFactory.Reset();
+ 	}
+ 
++	if (TextEditorFactory.IsValid())
++	{
++		if (IUMGEditorModule* UMGEditorModule = FModuleManager::GetModulePtr<IUMGEditorModule>("UMGEditor"))
++		{
++			UMGEditorModule->GetDesignerExtensibilityManager()->RemoveDesignerExtensionFactory(TextEditorFactory.ToSharedRef());
++		}
++		TextEditorFactory.Reset();
++	}
++
+ 	if (ValuePinFactory.IsValid())
+ 	{
+ 		FEdGraphUtilities::UnregisterVisualPinFactory(ValuePinFactory);
+@@ -214,10 +219,6 @@ void FNameTBDEditorModule::ShutdownModule()
+ 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimEntry"));
+ 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimMachineCondition"));
+ 		PropertyModule->UnregisterCustomClassLayout(TEXT("ShapeWidget"));
+-		for (const FName& ClassName : FWidgetAnimTextDetails::GetCustomizedClassNames())
+-		{
+-			PropertyModule->UnregisterCustomClassLayout(ClassName);
+-		}
+ 
+ 	}
+ 	
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextDetails.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.cpp
+similarity index 56%
+rename from Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextDetails.cpp
+rename to Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.cpp
+index d2ff65a..fa5e840 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextDetails.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.cpp
+@@ -1,39 +1,102 @@
+ ﻿// Copyright AR GameSystems 2026. All rights reserved.
+ 
+-#include "WidgetAnimTextDetails.h"
++#include "WidgetAnimTextCanvasEditor.h"
+ 
+-#include "NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h"
++#include "NameTBDColors.h"
++#include "NameTBDStyle.h"
+ #include "NameTBDTooltips.h"
++#include "WidgetShapeEditorUI.h"
++#include "NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h"
+ 
+-#include "DetailCategoryBuilder.h"
+-#include "DetailLayoutBuilder.h"
+-#include "DetailWidgetRow.h"
++#include "Brushes/SlateRoundedBoxBrush.h"
++#include "Components/Widget.h"
+ #include "Engine/DataTable.h"
+ #include "Framework/Application/SlateApplication.h"
+ #include "Framework/MultiBox/MultiBoxBuilder.h"
+ #include "Framework/Text/TextLayout.h"
+ #include "Internationalization/Text.h"
+ #include "Internationalization/TextKey.h"
+-#include "PropertyHandle.h"
+-#include "Styling/AppStyle.h"
++#include "ScopedTransaction.h"
++#include "Styling/CoreStyle.h"
++#include "WidgetBlueprint.h"
+ #include "Widgets/Colors/SColorPicker.h"
+-#include "Widgets/Input/SButton.h"
+-#include "Widgets/Input/SComboButton.h"
+ #include "Widgets/Input/SEditableTextBox.h"
+-#include "Widgets/Layout/SScrollBar.h"
+-#include "Widgets/Text/SMultiLineEditableText.h"
++#include "Widgets/Input/SMenuAnchor.h"
+ #include "Widgets/Layout/SBorder.h"
+ #include "Widgets/Layout/SBox.h"
+-#include "Widgets/Layout/SSeparator.h"
+-#include "Widgets/Layout/SWrapBox.h"
++#include "Widgets/Layout/SScrollBar.h"
+ #include "Widgets/SBoxPanel.h"
+ #include "Widgets/SCompoundWidget.h"
++#include "Widgets/Text/SMultiLineEditableText.h"
+ #include "Widgets/Text/STextBlock.h"
+ 
+-#define LOCTEXT_NAMESPACE "WidgetAnimTextDetails"
++#define LOCTEXT_NAMESPACE "WidgetAnimTextCanvasEditor"
+ 
+ namespace WidgetAnimTips = NameTBD::Tooltips::WidgetAnimEditor;
+ 
++// =====================================================================================================
++// Edit state
++// =====================================================================================================
++
++namespace WidgetAnimTextEditing
++{
++	static TSet<FName>& EditingNames()
++	{
++		static TSet<FName> Names;
++		return Names;
++	}
++
++	bool IsEditing(FName WidgetName)
++	{
++		return !WidgetName.IsNone() && EditingNames().Contains(WidgetName);
++	}
++
++	void SetEditing(FName WidgetName, bool bEditing)
++	{
++		if (WidgetName.IsNone())
++		{
++			return;
++		}
++		if (bEditing)
++		{
++			EditingNames().Add(WidgetName);
++		}
++		else
++		{
++			EditingNames().Remove(WidgetName);
++		}
++	}
++
++	const TArray<FName>& GetEditableClassNames()
++	{
++		static const TArray<FName> Names =
++		{
++			TEXT("WidgetAnimTextBlock"),
++			TEXT("WidgetAnimRichTextBlock"),
++			TEXT("CommonAnimatedText"),
++			TEXT("CommonAnimatedRichText"),
++		};
++		return Names;
++	}
++
++	/** Whether Class is one of the animated texts, or made from one. */
++	static bool IsEditableClass(const UClass* Class)
++	{
++		for (; Class; Class = Class->GetSuperClass())
++		{
++			if (GetEditableClassNames().Contains(Class->GetFName()))
++			{
++				return true;
++			}
++		}
++		return false;
++	}
++}
++
++// =====================================================================================================
++// Tags
++// =====================================================================================================
++
+ namespace WidgetAnimTextEditor
+ {
+ 	/** One tag in a text: where it is (End one past its '>'), its name, and what kind it is. */
+@@ -185,223 +248,357 @@ namespace WidgetAnimTextEditor
+ 	}
+ }
+ 
++// =====================================================================================================
++// The editor on the canvas
++// =====================================================================================================
++
++namespace WidgetAnimTextCanvasEditorImpl
++{
++	namespace Palette = NameTBD::Colors::ShapeEditor;
++
++	/** How far above the widget the toolbar's bottom edge sits - as the Custom Shape's does. */
++	constexpr float ToolbarLift = 6.f;
++
++	const FSlateBrush* ToolbarBrush()
++	{
++		static const FSlateRoundedBoxBrush Brush(Palette::ToolbarBackground, 5.f, Palette::ToolbarOutline, 1.f);
++		return &Brush;
++	}
++
++	const FSlateBrush* TextFrameBrush()
++	{
++		static const FSlateRoundedBoxBrush Brush(FLinearColor(0.f, 0.f, 0.f, 0.55f), 4.f, FLinearColor(1.f, 1.f, 1.f, 0.12f), 1.f);
++		return &Brush;
++	}
++
++	const FSlateBrush* DividerBrush()
++	{
++		static const FSlateRoundedBoxBrush Brush(FLinearColor(1.f, 1.f, 1.f, 0.15f), 0.f);
++		return &Brush;
++	}
++
++	FTextProperty* FindTextProperty(const UWidget* Widget)
++	{
++		return Widget ? FindFProperty<FTextProperty>(Widget->GetClass(), TEXT("Text")) : nullptr;
++	}
++
++	FText ReadText(const UWidget* Widget)
++	{
++		const FTextProperty* Property = FindTextProperty(Widget);
++		return Property ? *Property->ContainerPtrToValuePtr<FText>(Widget) : FText::GetEmpty();
++	}
++
++	/** Straight into the field - a setter may do more than a template wants - then out to the widget's Slate, if it has one. */
++	void WriteText(UWidget* Widget, const FText& Value)
++	{
++		const FTextProperty* Property = FindTextProperty(Widget);
++		if (!Property)
++		{
++			return;
++		}
++		*Property->ContainerPtrToValuePtr<FText>(Widget) = Value;
++		if (Widget->GetCachedWidget().IsValid())
++		{
++			Widget->SynchronizeProperties();
++		}
++	}
++
++	/** NewString as a text with Old's localization key, so a text already gathered for translation stays the same text. */
++	FText KeepKey(const FText& Old, const FString& NewString)
++	{
++		const TOptional<FString> Namespace = FTextInspector::GetNamespace(Old);
++		const TOptional<FString> Key = FTextInspector::GetKey(Old);
++		return Namespace.IsSet() && Key.IsSet() && !Old.IsCultureInvariant()
++			? FText::ChangeKey(FTextKey(*Namespace.GetValue()), FTextKey(*Key.GetValue()), FText::FromString(NewString))
++			: FText::FromString(NewString);
++	}
++}
++
+ /**
+- * The Text Editor row: a toolbar of tags over the text. See FWidgetAnimTextDetails. The text box is the source of truth while
+- * it is being typed in; it is written to the Text property on commit, and on every toolbar action.
++ * The toolbar above an animated text on the designer's canvas: Edit Text, or - while editing - a card with the text and the
++ * tag buttons over it. See WidgetAnimTextCanvasEditor.h.
+  */
+-class SWidgetAnimTextEditor : public SCompoundWidget
++class SWidgetAnimTextCanvasEditor : public SCompoundWidget
+ {
+ public:
+-	SLATE_BEGIN_ARGS(SWidgetAnimTextEditor) {}
+-		SLATE_ARGUMENT(TSharedPtr<IPropertyHandle>, TextHandle)
+-		SLATE_ARGUMENT(TArray<TWeakObjectPtr<UObject>>, Objects)
++	SLATE_BEGIN_ARGS(SWidgetAnimTextCanvasEditor) {}
++		SLATE_ARGUMENT(FWidgetReference, Widget)
+ 	SLATE_END_ARGS()
+ 
+ 	void Construct(const FArguments& InArgs)
+ 	{
+-		TextHandle = InArgs._TextHandle;
+-		Objects = InArgs._Objects;
+-		bRich = Objects.Num() > 0 && Objects[0].IsValid() && FindFProperty<FObjectPropertyBase>(Objects[0]->GetClass(), TEXT("TextStyleSet")) != nullptr;
++		using namespace WidgetAnimTextCanvasEditorImpl;
++		using WidgetShapeEditorUI::FChip;
++		using WidgetShapeEditorUI::MakeChip;
+ 
+-		const TSharedRef<SScrollBar> ScrollBar = SNew(SScrollBar).Orientation(Orient_Vertical).AlwaysShowScrollbar(false);
+-		const TSharedRef<SWrapBox> Toolbar = SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(2.0, 2.0));
+-		auto AddGroupBreak = [&Toolbar]()
++		Reference = InArgs._Widget;
++		if (const UWidget* Template = Reference.GetTemplate())
+ 		{
+-			Toolbar->AddSlot()
+-			.VAlign(VAlign_Center)
+-			.Padding(FMargin(3.f, 0.f))
+-			[
+-				SNew(SBox)
+-				.HeightOverride(16.f)
+-				[
+-					SNew(SSeparator).Orientation(Orient_Vertical).Thickness(1.f)
+-				]
+-			];
++			WidgetName = Template->GetFName();
++			bRich = FindFProperty<FObjectPropertyBase>(Template->GetClass(), TEXT("TextStyleSet")) != nullptr;
++		}
++
++		const TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
++		auto Add = [&Row](TSharedRef<SWidget> Item, float Gap = 2.f)
++		{
++			Row->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(Gap, 0.f, 0.f, 0.f))[Item];
++		};
++		auto Divider = []()
++		{
++			return SNew(SBox).WidthOverride(1.f).HeightOverride(16.f)[SNew(SBorder).BorderImage(DividerBrush())];
+ 		};
+ 
++		{
++			FChip Chip;
++			Chip.Icon = FNameTBDStyle::ShapeDoneIcon;
++			Chip.Label = LOCTEXT("Done", "Done");
++			Chip.ToolTip = WidgetAnimTips::TextEditorDoneTooltip();
++			Chip.IsActive = []() { return true; };
++			Chip.OnClick = Do([](SWidgetAnimTextCanvasEditor& Editor) { Editor.FinishEditing(); });
++			Add(MakeChip(Chip), 0.f);
++		}
++
+ 		// Look: the project's own styles and effects first, then the built-in look tags.
++		Add(Divider(), 6.f);
+ 		if (bRich)
+ 		{
+-			Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("StyleButton", "Style"), WidgetAnimTips::TextEditorStyleTooltip(), &SWidgetAnimTextEditor::MakeStyleMenu)];
++			Add(MakeMenuChip(LOCTEXT("StyleButton", "Style"), WidgetAnimTips::TextEditorStyleTooltip(), &SWidgetAnimTextCanvasEditor::MakeStyleMenu), 6.f);
+ 		}
+-		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("EffectButton", "Effect"), WidgetAnimTips::TextEditorEffectTooltip(), &SWidgetAnimTextEditor::MakeEffectMenu)];
+-		AddGroupBreak();
+-		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("ColorButton", "Color"), WidgetAnimTips::TextEditorColorTooltip(), &SWidgetAnimTextEditor::MakeColorMenu)];
+-		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("SizeButton", "Size"), WidgetAnimTips::TextEditorSizeTooltip(), &SWidgetAnimTextEditor::MakeSizeMenu)];
+-		Toolbar->AddSlot()[MakeButton(LOCTEXT("GlowButton", "Glow"), WidgetAnimTips::TextEditorGlowTooltip(), [this]() { Wrap(TEXT("<glow>"), TEXT("</>")); })];
+-		AddGroupBreak();
++		Add(MakeMenuChip(LOCTEXT("EffectButton", "Effect"), WidgetAnimTips::TextEditorEffectTooltip(), &SWidgetAnimTextCanvasEditor::MakeEffectMenu), bRich ? 2.f : 6.f);
++		Add(Divider(), 6.f);
++		Add(MakeMenuChip(LOCTEXT("ColorButton", "Color"), WidgetAnimTips::TextEditorColorTooltip(), &SWidgetAnimTextCanvasEditor::MakeColorMenu), 6.f);
++		Add(MakeMenuChip(LOCTEXT("SizeButton", "Size"), WidgetAnimTips::TextEditorSizeTooltip(), &SWidgetAnimTextCanvasEditor::MakeSizeMenu));
++		Add(MakeActionChip(LOCTEXT("GlowButton", "Glow"), WidgetAnimTips::TextEditorGlowTooltip(), [](SWidgetAnimTextCanvasEditor& Editor) { Editor.Wrap(TEXT("<glow>"), TEXT("</>")); }));
+ 
+ 		// Reveal: how a Text Reveal paces it, and what happens as it gets there.
+-		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("SpeedButton", "Speed"), WidgetAnimTips::TextEditorSpeedTooltip(), &SWidgetAnimTextEditor::MakeSpeedMenu)];
+-		Toolbar->AddSlot()[MakeButton(LOCTEXT("InstantButton", "Instant"), WidgetAnimTips::TextEditorInstantTooltip(), [this]() { Wrap(TEXT("<instant>"), TEXT("</>")); })];
+-		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("PauseButton", "Pause"), WidgetAnimTips::TextEditorPauseTooltip(), &SWidgetAnimTextEditor::MakePauseMenu)];
+-		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("EventButton", "Event"), WidgetAnimTips::TextEditorEventTooltip(), &SWidgetAnimTextEditor::MakeEventMenu)];
+-		Toolbar->AddSlot()[MakeMenuButton(LOCTEXT("PlayButton", "Play"), WidgetAnimTips::TextEditorPlayTooltip(), &SWidgetAnimTextEditor::MakePlayMenu)];
+-		AddGroupBreak();
+-		Toolbar->AddSlot()[MakeButton(LOCTEXT("ClearButton", "Clear Tags"), WidgetAnimTips::TextEditorClearTooltip(), [this]() { ClearTags(); })];
++		Add(Divider(), 6.f);
++		Add(MakeMenuChip(LOCTEXT("SpeedButton", "Speed"), WidgetAnimTips::TextEditorSpeedTooltip(), &SWidgetAnimTextCanvasEditor::MakeSpeedMenu), 6.f);
++		Add(MakeActionChip(LOCTEXT("InstantButton", "Instant"), WidgetAnimTips::TextEditorInstantTooltip(), [](SWidgetAnimTextCanvasEditor& Editor) { Editor.Wrap(TEXT("<instant>"), TEXT("</>")); }));
++		Add(MakeMenuChip(LOCTEXT("PauseButton", "Pause"), WidgetAnimTips::TextEditorPauseTooltip(), &SWidgetAnimTextCanvasEditor::MakePauseMenu));
++		Add(MakeMenuChip(LOCTEXT("EventButton", "Event"), WidgetAnimTips::TextEditorEventTooltip(), &SWidgetAnimTextCanvasEditor::MakeEventMenu));
++		Add(MakeMenuChip(LOCTEXT("PlayButton", "Play"), WidgetAnimTips::TextEditorPlayTooltip(), &SWidgetAnimTextCanvasEditor::MakePlayMenu));
++		Add(Divider(), 6.f);
++		Add(MakeActionChip(LOCTEXT("ClearButton", "Clear"), WidgetAnimTips::TextEditorClearTooltip(), [](SWidgetAnimTextCanvasEditor& Editor) { Editor.ClearTags(); }), 6.f);
++
++		FChip EditChip;
++		EditChip.Icon = FNameTBDStyle::ShapeEditIcon;
++		EditChip.Label = LOCTEXT("EditText", "Edit Text");
++		EditChip.ToolTip = WidgetAnimTips::TextEditorEditTooltip();
++		EditChip.OnClick = Do([](SWidgetAnimTextCanvasEditor& Editor) { Editor.StartEditing(); });
++
++		const TSharedRef<SScrollBar> ScrollBar = SNew(SScrollBar).Orientation(Orient_Vertical).AlwaysShowScrollbar(false);
++		const FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 10);
++
++		auto ShownWhileEditing = [this]() { return IsEditing() ? EVisibility::Visible : EVisibility::Collapsed; };
+ 
+ 		ChildSlot
+ 		[
+-			SNew(SVerticalBox)
+-
+-			+ SVerticalBox::Slot()
+-			.AutoHeight()
++			SNew(SBorder)
++			.BorderImage(ToolbarBrush())
++			.Padding(FMargin(4.f, 3.f))
+ 			[
+-				SNew(SBorder)
+-				.BorderImage(FAppStyle::GetBrush("Brushes.Header"))
+-				.Padding(FMargin(4.f, 3.f))
+-				.IsEnabled_Lambda([this]() { return IsEditable(); })
++				SNew(SVerticalBox)
++
++				+ SVerticalBox::Slot()
++				.AutoHeight()
+ 				[
+-					Toolbar
++					SNew(SBox)
++					.Visibility_Lambda([this]() { return IsEditing() ? EVisibility::Collapsed : EVisibility::Visible; })
++					[
++						MakeChip(EditChip)
++					]
+ 				]
+-			]
+ 
+-			+ SVerticalBox::Slot()
+-			.AutoHeight()
+-			.Padding(FMargin(0.f, 2.f, 0.f, 0.f))
+-			[
+-				// The bare editable text in a text box's frame - the box widget hides the selection calls the toolbar needs.
+-				SNew(SBorder)
+-				.BorderImage(&FAppStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("NormalEditableTextBox").BackgroundImageNormal)
+-				.Padding(FMargin(4.f, 3.f))
++				+ SVerticalBox::Slot()
++				.AutoHeight()
+ 				[
+ 					SNew(SBox)
+-					.MinDesiredHeight(64.f)
+-					.MaxDesiredHeight(220.f)
++					.Visibility_Lambda(ShownWhileEditing)
+ 					[
+-						SNew(SHorizontalBox)
+-						+ SHorizontalBox::Slot()
+-						.FillWidth(1.f)
+-						[
+-							SAssignNew(Box, SMultiLineEditableText)
+-							.Font(IDetailLayoutBuilder::GetDetailFont())
+-							.AutoWrapText(true)
+-							.SelectAllTextWhenFocused(false)
+-							.ClearTextSelectionOnFocusLoss(false)
+-							.IsReadOnly_Lambda([this]() { return !IsEditable(); })
+-							.VScrollBar(ScrollBar)
+-							.ToolTipText(WidgetAnimTips::TextEditorBoxTooltip())
+-							.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type)
+-							{
+-								Commit(NewText.ToString());
+-							})
+-						]
+-						+ SHorizontalBox::Slot()
+-						.AutoWidth()
++						Row
++					]
++				]
++
++				// The text, tags and all - no wider than the toolbar over it, so a long text wraps rather than widening the card.
++				+ SVerticalBox::Slot()
++				.AutoHeight()
++				.Padding(FMargin(0.f, 4.f, 0.f, 0.f))
++				[
++					SNew(SBox)
++					.Visibility_Lambda(ShownWhileEditing)
++					.MaxDesiredWidth_Lambda([Row]() { return FOptionalSize(FMath::Max(360.f, static_cast<float>(Row->GetDesiredSize().X))); })
++					[
++						SNew(SBorder)
++						.BorderImage(TextFrameBrush())
++						.ForegroundColor(FSlateColor(Palette::ToolText))
++						.Padding(FMargin(6.f, 4.f))
+ 						[
+-							ScrollBar
++							SNew(SBox)
++							.MinDesiredHeight(64.f)
++							.MaxDesiredHeight(220.f)
++							[
++								SNew(SHorizontalBox)
++								+ SHorizontalBox::Slot()
++								.FillWidth(1.f)
++								[
++									SAssignNew(Box, SMultiLineEditableText)
++									.Font(Font)
++									.AutoWrapText(true)
++									.SelectAllTextWhenFocused(false)
++									.ClearTextSelectionOnFocusLoss(false)
++									.VScrollBar(ScrollBar)
++									.ToolTipText(WidgetAnimTips::TextEditorBoxTooltip())
++									.OnTextChanged_Lambda([this](const FText& NewText) { PreviewText(NewText.ToString()); })
++									.OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type) { Commit(NewText.ToString()); })
++								]
++								+ SHorizontalBox::Slot()
++								.AutoWidth()
++								[
++									ScrollBar
++								]
++							]
+ 						]
+ 					]
+ 				]
+-			]
+ 
+-			// Where the cursor is: the tags around it, innermost last - as a word processor shows the styles in force.
+-			+ SVerticalBox::Slot()
+-			.AutoHeight()
+-			.Padding(FMargin(2.f, 2.f, 0.f, 0.f))
+-			[
+-				SNew(STextBlock)
+-				.Font(IDetailLayoutBuilder::GetDetailFontItalic())
+-				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+-				.Text_Lambda([this]() { return GetCursorTagsText(); })
++				// Where the cursor is: the tags around it, innermost last - as a word processor shows the styles in force.
++				+ SVerticalBox::Slot()
++				.AutoHeight()
++				.Padding(FMargin(2.f, 3.f, 0.f, 1.f))
++				[
++					SNew(STextBlock)
++					.Visibility_Lambda(ShownWhileEditing)
++					.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
++					.ColorAndOpacity(FSlateColor(Palette::ToolText.CopyWithNewOpacity(0.6f)))
++					.Text_Lambda([this]() { return GetCursorTagsText(); })
++				]
+ 			]
+ 		];
+ 
+-		Box->SetText(FText::FromString(ReadProperty()));
++		Box->SetText(FText::FromString(ReadTemplate()));
++		bFocusBox = IsEditing();
+ 	}
+ 
+ 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override
+ 	{
+ 		SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
++		if (!Box.IsValid())
++		{
++			return;
++		}
+ 
+-		// The text edited elsewhere - the Text row above, an undo - is taken in, unless it is being typed in here.
+-		if (Box.IsValid() && !Box->HasKeyboardFocus())
++		// The text changed elsewhere - the Details panel, an undo - is taken in, unless it is being typed in here.
++		if (!Box->HasKeyboardFocus())
+ 		{
+-			const FString Property = ReadProperty();
+-			if (Property != Box->GetText().ToString())
++			const FString Template = ReadTemplate();
++			if (Template != Box->GetText().ToString())
+ 			{
+-				Box->SetText(FText::FromString(Property));
++				Box->SetText(FText::FromString(Template));
+ 			}
+ 		}
++
++		// Into the box as editing starts, once it is shown and can take the keyboard.
++		if (bFocusBox && IsEditing())
++		{
++			bFocusBox = false;
++			FSlateApplication::Get().SetKeyboardFocus(Box, EFocusCause::SetDirectly);
++		}
++	}
++
++	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override
++	{
++		// What the box leaves: Escape with nothing selected finishes, as it does a Custom Shape's edit.
++		if (IsEditing() && InKeyEvent.GetKey() == EKeys::Escape)
++		{
++			FinishEditing();
++			return FReply::Handled();
++		}
++		return SCompoundWidget::OnKeyDown(MyGeometry, InKeyEvent);
+ 	}
+ 
+ private:
+ 
+-	TSharedPtr<IPropertyHandle> TextHandle;
+-	TArray<TWeakObjectPtr<UObject>> Objects;
++	FWidgetReference Reference;
++	FName WidgetName;
+ 	TSharedPtr<SMultiLineEditableText> Box;
+ 	bool bRich = false;
++	bool bFocusBox = false;
+ 
+-	/** Only with one value to edit: several widgets selected with different texts read Multiple Values. */
+-	bool IsEditable() const
+-	{
+-		FText Value;
+-		return TextHandle.IsValid() && TextHandle->IsValidHandle() && !TextHandle->IsEditConst() && TextHandle->GetValue(Value) == FPropertyAccess::Success;
+-	}
++	UWidget* GetTemplate() const { return Reference.GetTemplate(); }
++	UWidget* GetPreview() const { return Reference.GetPreview(); }
++	bool IsEditing() const { return WidgetAnimTextEditing::IsEditing(WidgetName); }
+ 
+-	FString ReadProperty() const
++	FString ReadTemplate() const
+ 	{
+-		FText Value;
+-		return TextHandle.IsValid() && TextHandle->IsValidHandle() && TextHandle->GetValue(Value) == FPropertyAccess::Success ? Value.ToString() : FString();
++		return WidgetAnimTextCanvasEditorImpl::ReadText(GetTemplate()).ToString();
+ 	}
+ 
+ 	/** The text as typed so far, which the toolbar works on - not yet committed, it is still the newest. */
+ 	FString GetCurrentText() const
+ 	{
+-		return Box.IsValid() ? Box->GetText().ToString() : ReadProperty();
++		return Box.IsValid() ? Box->GetText().ToString() : ReadTemplate();
+ 	}
+ 
+-	/** The selection, as character indices into the current text: Start == End is the cursor alone. */
+-	void GetSelectionRange(int32& OutStart, int32& OutEnd) const
++	void StartEditing()
+ 	{
+-		const FString Text = GetCurrentText();
+-		if (!Box.IsValid())
+-		{
+-			OutStart = OutEnd = Text.Len();
+-			return;
+-		}
+-		// The cursor is one end of the selection; the selected text says how far the other is, and on which side.
+-		const int32 CursorIndex = WidgetAnimTextEditor::ToIndex(Text, Box->GetCursorLocation());
+-		const FString Selected = Box->GetSelectedText().ToString();
+-		const int32 Length = Selected.Len();
+-		OutStart = OutEnd = CursorIndex;
+-		if (Length == 0)
+-		{
+-			return;
+-		}
+-		const bool bBefore = CursorIndex - Length >= 0 && Text.Mid(CursorIndex - Length, Length) == Selected;
+-		const bool bAfter = CursorIndex + Length <= Text.Len() && Text.Mid(CursorIndex, Length) == Selected;
+-		if (bBefore)
++		WidgetAnimTextEditing::SetEditing(WidgetName, true);
++		bFocusBox = true;
++	}
++
++	void FinishEditing()
++	{
++		if (Box.IsValid())
+ 		{
+-			OutStart = CursorIndex - Length;
++			Commit(Box->GetText().ToString());
+ 		}
+-		else if (bAfter)
++		WidgetAnimTextEditing::SetEditing(WidgetName, false);
++		FSlateApplication::Get().ClearKeyboardFocus(EFocusCause::Cleared);
++	}
++
++	/** What is being typed, shown on the canvas at once: on the preview only - the Widget Blueprint's widget gets it on commit. */
++	void PreviewText(const FString& NewString)
++	{
++		UWidget* Preview = GetPreview();
++		if (Preview && Preview != GetTemplate() && WidgetAnimTextCanvasEditorImpl::ReadText(Preview).ToString() != NewString)
+ 		{
+-			OutEnd = CursorIndex + Length;
++			WidgetAnimTextCanvasEditorImpl::WriteText(Preview, FText::FromString(NewString));
+ 		}
+ 	}
+ 
+ 	/**
+-	 * The new text onto Text, as one Details edit - keeping its localization key, so a text already gathered for translation
+-	 * stays the same text - and into the box, with SelectFrom - SelectTo selected.
++	 * The new text onto the Widget Blueprint's widget, as one undo step keeping its localization key, and onto the designer's
++	 * preview - written straight in, as the Custom Shape's edits are, so the designer doesn't rebuild under the box - then into
++	 * the box, with SelectFrom - SelectTo selected.
+ 	 */
+ 	void Commit(const FString& NewString, int32 SelectFrom = INDEX_NONE, int32 SelectTo = INDEX_NONE)
+ 	{
+-		if (!IsEditable())
++		using namespace WidgetAnimTextCanvasEditorImpl;
++
++		UWidget* Template = GetTemplate();
++		if (!Template || !FindTextProperty(Template))
+ 		{
+ 			return;
+ 		}
+ 
+-		FText Old;
+-		TextHandle->GetValue(Old);
++		const FText Old = ReadText(Template);
+ 		if (Old.ToString() != NewString)
+ 		{
+-			const TOptional<FString> Namespace = FTextInspector::GetNamespace(Old);
+-			const TOptional<FString> Key = FTextInspector::GetKey(Old);
+-			const FText NewText = Namespace.IsSet() && Key.IsSet() && !Old.IsCultureInvariant()
+-				? FText::ChangeKey(FTextKey(*Namespace.GetValue()), FTextKey(*Key.GetValue()), FText::FromString(NewString))
+-				: FText::FromString(NewString);
+-			TextHandle->SetValue(NewText);
++			const FText NewText = KeepKey(Old, NewString);
++			{
++				const FScopedTransaction Transaction(LOCTEXT("EditTextTransaction", "Edit Text"));
++				Template->Modify();
++				WriteText(Template, NewText);
++			}
++			Template->MarkPackageDirty();
++			if (UWidgetBlueprint* Blueprint = Template->GetTypedOuter<UWidgetBlueprint>())
++			{
++				Blueprint->Status = BS_Dirty;
++			}
++			UWidget* Preview = GetPreview();
++			if (Preview && Preview != Template)
++			{
++				WriteText(Preview, NewText);
++			}
+ 		}
+ 
+ 		if (Box.IsValid())
+@@ -412,11 +609,44 @@ private:
+ 			}
+ 			if (SelectFrom != INDEX_NONE)
+ 			{
++				// Back into the box - a chip took the keyboard - with the same words selected, ready for the next tag.
++				FSlateApplication::Get().SetKeyboardFocus(Box, EFocusCause::SetDirectly);
+ 				Box->SelectText(WidgetAnimTextEditor::ToLocation(NewString, SelectFrom), WidgetAnimTextEditor::ToLocation(NewString, SelectTo));
+ 			}
+ 		}
+ 	}
+ 
++	/** The selection, as character indices into the current text: Start == End is the cursor alone. */
++	void GetSelectionRange(int32& OutStart, int32& OutEnd) const
++	{
++		const FString Text = GetCurrentText();
++		if (!Box.IsValid())
++		{
++			OutStart = OutEnd = Text.Len();
++			return;
++		}
++		// The cursor is one end of the selection; the selected text says how far the other is, and on which side.
++		const int32 CursorIndex = WidgetAnimTextEditor::ToIndex(Text, Box->GetCursorLocation());
++		const FString Selected = Box->GetSelectedText().ToString();
++		const int32 Length = Selected.Len();
++		OutStart = OutEnd = CursorIndex;
++		if (Length == 0)
++		{
++			return;
++		}
++		const bool bBefore = CursorIndex - Length >= 0 && Text.Mid(CursorIndex - Length, Length) == Selected;
++		const bool bAfter = CursorIndex + Length <= Text.Len() && Text.Mid(CursorIndex, Length) == Selected;
++		if (bBefore)
++		{
++			OutStart = CursorIndex - Length;
++		}
++		else if (bAfter)
++		{
++			OutEnd = CursorIndex + Length;
++		}
++	}
++
++
+ 	/** Open and Close around the selection, the selection kept on the same words - or an empty pair at the cursor, the cursor inside. */
+ 	void Wrap(const FString& Open, const FString& Close)
+ 	{
+@@ -536,40 +766,53 @@ private:
+ 	// Toolbar
+ 	// ---------------------------------------------------------------------------------------------
+ 
+-	/**
+-	 * A toolbar button: flat, and never taking the keyboard focus - so the text box keeps its selection, and the button acts
+-	 * on it.
+-	 */
+-	TSharedRef<SWidget> MakeButton(const FText& Label, const FText& Tip, TFunction<void()> OnClick)
+-	{
+-		return SNew(SButton)
+-			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+-			.IsFocusable(false)
+-			.ContentPadding(FMargin(6.f, 2.f))
+-			.ToolTipText(Tip)
+-			.OnClicked_Lambda([OnClick]() { OnClick(); return FReply::Handled(); })
+-			[
+-				SNew(STextBlock)
+-				.Font(IDetailLayoutBuilder::GetDetailFont())
+-				.Text(Label)
+-			];
++	/** An action on this editor, reached through a weak pointer: a chip outlives nothing, but a menu or picker might. */
++	TFunction<void()> Do(TFunction<void(SWidgetAnimTextCanvasEditor&)> Action)
++	{
++		const TWeakPtr<SWidgetAnimTextCanvasEditor> WeakEditor = SharedThis(this);
++		return [WeakEditor, Action]()
++		{
++			if (const TSharedPtr<SWidgetAnimTextCanvasEditor> Pinned = WeakEditor.Pin())
++			{
++				Action(*Pinned);
++			}
++		};
+ 	}
+ 
+-	TSharedRef<SWidget> MakeMenuButton(const FText& Label, const FText& Tip, TSharedRef<SWidget>(SWidgetAnimTextEditor::* MakeMenu)())
++	TSharedRef<SWidget> MakeActionChip(const FText& Label, const FText& Tip, TFunction<void(SWidgetAnimTextCanvasEditor&)> Action)
+ 	{
+-		return SNew(SComboButton)
+-			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+-			.IsFocusable(false)
+-			.HasDownArrow(true)
+-			.ContentPadding(FMargin(6.f, 2.f))
+-			.ToolTipText(Tip)
+-			.OnGetMenuContent_Lambda([this, MakeMenu]() { return (this->*MakeMenu)(); })
+-			.ButtonContent()
++		WidgetShapeEditorUI::FChip Chip;
++		Chip.Label = Label;
++		Chip.ToolTip = Tip;
++		Chip.OnClick = Do(MoveTemp(Action));
++		return WidgetShapeEditorUI::MakeChip(Chip);
++	}
++
++	/** A chip that drops a menu down under itself, lit while the menu is open. */
++	TSharedRef<SWidget> MakeMenuChip(const FText& Label, const FText& Tip, TSharedRef<SWidget>(SWidgetAnimTextCanvasEditor::* MakeMenu)())
++	{
++		const TSharedRef<TWeakPtr<SMenuAnchor>> Anchor = MakeShared<TWeakPtr<SMenuAnchor>>();
++
++		WidgetShapeEditorUI::FChip Chip;
++		Chip.Label = Label;
++		Chip.ToolTip = Tip;
++		Chip.IsActive = [Anchor]() { const TSharedPtr<SMenuAnchor> Menu = Anchor->Pin(); return Menu.IsValid() && Menu->IsOpen(); };
++		Chip.OnClick = [Anchor]()
++		{
++			if (const TSharedPtr<SMenuAnchor> Menu = Anchor->Pin())
++			{
++				Menu->SetIsOpen(!Menu->IsOpen());
++			}
++		};
++
++		const TSharedRef<SMenuAnchor> MenuAnchor = SNew(SMenuAnchor)
++			.Placement(MenuPlacement_BelowAnchor)
++			.OnGetMenuContent(FOnGetContent::CreateSP(this, MakeMenu))
+ 			[
+-				SNew(STextBlock)
+-				.Font(IDetailLayoutBuilder::GetDetailFont())
+-				.Text(Label)
++				WidgetShapeEditorUI::MakeChip(Chip)
+ 			];
++		*Anchor = MenuAnchor;
++		return MenuAnchor;
+ 	}
+ 
+ 	/** A menu entry that wraps the selection in Open ... Close. */
+@@ -624,7 +867,7 @@ private:
+ 		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+ 		Menu.BeginSection("Styles", LOCTEXT("StylesHeading", "Text Style Set"));
+ 
+-		const UObject* Widget = Objects.Num() > 0 ? Objects[0].Get() : nullptr;
++		const UObject* Widget = GetTemplate();
+ 		const FObjectPropertyBase* StyleSetProperty = Widget ? FindFProperty<FObjectPropertyBase>(Widget->GetClass(), TEXT("TextStyleSet")) : nullptr;
+ 		const UDataTable* StyleSet = StyleSetProperty ? Cast<UDataTable>(StyleSetProperty->GetObjectPropertyValue_InContainer(Widget)) : nullptr;
+ 		int32 NumRows = 0;
+@@ -726,7 +969,7 @@ private:
+ 			int32 Start = 0;
+ 			int32 End = 0;
+ 			GetSelectionRange(Start, End);
+-			const TWeakPtr<SWidgetAnimTextEditor> WeakEditor = SharedThis(this);
++			const TWeakPtr<SWidgetAnimTextCanvasEditor> WeakEditor = SharedThis(this);
+ 			Menu.AddMenuEntry(
+ 				LOCTEXT("PickColor", "Pick a Color..."),
+ 				WidgetAnimTips::TextEditorPickColorTooltip(),
+@@ -743,7 +986,7 @@ private:
+ 					Args.OnColorPickerCancelled = FOnColorPickerCancelled::CreateLambda([bCancelled](FLinearColor) { *bCancelled = true; });
+ 					Args.OnColorPickerWindowClosed = FOnWindowClosed::CreateLambda([WeakEditor, Picked, bCancelled, Start, End](const TSharedRef<SWindow>&)
+ 					{
+-						const TSharedPtr<SWidgetAnimTextEditor> Pinned = WeakEditor.Pin();
++						const TSharedPtr<SWidgetAnimTextCanvasEditor> Pinned = WeakEditor.Pin();
+ 						if (Pinned && !*bCancelled)
+ 						{
+ 							Pinned->WrapRange(Start, End, FString::Printf(TEXT("<color=%s>"), *WidgetAnimTextEditor::ToHex(*Picked)), TEXT("</>"));
+@@ -753,7 +996,7 @@ private:
+ 				})));
+ 			AddNameEntry(Menu, LOCTEXT("HexHint", "#RRGGBB or a color name"), [WeakEditor, Start, End](const FString& Value)
+ 			{
+-				if (const TSharedPtr<SWidgetAnimTextEditor> Pinned = WeakEditor.Pin())
++				if (const TSharedPtr<SWidgetAnimTextCanvasEditor> Pinned = WeakEditor.Pin())
+ 				{
+ 					Pinned->WrapRange(Start, End, FString::Printf(TEXT("<color=%s>"), *Value), TEXT("</>"));
+ 				}
+@@ -815,10 +1058,10 @@ private:
+ 	{
+ 		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+ 		Menu.BeginSection("Event", LOCTEXT("EventHeading", "Event Here"));
+-		const TWeakPtr<SWidgetAnimTextEditor> WeakEditor = SharedThis(this);
++		const TWeakPtr<SWidgetAnimTextCanvasEditor> WeakEditor = SharedThis(this);
+ 		AddNameEntry(Menu, LOCTEXT("EventHint", "Event name, then Enter"), [WeakEditor](const FString& Name)
+ 		{
+-			if (const TSharedPtr<SWidgetAnimTextEditor> Pinned = WeakEditor.Pin())
++			if (const TSharedPtr<SWidgetAnimTextCanvasEditor> Pinned = WeakEditor.Pin())
+ 			{
+ 				Pinned->Insert(FString::Printf(TEXT("<event=%s>"), *Name));
+ 			}
+@@ -832,10 +1075,10 @@ private:
+ 	{
+ 		FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+ 		Menu.BeginSection("Play", LOCTEXT("PlayHeading", "Play Animation Here"));
+-		const TWeakPtr<SWidgetAnimTextEditor> WeakEditor = SharedThis(this);
++		const TWeakPtr<SWidgetAnimTextCanvasEditor> WeakEditor = SharedThis(this);
+ 		AddNameEntry(Menu, LOCTEXT("PlayHint", "Anim ID, then Enter"), [WeakEditor](const FString& Name)
+ 		{
+-			if (const TSharedPtr<SWidgetAnimTextEditor> Pinned = WeakEditor.Pin())
++			if (const TSharedPtr<SWidgetAnimTextCanvasEditor> Pinned = WeakEditor.Pin())
+ 			{
+ 				Pinned->Insert(FString::Printf(TEXT("<play=%s>"), *Name));
+ 			}
+@@ -847,47 +1090,39 @@ private:
+ };
+ 
+ // =====================================================================================================
+-// FWidgetAnimTextDetails
++// Extension
+ // =====================================================================================================
+ 
+-TSharedRef<IDetailCustomization> FWidgetAnimTextDetails::MakeInstance()
++FWidgetAnimTextEditorExtension::FWidgetAnimTextEditorExtension()
+ {
+-	return MakeShared<FWidgetAnimTextDetails>();
++	ExtensionId = FName(TEXT("WidgetAnimTextEditor"));
+ }
+ 
+-const TArray<FName>& FWidgetAnimTextDetails::GetCustomizedClassNames()
++bool FWidgetAnimTextEditorExtension::CanExtendSelection(const TArray<FWidgetReference>& Selection) const
+ {
+-	static const TArray<FName> Names =
+-	{
+-		TEXT("WidgetAnimTextBlock"),
+-		TEXT("WidgetAnimRichTextBlock"),
+-		TEXT("CommonAnimatedText"),
+-		TEXT("CommonAnimatedRichText"),
+-	};
+-	return Names;
++	const UWidget* Template = Selection.Num() == 1 ? Selection[0].GetTemplate() : nullptr;
++	return Template && WidgetAnimTextEditing::IsEditableClass(Template->GetClass()) && WidgetAnimTextCanvasEditorImpl::FindTextProperty(Template);
+ }
+ 
+-void FWidgetAnimTextDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
++void FWidgetAnimTextEditorExtension::ExtendSelection(const TArray<FWidgetReference>& Selection, TArray<TSharedRef<FDesignerSurfaceElement>>& SurfaceElements)
+ {
+-	const TSharedRef<IPropertyHandle> TextHandle = DetailBuilder.GetProperty(TEXT("Text"));
+-	if (!TextHandle->IsValidHandle() || !CastField<FTextProperty>(TextHandle->GetProperty()))
++	if (Selection.Num() != 1)
+ 	{
+ 		return;
+ 	}
+ 
+-	TArray<TWeakObjectPtr<UObject>> Objects;
+-	DetailBuilder.GetObjectsBeingCustomized(Objects);
++	// Centered above the text, as the Custom Shape's toolbar is: its bottom middle (alignment 0.5, 1) a few units over the
++	// widget's top middle - so the card grows upward, off the text it edits.
++	SurfaceElements.Add(MakeShared<FDesignerSurfaceElement>(
++		SNew(SWidgetAnimTextCanvasEditor).Widget(Selection[0]),
++		EExtensionLayoutLocation::TopCenter,
++		FVector2D(0.0, -WidgetAnimTextCanvasEditorImpl::ToolbarLift),
++		FVector2D(0.5, 1.0)));
++}
+ 
+-	// The Text row where it always is, for its localization options - and the editor right under it.
+-	IDetailCategoryBuilder& Content = DetailBuilder.EditCategory(TEXT("Content"));
+-	Content.AddProperty(TextHandle);
+-	Content.AddCustomRow(LOCTEXT("TextEditorRow", "Text Editor"))
+-		.WholeRowContent()
+-		[
+-			SNew(SWidgetAnimTextEditor)
+-			.TextHandle(TextHandle)
+-			.Objects(Objects)
+-		];
++TSharedRef<FDesignerExtension> FWidgetAnimTextEditorFactory::CreateDesignerExtension() const
++{
++	return MakeShared<FWidgetAnimTextEditorExtension>();
+ }
+ 
+ #undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.h
+new file mode 100644
+index 0000000..736b892
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextCanvasEditor.h
+@@ -0,0 +1,60 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++
++#include "DesignerExtension.h"
++#include "IHasDesignerExtensibility.h"
++#include "WidgetReference.h"
++
++/**
++ * Editing an animated text's tags on the UMG designer's canvas, the way the Custom Shape's outline is edited there.
++ *
++ * A designer extension puts a toolbar above a selected Animated Text Block, Animated Rich Text Block or their Common UI
++ * kin (matched by class name, so this module needs no Common UI). It shows Edit Text; while editing, it shows a card
++ * holding the text - tags and all - and, laid out as a word processor's, the buttons that write the tags for whatever is
++ * selected in it, so nobody types <Bold>...</> or <shake>...</> by hand:
++ *
++ *   Done
++ *   Style, Effect                      - the widget's Text Style Set rows (a rich text only), the project's Text Tags.
++ *   Color, Size, Glow                  - the built-in look tags.
++ *   Speed, Instant, Pause, Event, Play - the built-in Text Reveal tags: pacing, and what happens as it is reached.
++ *   Clear                              - takes the tags around or inside the selection off again.
++ *
++ * Each wraps the selection in its tag - the selection kept, so several can be stacked - or, with nothing selected, puts an
++ * empty pair at the cursor. Pause, Event and Play, which tag a moment rather than words, go in at the cursor. The widget on
++ * the canvas follows as you type; every toolbar action, and the typing when the box is left, is one undo step on the
++ * Widget Blueprint's widget, keeping the text's localization key.
++ *
++ * Whether a widget is being edited is kept here by its name, not in the canvas widgets, which the designer throws away and
++ * builds again whenever it refreshes.
++ */
++namespace WidgetAnimTextEditing
++{
++	bool IsEditing(FName WidgetName);
++	void SetEditing(FName WidgetName, bool bEditing);
++
++	/** The animated text classes the editor is offered for, by name. */
++	const TArray<FName>& GetEditableClassNames();
++}
++
++/** Puts the text editor on the designer's canvas for a selected animated text. */
++class FWidgetAnimTextEditorExtension : public FDesignerExtension
++{
++public:
++	FWidgetAnimTextEditorExtension();
++
++	// FDesignerExtension
++	virtual bool CanExtendSelection(const TArray<FWidgetReference>& Selection) const override;
++	virtual void ExtendSelection(const TArray<FWidgetReference>& Selection, TArray<TSharedRef<FDesignerSurfaceElement>>& SurfaceElements) override;
++};
++
++/** Hands the designer a fresh text editor extension per designer opened. */
++class FWidgetAnimTextEditorFactory : public IDesignerExtensionFactory, public TSharedFromThis<FWidgetAnimTextEditorFactory>
++{
++public:
++	virtual ~FWidgetAnimTextEditorFactory() = default;
++
++	virtual TSharedRef<FDesignerExtension> CreateDesignerExtension() const override;
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextDetails.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextDetails.h
+deleted file mode 100644
+index a6b70ba..0000000
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTextDetails.h
++++ /dev/null
+@@ -1,36 +0,0 @@
+-// Copyright AR GameSystems 2026. All rights reserved.
+-
+-#pragma once
+-
+-#include "CoreMinimal.h"
+-#include "IDetailCustomization.h"
+-
+-/**
+- * The Details panel of the plugin's animated text widgets - Animated Text Block, Animated Rich Text Block and their Common
+- * UI kin, registered by class name so this module needs no Common UI.
+- *
+- * Under the stock Text row - kept, for its localization options - a Text Editor: the text in a roomy box, and above it a
+- * toolbar, laid out as a word processor's is, that writes the tags for whatever is selected - so nobody types <Bold>...</>
+- * or <shake a=2>...</> by hand:
+- *
+- *   Style          - the rows of the widget's Text Style Set (a rich text only): the project's own rich text styles.
+- *   Effect         - the project's Text Tags (Project Settings > Plugins > Widget Animations > Text Tags): shake, wave...
+- *   Color, Size, Glow                       - the built-in look tags.
+- *   Speed, Instant, Pause, Event, Play      - the built-in Text Reveal tags: pacing, and what happens as it is reached.
+- *   Clear          - takes the tags around or inside the selection off again.
+- *
+- * Each wraps the selection in its tag - the selection kept, so several can be stacked - or, with nothing selected, puts an
+- * empty pair at the cursor, the cursor inside it. Pause, Event and Play, which tag a moment rather than words, go in at the
+- * cursor. Every change is one Details edit of Text: one undo step, on every selected widget, keeping the text's localization
+- * key.
+- */
+-class FWidgetAnimTextDetails : public IDetailCustomization
+-{
+-public:
+-	static TSharedRef<IDetailCustomization> MakeInstance();
+-
+-	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
+-
+-	/** The classes this lays out, by name: what the editor module registers it for. */
+-	static const TArray<FName>& GetCustomizedClassNames();
+-};
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h
+index 5c5cf5d..cbff857 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h
+@@ -4,6 +4,7 @@
+ 
+ class IAssetTypeActions; 
+ class FWidgetShapePathEditorFactory;
++class FWidgetAnimTextEditorFactory;
+ struct FGraphPanelPinFactory;
+ 
+ class FNameTBDEditorModule : public IModuleInterface
+@@ -21,4 +22,7 @@ private:
+ 
+ 	// Puts the Custom Shape path editor on the UMG designer's canvas.
+ 	TSharedPtr<FWidgetShapePathEditorFactory> ShapePathEditorFactory;
++
++	// Puts the animated texts' tag editor on the UMG designer's canvas.
++	TSharedPtr<FWidgetAnimTextEditorFactory> TextEditorFactory;
+ };
+\ No newline at end of file
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index 2a2848f..d12313b 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -1895,6 +1895,18 @@ namespace NameTBD::Tooltips
+ 				"Shows or hides this channel's curve.");
+ 		}
+ 
++		inline FText TextEditorEditTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorEditTooltip",
++				"Edit Text: the text and its tags, with buttons that write the tags for you - select some words, then pick a style, effect, color or reveal tag.");
++		}
++
++		inline FText TextEditorDoneTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorDoneTooltip",
++				"Done: stop editing the text (Escape).");
++		}
++
+ 		inline FText TextEditorStyleTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorStyleTooltip",
+@@ -2000,7 +2012,7 @@ namespace NameTBD::Tooltips
+ 		inline FText TextEditorBoxTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorBoxTooltip",
+-				"The text, tags and all. Select some of it and pick a tag above to wrap it. Changes apply when the box loses focus.");
++				"The text, tags and all. Select some of it and pick a tag above to wrap it. The widget follows as you type; Escape or Done when finished.");
+ 		}
+ 
+ 		inline FText TextEditorHint()

@@ -32,6 +32,30 @@ const UWidgetAnimBlueprintCue* FWidgetAnimBlueprintCueParams::GetTypeObject() co
 	return TypeClass->GetDefaultObject<UWidgetAnimBlueprintCue>();
 }
 
+bool FWidgetAnimBlueprintCueParams::IsSettingsStructCurrent() const
+{
+	const UWidgetAnimBlueprintCue* TypeObject = GetTypeObject();
+	return !TypeObject || Settings.GetScriptStruct() == TypeObject->SettingsStruct.Get();
+}
+
+bool FWidgetAnimBlueprintCueParams::SyncSettingsStruct()
+{
+	if (IsSettingsStructCurrent())
+	{
+		return false;
+	}
+	const UScriptStruct* SettingsStruct = GetTypeObject()->SettingsStruct.Get();
+	if (SettingsStruct)
+	{
+		Settings.InitializeAs(SettingsStruct);
+	}
+	else
+	{
+		Settings.Reset();
+	}
+	return true;
+}
+
 FInstancedStruct FWidgetAnimBlueprintCueParams::MakeFor(TSubclassOf<UWidgetAnimBlueprintCue> InType)
 {
 	FInstancedStruct Out;

@@ -82,6 +82,21 @@ void WidgetAnimTextParts::GetWords(const TArray<FRange>& Letters, TArray<FRange>
 	}
 }
 
+void FWidgetAnimTextTarget::GetParts(TArray<FString>& OutParts) const
+{
+	OutParts.Reset();
+	TArray<FString> Pieces;
+	Text.ParseIntoArray(Pieces, PartSeparator, /*bCullEmpty=*/false);
+	for (FString& Piece : Pieces)
+	{
+		Piece.TrimStartAndEndInline();
+		if (!Piece.IsEmpty())
+		{
+			OutParts.Add(MoveTemp(Piece));
+		}
+	}
+}
+
 void FWidgetAnimTextTarget::FindLetterRanges(const FString& Display, TArray<FIntPoint>& OutRanges) const
 {
 	OutRanges.Reset();
@@ -90,58 +105,88 @@ void FWidgetAnimTextTarget::FindLetterRanges(const FString& Display, TArray<FInt
 		return;
 	}
 
-	// Every place it is, in characters, one after another and never overlapping - "aa" in "aaaa" is two places, not three.
-	const ESearchCase::Type SearchCase = bMatchCase ? ESearchCase::CaseSensitive : ESearchCase::IgnoreCase;
-	TArray<FIntPoint, TInlineAllocator<4>> Places;
-	for (int32 From = 0; From <= Display.Len() - Text.Len();)
-	{
-		const int32 Found = Display.Find(Text, SearchCase, ESearchDir::FromStart, From);
-		if (Found == INDEX_NONE)
-		{
-			break;
-		}
-		const int32 End = Found + Text.Len();
+	// Each part on its own - "Hello && Big World" is "Hello", then "Big World" - with every rule applied to each.
+	TArray<FString> Parts;
+	GetParts(Parts);
 
-		// A whole word has no letter or digit right before it or right after it.
-		const bool bWholeWord = (Found == 0 || !FChar::IsAlnum(Display[Found - 1])) && (End >= Display.Len() || !FChar::IsAlnum(Display[End]));
-		if (!bWholeWords || bWholeWord)
+	const ESearchCase::Type SearchCase = bMatchCase ? ESearchCase::CaseSensitive : ESearchCase::IgnoreCase;
+	TArray<FIntPoint, TInlineAllocator<8>> Chosen;
+	for (const FString& Part : Parts)
+	{
+		// Every place it is, in characters, one after another and never overlapping - "aa" in "aaaa" is two places, not three.
+		TArray<FIntPoint, TInlineAllocator<4>> Places;
+		for (int32 From = 0; From <= Display.Len() - Part.Len();)
 		{
-			Places.Add(FIntPoint(Found, End));
-			From = End;
+			const int32 Found = Display.Find(Part, SearchCase, ESearchDir::FromStart, From);
+			if (Found == INDEX_NONE)
+			{
+				break;
+			}
+			const int32 End = Found + Part.Len();
+
+			// A whole word has no letter or digit right before it or right after it.
+			const bool bWholeWord = (Found == 0 || !FChar::IsAlnum(Display[Found - 1])) && (End >= Display.Len() || !FChar::IsAlnum(Display[End]));
+			if (!bWholeWords || bWholeWord)
+			{
+				Places.Add(FIntPoint(Found, End));
+				From = End;
+			}
+			else
+			{
+				From = Found + 1;
+			}
 		}
-		else
+		if (Places.Num() == 0)
 		{
-			From = Found + 1;
+			continue;
+		}
+
+		// The ones asked for.
+		int32 FirstPlace = 0;
+		int32 LastPlace = Places.Num() - 1;
+		switch (Occurrence)
+		{
+		case EWidgetAnimTextOccurrence::First:  LastPlace = 0; break;
+		case EWidgetAnimTextOccurrence::Last:   FirstPlace = LastPlace; break;
+		case EWidgetAnimTextOccurrence::Number:
+			if (!Places.IsValidIndex(Number - 1))
+			{
+				continue;
+			}
+			FirstPlace = LastPlace = Number - 1;
+			break;
+		default: break;
+		}
+		for (int32 Place = FirstPlace; Place <= LastPlace; ++Place)
+		{
+			Chosen.Add(Places[Place]);
 		}
 	}
-	if (Places.Num() == 0)
+	if (Chosen.Num() == 0)
 	{
 		return;
 	}
 
-	// The ones asked for.
-	int32 FirstPlace = 0;
-	int32 LastPlace = Places.Num() - 1;
-	switch (Occurrence)
+	// In the order they are in the text, and two parts that overlap or touch are one place - each place moves as a piece.
+	Chosen.Sort([](const FIntPoint& A, const FIntPoint& B) { return A.X < B.X; });
+	TArray<FIntPoint, TInlineAllocator<8>> Merged;
+	for (const FIntPoint& Place : Chosen)
 	{
-	case EWidgetAnimTextOccurrence::First:  LastPlace = 0; break;
-	case EWidgetAnimTextOccurrence::Last:   FirstPlace = LastPlace; break;
-	case EWidgetAnimTextOccurrence::Number:
-		if (!Places.IsValidIndex(Number - 1))
+		if (Merged.Num() > 0 && Place.X <= Merged.Last().Y)
 		{
-			return;
+			Merged.Last().Y = FMath::Max(Merged.Last().Y, Place.Y);
 		}
-		FirstPlace = LastPlace = Number - 1;
-		break;
-	default: break;
+		else
+		{
+			Merged.Add(Place);
+		}
 	}
 
 	// Each as the letters it covers - white space is never a letter, so "Hello World" is ten of them in one run.
 	TArray<WidgetAnimTextParts::FRange> Letters;
 	WidgetAnimTextParts::GetLetters(Display, Letters);
-	for (int32 Place = FirstPlace; Place <= LastPlace; ++Place)
+	for (const FIntPoint& Chars : Merged)
 	{
-		const FIntPoint& Chars = Places[Place];
 		int32 First = INDEX_NONE;
 		int32 Count = 0;
 		for (int32 LetterIndex = 0; LetterIndex < Letters.Num(); ++LetterIndex)

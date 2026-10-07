@@ -64,6 +64,14 @@ public:
 	virtual void NotifyGroupsChanged(EPropertyChangeType::Type ChangeType) = 0;
 
 	/**
+	 * A value mid-drag in the Selection panel - a slider, a spin box: the preview is to follow it at once, and nothing else
+	 * need hear of it until the drag ends, when the Selection panel tells the edited object as a Details edit would. Telling
+	 * the object (its PostEditChange, and with it every listener: the Widget Blueprint, the designer, Details panels) on
+	 * every step of a drag is what made dragging a value stutter. By default as an Interactive NotifyGroupsChanged.
+	 */
+	virtual void NotifyInteractiveEdit() { NotifyGroupsChanged(EPropertyChangeType::Interactive); }
+
+	/**
 	 * Names of the LayerGroups and Layers properties on GetEditedObject's class - what the Selection panel binds its
 	 * rows to. The same on a builder and an asset; a source editing some other object's list of tracks names that
 	 * list, and None for groups it doesn't keep.
@@ -437,6 +445,9 @@ public:
 	virtual bool CanEdit() const override;
 	virtual void NotifyGroupsChanged(EPropertyChangeType::Type ChangeType) override;
 	virtual UUserWidget* GetPreviewRoot() const override;
+
+	/** Mid-drag: only the preview is built again, and posed, next tick - see IWidgetAnimPanelSource::NotifyInteractiveEdit. */
+	virtual void NotifyInteractiveEdit() override { bFlattenedStale = true; }
 
 	virtual float GetPlayheadAlpha() const override;
 	virtual void ScrubToAlpha(float Alpha) override;
