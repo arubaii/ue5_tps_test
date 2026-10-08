@@ -505,6 +505,9 @@ namespace WidgetShapeGeometryPrivate
 		FSide Left;
 		FSide Right;
 		bool bFaded = false;
+
+		/** How far along the outline the section is, in local units - for an image laid along it. */
+		float Along = 0.f;
 	};
 
 	struct FStrokeBuilder
@@ -519,6 +522,16 @@ namespace WidgetShapeGeometryPrivate
 		float MiterLimit = 4.f;
 		EWidgetShapeLineCap Cap = EWidgetShapeLineCap::Butt;
 
+		// Where the sections being added lie on the outline: the distance the next section is at, the length of the
+		// contour, and which side of the line its inside is (what V = 0 means). Only an image laid along the outline reads
+		// them; nothing about the mesh's shape depends on them.
+		float CurrentAlong = 0.f;
+		float OutlineLength = 0.f;
+		bool bInsideOnLeft = true;
+
+		/** A closed run's length, so its last quad can run on to a copy of its first section rather than back across it. */
+		float ClosedLength = 0.f;
+
 		TArray<FSection> Sections;
 
 		explicit FStrokeBuilder(FWidgetShapeMesh& InMesh) : Mesh(InMesh) {}
@@ -529,7 +542,16 @@ namespace WidgetShapeGeometryPrivate
 			Section.Left = { Point, LeftDirection };
 			Section.Right = { Point, RightDirection };
 			Section.bFaded = bFaded;
+			Section.Along = CurrentAlong;
 			Sections.Add(Section);
+		}
+
+		/** Across the stroke for a point Offset to the left of the line (negative: to its right): 0 on its inside edge, 1 on its outside. */
+		float AcrossAt(float Offset) const
+		{
+			const float Width = FMath::Max(LeftExtent + RightExtent, KINDA_SMALL_NUMBER);
+			const float FromLeft = (LeftExtent - Offset) / Width;
+			return bInsideOnLeft ? FromLeft : 1.f - FromLeft;
 		}
 
 		int32 RoundSteps(float Angle, float Radius) const
@@ -624,9 +646,11 @@ namespace WidgetShapeGeometryPrivate
 			AddSection(Point, Left, -Left, /*bFaded=*/true);
 		}
 
-		uint32 SideVertex(const FSide& Side, float Extent, float Coverage)
+		uint32 SideVertex(const FSection& Section, bool bLeft, float Extent, float Coverage, float AlongOffset = 0.f)
 		{
-			return Mesh.AddVertex(Side.Base + Side.Direction * Extent, Coverage);
+			const FSide& Side = bLeft ? Section.Left : Section.Right;
+			const FVector2f UV(Section.Along + AlongOffset, AcrossAt(bLeft ? Extent : -Extent));
+			return Mesh.AddVertex(Side.Base + Side.Direction * Extent, Coverage, UV, OutlineLength);
 		}
 
 		/** Turns the sections into the strip: fade, solid, fade across, joined section to section. */
@@ -639,25 +663,24 @@ namespace WidgetShapeGeometryPrivate
 				return;
 			}
 
-			TArray<uint32> FirstIndices;
-			uint32 Previous[4] = { 0, 0, 0, 0 };
-			for (int32 Index = 0; Index < Count; ++Index)
+			auto EmitSection = [this](const FSection& Section, uint32 (&Out)[4], float AlongOffset)
 			{
-				const FSection& Section = Sections[Index];
 				const float Solid = Section.bFaded ? 0.f : Opacity;
-				uint32 Current[4];
 				// A side with no extent (an Inside or Outside stroke's edge on the outline) is solid right up to the outline and
 				// fades outward from it, rather than starting its fade across on the other side, where at a sharp corner it would
 				// swing round past the corner and overlap itself. The fill's own fade covers that edge anyway.
-				Current[0] = SideVertex(Section.Left, FMath::Max(LeftExtent + HalfFade, HalfFade), 0.f);
-				Current[1] = SideVertex(Section.Left, FMath::Max(LeftExtent - HalfFade, 0.f), Solid);
-				Current[2] = SideVertex(Section.Right, FMath::Max(RightExtent - HalfFade, 0.f), Solid);
-				Current[3] = SideVertex(Section.Right, FMath::Max(RightExtent + HalfFade, HalfFade), 0.f);
-				if (Index == 0)
-				{
-					FirstIndices = { Current[0], Current[1], Current[2], Current[3] };
-				}
-				else
+				Out[0] = SideVertex(Section, true, FMath::Max(LeftExtent + HalfFade, HalfFade), 0.f, AlongOffset);
+				Out[1] = SideVertex(Section, true, FMath::Max(LeftExtent - HalfFade, 0.f), Solid, AlongOffset);
+				Out[2] = SideVertex(Section, false, FMath::Max(RightExtent - HalfFade, 0.f), Solid, AlongOffset);
+				Out[3] = SideVertex(Section, false, FMath::Max(RightExtent + HalfFade, HalfFade), 0.f, AlongOffset);
+			};
+
+			uint32 Previous[4] = { 0, 0, 0, 0 };
+			for (int32 Index = 0; Index < Count; ++Index)
+			{
+				uint32 Current[4];
+				EmitSection(Sections[Index], Current, 0.f);
+				if (Index > 0)
 				{
 					EmitBetween(Previous, Current);
 				}
@@ -665,7 +688,11 @@ namespace WidgetShapeGeometryPrivate
 			}
 			if (bClosed)
 			{
-				const uint32 First[4] = { FirstIndices[0], FirstIndices[1], FirstIndices[2], FirstIndices[3] };
+				// Back to the start through a copy of the first section, a whole outline further along: the same place, so no
+				// seam shows, but an image laid along the outline runs on into its next repeat instead of back across the
+				// last edge.
+				uint32 First[4];
+				EmitSection(Sections[0], First, ClosedLength);
 				EmitBetween(Previous, First);
 			}
 			Sections.Reset();
@@ -678,12 +705,22 @@ namespace WidgetShapeGeometryPrivate
 			Mesh.AddQuad(A[2], A[3], B[3], B[2]);
 		}
 
-		/** A round cap: a half disc behind Point, facing back along Direction, with its fade around it. */
-		void EmitRoundCap(const FVector2f& Point, const FVector2f& Direction, float Radius)
+		/**
+		 * A round cap: a half disc behind Point, facing back along Direction, with its fade around it. Along: where Point is
+		 * on the outline; AlongSign: +1 when Direction runs the outline's way (the start cap), -1 against it (the end cap).
+		 */
+		void EmitRoundCap(const FVector2f& Point, const FVector2f& Direction, float Radius, float Along, float AlongSign)
 		{
 			const FVector2f Left = LeftOf(Direction);
 			const int32 Steps = RoundSteps(PI, Radius + HalfFade);
-			const uint32 Middle = Mesh.AddVertex(Point, Opacity);
+			auto CapVertex = [&](const FVector2f& Out, float Distance, float Coverage)
+			{
+				// Out in Direction's frame: its left is the outline's left at the start cap, its right at the end cap.
+				const float Sideways = Dot(Out, Left) * Distance * AlongSign;
+				const float Behind = -Dot(Out, Direction) * Distance * AlongSign;
+				return Mesh.AddVertex(Point + Out * Distance, Coverage, FVector2f(Along - Behind, AcrossAt(Sideways)), OutlineLength);
+			};
+			const uint32 Middle = CapVertex(FVector2f::ZeroVector, 0.f, Opacity);
 			uint32 PreviousSolid = 0;
 			uint32 PreviousFade = 0;
 			for (int32 Step = 0; Step <= Steps; ++Step)
@@ -691,8 +728,8 @@ namespace WidgetShapeGeometryPrivate
 				// From the left, round behind the point, to the right.
 				const float Angle = PI * Step / Steps;
 				const FVector2f Out = Left * FMath::Cos(Angle) - Direction * FMath::Sin(Angle);
-				const uint32 Solid = Mesh.AddVertex(Point + Out * (Radius - HalfFade), Opacity);
-				const uint32 Fade = Mesh.AddVertex(Point + Out * (Radius + HalfFade), 0.f);
+				const uint32 Solid = CapVertex(Out, Radius - HalfFade, Opacity);
+				const uint32 Fade = CapVertex(Out, Radius + HalfFade, 0.f);
 				if (Step > 0)
 				{
 					Mesh.AddTriangle(Middle, PreviousSolid, Solid);
@@ -707,7 +744,7 @@ namespace WidgetShapeGeometryPrivate
 		 * The stroke along one run of points. bClosed joins it back on itself; an open run gets the Cap at each end.
 		 * FillSide: +1 / -1 for a closed run that bounds the fill (left / right), which Inside and Outside lean toward.
 		 */
-		void Stroke(TArray<FVector2f> Points, bool bClosed)
+		void Stroke(TArray<FVector2f> Points, bool bClosed, float StartAlong)
 		{
 			RemoveDuplicates(Points, bClosed, 1e-4f);
 			if (bClosed && Points.Num() < 3)
@@ -732,11 +769,22 @@ namespace WidgetShapeGeometryPrivate
 				Directions[Segment] = Normalized(Delta);
 			}
 
+			// Where each point is along the outline.
+			TArray<float> Alongs;
+			Alongs.SetNumUninitialized(Count);
+			Alongs[0] = StartAlong;
+			for (int32 Index = 1; Index < Count; ++Index)
+			{
+				Alongs[Index] = Alongs[Index - 1] + Lengths[Index - 1];
+			}
+
 			if (bClosed)
 			{
+				ClosedLength = Alongs.Last() + Lengths.Last() - StartAlong;
 				for (int32 Index = 0; Index < Count; ++Index)
 				{
 					const int32 In = (Index + Count - 1) % Count;
+					CurrentAlong = Alongs[Index];
 					AddJoin(Points[Index], Directions[In], Directions[Index], Lengths[In], Lengths[Index]);
 				}
 				EmitStrip(true);
@@ -752,31 +800,37 @@ namespace WidgetShapeGeometryPrivate
 			// Flat caps fade across their end the way the sides fade: the line stops half a fade short, and a fully faded
 			// section half a fade past. Square caps do the same half a width further out.
 			const float CapReach = Cap == EWidgetShapeLineCap::Square ? HalfWidth : 0.f;
+			const float StartReach = Cap != EWidgetShapeLineCap::Round ? CapReach - HalfFade : 0.f;
 			if (Cap != EWidgetShapeLineCap::Round)
 			{
+				CurrentAlong = Alongs[0] - (CapReach + HalfFade);
 				AddFadedEnd(Start - StartDirection * (CapReach + HalfFade), StartDirection);
 				Start = Start - StartDirection * (CapReach - HalfFade);
 			}
+			CurrentAlong = Alongs[0] - StartReach;
 			AddSection(Start, LeftOf(StartDirection), -LeftOf(StartDirection));
 			for (int32 Index = 1; Index < Count - 1; ++Index)
 			{
+				CurrentAlong = Alongs[Index];
 				AddJoin(Points[Index], Directions[Index - 1], Directions[Index], Lengths[Index - 1], Lengths[Index]);
 			}
 			if (Cap != EWidgetShapeLineCap::Round)
 			{
 				End = End + EndDirection * (CapReach - HalfFade);
 			}
+			CurrentAlong = Alongs.Last() + StartReach;
 			AddSection(End, LeftOf(EndDirection), -LeftOf(EndDirection));
 			if (Cap != EWidgetShapeLineCap::Round)
 			{
+				CurrentAlong = Alongs.Last() + CapReach + HalfFade;
 				AddFadedEnd(Points.Last() + EndDirection * (CapReach + HalfFade), EndDirection);
 			}
 			EmitStrip(false);
 
 			if (Cap == EWidgetShapeLineCap::Round)
 			{
-				EmitRoundCap(Points[0], StartDirection, HalfWidth);
-				EmitRoundCap(Points.Last(), -EndDirection, HalfWidth);
+				EmitRoundCap(Points[0], StartDirection, HalfWidth, Alongs[0], 1.f);
+				EmitRoundCap(Points.Last(), -EndDirection, HalfWidth, Alongs.Last(), -1.f);
 			}
 		}
 	};
@@ -785,9 +839,10 @@ namespace WidgetShapeGeometryPrivate
 	 * The parts of a run left to draw by Trim Path: none, the whole of it (closed stays closed), or one or two open pieces -
 	 * two where the drawn part wraps past a closed run's start.
 	 */
-	void TrimRun(const TArray<FVector2f>& Points, bool bClosed, const FWidgetShapeTrim& Trim, TArray<TArray<FVector2f>>& OutPieces, bool& bOutWhole)
+	void TrimRun(const TArray<FVector2f>& Points, bool bClosed, const FWidgetShapeTrim& Trim, TArray<TArray<FVector2f>>& OutPieces, TArray<float>& OutStarts, bool& bOutWhole)
 	{
 		OutPieces.Reset();
+		OutStarts.Reset();
 		bOutWhole = false;
 
 		const float Low = FMath::Min(Trim.Start, Trim.End);
@@ -822,6 +877,7 @@ namespace WidgetShapeGeometryPrivate
 			TArray<FVector2f> Piece;
 			Measured.Extract(A * Measured.Length, B * Measured.Length, Piece);
 			OutPieces.Add(MoveTemp(Piece));
+			OutStarts.Add(A * Measured.Length);
 		};
 
 		if (To <= 1.f)
@@ -837,6 +893,7 @@ namespace WidgetShapeGeometryPrivate
 			Measured.Extract(0.f, (To - 1.f) * Measured.Length, Second);
 			First.Append(Second);
 			OutPieces.Add(MoveTemp(First));
+			OutStarts.Add(From * Measured.Length);
 		}
 		else
 		{
@@ -845,10 +902,11 @@ namespace WidgetShapeGeometryPrivate
 		}
 	}
 
-	/** Cuts a run into dashes. Each dash an open run. */
-	void DashRun(const TArray<FVector2f>& Points, bool bClosed, float DashLength, float Gap, float Offset, TArray<TArray<FVector2f>>& OutDashes)
+	/** Cuts a run into dashes. Each dash an open run; OutStarts: where each starts along the run. */
+	void DashRun(const TArray<FVector2f>& Points, bool bClosed, float DashLength, float Gap, float Offset, TArray<TArray<FVector2f>>& OutDashes, TArray<float>& OutStarts)
 	{
 		OutDashes.Reset();
+		OutStarts.Reset();
 		FMeasured Measured;
 		Measured.Build(Points, bClosed);
 		const float Period = DashLength + Gap;
@@ -874,6 +932,7 @@ namespace WidgetShapeGeometryPrivate
 				TArray<FVector2f> Dash;
 				Measured.Extract(A, B, Dash);
 				OutDashes.Add(MoveTemp(Dash));
+				OutStarts.Add(A);
 			}
 		}
 	}
@@ -910,7 +969,8 @@ namespace WidgetShapeGeometryPrivate
 			const float Alpha = VA / (VA - VB);
 			const FWidgetShapeMeshVertex& From = Mesh.Vertices[A];
 			const FWidgetShapeMeshVertex& To = Mesh.Vertices[B];
-			const uint32 New = Mesh.AddVertex(FMath::Lerp(From.Position, To.Position, Alpha), FMath::Lerp(From.Coverage, To.Coverage, Alpha));
+			const uint32 New = Mesh.AddVertex(FMath::Lerp(From.Position, To.Position, Alpha), FMath::Lerp(From.Coverage, To.Coverage, Alpha),
+				FMath::Lerp(From.Along, To.Along, Alpha), FMath::Lerp(From.OutlineLength, To.OutlineLength, Alpha));
 			Values.Add(0.f);
 			EdgeCuts.Add(Key, New);
 			return New;
@@ -1339,7 +1399,9 @@ namespace WidgetShapeGeometry
 		}
 
 		TArray<TArray<FVector2f>> Pieces;
+		TArray<float> PieceStarts;
 		TArray<TArray<FVector2f>> Dashes;
+		TArray<float> DashStarts;
 		for (int32 LineIndex = 0; LineIndex < Outline.Lines.Num(); ++LineIndex)
 		{
 			const FWidgetShapeLine& Line = Outline.Lines[LineIndex];
@@ -1358,28 +1420,37 @@ namespace WidgetShapeGeometry
 			Builder.LeftExtent = LeftExtent;
 			Builder.RightExtent = RightExtent;
 
+			// For an image laid along the outline: the contour's length, and its inside - the fill's side, or the left of an
+			// open line.
+			Builder.OutlineLength = GetLength(Line.Points, Line.bClosed);
+			Builder.bInsideOnLeft = FillSide >= 0;
+
 			bool bWhole = false;
-			TrimRun(Line.Points, Line.bClosed, Trim, Pieces, bWhole);
+			TrimRun(Line.Points, Line.bClosed, Trim, Pieces, PieceStarts, bWhole);
 			if (bWhole)
 			{
 				Pieces.Reset();
 				Pieces.Add(Line.Points);
+				PieceStarts.Reset();
+				PieceStarts.Add(0.f);
 			}
 			const bool bPiecesClosed = bWhole && Line.bClosed;
 
-			for (const TArray<FVector2f>& Piece : Pieces)
+			for (int32 PieceIndex = 0; PieceIndex < Pieces.Num(); ++PieceIndex)
 			{
+				const TArray<FVector2f>& Piece = Pieces[PieceIndex];
+				const float PieceStart = PieceStarts.IsValidIndex(PieceIndex) ? PieceStarts[PieceIndex] : 0.f;
 				if (!Stroke.IsDashed())
 				{
-					Builder.Stroke(Piece, bPiecesClosed);
+					Builder.Stroke(Piece, bPiecesClosed, PieceStart);
 					continue;
 				}
 
 				const float Gap = Stroke.DashGap > 0.f ? Stroke.DashGap : Stroke.DashLength;
-				DashRun(Piece, bPiecesClosed, Stroke.DashLength, Gap, Stroke.DashOffset, Dashes);
-				for (const TArray<FVector2f>& Dash : Dashes)
+				DashRun(Piece, bPiecesClosed, Stroke.DashLength, Gap, Stroke.DashOffset, Dashes, DashStarts);
+				for (int32 DashIndex = 0; DashIndex < Dashes.Num(); ++DashIndex)
 				{
-					Builder.Stroke(Dash, false);
+					Builder.Stroke(Dashes[DashIndex], false, PieceStart + (DashStarts.IsValidIndex(DashIndex) ? DashStarts[DashIndex] : 0.f));
 				}
 			}
 		}

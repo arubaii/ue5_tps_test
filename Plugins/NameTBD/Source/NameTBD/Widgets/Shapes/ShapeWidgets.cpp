@@ -327,6 +327,69 @@ uint32 UEllipseShape::GetMeshHash() const
 }
 
 // =====================================================================================================
+// Rectangle
+// =====================================================================================================
+
+void URectangleShape::SetCornerRounding(float InRounding)
+{
+	CornerRounding = FMath::Max(InRounding, 0.f);
+	CornerRadii = FVector4(CornerRounding, CornerRounding, CornerRounding, CornerRounding);
+	InvalidateShape();
+}
+
+bool URectangleShape::SetShapeValue(EWidgetShapeValue Value, float InValue)
+{
+	if (Value != EWidgetShapeValue::CornerRounding)
+	{
+		return Super::SetShapeValue(Value, InValue);
+	}
+	SetCornerRounding(InValue);
+	return true;
+}
+
+bool URectangleShape::GetShapeValue(EWidgetShapeValue Value, float& OutValue) const
+{
+	if (Value != EWidgetShapeValue::CornerRounding)
+	{
+		return Super::GetShapeValue(Value, OutValue);
+	}
+	OutValue = CornerRounding;
+	return true;
+}
+
+void URectangleShape::BuildPath(FWidgetShapePath& OutPath) const
+{
+	// Clockwise from the top left. Fully Rounded asks for more than any widget has room for; each corner is then held to half
+	// the shorter side, which is exactly a pill's round end.
+	constexpr float Unlimited = 1.0e6f;
+	const TArray<FVector2D> Corners = { FVector2D(0.0, 0.0), FVector2D(1.0, 0.0), FVector2D(1.0, 1.0), FVector2D(0.0, 1.0) };
+	ShapeWidgetsPrivate::AppendPolygonContour(OutPath, Corners, [this](int32 Corner)
+	{
+		if (bFullyRounded)
+		{
+			return Unlimited;
+		}
+		if (!bIndividualCorners)
+		{
+			return CornerRounding;
+		}
+		return FMath::Max(static_cast<float>(CornerRadii[Corner]), 0.f);
+	});
+}
+
+uint32 URectangleShape::GetMeshHash() const
+{
+	uint32 Hash = HashCombineFast(Super::GetMeshHash(), GetTypeHash(CornerRounding));
+	Hash = HashCombineFast(Hash, GetTypeHash(bFullyRounded));
+	Hash = HashCombineFast(Hash, GetTypeHash(bIndividualCorners));
+	for (int32 Corner = 0; Corner < 4; ++Corner)
+	{
+		Hash = HashCombineFast(Hash, GetTypeHash(static_cast<float>(CornerRadii[Corner])));
+	}
+	return Hash;
+}
+
+// =====================================================================================================
 // Triangle
 // =====================================================================================================
 

@@ -36,6 +36,18 @@ enum class EWidgetShapePaintType : uint8
 	Image UMETA(ToolTip = "A brush - a texture or a material - stretched across the shape's box and cut to its outline, tinted by the brush's Tint and by Color.")
 };
 
+/**
+ * How an Image paint - a texture or a material - is laid over what it paints. A fill is always stretched over the shape's box;
+ * a stroke can also run along its outline, the way a vector tool's brushed or patterned stroke does.
+ */
+UENUM(BlueprintType)
+enum class EWidgetShapeImageMapping : uint8
+{
+	Box UMETA(DisplayName = "Stretch Over Shape", ToolTip = "Stretched across the shape's box and cut to what is painted: U left to right, V top to bottom."),
+
+	AlongOutline UMETA(DisplayName = "Along Outline", ToolTip = "Strokes only. U runs along the outline - 0 to 1 once round each contour, or one per Tile Length - and V across the stroke, 0 on its inside edge to 1 on its outside. A material can then flow, pulse or dash along the outline (animate with Time on U), or glow outward (V). Dashes and a Trim Path keep their place on it, so a material doesn't slide as they move.")
+};
+
 /** One color of a gradient, at a place along it. */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FWidgetShapeGradientStop
@@ -86,7 +98,29 @@ struct NAMETBD_API FWidgetShapePaint
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::Image", EditConditionHides))
 	FSlateBrush Image;
 
+	/** How the image lies over what it paints. Along Outline is for strokes: on a fill it is stretched over the shape, as Stretch Over Shape. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::Image", EditConditionHides))
+	EWidgetShapeImageMapping ImageMapping = EWidgetShapeImageMapping::Box;
+
+	/**
+	 * Along Outline: how long one repeat of the image is along the outline, in Slate units - U then counts repeats, so a pattern
+	 * keeps its size whatever the shape's size (a texture repeats if it tiles; a material can Frac it). 0 runs U from 0 to 1
+	 * once round each contour, for a material that fills or sweeps the whole outline.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::Image && ImageMapping == EWidgetShapeImageMapping::AlongOutline", EditConditionHides, ClampMin = "0", UIMin = "0", UIMax = "200", ForceUnits = "px"))
+	float ImageTileLength = 0.f;
+
 	FWidgetShapePaint();
+
+	/** Whether this paints an image laid along the outline (strokes only). */
+	bool MapsAlongOutline() const { return Type == EWidgetShapePaintType::Image && ImageMapping == EWidgetShapeImageMapping::AlongOutline; }
+
+	/** The UV a vertex of a stroke laid Along Outline takes: Along is its distance along the outline and how far across (0..1), OutlineLength its contour's length. */
+	FVector2f GetOutlineUV(const FVector2f& Along, float OutlineLength) const
+	{
+		const float Repeat = ImageTileLength > KINDA_SMALL_NUMBER ? ImageTileLength : FMath::Max(OutlineLength, KINDA_SMALL_NUMBER);
+		return FVector2f(Along.X / Repeat, Along.Y);
+	}
 
 	/** Whether colors vary across the shape - the mesh is then cut so the gradient is drawn exactly. */
 	bool IsGradient() const { return Type == EWidgetShapePaintType::LinearGradient || Type == EWidgetShapePaintType::RadialGradient; }

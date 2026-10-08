@@ -64,14 +64,26 @@ struct NAMETBD_API FWidgetShapeOutline
 	void Reset() { Lines.Reset(); }
 };
 
-/** A vertex of a shape's mesh before it is colored: where it is, and how much of it is covered (the anti-aliased edge fades to 0). */
+/**
+ * A vertex of a shape's mesh before it is colored: where it is, and how much of it is covered (the anti-aliased edge fades to 0).
+ * A stroke's vertices also know where they lie on the outline - what an image laid Along Outline is mapped by (see
+ * FWidgetShapePaint::GetOutlineUV); a fill's are left at zero.
+ */
 struct FWidgetShapeMeshVertex
 {
 	FVector2f Position = FVector2f::ZeroVector;
 	float Coverage = 1.f;
 
+	/** X: the distance along the outline, in local units, from its contour's first vertex. Y: across the stroke, 0 on its inside edge, 1 on its outside. */
+	FVector2f Along = FVector2f::ZeroVector;
+
+	/** The length of the contour the vertex is on - what Along's X is a fraction of, for an image laid once round it. */
+	float OutlineLength = 0.f;
+
 	FWidgetShapeMeshVertex() = default;
 	FWidgetShapeMeshVertex(const FVector2f& InPosition, float InCoverage) : Position(InPosition), Coverage(InCoverage) {}
+	FWidgetShapeMeshVertex(const FVector2f& InPosition, float InCoverage, const FVector2f& InAlong, float InOutlineLength)
+		: Position(InPosition), Coverage(InCoverage), Along(InAlong), OutlineLength(InOutlineLength) {}
 };
 
 /** Triangles, as indices into Vertices. */
@@ -86,6 +98,11 @@ struct NAMETBD_API FWidgetShapeMesh
 	uint32 AddVertex(const FVector2f& Position, float Coverage)
 	{
 		return static_cast<uint32>(Vertices.Add(FWidgetShapeMeshVertex(Position, Coverage)));
+	}
+
+	uint32 AddVertex(const FVector2f& Position, float Coverage, const FVector2f& Along, float OutlineLength)
+	{
+		return static_cast<uint32>(Vertices.Add(FWidgetShapeMeshVertex(Position, Coverage, Along, OutlineLength)));
 	}
 
 	void AddTriangle(uint32 A, uint32 B, uint32 C)
@@ -146,7 +163,10 @@ namespace WidgetShapeGeometry
 	/** Which side of each line is filled, as BuildFill works it out, without building the fill. */
 	NAMETBD_API void ClassifyLines(const FWidgetShapeOutline& Outline, TArray<int8>& OutFillOnLeft);
 
-	/** The stroke along the outline: trimmed, dashed, aligned, joined and capped. FillOnLeft from BuildFill or ClassifyLines. */
+	/**
+	 * The stroke along the outline: trimmed, dashed, aligned, joined and capped. FillOnLeft from BuildFill or ClassifyLines.
+	 * Every vertex also gets where it lies on the outline (FWidgetShapeMeshVertex::Along), for an image laid along it.
+	 */
 	NAMETBD_API void BuildStroke(const FWidgetShapeOutline& Outline, const TArray<int8>& FillOnLeft, const FWidgetShapeStroke& Stroke, const FWidgetShapeTrim& Trim, float AntiAliasWidth, float Tolerance, FWidgetShapeMesh& Out);
 
 	/**

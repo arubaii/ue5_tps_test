@@ -16,6 +16,7 @@
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h" 
 
 #include "WidgetAnimBuilderToolbar.h"
+#include "ButtonPreviewToolbar.h"
 #include "ToolMenus.h"
 
 #include "NameTBDAssetTypeActions.h"
@@ -38,6 +39,7 @@
 #include "Editor.h"
 #include "UMGEditorModule.h"
 #include "WidgetShapeDetails.h"
+#include "StyledButtonsEditor.h"
 #include "WidgetShapePathEditor.h"
 #include "WidgetAnimTextCanvasEditor.h"
 #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
@@ -86,6 +88,7 @@ void FNameTBDEditorModule::StartupModule()
 	{
 		FToolMenuOwnerScoped OwnerScoped(TEXT("NameTBDEditor"));
 		FWidgetAnimBuilderToolbar::Register();
+		FButtonPreviewToolbar::Register();
 	}));
 	
 	PropertyModule.RegisterCustomClassLayout(
@@ -122,6 +125,9 @@ void FNameTBDEditorModule::StartupModule()
 		UFlowListItemStyle::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FFlowListItemStyleDetails::MakeInstance));
 	PropertyModule.NotifyCustomizationModuleChanged();
+
+	// The ready-made buttons: their parts built once placed (never per drop preview), each with its Widget Blueprint GUID.
+	StyledButtonsEditor::Register();
 
 	// A Custom Shape's path editor, on the UMG designer's canvas.
 	IUMGEditorModule& UMGEditorModule = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
@@ -186,6 +192,8 @@ void FNameTBDEditorModule::StartupModule()
 
 void FNameTBDEditorModule::ShutdownModule()
 {
+	StyledButtonsEditor::Unregister();
+
 	// The State Machine editors kept for the status bar drawers, while what they hold on to is still there.
 	WidgetAnimStateMachineEditorHooks::Shutdown();
 

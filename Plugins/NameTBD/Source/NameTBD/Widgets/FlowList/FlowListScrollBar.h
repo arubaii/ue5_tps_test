@@ -185,7 +185,7 @@ private:
 		const FWidgetStyle& WidgetStyle) const;
 
 	/** Draws a mesh: each vertex colored by ColorAt (its index, where it is in the widget's box 0..1), faded by its coverage. */
-	void PaintMesh(const FWidgetShapeMesh& Mesh, const FSlateBrush* ImageBrush, const FWidgetShapeFrame& Frame, const FGeometry& Geometry,
+	void PaintMesh(const FWidgetShapeMesh& Mesh, const FSlateBrush* ImageBrush, const FWidgetShapePaint* AlongOutline, const FWidgetShapeFrame& Frame, const FGeometry& Geometry,
 		FSlateWindowElementList& OutDrawElements, int32 LayerId, TFunctionRef<FLinearColor(int32, const FVector2f&)> ColorAt) const;
 
 	int32 PaintBar(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, float Opacity) const;

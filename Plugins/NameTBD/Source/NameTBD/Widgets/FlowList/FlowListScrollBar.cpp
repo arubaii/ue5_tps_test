@@ -428,7 +428,7 @@ FVector2D SFlowListScrollBar::ComputeDesiredSize(float LayoutScaleMultiplier) co
 // Painting
 // =====================================================================================================
 
-void SFlowListScrollBar::PaintMesh(const FWidgetShapeMesh& Mesh, const FSlateBrush* ImageBrush, const FWidgetShapeFrame& Frame, const FGeometry& Geometry,
+void SFlowListScrollBar::PaintMesh(const FWidgetShapeMesh& Mesh, const FSlateBrush* ImageBrush, const FWidgetShapePaint* AlongOutline, const FWidgetShapeFrame& Frame, const FGeometry& Geometry,
 	FSlateWindowElementList& OutDrawElements, int32 LayerId, TFunctionRef<FLinearColor(int32, const FVector2f&)> ColorAt) const
 {
 	using namespace FlowListScrollBarPrivate;
@@ -451,7 +451,9 @@ void SFlowListScrollBar::PaintMesh(const FWidgetShapeMesh& Mesh, const FSlateBru
 		const FVector2f BoxPoint = Frame.ToBox(Vertex.Position);
 		FLinearColor Color = ColorAt(Index, BoxPoint);
 		Color.A *= Vertex.Coverage;
-		const FVector2f UV = bHasUVRegion ? UVRegion.Min + BoxPoint * UVRegion.GetSize() : BoxPoint;
+		// A line's image laid along it (Image Mapping Along Outline): U along the path, V across the line.
+		const FVector2f UV = (ImageBrush && AlongOutline) ? AlongOutline->GetOutlineUV(Vertex.Along, Vertex.OutlineLength)
+			: bHasUVRegion ? UVRegion.Min + BoxPoint * UVRegion.GetSize() : BoxPoint;
 		Vertices[Index] = FSlateVertex::Make<ESlateVertexRounding::Disabled>(Transform, Vertex.Position, UV, Color.ToFColor(true));
 	}
 	Indices.SetNumUninitialized(Mesh.Indices.Num());
@@ -498,7 +500,7 @@ void SFlowListScrollBar::PaintLine(const TArray<FVector2f>& Points, const FFlowL
 		WidgetShapeGeometry::BuildStroke(Outline, FillOnLeft, Around, FWidgetShapeTrim(), AntiAlias, Tolerance, Mesh);
 		FLinearColor OutlineColor = Line.OutlineColor * WidgetTint;
 		OutlineColor.A *= Tint.A;
-		PaintMesh(Mesh, nullptr, Frame, Geometry, OutDrawElements, LayerId, [&OutlineColor](int32, const FVector2f&) { return OutlineColor; });
+		PaintMesh(Mesh, nullptr, nullptr, Frame, Geometry, OutDrawElements, LayerId, [&OutlineColor](int32, const FVector2f&) { return OutlineColor; });
 	}
 
 	Stroke.Width = Thickness;
@@ -511,7 +513,7 @@ void SFlowListScrollBar::PaintLine(const TArray<FVector2f>& Points, const FFlowL
 	const bool bImage = Line.Paint.Type == EWidgetShapePaintType::Image && Line.Paint.Image.GetResourceObject() != nullptr;
 	const FLinearColor BrushTint = bImage ? Line.Paint.Image.GetTint(WidgetStyle) : FLinearColor::White;
 	const FLinearColor Multiply = BrushTint * WidgetTint * Tint;
-	PaintMesh(Mesh, bImage ? &Line.Paint.Image : nullptr, Frame, Geometry, OutDrawElements, LayerId + 1,
+	PaintMesh(Mesh, bImage ? &Line.Paint.Image : nullptr, Line.Paint.MapsAlongOutline() ? &Line.Paint : nullptr, Frame, Geometry, OutDrawElements, LayerId + 1,
 		[&Line, &Multiply](int32, const FVector2f& BoxPoint) { return Line.Paint.Evaluate(BoxPoint) * Multiply; });
 }
 
@@ -617,7 +619,7 @@ int32 SFlowListScrollBar::PaintBar(const FGeometry& AllottedGeometry, FSlateWind
 		}
 
 		const FLinearColor WidgetTint = InWidgetStyle.GetColorAndOpacityTint();
-		PaintMesh(Mesh, nullptr, Frame, AllottedGeometry, OutDrawElements, LayerId + 4, [&](int32 Vertex, const FVector2f&)
+		PaintMesh(Mesh, nullptr, nullptr, Frame, AllottedGeometry, OutDrawElements, LayerId + 4, [&](int32 Vertex, const FVector2f&)
 		{
 			FLinearColor Color = FMath::Lerp(Bar->TickColor, Bar->ActiveTickColor, VertexLight.IsValidIndex(Vertex) ? VertexLight[Vertex] : 0.f) * WidgetTint;
 			Color.A *= Opacity;

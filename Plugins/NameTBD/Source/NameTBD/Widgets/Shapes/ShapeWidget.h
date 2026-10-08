@@ -13,6 +13,8 @@
 #include "ShapeWidget.generated.h"
 
 class UShapeWidget;
+class UMaterialInterface;
+class UMaterialInstanceDynamic;
 
 /**
  * A value of a shape that can be set by name - from Blueprint, and by the Widget Animations editor's Shape track. Each
@@ -28,7 +30,7 @@ enum class EWidgetShapeValue : uint8
 	DashOffset UMETA(DisplayName = "Dash Offset", ToolTip = "Animated steadily, the dashes march along the outline."),
 	ShapeRotation UMETA(DisplayName = "Shape Rotation"),
 	ShapeScale UMETA(DisplayName = "Shape Scale", ToolTip = "Both ways at once. Unlike the widget's Render Transform scale, strokes and rounding keep their width."),
-	CornerRounding UMETA(DisplayName = "Corner Rounding", ToolTip = "Triangle, Star (its points), N-gon."),
+	CornerRounding UMETA(DisplayName = "Corner Rounding", ToolTip = "Rectangle, Triangle, Star (its points), N-gon."),
 	InnerRounding UMETA(DisplayName = "Inner Rounding", ToolTip = "Star: its inner corners."),
 	Points UMETA(ToolTip = "Star. Whole numbers only."),
 	InnerRadius UMETA(DisplayName = "Inner Radius", ToolTip = "Star."),
@@ -79,7 +81,7 @@ public:
 
 private:
 	void Rebuild(const UShapeWidget& ShapeWidget, const FVector2f& LocalSize, float PixelScale) const;
-	void PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, const FGeometry& AllottedGeometry,
+	void PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, bool bStroke, const FGeometry& AllottedGeometry,
 		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle) const;
 
 	TWeakObjectPtr<const UShapeWidget> ShapeWidget;
@@ -104,7 +106,8 @@ private:
  * What every shape shares - the production vector tools' fill, stroke and trim:
  *   Fill        - a color, a linear or radial gradient, or an image or material cut to the outline.
  *   Stroke      - a line along the outline: inside, centered or outside it, with miter, round or bevel corners, flat, round
- *                 or square ends, and dashes that can march.
+ *                 or square ends, and dashes that can march. Painted with an image or a material, it can also be laid Along
+ *                 Outline: U runs round the outline and V across it, so a material flows, pulses or glows along the edge.
  *   Trim Path   - only part of the outline stroked: animated, the outline draws itself on.
  *   Layout      - how the shape fits a widget that isn't its own proportions, and a scale and turn of the shape inside the
  *                 widget that leave its strokes and rounding at their width (unlike a Render Transform).
@@ -176,6 +179,28 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Shape")
 	void SetStrokeWidth(float InWidth);
 
+	/**
+	 * Paints the outline with a material (or clears it with None: back to Color). Laid as the stroke's Image Mapping says -
+	 * Along Outline for a material that flows round the edge. Turns the stroke on.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Shape|Material")
+	void SetStrokeMaterial(UMaterialInterface* InMaterial);
+
+	/** Paints the fill with a material (or clears it with None: back to Color). */
+	UFUNCTION(BlueprintCallable, Category = "Shape|Material")
+	void SetFillMaterial(UMaterialInterface* InMaterial);
+
+	/**
+	 * The outline's material as a Dynamic Material Instance, made on first call, to set its parameters from Blueprint - a
+	 * glow's strength on hover, a sweep's progress. Null unless the stroke is painted with a material.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Shape|Material")
+	UMaterialInstanceDynamic* GetDynamicStrokeMaterial();
+
+	/** The fill's material as a Dynamic Material Instance, made on first call. Null unless the fill is painted with a material. */
+	UFUNCTION(BlueprintCallable, Category = "Shape|Material")
+	UMaterialInstanceDynamic* GetDynamicFillMaterial();
+
 	/** Draws only part of the outline's stroke. Start and End are fractions of the outline, Offset turns of it. */
 	UFUNCTION(BlueprintCallable, Category = "Shape")
 	void SetTrim(float InStart, float InEnd, float InOffset = 0.f);
@@ -227,6 +252,16 @@ public:
 	/** Repaints. Called by every setter; anything changing a shape's settings directly should call it too. */
 	void InvalidateShape();
 
+	/**
+	 * The paint an image or material set on the shape as a whole goes to: the outline's when it is drawn with an image,
+	 * otherwise the fill's. What a Context Menu Button's Design Target swaps and sets parameters on.
+	 */
+	FWidgetShapePaint& GetImagePaint();
+	const FWidgetShapePaint& GetImagePaint() const;
+
+	/** A paint's material as a Dynamic Material Instance owned by this shape, made on first call. Null unless it is a material. */
+	UMaterialInstanceDynamic* GetDynamicMaterial(FWidgetShapePaint& Paint);
+
 	// UWidget
 	virtual void SynchronizeProperties() override;
 	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
@@ -239,4 +274,14 @@ protected:
 	virtual TSharedRef<SWidget> RebuildWidget() override;
 
 	TSharedPtr<SWidgetShape> MyShape;
+
+public:
+	/**
+	 * Another widget that paints this shape and so is repainted along with it - a Context Menu Button whose background is
+	 * this shape, drawn without a widget of its own in any tree.
+	 */
+	void SetExternalPainter(const TSharedPtr<SWidget>& InPainter) { ExternalPainter = InPainter; }
+
+private:
+	TWeakPtr<SWidget> ExternalPainter;
 };

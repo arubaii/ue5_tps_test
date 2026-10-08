@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/Button.h"
+#include "Components/PanelSlot.h"
 #include "Engine/TimerHandle.h"
 #include "Components/Widget.h"
 #include "Slate/WidgetTransform.h"
@@ -17,6 +18,8 @@
 #include "NameTBD/WidgetAnimation/WidgetAnimDesignerPreview.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimHost.h"
 #include "NameTBD/Widgets/ShapeBox.h"
+#include "NameTBD/Widgets/Shapes/ShapeWidget.h"
+#include "StructUtils/PropertyBag.h"
 
 #include "ContextMenuButton.generated.h"
 
@@ -35,6 +38,9 @@ class UUserWidget;
 class UShapeBox;
 class SShapeBox;
 class SContextMenuButtonBrush;
+class SWidgetShape;
+class UShapeWidget;
+class UWidgetTree;
 
 UENUM(BlueprintType)
 enum class EContextMenuButtonType : uint8
@@ -413,9 +419,34 @@ struct NAMETBD_API FContextMenuShapeStateSettings
 	 *
 	 * On any other target it needs a Shape Box to act through: target the Shape Box itself, or a widget that sits
 	 * alone inside one. Anything else only gets Transform - Shape Status on the button says which targets those are.
+	 *
+	 * Not shown for a vector shape (an Ellipse, Rectangle, Star... or the button's own Background Shape): those take Look.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bIsApplicable", HideEditConditionToggle))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bIsApplicable && !bIsVectorShape", EditConditionHides))
 	FShapeBoxShape Shape;
+
+	/**
+	 * How a vector shape looks in this state - an Ellipse, Rectangle, Triangle, Star, N-gon or Custom Shape target, or the
+	 * button's own Background Shape: its fill, its outline (materials and all), Trim Path, rounding, points, sweep... every
+	 * setting it has, laid out for that kind of shape and started from how it is authored.
+	 *
+	 * Only what differs from the shape as authored is ever written, and it blends at the Shape speed: a hover that only
+	 * brightens the outline leaves the fill alone, and editing the shape itself still shows wherever no state changes it.
+	 *
+	 * Only a state its target overrides has a Look. The Base Shape has none: the base is the shape itself, as authored in its
+	 * own Details (Background Look, for Self), and a state with no Look shows it. That keeps a target to one Look per state it
+	 * actually changes - each Look is every setting of the shape, so there are never more of them than are used.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Shape", meta = (FixedLayout, EditCondition = "bIsApplicable && bHasLook", EditConditionHides))
+	FInstancedPropertyBag Look;
+
+	/** Details-panel mirror: this state has a Look (a vector shape's state the target overrides). Written by the button. */
+	UPROPERTY()
+	bool bHasLook = false;
+
+	/** Details-panel mirror: the target is a vector shape, so the Shape Box Shape is hidden. Written by the button. */
+	UPROPERTY()
+	bool bIsVectorShape = false;
 
 	/**
 	 * Details-panel only; no runtime effect. When false, the fields above are grayed out.
@@ -1204,6 +1235,33 @@ struct FContextMenuRuntimeShapeTarget
 	/** The shape state this target last blended toward, so ApplyShapeTarget can tell when it needs to restart the blend. */
 	EContextMenuState LastShapeState = EContextMenuState::Normal;
 	bool bHasInitializedState = false;
+
+	/** A vector shape's Look: the shape it is written onto (the target, or the button's Background Shape), and the settings any state changes. */
+	TWeakObjectPtr<UShapeWidget> LookWidget;
+	TArray<const FProperty*> LookProperties;
+
+	/** The Look as it stood when the state last changed - what the blend starts from. */
+	FInstancedPropertyBag StartLook;
+
+	/** The shape as authored: the value of a setting for a state that has no Look of its own. */
+	FInstancedPropertyBag BaselineLook;
+
+	/** The state's settings the blend heads for, resolved when the state last changed (or snapped). */
+	FContextMenuShapeStateSettings ResolvedGoal;
+	bool bHasResolvedGoal = false;
+};
+
+/** A vector shape as authored, before any Look was written onto it - what a setting no state changes is compared against. */
+USTRUCT()
+struct FContextMenuLookBaseline
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TWeakObjectPtr<UWidget> Widget;
+
+	UPROPERTY()
+	FInstancedPropertyBag Look;
 };
 
 /** Runtime-only resolved design target (not a USTRUCT: widgets are held weakly, nothing to serialize). */
@@ -1310,6 +1368,27 @@ public:
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
 
 	/**
+	 * Paints Shape - a vector shape the owner holds - as the button's background instead of the style brush, inside the same
+	 * brush layer, so the shape's Transform, hit area and the rest work exactly as for the brush. Null goes back to the brush.
+	 */
+	void SetBackgroundShape(UShapeWidget* InShape);
+
+	/** Where the last press landed, as a fraction of the button's layout box (0, 0 top left). (0.5, 0.5) before any. */
+	FVector2D GetLastPressFraction() const { return LastPressFraction; }
+
+	/** Where the last press landed on screen. Unset for a key or gamepad press, which has no position. */
+	const TOptional<FVector2D>& GetLastPressScreenPosition() const { return LastPressScreenPosition; }
+
+	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	virtual FReply OnTouchStarted(const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent) override;
+
+	/** A key or gamepad press has no position: it counts as the middle, so a Choice pressed from a gamepad steps forward. */
+	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+
+	/** Gives the owner first say over gamepad and keyboard navigation: a Choice steps its value on left and right. */
+	virtual FNavigationReply OnNavigation(const FGeometry& MyGeometry, const FNavigationEvent& InNavigationEvent) override;
+
+	/**
 	 * A mouse release reaches the button wherever the shape is drawn, because the brush layer bubbles to it. A touch
 	 * release is only counted as "over the button" by SButton if it lands inside the button's own geometry, though,
 	 * so one lifted over an extruded edge is re-checked here against the drawn shape.
@@ -1345,6 +1424,15 @@ private:
 	/** The shaped brush: an SShapeBox around BrushPainter. Not a layout child - painted by OnPaint, with this button as its parent. */
 	TSharedPtr<SShapeBox> BrushLayer;
 	TSharedPtr<SContextMenuButtonBrush> BrushPainter;
+
+	/** The vector Background Shape, in the brush layer in place of BrushPainter. */
+	TSharedPtr<SWidgetShape> BackgroundPainter;
+	TWeakObjectPtr<UShapeWidget> BackgroundShape;
+
+	/** Records where a press landed, in the layout box. */
+	void RecordPress(const FGeometry& MyGeometry, const FPointerEvent& Event);
+	FVector2D LastPressFraction = FVector2D(0.5, 0.5);
+	TOptional<FVector2D> LastPressScreenPosition;
 
 	FShapeBoxShape ButtonShape;
 	FWidgetTransform BrushTransform;
@@ -1419,7 +1507,8 @@ public:
 
 	/**
 	 * Shows the button's design and shape for one state in the UMG designer, without pressing Play. Editor only.
-	 * Set it back to None to restore the authored look.
+	 * Set it back to None to restore the authored look. Hidden from the Details panel: the Widget Blueprint editor's toolbar
+	 * previews states (and values) with their transitions now, and this stays the state shown until the toolbar picks one.
 	 *
 	 * Placements have their own copy of this on their Instance Overrides variable, so a widget dropped into
 	 * another one can be previewed per state from there.
@@ -1514,6 +1603,13 @@ public:
 	bool bUnenableAllOtherGroupButtonsOnEnabled = false;
 
 	/**
+	 * A click enables the button but never un-enables it - a radio button, a tab, a selected loadout slot: clicking the
+	 * one already chosen keeps it chosen. Off, a click toggles (a checkbox, a switch). Set Enabled State still does either.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Settings", meta = (EditCondition = "bButtonCanBeEnabled", HideEditConditionToggle))
+	bool bClickOnlyEnables = false;
+
+	/**
 	 * A ButtonGroup links buttons together to allow for management of other buttons from any one of them, e.g. setting
 	 * a button in a group to enabled can unenable all other buttons in the group.
 	 * 
@@ -1569,6 +1665,28 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Settings", meta = (EditCondition = "ButtonType == EContextMenuButtonType::Hold && ButtonTypeBehaviorSource == EContextMenuButtonSettingSource::Custom", EditConditionHides, ClampMin = "0.001", UIMin = "0.01", UIMax = "0.5"))
 	float ActionExecutionFrequencyCap = 0.05f;
 
+	/**
+	 * Whether a Hold button keeps firing while it stays held (at Action Execution Frequency, speeding up). Off, it fires once
+	 * per press - once its Press Duration fills, for a "hold to confirm" button.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Settings", meta = (EditCondition = "ButtonType == EContextMenuButtonType::Hold", EditConditionHides))
+	bool bRepeatWhileHeld = true;
+
+	/**
+	 * A widget that shows the press duration filling, without any Blueprint: a shape (its Progress Value goes from Progress
+	 * Range X to Y - a ring's Trim End 0 to 1, an Ellipse's Sweep 0 to 360) or a Progress Bar (its percent). Empty: none.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Settings", meta = (DisplayName = "Progress Widget", EditCondition = "ButtonType == EContextMenuButtonType::Hold", EditConditionHides, GetOptions = "GetColorTargetWidgetOptions"))
+	FName PressProgressWidgetName;
+
+	/** Which of the shape's values the progress drives. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Settings", meta = (DisplayName = "Progress Value", EditCondition = "ButtonType == EContextMenuButtonType::Hold", EditConditionHides))
+	EWidgetShapeValue PressProgressValue = EWidgetShapeValue::TrimEnd;
+
+	/** The value at no progress (X) and at full (Y). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Settings", meta = (DisplayName = "Progress Range", EditCondition = "ButtonType == EContextMenuButtonType::Hold", EditConditionHides))
+	FVector2D PressProgressRange = FVector2D(0.0, 1.0);
+
 	// ------------------------------------------------------------------
 	// Cooldown Configurations
 	// ------------------------------------------------------------------
@@ -1586,6 +1704,56 @@ public:
 	// ------------------------------------------------------------------
 	// Shape Configurations
 	// ------------------------------------------------------------------
+
+	/**
+	 * Draws the button's background as a vector shape - a Rectangle (Fully Rounded for a pill), an Ellipse, a Star, any shape
+	 * of the plugin - instead of the Style's brushes. Its fill, outline (a material laid along it included) and the rest are
+	 * Background Look; a Shape Target aimed at Self changes them per state, and the hit area follows the shape's Transform
+	 * as it does the brush's. None: the Style's brushes, as a stock button.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Shape", meta = (AllowAbstract = "false"))
+	TSubclassOf<UShapeWidget> BackgroundShape;
+
+	/** The Background Shape as authored: every setting that kind of shape has. States change it through a Shape Target aimed at Self. */
+	UPROPERTY(EditAnywhere, Category = "Context Menu Button|Shape", meta = (FixedLayout, EditCondition = "bHasBackgroundShape", EditConditionHides))
+	FInstancedPropertyBag BackgroundLook;
+
+	/** Details-panel mirror of Background Shape being set. */
+	UPROPERTY()
+	bool bHasBackgroundShape = false;
+
+	/**
+	 * Parts hidden from the Hierarchy: the button's content kept in HiddenContentSlot instead of among its slots, the widgets
+	 * themselves in PartsTree - a widget tree of the button's own, inside it, the way a User Widget keeps its widgets. The
+	 * Widget Blueprint lists, compiles and gives GUIDs only to the widgets of its own tree, so these are none of its business;
+	 * duplicating, copying, pasting and undoing the button carry them along as its subobjects. Built, drawn and targeted
+	 * exactly as when listed. See SetPartsHidden.
+	 */
+	bool ArePartsHidden() const;
+
+	/**
+	 * Checks the hidden parts on load (and for the editor module): parts in PartsTree are this button's own and kept (their
+	 * links put right); parts anywhere else - Buttons fix6-fix7 kept them in the Widget Blueprint's tree, or a pasted copy
+	 * still names the original's - are put back as the button's content when they are its own, else let go of, and the
+	 * button builds its parts again. True when it changed anything.
+	 */
+	bool RestoreHiddenParts();
+
+	/** Whether the button holds a hidden content slot at all (its own or legacy - see RestoreHiddenParts). */
+	bool HasHiddenParts() const { return HiddenContentSlot != nullptr; }
+
+	/** The content hidden from the Hierarchy, or null. */
+	UWidget* GetHiddenContent() const { return HiddenContentSlot ? HiddenContentSlot->Content.Get() : nullptr; }
+
+	/** The content's slot, listed or hidden. */
+	UPanelSlot* GetPartsSlot() const { return GetContentSlot() ? GetContentSlot() : HiddenContentSlot.Get(); }
+
+	/** Whether the button has content, listed or hidden. */
+	bool HasAnyContent() const { return GetChildrenCount() > 0 || GetHiddenContent() != nullptr; }
+
+	/** The Background Shape being drawn - set its values from Blueprint like any shape's. Null without a Background Shape. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Shape")
+	UShapeWidget* GetBackgroundShapeWidget() const { return BackgroundShapeWidget; }
 
 	/**
 	 * One entry per widget this button shapes: its own Transform and Shape Box shape across the button's states.
@@ -1894,9 +2062,31 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Instance Overrides")
 	void ClearInstanceOverrides();
 
-	/** Backs the Target Widget dropdown on FContextMenuDesignTarget: this button plus every widget beneath it. Must stay a UFUNCTION for GetOptions. */
+	/** Backs the Target Widget dropdown on FContextMenuDesignTarget: Self (this button) plus every widget beneath it. Must stay a UFUNCTION for GetOptions. */
 	UFUNCTION()
 	TArray<FString> GetColorTargetWidgetOptions() const;
+
+	/**
+	 * The name a target stores to mean this button itself, whatever it is called - so renaming or copying a button never
+	 * breaks a target aimed at it. A target holding the button's own name works too, as it always has.
+	 */
+	static const FName SelfTargetName;
+
+	/** Whether Name means this button itself: Self, or its own name. */
+	bool IsSelfTargetName(FName Name) const;
+
+	/** Where the last press landed on the button, as a fraction of it: (0, 0) top left, (1, 1) bottom right. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|State")
+	FVector2D GetLastPressPosition() const;
+
+	/** Where the last press landed on screen. False for a key or gamepad press, which has none. */
+	bool GetLastPressScreenPosition(FVector2D& OutScreenPosition) const;
+
+	/**
+	 * Lays out every Shape Target's Look for the vector shape it aims at, and Background Look for Background Shape, and
+	 * refreshes the mirrors that pick which rows show. Run on every edit; call it after changing targets from code.
+	 */
+	void RefreshShapeTargetLooks();
 
 	// ------------------------------------------------------------------
 	// Cursor Configurations
@@ -2072,6 +2262,62 @@ public:
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void OnCreationFromPalette() override;
+
+	/** Whether this button was dropped from the Palette and still wants its default content built. */
+	bool HasPendingDefaultContent() const { return bPendingDefaultContent; }
+
+	/**
+	 * Takes the pending request: true if there was one (it is cleared). Called before the build's transaction opens, so undoing
+	 * the build leaves the button empty instead of asking for it again.
+	 */
+	bool ConsumePendingDefaultContent();
+
+	/**
+	 * Builds the default content and hands back every part made (for the Widget Blueprint's GUIDs). Called by the editor module
+	 * once the button has really been placed - never during a drag. Nothing when the button already has content.
+	 */
+	void BuildDefaultContentForEditor(TArray<UWidget*>& OutParts);
+
+	/**
+	 * Hides the button's content from the Hierarchy (moved, with everything inside it, into PartsTree) or lists it again (moved
+	 * back into the tree the button is in). The same widgets either way - renamed only if their name is taken where they go, which
+	 * targets still follow (see FindWidgetInButtonTree). Hands back every widget moved. Call inside a transaction, then make the
+	 * Widget Blueprint's GUIDs match (the editor module does both). True when it moved anything.
+	 */
+	bool SetPartsHidden(bool bHide, TArray<UWidget*>& OutMovedParts);
+
+	/** Whether the Show / Hide Parts choice was made for this button (a fresh build hides; older buttons are hidden once). */
+	bool IsPartsVisibilityDecided() const { return bPartsVisibilityDecided; }
+	void MarkPartsVisibilityDecided() { bPartsVisibilityDecided = true; }
+
+	// ---- Button preview toolbar (designer only) ----------------------------------------------------
+
+	/**
+	 * Shows State in the designer, blending there from what the preview shows now with the button's own speeds, curves and
+	 * delays - exactly as the button changes state at runtime - or at once (bAnimate false). From then on the toolbar's state is
+	 * the preview in force instead of Show Preview, until StopDesignerPreviewState. Designer preview copies only.
+	 */
+	void PlayDesignerPreviewState(EContextMenuDesignPreview State, bool bAnimate);
+
+	/** Gives the preview back to Show Preview. */
+	void StopDesignerPreviewState();
+
+	/** The state the preview shows: the toolbar's, else Show Preview's (or the placement's). */
+	EContextMenuDesignPreview GetEffectiveDesignPreview() const;
+
+	/** Whether a toolbar transition is running. */
+	bool IsPlayingDesignerPreviewState() const { return bIsDesignerStateTimerActive; }
+
+	/**
+	 * The values the toolbar's stepper shows for a button that steps through some (a Choice Button's options or numbers, a
+	 * Segmented Choice's choices): how many, the one shown, its text, and showing another - animated as at runtime. A button
+	 * with none returns 0 and the stepper hides. Designer preview copies only; the authored value is never changed.
+	 */
+	virtual int32 GetDesignerPreviewValueCount() const { return 0; }
+	virtual int32 GetDesignerPreviewValueIndex() const { return 0; }
+	virtual FText GetDesignerPreviewValueText() const { return FText::GetEmpty(); }
+	virtual void SetDesignerPreviewValueIndex(int32 Index, bool bAnimate) {}
 
 	void SyncMaterialParametersEditor();
 	void SyncMaterialParameters(FContextMenuWidgetDesign& Design, UMaterialInterface* Material);
@@ -2221,8 +2467,55 @@ protected:
 	/** The Shape Box a Shape Target drives: the widget itself if it is one, else its parent if that is one (a Shape Box only ever has one child). Null otherwise. */
 	static UShapeBox* FindDrivenShapeBox(UWidget* Widget);
 
+	/** The vector shape a target's Look is written onto: the target if it is a shape widget, the Background Shape for Self. Null otherwise. */
+	UShapeWidget* GetLookWidget(UWidget* Widget) const;
+
+	/** The kind of shape a target's Look is laid out for, found from the target in this button's tree. Null when it has no Look. */
+	UClass* GetLookClass(const FContextMenuShapeTarget& Target);
+
+	/** Makes (or drops) the Background Shape's widget to match Background Shape, and writes Background Look onto it. */
+	void SyncBackgroundShape();
+
+	/** The shape as authored, captured the first time a Look touches it (Background Look, for the Background Shape). */
+	const FInstancedPropertyBag* FindLookBaseline(UShapeWidget* Shape);
+
+	/** The settings a target's states change on its shape: those whose Look in any state differs from the shape as authored. */
+	void GatherLookProperties(const FContextMenuShapeTarget& Authored, UShapeWidget* Shape, TArray<const FProperty*>& OutProperties);
+
+	/** Writes the settings Properties of Look onto Shape at once (a preview, a snap); a setting Look lacks is taken from Fallback. */
+	void WriteLook(UShapeWidget* Shape, const FInstancedPropertyBag& Look, const TArray<const FProperty*>& Properties, const FInstancedPropertyBag* Fallback = nullptr);
+
+	/** Repaints whatever draws Shape: its own widget, or this button for the Background Shape. */
+	void InvalidateLookWidget(UShapeWidget* Shape);
+
+	/** OnContextPressDurationProgress, and the Progress Widget. */
+	void BroadcastPressProgress(float Progress);
+
+	/**
+	 * Gamepad or keyboard navigation while this button is focused. True takes it (the focus stays here): a Choice steps its
+	 * value on left and right. The base takes none.
+	 */
+	virtual bool HandleNavigation(EUINavigation Direction) { return false; }
+
+	/**
+	 * Builds what a ready-made button is made of - its children, Background Look, Shape and Design Targets. Called when the
+	 * button is dragged in from the Palette (and, for a ready-made button left empty, when it is built at runtime). The plain
+	 * Context Menu Button builds nothing.
+	 */
+	virtual void BuildDefaultContent() {}
+
+	/** Whether a button with no content builds its default content when it is built at runtime. */
+	virtual bool ShouldBuildDefaultContentWhenEmpty() const { return false; }
+
 	/** Rebuilds Shape Status from the current Shape Targets. */
 	void RebuildShapeTargetStatus();
+
+	/**
+	 * The vector shape a Design Target's channels act on: a shape widget itself, or a button's Background Shape. On a shape,
+	 * Tint is its fill's color, Outline Tint its stroke's, and Brush Texture / Material its outline's image when the outline is
+	 * painted with one, otherwise its fill's.
+	 */
+	static UShapeWidget* GetDesignShape(UWidget* Widget);
 
 	static FLinearColor ExtractWidgetColor(UWidget* Widget);
 	static void ApplyColorToWidget(UWidget* Widget, const FLinearColor& Color);
@@ -2301,9 +2594,33 @@ protected:
 
 	/** Whether the designer animation preview should be running right now. */
 	bool ShouldRunDesignerAnimPreview() const;
+
+	/** The toolbar's state is in force (see PlayDesignerPreviewState), and which it is. */
+	bool bDesignerPreviewDriven = false;
+	EContextMenuDesignPreview DesignerPreviewState = EContextMenuDesignPreview::Normal;
+
+	/** A toolbar transition is blending; each new one bumps the serial, so a stale timer stops itself. */
+	bool bIsDesignerStateTimerActive = false;
+	int32 DesignerStateSerial = 0;
+
+	EActiveTimerReturnType TickDesignerPreviewState(double InCurrentTime, float InDeltaTime, int32 Serial);
+
+	/** The transition has arrived: the preview handed back to ApplyDesignPreviews, at the state reached. */
+	void FinishDesignerPreviewState();
+
+	/** Puts every Design Target's widget back as it was before the runtime targets wrote to it. */
+	void RestoreRuntimeDesignBaselines();
 #endif
 
 #if WITH_EDITORONLY_DATA
+	/** Dropped from the Palette, its default content not built yet. See OnCreationFromPalette. */
+	UPROPERTY()
+	bool bPendingDefaultContent = false;
+
+	/** See IsPartsVisibilityDecided. */
+	UPROPERTY()
+	bool bPartsVisibilityDecided = false;
+
 	UPROPERTY(Transient, DuplicateTransient)
 	bool bHasPaintedDesignPreviewOnce = false;
 
@@ -2504,6 +2821,25 @@ protected:
 
 	UPROPERTY(Transient)
 	TWeakObjectPtr<UInfoCardWidget> OwningCard;
+
+	/** The content's slot while the parts are hidden from the Hierarchy (see ArePartsHidden). */
+	UPROPERTY(Instanced)
+	TObjectPtr<UPanelSlot> HiddenContentSlot;
+
+	/** The button's own tree the hidden parts live in (see ArePartsHidden). Made the first time they are hidden. */
+	UPROPERTY(Instanced)
+	TObjectPtr<UWidgetTree> PartsTree;
+
+	/** What draws the Background Shape: a shape widget of that kind, in no tree, painted by the Slate button. */
+	UPROPERTY(Transient, DuplicateTransient)
+	TObjectPtr<UShapeWidget> BackgroundShapeWidget;
+
+	/** Each Look-driven shape as authored. See FindLookBaseline. */
+	UPROPERTY(Transient, DuplicateTransient)
+	TArray<FContextMenuLookBaseline> LookBaselines;
+
+	/** The Progress Widget, found when a press starts. */
+	TWeakObjectPtr<UWidget> CachedPressProgressWidget;
 
 	UPROPERTY(Transient, DuplicateTransient)
 	bool bHasBoundClickHandler = false;

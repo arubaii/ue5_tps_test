@@ -2,6 +2,8 @@
 
 #include "ShapeWidget.h"
 
+#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "Rendering/DrawElements.h"
 #include "Styling/SlateBrush.h"
 
@@ -92,7 +94,7 @@ void SWidgetShape::Rebuild(const UShapeWidget& Shape, const FVector2f& LocalSize
 	WidgetShapeGeometry::CutForGradient(StrokeMesh, Shape.Stroke.Paint, Frame, CellSize);
 }
 
-void SWidgetShape::PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, const FGeometry& AllottedGeometry,
+void SWidgetShape::PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, bool bStroke, const FGeometry& AllottedGeometry,
 	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle) const
 {
 	using namespace ShapeWidgetPrivate;
@@ -108,6 +110,9 @@ void SWidgetShape::PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePai
 	const FBox2f UVRegion = Brush.GetUVRegion();
 	const bool bHasUVRegion = bImage && UVRegion.bIsValid && UVRegion.GetArea() > 0.f;
 
+	// A stroke's image laid along its outline: U round the outline, V across the stroke (a fill has no outline to follow).
+	const bool bAlongOutline = bImage && bStroke && Paint.MapsAlongOutline();
+
 	Vertices.SetNumUninitialized(Mesh.Vertices.Num());
 	for (int32 Index = 0; Index < Mesh.Vertices.Num(); ++Index)
 	{
@@ -115,7 +120,8 @@ void SWidgetShape::PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePai
 		const FVector2f BoxPoint = Frame.ToBox(Vertex.Position);
 		FLinearColor Color = Paint.Evaluate(BoxPoint) * BrushTint * WidgetTint;
 		Color.A *= Vertex.Coverage;
-		const FVector2f UV = bHasUVRegion ? UVRegion.Min + BoxPoint * UVRegion.GetSize() : BoxPoint;
+		const FVector2f UV = bAlongOutline ? Paint.GetOutlineUV(Vertex.Along, Vertex.OutlineLength)
+			: bHasUVRegion ? UVRegion.Min + BoxPoint * UVRegion.GetSize() : BoxPoint;
 		Vertices[Index] = FSlateVertex::Make<ESlateVertexRounding::Disabled>(Transform, Vertex.Position, UV, Color.ToFColor(true));
 	}
 
@@ -155,11 +161,11 @@ int32 SWidgetShape::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
 
 	if (Shape->bFill && !FillMesh.IsEmpty())
 	{
-		PaintMesh(FillMesh, Shape->Fill, AllottedGeometry, OutDrawElements, LayerId, InWidgetStyle);
+		PaintMesh(FillMesh, Shape->Fill, /*bStroke=*/false, AllottedGeometry, OutDrawElements, LayerId, InWidgetStyle);
 	}
 	if (!StrokeMesh.IsEmpty())
 	{
-		PaintMesh(StrokeMesh, Shape->Stroke.Paint, AllottedGeometry, OutDrawElements, LayerId + 1, InWidgetStyle);
+		PaintMesh(StrokeMesh, Shape->Stroke.Paint, /*bStroke=*/true, AllottedGeometry, OutDrawElements, LayerId + 1, InWidgetStyle);
 	}
 	return LayerId + 1;
 }
@@ -178,6 +184,10 @@ void UShapeWidget::InvalidateShape()
 	if (MyShape.IsValid())
 	{
 		MyShape->Invalidate(EInvalidateWidgetReason::Paint);
+	}
+	if (const TSharedPtr<SWidget> Painter = ExternalPainter.Pin())
+	{
+		Painter->Invalidate(EInvalidateWidgetReason::Paint);
 	}
 }
 
@@ -215,6 +225,85 @@ void UShapeWidget::SetStrokeWidth(float InWidth)
 {
 	Stroke.Width = FMath::Max(InWidth, 0.f);
 	InvalidateShape();
+}
+
+namespace ShapeWidgetPrivate
+{
+	/** Paints with Material, or back to its color with none. */
+	void SetPaintMaterial(FWidgetShapePaint& Paint, UMaterialInterface* Material)
+	{
+		if (Material)
+		{
+			Paint.Type = EWidgetShapePaintType::Image;
+			Paint.Image.SetResourceObject(Material);
+		}
+		else if (Paint.Type == EWidgetShapePaintType::Image)
+		{
+			Paint.Type = EWidgetShapePaintType::Color;
+			Paint.Image.SetResourceObject(nullptr);
+		}
+	}
+}
+
+void UShapeWidget::SetStrokeMaterial(UMaterialInterface* InMaterial)
+{
+	ShapeWidgetPrivate::SetPaintMaterial(Stroke.Paint, InMaterial);
+	if (InMaterial)
+	{
+		Stroke.bEnabled = true;
+	}
+	InvalidateShape();
+}
+
+void UShapeWidget::SetFillMaterial(UMaterialInterface* InMaterial)
+{
+	ShapeWidgetPrivate::SetPaintMaterial(Fill, InMaterial);
+	if (InMaterial)
+	{
+		bFill = true;
+	}
+	InvalidateShape();
+}
+
+UMaterialInstanceDynamic* UShapeWidget::GetDynamicMaterial(FWidgetShapePaint& Paint)
+{
+	if (Paint.Type != EWidgetShapePaintType::Image)
+	{
+		return nullptr;
+	}
+	UMaterialInterface* Material = Cast<UMaterialInterface>(Paint.Image.GetResourceObject());
+	if (!Material)
+	{
+		return nullptr;
+	}
+	if (UMaterialInstanceDynamic* Dynamic = Cast<UMaterialInstanceDynamic>(Material))
+	{
+		return Dynamic;
+	}
+	UMaterialInstanceDynamic* Dynamic = UMaterialInstanceDynamic::Create(Material, this);
+	Paint.Image.SetResourceObject(Dynamic);
+	InvalidateShape();
+	return Dynamic;
+}
+
+UMaterialInstanceDynamic* UShapeWidget::GetDynamicStrokeMaterial()
+{
+	return GetDynamicMaterial(Stroke.Paint);
+}
+
+UMaterialInstanceDynamic* UShapeWidget::GetDynamicFillMaterial()
+{
+	return GetDynamicMaterial(Fill);
+}
+
+FWidgetShapePaint& UShapeWidget::GetImagePaint()
+{
+	return (Stroke.IsDrawn() && Stroke.Paint.Type == EWidgetShapePaintType::Image) ? Stroke.Paint : Fill;
+}
+
+const FWidgetShapePaint& UShapeWidget::GetImagePaint() const
+{
+	return const_cast<UShapeWidget*>(this)->GetImagePaint();
 }
 
 void UShapeWidget::SetTrim(float InStart, float InEnd, float InOffset)

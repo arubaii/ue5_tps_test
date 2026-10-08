@@ -3,6 +3,8 @@
 #include "ContextMenuButtonDetails.h"
 
 #include "NameTBD/Buttons/ContextMenuButton.h"
+#include "NameTBD/Buttons/Widgets/StyledButtons.h"
+#include "StyledButtonsEditor.h"
 
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
@@ -17,12 +19,71 @@
 #include "EdGraphSchema_K2.h"
 #include "K2Node_FunctionEntry.h"
 #include "ScopedTransaction.h"
+#include "Containers/Ticker.h"
+#include "UObject/UObjectGlobals.h"
 
 #define LOCTEXT_NAMESPACE "ContextMenuButtonDetails"
 
 TSharedRef<IDetailCustomization> FContextMenuButtonDetails::MakeInstance()
 {
 	return MakeShared<FContextMenuButtonDetails>();
+}
+
+FContextMenuButtonDetails::~FContextMenuButtonDetails()
+{
+	FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(PropertyChangedHandle);
+}
+
+void FContextMenuButtonDetails::CustomizeDetails(const TSharedPtr<IDetailLayoutBuilder>& DetailBuilder)
+{
+	WeakBuilder = DetailBuilder;
+	if (DetailBuilder.IsValid())
+	{
+		CustomizeDetails(*DetailBuilder);
+	}
+}
+
+void FContextMenuButtonDetails::HandleObjectPropertyChanged(UObject* Object, FPropertyChangedEvent& Event)
+{
+	if (!Object || (Event.ChangeType & EPropertyChangeType::Interactive) != 0
+		|| !CustomizedButtons.ContainsByPredicate([Object](const TWeakObjectPtr<UContextMenuButton>& Button) { return Button.Get() == Object; }))
+	{
+		return;
+	}
+
+	// What a target aims at, or the Background Shape, decides whether a Look or a Shape shows - and a Look newly laid out
+	// for another kind of shape has other rows. The property bag's rows are only made again by a fresh layout.
+	const FName Name = Event.GetPropertyName();
+	const FName Member = Event.GetMemberPropertyName();
+	const bool bArrayChange = (Event.ChangeType & (EPropertyChangeType::ArrayAdd | EPropertyChangeType::ArrayRemove | EPropertyChangeType::ArrayClear | EPropertyChangeType::Duplicate)) != 0;
+	const bool bShapeTargets = Member == GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShapeTargets);
+
+	// Switching a state's override on or off gives it a Look or takes it away.
+	static const FName OverrideToggles[] = {
+		GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, bOverrideNormalShape),
+		GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, bOverrideHoveredShape),
+		GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, bOverridePressedShape),
+		GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, bOverrideDisabledShape),
+		GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, bOverrideEnabledShape) };
+	bool bOverrideToggled = false;
+	for (const FName& Toggle : OverrideToggles)
+	{
+		bOverrideToggled |= Name == Toggle;
+	}
+
+	if (Name == GET_MEMBER_NAME_CHECKED(UContextMenuButton, BackgroundShape)
+		|| (bShapeTargets && (Name == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, TargetWidgetName) || bArrayChange || bOverrideToggled)))
+	{
+		const TWeakPtr<IDetailLayoutBuilder> Weak = WeakBuilder;
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Weak](float)
+		{
+			if (const TSharedPtr<IDetailLayoutBuilder> Builder = Weak.Pin())
+			{
+				Builder->ForceRefreshDetails();
+			}
+			return false;
+		}));
+	}
 }
 
 TArray<FContextMenuButtonDetails::FDispatcherEventInfo> FContextMenuButtonDetails::GetEventInfos()
@@ -483,6 +544,59 @@ void FContextMenuButtonDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
 	if (CustomizedButtons.Num() == 0)
 	{
 		return;
+	}
+
+	// A ready-made button just dropped from the Palette builds its parts now that it has really been placed (next tick).
+	StyledButtonsEditor::OnButtonsShown(CustomizedButtons);
+
+	// Looks laid out for what each target aims at, before any row is made from them.
+	for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : CustomizedButtons)
+	{
+		if (UContextMenuButton* Button = WeakButton.Get())
+		{
+			Button->RefreshShapeTargetLooks();
+		}
+	}
+
+	// The state preview is the designer toolbar's now (FButtonPreviewToolbar), with transitions; Show Preview stays the state a
+	// button shows until the toolbar picks one.
+	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShowPreview), UContextMenuButton::StaticClass());
+
+	FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(PropertyChangedHandle);
+	PropertyChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddRaw(this, &FContextMenuButtonDetails::HandleObjectPropertyChanged);
+
+	// A ready-made button: its Style first, with the switch that lists its parts in the Hierarchy or hides them.
+	const bool bAnyReadyMade = CustomizedButtons.ContainsByPredicate([](const TWeakObjectPtr<UContextMenuButton>& WeakButton)
+	{
+		return WeakButton.IsValid() && WeakButton->IsA<UStyledButtonBase>();
+	});
+	if (bAnyReadyMade)
+	{
+		IDetailCategoryBuilder& StyleCategory = DetailBuilder.EditCategory(TEXT("Style"), LOCTEXT("StyleCategory", "Style"), ECategoryPriority::Important);
+		const TArray<TWeakObjectPtr<UContextMenuButton>> PartsButtons = CustomizedButtons;
+		StyleCategory.AddCustomRow(LOCTEXT("PartsFilter", "Show Parts In Hierarchy"))
+		.WholeRowContent()
+		[
+			SNew(SButton)
+			.HAlign(HAlign_Center)
+			.Text_Lambda([PartsButtons]()
+			{
+				return StyledButtonsEditor::ArePartsShown(PartsButtons)
+					? LOCTEXT("HidePartsButton", "Hide Parts From Hierarchy")
+					: LOCTEXT("ShowPartsButton", "Show Parts In Hierarchy");
+			})
+			.ToolTipText(LOCTEXT("PartsTooltip",
+				"Lists the widgets this button is made of in the Hierarchy, or takes them out of it again. Hidden, they are the same widgets - kept inside the button, still drawn and driven by its targets - and every change made to them is kept. While hidden they can't be Blueprint variables or Sequencer targets: show them for that."))
+			.IsEnabled_Lambda([PartsButtons]()
+			{
+				return StyledButtonsEditor::CanToggleParts(PartsButtons);
+			})
+			.OnClicked_Lambda([PartsButtons]()
+			{
+				StyledButtonsEditor::ToggleParts(PartsButtons);
+				return FReply::Handled();
+			})
+		];
 	}
 
 	// NOTE: Designer Preview used to be hidden here and its children re-added one at a time into an

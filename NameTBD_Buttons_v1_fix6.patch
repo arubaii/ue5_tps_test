@@ -1,0 +1,3252 @@
+diff --git a/Plugins/NameTBD/Config/DefaultNameTBD.ini b/Plugins/NameTBD/Config/DefaultNameTBD.ini
+index ec9e7ee..a2e342f 100644
+--- a/Plugins/NameTBD/Config/DefaultNameTBD.ini
++++ b/Plugins/NameTBD/Config/DefaultNameTBD.ini
+@@ -13,3 +13,7 @@
+ +ClassRedirects=(OldName="/Script/NameTBD.InfoCardPayload",NewName="/Script/NameTBD.NameTBD_Payload")
+ +FunctionRedirects=(OldName="/Script/NameTBD.SkewBox.SetRenderScale",NewName="/Script/NameTBD.SkewBox.SetWarpRenderScale")
+ +ClassRedirects=(OldName="/Script/NameTBD.Ellipsoid",NewName="/Script/NameTBD.EllipseShape")
+++ClassRedirects=(OldName="/Script/NameTBD.PillButton",NewName="/Script/NameTBD.GenericButton")
+++ClassRedirects=(OldName="/Script/NameTBD.ToggleSwitchButton",NewName="/Script/NameTBD.PillSwitchButton")
+++ClassRedirects=(OldName="/Script/NameTBD.TabButton",NewName="/Script/NameTBD.GenericButton")
+++ClassRedirects=(OldName="/Script/NameTBD.IconButton",NewName="/Script/NameTBD.GenericButton")
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+index 8b10b57..be238ea 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+@@ -299,6 +299,12 @@ namespace ContextMenuButtonTree
+ 			{
+ 				Gather(Panel->GetChildAt(i), TreePrefix, bDescendIntoUserWidgets, Out, Depth + 1);
+ 			}
++
++			// A ready-made button's parts, hidden from the hierarchy, are still its parts.
++			if (const UContextMenuButton* Button = Cast<UContextMenuButton>(Panel))
++			{
++				Gather(Button->GetHiddenContent(), TreePrefix, bDescendIntoUserWidgets, Out, Depth + 1);
++			}
+ 		}
+ 		else if (bDescendIntoUserWidgets)
+ 		{
+@@ -1840,7 +1846,24 @@ void UContextMenuButton::OnCreationFromPalette()
+ 	// one an ensure on every compile ("was added but did not get a GUID"). So the button only notes that it wants its parts;
+ 	// the editor module builds them once the button has really been placed (after the compile the drop causes, with no drag
+ 	// in progress), and gives every part its GUID - see StyledButtonsEditor.
++	bPendingDefaultContent = ShouldBuildDefaultContentWhenEmpty() && !HasAnyContent();
++}
++
++bool UContextMenuButton::RepairHiddenParts()
++{
++	// Parts hidden from the hierarchy belong to this button only while their slot is this button's and they are its slot's.
++	// A pasted or duplicated button carries a copy of the slot still pointing at the original's parts (or at nothing): it
++	// lets go of them, and builds its own.
++	UWidget* Content = HiddenContentSlot ? HiddenContentSlot->Content.Get() : nullptr;
++	const bool bOwned = HiddenContentSlot && Content && Content->Slot == HiddenContentSlot && HiddenContentSlot->Parent.Get() == this
++		&& Content->GetOuter() == GetOuter();
++	if (!HiddenContentSlot || bOwned)
++	{
++		return false;
++	}
++	HiddenContentSlot = nullptr;
+ 	bPendingDefaultContent = ShouldBuildDefaultContentWhenEmpty() && GetChildrenCount() == 0;
++	return true;
+ }
+ 
+ bool UContextMenuButton::ConsumePendingDefaultContent()
+@@ -1855,7 +1878,7 @@ void UContextMenuButton::BuildDefaultContentForEditor(TArray<UWidget*>& OutParts
+ 	OutParts.Reset();
+ 
+ 	// Given content by hand meanwhile: that is the content.
+-	if (GetChildrenCount() > 0)
++	if (HasAnyContent())
+ 	{
+ 		return;
+ 	}
+@@ -2004,6 +2027,38 @@ void UContextMenuButton::SyncMaterialParameters(FContextMenuWidgetDesign& Design
+ }
+ #endif
+ 
++void UContextMenuButton::SetPartsShownInHierarchy(bool bShow)
++{
++	if (bShow)
++	{
++		if (!HiddenContentSlot || GetChildrenCount() > 0)
++		{
++			return;
++		}
++		// The same slot and widgets, back among the panel's slots: nothing is made again, so nothing changed on them is lost.
++		Slots.Add(HiddenContentSlot);
++		HiddenContentSlot = nullptr;
++	}
++	else
++	{
++		if (HiddenContentSlot || Slots.Num() == 0 || !Slots[0])
++		{
++			return;
++		}
++		HiddenContentSlot = Slots[0];
++		Slots.RemoveAt(0);
++	}
++
++	// The slot and its content are unchanged; only where the button finds them is. Built again onto a live button.
++	if (MyButton.IsValid())
++	{
++		if (UButtonSlot* PartsSlot = Cast<UButtonSlot>(GetPartsSlot()))
++		{
++			PartsSlot->BuildSlot(MyButton.ToSharedRef());
++		}
++	}
++}
++
+ bool UContextMenuButton::IsVisibilityInteractive(ESlateVisibility Visibility)
+ {
+ 	// Hit-test invisible counts as gone for this purpose. A button the player cannot reach is not in any
+@@ -2524,7 +2579,7 @@ TSharedRef<SWidget> UContextMenuButton::RebuildWidget()
+ 	NewButton->SetOwnerWidget(this);
+ 
+ 	// A ready-made button built at runtime with nothing in it builds what it is made of first, so the slot below has it.
+-	if (!IsDesignTime() && GetChildrenCount() == 0 && ShouldBuildDefaultContentWhenEmpty())
++	if (!IsDesignTime() && !HasAnyContent() && ShouldBuildDefaultContentWhenEmpty())
+ 	{
+ 		BuildDefaultContent();
+ 		RefreshShapeTargetLooks();
+@@ -2537,9 +2592,10 @@ TSharedRef<SWidget> UContextMenuButton::RebuildWidget()
+ 	// Widget Blueprint's own template.
+ 	SyncBackgroundShape();
+ 
+-	if (GetChildrenCount() > 0)
++	// The content slot - or, with the parts hidden from the hierarchy, the slot kept for them - builds the content.
++	if (UButtonSlot* PartsSlot = Cast<UButtonSlot>(GetPartsSlot()))
+ 	{
+-		Cast<UButtonSlot>(GetContentSlot())->BuildSlot(NewButton);
++		PartsSlot->BuildSlot(NewButton);
+ 	}
+ 
+ 	if (!IsDesignTime())
+@@ -2569,6 +2625,12 @@ void UContextMenuButton::ReleaseSlateResources(bool bReleaseChildren)
+ 		BackgroundShapeWidget->SetExternalPainter(nullptr);
+ 	}
+ 
++	// Parts hidden from the hierarchy aren't among the panel's slots, so the panel doesn't release them itself.
++	if (bReleaseChildren && HiddenContentSlot)
++	{
++		HiddenContentSlot->ReleaseSlateResources(bReleaseChildren);
++	}
++
+ 	Super::ReleaseSlateResources(bReleaseChildren);
+ }
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+index 77285e8..44cf26d 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+@@ -4,6 +4,7 @@
+ 
+ #include "CoreMinimal.h"
+ #include "Components/Button.h"
++#include "Components/PanelSlot.h"
+ #include "Engine/TimerHandle.h"
+ #include "Components/Widget.h"
+ #include "Slate/WidgetTransform.h"
+@@ -1719,6 +1720,25 @@ public:
+ 	UPROPERTY()
+ 	bool bHasBackgroundShape = false;
+ 
++	/**
++	 * Takes the button's content out of the Widget Designer's hierarchy (Show false) or puts it back. Hidden, it is the same
++	 * widgets, kept in a slot of its own on the button, built and drawn exactly as before, its targets still finding them -
++	 * just not listed, so a ready-made button's parts don't clutter the hierarchy. Every change made to them is kept.
++	 */
++	void SetPartsShownInHierarchy(bool bShow);
++
++	/** Whether the content is listed in the hierarchy (true for a button with none hidden). */
++	bool ArePartsShownInHierarchy() const { return HiddenContentSlot == nullptr; }
++
++	/** The content hidden from the hierarchy, or null. */
++	UWidget* GetHiddenContent() const { return HiddenContentSlot ? HiddenContentSlot->Content.Get() : nullptr; }
++
++	/** The content's slot, listed or hidden. */
++	UPanelSlot* GetPartsSlot() const { return GetContentSlot() ? GetContentSlot() : HiddenContentSlot.Get(); }
++
++	/** Whether the button has content, listed or hidden. */
++	bool HasAnyContent() const { return GetChildrenCount() > 0 || GetHiddenContent() != nullptr; }
++
+ 	/** The Background Shape being drawn - set its values from Blueprint like any shape's. Null without a Background Shape. */
+ 	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Shape")
+ 	UShapeWidget* GetBackgroundShapeWidget() const { return BackgroundShapeWidget; }
+@@ -2235,6 +2255,12 @@ public:
+ 	/** Whether this button was dropped from the Palette and still wants its default content built. */
+ 	bool HasPendingDefaultContent() const { return bPendingDefaultContent; }
+ 
++	/**
++	 * A copy of a button whose parts were hidden from the hierarchy (pasted, duplicated) still points at the original's parts:
++	 * lets go of them and asks for its own. True when it did. Called by the editor module.
++	 */
++	bool RepairHiddenParts();
++
+ 	/**
+ 	 * Takes the pending request: true if there was one (it is cleared). Called before the build's transaction opens, so undoing
+ 	 * the build leaves the button empty instead of asking for it again.
+@@ -2730,6 +2756,10 @@ protected:
+ 	UPROPERTY(Transient)
+ 	TWeakObjectPtr<UInfoCardWidget> OwningCard;
+ 
++	/** The content's slot while it is hidden from the hierarchy. See SetPartsShownInHierarchy. */
++	UPROPERTY(Instanced)
++	TObjectPtr<UPanelSlot> HiddenContentSlot;
++
+ 	/** What draws the Background Shape: a shape widget of that kind, in no tree, painted by the Slate button. */
+ 	UPROPERTY(Transient, DuplicateTransient)
+ 	TObjectPtr<UShapeWidget> BackgroundShapeWidget;
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.cpp b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.cpp
+index 5de0fe7..6651e32 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.cpp
+@@ -9,11 +9,26 @@
+ #include "Components/HorizontalBoxSlot.h"
+ #include "Components/Overlay.h"
+ #include "Components/OverlaySlot.h"
++#include "Components/SizeBox.h"
+ #include "Components/TextBlock.h"
+ #include "Types/WidgetActiveTimerDelegate.h"
+ 
+ #define LOCTEXT_NAMESPACE "ChoiceButtons"
+ 
++namespace ChoiceButtonParts
++{
++	const FName Label(TEXT("Label"));
++	const FName ValueText(TEXT("Value"));
++	const FName PreviousArrow(TEXT("PreviousArrow"));
++	const FName NextArrow(TEXT("NextArrow"));
++	const FName PreviousBox(TEXT("PreviousBox"));
++	const FName NextBox(TEXT("NextBox"));
++	const FName SelectorBox(TEXT("SelectorBox"));
++	const FName Segments(TEXT("Segments"));
++	const FName Highlight(TEXT("Highlight"));
++	const FName HighlightBox(TEXT("HighlightBox"));
++}
++
+ // =====================================================================================================
+ // Choice Button
+ // =====================================================================================================
+@@ -33,6 +48,11 @@ UChoiceButton::UChoiceButton(const FObjectInitializer& ObjectInitializer)
+ {
+ 	Options = { LOCTEXT("Low", "Low"), LOCTEXT("Medium", "Medium"), LOCTEXT("High", "High"), LOCTEXT("Ultra", "Ultra") };
+ 	SelectedIndex = 2;
++	FillColor = StyledButtonTheme::Surface();
++	OutlineColor = StyledButtonTheme::Line();
++	LabelColor = StyledButtonTheme::TextDim();
++	ValueColor = StyledButtonTheme::Text();
++	ArrowColor = StyledButtonTheme::TextDim();
+ }
+ 
+ int32 UChoiceButton::GetNumberSteps() const
+@@ -150,10 +170,10 @@ void UChoiceButton::HandleChoiceClicked(bool bWillDestroyCard, bool bIsEnabling)
+ {
+ 	// Left of the value's middle steps back; anywhere else - and a key or gamepad press, which has no place - forward.
+ 	FVector2D Press;
+-	const UWidget* ValueText = FindWidgetInButtonTree(ValueTextWidgetName);
+-	if (ValueText && GetLastPressScreenPosition(Press))
++	const UWidget* ShownValue = KickedValueText.IsValid() ? KickedValueText.Get() : GetPart(ChoiceButtonParts::ValueText);
++	if (ShownValue && GetLastPressScreenPosition(Press))
+ 	{
+-		const FGeometry& Geometry = ValueText->GetCachedGeometry();
++		const FGeometry& Geometry = ShownValue->GetCachedGeometry();
+ 		if (Geometry.GetLocalSize().X > 0.0)
+ 		{
+ 			const FVector2D Middle = Geometry.GetAbsolutePositionAtCoordinates(FVector2D(0.5, 0.5));
+@@ -190,11 +210,11 @@ void UChoiceButton::UpdateDisplay(int32 Direction)
+ {
+ 	using namespace ChoiceButtonPrivate;
+ 
+-	UTextBlock* ValueText = Cast<UTextBlock>(FindWidgetInButtonTree(ValueTextWidgetName));
+-	KickedValueText = ValueText;
+-	if (ValueText)
++	UTextBlock* ShownValue = GetPart<UTextBlock>(ChoiceButtonParts::ValueText);
++	KickedValueText = ShownValue;
++	if (ShownValue)
+ 	{
+-		ValueText->SetText(GetDisplayText());
++		ShownValue->SetText(GetDisplayText());
+ 	}
+ 
+ 	// Without Wrap, the arrow at an end the choice can't pass dims.
+@@ -213,21 +233,21 @@ void UChoiceButton::UpdateDisplay(int32 Direction)
+ 			bAtEnd = SelectedIndex >= Options.Num() - 1;
+ 		}
+ 	}
+-	if (UWidget* Previous = FindWidgetInButtonTree(PreviousArrowWidgetName))
++	if (UWidget* PreviousPart = GetPart(ChoiceButtonParts::PreviousArrow))
+ 	{
+-		Previous->SetRenderOpacity(bAtStart ? DimmedArrowOpacity : 1.f);
++		PreviousPart->SetRenderOpacity(bAtStart ? DimmedArrowOpacity : 1.f);
+ 	}
+-	if (UWidget* Next = FindWidgetInButtonTree(NextArrowWidgetName))
++	if (UWidget* NextPart = GetPart(ChoiceButtonParts::NextArrow))
+ 	{
+-		Next->SetRenderOpacity(bAtEnd ? DimmedArrowOpacity : 1.f);
++		NextPart->SetRenderOpacity(bAtEnd ? DimmedArrowOpacity : 1.f);
+ 	}
+ 
+ 	// The new value slides in from the side it came from.
+-	if (Direction != 0 && ValueText && !IsDesignTime())
++	if (Direction != 0 && ShownValue && !IsDesignTime())
+ 	{
+ 		KickOffset = Direction * KickDistance;
+-		ValueText->SetRenderTranslation(FVector2D(KickOffset, 0.0));
+-		ValueText->SetRenderOpacity(0.4f);
++		ShownValue->SetRenderTranslation(FVector2D(KickOffset, 0.0));
++		ShownValue->SetRenderOpacity(0.4f);
+ 		const TSharedPtr<SWidget> SlateWidget = GetCachedWidget();
+ 		if (!bIsKickTimerActive && SlateWidget.IsValid())
+ 		{
+@@ -248,10 +268,10 @@ EActiveTimerReturnType UChoiceButton::TickKick(double InCurrentTime, float InDel
+ 		KickOffset = 0.f;
+ 	}
+ 
+-	if (UTextBlock* ValueText = KickedValueText.Get())
++	if (UTextBlock* ShownValue = KickedValueText.Get())
+ 	{
+-		ValueText->SetRenderTranslation(FVector2D(KickOffset, 0.0));
+-		ValueText->SetRenderOpacity(1.f - 0.6f * FMath::Abs(KickOffset) / KickDistance);
++		ShownValue->SetRenderTranslation(FVector2D(KickOffset, 0.0));
++		ShownValue->SetRenderOpacity(1.f - 0.6f * FMath::Abs(KickOffset) / KickDistance);
+ 	}
+ 
+ 	if (bSettled)
+@@ -262,85 +282,127 @@ EActiveTimerReturnType UChoiceButton::TickKick(double InCurrentTime, float InDel
+ 	return EActiveTimerReturnType::Continue;
+ }
+ 
+-void UChoiceButton::BuildDefaultContent()
++void UChoiceButton::BuildParts()
+ {
+-	using namespace StyledButtonTheme;
+-
+-	const URectangleShape* Model = MakeBackground<URectangleShape>([](URectangleShape& Shape)
+-	{
+-		Shape.CornerRounding = 8.f;
+-		Solid(Shape, Surface());
+-		Outline(Shape, 1.5f, Line());
+-	});
++	UTextBlock* LabelBlock = MakeLabel(ChoiceButtonParts::Label, LOCTEXT("ChoiceLabel", "Quality"), 15);
++	ButtonTextWidgetName = LabelBlock->GetFName();
+ 
+-	UTextBlock* Label = MakeLabel(TEXT("Label"), LOCTEXT("ChoiceLabel", "Quality"), 15);
+-	ButtonTextWidgetName = Label->GetFName();
++	// A Triangle points up: turned a quarter either way, it points back or on.
++	UTriangleShape* PreviousShape = MakePart<UTriangleShape>(ChoiceButtonParts::PreviousArrow);
++	PreviousShape->ShapeRotation = -90.f;
++	UTriangleShape* NextShape = MakePart<UTriangleShape>(ChoiceButtonParts::NextArrow);
++	NextShape->ShapeRotation = 90.f;
+ 
+-	auto MakeArrow = [this](FName Name, float Rotation)
+-	{
+-		// A Triangle points up: turned a quarter either way, it points back or on.
+-		UTriangleShape* Arrow = MakePart<UTriangleShape>(Name);
+-		Arrow->CornerRounding = 1.5f;
+-		Solid(*Arrow, FLinearColor::White);
+-		Arrow->ShapeRotation = Rotation;
+-		return Arrow;
+-	};
+-	UTriangleShape* Previous = MakeArrow(TEXT("PreviousArrow"), -90.f);
+-	UTriangleShape* Next = MakeArrow(TEXT("NextArrow"), 90.f);
+-	PreviousArrowWidgetName = Previous->GetFName();
+-	NextArrowWidgetName = Next->GetFName();
+-
+-	UTextBlock* ValueText = MakeLabel(TEXT("Value"), GetDisplayText(), 15);
+-	ValueText->SetJustification(ETextJustify::Center);
+-	ValueTextWidgetName = ValueText->GetFName();
++	UTextBlock* ValueBlock = MakeLabel(ChoiceButtonParts::ValueText, GetDisplayText(), 15);
++	ValueBlock->SetJustification(ETextJustify::Center);
+ 
+ 	UHorizontalBox* Selector = MakePart<UHorizontalBox>(TEXT("Selector"));
+-	if (UHorizontalBoxSlot* PreviousSlot = Selector->AddChildToHorizontalBox(Sized(Previous, FVector2D(12.0, 12.0))))
++	UWidget* PreviousSizeBox = Sized(PreviousShape, ChoiceButtonParts::PreviousBox);
++	if (UHorizontalBoxSlot* PreviousSlot = Selector->AddChildToHorizontalBox(PreviousSizeBox))
+ 	{
+ 		PreviousSlot->SetVerticalAlignment(VAlign_Center);
+ 	}
+-	if (UHorizontalBoxSlot* ValueSlot = Selector->AddChildToHorizontalBox(ValueText))
++	if (UHorizontalBoxSlot* ValueSlot = Selector->AddChildToHorizontalBox(ValueBlock))
+ 	{
+ 		ValueSlot->SetVerticalAlignment(VAlign_Center);
+ 		ValueSlot->SetHorizontalAlignment(HAlign_Center);
+ 		ValueSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+ 		ValueSlot->SetPadding(FMargin(10.f, 0.f));
+ 	}
+-	if (UHorizontalBoxSlot* NextSlot = Selector->AddChildToHorizontalBox(Sized(Next, FVector2D(12.0, 12.0))))
++	UWidget* NextSizeBox = Sized(NextShape, ChoiceButtonParts::NextBox);
++	if (UHorizontalBoxSlot* NextSlot = Selector->AddChildToHorizontalBox(NextSizeBox))
+ 	{
+ 		NextSlot->SetVerticalAlignment(VAlign_Center);
+ 	}
+ 
+ 	UHorizontalBox* Row = MakePart<UHorizontalBox>(TEXT("Row"));
+-	if (UHorizontalBoxSlot* LabelSlot = Row->AddChildToHorizontalBox(Label))
++	if (UHorizontalBoxSlot* LabelSlot = Row->AddChildToHorizontalBox(LabelBlock))
+ 	{
+ 		LabelSlot->SetVerticalAlignment(VAlign_Center);
+ 		LabelSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+ 		LabelSlot->SetPadding(FMargin(0.f, 0.f, 16.f, 0.f));
+ 	}
+-	if (UHorizontalBoxSlot* SelectorSlot = Row->AddChildToHorizontalBox(Sized(Selector, FVector2D(200.0, 0.0))))
++	UWidget* SelectorSizeBox = Sized(Selector, ChoiceButtonParts::SelectorBox);
++	if (UHorizontalBoxSlot* SelectorSlot = Row->AddChildToHorizontalBox(SelectorSizeBox))
+ 	{
+ 		SelectorSlot->SetVerticalAlignment(VAlign_Center);
++		SelectorSlot->SetHorizontalAlignment(HAlign_Right);
+ 	}
+-	SetButtonContent(Row, FMargin(16.f, 10.f), HAlign_Fill);
+ 
+-	FContextMenuShapeTarget& Self = AddShapeTarget(this, 14.f);
+-	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
++	RememberPart(ChoiceButtonParts::Label, LabelBlock);
++	RememberPart(ChoiceButtonParts::ValueText, ValueBlock);
++	RememberPart(ChoiceButtonParts::PreviousArrow, PreviousShape);
++	RememberPart(ChoiceButtonParts::NextArrow, NextShape);
++	RememberPart(ChoiceButtonParts::PreviousBox, PreviousSizeBox);
++	RememberPart(ChoiceButtonParts::NextBox, NextSizeBox);
++	RememberPart(ChoiceButtonParts::SelectorBox, SelectorSizeBox);
++	SetButtonContent(Row);
++}
++
++void UChoiceButton::ApplyStyle()
++{
++	using namespace StyledButtonTheme;
++	BeginStyle();
++
++	const EStyledButtonCorners CornerStyle = Corners;
++	const float Rounding = CornerRounding;
++	const FLinearColor Fill = FillColor;
++	const FLinearColor Edge = OutlineColor;
++	const URectangleShape* Model = MakeBackground<URectangleShape>([CornerStyle, Rounding, Fill, Edge](URectangleShape& Shape)
+ 	{
+-		Shape.Fill.Color = SurfaceHover();
+-		Shape.Stroke.Paint.Color = LineHover();
++		SetCorners(Shape, CornerStyle, Rounding);
++		Solid(Shape, Fill);
++		Outline(Shape, 1.5f, Edge);
+ 	});
+-	FContextMenuShapeStateSettings& Pressed = OverrideShape(Self, EContextMenuState::Pressed);
+-	Pressed.Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
++	SetContentLayout(ContentPadding, HAlign_Fill);
++	SetBoxSize(FindPart(ChoiceButtonParts::SelectorBox), FVector2D(SelectorWidth, 0.0));
++	SetBoxSize(FindPart(ChoiceButtonParts::PreviousBox), FVector2D(ArrowSize, ArrowSize));
++	SetBoxSize(FindPart(ChoiceButtonParts::NextBox), FVector2D(ArrowSize, ArrowSize));
++
++	const FLinearColor Accent = AccentColor;
++	FContextMenuShapeTarget& Self = AddShapeTarget(this);
++	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [Fill, Edge](URectangleShape& Shape)
+ 	{
+-		Shape.Fill.Color = SurfacePressed();
+-		Shape.Stroke.Paint.Color = Accent();
++		Shape.Fill.Color = Lighter(Fill, 0.08f);
++		Shape.Stroke.Paint.Color = Lighter(Edge, 0.4f);
++	});
++	OverrideShape(Self, EContextMenuState::Pressed).Look = MakeLook<URectangleShape>(*Model, [Fill, Accent](URectangleShape& Shape)
++	{
++		Shape.Fill.Color = Fill * 0.8f;
++		Shape.Stroke.Paint.Color = Accent;
+ 	});
+ 
+ 	// The arrows light with the row (a Design Target's Tint on a shape is its fill).
+-	AddTint(Previous, TextDim(), { { EContextMenuState::Hovered, Accent() }, { EContextMenuState::Pressed, Accent() } });
+-	AddTint(Next, TextDim(), { { EContextMenuState::Hovered, Accent() }, { EContextMenuState::Pressed, Accent() } });
+-	AddTint(Label, TextDim(), { { EContextMenuState::Hovered, Text() }, { EContextMenuState::Pressed, Text() } });
++	for (const FName ArrowRole : { ChoiceButtonParts::PreviousArrow, ChoiceButtonParts::NextArrow })
++	{
++		if (UTriangleShape* ArrowShape = FindPart<UTriangleShape>(ArrowRole))
++		{
++			ArrowShape->CornerRounding = 1.5f;
++			Solid(*ArrowShape, FLinearColor::White);
++			ArrowShape->InvalidateShape();
++			AddTint(ArrowShape, ArrowColor, { { EContextMenuState::Hovered, Accent }, { EContextMenuState::Pressed, Accent } });
++		}
++	}
++
++	for (const FName TextRole : { ChoiceButtonParts::Label, ChoiceButtonParts::ValueText })
++	{
++		if (UTextBlock* TextPart = FindPart<UTextBlock>(TextRole))
++		{
++			FSlateFontInfo PartFont = TextPart->GetFont();
++			PartFont.Size = FontSize;
++			TextPart->SetFont(PartFont);
++		}
++	}
++	if (UTextBlock* LabelBlock = FindPart<UTextBlock>(ChoiceButtonParts::Label))
++	{
++		LabelBlock->SetVisibility(bShowLabel ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
++		LabelBlock->SetColorAndOpacity(FSlateColor(LabelColor));
++		AddTint(LabelBlock, LabelColor, { { EContextMenuState::Hovered, ValueColor }, { EContextMenuState::Pressed, ValueColor } });
++	}
++	if (UTextBlock* ValueBlock = FindPart<UTextBlock>(ChoiceButtonParts::ValueText))
++	{
++		ValueBlock->SetColorAndOpacity(FSlateColor(ValueColor));
++	}
+ 	AddDisabledFade();
+ }
+ 
+@@ -350,7 +412,7 @@ void UChoiceButton::BuildDefaultContent()
+ 
+ namespace SegmentedChoicePrivate
+ {
+-	/** Ticks the slide waits for the highlight to be laid out before giving up (a widget never shown). */
++	/** Ticks the slide waits for the track to be laid out before giving up (a widget never shown). */
+ 	constexpr int32 MaxUnplacedTicks = 240;
+ }
+ 
+@@ -359,6 +421,8 @@ USegmentedChoiceButton::USegmentedChoiceButton(const FObjectInitializer& ObjectI
+ {
+ 	Options = { LOCTEXT("SegmentLow", "Low"), LOCTEXT("SegmentMedium", "Medium"), LOCTEXT("SegmentHigh", "High") };
+ 	SelectedIndex = 1;
++	FillColor = StyledButtonTheme::Surface();
++	OutlineColor = StyledButtonTheme::Line();
+ 	TextColor = StyledButtonTheme::TextDim();
+ 	SelectedTextColor = StyledButtonTheme::Text();
+ }
+@@ -368,6 +432,19 @@ FText USegmentedChoiceButton::GetSelectedOption() const
+ 	return Options.IsValidIndex(SelectedIndex) ? Options[SelectedIndex] : FText::GetEmpty();
+ }
+ 
++float USegmentedChoiceButton::GetSlideSpeed() const
++{
++	switch (Motion)
++	{
++	case EStyledButtonMotion::Snappy:  return 30.f;
++	case EStyledButtonMotion::Bouncy:  return 14.f;
++	case EStyledButtonMotion::Gentle:  return 7.f;
++	case EStyledButtonMotion::Instant: return 0.f;
++	case EStyledButtonMotion::Smooth:
++	default:                           return 18.f;
++	}
++}
++
+ void USegmentedChoiceButton::SetSelectedIndex(int32 InIndex, bool bBroadcast)
+ {
+ 	const int32 Clamped = Options.Num() > 0 ? FMath::Clamp(InIndex, 0, Options.Num() - 1) : 0;
+@@ -411,11 +488,12 @@ void USegmentedChoiceButton::HandleSegmentClicked(bool bWillDestroyCard, bool bI
+ 	}
+ 
+ 	// The choice under the press; a key or gamepad press, which has no place, steps on round.
++	CacheSlideParts();
+ 	FVector2D Press;
+-	const UWidget* Segments = FindWidgetInButtonTree(SegmentsWidgetName);
+-	if (Segments && GetLastPressScreenPosition(Press))
++	const UWidget* SegmentsPart = CachedSegments.Get();
++	if (SegmentsPart && GetLastPressScreenPosition(Press))
+ 	{
+-		const FGeometry& Geometry = Segments->GetCachedGeometry();
++		const FGeometry& Geometry = SegmentsPart->GetCachedGeometry();
+ 		const double Width = Geometry.GetLocalSize().X;
+ 		if (Width > 0.0)
+ 		{
+@@ -432,6 +510,7 @@ void USegmentedChoiceButton::SynchronizeProperties()
+ 	Super::SynchronizeProperties();
+ 
+ 	SelectedIndex = Options.Num() > 0 ? FMath::Clamp(SelectedIndex, 0, Options.Num() - 1) : 0;
++	bHasCachedSlideParts = false;
+ 	RebuildSegments();
+ 
+ 	if (!IsDesignTime())
+@@ -452,17 +531,29 @@ void USegmentedChoiceButton::ReleaseSlateResources(bool bReleaseChildren)
+ 	Super::ReleaseSlateResources(bReleaseChildren);
+ 	bIsSlideTimerActive = false;
+ 	bHasPlacedHighlight = false;
++	bHasCachedSlideParts = false;
+ }
+ 
+-void USegmentedChoiceButton::RebuildSegments()
++void USegmentedChoiceButton::CacheSlideParts()
+ {
+-	UHorizontalBox* Segments = Cast<UHorizontalBox>(FindWidgetInButtonTree(SegmentsWidgetName));
+-	if (!Segments)
++	if (bHasCachedSlideParts && CachedSegments.IsValid())
+ 	{
+ 		return;
+ 	}
++	bHasCachedSlideParts = true;
++	CachedSegments = GetPart(ChoiceButtonParts::Segments);
++	CachedHighlight = GetPart(ChoiceButtonParts::Highlight);
++	CachedHighlightBox = GetPart<USizeBox>(ChoiceButtonParts::HighlightBox);
++}
+ 
+-	CachedHighlight.Reset();
++void USegmentedChoiceButton::RebuildSegments()
++{
++	CacheSlideParts();
++	UHorizontalBox* SegmentsBox = Cast<UHorizontalBox>(CachedSegments.Get());
++	if (!SegmentsBox)
++	{
++		return;
++	}
+ 
+ 	TArray<FString> Wanted;
+ 	for (const FText& Option : Options)
+@@ -470,49 +561,58 @@ void USegmentedChoiceButton::RebuildSegments()
+ 		Wanted.Add(Option.ToString());
+ 	}
+ 	const bool bAllThere = SegmentTexts.Num() == Wanted.Num()
+-		&& !SegmentTexts.ContainsByPredicate([Segments](const TObjectPtr<UTextBlock>& Existing) { return !Existing || Existing->GetParent() != Segments; });
+-	if (bAllThere && Wanted == BuiltOptions)
++		&& !SegmentTexts.ContainsByPredicate([SegmentsBox](const TObjectPtr<UTextBlock>& Existing) { return !Existing || Existing->GetParent() != SegmentsBox; });
++	if (!bAllThere || Wanted != BuiltOptions)
+ 	{
+-		return;
+-	}
++		for (UTextBlock* Old : SegmentTexts)
++		{
++			if (Old)
++			{
++				Old->RemoveFromParent();
++			}
++		}
++		SegmentTexts.Reset();
++		BuiltOptions = Wanted;
+ 
+-	for (UTextBlock* Old : SegmentTexts)
+-	{
+-		if (Old)
++		// Made at runtime (and on the designer's preview), never stored: the options are the source.
++		for (const FText& Option : Options)
+ 		{
+-			Old->RemoveFromParent();
++			UTextBlock* SegmentText = NewObject<UTextBlock>(this, NAME_None, RF_Transient);
++			SegmentText->SetText(Option);
++			SegmentText->SetJustification(ETextJustify::Center);
++			SegmentText->SetVisibility(ESlateVisibility::HitTestInvisible);
++			SegmentsBox->AddChildToHorizontalBox(SegmentText);
++			SegmentTexts.Add(SegmentText);
+ 		}
++		bHasPlacedHighlight = false;
+ 	}
+-	SegmentTexts.Reset();
+-	BuiltOptions = Wanted;
+ 
+-	// Made at runtime (and on the designer's preview), never stored: the options are the source.
+-	for (const FText& Option : Options)
++	// Styled every time: the font, padding and colors may have changed while the options didn't.
++	for (UTextBlock* SegmentText : SegmentTexts)
+ 	{
+-		UTextBlock* SegmentText = NewObject<UTextBlock>(this, NAME_None, RF_Transient);
+-		SegmentText->SetText(Option);
++		if (!SegmentText)
++		{
++			continue;
++		}
+ 		if (Font.HasValidFont())
+ 		{
+ 			SegmentText->SetFont(Font);
+ 		}
+ 		else
+ 		{
+-			FSlateFontInfo Default = SegmentText->GetFont();
+-			Default.Size = 14;
+-			SegmentText->SetFont(Default);
++			FSlateFontInfo DefaultFont = SegmentText->GetFont();
++			DefaultFont.Size = 14;
++			SegmentText->SetFont(DefaultFont);
+ 		}
+-		SegmentText->SetJustification(ETextJustify::Center);
+ 		SegmentText->SetColorAndOpacity(FSlateColor(TextColor));
+-		if (UHorizontalBoxSlot* TextSlot = Segments->AddChildToHorizontalBox(SegmentText))
++		if (UHorizontalBoxSlot* TextSlot = Cast<UHorizontalBoxSlot>(SegmentText->Slot))
+ 		{
+ 			TextSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+ 			TextSlot->SetHorizontalAlignment(HAlign_Center);
+ 			TextSlot->SetVerticalAlignment(VAlign_Center);
+-			TextSlot->SetPadding(FMargin(14.f, 7.f));
++			TextSlot->SetPadding(SegmentPadding);
+ 		}
+-		SegmentTexts.Add(SegmentText);
+ 	}
+-	bHasPlacedHighlight = false;
+ }
+ 
+ void USegmentedChoiceButton::PlaceHighlight(float Position)
+@@ -529,34 +629,37 @@ void USegmentedChoiceButton::PlaceHighlight(float Position)
+ 		}
+ 	}
+ 
+-	UShapeWidget* Highlight = CachedHighlight.Get();
+-	if (!Highlight)
+-	{
+-		Highlight = Cast<UShapeWidget>(FindWidgetInButtonTree(HighlightWidgetName));
+-		CachedHighlight = Highlight;
+-	}
+-	if (!Highlight)
++	CacheSlideParts();
++	UWidget* HighlightPart = CachedHighlight.Get();
++	USizeBox* HighlightSizeBox = CachedHighlightBox.Get();
++	const UWidget* SegmentsPart = CachedSegments.Get();
++	if (!HighlightPart || !SegmentsPart)
+ 	{
+ 		bHasPlacedHighlight = true;
+ 		return;
+ 	}
+ 	if (Count == 0)
+ 	{
+-		Highlight->SetRenderOpacity(0.f);
++		HighlightPart->SetRenderOpacity(0.f);
+ 		bHasPlacedHighlight = true;
+ 		return;
+ 	}
+-	const double Width = Highlight->GetCachedGeometry().GetLocalSize().X;
+-	if (Width <= 0.0)
++	const double TrackWidth = SegmentsPart->GetCachedGeometry().GetLocalSize().X;
++	if (TrackWidth <= 0.0)
+ 	{
+ 		return;
+ 	}
+ 
+-	// One choice wide (Shape Scale keeps its round ends round), moved over to the choice at Position.
+-	Highlight->SetRenderOpacity(1.f);
+-	Highlight->SetShapeScale(FVector2D(1.0 / Count, 1.0));
+-	const double SegmentWidth = Width / Count;
+-	Highlight->SetRenderTranslation(FVector2D((Position + 0.5) * SegmentWidth - Width * 0.5, 0.0));
++	// The highlight's own box is one choice wide, at the track's left, and moves over to the choice at Position: its
++	// widget sits where it is drawn - on the button, never past its ends.
++	const double SegmentWidth = TrackWidth / Count;
++	HighlightPart->SetRenderOpacity(1.f);
++	UWidget* Moved = HighlightSizeBox ? static_cast<UWidget*>(HighlightSizeBox) : HighlightPart;
++	if (HighlightSizeBox && !FMath::IsNearlyEqual(HighlightSizeBox->GetWidthOverride(), static_cast<float>(SegmentWidth), 0.01f))
++	{
++		HighlightSizeBox->SetWidthOverride(static_cast<float>(SegmentWidth));
++	}
++	Moved->SetRenderTranslation(FVector2D(Position * SegmentWidth, 0.0));
+ 	bHasPlacedHighlight = true;
+ }
+ 
+@@ -576,13 +679,14 @@ void USegmentedChoiceButton::StartSlide()
+ EActiveTimerReturnType USegmentedChoiceButton::TickSlide(double InCurrentTime, float InDeltaTime)
+ {
+ 	const float Target = static_cast<float>(SelectedIndex);
+-	if (IsDesignTime())
++	const float Speed = GetSlideSpeed();
++	if (IsDesignTime() || Speed <= 0.f)
+ 	{
+ 		HighlightPosition = Target;
+ 	}
+ 	else
+ 	{
+-		HighlightPosition += (Target - HighlightPosition) * (1.f - FMath::Exp(-InDeltaTime * SlideSpeed));
++		HighlightPosition += (Target - HighlightPosition) * (1.f - FMath::Exp(-InDeltaTime * Speed));
+ 	}
+ 	const bool bArrived = FMath::Abs(Target - HighlightPosition) < 0.001f;
+ 	if (bArrived)
+@@ -611,42 +715,89 @@ EActiveTimerReturnType USegmentedChoiceButton::TickSlide(double InCurrentTime, f
+ 	return EActiveTimerReturnType::Continue;
+ }
+ 
+-void USegmentedChoiceButton::BuildDefaultContent()
++void USegmentedChoiceButton::BuildParts()
+ {
+-	using namespace StyledButtonTheme;
++	URectangleShape* HighlightShape = MakePart<URectangleShape>(ChoiceButtonParts::Highlight);
++	UWidget* HighlightSizeBox = Sized(HighlightShape, ChoiceButtonParts::HighlightBox);
++	UHorizontalBox* SegmentsBox = MakePart<UHorizontalBox>(ChoiceButtonParts::Segments);
+ 
+-	const URectangleShape* Model = MakeBackground<URectangleShape>([](URectangleShape& Shape)
++	// The highlight under the choices, in a box one choice wide at the track's left (Place Highlight sizes and moves it).
++	UOverlay* Track = MakePart<UOverlay>(TEXT("Track"));
++	if (UOverlaySlot* HighlightSlot = Track->AddChildToOverlay(HighlightSizeBox))
+ 	{
+-		Shape.bFullyRounded = true;
+-		Solid(Shape, Surface());
+-		Outline(Shape, 1.5f, Line());
+-	});
++		HighlightSlot->SetHorizontalAlignment(HAlign_Left);
++		HighlightSlot->SetVerticalAlignment(VAlign_Fill);
++	}
++	if (UOverlaySlot* SegmentsSlot = Track->AddChildToOverlay(SegmentsBox))
++	{
++		SegmentsSlot->SetHorizontalAlignment(HAlign_Fill);
++		SegmentsSlot->SetVerticalAlignment(VAlign_Fill);
++	}
+ 
+-	URectangleShape* Highlight = MakePart<URectangleShape>(TEXT("Highlight"));
+-	Highlight->bFullyRounded = true;
+-	Solid(*Highlight, Accent());
+-	HighlightWidgetName = Highlight->GetFName();
++	RememberPart(ChoiceButtonParts::Highlight, HighlightShape);
++	RememberPart(ChoiceButtonParts::HighlightBox, HighlightSizeBox);
++	RememberPart(ChoiceButtonParts::Segments, SegmentsBox);
++	SetButtonContent(Track);
++}
+ 
+-	UHorizontalBox* Segments = MakePart<UHorizontalBox>(TEXT("Segments"));
+-	SegmentsWidgetName = Segments->GetFName();
++void USegmentedChoiceButton::ApplyStyle()
++{
++	using namespace StyledButtonTheme;
++	BeginStyle();
++
++	const bool bPill = bFullyRounded;
++	const float Rounding = FMath::Max(CornerRounding, 0.f);
++	const float Gap = FMath::Max(Inset, 0.f);
++	const FLinearColor Fill = FillColor;
++	const FLinearColor Edge = OutlineColor;
++	const URectangleShape* Model = MakeBackground<URectangleShape>([bPill, Rounding, Fill, Edge](URectangleShape& Shape)
++	{
++		Shape.bIndividualCorners = false;
++		Shape.bFullyRounded = bPill;
++		Shape.CornerRounding = bPill ? 0.f : Rounding;
++		Solid(Shape, Fill);
++		Outline(Shape, 1.5f, Edge);
++	});
++	SetContentLayout(FMargin(Gap), HAlign_Fill, VAlign_Fill);
+ 
+-	UOverlay* Track = MakePart<UOverlay>(TEXT("Track"));
+-	for (UWidget* Part : { static_cast<UWidget*>(Highlight), static_cast<UWidget*>(Segments) })
++	// Concentric with the track: a pill inside a pill, or the track's rounding less the gap - so at either end the
++	// highlight's corners follow the track's edge rather than poking past it.
++	if (URectangleShape* HighlightShape = FindPart<URectangleShape>(ChoiceButtonParts::Highlight))
+ 	{
+-		if (UOverlaySlot* PartSlot = Track->AddChildToOverlay(Part))
+-		{
+-			PartSlot->SetHorizontalAlignment(HAlign_Fill);
+-			PartSlot->SetVerticalAlignment(VAlign_Fill);
+-		}
++		HighlightShape->bIndividualCorners = false;
++		HighlightShape->bFullyRounded = bPill;
++		HighlightShape->CornerRounding = bPill ? 0.f : FMath::Max(Rounding - Gap, 0.f);
++		HighlightShape->ShapeScale = FVector2D(1.0, 1.0);
++		Solid(*HighlightShape, AccentColor);
++		HighlightShape->SetRenderTransform(FWidgetTransform());
++		HighlightShape->SetVisibility(ESlateVisibility::HitTestInvisible);
++		HighlightShape->InvalidateShape();
++	}
++	if (UWidget* HighlightSizeBox = FindPart(ChoiceButtonParts::HighlightBox))
++	{
++		HighlightSizeBox->SetVisibility(ESlateVisibility::HitTestInvisible);
++	}
++	if (UWidget* SegmentsBox = FindPart(ChoiceButtonParts::Segments))
++	{
++		SegmentsBox->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+ 	}
+-	SetButtonContent(Track, FMargin(4.f), HAlign_Fill, VAlign_Fill);
+ 
+-	FContextMenuShapeTarget& Self = AddShapeTarget(this, 14.f);
+-	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
++	FContextMenuShapeTarget& Self = AddShapeTarget(this);
++	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [Fill, Edge](URectangleShape& Shape)
+ 	{
+-		Shape.Stroke.Paint.Color = LineHover();
++		Shape.Fill.Color = Lighter(Fill, 0.05f);
++		Shape.Stroke.Paint.Color = Lighter(Edge, 0.4f);
+ 	});
+ 	AddDisabledFade();
++
++	// On a shown button (the designer's preview, or Refresh Style at runtime) the choices restyle now. The Widget Blueprint's
++	// own copy never gets them: they are made while the button runs, never stored.
++	bHasCachedSlideParts = false;
++	if (GetCachedWidget().IsValid())
++	{
++		RebuildSegments();
++		StartSlide();
++	}
+ }
+ 
+ #undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.h b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.h
+index 78b2eec..2ecdf35 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.h
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.h
+@@ -9,6 +9,7 @@
+ #include "ChoiceButtons.generated.h"
+ 
+ class UTextBlock;
++class USizeBox;
+ 
+ /** What a Choice Button steps through. */
+ UENUM(BlueprintType)
+@@ -36,6 +37,51 @@ class NAMETBD_API UChoiceButton : public UStyledButtonBase
+ public:
+ 	UChoiceButton(const FObjectInitializer& ObjectInitializer);
+ 
++	// ---- Style -----------------------------------------------------------------------------------
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	EStyledButtonCorners Corners = EStyledButtonCorners::Rounded;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle && Corners == EStyledButtonCorners::Rounded", EditConditionHides, ClampMin = "0", UIMax = "32", ForceUnits = "px"))
++	float CornerRounding = 8.f;
++
++	/** Space around the row: the button's height follows it. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FMargin ContentPadding = FMargin(16.f, 10.f);
++
++	/** The width of the arrows and the value between them. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "40", UIMax = "600", ForceUnits = "px"))
++	float SelectorWidth = 200.f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "6", UIMax = "64"))
++	int32 FontSize = 15;
++
++	/** The setting's name at the row's left. Off, the row is only the selector. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	bool bShowLabel = true;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor FillColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor OutlineColor;
++
++	/** The label's color while idle (it brightens to Value Color on hover). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor LabelColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor ValueColor;
++
++	/** The arrows while idle (they light to the Accent Color on hover). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor ArrowColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "4", UIMax = "32", ForceUnits = "px"))
++	float ArrowSize = 12.f;
++
++	// ---- Choice ----------------------------------------------------------------------------------
++
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice")
+ 	EChoiceButtonMode Mode = EChoiceButtonMode::Options;
+ 
+@@ -75,17 +121,6 @@ public:
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (DisplayName = "Left And Right Step It"))
+ 	bool bLeftRightSteps = true;
+ 
+-	/** The setting's name at the row's left (the button's label), and the Text Block showing the choice. Filled in when the button is made. */
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (GetOptions = "GetColorTargetWidgetOptions"))
+-	FName ValueTextWidgetName;
+-
+-	/** The arrows, dimmed at an end the choice can't pass. Filled in when the button is made. */
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (GetOptions = "GetColorTargetWidgetOptions"))
+-	FName PreviousArrowWidgetName;
+-
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (GetOptions = "GetColorTargetWidgetOptions"))
+-	FName NextArrowWidgetName;
+-
+ 	UPROPERTY(BlueprintAssignable, Category = "Context Menu Button|Choice")
+ 	FOnChoiceChanged OnChoiceChanged;
+ 
+@@ -119,7 +154,8 @@ public:
+ 	FText GetDisplayText() const;
+ 
+ protected:
+-	virtual void BuildDefaultContent() override;
++	virtual void BuildParts() override;
++	virtual void ApplyStyle() override;
+ 	virtual bool HandleNavigation(EUINavigation Direction) override;
+ 	virtual void SynchronizeProperties() override;
+ 	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
+@@ -143,9 +179,9 @@ protected:
+ };
+ 
+ /**
+- * "Low | Medium | High" - every choice side by side in one pill, a highlight sliding to the chosen one. Click a choice to pick
+- * it; left and right step it while it is focused. The choices are made from Options when the button is built, styled by
+- * Font and the two colors.
++ * "Low | Medium | High" - every choice side by side in one track, a highlight sliding to the chosen one. Click a choice to
++ * pick it; left and right step it while it is focused. The choices are made from Options while the button runs (and in the
++ * designer's preview), styled by the Style settings.
+  */
+ UCLASS(meta = (DisplayName = "Segmented Choice"))
+ class NAMETBD_API USegmentedChoiceButton : public UStyledButtonBase
+@@ -155,36 +191,50 @@ class NAMETBD_API USegmentedChoiceButton : public UStyledButtonBase
+ public:
+ 	USegmentedChoiceButton(const FObjectInitializer& ObjectInitializer);
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice")
+-	TArray<FText> Options;
++	// ---- Style -----------------------------------------------------------------------------------
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (ClampMin = "0"))
+-	int32 SelectedIndex = 0;
++	/** Ends fully rounded - a pill. Off, the corners are rounded by Corner Rounding. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	bool bFullyRounded = true;
+ 
+-	/** Left and right step it while it is focused, rather than moving the focus. */
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (DisplayName = "Left And Right Step It"))
+-	bool bLeftRightSteps = true;
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle && !bFullyRounded", EditConditionHides, ClampMin = "0", UIMax = "32", ForceUnits = "px"))
++	float CornerRounding = 8.f;
++
++	/** The gap between the highlight and the track's edge. The highlight's corners follow the track's, this far in. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "0", UIMax = "12", ForceUnits = "px"))
++	float Inset = 4.f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor FillColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor OutlineColor;
++
++	/** Space around each choice's text: the button's size follows it. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style")
++	FMargin SegmentPadding = FMargin(14.f, 7.f);
+ 
+ 	/** The choices' font. Left without a font, the Text Block default at size 14. */
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice")
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style")
+ 	FSlateFontInfo Font;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice")
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style")
+ 	FLinearColor TextColor;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice")
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style")
+ 	FLinearColor SelectedTextColor;
+ 
+-	/** How fast the highlight slides: higher is quicker. */
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (ClampMin = "1", UIMax = "40"))
+-	float SlideSpeed = 18.f;
++	// ---- Choice ----------------------------------------------------------------------------------
+ 
+-	/** The Horizontal Box the choices are made in, and the shape that slides under the chosen one. Filled in when the button is made. */
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (GetOptions = "GetColorTargetWidgetOptions"))
+-	FName SegmentsWidgetName;
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice")
++	TArray<FText> Options;
++
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (ClampMin = "0"))
++	int32 SelectedIndex = 0;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (GetOptions = "GetColorTargetWidgetOptions"))
+-	FName HighlightWidgetName;
++	/** Left and right step it while it is focused, rather than moving the focus. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (DisplayName = "Left And Right Step It"))
++	bool bLeftRightSteps = true;
+ 
+ 	UPROPERTY(BlueprintAssignable, Category = "Context Menu Button|Choice")
+ 	FOnChoiceChanged OnChoiceChanged;
+@@ -202,7 +252,8 @@ public:
+ 	FText GetSelectedOption() const;
+ 
+ protected:
+-	virtual void BuildDefaultContent() override;
++	virtual void BuildParts() override;
++	virtual void ApplyStyle() override;
+ 	virtual bool HandleNavigation(EUINavigation Direction) override;
+ 	virtual void SynchronizeProperties() override;
+ 	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
+@@ -210,12 +261,18 @@ protected:
+ 	UFUNCTION()
+ 	void HandleSegmentClicked(bool bWillDestroyCard, bool bIsEnabling);
+ 
+-	/** Makes a Text Block per option in the Segments box, when the options changed. */
++	/** Makes a Text Block per option in the Segments box when the options changed, and styles them. */
+ 	void RebuildSegments();
+ 
++	/** Finds the parts the slide moves, once per build - not on every frame of it. */
++	void CacheSlideParts();
++
+ 	/** Places the highlight at Position (in choices) and colors the texts by how near each is. */
+ 	void PlaceHighlight(float Position);
+ 
++	/** How fast the highlight slides, from Motion: higher is quicker, 0 at once. */
++	float GetSlideSpeed() const;
++
+ 	void StartSlide();
+ 	EActiveTimerReturnType TickSlide(double InCurrentTime, float InDeltaTime);
+ 
+@@ -228,10 +285,12 @@ protected:
+ 	float HighlightPosition = 0.f;
+ 	bool bHasPlacedHighlight = false;
+ 
+-	/** Ticks the slide has waited for the highlight to be laid out. */
++	/** Ticks the slide has waited for the track to be laid out. */
+ 	int32 UnplacedTicks = 0;
+ 
+-	/** The highlight, found once per build - not on every frame of its slide. */
+-	TWeakObjectPtr<UShapeWidget> CachedHighlight;
++	TWeakObjectPtr<UWidget> CachedSegments;
++	TWeakObjectPtr<UWidget> CachedHighlight;
++	TWeakObjectPtr<USizeBox> CachedHighlightBox;
++	bool bHasCachedSlideParts = false;
+ 	bool bIsSlideTimerActive = false;
+ };
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.cpp b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.cpp
+index b3b7246..b5c246a 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.cpp
+@@ -19,6 +19,27 @@
+ 
+ #define LOCTEXT_NAMESPACE "StyledButtons"
+ 
++namespace StyledButtonParts
++{
++	const FName Label(TEXT("Label"));
++	const FName Icon(TEXT("Icon"));
++	const FName Knob(TEXT("Knob"));
++	const FName KnobBox(TEXT("KnobBox"));
++	const FName Check(TEXT("Check"));
++	const FName CheckBox(TEXT("CheckBox"));
++	const FName Dot(TEXT("Dot"));
++	const FName DotBox(TEXT("DotBox"));
++	const FName Bar(TEXT("Bar"));
++	const FName BarBox(TEXT("BarBox"));
++	const FName RingTrack(TEXT("RingTrack"));
++	const FName Progress(TEXT("Progress"));
++	const FName RingBox(TEXT("RingBox"));
++	const FName Rarity(TEXT("Rarity"));
++	const FName RarityBox(TEXT("RarityBox"));
++	const FName TileBox(TEXT("TileBox"));
++	const FName IconBox(TEXT("IconBox"));
++}
++
+ // =====================================================================================================
+ // Base
+ // =====================================================================================================
+@@ -29,6 +50,7 @@ UStyledButtonBase::UStyledButtonBase(const FObjectInitializer& ObjectInitializer
+ 	// A menu's button doesn't close the card it is on unless asked to.
+ 	bShouldDestroyCard = false;
+ 	bButtonCanBeEnabled = false;
++	AccentColor = StyledButtonTheme::Accent();
+ }
+ 
+ #if WITH_EDITOR
+@@ -36,20 +58,84 @@ const FText UStyledButtonBase::GetPaletteCategory()
+ {
+ 	return LOCTEXT("PaletteCategory", "NameTBD Buttons");
+ }
++
++void UStyledButtonBase::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
++{
++	// A Style setting makes the looks again - before the Context Menu Button lays out the Looks and seeds its overrides.
++	const FProperty* Changed = PropertyChangedEvent.MemberProperty ? PropertyChangedEvent.MemberProperty : PropertyChangedEvent.Property;
++	const bool bStyleSetting = Changed && Changed->GetMetaData(TEXT("Category")).StartsWith(TEXT("Style"));
++	if (bStyleSetting && bUseStyle && HasAnyContent())
++	{
++		ApplyStyle();
++	}
++	Super::PostEditChangeProperty(PropertyChangedEvent);
++}
+ #endif
+ 
++void UStyledButtonBase::BuildDefaultContent()
++{
++	ShapeTargets.Reset();
++	DesignTargets.Reset();
++	PartNames.Reset();
++	BuildParts();
++	ApplyStyle();
++}
++
++void UStyledButtonBase::BeginStyle()
++{
++	ShapeTargets.Reset();
++	DesignTargets.Reset();
++	LookBaselines.Reset();
++}
++
++void UStyledButtonBase::RefreshStyle()
++{
++	if (!bUseStyle)
++	{
++		return;
++	}
++	ApplyStyle();
++	RefreshShapeTargetLooks();
++	RefreshButtonState(/*bInstant=*/true);
++}
++
+ void UStyledButtonBase::SetLabel(const FText& Text)
+ {
+-	if (UTextBlock* Label = ResolveButtonTextBlock())
++	if (UTextBlock* LabelBlock = ResolveButtonTextBlock())
+ 	{
+-		Label->SetText(Text);
++		LabelBlock->SetText(Text);
+ 	}
+ }
+ 
+ FText UStyledButtonBase::GetLabel()
+ {
+-	const UTextBlock* Label = ResolveButtonTextBlock();
+-	return Label ? Label->GetText() : FText::GetEmpty();
++	const UTextBlock* LabelBlock = ResolveButtonTextBlock();
++	return LabelBlock ? LabelBlock->GetText() : FText::GetEmpty();
++}
++
++void UStyledButtonBase::RememberPart(FName Role, const UWidget* Part)
++{
++	if (Part)
++	{
++		PartNames.Add(Role, Part->GetFName());
++	}
++}
++
++UWidget* UStyledButtonBase::GetPart(FName Role)
++{
++	const FName* Name = PartNames.Find(Role);
++	return Name ? FindWidgetInButtonTree(*Name) : nullptr;
++}
++
++UWidget* UStyledButtonBase::FindPart(FName Role)
++{
++	UWidget* Part = GetPart(Role);
++	if (Part)
++	{
++		// Inside an edit's transaction, the change the style makes to it is undone with the edit.
++		Part->Modify();
++	}
++	return Part;
+ }
+ 
+ UWidgetTree* UStyledButtonBase::GetBuildTree() const
+@@ -64,48 +150,71 @@ UWidget* UStyledButtonBase::MakePart(UClass* Class, FName BaseName)
+ 
+ 	// The plain name while it is free (Label), else the next one (Label_1). A copy of the button renames its parts the
+ 	// same way, and its targets still find them - see UContextMenuButton::FindWidgetInButtonTree.
+-	const FName Name = StaticFindObjectFast(UObject::StaticClass(), Outer, BaseName) ? MakeUniqueObjectName(Outer, Class, BaseName) : BaseName;
++	const FName PartName = StaticFindObjectFast(UObject::StaticClass(), Outer, BaseName) ? MakeUniqueObjectName(Outer, Class, BaseName) : BaseName;
+ 	if (Tree)
+ 	{
+-		return Tree->ConstructWidget<UWidget>(Class, Name);
++		return Tree->ConstructWidget<UWidget>(Class, PartName);
+ 	}
+-	return NewObject<UWidget>(Outer, Class, Name, RF_Transactional);
++	return NewObject<UWidget>(Outer, Class, PartName, RF_Transactional);
+ }
+ 
+ UTextBlock* UStyledButtonBase::MakeLabel(FName BaseName, const FText& Text, int32 Size)
+ {
+-	UTextBlock* Label = MakePart<UTextBlock>(BaseName);
+-	Label->SetText(Text);
+-	FSlateFontInfo Font = Label->GetFont();
+-	Font.Size = Size;
+-	Label->SetFont(Font);
+-	Label->SetColorAndOpacity(FSlateColor(FLinearColor::White));
+-	return Label;
++	UTextBlock* LabelBlock = MakePart<UTextBlock>(BaseName);
++	LabelBlock->SetText(Text);
++	FSlateFontInfo LabelFont = LabelBlock->GetFont();
++	LabelFont.Size = Size;
++	LabelBlock->SetFont(LabelFont);
++	LabelBlock->SetColorAndOpacity(FSlateColor(FLinearColor::White));
++	return LabelBlock;
+ }
+ 
+-void UStyledButtonBase::SetButtonContent(UWidget* Content, const FMargin& Padding, EHorizontalAlignment HAlign, EVerticalAlignment VAlign)
++void UStyledButtonBase::SetButtonContent(UWidget* Content)
+ {
+-	if (UButtonSlot* ContentSlot = Cast<UButtonSlot>(SetContent(Content)))
++	SetContent(Content);
++}
++
++void UStyledButtonBase::SetContentLayout(const FMargin& Padding, EHorizontalAlignment HAlign, EVerticalAlignment VAlign)
++{
++	if (UButtonSlot* ContentSlot = Cast<UButtonSlot>(GetPartsSlot()))
+ 	{
++		ContentSlot->Modify();
+ 		ContentSlot->SetPadding(Padding);
+ 		ContentSlot->SetHorizontalAlignment(HAlign);
+ 		ContentSlot->SetVerticalAlignment(VAlign);
+ 	}
+ }
+ 
+-UWidget* UStyledButtonBase::Sized(UWidget* Content, const FVector2D& Size)
++UWidget* UStyledButtonBase::Sized(UWidget* Content, FName BaseName)
+ {
+-	USizeBox* Box = MakePart<USizeBox>(TEXT("Size"));
++	USizeBox* Box = MakePart<USizeBox>(BaseName);
++	Box->SetContent(Content);
++	return Box;
++}
++
++void UStyledButtonBase::SetBoxSize(UWidget* SizeBox, const FVector2D& Size)
++{
++	USizeBox* Box = Cast<USizeBox>(SizeBox);
++	if (!Box)
++	{
++		return;
++	}
+ 	if (Size.X > 0.0)
+ 	{
+ 		Box->SetWidthOverride(static_cast<float>(Size.X));
+ 	}
++	else
++	{
++		Box->ClearWidthOverride();
++	}
+ 	if (Size.Y > 0.0)
+ 	{
+ 		Box->SetHeightOverride(static_cast<float>(Size.Y));
+ 	}
+-	Box->SetContent(Content);
+-	return Box;
++	else
++	{
++		Box->ClearHeightOverride();
++	}
+ }
+ 
+ FInstancedPropertyBag UStyledButtonBase::MakeLookFrom(const UShapeWidget& From, TFunctionRef<void(UShapeWidget&)> Change)
+@@ -133,21 +242,51 @@ void UStyledButtonBase::SetBackgroundFrom(const UShapeWidget& Model)
+ 	bHasBackgroundShape = true;
+ }
+ 
++void UStyledButtonBase::SetCorners(URectangleShape& Shape, EStyledButtonCorners Corners, float Rounding)
++{
++	Shape.bIndividualCorners = false;
++	Shape.bFullyRounded = Corners == EStyledButtonCorners::Pill;
++	Shape.CornerRounding = Corners == EStyledButtonCorners::Rounded ? FMath::Max(Rounding, 0.f) : 0.f;
++}
++
+ FName UStyledButtonBase::TargetNameOf(const UWidget* Part) const
+ {
+ 	return (!Part || Part == this) ? SelfTargetName : Part->GetFName();
+ }
+ 
+-FContextMenuShapeTarget& UStyledButtonBase::AddShapeTarget(UWidget* Part, float Speed, EContextMenuInterpolationCurve Curve, float Overshoot)
++FContextMenuShapeTarget& UStyledButtonBase::AddShapeTarget(UWidget* Part)
+ {
+ 	FContextMenuShapeTarget& Target = ShapeTargets.AddDefaulted_GetRef();
+ 	Target.TargetWidgetName = TargetNameOf(Part);
+ 	Target.ShapeSource = EContextMenuButtonSettingSource::Custom;
+-	Target.TransformInterpolationSpeed = Speed;
+-	Target.TransformInterpolationCurve = Curve;
+-	Target.TransformOvershoot = Overshoot;
+ 	Target.bSeparateTransformAndSize = false;
+ 
++	switch (Motion)
++	{
++	case EStyledButtonMotion::Snappy:
++		Target.TransformInterpolationSpeed = 22.f;
++		Target.TransformInterpolationCurve = EContextMenuInterpolationCurve::EaseOut;
++		break;
++	case EStyledButtonMotion::Bouncy:
++		Target.TransformInterpolationSpeed = 8.f;
++		Target.TransformInterpolationCurve = EContextMenuInterpolationCurve::Click;
++		Target.TransformOvershoot = 2.f;
++		break;
++	case EStyledButtonMotion::Gentle:
++		Target.TransformInterpolationSpeed = 5.f;
++		Target.TransformInterpolationCurve = EContextMenuInterpolationCurve::EaseInOut;
++		break;
++	case EStyledButtonMotion::Instant:
++		Target.TransformInterpolationSpeed = 0.f;
++		Target.TransformInterpolationCurve = EContextMenuInterpolationCurve::Linear;
++		break;
++	case EStyledButtonMotion::Smooth:
++	default:
++		Target.TransformInterpolationSpeed = 12.f;
++		Target.TransformInterpolationCurve = EContextMenuInterpolationCurve::EaseOut;
++		break;
++	}
++
+ 	// No Look on the Base Shape: the base is the part as it is. Each state given a Look below holds only what is used.
+ 	Target.BaseShape.bIsVectorShape = Part == this ? BackgroundShape != nullptr : (Part && Part->IsA<UShapeWidget>());
+ 	return Target;
+@@ -174,13 +313,19 @@ FContextMenuShapeStateSettings& UStyledButtonBase::OverrideShape(FContextMenuSha
+ 	return *Settings;
+ }
+ 
+-FContextMenuDesignTarget& UStyledButtonBase::AddDesignTarget(UWidget* Part, float Speed)
++FContextMenuDesignTarget& UStyledButtonBase::AddDesignTarget(UWidget* Part)
+ {
+ 	FContextMenuDesignTarget& Target = DesignTargets.AddDefaulted_GetRef();
+ 	Target.TargetWidgetName = TargetNameOf(Part);
+ 	Target.DesignSource = EContextMenuButtonSettingSource::Custom;
+-	Target.InterpolationSpeed = Speed;
+ 	Target.BaseDesign.bDriveTint = false;
++	switch (Motion)
++	{
++	case EStyledButtonMotion::Snappy:  Target.InterpolationSpeed = 28.f; break;
++	case EStyledButtonMotion::Gentle:  Target.InterpolationSpeed = 7.f; break;
++	case EStyledButtonMotion::Instant: Target.InterpolationSpeed = 0.f; break;
++	default:                           Target.InterpolationSpeed = 15.f; break;
++	}
+ 	return Target;
+ }
+ 
+@@ -210,9 +355,9 @@ FContextMenuDesignTarget& UStyledButtonBase::AddTint(UWidget* Part, const FLinea
+ 	FContextMenuDesignTarget& Target = AddDesignTarget(Part);
+ 	Target.BaseDesign.bDriveTint = true;
+ 	Target.BaseDesign.Tint = Base;
+-	for (const FStyledButtonStateTint& State : States)
++	for (const FStyledButtonStateTint& StateTint : States)
+ 	{
+-		OverrideDesign(Target, State.State).Tint = State.Tint;
++		OverrideDesign(Target, StateTint.State).Tint = StateTint.Tint;
+ 	}
+ 	return Target;
+ }
+@@ -220,224 +365,240 @@ FContextMenuDesignTarget& UStyledButtonBase::AddTint(UWidget* Part, const FLinea
+ void UStyledButtonBase::AddDisabledFade(float Opacity)
+ {
+ 	FContextMenuDesignTarget& Target = AddDesignTarget(this);
+-	FContextMenuWidgetDesign& Disabled = OverrideDesign(Target, EContextMenuState::Disabled);
+-	Disabled.bDriveOpacity = true;
+-	Disabled.Opacity = Opacity;
++	FContextMenuWidgetDesign& DisabledDesign = OverrideDesign(Target, EContextMenuState::Disabled);
++	DisabledDesign.bDriveOpacity = true;
++	DisabledDesign.Opacity = Opacity;
++}
++
++FLinearColor UStyledButtonBase::Lighter(const FLinearColor& Color, float Amount)
++{
++	FLinearColor Result = FMath::Lerp(Color, FLinearColor::White, FMath::Clamp(Amount, 0.f, 1.f));
++	Result.A = Color.A;
++	return Result;
+ }
+ 
+ // =====================================================================================================
+-// Pill Button
++// Generic Button
+ // =====================================================================================================
+ 
+-UPillButton::UPillButton(const FObjectInitializer& ObjectInitializer)
++UGenericButton::UGenericButton(const FObjectInitializer& ObjectInitializer)
+ 	: Super(ObjectInitializer)
+ {
++	FillColor = StyledButtonTheme::Surface();
++	OutlineColor = StyledButtonTheme::Line();
++	TextColor = StyledButtonTheme::Text();
++}
++
++void UGenericButton::BuildParts()
++{
++	UTextBlock* LabelBlock = MakeLabel(StyledButtonParts::Label, LOCTEXT("GenericLabel", "Button"), 15);
++	RememberPart(StyledButtonParts::Label, LabelBlock);
++	ButtonTextWidgetName = LabelBlock->GetFName();
++	SetButtonContent(LabelBlock);
+ }
+ 
+-void UPillButton::BuildDefaultContent()
++void UGenericButton::ApplyStyle()
+ {
+ 	using namespace StyledButtonTheme;
++	BeginStyle();
+ 
+-	const URectangleShape* Model = MakeBackground<URectangleShape>([](URectangleShape& Shape)
++	const EStyledButtonCorners CornerStyle = Corners;
++	const float Rounding = CornerRounding;
++	const FLinearColor Fill = FillColor;
++	const FLinearColor Edge = OutlineColor;
++	const URectangleShape* Model = MakeBackground<URectangleShape>([CornerStyle, Rounding, Fill, Edge](URectangleShape& Shape)
+ 	{
+-		Shape.bFullyRounded = true;
+-		Solid(Shape, Surface());
+-		Outline(Shape, 1.5f, Line());
++		SetCorners(Shape, CornerStyle, Rounding);
++		Solid(Shape, Fill);
++		Outline(Shape, 1.5f, Edge);
+ 	});
++	SetContentLayout(ContentPadding);
+ 
+-	UTextBlock* Label = MakeLabel(TEXT("Label"), LOCTEXT("PillLabel", "Button"), 15);
+-	ButtonTextWidgetName = Label->GetFName();
+-	SetButtonContent(Label, FMargin(28.f, 10.f));
+-
+-	FContextMenuShapeTarget& Self = AddShapeTarget(this, 14.f);
+-	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
++	const FLinearColor Accent = AccentColor;
++	FContextMenuShapeTarget& Self = AddShapeTarget(this);
++	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [Fill, Accent](URectangleShape& Shape)
+ 	{
+-		Shape.Fill.Color = SurfaceHover();
+-		Shape.Stroke.Paint.Color = LineHover();
++		Shape.Fill.Color = Lighter(Fill, 0.08f);
++		Shape.Stroke.Paint.Color = Accent;
+ 	});
+-	FContextMenuShapeStateSettings& Pressed = OverrideShape(Self, EContextMenuState::Pressed);
+-	Pressed.Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
++	FContextMenuShapeStateSettings& PressedState = OverrideShape(Self, EContextMenuState::Pressed);
++	PressedState.Look = MakeLook<URectangleShape>(*Model, [Fill, Accent](URectangleShape& Shape)
+ 	{
+-		Shape.Fill.Color = SurfacePressed();
+-		Shape.Stroke.Paint.Color = LineHover();
++		Shape.Fill.Color = Fill * 0.8f;
++		Shape.Stroke.Paint.Color = Accent;
+ 	});
+-	Pressed.Transform.Scale = FVector2D(0.97, 0.97);
++	PressedState.Transform.Scale = FVector2D(PressScale, PressScale);
+ 
+-	AddTint(Label, TextDim(), { { EContextMenuState::Hovered, Text() }, { EContextMenuState::Pressed, Text() } });
++	if (UTextBlock* LabelBlock = FindPart<UTextBlock>(StyledButtonParts::Label))
++	{
++		LabelBlock->SetColorAndOpacity(FSlateColor(TextColor * FLinearColor(0.75f, 0.75f, 0.8f, 1.f)));
++		AddTint(LabelBlock, TextColor * FLinearColor(0.75f, 0.75f, 0.8f, 1.f), { { EContextMenuState::Hovered, TextColor }, { EContextMenuState::Pressed, TextColor } });
++	}
+ 	AddDisabledFade();
+ }
+ 
+ // =====================================================================================================
+-// Icon Button
++// Pill Button (switch)
+ // =====================================================================================================
+ 
+-UIconButton::UIconButton(const FObjectInitializer& ObjectInitializer)
++UPillSwitchButton::UPillSwitchButton(const FObjectInitializer& ObjectInitializer)
+ 	: Super(ObjectInitializer)
+ {
++	bButtonCanBeEnabled = true;
++	TrackColor = StyledButtonTheme::Surface();
++	OutlineColor = StyledButtonTheme::LineHover();
++	KnobColor = StyledButtonTheme::TextDim();
++	KnobOnColor = FLinearColor::White;
+ }
+ 
+-void UIconButton::BuildDefaultContent()
++bool UPillSwitchButton::HandleNavigation(EUINavigation Direction)
+ {
+-	using namespace StyledButtonTheme;
+-
+-	const UEllipseShape* Model = MakeBackground<UEllipseShape>([](UEllipseShape& Shape)
+-	{
+-		Solid(Shape, Surface());
+-		Outline(Shape, 1.5f, Line());
+-	});
+-
+-	UImage* Icon = MakePart<UImage>(TEXT("Icon"));
+-	Icon->SetDesiredSizeOverride(FVector2D(24.0, 24.0));
+-	SetButtonContent(Icon, FMargin(12.f));
+-
+-	FContextMenuShapeTarget& Self = AddShapeTarget(this, 14.f);
+-	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<UEllipseShape>(*Model, [](UEllipseShape& Shape)
+-	{
+-		Shape.Fill.Color = SurfaceHover();
+-		Shape.Stroke.Paint.Color = Accent();
+-	});
+-	FContextMenuShapeStateSettings& Pressed = OverrideShape(Self, EContextMenuState::Pressed);
+-	Pressed.Look = MakeLook<UEllipseShape>(*Model, [](UEllipseShape& Shape)
++	if (!bLeftRightSetsValue || (Direction != EUINavigation::Left && Direction != EUINavigation::Right))
+ 	{
+-		Shape.Fill.Color = SurfacePressed();
+-		Shape.Stroke.Paint.Color = Accent();
+-	});
+-	Pressed.Transform.Scale = FVector2D(0.92, 0.92);
+-
+-	AddTint(Icon, TextDim(), { { EContextMenuState::Hovered, Text() }, { EContextMenuState::Pressed, Text() } });
+-	AddDisabledFade();
++		return false;
++	}
++	SetEnabledState(Direction == EUINavigation::Right);
++	return true;
+ }
+ 
+-// =====================================================================================================
+-// Menu Item
+-// =====================================================================================================
+-
+-UMenuItemButton::UMenuItemButton(const FObjectInitializer& ObjectInitializer)
+-	: Super(ObjectInitializer)
++void UPillSwitchButton::BuildParts()
+ {
++	UEllipseShape* KnobShape = MakePart<UEllipseShape>(StyledButtonParts::Knob);
++	UWidget* KnobSizeBox = Sized(KnobShape, StyledButtonParts::KnobBox);
++	RememberPart(StyledButtonParts::Knob, KnobShape);
++	RememberPart(StyledButtonParts::KnobBox, KnobSizeBox);
++	SetButtonContent(KnobSizeBox);
+ }
+ 
+-void UMenuItemButton::BuildDefaultContent()
++void UPillSwitchButton::ApplyStyle()
+ {
+ 	using namespace StyledButtonTheme;
++	BeginStyle();
+ 
+-	const URectangleShape* Model = MakeBackground<URectangleShape>([](URectangleShape& Shape)
+-	{
+-		Shape.CornerRounding = 4.f;
+-		Solid(Shape, Clear());
+-	});
+-
+-	// The bar at the side, grown from nothing on hover (Shape Scale keeps its round ends round).
+-	URectangleShape* Bar = MakePart<URectangleShape>(TEXT("Bar"));
+-	Bar->bFullyRounded = true;
+-	Solid(*Bar, Accent());
+-	Bar->ShapeScale = FVector2D(1.0, 0.0);
+-
+-	UTextBlock* Label = MakeLabel(TEXT("Label"), LOCTEXT("MenuItemLabel", "Menu Item"), 20);
+-	ButtonTextWidgetName = Label->GetFName();
+-
+-	UHorizontalBox* Row = MakePart<UHorizontalBox>(TEXT("Row"));
+-	if (UHorizontalBoxSlot* BarSlot = Row->AddChildToHorizontalBox(Sized(Bar, FVector2D(4.0, 24.0))))
+-	{
+-		BarSlot->SetVerticalAlignment(VAlign_Center);
+-	}
+-	if (UHorizontalBoxSlot* LabelSlot = Row->AddChildToHorizontalBox(Label))
+-	{
+-		LabelSlot->SetVerticalAlignment(VAlign_Center);
+-		LabelSlot->SetPadding(FMargin(14.f, 0.f, 0.f, 0.f));
+-		LabelSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+-	}
+-	SetButtonContent(Row, FMargin(12.f, 10.f), HAlign_Fill);
++	// The track is the button: the knob sits inside it, Knob Inset from its edges, and slides the track's width less its own.
++	const float Inset = FMath::Max(KnobInset, 0.f);
++	const float Knob = FMath::Max(static_cast<float>(TrackSize.Y) - 2.f * Inset, 1.f);
++	const float Travel = FMath::Max(static_cast<float>(TrackSize.X) - 2.f * Inset - Knob, 0.f);
+ 
+-	FContextMenuShapeTarget& Self = AddShapeTarget(this, 14.f);
+-	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
++	const FLinearColor Track = TrackColor;
++	const FLinearColor Edge = OutlineColor;
++	const URectangleShape* Model = MakeBackground<URectangleShape>([Track, Edge](URectangleShape& Shape)
+ 	{
+-		Shape.Fill.Color = RowHover();
++		Shape.bFullyRounded = true;
++		Solid(Shape, Track);
++		Outline(Shape, 1.5f, Edge);
+ 	});
++	SetContentLayout(FMargin(Inset, Inset, Inset + Travel, Inset), HAlign_Left, VAlign_Top);
++	SetBoxSize(FindPart(StyledButtonParts::KnobBox), FVector2D(Knob, Knob));
+ 
+-	FContextMenuShapeTarget& BarTarget = AddShapeTarget(Bar, 12.f, EContextMenuInterpolationCurve::Click, 1.2f);
+-	OverrideShape(BarTarget, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Bar, [](URectangleShape& Shape)
++	const FLinearColor Accent = AccentColor;
++	FContextMenuShapeTarget& Self = AddShapeTarget(this);
++	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [Track](URectangleShape& Shape)
+ 	{
+-		Shape.ShapeScale = FVector2D(1.0, 1.0);
++		Shape.Fill.Color = Lighter(Track, 0.08f);
+ 	});
+-	OverrideShape(BarTarget, EContextMenuState::Pressed).Look = MakeLook<URectangleShape>(*Bar, [](URectangleShape& Shape)
++	OverrideShape(Self, EContextMenuState::Enabled).Look = MakeLook<URectangleShape>(*Model, [Accent](URectangleShape& Shape)
+ 	{
+-		Shape.ShapeScale = FVector2D(1.0, 0.7);
++		Shape.Fill.Color = Accent;
++		Shape.Stroke.Paint.Color = Accent;
+ 	});
+ 
+-	FContextMenuShapeTarget& LabelTarget = AddShapeTarget(Label, 12.f);
+-	OverrideShape(LabelTarget, EContextMenuState::Hovered).Transform.Translation = FVector2D(6.0, 0.0);
+-	OverrideShape(LabelTarget, EContextMenuState::Pressed).Transform.Translation = FVector2D(4.0, 0.0);
++	if (UEllipseShape* KnobShape = FindPart<UEllipseShape>(StyledButtonParts::Knob))
++	{
++		Solid(*KnobShape, KnobColor);
++		KnobShape->SetRenderTransform(FWidgetTransform());
+ 
+-	AddTint(Label, TextDim(), { { EContextMenuState::Hovered, Text() }, { EContextMenuState::Pressed, Accent() } });
++		FContextMenuShapeTarget& KnobTarget = AddShapeTarget(KnobShape);
++		const FLinearColor KnobIdle = KnobColor;
++		const FLinearColor KnobOn = KnobOnColor;
++		OverrideShape(KnobTarget, EContextMenuState::Hovered).Look = MakeLook<UEllipseShape>(*KnobShape, [KnobIdle](UEllipseShape& Shape)
++		{
++			Shape.Fill.Color = Lighter(KnobIdle, 0.35f);
++		});
++		FContextMenuShapeStateSettings& OnState = OverrideShape(KnobTarget, EContextMenuState::Enabled);
++		OnState.Transform.Translation = FVector2D(Travel, 0.0);
++		OnState.Look = MakeLook<UEllipseShape>(*KnobShape, [KnobOn](UEllipseShape& Shape)
++		{
++			Shape.Fill.Color = KnobOn;
++		});
++	}
+ 	AddDisabledFade();
+ }
+ 
+ // =====================================================================================================
+-// Tab Button
++// Checkbox
+ // =====================================================================================================
+ 
+-UTabButton::UTabButton(const FObjectInitializer& ObjectInitializer)
++UCheckboxButton::UCheckboxButton(const FObjectInitializer& ObjectInitializer)
+ 	: Super(ObjectInitializer)
+ {
+ 	bButtonCanBeEnabled = true;
+-	bUnenableAllOtherGroupButtonsOnEnabled = true;
+-	bClickOnlyEnables = true;
++	OutlineColor = StyledButtonTheme::TextDim();
++	CheckColor = FLinearColor::White;
+ }
+ 
+-void UTabButton::BuildDefaultContent()
++void UCheckboxButton::BuildParts()
++{
++	// The check mark: an open path, stroked with round ends, drawn on by its Trim End. The box is the button itself.
++	UCustomShape* CheckShape = MakePart<UCustomShape>(StyledButtonParts::Check);
++	FWidgetShapePath Path;
++	FWidgetShapeContour& Contour = Path.Contours.AddDefaulted_GetRef();
++	Contour.bClosed = false;
++	Contour.Vertices.Add(FWidgetShapeVertex(FVector2D(0.24, 0.52)));
++	Contour.Vertices.Add(FWidgetShapeVertex(FVector2D(0.43, 0.70)));
++	Contour.Vertices.Add(FWidgetShapeVertex(FVector2D(0.77, 0.31)));
++	CheckShape->Path = Path;
++
++	UWidget* CheckSizeBox = Sized(CheckShape, StyledButtonParts::CheckBox);
++	RememberPart(StyledButtonParts::Check, CheckShape);
++	RememberPart(StyledButtonParts::CheckBox, CheckSizeBox);
++	SetButtonContent(CheckSizeBox);
++}
++
++void UCheckboxButton::ApplyStyle()
+ {
+ 	using namespace StyledButtonTheme;
++	BeginStyle();
+ 
+-	const URectangleShape* Model = MakeBackground<URectangleShape>([](URectangleShape& Shape)
++	const float Rounding = CornerRounding;
++	const float EdgeWidth = OutlineWidth;
++	const FLinearColor Edge = OutlineColor;
++	const URectangleShape* Model = MakeBackground<URectangleShape>([Rounding, EdgeWidth, Edge](URectangleShape& Shape)
+ 	{
+-		Shape.bIndividualCorners = true;
+-		Shape.CornerRadii = FVector4(6.0, 6.0, 0.0, 0.0);
++		Shape.CornerRounding = Rounding;
+ 		Solid(Shape, Clear());
++		Outline(Shape, EdgeWidth, Edge);
+ 	});
++	SetContentLayout(FMargin(0.f));
++	SetBoxSize(FindPart(StyledButtonParts::CheckBox), FVector2D(BoxSize, BoxSize));
+ 
+-	UTextBlock* Label = MakeLabel(TEXT("Label"), LOCTEXT("TabLabel", "Tab"), 15);
+-	ButtonTextWidgetName = Label->GetFName();
+-
+-	// The underline: a pill as wide as the tab, grown out from its middle.
+-	URectangleShape* Underline = MakePart<URectangleShape>(TEXT("Underline"));
+-	Underline->bFullyRounded = true;
+-	Solid(*Underline, Accent());
+-	Underline->ShapeScale = FVector2D(0.0, 1.0);
+-
+-	UOverlay* Stack = MakePart<UOverlay>(TEXT("Stack"));
+-	if (UOverlaySlot* LabelSlot = Stack->AddChildToOverlay(Label))
+-	{
+-		LabelSlot->SetHorizontalAlignment(HAlign_Center);
+-		LabelSlot->SetVerticalAlignment(VAlign_Center);
+-		LabelSlot->SetPadding(FMargin(18.f, 10.f, 18.f, 13.f));
+-	}
+-	if (UOverlaySlot* LineSlot = Stack->AddChildToOverlay(Sized(Underline, FVector2D(0.0, 3.0))))
+-	{
+-		LineSlot->SetHorizontalAlignment(HAlign_Fill);
+-		LineSlot->SetVerticalAlignment(VAlign_Bottom);
+-		LineSlot->SetPadding(FMargin(10.f, 0.f));
+-	}
+-	SetButtonContent(Stack, FMargin(0.f), HAlign_Fill, VAlign_Fill);
+-
+-	FContextMenuShapeTarget& Self = AddShapeTarget(this, 14.f);
+-	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
++	const FLinearColor Accent = AccentColor;
++	FContextMenuShapeTarget& Self = AddShapeTarget(this);
++	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [Edge](URectangleShape& Shape)
+ 	{
++		Shape.Stroke.Paint.Color = Lighter(Edge, 0.5f);
+ 		Shape.Fill.Color = RowHover();
+ 	});
+-
+-	FContextMenuShapeTarget& LineTarget = AddShapeTarget(Underline, 12.f, EContextMenuInterpolationCurve::EaseOut);
+-	OverrideShape(LineTarget, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Underline, [](URectangleShape& Shape)
++	OverrideShape(Self, EContextMenuState::Enabled).Look = MakeLook<URectangleShape>(*Model, [Accent](URectangleShape& Shape)
+ 	{
+-		Shape.ShapeScale = FVector2D(0.3, 1.0);
+-		Shape.Fill.Color = TextDim();
++		Shape.Fill.Color = Accent;
++		Shape.Stroke.Paint.Color = Accent;
+ 	});
+-	OverrideShape(LineTarget, EContextMenuState::Enabled).Look = MakeLook<URectangleShape>(*Underline, [](URectangleShape& Shape)
++
++	if (UCustomShape* CheckShape = FindPart<UCustomShape>(StyledButtonParts::Check))
+ 	{
+-		Shape.ShapeScale = FVector2D(1.0, 1.0);
+-	});
++		Hollow(*CheckShape, CheckWidth, CheckColor, EWidgetShapeStrokeAlign::Center);
++		CheckShape->Stroke.Cap = EWidgetShapeLineCap::Round;
++		CheckShape->Stroke.Join = EWidgetShapeLineJoin::Round;
++		CheckShape->Trim.End = 0.f;
++		CheckShape->InvalidateShape();
+ 
+-	AddTint(Label, TextDim(), { { EContextMenuState::Hovered, Text() }, { EContextMenuState::Enabled, Text() } });
++		FContextMenuShapeTarget& CheckTarget = AddShapeTarget(CheckShape);
++		OverrideShape(CheckTarget, EContextMenuState::Enabled).Look = MakeLook<UCustomShape>(*CheckShape, [](UCustomShape& Shape)
++		{
++			Shape.Trim.End = 1.f;
++		});
++	}
+ 	AddDisabledFade();
+ }
+ 
+@@ -448,274 +609,154 @@ void UTabButton::BuildDefaultContent()
+ URadioButton::URadioButton(const FObjectInitializer& ObjectInitializer)
+ 	: Super(ObjectInitializer)
+ {
++	// One chosen per container; clicking the chosen one again clears it (Click Only Enables makes it stay).
+ 	bButtonCanBeEnabled = true;
+ 	bUnenableAllOtherGroupButtonsOnEnabled = true;
+-	bClickOnlyEnables = true;
++	bClickOnlyEnables = false;
++	RingColor = StyledButtonTheme::TextDim();
++}
++
++void URadioButton::BuildParts()
++{
++	// The ring is the button itself; the dot sits in it.
++	UEllipseShape* DotShape = MakePart<UEllipseShape>(StyledButtonParts::Dot);
++	UWidget* DotSizeBox = Sized(DotShape, StyledButtonParts::DotBox);
++	RememberPart(StyledButtonParts::Dot, DotShape);
++	RememberPart(StyledButtonParts::DotBox, DotSizeBox);
++	SetButtonContent(DotSizeBox);
+ }
+ 
+-void URadioButton::BuildDefaultContent()
++void URadioButton::ApplyStyle()
+ {
+ 	using namespace StyledButtonTheme;
++	BeginStyle();
+ 
+-	const URectangleShape* Model = MakeBackground<URectangleShape>([](URectangleShape& Shape)
++	const float EdgeWidth = RingWidth;
++	const FLinearColor Ring = RingColor;
++	const UEllipseShape* Model = MakeBackground<UEllipseShape>([EdgeWidth, Ring](UEllipseShape& Shape)
+ 	{
+-		Shape.CornerRounding = 6.f;
+ 		Solid(Shape, Clear());
++		Outline(Shape, EdgeWidth, Ring);
+ 	});
++	SetContentLayout(FMargin(0.f));
++	SetBoxSize(FindPart(StyledButtonParts::DotBox), FVector2D(Size, Size));
+ 
+-	UEllipseShape* Ring = MakePart<UEllipseShape>(TEXT("Ring"));
+-	Hollow(*Ring, 2.f, TextDim());
+-
+-	UEllipseShape* Dot = MakePart<UEllipseShape>(TEXT("Dot"));
+-	Solid(*Dot, Accent());
+-	Dot->ShapeScale = FVector2D(0.0, 0.0);
+-
+-	UOverlay* Mark = MakePart<UOverlay>(TEXT("Mark"));
+-	for (UWidget* Part : { static_cast<UWidget*>(Ring), static_cast<UWidget*>(Dot) })
+-	{
+-		if (UOverlaySlot* PartSlot = Mark->AddChildToOverlay(Part))
+-		{
+-			PartSlot->SetHorizontalAlignment(HAlign_Fill);
+-			PartSlot->SetVerticalAlignment(VAlign_Fill);
+-		}
+-	}
+-
+-	UTextBlock* Label = MakeLabel(TEXT("Label"), LOCTEXT("RadioLabel", "Option"), 15);
+-	ButtonTextWidgetName = Label->GetFName();
+-
+-	UHorizontalBox* Row = MakePart<UHorizontalBox>(TEXT("Row"));
+-	if (UHorizontalBoxSlot* MarkSlot = Row->AddChildToHorizontalBox(Sized(Mark, FVector2D(20.0, 20.0))))
+-	{
+-		MarkSlot->SetVerticalAlignment(VAlign_Center);
+-	}
+-	if (UHorizontalBoxSlot* LabelSlot = Row->AddChildToHorizontalBox(Label))
+-	{
+-		LabelSlot->SetVerticalAlignment(VAlign_Center);
+-		LabelSlot->SetPadding(FMargin(10.f, 0.f, 0.f, 0.f));
+-	}
+-	SetButtonContent(Row, FMargin(8.f, 6.f), HAlign_Left);
+-
+-	FContextMenuShapeTarget& Self = AddShapeTarget(this, 14.f);
+-	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
++	const FLinearColor Accent = AccentColor;
++	FContextMenuShapeTarget& Self = AddShapeTarget(this);
++	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<UEllipseShape>(*Model, [Ring](UEllipseShape& Shape)
+ 	{
++		Shape.Stroke.Paint.Color = Lighter(Ring, 0.5f);
+ 		Shape.Fill.Color = RowHover();
+ 	});
+-
+-	FContextMenuShapeTarget& RingTarget = AddShapeTarget(Ring, 14.f);
+-	OverrideShape(RingTarget, EContextMenuState::Hovered).Look = MakeLook<UEllipseShape>(*Ring, [](UEllipseShape& Shape)
+-	{
+-		Shape.Stroke.Paint.Color = Text();
+-	});
+-	OverrideShape(RingTarget, EContextMenuState::Enabled).Look = MakeLook<UEllipseShape>(*Ring, [](UEllipseShape& Shape)
++	OverrideShape(Self, EContextMenuState::Enabled).Look = MakeLook<UEllipseShape>(*Model, [Accent](UEllipseShape& Shape)
+ 	{
+-		Shape.Stroke.Paint.Color = Accent();
++		Shape.Stroke.Paint.Color = Accent;
+ 	});
+ 
+-	// The dot pops in, a little past its size and back.
+-	FContextMenuShapeTarget& DotTarget = AddShapeTarget(Dot, 9.f, EContextMenuInterpolationCurve::Click, 2.0f);
+-	OverrideShape(DotTarget, EContextMenuState::Enabled).Look = MakeLook<UEllipseShape>(*Dot, [](UEllipseShape& Shape)
++	if (UEllipseShape* DotShape = FindPart<UEllipseShape>(StyledButtonParts::Dot))
+ 	{
+-		Shape.ShapeScale = FVector2D(0.5, 0.5);
+-	});
++		Solid(*DotShape, Accent);
++		DotShape->ShapeScale = FVector2D(0.0, 0.0);
++		DotShape->InvalidateShape();
+ 
+-	AddTint(Label, TextDim(), { { EContextMenuState::Hovered, Text() }, { EContextMenuState::Enabled, Text() } });
++		const float Scale = DotScale;
++		FContextMenuShapeTarget& DotTarget = AddShapeTarget(DotShape);
++		OverrideShape(DotTarget, EContextMenuState::Enabled).Look = MakeLook<UEllipseShape>(*DotShape, [Scale](UEllipseShape& Shape)
++		{
++			Shape.ShapeScale = FVector2D(Scale, Scale);
++		});
++	}
+ 	AddDisabledFade();
+ }
+ 
+ // =====================================================================================================
+-// Checkbox
++// Menu Item
+ // =====================================================================================================
+ 
+-UCheckboxButton::UCheckboxButton(const FObjectInitializer& ObjectInitializer)
++UMenuItemButton::UMenuItemButton(const FObjectInitializer& ObjectInitializer)
+ 	: Super(ObjectInitializer)
+ {
+-	bButtonCanBeEnabled = true;
++	TextColor = StyledButtonTheme::TextDim();
++	HoverTextColor = StyledButtonTheme::Text();
++	HoverFillColor = StyledButtonTheme::RowHover();
+ }
+ 
+-void UCheckboxButton::BuildDefaultContent()
++void UMenuItemButton::BuildParts()
+ {
+-	using namespace StyledButtonTheme;
+-
+-	const URectangleShape* Model = MakeBackground<URectangleShape>([](URectangleShape& Shape)
+-	{
+-		Shape.CornerRounding = 6.f;
+-		Solid(Shape, Clear());
+-	});
+-
+-	URectangleShape* Box = MakePart<URectangleShape>(TEXT("Box"));
+-	Box->CornerRounding = 4.f;
+-	Solid(*Box, Clear());
+-	Outline(*Box, 2.f, TextDim());
+-
+-	// The check mark: an open path, stroked with round ends, drawn on by its Trim End.
+-	UCustomShape* Check = MakePart<UCustomShape>(TEXT("Check"));
+-	{
+-		FWidgetShapePath Path;
+-		FWidgetShapeContour& Contour = Path.Contours.AddDefaulted_GetRef();
+-		Contour.bClosed = false;
+-		Contour.Vertices.Add(FWidgetShapeVertex(FVector2D(0.24, 0.52)));
+-		Contour.Vertices.Add(FWidgetShapeVertex(FVector2D(0.43, 0.70)));
+-		Contour.Vertices.Add(FWidgetShapeVertex(FVector2D(0.77, 0.31)));
+-		Check->Path = Path;
+-	}
+-	Hollow(*Check, 2.5f, FLinearColor::White, EWidgetShapeStrokeAlign::Center);
+-	Check->Stroke.Cap = EWidgetShapeLineCap::Round;
+-	Check->Stroke.Join = EWidgetShapeLineJoin::Round;
+-	Check->Trim.End = 0.f;
+-
+-	UOverlay* Mark = MakePart<UOverlay>(TEXT("Mark"));
+-	for (UWidget* Part : { static_cast<UWidget*>(Box), static_cast<UWidget*>(Check) })
+-	{
+-		if (UOverlaySlot* PartSlot = Mark->AddChildToOverlay(Part))
+-		{
+-			PartSlot->SetHorizontalAlignment(HAlign_Fill);
+-			PartSlot->SetVerticalAlignment(VAlign_Fill);
+-		}
+-	}
+-
+-	UTextBlock* Label = MakeLabel(TEXT("Label"), LOCTEXT("CheckboxLabel", "Checkbox"), 15);
+-	ButtonTextWidgetName = Label->GetFName();
++	URectangleShape* BarShape = MakePart<URectangleShape>(StyledButtonParts::Bar);
++	UTextBlock* LabelBlock = MakeLabel(StyledButtonParts::Label, LOCTEXT("MenuItemLabel", "Menu Item"), 20);
++	ButtonTextWidgetName = LabelBlock->GetFName();
+ 
+ 	UHorizontalBox* Row = MakePart<UHorizontalBox>(TEXT("Row"));
+-	if (UHorizontalBoxSlot* MarkSlot = Row->AddChildToHorizontalBox(Sized(Mark, FVector2D(20.0, 20.0))))
++	UWidget* BarSizeBox = Sized(BarShape, StyledButtonParts::BarBox);
++	if (UHorizontalBoxSlot* BarSlot = Row->AddChildToHorizontalBox(BarSizeBox))
+ 	{
+-		MarkSlot->SetVerticalAlignment(VAlign_Center);
++		BarSlot->SetVerticalAlignment(VAlign_Center);
+ 	}
+-	if (UHorizontalBoxSlot* LabelSlot = Row->AddChildToHorizontalBox(Label))
++	if (UHorizontalBoxSlot* LabelSlot = Row->AddChildToHorizontalBox(LabelBlock))
+ 	{
+ 		LabelSlot->SetVerticalAlignment(VAlign_Center);
+-		LabelSlot->SetPadding(FMargin(10.f, 0.f, 0.f, 0.f));
++		LabelSlot->SetPadding(FMargin(14.f, 0.f, 0.f, 0.f));
++		LabelSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+ 	}
+-	SetButtonContent(Row, FMargin(8.f, 6.f), HAlign_Left);
+-
+-	FContextMenuShapeTarget& Self = AddShapeTarget(this, 14.f);
+-	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
+-	{
+-		Shape.Fill.Color = RowHover();
+-	});
+-
+-	FContextMenuShapeTarget& BoxTarget = AddShapeTarget(Box, 14.f);
+-	OverrideShape(BoxTarget, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Box, [](URectangleShape& Shape)
+-	{
+-		Shape.Stroke.Paint.Color = Text();
+-	});
+-	OverrideShape(BoxTarget, EContextMenuState::Enabled).Look = MakeLook<URectangleShape>(*Box, [](URectangleShape& Shape)
+-	{
+-		Shape.Fill.Color = Accent();
+-		Shape.Stroke.Paint.Color = Accent();
+-	});
+-
+-	FContextMenuShapeTarget& CheckTarget = AddShapeTarget(Check, 7.f, EContextMenuInterpolationCurve::EaseOut);
+-	OverrideShape(CheckTarget, EContextMenuState::Enabled).Look = MakeLook<UCustomShape>(*Check, [](UCustomShape& Shape)
+-	{
+-		Shape.Trim.End = 1.f;
+-	});
+-
+-	AddTint(Label, TextDim(), { { EContextMenuState::Hovered, Text() }, { EContextMenuState::Enabled, Text() } });
+-	AddDisabledFade();
+-}
+-
+-// =====================================================================================================
+-// Toggle Switch
+-// =====================================================================================================
+-
+-UToggleSwitchButton::UToggleSwitchButton(const FObjectInitializer& ObjectInitializer)
+-	: Super(ObjectInitializer)
+-{
+-	bButtonCanBeEnabled = true;
++	RememberPart(StyledButtonParts::Bar, BarShape);
++	RememberPart(StyledButtonParts::BarBox, BarSizeBox);
++	RememberPart(StyledButtonParts::Label, LabelBlock);
++	SetButtonContent(Row);
+ }
+ 
+-bool UToggleSwitchButton::HandleNavigation(EUINavigation Direction)
+-{
+-	if (!bLeftRightSetsValue || (Direction != EUINavigation::Left && Direction != EUINavigation::Right))
+-	{
+-		return false;
+-	}
+-	SetEnabledState(Direction == EUINavigation::Right);
+-	return true;
+-}
+-
+-void UToggleSwitchButton::BuildDefaultContent()
++void UMenuItemButton::ApplyStyle()
+ {
+ 	using namespace StyledButtonTheme;
++	BeginStyle();
+ 
+ 	const URectangleShape* Model = MakeBackground<URectangleShape>([](URectangleShape& Shape)
+ 	{
+-		Shape.CornerRounding = 6.f;
++		Shape.CornerRounding = 4.f;
+ 		Solid(Shape, Clear());
+ 	});
++	SetContentLayout(FMargin(12.f, 10.f), HAlign_Fill);
++	SetBoxSize(FindPart(StyledButtonParts::BarBox), BarSize);
+ 
+-	UTextBlock* Label = MakeLabel(TEXT("Label"), LOCTEXT("ToggleLabel", "Setting"), 15);
+-	ButtonTextWidgetName = Label->GetFName();
+-
+-	URectangleShape* Track = MakePart<URectangleShape>(TEXT("Track"));
+-	Track->bFullyRounded = true;
+-	Solid(*Track, Surface());
+-	Outline(*Track, 1.5f, LineHover());
+-
+-	UEllipseShape* Knob = MakePart<UEllipseShape>(TEXT("Knob"));
+-	Solid(*Knob, TextDim());
+-
+-	// The knob sits at the track's left, 3 in; on, it slides over by the track's width less its own and both insets.
+-	constexpr double TrackWidth = 44.0;
+-	constexpr double TrackHeight = 24.0;
+-	constexpr double Inset = 3.0;
+-	constexpr double KnobSize = TrackHeight - 2.0 * Inset;
+-
+-	UOverlay* Switch = MakePart<UOverlay>(TEXT("Switch"));
+-	if (UOverlaySlot* TrackSlot = Switch->AddChildToOverlay(Track))
+-	{
+-		TrackSlot->SetHorizontalAlignment(HAlign_Fill);
+-		TrackSlot->SetVerticalAlignment(VAlign_Fill);
+-	}
+-	if (UOverlaySlot* KnobSlot = Switch->AddChildToOverlay(Sized(Knob, FVector2D(KnobSize, KnobSize))))
+-	{
+-		KnobSlot->SetHorizontalAlignment(HAlign_Left);
+-		KnobSlot->SetVerticalAlignment(VAlign_Center);
+-		KnobSlot->SetPadding(FMargin(static_cast<float>(Inset), 0.f));
+-	}
+-
+-	UHorizontalBox* Row = MakePart<UHorizontalBox>(TEXT("Row"));
+-	if (UHorizontalBoxSlot* LabelSlot = Row->AddChildToHorizontalBox(Label))
+-	{
+-		LabelSlot->SetVerticalAlignment(VAlign_Center);
+-		LabelSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+-		LabelSlot->SetPadding(FMargin(0.f, 0.f, 16.f, 0.f));
+-	}
+-	if (UHorizontalBoxSlot* SwitchSlot = Row->AddChildToHorizontalBox(Sized(Switch, FVector2D(TrackWidth, TrackHeight))))
+-	{
+-		SwitchSlot->SetVerticalAlignment(VAlign_Center);
+-	}
+-	SetButtonContent(Row, FMargin(10.f, 8.f), HAlign_Fill);
+-
+-	FContextMenuShapeTarget& Self = AddShapeTarget(this, 14.f);
+-	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
++	const FLinearColor HoverFill = HoverFillColor;
++	FContextMenuShapeTarget& Self = AddShapeTarget(this);
++	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [HoverFill](URectangleShape& Shape)
+ 	{
+-		Shape.Fill.Color = RowHover();
++		Shape.Fill.Color = HoverFill;
+ 	});
+ 
+-	FContextMenuShapeTarget& TrackTarget = AddShapeTarget(Track, 12.f);
+-	OverrideShape(TrackTarget, EContextMenuState::Enabled).Look = MakeLook<URectangleShape>(*Track, [](URectangleShape& Shape)
++	if (URectangleShape* BarShape = FindPart<URectangleShape>(StyledButtonParts::Bar))
+ 	{
+-		Shape.Fill.Color = Accent();
+-		Shape.Stroke.Paint.Color = Accent();
+-	});
++		// The bar grows from nothing on hover (Shape Scale keeps its round ends round).
++		BarShape->bFullyRounded = true;
++		Solid(*BarShape, AccentColor);
++		BarShape->ShapeScale = FVector2D(1.0, 0.0);
++		BarShape->InvalidateShape();
+ 
+-	// The knob slides with a little give at the end.
+-	FContextMenuShapeTarget& KnobTarget = AddShapeTarget(Knob, 9.f, EContextMenuInterpolationCurve::Click, 1.2f);
+-	FContextMenuShapeStateSettings& On = OverrideShape(KnobTarget, EContextMenuState::Enabled);
+-	On.Transform.Translation = FVector2D(TrackWidth - KnobSize - 2.0 * Inset, 0.0);
+-	On.Look = MakeLook<UEllipseShape>(*Knob, [](UEllipseShape& Shape)
+-	{
+-		Shape.Fill.Color = FLinearColor::White;
+-	});
+-	FContextMenuShapeStateSettings& Held = OverrideShape(KnobTarget, EContextMenuState::Hovered);
+-	Held.Look = MakeLook<UEllipseShape>(*Knob, [](UEllipseShape& Shape)
++		FContextMenuShapeTarget& BarTarget = AddShapeTarget(BarShape);
++		OverrideShape(BarTarget, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*BarShape, [](URectangleShape& Shape)
++		{
++			Shape.ShapeScale = FVector2D(1.0, 1.0);
++		});
++		OverrideShape(BarTarget, EContextMenuState::Pressed).Look = MakeLook<URectangleShape>(*BarShape, [](URectangleShape& Shape)
++		{
++			Shape.ShapeScale = FVector2D(1.0, 0.7);
++		});
++	}
++
++	if (UTextBlock* LabelBlock = FindPart<UTextBlock>(StyledButtonParts::Label))
+ 	{
+-		Shape.Fill.Color = Text();
+-	});
++		FSlateFontInfo LabelFont = LabelBlock->GetFont();
++		LabelFont.Size = FontSize;
++		LabelBlock->SetFont(LabelFont);
++		LabelBlock->SetColorAndOpacity(FSlateColor(TextColor));
++		LabelBlock->SetRenderTransform(FWidgetTransform());
+ 
+-	AddTint(Label, TextDim(), { { EContextMenuState::Hovered, Text() }, { EContextMenuState::Enabled, Text() } });
++		FContextMenuShapeTarget& LabelTarget = AddShapeTarget(LabelBlock);
++		OverrideShape(LabelTarget, EContextMenuState::Hovered).Transform.Translation = FVector2D(HoverShift, 0.0);
++		OverrideShape(LabelTarget, EContextMenuState::Pressed).Transform.Translation = FVector2D(HoverShift * 0.66, 0.0);
++		AddTint(LabelBlock, TextColor, { { EContextMenuState::Hovered, HoverTextColor }, { EContextMenuState::Pressed, AccentColor } });
++	}
+ 	AddDisabledFade();
+ }
+ 
+@@ -735,69 +776,101 @@ UHoldButton::UHoldButton(const FObjectInitializer& ObjectInitializer)
+ 	bPressDurationProgressResetsOnCompleted = true;
+ 	PressProgressValue = EWidgetShapeValue::TrimEnd;
+ 	PressProgressRange = FVector2D(0.0, 1.0);
++	FillColor = StyledButtonTheme::Surface();
++	OutlineColor = StyledButtonTheme::Line();
++	TextColor = StyledButtonTheme::Text();
+ }
+ 
+-void UHoldButton::BuildDefaultContent()
++void UHoldButton::BuildParts()
+ {
+-	using namespace StyledButtonTheme;
+-
+-	const URectangleShape* Model = MakeBackground<URectangleShape>([](URectangleShape& Shape)
+-	{
+-		Shape.bFullyRounded = true;
+-		Solid(Shape, Surface());
+-		Outline(Shape, 1.5f, Line());
+-	});
+-
+-	UEllipseShape* Track = MakePart<UEllipseShape>(TEXT("RingTrack"));
+-	Hollow(*Track, 3.f, FLinearColor(1.f, 1.f, 1.f, 0.18f));
++	UEllipseShape* TrackShape = MakePart<UEllipseShape>(StyledButtonParts::RingTrack);
++	UEllipseShape* ProgressShape = MakePart<UEllipseShape>(StyledButtonParts::Progress);
++	PressProgressWidgetName = ProgressShape->GetFName();
+ 
+-	// The ring that fills: its Trim End is the Progress Widget's value, 0 to 1 while held.
+-	UEllipseShape* Progress = MakePart<UEllipseShape>(TEXT("Progress"));
+-	Hollow(*Progress, 3.f, Accent());
+-	Progress->Stroke.Cap = EWidgetShapeLineCap::Round;
+-	Progress->Trim.End = 0.f;
+-	PressProgressWidgetName = Progress->GetFName();
+-
+-	UOverlay* Ring = MakePart<UOverlay>(TEXT("Ring"));
+-	for (UWidget* Part : { static_cast<UWidget*>(Track), static_cast<UWidget*>(Progress) })
++	UOverlay* RingStack = MakePart<UOverlay>(TEXT("Ring"));
++	for (UWidget* RingPart : { static_cast<UWidget*>(TrackShape), static_cast<UWidget*>(ProgressShape) })
+ 	{
+-		if (UOverlaySlot* PartSlot = Ring->AddChildToOverlay(Part))
++		if (UOverlaySlot* PartSlot = RingStack->AddChildToOverlay(RingPart))
+ 		{
+ 			PartSlot->SetHorizontalAlignment(HAlign_Fill);
+ 			PartSlot->SetVerticalAlignment(VAlign_Fill);
+ 		}
+ 	}
+ 
+-	UTextBlock* Label = MakeLabel(TEXT("Label"), LOCTEXT("HoldLabel", "Hold to Confirm"), 15);
+-	ButtonTextWidgetName = Label->GetFName();
++	UTextBlock* LabelBlock = MakeLabel(StyledButtonParts::Label, LOCTEXT("HoldLabel", "Hold to Confirm"), 15);
++	ButtonTextWidgetName = LabelBlock->GetFName();
+ 
+ 	UHorizontalBox* Row = MakePart<UHorizontalBox>(TEXT("Row"));
+-	if (UHorizontalBoxSlot* RingSlot = Row->AddChildToHorizontalBox(Sized(Ring, FVector2D(22.0, 22.0))))
++	UWidget* RingSizeBox = Sized(RingStack, StyledButtonParts::RingBox);
++	if (UHorizontalBoxSlot* RingSlot = Row->AddChildToHorizontalBox(RingSizeBox))
+ 	{
+ 		RingSlot->SetVerticalAlignment(VAlign_Center);
+ 	}
+-	if (UHorizontalBoxSlot* LabelSlot = Row->AddChildToHorizontalBox(Label))
++	if (UHorizontalBoxSlot* LabelSlot = Row->AddChildToHorizontalBox(LabelBlock))
+ 	{
+ 		LabelSlot->SetVerticalAlignment(VAlign_Center);
+ 		LabelSlot->SetPadding(FMargin(10.f, 0.f, 0.f, 0.f));
+ 	}
+-	SetButtonContent(Row, FMargin(16.f, 9.f, 24.f, 9.f));
++	RememberPart(StyledButtonParts::RingTrack, TrackShape);
++	RememberPart(StyledButtonParts::Progress, ProgressShape);
++	RememberPart(StyledButtonParts::RingBox, RingSizeBox);
++	RememberPart(StyledButtonParts::Label, LabelBlock);
++	SetButtonContent(Row);
++}
++
++void UHoldButton::ApplyStyle()
++{
++	using namespace StyledButtonTheme;
++	BeginStyle();
++
++	const EStyledButtonCorners CornerStyle = Corners;
++	const float Rounding = CornerRounding;
++	const FLinearColor Fill = FillColor;
++	const FLinearColor Edge = OutlineColor;
++	const URectangleShape* Model = MakeBackground<URectangleShape>([CornerStyle, Rounding, Fill, Edge](URectangleShape& Shape)
++	{
++		SetCorners(Shape, CornerStyle, Rounding);
++		Solid(Shape, Fill);
++		Outline(Shape, 1.5f, Edge);
++	});
++	SetContentLayout(FMargin(16.f, 9.f, 24.f, 9.f));
++	SetBoxSize(FindPart(StyledButtonParts::RingBox), FVector2D(RingSize, RingSize));
++
++	if (UEllipseShape* TrackShape = FindPart<UEllipseShape>(StyledButtonParts::RingTrack))
++	{
++		Hollow(*TrackShape, RingWidth, FLinearColor(1.f, 1.f, 1.f, 0.18f));
++		TrackShape->InvalidateShape();
++	}
++	if (UEllipseShape* ProgressShape = FindPart<UEllipseShape>(StyledButtonParts::Progress))
++	{
++		// Its Trim End is the Progress Widget's value: 0 to 1 while held.
++		Hollow(*ProgressShape, RingWidth, AccentColor);
++		ProgressShape->Stroke.Cap = EWidgetShapeLineCap::Round;
++		ProgressShape->Trim.End = 0.f;
++		ProgressShape->InvalidateShape();
++	}
+ 
+-	FContextMenuShapeTarget& Self = AddShapeTarget(this, 14.f);
+-	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
++	const FLinearColor Accent = AccentColor;
++	FContextMenuShapeTarget& Self = AddShapeTarget(this);
++	OverrideShape(Self, EContextMenuState::Hovered).Look = MakeLook<URectangleShape>(*Model, [Fill, Edge](URectangleShape& Shape)
+ 	{
+-		Shape.Fill.Color = SurfaceHover();
+-		Shape.Stroke.Paint.Color = LineHover();
++		Shape.Fill.Color = Lighter(Fill, 0.08f);
++		Shape.Stroke.Paint.Color = Lighter(Edge, 0.4f);
+ 	});
+-	FContextMenuShapeStateSettings& Pressed = OverrideShape(Self, EContextMenuState::Pressed);
+-	Pressed.Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
++	FContextMenuShapeStateSettings& PressedState = OverrideShape(Self, EContextMenuState::Pressed);
++	PressedState.Look = MakeLook<URectangleShape>(*Model, [Fill, Accent](URectangleShape& Shape)
+ 	{
+-		Shape.Fill.Color = SurfacePressed();
+-		Shape.Stroke.Paint.Color = Accent();
++		Shape.Fill.Color = Fill * 0.8f;
++		Shape.Stroke.Paint.Color = Accent;
+ 	});
+-	Pressed.Transform.Scale = FVector2D(0.98, 0.98);
++	PressedState.Transform.Scale = FVector2D(0.98, 0.98);
+ 
+-	AddTint(Label, TextDim(), { { EContextMenuState::Hovered, Text() }, { EContextMenuState::Pressed, Text() } });
++	if (UTextBlock* LabelBlock = FindPart<UTextBlock>(StyledButtonParts::Label))
++	{
++		const FLinearColor Idle = TextColor * FLinearColor(0.75f, 0.75f, 0.8f, 1.f);
++		LabelBlock->SetColorAndOpacity(FSlateColor(Idle));
++		AddTint(LabelBlock, Idle, { { EContextMenuState::Hovered, TextColor }, { EContextMenuState::Pressed, TextColor } });
++	}
+ 	AddDisabledFade();
+ }
+ 
+@@ -808,72 +881,108 @@ void UHoldButton::BuildDefaultContent()
+ UTileButton::UTileButton(const FObjectInitializer& ObjectInitializer)
+ 	: Super(ObjectInitializer)
+ {
++	// One chosen per container; clicking the chosen one again clears it (Click Only Enables makes it stay).
+ 	bButtonCanBeEnabled = true;
+ 	bUnenableAllOtherGroupButtonsOnEnabled = true;
+-	bClickOnlyEnables = true;
++	bClickOnlyEnables = false;
++	FillColor = StyledButtonTheme::Surface();
++	OutlineColor = StyledButtonTheme::Line();
++	RarityColor = StyledButtonTheme::Accent();
+ }
+ 
+-void UTileButton::BuildDefaultContent()
++void UTileButton::BuildParts()
+ {
+-	using namespace StyledButtonTheme;
+-
+-	const URectangleShape* Model = MakeBackground<URectangleShape>([](URectangleShape& Shape)
+-	{
+-		Shape.CornerRounding = 8.f;
+-		Solid(Shape, Surface());
+-		Outline(Shape, 2.f, Line());
+-	});
+-
+-	UImage* Icon = MakePart<UImage>(TEXT("Icon"));
+-	Icon->SetDesiredSizeOverride(FVector2D(64.0, 64.0));
+-
+-	UTextBlock* Label = MakeLabel(TEXT("Label"), LOCTEXT("TileLabel", "Item"), 12);
+-	ButtonTextWidgetName = Label->GetFName();
+-
+-	// The rarity stripe along the bottom, its lower corners following the tile's.
+-	URectangleShape* Rarity = MakePart<URectangleShape>(TEXT("Rarity"));
+-	Rarity->bIndividualCorners = true;
+-	Rarity->CornerRadii = FVector4(0.0, 0.0, 6.0, 6.0);
+-	Solid(*Rarity, Accent());
++	UImage* IconImage = MakePart<UImage>(StyledButtonParts::Icon);
++	UTextBlock* LabelBlock = MakeLabel(StyledButtonParts::Label, LOCTEXT("TileLabel", "Item"), 12);
++	ButtonTextWidgetName = LabelBlock->GetFName();
++	URectangleShape* RarityShape = MakePart<URectangleShape>(StyledButtonParts::Rarity);
+ 
+ 	UOverlay* Stack = MakePart<UOverlay>(TEXT("Stack"));
+-	if (UOverlaySlot* IconSlot = Stack->AddChildToOverlay(Icon))
++	UWidget* IconSizeBox = Sized(IconImage, StyledButtonParts::IconBox);
++	if (UOverlaySlot* IconSlot = Stack->AddChildToOverlay(IconSizeBox))
+ 	{
+ 		IconSlot->SetHorizontalAlignment(HAlign_Center);
+ 		IconSlot->SetVerticalAlignment(VAlign_Center);
+ 		IconSlot->SetPadding(FMargin(0.f, 0.f, 0.f, 16.f));
+ 	}
+-	if (UOverlaySlot* LabelSlot = Stack->AddChildToOverlay(Label))
++	if (UOverlaySlot* LabelSlot = Stack->AddChildToOverlay(LabelBlock))
+ 	{
+ 		LabelSlot->SetHorizontalAlignment(HAlign_Center);
+ 		LabelSlot->SetVerticalAlignment(VAlign_Bottom);
+ 		LabelSlot->SetPadding(FMargin(6.f, 0.f, 6.f, 10.f));
+ 	}
+-	if (UOverlaySlot* RaritySlot = Stack->AddChildToOverlay(Sized(Rarity, FVector2D(0.0, 4.0))))
++	UWidget* RaritySizeBox = Sized(RarityShape, StyledButtonParts::RarityBox);
++	if (UOverlaySlot* RaritySlot = Stack->AddChildToOverlay(RaritySizeBox))
+ 	{
+ 		RaritySlot->SetHorizontalAlignment(HAlign_Fill);
+ 		RaritySlot->SetVerticalAlignment(VAlign_Bottom);
+ 		RaritySlot->SetPadding(FMargin(2.f, 0.f, 2.f, 2.f));
+ 	}
+-	SetButtonContent(Sized(Stack, FVector2D(120.0, 120.0)), FMargin(0.f));
++	UWidget* TileSizeBox = Sized(Stack, StyledButtonParts::TileBox);
++
++	RememberPart(StyledButtonParts::Icon, IconImage);
++	RememberPart(StyledButtonParts::IconBox, IconSizeBox);
++	RememberPart(StyledButtonParts::Label, LabelBlock);
++	RememberPart(StyledButtonParts::Rarity, RarityShape);
++	RememberPart(StyledButtonParts::RarityBox, RaritySizeBox);
++	RememberPart(StyledButtonParts::TileBox, TileSizeBox);
++	SetButtonContent(TileSizeBox);
++}
++
++void UTileButton::ApplyStyle()
++{
++	using namespace StyledButtonTheme;
++	BeginStyle();
++
++	const float Rounding = CornerRounding;
++	const FLinearColor Fill = FillColor;
++	const FLinearColor Edge = OutlineColor;
++	const URectangleShape* Model = MakeBackground<URectangleShape>([Rounding, Fill, Edge](URectangleShape& Shape)
++	{
++		Shape.CornerRounding = Rounding;
++		Solid(Shape, Fill);
++		Outline(Shape, 2.f, Edge);
++	});
++	SetContentLayout(FMargin(0.f));
++	SetBoxSize(FindPart(StyledButtonParts::TileBox), TileSize);
++	SetBoxSize(FindPart(StyledButtonParts::IconBox), FVector2D(IconSize, IconSize));
++	SetBoxSize(FindPart(StyledButtonParts::RarityBox), FVector2D(0.0, 4.0));
++
++	if (URectangleShape* RarityShape = FindPart<URectangleShape>(StyledButtonParts::Rarity))
++	{
++		// Its lower corners follow the tile's, inside its outline.
++		const double Inner = FMath::Max(Rounding - 2.f, 0.f);
++		RarityShape->bFullyRounded = false;
++		RarityShape->bIndividualCorners = true;
++		RarityShape->CornerRadii = FVector4(0.0, 0.0, Inner, Inner);
++		Solid(*RarityShape, RarityColor);
++		RarityShape->SetVisibility(bShowRarity ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
++		RarityShape->InvalidateShape();
++	}
+ 
+-	FContextMenuShapeTarget& Self = AddShapeTarget(this, 14.f, EContextMenuInterpolationCurve::EaseOut);
+-	FContextMenuShapeStateSettings& Hovered = OverrideShape(Self, EContextMenuState::Hovered);
+-	Hovered.Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
++	const FLinearColor Accent = AccentColor;
++	FContextMenuShapeTarget& Self = AddShapeTarget(this);
++	FContextMenuShapeStateSettings& HoveredState = OverrideShape(Self, EContextMenuState::Hovered);
++	HoveredState.Look = MakeLook<URectangleShape>(*Model, [Fill, Edge](URectangleShape& Shape)
+ 	{
+-		Shape.Fill.Color = SurfaceHover();
+-		Shape.Stroke.Paint.Color = LineHover();
++		Shape.Fill.Color = Lighter(Fill, 0.08f);
++		Shape.Stroke.Paint.Color = Lighter(Edge, 0.4f);
+ 	});
+-	Hovered.Transform.Scale = FVector2D(1.03, 1.03);
++	HoveredState.Transform.Scale = FVector2D(HoverScale, HoverScale);
+ 	OverrideShape(Self, EContextMenuState::Pressed).Transform.Scale = FVector2D(0.97, 0.97);
+-	OverrideShape(Self, EContextMenuState::Enabled).Look = MakeLook<URectangleShape>(*Model, [](URectangleShape& Shape)
++	OverrideShape(Self, EContextMenuState::Enabled).Look = MakeLook<URectangleShape>(*Model, [Fill, Accent](URectangleShape& Shape)
+ 	{
+-		Shape.Fill.Color = SurfaceHover();
+-		Shape.Stroke.Paint.Color = Accent();
++		Shape.Fill.Color = Lighter(Fill, 0.08f);
++		Shape.Stroke.Paint.Color = Accent;
+ 		Shape.Stroke.Width = 3.f;
+ 	});
+ 
+-	AddTint(Label, TextDim(), { { EContextMenuState::Hovered, Text() }, { EContextMenuState::Enabled, Text() } });
++	if (UTextBlock* LabelBlock = FindPart<UTextBlock>(StyledButtonParts::Label))
++	{
++		LabelBlock->SetVisibility(bShowLabel ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
++		LabelBlock->SetColorAndOpacity(FSlateColor(TextDim()));
++		AddTint(LabelBlock, TextDim(), { { EContextMenuState::Hovered, Text() }, { EContextMenuState::Enabled, Text() } });
++	}
+ 	AddDisabledFade();
+ }
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.h b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.h
+index 5235283..541cbef 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.h
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.h
+@@ -9,7 +9,26 @@
+ 
+ class UWidgetTree;
+ class UTextBlock;
+-class UHorizontalBox;
++
++/** How a ready-made button moves between its states: the speed and curve of every look and transform it changes. */
++UENUM(BlueprintType)
++enum class EStyledButtonMotion : uint8
++{
++	Smooth UMETA(ToolTip = "Eases out over about a tenth of a second."),
++	Snappy UMETA(ToolTip = "Quick, eased out - for dense menus."),
++	Bouncy UMETA(ToolTip = "Overshoots a little and settles - a dot pops, a knob springs over."),
++	Gentle UMETA(ToolTip = "Slow and eased both ways - calm, cinematic menus."),
++	Instant UMETA(ToolTip = "No animation: every state shows at once.")
++};
++
++/** The corners of a ready-made button's background. */
++UENUM(BlueprintType)
++enum class EStyledButtonCorners : uint8
++{
++	Pill UMETA(ToolTip = "Ends fully rounded."),
++	Rounded UMETA(ToolTip = "Corners rounded by Corner Rounding."),
++	Square UMETA(ToolTip = "No rounding.")
++};
+ 
+ /** A tint for one state, for UStyledButtonBase::AddTint. */
+ struct FStyledButtonStateTint
+@@ -22,26 +41,25 @@ struct FStyledButtonStateTint
+  * The ready-made buttons: the controls modern menus are built from - settings, loadouts, pause and main menus - as Context
+  * Menu Buttons that arrive already made.
+  *
+- *   Pill Button          a capsule with a label: confirm, cancel, apply.
+- *   Icon Button          a round button around an icon: back, close, settings.
+- *   Menu Item            a main or pause menu's entry: a bar slides in and the label steps aside on hover.
+- *   Tab Button           a tab bar's tab: one chosen per row, an underline grows under it.
+- *   Radio Button         one choice of several, a dot in a ring.
++ *   Generic Button       a button with a label: confirm, cancel, apply.
++ *   Pill Button          an on/off switch: a track whose knob slides over. Left and right set it from a gamepad.
+  *   Checkbox             on or off, the check mark drawn on.
+- *   Toggle Switch        a settings row's on/off switch, its knob sliding over. Left and right set it from a gamepad.
++ *   Radio Button         one choice of several, a dot in a ring.
++ *   Menu Item            a main or pause menu's entry: a bar slides in and the label steps aside on hover.
+  *   Hold Button          hold to confirm: a ring fills while it is held, the action fires once it is full.
+  *   Tile Button          a loadout or inventory slot: icon, name, rarity stripe, a frame when chosen.
+- *   Choice Button        "< High >": steps through a list (or numbers, a stepper) with clicks, or left and right.
++ *   Choice Button        "Quality  < High >": steps through a list (or numbers, a stepper) with clicks, or left and right.
+  *   Segmented Choice     "Low | Medium | High": every choice side by side, a highlight sliding to the chosen one.
+  *
+- * Each is dragged in from the Palette (NameTBD Buttons) with its parts - text, shapes, images - as ordinary children, and
+- * its looks as ordinary Shape and Design Targets: every color, shape, outline material, speed and state can be changed in the
+- * designer like anything authored by hand, and the button is a Context Menu Button in every other way (actions, sounds,
+- * animations, overrides, enable groups). Built at runtime with no content, a ready-made button builds its parts itself.
++ * Each is dragged in from the Palette (NameTBD Buttons). Its parts - shapes, text, images - are ordinary widgets, hidden from
++ * the hierarchy until Show Parts In Hierarchy is pressed in its Details (Style); hidden or shown they are the same widgets,
++ * and changes made to them are kept. Its looks are ordinary Shape and Design Targets.
+  *
+- * The looks share one theme - dark surfaces, a light outline, a blue accent - set where each button is built.
++ * Style (top of the Details): the few settings most buttons need - colors, size, corners, Motion. Changing one remakes the
++ * button's Shape and Design Targets and its parts' look from all of them, so for hand-authored targets turn Use Style off.
++ * At runtime, set them and call Refresh Style.
+  */
+-UCLASS(Abstract, meta = (DisplayName = "Ready-Made Button"))
++UCLASS(Abstract, meta = (DisplayName = "Ready-Made Button", PrioritizeCategories = "Style"))
+ class NAMETBD_API UStyledButtonBase : public UContextMenuButton
+ {
+ 	GENERATED_BODY()
+@@ -49,7 +67,26 @@ class NAMETBD_API UStyledButtonBase : public UContextMenuButton
+ public:
+ 	UStyledButtonBase(const FObjectInitializer& ObjectInitializer);
+ 
+-	/** Writes Text into the button's label (Button Text Widget, or its only Text Block). */
++	/**
++	 * Whether the Style settings below make the button's looks. Off, they are hidden and the button's Shape and Design Targets
++	 * and parts are left exactly as authored - for a look built by hand from here.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (DisplayPriority = "0"))
++	bool bUseStyle = true;
++
++	/** How the button moves between its states. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, DisplayPriority = "1"))
++	EStyledButtonMotion Motion = EStyledButtonMotion::Smooth;
++
++	/** The color of on, chosen and active: a checked box, a switch that is on, a hover outline, a highlight. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, DisplayPriority = "2"))
++	FLinearColor AccentColor;
++
++	/** Makes the looks again from the Style settings - after setting them from Blueprint. */
++	UFUNCTION(BlueprintCallable, Category = "Style")
++	void RefreshStyle();
++
++	/** Writes Text into the button's label (Button Text Widget, or its only Text Block). Nothing for a button with none. */
+ 	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Label")
+ 	void SetLabel(const FText& Text);
+ 
+@@ -59,12 +96,52 @@ public:
+ 
+ #if WITH_EDITOR
+ 	virtual const FText GetPaletteCategory() override;
++	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+ #endif
+ 
+ protected:
++	/** Makes the parts (BuildParts), then the looks (ApplyStyle). Clears the targets first: they are all the style's. */
++	virtual void BuildDefaultContent() override final;
+ 	virtual bool ShouldBuildDefaultContentWhenEmpty() const override { return true; }
+ 
+-	// ---- Building the parts --------------------------------------------------------------------
++	/** Makes the button's parts, once, and remembers each by role (RememberPart). */
++	virtual void BuildParts() {}
++
++	/**
++	 * Makes the looks from the Style settings: the parts' own settings that the style decides, the Background Shape and its
++	 * Look, and every Shape and Design Target (made again from scratch). Runs after BuildParts and whenever a Style setting
++	 * changes; nothing while Use Style is off.
++	 */
++	virtual void ApplyStyle() {}
++
++	/** ApplyStyle's start: the targets emptied and the looks' baselines forgotten. */
++	void BeginStyle();
++
++	// ---- Parts -----------------------------------------------------------------------------------
++
++	/** Each part's widget name, by its role (Label, Knob...) - so the style finds its parts however they were renamed. */
++	UPROPERTY()
++	TMap<FName, FName> PartNames;
++
++	void RememberPart(FName Role, const UWidget* Part);
++
++	/** The part playing Role, if it is still in the button (listed or hidden). Marked modified, for undo - for the style. */
++	UWidget* FindPart(FName Role);
++
++	/** The part playing Role, as FindPart, left unmarked - for runtime updates. */
++	UWidget* GetPart(FName Role);
++
++	template <typename TWidget>
++	TWidget* GetPart(FName Role)
++	{
++		return Cast<TWidget>(GetPart(Role));
++	}
++
++	template <typename TWidget>
++	TWidget* FindPart(FName Role)
++	{
++		return Cast<TWidget>(FindPart(Role));
++	}
+ 
+ 	/** The tree the parts are made in: the Widget Blueprint's (or User Widget's) the button is in. */
+ 	UWidgetTree* GetBuildTree() const;
+@@ -81,13 +158,19 @@ protected:
+ 	/** A Text Block with Text, at Size, white (tinted by its Design Target). */
+ 	UTextBlock* MakeLabel(FName BaseName, const FText& Text, int32 Size);
+ 
+-	/** Content as the button's only child, padded and aligned. */
+-	void SetButtonContent(UWidget* Content, const FMargin& Padding, EHorizontalAlignment HAlign = HAlign_Center, EVerticalAlignment VAlign = VAlign_Center);
++	/** Content as the button's only child. */
++	void SetButtonContent(UWidget* Content);
++
++	/** The button's content padding and alignment, listed or hidden. */
++	void SetContentLayout(const FMargin& Padding, EHorizontalAlignment HAlign = HAlign_Center, EVerticalAlignment VAlign = VAlign_Center);
+ 
+-	/** Content inside a Size Box of Size (a side at 0 is left free). The Size Box is returned. */
+-	UWidget* Sized(UWidget* Content, const FVector2D& Size);
++	/** Content inside a new Size Box. The Size Box is returned. */
++	UWidget* Sized(UWidget* Content, FName BaseName);
+ 
+-	// ---- Looks ---------------------------------------------------------------------------------
++	/** Sets a part's Size Box to Size (a side at 0 or less is left free). */
++	static void SetBoxSize(UWidget* SizeBox, const FVector2D& Size);
++
++	// ---- Looks -----------------------------------------------------------------------------------
+ 
+ 	/** A Look laid out for From's kind of shape: From's settings as they are, then changed by Change. */
+ 	static FInstancedPropertyBag MakeLookFrom(const UShapeWidget& From, TFunctionRef<void(UShapeWidget&)> Change);
+@@ -99,8 +182,8 @@ protected:
+ 	}
+ 
+ 	/**
+-	 * A model of the Background Shape to author its looks from: a shape of Class, set up by Setup, which also becomes the
+-	 * Background Look. Kept in the transient package; nothing holds it once the button is built.
++	 * A model of the Background Shape to author its looks from: a shape set up by Setup, which also becomes the Background
++	 * Look. Kept in the transient package; nothing holds it once the style is applied.
+ 	 */
+ 	template <typename TShape>
+ 	TShape* MakeBackground(TFunctionRef<void(TShape&)> Setup)
+@@ -111,20 +194,19 @@ protected:
+ 		return Model;
+ 	}
+ 
+-	/** Background Shape of Model's kind, and Background Look from it. */
+ 	void SetBackgroundFrom(const UShapeWidget& Model);
+ 
+-	/**
+-	 * A Shape Target for Part (this button for Self), Custom, its Base Shape's Look started from the part as it is (the
+-	 * Background Look for Self), with the speed and curve given for both its Transform and its Shape.
+-	 */
+-	FContextMenuShapeTarget& AddShapeTarget(UWidget* Part, float Speed = 12.f, EContextMenuInterpolationCurve Curve = EContextMenuInterpolationCurve::EaseOut, float Overshoot = 1.5f);
++	/** Sets a Rectangle's corners as Corners says (Rounding for Rounded). */
++	static void SetCorners(class URectangleShape& Shape, EStyledButtonCorners Corners, float Rounding);
++
++	/** A Shape Target for Part (this button for Self), Custom, moving as Motion says. */
++	FContextMenuShapeTarget& AddShapeTarget(UWidget* Part);
+ 
+ 	/** Target's own settings for State, switched on (as a copy of its Base Shape) if they weren't. */
+ 	static FContextMenuShapeStateSettings& OverrideShape(FContextMenuShapeTarget& Target, EContextMenuState State);
+ 
+ 	/** A Design Target for Part (this button for Self), Custom, driving nothing until a state says so. */
+-	FContextMenuDesignTarget& AddDesignTarget(UWidget* Part, float Speed = 15.f);
++	FContextMenuDesignTarget& AddDesignTarget(UWidget* Part);
+ 
+ 	/** Target's own design for State, switched on (as a copy of its Base Design) if it wasn't. */
+ 	static FContextMenuWidgetDesign& OverrideDesign(FContextMenuDesignTarget& Target, EContextMenuState State);
+@@ -137,65 +219,125 @@ protected:
+ 
+ 	/** The name a target stores for Part. */
+ 	FName TargetNameOf(const UWidget* Part) const;
++
++	/** Color, lighter by Amount (0..1) toward white, alpha kept - a hover. */
++	static FLinearColor Lighter(const FLinearColor& Color, float Amount);
+ };
+ 
+ // =====================================================================================================
+-// Simple buttons
++// Buttons
+ // =====================================================================================================
+ 
+-/** A capsule with a label - the confirm, cancel and apply of every dialog. Lights on hover, presses in. */
+-UCLASS(meta = (DisplayName = "Pill Button"))
+-class NAMETBD_API UPillButton : public UStyledButtonBase
++/** A button with a label - the confirm, cancel and apply of every dialog. Lights on hover, presses in. */
++UCLASS(meta = (DisplayName = "Generic Button"))
++class NAMETBD_API UGenericButton : public UStyledButtonBase
+ {
+ 	GENERATED_BODY()
+ 
+ public:
+-	UPillButton(const FObjectInitializer& ObjectInitializer);
++	UGenericButton(const FObjectInitializer& ObjectInitializer);
+ 
+-protected:
+-	virtual void BuildDefaultContent() override;
+-};
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	EStyledButtonCorners Corners = EStyledButtonCorners::Pill;
+ 
+-/** A round button around an icon - back, close, settings, favorite. Put your icon in its Image. */
+-UCLASS(meta = (DisplayName = "Icon Button"))
+-class NAMETBD_API UIconButton : public UStyledButtonBase
+-{
+-	GENERATED_BODY()
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle && Corners == EStyledButtonCorners::Rounded", EditConditionHides, ClampMin = "0", UIMax = "32", ForceUnits = "px"))
++	float CornerRounding = 8.f;
+ 
+-public:
+-	UIconButton(const FObjectInitializer& ObjectInitializer);
++	/** Space around the label: the button's size follows it. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FMargin ContentPadding = FMargin(28.f, 10.f);
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor FillColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor OutlineColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor TextColor;
++
++	/** How far it presses in, as a scale. 1 doesn't. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "0.5", ClampMax = "1.2"))
++	float PressScale = 0.97f;
+ 
+ protected:
+-	virtual void BuildDefaultContent() override;
++	virtual void BuildParts() override;
++	virtual void ApplyStyle() override;
+ };
+ 
+-/** An entry of a main or pause menu: a bar slides in at its side and the label steps aside as it is hovered or focused. */
+-UCLASS(meta = (DisplayName = "Menu Item"))
+-class NAMETBD_API UMenuItemButton : public UStyledButtonBase
++/**
++ * An on/off switch: a track whose knob slides over. Its enabled state is the value - On Context Enabled State Changed reports
++ * it. Left and right set it from a gamepad or the keyboard (Left And Right Set It), as console settings menus do.
++ */
++UCLASS(meta = (DisplayName = "Pill Button"))
++class NAMETBD_API UPillSwitchButton : public UStyledButtonBase
+ {
+ 	GENERATED_BODY()
+ 
+ public:
+-	UMenuItemButton(const FObjectInitializer& ObjectInitializer);
++	UPillSwitchButton(const FObjectInitializer& ObjectInitializer);
++
++	/** The track's size: the button's size. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FVector2D TrackSize = FVector2D(44.0, 24.0);
++
++	/** The gap between the knob and the track's edge. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "0", UIMax = "8", ForceUnits = "px"))
++	float KnobInset = 3.f;
++
++	/** The track while off (on, it is the Accent Color). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor TrackColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor OutlineColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor KnobColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor KnobOnColor;
++
++	/** Left turns it off and right on while it is focused, rather than moving the focus. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Toggle", meta = (DisplayName = "Left And Right Set It"))
++	bool bLeftRightSetsValue = true;
+ 
+ protected:
+-	virtual void BuildDefaultContent() override;
++	virtual void BuildParts() override;
++	virtual void ApplyStyle() override;
++	virtual bool HandleNavigation(EUINavigation Direction) override;
+ };
+ 
+-/**
+- * A tab: one per row is chosen (its container's tabs un-choose each other), an underline grows under it. Bind On Context
+- * Enabled State Changed, or read Get Group Index, to switch the page.
+- */
+-UCLASS(meta = (DisplayName = "Tab Button"))
+-class NAMETBD_API UTabButton : public UStyledButtonBase
++/** On or off, a check mark drawing itself on. Its enabled state is the value. */
++UCLASS(meta = (DisplayName = "Checkbox"))
++class NAMETBD_API UCheckboxButton : public UStyledButtonBase
+ {
+ 	GENERATED_BODY()
+ 
+ public:
+-	UTabButton(const FObjectInitializer& ObjectInitializer);
++	UCheckboxButton(const FObjectInitializer& ObjectInitializer);
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "8", UIMax = "64", ForceUnits = "px"))
++	float BoxSize = 22.f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "0", UIMax = "16", ForceUnits = "px"))
++	float CornerRounding = 5.f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "0", UIMax = "6", ForceUnits = "px"))
++	float OutlineWidth = 2.f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor OutlineColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor CheckColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "0.5", UIMax = "6", ForceUnits = "px"))
++	float CheckWidth = 2.5f;
+ 
+ protected:
+-	virtual void BuildDefaultContent() override;
++	virtual void BuildParts() override;
++	virtual void ApplyStyle() override;
+ };
+ 
+ /** One choice of several: the radio buttons sharing a container (or an Enable Group) allow one chosen at a time. */
+@@ -207,42 +349,57 @@ class NAMETBD_API URadioButton : public UStyledButtonBase
+ public:
+ 	URadioButton(const FObjectInitializer& ObjectInitializer);
+ 
+-protected:
+-	virtual void BuildDefaultContent() override;
+-};
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "8", UIMax = "64", ForceUnits = "px"))
++	float Size = 22.f;
+ 
+-/** On or off, a check mark drawing itself on. Its enabled state is the value: On Context Enabled State Changed reports it. */
+-UCLASS(meta = (DisplayName = "Checkbox"))
+-class NAMETBD_API UCheckboxButton : public UStyledButtonBase
+-{
+-	GENERATED_BODY()
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "0", UIMax = "6", ForceUnits = "px"))
++	float RingWidth = 2.f;
+ 
+-public:
+-	UCheckboxButton(const FObjectInitializer& ObjectInitializer);
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor RingColor;
++
++	/** The dot's size when chosen, as a fraction of the ring. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "0.1", ClampMax = "1"))
++	float DotScale = 0.5f;
+ 
+ protected:
+-	virtual void BuildDefaultContent() override;
++	virtual void BuildParts() override;
++	virtual void ApplyStyle() override;
+ };
+ 
+-/**
+- * A settings row's on/off switch: the label, then a track whose knob slides over. Its enabled state is the value. Left and
+- * right set it from a gamepad or the keyboard (Left And Right Set It), as console settings menus do.
+- */
+-UCLASS(meta = (DisplayName = "Toggle Switch"))
+-class NAMETBD_API UToggleSwitchButton : public UStyledButtonBase
++/** An entry of a main or pause menu: a bar slides in at its side and the label steps aside as it is hovered or focused. */
++UCLASS(meta = (DisplayName = "Menu Item"))
++class NAMETBD_API UMenuItemButton : public UStyledButtonBase
+ {
+ 	GENERATED_BODY()
+ 
+ public:
+-	UToggleSwitchButton(const FObjectInitializer& ObjectInitializer);
++	UMenuItemButton(const FObjectInitializer& ObjectInitializer);
+ 
+-	/** Left turns it off and right on while it is focused, rather than moving the focus. */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Toggle", meta = (DisplayName = "Left And Right Set It"))
+-	bool bLeftRightSetsValue = true;
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "6", UIMax = "64"))
++	int32 FontSize = 20;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor TextColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor HoverTextColor;
++
++	/** The row's color while hovered. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor HoverFillColor;
++
++	/** The accent bar's size: width and height. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FVector2D BarSize = FVector2D(4.0, 24.0);
++
++	/** How far the label steps aside on hover. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, UIMin = "0", UIMax = "24", ForceUnits = "px"))
++	float HoverShift = 6.f;
+ 
+ protected:
+-	virtual void BuildDefaultContent() override;
+-	virtual bool HandleNavigation(EUINavigation Direction) override;
++	virtual void BuildParts() override;
++	virtual void ApplyStyle() override;
+ };
+ 
+ /**
+@@ -257,13 +414,35 @@ class NAMETBD_API UHoldButton : public UStyledButtonBase
+ public:
+ 	UHoldButton(const FObjectInitializer& ObjectInitializer);
+ 
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	EStyledButtonCorners Corners = EStyledButtonCorners::Pill;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle && Corners == EStyledButtonCorners::Rounded", EditConditionHides, ClampMin = "0", UIMax = "32", ForceUnits = "px"))
++	float CornerRounding = 8.f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor FillColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor OutlineColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor TextColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "8", UIMax = "64", ForceUnits = "px"))
++	float RingSize = 22.f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "0.5", UIMax = "8", ForceUnits = "px"))
++	float RingWidth = 3.f;
++
+ protected:
+-	virtual void BuildDefaultContent() override;
++	virtual void BuildParts() override;
++	virtual void ApplyStyle() override;
+ };
+ 
+ /**
+  * A loadout or inventory slot: an icon, a name, a rarity stripe (color it per item), lifted on hover and framed when chosen -
+- * one chosen per container, like a radio button.
++ * one chosen per container. Click the chosen one again to clear it.
+  */
+ UCLASS(meta = (DisplayName = "Tile Button"))
+ class NAMETBD_API UTileButton : public UStyledButtonBase
+@@ -273,6 +452,35 @@ class NAMETBD_API UTileButton : public UStyledButtonBase
+ public:
+ 	UTileButton(const FObjectInitializer& ObjectInitializer);
+ 
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FVector2D TileSize = FVector2D(120.0, 120.0);
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "0", UIMax = "32", ForceUnits = "px"))
++	float CornerRounding = 8.f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "0", UIMax = "256", ForceUnits = "px"))
++	float IconSize = 64.f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor FillColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor OutlineColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	FLinearColor RarityColor;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	bool bShowLabel = true;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides))
++	bool bShowRarity = true;
++
++	/** How much it lifts on hover, as a scale. 1 doesn't. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, ClampMin = "0.8", ClampMax = "1.3"))
++	float HoverScale = 1.03f;
++
+ protected:
+-	virtual void BuildDefaultContent() override;
++	virtual void BuildParts() override;
++	virtual void ApplyStyle() override;
+ };
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
+index a217aba..dc2c034 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
+@@ -3,6 +3,7 @@
+ #include "ContextMenuButtonDetails.h"
+ 
+ #include "NameTBD/Buttons/ContextMenuButton.h"
++#include "NameTBD/Buttons/Widgets/StyledButtons.h"
+ #include "StyledButtonsEditor.h"
+ 
+ #include "DetailCategoryBuilder.h"
+@@ -560,6 +561,40 @@ void FContextMenuButtonDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
+ 	FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(PropertyChangedHandle);
+ 	PropertyChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddRaw(this, &FContextMenuButtonDetails::HandleObjectPropertyChanged);
+ 
++	// A ready-made button: its Style first, with the switch that lists its parts in the hierarchy or hides them.
++	const bool bAnyReadyMade = CustomizedButtons.ContainsByPredicate([](const TWeakObjectPtr<UContextMenuButton>& WeakButton)
++	{
++		return WeakButton.IsValid() && WeakButton->IsA<UStyledButtonBase>();
++	});
++	if (bAnyReadyMade)
++	{
++		IDetailCategoryBuilder& StyleCategory = DetailBuilder.EditCategory(TEXT("Style"), LOCTEXT("StyleCategory", "Style"), ECategoryPriority::Important);
++		const TArray<TWeakObjectPtr<UContextMenuButton>> PartsButtons = CustomizedButtons;
++		StyleCategory.AddCustomRow(LOCTEXT("PartsFilter", "Show Parts In Hierarchy"))
++		.WholeRowContent()
++		[
++			SNew(SButton)
++			.HAlign(HAlign_Center)
++			.Text_Lambda([PartsButtons]()
++			{
++				return StyledButtonsEditor::ArePartsShown(PartsButtons)
++					? LOCTEXT("HidePartsButton", "Hide Parts From Hierarchy")
++					: LOCTEXT("ShowPartsButton", "Show Parts In Hierarchy");
++			})
++			.ToolTipText(LOCTEXT("PartsTooltip",
++				"Lists the widgets this button is made of in the Hierarchy, or hides them again. Hidden, they are the same widgets - still drawn, still driven by the button's targets - and every change made to them is kept."))
++			.IsEnabled_Lambda([PartsButtons]()
++			{
++				return StyledButtonsEditor::CanToggleParts(PartsButtons);
++			})
++			.OnClicked_Lambda([PartsButtons]()
++			{
++				StyledButtonsEditor::ToggleParts(PartsButtons);
++				return FReply::Handled();
++			})
++		];
++	}
++
+ 	// NOTE: Designer Preview used to be hidden here and its children re-added one at a time into an
+ 	// "Animation" category. That is now meta = (ShowOnlyInnerProperties) on the UPROPERTY itself, which
+ 	// does the same thing with no editor module involved - and, more to the point, works for every other
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
+index f22261d..17d0307 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
+@@ -62,7 +62,27 @@ namespace StyledButtonsEditorPrivate
+ 		return true;
+ 	}
+ 
+-	/** Every widget the tree really holds: under its root, and in its named slot bindings (read through reflection). */
++	/** Adds the parts Context Menu Buttons among Widgets keep hidden from the hierarchy, and everything inside them. */
++	void AddHiddenParts(const TArray<UWidget*>& Widgets, TSet<UWidget*>& OutLive)
++	{
++		for (UWidget* Widget : Widgets)
++		{
++			const UContextMenuButton* Button = Cast<UContextMenuButton>(Widget);
++			if (UWidget* Hidden = Button ? Button->GetHiddenContent() : nullptr)
++			{
++				OutLive.Add(Hidden);
++				UWidgetTree::ForWidgetAndChildren(Hidden, [&OutLive](UWidget* Part)
++				{
++					OutLive.Add(Part);
++				});
++			}
++		}
++	}
++
++	/**
++	 * Every widget the tree really holds: under its root, in its named slot bindings (read through reflection), and the parts
++	 * buttons keep hidden from the hierarchy.
++	 */
+ 	void GatherLiveWidgets(UWidgetTree* Tree, TSet<UWidget*>& OutLive)
+ 	{
+ 		Tree->ForEachWidget([&OutLive](UWidget* Widget)
+@@ -72,26 +92,27 @@ namespace StyledButtonsEditorPrivate
+ 
+ 		static const FMapProperty* BindingsProperty = FindFProperty<FMapProperty>(UWidgetTree::StaticClass(), TEXT("NamedSlotBindings"));
+ 		const FObjectPropertyBase* ValueProperty = BindingsProperty ? CastField<FObjectPropertyBase>(BindingsProperty->ValueProp) : nullptr;
+-		if (!ValueProperty)
++		if (ValueProperty)
+ 		{
+-			return;
+-		}
+-		FScriptMapHelper Bindings(BindingsProperty, BindingsProperty->ContainerPtrToValuePtr<void>(Tree));
+-		for (int32 Index = 0; Index < Bindings.GetMaxIndex(); ++Index)
+-		{
+-			if (!Bindings.IsValidIndex(Index))
+-			{
+-				continue;
+-			}
+-			if (UWidget* Bound = Cast<UWidget>(ValueProperty->GetObjectPropertyValue(Bindings.GetValuePtr(Index))))
++			FScriptMapHelper Bindings(BindingsProperty, BindingsProperty->ContainerPtrToValuePtr<void>(Tree));
++			for (int32 Index = 0; Index < Bindings.GetMaxIndex(); ++Index)
+ 			{
+-				OutLive.Add(Bound);
+-				UWidgetTree::ForWidgetAndChildren(Bound, [&OutLive](UWidget* Widget)
++				if (!Bindings.IsValidIndex(Index))
+ 				{
+-					OutLive.Add(Widget);
+-				});
++					continue;
++				}
++				if (UWidget* Bound = Cast<UWidget>(ValueProperty->GetObjectPropertyValue(Bindings.GetValuePtr(Index))))
++				{
++					OutLive.Add(Bound);
++					UWidgetTree::ForWidgetAndChildren(Bound, [&OutLive](UWidget* Widget)
++					{
++						OutLive.Add(Widget);
++					});
++				}
+ 			}
+ 		}
++
++		AddHiddenParts(OutLive.Array(), OutLive);
+ 	}
+ 
+ 	/** The ready-made button Widget is part of, following its parents; null when it isn't part of one. */
+@@ -239,7 +260,16 @@ namespace StyledButtonsEditorPrivate
+ 		for (UWidget* Widget : Live)
+ 		{
+ 			UContextMenuButton* Button = Cast<UContextMenuButton>(Widget);
+-			if (Button && Button->GetOuter() == Tree && Button->HasPendingDefaultContent())
++			if (!Button || Button->GetOuter() != Tree)
++			{
++				continue;
++			}
++			// A pasted or duplicated button still pointing at the original's hidden parts lets go of them and builds its own.
++			if (Button->RepairHiddenParts())
++			{
++				UE_LOG(LogTemp, Log, TEXT("NameTBD: %s in %s was a copy of a button with hidden parts; its own parts are built."), *Button->GetName(), *Blueprint->GetName());
++			}
++			if (Button->HasPendingDefaultContent())
+ 			{
+ 				Waiting.Add(Button);
+ 			}
+@@ -268,6 +298,12 @@ namespace StyledButtonsEditorPrivate
+ 				{
+ 					EnsureGuid(Blueprint, Part->GetFName());
+ 				}
++
++				// A ready-made button's parts start out of the hierarchy: Show Parts In Hierarchy (Style) lists them.
++				if (Parts.Num() > 0 && Button->IsA<UStyledButtonBase>())
++				{
++					Button->SetPartsShownInHierarchy(false);
++				}
+ 			}
+ 		}
+ 
+@@ -349,6 +385,25 @@ namespace StyledButtonsEditorPrivate
+ 	}
+ }
+ 
++namespace StyledButtonsEditorPrivate
++{
++	/** The Widget Blueprint's own copy of Button (the Details panel shows the designer's preview copy), or null. */
++	UContextMenuButton* FindTemplate(UContextMenuButton* Button, UWidgetBlueprint*& OutBlueprint)
++	{
++		OutBlueprint = FindWidgetBlueprint(Button);
++		UWidgetTree* Tree = OutBlueprint ? OutBlueprint->WidgetTree.Get() : nullptr;
++		if (!Tree)
++		{
++			return nullptr;
++		}
++		if (Button->GetOuter() == Tree)
++		{
++			return Button;
++		}
++		return Cast<UContextMenuButton>(Tree->FindWidget(Button->GetFName()));
++	}
++}
++
+ namespace StyledButtonsEditor
+ {
+ 	void Register()
+@@ -372,6 +427,94 @@ namespace StyledButtonsEditor
+ 		PendingBuilds.Reset();
+ 	}
+ 
++	bool ArePartsShown(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons)
++	{
++		using namespace StyledButtonsEditorPrivate;
++		for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : Buttons)
++		{
++			UWidgetBlueprint* Blueprint = nullptr;
++			const UContextMenuButton* Template = WeakButton.IsValid() ? FindTemplate(WeakButton.Get(), Blueprint) : nullptr;
++			if (Template && Template->HasAnyContent() && !Template->ArePartsShownInHierarchy())
++			{
++				return false;
++			}
++		}
++		return true;
++	}
++
++	bool CanToggleParts(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons)
++	{
++		using namespace StyledButtonsEditorPrivate;
++		for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : Buttons)
++		{
++			UWidgetBlueprint* Blueprint = nullptr;
++			const UContextMenuButton* Template = WeakButton.IsValid() ? FindTemplate(WeakButton.Get(), Blueprint) : nullptr;
++			if (Template && Template->HasAnyContent() && !Blueprint->bBeingCompiled)
++			{
++				return true;
++			}
++		}
++		return false;
++	}
++
++	void ToggleParts(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons)
++	{
++		using namespace StyledButtonsEditorPrivate;
++
++		// Shown if any is hidden, else all hidden - so a mixed selection ends up alike.
++		const bool bShow = !ArePartsShown(Buttons);
++
++		TArray<TPair<UWidgetBlueprint*, UContextMenuButton*>> Templates;
++		for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : Buttons)
++		{
++			UWidgetBlueprint* Blueprint = nullptr;
++			UContextMenuButton* Template = WeakButton.IsValid() ? FindTemplate(WeakButton.Get(), Blueprint) : nullptr;
++			if (Template && Template->HasAnyContent() && !Blueprint->bBeingCompiled)
++			{
++				Templates.AddUnique(TPair<UWidgetBlueprint*, UContextMenuButton*>(Blueprint, Template));
++			}
++		}
++		if (Templates.Num() == 0)
++		{
++			return;
++		}
++
++		TArray<UWidgetBlueprint*> Changed;
++		{
++			const FScopedTransaction Transaction(bShow
++				? LOCTEXT("ShowParts", "Show Button Parts In Hierarchy")
++				: LOCTEXT("HideParts", "Hide Button Parts From Hierarchy"));
++			for (const TPair<UWidgetBlueprint*, UContextMenuButton*>& Entry : Templates)
++			{
++				UWidgetBlueprint* Blueprint = Entry.Key;
++				UContextMenuButton* Template = Entry.Value;
++				if (Template->ArePartsShownInHierarchy() == bShow)
++				{
++					continue;
++				}
++				Blueprint->Modify();
++				Template->Modify();
++				Template->SetPartsShownInHierarchy(bShow);
++
++				// Listed again, every part needs its GUID for the compile; the same widgets keep theirs.
++				UWidget* Listed = bShow && Template->GetContentSlot() ? Template->GetContentSlot()->Content.Get() : nullptr;
++				if (Listed)
++				{
++					EnsureGuid(Blueprint, Listed->GetFName());
++					UWidgetTree::ForWidgetAndChildren(Listed, [Blueprint](UWidget* Part)
++					{
++						EnsureGuid(Blueprint, Part->GetFName());
++					});
++				}
++				Changed.AddUnique(Blueprint);
++			}
++		}
++		for (UWidgetBlueprint* Blueprint : Changed)
++		{
++			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
++		}
++	}
++
+ 	void OnButtonsShown(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons)
+ 	{
+ 		using namespace StyledButtonsEditorPrivate;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h
+index cce6176..c4305ba 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h
+@@ -19,6 +19,9 @@ class UContextMenuButton;
+  *     transaction, each part given its GUID, the blueprint marked structurally modified.
+  *   - Before every compile of a Widget Blueprint, any ready-made button's part still without a GUID gets one (buttons made
+  *     by the first version of the change set).
++ *   - Once built, a ready-made button's parts are hidden from the hierarchy (they clutter it, and are rarely touched);
++ *     Show Parts In Hierarchy in its Details lists them again (ToggleParts). A pasted copy whose hidden parts are still
++ *     the original's builds its own.
+  *   - Parts orphaned by discarded drop previews (and those previews' buttons) are taken out of the tree, outside the
+  *     compile, on the next tick.
+  */
+@@ -29,4 +32,16 @@ namespace StyledButtonsEditor
+ 
+ 	/** Called as a Context Menu Button's Details are shown: builds any pending ready-made content, next tick. */
+ 	void OnButtonsShown(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons);
++
++	/** Whether the buttons' parts are listed in the hierarchy - read from the Widget Blueprint's own copies. */
++	bool ArePartsShown(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons);
++
++	/** Whether any of the buttons has parts to show or hide. */
++	bool CanToggleParts(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons);
++
++	/**
++	 * Shows the buttons' parts in the hierarchy, or hides them (UContextMenuButton::SetPartsShownInHierarchy) - on the Widget
++	 * Blueprint's own copies, in one undoable step. The same widgets either way: nothing changed on them is lost.
++	 */
++	void ToggleParts(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons);
+ }

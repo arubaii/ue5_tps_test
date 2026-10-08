@@ -1,0 +1,297 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+index 45b4923..8b10b57 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+@@ -1838,19 +1838,21 @@ void UContextMenuButton::OnCreationFromPalette()
+ 	// Nothing is built here. The designer makes the dragged widget again for every drop preview while it is dragged over the
+ 	// canvas, and parts made in the Widget Blueprint's tree for a preview it then discards stay behind in that tree - each
+ 	// one an ensure on every compile ("was added but did not get a GUID"). So the button only notes that it wants its parts;
+-	// the editor module builds them once the button has really been placed (when it is selected), and gives every part
+-	// its GUID - see StyledButtonsEditor.
++	// the editor module builds them once the button has really been placed (after the compile the drop causes, with no drag
++	// in progress), and gives every part its GUID - see StyledButtonsEditor.
+ 	bPendingDefaultContent = ShouldBuildDefaultContentWhenEmpty() && GetChildrenCount() == 0;
+ }
+ 
+-void UContextMenuButton::BuildPendingDefaultContent(TArray<UWidget*>& OutParts)
++bool UContextMenuButton::ConsumePendingDefaultContent()
+ {
+-	OutParts.Reset();
+-	if (!bPendingDefaultContent)
+-	{
+-		return;
+-	}
++	const bool bWasPending = bPendingDefaultContent;
+ 	bPendingDefaultContent = false;
++	return bWasPending;
++}
++
++void UContextMenuButton::BuildDefaultContentForEditor(TArray<UWidget*>& OutParts)
++{
++	OutParts.Reset();
+ 
+ 	// Given content by hand meanwhile: that is the content.
+ 	if (GetChildrenCount() > 0)
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+index 4dfea9e..77285e8 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+@@ -2236,11 +2236,16 @@ public:
+ 	bool HasPendingDefaultContent() const { return bPendingDefaultContent; }
+ 
+ 	/**
+-	 * Builds the default content a Palette drop asked for, once, and hands back every part made (for the Widget Blueprint's
+-	 * GUIDs). Called by the editor module when the button has really been placed - never during a drag. Nothing when no
+-	 * longer pending, or when the button was given content meanwhile.
++	 * Takes the pending request: true if there was one (it is cleared). Called before the build's transaction opens, so undoing
++	 * the build leaves the button empty instead of asking for it again.
+ 	 */
+-	void BuildPendingDefaultContent(TArray<UWidget*>& OutParts);
++	bool ConsumePendingDefaultContent();
++
++	/**
++	 * Builds the default content and hands back every part made (for the Widget Blueprint's GUIDs). Called by the editor module
++	 * once the button has really been placed - never during a drag. Nothing when the button already has content.
++	 */
++	void BuildDefaultContentForEditor(TArray<UWidget*>& OutParts);
+ 
+ 	void SyncMaterialParametersEditor();
+ 	void SyncMaterialParameters(FContextMenuWidgetDesign& Design, UMaterialInterface* Material);
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
+index b333009..f22261d 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
+@@ -9,6 +9,7 @@
+ #include "Components/PanelWidget.h"
+ #include "Containers/Ticker.h"
+ #include "Editor.h"
++#include "Framework/Application/SlateApplication.h"
+ #include "Kismet2/BlueprintEditorUtils.h"
+ #include "ScopedTransaction.h"
+ #include "UObject/Package.h"
+@@ -26,6 +27,10 @@ namespace StyledButtonsEditorPrivate
+ 	TArray<TWeakObjectPtr<UWidgetBlueprint>> PendingSweeps;
+ 	bool bSweepScheduled = false;
+ 
++	/** Blueprints that may hold dropped ready-made buttons waiting for their parts. */
++	TArray<TWeakObjectPtr<UWidgetBlueprint>> PendingBuilds;
++	bool bBuildScheduled = false;
++
+ 	/** How far up a widget's parents are followed, in case a broken tree ever loops. */
+ 	constexpr int32 MaxDepth = 256;
+ 
+@@ -210,53 +215,137 @@ namespace StyledButtonsEditorPrivate
+ 		}));
+ 	}
+ 
+-	/** Before a Widget Blueprint compiles: every widget has its GUID; leftovers are swept just after. */
+-	void HandleBlueprintPreCompile(UBlueprint* Blueprint)
++	/**
++	 * Builds the parts of every ready-made button of the blueprint's hierarchy still waiting for them: one undoable step, each
++	 * part given its GUID, then one structural modification. Works on the Widget Blueprint's own tree - never on the
++	 * designer's preview copies, which is what the Details panel shows. True when it couldn't run yet (a compile in progress).
++	 */
++	bool BuildPendingInBlueprint(UWidgetBlueprint* Blueprint)
+ 	{
+-		UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Blueprint);
+-		if (!WidgetBlueprint || !WidgetBlueprint->WidgetTree)
++		UWidgetTree* Tree = Blueprint ? Blueprint->WidgetTree.Get() : nullptr;
++		if (!Tree)
+ 		{
+-			return;
++			return false;
+ 		}
+-		RegisterMissingGuids(WidgetBlueprint);
+-		ScheduleSweep(WidgetBlueprint);
++		if (Blueprint->bBeingCompiled)
++		{
++			return true;
++		}
++
++		// Only buttons really in the hierarchy: a drop preview that was discarded isn't.
++		TSet<UWidget*> Live;
++		GatherLiveWidgets(Tree, Live);
++		TArray<UContextMenuButton*> Waiting;
++		for (UWidget* Widget : Live)
++		{
++			UContextMenuButton* Button = Cast<UContextMenuButton>(Widget);
++			if (Button && Button->GetOuter() == Tree && Button->HasPendingDefaultContent())
++			{
++				Waiting.Add(Button);
++			}
++		}
++		if (Waiting.Num() == 0)
++		{
++			return false;
++		}
++
++		// Taken before the transaction opens: undoing the build then leaves a button empty instead of building it again.
++		for (UContextMenuButton* Button : Waiting)
++		{
++			Button->ConsumePendingDefaultContent();
++		}
++
++		{
++			const FScopedTransaction Transaction(LOCTEXT("BuildReadyMadeButton", "Build Ready-Made Button"));
++			Blueprint->Modify();
++			Tree->Modify();
++			for (UContextMenuButton* Button : Waiting)
++			{
++				Button->Modify();
++				TArray<UWidget*> Parts;
++				Button->BuildDefaultContentForEditor(Parts);
++				for (UWidget* Part : Parts)
++				{
++					EnsureGuid(Blueprint, Part->GetFName());
++				}
++			}
++		}
++
++		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
++		return false;
+ 	}
+ 
+-	/** Builds a placed ready-made button's pending content: one undoable step, each part given its GUID. */
+-	void BuildPendingContent(UContextMenuButton* Button)
++	/**
++	 * Builds pending buttons of Blueprint on a later tick: once no drag is in progress (a drag's drop previews are never built)
++	 * and no compile is running.
++	 */
++	void ScheduleBuild(UWidgetBlueprint* Blueprint)
+ 	{
+-		if (!Button || !Button->HasPendingDefaultContent())
++		if (!Blueprint)
+ 		{
+ 			return;
+ 		}
+-		UWidgetBlueprint* Blueprint = Button->GetTypedOuter<UWidgetBlueprint>();
+-		UWidgetTree* Tree = Blueprint ? Blueprint->WidgetTree.Get() : nullptr;
+-		if (!Tree || Button->GetOuter() != Tree)
++		PendingBuilds.AddUnique(Blueprint);
++		if (bBuildScheduled)
+ 		{
+ 			return;
+ 		}
+-
+-		// Only a button really in the hierarchy: never a drop preview.
+-		TSet<UWidget*> Live;
+-		GatherLiveWidgets(Tree, Live);
+-		if (!Live.Contains(Button))
++		bBuildScheduled = true;
++		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float)
+ 		{
+-			return;
+-		}
++			if (FSlateApplication::IsInitialized() && FSlateApplication::Get().IsDragDropping())
++			{
++				return true;
++			}
+ 
+-		const FScopedTransaction Transaction(LOCTEXT("BuildReadyMadeButton", "Build Ready-Made Button"));
+-		Blueprint->Modify();
+-		Tree->Modify();
+-		Button->Modify();
++			TArray<TWeakObjectPtr<UWidgetBlueprint>> Builds = MoveTemp(PendingBuilds);
++			PendingBuilds.Reset();
++			for (const TWeakObjectPtr<UWidgetBlueprint>& WeakBlueprint : Builds)
++			{
++				if (BuildPendingInBlueprint(WeakBlueprint.Get()))
++				{
++					PendingBuilds.AddUnique(WeakBlueprint);
++				}
++			}
++			bBuildScheduled = PendingBuilds.Num() > 0;
++			return bBuildScheduled;
++		}));
++	}
+ 
+-		TArray<UWidget*> Parts;
+-		Button->BuildPendingDefaultContent(Parts);
+-		for (UWidget* Part : Parts)
++	/** The Widget Blueprint a button belongs to: its own outer, or - for the designer's preview copy - its generated class's. */
++	UWidgetBlueprint* FindWidgetBlueprint(const UContextMenuButton* Button)
++	{
++		if (!Button)
+ 		{
+-			EnsureGuid(Blueprint, Part->GetFName());
++			return nullptr;
+ 		}
++		if (UWidgetBlueprint* Direct = Button->GetTypedOuter<UWidgetBlueprint>())
++		{
++			return Direct;
++		}
++#if WITH_EDITORONLY_DATA
++		if (const UClass* GeneratedClass = Button->WidgetGeneratedByClass.Get())
++		{
++			return Cast<UWidgetBlueprint>(GeneratedClass->ClassGeneratedBy);
++		}
++#endif
++		return nullptr;
++	}
+ 
+-		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
++	/**
++	 * Before a Widget Blueprint compiles: every widget has its GUID. Just after: leftovers are swept, and a button dropped from
++	 * the Palette (a drop always compiles) gets its parts.
++	 */
++	void HandleBlueprintPreCompile(UBlueprint* Blueprint)
++	{
++		UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Blueprint);
++		if (!WidgetBlueprint || !WidgetBlueprint->WidgetTree)
++		{
++			return;
++		}
++		RegisterMissingGuids(WidgetBlueprint);
++		ScheduleSweep(WidgetBlueprint);
++		ScheduleBuild(WidgetBlueprint);
+ 	}
+ }
+ 
+@@ -280,43 +369,22 @@ namespace StyledButtonsEditor
+ 		}
+ 		PreCompileHandle.Reset();
+ 		PendingSweeps.Reset();
++		PendingBuilds.Reset();
+ 	}
+ 
+ 	void OnButtonsShown(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons)
+ 	{
+ 		using namespace StyledButtonsEditorPrivate;
+ 
+-		TArray<TWeakObjectPtr<UContextMenuButton>> Pending;
++		// The Details panel shows the designer's preview copy: the build and the sweep go to the Widget Blueprint behind it.
+ 		for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : Buttons)
+ 		{
+-			UContextMenuButton* Button = WeakButton.Get();
+-			if (!Button)
+-			{
+-				continue;
+-			}
+-			if (Button->HasPendingDefaultContent())
+-			{
+-				Pending.Add(WeakButton);
+-			}
+-			if (UWidgetBlueprint* Blueprint = Button->GetTypedOuter<UWidgetBlueprint>())
++			if (UWidgetBlueprint* Blueprint = FindWidgetBlueprint(WeakButton.Get()))
+ 			{
+ 				ScheduleSweep(Blueprint);
++				ScheduleBuild(Blueprint);
+ 			}
+ 		}
+-		if (Pending.Num() == 0)
+-		{
+-			return;
+-		}
+-
+-		// Next tick: never while the Details panel is laying itself out.
+-		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Pending](float)
+-		{
+-			for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : Pending)
+-			{
+-				BuildPendingContent(WeakButton.Get());
+-			}
+-			return false;
+-		}));
+ 	}
+ }
+ 

@@ -7,6 +7,7 @@
 
 class IDetailLayoutBuilder;
 class UContextMenuButton;
+struct FPropertyChangedEvent;
 class UWidgetBlueprint;
 
 /**
@@ -16,6 +17,10 @@ class UWidgetBlueprint;
  * (see UContextMenuButton::BroadcastToOwnerDispatchers). Typing that name by hand and then adding two
  * bool parameters in the right order is exactly the kind of thing that gets done slightly wrong once and
  * then debugged for twenty minutes, so this creates it correctly instead.
+ *
+ * Before the rows are laid out, every Shape Target's Look is laid out for the vector shape it aims at (and Background Look
+ * for the Background Shape), so a target shows a Look for a shape and a Shape Box Shape for anything else - never both.
+ * Picking another target widget or Background Shape lays the panel out again, since those change which rows apply.
  */
 class FContextMenuButtonDetails : public IDetailCustomization
 {
@@ -23,6 +28,9 @@ public:
 
 	static TSharedRef<IDetailCustomization> MakeInstance();
 
+	virtual ~FContextMenuButtonDetails() override;
+
+	virtual void CustomizeDetails(const TSharedPtr<IDetailLayoutBuilder>& DetailBuilder) override;
 	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 
 private:
@@ -75,6 +83,12 @@ private:
 
 	/** Weak so a details panel outliving its selection can't resurrect a button. */
 	TArray<TWeakObjectPtr<UContextMenuButton>> CustomizedButtons;
+
+	/** Lays the panel out again next frame after an edit that changes which rows apply. */
+	void HandleObjectPropertyChanged(UObject* Object, FPropertyChangedEvent& Event);
+
+	TWeakPtr<IDetailLayoutBuilder> WeakBuilder;
+	FDelegateHandle PropertyChangedHandle;
 
 	FReply OnAddDispatcherClicked(FDispatcherEventInfo EventInfo);
 	bool CanAddDispatcher(FDispatcherEventInfo EventInfo) const;

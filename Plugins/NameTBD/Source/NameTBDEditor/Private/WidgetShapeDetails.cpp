@@ -159,6 +159,18 @@ void FWidgetShapeDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 			]
 		];
 
+	// ---- The fill's image is always stretched over the shape: Along Outline is a stroke's ---------------
+
+	const TSharedRef<IPropertyHandle> FillHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UShapeWidget, Fill), UShapeWidget::StaticClass());
+	for (const FName Hidden : { GET_MEMBER_NAME_CHECKED(FWidgetShapePaint, ImageMapping), GET_MEMBER_NAME_CHECKED(FWidgetShapePaint, ImageTileLength) })
+	{
+		const TSharedPtr<IPropertyHandle> Child = FillHandle->GetChildHandle(Hidden);
+		if (Child.IsValid() && Child->IsValidHandle())
+		{
+			Child->MarkHiddenByCustomization();
+		}
+	}
+
 	// ---- A Custom Shape's outline tools -------------------------------------------------------------
 
 	if (!ShapeClass || !ShapeClass->IsChildOf(UCustomShape::StaticClass()))
@@ -597,6 +609,7 @@ TSharedRef<SWidget> FWidgetShapeDetails::MakeStartFromMenu()
 		}
 		return Path;
 	});
+	AddPrimitive(LOCTEXT("Pill", "Pill"), []() { return PathOf<URectangleShape>([](URectangleShape& Shape) { Shape.bFullyRounded = true; }); });
 	AddPrimitive(LOCTEXT("Triangle", "Triangle"), []() { return PathOf<UTriangleShape>([](UTriangleShape&) {}); });
 	AddPrimitive(LOCTEXT("Star", "Star"), []() { return PathOf<UStarShape>([](UStarShape&) {}); });
 	AddPrimitive(LOCTEXT("Pentagon", "Pentagon"), []() { return PathOf<UPolygonShape>([](UPolygonShape& Shape) { Shape.Sides = 5; }); });

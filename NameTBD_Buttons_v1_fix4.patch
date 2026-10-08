@@ -1,0 +1,502 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+index a00198a..45b4923 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+@@ -1835,12 +1835,43 @@ void UContextMenuButton::OnCreationFromPalette()
+ {
+ 	Super::OnCreationFromPalette();
+ 
+-	// A ready-made button arrives with what it is made of, every part of it editable in the designer like anything placed
+-	// by hand.
++	// Nothing is built here. The designer makes the dragged widget again for every drop preview while it is dragged over the
++	// canvas, and parts made in the Widget Blueprint's tree for a preview it then discards stay behind in that tree - each
++	// one an ensure on every compile ("was added but did not get a GUID"). So the button only notes that it wants its parts;
++	// the editor module builds them once the button has really been placed (when it is selected), and gives every part
++	// its GUID - see StyledButtonsEditor.
++	bPendingDefaultContent = ShouldBuildDefaultContentWhenEmpty() && GetChildrenCount() == 0;
++}
++
++void UContextMenuButton::BuildPendingDefaultContent(TArray<UWidget*>& OutParts)
++{
++	OutParts.Reset();
++	if (!bPendingDefaultContent)
++	{
++		return;
++	}
++	bPendingDefaultContent = false;
++
++	// Given content by hand meanwhile: that is the content.
++	if (GetChildrenCount() > 0)
++	{
++		return;
++	}
++
+ 	BuildDefaultContent();
+ 	RefreshShapeTargetLooks();
+ 	SyncEditConditionMirrors();
+ 	RebuildShapeTargetStatus();
++
++	TArray<ContextMenuButtonTree::FTargetableWidget> Built;
++	ContextMenuButtonTree::Gather(this, FString(), /*bDescendIntoUserWidgets=*/false, Built);
++	for (const ContextMenuButtonTree::FTargetableWidget& Entry : Built)
++	{
++		if (Entry.Widget && Entry.Widget != this)
++		{
++			OutParts.Add(Entry.Widget);
++		}
++	}
+ }
+ 
+ void UContextMenuButton::SyncMaterialParametersEditor()
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+index fc66f8f..4dfea9e 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+@@ -2232,6 +2232,16 @@ public:
+ 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+ 	virtual void OnCreationFromPalette() override;
+ 
++	/** Whether this button was dropped from the Palette and still wants its default content built. */
++	bool HasPendingDefaultContent() const { return bPendingDefaultContent; }
++
++	/**
++	 * Builds the default content a Palette drop asked for, once, and hands back every part made (for the Widget Blueprint's
++	 * GUIDs). Called by the editor module when the button has really been placed - never during a drag. Nothing when no
++	 * longer pending, or when the button was given content meanwhile.
++	 */
++	void BuildPendingDefaultContent(TArray<UWidget*>& OutParts);
++
+ 	void SyncMaterialParametersEditor();
+ 	void SyncMaterialParameters(FContextMenuWidgetDesign& Design, UMaterialInterface* Material);
+ #endif
+@@ -2510,6 +2520,10 @@ protected:
+ #endif
+ 
+ #if WITH_EDITORONLY_DATA
++	/** Dropped from the Palette, its default content not built yet. See OnCreationFromPalette. */
++	UPROPERTY()
++	bool bPendingDefaultContent = false;
++
+ 	UPROPERTY(Transient, DuplicateTransient)
+ 	bool bHasPaintedDesignPreviewOnce = false;
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
+index 4e5da2a..a217aba 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
+@@ -3,6 +3,7 @@
+ #include "ContextMenuButtonDetails.h"
+ 
+ #include "NameTBD/Buttons/ContextMenuButton.h"
++#include "StyledButtonsEditor.h"
+ 
+ #include "DetailCategoryBuilder.h"
+ #include "DetailLayoutBuilder.h"
+@@ -544,6 +545,9 @@ void FContextMenuButtonDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
+ 		return;
+ 	}
+ 
++	// A ready-made button just dropped from the Palette builds its parts now that it has really been placed (next tick).
++	StyledButtonsEditor::OnButtonsShown(CustomizedButtons);
++
+ 	// Looks laid out for what each target aims at, before any row is made from them.
+ 	for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : CustomizedButtons)
+ 	{
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+index 13719db..c947f15 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+@@ -38,6 +38,7 @@
+ #include "Editor.h"
+ #include "UMGEditorModule.h"
+ #include "WidgetShapeDetails.h"
++#include "StyledButtonsEditor.h"
+ #include "WidgetShapePathEditor.h"
+ #include "WidgetAnimTextCanvasEditor.h"
+ #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
+@@ -123,6 +124,9 @@ void FNameTBDEditorModule::StartupModule()
+ 		FOnGetDetailCustomizationInstance::CreateStatic(&FFlowListItemStyleDetails::MakeInstance));
+ 	PropertyModule.NotifyCustomizationModuleChanged();
+ 
++	// The ready-made buttons: their parts built once placed (never per drop preview), each with its Widget Blueprint GUID.
++	StyledButtonsEditor::Register();
++
+ 	// A Custom Shape's path editor, on the UMG designer's canvas.
+ 	IUMGEditorModule& UMGEditorModule = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
+ 	ShapePathEditorFactory = MakeShared<FWidgetShapePathEditorFactory>();
+@@ -186,6 +190,8 @@ void FNameTBDEditorModule::StartupModule()
+ 
+ void FNameTBDEditorModule::ShutdownModule()
+ {
++	StyledButtonsEditor::Unregister();
++
+ 	// The State Machine editors kept for the status bar drawers, while what they hold on to is still there.
+ 	WidgetAnimStateMachineEditorHooks::Shutdown();
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
+new file mode 100644
+index 0000000..b333009
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
+@@ -0,0 +1,323 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "StyledButtonsEditor.h"
++
++#include "NameTBD/Buttons/ContextMenuButton.h"
++#include "NameTBD/Buttons/Widgets/StyledButtons.h"
++
++#include "Blueprint/WidgetTree.h"
++#include "Components/PanelWidget.h"
++#include "Containers/Ticker.h"
++#include "Editor.h"
++#include "Kismet2/BlueprintEditorUtils.h"
++#include "ScopedTransaction.h"
++#include "UObject/Package.h"
++#include "UObject/UnrealType.h"
++#include "UObject/UObjectHash.h"
++#include "WidgetBlueprint.h"
++
++#define LOCTEXT_NAMESPACE "StyledButtonsEditor"
++
++namespace StyledButtonsEditorPrivate
++{
++	FDelegateHandle PreCompileHandle;
++
++	/** Blueprints whose leftover parts are swept on the next tick - never during their compile. */
++	TArray<TWeakObjectPtr<UWidgetBlueprint>> PendingSweeps;
++	bool bSweepScheduled = false;
++
++	/** How far up a widget's parents are followed, in case a broken tree ever loops. */
++	constexpr int32 MaxDepth = 256;
++
++	/**
++	 * The Widget Blueprint's name-to-GUID map, read through reflection: whether a widget has its GUID, and giving it one, need
++	 * no API that may differ between engine versions.
++	 */
++	const FMapProperty* GetGuidMapProperty()
++	{
++		static const FMapProperty* Property = FindFProperty<FMapProperty>(UWidgetBlueprint::StaticClass(), TEXT("WidgetVariableNameToGuidMap"));
++		return Property;
++	}
++
++	/** Gives Name a GUID in the blueprint's map if it has none. True if it added one. */
++	bool EnsureGuid(UWidgetBlueprint* Blueprint, FName Name)
++	{
++		const FMapProperty* MapProperty = GetGuidMapProperty();
++		if (!Blueprint || !MapProperty || Name.IsNone())
++		{
++			return false;
++		}
++		FScriptMapHelper Map(MapProperty, MapProperty->ContainerPtrToValuePtr<void>(Blueprint));
++		if (Map.FindMapIndexWithKey(&Name) != INDEX_NONE)
++		{
++			return false;
++		}
++		const FGuid NewGuid = FGuid::NewGuid();
++		Map.AddPair(&Name, &NewGuid);
++		return true;
++	}
++
++	/** Every widget the tree really holds: under its root, and in its named slot bindings (read through reflection). */
++	void GatherLiveWidgets(UWidgetTree* Tree, TSet<UWidget*>& OutLive)
++	{
++		Tree->ForEachWidget([&OutLive](UWidget* Widget)
++		{
++			OutLive.Add(Widget);
++		});
++
++		static const FMapProperty* BindingsProperty = FindFProperty<FMapProperty>(UWidgetTree::StaticClass(), TEXT("NamedSlotBindings"));
++		const FObjectPropertyBase* ValueProperty = BindingsProperty ? CastField<FObjectPropertyBase>(BindingsProperty->ValueProp) : nullptr;
++		if (!ValueProperty)
++		{
++			return;
++		}
++		FScriptMapHelper Bindings(BindingsProperty, BindingsProperty->ContainerPtrToValuePtr<void>(Tree));
++		for (int32 Index = 0; Index < Bindings.GetMaxIndex(); ++Index)
++		{
++			if (!Bindings.IsValidIndex(Index))
++			{
++				continue;
++			}
++			if (UWidget* Bound = Cast<UWidget>(ValueProperty->GetObjectPropertyValue(Bindings.GetValuePtr(Index))))
++			{
++				OutLive.Add(Bound);
++				UWidgetTree::ForWidgetAndChildren(Bound, [&OutLive](UWidget* Widget)
++				{
++					OutLive.Add(Widget);
++				});
++			}
++		}
++	}
++
++	/** The ready-made button Widget is part of, following its parents; null when it isn't part of one. */
++	UStyledButtonBase* FindOwningReadyMade(UWidget* Widget)
++	{
++		UPanelWidget* Parent = Widget ? Widget->GetParent() : nullptr;
++		for (int32 Depth = 0; Parent && Depth < MaxDepth; ++Depth)
++		{
++			if (UStyledButtonBase* Button = Cast<UStyledButtonBase>(Parent))
++			{
++				return Button;
++			}
++			Parent = Parent->GetParent();
++		}
++		return nullptr;
++	}
++
++	/** Every widget made in the tree (its direct inners), live or not. */
++	void GatherTreeWidgets(UWidgetTree* Tree, TArray<UWidget*>& OutWidgets)
++	{
++		ForEachObjectWithOuter(Tree, [&OutWidgets](UObject* Object)
++		{
++			if (UWidget* Widget = Cast<UWidget>(Object))
++			{
++				if (IsValid(Widget))
++				{
++					OutWidgets.Add(Widget);
++				}
++			}
++		}, /*bIncludeNestedObjects=*/false);
++	}
++
++	/**
++	 * Gives every widget of the tree that has none a GUID - so the compile never meets one without. Covers parts of ready-made
++	 * buttons built by the first version (which got none), and is a no-op for everything the designer already registered.
++	 */
++	void RegisterMissingGuids(UWidgetBlueprint* Blueprint)
++	{
++		if (!Blueprint || !Blueprint->WidgetTree)
++		{
++			return;
++		}
++		TArray<UWidget*> Widgets;
++		GatherTreeWidgets(Blueprint->WidgetTree, Widgets);
++		for (UWidget* Widget : Widgets)
++		{
++			EnsureGuid(Blueprint, Widget->GetFName());
++		}
++	}
++
++	/**
++	 * Takes out of the tree the parts left behind by drop previews the designer discarded: widgets in the tree, not in its
++	 * hierarchy, belonging to a ready-made button the designer itself has already moved out of the tree. A button still in
++	 * the tree (an undone drop that a redo may bring back) and everything in it are left exactly as they are.
++	 */
++	void SweepLeftoverParts(UWidgetBlueprint* Blueprint)
++	{
++		UWidgetTree* Tree = Blueprint ? Blueprint->WidgetTree.Get() : nullptr;
++		if (!Tree)
++		{
++			return;
++		}
++
++		TSet<UWidget*> Live;
++		GatherLiveWidgets(Tree, Live);
++
++		TArray<UWidget*> Widgets;
++		GatherTreeWidgets(Tree, Widgets);
++
++		TArray<UWidget*> Leftovers;
++		for (UWidget* Widget : Widgets)
++		{
++			if (Live.Contains(Widget))
++			{
++				continue;
++			}
++			const UStyledButtonBase* Owner = FindOwningReadyMade(Widget);
++			if (Owner && !Live.Contains(Owner) && Owner->GetOuter() != Tree)
++			{
++				Leftovers.Add(Widget);
++			}
++		}
++
++		for (UWidget* Leftover : Leftovers)
++		{
++			Leftover->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty);
++			Leftover->MarkAsGarbage();
++		}
++		if (Leftovers.Num() > 0)
++		{
++			Blueprint->MarkPackageDirty();
++			UE_LOG(LogTemp, Log, TEXT("NameTBD: removed %d widget(s) left in %s by discarded drop previews of ready-made buttons."), Leftovers.Num(), *Blueprint->GetName());
++		}
++	}
++
++	void ScheduleSweep(UWidgetBlueprint* Blueprint)
++	{
++		PendingSweeps.AddUnique(Blueprint);
++		if (bSweepScheduled)
++		{
++			return;
++		}
++		bSweepScheduled = true;
++		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float)
++		{
++			bSweepScheduled = false;
++			TArray<TWeakObjectPtr<UWidgetBlueprint>> Sweeps = MoveTemp(PendingSweeps);
++			PendingSweeps.Reset();
++			for (const TWeakObjectPtr<UWidgetBlueprint>& WeakBlueprint : Sweeps)
++			{
++				if (UWidgetBlueprint* Blueprint = WeakBlueprint.Get())
++				{
++					// Never in the middle of a compile.
++					if (!Blueprint->bBeingCompiled)
++					{
++						SweepLeftoverParts(Blueprint);
++					}
++				}
++			}
++			return false;
++		}));
++	}
++
++	/** Before a Widget Blueprint compiles: every widget has its GUID; leftovers are swept just after. */
++	void HandleBlueprintPreCompile(UBlueprint* Blueprint)
++	{
++		UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Blueprint);
++		if (!WidgetBlueprint || !WidgetBlueprint->WidgetTree)
++		{
++			return;
++		}
++		RegisterMissingGuids(WidgetBlueprint);
++		ScheduleSweep(WidgetBlueprint);
++	}
++
++	/** Builds a placed ready-made button's pending content: one undoable step, each part given its GUID. */
++	void BuildPendingContent(UContextMenuButton* Button)
++	{
++		if (!Button || !Button->HasPendingDefaultContent())
++		{
++			return;
++		}
++		UWidgetBlueprint* Blueprint = Button->GetTypedOuter<UWidgetBlueprint>();
++		UWidgetTree* Tree = Blueprint ? Blueprint->WidgetTree.Get() : nullptr;
++		if (!Tree || Button->GetOuter() != Tree)
++		{
++			return;
++		}
++
++		// Only a button really in the hierarchy: never a drop preview.
++		TSet<UWidget*> Live;
++		GatherLiveWidgets(Tree, Live);
++		if (!Live.Contains(Button))
++		{
++			return;
++		}
++
++		const FScopedTransaction Transaction(LOCTEXT("BuildReadyMadeButton", "Build Ready-Made Button"));
++		Blueprint->Modify();
++		Tree->Modify();
++		Button->Modify();
++
++		TArray<UWidget*> Parts;
++		Button->BuildPendingDefaultContent(Parts);
++		for (UWidget* Part : Parts)
++		{
++			EnsureGuid(Blueprint, Part->GetFName());
++		}
++
++		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
++	}
++}
++
++namespace StyledButtonsEditor
++{
++	void Register()
++	{
++		using namespace StyledButtonsEditorPrivate;
++		if (GEditor && !PreCompileHandle.IsValid())
++		{
++			PreCompileHandle = GEditor->OnBlueprintPreCompile().AddStatic(&HandleBlueprintPreCompile);
++		}
++	}
++
++	void Unregister()
++	{
++		using namespace StyledButtonsEditorPrivate;
++		if (GEditor && PreCompileHandle.IsValid())
++		{
++			GEditor->OnBlueprintPreCompile().Remove(PreCompileHandle);
++		}
++		PreCompileHandle.Reset();
++		PendingSweeps.Reset();
++	}
++
++	void OnButtonsShown(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons)
++	{
++		using namespace StyledButtonsEditorPrivate;
++
++		TArray<TWeakObjectPtr<UContextMenuButton>> Pending;
++		for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : Buttons)
++		{
++			UContextMenuButton* Button = WeakButton.Get();
++			if (!Button)
++			{
++				continue;
++			}
++			if (Button->HasPendingDefaultContent())
++			{
++				Pending.Add(WeakButton);
++			}
++			if (UWidgetBlueprint* Blueprint = Button->GetTypedOuter<UWidgetBlueprint>())
++			{
++				ScheduleSweep(Blueprint);
++			}
++		}
++		if (Pending.Num() == 0)
++		{
++			return;
++		}
++
++		// Next tick: never while the Details panel is laying itself out.
++		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Pending](float)
++		{
++			for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : Pending)
++			{
++				BuildPendingContent(WeakButton.Get());
++			}
++			return false;
++		}));
++	}
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h
+new file mode 100644
+index 0000000..cce6176
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h
+@@ -0,0 +1,32 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++
++class UContextMenuButton;
++
++/**
++ * Keeps the ready-made buttons (UStyledButtonBase) right with the Widget Blueprint they are placed in.
++ *
++ * A ready-made button is made of child widgets. The UMG editor gives the widget dropped from the Palette a variable GUID,
++ * but not children it makes for itself; without one, every compile of the Widget Blueprint fires an ensure per child -
++ * a full callstack each - which froze the editor. And the designer makes the dragged widget again for every drop preview,
++ * so children made then were left behind in the tree as orphans. So:
++ *
++ *   - A dropped button only marks itself pending (UContextMenuButton::OnCreationFromPalette). Its parts are built here,
++ *     once it has really been placed - the designer selects a dropped widget, which shows its Details - in one undoable
++ *     transaction, each part given its GUID, the blueprint marked structurally modified.
++ *   - Before every compile of a Widget Blueprint, any ready-made button's part still without a GUID gets one (buttons made
++ *     by the first version of the change set).
++ *   - Parts orphaned by discarded drop previews (and those previews' buttons) are taken out of the tree, outside the
++ *     compile, on the next tick.
++ */
++namespace StyledButtonsEditor
++{
++	void Register();
++	void Unregister();
++
++	/** Called as a Context Menu Button's Details are shown: builds any pending ready-made content, next tick. */
++	void OnButtonsShown(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons);
++}

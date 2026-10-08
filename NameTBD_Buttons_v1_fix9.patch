@@ -1,0 +1,1524 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+index 357257d..ea6bd48 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+@@ -300,7 +300,7 @@ namespace ContextMenuButtonTree
+ 				Gather(Panel->GetChildAt(i), TreePrefix, bDescendIntoUserWidgets, Out, Depth + 1);
+ 			}
+ 
+-			// Legacy hidden parts (see RestoreHiddenParts) are still the button's parts until they are put back.
++			// Parts hidden from the Hierarchy are still the button's parts.
+ 			if (const UContextMenuButton* Button = Cast<UContextMenuButton>(Panel))
+ 			{
+ 				Gather(Button->GetHiddenContent(), TreePrefix, bDescendIntoUserWidgets, Out, Depth + 1);
+@@ -1852,6 +1852,232 @@ void UContextMenuButton::OnCreationFromPalette()
+ 	bPendingDefaultContent = ShouldBuildDefaultContentWhenEmpty() && !HasAnyContent();
+ }
+ 
++namespace ContextMenuButtonParts
++{
++	/** Root and everything inside it - panels' children and named slots' content. */
++	void GatherWidgetAndChildren(UWidget* Root, TArray<UWidget*>& OutWidgets)
++	{
++		if (!Root)
++		{
++			return;
++		}
++		OutWidgets.Add(Root);
++		UWidgetTree::ForWidgetAndChildren(Root, [&OutWidgets](UWidget* Child)
++		{
++			OutWidgets.Add(Child);
++		});
++	}
++
++	/** Moves Part into NewOuter, under its own name while that is free there, else a numbered one. */
++	void MovePart(UWidget* Part, UObject* NewOuter)
++	{
++		FName NewName = Part->GetFName();
++		if (StaticFindObjectFast(UObject::StaticClass(), NewOuter, NewName))
++		{
++			NewName = MakeUniqueObjectName(NewOuter, Part->GetClass(), NewName);
++		}
++		Part->Modify();
++		Part->Rename(*NewName.ToString(), NewOuter, REN_DontCreateRedirectors);
++	}
++}
++
++bool UContextMenuButton::SetPartsHidden(bool bHide, TArray<UWidget*>& OutMovedParts)
++{
++	using namespace ContextMenuButtonParts;
++	OutMovedParts.Reset();
++
++	UWidgetTree* OwnerTree = GetTypedOuter<UWidgetTree>();
++	if (!OwnerTree)
++	{
++		return false;
++	}
++
++	if (bHide)
++	{
++		UPanelSlot* ListedSlot = GetContentSlot();
++		UWidget* Content = ListedSlot ? ListedSlot->Content.Get() : nullptr;
++		if (!Content || HiddenContentSlot)
++		{
++			return false;
++		}
++		Modify();
++		if (!PartsTree)
++		{
++			const FName TreeName = MakeUniqueObjectName(this, UWidgetTree::StaticClass(), TEXT("PartsTree"));
++			PartsTree = NewObject<UWidgetTree>(this, TreeName, RF_Transactional);
++		}
++		PartsTree->Modify();
++		ListedSlot->Modify();
++
++		GatherWidgetAndChildren(Content, OutMovedParts);
++		for (UWidget* Part : OutMovedParts)
++		{
++			MovePart(Part, PartsTree);
++		}
++
++		Slots.Remove(ListedSlot);
++		HiddenContentSlot = ListedSlot;
++		PartsTree->RootWidget = Content;
++	}
++	else
++	{
++		if (!ArePartsHidden() || GetChildrenCount() > 0)
++		{
++			return false;
++		}
++		UWidget* Content = GetHiddenContent();
++		Modify();
++		OwnerTree->Modify();
++		PartsTree->Modify();
++
++		GatherWidgetAndChildren(Content, OutMovedParts);
++		for (UWidget* Part : OutMovedParts)
++		{
++			MovePart(Part, OwnerTree);
++		}
++
++		PartsTree->RootWidget = nullptr;
++		Slots.Add(HiddenContentSlot);
++		HiddenContentSlot = nullptr;
++	}
++
++	// Built again onto a live button (the slot is the same; only where the button finds it changed).
++	if (MyButton.IsValid())
++	{
++		if (UButtonSlot* PartsSlot = Cast<UButtonSlot>(GetPartsSlot()))
++		{
++			PartsSlot->BuildSlot(MyButton.ToSharedRef());
++		}
++	}
++	return OutMovedParts.Num() > 0;
++}
++
++EContextMenuDesignPreview UContextMenuButton::GetEffectiveDesignPreview() const
++{
++	return bDesignerPreviewDriven ? DesignerPreviewState : ActiveDesignPreview;
++}
++
++void UContextMenuButton::PlayDesignerPreviewState(EContextMenuDesignPreview State, bool bAnimate)
++{
++	using namespace ContextMenuButtonDesign;
++	if (!IsDesignTime())
++	{
++		return;
++	}
++
++	const EContextMenuDesignPreview Shown = GetEffectiveDesignPreview();
++	bDesignerPreviewDriven = true;
++	DesignerPreviewState = State;
++
++	const TSharedPtr<SWidget> SlateWidget = GetCachedWidget();
++	if (!bAnimate || !SlateWidget.IsValid() || State == EContextMenuDesignPreview::None)
++	{
++		if (bIsDesignerStateTimerActive)
++		{
++			bIsDesignerStateTimerActive = false;
++			++DesignerStateSerial;
++			RestoreRuntimeDesignBaselines();
++		}
++		ApplyDesignPreviews();
++		CacheResolvedOverridesSnapshot();
++		return;
++	}
++
++	// The runtime's own blend, run on the designer's copy: its targets are set up from the widgets as authored, put at the state
++	// shown now, then sent to the new one - and a pick during a blend redirects it from wherever it has got to.
++	const EContextMenuState Goal = PreviewToState(State);
++	if (!bIsDesignerStateTimerActive)
++	{
++		ClearDesignPreviews();
++		InitializeRuntimeShapeTargets();
++		InitializeRuntimeDesignTargets();
++
++		const EContextMenuState From = Shown == EContextMenuDesignPreview::None ? EContextMenuState::Normal : PreviewToState(Shown);
++		CurrentShapeState = From;
++		CurrentDesignState = From;
++		ApplyTransitions(0.f, /*bInstant=*/true);
++
++		bIsDesignerStateTimerActive = true;
++		const int32 Serial = ++DesignerStateSerial;
++		SlateWidget->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateUObject(this, &UContextMenuButton::TickDesignerPreviewState, Serial));
++	}
++
++	CurrentShapeState = Goal;
++	CurrentDesignState = Goal;
++	PushVisualStateToSlate(Goal);
++}
++
++void UContextMenuButton::StopDesignerPreviewState()
++{
++	if (!bDesignerPreviewDriven)
++	{
++		return;
++	}
++	bDesignerPreviewDriven = false;
++	if (bIsDesignerStateTimerActive)
++	{
++		bIsDesignerStateTimerActive = false;
++		++DesignerStateSerial;
++		RestoreRuntimeDesignBaselines();
++	}
++	ApplyDesignPreviews();
++	CacheResolvedOverridesSnapshot();
++}
++
++EActiveTimerReturnType UContextMenuButton::TickDesignerPreviewState(double InCurrentTime, float InDeltaTime, int32 Serial)
++{
++	if (Serial != DesignerStateSerial || !bIsDesignerStateTimerActive)
++	{
++		return EActiveTimerReturnType::Stop;
++	}
++	if (!IsDesignTime() || !GetCachedWidget().IsValid())
++	{
++		bIsDesignerStateTimerActive = false;
++		return EActiveTimerReturnType::Stop;
++	}
++	if (ApplyTransitions(InDeltaTime, /*bInstant=*/false))
++	{
++		FinishDesignerPreviewState();
++		return EActiveTimerReturnType::Stop;
++	}
++	return EActiveTimerReturnType::Continue;
++}
++
++void UContextMenuButton::FinishDesignerPreviewState()
++{
++	// The blend has arrived where the preview's own pass paints the state at once: handed back to it, so edits made from now on
++	// repaint as before. The design channels go back to as authored first, for its baselines.
++	bIsDesignerStateTimerActive = false;
++	RestoreRuntimeDesignBaselines();
++	ApplyDesignPreviews();
++	CacheResolvedOverridesSnapshot();
++}
++
++void UContextMenuButton::RestoreRuntimeDesignBaselines()
++{
++	for (const FContextMenuRuntimeDesignTarget& Target : RuntimeDesignTargets)
++	{
++		UWidget* Widget = Target.Widget.Get();
++		if (!Widget || !Target.bHasBaseline)
++		{
++			continue;
++		}
++		ApplyColorToWidget(Widget, Target.BaselineTint);
++		ApplyOutlineTintToWidget(Widget, Target.BaselineOutlineTint);
++		Widget->SetRenderOpacity(Target.BaselineOpacity);
++		if (UTexture2D* BaselineTexture = Target.BaselineBrushTexture.Get())
++		{
++			ApplyBrushTextureToWidget(Widget, BaselineTexture);
++		}
++		if (UMaterialInterface* BaselineMaterialObject = Target.BaselineMaterial.Get())
++		{
++			ApplyMaterialToWidget(Widget, BaselineMaterialObject);
++		}
++	}
++	RuntimeShapeTargets.Reset();
++	RuntimeDesignTargets.Reset();
++}
++
+ bool UContextMenuButton::ConsumePendingDefaultContent()
+ {
+ 	const bool bWasPending = bPendingDefaultContent;
+@@ -2013,12 +2239,42 @@ void UContextMenuButton::SyncMaterialParameters(FContextMenuWidgetDesign& Design
+ }
+ #endif
+ 
++bool UContextMenuButton::ArePartsHidden() const
++{
++	const UWidget* Content = GetHiddenContent();
++	return Content && PartsTree && Content->IsIn(PartsTree);
++}
++
+ bool UContextMenuButton::RestoreHiddenParts()
+ {
+ 	if (!HiddenContentSlot)
+ 	{
+ 		return false;
+ 	}
++
++	// Hidden in the button's own tree: kept. Only the links between the button, the slot and the content are put right.
++	if (ArePartsHidden())
++	{
++		UWidget* OwnContent = GetHiddenContent();
++		bool bChanged = false;
++		if (HiddenContentSlot->Parent.Get() != this)
++		{
++			HiddenContentSlot->Parent = this;
++			bChanged = true;
++		}
++		if (OwnContent->Slot.Get() != HiddenContentSlot.Get())
++		{
++			OwnContent->Slot = HiddenContentSlot;
++			bChanged = true;
++		}
++		if (PartsTree->RootWidget.Get() != OwnContent)
++		{
++			PartsTree->RootWidget = OwnContent;
++			bChanged = true;
++		}
++		return bChanged;
++	}
++
+ 	UPanelSlot* KeptSlot = HiddenContentSlot;
+ 	HiddenContentSlot = nullptr;
+ 
+@@ -2585,7 +2841,21 @@ TSharedRef<SWidget> UContextMenuButton::RebuildWidget()
+ 	// Widget Blueprint's own template.
+ 	SyncBackgroundShape();
+ 
+-	// The content slot - or a legacy hidden slot not put back yet - builds the content.
++	// Parts hidden from the Hierarchy live in the button's own tree, which the designer doesn't walk when it marks its widgets
++	// as being designed: they take the button's flags from it, before they are built.
++#if WITH_EDITOR
++	if (UWidget* HiddenRoot = GetHiddenContent())
++	{
++		const EWidgetDesignFlags DesignFlags = GetDesignerFlags();
++		HiddenRoot->SetDesignerFlags(DesignFlags);
++		UWidgetTree::ForWidgetAndChildren(HiddenRoot, [DesignFlags](UWidget* Part)
++		{
++			Part->SetDesignerFlags(DesignFlags);
++		});
++	}
++#endif
++
++	// The content slot - or, with the parts hidden from the Hierarchy, the slot kept for them - builds the content.
+ 	if (UButtonSlot* PartsSlot = Cast<UButtonSlot>(GetPartsSlot()))
+ 	{
+ 		PartsSlot->BuildSlot(NewButton);
+@@ -2618,7 +2888,7 @@ void UContextMenuButton::ReleaseSlateResources(bool bReleaseChildren)
+ 		BackgroundShapeWidget->SetExternalPainter(nullptr);
+ 	}
+ 
+-	// Legacy hidden parts aren't among the panel's slots, so the panel doesn't release them itself.
++	// Parts hidden from the Hierarchy aren't among the panel's slots, so the panel doesn't release them itself.
+ 	if (bReleaseChildren && HiddenContentSlot)
+ 	{
+ 		HiddenContentSlot->ReleaseSlateResources(bReleaseChildren);
+@@ -5477,14 +5747,20 @@ void UContextMenuButton::ApplyDesignPreviews()
+ {
+ 	using namespace ContextMenuButtonDesign;
+ 
++	// A toolbar transition is painting the widgets; it hands back to this once it arrives (FinishDesignerPreviewState).
++	if (bIsDesignerStateTimerActive)
++	{
++		return;
++	}
++
+ 	ClearDesignPreviews();
+ 
+ 	// The Background Shape back as authored, so a Look or a material an earlier preview wrote doesn't linger.
+ 	SyncBackgroundShape();
+ 
+-	// The placement's own dropdown when previewed inside a widget that has been placed somewhere, otherwise
+-	// the button's. Worked out by ResolveInstanceOverrides, which every caller has just run.
+-	const EContextMenuDesignPreview Preview = ActiveDesignPreview;
++	// The toolbar's state when it drives the preview; else the placement's own dropdown when previewed inside a widget that has
++	// been placed somewhere, otherwise the button's. Worked out by ResolveInstanceOverrides, which every caller has just run.
++	const EContextMenuDesignPreview Preview = GetEffectiveDesignPreview();
+ 	const bool bNoPreview = (Preview == EContextMenuDesignPreview::None);
+ 	const EContextMenuState State = bNoPreview ? EContextMenuState::Normal : PreviewToState(Preview);
+ 
+@@ -6070,7 +6346,7 @@ bool UContextMenuButton::HasResolvedOverridesChanged() const
+ 		return true;
+ 	}
+ 
+-	if (LastPaintedPreview != ActiveDesignPreview)
++	if (LastPaintedPreview != GetEffectiveDesignPreview())
+ 	{
+ 		return true;
+ 	}
+@@ -6122,7 +6398,7 @@ bool UContextMenuButton::HasResolvedOverridesChanged() const
+ void UContextMenuButton::CacheResolvedOverridesSnapshot()
+ {
+ 	bHasPaintedDesignPreviewOnce = true;
+-	LastPaintedPreview = ActiveDesignPreview;
++	LastPaintedPreview = GetEffectiveDesignPreview();
+ 	LastPaintedShapePatch = ActiveShapePatch;
+ 	LastPaintedDesignPatch = ActiveDesignPatch;
+ }
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+index 8c984cc..27f8990 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+@@ -40,6 +40,7 @@ class SShapeBox;
+ class SContextMenuButtonBrush;
+ class SWidgetShape;
+ class UShapeWidget;
++class UWidgetTree;
+ 
+ UENUM(BlueprintType)
+ enum class EContextMenuButtonType : uint8
+@@ -1506,7 +1507,8 @@ public:
+ 
+ 	/**
+ 	 * Shows the button's design and shape for one state in the UMG designer, without pressing Play. Editor only.
+-	 * Set it back to None to restore the authored look.
++	 * Set it back to None to restore the authored look. Hidden from the Details panel: the Widget Blueprint editor's toolbar
++	 * previews states (and values) with their transitions now, and this stays the state shown until the toolbar picks one.
+ 	 *
+ 	 * Placements have their own copy of this on their Instance Overrides variable, so a widget dropped into
+ 	 * another one can be previewed per state from there.
+@@ -1721,24 +1723,32 @@ public:
+ 	bool bHasBackgroundShape = false;
+ 
+ 	/**
+-	 * Legacy (Buttons fix6-fix7 kept a ready-made button's parts in a slot outside the hierarchy, which the Widget Blueprint
+-	 * editor and compiler don't know about). Puts them back as the button's content - the same widgets, nothing changed on
+-	 * them lost. Parts that aren't this button's own (gone, in another tree, or another widget's content - a pasted copy)
+-	 * are let go of instead, and the button builds its parts again. True when it changed anything. Called on load, and by the
+-	 * editor module for buttons changed in this session.
++	 * Parts hidden from the Hierarchy: the button's content kept in HiddenContentSlot instead of among its slots, the widgets
++	 * themselves in PartsTree - a widget tree of the button's own, inside it, the way a User Widget keeps its widgets. The
++	 * Widget Blueprint lists, compiles and gives GUIDs only to the widgets of its own tree, so these are none of its business;
++	 * duplicating, copying, pasting and undoing the button carry them along as its subobjects. Built, drawn and targeted
++	 * exactly as when listed. See SetPartsHidden.
++	 */
++	bool ArePartsHidden() const;
++
++	/**
++	 * Checks the hidden parts on load (and for the editor module): parts in PartsTree are this button's own and kept (their
++	 * links put right); parts anywhere else - Buttons fix6-fix7 kept them in the Widget Blueprint's tree, or a pasted copy
++	 * still names the original's - are put back as the button's content when they are its own, else let go of, and the
++	 * button builds its parts again. True when it changed anything.
+ 	 */
+ 	bool RestoreHiddenParts();
+ 
+-	/** Whether the button still holds parts outside the hierarchy (see RestoreHiddenParts). */
++	/** Whether the button holds a hidden content slot at all (its own or legacy - see RestoreHiddenParts). */
+ 	bool HasHiddenParts() const { return HiddenContentSlot != nullptr; }
+ 
+-	/** Legacy hidden content (see RestoreHiddenParts), or null. */
++	/** The content hidden from the Hierarchy, or null. */
+ 	UWidget* GetHiddenContent() const { return HiddenContentSlot ? HiddenContentSlot->Content.Get() : nullptr; }
+ 
+-	/** The content's slot (or a legacy hidden slot not restored yet). */
++	/** The content's slot, listed or hidden. */
+ 	UPanelSlot* GetPartsSlot() const { return GetContentSlot() ? GetContentSlot() : HiddenContentSlot.Get(); }
+ 
+-	/** Whether the button has content (or legacy hidden content). */
++	/** Whether the button has content, listed or hidden. */
+ 	bool HasAnyContent() const { return GetChildrenCount() > 0 || GetHiddenContent() != nullptr; }
+ 
+ 	/** The Background Shape being drawn - set its values from Blueprint like any shape's. Null without a Background Shape. */
+@@ -2269,6 +2279,46 @@ public:
+ 	 */
+ 	void BuildDefaultContentForEditor(TArray<UWidget*>& OutParts);
+ 
++	/**
++	 * Hides the button's content from the Hierarchy (moved, with everything inside it, into PartsTree) or lists it again (moved
++	 * back into the tree the button is in). The same widgets either way - renamed only if their name is taken where they go, which
++	 * targets still follow (see FindWidgetInButtonTree). Hands back every widget moved. Call inside a transaction, then make the
++	 * Widget Blueprint's GUIDs match (the editor module does both). True when it moved anything.
++	 */
++	bool SetPartsHidden(bool bHide, TArray<UWidget*>& OutMovedParts);
++
++	/** Whether the Show / Hide Parts choice was made for this button (a fresh build hides; older buttons are hidden once). */
++	bool IsPartsVisibilityDecided() const { return bPartsVisibilityDecided; }
++	void MarkPartsVisibilityDecided() { bPartsVisibilityDecided = true; }
++
++	// ---- Button preview toolbar (designer only) ----------------------------------------------------
++
++	/**
++	 * Shows State in the designer, blending there from what the preview shows now with the button's own speeds, curves and
++	 * delays - exactly as the button changes state at runtime - or at once (bAnimate false). From then on the toolbar's state is
++	 * the preview in force instead of Show Preview, until StopDesignerPreviewState. Designer preview copies only.
++	 */
++	void PlayDesignerPreviewState(EContextMenuDesignPreview State, bool bAnimate);
++
++	/** Gives the preview back to Show Preview. */
++	void StopDesignerPreviewState();
++
++	/** The state the preview shows: the toolbar's, else Show Preview's (or the placement's). */
++	EContextMenuDesignPreview GetEffectiveDesignPreview() const;
++
++	/** Whether a toolbar transition is running. */
++	bool IsPlayingDesignerPreviewState() const { return bIsDesignerStateTimerActive; }
++
++	/**
++	 * The values the toolbar's stepper shows for a button that steps through some (a Choice Button's options or numbers, a
++	 * Segmented Choice's choices): how many, the one shown, its text, and showing another - animated as at runtime. A button
++	 * with none returns 0 and the stepper hides. Designer preview copies only; the authored value is never changed.
++	 */
++	virtual int32 GetDesignerPreviewValueCount() const { return 0; }
++	virtual int32 GetDesignerPreviewValueIndex() const { return 0; }
++	virtual FText GetDesignerPreviewValueText() const { return FText::GetEmpty(); }
++	virtual void SetDesignerPreviewValueIndex(int32 Index, bool bAnimate) {}
++
+ 	void SyncMaterialParametersEditor();
+ 	void SyncMaterialParameters(FContextMenuWidgetDesign& Design, UMaterialInterface* Material);
+ #endif
+@@ -2544,6 +2594,22 @@ protected:
+ 
+ 	/** Whether the designer animation preview should be running right now. */
+ 	bool ShouldRunDesignerAnimPreview() const;
++
++	/** The toolbar's state is in force (see PlayDesignerPreviewState), and which it is. */
++	bool bDesignerPreviewDriven = false;
++	EContextMenuDesignPreview DesignerPreviewState = EContextMenuDesignPreview::Normal;
++
++	/** A toolbar transition is blending; each new one bumps the serial, so a stale timer stops itself. */
++	bool bIsDesignerStateTimerActive = false;
++	int32 DesignerStateSerial = 0;
++
++	EActiveTimerReturnType TickDesignerPreviewState(double InCurrentTime, float InDeltaTime, int32 Serial);
++
++	/** The transition has arrived: the preview handed back to ApplyDesignPreviews, at the state reached. */
++	void FinishDesignerPreviewState();
++
++	/** Puts every Design Target's widget back as it was before the runtime targets wrote to it. */
++	void RestoreRuntimeDesignBaselines();
+ #endif
+ 
+ #if WITH_EDITORONLY_DATA
+@@ -2551,6 +2617,10 @@ protected:
+ 	UPROPERTY()
+ 	bool bPendingDefaultContent = false;
+ 
++	/** See IsPartsVisibilityDecided. */
++	UPROPERTY()
++	bool bPartsVisibilityDecided = false;
++
+ 	UPROPERTY(Transient, DuplicateTransient)
+ 	bool bHasPaintedDesignPreviewOnce = false;
+ 
+@@ -2752,10 +2822,14 @@ protected:
+ 	UPROPERTY(Transient)
+ 	TWeakObjectPtr<UInfoCardWidget> OwningCard;
+ 
+-	/** Legacy: where Buttons fix6-fix7 kept a ready-made button's parts out of the hierarchy. Emptied on load. */
++	/** The content's slot while the parts are hidden from the Hierarchy (see ArePartsHidden). */
+ 	UPROPERTY(Instanced)
+ 	TObjectPtr<UPanelSlot> HiddenContentSlot;
+ 
++	/** The button's own tree the hidden parts live in (see ArePartsHidden). Made the first time they are hidden. */
++	UPROPERTY(Instanced)
++	TObjectPtr<UWidgetTree> PartsTree;
++
+ 	/** What draws the Background Shape: a shape widget of that kind, in no tree, painted by the Slate button. */
+ 	UPROPERTY(Transient, DuplicateTransient)
+ 	TObjectPtr<UShapeWidget> BackgroundShapeWidget;
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.cpp b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.cpp
+index 6651e32..b085013 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.cpp
+@@ -242,8 +242,8 @@ void UChoiceButton::UpdateDisplay(int32 Direction)
+ 		NextPart->SetRenderOpacity(bAtEnd ? DimmedArrowOpacity : 1.f);
+ 	}
+ 
+-	// The new value slides in from the side it came from.
+-	if (Direction != 0 && ShownValue && !IsDesignTime())
++	// The new value slides in from the side it came from (in the designer too, when its toolbar steps the preview).
++	if (Direction != 0 && ShownValue && (!IsDesignTime() || bAnimateInDesigner))
+ 	{
+ 		KickOffset = Direction * KickDistance;
+ 		ShownValue->SetRenderTranslation(FVector2D(KickOffset, 0.0));
+@@ -282,6 +282,53 @@ EActiveTimerReturnType UChoiceButton::TickKick(double InCurrentTime, float InDel
+ 	return EActiveTimerReturnType::Continue;
+ }
+ 
++#if WITH_EDITOR
++int32 UChoiceButton::GetDesignerPreviewValueCount() const
++{
++	return Mode == EChoiceButtonMode::Number ? GetNumberSteps() + 1 : Options.Num();
++}
++
++int32 UChoiceButton::GetDesignerPreviewValueIndex() const
++{
++	if (Mode == EChoiceButtonMode::Number)
++	{
++		const int32 Count = GetNumberSteps() + 1;
++		return FMath::Clamp(FMath::RoundToInt((Value - MinValue) / FMath::Max(Step, KINDA_SMALL_NUMBER)), 0, Count - 1);
++	}
++	return SelectedIndex;
++}
++
++FText UChoiceButton::GetDesignerPreviewValueText() const
++{
++	return GetDisplayText();
++}
++
++void UChoiceButton::SetDesignerPreviewValueIndex(int32 Index, bool bAnimate)
++{
++	const int32 Count = GetDesignerPreviewValueCount();
++	if (Count <= 0)
++	{
++		return;
++	}
++	const int32 Current = GetDesignerPreviewValueIndex();
++	const int32 Next = ((Index % Count) + Count) % Count;
++	if (Mode == EChoiceButtonMode::Number)
++	{
++		Value = FMath::Min(MinValue + Next * Step, MaxValue);
++	}
++	else
++	{
++		SelectedIndex = Next;
++	}
++
++	// Stepping on past the end comes back in from the side it is heading, as a wrapping step does at runtime.
++	const int32 Direction = Next == Current ? 0 : ((Index > Current) ? 1 : -1);
++	bAnimateInDesigner = bAnimate;
++	UpdateDisplay(Direction);
++	bAnimateInDesigner = false;
++}
++#endif
++
+ void UChoiceButton::BuildParts()
+ {
+ 	UTextBlock* LabelBlock = MakeLabel(ChoiceButtonParts::Label, LOCTEXT("ChoiceLabel", "Quality"), 15);
+@@ -680,7 +727,7 @@ EActiveTimerReturnType USegmentedChoiceButton::TickSlide(double InCurrentTime, f
+ {
+ 	const float Target = static_cast<float>(SelectedIndex);
+ 	const float Speed = GetSlideSpeed();
+-	if (IsDesignTime() || Speed <= 0.f)
++	if ((IsDesignTime() && !bAnimateInDesigner) || Speed <= 0.f)
+ 	{
+ 		HighlightPosition = Target;
+ 	}
+@@ -692,6 +739,7 @@ EActiveTimerReturnType USegmentedChoiceButton::TickSlide(double InCurrentTime, f
+ 	if (bArrived)
+ 	{
+ 		HighlightPosition = Target;
++		bAnimateInDesigner = false;
+ 	}
+ 
+ 	bHasPlacedHighlight = false;
+@@ -715,6 +763,24 @@ EActiveTimerReturnType USegmentedChoiceButton::TickSlide(double InCurrentTime, f
+ 	return EActiveTimerReturnType::Continue;
+ }
+ 
++#if WITH_EDITOR
++void USegmentedChoiceButton::SetDesignerPreviewValueIndex(int32 Index, bool bAnimate)
++{
++	const int32 Count = Options.Num();
++	if (Count <= 0)
++	{
++		return;
++	}
++	SelectedIndex = ((Index % Count) + Count) % Count;
++	bAnimateInDesigner = bAnimate;
++	if (!bAnimate)
++	{
++		HighlightPosition = static_cast<float>(SelectedIndex);
++	}
++	StartSlide();
++}
++#endif
++
+ void USegmentedChoiceButton::BuildParts()
+ {
+ 	URectangleShape* HighlightShape = MakePart<URectangleShape>(ChoiceButtonParts::Highlight);
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.h b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.h
+index 2ecdf35..4d294b6 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.h
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.h
+@@ -153,6 +153,13 @@ public:
+ 	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Choice")
+ 	FText GetDisplayText() const;
+ 
++#if WITH_EDITOR
++	virtual int32 GetDesignerPreviewValueCount() const override;
++	virtual int32 GetDesignerPreviewValueIndex() const override;
++	virtual FText GetDesignerPreviewValueText() const override;
++	virtual void SetDesignerPreviewValueIndex(int32 Index, bool bAnimate) override;
++#endif
++
+ protected:
+ 	virtual void BuildParts() override;
+ 	virtual void ApplyStyle() override;
+@@ -174,6 +181,9 @@ protected:
+ 	float KickOffset = 0.f;
+ 	bool bIsKickTimerActive = false;
+ 
++	/** The designer's toolbar is stepping the preview: the value kicks in as it does at runtime. */
++	bool bAnimateInDesigner = false;
++
+ 	/** The value's Text Block, found when the display updates - not on every frame of its slide. */
+ 	TWeakObjectPtr<UTextBlock> KickedValueText;
+ };
+@@ -251,6 +261,13 @@ public:
+ 	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Choice")
+ 	FText GetSelectedOption() const;
+ 
++#if WITH_EDITOR
++	virtual int32 GetDesignerPreviewValueCount() const override { return Options.Num(); }
++	virtual int32 GetDesignerPreviewValueIndex() const override { return SelectedIndex; }
++	virtual FText GetDesignerPreviewValueText() const override { return GetSelectedOption(); }
++	virtual void SetDesignerPreviewValueIndex(int32 Index, bool bAnimate) override;
++#endif
++
+ protected:
+ 	virtual void BuildParts() override;
+ 	virtual void ApplyStyle() override;
+@@ -293,4 +310,7 @@ protected:
+ 	TWeakObjectPtr<USizeBox> CachedHighlightBox;
+ 	bool bHasCachedSlideParts = false;
+ 	bool bIsSlideTimerActive = false;
++
++	/** The designer's toolbar picked a choice: the highlight slides there as it does at runtime (else the designer snaps). */
++	bool bAnimateInDesigner = false;
+ };
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.h b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.h
+index 6a4031a..1754ab8 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.h
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.h
+@@ -51,9 +51,10 @@ struct FStyledButtonStateTint
+  *   Choice Button        "Quality  < High >": steps through a list (or numbers, a stepper) with clicks, or left and right.
+  *   Segmented Choice     "Low | Medium | High": every choice side by side, a highlight sliding to the chosen one.
+  *
+- * Each is dragged in from the Palette (NameTBD Buttons). Its parts - shapes, text, images - are ordinary child widgets, folded
+- * away under the button in the Hierarchy until Show Parts In Hierarchy is pressed in its Details (Style) - or its arrow is
+- * opened. Its looks are ordinary Shape and Design Targets.
++ * Each is dragged in from the Palette (NameTBD Buttons). Its parts - shapes, text, images - are ordinary widgets kept inside the
++ * button, out of the Hierarchy, until Show Parts In Hierarchy is pressed in its Details (Style); hidden or shown they are the
++ * same widgets, and changes made to them are kept. Its looks are ordinary Shape and Design Targets. The Widget Blueprint
++ * editor's toolbar previews its states and values with their transitions.
+  *
+  * Style (top of the Details): the few settings most buttons need - colors, size, corners, Motion. Changing one remakes the
+  * button's Shape and Design Targets and its parts' look from all of them, so for hand-authored targets turn Use Style off.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/ButtonPreviewToolbar.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/ButtonPreviewToolbar.cpp
+new file mode 100644
+index 0000000..f1965d4
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/ButtonPreviewToolbar.cpp
+@@ -0,0 +1,435 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "ButtonPreviewToolbar.h"
++
++#include "NameTBD/Buttons/ContextMenuButton.h"
++
++#include "Blueprint/UserWidget.h"
++#include "Blueprint/WidgetTree.h"
++#include "Styling/AppStyle.h"
++#include "Toolkits/AssetEditorToolkit.h"
++#include "Toolkits/AssetEditorToolkitMenuContext.h"
++#include "ToolMenus.h"
++#include "WidgetBlueprint.h"
++#include "WidgetBlueprintEditor.h"
++#include "Widgets/Images/SImage.h"
++#include "Widgets/Input/SButton.h"
++#include "Widgets/Input/SCheckBox.h"
++#include "Widgets/Layout/SBox.h"
++#include "Widgets/SBoxPanel.h"
++#include "Widgets/Text/STextBlock.h"
++
++#define LOCTEXT_NAMESPACE "ButtonPreviewToolbar"
++
++namespace ButtonPreviewToolbarPrivate
++{
++	const FName WidgetBlueprintEditorName(TEXT("WidgetBlueprintEditor"));
++
++	const FSlateBrush* PickBrush(std::initializer_list<FName> Candidates)
++	{
++		const ISlateStyle& Style = FAppStyle::Get();
++		for (const FName Candidate : Candidates)
++		{
++			if (const FSlateBrush* Brush = Style.GetOptionalBrush(Candidate, nullptr, nullptr))
++			{
++				return Brush;
++			}
++		}
++		return nullptr;
++	}
++
++	bool IsWidgetBlueprintEditor(const FAssetEditorToolkit& Toolkit)
++	{
++		const TArray<UObject*>* EditedObjects = Toolkit.GetObjectsCurrentlyBeingEdited();
++		if (!EditedObjects || Toolkit.GetToolkitFName() != WidgetBlueprintEditorName)
++		{
++			return false;
++		}
++		return EditedObjects->ContainsByPredicate([](const UObject* Edited) { return Edited && Edited->IsA<UWidgetBlueprint>(); });
++	}
++
++	/** What the toolbar did to one button (by name): kept to show it again on a rebuilt preview, and to replay. */
++	struct FPreviewChoice
++	{
++		bool bHasState = false;
++		EContextMenuDesignPreview State = EContextMenuDesignPreview::Normal;
++
++		bool bHasValue = false;
++		int32 ValueIndex = 0;
++
++		/** The last change, for Replay: a state change from ReplayFromState, or a value step of ReplayStep from ReplayFromValue. */
++		bool bLastWasValue = false;
++		EContextMenuDesignPreview ReplayFromState = EContextMenuDesignPreview::Normal;
++		int32 ReplayFromValue = 0;
++		int32 ReplayStep = 0;
++		bool bCanReplay = false;
++	};
++
++	/** The Context Menu Button selected in one Widget Blueprint editor's designer, and what the toolbar has done to buttons there. */
++	class FSelectedButtonPreview
++	{
++	public:
++
++		explicit FSelectedButtonPreview(TWeakPtr<FWidgetBlueprintEditor> InEditor)
++			: Editor(InEditor)
++		{
++		}
++
++		/** The selected button's designer copy, or null (nothing, several things, or something else selected). */
++		UContextMenuButton* GetButton() const
++		{
++			Refresh();
++			return SelectedButton.Get();
++		}
++
++		FText GetLabel() const
++		{
++			const UContextMenuButton* Button = GetButton();
++			if (!Button)
++			{
++				return FText::GetEmpty();
++			}
++			const FString& Label = Button->GetDisplayLabel();
++			return FText::FromString(Label.IsEmpty() ? Button->GetName() : Label);
++		}
++
++		EContextMenuDesignPreview GetState() const
++		{
++			const UContextMenuButton* Button = GetButton();
++			return Button ? Button->GetEffectiveDesignPreview() : EContextMenuDesignPreview::Normal;
++		}
++
++		bool CanBeEnabled() const
++		{
++			const UContextMenuButton* Button = GetButton();
++			return Button && Button->bButtonCanBeEnabled;
++		}
++
++		void PickState(EContextMenuDesignPreview State)
++		{
++			UContextMenuButton* Button = GetButton();
++			if (!Button)
++			{
++				return;
++			}
++			const EContextMenuDesignPreview From = Button->GetEffectiveDesignPreview();
++			Button->PlayDesignerPreviewState(State, /*bAnimate=*/true);
++
++			FPreviewChoice& Choice = Choices.FindOrAdd(Button->GetFName());
++			Choice.bHasState = true;
++			Choice.State = State;
++			if (From != State)
++			{
++				Choice.bLastWasValue = false;
++				Choice.ReplayFromState = From;
++				Choice.bCanReplay = true;
++			}
++		}
++
++		bool HasValues() const
++		{
++			const UContextMenuButton* Button = GetButton();
++			return Button && Button->GetDesignerPreviewValueCount() > 0;
++		}
++
++		FText GetValueText() const
++		{
++			const UContextMenuButton* Button = GetButton();
++			return Button ? Button->GetDesignerPreviewValueText() : FText::GetEmpty();
++		}
++
++		void StepValue(int32 Step)
++		{
++			UContextMenuButton* Button = GetButton();
++			if (!Button || Button->GetDesignerPreviewValueCount() <= 0)
++			{
++				return;
++			}
++			const int32 From = Button->GetDesignerPreviewValueIndex();
++			Button->SetDesignerPreviewValueIndex(From + Step, /*bAnimate=*/true);
++
++			FPreviewChoice& Choice = Choices.FindOrAdd(Button->GetFName());
++			Choice.bHasValue = true;
++			Choice.ValueIndex = Button->GetDesignerPreviewValueIndex();
++			Choice.bLastWasValue = true;
++			Choice.ReplayFromValue = From;
++			Choice.ReplayStep = Step;
++			Choice.bCanReplay = true;
++		}
++
++		bool CanReplay() const
++		{
++			const UContextMenuButton* Button = GetButton();
++			const FPreviewChoice* Choice = Button ? Choices.Find(Button->GetFName()) : nullptr;
++			return Choice && Choice->bCanReplay;
++		}
++
++		/** The last change once more: put back where it started, at once, then played. */
++		void Replay()
++		{
++			UContextMenuButton* Button = GetButton();
++			const FPreviewChoice* Choice = Button ? Choices.Find(Button->GetFName()) : nullptr;
++			if (!Choice || !Choice->bCanReplay)
++			{
++				return;
++			}
++			if (Choice->bLastWasValue)
++			{
++				Button->SetDesignerPreviewValueIndex(Choice->ReplayFromValue, /*bAnimate=*/false);
++				Button->SetDesignerPreviewValueIndex(Choice->ReplayFromValue + Choice->ReplayStep, /*bAnimate=*/true);
++			}
++			else
++			{
++				Button->PlayDesignerPreviewState(Choice->ReplayFromState, /*bAnimate=*/false);
++				Button->PlayDesignerPreviewState(Choice->State, /*bAnimate=*/true);
++			}
++		}
++
++	private:
++
++		/**
++		 * Follows the selection, and the designer's preview: it is made again on every compile and many edits, and every button
++		 * the toolbar has set up is shown again as it was left - at once - in the new one.
++		 */
++		void Refresh() const
++		{
++			const TSharedPtr<FWidgetBlueprintEditor> Pinned = Editor.Pin();
++			if (!Pinned.IsValid())
++			{
++				SelectedButton.Reset();
++				return;
++			}
++
++			UUserWidget* PreviewRoot = Pinned->GetPreview();
++			if (PreviewRoot != LastPreviewRoot.Get())
++			{
++				LastPreviewRoot = PreviewRoot;
++				ShowChoicesIn(PreviewRoot);
++			}
++
++			UContextMenuButton* Found = nullptr;
++			if (Pinned->GetSelectedWidgets().Num() == 1)
++			{
++				Found = Cast<UContextMenuButton>(Pinned->GetSelectedWidgets().CreateConstIterator()->GetPreview());
++			}
++			SelectedButton = Found;
++		}
++
++		void ShowChoicesIn(UUserWidget* PreviewRoot) const
++		{
++			if (!PreviewRoot || !PreviewRoot->WidgetTree)
++			{
++				return;
++			}
++			for (const TPair<FName, FPreviewChoice>& Entry : Choices)
++			{
++				UContextMenuButton* Button = Cast<UContextMenuButton>(PreviewRoot->WidgetTree->FindWidget(Entry.Key));
++				if (!Button)
++				{
++					continue;
++				}
++				if (Entry.Value.bHasValue && Button->GetDesignerPreviewValueCount() > 0)
++				{
++					Button->SetDesignerPreviewValueIndex(Entry.Value.ValueIndex, /*bAnimate=*/false);
++				}
++				if (Entry.Value.bHasState)
++				{
++					Button->PlayDesignerPreviewState(Entry.Value.State, /*bAnimate=*/false);
++				}
++			}
++		}
++
++		TWeakPtr<FWidgetBlueprintEditor> Editor;
++		mutable TWeakObjectPtr<UContextMenuButton> SelectedButton;
++		mutable TWeakObjectPtr<UUserWidget> LastPreviewRoot;
++		TMap<FName, FPreviewChoice> Choices;
++	};
++
++	TSharedRef<SWidget> MakeIcon(const FSlateBrush* Brush, const FText& Fallback)
++	{
++		if (Brush)
++		{
++			return SNew(SBox)
++				.WidthOverride(14.f)
++				.HeightOverride(14.f)
++				[
++					SNew(SImage)
++					.Image(Brush)
++					.ColorAndOpacity(FSlateColor::UseForeground())
++				];
++		}
++		return SNew(STextBlock).Text(Fallback);
++	}
++
++	TSharedRef<SWidget> MakeStateToggle(const TSharedRef<FSelectedButtonPreview>& Preview, EContextMenuDesignPreview State, const FText& Label,
++		const FText& ToolTip, TAttribute<EVisibility> ToggleVisibility = EVisibility::Visible)
++	{
++		return SNew(SCheckBox)
++			.Style(FAppStyle::Get(), "ToggleButtonCheckbox")
++			.Padding(FMargin(6.f, 1.f))
++			.ToolTipText(ToolTip)
++			.Visibility(ToggleVisibility)
++			.IsChecked_Lambda([Preview, State]() { return Preview->GetState() == State ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
++			.OnCheckStateChanged_Lambda([Preview, State](ECheckBoxState) { Preview->PickState(State); })
++			[
++				SNew(STextBlock).Text(Label)
++			];
++	}
++
++	TSharedRef<SWidget> MakeSmallButton(const TSharedRef<SWidget>& Content, const FText& ToolTip, TFunction<void()> OnClicked, TAttribute<bool> IsButtonEnabled = true)
++	{
++		return SNew(SButton)
++			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
++			.ContentPadding(FMargin(3.f, 2.f))
++			.VAlign(VAlign_Center)
++			.ToolTipText(ToolTip)
++			.IsEnabled(IsButtonEnabled)
++			.OnClicked_Lambda([OnClicked]() { OnClicked(); return FReply::Handled(); })
++			[
++				Content
++			];
++	}
++
++	/** The controls, collapsed away unless a Context Menu Button is selected. Kept narrow: about 400 px, 520 with the stepper. */
++	TSharedRef<SWidget> MakeControls(const TSharedRef<FSelectedButtonPreview>& Preview)
++	{
++		const FSlateBrush* LeftBrush = PickBrush({ "Icons.ChevronLeft", "Icons.ArrowLeft" });
++		const FSlateBrush* RightBrush = PickBrush({ "Icons.ChevronRight", "Icons.ArrowRight" });
++		const FSlateBrush* ReplayBrush = PickBrush({ "Icons.Refresh", "GenericCommands.Undo" });
++
++		return SNew(SHorizontalBox)
++			.Visibility_Lambda([Preview]() { return Preview->GetButton() ? EVisibility::Visible : EVisibility::Collapsed; })
++
++			// Which button.
++			+ SHorizontalBox::Slot()
++			.AutoWidth()
++			.VAlign(VAlign_Center)
++			.Padding(FMargin(6.f, 0.f, 6.f, 0.f))
++			[
++				SNew(SBox)
++				.MaxDesiredWidth(110.f)
++				[
++					SNew(STextBlock)
++					.Font(FAppStyle::GetFontStyle("NormalFontBold"))
++					.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
++					.Text_Lambda([Preview]() { return Preview->GetLabel(); })
++					.ToolTipText(LOCTEXT("ButtonTooltip", "The selected button's preview: pick a state or a value to see the button change to it as it does in game."))
++				]
++			]
++
++			// Its states.
++			+ SHorizontalBox::Slot()
++			.AutoWidth()
++			.VAlign(VAlign_Center)
++			[
++				SNew(SHorizontalBox)
++				+ SHorizontalBox::Slot().AutoWidth()
++				[
++					MakeStateToggle(Preview, EContextMenuDesignPreview::Normal, LOCTEXT("Idle", "Idle"),
++						LOCTEXT("IdleTooltip", "Normal: the button at rest. It blends here as it does in game."))
++				]
++				+ SHorizontalBox::Slot().AutoWidth()
++				[
++					MakeStateToggle(Preview, EContextMenuDesignPreview::Hovered, LOCTEXT("Hover", "Hover"),
++						LOCTEXT("HoverTooltip", "Hovered - or focused by keyboard or gamepad."))
++				]
++				+ SHorizontalBox::Slot().AutoWidth()
++				[
++					MakeStateToggle(Preview, EContextMenuDesignPreview::Pressed, LOCTEXT("Press", "Press"),
++						LOCTEXT("PressTooltip", "Pressed (a button that can be enabled goes straight to its click's result in game)."))
++				]
++				+ SHorizontalBox::Slot().AutoWidth()
++				[
++					MakeStateToggle(Preview, EContextMenuDesignPreview::Enabled, LOCTEXT("On", "On"),
++						LOCTEXT("OnTooltip", "Enabled: switched on, checked, chosen."),
++						TAttribute<EVisibility>::CreateLambda([Preview]() { return Preview->CanBeEnabled() ? EVisibility::Visible : EVisibility::Collapsed; }))
++				]
++				+ SHorizontalBox::Slot().AutoWidth()
++				[
++					MakeStateToggle(Preview, EContextMenuDesignPreview::Disabled, LOCTEXT("Disabled", "Disabled"),
++						LOCTEXT("DisabledTooltip", "Disabled: Is Enabled off."))
++				]
++			]
++
++			// Its values, for a button that steps through some.
++			+ SHorizontalBox::Slot()
++			.AutoWidth()
++			.VAlign(VAlign_Center)
++			.Padding(FMargin(6.f, 0.f, 0.f, 0.f))
++			[
++				SNew(SHorizontalBox)
++				.Visibility_Lambda([Preview]() { return Preview->HasValues() ? EVisibility::Visible : EVisibility::Collapsed; })
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
++				[
++					MakeSmallButton(MakeIcon(LeftBrush, LOCTEXT("PreviousGlyph", "<")), LOCTEXT("PreviousTooltip", "Show the previous value, as the button steps back in game."),
++						[Preview]() { Preview->StepValue(-1); })
++				]
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
++				[
++					SNew(SBox)
++					.MinDesiredWidth(48.f)
++					.MaxDesiredWidth(96.f)
++					.HAlign(HAlign_Center)
++					[
++						SNew(STextBlock)
++						.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
++						.Text_Lambda([Preview]() { return Preview->GetValueText(); })
++					]
++				]
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
++				[
++					MakeSmallButton(MakeIcon(RightBrush, LOCTEXT("NextGlyph", ">")), LOCTEXT("NextTooltip", "Show the next value, as the button steps on in game."),
++						[Preview]() { Preview->StepValue(1); })
++				]
++			]
++
++			// The last change again.
++			+ SHorizontalBox::Slot()
++			.AutoWidth()
++			.VAlign(VAlign_Center)
++			.Padding(FMargin(4.f, 0.f, 2.f, 0.f))
++			[
++				MakeSmallButton(MakeIcon(ReplayBrush, LOCTEXT("ReplayGlyph", "Replay")), LOCTEXT("ReplayTooltip", "Play the last change again, from where it started."),
++					[Preview]() { Preview->Replay(); },
++					TAttribute<bool>::CreateLambda([Preview]() { return Preview->CanReplay(); }))
++			];
++	}
++
++	/** Runs once per asset editor window: a Widget Blueprint editor gets the controls, every other editor nothing. */
++	void BuildEntries(FToolMenuSection& Section)
++	{
++		const UAssetEditorToolkitMenuContext* Context = Section.FindContext<UAssetEditorToolkitMenuContext>();
++		const TSharedPtr<FAssetEditorToolkit> Toolkit = Context ? Context->Toolkit.Pin() : nullptr;
++		if (!Toolkit.IsValid() || !IsWidgetBlueprintEditor(*Toolkit))
++		{
++			return;
++		}
++		const TSharedRef<FSelectedButtonPreview> Preview = MakeShared<FSelectedButtonPreview>(StaticCastSharedPtr<FWidgetBlueprintEditor>(Toolkit));
++		Section.AddEntry(FToolMenuEntry::InitWidget("NameTBDButtonPreview", MakeControls(Preview), FText::GetEmpty(), /*bNoIndent=*/true));
++	}
++}
++
++void FButtonPreviewToolbar::Register()
++{
++	UToolMenus* ToolMenus = UToolMenus::Get();
++	if (!ToolMenus)
++	{
++		return;
++	}
++
++	// The Widget Blueprint editor's own toolbar, like the selected widget's animation controls beside it.
++	UToolMenu* Menu = ToolMenus->ExtendMenu("AssetEditor.WidgetBlueprintEditor.ToolBar");
++	if (!Menu)
++	{
++		Menu = ToolMenus->ExtendMenu("AssetEditorToolbar.CommonActions");
++	}
++	if (!Menu)
++	{
++		return;
++	}
++
++	FToolMenuSection& Section = Menu->FindOrAddSection("NameTBDButtonPreview");
++	Section.AddDynamicEntry("NameTBDButtonPreviewControls", FNewToolMenuSectionDelegate::CreateStatic(&ButtonPreviewToolbarPrivate::BuildEntries));
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/ButtonPreviewToolbar.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/ButtonPreviewToolbar.h
+new file mode 100644
+index 0000000..86d11ec
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/ButtonPreviewToolbar.h
+@@ -0,0 +1,30 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++
++/**
++ * The Widget Blueprint editor toolbar's button preview: shown while a Context Menu Button is selected in the designer, and
++ * driving that button's designer copy only (nothing authored changes, nothing is saved).
++ *
++ *   ButtonName   Idle  Hover  Press  On  Disabled   < High >   Replay
++ *
++ *   - A state: the button blends there from the one shown, with its own speeds, curves and delays - the transition exactly as
++ *     the game plays it (UContextMenuButton::PlayDesignerPreviewState). Pick another mid-blend and it turns from where it is.
++ *     On shows only for a button that can be enabled.
++ *   - The stepper: for a button that steps through values (a Choice Button's options or numbers, a Segmented Choice's
++ *     choices) - the value changes as at runtime: the text kicks in, the highlight slides (SetDesignerPreviewValueIndex).
++ *   - Replay: plays the button's last change again, from where it started.
++ *
++ * What was picked is remembered per button for the editor's session, and shown again (at once) whenever the designer rebuilds
++ * its preview. It replaces the Show Preview dropdown in the Details panel, which stays as the state shown until the toolbar
++ * picks one.
++ */
++class FButtonPreviewToolbar
++{
++public:
++
++	/** Call from the module's UToolMenus startup callback. */
++	static void Register();
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
+index 2cb2f42..2cc1d8b 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
+@@ -558,10 +558,14 @@ void FContextMenuButtonDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
+ 		}
+ 	}
+ 
++	// The state preview is the designer toolbar's now (FButtonPreviewToolbar), with transitions; Show Preview stays the state a
++	// button shows until the toolbar picks one.
++	DetailBuilder.HideProperty(GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShowPreview), UContextMenuButton::StaticClass());
++
+ 	FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(PropertyChangedHandle);
+ 	PropertyChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddRaw(this, &FContextMenuButtonDetails::HandleObjectPropertyChanged);
+ 
+-	// A ready-made button: its Style first, with the switch that unfolds its parts in the Hierarchy or folds them away.
++	// A ready-made button: its Style first, with the switch that lists its parts in the Hierarchy or hides them.
+ 	const bool bAnyReadyMade = CustomizedButtons.ContainsByPredicate([](const TWeakObjectPtr<UContextMenuButton>& WeakButton)
+ 	{
+ 		return WeakButton.IsValid() && WeakButton->IsA<UStyledButtonBase>();
+@@ -582,7 +586,7 @@ void FContextMenuButtonDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
+ 					: LOCTEXT("ShowPartsButton", "Show Parts In Hierarchy");
+ 			})
+ 			.ToolTipText(LOCTEXT("PartsTooltip",
+-				"Unfolds the widgets this button is made of in the Hierarchy, or folds them away under the button again. Only the Hierarchy's view changes: the widgets, and every change made to them, stay exactly as they are."))
++				"Lists the widgets this button is made of in the Hierarchy, or takes them out of it again. Hidden, they are the same widgets - kept inside the button, still drawn and driven by its targets - and every change made to them is kept. While hidden they can't be Blueprint variables or Sequencer targets: show them for that."))
+ 			.IsEnabled_Lambda([PartsButtons]()
+ 			{
+ 				return StyledButtonsEditor::CanToggleParts(PartsButtons);
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+index c947f15..0a88c0b 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+@@ -16,6 +16,7 @@
+ #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h" 
+ 
+ #include "WidgetAnimBuilderToolbar.h"
++#include "ButtonPreviewToolbar.h"
+ #include "ToolMenus.h"
+ 
+ #include "NameTBDAssetTypeActions.h"
+@@ -87,6 +88,7 @@ void FNameTBDEditorModule::StartupModule()
+ 	{
+ 		FToolMenuOwnerScoped OwnerScoped(TEXT("NameTBDEditor"));
+ 		FWidgetAnimBuilderToolbar::Register();
++		FButtonPreviewToolbar::Register();
+ 	}));
+ 	
+ 	PropertyModule.RegisterCustomClassLayout(
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
+index b307f85..5a6fb49 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
+@@ -63,32 +63,7 @@ namespace StyledButtonsEditorPrivate
+ 		return true;
+ 	}
+ 
+-	/**
+-	 * The designer's own "expanded in the hierarchy" flag of a widget (editor-only data on UWidget), through reflection. The
+-	 * Hierarchy panel folds a widget's children away while it is off - which is how a ready-made button's parts are hidden.
+-	 */
+-	const FBoolProperty* GetExpandedProperty()
+-	{
+-		static const FBoolProperty* Property = FindFProperty<FBoolProperty>(UWidget::StaticClass(), TEXT("bExpandedInDesigner"));
+-		return Property;
+-	}
+-
+-	bool IsExpandedInHierarchy(const UWidget* Widget)
+-	{
+-		const FBoolProperty* Property = GetExpandedProperty();
+-		return !Property || !Widget || Property->GetPropertyValue_InContainer(Widget);
+-	}
+-
+-	void SetExpandedInHierarchy(UWidget* Widget, bool bExpanded)
+-	{
+-		const FBoolProperty* Property = GetExpandedProperty();
+-		if (Property && Widget)
+-		{
+-			Property->SetPropertyValue_InContainer(Widget, bExpanded);
+-		}
+-	}
+-
+-	/** Adds the legacy hidden parts of Context Menu Buttons among Widgets (see RestoreHiddenParts), and everything inside. */
++	/** Adds the hidden parts of Context Menu Buttons among Widgets, and everything inside. */
+ 	void AddHiddenParts(const TArray<UWidget*>& Widgets, TSet<UWidget*>& OutLive)
+ 	{
+ 		for (UWidget* Widget : Widgets)
+@@ -136,7 +111,7 @@ namespace StyledButtonsEditorPrivate
+ 		}
+ 	}
+ 
+-	/** Every widget the tree really holds: the listed ones, and legacy hidden parts not restored yet. */
++	/** Every widget the tree really holds: the listed ones, and the parts buttons hide from the Hierarchy. */
+ 	void GatherLiveWidgets(UWidgetTree* Tree, TSet<UWidget*>& OutLive)
+ 	{
+ 		GatherListedWidgets(Tree, OutLive);
+@@ -179,11 +154,13 @@ namespace StyledButtonsEditorPrivate
+ 	}
+ 
+ 	/**
+-	 * Makes the blueprint's GUID map match the widgets made in its tree - which the Widget Blueprint compiler checks both ways,
+-	 * an ensure with a full callstack per mismatch: every widget in the tree, listed in the hierarchy or not, has a GUID ("was
+-	 * added but did not get a GUID"), and every GUID names a widget still in the tree ("was deleted but still has a GUID").
+-	 * Only for blueprints holding a Context Menu Button; a no-op where the designer keeps it right itself. Run before every
+-	 * compile, and before each structural change made here. True when it changed the map.
++	 * Makes the blueprint's GUID map match the widgets its tree owns - which the Widget Blueprint compiler checks both ways, an
++	 * ensure with a full callstack per mismatch: every widget the tree owns, listed in the Hierarchy or not, has a GUID ("was
++	 * added but did not get a GUID"), and every GUID names one ("was deleted but still has a GUID"). "Owns" is the compiler's
++	 * own rule (UWidgetBlueprint::ForEachSourceWidget): every widget inside the tree whose nearest widget tree is this one - so
++	 * not the parts a button hides in a tree of its own. Only for blueprints holding a Context Menu Button; a no-op where the
++	 * designer keeps it right itself. Run before every compile, and before each structural change made here. True when it
++	 * changed the map.
+ 	 */
+ 	bool SyncGuids(UWidgetBlueprint* Blueprint)
+ 	{
+@@ -193,15 +170,16 @@ namespace StyledButtonsEditorPrivate
+ 		{
+ 			return false;
+ 		}
+-		// Every widget inner, as the compiler counts them (garbage not yet collected included).
++		// Every widget the tree owns, as the compiler counts them (garbage not yet collected included).
+ 		TArray<UWidget*> Widgets;
+-		ForEachObjectWithOuter(Tree, [&Widgets](UObject* Object)
++		ForEachObjectWithOuter(Tree, [&Widgets, Tree](UObject* Object)
+ 		{
+-			if (UWidget* Widget = Cast<UWidget>(Object))
++			UWidget* Widget = Cast<UWidget>(Object);
++			if (Widget && Widget->GetTypedOuter<UWidgetTree>() == Tree)
+ 			{
+ 				Widgets.Add(Widget);
+ 			}
+-		}, /*bIncludeNestedObjects=*/false);
++		}, /*bIncludeNestedObjects=*/true);
+ 		if (!Widgets.ContainsByPredicate([](const UWidget* Candidate) { return Candidate->IsA<UContextMenuButton>(); }))
+ 		{
+ 			return false;
+@@ -346,7 +324,7 @@ namespace StyledButtonsEditorPrivate
+ 		TSet<UWidget*> Listed;
+ 		GatherListedWidgets(Tree, Listed);
+ 
+-		bool bRestored = false;
++		bool bChanged = false;
+ 		TArray<UContextMenuButton*> Waiting;
+ 		for (UWidget* Widget : Listed)
+ 		{
+@@ -355,15 +333,23 @@ namespace StyledButtonsEditorPrivate
+ 			{
+ 				continue;
+ 			}
+-			// Parts kept outside the hierarchy by fix6-fix7 and not restored on load: back as the button's content, folded.
+-			if (Button->HasHiddenParts() && Button->RestoreHiddenParts())
++
++			// Hidden parts checked: a button's own are kept, a pasted copy's (still the original's) or fix6-fix7's are put back
++			// or rebuilt - see RestoreHiddenParts.
++			if (Button->HasHiddenParts())
+ 			{
+-				bRestored = true;
+-				if (Button->GetChildrenCount() > 0)
+-				{
+-					SetExpandedInHierarchy(Button, false);
+-				}
++				bChanged |= Button->RestoreHiddenParts();
++			}
++
++			// A ready-made button made before parts could be hidden (or whose hidden parts were just put back) hides them, once;
++			// from then on it is the Show / Hide Parts choice. Outside any transaction: an upgrade, not an edit to undo.
++			if (Button->IsA<UStyledButtonBase>() && !Button->IsPartsVisibilityDecided() && !Button->HasPendingDefaultContent())
++			{
++				TArray<UWidget*> Moved;
++				bChanged |= Button->SetPartsHidden(true, Moved);
++				Button->MarkPartsVisibilityDecided();
+ 			}
++
+ 			if (Button->HasPendingDefaultContent())
+ 			{
+ 				Waiting.Add(Button);
+@@ -386,20 +372,18 @@ namespace StyledButtonsEditorPrivate
+ 				Button->Modify();
+ 				TArray<UWidget*> Parts;
+ 				Button->BuildDefaultContentForEditor(Parts);
+-				for (UWidget* Part : Parts)
+-				{
+-					EnsureGuid(Blueprint, Part->GetFName());
+-				}
+ 
+-				// A ready-made button's parts start folded away under it in the Hierarchy (Show Parts In Hierarchy unfolds them).
++				// A ready-made button's parts start hidden from the Hierarchy (Show Parts In Hierarchy, in Style, lists them).
+ 				if (Parts.Num() > 0 && Button->IsA<UStyledButtonBase>())
+ 				{
+-					SetExpandedInHierarchy(Button, false);
++					TArray<UWidget*> Moved;
++					Button->SetPartsHidden(true, Moved);
++					Button->MarkPartsVisibilityDecided();
+ 				}
+ 			}
+ 		}
+ 
+-		if (Waiting.Num() == 0 && !bRestored)
++		if (Waiting.Num() == 0 && !bChanged)
+ 		{
+ 			return false;
+ 		}
+@@ -520,10 +504,6 @@ namespace StyledButtonsEditor
+ 		{
+ 			AssetLoadedHandle = FCoreUObjectDelegates::OnAssetLoaded.AddStatic(&HandleAssetLoaded);
+ 		}
+-		if (!GetExpandedProperty())
+-		{
+-			UE_LOG(LogTemp, Warning, TEXT("NameTBD: UWidget::bExpandedInDesigner not found - Show/Hide Parts In Hierarchy is unavailable in this engine version."));
+-		}
+ 	}
+ 
+ 	void Unregister()
+@@ -547,7 +527,7 @@ namespace StyledButtonsEditor
+ 		{
+ 			UWidgetBlueprint* Blueprint = nullptr;
+ 			const UContextMenuButton* Template = WeakButton.IsValid() ? FindTemplate(WeakButton.Get(), Blueprint) : nullptr;
+-			if (Template && Template->GetChildrenCount() > 0 && !IsExpandedInHierarchy(Template))
++			if (Template && Template->ArePartsHidden())
+ 			{
+ 				return false;
+ 			}
+@@ -558,15 +538,11 @@ namespace StyledButtonsEditor
+ 	bool CanToggleParts(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons)
+ 	{
+ 		using namespace StyledButtonsEditorPrivate;
+-		if (!GetExpandedProperty())
+-		{
+-			return false;
+-		}
+ 		for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : Buttons)
+ 		{
+ 			UWidgetBlueprint* Blueprint = nullptr;
+ 			const UContextMenuButton* Template = WeakButton.IsValid() ? FindTemplate(WeakButton.Get(), Blueprint) : nullptr;
+-			if (Template && Template->GetChildrenCount() > 0 && !Blueprint->bBeingCompiled)
++			if (Template && (Template->GetChildrenCount() > 0 || Template->ArePartsHidden()) && !Blueprint->bBeingCompiled)
+ 			{
+ 				return true;
+ 			}
+@@ -578,37 +554,48 @@ namespace StyledButtonsEditor
+ 	{
+ 		using namespace StyledButtonsEditorPrivate;
+ 
+-		// Shown if any is folded, else all folded - so a mixed selection ends up alike.
++		// Shown if any is hidden, else all hidden - so a mixed selection ends up alike.
+ 		const bool bShow = !ArePartsShown(Buttons);
+ 
+-		TArray<UWidgetBlueprint*> Changed;
++		TArray<TPair<UWidgetBlueprint*, UContextMenuButton*>> Templates;
+ 		for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : Buttons)
+ 		{
+ 			UWidgetBlueprint* Blueprint = nullptr;
+ 			UContextMenuButton* Template = WeakButton.IsValid() ? FindTemplate(WeakButton.Get(), Blueprint) : nullptr;
+-			if (!Template || Template->GetChildrenCount() == 0 || Blueprint->bBeingCompiled)
++			if (Template && !Blueprint->bBeingCompiled)
+ 			{
+-				continue;
++				Templates.AddUnique(TPair<UWidgetBlueprint*, UContextMenuButton*>(Blueprint, Template));
+ 			}
++		}
+ 
+-			// Only the Hierarchy's fold state changes - the parts stay exactly where and as they are. Shown, every panel inside
+-			// unfolds too, so the whole tree is there at once.
+-			SetExpandedInHierarchy(Template, bShow);
+-			if (bShow)
++		TArray<UWidgetBlueprint*> Changed;
++		{
++			const FScopedTransaction Transaction(bShow
++				? LOCTEXT("ShowParts", "Show Button Parts In Hierarchy")
++				: LOCTEXT("HideParts", "Hide Button Parts From Hierarchy"));
++			for (const TPair<UWidgetBlueprint*, UContextMenuButton*>& Entry : Templates)
+ 			{
+-				UWidgetTree::ForWidgetAndChildren(Template, [](UWidget* Part)
++				UWidgetBlueprint* Blueprint = Entry.Key;
++				UContextMenuButton* Template = Entry.Value;
++				Blueprint->Modify();
++
++				// The same widgets, moved between the Widget Blueprint's tree and the button's own: nothing on them changes.
++				TArray<UWidget*> Moved;
++				if (Template->SetPartsHidden(!bShow, Moved))
+ 				{
+-					SetExpandedInHierarchy(Part, true);
+-				});
++					Template->MarkPartsVisibilityDecided();
++					Changed.AddUnique(Blueprint);
++				}
+ 			}
+-			Changed.AddUnique(Blueprint);
+-		}
+ 
+-		// The Hierarchy is laid out again from the flags.
++			// Listed parts get their GUIDs, hidden ones give theirs up - inside the transaction, so undo puts both back.
++			for (UWidgetBlueprint* Blueprint : Changed)
++			{
++				SyncGuids(Blueprint);
++			}
++		}
+ 		for (UWidgetBlueprint* Blueprint : Changed)
+ 		{
+-			SyncGuids(Blueprint);
+-			Blueprint->MarkPackageDirty();
+ 			FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+ 		}
+ 	}
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h
+index a8a4661..dc50c76 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h
+@@ -18,11 +18,12 @@ class UContextMenuButton;
+  *     once it has really been placed, in one undoable transaction, every part given its GUID.
+  *   - Before every compile, and before every structural change made here, the GUID map is made to match the tree's widgets
+  *     (SyncGuids) - both ways.
+- *   - The parts are ordinary children of the button. They start folded away under it in the Hierarchy (the designer's own
+- *     expanded flag); Show / Hide Parts In Hierarchy in its Details unfolds or folds them (ToggleParts). Nothing is moved.
++ *   - Once built, a ready-made button's parts are hidden from the Hierarchy: moved into a widget tree of the button's own
++ *     (UContextMenuButton::SetPartsHidden), which the Widget Blueprint neither lists nor compiles nor wants GUIDs for. Show /
++ *     Hide Parts In Hierarchy in its Details moves them back and forth (ToggleParts). Ready-made buttons placed before that
++ *     hide theirs once; a pasted copy whose hidden parts are still the original's builds its own (RestoreHiddenParts).
+  *   - Parts nothing holds any more (discarded drop previews, deleted buttons, parts left by fix6-fix7) are taken out of the
+- *     tree, outside the compile, on the next tick. fix6-fix7 kept parts in a slot outside the hierarchy; they are put back
+- *     as the button's content on load (UContextMenuButton::RestoreHiddenParts).
++ *     tree, outside the compile, on the next tick.
+  */
+ namespace StyledButtonsEditor
+ {
+@@ -32,15 +33,15 @@ namespace StyledButtonsEditor
+ 	/** Called as a Context Menu Button's Details are shown: builds any pending ready-made content, next tick. */
+ 	void OnButtonsShown(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons);
+ 
+-	/** Whether the buttons' parts are unfolded in the Hierarchy - read from the Widget Blueprint's own copies. */
++	/** Whether the buttons' parts are listed in the Hierarchy - read from the Widget Blueprint's own copies. */
+ 	bool ArePartsShown(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons);
+ 
+ 	/** Whether any of the buttons has parts to show or hide. */
+ 	bool CanToggleParts(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons);
+ 
+ 	/**
+-	 * Unfolds the buttons' parts in the Hierarchy, or folds them away under the button - on the Widget Blueprint's own copies.
+-	 * Only the fold state changes: the parts, and anything changed on them, stay exactly as they are.
++	 * Lists the buttons' parts in the Hierarchy, or hides them in the button's own tree - on the Widget Blueprint's own copies,
++	 * in one undoable step, GUIDs following. The same widgets either way: nothing changed on them is lost.
+ 	 */
+ 	void ToggleParts(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons);
+ }

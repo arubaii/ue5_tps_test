@@ -19,6 +19,8 @@
 #include "Types/WidgetActiveTimerDelegate.h"
 #include "Components/TextBlock.h"
 #include "Components/Image.h"
+#include "Components/ProgressBar.h"
+#include "NameTBD/Widgets/Shapes/WidgetShapeAnimation.h"
 #include "Components/Border.h"
 #include "Components/RetainerBox.h"
 #include "Components/ButtonSlot.h"
@@ -296,6 +298,12 @@ namespace ContextMenuButtonTree
 			for (int32 i = 0; i < Panel->GetChildrenCount(); ++i)
 			{
 				Gather(Panel->GetChildAt(i), TreePrefix, bDescendIntoUserWidgets, Out, Depth + 1);
+			}
+
+			// Parts hidden from the Hierarchy are still the button's parts.
+			if (const UContextMenuButton* Button = Cast<UContextMenuButton>(Panel))
+			{
+				Gather(Button->GetHiddenContent(), TreePrefix, bDescendIntoUserWidgets, Out, Depth + 1);
 			}
 		}
 		else if (bDescendIntoUserWidgets)
@@ -773,6 +781,87 @@ void SContextMenuSlateButton::SetButtonShape(const FShapeBoxShape& InShape, cons
 	}
 }
 
+void SContextMenuSlateButton::SetBackgroundShape(UShapeWidget* InShape)
+{
+	if (BackgroundShape.Get() == InShape && BackgroundPainter.IsValid() == (InShape != nullptr))
+	{
+		return;
+	}
+
+	BackgroundShape = InShape;
+	if (InShape)
+	{
+		// Painted where the brush would be: inside the brush layer, so the shape's Transform, the hit area that follows it
+		// and a Shape Box shape all work on it exactly as they do on the brush.
+		BackgroundPainter = SNew(SWidgetShape).Shape(InShape);
+		if (BrushLayer.IsValid())
+		{
+			BrushLayer->SetContent(BackgroundPainter.ToSharedRef());
+		}
+	}
+	else
+	{
+		BackgroundPainter.Reset();
+		if (BrushLayer.IsValid() && BrushPainter.IsValid())
+		{
+			BrushLayer->SetContent(BrushPainter.ToSharedRef());
+		}
+	}
+
+	if (BrushLayer.IsValid())
+	{
+		BrushLayer->MarkContentChanged();
+	}
+	Invalidate(EInvalidateWidgetReason::Paint);
+}
+
+void SContextMenuSlateButton::RecordPress(const FGeometry& MyGeometry, const FPointerEvent& Event)
+{
+	// MyGeometry is the button's core when the shape is active; through the committed core it is the layout box again.
+	FVector2f Local = FVector2f(FVector2D(MyGeometry.AbsoluteToLocal(Event.GetScreenSpacePosition())));
+	if (bCommittedShapeActive)
+	{
+		Local = CommittedShape.TransformPoint(Local);
+	}
+	LastPressScreenPosition = FVector2D(Event.GetScreenSpacePosition());
+	const FVector2D Size = MyGeometry.GetLocalSize();
+	LastPressFraction = FVector2D(
+		Size.X > 0.0 ? Local.X / Size.X : 0.5,
+		Size.Y > 0.0 ? Local.Y / Size.Y : 0.5);
+}
+
+FReply SContextMenuSlateButton::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	RecordPress(MyGeometry, MouseEvent);
+	return SButton::OnMouseButtonDown(MyGeometry, MouseEvent);
+}
+
+FReply SContextMenuSlateButton::OnTouchStarted(const FGeometry& MyGeometry, const FPointerEvent& InTouchEvent)
+{
+	RecordPress(MyGeometry, InTouchEvent);
+	return SButton::OnTouchStarted(MyGeometry, InTouchEvent);
+}
+
+FReply SContextMenuSlateButton::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+	LastPressFraction = FVector2D(0.5, 0.5);
+	LastPressScreenPosition.Reset();
+	return SButton::OnKeyDown(MyGeometry, InKeyEvent);
+}
+
+FNavigationReply SContextMenuSlateButton::OnNavigation(const FGeometry& MyGeometry, const FNavigationEvent& InNavigationEvent)
+{
+	if (UContextMenuButton* Owner = OwnerWidget.Get())
+	{
+		if (Owner->HandleNavigation(InNavigationEvent.GetNavigationType()))
+		{
+			// Taken: the focus stays on this button.
+			return FNavigationReply::Stop();
+		}
+	}
+	return SButton::OnNavigation(MyGeometry, InNavigationEvent);
+}
+
 void SContextMenuSlateButton::SetVisualState(EContextMenuState InVisualState, bool bInDesignOwnsBrush)
 {
 	if (!bHasVisualState || VisualState != InVisualState || bDesignOwnsBrush != bInDesignOwnsBrush)
@@ -1058,9 +1147,12 @@ int32 SContextMenuSlateButton::OnPaint(const FPaintArgs& Args, const FGeometry& 
 		}
 	}
 
+	// A vector Background Shape replaces the style's brushes outright.
+	const bool bVectorBackground = BackgroundPainter.IsValid() && BackgroundShape.IsValid();
+
 	// Nothing to take over: paint exactly like a stock SButton, and commit so a shape that has just gone back to
 	// identity comes off the render transform.
-	if (!bHasButtonShape && !bCommittedShapeActive && Brush == NativeBrush)
+	if (!bHasButtonShape && !bCommittedShapeActive && Brush == NativeBrush && !bVectorBackground)
 	{
 		const int32 StockLayer = SButton::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
 		CommitShapeRenderTransform(AllottedGeometry.GetLocalSize());
@@ -1090,14 +1182,22 @@ int32 SContextMenuSlateButton::OnPaint(const FPaintArgs& Args, const FGeometry& 
 
 	// The painter multiplies in the widget style's color and opacity itself (or, warped, the Shape Box does), so only
 	// the brush's own tint and the button's background color go in here.
-	if (BrushPainter->SetBrush(Brush, DrawEffects, Brush->GetTint(InWidgetStyle) * Owner->GetBackgroundColor()))
+	FWidgetStyle LayerStyle = InWidgetStyle;
+	if (bVectorBackground)
+	{
+		// The button's Background Color tints it, as it does the brush - which is what a Design Target's Tint on the button
+		// drives. The shape is painted live inside the layer (never warped: a vector background takes no Shape Box shape), so
+		// nothing is drawn offscreen and nothing needs marking as changed on every paint.
+		LayerStyle.BlendColorAndOpacityTint(Owner->GetBackgroundColor());
+	}
+	else if (BrushPainter->SetBrush(Brush, DrawEffects, Brush->GetTint(InWidgetStyle) * Owner->GetBackgroundColor()))
 	{
 		BrushLayer->MarkContentChanged();
 	}
 
 	// Painted with this button as its parent: that is what makes a hit anywhere on the drawn shape bubble to the
 	// button, even though the layer isn't one of its layout children.
-	const int32 BrushLayerId = BrushLayer->Paint(Args.WithNewParent(this), BrushGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bEnabled);
+	const int32 BrushLayerId = BrushLayer->Paint(Args.WithNewParent(this), BrushGeometry, MyCullingRect, OutDrawElements, LayerId, LayerStyle, bEnabled);
 	bBrushLayerPainted = true;
 
 	// Skip SButton/SBorder's own brush draw and paint only the content, with the layout geometry, above the brush.
@@ -1444,6 +1544,9 @@ void UContextMenuButton::PostLoad()
 {
 	Super::PostLoad();
 
+	// Parts a ready-made button kept outside the hierarchy (Buttons fix6-fix7) go back to being its content.
+	RestoreHiddenParts();
+
 	// Convert Color Targets into tint-only Design Targets. Also covers the older layout that stored the target as a
 	// UWidget pointer rather than a name.
 	for (FContextMenuColorTarget& Legacy : ColorTargets)
@@ -1667,6 +1770,39 @@ void UContextMenuButton::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	// A Shape Target aimed at a vector shape (or at Self, once the button has a Background Shape) authors that shape's Look
+	// itself - a Shape Preset has none to give - so it is switched to Custom, where the Looks are.
+	auto UseCustomForLooks = [this](FContextMenuShapeTarget& Target)
+	{
+		if (Target.ShapeSource == EContextMenuButtonSettingSource::UseProjectSettings && GetLookClass(Target))
+		{
+			Target.ShapeSource = EContextMenuButtonSettingSource::Custom;
+		}
+	};
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, TargetWidgetName)
+		&& PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShapeTargets))
+	{
+		const int32 TargetIndex = PropertyChangedEvent.GetArrayIndex(GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShapeTargets).ToString());
+		if (ShapeTargets.IsValidIndex(TargetIndex))
+		{
+			UseCustomForLooks(ShapeTargets[TargetIndex]);
+		}
+	}
+	if (PropertyName == GET_MEMBER_NAME_CHECKED(UContextMenuButton, BackgroundShape))
+	{
+		for (FContextMenuShapeTarget& Target : ShapeTargets)
+		{
+			if (IsSelfTargetName(Target.TargetWidgetName))
+			{
+				UseCustomForLooks(Target);
+			}
+		}
+	}
+
+	// Every target's Look laid out for the shape it aims at, before anything below reads them.
+	RefreshShapeTargetLooks();
+
 	SyncEditConditionMirrors();
 	SyncMaterialParametersEditor();
 
@@ -1703,6 +1839,277 @@ void UContextMenuButton::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 #endif
 }
 
+
+void UContextMenuButton::OnCreationFromPalette()
+{
+	Super::OnCreationFromPalette();
+
+	// Nothing is built here. The designer makes the dragged widget again for every drop preview while it is dragged over the
+	// canvas, and parts made in the Widget Blueprint's tree for a preview it then discards stay behind in that tree - each
+	// one an ensure on every compile ("was added but did not get a GUID"). So the button only notes that it wants its parts;
+	// the editor module builds them once the button has really been placed (after the compile the drop causes, with no drag
+	// in progress), and gives every part its GUID - see StyledButtonsEditor.
+	bPendingDefaultContent = ShouldBuildDefaultContentWhenEmpty() && !HasAnyContent();
+}
+
+namespace ContextMenuButtonParts
+{
+	/** Root and everything inside it - panels' children and named slots' content. */
+	void GatherWidgetAndChildren(UWidget* Root, TArray<UWidget*>& OutWidgets)
+	{
+		if (!Root)
+		{
+			return;
+		}
+		OutWidgets.Add(Root);
+		UWidgetTree::ForWidgetAndChildren(Root, [&OutWidgets](UWidget* Child)
+		{
+			OutWidgets.Add(Child);
+		});
+	}
+
+	/** Moves Part into NewOuter, under its own name while that is free there, else a numbered one. */
+	void MovePart(UWidget* Part, UObject* NewOuter)
+	{
+		FName NewName = Part->GetFName();
+		if (StaticFindObjectFast(UObject::StaticClass(), NewOuter, NewName))
+		{
+			NewName = MakeUniqueObjectName(NewOuter, Part->GetClass(), NewName);
+		}
+		Part->Modify();
+		Part->Rename(*NewName.ToString(), NewOuter, REN_DontCreateRedirectors);
+	}
+}
+
+bool UContextMenuButton::SetPartsHidden(bool bHide, TArray<UWidget*>& OutMovedParts)
+{
+	using namespace ContextMenuButtonParts;
+	OutMovedParts.Reset();
+
+	UWidgetTree* OwnerTree = GetTypedOuter<UWidgetTree>();
+	if (!OwnerTree)
+	{
+		return false;
+	}
+
+	if (bHide)
+	{
+		UPanelSlot* ListedSlot = GetContentSlot();
+		UWidget* Content = ListedSlot ? ListedSlot->Content.Get() : nullptr;
+		if (!Content || HiddenContentSlot)
+		{
+			return false;
+		}
+		Modify();
+		if (!PartsTree)
+		{
+			const FName TreeName = MakeUniqueObjectName(this, UWidgetTree::StaticClass(), TEXT("PartsTree"));
+			PartsTree = NewObject<UWidgetTree>(this, TreeName, RF_Transactional);
+		}
+		PartsTree->Modify();
+		ListedSlot->Modify();
+
+		GatherWidgetAndChildren(Content, OutMovedParts);
+		for (UWidget* Part : OutMovedParts)
+		{
+			MovePart(Part, PartsTree);
+		}
+
+		Slots.Remove(ListedSlot);
+		HiddenContentSlot = ListedSlot;
+		PartsTree->RootWidget = Content;
+	}
+	else
+	{
+		if (!ArePartsHidden() || GetChildrenCount() > 0)
+		{
+			return false;
+		}
+		UWidget* Content = GetHiddenContent();
+		Modify();
+		OwnerTree->Modify();
+		PartsTree->Modify();
+
+		GatherWidgetAndChildren(Content, OutMovedParts);
+		for (UWidget* Part : OutMovedParts)
+		{
+			MovePart(Part, OwnerTree);
+		}
+
+		PartsTree->RootWidget = nullptr;
+		Slots.Add(HiddenContentSlot);
+		HiddenContentSlot = nullptr;
+	}
+
+	// Built again onto a live button (the slot is the same; only where the button finds it changed).
+	if (MyButton.IsValid())
+	{
+		if (UButtonSlot* PartsSlot = Cast<UButtonSlot>(GetPartsSlot()))
+		{
+			PartsSlot->BuildSlot(MyButton.ToSharedRef());
+		}
+	}
+	return OutMovedParts.Num() > 0;
+}
+
+EContextMenuDesignPreview UContextMenuButton::GetEffectiveDesignPreview() const
+{
+	return bDesignerPreviewDriven ? DesignerPreviewState : ActiveDesignPreview;
+}
+
+void UContextMenuButton::PlayDesignerPreviewState(EContextMenuDesignPreview State, bool bAnimate)
+{
+	using namespace ContextMenuButtonDesign;
+	if (!IsDesignTime())
+	{
+		return;
+	}
+
+	const EContextMenuDesignPreview Shown = GetEffectiveDesignPreview();
+	bDesignerPreviewDriven = true;
+	DesignerPreviewState = State;
+
+	const TSharedPtr<SWidget> SlateWidget = GetCachedWidget();
+	if (!bAnimate || !SlateWidget.IsValid() || State == EContextMenuDesignPreview::None)
+	{
+		if (bIsDesignerStateTimerActive)
+		{
+			bIsDesignerStateTimerActive = false;
+			++DesignerStateSerial;
+			RestoreRuntimeDesignBaselines();
+		}
+		ApplyDesignPreviews();
+		CacheResolvedOverridesSnapshot();
+		return;
+	}
+
+	// The runtime's own blend, run on the designer's copy: its targets are set up from the widgets as authored, put at the state
+	// shown now, then sent to the new one - and a pick during a blend redirects it from wherever it has got to.
+	const EContextMenuState Goal = PreviewToState(State);
+	if (!bIsDesignerStateTimerActive)
+	{
+		ClearDesignPreviews();
+		InitializeRuntimeShapeTargets();
+		InitializeRuntimeDesignTargets();
+
+		const EContextMenuState From = Shown == EContextMenuDesignPreview::None ? EContextMenuState::Normal : PreviewToState(Shown);
+		CurrentShapeState = From;
+		CurrentDesignState = From;
+		ApplyTransitions(0.f, /*bInstant=*/true);
+
+		bIsDesignerStateTimerActive = true;
+		const int32 Serial = ++DesignerStateSerial;
+		SlateWidget->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateUObject(this, &UContextMenuButton::TickDesignerPreviewState, Serial));
+	}
+
+	CurrentShapeState = Goal;
+	CurrentDesignState = Goal;
+	PushVisualStateToSlate(Goal);
+}
+
+void UContextMenuButton::StopDesignerPreviewState()
+{
+	if (!bDesignerPreviewDriven)
+	{
+		return;
+	}
+	bDesignerPreviewDriven = false;
+	if (bIsDesignerStateTimerActive)
+	{
+		bIsDesignerStateTimerActive = false;
+		++DesignerStateSerial;
+		RestoreRuntimeDesignBaselines();
+	}
+	ApplyDesignPreviews();
+	CacheResolvedOverridesSnapshot();
+}
+
+EActiveTimerReturnType UContextMenuButton::TickDesignerPreviewState(double InCurrentTime, float InDeltaTime, int32 Serial)
+{
+	if (Serial != DesignerStateSerial || !bIsDesignerStateTimerActive)
+	{
+		return EActiveTimerReturnType::Stop;
+	}
+	if (!IsDesignTime() || !GetCachedWidget().IsValid())
+	{
+		bIsDesignerStateTimerActive = false;
+		return EActiveTimerReturnType::Stop;
+	}
+	if (ApplyTransitions(InDeltaTime, /*bInstant=*/false))
+	{
+		FinishDesignerPreviewState();
+		return EActiveTimerReturnType::Stop;
+	}
+	return EActiveTimerReturnType::Continue;
+}
+
+void UContextMenuButton::FinishDesignerPreviewState()
+{
+	// The blend has arrived where the preview's own pass paints the state at once: handed back to it, so edits made from now on
+	// repaint as before. The design channels go back to as authored first, for its baselines.
+	bIsDesignerStateTimerActive = false;
+	RestoreRuntimeDesignBaselines();
+	ApplyDesignPreviews();
+	CacheResolvedOverridesSnapshot();
+}
+
+void UContextMenuButton::RestoreRuntimeDesignBaselines()
+{
+	for (const FContextMenuRuntimeDesignTarget& Target : RuntimeDesignTargets)
+	{
+		UWidget* Widget = Target.Widget.Get();
+		if (!Widget || !Target.bHasBaseline)
+		{
+			continue;
+		}
+		ApplyColorToWidget(Widget, Target.BaselineTint);
+		ApplyOutlineTintToWidget(Widget, Target.BaselineOutlineTint);
+		Widget->SetRenderOpacity(Target.BaselineOpacity);
+		if (UTexture2D* BaselineTexture = Target.BaselineBrushTexture.Get())
+		{
+			ApplyBrushTextureToWidget(Widget, BaselineTexture);
+		}
+		if (UMaterialInterface* BaselineMaterialObject = Target.BaselineMaterial.Get())
+		{
+			ApplyMaterialToWidget(Widget, BaselineMaterialObject);
+		}
+	}
+	RuntimeShapeTargets.Reset();
+	RuntimeDesignTargets.Reset();
+}
+
+bool UContextMenuButton::ConsumePendingDefaultContent()
+{
+	const bool bWasPending = bPendingDefaultContent;
+	bPendingDefaultContent = false;
+	return bWasPending;
+}
+
+void UContextMenuButton::BuildDefaultContentForEditor(TArray<UWidget*>& OutParts)
+{
+	OutParts.Reset();
+
+	// Given content by hand meanwhile: that is the content.
+	if (HasAnyContent())
+	{
+		return;
+	}
+
+	BuildDefaultContent();
+	RefreshShapeTargetLooks();
+	SyncEditConditionMirrors();
+	RebuildShapeTargetStatus();
+
+	TArray<ContextMenuButtonTree::FTargetableWidget> Built;
+	ContextMenuButtonTree::Gather(this, FString(), /*bDescendIntoUserWidgets=*/false, Built);
+	for (const ContextMenuButtonTree::FTargetableWidget& Entry : Built)
+	{
+		if (Entry.Widget && Entry.Widget != this)
+		{
+			OutParts.Add(Entry.Widget);
+		}
+	}
+}
 
 void UContextMenuButton::SyncMaterialParametersEditor()
 {
@@ -1831,6 +2238,75 @@ void UContextMenuButton::SyncMaterialParameters(FContextMenuWidgetDesign& Design
 	}
 }
 #endif
+
+bool UContextMenuButton::ArePartsHidden() const
+{
+	const UWidget* Content = GetHiddenContent();
+	return Content && PartsTree && Content->IsIn(PartsTree);
+}
+
+bool UContextMenuButton::RestoreHiddenParts()
+{
+	if (!HiddenContentSlot)
+	{
+		return false;
+	}
+
+	// Hidden in the button's own tree: kept. Only the links between the button, the slot and the content are put right.
+	if (ArePartsHidden())
+	{
+		UWidget* OwnContent = GetHiddenContent();
+		bool bChanged = false;
+		if (HiddenContentSlot->Parent.Get() != this)
+		{
+			HiddenContentSlot->Parent = this;
+			bChanged = true;
+		}
+		if (OwnContent->Slot.Get() != HiddenContentSlot.Get())
+		{
+			OwnContent->Slot = HiddenContentSlot;
+			bChanged = true;
+		}
+		if (PartsTree->RootWidget.Get() != OwnContent)
+		{
+			PartsTree->RootWidget = OwnContent;
+			bChanged = true;
+		}
+		return bChanged;
+	}
+
+	UPanelSlot* KeptSlot = HiddenContentSlot;
+	HiddenContentSlot = nullptr;
+
+	// The parts are this button's own while they are in its tree and no other widget lists them as its content.
+	UWidget* Content = KeptSlot->Content;
+	const UPanelSlot* ClaimedBy = Content ? Content->Slot.Get() : nullptr;
+	const bool bListedElsewhere = ClaimedBy && ClaimedBy != KeptSlot && ClaimedBy->Parent && ClaimedBy->Parent->GetChildIndex(Content) != INDEX_NONE;
+	const bool bOwnParts = IsValid(Content) && Content->GetOuter() == GetOuter() && !bListedElsewhere && GetChildrenCount() == 0;
+	if (bOwnParts)
+	{
+		KeptSlot->Parent = this;
+		Content->Slot = KeptSlot;
+		Slots.Add(KeptSlot);
+		if (MyButton.IsValid())
+		{
+			if (UButtonSlot* PartsSlot = Cast<UButtonSlot>(KeptSlot))
+			{
+				PartsSlot->BuildSlot(MyButton.ToSharedRef());
+			}
+		}
+		return true;
+	}
+
+#if WITH_EDITORONLY_DATA
+	// Not its own: built again, like a button just dropped from the Palette.
+	if (GetChildrenCount() == 0)
+	{
+		bPendingDefaultContent = ShouldBuildDefaultContentWhenEmpty();
+	}
+#endif
+	return true;
+}
 
 bool UContextMenuButton::IsVisibilityInteractive(ESlateVisibility Visibility)
 {
@@ -2159,6 +2635,9 @@ void UContextMenuButton::SynchronizeProperties()
 		SlateButton->RefreshShapeRenderTransform();
 	}
 
+	// The Background Shape as authored, before any state's Look is written over it below.
+	SyncBackgroundShape();
+
 	// Before anything reads Shape or Design below. This only works out which patch is in force; the merge
 	// itself happens at read time, so both the runtime state machine and the designer previews further down
 	// go through the same resolution and can't end up showing different things.
@@ -2348,12 +2827,38 @@ TSharedRef<SWidget> UContextMenuButton::RebuildWidget()
 
 	NewButton->SetOwnerWidget(this);
 
+	// A ready-made button built at runtime with nothing in it builds what it is made of first, so the slot below has it.
+	if (!IsDesignTime() && !HasAnyContent() && ShouldBuildDefaultContentWhenEmpty())
+	{
+		BuildDefaultContent();
+		RefreshShapeTargetLooks();
+	}
+
 	MyButton = NewButton;
 	MyContextMenuSlateButton = NewButton;
 
-	if (GetChildrenCount() > 0)
+	// The Background Shape's widget is only ever made here, once there is a Slate button to paint it - never on the
+	// Widget Blueprint's own template.
+	SyncBackgroundShape();
+
+	// Parts hidden from the Hierarchy live in the button's own tree, which the designer doesn't walk when it marks its widgets
+	// as being designed: they take the button's flags from it, before they are built.
+#if WITH_EDITOR
+	if (UWidget* HiddenRoot = GetHiddenContent())
 	{
-		Cast<UButtonSlot>(GetContentSlot())->BuildSlot(NewButton);
+		const EWidgetDesignFlags DesignFlags = GetDesignerFlags();
+		HiddenRoot->SetDesignerFlags(DesignFlags);
+		UWidgetTree::ForWidgetAndChildren(HiddenRoot, [DesignFlags](UWidget* Part)
+		{
+			Part->SetDesignerFlags(DesignFlags);
+		});
+	}
+#endif
+
+	// The content slot - or, with the parts hidden from the Hierarchy, the slot kept for them - builds the content.
+	if (UButtonSlot* PartsSlot = Cast<UButtonSlot>(GetPartsSlot()))
+	{
+		PartsSlot->BuildSlot(NewButton);
 	}
 
 	if (!IsDesignTime())
@@ -2378,6 +2883,16 @@ void UContextMenuButton::ReleaseSlateResources(bool bReleaseChildren)
 	UnbindSlateFocusChanging();
 	UnregisterFromEnableGroups();
 	MyContextMenuSlateButton.Reset();
+	if (BackgroundShapeWidget)
+	{
+		BackgroundShapeWidget->SetExternalPainter(nullptr);
+	}
+
+	// Parts hidden from the Hierarchy aren't among the panel's slots, so the panel doesn't release them itself.
+	if (bReleaseChildren && HiddenContentSlot)
+	{
+		HiddenContentSlot->ReleaseSlateResources(bReleaseChildren);
+	}
 
 	Super::ReleaseSlateResources(bReleaseChildren);
 }
@@ -2651,7 +3166,10 @@ void UContextMenuButton::HandlePressed()
 			if (ActualHoldAction == EExecuteHoldAction::Immediate)
 			{
 				HoldStartTime = World->GetTimeSeconds();
-				World->GetTimerManager().SetTimer(HoldFrequencyTimerHandle, this, &UContextMenuButton::OnHoldTimerTick, CurrentHoldFrequency, false);
+				if (bRepeatWhileHeld)
+				{
+					World->GetTimerManager().SetTimer(HoldFrequencyTimerHandle, this, &UContextMenuButton::OnHoldTimerTick, CurrentHoldFrequency, false);
+				}
 				ExecuteButtonAction();
 			}
 			else if (ActualHoldAction == EExecuteHoldAction::AfterPressDuration)
@@ -2689,7 +3207,7 @@ void UContextMenuButton::HandleReleased()
 			// the button's setting and stays as it is - zeroing it made every press after the first complete at once.)
 			if (bPressDurationProgressResetsOnCancelled)
 			{
-				OnContextPressDurationProgress.Broadcast(0.0f);
+				BroadcastPressProgress(0.0f);
 			}
 
 			OnContextPressDurationCancelled.Broadcast();
@@ -2715,6 +3233,9 @@ void UContextMenuButton::BeginPressDuration()
 		return;
 	}
 
+	// Found again on every press, so renaming or replacing the Progress Widget is picked up.
+	CachedPressProgressWidget = !PressProgressWidgetName.IsNone() ? FindWidgetInButtonTree(PressProgressWidgetName) : nullptr;
+
 	const uint32 Serial = ++PressDurationSerial;
 	bIsPressDurationActive = true;
 	PressDurationStartTime = FApp::GetCurrentTime();
@@ -2729,7 +3250,23 @@ void UContextMenuButton::BeginPressDuration()
 				: EActiveTimerReturnType::Stop;
 		}));
 
-	OnContextPressDurationProgress.Broadcast(0.0f);
+	BroadcastPressProgress(0.0f);
+}
+
+void UContextMenuButton::BroadcastPressProgress(float Progress)
+{
+	OnContextPressDurationProgress.Broadcast(Progress);
+
+	UWidget* Widget = CachedPressProgressWidget.Get();
+	if (UProgressBar* Bar = Cast<UProgressBar>(Widget))
+	{
+		Bar->SetPercent(Progress);
+	}
+	else if (UShapeWidget* Shape = GetLookWidget(Widget))
+	{
+		Shape->SetShapeValue(PressProgressValue, FMath::Lerp(static_cast<float>(PressProgressRange.X), static_cast<float>(PressProgressRange.Y), Progress));
+		InvalidateLookWidget(Shape);
+	}
 }
 
 void UContextMenuButton::StopPressDuration()
@@ -2752,26 +3289,27 @@ bool UContextMenuButton::TickPressDuration(uint32 Serial)
 		return false;
 	}
 
-	OnContextPressDurationProgress.Broadcast(GetPressDurationProgress());
+	BroadcastPressProgress(GetPressDurationProgress());
 	return true;
 }
 
 void UContextMenuButton::StartHoldFrequencyTimer()
 {
 	StopPressDuration();
-	OnContextPressDurationProgress.Broadcast(1.0f);
+	BroadcastPressProgress(1.0f);
 	
 	OnContextPressDurationCompleted.Broadcast();
 
 	// Back to empty once it has completed - the progress only, as on cancel.
 	if (bPressDurationProgressResetsOnCompleted)
 	{
-		OnContextPressDurationProgress.Broadcast(0.0f);
+		BroadcastPressProgress(0.0f);
 	}
 
 	BroadcastToOwnerDispatchers(EContextMenuButtonEvent::PressDurationCompleted);
 
-	if (UWorld* World = GetWorld())
+	UWorld* World = GetWorld();
+	if (World && bRepeatWhileHeld)
 	{
 		HoldStartTime = World->GetTimeSeconds();
 		World->GetTimerManager().SetTimer(HoldFrequencyTimerHandle, this, &UContextMenuButton::OnHoldTimerTick, CurrentHoldFrequency, false);
@@ -2823,7 +3361,7 @@ void UContextMenuButton::ExecuteButtonAction()
 		if (!bHasToggledEnablingThisPress)
 		{
 			bHasToggledEnablingThisPress = true;
-			CommitEnabledState(!GetEnabledState());
+			CommitEnabledState(bClickOnlyEnables ? true : !GetEnabledState());
 		}
 		bEnabling = GetEnabledState();
 	}
@@ -3913,6 +4451,15 @@ FContextMenuShapeStateSettings UContextMenuButton::ResolveShapeForState(const FC
 		? Preset->GetShapeForState(State, bEnabledMatchesHoverShape)
 		: Authored.GetShapeForState(State, bEnabledMatchesHoverShape);
 
+	// A Shape Preset carries Transforms and Shape Box shapes, never a vector shape's Look: that stays the target's own.
+	if (Preset)
+	{
+		const FContextMenuShapeStateSettings Own = Authored.GetShapeForState(State, bEnabledMatchesHoverShape);
+		Result.Look = Own.Look;
+		Result.bHasLook = Own.bHasLook;
+		Result.bIsVectorShape = Own.bIsVectorShape;
+	}
+
 	// Matched by widget name, so a Shape Target the patch doesn't mention is left exactly as authored and a
 	// patch entry for a target that has since been deleted or renamed is quietly dropped. The slot is the one
 	// lining up with the slot the button itself just read from: a state the button leaves on Base is patched
@@ -3984,16 +4531,23 @@ bool UContextMenuButton::ApplyShapeTarget(FContextMenuRuntimeShapeTarget& Target
 		return true;
 	}
 
-	// Read live, so editing a shape (or a preset) during PIE is picked up on the next transition.
+	// Read live, so editing a shape (or a preset) during PIE is picked up on the next transition. Resolved once per
+	// state change (or snap), not on every frame of the blend: it copies the state's whole settings, Look included.
 	const FContextMenuShapeTarget& Authored = ShapeTargets[Target.AuthoredIndex];
 	const FContextMenuShapePreset* Preset = FindActiveShapePreset(Authored);
-	const FContextMenuShapeStateSettings TargetShape = ResolveShapeForState(Authored, State);
+	const bool bStateChanged = !Target.bHasInitializedState || Target.LastShapeState != State;
+	if (bStateChanged || bInstant || !Target.bHasResolvedGoal)
+	{
+		Target.ResolvedGoal = ResolveShapeForState(Authored, State);
+		Target.bHasResolvedGoal = true;
+	}
+	const FContextMenuShapeStateSettings& TargetShape = Target.ResolvedGoal;
 	const FContextMenuResolvedInterpolation Interp = Preset ? Preset->GetResolvedInterpolation() : Authored.GetResolvedInterpolation();
 
 	// A state change resets the blend from wherever this target currently sits, and re-arms the delay. Done
 	// here, per target, rather than once for the whole button, since every target can carry its own speed,
 	// curve and delay now - the same reason a Design Target's channels blend at their own InterpolationSpeed.
-	if (!Target.bHasInitializedState || Target.LastShapeState != State)
+	if (bStateChanged)
 	{
 		Target.StartTransform = Target.CurrentTransform;
 		Target.StartShape = Target.CurrentShape;
@@ -4007,6 +4561,14 @@ bool UContextMenuButton::ApplyShapeTarget(FContextMenuRuntimeShapeTarget& Target
 
 		Target.LastShapeState = State;
 		Target.bHasInitializedState = true;
+
+		// A vector shape's Look blends from wherever it stands now (only when a state changes anything on it).
+		UShapeWidget* StartLookWidget = Target.LookProperties.Num() > 0 ? Target.LookWidget.Get() : nullptr;
+		if (StartLookWidget)
+		{
+			WidgetShapeAnimation::LayOut(Target.StartLook, StartLookWidget->GetClass(), StartLookWidget);
+			WidgetShapeAnimation::Capture(Target.StartLook, StartLookWidget);
+		}
 	}
 
 	if (!bInstant)
@@ -4057,9 +4619,34 @@ bool UContextMenuButton::ApplyShapeTarget(FContextMenuRuntimeShapeTarget& Target
 
 	ApplyShapeToTargetWidget(Widget, Target.CurrentShape, Target.CurrentTransform);
 
+	// A vector shape's Look, at the Shape channel's pace: only the settings some state changes.
+	bool bLookDone = true;
+	UShapeWidget* LookWidget = Target.LookWidget.Get();
+	if (LookWidget && Target.LookProperties.Num() > 0)
+	{
+		const float LookAlpha = (bInstant || Target.SizeTransitionAlpha >= 1.0f) ? 1.0f : SCurveAlpha;
+		bool bLookChanged = false;
+		for (const FProperty* Property : Target.LookProperties)
+		{
+			// A state with no Look of its own shows the shape as authored.
+			const void* Goal = WidgetShapeAnimation::FindValue(TargetShape.Look, Property);
+			if (!Goal)
+			{
+				Goal = WidgetShapeAnimation::FindValue(Target.BaselineLook, Property);
+			}
+			bLookChanged |= WidgetShapeAnimation::WriteBlend(LookWidget, Property,
+				WidgetShapeAnimation::FindValue(Target.StartLook, Property), Goal, LookAlpha);
+		}
+		if (bLookChanged)
+		{
+			InvalidateLookWidget(LookWidget);
+		}
+		bLookDone = LookAlpha >= 1.0f;
+	}
+
 	const bool bDelaysDone = (Target.TransformDelayRemaining <= 0.0f) && (Target.SizeDelayRemaining <= 0.0f);
 
-	return bDelaysDone && bTransformDone && bShapeDone;
+	return bDelaysDone && bTransformDone && bShapeDone && bLookDone;
 }
 
 void UContextMenuButton::ApplyShapeToTargetWidget(UWidget* Widget, const FShapeBoxShape& Shape, const FWidgetTransform& Transform)
@@ -4071,8 +4658,16 @@ void UContextMenuButton::ApplyShapeToTargetWidget(UWidget* Widget, const FShapeB
 
 	if (Widget == this)
 	{
-		// Self-targeting: the button's own brush layer, which bends the brush and carries the hit area with it.
-		PushButtonShapeToSlate(Shape, Transform);
+		// Self-targeting: the button's own brush layer, which bends the brush and carries the hit area with it. A vector
+		// Background Shape takes a Look instead of a Shape Box shape (the Details show no Shape for it), so none is applied.
+		PushButtonShapeToSlate(BackgroundShapeWidget ? FShapeBoxShape() : Shape, Transform);
+		return;
+	}
+
+	// A vector shape takes its Look (ApplyShapeTarget) and its Transform, on itself - never the Shape Box it may sit in.
+	if (Widget->IsA<UShapeWidget>())
+	{
+		Widget->SetRenderTransform(Transform);
 		return;
 	}
 
@@ -4104,6 +4699,246 @@ UShapeBox* UContextMenuButton::FindDrivenShapeBox(UWidget* Widget)
 
 	// A Shape Box is a content widget, so a widget whose parent is one is necessarily its only child.
 	return Cast<UShapeBox>(Widget->GetParent());
+}
+
+// ------------------------------------------------------------------
+// Vector shapes: Background Shape and Looks
+// ------------------------------------------------------------------
+
+UShapeWidget* UContextMenuButton::GetLookWidget(UWidget* Widget) const
+{
+	if (!Widget)
+	{
+		return nullptr;
+	}
+	if (Widget == this)
+	{
+		return BackgroundShapeWidget;
+	}
+	return Cast<UShapeWidget>(Widget);
+}
+
+UClass* UContextMenuButton::GetLookClass(const FContextMenuShapeTarget& Target)
+{
+	UWidget* Widget = FindWidgetInButtonTree(Target.TargetWidgetName);
+	if (!Widget)
+	{
+		return nullptr;
+	}
+	if (Widget == this)
+	{
+		UClass* Class = BackgroundShape.Get();
+		return (Class && !Class->HasAnyClassFlags(CLASS_Abstract)) ? Class : nullptr;
+	}
+	return Widget->IsA<UShapeWidget>() ? Widget->GetClass() : nullptr;
+}
+
+void UContextMenuButton::SyncBackgroundShape()
+{
+	UClass* Class = BackgroundShape.Get();
+	if (Class && Class->HasAnyClassFlags(CLASS_Abstract))
+	{
+		Class = nullptr;
+	}
+	bHasBackgroundShape = Class != nullptr;
+
+	const TSharedPtr<SContextMenuSlateButton> SlateButton = MyContextMenuSlateButton.Pin();
+	if (!Class)
+	{
+		if (BackgroundShapeWidget)
+		{
+			BackgroundShapeWidget->SetExternalPainter(nullptr);
+			BackgroundShapeWidget = nullptr;
+		}
+		if (SlateButton.IsValid())
+		{
+			SlateButton->SetBackgroundShape(nullptr);
+		}
+		return;
+	}
+
+	// Kept as it is when it already holds this kind of shape's settings.
+	WidgetShapeAnimation::LayOut(BackgroundLook, Class, nullptr);
+
+	// Only made once there is a Slate button to paint it: a Widget Blueprint's template never builds one, so it never
+	// carries this widget around. In the transient package, so nothing ever saves or duplicates it with the button.
+	if (!SlateButton.IsValid())
+	{
+		return;
+	}
+	if (!BackgroundShapeWidget || BackgroundShapeWidget->GetClass() != Class)
+	{
+		BackgroundShapeWidget = NewObject<UShapeWidget>(GetTransientPackage(), Class, NAME_None, RF_Transient);
+	}
+
+	TArray<const FProperty*> All;
+	WidgetShapeAnimation::GetProperties(Class, All);
+	WriteLook(BackgroundShapeWidget, BackgroundLook, All);
+
+	BackgroundShapeWidget->SetExternalPainter(SlateButton);
+	SlateButton->SetBackgroundShape(BackgroundShapeWidget);
+}
+
+const FInstancedPropertyBag* UContextMenuButton::FindLookBaseline(UShapeWidget* Shape)
+{
+	if (!Shape)
+	{
+		return nullptr;
+	}
+	if (Shape == BackgroundShapeWidget)
+	{
+		return &BackgroundLook;
+	}
+
+	LookBaselines.RemoveAll([](const FContextMenuLookBaseline& Entry) { return !Entry.Widget.IsValid(); });
+	if (const FContextMenuLookBaseline* Found = LookBaselines.FindByPredicate([Shape](const FContextMenuLookBaseline& Entry) { return Entry.Widget.Get() == Shape; }))
+	{
+		return &Found->Look;
+	}
+
+	// The first time a Look reaches this shape, before anything is written onto it: the shape as authored.
+	FContextMenuLookBaseline& Added = LookBaselines.AddDefaulted_GetRef();
+	Added.Widget = Shape;
+	WidgetShapeAnimation::LayOut(Added.Look, Shape->GetClass(), Shape);
+	return &Added.Look;
+}
+
+void UContextMenuButton::GatherLookProperties(const FContextMenuShapeTarget& Authored, UShapeWidget* Shape, TArray<const FProperty*>& OutProperties)
+{
+	OutProperties.Reset();
+	const FInstancedPropertyBag* Baseline = FindLookBaseline(Shape);
+	if (!Shape || !Baseline)
+	{
+		return;
+	}
+
+	const EContextMenuState States[] = { EContextMenuState::Normal, EContextMenuState::Hovered, EContextMenuState::Pressed, EContextMenuState::Disabled, EContextMenuState::Enabled };
+	TArray<FContextMenuShapeStateSettings, TInlineAllocator<5>> Resolved;
+	for (const EContextMenuState State : States)
+	{
+		Resolved.Add(ResolveShapeForState(Authored, State));
+	}
+
+	// A setting is the states' to write once any state's Look differs from the shape as authored - so one a state changes
+	// blends, and one none of them touch keeps whatever the shape itself is given.
+	TArray<const FProperty*> All;
+	WidgetShapeAnimation::GetProperties(Shape->GetClass(), All);
+	for (const FProperty* Property : All)
+	{
+		const void* AsAuthored = WidgetShapeAnimation::FindValue(*Baseline, Property);
+		if (!AsAuthored)
+		{
+			continue;
+		}
+		for (const FContextMenuShapeStateSettings& Settings : Resolved)
+		{
+			const void* Value = WidgetShapeAnimation::FindValue(Settings.Look, Property);
+			if (Value && !Property->Identical(Value, AsAuthored))
+			{
+				OutProperties.Add(Property);
+				break;
+			}
+		}
+	}
+}
+
+void UContextMenuButton::WriteLook(UShapeWidget* Shape, const FInstancedPropertyBag& Look, const TArray<const FProperty*>& Properties, const FInstancedPropertyBag* Fallback)
+{
+	if (!Shape)
+	{
+		return;
+	}
+	bool bChanged = false;
+	for (const FProperty* Property : Properties)
+	{
+		const void* Value = WidgetShapeAnimation::FindValue(Look, Property);
+		if (!Value && Fallback)
+		{
+			Value = WidgetShapeAnimation::FindValue(*Fallback, Property);
+		}
+		bChanged |= WidgetShapeAnimation::WriteBlend(Shape, Property, nullptr, Value, 1.0f);
+	}
+	if (bChanged)
+	{
+		InvalidateLookWidget(Shape);
+	}
+}
+
+void UContextMenuButton::InvalidateLookWidget(UShapeWidget* Shape)
+{
+	if (!Shape)
+	{
+		return;
+	}
+	// Repaints its own widget, and whatever paints it besides (this button, for the Background Shape).
+	Shape->InvalidateShape();
+}
+
+void UContextMenuButton::RefreshShapeTargetLooks()
+{
+	SyncBackgroundShape();
+
+	for (FContextMenuShapeTarget& Target : ShapeTargets)
+	{
+		// Found once per target: what it aims at decides whether it has Looks at all.
+		UWidget* Widget = FindWidgetInButtonTree(Target.TargetWidgetName);
+		UClass* Class = nullptr;
+		if (Widget == this)
+		{
+			Class = (BackgroundShape && !BackgroundShape->HasAnyClassFlags(CLASS_Abstract)) ? BackgroundShape.Get() : nullptr;
+		}
+		else if (Widget && Widget->IsA<UShapeWidget>())
+		{
+			Class = Widget->GetClass();
+		}
+		const UShapeWidget* Source = (Widget && Widget != this) ? Cast<UShapeWidget>(Widget) : nullptr;
+
+		// Only the states the target overrides carry a Look; the Base Shape never does (the base is the shape as authored).
+		// A Look nobody uses is emptied, so it costs nothing - not in the Details panel, not in every copy of the button.
+		struct FStateLook
+		{
+			FContextMenuShapeStateSettings* Settings;
+			bool bOverridden;
+		};
+		const FStateLook States[] = {
+			{ &Target.BaseShape, false },
+			{ &Target.NormalShape, Target.bOverrideNormalShape },
+			{ &Target.HoveredShape, Target.bOverrideHoveredShape },
+			{ &Target.PressedShape, Target.bOverridePressedShape },
+			{ &Target.DisabledShape, Target.bOverrideDisabledShape },
+			{ &Target.EnabledShape, Target.bOverrideEnabledShape } };
+		for (const FStateLook& Entry : States)
+		{
+			FContextMenuShapeStateSettings* State = Entry.Settings;
+			const bool bWantsLook = Class != nullptr && Entry.bOverridden;
+			State->bIsVectorShape = Class != nullptr;
+			State->bHasLook = bWantsLook;
+
+			if (!bWantsLook)
+			{
+				if (State->Look.GetPropertyBagStruct())
+				{
+					State->Look.Reset();
+				}
+				continue;
+			}
+
+			// A Look for another kind of shape (or none yet) is laid out again, keeping what the two kinds share; one already
+			// right is left exactly as authored. Started from the shape as it is - the Background Look, for Self.
+			if (WidgetShapeAnimation::IsLaidOutFor(State->Look, Class))
+			{
+				continue;
+			}
+			if (!Source && WidgetShapeAnimation::IsLaidOutFor(BackgroundLook, Class))
+			{
+				State->Look = BackgroundLook;
+			}
+			else
+			{
+				WidgetShapeAnimation::LayOut(State->Look, Class, Source);
+			}
+		}
+	}
 }
 
 void UContextMenuButton::RebuildShapeTargetStatus()
@@ -4142,7 +4977,20 @@ void UContextMenuButton::RebuildShapeTargetStatus()
 
 		if (Widget == this)
 		{
-			Builder.Append(TEXT("shapes the button's brush (Shape and Transform)."));
+			if (BackgroundShape)
+			{
+				Builder.Appendf(TEXT("shapes the button's Background Shape, a %s (Look and Transform)."), *BackgroundShape->GetDisplayNameText().ToString());
+			}
+			else
+			{
+				Builder.Append(TEXT("shapes the button's brush (Shape and Transform)."));
+			}
+			continue;
+		}
+
+		if (Widget->IsA<UShapeWidget>())
+		{
+			Builder.Appendf(TEXT("drives this %s (Look and Transform)."), *Widget->GetClass()->GetDisplayNameText().ToString());
 			continue;
 		}
 
@@ -4235,11 +5083,9 @@ bool UContextMenuButton::DoesDesignDriveButtonBrush() const
 	// itself is stored as the button's own name, since it's the root of the gathered tree.
 	if (RuntimeDesignTargets.Num() == 0)
 	{
-		const FString MyName = GetName();
 		for (const FContextMenuDesignTarget& Authored : DesignTargets)
 		{
-			if (DoesTargetDriveBrush(Authored)
-				&& Authored.TargetWidgetName.ToString().Equals(MyName, ESearchCase::IgnoreCase))
+			if (DoesTargetDriveBrush(Authored) && IsSelfTargetName(Authored.TargetWidgetName))
 			{
 				return true;
 			}
@@ -4270,6 +5116,20 @@ void UContextMenuButton::InitializeRuntimeShapeTargets()
 		FContextMenuRuntimeShapeTarget& Entry = RuntimeShapeTargets.AddDefaulted_GetRef();
 		Entry.Widget = Widget;
 		Entry.AuthoredIndex = i;
+
+		// A vector shape: which of its settings the states change, worked out once against the shape as authored.
+		if (UShapeWidget* LookWidget = GetLookWidget(Widget))
+		{
+			Entry.LookWidget = LookWidget;
+			GatherLookProperties(Authored, LookWidget, Entry.LookProperties);
+			if (Entry.LookProperties.Num() > 0)
+			{
+				if (const FInstancedPropertyBag* Baseline = FindLookBaseline(LookWidget))
+				{
+					Entry.BaselineLook = *Baseline;
+				}
+			}
+		}
 
 		// Everything else starts at identity/zero, so the very first resolve blends out of "unshaped" toward
 		// whatever the current state's shape is - exactly what a freshly built button always did.
@@ -4487,7 +5347,55 @@ UWidget* UContextMenuButton::FindWidgetInButtonTree(FName WidgetPath)
 		}
 	}
 
+	// Self: the button itself, whatever it is called.
+	if (WidgetPath == SelfTargetName)
+	{
+		return this;
+	}
+
+	// A copy of a button (pasted, duplicated) has its children renamed - Label to Label_1 - while its targets still name the
+	// originals. Matched again by the name without its number, among this button's own widgets only.
+	if (!PathString.Contains(TEXT("/")))
+	{
+		const FString Stem = ContextMenuButtonOverrideNaming::StripInstanceSuffix(PathString);
+		for (const ContextMenuButtonTree::FTargetableWidget& Candidate : All)
+		{
+			if (!Candidate.Path.Contains(TEXT("/"))
+				&& ContextMenuButtonOverrideNaming::StripInstanceSuffix(Candidate.Path).Equals(Stem, ESearchCase::IgnoreCase))
+			{
+				return Candidate.Widget;
+			}
+		}
+	}
+
 	return nullptr;
+}
+
+const FName UContextMenuButton::SelfTargetName(TEXT("Self"));
+
+bool UContextMenuButton::IsSelfTargetName(FName Name) const
+{
+	return !Name.IsNone() && (Name == SelfTargetName || Name == GetFName());
+}
+
+FVector2D UContextMenuButton::GetLastPressPosition() const
+{
+	if (const TSharedPtr<SContextMenuSlateButton> SlateButton = MyContextMenuSlateButton.Pin())
+	{
+		return SlateButton->GetLastPressFraction();
+	}
+	return FVector2D(0.5, 0.5);
+}
+
+bool UContextMenuButton::GetLastPressScreenPosition(FVector2D& OutScreenPosition) const
+{
+	const TSharedPtr<SContextMenuSlateButton> SlateButton = MyContextMenuSlateButton.Pin();
+	if (!SlateButton.IsValid() || !SlateButton->GetLastPressScreenPosition().IsSet())
+	{
+		return false;
+	}
+	OutScreenPosition = SlateButton->GetLastPressScreenPosition().GetValue();
+	return true;
 }
 
 TArray<FString> UContextMenuButton::GetColorTargetWidgetOptions() const
@@ -4497,17 +5405,32 @@ TArray<FString> UContextMenuButton::GetColorTargetWidgetOptions() const
 	// Walks this button and every descendant through the panel/slot hierarchy, so Is Variable doesn't matter.
 	ContextMenuButtonTree::Gather(const_cast<UContextMenuButton*>(this), FString(), /*bDescendIntoUserWidgets=*/true, All);
 
+	// The button itself is offered as Self, which keeps working when the button is renamed or copied.
 	TArray<FString> Options;
 	Options.Reserve(All.Num());
 	for (const ContextMenuButtonTree::FTargetableWidget& Entry : All)
 	{
-		Options.AddUnique(Entry.Path);
+		Options.AddUnique(Entry.Widget == this ? SelfTargetName.ToString() : Entry.Path);
 	}
 	return Options;
 }
 
+UShapeWidget* UContextMenuButton::GetDesignShape(UWidget* Widget)
+{
+	if (const UContextMenuButton* Button = Cast<UContextMenuButton>(Widget))
+	{
+		return Button->BackgroundShapeWidget;
+	}
+	return Cast<UShapeWidget>(Widget);
+}
+
 FLinearColor UContextMenuButton::ExtractWidgetColor(UWidget* Widget)
 {
+	// A shape's fill. (A button's Background Shape is tinted through the button's Background Color, below, like its brush.)
+	if (const UShapeWidget* Shape = Cast<UShapeWidget>(Widget))
+	{
+		return Shape->Fill.Color;
+	}
 	if (UTextBlock* Text = Cast<UTextBlock>(Widget))
 	{
 		return Text->GetColorAndOpacity().GetSpecifiedColor();
@@ -4529,7 +5452,11 @@ FLinearColor UContextMenuButton::ExtractWidgetColor(UWidget* Widget)
 
 void UContextMenuButton::ApplyColorToWidget(UWidget* Widget, const FLinearColor& Color)
 {
-	if (UTextBlock* Text = Cast<UTextBlock>(Widget))
+	if (UShapeWidget* Shape = Cast<UShapeWidget>(Widget))
+	{
+		Shape->SetFillColor(Color);
+	}
+	else if (UTextBlock* Text = Cast<UTextBlock>(Widget))
 	{
 		Text->SetColorAndOpacity(FSlateColor(Color));
 	}
@@ -4549,6 +5476,12 @@ void UContextMenuButton::ApplyColorToWidget(UWidget* Widget, const FLinearColor&
 
 FLinearColor UContextMenuButton::ExtractWidgetOutlineTint(UWidget* Widget)
 {
+	// A vector shape's outline is its stroke.
+	if (const UShapeWidget* Shape = GetDesignShape(Widget))
+	{
+		return Shape->Stroke.Paint.Color;
+	}
+
 	// Only widgets whose look actually comes from an FSlateBrush have an outline to speak of - the same set
 	// ApplyBrushTextureToWidget supports, and for the same reason (Text and RetainerBox have no brush).
 	if (const UImage* Image = Cast<UImage>(Widget))
@@ -4571,7 +5504,11 @@ void UContextMenuButton::ApplyOutlineTintToWidget(UWidget* Widget, const FLinear
 	// The outline is baked into the brush's own OutlineSettings rather than being multiplied in at paint
 	// time the way Tint is, so coloring it means writing a modified copy of the brush back rather than
 	// setting a separate multiplier - there's no equivalent of SetColorAndOpacity for it.
-	if (UImage* Image = Cast<UImage>(Widget))
+	if (UShapeWidget* Shape = GetDesignShape(Widget))
+	{
+		Shape->SetStrokeColor(Color);
+	}
+	else if (UImage* Image = Cast<UImage>(Widget))
 	{
 		FSlateBrush Brush = Image->GetBrush();
 		Brush.OutlineSettings.Color = FSlateColor(Color);
@@ -4609,6 +5546,15 @@ void UContextMenuButton::ApplyBrushTextureToWidget(UWidget* Widget, UTexture2D* 
 		return;
 	}
 
+	if (UShapeWidget* Shape = GetDesignShape(Widget))
+	{
+		FWidgetShapePaint& Paint = Shape->GetImagePaint();
+		Paint.Type = EWidgetShapePaintType::Image;
+		Paint.Image.SetResourceObject(Texture);
+		Shape->InvalidateShape();
+		return;
+	}
+
 	// bMatchSize = false: the brush keeps the size and draw type it was authored with, so a swap never
 	// resizes the widget mid-transition.
 	if (UImage* Image = Cast<UImage>(Widget))
@@ -4641,7 +5587,14 @@ void UContextMenuButton::ApplyMaterialToWidget(UWidget* Widget, UMaterialInterfa
 		return;
 	}
 
-	if (UImage* Image = Cast<UImage>(Widget))
+	if (UShapeWidget* Shape = GetDesignShape(Widget))
+	{
+		FWidgetShapePaint& Paint = Shape->GetImagePaint();
+		Paint.Type = EWidgetShapePaintType::Image;
+		Paint.Image.SetResourceObject(Material);
+		Shape->InvalidateShape();
+	}
+	else if (UImage* Image = Cast<UImage>(Widget))
 	{
 		Image->SetBrushFromMaterial(Material);
 	}
@@ -4677,6 +5630,11 @@ UTexture2D* UContextMenuButton::ExtractWidgetBrushTexture(UWidget* Widget)
 		return nullptr;
 	}
 
+	if (const UShapeWidget* Shape = GetDesignShape(Widget))
+	{
+		const FWidgetShapePaint& Paint = Shape->GetImagePaint();
+		return Paint.Type == EWidgetShapePaintType::Image ? Cast<UTexture2D>(Paint.Image.GetResourceObject()) : nullptr;
+	}
 	if (UImage* Image = Cast<UImage>(Widget))
 	{
 		return Cast<UTexture2D>(Image->GetBrush().GetResourceObject());
@@ -4702,6 +5660,11 @@ UMaterialInterface* UContextMenuButton::ExtractWidgetMaterial(UWidget* Widget)
 		return nullptr;
 	}
 
+	if (const UShapeWidget* Shape = GetDesignShape(Widget))
+	{
+		const FWidgetShapePaint& Paint = Shape->GetImagePaint();
+		return Paint.Type == EWidgetShapePaintType::Image ? Cast<UMaterialInterface>(Paint.Image.GetResourceObject()) : nullptr;
+	}
 	if (UImage* Image = Cast<UImage>(Widget))
 	{
 		return Cast<UMaterialInterface>(Image->GetBrush().GetResourceObject());
@@ -4729,6 +5692,11 @@ UMaterialInstanceDynamic* UContextMenuButton::ResolveWidgetMaterial(UWidget* Wid
 {
 	// GetDynamicMaterial creates the instance on first call and returns the same one afterward. It returns null
 	// unless the brush's resource is already a material, which is why a plain texture brush can't be driven this way.
+	if (UShapeWidget* Shape = GetDesignShape(Widget))
+	{
+		return Shape->GetDynamicMaterial(Shape->GetImagePaint());
+	}
+
 	if (UImage* Image = Cast<UImage>(Widget))
 	{
 		return Image->GetDynamicMaterial();
@@ -4779,11 +5747,20 @@ void UContextMenuButton::ApplyDesignPreviews()
 {
 	using namespace ContextMenuButtonDesign;
 
+	// A toolbar transition is painting the widgets; it hands back to this once it arrives (FinishDesignerPreviewState).
+	if (bIsDesignerStateTimerActive)
+	{
+		return;
+	}
+
 	ClearDesignPreviews();
 
-	// The placement's own dropdown when previewed inside a widget that has been placed somewhere, otherwise
-	// the button's. Worked out by ResolveInstanceOverrides, which every caller has just run.
-	const EContextMenuDesignPreview Preview = ActiveDesignPreview;
+	// The Background Shape back as authored, so a Look or a material an earlier preview wrote doesn't linger.
+	SyncBackgroundShape();
+
+	// The toolbar's state when it drives the preview; else the placement's own dropdown when previewed inside a widget that has
+	// been placed somewhere, otherwise the button's. Worked out by ResolveInstanceOverrides, which every caller has just run.
+	const EContextMenuDesignPreview Preview = GetEffectiveDesignPreview();
 	const bool bNoPreview = (Preview == EContextMenuDesignPreview::None);
 	const EContextMenuState State = bNoPreview ? EContextMenuState::Normal : PreviewToState(Preview);
 
@@ -4800,6 +5777,19 @@ void UContextMenuButton::ApplyDesignPreviews()
 
 		const FContextMenuShapeStateSettings Shape = ResolveShapeForState(ShapeAuthored, State);
 		ApplyShapeToTargetWidget(ShapeWidget, Shape.Shape, Shape.Transform);
+
+		if (UShapeWidget* LookWidget = GetLookWidget(ShapeWidget))
+		{
+			TArray<const FProperty*> LookProperties;
+			GatherLookProperties(ShapeAuthored, LookWidget, LookProperties);
+			if (LookProperties.Num() > 0)
+			{
+				// Copied, not pointed at: the baseline list may grow while another target is gathered.
+				const FInstancedPropertyBag* Found = FindLookBaseline(LookWidget);
+				const FInstancedPropertyBag Baseline = Found ? *Found : FInstancedPropertyBag();
+				WriteLook(LookWidget, Shape.Look, LookProperties, &Baseline);
+			}
+		}
 	}
 
 	if (bNoPreview)
@@ -4869,6 +5859,13 @@ void UContextMenuButton::ApplyDesignPreviews()
 		else if (const URetainerBox* Retainer = Cast<URetainerBox>(Widget))
 		{
 			Baseline.Material = Retainer->GetEffectMaterial();
+		}
+		else if (const UShapeWidget* Shape = Cast<UShapeWidget>(Widget))
+		{
+			const FWidgetShapePaint& Paint = Shape->GetImagePaint();
+			UObject* Resource = Paint.Type == EWidgetShapePaintType::Image ? Paint.Image.GetResourceObject() : nullptr;
+			Baseline.BrushTexture = Cast<UTexture2D>(Resource);
+			Baseline.Material = Cast<UMaterialInterface>(Resource);
 		}
 		else if (const UButton* Button = Cast<UButton>(Widget))
 		{
@@ -5349,7 +6346,7 @@ bool UContextMenuButton::HasResolvedOverridesChanged() const
 		return true;
 	}
 
-	if (LastPaintedPreview != ActiveDesignPreview)
+	if (LastPaintedPreview != GetEffectiveDesignPreview())
 	{
 		return true;
 	}
@@ -5401,7 +6398,7 @@ bool UContextMenuButton::HasResolvedOverridesChanged() const
 void UContextMenuButton::CacheResolvedOverridesSnapshot()
 {
 	bHasPaintedDesignPreviewOnce = true;
-	LastPaintedPreview = ActiveDesignPreview;
+	LastPaintedPreview = GetEffectiveDesignPreview();
 	LastPaintedShapePatch = ActiveShapePatch;
 	LastPaintedDesignPatch = ActiveDesignPatch;
 }

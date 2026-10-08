@@ -1,0 +1,391 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+index be238ea..4f0325b 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+@@ -1849,21 +1849,31 @@ void UContextMenuButton::OnCreationFromPalette()
+ 	bPendingDefaultContent = ShouldBuildDefaultContentWhenEmpty() && !HasAnyContent();
+ }
+ 
+-bool UContextMenuButton::RepairHiddenParts()
++bool UContextMenuButton::ReconnectHiddenParts()
+ {
+-	// Parts hidden from the hierarchy belong to this button only while their slot is this button's and they are its slot's.
+-	// A pasted or duplicated button carries a copy of the slot still pointing at the original's parts (or at nothing): it
+-	// lets go of them, and builds its own.
+-	UWidget* Content = HiddenContentSlot ? HiddenContentSlot->Content.Get() : nullptr;
+-	const bool bOwned = HiddenContentSlot && Content && Content->Slot == HiddenContentSlot && HiddenContentSlot->Parent.Get() == this
+-		&& Content->GetOuter() == GetOuter();
+-	if (!HiddenContentSlot || bOwned)
++	UWidget* Content = GetHiddenContent();
++	if (!Content)
+ 	{
+ 		return false;
+ 	}
++	bool bChanged = false;
++	if (HiddenContentSlot->Parent.Get() != this)
++	{
++		HiddenContentSlot->Parent = this;
++		bChanged = true;
++	}
++	if (Content->Slot.Get() != HiddenContentSlot.Get())
++	{
++		Content->Slot = HiddenContentSlot;
++		bChanged = true;
++	}
++	return bChanged;
++}
++
++void UContextMenuButton::DropHiddenParts()
++{
+ 	HiddenContentSlot = nullptr;
+ 	bPendingDefaultContent = ShouldBuildDefaultContentWhenEmpty() && GetChildrenCount() == 0;
+-	return true;
+ }
+ 
+ bool UContextMenuButton::ConsumePendingDefaultContent()
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+index 44cf26d..15d8c86 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+@@ -2255,11 +2255,20 @@ public:
+ 	/** Whether this button was dropped from the Palette and still wants its default content built. */
+ 	bool HasPendingDefaultContent() const { return bPendingDefaultContent; }
+ 
++	/** The slot holding the content while it is hidden from the hierarchy, or null. */
++	UPanelSlot* GetHiddenContentSlot() const { return HiddenContentSlot; }
++
++	/**
++	 * Points the hidden slot and its content back at this button and at each other, where they don't already (nothing is
++	 * rebuilt). True when anything changed. Called by the editor module for the button that owns the hidden parts.
++	 */
++	bool ReconnectHiddenParts();
++
+ 	/**
+-	 * A copy of a button whose parts were hidden from the hierarchy (pasted, duplicated) still points at the original's parts:
+-	 * lets go of them and asks for its own. True when it did. Called by the editor module.
++	 * Lets go of the hidden parts - a pasted or duplicated button whose hidden slot still names the original's parts - and asks
++	 * for its own, built like a dropped button's. Called by the editor module.
+ 	 */
+-	bool RepairHiddenParts();
++	void DropHiddenParts();
+ 
+ 	/**
+ 	 * Takes the pending request: true if there was one (it is cleared). Called before the build's transaction opens, so undoing
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
+index 17d0307..9efa801 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.cpp
+@@ -62,6 +62,32 @@ namespace StyledButtonsEditorPrivate
+ 		return true;
+ 	}
+ 
++	/** Takes Name's GUID out of the blueprint's map. True if it had one. */
++	bool RemoveGuid(UWidgetBlueprint* Blueprint, FName Name)
++	{
++		const FMapProperty* MapProperty = GetGuidMapProperty();
++		if (!Blueprint || !MapProperty || Name.IsNone())
++		{
++			return false;
++		}
++		FScriptMapHelper Map(MapProperty, MapProperty->ContainerPtrToValuePtr<void>(Blueprint));
++		return Map.RemovePair(&Name);
++	}
++
++	/** Content and everything inside it. */
++	void GatherWidgetAndChildren(UWidget* Content, TArray<UWidget*>& OutWidgets)
++	{
++		if (!Content)
++		{
++			return;
++		}
++		OutWidgets.Add(Content);
++		UWidgetTree::ForWidgetAndChildren(Content, [&OutWidgets](UWidget* Child)
++		{
++			OutWidgets.Add(Child);
++		});
++	}
++
+ 	/** Adds the parts Context Menu Buttons among Widgets keep hidden from the hierarchy, and everything inside them. */
+ 	void AddHiddenParts(const TArray<UWidget*>& Widgets, TSet<UWidget*>& OutLive)
+ 	{
+@@ -80,10 +106,10 @@ namespace StyledButtonsEditorPrivate
+ 	}
+ 
+ 	/**
+-	 * Every widget the tree really holds: under its root, in its named slot bindings (read through reflection), and the parts
+-	 * buttons keep hidden from the hierarchy.
++	 * The widgets the hierarchy lists: under the tree's root and in its named slot bindings (read through reflection). These -
++	 * and only these - are the compile's widget variables, so these and only these have a GUID.
+ 	 */
+-	void GatherLiveWidgets(UWidgetTree* Tree, TSet<UWidget*>& OutLive)
++	void GatherListedWidgets(UWidgetTree* Tree, TSet<UWidget*>& OutLive)
+ 	{
+ 		Tree->ForEachWidget([&OutLive](UWidget* Widget)
+ 		{
+@@ -112,6 +138,12 @@ namespace StyledButtonsEditorPrivate
+ 			}
+ 		}
+ 
++	}
++
++	/** Every widget the tree really holds: the listed ones, and the parts buttons keep hidden from the hierarchy. */
++	void GatherLiveWidgets(UWidgetTree* Tree, TSet<UWidget*>& OutLive)
++	{
++		GatherListedWidgets(Tree, OutLive);
+ 		AddHiddenParts(OutLive.Array(), OutLive);
+ 	}
+ 
+@@ -146,21 +178,113 @@ namespace StyledButtonsEditorPrivate
+ 	}
+ 
+ 	/**
+-	 * Gives every widget of the tree that has none a GUID - so the compile never meets one without. Covers parts of ready-made
+-	 * buttons built by the first version (which got none), and is a no-op for everything the designer already registered.
++	 * Keeps the blueprint's GUID map matching its hierarchy, which the compile checks both ways (an ensure, with a full
++	 * callstack, per mismatch): every listed widget has a GUID ("was added but did not get a GUID"), and no GUID names a widget
++	 * that isn't listed ("was deleted but still has a GUID") - such as a part hidden from the hierarchy or left behind. Only
++	 * for blueprints holding a Context Menu Button; everything the designer already keeps right is left as it is.
+ 	 */
+-	void RegisterMissingGuids(UWidgetBlueprint* Blueprint)
++	void SyncGuids(UWidgetBlueprint* Blueprint)
+ 	{
+-		if (!Blueprint || !Blueprint->WidgetTree)
++		UWidgetTree* Tree = Blueprint ? Blueprint->WidgetTree.Get() : nullptr;
++		const FMapProperty* MapProperty = GetGuidMapProperty();
++		if (!Tree || !MapProperty)
+ 		{
+ 			return;
+ 		}
+ 		TArray<UWidget*> Widgets;
+-		GatherTreeWidgets(Blueprint->WidgetTree, Widgets);
+-		for (UWidget* Widget : Widgets)
++		GatherTreeWidgets(Tree, Widgets);
++		if (!Widgets.ContainsByPredicate([](const UWidget* Widget) { return Widget->IsA<UContextMenuButton>(); }))
++		{
++			return;
++		}
++
++		TSet<UWidget*> Listed;
++		GatherListedWidgets(Tree, Listed);
++		TSet<FName> ListedNames;
++		for (const UWidget* Widget : Listed)
+ 		{
++			ListedNames.Add(Widget->GetFName());
+ 			EnsureGuid(Blueprint, Widget->GetFName());
+ 		}
++
++		FScriptMapHelper Map(MapProperty, MapProperty->ContainerPtrToValuePtr<void>(Blueprint));
++		TArray<FName> Unlisted;
++		for (int32 Index = 0; Index < Map.GetMaxIndex(); ++Index)
++		{
++			if (Map.IsValidIndex(Index))
++			{
++				const FName Key = *reinterpret_cast<const FName*>(Map.GetKeyPtr(Index));
++				if (!ListedNames.Contains(Key))
++				{
++					Unlisted.Add(Key);
++				}
++			}
++		}
++		for (const FName Key : Unlisted)
++		{
++			Map.RemovePair(&Key);
++		}
++	}
++
++	/** Buttons whose hidden parts were already let go of once this session - never again (see ResolveHiddenParts). */
++	TSet<TWeakObjectPtr<UContextMenuButton>> DroppedOnce;
++
++	/**
++	 * Settles who owns each set of hidden parts, rebuilding nothing that is fine:
++	 *   - the button whose hidden slot the parts themselves name owns them;
++	 *   - another button naming the same parts, or parts listed in the hierarchy, is a copy (pasted, duplicated): it lets go
++	 *     and builds its own, once - a button never rebuilds twice in a session, so nothing can loop;
++	 *   - otherwise the button owns them, its slot and parts pointed back at it and each other (nothing rebuilt).
++	 */
++	void ResolveHiddenParts(UWidgetBlueprint* Blueprint, const TSet<UWidget*>& Listed)
++	{
++		UWidgetTree* Tree = Blueprint->WidgetTree.Get();
++		TArray<UContextMenuButton*> Holders;
++		for (UWidget* Widget : Listed)
++		{
++			UContextMenuButton* Button = Cast<UContextMenuButton>(Widget);
++			if (Button && Button->GetOuter() == Tree && Button->GetHiddenContentSlot())
++			{
++				Holders.Add(Button);
++			}
++		}
++
++		TMap<UWidget*, UContextMenuButton*> Owners;
++		for (UContextMenuButton* Button : Holders)
++		{
++			UWidget* Content = Button->GetHiddenContent();
++			if (Content && Content->Slot.Get() == Button->GetHiddenContentSlot() && !Owners.Contains(Content))
++			{
++				Owners.Add(Content, Button);
++			}
++		}
++
++		for (UContextMenuButton* Button : Holders)
++		{
++			UWidget* Content = Button->GetHiddenContent();
++			UContextMenuButton** Owner = Content ? Owners.Find(Content) : nullptr;
++			if (Owner && *Owner == Button)
++			{
++				continue;
++			}
++			const bool bCopy = !Content || Owner || Listed.Contains(Content);
++			if (!bCopy)
++			{
++				Owners.Add(Content, Button);
++				Button->ReconnectHiddenParts();
++				continue;
++			}
++			if (DroppedOnce.Contains(Button))
++			{
++				continue;
++			}
++			DroppedOnce.Add(Button);
++			const TCHAR* Reason = !Content ? TEXT("its hidden parts are gone")
++				: Owner ? TEXT("its hidden parts belong to another button")
++				: TEXT("its hidden parts are listed in the hierarchy");
++			Button->DropHiddenParts();
++			UE_LOG(LogTemp, Log, TEXT("NameTBD: %s in %s builds its own parts (%s - a pasted or duplicated copy)."), *Button->GetName(), *Blueprint->GetName(), Reason);
++		}
+ 	}
+ 
+ 	/**
+@@ -254,22 +378,15 @@ namespace StyledButtonsEditorPrivate
+ 		}
+ 
+ 		// Only buttons really in the hierarchy: a drop preview that was discarded isn't.
+-		TSet<UWidget*> Live;
+-		GatherLiveWidgets(Tree, Live);
++		TSet<UWidget*> Listed;
++		GatherListedWidgets(Tree, Listed);
++		ResolveHiddenParts(Blueprint, Listed);
++
+ 		TArray<UContextMenuButton*> Waiting;
+-		for (UWidget* Widget : Live)
++		for (UWidget* Widget : Listed)
+ 		{
+ 			UContextMenuButton* Button = Cast<UContextMenuButton>(Widget);
+-			if (!Button || Button->GetOuter() != Tree)
+-			{
+-				continue;
+-			}
+-			// A pasted or duplicated button still pointing at the original's hidden parts lets go of them and builds its own.
+-			if (Button->RepairHiddenParts())
+-			{
+-				UE_LOG(LogTemp, Log, TEXT("NameTBD: %s in %s was a copy of a button with hidden parts; its own parts are built."), *Button->GetName(), *Blueprint->GetName());
+-			}
+-			if (Button->HasPendingDefaultContent())
++			if (Button && Button->GetOuter() == Tree && Button->HasPendingDefaultContent())
+ 			{
+ 				Waiting.Add(Button);
+ 			}
+@@ -294,16 +411,25 @@ namespace StyledButtonsEditorPrivate
+ 				Button->Modify();
+ 				TArray<UWidget*> Parts;
+ 				Button->BuildDefaultContentForEditor(Parts);
+-				for (UWidget* Part : Parts)
+-				{
+-					EnsureGuid(Blueprint, Part->GetFName());
+-				}
+ 
+-				// A ready-made button's parts start out of the hierarchy: Show Parts In Hierarchy (Style) lists them.
+-				if (Parts.Num() > 0 && Button->IsA<UStyledButtonBase>())
++				// A ready-made button's parts start out of the hierarchy (Show Parts In Hierarchy, in Style, lists them): not
++				// listed, they are no widget variables and get no GUID. Anything else's parts are listed, and get one.
++				const bool bHideParts = Parts.Num() > 0 && Button->IsA<UStyledButtonBase>();
++				if (bHideParts)
+ 				{
+ 					Button->SetPartsShownInHierarchy(false);
+ 				}
++				for (UWidget* Part : Parts)
++				{
++					if (bHideParts)
++					{
++						RemoveGuid(Blueprint, Part->GetFName());
++					}
++					else
++					{
++						EnsureGuid(Blueprint, Part->GetFName());
++					}
++				}
+ 			}
+ 		}
+ 
+@@ -369,7 +495,7 @@ namespace StyledButtonsEditorPrivate
+ 	}
+ 
+ 	/**
+-	 * Before a Widget Blueprint compiles: every widget has its GUID. Just after: leftovers are swept, and a button dropped from
++	 * Before a Widget Blueprint compiles: its GUIDs match its hierarchy. Just after: leftovers are swept, and a button dropped from
+ 	 * the Palette (a drop always compiles) gets its parts.
+ 	 */
+ 	void HandleBlueprintPreCompile(UBlueprint* Blueprint)
+@@ -379,7 +505,7 @@ namespace StyledButtonsEditorPrivate
+ 		{
+ 			return;
+ 		}
+-		RegisterMissingGuids(WidgetBlueprint);
++		SyncGuids(WidgetBlueprint);
+ 		ScheduleSweep(WidgetBlueprint);
+ 		ScheduleBuild(WidgetBlueprint);
+ 	}
+@@ -425,6 +551,7 @@ namespace StyledButtonsEditor
+ 		PreCompileHandle.Reset();
+ 		PendingSweeps.Reset();
+ 		PendingBuilds.Reset();
++		DroppedOnce.Reset();
+ 	}
+ 
+ 	bool ArePartsShown(const TArray<TWeakObjectPtr<UContextMenuButton>>& Buttons)
+@@ -496,15 +623,19 @@ namespace StyledButtonsEditor
+ 				Template->Modify();
+ 				Template->SetPartsShownInHierarchy(bShow);
+ 
+-				// Listed again, every part needs its GUID for the compile; the same widgets keep theirs.
+-				UWidget* Listed = bShow && Template->GetContentSlot() ? Template->GetContentSlot()->Content.Get() : nullptr;
+-				if (Listed)
++				// Listed, every part is a widget variable and needs a GUID; hidden, none may have one (the compile checks both).
++				TArray<UWidget*> Parts;
++				GatherWidgetAndChildren(bShow ? (Template->GetContentSlot() ? Template->GetContentSlot()->Content.Get() : nullptr) : Template->GetHiddenContent(), Parts);
++				for (UWidget* Part : Parts)
+ 				{
+-					EnsureGuid(Blueprint, Listed->GetFName());
+-					UWidgetTree::ForWidgetAndChildren(Listed, [Blueprint](UWidget* Part)
++					if (bShow)
+ 					{
+ 						EnsureGuid(Blueprint, Part->GetFName());
+-					});
++					}
++					else
++					{
++						RemoveGuid(Blueprint, Part->GetFName());
++					}
+ 				}
+ 				Changed.AddUnique(Blueprint);
+ 			}
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h
+index c4305ba..8c65964 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/StyledButtonsEditor.h
+@@ -17,11 +17,12 @@ class UContextMenuButton;
+  *   - A dropped button only marks itself pending (UContextMenuButton::OnCreationFromPalette). Its parts are built here,
+  *     once it has really been placed - the designer selects a dropped widget, which shows its Details - in one undoable
+  *     transaction, each part given its GUID, the blueprint marked structurally modified.
+- *   - Before every compile of a Widget Blueprint, any ready-made button's part still without a GUID gets one (buttons made
+- *     by the first version of the change set).
++ *   - Before every compile of a Widget Blueprint holding a Context Menu Button, its GUID map is made to match the hierarchy,
++ *     which the compile checks both ways: every listed widget has a GUID, and none that isn't listed (a hidden part, a
++ *     leftover) has one.
+  *   - Once built, a ready-made button's parts are hidden from the hierarchy (they clutter it, and are rarely touched);
+- *     Show Parts In Hierarchy in its Details lists them again (ToggleParts). A pasted copy whose hidden parts are still
+- *     the original's builds its own.
++ *     Show Parts In Hierarchy in its Details lists them again (ToggleParts). Hidden parts are re-pointed at their owner
++ *     when needed, never rebuilt; only a pasted copy whose hidden parts are another button's builds its own - once.
+  *   - Parts orphaned by discarded drop previews (and those previews' buttons) are taken out of the tree, outside the
+  *     compile, on the next tick.
+  */

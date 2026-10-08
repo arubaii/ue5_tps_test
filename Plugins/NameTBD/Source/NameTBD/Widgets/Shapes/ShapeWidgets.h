@@ -49,6 +49,42 @@ public:
 	virtual uint32 GetMeshHash() const override;
 };
 
+/**
+ * A rectangle filling the widget, its corners rounded - the shape most of a UI is made of: a button, a card, a field, a pill
+ * (Fully Rounded), a progress bar's track. Its outline starts at the top left corner, so a Trim Path draws on clockwise from
+ * there. Rounding is in Slate units and held to what fits, so it stays round however the widget is stretched.
+ */
+UCLASS(meta = (DisplayName = "Rectangle"))
+class NAMETBD_API URectangleShape : public UShapeWidget
+{
+	GENERATED_BODY()
+
+public:
+	/** Rounds every corner, in Slate units. Held to what fits: a value past half the shorter side makes the ends round. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Interp, Category = "Shape", meta = (EditCondition = "!bFullyRounded && !bIndividualCorners", ClampMin = "0", UIMin = "0", UIMax = "64", ForceUnits = "px"))
+	float CornerRounding = 8.f;
+
+	/** Ends as round as they go - a pill, or a circle in a square widget - whatever the widget's size. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape", meta = (DisplayName = "Fully Rounded"))
+	bool bFullyRounded = false;
+
+	/** Rounds each corner by its own amount: Corner Radii instead of Corner Rounding. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape", meta = (EditCondition = "!bFullyRounded"))
+	bool bIndividualCorners = false;
+
+	/** Each corner's rounding, in Slate units: X top left, Y top right, Z bottom right, W bottom left - a tab's top corners only, say. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Interp, Category = "Shape", meta = (EditCondition = "!bFullyRounded && bIndividualCorners", EditConditionHides))
+	FVector4 CornerRadii = FVector4(8.0, 8.0, 8.0, 8.0);
+
+	UFUNCTION(BlueprintCallable, Category = "Shape")
+	void SetCornerRounding(float InRounding);
+
+	virtual bool SetShapeValue(EWidgetShapeValue Value, float InValue) override;
+	virtual bool GetShapeValue(EWidgetShapeValue Value, float& OutValue) const override;
+	virtual void BuildPath(FWidgetShapePath& OutPath) const override;
+	virtual uint32 GetMeshHash() const override;
+};
+
 /** A triangle filling the widget: its point at the top middle, its base along the bottom. Keep Aspect Ratio makes it equilateral. */
 UCLASS(meta = (DisplayName = "Triangle"))
 class NAMETBD_API UTriangleShape : public UShapeWidget
