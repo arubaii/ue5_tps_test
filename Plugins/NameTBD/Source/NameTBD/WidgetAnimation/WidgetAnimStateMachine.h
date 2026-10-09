@@ -130,7 +130,7 @@ UENUM(BlueprintType)
 enum class EWidgetAnimMachineCompare : uint8
 {
 	IsTrue UMETA(DisplayName = "Is True", ToolTip = "A Bool is true. A Press And Hold is being held, and hasn't been held for its Hold Time yet."),
-	IsFalse UMETA(DisplayName = "Is False", ToolTip = "A Bool is false. A Press And Hold isn't being held: let go before its Hold Time, or never pressed - never the frame it completes."),
+	IsFalse UMETA(DisplayName = "Is False", ToolTip = "A Bool is false. A Press And Hold (Is Let Go): the frame it is let go - once, as a Trigger fires - never the frame it completes."),
 	Fired UMETA(ToolTip = "A Trigger was fired since the machine last ran. A Press And Hold has just been held for its whole Hold Time."),
 	Equal UMETA(DisplayName = "==", ToolTip = "Equal - for a Choice, Is: the option picked is that one."),
 	NotEqual UMETA(DisplayName = "!=", ToolTip = "Not equal - for a Choice, Is Not."),
@@ -189,6 +189,158 @@ enum class EWidgetAnimTracksWithMachines : uint8
 	UnderMachines UMETA(DisplayName = "Under State Machines", ToolTip = "They play under the machines: a machine's Override layer covers them on every channel it animates, and only Additive layers add on top of them.")
 };
 
+/** What a condition tests: an input, or which state another layer of the machine is in. */
+UENUM(BlueprintType)
+enum class EWidgetAnimMachineConditionSource : uint8
+{
+	Input UMETA(ToolTip = "One of the machine's inputs, or a built-in one (Hovered, Pressed...)."),
+
+	LayerState UMETA(DisplayName = "Another Layer's State", ToolTip = "Which state another layer of the machine is in: a badge layer waiting for the interaction layer to be in Pressed. A layer on its way to a state counts as in it - what 'Press went down' means to a UI - and every layer is read as it was before any of them moved this frame, so layer order doesn't matter.")
+};
+
+/** What a condition on another layer's state asks. */
+UENUM(BlueprintType)
+enum class EWidgetAnimMachineLayerStateTest : uint8
+{
+	IsIn UMETA(DisplayName = "Is In", ToolTip = "The layer is in the state, or on its way there."),
+	IsNotIn UMETA(DisplayName = "Is Not In", ToolTip = "The layer is neither in the state nor on its way there."),
+	Entered UMETA(ToolTip = "The frame the layer goes into the state - holds for that one frame, as a Trigger does."),
+	Exited UMETA(ToolTip = "The frame the layer leaves the state - holds for that one frame.")
+};
+
+/** Which of the machine's targets a layer may animate. */
+UENUM(BlueprintType)
+enum class EWidgetAnimMachineLayerMask : uint8
+{
+	All UMETA(ToolTip = "Every target: the layer poses whatever its states' animations move."),
+	OnlyThese UMETA(DisplayName = "Only These", ToolTip = "Only the targets listed: what the states animate on any other widget is left out, for the layers under it to keep."),
+	AllButThese UMETA(DisplayName = "All But These", ToolTip = "Every target but those listed: those are left to the layers under it.")
+};
+
+/** How a state picks what it plays: one animation, or several blended by an input. */
+UENUM(BlueprintType)
+enum class EWidgetAnimMachineBlendSpace : uint8
+{
+	None UMETA(DisplayName = "Single Animation", ToolTip = "Plays its Animation."),
+	OneD UMETA(DisplayName = "Blend 1D", ToolTip = "Blends its Blend Samples by a Float, Integer or Press And Hold input: each sample sits at a number, and the two either side of the input's value are mixed - lean left, centre, lean right by a stick's X; idle to charged by a charge."),
+	TwoD UMETA(DisplayName = "Blend 2D", ToolTip = "Blends its Blend Samples by a Vector 2D input: each sample sits at a point, and the three around the input's value are mixed - a card tilting toward the pointer, a stick's direction.")
+};
+
+/** What a state's or transition's action does. */
+UENUM(BlueprintType)
+enum class EWidgetAnimMachineActionKind : uint8
+{
+	SetInput UMETA(DisplayName = "Set Input", ToolTip = "Sets one of the machine's inputs - a Bool, Float, Integer, Choice or Vector 2D - to a value. Seen by the machine's next frame, so an action never loops within one."),
+	FireTrigger UMETA(DisplayName = "Fire Trigger", ToolTip = "Fires a Trigger (or presses or lets go of a Press And Hold, by Bool Value), seen next frame - on entering Charged, fire Ready."),
+	FireEvent UMETA(DisplayName = "Fire Event", ToolTip = "Sends a named event out to Blueprint: the Widget Animation Component's On State Event, with Event Name set, and the Custom Event On <Machine> <Event Name> on the User Widget around it, if it has one.")
+};
+
+/** One thing a state does as it is entered or left, or a transition as it is taken. Run after the frame's transitions are settled. */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimMachineAction
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action")
+	EWidgetAnimMachineActionKind Kind = EWidgetAnimMachineActionKind::SetInput;
+
+	/** The input set or fired. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action", meta = (GetOptions = "GetSettableInputOptions", EditCondition = "Kind != EWidgetAnimMachineActionKind::FireEvent", EditConditionHides))
+	FName Input;
+
+	/** A Bool's value - or, firing a Press And Hold, true to press it and false to let go. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action", meta = (DisplayName = "Bool Value", EditCondition = "Kind != EWidgetAnimMachineActionKind::FireEvent", EditConditionHides))
+	bool bBoolValue = true;
+
+	/** A Float's or Integer's value. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action", meta = (DisplayName = "Number Value", EditCondition = "Kind == EWidgetAnimMachineActionKind::SetInput", EditConditionHides))
+	float NumberValue = 0.f;
+
+	/** A Choice's option, by name. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action", meta = (EditCondition = "Kind == EWidgetAnimMachineActionKind::SetInput", EditConditionHides))
+	FName Option;
+
+	/** A Vector 2D's value. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action", meta = (DisplayName = "Vector Value", EditCondition = "Kind == EWidgetAnimMachineActionKind::SetInput", EditConditionHides))
+	FVector2D VectorValue = FVector2D::ZeroVector;
+
+	/** The event's name, as Blueprint receives it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action", meta = (EditCondition = "Kind == EWidgetAnimMachineActionKind::FireEvent", EditConditionHides))
+	FName EventName;
+};
+
+/** One of a state's Random Variations: an animation, and how likely each start of the state plays it. */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimMachineRandomVariation
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Variation")
+	TObjectPtr<UWidgetAnimPresetAsset> Animation = nullptr;
+
+	/**
+	 * How likely a start of the state plays this one, 0 - 1. The state's variations add up to 1 at most (kept so: over 1,
+	 * they are scaled down together); what is left over plays the state's own Animation - 0.3 alone: 30% this, 70% the
+	 * state's own; three at 0.25: 25% each, 25% the state's own.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Variation", meta = (ClampMin = "0", ClampMax = "1", UIMin = "0", UIMax = "1"))
+	float Chance = 0.25f;
+};
+
+/** One animation of a blend state, and where it sits on the blend input. */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimMachineBlendSample
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sample")
+	TObjectPtr<UWidgetAnimPresetAsset> Animation = nullptr;
+
+	/** Blend 1D: the input's value at which this sample plays alone. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sample")
+	float Position = 0.f;
+
+	/** Blend 2D: the point - the Vector 2D input's value - at which this sample plays alone. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sample", meta = (DisplayName = "Position 2D"))
+	FVector2D Position2D = FVector2D::ZeroVector;
+};
+
+/**
+ * A group of states collapsed into one box in the State Machine editor's graph - as a Blueprint collapses part of a graph into
+ * a node - to keep a big graph tidy. Double-click it to open it. Only how the graph shows the states: they stay the layer's,
+ * and play exactly as they would anywhere. Editor only.
+ */
+USTRUCT()
+struct NAMETBD_API FWidgetAnimMachineStateGroup
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FGuid Id;
+
+	UPROPERTY()
+	FName Name;
+
+	/** Where its box sits in the layer's graph while collapsed. */
+	UPROPERTY()
+	FVector2D Position = FVector2D::ZeroVector;
+
+	/**
+	 * Its box's size in the graph when its position was last kept, and the graph's zoom then - kept by the graph, with no
+	 * undo step of its own, so an undo or a redo brings a position back with the size it went with and the node lands where
+	 * it was (the graph keeps a node's middle in place as its size changes).
+	 */
+	UPROPERTY()
+	FVector2D EditorSize = FVector2D::ZeroVector;
+
+	UPROPERTY()
+	float EditorSizeZoom = 0.f;
+
+	/** Collapsed: its states are shown as its box. Expanded: as themselves, in the layer's graph. */
+	UPROPERTY()
+	bool bCollapsed = true;
+};
+
 /** One input of a machine: its name, what it holds, and - optionally - where it is read from with no code. */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FWidgetAnimMachineInput
@@ -201,6 +353,14 @@ struct NAMETBD_API FWidgetAnimMachineInput
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input")
 	EWidgetAnimMachineInputType Type = EWidgetAnimMachineInputType::Bool;
+
+	/**
+	 * The heading it is listed under in the State Machine editor's Inputs panel, as a Blueprint variable's Category groups it -
+	 * "Movement", "Combat". Empty: listed first, with no heading. Typed here, or picked from the input's right-click menu in the
+	 * panel (Move To Category). Only how the panel lists it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input")
+	FString Category;
 
 	/** What it is until something sets it. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Default", EditCondition = "Type == EWidgetAnimMachineInputType::Bool", EditConditionHides))
@@ -252,9 +412,27 @@ struct NAMETBD_API FWidgetAnimMachineCondition
 {
 	GENERATED_BODY()
 
+	/** What it tests: an input (the default), or which state another layer is in. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition", meta = (DisplayName = "Test"))
+	EWidgetAnimMachineConditionSource Source = EWidgetAnimMachineConditionSource::Input;
+
 	/** The input tested: one of the machine's, or a built-in one (Hovered, Pressed, Focused, Selected, Disabled, Closing, Clicked). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition", meta = (GetOptions = "GetInputNameOptions"))
 	FName Input;
+
+	/** Another Layer's State: the layer, by name - any of the machine's but the transition's own. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition", meta = (GetOptions = "GetConditionLayerOptions"))
+	FName Layer;
+
+	/** Another Layer's State: what is asked of it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition", meta = (DisplayName = "Layer Test"))
+	EWidgetAnimMachineLayerStateTest LayerTest = EWidgetAnimMachineLayerStateTest::IsIn;
+
+	/** Another Layer's State: the state, by name. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Condition", meta = (GetOptions = "GetConditionStateOptions"))
+	FName State;
+
+	bool TestsLayerState() const { return Source == EWidgetAnimMachineConditionSource::LayerState; }
 
 	/**
 	 * What is asked of it - only what fits its type is offered in the editor: Is True / Is False for a Bool, Fired for a
@@ -383,6 +561,21 @@ struct NAMETBD_API FWidgetAnimMachineTransition
 	bool bInterruptible = true;
 
 	/**
+	 * Random: when this one could be taken, one of the Random transitions leaving the same node whose conditions hold is taken
+	 * instead, picked at random by their Random Weights - an idle with three fidgets. Off: taken in priority order, as ever.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Timing", meta = (DisplayName = "Random"))
+	bool bRandom = false;
+
+	/** How often a Random transition is picked against the others: 2 is twice as often as 1. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Timing", meta = (DisplayName = "Random Weight", ClampMin = "0", UIMax = "10", EditCondition = "bRandom", EditConditionHides))
+	float RandomWeight = 1.f;
+
+	/** What it does as it is taken: set an input, fire a trigger, send an event. See FWidgetAnimMachineAction. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Actions", meta = (DisplayName = "On Taken"))
+	TArray<FWidgetAnimMachineAction> OnTaken;
+
+	/**
 	 * How long the whole transition takes, from leaving one state to being in the next: 0 for a Cut, Duration for a Tween,
 	 * the spring's Visual Duration (it may run on a little as it settles), and for a transition animation its length plus the
 	 * blend out of it. What the editor labels the transition with.
@@ -417,6 +610,14 @@ struct NAMETBD_API FWidgetAnimMachineTransition
 	 */
 	UPROPERTY()
 	TArray<FVector2D> EditorReroutePoints;
+
+	/**
+	 * Its wire drawn dead straight from state to state - corner to corner between states that lie on a slant - rather than
+	 * curving out of and into them. Set by Straighten Connections (Q) on a wire between states on a slant, and from the wire's
+	 * menu. Only how the graph looks: nothing at runtime.
+	 */
+	UPROPERTY()
+	bool bEditorStraight = false;
 #endif
 };
 
@@ -456,6 +657,26 @@ struct NAMETBD_API FWidgetAnimMachineComment
 	bool bColorBubble = false;
 };
 
+/**
+ * One parameter of a state's animation (see WidgetAnimParameters.h), set from one of the machine's inputs each time the state
+ * starts: "Distance <- DragOffset". A Number, Integer or Press And Hold (its progress) gives a number; a Bool or a built-in
+ * input true or false; a Choice its option, by name, to a Choice parameter (its option's number to any other); a Vector 2D
+ * both its parts.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetAnimMachineParameterBinding
+{
+	GENERATED_BODY()
+
+	/** The parameter of the state's animation. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parameter", meta = (GetOptions = "GetStateParameterOptions"))
+	FName Parameter;
+
+	/** The input it takes its value from. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parameter", meta = (GetOptions = "GetInputNameOptions"))
+	FName Input;
+};
+
 /** One node of a layer: a state, or one of the special nodes. */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FWidgetAnimMachineState
@@ -468,36 +689,99 @@ struct NAMETBD_API FWidgetAnimMachineState
 	FGuid Id;
 
 	/** What it is called: in the graph, in conditions' events (On Button Entered Hovered), and to Is In State. Unique in its layer. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State", meta = (EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Properties", meta = (EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
 	FName Name;
 
 	UPROPERTY()
 	EWidgetAnimMachineNodeKind Kind = EWidgetAnimMachineNodeKind::State;
 
+	/** Single Animation, or a Blend 1D / 2D of several by an input. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Properties", meta = (DisplayName = "Plays", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	EWidgetAnimMachineBlendSpace BlendSpace = EWidgetAnimMachineBlendSpace::None;
+
 	/** The animation the state plays: a Widget Animation, aimed through its Layer Groups at the machine's targets. None: the state poses nothing. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State", meta = (EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && BlendSpace == EWidgetAnimMachineBlendSpace::None", EditConditionHides))
 	TObjectPtr<UWidgetAnimPresetAsset> Animation = nullptr;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State", meta = (EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	/**
+	 * More animations to pick from, each with its Chance: each time the state starts it plays one of these by its chance, or
+	 * else Animation - idle variety. The chances add up to 1 at most; what is left over is Animation's.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Random Variations", TitleProperty = "Animation", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && BlendSpace == EWidgetAnimMachineBlendSpace::None", EditConditionHides))
+	TArray<FWidgetAnimMachineRandomVariation> RandomVariations;
+
+	/** The Random Variations of StateMachine v1, with no chance each: moved into RandomVariations as the asset loads (Normalize). */
+	UPROPERTY()
+	TArray<TObjectPtr<UWidgetAnimPresetAsset>> RandomAnimations;
+
+	/** The Random Variation a start of the state plays for a roll of 0 - 1, or Animation when the roll falls past them all. */
+	UWidgetAnimPresetAsset* PickRandomAnimation(float Roll) const;
+
+	/** Blend 1D: a Float, Integer or Press And Hold input. Blend 2D: a Vector 2D input. Where between the samples the state is. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Blend Input", GetOptions = "GetBlendInputOptions", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && BlendSpace != EWidgetAnimMachineBlendSpace::None", EditConditionHides))
+	FName BlendInput;
+
+	/** The animations blended, each at its place on the Blend Input. Played together, at the state's speed and playback, and mixed by where the input is. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Blend Samples", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && BlendSpace != EWidgetAnimMachineBlendSpace::None", EditConditionHides))
+	TArray<FWidgetAnimMachineBlendSample> BlendSamples;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Properties", meta = (EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
 	EWidgetAnimMachineStatePlayback Playback = EWidgetAnimMachineStatePlayback::Once;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State", meta = (ClampMin = "0.01", UIMin = "0.1", UIMax = "4", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Properties", meta = (ClampMin = "0.01", UIMin = "0.1", UIMax = "4", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
 	float PlaybackSpeed = 1.f;
+
+	/** A Float input the state's speed follows, as it plays - multiplying Playback Speed (held at 0 or more). None: Playback Speed alone. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Speed Input", GetOptions = "GetNumberInputOptions", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	FName SpeedInput;
 
 	/**
 	 * For a percentage animation (Time In Percent): the Number input its progress follows, 0 for 0% and 1 for 100% - a charge
 	 * meter - or a Press And Hold, filling as it is held: a hold ring. None: it plays from 0% to 100% over one second.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State", meta = (DisplayName = "Progress Input", GetOptions = "GetNumberInputOptions", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Progress Input", GetOptions = "GetNumberInputOptions", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
 	FName ProgressInput;
+
+	/**
+	 * Parameters of the animation set from the machine's inputs, each time the state starts - a slide as far as the drag went,
+	 * a flash in the color a Choice picks. Read as the state starts: a change while it plays shows the next time it starts. A
+	 * value set on the widget with Set Widget Animation Parameter wins over these. See FWidgetAnimMachineParameterBinding.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Parameters From Inputs", TitleProperty = "Parameter", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	TArray<FWidgetAnimMachineParameterBinding> ParameterInputs;
+
+	/** What it does as it is entered: set an input, fire a trigger, send an event - run once the frame's transitions are settled. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Actions", meta = (DisplayName = "On Enter", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	TArray<FWidgetAnimMachineAction> OnEnter;
+
+	/** What it does as it is left. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Actions", meta = (DisplayName = "On Exit", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	TArray<FWidgetAnimMachineAction> OnExit;
+
+	/** Whether it blends several animations - see BlendSpace. */
+	bool IsBlendState() const { return Kind == EWidgetAnimMachineNodeKind::State && BlendSpace != EWidgetAnimMachineBlendSpace::None; }
+
+	/** Whether it has any action to run. */
+	bool HasActions() const { return OnEnter.Num() > 0 || OnExit.Num() > 0; }
 
 #if WITH_EDITORONLY_DATA
 	/** Where the node sits in its layer's graph. */
 	UPROPERTY()
 	FVector2D EditorPosition = FVector2D::ZeroVector;
 
+	/**
+	 * The node's size in the graph when its position was last kept, and the graph's zoom then - kept by the graph, with no
+	 * undo step of its own, so an undo or a redo brings a position back with the size it went with and the node lands where
+	 * it was (the graph keeps a node's middle in place as its size changes).
+	 */
+	UPROPERTY()
+	FVector2D EditorSize = FVector2D::ZeroVector;
+
+	UPROPERTY()
+	float EditorSizeZoom = 0.f;
+
 	/** A note, shown in a bubble over the node - as a Blueprint node's comment is. */
-	UPROPERTY(EditAnywhere, Category = "State", meta = (MultiLine = true, EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	UPROPERTY(EditAnywhere, Category = "State Properties", meta = (MultiLine = true, EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
 	FString Comment;
 
 	/** Whether the comment's bubble is shown. */
@@ -505,15 +789,19 @@ struct NAMETBD_API FWidgetAnimMachineState
 	bool bCommentBubbleVisible = true;
 
 	/** Whether the node wears Node Color instead of its own (dark gray for a state, green Entry, red Exit, blue Any State). */
-	UPROPERTY(EditAnywhere, Category = "State", meta = (InlineEditConditionToggle))
+	UPROPERTY(EditAnywhere, Category = "State Properties", meta = (InlineEditConditionToggle))
 	bool bOverrideNodeColor = false;
 
 	/**
 	 * The node's color in the graph - to group states by what they are for. Only how the graph looks: nothing at runtime. While
 	 * the watched widget is in the state it is lit brighter in this color, and its animation's progress fills it in it.
 	 */
-	UPROPERTY(EditAnywhere, Category = "State", meta = (EditCondition = "bOverrideNodeColor", DisplayName = "Node Color", HideAlphaChannel))
+	UPROPERTY(EditAnywhere, Category = "State Properties", meta = (EditCondition = "bOverrideNodeColor", DisplayName = "Node Color", HideAlphaChannel))
 	FLinearColor NodeColor = FLinearColor(0.10f, 0.22f, 0.40f);
+
+	/** The collapsed group it is shown in, in the graph - see FWidgetAnimMachineStateGroup. Invalid: none. */
+	UPROPERTY()
+	FGuid EditorGroup;
 #endif
 
 	bool IsSpecial() const { return Kind != EWidgetAnimMachineNodeKind::State; }
@@ -541,6 +829,18 @@ struct NAMETBD_API FWidgetAnimMachineLayer
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Weight Input", GetOptions = "GetNumberInputOptions"))
 	FName WeightInput;
 
+	/**
+	 * Which of the machine's targets the layer may animate: All (the default), Only These, or All But These. What its states
+	 * animate on a target left out is dropped before the layer is blended, so the layers under it keep it - two Override layers
+	 * on one widget no longer have to be ordered just so.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Affects"))
+	EWidgetAnimMachineLayerMask MaskMode = EWidgetAnimMachineLayerMask::All;
+
+	/** The targets Affects names - the Layer Group names of the machine's animations; (Widget) for the widget it plays on. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Targets", GetOptions = "GetMaskTargetOptions", EditCondition = "MaskMode != EWidgetAnimMachineLayerMask::All", EditConditionHides))
+	TArray<FName> MaskTargets;
+
 	/** Its nodes: Entry, Any State and Exit, and its states. Edited in the graph. */
 	UPROPERTY()
 	TArray<FWidgetAnimMachineState> States;
@@ -553,6 +853,10 @@ struct NAMETBD_API FWidgetAnimMachineLayer
 	/** The comment boxes on its graph. */
 	UPROPERTY()
 	TArray<FWidgetAnimMachineComment> Comments;
+
+	/** Its collapsed groups of states, in the graph. See FWidgetAnimMachineStateGroup. */
+	UPROPERTY()
+	TArray<FWidgetAnimMachineStateGroup> EditorGroups;
 #endif
 
 	int32 FindStateIndex(const FGuid& Id) const;
@@ -658,12 +962,54 @@ public:
 	UFUNCTION()
 	TArray<FString> GetInputNameOptions() const;
 
+	/** Backs a state's Parameters From Inputs dropdown: the parameters of every state's animation. */
+	UFUNCTION()
+	TArray<FString> GetStateParameterOptions() const;
+
+	/** Backs a condition's Layer dropdown: every layer. (The State Machine editor leaves out the transition's own.) */
+	UFUNCTION()
+	TArray<FString> GetConditionLayerOptions() const;
+
+	/** Backs a condition's State dropdown: every state of every layer. (The State Machine editor lists the picked layer's.) */
+	UFUNCTION()
+	TArray<FString> GetConditionStateOptions() const;
+
+	/** Backs a layer's Targets dropdown: (Widget), then every target. */
+	UFUNCTION()
+	TArray<FString> GetMaskTargetOptions() const;
+
+	/** The categories the machine's inputs are in, sorted - for the Inputs panel's Move To Category. */
+	TArray<FString> GetInputCategoryOptions() const;
+
+	/** Backs a blend state's Blend Input: every Float, Integer, Press And Hold and Vector 2D input. */
+	UFUNCTION()
+	TArray<FString> GetBlendInputOptions() const;
+
+	/** Backs an action's Input: every input but the built-in ones. */
+	UFUNCTION()
+	TArray<FString> GetSettableInputOptions() const;
+
+	/** What a layer's Targets name the widget the machine plays on: "(Widget)". */
+	static const FName MaskHostTarget;
+
+	/**
+	 * After a layer or state is renamed: every condition naming it by its old name follows it. Layer None renames a layer;
+	 * otherwise a state of that layer.
+	 */
+	void RenameLayerStateReferences(FName LayerName, FName OldName, FName NewName);
+
 	virtual void PostLoad() override;
 	virtual void PostInitProperties() override;
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostEditUndo() override;
+
+	/**
+	 * Warns of what names something the machine doesn't have: a condition on a layer or state that is gone, a state's
+	 * Parameters From Inputs naming a parameter none of its animations has. Each is simply false / ignored when it plays.
+	 */
+	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
 
 	/** Anything about a machine changed - an edit, an undo. The editor and the components playing it in the designer listen. */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMachineChanged, UWidgetAnimStateMachineAsset* /*Machine*/);
@@ -780,6 +1126,10 @@ struct NAMETBD_API FWidgetAnimStateEventInfo
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	bool bEntered = true;
 
+	/** A Fire Event action's Event Name - None for a state entered or exited. State is then the state the action is on (None for a transition's). */
+	UPROPERTY(BlueprintReadOnly, Category = "Animation")
+	FName EventName;
+
 	/** The widget the machine plays on. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	TObjectPtr<UWidget> Host = nullptr;
@@ -793,6 +1143,9 @@ namespace WidgetAnimMachineEvents
 	 * Component's Details. None for a state with no name.
 	 */
 	NAMETBD_API FName GetStateEventFunctionName(const UWidgetAnimStateMachineAsset* Machine, FName State, bool bEntered);
+
+	/** The Custom Event a Fire Event action calls - "On Button Charged Ready" for Charged Ready in WASM_Button. None for no name. */
+	NAMETBD_API FName GetActionEventFunctionName(const UWidgetAnimStateMachineAsset* Machine, FName EventName);
 }
 
 // =====================================================================================================

@@ -37,6 +37,12 @@ namespace WidgetAnimMachineJump
 
 		/** Hovered, Pressed, Focused, Selected, Disabled, Closing. */
 		TMap<FName, bool> BuiltIns;
+
+		/**
+		 * Press And Hold inputs pressed for a frame before the step lets them go: Is Let Go is the frame one is let go, so a
+		 * hold that wasn't held has to be pressed first.
+		 */
+		TSet<FName> Tap;
 	};
 
 	struct FStep
@@ -51,7 +57,8 @@ namespace WidgetAnimMachineJump
 	};
 
 	/**
-	 * The steps that take Layer of Machine from From - the state it is in; invalid before it has started - to Target. Current
+	 * The steps that take Layer of Machine from From - the state it is in; invalid before it has started - to Target, a state or
+	 * the layer's Exit (Entry is not jumped to this way: see SWidgetAnimStateMachineEditor::JumpToState). Current
 	 * holds the inputs as they are now (for Increased and Decreased; later steps compare with the step before). False when
 	 * Target can't be reached, with OutProblem saying why; OutSteps then still holds a step setting the conditions of a
 	 * transition into Target, when it has one. True with OutProblem set when a step's transition couldn't be kept holding

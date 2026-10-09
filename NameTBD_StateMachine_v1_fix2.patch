@@ -1,0 +1,448 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h
+index f81d6f9..023d800 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h
+@@ -33,7 +33,4 @@ private:
+ 
+ 	// Draws the motion paths of the Widget Animations panel's animation on the UMG designer's canvas.
+ 	TSharedPtr<FWidgetAnimMotionPathFactory> MotionPathFactory;
+-
+-	// The Selection panel's bind chips (Animation Parameters), on the Property Editor's row extensions.
+-	FDelegateHandle ParameterRowExtensionHandle;
+ };
+\ No newline at end of file
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimParameterValueCustomization.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimParameterValueCustomization.cpp
+index 151c69f..d63ec33 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimParameterValueCustomization.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimParameterValueCustomization.cpp
+@@ -150,7 +150,7 @@ void FWidgetAnimParameterValueCustomization::CustomizeHeader(TSharedRef<IPropert
+ 	}
+ 	else if (ValueHandle.IsValid())
+ 	{
+-		ValueWidget = ValueHandle->CreatePropertyValueWidget();
++		ValueWidget = WidgetAnimTypePill::MakeValueEditor(ValueHandle.ToSharedRef());
+ 	}
+ 
+ 	const FText ToolTip = Declared->Description.IsEmpty()
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTypePill.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTypePill.h
+index 3d81083..b796a78 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTypePill.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTypePill.h
+@@ -5,6 +5,8 @@
+ #include "CoreMinimal.h"
+ #include "Widgets/SWidget.h"
+ 
++class IPropertyHandle;
++
+ /**
+  * A value's type shown the way a Blueprint's My Blueprint panel shows a variable's: a small pill in the type's pin color, then
+  * the type's name ("● Float"). Shared by the State Machine editor's Inputs panel and the Widget Animations panel's
+@@ -37,6 +39,13 @@ namespace WidgetAnimTypePill
+ 	/** The pill and the type's name, as one widget. */
+ 	TSharedRef<SWidget> MakePill(EKind Kind);
+ 
++	/**
++	 * An editor for a value of one of these types, by its handle: a number, a bool's box, an enum's dropdown as the property
++	 * editor makes them; a Vector 2D as its X and Y side by side, and a Color as a swatch that opens the color picker - which a
++	 * bare value widget (IPropertyHandle::CreatePropertyValueWidget) leaves empty for a struct.
++	 */
++	TSharedRef<SWidget> MakeValueEditor(const TSharedRef<IPropertyHandle>& Handle);
++
+ 	/** How wide the type column is in a list of rows made with MakePill, so the names and types line up row under row. */
+ 	constexpr float TypeColumnWidth = 92.f;
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTypePill.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTypePill.cpp
+index 54d1cd3..d6a023c 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTypePill.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTypePill.cpp
+@@ -3,7 +3,10 @@
+ #include "WidgetAnimTypePill.h"
+ 
+ #include "EdGraphSchema_K2.h"
++#include "PropertyHandle.h"
+ #include "Styling/AppStyle.h"
++#include "Widgets/Colors/SColorBlock.h"
++#include "Widgets/Colors/SColorPicker.h"
+ #include "Widgets/Images/SImage.h"
+ #include "Widgets/Layout/SBox.h"
+ #include "Widgets/SBoxPanel.h"
+@@ -94,6 +97,84 @@ namespace WidgetAnimTypePill
+ 				.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+ 			];
+ 	}
++
++	TSharedRef<SWidget> MakeValueEditor(const TSharedRef<IPropertyHandle>& Handle)
++	{
++		const FStructProperty* StructProperty = CastField<FStructProperty>(Handle->GetProperty());
++		const UScriptStruct* Struct = StructProperty ? StructProperty->Struct : nullptr;
++
++		// A Vector 2D: X and Y, each the property editor's own number box.
++		if (Struct == TBaseStructure<FVector2D>::Get())
++		{
++			const TSharedPtr<IPropertyHandle> XHandle = Handle->GetChildHandle(TEXT("X"));
++			const TSharedPtr<IPropertyHandle> YHandle = Handle->GetChildHandle(TEXT("Y"));
++			if (XHandle.IsValid() && YHandle.IsValid())
++			{
++				return SNew(SHorizontalBox)
++					+ SHorizontalBox::Slot()
++					.FillWidth(1.f)
++					.Padding(FMargin(0.f, 0.f, 2.f, 0.f))
++					[
++						XHandle->CreatePropertyValueWidget()
++					]
++					+ SHorizontalBox::Slot()
++					.FillWidth(1.f)
++					.Padding(FMargin(2.f, 0.f, 0.f, 0.f))
++					[
++						YHandle->CreatePropertyValueWidget()
++					];
++			}
++		}
++
++		// A Color: a swatch; click it for the color picker.
++		if (Struct == TBaseStructure<FLinearColor>::Get())
++		{
++			const TWeakPtr<IPropertyHandle> WeakHandle = Handle;
++			auto ReadColor = [WeakHandle]()
++			{
++				FLinearColor Color = FLinearColor::White;
++				if (const TSharedPtr<IPropertyHandle> Pinned = WeakHandle.Pin())
++				{
++					FString Text;
++					if (Pinned->GetValueAsFormattedString(Text) == FPropertyAccess::Success)
++					{
++						Color.InitFromString(Text);
++					}
++				}
++				return Color;
++			};
++			return SNew(SBox)
++				.HeightOverride(18.f)
++				.VAlign(VAlign_Center)
++				[
++					SNew(SColorBlock)
++					.Color_Lambda(ReadColor)
++					.ShowBackgroundForAlpha(true)
++					.OnMouseButtonDown_Lambda([WeakHandle, ReadColor](const FGeometry&, const FPointerEvent& MouseEvent)
++					{
++						if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
++						{
++							return FReply::Unhandled();
++						}
++						FColorPickerArgs Args;
++						Args.bUseAlpha = true;
++						Args.bIsModal = false;
++						Args.InitialColor = ReadColor();
++						Args.OnColorCommitted = FOnLinearColorValueChanged::CreateLambda([WeakHandle](FLinearColor Picked)
++						{
++							if (const TSharedPtr<IPropertyHandle> Pinned = WeakHandle.Pin())
++							{
++								Pinned->SetValueFromFormattedString(FString::Printf(TEXT("(R=%f,G=%f,B=%f,A=%f)"), Picked.R, Picked.G, Picked.B, Picked.A));
++							}
++						});
++						OpenColorPicker(Args);
++						return FReply::Handled();
++					})
++				];
++		}
++
++		return Handle->CreatePropertyValueWidget();
++	}
+ }
+ 
+ #undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index d71d488..3194522 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -4496,6 +4496,54 @@ public:
+ 
+ private:
+ 
++	/**
++	 * Animation Parameters: the bind chip at the end of a track field's row, after its value - when the field can take a
++	 * parameter (see SWidgetAnimTimeline::MakeParameterBindChip). The row keeps its own name and value widgets, and its
++	 * children.
++	 */
++	static void AddBindChip(IDetailPropertyRow& Row, const TSharedRef<IPropertyHandle>& Handle)
++	{
++		const TSharedPtr<SWidget> Chip = SWidgetAnimTimeline::MakeParameterBindChip(Handle);
++		if (!Chip.IsValid())
++		{
++			return;
++		}
++		TSharedPtr<SWidget> NameWidget;
++		TSharedPtr<SWidget> ValueWidget;
++		FDetailWidgetRow DefaultRow;
++		Row.GetDefaultWidgets(NameWidget, ValueWidget, DefaultRow);
++		if (!NameWidget.IsValid() || !ValueWidget.IsValid())
++		{
++			return;
++		}
++		Row.CustomWidget(/*bShowChildren=*/true)
++			.NameContent()
++			.MinDesiredWidth(DefaultRow.NameWidget.MinWidth)
++			.MaxDesiredWidth(DefaultRow.NameWidget.MaxWidth)
++			[
++				NameWidget.ToSharedRef()
++			]
++			.ValueContent()
++			.MinDesiredWidth(DefaultRow.ValueWidget.MinWidth)
++			.MaxDesiredWidth(TOptional<float>())
++			[
++				SNew(SHorizontalBox)
++				+ SHorizontalBox::Slot()
++				.FillWidth(1.f)
++				.VAlign(VAlign_Center)
++				[
++					ValueWidget.ToSharedRef()
++				]
++				+ SHorizontalBox::Slot()
++				.AutoWidth()
++				.VAlign(VAlign_Center)
++				.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
++				[
++					Chip.ToSharedRef()
++				]
++			];
++	}
++
+ 	static void AddChildren(IDetailCategoryBuilder& Category, const TSharedRef<IPropertyHandle>& Parent, TFunctionRef<bool(FName)> Filter, bool bAutoExpand)
+ 	{
+ 		uint32 NumChildren = 0;
+@@ -4510,7 +4558,9 @@ private:
+ 				continue;
+ 			}
+ 
+-			Category.AddProperty(Child).ShouldAutoExpand(bAutoExpand);
++			IDetailPropertyRow& ChildRow = Category.AddProperty(Child);
++			ChildRow.ShouldAutoExpand(bAutoExpand);
++			AddBindChip(ChildRow, Child.ToSharedRef());
+ 		}
+ 	}
+ 
+@@ -5223,7 +5273,8 @@ private:
+ 
+ 			// Everything else hides itself by type through its own EditCondition, wherever it is added - and a Type, Timing
+ 			// or Value Type the type can't use is left out of its dropdown.
+-			Target.AddProperty(Child);
++			IDetailPropertyRow& FieldRow = Target.AddProperty(Child);
++			AddBindChip(FieldRow, Child.ToSharedRef());
+ 			if (CurrentLayer)
+ 			{
+ 				WidgetAnimTimeline::RestrictLayerChoices(Child, { CurrentLayer });
+@@ -6206,15 +6257,23 @@ private:
+ 			return;
+ 		}
+ 
+-		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Parameters", LOCTEXT("ParametersCategory", "Parameters"));
++		const FText CategoryTitle = LOCTEXT("ParametersCategory", "Animation Parameters");
++		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Parameters", CategoryTitle);
+ 		const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Owner;
+ 
+-		// + : one of each type, as the State Machine editor adds inputs.
++		// Its title - the header is replaced whole, so it says it itself - then + : one of each type, as the State Machine
++		// editor adds inputs.
+ 		Category.HeaderContent(
+ 			SNew(SHorizontalBox)
+ 			.ToolTipText(WidgetAnimTips::ParametersSectionTooltip())
+ 			+ SHorizontalBox::Slot()
+ 			.FillWidth(1.f)
++			.VAlign(VAlign_Center)
++			[
++				SNew(STextBlock)
++				.Text(CategoryTitle)
++				.Font(FAppStyle::GetFontStyle(TEXT("DetailsView.CategoryFontStyle")))
++			]
+ 			+ SHorizontalBox::Slot()
+ 			.AutoWidth()
+ 			.HAlign(HAlign_Right)
+@@ -6320,7 +6379,7 @@ private:
+ 				const TSharedPtr<IPropertyHandle> DefaultHandle = Element->GetChildHandle(DefaultName);
+ 				if (DefaultHandle.IsValid())
+ 				{
+-					DefaultWidget = DefaultHandle->CreatePropertyValueWidget();
++					DefaultWidget = WidgetAnimTypePill::MakeValueEditor(DefaultHandle.ToSharedRef());
+ 				}
+ 			}
+ 
+@@ -22767,14 +22826,13 @@ void SWidgetAnimTimeline::SetLayerPlaysWhen(int32 LayerIndex, const FWidgetAnimP
+ 	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+ }
+ 
+-void SWidgetAnimTimeline::GenerateParameterRowExtension(const FOnGenerateGlobalRowExtensionArgs& Args, TArray<FPropertyRowExtensionButton>& OutExtensions)
++TSharedPtr<SWidget> SWidgetAnimTimeline::MakeParameterBindChip(const TSharedRef<IPropertyHandle>& Handle)
+ {
+ 	using namespace WidgetAnimParameterEditing;
+ 
+-	const TSharedPtr<IPropertyHandle> Handle = Args.PropertyHandle;
+-	if (!Handle.IsValid() || !Handle->IsValidHandle())
++	if (!Handle->IsValidHandle())
+ 	{
+-		return;
++		return nullptr;
+ 	}
+ 
+ 	// Only rows of a Widget Animations panel's Selection panel: its shadow (one track) or its proxies (several).
+@@ -22803,51 +22861,79 @@ void SWidgetAnimTimeline::GenerateParameterRowExtension(const FOnGenerateGlobalR
+ 		}
+ 		else
+ 		{
+-			return;
++			return nullptr;
+ 		}
+ 	}
+-	TArray<FWidgetAnimParameter>* Declared = Owner ? Owner->GetParameters() : nullptr;
++	const TArray<FWidgetAnimParameter>* Declared = Owner ? Owner->GetParameters() : nullptr;
+ 	const TArray<FWidgetAnimLayer>* Layers = Owner ? Owner->GetLayers() : nullptr;
+ 	if (!Declared || !Layers || LayerIndices.Num() == 0 || LayerIndices.ContainsByPredicate([Layers](int32 Index) { return !Layers->IsValidIndex(Index); }))
+ 	{
+-		return;
++		return nullptr;
+ 	}
+ 
+ 	// A field of the track that can take a parameter - checked against the real track, so a row whose handle doesn't lead
+ 	// back to it (a registered type's fields, laid out apart) gets no chip rather than a wrong binding.
+ 	FString FieldPath;
+ 	const FProperty* Field = Handle->GetProperty();
+-	if (!MakeLayerFieldPath(Handle.ToSharedRef(), FieldPath) || IsUnbindableField(FieldPath) || !IsBindable(Field))
++	if (!MakeLayerFieldPath(Handle, FieldPath) || IsUnbindableField(FieldPath) || !IsBindable(Field))
+ 	{
+-		return;
++		return nullptr;
+ 	}
+-	const FWidgetAnimLayer& First = (*Layers)[LayerIndices[0]];
+-	if (WidgetAnimParameters::FindField(FWidgetAnimLayer::StaticStruct(), FieldPath, &First) != Field)
++	if (WidgetAnimParameters::FindField(FWidgetAnimLayer::StaticStruct(), FieldPath, &(*Layers)[LayerIndices[0]]) != Field)
+ 	{
+-		return;
++		return nullptr;
+ 	}
+ 
+-	const FWidgetAnimParameterBinding* Binding = First.FindParameterBinding(FieldPath);
+-	const FWidgetAnimParameter* BoundTo = Binding ? Declared->FindByPredicate([Binding](const FWidgetAnimParameter& Parameter) { return Parameter.Name == Binding->Parameter; }) : nullptr;
+-
+-	FPropertyRowExtensionButton& Button = OutExtensions.AddDefaulted_GetRef();
+-	Button.Icon = FSlateIcon(FNameTBDStyle::GetStyleSetName(), Binding ? FNameTBDStyle::ParameterBoundIcon : FNameTBDStyle::ParameterBindIcon);
+-	Button.Label = Binding ? FText::FromName(Binding->Parameter) : LOCTEXT("BindFieldLabel", "Bind to Parameter");
+-	Button.ToolTip = BoundTo
+-		? FText::Format(WidgetAnimTips::BoundFieldTooltip(), FText::FromName(BoundTo->Name), GetTypeText(BoundTo->Type), FText::FromString(FWidgetAnimParameterValue::FromDefault(*BoundTo).ToDisplayString()))
+-		: (Binding
+-			? FText::Format(LOCTEXT("BoundToMissing", "Bound to {0}, which the animation no longer has: this field plays its own value. Click to bind it to another or let go."), FText::FromName(Binding->Parameter))
+-			: WidgetAnimTips::BindFieldTooltip());
+-
++	// Read live, so binding or letting go shows at once: an empty pill to bind, a filled one while bound.
+ 	const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Owner;
+-	Button.UIAction = FUIAction(FExecuteAction::CreateLambda([WeakOwner, LayerIndices, FieldPath, Field]()
++	const int32 FirstLayer = LayerIndices[0];
++	auto FindBinding = [WeakOwner, FirstLayer, FieldPath]() -> TOptional<FWidgetAnimParameterBinding>
+ 	{
+ 		const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+-		if (Pinned)
++		const TArray<FWidgetAnimLayer>* Live = Pinned ? Pinned->GetLayers() : nullptr;
++		const FWidgetAnimParameterBinding* Found = Live && Live->IsValidIndex(FirstLayer) ? (*Live)[FirstLayer].FindParameterBinding(FieldPath) : nullptr;
++		return Found ? TOptional<FWidgetAnimParameterBinding>(*Found) : TOptional<FWidgetAnimParameterBinding>();
++	};
++
++	return SNew(SButton)
++		.ButtonStyle(FAppStyle::Get(), "SimpleButton")
++		.ContentPadding(FMargin(2.f, 0.f))
++		.VAlign(VAlign_Center)
++		.ToolTipText_Lambda([WeakOwner, FindBinding]()
+ 		{
+-			Pinned->OpenBindMenu(LayerIndices, FieldPath, Field);
+-		}
+-	}));
++			const TOptional<FWidgetAnimParameterBinding> Binding = FindBinding();
++			if (!Binding.IsSet())
++			{
++				return WidgetAnimTips::BindFieldTooltip();
++			}
++			const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
++			const TArray<FWidgetAnimParameter>* Live = Pinned ? Pinned->GetParameters() : nullptr;
++			const FWidgetAnimParameter* BoundTo = Live ? Live->FindByPredicate([&Binding](const FWidgetAnimParameter& Parameter) { return Parameter.Name == Binding->Parameter; }) : nullptr;
++			return BoundTo
++				? FText::Format(WidgetAnimTips::BoundFieldTooltip(), FText::FromName(BoundTo->Name), GetTypeText(BoundTo->Type), FText::FromString(FWidgetAnimParameterValue::FromDefault(*BoundTo).ToDisplayString()))
++				: FText::Format(LOCTEXT("BoundToMissing", "Bound to {0}, which the animation no longer has: this field plays its own value. Click to bind it to another or let go."), FText::FromName(Binding->Parameter));
++		})
++		.OnClicked_Lambda([WeakOwner, LayerIndices, FieldPath, Field]()
++		{
++			if (const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin())
++			{
++				Pinned->OpenBindMenu(LayerIndices, FieldPath, Field);
++			}
++			return FReply::Handled();
++		})
++		[
++			SNew(SImage)
++			.DesiredSizeOverride(FVector2D(16.0, 16.0))
++			.Image_Lambda([FindBinding]()
++			{
++				const FSlateBrush* Brush = FNameTBDStyle::FindIcon(FindBinding().IsSet() ? FNameTBDStyle::ParameterBoundIcon : FNameTBDStyle::ParameterBindIcon);
++				return Brush ? Brush : FAppStyle::GetBrush(TEXT("Icons.Link"));
++			})
++			.ColorAndOpacity_Lambda([FindBinding]()
++			{
++				return FindBinding().IsSet() ? FSlateColor(WidgetAnimTypePill::GetColor(WidgetAnimTypePill::EKind::Float)) : FSlateColor::UseSubduedForeground();
++			})
++		];
+ }
+ 
+ void SWidgetAnimTimeline::OpenBindMenu(const TArray<int32>& LayerIndices, const FString& FieldPath, const FProperty* Field)
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+index c52a665..35253a1 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+@@ -15,6 +15,7 @@
+ #include "WidgetAnimLayerEditProxy.h"
+ 
+ class IDetailsView;
++class IPropertyHandle;
+ class IWidgetAnimPanelSource;
+ class SScrollBar;
+ class SWindow;
+@@ -1041,10 +1042,11 @@ public:
+ 	void SetLayerPlaysWhen(int32 LayerIndex, const FWidgetAnimParameterCondition& Condition);
+ 
+ 	/**
+-	 * Adds the bind chip to a Selection panel row of a track's field - registered with the Property Editor for every details
+-	 * view, so it answers only rows of this panel's Selection panel (its shadow and proxies). See NameTBDEditor.cpp.
++	 * The bind chip for a Selection panel row of a track's field - an empty pill to bind, a filled one while bound - or null
++	 * for a row that isn't one (anything not on this panel's shadow or proxies, or a field no parameter can take). Put at the
++	 * end of the row's value by the Selection panel's layout (FWidgetAnimSelectionDetails::AddBindChip).
+ 	 */
+-	static void GenerateParameterRowExtension(const FOnGenerateGlobalRowExtensionArgs& Args, TArray<FPropertyRowExtensionButton>& OutExtensions);
++	static TSharedPtr<SWidget> MakeParameterBindChip(const TSharedRef<IPropertyHandle>& Handle);
+ 
+ 	/** The bind chip's menu for a field: the parameters it can take, a new one made from it, mirror, unbind. */
+ 	void OpenBindMenu(const TArray<int32>& LayerIndices, const FString& FieldPath, const FProperty* Field);
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+index 4d20221..3412063 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+@@ -30,7 +30,6 @@
+ #include "WidgetAnimValuePinFactory.h"
+ #include "WidgetAnimEntryCustomization.h"
+ #include "WidgetAnimParameterValueCustomization.h"
+-#include "SWidgetAnimTimeline.h"
+ #include "WidgetAnimMachineConditionCustomization.h"
+ #include "WidgetAnimEditorSettings.h"
+ #include "WidgetAnimStateMachineAssetEditor.h"
+@@ -113,9 +112,6 @@ void FNameTBDEditorModule::StartupModule()
+ 		FWidgetAnimParameterValue::StaticStruct()->GetFName(),
+ 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FWidgetAnimParameterValueCustomization::MakeInstance));
+ 
+-	// The bind chip at the end of a track field's row in the Widget Animations panel's Selection panel: Animation Parameters.
+-	ParameterRowExtensionHandle = PropertyModule.GetGlobalRowExtensionDelegate().AddStatic(&SWidgetAnimTimeline::GenerateParameterRowExtension);
+-
+ 	// A state machine transition's conditions: Compare offers only what the picked input can be asked.
+ 	PropertyModule.RegisterCustomPropertyTypeLayout(
+ 		FWidgetAnimMachineCondition::StaticStruct()->GetFName(),
+@@ -281,7 +277,6 @@ void FNameTBDEditorModule::ShutdownModule()
+ 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimEntry"));
+ 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimMachineCondition"));
+ 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimParameterValue"));
+-		PropertyModule->GetGlobalRowExtensionDelegate().Remove(ParameterRowExtensionHandle);
+ 		PropertyModule->UnregisterCustomClassLayout(TEXT("ShapeWidget"));
+ 		PropertyModule->UnregisterCustomClassLayout(TEXT("FlowListItemStyle"));
+ 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetSpringParams"));

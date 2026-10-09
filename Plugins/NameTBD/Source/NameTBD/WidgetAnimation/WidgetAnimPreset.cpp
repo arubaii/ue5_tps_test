@@ -6,6 +6,9 @@
 #include "Components/Widget.h"
 #include "NameTBD/Widgets/ShapeBox.h"
 #include "WidgetAnimTransform.h"
+#if WITH_EDITOR
+#include "Misc/DataValidation.h"
+#endif
 
 #if WITH_EDITOR
 #include "WidgetAnimBuilder.h"
@@ -137,10 +140,40 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 		return;
 	}
 
+	// Its parameters as this use plays them - its defaults, this entry's own, then whatever the play was handed - filled into a
+	// copy of its tracks' bound fields. An animation with no bindings plays its own tracks. See WidgetAnimParameters.h.
+	FWidgetAnimParameterResolver ParameterValues;
+	TArray<FWidgetAnimLayer> ResolvedLayers;
+	TSet<int32> MutedLayers;
+	const TArray<FWidgetAnimLayer>* PlayedLayers = &Animation->Layers;
+	const bool bHasParameterValues = ParameterValues.Resolve(*Animation, this, nullptr, AnimId);
+	if (bHasParameterValues && ParameterValues.Apply(Animation->Layers, ResolvedLayers, MutedLayers))
+	{
+		PlayedLayers = &ResolvedLayers;
+	}
+
 	// Placed in order first - one sequence across every group, each layer after the one above it per its
 	// Starts setting - so the per-use flags below are stamped onto layers that already sit where they belong.
+	// An animation inserted as a track takes this one's values by name.
 	TArray<FWidgetAnimSettings> Placed;
-	UWidgetAnimLibrary::BuildLayerSettings(Animation->Layers, Placed);
+	{
+		const FWidgetAnimParameterResolver::FCurrentScope CurrentParameters(bHasParameterValues ? &ParameterValues : nullptr);
+		UWidgetAnimLibrary::BuildLayerSettings(*PlayedLayers, Placed);
+	}
+
+	// A track whose Plays When doesn't hold keeps its place in time and poses nothing - and so does an animation it inserts.
+	if (MutedLayers.Num() > 0)
+	{
+		const int32 NumOwnLayers = Animation->Layers.Num();
+		for (int32 Index = 0; Index < Placed.Num(); ++Index)
+		{
+			const int32 LayerIndex = Index < NumOwnLayers ? Index : Placed[Index].InsertedFromLayer;
+			if (MutedLayers.Contains(LayerIndex))
+			{
+				Placed[Index].bMuted = true;
+			}
+		}
+	}
 
 	// After every other setting, so setting N is still layer N: what keeps a pass going after its last track.
 	UWidgetAnimLibrary::AddMinimumLengthPlaceholder(Animation, Placed);
@@ -283,6 +316,61 @@ bool FWidgetAnimEntry::SyncGroupTargets(const TArray<FString>* TargetOptions)
 		}
 	}
 
+	// The animation's parameters, listed alongside its groups wherever an entry is synced.
+	bChanged |= SyncParameters();
+
+	return bChanged;
+}
+
+bool FWidgetAnimEntryBase::SyncParameters()
+{
+	TArray<FWidgetAnimParameterValue> Synced;
+	if (Animation)
+	{
+		Synced.Reserve(Animation->Parameters.Num());
+		for (const FWidgetAnimParameter& Parameter : Animation->Parameters)
+		{
+			if (Parameter.Name.IsNone())
+			{
+				continue;
+			}
+
+			// Set here, and still the same parameter: kept. Otherwise its default, not set.
+			const FWidgetAnimParameterValue* Existing = Parameters.FindByPredicate([&Parameter](const FWidgetAnimParameterValue& Value)
+			{
+				return Value.Name == Parameter.Name && Value.Type == Parameter.Type;
+			});
+			if (Existing && Existing->bOverride)
+			{
+				FWidgetAnimParameterValue& Kept = Synced.Add_GetRef(*Existing);
+				if (Kept.Type == EWidgetAnimParameterType::Choice && !Parameter.Options.Contains(Kept.Option))
+				{
+					Kept.Option = Parameter.GetDefaultOption();
+				}
+			}
+			else
+			{
+				FWidgetAnimParameterValue& Default = Synced.Add_GetRef(FWidgetAnimParameterValue::FromDefault(Parameter));
+				Default.bOverride = false;
+			}
+		}
+	}
+
+	bool bChanged = Synced.Num() != Parameters.Num();
+	for (int32 Index = 0; !bChanged && Index < Synced.Num(); ++Index)
+	{
+		const FWidgetAnimParameterValue& Was = Parameters[Index];
+		const FWidgetAnimParameterValue& Now = Synced[Index];
+		bChanged = Was.Name != Now.Name || Was.bOverride != Now.bOverride || !Was.SameValueAs(Now);
+	}
+	if (bChanged)
+	{
+		Parameters = MoveTemp(Synced);
+	}
+
+	const bool bHas = Parameters.Num() > 0;
+	bChanged |= bHasParameters != bHas;
+	bHasParameters = bHas;
 	return bChanged;
 }
 
@@ -483,3 +571,31 @@ bool UWidgetAnimEntryLibrary::HasAnyUsableAnimation(const TArray<FWidgetAnimEntr
 
 	return false;
 }
+
+#if WITH_EDITOR
+EDataValidationResult UWidgetAnimPresetAsset::IsDataValid(FDataValidationContext& Context) const
+{
+	EDataValidationResult Result = Super::IsDataValid(Context);
+	bool bAnyMissing = false;
+	for (int32 LayerIndex = 0; LayerIndex < Layers.Num(); ++LayerIndex)
+	{
+		const FWidgetAnimLayer& Layer = Layers[LayerIndex];
+		for (const FWidgetAnimParameterBinding& Binding : Layer.ParameterBindings)
+		{
+			if (!Binding.Parameter.IsNone() && !FindParameter(Binding.Parameter))
+			{
+				bAnyMissing = true;
+				Context.AddWarning(FText::Format(NSLOCTEXT("WidgetAnimPreset", "MissingBoundParameter", "{0}: track {1}'s {2} is bound to the parameter {3}, which this animation doesn't have - it plays its own value."),
+					FText::FromString(GetName()), FText::AsNumber(LayerIndex + 1), FText::FromString(Binding.FieldPath), FText::FromName(Binding.Parameter)));
+			}
+		}
+		if (Layer.PlaysWhen.IsSet() && !FindParameter(Layer.PlaysWhen.Parameter))
+		{
+			bAnyMissing = true;
+			Context.AddWarning(FText::Format(NSLOCTEXT("WidgetAnimPreset", "MissingPlaysWhenParameter", "{0}: track {1} plays when {2} is set, a parameter this animation doesn't have - it always plays."),
+				FText::FromString(GetName()), FText::AsNumber(LayerIndex + 1), FText::FromName(Layer.PlaysWhen.Parameter)));
+		}
+	}
+	return Result == EDataValidationResult::Invalid ? Result : (bAnyMissing ? EDataValidationResult::Valid : Result);
+}
+#endif

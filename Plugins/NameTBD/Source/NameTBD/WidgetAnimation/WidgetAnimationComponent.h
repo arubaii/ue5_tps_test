@@ -132,6 +132,28 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FWidgetAnimationComponentStateEvent,
  * UUserWidget_Animatable both do - in which case the code that bound it also calls
  * NotifyOwnerConstructed / NotifyOwnerDestructed.
  */
+/**
+ * Animation parameter values set on one Widget Animation Component with Set Widget Animation Parameter, for the uses of one
+ * animation (or every one), with one Anim ID (or any). See UWidgetAnimationComponent::SetWidgetAnimationParameter.
+ */
+struct FWidgetAnimSetParameterGroup
+{
+	/** The animation they are for, when bForAnimation - else every animation. */
+	TWeakObjectPtr<const UWidgetAnimPresetAsset> Animation;
+	bool bForAnimation = false;
+
+	/** The Anim ID they are for; None for any. */
+	FName AnimId;
+
+	TArray<FWidgetAnimParameterValue> Values;
+
+	/** Whether these are for a use of UseAnimation (null: asked about any) with Anim ID UseAnimId (None: any). */
+	bool AppliesTo(const UWidgetAnimPresetAsset* UseAnimation, FName UseAnimId) const
+	{
+		return (!bForAnimation || !UseAnimation || Animation.Get() == UseAnimation) && (AnimId.IsNone() || UseAnimId.IsNone() || AnimId == UseAnimId);
+	}
+};
+
 UCLASS(DefaultToInstanced, EditInlineNew, BlueprintType, meta = (DisplayName = "Widget Animation Component"))
 class NAMETBD_API UWidgetAnimationComponent : public UUIComponent
 {
@@ -519,6 +541,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Animation|State Machine")
 	FName GetCurrentStateOfLayer(UWidgetAnimStateMachineAsset* StateMachine = nullptr, FName Layer = NAME_None) const;
 
+	/**
+	 * How much each animation of the blend state Layer is in plays right now, in the order of the state's Blend Samples
+	 * (0 to 1, adding up to 1) - its first layer when Layer is None. Empty when that state isn't a blend state.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Animation|State Machine", meta = (DisplayName = "Get State Machine Blend Weights"))
+	TArray<float> GetStateMachineBlendWeights(UWidgetAnimStateMachineAsset* StateMachine = nullptr, FName Layer = NAME_None) const;
+
 	/** Starts every state machine here that isn't playing - those not set to Start On Construct. Each starts at its Entry. */
 	UFUNCTION(BlueprintCallable, Category = "Animation|State Machine")
 	void StartStateMachines();
@@ -532,6 +561,32 @@ public:
 
 	/** Whether StateMachine is one of the State Machines here. */
 	bool PlaysStateMachine(const UWidgetAnimStateMachineAsset* StateMachine) const;
+
+	/**
+	 * Sets an animation parameter on this widget's uses of Animation (every animation when null) with Anim ID AnimId (any when
+	 * None), over each use's own value - taken by the animations started from now on (Play, Play In / Out, a state's
+	 * animation), and by the entries' animations already playing, at once (RefreshPlayingParameters). See WidgetAnimParameters.h.
+	 */
+	void SetWidgetAnimationParameter(const FWidgetAnimParameterValue& Value, const UWidgetAnimPresetAsset* Animation, FName AnimId);
+
+	/** Lets go of the values set with SetWidgetAnimationParameter for Animation and AnimId - all of them when both are unset. */
+	void ClearWidgetAnimationParameters(const UWidgetAnimPresetAsset* Animation, FName AnimId);
+
+	/**
+	 * The value a parameter of Animation (any when null) plays with on this widget: as set with SetWidgetAnimationParameter,
+	 * else as an entry with that Anim ID (any when None) sets it, else its default. False when no animation here has it.
+	 */
+	bool GetWidgetAnimationParameter(FName Name, const UWidgetAnimPresetAsset* Animation, FName AnimId, FWidgetAnimParameterValue& OutValue) const;
+
+	/** Puts the values set with SetWidgetAnimationParameter in effect while Stack lives - around whatever starts this component's animations. */
+	void PushParameterScopes(FWidgetAnimParameterScopeStack& Stack) const;
+
+	/**
+	 * Live parameters: the entries' animations already playing (Animation's, any when null; Anim ID AnimId, any when None) take
+	 * the parameter values as they are now - their tracks' settings worked out again, where they are in their play kept. A
+	 * state machine's state takes them the next time it starts. Called by Set / Clear Widget Animation Parameter.
+	 */
+	void RefreshPlayingParameters(const UWidgetAnimPresetAsset* Animation, FName AnimId);
 
 	/** The machines as they play, for the editor's graph to show where each is. */
 	const TArray<FWidgetAnimMachineInstance>& GetStateMachineInstances() const { return MachineInstances; }
@@ -737,6 +792,9 @@ private:
 	/** True when BindToWidget attached this rather than the designer's component system. */
 	bool bBoundByCode = false;
 
+	/** Values set with SetWidgetAnimationParameter, a group per animation and Anim ID they were set for. */
+	TArray<FWidgetAnimSetParameterGroup> SetParameterGroups;
+
 	bool bOwnerConstructed = false;
 	bool bApplyingVisibility = false;
 	bool bLastSeenVisible = false;
@@ -823,6 +881,9 @@ private:
 	/** How deep inside applying a frame this component is, and a text change waiting for it to finish - see PlayForTextChange. */
 	int32 PlayerTickDepth = 0;
 	bool bTextChangePending = false;
+
+	/** Parameters set while a frame was being applied: the playing tracks take them once it is done - see RefreshPlayingParameters. */
+	bool bParameterRefreshPending = false;
 
 	/** Ticks the player by DeltaTime and applies the result, then plays a text change that arrived meanwhile. */
 	void TickPlayer(UWidget* AnimatedWidget, float DeltaTime, TArray<FName>& OutJustFinished);

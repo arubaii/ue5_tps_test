@@ -29,6 +29,7 @@
 #include "EdGraphUtilities.h"
 #include "WidgetAnimValuePinFactory.h"
 #include "WidgetAnimEntryCustomization.h"
+#include "WidgetAnimParameterValueCustomization.h"
 #include "WidgetAnimMachineConditionCustomization.h"
 #include "WidgetAnimEditorSettings.h"
 #include "WidgetAnimStateMachineAssetEditor.h"
@@ -105,6 +106,11 @@ void FNameTBDEditorModule::StartupModule()
 	PropertyModule.RegisterCustomPropertyTypeLayout(
 		FWidgetAnimEntry::StaticStruct()->GetFName(),
 		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FWidgetAnimEntryCustomization::MakeInstance));
+
+	// An animation parameter's value - in an entry's Parameters, a tick, its name, its type and its value.
+	PropertyModule.RegisterCustomPropertyTypeLayout(
+		FWidgetAnimParameterValue::StaticStruct()->GetFName(),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FWidgetAnimParameterValueCustomization::MakeInstance));
 
 	// A state machine transition's conditions: Compare offers only what the picked input can be asked.
 	PropertyModule.RegisterCustomPropertyTypeLayout(
@@ -270,6 +276,7 @@ void FNameTBDEditorModule::ShutdownModule()
 		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimationComponent"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimEntry"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimMachineCondition"));
+		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimParameterValue"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("ShapeWidget"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("FlowListItemStyle"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetSpringParams"));

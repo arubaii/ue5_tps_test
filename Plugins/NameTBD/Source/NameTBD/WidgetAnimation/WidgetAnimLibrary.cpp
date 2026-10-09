@@ -3861,9 +3861,35 @@ void UWidgetAnimLibrary::BuildLayerSettings(const TArray<FWidgetAnimLayer>& Laye
 		}
 
 		// The inserted animation as it plays on its own - its own animations inserted in turn - then moved to where the
-		// track starts, at its own pace.
+		// track starts, at its own pace. With its parameters: its defaults, and the values of the animation it plays in by name.
 		TArray<FWidgetAnimSettings> Inserted;
-		BuildLayerSettings(Animation->Layers, Inserted);
+		{
+			FWidgetAnimParameterResolver InsertedParameters;
+			TArray<FWidgetAnimLayer> ResolvedLayers;
+			TSet<int32> MutedLayers;
+			const TArray<FWidgetAnimLayer>* InsertedLayers = &Animation->Layers;
+			const bool bHasParameterValues = InsertedParameters.Resolve(*Animation, nullptr, FWidgetAnimParameterResolver::GetCurrent());
+			if (bHasParameterValues && InsertedParameters.Apply(Animation->Layers, ResolvedLayers, MutedLayers))
+			{
+				InsertedLayers = &ResolvedLayers;
+			}
+			const FWidgetAnimParameterResolver::FCurrentScope CurrentParameters(bHasParameterValues ? &InsertedParameters : FWidgetAnimParameterResolver::GetCurrent());
+			BuildLayerSettings(*InsertedLayers, Inserted);
+
+			// A track of it whose Plays When doesn't hold poses nothing, nor does what it inserts in turn.
+			if (MutedLayers.Num() > 0)
+			{
+				const int32 NumInsertedOwn = Animation->Layers.Num();
+				for (int32 InsertedIndex = 0; InsertedIndex < Inserted.Num(); ++InsertedIndex)
+				{
+					const int32 LayerIndex = InsertedIndex < NumInsertedOwn ? InsertedIndex : Inserted[InsertedIndex].InsertedFromLayer;
+					if (MutedLayers.Contains(LayerIndex))
+					{
+						Inserted[InsertedIndex].bMuted = true;
+					}
+				}
+			}
+		}
 
 		// Copied rather than referred to: OutSettings grows below.
 		const float TrackStart = OutSettings[FirstPlaceholder + Index].Delay;

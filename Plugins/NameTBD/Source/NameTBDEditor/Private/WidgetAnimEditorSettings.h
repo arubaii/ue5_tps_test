@@ -337,6 +337,18 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Cue Track Icon Tint"))
 	FLinearColor CueTrackIconTint;
 
+	/** The State Machine editor's play / pause button, floating at the graph's bottom left: the outline round its dark box. */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "State Machine Play / Pause Outline"))
+	FLinearColor MachinePlayPauseOutline;
+
+	/**
+	 * The glow round the state in play, its selection outline and the play / pause button's outline are each one closed
+	 * antialiased line, which dims where its two ends meet (at the middle of the bottom edge). How far, in pixels, each line
+	 * runs on past its start so its ends overlap instead - 0: they just meet, as before.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "State Machine Ring Seam Overlap", ClampMin = "0", ClampMax = "6", UIMin = "0", UIMax = "6"))
+	float MachineRingSeamOverlap = 1.f;
+
 	// -------------------------------------------------------------------------------------------------
 
 	/** The color a layer type's tracks are drawn in: the user's, or the default for any type not set. */

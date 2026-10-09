@@ -101,6 +101,21 @@ namespace
 		return nullptr;
 	}
 
+	/** The layer a condition's transition is in - INDEX_NONE on the asset's own Details, which don't say. */
+	int32 FindOwnLayerIndex(const TSharedRef<IPropertyHandle>& Handle)
+	{
+		TArray<UObject*> Outers;
+		Handle->GetOuterObjects(Outers);
+		for (const UObject* Outer : Outers)
+		{
+			if (const UWidgetAnimMachineTransitionProxy* Proxy = Cast<UWidgetAnimMachineTransitionProxy>(Outer))
+			{
+				return Proxy->LayerIndex;
+			}
+		}
+		return INDEX_NONE;
+	}
+
 	/** A name field's value, or None while several conditions with different values are shown at once. */
 	FName GetName(const TSharedPtr<IPropertyHandle>& Handle)
 	{
@@ -136,7 +151,7 @@ namespace
 			case EWidgetAnimMachineCompare::IsTrue:
 				return LOCTEXT("HeldTip", "While it is being held, until it has been held for its Hold Time: the way into the state that plays as it is held.");
 			case EWidgetAnimMachineCompare::IsFalse:
-				return LOCTEXT("LetGoTip", "Once it is let go before its Hold Time - or isn't held at all: the way back, the hold not completed. Never the frame it completes.");
+				return LOCTEXT("LetGoTip", "The frame it is let go - once, as a Trigger fires, not for as long as nothing is pressed: the way back, before or after its Hold Time. Never the frame it completes.");
 			case EWidgetAnimMachineCompare::Fired:
 				return LOCTEXT("CompletedTip", "The frame it has been held for its whole Hold Time: the way on, the hold done.");
 			default:
@@ -244,6 +259,21 @@ bool FWidgetAnimMachineConditionCustomization::CanCompareInputs(const UWidgetAni
 FText FWidgetAnimMachineConditionCustomization::Describe(const UWidgetAnimStateMachineAsset* Machine, const FWidgetAnimMachineCondition& Condition)
 {
 	using C = EWidgetAnimMachineCompare;
+
+	// Another layer's state: "Press is Down", "Badge entered Shown".
+	if (Condition.TestsLayerState())
+	{
+		const FText LayerText = Condition.Layer.IsNone() ? LOCTEXT("NoLayer", "(no layer)") : FText::FromName(Condition.Layer);
+		const FText StateText = Condition.State.IsNone() ? LOCTEXT("NoState", "(no state)") : FText::FromName(Condition.State);
+		switch (Condition.LayerTest)
+		{
+		case EWidgetAnimMachineLayerStateTest::IsNotIn: return FText::Format(LOCTEXT("CondLayerNotIn", "{0} isn't {1}"), LayerText, StateText);
+		case EWidgetAnimMachineLayerStateTest::Entered: return FText::Format(LOCTEXT("CondLayerEntered", "{0} entered {1}"), LayerText, StateText);
+		case EWidgetAnimMachineLayerStateTest::Exited:  return FText::Format(LOCTEXT("CondLayerExited", "{0} left {1}"), LayerText, StateText);
+		default:                                         return FText::Format(LOCTEXT("CondLayerIn", "{0} is {1}"), LayerText, StateText);
+		}
+	}
+
 	const FText Name = Condition.Input.IsNone() ? LOCTEXT("NoInput", "(no input)") : FText::FromName(Condition.Input);
 	const EConditionInputKind Kind = GetInputKind(Machine, Condition.Input);
 	const bool bAgainstInput = Condition.CompareTo == EWidgetAnimMachineCompareTo::Input;
@@ -354,7 +384,7 @@ void FWidgetAnimMachineConditionCustomization::CustomizeHeader(TSharedRef<IPrope
 				return FText::GetEmpty();
 			}
 			const FWidgetAnimMachineCondition& Condition = *static_cast<const FWidgetAnimMachineCondition*>(RawData[0]);
-			return Condition.Input.IsNone() ? FText::GetEmpty() : Describe(WeakMachine.Get(), Condition);
+			return Condition.Input.IsNone() && !Condition.TestsLayerState() ? FText::GetEmpty() : Describe(WeakMachine.Get(), Condition);
 		})
 	];
 }
@@ -372,11 +402,26 @@ void FWidgetAnimMachineConditionCustomization::CustomizeChildren(TSharedRef<IPro
 	const TSharedPtr<IPropertyHandle> OptionHandle = Child(GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineCondition, Option));
 	const TSharedPtr<IPropertyHandle> OtherHandle = Child(GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineCondition, OtherInput));
 	const TSharedPtr<IPropertyHandle> OtherPartHandle = Child(GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineCondition, OtherPart));
-	if (!InputHandle.IsValid() || !CompareHandle.IsValid() || !CompareToHandle.IsValid() || !OptionHandle.IsValid() || !OtherHandle.IsValid())
+	const TSharedPtr<IPropertyHandle> SourceHandle = Child(GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineCondition, Source));
+	const TSharedPtr<IPropertyHandle> LayerHandle = Child(GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineCondition, Layer));
+	const TSharedPtr<IPropertyHandle> LayerTestHandle = Child(GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineCondition, LayerTest));
+	const TSharedPtr<IPropertyHandle> StateHandle = Child(GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineCondition, State));
+	if (!InputHandle.IsValid() || !CompareHandle.IsValid() || !CompareToHandle.IsValid() || !OptionHandle.IsValid() || !OtherHandle.IsValid()
+		|| !SourceHandle.IsValid() || !LayerHandle.IsValid() || !LayerTestHandle.IsValid() || !StateHandle.IsValid())
 	{
 		return;
 	}
 	const TWeakObjectPtr<const UWidgetAnimStateMachineAsset> WeakMachine(FindMachine(PropertyHandle));
+	const int32 OwnLayer = FindOwnLayerIndex(PropertyHandle);
+
+	// Test: an input, or another layer's state. Everything below the input rows is shown only for an input.
+	auto TestsLayer = [SourceHandle]()
+	{
+		EWidgetAnimMachineConditionSource Value = EWidgetAnimMachineConditionSource::Input;
+		GetEnum(SourceHandle, Value);
+		return Value == EWidgetAnimMachineConditionSource::LayerState;
+	};
+	ChildBuilder.AddProperty(SourceHandle.ToSharedRef());
 
 	// What each row is shown for - worked out each time it is drawn, so a row appears the moment what it depends on is picked.
 	auto Kind = [InputHandle, WeakMachine]() { return GetInputKind(WeakMachine.Get(), GetName(InputHandle)); };
@@ -400,11 +445,123 @@ void FWidgetAnimMachineConditionCustomization::CustomizeChildren(TSharedRef<IPro
 		return K == EConditionInputKind::Choice ? (C == EWidgetAnimMachineCompare::Equal || C == EWidgetAnimMachineCompare::NotEqual)
 			: (IsNumeric(K) || K == EConditionInputKind::Unknown) && IsRelational(C);
 	};
-	auto Show = [](bool bShown) { return bShown ? EVisibility::Visible : EVisibility::Collapsed; };
+	// Rows for an input are hidden while the condition tests another layer's state.
+	auto Show = [TestsLayer](bool bShown) { return bShown && !TestsLayer() ? EVisibility::Visible : EVisibility::Collapsed; };
+	auto ShowForLayer = [TestsLayer]() { return TestsLayer() ? EVisibility::Visible : EVisibility::Collapsed; };
+
+	// Another layer's state: the layer (any but the transition's own), what is asked, and the state - the picked layer's.
+	auto MakeNameCombo = [](TFunction<FText()> GetLabel, TFunction<void(FMenuBuilder&)> FillMenu) -> TSharedRef<SWidget>
+	{
+		return SNew(SComboButton)
+			.OnGetMenuContent_Lambda([FillMenu]()
+			{
+				FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+				FillMenu(Menu);
+				return Menu.MakeWidget();
+			})
+			.ButtonContent()
+			[
+				SNew(STextBlock)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.Text_Lambda([GetLabel]() { return GetLabel(); })
+			];
+	};
+	IDetailPropertyRow& LayerRow = ChildBuilder.AddProperty(LayerHandle.ToSharedRef());
+	LayerRow.Visibility(TAttribute<EVisibility>::CreateLambda(ShowForLayer));
+	LayerRow.CustomWidget()
+	.NameContent()
+	[
+		LayerHandle->CreatePropertyNameWidget()
+	]
+	.ValueContent()
+	.MinDesiredWidth(140.f)
+	[
+		MakeNameCombo(
+			[LayerHandle]()
+			{
+				const FName LayerName = GetName(LayerHandle);
+				return LayerName.IsNone() ? LOCTEXT("PickLayer", "Pick a layer") : FText::FromName(LayerName);
+			},
+			[LayerHandle, StateHandle, WeakMachine, OwnLayer](FMenuBuilder& Menu)
+			{
+				const UWidgetAnimStateMachineAsset* Machine = WeakMachine.Get();
+				bool bAny = false;
+				for (int32 Index = 0; Machine && Index < Machine->Layers.Num(); ++Index)
+				{
+					if (Index == OwnLayer)
+					{
+						continue;
+					}
+					bAny = true;
+					const FName LayerName = Machine->Layers[Index].Name;
+					Menu.AddMenuEntry(FText::FromName(LayerName), FText::GetEmpty(), FSlateIcon(),
+						FUIAction(
+							FExecuteAction::CreateLambda([LayerHandle, StateHandle, LayerName]()
+							{
+								if (GetName(LayerHandle) != LayerName)
+								{
+									LayerHandle->SetValue(LayerName);
+									StateHandle->SetValue(FName());
+								}
+							}),
+							FCanExecuteAction(),
+							FIsActionChecked::CreateLambda([LayerHandle, LayerName]() { return GetName(LayerHandle) == LayerName; })),
+						NAME_None, EUserInterfaceActionType::RadioButton);
+				}
+				if (!bAny)
+				{
+					Menu.AddMenuEntry(LOCTEXT("NoOtherLayers", "The machine has no other layer"), LOCTEXT("NoOtherLayersTip", "Add a layer with + beside the layer tabs."),
+						FSlateIcon(), FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([]() { return false; })));
+				}
+			})
+	];
+	ChildBuilder.AddProperty(LayerTestHandle.ToSharedRef()).Visibility(TAttribute<EVisibility>::CreateLambda(ShowForLayer));
+	IDetailPropertyRow& StateRow = ChildBuilder.AddProperty(StateHandle.ToSharedRef());
+	StateRow.Visibility(TAttribute<EVisibility>::CreateLambda(ShowForLayer));
+	StateRow.CustomWidget()
+	.NameContent()
+	[
+		StateHandle->CreatePropertyNameWidget()
+	]
+	.ValueContent()
+	.MinDesiredWidth(140.f)
+	[
+		MakeNameCombo(
+			[StateHandle]()
+			{
+				const FName StateName = GetName(StateHandle);
+				return StateName.IsNone() ? LOCTEXT("PickState", "Pick a state") : FText::FromName(StateName);
+			},
+			[LayerHandle, StateHandle, WeakMachine](FMenuBuilder& Menu)
+			{
+				const UWidgetAnimStateMachineAsset* Machine = WeakMachine.Get();
+				const int32 LayerIndex = Machine ? Machine->FindLayerIndex(GetName(LayerHandle)) : INDEX_NONE;
+				if (!Machine || !Machine->Layers.IsValidIndex(LayerIndex))
+				{
+					Menu.AddMenuEntry(LOCTEXT("PickLayerFirst", "Pick the layer first"), FText::GetEmpty(),
+						FSlateIcon(), FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([]() { return false; })));
+					return;
+				}
+				for (const FWidgetAnimMachineState& Candidate : Machine->Layers[LayerIndex].States)
+				{
+					if (Candidate.Kind != EWidgetAnimMachineNodeKind::State && Candidate.Kind != EWidgetAnimMachineNodeKind::Exit)
+					{
+						continue;
+					}
+					const FName StateName = Candidate.Name;
+					Menu.AddMenuEntry(FText::FromName(StateName), FText::GetEmpty(), FSlateIcon(),
+						FUIAction(
+							FExecuteAction::CreateLambda([StateHandle, StateName]() { StateHandle->SetValue(StateName); }),
+							FCanExecuteAction(),
+							FIsActionChecked::CreateLambda([StateHandle, StateName]() { return GetName(StateHandle) == StateName; })),
+						NAME_None, EUserInterfaceActionType::RadioButton);
+				}
+			})
+	];
 
 	// Input: as it is - its dropdown of the machine's inputs and the built-in ones. Picked, Compare is put right for it: the
 	// one it had, if it still applies, else the first that does.
-	ChildBuilder.AddProperty(InputHandle.ToSharedRef());
+	ChildBuilder.AddProperty(InputHandle.ToSharedRef()).Visibility(TAttribute<EVisibility>::CreateLambda([Show]() { return Show(true); }));
 	const TWeakPtr<IPropertyHandle> WeakInput = InputHandle;
 	const TWeakPtr<IPropertyHandle> WeakCompare = CompareHandle;
 	InputHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([WeakInput, WeakCompare, WeakMachine]()
@@ -461,6 +618,7 @@ void FWidgetAnimMachineConditionCustomization::CustomizeChildren(TSharedRef<IPro
 
 	// Compare: only what the input can be asked, in its words.
 	IDetailPropertyRow& CompareRow = ChildBuilder.AddProperty(CompareHandle.ToSharedRef());
+	CompareRow.Visibility(TAttribute<EVisibility>::CreateLambda([Show]() { return Show(true); }));
 	CompareRow.CustomWidget()
 	.NameContent()
 	[

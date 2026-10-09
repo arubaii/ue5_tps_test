@@ -103,6 +103,9 @@ namespace WidgetAnimMachineEdits
 	/** Switches transitions on or off. */
 	void SetTransitionsEnabled(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& Transitions, bool bEnabled);
 
+	/** Draws transitions' wires dead straight, or curving as usual. Not told to anyone: the graph's nodes are set by the caller. */
+	void SetTransitionsStraight(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& Transitions, bool bStraight);
+
 	/** Adds a layer, its Entry, Any State and Exit placed, and returns its index. */
 	int32 AddLayer(UWidgetAnimStateMachineAsset* Machine);
 
@@ -117,6 +120,12 @@ namespace WidgetAnimMachineEdits
 
 	/** Removes an input; the conditions that test it stay, and never hold, until they are changed. */
 	void RemoveInput(UWidgetAnimStateMachineAsset* Machine, FName Input);
+
+	/** Lists an input under Category in the Inputs panel (empty: under none). */
+	void SetInputCategory(UWidgetAnimStateMachineAsset* Machine, FName Input, const FString& Category);
+
+	/** Renames a category: every input under Old is listed under New (empty: under none). */
+	void RenameInputCategory(UWidgetAnimStateMachineAsset* Machine, const FString& Old, const FString& New);
 
 	/**
 	 * Renames an input, and every condition, Progress Input and Weight Input that reads it - made unique, never a built-in
@@ -156,6 +165,35 @@ namespace WidgetAnimMachineEdits
 
 	/** A new machine's content: one layer with an Idle state that Entry goes to. */
 	void SetUpNewMachine(UWidgetAnimStateMachineAsset* Machine);
+
+	// Collapsed groups - see FWidgetAnimMachineStateGroup. The graph's only: the states play as ever.
+
+	/** Puts states (never Entry, Any State or Exit) in a new collapsed group, its box where they were; returns its id. */
+	FGuid CollapseToGroup(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& States);
+
+	/**
+	 * Where a state (or a collapsed group's box) sits, set without an undo step of its own - the graph keeping a node's middle
+	 * in place as its size changes, part of whatever edit changed it.
+	 */
+	void SetNodePositionQuietly(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Id, const FVector2D& Position);
+
+	/**
+	 * The size a state's (or a collapsed group's) node had when its position was last kept, and the zoom then - false when
+	 * there is no such node. Set by SetNodeSizeQuietly: no undo step, and not a change to save on its own.
+	 */
+	bool GetNodeSize(const UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Id, FVector2D& OutSize, float& OutZoom);
+	void SetNodeSizeQuietly(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Id, const FVector2D& Size, float Zoom);
+
+	/** Collapses a group into its box, or expands it to its states in place. */
+	void SetGroupCollapsed(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Group, bool bCollapsed);
+
+	/** Takes a group's states out of it, and the group away. */
+	void Ungroup(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Group);
+
+	void RenameGroup(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Group, const FString& NewName);
+
+	/** The group with an id in a layer, or null. */
+	const FWidgetAnimMachineStateGroup* FindGroup(const FWidgetAnimMachineLayer& Layer, const FGuid& Group);
 }
 
 /**
@@ -217,6 +255,12 @@ namespace WidgetAnimMachineWires
 	 */
 	constexpr float CornerRatio = 6.f;
 
+	/**
+	 * A wire whose ends both point along the line between them, within this many degrees - lined up by Q, give or take a pixel -
+	 * is drawn as a straight line rather than a curve that bows by that pixel.
+	 */
+	constexpr float StraightSnapDegrees = 8.f;
+
 	/** A reroute point's dot, and the square round it that takes the mouse, in graph units. */
 	constexpr float RerouteDiameter = 10.f;
 	constexpr float RerouteHitSize = 16.f;
@@ -233,7 +277,13 @@ namespace WidgetAnimMachineWires
 	 * leaves and enters its states from the middle of a side (or a corner), as every wire does.
 	 */
 	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed,
-		const FVector2f* NodePoint = nullptr, TConstArrayView<FVector2f> Reroutes = TConstArrayView<FVector2f>());
+		const FVector2f* NodePoint = nullptr, TConstArrayView<FVector2f> Reroutes = TConstArrayView<FVector2f>(), bool bStraight = false);
+
+	/**
+	 * Whether two nodes lie on a slant - apart both ways, the line between their middles between 25 and 65 degrees - so a wire
+	 * between them leaves a corner: what Straighten Connections (Q) draws dead straight where they are, rather than moving one.
+	 */
+	bool IsSlanted(const FBox2f& First, const FBox2f& Second);
 
 	/**
 	 * The side or corner of Box that faces Toward - (1,0) right, (0,1) bottom, (1,1) bottom-right and so on: where a wire to it
@@ -267,6 +317,32 @@ public:
 	TObjectPtr<UWidgetAnimStateMachineAsset> Machine = nullptr;
 
 	int32 LayerIndex = INDEX_NONE;
+
+	/**
+	 * The collapsed group opened - double-clicked - so the graph shows its states alone; invalid shows the whole layer, each
+	 * collapsed group as one box (see FWidgetAnimMachineStateGroup). Set with OpenGroupView.
+	 */
+	FGuid OpenGroup;
+
+	/**
+	 * Each state node's size when last drawn, by state (or group) id. Emptied as the graph is made again: a node made again
+	 * takes the size the machine kept with its position (FWidgetAnimMachineState::EditorSize) - after an undo or a redo,
+	 * the one that goes with the position brought back. See SWidgetAnimMachineStateNode::Tick: a node whose size changes
+	 * keeps its middle where it was, so the wires lined up with it stay straight.
+	 */
+	TMap<FGuid, FVector2f> KnownNodeSizes;
+
+	/** The graph's zoom when KnownNodeSizes was last taken: a size that changes with the zoom moves nothing. */
+	float KnownNodeZoom = 0.f;
+
+	/** Shows a collapsed group's states alone - or, with an invalid id, the whole layer - from the next tick. */
+	void OpenGroupView(const FGuid& Group) { OpenGroup = Group; RequestRebuild(); }
+
+	/** The node a state is shown as: its own, or - in a collapsed group, at the top of the layer - its group's box. Invalid when it isn't shown. */
+	FGuid GetShownNodeId(const FGuid& StateId) const;
+
+	/** The selected states, for Collapse To Group. Set by the editor. */
+	TFunction<void(TArray<FGuid>& /*OutStates*/)> GetSelectedStates;
 
 	/** Makes the graph's nodes again from the machine's layer. */
 	void RebuildFromMachine();
@@ -318,6 +394,15 @@ public:
 	/** Q, or the node menu's Straighten Connections: the editor lines the selected states up. */
 	TFunction<void()> OnStraighten;
 
+	/** Whether the machine can be edited - not while the editor's lock is on. Unset: always. */
+	TFunction<bool()> CanEditMachine;
+
+	/**
+	 * States were just collapsed into the collapsed states GroupId (made, or folded back): the editor selects its box and,
+	 * once it has been laid out, lines it up with what it is wired to, as Q would.
+	 */
+	TFunction<void(const FGuid& /*GroupId*/)> OnCollapsed;
+
 	/** Whether the graph is being looked at in Play In Editor - its states then show where the widget is. */
 	bool IsDebugging() const;
 
@@ -368,8 +453,18 @@ public:
 	UPROPERTY()
 	EWidgetAnimMachineNodeKind Kind = EWidgetAnimMachineNodeKind::State;
 
-	/** The node's state in the machine, or null when it is gone. */
+	/** A collapsed group's box rather than a state: StateId is then the group's id. See FWidgetAnimMachineStateGroup. */
+	UPROPERTY()
+	bool bIsGroup = false;
+
+	/** The node's state in the machine, or null when it is gone - and for a group's box. */
 	const FWidgetAnimMachineState* GetState() const;
+
+	/** A group box's group, or null. */
+	const FWidgetAnimMachineStateGroup* GetGroup() const;
+
+	/** Whether the state being watched is this node's - or, for a group's box, one of its states. */
+	bool ShowsState(const FGuid& State) const;
 
 	UWidgetAnimMachineGraph* GetMachineGraph() const;
 
@@ -380,8 +475,8 @@ public:
 	virtual void AllocateDefaultPins() override;
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
 	virtual FText GetTooltipText() const override;
-	virtual bool CanUserDeleteNode() const override { return Kind == EWidgetAnimMachineNodeKind::State; }
-	virtual bool CanDuplicateNode() const override { return Kind == EWidgetAnimMachineNodeKind::State; }
+	virtual bool CanUserDeleteNode() const override { return Kind == EWidgetAnimMachineNodeKind::State && !bIsGroup; }
+	virtual bool CanDuplicateNode() const override { return Kind == EWidgetAnimMachineNodeKind::State && !bIsGroup; }
 	virtual TSharedPtr<class SGraphNode> CreateVisualWidget() override;
 	virtual void GetNodeContextMenuActions(class UToolMenu* Menu, class UGraphNodeContextMenuContext* Context) const override;
 };
@@ -409,6 +504,9 @@ public:
 	 */
 	bool bPlaced = false;
 	FVector2f PlacedOffset = FVector2f::ZeroVector;
+
+	/** Its wire drawn dead straight from state to state (see FWidgetAnimMachineTransition::bEditorStraight). From the machine. */
+	bool bStraight = false;
 
 	/**
 	 * The reroute points its wire runs through, in order the way it goes, each from GetPlacementAnchor. From the machine as the

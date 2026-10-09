@@ -171,6 +171,10 @@ TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
           { SaveIcon, TEXT("WidgetAnim_Save.svg") },
           { GraphEditorIcon, TEXT("WidgetAnim_GraphEditor.svg") },
           { RangeMarkerIcon, TEXT("WidgetAnim_RangeMarker.svg") },
+          { ParameterBindIcon, TEXT("WidgetAnim_ParameterBind.svg") },
+          { ParameterBoundIcon, TEXT("WidgetAnim_ParameterBound.svg") },
+          { ParameterMirroredIcon, TEXT("WidgetAnim_ParameterMirrored.svg") },
+          { StateMachineActionsIcon, TEXT("WidgetAnim_StateMachineActions.svg") },
        };
        for (const TPair<FName, const TCHAR*>& Icon : Icons)
        {

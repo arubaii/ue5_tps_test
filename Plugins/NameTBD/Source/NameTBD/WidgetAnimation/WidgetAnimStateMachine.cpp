@@ -6,6 +6,9 @@
 #include "WidgetAnimLibrary.h"
 #include "WidgetAnimPreset.h"
 #include "WidgetAnimSpring.h"
+#if WITH_EDITOR
+#include "Misc/DataValidation.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "WidgetAnimStateMachine"
 
@@ -152,9 +155,34 @@ void UWidgetAnimStateMachineAsset::GatherAnimations(TArray<UWidgetAnimPresetAsse
 	{
 		for (const FWidgetAnimMachineState& State : Layer.States)
 		{
-			if (State.Animation && State.Kind == EWidgetAnimMachineNodeKind::State)
+			if (State.Kind != EWidgetAnimMachineNodeKind::State)
 			{
-				OutAnimations.AddUnique(State.Animation);
+				continue;
+			}
+			// What it plays: its animation and random variations, or its blend samples.
+			if (!State.IsBlendState())
+			{
+				if (State.Animation)
+				{
+					OutAnimations.AddUnique(State.Animation);
+				}
+				for (const FWidgetAnimMachineRandomVariation& Variation : State.RandomVariations)
+				{
+					if (Variation.Animation)
+					{
+						OutAnimations.AddUnique(Variation.Animation);
+					}
+				}
+			}
+			else
+			{
+				for (const FWidgetAnimMachineBlendSample& Sample : State.BlendSamples)
+				{
+					if (Sample.Animation)
+					{
+						OutAnimations.AddUnique(Sample.Animation);
+					}
+				}
 			}
 		}
 		for (const FWidgetAnimMachineTransition& Transition : Layer.Transitions)
@@ -237,7 +265,7 @@ bool UWidgetAnimStateMachineAsset::UsesInput(FName InputName) const
 		}
 		for (const FWidgetAnimMachineState& State : Layer.States)
 		{
-			if (State.ProgressInput == InputName)
+			if (State.ProgressInput == InputName || State.SpeedInput == InputName || (State.IsBlendState() && State.BlendInput == InputName))
 			{
 				return true;
 			}
@@ -246,7 +274,8 @@ bool UWidgetAnimStateMachineAsset::UsesInput(FName InputName) const
 		{
 			if (Transition.Conditions.ContainsByPredicate([InputName](const FWidgetAnimMachineCondition& Condition)
 			{
-				return Condition.Input == InputName || (Condition.CompareTo == EWidgetAnimMachineCompareTo::Input && Condition.OtherInput == InputName);
+				return !Condition.TestsLayerState()
+					&& (Condition.Input == InputName || (Condition.CompareTo == EWidgetAnimMachineCompareTo::Input && Condition.OtherInput == InputName));
 			}))
 			{
 				return true;
@@ -468,6 +497,55 @@ bool UWidgetAnimStateMachineAsset::Normalize()
 				bChanged = true;
 			}
 		}
+
+		// Random Variations: v1's (no chances) moved over, each an equal share with the state's own; then kept to 1 at most.
+		for (FWidgetAnimMachineState& State : Layer.States)
+		{
+			if (State.RandomAnimations.Num() > 0)
+			{
+				const float Share = 1.f / static_cast<float>(State.RandomAnimations.Num() + 1);
+				for (const TObjectPtr<UWidgetAnimPresetAsset>& Old : State.RandomAnimations)
+				{
+					FWidgetAnimMachineRandomVariation& Moved = State.RandomVariations.AddDefaulted_GetRef();
+					Moved.Animation = Old;
+					Moved.Chance = Share;
+				}
+				State.RandomAnimations.Reset();
+				bChanged = true;
+			}
+			float Total = 0.f;
+			for (FWidgetAnimMachineRandomVariation& Variation : State.RandomVariations)
+			{
+				Variation.Chance = FMath::Clamp(Variation.Chance, 0.f, 1.f);
+				Total += Variation.Chance;
+			}
+			if (Total > 1.f + KINDA_SMALL_NUMBER)
+			{
+				for (FWidgetAnimMachineRandomVariation& Variation : State.RandomVariations)
+				{
+					Variation.Chance /= Total;
+				}
+				bChanged = true;
+			}
+		}
+
+		// Collapsed groups: a state in a group that is gone is in none; a group with no state left goes.
+		for (FWidgetAnimMachineState& State : Layer.States)
+		{
+			const bool bGroupExists = State.EditorGroup.IsValid()
+				&& Layer.EditorGroups.ContainsByPredicate([&State](const FWidgetAnimMachineStateGroup& Group) { return Group.Id == State.EditorGroup; });
+			if (State.EditorGroup.IsValid() && (!bGroupExists || State.Kind != EWidgetAnimMachineNodeKind::State))
+			{
+				State.EditorGroup.Invalidate();
+				bChanged = true;
+			}
+		}
+		const int32 NumGroupsBefore = Layer.EditorGroups.Num();
+		Layer.EditorGroups.RemoveAll([&Layer](const FWidgetAnimMachineStateGroup& Group)
+		{
+			return !Group.Id.IsValid() || !Layer.States.ContainsByPredicate([&Group](const FWidgetAnimMachineState& State) { return State.EditorGroup == Group.Id; });
+		});
+		bChanged |= Layer.EditorGroups.Num() != NumGroupsBefore;
 #endif
 	}
 
@@ -509,6 +587,168 @@ TArray<FString> UWidgetAnimStateMachineAsset::GetNumberInputOptions() const
 		if ((Input.Type == EWidgetAnimMachineInputType::Number || Input.Type == EWidgetAnimMachineInputType::Hold) && !Input.Name.IsNone())
 		{
 			Options.Add(Input.Name.ToString());
+		}
+	}
+	return Options;
+}
+
+const FName UWidgetAnimStateMachineAsset::MaskHostTarget(TEXT("(Widget)"));
+
+UWidgetAnimPresetAsset* FWidgetAnimMachineState::PickRandomAnimation(float Roll) const
+{
+	float Reached = 0.f;
+	for (const FWidgetAnimMachineRandomVariation& Variation : RandomVariations)
+	{
+		Reached += FMath::Max(Variation.Chance, 0.f);
+		if (Variation.Animation && Roll < Reached)
+		{
+			return Variation.Animation;
+		}
+	}
+	return Animation;
+}
+
+TArray<FString> UWidgetAnimStateMachineAsset::GetConditionLayerOptions() const
+{
+	TArray<FString> Options;
+	for (const FWidgetAnimMachineLayer& Layer : Layers)
+	{
+		Options.Add(Layer.Name.ToString());
+	}
+	return Options;
+}
+
+TArray<FString> UWidgetAnimStateMachineAsset::GetConditionStateOptions() const
+{
+	TArray<FString> Options;
+	for (const FWidgetAnimMachineLayer& Layer : Layers)
+	{
+		for (const FWidgetAnimMachineState& State : Layer.States)
+		{
+			if (State.Kind == EWidgetAnimMachineNodeKind::State || State.Kind == EWidgetAnimMachineNodeKind::Exit)
+			{
+				Options.AddUnique(State.Name.ToString());
+			}
+		}
+	}
+	return Options;
+}
+
+TArray<FString> UWidgetAnimStateMachineAsset::GetMaskTargetOptions() const
+{
+	TArray<FString> Options;
+	Options.Add(MaskHostTarget.ToString());
+	TArray<FName> Names;
+	GetTargetNames(Names);
+	for (const FName Name : Names)
+	{
+		Options.Add(Name.ToString());
+	}
+	return Options;
+}
+
+TArray<FString> UWidgetAnimStateMachineAsset::GetInputCategoryOptions() const
+{
+	TArray<FString> Options;
+	for (const FWidgetAnimMachineInput& Input : Inputs)
+	{
+		if (!Input.Category.TrimStartAndEnd().IsEmpty())
+		{
+			Options.AddUnique(Input.Category.TrimStartAndEnd());
+		}
+	}
+	Options.Sort();
+	return Options;
+}
+
+TArray<FString> UWidgetAnimStateMachineAsset::GetBlendInputOptions() const
+{
+	TArray<FString> Options;
+	Options.Add(TEXT("None"));
+	for (const FWidgetAnimMachineInput& Input : Inputs)
+	{
+		if (!Input.Name.IsNone() && (Input.Type == EWidgetAnimMachineInputType::Number || Input.Type == EWidgetAnimMachineInputType::Integer
+			|| Input.Type == EWidgetAnimMachineInputType::Hold || Input.Type == EWidgetAnimMachineInputType::Vector2D))
+		{
+			Options.Add(Input.Name.ToString());
+		}
+	}
+	return Options;
+}
+
+TArray<FString> UWidgetAnimStateMachineAsset::GetSettableInputOptions() const
+{
+	TArray<FString> Options;
+	for (const FWidgetAnimMachineInput& Input : Inputs)
+	{
+		if (!Input.Name.IsNone())
+		{
+			Options.Add(Input.Name.ToString());
+		}
+	}
+	return Options;
+}
+
+void UWidgetAnimStateMachineAsset::RenameLayerStateReferences(FName LayerName, FName OldName, FName NewName)
+{
+	if (OldName == NewName)
+	{
+		return;
+	}
+	for (FWidgetAnimMachineLayer& Layer : Layers)
+	{
+		for (FWidgetAnimMachineTransition& Transition : Layer.Transitions)
+		{
+			for (FWidgetAnimMachineCondition& Condition : Transition.Conditions)
+			{
+				if (!Condition.TestsLayerState())
+				{
+					continue;
+				}
+				if (LayerName.IsNone())
+				{
+					if (Condition.Layer == OldName)
+					{
+						Condition.Layer = NewName;
+					}
+				}
+				else if (Condition.Layer == LayerName && Condition.State == OldName)
+				{
+					Condition.State = NewName;
+				}
+			}
+		}
+	}
+}
+
+TArray<FString> UWidgetAnimStateMachineAsset::GetStateParameterOptions() const
+{
+	TArray<FString> Options;
+	for (const FWidgetAnimMachineLayer& Layer : Layers)
+	{
+		for (const FWidgetAnimMachineState& State : Layer.States)
+		{
+			// Every animation it can play: its own and variations, or its blend samples'.
+			TArray<const UWidgetAnimPresetAsset*, TInlineAllocator<8>> Played;
+			Played.Add(State.Animation);
+			for (const FWidgetAnimMachineRandomVariation& Variation : State.RandomVariations)
+			{
+				Played.Add(Variation.Animation);
+			}
+			for (const FWidgetAnimMachineBlendSample& Sample : State.BlendSamples)
+			{
+				Played.Add(Sample.Animation);
+			}
+			for (const UWidgetAnimPresetAsset* Animation : Played)
+			{
+				if (Animation)
+				{
+					for (const FWidgetAnimParameter& Parameter : Animation->Parameters)
+					{
+						Options.AddUnique(Parameter.Name.ToString());
+					}
+				}
+			}
 		}
 	}
 	return Options;
@@ -576,6 +816,67 @@ UWidgetAnimStateMachineAsset::FOnMachineChanged& UWidgetAnimStateMachineAsset::O
 void UWidgetAnimStateMachineAsset::NotifyMachineChanged()
 {
 	OnMachineChanged().Broadcast(this);
+}
+
+EDataValidationResult UWidgetAnimStateMachineAsset::IsDataValid(FDataValidationContext& Context) const
+{
+	const EDataValidationResult Result = Super::IsDataValid(Context);
+	const FText MachineName = FText::FromString(GetName());
+	for (const FWidgetAnimMachineLayer& Layer : Layers)
+	{
+		for (const FWidgetAnimMachineTransition& Transition : Layer.Transitions)
+		{
+			for (const FWidgetAnimMachineCondition& Condition : Transition.Conditions)
+			{
+				if (!Condition.TestsLayerState())
+				{
+					continue;
+				}
+				const int32 OtherLayer = FindLayerIndex(Condition.Layer);
+				if (!Layers.IsValidIndex(OtherLayer))
+				{
+					Context.AddWarning(FText::Format(NSLOCTEXT("WidgetAnimStateMachine", "MissingConditionLayer", "{0}: a transition on layer {1} tests the layer {2}, which the machine doesn't have - the condition never holds."),
+						MachineName, FText::FromName(Layer.Name), FText::FromName(Condition.Layer)));
+				}
+				else if (Layers[OtherLayer].FindStateIndexByName(Condition.State) == INDEX_NONE)
+				{
+					Context.AddWarning(FText::Format(NSLOCTEXT("WidgetAnimStateMachine", "MissingConditionState", "{0}: a transition on layer {1} tests {2}'s state {3}, which that layer doesn't have - the condition never holds."),
+						MachineName, FText::FromName(Layer.Name), FText::FromName(Condition.Layer), FText::FromName(Condition.State)));
+				}
+			}
+		}
+		for (const FWidgetAnimMachineState& State : Layer.States)
+		{
+			for (const FWidgetAnimMachineParameterBinding& Binding : State.ParameterInputs)
+			{
+				if (Binding.Parameter.IsNone())
+				{
+					continue;
+				}
+				// Any of what the state can play declaring it is enough.
+				bool bDeclared = State.Animation && State.Animation->FindParameter(Binding.Parameter);
+				for (const FWidgetAnimMachineRandomVariation& Variation : State.RandomVariations)
+				{
+					bDeclared = bDeclared || (Variation.Animation && Variation.Animation->FindParameter(Binding.Parameter));
+				}
+				for (const FWidgetAnimMachineBlendSample& Sample : State.BlendSamples)
+				{
+					bDeclared = bDeclared || (Sample.Animation && Sample.Animation->FindParameter(Binding.Parameter));
+				}
+				if (!bDeclared)
+				{
+					Context.AddWarning(FText::Format(NSLOCTEXT("WidgetAnimStateMachine", "MissingStateParameter", "{0}: state {1} sets the parameter {2} from {3}, but none of its animations has that parameter - it is ignored."),
+						MachineName, FText::FromName(State.Name), FText::FromName(Binding.Parameter), FText::FromName(Binding.Input)));
+				}
+				if (!Binding.Input.IsNone() && !FindInput(Binding.Input) && !WidgetAnimMachineInputs::IsBuiltIn(Binding.Input))
+				{
+					Context.AddWarning(FText::Format(NSLOCTEXT("WidgetAnimStateMachine", "MissingStateParameterInput", "{0}: state {1} sets {2} from the input {3}, which the machine doesn't have - it is ignored."),
+						MachineName, FText::FromName(State.Name), FText::FromName(Binding.Parameter), FText::FromName(Binding.Input)));
+				}
+			}
+		}
+	}
+	return Result;
 }
 #endif
 
@@ -783,6 +1084,17 @@ namespace WidgetAnimMachineEvents
 		}
 		const FString MachineWords = Machine ? ToWords(Machine->GetMachineDisplayName()) : FString(TEXT("State Machine"));
 		return FName(*FString::Printf(TEXT("On %s %s %s"), *MachineWords, bEntered ? TEXT("Entered") : TEXT("Exited"), *StateWords));
+	}
+
+	FName GetActionEventFunctionName(const UWidgetAnimStateMachineAsset* Machine, FName EventName)
+	{
+		const FString EventWords = EventName.IsNone() ? FString() : ToWords(EventName.ToString());
+		if (EventWords.IsEmpty())
+		{
+			return NAME_None;
+		}
+		const FString MachineWords = Machine ? ToWords(Machine->GetMachineDisplayName()) : FString(TEXT("State Machine"));
+		return FName(*FString::Printf(TEXT("On %s %s"), *MachineWords, *EventWords));
 	}
 }
 

@@ -1,0 +1,196 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+index d64639b..e21d43c 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+@@ -6329,9 +6329,10 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeDraftNameField()
+ namespace
+ {
+ 	/**
+-	 * A rounded outline in any color, set live, inside the widget's box: a rounded box's outline - the rounded-box shader's, one
+-	 * seamless shape - drawn in its color. Not an antialiased closed path: its two ends fade out where they meet - a hairline
+-	 * crack.
++	 * A rounded outline in any color, set live: an antialiased closed path round the widget's box, inset by half its width.
++	 * (A rounded box brush's outline color is the brush's own - a tint doesn't reach it.) Such a path dims where its two ends
++	 * meet, so it starts at the middle of the bottom edge and runs on past its start by the DEVELOPER ONLY State Machine Ring
++	 * Seam Overlap - its ends overlap rather than meet.
+ 	 */
+ 	class SWidgetAnimMachineRoundedOutline : public SLeafWidget
+ 	{
+@@ -6363,18 +6364,41 @@ namespace
+ 			FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+ 		{
+ 			const FVector2f Size = AllottedGeometry.GetLocalSize();
+-			if (Size.X <= Thickness * 2.f || Size.Y <= Thickness * 2.f)
++			const float Inset = Thickness * 0.5f;
++			const FVector2f Min(Inset, Inset);
++			const FVector2f Max = Size - FVector2f(Inset, Inset);
++			if (Max.X <= Min.X || Max.Y <= Min.Y)
+ 			{
+ 				return LayerId;
+ 			}
+-			OutlineBrush.DrawAs = ESlateBrushDrawType::RoundedBox;
+-			OutlineBrush.TintColor = FSlateColor(FLinearColor::Transparent);
+-			// The outline plain white on the brush, its color the color the box is drawn with: a brush's outline color is taken as
+-			// already multiplied by its opacity.
+-			OutlineBrush.OutlineSettings = FSlateBrushOutlineSettings(FVector4(Radius, Radius, Radius, Radius), FSlateColor(FLinearColor::White), Thickness);
+-			OutlineBrush.OutlineSettings.RoundingType = ESlateBrushRoundingType::FixedRadius;
+-			FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), &OutlineBrush, ESlateDrawEffect::None,
+-				LineColor.Get() * InWidgetStyle.GetColorAndOpacityTint());
++			const float Corner = FMath::Clamp(Radius - Inset, 0.5f, FMath::Min(Max.X - Min.X, Max.Y - Min.Y) * 0.5f);
++			const FVector2f Centers[] =
++			{
++				FVector2f(Max.X - Corner, Min.Y + Corner),
++				FVector2f(Max.X - Corner, Max.Y - Corner),
++				FVector2f(Min.X + Corner, Max.Y - Corner),
++				FVector2f(Min.X + Corner, Min.Y + Corner),
++			};
++			// From the middle of the bottom edge, clockwise round each corner, and on past the start.
++			TArray<FVector2f> Points;
++			const FVector2f BottomMiddle((Min.X + Max.X) * 0.5f, Max.Y);
++			Points.Add(BottomMiddle);
++			constexpr int32 ArcSegments = 8;
++			for (int32 Step = 0; Step < 4; ++Step)
++			{
++				const int32 Arc = (Step + 2) % 4;
++				const float StartAngle = -UE_HALF_PI + Arc * UE_HALF_PI;
++				for (int32 Segment = 0; Segment <= ArcSegments; ++Segment)
++				{
++					const float Angle = StartAngle + UE_HALF_PI * Segment / ArcSegments;
++					Points.Add(Centers[Arc] + FVector2f(FMath::Cos(Angle), FMath::Sin(Angle)) * Corner);
++				}
++			}
++			const float Overlap = FMath::Max(UWidgetAnimEditorSettings::Get().MachineRingSeamOverlap, 0.f);
++			const float Straight = FMath::Max((Max.X - Min.X) * 0.5f - Corner, 0.f);
++			Points.Add(BottomMiddle - FVector2f(FMath::Min(Overlap, Straight), 0.f));
++			FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None,
++				LineColor.Get() * InWidgetStyle.GetColorAndOpacityTint(), /*bAntialias=*/true, Thickness);
+ 			return LayerId + 1;
+ 		}
+ 
+@@ -6383,9 +6407,6 @@ namespace
+ 		TAttribute<FLinearColor> LineColor;
+ 		float Radius = 5.f;
+ 		float Thickness = 1.f;
+-
+-		/** Kept, as a drawn box refers to its brush until the frame is rendered. */
+-		mutable FSlateBrush OutlineBrush;
+ 	};
+ }
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
+index 2a7d4e6..22c5bf2 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
+@@ -342,11 +342,12 @@ public:
+ 	FLinearColor MachinePlayPauseOutline;
+ 
+ 	/**
+-	 * The glow round the state in play (and its selection outline) drawn as rounded boxes' outlines - seamless. Off: as
+-	 * antialiased closed lines, as before v7 - which leave a hairline where each line's ends meet.
++	 * The glow round the state in play, its selection outline and the play / pause button's outline are each one closed
++	 * antialiased line, which dims where its two ends meet (at the middle of the bottom edge). How far, in pixels, each line
++	 * runs on past its start so its ends overlap instead - 0: they just meet, as before.
+ 	 */
+-	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "State Machine Ring As Rounded Boxes"))
+-	bool bMachineRingRoundedBoxes = true;
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "State Machine Ring Seam Overlap", ClampMin = "0", ClampMax = "6", UIMin = "0", UIMax = "6"))
++	float MachineRingSeamOverlap = 1.f;
+ 
+ 	// -------------------------------------------------------------------------------------------------
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+index c38121e..02c7fd3 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+@@ -3370,8 +3370,9 @@ public:
+ 		}
+ 		const bool bSelected = Selected.Get();
+ 
+-		// Each line is the node's rounded outline pushed out by its offset - corners round the same corner radius grown by the
+-		// same offset, so every line is concentric with the node (drawn below).
++		// Each line is the node's rounded outline pushed out by its offset - corners as arcs round the same corner radius
++		// grown by the same offset, so every line is concentric with the node - drawn antialiased as one closed path, so its
++		// color is exactly what is asked (a rounded box brush's outline isn't tinted).
+ 		const float NodeRadius = FMath::Min(MachineColors::ActiveRingRadius, FMath::Min(Size.X, Size.Y) * 0.5f);
+ 		const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
+ 		const FLinearColor Glow = MachineColors::ActiveRing * Tint;
+@@ -3408,35 +3409,13 @@ public:
+ 			: Glow.CopyWithNewOpacity(Glow.A * Amount);
+ 		Lines.Add({ RimOffset, RimWidth, Rim });
+ 
+-		// Each a rounded box's outline - the rounded-box shader's, one seamless shape as the node's own edge is. Its color is
+-		// the color the box is drawn with, the brush's outline plain white: the outline color on a brush is taken as already
+-		// multiplied by its opacity, so a faint halo line given its color there was added at full strength - eight of them
+-		// piled up into a pale solid band. The stroke is centered on the line's offset: the box reaches half its thickness
+-		// further out.
+-		// Not an antialiased closed path (DEVELOPER ONLY: State Machine Ring As Rounded Boxes, off): a path's two ends fade
+-		// out where they meet - a hairline crack across the ring wherever it starts.
+-		const bool bRoundedBoxes = UWidgetAnimEditorSettings::Get().bMachineRingRoundedBoxes;
+-		const int32 Count = FMath::Min(Lines.Num(), static_cast<int32>(UE_ARRAY_COUNT(LineBrushes)));
++		// Each line one closed antialiased path. Such a path dims where its two ends meet - a hairline crack across the ring -
++		// so it starts at the middle of the bottom edge, where it shows least, and runs on past its start by the DEVELOPER
++		// ONLY State Machine Ring Seam Overlap: its two ends overlap rather than meet.
++		const float Overlap = FMath::Max(UWidgetAnimEditorSettings::Get().MachineRingSeamOverlap, 0.f);
+ 		TArray<FVector2f> Points;
+-		for (int32 Index = 0; Index < Count; ++Index)
++		for (const FLine& Line : Lines)
+ 		{
+-			const FLine& Line = Lines[Index];
+-			if (bRoundedBoxes)
+-			{
+-				const float Out = Line.Offset + Line.Thickness * 0.5f;
+-				const float BoxRadius = FMath::Max(NodeRadius + Out, 0.5f);
+-				FSlateBrush& LineBrush = LineBrushes[Index];
+-				LineBrush.DrawAs = ESlateBrushDrawType::RoundedBox;
+-				LineBrush.TintColor = FSlateColor(FLinearColor::Transparent);
+-				LineBrush.OutlineSettings = FSlateBrushOutlineSettings(FVector4(BoxRadius, BoxRadius, BoxRadius, BoxRadius), FSlateColor(FLinearColor::White), Line.Thickness);
+-				LineBrush.OutlineSettings.RoundingType = ESlateBrushRoundingType::FixedRadius;
+-				FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+-					AllottedGeometry.ToPaintGeometry(Size + FVector2f(Out * 2.f, Out * 2.f), FSlateLayoutTransform(FVector2f(-Out, -Out))),
+-					&LineBrush, ESlateDrawEffect::None, Line.Color);
+-				continue;
+-			}
+-
+-			// The path: from the middle of the top edge, clockwise round each corner, and back.
+ 			const float Radius = FMath::Max(NodeRadius + Line.Offset, 0.5f);
+ 			const FVector2f Min(-Line.Offset, -Line.Offset);
+ 			const FVector2f Max = Size + FVector2f(Line.Offset, Line.Offset);
+@@ -3447,12 +3426,15 @@ public:
+ 				FVector2f(Min.X + Radius, Max.Y - Radius),
+ 				FVector2f(Min.X + Radius, Min.Y + Radius),
+ 			};
++			// From the middle of the bottom edge, clockwise: the bottom-left corner, the top-left, the top-right, the
++			// bottom-right - each a quarter turn - and back along the bottom edge, past the start.
+ 			constexpr int32 ArcSegments = 10;
+ 			Points.Reset();
+-			const FVector2f TopMiddle((Min.X + Max.X) * 0.5f, Min.Y);
+-			Points.Add(TopMiddle);
+-			for (int32 Corner = 0; Corner < 4; ++Corner)
++			const FVector2f BottomMiddle((Min.X + Max.X) * 0.5f, Max.Y);
++			Points.Add(BottomMiddle);
++			for (int32 Step = 0; Step < 4; ++Step)
+ 			{
++				const int32 Corner = (Step + 2) % 4;
+ 				const float StartAngle = -UE_HALF_PI + Corner * UE_HALF_PI;
+ 				for (int32 Segment = 0; Segment <= ArcSegments; ++Segment)
+ 				{
+@@ -3460,7 +3442,8 @@ public:
+ 					Points.Add(Centers[Corner] + FVector2f(FMath::Cos(Angle), FMath::Sin(Angle)) * Radius);
+ 				}
+ 			}
+-			Points.Add(TopMiddle);
++			const float Straight = FMath::Max((Max.X - Min.X) * 0.5f - Radius, 0.f);
++			Points.Add(BottomMiddle - FVector2f(FMath::Min(Overlap, Straight), 0.f));
+ 			FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None,
+ 				Line.Color, /*bAntialias=*/true, Line.Thickness);
+ 		}
+@@ -3472,9 +3455,6 @@ private:
+ 	TAttribute<float> Strength;
+ 	TAttribute<bool> Selected;
+ 	TAttribute<bool> Hovered;
+-
+-	/** One brush per line drawn - kept, as a drawn box refers to its brush until the frame is rendered. */
+-	mutable FSlateBrush LineBrushes[16];
+ };
+ 
+ /**

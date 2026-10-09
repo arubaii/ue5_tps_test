@@ -10,6 +10,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "WidgetAnimPreset.h"
 #include "WidgetAnimSpring.h"
+#include "NameTBD/Widgets/ShapeBox.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimStateMachine, Log, All);
 
@@ -593,8 +594,41 @@ namespace WidgetAnimStateMachines
 			}
 		}
 
+		/**
+		 * A condition on another layer's state: against every layer as it was before any moved this frame (LayerStatesNow), and
+		 * the frame before (LayerStatesBefore) for Entered and Exited. A layer or state the machine doesn't have never holds.
+		 */
+		bool EvaluateLayerStateCondition(const FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineCondition& Condition)
+		{
+			const UWidgetAnimStateMachineAsset* Machine = Instance.Machine.Get();
+			const int32 LayerIndex = Machine ? Machine->FindLayerIndex(Condition.Layer) : INDEX_NONE;
+			if (!Machine || !Machine->Layers.IsValidIndex(LayerIndex))
+			{
+				return false;
+			}
+			const int32 StateIndex = Machine->Layers[LayerIndex].FindStateIndexByName(Condition.State);
+			if (StateIndex == INDEX_NONE)
+			{
+				return false;
+			}
+			const int32 Now = Instance.LayerStatesNow.IsValidIndex(LayerIndex) ? Instance.LayerStatesNow[LayerIndex] : INDEX_NONE;
+			const int32 Before = Instance.LayerStatesBefore.IsValidIndex(LayerIndex) ? Instance.LayerStatesBefore[LayerIndex] : INDEX_NONE;
+			switch (Condition.LayerTest)
+			{
+			case EWidgetAnimMachineLayerStateTest::IsNotIn: return Now != StateIndex;
+			case EWidgetAnimMachineLayerStateTest::Entered: return Now == StateIndex && Before != StateIndex;
+			case EWidgetAnimMachineLayerStateTest::Exited:  return Now != StateIndex && Before == StateIndex;
+			default:                                         return Now == StateIndex;
+			}
+		}
+
 		bool EvaluateCondition(const FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineCondition& Condition)
 		{
+			if (Condition.TestsLayerState())
+			{
+				return EvaluateLayerStateCondition(Instance, Condition);
+			}
+
 			const FWidgetAnimMachineInputState* Input = Instance.FindInput(Condition.Input);
 			const bool bAgainstInput = Condition.CompareTo == EWidgetAnimMachineCompareTo::Input;
 
@@ -603,15 +637,17 @@ namespace WidgetAnimStateMachines
 				switch (Input->Type)
 				{
 				case EWidgetAnimMachineInputType::Hold:
-					// Fired the frame it completes; Is False while it isn't held - but never that frame, so the way back from the
-					// state it held is never taken as the hold completes, whatever order the two transitions are in.
+					// Fired the frame it completes; Is Let Go the frame it is let go - a pulse, as a Trigger is, so it is spent
+					// once something takes it rather than holding for as long as nothing is pressed. Never the frame it
+					// completes (it is still held then), so the way back from the state it held is never taken as the hold
+					// completes, whatever order the two transitions are in.
 					if (Condition.Compare == EWidgetAnimMachineCompare::Fired)
 					{
 						return Input->bFired;
 					}
 					if (Condition.Compare == EWidgetAnimMachineCompare::IsFalse)
 					{
-						return !Input->bValue && !Input->bFired;
+						return Input->bLetGo;
 					}
 					break;
 
@@ -919,9 +955,11 @@ namespace WidgetAnimStateMachines
 				const bool bDown = Input.bHoldSetDown || (bSourced ? Input.bHoldSourceDown : Instance.WidgetState.bPressed);
 				if (!bDown)
 				{
-					// Let go - complete or not: ready for the next press.
+					// Let go - complete or not: ready for the next press. A press that had started is let go this frame
+					// (Is Let Go), once.
 					if (Input.bValue || Input.bHoldDone || Input.HoldElapsed > 0.f || Input.Number != 0.f)
 					{
+						Input.bLetGo = Input.bValue || Input.bHoldDone || Input.HoldElapsed > 0.f;
 						Input.bValue = false;
 						Input.bHoldDone = false;
 						Input.HoldElapsed = 0.f;
@@ -964,7 +1002,8 @@ namespace WidgetAnimStateMachines
 
 		/** An animation's settings as a machine plays it: its groups on the targets' widgets, played as the state says. */
 		void BuildAnimationSettings(UWidgetAnimPresetAsset* Animation, const TMap<FName, FName>& TargetPaths, const FWidgetAnimMachineContext& Context,
-			EWidgetAnimMachineStatePlayback Playback, float Speed, bool bFollowsProgress, TArray<FWidgetAnimSettings>& OutSettings)
+			EWidgetAnimMachineStatePlayback Playback, float Speed, bool bFollowsProgress, TArray<FWidgetAnimSettings>& OutSettings,
+			TConstArrayView<FWidgetAnimParameterValue> ParameterValues = TConstArrayView<FWidgetAnimParameterValue>())
 		{
 			if (!Animation)
 			{
@@ -973,6 +1012,7 @@ namespace WidgetAnimStateMachines
 
 			FWidgetAnimEntry Use;
 			Use.Animation = Animation;
+			Use.Parameters.Append(ParameterValues.GetData(), ParameterValues.Num());
 			Use.bLoop = Playback == EWidgetAnimMachineStatePlayback::Loop || Playback == EWidgetAnimMachineStatePlayback::PingPong;
 			Use.bPingPong = Playback == EWidgetAnimMachineStatePlayback::PingPong;
 			Use.LoopCount = 0;
@@ -1018,6 +1058,163 @@ namespace WidgetAnimStateMachines
 		{
 			Layer.Output.DetachParams();
 			UWidgetAnimLibrary::StopWidgetAnimTracks(Layer.Player, TArray<FName>(), /*bRemoveTracks=*/true);
+			for (FWidgetAnimPlayer& BlendPlayer : Layer.BlendPlayers)
+			{
+				UWidgetAnimLibrary::StopWidgetAnimTracks(BlendPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
+			}
+			Layer.BlendPlayers.Reset();
+			Layer.BlendWeights.Reset();
+		}
+
+		/** Every player of the layer: its own, and a blend state's samples'. */
+		template <typename TVisit>
+		void ForEachPlayer(FWidgetAnimMachineLayerInstance& Layer, TVisit&& Visit)
+		{
+			Visit(Layer.Player);
+			for (FWidgetAnimPlayer& BlendPlayer : Layer.BlendPlayers)
+			{
+				Visit(BlendPlayer);
+			}
+		}
+
+		template <typename TVisit>
+		void ForEachPlayer(const FWidgetAnimMachineLayerInstance& Layer, TVisit&& Visit)
+		{
+			Visit(Layer.Player);
+			for (const FWidgetAnimPlayer& BlendPlayer : Layer.BlendPlayers)
+			{
+				Visit(BlendPlayer);
+			}
+		}
+
+		/** Where a blend state's input is now: a number in X for Blend 1D, the point for Blend 2D. */
+		FVector2f ReadBlendPoint(const FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineState& State)
+		{
+			const FWidgetAnimMachineInputState* Input = Instance.FindInput(State.BlendInput);
+			if (!Input)
+			{
+				return FVector2f::ZeroVector;
+			}
+			if (Input->Type == EWidgetAnimMachineInputType::Vector2D)
+			{
+				return State.BlendSpace == EWidgetAnimMachineBlendSpace::TwoD ? Input->Vector : FVector2f(Input->Vector.Size(), 0.f);
+			}
+			float Number = 0.f;
+			bool bTruthy = false;
+			ReadAsNumber(Instance, State.BlendInput, Number, bTruthy);
+			return FVector2f(Number, 0.f);
+		}
+
+		/** A blend state's weights from where its input is now, into the layer. */
+		void UpdateBlendWeights(const FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineState& State, FWidgetAnimMachineLayerInstance& Layer)
+		{
+			Layer.BlendPoint = ReadBlendPoint(Instance, State);
+			ComputeBlendWeights(State, Layer.BlendPoint, Layer.BlendWeights);
+		}
+
+		/** An action in words, for the editor's debugging. */
+		FString DescribeAction(const FWidgetAnimMachineAction& Action)
+		{
+			switch (Action.Kind)
+			{
+			case EWidgetAnimMachineActionKind::FireTrigger: return FString::Printf(TEXT("Fired %s"), *Action.Input.ToString());
+			case EWidgetAnimMachineActionKind::FireEvent:   return FString::Printf(TEXT("Event %s"), *Action.EventName.ToString());
+			default:                                         return FString::Printf(TEXT("Set %s"), *Action.Input.ToString());
+			}
+		}
+
+		/** Queues actions to run once the frame's transitions are settled. */
+		void QueueActions(FWidgetAnimMachineInstance& Instance, int32 LayerIndex, FName State, const TArray<FWidgetAnimMachineAction>& Actions)
+		{
+			for (const FWidgetAnimMachineAction& Action : Actions)
+			{
+				FWidgetAnimMachinePendingAction& Pending = Instance.PendingActions.AddDefaulted_GetRef();
+				Pending.Action = Action;
+				Pending.LayerIndex = LayerIndex;
+				Pending.State = State;
+			}
+		}
+
+		/** Runs the queued actions: inputs set and triggers fired for the next frame, events sent out. */
+		void RunPendingActions(FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineContext& Context)
+		{
+			if (Instance.PendingActions.Num() == 0)
+			{
+				return;
+			}
+			const TArray<FWidgetAnimMachinePendingAction> Actions = MoveTemp(Instance.PendingActions);
+			Instance.PendingActions.Reset();
+
+			for (const FWidgetAnimMachinePendingAction& Pending : Actions)
+			{
+				const FWidgetAnimMachineAction& Action = Pending.Action;
+				const FWidgetAnimMachineInputState* Input = Instance.FindInput(Action.Input);
+				switch (Action.Kind)
+				{
+				case EWidgetAnimMachineActionKind::SetInput:
+					if (Input)
+					{
+						switch (Input->Type)
+						{
+						case EWidgetAnimMachineInputType::Bool:
+						case EWidgetAnimMachineInputType::Hold:
+							SetBool(Instance, Action.Input, Action.bBoolValue);
+							break;
+						case EWidgetAnimMachineInputType::Trigger:
+							FireTrigger(Instance, Action.Input);
+							break;
+						case EWidgetAnimMachineInputType::Choice:
+							SetChoice(Instance, Action.Input, Action.Option);
+							break;
+						case EWidgetAnimMachineInputType::Vector2D:
+							SetVector2D(Instance, Action.Input, Action.VectorValue);
+							break;
+						default:
+							SetNumber(Instance, Action.Input, Action.NumberValue);
+							break;
+						}
+					}
+					break;
+
+				case EWidgetAnimMachineActionKind::FireTrigger:
+					if (Input && Input->Type == EWidgetAnimMachineInputType::Trigger)
+					{
+						FireTrigger(Instance, Action.Input);
+					}
+					else if (Input)
+					{
+						// A Press And Hold pressed or let go; anything else set as if a trigger had pulsed it on.
+						SetFromNumber(Instance, Action.Input, Input->Type == EWidgetAnimMachineInputType::Hold ? (Action.bBoolValue ? 1.0 : 0.0) : 1.0);
+					}
+					break;
+
+				case EWidgetAnimMachineActionKind::FireEvent:
+					if (Context.OnStateEvent && !Context.bDesignTime && !Action.EventName.IsNone())
+					{
+						const UWidgetAnimStateMachineAsset* Machine = Instance.Machine.Get();
+						FWidgetAnimStateEventInfo Info;
+						Info.Machine = Instance.Machine;
+						Info.Layer = Machine && Machine->Layers.IsValidIndex(Pending.LayerIndex) ? Machine->Layers[Pending.LayerIndex].Name : FName();
+						Info.State = Pending.State;
+						Info.EventName = Action.EventName;
+						Info.bEntered = true;
+						Info.Host = Context.Host;
+						Context.OnStateEvent(Info);
+					}
+					break;
+				}
+
+				// What it did, for the editor's debugging: the last few.
+				if (Instance.Layers.IsValidIndex(Pending.LayerIndex))
+				{
+					TArray<FString>& Recent = Instance.Layers[Pending.LayerIndex].LastActions;
+					Recent.Add(DescribeAction(Action));
+					if (Recent.Num() > 4)
+					{
+						Recent.RemoveAt(0);
+					}
+				}
+			}
 		}
 
 		/** The state's progress, from its Progress Input, set on its track when it changed. */
@@ -1050,6 +1247,61 @@ namespace WidgetAnimStateMachines
 			UWidgetAnimLibrary::SetWidgetAnimTrackValue(Layer.Player, FWidgetAnimValueId::Progress(GetStateTrackId(State)), WidgetAnimValue::FromFloat(Progress), bSnap);
 		}
 
+		/** The values a state's Parameters From Inputs give its animation's parameters, from the inputs as they are now. */
+		void GatherParameterInputs(const FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineState& State, TArray<FWidgetAnimParameterValue>& OutValues,
+			const UWidgetAnimPresetAsset* Played)
+		{
+			if (!Played)
+			{
+				return;
+			}
+			for (const FWidgetAnimMachineParameterBinding& Binding : State.ParameterInputs)
+			{
+				const FWidgetAnimParameter* Declared = Played->FindParameter(Binding.Parameter);
+				if (!Declared || Binding.Input.IsNone())
+				{
+					continue;
+				}
+				FWidgetAnimParameterValue Value = FWidgetAnimParameterValue::FromDefault(*Declared);
+				const FWidgetAnimMachineInputState* Input = Instance.FindInput(Binding.Input);
+				if (Input && Input->Type == EWidgetAnimMachineInputType::Vector2D)
+				{
+					// Both parts; a single number its length.
+					Value.SetFromVector(Declared->Type == EWidgetAnimParameterType::Vector2D
+						? FVector4(Input->Vector.X, Input->Vector.Y, 0.0, 0.0)
+						: FVector4(Input->Vector.Size(), 0.0, 0.0, 0.0), &Declared->Options);
+				}
+				else if (Input && Input->Type == EWidgetAnimMachineInputType::Choice && Declared->Type == EWidgetAnimParameterType::Choice)
+				{
+					// By name, as the options read.
+					const FName Option = GetChoiceOption(Input);
+					if (Declared->Options.Contains(Option))
+					{
+						Value.Option = Option;
+					}
+				}
+				else
+				{
+					float Number = 0.f;
+					bool bTruthy = false;
+					if (!ReadAsNumber(Instance, Binding.Input, Number, bTruthy))
+					{
+						continue;
+					}
+					if (Declared->Type == EWidgetAnimParameterType::Bool)
+					{
+						Value.bBool = bTruthy;
+					}
+					else
+					{
+						Value.SetFromVector(FVector4(Number, Number, Number, Number), &Declared->Options);
+					}
+				}
+				Value.bOverride = true;
+				OutValues.Add(Value);
+			}
+		}
+
 		/** Starts the track of the state the layer is in, if it plays anything. */
 		void StartStateTrack(FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineLayer& Def, FWidgetAnimMachineLayerInstance& Layer, const FWidgetAnimMachineContext& Context)
 		{
@@ -1065,15 +1317,50 @@ namespace WidgetAnimStateMachines
 				return;
 			}
 			const FWidgetAnimMachineState& State = Def.States[Layer.Current];
-			if (State.Kind != EWidgetAnimMachineNodeKind::State || !State.Animation)
+
+			// A blend state: every sample on a player of its own, all at the state's speed and playback, mixed as it is posed.
+			if (State.IsBlendState())
+			{
+				Layer.BlendPlayers.Reset();
+				Layer.BlendPlayers.SetNum(State.BlendSamples.Num());
+				for (int32 SampleIndex = 0; SampleIndex < State.BlendSamples.Num(); ++SampleIndex)
+				{
+					const FWidgetAnimMachineBlendSample& Sample = State.BlendSamples[SampleIndex];
+					if (!Sample.Animation)
+					{
+						continue;
+					}
+					TArray<FWidgetAnimParameterValue> SampleParameters;
+					GatherParameterInputs(Instance, State, SampleParameters, Sample.Animation);
+					TArray<FWidgetAnimSettings> SampleSettings;
+					BuildAnimationSettings(Sample.Animation, Instance.TargetPaths, Context, State.Playback, State.PlaybackSpeed, /*bFollowsProgress=*/false, SampleSettings, SampleParameters);
+					if (SampleSettings.Num() > 0)
+					{
+						UWidgetAnimLibrary::StartWidgetAnimTrack(Layer.BlendPlayers[SampleIndex], GetStateTrackId(State), /*SourceIndex=*/0, SampleSettings, /*bIsOut=*/false, /*Speed=*/1.f, /*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
+					}
+				}
+				UpdateBlendWeights(Instance, State, Layer);
+				const bool bAnyTrack = Layer.BlendPlayers.ContainsByPredicate([](const FWidgetAnimPlayer& BlendPlayer) { return BlendPlayer.Tracks.Num() > 0; });
+				if (!bAnyTrack)
+				{
+					Layer.bStatePlayed = true;
+				}
+				return;
+			}
+
+			// Its animation - or, with Random Variations, one of them picked now by its chance.
+			UWidgetAnimPresetAsset* Played = State.RandomVariations.Num() > 0 ? State.PickRandomAnimation(FMath::FRand()) : State.Animation.Get();
+			if (State.Kind != EWidgetAnimMachineNodeKind::State || !Played)
 			{
 				Layer.bStatePlayed = true;
 				return;
 			}
 
-			const bool bFollowsProgress = !State.ProgressInput.IsNone() && State.Animation->IsPercentTime();
+			const bool bFollowsProgress = !State.ProgressInput.IsNone() && Played->IsPercentTime();
+			TArray<FWidgetAnimParameterValue> ParameterValues;
+			GatherParameterInputs(Instance, State, ParameterValues, Played);
 			TArray<FWidgetAnimSettings> Settings;
-			BuildAnimationSettings(State.Animation, Instance.TargetPaths, Context, State.Playback, State.PlaybackSpeed, bFollowsProgress, Settings);
+			BuildAnimationSettings(Played, Instance.TargetPaths, Context, State.Playback, State.PlaybackSpeed, bFollowsProgress, Settings, ParameterValues);
 			if (Settings.Num() == 0)
 			{
 				Layer.bStatePlayed = true;
@@ -1194,6 +1481,17 @@ namespace WidgetAnimStateMachines
 			}
 
 			SendStateEvents(Instance, Def, Left, ToIndex, Context);
+
+			// Its actions, and the states', run once every layer has moved: the one left, the way taken, the one entered.
+			if (Def.States.IsValidIndex(Left) && Def.States[Left].Kind == EWidgetAnimMachineNodeKind::State)
+			{
+				QueueActions(Instance, LayerIndex, Def.States[Left].Name, Def.States[Left].OnExit);
+			}
+			QueueActions(Instance, LayerIndex, NAME_None, Transition.OnTaken);
+			if (Def.States.IsValidIndex(ToIndex) && Def.States[ToIndex].Kind == EWidgetAnimMachineNodeKind::State)
+			{
+				QueueActions(Instance, LayerIndex, Def.States[ToIndex].Name, Def.States[ToIndex].OnEnter);
+			}
 		}
 
 		/** Whether the state the layer is in has played enough for Transition to leave it. */
@@ -1237,6 +1535,42 @@ namespace WidgetAnimStateMachines
 
 			const FWidgetAnimMachineState& Current = Def.States[Layer.Current];
 
+			// A Random transition that could be taken: one of the Random ones from the same node that could be, by weight.
+			auto PickRandom = [&Instance, &Def, &Layer, &Current](int32 Found) -> int32
+			{
+				const FWidgetAnimMachineTransition& First = Def.Transitions[Found];
+				if (!First.bRandom)
+				{
+					return Found;
+				}
+				TArray<int32, TInlineAllocator<8>> Pool;
+				float Total = 0.f;
+				for (int32 Index = 0; Index < Def.Transitions.Num(); ++Index)
+				{
+					const FWidgetAnimMachineTransition& Candidate = Def.Transitions[Index];
+					if (Candidate.bEnabled && Candidate.bRandom && Candidate.From == First.From && Candidate.To != Current.Id
+						&& Candidate.RandomWeight > 0.f && ConditionsHold(Instance, Candidate) && ExitTimeAllows(Def, Layer, Candidate))
+					{
+						Pool.Add(Index);
+						Total += Candidate.RandomWeight;
+					}
+				}
+				if (Pool.Num() == 0 || Total <= 0.f)
+				{
+					return Found;
+				}
+				float Roll = FMath::FRandRange(0.f, Total);
+				for (const int32 Index : Pool)
+				{
+					Roll -= Def.Transitions[Index].RandomWeight;
+					if (Roll <= 0.f)
+					{
+						return Index;
+					}
+				}
+				return Pool.Last();
+			};
+
 			// At Exit the layer waits to be brought back in through Entry; nothing leaves it.
 			if (Current.Kind == EWidgetAnimMachineNodeKind::Exit)
 			{
@@ -1254,7 +1588,7 @@ namespace WidgetAnimStateMachines
 					const FWidgetAnimMachineTransition& Transition = Def.Transitions[Index];
 					if (Transition.bEnabled && Transition.From == AnyId && Transition.To != Current.Id && ConditionsHold(Instance, Transition) && ExitTimeAllows(Def, Layer, Transition))
 					{
-						return Index;
+						return PickRandom(Index);
 					}
 				}
 			}
@@ -1264,7 +1598,7 @@ namespace WidgetAnimStateMachines
 				const FWidgetAnimMachineTransition& Transition = Def.Transitions[Index];
 				if (Transition.bEnabled && Transition.From == Current.Id && ConditionsHold(Instance, Transition) && ExitTimeAllows(Def, Layer, Transition))
 				{
-					return Index;
+					return PickRandom(Index);
 				}
 			}
 			return INDEX_NONE;
@@ -1400,6 +1734,40 @@ namespace WidgetAnimStateMachines
 				TakeTransitions(Instance, LayerIndex, Context);
 			}
 
+			// The state's speed, following its Speed Input - on its track (or its samples' tracks), as it plays.
+			const FWidgetAnimMachineState* CurrentState = Def.States.IsValidIndex(Layer.Current) ? &Def.States[Layer.Current] : nullptr;
+			Layer.SpeedScale = 1.f;
+			if (CurrentState && !CurrentState->SpeedInput.IsNone())
+			{
+				float SpeedNumber = 1.f;
+				bool bSpeedTruthy = false;
+				if (ReadAsNumber(Instance, CurrentState->SpeedInput, SpeedNumber, bSpeedTruthy))
+				{
+					Layer.SpeedScale = FMath::Max(SpeedNumber, 0.f);
+				}
+			}
+			if (CurrentState && Layer.bStateTrackStarted)
+			{
+				const FName StateTrackId = GetStateTrackId(*CurrentState);
+				const float StateSpeed = Layer.SpeedScale;
+				ForEachPlayer(Layer, [StateTrackId, StateSpeed](FWidgetAnimPlayer& StatePlayer)
+				{
+					for (FWidgetAnimTrack& Track : StatePlayer.Tracks)
+					{
+						if (Track.AnimId == StateTrackId && Track.SourceIndex == 0)
+						{
+							Track.Speed = StateSpeed;
+						}
+					}
+				});
+			}
+
+			// A blend state's mix, from where its input is now.
+			if (CurrentState && CurrentState->IsBlendState() && Layer.BlendPlayers.Num() > 0 && Instance.bInputsChanged)
+			{
+				UpdateBlendWeights(Instance, *CurrentState, Layer);
+			}
+
 			// Closing, and waiting for a way to Exit that never comes - its conditions can't hold - would hold the screen open
 			// for good. A few seconds is long enough for any exit worth waiting for.
 			if (Instance.bClosing && !Layer.bExited && Def.HasExitPath() && !(Def.Transitions.IsValidIndex(Layer.Transition) && Def.States.IsValidIndex(Layer.Current) && Def.States[Layer.Current].Kind == EWidgetAnimMachineNodeKind::Exit))
@@ -1423,7 +1791,7 @@ namespace WidgetAnimStateMachines
 			const bool bCanReuse = Layer.bSettled && !Instance.bInputsChanged && Layer.Phase == EWidgetAnimMachineBlendPhase::None && Weight == Layer.Weight;
 			if (bCanReuse)
 			{
-				Layer.TimeInState += DeltaTime;
+				Layer.TimeInState += DeltaTime * Layer.SpeedScale;
 				return;
 			}
 
@@ -1434,21 +1802,25 @@ namespace WidgetAnimStateMachines
 			// which a zero-time evaluation sees to first.
 			if (Layer.bStateTrackStarted && !Layer.bPoseSettled && Def.States.IsValidIndex(Layer.Current) && Def.States[Layer.Current].Playback == EWidgetAnimMachineStatePlayback::Pose)
 			{
-				// Once: a track following a Progress Input never finishes, and is left to follow it from its end pose.
+				// Once: a track following a Progress Input never finishes, and is left to follow it from its end pose. A blend
+				// state's samples each to theirs.
 				Layer.bPoseSettled = true;
-				for (FWidgetAnimTrack& Track : Layer.Player.Tracks)
+				ForEachPlayer(Layer, [&Context, &Baselines](FWidgetAnimPlayer& PosePlayer)
 				{
-					if (!Track.bFinished)
+					for (FWidgetAnimTrack& Track : PosePlayer.Tracks)
 					{
-						if (Track.bNeedsExpansion)
+						if (!Track.bFinished)
 						{
-							FWidgetAnimResult Discarded;
-							TArray<FName> Ignored;
-							UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(Context.Host, Layer.Player, Baselines, 0.f, Ignored, Discarded);
+							if (Track.bNeedsExpansion)
+							{
+								FWidgetAnimResult Discarded;
+								TArray<FName> Ignored;
+								UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(Context.Host, PosePlayer, Baselines, 0.f, Ignored, Discarded);
+							}
+							UWidgetAnimLibrary::SettleWidgetAnimTrack(Track, Baselines);
 						}
-						UWidgetAnimLibrary::SettleWidgetAnimTrack(Track, Baselines);
 					}
-				}
+				});
 			}
 
 			FWidgetAnimMachinePose Evaluated;
@@ -1457,18 +1829,75 @@ namespace WidgetAnimStateMachines
 			NormalizeTargets(Evaluated.Result, Context.Host);
 			ComputeMasks(Layer.Player, Context.Host, Evaluated);
 
+			// A blend state: each sample worked out on its own player, then mixed by their weights - a running weighted mean,
+			// each sample lerped in by its share of the weight so far. Every sample's clock moves on, weighted or not.
+			if (Layer.BlendPlayers.Num() > 0)
+			{
+				FWidgetAnimMachinePose Mixed;
+				float WeightSoFar = 0.f;
+				for (int32 SampleIndex = 0; SampleIndex < Layer.BlendPlayers.Num(); ++SampleIndex)
+				{
+					FWidgetAnimMachinePose Sample;
+					TArray<FName> SampleFinished;
+					UWidgetAnimLibrary::EvaluateWidgetAnimPlayer(Context.Host, Layer.BlendPlayers[SampleIndex], Baselines, DeltaTime, SampleFinished, Sample.Result);
+					NormalizeTargets(Sample.Result, Context.Host);
+					ComputeMasks(Layer.BlendPlayers[SampleIndex], Context.Host, Sample);
+					const float SampleWeight = Layer.BlendWeights.IsValidIndex(SampleIndex) ? Layer.BlendWeights[SampleIndex] : 0.f;
+					if (SampleWeight <= 0.f)
+					{
+						continue;
+					}
+					WeightSoFar += SampleWeight;
+					if (WeightSoFar <= SampleWeight)
+					{
+						Mixed = MoveTemp(Sample);
+						continue;
+					}
+					FWidgetAnimMachinePose Blended;
+					BlendPoses(Mixed, Sample, SampleWeight / WeightSoFar, Context, Blended);
+					Mixed = MoveTemp(Blended);
+				}
+				Evaluated = MoveTemp(Mixed);
+			}
+
 			// How far through its state the layer is, for Exit Time.
 			const FWidgetAnimTrack* StateTrack = nullptr;
 			const bool bWasPlayed = Layer.bStatePlayed;
 			const EWidgetAnimMachineBlendPhase PhaseBefore = Layer.Phase;
-			if (Layer.bStateTrackStarted && Def.States.IsValidIndex(Layer.Current))
+			if (Layer.bStateTrackStarted && Def.States.IsValidIndex(Layer.Current) && Layer.BlendPlayers.Num() > 0)
+			{
+				// A blend state has played once its longest sample has - or every sample has finished.
+				const FName TrackId = GetStateTrackId(Def.States[Layer.Current]);
+				Layer.TimeInState += DeltaTime * Layer.SpeedScale;
+				bool bAllDone = true;
+				bool bAnyPending = false;
+				float LongestPass = 0.f;
+				for (const FWidgetAnimPlayer& BlendPlayer : Layer.BlendPlayers)
+				{
+					const FWidgetAnimTrack* SampleTrack = BlendPlayer.Tracks.FindByPredicate([TrackId](const FWidgetAnimTrack& Track) { return Track.AnimId == TrackId && Track.SourceIndex == 0; });
+					if (!SampleTrack)
+					{
+						continue;
+					}
+					bAllDone = bAllDone && (SampleTrack->bFinished || SampleTrack->bSettled);
+					bAnyPending = bAnyPending || SampleTrack->bNeedsExpansion;
+					LongestPass = FMath::Max(LongestPass, UWidgetAnimLibrary::GetStackPassDuration(SampleTrack->Settings));
+				}
+				if (!bAnyPending && Layer.PassSeconds <= 0.f)
+				{
+					Layer.PassSeconds = LongestPass;
+				}
+				Layer.bStatePlayed = bAllDone || (Layer.PassSeconds > KINDA_SMALL_NUMBER && Layer.TimeInState >= Layer.PassSeconds);
+			}
+			else if (Layer.bStateTrackStarted && Def.States.IsValidIndex(Layer.Current))
 			{
 				const FName TrackId = GetStateTrackId(Def.States[Layer.Current]);
 				StateTrack = Layer.Player.Tracks.FindByPredicate([TrackId](const FWidgetAnimTrack& Track) { return Track.AnimId == TrackId && Track.SourceIndex == 0; });
-				Layer.TimeInState += DeltaTime;
+				Layer.TimeInState += DeltaTime * Layer.SpeedScale;
 				if (StateTrack && !StateTrack->bNeedsExpansion && Layer.PassSeconds <= 0.f)
 				{
-					Layer.PassSeconds = UWidgetAnimLibrary::GetStackPassDuration(StateTrack->Settings) / FMath::Max(StateTrack->Speed, 0.01f);
+					// At the state's own speed - its Speed Input moves TimeInState instead.
+					Layer.PassSeconds = UWidgetAnimLibrary::GetStackPassDuration(StateTrack->Settings);
 				}
 				Layer.bStatePlayed = !StateTrack
 					|| StateTrack->bFinished
@@ -1575,25 +2004,43 @@ namespace WidgetAnimStateMachines
 			// interrupt the blend) are looked at once more before the layer rests.
 			const bool bJustArrived = (PhaseBefore != EWidgetAnimMachineBlendPhase::None && Layer.Phase == EWidgetAnimMachineBlendPhase::None)
 				|| (!bWasPlayed && Layer.bStatePlayed);
+			bool bPlayersAtRest = true;
+			ForEachPlayer(Layer, [&bPlayersAtRest](FWidgetAnimPlayer& RestPlayer)
+			{
+				bPlayersAtRest = bPlayersAtRest
+					&& !RestPlayer.Tracks.ContainsByPredicate([](const FWidgetAnimTrack& Track) { return !Track.bFinished || Track.bNeedsExpansion; })
+					&& !UWidgetAnimLibrary::HasValueInputs(RestPlayer);
+			});
 			Layer.bSettled = !bJustArrived
 				&& Layer.Phase == EWidgetAnimMachineBlendPhase::None
-				&& !Layer.Player.Tracks.ContainsByPredicate([](const FWidgetAnimTrack& Track) { return !Track.bFinished || Track.bNeedsExpansion; })
-				&& !UWidgetAnimLibrary::HasValueInputs(Layer.Player);
+				&& bPlayersAtRest;
 		}
 
 		/** Writes Pose into Acc by Weight: over what is there (Override), or added on top (Additive). Collects the widgets it posed. */
 		void ApplyLayer(FWidgetAnimMachinePose& Acc, const FWidgetAnimMachinePose& Pose, EWidgetAnimMachineLayerBlend Mode, float Weight, const FWidgetAnimMachineContext& Context,
-			TArray<TPair<TWeakObjectPtr<UWidget>, FWidgetAnimPartKey>>& OutPosed)
+			TArray<TPair<TWeakObjectPtr<UWidget>, FWidgetAnimPartKey>>& OutPosed, const TSet<const UObject*>* WidgetMask = nullptr, bool bMaskExcludes = false)
 		{
 			if (Weight <= 0.f)
 			{
 				return;
 			}
 
+			// The layer's widget mask (see FWidgetAnimMachineLayer::MaskMode): what it poses on a widget left out is dropped,
+			// so the layers under it keep that widget.
+			auto Allowed = [WidgetMask, bMaskExcludes](const UObject* Widget)
+			{
+				if (!WidgetMask)
+				{
+					return true;
+				}
+				const bool bListed = Widget && WidgetMask->Contains(Widget);
+				return bMaskExcludes ? !bListed : bListed;
+			};
+
 			for (int32 Index = 0; Index < Pose.Result.TargetedTransforms.Num(); ++Index)
 			{
 				const uint8 Mask = Pose.Masks.IsValidIndex(Index) ? Pose.Masks[Index] : 0;
-				if (Mask == 0)
+				if (Mask == 0 || !Allowed(Pose.Result.TargetedTransforms[Index].TargetWidget))
 				{
 					continue;
 				}
@@ -1641,6 +2088,10 @@ namespace WidgetAnimStateMachines
 			// Material parameters are assigned, as a later track's are - by the weight, from what is there or where they rest.
 			for (const FWidgetAnimScalarTarget& Source : Pose.Result.ScalarParameters)
 			{
+				if (!Allowed(Source.TargetWidget))
+				{
+					continue;
+				}
 				FWidgetAnimScalarTarget* Existing = Acc.Result.ScalarParameters.FindByPredicate([&Source](const FWidgetAnimScalarTarget& Candidate)
 				{
 					return Candidate.TargetWidget == Source.TargetWidget && Candidate.Slot == Source.Slot && Candidate.ParameterName == Source.ParameterName;
@@ -1664,6 +2115,10 @@ namespace WidgetAnimStateMachines
 			}
 			for (const FWidgetAnimVectorTarget& Source : Pose.Result.VectorParameters)
 			{
+				if (!Allowed(Source.TargetWidget))
+				{
+					continue;
+				}
 				FWidgetAnimVectorTarget* Existing = Acc.Result.VectorParameters.FindByPredicate([&Source](const FWidgetAnimVectorTarget& Candidate)
 				{
 					return Candidate.TargetWidget == Source.TargetWidget && Candidate.Slot == Source.Slot && Candidate.ParameterName == Source.ParameterName;
@@ -1689,6 +2144,10 @@ namespace WidgetAnimStateMachines
 			// Outlines and registered types say what their channel IS: the later layer's, unless it is only a baseline.
 			for (const FWidgetAnimShapeTarget& Source : Pose.Result.ShapeTargets)
 			{
+				if (!Allowed(Source.TargetBox))
+				{
+					continue;
+				}
 				FWidgetAnimShapeTarget* Existing = Acc.Result.ShapeTargets.FindByPredicate([&Source](const FWidgetAnimShapeTarget& Candidate) { return Candidate.TargetBox == Source.TargetBox; });
 				if (Source.bIsBaseline && Existing)
 				{
@@ -1705,6 +2164,10 @@ namespace WidgetAnimStateMachines
 			}
 			for (const FWidgetAnimAuthoritativeWrite& Source : Pose.Result.AuthoritativeWrites)
 			{
+				if (!Allowed(Source.TargetWidget))
+				{
+					continue;
+				}
 				FWidgetAnimAuthoritativeWrite* Existing = Acc.Result.AuthoritativeWrites.FindByPredicate([&Source](const FWidgetAnimAuthoritativeWrite& Candidate)
 				{
 					return Candidate.TargetWidget == Source.TargetWidget && Candidate.Channel == Source.Channel;
@@ -1737,6 +2200,39 @@ namespace WidgetAnimStateMachines
 					Acc.Result.AuthoritativeWrites.Add(Source);
 				}
 			}
+		}
+
+		/**
+		 * The widgets a layer's Affects names - its targets as this use of the machine maps them, (Widget) the host - and the
+		 * Shape Box each is or sits in. False for a layer that affects everything.
+		 */
+		bool BuildLayerMask(const FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineLayer& Def, const FWidgetAnimMachineContext& Context, TSet<const UObject*>& OutWidgets)
+		{
+			if (Def.MaskMode == EWidgetAnimMachineLayerMask::All)
+			{
+				return false;
+			}
+			for (const FName Target : Def.MaskTargets)
+			{
+				UWidget* Widget = nullptr;
+				if (Target == UWidgetAnimStateMachineAsset::MaskHostTarget)
+				{
+					Widget = Context.Host;
+				}
+				else if (const FName* Path = Instance.TargetPaths.Find(Target))
+				{
+					Widget = Path->IsNone() ? Context.Host : (Context.ResolvePath ? Context.ResolvePath(*Path) : nullptr);
+				}
+				if (Widget)
+				{
+					OutWidgets.Add(Widget);
+					if (const UShapeBox* Box = UWidgetAnimLibrary::ResolveShapeBox(Widget))
+					{
+						OutWidgets.Add(Box);
+					}
+				}
+			}
+			return true;
 		}
 
 		/** The frame's other tracks on top of the machines, as tracks combine: opacity and scale multiply, the rest adds. */
@@ -1923,6 +2419,11 @@ namespace WidgetAnimStateMachines
 		Instance.bClosing = false;
 		Instance.bInputsChanged = true;
 		Instance.bPoseChanged = true;
+		Instance.PendingActions.Reset();
+
+		// No layer is anywhere yet: conditions on another layer's state, as Entry picks the first states, hold for none.
+		Instance.LayerStatesNow.Init(INDEX_NONE, Instance.Layers.Num());
+		Instance.LayerStatesBefore.Init(INDEX_NONE, Instance.Layers.Num());
 
 		// What the widget is now - hovered already, disabled already - before Entry picks the first state.
 		ReadInputs(Instance, Context, 0.f);
@@ -1932,6 +2433,9 @@ namespace WidgetAnimStateMachines
 		{
 			EnterLayer(Instance, LayerIndex, Context);
 		}
+
+		// The first states' On Enter, seen from the first Tick on.
+		RunPendingActions(Instance, Context);
 	}
 
 	void Stop(FWidgetAnimMachineInstance& Instance)
@@ -1969,6 +2473,23 @@ namespace WidgetAnimStateMachines
 		ReadInputs(Instance, Context, DeltaTime);
 		UpdateHolds(Instance, DeltaTime);
 
+		// Every layer as it is before any moves - and as it was last time: what conditions on another layer's state read.
+		Instance.LayerStatesBefore = Instance.LayerStatesNow;
+		Instance.LayerStatesNow.SetNum(NumLayers);
+		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
+		{
+			Instance.LayerStatesNow[LayerIndex] = Instance.Layers[LayerIndex].Current;
+		}
+		if (Instance.LayerStatesBefore.Num() != NumLayers)
+		{
+			Instance.LayerStatesBefore = Instance.LayerStatesNow;
+		}
+		// A layer that moved since last time is news to the others: they look again.
+		if (Instance.LayerStatesBefore != Instance.LayerStatesNow)
+		{
+			Instance.bInputsChanged = true;
+		}
+
 		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
 		{
 			FWidgetAnimMachineLayerInstance& Layer = Instance.Layers[LayerIndex];
@@ -1988,11 +2509,16 @@ namespace WidgetAnimStateMachines
 		for (FWidgetAnimMachineInputState& Input : Instance.Inputs)
 		{
 			Input.bFired = false;
+			Input.bLetGo = false;
 			Input.PreviousNumber = Input.Number;
 			Input.PreviousVector = Input.Vector;
 		}
 		Instance.WidgetState.bClicked = false;
 		Instance.bInputsChanged = false;
+
+		// The actions the frame's transitions queued: after the inputs were spent, so what they set and fire is seen next frame -
+		// never within this one, which keeps a machine from looping on itself.
+		RunPendingActions(Instance, Context);
 	}
 
 	void Compose(TArrayView<FWidgetAnimMachineInstance> Instances, EWidgetAnimTracksWithMachines Mode, const FWidgetAnimMachineContext& Context, FWidgetAnimResult& InOutResult,
@@ -2020,7 +2546,10 @@ namespace WidgetAnimStateMachines
 				const FWidgetAnimMachineLayerInstance& Layer = Instance.Layers[LayerIndex];
 				if (!Layer.Output.IsEmpty())
 				{
-					ApplyLayer(Acc, Layer.Output, Instance.Machine->Layers[LayerIndex].BlendMode, Layer.Weight, Context, Posed);
+					const FWidgetAnimMachineLayer& Def = Instance.Machine->Layers[LayerIndex];
+					TSet<const UObject*> MaskWidgets;
+					const bool bMasked = BuildLayerMask(Instance, Def, Context, MaskWidgets);
+					ApplyLayer(Acc, Layer.Output, Def.BlendMode, Layer.Weight, Context, Posed, bMasked ? &MaskWidgets : nullptr, Def.MaskMode == EWidgetAnimMachineLayerMask::AllButThese);
 				}
 			}
 		}
@@ -2048,7 +2577,7 @@ namespace WidgetAnimStateMachines
 	{
 		for (FWidgetAnimMachineLayerInstance& Layer : Instance.Layers)
 		{
-			UWidgetAnimLibrary::ReleaseFinishedTracks(Layer.Player);
+			ForEachPlayer(Layer, [](FWidgetAnimPlayer& LayerPlayer) { UWidgetAnimLibrary::ReleaseFinishedTracks(LayerPlayer); });
 		}
 	}
 
@@ -2317,7 +2846,11 @@ namespace WidgetAnimStateMachines
 		int32 Taken = 0;
 		for (FWidgetAnimMachineLayerInstance& Layer : Instance.Layers)
 		{
-			const int32 LayerTaken = UWidgetAnimLibrary::SetWidgetAnimTrackValue(Layer.Player, Id, Value, bSnap);
+			int32 LayerTaken = 0;
+			ForEachPlayer(Layer, [&LayerTaken, &Id, &Value, bSnap](FWidgetAnimPlayer& LayerPlayer)
+			{
+				LayerTaken += UWidgetAnimLibrary::SetWidgetAnimTrackValue(LayerPlayer, Id, Value, bSnap);
+			});
 			if (LayerTaken > 0)
 			{
 				Layer.bSettled = false;
@@ -2347,9 +2880,33 @@ namespace WidgetAnimStateMachines
 		{
 			for (const FWidgetAnimMachineState& State : Layer.States)
 			{
-				if (State.Kind == EWidgetAnimMachineNodeKind::State && State.Animation)
+				if (State.Kind != EWidgetAnimMachineNodeKind::State)
 				{
-					BuildAnimationSettings(State.Animation, TargetPaths, Context, EWidgetAnimMachineStatePlayback::Once, 1.f, /*bFollowsProgress=*/false, OutSettings);
+					continue;
+				}
+				// Everything it can play: its animation and variations, or its blend samples.
+				TArray<UWidgetAnimPresetAsset*, TInlineAllocator<8>> Played;
+				if (State.IsBlendState())
+				{
+					for (const FWidgetAnimMachineBlendSample& Sample : State.BlendSamples)
+					{
+						Played.Add(Sample.Animation);
+					}
+				}
+				else
+				{
+					Played.Add(State.Animation);
+					for (const FWidgetAnimMachineRandomVariation& Variation : State.RandomVariations)
+					{
+						Played.Add(Variation.Animation);
+					}
+				}
+				for (UWidgetAnimPresetAsset* Animation : Played)
+				{
+					if (Animation)
+					{
+						BuildAnimationSettings(Animation, TargetPaths, Context, EWidgetAnimMachineStatePlayback::Once, 1.f, /*bFollowsProgress=*/false, OutSettings);
+					}
 				}
 			}
 			for (const FWidgetAnimMachineTransition& Transition : Layer.Transitions)
@@ -2438,6 +2995,144 @@ namespace WidgetAnimStateMachines
 				&& !(Playback == EWidgetAnimMachineStatePlayback::Once && Layer.bStatePlayed);
 			Debug.bExited = Layer.bExited;
 			Debug.Weight = Layer.Weight;
+			if (Layer.BlendPlayers.Num() > 0)
+			{
+				Debug.BlendWeights = Layer.BlendWeights;
+				Debug.BlendPoint = Layer.BlendPoint;
+			}
+			Debug.LastActions = Layer.LastActions;
+		}
+	}
+
+	void ComputeBlendWeights(const FWidgetAnimMachineState& State, const FVector2f& Value, TArray<float>& OutWeights)
+	{
+		const int32 NumSamples = State.BlendSamples.Num();
+		OutWeights.Init(0.f, NumSamples);
+		if (NumSamples == 0)
+		{
+			return;
+		}
+		if (NumSamples == 1)
+		{
+			OutWeights[0] = 1.f;
+			return;
+		}
+
+		if (State.BlendSpace != EWidgetAnimMachineBlendSpace::TwoD)
+		{
+			// 1D: the two samples either side of the value, mixed linearly; past either end, the end sample alone.
+			int32 Below = INDEX_NONE;
+			int32 Above = INDEX_NONE;
+			for (int32 Index = 0; Index < NumSamples; ++Index)
+			{
+				const float Position = State.BlendSamples[Index].Position;
+				if (Position <= Value.X && (Below == INDEX_NONE || Position > State.BlendSamples[Below].Position))
+				{
+					Below = Index;
+				}
+				if (Position >= Value.X && (Above == INDEX_NONE || Position < State.BlendSamples[Above].Position))
+				{
+					Above = Index;
+				}
+			}
+			if (Below == INDEX_NONE || Above == INDEX_NONE || Below == Above)
+			{
+				OutWeights[Below != INDEX_NONE ? Below : Above] = 1.f;
+				return;
+			}
+			const float From = State.BlendSamples[Below].Position;
+			const float To = State.BlendSamples[Above].Position;
+			const float Alpha = To - From > KINDA_SMALL_NUMBER ? FMath::Clamp((Value.X - From) / (To - From), 0.f, 1.f) : 0.f;
+			OutWeights[Below] = 1.f - Alpha;
+			OutWeights[Above] = Alpha;
+			return;
+		}
+
+		// 2D. On a sample: that one alone.
+		auto PointOf = [&State](int32 Index) { return FVector2f(State.BlendSamples[Index].Position2D); };
+		for (int32 Index = 0; Index < NumSamples; ++Index)
+		{
+			if (FVector2f::DistSquared(PointOf(Index), Value) < 1e-8f)
+			{
+				OutWeights[Index] = 1.f;
+				return;
+			}
+		}
+
+		// Inside a triangle of samples: barycentric over the smallest one around it. Samples are few, so every triangle is tried.
+		float BestArea = TNumericLimits<float>::Max();
+		int32 Best[3] = { INDEX_NONE, INDEX_NONE, INDEX_NONE };
+		float BestWeights[3] = { 0.f, 0.f, 0.f };
+		const int32 Tried = FMath::Min(NumSamples, 16);
+		for (int32 A = 0; A < Tried; ++A)
+		{
+			for (int32 B = A + 1; B < Tried; ++B)
+			{
+				for (int32 C = B + 1; C < Tried; ++C)
+				{
+					const FVector2f PA = PointOf(A);
+					const FVector2f PB = PointOf(B);
+					const FVector2f PC = PointOf(C);
+					const float Denominator = (PB.Y - PC.Y) * (PA.X - PC.X) + (PC.X - PB.X) * (PA.Y - PC.Y);
+					if (FMath::Abs(Denominator) < 1e-6f)
+					{
+						continue;
+					}
+					const float WA = ((PB.Y - PC.Y) * (Value.X - PC.X) + (PC.X - PB.X) * (Value.Y - PC.Y)) / Denominator;
+					const float WB = ((PC.Y - PA.Y) * (Value.X - PC.X) + (PA.X - PC.X) * (Value.Y - PC.Y)) / Denominator;
+					const float WC = 1.f - WA - WB;
+					const float Area = FMath::Abs(Denominator);
+					if (WA >= -1e-4f && WB >= -1e-4f && WC >= -1e-4f && Area < BestArea)
+					{
+						BestArea = Area;
+						Best[0] = A;
+						Best[1] = B;
+						Best[2] = C;
+						BestWeights[0] = FMath::Max(WA, 0.f);
+						BestWeights[1] = FMath::Max(WB, 0.f);
+						BestWeights[2] = FMath::Max(WC, 0.f);
+					}
+				}
+			}
+		}
+		if (Best[0] != INDEX_NONE)
+		{
+			const float Sum = BestWeights[0] + BestWeights[1] + BestWeights[2];
+			for (int32 Corner = 0; Corner < 3; ++Corner)
+			{
+				OutWeights[Best[Corner]] = Sum > 0.f ? BestWeights[Corner] / Sum : 1.f / 3.f;
+			}
+			return;
+		}
+
+		// Outside them all (or all in a line): the nearest three, by inverse distance squared.
+		TArray<int32, TInlineAllocator<16>> Order;
+		for (int32 Index = 0; Index < NumSamples; ++Index)
+		{
+			Order.Add(Index);
+		}
+		Order.Sort([&PointOf, &Value](int32 Left, int32 Right) { return FVector2f::DistSquared(PointOf(Left), Value) < FVector2f::DistSquared(PointOf(Right), Value); });
+		float Total = 0.f;
+		for (int32 Rank = 0; Rank < FMath::Min(3, Order.Num()); ++Rank)
+		{
+			const float Inverse = 1.f / FMath::Max(FVector2f::DistSquared(PointOf(Order[Rank]), Value), 1e-6f);
+			OutWeights[Order[Rank]] = Inverse;
+			Total += Inverse;
+		}
+		for (float& Weight : OutWeights)
+		{
+			Weight = Total > 0.f ? Weight / Total : 0.f;
+		}
+	}
+
+	void GetBlendWeights(const FWidgetAnimMachineInstance& Instance, FName LayerName, TArray<float>& OutWeights)
+	{
+		OutWeights.Reset();
+		const UWidgetAnimStateMachineAsset* Machine = Instance.Machine.Get();
+		const int32 LayerIndex = !Machine ? INDEX_NONE : (LayerName.IsNone() ? 0 : Machine->FindLayerIndex(LayerName));
+		if (Instance.Layers.IsValidIndex(LayerIndex) && Instance.Layers[LayerIndex].BlendPlayers.Num() > 0)
+		{
+			OutWeights = Instance.Layers[LayerIndex].BlendWeights;
 		}
 	}
 }

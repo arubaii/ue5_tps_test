@@ -272,6 +272,9 @@ private:
 	/** Set State Machine Input: the field's value onto the input named Input Name of the machine the trigger reaches. */
 	void SetMachineInput(const FWidgetFieldTrigger& Trigger, double Value);
 
+	/** Set Animation Parameter: the field's value as the parameter named Parameter Name, on the widget the trigger reaches. */
+	void SetAnimationParameter(const FWidgetFieldTrigger& Trigger, const FWidgetDataValue& Value);
+
 	/**
 	 * What owns a trigger's Anim IDs: outwards from its Animation Widget to the first Widget Animation Component on a
 	 * widget, or widget that is an animation host itself - the same search Play Widget Animation makes. One output is

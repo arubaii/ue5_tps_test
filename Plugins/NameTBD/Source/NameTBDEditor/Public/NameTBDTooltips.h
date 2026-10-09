@@ -218,10 +218,16 @@ namespace NameTBD::Tooltips
 				"Make or edit this Widget Blueprint's own animation timelines. They are saved with it and belong to it; to use one in another widget, save it as a Widget Animation asset.");
 		}
 
+		inline FText BuilderAnimationNameTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "BuilderAnimationNameTooltip",
+				"Animation Name: what Save Animation To calls the asset it makes (WA_ is added if missing). Double-click to rename it - the same as the builder's Animation Name in its Class Defaults.");
+		}
+
 		inline FText TimelinePickerTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TimelinePickerTooltip",
-				"Timeline: which of this Widget Blueprint's animation timelines is open. Make, rename, duplicate or delete them here.");
+				"Timeline: which of this Widget Blueprint's animation timelines is open. Double-click its name to rename it; the arrow lists them all, and makes, duplicates or deletes them.");
 		}
 
 		inline FText OpenTimelineTooltip()
@@ -1012,6 +1018,64 @@ namespace NameTBD::Tooltips
 		// -------------------------------------------------------------------------------------------------
 		// Track names and track presets
 		// -------------------------------------------------------------------------------------------------
+
+		// -------------------------------------------------------------------------------------------------
+		// Animation Parameters
+		// -------------------------------------------------------------------------------------------------
+
+		inline FText ParametersSectionTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ParametersSectionTooltip",
+				"Parameters: named values this animation's tracks can take instead of their own - a slide's distance, a fade's end, a key's value, a color, a duration. Bind a field with the pill at the end of its row. Every use of the animation can then set them: a Widget Animation Component entry's Parameters, Play Widget Animation With Parameters, Set Widget Animation Parameter, a state machine state from its inputs. One animation, many results.\n\nEach row: its name, its type, and its default - what the preview plays. Right-click a row to rename, retype or delete it; expand it for its description, options and range.");
+		}
+
+		inline FText TrackNameTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TrackNameTooltip",
+				"The track's name in the Track Editor - the same as Rename on its right-click menu. Empty, or its type's name, and it is called by its type again.");
+		}
+
+		inline FText ParameterPreviewTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ParameterPreviewTooltip",
+				"Preview: ticked, the preview (and the designer's preview and motion paths) plays the value beside it instead of the parameter's default - try a few without changing the animation. Never saved. Unticked, the default plays again.");
+		}
+
+		inline FText MissingParameterTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MissingParameterTooltip",
+				"Bound to a parameter this animation doesn't have (renamed or deleted): the field plays its own value. Bind it to another, or let go.");
+		}
+
+		inline FText AddParameterTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AddParameterTooltip",
+				"Add Parameter: a new parameter of the type picked. Or make one straight from a field: its pill's menu, New Parameter From This Field.");
+		}
+
+		inline FText NoParametersNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NoParametersNote",
+				"No parameters yet. Add one with +, or from any track field's pill (at the end of its row): New Parameter From This Field.");
+		}
+
+		inline FText BindFieldTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "BindFieldTooltip",
+				"Bind to a parameter: this field takes the value of one of the animation's parameters each time it plays, instead of its own. Click for the parameters of a type it takes, or to make one from it.");
+		}
+
+		inline FText BoundFieldTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "BoundFieldTooltip",
+				"Bound to {0} ({1}): this field plays the parameter's value - {2} by default, whatever each use of the animation sets - not the value shown here, which plays only if the parameter is removed. Click to bind it to another, mirror it, or let go.");
+		}
+
+		inline FText PlaysWhenTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PlaysWhenTooltip",
+				"Plays When: this track plays only for some values of a Choice or Bool parameter - Slide From Left for Side = Left, Slide From Right for Side = Right, in one animation. When it doesn't hold, the track keeps its place in time and poses nothing. Always: it always plays.");
+		}
 
 		inline FText RenameTrackTooltip()
 		{
@@ -2160,6 +2224,108 @@ namespace NameTBD::Tooltips
 				"Jump To State (or double-click the state): sets the preview's inputs so the layer goes there by its own transitions - the fewest from where it is, played one after another - then leaves it there. Inputs the way there doesn't test go back to their defaults, and anything that would take the layer back out is set so it doesn't.");
 		}
 
+		inline FText LayerMaskBadgeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "LayerMaskBadgeTooltip",
+				"This layer animates only some of the machine's targets (its Affects, in the layer's settings): what its states animate on the others is left to the layers under it.");
+		}
+
+		inline FText ActionsBadgeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "ActionsBadgeTooltip",
+				"This state does something as it is entered or left - sets an input, fires a trigger or sends an event (its On Enter / On Exit).");
+		}
+
+		inline FText CollapseToGroupTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "CollapseToGroupTooltip",
+				"Collapse States: shows the selected states as one box, as a Blueprint collapses nodes - double-click the box to open it. Only how the graph looks: the states play exactly as before, and transitions into and out of them run to the box.");
+		}
+
+		inline FText GroupNodeHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "GroupNodeHint",
+				"Double-click to open it. Right-click to expand its states or rename it.");
+		}
+
+		inline FText MachineModeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "MachineModeTooltip",
+				"State Machine edits this Widget Blueprint's own state machine, saved with it - as Animation Timeline is the Widget Animations panel's; Save State Machine To makes an asset of it any widget can play. Edit Existing Asset edits a Widget Animation State Machine asset in place.");
+		}
+
+		inline FText DraftMachineModeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "DraftMachineModeTooltip",
+				"This Widget Blueprint's own state machine: kept and saved with the Widget Blueprint until Save State Machine To makes it an asset. Previews in the designer like any machine; a Widget Animation Component plays the asset it is saved as.");
+		}
+
+		inline FText EditExistingMachineTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "EditExistingMachineTooltip",
+				"Edit a Widget Animation State Machine asset in place - every widget playing it plays the changes once it is saved.");
+		}
+
+		inline FText SaveDraftToTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "SaveDraftToTooltip",
+				"Save State Machine To: makes a Widget Animation State Machine asset of this Widget Blueprint's machine - in the Default Folder, or wherever the editor's Save Asset As window says - for a Widget Animation Component to play. The machine stays open here; Save puts later changes into that asset.");
+		}
+
+		inline FText SaveDraftToSavedTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "SaveDraftToSavedTooltip",
+				"Save: put this Widget Blueprint's machine into {0}, the asset it was saved as, and save it. Every widget playing it plays the change.");
+		}
+
+		inline FText UnreadInputValueTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "UnreadInputValueTooltip",
+				"Nothing in the machine reads this input yet, so its value can't be set here. It becomes editable as soon as something uses it - a condition, a state's Progress, Speed or Blend Input, a layer's Weight Input, a Parameters From Inputs or an action.");
+		}
+
+		inline FText LockMachineTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "LockMachineTooltip",
+				"Lock the machine so that it is read only: a preview, with its graph, layers, inputs and Details grayed out. The preview's inputs still work, to try it.");
+		}
+
+		inline FText LeaveGroupTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "LeaveGroupTooltip",
+				"Back to the whole layer, the collapsed states shown as their box again. Each step of the trail is the way back to it.");
+		}
+
+		inline FText MoveInputToCategoryTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "MoveInputToCategoryTooltip",
+				"Lists the input under a category in this panel, as a Blueprint variable's Category groups it - or under none, first. Only how the panel lists it; the machine is unchanged.");
+		}
+
+		inline FText NewInputCategoryTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "NewInputCategoryTooltip",
+				"Moves the input into a new category - double-click its heading to name it, or type it in the input's Category.");
+		}
+
+		inline FText InputCategoryTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "InputCategoryTooltip",
+				"A category of inputs. Click to fold or unfold it; double-click its name to rename it (every input in it follows). Move an input in or out from its right-click menu, or with its Category.");
+		}
+
+		inline FText JumpToEntryTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "JumpToEntryTooltip",
+				"Jump To Entry (or double-click Entry): starts the preview again from Entry, every input back to its default - where the machine is when its widget is made.");
+		}
+
+		inline FText JumpToExitTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "JumpToExitTooltip",
+				"Jump To Exit (or double-click Exit): sets the preview's inputs - Closing, usually - so the layer takes its way to Exit, as it does when its widget closes. Jump To Entry, or turning Closing off, brings it back in.");
+		}
+
 		inline FText OpenStateAnimationTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "OpenStateAnimationTooltip",
@@ -2182,6 +2348,30 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "RemoveRerouteTooltip",
 				"Remove Reroute Point: takes this point off its wire. The wire runs straight on from the points either side of it.");
+		}
+
+		inline FText RenameStateTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "RenameStateTooltip",
+				"Rename: type the state's new name and press Enter. Conditions on other layers that name it follow it.");
+		}
+
+		inline FText RenameCollapsedStatesTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "RenameCollapsedStatesTooltip",
+				"Rename: type the collapsed states' new name and press Enter. Only how the graph shows them - nothing that plays changes.");
+		}
+
+		inline FText DraftMachineNameTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "DraftMachineNameTooltip",
+				"The name of this Widget Blueprint's own state machine. Double-click it on the bar to rename it, or type it in the Details under State Machine. Save State Machine To names the asset after it.");
+		}
+
+		inline FText StraightWireTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "StraightWireTooltip",
+				"Straight Wire: draws this transition's wire as a straight line from state to state - corner to corner between states that lie on a slant - instead of curving out of one and into the other. Straighten Connections (Q) sets it on wires between states on a slant. Only how the graph looks.");
 		}
 
 		inline FText ClearReroutesTooltip()
@@ -2439,7 +2629,7 @@ namespace NameTBD::Tooltips
 		inline FText StraightenTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "StraightenTooltip",
-				"Straighten Connections (Q): lines the selected states up with the states they connect to, so their wires run straight. With one state selected, it lines up with the state it shares the most transitions with. Nothing is moved onto another state.");
+				"Straighten Connections (Q): lines the selected states up with the states they connect to, so their wires run straight. With one state selected, it lines up with the state it shares the most transitions with. States that lie on a slant stay where they are: the wire between them is drawn dead straight, corner to corner (Straight Wire). Works on collapsed states as on states. Nothing is moved onto another state.");
 		}
 
 		inline FText StateNodeHint()
@@ -2451,7 +2641,7 @@ namespace NameTBD::Tooltips
 		inline FText InputRowTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "InputRowTooltip",
-				"{0}: {1}\n\nClick for its settings. Double-click its name to rename it - the conditions that test it follow.");
+				"{0}: {1}\n\nClick for its settings. Double-click its name to rename it - the conditions that test it follow. Right-click to rename or delete it.");
 		}
 
 		inline FText BuiltInUnusedTooltip()

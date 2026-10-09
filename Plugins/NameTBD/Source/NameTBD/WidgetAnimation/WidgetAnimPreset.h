@@ -96,6 +96,22 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Minimum Length", ClampMin = "0", UIMin = "0", Units = "s", EditCondition = "TimeUnit == EWidgetAnimTimeUnit::Seconds", EditConditionHides))
 	float MinimumLength = 0.f;
 
+	/**
+	 * Named values this animation's tracks can take in place of their own: bind a field to one in the Widget Animations panel
+	 * (the chip at the end of its row), and every use of the animation can set it - a Widget Animation Component entry's
+	 * Parameters, Play Widget Animation With Parameters, Set Widget Animation Parameter, a state machine state from its
+	 * inputs. One animation, many results: slide from the left or the right, 40 px or 200 px, flash red or gold. See
+	 * WidgetAnimParameters.h.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (TitleProperty = "Name"))
+	TArray<FWidgetAnimParameter> Parameters;
+
+	/** The parameter called Name, or null. */
+	const FWidgetAnimParameter* FindParameter(FName Name) const
+	{
+		return Parameters.FindByPredicate([Name](const FWidgetAnimParameter& Parameter) { return Parameter.Name == Name; });
+	}
+
 	int32 GetNumLayers() const { return Layers.Num(); }
 
 	/** Whether this animation follows a progress value rather than time. See EWidgetAnimTimeUnit. */
@@ -127,6 +143,9 @@ public:
 #if WITH_EDITOR
 	virtual void PreEditChange(FProperty* PropertyAboutToChange) override;
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+
+	/** Warns of tracks bound to parameters the animation doesn't have (renamed or deleted): they play their own values. */
+	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
 #endif
 
 private:
@@ -232,6 +251,24 @@ struct NAMETBD_API FWidgetAnimEntryBase
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Progress Animation Duration", ClampMin = "0", UIMin = "0", UIMax = "5", Units = "s"))
 	float ProgressAnimationDuration = 0.f;
+
+	/**
+	 * The animation's parameters as this use plays them: one row each, ticked to set it here, else its default. Listed from the
+	 * animation whenever the entry is edited or loaded (SyncParameters); values a Play call or Set Widget Animation Parameter
+	 * hands it win over these. See WidgetAnimParameters.h.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditFixedSize, EditCondition = "bHasParameters", EditConditionHides, HideEditConditionToggle))
+	TArray<FWidgetAnimParameterValue> Parameters;
+
+	/** Whether the animation has parameters - so Parameters is shown. Set by SyncParameters. */
+	UPROPERTY()
+	bool bHasParameters = false;
+
+	/**
+	 * Lists the animation's parameters in Parameters, in its order: a row set here keeps its value while its parameter is still
+	 * there with the same type; a row not set follows the parameter's default. True if anything changed.
+	 */
+	bool SyncParameters();
 
 	/** Whether the animation played is a percentage animation. */
 	bool IsPercentAnimation() const;

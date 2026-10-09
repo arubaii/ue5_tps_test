@@ -6,19 +6,23 @@
 #include "CoreGlobals.h"
 #include "EdGraph/EdGraphPin.h"
 #include "EdGraphNode_Comment.h"
+#include "Fonts/CompositeFont.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Commands/GenericCommands.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GraphEditorActions.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimSpring.h"
 #include "NameTBDColors.h"
+#include "WidgetAnimEditorSettings.h"
 #include "NameTBDStyle.h"
 #include "NameTBDTooltips.h"
 #include "Rendering/DrawElements.h"
 #include "Rendering/SlateRenderer.h"
 #include "SCommentBubble.h"
+#include "GraphEditorSettings.h"
 #include "SGraphNode.h"
 #include "SGraphPanel.h"
 #include "SGraphPin.h"
@@ -29,6 +33,7 @@
 #include "WidgetAnimMachineConditionCustomization.h"
 #include "WidgetAnimMachineEditorStyle.h"
 #include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
@@ -329,7 +334,12 @@ namespace WidgetAnimMachineEdits
 
 		const FScopedTransaction Transaction(LOCTEXT("RenameState", "Rename State"));
 		Machine->Modify();
-		Layer->States[Index].Name = UWidgetAnimStateMachineAsset::MakeUniqueStateName(*Layer, FName(*Trimmed), State);
+		const FName OldName = Layer->States[Index].Name;
+		const FName NewStateName = UWidgetAnimStateMachineAsset::MakeUniqueStateName(*Layer, FName(*Trimmed), State);
+		Layer->States[Index].Name = NewStateName;
+
+		// Conditions on another layer's state that name it follow it.
+		Machine->RenameLayerStateReferences(Layer->Name, OldName, NewStateName);
 		FinishEdit(Machine);
 	}
 
@@ -350,9 +360,81 @@ namespace WidgetAnimMachineEdits
 				State.EditorPosition = *Position;
 			}
 		}
+		// A collapsed group's box goes by the group's id.
+		for (FWidgetAnimMachineStateGroup& Group : Layer->EditorGroups)
+		{
+			if (const FVector2D* Position = Positions.Find(Group.Id))
+			{
+				Group.Position = *Position;
+			}
+		}
 		Machine->MarkPackageDirty();
 
 		// Positions are the graph's own: nothing else needs to hear of them, and the graph already shows them.
+	}
+
+	void SetNodePositionQuietly(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Id, const FVector2D& Position)
+	{
+		if (!Machine || !Machine->Layers.IsValidIndex(LayerIndex))
+		{
+			return;
+		}
+		FWidgetAnimMachineLayer& Layer = Machine->Layers[LayerIndex];
+		if (FWidgetAnimMachineState* State = Layer.States.FindByPredicate([&Id](const FWidgetAnimMachineState& Candidate) { return Candidate.Id == Id; }))
+		{
+			State->EditorPosition = Position;
+		}
+		else if (FWidgetAnimMachineStateGroup* Group = Layer.EditorGroups.FindByPredicate([&Id](const FWidgetAnimMachineStateGroup& Candidate) { return Candidate.Id == Id; }))
+		{
+			Group->Position = Position;
+		}
+		else
+		{
+			return;
+		}
+		Machine->MarkPackageDirty();
+	}
+
+	bool GetNodeSize(const UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Id, FVector2D& OutSize, float& OutZoom)
+	{
+		if (!Machine || !Machine->Layers.IsValidIndex(LayerIndex))
+		{
+			return false;
+		}
+		const FWidgetAnimMachineLayer& Layer = Machine->Layers[LayerIndex];
+		if (const FWidgetAnimMachineState* State = Layer.States.FindByPredicate([&Id](const FWidgetAnimMachineState& Candidate) { return Candidate.Id == Id; }))
+		{
+			OutSize = State->EditorSize;
+			OutZoom = State->EditorSizeZoom;
+			return true;
+		}
+		if (const FWidgetAnimMachineStateGroup* Group = Layer.EditorGroups.FindByPredicate([&Id](const FWidgetAnimMachineStateGroup& Candidate) { return Candidate.Id == Id; }))
+		{
+			OutSize = Group->EditorSize;
+			OutZoom = Group->EditorSizeZoom;
+			return true;
+		}
+		return false;
+	}
+
+	void SetNodeSizeQuietly(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Id, const FVector2D& Size, float Zoom)
+	{
+		if (!Machine || !Machine->Layers.IsValidIndex(LayerIndex))
+		{
+			return;
+		}
+		FWidgetAnimMachineLayer& Layer = Machine->Layers[LayerIndex];
+		if (FWidgetAnimMachineState* State = Layer.States.FindByPredicate([&Id](const FWidgetAnimMachineState& Candidate) { return Candidate.Id == Id; }))
+		{
+			State->EditorSize = Size;
+			State->EditorSizeZoom = Zoom;
+		}
+		else if (FWidgetAnimMachineStateGroup* Group = Layer.EditorGroups.FindByPredicate([&Id](const FWidgetAnimMachineStateGroup& Candidate) { return Candidate.Id == Id; }))
+		{
+			Group->EditorSize = Size;
+			Group->EditorSizeZoom = Zoom;
+		}
+		// Not dirtied: only how the graph keeps a node in place, saved with whatever is saved next.
 	}
 
 	void PlaceTransitions(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TMap<FGuid, TOptional<FVector2D>>& Offsets)
@@ -452,6 +534,25 @@ namespace WidgetAnimMachineEdits
 		FinishEdit(Machine);
 	}
 
+	void SetTransitionsStraight(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& Transitions, bool bStraight)
+	{
+		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
+		if (!Layer || Transitions.Num() == 0)
+		{
+			return;
+		}
+		const FScopedTransaction Transaction(bStraight ? LOCTEXT("StraightenWires", "Straighten Wire") : LOCTEXT("CurveWires", "Curve Wire"));
+		Machine->Modify();
+		for (FWidgetAnimMachineTransition& Transition : Layer->Transitions)
+		{
+			if (Transitions.Contains(Transition.Id))
+			{
+				Transition.bEditorStraight = bStraight;
+			}
+		}
+		Machine->MarkPackageDirty();
+	}
+
 	int32 AddLayer(UWidgetAnimStateMachineAsset* Machine)
 	{
 		if (!Machine)
@@ -486,7 +587,11 @@ namespace WidgetAnimMachineEdits
 		}
 		const FScopedTransaction Transaction(LOCTEXT("RenameLayer", "Rename State Machine Layer"));
 		Machine->Modify();
+		const FName OldName = Machine->Layers[LayerIndex].Name;
 		Machine->Layers[LayerIndex].Name = Machine->MakeUniqueLayerName(FName(*Trimmed), LayerIndex);
+
+		// Conditions on its states, in the other layers, follow it.
+		Machine->RenameLayerStateReferences(NAME_None, OldName, Machine->Layers[LayerIndex].Name);
 		FinishEdit(Machine);
 	}
 
@@ -518,6 +623,39 @@ namespace WidgetAnimMachineEdits
 		return Name;
 	}
 
+	void SetInputCategory(UWidgetAnimStateMachineAsset* Machine, FName Input, const FString& Category)
+	{
+		FWidgetAnimMachineInput* Found = Machine ? Machine->Inputs.FindByPredicate([Input](const FWidgetAnimMachineInput& Candidate) { return Candidate.Name == Input; }) : nullptr;
+		const FString Trimmed = Category.TrimStartAndEnd();
+		if (!Found || Found->Category == Trimmed)
+		{
+			return;
+		}
+		const FScopedTransaction Transaction(LOCTEXT("SetInputCategory", "Move State Machine Input To Category"));
+		Machine->Modify();
+		Found->Category = Trimmed;
+		FinishEdit(Machine);
+	}
+
+	void RenameInputCategory(UWidgetAnimStateMachineAsset* Machine, const FString& Old, const FString& New)
+	{
+		const FString Trimmed = New.TrimStartAndEnd();
+		if (!Machine || Old.IsEmpty() || Trimmed == Old)
+		{
+			return;
+		}
+		const FScopedTransaction Transaction(LOCTEXT("RenameInputCategory", "Rename State Machine Input Category"));
+		Machine->Modify();
+		for (FWidgetAnimMachineInput& Input : Machine->Inputs)
+		{
+			if (Input.Category == Old)
+			{
+				Input.Category = Trimmed;
+			}
+		}
+		FinishEdit(Machine);
+	}
+
 	void RemoveInput(UWidgetAnimStateMachineAsset* Machine, FName Input)
 	{
 		if (!Machine || !Machine->FindInput(Input))
@@ -542,12 +680,34 @@ namespace WidgetAnimMachineEdits
 			{
 				Layer.WeightInput = New;
 			}
+			auto RenameActions = [Old, New](TArray<FWidgetAnimMachineAction>& Actions)
+			{
+				for (FWidgetAnimMachineAction& Action : Actions)
+				{
+					if (Action.Input == Old)
+					{
+						Action.Input = New;
+					}
+				}
+			};
 			for (FWidgetAnimMachineState& State : Layer.States)
 			{
-				if (State.ProgressInput == Old)
+				for (FName* Read : { &State.ProgressInput, &State.SpeedInput, &State.BlendInput })
 				{
-					State.ProgressInput = New;
+					if (*Read == Old)
+					{
+						*Read = New;
+					}
 				}
+				for (FWidgetAnimMachineParameterBinding& Binding : State.ParameterInputs)
+				{
+					if (Binding.Input == Old)
+					{
+						Binding.Input = New;
+					}
+				}
+				RenameActions(State.OnEnter);
+				RenameActions(State.OnExit);
 			}
 			for (FWidgetAnimMachineTransition& Transition : Layer.Transitions)
 			{
@@ -562,6 +722,7 @@ namespace WidgetAnimMachineEdits
 						Condition.OtherInput = New;
 					}
 				}
+				RenameActions(Transition.OnTaken);
 			}
 		}
 	}
@@ -601,6 +762,107 @@ namespace WidgetAnimMachineEdits
 		ReplaceInputReferences(Machine, Input, Unique);
 		FinishEdit(Machine);
 		return Unique;
+	}
+
+	const FWidgetAnimMachineStateGroup* FindGroup(const FWidgetAnimMachineLayer& Layer, const FGuid& Group)
+	{
+		return Group.IsValid() ? Layer.EditorGroups.FindByPredicate([&Group](const FWidgetAnimMachineStateGroup& Candidate) { return Candidate.Id == Group; }) : nullptr;
+	}
+
+	FGuid CollapseToGroup(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& States)
+	{
+		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
+		if (!Layer)
+		{
+			return FGuid();
+		}
+		TArray<int32> Members;
+		for (const FGuid& State : States)
+		{
+			const int32 Index = Layer->FindStateIndex(State);
+			if (Index != INDEX_NONE && Layer->States[Index].Kind == EWidgetAnimMachineNodeKind::State)
+			{
+				Members.Add(Index);
+			}
+		}
+		if (Members.Num() == 0)
+		{
+			return FGuid();
+		}
+
+		const FScopedTransaction Transaction(LOCTEXT("CollapseToGroup", "Collapse States"));
+		Machine->Modify();
+		FWidgetAnimMachineStateGroup& Group = Layer->EditorGroups.AddDefaulted_GetRef();
+		Group.Id = FGuid::NewGuid();
+		Group.bCollapsed = true;
+
+		// Collapsed States, unique among the layer's; its box where its states were, on average.
+		const FString Base = TEXT("Collapsed States");
+		FString Candidate = Base;
+		for (int32 Suffix = 2; Layer->EditorGroups.ContainsByPredicate([&Candidate](const FWidgetAnimMachineStateGroup& Other) { return Other.Name == FName(*Candidate); }); ++Suffix)
+		{
+			Candidate = FString::Printf(TEXT("%s %d"), *Base, Suffix);
+		}
+		Group.Name = FName(*Candidate);
+		FVector2D Sum = FVector2D::ZeroVector;
+		for (const int32 Index : Members)
+		{
+			Layer->States[Index].EditorGroup = Group.Id;
+			Sum += Layer->States[Index].EditorPosition;
+		}
+		Group.Position = Sum / static_cast<double>(Members.Num());
+		const FGuid Id = Group.Id;
+		FinishEdit(Machine);
+		return Id;
+	}
+
+	void SetGroupCollapsed(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Group, bool bCollapsed)
+	{
+		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
+		FWidgetAnimMachineStateGroup* Found = Layer ? Layer->EditorGroups.FindByPredicate([&Group](const FWidgetAnimMachineStateGroup& Candidate) { return Candidate.Id == Group; }) : nullptr;
+		if (!Found || Found->bCollapsed == bCollapsed)
+		{
+			return;
+		}
+		const FScopedTransaction Transaction(bCollapsed ? LOCTEXT("CollapseGroup", "Collapse States") : LOCTEXT("ExpandGroup", "Expand Collapsed States"));
+		Machine->Modify();
+		Found->bCollapsed = bCollapsed;
+		FinishEdit(Machine);
+	}
+
+	void Ungroup(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Group)
+	{
+		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
+		if (!Layer || !FindGroup(*Layer, Group))
+		{
+			return;
+		}
+		const FScopedTransaction Transaction(LOCTEXT("Ungroup", "Release Collapsed States"));
+		Machine->Modify();
+		for (FWidgetAnimMachineState& State : Layer->States)
+		{
+			if (State.EditorGroup == Group)
+			{
+				State.EditorGroup.Invalidate();
+			}
+		}
+		Layer->EditorGroups.RemoveAll([&Group](const FWidgetAnimMachineStateGroup& Candidate) { return Candidate.Id == Group; });
+		FinishEdit(Machine);
+	}
+
+	void RenameGroup(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Group, const FString& NewName)
+	{
+		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
+		FWidgetAnimMachineStateGroup* Found = Layer ? Layer->EditorGroups.FindByPredicate([&Group](const FWidgetAnimMachineStateGroup& Candidate) { return Candidate.Id == Group; }) : nullptr;
+		const FString Trimmed = NewName.TrimStartAndEnd();
+		if (!Found || Trimmed.IsEmpty() || Found->Name == FName(*Trimmed))
+		{
+			return;
+		}
+		const FScopedTransaction Transaction(LOCTEXT("RenameGroup", "Rename Collapsed States"));
+		Machine->Modify();
+		Found->Name = FName(*Trimmed);
+		FinishEdit(Machine);
 	}
 
 	void SetStateComment(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& State, const FString& Comment, bool bVisible)
@@ -1148,7 +1410,15 @@ namespace WidgetAnimMachineWires
 		return Wire;
 	}
 
-	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed, const FVector2f* NodePoint, TConstArrayView<FVector2f> Reroutes)
+	bool IsSlanted(const FBox2f& First, const FBox2f& Second)
+	{
+		const FVector2f Side = GetFacingSide(First, Second);
+		const FVector2f Delta = Second.GetCenter() - First.GetCenter();
+		const float Slant = FMath::RadiansToDegrees(FMath::Atan2(FMath::Abs(Delta.Y), FMath::Max(FMath::Abs(Delta.X), KINDA_SMALL_NUMBER)));
+		return Side.X != 0.f && Side.Y != 0.f && Slant > 25.f && Slant < 65.f;
+	}
+
+	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed, const FVector2f* NodePoint, TConstArrayView<FVector2f> Reroutes, bool bStraight)
 	{
 		if (NodePoint || Reroutes.Num() > 0)
 		{
@@ -1188,8 +1458,22 @@ namespace WidgetAnimMachineWires
 		// long enough to curve smoothly, never so short that it kinks between states that nearly touch.
 		const float Chord = FMath::Max((SecondPoint - FirstPoint).Size(), 1.f);
 		const float TangentLength = FMath::Max(Chord * 0.6f, 36.f);
-		const FVector2f FirstTangent = FirstSide.GetSafeNormal() * TangentLength;
-		const FVector2f SecondTangent = -SecondSide.GetSafeNormal() * TangentLength;
+		FVector2f FirstTangent = FirstSide.GetSafeNormal() * TangentLength;
+		FVector2f SecondTangent = -SecondSide.GetSafeNormal() * TangentLength;
+
+		// Lined up - straight across, straight down, or corner to corner on the diagonal (Q) - give or take a pixel's rounding:
+		// a straight line, not a curve that bows by that pixel. Both ends must already point along the line, within a few degrees.
+		// Drawn straight on purpose (Q on states that lie on a slant, or the wire's menu): a straight line whatever the angle.
+		const FVector2f ChordDirection = (SecondPoint - FirstPoint).GetSafeNormal();
+		const float StraightCos = FMath::Cos(FMath::DegreesToRadians(StraightSnapDegrees));
+		if (!ChordDirection.IsNearlyZero()
+			&& (bStraight
+				|| (FVector2f::DotProduct(ChordDirection, FirstSide.GetSafeNormal()) >= StraightCos
+					&& FVector2f::DotProduct(ChordDirection, (-SecondSide).GetSafeNormal()) >= StraightCos)))
+		{
+			FirstTangent = ChordDirection * TangentLength;
+			SecondTangent = ChordDirection * TangentLength;
+		}
 
 		// Where the transition node sits: halfway. Lanes closer than a node is wide stagger their nodes along the wire, so no
 		// two nodes land on each other however many wires there are.
@@ -1400,7 +1684,7 @@ FWidgetAnimMachineWire UWidgetAnimMachineGraph::ComputeWire(const UWidgetAnimMac
 	{
 		Reroutes.Add(Anchor + Offset);
 	}
-	return WidgetAnimMachineWires::Compute(FirstBox, SecondBox, Lane, Count, bReversed, Node->bPlaced ? &PlacedPoint : nullptr, Reroutes);
+	return WidgetAnimMachineWires::Compute(FirstBox, SecondBox, Lane, Count, bReversed, Node->bPlaced ? &PlacedPoint : nullptr, Reroutes, Node->bStraight);
 }
 
 bool UWidgetAnimMachineGraph::IsDebugging() const
@@ -1415,6 +1699,9 @@ void UWidgetAnimMachineGraph::RebuildFromMachine()
 	PairNodes.Reset();
 	PairNodesFrame = MAX_uint64;
 	PairNodesCount = INDEX_NONE;
+
+	// Each node made again takes the size the machine kept with its position (see SWidgetAnimMachineStateNode::Tick).
+	KnownNodeSizes.Reset();
 
 	// Every node made again: the asset is the truth, and a graph this size is quicker to make than to reconcile.
 	const TArray<UEdGraphNode*> OldNodes = Nodes;
@@ -1449,8 +1736,41 @@ void UWidgetAnimMachineGraph::RebuildFromMachine()
 		AddNode(Node, /*bUserAction=*/false, /*bSelectNewNode=*/false);
 	}
 
+	// A group opened that is gone (undone, ungrouped): back to the whole layer.
+	if (OpenGroup.IsValid() && !WidgetAnimMachineEdits::FindGroup(*Layer, OpenGroup))
+	{
+		OpenGroup.Invalidate();
+	}
+
+	// Collapsed groups, at the top of the layer: a box each, in place of their states.
+	if (!OpenGroup.IsValid())
+	{
+		for (const FWidgetAnimMachineStateGroup& Group : Layer->EditorGroups)
+		{
+			if (!Group.bCollapsed)
+			{
+				continue;
+			}
+			UWidgetAnimMachineGraphNode* Node = NewObject<UWidgetAnimMachineGraphNode>(this, NAME_None, RF_Transient);
+			Node->CreateNewGuid();
+			Node->StateId = Group.Id;
+			Node->Kind = EWidgetAnimMachineNodeKind::State;
+			Node->bIsGroup = true;
+			Node->NodePosX = FMath::RoundToInt32(Group.Position.X);
+			Node->NodePosY = FMath::RoundToInt32(Group.Position.Y);
+			Node->bCanRenameNode = true;
+			Node->AllocateDefaultPins();
+			AddNode(Node, /*bUserAction=*/false, /*bSelectNewNode=*/false);
+		}
+	}
+
 	for (const FWidgetAnimMachineState& State : Layer->States)
 	{
+		// Only what is shown: a group opened, its states alone; else every state not in a collapsed group.
+		if (GetShownNodeId(State.Id) != State.Id)
+		{
+			continue;
+		}
 		UWidgetAnimMachineGraphNode* Node = NewObject<UWidgetAnimMachineGraphNode>(this, NAME_None, RF_Transient);
 		Node->CreateNewGuid();
 		Node->StateId = State.Id;
@@ -1470,9 +1790,12 @@ void UWidgetAnimMachineGraph::RebuildFromMachine()
 
 	for (const FWidgetAnimMachineTransition& Transition : Layer->Transitions)
 	{
-		UWidgetAnimMachineGraphNode* From = FindStateNode(Transition.From);
-		UWidgetAnimMachineGraphNode* To = FindStateNode(Transition.To);
-		if (!From || !To)
+		// Between the nodes its ends are shown as - a collapsed group's box for a state in it. Within one box it isn't drawn.
+		const FGuid ShownFrom = GetShownNodeId(Transition.From);
+		const FGuid ShownTo = GetShownNodeId(Transition.To);
+		UWidgetAnimMachineGraphNode* From = FindStateNode(ShownFrom);
+		UWidgetAnimMachineGraphNode* To = FindStateNode(ShownTo);
+		if (!From || !To || From == To)
 		{
 			continue;
 		}
@@ -1480,10 +1803,11 @@ void UWidgetAnimMachineGraph::RebuildFromMachine()
 		UWidgetAnimMachineTransitionNode* Node = NewObject<UWidgetAnimMachineTransitionNode>(this, NAME_None, RF_Transient);
 		Node->CreateNewGuid();
 		Node->TransitionId = Transition.Id;
-		Node->FromId = Transition.From;
-		Node->ToId = Transition.To;
+		Node->FromId = ShownFrom;
+		Node->ToId = ShownTo;
 		Node->bPlaced = Transition.bEditorNodePlaced;
 		Node->PlacedOffset = FVector2f(Transition.EditorNodeOffset);
+		Node->bStraight = Transition.bEditorStraight;
 		for (const FVector2D& Point : Transition.EditorReroutePoints)
 		{
 			Node->RerouteOffsets.Add(FVector2f(Point));
@@ -1530,6 +1854,41 @@ UWidgetAnimMachineGraph* UWidgetAnimMachineGraphNode::GetMachineGraph() const
 	return Cast<UWidgetAnimMachineGraph>(GetGraph());
 }
 
+FGuid UWidgetAnimMachineGraph::GetShownNodeId(const FGuid& StateId) const
+{
+	const FWidgetAnimMachineLayer* Layer = GetLayer();
+	const FWidgetAnimMachineState* State = Layer ? Layer->FindState(StateId) : nullptr;
+	if (!State)
+	{
+		return FGuid();
+	}
+	if (OpenGroup.IsValid())
+	{
+		return State->EditorGroup == OpenGroup ? StateId : FGuid();
+	}
+	const FWidgetAnimMachineStateGroup* Group = WidgetAnimMachineEdits::FindGroup(*Layer, State->EditorGroup);
+	return Group && Group->bCollapsed ? Group->Id : StateId;
+}
+
+const FWidgetAnimMachineStateGroup* UWidgetAnimMachineGraphNode::GetGroup() const
+{
+	const UWidgetAnimMachineGraph* Graph = GetMachineGraph();
+	const FWidgetAnimMachineLayer* Layer = Graph ? Graph->GetLayer() : nullptr;
+	return bIsGroup && Layer ? WidgetAnimMachineEdits::FindGroup(*Layer, StateId) : nullptr;
+}
+
+bool UWidgetAnimMachineGraphNode::ShowsState(const FGuid& State) const
+{
+	if (!bIsGroup)
+	{
+		return State.IsValid() && State == StateId;
+	}
+	const UWidgetAnimMachineGraph* Graph = GetMachineGraph();
+	const FWidgetAnimMachineLayer* Layer = Graph ? Graph->GetLayer() : nullptr;
+	const FWidgetAnimMachineState* Found = Layer ? Layer->FindState(State) : nullptr;
+	return Found && Found->EditorGroup == StateId;
+}
+
 const FWidgetAnimMachineState* UWidgetAnimMachineGraphNode::GetState() const
 {
 	const UWidgetAnimMachineGraph* Graph = GetMachineGraph();
@@ -1549,12 +1908,21 @@ void UWidgetAnimMachineGraphNode::AllocateDefaultPins()
 
 FText UWidgetAnimMachineGraphNode::GetNodeTitle(ENodeTitleType::Type TitleType) const
 {
+	if (bIsGroup)
+	{
+		const FWidgetAnimMachineStateGroup* Group = GetGroup();
+		return Group ? FText::FromName(Group->Name) : LOCTEXT("MissingGroup", "(gone)");
+	}
 	const FWidgetAnimMachineState* State = GetState();
 	return State ? FText::FromName(State->Name) : LOCTEXT("MissingState", "(gone)");
 }
 
 FText UWidgetAnimMachineGraphNode::GetTooltipText() const
 {
+	if (bIsGroup)
+	{
+		return MachineTips::GroupNodeHint();
+	}
 	switch (Kind)
 	{
 	case EWidgetAnimMachineNodeKind::Entry:    return MachineTips::EntryNodeTooltip();
@@ -1576,9 +1944,23 @@ FText UWidgetAnimMachineGraphNode::GetTooltipText() const
 
 void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGraphNodeContextMenuContext* Context) const
 {
+	// Several states selected: the menu is the selection's - what acts on all of them (Collapse States, copy, cut, duplicate,
+	// delete, Organize) - and nothing meant for one state: no jumping to it, opening its animation, renaming it, making it the
+	// Entry state, its note, or the wires off it.
+	bool bMultiple = false;
+	if (const UWidgetAnimMachineGraph* OwnGraph = GetMachineGraph())
+	{
+		TArray<FGuid> Selected;
+		if (OwnGraph->GetSelectedStates)
+		{
+			OwnGraph->GetSelectedStates(Selected);
+		}
+		bMultiple = Selected.Num() > 1;
+	}
+
 	// A wire right-clicked: the graph hands over the pin at one end of it - often a state's - so the transitions on the wires
 	// at that pin are offered here, each to switch on or off, as their own node's menu does.
-	if (Context && Context->Pin)
+	if (Context && Context->Pin && !bMultiple)
 	{
 		TArray<const UWidgetAnimMachineTransitionNode*, TInlineAllocator<4>> OnWire;
 		for (const UEdGraphPin* Linked : Context->Pin->LinkedTo)
@@ -1590,7 +1972,9 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
 		}
 		if (OnWire.Num() > 0)
 		{
-			FToolMenuSection& WireSection = Menu->AddSection(TEXT("WidgetAnimMachineWire"), LOCTEXT("WireSection", "Transitions On This Wire"));
+			// Under the State section: what the state is comes first, then the wires off it.
+			FToolMenuSection& WireSection = Menu->AddSection(TEXT("WidgetAnimMachineWire"), LOCTEXT("WireSection", "Transitions On This Wire"),
+				FToolMenuInsert(TEXT("WidgetAnimMachineState"), EToolMenuInsertType::After));
 			for (const UWidgetAnimMachineTransitionNode* TransitionNode : OnWire)
 			{
 				const FWidgetAnimMachineTransition* Transition = TransitionNode->GetTransition();
@@ -1606,26 +1990,205 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
 					ToNode ? ToNode->GetNodeTitle(ENodeTitleType::ListView) : FText::GetEmpty());
 				const bool bEnabled = Transition->bEnabled;
 				const TWeakObjectPtr<const UWidgetAnimMachineTransitionNode> WeakTransition(TransitionNode);
+				// Each its route with a check box: ticked, it can be taken - quicker to read than "Enabled" / "Disabled".
 				WireSection.AddMenuEntry(
 					*FString::Printf(TEXT("ToggleWire_%s"), *TransitionNode->TransitionId.ToString()),
-					FText::Format(bEnabled ? LOCTEXT("DisableWireTransition", "Disable {0}") : LOCTEXT("EnableWireTransition", "Enable {0}"), Route),
+					Route,
 					MachineTips::ToggleTransitionTooltip(),
 					FSlateIcon(),
-					FUIAction(FExecuteAction::CreateLambda([WeakTransition, bEnabled]()
-					{
-						const UWidgetAnimMachineTransitionNode* Node = WeakTransition.Get();
-						UWidgetAnimMachineGraph* NodeGraph = Node ? Node->GetMachineGraph() : nullptr;
-						if (NodeGraph)
+					FUIAction(
+						FExecuteAction::CreateLambda([WeakTransition, bEnabled]()
 						{
-							WidgetAnimMachineEdits::SetTransitionsEnabled(NodeGraph->Machine, NodeGraph->LayerIndex, { Node->TransitionId }, !bEnabled);
-						}
-					})));
+							const UWidgetAnimMachineTransitionNode* Node = WeakTransition.Get();
+							UWidgetAnimMachineGraph* NodeGraph = Node ? Node->GetMachineGraph() : nullptr;
+							if (NodeGraph)
+							{
+								WidgetAnimMachineEdits::SetTransitionsEnabled(NodeGraph->Machine, NodeGraph->LayerIndex, { Node->TransitionId }, !bEnabled);
+							}
+						}),
+						FCanExecuteAction(),
+						FIsActionChecked::CreateLambda([bEnabled]() { return bEnabled; })),
+					EUserInterfaceActionType::ToggleButton);
 			}
 		}
 	}
 
-	FToolMenuSection& Section = Menu->AddSection(TEXT("WidgetAnimMachineState"), LOCTEXT("StateSection", "State"));
 	const TWeakObjectPtr<const UWidgetAnimMachineGraphNode> WeakSelf(this);
+
+	// Collapse States: the selected states (this one too), as one box - lined up with what they are wired to once it is made
+	// (OnCollapsed). Expand States undoes the look; a state of expanded collapsed states folds them back.
+	auto CollapseSelected = [WeakSelf]()
+	{
+		const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+		UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+		if (!Graph)
+		{
+			return;
+		}
+		const FWidgetAnimMachineState* Own = Node->GetState();
+		const FWidgetAnimMachineLayer* Layer = Graph->GetLayer();
+		const FWidgetAnimMachineStateGroup* Expanded = Own && Layer ? WidgetAnimMachineEdits::FindGroup(*Layer, Own->EditorGroup) : nullptr;
+		FGuid Made;
+		if (Expanded && !Expanded->bCollapsed)
+		{
+			Made = Expanded->Id;
+			WidgetAnimMachineEdits::SetGroupCollapsed(Graph->Machine, Graph->LayerIndex, Made, true);
+		}
+		else
+		{
+			TArray<FGuid> States;
+			if (Graph->GetSelectedStates)
+			{
+				Graph->GetSelectedStates(States);
+			}
+			States.AddUnique(Node->StateId);
+			Made = WidgetAnimMachineEdits::CollapseToGroup(Graph->Machine, Graph->LayerIndex, States);
+		}
+		if (Made.IsValid() && Graph->OnCollapsed)
+		{
+			Graph->OnCollapsed(Made);
+		}
+	};
+
+	// Rename: its new name typed straight into the menu, as a track's is in the Widget Animations panel - a state, or
+	// collapsed states. Enter renames it and closes the menu; Escape or clicking away leaves it.
+	auto AddRename = [WeakSelf](FToolMenuSection& InSection)
+	{
+		const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+		const UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+		const bool bEditable = !Graph || !Graph->CanEditMachine || Graph->CanEditMachine();
+		const FText Current = Node ? Node->GetNodeTitle(ENodeTitleType::EditableTitle) : FText::GetEmpty();
+		InSection.AddSubMenu(
+			TEXT("RenameNode"),
+			LOCTEXT("RenameNodeMenu", "Rename"),
+			Node && Node->bIsGroup ? MachineTips::RenameCollapsedStatesTooltip() : MachineTips::RenameStateTooltip(),
+			FNewMenuDelegate::CreateLambda([WeakSelf, Current, bEditable](FMenuBuilder& SubMenu)
+			{
+				SubMenu.AddWidget(
+					SNew(SBox)
+					.Padding(FMargin(8.f, 2.f, 8.f, 4.f))
+					.MinDesiredWidth(200.f)
+					[
+						SNew(SEditableTextBox)
+						.Text(Current)
+						.IsReadOnly(!bEditable)
+						.SelectAllTextWhenFocused(true)
+						.OnTextCommitted_Lambda([WeakSelf](const FText& NewText, ETextCommit::Type CommitType)
+						{
+							const FString Typed = NewText.ToString().TrimStartAndEnd();
+							if (CommitType != ETextCommit::OnEnter || Typed.IsEmpty())
+							{
+								return;
+							}
+							FSlateApplication::Get().DismissAllMenus();
+							const UWidgetAnimMachineGraphNode* Renamed = WeakSelf.Get();
+							UWidgetAnimMachineGraph* RenamedGraph = Renamed ? Renamed->GetMachineGraph() : nullptr;
+							if (!RenamedGraph)
+							{
+								return;
+							}
+							if (Renamed->bIsGroup)
+							{
+								WidgetAnimMachineEdits::RenameGroup(RenamedGraph->Machine, RenamedGraph->LayerIndex, Renamed->StateId, Typed);
+							}
+							else
+							{
+								WidgetAnimMachineEdits::RenameState(RenamedGraph->Machine, RenamedGraph->LayerIndex, Renamed->StateId, Typed);
+							}
+						})
+					],
+					FText::GetEmpty(),
+					/*bNoIndent=*/true);
+			}),
+			/*bInOpenSubMenuOnClick=*/false,
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("GenericCommands.Rename")));
+	};
+
+	// Lining the selection up: Q, as in a Blueprint graph. A menu entry of its own - the engine's Straighten Connections
+	// command straightens by pins, which a state machine's nodes don't line up by. Next to last: a state's note is last.
+	auto AddOrganize = [&Menu, WeakSelf]()
+	{
+		FToolMenuSection& Organize = Menu->AddSection(TEXT("WidgetAnimMachineOrganize"), LOCTEXT("OrganizeSection", "Organize"));
+		Organize.AddMenuEntry(
+			TEXT("StraightenStates"),
+			LOCTEXT("StraightenStates", "Straighten Connections (Q)"),
+			MachineTips::StraightenTooltip(),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([WeakSelf]()
+			{
+				const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+				UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+				if (Graph && Graph->OnStraighten)
+				{
+					Graph->OnStraighten();
+				}
+			})));
+		Organize.AddMenuEntry(FGraphEditorCommands::Get().CreateComment);
+	};
+
+	// The selection's menu.
+	if (bMultiple)
+	{
+		FToolMenuSection& SelectionSection = Menu->AddSection(TEXT("WidgetAnimMachineSelection"), LOCTEXT("SelectionSection", "Selected States"));
+		SelectionSection.AddMenuEntry(
+			TEXT("CollapseToGroup"),
+			LOCTEXT("CollapseToGroupMenu", "Collapse States"),
+			MachineTips::CollapseToGroupTooltip(),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda(CollapseSelected)));
+		SelectionSection.AddMenuEntry(FGenericCommands::Get().Copy);
+		SelectionSection.AddMenuEntry(FGenericCommands::Get().Cut);
+		SelectionSection.AddMenuEntry(FGenericCommands::Get().Duplicate);
+		SelectionSection.AddMenuEntry(FGenericCommands::Get().Delete);
+		AddOrganize();
+		return;
+	}
+
+	// A collapsed group's box: open it, expand it in place, take its states out of it, rename it.
+	if (bIsGroup)
+	{
+		FToolMenuSection& GroupSection = Menu->AddSection(TEXT("WidgetAnimMachineGroup"), LOCTEXT("GroupSection", "Collapsed States"));
+		auto AddGroupEntry = [&GroupSection, WeakSelf](FName EntryName, const FText& Label, const FText& Tip, TFunction<void(UWidgetAnimMachineGraph&, const FGuid&)> Act)
+		{
+			GroupSection.AddMenuEntry(EntryName, Label, Tip, FSlateIcon(), FUIAction(FExecuteAction::CreateLambda([WeakSelf, Act]()
+			{
+				const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+				UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+				if (Graph)
+				{
+					Act(*Graph, Node->StateId);
+				}
+			})));
+		};
+		AddGroupEntry(TEXT("OpenGroup"), LOCTEXT("OpenGroupMenu", "Open"), LOCTEXT("OpenGroupTip", "Shows these states alone (or double-click the box). Back to the layer with the trail in the layer row, above the graph."),
+			[](UWidgetAnimMachineGraph& Graph, const FGuid& Group) { Graph.OpenGroupView(Group); });
+		AddGroupEntry(TEXT("ExpandGroup"), LOCTEXT("ExpandGroupMenu", "Expand States"), LOCTEXT("ExpandGroupTip", "Shows these states in the layer again, still together under this name; Collapse States on any of them folds them back into this box."),
+			[](UWidgetAnimMachineGraph& Graph, const FGuid& Group) { WidgetAnimMachineEdits::SetGroupCollapsed(Graph.Machine, Graph.LayerIndex, Group, false); });
+		AddRename(GroupSection);
+		AddOrganize();
+		return;
+	}
+
+	FToolMenuSection& Section = Menu->AddSection(TEXT("WidgetAnimMachineState"), LOCTEXT("StateSection", "State"));
+	if (Kind == EWidgetAnimMachineNodeKind::Entry || Kind == EWidgetAnimMachineNodeKind::Exit)
+	{
+		// Back to the start, or out through Exit - as a double-click does.
+		const bool bEntry = Kind == EWidgetAnimMachineNodeKind::Entry;
+		Section.AddMenuEntry(
+			TEXT("JumpToState"),
+			bEntry ? LOCTEXT("JumpToEntryMenu", "Jump To Entry") : LOCTEXT("JumpToExitMenu", "Jump To Exit"),
+			bEntry ? MachineTips::JumpToEntryTooltip() : MachineTips::JumpToExitTooltip(),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([WeakSelf]()
+			{
+				const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+				UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+				if (Graph && Graph->OnJumpToState)
+				{
+					Graph->OnJumpToState(Node->StateId);
+				}
+			})));
+	}
 	if (Kind == EWidgetAnimMachineNodeKind::State)
 	{
 		Section.AddMenuEntry(
@@ -1670,13 +2233,24 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
 					Graph->OnOpenState(Node->StateId);
 				}
 			})));
-		Section.AddMenuEntry(FGenericCommands::Get().Rename);
+		Section.AddMenuEntry(
+			TEXT("CollapseToGroup"),
+			LOCTEXT("CollapseToGroupMenu", "Collapse States"),
+			MachineTips::CollapseToGroupTooltip(),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda(CollapseSelected)));
+		AddRename(Section);
 		Section.AddMenuEntry(FGenericCommands::Get().Copy);
 		Section.AddMenuEntry(FGenericCommands::Get().Cut);
 		Section.AddMenuEntry(FGenericCommands::Get().Duplicate);
 		Section.AddMenuEntry(FGenericCommands::Get().Delete);
+	}
 
-		// Its note: typed straight into the menu, as a Blueprint node's comment is.
+	AddOrganize();
+
+	// A state's note, last: typed straight into the menu, as a Blueprint node's comment is.
+	if (Kind == EWidgetAnimMachineNodeKind::State)
+	{
 		const FWidgetAnimMachineState* State = GetState();
 		FToolMenuSection& CommentSection = Menu->AddSection(TEXT("WidgetAnimMachineNodeComment"), LOCTEXT("NodeCommentSection", "Node Comment"));
 		CommentSection.AddEntry(FToolMenuEntry::InitWidget(
@@ -1687,7 +2261,6 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
 			[
 				SNew(SMultiLineEditableTextBox)
 				.Text(FText::FromString(State ? State->Comment : FString()))
-				.HintText(LOCTEXT("NodeCommentHint", "A note shown over the state"))
 				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::NodeCommentTooltip()))
 				.OnTextCommitted_Lambda([WeakSelf](const FText& NewText, ETextCommit::Type CommitType)
 				{
@@ -1702,25 +2275,6 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
 			FText::GetEmpty(),
 			/*bNoIndent=*/true));
 	}
-
-	// Lining the selection up: Q, as in a Blueprint graph. A menu entry of its own - the engine's Straighten Connections
-	// command straightens by pins, which a state machine's nodes don't line up by.
-	FToolMenuSection& Organize = Menu->AddSection(TEXT("WidgetAnimMachineOrganize"), LOCTEXT("OrganizeSection", "Organize"));
-	Organize.AddMenuEntry(
-		TEXT("StraightenStates"),
-		LOCTEXT("StraightenStates", "Straighten Connections (Q)"),
-		MachineTips::StraightenTooltip(),
-		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateLambda([WeakSelf]()
-		{
-			const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
-			UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
-			if (Graph && Graph->OnStraighten)
-			{
-				Graph->OnStraighten();
-			}
-		})));
-	Organize.AddMenuEntry(FGraphEditorCommands::Get().CreateComment);
 }
 
 UWidgetAnimMachineGraph* UWidgetAnimMachineTransitionNode::GetMachineGraph() const
@@ -1946,6 +2500,35 @@ void UWidgetAnimMachineTransitionNode::GetNodeContextMenuActions(UToolMenu* Menu
 				}
 			})));
 	}
+	// Its wire dead straight from state to state, or curving as usual - when it is a plain wire: one routed through points
+	// of its own runs straight between them already.
+	if (!bPlaced && RerouteOffsets.Num() == 0)
+	{
+		const TWeakObjectPtr<UWidgetAnimMachineTransitionNode> WeakStraight(const_cast<UWidgetAnimMachineTransitionNode*>(this));
+		Section.AddMenuEntry(
+			TEXT("StraightWire"),
+			LOCTEXT("StraightWire", "Straight Wire"),
+			MachineTips::StraightWireTooltip(),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateLambda([WeakStraight]()
+				{
+					UWidgetAnimMachineTransitionNode* Node = WeakStraight.Get();
+					UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+					if (Graph)
+					{
+						Node->bStraight = !Node->bStraight;
+						WidgetAnimMachineEdits::SetTransitionsStraight(Graph->Machine, Graph->LayerIndex, { Node->TransitionId }, Node->bStraight);
+					}
+				}),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateLambda([WeakStraight]()
+				{
+					const UWidgetAnimMachineTransitionNode* Node = WeakStraight.Get();
+					return Node && Node->bStraight;
+				})),
+			EUserInterfaceActionType::ToggleButton);
+	}
 	// Routed through reroute points: back to a plain wire.
 	if (RerouteOffsets.Num() > 0)
 	{
@@ -2135,6 +2718,21 @@ FGuid UWidgetAnimMachineGraphSchema::AddPresetState(UWidgetAnimMachineGraph* Gra
 	}
 
 	const FGuid StateId = WidgetAnimMachineEdits::AddState(Graph->Machine, Graph->LayerIndex, Preset, Location);
+
+	// Added inside an open group: the state joins it, or the group's view would not show it.
+	if (StateId.IsValid() && Graph->OpenGroup.IsValid() && Graph->Machine->Layers.IsValidIndex(Graph->LayerIndex))
+	{
+		FWidgetAnimMachineLayer& Layer = Graph->Machine->Layers[Graph->LayerIndex];
+		if (WidgetAnimMachineEdits::FindGroup(Layer, Graph->OpenGroup))
+		{
+			if (FWidgetAnimMachineState* Added = Layer.States.FindByPredicate([&StateId](const FWidgetAnimMachineState& Candidate) { return Candidate.Id == StateId; }))
+			{
+				Graph->Machine->Modify();
+				Added->EditorGroup = Graph->OpenGroup;
+			}
+		}
+	}
+
 	if (From && StateId.IsValid())
 	{
 		const FGuid TransitionId = WidgetAnimMachineEdits::AddTransition(Graph->Machine, Graph->LayerIndex, From->StateId, StateId);
@@ -2196,6 +2794,11 @@ const FPinConnectionResponse UWidgetAnimMachineGraphSchema::CanCreateConnection(
 	if (!NodeA || !NodeB)
 	{
 		return FPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, LOCTEXT("OnlyStates", "Join two states"));
+	}
+	if (NodeA->bIsGroup || NodeB->bIsGroup)
+	{
+		// A group's box is only how the graph shows its states: join one of them - open the group, or expand it.
+		return FPinConnectionResponse(CONNECT_RESPONSE_DISALLOW, LOCTEXT("NotToGroup", "Open or expand the collapsed states to join one of them"));
 	}
 
 	// Dragged onto a node anywhere - its edge is its output - the transition goes from the one dragged from to the one dropped on.
@@ -2381,6 +2984,205 @@ private:
 	FLinearColor EdgeColor = FLinearColor::Transparent;
 	float EdgeWidth = 0.f;
 	const FSlateBrush* Brush = nullptr;
+};
+
+/**
+ * A collapsed group's body, as a Blueprint collapsed graph node's (and the Widget Animations panel's collapsed track) is: a
+ * dark frame round a dark, blank body, rounded at every corner, with a soft gray glow in its middle fading toward its edges.
+ * Colors from NameTBD::Colors::WidgetAnimEditor (CollapsedNode*), so the two editors' collapsed things look alike.
+ */
+class SWidgetAnimMachineCollapsedBody : public SLeafWidget
+{
+public:
+
+	SLATE_BEGIN_ARGS(SWidgetAnimMachineCollapsedBody) {}
+		SLATE_ATTRIBUTE(bool, Lifted)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		// Visibility is the caller's (shown on a group's box only); never set here, which would override it.
+		Lifted = InArgs._Lifted;
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override
+	{
+		return FVector2D(8.0, 8.0);
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+	{
+		namespace CollapsedLook = NameTBD::Colors::WidgetAnimEditor;
+		const FVector2f Size = AllottedGeometry.GetLocalSize();
+		const float Border = CollapsedLook::CollapsedNodeBorder;
+		if (Size.X <= Border * 2.f || Size.Y <= Border * 2.f)
+		{
+			return LayerId;
+		}
+		const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
+		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(),
+			WidgetAnimMachineStyle::RoundedBrush(CollapsedLook::CollapsedNodeRadius), ESlateDrawEffect::None, CollapsedLook::CollapsedNodeFrame * Tint);
+
+		const FVector2f BodySize(Size.X - Border * 2.f, Size.Y - Border * 2.f);
+		const FGeometry Body = AllottedGeometry.MakeChild(BodySize, FSlateLayoutTransform(FVector2f(Border, Border)));
+		FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1, Body.ToPaintGeometry(),
+			WidgetAnimMachineStyle::RoundedBrush(FMath::Max(CollapsedLook::CollapsedNodeRadius - Border, 1.f)), ESlateDrawEffect::None, CollapsedLook::CollapsedNodeBody * Tint);
+
+		// The glow, a row of pixels at a time: across each row, faded in from both ends; down the rows, strongest in the middle.
+		FLinearColor Glow = CollapsedLook::CollapsedNodeGlow;
+		if (Lifted.Get(false))
+		{
+			Glow = Glow * 1.25f;
+		}
+		Glow.A = CollapsedLook::CollapsedNodeGlow.A;
+		OutDrawElements.PushClip(FSlateClippingZone(Body));
+		const float Reach = FMath::Min(FMath::Clamp(BodySize.X * CollapsedLook::CollapsedNodeGlowReach, 4.f, CollapsedLook::CollapsedNodeGlowMaxReach), BodySize.X / 4.5f);
+		const int32 NumRows = FMath::Max(FMath::CeilToInt(BodySize.Y), 1);
+		for (int32 Row = 0; Row < NumRows; ++Row)
+		{
+			const float Down = (Row + 0.5f) / NumRows;
+			const float Strength = FMath::Pow(FMath::Sin(Down * PI), CollapsedLook::CollapsedNodeGlowFalloff);
+			if (Strength <= 0.01f)
+			{
+				continue;
+			}
+			auto At = [&Glow, Strength](float X, float Alpha)
+			{
+				return FSlateGradientStop(FVector2D(X, 0.0), Glow.CopyWithNewOpacity(Glow.A * Strength * Alpha) * FLinearColor(1.f, 1.f, 1.f, 1.f));
+			};
+			TArray<FSlateGradientStop> Stops;
+			Stops.Add(At(0.f, 0.f));
+			Stops.Add(At(Reach * 0.5f, 0.15f));
+			Stops.Add(At(Reach, 0.45f));
+			Stops.Add(At(Reach * 2.2f, 1.f));
+			Stops.Add(At(BodySize.X - Reach * 2.2f, 1.f));
+			Stops.Add(At(BodySize.X - Reach, 0.45f));
+			Stops.Add(At(BodySize.X - Reach * 0.5f, 0.15f));
+			Stops.Add(At(BodySize.X, 0.f));
+			FSlateDrawElement::MakeGradient(OutDrawElements, LayerId + 2,
+				Body.ToPaintGeometry(FVector2f(BodySize.X, 1.f), FSlateLayoutTransform(FVector2f(0.f, static_cast<float>(Row)))),
+				MoveTemp(Stops), Orient_Vertical, ESlateDrawEffect::None);
+		}
+		OutDrawElements.PopClip();
+		return LayerId + 3;
+	}
+
+private:
+
+	TAttribute<bool> Lifted;
+};
+
+/**
+ * A blend state's samples, drawn small on its node: Blend 1D as a line with a tick per sample, Blend 2D as a square with a dot per
+ * sample (each as big as its weight while watched) - and, while the watched widget is in the state, a dot where its input is.
+ */
+class SWidgetAnimMachineBlendPlot : public SLeafWidget
+{
+public:
+
+	SLATE_BEGIN_ARGS(SWidgetAnimMachineBlendPlot) {}
+		/** The state's blend samples and space, read every paint. */
+		SLATE_ARGUMENT(TFunction<const FWidgetAnimMachineState*()>, GetState)
+		/** The live weights and input point, when watched. False otherwise. */
+		SLATE_ARGUMENT(TFunction<bool(TArray<float>&, FVector2f&)>, GetLive)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		GetState = InArgs._GetState;
+		GetLive = InArgs._GetLive;
+		SetVisibility(EVisibility::HitTestInvisible);
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override
+	{
+		const FWidgetAnimMachineState* State = GetState ? GetState() : nullptr;
+		if (!State || !State->IsBlendState() || State->BlendSamples.Num() == 0)
+		{
+			return FVector2D::ZeroVector;
+		}
+		return State->BlendSpace == EWidgetAnimMachineBlendSpace::TwoD ? FVector2D(56.0, 56.0) : FVector2D(96.0, 14.0);
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+	{
+		const FWidgetAnimMachineState* State = GetState ? GetState() : nullptr;
+		if (!State || !State->IsBlendState() || State->BlendSamples.Num() == 0)
+		{
+			return LayerId;
+		}
+		TArray<float> Weights;
+		FVector2f Live = FVector2f::ZeroVector;
+		const bool bLive = GetLive && GetLive(Weights, Live);
+		const FSlateBrush* White = FAppStyle::GetBrush(TEXT("WhiteBrush"));
+		const FLinearColor Faint(1.f, 1.f, 1.f, 0.25f);
+		const FLinearColor Sample(1.f, 1.f, 1.f, 0.8f);
+		const FLinearColor LiveColor = MachineColors::StateProgress;
+		const FVector2f Size = AllottedGeometry.GetLocalSize();
+		const bool bTwoD = State->BlendSpace == EWidgetAnimMachineBlendSpace::TwoD;
+
+		// The samples' extent - where the plot's edges are - with the live point inside it too.
+		FVector2f Min(TNumericLimits<float>::Max(), TNumericLimits<float>::Max());
+		FVector2f Max(-TNumericLimits<float>::Max(), -TNumericLimits<float>::Max());
+		auto PointOf = [State, bTwoD](int32 Index)
+		{
+			const FWidgetAnimMachineBlendSample& Blend = State->BlendSamples[Index];
+			return bTwoD ? FVector2f(Blend.Position2D) : FVector2f(Blend.Position, 0.f);
+		};
+		for (int32 Index = 0; Index < State->BlendSamples.Num(); ++Index)
+		{
+			Min = FVector2f::Min(Min, PointOf(Index));
+			Max = FVector2f::Max(Max, PointOf(Index));
+		}
+		if (bLive)
+		{
+			Min = FVector2f::Min(Min, Live);
+			Max = FVector2f::Max(Max, Live);
+		}
+		const FVector2f Span(FMath::Max(Max.X - Min.X, 1e-3f), FMath::Max(Max.Y - Min.Y, 1e-3f));
+		const float Inset = 4.f;
+		auto ToLocal = [&](const FVector2f& Point)
+		{
+			const float X = Inset + (Point.X - Min.X) / Span.X * (Size.X - Inset * 2.f);
+			const float Y = bTwoD ? Inset + (Point.Y - Min.Y) / Span.Y * (Size.Y - Inset * 2.f) : Size.Y * 0.5f;
+			return FVector2f(X, Y);
+		};
+		auto Dot = [&](const FVector2f& Center, float Radius, const FLinearColor& Color, int32 Layer)
+		{
+			FSlateDrawElement::MakeBox(OutDrawElements, Layer,
+				AllottedGeometry.ToPaintGeometry(FVector2f(Radius * 2.f, Radius * 2.f), FSlateLayoutTransform(Center - FVector2f(Radius, Radius))),
+				White, ESlateDrawEffect::None, Color * InWidgetStyle.GetColorAndOpacityTint());
+		};
+
+		// The frame: a line for 1D, a box for 2D.
+		if (bTwoD)
+		{
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), White, ESlateDrawEffect::None, FLinearColor(0.f, 0.f, 0.f, 0.35f) * InWidgetStyle.GetColorAndOpacityTint());
+		}
+		else
+		{
+			TArray<FVector2f> Line = { FVector2f(Inset, Size.Y * 0.5f), FVector2f(Size.X - Inset, Size.Y * 0.5f) };
+			FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Line, ESlateDrawEffect::None, Faint * InWidgetStyle.GetColorAndOpacityTint(), true, 1.f);
+		}
+
+		for (int32 Index = 0; Index < State->BlendSamples.Num(); ++Index)
+		{
+			const float Weight = bLive && Weights.IsValidIndex(Index) ? Weights[Index] : 0.f;
+			Dot(ToLocal(PointOf(Index)), 1.5f + 2.5f * Weight, Weight > 0.f ? FMath::Lerp(Sample, LiveColor, Weight) : Sample, LayerId + 1);
+		}
+		if (bLive)
+		{
+			Dot(ToLocal(Live), 2.f, LiveColor, LayerId + 2);
+		}
+		return LayerId + 3;
+	}
+
+private:
+
+	TFunction<const FWidgetAnimMachineState*()> GetState;
+	TFunction<bool(TArray<float>&, FVector2f&)> GetLive;
 };
 
 /**
@@ -2605,6 +3407,10 @@ public:
 			: Glow.CopyWithNewOpacity(Glow.A * Amount);
 		Lines.Add({ RimOffset, RimWidth, Rim });
 
+		// Each line one closed antialiased path. Such a path dims where its two ends meet - a hairline crack across the ring -
+		// so it starts at the middle of the bottom edge, where it shows least, and runs on past its start by the DEVELOPER
+		// ONLY State Machine Ring Seam Overlap: its two ends overlap rather than meet.
+		const float Overlap = FMath::Max(UWidgetAnimEditorSettings::Get().MachineRingSeamOverlap, 0.f);
 		TArray<FVector2f> Points;
 		for (const FLine& Line : Lines)
 		{
@@ -2618,11 +3424,15 @@ public:
 				FVector2f(Min.X + Radius, Max.Y - Radius),
 				FVector2f(Min.X + Radius, Min.Y + Radius),
 			};
-			// Round from the top-right corner, clockwise: each corner a quarter turn starting where the last left off.
+			// From the middle of the bottom edge, clockwise: the bottom-left corner, the top-left, the top-right, the
+			// bottom-right - each a quarter turn - and back along the bottom edge, past the start.
 			constexpr int32 ArcSegments = 10;
 			Points.Reset();
-			for (int32 Corner = 0; Corner < 4; ++Corner)
+			const FVector2f BottomMiddle((Min.X + Max.X) * 0.5f, Max.Y);
+			Points.Add(BottomMiddle);
+			for (int32 Step = 0; Step < 4; ++Step)
 			{
+				const int32 Corner = (Step + 2) % 4;
 				const float StartAngle = -UE_HALF_PI + Corner * UE_HALF_PI;
 				for (int32 Segment = 0; Segment <= ArcSegments; ++Segment)
 				{
@@ -2630,10 +3440,8 @@ public:
 					Points.Add(Centers[Corner] + FVector2f(FMath::Cos(Angle), FMath::Sin(Angle)) * Radius);
 				}
 			}
-			// Closed back on its first point - copied out first: adding an array's own element to it is refused (it may move
-			// as the array grows).
-			const FVector2f First = Points[0];
-			Points.Add(First);
+			const float Straight = FMath::Max((Max.X - Min.X) * 0.5f - Radius, 0.f);
+			Points.Add(BottomMiddle - FVector2f(FMath::Min(Overlap, Straight), 0.f));
 			FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None,
 				Line.Color, /*bAntialias=*/true, Line.Thickness);
 		}
@@ -2741,6 +3549,14 @@ public:
 						[
 							SNew(SOverlay)
 
+							// A collapsed group: the collapsed graph node's body in place of a state's colored title.
+							+ SOverlay::Slot()
+							[
+								SNew(SWidgetAnimMachineCollapsedBody)
+								.Visibility(MachineNode && MachineNode->bIsGroup ? EVisibility::HitTestInvisible : EVisibility::Collapsed)
+								.Lifted(this, &SWidgetAnimMachineStateNode::IsActive)
+							]
+
 							// Its animation's progress, while the watched widget plays it.
 							+ SOverlay::Slot()
 							[
@@ -2772,16 +3588,38 @@ public:
 								.VAlign(VAlign_Center)
 								[
 									SNew(SVerticalBox)
+									// Entry, Exit, Any State - a name alone: its capitals centered in the box, not its line. The
+									// title's line is taller below them (descenders, the drop shadow) than above, which sat the
+									// name visibly high; it is drawn that much lower, the box's size unchanged.
 									+ SVerticalBox::Slot()
 									.AutoHeight()
+									.Padding(bIsState ? FMargin(0.f) : FMargin(0.f, MachineColors::SpecialNodeTitleDrop, 0.f, -MachineColors::SpecialNodeTitleDrop))
 									[
+										SNew(SHorizontalBox)
+										+ SHorizontalBox::Slot()
+										.AutoWidth()
+										.VAlign(VAlign_Center)
+										[
 										SAssignNew(InlineEditableText, SInlineEditableTextBlock)
-										.Style(FAppStyle::Get(), "Graph.StateNode.NodeTitleInlineEditableText")
+										.Style(MachineNode && MachineNode->bIsGroup ? &GetGroupTitleStyle() : &FAppStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("Graph.StateNode.NodeTitleInlineEditableText"))
 										.Text(this, &SWidgetAnimMachineStateNode::GetName)
 										.OnVerifyTextChanged(this, &SWidgetAnimMachineStateNode::OnVerifyNameTextChanged)
 										.OnTextCommitted(this, &SWidgetAnimMachineStateNode::OnNameTextCommited)
 										.IsReadOnly(this, &SWidgetAnimMachineStateNode::IsNameReadOnly)
 										.IsSelected(this, &SWidgetAnimMachineStateNode::IsSelectedExclusively)
+										]
+										// Actions on entering or leaving: a small lightning badge.
+										+ SHorizontalBox::Slot()
+										.AutoWidth()
+										.VAlign(VAlign_Center)
+										.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+										[
+											SNew(SImage)
+											.Image(FNameTBDStyle::FindIcon(FNameTBDStyle::StateMachineActionsIcon) ? FNameTBDStyle::FindIcon(FNameTBDStyle::StateMachineActionsIcon) : FAppStyle::GetBrush(TEXT("Icons.Lightning")))
+											.ColorAndOpacity(MachineColors::StateProgress)
+											.ToolTipText(MachineTips::ActionsBadgeTooltip())
+											.Visibility(this, &SWidgetAnimMachineStateNode::GetActionsBadgeVisibility)
+										]
 									]
 									+ SVerticalBox::Slot()
 									.AutoHeight()
@@ -2791,6 +3629,31 @@ public:
 										.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 										.Text(this, &SWidgetAnimMachineStateNode::GetSubtitle)
 										.Visibility(bIsState ? EVisibility::Visible : EVisibility::Collapsed)
+									]
+									// A blend state's samples, and where its input is while watched. Collapsed for anything else, so
+									// its gap doesn't push the name off center.
+									+ SVerticalBox::Slot()
+									.AutoHeight()
+									.HAlign(HAlign_Center)
+									.Padding(FMargin(0.f, 3.f, 0.f, 0.f))
+									[
+										SNew(SWidgetAnimMachineBlendPlot)
+										.Visibility_Lambda([WeakNode = TWeakObjectPtr<UWidgetAnimMachineGraphNode>(Cast<UWidgetAnimMachineGraphNode>(GraphNode))]()
+										{
+											const UWidgetAnimMachineGraphNode* Node = WeakNode.Get();
+											const FWidgetAnimMachineState* State = Node ? Node->GetState() : nullptr;
+											return State && State->IsBlendState() && State->BlendSamples.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed;
+										})
+										.GetState([WeakNode = TWeakObjectPtr<UWidgetAnimMachineGraphNode>(Cast<UWidgetAnimMachineGraphNode>(GraphNode))]() -> const FWidgetAnimMachineState*
+										{
+											const UWidgetAnimMachineGraphNode* Node = WeakNode.Get();
+											return Node ? Node->GetState() : nullptr;
+										})
+										.GetLive([WeakSelf = TWeakPtr<SWidgetAnimMachineStateNode>(SharedThis(this))](TArray<float>& OutWeights, FVector2f& OutPoint)
+										{
+											const TSharedPtr<SWidgetAnimMachineStateNode> Self = WeakSelf.Pin();
+											return Self.IsValid() && Self->GetLiveBlend(OutWeights, OutPoint);
+										})
 									]
 								]
 							]
@@ -2806,10 +3669,24 @@ public:
 			const TSharedRef<SCommentBubble> Bubble = SNew(SCommentBubble)
 				.GraphNode(GraphNode)
 				.Text(this, &SWidgetAnimMachineStateNode::GetNodeComment)
-				.ColorAndOpacity(FLinearColor(1.f, 1.f, 1.f, 0.9f))
-				.EnableTitleBarBubble(false)
-				.EnableBubbleCtrls(false)
-				.AllowPinning(false)
+				// A Blueprint node's comment bubble exactly: the editor's comment color (dark gray, quiet), its pin and its
+				// show / hide toggle - hiding it keeps the note, as a Blueprint node's does.
+				.ColorAndOpacity(GetDefault<UGraphEditorSettings>()->DefaultCommentNodeTitleColor)
+				.EnableTitleBarBubble(true)
+				.EnableBubbleCtrls(true)
+				.AllowPinning(true)
+				.GraphLOD_Lambda([this]() { return GetCurrentLOD(); })
+				.IsGraphNodeHovered_Lambda([this]() { return IsHovered(); })
+				.OnToggled_Lambda([WeakNode](bool bVisible)
+				{
+					const UWidgetAnimMachineGraphNode* Node = WeakNode.Get();
+					UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+					const FWidgetAnimMachineState* State = Node ? Node->GetState() : nullptr;
+					if (Graph && State)
+					{
+						WidgetAnimMachineEdits::SetStateComment(Graph->Machine, Graph->LayerIndex, Node->StateId, State->Comment, bVisible);
+					}
+				})
 				.OnTextCommitted_Lambda([WeakNode](const FText& NewText, ETextCommit::Type)
 				{
 					const UWidgetAnimMachineGraphNode* Node = WeakNode.Get();
@@ -2902,6 +3779,20 @@ public:
 	{
 		UWidgetAnimMachineGraphNode* Node = Cast<UWidgetAnimMachineGraphNode>(GraphNode);
 		UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+		// A collapsed group's box opens - its states shown alone.
+		if (Node && Graph && Node->bIsGroup)
+		{
+			Graph->OpenGroupView(Node->StateId);
+			return FReply::Handled();
+		}
+
+		// Entry and Exit are jumped to as well: Entry starts the preview again, Exit takes the layer out the way it closes.
+		const bool bEntryOrExit = Node && (Node->Kind == EWidgetAnimMachineNodeKind::Entry || Node->Kind == EWidgetAnimMachineNodeKind::Exit);
+		if (bEntryOrExit && Graph && Graph->OnJumpToState)
+		{
+			Graph->OnJumpToState(Node->StateId);
+			return FReply::Handled();
+		}
 		if (Node && Graph && Node->Kind == EWidgetAnimMachineNodeKind::State)
 		{
 			// Into the state, as the preview's inputs would take it there. Its animation opens from the node's menu.
@@ -2919,11 +3810,119 @@ public:
 		return SGraphNode::OnMouseButtonDoubleClick(InMyGeometry, InMouseEvent);
 	}
 
+	/**
+	 * A node whose size changes - a longer animation name, a blend plot appearing - keeps its middle where it was, so the
+	 * wires lined up with it (Q) stay straight: it moves by half of what it grew or shrank. The size is kept with the position
+	 * in the machine (EditorSize, quietly), and a node made again by a rebuild starts from it - so after an undo or a redo,
+	 * which bring back a position with the size it went with, the node lands exactly where it was.
+	 */
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override
+	{
+		SGraphNode::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+
+		UWidgetAnimMachineGraphNode* Node = Cast<UWidgetAnimMachineGraphNode>(GraphNode);
+		UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+		if (!Graph || !Node->StateId.IsValid() || Node->Kind != EWidgetAnimMachineNodeKind::State)
+		{
+			return;
+		}
+		const FVector2f NowSize = FVector2f(FVector2D(GetDesiredSize()));
+		if (NowSize.X <= 1.f || NowSize.Y <= 1.f)
+		{
+			return;
+		}
+		// Only a size that has held two frames in a row: a node's first frames - the editor just opened, the graph just made
+		// again - can measure it on the way to its real size, and moving it by that would take it off its line for good.
+		if (!NowSize.Equals(LastSeenSize, 0.5f))
+		{
+			LastSeenSize = NowSize;
+			return;
+		}
+		// Zoomed: whatever the zoom does to a node's size is not the node changing.
+		const TSharedPtr<SGraphPanel> Panel = GetOwnerPanel();
+		const float Zoom = Panel.IsValid() ? Panel->GetZoomAmount() : 1.f;
+		if (!FMath::IsNearlyEqual(Zoom, Graph->KnownNodeZoom))
+		{
+			Graph->KnownNodeZoom = Zoom;
+			Graph->KnownNodeSizes.Reset();
+		}
+		FVector2f* Known = Graph->KnownNodeSizes.Find(Node->StateId);
+		if (!Known)
+		{
+			// First seen since the graph was made again or zoomed: the size kept with its position, if kept at this zoom.
+			FVector2D KeptSize = FVector2D::ZeroVector;
+			float KeptZoom = 0.f;
+			const bool bKept = WidgetAnimMachineEdits::GetNodeSize(Graph->Machine, Graph->LayerIndex, Node->StateId, KeptSize, KeptZoom)
+				&& KeptSize.X > 1.0 && KeptSize.Y > 1.0 && FMath::IsNearlyEqual(KeptZoom, Zoom);
+			Known = &Graph->KnownNodeSizes.Add(Node->StateId, bKept ? FVector2f(KeptSize) : NowSize);
+			if (!bKept)
+			{
+				WidgetAnimMachineEdits::SetNodeSizeQuietly(Graph->Machine, Graph->LayerIndex, Node->StateId, FVector2D(NowSize), Zoom);
+			}
+		}
+		if (Known->Equals(NowSize, 0.5f))
+		{
+			return;
+		}
+		const FVector2f Shift = (*Known - NowSize) * 0.5f;
+		*Known = NowSize;
+		WidgetAnimMachineEdits::SetNodeSizeQuietly(Graph->Machine, Graph->LayerIndex, Node->StateId, FVector2D(NowSize), Zoom);
+		const int32 ShiftX = FMath::RoundToInt32(Shift.X);
+		const int32 ShiftY = FMath::RoundToInt32(Shift.Y);
+		if (ShiftX == 0 && ShiftY == 0)
+		{
+			return;
+		}
+		Node->NodePosX += ShiftX;
+		Node->NodePosY += ShiftY;
+		WidgetAnimMachineEdits::SetNodePositionQuietly(Graph->Machine, Graph->LayerIndex, Node->StateId, FVector2D(Node->NodePosX, Node->NodePosY));
+	}
+
 private:
+
+	/** Its size last tick - see Tick: a size is acted on once it has held two frames in a row. */
+	FVector2f LastSeenSize = FVector2f::ZeroVector;
 
 	const UWidgetAnimMachineGraphNode* GetMachineNode() const
 	{
 		return Cast<UWidgetAnimMachineGraphNode>(GraphNode);
+	}
+
+	/**
+	 * A collapsed group's name, as the Widget Animations panel's collapsed track names itself: italic, in CollapsedNodeText, with
+	 * no drop shadow. The state title's own style otherwise.
+	 */
+	static const FInlineEditableTextBlockStyle& GetGroupTitleStyle()
+	{
+		// A state's name at a state's size, drawn as a collapsed track's name is in the Widget Animations panel: in its italic,
+		// in CollapsedNodeText, over the tracks' slight drop shadow.
+		static const FInlineEditableTextBlockStyle Style = []()
+		{
+			namespace Palette = NameTBD::Colors::WidgetAnimEditor;
+			FInlineEditableTextBlockStyle Made = FAppStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("Graph.StateNode.NodeTitleInlineEditableText");
+			FSlateFontInfo Font = Made.TextStyle.Font;
+			// Its italic typeface ("Bold" -> "BoldItalic", "Regular" -> "Italic") where its family has one.
+			if (const FCompositeFont* Composite = Font.GetCompositeFont())
+			{
+				const FString Base = Font.TypefaceFontName.IsNone() || Font.TypefaceFontName == TEXT("Regular") ? FString() : Font.TypefaceFontName.ToString();
+				const FName Wanted(*(Base + TEXT("Italic")));
+				for (const FTypefaceEntry& Entry : Composite->DefaultTypeface.Fonts)
+				{
+					if (Entry.Name == Wanted)
+					{
+						Font.TypefaceFontName = Wanted;
+						break;
+					}
+				}
+			}
+			Made.TextStyle.SetFont(Font);
+			Made.TextStyle.SetColorAndOpacity(FSlateColor(Palette::CollapsedNodeText));
+			Made.TextStyle.SetShadowOffset(FVector2D(Palette::TrackTextShadowOffset, Palette::TrackTextShadowOffset));
+			Made.TextStyle.SetShadowColorAndOpacity(Palette::TrackTextShadow);
+			Made.EditableTextBoxStyle.TextStyle.SetFont(Font);
+			return Made;
+		}();
+		return Style;
 	}
 
 	/** What the watched widget's layer is doing, if anything is watched. */
@@ -2943,7 +3942,29 @@ private:
 	{
 		FWidgetAnimMachineLayerDebug Debug;
 		const UWidgetAnimMachineGraphNode* Node = GetMachineNode();
-		return Node && GetDebug(Debug) && Debug.CurrentState == Node->StateId && !Debug.ActiveTransition.IsValid();
+		return Node && GetDebug(Debug) && Node->ShowsState(Debug.CurrentState) && !Debug.ActiveTransition.IsValid();
+	}
+
+	/** The lightning badge: shown on a state with On Enter or On Exit actions. */
+	EVisibility GetActionsBadgeVisibility() const
+	{
+		const UWidgetAnimMachineGraphNode* Node = GetMachineNode();
+		const FWidgetAnimMachineState* State = Node ? Node->GetState() : nullptr;
+		return State && State->HasActions() ? EVisibility::Visible : EVisibility::Collapsed;
+	}
+
+	/** A blend state's live weights and input point, while the watched widget is in it. */
+	bool GetLiveBlend(TArray<float>& OutWeights, FVector2f& OutPoint) const
+	{
+		FWidgetAnimMachineLayerDebug Debug;
+		const UWidgetAnimMachineGraphNode* Node = GetMachineNode();
+		if (!Node || Node->bIsGroup || !GetDebug(Debug) || Debug.CurrentState != Node->StateId || Debug.BlendWeights.Num() == 0)
+		{
+			return false;
+		}
+		OutWeights = Debug.BlendWeights;
+		OutPoint = Debug.BlendPoint;
+		return true;
 	}
 
 
@@ -3043,6 +4064,12 @@ private:
 
 	FSlateColor GetTitleColor() const
 	{
+		// A collapsed group's body is its own (SWidgetAnimMachineCollapsedBody): nothing over it.
+		const UWidgetAnimMachineGraphNode* Node = GetMachineNode();
+		if (Node && Node->bIsGroup)
+		{
+			return FLinearColor::Transparent;
+		}
 		if (GetProgress() > 0.f)
 		{
 			return MachineColors::StateTitleSharp;
@@ -3063,7 +4090,7 @@ private:
 	{
 		FWidgetAnimMachineLayerDebug Debug;
 		const UWidgetAnimMachineGraphNode* Node = GetMachineNode();
-		if (!Node || !GetDebug(Debug) || Debug.CurrentState != Node->StateId || !Debug.bStatePlaying || Debug.ActiveTransition.IsValid())
+		if (!Node || Node->bIsGroup || !GetDebug(Debug) || Debug.CurrentState != Node->StateId || !Debug.bStatePlaying || Debug.ActiveTransition.IsValid())
 		{
 			return 0.f;
 		}
@@ -3085,7 +4112,13 @@ private:
 			}
 			return FindBrush({ TEXT("Icons.Logout"), TEXT("Icons.Export"), TEXT("Icons.ArrowRight") });
 		case EWidgetAnimMachineNodeKind::AnyState: return FindBrush({ TEXT("Graph.AliasNode.Icon"), TEXT("Graph.ConduitNode.Icon"), TEXT("Graph.StateNode.Icon") });
-		default:                                    return FindBrush({ TEXT("Graph.StateNode.Icon") });
+		default:
+			// A collapsed group: the collapsed graph's icon, as a Blueprint's collapsed node wears.
+			if (Node && Node->bIsGroup)
+			{
+				return FindBrush({ TEXT("GraphEditor.SubGraph_16x"), TEXT("Graph.StateNode.Icon") });
+			}
+			return FindBrush({ TEXT("Graph.StateNode.Icon") });
 		}
 	}
 
@@ -3097,10 +4130,49 @@ private:
 	FText GetSubtitle() const
 	{
 		const UWidgetAnimMachineGraphNode* Node = GetMachineNode();
+
+		// A collapsed group: how many states it holds.
+		if (Node && Node->bIsGroup)
+		{
+			int32 Count = 0;
+			const UWidgetAnimMachineGraph* Graph = Node->GetMachineGraph();
+			if (const FWidgetAnimMachineLayer* Layer = Graph ? Graph->GetLayer() : nullptr)
+			{
+				for (const FWidgetAnimMachineState& Member : Layer->States)
+				{
+					Count += Member.EditorGroup == Node->StateId ? 1 : 0;
+				}
+			}
+			return FText::Format(LOCTEXT("GroupSubtitle", "{0} {0}|plural(one=state,other=states)"), Count);
+		}
+
 		const FWidgetAnimMachineState* State = Node ? Node->GetState() : nullptr;
 		if (!State || State->Kind != EWidgetAnimMachineNodeKind::State)
 		{
 			return FText::GetEmpty();
+		}
+
+		// A blend state: by what, over how many.
+		if (State->IsBlendState())
+		{
+			return FText::Format(LOCTEXT("BlendSubtitle", "{0} by {1}, {2} samples"),
+				StaticEnum<EWidgetAnimMachineBlendSpace>()->GetDisplayNameTextByValue(static_cast<int64>(State->BlendSpace)),
+				State->BlendInput.IsNone() ? LOCTEXT("BlendNoInput", "(no input)") : FText::FromName(State->BlendInput),
+				FText::AsNumber(State->BlendSamples.Num()));
+		}
+		if (State->RandomVariations.Num() > 0)
+		{
+			// "Idle 40% + 2 random, Loop": how often the state's own animation plays, and how many others it picks from.
+			float Total = 0.f;
+			for (const FWidgetAnimMachineRandomVariation& Variation : State->RandomVariations)
+			{
+				Total += FMath::Max(Variation.Chance, 0.f);
+			}
+			return FText::Format(LOCTEXT("RandomSubtitle", "{0} {1} + {2} random, {3}"),
+				State->Animation ? FText::FromString(State->Animation->GetName()) : LOCTEXT("RandomNoMain", "none"),
+				FText::AsPercent(FMath::Clamp(1.f - Total, 0.f, 1.f)),
+				FText::AsNumber(State->RandomVariations.Num()),
+				StaticEnum<EWidgetAnimMachineStatePlayback>()->GetDisplayNameTextByValue(static_cast<int64>(State->Playback)));
 		}
 		if (!State->Animation)
 		{
@@ -3118,6 +4190,18 @@ private:
 	TSharedPtr<SWidget> MakeToolTipContent() const
 	{
 		const UWidgetAnimMachineGraphNode* Node = GetMachineNode();
+
+		// A collapsed group's box.
+		if (Node && Node->bIsGroup)
+		{
+			WidgetAnimMachineStyle::FTipBuilder GroupTip;
+			GroupTip.Title(Node->GetNodeTitle(ENodeTitleType::FullTitle), TipPalette::TooltipControlName);
+			GroupTip.Kind(LOCTEXT("GroupKind", "Collapsed States"));
+			GroupTip.Paragraph(GetSubtitle());
+			GroupTip.Hint(MachineTips::GroupNodeHint());
+			return GroupTip.Build();
+		}
+
 		const FWidgetAnimMachineState* State = Node ? Node->GetState() : nullptr;
 		if (!Node || !State)
 		{
@@ -3162,6 +4246,25 @@ private:
 				}
 				Tip.Row(LOCTEXT("TipTransitions", "Transitions"), FText::Format(LOCTEXT("TipTransitionsValue", "{0} in, {1} out"), In, Out));
 			}
+		}
+		if (State->IsBlendState())
+		{
+			Tip.Row(LOCTEXT("TipBlend", "Blends"), FText::Format(LOCTEXT("TipBlendValue", "{0} samples by {1}"), FText::AsNumber(State->BlendSamples.Num()), FText::FromName(State->BlendInput)));
+		}
+		if (!State->SpeedInput.IsNone())
+		{
+			Tip.Row(LOCTEXT("TipSpeedInput", "Speed From"), FText::FromName(State->SpeedInput));
+		}
+		if (State->HasActions())
+		{
+			Tip.Row(LOCTEXT("TipActions", "Actions"), FText::Format(LOCTEXT("TipActionsValue", "{0} on enter, {1} on exit"), FText::AsNumber(State->OnEnter.Num()), FText::AsNumber(State->OnExit.Num())));
+		}
+
+		// While watched: the actions its layer ran last.
+		FWidgetAnimMachineLayerDebug Debug;
+		if (GetDebug(Debug) && Debug.LastActions.Num() > 0)
+		{
+			Tip.Row(LOCTEXT("TipLastActions", "Last Actions"), FText::FromString(FString::Join(Debug.LastActions, TEXT(", "))));
 		}
 		if (!State->Comment.IsEmpty())
 		{

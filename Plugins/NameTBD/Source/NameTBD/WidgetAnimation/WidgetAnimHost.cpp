@@ -61,6 +61,69 @@ void UWidgetAnimPlayLibrary::PlayWidgetAnimation(UObject* Target, const TArray<F
 		bRestartIfPlaying);
 }
 
+void UWidgetAnimPlayLibrary::PlayWidgetAnimationWithParameters(UObject* Target, const TArray<FName>& AnimIds, const TArray<FWidgetAnimParameterValue>& Parameters, EWidgetAnimPlayDirection Direction, float PlaybackSpeed, bool bHoldFinalPose, bool bRestartIfPlaying, bool bSearchParentWidgets)
+{
+	UWidgetAnimationComponent* Component = nullptr;
+	IWidgetAnimHost* Host = nullptr;
+	if (!Target || !ResolveValueOwner(Target, bSearchParentWidgets, Component, Host))
+	{
+		return;
+	}
+
+	// The values are in effect while the animations are built - which they are as they start, right here.
+	const FWidgetAnimParameterScope Scope(Parameters);
+	const bool bReverse = Direction == EWidgetAnimPlayDirection::Reverse;
+	const float Speed = FMath::Max(PlaybackSpeed, 0.01f);
+	if (Component)
+	{
+		Component->PlayWidgetAnimationsById(AnimIds, bReverse, Speed, bHoldFinalPose, bRestartIfPlaying);
+	}
+	else
+	{
+		Host->PlayWidgetAnimationsById(AnimIds, bReverse, Speed, bHoldFinalPose, bRestartIfPlaying);
+	}
+}
+
+bool UWidgetAnimPlayLibrary::SetWidgetAnimationParameter(UObject* Target, const FWidgetAnimParameterValue& Value, UWidgetAnimPresetAsset* Animation, FName AnimId, bool bSearchParentWidgets)
+{
+	UWidgetAnimationComponent* Component = nullptr;
+	IWidgetAnimHost* Host = nullptr;
+	if (!Target || !ResolveValueOwner(Target, bSearchParentWidgets, Component, Host) || !Component)
+	{
+		return false;
+	}
+	Component->SetWidgetAnimationParameter(Value, Animation, AnimId);
+	return true;
+}
+
+void UWidgetAnimPlayLibrary::ClearWidgetAnimationParameters(UObject* Target, UWidgetAnimPresetAsset* Animation, FName AnimId, bool bSearchParentWidgets)
+{
+	UWidgetAnimationComponent* Component = nullptr;
+	IWidgetAnimHost* Host = nullptr;
+	if (Target && ResolveValueOwner(Target, bSearchParentWidgets, Component, Host) && Component)
+	{
+		Component->ClearWidgetAnimationParameters(Animation, AnimId);
+	}
+}
+
+bool UWidgetAnimPlayLibrary::GetWidgetAnimationParameter(UObject* Target, FName Name, FWidgetAnimParameterValue& OutValue, UWidgetAnimPresetAsset* Animation, FName AnimId, bool bSearchParentWidgets)
+{
+	UWidgetAnimationComponent* Component = nullptr;
+	IWidgetAnimHost* Host = nullptr;
+	if (Target && ResolveValueOwner(Target, bSearchParentWidgets, Component, Host) && Component)
+	{
+		return Component->GetWidgetAnimationParameter(Name, Animation, AnimId, OutValue);
+	}
+
+	// Nothing to ask: the animation's default, when one was named.
+	const FWidgetAnimParameter* Declared = Animation ? Animation->FindParameter(Name) : nullptr;
+	if (Declared)
+	{
+		OutValue = FWidgetAnimParameterValue::FromDefault(*Declared);
+	}
+	return Declared != nullptr;
+}
+
 void UWidgetAnimPlayLibrary::StopWidgetAnimation(UObject* Target, const TArray<FName>& AnimIds, bool bResetToStart, bool bSearchParentWidgets)
 {
 	if (IWidgetAnimHost* Host = ResolveHost(Target, bSearchParentWidgets))

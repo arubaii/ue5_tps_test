@@ -423,10 +423,13 @@ namespace NameTBD
 
 			// A collapsed track open on its own: the Track Editor's edges darkened, ScopeVignetteWidth pixels in, to
 			// ScopeVignette at the very edge (its alpha is how dark; 0 turns it off) - a nested editor - inside a thin
-			// ScopeFrame line of the collapsed track's color.
-			inline const FLinearColor ScopeVignette(0.00f, 0.00f, 0.00f, 0.38f);
+			// ScopeFrame line of the collapsed track's color. GraphScopeVignette: the same, lighter, over the state machine's
+			// graph while collapsed states are open - always lighter than the Track Editor's (keep its alpha below
+			// ScopeVignette's).
+			inline const FLinearColor ScopeVignette(0.00f, 0.00f, 0.00f, 0.30f);
 			inline constexpr float ScopeVignetteWidth = 56.0f;
 			inline const FLinearColor ScopeFrame(0.55f, 0.62f, 0.72f, 0.55f);
+			inline const FLinearColor GraphScopeVignette(0.00f, 0.00f, 0.00f, 0.24f);
 
 			// -------------------------------------------------------------------------------------------------
 			// Pinned tracks - drawn at the top of the Track Editor, under the ruler, where they stay while the rest scroll.
@@ -579,20 +582,21 @@ namespace NameTBD
 			inline const FLinearColor StateTitleActive(1.0f, 1.0f, 1.0f);
 
 			// -------------------------------------------------------------------------------------------------
-			// The Inputs panel - each input's type as a small colored dot, matching the Blueprint pin colors of the
-			// same types (Boolean red, Float green, an exec-like white for a Trigger), so they read as what they are.
+			// The Inputs panel - each input's type as a pill, as Blueprint variables show theirs. The Inputs panel and the Widget
+			// Animations panel's Parameters take Bool, Float, Integer, Choice (an enum's), Vector 2D and Color from the engine's own
+			// pin colors (WidgetAnimTypePill, through the Graph Editor settings); these are kept for what has no Blueprint type -
+			// Trigger and Press And Hold - and as the engine's defaults, for anything drawn without the schema.
 			// -------------------------------------------------------------------------------------------------
 
 			inline const FLinearColor InputBool(0.30f, 0.0f, 0.0f);
-			inline const FLinearColor InputNumber(0.357667f, 1.0f, 0.06f);
+			inline const FLinearColor InputNumber(0.039216f, 0.666667f, 0.0f);
 			inline const FLinearColor InputTrigger(1.0f, 1.0f, 1.0f);
 			// A Press And Hold: the animation orange - it fills as it is held, as a hold ring would.
 			inline const FLinearColor InputHold(AnimationOrange_Normal);
-			// Integer: the Blueprint integer pin's teal. Choice: an enum's green, lighter so its label reads. Vector 2D: the
-			// Blueprint vector pin's gold.
+			// Integer: the Blueprint integer pin's teal. Choice: an enum's (byte) dark green. Vector 2D: a struct's deep blue.
 			inline const FLinearColor InputInteger(0.013575f, 0.770000f, 0.429609f);
-			inline const FLinearColor InputChoice(0.10f, 0.55f, 0.45f);
-			inline const FLinearColor InputVector2D(1.0f, 0.74f, 0.10f);
+			inline const FLinearColor InputChoice(0.0f, 0.160000f, 0.131270f);
+			inline const FLinearColor InputVector2D(0.0f, 0.1f, 0.6f);
 
 			// -------------------------------------------------------------------------------------------------
 			// Wires - Blueprint splines from state to state.
@@ -694,6 +698,16 @@ namespace NameTBD
 			// How far toward white the line on the rim of a glowing state goes while the mouse is over its edge (the edge's
 			// own hover look is held back then: its corners would poke out past the glow).
 			inline constexpr float ActiveRingHoverLift = 0.45f;
+
+			// The dark backing of the buttons floating over the graph (play / pause, at its bottom left), and the gray outline
+			// round it that sets it off from the graph's own dark. FloatingButtonOutline is what the DEVELOPER ONLY setting
+			// State Machine Play / Pause Outline starts from.
+			inline const FLinearColor FloatingButtonBacking(0.012f, 0.012f, 0.014f, 0.88f);
+			inline const FLinearColor FloatingButtonOutline(0.13f, 0.13f, 0.14f, 1.0f);
+
+			// Entry, Exit and Any State: how far down their name is drawn, in graph units, so its capitals sit in the middle
+			// of the box - the title's line runs further below them (descenders, the drop shadow) than above.
+			inline constexpr float SpecialNodeTitleDrop = 3.0f;
 
 			// A state's middle while its animation's progress fills it: square-cornered, near black - the rounded one's dark.
 			inline const FLinearColor StateTitleSharp(0.010f, 0.010f, 0.011f, 1.0f);

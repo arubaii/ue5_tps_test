@@ -21,6 +21,7 @@ UWidgetAnimEditorSettings::UWidgetAnimEditorSettings()
 	GridMajorColor = NameTBD::Colors::WidgetAnimEditor::GridMajor;
 	GridMinorColor = NameTBD::Colors::WidgetAnimEditor::GridMinor;
 	CueTrackIconTint = NameTBD::Colors::WidgetAnimEditor::CueTrackIcon;
+	MachinePlayPauseOutline = NameTBD::Colors::StateMachineEditor::FloatingButtonOutline;
 
 	FillMissingTrackColors();
 }

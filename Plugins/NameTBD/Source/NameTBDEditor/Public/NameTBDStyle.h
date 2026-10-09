@@ -28,6 +28,9 @@ public:
 	/** The State Machine editor's Exit node: a door with the way out (Resources/WidgetAnim_StateMachineExit.svg). */
 	static inline const FName StateMachineExitIcon = TEXT("NameTBD.StateMachine.ExitIcon");
 
+	/** A state node's badge while the state runs actions on enter or exit: a lightning bolt (Resources/WidgetAnim_StateMachineActions.svg). */
+	static inline const FName StateMachineActionsIcon = TEXT("NameTBD.StateMachine.ActionsIcon");
+
 	/**
 	 * The Custom Shape path editor's toolbar, and Save: the plugin's own SVGs in Resources (ShapeEdit_*.svg, WidgetAnim_Save.svg),
 	 * white so a button's text color tints them. Left unset when a file is missing; the button then shows its label alone.
@@ -51,6 +54,12 @@ public:
 
 	/** The timeline's start and end markers: an upside-down triangle, white to be tinted, drawn smooth at any size. */
 	static inline const FName RangeMarkerIcon = TEXT("NameTBD.Timeline.RangeMarker");
+
+	// Animation Parameters: the chip at the end of a Selection panel row - an empty pill to bind the field to a parameter, a
+	// filled one while it is bound.
+	static inline const FName ParameterBindIcon = TEXT("NameTBD.Timeline.ParameterBind");
+	static inline const FName ParameterBoundIcon = TEXT("NameTBD.Timeline.ParameterBound");
+	static inline const FName ParameterMirroredIcon = TEXT("NameTBD.Timeline.ParameterMirrored");
 
 	/** One of the plugin's own icons, or null when its file was missing at startup. */
 	static const FSlateBrush* FindIcon(FName Name);

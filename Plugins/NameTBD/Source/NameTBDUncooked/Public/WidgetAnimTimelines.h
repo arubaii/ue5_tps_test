@@ -8,6 +8,7 @@
 #include "WidgetAnimTimelines.generated.h"
 
 class UWidgetAnimPresetAsset;
+class UWidgetAnimStateMachineAsset;
 class UWidgetBlueprint;
 
 /**
@@ -61,6 +62,26 @@ public:
 	/** In the order the panel lists them. */
 	UPROPERTY()
 	TArray<FWidgetAnimTimeline> Timelines;
+
+	/**
+	 * The Widget Blueprint's own state machine - the State Machine editor's State Machine mode, as Animation Timeline is the
+	 * Widget Animations panel's: made the first time that mode is opened here, kept and saved with the Widget Blueprint, and
+	 * made into an asset any widget can play with Save State Machine To. A Widget Animation State Machine object inside the
+	 * Widget Blueprint, so everything that edits and previews an asset edits and previews it too. Editor data, never cooked.
+	 */
+	UPROPERTY()
+	TObjectPtr<UWidgetAnimStateMachineAsset> StateMachine;
+
+	/** The asset StateMachine was last saved as (Save State Machine To) - Save puts it there again. None until saved once. */
+	UPROPERTY()
+	TSoftObjectPtr<UWidgetAnimStateMachineAsset> SavedStateMachine;
+
+	/**
+	 * What StateMachine is called in the State Machine editor - renamed by double-clicking it on the editor's bar, or in its
+	 * Details. Empty: the default, "Card State Machine" for WBP_Card. Save State Machine To names the asset after it.
+	 */
+	UPROPERTY()
+	FString StateMachineName;
 
 	/** The Widget Blueprint's timelines, or null when it has never had one. Never makes one. */
 	static UWidgetAnimTimelinesExtension* Find(const UWidgetBlueprint* WidgetBlueprint);

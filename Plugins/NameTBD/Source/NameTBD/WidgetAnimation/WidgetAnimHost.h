@@ -7,6 +7,7 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 
 #include "WidgetAnimDriver.h" // FWidgetAnimValueId
+#include "WidgetAnimParameters.h" // FWidgetAnimParameterValue
 
 #include "WidgetAnimHost.generated.h"
 
@@ -83,6 +84,43 @@ public:
 		bool bHoldFinalPose = false,
 		bool bRestartIfPlaying = true,
 		bool bSearchParentWidgets = true);
+
+	/**
+	 * Play Widget Animation, with values for the animations' parameters (see WidgetAnimParameters.h): each value goes to the
+	 * parameter of its name in every animation started, over the entry's own and whatever Set Widget Animation Parameter set.
+	 * Make them with the Make Animation Parameter nodes. Target is a widget with a Widget Animation Component, the component,
+	 * or any animation host, found as Set Widget Animation Value finds it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Parameters", meta = (DefaultToSelf = "Target", AutoCreateRefTerm = "AnimIds,Parameters", AdvancedDisplay = "PlaybackSpeed,bHoldFinalPose,bRestartIfPlaying,bSearchParentWidgets"))
+	static void PlayWidgetAnimationWithParameters(
+		UObject* Target,
+		const TArray<FName>& AnimIds,
+		const TArray<FWidgetAnimParameterValue>& Parameters,
+		EWidgetAnimPlayDirection Direction = EWidgetAnimPlayDirection::Forward,
+		float PlaybackSpeed = 1.f,
+		bool bHoldFinalPose = false,
+		bool bRestartIfPlaying = true,
+		bool bSearchParentWidgets = true);
+
+	/**
+	 * Sets an animation parameter on Target's Widget Animation Component (see WidgetAnimParameters.h) for the uses of Animation
+	 * (every animation when none) with Anim ID (any when None), over each use's own value - taken by every animation it starts
+	 * from now on, Play In / Out, Play Widget Animation and its state machines' states alike. One already playing keeps the
+	 * values it started with: play it again to see the new one. True when a component took it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Parameters", meta = (DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
+	static bool SetWidgetAnimationParameter(UObject* Target, const FWidgetAnimParameterValue& Value, UWidgetAnimPresetAsset* Animation = nullptr, FName AnimId = NAME_None, bool bSearchParentWidgets = true);
+
+	/** Lets go of the values Set Widget Animation Parameter set on Target for Animation and Anim ID - every one when both are unset. */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Parameters", meta = (DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
+	static void ClearWidgetAnimationParameters(UObject* Target, UWidgetAnimPresetAsset* Animation = nullptr, FName AnimId = NAME_None, bool bSearchParentWidgets = true);
+
+	/**
+	 * The value an animation parameter plays with on Target: as Set Widget Animation Parameter set it, else as the entry of
+	 * Animation (any when none) with Anim ID (any when None) sets it, else its default. False when no animation there has it.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Parameters", meta = (DefaultToSelf = "Target", AdvancedDisplay = "bSearchParentWidgets"))
+	static bool GetWidgetAnimationParameter(UObject* Target, FName Name, FWidgetAnimParameterValue& OutValue, UWidgetAnimPresetAsset* Animation = nullptr, FName AnimId = NAME_None, bool bSearchParentWidgets = true);
 
 	/**
 	 * Stops the animations with these Anim IDs. An empty list stops everything on Target.

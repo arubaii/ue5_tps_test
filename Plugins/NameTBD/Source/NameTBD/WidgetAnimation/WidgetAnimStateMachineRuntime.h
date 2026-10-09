@@ -114,6 +114,22 @@ struct NAMETBD_API FWidgetAnimMachineLayerInstance
 	UPROPERTY(Transient)
 	FWidgetAnimPlayer Player;
 
+	/** A blend state's samples, one player each, in the state's Blend Samples order - empty for any other state. */
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimPlayer> BlendPlayers;
+
+	/** How much of each sample the blend state shows now, summing to 1. */
+	TArray<float> BlendWeights;
+
+	/** Where the blend input put it last: the 1D value in X, or the 2D point. */
+	FVector2f BlendPoint = FVector2f::ZeroVector;
+
+	/** What the state's Speed Input multiplies its speed by now. */
+	float SpeedScale = 1.f;
+
+	/** The last few actions it ran, in words - for the editor's debugging. */
+	TArray<FString> LastActions;
+
 	/** The pose the running transition started from. */
 	UPROPERTY(Transient)
 	FWidgetAnimMachinePose FromPose;
@@ -204,7 +220,7 @@ struct FWidgetAnimMachineInputState
 	bool bHasSample = false;
 
 	// A Press And Hold: bValue is "being held, not yet complete", Number how far through HoldTime, bFired the frame it
-	// completes - worked out each Tick from whether it is held down (see UpdateHolds in the .cpp).
+	// completes, bLetGo the frame it is let go - worked out each Tick from whether it is held down (see UpdateHolds in the .cpp).
 
 	/** How long it has to be held, and has been. */
 	float HoldTime = 1.f;
@@ -218,6 +234,19 @@ struct FWidgetAnimMachineInputState
 
 	/** Held all the way this press: it doesn't count again until it is let go. */
 	bool bHoldDone = false;
+
+	/** A Press And Hold was let go since the machine last ran - a one-frame pulse, as a Trigger is: Is Let Go. */
+	bool bLetGo = false;
+};
+
+/** An action waiting to run once the frame's transitions are settled - see FWidgetAnimMachineAction. */
+struct FWidgetAnimMachinePendingAction
+{
+	FWidgetAnimMachineAction Action;
+	int32 LayerIndex = INDEX_NONE;
+
+	/** The state it is on - None for a transition's. */
+	FName State;
 };
 
 /** One state machine as a Widget Animation Component plays it. */
@@ -239,6 +268,16 @@ struct NAMETBD_API FWidgetAnimMachineInstance
 
 	/** Target name -> widget path, from the row. */
 	TMap<FName, FName> TargetPaths;
+
+	/**
+	 * Each layer's state - or the one it is on its way to - as every layer was before any of them moved this frame, and as they
+	 * were the frame before: what conditions on another layer's state read, so the order layers run in changes nothing.
+	 */
+	TArray<int32> LayerStatesNow;
+	TArray<int32> LayerStatesBefore;
+
+	/** Actions to run once the frame's transitions are settled. */
+	TArray<FWidgetAnimMachinePendingAction> PendingActions;
 
 	bool bStarted = false;
 
@@ -320,6 +359,13 @@ struct NAMETBD_API FWidgetAnimMachineLayerDebug
 
 	bool bExited = false;
 	float Weight = 1.f;
+
+	/** A blend state's weight for each of its samples, and where its input is. Empty for any other state. */
+	TArray<float> BlendWeights;
+	FVector2f BlendPoint = FVector2f::ZeroVector;
+
+	/** The last few actions the layer ran, in words. */
+	TArray<FString> LastActions;
 };
 
 namespace WidgetAnimStateMachines
@@ -410,4 +456,14 @@ namespace WidgetAnimStateMachines
 
 	/** What each layer is doing, for the editor's graph. */
 	NAMETBD_API void GetDebug(const FWidgetAnimMachineInstance& Instance, TArray<FWidgetAnimMachineLayerDebug>& OutLayers);
+
+	/**
+	 * A blend state's weight for each sample, from where its input is: Blend 1D between the two samples either side of Value.X
+	 * (held to the ends), Blend 2D by the triangle of samples around Value (barycentric; outside them all, the nearest three
+	 * by inverse distance). Shared by the runtime and the editor's preview plot.
+	 */
+	NAMETBD_API void ComputeBlendWeights(const FWidgetAnimMachineState& State, const FVector2f& Value, TArray<float>& OutWeights);
+
+	/** A layer's blend weights - for Get State Machine Blend Weights. Empty when it isn't in a blend state. */
+	NAMETBD_API void GetBlendWeights(const FWidgetAnimMachineInstance& Instance, FName LayerName, TArray<float>& OutWeights);
 }

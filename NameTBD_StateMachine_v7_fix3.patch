@@ -1,0 +1,87 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+index e21d43c..7054117 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+@@ -4029,8 +4029,19 @@ void SWidgetAnimStateMachineEditor::CommitGraphEdits()
+ 	{
+ 		if (const UWidgetAnimMachineGraphNode* StateNode = Cast<UWidgetAnimMachineGraphNode>(Node))
+ 		{
+-			const FWidgetAnimMachineState* State = Layer->FindState(StateNode->StateId);
++			// A state, or collapsed states' box - its position is the group's (it was never written back, so a dragged box
++			// went back where it was the next time the graph was made: a restart, an undo, any edit).
+ 			const FVector2D Position(StateNode->NodePosX, StateNode->NodePosY);
++			if (StateNode->bIsGroup)
++			{
++				const FWidgetAnimMachineStateGroup* Group = WidgetAnimMachineEdits::FindGroup(*Layer, StateNode->StateId);
++				if (Group && !Position.Equals(Group->Position, 0.5))
++				{
++					Moved.Add(StateNode->StateId, Position);
++				}
++				continue;
++			}
++			const FWidgetAnimMachineState* State = Layer->FindState(StateNode->StateId);
+ 			if (State && !Position.Equals(State->EditorPosition, 0.5))
+ 			{
+ 				Moved.Add(StateNode->StateId, Position);
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+index 02c7fd3..8a241e4 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+@@ -2016,7 +2016,7 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
+ 	const TWeakObjectPtr<const UWidgetAnimMachineGraphNode> WeakSelf(this);
+ 
+ 	// Collapse States: the selected states (this one too), as one box - lined up with what they are wired to once it is made
+-	// (OnCollapsed). Expand In Place undoes the look; a state of expanded collapsed states folds them back.
++	// (OnCollapsed). Expand States undoes the look; a state of expanded collapsed states folds them back.
+ 	auto CollapseSelected = [WeakSelf]()
+ 	{
+ 		const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+@@ -2162,10 +2162,8 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
+ 		};
+ 		AddGroupEntry(TEXT("OpenGroup"), LOCTEXT("OpenGroupMenu", "Open"), LOCTEXT("OpenGroupTip", "Shows these states alone (or double-click the box). Back to the layer with the trail in the layer row, above the graph."),
+ 			[](UWidgetAnimMachineGraph& Graph, const FGuid& Group) { Graph.OpenGroupView(Group); });
+-		AddGroupEntry(TEXT("ExpandGroup"), LOCTEXT("ExpandGroupMenu", "Expand In Place"), LOCTEXT("ExpandGroupTip", "Shows these states in the layer again; Collapse States on any of them folds them back."),
++		AddGroupEntry(TEXT("ExpandGroup"), LOCTEXT("ExpandGroupMenu", "Expand States"), LOCTEXT("ExpandGroupTip", "Shows these states in the layer again, still together under this name; Collapse States on any of them folds them back into this box."),
+ 			[](UWidgetAnimMachineGraph& Graph, const FGuid& Group) { WidgetAnimMachineEdits::SetGroupCollapsed(Graph.Machine, Graph.LayerIndex, Group, false); });
+-		AddGroupEntry(TEXT("Ungroup"), LOCTEXT("UngroupMenu", "Release States"), LOCTEXT("UngroupTip", "Puts the states back in the layer as themselves, and takes the collapsed box away."),
+-			[](UWidgetAnimMachineGraph& Graph, const FGuid& Group) { WidgetAnimMachineEdits::Ungroup(Graph.Machine, Graph.LayerIndex, Group); });
+ 		AddRename(GroupSection);
+ 		AddOrganize();
+ 		return;
+@@ -3833,6 +3831,13 @@ public:
+ 		{
+ 			return;
+ 		}
++		// Only a size that has held two frames in a row: a node's first frames - the editor just opened, the graph just made
++		// again - can measure it on the way to its real size, and moving it by that would take it off its line for good.
++		if (!NowSize.Equals(LastSeenSize, 0.5f))
++		{
++			LastSeenSize = NowSize;
++			return;
++		}
+ 		// Zoomed: whatever the zoom does to a node's size is not the node changing.
+ 		const TSharedPtr<SGraphPanel> Panel = GetOwnerPanel();
+ 		const float Zoom = Panel.IsValid() ? Panel->GetZoomAmount() : 1.f;
+@@ -3875,6 +3880,9 @@ public:
+ 
+ private:
+ 
++	/** Its size last tick - see Tick: a size is acted on once it has held two frames in a row. */
++	FVector2f LastSeenSize = FVector2f::ZeroVector;
++
+ 	const UWidgetAnimMachineGraphNode* GetMachineNode() const
+ 	{
+ 		return Cast<UWidgetAnimMachineGraphNode>(GraphNode);
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index 2e56688..9a33c48 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -2245,7 +2245,7 @@ namespace NameTBD::Tooltips
+ 		inline FText GroupNodeHint()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "GroupNodeHint",
+-				"Double-click to open it. Right-click to expand it in place, release its states or rename it.");
++				"Double-click to open it. Right-click to expand its states or rename it.");
+ 		}
+ 
+ 		inline FText MachineModeTooltip()

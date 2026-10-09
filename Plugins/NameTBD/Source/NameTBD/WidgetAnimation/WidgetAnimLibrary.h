@@ -17,6 +17,7 @@
 #include "WidgetAnimParts.h"     // Parts of a widget: FWidgetAnimPartKey
 #include "WidgetAnimCue.h"       // Cues: FWidgetAnimCueFire
 #include "WidgetAnimShake.h"     // Shake: FWidgetAnimShakeTrackParams
+#include "WidgetAnimParameters.h" // Animation Parameters: FWidgetAnimParameterBinding, FWidgetAnimParameterCondition
 #include "StructUtils/InstancedStruct.h"
 #include "Stats/Stats.h"
 #include "WidgetAnimLibrary.generated.h"
@@ -1152,6 +1153,27 @@ struct NAMETBD_API FWidgetAnimLayer
 	 */
 	UPROPERTY()
 	FName TargetWidget;
+
+	// Animation Parameters
+	//
+	// Fields of this track that take their value from one of its animation's parameters rather than their own constant, and
+	// the parameter values it plays for. Set from the Widget Animations panel - a field's bind chip in the Selection panel, the
+	// track's Plays When row - never in a Details panel. Resolved on the played copy each time the animation starts (see
+	// WidgetAnimParameters.h), so the constants stay what an unbound field, or one bound to a parameter since removed, plays.
+
+	/** This track's fields bound to parameters, by field path. Empty for a track with no bindings - nothing to resolve. */
+	UPROPERTY()
+	TArray<FWidgetAnimParameterBinding> ParameterBindings;
+
+	/** Plays only while a Choice parameter has one of these options (or a Bool one is true) - else it keeps its place in time and poses nothing. */
+	UPROPERTY()
+	FWidgetAnimParameterCondition PlaysWhen;
+
+	/** The binding of the field at FieldPath, or null. */
+	const FWidgetAnimParameterBinding* FindParameterBinding(const FString& FieldPath) const
+	{
+		return ParameterBindings.FindByPredicate([&FieldPath](const FWidgetAnimParameterBinding& Binding) { return Binding.FieldPath == FieldPath; });
+	}
 
 #if WITH_EDITORONLY_DATA
 	/**

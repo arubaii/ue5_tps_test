@@ -1095,6 +1095,11 @@ void UWidgetAnimationComponent::TickPlayer(UWidget* AnimatedWidget, float DeltaT
 		bTextChangePending = false;
 		PlayForTextChange();
 	}
+	if (PlayerTickDepth == 0 && bParameterRefreshPending)
+	{
+		bParameterRefreshPending = false;
+		RefreshPlayingParameters(nullptr, NAME_None);
+	}
 }
 
 bool UWidgetAnimationComponent::PlayForTextChange()
@@ -1127,6 +1132,9 @@ bool UWidgetAnimationComponent::PlayForTextChange()
 	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
 
 	// Only these entries, from their start; whatever else plays - a looping shimmer, an entrance still settling - goes on.
+	// The values Set Widget Animation Parameter set here, for the animations this starts.
+	FWidgetAnimParameterScopeStack ParameterScopes;
+	PushParameterScopes(ParameterScopes);
 	const int32 Started = UWidgetAnimEntryLibrary::StartEntriesById(
 		AnimPlayer,
 		EffectiveInEntries,
@@ -1138,6 +1146,7 @@ bool UWidgetAnimationComponent::PlayForTextChange()
 		/*bHoldWhenFinished=*/true,
 		&Filter,
 		&AppendExtra);
+	ParameterScopes.Reset();
 	if (Started == 0)
 	{
 		return false;
@@ -1227,6 +1236,9 @@ bool UWidgetAnimationComponent::PlayForTrigger(EEntryTrigger Trigger, bool bOut)
 	UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
 	auto AppendLinked = [this, bOut](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { PrepareEntrySettings(EntryIndex, bOut, EntrySettings); };
 	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
+	// The values Set Widget Animation Parameter set here, for the animations this starts.
+	FWidgetAnimParameterScopeStack ParameterScopes;
+	PushParameterScopes(ParameterScopes);
 	UWidgetAnimEntryLibrary::StartEntriesById(
 		AnimPlayer,
 		Entries,
@@ -1238,6 +1250,7 @@ bool UWidgetAnimationComponent::PlayForTrigger(EEntryTrigger Trigger, bool bOut)
 		/*bHoldWhenFinished=*/true,
 		&Filter,
 		&AppendExtra);
+	ParameterScopes.Reset();
 
 	UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, Unnamed, bOut, /*Speed=*/1.f, /*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
 
@@ -1321,6 +1334,9 @@ void UWidgetAnimationComponent::PlayIn(bool bCascadeToChildren)
 	UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
 	auto AppendLinked = [this](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { PrepareEntrySettings(EntryIndex, /*bOut=*/false, EntrySettings); };
 	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
+	// The values Set Widget Animation Parameter set here, for the animations this starts.
+	FWidgetAnimParameterScopeStack ParameterScopes;
+	PushParameterScopes(ParameterScopes);
 	UWidgetAnimEntryLibrary::StartEntriesById(
 		AnimPlayer,
 		EffectiveInEntries,
@@ -1332,6 +1348,7 @@ void UWidgetAnimationComponent::PlayIn(bool bCascadeToChildren)
 		/*bHoldWhenFinished=*/true,
 		/*Filter=*/nullptr,
 		&AppendExtra);
+	ParameterScopes.Reset();
 
 	UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, UnnamedAnimIn, /*bIsOut=*/false, /*Speed=*/1.f, /*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
 
@@ -1386,6 +1403,9 @@ void UWidgetAnimationComponent::PlayOut(bool bCascadeToChildren)
 	UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
 	auto AppendLinked = [this](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { PrepareEntrySettings(EntryIndex, /*bOut=*/true, EntrySettings); };
 	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
+	// The values Set Widget Animation Parameter set here, for the animations this starts.
+	FWidgetAnimParameterScopeStack ParameterScopes;
+	PushParameterScopes(ParameterScopes);
 	UWidgetAnimEntryLibrary::StartEntriesById(
 		AnimPlayer,
 		EffectiveOutEntries,
@@ -1397,6 +1417,7 @@ void UWidgetAnimationComponent::PlayOut(bool bCascadeToChildren)
 		/*bHoldWhenFinished=*/true,
 		/*Filter=*/nullptr,
 		&AppendExtra);
+	ParameterScopes.Reset();
 
 	UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, UnnamedAnimOut, /*bIsOut=*/true, /*Speed=*/1.f, /*bRestartIfPlaying=*/true, /*bHoldWhenFinished=*/true);
 
@@ -1564,7 +1585,11 @@ bool UWidgetAnimationComponent::SetWidgetAnimationValues(const FWidgetAnimValueI
 		UWidgetAnimLibrary::StartWidgetAnimTrack(AnimPlayer, NAME_None, UnnamedLayersSourceIndex, UnnamedAnimIn, /*bIsOut=*/false, /*Speed=*/1.f, /*bRestartIfPlaying=*/false, /*bHoldWhenFinished=*/true);
 	}
 
+	// The values Set Widget Animation Parameter set here, for any entry this starts.
+	FWidgetAnimParameterScopeStack ParameterScopes;
+	PushParameterScopes(ParameterScopes);
 	int32 Taken = UWidgetAnimEntryLibrary::SetEntriesValue(AnimPlayer, EffectiveInEntries, Resolver, Id, Value, bSnap, bStartIfNotPlaying, &AppendExtra);
+	ParameterScopes.Reset();
 
 	// The value tracks the state machines' states play take it too. A percentage state's progress is its Progress Input's.
 	if (Id.ValueName != WidgetAnimValue::ProgressValueName)
@@ -1977,6 +2002,9 @@ void UWidgetAnimationComponent::PlayWidgetAnimationsById(const TArray<FName>& An
 	// that starts within an entry plays with it, whatever called for it.
 	auto AppendLinked = [this, bReverse](int32 EntryIndex, TArray<FWidgetAnimSettings>& EntrySettings) { PrepareEntrySettings(EntryIndex, bReverse, EntrySettings); };
 	const TFunctionRef<void(int32, TArray<FWidgetAnimSettings>&)> AppendExtra(AppendLinked);
+	// The values Set Widget Animation Parameter set here, for the animations this starts.
+	FWidgetAnimParameterScopeStack ParameterScopes;
+	PushParameterScopes(ParameterScopes);
 	UWidgetAnimEntryLibrary::StartEntriesById(
 		AnimPlayer,
 		bReverse ? EffectiveOutEntries : EffectiveInEntries,
@@ -1988,6 +2016,7 @@ void UWidgetAnimationComponent::PlayWidgetAnimationsById(const TArray<FName>& An
 		bHoldFinalPose,
 		/*Filter=*/nullptr,
 		&AppendExtra);
+	ParameterScopes.Reset();
 
 	// Additive layers that start right away, and extra layers, have no Anim ID, so they only join a "play everything" call.
 	if (AnimIds.Num() == 0)
@@ -2567,6 +2596,8 @@ void UWidgetAnimationComponent::StartMachines(bool bOnlyOnConstruct)
 	}
 
 	const FWidgetAnimMachineContext& Context = GetMachineContext();
+	FWidgetAnimParameterScopeStack ParameterScopes;
+	PushParameterScopes(ParameterScopes);
 	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
 	{
 		const bool bAsked = !bOnlyOnConstruct || (StateMachines.IsValidIndex(Instance.RowIndex) && StateMachines[Instance.RowIndex].bStartOnConstruct);
@@ -2672,6 +2703,10 @@ bool UWidgetAnimationComponent::TickMachines(float DeltaTime)
 			MachinesLastAdvanceFrame = GFrameCounter;
 		}
 	}
+
+	// The values Set Widget Animation Parameter set here, for the animations the states start.
+	FWidgetAnimParameterScopeStack ParameterScopes;
+	PushParameterScopes(ParameterScopes);
 
 	bool bPoseChanged = false;
 	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
@@ -2810,9 +2845,11 @@ void UWidgetAnimationComponent::FlushStateEvents()
 	{
 		OnStateMachineStateChanged.Broadcast(Info);
 
-		// Its Custom Event - On <Machine> Entered <State> - on the nearest User Widget around the widget playing the machine
-		// that has one: the Widget Blueprint the component was set up in, usually.
-		const FName FunctionName = WidgetAnimMachineEvents::GetStateEventFunctionName(Info.Machine, Info.State, Info.bEntered);
+		// Its Custom Event - On <Machine> Entered <State>, or a Fire Event action's On <Machine> <Event Name> - on the nearest
+		// User Widget around the widget playing the machine that has one: the Widget Blueprint the component was set up in, usually.
+		const FName FunctionName = Info.EventName.IsNone()
+			? WidgetAnimMachineEvents::GetStateEventFunctionName(Info.Machine, Info.State, Info.bEntered)
+			: WidgetAnimMachineEvents::GetActionEventFunctionName(Info.Machine, Info.EventName);
 		if (FunctionName.IsNone())
 		{
 			continue;
@@ -2941,6 +2978,24 @@ FName UWidgetAnimationComponent::GetCurrentStateOfLayer(UWidgetAnimStateMachineA
 	return NAME_None;
 }
 
+TArray<float> UWidgetAnimationComponent::GetStateMachineBlendWeights(UWidgetAnimStateMachineAsset* StateMachine, FName Layer) const
+{
+	TArray<float> Weights;
+	for (const FWidgetAnimMachineInstance& Instance : MachineInstances)
+	{
+		if ((!StateMachine || Instance.Machine == StateMachine) && Instance.bStarted)
+		{
+			if (!Layer.IsNone() && Instance.Machine && Instance.Machine->FindLayerIndex(Layer) == INDEX_NONE)
+			{
+				continue;
+			}
+			WidgetAnimStateMachines::GetBlendWeights(Instance, Layer, Weights);
+			break;
+		}
+	}
+	return Weights;
+}
+
 void UWidgetAnimationComponent::StartStateMachines()
 {
 	if (!bOwnerConstructed || !AnimOwner.IsValid())
@@ -2985,6 +3040,191 @@ bool UWidgetAnimationComponent::HasStateMachineInput(const UWidgetAnimStateMachi
 bool UWidgetAnimationComponent::PlaysStateMachine(const UWidgetAnimStateMachineAsset* StateMachine) const
 {
 	return StateMachine && StateMachines.ContainsByPredicate([StateMachine](const FWidgetAnimStateMachineEntry& Row) { return Row.StateMachine == StateMachine; });
+}
+
+void UWidgetAnimationComponent::SetWidgetAnimationParameter(const FWidgetAnimParameterValue& Value, const UWidgetAnimPresetAsset* Animation, FName AnimId)
+{
+	if (Value.Name.IsNone())
+	{
+		return;
+	}
+
+	// One group per animation and Anim ID it is set for: setting it again replaces the value.
+	FWidgetAnimSetParameterGroup* Group = SetParameterGroups.FindByPredicate([Animation, AnimId](const FWidgetAnimSetParameterGroup& Candidate)
+	{
+		return Candidate.bForAnimation == (Animation != nullptr) && Candidate.Animation.Get() == Animation && Candidate.AnimId == AnimId;
+	});
+	if (!Group)
+	{
+		Group = &SetParameterGroups.AddDefaulted_GetRef();
+		Group->Animation = Animation;
+		Group->bForAnimation = Animation != nullptr;
+		Group->AnimId = AnimId;
+	}
+
+	FWidgetAnimParameterValue Set = Value;
+	Set.bOverride = true;
+	if (FWidgetAnimParameterValue* Existing = Group->Values.FindByPredicate([&Value](const FWidgetAnimParameterValue& Candidate) { return Candidate.Name == Value.Name; }))
+	{
+		if (Existing->SameValueAs(Set))
+		{
+			return;
+		}
+		*Existing = Set;
+	}
+	else
+	{
+		Group->Values.Add(Set);
+	}
+
+	// Live: what plays now takes it at once.
+	RefreshPlayingParameters(Animation, AnimId);
+}
+
+void UWidgetAnimationComponent::RefreshPlayingParameters(const UWidgetAnimPresetAsset* Animation, FName AnimId)
+{
+	if (!AnimOwner.IsValid() || AnimPlayer.Tracks.Num() == 0)
+	{
+		return;
+	}
+
+	// The tracks can't be changed while a frame of them is being applied: once it is done.
+	if (PlayerTickDepth > 0)
+	{
+		bParameterRefreshPending = true;
+		return;
+	}
+
+	auto Resolver = [this](FName Path) { return ResolveAnimTarget(Path); };
+	FWidgetAnimParameterScopeStack ParameterScopes;
+	PushParameterScopes(ParameterScopes);
+
+	bool bAnyChanged = false;
+	for (FWidgetAnimTrack& Track : AnimPlayer.Tracks)
+	{
+		if (Track.bFinished && !Track.bHoldWhenFinished)
+		{
+			continue;
+		}
+		const TArray<FWidgetAnimEntry>& Entries = Track.bIsOut ? EffectiveOutEntries : EffectiveInEntries;
+		if (!Entries.IsValidIndex(Track.SourceIndex))
+		{
+			continue;
+		}
+		const FWidgetAnimEntry& Entry = Entries[Track.SourceIndex];
+		const UWidgetAnimPresetAsset* Played = Entry.Animation.Get();
+		if (!Entry.IsUsable() || Entry.AnimId != Track.AnimId || !Played || Played->Parameters.Num() == 0
+			|| (Animation && Played != Animation) || (!AnimId.IsNone() && Entry.AnimId != AnimId))
+		{
+			continue;
+		}
+
+		// Worked out again with the values as they are now, and laid over the track's own - one for one, so where each part
+		// is in its play stays as it was. The settings added on top of the entry's (linked tracks) are left as they are.
+		TArray<FWidgetAnimSettings> Rebuilt;
+		Entry.BuildSettingsResolved(Rebuilt, Resolver);
+		const int32 Count = FMath::Min(Rebuilt.Num(), Track.Settings.Num());
+		bool bTrackChanged = false;
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			if (!FWidgetAnimSettings::StaticStruct()->CompareScriptStruct(&Track.Settings[Index], &Rebuilt[Index], PPF_None))
+			{
+				Track.Settings[Index] = MoveTemp(Rebuilt[Index]);
+				bTrackChanged = true;
+			}
+		}
+		if (bTrackChanged)
+		{
+			Track.bSettled = false;
+			bAnyChanged = true;
+		}
+	}
+	ParameterScopes.Reset();
+
+	if (bAnyChanged)
+	{
+		ApplyCurrentAnimPose();
+	}
+}
+
+void UWidgetAnimationComponent::ClearWidgetAnimationParameters(const UWidgetAnimPresetAsset* Animation, FName AnimId)
+{
+	if (!Animation && AnimId.IsNone())
+	{
+		SetParameterGroups.Reset();
+	}
+	else
+	{
+		SetParameterGroups.RemoveAll([Animation, AnimId](const FWidgetAnimSetParameterGroup& Group)
+		{
+			return (!Animation || Group.Animation.Get() == Animation) && (AnimId.IsNone() || Group.AnimId == AnimId);
+		});
+	}
+	RefreshPlayingParameters(Animation, AnimId);
+}
+
+bool UWidgetAnimationComponent::GetWidgetAnimationParameter(FName Name, const UWidgetAnimPresetAsset* Animation, FName AnimId, FWidgetAnimParameterValue& OutValue) const
+{
+	// Set here, the latest set first.
+	for (int32 Index = SetParameterGroups.Num() - 1; Index >= 0; --Index)
+	{
+		const FWidgetAnimSetParameterGroup& Group = SetParameterGroups[Index];
+		if (Group.bForAnimation && !Group.Animation.IsValid())
+		{
+			continue;
+		}
+		if (!Group.AppliesTo(Animation, AnimId))
+		{
+			continue;
+		}
+		if (const FWidgetAnimParameterValue* Found = Group.Values.FindByPredicate([Name](const FWidgetAnimParameterValue& Value) { return Value.Name == Name; }))
+		{
+			OutValue = *Found;
+			return true;
+		}
+	}
+
+	// Else as an entry plays it: its own value, or the animation's default.
+	for (const TArray<FWidgetAnimEntry>* Entries : { &EffectiveInEntries, &EffectiveOutEntries })
+	{
+		for (const FWidgetAnimEntry& Entry : *Entries)
+		{
+			const UWidgetAnimPresetAsset* EntryAnimation = Entry.Animation.Get();
+			if (!EntryAnimation || (Animation && EntryAnimation != Animation) || (!AnimId.IsNone() && Entry.AnimId != AnimId))
+			{
+				continue;
+			}
+			const FWidgetAnimParameter* Declared = EntryAnimation->FindParameter(Name);
+			if (!Declared)
+			{
+				continue;
+			}
+			const FWidgetAnimParameterValue* Own = Entry.Parameters.FindByPredicate([Name](const FWidgetAnimParameterValue& Value) { return Value.Name == Name && Value.bOverride; });
+			OutValue = Own ? *Own : FWidgetAnimParameterValue::FromDefault(*Declared);
+			return true;
+		}
+	}
+
+	// An animation asked about by name that no entry here plays: its default.
+	if (const FWidgetAnimParameter* Declared = Animation ? Animation->FindParameter(Name) : nullptr)
+	{
+		OutValue = FWidgetAnimParameterValue::FromDefault(*Declared);
+		return true;
+	}
+	return false;
+}
+
+void UWidgetAnimationComponent::PushParameterScopes(FWidgetAnimParameterScopeStack& Stack) const
+{
+	for (const FWidgetAnimSetParameterGroup& Group : SetParameterGroups)
+	{
+		// For an animation since unloaded: for nothing, rather than for everything.
+		if (Group.Values.Num() == 0 || (Group.bForAnimation && !Group.Animation.IsValid()))
+		{
+			continue;
+		}
+		Stack.Push(Group.Values, Group.Animation.Get(), Group.AnimId);
+	}
 }
 
 bool UWidgetAnimationComponent::SyncStateMachines()
@@ -3045,9 +3285,13 @@ bool UWidgetAnimationComponent::StartDesignerStateMachinePreview()
 
 	bMachinePreviewing = true;
 	const FWidgetAnimMachineContext& Context = GetMachineContext();
-	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
 	{
-		WidgetAnimStateMachines::Start(Instance, Context);
+		FWidgetAnimParameterScopeStack ParameterScopes;
+		PushParameterScopes(ParameterScopes);
+		for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+		{
+			WidgetAnimStateMachines::Start(Instance, Context);
+		}
 	}
 	TickDesignerMachines(0.f);
 

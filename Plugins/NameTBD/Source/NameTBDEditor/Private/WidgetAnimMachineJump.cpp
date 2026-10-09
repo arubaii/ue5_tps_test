@@ -145,6 +145,13 @@ namespace WidgetAnimMachineJumpLocal
 		/** Whether a condition holds on the plan - as the runtime would judge it the frame the step is set. */
 		bool Holds(const FWidgetAnimMachineCondition& Condition) const
 		{
+			// Another layer's state: no input sets it - taken to hold, so a step that needs it is planned; the layer gets there
+			// when the other layer does (a jump may stop short until it has).
+			if (Condition.TestsLayerState())
+			{
+				return true;
+			}
+
 			const FWidgetAnimMachineInput* Input = Machine.FindInput(Condition.Input);
 			const bool bAgainstInput = Condition.CompareTo == EWidgetAnimMachineCompareTo::Input;
 
@@ -180,6 +187,11 @@ namespace WidgetAnimMachineJumpLocal
 				case EWidgetAnimMachineCompare::Decreased: return Now < Before - 1e-4f;
 				default:                                    return !FMath::IsNearlyEqual(Now, Before, 1e-4f);
 				}
+			}
+			if (Input && Input->Type == EWidgetAnimMachineInputType::Hold && Condition.Compare == EWidgetAnimMachineCompare::IsFalse)
+			{
+				// Is Let Go: the frame it goes from held to let go - from the step before, or from a press made just before.
+				return Plan.Values.FindRef(Condition.Input) < 0.5f && (Previous.FindRef(Condition.Input) > 0.5f || Plan.Tap.Contains(Condition.Input));
 			}
 			if (Input && Input->Type == EWidgetAnimMachineInputType::Choice)
 			{
@@ -353,6 +365,11 @@ namespace WidgetAnimMachineJumpLocal
 		/** Makes one condition hold - all but the number comparisons, which SolveNumbers takes together. */
 		void MakeHold(const FWidgetAnimMachineCondition& Condition)
 		{
+			if (Condition.TestsLayerState())
+			{
+				return;
+			}
+
 			const FName Name = Condition.Input;
 			const FWidgetAnimMachineInput* Input = Machine.FindInput(Name);
 			const bool bBuiltIn = WidgetAnimMachineInputs::IsBuiltIn(Name);
@@ -395,6 +412,15 @@ namespace WidgetAnimMachineJumpLocal
 				else if (Input && Input->Type == EWidgetAnimMachineInputType::Vector2D)
 				{
 					Plan.Vectors.Add(Name, FVector2D::ZeroVector);
+				}
+				else if (Input && Input->Type == EWidgetAnimMachineInputType::Hold)
+				{
+					// Let go - pressed for a frame first when the step before didn't leave it held.
+					Plan.Values.Add(Name, 0.f);
+					if (Previous.FindRef(Name) <= 0.5f)
+					{
+						Plan.Tap.Add(Name);
+					}
 				}
 				else if (!(Input && Input->Type == EWidgetAnimMachineInputType::Trigger))
 				{
@@ -482,6 +508,10 @@ namespace WidgetAnimMachineJumpLocal
 				for (const FWidgetAnimMachineCondition& Condition : Transition.Conditions)
 				{
 					const bool bAgainstInput = Condition.CompareTo == EWidgetAnimMachineCompareTo::Input && !Condition.OtherInput.IsNone();
+					if (Condition.TestsLayerState())
+					{
+						continue;
+					}
 					if (Pass == 0)
 					{
 						// Both sides of a comparison between inputs are needed: blocking moves neither.
@@ -519,6 +549,10 @@ namespace WidgetAnimMachineJumpLocal
 		/** Makes one condition fail, leaving the needed inputs alone. False when it can't be. */
 		bool MakeFail(const FWidgetAnimMachineCondition& Condition)
 		{
+			if (Condition.TestsLayerState())
+			{
+				return false;
+			}
 			const FName Name = Condition.Input;
 			if (Required.Contains(Name))
 			{
@@ -561,6 +595,7 @@ namespace WidgetAnimMachineJumpLocal
 				}
 				else
 				{
+					Plan.Tap.Remove(Name);
 					Plan.Values.Add(Name, 1.f);
 				}
 				break;
@@ -659,10 +694,13 @@ namespace WidgetAnimMachineJump
 		const FGuid AnyId = Layer.States.IsValidIndex(AnyIndex) ? Layer.States[AnyIndex].Id : FGuid();
 		const FGuid Start = Layer.FindState(From) ? From : EntryId;
 
-		auto IsStateNode = [&Layer](const FGuid& Id)
+		// States are gone through; the layer's Exit only arrived at, as the last step - nothing leaves it.
+		const FWidgetAnimMachineState* TargetNode = Layer.FindState(Target);
+		const bool bToExit = TargetNode && TargetNode->Kind == EWidgetAnimMachineNodeKind::Exit;
+		auto IsStateNode = [&Layer, &Target, bToExit](const FGuid& Id)
 		{
 			const FWidgetAnimMachineState* State = Layer.FindState(Id);
-			return State && State->Kind == EWidgetAnimMachineNodeKind::State;
+			return State && (State->Kind == EWidgetAnimMachineNodeKind::State || (bToExit && Id == Target));
 		};
 
 		// The fewest transitions from Start to Target: Any State's leave from anywhere but Entry; Entry's only from Entry.

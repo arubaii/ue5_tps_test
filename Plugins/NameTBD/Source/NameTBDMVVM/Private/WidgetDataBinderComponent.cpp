@@ -798,6 +798,22 @@ void UWidgetDataBinderComponent::EvaluateTrigger(int32 TriggerIndex, bool bIniti
 		return;
 	}
 
+	if (Trigger.Action == EWidgetDataTriggerAction::SetParameter)
+	{
+		// As Set Value: at binding only with Evaluate On Bind, after that on every change - compared as text, which covers
+		// every type a parameter can take (a Name, an enum, a color).
+		FString Text;
+		Value.Property->ExportTextItem_Direct(Text, Value.ValuePtr, nullptr, nullptr, PPF_None);
+		const bool bChanged = !State.bHasLastText || Text != State.LastText;
+		State.LastText = MoveTemp(Text);
+		State.bHasLastText = true;
+		if (bInitial ? Trigger.bEvaluateOnBind : bChanged)
+		{
+			SetAnimationParameter(Trigger, Value);
+		}
+		return;
+	}
+
 	if (Trigger.Action == EWidgetDataTriggerAction::SetValue || Trigger.Action == EWidgetDataTriggerAction::SetProgress || Trigger.Action == EWidgetDataTriggerAction::SetInput)
 	{
 		// No condition and no edge: every change of the field is a value, as it is - each track maps it onto itself. A
@@ -1038,6 +1054,95 @@ void UWidgetDataBinderComponent::PlayOrStop(const FWidgetFieldTrigger& Trigger, 
 	else
 	{
 		Host->StopWidgetAnimationsById(Trigger.AnimIds, Trigger.bResetToStartOnStop);
+	}
+}
+
+void UWidgetDataBinderComponent::SetAnimationParameter(const FWidgetFieldTrigger& Trigger, const FWidgetDataValue& Value)
+{
+	UWidget* Target = ResolveAnimationWidget(Trigger.AnimationWidget);
+	if (Trigger.ParameterName.IsNone() || !Target || !Value.IsValid())
+	{
+		return;
+	}
+
+	// The field as a parameter value of its own kind: the animation's declaration converts it on arrival if it is another.
+	FWidgetAnimParameterValue Parameter;
+	Parameter.Name = Trigger.ParameterName;
+	const FStructProperty* StructProperty = CastField<FStructProperty>(Value.Property);
+	const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Value.Property);
+	const FByteProperty* ByteProperty = CastField<FByteProperty>(Value.Property);
+	const UEnum* Enum = EnumProperty ? EnumProperty->GetEnum() : (ByteProperty ? ByteProperty->Enum.Get() : nullptr);
+	double Number = 0.0;
+	if (StructProperty && StructProperty->Struct == TBaseStructure<FVector2D>::Get())
+	{
+		Parameter.Type = EWidgetAnimParameterType::Vector2D;
+		Parameter.Vector2D = *static_cast<const FVector2D*>(Value.ValuePtr);
+	}
+	else if (StructProperty && StructProperty->Struct == TBaseStructure<FLinearColor>::Get())
+	{
+		Parameter.Type = EWidgetAnimParameterType::Color;
+		Parameter.Color = *static_cast<const FLinearColor*>(Value.ValuePtr);
+	}
+	else if (StructProperty && StructProperty->Struct == TBaseStructure<FColor>::Get())
+	{
+		Parameter.Type = EWidgetAnimParameterType::Color;
+		Parameter.Color = FLinearColor(*static_cast<const FColor*>(Value.ValuePtr));
+	}
+	else if (CastField<FBoolProperty>(Value.Property))
+	{
+		Parameter.Type = EWidgetAnimParameterType::Bool;
+		Parameter.bBool = WidgetDataValues::IsTruthy(Value.Property, Value.ValuePtr);
+	}
+	else if (Enum)
+	{
+		// An enum by its option's name, as a Choice's options read.
+		int64 EnumValue = 0;
+		if (EnumProperty)
+		{
+			EnumValue = EnumProperty->GetUnderlyingProperty()->GetSignedIntPropertyValue(Value.ValuePtr);
+		}
+		else
+		{
+			EnumValue = ByteProperty->GetPropertyValue(Value.ValuePtr);
+		}
+		Parameter.Type = EWidgetAnimParameterType::Choice;
+		Parameter.Option = FName(*Enum->GetNameStringByValue(EnumValue));
+	}
+	else if (CastField<FNameProperty>(Value.Property) || CastField<FStrProperty>(Value.Property) || CastField<FTextProperty>(Value.Property))
+	{
+		FString Text;
+		if (const FTextProperty* TextProperty = CastField<FTextProperty>(Value.Property))
+		{
+			Text = TextProperty->GetPropertyValue(Value.ValuePtr).ToString();
+		}
+		else
+		{
+			Value.Property->ExportTextItem_Direct(Text, Value.ValuePtr, nullptr, nullptr, PPF_None);
+		}
+		Parameter.Type = EWidgetAnimParameterType::Choice;
+		Parameter.Option = FName(*Text);
+	}
+	else if (WidgetDataValues::ReadNumber(Value.Property, Value.ValuePtr, Number))
+	{
+		const bool bInteger = CastField<FNumericProperty>(Value.Property) && CastField<FNumericProperty>(Value.Property)->IsInteger();
+		Parameter.Type = bInteger ? EWidgetAnimParameterType::Integer : EWidgetAnimParameterType::Float;
+		Parameter.Float = static_cast<float>(Number);
+		Parameter.Integer = static_cast<int32>(FMath::RoundToInt64(Number));
+	}
+	else
+	{
+		Parameter.Type = EWidgetAnimParameterType::Bool;
+		Parameter.bBool = WidgetDataValues::IsTruthy(Value.Property, Value.ValuePtr);
+	}
+
+	// For the entries with the Anim IDs, or every animation the widget plays.
+	if (Trigger.AnimIds.Num() == 0)
+	{
+		UWidgetAnimPlayLibrary::SetWidgetAnimationParameter(Target, Parameter, nullptr, NAME_None, /*bSearchParentWidgets=*/true);
+	}
+	for (const FName AnimId : Trigger.AnimIds)
+	{
+		UWidgetAnimPlayLibrary::SetWidgetAnimationParameter(Target, Parameter, nullptr, AnimId, /*bSearchParentWidgets=*/true);
 	}
 }
 

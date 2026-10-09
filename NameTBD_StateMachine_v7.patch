@@ -1,0 +1,300 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+index b929a81..eb86906 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+@@ -1749,6 +1749,11 @@ UWidgetAnimMachineGraph* SWidgetAnimStateMachineEditor::GetOrMakeGraph(int32 Lay
+ 		const TSharedPtr<SWidgetAnimStateMachineEditor> Self = WeakSelf.Pin();
+ 		return Self.IsValid() && Self->GetLayerDebug(Graph->LayerIndex, OutDebug);
+ 	};
++	Graph->CanEditMachine = [WeakSelf]()
++	{
++		const TSharedPtr<SWidgetAnimStateMachineEditor> Self = WeakSelf.Pin();
++		return Self.IsValid() && Self->IsMachineEditable();
++	};
+ 	Graph->OnCollapsed = [WeakSelf](const FGuid& GroupId)
+ 	{
+ 		if (const TSharedPtr<SWidgetAnimStateMachineEditor> Self = WeakSelf.Pin())
+@@ -6324,8 +6329,9 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeDraftNameField()
+ namespace
+ {
+ 	/**
+-	 * A rounded outline in any color, set live: an antialiased closed path round the widget's box, inset by half its width.
+-	 * (A rounded box brush's outline color is the brush's own - a tint doesn't reach it.)
++	 * A rounded outline in any color, set live, inside the widget's box: a rounded box's outline - the rounded-box shader's, one
++	 * seamless shape - its color set on its own brush (a rounded box's outline color is the brush's: the color it is drawn
++	 * with doesn't reach it). Not an antialiased closed path: its two ends fade out where they meet - a hairline crack.
+ 	 */
+ 	class SWidgetAnimMachineRoundedOutline : public SLeafWidget
+ 	{
+@@ -6357,38 +6363,16 @@ namespace
+ 			FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+ 		{
+ 			const FVector2f Size = AllottedGeometry.GetLocalSize();
+-			const float Inset = Thickness * 0.5f;
+-			const FVector2f Min(Inset, Inset);
+-			const FVector2f Max = Size - FVector2f(Inset, Inset);
+-			const float Corner = FMath::Clamp(Radius - Inset, 0.5f, FMath::Min(Max.X - Min.X, Max.Y - Min.Y) * 0.5f);
+-			if (Max.X <= Min.X || Max.Y <= Min.Y)
++			if (Size.X <= Thickness * 2.f || Size.Y <= Thickness * 2.f)
+ 			{
+ 				return LayerId;
+ 			}
+-			const FVector2f Centers[] =
+-			{
+-				FVector2f(Max.X - Corner, Min.Y + Corner),
+-				FVector2f(Max.X - Corner, Max.Y - Corner),
+-				FVector2f(Min.X + Corner, Max.Y - Corner),
+-				FVector2f(Min.X + Corner, Min.Y + Corner),
+-			};
+-			// From the middle of the top edge and back to it, so the path's two ends meet in a straight line - no seam.
+-			TArray<FVector2f> Points;
+-			const FVector2f TopMiddle((Min.X + Max.X) * 0.5f, Min.Y);
+-			Points.Add(TopMiddle);
+-			constexpr int32 ArcSegments = 8;
+-			for (int32 Arc = 0; Arc < 4; ++Arc)
+-			{
+-				const float StartAngle = -UE_HALF_PI + Arc * UE_HALF_PI;
+-				for (int32 Segment = 0; Segment <= ArcSegments; ++Segment)
+-				{
+-					const float Angle = StartAngle + UE_HALF_PI * Segment / ArcSegments;
+-					Points.Add(Centers[Arc] + FVector2f(FMath::Cos(Angle), FMath::Sin(Angle)) * Corner);
+-				}
+-			}
+-			Points.Add(TopMiddle);
+-			FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None,
+-				LineColor.Get() * InWidgetStyle.GetColorAndOpacityTint(), /*bAntialias=*/true, Thickness);
++			OutlineBrush.DrawAs = ESlateBrushDrawType::RoundedBox;
++			OutlineBrush.TintColor = FSlateColor(FLinearColor::Transparent);
++			OutlineBrush.OutlineSettings = FSlateBrushOutlineSettings(FVector4(Radius, Radius, Radius, Radius),
++				FSlateColor(LineColor.Get() * InWidgetStyle.GetColorAndOpacityTint()), Thickness);
++			OutlineBrush.OutlineSettings.RoundingType = ESlateBrushRoundingType::FixedRadius;
++			FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), &OutlineBrush, ESlateDrawEffect::None, FLinearColor::White);
+ 			return LayerId + 1;
+ 		}
+ 
+@@ -6397,6 +6381,9 @@ namespace
+ 		TAttribute<FLinearColor> LineColor;
+ 		float Radius = 5.f;
+ 		float Thickness = 1.f;
++
++		/** Kept, as a drawn box refers to its brush until the frame is rendered. */
++		mutable FSlateBrush OutlineBrush;
+ 	};
+ }
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+index 0e921c4..18a3211 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+@@ -10,6 +10,7 @@
+ #include "Fonts/FontMeasure.h"
+ #include "Framework/Application/SlateApplication.h"
+ #include "Framework/Commands/GenericCommands.h"
++#include "Framework/MultiBox/MultiBoxBuilder.h"
+ #include "GraphEditorActions.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
+@@ -31,6 +32,7 @@
+ #include "WidgetAnimMachineConditionCustomization.h"
+ #include "WidgetAnimMachineEditorStyle.h"
+ #include "Widgets/Images/SImage.h"
++#include "Widgets/Input/SEditableTextBox.h"
+ #include "Widgets/Input/SMultiLineEditableTextBox.h"
+ #include "Widgets/Layout/SBorder.h"
+ #include "Widgets/Layout/SBox.h"
+@@ -2047,6 +2049,60 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
+ 		}
+ 	};
+ 
++	// Rename: its new name typed straight into the menu, as a track's is in the Widget Animations panel - a state, or
++	// collapsed states. Enter renames it and closes the menu; Escape or clicking away leaves it.
++	auto AddRename = [WeakSelf](FToolMenuSection& InSection)
++	{
++		const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
++		const UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
++		const bool bEditable = !Graph || !Graph->CanEditMachine || Graph->CanEditMachine();
++		const FText Current = Node ? Node->GetNodeTitle(ENodeTitleType::EditableTitle) : FText::GetEmpty();
++		InSection.AddSubMenu(
++			TEXT("RenameNode"),
++			LOCTEXT("RenameNodeMenu", "Rename"),
++			Node && Node->bIsGroup ? MachineTips::RenameCollapsedStatesTooltip() : MachineTips::RenameStateTooltip(),
++			FNewMenuDelegate::CreateLambda([WeakSelf, Current, bEditable](FMenuBuilder& SubMenu)
++			{
++				SubMenu.AddWidget(
++					SNew(SBox)
++					.Padding(FMargin(8.f, 2.f, 8.f, 4.f))
++					.MinDesiredWidth(200.f)
++					[
++						SNew(SEditableTextBox)
++						.Text(Current)
++						.IsReadOnly(!bEditable)
++						.SelectAllTextWhenFocused(true)
++						.OnTextCommitted_Lambda([WeakSelf](const FText& NewText, ETextCommit::Type CommitType)
++						{
++							const FString Typed = NewText.ToString().TrimStartAndEnd();
++							if (CommitType != ETextCommit::OnEnter || Typed.IsEmpty())
++							{
++								return;
++							}
++							FSlateApplication::Get().DismissAllMenus();
++							const UWidgetAnimMachineGraphNode* Renamed = WeakSelf.Get();
++							UWidgetAnimMachineGraph* RenamedGraph = Renamed ? Renamed->GetMachineGraph() : nullptr;
++							if (!RenamedGraph)
++							{
++								return;
++							}
++							if (Renamed->bIsGroup)
++							{
++								WidgetAnimMachineEdits::RenameGroup(RenamedGraph->Machine, RenamedGraph->LayerIndex, Renamed->StateId, Typed);
++							}
++							else
++							{
++								WidgetAnimMachineEdits::RenameState(RenamedGraph->Machine, RenamedGraph->LayerIndex, Renamed->StateId, Typed);
++							}
++						})
++					],
++					FText::GetEmpty(),
++					/*bNoIndent=*/true);
++			}),
++			/*bInOpenSubMenuOnClick=*/false,
++			FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("GenericCommands.Rename")));
++	};
++
+ 	// Lining the selection up: Q, as in a Blueprint graph. A menu entry of its own - the engine's Straighten Connections
+ 	// command straightens by pins, which a state machine's nodes don't line up by. Next to last: a state's note is last.
+ 	auto AddOrganize = [&Menu, WeakSelf]()
+@@ -2109,7 +2165,7 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
+ 			[](UWidgetAnimMachineGraph& Graph, const FGuid& Group) { WidgetAnimMachineEdits::SetGroupCollapsed(Graph.Machine, Graph.LayerIndex, Group, false); });
+ 		AddGroupEntry(TEXT("Ungroup"), LOCTEXT("UngroupMenu", "Release States"), LOCTEXT("UngroupTip", "Puts the states back in the layer as themselves, and takes the collapsed box away."),
+ 			[](UWidgetAnimMachineGraph& Graph, const FGuid& Group) { WidgetAnimMachineEdits::Ungroup(Graph.Machine, Graph.LayerIndex, Group); });
+-		GroupSection.AddMenuEntry(FGenericCommands::Get().Rename);
++		AddRename(GroupSection);
+ 		AddOrganize();
+ 		return;
+ 	}
+@@ -2184,7 +2240,7 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
+ 			MachineTips::CollapseToGroupTooltip(),
+ 			FSlateIcon(),
+ 			FUIAction(FExecuteAction::CreateLambda(CollapseSelected)));
+-		Section.AddMenuEntry(FGenericCommands::Get().Rename);
++		AddRename(Section);
+ 		Section.AddMenuEntry(FGenericCommands::Get().Copy);
+ 		Section.AddMenuEntry(FGenericCommands::Get().Cut);
+ 		Section.AddMenuEntry(FGenericCommands::Get().Duplicate);
+@@ -3313,9 +3369,8 @@ public:
+ 		}
+ 		const bool bSelected = Selected.Get();
+ 
+-		// Each line is the node's rounded outline pushed out by its offset - corners as arcs round the same corner radius
+-		// grown by the same offset, so every line is concentric with the node - drawn antialiased as one closed path, so its
+-		// color is exactly what is asked (a rounded box brush's outline isn't tinted).
++		// Each line is the node's rounded outline pushed out by its offset - corners round the same corner radius grown by the
++		// same offset, so every line is concentric with the node (drawn below).
+ 		const float NodeRadius = FMath::Min(MachineColors::ActiveRingRadius, FMath::Min(Size.X, Size.Y) * 0.5f);
+ 		const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
+ 		const FLinearColor Glow = MachineColors::ActiveRing * Tint;
+@@ -3352,39 +3407,24 @@ public:
+ 			: Glow.CopyWithNewOpacity(Glow.A * Amount);
+ 		Lines.Add({ RimOffset, RimWidth, Rim });
+ 
+-		TArray<FVector2f> Points;
+-		for (const FLine& Line : Lines)
+-		{
+-			const float Radius = FMath::Max(NodeRadius + Line.Offset, 0.5f);
+-			const FVector2f Min(-Line.Offset, -Line.Offset);
+-			const FVector2f Max = Size + FVector2f(Line.Offset, Line.Offset);
+-			const FVector2f Centers[] =
+-			{
+-				FVector2f(Max.X - Radius, Min.Y + Radius),
+-				FVector2f(Max.X - Radius, Max.Y - Radius),
+-				FVector2f(Min.X + Radius, Max.Y - Radius),
+-				FVector2f(Min.X + Radius, Min.Y + Radius),
+-			};
+-			// From the middle of the top edge, clockwise round each corner - a quarter turn starting where the last left off -
+-			// and back to the middle of the top edge. Started and ended on a straight edge, the path's two ends meet in line:
+-			// started where the top edge meets the top-right corner's arc, the first and last pieces met at an angle, and their
+-			// square ends left a hairline wedge there - a thin dark line across the glow in the top-right corner.
+-			constexpr int32 ArcSegments = 10;
+-			Points.Reset();
+-			const FVector2f TopMiddle((Min.X + Max.X) * 0.5f, Min.Y);
+-			Points.Add(TopMiddle);
+-			for (int32 Corner = 0; Corner < 4; ++Corner)
+-			{
+-				const float StartAngle = -UE_HALF_PI + Corner * UE_HALF_PI;
+-				for (int32 Segment = 0; Segment <= ArcSegments; ++Segment)
+-				{
+-					const float Angle = StartAngle + UE_HALF_PI * Segment / ArcSegments;
+-					Points.Add(Centers[Corner] + FVector2f(FMath::Cos(Angle), FMath::Sin(Angle)) * Radius);
+-				}
+-			}
+-			Points.Add(TopMiddle);
+-			FSlateDrawElement::MakeLines(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None,
+-				Line.Color, /*bAntialias=*/true, Line.Thickness);
++		// Each a rounded box's outline - the rounded-box shader's, one seamless shape as the node's own edge is - its color set
++		// on its own brush (a rounded box's outline color is the brush's: the color it is drawn with doesn't reach it). Not an
++		// antialiased closed path: a path's two ends fade out where they meet, a hairline crack across the ring wherever it
++		// started. The stroke is centered on the line's offset: the box reaches half its thickness further out.
++		const int32 Count = FMath::Min(Lines.Num(), static_cast<int32>(UE_ARRAY_COUNT(LineBrushes)));
++		for (int32 Index = 0; Index < Count; ++Index)
++		{
++			const FLine& Line = Lines[Index];
++			const float Out = Line.Offset + Line.Thickness * 0.5f;
++			const float Radius = FMath::Max(NodeRadius + Out, 0.5f);
++			FSlateBrush& LineBrush = LineBrushes[Index];
++			LineBrush.DrawAs = ESlateBrushDrawType::RoundedBox;
++			LineBrush.TintColor = FSlateColor(FLinearColor::Transparent);
++			LineBrush.OutlineSettings = FSlateBrushOutlineSettings(FVector4(Radius, Radius, Radius, Radius), FSlateColor(Line.Color), Line.Thickness);
++			LineBrush.OutlineSettings.RoundingType = ESlateBrushRoundingType::FixedRadius;
++			FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
++				AllottedGeometry.ToPaintGeometry(Size + FVector2f(Out * 2.f, Out * 2.f), FSlateLayoutTransform(FVector2f(-Out, -Out))),
++				&LineBrush, ESlateDrawEffect::None, FLinearColor::White);
+ 		}
+ 		return LayerId + 1;
+ 	}
+@@ -3394,6 +3434,9 @@ private:
+ 	TAttribute<float> Strength;
+ 	TAttribute<bool> Selected;
+ 	TAttribute<bool> Hovered;
++
++	/** One brush per line drawn - kept, as a drawn box refers to its brush until the frame is rendered. */
++	mutable FSlateBrush LineBrushes[16];
+ };
+ 
+ /**
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h
+index cfcd60b..8efada9 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h
+@@ -394,6 +394,9 @@ public:
+ 	/** Q, or the node menu's Straighten Connections: the editor lines the selected states up. */
+ 	TFunction<void()> OnStraighten;
+ 
++	/** Whether the machine can be edited - not while the editor's lock is on. Unset: always. */
++	TFunction<bool()> CanEditMachine;
++
+ 	/**
+ 	 * States were just collapsed into the collapsed states GroupId (made, or folded back): the editor selects its box and,
+ 	 * once it has been laid out, lines it up with what it is wired to, as Q would.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index c5a97fd..2e56688 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -2350,6 +2350,18 @@ namespace NameTBD::Tooltips
+ 				"Remove Reroute Point: takes this point off its wire. The wire runs straight on from the points either side of it.");
+ 		}
+ 
++		inline FText RenameStateTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "RenameStateTooltip",
++				"Rename: type the state's new name and press Enter. Conditions on other layers that name it follow it.");
++		}
++
++		inline FText RenameCollapsedStatesTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "RenameCollapsedStatesTooltip",
++				"Rename: type the collapsed states' new name and press Enter. Only how the graph shows them - nothing that plays changes.");
++		}
++
+ 		inline FText DraftMachineNameTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "DraftMachineNameTooltip",

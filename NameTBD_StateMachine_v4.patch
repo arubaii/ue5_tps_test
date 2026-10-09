@@ -1,0 +1,890 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimStateMachine.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimStateMachine.h
+index b3fbd7f..30e330a 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimStateMachine.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimStateMachine.h
+@@ -599,6 +599,14 @@ struct NAMETBD_API FWidgetAnimMachineTransition
+ 	 */
+ 	UPROPERTY()
+ 	TArray<FVector2D> EditorReroutePoints;
++
++	/**
++	 * Its wire drawn dead straight from state to state - corner to corner between states that lie on a slant - rather than
++	 * curving out of and into them. Set by Straighten Connections (Q) on a wire between states on a slant, and from the wire's
++	 * menu. Only how the graph looks: nothing at runtime.
++	 */
++	UPROPERTY()
++	bool bEditorStraight = false;
+ #endif
+ };
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+index 9f7ff15..9891bf6 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+@@ -1015,7 +1015,8 @@ namespace
+ 	/** An editor icon at 16px, whatever size its brush was authored at. */
+ 	/**
+ 	 * A section of the left panel as the My Blueprint panel lays out its Variables: its heading in small capitals on the header
+-	 * strip, with Extra (an Add button, toggles) at its right, then its rows on the panel's recessed color.
++	 * strip, with Extra (an Add button, toggles) at its right, then its rows on the panel's recessed color - both edge to edge,
++	 * so a row's selection spans the panel. Rows pad themselves, by RowPadding.
+ 	 */
+ 	TSharedRef<SWidget> MakePanelSection(const FText& Title, const FText& ToolTip, const TSharedRef<SWidget>& Extra, const TSharedRef<SWidget>& Rows)
+ 	{
+@@ -1025,7 +1026,7 @@ namespace
+ 			[
+ 				SNew(SBorder)
+ 				.BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Header")))
+-				.Padding(FMargin(6.f, 3.f, 4.f, 3.f))
++				.Padding(FMargin(8.f, 4.f, 4.f, 4.f))
+ 				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(ToolTip))
+ 				[
+ 					SNew(SHorizontalBox)
+@@ -1035,7 +1036,7 @@ namespace
+ 					[
+ 						SNew(STextBlock)
+ 						.Font(FAppStyle::GetFontStyle(TEXT("SmallFontBold")))
+-						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
++						.ColorAndOpacity(FStyleColors::ForegroundHover)
+ 						.Text(Title.ToUpper())
+ 					]
+ 					+ SHorizontalBox::Slot()
+@@ -1051,13 +1052,22 @@ namespace
+ 			[
+ 				SNew(SBorder)
+ 				.BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Recessed")))
+-				.Padding(FMargin(4.f, 3.f))
++				.Padding(FMargin(0.f, 3.f))
+ 				[
+ 					Rows
+ 				]
+ 			];
+ 	}
+ 
++	/** Inside a panel row, edge to edge: its content's inset from the panel's sides. */
++	const FMargin RowPadding(8.f, 3.f);
++
++	/** A panel row's selection: square, edge to edge, as the My Blueprint panel's rows are. */
++	const FSlateBrush* GetRowBrush()
++	{
++		return FCoreStyle::Get().GetBrush(TEXT("WhiteBrush"));
++	}
++
+ 	/** The Preview section's Targets / Components toggles: the editor's toggle buttons, checked in a dimmed animation orange. */
+ 	const FCheckBoxStyle& GetPreviewSourceToggleStyle()
+ 	{
+@@ -1369,9 +1379,10 @@ void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
+ 			.Value(SplitSize(MakeSplitKey(bInDrawer, TEXT("Inputs")), 0.2f))
+ 			.OnSlotResized(SplitResized(MakeSplitKey(bInDrawer, TEXT("Inputs"))))
+ 			[
++				// The panel's recessed color, all of it: its sections' header strips and rows edge to edge.
+ 				SNew(SBorder)
+-				.BorderImage(FAppStyle::GetBrush(TEXT("ToolPanel.GroupBorder")))
+-				.Padding(FMargin(6.f))
++				.BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Recessed")))
++				.Padding(FMargin(0.f))
+ 				[
+ 					SNew(SScrollBox)
+ 					+ SScrollBox::Slot()
+@@ -1905,6 +1916,14 @@ void SWidgetAnimStateMachineEditor::ShowLayer(int32 LayerIndex)
+ 					})
+ 				]
+ 			]
++		]
++		// Play / pause the preview: floating at the bottom left.
++		+ SOverlay::Slot()
++		.HAlign(HAlign_Left)
++		.VAlign(VAlign_Bottom)
++		.Padding(FMargin(10.f))
++		[
++			MakePlayPauseButton()
+ 		]);
+ 	ShowLayerDetails();
+ }
+@@ -2302,14 +2321,15 @@ namespace
+ 
+ void SWidgetAnimStateMachineEditor::AddInputCategoryHeader(const TSharedRef<SVerticalBox>& Rows, const FString& Category)
+ {
++	// A strip edge to edge, set off from the rows above it.
+ 	Rows->AddSlot()
+ 		.AutoHeight()
+-		.Padding(FMargin(0.f, 4.f, 0.f, 1.f))
++		.Padding(FMargin(0.f, 8.f, 0.f, 2.f))
+ 		[
+ 			SNew(SBorder)
+-			.BorderImage(WidgetAnimMachineStyle::RoundedBrush(3.f))
+-			.BorderBackgroundColor(FLinearColor(1.f, 1.f, 1.f, 0.04f))
+-			.Padding(FMargin(2.f, 1.f))
++			.BorderImage(GetRowBrush())
++			.BorderBackgroundColor(FLinearColor(1.f, 1.f, 1.f, 0.05f))
++			.Padding(FMargin(4.f, 2.f, 8.f, 2.f))
+ 			[
+ 				SNew(SHorizontalBox)
+ 				// Folded or unfolded, as a Blueprint's variable categories are.
+@@ -2342,6 +2362,7 @@ void SWidgetAnimStateMachineEditor::AddInputCategoryHeader(const TSharedRef<SVer
+ 				[
+ 					SNew(SInlineEditableTextBlock)
+ 					.Font(FAppStyle::GetFontStyle(TEXT("NormalFontBold")))
++					.ColorAndOpacity(FStyleColors::White)
+ 					.IsReadOnly(bMachineLocked)
+ 					.Text(FText::FromString(Category))
+ 					.ToolTipText(MachineTips::InputCategoryTooltip())
+@@ -2374,7 +2395,7 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
+ 		const TSharedRef<SVerticalBox> Rows = SNew(SVerticalBox);
+ 		InputsBox->AddSlot()
+ 			.AutoHeight()
+-			.Padding(FMargin(0.f, 6.f, 0.f, 0.f))
++			.Padding(FMargin(0.f, 10.f, 0.f, 0.f))
+ 			[
+ 				MakePanelSection(Title, ToolTip, Extra, Rows)
+ 			];
+@@ -2407,6 +2428,7 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
+ 	{
+ 		InputRows->AddSlot()
+ 			.AutoHeight()
++			.Padding(RowPadding)
+ 			[
+ 				SNew(STextBlock)
+ 				.AutoWrapText(true)
+@@ -2537,13 +2559,12 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
+ 		TSharedPtr<SInlineEditableTextBlock> NameText;
+ 		InputRows->AddSlot()
+ 			.AutoHeight()
+-			.Padding(FMargin(0.f, 1.f))
+ 			[
+-				// Click: its settings in the Details. Double-click: rename it. Right-click: its menu.
++				// Click: its settings in the Details. Double-click: rename it. Right-click: its menu. Selected, edge to edge.
+ 				SNew(SBorder)
+-				.BorderImage(WidgetAnimMachineStyle::RoundedBrush(3.f))
++				.BorderImage(GetRowBrush())
+ 				.BorderBackgroundColor_Lambda([this, Name]() { return FSlateColor(IsShowingInput(Name) ? MachineColors::InputRowSelected : FLinearColor::Transparent); })
+-				.Padding(FMargin(4.f, 2.f))
++				.Padding(RowPadding)
+ 				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(RowTip))
+ 				.OnMouseButtonDown_Lambda([this, Name](const FGeometry&, const FPointerEvent& MouseEvent)
+ 				{
+@@ -2719,7 +2740,7 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
+ 
+ 		WidgetRows->AddSlot()
+ 			.AutoHeight()
+-			.Padding(FMargin(4.f, 2.f))
++			.Padding(RowPadding)
+ 			[
+ 				SNew(SHorizontalBox)
+ 				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(Tip))
+@@ -2816,7 +2837,11 @@ void SWidgetAnimStateMachineEditor::RebuildPreviewPanel()
+ 				[
+ 					MakeSourceToggle(EPreviewSource::Components, LOCTEXT("PreviewComponentsToggle", "Components"), MachineTips::PreviewComponentsSourceTooltip())
+ 				],
+-				PreviewRows)
++				SNew(SBox)
++				.Padding(FMargin(RowPadding.Left, 0.f, RowPadding.Right, 0.f))
++				[
++					PreviewRows
++				])
+ 		];
+ 
+ 	if (PreviewSource == EPreviewSource::Components)
+@@ -3599,6 +3624,9 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 		return;
+ 	}
+ 
++	// All of it one undo step: the moves, the transition nodes put back, the reroute points kept, the wires straightened.
++	const FScopedTransaction Transaction(LOCTEXT("StraightenConnections", "Straighten Connections"));
++
+ 	// Selected transition nodes that were dragged somewhere of their own go back onto the middle of their wires.
+ 	if (Editor.IsValid())
+ 	{
+@@ -3689,22 +3717,29 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 		return;
+ 	}
+ 
+-	auto IndexOf = [&All](const FGuid& StateId)
++	// A transition's end as the graph shows it - a collapsed group's box for a state in it - as an index into All.
++	auto IndexOf = [&All, Graph](const FGuid& StateId)
+ 	{
+-		return All.IndexOfByPredicate([&StateId](const FArrangeState& Entry) { return Entry.Node->StateId == StateId; });
++		const FGuid Shown = Graph->GetShownNodeId(StateId);
++		return Shown.IsValid() ? All.IndexOfByPredicate([&Shown](const FArrangeState& Entry) { return Entry.Node->StateId == Shown; }) : INDEX_NONE;
+ 	};
+ 
+ 	// One state alone is lined up on the state it shares the most transitions with, which stays put.
+ 	TSet<int32> Fixed;
+-	if (Selected.Num() == 1)
++	const int32 Lone = Selected.Num() == 1 ? Selected[0] : INDEX_NONE;
++	if (Lone != INDEX_NONE)
+ 	{
+ 		TMap<int32, int32> Shared;
+-		const FGuid Own = All[Selected[0]].Node->StateId;
+ 		for (const FWidgetAnimMachineTransition& Transition : Layer->Transitions)
+ 		{
+ 			// A wire routed through reroute points doesn't run between the two: its state lines up with its points instead (below).
+-			const FGuid Other = Transition.EditorReroutePoints.Num() > 0 ? FGuid() : (Transition.From == Own ? Transition.To : (Transition.To == Own ? Transition.From : FGuid()));
+-			const int32 OtherIndex = Other.IsValid() ? IndexOf(Other) : INDEX_NONE;
++			if (Transition.EditorReroutePoints.Num() > 0)
++			{
++				continue;
++			}
++			const int32 From = IndexOf(Transition.From);
++			const int32 To = IndexOf(Transition.To);
++			const int32 OtherIndex = From == To ? INDEX_NONE : (From == Lone ? To : (To == Lone ? From : INDEX_NONE));
+ 			if (OtherIndex != INDEX_NONE)
+ 			{
+ 				Shared.FindOrAdd(OtherIndex)++;
+@@ -3733,7 +3768,7 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 	{
+ 		const int32 From = IndexOf(Transition.From);
+ 		const int32 To = IndexOf(Transition.To);
+-		if (From == INDEX_NONE || To == INDEX_NONE || !Selected.Contains(From) || !Selected.Contains(To) || Transition.EditorReroutePoints.Num() > 0)
++		if (From == INDEX_NONE || To == INDEX_NONE || From == To || !Selected.Contains(From) || !Selected.Contains(To) || Transition.EditorReroutePoints.Num() > 0)
+ 		{
+ 			continue;
+ 		}
+@@ -3749,7 +3784,7 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 		{
+ 			const int32 From = IndexOf(Transition.From);
+ 			const int32 To = IndexOf(Transition.To);
+-			if (Transition.bEditorNodePlaced && Transition.EditorReroutePoints.Num() == 0 && Selected.Contains(From) && Selected.Contains(To))
++			if (Transition.bEditorNodePlaced && Transition.EditorReroutePoints.Num() == 0 && From != To && Selected.Contains(From) && Selected.Contains(To))
+ 			{
+ 				Unplaced.Add(Transition.Id, TOptional<FVector2D>());
+ 				if (UWidgetAnimMachineTransitionNode* TransitionNode = Graph->FindTransitionNode(Transition.Id))
+@@ -3764,7 +3799,9 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 
+ 	// Outward from the best-connected state, each state put level with the one it was reached from - across from it, or above
+ 	// or below it, whichever way it already lies - so their wire runs straight. A state that would land on another is moved
+-	// further along that way instead, and left where it is if there is no room.
++	// further along that way instead, and left where it is if there is no room. One that lies on a slant from it stays where
++	// it is: their wire is drawn dead straight, corner to corner, below - moving it onto the 45-degree line would pull it out
++	// of line with everything else it is level with.
+ 	TArray<int32> Seeds = Selected;
+ 	if (Fixed.Num() == 0)
+ 	{
+@@ -3807,43 +3844,24 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 					continue;
+ 				}
+ 
++				// On a slant (between 25 and 65 degrees, corner to corner): left where it is - see above. Nearly side by side,
++				// or nearly one above the other: level with it, across or above or below.
++				if (WidgetAnimMachineWires::IsSlanted(All[From].Box, All[To].Box))
++				{
++					continue;
++				}
+ 				const FVector2f FromCenter = All[From].Box.GetCenter();
+ 				const FVector2f ToCenter = All[To].Box.GetCenter();
+ 				const FVector2f Delta = ToCenter - FromCenter;
+ 				const bool bAcross = FMath::Abs(Delta.X) >= FMath::Abs(Delta.Y);
+-
+-				// Wired corner to corner - the two lie diagonally: put on the 45-degree line through the corner its wire leaves,
+-				// so the wire runs straight from corner to corner. Otherwise level with it, across or above or below.
+-				// Diagonal only when the two really lie on a slant (between 25 and 65 degrees): a wire drawn out of a corner
+-				// between states that are nearly side by side, or nearly one above the other, lines them up level instead -
+-				// what a wire wanted straight there means.
+-				const FVector2f Side = WidgetAnimMachineWires::GetFacingSide(All[From].Box, All[To].Box);
+-				const float Slant = FMath::RadiansToDegrees(FMath::Atan2(FMath::Abs(Delta.Y), FMath::Max(FMath::Abs(Delta.X), KINDA_SMALL_NUMBER)));
+-				const bool bDiagonal = Side.X != 0.f && Side.Y != 0.f && Slant > 25.f && Slant < 65.f;
+-				FVector2f Level;
+-				if (bDiagonal)
+-				{
+-					const FVector2f FromCorner = WidgetAnimMachineWires::GetSideMiddle(All[From].Box, Side);
+-					const FVector2f ToCorner = WidgetAnimMachineWires::GetSideMiddle(All[To].Box, -Side);
+-					const FVector2f Gap = ToCorner - FromCorner;
+-					const float Even = (FMath::Abs(Gap.X) + FMath::Abs(Gap.Y)) * 0.5f;
+-					Level = FVector2f(Side.X * Even, Side.Y * Even) - Gap;
+-				}
+-				else
+-				{
+-					Level = bAcross ? FVector2f(0.f, FromCenter.Y - ToCenter.Y) : FVector2f(FromCenter.X - ToCenter.X, 0.f);
+-				}
++				const FVector2f Level = bAcross ? FVector2f(0.f, FromCenter.Y - ToCenter.Y) : FVector2f(FromCenter.X - ToCenter.X, 0.f);
+ 				FBox2f Candidate = ShiftBox(All[To].Box, Level);
+ 
+ 				if (LandsOnOther(All, To, Candidate))
+ 				{
+ 					// Further along the way it lies, a node's length at a time.
+-					const FVector2f Away = bDiagonal
+-						? Side
+-						: (bAcross ? FVector2f(Delta.X >= 0.f ? 1.f : -1.f, 0.f) : FVector2f(0.f, Delta.Y >= 0.f ? 1.f : -1.f));
+-					const float Step = bDiagonal
+-						? (Candidate.GetSize().X + Candidate.GetSize().Y) * 0.5f + ArrangeMargin
+-						: (bAcross ? Candidate.GetSize().X : Candidate.GetSize().Y) + ArrangeMargin;
++					const FVector2f Away = bAcross ? FVector2f(Delta.X >= 0.f ? 1.f : -1.f, 0.f) : FVector2f(0.f, Delta.Y >= 0.f ? 1.f : -1.f);
++					const float Step = (bAcross ? Candidate.GetSize().X : Candidate.GetSize().Y) + ArrangeMargin;
+ 					bool bFound = false;
+ 					for (int32 Try = 1; Try <= 6 && !bFound; ++Try)
+ 					{
+@@ -3867,12 +3885,13 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 	// A selected state with no straight wire to the others but a routed one: its middle lined up with the reroute point next
+ 	// to it on that wire - across from it or above or below it, whichever way it lies - so the wire leaves the middle of its
+ 	// side straight. Not if it would land on another state.
+-	auto AnchorOf = [&All, &IndexOf](const FWidgetAnimMachineTransition& Transition, bool bOriginal, FVector2f& OutAnchor)
++	auto AnchorOf = [&All, &IndexOf, Graph](const FWidgetAnimMachineTransition& Transition, bool bOriginal, FVector2f& OutAnchor)
+ 	{
+-		const bool bFromFirst = Transition.From < Transition.To;
++		// Paired as the graph pairs its ends (see UWidgetAnimMachineGraph::GetPairOrder): by the nodes they are shown as.
++		const bool bFromFirst = Graph->GetShownNodeId(Transition.From) < Graph->GetShownNodeId(Transition.To);
+ 		const int32 First = IndexOf(bFromFirst ? Transition.From : Transition.To);
+ 		const int32 Second = IndexOf(bFromFirst ? Transition.To : Transition.From);
+-		if (First == INDEX_NONE || Second == INDEX_NONE)
++		if (First == INDEX_NONE || Second == INDEX_NONE || First == Second)
+ 		{
+ 			return false;
+ 		}
+@@ -3887,10 +3906,11 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 		{
+ 			continue;
+ 		}
+-		const FGuid StateId = All[StateIndex].Node->StateId;
+-		const FWidgetAnimMachineTransition* Routed = Layer->Transitions.FindByPredicate([&StateId](const FWidgetAnimMachineTransition& Transition)
++		const FWidgetAnimMachineTransition* Routed = Layer->Transitions.FindByPredicate([&IndexOf, StateIndex](const FWidgetAnimMachineTransition& Transition)
+ 		{
+-			return Transition.EditorReroutePoints.Num() > 0 && (Transition.From == StateId || Transition.To == StateId) && Transition.From != Transition.To;
++			const int32 From = IndexOf(Transition.From);
++			const int32 To = IndexOf(Transition.To);
++			return Transition.EditorReroutePoints.Num() > 0 && (From == StateIndex || To == StateIndex) && From != To;
+ 		});
+ 		const UWidgetAnimMachineTransitionNode* RoutedNode = Routed ? Graph->FindTransitionNode(Routed->Id) : nullptr;
+ 		FVector2f RouteAnchor;
+@@ -3898,7 +3918,7 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 		{
+ 			continue;
+ 		}
+-		const FVector2f Knot = RouteAnchor + (Routed->From == StateId ? RoutedNode->RerouteOffsets[0] : RoutedNode->RerouteOffsets.Last());
++		const FVector2f Knot = RouteAnchor + (IndexOf(Routed->From) == StateIndex ? RoutedNode->RerouteOffsets[0] : RoutedNode->RerouteOffsets.Last());
+ 		FVector2f Center = All[StateIndex].Box.GetCenter();
+ 		bool bLeveledX = false;
+ 		bool bLeveledY = false;
+@@ -3936,6 +3956,39 @@ void SWidgetAnimStateMachineEditor::StraightenSelected()
+ 	}
+ 	WidgetAnimMachineEdits::MoveReroutes(Machine, ShownLayer, Kept);
+ 
++	// Plain wires between the states lined up - with one state selected, every one of its own - drawn dead straight where the
++	// two lie on a slant, corner to corner at whatever angle, and curving as usual again where they now lie level (straight
++	// anyway).
++	{
++		TArray<FGuid> MakeStraight;
++		TArray<FGuid> MakeCurved;
++		for (const FWidgetAnimMachineTransition& Transition : Layer->Transitions)
++		{
++			const int32 From = IndexOf(Transition.From);
++			const int32 To = IndexOf(Transition.To);
++			if (From == INDEX_NONE || To == INDEX_NONE || From == To || Transition.EditorReroutePoints.Num() > 0 || Transition.bEditorNodePlaced)
++			{
++				continue;
++			}
++			const bool bCovered = Lone != INDEX_NONE ? (From == Lone || To == Lone) : (Selected.Contains(From) && Selected.Contains(To));
++			if (!bCovered)
++			{
++				continue;
++			}
++			const bool bSlanted = WidgetAnimMachineWires::IsSlanted(All[From].Box, All[To].Box);
++			if (bSlanted != Transition.bEditorStraight)
++			{
++				(bSlanted ? MakeStraight : MakeCurved).Add(Transition.Id);
++				if (UWidgetAnimMachineTransitionNode* TransitionNode = Graph->FindTransitionNode(Transition.Id))
++				{
++					TransitionNode->bStraight = bSlanted;
++				}
++			}
++		}
++		WidgetAnimMachineEdits::SetTransitionsStraight(Machine, ShownLayer, MakeStraight, /*bStraight=*/true);
++		WidgetAnimMachineEdits::SetTransitionsStraight(Machine, ShownLayer, MakeCurved, /*bStraight=*/false);
++	}
++
+ 	// Into the machine, and the graph.
+ 	TMap<FGuid, FVector2D> Positions;
+ 	for (const FArrangeState& Entry : All)
+@@ -4231,12 +4284,33 @@ void SWidgetAnimStateMachineEditor::Tick(const FGeometry& AllottedGeometry, cons
+ 
+ FReply SWidgetAnimStateMachineEditor::OnPreviewKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+ {
+-	// Only while the graph has the keyboard, and never while a name or a comment is being typed.
++	// Never while a name or a comment is being typed: the text box has the keys, for its own typing.
++	const TSharedPtr<SWidget> Focused = FSlateApplication::Get().GetKeyboardFocusedWidget();
++	const bool bTyping = Focused.IsValid() && Focused->GetType().ToString().Contains(TEXT("EditableText"));
++
++	// Ctrl / Cmd + Z, and Ctrl / Cmd + Y or Ctrl / Cmd + Shift + Z: the editor's undo and redo, anywhere in the editor - as the
++	// Widget Animations panel has them. Not in the middle of an edit (a drag), which is still open.
++	const FKey Key = InKeyEvent.GetKey();
++	if (!bTyping && (Key == EKeys::Z || Key == EKeys::Y) && (InKeyEvent.IsControlDown() || InKeyEvent.IsCommandDown()) && !InKeyEvent.IsAltDown())
++	{
++		if (GEditor && !GEditor->IsTransactionActive())
++		{
++			if (Key == EKeys::Y || InKeyEvent.IsShiftDown())
++			{
++				GEditor->RedoTransaction();
++			}
++			else
++			{
++				GEditor->UndoTransaction();
++			}
++		}
++		return FReply::Handled();
++	}
++
++	// Only while the graph has the keyboard.
+ 	const TSharedPtr<SGraphEditor> Editor = GetShownGraphEditor();
+ 	if (Editor.IsValid() && PreviewCommands.IsValid() && (Editor->HasKeyboardFocus() || Editor->HasFocusedDescendants()))
+ 	{
+-		const TSharedPtr<SWidget> Focused = FSlateApplication::Get().GetKeyboardFocusedWidget();
+-		const bool bTyping = Focused.IsValid() && Focused->GetType().ToString().Contains(TEXT("EditableText"));
+ 		if (!bTyping && PreviewCommands->ProcessCommandBindings(InKeyEvent))
+ 		{
+ 			return FReply::Handled();
+@@ -4615,7 +4689,7 @@ bool SWidgetAnimStateMachineEditor::FindActiveState(int32& OutLayer, FGuid& OutS
+ 	return false;
+ }
+ 
+-FText SWidgetAnimStateMachineEditor::GetJumpToActiveLabel() const
++FText SWidgetAnimStateMachineEditor::GetJumpToActiveStateName() const
+ {
+ 	int32 LayerIndex = INDEX_NONE;
+ 	FGuid StateId;
+@@ -4624,12 +4698,12 @@ FText SWidgetAnimStateMachineEditor::GetJumpToActiveLabel() const
+ 		: nullptr;
+ 	if (!State)
+ 	{
+-		return LOCTEXT("JumpToActiveNone", "Jump to Active State");
++		return FText::GetEmpty();
+ 	}
+ 	const FText Name = State->IsSpecial()
+ 		? StaticEnum<EWidgetAnimMachineNodeKind>()->GetDisplayNameTextByValue(static_cast<int64>(State->Kind))
+ 		: FText::FromName(State->Name);
+-	return FText::Format(LOCTEXT("JumpToActive", "Jump to Active State ({0})"), Name);
++	return FText::Format(LOCTEXT("JumpToActiveName", "({0})"), Name);
+ }
+ 
+ void SWidgetAnimStateMachineEditor::JumpToActiveState()
+@@ -6040,44 +6114,6 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeToolbar()
+ 					Left
+ 				]
+ 				+ SOverlay::Slot()
+-				.HAlign(HAlign_Center)
+-				.VAlign(VAlign_Center)
+-				[
+-			SNew(SButton)
+-			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+-			.ContentPadding(FMargin(4.f, 2.f))
+-			.ToolTip(WidgetAnimMachineStyle::MakeToolTip(TAttribute<FText>::CreateLambda([this]()
+-			{
+-				return bPreviewPaused ? MachineTips::PreviewPlayTooltip() : MachineTips::PreviewPauseTooltip();
+-			})))
+-			.Visibility_Lambda([this]() { return WidgetBlueprint.IsValid() ? EVisibility::Visible : EVisibility::Collapsed; })
+-			.IsEnabled_Lambda([this]() { return bPreviewInDesigner && !(GEditor && GEditor->PlayWorld); })
+-			.OnClicked_Lambda([this]()
+-			{
+-				bPreviewPaused = !bPreviewPaused;
+-				return FReply::Handled();
+-			})
+-			[
+-				SNew(SBox)
+-				.WidthOverride(16.f)
+-				.HeightOverride(16.f)
+-				[
+-					// The Widget Animations panel's colors: Play in its orange, Pause in its dimmed orange.
+-					SNew(SImage)
+-					.ColorAndOpacity_Lambda([this]()
+-					{
+-						return FSlateColor(bPreviewPaused ? NameTBD::Colors::WidgetAnimEditor::PlayTint : NameTBD::Colors::WidgetAnimEditor::PauseTint);
+-					})
+-					.Image_Lambda([this]()
+-					{
+-						return bPreviewPaused
+-							? FindEditorBrush({ TEXT("Icons.Play"), TEXT("PlayWorld.ResumePlaySession"), TEXT("GenericPlay") })
+-							: FindEditorBrush({ TEXT("Icons.Pause"), TEXT("PlayWorld.PausePlaySession"), TEXT("GenericPause") });
+-					})
+-				]
+-			]
+-				]
+-				+ SOverlay::Slot()
+ 				.HAlign(HAlign_Right)
+ 				.VAlign(VAlign_Center)
+ 				[
+@@ -6126,11 +6162,63 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeJumpToActiveButton()
+ 				.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+ 				[
+ 					SNew(STextBlock)
+-					.Text(this, &SWidgetAnimStateMachineEditor::GetJumpToActiveLabel)
++					.Text(LOCTEXT("JumpToActive", "Jump to Active State"))
++				]
++				// The state's name, in the glow's orange and bold: the one in play, as the graph rings it.
++				+ SHorizontalBox::Slot()
++				.AutoWidth()
++				.VAlign(VAlign_Center)
++				.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
++				[
++					SNew(STextBlock)
++					.Font(FAppStyle::GetFontStyle(TEXT("NormalFontBold")))
++					.ColorAndOpacity(MachineColors::ActiveRing)
++					.Text(this, &SWidgetAnimStateMachineEditor::GetJumpToActiveStateName)
+ 				]
+ 			];
+ }
+ 
++TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakePlayPauseButton()
++{
++	// Floating at the graph's bottom left, on a dark backing as the graph's own overlays are. Play and Pause both in the
++	// Widget Animations panel's Play orange.
++	return SNew(SBorder)
++		.BorderImage(WidgetAnimMachineStyle::RoundedBrush(6.f))
++		.BorderBackgroundColor(MachineColors::FloatingButtonBacking)
++		.Padding(FMargin(3.f))
++		.Visibility_Lambda([this]() { return WidgetBlueprint.IsValid() ? EVisibility::Visible : EVisibility::Collapsed; })
++		[
++			SNew(SButton)
++			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
++			.ContentPadding(FMargin(6.f, 4.f))
++			.ToolTip(WidgetAnimMachineStyle::MakeToolTip(TAttribute<FText>::CreateLambda([this]()
++			{
++				return bPreviewPaused ? MachineTips::PreviewPlayTooltip() : MachineTips::PreviewPauseTooltip();
++			})))
++			.IsEnabled_Lambda([this]() { return bPreviewInDesigner && !(GEditor && GEditor->PlayWorld); })
++			.OnClicked_Lambda([this]()
++			{
++				bPreviewPaused = !bPreviewPaused;
++				return FReply::Handled();
++			})
++			[
++				SNew(SBox)
++				.WidthOverride(16.f)
++				.HeightOverride(16.f)
++				[
++					SNew(SImage)
++					.ColorAndOpacity(FSlateColor(NameTBD::Colors::WidgetAnimEditor::PlayTint))
++					.Image_Lambda([this]()
++					{
++						return bPreviewPaused
++							? FindEditorBrush({ TEXT("Icons.Play"), TEXT("PlayWorld.ResumePlaySession"), TEXT("GenericPlay") })
++							: FindEditorBrush({ TEXT("Icons.Pause"), TEXT("PlayWorld.PausePlaySession"), TEXT("GenericPause") });
++					})
++				]
++			]
++		];
++}
++
+ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeDebugMenu()
+ {
+ 	FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.h
+index 6325dd9..86650b9 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.h
+@@ -492,8 +492,8 @@ private:
+ 	 */
+ 	bool FindActiveState(int32& OutLayer, FGuid& OutState) const;
+ 
+-	/** "Jump to Active State (Hovered)" - what the toolbar button reads. */
+-	FText GetJumpToActiveLabel() const;
++	/** "(Hovered)" - the state in play, after the button's "Jump to Active State"; empty when nothing is in play. */
++	FText GetJumpToActiveStateName() const;
+ 
+ 	/** Shows the active state's layer and brings its state into view. */
+ 	void JumpToActiveState();
+@@ -554,6 +554,9 @@ private:
+ 	/** Jump To Active State, beside Add State: back to the state in play when the graph has been scrolled away from it. */
+ 	TSharedRef<SWidget> MakeJumpToActiveButton();
+ 
++	/** Play / pause the preview, floating over the graph at its bottom left. */
++	TSharedRef<SWidget> MakePlayPauseButton();
++
+ 	/** The lock: the machine read-only - a preview - as the Widget Animations panel's lock. See IsMachineEditable. */
+ 	bool bMachineLocked = false;
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index d5a697e..971cbd6 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -9176,6 +9176,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
+ 		MakeGraphButton()
+ 	];
+ 
++	// Everything after it sits at the right - Time In and Fit first (see below), then Save, Dock, the lock.
++	const int32 RightGroupIndex = Header->NumSlots() + 1;
+ 	Header->AddSlot()
+ 	.FillWidth(1.f)
+ 	[
+@@ -9445,8 +9447,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
+ 			return Unit == EWidgetAnimTimeUnit::Percent ? LOCTEXT("TimeInPercent", "Percent") : LOCTEXT("TimeInSeconds", "Seconds");
+ 		};
+ 
+-		// Farthest left, with Fit right of it; the lock is then the last thing on the right.
+-		Header->InsertSlot(0)
++		// First of the buttons on the right, with Fit right of it; the lock is then the last thing on the right.
++		Header->InsertSlot(RightGroupIndex)
+ 		.AutoWidth()
+ 		.VAlign(VAlign_Center)
+ 		.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+@@ -9610,7 +9612,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
+ 			];
+ 		*FitWidget = FitButton;
+ 
+-		Header->InsertSlot(1)
++		Header->InsertSlot(RightGroupIndex + 1)
+ 		.AutoWidth()
+ 		.VAlign(VAlign_Center)
+ 		.Padding(FMargin(0.f, 0.f, 8.f, 0.f))
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+index 170c4fc..5fc28f0 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+@@ -6,6 +6,7 @@
+ #include "CoreGlobals.h"
+ #include "EdGraph/EdGraphPin.h"
+ #include "EdGraphNode_Comment.h"
++#include "Fonts/CompositeFont.h"
+ #include "Fonts/FontMeasure.h"
+ #include "Framework/Application/SlateApplication.h"
+ #include "Framework/Commands/GenericCommands.h"
+@@ -488,6 +489,25 @@ namespace WidgetAnimMachineEdits
+ 		FinishEdit(Machine);
+ 	}
+ 
++	void SetTransitionsStraight(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& Transitions, bool bStraight)
++	{
++		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
++		if (!Layer || Transitions.Num() == 0)
++		{
++			return;
++		}
++		const FScopedTransaction Transaction(bStraight ? LOCTEXT("StraightenWires", "Straighten Wire") : LOCTEXT("CurveWires", "Curve Wire"));
++		Machine->Modify();
++		for (FWidgetAnimMachineTransition& Transition : Layer->Transitions)
++		{
++			if (Transitions.Contains(Transition.Id))
++			{
++				Transition.bEditorStraight = bStraight;
++			}
++		}
++		Machine->MarkPackageDirty();
++	}
++
+ 	int32 AddLayer(UWidgetAnimStateMachineAsset* Machine)
+ 	{
+ 		if (!Machine)
+@@ -1345,7 +1365,15 @@ namespace WidgetAnimMachineWires
+ 		return Wire;
+ 	}
+ 
+-	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed, const FVector2f* NodePoint, TConstArrayView<FVector2f> Reroutes)
++	bool IsSlanted(const FBox2f& First, const FBox2f& Second)
++	{
++		const FVector2f Side = GetFacingSide(First, Second);
++		const FVector2f Delta = Second.GetCenter() - First.GetCenter();
++		const float Slant = FMath::RadiansToDegrees(FMath::Atan2(FMath::Abs(Delta.Y), FMath::Max(FMath::Abs(Delta.X), KINDA_SMALL_NUMBER)));
++		return Side.X != 0.f && Side.Y != 0.f && Slant > 25.f && Slant < 65.f;
++	}
++
++	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed, const FVector2f* NodePoint, TConstArrayView<FVector2f> Reroutes, bool bStraight)
+ 	{
+ 		if (NodePoint || Reroutes.Num() > 0)
+ 		{
+@@ -1390,11 +1418,13 @@ namespace WidgetAnimMachineWires
+ 
+ 		// Lined up - straight across, straight down, or corner to corner on the diagonal (Q) - give or take a pixel's rounding:
+ 		// a straight line, not a curve that bows by that pixel. Both ends must already point along the line, within a few degrees.
++		// Drawn straight on purpose (Q on states that lie on a slant, or the wire's menu): a straight line whatever the angle.
+ 		const FVector2f ChordDirection = (SecondPoint - FirstPoint).GetSafeNormal();
+ 		const float StraightCos = FMath::Cos(FMath::DegreesToRadians(StraightSnapDegrees));
+ 		if (!ChordDirection.IsNearlyZero()
+-			&& FVector2f::DotProduct(ChordDirection, FirstSide.GetSafeNormal()) >= StraightCos
+-			&& FVector2f::DotProduct(ChordDirection, (-SecondSide).GetSafeNormal()) >= StraightCos)
++			&& (bStraight
++				|| (FVector2f::DotProduct(ChordDirection, FirstSide.GetSafeNormal()) >= StraightCos
++					&& FVector2f::DotProduct(ChordDirection, (-SecondSide).GetSafeNormal()) >= StraightCos)))
+ 		{
+ 			FirstTangent = ChordDirection * TangentLength;
+ 			SecondTangent = ChordDirection * TangentLength;
+@@ -1609,7 +1639,7 @@ FWidgetAnimMachineWire UWidgetAnimMachineGraph::ComputeWire(const UWidgetAnimMac
+ 	{
+ 		Reroutes.Add(Anchor + Offset);
+ 	}
+-	return WidgetAnimMachineWires::Compute(FirstBox, SecondBox, Lane, Count, bReversed, Node->bPlaced ? &PlacedPoint : nullptr, Reroutes);
++	return WidgetAnimMachineWires::Compute(FirstBox, SecondBox, Lane, Count, bReversed, Node->bPlaced ? &PlacedPoint : nullptr, Reroutes, Node->bStraight);
+ }
+ 
+ bool UWidgetAnimMachineGraph::IsDebugging() const
+@@ -1729,6 +1759,7 @@ void UWidgetAnimMachineGraph::RebuildFromMachine()
+ 		Node->ToId = ShownTo;
+ 		Node->bPlaced = Transition.bEditorNodePlaced;
+ 		Node->PlacedOffset = FVector2f(Transition.EditorNodeOffset);
++		Node->bStraight = Transition.bEditorStraight;
+ 		for (const FVector2D& Point : Transition.EditorReroutePoints)
+ 		{
+ 			Node->RerouteOffsets.Add(FVector2f(Point));
+@@ -2318,6 +2349,36 @@ void UWidgetAnimMachineTransitionNode::GetNodeContextMenuActions(UToolMenu* Menu
+ 				}
+ 			})));
+ 	}
++	// Its wire dead straight from state to state, or curving as usual - when it is a plain wire: one routed through points
++	// of its own runs straight between them already.
++	if (!bPlaced && RerouteOffsets.Num() == 0)
++	{
++		const TWeakObjectPtr<UWidgetAnimMachineTransitionNode> WeakStraight(const_cast<UWidgetAnimMachineTransitionNode*>(this));
++		Section.AddMenuEntry(
++			TEXT("StraightWire"),
++			LOCTEXT("StraightWire", "Straight Wire"),
++			MachineTips::StraightWireTooltip(),
++			FSlateIcon(),
++			FUIAction(
++				FExecuteAction::CreateLambda([WeakStraight]()
++				{
++					UWidgetAnimMachineTransitionNode* Node = WeakStraight.Get();
++					UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
++					if (Graph)
++					{
++						Node->bStraight = !Node->bStraight;
++						WidgetAnimMachineEdits::SetTransitionsStraight(Graph->Machine, Graph->LayerIndex, { Node->TransitionId }, Node->bStraight);
++					}
++				}),
++				FCanExecuteAction(),
++				FIsActionChecked::CreateLambda([WeakStraight]()
++				{
++					const UWidgetAnimMachineTransitionNode* Node = WeakStraight.Get();
++					return Node && Node->bStraight;
++				})),
++			NAME_None,
++			EUserInterfaceActionType::ToggleButton);
++	}
+ 	// Routed through reroute points: back to a plain wire.
+ 	if (RerouteOffsets.Num() > 0)
+ 	{
+@@ -3409,13 +3470,20 @@ public:
+ 										.Text(this, &SWidgetAnimMachineStateNode::GetSubtitle)
+ 										.Visibility(bIsState ? EVisibility::Visible : EVisibility::Collapsed)
+ 									]
+-									// A blend state's samples, and where its input is while watched.
++									// A blend state's samples, and where its input is while watched. Collapsed for anything else, so
++									// its gap doesn't push the name off center.
+ 									+ SVerticalBox::Slot()
+ 									.AutoHeight()
+ 									.HAlign(HAlign_Center)
+ 									.Padding(FMargin(0.f, 3.f, 0.f, 0.f))
+ 									[
+ 										SNew(SWidgetAnimMachineBlendPlot)
++										.Visibility_Lambda([WeakNode = TWeakObjectPtr<UWidgetAnimMachineGraphNode>(Cast<UWidgetAnimMachineGraphNode>(GraphNode))]()
++										{
++											const UWidgetAnimMachineGraphNode* Node = WeakNode.Get();
++											const FWidgetAnimMachineState* State = Node ? Node->GetState() : nullptr;
++											return State && State->IsBlendState() && State->BlendSamples.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed;
++										})
+ 										.GetState([WeakNode = TWeakObjectPtr<UWidgetAnimMachineGraphNode>(Cast<UWidgetAnimMachineGraphNode>(GraphNode))]() -> const FWidgetAnimMachineState*
+ 										{
+ 											const UWidgetAnimMachineGraphNode* Node = WeakNode.Get();
+@@ -3641,15 +3709,32 @@ private:
+ 	 */
+ 	static const FInlineEditableTextBlockStyle& GetGroupTitleStyle()
+ 	{
++		// As a collapsed track's name is drawn in the Widget Animations panel: a node title's font, in its italic, in
++		// CollapsedNodeText, over the tracks' slight drop shadow.
+ 		static const FInlineEditableTextBlockStyle Style = []()
+ 		{
++			namespace Palette = NameTBD::Colors::WidgetAnimEditor;
+ 			FInlineEditableTextBlockStyle Made = FAppStyle::Get().GetWidgetStyle<FInlineEditableTextBlockStyle>("Graph.StateNode.NodeTitleInlineEditableText");
+-			FSlateFontInfo Italic = Made.TextStyle.Font;
+-			Italic.TypefaceFontName = TEXT("Italic");
+-			Made.TextStyle.SetFont(Italic);
+-			Made.TextStyle.SetColorAndOpacity(FSlateColor(NameTBD::Colors::WidgetAnimEditor::CollapsedNodeText));
+-			Made.TextStyle.SetShadowOffset(FVector2D::ZeroVector);
+-			Made.TextStyle.SetShadowColorAndOpacity(FLinearColor::Transparent);
++			FSlateFontInfo Font = FAppStyle::Get().GetWidgetStyle<FTextBlockStyle>("Graph.Node.NodeTitle").Font;
++			// Its italic typeface ("Bold" -> "BoldItalic", "Regular" -> "Italic") where its family has one.
++			if (const FCompositeFont* Composite = Font.GetCompositeFont())
++			{
++				const FString Base = Font.TypefaceFontName.IsNone() || Font.TypefaceFontName == TEXT("Regular") ? FString() : Font.TypefaceFontName.ToString();
++				const FName Wanted(*(Base + TEXT("Italic")));
++				for (const FTypefaceEntry& Entry : Composite->DefaultTypeface.Fonts)
++				{
++					if (Entry.Name == Wanted)
++					{
++						Font.TypefaceFontName = Wanted;
++						break;
++					}
++				}
++			}
++			Made.TextStyle.SetFont(Font);
++			Made.TextStyle.SetColorAndOpacity(FSlateColor(Palette::CollapsedNodeText));
++			Made.TextStyle.SetShadowOffset(FVector2D(Palette::TrackTextShadowOffset, Palette::TrackTextShadowOffset));
++			Made.TextStyle.SetShadowColorAndOpacity(Palette::TrackTextShadow);
++			Made.EditableTextBoxStyle.TextStyle.SetFont(Font);
+ 			return Made;
+ 		}();
+ 		return Style;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h
+index 4a72f68..0a9264f 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.h
+@@ -103,6 +103,9 @@ namespace WidgetAnimMachineEdits
+ 	/** Switches transitions on or off. */
+ 	void SetTransitionsEnabled(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& Transitions, bool bEnabled);
+ 
++	/** Draws transitions' wires dead straight, or curving as usual. Not told to anyone: the graph's nodes are set by the caller. */
++	void SetTransitionsStraight(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& Transitions, bool bStraight);
++
+ 	/** Adds a layer, its Entry, Any State and Exit placed, and returns its index. */
+ 	int32 AddLayer(UWidgetAnimStateMachineAsset* Machine);
+ 
+@@ -267,7 +270,13 @@ namespace WidgetAnimMachineWires
+ 	 * leaves and enters its states from the middle of a side (or a corner), as every wire does.
+ 	 */
+ 	FWidgetAnimMachineWire Compute(const FBox2f& First, const FBox2f& Second, int32 Lane, int32 LaneCount, bool bReversed,
+-		const FVector2f* NodePoint = nullptr, TConstArrayView<FVector2f> Reroutes = TConstArrayView<FVector2f>());
++		const FVector2f* NodePoint = nullptr, TConstArrayView<FVector2f> Reroutes = TConstArrayView<FVector2f>(), bool bStraight = false);
++
++	/**
++	 * Whether two nodes lie on a slant - apart both ways, the line between their middles between 25 and 65 degrees - so a wire
++	 * between them leaves a corner: what Straighten Connections (Q) draws dead straight where they are, rather than moving one.
++	 */
++	bool IsSlanted(const FBox2f& First, const FBox2f& Second);
+ 
+ 	/**
+ 	 * The side or corner of Box that faces Toward - (1,0) right, (0,1) bottom, (1,1) bottom-right and so on: where a wire to it
+@@ -479,6 +488,9 @@ public:
+ 	bool bPlaced = false;
+ 	FVector2f PlacedOffset = FVector2f::ZeroVector;
+ 
++	/** Its wire drawn dead straight from state to state (see FWidgetAnimMachineTransition::bEditorStraight). From the machine. */
++	bool bStraight = false;
++
+ 	/**
+ 	 * The reroute points its wire runs through, in order the way it goes, each from GetPlacementAnchor. From the machine as the
+ 	 * graph is made; changed as its reroute nodes are dragged, and written back into the machine once the mouse is let go.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index 61c9425..20f7a4f 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -696,6 +696,9 @@ namespace NameTBD
+ 			// own hover look is held back then: its corners would poke out past the glow).
+ 			inline constexpr float ActiveRingHoverLift = 0.45f;
+ 
++			// The dark backing of the buttons floating over the graph (play / pause, at its bottom left).
++			inline const FLinearColor FloatingButtonBacking(0.012f, 0.012f, 0.014f, 0.88f);
++
+ 			// A state's middle while its animation's progress fills it: square-cornered, near black - the rounded one's dark.
+ 			inline const FLinearColor StateTitleSharp(0.010f, 0.010f, 0.011f, 1.0f);
+ 			inline const FLinearColor StateSelected(1.0f, 1.0f, 1.0f, 0.85f);
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index 36098e3..266e7e8 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -2344,6 +2344,12 @@ namespace NameTBD::Tooltips
+ 				"Remove Reroute Point: takes this point off its wire. The wire runs straight on from the points either side of it.");
+ 		}
+ 
++		inline FText StraightWireTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "StraightWireTooltip",
++				"Straight Wire: draws this transition's wire as a straight line from state to state - corner to corner between states that lie on a slant - instead of curving out of one and into the other. Straighten Connections (Q) sets it on wires between states on a slant. Only how the graph looks.");
++		}
++
+ 		inline FText ClearReroutesTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "ClearReroutesTooltip",
+@@ -2599,7 +2605,7 @@ namespace NameTBD::Tooltips
+ 		inline FText StraightenTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "StraightenTooltip",
+-				"Straighten Connections (Q): lines the selected states up with the states they connect to, so their wires run straight. With one state selected, it lines up with the state it shares the most transitions with. Nothing is moved onto another state.");
++				"Straighten Connections (Q): lines the selected states up with the states they connect to, so their wires run straight. With one state selected, it lines up with the state it shares the most transitions with. States that lie on a slant stay where they are: the wire between them is drawn dead straight, corner to corner (Straight Wire). Works on collapsed groups as on states. Nothing is moved onto another state.");
+ 		}
+ 
+ 		inline FText StateNodeHint()

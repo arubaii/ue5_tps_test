@@ -233,6 +233,13 @@ public:
 	virtual float GetSpeed() const = 0;
 	virtual void SetSpeed(float Speed) = 0;
 
+	/**
+	 * Animation Parameters tried out in the preview: values the preview plays instead of the parameters' defaults - the
+	 * Parameters section's Preview column. Never saved. A source that previews no animation asset ignores them.
+	 */
+	virtual void SetPreviewParameters(const TArray<FWidgetAnimParameterValue>& Values) {}
+	virtual const TArray<FWidgetAnimParameterValue>* GetPreviewParameters() const { return nullptr; }
+
 	/** Called by the panel every frame it is on screen. A source that drives the preview itself uses it to know it's wanted. */
 	virtual void NotifyPanelActive() {}
 
@@ -502,6 +509,8 @@ public:
 	virtual void SetInvert(bool bValue) override { bInvert = bValue; }
 	virtual float GetSpeed() const override { return Speed; }
 	virtual void SetSpeed(float InSpeed) override { Speed = FMath::Max(InSpeed, 0.01f); }
+	virtual void SetPreviewParameters(const TArray<FWidgetAnimParameterValue>& Values) override { PreviewParameters = Values; bFlattenedStale = true; bUnposedStale = true; }
+	virtual const TArray<FWidgetAnimParameterValue>* GetPreviewParameters() const override { return &PreviewParameters; }
 
 	virtual void NotifyPanelActive() override;
 
@@ -607,6 +616,9 @@ private:
 	TWeakObjectPtr<UUserWidget> FlattenedRoot;
 	bool bFlattenedInvert = false;
 	bool bFlattenedStale = true;
+
+	/** The preview's own parameter values - see IWidgetAnimPanelSource::SetPreviewParameters. */
+	TArray<FWidgetAnimParameterValue> PreviewParameters;
 	double FlattenedTime = -1.0;
 
 	/** Worked out with Flattened: what its poses are captured for (see PosedSignature), and one pass of it, in seconds. */

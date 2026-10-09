@@ -60,6 +60,21 @@ public:
 
 	UFUNCTION()
 	TArray<FString> GetNumberInputOptions() const;
+
+	/** Backs Parameters From Inputs: the parameters of the state's animation (or samples), and the machine's inputs. */
+	UFUNCTION()
+	TArray<FString> GetStateParameterOptions() const;
+
+	UFUNCTION()
+	TArray<FString> GetInputNameOptions() const;
+
+	/** Backs Blend Input: the machine's Float, Integer, Press And Hold and Vector 2D inputs. */
+	UFUNCTION()
+	TArray<FString> GetBlendInputOptions() const;
+
+	/** Backs an action's Input. */
+	UFUNCTION()
+	TArray<FString> GetSettableInputOptions() const;
 };
 
 /** One transition of a machine, as the editor's Details show it. See UWidgetAnimMachineStateProxy. */
@@ -91,6 +106,18 @@ public:
 
 	UFUNCTION()
 	TArray<FString> GetInputNameOptions() const;
+
+	/** Backs a condition's Layer: every layer but the transition's own. */
+	UFUNCTION()
+	TArray<FString> GetConditionLayerOptions() const;
+
+	/** Backs a condition's State: every state of every other layer. */
+	UFUNCTION()
+	TArray<FString> GetConditionStateOptions() const;
+
+	/** Backs an On Taken action's Input. */
+	UFUNCTION()
+	TArray<FString> GetSettableInputOptions() const;
 };
 
 /** One input of a machine, as the editor's Details show it - what clicking it in the Inputs panel shows. See UWidgetAnimMachineStateProxy. */
@@ -139,6 +166,10 @@ public:
 
 	UFUNCTION()
 	TArray<FString> GetNumberInputOptions() const;
+
+	/** Backs the layer's Targets: (Widget), then every target. */
+	UFUNCTION()
+	TArray<FString> GetMaskTargetOptions() const;
 };
 
 /**
@@ -250,6 +281,9 @@ private:
 	/** What to select once the shown graph is next rebuilt - what was just pasted, duplicated or added. */
 	TArray<FGuid> PendingSelection;
 
+	/** Frames until the selection - collapsed states just made - is straightened (Q); 0: none waiting. */
+	int32 PendingStraightenFrames = 0;
+
 	/** The inputs the previews were started with: a change restarts them, so they have the new inputs. Unset: start them again. */
 	TOptional<uint32> PreviewSignature;
 
@@ -259,6 +293,17 @@ private:
 	void ShowLayer(int32 LayerIndex);
 	void RebuildLayerTabs();
 	void RebuildInputs();
+
+	/** An input's row in the Inputs panel: its name put into editing, removed, or its right-click menu opened. */
+	void RenameInputInPanel(FName Input);
+	void RemoveInputFromPanel(FName Input);
+	void OpenInputMenu(FName Input, const FPointerEvent& MouseEvent);
+
+	/** A category's heading in the Inputs panel: click to fold it, double-click its name to rename the category. */
+	void AddInputCategoryHeader(const TSharedRef<SVerticalBox>& Rows, const FString& Category);
+
+	/** The Inputs panel's folded categories - the panel's own, never saved. */
+	TSet<FString> CollapsedInputCategories;
 	void RebuildPreviewPanel();
 	void OnMachineChanged(UWidgetAnimStateMachineAsset* ChangedMachine);
 
@@ -450,8 +495,8 @@ private:
 	 */
 	bool FindActiveState(int32& OutLayer, FGuid& OutState) const;
 
-	/** "Jump to Active State (Hovered)" - what the toolbar button reads. */
-	FText GetJumpToActiveLabel() const;
+	/** "(Hovered)" - the state in play, after the button's "Jump to Active State"; empty when nothing is in play. */
+	FText GetJumpToActiveStateName() const;
 
 	/** Shows the active state's layer and brings its state into view. */
 	void JumpToActiveState();
@@ -459,9 +504,16 @@ private:
 	/**
 	 * Jump To State: plans the preview inputs that take a layer to State (see WidgetAnimMachineJump.h) and sets them a step at a
 	 * time - each step once the layer has arrived where the last one took it - so every transition on the way plays. With
-	 * nothing watched to follow, the last step's inputs are set at once.
+	 * nothing watched to follow, the last step's inputs are set at once. State may be the layer's Exit (its way out, as it
+	 * closes) or its Entry, which starts the preview again from the start (RestartFromEntry).
 	 */
 	void JumpToState(int32 LayerIndex, const FGuid& State);
+
+	/** Every preview input back to its default, and the designer preview started again from Entry. Not in Play In Editor. */
+	void RestartFromEntry();
+
+	/** Lets go of the Press And Hold inputs a jump step pressed for a moment (FInputPlan::Tap), once the machine has seen the press. */
+	void TickPendingLetGo();
 
 	/** Sets the preview's inputs to a jump step's. */
 	void ApplyJumpPlan(const WidgetAnimMachineJump::FInputPlan& Plan);
@@ -473,8 +525,55 @@ private:
 	int32 JumpStep = INDEX_NONE;
 	int32 JumpLayer = INDEX_NONE;
 	double JumpStepTime = 0.0;
+
+	/** Press And Hold inputs a jump step pressed, to let go of shortly after - and when they were pressed. */
+	TArray<FName> PendingLetGo;
+	double PendingLetGoTime = 0.0;
 	/** A new machine: in the Default Folder, or - bChooseLocation - wherever the editor's Save Asset As window says. */
 	void CreateNewMachine(bool bChooseLocation);
+
+	// The Widget Blueprint's own machine (UWidgetAnimTimelinesExtension::StateMachine) - the State Machine mode, as Animation
+	// Timeline is the Widget Animations panel's - or an asset (Edit Existing Asset).
+
+	/** Whether Edited is a Widget Blueprint's own machine rather than an asset. */
+	static bool IsDraftMachine(const UWidgetAnimStateMachineAsset* Edited);
+
+	/** The Widget Blueprint's own machine - made (with one layer and an Idle state) the first time it is asked for. */
+	UWidgetAnimStateMachineAsset* GetOrMakeDraftMachine();
+
+	/** State Machine mode: the Widget Blueprint's own machine. Edit Existing Asset: the asset edited last, or the one it plays. */
+	void SwitchToDraft();
+	void SwitchToAsset();
+
+	/** The asset the Widget Blueprint's machine was last saved as, or null. */
+	UWidgetAnimStateMachineAsset* GetDraftSavedAsset() const;
+
+	/** Save State Machine To: a new asset of the Widget Blueprint's machine, in the Default Folder or (bChooseLocation) where picked. */
+	void SaveDraftTo(bool bChooseLocation);
+
+	/** Save, in State Machine mode: the Widget Blueprint's machine into the asset it was saved as, and that asset saved. */
+	void SaveDraftToSavedAsset();
+
+	/** Jump To Active State, beside Add State: back to the state in play when the graph has been scrolled away from it. */
+	TSharedRef<SWidget> MakeJumpToActiveButton();
+
+	/** Play / pause the preview, floating over the graph at its bottom left. */
+	TSharedRef<SWidget> MakePlayPauseButton();
+
+	/** State Machine mode: the Widget Blueprint's own machine's name, as a field on the bar - double-click to rename it. */
+	TSharedRef<SWidget> MakeDraftNameField();
+
+	/** In the layer row, while collapsed states are open on their own: the layer (the way back to all of it), then them. */
+	TSharedRef<SWidget> MakeGroupBreadcrumb();
+
+	/** The lock: the machine read-only - a preview - as the Widget Animations panel's lock. See IsMachineEditable. */
+	bool bMachineLocked = false;
+
+	/** Whether the machine can be edited here: one is open and the lock is off. */
+	bool IsMachineEditable() const { return Machine != nullptr && !bMachineLocked; }
+
+	/** The asset edited last in Edit Existing Asset, for switching back to it. */
+	TWeakObjectPtr<UWidgetAnimStateMachineAsset> LastAssetMachine;
 
 	/** Where New puts a machine without asking: the project's Default Save Folder, else beside the Widget Blueprint. */
 	FString GetDefaultMachineFolder() const;

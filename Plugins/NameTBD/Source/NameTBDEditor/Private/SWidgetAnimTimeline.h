@@ -15,6 +15,7 @@
 #include "WidgetAnimLayerEditProxy.h"
 
 class IDetailsView;
+class IPropertyHandle;
 class IWidgetAnimPanelSource;
 class SScrollBar;
 class SWindow;
@@ -1011,6 +1012,56 @@ public:
 	/** A plain list's track pointed at another widget - see FWidgetAnimLayer::TargetWidget. None is the list's own widget. */
 	void SetLayerTarget(int32 LayerIndex, FName Target);
 
+	// -------------------------------------------------------------------------------------------------
+	// Animation Parameters (see WidgetAnimParameters.h) - declared in the Selection panel's Parameters section, bound with the
+	// chip at the end of a field's row, a track played for some of a Choice's options with its Plays When row.
+	// -------------------------------------------------------------------------------------------------
+
+	/** The edited animation's parameters - null where the panel edits no Widget Animation (a plain list, the builder's own copy). */
+	TArray<FWidgetAnimParameter>* GetParameters() const;
+
+	/**
+	 * A parameter's value tried out in the preview (the Parameters section's Preview row): false when the preview plays its
+	 * default. Set with bTry false to go back to the default. Never saved - see IWidgetAnimPanelSource::SetPreviewParameters.
+	 */
+	bool GetPreviewParameter(FName Name, FWidgetAnimParameterValue& OutValue) const;
+	void SetPreviewParameter(const FWidgetAnimParameterValue& Value, bool bTry);
+
+	/** Adds a parameter of Type with a fresh name; returns its index, or INDEX_NONE. */
+	int32 AddParameter(EWidgetAnimParameterType Type);
+
+	/** Renames one - the tracks' bindings and Plays When follow it. */
+	void RenameParameter(int32 ParameterIndex, const FString& NewName);
+
+	/** Changes one's type - bindings of fields that can't take the new type are let go of. */
+	void SetParameterType(int32 ParameterIndex, EWidgetAnimParameterType Type);
+
+	/** Removes one, and every binding to it - those fields play their own values again. */
+	void RemoveParameter(int32 ParameterIndex);
+
+	/** Binds the field at FieldPath of each of LayerIndices to Parameter - or, with None, lets go of its binding. */
+	void BindLayerField(const TArray<int32>& LayerIndices, const FString& FieldPath, FName Parameter);
+
+	/** Sets the Scale of the binding at FieldPath of each of LayerIndices: -1 mirrors it. */
+	void SetLayerBindingScale(const TArray<int32>& LayerIndices, const FString& FieldPath, float BindingScale);
+
+	/** Sets when a track plays - see FWidgetAnimLayer::PlaysWhen. */
+	void SetLayerPlaysWhen(int32 LayerIndex, const FWidgetAnimParameterCondition& Condition);
+
+	/**
+	 * The bind chip for a Selection panel row of a track's field - an empty pill to bind, a filled one while bound - or null
+	 * for a row that isn't one (anything not on this panel's shadow or proxies, or a field no parameter can take). Put at the
+	 * end of the row's value by the Selection panel's layout (FWidgetAnimSelectionDetails::AddBindChip). Given the row's value
+	 * widget, it is wrapped so that while the field is bound it shows the parameter's name and value, greyed, instead.
+	 */
+	static TSharedPtr<SWidget> MakeParameterBindChip(const TSharedRef<IPropertyHandle>& Handle, TSharedPtr<SWidget>* InOutValueWidget = nullptr);
+
+	/** The bind chip's menu for a field: the parameters it can take, a new one made from it, mirror, unbind. */
+	void OpenBindMenu(const TArray<int32>& LayerIndices, const FString& FieldPath, const FProperty* Field);
+
+	/** Adds a parameter of the field's type, its value as the default and its label as the name, and binds the field to it. */
+	void AddParameterFromField(TArray<int32> LayerIndices, FString FieldPath, const FProperty* Field);
+
 	/**
 	 * An animation track's Stretch Across Track (FWidgetAnimLayer::bFitToTrack): on, its animation plays across the track's
 	 * own length, which keeps the length it had so nothing moves; off, at the animation's own length.
@@ -1375,6 +1426,9 @@ private:
 
 	/** Points the Selection panel at the selection and rebuilds it - one layer's properties, or several layers' shared ones. */
 	void RefreshDetails();
+
+	/** RefreshDetails on the next tick - for an edit made from a row of the Selection panel itself, which it would rebuild under it. */
+	void RefreshDetailsNextTick();
 
 	/** Re-makes the proxies the Selection panel shows for a multi-selection, one per selected layer. */
 	void RebuildLayerProxies();

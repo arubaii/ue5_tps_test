@@ -1221,6 +1221,7 @@ namespace
 		Target.MinimumLength = Timeline.MinimumLength;
 		Target.TimeUnit = Timeline.TimeUnit;
 		Target.Progress = Timeline.Progress;
+		Target.Parameters = Timeline.Parameters;
 		Target.PostEditChange();
 		Target.MarkPackageDirty();
 	}
@@ -1438,6 +1439,13 @@ void FWidgetAnimAssetPanelSource::BuildFlattened(UUserWidget* Root, TArray<FWidg
 	FWidgetAnimEntry PreviewUse;
 	PreviewUse.Animation = const_cast<UWidgetAnimPresetAsset*>(Edited);
 	PreviewUse.bInvertAnimation = bInvert;
+
+	// The values tried out in the Parameters section, over the defaults - as an entry's own would be.
+	PreviewUse.Parameters = PreviewParameters;
+	for (FWidgetAnimParameterValue& Value : PreviewUse.Parameters)
+	{
+		Value.bOverride = true;
+	}
 
 	const int32 FirstSetting = OutSettings.Num();
 	PreviewUse.BuildSettingsResolved(OutSettings, [Root](FName Path) -> UWidget*
