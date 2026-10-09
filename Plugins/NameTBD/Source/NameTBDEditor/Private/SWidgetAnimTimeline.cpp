@@ -11,6 +11,7 @@
 #include "Layout/Children.h"
 #include "Widgets/SPanel.h"
 #include "WidgetAnimPanelSource.h"
+#include "WidgetAnimTargetOption.h"
 #include "WidgetAnimScripting.h"
 #include "WidgetAnimTrackPresets.h"
 #include "WidgetAnimBuilderToolbar.h"
@@ -855,6 +856,11 @@ namespace WidgetAnimTimeline
 	 * children, laid out where they are added. On a Blueprint type's or cue's track, its Type and its Settings are read-only -
 	 * the Settings follow the type's Settings Struct (see SWidgetAnimTimeline::SyncBlueprintTypeSettings) - each with a button
 	 * beside it that finds its asset in the Content Browser.
+	 *
+	 * A field of a type's settings may also say when it is shown and when it can be edited, from its fields before it:
+	 *   meta = (ShowWhen = "Action=BurstAtTarget|Play", EnableWhen = "bUseWidgetSystem=false")
+	 * - terms joined by commas, all of which must hold; each a field and the values it may have, by '|' (a bool's true / false,
+	 * an enum's value name). For what an EditCondition can't be put on: a property bag under one came back read-only.
 	 */
 	class FTypeParamsDetails : public FInstancedStructDataDetails
 	{
@@ -868,6 +874,12 @@ namespace WidgetAnimTimeline
 		{
 			const TSharedPtr<IPropertyHandle> Handle = ChildRow.GetPropertyHandle();
 			const FProperty* Property = Handle.IsValid() ? Handle->GetProperty() : nullptr;
+			if (Property)
+			{
+				// The fields come in order: those a later field's ShowWhen / EnableWhen read are already here.
+				FieldHandles.Add(Property->GetFName(), Handle);
+				ApplyFieldConditions(ChildRow, *Property);
+			}
 			const UStruct* Owner = Property ? Property->GetOwnerStruct() : nullptr;
 			const bool bBlueprintType = Owner == FWidgetAnimBlueprintTypeParams::StaticStruct();
 			const bool bBlueprintCue = Owner == FWidgetAnimBlueprintCueParams::StaticStruct();
@@ -955,6 +967,75 @@ namespace WidgetAnimTimeline
 					]
 				];
 		}
+
+	private:
+		/** Whether every term of a ShowWhen / EnableWhen holds for the fields as they are now. True when one can't be read. */
+		static bool AreTermsMet(const TArray<TPair<TSharedPtr<IPropertyHandle>, TArray<FString>>>& Terms)
+		{
+			for (const TPair<TSharedPtr<IPropertyHandle>, TArray<FString>>& Term : Terms)
+			{
+				FString Value;
+				if (!Term.Key.IsValid() || !Term.Key->IsValidHandle() || Term.Key->GetValueAsFormattedString(Value, PPF_None) != FPropertyAccess::Success)
+				{
+					continue;
+				}
+				const bool bAny = Term.Value.ContainsByPredicate([&Value](const FString& Allowed) { return Allowed.Equals(Value, ESearchCase::IgnoreCase); });
+				if (!bAny)
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
+		/** A ShowWhen / EnableWhen read against the fields already added. */
+		TArray<TPair<TSharedPtr<IPropertyHandle>, TArray<FString>>> ParseTerms(const FString& Text) const
+		{
+			TArray<TPair<TSharedPtr<IPropertyHandle>, TArray<FString>>> Terms;
+			TArray<FString> Parts;
+			Text.ParseIntoArray(Parts, TEXT(","));
+			for (const FString& Part : Parts)
+			{
+				FString FieldName;
+				FString Values;
+				if (!Part.Split(TEXT("="), &FieldName, &Values))
+				{
+					continue;
+				}
+				const TSharedPtr<IPropertyHandle>* Field = FieldHandles.Find(FName(*FieldName.TrimStartAndEnd()));
+				if (!Field)
+				{
+					continue;
+				}
+				TArray<FString> Allowed;
+				Values.TrimStartAndEnd().ParseIntoArray(Allowed, TEXT("|"));
+				Terms.Emplace(*Field, MoveTemp(Allowed));
+			}
+			return Terms;
+		}
+
+		void ApplyFieldConditions(IDetailPropertyRow& ChildRow, const FProperty& Property) const
+		{
+			static const FName ShowWhenName(TEXT("ShowWhen"));
+			static const FName EnableWhenName(TEXT("EnableWhen"));
+			if (Property.HasMetaData(ShowWhenName))
+			{
+				ChildRow.Visibility(TAttribute<EVisibility>::CreateLambda([Terms = ParseTerms(Property.GetMetaData(ShowWhenName))]()
+				{
+					return AreTermsMet(Terms) ? EVisibility::Visible : EVisibility::Collapsed;
+				}));
+			}
+			if (Property.HasMetaData(EnableWhenName))
+			{
+				ChildRow.IsEnabled(TAttribute<bool>::CreateLambda([Terms = ParseTerms(Property.GetMetaData(EnableWhenName))]()
+				{
+					return AreTermsMet(Terms);
+				}));
+			}
+		}
+
+		/** The settings' fields added so far, by name. */
+		TMap<FName, TSharedPtr<IPropertyHandle>> FieldHandles;
 	};
 
 	/**
@@ -4605,7 +4686,7 @@ private:
 		// form, an entry's Target Widget offers. Kept on this customization, which lives as long as the rows.
 		FName Current;
 		TargetHandle->GetValue(Current);
-		const FString CurrentText = Current.IsNone() ? FString(TEXT("None")) : Current.ToString();
+		const FString CurrentText = WidgetAnimTargetOption::FromPath(Current);
 
 		TargetOptions = MakeShared<TArray<TSharedPtr<FString>>>();
 		TSharedPtr<FString> Initial;
@@ -4650,11 +4731,11 @@ private:
 						{
 							FName Value;
 							Target->GetValue(Value);
-							return FText::FromString(Value.IsNone() ? FString(TEXT("None")) : Value.ToString());
+							return FText::FromString(WidgetAnimTargetOption::FromPath(Value));
 						}),
 						[Target](const FString& Picked)
 						{
-							Target->SetValue(Picked == TEXT("None") ? FName(NAME_None) : FName(*Picked));
+							Target->SetValue(WidgetAnimTargetOption::ToPath(Picked));
 						},
 						TAttribute<bool>::CreateLambda([WeakOwner]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanEdit(); }),
 						WidgetAnimTips::PreviewTargetTooltip())
@@ -4795,7 +4876,7 @@ private:
 		if (PanelSource && PanelSource->SupportsLayerTargets() && TargetLayers && TargetLayers->IsValidIndex(LayerIndex))
 		{
 			const FName CurrentTarget = (*TargetLayers)[LayerIndex].TargetWidget;
-			const FString CurrentTargetText = CurrentTarget.IsNone() ? FString(TEXT("None")) : CurrentTarget.ToString();
+			const FString CurrentTargetText = WidgetAnimTargetOption::FromPath(CurrentTarget);
 
 			LayerTargetOptions = MakeShared<TArray<TSharedPtr<FString>>>();
 			TSharedPtr<FString> InitialTarget;
@@ -4834,13 +4915,13 @@ private:
 							const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin();
 							const TArray<FWidgetAnimLayer>* Layers = Pinned ? Pinned->GetLayers() : nullptr;
 							const FName Value = Layers && Layers->IsValidIndex(LayerIndex) ? (*Layers)[LayerIndex].TargetWidget : FName(NAME_None);
-							return FText::FromString(Value.IsNone() ? FString(TEXT("None")) : Value.ToString());
+							return FText::FromString(WidgetAnimTargetOption::FromPath(Value));
 						}),
 						[WeakTargetOwner, LayerIndex](const FString& Picked)
 						{
 							if (const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin())
 							{
-								Pinned->SetLayerTarget(LayerIndex, Picked == TEXT("None") ? FName(NAME_None) : FName(*Picked));
+								Pinned->SetLayerTarget(LayerIndex, WidgetAnimTargetOption::ToPath(Picked));
 							}
 						},
 						TAttribute<bool>::CreateLambda([WeakTargetOwner, LayerIndex]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin(); return Pinned && Pinned->CanEditLayer(LayerIndex); }),
@@ -11942,6 +12023,18 @@ namespace
 
 		return false;
 	}
+
+	/**
+	 * After an edit: has a registered type bring what its settings derive from something else up to date - a Particles
+	 * track's User Parameters, from the Niagara System just picked (FWidgetAnimEvaluator::RefreshParams).
+	 */
+	void RefreshLayerParams(FWidgetAnimLayer& Layer)
+	{
+		if (const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator())
+		{
+			Evaluator->RefreshParams(Layer.TypeParams);
+		}
+	}
 }
 
 void SWidgetAnimTimeline::OnProxyEdited(UWidgetAnimLayerEditProxy* Proxy, FPropertyChangedChainEvent& PropertyChangedEvent)
@@ -11966,6 +12059,7 @@ void SWidgetAnimTimeline::OnProxyEdited(UWidgetAnimLayerEditProxy* Proxy, FPrope
 		if (Represented != Proxy->LayerIndex && Layers->IsValidIndex(Represented) && CanEditLayer(Represented))
 		{
 			CopyEditedLayerProperty(PropertyChangedEvent.PropertyChain, Proxy->Layer, (*Layers)[Represented]);
+			RefreshLayerParams((*Layers)[Represented]);
 		}
 	}
 
@@ -11987,6 +12081,10 @@ void SWidgetAnimTimeline::OnProxyEdited(UWidgetAnimLayerEditProxy* Proxy, FPrope
 		Layer.bHiddenByFocus = bHiddenByFocus;
 		Layer.InsertedFrom = InsertedFrom;
 	}
+
+	// What the edit derives - the track and what the Details panel shows of it alike, so the next edit carries it whole.
+	RefreshLayerParams(Layer);
+	RefreshLayerParams(Proxy->Layer);
 
 	// Every selected proxy reports the same edit; the source is told once, on the next frame. A drag in
 	// progress stays Interactive unless something in the batch committed.
@@ -12154,6 +12252,7 @@ void SWidgetAnimTimeline::OnShadowEdited(UWidgetAnimPresetSelectionShadow* Shado
 			Layer.bHiddenByFocus = bHiddenByFocus;
 			Layer.InsertedFrom = InsertedFrom;
 		}
+		RefreshLayerParams(Layer);
 		Indices.Add(Member->GetName(), LayerIndex);
 	}
 	else
@@ -12337,6 +12436,11 @@ uint32 SWidgetAnimTimeline::ComputeLayoutSignature() const
 		if (Layer.AnimType == EWidgetAnimType::Custom)
 		{
 			Hash = HashCombine(Hash, PointerHash(Layer.TypeParams.GetScriptStruct()));
+			if (const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator())
+			{
+				// Rows a type lays out from an asset - a Particles track's User Parameters.
+				Hash = HashCombine(Hash, Evaluator->GetParamsLayoutHash(Layer.TypeParams));
+			}
 			if (const FWidgetAnimBlueprintTypeParams* BlueprintType = Layer.TypeParams.GetPtr<FWidgetAnimBlueprintTypeParams>())
 			{
 				Hash = HashCombine(Hash, PointerHash(BlueprintType->Settings.GetScriptStruct()));
@@ -19368,7 +19472,7 @@ void SWidgetAnimTimeline::UpdatePickHover(const FVector2D& ScreenPosition)
 	FString Option;
 	UWidget* Hovered = FindPreviewWidgetAt(ScreenPosition, Option);
 	PickHoverWidget = Hovered;
-	PickHoverLabel = !Hovered ? FString() : Option == TEXT("None") ? Hovered->GetName() : Option;
+	PickHoverLabel = !Hovered ? FString() : WidgetAnimTargetOption::IsThisWidget(Option) ? Hovered->GetName() : Option;
 
 	if (PickLabelWindow.IsValid())
 	{
@@ -19450,7 +19554,7 @@ void SWidgetAnimTimeline::ApplyPickedTarget(UWidget* Picked)
 		return;
 	}
 
-	const FName NewTarget = Option == TEXT("None") ? NAME_None : FName(*Option);
+	const FName NewTarget = WidgetAnimTargetOption::ToPath(Option);
 	if ((*Groups)[GroupIndex].PreviewTarget == NewTarget)
 	{
 		return;
@@ -22916,7 +23020,7 @@ void SWidgetAnimTimeline::RebuildWatchRows()
 				{
 					for (const FString& Option : Source->GetTargetOptions())
 					{
-						const FName Path = Option == TEXT("None") ? FName(NAME_None) : FName(*Option);
+						const FName Path = WidgetAnimTargetOption::ToPath(Option);
 						Menu.AddMenuEntry(
 							Path.IsNone() ? LOCTEXT("WatchThisWidget", "(this widget)") : FText::FromString(Option),
 							FText::GetEmpty(),

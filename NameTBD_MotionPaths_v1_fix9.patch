@@ -1,0 +1,17 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+index d89df94..cfdb9f8 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+@@ -1411,7 +1411,11 @@ namespace WidgetAnimMotionPathImpl
+ 		Menu.EndSection();
+ 
+ 		// Over the designer the diamond was clicked in: the menu belongs to its window.
+-		FSlateApplication::Get().PushMenu(OwnerPath.IsValid() ? OwnerPath.GetLastWidget() : TSharedPtr<SWidget>(), OwnerPath, Menu.MakeWidget(), ScreenPosition, FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
++		if (!OwnerPath.IsValid())
++		{
++			return;
++		}
++		FSlateApplication::Get().PushMenu(OwnerPath.GetLastWidget(), OwnerPath, Menu.MakeWidget(), ScreenPosition, FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
+ 	}
+ 
+ 	// ---------------------------------------------------------------------------------------------

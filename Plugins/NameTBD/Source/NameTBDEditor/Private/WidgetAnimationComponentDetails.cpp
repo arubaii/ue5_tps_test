@@ -4,6 +4,7 @@
 
 #include "SWidgetAnimTimeline.h"
 #include "WidgetAnimPanelSource.h"
+#include "WidgetAnimTargetOption.h"
 
 #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
@@ -501,7 +502,7 @@ namespace
 
 		/**
 		 * The Target Widget choices the component's own entries offer - listed even from the template, which has no widget
-		 * to ask - with their (This Widget) as the None a track's own Target Widget uses for the same thing.
+		 * to ask - with their (This Widget) as the (this widget) a track's own Target Widget uses for the same thing.
 		 */
 		virtual TArray<FString> GetLayerTargetOptions() const override
 		{
@@ -516,7 +517,7 @@ namespace
 			{
 				if (Option == FWidgetAnimGroupTarget::ThisWidget.ToString())
 				{
-					Option = TEXT("None");
+					Option = WidgetAnimTargetOption::ThisWidget();
 				}
 			}
 			return Options;

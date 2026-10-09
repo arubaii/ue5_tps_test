@@ -16,41 +16,26 @@
 #include "Components/PanelWidget.h"
 #include "Editor.h"
 #include "Fonts/FontMeasure.h"
+#include "Framework/Application/IInputProcessor.h"
+#include "GenericPlatform/ICursor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "HAL/IConsoleManager.h"
+#include "Layout/WidgetPath.h"
 #include "Rendering/DrawElements.h"
 #include "Rendering/SlateRenderer.h"
 #include "Styling/CoreStyle.h"
-#include "Subsystems/AssetEditorSubsystem.h"
 #include "WidgetBlueprint.h"
-#include "WidgetBlueprintEditor.h"
-#include "Widgets/SCompoundWidget.h"
-#include "Widgets/SLeafWidget.h"
-#include "Widgets/SPanel.h"
 #include "Widgets/SWindow.h"
 
 #define LOCTEXT_NAMESPACE "WidgetAnimMotionPath"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimMotionPath, Log, All);
 
-/** Where a designer is - its geometry as it ticked, in desktop space - and the last frame it was drawn. See FWidgetAnimMotionPathExtension::Tick. */
-struct FWidgetAnimMotionPathDesignerFrame
-{
-	FGeometry Geometry;
-	uint64 FrameNumber = 0;
-};
-
 namespace WidgetAnimMotionPathImpl
 {
 	namespace Palette = NameTBD::Colors::MotionPath;
 	namespace KeyPalette = NameTBD::Colors::WidgetAnimEditor;
-
-	/**
-	 * How far the selection-anchored layer (the fallback, see FWidgetAnimMotionPathExtension) reaches past the selected widget on
-	 * every side, in canvas units: Slate only paints - and hit-tests - a widget whose own box is on screen.
-	 */
-	constexpr float OverlayMargin = 4000.f;
 
 	/** How finely the line is sampled between dots, at most: this many samples per second of the animation. */
 	constexpr float LineSamplesPerSecond = 240.f;
@@ -61,7 +46,7 @@ namespace WidgetAnimMotionPathImpl
 	/** The most widgets that show a path at once. */
 	constexpr int32 MaxPaths = 8;
 
-	/** How far the mouse must move, in canvas units, before a press on a diamond or a handle becomes a drag. */
+	/** How far the mouse must move, in the designer's units, before a press on a diamond or a handle becomes a drag. */
 	constexpr float DragThreshold = 3.f;
 
 	/** A step between two samples is a jump - a Hold, a step - when it is longer than this, in canvas units... */
@@ -359,310 +344,308 @@ namespace WidgetAnimMotionPathImpl
 		FString MapDetail;
 	};
 
-	class SWidgetAnimMotionPathCanvas;
+	class FMotionPathLayer;
 
-	// =================================================================================================
-	// A diamond, and a handle: the only parts of the layer that take the mouse
-	// =================================================================================================
-
-	class SWidgetAnimMotionPathKey : public SLeafWidget
+	/** Every designer's layer alive now - what FMotionPathInput hit-tests. Each adds itself as it is made. */
+	TArray<TWeakPtr<FMotionPathLayer>>& GetDesignerLayers()
 	{
-	public:
-		SLATE_BEGIN_ARGS(SWidgetAnimMotionPathKey) {}
-			SLATE_ARGUMENT(TWeakPtr<SWidgetAnimMotionPathCanvas>, Canvas)
-			SLATE_ARGUMENT(int32, Index)
-		SLATE_END_ARGS()
+		static TArray<TWeakPtr<FMotionPathLayer>> Layers;
+		return Layers;
+	}
 
-		void Construct(const FArguments& InArgs)
-		{
-			OwnerCanvas = InArgs._Canvas;
-			MarkerIndex = InArgs._Index;
-		}
-
-		virtual FVector2D ComputeDesiredSize(float) const override
-		{
-			return FVector2D(Palette::KeyHitSize, Palette::KeyHitSize);
-		}
-
-		virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
-			FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
-
-		virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
-		virtual FReply OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
-		virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
-		virtual void OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent) override;
-		virtual void OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
-		virtual void OnMouseLeave(const FPointerEvent& MouseEvent) override;
-		virtual FCursorReply OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const override;
-
-	private:
-		TWeakPtr<SWidgetAnimMotionPathCanvas> OwnerCanvas;
-		int32 MarkerIndex = INDEX_NONE;
-
-		bool bPressed = false;
-		bool bDragging = false;
-
-		/** Alt held at the press: the drag pulls handles out of the key instead of moving it. */
-		bool bPullingHandles = false;
-		FVector2D PressScreen = FVector2D::ZeroVector;
-	};
-
-	class SWidgetAnimMotionPathHandle : public SLeafWidget
-	{
-	public:
-		SLATE_BEGIN_ARGS(SWidgetAnimMotionPathHandle) {}
-			SLATE_ARGUMENT(TWeakPtr<SWidgetAnimMotionPathCanvas>, Canvas)
-			SLATE_ARGUMENT(int32, Index)
-			SLATE_ARGUMENT(bool, Out)
-		SLATE_END_ARGS()
-
-		void Construct(const FArguments& InArgs)
-		{
-			OwnerCanvas = InArgs._Canvas;
-			MarkerIndex = InArgs._Index;
-			bOutHandle = InArgs._Out;
-		}
-
-		virtual FVector2D ComputeDesiredSize(float) const override
-		{
-			return FVector2D(Palette::HandleHitSize, Palette::HandleHitSize);
-		}
-
-		virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
-			FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
-
-		virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
-		virtual FReply OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
-		virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
-		virtual void OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent) override;
-		virtual FCursorReply OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const override
-		{
-			return FCursorReply::Cursor(bDragging ? EMouseCursor::GrabHandClosed : EMouseCursor::GrabHand);
-		}
-
-	private:
-		TWeakPtr<SWidgetAnimMotionPathCanvas> OwnerCanvas;
-		int32 MarkerIndex = INDEX_NONE;
-		bool bOutHandle = true;
-
-		bool bPressed = false;
-		bool bDragging = false;
-		FVector2D PressScreen = FVector2D::ZeroVector;
-	};
-
-	/**
-	 * Holds the diamonds and handles - for each marker its in handle, its out handle, then its diamond - and puts each where
-	 * the layer says as it is laid out: after the layer worked the frame's path out, so they never trail it by a frame, as
-	 * bound attributes (read by Slate before the frame is worked out) did. One that the layer doesn't place isn't laid out at
-	 * all - neither drawn nor clicked.
-	 */
-	class SWidgetAnimMotionPathKeyPanel : public SPanel
-	{
-	public:
-		SLATE_BEGIN_ARGS(SWidgetAnimMotionPathKeyPanel) {}
-			SLATE_ARGUMENT(TWeakPtr<SWidgetAnimMotionPathCanvas>, Canvas)
-		SLATE_END_ARGS()
-
-		SWidgetAnimMotionPathKeyPanel()
-			: KeyChildren(this)
-		{
-		}
-
-		void Construct(const FArguments& InArgs)
-		{
-			OwnerCanvas = InArgs._Canvas;
-			SetVisibility(EVisibility::SelfHitTestInvisible);
-		}
-
-		void AddKeyWidget(const TSharedRef<SWidget>& KeyWidget)
-		{
-			KeyChildren.Add(KeyWidget);
-			KeyWidgets.Add(KeyWidget);
-		}
-
-		void ClearKeyWidgets()
-		{
-			KeyChildren.Empty();
-			KeyWidgets.Reset();
-		}
-
-		virtual FChildren* GetChildren() override
-		{
-			return &KeyChildren;
-		}
-
-		virtual void OnArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const override;
-
-	protected:
-		virtual FVector2D ComputeDesiredSize(float) const override
-		{
-			return FVector2D::ZeroVector;
-		}
-
-	private:
-		TWeakPtr<SWidgetAnimMotionPathCanvas> OwnerCanvas;
-		TSlotlessChildren<SWidget> KeyChildren;
-
-		/** KeyChildren's widgets, kept to reach from the const layout pass. */
-		TArray<TSharedRef<SWidget>> KeyWidgets;
-	};
+	/** Takes the mouse for the layers' diamonds and handles - registered while any layer exists. See FMotionPathInput below. */
+	void AcquireInput();
+	void ReleaseInput();
 
 	// =================================================================================================
 	// The layer
 	// =================================================================================================
 
 	/**
-	 * The paths, drawn over the designer's canvas. Either laid over a Widget Blueprint's whole designer - in the overlay of its
-	 * window, kept to the designer's area, shown whatever is selected (see FWidgetAnimMotionPathExtension::Tick) - or, where
-	 * no window was found, handed to the designer for the widget selected in it. Hit-test invisible itself; its diamonds and
-	 * handles are child widgets on SWidgetAnimMotionPathKeyPanel, so only they take the mouse. See WidgetAnimMotionPath.h.
+	 * One designer's paths, drawn over it by its extension's Paint (see FWidgetAnimMotionPathExtension) every frame the designer
+	 * is drawn, whatever is selected in it. Not a widget: what it draws is part of the designer's own drawing, in the designer's
+	 * own space, and its diamonds and handles take the mouse through FMotionPathInput, which hit-tests what was drawn that frame.
+	 * See WidgetAnimMotionPath.h.
 	 */
-	class SWidgetAnimMotionPathCanvas : public SCompoundWidget
+	class FMotionPathLayer : public TSharedFromThis<FMotionPathLayer>
 	{
 	public:
-		SLATE_BEGIN_ARGS(SWidgetAnimMotionPathCanvas) {}
-			/** Anchored to a selected widget: the selection. */
-			SLATE_ARGUMENT(FWidgetReference, Widget)
-
-			/** Laid over a designer: the Widget Blueprint it shows, and where the designer is. */
-			SLATE_ARGUMENT(TWeakObjectPtr<UWidgetBlueprint>, Blueprint)
-			SLATE_ARGUMENT(TSharedPtr<FWidgetAnimMotionPathDesignerFrame>, DesignerFrame)
-		SLATE_END_ARGS()
-
-		void Construct(const FArguments& InArgs)
+		explicit FMotionPathLayer(const TWeakObjectPtr<UWidgetBlueprint>& InBlueprint)
+			: BlueprintWeak(InBlueprint)
 		{
-			Reference = InArgs._Widget;
-			BlueprintWeak = InArgs._Blueprint;
-			DesignerFrame = InArgs._DesignerFrame;
-			bOverDesigner = BlueprintWeak.IsValid() && DesignerFrame.IsValid();
-			SetVisibility(EVisibility::SelfHitTestInvisible);
-
+			AcquireInput();
 			if (LogLevel() >= 1)
 			{
-				const UWidgetBlueprint* Blueprint = GetBlueprint();
-				UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path layer made %s %s."),
-					bOverDesigner ? TEXT("over the designer of") : TEXT("for the widget selected in"), Blueprint ? *Blueprint->GetName() : TEXT("(none)"));
+				const UWidgetBlueprint* Blueprint = BlueprintWeak.Get();
+				UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path layer made for the designer of %s."), Blueprint ? *Blueprint->GetName() : TEXT("(none)"));
 			}
-
-			ChildSlot
-			[
-				SAssignNew(KeyLayer, SWidgetAnimMotionPathKeyPanel)
-				.Canvas(StaticCastSharedRef<SWidgetAnimMotionPathCanvas>(AsShared()))
-			];
 		}
 
-		virtual ~SWidgetAnimMotionPathCanvas() override
+		~FMotionPathLayer()
 		{
 			EndDrag();
+			ReleaseInput();
 		}
 
-		// SWidget
-		virtual FVector2D ComputeDesiredSize(float) const override
+		/** Listed for FMotionPathInput - once it is owned by a shared pointer. */
+		void Register()
 		{
-			// Over a designer it fills the overlay of the designer's window whatever it asks for.
-			if (bOverDesigner)
-			{
-				return FVector2D::ZeroVector;
-			}
-
-			const FVector2D Margin(OverlayMargin * 2.f, OverlayMargin * 2.f);
-			const UWidget* Preview = Reference.GetPreview();
-			const TSharedPtr<SWidget> SlateWidget = Preview ? Preview->GetCachedWidget() : nullptr;
-			if (!SlateWidget.IsValid())
-			{
-				return Margin;
-			}
-			const FGeometry& Target = SlateWidget->GetTickSpaceGeometry();
-			const FVector2D LocalSize = Target.GetLocalSize();
-			FBox2D Corners(ForceInit);
-			for (const FVector2D& Corner : { FVector2D(0.0, 0.0), FVector2D(LocalSize.X, 0.0), FVector2D(0.0, LocalSize.Y), LocalSize })
-			{
-				const FVector2D Absolute = Target.LocalToAbsolute(Corner);
-				Corners += Absolute;
-			}
-			const float OwnScale = GetTickSpaceGeometry().GetAccumulatedLayoutTransform().GetScale();
-			const float CanvasScale = OwnScale > 0.01f ? OwnScale : 1.f;
-			return Corners.GetSize() / CanvasScale + Margin;
+			GetDesignerLayers().RemoveAll([](const TWeakPtr<FMotionPathLayer>& Weak) { return !Weak.IsValid(); });
+			GetDesignerLayers().Add(AsShared());
 		}
 
-		virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override
-		{
-			SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
-			if (!bTickedOnce && LogLevel() >= 1)
-			{
-				const FVector2D CanvasSize = AllottedGeometry.GetLocalSize();
-				const FVector2D CanvasTopLeft = AllottedGeometry.GetAbsolutePosition();
-				UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path layer is on the designer's canvas: %.0f x %.0f, top left at (%.0f, %.0f) on screen."), CanvasSize.X, CanvasSize.Y, CanvasTopLeft.X, CanvasTopLeft.Y);
-			}
-			bTickedOnce = true;
-			if (bOverDesigner && !ReadDesigner(AllottedGeometry))
-			{
-				// The designer wasn't drawn this frame - another tab is in front of it, or its editor is in Graph mode: nothing
-				// shows, and nothing is worked out for it.
-				EndDrag();
-				return;
-			}
-			Update(AllottedGeometry);
-			ReportStatus();
-		}
-
-		virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
-			FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
-
-		/** The paths, diamonds and labels - OnPaint, inside the designer's area when laid over one. */
-		int32 PaintPaths(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
-			FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const;
+		/**
+		 * Works this frame's paths out and draws them over the designer: DesignerGeometry is the designer's own, as it paints, and
+		 * everything is drawn in its space and clipped to it.
+		 */
+		void Paint(const TSet<FWidgetReference>& Selection, const FGeometry& DesignerGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId);
 
 		// ---------------------------------------------------------------------------------------------
-		// What the diamonds and handles ask
+		// What FMotionPathInput asks
+		// ---------------------------------------------------------------------------------------------
+
+		/**
+		 * Whether this layer has been drawn and Screen is over its designer as last drawn. Not "drawn this frame": an idle designer
+		 * isn't painted again every frame - what it drew is kept and shown - so its paths are on screen without a fresh paint.
+		 * Whether the designer is really there, in front, is IsDesignerUnder's question.
+		 */
+		bool IsOver(const FVector2D& Screen) const
+		{
+			return PaintedFrame > 0 && Designer.IsUnderLocation(Screen);
+		}
+
+		/**
+		 * Whether Path - what is under the mouse - goes through this layer's own designer: so not a menu, drawer or window over
+		 * it, nor another Widget Blueprint's designer tabbed in front of it in the same place.
+		 */
+		bool IsDesignerUnder(const FWidgetPath& Path)
+		{
+			if (!Path.IsValid())
+			{
+				return false;
+			}
+			const TSharedPtr<SWidget> OwnDesigner = DesignerWidget.Pin();
+			for (int32 Index = Path.Widgets.Num() - 1; Index >= 0; --Index)
+			{
+				const FArrangedWidget& Arranged = Path.Widgets[Index];
+				if (OwnDesigner.IsValid() && Arranged.Widget == OwnDesigner.ToSharedRef())
+				{
+					return true;
+				}
+				// The widget the designer handed its geometry to the paths with - whatever its type - is the one exactly where the
+				// paths are drawn: a menu or a drawer over the designer is not, and neither are the widgets around the designer.
+				if (IsDesignerRect(Arranged.Geometry))
+				{
+					if (DesignerWidget != Arranged.Widget)
+					{
+						DesignerWidget = Arranged.Widget;
+						if (LogLevel() >= 1)
+						{
+							UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path layer: its designer is %s, found under the mouse."), *Arranged.Widget->GetTypeAsString());
+						}
+					}
+					return true;
+				}
+			}
+			return false;
+		}
+
+		/** Whether Geometry (desktop space) covers exactly the designer the paths were last drawn over - to the pixel. */
+		bool IsDesignerRect(const FGeometry& Geometry) const
+		{
+			const FVector2D Position(Geometry.GetAbsolutePosition());
+			const FVector2D Size(Geometry.GetAbsoluteSize());
+			return FVector2D::Distance(Position, FVector2D(Designer.GetAbsolutePosition())) < 2.0
+				&& FVector2D::Distance(Size, FVector2D(Designer.GetAbsoluteSize())) < 2.0;
+		}
+
+		/** For WidgetAnim.LogMotionPaths: the widgets under the mouse, innermost last, and where the designer is. */
+		FString DescribePath(const FWidgetPath& Path) const
+		{
+			TArray<FString> Parts;
+			const int32 First = FMath::Max(0, Path.Widgets.Num() - 10);
+			for (int32 Index = First; Index < Path.Widgets.Num(); ++Index)
+			{
+				const FArrangedWidget& Arranged = Path.Widgets[Index];
+				const FVector2D Position(Arranged.Geometry.GetAbsolutePosition());
+				const FVector2D Size(Arranged.Geometry.GetAbsoluteSize());
+				Parts.Add(FString::Printf(TEXT("%s [%.0f,%.0f %.0fx%.0f]"), *Arranged.Widget->GetTypeAsString(), Position.X, Position.Y, Size.X, Size.Y));
+			}
+			const FVector2D DesignerPosition(Designer.GetAbsolutePosition());
+			const FVector2D DesignerSize(Designer.GetAbsoluteSize());
+			return FString::Printf(TEXT("Under the mouse: %s. Paths drawn over [%.0f,%.0f %.0fx%.0f]."),
+				*FString::Join(Parts, TEXT(" > ")), DesignerPosition.X, DesignerPosition.Y, DesignerSize.X, DesignerSize.Y);
+		}
+
+		/** The cursor over diamond Marker (or its Handle): grab for what drags, a hand for what only picks. */
+		EMouseCursor::Type GetCursorFor(int32 Marker, int32 Handle) const
+		{
+			if (bPressDragging)
+			{
+				return EMouseCursor::GrabHandClosed;
+			}
+			const FMarker* Found = GetMarker(Marker);
+			return Handle != INDEX_NONE || (Found && Found->bDraggable) ? EMouseCursor::GrabHand : EMouseCursor::Hand;
+		}
+
+		/** Has the designer painted again - the hovered or pressed diamond's look, or a drag's path, changed. */
+		void RequestRepaint() const
+		{
+			if (const TSharedPtr<SWidget> OwnDesigner = DesignerWidget.Pin())
+			{
+				OwnDesigner->Invalidate(EInvalidateWidgetReason::Paint);
+			}
+		}
+
+		/** The diamond or handle drawn at Screen this frame: its marker, and its handle (0 in, 1 out) or INDEX_NONE for the diamond. */
+		bool HitTest(const FVector2D& Screen, int32& OutMarker, int32& OutHandle) const
+		{
+			const FVector2f Local = FVector2f(FVector2D(Designer.AbsoluteToLocal(Screen)));
+			// Handles first - they sit over the diamonds - then the diamonds drawn last, which are on top.
+			for (int32 Index = Markers.Num() - 1; Index >= 0; --Index)
+			{
+				const FMarker& Marker = Markers[Index];
+				if (!Marker.bShown || !Marker.bShowHandles)
+				{
+					continue;
+				}
+				for (int32 Handle = 0; Handle < 2; ++Handle)
+				{
+					const FVector2f Center = Handle == 0 ? Marker.HandleInCanvas : Marker.HandleOutCanvas;
+					if (IsInDesigner(Center) && FVector2f::Distance(Center, Local) <= Palette::HandleHitSize * 0.5f)
+					{
+						OutMarker = Index;
+						OutHandle = Handle;
+						return true;
+					}
+				}
+			}
+			for (int32 Index = Markers.Num() - 1; Index >= 0; --Index)
+			{
+				const FMarker& Marker = Markers[Index];
+				const float Half = Palette::KeyHitSize * 0.5f;
+				if (Marker.bShown && FMath::Abs(Marker.Canvas.X - Local.X) <= Half && FMath::Abs(Marker.Canvas.Y - Local.Y) <= Half)
+				{
+					OutMarker = Index;
+					OutHandle = INDEX_NONE;
+					return true;
+				}
+			}
+			return false;
+		}
+
+		/** For WidgetAnim.LogMotionPaths: where Screen is on the designer, and the nearest diamond drawn. */
+		void DescribeNearest(const FVector2D& Screen, FString& OutText) const
+		{
+			const FVector2f Local = FVector2f(FVector2D(Designer.AbsoluteToLocal(Screen)));
+			int32 NearestIndex = INDEX_NONE;
+			float NearestDistance = TNumericLimits<float>::Max();
+			int32 NumShown = 0;
+			for (int32 Index = 0; Index < Markers.Num(); ++Index)
+			{
+				if (!Markers[Index].bShown)
+				{
+					continue;
+				}
+				++NumShown;
+				const float Distance = FVector2f::Distance(Markers[Index].Canvas, Local);
+				if (Distance < NearestDistance)
+				{
+					NearestDistance = Distance;
+					NearestIndex = Index;
+				}
+			}
+			OutText = NearestIndex == INDEX_NONE
+				? FString::Printf(TEXT("Pressed at (%.0f, %.0f) on the designer; no diamond drawn (%d markers)."), Local.X, Local.Y, Markers.Num())
+				: FString::Printf(TEXT("Pressed at (%.0f, %.0f) on the designer; nearest of %d diamonds at (%.0f, %.0f), %.1f away (hit within %.1f)."),
+					Local.X, Local.Y, NumShown, Markers[NearestIndex].Canvas.X, Markers[NearestIndex].Canvas.Y, NearestDistance, Palette::KeyHitSize * 0.5f);
+		}
+
+		void SetHover(int32 Marker, int32 Handle)
+		{
+			if (HoveredMarker != Marker || HoveredHandle != Handle)
+			{
+				HoveredMarker = Marker;
+				HoveredHandle = Handle;
+				RequestRepaint();
+			}
+		}
+
+		/** A left press on what HitTest found, held until released: a click, or once past the threshold a drag. */
+		void Press(int32 Marker, int32 Handle, const FVector2D& Screen, bool bAlt)
+		{
+			PressedMarker = Marker;
+			PressedHandle = Handle;
+			PressScreen = Screen;
+			bPressAlt = bAlt;
+			bPressDragging = false;
+			RequestRepaint();
+		}
+
+		bool IsPressed() const { return PressedMarker != INDEX_NONE; }
+
+		/** The mouse moved while pressed: past the threshold the drag starts - moving the key, or its handle - and follows it. */
+		void PressMove(const FVector2D& Screen, const FModifierKeysState& Modifiers)
+		{
+			if (!IsPressed())
+			{
+				return;
+			}
+			if (!bPressDragging)
+			{
+				// Measured on the designer, so the threshold is the same at any DPI.
+				const FVector2D Moved = FVector2D(Designer.AbsoluteToLocal(Screen)) - FVector2D(Designer.AbsoluteToLocal(PressScreen));
+				if (Moved.Size() < DragThreshold)
+				{
+					return;
+				}
+				if (PressedHandle == INDEX_NONE)
+				{
+					// Ctrl picks: a drag only starts from a plain press, or Alt to pull the key's handles out.
+					if (Modifiers.IsControlDown() || Modifiers.IsCommandDown() || !BeginKeyDrag(PressedMarker, bPressAlt))
+					{
+						return;
+					}
+				}
+				else if (!BeginHandleDrag(PressedMarker, PressedHandle == 1))
+				{
+					return;
+				}
+				bPressDragging = true;
+			}
+			const bool bHandle = PressedHandle != INDEX_NONE;
+			UpdateDrag(Screen - PressScreen, !bHandle && Modifiers.IsShiftDown(), bHandle && Modifiers.IsAltDown());
+			RequestRepaint();
+		}
+
+		/** The press let go: a click on a diamond picks its key; a drag ends. bCancelled: let go elsewhere - no click. */
+		void Release(const FModifierKeysState& Modifiers, bool bCancelled)
+		{
+			const int32 Marker = PressedMarker;
+			const int32 Handle = PressedHandle;
+			const bool bWasDragging = bPressDragging;
+			PressedMarker = INDEX_NONE;
+			PressedHandle = INDEX_NONE;
+			bPressDragging = false;
+			if (bWasDragging)
+			{
+				EndDrag();
+			}
+			else if (!bCancelled && Handle == INDEX_NONE && Marker != INDEX_NONE)
+			{
+				ClickMarker(Marker, Modifiers);
+			}
+			RequestRepaint();
+		}
+
+		/** Right-click on a diamond: how the path runs through it, and its track's easing - a menu over the designer (OwnerPath). */
+		void OpenMarkerMenu(int32 Index, const FVector2D& ScreenPosition, const FWidgetPath& OwnerPath);
+
+		// ---------------------------------------------------------------------------------------------
+		// Keys and drags
 		// ---------------------------------------------------------------------------------------------
 
 		const FMarker* GetMarker(int32 Index) const { return Markers.IsValidIndex(Index) ? &Markers[Index] : nullptr; }
-
-		/**
-		 * Where the key panel's child ChildIndex goes, on this layer, as it is laid out - for each marker its in handle, its out
-		 * handle, then its diamond. False: not laid out this frame.
-		 */
-		bool GetKeyWidgetPlace(int32 ChildIndex, FVector2f& OutCenter, FVector2f& OutSize) const
-		{
-			if (bOverDesigner && !bDesignerShown)
-			{
-				return false;
-			}
-			const FMarker* Marker = GetMarker(ChildIndex / 3);
-			if (!Marker || !Marker->bShown)
-			{
-				return false;
-			}
-			switch (ChildIndex % 3)
-			{
-			case 0:
-			case 1:
-				if (!Marker->bShowHandles)
-				{
-					return false;
-				}
-				OutCenter = ChildIndex % 3 == 0 ? Marker->HandleInCanvas : Marker->HandleOutCanvas;
-				OutSize = FVector2f(Palette::HandleHitSize, Palette::HandleHitSize);
-				return !bOverDesigner || IsInDesigner(OutCenter);
-			default:
-				OutCenter = Marker->Canvas;
-				OutSize = FVector2f(Palette::KeyHitSize, Palette::KeyHitSize);
-				return true;
-			}
-		}
-
-		/** Whether a point on this layer is over the designer it is laid over. */
-		bool IsInDesigner(const FVector2f& Point) const
-		{
-			return Point.X >= DesignerMin.X && Point.Y >= DesignerMin.Y && Point.X <= DesignerMax.X && Point.Y <= DesignerMax.Y;
-		}
-
-		/** Whether this layer is laid over a whole designer - not handed to it for a selection. */
-		bool IsOverDesigner() const { return bOverDesigner; }
-
-		/** The Widget Blueprint whose designer this layer is laid over, or whose widget is selected. */
-		UWidgetBlueprint* GetLayerBlueprint() const { return GetBlueprint(); }
 
 		bool IsMarkerSelected(const FMarker& Marker) const
 		{
@@ -678,22 +661,10 @@ namespace WidgetAnimMotionPathImpl
 		bool IsMarkerHot(int32 Index) const
 		{
 			const FMarker* Marker = GetMarker(Index);
-			return Marker && (HoveredMarker == Index || IsMarkerDragged(*Marker));
+			return Marker && ((HoveredMarker == Index && HoveredHandle == INDEX_NONE) || IsMarkerDragged(*Marker));
 		}
 
 		bool IsMarkerDragged(const FMarker& Marker) const { return bDragActive && Marker.Layer == DragLayer && Marker.Key == DragKey && !Marker.bEdge; }
-
-		void SetHovered(int32 Index, bool bHovered)
-		{
-			if (bHovered)
-			{
-				HoveredMarker = Index;
-			}
-			else if (HoveredMarker == Index)
-			{
-				HoveredMarker = INDEX_NONE;
-			}
-		}
 
 		/** A click on a diamond with no drag: its key picked - Ctrl toggles it among the picked keys, Shift adds it. */
 		void ClickMarker(int32 Index, const FModifierKeysState& Modifiers)
@@ -723,9 +694,6 @@ namespace WidgetAnimMotionPathImpl
 				Panel->SelectKey(Marker->Layer, Marker->Key);
 			}
 		}
-
-		/** Right-click on a diamond: how the path runs through it, and its track's easing. */
-		void OpenMarkerMenu(int32 Index, const FVector2D& ScreenPosition);
 
 		/**
 		 * A press on a diamond moved past the threshold: a draggable key's drag starts - moving it, or with bHandles pulling its
@@ -848,15 +816,48 @@ namespace WidgetAnimMotionPathImpl
 		bool IsDragging() const { return bDragActive; }
 
 	private:
-		/** The selection's Widget Blueprint, or the one this layer was laid over. */
-		UWidgetBlueprint* GetBlueprint() const
+		UWidgetBlueprint* GetBlueprint() const { return BlueprintWeak.Get(); }
+
+		/**
+		 * The designer widget this layer draws over: up the parents of its Widget Blueprint's designer preview to the
+		 * SDesignerView. Looked for again only while it isn't known (once a second at most - finding the preview walks every
+		 * User Widget); the designer outlives its preview, which is remade on every compile.
+		 */
+		void FindDesignerWidget()
 		{
-			if (UWidgetBlueprint* Blueprint = BlueprintWeak.Get())
+			if (DesignerWidget.IsValid())
 			{
-				return Blueprint;
+				return;
 			}
-			const UWidget* Template = Reference.GetTemplate();
-			return Template ? Template->GetTypedOuter<UWidgetBlueprint>() : nullptr;
+			const double Now = FPlatformTime::Seconds();
+			if (Now < NextDesignerSearch)
+			{
+				return;
+			}
+			NextDesignerSearch = Now + 1.0;
+
+			// Up the preview's parents to the one exactly where the paths are drawn - the widget the designer painted them with.
+			// Matched by place, not by type: the designer's own widget isn't always the one it hands its geometry from.
+			UUserWidget* Preview = FindWidgetAnimDesignerPreview(GetBlueprint());
+			TSharedPtr<SWidget> Walk = Preview ? Preview->GetCachedWidget() : nullptr;
+			while (Walk.IsValid() && !IsDesignerRect(Walk->GetTickSpaceGeometry()))
+			{
+				Walk = Walk->GetParentWidget();
+			}
+			DesignerWidget = Walk;
+			if (LogLevel() >= 1 && (Walk.IsValid() || !bReportedDesignerSearch))
+			{
+				bReportedDesignerSearch = true;
+				UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path layer: %s."), Walk.IsValid()
+					? *FString::Printf(TEXT("its designer is %s, found up the preview"), *Walk->GetTypeAsString())
+					: TEXT("its designer isn't found up the preview yet - it is found under the mouse instead, on the first press or hover over it"));
+			}
+		}
+
+		/** Whether a point in the designer's space is inside it. */
+		bool IsInDesigner(const FVector2f& Point) const
+		{
+			return Point.X >= DesignerMin.X && Point.Y >= DesignerMin.Y && Point.X <= DesignerMax.X && Point.Y <= DesignerMax.Y;
 		}
 
 		/** The screen per unit of the dragged key's widget's Translation, read now for the whole drag. */
@@ -871,46 +872,26 @@ namespace WidgetAnimMotionPathImpl
 			return true;
 		}
 
-		/**
-		 * Laid over a designer: whether it was drawn this frame - it is ticked as it is drawn, before this layer, which is
-		 * drawn over the whole window after it - and where it is on this layer. Everything is kept inside it.
-		 */
-		bool ReadDesigner(const FGeometry& AllottedGeometry)
-		{
-			bDesignerShown = false;
-			if (!DesignerFrame.IsValid() || DesignerFrame->FrameNumber + 1 < GFrameCounter)
-			{
-				return false;
-			}
-			const FSlateRenderTransform AbsoluteToCanvas = AllottedGeometry.GetAccumulatedRenderTransform().Inverse();
-			const FSlateRenderTransform DesignerToAbsolute = DesignerFrame->Geometry.GetAccumulatedRenderTransform();
-			const FVector2f DesignerSize = FVector2f(DesignerFrame->Geometry.GetLocalSize());
-			const FVector2f CornerA = AbsoluteToCanvas.TransformPoint(DesignerToAbsolute.TransformPoint(FVector2f::ZeroVector));
-			const FVector2f CornerB = AbsoluteToCanvas.TransformPoint(DesignerToAbsolute.TransformPoint(DesignerSize));
-			DesignerMin = FVector2f(FMath::Min(CornerA.X, CornerB.X), FMath::Min(CornerA.Y, CornerB.Y));
-			DesignerMax = FVector2f(FMath::Max(CornerA.X, CornerB.X), FMath::Max(CornerA.Y, CornerB.Y));
-			bDesignerShown = DesignerMax.X - DesignerMin.X > 1.f && DesignerMax.Y - DesignerMin.Y > 1.f;
-			return bDesignerShown;
-		}
-
-		/** Finds the panel and what it poses, works the paths out again when the animation changed, and maps them onto the canvas. */
+		/** Finds the panel and what it poses, works the paths out again when the animation changed, and maps them onto the designer. */
 		void Update(const FGeometry& AllottedGeometry);
 
 		/** The paths' poses and the keys' places, from the animation as posed: run only when that changed. */
 		void Rebuild(SWidgetAnimTimeline& Panel, const IWidgetAnimPanelSource::FPosedAnimation& Posed, const TArray<UWidget*>& Widgets);
 
-		/** Every path, diamond and handle onto the canvas, through the widgets' layout this frame. */
+		/** Every path, diamond and handle onto the designer, through the widgets' layout this frame. */
 		void MapToCanvas(const FGeometry& AllottedGeometry);
 
-		/** As many diamonds and handles as there are markers - see the function. */
-		void SyncKeyWidgets();
+		/** The paths, diamonds and labels, in the designer's space. */
+		int32 PaintPaths(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
+
+		/** The handles of picked keys, and every key's diamond - in the Track Editor's key colors. */
+		int32 PaintKeys(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
 
 		void Clear()
 		{
 			Paths.Reset();
 			Markers.Reset();
 			BuiltVersion = MAX_uint32;
-			SyncKeyWidgets();
 		}
 
 		/**
@@ -922,18 +903,19 @@ namespace WidgetAnimMotionPathImpl
 		/** Logs what Status and the paths' notes say now - to the Output Log when it changed - and keeps it for drawing. */
 		void ReportStatus();
 
-		FWidgetReference Reference;
 		TWeakObjectPtr<UWidgetBlueprint> BlueprintWeak;
-		bool bOverDesigner = false;
 
-		/** Laid over a designer: where it is and when it was drawn (see ReadDesigner), and its area on this layer this frame. */
-		TSharedPtr<FWidgetAnimMotionPathDesignerFrame> DesignerFrame;
-		bool bDesignerShown = false;
+		/** The designer as it was last painted: its geometry, its window, the frame, and what was selected in it. */
+		FGeometry Designer;
+		uint64 PaintedFrame = 0;
+
+		/** The designer widget itself (its SDesignerView), found up the preview's parents - see FindDesignerWidget. */
+		TWeakPtr<SWidget> DesignerWidget;
+		double NextDesignerSearch = 0.0;
+		bool bReportedDesignerSearch = false;
+		TArray<FWidgetReference> DesignerSelection;
 		FVector2f DesignerMin = FVector2f::ZeroVector;
 		FVector2f DesignerMax = FVector2f::ZeroVector;
-
-		TSharedPtr<SWidgetAnimMotionPathKeyPanel> KeyLayer;
-		int32 NumKeyWidgets = 0;
 
 		TWeakPtr<SWidgetAnimTimeline> PanelWeak;
 
@@ -951,7 +933,15 @@ namespace WidgetAnimMotionPathImpl
 		/** Whether the preview is posed at the playhead - the panel on screen. Off screen it is as authored, and has no "now" to ring. */
 		bool bPreviewPosed = false;
 
+		// The mouse, from FMotionPathInput.
 		int32 HoveredMarker = INDEX_NONE;
+		int32 HoveredHandle = INDEX_NONE;
+		int32 PressedMarker = INDEX_NONE;
+		int32 PressedHandle = INDEX_NONE;
+		FVector2D PressScreen = FVector2D::ZeroVector;
+		bool bPressAlt = false;
+		bool bPressDragging = false;
+
 		bool bDragActive = false;
 		bool bDragHandles = false;
 		bool bDragOutHandle = true;
@@ -968,51 +958,14 @@ namespace WidgetAnimMotionPathImpl
 		FString LoggedStatus;
 		FString LoggedDetail;
 		TArray<FString> StatusLines;
-		bool bTickedOnce = false;
 		FVector2f StatusAnchor = FVector2f::ZeroVector;
 	};
-
-	// =================================================================================================
-	// Laid over each designer
-	// =================================================================================================
-
-	/** The layers laid over whole designers, each kept by its designer's extension - see FWidgetAnimMotionPathExtension::Tick. */
-	TArray<TWeakPtr<SWidgetAnimMotionPathCanvas>>& GetDesignerLayers()
-	{
-		static TArray<TWeakPtr<SWidgetAnimMotionPathCanvas>> Layers;
-		return Layers;
-	}
-
-	/** Whether a layer is laid over Blueprint's whole designer, so the one handed to it for a selection draws nothing. */
-	bool HasDesignerLayer(const UWidgetBlueprint* Blueprint)
-	{
-		return Blueprint && GetDesignerLayers().ContainsByPredicate([Blueprint](const TWeakPtr<SWidgetAnimMotionPathCanvas>& Weak)
-		{
-			const TSharedPtr<SWidgetAnimMotionPathCanvas> Layer = Weak.Pin();
-			return Layer.IsValid() && Layer->GetLayerBlueprint() == Blueprint;
-		});
-	}
-
-	/** The top-level window a widget is in: up its parents, else searched for from every window. */
-	TSharedPtr<SWindow> FindOwningWindow(const TSharedRef<SWidget>& Inside)
-	{
-		TSharedPtr<SWidget> Top = Inside;
-		while (const TSharedPtr<SWidget> Parent = Top->GetParentWidget())
-		{
-			Top = Parent;
-		}
-		if (Top->Advanced_IsWindow())
-		{
-			return StaticCastSharedPtr<SWindow>(Top);
-		}
-		return FSlateApplication::Get().FindWidgetWindow(Inside);
-	}
 
 	// ---------------------------------------------------------------------------------------------
 	// Working the paths out
 	// ---------------------------------------------------------------------------------------------
 
-	void SWidgetAnimMotionPathCanvas::GatherWidgets(SWidgetAnimTimeline& Panel, const IWidgetAnimPanelSource::FPosedAnimation& Posed, TArray<UWidget*>& OutWidgets) const
+	void FMotionPathLayer::GatherWidgets(SWidgetAnimTimeline& Panel, const IWidgetAnimPanelSource::FPosedAnimation& Posed, TArray<UWidget*>& OutWidgets) const
 	{
 		IWidgetAnimPanelSource* PanelSource = Panel.GetSource();
 		UWidget* FallbackWidget = Posed.FallbackWidget;
@@ -1028,26 +981,13 @@ namespace WidgetAnimMotionPathImpl
 			return DesignerWidget;
 		};
 
-		// What is selected in the designer: the selection this layer is anchored to, or - laid over the designer - its editor's.
-		if (bOverDesigner)
+		// What is selected in the designer - its paths through moving parents too. Not needed for anything to show.
+		for (const FWidgetReference& Selected : DesignerSelection)
 		{
-			UWidgetBlueprint* Blueprint = BlueprintWeak.Get();
-			UAssetEditorSubsystem* AssetEditors = GEditor && Blueprint ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr;
-			IAssetEditorInstance* Instance = AssetEditors ? AssetEditors->FindEditorForAsset(Blueprint, /*bFocusIfOpen=*/false) : nullptr;
-			if (Instance && Instance->GetEditorName() == FName(TEXT("WidgetBlueprintEditor")))
+			if (UWidget* OnPreview = OnPanelPreview(Selected.GetPreview(), Selected.GetTemplate()))
 			{
-				for (const FWidgetReference& Selected : static_cast<FWidgetBlueprintEditor*>(Instance)->GetSelectedWidgets())
-				{
-					if (UWidget* OnPreview = OnPanelPreview(Selected.GetPreview(), Selected.GetTemplate()))
-					{
-						OutWidgets.AddUnique(OnPreview);
-					}
-				}
+				OutWidgets.AddUnique(OnPreview);
 			}
-		}
-		else if (UWidget* OnPreview = OnPanelPreview(Reference.GetPreview(), Reference.GetTemplate()))
-		{
-			OutWidgets.AddUnique(OnPreview);
 		}
 
 		// The tracks picked in the panel - or whose keys are.
@@ -1090,23 +1030,10 @@ namespace WidgetAnimMotionPathImpl
 		}
 	}
 
-	void SWidgetAnimMotionPathCanvas::Update(const FGeometry& AllottedGeometry)
+	void FMotionPathLayer::Update(const FGeometry& AllottedGeometry)
 	{
 		const UWidgetAnimEditorSettings& Settings = UWidgetAnimEditorSettings::Get();
 		const UWidgetBlueprint* Blueprint = GetBlueprint();
-
-		// Anchored to a selection only where no layer could be laid over the designer itself.
-		if (!bOverDesigner && HasDesignerLayer(Blueprint))
-		{
-			EndDrag();
-			if (Paths.Num() > 0 || Markers.Num() > 0)
-			{
-				Clear();
-			}
-			PanelWeak.Reset();
-			Status = TEXT("Drawn by the layer over the whole designer.");
-			return;
-		}
 
 		const TSharedPtr<SWidgetAnimTimeline> Panel = Settings.bShowMotionPaths && Blueprint ? WidgetAnimScripting::FindLastUsedPanelForBlueprint(Blueprint) : nullptr;
 		IWidgetAnimPanelSource* PanelSource = Panel.IsValid() ? Panel->GetSource() : nullptr;
@@ -1138,6 +1065,7 @@ namespace WidgetAnimMotionPathImpl
 				Clear();
 			}
 			PanelWeak.Reset();
+			StatusAnchor = DesignerMin + FVector2f(12.f, 40.f);
 			return;
 		}
 		if (PanelWeak.Pin() != Panel)
@@ -1174,24 +1102,12 @@ namespace WidgetAnimMotionPathImpl
 		bPreviewPosed = Posed.bPosed;
 		PlayheadTime = FMath::Clamp(PanelSource->GetPlayheadAlpha(), 0.f, 1.f) * PassTime;
 		MapToCanvas(AllottedGeometry);
-		SyncKeyWidgets();
 
-		// Where the status is written: under the designer's toolbar, or the selected widget's top left corner.
+		// Where the status is written: under the designer's toolbar.
 		StatusAnchor = DesignerMin + FVector2f(12.f, 40.f);
-		if (!bOverDesigner)
-		{
-			StatusAnchor = FVector2f(OverlayMargin, OverlayMargin);
-			const UWidget* Selected = Reference.GetPreview();
-			const TSharedPtr<SWidget> SelectedSlate = Selected ? Selected->GetCachedWidget() : nullptr;
-			if (SelectedSlate.IsValid())
-			{
-				const FVector2D SelectedTopLeft = SelectedSlate->GetTickSpaceGeometry().GetAbsolutePosition();
-				StatusAnchor = AllottedGeometry.GetAccumulatedRenderTransform().Inverse().TransformPoint(FVector2f(SelectedTopLeft));
-			}
-		}
 	}
 
-	void SWidgetAnimMotionPathCanvas::Rebuild(SWidgetAnimTimeline& Panel, const IWidgetAnimPanelSource::FPosedAnimation& Posed, const TArray<UWidget*>& Widgets)
+	void FMotionPathLayer::Rebuild(SWidgetAnimTimeline& Panel, const IWidgetAnimPanelSource::FPosedAnimation& Posed, const TArray<UWidget*>& Widgets)
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimMotionPathRebuild);
 
@@ -1235,6 +1151,12 @@ namespace WidgetAnimMotionPathImpl
 		const float PanelPass = Panel.GetPassSeconds();
 		const bool bInvert = PanelSource && PanelSource->GetInvert();
 
+		// What each chain widget is at rest: the baselines the preview poses over, and - for a widget of the chain that no layer
+		// moves - the widget as authored in the Widget Blueprint. Never the preview's render transform as it stands, which
+		// whatever is playing on the preview changes: a path read from it would shift as the animation plays.
+		const UWidgetBlueprint* AuthoredBlueprint = PanelSource && PanelSource->GetWidgetBlueprint() ? PanelSource->GetWidgetBlueprint() : GetBlueprint();
+		FWidgetAnimBaselineSet ChainBaselines;
+
 		FWidgetAnimResult Result;
 		auto PoseChainAt = [&](const TArray<FWidgetAnimSettings>& LayersToPose, const TArray<TWeakObjectPtr<UWidget>>& PosedChain, float StackTime, TArray<FWidgetTransform>& OutPoses)
 		{
@@ -1242,7 +1164,7 @@ namespace WidgetAnimMotionPathImpl
 			UWidgetAnimLibrary::EvaluateExpandedStackAtTime(LayersToPose, FMath::Min(StackTime, PassTime), /*bAtEnd=*/StackTime >= PassTime, Posed.bIsOutAnimation, Baselines, Result);
 			for (const TWeakObjectPtr<UWidget>& Link : PosedChain)
 			{
-				OutPoses.Add(UWidgetAnimLibrary::GetResultPose(Result, Link.Get(), FallbackWidget, Baselines));
+				OutPoses.Add(UWidgetAnimLibrary::GetResultPose(Result, Link.Get(), FallbackWidget, ChainBaselines));
 			}
 		};
 
@@ -1267,6 +1189,7 @@ namespace WidgetAnimMotionPathImpl
 
 			// Only the layers that move one of them - what the rest do doesn't move this widget - and the highest one they move.
 			TArray<FWidgetAnimSettings> Filtered;
+			TSet<const UWidget*> Targeted;
 			int32 Highest = INDEX_NONE;
 			for (const FWidgetAnimSettings& Layer : Stack)
 			{
@@ -1275,6 +1198,7 @@ namespace WidgetAnimMotionPathImpl
 				if (Level != INDEX_NONE)
 				{
 					Filtered.Add(Layer);
+					Targeted.Add(Target);
 					Highest = FMath::Max(Highest, Level);
 				}
 			}
@@ -1291,6 +1215,34 @@ namespace WidgetAnimMotionPathImpl
 				Path.Chain.Add(FullChain[Level]);
 			}
 			Path.DotEvery = DotEvery;
+
+			// The chain's rest poses: the preview's baselines as they are (so a moved widget composes exactly as the preview
+			// poses it), and the authored pose for each widget of the chain that no layer moves and that has none.
+			ChainBaselines.Baselines.Reset();
+			if (Baselines.bCaptured)
+			{
+				ChainBaselines.Baselines = Baselines.Baselines;
+			}
+			ChainBaselines.bCaptured = true;
+			ChainBaselines.bComposeTransforms = Baselines.bCaptured && Baselines.bComposeTransforms;
+			for (const TWeakObjectPtr<UWidget>& Link : Path.Chain)
+			{
+				const UWidget* Linked = Link.Get();
+				const bool bHasBaseline = ChainBaselines.Baselines.ContainsByPredicate([Linked](const FWidgetAnimBaseline& Candidate) { return Candidate.Widget.Get() == Linked; });
+				if (!Linked || bHasBaseline || Targeted.Contains(Linked))
+				{
+					continue;
+				}
+				float AuthoredOpacity = 1.f;
+				const FWidgetTransform Authored = GetWidgetAnimAuthoredTransform(Linked, AuthoredBlueprint, &AuthoredOpacity);
+				FWidgetAnimBaseline& Rest = ChainBaselines.Baselines.AddDefaulted_GetRef();
+				Rest.Widget = const_cast<UWidget*>(Linked);
+				Rest.Opacity = AuthoredOpacity;
+				Rest.Scale = Authored.Scale;
+				Rest.Translation = Authored.Translation;
+				Rest.Shear = Authored.Shear;
+				Rest.Angle = Authored.Angle;
+			}
 
 			// The samples: every Step through the pass, and its very end.
 			const int32 Count = FMath::FloorToInt(PassTime / Step) + 1;
@@ -1395,7 +1347,7 @@ namespace WidgetAnimMotionPathImpl
 		}
 	}
 
-	void SWidgetAnimMotionPathCanvas::MapToCanvas(const FGeometry& AllottedGeometry)
+	void FMotionPathLayer::MapToCanvas(const FGeometry& AllottedGeometry)
 	{
 		const FSlateRenderTransform AbsoluteToCanvas = AllottedGeometry.GetAccumulatedRenderTransform().Inverse();
 
@@ -1468,7 +1420,7 @@ namespace WidgetAnimMotionPathImpl
 			}
 			Marker.Absolute = MapChain(Path.Mapping, Marker.Poses.GetData());
 			Marker.Canvas = AbsoluteToCanvas.TransformPoint(Marker.Absolute);
-			Marker.bShown = !bOverDesigner || IsInDesigner(Marker.Canvas);
+			Marker.bShown = IsInDesigner(Marker.Canvas);
 			if (!Marker.bShown)
 			{
 				continue;
@@ -1498,61 +1450,7 @@ namespace WidgetAnimMotionPathImpl
 		}
 	}
 
-	void SWidgetAnimMotionPathCanvas::SyncKeyWidgets()
-	{
-		if (!KeyLayer.IsValid())
-		{
-			return;
-		}
-
-		// One diamond and two handles per marker, placed by the panel as it lays them out (see GetKeyWidgetPlace). Fewer
-		// markers: the spare ones aren't laid out, and are only taken away while none is held - the one being dragged holds
-		// the mouse, and taking it away would end the drag.
-		if (NumKeyWidgets > Markers.Num() && !IsDragging())
-		{
-			KeyLayer->ClearKeyWidgets();
-			NumKeyWidgets = 0;
-		}
-
-		const TWeakPtr<SWidgetAnimMotionPathCanvas> WeakCanvas = StaticCastSharedRef<SWidgetAnimMotionPathCanvas>(AsShared());
-		for (int32 Index = NumKeyWidgets; Index < Markers.Num(); ++Index)
-		{
-			for (const bool bOut : { false, true })
-			{
-				KeyLayer->AddKeyWidget(
-					SNew(SWidgetAnimMotionPathHandle)
-					.Canvas(WeakCanvas)
-					.Index(Index)
-					.Out(bOut));
-			}
-			KeyLayer->AddKeyWidget(
-				SNew(SWidgetAnimMotionPathKey)
-				.Canvas(WeakCanvas)
-				.Index(Index));
-		}
-		NumKeyWidgets = FMath::Max(NumKeyWidgets, Markers.Num());
-	}
-
-	void SWidgetAnimMotionPathKeyPanel::OnArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const
-	{
-		const TSharedPtr<SWidgetAnimMotionPathCanvas> Canvas = OwnerCanvas.Pin();
-		if (!Canvas.IsValid())
-		{
-			return;
-		}
-		for (int32 ChildIndex = 0; ChildIndex < KeyWidgets.Num(); ++ChildIndex)
-		{
-			const TSharedRef<SWidget>& KeyWidget = KeyWidgets[ChildIndex];
-			FVector2f Center, PlaceSize;
-			if (!ArrangedChildren.Accepts(KeyWidget->GetVisibility()) || !Canvas->GetKeyWidgetPlace(ChildIndex, Center, PlaceSize))
-			{
-				continue;
-			}
-			ArrangedChildren.AddWidget(AllottedGeometry.MakeChild(KeyWidget, PlaceSize, FSlateLayoutTransform(Center - PlaceSize * 0.5f)));
-		}
-	}
-
-	void SWidgetAnimMotionPathCanvas::OpenMarkerMenu(int32 Index, const FVector2D& ScreenPosition)
+	void FMotionPathLayer::OpenMarkerMenu(int32 Index, const FVector2D& ScreenPosition, const FWidgetPath& OwnerPath)
 	{
 		const TSharedPtr<SWidgetAnimTimeline> Panel = PanelWeak.Pin();
 		const FMarker* Marker = GetMarker(Index);
@@ -1654,14 +1552,19 @@ namespace WidgetAnimMotionPathImpl
 			NAME_None, EUserInterfaceActionType::RadioButton);
 		Menu.EndSection();
 
-		FSlateApplication::Get().PushMenu(AsShared(), FWidgetPath(), Menu.MakeWidget(), ScreenPosition, FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
+		// Over the designer the diamond was clicked in: the menu belongs to its window.
+		if (!OwnerPath.IsValid())
+		{
+			return;
+		}
+		FSlateApplication::Get().PushMenu(OwnerPath.GetLastWidget(), OwnerPath, Menu.MakeWidget(), ScreenPosition, FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
 	}
 
 	// ---------------------------------------------------------------------------------------------
 	// WidgetAnim.LogMotionPaths
 	// ---------------------------------------------------------------------------------------------
 
-	void SWidgetAnimMotionPathCanvas::ReportStatus()
+	void FMotionPathLayer::ReportStatus()
 	{
 		const int32 Level = LogLevel();
 		StatusLines.Reset();
@@ -1721,29 +1624,32 @@ namespace WidgetAnimMotionPathImpl
 	// Drawing
 	// ---------------------------------------------------------------------------------------------
 
-	int32 SWidgetAnimMotionPathCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
-		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
+	void FMotionPathLayer::Paint(const TSet<FWidgetReference>& Selection, const FGeometry& DesignerGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId)
 	{
-		// Laid over a designer: nothing on a frame it isn't drawn, and nothing outside it - the rest of its window is other tabs.
-		if (bOverDesigner)
+		// The designer as it is painted now, after its preview: its own local space is the canvas. DesignerGeometry is in its
+		// window's space - Slate paints each window from its own top left - while the mouse and the widgets' tick geometry, which
+		// the paths are worked out from, are in desktop space: the two differ by where the window is on the desktop. Drawn
+		// through DesignerGeometry; mapped and hit-tested through Designer, the same geometry moved onto the desktop.
+		Designer = DesignerGeometry;
+		if (const SWindow* Window = OutDrawElements.GetPaintWindow())
 		{
-			if (!bDesignerShown || DesignerFrame->FrameNumber + 1 < GFrameCounter)
-			{
-				return LayerId;
-			}
-			const FSlateRenderTransform CanvasToWindow = AllottedGeometry.GetAccumulatedRenderTransform();
-			const FVector2f WindowMin = CanvasToWindow.TransformPoint(DesignerMin);
-			const FVector2f WindowMax = CanvasToWindow.TransformPoint(DesignerMax);
-			OutDrawElements.PushClip(FSlateClippingZone(FSlateRect(WindowMin.X, WindowMin.Y, WindowMax.X, WindowMax.Y)));
-			const int32 Painted = PaintPaths(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
-			OutDrawElements.PopClip();
-			return Painted;
+			Designer.AppendTransform(FSlateLayoutTransform(FVector2f(FVector2D(Window->GetPositionInScreen()))));
 		}
-		return PaintPaths(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+		PaintedFrame = GFrameCounter;
+		FindDesignerWidget();
+		DesignerMin = FVector2f::ZeroVector;
+		DesignerMax = FVector2f(DesignerGeometry.GetLocalSize());
+		DesignerSelection = Selection.Array();
+
+		Update(Designer);
+		ReportStatus();
+
+		OutDrawElements.PushClip(FSlateClippingZone(DesignerGeometry));
+		PaintPaths(DesignerGeometry, OutDrawElements, LayerId);
+		OutDrawElements.PopClip();
 	}
 
-	int32 SWidgetAnimMotionPathCanvas::PaintPaths(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
-		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
+	int32 FMotionPathLayer::PaintPaths(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const
 	{
 		const UWidgetAnimEditorSettings& Settings = UWidgetAnimEditorSettings::Get();
 		const bool bAround = Settings.MotionPathRange == EWidgetAnimMotionPathRange::AroundPlayhead;
@@ -1895,8 +1801,8 @@ namespace WidgetAnimMotionPathImpl
 			}
 		}
 
-		// The diamonds and handles - child widgets, so they take the mouse - over the line.
-		const int32 MaxLayer = SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId + 7, InWidgetStyle, bParentEnabled);
+		// The diamonds and handles over the line - FMotionPathInput takes the mouse for them.
+		const int32 MaxLayer = PaintKeys(AllottedGeometry, OutDrawElements, LayerId + 7);
 
 		const FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 8);
 		const TSharedRef<FSlateFontMeasure> Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
@@ -1978,43 +1884,18 @@ namespace WidgetAnimMotionPathImpl
 	}
 
 	// ---------------------------------------------------------------------------------------------
-	// The diamonds
+	// The diamonds and handles
 	// ---------------------------------------------------------------------------------------------
 
-	int32 SWidgetAnimMotionPathKey::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
-		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
+	int32 FMotionPathLayer::PaintKeys(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const
 	{
-		const TSharedPtr<SWidgetAnimMotionPathCanvas> Pinned = OwnerCanvas.Pin();
-		const FMarker* Marker = Pinned.IsValid() ? Pinned->GetMarker(MarkerIndex) : nullptr;
-		if (!Marker || !Marker->bShown)
+		auto Grip = [&](const FVector2f& Center, float Diameter, const FLinearColor& GripColor, int32 Layer)
 		{
-			return LayerId;
-		}
-
-		// The Track Editor's keys exactly: its colors, and its glow on a picked key.
-		const bool bSelected = Pinned->IsMarkerSelected(*Marker);
-		const bool bHovered = Pinned->IsMarkerHot(MarkerIndex);
-		FLinearColor Fill = Marker->bEditable ? KeyPalette::Key : KeyPalette::KeyReadOnly;
-		float Scale = 1.f;
-		if (bSelected)
-		{
-			Fill = KeyPalette::KeySelected;
-		}
-		if (bHovered)
-		{
-			Fill = bSelected ? KeyPalette::KeySelected * 1.2f : (Marker->bEditable ? KeyPalette::KeyHovered : KeyPalette::Key);
-			Scale = 1.15f;
-		}
-		if (bPressed)
-		{
-			Fill = (bSelected ? KeyPalette::KeySelected : KeyPalette::Key) * 0.7f;
-			Scale = 0.95f;
-		}
-		Fill.A = 1.f;
-
-		const FVector2D BoxSize = AllottedGeometry.GetLocalSize();
-		const FVector2f Center = FVector2f(BoxSize) * 0.5f;
-		auto Diamond = [&](float DiamondSize, const FLinearColor& DiamondColor, int32 Layer)
+			FSlateDrawElement::MakeBox(OutDrawElements, Layer,
+				AllottedGeometry.ToPaintGeometry(FVector2f(Diameter, Diameter), FSlateLayoutTransform(Center - FVector2f(Diameter, Diameter) * 0.5f)),
+				CircleBrush(), ESlateDrawEffect::None, GripColor);
+		};
+		auto Diamond = [&](const FVector2f& Center, float DiamondSize, const FLinearColor& DiamondColor, int32 Layer)
 		{
 			const float Half = DiamondSize * 0.5f;
 			FSlateDrawElement::MakeBox(
@@ -2030,238 +1911,305 @@ namespace WidgetAnimMotionPathImpl
 				DiamondColor);
 		};
 
-		// A track's start or end is a little smaller than a key.
-		const float KeySize = Palette::KeySize * (Marker->bEdge ? 0.8f : 1.f) * Scale;
-		if (bSelected)
+		for (int32 Index = 0; Index < Markers.Num(); ++Index)
 		{
-			Diamond(KeySize + 5.f, KeyPalette::KeySelectedGlow, LayerId);
+			const FMarker& Marker = Markers[Index];
+			if (!Marker.bShown)
+			{
+				continue;
+			}
+
+			// A picked key's handles, under the diamonds.
+			if (Marker.bShowHandles)
+			{
+				for (int32 Handle = 0; Handle < 2; ++Handle)
+				{
+					const FVector2f Center = Handle == 0 ? Marker.HandleInCanvas : Marker.HandleOutCanvas;
+					if (!IsInDesigner(Center))
+					{
+						continue;
+					}
+					const bool bHot = (HoveredMarker == Index && HoveredHandle == Handle) || (PressedMarker == Index && PressedHandle == Handle);
+					const float GripSize = Palette::HandleSize * (bHot ? 1.25f : 1.f);
+					Grip(Center, GripSize + 2.f, Palette::HandleOutline, LayerId);
+					Grip(Center, GripSize, Palette::HandleFill, LayerId + 1);
+				}
+			}
+
+			// The Track Editor's keys exactly: its colors, and its glow on a picked key.
+			const bool bSelected = IsMarkerSelected(Marker);
+			const bool bHovered = IsMarkerHot(Index);
+			const bool bPressed = PressedMarker == Index && PressedHandle == INDEX_NONE;
+			FLinearColor Fill = Marker.bEditable ? KeyPalette::Key : KeyPalette::KeyReadOnly;
+			float Scale = 1.f;
+			if (bSelected)
+			{
+				Fill = KeyPalette::KeySelected;
+			}
+			if (bHovered)
+			{
+				Fill = bSelected ? KeyPalette::KeySelected * 1.2f : (Marker.bEditable ? KeyPalette::KeyHovered : KeyPalette::Key);
+				Scale = 1.15f;
+			}
+			if (bPressed)
+			{
+				Fill = (bSelected ? KeyPalette::KeySelected : KeyPalette::Key) * 0.7f;
+				Scale = 0.95f;
+			}
+			Fill.A = 1.f;
+
+			// A track's start or end is a little smaller than a key.
+			const float KeySize = Palette::KeySize * (Marker.bEdge ? 0.8f : 1.f) * Scale;
+			if (bSelected)
+			{
+				Diamond(Marker.Canvas, KeySize + 5.f, KeyPalette::KeySelectedGlow, LayerId + 2);
+			}
+			Diamond(Marker.Canvas, KeySize + 2.f, KeyPalette::KeyOutline, LayerId + 3);
+			Diamond(Marker.Canvas, KeySize, Fill, LayerId + 4);
 		}
-		Diamond(KeySize + 2.f, KeyPalette::KeyOutline, LayerId + 1);
-		Diamond(KeySize, Fill, LayerId + 2);
-		return LayerId + 2;
+		return LayerId + 4;
 	}
 
-	FReply SWidgetAnimMotionPathKey::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+	// =================================================================================================
+	// The mouse, for the diamonds and handles
+	// =================================================================================================
+
+	/**
+	 * Sees the mouse before any widget does. A press on a diamond or handle a layer drew this frame - where its designer itself is
+	 * under the mouse, not a menu or drawer over it - is the layer's: it is consumed, so the designer neither selects nor marquees,
+	 * and the moves and the release that follow are the layer's too until the button is let go. Everything else passes through
+	 * untouched; moving over the designer only lights up the diamond or handle under the mouse.
+	 */
+	class FMotionPathInput : public IInputProcessor
 	{
-		if (!OwnerCanvas.IsValid())
+	public:
+		virtual void Tick(const float DeltaTime, FSlateApplication& SlateApp, TSharedRef<ICursor> Cursor) override
 		{
-			return FReply::Unhandled();
-		}
-		if (MouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
-		{
-			return FReply::Handled();
-		}
-		if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
-		{
-			return FReply::Unhandled();
-		}
-		bPressed = true;
-		bDragging = false;
-		bPullingHandles = MouseEvent.IsAltDown();
-		PressScreen = MouseEvent.GetScreenSpacePosition();
-		return FReply::Handled().CaptureMouse(SharedThis(this));
-	}
-
-	FReply SWidgetAnimMotionPathKey::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
-	{
-		const TSharedPtr<SWidgetAnimMotionPathCanvas> Pinned = OwnerCanvas.Pin();
-		if (!bPressed || !HasMouseCapture() || !Pinned.IsValid())
-		{
-			return FReply::Unhandled();
-		}
-
-		const FVector2D MouseScreen = MouseEvent.GetScreenSpacePosition();
-		const FVector2D ScreenDelta = MouseScreen - PressScreen;
-		if (!bDragging)
-		{
-			// Measured on the canvas, so the threshold is the same at any zoom or DPI.
-			const FVector2D MouseLocal = MyGeometry.AbsoluteToLocal(MouseScreen);
-			const FVector2D PressLocal = MyGeometry.AbsoluteToLocal(PressScreen);
-			if (FVector2D::Distance(MouseLocal, PressLocal) < DragThreshold)
+			// A release that never came here - the window lost focus mid-drag: the drag ends where it is.
+			if (const TSharedPtr<FMotionPathLayer> Layer = Pressed.Pin())
 			{
-				return FReply::Handled();
-			}
-			// Ctrl picks: a drag only starts from a plain press, or Alt to pull the key's handles out.
-			if (MouseEvent.IsControlDown() || MouseEvent.IsCommandDown() || !Pinned->BeginKeyDrag(MarkerIndex, bPullingHandles))
-			{
-				return FReply::Handled();
-			}
-			bDragging = true;
-		}
-		Pinned->UpdateDrag(ScreenDelta, MouseEvent.IsShiftDown(), /*bAlt=*/false);
-		return FReply::Handled();
-	}
-
-	FReply SWidgetAnimMotionPathKey::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
-	{
-		const TSharedPtr<SWidgetAnimMotionPathCanvas> Pinned = OwnerCanvas.Pin();
-		if (MouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
-		{
-			if (Pinned.IsValid() && !bPressed)
-			{
-				Pinned->OpenMarkerMenu(MarkerIndex, MouseEvent.GetScreenSpacePosition());
-			}
-			return FReply::Handled();
-		}
-		if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton || !bPressed)
-		{
-			return FReply::Unhandled();
-		}
-
-		const bool bWasDragging = bDragging;
-		bPressed = false;
-		bDragging = false;
-		if (Pinned.IsValid())
-		{
-			if (bWasDragging)
-			{
-				Pinned->EndDrag();
-			}
-			else
-			{
-				Pinned->ClickMarker(MarkerIndex, MouseEvent.GetModifierKeys());
+				if (!SlateApp.GetPressedMouseButtons().Contains(EKeys::LeftMouseButton))
+				{
+					Layer->Release(SlateApp.GetModifierKeys(), /*bCancelled=*/true);
+					Pressed.Reset();
+				}
 			}
 		}
-		return FReply::Handled().ReleaseMouseCapture();
-	}
 
-	void SWidgetAnimMotionPathKey::OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent)
-	{
-		if (bDragging)
+		virtual bool HandleMouseButtonDownEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
 		{
-			if (const TSharedPtr<SWidgetAnimMotionPathCanvas> Pinned = OwnerCanvas.Pin())
+			const FKey Button = MouseEvent.GetEffectingButton();
+			if (Button != EKeys::LeftMouseButton && Button != EKeys::RightMouseButton)
 			{
-				Pinned->EndDrag();
+				return false;
+			}
+
+			int32 Marker = INDEX_NONE;
+			int32 Handle = INDEX_NONE;
+			const TSharedPtr<FMotionPathLayer> Layer = FindHit(SlateApp, MouseEvent.GetScreenSpacePosition(), Marker, Handle, nullptr, /*bLog=*/true);
+			if (!Layer.IsValid())
+			{
+				return false;
+			}
+
+			if (Button == EKeys::LeftMouseButton)
+			{
+				Layer->Press(Marker, Handle, MouseEvent.GetScreenSpacePosition(), MouseEvent.IsAltDown());
+				Pressed = Layer;
+				LeftMarker = Marker;
+				LeftHandle = Handle;
+				SetCursor(SlateApp, Handle != INDEX_NONE || Layer->GetCursorFor(Marker, Handle) == EMouseCursor::GrabHand ? EMouseCursor::GrabHandClosed : EMouseCursor::Hand);
+				return true;
+			}
+
+			// Right: a diamond's menu, opened as the button comes up.
+			if (Handle != INDEX_NONE)
+			{
+				return false;
+			}
+			RightPressed = Layer;
+			RightMarker = Marker;
+			return true;
+		}
+
+		virtual bool HandleMouseMoveEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+		{
+			const FVector2D Screen = MouseEvent.GetScreenSpacePosition();
+			if (const TSharedPtr<FMotionPathLayer> Layer = Pressed.Pin())
+			{
+				Layer->PressMove(Screen, MouseEvent.GetModifierKeys());
+				SetCursor(SlateApp, Layer->GetCursorFor(LeftMarker, LeftHandle));
+				return true;
+			}
+
+			// Lit up under the mouse.
+			int32 Marker = INDEX_NONE;
+			int32 Handle = INDEX_NONE;
+			const TSharedPtr<FMotionPathLayer> Hit = FindHit(SlateApp, Screen, Marker, Handle, nullptr);
+			for (const TWeakPtr<FMotionPathLayer>& Weak : GetDesignerLayers())
+			{
+				if (const TSharedPtr<FMotionPathLayer> Layer = Weak.Pin())
+				{
+					Layer->SetHover(Layer == Hit ? Marker : INDEX_NONE, Layer == Hit ? Handle : INDEX_NONE);
+				}
+			}
+
+			// Over a diamond or handle: its cursor. The move is kept from the designer, which would otherwise have Slate ask it
+			// for its own cursor straight after and put that back. Anywhere else the designer has the move, and its cursor.
+			if (Hit.IsValid())
+			{
+				SetCursor(SlateApp, Hit->GetCursorFor(Marker, Handle));
+				return true;
+			}
+			return false;
+		}
+
+		virtual bool HandleMouseButtonUpEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+		{
+			const FKey Button = MouseEvent.GetEffectingButton();
+			if (Button == EKeys::LeftMouseButton)
+			{
+				if (const TSharedPtr<FMotionPathLayer> Layer = Pressed.Pin())
+				{
+					Pressed.Reset();
+					Layer->Release(MouseEvent.GetModifierKeys(), /*bCancelled=*/false);
+					return true;
+				}
+				return false;
+			}
+
+			if (Button == EKeys::RightMouseButton)
+			{
+				const TSharedPtr<FMotionPathLayer> PressedLayer = RightPressed.Pin();
+				const int32 PressedMarker = RightMarker;
+				RightPressed.Reset();
+				RightMarker = INDEX_NONE;
+				if (!PressedLayer.IsValid())
+				{
+					return false;
+				}
+
+				// Released on the diamond it was pressed on: its menu.
+				int32 Marker = INDEX_NONE;
+				int32 Handle = INDEX_NONE;
+				FWidgetPath Path;
+				if (FindHit(SlateApp, MouseEvent.GetScreenSpacePosition(), Marker, Handle, &Path) == PressedLayer && Marker == PressedMarker && Handle == INDEX_NONE)
+				{
+					PressedLayer->OpenMarkerMenu(Marker, MouseEvent.GetScreenSpacePosition(), Path);
+				}
+				return true;
+			}
+			return false;
+		}
+
+		virtual const TCHAR* GetDebugName() const override { return TEXT("WidgetAnimMotionPath"); }
+
+	private:
+		/** The layer whose diamond or handle is at Screen - checked cheaply against what was drawn, then that its designer is on top. */
+		static TSharedPtr<FMotionPathLayer> FindHit(FSlateApplication& SlateApp, const FVector2D& Screen, int32& OutMarker, int32& OutHandle, FWidgetPath* OutPath, bool bLog = false)
+		{
+			// WidgetAnim.LogMotionPaths 1: why a press over a designer was or wasn't taken.
+			const bool bExplain = bLog && LogLevel() >= 1;
+			for (const TWeakPtr<FMotionPathLayer>& Weak : GetDesignerLayers())
+			{
+				const TSharedPtr<FMotionPathLayer> Layer = Weak.Pin();
+				if (!Layer.IsValid() || !Layer->IsOver(Screen))
+				{
+					continue;
+				}
+				if (!Layer->HitTest(Screen, OutMarker, OutHandle))
+				{
+					if (bExplain)
+					{
+						FString Nearest;
+						Layer->DescribeNearest(Screen, Nearest);
+						UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path press: over the designer, but on no diamond or handle - left to the designer. %s"), *Nearest);
+					}
+					continue;
+				}
+
+				// Only where the designer itself is under the mouse - not a menu, a drawer or another window over it.
+				FWidgetPath Path = SlateApp.LocateWindowUnderMouse(Screen, SlateApp.GetInteractiveTopLevelWindows());
+				if (!Layer->IsDesignerUnder(Path))
+				{
+					if (bExplain)
+					{
+						UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path press: on diamond %d, but the layer's designer isn't what is under the mouse - left alone. %s"),
+							OutMarker, *Layer->DescribePath(Path));
+					}
+					continue;
+				}
+				if (bExplain)
+				{
+					UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path press: taken - diamond %d%s."), OutMarker, OutHandle == INDEX_NONE ? TEXT("") : TEXT(", a handle"));
+				}
+				if (OutPath)
+				{
+					*OutPath = MoveTemp(Path);
+				}
+				return Layer;
+			}
+			OutMarker = INDEX_NONE;
+			OutHandle = INDEX_NONE;
+			return nullptr;
+		}
+
+		static void SetCursor(FSlateApplication& SlateApp, EMouseCursor::Type CursorType)
+		{
+			if (const TSharedPtr<ICursor> PlatformCursor = SlateApp.GetPlatformCursor())
+			{
+				PlatformCursor->SetType(CursorType);
 			}
 		}
-		bPressed = false;
-		bDragging = false;
+
+		TWeakPtr<FMotionPathLayer> Pressed;
+		int32 LeftMarker = INDEX_NONE;
+		int32 LeftHandle = INDEX_NONE;
+		TWeakPtr<FMotionPathLayer> RightPressed;
+		int32 RightMarker = INDEX_NONE;
+	};
+
+	namespace
+	{
+		TSharedPtr<FMotionPathInput>& GetInput()
+		{
+			static TSharedPtr<FMotionPathInput> Input;
+			return Input;
+		}
+
+		int32& GetInputUsers()
+		{
+			static int32 Users = 0;
+			return Users;
+		}
 	}
 
-	void SWidgetAnimMotionPathKey::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+	void AcquireInput()
 	{
-		SLeafWidget::OnMouseEnter(MyGeometry, MouseEvent);
-		if (const TSharedPtr<SWidgetAnimMotionPathCanvas> Pinned = OwnerCanvas.Pin())
+		if (++GetInputUsers() == 1 && FSlateApplication::IsInitialized())
 		{
-			Pinned->SetHovered(MarkerIndex, true);
+			GetInput() = MakeShared<FMotionPathInput>();
+			FSlateApplication::Get().RegisterInputPreProcessor(GetInput());
 		}
 	}
 
-	void SWidgetAnimMotionPathKey::OnMouseLeave(const FPointerEvent& MouseEvent)
+	void ReleaseInput()
 	{
-		SLeafWidget::OnMouseLeave(MouseEvent);
-		if (const TSharedPtr<SWidgetAnimMotionPathCanvas> Pinned = OwnerCanvas.Pin())
+		if (--GetInputUsers() > 0)
 		{
-			Pinned->SetHovered(MarkerIndex, false);
+			return;
 		}
-	}
-
-	FCursorReply SWidgetAnimMotionPathKey::OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const
-	{
-		const TSharedPtr<SWidgetAnimMotionPathCanvas> Pinned = OwnerCanvas.Pin();
-		const FMarker* Marker = Pinned.IsValid() ? Pinned->GetMarker(MarkerIndex) : nullptr;
-		if (!Marker)
+		GetInputUsers() = 0;
+		if (GetInput().IsValid() && FSlateApplication::IsInitialized())
 		{
-			return FCursorReply::Unhandled();
+			FSlateApplication::Get().UnregisterInputPreProcessor(GetInput());
 		}
-		if (Marker->bDraggable)
-		{
-			return FCursorReply::Cursor(bDragging ? EMouseCursor::GrabHandClosed : EMouseCursor::GrabHand);
-		}
-		return FCursorReply::Cursor(EMouseCursor::Hand);
-	}
-
-	// ---------------------------------------------------------------------------------------------
-	// The handles
-	// ---------------------------------------------------------------------------------------------
-
-	int32 SWidgetAnimMotionPathHandle::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
-		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
-	{
-		const FVector2D LocalSize = AllottedGeometry.GetLocalSize();
-		const FVector2f Center = FVector2f(LocalSize) * 0.5f;
-		const float GripSize = Palette::HandleSize * (IsHovered() || bDragging ? 1.25f : 1.f);
-		auto Grip = [&](float Diameter, const FLinearColor& GripColor, int32 Layer)
-		{
-			FSlateDrawElement::MakeBox(OutDrawElements, Layer,
-				AllottedGeometry.ToPaintGeometry(FVector2f(Diameter, Diameter), FSlateLayoutTransform(Center - FVector2f(Diameter, Diameter) * 0.5f)),
-				CircleBrush(), ESlateDrawEffect::None, GripColor);
-		};
-		Grip(GripSize + 2.f, Palette::HandleOutline, LayerId);
-		Grip(GripSize, Palette::HandleFill, LayerId + 1);
-		return LayerId + 1;
-	}
-
-	FReply SWidgetAnimMotionPathHandle::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
-	{
-		if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton || !OwnerCanvas.IsValid())
-		{
-			return FReply::Unhandled();
-		}
-		bPressed = true;
-		bDragging = false;
-		PressScreen = MouseEvent.GetScreenSpacePosition();
-		return FReply::Handled().CaptureMouse(SharedThis(this));
-	}
-
-	FReply SWidgetAnimMotionPathHandle::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
-	{
-		const TSharedPtr<SWidgetAnimMotionPathCanvas> Pinned = OwnerCanvas.Pin();
-		if (!bPressed || !HasMouseCapture() || !Pinned.IsValid())
-		{
-			return FReply::Unhandled();
-		}
-
-		const FVector2D MouseScreen = MouseEvent.GetScreenSpacePosition();
-		if (!bDragging)
-		{
-			const FVector2D MouseLocal = MyGeometry.AbsoluteToLocal(MouseScreen);
-			const FVector2D PressLocal = MyGeometry.AbsoluteToLocal(PressScreen);
-			if (FVector2D::Distance(MouseLocal, PressLocal) < DragThreshold || !Pinned->BeginHandleDrag(MarkerIndex, bOutHandle))
-			{
-				return FReply::Handled();
-			}
-			bDragging = true;
-		}
-		Pinned->UpdateDrag(MouseScreen - PressScreen, /*bShift=*/false, MouseEvent.IsAltDown());
-		return FReply::Handled();
-	}
-
-	FReply SWidgetAnimMotionPathHandle::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
-	{
-		if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton || !bPressed)
-		{
-			return FReply::Unhandled();
-		}
-		const bool bWasDragging = bDragging;
-		bPressed = false;
-		bDragging = false;
-		if (bWasDragging)
-		{
-			if (const TSharedPtr<SWidgetAnimMotionPathCanvas> Pinned = OwnerCanvas.Pin())
-			{
-				Pinned->EndDrag();
-			}
-		}
-		return FReply::Handled().ReleaseMouseCapture();
-	}
-
-	void SWidgetAnimMotionPathHandle::OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent)
-	{
-		if (bDragging)
-		{
-			if (const TSharedPtr<SWidgetAnimMotionPathCanvas> Pinned = OwnerCanvas.Pin())
-			{
-				Pinned->EndDrag();
-			}
-		}
-		bPressed = false;
-		bDragging = false;
+		GetInput().Reset();
 	}
 }
 
 // =====================================================================================================
-// Extension - keeps the layer over its designer; handed to the designer for a selection only where it can't
+// Extension - the designer draws the paths through it, every frame it is drawn
 // =====================================================================================================
 
 namespace WidgetAnimMotionPathImpl
@@ -2269,9 +2217,6 @@ namespace WidgetAnimMotionPathImpl
 	/** FDesignerExtension::Blueprint, whether it is kept weak or not. */
 	UWidgetBlueprint* ResolveBlueprint(const TWeakObjectPtr<UWidgetBlueprint>& Weak) { return Weak.Get(); }
 	UWidgetBlueprint* ResolveBlueprint(UWidgetBlueprint* Raw) { return Raw; }
-
-	/** How often an extension checks the window its layer is in, in seconds. */
-	constexpr double HostCheckInterval = 1.0;
 }
 
 FWidgetAnimMotionPathExtension::FWidgetAnimMotionPathExtension()
@@ -2281,116 +2226,25 @@ FWidgetAnimMotionPathExtension::FWidgetAnimMotionPathExtension()
 
 FWidgetAnimMotionPathExtension::~FWidgetAnimMotionPathExtension()
 {
-	RemoveHost();
+	Layer.Reset();
 }
 
-void FWidgetAnimMotionPathExtension::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
-{
-	// The designer ticks as it is drawn - so only while it is on screen - with or without a selection.
-	if (!DesignerFrame.IsValid())
-	{
-		DesignerFrame = MakeShared<FWidgetAnimMotionPathDesignerFrame>();
-	}
-	DesignerFrame->Geometry = AllottedGeometry;
-	DesignerFrame->FrameNumber = GFrameCounter;
-
-	const double Now = FPlatformTime::Seconds();
-	if (Now >= NextHostCheck)
-	{
-		NextHostCheck = Now + WidgetAnimMotionPathImpl::HostCheckInterval;
-		UpdateHost();
-	}
-}
-
-void FWidgetAnimMotionPathExtension::UpdateHost()
-{
-	namespace Impl = WidgetAnimMotionPathImpl;
-
-	UWidgetBlueprint* OwnBlueprint = Impl::ResolveBlueprint(Blueprint);
-	UUserWidget* Preview = OwnBlueprint ? FindWidgetAnimDesignerPreview(OwnBlueprint) : nullptr;
-	const TSharedPtr<SWidget> PreviewSlate = Preview ? Preview->GetCachedWidget() : nullptr;
-	if (!OwnBlueprint || !PreviewSlate.IsValid())
-	{
-		// No preview drawn yet (or being remade): the layer stays where it is until there is.
-		return;
-	}
-
-	// The window the designer is in now - it moves with its tab.
-	const TSharedPtr<SWindow> Window = Impl::FindOwningWindow(PreviewSlate.ToSharedRef());
-	if (!Window.IsValid())
-	{
-		if (Impl::LogLevel() >= 1)
-		{
-			UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path layer: the window of %s's designer wasn't found - the paths show for a selected widget only."), *OwnBlueprint->GetName());
-		}
-		return;
-	}
-	if (HostCanvas.IsValid() && HostWindow.Pin() == Window)
-	{
-		return;
-	}
-
-	RemoveHost();
-	const TSharedRef<Impl::SWidgetAnimMotionPathCanvas> Canvas = SNew(Impl::SWidgetAnimMotionPathCanvas)
-		.Blueprint(TWeakObjectPtr<UWidgetBlueprint>(OwnBlueprint))
-		.DesignerFrame(DesignerFrame);
-
-	// Under every other layer of the window's overlay - a status bar drawer slid over the designer is drawn over the paths.
-	Window->AddOverlaySlot(-1000)
-	[
-		Canvas
-	];
-	HostCanvas = Canvas;
-	HostWindow = Window;
-	Impl::GetDesignerLayers().RemoveAll([](const TWeakPtr<Impl::SWidgetAnimMotionPathCanvas>& Weak) { return !Weak.IsValid(); });
-	Impl::GetDesignerLayers().Add(Canvas);
-
-	if (Impl::LogLevel() >= 1)
-	{
-		UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path layer laid over %s's designer, in the overlay of its window."), *OwnBlueprint->GetName());
-	}
-}
-
-void FWidgetAnimMotionPathExtension::RemoveHost()
-{
-	const TSharedPtr<SWidget> Canvas = HostCanvas;
-	const TSharedPtr<SWindow> Window = HostWindow.Pin();
-	HostCanvas.Reset();
-	HostWindow.Reset();
-	if (Canvas.IsValid())
-	{
-		WidgetAnimMotionPathImpl::GetDesignerLayers().RemoveAll([&Canvas](const TWeakPtr<WidgetAnimMotionPathImpl::SWidgetAnimMotionPathCanvas>& Weak)
-		{
-			return !Weak.IsValid() || Weak.Pin() == Canvas;
-		});
-		if (Window.IsValid())
-		{
-			Window->RemoveOverlaySlot(Canvas.ToSharedRef());
-		}
-	}
-}
-
-bool FWidgetAnimMotionPathExtension::CanExtendSelection(const TArray<FWidgetReference>& Selection) const
-{
-	// Only where no layer could be laid over this designer - see Tick.
-	if (Selection.Num() != 1 || !Selection[0].GetTemplate() || (HostCanvas.IsValid() && HostWindow.IsValid()))
-	{
-		return false;
-	}
-	return !WidgetAnimMotionPathImpl::HasDesignerLayer(Selection[0].GetTemplate()->GetTypedOuter<UWidgetBlueprint>());
-}
-
-void FWidgetAnimMotionPathExtension::ExtendSelection(const TArray<FWidgetReference>& Selection, TArray<TSharedRef<FDesignerSurfaceElement>>& SurfaceElements)
+void FWidgetAnimMotionPathExtension::Paint(const TSet<FWidgetReference>& Selection, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+	FSlateWindowElementList& OutDrawElements, int32 LayerId) const
 {
 	using namespace WidgetAnimMotionPathImpl;
 
-	if (Selection.Num() != 1)
+	if (!Layer.IsValid())
 	{
-		return;
+		UWidgetBlueprint* OwnBlueprint = ResolveBlueprint(Blueprint);
+		if (!OwnBlueprint)
+		{
+			return;
+		}
+		Layer = MakeShared<FMotionPathLayer>(TWeakObjectPtr<UWidgetBlueprint>(OwnBlueprint));
+		Layer->Register();
 	}
-
-	const TSharedRef<SWidgetAnimMotionPathCanvas> Canvas = SNew(SWidgetAnimMotionPathCanvas).Widget(Selection[0]);
-	SurfaceElements.Add(MakeShared<FDesignerSurfaceElement>(Canvas, EExtensionLayoutLocation::TopLeft, FVector2D(-OverlayMargin, -OverlayMargin), FVector2D(0.0, 0.0)));
+	Layer->Paint(Selection, AllottedGeometry, OutDrawElements, LayerId);
 }
 
 TSharedRef<FDesignerExtension> FWidgetAnimMotionPathFactory::CreateDesignerExtension() const

@@ -1,0 +1,346 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+index 4a43744..dc70908 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+@@ -1,6 +1,7 @@
+ // Copyright AR GameSystems 2026. All rights reserved.
+ 
+ #include "SWidgetAnimStateMachineEditor.h"
++#include "WidgetAnimTargetOption.h"
+ 
+ #include "Algo/StableSort.h"
+ #include "AssetRegistry/AssetData.h"
+@@ -2140,11 +2141,11 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeTargetRow(FName Target, c
+ 				TAttribute<FText>::CreateLambda([this, Target, bHost]()
+ 				{
+ 					const FName Path = bHost ? GetPreviewHostPath() : GetPreviewTargetPath(Target);
+-					return FText::FromString(Path.IsNone() ? FString(TEXT("None")) : Path.ToString());
++					return FText::FromString(WidgetAnimTargetOption::FromPath(Path));
+ 				}),
+ 				[this, Target, bHost](const FString& Picked)
+ 				{
+-					const FName Path = Picked == TEXT("None") ? FName(NAME_None) : FName(*Picked);
++					const FName Path = WidgetAnimTargetOption::ToPath(Picked);
+ 					if (bHost)
+ 					{
+ 						SetPreviewHostPath(Path);
+@@ -4477,7 +4478,7 @@ TArray<FString> SWidgetAnimStateMachineEditor::GetTargetOptions() const
+ 		UWidgetAnimLibrary::GatherTargetableWidgetPathsInTree(Root, Options);
+ 	}
+ 	// First, so there is a way back to "the widget itself" once something has been picked.
+-	Options.Insert(TEXT("None"), 0);
++	Options.Insert(WidgetAnimTargetOption::ThisWidget(), 0);
+ 	return Options;
+ }
+ 
+@@ -4490,11 +4491,11 @@ FString SWidgetAnimStateMachineEditor::FindTargetOptionFor(const UWidget* Widget
+ 	}
+ 	if (Widget == Root)
+ 	{
+-		return TEXT("None");
++		return WidgetAnimTargetOption::ThisWidget();
+ 	}
+ 	for (const FString& Option : GetTargetOptions())
+ 	{
+-		if (Option != TEXT("None") && UWidgetAnimLibrary::FindWidgetByPathInTree(Root, FName(*Option)) == Widget)
++		if (!WidgetAnimTargetOption::IsThisWidget(Option) && UWidgetAnimLibrary::FindWidgetByPathInTree(Root, FName(*Option)) == Widget)
+ 		{
+ 			return Option;
+ 		}
+@@ -4756,7 +4757,7 @@ UWidget* SWidgetAnimStateMachineEditor::FindPreviewWidgetAt(const FVector2D& Scr
+ 	if (!Best && Root->GetCachedWidget().IsValid() && Root->GetCachedGeometry().IsUnderLocation(ScreenPosition))
+ 	{
+ 		Best = Root;
+-		BestOption = TEXT("None");
++		BestOption = WidgetAnimTargetOption::ThisWidget();
+ 	}
+ 
+ 	OutOption = BestOption;
+@@ -4773,7 +4774,7 @@ void SWidgetAnimStateMachineEditor::UpdatePickHover(const FVector2D& ScreenPosit
+ 	FString Option;
+ 	UWidget* Hovered = FindPreviewWidgetAt(ScreenPosition, Option);
+ 	PickHoverWidget = Hovered;
+-	PickHoverLabel = !Hovered ? FString() : Option == TEXT("None") ? Hovered->GetName() : Option;
++	PickHoverLabel = !Hovered ? FString() : WidgetAnimTargetOption::IsThisWidget(Option) ? Hovered->GetName() : Option;
+ 
+ 	if (PickLabelWindow.IsValid())
+ 	{
+@@ -4821,7 +4822,7 @@ void SWidgetAnimStateMachineEditor::ApplyPickedTarget(UWidget* Picked)
+ 		return;
+ 	}
+ 
+-	const FName Path = Option == TEXT("None") ? FName(NAME_None) : FName(*Option);
++	const FName Path = WidgetAnimTargetOption::ToPath(Option);
+ 	if (Target == HostPickKey)
+ 	{
+ 		SetPreviewHostPath(Path);
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.h
+index 784a050..1c4597e 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.h
+@@ -395,10 +395,10 @@ private:
+ 	/** The designer's preview of the Widget Blueprint: what Preview Targets are paths into. Null outside a Widget Blueprint. */
+ 	UUserWidget* GetDesignerPreview() const;
+ 
+-	/** Every widget a target can be, as paths - "None" first, for the widget the machine plays on. */
++	/** Every widget a target can be, as paths - (this widget) first, for the widget the machine plays on, stored as None. */
+ 	TArray<FString> GetTargetOptions() const;
+ 
+-	/** The path that names Widget, or empty. "None" for the designer preview itself. */
++	/** The option that names Widget, or empty. (this widget) for the designer preview itself. */
+ 	FString FindTargetOptionFor(const UWidget* Widget) const;
+ 
+ 	/** The widget the machine plays on in the preview, and each target's: picked here, or else where they start. */
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 07e9215..2adf20f 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -11,6 +11,7 @@
+ #include "Layout/Children.h"
+ #include "Widgets/SPanel.h"
+ #include "WidgetAnimPanelSource.h"
++#include "WidgetAnimTargetOption.h"
+ #include "WidgetAnimScripting.h"
+ #include "WidgetAnimTrackPresets.h"
+ #include "WidgetAnimBuilderToolbar.h"
+@@ -4605,7 +4606,7 @@ private:
+ 		// form, an entry's Target Widget offers. Kept on this customization, which lives as long as the rows.
+ 		FName Current;
+ 		TargetHandle->GetValue(Current);
+-		const FString CurrentText = Current.IsNone() ? FString(TEXT("None")) : Current.ToString();
++		const FString CurrentText = WidgetAnimTargetOption::FromPath(Current);
+ 
+ 		TargetOptions = MakeShared<TArray<TSharedPtr<FString>>>();
+ 		TSharedPtr<FString> Initial;
+@@ -4650,11 +4651,11 @@ private:
+ 						{
+ 							FName Value;
+ 							Target->GetValue(Value);
+-							return FText::FromString(Value.IsNone() ? FString(TEXT("None")) : Value.ToString());
++							return FText::FromString(WidgetAnimTargetOption::FromPath(Value));
+ 						}),
+ 						[Target](const FString& Picked)
+ 						{
+-							Target->SetValue(Picked == TEXT("None") ? FName(NAME_None) : FName(*Picked));
++							Target->SetValue(WidgetAnimTargetOption::ToPath(Picked));
+ 						},
+ 						TAttribute<bool>::CreateLambda([WeakOwner]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanEdit(); }),
+ 						WidgetAnimTips::PreviewTargetTooltip())
+@@ -4795,7 +4796,7 @@ private:
+ 		if (PanelSource && PanelSource->SupportsLayerTargets() && TargetLayers && TargetLayers->IsValidIndex(LayerIndex))
+ 		{
+ 			const FName CurrentTarget = (*TargetLayers)[LayerIndex].TargetWidget;
+-			const FString CurrentTargetText = CurrentTarget.IsNone() ? FString(TEXT("None")) : CurrentTarget.ToString();
++			const FString CurrentTargetText = WidgetAnimTargetOption::FromPath(CurrentTarget);
+ 
+ 			LayerTargetOptions = MakeShared<TArray<TSharedPtr<FString>>>();
+ 			TSharedPtr<FString> InitialTarget;
+@@ -4834,13 +4835,13 @@ private:
+ 							const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin();
+ 							const TArray<FWidgetAnimLayer>* Layers = Pinned ? Pinned->GetLayers() : nullptr;
+ 							const FName Value = Layers && Layers->IsValidIndex(LayerIndex) ? (*Layers)[LayerIndex].TargetWidget : FName(NAME_None);
+-							return FText::FromString(Value.IsNone() ? FString(TEXT("None")) : Value.ToString());
++							return FText::FromString(WidgetAnimTargetOption::FromPath(Value));
+ 						}),
+ 						[WeakTargetOwner, LayerIndex](const FString& Picked)
+ 						{
+ 							if (const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin())
+ 							{
+-								Pinned->SetLayerTarget(LayerIndex, Picked == TEXT("None") ? FName(NAME_None) : FName(*Picked));
++								Pinned->SetLayerTarget(LayerIndex, WidgetAnimTargetOption::ToPath(Picked));
+ 							}
+ 						},
+ 						TAttribute<bool>::CreateLambda([WeakTargetOwner, LayerIndex]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakTargetOwner.Pin(); return Pinned && Pinned->CanEditLayer(LayerIndex); }),
+@@ -19368,7 +19369,7 @@ void SWidgetAnimTimeline::UpdatePickHover(const FVector2D& ScreenPosition)
+ 	FString Option;
+ 	UWidget* Hovered = FindPreviewWidgetAt(ScreenPosition, Option);
+ 	PickHoverWidget = Hovered;
+-	PickHoverLabel = !Hovered ? FString() : Option == TEXT("None") ? Hovered->GetName() : Option;
++	PickHoverLabel = !Hovered ? FString() : WidgetAnimTargetOption::IsThisWidget(Option) ? Hovered->GetName() : Option;
+ 
+ 	if (PickLabelWindow.IsValid())
+ 	{
+@@ -19450,7 +19451,7 @@ void SWidgetAnimTimeline::ApplyPickedTarget(UWidget* Picked)
+ 		return;
+ 	}
+ 
+-	const FName NewTarget = Option == TEXT("None") ? NAME_None : FName(*Option);
++	const FName NewTarget = WidgetAnimTargetOption::ToPath(Option);
+ 	if ((*Groups)[GroupIndex].PreviewTarget == NewTarget)
+ 	{
+ 		return;
+@@ -22916,7 +22917,7 @@ void SWidgetAnimTimeline::RebuildWatchRows()
+ 				{
+ 					for (const FString& Option : Source->GetTargetOptions())
+ 					{
+-						const FName Path = Option == TEXT("None") ? FName(NAME_None) : FName(*Option);
++						const FName Path = WidgetAnimTargetOption::ToPath(Option);
+ 						Menu.AddMenuEntry(
+ 							Path.IsNone() ? LOCTEXT("WatchThisWidget", "(this widget)") : FText::FromString(Option),
+ 							FText::GetEmpty(),
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
+index 9c4fbd9..d9d612b 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
+@@ -1,6 +1,7 @@
+ ﻿// Copyright AR GameSystems 2026. All rights reserved.
+ 
+ #include "WidgetAnimPanelSource.h"
++#include "WidgetAnimTargetOption.h"
+ 
+ #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h"
+@@ -60,7 +61,7 @@ TArray<FString> IWidgetAnimPanelSource::GetTargetOptions() const
+ 	}
+ 
+ 	// First, so there is a way back to "the widget itself" once something has been picked.
+-	Options.Insert(TEXT("None"), 0);
++	Options.Insert(WidgetAnimTargetOption::ThisWidget(), 0);
+ 	return Options;
+ }
+ 
+@@ -72,16 +73,16 @@ FString IWidgetAnimPanelSource::FindTargetOptionFor(const UWidget* Widget) const
+ 		return FString();
+ 	}
+ 
+-	// The preview itself is the widget the animation is played on: None.
++	// The preview itself is the widget the animation is played on: (this widget), stored as None.
+ 	if (Widget == Root)
+ 	{
+-		return TEXT("None");
++		return WidgetAnimTargetOption::ThisWidget();
+ 	}
+ 
+ 	// Whichever path finds it - the same paths the dropdown offers, so what is picked here reads the same there.
+ 	for (const FString& Option : GetTargetOptions())
+ 	{
+-		if (Option != TEXT("None") && ResolvePreviewTarget(FName(*Option)) == Widget)
++		if (!WidgetAnimTargetOption::IsThisWidget(Option) && ResolvePreviewTarget(FName(*Option)) == Widget)
+ 		{
+ 			return Option;
+ 		}
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
+index 4f2bd78..146049b 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
+@@ -129,7 +129,7 @@ public:
+ 	/** The designer's preview of this Widget Blueprint, whose tree Preview Targets are paths into. Null while there is none. */
+ 	virtual UUserWidget* GetPreviewRoot() const = 0;
+ 
+-	/** Every widget a group can target, as paths, "None" first. */
++	/** Every widget a group can target, as paths, (this widget) - the preview itself, stored as None - first. */
+ 	TArray<FString> GetTargetOptions() const;
+ 
+ 	/**
+@@ -139,7 +139,7 @@ public:
+ 	virtual UWidgetBlueprint* GetWidgetBlueprint() const { return nullptr; }
+ 
+ 	/**
+-	 * The target option - one of GetTargetOptions, "None" for the preview itself - that names Widget, a widget of the
++	 * The target option - one of GetTargetOptions, (this widget) for the preview itself - that names Widget, a widget of the
+ 	 * designer's preview. Empty when none does.
+ 	 */
+ 	FString FindTargetOptionFor(const UWidget* Widget) const;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimScripting.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimScripting.cpp
+index 105f83e..c274643 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimScripting.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimScripting.cpp
+@@ -5,6 +5,7 @@
+ #include "SWidgetAnimTimeline.h"
+ #include "WidgetAnimEditorSettings.h"
+ #include "WidgetAnimPanelSource.h"
++#include "WidgetAnimTargetOption.h"
+ 
+ #include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimEvaluator.h"
+@@ -2303,7 +2304,7 @@ void UWidgetAnimScriptAnimation::GatherWidgets(TArray<FWidgetEntry>& OutWidgets)
+ bool UWidgetAnimScriptAnimation::ResolveTarget(const FString& Target, FString& OutPath) const
+ {
+ 	const FString Trimmed = Target.TrimStartAndEnd();
+-	if (Trimmed.IsEmpty() || Trimmed.Equals(TEXT("None"), ESearchCase::IgnoreCase))
++	if (Trimmed.IsEmpty() || Trimmed.Equals(TEXT("None"), ESearchCase::IgnoreCase) || Trimmed.Equals(WidgetAnimTargetOption::ThisWidget(), ESearchCase::IgnoreCase))
+ 	{
+ 		OutPath.Reset();
+ 		return true;
+@@ -2327,7 +2328,7 @@ bool UWidgetAnimScriptAnimation::ResolveTarget(const FString& Target, FString& O
+ 			}
+ 		}
+ 	}
+-	Options.RemoveAll([](const FString& Option) { return Option.Equals(TEXT("None"), ESearchCase::IgnoreCase); });
++	Options.RemoveAll([](const FString& Option) { return WidgetAnimTargetOption::IsThisWidget(Option) || Option.Equals(TEXT("None"), ESearchCase::IgnoreCase); });
+ 
+ 	// Nothing to check it against - an asset edited directly, a designer not open: taken as it is.
+ 	if (Options.Num() == 0)
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTargetOption.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTargetOption.h
+new file mode 100644
+index 0000000..9d7176a
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimTargetOption.h
+@@ -0,0 +1,37 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++
++/**
++ * The first option of the editor's widget pickers - a Layer Group's or a track's Target Widget, the state machine preview's
++ * Plays On and its layer groups' rows: the widget the animation plays on itself, stored as None. Listed as "(this widget)",
++ * never as None, which read as "no widget at all". Widget names can't hold spaces or brackets, so no path is ever taken for it.
++ */
++namespace WidgetAnimTargetOption
++{
++	/** The option itself. */
++	inline const FString& ThisWidget()
++	{
++		static const FString Label(TEXT("(this widget)"));
++		return Label;
++	}
++
++	inline bool IsThisWidget(const FString& Option)
++	{
++		return Option == ThisWidget();
++	}
++
++	/** The option a stored target reads as. */
++	inline FString FromPath(FName Path)
++	{
++		return Path.IsNone() ? ThisWidget() : Path.ToString();
++	}
++
++	/** The target an option stores: None for (this widget). */
++	inline FName ToPath(const FString& Option)
++	{
++		return IsThisWidget(Option) ? FName(NAME_None) : FName(*Option);
++	}
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimationComponentDetails.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimationComponentDetails.cpp
+index 51d3ee9..f342ac6 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimationComponentDetails.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimationComponentDetails.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include "SWidgetAnimTimeline.h"
+ #include "WidgetAnimPanelSource.h"
++#include "WidgetAnimTargetOption.h"
+ 
+ #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
+@@ -501,7 +502,7 @@ namespace
+ 
+ 		/**
+ 		 * The Target Widget choices the component's own entries offer - listed even from the template, which has no widget
+-		 * to ask - with their (This Widget) as the None a track's own Target Widget uses for the same thing.
++		 * to ask - with their (This Widget) as the (this widget) a track's own Target Widget uses for the same thing.
+ 		 */
+ 		virtual TArray<FString> GetLayerTargetOptions() const override
+ 		{
+@@ -516,7 +517,7 @@ namespace
+ 			{
+ 				if (Option == FWidgetAnimGroupTarget::ThisWidget.ToString())
+ 				{
+-					Option = TEXT("None");
++					Option = WidgetAnimTargetOption::ThisWidget();
+ 				}
+ 			}
+ 			return Options;

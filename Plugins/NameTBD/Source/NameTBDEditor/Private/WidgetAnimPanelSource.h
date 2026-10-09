@@ -129,7 +129,7 @@ public:
 	/** The designer's preview of this Widget Blueprint, whose tree Preview Targets are paths into. Null while there is none. */
 	virtual UUserWidget* GetPreviewRoot() const = 0;
 
-	/** Every widget a group can target, as paths, "None" first. */
+	/** Every widget a group can target, as paths, (this widget) - the preview itself, stored as None - first. */
 	TArray<FString> GetTargetOptions() const;
 
 	/**
@@ -139,7 +139,7 @@ public:
 	virtual UWidgetBlueprint* GetWidgetBlueprint() const { return nullptr; }
 
 	/**
-	 * The target option - one of GetTargetOptions, "None" for the preview itself - that names Widget, a widget of the
+	 * The target option - one of GetTargetOptions, (this widget) for the preview itself - that names Widget, a widget of the
 	 * designer's preview. Empty when none does.
 	 */
 	FString FindTargetOptionFor(const UWidget* Widget) const;
@@ -377,6 +377,13 @@ private:
  * not sitting inside some other widget's tree. Looking is a walk over every User Widget, so callers cache it.
  */
 UUserWidget* FindWidgetAnimDesignerPreview(const UWidgetBlueprint* Blueprint);
+
+/**
+ * A designer preview widget's render transform (and, into OutOpacity, its render opacity) as authored in Blueprint: read from
+ * the Widget Blueprint's own widget of the same name - or, for the preview itself, its class defaults - never from the preview,
+ * whose transform whatever plays on it changes. The preview widget's own values when it isn't one of Blueprint's.
+ */
+FWidgetTransform GetWidgetAnimAuthoredTransform(const UWidget* PreviewWidget, const UWidgetBlueprint* Blueprint, float* OutOpacity = nullptr);
 
 /**
  * In a WidgetAnimationBuilder's editor: the builder's working copy - or, while its Preview Animation is set,

@@ -1,0 +1,38 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimDockPreference.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimDockPreference.h
+index 5808cdd..ac64bcb 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimDockPreference.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimDockPreference.h
+@@ -20,7 +20,7 @@
+  * it was docked in (Designer or Graph); closing the docked tab by hand clears it. A tab taken down by its editor closing, the
+  * editor quitting, or a switch between the Designer and the Graph (which lays the editor out afresh) leaves it as it was.
+  *
+- * Also: unique placeholder ids for tabs about to be put into a well. FTabManager::InsertNewDocumentTab ensures that no live
++ * Also: unique placeholder ids for tabs about to be put into a well (set through FDockTabLayoutIdAccess - the setter is protected). FTabManager::InsertNewDocumentTab ensures that no live
+  * tab matches the new tab's layout id before giving it one - and a freshly made SDockTab's is empty, which matched whatever
+  * else in the editor had none: the "! FindTabInLiveAreas(...)" ensure, and the hitch its callstack capture caused.
+  */
+@@ -93,10 +93,23 @@ namespace WidgetAnimDockPreference
+ 		return FTabId(FName(TEXT("NameTBD.PendingDock"), ++Counter));
+ 	}
+ 
++	/**
++	 * Reaches SDockTab::SetLayoutIdentifier, which is protected: a pointer to it is taken through a class deriving from
++	 * SDockTab (which may name it), and called on the tab. Never made - only its static function is used.
++	 */
++	struct FDockTabLayoutIdAccess : public SDockTab
++	{
++		static void SetLayoutId(SDockTab& Tab, const FTabId& NewId)
++		{
++			void (SDockTab::*Setter)(const FTabId&) = &FDockTabLayoutIdAccess::SetLayoutIdentifier;
++			(Tab.*Setter)(NewId);
++		}
++	};
++
+ 	/** Puts Tab into a well beside another under PlaceholderId - with a placeholder id first, so the tab manager's check can't trip. */
+ 	inline void InsertDocumentTab(FTabManager& TabManager, FName PlaceholderId, const FTabManager::FSearchPreference& SearchPreference, const TSharedRef<SDockTab>& Tab)
+ 	{
+-		Tab->SetLayoutIdentifier(MakePendingTabId());
++		FDockTabLayoutIdAccess::SetLayoutId(*Tab, MakePendingTabId());
+ 		TabManager.InsertNewDocumentTab(PlaceholderId, SearchPreference, Tab);
+ 	}
+ 

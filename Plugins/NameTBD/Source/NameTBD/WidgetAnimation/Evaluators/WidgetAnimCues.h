@@ -16,8 +16,9 @@ class USoundBase;
 // Listed under Cues in the Add Track menu: Event and Sound. Play Animation is no longer offered - an existing animation is
 // inserted as a track of its own instead (Insert Existing Widget Animation) - but still plays wherever a track of it was made. How and when every cue fires - its points,
 // loops, ping-pong, inverted play, scrubbing - is in WidgetAnimCue.h; these only say what happens when one does. A
-// particle, a camera shake or anything else the game owns is an Event handled there, or a Blueprint cue type (see
-// UWidgetAnimBlueprintCue): UMG has no particle widget of its own to fire at.
+// camera shake or anything else the game owns is an Event handled there, or a Blueprint cue type (see
+// UWidgetAnimBlueprintCue). Particles have a cue of their own, Particles, registered by the NameTBDNiagara module (see
+// WidgetAnimParticleCue.h) - it fires a Niagara Particles widget.
 
 // -----------------------------------------------------------------------------------------------------
 // Event

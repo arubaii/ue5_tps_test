@@ -1,6 +1,7 @@
 // Copyright AR GameSystems 2026. All rights reserved.
 
 #include "SWidgetAnimStateMachineEditor.h"
+#include "WidgetAnimTargetOption.h"
 
 #include "Algo/StableSort.h"
 #include "AssetRegistry/AssetData.h"
@@ -60,6 +61,7 @@
 #include "WidgetAnimStateMachineGraph.h"
 #include "WidgetBlueprint.h"
 #include "WidgetBlueprintEditor.h"
+#include "WidgetAnimDockPreference.h"
 #include "WidgetDrawerConfig.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Images/SImage.h"
@@ -1079,6 +1081,47 @@ namespace
 		}
 	}
 
+	/**
+	 * The machine last edited for each Widget Blueprint, by the Blueprint's path - so the editor opens on it again, in this
+	 * session or the next, rather than asking which one. Per user and project, like the column widths above.
+	 */
+	const TCHAR* EditedMachineConfigSection = TEXT("NameTBD.WidgetAnimationStateMachineEditor.EditedMachines");
+
+	UWidgetAnimStateMachineAsset* LoadEditedMachine(const UWidgetBlueprint* Blueprint)
+	{
+		FString Path;
+		if (!Blueprint || !GConfig || !GConfig->GetString(EditedMachineConfigSection, *Blueprint->GetPathName(), Path, GEditorPerProjectIni) || Path.IsEmpty())
+		{
+			return nullptr;
+		}
+		return Cast<UWidgetAnimStateMachineAsset>(FSoftObjectPath(Path).TryLoad());
+	}
+
+	void SaveEditedMachine(const UWidgetBlueprint* Blueprint, const UWidgetAnimStateMachineAsset* EditedMachine)
+	{
+		if (!Blueprint || !GConfig)
+		{
+			return;
+		}
+		const FString Key = Blueprint->GetPathName();
+		const FString Path = EditedMachine ? FSoftObjectPath(EditedMachine).ToString() : FString();
+		FString Saved;
+		GConfig->GetString(EditedMachineConfigSection, *Key, Saved, GEditorPerProjectIni);
+		if (Saved == Path)
+		{
+			return;
+		}
+		if (Path.IsEmpty())
+		{
+			GConfig->RemoveKey(EditedMachineConfigSection, *Key, GEditorPerProjectIni);
+		}
+		else
+		{
+			GConfig->SetString(EditedMachineConfigSection, *Key, *Path, GEditorPerProjectIni);
+		}
+		GConfig->Flush(/*bRemoveFromCache=*/false, GEditorPerProjectIni);
+	}
+
 	FName MakeSplitKey(bool bInDrawer, const TCHAR* Column)
 	{
 		return FName(FString::Printf(TEXT("%s.%s"), bInDrawer ? TEXT("Drawer") : TEXT("Tab"), Column));
@@ -1219,7 +1262,13 @@ void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
 		]
 	];
 
+	// The one asked for; else the one last edited for this Widget Blueprint (kept across sessions); else the first the
+	// Widget Blueprint plays.
 	UWidgetAnimStateMachineAsset* Start = InArgs._Machine.Get();
+	if (!Start)
+	{
+		Start = LoadEditedMachine(WidgetBlueprint.Get());
+	}
 	if (!Start)
 	{
 		Start = FindMachineInWidgetBlueprint();
@@ -1323,6 +1372,7 @@ void SWidgetAnimStateMachineEditor::SetMachine(UWidgetAnimStateMachineAsset* InM
 	PreviewSignature.Reset();
 
 	Machine = InMachine;
+	SaveEditedMachine(WidgetBlueprint.Get(), Machine);
 	JumpSteps.Reset();
 	JumpStep = INDEX_NONE;
 	Graphs.Reset();
@@ -2140,11 +2190,11 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeTargetRow(FName Target, c
 				TAttribute<FText>::CreateLambda([this, Target, bHost]()
 				{
 					const FName Path = bHost ? GetPreviewHostPath() : GetPreviewTargetPath(Target);
-					return FText::FromString(Path.IsNone() ? FString(TEXT("None")) : Path.ToString());
+					return FText::FromString(WidgetAnimTargetOption::FromPath(Path));
 				}),
 				[this, Target, bHost](const FString& Picked)
 				{
-					const FName Path = Picked == TEXT("None") ? FName(NAME_None) : FName(*Picked);
+					const FName Path = WidgetAnimTargetOption::ToPath(Picked);
 					if (bHost)
 					{
 						SetPreviewHostPath(Path);
@@ -4477,7 +4527,7 @@ TArray<FString> SWidgetAnimStateMachineEditor::GetTargetOptions() const
 		UWidgetAnimLibrary::GatherTargetableWidgetPathsInTree(Root, Options);
 	}
 	// First, so there is a way back to "the widget itself" once something has been picked.
-	Options.Insert(TEXT("None"), 0);
+	Options.Insert(WidgetAnimTargetOption::ThisWidget(), 0);
 	return Options;
 }
 
@@ -4490,11 +4540,11 @@ FString SWidgetAnimStateMachineEditor::FindTargetOptionFor(const UWidget* Widget
 	}
 	if (Widget == Root)
 	{
-		return TEXT("None");
+		return WidgetAnimTargetOption::ThisWidget();
 	}
 	for (const FString& Option : GetTargetOptions())
 	{
-		if (Option != TEXT("None") && UWidgetAnimLibrary::FindWidgetByPathInTree(Root, FName(*Option)) == Widget)
+		if (!WidgetAnimTargetOption::IsThisWidget(Option) && UWidgetAnimLibrary::FindWidgetByPathInTree(Root, FName(*Option)) == Widget)
 		{
 			return Option;
 		}
@@ -4756,7 +4806,7 @@ UWidget* SWidgetAnimStateMachineEditor::FindPreviewWidgetAt(const FVector2D& Scr
 	if (!Best && Root->GetCachedWidget().IsValid() && Root->GetCachedGeometry().IsUnderLocation(ScreenPosition))
 	{
 		Best = Root;
-		BestOption = TEXT("None");
+		BestOption = WidgetAnimTargetOption::ThisWidget();
 	}
 
 	OutOption = BestOption;
@@ -4773,7 +4823,7 @@ void SWidgetAnimStateMachineEditor::UpdatePickHover(const FVector2D& ScreenPosit
 	FString Option;
 	UWidget* Hovered = FindPreviewWidgetAt(ScreenPosition, Option);
 	PickHoverWidget = Hovered;
-	PickHoverLabel = !Hovered ? FString() : Option == TEXT("None") ? Hovered->GetName() : Option;
+	PickHoverLabel = !Hovered ? FString() : WidgetAnimTargetOption::IsThisWidget(Option) ? Hovered->GetName() : Option;
 
 	if (PickLabelWindow.IsValid())
 	{
@@ -4821,7 +4871,7 @@ void SWidgetAnimStateMachineEditor::ApplyPickedTarget(UWidget* Picked)
 		return;
 	}
 
-	const FName Path = Option == TEXT("None") ? FName(NAME_None) : FName(*Option);
+	const FName Path = WidgetAnimTargetOption::ToPath(Option);
 	if (Target == HostPickKey)
 	{
 		SetPreviewHostPath(Path);
@@ -5344,11 +5394,16 @@ namespace WidgetAnimStateMachineEditorHooks
 			return FSlateIcon();
 		}
 
+		TSharedPtr<SDockTab> FindLiveTab(const TSharedPtr<FTabManager>& TabManager);
+
+		/** The editor as a tab's body - watched, so closing the tab by hand means it isn't docked any more (WidgetAnimDockPreference). */
 		TSharedRef<SWidget> MakeTabBody(const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
 		{
 			const TSharedPtr<FAssetEditorToolkit> Toolkit = WeakToolkit.Pin();
-			return SNew(SWidgetAnimStateMachineEditor)
-				.WidgetBlueprint(Toolkit.IsValid() ? GetEditedWidgetBlueprint(*Toolkit) : nullptr);
+			return WidgetAnimDockPreference::Watch(WidgetAnimDockPreference::StateMachinePanel, WeakToolkit,
+				[WeakToolkit]() { const TSharedPtr<FAssetEditorToolkit> Live = WeakToolkit.Pin(); return Live.IsValid() && FindLiveTab(Live->GetTabManager()).IsValid(); },
+				SNew(SWidgetAnimStateMachineEditor)
+				.WidgetBlueprint(Toolkit.IsValid() ? GetEditedWidgetBlueprint(*Toolkit) : nullptr));
 		}
 
 		TSharedRef<SDockTab> MakeTab(const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
@@ -5525,6 +5580,21 @@ namespace WidgetAnimStateMachineEditorHooks
 			return Targets;
 		}
 
+		/**
+		 * Takes Tab out of its well at once. A close request alone can leave it among the live tabs a moment longer, and the
+		 * next insert under the same id then trips the tab manager's ensure (FindTabInLiveAreas) - with the cost of a callstack
+		 * capture, which made docking hitch.
+		 */
+		void CloseTabNow(const TSharedRef<SDockTab>& Tab)
+		{
+			const TSharedPtr<FTabManager> Manager = Tab->GetTabManagerPtr();
+			Tab->RequestCloseTab();
+			if (Manager.IsValid() && Manager->FindExistingLiveTab(Tab->GetLayoutIdentifier()) == Tab)
+			{
+				Tab->RemoveTabFromParent();
+			}
+		}
+
 		TSharedPtr<SDockTab> FindLiveTab(const TSharedPtr<FTabManager>& TabManager)
 		{
 			if (!TabManager.IsValid())
@@ -5548,7 +5618,7 @@ namespace WidgetAnimStateMachineEditorHooks
 		 * a spawner-less document id, and is checked to have landed there; one left floating by an earlier dock is docked
 		 * properly. Failing all that, the tab's own slot in the layout - after Animations - or floating if the layout has none.
 		 */
-		void DockInLayout(const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
+		void DockInLayout(const TWeakPtr<FAssetEditorToolkit>& WeakToolkit, bool bRestore = false)
 		{
 			const TSharedPtr<FAssetEditorToolkit> Toolkit = WeakToolkit.Pin();
 			const TSharedPtr<FTabManager> TabManager = Toolkit.IsValid() ? Toolkit->GetTabManager() : nullptr;
@@ -5557,14 +5627,20 @@ namespace WidgetAnimStateMachineEditorHooks
 				return;
 			}
 
-			if (UStatusBarSubsystem* StatusBars = GEditor ? GEditor->GetEditorSubsystem<UStatusBarSubsystem>() : nullptr)
+			if (UStatusBarSubsystem* StatusBars = !bRestore && GEditor ? GEditor->GetEditorSubsystem<UStatusBarSubsystem>() : nullptr)
 			{
 				StatusBars->ForceDismissDrawer();
 			}
 			EnsureTabSpawner(TabManager, WeakToolkit);
 
-			auto BringForward = [](const TSharedRef<SDockTab>& Tab)
+			// Docked: brought forward (not when restored as the editor opens), and the choice kept for every editor opened after.
+			auto BringForward = [&Toolkit, bRestore](const TSharedRef<SDockTab>& Tab)
 			{
+				WidgetAnimDockPreference::SetDocked(WidgetAnimDockPreference::StateMachinePanel, WidgetAnimDockPreference::GetEditorMode(Toolkit));
+				if (bRestore)
+				{
+					return;
+				}
 				Tab->ActivateInParent(ETabActivationCause::SetDirectly);
 				if (const TSharedPtr<FTabManager> Manager = Tab->GetTabManagerPtr())
 				{
@@ -5581,14 +5657,27 @@ namespace WidgetAnimStateMachineEditorHooks
 					return;
 				}
 				// Floating in a window of its own: closed, and docked properly below.
-				Live->RequestCloseTab();
+				CloseTabNow(Live.ToSharedRef());
 			}
 
 			for (const TSharedRef<SDockTab>& Beside : FindDockTargets(Toolkit.ToSharedRef(), TabManager))
 			{
 				const TSharedPtr<FTabManager> DockManager = Beside->GetTabManagerPtr().IsValid() ? Beside->GetTabManagerPtr() : TabManager;
+
+				// One docked already under this manager - which the editor's own manager doesn't list when the well is another
+				// manager's: brought forward. One left floating there: closed first, so no two tabs ever share the id.
+				if (const TSharedPtr<SDockTab> Existing = DockManager->FindExistingLiveTab(FTabId(DockedTabId)))
+				{
+					if (!Existing->GetParentWindow().IsValid())
+					{
+						BringForward(Existing.ToSharedRef());
+						return;
+					}
+					CloseTabNow(Existing.ToSharedRef());
+				}
+
 				const TSharedRef<SDockTab> Tab = MakeTab(WeakToolkit);
-				DockManager->InsertNewDocumentTab(DockedTabId, FDockBesideTab(Beside), Tab);
+				WidgetAnimDockPreference::InsertDocumentTab(*DockManager, DockedTabId, FDockBesideTab(Beside), Tab);
 
 				const TSharedPtr<SWidget> TabWell = Tab->GetParentWidget();
 				if (((TabWell.IsValid() && TabWell == Beside->GetParentWidget()) || DockManager->FindExistingLiveTab(Tab->GetLayoutIdentifier()) == Tab)
@@ -5599,7 +5688,7 @@ namespace WidgetAnimStateMachineEditorHooks
 					return;
 				}
 				UE_LOG(LogWidgetAnimStateMachineDock, Warning, TEXT("Dock in Layout: couldn't put the tab beside '%s' (%s)."), *Beside->GetTabLabel().ToString(), *Beside->GetLayoutIdentifier().ToString());
-				Tab->RequestCloseTab();
+				CloseTabNow(Tab);
 			}
 
 			// Its own slot in the layout: the bottom well, after Animations, where the layout extension put it - as Widget
@@ -5610,6 +5699,14 @@ namespace WidgetAnimStateMachineEditorHooks
 				UE_LOG(LogWidgetAnimStateMachineDock, Warning, TEXT("Dock in Layout: nothing open in the bottom well to dock beside - opened in the tab's own slot of the layout%s."),
 					Opened->GetParentWindow().IsValid() ? TEXT(", which floats (the layout has no Animations tab to put it after)") : TEXT(""));
 			}
+		}
+	}
+
+	void RestoreDock(const TSharedRef<FAssetEditorToolkit>& Toolkit)
+	{
+		if (Toolkit->IsHosted() && WidgetAnimDockPreference::IsDockedIn(WidgetAnimDockPreference::StateMachinePanel, Toolkit))
+		{
+			DockInLayout(TWeakPtr<FAssetEditorToolkit>(Toolkit), /*bRestore=*/true);
 		}
 	}
 

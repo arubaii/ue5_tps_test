@@ -1,0 +1,156 @@
+// Copyright AR GameSystems 2026. All rights reserved.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
+#include "StructUtils/PropertyBag.h"
+
+#include "WidgetAnimParticleCue.generated.h"
+
+class UNiagaraSystem;
+class UNiagaraUIWidget;
+class UWidget;
+
+/** What a Particles cue does when it fires. */
+UENUM(BlueprintType)
+enum class EWidgetAnimParticleCueAction : uint8
+{
+	BurstAtTarget UMETA(DisplayName = "Burst", ToolTip = "Plays a one-shot of the track's Niagara System (or the Niagara Particles widget's own) - where the Particles widget is, or on the track's widget (Burst At). Several can play at once; a stagger plays one per item."),
+
+	Play UMETA(ToolTip = "Plays the track's Niagara System as the Niagara Particles widget's system (or its own, when the track names none), from its start."),
+
+	StopEmitting UMETA(DisplayName = "Stop Emitting", ToolTip = "Stops the Niagara Particles widget spawning; its particles live out their lives."),
+
+	Clear UMETA(ToolTip = "Removes every particle of the Niagara Particles widget at once.")
+};
+
+/** Where a Particles cue's burst plays. */
+UENUM(BlueprintType)
+enum class EWidgetAnimParticleCuePlace : uint8
+{
+	ParticlesWidget UMETA(DisplayName = "At Particles Widget", ToolTip = "Where the Niagara Particles widget is - at its Origin, as placed in the designer and wherever it has moved since."),
+
+	TrackWidget UMETA(DisplayName = "At Track's Widget", ToolTip = "On the widget this track is aimed at - its Layer Group's Target Widget, or each item of a stagger - at Burst Point. The Niagara Particles widget is then only the layer the particles are drawn in: one over the whole screen serves every button.")
+};
+
+/** Which Niagara Particles widgets a Particles cue plays on, of those it finds. */
+UENUM(BlueprintType)
+enum class EWidgetAnimParticleCueScope : uint8
+{
+	FirstFound UMETA(DisplayName = "First Found", ToolTip = "The first Niagara Particles widget found: the one named in Particles Widget, else the track's widget itself, or the first inside it, else the nearest around it."),
+
+	AllFound UMETA(DisplayName = "All Found", ToolTip = "Every Niagara Particles widget found, each with its own Niagara System: every one named Particles Widget in the User Widgets around the track's widget; unnamed, every one at or inside the track's widget, else every one in the nearest User Widget around it that has any.")
+};
+
+/**
+ * Particles: fires Niagara particles at a moment of the animation - a burst where a card lands, embers starting as a panel
+ * opens, stopping as it closes.
+ *
+ * The track carries its own Niagara System and User Parameters: it plays that, whatever the Niagara Particles widget is set
+ * to - leave it empty to play the widget's own. So one Particles widget serves every track, each with its effect. Or Use
+ * Widget's Niagara System: each widget plays its own system, with its own parameters - on the first found, or on all of them.
+ *
+ * Plays on a Niagara Particles widget: the one named by Particles Widget; else the track's widget itself when it is one (aim
+ * the track's Layer Group at it - the simplest setup), or the first inside it; else the nearest around it. Seen in the
+ * editor's previews too, where that widget has Preview In Designer on.
+ */
+USTRUCT(BlueprintType, meta = (DisplayName = "Particles"))
+struct NAMETBDNIAGARA_API FWidgetAnimParticleCueParams : public FWidgetAnimCueParams
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles")
+	EWidgetAnimParticleCueAction Action = EWidgetAnimParticleCueAction::BurstAtTarget;
+
+	/**
+	 * Plays each Niagara Particles widget's own Niagara System, with its own User Parameters, rather than one set here - so one
+	 * track fires whatever each widget is set up with. Off, the track plays its Niagara System below.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Use Widget's Niagara System", EditCondition = "Action == EWidgetAnimParticleCueAction::BurstAtTarget || Action == EWidgetAnimParticleCueAction::Play", EditConditionHides))
+	bool bUseWidgetSystem = false;
+
+	/** Which of the Niagara Particles widgets found it acts on: the first, or every one. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Act On", EditCondition = "bUseWidgetSystem || Action == EWidgetAnimParticleCueAction::StopEmitting || Action == EWidgetAnimParticleCueAction::Clear", EditConditionHides))
+	EWidgetAnimParticleCueScope ActOn = EWidgetAnimParticleCueScope::FirstFound;
+
+	/**
+	 * The system this track plays - burst, or played as the widget's system. None: the Niagara Particles widget's own. The
+	 * widget's User Parameters reach it too, by name, under the track's own below. For a burst, a one-shot system (Loop
+	 * Behavior: Once). Greyed out while Use Widget's Niagara System is on.
+	 *
+	 * Shown and greyed by the Widget Animations panel (ShowWhen / EnableWhen - see FTypeParamsDetails in SWidgetAnimTimeline.cpp)
+	 * rather than an EditCondition: a property bag under an EditCondition came back read-only.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Niagara System", ShowWhen = "Action=BurstAtTarget|Play", EnableWhen = "bUseWidgetSystem=false"))
+	TObjectPtr<UNiagaraSystem> NiagaraSystem = nullptr;
+
+	/**
+	 * The track's Niagara System's User parameters, listed from the system itself, each starting at the system's own value -
+	 * as the Niagara Particles widget lists its own. Change one and this track plays the system with it, over the widget's
+	 * value of it; the rest are the widget's, else the system's. Kept in step with the system each time the track is edited.
+	 * Greyed out while Use Widget's Niagara System is on.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Particles", meta = (DisplayName = "User Parameters", FixedLayout, ShowWhen = "Action=BurstAtTarget|Play", EnableWhen = "bUseWidgetSystem=false"))
+	FInstancedPropertyBag UserParameters;
+
+	/** Where the burst plays: where the Niagara Particles widget is, or on the widget this track is aimed at. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Burst At", EditCondition = "Action == EWidgetAnimParticleCueAction::BurstAtTarget", EditConditionHides))
+	EWidgetAnimParticleCuePlace Place = EWidgetAnimParticleCuePlace::ParticlesWidget;
+
+	/** Where on the track's widget: 0, 0 its top left, 0.5, 0.5 its middle, 1, 1 its bottom right. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Burst Point", EditCondition = "Action == EWidgetAnimParticleCueAction::BurstAtTarget && Place == EWidgetAnimParticleCuePlace::TrackWidget", EditConditionHides))
+	FVector2D BurstPoint = FVector2D(0.5, 0.5);
+
+	/**
+	 * The Niagara Particles widget to play on, by its name in the Widget Blueprint the track's widget is in or any around it.
+	 * None: the track's widget when it is one, else the first inside it, else the nearest around it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Particles Widget"))
+	FName ParticlesWidget;
+
+	/** The Niagara System's own values of User Parameters when they were last laid out: which of them this track changed. */
+	UPROPERTY()
+	FInstancedPropertyBag UserParameterDefaults;
+
+	/** User Parameters that are Positions in the system (laid out as vectors) - set as positions. */
+	UPROPERTY()
+	TArray<FName> PositionParameters;
+
+	/** Whether this fire plays the track's own Niagara System, rather than each widget's. */
+	bool PlaysTrackSystem() const
+	{
+		return !bUseWidgetSystem && (Action == EWidgetAnimParticleCueAction::BurstAtTarget || Action == EWidgetAnimParticleCueAction::Play);
+	}
+
+	/** Whether it acts on every Niagara Particles widget found, not just the first. */
+	bool ActsOnAll() const
+	{
+		return ActOn == EWidgetAnimParticleCueScope::AllFound && (bUseWidgetSystem || Action == EWidgetAnimParticleCueAction::StopEmitting || Action == EWidgetAnimParticleCueAction::Clear);
+	}
+};
+
+class NAMETBDNIAGARA_API FWidgetAnimParticleCueEvaluator : public TWidgetAnimCueEvaluator<FWidgetAnimParticleCueParams>
+{
+public:
+
+	virtual FText GetDisplayName() const override;
+	virtual FText GetDescription() const override;
+	virtual FText GetTrackSummary(const FInstancedStruct& Params) const override;
+	virtual bool FiresAtDesignTime(const FInstancedStruct& Params) const override { return true; }
+	virtual void Fire(const FWidgetAnimCueContext& Context) const override;
+	virtual bool RefreshParams(FInstancedStruct& Params) const override;
+	virtual uint32 GetParamsLayoutHash(const FInstancedStruct& Params) const override;
+
+	/**
+	 * The Niagara Particles widget a cue plays on: the one named WidgetName in the User Widgets around TrackWidget (or Host);
+	 * unnamed, TrackWidget itself or the first inside it, else the first in each User Widget around it, nearest first.
+	 */
+	static UNiagaraUIWidget* FindParticlesWidget(UWidget* TrackWidget, UWidget* Host, FName WidgetName);
+
+	/**
+	 * FindParticlesWidget, or with bAll every one: each named WidgetName in the User Widgets around TrackWidget (or Host);
+	 * unnamed, every one at or inside TrackWidget, else every one in the nearest User Widget around it that has any.
+	 */
+	static void FindParticlesWidgets(UWidget* TrackWidget, UWidget* Host, FName WidgetName, bool bAll, TArray<UNiagaraUIWidget*>& OutWidgets);
+};

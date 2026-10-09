@@ -17,6 +17,7 @@
 #include "SWidgetAnimStateMachineEditor.h"
 #include "WidgetAnimScripting.h"
 #include "WidgetAnimPanelSource.h"
+#include "WidgetAnimDockPreference.h"
 #include "StatusBarSubsystem.h"
 #include "Styling/AppStyle.h"
 #include "Toolkits/AssetEditorToolkit.h"
@@ -221,14 +222,30 @@ namespace
 	}
 
 	/** The panel as a tab of the editor's layout. */
-	TSharedRef<SDockTab> MakeWidgetAnimationsTab(const TSharedRef<IWidgetAnimPanelSource>& PanelSource)
+	/** Whether this editor has the Widget Animations tab open - docked by Dock in Layout, or in its own slot. */
+	bool IsWidgetAnimationsTabOpen(const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
+	{
+		const TSharedPtr<FAssetEditorToolkit> Toolkit = WeakToolkit.Pin();
+		const TSharedPtr<FTabManager> TabManager = Toolkit.IsValid() ? Toolkit->GetTabManager() : nullptr;
+		return TabManager.IsValid()
+			&& (TabManager->FindExistingLiveTab(FTabId(WidgetAnimationsTabId)).IsValid() || TabManager->FindExistingLiveTab(FTabId(WidgetAnimationsDockedTabId)).IsValid());
+	}
+
+	/** The panel as a tab's body - watched, so closing the tab by hand means it isn't docked any more (WidgetAnimDockPreference). */
+	TSharedRef<SWidget> MakeWidgetAnimationsTabBody(const TSharedRef<IWidgetAnimPanelSource>& PanelSource, const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
+	{
+		return WidgetAnimDockPreference::Watch(WidgetAnimDockPreference::WidgetAnimationsPanel, WeakToolkit,
+			[WeakToolkit]() { return IsWidgetAnimationsTabOpen(WeakToolkit); },
+			SNew(SWidgetAnimTimeline).Source(PanelSource));
+	}
+
+	TSharedRef<SDockTab> MakeWidgetAnimationsTab(const TSharedRef<IWidgetAnimPanelSource>& PanelSource, const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
 	{
 		return SNew(SDockTab)
 			.TabRole(ETabRole::PanelTab)
 			.Label(LOCTEXT("WidgetAnimationsTab", "Widget Animations"))
 			[
-				SNew(SWidgetAnimTimeline)
-				.Source(PanelSource)
+				MakeWidgetAnimationsTabBody(PanelSource, WeakToolkit)
 			];
 	}
 
@@ -258,13 +275,12 @@ namespace
 				return SNullWidget::NullWidget;
 			}
 
-			return SNew(SWidgetAnimTimeline)
-				.Source(GetPanelSource(Toolkit.ToSharedRef()));
+			return MakeWidgetAnimationsTabBody(GetPanelSource(Toolkit.ToSharedRef()), TWeakPtr<FAssetEditorToolkit>(Toolkit));
 		}
 	};
 
 	/** Registers the panel's tab spawner on an editor's tab manager by hand, unless its mode already has. */
-	void EnsureTabSpawner(const TSharedPtr<FTabManager>& TabManager, const TSharedRef<IWidgetAnimPanelSource>& PanelSource)
+	void EnsureTabSpawner(const TSharedPtr<FTabManager>& TabManager, const TSharedRef<IWidgetAnimPanelSource>& PanelSource, const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
 	{
 		if (!TabManager.IsValid() || TabManager->HasTabSpawner(WidgetAnimationsTabId))
 		{
@@ -272,9 +288,9 @@ namespace
 		}
 
 		const FSlateIcon Icon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::WidgetAnimationsIcon);
-		TabManager->RegisterTabSpawner(WidgetAnimationsTabId, FOnSpawnTab::CreateLambda([PanelSource](const FSpawnTabArgs&)
+		TabManager->RegisterTabSpawner(WidgetAnimationsTabId, FOnSpawnTab::CreateLambda([PanelSource, WeakToolkit](const FSpawnTabArgs&)
 		{
-			return MakeWidgetAnimationsTab(PanelSource);
+			return MakeWidgetAnimationsTab(PanelSource, WeakToolkit);
 		}))
 		.SetDisplayName(LOCTEXT("WidgetAnimationsTabName", "Widget Animations"))
 		.SetTooltipText(LOCTEXT("WidgetAnimationsTabTooltip", "Build the widget animation: its tracks, keys and preview settings."))
@@ -297,8 +313,11 @@ namespace
 	 *
 	 * The drawer is dismissed first, as the native Dock in Layout dismisses its own. It slides up over the very
 	 * place the tab opens, so a tab docked behind an open drawer looks as if nothing happened at all.
+	 *
+	 * Docked, the choice is kept (WidgetAnimDockPreference): every Widget Blueprint editor opened after - this session or the
+	 * next - docks it again as it opens, with bRestore: quietly, nothing brought forward, the drawer left alone.
 	 */
-	void DockInLayout(TWeakPtr<FAssetEditorToolkit> WeakToolkit, TSharedRef<IWidgetAnimPanelSource> PanelSource)
+	void DockInLayout(TWeakPtr<FAssetEditorToolkit> WeakToolkit, TSharedRef<IWidgetAnimPanelSource> PanelSource, bool bRestore = false)
 	{
 		const TSharedPtr<FAssetEditorToolkit> Toolkit = WeakToolkit.Pin();
 		const TSharedPtr<FTabManager> TabManager = Toolkit.IsValid() ? Toolkit->GetTabManager() : nullptr;
@@ -307,17 +326,24 @@ namespace
 			return;
 		}
 
-		if (UStatusBarSubsystem* StatusBars = GEditor ? GEditor->GetEditorSubsystem<UStatusBarSubsystem>() : nullptr)
+		if (UStatusBarSubsystem* StatusBars = !bRestore && GEditor ? GEditor->GetEditorSubsystem<UStatusBarSubsystem>() : nullptr)
 		{
 			StatusBars->ForceDismissDrawer();
 		}
 
-		EnsureTabSpawner(TabManager, PanelSource);
+		EnsureTabSpawner(TabManager, PanelSource, WeakToolkit);
 
-		auto BringForward = [&TabManager](const TSharedRef<SDockTab>& Tab)
+		auto BringForward = [&TabManager, bRestore](const TSharedRef<SDockTab>& Tab)
 		{
-			Tab->ActivateInParent(ETabActivationCause::SetDirectly);
-			TabManager->DrawAttention(Tab);
+			if (!bRestore)
+			{
+				Tab->ActivateInParent(ETabActivationCause::SetDirectly);
+				TabManager->DrawAttention(Tab);
+			}
+		};
+		auto RememberDocked = [&Toolkit]()
+		{
+			WidgetAnimDockPreference::SetDocked(WidgetAnimDockPreference::WidgetAnimationsPanel, WidgetAnimDockPreference::GetEditorMode(Toolkit));
 		};
 
 		// Open already - docked by this, or put somewhere by hand: there.
@@ -326,6 +352,7 @@ namespace
 			if (const TSharedPtr<SDockTab> Live = TabManager->FindExistingLiveTab(FTabId(OpenId)))
 			{
 				BringForward(Live.ToSharedRef());
+				RememberDocked();
 				return;
 			}
 		}
@@ -335,9 +362,10 @@ namespace
 		{
 			if (TabManager->FindExistingLiveTab(FTabId(NativeTabId)).IsValid())
 			{
-				const TSharedRef<SDockTab> PanelTab = MakeWidgetAnimationsTab(PanelSource);
-				TabManager->InsertNewDocumentTab(WidgetAnimationsDockedTabId, FTabManager::FLiveTabSearch(NativeTabId), PanelTab);
+				const TSharedRef<SDockTab> PanelTab = MakeWidgetAnimationsTab(PanelSource, WeakToolkit);
+				WidgetAnimDockPreference::InsertDocumentTab(*TabManager, WidgetAnimationsDockedTabId, FTabManager::FLiveTabSearch(NativeTabId), PanelTab);
 				BringForward(PanelTab);
+				RememberDocked();
 				return;
 			}
 		}
@@ -346,6 +374,7 @@ namespace
 		if (const TSharedPtr<SDockTab> Opened = TabManager->TryInvokeTab(FTabId(WidgetAnimationsTabId)))
 		{
 			BringForward(Opened.ToSharedRef());
+			RememberDocked();
 		}
 	}
 
@@ -605,7 +634,21 @@ namespace
 		{
 			return Candidate.Toolkit.Pin() == Toolkit;
 		});
-		return Entry && Entry->bScriptingDocked;
+		return (Entry && Entry->bScriptingDocked) || WidgetAnimDockPreference::IsDockedIn(WidgetAnimDockPreference::ScriptingPanel, Toolkit);
+	}
+
+	/**
+	 * Takes Tab out of its well at once. A close request alone can leave it among the live tabs a moment longer, and the next
+	 * insert under the same id then trips the tab manager's ensure (FindTabInLiveAreas) - a callstack capture, a hitch.
+	 */
+	void CloseTabNow(const TSharedRef<SDockTab>& Tab)
+	{
+		const TSharedPtr<FTabManager> Manager = Tab->GetTabManagerPtr();
+		Tab->RequestCloseTab();
+		if (Manager.IsValid() && Manager->FindExistingLiveTab(Tab->GetLayoutIdentifier()) == Tab)
+		{
+			Tab->RemoveTabFromParent();
+		}
 	}
 
 	/** Closes this editor's scripting tab, wherever it is. */
@@ -641,12 +684,15 @@ namespace
 			}));
 		}
 
-		return SNew(SWidgetAnimScriptPanel)
+		// Watched: closing the tab by hand means it isn't docked any more (WidgetAnimDockPreference).
+		return WidgetAnimDockPreference::Watch(WidgetAnimDockPreference::ScriptingPanel, WeakToolkit,
+			[WeakToolkit]() { const TSharedPtr<FAssetEditorToolkit> Toolkit = WeakToolkit.Pin(); return Toolkit.IsValid() && FindLiveScriptingTab(Toolkit->GetTabManager()).IsValid(); },
+			SNew(SWidgetAnimScriptPanel)
 			.FindPanel([WeakToolkit]() { return FindScriptedPanel(WeakToolkit); })
 			.FindSource([WeakToolkit]() { return FindScriptedSource(WeakToolkit); })
 			.ScriptKey(GetScriptingKey(WeakToolkit))
 			.Docked(true)
-			.OnClose_Lambda([WeakToolkit]() { CloseScriptingTab(WeakToolkit); });
+			.OnClose_Lambda([WeakToolkit]() { CloseScriptingTab(WeakToolkit); }));
 	}
 
 	TSharedRef<SDockTab> MakeScriptingTab(const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
@@ -721,7 +767,7 @@ namespace
 	 * tab's well under a spawner-less document id. Failing that, the tab's own slot in the layout - beside Details, where the
 	 * layout extension put it - or floating if the layout has none. Returns the tab, or null when there is no editor.
 	 */
-	TSharedPtr<SDockTab> DockScriptingInLayout(const TWeakPtr<FAssetEditorToolkit>& WeakToolkit)
+	TSharedPtr<SDockTab> DockScriptingInLayout(const TWeakPtr<FAssetEditorToolkit>& WeakToolkit, bool bRestore)
 	{
 		const TSharedPtr<FAssetEditorToolkit> Toolkit = WeakToolkit.Pin();
 		const TSharedPtr<FTabManager> TabManager = Toolkit.IsValid() ? Toolkit->GetTabManager() : nullptr;
@@ -731,7 +777,7 @@ namespace
 			return nullptr;
 		}
 
-		if (UStatusBarSubsystem* StatusBars = GEditor ? GEditor->GetEditorSubsystem<UStatusBarSubsystem>() : nullptr)
+		if (UStatusBarSubsystem* StatusBars = !bRestore && GEditor ? GEditor->GetEditorSubsystem<UStatusBarSubsystem>() : nullptr)
 		{
 			StatusBars->ForceDismissDrawer();
 		}
@@ -741,8 +787,14 @@ namespace
 
 		EnsureScriptingTabSpawner(TabManager, WeakToolkit);
 
-		auto BringForward = [](const TSharedRef<SDockTab>& Tab)
+		// Docked: brought forward (not when restored as the editor opens), and the choice kept for every editor opened after.
+		auto BringForward = [&Toolkit, bRestore](const TSharedRef<SDockTab>& Tab)
 		{
+			WidgetAnimDockPreference::SetDocked(WidgetAnimDockPreference::ScriptingPanel, WidgetAnimDockPreference::GetEditorMode(Toolkit));
+			if (bRestore)
+			{
+				return;
+			}
 			Tab->ActivateInParent(ETabActivationCause::SetDirectly);
 			if (const TSharedPtr<FTabManager> Manager = Tab->GetTabManagerPtr())
 			{
@@ -760,15 +812,28 @@ namespace
 				return Live;
 			}
 			UE_LOG(LogWidgetAnimScripting, Log, TEXT("Dock in Layout: the tab was floating in a window of its own - docking it in the editor instead."));
-			Live->RequestCloseTab();
+			CloseTabNow(Live.ToSharedRef());
 		}
 
 		// Beside the Details tab - else the next place on the list.
 		for (const TSharedRef<SDockTab>& Beside : FindScriptingDockTargets(Toolkit.ToSharedRef(), TabManager))
 		{
 			const TSharedPtr<FTabManager> DockManager = Beside->GetTabManagerPtr().IsValid() ? Beside->GetTabManagerPtr() : TabManager;
+
+			// One docked already under this manager - which the editor's own manager doesn't list when the well is another
+			// manager's: brought forward. One left floating there: closed first, so no two tabs ever share the id.
+			if (const TSharedPtr<SDockTab> Existing = DockManager->FindExistingLiveTab(FTabId(WidgetAnimationScriptingDockedTabId)))
+			{
+				if (!Existing->GetParentWindow().IsValid())
+				{
+					BringForward(Existing.ToSharedRef());
+					return Existing;
+				}
+				CloseTabNow(Existing.ToSharedRef());
+			}
+
 			const TSharedRef<SDockTab> Tab = MakeScriptingTab(WeakToolkit);
-			DockManager->InsertNewDocumentTab(WidgetAnimationScriptingDockedTabId, FScriptingDockBesideTab(Beside), Tab);
+			WidgetAnimDockPreference::InsertDocumentTab(*DockManager, WidgetAnimationScriptingDockedTabId, FScriptingDockBesideTab(Beside), Tab);
 
 			const TSharedPtr<SWidget> TabWell = Tab->GetParentWidget();
 			if ((TabWell.IsValid() && TabWell == Beside->GetParentWidget()) || DockManager->FindExistingLiveTab(Tab->GetLayoutIdentifier()) == Tab)
@@ -778,7 +843,7 @@ namespace
 				return Tab;
 			}
 			UE_LOG(LogWidgetAnimScripting, Warning, TEXT("Dock in Layout: couldn't put the tab beside '%s' (%s)."), *Beside->GetTabLabel().ToString(), *Beside->GetLayoutIdentifier().ToString());
-			Tab->RequestCloseTab();
+			CloseTabNow(Tab);
 		}
 
 		// Its own slot in the layout, wherever that is.
@@ -808,7 +873,7 @@ namespace
 			.ScriptKey(GetScriptingKey(WeakToolkit))
 			.InDrawer(true)
 			.OnClose_Lambda(DismissDrawer)
-			.OnDock_Lambda([WeakToolkit]() { DockScriptingInLayout(WeakToolkit); });
+			.OnDock_Lambda([WeakToolkit]() { DockScriptingInLayout(WeakToolkit, /*bRestore=*/false); });
 	}
 
 	/** Puts this editor's Widget Animation Scripting drawer on its status bar, right after Widget Animations - replacing it if it is there. */
@@ -925,7 +990,7 @@ namespace
 			// Normally the editor's mode has registered the tab already (see FWidgetAnimationsTabSummoner); every
 			// time rather than once in case it hasn't, since switching between the Designer and the Graph clears
 			// every spawner on the editor's tab manager.
-			EnsureTabSpawner(LiveToolkit->GetTabManager(), PanelSource);
+			EnsureTabSpawner(LiveToolkit->GetTabManager(), PanelSource, LiveToolkit);
 			EnsureScriptingTabSpawner(LiveToolkit->GetTabManager(), LiveToolkit);
 
 			PlaceDrawer(LiveToolkit.ToSharedRef(), *Entry);
@@ -933,6 +998,27 @@ namespace
 
 			// The Widget Animation State Machine editor's drawer, right after Widget Animation Scripting - its tab spawner too.
 			WidgetAnimStateMachineEditorHooks::PlaceDrawer(LiveToolkit.ToSharedRef(), WidgetAnimationScriptingDrawerSlot + 1);
+
+			// The panels docked last time - in this session or an earlier one, in this mode - docked again, quietly. A moment
+			// later, once the editor's layout (rebuilt with each switch between the Designer and the Graph) has its tabs.
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakToolkit, PanelSource](float) -> bool
+			{
+				const TSharedPtr<FAssetEditorToolkit> RestoreToolkit = WeakToolkit.Pin();
+				if (!RestoreToolkit.IsValid() || !RestoreToolkit->IsHosted())
+				{
+					return false;
+				}
+				if (WidgetAnimDockPreference::IsDockedIn(WidgetAnimDockPreference::WidgetAnimationsPanel, RestoreToolkit))
+				{
+					DockInLayout(WeakToolkit, PanelSource, /*bRestore=*/true);
+				}
+				if (WidgetAnimDockPreference::IsDockedIn(WidgetAnimDockPreference::ScriptingPanel, RestoreToolkit))
+				{
+					DockScriptingInLayout(WeakToolkit, /*bRestore=*/true);
+				}
+				WidgetAnimStateMachineEditorHooks::RestoreDock(RestoreToolkit.ToSharedRef());
+				return false;
+			}), 0.3f);
 			return false; // one shot
 		}));
 	}
@@ -1403,7 +1489,7 @@ void FWidgetAnimBuilderToolbar::Register()
 TSharedPtr<SDockTab> FWidgetAnimBuilderToolbar::DockScripting(const UWidgetBlueprint* WidgetBlueprint)
 {
 	const TSharedPtr<FAssetEditorToolkit> Toolkit = FindToolkitFor(WidgetBlueprint);
-	return Toolkit.IsValid() ? DockScriptingInLayout(Toolkit) : nullptr;
+	return Toolkit.IsValid() ? DockScriptingInLayout(Toolkit, /*bRestore=*/false) : nullptr;
 }
 
 bool FWidgetAnimBuilderToolbar::IsScriptingDocked(const UWidgetBlueprint* WidgetBlueprint)

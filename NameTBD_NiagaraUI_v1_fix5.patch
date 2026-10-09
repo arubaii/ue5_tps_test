@@ -1,0 +1,574 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIParameters.cpp b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIParameters.cpp
+index ee63715..f04f5ca 100644
+--- a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIParameters.cpp
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIParameters.cpp
+@@ -2,9 +2,16 @@
+ 
+ #include "NiagaraUIParameters.h"
+ 
++#include "Curves/CurveFloat.h"
++#include "Curves/CurveLinearColor.h"
++#include "Curves/CurveVector.h"
++#include "Curves/RichCurve.h"
+ #include "Engine/Texture.h"
+ #include "Materials/MaterialInterface.h"
+ #include "NiagaraComponent.h"
++#include "NiagaraDataInterface.h"
++#include "NiagaraDataInterfaceArrayFunctionLibrary.h"
++#include "NiagaraDataInterfaceCurveBase.h"
+ #include "NiagaraSystem.h"
+ #include "NiagaraTypes.h"
+ #include "NiagaraUserRedirectionParameterStore.h"
+@@ -13,8 +20,479 @@ namespace NiagaraUIParameters
+ {
+ 	namespace
+ 	{
++		// ---------------------------------------------------------------------------------------------
++		// Data interfaces: curves and arrays
++		// ---------------------------------------------------------------------------------------------
++
+ 		/**
+-		 * What one of the system's User parameters is in the bag - false for a type it can't hold (a data interface).
++		 * The User parameter data interfaces listed: those that hold a value a UI effect is tuned by. Known by class name, so
++		 * none of their headers - nor their exports - are needed. Texture Sample isn't one: it samples on the GPU only, and only
++		 * CPU emitters are drawn in UI. Mesh, grid, render target and other scene data interfaces mean nothing in UI.
++		 */
++		enum class EDataInterfaceKind : uint8
++		{
++			None,
++			Curve,
++			ColorCurve,
++			VectorCurve,
++			Vector2DCurve,
++			ArrayFloat,
++			ArrayInt32,
++			ArrayBool,
++			ArrayVector2D,
++			ArrayVector,
++			ArrayPosition,
++			ArrayVector4,
++			ArrayColor,
++			ArrayQuat
++		};
++
++		EDataInterfaceKind GetDataInterfaceKind(const UClass* Class)
++		{
++			static const TMap<FName, EDataInterfaceKind> Kinds =
++			{
++				{ TEXT("NiagaraDataInterfaceCurve"), EDataInterfaceKind::Curve },
++				{ TEXT("NiagaraDataInterfaceColorCurve"), EDataInterfaceKind::ColorCurve },
++				{ TEXT("NiagaraDataInterfaceVectorCurve"), EDataInterfaceKind::VectorCurve },
++				{ TEXT("NiagaraDataInterfaceVector2DCurve"), EDataInterfaceKind::Vector2DCurve },
++				{ TEXT("NiagaraDataInterfaceArrayFloat"), EDataInterfaceKind::ArrayFloat },
++				{ TEXT("NiagaraDataInterfaceArrayInt32"), EDataInterfaceKind::ArrayInt32 },
++				{ TEXT("NiagaraDataInterfaceArrayBool"), EDataInterfaceKind::ArrayBool },
++				{ TEXT("NiagaraDataInterfaceArrayFloat2"), EDataInterfaceKind::ArrayVector2D },
++				{ TEXT("NiagaraDataInterfaceArrayFloat3"), EDataInterfaceKind::ArrayVector },
++				{ TEXT("NiagaraDataInterfaceArrayPosition"), EDataInterfaceKind::ArrayPosition },
++				{ TEXT("NiagaraDataInterfaceArrayFloat4"), EDataInterfaceKind::ArrayVector4 },
++				{ TEXT("NiagaraDataInterfaceArrayColor"), EDataInterfaceKind::ArrayColor },
++				{ TEXT("NiagaraDataInterfaceArrayQuat"), EDataInterfaceKind::ArrayQuat },
++			};
++			const EDataInterfaceKind* Kind = Class ? Kinds.Find(Class->GetFName()) : nullptr;
++			return Kind ? *Kind : EDataInterfaceKind::None;
++		}
++
++		bool IsCurveKind(EDataInterfaceKind Kind)
++		{
++			return Kind == EDataInterfaceKind::Curve || Kind == EDataInterfaceKind::ColorCurve || Kind == EDataInterfaceKind::VectorCurve || Kind == EDataInterfaceKind::Vector2DCurve;
++		}
++
++		/** A curve data interface's curves, by their property names: what the bag's curve struct holds, channel by channel. */
++		TArrayView<const TCHAR* const> GetCurveNames(EDataInterfaceKind Kind)
++		{
++			static const TCHAR* const Single[] = { TEXT("Curve") };
++			static const TCHAR* const Color[] = { TEXT("RedCurve"), TEXT("GreenCurve"), TEXT("BlueCurve"), TEXT("AlphaCurve") };
++			static const TCHAR* const Vector[] = { TEXT("XCurve"), TEXT("YCurve"), TEXT("ZCurve") };
++			switch (Kind)
++			{
++			case EDataInterfaceKind::Curve: return Single;
++			case EDataInterfaceKind::ColorCurve: return Color;
++			case EDataInterfaceKind::VectorCurve: return Vector;
++			case EDataInterfaceKind::Vector2DCurve: return TArrayView<const TCHAR* const>(Vector, 2);
++			default: return {};
++			}
++		}
++
++		/** The struct a curve is listed as: Curve for Floats as a float curve, Color Curve as a color curve, the vector ones as a vector curve (a Vector 2D Curve its X and Y). */
++		const UScriptStruct* GetCurveStruct(EDataInterfaceKind Kind)
++		{
++			switch (Kind)
++			{
++			case EDataInterfaceKind::Curve: return FRuntimeFloatCurve::StaticStruct();
++			case EDataInterfaceKind::ColorCurve: return FRuntimeCurveLinearColor::StaticStruct();
++			case EDataInterfaceKind::VectorCurve:
++			case EDataInterfaceKind::Vector2DCurve: return FRuntimeVectorCurve::StaticStruct();
++			default: return nullptr;
++			}
++		}
++
++		/** Channel Index of a bag's curve struct at Value (of StructType) - its external curve's when it names one. */
++		FRichCurve* GetBagCurve(const UScriptStruct* StructType, void* Value, int32 Index)
++		{
++			if (StructType == FRuntimeFloatCurve::StaticStruct())
++			{
++				FRuntimeFloatCurve& Curve = *static_cast<FRuntimeFloatCurve*>(Value);
++				return Index == 0 ? (Curve.ExternalCurve ? &Curve.ExternalCurve->FloatCurve : &Curve.EditorCurveData) : nullptr;
++			}
++			if (StructType == FRuntimeCurveLinearColor::StaticStruct())
++			{
++				FRuntimeCurveLinearColor& Curve = *static_cast<FRuntimeCurveLinearColor*>(Value);
++				return Index >= 0 && Index < 4 ? (Curve.ExternalCurve ? &Curve.ExternalCurve->FloatCurves[Index] : &Curve.ColorCurves[Index]) : nullptr;
++			}
++			if (StructType == FRuntimeVectorCurve::StaticStruct())
++			{
++				FRuntimeVectorCurve& Curve = *static_cast<FRuntimeVectorCurve*>(Value);
++				return Index >= 0 && Index < 3 ? (Curve.ExternalCurve ? &Curve.ExternalCurve->FloatCurves[Index] : &Curve.VectorCurves[Index]) : nullptr;
++			}
++			return nullptr;
++		}
++
++		/** Curve Name of a curve data interface. */
++		FRichCurve* GetDataInterfaceCurve(UNiagaraDataInterface* DataInterface, const TCHAR* Name)
++		{
++			const FStructProperty* Property = DataInterface ? FindFProperty<FStructProperty>(DataInterface->GetClass(), Name) : nullptr;
++			return Property && Property->Struct == FRichCurve::StaticStruct() ? Property->ContainerPtrToValuePtr<FRichCurve>(DataInterface) : nullptr;
++		}
++
++		/** Where parameter Desc of Bag keeps its value, to write. */
++		void* GetMutableBagValuePtr(FInstancedPropertyBag& Bag, const FPropertyBagPropertyDesc& Desc)
++		{
++			uint8* Memory = Bag.GetMutableValue().GetMemory();
++			return Memory && Desc.CachedProperty ? Desc.CachedProperty->ContainerPtrToValuePtr<void>(Memory) : nullptr;
++		}
++
++		const void* GetBagValuePtr(const FInstancedPropertyBag& Bag, const FPropertyBagPropertyDesc& Desc)
++		{
++			const uint8* Memory = Bag.GetValue().GetMemory();
++			return Memory && Desc.CachedProperty ? Desc.CachedProperty->ContainerPtrToValuePtr<void>(Memory) : nullptr;
++		}
++
++		/** An array parameter of a bag, as a typed array - T matching the bag's element type. */
++		template <typename T>
++		TArray<T> ReadBagArray(const FInstancedPropertyBag& Bag, const FPropertyBagPropertyDesc& Desc)
++		{
++			TArray<T> Result;
++			const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Desc.CachedProperty);
++			const void* Value = GetBagValuePtr(Bag, Desc);
++			if (!ArrayProperty || !Value || ArrayProperty->Inner->GetElementSize() != sizeof(T))
++			{
++				return Result;
++			}
++			FScriptArrayHelper Helper(ArrayProperty, Value);
++			Result.Reserve(Helper.Num());
++			for (int32 Index = 0; Index < Helper.Num(); ++Index)
++			{
++				Result.Add(*reinterpret_cast<const T*>(Helper.GetRawPtr(Index)));
++			}
++			return Result;
++		}
++
++		template <typename T>
++		void WriteBagArray(FInstancedPropertyBag& Bag, const FPropertyBagPropertyDesc& Desc, const TArray<T>& Items)
++		{
++			const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Desc.CachedProperty);
++			void* Value = GetMutableBagValuePtr(Bag, Desc);
++			if (!ArrayProperty || !Value || ArrayProperty->Inner->GetElementSize() != sizeof(T))
++			{
++				return;
++			}
++			FScriptArrayHelper Helper(ArrayProperty, Value);
++			Helper.Resize(Items.Num());
++			for (int32 Index = 0; Index < Items.Num(); ++Index)
++			{
++				*reinterpret_cast<T*>(Helper.GetRawPtr(Index)) = Items[Index];
++			}
++		}
++
++		/**
++		 * The values an array data interface holds, NumFloats floats each (or one int / bool), read through its one array
++		 * property - by reflection, so its member's name doesn't matter.
++		 */
++		const FArrayProperty* FindDataInterfaceArray(const UNiagaraDataInterface* DataInterface)
++		{
++			if (!DataInterface)
++			{
++				return nullptr;
++			}
++			for (TFieldIterator<FArrayProperty> It(DataInterface->GetClass()); It; ++It)
++			{
++				return *It;
++			}
++			return nullptr;
++		}
++
++		TArray<float> ReadDataInterfaceFloats(const UNiagaraDataInterface* DataInterface, int32 NumFloats)
++		{
++			TArray<float> Flat;
++			const FArrayProperty* ArrayProperty = FindDataInterfaceArray(DataInterface);
++			if (!ArrayProperty || ArrayProperty->Inner->GetElementSize() != NumFloats * static_cast<int32>(sizeof(float)))
++			{
++				return Flat;
++			}
++			FScriptArrayHelper Helper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(DataInterface));
++			Flat.Reserve(Helper.Num() * NumFloats);
++			for (int32 Index = 0; Index < Helper.Num(); ++Index)
++			{
++				const float* Element = reinterpret_cast<const float*>(Helper.GetRawPtr(Index));
++				Flat.Append(Element, NumFloats);
++			}
++			return Flat;
++		}
++
++		template <typename T>
++		TArray<T> ReadDataInterfaceValues(const UNiagaraDataInterface* DataInterface)
++		{
++			TArray<T> Values;
++			const FArrayProperty* ArrayProperty = FindDataInterfaceArray(DataInterface);
++			if (!ArrayProperty || ArrayProperty->Inner->GetElementSize() != sizeof(T))
++			{
++				return Values;
++			}
++			FScriptArrayHelper Helper(ArrayProperty, ArrayProperty->ContainerPtrToValuePtr<void>(DataInterface));
++			Values.Reserve(Helper.Num());
++			for (int32 Index = 0; Index < Helper.Num(); ++Index)
++			{
++				Values.Add(*reinterpret_cast<const T*>(Helper.GetRawPtr(Index)));
++			}
++			return Values;
++		}
++
++		/** What a data interface parameter is in the bag. False for one it doesn't list. */
++		bool MakeDataInterfaceDesc(FName Name, const UClass* Class, FPropertyBagPropertyDesc& OutDesc)
++		{
++			const EDataInterfaceKind Kind = GetDataInterfaceKind(Class);
++			if (IsCurveKind(Kind))
++			{
++				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Struct, GetCurveStruct(Kind));
++				return true;
++			}
++			const auto MakeArray = [&OutDesc, Name](EPropertyBagPropertyType ValueType, const UObject* ValueTypeObject = nullptr)
++			{
++				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagContainerType::Array, ValueType, ValueTypeObject);
++				return true;
++			};
++			switch (Kind)
++			{
++			case EDataInterfaceKind::ArrayFloat: return MakeArray(EPropertyBagPropertyType::Float);
++			case EDataInterfaceKind::ArrayInt32: return MakeArray(EPropertyBagPropertyType::Int32);
++			case EDataInterfaceKind::ArrayBool: return MakeArray(EPropertyBagPropertyType::Bool);
++			case EDataInterfaceKind::ArrayVector2D: return MakeArray(EPropertyBagPropertyType::Struct, TBaseStructure<FVector2D>::Get());
++			case EDataInterfaceKind::ArrayVector:
++			case EDataInterfaceKind::ArrayPosition: return MakeArray(EPropertyBagPropertyType::Struct, TBaseStructure<FVector>::Get());
++			case EDataInterfaceKind::ArrayVector4: return MakeArray(EPropertyBagPropertyType::Struct, TBaseStructure<FVector4>::Get());
++			case EDataInterfaceKind::ArrayColor: return MakeArray(EPropertyBagPropertyType::Struct, TBaseStructure<FLinearColor>::Get());
++			case EDataInterfaceKind::ArrayQuat: return MakeArray(EPropertyBagPropertyType::Struct, TBaseStructure<FQuat>::Get());
++			default: return false;
++			}
++		}
++
++		/** A data interface's value (the system's), into Bag's parameter Name. */
++		void ReadDataInterfaceValue(UNiagaraDataInterface* DataInterface, FName Name, FInstancedPropertyBag& Bag)
++		{
++			const FPropertyBagPropertyDesc* Desc = DataInterface ? Bag.FindPropertyDescByName(Name) : nullptr;
++			if (!Desc)
++			{
++				return;
++			}
++			const EDataInterfaceKind Kind = GetDataInterfaceKind(DataInterface->GetClass());
++
++			if (IsCurveKind(Kind))
++			{
++				void* Value = GetMutableBagValuePtr(Bag, *Desc);
++				const UScriptStruct* StructType = Cast<UScriptStruct>(Desc->ValueTypeObject);
++				const TArrayView<const TCHAR* const> Names = GetCurveNames(Kind);
++				for (int32 Index = 0; Value && Index < Names.Num(); ++Index)
++				{
++					FRichCurve* Into = GetBagCurve(StructType, Value, Index);
++					const FRichCurve* From = GetDataInterfaceCurve(DataInterface, Names[Index]);
++					if (Into && From)
++					{
++						*Into = *From;
++					}
++				}
++				return;
++			}
++
++			// Each element as the bag holds it: the data interface's floats widened to doubles where the bag's type is.
++			const auto ReadFloats = [DataInterface](int32 NumFloats) { return ReadDataInterfaceFloats(DataInterface, NumFloats); };
++			switch (Kind)
++			{
++			case EDataInterfaceKind::ArrayFloat:
++				WriteBagArray(Bag, *Desc, ReadFloats(1));
++				break;
++			case EDataInterfaceKind::ArrayInt32:
++				WriteBagArray(Bag, *Desc, ReadDataInterfaceValues<int32>(DataInterface));
++				break;
++			case EDataInterfaceKind::ArrayBool:
++				WriteBagArray(Bag, *Desc, ReadDataInterfaceValues<bool>(DataInterface));
++				break;
++			case EDataInterfaceKind::ArrayVector2D:
++			{
++				const TArray<float> Flat = ReadFloats(2);
++				TArray<FVector2D> Items;
++				for (int32 Index = 0; Index + 1 < Flat.Num(); Index += 2)
++				{
++					Items.Emplace(Flat[Index], Flat[Index + 1]);
++				}
++				WriteBagArray(Bag, *Desc, Items);
++				break;
++			}
++			case EDataInterfaceKind::ArrayVector:
++			case EDataInterfaceKind::ArrayPosition:
++			{
++				const TArray<float> Flat = ReadFloats(3);
++				TArray<FVector> Items;
++				for (int32 Index = 0; Index + 2 < Flat.Num(); Index += 3)
++				{
++					Items.Emplace(Flat[Index], Flat[Index + 1], Flat[Index + 2]);
++				}
++				WriteBagArray(Bag, *Desc, Items);
++				break;
++			}
++			case EDataInterfaceKind::ArrayVector4:
++			case EDataInterfaceKind::ArrayColor:
++			case EDataInterfaceKind::ArrayQuat:
++			{
++				const TArray<float> Flat = ReadFloats(4);
++				TArray<FVector4> Vectors;
++				TArray<FLinearColor> Colors;
++				TArray<FQuat> Quats;
++				for (int32 Index = 0; Index + 3 < Flat.Num(); Index += 4)
++				{
++					Vectors.Emplace(Flat[Index], Flat[Index + 1], Flat[Index + 2], Flat[Index + 3]);
++					Colors.Emplace(Flat[Index], Flat[Index + 1], Flat[Index + 2], Flat[Index + 3]);
++					Quats.Emplace(Flat[Index], Flat[Index + 1], Flat[Index + 2], Flat[Index + 3]);
++				}
++				if (Kind == EDataInterfaceKind::ArrayVector4)
++				{
++					WriteBagArray(Bag, *Desc, Vectors);
++				}
++				else if (Kind == EDataInterfaceKind::ArrayColor)
++				{
++					WriteBagArray(Bag, *Desc, Colors);
++				}
++				else
++				{
++					WriteBagArray(Bag, *Desc, Quats);
++				}
++				break;
++			}
++			default:
++				break;
++			}
++		}
++
++		/** The system's User parameter named Name (short, as the bag lists it), as Component plays it. */
++		bool FindUserVariable(UNiagaraComponent* Component, FName Name, FNiagaraVariable& OutVariable)
++		{
++			UNiagaraSystem* System = Component ? Component->GetAsset() : nullptr;
++			if (!System)
++			{
++				return false;
++			}
++			TArray<FNiagaraVariable> UserVariables;
++			System->GetExposedParameters().GetUserParameters(UserVariables);
++			for (const FNiagaraVariable& Variable : UserVariables)
++			{
++				if (GetShortName(Variable.GetName()) == Name)
++				{
++					OutVariable = Variable;
++					return true;
++				}
++			}
++			return false;
++		}
++
++		/** Whether a bag parameter can only be a data interface's: an array, or a curve struct. */
++		bool IsDataInterfaceDesc(const FPropertyBagPropertyDesc& Desc)
++		{
++			if (CastField<FArrayProperty>(Desc.CachedProperty))
++			{
++				return true;
++			}
++			const UObject* StructType = Desc.ValueType == EPropertyBagPropertyType::Struct ? Desc.ValueTypeObject.Get() : nullptr;
++			return StructType && (StructType == FRuntimeFloatCurve::StaticStruct() || StructType == FRuntimeCurveLinearColor::StaticStruct() || StructType == FRuntimeVectorCurve::StaticStruct());
++		}
++
++		/** Hands a data interface parameter Desc of Bag to Component. False when Component's system has no such data interface. */
++		bool ApplyDataInterface(UNiagaraComponent* Component, const FInstancedPropertyBag& Bag, const FPropertyBagPropertyDesc& Desc)
++		{
++			FNiagaraVariable Variable;
++			if (!FindUserVariable(Component, Desc.Name, Variable) || !Variable.GetType().IsDataInterface())
++			{
++				return false;
++			}
++			const EDataInterfaceKind Kind = GetDataInterfaceKind(Variable.GetType().GetClass());
++			const FName FullName = Variable.GetName();
++
++			if (IsCurveKind(Kind))
++			{
++				FNiagaraUserRedirectionParameterStore& Store = Component->GetOverrideParameters();
++				UNiagaraDataInterface* Current = Store.GetDataInterface(Variable);
++				const UScriptStruct* StructType = Cast<UScriptStruct>(Desc.ValueTypeObject);
++				void* Value = const_cast<void*>(GetBagValuePtr(Bag, Desc));
++				if (!Current || !Value || StructType != GetCurveStruct(Kind))
++				{
++					return false;
++				}
++
++				// Already these curves: nothing to do - the usual case, as most starts hand the same values on again.
++				const TArrayView<const TCHAR* const> Names = GetCurveNames(Kind);
++				bool bSame = true;
++				for (int32 Index = 0; bSame && Index < Names.Num(); ++Index)
++				{
++					const FRichCurve* Have = GetDataInterfaceCurve(Current, Names[Index]);
++					const FRichCurve* Want = GetBagCurve(StructType, Value, Index);
++					bSame = !Have || !Want || FRichCurve::StaticStruct()->CompareScriptStruct(Have, Want, 0);
++				}
++				if (bSame)
++				{
++					return true;
++				}
++
++				// A fresh copy with the new curves, swapped in - never the one a running simulation may be reading on another
++				// thread, nor (should the component ever share it) the system's own.
++				UNiagaraDataInterface* Copy = DuplicateObject<UNiagaraDataInterface>(Current, Component);
++				Copy->SetFlags(RF_Transient);
++				for (int32 Index = 0; Index < Names.Num(); ++Index)
++				{
++					FRichCurve* Into = GetDataInterfaceCurve(Copy, Names[Index]);
++					const FRichCurve* From = GetBagCurve(StructType, Value, Index);
++					if (Into && From)
++					{
++						*Into = *From;
++					}
++				}
++
++				// The lookup table the simulation samples is made from the curves: made again from the new ones.
++				static const UClass* CurveBaseClass = FindObject<UClass>(nullptr, TEXT("/Script/Niagara.NiagaraDataInterfaceCurveBase"));
++				if (CurveBaseClass && Copy->IsA(CurveBaseClass))
++				{
++					UNiagaraDataInterfaceCurveBase* CurveInterface = static_cast<UNiagaraDataInterfaceCurveBase*>(Copy);
++					CurveInterface->UpdateTimeRanges();
++					CurveInterface->UpdateLUT();
++				}
++
++				// Bound as the simulation is made: made again (a playing one starts over - only when a curve really changed).
++				Store.SetDataInterface(Copy, Variable);
++				Component->ReinitializeSystem();
++				return true;
++			}
++
++			switch (Kind)
++			{
++			case EDataInterfaceKind::ArrayFloat:
++				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayFloat(Component, FullName, ReadBagArray<float>(Bag, Desc));
++				return true;
++			case EDataInterfaceKind::ArrayInt32:
++				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayInt32(Component, FullName, ReadBagArray<int32>(Bag, Desc));
++				return true;
++			case EDataInterfaceKind::ArrayBool:
++				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayBool(Component, FullName, ReadBagArray<bool>(Bag, Desc));
++				return true;
++			case EDataInterfaceKind::ArrayVector2D:
++				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector2D(Component, FullName, ReadBagArray<FVector2D>(Bag, Desc));
++				return true;
++			case EDataInterfaceKind::ArrayVector:
++				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector(Component, FullName, ReadBagArray<FVector>(Bag, Desc));
++				return true;
++			case EDataInterfaceKind::ArrayPosition:
++				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayPosition(Component, FullName, ReadBagArray<FVector>(Bag, Desc));
++				return true;
++			case EDataInterfaceKind::ArrayVector4:
++				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayVector4(Component, FullName, ReadBagArray<FVector4>(Bag, Desc));
++				return true;
++			case EDataInterfaceKind::ArrayColor:
++				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayColor(Component, FullName, ReadBagArray<FLinearColor>(Bag, Desc));
++				return true;
++			case EDataInterfaceKind::ArrayQuat:
++				UNiagaraDataInterfaceArrayFunctionLibrary::SetNiagaraArrayQuat(Component, FullName, ReadBagArray<FQuat>(Bag, Desc));
++				return true;
++			default:
++				return false;
++			}
++		}
++
++		/**
++		 * What one of the system's User parameters is in the bag - false for a type it can't hold (a data interface other
++		 * than a curve or an array).
+ 		 * Positions are vectors there, and said so (bOutPosition), so they are handed back as positions.
+ 		 */
+ 		bool MakeDesc(const FNiagaraVariable& Variable, FPropertyBagPropertyDesc& OutDesc, bool& bOutPosition)
+@@ -59,7 +537,12 @@ namespace NiagaraUIParameters
+ 			{
+ 				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Enum, Type.GetEnum());
+ 			}
+-			else if (Type.IsUObject() && !Type.IsDataInterface() && Type.GetClass())
++			else if (Type.IsDataInterface())
++			{
++				// Curves and arrays - see EDataInterfaceKind. Any other data interface isn't listed.
++				return MakeDataInterfaceDesc(Name, Type.GetClass(), OutDesc);
++			}
++			else if (Type.IsUObject() && Type.GetClass())
+ 			{
+ 				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Object, Type.GetClass());
+ 			}
+@@ -116,6 +599,10 @@ namespace NiagaraUIParameters
+ 			{
+ 				Bag.SetValueEnum(Name, static_cast<uint8>(Store.GetParameterValue<int32>(Variable)), Type.GetEnum());
+ 			}
++			else if (Type.IsDataInterface())
++			{
++				ReadDataInterfaceValue(Store.GetDataInterface(Variable), Name, Bag);
++			}
+ 			else if (Type.IsUObject())
+ 			{
+ 				Bag.SetValueObject(Name, Store.GetUObject(Variable));
+@@ -275,6 +762,13 @@ namespace NiagaraUIParameters
+ 
+ 	void Apply(UNiagaraComponent* Component, const FInstancedPropertyBag& Bag, const FPropertyBagPropertyDesc& Desc, const TArray<FName>& PositionNames)
+ 	{
++		// A curve or an array: the data interface's, set on the component's own copy of it. Never handed on as a value.
++		if (IsDataInterfaceDesc(Desc))
++		{
++			ApplyDataInterface(Component, Bag, Desc);
++			return;
++		}
++
+ 		const FName Name = Desc.Name;
+ 		switch (Desc.ValueType)
+ 		{
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIParameters.h b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIParameters.h
+index fe69943..af3929d 100644
+--- a/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIParameters.h
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIParameters.h
+@@ -16,6 +16,11 @@ class UNiagaraSystem;
+  *  - Values:        what is shown and edited - only those changed from the system's value are ever handed on;
+  *  - SystemValues:  the system's own values when it was last laid out - what tells a changed value from one following the system;
+  *  - PositionNames: the Position parameters, laid out as vectors, handed back as positions.
++ *
++ * Values: float, int, bool, enum, color, vectors, position, quat, objects. Data interfaces (fix5): the curves - as a float,
++ * color or vector curve struct - and the arrays - as an array of the element type - each set on the component's own copy of
++ * the data interface (arrays through Niagara's array function library; a changed curve by swapping in a copy and making the
++ * simulation again). Other data interfaces - Texture Sample (GPU only), meshes, grids, render targets - aren't listed.
+  */
+ namespace NiagaraUIParameters
+ {
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
+index d216fed..e006e6e 100644
+--- a/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
+@@ -224,8 +224,10 @@ public:
+ 	 * quat, position, texture, material and object it exposes - each starting at the system's own value. Change one and the
+ 	 * widget plays the system with it (bursts too). Kept in step with the system: a parameter added or removed in the Niagara
+ 	 * editor appears or goes the next time this widget is loaded or its system is set; one left at the system's value follows
+-	 * the system when that value changes there. Data interfaces aren't listed. Set from Blueprint with the Set ... Parameter
+-	 * functions.
++	 * the system when that value changes there. Curves (Curve for Floats, Color, Vector and Vector 2D Curve) and arrays (Float,
++	 * Int, Bool, Vector 2D, Vector, Position, Vector 4, Color, Quat Array) are listed too, as curves and lists to edit; other
++	 * data interfaces aren't. Changing a curve restarts what is playing. Set from Blueprint with the Set ... Parameter
++	 * functions (values), or on Get Niagara Component (curves and arrays).
+ 	 */
+ 	UPROPERTY(EditAnywhere, Category = "Parameters", meta = (DisplayName = "User Parameters", FixedLayout))
+ 	FInstancedPropertyBag UserParameters;

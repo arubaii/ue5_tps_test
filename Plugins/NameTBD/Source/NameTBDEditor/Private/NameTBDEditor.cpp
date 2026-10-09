@@ -133,8 +133,8 @@ void FNameTBDEditorModule::StartupModule()
 	IUMGEditorModule& UMGEditorModule = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
 
 	// Motion paths - where the Widget Animations panel's animation moves its widgets - on the UMG designer's canvas, with
-	// nothing selected: each designer's extension keeps the layer over it (see WidgetAnimMotionPath.h).
-	// First, so every other canvas tool's toolbar is drawn, and clicked, over its diamonds.
+	// nothing selected: the designer paints each extension every frame it draws, and this one draws the paths then (see
+	// WidgetAnimMotionPath.h). First, so every other extension draws over them.
 	MotionPathFactory = MakeShared<FWidgetAnimMotionPathFactory>();
 	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(MotionPathFactory.ToSharedRef());
 

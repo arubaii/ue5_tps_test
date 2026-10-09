@@ -1,6 +1,7 @@
 ﻿// Copyright AR GameSystems 2026. All rights reserved.
 
 #include "WidgetAnimPanelSource.h"
+#include "WidgetAnimTargetOption.h"
 
 #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimRuntimeSettings.h"
@@ -60,7 +61,7 @@ TArray<FString> IWidgetAnimPanelSource::GetTargetOptions() const
 	}
 
 	// First, so there is a way back to "the widget itself" once something has been picked.
-	Options.Insert(TEXT("None"), 0);
+	Options.Insert(WidgetAnimTargetOption::ThisWidget(), 0);
 	return Options;
 }
 
@@ -72,16 +73,16 @@ FString IWidgetAnimPanelSource::FindTargetOptionFor(const UWidget* Widget) const
 		return FString();
 	}
 
-	// The preview itself is the widget the animation is played on: None.
+	// The preview itself is the widget the animation is played on: (this widget), stored as None.
 	if (Widget == Root)
 	{
-		return TEXT("None");
+		return WidgetAnimTargetOption::ThisWidget();
 	}
 
 	// Whichever path finds it - the same paths the dropdown offers, so what is picked here reads the same there.
 	for (const FString& Option : GetTargetOptions())
 	{
-		if (Option != TEXT("None") && ResolvePreviewTarget(FName(*Option)) == Widget)
+		if (!WidgetAnimTargetOption::IsThisWidget(Option) && ResolvePreviewTarget(FName(*Option)) == Widget)
 		{
 			return Option;
 		}
@@ -341,6 +342,41 @@ UUserWidget* FindWidgetAnimDesignerPreview(const UWidgetBlueprint* Blueprint)
 	}
 
 	return Fallback;
+}
+
+FWidgetTransform GetWidgetAnimAuthoredTransform(const UWidget* PreviewWidget, const UWidgetBlueprint* Blueprint, float* OutOpacity)
+{
+	const UWidget* Authored = PreviewWidget;
+	const UClass* GeneratedClass = Blueprint ? Blueprint->GeneratedClass.Get() : nullptr;
+	if (PreviewWidget && GeneratedClass)
+	{
+		if (PreviewWidget->GetClass() == GeneratedClass)
+		{
+			// The preview itself: as its class says, which nothing plays on.
+			Authored = Cast<UWidget>(GeneratedClass->GetDefaultObject());
+		}
+		else if (Blueprint->WidgetTree)
+		{
+			// A widget of the preview's own tree: the Widget Blueprint's widget of the same name.
+			const UUserWidget* Owner = PreviewWidget->GetTypedOuter<UUserWidget>();
+			if (Owner && Owner->GetClass() == GeneratedClass)
+			{
+				if (const UWidget* Template = Blueprint->WidgetTree->FindWidget(PreviewWidget->GetFName()))
+				{
+					Authored = Template;
+				}
+			}
+		}
+	}
+	if (!Authored)
+	{
+		Authored = PreviewWidget;
+	}
+	if (OutOpacity)
+	{
+		*OutOpacity = Authored ? Authored->GetRenderOpacity() : 1.f;
+	}
+	return Authored ? Authored->GetRenderTransform() : FWidgetTransform();
 }
 
 // =====================================================================================================
@@ -1443,8 +1479,11 @@ bool FWidgetAnimAssetPanelSource::GetPosedAnimation(FPosedAnimation& OutPosed) c
 		UnposedSettings.Reset();
 		BuildFlattened(PreviewRoot, UnposedSettings);
 
-		// Its baselines are the preview's transforms as they stand, unposed - the authored ones. Only transforms: capturing
-		// a material parameter would give the widget a dynamic material, and the paths only read where widgets are.
+		// Its baselines are the widgets as authored - read from the Widget Blueprint's own widgets, not the preview's, which
+		// whatever plays on it (the designer toolbar's preview) moves: re-read twice a second from there, the motion paths and
+		// their keys would jump as it plays. Only transforms: capturing a material parameter would give the widget a dynamic
+		// material, and the paths only read where widgets are.
+		const UWidgetBlueprint* AuthoredBlueprint = Blueprint.Get();
 		UnposedBaselines = FWidgetAnimBaselineSet();
 		TArray<FWidgetAnimSettings> Expanded;
 		const TArray<FWidgetAnimSettings>& Stack = UWidgetAnimLibrary::ExpandSettings(PreviewRoot, UnposedSettings, Expanded) ? Expanded : UnposedSettings;
@@ -1458,10 +1497,11 @@ bool FWidgetAnimAssetPanelSource::GetPosedAnimation(FPosedAnimation& OutPosed) c
 			{
 				continue;
 			}
-			const FWidgetTransform& Authored = Target->GetRenderTransform();
+			float AuthoredOpacity = 1.f;
+			const FWidgetTransform Authored = GetWidgetAnimAuthoredTransform(Target, AuthoredBlueprint, &AuthoredOpacity);
 			FWidgetAnimBaseline& Baseline = UnposedBaselines.Baselines.AddDefaulted_GetRef();
 			Baseline.Widget = Target;
-			Baseline.Opacity = Target->GetRenderOpacity();
+			Baseline.Opacity = AuthoredOpacity;
 			Baseline.Scale = Authored.Scale;
 			Baseline.Translation = Authored.Translation;
 			Baseline.Shear = Authored.Shear;

@@ -395,10 +395,10 @@ private:
 	/** The designer's preview of the Widget Blueprint: what Preview Targets are paths into. Null outside a Widget Blueprint. */
 	UUserWidget* GetDesignerPreview() const;
 
-	/** Every widget a target can be, as paths - "None" first, for the widget the machine plays on. */
+	/** Every widget a target can be, as paths - (this widget) first, for the widget the machine plays on, stored as None. */
 	TArray<FString> GetTargetOptions() const;
 
-	/** The path that names Widget, or empty. "None" for the designer preview itself. */
+	/** The option that names Widget, or empty. (this widget) for the designer preview itself. */
 	FString FindTargetOptionFor(const UWidget* Widget) const;
 
 	/** The widget the machine plays on in the preview, and each target's: picked here, or else where they start. */
@@ -493,6 +493,9 @@ namespace WidgetAnimStateMachineEditorHooks
 
 	/** Puts the Widget Animation State Machine drawer on this editor's status bar, and makes sure its tab can be opened. */
 	void PlaceDrawer(const TSharedRef<FAssetEditorToolkit>& Toolkit, int32 Slot);
+
+	/** Docks the tab again, quietly, if it was docked last time in the mode this editor is in - see WidgetAnimDockPreference. */
+	void RestoreDock(const TSharedRef<FAssetEditorToolkit>& Toolkit);
 
 	/** Lets go of every drawer's editor - from the module's shutdown, before the machine asset's statics are gone. */
 	void Shutdown();

@@ -1110,7 +1110,7 @@ public:
 	bool IsDraggingKey() const { return KeyDragTransaction.IsValid(); }
 
 	// ---------------------------------------------------------------------------------------------
-	// Motion paths - where the designer's selected widget travels, drawn on the designer's canvas (see WidgetAnimMotionPath.h)
+	// Motion paths - where the animated widgets travel, drawn over the designer's canvas whatever is selected (see WidgetAnimMotionPath.h)
 	// ---------------------------------------------------------------------------------------------
 
 	/**

@@ -1,0 +1,3177 @@
+diff --git a/Plugins/NameTBD/NameTBD.uplugin b/Plugins/NameTBD/NameTBD.uplugin
+index 3832f6f..e3d23f3 100644
+--- a/Plugins/NameTBD/NameTBD.uplugin
++++ b/Plugins/NameTBD/NameTBD.uplugin
+@@ -61,6 +61,16 @@
+ 				"Mac",
+ 				"Linux"
+ 			]
++		},
++		{
++			"Name": "NameTBDNiagara",
++			"Type": "Runtime",
++			"LoadingPhase": "Default",
++			"PlatformAllowList": [
++				"Win64",
++				"Mac",
++				"Linux"
++			]
+ 		}
+ 	],
+ 	"Plugins": [
+@@ -71,6 +81,10 @@
+ 		{
+ 			"Name": "ModelViewViewModel",
+ 			"Enabled": true
++		},
++		{
++			"Name": "Niagara",
++			"Enabled": true
+ 		}
+ 	]
+ }
+\ No newline at end of file
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimCues.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimCues.h
+index 474a639..9d8f384 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimCues.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimCues.h
+@@ -16,8 +16,9 @@ class USoundBase;
+ // Listed under Cues in the Add Track menu: Event and Sound. Play Animation is no longer offered - an existing animation is
+ // inserted as a track of its own instead (Insert Existing Widget Animation) - but still plays wherever a track of it was made. How and when every cue fires - its points,
+ // loops, ping-pong, inverted play, scrubbing - is in WidgetAnimCue.h; these only say what happens when one does. A
+-// particle, a camera shake or anything else the game owns is an Event handled there, or a Blueprint cue type (see
+-// UWidgetAnimBlueprintCue): UMG has no particle widget of its own to fire at.
++// camera shake or anything else the game owns is an Event handled there, or a Blueprint cue type (see
++// UWidgetAnimBlueprintCue). Particles have a cue of their own, Particles, registered by the NameTBDNiagara module (see
++// WidgetAnimParticleCue.h) - it fires a Niagara Particles widget.
+ 
+ // -----------------------------------------------------------------------------------------------------
+ // Event
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/NameTBDNiagara.Build.cs b/Plugins/NameTBD/Source/NameTBDNiagara/NameTBDNiagara.Build.cs
+new file mode 100644
+index 0000000..27b50b4
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/NameTBDNiagara.Build.cs
+@@ -0,0 +1,35 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++using UnrealBuildTool;
++
++// Niagara particles drawn in UI: the Niagara Particles widget, which simulates a Niagara System and draws its CPU
++// sprites and ribbons straight into Slate, and the Particles cue that fires them from a Widget Animation. Kept out of
++// the core NameTBD module so the library itself never depends on Niagara; only this module does.
++public class NameTBDNiagara : ModuleRules
++{
++	public NameTBDNiagara(ReadOnlyTargetRules Target) : base(Target)
++	{
++		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
++
++		PublicDependencyModuleNames.AddRange(
++			new string[]
++			{
++				"Core",
++				"CoreUObject",
++				"Engine",
++				"UMG",
++				"Niagara",
++				"NameTBD"
++			}
++		);
++
++		PrivateDependencyModuleNames.AddRange(
++			new string[]
++			{
++				"Slate",
++				"SlateCore",
++				"NiagaraCore"   // FNiagaraID, for telling a ribbon emitter's ribbons apart
++			}
++		);
++	}
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NameTBDNiagaraModule.cpp b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NameTBDNiagaraModule.cpp
+new file mode 100644
+index 0000000..8315af1
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NameTBDNiagaraModule.cpp
+@@ -0,0 +1,33 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "Modules/ModuleManager.h"
++#include "NameTBD/WidgetAnimation/WidgetAnimEvaluator.h"
++#include "NiagaraUILog.h"
++#include "NiagaraUIRuntime.h"
++#include "WidgetAnimParticleCue.h"
++
++DEFINE_LOG_CATEGORY(LogNiagaraUI);
++
++/**
++ * The Niagara module's setup: what every Niagara Particles widget shares (see NiagaraUIRuntime.h), and the Particles cue,
++ * registered with the Widget Animations as any registered type is - listed under Cues in the Add Track menu. The core
++ * library never depends on Niagara; it only meets this cue through the registry.
++ */
++class FNameTBDNiagaraModule : public IModuleInterface
++{
++public:
++
++	virtual void StartupModule() override
++	{
++		NiagaraUIRuntime::Startup();
++		FWidgetAnimEvaluatorRegistry::Get().Register(MakeShared<FWidgetAnimParticleCueEvaluator>());
++	}
++
++	virtual void ShutdownModule() override
++	{
++		FWidgetAnimEvaluatorRegistry::Get().Unregister(FWidgetAnimParticleCueParams::StaticStruct());
++		NiagaraUIRuntime::Shutdown();
++	}
++};
++
++IMPLEMENT_MODULE(FNameTBDNiagaraModule, NameTBDNiagara)
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUILog.h b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUILog.h
+new file mode 100644
+index 0000000..536bc29
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUILog.h
+@@ -0,0 +1,12 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++
++/**
++ * The Niagara Particles widget's log category, shared by its files. Declared once here and defined once, in
++ * NameTBDNiagaraModule.cpp: a static category in each .cpp is two definitions of one type as soon as a unity build
++ * puts the two files together.
++ */
++DECLARE_LOG_CATEGORY_EXTERN(LogNiagaraUI, Log, All);
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIMesh.cpp b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIMesh.cpp
+new file mode 100644
+index 0000000..428bc63
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIMesh.cpp
+@@ -0,0 +1,914 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "NiagaraUIMesh.h"
++
++#include "NiagaraUILog.h"
++#include "NiagaraUIRuntime.h"
++
++#include "Materials/MaterialInterface.h"
++#include "NiagaraComponent.h"
++#include "NiagaraDataSet.h"
++#include "NiagaraDataSetAccessor.h"
++#include "NiagaraEmitter.h"
++#include "NiagaraEmitterInstance.h"
++#include "NiagaraRibbonRendererProperties.h"
++#include "NiagaraSpriteRendererProperties.h"
++#include "NiagaraSystem.h"
++#include "NiagaraSystemInstance.h"
++#include "NiagaraSystemInstanceController.h"
++#include "ProfilingDebugging/CpuProfilerTrace.h"
++#include "Rendering/DrawElements.h"
++#include "Stats/Stats.h"
++
++DECLARE_STATS_GROUP(TEXT("Niagara UI"), STATGROUP_NiagaraUI, STATCAT_Advanced);
++DECLARE_CYCLE_STAT(TEXT("Build Meshes"), STAT_NiagaraUIBuild, STATGROUP_NiagaraUI);
++DECLARE_CYCLE_STAT(TEXT("Paint"), STAT_NiagaraUIPaint, STATGROUP_NiagaraUI);
++DECLARE_DWORD_COUNTER_STAT(TEXT("Particles Drawn"), STAT_NiagaraUIParticles, STATGROUP_NiagaraUI);
++DECLARE_DWORD_COUNTER_STAT(TEXT("Draw Elements"), STAT_NiagaraUIDrawElements, STATGROUP_NiagaraUI);
++DECLARE_DWORD_COUNTER_STAT(TEXT("Meshes Rebuilt"), STAT_NiagaraUIRebuilds, STATGROUP_NiagaraUI);
++
++namespace NiagaraUIMeshPrivate
++{
++	/** Vertices are built in absolute space already, so they go through no transform of their own. */
++	const FSlateRenderTransform& GetIdentity()
++	{
++		static const FSlateRenderTransform Identity;
++		return Identity;
++	}
++
++	/** A sprite's size when its system writes none. */
++	constexpr float DefaultSpriteSize = 10.f;
++
++	/** How long a ribbon segment may be on screen, in pixels, before Smooth Ribbons bends it through more points. */
++	constexpr float SmoothStepPixels = 6.f;
++	constexpr int32 MaxSmoothSteps = 8;
++
++	/** How much a ribbon may widen at a corner to keep its width along both segments; sharper corners are cut. */
++	constexpr float MaxMiter = 2.f;
++
++	/** How much bigger a point Depth toward the viewer is drawn, for a Perspective Distance. Never through the eye. */
++	float PerspectiveScale(float Depth, float Distance)
++	{
++		return Distance / FMath::Max(Distance - Depth, Distance * 0.05f);
++	}
++
++	void HashFloat(uint32& Hash, float Value)
++	{
++		Hash = HashCombineFast(Hash, GetTypeHash(Value));
++	}
++
++	void HashInt(uint32& Hash, int32 Value)
++	{
++		Hash = HashCombineFast(Hash, GetTypeHash(Value));
++	}
++
++	void HashPointer(uint32& Hash, const void* Pointer)
++	{
++		Hash = HashCombineFast(Hash, PointerHash(Pointer));
++	}
++
++	void HashVector(uint32& Hash, const FVector2f& Value)
++	{
++		HashFloat(Hash, Value.X);
++		HashFloat(Hash, Value.Y);
++	}
++
++	void HashSpace(uint32& Hash, const FNiagaraUISpace& Space)
++	{
++		HashVector(Hash, Space.Origin);
++		HashVector(Hash, Space.AxisX);
++		HashVector(Hash, Space.AxisY);
++		HashVector(Hash, Space.Center);
++	}
++
++	/** Whether the box Min - Max misses Rect entirely. */
++	bool IsOutside(const FVector2f& Min, const FVector2f& Max, const FSlateRect& Rect)
++	{
++		return Max.X < Rect.Left || Min.X > Rect.Right || Max.Y < Rect.Top || Min.Y > Rect.Bottom;
++	}
++
++	/** The point T of the way from P1 to P2 on a Catmull-Rom curve through P0 - P3. */
++	FVector2f CatmullRom(const FVector2f& P0, const FVector2f& P1, const FVector2f& P2, const FVector2f& P3, float T)
++	{
++		const float T2 = T * T;
++		const float T3 = T2 * T;
++		return (P1 * 2.f
++			+ (P2 - P0) * T
++			+ (P0 * 2.f - P1 * 5.f + P2 * 4.f - P3) * T2
++			+ (P1 * 3.f - P0 - P2 * 3.f + P3) * T3) * 0.5f;
++	}
++
++	/** Component's running system instance, or null while it has none. */
++	FNiagaraSystemInstance* GetSystemInstance(UNiagaraComponent* Component)
++	{
++		if (!Component)
++		{
++			return nullptr;
++		}
++		auto Controller = Component->GetSystemInstanceController();
++		return Controller.IsValid() ? Controller->GetSystemInstance_Unsafe() : nullptr;
++	}
++
++	/** The emitter's name, for warnings. */
++	FString GetEmitterName(const FNiagaraEmitterInstance& Emitter)
++	{
++		const FVersionedNiagaraEmitter Versioned = Emitter.GetVersionedEmitter();
++		return Versioned.Emitter ? Versioned.Emitter->GetUniqueEmitterName() : FString(TEXT("(unnamed)"));
++	}
++
++	/** "Niagara Particles 'Sparkles' (NS_Sparkle)", for warnings. */
++	FString DescribeOwner(const UObject* Owner, const UNiagaraComponent* Component)
++	{
++		const UObject* System = Component ? Component->GetAsset() : nullptr;
++		return FString::Printf(TEXT("Niagara Particles '%s' (%s)"), Owner ? *Owner->GetName() : TEXT("?"), System ? *System->GetName() : TEXT("no system"));
++	}
++}
++
++// =====================================================================================================
++// FNiagaraUIPlaneAxes
++// =====================================================================================================
++
++FNiagaraUIPlaneAxes FNiagaraUIPlaneAxes::Get(ENiagaraUIPlane Plane)
++{
++	FNiagaraUIPlaneAxes Axes;
++	switch (Plane)
++	{
++	case ENiagaraUIPlane::XY:
++		Axes.Right = FVector3f(1.f, 0.f, 0.f);
++		Axes.Down = FVector3f(0.f, 1.f, 0.f);
++		break;
++	case ENiagaraUIPlane::YZ:
++		Axes.Right = FVector3f(0.f, 1.f, 0.f);
++		Axes.Down = FVector3f(0.f, 0.f, -1.f);
++		break;
++	case ENiagaraUIPlane::XZ:
++	default:
++		Axes.Right = FVector3f(1.f, 0.f, 0.f);
++		Axes.Down = FVector3f(0.f, 0.f, -1.f);
++		break;
++	}
++	// Right x Down: a turn of the widget by an angle on screen is a turn of the system by the same angle about this axis.
++	Axes.Depth = FVector3f::CrossProduct(Axes.Right, Axes.Down);
++	return Axes;
++}
++
++// =====================================================================================================
++// FNiagaraUIMesh
++// =====================================================================================================
++
++uint32 FNiagaraUIMesh::Gather(TConstArrayView<FNiagaraUISource> Sources, const FNiagaraUIBuildSettings& Settings)
++{
++	using namespace NiagaraUIMeshPrivate;
++
++	Entries.Reset();
++
++	uint32 Hash = 0;
++	HashInt(Hash, static_cast<int32>(Settings.Plane));
++	HashFloat(Hash, Settings.PerspectiveDistance);
++	HashInt(Hash, Settings.bSmoothRibbons ? 1 : 0);
++	HashFloat(Hash, Settings.Tint.R);
++	HashFloat(Hash, Settings.Tint.G);
++	HashFloat(Hash, Settings.Tint.B);
++	HashFloat(Hash, Settings.Tint.A);
++	HashFloat(Hash, Settings.CullRect.Left);
++	HashFloat(Hash, Settings.CullRect.Top);
++	HashFloat(Hash, Settings.CullRect.Right);
++	HashFloat(Hash, Settings.CullRect.Bottom);
++	HashPointer(Hash, ImageBrush.Get());
++	if (Settings.MaterialRemap)
++	{
++		for (const TPair<TObjectPtr<UMaterialInterface>, TObjectPtr<UMaterialInterface>>& Pair : *Settings.MaterialRemap)
++		{
++			HashPointer(Hash, Pair.Key.Get());
++			HashPointer(Hash, Pair.Value.Get());
++		}
++	}
++
++	for (int32 SourceIndex = 0; SourceIndex < Sources.Num(); ++SourceIndex)
++	{
++		const FNiagaraUISource& Source = Sources[SourceIndex];
++		FNiagaraSystemInstance* SystemInstance = GetSystemInstance(Source.Component);
++		if (!SystemInstance)
++		{
++			continue;
++		}
++
++		// This frame's simulation may still be finishing on a worker thread (Niagara lets async work run to the end of the
++		// frame); its particle data is only whole, and only safe to read, once it is done.
++		SystemInstance->WaitForConcurrentTickAndFinalize();
++
++		HashPointer(Hash, Source.Component);
++		HashSpace(Hash, Source.LocalSpace);
++		HashSpace(Hash, Source.WorldSpace);
++
++		int32 EmitterIndex = INDEX_NONE;
++		for (const auto& EmitterRef : SystemInstance->GetEmitters())
++		{
++			++EmitterIndex;
++			const FNiagaraEmitterInstance& Emitter = EmitterRef.Get();
++			if (Emitter.IsDisabled())
++			{
++				continue;
++			}
++
++			const FVersionedNiagaraEmitterData* EmitterData = Emitter.GetVersionedEmitter().GetEmitterData();
++			if (!EmitterData)
++			{
++				bool bAlreadyWarned = false;
++				Warned.Add(&Emitter, &bAlreadyWarned);
++				if (!bAlreadyWarned)
++				{
++					NiagaraUIRuntime::WarnOnce(FString::Printf(TEXT("%s: emitter %d isn't a regular emitter (a lightweight emitter?) and isn't drawn in UI."),
++						*DescribeOwner(Settings.Owner, Source.Component), EmitterIndex));
++				}
++				continue;
++			}
++
++			if (EmitterData->SimTarget != ENiagaraSimTarget::CPUSim)
++			{
++				bool bAlreadyWarned = false;
++				Warned.Add(EmitterData, &bAlreadyWarned);
++				if (!bAlreadyWarned)
++				{
++					NiagaraUIRuntime::WarnOnce(FString::Printf(TEXT("%s: emitter '%s' simulates on the GPU, which UI can't read back - it isn't drawn. Set its Sim Target to CPUSim to draw it in UI."),
++						*DescribeOwner(Settings.Owner, Source.Component), *GetEmitterName(Emitter)));
++				}
++				continue;
++			}
++
++			const FNiagaraDataBuffer* Buffer = Emitter.GetParticleData().GetCurrentData();
++			const int32 NumParticles = Buffer ? static_cast<int32>(Buffer->GetNumInstances()) : 0;
++
++			// A new buffer every time the emitter simulates: the same buffer and count mean nothing moved.
++			HashPointer(Hash, Buffer);
++			HashInt(Hash, NumParticles);
++			if (NumParticles <= 0)
++			{
++				continue;
++			}
++
++			const TArray<UNiagaraRendererProperties*>& Renderers = EmitterData->GetRenderers();
++			for (int32 RendererIndex = 0; RendererIndex < Renderers.Num(); ++RendererIndex)
++			{
++				const UNiagaraRendererProperties* Renderer = Renderers[RendererIndex];
++				if (!Renderer || !Renderer->GetIsEnabled())
++				{
++					continue;
++				}
++
++				if (!Renderer->IsA<UNiagaraSpriteRendererProperties>() && !Renderer->IsA<UNiagaraRibbonRendererProperties>())
++				{
++					bool bAlreadyWarned = false;
++					Warned.Add(Renderer, &bAlreadyWarned);
++					if (!bAlreadyWarned)
++					{
++						NiagaraUIRuntime::WarnOnce(FString::Printf(TEXT("%s: emitter '%s' has a %s, which UI doesn't draw - only Sprite and Ribbon renderers are."),
++							*DescribeOwner(Settings.Owner, Source.Component), *GetEmitterName(Emitter), *Renderer->GetClass()->GetName()));
++					}
++					continue;
++				}
++
++				FDrawEntry& Entry = Entries.AddDefaulted_GetRef();
++				Entry.Emitter = &Emitter;
++				Entry.Renderer = Renderer;
++				Entry.Space = EmitterData->bLocalSpace ? &Source.LocalSpace : &Source.WorldSpace;
++				Entry.SortOrder = Renderer->SortOrderHint;
++				Entry.EmitterIndex = EmitterIndex;
++				Entry.RendererIndex = RendererIndex;
++				Entry.SourceIndex = SourceIndex;
++				Entry.NumParticles = NumParticles;
++			}
++		}
++	}
++
++	// Drawn in the renderers' Sort Order Hint, then as the system lists them. The same renderer of every simulation of a
++	// system - the main one and its bursts - is drawn together, so they share one batch.
++	Entries.Sort([](const FDrawEntry& A, const FDrawEntry& B)
++	{
++		if (A.SortOrder != B.SortOrder)
++		{
++			return A.SortOrder < B.SortOrder;
++		}
++		if (A.EmitterIndex != B.EmitterIndex)
++		{
++			return A.EmitterIndex < B.EmitterIndex;
++		}
++		if (A.RendererIndex != B.RendererIndex)
++		{
++			return A.RendererIndex < B.RendererIndex;
++		}
++		return A.SourceIndex < B.SourceIndex;
++	});
++
++	return Hash;
++}
++
++void FNiagaraUIMesh::Build(TConstArrayView<FNiagaraUISource> Sources, const FNiagaraUIBuildSettings& Settings)
++{
++	using namespace NiagaraUIMeshPrivate;
++	SCOPE_CYCLE_COUNTER(STAT_NiagaraUIBuild);
++	TRACE_CPUPROFILER_EVENT_SCOPE(FNiagaraUIMesh::Build);
++
++	// The Particle Image, copied only when it changes; a batch keeps its own reference to the copy it drew with.
++	if (Settings.ParticleImage)
++	{
++		if (!ImageBrush.IsValid() || !(*ImageBrush == *Settings.ParticleImage))
++		{
++			ImageBrush = MakeShared<FSlateBrush>(*Settings.ParticleImage);
++		}
++	}
++	else
++	{
++		ImageBrush.Reset();
++	}
++
++	const uint32 Hash = Gather(Sources, Settings);
++	if (bBuilt && Hash == BuiltHash)
++	{
++		return;
++	}
++	bBuilt = true;
++	BuiltHash = Hash;
++	INC_DWORD_STAT(STAT_NiagaraUIRebuilds);
++
++	NumBatches = 0;
++	NumParticlesDrawn = 0;
++
++	const FNiagaraUIPlaneAxes Axes = FNiagaraUIPlaneAxes::Get(Settings.Plane);
++	for (const FDrawEntry& Entry : Entries)
++	{
++		UMaterialInterface* Material = nullptr;
++		bool bRibbon = false;
++		if (const UNiagaraSpriteRendererProperties* SpriteRenderer = Cast<UNiagaraSpriteRendererProperties>(Entry.Renderer))
++		{
++			Material = SpriteRenderer->Material;
++		}
++		else if (const UNiagaraRibbonRendererProperties* RibbonRenderer = Cast<UNiagaraRibbonRendererProperties>(Entry.Renderer))
++		{
++			Material = RibbonRenderer->Material;
++			bRibbon = true;
++		}
++
++		const FBrushChoice Choice = ChooseBrush(Material, Settings, Entry);
++		if (!Choice.Brush.IsValid())
++		{
++			continue;
++		}
++
++		FBatch& Batch = BatchFor(Choice.Brush);
++		if (bRibbon)
++		{
++			AddRibbons(Entry, Settings, Axes, Choice, Batch);
++		}
++		else
++		{
++			AddSprites(Entry, Settings, Axes, Choice, Batch);
++		}
++	}
++
++	// Batches not used this time let go of their brushes, so a material no longer drawn can be released.
++	for (int32 BatchIndex = NumBatches; BatchIndex < Batches.Num(); ++BatchIndex)
++	{
++		Batches[BatchIndex].Brush.Reset();
++	}
++}
++
++void FNiagaraUIMesh::Paint(FSlateWindowElementList& OutDrawElements, int32 LayerId) const
++{
++	SCOPE_CYCLE_COUNTER(STAT_NiagaraUIPaint);
++
++	for (int32 BatchIndex = 0; BatchIndex < NumBatches; ++BatchIndex)
++	{
++		const FBatch& Batch = Batches[BatchIndex];
++		if (Batch.Indices.Num() == 0 || !Batch.Brush.IsValid())
++		{
++			continue;
++		}
++		FSlateDrawElement::MakeCustomVerts(OutDrawElements, LayerId, Batch.Brush->GetRenderingResource(), Batch.Vertices, Batch.Indices, nullptr, 0, 0);
++		INC_DWORD_STAT(STAT_NiagaraUIDrawElements);
++	}
++	INC_DWORD_STAT_BY(STAT_NiagaraUIParticles, NumParticlesDrawn);
++}
++
++void FNiagaraUIMesh::Reset()
++{
++	NumBatches = 0;
++	NumParticlesDrawn = 0;
++	bBuilt = false;
++	for (FBatch& Batch : Batches)
++	{
++		Batch.Brush.Reset();
++	}
++}
++
++FNiagaraUIMesh::FBatch& FNiagaraUIMesh::BatchFor(const TSharedPtr<FSlateBrush>& Brush)
++{
++	// Renderers drawn one after another with the same brush share a batch - one draw for all of them.
++	if (NumBatches > 0 && Batches[NumBatches - 1].Brush == Brush)
++	{
++		return Batches[NumBatches - 1];
++	}
++	if (NumBatches == Batches.Num())
++	{
++		Batches.AddDefaulted();
++	}
++	FBatch& Batch = Batches[NumBatches++];
++	Batch.Brush = Brush;
++	Batch.Vertices.Reset();
++	Batch.Indices.Reset();
++	return Batch;
++}
++
++FNiagaraUIMesh::FBrushChoice FNiagaraUIMesh::ChooseBrush(UMaterialInterface* Material, const FNiagaraUIBuildSettings& Settings, const FDrawEntry& Entry)
++{
++	using namespace NiagaraUIMeshPrivate;
++
++	FBrushChoice Choice;
++
++	if (Material && Settings.MaterialRemap)
++	{
++		if (const TObjectPtr<UMaterialInterface>* Remapped = Settings.MaterialRemap->Find(Material))
++		{
++			if (*Remapped)
++			{
++				Material = Remapped->Get();
++			}
++		}
++	}
++
++	if (NiagaraUIRuntime::IsUIMaterial(Material))
++	{
++		Choice.Brush = NiagaraUIRuntime::GetMaterialBrush(Material);
++		return Choice;
++	}
++
++	if (Material)
++	{
++		bool bAlreadyWarned = false;
++		Warned.Add(Material, &bAlreadyWarned);
++		if (!bAlreadyWarned)
++		{
++			NiagaraUIRuntime::WarnOnce(FString::Printf(TEXT("Niagara Particles '%s': material %s (emitter '%s') isn't a User Interface material, so its particles are drawn with the Particle Image. Give the renderer a UI material, or map one to it in Material Remap."),
++				Settings.Owner ? *Settings.Owner->GetName() : TEXT("?"), *Material->GetName(), *GetEmitterName(*Entry.Emitter)));
++		}
++	}
++
++	if (ImageBrush.IsValid())
++	{
++		Choice.Brush = ImageBrush;
++		Choice.Tint = ImageBrush->TintColor.GetSpecifiedColor();
++
++		// An image from an atlas covers only part of its texture: its UV Region says which.
++		const FBox2f UVRegion = ImageBrush->GetUVRegion();
++		if (UVRegion.bIsValid && UVRegion.GetArea() > 0.f)
++		{
++			Choice.UVMin = UVRegion.Min;
++			Choice.UVSize = UVRegion.GetSize();
++		}
++		return Choice;
++	}
++
++	Choice.Brush = NiagaraUIRuntime::GetDefaultParticleBrush();
++	return Choice;
++}
++
++void FNiagaraUIMesh::AddSprites(const FDrawEntry& Entry, const FNiagaraUIBuildSettings& Settings, const FNiagaraUIPlaneAxes& Axes, const FBrushChoice& Choice, FBatch& Batch)
++{
++	using namespace NiagaraUIMeshPrivate;
++
++	const UNiagaraSpriteRendererProperties& Props = *CastChecked<UNiagaraSpriteRendererProperties>(Entry.Renderer);
++	const FNiagaraDataSet& DataSet = Entry.Emitter->GetParticleData();
++	const FNiagaraUISpace& Space = *Entry.Space;
++	const int32 Count = Entry.NumParticles;
++
++	const auto Positions = FNiagaraDataSetAccessor<FNiagaraPosition>::CreateReader(DataSet, Props.PositionBinding.GetDataSetBindableVariable().GetName());
++	if (!Positions.IsValid())
++	{
++		return;
++	}
++	const auto Colors = FNiagaraDataSetAccessor<FLinearColor>::CreateReader(DataSet, Props.ColorBinding.GetDataSetBindableVariable().GetName());
++	const auto Sizes = FNiagaraDataSetAccessor<FVector2f>::CreateReader(DataSet, Props.SpriteSizeBinding.GetDataSetBindableVariable().GetName());
++	const auto Rotations = FNiagaraDataSetAccessor<float>::CreateReader(DataSet, Props.SpriteRotationBinding.GetDataSetBindableVariable().GetName());
++	const auto Velocities = FNiagaraDataSetAccessor<FVector3f>::CreateReader(DataSet, Props.VelocityBinding.GetDataSetBindableVariable().GetName());
++	const auto Alignments = FNiagaraDataSetAccessor<FVector3f>::CreateReader(DataSet, Props.SpriteAlignmentBinding.GetDataSetBindableVariable().GetName());
++	const auto SubImages = FNiagaraDataSetAccessor<float>::CreateReader(DataSet, Props.SubImageIndexBinding.GetDataSetBindableVariable().GetName());
++	const auto Dynamics = FNiagaraDataSetAccessor<FVector4f>::CreateReader(DataSet, Props.DynamicMaterialBinding.GetDataSetBindableVariable().GetName());
++	const auto CustomSorts = FNiagaraDataSetAccessor<float>::CreateReader(DataSet, Props.CustomSortingBinding.GetDataSetBindableVariable().GetName());
++
++	const bool bVelocityAligned = Props.Alignment == ENiagaraSpriteAlignment::VelocityAligned;
++	const bool bCustomAligned = !bVelocityAligned && Props.Alignment != ENiagaraSpriteAlignment::Unaligned && Alignments.IsValid();
++
++	const FVector2f Pivot(Props.PivotInUVSpace);
++	const int32 Columns = FMath::Max(FMath::RoundToInt(Props.SubImageSize.X), 1);
++	const int32 Rows = FMath::Max(FMath::RoundToInt(Props.SubImageSize.Y), 1);
++	const int32 NumFrames = Columns * Rows;
++	const FVector2f FrameSize(Choice.UVSize.X / Columns, Choice.UVSize.Y / Rows);
++
++	const FLinearColor Tint = Settings.Tint * Choice.Tint;
++	const float Perspective = Settings.PerspectiveDistance;
++
++	// Draw order: as the renderer sorts - back to front by depth, or by its custom key - else as stored.
++	const bool bSortByDepth = Props.SortMode == ENiagaraSortMode::ViewDepth || Props.SortMode == ENiagaraSortMode::ViewDistance;
++	const bool bSortByCustom = (Props.SortMode == ENiagaraSortMode::CustomAscending || Props.SortMode == ENiagaraSortMode::CustomDecending) && CustomSorts.IsValid();
++	const bool bSorted = bSortByDepth || bSortByCustom;
++	if (bSorted)
++	{
++		const float CustomSign = Props.SortMode == ENiagaraSortMode::CustomDecending ? -1.f : 1.f;
++		SortScratch.SetNumUninitialized(Count);
++		for (int32 Index = 0; Index < Count; ++Index)
++		{
++			FSortKey& SortKey = SortScratch[Index];
++			SortKey.Index = Index;
++			SortKey.Key = bSortByDepth
++				? Axes.DepthOf(Positions.GetSafe(Index, FVector3f::ZeroVector))
++				: CustomSorts.GetSafe(Index, 0.f) * CustomSign;
++		}
++		SortScratch.Sort([](const FSortKey& A, const FSortKey& B) { return A.Key < B.Key; });
++	}
++
++	Batch.Vertices.Reserve(Batch.Vertices.Num() + Count * 4);
++	Batch.Indices.Reserve(Batch.Indices.Num() + Count * 6);
++
++	const FSlateRenderTransform& Identity = GetIdentity();
++	for (int32 Step = 0; Step < Count; ++Step)
++	{
++		const int32 Index = bSorted ? SortScratch[Step].Index : Step;
++
++		const FLinearColor Color = Colors.GetSafe(Index, FLinearColor::White) * Tint;
++		if (Color.A <= 0.f)
++		{
++			continue;
++		}
++
++		const FVector3f Position = Positions.GetSafe(Index, FVector3f::ZeroVector);
++		FVector2f Point = Axes.Project(Position);
++		FVector2f Size = Sizes.GetSafe(Index, FVector2f(DefaultSpriteSize, DefaultSpriteSize));
++		if (Perspective > 0.f)
++		{
++			const float Scale = PerspectiveScale(Axes.DepthOf(Position), Perspective);
++			Point = Space.Center + (Point - Space.Center) * Scale;
++			Size *= Scale;
++		}
++
++		// The sprite's own axes in the plane: across its width, and down its height (its texture's top is "up").
++		FVector2f Right(1.f, 0.f);
++		FVector2f Down(0.f, 1.f);
++		bool bAligned = false;
++		if (bVelocityAligned || bCustomAligned)
++		{
++			const FVector3f Facing3 = bVelocityAligned ? Velocities.GetSafe(Index, FVector3f::ZeroVector) : Alignments.GetSafe(Index, FVector3f::ZeroVector);
++			const FVector2f Facing = Axes.Project(Facing3);
++			const float LengthSquared = Facing.SizeSquared();
++			if (LengthSquared > UE_SMALL_NUMBER)
++			{
++				// Its top points the way it faces.
++				Down = Facing * -FMath::InvSqrt(LengthSquared);
++				Right = FVector2f(Down.Y, -Down.X);
++				bAligned = true;
++			}
++		}
++		if (!bAligned)
++		{
++			const float Degrees = Rotations.GetSafe(Index, 0.f);
++			if (Degrees != 0.f)
++			{
++				float Sin = 0.f;
++				float Cos = 1.f;
++				FMath::SinCos(&Sin, &Cos, FMath::DegreesToRadians(Degrees));
++				Right = FVector2f(Cos, Sin);
++				Down = FVector2f(-Sin, Cos);
++			}
++		}
++
++		const FVector2f Across = Space.ToAbsoluteVector(Right * Size.X);
++		const FVector2f Along = Space.ToAbsoluteVector(Down * Size.Y);
++		const FVector2f TopLeft = Space.ToAbsolute(Point) - Across * Pivot.X - Along * Pivot.Y;
++		const FVector2f TopRight = TopLeft + Across;
++		const FVector2f BottomLeft = TopLeft + Along;
++		const FVector2f BottomRight = TopRight + Along;
++
++		const FVector2f Min = TopLeft.ComponentMin(TopRight).ComponentMin(BottomLeft.ComponentMin(BottomRight));
++		const FVector2f Max = TopLeft.ComponentMax(TopRight).ComponentMax(BottomLeft.ComponentMax(BottomRight));
++		if (IsOutside(Min, Max, Settings.CullRect))
++		{
++			continue;
++		}
++
++		FVector2f UVMin = Choice.UVMin;
++		FVector2f UVSpan = Choice.UVSize;
++		if (NumFrames > 1)
++		{
++			int32 Frame = FMath::FloorToInt(SubImages.GetSafe(Index, 0.f)) % NumFrames;
++			if (Frame < 0)
++			{
++				Frame += NumFrames;
++			}
++			UVMin += FrameSize * FVector2f(static_cast<float>(Frame % Columns), static_cast<float>(Frame / Columns));
++			UVSpan = FrameSize;
++		}
++		const FVector2f UVMax = UVMin + UVSpan;
++
++		// The Dynamic Parameter's x and y reach a UI material as TexCoord1.
++		const FVector4f Dynamic = Dynamics.GetSafe(Index, FVector4f(0.f, 0.f, 0.f, 0.f));
++		const FVector2f DynamicXY(Dynamic.X, Dynamic.Y);
++		const FColor Packed = Color.ToFColor(true);
++
++		const SlateIndex First = static_cast<SlateIndex>(Batch.Vertices.Num());
++		Batch.Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(Identity, TopLeft, UVMin, DynamicXY, Packed));
++		Batch.Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(Identity, TopRight, FVector2f(UVMax.X, UVMin.Y), DynamicXY, Packed));
++		Batch.Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(Identity, BottomLeft, FVector2f(UVMin.X, UVMax.Y), DynamicXY, Packed));
++		Batch.Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(Identity, BottomRight, UVMax, DynamicXY, Packed));
++
++		Batch.Indices.Add(First);
++		Batch.Indices.Add(First + 1);
++		Batch.Indices.Add(First + 2);
++		Batch.Indices.Add(First + 2);
++		Batch.Indices.Add(First + 1);
++		Batch.Indices.Add(First + 3);
++
++		++NumParticlesDrawn;
++	}
++}
++
++void FNiagaraUIMesh::AddRibbons(const FDrawEntry& Entry, const FNiagaraUIBuildSettings& Settings, const FNiagaraUIPlaneAxes& Axes, const FBrushChoice& Choice, FBatch& Batch)
++{
++	using namespace NiagaraUIMeshPrivate;
++
++	const UNiagaraRibbonRendererProperties& Props = *CastChecked<UNiagaraRibbonRendererProperties>(Entry.Renderer);
++	const FNiagaraDataSet& DataSet = Entry.Emitter->GetParticleData();
++	const FNiagaraUISpace& Space = *Entry.Space;
++	const int32 Count = Entry.NumParticles;
++	if (Count < 2)
++	{
++		return;
++	}
++
++	const auto Positions = FNiagaraDataSetAccessor<FNiagaraPosition>::CreateReader(DataSet, Props.PositionBinding.GetDataSetBindableVariable().GetName());
++	if (!Positions.IsValid())
++	{
++		return;
++	}
++	const auto Colors = FNiagaraDataSetAccessor<FLinearColor>::CreateReader(DataSet, Props.ColorBinding.GetDataSetBindableVariable().GetName());
++	const auto Widths = FNiagaraDataSetAccessor<float>::CreateReader(DataSet, Props.RibbonWidthBinding.GetDataSetBindableVariable().GetName());
++	const auto LinkOrders = FNiagaraDataSetAccessor<float>::CreateReader(DataSet, Props.RibbonLinkOrderBinding.GetDataSetBindableVariable().GetName());
++	const FName RibbonIdName = Props.RibbonIdBinding.GetDataSetBindableVariable().GetName();
++	const auto FullIds = FNiagaraDataSetAccessor<FNiagaraID>::CreateReader(DataSet, RibbonIdName);
++	const auto IntIds = FNiagaraDataSetAccessor<int32>::CreateReader(DataSet, RibbonIdName);
++	const auto UniqueIds = FNiagaraDataSetAccessor<int32>::CreateReader(DataSet, FName(TEXT("UniqueID")));
++	const auto Ages = FNiagaraDataSetAccessor<float>::CreateReader(DataSet, FName(TEXT("NormalizedAge")));
++
++	// Each particle by its ribbon, then along it: its Link Order; else newest first by ID, or by age; else as stored.
++	RibbonScratch.SetNumUninitialized(Count);
++	for (int32 Index = 0; Index < Count; ++Index)
++	{
++		FRibbonParticle& Particle = RibbonScratch[Index];
++		Particle.Index = Index;
++		if (FullIds.IsValid())
++		{
++			const FNiagaraID Id = FullIds.GetSafe(Index, FNiagaraID());
++			Particle.Ribbon = (static_cast<uint64>(static_cast<uint32>(Id.AcquireTag)) << 32) | static_cast<uint32>(Id.Index);
++		}
++		else
++		{
++			Particle.Ribbon = IntIds.IsValid() ? static_cast<uint32>(IntIds.GetSafe(Index, 0)) : 0;
++		}
++
++		if (LinkOrders.IsValid())
++		{
++			Particle.Order = LinkOrders.GetSafe(Index, 0.f);
++		}
++		else if (UniqueIds.IsValid())
++		{
++			Particle.Order = -static_cast<double>(UniqueIds.GetSafe(Index, 0));
++		}
++		else if (Ages.IsValid())
++		{
++			Particle.Order = Ages.GetSafe(Index, 0.f);
++		}
++		else
++		{
++			Particle.Order = Index;
++		}
++	}
++	RibbonScratch.Sort([](const FRibbonParticle& A, const FRibbonParticle& B)
++	{
++		if (A.Ribbon != B.Ribbon)
++		{
++			return A.Ribbon < B.Ribbon;
++		}
++		return A.Order != B.Order ? A.Order < B.Order : A.Index < B.Index;
++	});
++
++	const FLinearColor Tint = Settings.Tint * Choice.Tint;
++	const float Perspective = Settings.PerspectiveDistance;
++
++	int32 RunStart = 0;
++	while (RunStart < Count)
++	{
++		int32 RunEnd = RunStart + 1;
++		while (RunEnd < Count && RibbonScratch[RunEnd].Ribbon == RibbonScratch[RunStart].Ribbon)
++		{
++			++RunEnd;
++		}
++
++		RibbonPoints.Reset();
++		for (int32 Step = RunStart; Step < RunEnd; ++Step)
++		{
++			const int32 Index = RibbonScratch[Step].Index;
++			const FVector3f Position = Positions.GetSafe(Index, FVector3f::ZeroVector);
++			FVector2f Point = Axes.Project(Position);
++			float Scale = 1.f;
++			if (Perspective > 0.f)
++			{
++				Scale = PerspectiveScale(Axes.DepthOf(Position), Perspective);
++				Point = Space.Center + (Point - Space.Center) * Scale;
++			}
++
++			FRibbonPoint RibbonPoint;
++			RibbonPoint.Position = Space.ToAbsolute(Point);
++			RibbonPoint.Width = Widths.GetSafe(Index, 1.f) * Space.LengthScale * Scale;
++			RibbonPoint.Color = Colors.GetSafe(Index, FLinearColor::White) * Tint;
++			RibbonPoint.Param = static_cast<float>(Step - RunStart);
++
++			// Particles on top of one another make no segment, and give it no way to face.
++			if (RibbonPoints.Num() > 0 && FVector2f::DistSquared(RibbonPoints.Last().Position, RibbonPoint.Position) < 1.e-4f)
++			{
++				continue;
++			}
++			RibbonPoints.Add(RibbonPoint);
++		}
++
++		AddRibbonStrip(RunEnd - RunStart, Entry, Settings, Choice, Batch);
++		RunStart = RunEnd;
++	}
++}
++
++void FNiagaraUIMesh::AddRibbonStrip(int32 NumParticles, const FDrawEntry& Entry, const FNiagaraUIBuildSettings& Settings, const FBrushChoice& Choice, FBatch& Batch)
++{
++	using namespace NiagaraUIMeshPrivate;
++
++	if (RibbonPoints.Num() < 2)
++	{
++		return;
++	}
++
++	const UNiagaraRibbonRendererProperties& Props = *CastChecked<UNiagaraRibbonRendererProperties>(Entry.Renderer);
++	const FNiagaraUISpace& Space = *Entry.Space;
++
++	// Smoothed: a Catmull-Rom curve through the particles, with more points where they lie far apart on screen.
++	bool bSmoothed = false;
++	if (Settings.bSmoothRibbons && RibbonPoints.Num() >= 3)
++	{
++		SmoothedPoints.Reset();
++		const int32 Last = RibbonPoints.Num() - 1;
++		for (int32 Segment = 0; Segment < Last; ++Segment)
++		{
++			const FRibbonPoint& From = RibbonPoints[Segment];
++			const FRibbonPoint& To = RibbonPoints[Segment + 1];
++			const FVector2f& Before = RibbonPoints[FMath::Max(Segment - 1, 0)].Position;
++			const FVector2f& After = RibbonPoints[FMath::Min(Segment + 2, Last)].Position;
++
++			SmoothedPoints.Add(From);
++			const int32 Steps = FMath::Clamp(FMath::CeilToInt(FVector2f::Distance(From.Position, To.Position) / SmoothStepPixels), 1, MaxSmoothSteps);
++			for (int32 Step = 1; Step < Steps; ++Step)
++			{
++				const float Alpha = static_cast<float>(Step) / Steps;
++				FRibbonPoint& Between = SmoothedPoints.AddDefaulted_GetRef();
++				Between.Position = CatmullRom(Before, From.Position, To.Position, After, Alpha);
++				Between.Width = FMath::Lerp(From.Width, To.Width, Alpha);
++				Between.Color = FMath::Lerp(From.Color, To.Color, Alpha);
++				Between.Param = FMath::Lerp(From.Param, To.Param, Alpha);
++			}
++		}
++		SmoothedPoints.Add(RibbonPoints.Last());
++		bSmoothed = true;
++	}
++	TArray<FRibbonPoint>& Strip = bSmoothed ? SmoothedPoints : RibbonPoints;
++	const int32 NumPoints = Strip.Num();
++
++	// Its length so far at each point, and its bounds - to leave out a ribbon wholly off screen.
++	FVector2f Min = Strip[0].Position;
++	FVector2f Max = Strip[0].Position;
++	float MaxWidth = Strip[0].Width;
++	float TotalLength = 0.f;
++	Strip[0].Distance = 0.f;
++	for (int32 PointIndex = 1; PointIndex < NumPoints; ++PointIndex)
++	{
++		FRibbonPoint& Point = Strip[PointIndex];
++		TotalLength += FVector2f::Distance(Strip[PointIndex - 1].Position, Point.Position);
++		Point.Distance = TotalLength;
++		Min = Min.ComponentMin(Point.Position);
++		Max = Max.ComponentMax(Point.Position);
++		MaxWidth = FMath::Max(MaxWidth, Point.Width);
++	}
++	const FVector2f Reach(MaxWidth * 0.5f * MaxMiter, MaxWidth * 0.5f * MaxMiter);
++	if (IsOutside(Min - Reach, Max + Reach, Settings.CullRect))
++	{
++		return;
++	}
++
++	// U along the ribbon, as the renderer's UV settings lay it: evenly per particle, over its length, or tiled.
++	const auto GetU = [&Space, TotalLength, NumParticles](const FNiagaraRibbonUVSettings& UVSettings, const FRibbonPoint& Point) -> float
++	{
++		if (UVSettings.DistributionMode == ENiagaraRibbonUVDistributionMode::ScaledUniformly)
++		{
++			return NumParticles > 1 ? Point.Param / static_cast<float>(NumParticles - 1) : 0.f;
++		}
++		const bool bTiled = UVSettings.DistributionMode == ENiagaraRibbonUVDistributionMode::TiledOverRibbonLength
++			|| UVSettings.DistributionMode == ENiagaraRibbonUVDistributionMode::TiledFromStartOverRibbonLength;
++		if (bTiled && UVSettings.TilingLength > 0.f)
++		{
++			return Point.Distance / (UVSettings.TilingLength * FMath::Max(Space.LengthScale, UE_SMALL_NUMBER));
++		}
++		return TotalLength > 0.f ? Point.Distance / TotalLength : 0.f;
++	};
++
++	const FSlateRenderTransform& Identity = GetIdentity();
++	const SlateIndex First = static_cast<SlateIndex>(Batch.Vertices.Num());
++	Batch.Vertices.Reserve(Batch.Vertices.Num() + NumPoints * 2);
++	Batch.Indices.Reserve(Batch.Indices.Num() + (NumPoints - 1) * 6);
++
++	for (int32 PointIndex = 0; PointIndex < NumPoints; ++PointIndex)
++	{
++		const FRibbonPoint& Point = Strip[PointIndex];
++
++		// Which way the ribbon runs here: between the segments either side of the point.
++		FVector2f Incoming = PointIndex > 0 ? (Point.Position - Strip[PointIndex - 1].Position).GetSafeNormal() : FVector2f::ZeroVector;
++		FVector2f Outgoing = PointIndex < NumPoints - 1 ? (Strip[PointIndex + 1].Position - Point.Position).GetSafeNormal() : FVector2f::ZeroVector;
++		if (PointIndex == 0)
++		{
++			Incoming = Outgoing;
++		}
++		if (PointIndex == NumPoints - 1)
++		{
++			Outgoing = Incoming;
++		}
++		FVector2f Tangent = (Incoming + Outgoing).GetSafeNormal();
++		if (Tangent.IsNearlyZero())
++		{
++			Tangent = Incoming;
++		}
++		const FVector2f Normal(-Tangent.Y, Tangent.X);
++
++		// Widened at a bend so it keeps its width along both segments - up to MaxMiter, past which the corner is cut.
++		const float Cosine = FVector2f::DotProduct(Normal, FVector2f(-Incoming.Y, Incoming.X));
++		const float Miter = FMath::Min(1.f / FMath::Max(Cosine, 1.f / MaxMiter), MaxMiter);
++		const FVector2f Offset = Normal * (Point.Width * 0.5f * Miter);
++
++		const float U0 = GetU(Props.UV0Settings, Point);
++		const float U1 = GetU(Props.UV1Settings, Point);
++		const FColor Packed = Point.Color.ToFColor(true);
++
++		// UV0 is TexCoord0 (V across the ribbon), UV1 TexCoord1.
++		Batch.Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(Identity, Point.Position + Offset,
++			Choice.UVMin + Choice.UVSize * FVector2f(U0, 0.f), FVector2f(U1, 0.f), Packed));
++		Batch.Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(Identity, Point.Position - Offset,
++			Choice.UVMin + Choice.UVSize * FVector2f(U0, 1.f), FVector2f(U1, 1.f), Packed));
++	}
++
++	for (int32 Segment = 0; Segment < NumPoints - 1; ++Segment)
++	{
++		const SlateIndex Corner = First + static_cast<SlateIndex>(Segment * 2);
++		Batch.Indices.Add(Corner);
++		Batch.Indices.Add(Corner + 1);
++		Batch.Indices.Add(Corner + 2);
++		Batch.Indices.Add(Corner + 1);
++		Batch.Indices.Add(Corner + 3);
++		Batch.Indices.Add(Corner + 2);
++	}
++
++	NumParticlesDrawn += NumParticles;
++}
++
++// =====================================================================================================
++// Helpers
++// =====================================================================================================
++
++int32 NiagaraUIMesh::CountParticles(UNiagaraComponent* Component)
++{
++	FNiagaraSystemInstance* SystemInstance = NiagaraUIMeshPrivate::GetSystemInstance(Component);
++	if (!SystemInstance)
++	{
++		return 0;
++	}
++
++	int32 Total = 0;
++	for (const auto& EmitterRef : SystemInstance->GetEmitters())
++	{
++		const FNiagaraEmitterInstance& Emitter = EmitterRef.Get();
++		if (Emitter.IsDisabled())
++		{
++			continue;
++		}
++		const FVersionedNiagaraEmitterData* EmitterData = Emitter.GetVersionedEmitter().GetEmitterData();
++		if (!EmitterData || EmitterData->SimTarget != ENiagaraSimTarget::CPUSim)
++		{
++			continue;
++		}
++		if (const FNiagaraDataBuffer* Buffer = Emitter.GetParticleData().GetCurrentData())
++		{
++			Total += static_cast<int32>(Buffer->GetNumInstances());
++		}
++	}
++	return Total;
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIMesh.h b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIMesh.h
+new file mode 100644
+index 0000000..5fdeda1
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIMesh.h
+@@ -0,0 +1,196 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Layout/SlateRect.h"
++#include "Rendering/RenderingCommon.h"
++#include "Styling/SlateBrush.h"
++
++#include "NiagaraUIWidget.h"
++
++class FNiagaraDataSet;
++class FNiagaraEmitterInstance;
++class FSlateWindowElementList;
++class UMaterialInterface;
++class UNiagaraComponent;
++class UNiagaraRendererProperties;
++
++/**
++ * A plane of the system laid on the screen (see ENiagaraUIPlane): Right and Down are the system's axes along the screen's
++ * X and Y, Depth points toward the viewer (Right x Down, so the view is the one an editor camera along -Depth sees).
++ */
++struct FNiagaraUIPlaneAxes
++{
++	FVector3f Right = FVector3f(1.f, 0.f, 0.f);
++	FVector3f Down = FVector3f(0.f, 0.f, -1.f);
++	FVector3f Depth = FVector3f(0.f, 1.f, 0.f);
++
++	static FNiagaraUIPlaneAxes Get(ENiagaraUIPlane Plane);
++
++	/** A point or direction of the system in the plane's 2D coordinates (Y down, as Slate's). */
++	FVector2f Project(const FVector3f& Value) const { return FVector2f(FVector3f::DotProduct(Value, Right), FVector3f::DotProduct(Value, Down)); }
++
++	/** How far toward the viewer a point is. */
++	float DepthOf(const FVector3f& Point) const { return FVector3f::DotProduct(Point, Depth); }
++};
++
++/**
++ * Where one simulation's particles land on screen: a point of the plane, in Niagara units, to Slate absolute space -
++ * Origin + AxisX * X + AxisY * Y. Local-space emitters are mapped through the widget's whole render transform; world-space
++ * ones through its scale alone, so what they left behind stays where it was.
++ */
++struct FNiagaraUISpace
++{
++	FVector2f Origin = FVector2f::ZeroVector;
++	FVector2f AxisX = FVector2f(1.f, 0.f);
++	FVector2f AxisY = FVector2f(0.f, 1.f);
++
++	/** How long one Niagara unit is on screen, whichever way it points - for ribbon widths and tiling. */
++	float LengthScale = 1.f;
++
++	/** The point of the plane perspective scales about: the system's origin. */
++	FVector2f Center = FVector2f::ZeroVector;
++
++	FVector2f ToAbsolute(const FVector2f& PlanePoint) const { return Origin + AxisX * PlanePoint.X + AxisY * PlanePoint.Y; }
++	FVector2f ToAbsoluteVector(const FVector2f& PlaneVector) const { return AxisX * PlaneVector.X + AxisY * PlaneVector.Y; }
++};
++
++/** One simulation to draw this paint, and where. Handed from UNiagaraUIWidget::PrepareForPaint to the mesh. */
++struct FNiagaraUISource
++{
++	UNiagaraComponent* Component = nullptr;
++	FNiagaraUISpace LocalSpace;
++	FNiagaraUISpace WorldSpace;
++};
++
++/** Everything about the widget the mesh needs, read as it paints. */
++struct FNiagaraUIBuildSettings
++{
++	ENiagaraUIPlane Plane = ENiagaraUIPlane::XZ;
++	float PerspectiveDistance = 0.f;
++	bool bSmoothRibbons = true;
++
++	/** The widget's color, opacity and its parents' - multiplies every particle. */
++	FLinearColor Tint = FLinearColor::White;
++
++	/** Slate absolute space. Particles wholly outside it aren't built. */
++	FSlateRect CullRect;
++
++	const TMap<TObjectPtr<UMaterialInterface>, TObjectPtr<UMaterialInterface>>* MaterialRemap = nullptr;
++
++	/** The widget's Particle Image when it has one; null for the built-in soft dot. */
++	const FSlateBrush* ParticleImage = nullptr;
++
++	/** Named in warnings. */
++	const UObject* Owner = nullptr;
++};
++
++/**
++ * The meshes one Niagara Particles widget draws: one batch per run of renderers that draw with the same brush, rebuilt
++ * from the particle data only when it has changed - a simulation ticked, the widget moved or recolored - so a paused
++ * effect, or one painted twice in a frame, costs nothing to build again. Every array is kept between builds and only grows.
++ *
++ * Game thread only.
++ */
++class FNiagaraUIMesh
++{
++public:
++	/** Works out the batches for Sources, or keeps the last ones when nothing they came from has changed. */
++	void Build(TConstArrayView<FNiagaraUISource> Sources, const FNiagaraUIBuildSettings& Settings);
++
++	/** Draws the batches as custom-vertex elements at LayerId. */
++	void Paint(FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
++
++	/** Forgets what was built; the next Build builds. Keeps the memory. */
++	void Reset();
++
++private:
++	struct FBatch
++	{
++		TSharedPtr<FSlateBrush> Brush;
++		TArray<FSlateVertex> Vertices;
++		TArray<SlateIndex> Indices;
++	};
++
++	/** What a renderer draws with: its UI material, a remap of it, or the Particle Image / soft dot, and their tint and UVs. */
++	struct FBrushChoice
++	{
++		TSharedPtr<FSlateBrush> Brush;
++		FLinearColor Tint = FLinearColor::White;
++		FVector2f UVMin = FVector2f(0.f, 0.f);
++		FVector2f UVSize = FVector2f(1.f, 1.f);
++	};
++
++	/** One renderer of one emitter of one simulation, in the order drawn. */
++	struct FDrawEntry
++	{
++		const FNiagaraEmitterInstance* Emitter = nullptr;
++		const UNiagaraRendererProperties* Renderer = nullptr;
++		const FNiagaraUISpace* Space = nullptr;
++		int32 SortOrder = 0;
++		int32 EmitterIndex = 0;
++		int32 RendererIndex = 0;
++		int32 SourceIndex = 0;
++		int32 NumParticles = 0;
++	};
++
++	struct FSortKey
++	{
++		float Key = 0.f;
++		int32 Index = 0;
++	};
++
++	struct FRibbonParticle
++	{
++		uint64 Ribbon = 0;
++		double Order = 0.0;
++		int32 Index = 0;
++	};
++
++	struct FRibbonPoint
++	{
++		FVector2f Position = FVector2f::ZeroVector;
++		float Width = 0.f;
++		FLinearColor Color = FLinearColor::White;
++		/** Which particle along its ribbon it is (fractions between, once smoothed) - for Scaled Uniformly UVs. */
++		float Param = 0.f;
++		float Distance = 0.f;
++	};
++
++	/** Gathers what to draw and how it all hashes - which says whether anything changed. */
++	uint32 Gather(TConstArrayView<FNiagaraUISource> Sources, const FNiagaraUIBuildSettings& Settings);
++
++	FBrushChoice ChooseBrush(UMaterialInterface* Material, const FNiagaraUIBuildSettings& Settings, const FDrawEntry& Entry);
++	FBatch& BatchFor(const TSharedPtr<FSlateBrush>& Brush);
++
++	void AddSprites(const FDrawEntry& Entry, const FNiagaraUIBuildSettings& Settings, const FNiagaraUIPlaneAxes& Axes, const FBrushChoice& Choice, FBatch& Batch);
++	void AddRibbons(const FDrawEntry& Entry, const FNiagaraUIBuildSettings& Settings, const FNiagaraUIPlaneAxes& Axes, const FBrushChoice& Choice, FBatch& Batch);
++	void AddRibbonStrip(int32 NumParticles, const FDrawEntry& Entry, const FNiagaraUIBuildSettings& Settings, const FBrushChoice& Choice, FBatch& Batch);
++
++	TArray<FBatch> Batches;
++	int32 NumBatches = 0;
++	int32 NumParticlesDrawn = 0;
++
++	bool bBuilt = false;
++	uint32 BuiltHash = 0;
++
++	/** The widget's Particle Image, copied so a batch can hold it safely; replaced when the image changes. */
++	TSharedPtr<FSlateBrush> ImageBrush;
++
++	/** What this widget has already warned about - a material, an emitter, a renderer - so each is said once, and cheaply. */
++	TSet<const void*> Warned;
++
++	// Scratch, kept between builds so building allocates nothing once warmed up.
++	TArray<FDrawEntry> Entries;
++	TArray<FSortKey> SortScratch;
++	TArray<FRibbonParticle> RibbonScratch;
++	TArray<FRibbonPoint> RibbonPoints;
++	TArray<FRibbonPoint> SmoothedPoints;
++};
++
++namespace NiagaraUIMesh
++{
++	/** Particles alive now in Component's CPU emitters. */
++	int32 CountParticles(UNiagaraComponent* Component);
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIRuntime.cpp b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIRuntime.cpp
+new file mode 100644
+index 0000000..e718beb
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIRuntime.cpp
+@@ -0,0 +1,305 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "NiagaraUIRuntime.h"
++
++#include "NiagaraUILog.h"
++#include "NiagaraUIWidget.h"
++
++#include "Containers/Ticker.h"
++#include "Engine/Texture2D.h"
++#include "Engine/World.h"
++#include "HAL/IConsoleManager.h"
++#include "Materials/Material.h"
++#include "Materials/MaterialInterface.h"
++#include "Misc/App.h"
++#include "Styling/SlateBrush.h"
++#include "TextureResource.h"
++#include "UObject/GCObject.h"
++
++namespace NiagaraUIRuntime
++{
++	namespace
++	{
++		TAutoConsoleVariable<int32> CVarEnable(
++			TEXT("NiagaraUI.Enable"),
++			1,
++			TEXT("0 stops every Niagara Particles widget simulating and drawing, for profiling. 1 (the default) runs them."));
++
++		TAutoConsoleVariable<int32> CVarLog(
++			TEXT("NiagaraUI.Log"),
++			0,
++			TEXT("1 logs the Niagara Particles widgets' simulations as they are made, let go, paused and resumed (LogNiagaraUI)."));
++
++		/** Seconds a brush nothing has drawn with is kept before it is let go - and its material with it. */
++		constexpr double BrushKeepSeconds = 10.0;
++
++		/** Edge of the soft dot texture, in pixels. Big enough to stay soft at the sizes particles are drawn in UI. */
++		constexpr int32 DotSize = 64;
++
++		/**
++		 * The shared state. An FGCObject: it keeps the materials it has brushes for, and the dot texture, from being
++		 * collected while a brush may still draw with them.
++		 */
++		class FRuntime : public FGCObject
++		{
++		public:
++			FRuntime()
++			{
++				TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FRuntime::Tick));
++				WorldCleanupHandle = FWorldDelegates::OnWorldCleanup.AddRaw(this, &FRuntime::HandleWorldCleanup);
++			}
++
++			virtual ~FRuntime() override
++			{
++				FTSTicker::RemoveTicker(TickerHandle);
++				FWorldDelegates::OnWorldCleanup.Remove(WorldCleanupHandle);
++			}
++
++			virtual void AddReferencedObjects(FReferenceCollector& Collector) override
++			{
++				for (TPair<const UMaterialInterface*, FBrushEntry>& Pair : MaterialBrushes)
++				{
++					Collector.AddReferencedObject(Pair.Value.Material);
++				}
++				Collector.AddReferencedObject(DotTexture);
++			}
++
++			virtual FString GetReferencerName() const override
++			{
++				return TEXT("NiagaraUIRuntime");
++			}
++
++			void Track(UNiagaraUIWidget* Widget)
++			{
++				Tracked.AddUnique(Widget);
++			}
++
++			void Untrack(UNiagaraUIWidget* Widget)
++			{
++				Tracked.RemoveAllSwap([Widget](const TWeakObjectPtr<UNiagaraUIWidget>& Entry)
++				{
++					return !Entry.IsValid() || Entry.Get() == Widget;
++				});
++			}
++
++			void WarnOnce(const FString& Message)
++			{
++				bool bAlreadyWarned = false;
++				Warned.Add(Message, &bAlreadyWarned);
++				if (!bAlreadyWarned)
++				{
++					UE_LOG(LogNiagaraUI, Warning, TEXT("%s"), *Message);
++				}
++			}
++
++			TSharedPtr<FSlateBrush> GetMaterialBrush(UMaterialInterface* Material)
++			{
++				FBrushEntry& Entry = MaterialBrushes.FindOrAdd(Material);
++				if (!Entry.Brush.IsValid() || Entry.Material != Material)
++				{
++					Entry.Material = Material;
++					Entry.Brush = MakeShared<FSlateBrush>();
++					Entry.Brush->SetResourceObject(Material);
++					Entry.Brush->ImageSize = FVector2D(DotSize, DotSize);
++				}
++				Entry.LastUsed = FApp::GetCurrentTime();
++				return Entry.Brush;
++			}
++
++			TSharedPtr<FSlateBrush> GetDefaultParticleBrush()
++			{
++				if (!DotBrush.IsValid() || !DotTexture)
++				{
++					DotTexture = MakeDotTexture();
++					DotBrush = MakeShared<FSlateBrush>();
++					// Without a texture (no RHI) the brush draws plain squares, which is still something.
++					DotBrush->SetResourceObject(DotTexture);
++					DotBrush->ImageSize = FVector2D(DotSize, DotSize);
++				}
++				return DotBrush;
++			}
++
++		private:
++			struct FBrushEntry
++			{
++				TObjectPtr<UMaterialInterface> Material = nullptr;
++				TSharedPtr<FSlateBrush> Brush;
++				double LastUsed = 0.0;
++			};
++
++			bool Tick(float /*DeltaTime*/)
++			{
++				// Backwards: a widget gone is dropped as it is met.
++				const uint64 Frame = GFrameCounter;
++				for (int32 Index = Tracked.Num() - 1; Index >= 0; --Index)
++				{
++					UNiagaraUIWidget* Widget = Tracked[Index].Get();
++					if (!Widget)
++					{
++						Tracked.RemoveAtSwap(Index);
++						continue;
++					}
++					Widget->TickRuntime(Frame);
++				}
++
++				const double Now = FApp::GetCurrentTime();
++				if (Now >= NextPrune)
++				{
++					NextPrune = Now + 2.0;
++					PruneBrushes(Now);
++				}
++				return true;
++			}
++
++			/** Lets go of brushes no batch holds any more and nothing has drawn with lately, and of deleted materials'. */
++			void PruneBrushes(double Now)
++			{
++				for (auto It = MaterialBrushes.CreateIterator(); It; ++It)
++				{
++					const FBrushEntry& Entry = It.Value();
++					const bool bHeldElsewhere = Entry.Brush.IsValid() && Entry.Brush.GetSharedReferenceCount() > 1;
++					if (!Entry.Material || (!bHeldElsewhere && Now - Entry.LastUsed > BrushKeepSeconds))
++					{
++						It.RemoveCurrent();
++					}
++				}
++			}
++
++			void HandleWorldCleanup(UWorld* World, bool /*bSessionEnded*/, bool /*bCleanupResources*/)
++			{
++				// A copy: letting go of a widget's simulations takes it off the list.
++				const TArray<TWeakObjectPtr<UNiagaraUIWidget>> Widgets = Tracked;
++				for (const TWeakObjectPtr<UNiagaraUIWidget>& Entry : Widgets)
++				{
++					if (UNiagaraUIWidget* Widget = Entry.Get())
++					{
++						Widget->ReleaseSimulationsIn(World);
++					}
++				}
++			}
++
++			/** A white dot, opaque in the middle and fading smoothly to nothing at its edge. */
++			static UTexture2D* MakeDotTexture()
++			{
++				UTexture2D* Texture = UTexture2D::CreateTransient(DotSize, DotSize, PF_B8G8R8A8, TEXT("NiagaraUISoftDot"));
++				if (!Texture || !Texture->GetPlatformData() || Texture->GetPlatformData()->Mips.Num() == 0)
++				{
++					return Texture;
++				}
++
++				Texture->SRGB = true;
++				Texture->Filter = TF_Bilinear;
++				Texture->AddressX = TA_Clamp;
++				Texture->AddressY = TA_Clamp;
++
++				FTexture2DMipMap& Mip = Texture->GetPlatformData()->Mips[0];
++				if (uint8* Pixels = static_cast<uint8*>(Mip.BulkData.Lock(LOCK_READ_WRITE)))
++				{
++					const float Radius = DotSize * 0.5f;
++					for (int32 Y = 0; Y < DotSize; ++Y)
++					{
++						for (int32 X = 0; X < DotSize; ++X)
++						{
++							const float DeltaX = (X + 0.5f - Radius) / Radius;
++							const float DeltaY = (Y + 0.5f - Radius) / Radius;
++							const float Inside = FMath::Clamp(1.f - FMath::Sqrt(DeltaX * DeltaX + DeltaY * DeltaY), 0.f, 1.f);
++							const float Alpha = Inside * Inside * (3.f - 2.f * Inside);
++
++							uint8* Pixel = Pixels + (Y * DotSize + X) * 4;
++							Pixel[0] = 255;
++							Pixel[1] = 255;
++							Pixel[2] = 255;
++							Pixel[3] = static_cast<uint8>(FMath::RoundToInt(Alpha * 255.f));
++						}
++					}
++					Mip.BulkData.Unlock();
++				}
++				Texture->UpdateResource();
++				return Texture;
++			}
++
++			TArray<TWeakObjectPtr<UNiagaraUIWidget>> Tracked;
++			TMap<const UMaterialInterface*, FBrushEntry> MaterialBrushes;
++			TObjectPtr<UTexture2D> DotTexture = nullptr;
++			TSharedPtr<FSlateBrush> DotBrush;
++			TSet<FString> Warned;
++			double NextPrune = 0.0;
++			FTSTicker::FDelegateHandle TickerHandle;
++			FDelegateHandle WorldCleanupHandle;
++		};
++
++		TUniquePtr<FRuntime>& GetRuntime()
++		{
++			static TUniquePtr<FRuntime> Runtime;
++			return Runtime;
++		}
++	}
++
++	void Startup()
++	{
++		GetRuntime() = MakeUnique<FRuntime>();
++	}
++
++	void Shutdown()
++	{
++		GetRuntime().Reset();
++	}
++
++	void Track(UNiagaraUIWidget* Widget)
++	{
++		if (Widget && GetRuntime())
++		{
++			GetRuntime()->Track(Widget);
++		}
++	}
++
++	void Untrack(UNiagaraUIWidget* Widget)
++	{
++		if (GetRuntime())
++		{
++			GetRuntime()->Untrack(Widget);
++		}
++	}
++
++	bool IsEnabled()
++	{
++		return CVarEnable.GetValueOnGameThread() != 0;
++	}
++
++	bool IsLogging()
++	{
++		return CVarLog.GetValueOnGameThread() != 0;
++	}
++
++	void WarnOnce(const FString& Message)
++	{
++		if (GetRuntime())
++		{
++			GetRuntime()->WarnOnce(Message);
++		}
++	}
++
++	bool IsUIMaterial(const UMaterialInterface* Material)
++	{
++		const UMaterial* BaseMaterial = Material ? Material->GetMaterial() : nullptr;
++		return BaseMaterial && BaseMaterial->MaterialDomain == MD_UI;
++	}
++
++	TSharedPtr<FSlateBrush> GetMaterialBrush(UMaterialInterface* Material)
++	{
++		if (!GetRuntime() || !Material)
++		{
++			return nullptr;
++		}
++		return GetRuntime()->GetMaterialBrush(Material);
++	}
++
++	TSharedPtr<FSlateBrush> GetDefaultParticleBrush()
++	{
++		if (!GetRuntime())
++		{
++			return nullptr;
++		}
++		return GetRuntime()->GetDefaultParticleBrush();
++	}
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIRuntime.h b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIRuntime.h
+new file mode 100644
+index 0000000..dde85f7
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIRuntime.h
+@@ -0,0 +1,50 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++
++class UMaterialInterface;
++class UNiagaraUIWidget;
++struct FSlateBrush;
++
++/**
++ * What every Niagara Particles widget shares, started and stopped with the module:
++ *
++ *   - One ticker for them all, before the world ticks each frame: Pause When Hidden, and whether each repaints every frame
++ *     (see UNiagaraUIWidget::TickRuntime). Only widgets that have made a simulation are on it.
++ *   - Letting go of their simulations when the world those are registered with is cleaned up (a level change, the end of
++ *     Play In Editor), so no world is kept alive by a widget that outlives it.
++ *   - The brushes particles draw with: one per User Interface material, shared by every widget, and the soft dot drawn
++ *     when a renderer's material can't draw in UI. A brush nothing has drawn with for a while is let go.
++ *   - The console variables NiagaraUI.Enable and NiagaraUI.Log, and warnings logged once.
++ */
++namespace NiagaraUIRuntime
++{
++	void Startup();
++	void Shutdown();
++
++	/** Ticks Widget from the next frame on. Called once it has a simulation. */
++	void Track(UNiagaraUIWidget* Widget);
++
++	/** Stops ticking Widget. Not during garbage collection: a widget being destroyed simply drops off. */
++	void Untrack(UNiagaraUIWidget* Widget);
++
++	/** NiagaraUI.Enable: 0 stops every Niagara Particles widget simulating and drawing, for profiling. */
++	bool IsEnabled();
++
++	/** NiagaraUI.Log: 1 logs simulations made, let go, paused and resumed. */
++	bool IsLogging();
++
++	/** Logs Message as a warning the first time it is seen this run; the same message never again. */
++	void WarnOnce(const FString& Message);
++
++	/** Whether Material can be drawn by Slate: its Material Domain is User Interface. */
++	bool IsUIMaterial(const UMaterialInterface* Material);
++
++	/** The shared brush drawing with Material (a User Interface material). Null after shutdown. */
++	TSharedPtr<FSlateBrush> GetMaterialBrush(UMaterialInterface* Material);
++
++	/** The shared soft round dot, white, drawn when a renderer's material can't draw in UI. Null after shutdown. */
++	TSharedPtr<FSlateBrush> GetDefaultParticleBrush();
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIWidget.cpp b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIWidget.cpp
+new file mode 100644
+index 0000000..edab5f0
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIWidget.cpp
+@@ -0,0 +1,808 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "NiagaraUIWidget.h"
++
++#include "NiagaraUILog.h"
++#include "NiagaraUIMesh.h"
++#include "NiagaraUIRuntime.h"
++#include "SNiagaraUIWidget.h"
++
++#include "Engine/Engine.h"
++#include "Engine/World.h"
++#include "HAL/PlatformTime.h"
++#include "Materials/MaterialInterface.h"
++#include "NiagaraComponent.h"
++#include "NiagaraEmitterHandle.h"
++#include "NiagaraRibbonRendererProperties.h"
++#include "NiagaraSpriteRendererProperties.h"
++#include "NiagaraSystem.h"
++
++#if WITH_EDITOR
++#include "Editor/WidgetCompilerLog.h"
++#endif
++
++#define LOCTEXT_NAMESPACE "NiagaraUIWidget"
++
++namespace NiagaraUIWidgetPrivate
++{
++	/** The step Prewarm Time is simulated in. */
++	constexpr float PrewarmStep = 1.f / 30.f;
++
++	/** Frames a widget may go undrawn before Pause When Hidden pauses it - one frame of slack for a skipped paint. */
++	constexpr uint64 HiddenAfterFrames = 2;
++}
++
++template <typename FunctionType>
++void UNiagaraUIWidget::ForEachComponent(FunctionType&& Function) const
++{
++	if (IsValid(Main.Component))
++	{
++		Function(Main.Component.Get());
++	}
++	for (const FNiagaraUISimulation& Burst : Bursts)
++	{
++		if (IsValid(Burst.Component))
++		{
++			Function(Burst.Component.Get());
++		}
++	}
++}
++
++UNiagaraUIWidget::UNiagaraUIWidget()
++{
++	// Particles are decoration: a click goes through them to whatever is underneath.
++	SetVisibilityInternal(ESlateVisibility::HitTestInvisible);
++}
++
++// ---------------------------------------------------------------------------------------------
++// UWidget
++// ---------------------------------------------------------------------------------------------
++
++TSharedRef<SWidget> UNiagaraUIWidget::RebuildWidget()
++{
++	MyParticles = SNew(SNiagaraUIWidget).Owner(this);
++	bSlateVolatile = false;
++	return MyParticles.ToSharedRef();
++}
++
++void UNiagaraUIWidget::SynchronizeProperties()
++{
++	Super::SynchronizeProperties();
++
++	// Another system set on a simulation already made: it starts again with that one, if it was playing.
++	if (IsValid(Main.Component) && Main.Component->GetAsset() != NiagaraSystem)
++	{
++		const bool bWasPlaying = Main.Component->IsActive() || Main.bPendingPlay;
++		Main.Component->OnSystemFinished.RemoveAll(this);
++		Main.Component->DeactivateImmediate();
++		Main.Component->SetAsset(NiagaraSystem);
++		Main.Component->OnSystemFinished.AddUniqueDynamic(this, &UNiagaraUIWidget::HandleSystemFinished);
++		Main.bPendingPlay = NiagaraSystem && (bWasPlaying || bAutoPlay);
++		Main.bPendingRestart = true;
++	}
++
++	ForEachComponent([this](UNiagaraComponent* SimComponent)
++	{
++		ApplyRuntimeSettings(SimComponent);
++		ApplyParameters(SimComponent);
++	});
++
++	if (MyParticles.IsValid())
++	{
++		// UWidget::SynchronizeProperties sets volatility from Is Volatile alone; live particles keep it repainting too.
++		MyParticles->ForceVolatile(bSlateVolatile || bIsVolatile);
++		MyParticles->Invalidate(EInvalidateWidgetReason::Layout);
++	}
++}
++
++void UNiagaraUIWidget::ReleaseSlateResources(bool bReleaseChildren)
++{
++	Super::ReleaseSlateResources(bReleaseChildren);
++
++	MyParticles.Reset();
++	bSlateVolatile = false;
++
++	// Not while being garbage collected: the simulations are this widget's alone and go with it, and touching other
++	// objects from here then isn't safe.
++	if (!IsUnreachable())
++	{
++		ReleaseSimulations();
++	}
++}
++
++#if WITH_EDITOR
++const FText UNiagaraUIWidget::GetPaletteCategory()
++{
++	return LOCTEXT("PaletteCategory", "NameTBD");
++}
++
++void UNiagaraUIWidget::ValidateCompiledDefaults(IWidgetCompilerLog& CompileLog) const
++{
++	Super::ValidateCompiledDefaults(CompileLog);
++
++	if (!NiagaraSystem)
++	{
++		return;
++	}
++
++	// What of the system won't show in UI, said where the widget is compiled rather than discovered by a blank screen.
++	const FText WidgetName = FText::FromString(GetName());
++	for (const FNiagaraEmitterHandle& Handle : NiagaraSystem->GetEmitterHandles())
++	{
++		if (!Handle.GetIsEnabled())
++		{
++			continue;
++		}
++
++		const FText EmitterName = FText::FromName(Handle.GetName());
++		const FVersionedNiagaraEmitterData* EmitterData = Handle.GetEmitterData();
++		if (!EmitterData)
++		{
++			CompileLog.Note(FText::Format(LOCTEXT("IrregularEmitter", "{0}: emitter {1} isn't a regular emitter (a lightweight emitter?) and won't be drawn in UI."), WidgetName, EmitterName));
++			continue;
++		}
++
++		if (EmitterData->SimTarget != ENiagaraSimTarget::CPUSim)
++		{
++			CompileLog.Warning(FText::Format(LOCTEXT("GPUEmitter", "{0}: emitter {1} simulates on the GPU and won't be drawn - UI draws CPU particles only. Set its Sim Target to CPUSim."), WidgetName, EmitterName));
++			continue;
++		}
++
++		for (const UNiagaraRendererProperties* Renderer : EmitterData->GetRenderers())
++		{
++			if (!Renderer || !Renderer->GetIsEnabled())
++			{
++				continue;
++			}
++
++			UMaterialInterface* Material = nullptr;
++			if (const UNiagaraSpriteRendererProperties* SpriteRenderer = Cast<UNiagaraSpriteRendererProperties>(Renderer))
++			{
++				Material = SpriteRenderer->Material;
++			}
++			else if (const UNiagaraRibbonRendererProperties* RibbonRenderer = Cast<UNiagaraRibbonRendererProperties>(Renderer))
++			{
++				Material = RibbonRenderer->Material;
++			}
++			else
++			{
++				CompileLog.Note(FText::Format(LOCTEXT("UnsupportedRenderer", "{0}: emitter {1}'s {2} won't be drawn - UI draws Sprite and Ribbon renderers."),
++					WidgetName, EmitterName, Renderer->GetClass()->GetDisplayNameText()));
++				continue;
++			}
++
++			if (const TObjectPtr<UMaterialInterface>* Remapped = Material ? MaterialRemap.Find(Material) : nullptr)
++			{
++				if (*Remapped)
++				{
++					Material = Remapped->Get();
++				}
++			}
++			if (Material && !NiagaraUIRuntime::IsUIMaterial(Material))
++			{
++				CompileLog.Note(FText::Format(LOCTEXT("SurfaceMaterial", "{0}: emitter {1} draws with {2}, which isn't a User Interface material - its particles show the Particle Image instead. Map it to a UI material in Material Remap to draw it as authored."),
++					WidgetName, EmitterName, FText::FromString(Material->GetName())));
++			}
++		}
++	}
++}
++#endif
++
++// ---------------------------------------------------------------------------------------------
++// Blueprint
++// ---------------------------------------------------------------------------------------------
++
++void UNiagaraUIWidget::Play(bool bRestart)
++{
++	bAutoPlayDone = true;
++	if (IsValid(Main.Component) && Main.bPlaced)
++	{
++		StartSimulation(Main, bRestart);
++	}
++	else
++	{
++		// Not drawn yet: it starts on its first paint, once it is where the widget is.
++		Main.bPendingPlay = true;
++		Main.bPendingRestart = bRestart;
++	}
++	SetAnimating(!bUserPaused);
++}
++
++void UNiagaraUIWidget::StopEmitting()
++{
++	bAutoPlayDone = true;
++	Main.bPendingPlay = false;
++	for (FNiagaraUISimulation& Burst : Bursts)
++	{
++		Burst.bPendingPlay = false;
++	}
++	ForEachComponent([](UNiagaraComponent* SimComponent)
++	{
++		if (SimComponent->IsActive())
++		{
++			SimComponent->Deactivate();
++		}
++	});
++}
++
++void UNiagaraUIWidget::Clear()
++{
++	bAutoPlayDone = true;
++	Main.bPendingPlay = false;
++	for (FNiagaraUISimulation& Burst : Bursts)
++	{
++		Burst.bPendingPlay = false;
++	}
++	ForEachComponent([](UNiagaraComponent* SimComponent)
++	{
++		SimComponent->DeactivateImmediate();
++	});
++	SetAnimating(false);
++	if (MyParticles.IsValid())
++	{
++		MyParticles->Invalidate(EInvalidateWidgetReason::Paint);
++	}
++}
++
++void UNiagaraUIWidget::PlayAt(FVector2D LocalPosition, UNiagaraSystem* BurstSystem)
++{
++	UNiagaraSystem* System = BurstSystem ? BurstSystem : NiagaraSystem.Get();
++	if (!System || MaxBursts <= 0 || !CanSimulate())
++	{
++		return;
++	}
++
++	UWorld* World = FindSimulationWorld();
++	FNiagaraUISimulation* Burst = World ? TakeBurst(System, World) : nullptr;
++	if (!Burst)
++	{
++		return;
++	}
++
++	// Placed and started on the next paint, so a world-space emitter's first particles are born at the point.
++	Burst->Position = FVector2f(LocalPosition);
++	Burst->StartedAt = FPlatformTime::Seconds();
++	Burst->bPlaced = false;
++	Burst->bPendingPlay = true;
++	Burst->bPendingRestart = true;
++	SetAnimating(!bUserPaused);
++}
++
++void UNiagaraUIWidget::PlayAtAbsolutePosition(FVector2D AbsolutePosition, UNiagaraSystem* BurstSystem)
++{
++	const FGeometry& Geometry = GetCachedGeometry();
++	PlayAt(FVector2D(Geometry.AbsoluteToLocal(AbsolutePosition)), BurstSystem);
++}
++
++void UNiagaraUIWidget::SetNiagaraSystem(UNiagaraSystem* NewSystem, bool bPlay)
++{
++	NiagaraSystem = NewSystem;
++	if (IsValid(Main.Component))
++	{
++		// Quietly: On Finished is for the system ending, not for being swapped out.
++		Main.Component->OnSystemFinished.RemoveAll(this);
++		Main.Component->DeactivateImmediate();
++		Main.Component->SetAsset(NewSystem);
++		Main.Component->OnSystemFinished.AddUniqueDynamic(this, &UNiagaraUIWidget::HandleSystemFinished);
++		ApplyParameters(Main.Component);
++	}
++	Main.bPendingPlay = false;
++
++	if (bPlay && NewSystem)
++	{
++		Play(true);
++	}
++	else
++	{
++		bAutoPlayDone = true;
++	}
++}
++
++void UNiagaraUIWidget::SetPaused(bool bPaused)
++{
++	bUserPaused = bPaused;
++	ApplyPause();
++
++	bool bAnyActive = false;
++	ForEachComponent([&bAnyActive](UNiagaraComponent* SimComponent)
++	{
++		bAnyActive |= SimComponent->IsActive();
++	});
++	SetAnimating(bAnyActive && !bPaused);
++}
++
++bool UNiagaraUIWidget::IsPlaying() const
++{
++	return Main.bPendingPlay || (IsValid(Main.Component) && Main.Component->IsActive());
++}
++
++int32 UNiagaraUIWidget::GetLiveParticleCount() const
++{
++	int32 Total = 0;
++	ForEachComponent([&Total](UNiagaraComponent* SimComponent)
++	{
++		Total += NiagaraUIMesh::CountParticles(SimComponent);
++	});
++	return Total;
++}
++
++UNiagaraComponent* UNiagaraUIWidget::GetNiagaraComponent() const
++{
++	return IsValid(Main.Component) ? Main.Component.Get() : nullptr;
++}
++
++void UNiagaraUIWidget::SetFloatParameter(FName ParameterName, float Value)
++{
++	FloatParameters.Add(ParameterName, Value);
++	ForEachComponent([ParameterName, Value](UNiagaraComponent* SimComponent)
++	{
++		SimComponent->SetVariableFloat(ParameterName, Value);
++	});
++}
++
++void UNiagaraUIWidget::SetColorParameter(FName ParameterName, FLinearColor Value)
++{
++	ColorParameters.Add(ParameterName, Value);
++	ForEachComponent([ParameterName, Value](UNiagaraComponent* SimComponent)
++	{
++		SimComponent->SetVariableLinearColor(ParameterName, Value);
++	});
++}
++
++void UNiagaraUIWidget::SetVectorParameter(FName ParameterName, FVector Value)
++{
++	VectorParameters.Add(ParameterName, Value);
++	ForEachComponent([ParameterName, Value](UNiagaraComponent* SimComponent)
++	{
++		SimComponent->SetVariableVec3(ParameterName, Value);
++	});
++}
++
++void UNiagaraUIWidget::SetColorAndOpacity(FLinearColor InColorAndOpacity)
++{
++	ColorAndOpacity = InColorAndOpacity;
++	if (MyParticles.IsValid())
++	{
++		MyParticles->Invalidate(EInvalidateWidgetReason::Paint);
++	}
++}
++
++void UNiagaraUIWidget::SetParticleScale(float InParticleScale)
++{
++	ParticleScale = FMath::Max(InParticleScale, 0.001f);
++	if (MyParticles.IsValid())
++	{
++		MyParticles->Invalidate(EInvalidateWidgetReason::Paint);
++	}
++}
++
++void UNiagaraUIWidget::SetDesiredSize(FVector2D InDesiredSize)
++{
++	DesiredSize = InDesiredSize;
++	if (MyParticles.IsValid())
++	{
++		MyParticles->Invalidate(EInvalidateWidgetReason::Layout);
++	}
++}
++
++// ---------------------------------------------------------------------------------------------
++// Painting and ticking
++// ---------------------------------------------------------------------------------------------
++
++void UNiagaraUIWidget::PrepareForPaint(const FGeometry& Geometry, TArray<FNiagaraUISource>& OutSources)
++{
++	if (!CanSimulate())
++	{
++		return;
++	}
++	LastPaintFrame = GFrameCounter;
++
++	// The first paint makes the main simulation, and Auto Play starts it - once per simulation, not on every paint.
++	if (!IsValid(Main.Component))
++	{
++		if (bAutoPlay && !bAutoPlayDone && NiagaraSystem)
++		{
++			Main.bPendingPlay = true;
++			Main.bPendingRestart = true;
++		}
++		if (Main.bPendingPlay && EnsureMainSimulation())
++		{
++			bAutoPlayDone = true;
++		}
++	}
++
++	// Drawn again: Pause When Hidden lets go.
++	if (bHiddenPaused)
++	{
++		bHiddenPaused = false;
++		ApplyPause();
++		if (NiagaraUIRuntime::IsLogging())
++		{
++			UE_LOG(LogNiagaraUI, Log, TEXT("%s: shown again - resumed."), *GetPathName());
++		}
++	}
++
++	// Where this paint puts the widget. Local-space particles go through its whole render transform (DPI scale, layout,
++	// Render Transform, a Widget Animation's turn or squash); world-space ones through its scale alone, in units of
++	// WorldUnit absolute pixels, so the simulation's world is the screen and a moving widget leaves them behind.
++	const FSlateRenderTransform& Transform = Geometry.GetAccumulatedRenderTransform();
++	const float UnitScale = FMath::Max(ParticleScale, 0.001f);
++	const float WorldUnit = FMath::Max(Geometry.Scale, UE_KINDA_SMALL_NUMBER) * UnitScale;
++	const FVector2f LocalAxisX = Transform.TransformVector(FVector2f(UnitScale, 0.f));
++	const FVector2f LocalAxisY = Transform.TransformVector(FVector2f(0.f, UnitScale));
++	const float LocalUnit = FMath::Sqrt(FMath::Abs(LocalAxisX.X * LocalAxisY.Y - LocalAxisX.Y * LocalAxisY.X));
++	const float Angle = FMath::Atan2(LocalAxisX.Y, LocalAxisX.X);
++	const float SimulationScale = FMath::Max(LocalUnit / WorldUnit, UE_KINDA_SMALL_NUMBER);
++	const FVector2f LocalSize = FVector2f(FVector2D(Geometry.GetLocalSize()));
++	const FNiagaraUIPlaneAxes Axes = FNiagaraUIPlaneAxes::Get(Plane);
++
++	auto PrepareSimulation = [&](FNiagaraUISimulation& Simulation, const FVector2f& LocalPoint)
++	{
++		UNiagaraComponent* SimComponent = Simulation.Component;
++		if (!IsValid(SimComponent))
++		{
++			return;
++		}
++
++		// The component goes where the widget puts the system's origin, turned and scaled as the widget is - what a
++		// world-space emitter spawns from. Only moved when the widget has moved.
++		const FVector2f Anchor = Transform.TransformPoint(LocalPoint);
++		const FVector2f WorldPoint = Anchor / WorldUnit;
++		const bool bMoved = !Simulation.bPlaced
++			|| !WorldPoint.Equals(Simulation.PlacedAt, 0.01f)
++			|| !FMath::IsNearlyEqual(Angle, Simulation.PlacedAngle, 1.e-4f)
++			|| !FMath::IsNearlyEqual(SimulationScale, Simulation.PlacedScale, 1.e-4f);
++		if (bMoved)
++		{
++			const FVector Location(Axes.Right * WorldPoint.X + Axes.Down * WorldPoint.Y);
++			const FQuat Rotation(FVector(Axes.Depth), Angle);
++			SimComponent->SetWorldTransform(FTransform(Rotation, Location, FVector(SimulationScale)));
++			Simulation.bPlaced = true;
++			Simulation.PlacedAt = WorldPoint;
++			Simulation.PlacedAngle = Angle;
++			Simulation.PlacedScale = SimulationScale;
++		}
++
++		if (Simulation.bPendingPlay)
++		{
++			StartSimulation(Simulation, Simulation.bPendingRestart);
++		}
++		if (!SimComponent->IsActive())
++		{
++			return;
++		}
++
++		FNiagaraUISource& Source = OutSources.AddDefaulted_GetRef();
++		Source.Component = SimComponent;
++
++		Source.LocalSpace.Origin = Anchor;
++		Source.LocalSpace.AxisX = LocalAxisX;
++		Source.LocalSpace.AxisY = LocalAxisY;
++		Source.LocalSpace.LengthScale = LocalUnit;
++		Source.LocalSpace.Center = FVector2f::ZeroVector;
++
++		Source.WorldSpace.Origin = FVector2f::ZeroVector;
++		Source.WorldSpace.AxisX = FVector2f(WorldUnit, 0.f);
++		Source.WorldSpace.AxisY = FVector2f(0.f, WorldUnit);
++		Source.WorldSpace.LengthScale = WorldUnit;
++		Source.WorldSpace.Center = WorldPoint;
++	};
++
++	PrepareSimulation(Main, LocalSize * FVector2f(Origin));
++	for (FNiagaraUISimulation& Burst : Bursts)
++	{
++		PrepareSimulation(Burst, Burst.Position);
++	}
++}
++
++void UNiagaraUIWidget::TickRuntime(uint64 Frame)
++{
++	using namespace NiagaraUIWidgetPrivate;
++
++	bool bAnyActive = Main.bPendingPlay;
++	for (const FNiagaraUISimulation& Burst : Bursts)
++	{
++		bAnyActive |= Burst.bPendingPlay;
++	}
++	ForEachComponent([&bAnyActive](UNiagaraComponent* SimComponent)
++	{
++		bAnyActive |= SimComponent->IsActive();
++	});
++
++	// Not drawn for a couple of frames: collapsed, hidden, scrolled out of view, off the screen.
++	const bool bHidden = bPauseWhenHidden && bAnyActive && LastPaintFrame + HiddenAfterFrames < Frame;
++	if (bHidden != bHiddenPaused)
++	{
++		bHiddenPaused = bHidden;
++		ApplyPause();
++		if (NiagaraUIRuntime::IsLogging())
++		{
++			UE_LOG(LogNiagaraUI, Log, TEXT("%s: %s."), *GetPathName(), bHidden ? TEXT("not drawn - paused") : TEXT("resumed"));
++		}
++	}
++
++	SetAnimating(bAnyActive && !bUserPaused);
++}
++
++void UNiagaraUIWidget::ReleaseSimulationsIn(const UWorld* World)
++{
++	bool bInWorld = false;
++	ForEachComponent([World, &bInWorld](UNiagaraComponent* SimComponent)
++	{
++		bInWorld |= SimComponent->GetWorld() == World;
++	});
++	if (bInWorld)
++	{
++		ReleaseSimulations();
++	}
++}
++
++// ---------------------------------------------------------------------------------------------
++// Simulations
++// ---------------------------------------------------------------------------------------------
++
++UWorld* UNiagaraUIWidget::FindSimulationWorld() const
++{
++	UWorld* World = GetWorld();
++
++#if WITH_EDITOR
++	// A designer preview may have no world of its own: it plays in the editor's.
++	if (!World && IsDesignTime() && GEngine)
++	{
++		for (const FWorldContext& Context : GEngine->GetWorldContexts())
++		{
++			if (Context.WorldType == EWorldType::Editor)
++			{
++				World = Context.World();
++				break;
++			}
++		}
++	}
++#endif
++
++	if (!World || World->bIsTearingDown || !World->bIsWorldInitialized)
++	{
++		return nullptr;
++	}
++	return World;
++}
++
++bool UNiagaraUIWidget::CanSimulate() const
++{
++	if (!NiagaraUIRuntime::IsEnabled())
++	{
++		return false;
++	}
++	return !IsDesignTime() || bPreviewInDesigner;
++}
++
++UNiagaraComponent* UNiagaraUIWidget::MakeComponent(UWorld* World, UNiagaraSystem* System)
++{
++	// Ownerless, as Niagara's own Spawn System At Location makes them, and never saved, copied or exported.
++	UNiagaraComponent* SimComponent = NewObject<UNiagaraComponent>(World, NAME_None, RF_Transient | RF_TextExportTransient | RF_DuplicateTransient);
++	SimComponent->SetAutoActivate(false);
++	SimComponent->SetAutoDestroy(false);
++
++	// Drawn by this widget wherever the camera is: never culled for distance, visibility or an effect budget.
++	SimComponent->SetAllowScalability(false);
++
++	// Nothing for the scene renderer - no proxy, no render data sent each frame. The widget reads the particles itself.
++	SimComponent->SetRenderingEnabled(false);
++	SimComponent->SetHiddenInGame(true);
++	SimComponent->SetCastShadow(false);
++	SimComponent->SetCanEverAffectNavigation(false);
++
++	ApplyRuntimeSettings(SimComponent);
++	SimComponent->SetAsset(System);
++	SimComponent->RegisterComponentWithWorld(World);
++	ApplyParameters(SimComponent);
++
++	if (!bTracked)
++	{
++		NiagaraUIRuntime::Track(this);
++		bTracked = true;
++	}
++
++	if (NiagaraUIRuntime::IsLogging())
++	{
++		UE_LOG(LogNiagaraUI, Log, TEXT("%s: simulation of %s made in %s."), *GetPathName(), System ? *System->GetName() : TEXT("no system"), *World->GetName());
++	}
++	return SimComponent;
++}
++
++void UNiagaraUIWidget::ApplyRuntimeSettings(UNiagaraComponent* SimComponent) const
++{
++	// Ticking itself, not batched with the world's systems, is what lets it tick while the game is paused.
++	SimComponent->SetTickableWhenPaused(bPlayWhilePaused);
++	SimComponent->SetForceSolo(bPlayWhilePaused);
++}
++
++void UNiagaraUIWidget::ApplyParameters(UNiagaraComponent* SimComponent) const
++{
++	for (const TPair<FName, float>& Pair : FloatParameters)
++	{
++		SimComponent->SetVariableFloat(Pair.Key, Pair.Value);
++	}
++	for (const TPair<FName, FLinearColor>& Pair : ColorParameters)
++	{
++		SimComponent->SetVariableLinearColor(Pair.Key, Pair.Value);
++	}
++	for (const TPair<FName, FVector>& Pair : VectorParameters)
++	{
++		SimComponent->SetVariableVec3(Pair.Key, Pair.Value);
++	}
++}
++
++bool UNiagaraUIWidget::EnsureMainSimulation()
++{
++	if (IsValid(Main.Component))
++	{
++		return true;
++	}
++
++	Main.Component = nullptr;
++	Main.bPlaced = false;
++	if (!NiagaraSystem || !CanSimulate())
++	{
++		return false;
++	}
++
++	UWorld* World = FindSimulationWorld();
++	if (!World)
++	{
++		return false;
++	}
++
++	Main.Component = MakeComponent(World, NiagaraSystem);
++	Main.Component->OnSystemFinished.AddUniqueDynamic(this, &UNiagaraUIWidget::HandleSystemFinished);
++	return true;
++}
++
++void UNiagaraUIWidget::StartSimulation(FNiagaraUISimulation& Simulation, bool bRestart)
++{
++	Simulation.bPendingPlay = false;
++
++	UNiagaraComponent* SimComponent = Simulation.Component;
++	if (!IsValid(SimComponent) || !SimComponent->GetAsset())
++	{
++		return;
++	}
++
++	if (bRestart || !SimComponent->IsActive())
++	{
++		SimComponent->Activate(/*bReset=*/true);
++
++		// Only the main system opens already full; a burst plays from its first frame.
++		if (&Simulation == &Main && PrewarmTime > 0.f)
++		{
++			SimComponent->AdvanceSimulationByTime(PrewarmTime, NiagaraUIWidgetPrivate::PrewarmStep);
++		}
++	}
++
++	const bool bPause = bUserPaused || bHiddenPaused;
++	if (SimComponent->IsPaused() != bPause)
++	{
++		SimComponent->SetPaused(bPause);
++	}
++	SetAnimating(!bUserPaused);
++}
++
++FNiagaraUISimulation* UNiagaraUIWidget::TakeBurst(UNiagaraSystem* System, UWorld* World)
++{
++	Bursts.RemoveAll([](const FNiagaraUISimulation& Burst)
++	{
++		return !IsValid(Burst.Component);
++	});
++
++	// A finished burst of the same system first (nothing to swap), then any finished one, then a new one, then the oldest.
++	FNiagaraUISimulation* SameIdle = nullptr;
++	FNiagaraUISimulation* AnyIdle = nullptr;
++	FNiagaraUISimulation* Oldest = nullptr;
++	for (FNiagaraUISimulation& Burst : Bursts)
++	{
++		const bool bBusy = Burst.bPendingPlay || Burst.Component->IsActive();
++		if (!bBusy)
++		{
++			if (Burst.Component->GetAsset() == System)
++			{
++				SameIdle = &Burst;
++				break;
++			}
++			AnyIdle = AnyIdle ? AnyIdle : &Burst;
++		}
++		if (!Oldest || Burst.StartedAt < Oldest->StartedAt)
++		{
++			Oldest = &Burst;
++		}
++	}
++
++	FNiagaraUISimulation* Chosen = SameIdle ? SameIdle : AnyIdle;
++	if (!Chosen && Bursts.Num() < MaxBursts)
++	{
++		FNiagaraUISimulation& Added = Bursts.AddDefaulted_GetRef();
++		Added.Component = MakeComponent(World, System);
++		return &Added;
++	}
++
++	Chosen = Chosen ? Chosen : Oldest;
++	if (!Chosen)
++	{
++		return nullptr;
++	}
++
++	// A busy one taken over is cleared first, so nothing of it jumps to the new point.
++	Chosen->Component->DeactivateImmediate();
++	if (Chosen->Component->GetAsset() != System)
++	{
++		Chosen->Component->SetAsset(System);
++		ApplyParameters(Chosen->Component);
++	}
++	return Chosen;
++}
++
++void UNiagaraUIWidget::ReleaseSimulations()
++{
++	const bool bHadAny = IsValid(Main.Component) || Bursts.Num() > 0;
++
++	ForEachComponent([this](UNiagaraComponent* SimComponent)
++	{
++		SimComponent->OnSystemFinished.RemoveAll(this);
++		SimComponent->DestroyComponent();
++	});
++	Main = FNiagaraUISimulation();
++	Bursts.Reset();
++	bAutoPlayDone = false;
++	bHiddenPaused = false;
++
++	if (bTracked)
++	{
++		NiagaraUIRuntime::Untrack(this);
++		bTracked = false;
++	}
++	SetAnimating(false);
++
++	if (bHadAny && NiagaraUIRuntime::IsLogging())
++	{
++		UE_LOG(LogNiagaraUI, Log, TEXT("%s: simulations let go."), *GetPathName());
++	}
++}
++
++void UNiagaraUIWidget::ApplyPause()
++{
++	const bool bPause = bUserPaused || bHiddenPaused;
++	ForEachComponent([bPause](UNiagaraComponent* SimComponent)
++	{
++		if (SimComponent->IsPaused() != bPause)
++		{
++			SimComponent->SetPaused(bPause);
++		}
++	});
++}
++
++void UNiagaraUIWidget::SetAnimating(bool bAnimating)
++{
++	if (!MyParticles.IsValid())
++	{
++		bSlateVolatile = false;
++		return;
++	}
++	if (bAnimating == bSlateVolatile)
++	{
++		return;
++	}
++
++	// Repainted every frame only while particles move; once still, painted once more and then cached like any widget.
++	bSlateVolatile = bAnimating;
++	MyParticles->ForceVolatile(bAnimating || bIsVolatile);
++	MyParticles->Invalidate(EInvalidateWidgetReason::Paint);
++}
++
++void UNiagaraUIWidget::HandleSystemFinished(UNiagaraComponent* FinishedComponent)
++{
++	if (FinishedComponent && FinishedComponent == Main.Component)
++	{
++		OnFinished.Broadcast(this);
++	}
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/SNiagaraUIWidget.cpp b/Plugins/NameTBD/Source/NameTBDNiagara/Private/SNiagaraUIWidget.cpp
+new file mode 100644
+index 0000000..ecee78a
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/SNiagaraUIWidget.cpp
+@@ -0,0 +1,53 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "SNiagaraUIWidget.h"
++
++#include "NiagaraUIWidget.h"
++#include "ProfilingDebugging/CpuProfilerTrace.h"
++
++void SNiagaraUIWidget::Construct(const FArguments& InArgs)
++{
++	OwnerWidget = InArgs._Owner;
++}
++
++FVector2D SNiagaraUIWidget::ComputeDesiredSize(float /*LayoutScaleMultiplier*/) const
++{
++	const UNiagaraUIWidget* Particles = OwnerWidget.Get();
++	return Particles ? Particles->DesiredSize : FVector2D(128.0, 128.0);
++}
++
++int32 SNiagaraUIWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
++{
++	TRACE_CPUPROFILER_EVENT_SCOPE(SNiagaraUIWidget::OnPaint);
++
++	UNiagaraUIWidget* Particles = OwnerWidget.Get();
++	if (!Particles)
++	{
++		return LayerId;
++	}
++
++	// The widget places its simulations where this paint puts it (a world-space emitter's next particles spawn there) and
++	// says which have particles to draw.
++	Sources.Reset();
++	Particles->PrepareForPaint(AllottedGeometry, Sources);
++	if (Sources.Num() == 0)
++	{
++		Mesh.Reset();
++		return LayerId;
++	}
++
++	FNiagaraUIBuildSettings Settings;
++	Settings.Plane = Particles->Plane;
++	Settings.PerspectiveDistance = FMath::Max(Particles->PerspectiveDistance, 0.f);
++	Settings.bSmoothRibbons = Particles->bSmoothRibbons;
++	Settings.Tint = InWidgetStyle.GetColorAndOpacityTint() * Particles->ColorAndOpacity;
++	Settings.CullRect = MyCullingRect;
++	Settings.MaterialRemap = &Particles->MaterialRemap;
++	Settings.ParticleImage = Particles->ParticleImage.GetResourceObject() ? &Particles->ParticleImage : nullptr;
++	Settings.Owner = Particles;
++
++	Mesh.Build(Sources, Settings);
++	Mesh.Paint(OutDrawElements, LayerId);
++	return LayerId;
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/SNiagaraUIWidget.h b/Plugins/NameTBD/Source/NameTBDNiagara/Private/SNiagaraUIWidget.h
+new file mode 100644
+index 0000000..6c6baf4
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/SNiagaraUIWidget.h
+@@ -0,0 +1,37 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Widgets/SLeafWidget.h"
++
++#include "NiagaraUIMesh.h"
++
++class UNiagaraUIWidget;
++
++/**
++ * Draws a Niagara Particles widget. Reads the UMG widget live as it paints (as the shape widgets do): asks it to place its
++ * simulations where this paint puts the widget, then builds the particle meshes - only when the particles, the widget's
++ * place or its look changed - and draws one custom-vertex element per batch. Draws nothing and costs nothing beyond that
++ * check when no simulation is live.
++ */
++class SNiagaraUIWidget : public SLeafWidget
++{
++public:
++	SLATE_BEGIN_ARGS(SNiagaraUIWidget) {}
++		SLATE_ARGUMENT(TWeakObjectPtr<UNiagaraUIWidget>, Owner)
++	SLATE_END_ARGS()
++
++	void Construct(const FArguments& InArgs);
++
++	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
++
++	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override;
++
++private:
++	TWeakObjectPtr<UNiagaraUIWidget> OwnerWidget;
++
++	mutable FNiagaraUIMesh Mesh;
++	mutable TArray<FNiagaraUISource> Sources;
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/WidgetAnimParticleCue.cpp b/Plugins/NameTBD/Source/NameTBDNiagara/Private/WidgetAnimParticleCue.cpp
+new file mode 100644
+index 0000000..fd2593d
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/WidgetAnimParticleCue.cpp
+@@ -0,0 +1,148 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "WidgetAnimParticleCue.h"
++
++#include "NiagaraUIRuntime.h"
++#include "NiagaraUIWidget.h"
++
++#include "Blueprint/UserWidget.h"
++#include "Blueprint/WidgetTree.h"
++#include "Components/Widget.h"
++#include "NiagaraSystem.h"
++
++#define LOCTEXT_NAMESPACE "WidgetAnimParticleCue"
++
++FText FWidgetAnimParticleCueEvaluator::GetDisplayName() const
++{
++	return LOCTEXT("ParticlesName", "Particles");
++}
++
++FText FWidgetAnimParticleCueEvaluator::GetDescription() const
++{
++	return LOCTEXT("ParticlesDescription", "Fires Niagara particles: a burst at the track's widget, or Play, Stop Emitting or Clear on a Niagara Particles widget. Seen in the editor's previews too.");
++}
++
++FText FWidgetAnimParticleCueEvaluator::GetTrackSummary(const FInstancedStruct& Params) const
++{
++	const FWidgetAnimParticleCueParams* CueParams = GetParams(Params);
++	if (!CueParams)
++	{
++		return FText::GetEmpty();
++	}
++
++	FText What;
++	switch (CueParams->Action)
++	{
++	case EWidgetAnimParticleCueAction::BurstAtTarget:
++		What = CueParams->BurstSystem
++			? FText::Format(LOCTEXT("BurstSystemSummary", "Burst {0}"), FText::FromString(CueParams->BurstSystem->GetName()))
++			: LOCTEXT("BurstSummary", "Burst");
++		break;
++	case EWidgetAnimParticleCueAction::Play:
++		What = LOCTEXT("PlaySummary", "Play");
++		break;
++	case EWidgetAnimParticleCueAction::StopEmitting:
++		What = LOCTEXT("StopSummary", "Stop Emitting");
++		break;
++	case EWidgetAnimParticleCueAction::Clear:
++	default:
++		What = LOCTEXT("ClearSummary", "Clear");
++		break;
++	}
++
++	return CueParams->ParticlesWidget.IsNone()
++		? What
++		: FText::Format(LOCTEXT("SummaryOnWidget", "{0} on {1}"), What, FText::FromName(CueParams->ParticlesWidget));
++}
++
++void FWidgetAnimParticleCueEvaluator::Fire(const FWidgetAnimCueContext& Context) const
++{
++	const FWidgetAnimParticleCueParams* CueParams = Context.Params ? GetParams(*Context.Params) : nullptr;
++	UWidget* TrackWidget = Context.Info.Target ? Context.Info.Target.Get() : Context.Info.Host.Get();
++	if (!CueParams || !TrackWidget)
++	{
++		return;
++	}
++
++	UNiagaraUIWidget* Particles = FindParticlesWidget(TrackWidget, Context.Info.Host, CueParams->ParticlesWidget);
++	if (!Particles)
++	{
++		// Said once per widget and name: a cue fired every loop would otherwise fill the log.
++		NiagaraUIRuntime::WarnOnce(FString::Printf(TEXT("A Particles cue on %s found no Niagara Particles widget%s%s - add one, or name an existing one in the cue's Particles Widget."),
++			*TrackWidget->GetName(),
++			CueParams->ParticlesWidget.IsNone() ? TEXT("") : TEXT(" named "),
++			CueParams->ParticlesWidget.IsNone() ? TEXT("") : *CueParams->ParticlesWidget.ToString()));
++		return;
++	}
++
++	switch (CueParams->Action)
++	{
++	case EWidgetAnimParticleCueAction::BurstAtTarget:
++	{
++		// The point on the track's widget as it is drawn now - its Render Transform and animation included - put into
++		// the Particles widget's own space, wherever that one is.
++		const FGeometry& Geometry = TrackWidget->GetCachedGeometry();
++		const FVector2D LocalSize(Geometry.GetLocalSize());
++		const FVector2D AbsolutePoint(Geometry.LocalToAbsolute(LocalSize * CueParams->BurstPoint));
++		Particles->PlayAtAbsolutePosition(AbsolutePoint, CueParams->BurstSystem);
++		break;
++	}
++	case EWidgetAnimParticleCueAction::Play:
++		Particles->Play(/*bRestart=*/true);
++		break;
++	case EWidgetAnimParticleCueAction::StopEmitting:
++		Particles->StopEmitting();
++		break;
++	case EWidgetAnimParticleCueAction::Clear:
++		Particles->Clear();
++		break;
++	default:
++		break;
++	}
++}
++
++UNiagaraUIWidget* FWidgetAnimParticleCueEvaluator::FindParticlesWidget(UWidget* TrackWidget, UWidget* Host, FName WidgetName)
++{
++	// The User Widget a widget is in, or the widget itself when it is one; then each one around it.
++	const auto FirstUserWidget = [](UWidget* Widget) -> UUserWidget*
++	{
++		if (UUserWidget* AsUserWidget = Cast<UUserWidget>(Widget))
++		{
++			return AsUserWidget;
++		}
++		return Widget ? Widget->GetTypedOuter<UUserWidget>() : nullptr;
++	};
++
++	if (!WidgetName.IsNone())
++	{
++		for (UWidget* From : { TrackWidget, Host })
++		{
++			for (UUserWidget* UserWidget = FirstUserWidget(From); UserWidget; UserWidget = UserWidget->GetTypedOuter<UUserWidget>())
++			{
++				if (UNiagaraUIWidget* Found = Cast<UNiagaraUIWidget>(UserWidget->GetWidgetFromName(WidgetName)))
++				{
++					return Found;
++				}
++			}
++		}
++		return nullptr;
++	}
++
++	// Unnamed: the track's widget itself or the first inside it - a burst aimed at a widget that holds its own particles.
++	if (UNiagaraUIWidget* Inside = Cast<UNiagaraUIWidget>(FindFirstTarget(TrackWidget, UNiagaraUIWidget::StaticClass())))
++	{
++		return Inside;
++	}
++
++	// Else the nearest around it: the first in the User Widget it is in, then in each one around that.
++	for (UUserWidget* UserWidget = FirstUserWidget(TrackWidget); UserWidget; UserWidget = UserWidget->GetTypedOuter<UUserWidget>())
++	{
++		if (UNiagaraUIWidget* Found = Cast<UNiagaraUIWidget>(FindFirstTarget(UserWidget, UNiagaraUIWidget::StaticClass())))
++		{
++			return Found;
++		}
++	}
++	return nullptr;
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
+new file mode 100644
+index 0000000..7639ab7
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
+@@ -0,0 +1,387 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Components/Widget.h"
++#include "Styling/SlateBrush.h"
++
++#include "NiagaraUIWidget.generated.h"
++
++class SNiagaraUIWidget;
++class UMaterialInterface;
++class UNiagaraComponent;
++class UNiagaraSystem;
++class UNiagaraUIWidget;
++class UWorld;
++struct FNiagaraUISource;
++
++/**
++ * Which plane of the Niagara System is laid on the widget - the view of the system the UI shows. Every position, velocity
++ * and size the system writes is read in this plane; the third axis is depth (see Perspective Distance).
++ */
++UENUM(BlueprintType)
++enum class ENiagaraUIPlane : uint8
++{
++	XZ UMETA(DisplayName = "X Right, Z Up (Front)", ToolTip = "X is right on screen and Z is up - the system as seen from the front. What most UI particle systems are authored for: gravity pulls down Z, as in the Niagara editor's preview."),
++
++	XY UMETA(DisplayName = "X Right, Y Down (Top)", ToolTip = "X is right and Y is down, as Slate's own axes are - the system seen from above. Handy for systems written with screen coordinates in mind."),
++
++	YZ UMETA(DisplayName = "Y Right, Z Up (Side)", ToolTip = "Y is right and Z is up - the system seen from the side.")
++};
++
++/** One simulation the widget runs: its main system, or a burst played at a point. Kept by the widget, never saved. */
++USTRUCT()
++struct FNiagaraUISimulation
++{
++	GENERATED_BODY()
++
++	/** Ownerless and transient, registered with the widget's world, its rendering off - the widget draws it. */
++	UPROPERTY(Transient)
++	TObjectPtr<UNiagaraComponent> Component = nullptr;
++
++	/** A burst's point in the widget, in its local units. The main simulation sits at the widget's Origin instead. */
++	FVector2f Position = FVector2f::ZeroVector;
++
++	/** When a burst last started, for recycling the oldest when every burst is busy. */
++	double StartedAt = 0.0;
++
++	/** Asked to play before it was ever placed: starts on the next paint, once it is where the widget is. */
++	bool bPendingPlay = false;
++	bool bPendingRestart = true;
++
++	/** Where the component was last put - only moved again when the widget moves. */
++	bool bPlaced = false;
++	FVector2f PlacedAt = FVector2f::ZeroVector;
++	float PlacedAngle = 0.f;
++	float PlacedScale = 1.f;
++};
++
++DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNiagaraUIFinished, UNiagaraUIWidget*, ParticlesWidget);
++
++/**
++ * Niagara Particles: a Niagara System played in UI, drawn by Slate with the rest of the widgets - sorted, clipped, tinted,
++ * transformed, faded and laid out as any widget is. Not a render target and not a scene capture: each frame the
++ * simulation's particles are read and drawn as Slate meshes, one draw per renderer.
++ *
++ * What it draws: CPU-simulated emitters (Sim Target CPUSim) with Sprite and Ribbon renderers. Sprites follow their
++ * Position, Size, Color, Rotation, Alignment (unaligned, velocity or custom), Pivot, Sub UV frames, Sort Mode and Dynamic
++ * Parameter; ribbons their Ribbon ID, Link Order, Width, Color and UV0/UV1 distribution. GPU emitters, meshes and
++ * lights are not drawn - the Blueprint compiler says so for the system set here.
++ *
++ * Materials: a renderer's material is used when it is a User Interface material (Material Domain: User Interface); the
++ * sprite's UVs are TexCoord0 and its Dynamic Parameter (x, y) TexCoord1, a ribbon's UV0 and UV1 TexCoord0 and TexCoord1,
++ * the particle color is Vertex Color. Any other material is looked up in Material Remap, else drawn with Particle Image
++ * (a soft round dot when empty) - so any system shows something at once.
++ *
++ * Space: the system's origin sits at Origin in the widget; Particle Scale Slate units per Niagara unit. Local-space
++ * emitters move, turn and scale with the widget, Render Transform and Widget Animations included. World-space emitters
++ * leave their particles behind as the widget moves - a trail behind a dragged item.
++ *
++ * Cost: nothing until first painted. While shown, one simulation per widget (plus bursts in flight) and one mesh per
++ * renderer. Hidden - collapsed, scrolled off, removed from the screen - it pauses (Pause When Hidden) and resumes where it
++ * was. Inside an invalidation panel it repaints only while particles are live. stat NiagaraUI shows what it costs.
++ *
++ * Bursts: Play At (or the Particles cue of a Widget Animation) plays a one-shot of the system - or another - at a point
++ * of the widget, up to Max Bursts at once, reusing finished ones: one Particles widget over a screen serves every click
++ * sparkle and reward pop on it.
++ */
++UCLASS(meta = (DisplayName = "Niagara Particles"))
++class NAMETBDNIAGARA_API UNiagaraUIWidget : public UWidget
++{
++	GENERATED_BODY()
++
++public:
++	UNiagaraUIWidget();
++
++	// ---------------------------------------------------------------------------------------------
++	// Particles
++	// ---------------------------------------------------------------------------------------------
++
++	/** The system played. Its CPU emitters' sprites and ribbons are drawn. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Particles", meta = (DisplayName = "Niagara System"))
++	TObjectPtr<UNiagaraSystem> NiagaraSystem = nullptr;
++
++	/** Plays as soon as the widget is first shown. Off, it waits for Play. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Particles", meta = (DisplayName = "Auto Play"))
++	bool bAutoPlay = true;
++
++	/** Plays in the Widget Blueprint designer too, so the effect is laid out where it is seen. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Particles", meta = (DisplayName = "Preview In Designer"))
++	bool bPreviewInDesigner = true;
++
++	// ---------------------------------------------------------------------------------------------
++	// Playback
++	// ---------------------------------------------------------------------------------------------
++
++	/**
++	 * Keeps playing while the game is paused - a pause menu's particles. Such a simulation ticks on its own rather than
++	 * batched with the world's other Niagara systems, which costs a little more each; off for widgets never shown paused.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "Play While Paused"))
++	bool bPlayWhilePaused = true;
++
++	/**
++	 * Pauses the simulation while the widget isn't drawn - collapsed, hidden, scrolled out of view, on a screen not shown,
++	 * removed from the viewport - and resumes it where it was once it is drawn again. Off, it plays on unseen.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "Pause When Hidden"))
++	bool bPauseWhenHidden = true;
++
++	/**
++	 * Seconds simulated at once as it starts playing, so it opens already full - drifting embers on a menu that has just
++	 * opened. Simulated in 1/30 s steps on the frame it starts, so keep it short. The system's own Warmup adds to it.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "Prewarm Time", ClampMin = "0.0", UIMax = "5.0", Units = "s"))
++	float PrewarmTime = 0.f;
++
++	/**
++	 * How many bursts - Play At, Play At Absolute Position, a Particles cue - may play at once. Finished ones are reused;
++	 * past this many the oldest starts again at the new point. 0 turns bursts off. A system that loops keeps playing at
++	 * each point until Clear, so bursts are for one-shot systems (Loop Behavior: Once).
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "Max Bursts", ClampMin = "0", UIMax = "32"))
++	int32 MaxBursts = 8;
++
++	// ---------------------------------------------------------------------------------------------
++	// Layout
++	// ---------------------------------------------------------------------------------------------
++
++	/** How big the widget asks to be. Particles are not held inside it: Clipping does that. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Layout", meta = (DisplayName = "Desired Size"))
++	FVector2D DesiredSize = FVector2D(128.0, 128.0);
++
++	/** Where the system's origin sits in the widget: 0, 0 its top left, 0.5, 0.5 its middle, 1, 1 its bottom right. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Layout")
++	FVector2D Origin = FVector2D(0.5, 0.5);
++
++	/**
++	 * Slate units per Niagara unit - positions, sizes, widths and speeds alike. 1 draws a 10-unit sprite 10 units across,
++	 * at the widget's scale (DPI scale and Render Transform included).
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Layout", meta = (DisplayName = "Particle Scale", ClampMin = "0.001", UIMin = "0.1", UIMax = "10.0"))
++	float ParticleScale = 1.f;
++
++	/** Which plane of the system is laid on the widget. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Layout")
++	ENiagaraUIPlane Plane = ENiagaraUIPlane::XZ;
++
++	/**
++	 * Depth as perspective: a particle half this many Niagara units toward the viewer is drawn twice as big and twice as
++	 * far from the origin, one as far away two thirds as big - a swirl around a portrait reads in 3D. 0 ignores depth.
++	 * Sprites are drawn far to near whenever their renderer's Sort Mode is View Depth or View Distance.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Layout", meta = (DisplayName = "Perspective Distance", ClampMin = "0.0", UIMax = "2000.0"))
++	float PerspectiveDistance = 0.f;
++
++	// ---------------------------------------------------------------------------------------------
++	// Appearance
++	// ---------------------------------------------------------------------------------------------
++
++	/** Multiplies every particle's color. Render Opacity and the parents' colors apply too, as on any widget. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Color And Opacity"))
++	FLinearColor ColorAndOpacity = FLinearColor::White;
++
++	/**
++	 * What particles are drawn with when their renderer's material can't draw in UI - not a User Interface material, and
++	 * not remapped below - tinted by each particle's color. Empty: a soft round dot. A texture, or a User Interface
++	 * material. Drawn with plain alpha blending; for additive glows give the renderer a UI material set to Additive.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Particle Image"))
++	FSlateBrush ParticleImage;
++
++	/**
++	 * The User Interface material to draw with in place of a renderer's material - the system's own surface material on
++	 * the left, its UI twin on the right - so one system serves a level and a menu. Read before Particle Image.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Material Remap"))
++	TMap<TObjectPtr<UMaterialInterface>, TObjectPtr<UMaterialInterface>> MaterialRemap;
++
++	/** Bends ribbons smoothly through their particles rather than in straight steps, where they are far apart on screen. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Smooth Ribbons"))
++	bool bSmoothRibbons = true;
++
++	// ---------------------------------------------------------------------------------------------
++	// Parameters
++	// ---------------------------------------------------------------------------------------------
++
++	/** The system's User parameters set as it starts, by name - Speed or User.Speed. Set Float Parameter changes one live. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Parameters", meta = (DisplayName = "Float Parameters"))
++	TMap<FName, float> FloatParameters;
++
++	/** Linear Color User parameters, by name. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Parameters", meta = (DisplayName = "Color Parameters"))
++	TMap<FName, FLinearColor> ColorParameters;
++
++	/** Vector (Vector 3) User parameters, by name - in the system's own axes, not the screen's. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Parameters", meta = (DisplayName = "Vector Parameters"))
++	TMap<FName, FVector> VectorParameters;
++
++	// ---------------------------------------------------------------------------------------------
++	// Events
++	// ---------------------------------------------------------------------------------------------
++
++	/** The main system has finished: Stop Emitting and its last particle gone, or a one-shot system done. Not for bursts. */
++	UPROPERTY(BlueprintAssignable, Category = "Niagara Particles|Events")
++	FOnNiagaraUIFinished OnFinished;
++
++	// ---------------------------------------------------------------------------------------------
++	// Blueprint
++	// ---------------------------------------------------------------------------------------------
++
++	/** Plays the system. Restart starts it over; off, a system already playing carries on. Shown or not, it starts once drawn. */
++	UFUNCTION(BlueprintCallable, Category = "Niagara Particles")
++	void Play(bool bRestart = true);
++
++	/** Stops spawning: the particles already there live out their lives, then On Finished. Bursts finish too. */
++	UFUNCTION(BlueprintCallable, Category = "Niagara Particles")
++	void StopEmitting();
++
++	/** Removes every particle at once, bursts' too, and stops. */
++	UFUNCTION(BlueprintCallable, Category = "Niagara Particles")
++	void Clear();
++
++	/**
++	 * Plays a one-shot of the system at a point of this widget, in its local units (0, 0 its top left) - a sparkle where it
++	 * was clicked. Burst System plays another system there instead. See Max Bursts.
++	 */
++	UFUNCTION(BlueprintCallable, Category = "Niagara Particles", meta = (AdvancedDisplay = "BurstSystem"))
++	void PlayAt(FVector2D LocalPosition, UNiagaraSystem* BurstSystem = nullptr);
++
++	/**
++	 * Play At, at a point in Slate's absolute (desktop) space - a pointer event's Screen Space Position, or Local To
++	 * Absolute of another widget's geometry - wherever it is over this widget.
++	 */
++	UFUNCTION(BlueprintCallable, Category = "Niagara Particles", meta = (AdvancedDisplay = "BurstSystem"))
++	void PlayAtAbsolutePosition(FVector2D AbsolutePosition, UNiagaraSystem* BurstSystem = nullptr);
++
++	/** Plays another system. Play starts it at once (once the widget is drawn); off, it waits for Play. */
++	UFUNCTION(BlueprintCallable, Category = "Niagara Particles")
++	void SetNiagaraSystem(UNiagaraSystem* NewSystem, bool bPlay = true);
++
++	/** Freezes every particle where it is, bursts included, until unpaused. */
++	UFUNCTION(BlueprintCallable, Category = "Niagara Particles")
++	void SetPaused(bool bPaused);
++
++	/** Whether Set Paused has paused it. Pause When Hidden doesn't count. */
++	UFUNCTION(BlueprintPure, Category = "Niagara Particles")
++	bool IsPaused() const { return bUserPaused; }
++
++	/** Whether the main system is playing - spawning, or its last particles still alive. */
++	UFUNCTION(BlueprintPure, Category = "Niagara Particles")
++	bool IsPlaying() const;
++
++	/** Particles alive now in the widget's CPU emitters, bursts included. For debugging and for waiting on an effect. */
++	UFUNCTION(BlueprintPure, Category = "Niagara Particles")
++	int32 GetLiveParticleCount() const;
++
++	/**
++	 * The Niagara Component running the main system, for anything this widget doesn't offer - Niagara's own Set Variable
++	 * functions, say. None before the widget is first drawn, and after it is released. Its transform and rendering are the
++	 * widget's: don't move it or turn its rendering on.
++	 */
++	UFUNCTION(BlueprintPure, Category = "Niagara Particles")
++	UNiagaraComponent* GetNiagaraComponent() const;
++
++	/** Sets a float User parameter on the system, bursts too, now and whenever it starts again. */
++	UFUNCTION(BlueprintCallable, Category = "Niagara Particles|Parameters")
++	void SetFloatParameter(FName ParameterName, float Value);
++
++	/** Sets a Linear Color User parameter on the system, bursts too, now and whenever it starts again. */
++	UFUNCTION(BlueprintCallable, Category = "Niagara Particles|Parameters")
++	void SetColorParameter(FName ParameterName, FLinearColor Value);
++
++	/** Sets a Vector User parameter on the system, bursts too, now and whenever it starts again. */
++	UFUNCTION(BlueprintCallable, Category = "Niagara Particles|Parameters")
++	void SetVectorParameter(FName ParameterName, FVector Value);
++
++	UFUNCTION(BlueprintCallable, Category = "Niagara Particles|Appearance")
++	void SetColorAndOpacity(FLinearColor InColorAndOpacity);
++
++	UFUNCTION(BlueprintCallable, Category = "Niagara Particles|Layout")
++	void SetParticleScale(float InParticleScale);
++
++	UFUNCTION(BlueprintCallable, Category = "Niagara Particles|Layout")
++	void SetDesiredSize(FVector2D InDesiredSize);
++
++	// ---------------------------------------------------------------------------------------------
++	// UWidget
++	// ---------------------------------------------------------------------------------------------
++
++	virtual void SynchronizeProperties() override;
++	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
++
++#if WITH_EDITOR
++	virtual const FText GetPaletteCategory() override;
++	virtual void ValidateCompiledDefaults(IWidgetCompilerLog& CompileLog) const override;
++#endif
++
++	// ---------------------------------------------------------------------------------------------
++	// For the Slate widget and the module's ticker - not for gameplay code
++	// ---------------------------------------------------------------------------------------------
++
++	/**
++	 * Called as the widget paints: makes the simulations it needs (the first paint starts them), moves each to where the
++	 * widget is now, resumes what Pause When Hidden paused, and hands out where each one's particles are drawn.
++	 */
++	void PrepareForPaint(const FGeometry& Geometry, TArray<FNiagaraUISource>& OutSources);
++
++	/** Once per frame, before the world ticks: Pause When Hidden, and whether the Slate widget repaints every frame. */
++	void TickRuntime(uint64 Frame);
++
++	/** Lets go of every simulation registered with World - it is being torn down. */
++	void ReleaseSimulationsIn(const UWorld* World);
++
++protected:
++	virtual TSharedRef<SWidget> RebuildWidget() override;
++
++private:
++	UFUNCTION()
++	void HandleSystemFinished(UNiagaraComponent* FinishedComponent);
++
++	/** The world simulations are made in: the widget's, or in the designer the editor's. Null while none can be used. */
++	UWorld* FindSimulationWorld() const;
++
++	/** Whether anything may be simulated now: not in a designer with Preview In Designer off, not switched off by cvar. */
++	bool CanSimulate() const;
++
++	UNiagaraComponent* MakeComponent(UWorld* World, UNiagaraSystem* System);
++	void ApplyRuntimeSettings(UNiagaraComponent* Component) const;
++	void ApplyParameters(UNiagaraComponent* Component) const;
++
++	/** Makes the main simulation if it doesn't exist yet. False when it can't be made now. */
++	bool EnsureMainSimulation();
++
++	/** Starts a placed simulation playing - from its start if bRestart - with the Prewarm. */
++	void StartSimulation(FNiagaraUISimulation& Simulation, bool bRestart);
++
++	/** The burst to play the next Play At with: a finished one (of the same system first), a new one, or the oldest. */
++	FNiagaraUISimulation* TakeBurst(UNiagaraSystem* System, UWorld* World);
++
++	void ReleaseSimulations();
++	void ApplyPause();
++	void SetAnimating(bool bAnimating);
++
++	template <typename FunctionType>
++	void ForEachComponent(FunctionType&& Function) const;
++
++	UPROPERTY(Transient)
++	FNiagaraUISimulation Main;
++
++	UPROPERTY(Transient)
++	TArray<FNiagaraUISimulation> Bursts;
++
++	TSharedPtr<SNiagaraUIWidget> MyParticles;
++
++	/** The frame this widget was last painted - what Pause When Hidden goes by. */
++	uint64 LastPaintFrame = 0;
++
++	bool bUserPaused = false;
++	bool bHiddenPaused = false;
++
++	/** Auto Play has started the main system since its simulation was made - it plays once per simulation, not per paint. */
++	bool bAutoPlayDone = false;
++
++	bool bSlateVolatile = false;
++	bool bTracked = false;
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Public/WidgetAnimParticleCue.h b/Plugins/NameTBD/Source/NameTBDNiagara/Public/WidgetAnimParticleCue.h
+new file mode 100644
+index 0000000..142bb60
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Public/WidgetAnimParticleCue.h
+@@ -0,0 +1,72 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
++
++#include "WidgetAnimParticleCue.generated.h"
++
++class UNiagaraSystem;
++class UNiagaraUIWidget;
++class UWidget;
++
++/** What a Particles cue does when it fires. */
++UENUM(BlueprintType)
++enum class EWidgetAnimParticleCueAction : uint8
++{
++	BurstAtTarget UMETA(DisplayName = "Burst At Track's Widget", ToolTip = "Plays a one-shot of the system at the widget this track is aimed at (its Burst Point) - a sparkle as a card lands. Staggered, one burst per item. The Niagara Particles widget can be anywhere around it: an effects layer over the whole screen."),
++
++	Play UMETA(ToolTip = "Plays the Niagara Particles widget's own system from its start."),
++
++	StopEmitting UMETA(DisplayName = "Stop Emitting", ToolTip = "Stops the Niagara Particles widget spawning; its particles live out their lives."),
++
++	Clear UMETA(ToolTip = "Removes every particle of the Niagara Particles widget at once.")
++};
++
++/**
++ * Particles: fires Niagara particles at a moment of the animation - a burst where a card lands, embers starting as a panel
++ * opens, stopping as it closes. Plays on a Niagara Particles widget (see UNiagaraUIWidget): the one named by Particles
++ * Widget, else the first at or inside the track's widget, else the nearest around it. Seen in the editor's previews too,
++ * where the widget has Preview In Designer on.
++ */
++USTRUCT(BlueprintType, meta = (DisplayName = "Particles"))
++struct NAMETBDNIAGARA_API FWidgetAnimParticleCueParams : public FWidgetAnimCueParams
++{
++	GENERATED_BODY()
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles")
++	EWidgetAnimParticleCueAction Action = EWidgetAnimParticleCueAction::BurstAtTarget;
++
++	/**
++	 * The Niagara Particles widget to play on, by its name in the Widget Blueprint the track's widget is in or any around
++	 * it. None: the first at or inside the track's widget, else the nearest one around it.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Particles Widget"))
++	FName ParticlesWidget;
++
++	/** Where on the track's widget the burst plays: 0, 0 its top left, 0.5, 0.5 its middle, 1, 1 its bottom right. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Burst Point", EditCondition = "Action == EWidgetAnimParticleCueAction::BurstAtTarget", EditConditionHides))
++	FVector2D BurstPoint = FVector2D(0.5, 0.5);
++
++	/** The system the burst plays. None: the Niagara Particles widget's own. A one-shot system (Loop Behavior: Once). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Burst System", EditCondition = "Action == EWidgetAnimParticleCueAction::BurstAtTarget", EditConditionHides))
++	TObjectPtr<UNiagaraSystem> BurstSystem = nullptr;
++};
++
++class NAMETBDNIAGARA_API FWidgetAnimParticleCueEvaluator : public TWidgetAnimCueEvaluator<FWidgetAnimParticleCueParams>
++{
++public:
++
++	virtual FText GetDisplayName() const override;
++	virtual FText GetDescription() const override;
++	virtual FText GetTrackSummary(const FInstancedStruct& Params) const override;
++	virtual bool FiresAtDesignTime(const FInstancedStruct& Params) const override { return true; }
++	virtual void Fire(const FWidgetAnimCueContext& Context) const override;
++
++	/**
++	 * The Niagara Particles widget a cue plays on: the one named WidgetName in the User Widgets around TrackWidget (or
++	 * Host); unnamed, the first at or inside TrackWidget, else the first in each User Widget around it, nearest first.
++	 */
++	static UNiagaraUIWidget* FindParticlesWidget(UWidget* TrackWidget, UWidget* Host, FName WidgetName);
++};

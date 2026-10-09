@@ -25,26 +25,30 @@
  *    its Path, every key's Path, and Easing Across (each segment, or the whole track as one ease through every key);
  *  - a dashed line, without dots, where the widget jumps without travelling (a Hold, a step);
  *  - the stretch already played drawn fainter than what is ahead of the playhead, and - while the panel poses the preview -
- *    a ring where the widget is now; key times, when shown, sit beside the path, never on it.
+ *    a ring where the widget is now: the only thing that moves as the animation plays. Key times, when shown, sit beside the
+ *    path, never on it.
  *
  * Shown for every widget the open animation moves - each layer group's Target Widget with a Transform, Slide or Shake track - by
- * itself, with nothing selected, whenever the Widget Blueprint's Widget Animations panel has an animation open. The designer
- * ticks every extension each frame it is on screen, selection or not (FDesignerExtension::Tick): from there the extension
- * keeps one layer over its designer - in the overlay of the designer's window, kept to the designer's own area, and drawing
- * nothing on a frame the designer isn't drawn (another tab in front, the Graph mode). Only where no window could be found is
- * the layer handed to the designer for a selection instead. The panel need not be on screen. The path is worked out from exactly what the preview plays
- * (UWidgetAnimLibrary::EvaluateExpandedStackAtTime on the panel's own settings and baselines), so every easing, segment curve,
- * spring, overshoot, stagger and delay is in it, and nothing is moved to find it. It is mapped onto the canvas through the
- * widgets' layout alone - never their render transforms, which the preview changes every frame - so the path and its keys stay
- * perfectly still while the animation plays or a key is dragged. Settings: Editor Preferences > Widget Animations Editor >
- * Motion Paths, and the panel's Motion Path toggle.
+ * itself, whatever is selected in the designer (the selected widgets' paths through moving parents are added), whenever the
+ * Widget Blueprint's Widget Animations panel has an animation open. The panel need not be on screen.
  *
- * The layer takes no clicks of its own - only its diamonds and handles do - so the designer's own selection and handles work
- * through it everywhere else. The diamonds and handles are placed as they are laid out, from where the path was worked out
- * that same frame - never through bound attributes, which Slate reads before the frame's path is worked out.
+ * Drawn by the designer itself: it calls each of its extensions' Paint every frame it draws, selection or not, with its own
+ * geometry, right after its preview - so the paths are part of the designer's own drawing, clipped to it, gone with it when
+ * another tab is in front, and need no widget laid anywhere. The diamonds and handles take the mouse through an input
+ * preprocessor (FMotionPathInput in the .cpp), which hit-tests what was drawn that frame - only where the designer itself is
+ * under the mouse - before the designer sees the press, so its own selection and handles work everywhere else.
+ *
+ * The path is worked out from exactly what the preview plays (UWidgetAnimLibrary::EvaluateExpandedStackAtTime on the panel's
+ * own settings over baselines that are the widgets as authored), so every easing, segment curve, spring, overshoot, stagger and
+ * delay is in it, and nothing is moved to find it. It is mapped onto the canvas through the widgets' layout alone - never their
+ * render transforms, which the preview changes every frame - so the path and its keys stay perfectly still while the animation
+ * plays or a key is dragged. Settings: Editor Preferences > Widget Animations Editor > Motion Paths, and the panel's Motion
+ * Path toggle. WidgetAnim.LogMotionPaths 1 says over the designer why nothing is drawn.
  */
-class SWindow;
-struct FWidgetAnimMotionPathDesignerFrame;
+namespace WidgetAnimMotionPathImpl
+{
+	class FMotionPathLayer;
+}
 
 class FWidgetAnimMotionPathExtension : public FDesignerExtension
 {
@@ -53,25 +57,13 @@ public:
 	virtual ~FWidgetAnimMotionPathExtension();
 
 	// FDesignerExtension
-	virtual bool CanExtendSelection(const TArray<FWidgetReference>& Selection) const override;
-	virtual void ExtendSelection(const TArray<FWidgetReference>& Selection, TArray<TSharedRef<FDesignerSurfaceElement>>& SurfaceElements) override;
-
-	/** Each frame the designer is on screen: where it is, and the layer kept over it. */
-	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
+	/** Every frame the designer is drawn, after its preview: the paths, over it. */
+	virtual void Paint(const TSet<FWidgetReference>& Selection, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId) const override;
 
 private:
-	/** Lays the layer over the designer's window - again when the designer moved to another window. */
-	void UpdateHost();
-
-	/** Takes the layer back off its window. */
-	void RemoveHost();
-
-	/** Where the designer is and the frame it was last drawn - shared with the layer, which reads it as it draws. */
-	TSharedPtr<FWidgetAnimMotionPathDesignerFrame> DesignerFrame;
-
-	TSharedPtr<SWidget> HostCanvas;
-	TWeakPtr<SWindow> HostWindow;
-	double NextHostCheck = 0.0;
+	/** This designer's paths - made on its first paint, once the extension knows its Widget Blueprint. */
+	mutable TSharedPtr<WidgetAnimMotionPathImpl::FMotionPathLayer> Layer;
 };
 
 /** Hands the designer a fresh motion path extension per designer opened. */

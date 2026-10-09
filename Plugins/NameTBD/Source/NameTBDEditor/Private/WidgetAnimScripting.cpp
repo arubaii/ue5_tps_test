@@ -5,6 +5,7 @@
 #include "SWidgetAnimTimeline.h"
 #include "WidgetAnimEditorSettings.h"
 #include "WidgetAnimPanelSource.h"
+#include "WidgetAnimTargetOption.h"
 
 #include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimEvaluator.h"
@@ -2303,7 +2304,7 @@ void UWidgetAnimScriptAnimation::GatherWidgets(TArray<FWidgetEntry>& OutWidgets)
 bool UWidgetAnimScriptAnimation::ResolveTarget(const FString& Target, FString& OutPath) const
 {
 	const FString Trimmed = Target.TrimStartAndEnd();
-	if (Trimmed.IsEmpty() || Trimmed.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+	if (Trimmed.IsEmpty() || Trimmed.Equals(TEXT("None"), ESearchCase::IgnoreCase) || Trimmed.Equals(WidgetAnimTargetOption::ThisWidget(), ESearchCase::IgnoreCase))
 	{
 		OutPath.Reset();
 		return true;
@@ -2327,7 +2328,7 @@ bool UWidgetAnimScriptAnimation::ResolveTarget(const FString& Target, FString& O
 			}
 		}
 	}
-	Options.RemoveAll([](const FString& Option) { return Option.Equals(TEXT("None"), ESearchCase::IgnoreCase); });
+	Options.RemoveAll([](const FString& Option) { return WidgetAnimTargetOption::IsThisWidget(Option) || Option.Equals(TEXT("None"), ESearchCase::IgnoreCase); });
 
 	// Nothing to check it against - an asset edited directly, a designer not open: taken as it is.
 	if (Options.Num() == 0)

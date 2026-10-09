@@ -1,0 +1,232 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+index cfdb9f8..194fbc3 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+@@ -404,31 +404,57 @@ namespace WidgetAnimMotionPathImpl
+ 		// What FMotionPathInput asks
+ 		// ---------------------------------------------------------------------------------------------
+ 
+-		/** Whether this layer was drawn this frame or the last and Screen is over its designer. */
++		/**
++		 * Whether this layer has been drawn and Screen is over its designer as last drawn. Not "drawn this frame": an idle designer
++		 * isn't painted again every frame - what it drew is kept and shown - so its paths are on screen without a fresh paint.
++		 * Whether the designer is really there, in front, is IsDesignerUnder's question.
++		 */
+ 		bool IsOver(const FVector2D& Screen) const
+ 		{
+-			return PaintedFrame + 1 >= GFrameCounter && Designer.IsUnderLocation(Screen);
++			return PaintedFrame > 0 && Designer.IsUnderLocation(Screen);
+ 		}
+ 
+-		/** Whether Path - what is under the mouse - is this layer's designer itself, not a menu, drawer or window over it. */
++		/**
++		 * Whether Path - what is under the mouse - goes through this layer's own designer: so not a menu, drawer or window over
++		 * it, nor another Widget Blueprint's designer tabbed in front of it in the same place.
++		 */
+ 		bool IsDesignerUnder(const FWidgetPath& Path) const
+ 		{
+-			const TSharedPtr<SWindow> Window = PaintWindow.Pin();
+-			if (!Path.IsValid() || !Window.IsValid() || Path.GetWindow() != Window.ToSharedRef())
++			if (!Path.IsValid())
+ 			{
+ 				return false;
+ 			}
+-			static const FName DesignerType(TEXT("SDesignerView"));
++			const TSharedPtr<SWidget> OwnDesigner = DesignerWidget.Pin();
+ 			for (int32 Index = Path.Widgets.Num() - 1; Index >= 0; --Index)
+ 			{
+-				if (Path.Widgets[Index].Widget->GetType() == DesignerType)
++				const FArrangedWidget& Arranged = Path.Widgets[Index];
++				if (OwnDesigner.IsValid())
+ 				{
++					if (Arranged.Widget == OwnDesigner.ToSharedRef())
++					{
++						return true;
++					}
++				}
++				else if (Arranged.Widget->GetType() == GetDesignerType()
++					&& FVector2D::Distance(FVector2D(Arranged.Geometry.GetAbsolutePosition()), FVector2D(Designer.GetAbsolutePosition())) < 1.0
++					&& FVector2D::Distance(FVector2D(Arranged.Geometry.GetLocalSize()), FVector2D(Designer.GetLocalSize())) < 1.0)
++				{
++					// Its designer widget not found yet: the designer drawn where this one was.
+ 					return true;
+ 				}
+ 			}
+ 			return false;
+ 		}
+ 
++		/** Has the designer painted again - the hovered or pressed diamond's look, or a drag's path, changed. */
++		void RequestRepaint() const
++		{
++			if (const TSharedPtr<SWidget> OwnDesigner = DesignerWidget.Pin())
++			{
++				OwnDesigner->Invalidate(EInvalidateWidgetReason::Paint);
++			}
++		}
++
+ 		/** The diamond or handle drawn at Screen this frame: its marker, and its handle (0 in, 1 out) or INDEX_NONE for the diamond. */
+ 		bool HitTest(const FVector2D& Screen, int32& OutMarker, int32& OutHandle) const
+ 		{
+@@ -468,8 +494,12 @@ namespace WidgetAnimMotionPathImpl
+ 
+ 		void SetHover(int32 Marker, int32 Handle)
+ 		{
+-			HoveredMarker = Marker;
+-			HoveredHandle = Handle;
++			if (HoveredMarker != Marker || HoveredHandle != Handle)
++			{
++				HoveredMarker = Marker;
++				HoveredHandle = Handle;
++				RequestRepaint();
++			}
+ 		}
+ 
+ 		/** A left press on what HitTest found, held until released: a click, or once past the threshold a drag. */
+@@ -480,6 +510,7 @@ namespace WidgetAnimMotionPathImpl
+ 			PressScreen = Screen;
+ 			bPressAlt = bAlt;
+ 			bPressDragging = false;
++			RequestRepaint();
+ 		}
+ 
+ 		bool IsPressed() const { return PressedMarker != INDEX_NONE; }
+@@ -515,6 +546,7 @@ namespace WidgetAnimMotionPathImpl
+ 			}
+ 			const bool bHandle = PressedHandle != INDEX_NONE;
+ 			UpdateDrag(Screen - PressScreen, !bHandle && Modifiers.IsShiftDown(), bHandle && Modifiers.IsAltDown());
++			RequestRepaint();
+ 		}
+ 
+ 		/** The press let go: a click on a diamond picks its key; a drag ends. bCancelled: let go elsewhere - no click. */
+@@ -534,6 +566,7 @@ namespace WidgetAnimMotionPathImpl
+ 			{
+ 				ClickMarker(Marker, Modifiers);
+ 			}
++			RequestRepaint();
+ 		}
+ 
+ 		/** Right-click on a diamond: how the path runs through it, and its track's easing - a menu over the designer (OwnerPath). */
+@@ -716,6 +749,43 @@ namespace WidgetAnimMotionPathImpl
+ 	private:
+ 		UWidgetBlueprint* GetBlueprint() const { return BlueprintWeak.Get(); }
+ 
++		static const FName& GetDesignerType()
++		{
++			static const FName DesignerType(TEXT("SDesignerView"));
++			return DesignerType;
++		}
++
++		/**
++		 * The designer widget this layer draws over: up the parents of its Widget Blueprint's designer preview to the
++		 * SDesignerView. Looked for again only while it isn't known (once a second at most - finding the preview walks every
++		 * User Widget); the designer outlives its preview, which is remade on every compile.
++		 */
++		void FindDesignerWidget()
++		{
++			if (DesignerWidget.IsValid())
++			{
++				return;
++			}
++			const double Now = FPlatformTime::Seconds();
++			if (Now < NextDesignerSearch)
++			{
++				return;
++			}
++			NextDesignerSearch = Now + 1.0;
++
++			UUserWidget* Preview = FindWidgetAnimDesignerPreview(GetBlueprint());
++			TSharedPtr<SWidget> Walk = Preview ? Preview->GetCachedWidget() : nullptr;
++			while (Walk.IsValid() && Walk->GetType() != GetDesignerType())
++			{
++				Walk = Walk->GetParentWidget();
++			}
++			DesignerWidget = Walk;
++			if (LogLevel() >= 1)
++			{
++				UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path layer: the designer widget %s."), Walk.IsValid() ? TEXT("was found - its diamonds take the mouse") : TEXT("wasn't found yet - the diamonds take the mouse where a designer is drawn in the layer's place"));
++			}
++		}
++
+ 		/** Whether a point in the designer's space is inside it. */
+ 		bool IsInDesigner(const FVector2f& Point) const
+ 		{
+@@ -769,8 +839,11 @@ namespace WidgetAnimMotionPathImpl
+ 
+ 		/** The designer as it was last painted: its geometry, its window, the frame, and what was selected in it. */
+ 		FGeometry Designer;
+-		TWeakPtr<SWindow> PaintWindow;
+ 		uint64 PaintedFrame = 0;
++
++		/** The designer widget itself (its SDesignerView), found up the preview's parents - see FindDesignerWidget. */
++		TWeakPtr<SWidget> DesignerWidget;
++		double NextDesignerSearch = 0.0;
+ 		TArray<FWidgetReference> DesignerSelection;
+ 		FVector2f DesignerMin = FVector2f::ZeroVector;
+ 		FVector2f DesignerMax = FVector2f::ZeroVector;
+@@ -1487,12 +1560,7 @@ namespace WidgetAnimMotionPathImpl
+ 		// The designer as it is painted now, after its preview: everything below is in its space - its own geometry is the canvas.
+ 		Designer = DesignerGeometry;
+ 		PaintedFrame = GFrameCounter;
+-		const SWindow* Window = OutDrawElements.GetPaintWindow();
+-		PaintWindow.Reset();
+-		if (Window)
+-		{
+-			PaintWindow = StaticCastSharedRef<SWindow>(const_cast<SWindow*>(Window)->AsShared());
+-		}
++		FindDesignerWidget();
+ 		DesignerMin = FVector2f::ZeroVector;
+ 		DesignerMax = FVector2f(DesignerGeometry.GetLocalSize());
+ 		DesignerSelection = Selection.Array();
+@@ -1862,7 +1930,7 @@ namespace WidgetAnimMotionPathImpl
+ 
+ 			int32 Marker = INDEX_NONE;
+ 			int32 Handle = INDEX_NONE;
+-			const TSharedPtr<FMotionPathLayer> Layer = FindHit(SlateApp, MouseEvent.GetScreenSpacePosition(), Marker, Handle, nullptr);
++			const TSharedPtr<FMotionPathLayer> Layer = FindHit(SlateApp, MouseEvent.GetScreenSpacePosition(), Marker, Handle, nullptr, /*bLog=*/true);
+ 			if (!Layer.IsValid())
+ 			{
+ 				return false;
+@@ -1950,13 +2018,23 @@ namespace WidgetAnimMotionPathImpl
+ 
+ 	private:
+ 		/** The layer whose diamond or handle is at Screen - checked cheaply against what was drawn, then that its designer is on top. */
+-		static TSharedPtr<FMotionPathLayer> FindHit(FSlateApplication& SlateApp, const FVector2D& Screen, int32& OutMarker, int32& OutHandle, FWidgetPath* OutPath)
++		static TSharedPtr<FMotionPathLayer> FindHit(FSlateApplication& SlateApp, const FVector2D& Screen, int32& OutMarker, int32& OutHandle, FWidgetPath* OutPath, bool bLog = false)
+ 		{
++			// WidgetAnim.LogMotionPaths 1: why a press over a designer was or wasn't taken.
++			const bool bExplain = bLog && LogLevel() >= 1;
+ 			for (const TWeakPtr<FMotionPathLayer>& Weak : GetDesignerLayers())
+ 			{
+ 				const TSharedPtr<FMotionPathLayer> Layer = Weak.Pin();
+-				if (!Layer.IsValid() || !Layer->IsOver(Screen) || !Layer->HitTest(Screen, OutMarker, OutHandle))
++				if (!Layer.IsValid() || !Layer->IsOver(Screen))
++				{
++					continue;
++				}
++				if (!Layer->HitTest(Screen, OutMarker, OutHandle))
+ 				{
++					if (bExplain)
++					{
++						UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path press: over the designer, but on no diamond or handle - left to the designer."));
++					}
+ 					continue;
+ 				}
+ 
+@@ -1964,8 +2042,17 @@ namespace WidgetAnimMotionPathImpl
+ 				FWidgetPath Path = SlateApp.LocateWindowUnderMouse(Screen, SlateApp.GetInteractiveTopLevelWindows());
+ 				if (!Layer->IsDesignerUnder(Path))
+ 				{
++					if (bExplain)
++					{
++						UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path press: on diamond %d, but the layer's designer isn't what is under the mouse (%s) - left alone."),
++							OutMarker, Path.IsValid() ? *Path.GetLastWidget()->GetTypeAsString() : TEXT("no widget"));
++					}
+ 					continue;
+ 				}
++				if (bExplain)
++				{
++					UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path press: taken - diamond %d%s."), OutMarker, OutHandle == INDEX_NONE ? TEXT("") : TEXT(", a handle"));
++				}
+ 				if (OutPath)
+ 				{
+ 					*OutPath = MoveTemp(Path);

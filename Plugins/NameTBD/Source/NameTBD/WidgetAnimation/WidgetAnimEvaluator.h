@@ -327,6 +327,23 @@ public:
 	 */
 	virtual FText GetTrackSummary(const FInstancedStruct& Params) const { return FText::GetEmpty(); }
 
+	// ---------------------------------------------------------------------------------------------
+	// Editing
+	// ---------------------------------------------------------------------------------------------
+
+	/**
+	 * Called in the editor after a track's settings were edited, on the track and on what the Details panel shows of it:
+	 * brings up to date whatever the settings derive from something else - a Particles track's User Parameters, listed from
+	 * its Niagara System. True if it changed anything.
+	 */
+	virtual bool RefreshParams(FInstancedStruct& Params) const { return false; }
+
+	/**
+	 * What decides the rows the settings show in the Details panel, beyond their struct - a property bag laid out from an
+	 * asset. When it changes the Widget Animations panel lays its Selection panel out again. 0: nothing beyond the struct.
+	 */
+	virtual uint32 GetParamsLayoutHash(const FInstancedStruct& Params) const { return 0; }
+
 protected:
 
 	/** The first TargetClass at or beneath Widget, depth first, through panels and into User Widgets. */

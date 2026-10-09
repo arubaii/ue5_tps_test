@@ -1,0 +1,1617 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEvaluator.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEvaluator.h
+index 47f96c0..99f3654 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEvaluator.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEvaluator.h
+@@ -327,6 +327,23 @@ public:
+ 	 */
+ 	virtual FText GetTrackSummary(const FInstancedStruct& Params) const { return FText::GetEmpty(); }
+ 
++	// ---------------------------------------------------------------------------------------------
++	// Editing
++	// ---------------------------------------------------------------------------------------------
++
++	/**
++	 * Called in the editor after a track's settings were edited, on the track and on what the Details panel shows of it:
++	 * brings up to date whatever the settings derive from something else - a Particles track's User Parameters, listed from
++	 * its Niagara System. True if it changed anything.
++	 */
++	virtual bool RefreshParams(FInstancedStruct& Params) const { return false; }
++
++	/**
++	 * What decides the rows the settings show in the Details panel, beyond their struct - a property bag laid out from an
++	 * asset. When it changes the Widget Animations panel lays its Selection panel out again. 0: nothing beyond the struct.
++	 */
++	virtual uint32 GetParamsLayoutHash(const FInstancedStruct& Params) const { return 0; }
++
+ protected:
+ 
+ 	/** The first TargetClass at or beneath Widget, depth first, through panels and into User Widgets. */
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 07e9215..c6b781c 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -11942,6 +11942,18 @@ namespace
+ 
+ 		return false;
+ 	}
++
++	/**
++	 * After an edit: has a registered type bring what its settings derive from something else up to date - a Particles
++	 * track's User Parameters, from the Niagara System just picked (FWidgetAnimEvaluator::RefreshParams).
++	 */
++	void RefreshLayerParams(FWidgetAnimLayer& Layer)
++	{
++		if (const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator())
++		{
++			Evaluator->RefreshParams(Layer.TypeParams);
++		}
++	}
+ }
+ 
+ void SWidgetAnimTimeline::OnProxyEdited(UWidgetAnimLayerEditProxy* Proxy, FPropertyChangedChainEvent& PropertyChangedEvent)
+@@ -11966,6 +11978,7 @@ void SWidgetAnimTimeline::OnProxyEdited(UWidgetAnimLayerEditProxy* Proxy, FPrope
+ 		if (Represented != Proxy->LayerIndex && Layers->IsValidIndex(Represented) && CanEditLayer(Represented))
+ 		{
+ 			CopyEditedLayerProperty(PropertyChangedEvent.PropertyChain, Proxy->Layer, (*Layers)[Represented]);
++			RefreshLayerParams((*Layers)[Represented]);
+ 		}
+ 	}
+ 
+@@ -11988,6 +12001,10 @@ void SWidgetAnimTimeline::OnProxyEdited(UWidgetAnimLayerEditProxy* Proxy, FPrope
+ 		Layer.InsertedFrom = InsertedFrom;
+ 	}
+ 
++	// What the edit derives - the track and what the Details panel shows of it alike, so the next edit carries it whole.
++	RefreshLayerParams(Layer);
++	RefreshLayerParams(Proxy->Layer);
++
+ 	// Every selected proxy reports the same edit; the source is told once, on the next frame. A drag in
+ 	// progress stays Interactive unless something in the batch committed.
+ 	const EPropertyChangeType::Type ChangeType = PropertyChangedEvent.ChangeType == EPropertyChangeType::Interactive
+@@ -12154,6 +12171,7 @@ void SWidgetAnimTimeline::OnShadowEdited(UWidgetAnimPresetSelectionShadow* Shado
+ 			Layer.bHiddenByFocus = bHiddenByFocus;
+ 			Layer.InsertedFrom = InsertedFrom;
+ 		}
++		RefreshLayerParams(Layer);
+ 		Indices.Add(Member->GetName(), LayerIndex);
+ 	}
+ 	else
+@@ -12337,6 +12355,11 @@ uint32 SWidgetAnimTimeline::ComputeLayoutSignature() const
+ 		if (Layer.AnimType == EWidgetAnimType::Custom)
+ 		{
+ 			Hash = HashCombine(Hash, PointerHash(Layer.TypeParams.GetScriptStruct()));
++			if (const FWidgetAnimEvaluator* Evaluator = Layer.FindEvaluator())
++			{
++				// Rows a type lays out from an asset - a Particles track's User Parameters.
++				Hash = HashCombine(Hash, Evaluator->GetParamsLayoutHash(Layer.TypeParams));
++			}
+ 			if (const FWidgetAnimBlueprintTypeParams* BlueprintType = Layer.TypeParams.GetPtr<FWidgetAnimBlueprintTypeParams>())
+ 			{
+ 				Hash = HashCombine(Hash, PointerHash(BlueprintType->Settings.GetScriptStruct()));
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIParameters.cpp b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIParameters.cpp
+new file mode 100644
+index 0000000..ee63715
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIParameters.cpp
+@@ -0,0 +1,403 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "NiagaraUIParameters.h"
++
++#include "Engine/Texture.h"
++#include "Materials/MaterialInterface.h"
++#include "NiagaraComponent.h"
++#include "NiagaraSystem.h"
++#include "NiagaraTypes.h"
++#include "NiagaraUserRedirectionParameterStore.h"
++
++namespace NiagaraUIParameters
++{
++	namespace
++	{
++		/**
++		 * What one of the system's User parameters is in the bag - false for a type it can't hold (a data interface).
++		 * Positions are vectors there, and said so (bOutPosition), so they are handed back as positions.
++		 */
++		bool MakeDesc(const FNiagaraVariable& Variable, FPropertyBagPropertyDesc& OutDesc, bool& bOutPosition)
++		{
++			const FNiagaraTypeDefinition& Type = Variable.GetType();
++			const FName Name = GetShortName(Variable.GetName());
++			bOutPosition = false;
++			if (Type == FNiagaraTypeDefinition::GetFloatDef())
++			{
++				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Float);
++			}
++			else if (Type == FNiagaraTypeDefinition::GetIntDef())
++			{
++				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Int32);
++			}
++			else if (Type == FNiagaraTypeDefinition::GetBoolDef())
++			{
++				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Bool);
++			}
++			else if (Type == FNiagaraTypeDefinition::GetColorDef())
++			{
++				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Struct, TBaseStructure<FLinearColor>::Get());
++			}
++			else if (Type == FNiagaraTypeDefinition::GetVec2Def())
++			{
++				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Struct, TBaseStructure<FVector2D>::Get());
++			}
++			else if (Type == FNiagaraTypeDefinition::GetVec3Def() || Type == FNiagaraTypeDefinition::GetPositionDef())
++			{
++				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Struct, TBaseStructure<FVector>::Get());
++				bOutPosition = Type == FNiagaraTypeDefinition::GetPositionDef();
++			}
++			else if (Type == FNiagaraTypeDefinition::GetVec4Def())
++			{
++				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Struct, TBaseStructure<FVector4>::Get());
++			}
++			else if (Type == FNiagaraTypeDefinition::GetQuatDef())
++			{
++				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Struct, TBaseStructure<FQuat>::Get());
++			}
++			else if (Type.IsEnum() && Type.GetEnum())
++			{
++				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Enum, Type.GetEnum());
++			}
++			else if (Type.IsUObject() && !Type.IsDataInterface() && Type.GetClass())
++			{
++				OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Object, Type.GetClass());
++			}
++			else
++			{
++				return false;
++			}
++			return true;
++		}
++
++		/** The system's own value of Variable, into Bag's parameter of the same name. */
++		void ReadSystemValue(const FNiagaraParameterStore& Store, const FNiagaraVariable& Variable, FInstancedPropertyBag& Bag)
++		{
++			const FNiagaraTypeDefinition& Type = Variable.GetType();
++			const FName Name = GetShortName(Variable.GetName());
++			if (Type == FNiagaraTypeDefinition::GetFloatDef())
++			{
++				Bag.SetValueFloat(Name, Store.GetParameterValue<float>(Variable));
++			}
++			else if (Type == FNiagaraTypeDefinition::GetIntDef())
++			{
++				Bag.SetValueInt32(Name, Store.GetParameterValue<int32>(Variable));
++			}
++			else if (Type == FNiagaraTypeDefinition::GetBoolDef())
++			{
++				Bag.SetValueBool(Name, Store.GetParameterValue<FNiagaraBool>(Variable).GetValue());
++			}
++			else if (Type == FNiagaraTypeDefinition::GetColorDef())
++			{
++				const FLinearColor Value = Store.GetParameterValue<FLinearColor>(Variable);
++				Bag.SetValueStruct(Name, FConstStructView::Make(Value));
++			}
++			else if (Type == FNiagaraTypeDefinition::GetVec2Def())
++			{
++				const FVector2D Value(Store.GetParameterValue<FVector2f>(Variable));
++				Bag.SetValueStruct(Name, FConstStructView::Make(Value));
++			}
++			else if (Type == FNiagaraTypeDefinition::GetVec3Def() || Type == FNiagaraTypeDefinition::GetPositionDef())
++			{
++				const FVector Value(Store.GetParameterValue<FVector3f>(Variable));
++				Bag.SetValueStruct(Name, FConstStructView::Make(Value));
++			}
++			else if (Type == FNiagaraTypeDefinition::GetVec4Def())
++			{
++				const FVector4 Value(Store.GetParameterValue<FVector4f>(Variable));
++				Bag.SetValueStruct(Name, FConstStructView::Make(Value));
++			}
++			else if (Type == FNiagaraTypeDefinition::GetQuatDef())
++			{
++				const FQuat Value(Store.GetParameterValue<FQuat4f>(Variable));
++				Bag.SetValueStruct(Name, FConstStructView::Make(Value));
++			}
++			else if (Type.IsEnum() && Type.GetEnum())
++			{
++				Bag.SetValueEnum(Name, static_cast<uint8>(Store.GetParameterValue<int32>(Variable)), Type.GetEnum());
++			}
++			else if (Type.IsUObject())
++			{
++				Bag.SetValueObject(Name, Store.GetUObject(Variable));
++			}
++		}
++
++		/** Where parameter Desc of Bag keeps its value. */
++		const void* GetValuePtr(const FInstancedPropertyBag& Bag, const FPropertyBagPropertyDesc& Desc)
++		{
++			const uint8* Memory = Bag.GetValue().GetMemory();
++			return Memory && Desc.CachedProperty ? Desc.CachedProperty->ContainerPtrToValuePtr<void>(Memory) : nullptr;
++		}
++
++		bool IsSameType(const FPropertyBagPropertyDesc& A, const FPropertyBagPropertyDesc& B)
++		{
++			return A.ValueType == B.ValueType && A.ValueTypeObject == B.ValueTypeObject;
++		}
++
++		/** Whether two bags hold the same parameters, of the same types, with the same values. */
++		bool AreIdentical(const FInstancedPropertyBag& A, const FInstancedPropertyBag& B)
++		{
++			const UPropertyBag* StructA = A.GetPropertyBagStruct();
++			const UPropertyBag* StructB = B.GetPropertyBagStruct();
++			if (StructA != StructB)
++			{
++				return false;
++			}
++			return !StructA || StructA->CompareScriptStruct(A.GetValue().GetMemory(), B.GetValue().GetMemory(), 0);
++		}
++
++		/** Whether two bags list the same parameters, of the same types - the rows the Details panel shows. */
++		bool HaveSameLayout(const FInstancedPropertyBag& A, const FInstancedPropertyBag& B)
++		{
++			return A.GetPropertyBagStruct() == B.GetPropertyBagStruct();
++		}
++
++		/** Parameter Desc of Values as the system has it in SystemValues: false when the system doesn't have it, as that type. */
++		const FPropertyBagPropertyDesc* FindSystemDesc(const FInstancedPropertyBag& SystemValues, const FPropertyBagPropertyDesc& Desc)
++		{
++			const FPropertyBagPropertyDesc* SystemDesc = SystemValues.FindPropertyDescByName(Desc.Name);
++			return SystemDesc && IsSameType(Desc, *SystemDesc) && SystemDesc->CachedProperty ? SystemDesc : nullptr;
++		}
++	}
++
++	FName GetShortName(FName Name)
++	{
++		FString Text = Name.ToString();
++		Text.RemoveFromStart(TEXT("User."));
++		return FName(*Text);
++	}
++
++	bool IsChanged(const FInstancedPropertyBag& Values, const FInstancedPropertyBag& SystemValues, const FPropertyBagPropertyDesc& Desc)
++	{
++		const FPropertyBagPropertyDesc* SystemDesc = FindSystemDesc(SystemValues, Desc);
++		if (!SystemDesc || !Desc.CachedProperty)
++		{
++			return true;
++		}
++		const void* Value = GetValuePtr(Values, Desc);
++		const void* SystemValue = GetValuePtr(SystemValues, *SystemDesc);
++		return !Value || !SystemValue || !Desc.CachedProperty->Identical(Value, SystemValue);
++	}
++
++	bool HasChanges(const FInstancedPropertyBag& Values, const FInstancedPropertyBag& SystemValues)
++	{
++		if (const UPropertyBag* BagStruct = Values.GetPropertyBagStruct())
++		{
++			for (const FPropertyBagPropertyDesc& Desc : BagStruct->GetPropertyDescs())
++			{
++				if (IsChanged(Values, SystemValues, Desc))
++				{
++					return true;
++				}
++			}
++		}
++		return false;
++	}
++
++	bool LayOut(UNiagaraSystem* System, FInstancedPropertyBag& Values, FInstancedPropertyBag& SystemValues, TArray<FName>& PositionNames, bool* bOutChanged)
++	{
++		if (bOutChanged)
++		{
++			*bOutChanged = false;
++		}
++
++		// The system's User parameters as they are now, and its values of them.
++		TArray<FPropertyBagPropertyDesc> Descs;
++		TArray<FNiagaraVariable> Variables;
++		TArray<FName> Positions;
++		if (System)
++		{
++			TArray<FNiagaraVariable> UserVariables;
++			System->GetExposedParameters().GetUserParameters(UserVariables);
++			for (const FNiagaraVariable& Variable : UserVariables)
++			{
++				FPropertyBagPropertyDesc Desc;
++				bool bPosition = false;
++				if (!MakeDesc(Variable, Desc, bPosition) || Descs.ContainsByPredicate([&Desc](const FPropertyBagPropertyDesc& Other) { return Other.Name == Desc.Name; }))
++				{
++					continue;
++				}
++				Descs.Add(Desc);
++				Variables.Add(Variable);
++				if (bPosition)
++				{
++					Positions.Add(Desc.Name);
++				}
++			}
++		}
++
++		FInstancedPropertyBag NewSystemValues;
++		if (Descs.Num() > 0)
++		{
++			NewSystemValues.AddProperties(Descs);
++			for (const FNiagaraVariable& Variable : Variables)
++			{
++				ReadSystemValue(System->GetExposedParameters(), Variable, NewSystemValues);
++			}
++		}
++
++		// Nothing new in the system since it was last laid out: nothing to do (asked often).
++		if (AreIdentical(NewSystemValues, SystemValues) && HaveSameLayout(NewSystemValues, Values) && PositionNames == Positions)
++		{
++			return false;
++		}
++
++		// Each at the system's value - but one that was changed keeps its own, as long as it is still there, of the same type.
++		FInstancedPropertyBag NewValues = NewSystemValues;
++		if (const UPropertyBag* NewStruct = NewValues.GetPropertyBagStruct())
++		{
++			for (const FPropertyBagPropertyDesc& NewDesc : NewStruct->GetPropertyDescs())
++			{
++				const FPropertyBagPropertyDesc* OldDesc = Values.FindPropertyDescByName(NewDesc.Name);
++				if (!OldDesc || !IsSameType(*OldDesc, NewDesc) || !OldDesc->CachedProperty || !NewDesc.CachedProperty || !IsChanged(Values, SystemValues, *OldDesc))
++				{
++					continue;
++				}
++				const void* OldValue = GetValuePtr(Values, *OldDesc);
++				uint8* NewMemory = NewValues.GetMutableValue().GetMemory();
++				if (OldValue && NewMemory)
++				{
++					NewDesc.CachedProperty->CopyCompleteValue(NewDesc.CachedProperty->ContainerPtrToValuePtr<void>(NewMemory), OldValue);
++				}
++			}
++		}
++
++		const bool bRowsChanged = !HaveSameLayout(NewValues, Values);
++		Values = MoveTemp(NewValues);
++		SystemValues = MoveTemp(NewSystemValues);
++		PositionNames = MoveTemp(Positions);
++		if (bOutChanged)
++		{
++			*bOutChanged = true;
++		}
++		return bRowsChanged;
++	}
++
++	void Apply(UNiagaraComponent* Component, const FInstancedPropertyBag& Bag, const FPropertyBagPropertyDesc& Desc, const TArray<FName>& PositionNames)
++	{
++		const FName Name = Desc.Name;
++		switch (Desc.ValueType)
++		{
++		case EPropertyBagPropertyType::Float:
++			if (const auto Value = Bag.GetValueFloat(Name); Value.HasValue())
++			{
++				Component->SetVariableFloat(Name, Value.GetValue());
++			}
++			break;
++		case EPropertyBagPropertyType::Int32:
++			if (const auto Value = Bag.GetValueInt32(Name); Value.HasValue())
++			{
++				Component->SetVariableInt(Name, Value.GetValue());
++			}
++			break;
++		case EPropertyBagPropertyType::Bool:
++			if (const auto Value = Bag.GetValueBool(Name); Value.HasValue())
++			{
++				Component->SetVariableBool(Name, Value.GetValue());
++			}
++			break;
++		case EPropertyBagPropertyType::Enum:
++			if (const auto Value = Bag.GetValueEnum(Name, Cast<UEnum>(Desc.ValueTypeObject)); Value.HasValue())
++			{
++				Component->SetVariableInt(Name, Value.GetValue());
++			}
++			break;
++		case EPropertyBagPropertyType::Object:
++			if (const auto Value = Bag.GetValueObject(Name); Value.HasValue())
++			{
++				ApplyObject(Component, Name, Value.GetValue());
++			}
++			break;
++		case EPropertyBagPropertyType::Struct:
++		{
++			const UScriptStruct* StructType = Cast<UScriptStruct>(Desc.ValueTypeObject);
++			const auto Value = Bag.GetValueStruct(Name, StructType);
++			if (!Value.HasValue() || !StructType)
++			{
++				break;
++			}
++			const FStructView View = Value.GetValue();
++			if (StructType == TBaseStructure<FLinearColor>::Get())
++			{
++				Component->SetVariableLinearColor(Name, View.Get<FLinearColor>());
++			}
++			else if (StructType == TBaseStructure<FVector2D>::Get())
++			{
++				Component->SetVariableVec2(Name, View.Get<FVector2D>());
++			}
++			else if (StructType == TBaseStructure<FVector>::Get())
++			{
++				if (PositionNames.Contains(Name))
++				{
++					Component->SetVariablePosition(Name, View.Get<FVector>());
++				}
++				else
++				{
++					Component->SetVariableVec3(Name, View.Get<FVector>());
++				}
++			}
++			else if (StructType == TBaseStructure<FVector4>::Get())
++			{
++				Component->SetVariableVec4(Name, View.Get<FVector4>());
++			}
++			else if (StructType == TBaseStructure<FQuat>::Get())
++			{
++				Component->SetVariableQuat(Name, View.Get<FQuat>());
++			}
++			break;
++		}
++		default:
++			break;
++		}
++	}
++
++	void ApplyChanged(UNiagaraComponent* Component, const FInstancedPropertyBag& Values, const FInstancedPropertyBag& SystemValues, const TArray<FName>& PositionNames)
++	{
++		const UPropertyBag* BagStruct = Values.GetPropertyBagStruct();
++		if (!Component || !BagStruct)
++		{
++			return;
++		}
++		for (const FPropertyBagPropertyDesc& Desc : BagStruct->GetPropertyDescs())
++		{
++			if (IsChanged(Values, SystemValues, Desc))
++			{
++				Apply(Component, Values, Desc, PositionNames);
++			}
++		}
++	}
++
++	void RestoreChanged(UNiagaraComponent* Component, const FInstancedPropertyBag& Values, const FInstancedPropertyBag& SystemValues, const TArray<FName>& PositionNames)
++	{
++		const UPropertyBag* BagStruct = Values.GetPropertyBagStruct();
++		if (!Component || !BagStruct)
++		{
++			return;
++		}
++		for (const FPropertyBagPropertyDesc& Desc : BagStruct->GetPropertyDescs())
++		{
++			// One the system no longer has is left alone: there is no value of its to put back.
++			const FPropertyBagPropertyDesc* SystemDesc = FindSystemDesc(SystemValues, Desc);
++			if (SystemDesc && IsChanged(Values, SystemValues, Desc))
++			{
++				Apply(Component, SystemValues, *SystemDesc, PositionNames);
++			}
++		}
++	}
++
++	void ApplyObject(UNiagaraComponent* Component, FName Name, UObject* Value)
++	{
++		if (UMaterialInterface* Material = Cast<UMaterialInterface>(Value))
++		{
++			Component->SetVariableMaterial(Name, Material);
++		}
++		else if (UTexture* Texture = Cast<UTexture>(Value))
++		{
++			Component->SetVariableTexture(Name, Texture);
++		}
++		else
++		{
++			Component->SetVariableObject(Name, Value);
++		}
++	}
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIWidget.cpp b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIWidget.cpp
+index 68f26bb..e2b2303 100644
+--- a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIWidget.cpp
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIWidget.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include "NiagaraUILog.h"
+ #include "NiagaraUIMesh.h"
++#include "NiagaraUIParameters.h"
+ #include "NiagaraUIRuntime.h"
+ #include "SNiagaraUIWidget.h"
+ 
+@@ -11,7 +12,6 @@
+ #include "Engine/World.h"
+ #include "HAL/PlatformTime.h"
+ #include "Containers/Ticker.h"
+-#include "Engine/Texture.h"
+ #include "Materials/MaterialInterface.h"
+ #include "NiagaraComponent.h"
+ #include "NiagaraEmitter.h"
+@@ -20,7 +20,6 @@
+ #include "NiagaraSpriteRendererProperties.h"
+ #include "NiagaraSystem.h"
+ #include "NiagaraTypes.h"
+-#include "NiagaraUserRedirectionParameterStore.h"
+ #include "UObject/ObjectSaveContext.h"
+ 
+ #if WITH_EDITOR
+@@ -40,173 +39,6 @@ namespace NiagaraUIWidgetPrivate
+ 	constexpr uint64 HiddenAfterFrames = 2;
+ }
+ 
+-namespace NiagaraUIParameters
+-{
+-	/** A User parameter's name as User Parameters lists it, and as the Set ... Parameter functions take it: without "User.". */
+-	FName GetShortName(FName Name)
+-	{
+-		FString Text = Name.ToString();
+-		Text.RemoveFromStart(TEXT("User."));
+-		return FName(*Text);
+-	}
+-
+-	/**
+-	 * What one of the system's User parameters is in User Parameters - false for a type it can't hold (a data interface).
+-	 * Positions are vectors there, and said so (bOutPosition), so they are handed back as positions.
+-	 */
+-	bool MakeDesc(const FNiagaraVariable& Variable, FPropertyBagPropertyDesc& OutDesc, bool& bOutPosition)
+-	{
+-		const FNiagaraTypeDefinition& Type = Variable.GetType();
+-		const FName Name = GetShortName(Variable.GetName());
+-		bOutPosition = false;
+-		if (Type == FNiagaraTypeDefinition::GetFloatDef())
+-		{
+-			OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Float);
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetIntDef())
+-		{
+-			OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Int32);
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetBoolDef())
+-		{
+-			OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Bool);
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetColorDef())
+-		{
+-			OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Struct, TBaseStructure<FLinearColor>::Get());
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetVec2Def())
+-		{
+-			OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Struct, TBaseStructure<FVector2D>::Get());
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetVec3Def() || Type == FNiagaraTypeDefinition::GetPositionDef())
+-		{
+-			OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Struct, TBaseStructure<FVector>::Get());
+-			bOutPosition = Type == FNiagaraTypeDefinition::GetPositionDef();
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetVec4Def())
+-		{
+-			OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Struct, TBaseStructure<FVector4>::Get());
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetQuatDef())
+-		{
+-			OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Struct, TBaseStructure<FQuat>::Get());
+-		}
+-		else if (Type.IsEnum() && Type.GetEnum())
+-		{
+-			OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Enum, Type.GetEnum());
+-		}
+-		else if (Type.IsUObject() && !Type.IsDataInterface() && Type.GetClass())
+-		{
+-			OutDesc = FPropertyBagPropertyDesc(Name, EPropertyBagPropertyType::Object, Type.GetClass());
+-		}
+-		else
+-		{
+-			return false;
+-		}
+-		return true;
+-	}
+-
+-	/** The system's own value of Variable, into Bag's parameter of the same name. */
+-	void ReadSystemValue(const FNiagaraParameterStore& Store, const FNiagaraVariable& Variable, FInstancedPropertyBag& Bag)
+-	{
+-		const FNiagaraTypeDefinition& Type = Variable.GetType();
+-		const FName Name = GetShortName(Variable.GetName());
+-		if (Type == FNiagaraTypeDefinition::GetFloatDef())
+-		{
+-			Bag.SetValueFloat(Name, Store.GetParameterValue<float>(Variable));
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetIntDef())
+-		{
+-			Bag.SetValueInt32(Name, Store.GetParameterValue<int32>(Variable));
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetBoolDef())
+-		{
+-			Bag.SetValueBool(Name, Store.GetParameterValue<FNiagaraBool>(Variable).GetValue());
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetColorDef())
+-		{
+-			const FLinearColor Value = Store.GetParameterValue<FLinearColor>(Variable);
+-			Bag.SetValueStruct(Name, FConstStructView::Make(Value));
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetVec2Def())
+-		{
+-			const FVector2D Value(Store.GetParameterValue<FVector2f>(Variable));
+-			Bag.SetValueStruct(Name, FConstStructView::Make(Value));
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetVec3Def() || Type == FNiagaraTypeDefinition::GetPositionDef())
+-		{
+-			const FVector Value(Store.GetParameterValue<FVector3f>(Variable));
+-			Bag.SetValueStruct(Name, FConstStructView::Make(Value));
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetVec4Def())
+-		{
+-			const FVector4 Value(Store.GetParameterValue<FVector4f>(Variable));
+-			Bag.SetValueStruct(Name, FConstStructView::Make(Value));
+-		}
+-		else if (Type == FNiagaraTypeDefinition::GetQuatDef())
+-		{
+-			const FQuat Value(Store.GetParameterValue<FQuat4f>(Variable));
+-			Bag.SetValueStruct(Name, FConstStructView::Make(Value));
+-		}
+-		else if (Type.IsEnum() && Type.GetEnum())
+-		{
+-			Bag.SetValueEnum(Name, static_cast<uint8>(Store.GetParameterValue<int32>(Variable)), Type.GetEnum());
+-		}
+-		else if (Type.IsUObject())
+-		{
+-			Bag.SetValueObject(Name, Store.GetUObject(Variable));
+-		}
+-	}
+-
+-	/** Where parameter Desc of Bag keeps its value. */
+-	const void* GetValuePtr(const FInstancedPropertyBag& Bag, const FPropertyBagPropertyDesc& Desc)
+-	{
+-		const uint8* Memory = Bag.GetValue().GetMemory();
+-		return Memory && Desc.CachedProperty ? Desc.CachedProperty->ContainerPtrToValuePtr<void>(Memory) : nullptr;
+-	}
+-
+-	bool IsSameType(const FPropertyBagPropertyDesc& A, const FPropertyBagPropertyDesc& B)
+-	{
+-		return A.ValueType == B.ValueType && A.ValueTypeObject == B.ValueTypeObject;
+-	}
+-
+-	/** Whether two bags hold the same parameters, of the same types, with the same values. */
+-	bool AreIdentical(const FInstancedPropertyBag& A, const FInstancedPropertyBag& B)
+-	{
+-		const UPropertyBag* StructA = A.GetPropertyBagStruct();
+-		const UPropertyBag* StructB = B.GetPropertyBagStruct();
+-		if (StructA != StructB)
+-		{
+-			return false;
+-		}
+-		return !StructA || StructA->CompareScriptStruct(A.GetValue().GetMemory(), B.GetValue().GetMemory(), 0);
+-	}
+-
+-	/** Whether two bags list the same parameters, of the same types - the rows the Details panel shows. */
+-	bool HaveSameLayout(const FInstancedPropertyBag& A, const FInstancedPropertyBag& B)
+-	{
+-		return A.GetPropertyBagStruct() == B.GetPropertyBagStruct();
+-	}
+-
+-	/** Hands an object parameter on: as a material, a texture, or any object. */
+-	void ApplyObject(UNiagaraComponent* Component, FName Name, UObject* Value)
+-	{
+-		if (UMaterialInterface* Material = Cast<UMaterialInterface>(Value))
+-		{
+-			Component->SetVariableMaterial(Name, Material);
+-		}
+-		else if (UTexture* Texture = Cast<UTexture>(Value))
+-		{
+-			Component->SetVariableTexture(Name, Texture);
+-		}
+-		else
+-		{
+-			Component->SetVariableObject(Name, Value);
+-		}
+-	}
+-}
+-
+ template <typename FunctionType>
+ void UNiagaraUIWidget::ForEachComponent(FunctionType&& Function) const
+ {
+@@ -258,6 +90,7 @@ void UNiagaraUIWidget::SynchronizeProperties()
+ 	if (IsValid(Main.Component) && Main.Component->GetAsset() != NiagaraSystem)
+ 	{
+ 		const bool bWasPlaying = Main.Component->IsActive() || Main.bPendingPlay;
++		DropOverrides(Main);
+ 		Main.Component->OnSystemFinished.RemoveAll(this);
+ 		Main.Component->DeactivateImmediate();
+ 		Main.Component->SetAsset(NiagaraSystem);
+@@ -490,7 +323,7 @@ void UNiagaraUIWidget::BurstAtOrigin(UNiagaraSystem* BurstSystem)
+ 	StartBurst(BurstSystem, FVector2f::ZeroVector, /*bAtOrigin=*/true);
+ }
+ 
+-void UNiagaraUIWidget::StartBurst(UNiagaraSystem* System, const FVector2f& LocalPosition, bool bAtOrigin)
++void UNiagaraUIWidget::StartBurst(UNiagaraSystem* System, const FVector2f& LocalPosition, bool bAtOrigin, const FNiagaraUIParameterOverrides* Overrides)
+ {
+ 	UNiagaraSystem* PlayedSystem = System ? System : NiagaraSystem.Get();
+ 	if (!PlayedSystem || MaxBursts <= 0 || !CanSimulate())
+@@ -513,6 +346,14 @@ void UNiagaraUIWidget::StartBurst(UNiagaraSystem* System, const FVector2f& Local
+ 	// Origin worked out then, wherever the widget is by that time.
+ 	Burst->Position = LocalPosition;
+ 	Burst->bAtOrigin = bAtOrigin;
++	if (Overrides)
++	{
++		Burst->Overrides = *Overrides;
++	}
++	else
++	{
++		Burst->Overrides.Reset();
++	}
+ 	Burst->StartedAt = FPlatformTime::Seconds();
+ 	Burst->bPlaced = false;
+ 	Burst->bPendingPlay = true;
+@@ -532,7 +373,8 @@ void UNiagaraUIWidget::SetNiagaraSystem(UNiagaraSystem* NewSystem, bool bPlay)
+ 	LayOutUserParameters();
+ 	if (IsValid(Main.Component))
+ 	{
+-		// Quietly: On Finished is for the system ending, not for being swapped out.
++		// Quietly: On Finished is for the system ending, not for being swapped out. A track's parameter values go with the old one.
++		DropOverrides(Main);
+ 		Main.Component->OnSystemFinished.RemoveAll(this);
+ 		Main.Component->DeactivateImmediate();
+ 		Main.Component->SetAsset(NewSystem);
+@@ -540,6 +382,7 @@ void UNiagaraUIWidget::SetNiagaraSystem(UNiagaraSystem* NewSystem, bool bPlay)
+ 		ApplyParameters(Main.Component);
+ 	}
+ 	Main.bPendingPlay = false;
++	Main.Overrides.Reset();
+ 
+ 	if (bPlay && NewSystem)
+ 	{
+@@ -551,6 +394,25 @@ void UNiagaraUIWidget::SetNiagaraSystem(UNiagaraSystem* NewSystem, bool bPlay)
+ 	}
+ }
+ 
++void UNiagaraUIWidget::PlayWithOverrides(UNiagaraSystem* System, const FNiagaraUIParameterOverrides* Overrides)
++{
++	if (System && System != NiagaraSystem)
++	{
++		SetNiagaraSystem(System, /*bPlay=*/false);
++	}
++
++	// Put on as it starts - now, or on its first paint - and the last track's taken off, if it had others.
++	if (Overrides)
++	{
++		Main.Overrides = *Overrides;
++	}
++	else
++	{
++		Main.Overrides.Reset();
++	}
++	Play(/*bRestart=*/true);
++}
++
+ void UNiagaraUIWidget::SetPaused(bool bPaused)
+ {
+ 	bUserPaused = bPaused;
+@@ -670,7 +532,7 @@ void UNiagaraUIWidget::ResetParameters()
+ 	{
+ 		for (const FPropertyBagPropertyDesc& Desc : BagStruct->GetPropertyDescs())
+ 		{
+-			ApplyParameter(SimComponent, UserParameterDefaults, Desc);
++			NiagaraUIParameters::Apply(SimComponent, UserParameterDefaults, Desc, PositionParameters);
+ 		}
+ 	});
+ }
+@@ -946,108 +808,7 @@ void UNiagaraUIWidget::ApplyRuntimeSettings(UNiagaraComponent* SimComponent) con
+ void UNiagaraUIWidget::ApplyParameters(UNiagaraComponent* SimComponent) const
+ {
+ 	// Only what this widget changed: the rest the system already has, at its own - current - values.
+-	const UPropertyBag* BagStruct = UserParameters.GetPropertyBagStruct();
+-	if (!BagStruct)
+-	{
+-		return;
+-	}
+-	for (const FPropertyBagPropertyDesc& Desc : BagStruct->GetPropertyDescs())
+-	{
+-		if (IsParameterChanged(Desc))
+-		{
+-			ApplyParameter(SimComponent, UserParameters, Desc);
+-		}
+-	}
+-}
+-
+-void UNiagaraUIWidget::ApplyParameter(UNiagaraComponent* SimComponent, const FInstancedPropertyBag& Bag, const FPropertyBagPropertyDesc& Desc) const
+-{
+-	const FName Name = Desc.Name;
+-	switch (Desc.ValueType)
+-	{
+-	case EPropertyBagPropertyType::Float:
+-		if (const auto Value = Bag.GetValueFloat(Name); Value.HasValue())
+-		{
+-			SimComponent->SetVariableFloat(Name, Value.GetValue());
+-		}
+-		break;
+-	case EPropertyBagPropertyType::Int32:
+-		if (const auto Value = Bag.GetValueInt32(Name); Value.HasValue())
+-		{
+-			SimComponent->SetVariableInt(Name, Value.GetValue());
+-		}
+-		break;
+-	case EPropertyBagPropertyType::Bool:
+-		if (const auto Value = Bag.GetValueBool(Name); Value.HasValue())
+-		{
+-			SimComponent->SetVariableBool(Name, Value.GetValue());
+-		}
+-		break;
+-	case EPropertyBagPropertyType::Enum:
+-		if (const auto Value = Bag.GetValueEnum(Name, Cast<UEnum>(Desc.ValueTypeObject)); Value.HasValue())
+-		{
+-			SimComponent->SetVariableInt(Name, Value.GetValue());
+-		}
+-		break;
+-	case EPropertyBagPropertyType::Object:
+-		if (const auto Value = Bag.GetValueObject(Name); Value.HasValue())
+-		{
+-			NiagaraUIParameters::ApplyObject(SimComponent, Name, Value.GetValue());
+-		}
+-		break;
+-	case EPropertyBagPropertyType::Struct:
+-	{
+-		const UScriptStruct* StructType = Cast<UScriptStruct>(Desc.ValueTypeObject);
+-		const auto Value = Bag.GetValueStruct(Name, StructType);
+-		if (!Value.HasValue() || !StructType)
+-		{
+-			break;
+-		}
+-		const FStructView View = Value.GetValue();
+-		if (StructType == TBaseStructure<FLinearColor>::Get())
+-		{
+-			SimComponent->SetVariableLinearColor(Name, View.Get<FLinearColor>());
+-		}
+-		else if (StructType == TBaseStructure<FVector2D>::Get())
+-		{
+-			SimComponent->SetVariableVec2(Name, View.Get<FVector2D>());
+-		}
+-		else if (StructType == TBaseStructure<FVector>::Get())
+-		{
+-			if (PositionParameters.Contains(Name))
+-			{
+-				SimComponent->SetVariablePosition(Name, View.Get<FVector>());
+-			}
+-			else
+-			{
+-				SimComponent->SetVariableVec3(Name, View.Get<FVector>());
+-			}
+-		}
+-		else if (StructType == TBaseStructure<FVector4>::Get())
+-		{
+-			SimComponent->SetVariableVec4(Name, View.Get<FVector4>());
+-		}
+-		else if (StructType == TBaseStructure<FQuat>::Get())
+-		{
+-			SimComponent->SetVariableQuat(Name, View.Get<FQuat>());
+-		}
+-		break;
+-	}
+-	default:
+-		break;
+-	}
+-}
+-
+-bool UNiagaraUIWidget::IsParameterChanged(const FPropertyBagPropertyDesc& Desc) const
+-{
+-	const FPropertyBagPropertyDesc* SystemDesc = UserParameterDefaults.FindPropertyDescByName(Desc.Name);
+-	if (!SystemDesc || !NiagaraUIParameters::IsSameType(Desc, *SystemDesc) || !Desc.CachedProperty)
+-	{
+-		return true;
+-	}
+-	const void* Value = NiagaraUIParameters::GetValuePtr(UserParameters, Desc);
+-	const void* SystemValue = NiagaraUIParameters::GetValuePtr(UserParameterDefaults, *SystemDesc);
+-	return !Value || !SystemValue || !Desc.CachedProperty->Identical(Value, SystemValue);
++	NiagaraUIParameters::ApplyChanged(SimComponent, UserParameters, UserParameterDefaults, PositionParameters);
+ }
+ 
+ void UNiagaraUIWidget::RefreshUserParameters()
+@@ -1057,74 +818,7 @@ void UNiagaraUIWidget::RefreshUserParameters()
+ 
+ bool UNiagaraUIWidget::LayOutUserParameters()
+ {
+-	using namespace NiagaraUIParameters;
+-
+-	// The system's User parameters as they are now, and its values of them.
+-	TArray<FPropertyBagPropertyDesc> Descs;
+-	TArray<FNiagaraVariable> Variables;
+-	TArray<FName> Positions;
+-	if (NiagaraSystem)
+-	{
+-		TArray<FNiagaraVariable> UserVariables;
+-		NiagaraSystem->GetExposedParameters().GetUserParameters(UserVariables);
+-		for (const FNiagaraVariable& Variable : UserVariables)
+-		{
+-			FPropertyBagPropertyDesc Desc;
+-			bool bPosition = false;
+-			if (!MakeDesc(Variable, Desc, bPosition) || Descs.ContainsByPredicate([&Desc](const FPropertyBagPropertyDesc& Other) { return Other.Name == Desc.Name; }))
+-			{
+-				continue;
+-			}
+-			Descs.Add(Desc);
+-			Variables.Add(Variable);
+-			if (bPosition)
+-			{
+-				Positions.Add(Desc.Name);
+-			}
+-		}
+-	}
+-
+-	FInstancedPropertyBag SystemValues;
+-	if (Descs.Num() > 0)
+-	{
+-		SystemValues.AddProperties(Descs);
+-		for (const FNiagaraVariable& Variable : Variables)
+-		{
+-			ReadSystemValue(NiagaraSystem->GetExposedParameters(), Variable, SystemValues);
+-		}
+-	}
+-
+-	// Nothing new in the system since it was last laid out: nothing to do (the designer asks often).
+-	if (AreIdentical(SystemValues, UserParameterDefaults) && HaveSameLayout(SystemValues, UserParameters) && PositionParameters == Positions)
+-	{
+-		return false;
+-	}
+-
+-	// Each at the system's value - but one this widget had changed keeps its own, as long as it is still there, of the same type.
+-	FInstancedPropertyBag NewValues = SystemValues;
+-	if (const UPropertyBag* NewStruct = NewValues.GetPropertyBagStruct())
+-	{
+-		for (const FPropertyBagPropertyDesc& NewDesc : NewStruct->GetPropertyDescs())
+-		{
+-			const FPropertyBagPropertyDesc* OldDesc = UserParameters.FindPropertyDescByName(NewDesc.Name);
+-			if (!OldDesc || !IsSameType(*OldDesc, NewDesc) || !OldDesc->CachedProperty || !NewDesc.CachedProperty || !IsParameterChanged(*OldDesc))
+-			{
+-				continue;
+-			}
+-			const void* OldValue = GetValuePtr(UserParameters, *OldDesc);
+-			uint8* NewMemory = NewValues.GetMutableValue().GetMemory();
+-			if (OldValue && NewMemory)
+-			{
+-				NewDesc.CachedProperty->CopyCompleteValue(NewDesc.CachedProperty->ContainerPtrToValuePtr<void>(NewMemory), OldValue);
+-			}
+-		}
+-	}
+-
+-	const bool bLayoutChanged = !HaveSameLayout(NewValues, UserParameters);
+-	UserParameters = MoveTemp(NewValues);
+-	UserParameterDefaults = MoveTemp(SystemValues);
+-	PositionParameters = MoveTemp(Positions);
+-	return bLayoutChanged;
++	return NiagaraUIParameters::LayOut(NiagaraSystem, UserParameters, UserParameterDefaults, PositionParameters);
+ }
+ 
+ void UNiagaraUIWidget::MigrateLegacyParameters()
+@@ -1181,6 +875,8 @@ void UNiagaraUIWidget::StartSimulation(FNiagaraUISimulation& Simulation, bool bR
+ 		return;
+ 	}
+ 
++	ApplyOverrides(Simulation);
++
+ 	if (bRestart || !SimComponent->IsActive())
+ 	{
+ 		SimComponent->Activate(/*bReset=*/true);
+@@ -1200,6 +896,41 @@ void UNiagaraUIWidget::StartSimulation(FNiagaraUISimulation& Simulation, bool bR
+ 	SetAnimating(!bUserPaused);
+ }
+ 
++void UNiagaraUIWidget::ApplyOverrides(FNiagaraUISimulation& Simulation)
++{
++	const bool bHad = Simulation.AppliedOverrides.HasChanges();
++	const bool bHas = Simulation.Overrides.HasChanges();
++	if (!bHad && !bHas)
++	{
++		return;
++	}
++
++	// The last track's values back to the system's - and this widget's own over those it had covered - then this one's.
++	UNiagaraComponent* SimComponent = Simulation.Component;
++	if (bHad)
++	{
++		Simulation.AppliedOverrides.RestoreChanged(SimComponent);
++		ApplyParameters(SimComponent);
++	}
++	if (bHas)
++	{
++		Simulation.Overrides.ApplyChanged(SimComponent);
++	}
++	Simulation.AppliedOverrides = Simulation.Overrides;
++}
++
++void UNiagaraUIWidget::DropOverrides(FNiagaraUISimulation& Simulation)
++{
++	// Taken off while the component still has the system they were for.
++	if (IsValid(Simulation.Component) && Simulation.AppliedOverrides.HasChanges())
++	{
++		Simulation.AppliedOverrides.RestoreChanged(Simulation.Component);
++		ApplyParameters(Simulation.Component);
++	}
++	Simulation.Overrides.Reset();
++	Simulation.AppliedOverrides.Reset();
++}
++
+ FNiagaraUISimulation* UNiagaraUIWidget::TakeBurst(UNiagaraSystem* System, UWorld* World)
+ {
+ 	Bursts.RemoveAll([](const FNiagaraUISimulation& Burst)
+@@ -1247,6 +978,7 @@ FNiagaraUISimulation* UNiagaraUIWidget::TakeBurst(UNiagaraSystem* System, UWorld
+ 	Chosen->Component->DeactivateImmediate();
+ 	if (Chosen->Component->GetAsset() != System)
+ 	{
++		DropOverrides(*Chosen);
+ 		Chosen->Component->SetAsset(System);
+ 		ApplyParameters(Chosen->Component);
+ 	}
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/WidgetAnimParticleCue.cpp b/Plugins/NameTBD/Source/NameTBDNiagara/Private/WidgetAnimParticleCue.cpp
+index 987a834..d3e6c30 100644
+--- a/Plugins/NameTBD/Source/NameTBDNiagara/Private/WidgetAnimParticleCue.cpp
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/WidgetAnimParticleCue.cpp
+@@ -2,11 +2,13 @@
+ 
+ #include "WidgetAnimParticleCue.h"
+ 
++#include "NiagaraUIParameters.h"
+ #include "NiagaraUIRuntime.h"
+ #include "NiagaraUIWidget.h"
+ 
+ #include "Blueprint/UserWidget.h"
+ #include "Blueprint/WidgetTree.h"
++#include "Components/PanelWidget.h"
+ #include "Components/Widget.h"
+ #include "NiagaraSystem.h"
+ 
+@@ -19,7 +21,7 @@ FText FWidgetAnimParticleCueEvaluator::GetDisplayName() const
+ 
+ FText FWidgetAnimParticleCueEvaluator::GetDescription() const
+ {
+-	return LOCTEXT("ParticlesDescription", "Fires Niagara particles on a Niagara Particles widget: a burst of the track's own Niagara System (or the widget's) where the widget is or on the track's widget; or Play, Stop Emitting, Clear. Seen in the editor's previews too.");
++	return LOCTEXT("ParticlesDescription", "Fires Niagara particles on a Niagara Particles widget, or on every one found: a burst of the track's own Niagara System and User Parameters (or each widget's own) where the widget is or on the track's widget; or Play, Stop Emitting, Clear. Seen in the editor's previews too.");
+ }
+ 
+ FText FWidgetAnimParticleCueEvaluator::GetTrackSummary(const FInstancedStruct& Params) const
+@@ -30,17 +32,18 @@ FText FWidgetAnimParticleCueEvaluator::GetTrackSummary(const FInstancedStruct& P
+ 		return FText::GetEmpty();
+ 	}
+ 
++	const UNiagaraSystem* TrackSystem = CueParams->PlaysTrackSystem() ? CueParams->NiagaraSystem.Get() : nullptr;
+ 	FText What;
+ 	switch (CueParams->Action)
+ 	{
+ 	case EWidgetAnimParticleCueAction::BurstAtTarget:
+-		What = CueParams->NiagaraSystem
+-			? FText::Format(LOCTEXT("BurstSystemSummary", "Burst {0}"), FText::FromString(CueParams->NiagaraSystem->GetName()))
++		What = TrackSystem
++			? FText::Format(LOCTEXT("BurstSystemSummary", "Burst {0}"), FText::FromString(TrackSystem->GetName()))
+ 			: LOCTEXT("BurstSummary", "Burst");
+ 		break;
+ 	case EWidgetAnimParticleCueAction::Play:
+-		What = CueParams->NiagaraSystem
+-			? FText::Format(LOCTEXT("PlaySystemSummary", "Play {0}"), FText::FromString(CueParams->NiagaraSystem->GetName()))
++		What = TrackSystem
++			? FText::Format(LOCTEXT("PlaySystemSummary", "Play {0}"), FText::FromString(TrackSystem->GetName()))
+ 			: LOCTEXT("PlaySummary", "Play");
+ 		break;
+ 	case EWidgetAnimParticleCueAction::StopEmitting:
+@@ -52,6 +55,10 @@ FText FWidgetAnimParticleCueEvaluator::GetTrackSummary(const FInstancedStruct& P
+ 		break;
+ 	}
+ 
++	if (CueParams->ActsOnAll())
++	{
++		What = FText::Format(LOCTEXT("AllSummary", "{0} (all)"), What);
++	}
+ 	return CueParams->ParticlesWidget.IsNone()
+ 		? What
+ 		: FText::Format(LOCTEXT("SummaryOnWidget", "{0} on {1}"), What, FText::FromName(CueParams->ParticlesWidget));
+@@ -66,8 +73,9 @@ void FWidgetAnimParticleCueEvaluator::Fire(const FWidgetAnimCueContext& Context)
+ 		return;
+ 	}
+ 
+-	UNiagaraUIWidget* Particles = FindParticlesWidget(TrackWidget, Context.Info.Host, CueParams->ParticlesWidget);
+-	if (!Particles)
++	TArray<UNiagaraUIWidget*> Found;
++	FindParticlesWidgets(TrackWidget, Context.Info.Host, CueParams->ParticlesWidget, CueParams->ActsOnAll(), Found);
++	if (Found.Num() == 0)
+ 	{
+ 		// Said once per widget and name: a cue fired every loop would otherwise fill the log.
+ 		NiagaraUIRuntime::WarnOnce(FString::Printf(TEXT("A Particles cue on %s found no Niagara Particles widget%s%s - add one, or name an existing one in the cue's Particles Widget."),
+@@ -77,88 +85,169 @@ void FWidgetAnimParticleCueEvaluator::Fire(const FWidgetAnimCueContext& Context)
+ 		return;
+ 	}
+ 
+-	switch (CueParams->Action)
++	// The track's own system and the User Parameters it changed - or, with Use Widget's Niagara System, each widget's own.
++	UNiagaraSystem* TrackSystem = CueParams->PlaysTrackSystem() ? CueParams->NiagaraSystem.Get() : nullptr;
++	FNiagaraUIParameterOverrides Overrides;
++	const FNiagaraUIParameterOverrides* TrackOverrides = nullptr;
++	if (TrackSystem && NiagaraUIParameters::HasChanges(CueParams->UserParameters, CueParams->UserParameterDefaults))
+ 	{
+-	case EWidgetAnimParticleCueAction::BurstAtTarget:
+-		if (CueParams->Place == EWidgetAnimParticleCuePlace::ParticlesWidget)
++		Overrides.Values = CueParams->UserParameters;
++		Overrides.SystemValues = CueParams->UserParameterDefaults;
++		Overrides.PositionNames = CueParams->PositionParameters;
++		TrackOverrides = &Overrides;
++	}
++
++	// For a burst on the track's widget: the point as it is drawn now - its Render Transform and animation included.
++	FVector2D AbsolutePoint = FVector2D::ZeroVector;
++	if (CueParams->Action == EWidgetAnimParticleCueAction::BurstAtTarget && CueParams->Place == EWidgetAnimParticleCuePlace::TrackWidget)
++	{
++		const FGeometry& Geometry = TrackWidget->GetCachedGeometry();
++		const FVector2D LocalSize(Geometry.GetLocalSize());
++		AbsolutePoint = FVector2D(Geometry.LocalToAbsolute(LocalSize * CueParams->BurstPoint));
++	}
++
++	for (UNiagaraUIWidget* Particles : Found)
++	{
++		switch (CueParams->Action)
++		{
++		case EWidgetAnimParticleCueAction::BurstAtTarget:
++			if (CueParams->Place == EWidgetAnimParticleCuePlace::ParticlesWidget)
++			{
++				// Where the Particles widget is - its Origin, worked out as it is drawn.
++				Particles->StartBurst(TrackSystem, FVector2f::ZeroVector, /*bAtOrigin=*/true, TrackOverrides);
++			}
++			else
++			{
++				// The track widget's point, put into the Particles widget's own space, wherever that one is.
++				const FVector2f LocalPoint = FVector2f(FVector2D(Particles->GetCachedGeometry().AbsoluteToLocal(AbsolutePoint)));
++				Particles->StartBurst(TrackSystem, LocalPoint, /*bAtOrigin=*/false, TrackOverrides);
++			}
++			break;
++		case EWidgetAnimParticleCueAction::Play:
++			// The track's system as the widget's own, or the widget's system when the track names none (or uses the widget's).
++			Particles->PlayWithOverrides(TrackSystem, TrackOverrides);
++			break;
++		case EWidgetAnimParticleCueAction::StopEmitting:
++			Particles->StopEmitting();
++			break;
++		case EWidgetAnimParticleCueAction::Clear:
++			Particles->Clear();
++			break;
++		default:
++			break;
++		}
++	}
++}
++
++bool FWidgetAnimParticleCueEvaluator::RefreshParams(FInstancedStruct& Params) const
++{
++	FWidgetAnimParticleCueParams* CueParams = Params.GetMutablePtr<FWidgetAnimParticleCueParams>();
++	if (!CueParams)
++	{
++		return false;
++	}
++
++	// Laid out from the track's system even while Use Widget's Niagara System hides them, so turning it off finds them as left.
++	bool bChanged = false;
++	NiagaraUIParameters::LayOut(CueParams->NiagaraSystem, CueParams->UserParameters, CueParams->UserParameterDefaults, CueParams->PositionParameters, &bChanged);
++	return bChanged;
++}
++
++uint32 FWidgetAnimParticleCueEvaluator::GetParamsLayoutHash(const FInstancedStruct& Params) const
++{
++	const FWidgetAnimParticleCueParams* CueParams = GetParams(Params);
++	return CueParams ? PointerHash(CueParams->UserParameters.GetPropertyBagStruct()) : 0;
++}
++
++UNiagaraUIWidget* FWidgetAnimParticleCueEvaluator::FindParticlesWidget(UWidget* TrackWidget, UWidget* Host, FName WidgetName)
++{
++	TArray<UNiagaraUIWidget*> Widgets;
++	FindParticlesWidgets(TrackWidget, Host, WidgetName, /*bAll=*/false, Widgets);
++	return Widgets.Num() > 0 ? Widgets[0] : nullptr;
++}
++
++namespace WidgetAnimParticleCuePrivate
++{
++	/** Every Niagara Particles widget at or beneath Widget, through panels and into User Widgets - or the first, unless bAll. */
++	void CollectParticlesWidgets(UWidget* Widget, bool bAll, TArray<UNiagaraUIWidget*>& OutWidgets)
++	{
++		if (!Widget || (!bAll && OutWidgets.Num() > 0))
+ 		{
+-			// Where the Particles widget is - its Origin, worked out as it is drawn.
+-			Particles->BurstAtOrigin(CueParams->NiagaraSystem);
++			return;
+ 		}
+-		else
++		if (UNiagaraUIWidget* Particles = Cast<UNiagaraUIWidget>(Widget))
+ 		{
+-			// The point on the track's widget as it is drawn now - its Render Transform and animation included - put into the
+-			// Particles widget's own space, wherever that one is.
+-			const FGeometry& Geometry = TrackWidget->GetCachedGeometry();
+-			const FVector2D LocalSize(Geometry.GetLocalSize());
+-			const FVector2D AbsolutePoint(Geometry.LocalToAbsolute(LocalSize * CueParams->BurstPoint));
+-			Particles->PlayAtAbsolutePosition(AbsolutePoint, CueParams->NiagaraSystem);
++			OutWidgets.AddUnique(Particles);
++			return;
+ 		}
+-		break;
+-	case EWidgetAnimParticleCueAction::Play:
+-		// The track's system as the widget's own, or the widget's system when the track names none.
+-		if (CueParams->NiagaraSystem && CueParams->NiagaraSystem != Particles->NiagaraSystem)
++		if (const UUserWidget* UserWidget = Cast<UUserWidget>(Widget))
+ 		{
+-			Particles->SetNiagaraSystem(CueParams->NiagaraSystem, /*bPlay=*/true);
++			if (UserWidget->WidgetTree)
++			{
++				CollectParticlesWidgets(UserWidget->WidgetTree->RootWidget, bAll, OutWidgets);
++			}
++			return;
+ 		}
+-		else
++		if (const UPanelWidget* Panel = Cast<UPanelWidget>(Widget))
+ 		{
+-			Particles->Play(/*bRestart=*/true);
++			for (int32 ChildIndex = 0; ChildIndex < Panel->GetChildrenCount(); ++ChildIndex)
++			{
++				CollectParticlesWidgets(Panel->GetChildAt(ChildIndex), bAll, OutWidgets);
++			}
+ 		}
+-		break;
+-	case EWidgetAnimParticleCueAction::StopEmitting:
+-		Particles->StopEmitting();
+-		break;
+-	case EWidgetAnimParticleCueAction::Clear:
+-		Particles->Clear();
+-		break;
+-	default:
+-		break;
+ 	}
+-}
+ 
+-UNiagaraUIWidget* FWidgetAnimParticleCueEvaluator::FindParticlesWidget(UWidget* TrackWidget, UWidget* Host, FName WidgetName)
+-{
+-	// The User Widget a widget is in, or the widget itself when it is one; then each one around it.
+-	const auto FirstUserWidget = [](UWidget* Widget) -> UUserWidget*
++	/** The User Widget a widget is in, or the widget itself when it is one. */
++	UUserWidget* FirstUserWidget(UWidget* Widget)
+ 	{
+ 		if (UUserWidget* AsUserWidget = Cast<UUserWidget>(Widget))
+ 		{
+ 			return AsUserWidget;
+ 		}
+ 		return Widget ? Widget->GetTypedOuter<UUserWidget>() : nullptr;
+-	};
++	}
++}
++
++void FWidgetAnimParticleCueEvaluator::FindParticlesWidgets(UWidget* TrackWidget, UWidget* Host, FName WidgetName, bool bAll, TArray<UNiagaraUIWidget*>& OutWidgets)
++{
++	using namespace WidgetAnimParticleCuePrivate;
+ 
+ 	if (!WidgetName.IsNone())
+ 	{
++		// By name: in the User Widget the track's widget (or the host) is in, then in each one around it.
+ 		for (UWidget* From : { TrackWidget, Host })
+ 		{
+ 			for (UUserWidget* UserWidget = FirstUserWidget(From); UserWidget; UserWidget = UserWidget->GetTypedOuter<UUserWidget>())
+ 			{
+-				if (UNiagaraUIWidget* Found = Cast<UNiagaraUIWidget>(UserWidget->GetWidgetFromName(WidgetName)))
++				if (UNiagaraUIWidget* Named = Cast<UNiagaraUIWidget>(UserWidget->GetWidgetFromName(WidgetName)))
+ 				{
+-					return Found;
++					OutWidgets.AddUnique(Named);
++					if (!bAll)
++					{
++						return;
++					}
+ 				}
+ 			}
+ 		}
+-		return nullptr;
++		return;
+ 	}
+ 
+-	// Unnamed: the track's widget itself - a track aimed at the Particles widget - or the first inside it.
+-	if (UNiagaraUIWidget* Inside = Cast<UNiagaraUIWidget>(FindFirstTarget(TrackWidget, UNiagaraUIWidget::StaticClass())))
++	// Unnamed: the track's widget itself - a track aimed at the Particles widget - or what is inside it.
++	CollectParticlesWidgets(TrackWidget, bAll, OutWidgets);
++	if (OutWidgets.Num() > 0)
+ 	{
+-		return Inside;
++		return;
+ 	}
+ 
+-	// Else the nearest around it: the first in the User Widget it is in, then in each one around that.
++	// Else the nearest around it: in the User Widget it is in, then in each one around that - the first that has any.
+ 	for (UUserWidget* UserWidget = FirstUserWidget(TrackWidget); UserWidget; UserWidget = UserWidget->GetTypedOuter<UUserWidget>())
+ 	{
+-		if (UNiagaraUIWidget* Found = Cast<UNiagaraUIWidget>(FindFirstTarget(UserWidget, UNiagaraUIWidget::StaticClass())))
++		CollectParticlesWidgets(UserWidget, bAll, OutWidgets);
++		if (OutWidgets.Num() > 0)
+ 		{
+-			return Found;
++			return;
+ 		}
+ 	}
+-	return nullptr;
+ }
+ 
+ #undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIParameters.h b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIParameters.h
+new file mode 100644
+index 0000000..fe69943
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIParameters.h
+@@ -0,0 +1,76 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "StructUtils/PropertyBag.h"
++
++#include "NiagaraUIParameters.generated.h"
++
++class UNiagaraComponent;
++class UNiagaraSystem;
++
++/**
++ * A Niagara System's User parameters as a property bag, the way the Niagara Particles widget and the Particles track list them:
++ * every parameter the system exposes, each at the system's own value until changed. Three bags travel together:
++ *  - Values:        what is shown and edited - only those changed from the system's value are ever handed on;
++ *  - SystemValues:  the system's own values when it was last laid out - what tells a changed value from one following the system;
++ *  - PositionNames: the Position parameters, laid out as vectors, handed back as positions.
++ */
++namespace NiagaraUIParameters
++{
++	/** A User parameter's name as the bag lists it, and as the Set ... Parameter functions take it: without "User.". */
++	NAMETBDNIAGARA_API FName GetShortName(FName Name);
++
++	/**
++	 * Lays Values out again from System: its User parameters as they are now, each at the system's value unless Values had it
++	 * changed (kept as long as it is still there, of the same type). No system empties them. Returns whether the rows changed -
++	 * parameters added, removed or retyped - and bOutChanged whether anything did, values included.
++	 */
++	NAMETBDNIAGARA_API bool LayOut(UNiagaraSystem* System, FInstancedPropertyBag& Values, FInstancedPropertyBag& SystemValues, TArray<FName>& PositionNames, bool* bOutChanged = nullptr);
++
++	/** Whether parameter Desc of Values holds something other than the system's own value. */
++	NAMETBDNIAGARA_API bool IsChanged(const FInstancedPropertyBag& Values, const FInstancedPropertyBag& SystemValues, const FPropertyBagPropertyDesc& Desc);
++
++	/** Whether any parameter of Values is changed. */
++	NAMETBDNIAGARA_API bool HasChanges(const FInstancedPropertyBag& Values, const FInstancedPropertyBag& SystemValues);
++
++	/** Hands parameter Desc of Bag to Component. */
++	NAMETBDNIAGARA_API void Apply(UNiagaraComponent* Component, const FInstancedPropertyBag& Bag, const FPropertyBagPropertyDesc& Desc, const TArray<FName>& PositionNames);
++
++	/** Hands Component every changed parameter of Values - the rest it already has, at the system's own (current) values. */
++	NAMETBDNIAGARA_API void ApplyChanged(UNiagaraComponent* Component, const FInstancedPropertyBag& Values, const FInstancedPropertyBag& SystemValues, const TArray<FName>& PositionNames);
++
++	/** Hands Component the system's own value of every parameter Values changed - what ApplyChanged put on, taken back off. */
++	NAMETBDNIAGARA_API void RestoreChanged(UNiagaraComponent* Component, const FInstancedPropertyBag& Values, const FInstancedPropertyBag& SystemValues, const TArray<FName>& PositionNames);
++
++	/** Hands an object parameter on: as a material, a texture, or any object. */
++	NAMETBDNIAGARA_API void ApplyObject(UNiagaraComponent* Component, FName Name, UObject* Value);
++}
++
++/**
++ * User parameter values handed to one simulation on top of the Niagara Particles widget's own - a Particles track's. Kept
++ * with the simulation, so they are taken back off before it plays anything else.
++ */
++USTRUCT()
++struct NAMETBDNIAGARA_API FNiagaraUIParameterOverrides
++{
++	GENERATED_BODY()
++
++	UPROPERTY()
++	FInstancedPropertyBag Values;
++
++	UPROPERTY()
++	FInstancedPropertyBag SystemValues;
++
++	UPROPERTY()
++	TArray<FName> PositionNames;
++
++	bool HasChanges() const { return NiagaraUIParameters::HasChanges(Values, SystemValues); }
++
++	void ApplyChanged(UNiagaraComponent* Component) const { NiagaraUIParameters::ApplyChanged(Component, Values, SystemValues, PositionNames); }
++
++	void RestoreChanged(UNiagaraComponent* Component) const { NiagaraUIParameters::RestoreChanged(Component, Values, SystemValues, PositionNames); }
++
++	void Reset() { *this = FNiagaraUIParameterOverrides(); }
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
+index 51ee92a..d216fed 100644
+--- a/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
+@@ -7,6 +7,8 @@
+ #include "Styling/SlateBrush.h"
+ #include "StructUtils/PropertyBag.h"
+ 
++#include "NiagaraUIParameters.h"
++
+ #include "NiagaraUIWidget.generated.h"
+ 
+ class SNiagaraUIWidget;
+@@ -59,6 +61,14 @@ struct FNiagaraUISimulation
+ 	FVector2f PlacedAt = FVector2f::ZeroVector;
+ 	float PlacedAngle = 0.f;
+ 	float PlacedScale = 1.f;
++
++	/** A Particles track's own User parameter values, put on over the widget's as it next starts - none for anything else. */
++	UPROPERTY(Transient)
++	FNiagaraUIParameterOverrides Overrides;
++
++	/** The track values on its component now - taken back off (to the system's values) before it plays without them. */
++	UPROPERTY(Transient)
++	FNiagaraUIParameterOverrides AppliedOverrides;
+ };
+ 
+ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNiagaraUIFinished, UNiagaraUIWidget*, ParticlesWidget);
+@@ -90,7 +100,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNiagaraUIFinished, UNiagaraUIWidg
+  * of the widget, up to Max Bursts at once, reusing finished ones: one Particles widget over a screen serves every click
+  * sparkle and reward pop on it.
+  */
+-UCLASS(meta = (DisplayName = "Niagara Particles"))
++UCLASS(meta = (DisplayName = "Niagara Particles", PrioritizeCategories = "Particles Parameters Playback Layout Appearance"))
+ class NAMETBDNIAGARA_API UNiagaraUIWidget : public UWidget
+ {
+ 	GENERATED_BODY()
+@@ -360,6 +370,22 @@ public:
+ 	 */
+ 	void RefreshUserParameters();
+ 
++	// ---------------------------------------------------------------------------------------------
++	// For the Particles cue
++	// ---------------------------------------------------------------------------------------------
++
++	/**
++	 * Plays a one-shot of System (or the widget's own) at LocalPosition, or at the widget's Origin - Play At and Burst At Origin's
++	 * work. Overrides: User parameter values of System's put on over this widget's, for this burst alone.
++	 */
++	void StartBurst(UNiagaraSystem* System, const FVector2f& LocalPosition, bool bAtOrigin, const FNiagaraUIParameterOverrides* Overrides = nullptr);
++
++	/**
++	 * Plays System as this widget's system (or its own, when none), from its start - with Overrides, User parameter values of
++	 * System's, over this widget's, until another system is set or it plays without them.
++	 */
++	void PlayWithOverrides(UNiagaraSystem* System, const FNiagaraUIParameterOverrides* Overrides);
++
+ 	// ---------------------------------------------------------------------------------------------
+ 	// For the Slate widget and the module's ticker - not for gameplay code
+ 	// ---------------------------------------------------------------------------------------------
+@@ -393,30 +419,27 @@ private:
+ 	void ApplyRuntimeSettings(UNiagaraComponent* Component) const;
+ 	void ApplyParameters(UNiagaraComponent* Component) const;
+ 
+-	/** Hands parameter Desc of Bag (User Parameters, or the system's own values) to Component. */
+-	void ApplyParameter(UNiagaraComponent* Component, const FInstancedPropertyBag& Bag, const FPropertyBagPropertyDesc& Desc) const;
+-
+-	/** Whether User Parameters' Desc holds something other than the system's own value - only those are handed on. */
+-	bool IsParameterChanged(const FPropertyBagPropertyDesc& Desc) const;
+-
+ 	/** RefreshUserParameters' work: false when the system's User parameters and values are as already laid out. */
+ 	bool LayOutUserParameters();
+ 
+ 	/** In the editor: has the Details panels laid out again, next tick - User Parameters' rows changed. */
+ 	void RequestDetailsRefresh() const;
+ 
+-	/** Starts a burst of System at LocalPosition, or at the widget's Origin. */
+-	void StartBurst(UNiagaraSystem* System, const FVector2f& LocalPosition, bool bAtOrigin);
+-
+ 	/** Folds the v1 Float / Color / Vector Parameters maps into User Parameters, once, as an old widget loads. */
+ 	void MigrateLegacyParameters();
+ 
+ 	/** Makes the main simulation if it doesn't exist yet. False when it can't be made now. */
+ 	bool EnsureMainSimulation();
+ 
+-	/** Starts a placed simulation playing - from its start if bRestart - with the Prewarm. */
++	/** Starts a placed simulation playing - from its start if bRestart - with the Prewarm, and its track's parameter values. */
+ 	void StartSimulation(FNiagaraUISimulation& Simulation, bool bRestart);
+ 
++	/** Puts Simulation's track parameter values on its component - the ones it had on taken back off first. */
++	void ApplyOverrides(FNiagaraUISimulation& Simulation);
++
++	/** Takes Simulation's track parameter values off its component and forgets them - before another system is set on it. */
++	void DropOverrides(FNiagaraUISimulation& Simulation);
++
+ 	/** The burst to play the next Play At with: a finished one (of the same system first), a new one, or the oldest. */
+ 	FNiagaraUISimulation* TakeBurst(UNiagaraSystem* System, UWorld* World);
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Public/WidgetAnimParticleCue.h b/Plugins/NameTBD/Source/NameTBDNiagara/Public/WidgetAnimParticleCue.h
+index 58ec32e..1002a83 100644
+--- a/Plugins/NameTBD/Source/NameTBDNiagara/Public/WidgetAnimParticleCue.h
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Public/WidgetAnimParticleCue.h
+@@ -4,6 +4,7 @@
+ 
+ #include "CoreMinimal.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
++#include "StructUtils/PropertyBag.h"
+ 
+ #include "WidgetAnimParticleCue.generated.h"
+ 
+@@ -33,12 +34,22 @@ enum class EWidgetAnimParticleCuePlace : uint8
+ 	TrackWidget UMETA(DisplayName = "At Track's Widget", ToolTip = "On the widget this track is aimed at - its Layer Group's Target Widget, or each item of a stagger - at Burst Point. The Niagara Particles widget is then only the layer the particles are drawn in: one over the whole screen serves every button.")
+ };
+ 
++/** Which Niagara Particles widgets a Particles cue plays on, of those it finds. */
++UENUM(BlueprintType)
++enum class EWidgetAnimParticleCueScope : uint8
++{
++	FirstFound UMETA(DisplayName = "First Found", ToolTip = "The first Niagara Particles widget found: the one named in Particles Widget, else the track's widget itself, or the first inside it, else the nearest around it."),
++
++	AllFound UMETA(DisplayName = "All Found", ToolTip = "Every Niagara Particles widget found, each with its own Niagara System: every one named Particles Widget in the User Widgets around the track's widget; unnamed, every one at or inside the track's widget, else every one in the nearest User Widget around it that has any.")
++};
++
+ /**
+  * Particles: fires Niagara particles at a moment of the animation - a burst where a card lands, embers starting as a panel
+  * opens, stopping as it closes.
+  *
+- * The track carries its own Niagara System: it plays that, whatever the Niagara Particles widget is set to - leave it empty
+- * to play the widget's own. So one Particles widget serves every track, each with its effect.
++ * The track carries its own Niagara System and User Parameters: it plays that, whatever the Niagara Particles widget is set
++ * to - leave it empty to play the widget's own. So one Particles widget serves every track, each with its effect. Or Use
++ * Widget's Niagara System: each widget plays its own system, with its own parameters - on the first found, or on all of them.
+  *
+  * Plays on a Niagara Particles widget: the one named by Particles Widget; else the track's widget itself when it is one (aim
+  * the track's Layer Group at it - the simplest setup), or the first inside it; else the nearest around it. Seen in the
+@@ -52,13 +63,33 @@ struct NAMETBDNIAGARA_API FWidgetAnimParticleCueParams : public FWidgetAnimCuePa
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles")
+ 	EWidgetAnimParticleCueAction Action = EWidgetAnimParticleCueAction::BurstAtTarget;
+ 
++	/**
++	 * Plays each Niagara Particles widget's own Niagara System, with its own User Parameters, rather than one set here - so one
++	 * track fires whatever each widget is set up with. Off, the track plays its Niagara System below.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Use Widget's Niagara System", EditCondition = "Action == EWidgetAnimParticleCueAction::BurstAtTarget || Action == EWidgetAnimParticleCueAction::Play", EditConditionHides))
++	bool bUseWidgetSystem = false;
++
++	/** Which of the Niagara Particles widgets found it acts on: the first, or every one. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Act On", EditCondition = "bUseWidgetSystem || Action == EWidgetAnimParticleCueAction::StopEmitting || Action == EWidgetAnimParticleCueAction::Clear", EditConditionHides))
++	EWidgetAnimParticleCueScope ActOn = EWidgetAnimParticleCueScope::FirstFound;
++
+ 	/**
+ 	 * The system this track plays - burst, or played as the widget's system. None: the Niagara Particles widget's own. The
+-	 * widget's User Parameters reach it too, by name. For a burst, a one-shot system (Loop Behavior: Once).
++	 * widget's User Parameters reach it too, by name, under the track's own below. For a burst, a one-shot system (Loop
++	 * Behavior: Once).
+ 	 */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Niagara System", EditCondition = "Action == EWidgetAnimParticleCueAction::BurstAtTarget || Action == EWidgetAnimParticleCueAction::Play", EditConditionHides))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Niagara System", EditCondition = "!bUseWidgetSystem && (Action == EWidgetAnimParticleCueAction::BurstAtTarget || Action == EWidgetAnimParticleCueAction::Play)", EditConditionHides))
+ 	TObjectPtr<UNiagaraSystem> NiagaraSystem = nullptr;
+ 
++	/**
++	 * The track's Niagara System's User parameters, listed from the system itself, each starting at the system's own value -
++	 * as the Niagara Particles widget lists its own. Change one and this track plays the system with it, over the widget's
++	 * value of it; the rest are the widget's, else the system's. Kept in step with the system each time the track is edited.
++	 */
++	UPROPERTY(EditAnywhere, Category = "Particles", meta = (DisplayName = "User Parameters", FixedLayout, EditCondition = "!bUseWidgetSystem && (Action == EWidgetAnimParticleCueAction::BurstAtTarget || Action == EWidgetAnimParticleCueAction::Play)", EditConditionHides))
++	FInstancedPropertyBag UserParameters;
++
+ 	/** Where the burst plays: where the Niagara Particles widget is, or on the widget this track is aimed at. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Burst At", EditCondition = "Action == EWidgetAnimParticleCueAction::BurstAtTarget", EditConditionHides))
+ 	EWidgetAnimParticleCuePlace Place = EWidgetAnimParticleCuePlace::ParticlesWidget;
+@@ -73,6 +104,26 @@ struct NAMETBDNIAGARA_API FWidgetAnimParticleCueParams : public FWidgetAnimCuePa
+ 	 */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particles", meta = (DisplayName = "Particles Widget"))
+ 	FName ParticlesWidget;
++
++	/** The Niagara System's own values of User Parameters when they were last laid out: which of them this track changed. */
++	UPROPERTY()
++	FInstancedPropertyBag UserParameterDefaults;
++
++	/** User Parameters that are Positions in the system (laid out as vectors) - set as positions. */
++	UPROPERTY()
++	TArray<FName> PositionParameters;
++
++	/** Whether this fire plays the track's own Niagara System, rather than each widget's. */
++	bool PlaysTrackSystem() const
++	{
++		return !bUseWidgetSystem && (Action == EWidgetAnimParticleCueAction::BurstAtTarget || Action == EWidgetAnimParticleCueAction::Play);
++	}
++
++	/** Whether it acts on every Niagara Particles widget found, not just the first. */
++	bool ActsOnAll() const
++	{
++		return ActOn == EWidgetAnimParticleCueScope::AllFound && (bUseWidgetSystem || Action == EWidgetAnimParticleCueAction::StopEmitting || Action == EWidgetAnimParticleCueAction::Clear);
++	}
+ };
+ 
+ class NAMETBDNIAGARA_API FWidgetAnimParticleCueEvaluator : public TWidgetAnimCueEvaluator<FWidgetAnimParticleCueParams>
+@@ -84,10 +135,18 @@ public:
+ 	virtual FText GetTrackSummary(const FInstancedStruct& Params) const override;
+ 	virtual bool FiresAtDesignTime(const FInstancedStruct& Params) const override { return true; }
+ 	virtual void Fire(const FWidgetAnimCueContext& Context) const override;
++	virtual bool RefreshParams(FInstancedStruct& Params) const override;
++	virtual uint32 GetParamsLayoutHash(const FInstancedStruct& Params) const override;
+ 
+ 	/**
+ 	 * The Niagara Particles widget a cue plays on: the one named WidgetName in the User Widgets around TrackWidget (or Host);
+ 	 * unnamed, TrackWidget itself or the first inside it, else the first in each User Widget around it, nearest first.
+ 	 */
+ 	static UNiagaraUIWidget* FindParticlesWidget(UWidget* TrackWidget, UWidget* Host, FName WidgetName);
++
++	/**
++	 * FindParticlesWidget, or with bAll every one: each named WidgetName in the User Widgets around TrackWidget (or Host);
++	 * unnamed, every one at or inside TrackWidget, else every one in the nearest User Widget around it that has any.
++	 */
++	static void FindParticlesWidgets(UWidget* TrackWidget, UWidget* Host, FName WidgetName, bool bAll, TArray<UNiagaraUIWidget*>& OutWidgets);
+ };
