@@ -740,12 +740,18 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 		// the spring being the motion, as a spring track's value keys are points along its travel - and its overshoot
 		// carries on past the last key (or before the first, heading back) instead of holding there.
 		const bool bSpring = Settings.IsSpringTimed();
+
+		// Easing Across Whole Track: the Easing spans the run, as a spring does - eased time walks the keys, each stretch
+		// straight in time, and an overshooting Easing carries on past the last key (or before the first).
+		const bool bWholeTrack = !bSpring && Settings.Transform.EasingSpan == EWidgetKeyEasingSpan::WholeTrack;
 		const float LocalTime = bSpring
 			? UWidgetAnimSpringLibrary::EvaluateDirectedProgress(Settings.Spring, FMath::Clamp(DirectedAlpha, 0.f, 1.f), bTowardStart) * Duration
-			: FMath::Clamp(DirectedAlpha, 0.f, 1.f) * Duration;
+			: bWholeTrack
+				? EvaluateEasedAlpha(Settings, FMath::Clamp(DirectedAlpha, 0.f, 1.f)) * Duration
+				: FMath::Clamp(DirectedAlpha, 0.f, 1.f) * Duration;
 
 		const FWidgetTransformAnimResult Contribution = UWidgetAnimTransformLibrary::Evaluate(Settings.Transform,
-			bShapeBox ? EWidgetKeyframeContent::ShapeBox : EWidgetKeyframeContent::Transform, LocalTime, AuthoredShape, bSpring ? nullptr : &TrackEase, /*bExtrapolate=*/bSpring);
+			bShapeBox ? EWidgetKeyframeContent::ShapeBox : EWidgetKeyframeContent::Transform, LocalTime, AuthoredShape, (bSpring || bWholeTrack) ? nullptr : &TrackEase, /*bExtrapolate=*/bSpring || bWholeTrack);
 
 		// A Shape Box track moves the outline only, never the widget.
 		if (!bShapeBox)
@@ -792,13 +798,16 @@ void UWidgetAnimLibrary::ApplyAnimationContribution(const FWidgetAnimSettings& S
 		auto EaseSegment = [&Settings](float Alpha) { return EvaluateEasedAlpha(Settings, Alpha); };
 		const TFunctionRef<float(float)> TrackEase(EaseSegment);
 		const bool bSpring = Settings.IsSpringTimed();
+		const bool bWholeTrack = !bSpring && Settings.Transform.EasingSpan == EWidgetKeyEasingSpan::WholeTrack;
 		const float LocalTime = bSpring
 			? UWidgetAnimSpringLibrary::EvaluateDirectedProgress(Settings.Spring, FMath::Clamp(DirectedAlpha, 0.f, 1.f), bTowardStart) * Duration
-			: FMath::Clamp(DirectedAlpha, 0.f, 1.f) * Duration;
+			: bWholeTrack
+				? EvaluateEasedAlpha(Settings, FMath::Clamp(DirectedAlpha, 0.f, 1.f)) * Duration
+				: FMath::Clamp(DirectedAlpha, 0.f, 1.f) * Duration;
 
 		int32 KeySegment = 0;
 		float KeyAlpha = 0.f;
-		if (UWidgetAnimTransformLibrary::FindSegment(Settings.Transform, LocalTime, bSpring ? nullptr : &TrackEase, /*bExtrapolate=*/bSpring, KeySegment, KeyAlpha) == 0)
+		if (UWidgetAnimTransformLibrary::FindSegment(Settings.Transform, LocalTime, (bSpring || bWholeTrack) ? nullptr : &TrackEase, /*bExtrapolate=*/bSpring || bWholeTrack, KeySegment, KeyAlpha) == 0)
 		{
 			break;
 		}
@@ -3525,11 +3534,18 @@ void UWidgetAnimLibrary::ApplyWidgetAnimationsAtAlpha(UWidget* FallbackWidget, c
 
 	FWidgetAnimResult Result;
 	Result.bAllFinished = true;
+	EvaluateExpandedStackAtTime(Animations, StackTime, /*bAtEnd=*/ClampedAlpha >= 1.f, bIsOutAnimation, Baselines, Result);
 
+	ApplyResultInternal(FallbackWidget, Result, Baselines.bCaptured ? &Baselines : nullptr);
+	ApplyMaterialAnimResult(Result, FallbackWidget);
+}
+
+void UWidgetAnimLibrary::EvaluateExpandedStackAtTime(const TArray<FWidgetAnimSettings>& Animations, float StackTime, bool bAtEnd, bool bIsOutAnimation, const FWidgetAnimBaselineSet& Baselines, FWidgetAnimResult& Result)
+{
 	for (const FWidgetAnimSettings& Settings : Animations)
 	{
 		const WidgetAnimLoop::FLayerSpan Span = WidgetAnimLoop::GetLayerSpan(Settings);
-		const float LayerAlpha = ClampedAlpha >= 1.f ? 1.f : WidgetAnimLoop::GetLayerAlpha(StackTime - Span.Start, Span);
+		const float LayerAlpha = bAtEnd ? 1.f : WidgetAnimLoop::GetLayerAlpha(StackTime - Span.Start, Span);
 
 		const bool bInvert = GetEffectiveInvert(Settings, bIsOutAnimation);
 		if (!Settings.bMuted && !bInvert && StackTime < Span.Start && Settings.bHoldStartPose)
@@ -3551,9 +3567,42 @@ void UWidgetAnimLibrary::ApplyWidgetAnimationsAtAlpha(UWidget* FallbackWidget, c
 		// One pass has no return legs, so the only thing that turns a layer toward its start here is inversion.
 		ApplyAnimationContribution(Settings, bInvert ? 1.f - LayerAlpha : LayerAlpha, Result, Baselines.bCaptured ? &Baselines : nullptr, /*bTowardStart=*/bInvert);
 	}
+}
 
-	ApplyResultInternal(FallbackWidget, Result, Baselines.bCaptured ? &Baselines : nullptr);
-	ApplyMaterialAnimResult(Result, FallbackWidget);
+FWidgetTransform UWidgetAnimLibrary::GetResultPose(const FWidgetAnimResult& Result, const UWidget* Widget, const UWidget* FallbackWidget, const FWidgetAnimBaselineSet& Baselines)
+{
+	if (!Widget)
+	{
+		return FWidgetTransform();
+	}
+
+	const FWidgetAnimBaseline* Baseline = nullptr;
+	if (Baselines.bCaptured)
+	{
+		Baseline = Baselines.Baselines.FindByPredicate([Widget](const FWidgetAnimBaseline& Candidate) { return Candidate.Widget.Get() == Widget; });
+	}
+
+	// The same composition ApplyResultInternal writes: over the baseline when transforms are composed, else as it is.
+	for (const FWidgetAnimTargetedTransform& Transform : Result.TargetedTransforms)
+	{
+		const UWidget* Target = Transform.TargetWidget ? Transform.TargetWidget : FallbackWidget;
+		if (Target != Widget || Transform.Part.IsSet())
+		{
+			continue;
+		}
+		if (Baselines.bCaptured && Baselines.bComposeTransforms && Baseline)
+		{
+			return FWidgetTransform(Baseline->Translation + Transform.Translation, MakeInvertibleScale(Baseline->Scale * Transform.Scale), Baseline->Shear + Transform.Shear, Baseline->Angle + Transform.Angle);
+		}
+		return FWidgetTransform(Transform.Translation, MakeInvertibleScale(Transform.Scale), Transform.Shear, Transform.Angle);
+	}
+
+	// Not posed: at rest.
+	if (Baseline)
+	{
+		return FWidgetTransform(Baseline->Translation, MakeInvertibleScale(Baseline->Scale), Baseline->Shear, Baseline->Angle);
+	}
+	return Widget->GetRenderTransform();
 }
 
 void UWidgetAnimLibrary::FirePreviewCues(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& InAnimations, float FromAlpha, float ToAlpha, bool bIsOutAnimation, bool bIncludeFrom)

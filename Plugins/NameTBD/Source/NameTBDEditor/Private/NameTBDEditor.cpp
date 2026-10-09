@@ -45,6 +45,7 @@
 #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
 #include "FlowListItemStyleDetails.h"
 #include "FlowListPathEditor.h"
+#include "WidgetAnimMotionPath.h"
 #include "WidgetSpringPresets.h"
 #include "NameTBD/Widgets/FlowList/FlowListItemStyle.h"
 
@@ -129,8 +130,16 @@ void FNameTBDEditorModule::StartupModule()
 	// The ready-made buttons: their parts built once placed (never per drop preview), each with its Widget Blueprint GUID.
 	StyledButtonsEditor::Register();
 
-	// A Custom Shape's path editor, on the UMG designer's canvas.
 	IUMGEditorModule& UMGEditorModule = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
+
+	// Motion paths - where the Widget Animations panel's animation moves its widgets - on the UMG designer's canvas: laid over
+	// each open designer by itself, with nothing selected; the designer extension is the fallback where that layer can't go.
+	// First, so every other canvas tool's toolbar is drawn, and clicked, over its diamonds.
+	WidgetAnimMotionPaths::Register();
+	MotionPathFactory = MakeShared<FWidgetAnimMotionPathFactory>();
+	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(MotionPathFactory.ToSharedRef());
+
+	// A Custom Shape's path editor, on the UMG designer's canvas.
 	ShapePathEditorFactory = MakeShared<FWidgetShapePathEditorFactory>();
 	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(ShapePathEditorFactory.ToSharedRef());
 
@@ -215,6 +224,16 @@ void FNameTBDEditorModule::ShutdownModule()
 			UMGEditorModule->GetDesignerExtensibilityManager()->RemoveDesignerExtensionFactory(TextEditorFactory.ToSharedRef());
 		}
 		TextEditorFactory.Reset();
+	}
+
+	WidgetAnimMotionPaths::Unregister();
+	if (MotionPathFactory.IsValid())
+	{
+		if (IUMGEditorModule* UMGEditorModule = FModuleManager::GetModulePtr<IUMGEditorModule>("UMGEditor"))
+		{
+			UMGEditorModule->GetDesignerExtensibilityManager()->RemoveDesignerExtensionFactory(MotionPathFactory.ToSharedRef());
+		}
+		MotionPathFactory.Reset();
 	}
 
 	if (FlowListPathEditorFactory.IsValid())

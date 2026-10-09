@@ -721,6 +721,49 @@ namespace NameTBD
 			inline const FLinearColor PickLabelText(AnimationOrange_Normal);
 		}
 
+		namespace MotionPath
+		{
+			// -------------------------------------------------------------------------------------------------
+			// Motion paths: where a widget travels as the animation plays, drawn over the designer's canvas (see
+			// WidgetAnimMotionPath.h). Read the way After Effects' and Rive's are: a line through every moment, a dot at
+			// every frame - close together where the widget moves slowly, far apart where it moves fast - and a diamond
+			// at every key. Drawn twice, a dark line under a light one, so it reads over any background.
+			//   PathLine: the line ahead of the playhead; PathPastOpacity: how strongly the stretch already played is drawn.
+			//   Jump: the dashed line where the widget jumps without travelling - a Hold, or a step - with no dots on it.
+			//   Dot / DotOutline: the frame dots. Here: the ring where the widget is right now.
+			//   Key*: the diamonds' size and hit area; their colors are the Track Editor's keys'.
+			//   Label*: the key time written beside a diamond, and while one is dragged its position.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor PathUnderlay(0.0f, 0.0f, 0.0f, 0.55f);
+			inline const FLinearColor PathLine(AnimationOrange_Normal.CopyWithNewOpacity(0.95f));
+			inline constexpr float PathPastOpacity = 0.4f;
+			inline constexpr float PathThickness = 1.5f;
+			inline const FLinearColor Jump(1.0f, 1.0f, 1.0f, 0.45f);
+			inline constexpr float JumpDash = 4.0f;
+			inline const FLinearColor Dot(1.0f, 1.0f, 1.0f, 0.95f);
+			inline const FLinearColor DotOutline(0.0f, 0.0f, 0.0f, 0.65f);
+			inline constexpr float DotSize = 3.0f;
+			inline const FLinearColor Here(1.0f, 1.0f, 1.0f, 1.0f);
+			inline constexpr float HereSize = 9.0f;
+			inline constexpr float KeySize = 9.0f;
+			inline constexpr float KeyHitSize = 15.0f;
+			inline const FLinearColor LabelBackground(0.02f, 0.02f, 0.02f, 0.85f);
+			inline const FLinearColor LabelText(0.88f, 0.88f, 0.88f, 1.0f);
+
+			// A picked key's path handles: a line from the key to each, and a small round grip - the animation orange the
+			// Custom Shape path editor draws its handles in. The keys themselves use the Track Editor's key colors
+			// (WidgetAnimEditor::Key, KeyHovered, KeySelected, KeySelectedGlow, KeyOutline, KeyReadOnly).
+			inline const FLinearColor HandleLine(AnimationOrange_Normal.CopyWithNewOpacity(0.85f));
+			inline const FLinearColor HandleFill(1.0f, 1.0f, 1.0f, 1.0f);
+			inline const FLinearColor HandleOutline(0.0f, 0.0f, 0.0f, 0.9f);
+			inline constexpr float HandleSize = 7.0f;
+			inline constexpr float HandleHitSize = 13.0f;
+
+			// How far a key's time label sits from the path, beside its diamond.
+			inline constexpr float LabelGap = 6.0f;
+		}
+
 		namespace ShapeEditor
 		{
 			// -------------------------------------------------------------------------------------------------

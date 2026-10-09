@@ -1,0 +1,282 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.cpp
+index 13d6440..47d2fb3 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.cpp
+@@ -6,6 +6,7 @@
+ #include "WidgetAnimTransform.h"
+ #include "WidgetAnimRuntimeSettings.h"
+ 
++#include "Blueprint/WidgetTree.h"
+ #include "Components/Image.h"
+ 
+ #if WITH_EDITOR
+@@ -179,8 +180,16 @@ void UWidgetAnimBuilder::PostLoad()
+ 	UWidgetAnimLibrary::NormalizeLayerGroups(LayerGroups, Layers);
+ }
+ 
++bool UWidgetAnimBuilder::IsOwnDesignerPreview() const
++{
++	// The designer's own preview of the builder sits in no widget tree; a copy placed in another Widget Blueprint sits in that
++	// one's - the same test FindWidgetAnimDesignerPreview makes.
++	return IsDesignTime() && !GetTypedOuter<UWidgetTree>();
++}
++
+ void UWidgetAnimBuilder::RebuildPreviewAnimations()
+ {
++	++PreviewBuildCount;
+ 	FlattenedIn.Reset();
+ 	FlattenedOut.Reset();
+ 
+@@ -254,6 +263,16 @@ void UWidgetAnimBuilder::SynchronizeProperties()
+ {
+ 	Super::SynchronizeProperties();
+ 
++	// A builder placed inside another widget is shown there as authored: only the builder's own designer plays its animation.
++	if (IsDesignTime() && !IsOwnDesignerPreview())
++	{
++		if (PreviewBaselines.bCaptured)
++		{
++			UWidgetAnimDesignerPreview::Stop(this);
++		}
++		return;
++	}
++
+ 	// Returns immediately unless this is a live widget in the designer. Rebuilds the stacks and puts the
+ 	// widget back as authored before re-reading its baselines.
+ 	UWidgetAnimDesignerPreview::Synchronize(this);
+@@ -276,7 +295,7 @@ void UWidgetAnimBuilder::OnWidgetRebuilt()
+ {
+ 	Super::OnWidgetRebuilt();
+ 
+-	if (!IsDesignTime())
++	if (!IsOwnDesignerPreview())
+ 	{
+ 		return;
+ 	}
+@@ -306,6 +325,11 @@ void UWidgetAnimBuilder::BeginDestroy()
+ 
+ void UWidgetAnimBuilder::EnsurePreviewTimer()
+ {
++	if (!IsOwnDesignerPreview())
++	{
++		return;
++	}
++
+ 	if (bPreviewPaused)
+ 	{
+ 		RequestDesignerRepaint();
+@@ -359,7 +383,7 @@ void UWidgetAnimBuilder::RestartPreviewClock()
+ 
+ void UWidgetAnimBuilder::RefreshPreview(bool bForceRestart, bool bAnimate)
+ {
+-	if (!IsDesignTime())
++	if (!IsOwnDesignerPreview())
+ 	{
+ 		return;
+ 	}
+@@ -393,7 +417,7 @@ void UWidgetAnimBuilder::RefreshPreview(bool bForceRestart, bool bAnimate)
+ 
+ void UWidgetAnimBuilder::ApplyCurrentPose()
+ {
+-	if (!IsDesignTime())
++	if (!IsOwnDesignerPreview())
+ 	{
+ 		return;
+ 	}
+@@ -492,7 +516,7 @@ void UWidgetAnimBuilder::RequestDesignerRepaint()
+ void UWidgetAnimBuilder::SaveSession() const
+ {
+ #if WITH_EDITOR
+-	if (!IsDesignTime())
++	if (!IsOwnDesignerPreview())
+ 	{
+ 		return;
+ 	}
+@@ -510,7 +534,7 @@ void UWidgetAnimBuilder::SaveSession() const
+ 
+ void UWidgetAnimBuilder::RestoreSession()
+ {
+-	if (bSessionRestored || !IsDesignTime())
++	if (bSessionRestored || !IsOwnDesignerPreview())
+ 	{
+ 		return;
+ 	}
+@@ -558,7 +582,7 @@ void UWidgetAnimBuilder::SetPreviewPaused(bool bPaused)
+ 
+ 	bPreviewPaused = bPaused;
+ 
+-	if (!IsDesignTime())
++	if (!IsOwnDesignerPreview())
+ 	{
+ 		return;
+ 	}
+@@ -774,7 +798,7 @@ float UWidgetAnimBuilder::GetPreviewScrubAlpha() const
+ 
+ void UWidgetAnimBuilder::SetPreviewScrubAlpha(float Alpha)
+ {
+-	if (!IsDesignTime())
++	if (!IsOwnDesignerPreview())
+ 	{
+ 		return;
+ 	}
+@@ -833,7 +857,7 @@ float UWidgetAnimBuilder::GetTransformKeyScrubAlpha(int32 LayerIndex, int32 KeyI
+ 
+ void UWidgetAnimBuilder::ScrubToTransformKey(int32 LayerIndex, int32 KeyIndex)
+ {
+-	if (!IsDesignTime())
++	if (!IsOwnDesignerPreview())
+ 	{
+ 		return;
+ 	}
+@@ -1171,8 +1195,9 @@ void UWidgetAnimBuilder::ForEachLivePreview(const UClass* BuilderClass, TFunctio
+ 		}
+ 
+ 		// On screen, not merely in memory: a cached Slate widget is what separates the designer's preview
+-		// instance from the templates and the leftovers waiting to be collected.
+-		if (!Builder->IsDesignTime() || !Builder->GetCachedWidget().IsValid())
++		// instance from the templates and the leftovers waiting to be collected. And the builder's own preview, never a
++		// copy of it placed in another Widget Blueprint - playing the builder's animation would play it there too.
++		if (!Builder->IsOwnDesignerPreview() || !Builder->GetCachedWidget().IsValid())
+ 		{
+ 			continue;
+ 		}
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.h
+index 0a4d7e0..1c16469 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimBuilder.h
+@@ -328,6 +328,19 @@ public:
+ 	static bool HasLivePreview(const UClass* BuilderClass);
+ #endif
+ 
++	/**
++	 * Whether this is the builder's own preview in its Widget Blueprint's designer. A copy of the builder placed inside another
++	 * widget is shown there as authored: its animation never plays, and the builder's toolbar and Widget Animations panel
++	 * never reach it.
++	 */
++	bool IsOwnDesignerPreview() const;
++
++	/**
++	 * How many times the preview's stacks have been built - it counts up with every edit that reaches them - so an editor tool
++	 * reading GetPreviewAnimIn (the Widget Animations panel's motion paths) knows when to read them again.
++	 */
++	uint32 GetPreviewBuildCount() const { return PreviewBuildCount; }
++
+ 	// IWidgetAnimDesignerPreviewHost
+ 	virtual UWidget* GetPreviewOwnerWidget() override { return this; }
+ 	virtual UWidget* GetPreviewAnimationTarget() override;
+@@ -516,6 +529,9 @@ private:
+ 	/** A one-shot repaint timer is already registered. */
+ 	bool bRepaintQueued = false;
+ 
++	/** See GetPreviewBuildCount. */
++	uint32 PreviewBuildCount = 0;
++
+ 	UPROPERTY(Transient)
+ 	FWidgetAnimPreviewState PreviewState;
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+index 5e93d51..fb2a1a2 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+@@ -565,7 +565,7 @@ namespace WidgetAnimMotionPathImpl
+ 	{
+ 		IWidgetAnimPanelSource* PanelSource = Panel.GetSource();
+ 		UWidget* FallbackWidget = Posed.FallbackWidget;
+-		UUserWidget* Root = Cast<UUserWidget>(FallbackWidget);
++		UUserWidget* Root = PanelSource ? PanelSource->GetPreviewRoot() : nullptr;
+ 
+ 		// The designer's selection - on the panel's preview, which may be another instance of the same tree: found there by name.
+ 		UWidget* Selected = Reference.GetPreview();
+@@ -646,7 +646,7 @@ namespace WidgetAnimMotionPathImpl
+ 		}
+ 		else if (!bHasAnimation)
+ 		{
+-			Status = FString::Printf(TEXT("Nothing to draw: the Widget Animations panel of %s has no animation open (Animation Timeline or Edit Existing Asset), or the designer's preview of it wasn't found. A Widget Animation Builder has no motion paths."), *Blueprint->GetName());
++			Status = FString::Printf(TEXT("Nothing to draw: the Widget Animations panel of %s has no animation open (Animation Timeline or Edit Existing Asset), or the designer's preview of it wasn't found."), *Blueprint->GetName());
+ 		}
+ 		if (!bHasAnimation || !Settings.bShowMotionPaths)
+ 		{
+@@ -760,15 +760,16 @@ namespace WidgetAnimMotionPathImpl
+ 				continue;
+ 			}
+ 
+-			// The widget and every parent up to the preview itself - each one's pose moves it.
++			// The widget and every parent up to the preview it is in - each one's pose moves it. The fallback widget is not
++			// necessarily that preview: in a Widget Animation Builder it is PreviewImage.
+ 			TArray<UWidget*> FullChain;
+ 			for (UWidget* Link = Shown; Link; Link = Link->GetParent())
+ 			{
+ 				FullChain.Add(Link);
+ 			}
+-			if (FallbackWidget && !FullChain.Contains(FallbackWidget))
++			if (UUserWidget* OwningPreview = Shown->GetTypedOuter<UUserWidget>())
+ 			{
+-				FullChain.Add(FallbackWidget);
++				FullChain.AddUnique(OwningPreview);
+ 			}
+ 
+ 			// Only the layers that move one of them - what the rest do doesn't move this widget - and the highest one they move.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
+index 5fd4196..9c4fbd9 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
+@@ -607,6 +607,44 @@ int32 FWidgetAnimBuilderPanelSource::GetExpandedCount(int32 FlatLayerIndex) cons
+ 	return Count;
+ }
+ 
++bool FWidgetAnimBuilderPanelSource::GetPosedAnimation(FPosedAnimation& OutPosed) const
++{
++	// The builder's own preview in its designer - what plays the animation, posed over its baselines on PreviewImage.
++	UWidgetAnimBuilder* Live = nullptr;
++	UWidgetAnimBuilder::ForEachLivePreview(GetBuilderClass(), [&Live](UWidgetAnimBuilder& Candidate)
++	{
++		if (!Live)
++		{
++			Live = &Candidate;
++		}
++	});
++	if (!Live || Live->GetPreviewAnimIn().Num() == 0)
++	{
++		return false;
++	}
++
++	OutPosed.Settings = &Live->GetPreviewAnimIn();
++	OutPosed.Baselines = &Live->GetPreviewBaselines();
++	OutPosed.FallbackWidget = Live->GetPreviewAnimationTarget();
++	OutPosed.bIsOutAnimation = false;
++	OutPosed.bPosed = true;
++	OutPosed.Version = HashCombine(PointerHash(Live), GetTypeHash(Live->GetPreviewBuildCount()));
++	return true;
++}
++
++UWidget* FWidgetAnimBuilderPanelSource::GetLayerPreviewWidget(int32 LayerIndex) const
++{
++	UWidget* Target = IWidgetAnimPanelSource::GetLayerPreviewWidget(LayerIndex);
++	if (UWidgetAnimBuilder* Live = Cast<UWidgetAnimBuilder>(Target))
++	{
++		if (Live == GetPreviewRoot())
++		{
++			return Live->GetPreviewAnimationTarget();
++		}
++	}
++	return Target;
++}
++
+ bool FWidgetAnimBuilderPanelSource::IsPlaying() const
+ {
+ 	const UClass* BuilderClass = GetBuilderClass();
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
+index 333dba1..4f2bd78 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
+@@ -401,6 +401,10 @@ public:
+ 	virtual void FocusKey(int32 FlatLayerIndex, int32 KeyIndex) override;
+ 	virtual int32 GetExpandedCount(int32 FlatLayerIndex) const override;
+ 	virtual float GetPreparedRun(int32 FlatLayerIndex) const override;
++	virtual bool GetPosedAnimation(FPosedAnimation& OutPosed) const override;
++
++	/** A group with no Target Widget plays on PreviewImage here, not on the builder itself. */
++	virtual UWidget* GetLayerPreviewWidget(int32 LayerIndex) const override;
+ 	virtual bool IsPlaying() const override;
+ 	virtual void TogglePlay() override;
+ 	virtual bool GetLoop() const override;

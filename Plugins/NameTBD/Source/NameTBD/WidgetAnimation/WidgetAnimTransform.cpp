@@ -76,8 +76,12 @@ namespace
 			FWidgetTransformKeyframe Blended = (Alpha < 0.5f) ? A : B;
 			Blended.Time = Time;
 
-			// A key dropped into a segment splits it, and both halves keep moving the way the whole did.
+			// A key dropped into a segment splits it, and both halves keep moving the way the whole did - a curved stretch
+			// staying curved through it.
 			Blended.CurveToNext = A.CurveToNext;
+			Blended.PathShape = (A.PathShape != EWidgetKeyPathShape::Linear || B.PathShape != EWidgetKeyPathShape::Linear) ? EWidgetKeyPathShape::Smooth : EWidgetKeyPathShape::Linear;
+			Blended.PathHandleIn = FVector2D::ZeroVector;
+			Blended.PathHandleOut = FVector2D::ZeroVector;
 			Blended.Transform = LerpWidgetTransform(A.Transform, B.Transform, Alpha);
 			Blended.Shape = FShapeBoxShape::Lerp(A.Shape, B.Shape, Alpha);
 			Blended.ShapeValues = WidgetShapeAnimation::LerpBags(A.ShapeValues, B.ShapeValues, Alpha);
@@ -261,6 +265,107 @@ FWidgetTransform FWidgetTransformAnim::GetKeyTransform(int32 Index) const
 	return Keys[Index].Transform;
 }
 
+void FWidgetTransformAnim::GetPathHandles(int32 Index, FVector2D& OutIn, FVector2D& OutOut) const
+{
+	OutIn = FVector2D::ZeroVector;
+	OutOut = FVector2D::ZeroVector;
+	if (!Keys.IsValidIndex(Index))
+	{
+		return;
+	}
+
+	const FWidgetTransformKeyframe& Key = Keys[Index];
+	if (Key.PathShape == EWidgetKeyPathShape::Bezier)
+	{
+		OutIn = Key.PathHandleIn;
+		OutOut = Key.PathHandleOut;
+		return;
+	}
+	if (Key.PathShape != EWidgetKeyPathShape::Smooth)
+	{
+		return;
+	}
+
+	// Smooth: the path runs through the key in the direction from the key before to the key after, each handle a third of
+	// the way to its neighbor - so the curve never loops past a key that is close by. At the first or last key it heads
+	// straight for its one neighbor.
+	const FVector2D Here = GetKeyTransform(Index).Translation;
+	const FVector2D Before = Keys.IsValidIndex(Index - 1) ? GetKeyTransform(Index - 1).Translation : Here;
+	const FVector2D After = Keys.IsValidIndex(Index + 1) ? GetKeyTransform(Index + 1).Translation : Here;
+	const FVector2D Direction = (After - Before).GetSafeNormal();
+	OutIn = -Direction * (FVector2D::Distance(Here, Before) / 3.0);
+	OutOut = Direction * (FVector2D::Distance(After, Here) / 3.0);
+}
+
+FVector2D FWidgetTransformAnim::EvaluatePath(int32 Segment, float Alpha) const
+{
+	const int32 IndexB = FMath::Min(Segment + 1, Keys.Num() - 1);
+	const FVector2D P0 = GetKeyTransform(Segment).Translation;
+	const FVector2D P3 = GetKeyTransform(IndexB).Translation;
+	if (IndexB == Segment)
+	{
+		return P0;
+	}
+
+	FVector2D InA, OutA, InB, OutB;
+	GetPathHandles(Segment, InA, OutA);
+	GetPathHandles(IndexB, InB, OutB);
+
+	// Straight: exactly the lerp it always was, overshoot included.
+	if (OutA.IsNearlyZero() && InB.IsNearlyZero())
+	{
+		return FMath::Lerp(P0, P3, static_cast<double>(Alpha));
+	}
+
+	const FVector2D P1 = P0 + OutA;
+	const FVector2D P2 = P3 + InB;
+	auto Bezier = [&P0, &P1, &P2, &P3](double Param)
+	{
+		const double U = 1.0 - Param;
+		return P0 * (U * U * U) + P1 * (3.0 * U * U * Param) + P2 * (3.0 * U * Param * Param) + P3 * (Param * Param * Param);
+	};
+
+	// At an even pace along the curve: Alpha is how far along it, by distance, so the track's Easing alone decides the speed.
+	// Measured afresh each time - a few dozen points, cheap beside everything else a frame does.
+	constexpr int32 Steps = 24;
+	double Lengths[Steps + 1];
+	Lengths[0] = 0.0;
+	FVector2D Previous = P0;
+	for (int32 Step = 1; Step <= Steps; ++Step)
+	{
+		const FVector2D Point = Bezier(static_cast<double>(Step) / Steps);
+		Lengths[Step] = Lengths[Step - 1] + FVector2D::Distance(Previous, Point);
+		Previous = Point;
+	}
+	const double Total = Lengths[Steps];
+	if (Total <= UE_KINDA_SMALL_NUMBER)
+	{
+		return P0;
+	}
+
+	// Past either end - an overshoot - it carries on straight along the curve's direction there.
+	if (Alpha <= 0.f)
+	{
+		const FVector2D Start = (P1 - P0).IsNearlyZero() ? (Bezier(1.0 / Steps) - P0) : (P1 - P0);
+		return P0 + Start.GetSafeNormal() * (static_cast<double>(Alpha) * Total);
+	}
+	if (Alpha >= 1.f)
+	{
+		const FVector2D End = (P3 - P2).IsNearlyZero() ? (P3 - Bezier(1.0 - 1.0 / Steps)) : (P3 - P2);
+		return P3 + End.GetSafeNormal() * (static_cast<double>(Alpha - 1.f) * Total);
+	}
+
+	const double Wanted = static_cast<double>(Alpha) * Total;
+	int32 Step = 1;
+	while (Step < Steps && Lengths[Step] < Wanted)
+	{
+		++Step;
+	}
+	const double Span = FMath::Max(Lengths[Step] - Lengths[Step - 1], UE_SMALL_NUMBER);
+	const double T = (static_cast<double>(Step - 1) + (Wanted - Lengths[Step - 1]) / Span) / Steps;
+	return Bezier(FMath::Clamp(T, 0.0, 1.0));
+}
+
 // =====================================================================================================
 // UWidgetAnimTransformLibrary
 // =====================================================================================================
@@ -346,7 +451,9 @@ FWidgetTransformAnimResult UWidgetAnimTransformLibrary::Evaluate(const FWidgetTr
 		const FWidgetTransform PoseA = Anim.GetKeyTransform(Segment);
 		const FWidgetTransform PoseB = Anim.GetKeyTransform(IndexB);
 		const FWidgetTransform Pose = NumKeys > 1 ? LerpWidgetTransform(PoseA, PoseB, Alpha) : PoseA;
-		Result.Translation = Pose.Translation;
+
+		// Where it goes follows the path through the keys - straight, or curved by their Path - and the rest blends straight.
+		Result.Translation = NumKeys > 1 ? Anim.EvaluatePath(Segment, Alpha) : Pose.Translation;
 		Result.Scale       = Pose.Scale;
 		Result.Shear       = Pose.Shear;
 		Result.Angle       = Pose.Angle;

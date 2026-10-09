@@ -1369,11 +1369,11 @@ struct NAMETBD_API FWidgetAnimLayerGroup
 	FString GroupName;
 
 	/**
-	 * The widget this group animates while it is being authored, as a path into the Widget Blueprint it is
-	 * being built in. None animates that widget itself. A use of the animation that has not picked its own
-	 * Target Widget for this group starts from this one.
+	 * The widget this group animates, as a path into the Widget Blueprint the animation is built in. None animates
+	 * that widget itself. A use of the animation that has not picked its own Target Widget for this group starts
+	 * from this one.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer Group", meta = (DisplayName = "Preview Target"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer Group", meta = (DisplayName = "Target Widget"))
 	FName PreviewTarget;
 
 #if WITH_EDITORONLY_DATA
@@ -2565,6 +2565,21 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Preview")
 	static void ApplyWidgetAnimationsAtAlpha(UWidget* FallbackWidget, const TArray<FWidgetAnimSettings>& Animations, float Alpha, bool bIsOutAnimation, const FWidgetAnimBaselineSet& Baselines);
+
+	/**
+	 * What ApplyWidgetAnimationsAtAlpha poses, worked out without posing anything: a stack already fanned out (see
+	 * ExpandSettings) at StackTime seconds into one pass - or, with bAtEnd, at the very end of it, where every layer holds
+	 * its end pose - added into OutResult. Nothing is written to any widget and no cue fires, so it can be asked about
+	 * any moment, as often as needed: how the Widget Animations panel's motion paths see where a widget will be.
+	 */
+	static void EvaluateExpandedStackAtTime(const TArray<FWidgetAnimSettings>& ExpandedAnimations, float StackTime, bool bAtEnd, bool bIsOutAnimation, const FWidgetAnimBaselineSet& Baselines, FWidgetAnimResult& OutResult);
+
+	/**
+	 * The render transform Result gives Widget - its own, never a part's - composed over its captured baseline exactly as
+	 * applying the result composes it. A widget the result doesn't pose is where it rests: at its baseline when one was
+	 * captured, else as it is now. FallbackWidget is the widget entries naming none are for.
+	 */
+	static FWidgetTransform GetResultPose(const FWidgetAnimResult& Result, const UWidget* Widget, const UWidget* FallbackWidget, const FWidgetAnimBaselineSet& Baselines);
 
 	/**
 	 * One frame of a preview harness: playing, holding, restarting, and (for Off) restoring the captured

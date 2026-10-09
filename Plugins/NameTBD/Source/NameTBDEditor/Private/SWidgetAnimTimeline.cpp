@@ -820,7 +820,8 @@ namespace WidgetAnimTimeline
 	bool LayerUsesSegmentCurves(const FWidgetAnimLayer& Layer)
 	{
 		return (WidgetAnimTypeIsKeyframed(Layer.AnimType) || WidgetAnimTypeSupportsValueKeys(Layer.AnimType))
-			&& !Layer.IsSpringTimed() && !SWidgetAnimTimeline::IsCueLayer(Layer);
+			&& !Layer.IsSpringTimed() && !SWidgetAnimTimeline::IsCueLayer(Layer)
+			&& !(WidgetAnimTypeIsKeyframed(Layer.AnimType) && Layer.Transform.EasingSpan == EWidgetKeyEasingSpan::WholeTrack);
 	}
 
 	bool LayerHasSegmentCurves(const FWidgetAnimLayer& Layer)
@@ -5812,6 +5813,11 @@ private:
 			AddNoteRow(Category, WidgetAnimTips::SpringKeyCurveNote());
 			return;
 		}
+		if (KeyIndex + 1 < NumKeys && Layer.Transform.EasingSpan == EWidgetKeyEasingSpan::WholeTrack)
+		{
+			AddNoteRow(Category, WidgetAnimTips::WholeTrackKeyCurveNote());
+			return;
+		}
 
 		const TSharedPtr<IPropertyHandle> CurveHandle = KeyHandle->GetChildHandle(CurveName);
 		if (KeyIndex + 1 < NumKeys && CurveHandle.IsValid() && CurveHandle->IsValidHandle())
@@ -9693,7 +9699,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 	};
 
 	// ---- One pill of controls: how the preview plays - Loop, Ping Pong, Invert, Speed - then how tracks behave when
-	// dragged - Snapping, Linked Edges. -------------------------------------------------------------------------------
+	// dragged - Snapping, Linked Edges - and the designer's Motion Path. ------------------------------------------------
 
 	const TSharedRef<SHorizontalBox> PillRow = SNew(SHorizontalBox);
 	auto AddToPill = [&PillRow](const TSharedRef<SWidget>& Widget, const FMargin& Padding = FMargin(0.f))
@@ -9774,6 +9780,13 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetLinkedEdges(bValue); },
 		[]() { return true; },
 		FindControlIcon(TEXT("WidgetAnim_LinkedEdges"), { "Icons.Link", "Icons.Chain" })));
+	AddToPill(MakeDivider(), FMargin(2.f, 0.f));
+	AddToPill(MakePillToggle(LOCTEXT("MotionPaths", "Motion Path"),
+		WidgetAnimTips::MotionPathsTooltip(),
+		[]() { return UWidgetAnimEditorSettings::Get().bShowMotionPaths; },
+		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetShowMotionPaths(bValue); },
+		[]() { return true; },
+		FindControlIcon(TEXT("WidgetAnim_MotionPath"), { "Icons.Spline", "CurveEditor.Curve" })));
 
 	const TSharedRef<SWidget> Pill = SNew(SBorder)
 		.BorderImage(ControlsPillBrush())
@@ -10684,9 +10697,10 @@ bool SWidgetAnimTimeline::UsesSegmentCurves(int32 LayerIndex) const
 	}
 
 	// A spring springs across the whole run, keys and all - a Transform's too, fitted to its keys - so the curves
-	// between them wait for it to be a Tween again.
+	// between them wait for it to be a Tween again. So does a keyframed track eased across its whole track.
 	const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
-	return (WidgetAnimTypeIsKeyframed(Layer.AnimType) || WidgetAnimTypeSupportsValueKeys(Layer.AnimType)) && !Layer.IsSpringTimed() && !IsCueLayer(Layer);
+	return (WidgetAnimTypeIsKeyframed(Layer.AnimType) || WidgetAnimTypeSupportsValueKeys(Layer.AnimType)) && !Layer.IsSpringTimed() && !IsCueLayer(Layer)
+		&& !(WidgetAnimTypeIsKeyframed(Layer.AnimType) && Layer.Transform.EasingSpan == EWidgetKeyEasingSpan::WholeTrack);
 }
 
 float SWidgetAnimTimeline::GetPlayheadSeconds() const
@@ -12371,6 +12385,8 @@ uint32 SWidgetAnimTimeline::ComputeLayoutSignature() const
 				AuthoredBits = HashCombine(AuthoredBits, GetTypeHash((Key.bUseAuthoredShape ? 1u : 0u) | (Key.bUseAuthoredTransform ? 2u : 0u)));
 			}
 			Hash = HashCombine(Hash, AuthoredBits);
+			// Easing Across decides whether each key shows its Curve To Next Key.
+			Hash = HashCombine(Hash, GetTypeHash(static_cast<uint8>(Layer.Transform.EasingSpan)));
 			Hash = HashCombine(Hash, PointerHash(Layer.Transform.Keys.Num() > 0 ? Layer.Transform.Keys[0].ShapeValues.GetPropertyBagStruct() : nullptr));
 			Hash = HashCombine(Hash, PointerHash(Layer.Transform.Curve.ExternalCurve.Get()));
 		}
@@ -17314,6 +17330,214 @@ void SWidgetAnimTimeline::EndKeyDrag()
 	RefreshDetails();
 }
 
+bool SWidgetAnimTimeline::CanDragKeyPosition(int32 LayerIndex, int32 KeyIndex) const
+{
+	if (!CanEditLayer(LayerIndex))
+	{
+		return false;
+	}
+	const FWidgetAnimLayer& Layer = (*GetLayers())[LayerIndex];
+	return !Layer.IsAnimationTrack()
+		&& Layer.AnimType == EWidgetAnimType::Transform
+		&& Layer.Transform.IsAnimatingTransform()
+		&& Layer.Transform.Keys.IsValidIndex(KeyIndex);
+}
+
+bool SWidgetAnimTimeline::BeginKeyHandleDrag(int32 LayerIndex, int32 KeyIndex)
+{
+	if (!BeginKeyPositionDrag(LayerIndex, KeyIndex))
+	{
+		return false;
+	}
+	if (KeyPositionTransaction.IsValid())
+	{
+		// One drag, one undo step: named for what it does.
+		KeyPositionTransaction->Cancel();
+		KeyPositionTransaction = MakeUnique<FScopedTransaction>(LOCTEXT("EditPathHandlesTransaction", "Edit Path Handles"));
+		BeginEdit();
+	}
+	return true;
+}
+
+void SWidgetAnimTimeline::UpdateKeyHandleDrag(const FVector2D& HandleIn, const FVector2D& HandleOut)
+{
+	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
+	if (!IsDraggingKeyPosition() || !Layers || !Layers->IsValidIndex(KeyPositionLayer))
+	{
+		return;
+	}
+	FWidgetAnimLayer& Layer = (*Layers)[KeyPositionLayer];
+	if (!Layer.Transform.Keys.IsValidIndex(KeyPositionKey))
+	{
+		return;
+	}
+
+	auto Round = [](const FVector2D& Value) { return FVector2D(FMath::RoundToDouble(Value.X * 10.0) / 10.0, FMath::RoundToDouble(Value.Y * 10.0) / 10.0); };
+	FWidgetTransformKeyframe& Key = Layer.Transform.Keys[KeyPositionKey];
+	const FVector2D NewIn = Round(HandleIn);
+	const FVector2D NewOut = Round(HandleOut);
+	if (Key.PathShape == EWidgetKeyPathShape::Bezier && Key.PathHandleIn.Equals(NewIn, 1.e-4) && Key.PathHandleOut.Equals(NewOut, 1.e-4))
+	{
+		return;
+	}
+
+	Key.PathShape = EWidgetKeyPathShape::Bezier;
+	Key.PathHandleIn = NewIn;
+	Key.PathHandleOut = NewOut;
+	bKeyPositionMoved = true;
+
+	NotifyGroupsChanged(EPropertyChangeType::Interactive);
+	FocusPreviewOnKey(KeyPositionLayer, KeyPositionKey);
+}
+
+void SWidgetAnimTimeline::SetKeyPathShape(int32 LayerIndex, const TArray<int32>& KeyIndices, EWidgetKeyPathShape Shape)
+{
+	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
+	if (!CanEditLayer(LayerIndex) || !Layers || IsDragging())
+	{
+		return;
+	}
+
+	const FScopedTransaction Transaction(LOCTEXT("SetKeyPathTransaction", "Set Key Path"));
+	if (!BeginEdit())
+	{
+		return;
+	}
+
+	FWidgetTransformAnim& Anim = (*Layers)[LayerIndex].Transform;
+
+	// Every handle worked out before any key changes, as the path is now, so the keys changed together keep its shape.
+	TArray<TPair<FVector2D, FVector2D>> Handles;
+	for (const int32 KeyIndex : KeyIndices)
+	{
+		FVector2D HandleIn, HandleOut;
+		Anim.GetPathHandles(KeyIndex, HandleIn, HandleOut);
+		Handles.Emplace(HandleIn, HandleOut);
+	}
+	for (int32 Index = 0; Index < KeyIndices.Num(); ++Index)
+	{
+		if (!Anim.Keys.IsValidIndex(KeyIndices[Index]))
+		{
+			continue;
+		}
+		FWidgetTransformKeyframe& Key = Anim.Keys[KeyIndices[Index]];
+		Key.PathShape = Shape;
+		Key.PathHandleIn = Shape == EWidgetKeyPathShape::Bezier ? Handles[Index].Key : FVector2D::ZeroVector;
+		Key.PathHandleOut = Shape == EWidgetKeyPathShape::Bezier ? Handles[Index].Value : FVector2D::ZeroVector;
+	}
+
+	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	RefreshDetails();
+}
+
+void SWidgetAnimTimeline::SetLayerEasingSpan(int32 LayerIndex, EWidgetKeyEasingSpan Span)
+{
+	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
+	if (!CanEditLayer(LayerIndex) || !Layers || IsDragging() || (*Layers)[LayerIndex].Transform.EasingSpan == Span)
+	{
+		return;
+	}
+
+	const FScopedTransaction Transaction(LOCTEXT("SetEasingAcrossTransaction", "Set Easing Across"));
+	if (!BeginEdit())
+	{
+		return;
+	}
+	(*Layers)[LayerIndex].Transform.EasingSpan = Span;
+
+	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	RefreshDetails();
+}
+
+bool SWidgetAnimTimeline::BeginKeyPositionDrag(int32 LayerIndex, int32 KeyIndex)
+{
+	if (!CanDragKeyPosition(LayerIndex, KeyIndex) || IsDragging())
+	{
+		return false;
+	}
+
+	const FWidgetAnimLayer& Layer = (*GetLayers())[LayerIndex];
+	KeyPositionLayer = LayerIndex;
+	KeyPositionKey = KeyIndex;
+	KeyPositionStartPose = Layer.Transform.GetKeyTransform(KeyIndex);
+	KeyPositionStart = KeyPositionStartPose.Translation;
+	bKeyPositionMoved = false;
+
+	// One undo step for the whole drag, however many frames it moves through.
+	KeyPositionTransaction = MakeUnique<FScopedTransaction>(LOCTEXT("MoveKeyPositionTransaction", "Move Key on Motion Path"));
+	if (!BeginEdit())
+	{
+		KeyPositionTransaction->Cancel();
+		KeyPositionTransaction.Reset();
+		KeyPositionLayer = INDEX_NONE;
+		KeyPositionKey = INDEX_NONE;
+		return false;
+	}
+
+	// The key picked, and the preview held on it - what it looks like there is what the drag changes.
+	SelectKey(LayerIndex, KeyIndex);
+	return true;
+}
+
+void SWidgetAnimTimeline::UpdateKeyPositionDrag(const FVector2D& Delta)
+{
+	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
+	if (!IsDraggingKeyPosition() || !Layers || !Layers->IsValidIndex(KeyPositionLayer))
+	{
+		return;
+	}
+	FWidgetAnimLayer& Layer = (*Layers)[KeyPositionLayer];
+	if (!Layer.Transform.Keys.IsValidIndex(KeyPositionKey))
+	{
+		return;
+	}
+
+	// Rounded to a tenth, as a value typed in would be - small enough to place anything, without long fractions in the Details.
+	const FVector2D Wanted = KeyPositionStart + Delta;
+	const FVector2D Rounded(FMath::RoundToDouble(Wanted.X * 10.0) / 10.0, FMath::RoundToDouble(Wanted.Y * 10.0) / 10.0);
+
+	FWidgetTransformKeyframe& Key = Layer.Transform.Keys[KeyPositionKey];
+	if (!Key.bUseAuthoredTransform && Key.Transform.Translation.Equals(Rounded, 1.e-4))
+	{
+		return;
+	}
+
+	// Somewhere of its own now: the rest of its pose kept as it played.
+	Key.Transform = KeyPositionStartPose;
+	Key.Transform.Translation = Rounded;
+	Key.bUseAuthoredTransform = false;
+	bKeyPositionMoved = true;
+
+	// Interactive, as a key's time dragged is: the preview follows live, held on the key.
+	NotifyGroupsChanged(EPropertyChangeType::Interactive);
+	FocusPreviewOnKey(KeyPositionLayer, KeyPositionKey);
+}
+
+void SWidgetAnimTimeline::EndKeyPositionDrag()
+{
+	if (!IsDraggingKeyPosition())
+	{
+		return;
+	}
+
+	if (bKeyPositionMoved)
+	{
+		NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	}
+	else
+	{
+		// A click with no move: nothing to undo.
+		KeyPositionTransaction->Cancel();
+	}
+	KeyPositionTransaction.Reset();
+	KeyPositionLayer = INDEX_NONE;
+	KeyPositionKey = INDEX_NONE;
+	bKeyPositionMoved = false;
+
+	// The key's Transform row changed; the Selection panel shows it fresh.
+	RefreshDetails();
+}
+
 bool SWidgetAnimTimeline::BeginLayerDrag(int32 PressedLayer, ELayerDrag Mode)
 {
 	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
@@ -19232,7 +19456,7 @@ void SWidgetAnimTimeline::ApplyPickedTarget(UWidget* Picked)
 		return;
 	}
 
-	const FScopedTransaction Transaction(LOCTEXT("PickTargetTransaction", "Set Preview Target"));
+	const FScopedTransaction Transaction(LOCTEXT("PickTargetTransaction", "Set Target Widget"));
 	if (!BeginEdit())
 	{
 		return;
@@ -20616,7 +20840,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeGroupContextMenu(int32 GroupIndex, 
 	if (CanPickTargetInDesigner())
 	{
 		Menu.AddMenuEntry(
-			LOCTEXT("PickTargetInDesigner", "Pick Preview Target in Designer"),
+			LOCTEXT("PickTargetInDesigner", "Pick Target Widget in Designer"),
 			WidgetAnimTips::PickTargetInDesignerTooltip(),
 			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.EyeDropper"),
 			FUIAction(FExecuteAction::CreateLambda([this, GroupIndex]() { BeginTargetPick(GroupIndex); })));

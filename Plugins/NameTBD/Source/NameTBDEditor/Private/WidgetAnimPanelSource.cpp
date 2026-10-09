@@ -607,6 +607,44 @@ int32 FWidgetAnimBuilderPanelSource::GetExpandedCount(int32 FlatLayerIndex) cons
 	return Count;
 }
 
+bool FWidgetAnimBuilderPanelSource::GetPosedAnimation(FPosedAnimation& OutPosed) const
+{
+	// The builder's own preview in its designer - what plays the animation, posed over its baselines on PreviewImage.
+	UWidgetAnimBuilder* Live = nullptr;
+	UWidgetAnimBuilder::ForEachLivePreview(GetBuilderClass(), [&Live](UWidgetAnimBuilder& Candidate)
+	{
+		if (!Live)
+		{
+			Live = &Candidate;
+		}
+	});
+	if (!Live || Live->GetPreviewAnimIn().Num() == 0)
+	{
+		return false;
+	}
+
+	OutPosed.Settings = &Live->GetPreviewAnimIn();
+	OutPosed.Baselines = &Live->GetPreviewBaselines();
+	OutPosed.FallbackWidget = Live->GetPreviewAnimationTarget();
+	OutPosed.bIsOutAnimation = false;
+	OutPosed.bPosed = true;
+	OutPosed.Version = HashCombine(PointerHash(Live), GetTypeHash(Live->GetPreviewBuildCount()));
+	return true;
+}
+
+UWidget* FWidgetAnimBuilderPanelSource::GetLayerPreviewWidget(int32 LayerIndex) const
+{
+	UWidget* Target = IWidgetAnimPanelSource::GetLayerPreviewWidget(LayerIndex);
+	if (UWidgetAnimBuilder* Live = Cast<UWidgetAnimBuilder>(Target))
+	{
+		if (Live == GetPreviewRoot())
+		{
+			return Live->GetPreviewAnimationTarget();
+		}
+	}
+	return Target;
+}
+
 bool FWidgetAnimBuilderPanelSource::IsPlaying() const
 {
 	const UClass* BuilderClass = GetBuilderClass();
@@ -756,6 +794,7 @@ void FWidgetAnimAssetPanelSource::OnObjectPropertyChanged(UObject* Object, FProp
 	if (Object && Object->IsA<UWidgetAnimPresetAsset>())
 	{
 		bFlattenedStale = true;
+		bUnposedStale = true;
 	}
 
 	// A widget of this Widget Blueprint edited in UMG's Details while the preview is posed. The preview's authored state was
@@ -832,6 +871,7 @@ void FWidgetAnimAssetPanelSource::ResetPlayback()
 {
 	RestorePreview();
 	bFlattenedStale = true;
+	bUnposedStale = true;
 	Alpha = 0.f;
 	bPlaying = false;
 	bPlayingForward = true;
@@ -1373,6 +1413,78 @@ void FWidgetAnimAssetPanelSource::BuildFlattened(UUserWidget* Root, TArray<FWidg
 	UWidgetAnimLibrary::MuteHiddenLayers(Edited->Layers, OutSettings, FirstSetting);
 }
 
+bool FWidgetAnimAssetPanelSource::GetPosedAnimation(FPosedAnimation& OutPosed) const
+{
+	// Posed this tick: the settings built for the root the baselines were captured on.
+	UUserWidget* Root = PosedRoot.Get();
+	if (Root && IsValid(Root) && Flattened.Num() > 0 && FlattenedRoot.Get() == Root)
+	{
+		OutPosed.Settings = &Flattened;
+		OutPosed.Baselines = &Baselines;
+		OutPosed.FallbackWidget = Root;
+		OutPosed.bIsOutAnimation = false;
+		OutPosed.bPosed = true;
+		OutPosed.Version = PosedVersion;
+		return true;
+	}
+
+	// Not posed: the panel isn't on screen - a status bar drawer closes as soon as the designer is clicked, to select the widget
+	// whose path is wanted - so the preview is back as authored. The animation is built for it all the same, posing nothing.
+	UWidgetAnimPresetAsset* Edited = GetEditedAnimation();
+	UUserWidget* PreviewRoot = GetPreviewRoot();
+	if (!Edited || !PreviewRoot)
+	{
+		return false;
+	}
+
+	const double Now = FPlatformTime::Seconds();
+	if (bUnposedStale || UnposedAnimation.Get() != Edited || UnposedRoot.Get() != PreviewRoot || Now - UnposedTime > FlattenedRefreshSeconds)
+	{
+		UnposedSettings.Reset();
+		BuildFlattened(PreviewRoot, UnposedSettings);
+
+		// Its baselines are the preview's transforms as they stand, unposed - the authored ones. Only transforms: capturing
+		// a material parameter would give the widget a dynamic material, and the paths only read where widgets are.
+		UnposedBaselines = FWidgetAnimBaselineSet();
+		TArray<FWidgetAnimSettings> Expanded;
+		const TArray<FWidgetAnimSettings>& Stack = UWidgetAnimLibrary::ExpandSettings(PreviewRoot, UnposedSettings, Expanded) ? Expanded : UnposedSettings;
+		TSet<const UWidget*> Kept;
+		for (const FWidgetAnimSettings& Layer : Stack)
+		{
+			UWidget* Target = Layer.TargetWidget ? Layer.TargetWidget.Get() : PreviewRoot;
+			bool bAlreadyKept = false;
+			Kept.Add(Target, &bAlreadyKept);
+			if (!Target || bAlreadyKept)
+			{
+				continue;
+			}
+			const FWidgetTransform& Authored = Target->GetRenderTransform();
+			FWidgetAnimBaseline& Baseline = UnposedBaselines.Baselines.AddDefaulted_GetRef();
+			Baseline.Widget = Target;
+			Baseline.Opacity = Target->GetRenderOpacity();
+			Baseline.Scale = Authored.Scale;
+			Baseline.Translation = Authored.Translation;
+			Baseline.Shear = Authored.Shear;
+			Baseline.Angle = Authored.Angle;
+		}
+		UnposedBaselines.bCaptured = true;
+
+		UnposedAnimation = Edited;
+		UnposedRoot = PreviewRoot;
+		UnposedTime = Now;
+		bUnposedStale = false;
+		++PosedVersion;
+	}
+
+	OutPosed.Settings = &UnposedSettings;
+	OutPosed.Baselines = &UnposedBaselines;
+	OutPosed.FallbackWidget = PreviewRoot;
+	OutPosed.bIsOutAnimation = false;
+	OutPosed.bPosed = false;
+	OutPosed.Version = PosedVersion;
+	return true;
+}
+
 void FWidgetAnimAssetPanelSource::RestorePreview()
 {
 	// Only while the widgets it was captured on are still alive: the designer rebuilds its preview freely,
@@ -1470,6 +1582,7 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 		}
 		FlattenedSignature = Signature;
 		FlattenedPassSeconds = UWidgetAnimLibrary::GetStackPassDuration(Flattened);
+		++PosedVersion;
 	}
 	const TArray<FWidgetAnimSettings>& Settings = Flattened;
 
@@ -1480,6 +1593,7 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 		PosedRoot = Root;
 		PosedSignature = FlattenedSignature;
 		bPoseStale = true;
+		++PosedVersion;
 	}
 
 	// The clock. One pass is the animation at this Speed; Loop wraps it, Ping Pong bounces it.

@@ -494,6 +494,12 @@ namespace WidgetAnimScripting
 	/** The panel showing Source that was worked in last - null when none is open. */
 	TSharedPtr<SWidgetAnimTimeline> FindLastUsedPanelFor(const IWidgetAnimPanelSource* Source);
 
+	/** The panel of Blueprint's editor that was worked in last - its drawer's or its docked tab's - null when none is open. */
+	TSharedPtr<SWidgetAnimTimeline> FindLastUsedPanelForBlueprint(const UWidgetBlueprint* Blueprint);
+
+	/** Every Widget Animations panel still open, the one worked in last at the end. */
+	void GetOpenPanels(TArray<TSharedPtr<SWidgetAnimTimeline>>& OutPanels);
+
 	/** Whether Python can run here: the Python Editor Script Plugin loaded and working. */
 	bool IsPythonAvailable();
 

@@ -6,6 +6,7 @@
 #include "WidgetAnimTransform.h"
 #include "WidgetAnimRuntimeSettings.h"
 
+#include "Blueprint/WidgetTree.h"
 #include "Components/Image.h"
 
 #if WITH_EDITOR
@@ -179,8 +180,16 @@ void UWidgetAnimBuilder::PostLoad()
 	UWidgetAnimLibrary::NormalizeLayerGroups(LayerGroups, Layers);
 }
 
+bool UWidgetAnimBuilder::IsOwnDesignerPreview() const
+{
+	// The designer's own preview of the builder sits in no widget tree; a copy placed in another Widget Blueprint sits in that
+	// one's - the same test FindWidgetAnimDesignerPreview makes.
+	return IsDesignTime() && !GetTypedOuter<UWidgetTree>();
+}
+
 void UWidgetAnimBuilder::RebuildPreviewAnimations()
 {
+	++PreviewBuildCount;
 	FlattenedIn.Reset();
 	FlattenedOut.Reset();
 
@@ -254,6 +263,16 @@ void UWidgetAnimBuilder::SynchronizeProperties()
 {
 	Super::SynchronizeProperties();
 
+	// A builder placed inside another widget is shown there as authored: only the builder's own designer plays its animation.
+	if (IsDesignTime() && !IsOwnDesignerPreview())
+	{
+		if (PreviewBaselines.bCaptured)
+		{
+			UWidgetAnimDesignerPreview::Stop(this);
+		}
+		return;
+	}
+
 	// Returns immediately unless this is a live widget in the designer. Rebuilds the stacks and puts the
 	// widget back as authored before re-reading its baselines.
 	UWidgetAnimDesignerPreview::Synchronize(this);
@@ -276,7 +295,7 @@ void UWidgetAnimBuilder::OnWidgetRebuilt()
 {
 	Super::OnWidgetRebuilt();
 
-	if (!IsDesignTime())
+	if (!IsOwnDesignerPreview())
 	{
 		return;
 	}
@@ -306,6 +325,11 @@ void UWidgetAnimBuilder::BeginDestroy()
 
 void UWidgetAnimBuilder::EnsurePreviewTimer()
 {
+	if (!IsOwnDesignerPreview())
+	{
+		return;
+	}
+
 	if (bPreviewPaused)
 	{
 		RequestDesignerRepaint();
@@ -359,7 +383,7 @@ void UWidgetAnimBuilder::RestartPreviewClock()
 
 void UWidgetAnimBuilder::RefreshPreview(bool bForceRestart, bool bAnimate)
 {
-	if (!IsDesignTime())
+	if (!IsOwnDesignerPreview())
 	{
 		return;
 	}
@@ -393,7 +417,7 @@ void UWidgetAnimBuilder::RefreshPreview(bool bForceRestart, bool bAnimate)
 
 void UWidgetAnimBuilder::ApplyCurrentPose()
 {
-	if (!IsDesignTime())
+	if (!IsOwnDesignerPreview())
 	{
 		return;
 	}
@@ -492,7 +516,7 @@ void UWidgetAnimBuilder::RequestDesignerRepaint()
 void UWidgetAnimBuilder::SaveSession() const
 {
 #if WITH_EDITOR
-	if (!IsDesignTime())
+	if (!IsOwnDesignerPreview())
 	{
 		return;
 	}
@@ -510,7 +534,7 @@ void UWidgetAnimBuilder::SaveSession() const
 
 void UWidgetAnimBuilder::RestoreSession()
 {
-	if (bSessionRestored || !IsDesignTime())
+	if (bSessionRestored || !IsOwnDesignerPreview())
 	{
 		return;
 	}
@@ -558,7 +582,7 @@ void UWidgetAnimBuilder::SetPreviewPaused(bool bPaused)
 
 	bPreviewPaused = bPaused;
 
-	if (!IsDesignTime())
+	if (!IsOwnDesignerPreview())
 	{
 		return;
 	}
@@ -774,7 +798,7 @@ float UWidgetAnimBuilder::GetPreviewScrubAlpha() const
 
 void UWidgetAnimBuilder::SetPreviewScrubAlpha(float Alpha)
 {
-	if (!IsDesignTime())
+	if (!IsOwnDesignerPreview())
 	{
 		return;
 	}
@@ -833,7 +857,7 @@ float UWidgetAnimBuilder::GetTransformKeyScrubAlpha(int32 LayerIndex, int32 KeyI
 
 void UWidgetAnimBuilder::ScrubToTransformKey(int32 LayerIndex, int32 KeyIndex)
 {
-	if (!IsDesignTime())
+	if (!IsOwnDesignerPreview())
 	{
 		return;
 	}
@@ -1171,8 +1195,9 @@ void UWidgetAnimBuilder::ForEachLivePreview(const UClass* BuilderClass, TFunctio
 		}
 
 		// On screen, not merely in memory: a cached Slate widget is what separates the designer's preview
-		// instance from the templates and the leftovers waiting to be collected.
-		if (!Builder->IsDesignTime() || !Builder->GetCachedWidget().IsValid())
+		// instance from the templates and the leftovers waiting to be collected. And the builder's own preview, never a
+		// copy of it placed in another Widget Blueprint - playing the builder's animation would play it there too.
+		if (!Builder->IsOwnDesignerPreview() || !Builder->GetCachedWidget().IsValid())
 		{
 			continue;
 		}

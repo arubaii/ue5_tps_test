@@ -1231,7 +1231,7 @@ bool UWidgetAnimScriptAnimation::SetGroupTarget(int32 Group, const FString& Targ
 	{
 		return false;
 	}
-	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("SetGroupTarget", "Set Preview Target"));
+	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("SetGroupTarget", "Set Target Widget"));
 	if (!Edit.IsOpen())
 	{
 		return false;
@@ -3253,6 +3253,38 @@ namespace WidgetAnimScripting
 			if (const TSharedPtr<SWidgetAnimTimeline> Pinned = Panels[Index].Pin())
 			{
 				if (Source && Pinned->GetSource() == Source)
+				{
+					return Pinned;
+				}
+			}
+		}
+		return nullptr;
+	}
+
+	void GetOpenPanels(TArray<TSharedPtr<SWidgetAnimTimeline>>& OutPanels)
+	{
+		for (const TWeakPtr<SWidgetAnimTimeline>& Weak : GetUsedPanels())
+		{
+			if (const TSharedPtr<SWidgetAnimTimeline> Pinned = Weak.Pin())
+			{
+				OutPanels.Add(Pinned);
+			}
+		}
+	}
+
+	TSharedPtr<SWidgetAnimTimeline> FindLastUsedPanelForBlueprint(const UWidgetBlueprint* Blueprint)
+	{
+		if (!Blueprint)
+		{
+			return nullptr;
+		}
+		TArray<TWeakPtr<SWidgetAnimTimeline>>& Panels = GetUsedPanels();
+		for (int32 Index = Panels.Num() - 1; Index >= 0; --Index)
+		{
+			if (const TSharedPtr<SWidgetAnimTimeline> Pinned = Panels[Index].Pin())
+			{
+				const IWidgetAnimPanelSource* PanelSource = Pinned->GetSource();
+				if (PanelSource && PanelSource->GetWidgetBlueprint() == Blueprint)
 				{
 					return Pinned;
 				}

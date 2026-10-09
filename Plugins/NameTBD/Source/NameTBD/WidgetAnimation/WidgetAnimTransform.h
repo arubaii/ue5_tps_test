@@ -37,6 +37,43 @@ enum class EWidgetKeyframeContent : uint8
 	Design
 };
 
+/**
+ * How the path a Transform track moves its widget along runs through one key - the shape of the line the designer's motion
+ * path draws. Only where the widget goes: how fast it gets there is the track's Easing and each key's Curve To Next Key.
+ */
+UENUM(BlueprintType)
+enum class EWidgetKeyPathShape : uint8
+{
+	/** A corner: straight in from the key before, straight on to the key after. */
+	Linear,
+
+	/**
+	 * A smooth curve through the key, its direction set by the keys either side of it - three keys make an arc through the
+	 * middle one, as After Effects' Auto Bezier does. Its handles move with the keys around it.
+	 */
+	Smooth,
+
+	/**
+	 * A curve through the key shaped by its own two handles, Path Handle In and Path Handle Out - dragged on the designer's
+	 * motion path. With a handle on only one key of a stretch, that stretch bends toward it: an arc between two keys.
+	 */
+	Bezier
+};
+
+/** What a keyframed track's Easing shapes - see FWidgetTransformAnim::EasingSpan. */
+UENUM(BlueprintType)
+enum class EWidgetKeyEasingSpan : uint8
+{
+	/** Each stretch between two keys on its own: the track eases into and out of every key - a pause at each. */
+	EachSegment UMETA(DisplayName = "Each Segment"),
+
+	/**
+	 * The whole run, first key to last: the track eases out of its start and into its end and passes through the keys between
+	 * without slowing at them - each stretch between two keys straight in time. Keys' Curve To Next Key aren't used.
+	 */
+	WholeTrack UMETA(DisplayName = "Whole Track")
+};
+
 // =====================================================================================================
 // Keyframe
 // =====================================================================================================
@@ -79,6 +116,25 @@ struct NAMETBD_API FWidgetTransformKeyframe
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (EditCondition = "Content == EWidgetKeyframeContent::Transform && !bUseAuthoredTransform", EditConditionHides, HideEditConditionToggle))
 	FWidgetTransform Transform;
+
+	/**
+	 * On a Transform track: how the path the widget moves along runs through this key - a corner (Linear), a smooth curve set
+	 * by the keys around it (Smooth), or a curve set by this key's own handles (Bezier). Only where the widget travels - how
+	 * fast is the track's Easing. Also set by right-clicking the key's diamond on the designer's motion path.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (DisplayName = "Path", EditCondition = "Content == EWidgetKeyframeContent::Transform", EditConditionHides, HideEditConditionToggle))
+	EWidgetKeyPathShape PathShape = EWidgetKeyPathShape::Linear;
+
+	/**
+	 * On a Bezier key: the handle the path arrives along, from the key toward the key before, in the same units as the key's
+	 * Translation. Zero is no handle - the path arrives straight. Dragged on the designer's motion path.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (DisplayName = "Path Handle In", EditCondition = "Content == EWidgetKeyframeContent::Transform && PathShape == EWidgetKeyPathShape::Bezier", EditConditionHides, HideEditConditionToggle))
+	FVector2D PathHandleIn = FVector2D::ZeroVector;
+
+	/** On a Bezier key: the handle the path leaves along, from the key toward the key after. See Path Handle In. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Key", meta = (DisplayName = "Path Handle Out", EditCondition = "Content == EWidgetKeyframeContent::Transform && PathShape == EWidgetKeyPathShape::Bezier", EditConditionHides, HideEditConditionToggle))
+	FVector2D PathHandleOut = FVector2D::ZeroVector;
 
 	/**
 	 * On a Shape Box, Shape or Design track: the shape - or the widget's look - exactly as it was authored on the widget, at
@@ -189,6 +245,15 @@ struct NAMETBD_API FWidgetTransformAnim
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, EditFixedSize, Category = "Transform", meta = (TitleProperty = "Time"))
 	TArray<FWidgetTransformKeyframe> Keys;
 
+	/**
+	 * What the track's Easing shapes. Each Segment: every stretch between two keys - the track eases into and out of each key
+	 * (and a key's Curve To Next Key replaces it for its stretch). Whole Track: the run from the first key to the last - the
+	 * track eases out of its start and into its end, and passes through the keys between without slowing. A Spring track's
+	 * spring always spans the whole track.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Transform", meta = (DisplayName = "Easing Across"))
+	EWidgetKeyEasingSpan EasingSpan = EWidgetKeyEasingSpan::EachSegment;
+
 	/** The curve actually in use: the Curve asset when one is picked, otherwise the inline one. */
 	const FRichCurve* GetActiveCurve() const;
 
@@ -219,6 +284,31 @@ struct NAMETBD_API FWidgetTransformAnim
 
 	/** The key at Index's render transform, as it plays: the identity - the widget as authored - when it Uses Authored Transform. */
 	FWidgetTransform GetKeyTransform(int32 Index) const;
+
+	/**
+	 * The handles the path has at key Index, as it plays, relative to the key's Translation: none on a Linear key, set by the
+	 * keys either side on a Smooth one, the key's own on a Bezier one.
+	 */
+	void GetPathHandles(int32 Index, FVector2D& OutIn, FVector2D& OutOut) const;
+
+	/**
+	 * Where the path from key Segment to the next is at Alpha (0 the key, 1 the next; past either end it carries on straight,
+	 * for an overshoot) - straight between Linear keys, along the curve their handles make otherwise, at an even pace along it.
+	 */
+	FVector2D EvaluatePath(int32 Segment, float Alpha) const;
+
+	/** Whether any key's path isn't a corner - when the motion path between keys can be curved at all. */
+	bool HasCurvedPath() const
+	{
+		for (const FWidgetTransformKeyframe& Key : Keys)
+		{
+			if (Key.PathShape != EWidgetKeyPathShape::Linear)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
 
 	/** Whether any key but the last has a Curve To Next Key of its own, rather than the layer's Easing. */
 	bool HasSegmentCurves() const

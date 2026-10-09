@@ -1109,6 +1109,43 @@ public:
 	void EndKeyDrag();
 	bool IsDraggingKey() const { return KeyDragTransaction.IsValid(); }
 
+	// ---------------------------------------------------------------------------------------------
+	// Motion paths - where the designer's selected widget travels, drawn on the designer's canvas (see WidgetAnimMotionPath.h)
+	// ---------------------------------------------------------------------------------------------
+
+	/**
+	 * Whether a key's position can be dragged on the designer's canvas: a key of an editable Transform track, whose pose
+	 * holds a Translation. Every other track's keys are only picked there.
+	 */
+	bool CanDragKeyPosition(int32 LayerIndex, int32 KeyIndex) const;
+
+	/**
+	 * A key's position dragged on the designer's canvas: one undo step from press to release, the preview held on the key
+	 * and following every move. Delta is how far the key has been moved since the press, in the track's widget's own units -
+	 * what its Translation counts in. A key that Uses Authored Transform stops using it: it is somewhere of its own now.
+	 */
+	bool BeginKeyPositionDrag(int32 LayerIndex, int32 KeyIndex);
+	void UpdateKeyPositionDrag(const FVector2D& Delta);
+	void EndKeyPositionDrag();
+	bool IsDraggingKeyPosition() const { return KeyPositionTransaction.IsValid(); }
+
+	/**
+	 * A key's path handles dragged on the designer's canvas - or pulled out of a key with Alt held: one undo step from press
+	 * to release, the preview held on the key. The key's Path becomes Bezier, with these handles (relative to its Translation,
+	 * in its widget's units). Ended by EndKeyPositionDrag.
+	 */
+	bool BeginKeyHandleDrag(int32 LayerIndex, int32 KeyIndex);
+	void UpdateKeyHandleDrag(const FVector2D& HandleIn, const FVector2D& HandleOut);
+
+	/**
+	 * How the path runs through keys of a Transform track: a corner, a smooth curve, or its own handles - which start where the
+	 * path's handles were, so turning a Smooth key into a Bezier one changes nothing until a handle is dragged. One undoable edit.
+	 */
+	void SetKeyPathShape(int32 LayerIndex, const TArray<int32>& KeyIndices, EWidgetKeyPathShape Shape);
+
+	/** A keyframed track's Easing Across - see FWidgetTransformAnim::EasingSpan. One undoable edit. */
+	void SetLayerEasingSpan(int32 LayerIndex, EWidgetKeyEasingSpan Span);
+
 	/**
 	 * A track drag - moving the pressed layer's section, or resizing it from one edge - applied to every selected,
 	 * unlocked layer if the pressed one is selected, else to it alone. One transaction from press to release.
@@ -1136,7 +1173,7 @@ public:
 	TOptional<float> GetSnapIndicator() const { return SnapIndicator; }
 
 	/** Whether a drag is under way, of anything. The tracks freeze their view while one is. */
-	bool IsDragging() const { return IsDraggingKey() || IsDraggingLayers(); }
+	bool IsDragging() const { return IsDraggingKey() || IsDraggingLayers() || IsDraggingKeyPosition(); }
 
 	/** Told by a multi-selection proxy that one of its properties was edited. Copies that property back onto the real layer. */
 	void OnProxyEdited(UWidgetAnimLayerEditProxy* Proxy, FPropertyChangedChainEvent& PropertyChangedEvent);
@@ -1754,6 +1791,14 @@ private:
 
 	/** Where the pressed key was at the press - what the mouse is measured against, whether or not it moves itself. */
 	float DragPressedOriginalTime = 0.f;
+
+	/** The key whose position is being dragged on the designer's canvas, its Translation at the press, and the drag's transaction. */
+	int32 KeyPositionLayer = INDEX_NONE;
+	int32 KeyPositionKey = INDEX_NONE;
+	FVector2D KeyPositionStart = FVector2D::ZeroVector;
+	FWidgetTransform KeyPositionStartPose;
+	bool bKeyPositionMoved = false;
+	TUniquePtr<FScopedTransaction> KeyPositionTransaction;
 
 	/** Every selected key - keys of any tracks - in the order they were picked, the primary one last. */
 	TArray<FKeyRef> SelectedKeys;

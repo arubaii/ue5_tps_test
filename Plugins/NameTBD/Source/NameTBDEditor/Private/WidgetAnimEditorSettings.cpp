@@ -121,6 +121,15 @@ void UWidgetAnimEditorSettings::SetPreviewFrameRate(float FrameRate)
 	}
 }
 
+void UWidgetAnimEditorSettings::SetShowMotionPaths(bool bEnabled)
+{
+	if (bShowMotionPaths != bEnabled)
+	{
+		bShowMotionPaths = bEnabled;
+		SaveConfig();
+	}
+}
+
 #if WITH_EDITOR
 FText UWidgetAnimEditorSettings::GetSectionText() const
 {
@@ -129,7 +138,7 @@ FText UWidgetAnimEditorSettings::GetSectionText() const
 
 FText UWidgetAnimEditorSettings::GetSectionDescription() const
 {
-	return LOCTEXT("SectionDescription", "Track colors, track controls and previews for the Widget Animations panel in the Widget Blueprint editor.");
+	return LOCTEXT("SectionDescription", "Track colors, track controls, previews and motion paths for the Widget Animations panel in the Widget Blueprint editor.");
 }
 #endif
 

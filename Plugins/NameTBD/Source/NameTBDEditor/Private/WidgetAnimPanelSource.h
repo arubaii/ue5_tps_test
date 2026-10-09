@@ -181,6 +181,31 @@ public:
 	virtual int32 GetExpandedCount(int32 FlatLayerIndex) const { return INDEX_NONE; }
 
 	/**
+	 * What the designer's preview is posed from - for drawing where a widget goes without moving it (the motion paths, see
+	 * WidgetAnimMotionPath.h). While the panel isn't on screen nothing is posed, and this is the animation built for the
+	 * preview all the same, over the preview as authored - bPosed false.
+	 *
+	 *  - Settings: the animation as settings for the preview, before any stagger is fanned out. Setting N is layer N of
+	 *    GetLayers for every layer; the layers of animations inserted as tracks follow them.
+	 *  - Baselines: what the preview's widgets looked like before they were posed - what the poses compose over.
+	 *  - FallbackWidget: the widget a setting naming none plays on.
+	 *  - Version: changes whenever any of the above may have, so a drawing worked out from them knows when to work it out again.
+	 *  - bPosed: the preview is posed at the playhead now - false while the panel is off screen and the preview is as authored.
+	 */
+	struct FPosedAnimation
+	{
+		const TArray<FWidgetAnimSettings>* Settings = nullptr;
+		const FWidgetAnimBaselineSet* Baselines = nullptr;
+		UWidget* FallbackWidget = nullptr;
+		bool bIsOutAnimation = false;
+		bool bPosed = false;
+		uint32 Version = 0;
+	};
+
+	/** False while there is no animation or no preview. Only the Widget Blueprint source has one. */
+	virtual bool GetPosedAnimation(FPosedAnimation& OutPosed) const { return false; }
+
+	/**
 	 * How long flattened layer FlatLayerIndex runs on the preview when its length comes from its widget rather than its
 	 * Duration - a text typed at a Typing Speed, a count at so many a second (see FWidgetAnimEvaluator::HasDerivedLength).
 	 * Negative when its Duration is its length, or there is no preview to work it out on.
@@ -376,6 +401,10 @@ public:
 	virtual void FocusKey(int32 FlatLayerIndex, int32 KeyIndex) override;
 	virtual int32 GetExpandedCount(int32 FlatLayerIndex) const override;
 	virtual float GetPreparedRun(int32 FlatLayerIndex) const override;
+	virtual bool GetPosedAnimation(FPosedAnimation& OutPosed) const override;
+
+	/** A group with no Target Widget plays on PreviewImage here, not on the builder itself. */
+	virtual UWidget* GetLayerPreviewWidget(int32 LayerIndex) const override;
 	virtual bool IsPlaying() const override;
 	virtual void TogglePlay() override;
 	virtual bool GetLoop() const override;
@@ -447,13 +476,14 @@ public:
 	virtual UUserWidget* GetPreviewRoot() const override;
 
 	/** Mid-drag: only the preview is built again, and posed, next tick - see IWidgetAnimPanelSource::NotifyInteractiveEdit. */
-	virtual void NotifyInteractiveEdit() override { bFlattenedStale = true; }
+	virtual void NotifyInteractiveEdit() override { bFlattenedStale = true; bUnposedStale = true; }
 
 	virtual float GetPlayheadAlpha() const override;
 	virtual void ScrubToAlpha(float Alpha) override;
 	virtual void FocusKey(int32 FlatLayerIndex, int32 KeyIndex) override;
 	virtual int32 GetExpandedCount(int32 FlatLayerIndex) const override { return ExpandedCounts.IsValidIndex(FlatLayerIndex) ? ExpandedCounts[FlatLayerIndex] : INDEX_NONE; }
 	virtual float GetPreparedRun(int32 FlatLayerIndex) const override { return PreparedRuns.IsValidIndex(FlatLayerIndex) ? PreparedRuns[FlatLayerIndex] : -1.f; }
+	virtual bool GetPosedAnimation(FPosedAnimation& OutPosed) const override;
 	virtual bool IsPlaying() const override { return bPlaying; }
 	virtual void TogglePlay() override;
 	virtual bool PlayBackward() override;
@@ -584,6 +614,21 @@ private:
 	 */
 	float PosedAlpha = -1.f;
 	bool bPoseStale = true;
+
+	/** Counts up whenever Flattened is built or the baselines are captured again - see FPosedAnimation::Version. */
+	mutable uint32 PosedVersion = 0;
+
+	/**
+	 * The animation built for the preview while the panel isn't on screen - see GetPosedAnimation - with the preview's authored
+	 * transforms as its baselines, and what it was built for. Built when asked for, again after an edit or every
+	 * FlattenedRefreshSeconds; never posed.
+	 */
+	mutable TArray<FWidgetAnimSettings> UnposedSettings;
+	mutable FWidgetAnimBaselineSet UnposedBaselines;
+	mutable TWeakObjectPtr<UWidgetAnimPresetAsset> UnposedAnimation;
+	mutable TWeakObjectPtr<UUserWidget> UnposedRoot;
+	mutable bool bUnposedStale = true;
+	mutable double UnposedTime = -1.0;
 
 	FDelegateHandle PropertyChangedHandle;
 

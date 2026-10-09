@@ -32,6 +32,17 @@ enum class EWidgetAnimScriptEditorTheme : uint8
 	HighContrast UMETA(DisplayName = "High Contrast")
 };
 
+/** How much of a motion path is drawn on the designer's canvas. */
+UENUM()
+enum class EWidgetAnimMotionPathRange : uint8
+{
+	/** The whole pass, from the animation's start to its end. */
+	WholeAnimation UMETA(DisplayName = "Whole Animation"),
+
+	/** Only the stretch around the playhead - Seconds Around Playhead before it and after it - which follows it as it plays. */
+	AroundPlayhead UMETA(DisplayName = "Around Playhead")
+};
+
 /**
  * The Widget Animations panel's per-user preferences: Editor Preferences > Plugins > Widget Animations Editor.
  *
@@ -171,6 +182,39 @@ public:
 	float PreviewFrameRate = 60.f;
 
 	// -------------------------------------------------------------------------------------------------
+	// Motion paths - where the animated widgets travel, drawn over the designer's canvas
+	// -------------------------------------------------------------------------------------------------
+
+	/**
+	 * While the Widget Animations panel has an animation open - on screen or not - every widget the animation moves shows the path
+	 * it travels along on the designer's canvas, with nothing to select: a line through every moment of the animation, a dot at
+	 * every frame (close together where it moves slowly, far apart where it moves fast), and a diamond at every key, dragged to
+	 * move a Transform key, Alt-dragged to pull out curve handles, right-clicked for its Path and the track's Easing Across.
+	 * The Motion Path toggle in the panel's Track Controls sets it too.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Motion Paths", meta = (DisplayName = "Show Motion Paths"))
+	bool bShowMotionPaths = true;
+
+	/**
+	 * How many dots a motion path has per second of the animation - one per frame at this rate, so their spacing shows the
+	 * speed. With Show Time In Frames on, there is a dot at every frame of its Frame Rate instead.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Motion Paths", meta = (DisplayName = "Dots Per Second", ClampMin = "1", ClampMax = "240", UIMin = "6", UIMax = "120", EditCondition = "bShowMotionPaths"))
+	float MotionPathDotsPerSecond = 30.f;
+
+	/** How much of the path is drawn: the whole animation, or only the stretch around the playhead. */
+	UPROPERTY(config, EditAnywhere, Category = "Motion Paths", meta = (DisplayName = "Path Range", EditCondition = "bShowMotionPaths"))
+	EWidgetAnimMotionPathRange MotionPathRange = EWidgetAnimMotionPathRange::WholeAnimation;
+
+	/** With Path Range Around Playhead: how many seconds of the path are drawn before the playhead, and how many after it. */
+	UPROPERTY(config, EditAnywhere, Category = "Motion Paths", meta = (DisplayName = "Seconds Around Playhead", ClampMin = "0.05", ClampMax = "30", UIMin = "0.1", UIMax = "3", Units = "s", EditCondition = "bShowMotionPaths && MotionPathRange == EWidgetAnimMotionPathRange::AroundPlayhead", EditConditionHides))
+	float MotionPathAroundSeconds = 0.5f;
+
+	/** Each key's time written beside its diamond on the path - otherwise only the key under the mouse says when it is. */
+	UPROPERTY(config, EditAnywhere, Category = "Motion Paths", meta = (DisplayName = "Show Key Times", EditCondition = "bShowMotionPaths"))
+	bool bMotionPathKeyTimes = false;
+
+	// -------------------------------------------------------------------------------------------------
 	// New tracks
 	// -------------------------------------------------------------------------------------------------
 
@@ -307,6 +351,9 @@ public:
 	/** Show Time In Frames and its Frame Rate, saved - see bShowTimeInFrames. */
 	void SetShowTimeInFrames(bool bEnabled);
 	void SetPreviewFrameRate(float FrameRate);
+
+	/** Show Motion Paths, saved - see bShowMotionPaths. */
+	void SetShowMotionPaths(bool bEnabled);
 
 	static const UWidgetAnimEditorSettings& Get() { return *GetDefault<UWidgetAnimEditorSettings>(); }
 	static UWidgetAnimEditorSettings& GetMutable() { return *GetMutableDefault<UWidgetAnimEditorSettings>(); }

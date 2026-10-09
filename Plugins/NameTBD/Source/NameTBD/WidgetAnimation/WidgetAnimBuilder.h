@@ -328,6 +328,19 @@ public:
 	static bool HasLivePreview(const UClass* BuilderClass);
 #endif
 
+	/**
+	 * Whether this is the builder's own preview in its Widget Blueprint's designer. A copy of the builder placed inside another
+	 * widget is shown there as authored: its animation never plays, and the builder's toolbar and Widget Animations panel
+	 * never reach it.
+	 */
+	bool IsOwnDesignerPreview() const;
+
+	/**
+	 * How many times the preview's stacks have been built - it counts up with every edit that reaches them - so an editor tool
+	 * reading GetPreviewAnimIn (the Widget Animations panel's motion paths) knows when to read them again.
+	 */
+	uint32 GetPreviewBuildCount() const { return PreviewBuildCount; }
+
 	// IWidgetAnimDesignerPreviewHost
 	virtual UWidget* GetPreviewOwnerWidget() override { return this; }
 	virtual UWidget* GetPreviewAnimationTarget() override;
@@ -515,6 +528,9 @@ private:
 
 	/** A one-shot repaint timer is already registered. */
 	bool bRepaintQueued = false;
+
+	/** See GetPreviewBuildCount. */
+	uint32 PreviewBuildCount = 0;
 
 	UPROPERTY(Transient)
 	FWidgetAnimPreviewState PreviewState;

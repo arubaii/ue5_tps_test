@@ -6,6 +6,7 @@ class IAssetTypeActions;
 class FWidgetShapePathEditorFactory;
 class FWidgetAnimTextEditorFactory;
 class FFlowListPathEditorFactory;
+class FWidgetAnimMotionPathFactory;
 struct FGraphPanelPinFactory;
 
 class FNameTBDEditorModule : public IModuleInterface
@@ -29,4 +30,7 @@ private:
 
 	// Puts the Flow List's Spline path editor on the UMG designer's canvas.
 	TSharedPtr<FFlowListPathEditorFactory> FlowListPathEditorFactory;
+
+	// Draws the motion paths of the Widget Animations panel's animation on the UMG designer's canvas.
+	TSharedPtr<FWidgetAnimMotionPathFactory> MotionPathFactory;
 };

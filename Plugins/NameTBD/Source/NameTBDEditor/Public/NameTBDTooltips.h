@@ -99,6 +99,12 @@ namespace NameTBD::Tooltips
 				"How far from where the widget sits, along the slide's direction: the track's Distance at its start, 0 at its end.");
 		}
 
+		inline FText WholeTrackKeyCurveNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "WholeTrackKeyCurveNote",
+				"This track's Easing spans the whole track (Easing Across: Whole Track), so it passes through this key without easing into or out of it. Set Easing Across to Each Segment to curve each stretch on its own.");
+		}
+
 		inline FText SpringKeyCurveNote()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "SpringKeyCurveNote",
@@ -478,6 +484,12 @@ namespace NameTBD::Tooltips
 				"Linked Edges: Resizing a track also resizes the tracks below it whose start or end lines up exactly with the edge being dragged - so a sequence stays joined, and tracks that end together keep ending together.");
 		}
 
+		inline FText MotionPathsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MotionPathsTooltip",
+				"Motion Path: Every widget this animation moves shows the path it travels on the designer's canvas - even once this panel is closed: a dot at every frame (close together where they move slowly, far apart where they move fast) and a diamond at every key. Click a diamond to pick its key; drag a Transform key's diamond to move it; Alt-drag it to pull out curve handles; right-click it for its Path (Corner, Smooth, Bezier) and Easing Across (each segment or the whole track). More in Editor Preferences > Widget Animations Editor > Motion Paths.");
+		}
+
 		// -------------------------------------------------------------------------------------------------
 		// The Animation Tracks list
 		// -------------------------------------------------------------------------------------------------
@@ -497,7 +509,7 @@ namespace NameTBD::Tooltips
 		inline FText GroupTargetTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GroupTargetTooltip",
-				"The widget this group animates here. Change it by selecting the group - or pick it by clicking it in the designer, from the group's menu or the eyedropper beside its Preview Target.");
+				"The widget this group animates here. Change it by selecting the group - or pick it by clicking it in the designer, from the group's menu or the eyedropper beside its Target Widget.");
 		}
 
 		inline FText ListLayerRowTooltip()
@@ -1224,7 +1236,7 @@ namespace NameTBD::Tooltips
 		}
 
 		// -------------------------------------------------------------------------------------------------
-		// Picking a Preview Target in the designer
+		// Picking a group's Target Widget in the designer
 		// -------------------------------------------------------------------------------------------------
 
 		inline FText PickTargetInDesignerTooltip()
@@ -1248,7 +1260,7 @@ namespace NameTBD::Tooltips
 		inline FText PickTargetNotFoundNote()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PickTargetNotFoundNote",
-				"That widget can't be a Preview Target here: it isn't in this widget's tree.");
+				"That widget can't be a Target Widget here: it isn't in this widget's tree.");
 		}
 
 		inline FText MaterialScalarBlurbTooltip()
@@ -1290,7 +1302,7 @@ namespace NameTBD::Tooltips
 		inline FText DesignNoWidgetNote()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DesignNoWidgetNote",
-				"No widget to read a design off yet: give the track's Layer Group a Preview Target, or open the animation in a Widget Blueprint's editor, and its keys take that widget's settings.");
+				"No widget to read a design off yet: give the track's Layer Group a Target Widget, or open the animation in a Widget Blueprint's editor, and its keys take that widget's settings.");
 		}
 
 		// A registered type describes itself (FWidgetAnimEvaluator::GetDescription); these two are only for a
@@ -2481,7 +2493,7 @@ namespace NameTBD::Tooltips
 		inline FText PreviewTargetTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewTargetTooltip",
-				"{0}: the widget the machine's {0} target moves in the preview. Starts on the Preview Target of the animation group it is named for. None: the widget it plays on.");
+				"{0}: the widget the machine's {0} target moves in the preview. Starts on the Target Widget of the animation group it is named for. None: the widget it plays on.");
 		}
 
 		inline FText NoPreviewTargetsNote()
