@@ -132,10 +132,9 @@ void FNameTBDEditorModule::StartupModule()
 
 	IUMGEditorModule& UMGEditorModule = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
 
-	// Motion paths - where the Widget Animations panel's animation moves its widgets - on the UMG designer's canvas: laid over
-	// each open designer by itself, with nothing selected; the designer extension is the fallback where that layer can't go.
+	// Motion paths - where the Widget Animations panel's animation moves its widgets - on the UMG designer's canvas, with
+	// nothing selected: each designer's extension keeps the layer over it (see WidgetAnimMotionPath.h).
 	// First, so every other canvas tool's toolbar is drawn, and clicked, over its diamonds.
-	WidgetAnimMotionPaths::Register();
 	MotionPathFactory = MakeShared<FWidgetAnimMotionPathFactory>();
 	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(MotionPathFactory.ToSharedRef());
 
@@ -226,7 +225,6 @@ void FNameTBDEditorModule::ShutdownModule()
 		TextEditorFactory.Reset();
 	}
 
-	WidgetAnimMotionPaths::Unregister();
 	if (MotionPathFactory.IsValid())
 	{
 		if (IUMGEditorModule* UMGEditorModule = FModuleManager::GetModulePtr<IUMGEditorModule>("UMGEditor"))

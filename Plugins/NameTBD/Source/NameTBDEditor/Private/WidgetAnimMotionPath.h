@@ -28,9 +28,11 @@
  *    a ring where the widget is now; key times, when shown, sit beside the path, never on it.
  *
  * Shown for every widget the open animation moves - each layer group's Target Widget with a Transform, Slide or Shake track - by
- * itself: a layer is laid over each designer whose Widget Blueprint has a Widget Animations panel with an animation open, with
- * nothing selected (WidgetAnimMotionPaths::Register). Where that layer can't be laid, the designer extension below draws it
- * while any widget is selected. The panel need not be on screen. The path is worked out from exactly what the preview plays
+ * itself, with nothing selected, whenever the Widget Blueprint's Widget Animations panel has an animation open. The designer
+ * ticks every extension each frame it is on screen, selection or not (FDesignerExtension::Tick): from there the extension
+ * keeps one layer over its designer - in the overlay of the designer's window, kept to the designer's own area, and drawing
+ * nothing on a frame the designer isn't drawn (another tab in front, the Graph mode). Only where no window could be found is
+ * the layer handed to the designer for a selection instead. The panel need not be on screen. The path is worked out from exactly what the preview plays
  * (UWidgetAnimLibrary::EvaluateExpandedStackAtTime on the panel's own settings and baselines), so every easing, segment curve,
  * spring, overshoot, stagger and delay is in it, and nothing is moved to find it. It is mapped onto the canvas through the
  * widgets' layout alone - never their render transforms, which the preview changes every frame - so the path and its keys stay
@@ -38,16 +40,38 @@
  * Motion Paths, and the panel's Motion Path toggle.
  *
  * The layer takes no clicks of its own - only its diamonds and handles do - so the designer's own selection and handles work
- * through it everywhere else.
+ * through it everywhere else. The diamonds and handles are placed as they are laid out, from where the path was worked out
+ * that same frame - never through bound attributes, which Slate reads before the frame's path is worked out.
  */
+class SWindow;
+struct FWidgetAnimMotionPathDesignerFrame;
+
 class FWidgetAnimMotionPathExtension : public FDesignerExtension
 {
 public:
 	FWidgetAnimMotionPathExtension();
+	virtual ~FWidgetAnimMotionPathExtension();
 
 	// FDesignerExtension
 	virtual bool CanExtendSelection(const TArray<FWidgetReference>& Selection) const override;
 	virtual void ExtendSelection(const TArray<FWidgetReference>& Selection, TArray<TSharedRef<FDesignerSurfaceElement>>& SurfaceElements) override;
+
+	/** Each frame the designer is on screen: where it is, and the layer kept over it. */
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
+
+private:
+	/** Lays the layer over the designer's window - again when the designer moved to another window. */
+	void UpdateHost();
+
+	/** Takes the layer back off its window. */
+	void RemoveHost();
+
+	/** Where the designer is and the frame it was last drawn - shared with the layer, which reads it as it draws. */
+	TSharedPtr<FWidgetAnimMotionPathDesignerFrame> DesignerFrame;
+
+	TSharedPtr<SWidget> HostCanvas;
+	TWeakPtr<SWindow> HostWindow;
+	double NextHostCheck = 0.0;
 };
 
 /** Hands the designer a fresh motion path extension per designer opened. */
@@ -58,12 +82,3 @@ public:
 
 	virtual TSharedRef<FDesignerExtension> CreateDesignerExtension() const override;
 };
-
-namespace WidgetAnimMotionPaths
-{
-	/** Starts laying the motion path layer over every open designer whose Widget Blueprint has a Widget Animations panel open. */
-	void Register();
-
-	/** Takes every layer laid back off its designer and stops looking for more. */
-	void Unregister();
-}

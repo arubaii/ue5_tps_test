@@ -1,0 +1,52 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+index ac3d78f..23fc0fb 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+@@ -2304,9 +2304,9 @@ void FWidgetAnimMotionPathExtension::Tick(const FGeometry& AllottedGeometry, con
+ 
+ void FWidgetAnimMotionPathExtension::UpdateHost()
+ {
+-	using namespace WidgetAnimMotionPathImpl;
++	namespace Impl = WidgetAnimMotionPathImpl;
+ 
+-	UWidgetBlueprint* OwnBlueprint = ResolveBlueprint(Blueprint);
++	UWidgetBlueprint* OwnBlueprint = Impl::ResolveBlueprint(Blueprint);
+ 	UUserWidget* Preview = OwnBlueprint ? FindWidgetAnimDesignerPreview(OwnBlueprint) : nullptr;
+ 	const TSharedPtr<SWidget> PreviewSlate = Preview ? Preview->GetCachedWidget() : nullptr;
+ 	if (!OwnBlueprint || !PreviewSlate.IsValid())
+@@ -2316,10 +2316,10 @@ void FWidgetAnimMotionPathExtension::UpdateHost()
+ 	}
+ 
+ 	// The window the designer is in now - it moves with its tab.
+-	const TSharedPtr<SWindow> Window = FindOwningWindow(PreviewSlate.ToSharedRef());
++	const TSharedPtr<SWindow> Window = Impl::FindOwningWindow(PreviewSlate.ToSharedRef());
+ 	if (!Window.IsValid())
+ 	{
+-		if (LogLevel() >= 1)
++		if (Impl::LogLevel() >= 1)
+ 		{
+ 			UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path layer: the window of %s's designer wasn't found - the paths show for a selected widget only."), *OwnBlueprint->GetName());
+ 		}
+@@ -2331,7 +2331,7 @@ void FWidgetAnimMotionPathExtension::UpdateHost()
+ 	}
+ 
+ 	RemoveHost();
+-	const TSharedRef<SWidgetAnimMotionPathCanvas> Canvas = SNew(SWidgetAnimMotionPathCanvas)
++	const TSharedRef<Impl::SWidgetAnimMotionPathCanvas> Canvas = SNew(Impl::SWidgetAnimMotionPathCanvas)
+ 		.Blueprint(TWeakObjectPtr<UWidgetBlueprint>(OwnBlueprint))
+ 		.DesignerFrame(DesignerFrame);
+ 
+@@ -2342,10 +2342,10 @@ void FWidgetAnimMotionPathExtension::UpdateHost()
+ 	];
+ 	HostCanvas = Canvas;
+ 	HostWindow = Window;
+-	GetDesignerLayers().RemoveAll([](const TWeakPtr<SWidgetAnimMotionPathCanvas>& Weak) { return !Weak.IsValid(); });
+-	GetDesignerLayers().Add(Canvas);
++	Impl::GetDesignerLayers().RemoveAll([](const TWeakPtr<Impl::SWidgetAnimMotionPathCanvas>& Weak) { return !Weak.IsValid(); });
++	Impl::GetDesignerLayers().Add(Canvas);
+ 
+-	if (LogLevel() >= 1)
++	if (Impl::LogLevel() >= 1)
+ 	{
+ 		UE_LOG(LogWidgetAnimMotionPath, Log, TEXT("Motion path layer laid over %s's designer, in the overlay of its window."), *OwnBlueprint->GetName());
+ 	}
