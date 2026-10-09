@@ -181,4 +181,19 @@ namespace WidgetShapeGeometry
 
 	/** The length of a line of points, closed back to its start when bClosed. */
 	NAMETBD_API float GetLength(const TArray<FVector2f>& Points, bool bClosed);
+
+	/**
+	 * The largest rectangle at Aspect (width over height) inside the outline's fill - holes kept out - with Margin to spare
+	 * all round: where a shape's content goes when its Content Area is Inscribed, so text in a circle, a star or a triangle
+	 * stays inside it. Searched rather than solved: grown about the box's middle, the outline's centroid and a few points
+	 * between, then moved toward more room until a step is a fraction of a unit. False when nothing fits.
+	 */
+	NAMETBD_API bool FindInscribedRect(const FWidgetShapeOutline& Outline, float Aspect, float Margin, FBox2f& OutRect);
+
+	/**
+	 * The outline's fill as rectangles, one row of spans every RowHeight (at most MaxRows rows), a span carried on down while
+	 * the rows below it start and end within a quarter of a unit of it - so a rectangle stays one, and a circle takes a few
+	 * dozen. What a shape that is only hit inside its outline puts into the hit-test grid.
+	 */
+	NAMETBD_API void BuildFillRects(const FWidgetShapeOutline& Outline, float RowHeight, int32 MaxRows, TArray<FBox2f>& OutRects);
 }

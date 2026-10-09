@@ -950,7 +950,7 @@ void UWidgetAnimationComponent::ShutdownRuntimeClock()
 void UWidgetAnimationComponent::RuntimeTick(float DeltaTime)
 {
 	UWidget* AnimatedWidget = AnimOwner.Get();
-	if (!AnimatedWidget || !bOwnerConstructed)
+	if (!AnimatedWidget || !(bOwnerConstructed || bDesignTimePlayback))
 	{
 		StopRuntimeTicking();
 		return;
@@ -958,7 +958,7 @@ void UWidgetAnimationComponent::RuntimeTick(float DeltaTime)
 
 	// A component cannot intercept its owner's SetVisibility, so becoming visible is noticed here instead.
 	// The pose is applied in the same frame (see ApplyCurrentAnimPose), before Slate draws the widget.
-	if (ReactsToVisibility() && !bPlayOnlyOnConstructAndDestruct)
+	if (bOwnerConstructed && ReactsToVisibility() && !bPlayOnlyOnConstructAndDestruct)
 	{
 		const bool bVisibleNow = IsVisibleState(AnimatedWidget->GetVisibility());
 		if (bVisibleNow && !bLastSeenVisible && !bIsDeferringVisibility)
@@ -1563,9 +1563,9 @@ bool UWidgetAnimationComponent::SetWidgetAnimationValues(const FWidgetAnimValueI
 		return false;
 	}
 
-	// Nothing plays before the owner is constructed (or at all in the designer), so the value is only remembered: the
-	// tracks start from it when they do start, rather than from their Start Value.
-	if (!AnimOwner.IsValid() || !bOwnerConstructed)
+	// Nothing plays before the owner is constructed (or in the designer, unless a data preview plays there), so the value
+	// is only remembered: the tracks start from it when they do start, rather than from their Start Value.
+	if (!AnimOwner.IsValid() || !(bOwnerConstructed || bDesignTimePlayback))
 	{
 		UWidgetAnimLibrary::SetWidgetAnimTrackValue(AnimPlayer, Id, Value, /*bSnap=*/true);
 		return false;
@@ -2092,6 +2092,15 @@ void UWidgetAnimationComponent::NotifyOwnerDesignTimeRefresh()
 		StopDesignerStateMachinePreview();
 	}
 
+	// A data preview's playing ends: whoever plays by name again starts it again, from the pose read below.
+	if (bDesignTimePlayback)
+	{
+		bDesignTimePlayback = false;
+		StopRuntimeTicking();
+		UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
+		AnimPlayer.Phase = EWidgetAnimPhase::Idle;
+	}
+
 	// Put back whatever a previous preview left before reading the authored pose again.
 	if (AnimBaselines.bCaptured)
 	{
@@ -2121,6 +2130,31 @@ void UWidgetAnimationComponent::NotifyOwnerDesignTimeRefresh()
 
 	PreviewRetriesLeft = PreviewTimerRetryFrames;
 	EnsureDesignerPreviewTimer();
+}
+
+void UWidgetAnimationComponent::BeginDesignTimePlayback()
+{
+	UWidget* AnimatedWidget = AnimOwner.Get();
+	if (bDesignTimePlayback || bOwnerConstructed || !AnimatedWidget || !AnimatedWidget->IsDesignTime())
+	{
+		return;
+	}
+
+	// The toolbar's preview poses the same widgets: it gives way, as it does to the state machine preview.
+	if (DesignerPreviewModeOverride.IsSet() || PreviewTimerHandle.IsValid())
+	{
+		StopDesignerPreview();
+	}
+
+	bDesignTimePlayback = true;
+	if (EffectiveInEntries.Num() == 0 && EffectiveOutEntries.Num() == 0)
+	{
+		RebuildEffectiveAnimations();
+	}
+
+	// The designer captured the authored pose already (NotifyOwnerDesignTimeRefresh): this keeps it.
+	EnsureRuntimeBaselines();
+	StartRuntimeTicking();
 }
 
 void UWidgetAnimationComponent::EnsureDesignerPreviewTimer()

@@ -1529,3 +1529,297 @@ namespace WidgetShapeGeometry
 		return Length;
 	}
 }
+
+// =====================================================================================================
+// Content area and hit area
+// =====================================================================================================
+
+namespace WidgetShapeGeometryPrivate
+{
+	/** Every edge of every contour of three points or more, open ones closed across their ends - as IsInside reads them. */
+	void GatherEdges(const FWidgetShapeOutline& Outline, TArray<TPair<FVector2f, FVector2f>>& OutEdges, FBox2f& OutBounds)
+	{
+		OutEdges.Reset();
+		OutBounds = FBox2f(ForceInit);
+		for (const FWidgetShapeLine& Line : Outline.Lines)
+		{
+			const int32 Count = Line.Points.Num();
+			if (Count < 3)
+			{
+				continue;
+			}
+			for (int32 Index = 0, Previous = Count - 1; Index < Count; Previous = Index++)
+			{
+				OutEdges.Emplace(Line.Points[Previous], Line.Points[Index]);
+				OutBounds += Line.Points[Index];
+			}
+		}
+	}
+
+	/** Whether any part of the segment A-B lies in the box, its edges included (Liang-Barsky clipping). */
+	bool SegmentTouchesBox(const FVector2f& A, const FVector2f& B, const FVector2f& BoxMin, const FVector2f& BoxMax)
+	{
+		const FVector2f Delta = B - A;
+		const float Direction[4] = { -Delta.X, Delta.X, -Delta.Y, Delta.Y };
+		const float Room[4] = { A.X - BoxMin.X, BoxMax.X - A.X, A.Y - BoxMin.Y, BoxMax.Y - A.Y };
+		float Enter = 0.f;
+		float Leave = 1.f;
+		for (int32 Side = 0; Side < 4; ++Side)
+		{
+			if (FMath::IsNearlyZero(Direction[Side]))
+			{
+				if (Room[Side] < 0.f)
+				{
+					return false;
+				}
+				continue;
+			}
+			const float Crossing = Room[Side] / Direction[Side];
+			if (Direction[Side] < 0.f)
+			{
+				if (Crossing > Leave)
+				{
+					return false;
+				}
+				Enter = FMath::Max(Enter, Crossing);
+			}
+			else
+			{
+				if (Crossing < Enter)
+				{
+					return false;
+				}
+				Leave = FMath::Min(Leave, Crossing);
+			}
+		}
+		return Enter <= Leave;
+	}
+
+	/** Grows rectangles at one aspect about a point until they touch the outline. */
+	struct FInscribedSearch
+	{
+		const FWidgetShapeOutline& Outline;
+		TArray<TPair<FVector2f, FVector2f>> Edges;
+		float Aspect = 1.f;
+		float Margin = 0.f;
+		float MaxHalfHeight = 0.f;
+
+		explicit FInscribedSearch(const FWidgetShapeOutline& InOutline) : Outline(InOutline) {}
+
+		/** No edge crosses or touches the rectangle of HalfHeight about Center, grown by Margin. */
+		bool Fits(const FVector2f& Center, float HalfHeight) const
+		{
+			const FVector2f Half(Aspect * HalfHeight + Margin, HalfHeight + Margin);
+			const FVector2f BoxMin = Center - Half;
+			const FVector2f BoxMax = Center + Half;
+			for (const TPair<FVector2f, FVector2f>& Edge : Edges)
+			{
+				if (SegmentTouchesBox(Edge.Key, Edge.Value, BoxMin, BoxMax))
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
+		/**
+		 * The half height of the largest rectangle about Center that fits, or -1 when Center isn't on the fill. With no edge
+		 * touching it and its middle on the fill, the whole rectangle is: nothing inside it can be a hole's edge.
+		 */
+		float Largest(const FVector2f& Center) const
+		{
+			if (!WidgetShapeGeometry::IsInside(Outline, Center) || !Fits(Center, 0.f))
+			{
+				return -1.f;
+			}
+			if (Fits(Center, MaxHalfHeight))
+			{
+				return MaxHalfHeight;
+			}
+			float Low = 0.f;
+			float High = MaxHalfHeight;
+			for (int32 Step = 0; Step < 18; ++Step)
+			{
+				const float Middle = (Low + High) * 0.5f;
+				if (Fits(Center, Middle))
+				{
+					Low = Middle;
+				}
+				else
+				{
+					High = Middle;
+				}
+			}
+			return Low;
+		}
+	};
+}
+
+namespace WidgetShapeGeometry
+{
+	bool FindInscribedRect(const FWidgetShapeOutline& Outline, float Aspect, float Margin, FBox2f& OutRect)
+	{
+		using namespace WidgetShapeGeometryPrivate;
+
+		FInscribedSearch Search(Outline);
+		FBox2f Bounds(ForceInit);
+		GatherEdges(Outline, Search.Edges, Bounds);
+		if (!Bounds.bIsValid || Search.Edges.Num() < 3)
+		{
+			return false;
+		}
+
+		Search.Aspect = FMath::Clamp(Aspect, 0.01f, 100.f);
+		Search.Margin = FMath::Max(Margin, 0.f);
+		const FVector2f Extent = Bounds.GetSize();
+		Search.MaxHalfHeight = FMath::Min(Extent.Y, Extent.X / Search.Aspect) * 0.5f;
+		if (Search.MaxHalfHeight <= 0.f)
+		{
+			return false;
+		}
+
+		// Where to start: the middle, the centroid (a triangle's room is low in it), and a grid between.
+		TArray<FVector2f, TInlineAllocator<12>> Starts;
+		Starts.Add(Bounds.GetCenter());
+		{
+			float Area = 0.f;
+			FVector2f Weighted = FVector2f::ZeroVector;
+			for (const TPair<FVector2f, FVector2f>& Edge : Search.Edges)
+			{
+				const float Cross = Edge.Key.X * Edge.Value.Y - Edge.Value.X * Edge.Key.Y;
+				Area += Cross;
+				Weighted += (Edge.Key + Edge.Value) * Cross;
+			}
+			if (!FMath::IsNearlyZero(Area))
+			{
+				Starts.Add(Weighted / (3.f * Area));
+			}
+		}
+		for (int32 Row = 1; Row <= 3; ++Row)
+		{
+			for (int32 Column = 1; Column <= 3; ++Column)
+			{
+				if (Row != 2 || Column != 2)
+				{
+					Starts.Add(Bounds.Min + Extent * FVector2f(Column * 0.25f, Row * 0.25f));
+				}
+			}
+		}
+
+		FVector2f Best = Starts[0];
+		float BestHalf = -1.f;
+		for (const FVector2f& Start : Starts)
+		{
+			const float Half = Search.Largest(Start);
+			if (Half > BestHalf)
+			{
+				BestHalf = Half;
+				Best = Start;
+			}
+		}
+		if (BestHalf <= 0.f)
+		{
+			return false;
+		}
+
+		// Moved toward more room, eight ways, the step halved whenever no way gives more.
+		static const FVector2f Ways[8] =
+		{
+			FVector2f(1.f, 0.f), FVector2f(-1.f, 0.f), FVector2f(0.f, 1.f), FVector2f(0.f, -1.f),
+			FVector2f(0.7071f, 0.7071f), FVector2f(-0.7071f, 0.7071f), FVector2f(0.7071f, -0.7071f), FVector2f(-0.7071f, -0.7071f)
+		};
+		const float LongestSide = FMath::Max(Extent.X, Extent.Y);
+		float StepLength = LongestSide * 0.125f;
+		for (int32 Round = 0; Round < 64 && StepLength > LongestSide * 0.002f; ++Round)
+		{
+			FVector2f Moved = Best;
+			float MovedHalf = BestHalf;
+			for (const FVector2f& Way : Ways)
+			{
+				const FVector2f Candidate = Best + Way * StepLength;
+				const float Half = Search.Largest(Candidate);
+				if (Half > MovedHalf + KINDA_SMALL_NUMBER)
+				{
+					MovedHalf = Half;
+					Moved = Candidate;
+				}
+			}
+			if (MovedHalf > BestHalf)
+			{
+				Best = Moved;
+				BestHalf = MovedHalf;
+			}
+			else
+			{
+				StepLength *= 0.5f;
+			}
+		}
+
+		const FVector2f HalfSize(Search.Aspect * BestHalf, BestHalf);
+		OutRect = FBox2f(Best - HalfSize, Best + HalfSize);
+		return true;
+	}
+
+	void BuildFillRects(const FWidgetShapeOutline& Outline, float RowHeight, int32 MaxRows, TArray<FBox2f>& OutRects)
+	{
+		using namespace WidgetShapeGeometryPrivate;
+
+		OutRects.Reset();
+		TArray<TPair<FVector2f, FVector2f>> Edges;
+		FBox2f Bounds(ForceInit);
+		GatherEdges(Outline, Edges, Bounds);
+		const float Height = Bounds.bIsValid ? Bounds.Max.Y - Bounds.Min.Y : 0.f;
+		if (Edges.Num() < 3 || Height <= 0.f)
+		{
+			return;
+		}
+
+		const int32 Rows = FMath::Clamp(FMath::CeilToInt32(Height / FMath::Max(RowHeight, 0.01f)), 1, FMath::Max(MaxRows, 1));
+		const float Step = Height / static_cast<float>(Rows);
+		constexpr float SameEdge = 0.25f;
+
+		TArray<float> Crossings;
+		TArray<int32> Open;
+		TArray<int32> NextOpen;
+		for (int32 Row = 0; Row < Rows; ++Row)
+		{
+			const float Top = Bounds.Min.Y + Step * static_cast<float>(Row);
+			const float Bottom = Top + Step;
+			const float Y = Top + Step * 0.5f;
+
+			Crossings.Reset();
+			for (const TPair<FVector2f, FVector2f>& Edge : Edges)
+			{
+				const FVector2f& A = Edge.Key;
+				const FVector2f& B = Edge.Value;
+				if ((A.Y <= Y) != (B.Y <= Y))
+				{
+					Crossings.Add(A.X + (Y - A.Y) * (B.X - A.X) / (B.Y - A.Y));
+				}
+			}
+			Crossings.Sort();
+
+			// Even-odd: inside between the first and second crossing, the third and fourth...
+			const int32 Spans = Crossings.Num() / 2;
+			const bool bSameCount = Open.Num() == Spans;
+			NextOpen.Reset();
+			for (int32 Span = 0; Span < Spans; ++Span)
+			{
+				const float Left = Crossings[Span * 2];
+				const float Right = Crossings[Span * 2 + 1];
+				if (bSameCount)
+				{
+					FBox2f& Above = OutRects[Open[Span]];
+					if (FMath::Abs(Above.Min.X - Left) <= SameEdge && FMath::Abs(Above.Max.X - Right) <= SameEdge)
+					{
+						Above.Max.Y = Bottom;
+						NextOpen.Add(Open[Span]);
+						continue;
+					}
+				}
+				NextOpen.Add(OutRects.Add(FBox2f(FVector2f(Left, Top), FVector2f(Right, Bottom))));
+			}
+			Swap(Open, NextOpen);
+		}
+	}
+}

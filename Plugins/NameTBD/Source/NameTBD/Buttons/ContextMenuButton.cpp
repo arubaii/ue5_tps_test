@@ -793,7 +793,7 @@ void SContextMenuSlateButton::SetBackgroundShape(UShapeWidget* InShape)
 	{
 		// Painted where the brush would be: inside the brush layer, so the shape's Transform, the hit area that follows it
 		// and a Shape Box shape all work on it exactly as they do on the brush.
-		BackgroundPainter = SNew(SWidgetShape).Shape(InShape);
+		BackgroundPainter = SNew(SWidgetShape).Shape(InShape).PaintOnly(true);
 		if (BrushLayer.IsValid())
 		{
 			BrushLayer->SetContent(BackgroundPainter.ToSharedRef());

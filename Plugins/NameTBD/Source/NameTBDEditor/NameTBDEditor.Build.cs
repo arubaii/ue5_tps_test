@@ -40,6 +40,7 @@ public class NameTBDEditor : ModuleRules
 			"WebBrowser",        // the Script area's code editor (Monaco), shown in the editor's web browser
 			"StructUtilsEditor", // FInstancedStructDataDetails, for a registered type's settings laid out field by field
 			"AppFramework",      // the color picker, for the Text Editor's Color menu
+			"NameTBDMVVM",       // the Widget Data Binder's Details: its Data Preview
 		});
 		if (Target.bBuildEditor)
 		{

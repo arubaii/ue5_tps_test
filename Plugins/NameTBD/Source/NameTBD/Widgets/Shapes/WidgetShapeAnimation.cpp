@@ -72,7 +72,7 @@ namespace WidgetShapeAnimation
 			{
 				continue;
 			}
-			if (Property->GetFName() == DesiredSize)
+			if (Property->GetFName() == DesiredSize || UShapeWidget::IsContentProperty(Property))
 			{
 				continue;
 			}

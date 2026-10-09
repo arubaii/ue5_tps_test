@@ -146,7 +146,7 @@ namespace WidgetShapePresets
 			{
 				continue;
 			}
-			if (Property->GetFName() == DesiredSize || (bOutlineOnly && IsLookProperty(Property)))
+			if (Property->GetFName() == DesiredSize || UShapeWidget::IsContentProperty(Property) || (bOutlineOnly && IsLookProperty(Property)))
 			{
 				continue;
 			}

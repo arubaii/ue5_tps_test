@@ -1,0 +1,1315 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+index ea6bd48..728319e 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+@@ -793,7 +793,7 @@ void SContextMenuSlateButton::SetBackgroundShape(UShapeWidget* InShape)
+ 	{
+ 		// Painted where the brush would be: inside the brush layer, so the shape's Transform, the hit area that follows it
+ 		// and a Shape Box shape all work on it exactly as they do on the brush.
+-		BackgroundPainter = SNew(SWidgetShape).Shape(InShape);
++		BackgroundPainter = SNew(SWidgetShape).Shape(InShape).PaintOnly(true);
+ 		if (BrushLayer.IsValid())
+ 		{
+ 			BrushLayer->SetContent(BackgroundPainter.ToSharedRef());
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.cpp
+index 464cbcd..d21b7dd 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.cpp
+@@ -2,10 +2,13 @@
+ 
+ #include "ShapeWidget.h"
+ 
++#include "Layout/ArrangedChildren.h"
+ #include "Materials/MaterialInstanceDynamic.h"
+ #include "Materials/MaterialInterface.h"
+ #include "Rendering/DrawElements.h"
+ #include "Styling/SlateBrush.h"
++#include "Widgets/SLeafWidget.h"
++#include "Widgets/SNullWidget.h"
+ 
+ #define LOCTEXT_NAMESPACE "ShapeWidget"
+ 
+@@ -39,6 +42,54 @@ namespace ShapeWidgetPrivate
+ 		const float Steps = FMath::RoundToFloat(FMath::Log2(Scale) * 8.f) / 8.f;
+ 		return FMath::Pow(2.f, Steps);
+ 	}
++
++	/** How finely the Content Area's outline is flattened, in local units: a quarter unit is far finer than any layout needs. */
++	constexpr float AreaTolerance = 0.25f;
++
++	/** Hit Test Outline's rows: at least this tall (local units), at most this many. */
++	constexpr float HitRowHeight = 2.f;
++	constexpr int32 MaxHitRows = 96;
++
++	/**
++	 * Invisible, draws nothing and asks for no room. Hit Test Outline tiles the shape's fill with these, so the hit-test
++	 * grid sees the outline rather than the box; painted with the shape as their paint parent, the pointer over one bubbles
++	 * through the shape and everything above it, as if the shape itself were hit.
++	 */
++	class SWidgetShapeHitCell : public SLeafWidget
++	{
++	public:
++		SLATE_BEGIN_ARGS(SWidgetShapeHitCell) {}
++		SLATE_END_ARGS()
++
++		void Construct(const FArguments&)
++		{
++			SetCanTick(false);
++		}
++
++		virtual int32 OnPaint(const FPaintArgs&, const FGeometry&, const FSlateRect&, FSlateWindowElementList&, int32 LayerId, const FWidgetStyle&, bool) const override
++		{
++			return LayerId;
++		}
++
++		virtual FVector2D ComputeDesiredSize(float) const override
++		{
++			return FVector2D::ZeroVector;
++		}
++	};
++
++	/** Places Length of content along an axis of Room starting at Start: Fill takes it all, the others its desired length. */
++	void AlignAxis(int32 Alignment, float Start, float Room, float Desired, float& OutOffset, float& OutLength)
++	{
++		// 0 Fill, 1 Left / Top, 2 Center, 3 Right / Bottom - as EHorizontalAlignment and EVerticalAlignment number them.
++		if (Alignment == 0)
++		{
++			OutOffset = Start;
++			OutLength = Room;
++			return;
++		}
++		OutLength = FMath::Min(Desired, Room);
++		OutOffset = Alignment == 1 ? Start : Alignment == 3 ? Start + Room - OutLength : Start + (Room - OutLength) * 0.5f;
++	}
+ }
+ 
+ bool WidgetShapeValueIsColor(EWidgetShapeValue Value)
+@@ -58,12 +109,294 @@ bool WidgetShapeValueIsWhole(EWidgetShapeValue Value)
+ void SWidgetShape::Construct(const FArguments& InArgs)
+ {
+ 	ShapeWidget = InArgs._Shape;
++	bPaintOnly = InArgs._PaintOnly;
++	ChildSlot
++	[
++		bPaintOnly ? SNullWidget::NullWidget : InArgs._Content.Widget
++	];
++}
++
++void SWidgetShape::SetContent(const TSharedRef<SWidget>& InContent)
++{
++	if (bPaintOnly)
++	{
++		return;
++	}
++	ChildSlot
++	[
++		InContent
++	];
++	bAreaBuilt = false;
++	bSizeBuilt = false;
++	Invalidate(EInvalidateWidgetReason::Layout | EInvalidateWidgetReason::ChildOrder);
++}
++
++void SWidgetShape::SetContentPadding(const FMargin& InPadding)
++{
++	if (ContentPadding != InPadding)
++	{
++		ContentPadding = InPadding;
++		bAreaBuilt = false;
++		bSizeBuilt = false;
++		Invalidate(EInvalidateWidgetReason::Layout);
++	}
++}
++
++void SWidgetShape::SetContentAlignment(EHorizontalAlignment InHorizontalAlignment, EVerticalAlignment InVerticalAlignment)
++{
++	if (ContentHorizontalAlignment != InHorizontalAlignment || ContentVerticalAlignment != InVerticalAlignment)
++	{
++		ContentHorizontalAlignment = InHorizontalAlignment;
++		ContentVerticalAlignment = InVerticalAlignment;
++		Invalidate(EInvalidateWidgetReason::Layout);
++	}
++}
++
++void SWidgetShape::SetRequestedVisibility(const TAttribute<EVisibility>& InVisibility)
++{
++	if (bPaintOnly)
++	{
++		return;
++	}
++	RequestedVisibility = InVisibility;
++	bRoutesVisibility = true;
++	SetVisibility(TAttribute<EVisibility>::CreateSP(this, &SWidgetShape::GetEffectiveVisibility));
++}
++
++bool SWidgetShape::HitTestsOutline() const
++{
++	const UShapeWidget* Shape = ShapeWidget.Get();
++	return bRoutesVisibility && !bPaintOnly && Shape && Shape->bHitTestOutline
++		&& RequestedVisibility.Get(EVisibility::Visible) == EVisibility::Visible;
++}
++
++EVisibility SWidgetShape::GetEffectiveVisibility() const
++{
++	const EVisibility Requested = RequestedVisibility.Get(EVisibility::Visible);
++
++	// The box itself would catch the pointer over the corners round the outline: the hit cells stand in for it.
++	if (HitTestsOutline())
++	{
++		return EVisibility::SelfHitTestInvisible;
++	}
++	return Requested;
++}
++
++bool SWidgetShape::HasContent() const
++{
++	if (bPaintOnly)
++	{
++		return false;
++	}
++	const TSharedRef<SWidget>& Content = ChildSlot.GetWidget();
++	return Content != SNullWidget::NullWidget && Content->GetVisibility() != EVisibility::Collapsed;
++}
++
++FVector2f SWidgetShape::GetContentDesiredSize() const
++{
++	const FVector2f Desired(ChildSlot.GetWidget()->GetDesiredSize());
++	return Desired + FVector2f(ContentPadding.Left + ContentPadding.Right, ContentPadding.Top + ContentPadding.Bottom);
++}
++
++bool SWidgetShape::ComputeInscribed(const UShapeWidget& Shape, const FVector2f& LocalSize, float Aspect, float Margin, FBox2f& OutArea) const
++{
++	FWidgetShapeOutline AreaOutline;
++	Shape.BuildOutline(Shape.MakeFrame(LocalSize), ShapeWidgetPrivate::AreaTolerance, AreaOutline);
++	return WidgetShapeGeometry::FindInscribedRect(AreaOutline, Aspect, Margin, OutArea);
++}
++
++FBox2f SWidgetShape::GetContentArea(const FVector2f& LocalSize) const
++{
++	const FBox2f Whole(FVector2f::ZeroVector, LocalSize);
++	const UShapeWidget* Shape = ShapeWidget.Get();
++	if (!Shape || LocalSize.X <= 0.f || LocalSize.Y <= 0.f)
++	{
++		return Whole;
++	}
++
++	const float Inset = Shape->GetInnerStrokeWidth();
++	switch (Shape->ContentArea)
++	{
++	case EWidgetShapeContentArea::Bounds:
++		return Whole;
++
++	case EWidgetShapeContentArea::InsideStroke:
++	{
++		const FVector2f Clear(FMath::Min(Inset, LocalSize.X * 0.5f), FMath::Min(Inset, LocalSize.Y * 0.5f));
++		return FBox2f(Clear, LocalSize - Clear);
++	}
++
++	case EWidgetShapeContentArea::Inscribed:
++	default:
++		break;
++	}
++
++	// At the content's proportions (padding included), so a label gets the widest box that keeps it inside; with nothing
++	// that asks for room, at the widget's.
++	const FVector2f ContentSize = HasContent() ? GetContentDesiredSize() : FVector2f::ZeroVector;
++	const float Aspect = ContentSize.X > 0.5f && ContentSize.Y > 0.5f ? ContentSize.X / ContentSize.Y : LocalSize.X / LocalSize.Y;
++
++	uint32 Hash = Shape->GetMeshHash();
++	Hash = HashCombineFast(Hash, GetTypeHash(LocalSize));
++	Hash = HashCombineFast(Hash, GetTypeHash(Aspect));
++	if (bAreaBuilt && Hash == AreaHash)
++	{
++		return AreaRect;
++	}
++
++	FBox2f Found;
++	AreaRect = ComputeInscribed(*Shape, LocalSize, Aspect, Inset, Found) ? Found : FBox2f(LocalSize * 0.5f, LocalSize * 0.5f);
++	AreaHash = Hash;
++	bAreaBuilt = true;
++	return AreaRect;
++}
++
++FVector2D SWidgetShape::ComputeSizeForContent(const UShapeWidget& Shape) const
++{
++	const FVector2f ContentSize = GetContentDesiredSize();
++
++	uint32 Hash = Shape.GetMeshHash();
++	Hash = HashCombineFast(Hash, GetTypeHash(ContentSize));
++	Hash = HashCombineFast(Hash, GetTypeHash(static_cast<uint8>(Shape.ContentArea)));
++	if (bSizeBuilt && Hash == SizeHash)
++	{
++		return SizeForContent;
++	}
++
++	const float Inset = Shape.GetInnerStrokeWidth();
++	FVector2f Size = ContentSize;
++	switch (Shape.ContentArea)
++	{
++	case EWidgetShapeContentArea::Bounds:
++		break;
++
++	case EWidgetShapeContentArea::InsideStroke:
++		Size += FVector2f(Inset * 2.f, Inset * 2.f);
++		break;
++
++	case EWidgetShapeContentArea::Inscribed:
++	default:
++	{
++		// The area grows with the widget (all but the strokes and roundings, which are in units), so a few steps of
++		// "grow by what is missing" settle it. Grown evenly: the shape takes the content's proportions.
++		Size = FVector2f(FMath::Max(ContentSize.X, 1.f), FMath::Max(ContentSize.Y, 1.f));
++		const float Aspect = Size.X / Size.Y;
++		for (int32 Pass = 0; Pass < 6; ++Pass)
++		{
++			FBox2f Found;
++			if (!ComputeInscribed(Shape, Size, Aspect, Inset, Found))
++			{
++				break;
++			}
++			const FVector2f Got = Found.GetSize();
++			if (Got.X <= KINDA_SMALL_NUMBER || Got.Y <= KINDA_SMALL_NUMBER)
++			{
++				break;
++			}
++			const float Grow = FMath::Clamp(FMath::Max(ContentSize.X / Got.X, ContentSize.Y / Got.Y), 0.25f, 16.f);
++			Size *= Grow;
++			if (FMath::IsNearlyEqual(Grow, 1.f, 0.002f))
++			{
++				break;
++			}
++		}
++		Size = FVector2f(FMath::Min(Size.X, 8192.f), FMath::Min(Size.Y, 8192.f));
++		break;
++	}
++	}
++
++	SizeForContent = FVector2D(FMath::CeilToFloat(Size.X), FMath::CeilToFloat(Size.Y));
++	SizeHash = Hash;
++	bSizeBuilt = true;
++	return SizeForContent;
+ }
+ 
+ FVector2D SWidgetShape::ComputeDesiredSize(float) const
+ {
+ 	const UShapeWidget* Shape = ShapeWidget.Get();
+-	return Shape ? Shape->DesiredSize : FVector2D(64.0, 64.0);
++	if (!Shape)
++	{
++		return FVector2D(64.0, 64.0);
++	}
++	if (!Shape->bSizeToContent || !HasContent())
++	{
++		return Shape->DesiredSize;
++	}
++	return ComputeSizeForContent(*Shape);
++}
++
++void SWidgetShape::OnArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const
++{
++	using namespace ShapeWidgetPrivate;
++
++	if (!HasContent())
++	{
++		return;
++	}
++
++	const TSharedRef<SWidget>& Content = ChildSlot.GetWidget();
++	const EVisibility ContentVisibility = Content->GetVisibility();
++	if (!ArrangedChildren.Accepts(ContentVisibility))
++	{
++		return;
++	}
++
++	const FVector2f LocalSize(AllottedGeometry.GetLocalSize());
++	ArrangedArea = GetContentArea(LocalSize);
++
++	// Padding and alignment as a Border's slot lays them, mirrored right to left.
++	const bool bRightToLeft = GSlateFlowDirection == EFlowDirection::RightToLeft;
++	const float PadLeft = bRightToLeft ? ContentPadding.Right : ContentPadding.Left;
++	const float PadRight = bRightToLeft ? ContentPadding.Left : ContentPadding.Right;
++	int32 Horizontal = static_cast<int32>(ContentHorizontalAlignment);
++	if (bRightToLeft && (Horizontal == 1 || Horizontal == 3))
++	{
++		Horizontal = 4 - Horizontal;
++	}
++
++	const FVector2f AreaSize = ArrangedArea.GetSize();
++	const FVector2f Room(
++		FMath::Max(AreaSize.X - PadLeft - PadRight, 0.f),
++		FMath::Max(AreaSize.Y - ContentPadding.Top - ContentPadding.Bottom, 0.f));
++	const FVector2f Desired(Content->GetDesiredSize());
++
++	float OffsetX = 0.f;
++	float OffsetY = 0.f;
++	float Width = 0.f;
++	float Height = 0.f;
++	AlignAxis(Horizontal, ArrangedArea.Min.X + PadLeft, Room.X, Desired.X, OffsetX, Width);
++	AlignAxis(static_cast<int32>(ContentVerticalAlignment), ArrangedArea.Min.Y + ContentPadding.Top, Room.Y, Desired.Y, OffsetY, Height);
++
++	ArrangedChildren.AddWidget(ContentVisibility, AllottedGeometry.MakeChild(Content, FVector2D(OffsetX, OffsetY), FVector2D(Width, Height)));
++}
++
++void SWidgetShape::PaintHitCells(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bEnabled) const
++{
++	if (!bHitRectsBuilt)
++	{
++		WidgetShapeGeometry::BuildFillRects(Outline, ShapeWidgetPrivate::HitRowHeight, ShapeWidgetPrivate::MaxHitRows, HitRects);
++		bHitRectsBuilt = true;
++	}
++
++	while (HitCells.Num() < HitRects.Num())
++	{
++		HitCells.Add(SNew(ShapeWidgetPrivate::SWidgetShapeHitCell));
++	}
++	if (HitCells.Num() > HitRects.Num())
++	{
++		// Destroying the spare ones drops their entries from the hit-test grid.
++		HitCells.RemoveAt(HitRects.Num(), HitCells.Num() - HitRects.Num());
++	}
++
++	// Below the content: painted first, so a button inside is hit before the shape round it.
++	const FPaintArgs CellArgs = Args.WithNewParent(this);
++	for (int32 Index = 0; Index < HitRects.Num(); ++Index)
++	{
++		const FBox2f& Rect = HitRects[Index];
++		const FGeometry CellGeometry = AllottedGeometry.MakeChild(FVector2D(Rect.GetSize()), FSlateLayoutTransform(1.f, FVector2D(Rect.Min)));
++		HitCells[Index]->Paint(CellArgs, CellGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bEnabled);
++	}
+ }
+ 
+ void SWidgetShape::Rebuild(const UShapeWidget& Shape, const FVector2f& LocalSize, float PixelScale) const
+@@ -157,6 +490,7 @@ int32 SWidgetShape::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
+ 		Rebuild(*Shape, LocalSize, PixelScale);
+ 		BuiltHash = Hash;
+ 		bBuilt = true;
++		bHitRectsBuilt = false;
+ 	}
+ 
+ 	if (Shape->bFill && !FillMesh.IsEmpty())
+@@ -167,14 +501,31 @@ int32 SWidgetShape::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
+ 	{
+ 		PaintMesh(StrokeMesh, Shape->Stroke.Paint, /*bStroke=*/true, AllottedGeometry, OutDrawElements, LayerId + 1, InWidgetStyle);
+ 	}
+-	return LayerId + 1;
++	int32 MaxLayer = LayerId + 1;
++
++	if (HitTestsOutline() && Args.GetInheritedHittestability())
++	{
++		PaintHitCells(Args, AllottedGeometry, MyCullingRect, OutDrawElements, MaxLayer, InWidgetStyle, ShouldBeEnabled(bParentEnabled));
++	}
++	else if (HitCells.Num() > 0)
++	{
++		HitCells.Reset();
++	}
++
++	// The content over the shape, as a Border's over its brush.
++	if (HasContent())
++	{
++		MaxLayer = FMath::Max(MaxLayer, SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, MaxLayer + 1, InWidgetStyle, bParentEnabled));
++	}
++	return MaxLayer;
+ }
+ 
+ // =====================================================================================================
+ // UMG widget
+ // =====================================================================================================
+ 
+-UShapeWidget::UShapeWidget()
++UShapeWidget::UShapeWidget(const FObjectInitializer& ObjectInitializer)
++	: Super(ObjectInitializer)
+ {
+ 	Fill.Color = FLinearColor(0.9f, 0.9f, 0.9f, 1.f);
+ }
+@@ -183,7 +534,9 @@ void UShapeWidget::InvalidateShape()
+ {
+ 	if (MyShape.IsValid())
+ 	{
+-		MyShape->Invalidate(EInvalidateWidgetReason::Paint);
++		// A shape sized round its content asks for another size when its outline changes (Inscribed), or its stroke.
++		const bool bSizesToContent = bSizeToContent && GetChildrenCount() > 0;
++		MyShape->Invalidate(bSizesToContent ? EInvalidateWidgetReason::Layout : EInvalidateWidgetReason::Paint);
+ 	}
+ 	if (const TSharedPtr<SWidget> Painter = ExternalPainter.Pin())
+ 	{
+@@ -391,6 +744,82 @@ bool UShapeWidget::GetShapeColor(EWidgetShapeValue Value, FLinearColor& OutColor
+ 	return false;
+ }
+ 
++void UShapeWidget::SetContentArea(EWidgetShapeContentArea InContentArea)
++{
++	ContentArea = InContentArea;
++	if (MyShape.IsValid())
++	{
++		MyShape->Invalidate(EInvalidateWidgetReason::Layout);
++	}
++}
++
++void UShapeWidget::SetSizeToContent(bool bInSizeToContent)
++{
++	bSizeToContent = bInSizeToContent;
++	if (MyShape.IsValid())
++	{
++		MyShape->Invalidate(EInvalidateWidgetReason::Layout);
++	}
++}
++
++void UShapeWidget::SetHitTestOutline(bool bInHitTestOutline)
++{
++	bHitTestOutline = bInHitTestOutline;
++	SyncShapeVisibility();
++	if (MyShape.IsValid())
++	{
++		MyShape->Invalidate(EInvalidateWidgetReason::Paint | EInvalidateWidgetReason::Visibility);
++	}
++}
++
++bool UShapeWidget::GetContentAreaRect(FVector2D& OutTopLeft, FVector2D& OutSize) const
++{
++	if (!MyShape.IsValid() || !MyShape->GetArrangedContentArea().bIsValid)
++	{
++		return false;
++	}
++	const FBox2f& Area = MyShape->GetArrangedContentArea();
++	OutTopLeft = FVector2D(Area.Min);
++	OutSize = FVector2D(Area.GetSize());
++	return true;
++}
++
++float UShapeWidget::GetInnerStrokeWidth() const
++{
++	if (!Stroke.IsDrawn())
++	{
++		return 0.f;
++	}
++	switch (Stroke.Align)
++	{
++	case EWidgetShapeStrokeAlign::Inside: return Stroke.Width;
++	case EWidgetShapeStrokeAlign::Center: return Stroke.Width * 0.5f;
++	default: return 0.f;
++	}
++}
++
++bool UShapeWidget::IsContentProperty(const FProperty* Property)
++{
++	static const FName Content[] =
++	{
++		GET_MEMBER_NAME_CHECKED(UShapeWidget, ContentArea),
++		GET_MEMBER_NAME_CHECKED(UShapeWidget, bSizeToContent),
++		GET_MEMBER_NAME_CHECKED(UShapeWidget, bHitTestOutline)
++	};
++	if (!Property || Property->GetOwnerClass() != UShapeWidget::StaticClass())
++	{
++		return false;
++	}
++	for (const FName& Name : Content)
++	{
++		if (Property->GetFName() == Name)
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
+ bool UShapeWidget::IsLocalPointInShape(FVector2D LocalPoint) const
+ {
+ 	if (!MyShape.IsValid())
+@@ -440,21 +869,134 @@ uint32 UShapeWidget::GetMeshHash() const
+ TSharedRef<SWidget> UShapeWidget::RebuildWidget()
+ {
+ 	MyShape = SNew(SWidgetShape).Shape(this);
++
++	UPanelSlot* ContentSlot = GetContentSlot();
++	if (UShapeWidgetSlot* ShapeSlot = Cast<UShapeWidgetSlot>(ContentSlot))
++	{
++		ShapeSlot->BuildSlot(MyShape.ToSharedRef());
++	}
++	else if (ContentSlot && ContentSlot->Content)
++	{
++		MyShape->SetContent(ContentSlot->Content->TakeWidget());
++	}
++
+ 	return MyShape.ToSharedRef();
+ }
+ 
+ void UShapeWidget::SynchronizeProperties()
+ {
+ 	Super::SynchronizeProperties();
++	SyncShapeVisibility();
+ 	InvalidateShape();
+ }
+ 
++void UShapeWidget::SyncShapeVisibility()
++{
++	// Only while the outline is hit tested, and never in the designer (which picks widgets by their box, and shows hidden
++	// ones): otherwise the visibility UMG set - a Blueprint binding included - is left alone.
++	if (!MyShape.IsValid() || !bHitTestOutline || IsDesignTime())
++	{
++		return;
++	}
++	MyShape->SetRequestedVisibility(UWidget::ConvertSerializedVisibilityToRuntime(GetVisibility()));
++}
++
++void UShapeWidget::SetVisibility(ESlateVisibility InVisibility)
++{
++	Super::SetVisibility(InVisibility);
++	SyncShapeVisibility();
++}
++
+ void UShapeWidget::ReleaseSlateResources(bool bReleaseChildren)
+ {
+ 	Super::ReleaseSlateResources(bReleaseChildren);
+ 	MyShape.Reset();
+ }
+ 
++UClass* UShapeWidget::GetSlotClass() const
++{
++	return UShapeWidgetSlot::StaticClass();
++}
++
++void UShapeWidget::OnSlotAdded(UPanelSlot* InSlot)
++{
++	if (!MyShape.IsValid())
++	{
++		return;
++	}
++	if (UShapeWidgetSlot* ShapeSlot = Cast<UShapeWidgetSlot>(InSlot))
++	{
++		ShapeSlot->BuildSlot(MyShape.ToSharedRef());
++	}
++	else
++	{
++		MyShape->SetContent(InSlot && InSlot->Content ? InSlot->Content->TakeWidget() : SNullWidget::NullWidget);
++	}
++}
++
++void UShapeWidget::OnSlotRemoved(UPanelSlot* InSlot)
++{
++	if (MyShape.IsValid())
++	{
++		MyShape->SetContent(SNullWidget::NullWidget);
++	}
++}
++
++// =====================================================================================================
++// Slot
++// =====================================================================================================
++
++void UShapeWidgetSlot::BuildSlot(const TSharedRef<SWidgetShape>& InShape)
++{
++	SlateShape = InShape;
++	InShape->SetContentPadding(Padding);
++	InShape->SetContentAlignment(HorizontalAlignment, VerticalAlignment);
++	InShape->SetContent(Content ? Content->TakeWidget() : SNullWidget::NullWidget);
++}
++
++void UShapeWidgetSlot::SetPadding(FMargin InPadding)
++{
++	Padding = InPadding;
++	if (const TSharedPtr<SWidgetShape> Pinned = SlateShape.Pin())
++	{
++		Pinned->SetContentPadding(InPadding);
++	}
++}
++
++void UShapeWidgetSlot::SetHorizontalAlignment(EHorizontalAlignment InHorizontalAlignment)
++{
++	HorizontalAlignment = InHorizontalAlignment;
++	if (const TSharedPtr<SWidgetShape> Pinned = SlateShape.Pin())
++	{
++		Pinned->SetContentAlignment(HorizontalAlignment, VerticalAlignment);
++	}
++}
++
++void UShapeWidgetSlot::SetVerticalAlignment(EVerticalAlignment InVerticalAlignment)
++{
++	VerticalAlignment = InVerticalAlignment;
++	if (const TSharedPtr<SWidgetShape> Pinned = SlateShape.Pin())
++	{
++		Pinned->SetContentAlignment(HorizontalAlignment, VerticalAlignment);
++	}
++}
++
++void UShapeWidgetSlot::SynchronizeProperties()
++{
++	Super::SynchronizeProperties();
++	if (const TSharedPtr<SWidgetShape> Pinned = SlateShape.Pin())
++	{
++		Pinned->SetContentPadding(Padding);
++		Pinned->SetContentAlignment(HorizontalAlignment, VerticalAlignment);
++	}
++}
++
++void UShapeWidgetSlot::ReleaseSlateResources(bool bReleaseChildren)
++{
++	Super::ReleaseSlateResources(bReleaseChildren);
++	SlateShape.Reset();
++}
++
+ #if WITH_EDITOR
+ const FText UShapeWidget::GetPaletteCategory()
+ {
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.h b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.h
+index a9e6a65..30fa2e5 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.h
+@@ -3,9 +3,12 @@
+ #pragma once
+ 
+ #include "CoreMinimal.h"
+-#include "Components/Widget.h"
++#include "Components/ContentWidget.h"
++#include "Components/PanelSlot.h"
++#include "Layout/Margin.h"
+ #include "Rendering/RenderingCommon.h"
+-#include "Widgets/SLeafWidget.h"
++#include "Types/SlateEnums.h"
++#include "Widgets/SCompoundWidget.h"
+ 
+ #include "WidgetShapeGeometry.h"
+ #include "WidgetShapeTypes.h"
+@@ -43,6 +46,15 @@ enum class EWidgetShapeValue : uint8
+ 	StrokeColor UMETA(DisplayName = "Stroke Color")
+ };
+ 
++/** Where a shape lays out the widget it holds. */
++UENUM(BlueprintType)
++enum class EWidgetShapeContentArea : uint8
++{
++	Bounds UMETA(ToolTip = "The widget's whole box, as a Border's content - for a Rectangle, or content meant to run over the outline."),
++	InsideStroke UMETA(DisplayName = "Inside Stroke", ToolTip = "The widget's box less the part of the stroke drawn inside the outline - a framed Rectangle's content clear of its frame."),
++	Inscribed UMETA(ToolTip = "The largest rectangle inside the outline and its stroke, at the content's proportions: text in a circle, a star or a triangle stays inside it. Follows Shape Scale and Shape Rotation.")
++};
++
+ /** Whether a shape value is a color rather than a number. */
+ NAMETBD_API bool WidgetShapeValueIsColor(EWidgetShapeValue Value);
+ 
+@@ -55,36 +67,103 @@ NAMETBD_API bool WidgetShapeValueIsWhole(EWidgetShapeValue Value);
+ 
+ /**
+  * Draws a shape widget: asks it for its outline, triangulates the fill and builds the stroke (see WidgetShapeGeometry.h),
+- * and paints both as meshes.
++ * and paints both as meshes - then the one widget it holds, laid out in its Content Area, on top.
+  *
+  * The UMG widget is read live on every paint, so a value set from Blueprint, a UMG animation or a Widget Animation shows
+  * on the next frame without being pushed. The mesh is only built again when something that shapes it changes - the shape,
+  * the widget's size, or the scale it is drawn at (rounded, so a shape scaling up doesn't rebuild every frame). Colors and
+  * the render transform are applied to the cached mesh as it is painted, which costs a pass over its vertices.
++ *
++ * Hit Test Outline: the widget is then Self Hit Test Invisible and tiles its fill with invisible rectangles (built with
++ * the mesh, a handful per shape), so only the outline's inside is hovered or clicked - its content keeps its own hit area.
+  */
+-class NAMETBD_API SWidgetShape : public SLeafWidget
++class NAMETBD_API SWidgetShape : public SCompoundWidget
+ {
+ public:
+-	SLATE_BEGIN_ARGS(SWidgetShape) {}
++	SLATE_BEGIN_ARGS(SWidgetShape)
++		: _PaintOnly(false)
++	{}
++		SLATE_DEFAULT_SLOT(FArguments, Content)
+ 		SLATE_ARGUMENT(TWeakObjectPtr<const UShapeWidget>, Shape)
++		/** Only paints the shape - no content, no hit area of its own, the shape's Desired Size: a Context Menu Button's background. */
++		SLATE_ARGUMENT(bool, PaintOnly)
+ 	SLATE_END_ARGS()
+ 
+ 	void Construct(const FArguments& InArgs);
+ 
++	void SetContent(const TSharedRef<SWidget>& InContent);
++	void SetContentPadding(const FMargin& InPadding);
++	void SetContentAlignment(EHorizontalAlignment InHorizontalAlignment, EVerticalAlignment InVerticalAlignment);
++
++	/**
++	 * The visibility asked for (the UMG widget's), from now on put through the shape: Visible becomes Self Hit Test Invisible
++	 * plus the hit rectangles while the shape hit tests its outline. Not called, the widget's visibility is left as set.
++	 */
++	void SetRequestedVisibility(const TAttribute<EVisibility>& InVisibility);
++
++	/** Where the content goes in a widget of LocalSize - the shape's Content Area, before the slot's padding and alignment. */
++	FBox2f GetContentArea(const FVector2f& LocalSize) const;
++
+ 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+ 		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
+ 
+ 	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override;
++	virtual void OnArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const override;
+ 
+ 	/** The outline as last painted, in local space - for the designer's path editor. Empty before the first paint. */
+ 	const FWidgetShapeOutline& GetPaintedOutline() const { return Outline; }
+ 
++	/** The Content Area as last arranged, in local space. Invalid before the first arrange. */
++	const FBox2f& GetArrangedContentArea() const { return ArrangedArea; }
++
+ private:
+ 	void Rebuild(const UShapeWidget& ShapeWidget, const FVector2f& LocalSize, float PixelScale) const;
+ 	void PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, bool bStroke, const FGeometry& AllottedGeometry,
+ 		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle) const;
+ 
++	/** A widget is held and not collapsed. */
++	bool HasContent() const;
++
++	/** What the content asks for, its padding included. */
++	FVector2f GetContentDesiredSize() const;
++
++	/** The Inscribed area of a widget of LocalSize at Aspect, Margin clear of the outline. False when nothing fits. */
++	bool ComputeInscribed(const UShapeWidget& Shape, const FVector2f& LocalSize, float Aspect, float Margin, FBox2f& OutArea) const;
++
++	/** The size that gives the content its desired size in the Content Area: Size To Content. */
++	FVector2D ComputeSizeForContent(const UShapeWidget& Shape) const;
++
++	/** Only the outline's inside is hit: Hit Test Outline on, routed and asked to be Visible. */
++	bool HitTestsOutline() const;
++	EVisibility GetEffectiveVisibility() const;
++	void PaintHitCells(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bEnabled) const;
++
+ 	TWeakObjectPtr<const UShapeWidget> ShapeWidget;
++	bool bPaintOnly = false;
++
++	FMargin ContentPadding;
++	EHorizontalAlignment ContentHorizontalAlignment = HAlign_Center;
++	EVerticalAlignment ContentVerticalAlignment = VAlign_Center;
++
++	TAttribute<EVisibility> RequestedVisibility;
++	bool bRoutesVisibility = false;
++
++	/** The Content Area last worked out, and for what (the shape's mesh hash, the size, the content's aspect). */
++	mutable bool bAreaBuilt = false;
++	mutable uint32 AreaHash = 0;
++	mutable FBox2f AreaRect = FBox2f(ForceInit);
++	mutable FBox2f ArrangedArea = FBox2f(ForceInit);
++
++	/** Size To Content's size last worked out, and for what. */
++	mutable bool bSizeBuilt = false;
++	mutable uint32 SizeHash = 0;
++	mutable FVector2D SizeForContent = FVector2D::ZeroVector;
++
++	/** Hit Test Outline: the fill as rectangles (built with the mesh) and an invisible widget for each. */
++	mutable bool bHitRectsBuilt = false;
++	mutable TArray<FBox2f> HitRects;
++	mutable TArray<TSharedRef<SWidget>> HitCells;
+ 
+ 	mutable bool bBuilt = false;
+ 	mutable uint32 BuiltHash = 0;
+@@ -101,7 +180,47 @@ private:
+ // =====================================================================================================
+ 
+ /**
+- * The base of every shape widget: Ellipse, Triangle, Star, N-gon and Custom Shape.
++ * Where a shape lays out the one widget it holds - inside its Content Area (the shape's own setting), as a Border's slot does
++ * inside the Border.
++ */
++UCLASS(meta = (DisplayName = "Shape Slot"))
++class NAMETBD_API UShapeWidgetSlot : public UPanelSlot
++{
++	GENERATED_BODY()
++
++public:
++	/** Space kept clear round the content, inside the shape's Content Area. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Layout|Shape Slot")
++	FMargin Padding;
++
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Layout|Shape Slot")
++	TEnumAsByte<EHorizontalAlignment> HorizontalAlignment = HAlign_Center;
++
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Layout|Shape Slot")
++	TEnumAsByte<EVerticalAlignment> VerticalAlignment = VAlign_Center;
++
++	UFUNCTION(BlueprintCallable, Category = "Layout|Shape Slot")
++	void SetPadding(FMargin InPadding);
++
++	UFUNCTION(BlueprintCallable, Category = "Layout|Shape Slot")
++	void SetHorizontalAlignment(EHorizontalAlignment InHorizontalAlignment);
++
++	UFUNCTION(BlueprintCallable, Category = "Layout|Shape Slot")
++	void SetVerticalAlignment(EVerticalAlignment InVerticalAlignment);
++
++	/** Puts the content and this slot's layout on the shape's Slate widget. */
++	void BuildSlot(const TSharedRef<SWidgetShape>& InShape);
++
++	// UPanelSlot
++	virtual void SynchronizeProperties() override;
++	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
++
++private:
++	TWeakPtr<SWidgetShape> SlateShape;
++};
++
++/**
++ * The base of every shape widget: Ellipse, Rectangle, Triangle, Star, N-gon and Custom Shape.
+  *
+  * What every shape shares - the production vector tools' fill, stroke and trim:
+  *   Fill        - a color, a linear or radial gradient, or an image or material cut to the outline.
+@@ -116,14 +235,20 @@ private:
+  *
+  * Presets: the Details panel's Preset row saves a shape's settings under a name, and puts them on any other shape of the
+  * same kind from its dropdown.
++ *
++ * Holds one widget, drawn over the shape as a Border holds one: a star button's label, a badge's count, an icon in a
++ * circle - no Overlay needed. Content Area says where it goes (the box, inside the stroke, or the largest rectangle inside
++ * the outline), the slot its padding and alignment; Size To Content grows the shape round it. Hit Test Outline makes only
++ * the outline's inside hoverable and clickable. The shape is the background and the content sits on it unchanged; to bend
++ * or warp the content itself, put it in a Shape Box.
+  */
+ UCLASS(Abstract, meta = (DisplayName = "Shape"))
+-class NAMETBD_API UShapeWidget : public UWidget
++class NAMETBD_API UShapeWidget : public UContentWidget
+ {
+ 	GENERATED_BODY()
+ 
+ public:
+-	UShapeWidget();
++	UShapeWidget(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
+ 
+ 	/** Whether the inside is painted. Off leaves only the stroke - an outline shape. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Fill", meta = (DisplayName = "Fill"))
+@@ -157,6 +282,29 @@ public:
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, AdvancedDisplay, Category = "Shape Layout", meta = (DisplayName = "Smooth Edges"))
+ 	bool bAntiAlias = true;
+ 
++	/**
++	 * Where the widget the shape holds is laid out (then padded and aligned by its slot). Inscribed keeps it inside the
++	 * outline - text in a circle or a star - at the content's own proportions.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Content")
++	EWidgetShapeContentArea ContentArea = EWidgetShapeContentArea::Inscribed;
++
++	/**
++	 * With a widget inside, the shape asks for the size that gives it its desired size in the Content Area - growing round
++	 * a label as a Border does (an Inscribed circle round text ends up about 1.4 times the text). Without one, or off, the
++	 * shape asks for Desired Size.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Content", meta = (DisplayName = "Size To Content"))
++	bool bSizeToContent = true;
++
++	/**
++	 * Only the outline's inside is hovered and clicked: the corners of the box round a circle or a star let the pointer
++	 * through to what is under them. The widget inside keeps its own hit area. Applies while the shape is Visible; in the
++	 * designer the whole box is picked as before.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Content", meta = (DisplayName = "Hit Test Outline"))
++	bool bHitTestOutline = false;
++
+ 	// ---------------------------------------------------------------------------------------------
+ 	// Blueprint
+ 	// ---------------------------------------------------------------------------------------------
+@@ -226,6 +374,22 @@ public:
+ 	UFUNCTION(BlueprintPure, Category = "Shape")
+ 	bool GetShapeColor(EWidgetShapeValue Value, FLinearColor& OutColor) const;
+ 
++	UFUNCTION(BlueprintCallable, Category = "Shape|Content")
++	void SetContentArea(EWidgetShapeContentArea InContentArea);
++
++	UFUNCTION(BlueprintCallable, Category = "Shape|Content")
++	void SetSizeToContent(bool bInSizeToContent);
++
++	UFUNCTION(BlueprintCallable, Category = "Shape|Content")
++	void SetHitTestOutline(bool bInHitTestOutline);
++
++	/**
++	 * Where the widget the shape holds is laid out, in widget-local space, as last arranged - the Content Area before the
++	 * slot's padding and alignment. False before the shape is shown.
++	 */
++	UFUNCTION(BlueprintPure, Category = "Shape|Content")
++	bool GetContentAreaRect(FVector2D& OutTopLeft, FVector2D& OutSize) const;
++
+ 	/** Whether a widget-local point is on the shape's fill as last drawn (even-odd, holes excluded). */
+ 	UFUNCTION(BlueprintPure, Category = "Shape")
+ 	bool IsLocalPointInShape(FVector2D LocalPoint) const;
+@@ -249,9 +413,18 @@ public:
+ 	/** A hash of everything that changes the mesh. A shape adds its own settings to the base's. */
+ 	virtual uint32 GetMeshHash() const;
+ 
+-	/** Repaints. Called by every setter; anything changing a shape's settings directly should call it too. */
++	/** Repaints (and lays out again, when the shape sizes to a widget it holds). Called by every setter; anything changing a shape's settings directly should call it too. */
+ 	void InvalidateShape();
+ 
++	/** How far the stroke reaches inside the outline: all of it Inside, half Centered, none Outside or not drawn. */
++	float GetInnerStrokeWidth() const;
++
++	/**
++	 * Whether a property is one of the Content settings (Content Area, Size To Content, Hit Test Outline): how the shape holds
++	 * a widget, not how it looks - kept out of Looks, Shape tracks, Flow List item looks and presets, as Desired Size is.
++	 */
++	static bool IsContentProperty(const FProperty* Property);
++
+ 	/**
+ 	 * The paint an image or material set on the shape as a whole goes to: the outline's when it is drawn with an image,
+ 	 * otherwise the fill's. What a Context Menu Button's Design Target swaps and sets parameters on.
+@@ -265,6 +438,7 @@ public:
+ 	// UWidget
+ 	virtual void SynchronizeProperties() override;
+ 	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
++	virtual void SetVisibility(ESlateVisibility InVisibility) override;
+ 
+ #if WITH_EDITOR
+ 	virtual const FText GetPaletteCategory() override;
+@@ -273,6 +447,14 @@ public:
+ protected:
+ 	virtual TSharedRef<SWidget> RebuildWidget() override;
+ 
++	// UPanelWidget
++	virtual UClass* GetSlotClass() const override;
++	virtual void OnSlotAdded(UPanelSlot* InSlot) override;
++	virtual void OnSlotRemoved(UPanelSlot* InSlot) override;
++
++	/** Routes the widget's visibility through the Slate shape (Hit Test Outline), at runtime only. */
++	void SyncShapeVisibility();
++
+ 	TSharedPtr<SWidgetShape> MyShape;
+ 
+ public:
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeAnimation.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeAnimation.cpp
+index bbedbb2..1058b1f 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeAnimation.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeAnimation.cpp
+@@ -72,7 +72,7 @@ namespace WidgetShapeAnimation
+ 			{
+ 				continue;
+ 			}
+-			if (Property->GetFName() == DesiredSize)
++			if (Property->GetFName() == DesiredSize || UShapeWidget::IsContentProperty(Property))
+ 			{
+ 				continue;
+ 			}
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.cpp
+index 4cf877f..6c0f7a4 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.cpp
+@@ -1529,3 +1529,297 @@ namespace WidgetShapeGeometry
+ 		return Length;
+ 	}
+ }
++
++// =====================================================================================================
++// Content area and hit area
++// =====================================================================================================
++
++namespace WidgetShapeGeometryPrivate
++{
++	/** Every edge of every contour of three points or more, open ones closed across their ends - as IsInside reads them. */
++	void GatherEdges(const FWidgetShapeOutline& Outline, TArray<TPair<FVector2f, FVector2f>>& OutEdges, FBox2f& OutBounds)
++	{
++		OutEdges.Reset();
++		OutBounds = FBox2f(ForceInit);
++		for (const FWidgetShapeLine& Line : Outline.Lines)
++		{
++			const int32 Count = Line.Points.Num();
++			if (Count < 3)
++			{
++				continue;
++			}
++			for (int32 Index = 0, Previous = Count - 1; Index < Count; Previous = Index++)
++			{
++				OutEdges.Emplace(Line.Points[Previous], Line.Points[Index]);
++				OutBounds += Line.Points[Index];
++			}
++		}
++	}
++
++	/** Whether any part of the segment A-B lies in the box, its edges included (Liang-Barsky clipping). */
++	bool SegmentTouchesBox(const FVector2f& A, const FVector2f& B, const FVector2f& BoxMin, const FVector2f& BoxMax)
++	{
++		const FVector2f Delta = B - A;
++		const float Direction[4] = { -Delta.X, Delta.X, -Delta.Y, Delta.Y };
++		const float Room[4] = { A.X - BoxMin.X, BoxMax.X - A.X, A.Y - BoxMin.Y, BoxMax.Y - A.Y };
++		float Enter = 0.f;
++		float Leave = 1.f;
++		for (int32 Side = 0; Side < 4; ++Side)
++		{
++			if (FMath::IsNearlyZero(Direction[Side]))
++			{
++				if (Room[Side] < 0.f)
++				{
++					return false;
++				}
++				continue;
++			}
++			const float Crossing = Room[Side] / Direction[Side];
++			if (Direction[Side] < 0.f)
++			{
++				if (Crossing > Leave)
++				{
++					return false;
++				}
++				Enter = FMath::Max(Enter, Crossing);
++			}
++			else
++			{
++				if (Crossing < Enter)
++				{
++					return false;
++				}
++				Leave = FMath::Min(Leave, Crossing);
++			}
++		}
++		return Enter <= Leave;
++	}
++
++	/** Grows rectangles at one aspect about a point until they touch the outline. */
++	struct FInscribedSearch
++	{
++		const FWidgetShapeOutline& Outline;
++		TArray<TPair<FVector2f, FVector2f>> Edges;
++		float Aspect = 1.f;
++		float Margin = 0.f;
++		float MaxHalfHeight = 0.f;
++
++		explicit FInscribedSearch(const FWidgetShapeOutline& InOutline) : Outline(InOutline) {}
++
++		/** No edge crosses or touches the rectangle of HalfHeight about Center, grown by Margin. */
++		bool Fits(const FVector2f& Center, float HalfHeight) const
++		{
++			const FVector2f Half(Aspect * HalfHeight + Margin, HalfHeight + Margin);
++			const FVector2f BoxMin = Center - Half;
++			const FVector2f BoxMax = Center + Half;
++			for (const TPair<FVector2f, FVector2f>& Edge : Edges)
++			{
++				if (SegmentTouchesBox(Edge.Key, Edge.Value, BoxMin, BoxMax))
++				{
++					return false;
++				}
++			}
++			return true;
++		}
++
++		/**
++		 * The half height of the largest rectangle about Center that fits, or -1 when Center isn't on the fill. With no edge
++		 * touching it and its middle on the fill, the whole rectangle is: nothing inside it can be a hole's edge.
++		 */
++		float Largest(const FVector2f& Center) const
++		{
++			if (!WidgetShapeGeometry::IsInside(Outline, Center) || !Fits(Center, 0.f))
++			{
++				return -1.f;
++			}
++			if (Fits(Center, MaxHalfHeight))
++			{
++				return MaxHalfHeight;
++			}
++			float Low = 0.f;
++			float High = MaxHalfHeight;
++			for (int32 Step = 0; Step < 18; ++Step)
++			{
++				const float Middle = (Low + High) * 0.5f;
++				if (Fits(Center, Middle))
++				{
++					Low = Middle;
++				}
++				else
++				{
++					High = Middle;
++				}
++			}
++			return Low;
++		}
++	};
++}
++
++namespace WidgetShapeGeometry
++{
++	bool FindInscribedRect(const FWidgetShapeOutline& Outline, float Aspect, float Margin, FBox2f& OutRect)
++	{
++		using namespace WidgetShapeGeometryPrivate;
++
++		FInscribedSearch Search(Outline);
++		FBox2f Bounds(ForceInit);
++		GatherEdges(Outline, Search.Edges, Bounds);
++		if (!Bounds.bIsValid || Search.Edges.Num() < 3)
++		{
++			return false;
++		}
++
++		Search.Aspect = FMath::Clamp(Aspect, 0.01f, 100.f);
++		Search.Margin = FMath::Max(Margin, 0.f);
++		const FVector2f Extent = Bounds.GetSize();
++		Search.MaxHalfHeight = FMath::Min(Extent.Y, Extent.X / Search.Aspect) * 0.5f;
++		if (Search.MaxHalfHeight <= 0.f)
++		{
++			return false;
++		}
++
++		// Where to start: the middle, the centroid (a triangle's room is low in it), and a grid between.
++		TArray<FVector2f, TInlineAllocator<12>> Starts;
++		Starts.Add(Bounds.GetCenter());
++		{
++			float Area = 0.f;
++			FVector2f Weighted = FVector2f::ZeroVector;
++			for (const TPair<FVector2f, FVector2f>& Edge : Search.Edges)
++			{
++				const float Cross = Edge.Key.X * Edge.Value.Y - Edge.Value.X * Edge.Key.Y;
++				Area += Cross;
++				Weighted += (Edge.Key + Edge.Value) * Cross;
++			}
++			if (!FMath::IsNearlyZero(Area))
++			{
++				Starts.Add(Weighted / (3.f * Area));
++			}
++		}
++		for (int32 Row = 1; Row <= 3; ++Row)
++		{
++			for (int32 Column = 1; Column <= 3; ++Column)
++			{
++				if (Row != 2 || Column != 2)
++				{
++					Starts.Add(Bounds.Min + Extent * FVector2f(Column * 0.25f, Row * 0.25f));
++				}
++			}
++		}
++
++		FVector2f Best = Starts[0];
++		float BestHalf = -1.f;
++		for (const FVector2f& Start : Starts)
++		{
++			const float Half = Search.Largest(Start);
++			if (Half > BestHalf)
++			{
++				BestHalf = Half;
++				Best = Start;
++			}
++		}
++		if (BestHalf <= 0.f)
++		{
++			return false;
++		}
++
++		// Moved toward more room, eight ways, the step halved whenever no way gives more.
++		static const FVector2f Ways[8] =
++		{
++			FVector2f(1.f, 0.f), FVector2f(-1.f, 0.f), FVector2f(0.f, 1.f), FVector2f(0.f, -1.f),
++			FVector2f(0.7071f, 0.7071f), FVector2f(-0.7071f, 0.7071f), FVector2f(0.7071f, -0.7071f), FVector2f(-0.7071f, -0.7071f)
++		};
++		const float LongestSide = FMath::Max(Extent.X, Extent.Y);
++		float StepLength = LongestSide * 0.125f;
++		for (int32 Round = 0; Round < 64 && StepLength > LongestSide * 0.002f; ++Round)
++		{
++			FVector2f Moved = Best;
++			float MovedHalf = BestHalf;
++			for (const FVector2f& Way : Ways)
++			{
++				const FVector2f Candidate = Best + Way * StepLength;
++				const float Half = Search.Largest(Candidate);
++				if (Half > MovedHalf + KINDA_SMALL_NUMBER)
++				{
++					MovedHalf = Half;
++					Moved = Candidate;
++				}
++			}
++			if (MovedHalf > BestHalf)
++			{
++				Best = Moved;
++				BestHalf = MovedHalf;
++			}
++			else
++			{
++				StepLength *= 0.5f;
++			}
++		}
++
++		const FVector2f HalfSize(Search.Aspect * BestHalf, BestHalf);
++		OutRect = FBox2f(Best - HalfSize, Best + HalfSize);
++		return true;
++	}
++
++	void BuildFillRects(const FWidgetShapeOutline& Outline, float RowHeight, int32 MaxRows, TArray<FBox2f>& OutRects)
++	{
++		using namespace WidgetShapeGeometryPrivate;
++
++		OutRects.Reset();
++		TArray<TPair<FVector2f, FVector2f>> Edges;
++		FBox2f Bounds(ForceInit);
++		GatherEdges(Outline, Edges, Bounds);
++		const float Height = Bounds.bIsValid ? Bounds.Max.Y - Bounds.Min.Y : 0.f;
++		if (Edges.Num() < 3 || Height <= 0.f)
++		{
++			return;
++		}
++
++		const int32 Rows = FMath::Clamp(FMath::CeilToInt32(Height / FMath::Max(RowHeight, 0.01f)), 1, FMath::Max(MaxRows, 1));
++		const float Step = Height / static_cast<float>(Rows);
++		constexpr float SameEdge = 0.25f;
++
++		TArray<float> Crossings;
++		TArray<int32> Open;
++		TArray<int32> NextOpen;
++		for (int32 Row = 0; Row < Rows; ++Row)
++		{
++			const float Top = Bounds.Min.Y + Step * static_cast<float>(Row);
++			const float Bottom = Top + Step;
++			const float Y = Top + Step * 0.5f;
++
++			Crossings.Reset();
++			for (const TPair<FVector2f, FVector2f>& Edge : Edges)
++			{
++				const FVector2f& A = Edge.Key;
++				const FVector2f& B = Edge.Value;
++				if ((A.Y <= Y) != (B.Y <= Y))
++				{
++					Crossings.Add(A.X + (Y - A.Y) * (B.X - A.X) / (B.Y - A.Y));
++				}
++			}
++			Crossings.Sort();
++
++			// Even-odd: inside between the first and second crossing, the third and fourth...
++			const int32 Spans = Crossings.Num() / 2;
++			const bool bSameCount = Open.Num() == Spans;
++			NextOpen.Reset();
++			for (int32 Span = 0; Span < Spans; ++Span)
++			{
++				const float Left = Crossings[Span * 2];
++				const float Right = Crossings[Span * 2 + 1];
++				if (bSameCount)
++				{
++					FBox2f& Above = OutRects[Open[Span]];
++					if (FMath::Abs(Above.Min.X - Left) <= SameEdge && FMath::Abs(Above.Max.X - Right) <= SameEdge)
++					{
++						Above.Max.Y = Bottom;
++						NextOpen.Add(Open[Span]);
++						continue;
++					}
++				}
++				NextOpen.Add(OutRects.Add(FBox2f(FVector2f(Left, Top), FVector2f(Right, Bottom))));
++			}
++			Swap(Open, NextOpen);
++		}
++	}
++}
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.h b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.h
+index 097c24b..eccd4d1 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.h
+@@ -181,4 +181,19 @@ namespace WidgetShapeGeometry
+ 
+ 	/** The length of a line of points, closed back to its start when bClosed. */
+ 	NAMETBD_API float GetLength(const TArray<FVector2f>& Points, bool bClosed);
++
++	/**
++	 * The largest rectangle at Aspect (width over height) inside the outline's fill - holes kept out - with Margin to spare
++	 * all round: where a shape's content goes when its Content Area is Inscribed, so text in a circle, a star or a triangle
++	 * stays inside it. Searched rather than solved: grown about the box's middle, the outline's centroid and a few points
++	 * between, then moved toward more room until a step is a fraction of a unit. False when nothing fits.
++	 */
++	NAMETBD_API bool FindInscribedRect(const FWidgetShapeOutline& Outline, float Aspect, float Margin, FBox2f& OutRect);
++
++	/**
++	 * The outline's fill as rectangles, one row of spans every RowHeight (at most MaxRows rows), a span carried on down while
++	 * the rows below it start and end within a quarter of a unit of it - so a rectangle stays one, and a circle takes a few
++	 * dozen. What a shape that is only hit inside its outline puts into the hit-test grid.
++	 */
++	NAMETBD_API void BuildFillRects(const FWidgetShapeOutline& Outline, float RowHeight, int32 MaxRows, TArray<FBox2f>& OutRects);
+ }
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapePresets.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapePresets.cpp
+index 0d5f398..b6d6255 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapePresets.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapePresets.cpp
+@@ -146,7 +146,7 @@ namespace WidgetShapePresets
+ 			{
+ 				continue;
+ 			}
+-			if (Property->GetFName() == DesiredSize || (bOutlineOnly && IsLookProperty(Property)))
++			if (Property->GetFName() == DesiredSize || UShapeWidget::IsContentProperty(Property) || (bOutlineOnly && IsLookProperty(Property)))
+ 			{
+ 				continue;
+ 			}

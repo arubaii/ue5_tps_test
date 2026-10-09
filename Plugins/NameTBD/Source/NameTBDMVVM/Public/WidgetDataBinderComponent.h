@@ -7,6 +7,7 @@
 #include "Extensions/UIComponent.h"
 #include "INotifyFieldValueChanged.h"
 #include "Misc/EngineVersionComparison.h"
+#include "StructUtils/InstancedStruct.h"
 #include "UObject/ObjectKey.h"
 #include "WidgetDataBindingTypes.h"
 #include "WidgetDataValues.h"
@@ -20,6 +21,16 @@ class UWidgetDataBinderComponent;
 class UWidgetDataBinderEventProxy;
 class UWidgetAnimationComponent;
 
+/** What the designer's Data Preview can do to a list, to try its animations. */
+enum class EWidgetDataListEdit : uint8
+{
+	AddRow,
+	RemoveRow,
+	Shuffle,
+	Reverse,
+	MoveOneUp
+};
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FWidgetDataTriggerEvent, FName, TriggerName, bool, bActive);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FWidgetDataBinderEvent, UWidgetDataBinderComponent*, Binder);
 
@@ -27,11 +38,16 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FWidgetDataBinderEvent, UWidgetDataB
  * Connects a widget's ViewModel to the gameplay object it describes, and plays Widget Animations when the
  * ViewModel changes, with no glue graphs.
  *
- * Select a widget in the hierarchy, press Add Component, pick Widget Data Binder Component, then fill two
+ * Select a widget in the hierarchy, press Add Component, pick Widget Data Binder Component, then fill the
  * tables in Details:
  *  - Field Bindings: a value on the source ("HealthComponent.Health") copied into a ViewModel field.
- *  - Triggers: a condition on a ViewModel field (Is True, Health Percent < 0.25, Changed) that plays or
- *    stops Anim IDs, edge-triggered.
+ *  - Triggers: a condition on a ViewModel field (Is True, Health Percent < 0.25, Score > Best Score, Changed,
+ *    Went Up / Went Down) that plays or stops Anim IDs, edge-triggered - or a field driving a value track, a
+ *    progress, a state machine input, an Animation Parameter, or another field counted to it (a score ticking up).
+ *  - List Bindings: a ViewModel array shown as one entry widget per element in a Flow List or panel, matched by
+ *    key, so rows arrive, leave and move rather than being rebuilt - a leaderboard.
+ * Then try it without playing: Mock Values and Sample Sets, stepped through in the binder's Data Preview, run
+ * the triggers and lists in the designer exactly as the game will.
  * Whoever creates the widget hands it its source with one call, Set Widget Data Source (Row, Pawn), and
  * can call it again at any time to point the same widget at another object.
  *
@@ -99,16 +115,40 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Triggers", meta = (TitleProperty = "{ViewModelField} {Condition} -> {Action} {AnimIds}"))
 	TArray<FWidgetFieldTrigger> Triggers;
 
+	/** ViewModel array -> one entry widget per element, in a Flow List or panel, matched by Key Field. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "List Bindings", meta = (TitleProperty = "{ViewModelField} -> {ListWidget} ({EntryWidgetClass})"))
+	TArray<FWidgetListBinding> ListBindings;
+
 	/** Values written into the ViewModel for previewing, instead of a live source. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mock Data", meta = (TitleProperty = "{ViewModelField} = {Value}"))
 	TArray<FWidgetDataMockValue> MockValues;
 
 	/**
 	 * Writes Mock Values into the ViewModel in the UMG designer, so View Bindings show them if the ViewModel
-	 * plugin runs bindings there. Triggers don't play in the designer.
+	 * plugin runs bindings there. With Run Triggers In Designer, the triggers and List Bindings act on them too.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mock Data")
 	bool bUseMockDataInDesigner = true;
+
+	/**
+	 * The triggers, counts and List Bindings run in the UMG designer too, on the Mock Values and whatever the Data
+	 * Preview (at the top of these Details) shows - a sample set, a value typed there, a list shuffled - so the widget
+	 * reacts in the designer exactly as it will in game, without Play In Editor. Nothing they do there is saved.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mock Data")
+	bool bRunTriggersInDesigner = true;
+
+	/**
+	 * Moments of sample data, each put over the Mock Values: stepped through in the Data Preview (previous / next /
+	 * play), so each step's changes animate - a leaderboard reshuffled, a score going up, a row arriving. Apply Sample
+	 * Set puts one on at runtime, for testing a screen on its own.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mock Data", meta = (TitleProperty = "Name"))
+	TArray<FWidgetDataSampleSet> SampleSets;
+
+	/** The Data Preview's Play: seconds on each sample set. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mock Data", meta = (ClampMin = "0.25", UIMin = "0.5", UIMax = "10", Units = "s"))
+	float SampleSetInterval = 2.f;
 
 	/**
 	 * Writes Mock Values when the game has set no source (and again when the source is cleared), and runs
@@ -159,6 +199,61 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Data Binder")
 	void RefreshFromSource();
 
+	/**
+	 * Writes the Mock Values, then sample set Index's values and lists, into the ViewModel: the triggers and List Bindings
+	 * act on whatever changed, as on a real change. For testing a screen on its own; the designer's Data Preview steps
+	 * through the sets. False when there is no such set or no ViewModel yet.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Data Binder")
+	bool ApplySampleSet(int32 SetIndex);
+
+	/**
+	 * Sets a ViewModel field from text, written as the Details panel writes it (42, 0.25, true, an enum's name, an array
+	 * as Unreal exports one). Broadcast as any change, so View Bindings, triggers and List Bindings follow. False when the
+	 * field isn't there or the text isn't a value of its type.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Data Binder")
+	bool SetViewModelFieldFromText(FName FieldName, const FString& ValueText);
+
+	/** A ViewModel field's value as text (an array as its length, "3 rows"). False when there is no such field or no ViewModel. */
+	UFUNCTION(BlueprintPure, Category = "Data Binder")
+	bool GetViewModelFieldAsText(FName FieldName, FString& OutValueText) const;
+
+	/** The entry widgets List Binding ListIndex shows now, in order. */
+	UFUNCTION(BlueprintPure, Category = "Data Binder")
+	TArray<UUserWidget*> GetListEntries(int32 ListIndex) const;
+
+	/**
+	 * Gives the binder one element of a list to show - what a List Binding does for each entry it makes: each field of the
+	 * struct is copied into the ViewModel field of the same name, and Position into the field PositionFieldName (if any).
+	 * Kept, and put on again whenever the binder binds a ViewModel. C++: a struct can't be passed generically to Blueprint.
+	 */
+	void SetItemData(const UScriptStruct* Struct, const void* Data, FName PositionFieldName, int32 Position);
+
+	/** As SetItemData for an object element (the binder's source or ViewModel): only the position. */
+	void SetItemPosition(FName PositionFieldName, int32 Position);
+
+	/** The array edits the Data Preview offers on a list's field, to try its animations. False when the field isn't an array. */
+	bool EditListForPreview(FName FieldName, EWidgetDataListEdit Edit);
+
+	/** The Data Preview's sample set (INDEX_NONE: only the Mock Values). Applied at once when bound. */
+	void SetPreviewSampleSet(int32 SetIndex);
+	int32 GetPreviewSampleSet() const { return PreviewSampleSet; }
+
+	/** Bound in the designer (Run Triggers In Designer): what the Data Preview shows and changes. */
+	bool IsDesignBound() const { return bDesignBound; }
+
+#if WITH_EDITOR
+	/**
+	 * The designer's live copies of this binder - the template the Details edit - or this one when it is a live copy. The
+	 * Data Preview acts on these.
+	 */
+	TArray<UWidgetDataBinderComponent*> FindDesignerPreviews() const;
+
+	/** Takes the template's authored settings (the designer doesn't copy a component's edits until it compiles) and binds again. */
+	void RefreshDesignerPreviewFrom(const UWidgetDataBinderComponent* Template);
+#endif
+
 	/** The Widget Data Binder Component on Widget, or null. */
 	UFUNCTION(BlueprintPure, Category = "Data Binder")
 	static UWidgetDataBinderComponent* FindWidgetDataBinder(const UWidget* Widget);
@@ -185,6 +280,14 @@ public:
 
 	UFUNCTION()
 	TArray<FString> GetAnimationWidgetOptions() const;
+
+	/** The ViewModel Class's array fields. */
+	UFUNCTION()
+	TArray<FString> GetListFieldOptions() const;
+
+	/** The members of the elements of the ViewModel Class's array fields - what can tell elements apart. */
+	UFUNCTION()
+	TArray<FString> GetListKeyFieldOptions() const;
 
 	virtual void BeginDestroy() override;
 
@@ -223,13 +326,36 @@ private:
 	struct FTriggerState
 	{
 		FWidgetDataPath FieldPath;
+		FWidgetDataPath CompareFieldPath;
 		bool bActive = false;
 		bool bHasLastText = false;
 		FString LastText;
 		/** Set Value: the last value sent, so an unchanged field sends nothing. */
 		bool bHasLastValue = false;
 		FVector4 LastValue = FVector4(0.0, 0.0, 0.0, 0.0);
+		/** Went Up / Went Down, Count Into Field: the number last seen. */
+		bool bHasLastNumber = false;
+		double LastNumber = 0.0;
+		/** Count Into Field: the field counted, and where the count is. */
+		const FProperty* CountProperty = nullptr;
+		bool bCounting = false;
+		bool bHasCountShown = false;
+		double CountFrom = 0.0;
+		double CountTarget = 0.0;
+		double CountShown = 0.0;
+		float CountElapsed = 0.f;
 		bool bWarned = false;
+	};
+
+	/** Per List Binding: the keys shown and their entries, in order. Kept across rebinding, so entries are reused. */
+	struct FListState
+	{
+		FWidgetDataPath FieldPath;
+		TArray<FString> Keys;
+		TArray<TWeakObjectPtr<UUserWidget>> Entries;
+		bool bFilled = false;
+		bool bWarned = false;
+		bool bWarnedNoEntryBinder = false;
 	};
 
 	void SetBinderOwner(UWidget* NewOwner);
@@ -248,7 +374,11 @@ private:
 	/** Reads one Field Binding from the source and writes it into the ViewModel if it changed. */
 	void PushBinding(int32 BindingIndex);
 
-	void ApplyMockValues(UObject* ViewModel);
+	/** Writes the Mock Values, all but those of the fields in Skip (a sample set's own). */
+	void ApplyMockValues(UObject* ViewModel, const TSet<FName>* Skip = nullptr);
+
+	/** The fields sample set SetIndex writes. */
+	TSet<FName> GetSampleSetFields(int32 SetIndex) const;
 	void ApplyDesignTimeMock();
 
 	void HandleViewModelFieldChanged(UObject* Object, UE::FieldNotification::FFieldId FieldId);
@@ -274,6 +404,37 @@ private:
 
 	/** Set Animation Parameter: the field's value as the parameter named Parameter Name, on the widget the trigger reaches. */
 	void SetAnimationParameter(const FWidgetFieldTrigger& Trigger, const FWidgetDataValue& Value);
+
+	/** Count Into Field: writes Number into the trigger's Count Field - a number, or text written out. */
+	void WriteCount(int32 TriggerIndex, double Number);
+
+	/** Advances every count running. True while any still is. */
+	bool TickCounts(float DeltaTime);
+
+	/** Shows List Binding ListIndex's array: entries added, removed, moved and given their elements. bInitial: nothing animates. */
+	void ReconcileList(int32 ListIndex, bool bInitial);
+	void ReconcileAllLists(bool bInitial);
+
+	/** Hands element Position of a list (at ElementPtr, of type Inner) to its entry's Widget Data Binder. */
+	void PushListElement(int32 ListIndex, UUserWidget* Entry, const FProperty* Inner, const void* ElementPtr, int32 Position);
+
+	/** Copies the item data and position (SetItemData) into the ViewModel. */
+	void ApplyItemData();
+
+	/** Writes sample set SetIndex's values and lists into ViewModel. */
+	void ApplySampleSetValues(UObject* ViewModel, int32 SetIndex);
+
+	/** Imports Text into Field of ViewModel and writes it (broadcast when it changed). */
+	bool WriteFieldFromText(UObject* ViewModel, FName FieldName, const FString& ValueText, bool bWarn);
+
+	/** Builds the value of list field ArrayProperty from sample rows into ArrayValue, reusing ViewModel's current objects by key. */
+	void BuildSampleArray(UObject* ViewModel, const FArrayProperty* ArrayProperty, const TArray<FString>& Rows, void* ArrayValue);
+
+	/** At design time: binds the ViewModel with the Mock Values (and the preview's sample set) and runs the triggers and lists on it. */
+	void BindForDesigner();
+
+	/** At design time: keeps the designer repainting for a while, as something plays that a core ticker drives. */
+	void KeepDesignerAwake(float Seconds);
 
 	/**
 	 * What owns a trigger's Anim IDs: outwards from its Animation Widget to the first Widget Animation Component on a
@@ -318,6 +479,30 @@ private:
 	TArray<TPair<UE::FieldNotification::FFieldId, FDelegateHandle>> ViewModelHandles;
 
 	FTSTicker::FDelegateHandle TickerHandle;
+
+	TArray<FListState> ListStates;
+
+	/** The entries List Bindings made, kept alive with their lists. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UUserWidget>> ListEntryWidgets;
+
+	/** SetItemData: one list element this binder shows. */
+	UPROPERTY(Transient)
+	FInstancedStruct ItemData;
+
+	FName ItemPositionField;
+	int32 ItemPosition = INDEX_NONE;
+
+	/** The Data Preview's sample set, at design time. */
+	int32 PreviewSampleSet = INDEX_NONE;
+
+	/** Bound by BindForDesigner. */
+	bool bDesignBound = false;
+
+	/** Count Into Field: some count is running. */
+	bool bAnyCounting = false;
+
+	double DesignerAwakeUntil = 0.0;
 
 	bool bOwnerConstructed = false;
 	bool bHadSource = false;

@@ -692,6 +692,14 @@ public:
 	void NotifyOwnerDesignTimeRefresh();
 
 	/**
+	 * At design time, lets what is played by name - Play / Stop Widget Animations By Id, Set Widget Animation Value and
+	 * Progress - play on the designer's preview, on the runtime clock, from the widget's authored pose: what a Widget Data
+	 * Binder previewing its data in the designer calls before it plays anything. Ends (everything stopped, the pose put
+	 * back) when the designer rebuilds the preview. No-op at runtime or once the owner is constructed.
+	 */
+	void BeginDesignTimePlayback();
+
+	/**
 	 * The owner - an animated text widget - was given a new text: plays the Anim In entries set to Play When Text
 	 * Changes, from their start, leaving everything else playing. Runtime only. When it arrives in the middle of a frame
 	 * being applied - a text set by an event the animation fired - it plays as soon as that frame is done. False when
@@ -827,6 +835,10 @@ private:
 	TArray<FWidgetAnimSetParameterGroup> SetParameterGroups;
 
 	bool bOwnerConstructed = false;
+
+	/** BeginDesignTimePlayback: the runtime clock plays at design time. */
+	bool bDesignTimePlayback = false;
+
 	bool bApplyingVisibility = false;
 	bool bLastSeenVisible = false;
 

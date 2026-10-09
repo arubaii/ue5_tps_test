@@ -50,6 +50,8 @@
 #include "WidgetAnimMotionPath.h"
 #include "WidgetSpringPresets.h"
 #include "NameTBD/Widgets/FlowList/FlowListItemStyle.h"
+#include "WidgetDataBinderComponent.h"
+#include "WidgetDataBinderDetails.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
 
@@ -132,6 +134,11 @@ void FNameTBDEditorModule::StartupModule()
 	PropertyModule.RegisterCustomClassLayout(
 		UFlowListItemStyle::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FFlowListItemStyleDetails::MakeInstance));
+
+	// A Widget Data Binder's Data Preview: its data live in the designer - sample sets stepped through, values typed, lists changed.
+	PropertyModule.RegisterCustomClassLayout(
+		UWidgetDataBinderComponent::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetDataBinderDetails::MakeInstance));
 	PropertyModule.NotifyCustomizationModuleChanged();
 
 	// The ready-made buttons: their parts built once placed (never per drop preview), each with its Widget Blueprint GUID.
@@ -284,6 +291,7 @@ void FNameTBDEditorModule::ShutdownModule()
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimParameterValue"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("ShapeWidget"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("FlowListItemStyle"));
+		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetDataBinderComponent"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetSpringParams"));
 
 	}

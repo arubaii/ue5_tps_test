@@ -1,0 +1,3062 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp
+index 3b4bea4..e8b672e 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp
+@@ -950,7 +950,7 @@ void UWidgetAnimationComponent::ShutdownRuntimeClock()
+ void UWidgetAnimationComponent::RuntimeTick(float DeltaTime)
+ {
+ 	UWidget* AnimatedWidget = AnimOwner.Get();
+-	if (!AnimatedWidget || !bOwnerConstructed)
++	if (!AnimatedWidget || !(bOwnerConstructed || bDesignTimePlayback))
+ 	{
+ 		StopRuntimeTicking();
+ 		return;
+@@ -958,7 +958,7 @@ void UWidgetAnimationComponent::RuntimeTick(float DeltaTime)
+ 
+ 	// A component cannot intercept its owner's SetVisibility, so becoming visible is noticed here instead.
+ 	// The pose is applied in the same frame (see ApplyCurrentAnimPose), before Slate draws the widget.
+-	if (ReactsToVisibility() && !bPlayOnlyOnConstructAndDestruct)
++	if (bOwnerConstructed && ReactsToVisibility() && !bPlayOnlyOnConstructAndDestruct)
+ 	{
+ 		const bool bVisibleNow = IsVisibleState(AnimatedWidget->GetVisibility());
+ 		if (bVisibleNow && !bLastSeenVisible && !bIsDeferringVisibility)
+@@ -1563,9 +1563,9 @@ bool UWidgetAnimationComponent::SetWidgetAnimationValues(const FWidgetAnimValueI
+ 		return false;
+ 	}
+ 
+-	// Nothing plays before the owner is constructed (or at all in the designer), so the value is only remembered: the
+-	// tracks start from it when they do start, rather than from their Start Value.
+-	if (!AnimOwner.IsValid() || !bOwnerConstructed)
++	// Nothing plays before the owner is constructed (or in the designer, unless a data preview plays there), so the value
++	// is only remembered: the tracks start from it when they do start, rather than from their Start Value.
++	if (!AnimOwner.IsValid() || !(bOwnerConstructed || bDesignTimePlayback))
+ 	{
+ 		UWidgetAnimLibrary::SetWidgetAnimTrackValue(AnimPlayer, Id, Value, /*bSnap=*/true);
+ 		return false;
+@@ -2092,6 +2092,15 @@ void UWidgetAnimationComponent::NotifyOwnerDesignTimeRefresh()
+ 		StopDesignerStateMachinePreview();
+ 	}
+ 
++	// A data preview's playing ends: whoever plays by name again starts it again, from the pose read below.
++	if (bDesignTimePlayback)
++	{
++		bDesignTimePlayback = false;
++		StopRuntimeTicking();
++		UWidgetAnimLibrary::StopWidgetAnimTracks(AnimPlayer, TArray<FName>(), /*bRemoveTracks=*/true);
++		AnimPlayer.Phase = EWidgetAnimPhase::Idle;
++	}
++
+ 	// Put back whatever a previous preview left before reading the authored pose again.
+ 	if (AnimBaselines.bCaptured)
+ 	{
+@@ -2123,6 +2132,31 @@ void UWidgetAnimationComponent::NotifyOwnerDesignTimeRefresh()
+ 	EnsureDesignerPreviewTimer();
+ }
+ 
++void UWidgetAnimationComponent::BeginDesignTimePlayback()
++{
++	UWidget* AnimatedWidget = AnimOwner.Get();
++	if (bDesignTimePlayback || bOwnerConstructed || !AnimatedWidget || !AnimatedWidget->IsDesignTime())
++	{
++		return;
++	}
++
++	// The toolbar's preview poses the same widgets: it gives way, as it does to the state machine preview.
++	if (DesignerPreviewModeOverride.IsSet() || PreviewTimerHandle.IsValid())
++	{
++		StopDesignerPreview();
++	}
++
++	bDesignTimePlayback = true;
++	if (EffectiveInEntries.Num() == 0 && EffectiveOutEntries.Num() == 0)
++	{
++		RebuildEffectiveAnimations();
++	}
++
++	// The designer captured the authored pose already (NotifyOwnerDesignTimeRefresh): this keeps it.
++	EnsureRuntimeBaselines();
++	StartRuntimeTicking();
++}
++
+ void UWidgetAnimationComponent::EnsureDesignerPreviewTimer()
+ {
+ 	UWidget* AnimatedWidget = AnimOwner.Get();
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h
+index d6b1bfc..7794f49 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h
+@@ -691,6 +691,14 @@ public:
+ 	/** At design time, (re)starts the designer preview from the widget's authored pose. No-op at runtime. */
+ 	void NotifyOwnerDesignTimeRefresh();
+ 
++	/**
++	 * At design time, lets what is played by name - Play / Stop Widget Animations By Id, Set Widget Animation Value and
++	 * Progress - play on the designer's preview, on the runtime clock, from the widget's authored pose: what a Widget Data
++	 * Binder previewing its data in the designer calls before it plays anything. Ends (everything stopped, the pose put
++	 * back) when the designer rebuilds the preview. No-op at runtime or once the owner is constructed.
++	 */
++	void BeginDesignTimePlayback();
++
+ 	/**
+ 	 * The owner - an animated text widget - was given a new text: plays the Anim In entries set to Play When Text
+ 	 * Changes, from their start, leaving everything else playing. Runtime only. When it arrives in the middle of a frame
+@@ -827,6 +835,10 @@ private:
+ 	TArray<FWidgetAnimSetParameterGroup> SetParameterGroups;
+ 
+ 	bool bOwnerConstructed = false;
++
++	/** BeginDesignTimePlayback: the runtime clock plays at design time. */
++	bool bDesignTimePlayback = false;
++
+ 	bool bApplyingVisibility = false;
+ 	bool bLastSeenVisible = false;
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/NameTBDEditor.Build.cs b/Plugins/NameTBD/Source/NameTBDEditor/NameTBDEditor.Build.cs
+index ea2cc03..1495e59 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/NameTBDEditor.Build.cs
++++ b/Plugins/NameTBD/Source/NameTBDEditor/NameTBDEditor.Build.cs
+@@ -40,6 +40,7 @@ public class NameTBDEditor : ModuleRules
+ 			"WebBrowser",        // the Script area's code editor (Monaco), shown in the editor's web browser
+ 			"StructUtilsEditor", // FInstancedStructDataDetails, for a registered type's settings laid out field by field
+ 			"AppFramework",      // the color picker, for the Text Editor's Color menu
++			"NameTBDMVVM",       // the Widget Data Binder's Details: its Data Preview
+ 		});
+ 		if (Target.bBuildEditor)
+ 		{
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+index 61730ba..43b835d 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+@@ -50,6 +50,8 @@
+ #include "WidgetAnimMotionPath.h"
+ #include "WidgetSpringPresets.h"
+ #include "NameTBD/Widgets/FlowList/FlowListItemStyle.h"
++#include "WidgetDataBinderComponent.h"
++#include "WidgetDataBinderDetails.h"
+ 
+ #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
+ 
+@@ -132,6 +134,11 @@ void FNameTBDEditorModule::StartupModule()
+ 	PropertyModule.RegisterCustomClassLayout(
+ 		UFlowListItemStyle::StaticClass()->GetFName(),
+ 		FOnGetDetailCustomizationInstance::CreateStatic(&FFlowListItemStyleDetails::MakeInstance));
++
++	// A Widget Data Binder's Data Preview: its data live in the designer - sample sets stepped through, values typed, lists changed.
++	PropertyModule.RegisterCustomClassLayout(
++		UWidgetDataBinderComponent::StaticClass()->GetFName(),
++		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetDataBinderDetails::MakeInstance));
+ 	PropertyModule.NotifyCustomizationModuleChanged();
+ 
+ 	// The ready-made buttons: their parts built once placed (never per drop preview), each with its Widget Blueprint GUID.
+@@ -284,6 +291,7 @@ void FNameTBDEditorModule::ShutdownModule()
+ 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimParameterValue"));
+ 		PropertyModule->UnregisterCustomClassLayout(TEXT("ShapeWidget"));
+ 		PropertyModule->UnregisterCustomClassLayout(TEXT("FlowListItemStyle"));
++		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetDataBinderComponent"));
+ 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetSpringParams"));
+ 
+ 	}
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetDataBinderDetails.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetDataBinderDetails.cpp
+new file mode 100644
+index 0000000..474cee1
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetDataBinderDetails.cpp
+@@ -0,0 +1,409 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "WidgetDataBinderDetails.h"
++
++#include "DetailCategoryBuilder.h"
++#include "DetailLayoutBuilder.h"
++#include "DetailWidgetRow.h"
++#include "Misc/App.h"
++#include "NameTBDTooltips.h"
++#include "UObject/UObjectGlobals.h"
++#include "UObject/UnrealType.h"
++#include "WidgetDataBinderComponent.h"
++#include "Widgets/Input/SButton.h"
++#include "Widgets/Input/SEditableTextBox.h"
++#include "Widgets/Layout/SBox.h"
++#include "Widgets/SNullWidget.h"
++#include "Widgets/SBoxPanel.h"
++#include "Widgets/Text/STextBlock.h"
++
++#define LOCTEXT_NAMESPACE "WidgetDataBinderDetails"
++
++namespace WidgetDataBinderDetailsLocal
++{
++	namespace Tips = NameTBD::Tooltips::DataPreview;
++
++	/** How long the list of designer copies is trusted before it is looked up again. */
++	constexpr double PreviewLookupSeconds = 0.5;
++
++	TSharedRef<SWidget> MakeButton(const FText& Label, const FText& Tip, FSimpleDelegate OnClick, TAttribute<bool> Enabled = true)
++	{
++		return SNew(SButton)
++			.ContentPadding(FMargin(6.f, 1.f))
++			.ToolTipText(Tip)
++			.IsEnabled(Enabled)
++			.OnClicked_Lambda([OnClick]()
++			{
++				OnClick.ExecuteIfBound();
++				return FReply::Handled();
++			})
++			[
++				SNew(STextBlock)
++				.Text(Label)
++				.Font(IDetailLayoutBuilder::GetDetailFont())
++			];
++	}
++}
++
++TSharedRef<IDetailCustomization> FWidgetDataBinderDetails::MakeInstance()
++{
++	return MakeShared<FWidgetDataBinderDetails>();
++}
++
++FWidgetDataBinderDetails::~FWidgetDataBinderDetails()
++{
++	if (PlayHandle.IsValid())
++	{
++		FTSTicker::GetCoreTicker().RemoveTicker(PlayHandle);
++	}
++	if (RebindHandle.IsValid())
++	{
++		FTSTicker::GetCoreTicker().RemoveTicker(RebindHandle);
++	}
++	FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(PropertyChangedHandle);
++}
++
++TArray<UWidgetDataBinderComponent*> FWidgetDataBinderDetails::GetPreviews() const
++{
++	const double Now = FApp::GetCurrentTime();
++	if (CachedAt < 0.0 || Now - CachedAt > WidgetDataBinderDetailsLocal::PreviewLookupSeconds)
++	{
++		CachedAt = Now;
++		CachedPreviews.Reset();
++		if (const UWidgetDataBinderComponent* Binder = Template.Get())
++		{
++			for (UWidgetDataBinderComponent* Preview : Binder->FindDesignerPreviews())
++			{
++				CachedPreviews.Add(Preview);
++			}
++		}
++	}
++
++	TArray<UWidgetDataBinderComponent*> Previews;
++	for (const TWeakObjectPtr<UWidgetDataBinderComponent>& Cached : CachedPreviews)
++	{
++		if (UWidgetDataBinderComponent* Preview = Cached.Get())
++		{
++			if (Preview->IsDesignBound())
++			{
++				Previews.Add(Preview);
++			}
++		}
++	}
++	return Previews;
++}
++
++UWidgetDataBinderComponent* FWidgetDataBinderDetails::GetFirstPreview() const
++{
++	const TArray<UWidgetDataBinderComponent*> Previews = GetPreviews();
++	return Previews.Num() > 0 ? Previews[0] : nullptr;
++}
++
++void FWidgetDataBinderDetails::ShowSet(int32 SetIndex)
++{
++	for (UWidgetDataBinderComponent* Preview : GetPreviews())
++	{
++		Preview->SetPreviewSampleSet(SetIndex);
++	}
++}
++
++void FWidgetDataBinderDetails::Step(int32 Delta)
++{
++	const UWidgetDataBinderComponent* Binder = Template.Get();
++	const UWidgetDataBinderComponent* First = GetFirstPreview();
++	const int32 Count = Binder ? Binder->SampleSets.Num() : 0;
++	if (Count == 0 || !First)
++	{
++		return;
++	}
++	const int32 Current = First->GetPreviewSampleSet();
++	const int32 Next = Current == INDEX_NONE ? (Delta > 0 ? 0 : Count - 1) : ((Current + Delta) % Count + Count) % Count;
++	ShowSet(Next);
++}
++
++void FWidgetDataBinderDetails::TogglePlay()
++{
++	if (PlayHandle.IsValid())
++	{
++		FTSTicker::GetCoreTicker().RemoveTicker(PlayHandle);
++		PlayHandle.Reset();
++		return;
++	}
++	PlayElapsed = 0.f;
++	Step(1);
++	PlayHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateRaw(this, &FWidgetDataBinderDetails::TickPlay));
++}
++
++bool FWidgetDataBinderDetails::TickPlay(float DeltaTime)
++{
++	const UWidgetDataBinderComponent* Binder = Template.Get();
++	if (!Binder || Binder->SampleSets.Num() == 0)
++	{
++		PlayHandle.Reset();
++		return false;
++	}
++	PlayElapsed += DeltaTime;
++	if (PlayElapsed >= FMath::Max(Binder->SampleSetInterval, 0.25f))
++	{
++		PlayElapsed = 0.f;
++		Step(1);
++	}
++	return true;
++}
++
++void FWidgetDataBinderDetails::Rebind()
++{
++	const UWidgetDataBinderComponent* Binder = Template.Get();
++	for (UWidgetDataBinderComponent* Preview : GetPreviews())
++	{
++		Preview->RefreshDesignerPreviewFrom(Binder);
++	}
++}
++
++void FWidgetDataBinderDetails::HandleObjectPropertyChanged(UObject* Object, FPropertyChangedEvent& Event)
++{
++	// A sample row typed, a trigger added: into the preview next frame - once, however many edits the frame held.
++	if (Object != Template.Get() || RebindHandle.IsValid() || Event.ChangeType == EPropertyChangeType::Interactive)
++	{
++		return;
++	}
++	RebindHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([this](float)
++	{
++		RebindHandle.Reset();
++		CachedAt = -1.0;
++		Rebind();
++		return false;
++	}));
++}
++
++FText FWidgetDataBinderDetails::GetSetLabel() const
++{
++	const UWidgetDataBinderComponent* Binder = Template.Get();
++	const int32 Count = Binder ? Binder->SampleSets.Num() : 0;
++	if (Count == 0)
++	{
++		return LOCTEXT("NoSets", "No sample sets - add some under Mock Data > Sample Sets");
++	}
++	const UWidgetDataBinderComponent* First = GetFirstPreview();
++	const int32 Current = First ? First->GetPreviewSampleSet() : INDEX_NONE;
++	if (!Binder->SampleSets.IsValidIndex(Current))
++	{
++		return FText::Format(LOCTEXT("MockOnly", "Mock Values ({0} sets)"), FText::AsNumber(Count));
++	}
++	const FName SetName = Binder->SampleSets[Current].Name;
++	return SetName.IsNone()
++		? FText::Format(LOCTEXT("SetOfUnnamed", "Set {0} of {1}"), FText::AsNumber(Current + 1), FText::AsNumber(Count))
++		: FText::Format(LOCTEXT("SetOf", "Set {0} of {1}: {2}"), FText::AsNumber(Current + 1), FText::AsNumber(Count), FText::FromName(SetName));
++}
++
++void FWidgetDataBinderDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
++{
++	using namespace WidgetDataBinderDetailsLocal;
++
++	TArray<TWeakObjectPtr<UObject>> Objects;
++	DetailBuilder.GetObjectsBeingCustomized(Objects);
++	UWidgetDataBinderComponent* Binder = Objects.Num() == 1 ? Cast<UWidgetDataBinderComponent>(Objects[0].Get()) : nullptr;
++	if (!Binder)
++	{
++		return;
++	}
++	Template = Binder;
++	CachedAt = -1.0;
++
++	if (!PropertyChangedHandle.IsValid())
++	{
++		PropertyChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddRaw(this, &FWidgetDataBinderDetails::HandleObjectPropertyChanged);
++	}
++
++	IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(TEXT("Data Preview"), LOCTEXT("DataPreviewCategory", "Data Preview"), ECategoryPriority::Important);
++	const FSlateFontInfo Font = IDetailLayoutBuilder::GetDetailFont();
++	const TAttribute<bool> HasPreview = TAttribute<bool>::CreateLambda([this]() { return GetFirstPreview() != nullptr; });
++
++	Category.AddCustomRow(LOCTEXT("HintFilter", "Data Preview"))
++	.WholeRowContent()
++	[
++		SNew(STextBlock)
++		.Font(IDetailLayoutBuilder::GetDetailFontItalic())
++		.AutoWrapText(true)
++		.Text_Lambda([this]()
++		{
++			return GetFirstPreview() ? Tips::DataPreviewHint() : Tips::NoPreviewHint();
++		})
++	];
++
++	Category.AddCustomRow(LOCTEXT("SetsFilter", "Sample Set"))
++	.NameContent()
++	[
++		SNew(STextBlock)
++		.Font(Font)
++		.Text(LOCTEXT("SampleSetName", "Sample Set"))
++	]
++	.ValueContent()
++	.MinDesiredWidth(320.f)
++	.MaxDesiredWidth(640.f)
++	[
++		SNew(SVerticalBox)
++		+ SVerticalBox::Slot()
++		.AutoHeight()
++		[
++			SNew(SHorizontalBox)
++			+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 2.f, 0.f)
++			[
++				MakeButton(LOCTEXT("Previous", "<"), Tips::PreviousSetTooltip(), FSimpleDelegate::CreateLambda([this]() { Step(-1); }), HasPreview)
++			]
++			+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 2.f, 0.f)
++			[
++				MakeButton(LOCTEXT("Next", ">"), Tips::NextSetTooltip(), FSimpleDelegate::CreateLambda([this]() { Step(1); }), HasPreview)
++			]
++			+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 2.f, 0.f)
++			[
++				SNew(SButton)
++				.ContentPadding(FMargin(6.f, 1.f))
++				.IsEnabled(HasPreview)
++				.ToolTipText_Lambda([this]() { return PlayHandle.IsValid() ? Tips::StopSetsTooltip() : Tips::PlaySetsTooltip(); })
++				.OnClicked_Lambda([this]()
++				{
++					TogglePlay();
++					return FReply::Handled();
++				})
++				[
++					SNew(STextBlock)
++					.Font(Font)
++					.Text_Lambda([this]() { return PlayHandle.IsValid() ? LOCTEXT("Stop", "Stop") : LOCTEXT("Play", "Play"); })
++				]
++			]
++			+ SHorizontalBox::Slot().AutoWidth().Padding(6.f, 0.f, 2.f, 0.f)
++			[
++				MakeButton(LOCTEXT("MockOnlyButton", "Mock Values"), Tips::MockOnlyTooltip(), FSimpleDelegate::CreateLambda([this]() { ShowSet(INDEX_NONE); }), HasPreview)
++			]
++			+ SHorizontalBox::Slot().AutoWidth()
++			[
++				MakeButton(LOCTEXT("Rebind", "Rebind"), Tips::RebindTooltip(), FSimpleDelegate::CreateLambda([this]() { CachedAt = -1.0; Rebind(); }), HasPreview)
++			]
++		]
++		+ SVerticalBox::Slot()
++		.AutoHeight()
++		.Padding(0.f, 3.f, 0.f, 0.f)
++		[
++			SNew(STextBlock)
++			.Font(Font)
++			.Text_Lambda([this]() { return GetSetLabel(); })
++		]
++	];
++
++	// A row per field the ViewModel announces: what the preview holds now, editable.
++	UClass* ViewModelType = Binder->ViewModelClass.Get();
++	if (!ViewModelType)
++	{
++		return;
++	}
++	for (const FString& Option : Binder->GetViewModelFieldOptions())
++	{
++		const FName FieldName(*Option);
++		if (FieldName.IsNone())
++		{
++			continue;
++		}
++		const FProperty* Field = FindFProperty<FProperty>(ViewModelType, FieldName);
++		const bool bList = CastField<FArrayProperty>(Field) != nullptr;
++
++		auto ReadValue = [this, FieldName]()
++		{
++			FString Text;
++			const UWidgetDataBinderComponent* First = GetFirstPreview();
++			return First && First->GetViewModelFieldAsText(FieldName, Text) ? FText::FromString(Text) : FText::FromString(TEXT("-"));
++		};
++
++		TSharedRef<SWidget> ValueWidget = SNullWidget::NullWidget;
++		if (bList)
++		{
++			auto ListButton = [this, FieldName, HasPreview](const FText& Label, const FText& Tip, EWidgetDataListEdit Edit)
++			{
++				return MakeButton(Label, Tip, FSimpleDelegate::CreateLambda([this, FieldName, Edit]()
++				{
++					for (UWidgetDataBinderComponent* Preview : GetPreviews())
++					{
++						Preview->EditListForPreview(FieldName, Edit);
++					}
++				}), HasPreview);
++			};
++
++			ValueWidget = SNew(SVerticalBox)
++				+ SVerticalBox::Slot()
++				.AutoHeight()
++				[
++					SNew(STextBlock)
++					.Font(Font)
++					.Text_Lambda(ReadValue)
++				]
++				+ SVerticalBox::Slot()
++				.AutoHeight()
++				.Padding(0.f, 2.f, 0.f, 0.f)
++				[
++					SNew(SHorizontalBox)
++					+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 2.f, 0.f)
++					[
++						ListButton(LOCTEXT("AddRow", "Add Row"), Tips::AddRowTooltip(), EWidgetDataListEdit::AddRow)
++					]
++					+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 2.f, 0.f)
++					[
++						ListButton(LOCTEXT("RemoveRow", "Remove Row"), Tips::RemoveRowTooltip(), EWidgetDataListEdit::RemoveRow)
++					]
++					+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 2.f, 0.f)
++					[
++						ListButton(LOCTEXT("Overtake", "Overtake"), Tips::MoveUpTooltip(), EWidgetDataListEdit::MoveOneUp)
++					]
++					+ SHorizontalBox::Slot().AutoWidth().Padding(0.f, 0.f, 2.f, 0.f)
++					[
++						ListButton(LOCTEXT("Shuffle", "Shuffle"), Tips::ShuffleTooltip(), EWidgetDataListEdit::Shuffle)
++					]
++					+ SHorizontalBox::Slot().AutoWidth()
++					[
++						ListButton(LOCTEXT("Reverse", "Reverse"), Tips::ReverseTooltip(), EWidgetDataListEdit::Reverse)
++					]
++				];
++		}
++		else if (Field)
++		{
++			ValueWidget = SNew(SEditableTextBox)
++				.Font(Font)
++				.IsEnabled(HasPreview)
++				.ToolTipText(FText::Format(Tips::FieldValueTooltip(), FText::FromName(FieldName)))
++				.Text_Lambda(ReadValue)
++				.OnTextCommitted_Lambda([this, FieldName](const FText& NewText, ETextCommit::Type CommitType)
++				{
++					if (CommitType == ETextCommit::OnCleared)
++					{
++						return;
++					}
++					for (UWidgetDataBinderComponent* Preview : GetPreviews())
++					{
++						Preview->SetViewModelFieldFromText(FieldName, NewText.ToString());
++					}
++				});
++		}
++		else
++		{
++			// A getter function: shown, not set.
++			ValueWidget = SNew(STextBlock)
++				.Font(Font)
++				.Text_Lambda(ReadValue);
++		}
++
++		Category.AddCustomRow(FText::FromName(FieldName))
++		.NameContent()
++		[
++			SNew(STextBlock)
++			.Font(Font)
++			.Text(FText::FromName(FieldName))
++		]
++		.ValueContent()
++		.MinDesiredWidth(240.f)
++		.MaxDesiredWidth(640.f)
++		[
++			ValueWidget
++		];
++	}
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetDataBinderDetails.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetDataBinderDetails.h
+new file mode 100644
+index 0000000..6ec8566
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetDataBinderDetails.h
+@@ -0,0 +1,57 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Containers/Ticker.h"
++#include "IDetailCustomization.h"
++
++class UWidgetDataBinderComponent;
++struct FPropertyChangedEvent;
++
++/**
++ * The Details of a Widget Data Binder, with a Data Preview at the top: the binder's data, live in the designer, without
++ * Play In Editor - the way Rive's data panel or a design tool's variable panel lets a component be tried with its data.
++ *
++ *  - Sample Set: previous / next / play through the binder's Sample Sets, or back to its Mock Values. Each step is written
++ *    into the designer's preview as a change, so the widget reacts as in game: triggers play their animations, counts run,
++ *    List Bindings add, remove and move their rows.
++ *  - A row per ViewModel field with its value in the preview now (counts tick in it); type a value to change it. A list's
++ *    row has Add Row, Remove Row, Overtake, Shuffle and Reverse, to try its entrances, exits and moves.
++ *  - Edits to the binder's own settings (Sample Sets, Triggers, List Bindings) are taken into the preview at once.
++ *
++ * Acts on the binder's designer copies (UWidgetDataBinderComponent::FindDesignerPreviews), bound there when Run Triggers In
++ * Designer is on. Nothing it does is saved.
++ */
++class FWidgetDataBinderDetails : public IDetailCustomization
++{
++public:
++	static TSharedRef<IDetailCustomization> MakeInstance();
++
++	virtual ~FWidgetDataBinderDetails() override;
++
++	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
++
++private:
++	/** The designer copies of the binder shown, looked up again at most twice a second. */
++	TArray<UWidgetDataBinderComponent*> GetPreviews() const;
++	UWidgetDataBinderComponent* GetFirstPreview() const;
++
++	void ShowSet(int32 SetIndex);
++	void Step(int32 Delta);
++	void TogglePlay();
++	bool TickPlay(float DeltaTime);
++	void Rebind();
++	void HandleObjectPropertyChanged(UObject* Object, FPropertyChangedEvent& Event);
++
++	FText GetSetLabel() const;
++
++	TWeakObjectPtr<UWidgetDataBinderComponent> Template;
++	FTSTicker::FDelegateHandle PlayHandle;
++	FTSTicker::FDelegateHandle RebindHandle;
++	FDelegateHandle PropertyChangedHandle;
++	float PlayElapsed = 0.f;
++
++	mutable TArray<TWeakObjectPtr<UWidgetDataBinderComponent>> CachedPreviews;
++	mutable double CachedAt = -1.0;
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index 7f3c9fa..daa9155 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -3048,4 +3048,92 @@ namespace NameTBD::Tooltips
+ 		}
+ 	}
+ 
++	/** The Widget Data Binder's Data Preview: its data, live in the designer. */
++	namespace DataPreview
++	{
++		inline FText DataPreviewHint()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "DataPreviewHint",
++				"Your data, live in the designer: step through the Sample Sets, type a value or change a list, and the widget reacts as it will in game - its triggers play, its counts run, its List Bindings add, remove and move rows. Nothing here is saved; edit Mock Values and Sample Sets below to keep data.");
++		}
++
++		inline FText NoPreviewHint()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "NoPreviewHint",
++				"Open the Designer tab to preview: the Data Preview acts on the widget the designer shows. (Off: Run Triggers In Designer, under Mock Data.)");
++		}
++
++		inline FText PreviousSetTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "PreviousSetTooltip",
++				"Previous: show the sample set before this one. Its changes animate, as they would in game.");
++		}
++
++		inline FText NextSetTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "NextSetTooltip",
++				"Next: show the next sample set. Its changes animate, as they would in game.");
++		}
++
++		inline FText PlaySetsTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "PlaySetsTooltip",
++				"Play: step through the sample sets one after another, Sample Set Interval apart, round and round.");
++		}
++
++		inline FText StopSetsTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "StopSetsTooltip",
++				"Stop: stay on this sample set.");
++		}
++
++		inline FText MockOnlyTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "MockOnlyTooltip",
++				"Mock Values: back to the Mock Values alone, no sample set.");
++		}
++
++		inline FText RebindTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "RebindTooltip",
++				"Rebind: take the edits made below (Triggers, List Bindings, Mock Values, Sample Sets) into the preview and bind again - the designer only copies a component's edits when it compiles.");
++		}
++
++		inline FText FieldValueTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "FieldValueTooltip",
++				"{0}: its value in the preview now. Type a new one and press Enter - written as the Details panel writes it (42, 0.25, true, an enum's name) - and whatever watches it reacts.");
++		}
++
++		inline FText AddRowTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "AddRowTooltip",
++				"Add Row: a copy of the last row, with a key of its own, somewhere in the list - plays its entrance.");
++		}
++
++		inline FText RemoveRowTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "RemoveRowTooltip",
++				"Remove Row: one row, at random - plays its exit while the rest close up.");
++		}
++
++		inline FText ShuffleTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "ShuffleTooltip",
++				"Shuffle: every row to a new place - the rows slide to them.");
++		}
++
++		inline FText MoveUpTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "MoveUpTooltip",
++				"Overtake: one row climbs one to three places - the commonest leaderboard change.");
++		}
++
++		inline FText ReverseTooltip()
++		{
++			return NSLOCTEXT("NameTBDTooltips.DataPreview", "ReverseTooltip",
++				"Reverse: the rows in the opposite order.");
++		}
++	}
++
+ }
+\ No newline at end of file
+diff --git a/Plugins/NameTBD/Source/NameTBDMVVM/Private/WidgetDataBinderComponent.cpp b/Plugins/NameTBD/Source/NameTBDMVVM/Private/WidgetDataBinderComponent.cpp
+index 99eb981..29cd2f7 100644
+--- a/Plugins/NameTBD/Source/NameTBDMVVM/Private/WidgetDataBinderComponent.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMVVM/Private/WidgetDataBinderComponent.cpp
+@@ -6,9 +6,16 @@
+ #include "Blueprint/WidgetBlueprintGeneratedClass.h"
+ #include "Blueprint/WidgetTree.h"
+ #include "Components/ActorComponent.h"
++#include "Components/PanelWidget.h"
+ #include "Components/Widget.h"
+ #include "GameFramework/Actor.h"
++#include "Internationalization/Text.h"
++#include "Misc/App.h"
++#include "NameTBD/WidgetAnimation/WidgetAnimEasing.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimHost.h"
++#include "NameTBD/Widgets/FlowList/FlowList.h"
++#include "UObject/UObjectIterator.h"
++#include "Widgets/SWidget.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimLibrary.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimStateMachineLibrary.h"
+@@ -51,7 +58,7 @@ void UWidgetDataBinderComponent::OnPreConstruct(bool bIsDesignTime)
+ 
+ 	if (bIsDesignTime)
+ 	{
+-		ApplyDesignTimeMock();
++		BindForDesigner();
+ 	}
+ }
+ #endif
+@@ -135,6 +142,10 @@ void UWidgetDataBinderComponent::SetSource(UObject* NewSource)
+ 	{
+ 		BindSource();
+ 	}
++	else if (bDesignBound)
++	{
++		BindForDesigner();
++	}
+ }
+ 
+ void UWidgetDataBinderComponent::ClearSource()
+@@ -163,6 +174,10 @@ void UWidgetDataBinderComponent::SetViewModel(UObject* NewViewModel)
+ 		UnbindAll();
+ 		BindAll(/*bFromConstruct=*/false);
+ 	}
++	else if (bDesignBound)
++	{
++		BindForDesigner();
++	}
+ }
+ 
+ void UWidgetDataBinderComponent::RefreshFromSource()
+@@ -272,6 +287,8 @@ void UWidgetDataBinderComponent::UnbindAll()
+ 	UnbindSource();
+ 	DetachViewModel();
+ 	bVerifyViewModelNextTick = false;
++	bAnyCounting = false;
++	bDesignBound = false;
+ 	StopTicker();
+ }
+ 
+@@ -328,25 +345,19 @@ void UWidgetDataBinderComponent::AttachViewModel(UObject* ViewModel, bool bKeepT
+ 		State.Scratch = MakeUnique<FWidgetDataScratch>(State.TargetProperty);
+ 	}
+ 
+-	// One subscription per watched field, however many triggers watch it.
+-	TriggerStates.Reset();
+-	TriggerStates.SetNum(Triggers.Num());
+-	for (int32 Index = 0; Index < Triggers.Num(); ++Index)
++	// One subscription per watched field, however many triggers and lists watch it.
++	auto Watch = [this, Notifier, &Descriptor, ViewModelType](FName Field, const FString& Watcher)
+ 	{
+-		const FName Field = Triggers[Index].ViewModelField;
+-		TriggerStates[Index].FieldPath.Set(Field.ToString());
+-		TriggerStates[Index].bActive = PreviousActive.IsValidIndex(Index) && PreviousActive[Index];
+-
+ 		if (Field.IsNone())
+ 		{
+-			continue;
++			return;
+ 		}
+ 
+ 		const UE::FieldNotification::FFieldId FieldId = Descriptor.GetField(ViewModelType, Field);
+ 		if (!FieldId.IsValid())
+ 		{
+-			UE_LOG(LogWidgetDataBinder, Warning, TEXT("%s: trigger %d watches '%s', which isn't a Field Notify field of %s. It will never act."), *DescribeForLog(), Index, *Field.ToString(), *ViewModelType->GetName());
+-			continue;
++			UE_LOG(LogWidgetDataBinder, Warning, TEXT("%s: %s watches '%s', which isn't a Field Notify field of %s. It will never act."), *DescribeForLog(), *Watcher, *Field.ToString(), *ViewModelType->GetName());
++			return;
+ 		}
+ 
+ 		const bool bAlreadyWatched = ViewModelHandles.ContainsByPredicate([&FieldId](const TPair<UE::FieldNotification::FFieldId, FDelegateHandle>& Entry)
+@@ -360,6 +371,42 @@ void UWidgetDataBinderComponent::AttachViewModel(UObject* ViewModel, bool bKeepT
+ 				INotifyFieldValueChanged::FFieldValueChangedDelegate::CreateUObject(this, &UWidgetDataBinderComponent::HandleViewModelFieldChanged));
+ 			ViewModelHandles.Emplace(FieldId, Handle);
+ 		}
++	};
++
++	TriggerStates.Reset();
++	TriggerStates.SetNum(Triggers.Num());
++	for (int32 Index = 0; Index < Triggers.Num(); ++Index)
++	{
++		const FWidgetFieldTrigger& Trigger = Triggers[Index];
++		FTriggerState& State = TriggerStates[Index];
++		State.FieldPath.Set(Trigger.ViewModelField.ToString());
++		State.bActive = PreviousActive.IsValidIndex(Index) && PreviousActive[Index];
++		Watch(Trigger.ViewModelField, FString::Printf(TEXT("trigger %d"), Index));
++
++		// Score > Best Score is worked out again when Best Score changes too.
++		if (Trigger.Condition == EWidgetDataTriggerCondition::Compare && Trigger.CompareTo == EWidgetDataCompareTo::Field)
++		{
++			State.CompareFieldPath.Set(Trigger.CompareField.ToString());
++			Watch(Trigger.CompareField, FString::Printf(TEXT("trigger %d's Compare Field"), Index));
++		}
++
++		if (Trigger.Action == EWidgetDataTriggerAction::CountTo)
++		{
++			State.CountProperty = Trigger.CountField.IsNone() ? nullptr : FindFProperty<FProperty>(ViewModelType, Trigger.CountField);
++			if (!State.CountProperty)
++			{
++				UE_LOG(LogWidgetDataBinder, Warning, TEXT("%s: trigger %d counts into '%s', which %s doesn't have."), *DescribeForLog(), Index, *Trigger.CountField.ToString(), *ViewModelType->GetName());
++			}
++		}
++	}
++
++	// The lists keep their entries across ViewModels: a new one is shown by key, reusing what it can.
++	ListStates.SetNum(ListBindings.Num());
++	for (int32 Index = 0; Index < ListBindings.Num(); ++Index)
++	{
++		ListStates[Index].FieldPath.Set(ListBindings[Index].ViewModelField.ToString());
++		ListStates[Index].bWarned = false;
++		Watch(ListBindings[Index].ViewModelField, FString::Printf(TEXT("List Binding %d"), Index));
+ 	}
+ }
+ 
+@@ -398,9 +445,12 @@ void UWidgetDataBinderComponent::BindSource()
+ 	{
+ 		TGuardValue<bool> SuppressGuard(bSuppressTriggers, true);
+ 
++		// A list's element, before the source's values: an entry of a struct list has no source at all.
++		ApplyItemData();
++
+ 		if (!Source)
+ 		{
+-			if (bUseMockDataWithoutSource)
++			if (bUseMockDataWithoutSource && !ItemData.IsValid())
+ 			{
+ 				ApplyMockValues(ViewModel);
+ 			}
+@@ -526,6 +576,7 @@ void UWidgetDataBinderComponent::BindSource()
+ 	}
+ 
+ 	EvaluateAllTriggers(/*bInitial=*/true);
++	ReconcileAllLists(/*bInitial=*/true);
+ 
+ 	if (bAnyPolling)
+ 	{
+@@ -626,7 +677,7 @@ void UWidgetDataBinderComponent::PushBinding(int32 BindingIndex)
+ // Mock data
+ // =====================================================================================================
+ 
+-void UWidgetDataBinderComponent::ApplyMockValues(UObject* ViewModel)
++void UWidgetDataBinderComponent::ApplyMockValues(UObject* ViewModel, const TSet<FName>* Skip)
+ {
+ 	if (!ViewModel)
+ 	{
+@@ -635,6 +686,11 @@ void UWidgetDataBinderComponent::ApplyMockValues(UObject* ViewModel)
+ 
+ 	for (const FWidgetDataMockValue& Mock : MockValues)
+ 	{
++		if (Skip && Skip->Contains(Mock.ViewModelField))
++		{
++			continue;
++		}
++
+ 		const FProperty* Field = Mock.ViewModelField.IsNone() ? nullptr : FindFProperty<FProperty>(ViewModel->GetClass(), Mock.ViewModelField);
+ 		if (!Field)
+ 		{
+@@ -753,11 +809,22 @@ void UWidgetDataBinderComponent::HandleViewModelFieldChanged(UObject* Object, UE
+ 	const FName Field = FieldId.GetName();
+ 	for (int32 Index = 0; Index < Triggers.Num(); ++Index)
+ 	{
+-		if (Triggers[Index].ViewModelField == Field)
++		const FWidgetFieldTrigger& Trigger = Triggers[Index];
++		const bool bComparedField = Trigger.Condition == EWidgetDataTriggerCondition::Compare
++			&& Trigger.CompareTo == EWidgetDataCompareTo::Field && Trigger.CompareField == Field;
++		if (Trigger.ViewModelField == Field || bComparedField)
+ 		{
+ 			EvaluateTrigger(Index, /*bInitial=*/false);
+ 		}
+ 	}
++
++	for (int32 Index = 0; Index < ListBindings.Num(); ++Index)
++	{
++		if (ListBindings[Index].ViewModelField == Field)
++		{
++			ReconcileList(Index, /*bInitial=*/false);
++		}
++	}
+ }
+ 
+ void UWidgetDataBinderComponent::EvaluateAllTriggers(bool bInitial)
+@@ -798,6 +865,74 @@ void UWidgetDataBinderComponent::EvaluateTrigger(int32 TriggerIndex, bool bIniti
+ 		return;
+ 	}
+ 
++	if (Trigger.Action == EWidgetDataTriggerAction::CountTo)
++	{
++		double Number = 0.0;
++		if (!WidgetDataValues::ReadNumber(Value.Property, Value.ValuePtr, Number))
++		{
++			Number = WidgetDataValues::IsTruthy(Value.Property, Value.ValuePtr) ? 1.0 : 0.0;
++		}
++
++		const bool bChanged = !State.bHasLastNumber || Number != State.LastNumber;
++		State.bHasLastNumber = true;
++		State.LastNumber = Number;
++
++		// At binding the number is shown where it is, never counted to: a row pointed at another player shows their score.
++		// A count only starts on a change after that, from wherever the shown number is - mid-count included.
++		const float Duration = FMath::Max(Trigger.CountDuration, 0.f);
++		if (bInitial || !State.bHasCountShown || Duration <= 0.f)
++		{
++			if (!bInitial || Trigger.bEvaluateOnBind || !State.bHasCountShown)
++			{
++				State.bCounting = false;
++				State.CountShown = Number;
++				State.bHasCountShown = true;
++				WriteCount(TriggerIndex, Number);
++			}
++			return;
++		}
++		if (bChanged)
++		{
++			State.CountFrom = State.CountShown;
++			State.CountTarget = Number;
++			State.CountElapsed = 0.f;
++			State.bCounting = true;
++			bAnyCounting = true;
++			EnsureTicker();
++			KeepDesignerAwake(Duration + 0.1f);
++		}
++		return;
++	}
++
++	if (Trigger.Condition == EWidgetDataTriggerCondition::WentUp || Trigger.Condition == EWidgetDataTriggerCondition::WentDown)
++	{
++		if (Trigger.Action == EWidgetDataTriggerAction::SetValue || Trigger.Action == EWidgetDataTriggerAction::SetProgress
++			|| Trigger.Action == EWidgetDataTriggerAction::SetInput || Trigger.Action == EWidgetDataTriggerAction::SetParameter)
++		{
++			// Those act on every change below, with no condition.
++		}
++		else
++		{
++			double Number = 0.0;
++			if (!WidgetDataValues::ReadNumber(Value.Property, Value.ValuePtr, Number))
++			{
++				Number = WidgetDataValues::IsTruthy(Value.Property, Value.ValuePtr) ? 1.0 : 0.0;
++			}
++			const bool bHadNumber = State.bHasLastNumber;
++			const double Before = State.LastNumber;
++			State.bHasLastNumber = true;
++			State.LastNumber = Number;
++
++			// As Changed: a rebind is not a change, even to another number.
++			const bool bWent = Trigger.Condition == EWidgetDataTriggerCondition::WentUp ? Number > Before : Number < Before;
++			if (bHadNumber && bWent && !bInitial)
++			{
++				FireTrigger(TriggerIndex, /*bBecameActive=*/true);
++			}
++			return;
++		}
++	}
++
+ 	if (Trigger.Action == EWidgetDataTriggerAction::SetParameter)
+ 	{
+ 		// As Set Value: at binding only with Evaluate On Bind, after that on every change - compared as text, which covers
+@@ -930,6 +1065,16 @@ bool UWidgetDataBinderComponent::EvaluateCondition(const FWidgetFieldTrigger& Tr
+ 		// While active, the threshold moves by Hysteresis in the direction the value has to travel to leave, so
+ 		// a value sitting on the threshold doesn't flicker the animation on and off.
+ 		double Limit = Trigger.Threshold;
++		if (Trigger.CompareTo == EWidgetDataCompareTo::Field)
++		{
++			// Read live: Score > Best Score holds against whatever Best Score is now.
++			FWidgetDataValue Other;
++			if (Trigger.CompareField.IsNone() || !FWidgetDataValue::Resolve(BoundViewModel.Get(), FWidgetDataPath(Trigger.CompareField.ToString()), Other)
++				|| !WidgetDataValues::ReadNumber(Other.Property, Other.ValuePtr, Limit))
++			{
++				return false;
++			}
++		}
+ 		const double Band = bCurrentlyActive ? FMath::Max(Trigger.Hysteresis, 0.0) : 0.0;
+ 
+ 		switch (Trigger.Comparison)
+@@ -956,8 +1101,9 @@ void UWidgetDataBinderComponent::FireTrigger(int32 TriggerIndex, bool bBecameAct
+ 	switch (Trigger.Action)
+ 	{
+ 	case EWidgetDataTriggerAction::PlayWhileTrue:
+-		// Changed has no "while", so its every change is a start.
+-		PlayOrStop(Trigger, bBecameActive || Trigger.Condition == EWidgetDataTriggerCondition::Changed);
++		// Changed, Went Up and Went Down have no "while", so their every change is a start.
++		PlayOrStop(Trigger, bBecameActive || Trigger.Condition == EWidgetDataTriggerCondition::Changed
++			|| Trigger.Condition == EWidgetDataTriggerCondition::WentUp || Trigger.Condition == EWidgetDataTriggerCondition::WentDown);
+ 		break;
+ 
+ 	case EWidgetDataTriggerAction::Play:
+@@ -1032,6 +1178,16 @@ void UWidgetDataBinderComponent::PlayOrStop(const FWidgetFieldTrigger& Trigger,
+ 		return;
+ 	}
+ 
++	// In the designer (a data preview), the component plays on its runtime clock from the authored pose.
++	if (bDesignBound)
++	{
++		if (Component)
++		{
++			Component->BeginDesignTimePlayback();
++		}
++		KeepDesignerAwake(3.f);
++	}
++
+ 	if (Component)
+ 	{
+ 		if (bPlay)
+@@ -1156,6 +1312,12 @@ void UWidgetDataBinderComponent::SetAnimationValue(const FWidgetFieldTrigger& Tr
+ 		return;
+ 	}
+ 
++	if (bDesignBound && Component)
++	{
++		Component->BeginDesignTimePlayback();
++		KeepDesignerAwake(2.f);
++	}
++
+ 	// By name alone: every animation's tracks with this Value Name follow the field. A progress goes to the percentage
+ 	// animations of the entries with the Anim IDs, or of every entry.
+ 	TArray<FWidgetAnimValueId, TInlineAllocator<2>> Ids;
+@@ -1339,177 +1501,1281 @@ UWidget* UWidgetDataBinderComponent::ResolveAnimationWidget(FName WidgetPath) co
+ }
+ 
+ // =====================================================================================================
+-// Ticking
++// Count Into Field
+ // =====================================================================================================
+ 
+-void UWidgetDataBinderComponent::EnsureTicker()
++void UWidgetDataBinderComponent::WriteCount(int32 TriggerIndex, double Number)
+ {
+-	if (!TickerHandle.IsValid())
++	UObject* ViewModel = BoundViewModel.Get();
++	if (!ViewModel || !Triggers.IsValidIndex(TriggerIndex) || !TriggerStates.IsValidIndex(TriggerIndex))
+ 	{
+-		TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UWidgetDataBinderComponent::TickBinder));
++		return;
+ 	}
+-}
+-
+-void UWidgetDataBinderComponent::StopTicker()
+-{
+-	if (TickerHandle.IsValid())
++	const FWidgetFieldTrigger& Trigger = Triggers[TriggerIndex];
++	const FProperty* Target = TriggerStates[TriggerIndex].CountProperty;
++	if (!Target)
+ 	{
+-		FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+-		TickerHandle.Reset();
++		return;
+ 	}
+-}
+ 
+-bool UWidgetDataBinderComponent::TickBinder(float DeltaTime)
+-{
+-	if (bVerifyViewModelNextTick)
++	FWidgetDataScratch Written(Target);
++	if (WidgetDataValues::IsNumeric(Target))
+ 	{
+-		bVerifyViewModelNextTick = false;
++		WidgetDataValues::WriteNumber(Target, Written.Get(), Number);
++	}
++	else
++	{
++		// Written out as the culture writes numbers: 12,480 - or 12.480 - with the decimals asked for.
++		FNumberFormattingOptions Options;
++		Options.SetUseGrouping(Trigger.bCountGroupDigits);
++		Options.SetMinimumFractionalDigits(FMath::Clamp(Trigger.CountDecimals, 0, 6));
++		Options.SetMaximumFractionalDigits(FMath::Clamp(Trigger.CountDecimals, 0, 6));
++		const FText Formatted = FText::AsNumber(Number, &Options);
+ 
+-		// The view has finished constructing now. If it owns a ViewModel we aren't bound to, it is the one its
+-		// View Bindings read, so bind to that instead.
+-		if (bOwnerConstructed && !ExplicitViewModel.IsValid())
++		if (const FTextProperty* TextProperty = CastField<FTextProperty>(Target))
+ 		{
+-			UObject* InView = FindViewModelInView();
+-			if (InView && InView != BoundViewModel.Get())
+-			{
+-				AttachViewModel(InView, /*bKeepTriggerStates=*/true);
+-				BindSource();
+-			}
+-			else if (!InView && BoundViewModel.IsValid() && !ViewModelName.IsNone())
+-			{
+-				// The view wasn't ready to take our ViewModel during construct and hasn't made one of its own,
+-				// so it is showing nothing. Hand it over now; without this the binder writes to a ViewModel no
+-				// View Binding reads.
+-				PushViewModelToView(BoundViewModel.Get(), /*bWarnOnFailure=*/true);
+-			}
+-			else if (!InView && !BoundViewModel.IsValid() && !bWarnedNoViewModel)
+-			{
+-				bWarnedNoViewModel = true;
+-				UE_LOG(LogWidgetDataBinder, Warning, TEXT("%s: the widget has no ViewModel named '%s'. Check ViewModel Name, or turn on Create ViewModel If Missing."), *DescribeForLog(), *ViewModelName.ToString());
+-			}
++			TextProperty->SetPropertyValue(Written.Get(), Formatted);
+ 		}
+-	}
+-
+-	if (bAnyPolling)
+-	{
+-		if (!DataSource.IsValid())
++		else if (const FStrProperty* StringProperty = CastField<FStrProperty>(Target))
+ 		{
+-			HandleSourceLost();
++			StringProperty->SetPropertyValue(Written.Get(), Formatted.ToString());
++		}
++		else if (const FNameProperty* NameProperty = CastField<FNameProperty>(Target))
++		{
++			NameProperty->SetPropertyValue(Written.Get(), FName(*Formatted.ToString()));
+ 		}
+ 		else
+ 		{
+-			for (int32 Index = 0; Index < BindingStates.Num(); ++Index)
++			FTriggerState& State = TriggerStates[TriggerIndex];
++			if (!State.bWarned)
+ 			{
+-				FBindingState& State = BindingStates[Index];
+-				if (State.Mode != EWidgetDataUpdateMode::Poll)
+-				{
+-					continue;
+-				}
+-
+-				const float Interval = FieldBindings.IsValidIndex(Index) ? FieldBindings[Index].PollInterval : 0.f;
+-				State.PollElapsed += DeltaTime;
+-				if (Interval <= 0.f || State.PollElapsed >= Interval)
+-				{
+-					State.PollElapsed = Interval > 0.f ? FMath::Fmod(State.PollElapsed, Interval) : 0.f;
+-					PushBinding(Index);
+-				}
++				State.bWarned = true;
++				UE_LOG(LogWidgetDataBinder, Warning, TEXT("%s: trigger %d counts into '%s', which is a %s - only numbers, Text, String and Name can be counted into."),
++					*DescribeForLog(), TriggerIndex, *Trigger.CountField.ToString(), *Target->GetCPPType());
+ 			}
++			return;
+ 		}
+ 	}
++	WidgetDataValues::WriteField(ViewModel, Target, Written.Get());
++}
+ 
+-	const bool bKeepTicking = bAnyPolling || bVerifyViewModelNextTick;
+-	if (!bKeepTicking)
++bool UWidgetDataBinderComponent::TickCounts(float DeltaTime)
++{
++	bool bAnyStill = false;
++	for (int32 Index = 0; Index < TriggerStates.Num(); ++Index)
+ 	{
+-		TickerHandle.Reset();
++		FTriggerState& State = TriggerStates[Index];
++		if (!State.bCounting || !Triggers.IsValidIndex(Index))
++		{
++			continue;
++		}
++		const FWidgetFieldTrigger& Trigger = Triggers[Index];
++		State.CountElapsed += DeltaTime;
++		const float Duration = FMath::Max(Trigger.CountDuration, KINDA_SMALL_NUMBER);
++		const float Alpha = FMath::Clamp(State.CountElapsed / Duration, 0.f, 1.f);
++		const float Eased = WidgetAnimEasing::Evaluate(Trigger.CountEasing, nullptr, Alpha);
++		State.CountShown = FMath::Lerp(State.CountFrom, State.CountTarget, static_cast<double>(Eased));
++		if (Alpha >= 1.f)
++		{
++			State.CountShown = State.CountTarget;
++			State.bCounting = false;
++		}
++		else
++		{
++			bAnyStill = true;
++		}
++		WriteCount(Index, State.CountShown);
+ 	}
+-	return bKeepTicking;
++	return bAnyStill;
+ }
+ 
+ // =====================================================================================================
+-// Dropdowns
++// List Bindings
+ // =====================================================================================================
+ 
+-UUserWidget* UWidgetDataBinderComponent::GetOptionsRoot() const
++namespace WidgetDataBinderLists
+ {
+-	if (UWidget* OwnerWidget = BinderOwner.Get())
++	/** The Widget Data Binder of an entry: on the entry itself, else the first in its own hierarchy. */
++	static UWidgetDataBinderComponent* FindEntryBinder(UUserWidget* Entry)
+ 	{
+-		if (UUserWidget* Containing = OwnerWidget->GetTypedOuter<UUserWidget>())
++		if (UWidgetDataBinderComponent* OnEntry = UWidgetDataBinderComponent::FindWidgetDataBinder(Entry))
+ 		{
+-			return Containing;
++			return OnEntry;
++		}
++		UWidgetDataBinderComponent* Found = nullptr;
++		if (Entry && Entry->WidgetTree)
++		{
++			Entry->WidgetTree->ForEachWidget([&Found](UWidget* Child)
++			{
++				if (!Found)
++				{
++					Found = UWidgetDataBinderComponent::FindWidgetDataBinder(Child);
++				}
++			});
+ 		}
++		return Found;
+ 	}
+ 
+-	// The Details panel edits the component ARCHETYPE the Widget Blueprint keeps, which has no owner widget to
+-	// ask. Find the Widget Blueprint it belongs to and use that class's default instead.
+-	if (const UWidgetBlueprintGeneratedClass* GeneratedClass = GetTypedOuter<UWidgetBlueprintGeneratedClass>())
++	/** An element's key as text: Key Field's value (struct member, or a path on an object), else what identifies it. */
++	static FString MakeKey(const FProperty* Inner, const void* Element, int32 Position, FName KeyField)
+ 	{
+-		return GeneratedClass->GetDefaultObject<UUserWidget>();
++		FString Key;
++		if (const FStructProperty* StructInner = CastField<FStructProperty>(Inner))
++		{
++			const FProperty* KeyProperty = KeyField.IsNone() ? nullptr : FindFProperty<FProperty>(StructInner->Struct, KeyField);
++			if (!KeyProperty)
++			{
++				return FString::FromInt(Position);
++			}
++			KeyProperty->ExportTextItem_InContainer(Key, Element, nullptr, nullptr, PPF_None);
++			return Key;
++		}
++
++		const FObjectPropertyBase* ObjectInner = CastField<FObjectPropertyBase>(Inner);
++		UObject* Object = ObjectInner ? ObjectInner->GetObjectPropertyValue(Element) : nullptr;
++		if (!Object)
++		{
++			return TEXT("(none)");
++		}
++		if (!KeyField.IsNone())
++		{
++			FWidgetDataValue KeyValue;
++			if (FWidgetDataValue::Resolve(Object, FWidgetDataPath(KeyField.ToString()), KeyValue))
++			{
++				KeyValue.Property->ExportTextItem_Direct(Key, KeyValue.ValuePtr, nullptr, nullptr, PPF_None);
++				return Key;
++			}
++		}
++		return Object->GetPathName();
+ 	}
+ 
+-#if WITH_EDITORONLY_DATA
+-	if (const UBlueprint* Blueprint = GetTypedOuter<UBlueprint>())
++	/** "Name=Ann, Score=1200" split at the commas outside quotes and brackets, each split at its first '='. */
++	static void ParsePairs(const FString& Row, TArray<TPair<FString, FString>>& OutPairs)
+ 	{
+-		if (Blueprint->GeneratedClass)
++		OutPairs.Reset();
++		TArray<FString> Parts;
++		FString Current;
++		int32 Depth = 0;
++		bool bQuoted = false;
++		for (int32 Index = 0; Index < Row.Len(); ++Index)
+ 		{
+-			return Cast<UUserWidget>(Blueprint->GeneratedClass->GetDefaultObject());
++			const TCHAR Char = Row[Index];
++			if (Char == TEXT('"') && (Index == 0 || Row[Index - 1] != TEXT('\\')))
++			{
++				bQuoted = !bQuoted;
++			}
++			else if (!bQuoted && Char == TEXT('('))
++			{
++				++Depth;
++			}
++			else if (!bQuoted && Char == TEXT(')'))
++			{
++				--Depth;
++			}
++			else if (!bQuoted && Depth == 0 && Char == TEXT(','))
++			{
++				Parts.Add(Current);
++				Current.Reset();
++				continue;
++			}
++			Current.AppendChar(Char);
+ 		}
+-	}
+-#endif
++		Parts.Add(Current);
+ 
+-	return nullptr;
++		for (const FString& Part : Parts)
++		{
++			FString Name;
++			FString Value;
++			if (Part.Split(TEXT("="), &Name, &Value))
++			{
++				OutPairs.Emplace(Name.TrimStartAndEnd(), Value.TrimStartAndEnd());
++			}
++		}
++	}
+ }
+ 
+-TArray<FString> UWidgetDataBinderComponent::GetViewModelFieldOptions() const
++void UWidgetDataBinderComponent::ReconcileAllLists(bool bInitial)
+ {
+-	TArray<FString> Options;
+-	Options.Add(TEXT("None"));
+-
+-	UClass* ViewModelType = ViewModelClass.Get();
+-	if (!ViewModelType)
+-	{
+-		return Options;
+-	}
+-
+-	if (const INotifyFieldValueChanged* Notifier = Cast<INotifyFieldValueChanged>(ViewModelType->GetDefaultObject()))
++	for (int32 Index = 0; Index < ListBindings.Num(); ++Index)
+ 	{
+-		Notifier->GetFieldNotificationDescriptor().ForEachField(ViewModelType, [&Options](UE::FieldNotification::FFieldId FieldId)
+-		{
+-			Options.AddUnique(FieldId.GetName().ToString());
+-			return true;
+-		});
++		ReconcileList(Index, bInitial);
+ 	}
+-
+-	return Options;
+ }
+ 
+-namespace WidgetDataBinderOptions
++void UWidgetDataBinderComponent::ReconcileList(int32 ListIndex, bool bInitial)
+ {
+-	static bool IsListedValue(const FProperty* Property)
++	using namespace WidgetDataBinderLists;
++
++	if (!ListBindings.IsValidIndex(ListIndex) || !ListStates.IsValidIndex(ListIndex))
+ 	{
+-		return !CastField<FMulticastDelegateProperty>(Property) && !CastField<FDelegateProperty>(Property);
++		return;
++	}
++	const FWidgetListBinding& Binding = ListBindings[ListIndex];
++	FListState& State = ListStates[ListIndex];
++	UObject* ViewModel = BoundViewModel.Get();
++	UWidget* OwnerWidget = BinderOwner.Get();
++	if (!ViewModel || !OwnerWidget || Binding.ViewModelField.IsNone())
++	{
++		return;
+ 	}
+ 
+-	/**
+-	 * Blueprint-visible properties of Scope (and getters, when it is a class), prefixed; one level into
+-	 * components and structs, which is where gameplay values usually sit (Health Component, a Stats struct).
+-	 */
+-	static void Gather(const UStruct* Scope, const FString& Prefix, int32 DepthLeft, bool bEvents, TArray<FString>& Out)
++	auto Warn = [this, &State, ListIndex, &Binding](const FString& Problem)
+ 	{
+-		if (!Scope)
++		if (!State.bWarned)
+ 		{
+-			return;
++			State.bWarned = true;
++			UE_LOG(LogWidgetDataBinder, Warning, TEXT("%s: List Binding %d ('%s') %s"), *DescribeForLog(), ListIndex, *Binding.ViewModelField.ToString(), *Problem);
+ 		}
++	};
++
++	FWidgetDataValue Value;
++	FString Error;
++	if (!FWidgetDataValue::Resolve(ViewModel, State.FieldPath, Value, &Error))
++	{
++		Warn(FString::Printf(TEXT("can't read the field: %s."), *Error));
++		return;
++	}
++	const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Value.Property);
++	const FProperty* Inner = ArrayProperty ? ArrayProperty->Inner : nullptr;
++	if (!Inner || !(CastField<FStructProperty>(Inner) || CastField<FObjectPropertyBase>(Inner)))
++	{
++		Warn(TEXT("isn't an array of structs or objects."));
++		return;
++	}
++	if (!Binding.EntryWidgetClass)
++	{
++		Warn(TEXT("has no Entry Widget Class."));
++		return;
++	}
++	UPanelWidget* Panel = Cast<UPanelWidget>(ResolveAnimationWidget(Binding.ListWidget));
++	if (!Panel)
++	{
++		Warn(TEXT("has no List Widget that can hold widgets (a Flow List, a Vertical Box...)."));
++		return;
++	}
++	UFlowList* FlowList = Cast<UFlowList>(Panel);
++	if (FlowList && FlowList->IsVirtual())
++	{
++		Warn(TEXT("fills a Flow List that is a virtual list (it has its own Entry Widget Class). Clear the Flow List's Entry Widget Class: the List Binding makes the entries."));
++		return;
++	}
++	UUserWidget* EntryOuter = Cast<UUserWidget>(OwnerWidget);
++	if (!EntryOuter)
++	{
++		EntryOuter = OwnerWidget->GetTypedOuter<UUserWidget>();
++	}
++	if (!EntryOuter)
++	{
++		return;
++	}
++
++	// The keys now, made unique (a second "Ann" is "Ann#2"), in order.
++	FScriptArrayHelper Array(ArrayProperty, Value.ValuePtr);
++	const int32 Count = Array.Num();
++	TArray<FString> Keys;
++	Keys.Reserve(Count);
++	{
++		TMap<FString, int32> Seen;
++		for (int32 Position = 0; Position < Count; ++Position)
++		{
++			FString Key = MakeKey(Inner, Array.GetRawPtr(Position), Position, Binding.KeyField);
++			int32& Times = Seen.FindOrAdd(Key);
++			if (++Times > 1)
++			{
++				Key += FString::Printf(TEXT("#%d"), Times);
++			}
++			Keys.Add(MoveTemp(Key));
++		}
++	}
++
++	const bool bAnimate = !bInitial && Binding.bAnimateChanges;
++	auto RemoveFromList = [FlowList, Panel, bAnimate](UWidget* Child)
++	{
++		if (FlowList)
++		{
++			FlowList->RemoveItem(Child, bAnimate);
++		}
++		else
++		{
++			Panel->RemoveChild(Child);
++		}
++	};
++
++	// The first time, what was placed in the designer goes: it was a layout preview.
++	if (!State.bFilled)
++	{
++		State.bFilled = true;
++		for (int32 ChildIndex = Panel->GetChildrenCount() - 1; ChildIndex >= 0; --ChildIndex)
++		{
++			if (UWidget* Child = Panel->GetChildAt(ChildIndex))
++			{
++				if (FlowList)
++				{
++					FlowList->RemoveItem(Child, /*bAnimate=*/false);
++				}
++				else
++				{
++					Panel->RemoveChild(Child);
++				}
++			}
++		}
++	}
++
++	TMap<FString, UUserWidget*> Shown;
++	for (int32 Index = 0; Index < State.Keys.Num() && Index < State.Entries.Num(); ++Index)
++	{
++		UUserWidget* Entry = State.Entries[Index].Get();
++		if (Entry && Entry->GetParent() == Panel)
++		{
++			Shown.Add(State.Keys[Index], Entry);
++		}
++	}
++
++	// Gone: their exit plays (a Flow List keeps them while it does).
++	{
++		TSet<FString> Kept(Keys);
++		for (const TPair<FString, UUserWidget*>& Pair : Shown)
++		{
++			if (!Kept.Contains(Pair.Key))
++			{
++				RemoveFromList(Pair.Value);
++				ListEntryWidgets.Remove(Pair.Value);
++			}
++		}
++	}
++
++	// Kept by key, or made - given their element before they are first built, so they never show a default.
++	TArray<UUserWidget*> Entries;
++	Entries.Reserve(Count);
++	for (int32 Position = 0; Position < Count; ++Position)
++	{
++		UUserWidget* Entry = Shown.FindRef(Keys[Position]);
++		if (!Entry)
++		{
++			Entry = CreateWidget<UUserWidget>(EntryOuter, Binding.EntryWidgetClass);
++			if (!Entry)
++			{
++				Warn(TEXT("couldn't make its Entry Widget Class."));
++				return;
++			}
++#if WITH_EDITOR
++			// In the designer the entry is part of the preview: built as designed widgets are, its own binder previewing too.
++			if (OwnerWidget->IsDesignTime())
++			{
++				Entry->SetDesignerFlags(OwnerWidget->GetDesignerFlags());
++			}
++#endif
++			ListEntryWidgets.Add(Entry);
++		}
++		PushListElement(ListIndex, Entry, Inner, Array.GetRawPtr(Position), Position);
++		Entries.Add(Entry);
++	}
++
++	// In order: a Flow List moves each into place, so the ones between slide; a new one enters where it belongs.
++	if (FlowList)
++	{
++		for (int32 Position = 0; Position < Entries.Num(); ++Position)
++		{
++			UUserWidget* Entry = Entries[Position];
++			if (Entry->GetParent() != FlowList)
++			{
++				FlowList->InsertItem(Entry, Position, bAnimate);
++			}
++			else if (FlowList->GetChildIndex(Entry) != Position)
++			{
++				FlowList->MoveItem(Entry, Position);
++			}
++		}
++	}
++	else
++	{
++		bool bInOrder = Panel->GetChildrenCount() == Entries.Num();
++		for (int32 Position = 0; bInOrder && Position < Entries.Num(); ++Position)
++		{
++			bInOrder = Panel->GetChildAt(Position) == Entries[Position];
++		}
++		if (!bInOrder)
++		{
++			Panel->ClearChildren();
++			for (UUserWidget* Entry : Entries)
++			{
++				Panel->AddChild(Entry);
++			}
++		}
++	}
++
++	State.Keys = MoveTemp(Keys);
++	State.Entries.Reset(Entries.Num());
++	for (UUserWidget* Entry : Entries)
++	{
++		State.Entries.Add(Entry);
++	}
++
++	if (bAnimate)
++	{
++		KeepDesignerAwake(2.f);
++	}
++}
++
++void UWidgetDataBinderComponent::PushListElement(int32 ListIndex, UUserWidget* Entry, const FProperty* Inner, const void* ElementPtr, int32 Position)
++{
++	const FWidgetListBinding& Binding = ListBindings[ListIndex];
++	UWidgetDataBinderComponent* EntryBinder = WidgetDataBinderLists::FindEntryBinder(Entry);
++	if (!EntryBinder)
++	{
++		FListState& State = ListStates[ListIndex];
++		if (!State.bWarnedNoEntryBinder)
++		{
++			State.bWarnedNoEntryBinder = true;
++			UE_LOG(LogWidgetDataBinder, Warning, TEXT("%s: List Binding %d's entry %s has no Widget Data Binder to give its element to. Add one to the entry widget."),
++				*DescribeForLog(), ListIndex, *GetNameSafe(Entry ? Entry->GetClass() : nullptr));
++		}
++		return;
++	}
++
++	if (const FStructProperty* StructInner = CastField<FStructProperty>(Inner))
++	{
++		EntryBinder->SetItemData(StructInner->Struct, ElementPtr, Binding.PositionField, Position + 1);
++		return;
++	}
++
++	const FObjectPropertyBase* ObjectInner = CastField<FObjectPropertyBase>(Inner);
++	UObject* Element = ObjectInner ? ObjectInner->GetObjectPropertyValue(ElementPtr) : nullptr;
++	if (Cast<INotifyFieldValueChanged>(Element))
++	{
++		// A list of ViewModels: each entry shows its own, so a change inside one reaches its entry directly.
++		if (EntryBinder->ExplicitViewModel.Get() != Element)
++		{
++			EntryBinder->SetViewModel(Element);
++		}
++	}
++	else if (EntryBinder->GetSource() != Element)
++	{
++		EntryBinder->SetSource(Element);
++	}
++	EntryBinder->SetItemPosition(Binding.PositionField, Position + 1);
++}
++
++// =====================================================================================================
++// Item data (one element of a list)
++// =====================================================================================================
++
++void UWidgetDataBinderComponent::SetItemData(const UScriptStruct* Struct, const void* Data, FName PositionFieldName, int32 Position)
++{
++	if (!Struct || !Data)
++	{
++		ItemData.Reset();
++	}
++	else
++	{
++		ItemData.InitializeAs(Struct, static_cast<const uint8*>(Data));
++	}
++	ItemPositionField = PositionFieldName;
++	ItemPosition = Position;
++
++	// Written as any change once bound - the triggers see it (Rank Went Down plays Promote); before, applied as it binds.
++	if (BoundViewModel.IsValid())
++	{
++		ApplyItemData();
++	}
++}
++
++void UWidgetDataBinderComponent::SetItemPosition(FName PositionFieldName, int32 Position)
++{
++	ItemPositionField = PositionFieldName;
++	ItemPosition = Position;
++	if (BoundViewModel.IsValid())
++	{
++		ApplyItemData();
++	}
++}
++
++void UWidgetDataBinderComponent::ApplyItemData()
++{
++	UObject* ViewModel = BoundViewModel.Get();
++	if (!ViewModel)
++	{
++		return;
++	}
++	UClass* ViewModelType = ViewModel->GetClass();
++
++	if (const UScriptStruct* Struct = ItemData.GetScriptStruct())
++	{
++		const uint8* Memory = ItemData.GetMemory();
++		for (TFieldIterator<FProperty> It(Struct); It; ++It)
++		{
++			const FProperty* Member = *It;
++			const FProperty* Field = FindFProperty<FProperty>(ViewModelType, Member->GetFName());
++			if (!Field || !WidgetDataValues::CanConvert(Member, Field))
++			{
++				continue;
++			}
++			FWidgetDataScratch Converted(Field);
++			if (WidgetDataValues::Convert(Member, Member->ContainerPtrToValuePtr<void>(Memory), Field, Converted.Get()))
++			{
++				WidgetDataValues::WriteField(ViewModel, Field, Converted.Get());
++			}
++		}
++	}
++
++	if (!ItemPositionField.IsNone() && ItemPosition != INDEX_NONE)
++	{
++		if (const FProperty* Field = FindFProperty<FProperty>(ViewModelType, ItemPositionField))
++		{
++			FWidgetDataScratch Number(Field);
++			if (WidgetDataValues::WriteNumber(Field, Number.Get(), ItemPosition))
++			{
++				WidgetDataValues::WriteField(ViewModel, Field, Number.Get());
++			}
++		}
++	}
++}
++
++TArray<UUserWidget*> UWidgetDataBinderComponent::GetListEntries(int32 ListIndex) const
++{
++	TArray<UUserWidget*> Entries;
++	if (ListStates.IsValidIndex(ListIndex))
++	{
++		for (const TWeakObjectPtr<UUserWidget>& Entry : ListStates[ListIndex].Entries)
++		{
++			if (UUserWidget* Live = Entry.Get())
++			{
++				Entries.Add(Live);
++			}
++		}
++	}
++	return Entries;
++}
++
++// =====================================================================================================
++// Sample data and the designer's Data Preview
++// =====================================================================================================
++
++bool UWidgetDataBinderComponent::WriteFieldFromText(UObject* ViewModel, FName FieldName, const FString& ValueText, bool bWarn)
++{
++	const FProperty* Field = (ViewModel && !FieldName.IsNone()) ? FindFProperty<FProperty>(ViewModel->GetClass(), FieldName) : nullptr;
++	if (!Field)
++	{
++		return false;
++	}
++	FWidgetDataScratch Parsed(Field);
++	if (!Field->ImportText_Direct(*ValueText, Parsed.Get(), ViewModel, PPF_None))
++	{
++		if (bWarn)
++		{
++			UE_LOG(LogWidgetDataBinder, Warning, TEXT("%s: '%s' isn't a valid %s for '%s'."), *DescribeForLog(), *ValueText, *Field->GetCPPType(), *FieldName.ToString());
++		}
++		return false;
++	}
++	WidgetDataValues::WriteField(ViewModel, Field, Parsed.Get());
++	return true;
++}
++
++void UWidgetDataBinderComponent::BuildSampleArray(UObject* ViewModel, const FArrayProperty* ArrayProperty, const TArray<FString>& Rows, void* ArrayValue)
++{
++	using namespace WidgetDataBinderLists;
++
++	const FProperty* Inner = ArrayProperty->Inner;
++	const FStructProperty* StructInner = CastField<FStructProperty>(Inner);
++	const FObjectPropertyBase* ObjectInner = CastField<FObjectPropertyBase>(Inner);
++
++	// The key of the list that shows this field, so an object row reuses the object already there with its key - its entry
++	// then sees its values change (and animates), rather than being handed a new ViewModel.
++	FName KeyField;
++	for (const FWidgetListBinding& Binding : ListBindings)
++	{
++		if (Binding.ViewModelField == ArrayProperty->GetFName())
++		{
++			KeyField = Binding.KeyField;
++			break;
++		}
++	}
++	TMap<FString, UObject*> Existing;
++	if (ObjectInner)
++	{
++		FWidgetDataValue Current;
++		if (FWidgetDataValue::Resolve(ViewModel, FWidgetDataPath(ArrayProperty->GetName()), Current) && Current.Property == ArrayProperty)
++		{
++			FScriptArrayHelper CurrentArray(ArrayProperty, Current.ValuePtr);
++			for (int32 Index = 0; Index < CurrentArray.Num(); ++Index)
++			{
++				if (UObject* Object = ObjectInner->GetObjectPropertyValue(CurrentArray.GetRawPtr(Index)))
++				{
++					Existing.Add(MakeKey(Inner, CurrentArray.GetRawPtr(Index), Index, KeyField), Object);
++				}
++			}
++		}
++	}
++
++	FScriptArrayHelper Array(ArrayProperty, ArrayValue);
++	Array.EmptyValues();
++	TArray<TPair<FString, FString>> Pairs;
++	for (const FString& Row : Rows)
++	{
++		const int32 Index = Array.AddValue();
++		uint8* Element = Array.GetRawPtr(Index);
++
++		if (StructInner)
++		{
++			FString Text = Row.TrimStartAndEnd();
++			if (!Text.StartsWith(TEXT("(")))
++			{
++				Text = TEXT("(") + Text + TEXT(")");
++			}
++			if (!StructInner->ImportText_Direct(*Text, Element, ViewModel, PPF_None))
++			{
++				UE_LOG(LogWidgetDataBinder, Warning, TEXT("%s: sample row '%s' isn't a valid %s."), *DescribeForLog(), *Row, *StructInner->Struct->GetName());
++			}
++			continue;
++		}
++
++		UClass* ElementClass = ObjectInner ? ObjectInner->PropertyClass.Get() : nullptr;
++		if (!ElementClass || ElementClass->HasAnyClassFlags(CLASS_Abstract))
++		{
++			continue;
++		}
++
++		ParsePairs(Row, Pairs);
++		UObject* Object = nullptr;
++		if (!KeyField.IsNone())
++		{
++			for (const TPair<FString, FString>& Pair : Pairs)
++			{
++				if (FName(*Pair.Key) == KeyField)
++				{
++					// Keyed as MakeKey writes it: the value as its property exports it.
++					if (const FProperty* KeyProperty = FindFProperty<FProperty>(ElementClass, KeyField))
++					{
++						FWidgetDataScratch KeyValue(KeyProperty);
++						FString KeyText;
++						if (KeyProperty->ImportText_Direct(*Pair.Value, KeyValue.Get(), nullptr, PPF_None))
++						{
++							KeyProperty->ExportTextItem_Direct(KeyText, KeyValue.Get(), nullptr, nullptr, PPF_None);
++							Object = Existing.FindRef(KeyText);
++						}
++					}
++					break;
++				}
++			}
++		}
++		if (!Object || !Object->IsA(ElementClass))
++		{
++			Object = NewObject<UObject>(ViewModel, ElementClass, NAME_None, RF_Transient);
++		}
++		for (const TPair<FString, FString>& Pair : Pairs)
++		{
++			if (const FProperty* Member = FindFProperty<FProperty>(ElementClass, FName(*Pair.Key)))
++			{
++				FWidgetDataScratch Parsed(Member);
++				if (Member->ImportText_Direct(*Pair.Value, Parsed.Get(), Object, PPF_None))
++				{
++					// Through WriteField, so an element that is a ViewModel tells its entry.
++					WidgetDataValues::WriteField(Object, Member, Parsed.Get());
++				}
++			}
++		}
++		ObjectInner->SetObjectPropertyValue(Element, Object);
++	}
++}
++
++void UWidgetDataBinderComponent::ApplySampleSetValues(UObject* ViewModel, int32 SetIndex)
++{
++	if (!ViewModel || !SampleSets.IsValidIndex(SetIndex))
++	{
++		return;
++	}
++	const FWidgetDataSampleSet& Set = SampleSets[SetIndex];
++	for (const FWidgetDataMockValue& Sample : Set.Values)
++	{
++		WriteFieldFromText(ViewModel, Sample.ViewModelField, Sample.Value, /*bWarn=*/true);
++	}
++	for (const FWidgetDataSampleList& List : Set.Lists)
++	{
++		const FArrayProperty* ArrayProperty = List.ViewModelField.IsNone() ? nullptr : FindFProperty<FArrayProperty>(ViewModel->GetClass(), List.ViewModelField);
++		if (!ArrayProperty)
++		{
++			UE_LOG(LogWidgetDataBinder, Warning, TEXT("%s: sample set '%s' lists '%s', which isn't an array field of %s."),
++				*DescribeForLog(), *Set.Name.ToString(), *List.ViewModelField.ToString(), *ViewModel->GetClass()->GetName());
++			continue;
++		}
++		FWidgetDataScratch Built(ArrayProperty);
++		BuildSampleArray(ViewModel, ArrayProperty, List.Rows, Built.Get());
++		WidgetDataValues::WriteField(ViewModel, ArrayProperty, Built.Get());
++	}
++}
++
++bool UWidgetDataBinderComponent::ApplySampleSet(int32 SetIndex)
++{
++	UObject* ViewModel = BoundViewModel.Get();
++	if (!ViewModel || !SampleSets.IsValidIndex(SetIndex))
++	{
++		return false;
++	}
++	// The Mock Values first, so a set only needs what differs - each step then changes just what it says. Not those the set
++	// writes itself: a list would otherwise go to the mock rows and back, playing every exit and entrance.
++	const TSet<FName> SetFields = GetSampleSetFields(SetIndex);
++	ApplyMockValues(ViewModel, &SetFields);
++	ApplySampleSetValues(ViewModel, SetIndex);
++	return true;
++}
++
++TSet<FName> UWidgetDataBinderComponent::GetSampleSetFields(int32 SetIndex) const
++{
++	TSet<FName> Fields;
++	if (SampleSets.IsValidIndex(SetIndex))
++	{
++		for (const FWidgetDataMockValue& Sample : SampleSets[SetIndex].Values)
++		{
++			Fields.Add(Sample.ViewModelField);
++		}
++		for (const FWidgetDataSampleList& List : SampleSets[SetIndex].Lists)
++		{
++			Fields.Add(List.ViewModelField);
++		}
++	}
++	return Fields;
++}
++
++bool UWidgetDataBinderComponent::SetViewModelFieldFromText(FName FieldName, const FString& ValueText)
++{
++	return WriteFieldFromText(BoundViewModel.Get(), FieldName, ValueText, /*bWarn=*/false);
++}
++
++bool UWidgetDataBinderComponent::GetViewModelFieldAsText(FName FieldName, FString& OutValueText) const
++{
++	UObject* ViewModel = BoundViewModel.Get();
++	if (!ViewModel || FieldName.IsNone())
++	{
++		return false;
++	}
++	FWidgetDataValue Value;
++	if (!FWidgetDataValue::Resolve(ViewModel, FWidgetDataPath(FieldName.ToString()), Value))
++	{
++		return false;
++	}
++	OutValueText.Reset();
++	if (const FArrayProperty* ArrayProperty = CastField<FArrayProperty>(Value.Property))
++	{
++		const int32 Count = FScriptArrayHelper(ArrayProperty, Value.ValuePtr).Num();
++		OutValueText = FString::Printf(TEXT("%d %s"), Count, Count == 1 ? TEXT("row") : TEXT("rows"));
++		return true;
++	}
++	Value.Property->ExportTextItem_Direct(OutValueText, Value.ValuePtr, nullptr, nullptr, PPF_None);
++	return true;
++}
++
++bool UWidgetDataBinderComponent::EditListForPreview(FName FieldName, EWidgetDataListEdit Edit)
++{
++	using namespace WidgetDataBinderLists;
++
++	UObject* ViewModel = BoundViewModel.Get();
++	const FArrayProperty* ArrayProperty = (ViewModel && !FieldName.IsNone()) ? FindFProperty<FArrayProperty>(ViewModel->GetClass(), FieldName) : nullptr;
++	if (!ArrayProperty)
++	{
++		return false;
++	}
++
++	FWidgetDataScratch Edited(ArrayProperty);
++	ArrayProperty->CopyCompleteValue(Edited.Get(), ArrayProperty->ContainerPtrToValuePtr<void>(ViewModel));
++	FScriptArrayHelper Array(ArrayProperty, Edited.Get());
++	const FProperty* Inner = ArrayProperty->Inner;
++	const int32 Count = Array.Num();
++
++	switch (Edit)
++	{
++	case EWidgetDataListEdit::AddRow:
++	{
++		// A copy of the last row (or a default one), at a random place, with a key of its own.
++		const int32 Added = Array.AddValue();
++		if (Count > 0)
++		{
++			if (const FObjectPropertyBase* ObjectInner = CastField<FObjectPropertyBase>(Inner))
++			{
++				UObject* Last = ObjectInner->GetObjectPropertyValue(Array.GetRawPtr(Count - 1));
++				ObjectInner->SetObjectPropertyValue(Array.GetRawPtr(Added), Last ? DuplicateObject<UObject>(Last, ViewModel) : nullptr);
++			}
++			else
++			{
++				Inner->CopySingleValue(Array.GetRawPtr(Added), Array.GetRawPtr(Count - 1));
++			}
++		}
++		else if (const FObjectPropertyBase* ObjectInner = CastField<FObjectPropertyBase>(Inner))
++		{
++			UClass* ElementClass = ObjectInner->PropertyClass.Get();
++			if (ElementClass && !ElementClass->HasAnyClassFlags(CLASS_Abstract))
++			{
++				ObjectInner->SetObjectPropertyValue(Array.GetRawPtr(Added), NewObject<UObject>(ViewModel, ElementClass, NAME_None, RF_Transient));
++			}
++		}
++
++		FName KeyField;
++		for (const FWidgetListBinding& Binding : ListBindings)
++		{
++			if (Binding.ViewModelField == FieldName)
++			{
++				KeyField = Binding.KeyField;
++				break;
++			}
++		}
++		void* Container = Array.GetRawPtr(Added);
++		const UStruct* Scope = nullptr;
++		if (const FStructProperty* StructInner = CastField<FStructProperty>(Inner))
++		{
++			Scope = StructInner->Struct;
++		}
++		else if (const FObjectPropertyBase* ObjectInner = CastField<FObjectPropertyBase>(Inner))
++		{
++			UObject* Object = ObjectInner->GetObjectPropertyValue(Container);
++			Container = Object;
++			Scope = Object ? Object->GetClass() : nullptr;
++		}
++		const FProperty* KeyProperty = (Scope && Container && !KeyField.IsNone()) ? FindFProperty<FProperty>(Scope, KeyField) : nullptr;
++		if (KeyProperty)
++		{
++			void* KeyValue = KeyProperty->ContainerPtrToValuePtr<void>(Container);
++			double Number = 0.0;
++			if (WidgetDataValues::ReadNumber(KeyProperty, KeyValue, Number))
++			{
++				double Highest = Number;
++				for (int32 Index = 0; Index < Count; ++Index)
++				{
++					const void* Other = Array.GetRawPtr(Index);
++					if (CastField<FObjectPropertyBase>(Inner))
++					{
++						Other = CastField<FObjectPropertyBase>(Inner)->GetObjectPropertyValue(Other);
++					}
++					double OtherNumber = 0.0;
++					if (Other && WidgetDataValues::ReadNumber(KeyProperty, KeyProperty->ContainerPtrToValuePtr<void>(Other), OtherNumber))
++					{
++						Highest = FMath::Max(Highest, OtherNumber);
++					}
++				}
++				WidgetDataValues::WriteNumber(KeyProperty, KeyValue, Highest + 1.0);
++			}
++			else if (const FStrProperty* StringKey = CastField<FStrProperty>(KeyProperty))
++			{
++				StringKey->SetPropertyValue(KeyValue, StringKey->GetPropertyValue(KeyValue) + FString::Printf(TEXT(" %d"), Count + 1));
++			}
++			else if (const FNameProperty* NameKey = CastField<FNameProperty>(KeyProperty))
++			{
++				NameKey->SetPropertyValue(KeyValue, FName(*FString::Printf(TEXT("%s %d"), *NameKey->GetPropertyValue(KeyValue).ToString(), Count + 1)));
++			}
++			else if (const FTextProperty* TextKey = CastField<FTextProperty>(KeyProperty))
++			{
++				TextKey->SetPropertyValue(KeyValue, FText::FromString(FString::Printf(TEXT("%s %d"), *TextKey->GetPropertyValue(KeyValue).ToString(), Count + 1)));
++			}
++		}
++
++		// Somewhere in the list rather than always last, where an arrival is easiest to miss.
++		const int32 Place = FMath::RandRange(0, Added);
++		for (int32 Index = Added; Index > Place; --Index)
++		{
++			Array.SwapValues(Index, Index - 1);
++		}
++		break;
++	}
++
++	case EWidgetDataListEdit::RemoveRow:
++		if (Count == 0)
++		{
++			return false;
++		}
++		Array.RemoveValues(FMath::RandRange(0, Count - 1), 1);
++		break;
++
++	case EWidgetDataListEdit::Shuffle:
++		for (int32 Index = Count - 1; Index > 0; --Index)
++		{
++			Array.SwapValues(Index, FMath::RandRange(0, Index));
++		}
++		break;
++
++	case EWidgetDataListEdit::Reverse:
++		for (int32 Index = 0; Index < Count / 2; ++Index)
++		{
++			Array.SwapValues(Index, Count - 1 - Index);
++		}
++		break;
++
++	case EWidgetDataListEdit::MoveOneUp:
++	{
++		// One row climbs one to three places - an overtake, the commonest leaderboard change.
++		if (Count < 2)
++		{
++			return false;
++		}
++		const int32 From = FMath::RandRange(1, Count - 1);
++		const int32 To = FMath::Max(0, From - FMath::RandRange(1, 3));
++		for (int32 Index = From; Index > To; --Index)
++		{
++			Array.SwapValues(Index, Index - 1);
++		}
++		break;
++	}
++	}
++
++	WidgetDataValues::WriteField(ViewModel, ArrayProperty, Edited.Get());
++	return true;
++}
++
++void UWidgetDataBinderComponent::SetPreviewSampleSet(int32 SetIndex)
++{
++	PreviewSampleSet = SampleSets.IsValidIndex(SetIndex) ? SetIndex : INDEX_NONE;
++	UObject* ViewModel = BoundViewModel.Get();
++	if (!bDesignBound || !ViewModel)
++	{
++		return;
++	}
++	const TSet<FName> SetFields = GetSampleSetFields(PreviewSampleSet);
++	ApplyMockValues(ViewModel, &SetFields);
++	ApplySampleSetValues(ViewModel, PreviewSampleSet);
++}
++
++void UWidgetDataBinderComponent::BindForDesigner()
++{
++	UWidget* OwnerWidget = BinderOwner.Get();
++	if (!OwnerWidget || !OwnerWidget->IsDesignTime())
++	{
++		return;
++	}
++
++	if (!bRunTriggersInDesigner)
++	{
++		// As before: the Mock Values (or this entry's element) written, nothing run.
++		UnbindAll();
++		if (ItemData.IsValid())
++		{
++			UObject* ViewModel = FindViewModelInView();
++			if (!ViewModel)
++			{
++				ViewModel = CreateViewModel();
++			}
++			if (ViewModel)
++			{
++				TGuardValue<bool> SuppressGuard(bSuppressTriggers, true);
++				AttachViewModel(ViewModel);
++				ApplyItemData();
++				DetachViewModel();
++			}
++		}
++		else
++		{
++			ApplyDesignTimeMock();
++		}
++		return;
++	}
++
++	UObject* ViewModel = ExplicitViewModel.Get();
++	if (!ViewModel)
++	{
++		ViewModel = FindViewModelInView();
++	}
++	if (!ViewModel && ViewModelClass)
++	{
++		ViewModel = CreateViewModel();
++	}
++	if (!ViewModel)
++	{
++		return;
++	}
++
++	UnbindAll();
++	AttachViewModel(ViewModel);
++	bDesignBound = true;
++
++	// An entry of a list of objects: its element is its source, read as at runtime.
++	if (DataSource.IsValid())
++	{
++		BindSource();
++		return;
++	}
++
++	// Settled without acting, as at runtime: then the one evaluation on bind, and the lists shown as they are.
++	{
++		TGuardValue<bool> SuppressGuard(bSuppressTriggers, true);
++		if (ItemData.IsValid() || ExplicitViewModel.IsValid())
++		{
++			// An entry of a list: its element is its data.
++			ApplyItemData();
++		}
++		else
++		{
++			if (bUseMockDataInDesigner)
++			{
++				const TSet<FName> SetFields = GetSampleSetFields(PreviewSampleSet);
++				ApplyMockValues(ViewModel, &SetFields);
++			}
++			ApplySampleSetValues(ViewModel, PreviewSampleSet);
++		}
++	}
++	EvaluateAllTriggers(/*bInitial=*/true);
++	ReconcileAllLists(/*bInitial=*/true);
++	if (bAnyCounting)
++	{
++		EnsureTicker();
++	}
++}
++
++void UWidgetDataBinderComponent::KeepDesignerAwake(float Seconds)
++{
++	UWidget* OwnerWidget = BinderOwner.Get();
++	if (!bDesignBound || !OwnerWidget)
++	{
++		return;
++	}
++
++	const double Now = FApp::GetCurrentTime();
++	const bool bRunning = DesignerAwakeUntil > Now;
++	DesignerAwakeUntil = FMath::Max(DesignerAwakeUntil, Now + Seconds);
++	if (bRunning)
++	{
++		return;
++	}
++
++	// An active timer keeps the designer's viewport drawing every frame while what the core ticker plays runs.
++	const TSharedPtr<SWidget> Slate = OwnerWidget->GetCachedWidget();
++	if (!Slate.IsValid())
++	{
++		return;
++	}
++	Slate->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateWeakLambda(this, [this](double, float)
++	{
++		return FApp::GetCurrentTime() < DesignerAwakeUntil ? EActiveTimerReturnType::Continue : EActiveTimerReturnType::Stop;
++	}));
++}
++
++#if WITH_EDITOR
++TArray<UWidgetDataBinderComponent*> UWidgetDataBinderComponent::FindDesignerPreviews() const
++{
++	TArray<UWidgetDataBinderComponent*> Previews;
++	if (const UWidget* OwnerWidget = BinderOwner.Get())
++	{
++		if (OwnerWidget->IsDesignTime())
++		{
++			Previews.Add(const_cast<UWidgetDataBinderComponent*>(this));
++		}
++		return Previews;
++	}
++
++	// The template the Details edit: its designer copies are the binders made from it whose widget is being designed.
++	for (TObjectIterator<UWidgetDataBinderComponent> It(RF_ClassDefaultObject | RF_ArchetypeObject, /*bIncludeDerivedClasses=*/true, EInternalObjectFlags::Garbage); It; ++It)
++	{
++		UWidgetDataBinderComponent* Copy = *It;
++		const UWidget* CopyWidget = Copy != this ? Copy->BinderOwner.Get() : nullptr;
++		if (!CopyWidget || !CopyWidget->IsDesignTime())
++		{
++			continue;
++		}
++		for (const UObject* Archetype = Copy->GetArchetype(); Archetype; Archetype = Archetype->GetArchetype())
++		{
++			if (Archetype == this)
++			{
++				Previews.Add(Copy);
++				break;
++			}
++			if (Archetype->HasAnyFlags(RF_ClassDefaultObject))
++			{
++				break;
++			}
++		}
++	}
++	return Previews;
++}
++
++void UWidgetDataBinderComponent::RefreshDesignerPreviewFrom(const UWidgetDataBinderComponent* Template)
++{
++	if (Template && Template != this)
++	{
++		for (TFieldIterator<FProperty> It(UWidgetDataBinderComponent::StaticClass(), EFieldIteratorFlags::ExcludeSuper); It; ++It)
++		{
++			const FProperty* Property = *It;
++			if (Property->HasAnyPropertyFlags(CPF_Edit) && !Property->HasAnyPropertyFlags(CPF_Transient | CPF_EditConst))
++			{
++				Property->CopyCompleteValue_InContainer(this, Template);
++			}
++		}
++	}
++	BindForDesigner();
++}
++#endif
++
++// =====================================================================================================
++// Ticking
++// =====================================================================================================
++
++void UWidgetDataBinderComponent::EnsureTicker()
++{
++	if (!TickerHandle.IsValid())
++	{
++		TickerHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UWidgetDataBinderComponent::TickBinder));
++	}
++}
++
++void UWidgetDataBinderComponent::StopTicker()
++{
++	if (TickerHandle.IsValid())
++	{
++		FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
++		TickerHandle.Reset();
++	}
++}
++
++bool UWidgetDataBinderComponent::TickBinder(float DeltaTime)
++{
++	if (bVerifyViewModelNextTick)
++	{
++		bVerifyViewModelNextTick = false;
++
++		// The view has finished constructing now. If it owns a ViewModel we aren't bound to, it is the one its
++		// View Bindings read, so bind to that instead.
++		if (bOwnerConstructed && !ExplicitViewModel.IsValid())
++		{
++			UObject* InView = FindViewModelInView();
++			if (InView && InView != BoundViewModel.Get())
++			{
++				AttachViewModel(InView, /*bKeepTriggerStates=*/true);
++				BindSource();
++			}
++			else if (!InView && BoundViewModel.IsValid() && !ViewModelName.IsNone())
++			{
++				// The view wasn't ready to take our ViewModel during construct and hasn't made one of its own,
++				// so it is showing nothing. Hand it over now; without this the binder writes to a ViewModel no
++				// View Binding reads.
++				PushViewModelToView(BoundViewModel.Get(), /*bWarnOnFailure=*/true);
++			}
++			else if (!InView && !BoundViewModel.IsValid() && !bWarnedNoViewModel)
++			{
++				bWarnedNoViewModel = true;
++				UE_LOG(LogWidgetDataBinder, Warning, TEXT("%s: the widget has no ViewModel named '%s'. Check ViewModel Name, or turn on Create ViewModel If Missing."), *DescribeForLog(), *ViewModelName.ToString());
++			}
++		}
++	}
++
++	if (bAnyPolling)
++	{
++		if (!DataSource.IsValid())
++		{
++			HandleSourceLost();
++		}
++		else
++		{
++			for (int32 Index = 0; Index < BindingStates.Num(); ++Index)
++			{
++				FBindingState& State = BindingStates[Index];
++				if (State.Mode != EWidgetDataUpdateMode::Poll)
++				{
++					continue;
++				}
++
++				const float Interval = FieldBindings.IsValidIndex(Index) ? FieldBindings[Index].PollInterval : 0.f;
++				State.PollElapsed += DeltaTime;
++				if (Interval <= 0.f || State.PollElapsed >= Interval)
++				{
++					State.PollElapsed = Interval > 0.f ? FMath::Fmod(State.PollElapsed, Interval) : 0.f;
++					PushBinding(Index);
++				}
++			}
++		}
++	}
++
++	if (bAnyCounting)
++	{
++		bAnyCounting = TickCounts(DeltaTime);
++	}
++
++	const bool bKeepTicking = bAnyPolling || bVerifyViewModelNextTick || bAnyCounting;
++	if (!bKeepTicking)
++	{
++		TickerHandle.Reset();
++	}
++	return bKeepTicking;
++}
++
++// =====================================================================================================
++// Dropdowns
++// =====================================================================================================
++
++UUserWidget* UWidgetDataBinderComponent::GetOptionsRoot() const
++{
++	if (UWidget* OwnerWidget = BinderOwner.Get())
++	{
++		if (UUserWidget* Containing = OwnerWidget->GetTypedOuter<UUserWidget>())
++		{
++			return Containing;
++		}
++	}
++
++	// The Details panel edits the component ARCHETYPE the Widget Blueprint keeps, which has no owner widget to
++	// ask. Find the Widget Blueprint it belongs to and use that class's default instead.
++	if (const UWidgetBlueprintGeneratedClass* GeneratedClass = GetTypedOuter<UWidgetBlueprintGeneratedClass>())
++	{
++		return GeneratedClass->GetDefaultObject<UUserWidget>();
++	}
++
++#if WITH_EDITORONLY_DATA
++	if (const UBlueprint* Blueprint = GetTypedOuter<UBlueprint>())
++	{
++		if (Blueprint->GeneratedClass)
++		{
++			return Cast<UUserWidget>(Blueprint->GeneratedClass->GetDefaultObject());
++		}
++	}
++#endif
++
++	return nullptr;
++}
++
++TArray<FString> UWidgetDataBinderComponent::GetViewModelFieldOptions() const
++{
++	TArray<FString> Options;
++	Options.Add(TEXT("None"));
++
++	UClass* ViewModelType = ViewModelClass.Get();
++	if (!ViewModelType)
++	{
++		return Options;
++	}
++
++	if (const INotifyFieldValueChanged* Notifier = Cast<INotifyFieldValueChanged>(ViewModelType->GetDefaultObject()))
++	{
++		Notifier->GetFieldNotificationDescriptor().ForEachField(ViewModelType, [&Options](UE::FieldNotification::FFieldId FieldId)
++		{
++			Options.AddUnique(FieldId.GetName().ToString());
++			return true;
++		});
++	}
++
++	return Options;
++}
++
++namespace WidgetDataBinderOptions
++{
++	static bool IsListedValue(const FProperty* Property)
++	{
++		return !CastField<FMulticastDelegateProperty>(Property) && !CastField<FDelegateProperty>(Property);
++	}
++
++	/**
++	 * Blueprint-visible properties of Scope (and getters, when it is a class), prefixed; one level into
++	 * components and structs, which is where gameplay values usually sit (Health Component, a Stats struct).
++	 */
++	static void Gather(const UStruct* Scope, const FString& Prefix, int32 DepthLeft, bool bEvents, TArray<FString>& Out)
++	{
++		if (!Scope)
++		{
++			return;
++		}
++
++		for (TFieldIterator<FProperty> It(Scope); It; ++It)
++		{
++			const FProperty* Property = *It;
++			if (!Property->HasAnyPropertyFlags(CPF_BlueprintVisible | CPF_BlueprintAssignable))
++			{
++				continue;
++			}
++
++			const FString PropertyPath = Prefix + Property->GetName();
+ 
+-		for (TFieldIterator<FProperty> It(Scope); It; ++It)
+-		{
+-			const FProperty* Property = *It;
+-			if (!Property->HasAnyPropertyFlags(CPF_BlueprintVisible | CPF_BlueprintAssignable))
+-			{
+-				continue;
+-			}
+-
+-			const FString PropertyPath = Prefix + Property->GetName();
+-
+ 			if (bEvents)
+ 			{
+ 				if (CastField<FMulticastDelegateProperty>(Property))
+@@ -1590,6 +2856,60 @@ TArray<FString> UWidgetDataBinderComponent::GetAnimationWidgetOptions() const
+ 	return Options;
+ }
+ 
++TArray<FString> UWidgetDataBinderComponent::GetListFieldOptions() const
++{
++	TArray<FString> Options;
++	Options.Add(TEXT("None"));
++	if (const UClass* ViewModelType = ViewModelClass.Get())
++	{
++		for (TFieldIterator<FArrayProperty> It(ViewModelType); It; ++It)
++		{
++			const FProperty* Inner = It->Inner;
++			if (CastField<FStructProperty>(Inner) || CastField<FObjectPropertyBase>(Inner))
++			{
++				Options.AddUnique(It->GetName());
++			}
++		}
++	}
++	return Options;
++}
++
++TArray<FString> UWidgetDataBinderComponent::GetListKeyFieldOptions() const
++{
++	TArray<FString> Options;
++	Options.Add(TEXT("None"));
++	if (const UClass* ViewModelType = ViewModelClass.Get())
++	{
++		for (TFieldIterator<FArrayProperty> It(ViewModelType); It; ++It)
++		{
++			const UStruct* Element = nullptr;
++			if (const FStructProperty* StructInner = CastField<FStructProperty>(It->Inner))
++			{
++				Element = StructInner->Struct;
++			}
++			else if (const FObjectPropertyBase* ObjectInner = CastField<FObjectPropertyBase>(It->Inner))
++			{
++				Element = ObjectInner->PropertyClass;
++			}
++			if (!Element)
++			{
++				continue;
++			}
++			for (TFieldIterator<FProperty> MemberIt(Element); MemberIt; ++MemberIt)
++			{
++				const FProperty* Member = *MemberIt;
++				const bool bKeyLike = WidgetDataValues::IsNumeric(Member) || CastField<FStrProperty>(Member) || CastField<FNameProperty>(Member)
++					|| CastField<FTextProperty>(Member) || CastField<FStructProperty>(Member);
++				if (bKeyLike && (Member->HasAnyPropertyFlags(CPF_BlueprintVisible | CPF_Edit) || CastField<FStructProperty>(It->Inner)))
++				{
++					Options.AddUnique(Member->GetName());
++				}
++			}
++		}
++	}
++	return Options;
++}
++
+ FString UWidgetDataBinderComponent::DescribeForLog() const
+ {
+ 	const UWidget* OwnerWidget = BinderOwner.Get();
+diff --git a/Plugins/NameTBD/Source/NameTBDMVVM/Public/WidgetDataBinderComponent.h b/Plugins/NameTBD/Source/NameTBDMVVM/Public/WidgetDataBinderComponent.h
+index 0a14cb0..f86deb7 100644
+--- a/Plugins/NameTBD/Source/NameTBDMVVM/Public/WidgetDataBinderComponent.h
++++ b/Plugins/NameTBD/Source/NameTBDMVVM/Public/WidgetDataBinderComponent.h
+@@ -7,6 +7,7 @@
+ #include "Extensions/UIComponent.h"
+ #include "INotifyFieldValueChanged.h"
+ #include "Misc/EngineVersionComparison.h"
++#include "StructUtils/InstancedStruct.h"
+ #include "UObject/ObjectKey.h"
+ #include "WidgetDataBindingTypes.h"
+ #include "WidgetDataValues.h"
+@@ -20,6 +21,16 @@ class UWidgetDataBinderComponent;
+ class UWidgetDataBinderEventProxy;
+ class UWidgetAnimationComponent;
+ 
++/** What the designer's Data Preview can do to a list, to try its animations. */
++enum class EWidgetDataListEdit : uint8
++{
++	AddRow,
++	RemoveRow,
++	Shuffle,
++	Reverse,
++	MoveOneUp
++};
++
+ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FWidgetDataTriggerEvent, FName, TriggerName, bool, bActive);
+ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FWidgetDataBinderEvent, UWidgetDataBinderComponent*, Binder);
+ 
+@@ -27,11 +38,16 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FWidgetDataBinderEvent, UWidgetDataB
+  * Connects a widget's ViewModel to the gameplay object it describes, and plays Widget Animations when the
+  * ViewModel changes, with no glue graphs.
+  *
+- * Select a widget in the hierarchy, press Add Component, pick Widget Data Binder Component, then fill two
++ * Select a widget in the hierarchy, press Add Component, pick Widget Data Binder Component, then fill the
+  * tables in Details:
+  *  - Field Bindings: a value on the source ("HealthComponent.Health") copied into a ViewModel field.
+- *  - Triggers: a condition on a ViewModel field (Is True, Health Percent < 0.25, Changed) that plays or
+- *    stops Anim IDs, edge-triggered.
++ *  - Triggers: a condition on a ViewModel field (Is True, Health Percent < 0.25, Score > Best Score, Changed,
++ *    Went Up / Went Down) that plays or stops Anim IDs, edge-triggered - or a field driving a value track, a
++ *    progress, a state machine input, an Animation Parameter, or another field counted to it (a score ticking up).
++ *  - List Bindings: a ViewModel array shown as one entry widget per element in a Flow List or panel, matched by
++ *    key, so rows arrive, leave and move rather than being rebuilt - a leaderboard.
++ * Then try it without playing: Mock Values and Sample Sets, stepped through in the binder's Data Preview, run
++ * the triggers and lists in the designer exactly as the game will.
+  * Whoever creates the widget hands it its source with one call, Set Widget Data Source (Row, Pawn), and
+  * can call it again at any time to point the same widget at another object.
+  *
+@@ -99,17 +115,41 @@ public:
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Triggers", meta = (TitleProperty = "{ViewModelField} {Condition} -> {Action} {AnimIds}"))
+ 	TArray<FWidgetFieldTrigger> Triggers;
+ 
++	/** ViewModel array -> one entry widget per element, in a Flow List or panel, matched by Key Field. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "List Bindings", meta = (TitleProperty = "{ViewModelField} -> {ListWidget} ({EntryWidgetClass})"))
++	TArray<FWidgetListBinding> ListBindings;
++
+ 	/** Values written into the ViewModel for previewing, instead of a live source. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mock Data", meta = (TitleProperty = "{ViewModelField} = {Value}"))
+ 	TArray<FWidgetDataMockValue> MockValues;
+ 
+ 	/**
+ 	 * Writes Mock Values into the ViewModel in the UMG designer, so View Bindings show them if the ViewModel
+-	 * plugin runs bindings there. Triggers don't play in the designer.
++	 * plugin runs bindings there. With Run Triggers In Designer, the triggers and List Bindings act on them too.
+ 	 */
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mock Data")
+ 	bool bUseMockDataInDesigner = true;
+ 
++	/**
++	 * The triggers, counts and List Bindings run in the UMG designer too, on the Mock Values and whatever the Data
++	 * Preview (at the top of these Details) shows - a sample set, a value typed there, a list shuffled - so the widget
++	 * reacts in the designer exactly as it will in game, without Play In Editor. Nothing they do there is saved.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mock Data")
++	bool bRunTriggersInDesigner = true;
++
++	/**
++	 * Moments of sample data, each put over the Mock Values: stepped through in the Data Preview (previous / next /
++	 * play), so each step's changes animate - a leaderboard reshuffled, a score going up, a row arriving. Apply Sample
++	 * Set puts one on at runtime, for testing a screen on its own.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mock Data", meta = (TitleProperty = "Name"))
++	TArray<FWidgetDataSampleSet> SampleSets;
++
++	/** The Data Preview's Play: seconds on each sample set. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Mock Data", meta = (ClampMin = "0.25", UIMin = "0.5", UIMax = "10", Units = "s"))
++	float SampleSetInterval = 2.f;
++
+ 	/**
+ 	 * Writes Mock Values when the game has set no source (and again when the source is cleared), and runs
+ 	 * the triggers against them. For testing a screen on its own in PIE before any gameplay feeds it.
+@@ -159,6 +199,61 @@ public:
+ 	UFUNCTION(BlueprintCallable, Category = "Data Binder")
+ 	void RefreshFromSource();
+ 
++	/**
++	 * Writes the Mock Values, then sample set Index's values and lists, into the ViewModel: the triggers and List Bindings
++	 * act on whatever changed, as on a real change. For testing a screen on its own; the designer's Data Preview steps
++	 * through the sets. False when there is no such set or no ViewModel yet.
++	 */
++	UFUNCTION(BlueprintCallable, Category = "Data Binder")
++	bool ApplySampleSet(int32 SetIndex);
++
++	/**
++	 * Sets a ViewModel field from text, written as the Details panel writes it (42, 0.25, true, an enum's name, an array
++	 * as Unreal exports one). Broadcast as any change, so View Bindings, triggers and List Bindings follow. False when the
++	 * field isn't there or the text isn't a value of its type.
++	 */
++	UFUNCTION(BlueprintCallable, Category = "Data Binder")
++	bool SetViewModelFieldFromText(FName FieldName, const FString& ValueText);
++
++	/** A ViewModel field's value as text (an array as its length, "3 rows"). False when there is no such field or no ViewModel. */
++	UFUNCTION(BlueprintPure, Category = "Data Binder")
++	bool GetViewModelFieldAsText(FName FieldName, FString& OutValueText) const;
++
++	/** The entry widgets List Binding ListIndex shows now, in order. */
++	UFUNCTION(BlueprintPure, Category = "Data Binder")
++	TArray<UUserWidget*> GetListEntries(int32 ListIndex) const;
++
++	/**
++	 * Gives the binder one element of a list to show - what a List Binding does for each entry it makes: each field of the
++	 * struct is copied into the ViewModel field of the same name, and Position into the field PositionFieldName (if any).
++	 * Kept, and put on again whenever the binder binds a ViewModel. C++: a struct can't be passed generically to Blueprint.
++	 */
++	void SetItemData(const UScriptStruct* Struct, const void* Data, FName PositionFieldName, int32 Position);
++
++	/** As SetItemData for an object element (the binder's source or ViewModel): only the position. */
++	void SetItemPosition(FName PositionFieldName, int32 Position);
++
++	/** The array edits the Data Preview offers on a list's field, to try its animations. False when the field isn't an array. */
++	bool EditListForPreview(FName FieldName, EWidgetDataListEdit Edit);
++
++	/** The Data Preview's sample set (INDEX_NONE: only the Mock Values). Applied at once when bound. */
++	void SetPreviewSampleSet(int32 SetIndex);
++	int32 GetPreviewSampleSet() const { return PreviewSampleSet; }
++
++	/** Bound in the designer (Run Triggers In Designer): what the Data Preview shows and changes. */
++	bool IsDesignBound() const { return bDesignBound; }
++
++#if WITH_EDITOR
++	/**
++	 * The designer's live copies of this binder - the template the Details edit - or this one when it is a live copy. The
++	 * Data Preview acts on these.
++	 */
++	TArray<UWidgetDataBinderComponent*> FindDesignerPreviews() const;
++
++	/** Takes the template's authored settings (the designer doesn't copy a component's edits until it compiles) and binds again. */
++	void RefreshDesignerPreviewFrom(const UWidgetDataBinderComponent* Template);
++#endif
++
+ 	/** The Widget Data Binder Component on Widget, or null. */
+ 	UFUNCTION(BlueprintPure, Category = "Data Binder")
+ 	static UWidgetDataBinderComponent* FindWidgetDataBinder(const UWidget* Widget);
+@@ -186,6 +281,14 @@ public:
+ 	UFUNCTION()
+ 	TArray<FString> GetAnimationWidgetOptions() const;
+ 
++	/** The ViewModel Class's array fields. */
++	UFUNCTION()
++	TArray<FString> GetListFieldOptions() const;
++
++	/** The members of the elements of the ViewModel Class's array fields - what can tell elements apart. */
++	UFUNCTION()
++	TArray<FString> GetListKeyFieldOptions() const;
++
+ 	virtual void BeginDestroy() override;
+ 
+ protected:
+@@ -223,13 +326,36 @@ private:
+ 	struct FTriggerState
+ 	{
+ 		FWidgetDataPath FieldPath;
++		FWidgetDataPath CompareFieldPath;
+ 		bool bActive = false;
+ 		bool bHasLastText = false;
+ 		FString LastText;
+ 		/** Set Value: the last value sent, so an unchanged field sends nothing. */
+ 		bool bHasLastValue = false;
+ 		FVector4 LastValue = FVector4(0.0, 0.0, 0.0, 0.0);
++		/** Went Up / Went Down, Count Into Field: the number last seen. */
++		bool bHasLastNumber = false;
++		double LastNumber = 0.0;
++		/** Count Into Field: the field counted, and where the count is. */
++		const FProperty* CountProperty = nullptr;
++		bool bCounting = false;
++		bool bHasCountShown = false;
++		double CountFrom = 0.0;
++		double CountTarget = 0.0;
++		double CountShown = 0.0;
++		float CountElapsed = 0.f;
++		bool bWarned = false;
++	};
++
++	/** Per List Binding: the keys shown and their entries, in order. Kept across rebinding, so entries are reused. */
++	struct FListState
++	{
++		FWidgetDataPath FieldPath;
++		TArray<FString> Keys;
++		TArray<TWeakObjectPtr<UUserWidget>> Entries;
++		bool bFilled = false;
+ 		bool bWarned = false;
++		bool bWarnedNoEntryBinder = false;
+ 	};
+ 
+ 	void SetBinderOwner(UWidget* NewOwner);
+@@ -248,7 +374,11 @@ private:
+ 	/** Reads one Field Binding from the source and writes it into the ViewModel if it changed. */
+ 	void PushBinding(int32 BindingIndex);
+ 
+-	void ApplyMockValues(UObject* ViewModel);
++	/** Writes the Mock Values, all but those of the fields in Skip (a sample set's own). */
++	void ApplyMockValues(UObject* ViewModel, const TSet<FName>* Skip = nullptr);
++
++	/** The fields sample set SetIndex writes. */
++	TSet<FName> GetSampleSetFields(int32 SetIndex) const;
+ 	void ApplyDesignTimeMock();
+ 
+ 	void HandleViewModelFieldChanged(UObject* Object, UE::FieldNotification::FFieldId FieldId);
+@@ -275,6 +405,37 @@ private:
+ 	/** Set Animation Parameter: the field's value as the parameter named Parameter Name, on the widget the trigger reaches. */
+ 	void SetAnimationParameter(const FWidgetFieldTrigger& Trigger, const FWidgetDataValue& Value);
+ 
++	/** Count Into Field: writes Number into the trigger's Count Field - a number, or text written out. */
++	void WriteCount(int32 TriggerIndex, double Number);
++
++	/** Advances every count running. True while any still is. */
++	bool TickCounts(float DeltaTime);
++
++	/** Shows List Binding ListIndex's array: entries added, removed, moved and given their elements. bInitial: nothing animates. */
++	void ReconcileList(int32 ListIndex, bool bInitial);
++	void ReconcileAllLists(bool bInitial);
++
++	/** Hands element Position of a list (at ElementPtr, of type Inner) to its entry's Widget Data Binder. */
++	void PushListElement(int32 ListIndex, UUserWidget* Entry, const FProperty* Inner, const void* ElementPtr, int32 Position);
++
++	/** Copies the item data and position (SetItemData) into the ViewModel. */
++	void ApplyItemData();
++
++	/** Writes sample set SetIndex's values and lists into ViewModel. */
++	void ApplySampleSetValues(UObject* ViewModel, int32 SetIndex);
++
++	/** Imports Text into Field of ViewModel and writes it (broadcast when it changed). */
++	bool WriteFieldFromText(UObject* ViewModel, FName FieldName, const FString& ValueText, bool bWarn);
++
++	/** Builds the value of list field ArrayProperty from sample rows into ArrayValue, reusing ViewModel's current objects by key. */
++	void BuildSampleArray(UObject* ViewModel, const FArrayProperty* ArrayProperty, const TArray<FString>& Rows, void* ArrayValue);
++
++	/** At design time: binds the ViewModel with the Mock Values (and the preview's sample set) and runs the triggers and lists on it. */
++	void BindForDesigner();
++
++	/** At design time: keeps the designer repainting for a while, as something plays that a core ticker drives. */
++	void KeepDesignerAwake(float Seconds);
++
+ 	/**
+ 	 * What owns a trigger's Anim IDs: outwards from its Animation Widget to the first Widget Animation Component on a
+ 	 * widget, or widget that is an animation host itself - the same search Play Widget Animation makes. One output is
+@@ -319,6 +480,30 @@ private:
+ 
+ 	FTSTicker::FDelegateHandle TickerHandle;
+ 
++	TArray<FListState> ListStates;
++
++	/** The entries List Bindings made, kept alive with their lists. */
++	UPROPERTY(Transient)
++	TArray<TObjectPtr<UUserWidget>> ListEntryWidgets;
++
++	/** SetItemData: one list element this binder shows. */
++	UPROPERTY(Transient)
++	FInstancedStruct ItemData;
++
++	FName ItemPositionField;
++	int32 ItemPosition = INDEX_NONE;
++
++	/** The Data Preview's sample set, at design time. */
++	int32 PreviewSampleSet = INDEX_NONE;
++
++	/** Bound by BindForDesigner. */
++	bool bDesignBound = false;
++
++	/** Count Into Field: some count is running. */
++	bool bAnyCounting = false;
++
++	double DesignerAwakeUntil = 0.0;
++
+ 	bool bOwnerConstructed = false;
+ 	bool bHadSource = false;
+ 	bool bSuppressTriggers = false;
+diff --git a/Plugins/NameTBD/Source/NameTBDMVVM/Public/WidgetDataBindingTypes.h b/Plugins/NameTBD/Source/NameTBDMVVM/Public/WidgetDataBindingTypes.h
+index 62dc55c..087a697 100644
+--- a/Plugins/NameTBD/Source/NameTBDMVVM/Public/WidgetDataBindingTypes.h
++++ b/Plugins/NameTBD/Source/NameTBDMVVM/Public/WidgetDataBindingTypes.h
+@@ -3,10 +3,13 @@
+ #pragma once
+ 
+ #include "CoreMinimal.h"
++#include "NameTBD/WidgetAnimation/WidgetAnimEasing.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimHost.h"
+ 
+ #include "WidgetDataBindingTypes.generated.h"
+ 
++class UUserWidget;
++
+ /** When a Field Binding reads its source again. */
+ UENUM(BlueprintType)
+ enum class EWidgetDataUpdateMode : uint8
+@@ -32,7 +35,17 @@ enum class EWidgetDataTriggerCondition : uint8
+ 	IsTrue UMETA(DisplayName = "Is True", ToolTip = "True while the field is true: a set bool, a non-zero number, a valid object, a non-empty string or text."),
+ 	IsFalse UMETA(DisplayName = "Is False", ToolTip = "True while the field is false (the opposite of Is True)."),
+ 	Compare UMETA(ToolTip = "True while the field compares against Threshold, for example Health Percent < 0.25."),
+-	Changed UMETA(ToolTip = "Fires every time the field changes to a different value. There is no 'while' state, so Play While True acts as Play.")
++	Changed UMETA(ToolTip = "Fires every time the field changes to a different value. There is no 'while' state, so Play While True acts as Play."),
++	WentUp UMETA(DisplayName = "Went Up", ToolTip = "Fires every time the field changes to a larger number (a bool from false to true). Score went up: play Score Pop. As Changed, there is no 'while' state."),
++	WentDown UMETA(DisplayName = "Went Down", ToolTip = "Fires every time the field changes to a smaller number. A leaderboard Rank went down - 5th to 2nd - is a promotion: play Promote.")
++};
++
++/** What a Compare condition compares the field against. */
++UENUM(BlueprintType)
++enum class EWidgetDataCompareTo : uint8
++{
++	Threshold UMETA(DisplayName = "A Value", ToolTip = "Threshold, a number set here."),
++	Field UMETA(DisplayName = "Another Field", ToolTip = "Another field of the same ViewModel, read live - Score > Best Score. The condition is worked out again when either changes.")
+ };
+ 
+ UENUM(BlueprintType)
+@@ -59,7 +72,9 @@ enum class EWidgetDataTriggerAction : uint8
+ 
+ 	SetInput UMETA(DisplayName = "Set State Machine Input", ToolTip = "Drives a Widget Animation State Machine's input with the field: every change sets the input named Input Name on the machine the Animation Widget plays. A Bool input is true while the field is (a non-zero number, a set bool); a Number takes the number; a Trigger fires each time the field changes to something true. Is Selected, Has Unread, Charge. Condition is not used."),
+ 
+-	SetParameter UMETA(DisplayName = "Set Animation Parameter", ToolTip = "Drives an Animation Parameter with the field: every change sets the parameter named Parameter Name on the widget the Animation Widget plays - for the entries with the Anim IDs, or every animation when empty - and what plays takes it at once (Set Widget Animation Parameter). A Float or Integer field gives a number, a bool a Bool, a Vector 2D or Linear Color itself, a Name, String, Text or enum a Choice's option by name. A slide as far as Offset, a flash in Team Color. Condition is not used.")
++	SetParameter UMETA(DisplayName = "Set Animation Parameter", ToolTip = "Drives an Animation Parameter with the field: every change sets the parameter named Parameter Name on the widget the Animation Widget plays - for the entries with the Anim IDs, or every animation when empty - and what plays takes it at once (Set Widget Animation Parameter). A Float or Integer field gives a number, a bool a Bool, a Vector 2D or Linear Color itself, a Name, String, Text or enum a Choice's option by name. A slide as far as Offset, a flash in Team Color. Condition is not used."),
++
++	CountTo UMETA(DisplayName = "Count Into Field", ToolTip = "Counts another field of the ViewModel (Count Field) to this one's number, over Count Duration with Count Easing - a score ticking up, a timer rolling - instead of jumping. Bind the display to Count Field. A number field takes the number; a Text or String field the number written out with Count Decimals and digit grouping (12,480). A change while counting carries on from where the count got to. Condition is not used.")
+ };
+ 
+ /**
+@@ -122,22 +137,30 @@ struct NAMETBDMVVM_API FWidgetFieldTrigger
+ 	FName ViewModelField;
+ 
+ 	/** Not used by Set Value, Set Progress or Set State Machine Input, which act on every change of the field. */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter", EditConditionHides))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter && Action != EWidgetDataTriggerAction::CountTo", EditConditionHides))
+ 	EWidgetDataTriggerCondition Condition = EWidgetDataTriggerCondition::IsTrue;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter", EditConditionHides))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter && Action != EWidgetDataTriggerAction::CountTo", EditConditionHides))
+ 	EWidgetDataComparison Comparison = EWidgetDataComparison::Less;
+ 
++	/** Compared against a number set here, or against another field of the ViewModel (Score > Best Score). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter && Action != EWidgetDataTriggerAction::CountTo", EditConditionHides))
++	EWidgetDataCompareTo CompareTo = EWidgetDataCompareTo::Threshold;
++
+ 	/** The value the field is compared against. Bools are 0 and 1, enums their numeric value. */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter", EditConditionHides))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && CompareTo == EWidgetDataCompareTo::Threshold && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter && Action != EWidgetDataTriggerAction::CountTo", EditConditionHides))
+ 	double Threshold = 0.0;
+ 
++	/** The field the value is compared against, read whenever either changes - Best Score, Rank To Beat. Hysteresis applies as to a Threshold. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (DisplayName = "Compare Field", EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && CompareTo == EWidgetDataCompareTo::Field && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter && Action != EWidgetDataTriggerAction::CountTo", EditConditionHides, GetOptions = "GetViewModelFieldOptions"))
++	FName CompareField;
++
+ 	/**
+ 	 * How far past Threshold the value has to come back before the condition counts as false again, so a
+ 	 * value hovering on the threshold doesn't flicker the animation on and off. With < 0.25 and Hysteresis
+ 	 * 0.05, Low Health starts below 0.25 and stops only above 0.30. Used by <, <=, > and >=.
+ 	 */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter", EditConditionHides, ClampMin = "0", UIMin = "0"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Condition == EWidgetDataTriggerCondition::Compare && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter && Action != EWidgetDataTriggerAction::CountTo", EditConditionHides, ClampMin = "0", UIMin = "0"))
+ 	double Hysteresis = 0.0;
+ 
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger")
+@@ -154,7 +177,7 @@ struct NAMETBDMVVM_API FWidgetFieldTrigger
+ 	 * The Anim IDs to play or stop - or, for Set Progress, whose percentage animations the field drives. Empty means every
+ 	 * Anim In entry, the same as Play Widget Animation.
+ 	 */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (DisplayName = "Anim IDs", EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetInput", EditConditionHides))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (DisplayName = "Anim IDs", EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::CountTo", EditConditionHides))
+ 	TArray<FName> AnimIds;
+ 
+ 	/**
+@@ -176,9 +199,31 @@ struct NAMETBDMVVM_API FWidgetFieldTrigger
+ 	 * this binder is on. When the picked widget has no component, the search continues outwards through its
+ 	 * parents, the same way Play Widget Animation does.
+ 	 */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (DisplayName = "Animation Widget", GetOptions = "GetAnimationWidgetOptions"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (DisplayName = "Animation Widget", EditCondition = "Action != EWidgetDataTriggerAction::CountTo", EditConditionHides, GetOptions = "GetAnimationWidgetOptions"))
+ 	FName AnimationWidget;
+ 
++	/**
++	 * Count Into Field: the ViewModel field that is counted - what the display is bound to (Display Score), while this
++	 * trigger's field holds the real value (Score). A number, Text or String field.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (DisplayName = "Count Field", EditCondition = "Action == EWidgetDataTriggerAction::CountTo", EditConditionHides, GetOptions = "GetViewModelFieldOptions"))
++	FName CountField;
++
++	/** Count Into Field: how long a count takes, in seconds. 0 sets it at once. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Action == EWidgetDataTriggerAction::CountTo", EditConditionHides, ClampMin = "0", UIMin = "0", UIMax = "3", Units = "s"))
++	float CountDuration = 0.6f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Action == EWidgetDataTriggerAction::CountTo", EditConditionHides))
++	EWidgetAnimEasing CountEasing = EWidgetAnimEasing::EaseOut;
++
++	/** Count Into Field, into a Text or String field: digits after the point (an integer field rounds anyway). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Action == EWidgetDataTriggerAction::CountTo", EditConditionHides, ClampMin = "0", ClampMax = "6", UIMin = "0", UIMax = "3"))
++	int32 CountDecimals = 0;
++
++	/** Count Into Field, into a Text or String field: thousands grouped as the culture writes them (12,480). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (EditCondition = "Action == EWidgetDataTriggerAction::CountTo", EditConditionHides))
++	bool bCountGroupDigits = true;
++
+ 	/**
+ 	 * When the binder starts (the widget is constructed, or a new source is set), a condition that is already
+ 	 * true acts straight away. On by default, so a row created for a badly hurt pawn starts pulsing at once.
+@@ -189,21 +234,21 @@ struct NAMETBDMVVM_API FWidgetFieldTrigger
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger")
+ 	bool bEvaluateOnBind = true;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter", EditConditionHides))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter && Action != EWidgetDataTriggerAction::CountTo", EditConditionHides))
+ 	EWidgetAnimPlayDirection Direction = EWidgetAnimPlayDirection::Forward;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter", EditConditionHides, ClampMin = "0.01", UIMin = "0.01"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter && Action != EWidgetDataTriggerAction::CountTo", EditConditionHides, ClampMin = "0.01", UIMin = "0.01"))
+ 	float PlaybackSpeed = 1.f;
+ 
+ 	/** Off: a one-shot returns the widget to normal when it ends. On: it stays on its final pose. */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter", EditConditionHides))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter && Action != EWidgetDataTriggerAction::CountTo", EditConditionHides))
+ 	bool bHoldFinalPose = false;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter", EditConditionHides))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter && Action != EWidgetDataTriggerAction::CountTo", EditConditionHides))
+ 	bool bRestartIfPlaying = true;
+ 
+ 	/** When stopping: snap the widgets back to where they were before the animation began, rather than holding them where it got to. */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::Play && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter", EditConditionHides))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, Category = "Trigger", meta = (EditCondition = "Action != EWidgetDataTriggerAction::Play && Action != EWidgetDataTriggerAction::SetValue && Action != EWidgetDataTriggerAction::SetProgress && Action != EWidgetDataTriggerAction::SetInput && Action != EWidgetDataTriggerAction::SetParameter && Action != EWidgetDataTriggerAction::CountTo", EditConditionHides))
+ 	bool bResetToStartOnStop = true;
+ };
+ 
+@@ -219,3 +264,93 @@ struct NAMETBDMVVM_API FWidgetDataMockValue
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mock")
+ 	FString Value;
+ };
++
++/**
++ * One row of the binder's List Bindings table: a ViewModel array (a leaderboard's rows, an inventory's items) shown as one
++ * entry widget per element in a Flow List or any panel - entries matched to elements by Key Field, so a change of the
++ * array adds, removes and moves entries instead of rebuilding them.
++ *
++ * Each entry's own Widget Data Binder (on the entry widget or anywhere in its hierarchy) gets its element:
++ *  - an element that is a ViewModel (an object with Field Notify fields) becomes the entry's ViewModel - a list of ViewModel
++ *    instances, as Rive's lists are, so a change inside an element reaches its entry with no array change;
++ *  - any other object becomes the entry's source, read by its Field Bindings;
++ *  - a struct is copied into the entry's ViewModel field by field, by name (a struct's Score into the entry's Score).
++ * The entry's own triggers then animate it: Rank Went Down plays Promote, Is Local Player plays Highlight.
++ *
++ * In a Flow List, new entries play its Enter transition, removed ones its Exit, and moved ones slide to their new places
++ * (Animate Changes). Other panels show the changes at once. Children placed in the designer are removed when the list is
++ * first filled - leave one or two there as a layout preview.
++ */
++USTRUCT(BlueprintType)
++struct NAMETBDMVVM_API FWidgetListBinding
++{
++	GENERATED_BODY()
++
++	/** The ViewModel's array field: an array of structs or of objects. Set the whole array (or broadcast the field) to show a change. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "List", meta = (DisplayName = "ViewModel Field", GetOptions = "GetListFieldOptions"))
++	FName ViewModelField;
++
++	/** The Flow List (or any panel) the entries go in. None: the widget this binder is on, if it is a panel. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "List", meta = (GetOptions = "GetAnimationWidgetOptions"))
++	FName ListWidget;
++
++	/** The widget made for each element. Give it a Widget Data Binder to receive its element. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "List")
++	TSubclassOf<UUserWidget> EntryWidgetClass;
++
++	/**
++	 * What tells elements apart across changes: a member of the element (Player Id, Name). An element with the same key
++	 * keeps its entry - moved, its values updated - rather than getting a new one. None: an object element is itself, a
++	 * struct element is its position (no moves; entries only added and removed at the end).
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "List", meta = (GetOptions = "GetListKeyFieldOptions"))
++	FName KeyField;
++
++	/**
++	 * Optional: a field of the entry's ViewModel that receives the element's position, from 1 - a leaderboard's place shown
++	 * from where the row is, and a trigger on it (Went Down: Promote) whatever the data calls it.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "List")
++	FName PositionField;
++
++	/** In a Flow List: entries added play its Enter transition, removed ones its Exit, moved ones slide. Off: changes show at once. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "List")
++	bool bAnimateChanges = true;
++};
++
++/**
++ * The rows of one list in a sample set: one element each, written as the element's members, "Name=Ann, Score=1200, Id=3"
++ * (as Unreal writes a struct, without the brackets; text in quotes when it has a comma). Members not named keep their
++ * defaults.
++ */
++USTRUCT(BlueprintType)
++struct NAMETBDMVVM_API FWidgetDataSampleList
++{
++	GENERATED_BODY()
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sample", meta = (DisplayName = "ViewModel Field", GetOptions = "GetListFieldOptions"))
++	FName ViewModelField;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sample")
++	TArray<FString> Rows;
++};
++
++/**
++ * One moment of sample data: values for some ViewModel fields and lists, put over the Mock Values. Sample sets are stepped
++ * through in the designer (the binder's Data Preview: previous / next / play), so the widget reacts to each change exactly
++ * as it will in game - a leaderboard reshuffled, a score going up, a row arriving.
++ */
++USTRUCT(BlueprintType)
++struct NAMETBDMVVM_API FWidgetDataSampleSet
++{
++	GENERATED_BODY()
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sample")
++	FName Name;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sample", meta = (TitleProperty = "{ViewModelField} = {Value}"))
++	TArray<FWidgetDataMockValue> Values;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sample", meta = (TitleProperty = "ViewModelField"))
++	TArray<FWidgetDataSampleList> Lists;
++};

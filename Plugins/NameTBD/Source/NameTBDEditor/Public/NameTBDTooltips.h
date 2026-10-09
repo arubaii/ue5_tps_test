@@ -3048,4 +3048,92 @@ namespace NameTBD::Tooltips
 		}
 	}
 
+	/** The Widget Data Binder's Data Preview: its data, live in the designer. */
+	namespace DataPreview
+	{
+		inline FText DataPreviewHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "DataPreviewHint",
+				"Your data, live in the designer: step through the Sample Sets, type a value or change a list, and the widget reacts as it will in game - its triggers play, its counts run, its List Bindings add, remove and move rows. Nothing here is saved; edit Mock Values and Sample Sets below to keep data.");
+		}
+
+		inline FText NoPreviewHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "NoPreviewHint",
+				"Open the Designer tab to preview: the Data Preview acts on the widget the designer shows. (Off: Run Triggers In Designer, under Mock Data.)");
+		}
+
+		inline FText PreviousSetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "PreviousSetTooltip",
+				"Previous: show the sample set before this one. Its changes animate, as they would in game.");
+		}
+
+		inline FText NextSetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "NextSetTooltip",
+				"Next: show the next sample set. Its changes animate, as they would in game.");
+		}
+
+		inline FText PlaySetsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "PlaySetsTooltip",
+				"Play: step through the sample sets one after another, Sample Set Interval apart, round and round.");
+		}
+
+		inline FText StopSetsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "StopSetsTooltip",
+				"Stop: stay on this sample set.");
+		}
+
+		inline FText MockOnlyTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "MockOnlyTooltip",
+				"Mock Values: back to the Mock Values alone, no sample set.");
+		}
+
+		inline FText RebindTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "RebindTooltip",
+				"Rebind: take the edits made below (Triggers, List Bindings, Mock Values, Sample Sets) into the preview and bind again - the designer only copies a component's edits when it compiles.");
+		}
+
+		inline FText FieldValueTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "FieldValueTooltip",
+				"{0}: its value in the preview now. Type a new one and press Enter - written as the Details panel writes it (42, 0.25, true, an enum's name) - and whatever watches it reacts.");
+		}
+
+		inline FText AddRowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "AddRowTooltip",
+				"Add Row: a copy of the last row, with a key of its own, somewhere in the list - plays its entrance.");
+		}
+
+		inline FText RemoveRowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "RemoveRowTooltip",
+				"Remove Row: one row, at random - plays its exit while the rest close up.");
+		}
+
+		inline FText ShuffleTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "ShuffleTooltip",
+				"Shuffle: every row to a new place - the rows slide to them.");
+		}
+
+		inline FText MoveUpTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "MoveUpTooltip",
+				"Overtake: one row climbs one to three places - the commonest leaderboard change.");
+		}
+
+		inline FText ReverseTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DataPreview", "ReverseTooltip",
+				"Reverse: the rows in the opposite order.");
+		}
+	}
+
 }
