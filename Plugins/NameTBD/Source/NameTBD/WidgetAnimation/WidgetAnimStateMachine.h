@@ -217,6 +217,25 @@ enum class EWidgetAnimMachineLayerMask : uint8
 	AllButThese UMETA(DisplayName = "All But These", ToolTip = "Every target but those listed: those are left to the layers under it.")
 };
 
+/**
+ * Which kinds of what its states animate a layer may pose - its Channels. The first five are a widget's own channels (the
+ * same bits as WidgetAnimMachineChannels), so a layer can own a widget's scale while the one under it keeps its opacity.
+ */
+UENUM(BlueprintType, meta = (Bitflags, UseEnumValuesAsMaskValuesInEditor = "true"))
+enum class EWidgetAnimMachineLayerChannel : uint8
+{
+	None = 0 UMETA(Hidden),
+	Opacity = 1 << 0 UMETA(ToolTip = "The widget's opacity: Fade tracks, and the opacity of Transform keys."),
+	Scale = 1 << 1 UMETA(ToolTip = "The widget's scale: Scale and Pulse tracks, and the scale of Transform keys."),
+	Translation = 1 << 2 UMETA(DisplayName = "Position", ToolTip = "The widget's translation: Slide and Shake tracks, and the translation of Transform keys."),
+	Shear = 1 << 3 UMETA(ToolTip = "The widget's shear: the shear of Transform keys."),
+	Angle = 1 << 4 UMETA(DisplayName = "Rotation", ToolTip = "The widget's angle: Rotate and Shake tracks, and the angle of Transform keys."),
+	Material = 1 << 5 UMETA(DisplayName = "Material Parameters", ToolTip = "Material Scalar and Material Vector tracks."),
+	Outline = 1 << 6 UMETA(DisplayName = "Shape Box Outline", ToolTip = "Shape Box tracks: the outline a Shape Box bends its content into."),
+	Other = 1 << 7 UMETA(DisplayName = "Texts, Designs And Others", ToolTip = "Everything else a track writes: texts, Design and Shape tracks, and the plugin's or a game's registered track types.")
+};
+ENUM_CLASS_FLAGS(EWidgetAnimMachineLayerChannel);
+
 /** How a state picks what it plays: one animation, or several blended by an input. */
 UENUM(BlueprintType)
 enum class EWidgetAnimMachineBlendSpace : uint8
@@ -658,10 +677,10 @@ struct NAMETBD_API FWidgetAnimMachineComment
 };
 
 /**
- * One parameter of a state's animation (see WidgetAnimParameters.h), set from one of the machine's inputs each time the state
- * starts: "Distance <- DragOffset". A Number, Integer or Press And Hold (its progress) gives a number; a Bool or a built-in
- * input true or false; a Choice its option, by name, to a Choice parameter (its option's number to any other); a Vector 2D
- * both its parts.
+ * One parameter of a state's animation (see WidgetAnimParameters.h), set from one of the machine's inputs as the state starts
+ * and whenever that input changes while it plays: "Distance <- DragOffset". A Number, Integer or Press And Hold (its
+ * progress) gives a number; a Bool or a built-in input true or false; a Choice its option, by name, to a Choice parameter
+ * (its option's number to any other); a Vector 2D both its parts.
  */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FWidgetAnimMachineParameterBinding
@@ -743,9 +762,10 @@ struct NAMETBD_API FWidgetAnimMachineState
 	FName ProgressInput;
 
 	/**
-	 * Parameters of the animation set from the machine's inputs, each time the state starts - a slide as far as the drag went,
-	 * a flash in the color a Choice picks. Read as the state starts: a change while it plays shows the next time it starts. A
-	 * value set on the widget with Set Widget Animation Parameter wins over these. See FWidgetAnimMachineParameterBinding.
+	 * Parameters of the animation set from the machine's inputs - a slide as far as the drag went, a flash in the color a Choice
+	 * picks. Read as the state starts, and again whenever one of those inputs changes while it plays: the playing tracks take
+	 * the new value at once, where each is in its play. A value set on the widget with Set Widget Animation Parameter wins
+	 * over these. See FWidgetAnimMachineParameterBinding.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Parameters From Inputs", TitleProperty = "Parameter", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
 	TArray<FWidgetAnimMachineParameterBinding> ParameterInputs;
@@ -840,6 +860,24 @@ struct NAMETBD_API FWidgetAnimMachineLayer
 	/** The targets Affects names - the Layer Group names of the machine's animations; (Widget) for the widget it plays on. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Targets", GetOptions = "GetMaskTargetOptions", EditCondition = "MaskMode != EWidgetAnimMachineLayerMask::All", EditConditionHides))
 	TArray<FName> MaskTargets;
+
+	/**
+	 * Which kinds of what its states animate the layer may pose, on the targets it affects: opacity, scale, position, shear,
+	 * rotation, material parameters, Shape Box outlines, and everything else (texts, designs...). What is left unticked is
+	 * dropped before the layer is blended, so the layers under it keep it - a hover layer that owns scale alone over a
+	 * selection layer that fades. All of them by default.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Channels", Bitmask, BitmaskEnum = "/Script/NameTBD.EWidgetAnimMachineLayerChannel"))
+	int32 MaskChannels = AllMaskChannels;
+
+	/** Every channel: what a layer poses by default. */
+	static constexpr int32 AllMaskChannels = 0xFF;
+
+	/** Whether the layer may pose Channel. */
+	bool AffectsChannel(EWidgetAnimMachineLayerChannel Channel) const { return (MaskChannels & static_cast<int32>(Channel)) != 0; }
+
+	/** Whether its Channels leave anything out. */
+	bool HasChannelMask() const { return (MaskChannels & AllMaskChannels) != AllMaskChannels; }
 
 	/** Its nodes: Entry, Any State and Exit, and its states. Edited in the graph. */
 	UPROPERTY()
@@ -1010,6 +1048,13 @@ public:
 	 * Parameters From Inputs naming a parameter none of its animations has. Each is simply false / ignored when it plays.
 	 */
 	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
+
+	/**
+	 * What IsDataValid warns of, each a line starting with MachineName - also what a Widget Blueprint's compile reports for a
+	 * machine it plays or holds: a condition on an input, layer or state that is gone, Parameters From Inputs naming a
+	 * parameter none of the state's animations has, or an input the machine doesn't have.
+	 */
+	void GatherProblems(TArray<FText>& OutProblems, const FText& MachineName) const;
 
 	/** Anything about a machine changed - an edit, an undo. The editor and the components playing it in the designer listen. */
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnMachineChanged, UWidgetAnimStateMachineAsset* /*Machine*/);

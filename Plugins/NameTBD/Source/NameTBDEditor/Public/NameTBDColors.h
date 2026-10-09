@@ -120,6 +120,9 @@ namespace NameTBD
 			inline constexpr float SectionTextPadding = 12.0f;
 			inline constexpr float SectionSecondaryTextOpacity = 0.75f;
 
+			/** How far an Event / Sound / Particles track's icon sits in from where its section's text would start. */
+			inline constexpr float CueTrackIconLeftPadding = 4.0f;
+
 			/**
 			 * A selected section gets a selected Blueprint node's outline: a solid orange rim SectionSelectedOutlineSize
 			 * pixels out around the section, under its frame - the frame's alpha (SectionFrame, below 1) is what lets
@@ -444,6 +447,23 @@ namespace NameTBD
 			inline const FLinearColor ListQuietIcon(1.00f, 1.00f, 1.00f, 0.22f);
 
 			// -------------------------------------------------------------------------------------------------
+			// Animation Parameters in the Animation Tracks list.
+			//   ListBindingPill*: after a track's name, a pill per field bound to a parameter, in the parameter's type's pin
+			//   color (as the My Blueprint panel's variable pill): ListBindingPillGap apart, ListBindingPillTypeGap between
+			//   types; ListBindingPillMissing for one whose parameter is gone. ListBindingPillWashedOut: their opacity on a
+			//   locked or hidden track.
+			//   ListParametrizedTextOpacity: ", 2 tracks parametrized" after a group's name, in italics, at this opacity.
+			// -------------------------------------------------------------------------------------------------
+
+			inline constexpr float ListBindingPillWidth = 10.0f;
+			inline constexpr float ListBindingPillHeight = 6.0f;
+			inline constexpr float ListBindingPillGap = 2.0f;
+			inline constexpr float ListBindingPillTypeGap = 5.0f;
+			inline constexpr float ListBindingPillWashedOut = 0.45f;
+			inline const FLinearColor ListBindingPillMissing(0.90f, 0.15f, 0.12f);
+			inline constexpr float ListParametrizedTextOpacity = 0.65f;
+
+			// -------------------------------------------------------------------------------------------------
 			// Playing backward - an inverted track, or every track while the preview's Invert is on.
 			//   InvertChevron: the chevrons pointing back along an inverted track, InvertChevronSpacing pixels apart.
 			// -------------------------------------------------------------------------------------------------
@@ -651,6 +671,18 @@ namespace NameTBD
 			// The length label beside a transition node: how long the transition takes. Text, and the dark pill behind it.
 			// -------------------------------------------------------------------------------------------------
 
+			// -------------------------------------------------------------------------------------------------
+			// Conditions on another layer's state, while a widget is watched: the small dot at the top right of a transition
+			// node that has any - LayerConditionHeld when they all hold, LayerConditionNotHeld when one doesn't - and the same
+			// colors on each such condition in the node's tooltip. LayerConditionDot: the dot's diameter, in graph units.
+			// LayerConditionLinger: seconds a condition that held still counts as held, so a one-frame Entered / Exited shows.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor LayerConditionHeld(0.35f, 0.85f, 0.40f);
+			inline const FLinearColor LayerConditionNotHeld(0.85f, 0.30f, 0.26f);
+			inline constexpr float LayerConditionDot = 7.0f;
+			inline constexpr double LayerConditionLinger = 0.5;
+
 			inline const FLinearColor LengthLabelText(1.0f, 1.0f, 1.0f, 0.78f);
 			inline const FLinearColor LengthLabelBackground(0.015f, 0.015f, 0.018f, 0.78f);
 
@@ -742,16 +774,19 @@ namespace NameTBD
 			// WidgetAnimMotionPath.h). Read the way After Effects' and Rive's are: a line through every moment, a dot at
 			// every frame - close together where the widget moves slowly, far apart where it moves fast - and a diamond
 			// at every key. Drawn twice, a dark line under a light one, so it reads over any background.
-			//   PathLine: the line ahead of the playhead; PathPastOpacity: how strongly the stretch already played is drawn.
+			//   PathLine: the line. PathUnplayedOpacity: while the preview plays, how strongly the stretch not yet played is
+			//   drawn - the path fills in to full from its start as the playhead passes; stopped or paused, it is all full.
 			//   Jump: the dashed line where the widget jumps without travelling - a Hold, or a step - with no dots on it.
 			//   Dot / DotOutline: the frame dots. Here: the ring where the widget is right now.
 			//   Key*: the diamonds' size and hit area; their colors are the Track Editor's keys'.
-			//   Label*: the key time written beside a diamond, and while one is dragged its position.
+			//   Label*: the key time written beside a diamond, and while one is hovered or dragged its position, in a box of
+			//   its own beside the time's, tinted the animation orange (LabelValueBackground). Both boxes have a dim white
+			//   outline (LabelOutline), LabelPartGap apart.
 			// -------------------------------------------------------------------------------------------------
 
 			inline const FLinearColor PathUnderlay(0.0f, 0.0f, 0.0f, 0.55f);
 			inline const FLinearColor PathLine(AnimationOrange_Normal.CopyWithNewOpacity(0.95f));
-			inline constexpr float PathPastOpacity = 0.4f;
+			inline constexpr float PathUnplayedOpacity = 0.4f;
 			inline constexpr float PathThickness = 1.5f;
 			inline const FLinearColor Jump(1.0f, 1.0f, 1.0f, 0.45f);
 			inline constexpr float JumpDash = 4.0f;
@@ -761,9 +796,12 @@ namespace NameTBD
 			inline const FLinearColor Here(1.0f, 1.0f, 1.0f, 1.0f);
 			inline constexpr float HereSize = 9.0f;
 			inline constexpr float KeySize = 9.0f;
-			inline constexpr float KeyHitSize = 15.0f;
+			inline constexpr float KeyHitSize = 21.0f;
 			inline const FLinearColor LabelBackground(0.02f, 0.02f, 0.02f, 0.85f);
 			inline const FLinearColor LabelText(0.88f, 0.88f, 0.88f, 1.0f);
+			inline const FLinearColor LabelValueBackground(0.14f, 0.075f, 0.02f, 0.88f);
+			inline const FLinearColor LabelOutline(1.0f, 1.0f, 1.0f, 0.22f);
+			inline constexpr float LabelPartGap = 3.0f;
 
 			// A picked key's path handles: a line from the key to each, and a small round grip - the animation orange the
 			// Custom Shape path editor draws its handles in. The keys themselves use the Track Editor's key colors
@@ -772,10 +810,10 @@ namespace NameTBD
 			inline const FLinearColor HandleFill(1.0f, 1.0f, 1.0f, 1.0f);
 			inline const FLinearColor HandleOutline(0.0f, 0.0f, 0.0f, 0.9f);
 			inline constexpr float HandleSize = 7.0f;
-			inline constexpr float HandleHitSize = 13.0f;
+			inline constexpr float HandleHitSize = 19.0f;
 
-			// How far a key's time label sits from the path, beside its diamond.
-			inline constexpr float LabelGap = 6.0f;
+			// How far a key's time label sits from its diamond's edge, beside it.
+			inline constexpr float LabelGap = 9.0f;
 		}
 
 		namespace ShapeEditor

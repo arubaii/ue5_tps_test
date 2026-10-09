@@ -576,7 +576,17 @@ bool UWidgetAnimEntryLibrary::HasAnyUsableAnimation(const TArray<FWidgetAnimEntr
 EDataValidationResult UWidgetAnimPresetAsset::IsDataValid(FDataValidationContext& Context) const
 {
 	EDataValidationResult Result = Super::IsDataValid(Context);
-	bool bAnyMissing = false;
+	TArray<FText> Problems;
+	GatherParameterProblems(Problems, FText::FromString(GetName()));
+	for (const FText& Problem : Problems)
+	{
+		Context.AddWarning(Problem);
+	}
+	return Result == EDataValidationResult::Invalid ? Result : (Problems.Num() > 0 ? EDataValidationResult::Valid : Result);
+}
+
+void UWidgetAnimPresetAsset::GatherParameterProblems(TArray<FText>& OutProblems, const FText& AnimationName) const
+{
 	for (int32 LayerIndex = 0; LayerIndex < Layers.Num(); ++LayerIndex)
 	{
 		const FWidgetAnimLayer& Layer = Layers[LayerIndex];
@@ -584,18 +594,15 @@ EDataValidationResult UWidgetAnimPresetAsset::IsDataValid(FDataValidationContext
 		{
 			if (!Binding.Parameter.IsNone() && !FindParameter(Binding.Parameter))
 			{
-				bAnyMissing = true;
-				Context.AddWarning(FText::Format(NSLOCTEXT("WidgetAnimPreset", "MissingBoundParameter", "{0}: track {1}'s {2} is bound to the parameter {3}, which this animation doesn't have - it plays its own value."),
-					FText::FromString(GetName()), FText::AsNumber(LayerIndex + 1), FText::FromString(Binding.FieldPath), FText::FromName(Binding.Parameter)));
+				OutProblems.Add(FText::Format(NSLOCTEXT("WidgetAnimPreset", "MissingBoundParameter", "{0}: track {1}'s {2} is bound to the parameter {3}, which this animation doesn't have - it plays its own value."),
+					AnimationName, FText::AsNumber(LayerIndex + 1), FText::FromString(Binding.FieldPath), FText::FromName(Binding.Parameter)));
 			}
 		}
 		if (Layer.PlaysWhen.IsSet() && !FindParameter(Layer.PlaysWhen.Parameter))
 		{
-			bAnyMissing = true;
-			Context.AddWarning(FText::Format(NSLOCTEXT("WidgetAnimPreset", "MissingPlaysWhenParameter", "{0}: track {1} plays when {2} is set, a parameter this animation doesn't have - it always plays."),
-				FText::FromString(GetName()), FText::AsNumber(LayerIndex + 1), FText::FromName(Layer.PlaysWhen.Parameter)));
+			OutProblems.Add(FText::Format(NSLOCTEXT("WidgetAnimPreset", "MissingPlaysWhenParameter", "{0}: track {1} plays when {2} is set, a parameter this animation doesn't have - it always plays."),
+				AnimationName, FText::AsNumber(LayerIndex + 1), FText::FromName(Layer.PlaysWhen.Parameter)));
 		}
 	}
-	return Result == EDataValidationResult::Invalid ? Result : (bAnyMissing ? EDataValidationResult::Valid : Result);
 }
 #endif

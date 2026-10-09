@@ -821,7 +821,17 @@ void UWidgetAnimStateMachineAsset::NotifyMachineChanged()
 EDataValidationResult UWidgetAnimStateMachineAsset::IsDataValid(FDataValidationContext& Context) const
 {
 	const EDataValidationResult Result = Super::IsDataValid(Context);
-	const FText MachineName = FText::FromString(GetName());
+	TArray<FText> Problems;
+	GatherProblems(Problems, FText::FromString(GetName()));
+	for (const FText& Problem : Problems)
+	{
+		Context.AddWarning(Problem);
+	}
+	return Result;
+}
+
+void UWidgetAnimStateMachineAsset::GatherProblems(TArray<FText>& OutProblems, const FText& MachineName) const
+{
 	for (const FWidgetAnimMachineLayer& Layer : Layers)
 	{
 		for (const FWidgetAnimMachineTransition& Transition : Layer.Transitions)
@@ -830,17 +840,23 @@ EDataValidationResult UWidgetAnimStateMachineAsset::IsDataValid(FDataValidationC
 			{
 				if (!Condition.TestsLayerState())
 				{
+					// An input condition naming an input that is gone (renamed or deleted by hand) never holds either.
+					if (!Condition.Input.IsNone() && !FindInput(Condition.Input) && !WidgetAnimMachineInputs::IsBuiltIn(Condition.Input))
+					{
+						OutProblems.Add(FText::Format(NSLOCTEXT("WidgetAnimStateMachine", "MissingConditionInput", "{0}: a transition on layer {1} tests the input {2}, which the machine doesn't have - the condition never holds."),
+							MachineName, FText::FromName(Layer.Name), FText::FromName(Condition.Input)));
+					}
 					continue;
 				}
 				const int32 OtherLayer = FindLayerIndex(Condition.Layer);
 				if (!Layers.IsValidIndex(OtherLayer))
 				{
-					Context.AddWarning(FText::Format(NSLOCTEXT("WidgetAnimStateMachine", "MissingConditionLayer", "{0}: a transition on layer {1} tests the layer {2}, which the machine doesn't have - the condition never holds."),
+					OutProblems.Add(FText::Format(NSLOCTEXT("WidgetAnimStateMachine", "MissingConditionLayer", "{0}: a transition on layer {1} tests the layer {2}, which the machine doesn't have - the condition never holds."),
 						MachineName, FText::FromName(Layer.Name), FText::FromName(Condition.Layer)));
 				}
 				else if (Layers[OtherLayer].FindStateIndexByName(Condition.State) == INDEX_NONE)
 				{
-					Context.AddWarning(FText::Format(NSLOCTEXT("WidgetAnimStateMachine", "MissingConditionState", "{0}: a transition on layer {1} tests {2}'s state {3}, which that layer doesn't have - the condition never holds."),
+					OutProblems.Add(FText::Format(NSLOCTEXT("WidgetAnimStateMachine", "MissingConditionState", "{0}: a transition on layer {1} tests {2}'s state {3}, which that layer doesn't have - the condition never holds."),
 						MachineName, FText::FromName(Layer.Name), FText::FromName(Condition.Layer), FText::FromName(Condition.State)));
 				}
 			}
@@ -865,18 +881,17 @@ EDataValidationResult UWidgetAnimStateMachineAsset::IsDataValid(FDataValidationC
 				}
 				if (!bDeclared)
 				{
-					Context.AddWarning(FText::Format(NSLOCTEXT("WidgetAnimStateMachine", "MissingStateParameter", "{0}: state {1} sets the parameter {2} from {3}, but none of its animations has that parameter - it is ignored."),
+					OutProblems.Add(FText::Format(NSLOCTEXT("WidgetAnimStateMachine", "MissingStateParameter", "{0}: state {1} sets the parameter {2} from {3}, but none of its animations has that parameter - it is ignored."),
 						MachineName, FText::FromName(State.Name), FText::FromName(Binding.Parameter), FText::FromName(Binding.Input)));
 				}
 				if (!Binding.Input.IsNone() && !FindInput(Binding.Input) && !WidgetAnimMachineInputs::IsBuiltIn(Binding.Input))
 				{
-					Context.AddWarning(FText::Format(NSLOCTEXT("WidgetAnimStateMachine", "MissingStateParameterInput", "{0}: state {1} sets {2} from the input {3}, which the machine doesn't have - it is ignored."),
+					OutProblems.Add(FText::Format(NSLOCTEXT("WidgetAnimStateMachine", "MissingStateParameterInput", "{0}: state {1} sets {2} from the input {3}, which the machine doesn't have - it is ignored."),
 						MachineName, FText::FromName(State.Name), FText::FromName(Binding.Parameter), FText::FromName(Binding.Input)));
 				}
 			}
 		}
 	}
-	return Result;
 }
 #endif
 

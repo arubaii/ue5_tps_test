@@ -147,6 +147,16 @@ class Smoothing:
     STEADY = "Steady"
 
 
+class ParamType:
+    """What an Animation Parameter holds - anim.add_parameter("Distance", ParamType.FLOAT, 40)."""
+    FLOAT = "Float"
+    INTEGER = "Integer"
+    BOOL = "Bool"
+    COLOR = "Color"
+    VECTOR2D = "Vector2D"
+    CHOICE = "Choice"
+
+
 # =====================================================================================================
 # Values to and from the plugin
 #
@@ -739,6 +749,37 @@ class Track:
     def clear_keys(self):
         return self.set({"ValueKeys.Keys": "()"})
 
+    # ---- Animation Parameters -------------------------------------------------------------------
+
+    def bind(self, path, parameter, scale=1.0, offset=0.0, mirrored=False):
+        """Binds a field to one of the animation's parameters: track.bind("SlideDistance", "Distance") is
+        "Slide.Distance = $Distance" - the field plays the parameter's value, times scale, plus offset (mirrored: scale
+        -1, for the other side). track.set(SlideDistance="$Distance") does the same ("-$Distance" mirrored). Returns
+        the track."""
+        name = _text(parameter)
+        if name.startswith("$"):
+            name = name[1:]
+        if mirrored:
+            scale = -scale
+        self._anim._check(self._anim._raw.bind_track_field(self.index, path, name, float(scale), float(offset)))
+        return self
+
+    def unbind(self, path):
+        """Lets a field go of its parameter: it plays its own value again. Returns the track."""
+        self._anim._check(self._anim._raw.bind_track_field(self.index, path, "", 1.0, 0.0))
+        return self
+
+    def binding(self, path):
+        """The parameter a field is bound to, or None while it plays its own value."""
+        return self._anim._raw.get_track_field_binding(self.index, path) or None
+
+    def plays_when(self, parameter, options=None):
+        """Plays the track only for some options of a Choice parameter - plays_when("Side", ["Left"]) - or, for a
+        Bool, while it is true (options=["False"]: while it is false). None: it always plays. Returns the track."""
+        name = "" if parameter is None else _text(parameter)
+        self._anim._check(self._anim._raw.set_track_plays_when(self.index, name, [_text(o) for o in (options or [])]))
+        return self
+
     # ---- Stagger and Value Input ---------------------------------------------------------------
 
     def set_stagger(self, kind, **fields):
@@ -1117,6 +1158,47 @@ class Animation:
         """The tracks folded into the collapsed track name."""
         return [self._track(i) for i in self._raw.get_collapsed_tracks(_text(name))]
 
+    # ---- Animation Parameters -----------------------------------------------------------------------
+
+    _PARAMETER_KINDS = {
+        "Float": "float", "Integer": "int", "Bool": "bool", "Color": "struct:LinearColor", "Vector2D": "struct:Vector2D", "Choice": "name",
+    }
+
+    @property
+    def parameters(self):
+        """The animation's parameters: a dict of each name to its default."""
+        return dict((name, self.parameter_default(name)) for name in self._raw.get_parameter_names())
+
+    def add_parameter(self, name, type=ParamType.FLOAT, default=None, options=None):
+        """Declares a parameter - add_parameter("Distance", ParamType.FLOAT, 40) is "param Distance: Float = 40" - or
+        changes the one of that name. A Choice's options: options=["Left", "Right"] (its default the first unless given).
+        Bind fields to it with track.set(SlideDistance="$Distance") or track.bind(...). Returns its name."""
+        default_text = "" if default is None else _text(default)
+        self._check(self._raw.set_parameter(_text(name), _text(type), default_text, [_text(o) for o in (options or [])]))
+        return name
+
+    param = add_parameter
+
+    def parameter_type(self, name):
+        """A parameter's type, as ParamType names it."""
+        found = self._raw.get_parameter_type(_text(name))
+        if not found:
+            raise ScriptError(self._raw.get_last_error())
+        return found
+
+    def parameter_default(self, name):
+        """A parameter's default: a number, a bool, (r, g, b, a), (x, y), or a Choice's option."""
+        kind = self._PARAMETER_KINDS.get(self.parameter_type(name), "string")
+        return _from_text(self._raw.get_parameter_default(_text(name)), kind)
+
+    def parameter_options(self, name):
+        """A Choice parameter's options."""
+        return list(self._raw.get_parameter_options(_text(name)))
+
+    def remove_parameter(self, name):
+        """Removes a parameter, and every binding to it: those fields play their own values again."""
+        self._check(self._raw.remove_parameter(_text(name)))
+
     # ---- widgets -------------------------------------------------------------------------------------
 
     def _resolve(self, target):
@@ -1326,6 +1408,7 @@ SCRIPT_NAMES = {
     "Order": Order,
     "Falloff": Falloff,
     "Smoothing": Smoothing,
+    "ParamType": ParamType,
     "Animation": Animation,
     "Track": Track,
     "Group": Group,
@@ -1468,7 +1551,7 @@ Widget Animations scripting
 In a script run from the panel:
   anim                     the animation open in the panel
   selection                .tracks, .group: what was selected when it ran
-  Names: TrackType, Ease, Curve, Starts, Timing, Direction, Stagger, Spacing, Order, Falloff, Smoothing
+  Names: TrackType, Ease, Curve, Starts, Timing, Direction, Stagger, Spacing, Order, Falloff, Smoothing, ParamType
   One run is one undoable edit; a run that stops with an error changes nothing.
   Seconds are the animation's own (as Duration is typed). Changing a track never moves another.
 
@@ -1483,6 +1566,8 @@ anim
   .collapse(tracks, name) -> name   .expand(name)   .collapsed(name) -> [Track]
   .widget(name or path) -> Widget   .print_tracks()   .kinds("Expander" or "ValueInput") -> names
   .edit(description)   with anim.edit("..."): one undoable edit (outside the panel)
+  .parameters -> {name: default}   .add_parameter(name, type=ParamType.FLOAT, default=None, options=None)  (also .param)
+  .parameter_type(name)  .parameter_default(name)  .parameter_options(name)  .remove_parameter(name)
 
 Track
   .index .type .group .target .start .end .length .duration .delay .starts .easing .timing
@@ -1491,6 +1576,8 @@ Track
   .set_values(from_, to)     .set_keys([(time, value[, curve]), ...])     .clear_keys()
   .set_stagger(Stagger.EACH_CHILD, Interval=0.05, Order=Order.FROM_THE_MIDDLE)    .set_input(kind, **fields)
   .fields(path="")   .configure(**settings)   .remove()   .duplicate()
+  .set(SlideDistance="$Distance")  ("-$Distance" mirrored)   .bind(field, parameter, scale=1, offset=0, mirrored=False)
+  .unbind(field)   .binding(field) -> name or None   .plays_when(parameter, options)  (None: always)
 
 Group      .index .name .target .tracks .add_track(type, **settings) .remove()
 Widget     .path .name .class_name .parent .children .descendants() .index .tracks     str(widget) is its path
@@ -1551,6 +1638,7 @@ _RETURNS = {
     "Track": {
         "group": "Group", "anim": "Animation", "duplicate": "Track", "set": "Track", "set_values": "Track",
         "set_keys": "Track", "clear_keys": "Track", "set_stagger": "Track", "set_input": "Track", "configure": "Track",
+        "bind": "Track", "unbind": "Track", "plays_when": "Track",
     },
     "Group": {"tracks": "list[Track]", "add_track": "Track"},
     "Widget": {"parent": "Widget", "children": "list[Widget]", "descendants": "list[Widget]", "tracks": "list[Track]",

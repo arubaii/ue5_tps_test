@@ -3,7 +3,9 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimParameters.h"
 #include "StructUtils/PropertyBag.h"
 
 #include "WidgetAnimParticleCue.generated.h"
@@ -153,4 +155,43 @@ public:
 	 * unnamed, every one at or inside TrackWidget, else every one in the nearest User Widget around it that has any.
 	 */
 	static void FindParticlesWidgets(UWidget* TrackWidget, UWidget* Host, FName WidgetName, bool bAll, TArray<UNiagaraUIWidget*>& OutWidgets);
+};
+
+/**
+ * Particles tracks' User Parameters set from Blueprint - for a value that comes from gameplay rather than the animation: a
+ * burst's color from the item's rarity, a count from a score.
+ *
+ * For a value that should follow one of the animation's own parameters, bind the track's User Parameter to an Animation
+ * Parameter instead (the chip at the end of User Parameters' row in the Widget Animations panel) and set it with Set Widget
+ * Animation Parameter - it is then part of the animation, with its default and preview.
+ */
+UCLASS(meta = (DisplayName = "Widget Animation Particles"))
+class NAMETBDNIAGARA_API UWidgetAnimParticleTrackLibrary : public UBlueprintFunctionLibrary
+{
+	GENERATED_BODY()
+
+public:
+
+	/**
+	 * Sets a User Parameter of the Particles tracks that Widget plays, from their next fire on - as if each track had that
+	 * value set: the tracks of the Widget Animations it (or a widget inside it) plays - Anim In, Anim Out, by Anim ID, its
+	 * state machines' states. Parameter: the User parameter's name (without "User.") and its value - Make Animation
+	 * Parameter (Float), (Color), (Vector 2D)... AnimId: only the animations played with that Anim ID; None: every one. Only
+	 * tracks that play their own Niagara System take it; with Use Widget's Niagara System, each Niagara Particles widget's
+	 * own Set ... Parameter is the way. Kept until Clear Particle Track Parameters; a value set on a widget nearer the track
+	 * wins over one set around it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Particles", meta = (DefaultToSelf = "Widget", Keywords = "niagara user parameter particles track cue"))
+	static void SetParticleTrackParameter(UWidget* Widget, FWidgetAnimParameterValue Parameter, FName AnimId);
+
+	/** Lets go of what Set Particle Track Parameter set on Widget: for the animations with that Anim ID, or - None - all of it. */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Particles", meta = (DefaultToSelf = "Widget", Keywords = "niagara user parameter particles track cue"))
+	static void ClearParticleTrackParameters(UWidget* Widget, FName AnimId);
+
+	/**
+	 * Writes what Set Particle Track Parameter set on the widgets around a fire - the track's widget, the widget playing it,
+	 * and each User Widget around that, the nearest winning - into OutParams, a copy of Params. False, OutParams untouched,
+	 * when nothing applies.
+	 */
+	static bool ApplyTrackParameters(const FWidgetAnimCueInfo& Info, const FWidgetAnimParticleCueParams& Params, FWidgetAnimParticleCueParams& OutParams);
 };

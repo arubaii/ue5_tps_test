@@ -430,6 +430,10 @@ public:
 	virtual float GetSpeed() const override;
 	virtual void SetSpeed(float Speed) override;
 
+	/** The builder's own preview plays them - see UWidgetAnimBuilder::SetPreviewParameterValues. */
+	virtual void SetPreviewParameters(const TArray<FWidgetAnimParameterValue>& Values) override;
+	virtual const TArray<FWidgetAnimParameterValue>* GetPreviewParameters() const override;
+
 	virtual EMode GetMode() const override;
 	virtual void SetMode(EMode Mode) override;
 

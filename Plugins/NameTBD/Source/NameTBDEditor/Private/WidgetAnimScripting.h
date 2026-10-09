@@ -238,6 +238,62 @@ public:
 	TArray<FString> GetTrackPropertyNames(int32 Track, const FString& Path) const;
 
 	// ---------------------------------------------------------------------------------------------
+	// Animation Parameters - see WidgetAnimParameters.h. "param Distance: Float = 40" is SetParameter; "Slide.Distance =
+	// $Distance" is BindTrackField, or Set Track Property with the value "$Distance" ("-$Distance" mirrored).
+	// ---------------------------------------------------------------------------------------------
+
+	/** Whether the animation can have parameters: an asset, a timeline or a builder's working copy - not a plain list of tracks. */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Scripting")
+	bool SupportsParameters() const;
+
+	/** The animation's parameters, by name, in order. */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Scripting")
+	TArray<FString> GetParameterNames() const;
+
+	/** A parameter's type - Float, Integer, Bool, Color, Vector2D or Choice - or empty when there is none of that name. */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Scripting")
+	FString GetParameterType(const FString& ParameterName) const;
+
+	/** A parameter's default as property text - "40", "True", "(X=1,Y=0)", "(R=1,G=0,B=0,A=1)", "Left". */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Scripting")
+	FString GetParameterDefault(const FString& ParameterName) const;
+
+	/** A Choice parameter's options. */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Scripting")
+	TArray<FString> GetParameterOptions(const FString& ParameterName) const;
+
+	/**
+	 * Declares a parameter - or, when there is one of that name, changes its type, default and options. ParameterType:
+	 * Float, Integer, Bool, Color, Vector2D (Vector 2D), Choice - matched loosely; Number and Int work. DefaultText: its
+	 * default as property text, empty for the type's own (a Choice: its first option). Options: a Choice's. A parameter whose
+	 * type changes loses the bindings that can't take the new type, as in the panel.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Scripting")
+	bool SetParameter(const FString& ParameterName, const FString& ParameterType, const FString& DefaultText, const TArray<FString>& ChoiceOptions);
+
+	/** Removes a parameter, and every binding and Plays When naming it: those fields play their own values again. */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Scripting")
+	bool RemoveParameter(const FString& ParameterName);
+
+	/**
+	 * Binds a track's field (a path as GetTrackProperty takes it) to a parameter: the field plays the parameter's value, times
+	 * Scale, plus Offset - Scale -1 mirrors a distance or an angle. An empty ParameterName unbinds it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Scripting")
+	bool BindTrackField(int32 Track, const FString& Path, const FString& ParameterName, float Scale = 1.f, float Offset = 0.f);
+
+	/** The parameter a track's field is bound to - empty when it plays its own value. */
+	UFUNCTION(BlueprintPure, Category = "Widget Animation|Scripting")
+	FString GetTrackFieldBinding(int32 Track, const FString& Path) const;
+
+	/**
+	 * Plays the track only for some options of a Choice parameter - or, for a Bool, while it is true (Options ["False"]:
+	 * while it is false). An empty ParameterName: it always plays.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget Animation|Scripting")
+	bool SetTrackPlaysWhen(int32 Track, const FString& ParameterName, const TArray<FString>& PlayOptions);
+
+	// ---------------------------------------------------------------------------------------------
 	// Collapsed tracks
 	// ---------------------------------------------------------------------------------------------
 
@@ -384,6 +440,10 @@ private:
 	TArray<FWidgetAnimLayerGroup>* GetGroupsArray() const;
 	TArray<FWidgetAnimLayer>* GetLayersArray() const;
 	UObject* GetEditedObject() const;
+
+	/** The edited animation's parameters, or null when it can have none (a plain list of tracks). */
+	TArray<FWidgetAnimParameter>* GetParametersArray() const;
+	FWidgetAnimParameter* FindParameter(const FString& ParameterName) const;
 
 	bool Fail(const FString& Error) const;
 	bool CheckTrack(int32 Track) const;

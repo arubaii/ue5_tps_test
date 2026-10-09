@@ -88,6 +88,16 @@ namespace WidgetAnimMotionPathImpl
 		return &Brush;
 	}
 
+	/**
+	 * A key label's box: LabelBrush with a 1px outline in LabelOutline. MakeBox's tint colors only a rounded box's fill - its
+	 * outline keeps the brush's own color - so the box is tinted to its background as LabelBrush is, and the outline is baked in.
+	 */
+	const FSlateBrush* LabelOutlinedBrush()
+	{
+		static const FSlateRoundedBoxBrush Brush(FLinearColor::White, 3.f, Palette::LabelOutline, 1.f);
+		return &Brush;
+	}
+
 	/** A widget's render transform about its pivot, PivotPx from its top left: what Slate draws it with. */
 	FSlateRenderTransform PivotedPose(const FWidgetTransform& Pose, const FVector2f& PivotPx)
 	{
@@ -384,6 +394,7 @@ namespace WidgetAnimMotionPathImpl
 		~FMotionPathLayer()
 		{
 			EndDrag();
+			ReleaseDesignerCursor();
 			ReleaseInput();
 		}
 
@@ -583,6 +594,53 @@ namespace WidgetAnimMotionPathImpl
 		}
 
 		bool IsPressed() const { return PressedMarker != INDEX_NONE; }
+
+		/** Whether any path is drawn now - Motion Path on, and an animation open that moves a widget. */
+		bool HasPaths() const { return Paths.Num() > 0; }
+
+		/** Whether a diamond or handle is lit up under the mouse, or pressed. */
+		bool IsHoveredOrPressed() const { return HoveredMarker != INDEX_NONE || IsPressed(); }
+
+		/**
+		 * The cursor while the mouse is on a diamond or handle, or pressed on one; unset anywhere else. What the designer answers
+		 * Slate with (see ClaimDesignerCursor) and FMotionPathInput keeps up every frame: Slate asks the widgets under the mouse
+		 * for their cursor whenever it likes - after a move it makes up itself, say - which FMotionPathInput never sees, so the
+		 * designer's own arrow kept coming back between the moves it did see.
+		 */
+		TOptional<EMouseCursor::Type> GetDesignerCursor() const
+		{
+			if (IsPressed())
+			{
+				return GetCursorFor(PressedMarker, PressedHandle) == EMouseCursor::Hand ? EMouseCursor::Hand : EMouseCursor::GrabHandClosed;
+			}
+			if (HoveredMarker != INDEX_NONE)
+			{
+				return GetCursorFor(HoveredMarker, HoveredHandle);
+			}
+			return TOptional<EMouseCursor::Type>();
+		}
+
+		/**
+		 * Whether Path - what is under the mouse - reaches the designer through one of its own controls (its toolbar's buttons,
+		 * boxes and menus: anything between the mouse and the designer that takes keyboard focus). Paths Only leaves those alone.
+		 */
+		bool IsOnDesignerControl(const FWidgetPath& Path) const
+		{
+			const TSharedPtr<SWidget> OwnDesigner = DesignerWidget.Pin();
+			for (int32 Index = Path.Widgets.Num() - 1; Index >= 0; --Index)
+			{
+				const TSharedRef<SWidget>& Under = Path.Widgets[Index].Widget;
+				if ((OwnDesigner.IsValid() && Under == OwnDesigner.ToSharedRef()) || IsDesignerRect(Path.Widgets[Index].Geometry))
+				{
+					return false;
+				}
+				if (Under->SupportsKeyboardFocus())
+				{
+					return true;
+				}
+			}
+			return false;
+		}
 
 		/** The mouse moved while pressed: past the threshold the drag starts - moving the key, or its handle - and follows it. */
 		void PressMove(const FVector2D& Screen, const FModifierKeysState& Modifiers)
@@ -819,6 +877,27 @@ namespace WidgetAnimMotionPathImpl
 		UWidgetBlueprint* GetBlueprint() const { return BlueprintWeak.Get(); }
 
 		/**
+		 * The designer's preview of the Widget Blueprint - for the Paths Only note at its top left. Looked for once a second at
+		 * most while not known (finding it walks every User Widget); remade on every compile, so kept weak.
+		 */
+		UUserWidget* GetPreview() const
+		{
+			if (UUserWidget* Known = PreviewWeak.Get())
+			{
+				return Known;
+			}
+			const double Now = FPlatformTime::Seconds();
+			if (Now < NextPreviewSearch)
+			{
+				return nullptr;
+			}
+			NextPreviewSearch = Now + 1.0;
+			UUserWidget* Found = FindWidgetAnimDesignerPreview(GetBlueprint());
+			PreviewWeak = Found;
+			return Found;
+		}
+
+		/**
 		 * The designer widget this layer draws over: up the parents of its Widget Blueprint's designer preview to the
 		 * SDesignerView. Looked for again only while it isn't known (once a second at most - finding the preview walks every
 		 * User Widget); the designer outlives its preview, which is remade on every compile.
@@ -852,6 +931,32 @@ namespace WidgetAnimMotionPathImpl
 					? *FString::Printf(TEXT("its designer is %s, found up the preview"), *Walk->GetTypeAsString())
 					: TEXT("its designer isn't found up the preview yet - it is found under the mouse instead, on the first press or hover over it"));
 			}
+		}
+
+		/**
+		 * Has the designer widget answer Slate's cursor questions with GetDesignerCursor - once for each designer widget found;
+		 * given back (unset) when this layer goes or its designer changes. The designer sets no Cursor of its own (and SWidget
+		 * keeps GetCursor protected, so it can't be asked): unset, GetDesignerCursor leaves the designer's own answer alone.
+		 */
+		void ClaimDesignerCursor()
+		{
+			const TSharedPtr<SWidget> OwnDesigner = DesignerWidget.Pin();
+			if (!OwnDesigner.IsValid() || OwnDesigner == CursorDesigner.Pin())
+			{
+				return;
+			}
+			ReleaseDesignerCursor();
+			OwnDesigner->SetCursor(TAttribute<TOptional<EMouseCursor::Type>>::CreateSP(this, &FMotionPathLayer::GetDesignerCursor));
+			CursorDesigner = OwnDesigner;
+		}
+
+		void ReleaseDesignerCursor()
+		{
+			if (const TSharedPtr<SWidget> Claimed = CursorDesigner.Pin())
+			{
+				Claimed->SetCursor(TOptional<EMouseCursor::Type>());
+			}
+			CursorDesigner.Reset();
 		}
 
 		/** Whether a point in the designer's space is inside it. */
@@ -911,7 +1016,12 @@ namespace WidgetAnimMotionPathImpl
 
 		/** The designer widget itself (its SDesignerView), found up the preview's parents - see FindDesignerWidget. */
 		TWeakPtr<SWidget> DesignerWidget;
+		/** The designer widget asking GetDesignerCursor for its cursor - see ClaimDesignerCursor. */
+		TWeakPtr<SWidget> CursorDesigner;
 		double NextDesignerSearch = 0.0;
+		/** The designer's preview - see GetPreview. */
+		mutable TWeakObjectPtr<UUserWidget> PreviewWeak;
+		mutable double NextPreviewSearch = 0.0;
 		bool bReportedDesignerSearch = false;
 		TArray<FWidgetReference> DesignerSelection;
 		FVector2f DesignerMin = FVector2f::ZeroVector;
@@ -932,6 +1042,9 @@ namespace WidgetAnimMotionPathImpl
 
 		/** Whether the preview is posed at the playhead - the panel on screen. Off screen it is as authored, and has no "now" to ring. */
 		bool bPreviewPosed = false;
+
+		/** Whether the preview is playing: only then is the stretch not yet played drawn fainter - see PathUnplayedOpacity. */
+		bool bPreviewPlaying = false;
 
 		// The mouse, from FMotionPathInput.
 		int32 HoveredMarker = INDEX_NONE;
@@ -1101,6 +1214,7 @@ namespace WidgetAnimMotionPathImpl
 
 		bPreviewPosed = Posed.bPosed;
 		PlayheadTime = FMath::Clamp(PanelSource->GetPlayheadAlpha(), 0.f, 1.f) * PassTime;
+		bPreviewPlaying = PanelSource->IsPlaying();
 		MapToCanvas(AllottedGeometry);
 
 		// Where the status is written: under the designer's toolbar.
@@ -1637,6 +1751,7 @@ namespace WidgetAnimMotionPathImpl
 		}
 		PaintedFrame = GFrameCounter;
 		FindDesignerWidget();
+		ClaimDesignerCursor();
 		DesignerMin = FVector2f::ZeroVector;
 		DesignerMax = FVector2f(DesignerGeometry.GetLocalSize());
 		DesignerSelection = Selection.Array();
@@ -1697,15 +1812,18 @@ namespace WidgetAnimMotionPathImpl
 				return StepLength > JumpRatio * FMath::Max(Before, After);
 			};
 
-			// The line, in runs: broken at jumps (drawn dashed), and at the playhead (what has played drawn fainter).
-			const FLinearColor Ahead = Palette::PathLine;
-			const FLinearColor Behind = Palette::PathLine.CopyWithNewOpacity(Palette::PathLine.A * Palette::PathPastOpacity);
+			// The line, in runs: broken at jumps (drawn dashed), and at the playhead. While the preview plays, what is still to
+			// play is drawn fainter, so the path fills in from its start as the playhead runs along it; stopped or paused, all of
+			// it is drawn full.
+			auto IsUnplayed = [this](float Time) { return bPreviewPlaying && Time > PlayheadTime + KINDA_SMALL_NUMBER; };
+			const FLinearColor Played = Palette::PathLine;
+			const FLinearColor Unplayed = Palette::PathLine.CopyWithNewOpacity(Palette::PathLine.A * Palette::PathUnplayedOpacity);
 			TArray<FVector2f> Run;
-			bool bRunPast = false;
+			bool bRunUnplayed = false;
 			auto FlushRun = [&]()
 			{
-				DrawLine(Run, Palette::PathUnderlay.CopyWithNewOpacity(Palette::PathUnderlay.A * (bRunPast ? Palette::PathPastOpacity : 1.f)), Palette::PathThickness + 2.f, LayerId);
-				DrawLine(Run, bRunPast ? Behind : Ahead, Palette::PathThickness, LayerId + 1);
+				DrawLine(Run, Palette::PathUnderlay.CopyWithNewOpacity(Palette::PathUnderlay.A * (bRunUnplayed ? Palette::PathUnplayedOpacity : 1.f)), Palette::PathThickness + 2.f, LayerId);
+				DrawLine(Run, bRunUnplayed ? Unplayed : Played, Palette::PathThickness, LayerId + 1);
 				Run.Reset();
 			};
 
@@ -1722,14 +1840,14 @@ namespace WidgetAnimMotionPathImpl
 					continue;
 				}
 
-				const bool bPast = To <= PlayheadTime + KINDA_SMALL_NUMBER;
-				if (Run.Num() > 0 && bPast != bRunPast)
+				const bool bUnplayed = IsUnplayed(To);
+				if (Run.Num() > 0 && bUnplayed != bRunUnplayed)
 				{
 					const FVector2f Joint = Run.Last();
 					FlushRun();
 					Run.Add(Joint);
 				}
-				bRunPast = bPast;
+				bRunUnplayed = bUnplayed;
 
 				if (IsJump(Sample))
 				{
@@ -1746,7 +1864,7 @@ namespace WidgetAnimMotionPathImpl
 					for (float Along = 0.f; Along < JumpLength; Along += Palette::JumpDash * 2.f)
 					{
 						DrawLine({ JumpStart + Direction * Along, JumpStart + Direction * FMath::Min(Along + Palette::JumpDash, JumpLength) },
-							Palette::Jump.CopyWithNewOpacity(Palette::Jump.A * (bPast ? Palette::PathPastOpacity : 1.f)), 1.f, LayerId + 1);
+							Palette::Jump.CopyWithNewOpacity(Palette::Jump.A * (bUnplayed ? Palette::PathUnplayedOpacity : 1.f)), 1.f, LayerId + 1);
 					}
 					continue;
 				}
@@ -1771,7 +1889,7 @@ namespace WidgetAnimMotionPathImpl
 				{
 					continue;
 				}
-				const float Opacity = Time <= PlayheadTime + KINDA_SMALL_NUMBER ? Palette::PathPastOpacity : 1.f;
+				const float Opacity = IsUnplayed(Time) ? Palette::PathUnplayedOpacity : 1.f;
 				DrawDot(Path.Canvas[Sample], Palette::DotSize + 2.f, CircleBrush(), Palette::DotOutline.CopyWithNewOpacity(Palette::DotOutline.A * Opacity), LayerId + 2);
 				DrawDot(Path.Canvas[Sample], Palette::DotSize, CircleBrush(), Palette::Dot.CopyWithNewOpacity(Palette::Dot.A * Opacity), LayerId + 3);
 			}
@@ -1806,17 +1924,19 @@ namespace WidgetAnimMotionPathImpl
 
 		const FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 8);
 		const TSharedRef<FSlateFontMeasure> Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
-		auto DrawLabel = [&](const FString& Text, const FVector2f& TopLeft, int32 Layer)
+		// A box of text: its background - for a key's label with a dim outline - and its text. Uses Layer and Layer + 1.
+		const FVector2f LabelPadding(4.f, 2.f);
+		auto MeasureLabel = [&](const FString& Text) { return FVector2f(Measure->Measure(Text, Font)) + LabelPadding * 2.f; };
+		auto DrawLabel = [&](const FString& Text, const FVector2f& TopLeft, int32 Layer, const FLinearColor& Background = Palette::LabelBackground, bool bOutline = false)
 		{
-			const FVector2f TextSize(Measure->Measure(Text, Font));
-			const FVector2f Padding(4.f, 2.f);
+			const FVector2f BoxSize = MeasureLabel(Text);
 			FSlateDrawElement::MakeBox(OutDrawElements, Layer,
-				AllottedGeometry.ToPaintGeometry(TextSize + Padding * 2.f, FSlateLayoutTransform(TopLeft)),
-				LabelBrush(), ESlateDrawEffect::None, Palette::LabelBackground);
+				AllottedGeometry.ToPaintGeometry(BoxSize, FSlateLayoutTransform(TopLeft)),
+				bOutline ? LabelOutlinedBrush() : LabelBrush(), ESlateDrawEffect::None, Background);
 			FSlateDrawElement::MakeText(OutDrawElements, Layer + 1,
-				AllottedGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(TopLeft + Padding)),
+				AllottedGeometry.ToPaintGeometry(BoxSize - LabelPadding * 2.f, FSlateLayoutTransform(TopLeft + LabelPadding)),
 				Text, Font, ESlateDrawEffect::None, Palette::LabelText);
-			return TextSize + Padding * 2.f;
+			return BoxSize;
 		};
 
 		// WidgetAnim.LogMotionPaths: why the paths show or not.
@@ -1828,9 +1948,32 @@ namespace WidgetAnimMotionPathImpl
 			}
 		}
 
+		// Paths Only (UWidgetAnimEditorSettings::bMotionPathPathsOnly): a note, in a key label's box, just above the top left
+		// of the widget being designed - kept inside the designer - while clicks there reach only the paths. Under the
+		// designer's toolbar when its preview isn't found.
+		if (Settings.bShowMotionPaths && Settings.bMotionPathPathsOnly && HasPaths())
+		{
+			const FString Note = LOCTEXT("PathsOnlyNote", "Paths Only On: Widget cannot be clicked on").ToString();
+			const FVector2f NoteSize = MeasureLabel(Note);
+			FVector2f NoteAt = StatusAnchor + FVector2f(4.f, 4.f);
+			const UUserWidget* Preview = GetPreview();
+			const TSharedPtr<SWidget> PreviewSlate = Preview ? Preview->GetCachedWidget() : nullptr;
+			if (PreviewSlate.IsValid())
+			{
+				// In the designer's space, as the paths are (see MapToCanvas): from the desktop through the designer's transform.
+				const FSlateRenderTransform AbsoluteToCanvas = Designer.GetAccumulatedRenderTransform().Inverse();
+				const FVector2f Corner = AbsoluteToCanvas.TransformPoint(PreviewSlate->GetTickSpaceGeometry().GetAccumulatedRenderTransform().TransformPoint(FVector2f::ZeroVector));
+				NoteAt = Corner - FVector2f(0.f, NoteSize.Y + 4.f);
+			}
+			NoteAt.X = FMath::Clamp(NoteAt.X, DesignerMin.X + 4.f, FMath::Max(DesignerMin.X + 4.f, DesignerMax.X - NoteSize.X - 4.f));
+			NoteAt.Y = FMath::Clamp(NoteAt.Y, DesignerMin.Y + 4.f, FMath::Max(DesignerMin.Y + 4.f, DesignerMax.Y - NoteSize.Y - 4.f));
+			DrawLabel(Note, NoteAt, MaxLayer + 1, Palette::LabelBackground, /*bOutline=*/true);
+		}
+
 		// The key labels, over everything: every key's time with Show Key Times, else only the key under the mouse or dragged -
-		// and a Transform key's position while it is. Beside the diamond, off the path: on the side of the path facing up, at
-		// right angles to it there, so the label never lies along it.
+		// and a Transform key's position while it is, in an orange-tinted box of its own after the time's. Beside the diamond,
+		// off the path: on the side of the path facing up, at right angles to it there, so the label never lies along it.
+		// The hot keys' labels go on last, over the others: another key's time drawn after them used to cover their position.
 		const TSharedPtr<SWidgetAnimTimeline> Panel = PanelWeak.Pin();
 		if (!Panel.IsValid())
 		{
@@ -1838,49 +1981,77 @@ namespace WidgetAnimMotionPathImpl
 		}
 		const TArray<FWidgetAnimLayer>* Layers = Panel->GetLayers();
 		const int32 LabelLayer = MaxLayer + 3;
+		const int32 HotLabelLayer = LabelLayer + 2;
+
+		TArray<FVector2f> HotCanvas;
 		for (int32 Index = 0; Index < Markers.Num(); ++Index)
 		{
-			const FMarker& Marker = Markers[Index];
-			const bool bHot = IsMarkerHot(Index);
-			if (!Marker.bShown || (!bHot && !Settings.bMotionPathKeyTimes) || !Paths.IsValidIndex(Marker.Path))
+			if (Markers[Index].bShown && IsMarkerHot(Index))
 			{
-				continue;
+				HotCanvas.Add(Markers[Index].Canvas);
 			}
+		}
 
-			FString Label = Panel->FormatTime(Marker.PanelSeconds);
-			if (bHot && Marker.bDraggable && Layers && Layers->IsValidIndex(Marker.Layer) && (*Layers)[Marker.Layer].Transform.Keys.IsValidIndex(Marker.Key))
+		for (const bool bHotPass : { false, true })
+		{
+			for (int32 Index = 0; Index < Markers.Num(); ++Index)
 			{
-				const FVector2D Translation = (*Layers)[Marker.Layer].Transform.GetKeyTransform(Marker.Key).Translation;
-				Label += FString::Printf(TEXT("   %s, %s"), *FString::SanitizeFloat(FMath::RoundToDouble(Translation.X * 10.0) / 10.0, 0), *FString::SanitizeFloat(FMath::RoundToDouble(Translation.Y * 10.0) / 10.0, 0));
-			}
-
-			// The path's direction at the key, from the samples either side of it.
-			const FPath& Path = Paths[Marker.Path];
-			FVector2f Along(1.f, 0.f);
-			if (Path.Canvas.Num() >= 2)
-			{
-				const int32 Before = FMath::Clamp(Marker.NearSample - 2, 0, Path.Canvas.Num() - 1);
-				const int32 After = FMath::Clamp(Marker.NearSample + 2, 0, Path.Canvas.Num() - 1);
-				const FVector2f Tangent = Path.Canvas[After] - Path.Canvas[Before];
-				if (Tangent.SizeSquared() > 1.e-4f)
+				const FMarker& Marker = Markers[Index];
+				const bool bHot = IsMarkerHot(Index);
+				if (bHot != bHotPass || !Marker.bShown || (!bHot && !Settings.bMotionPathKeyTimes) || !Paths.IsValidIndex(Marker.Path))
 				{
-					Along = Tangent.GetSafeNormal();
+					continue;
+				}
+				// Another key at the same spot as a hot one - a second track's key there - leaves the label to it.
+				if (!bHot && HotCanvas.ContainsByPredicate([&Marker](const FVector2f& Hot) { return FVector2f::DistSquared(Hot, Marker.Canvas) < 1.f; }))
+				{
+					continue;
+				}
+
+				const FString TimeText = Panel->FormatTime(Marker.PanelSeconds);
+				FString ValueText;
+				if (bHot && Marker.bDraggable && Layers && Layers->IsValidIndex(Marker.Layer) && (*Layers)[Marker.Layer].Transform.Keys.IsValidIndex(Marker.Key))
+				{
+					const FVector2D Translation = (*Layers)[Marker.Layer].Transform.GetKeyTransform(Marker.Key).Translation;
+					ValueText = FString::Printf(TEXT("%s, %s"), *FString::SanitizeFloat(FMath::RoundToDouble(Translation.X * 10.0) / 10.0, 0), *FString::SanitizeFloat(FMath::RoundToDouble(Translation.Y * 10.0) / 10.0, 0));
+				}
+
+				// The path's direction at the key, from the samples either side of it.
+				const FPath& Path = Paths[Marker.Path];
+				FVector2f Along(1.f, 0.f);
+				if (Path.Canvas.Num() >= 2)
+				{
+					const int32 Before = FMath::Clamp(Marker.NearSample - 2, 0, Path.Canvas.Num() - 1);
+					const int32 After = FMath::Clamp(Marker.NearSample + 2, 0, Path.Canvas.Num() - 1);
+					const FVector2f Tangent = Path.Canvas[After] - Path.Canvas[Before];
+					if (Tangent.SizeSquared() > 1.e-4f)
+					{
+						Along = Tangent.GetSafeNormal();
+					}
+				}
+				FVector2f Side(-Along.Y, Along.X);
+				if (Side.Y > 0.f || (FMath::IsNearlyZero(Side.Y) && Side.X < 0.f))
+				{
+					Side = -Side;
+				}
+
+				// The label - the time's box, and the position's after it - pushed out along that side until its nearest edge
+				// clears the diamond.
+				const FVector2f TimeSize = MeasureLabel(TimeText);
+				const FVector2f ValueSize = ValueText.IsEmpty() ? FVector2f::ZeroVector : MeasureLabel(ValueText);
+				const FVector2f LabelSize(TimeSize.X + (ValueText.IsEmpty() ? 0.f : Palette::LabelPartGap + ValueSize.X), FMath::Max(TimeSize.Y, ValueSize.Y));
+				const float Reach = Palette::KeySize * 0.5f + Palette::LabelGap
+					+ FMath::Abs(Side.X) * LabelSize.X * 0.5f + FMath::Abs(Side.Y) * LabelSize.Y * 0.5f;
+				const FVector2f TopLeft = Marker.Canvas + Side * Reach - LabelSize * 0.5f;
+				const int32 KeyLabelLayer = bHot ? HotLabelLayer : LabelLayer;
+				DrawLabel(TimeText, TopLeft + FVector2f(0.f, (LabelSize.Y - TimeSize.Y) * 0.5f), KeyLabelLayer, Palette::LabelBackground, /*bOutline=*/true);
+				if (!ValueText.IsEmpty())
+				{
+					DrawLabel(ValueText, TopLeft + FVector2f(TimeSize.X + Palette::LabelPartGap, (LabelSize.Y - ValueSize.Y) * 0.5f), KeyLabelLayer, Palette::LabelValueBackground, /*bOutline=*/true);
 				}
 			}
-			FVector2f Side(-Along.Y, Along.X);
-			if (Side.Y > 0.f || (FMath::IsNearlyZero(Side.Y) && Side.X < 0.f))
-			{
-				Side = -Side;
-			}
-
-			// The label's box pushed out along that side until its nearest edge clears the diamond.
-			const FVector2f LabelSize = FVector2f(Measure->Measure(Label, Font)) + FVector2f(8.f, 4.f);
-			const float Reach = Palette::KeyHitSize * 0.5f + Palette::LabelGap
-				+ FMath::Abs(Side.X) * LabelSize.X * 0.5f + FMath::Abs(Side.Y) * LabelSize.Y * 0.5f;
-			const FVector2f Center = Marker.Canvas + Side * Reach;
-			DrawLabel(Label, Center - LabelSize * 0.5f, LabelLayer);
 		}
-		return LabelLayer + 1;
+		return HotLabelLayer + 2;
 	}
 
 	// ---------------------------------------------------------------------------------------------
@@ -1978,7 +2149,8 @@ namespace WidgetAnimMotionPathImpl
 	 * Sees the mouse before any widget does. A press on a diamond or handle a layer drew this frame - where its designer itself is
 	 * under the mouse, not a menu or drawer over it - is the layer's: it is consumed, so the designer neither selects nor marquees,
 	 * and the moves and the release that follow are the layer's too until the button is let go. Everything else passes through
-	 * untouched; moving over the designer only lights up the diamond or handle under the mouse.
+	 * untouched; moving over the designer only lights up the diamond or handle under the mouse. With Paths Only on, a left
+	 * press anywhere else on a designer drawing paths is kept from it too, so it selects no widget.
 	 */
 	class FMotionPathInput : public IInputProcessor
 	{
@@ -1993,6 +2165,53 @@ namespace WidgetAnimMotionPathImpl
 					Layer->Release(SlateApp.GetModifierKeys(), /*bCancelled=*/true);
 					Pressed.Reset();
 				}
+			}
+			if (bSwallowedLeft && !SlateApp.GetPressedMouseButtons().Contains(EKeys::LeftMouseButton))
+			{
+				bSwallowedLeft = false;
+			}
+
+			// The cursor kept up every frame, not only on the moves seen here - see FMotionPathLayer::GetDesignerCursor.
+			if (const TSharedPtr<FMotionPathLayer> Layer = Pressed.Pin())
+			{
+				const TOptional<EMouseCursor::Type> Held = Layer->GetDesignerCursor();
+				if (Held.IsSet())
+				{
+					Cursor->SetType(Held.GetValue());
+					bCursorOwned = true;
+				}
+				return;
+			}
+			const bool bAnyHovered = GetDesignerLayers().ContainsByPredicate([](const TWeakPtr<FMotionPathLayer>& Weak)
+			{
+				const TSharedPtr<FMotionPathLayer> Layer = Weak.Pin();
+				return Layer.IsValid() && Layer->IsHoveredOrPressed();
+			});
+			if (bAnyHovered)
+			{
+				int32 Marker = INDEX_NONE;
+				int32 Handle = INDEX_NONE;
+				const TSharedPtr<FMotionPathLayer> Hit = FindHit(SlateApp, SlateApp.GetCursorPos(), Marker, Handle, nullptr);
+				for (const TWeakPtr<FMotionPathLayer>& Weak : GetDesignerLayers())
+				{
+					if (const TSharedPtr<FMotionPathLayer> Layer = Weak.Pin())
+					{
+						Layer->SetHover(Layer == Hit ? Marker : INDEX_NONE, Layer == Hit ? Handle : INDEX_NONE);
+					}
+				}
+				if (Hit.IsValid())
+				{
+					Cursor->SetType(Hit->GetCursorFor(Marker, Handle));
+					bCursorOwned = true;
+					return;
+				}
+			}
+
+			// Off every diamond and handle: the cursor given back, once.
+			if (bCursorOwned)
+			{
+				bCursorOwned = false;
+				Cursor->SetType(EMouseCursor::Default);
 			}
 		}
 
@@ -2009,6 +2228,13 @@ namespace WidgetAnimMotionPathImpl
 			const TSharedPtr<FMotionPathLayer> Layer = FindHit(SlateApp, MouseEvent.GetScreenSpacePosition(), Marker, Handle, nullptr, /*bLog=*/true);
 			if (!Layer.IsValid())
 			{
+				// Paths Only: a left press on a designer drawing paths, off its paths, is kept from the designer - and so is its
+				// release - so it selects no widget, nor starts a marquee.
+				if (Button == EKeys::LeftMouseButton && IsPathsOnlyPress(SlateApp, MouseEvent.GetScreenSpacePosition()))
+				{
+					bSwallowedLeft = true;
+					return true;
+				}
 				return false;
 			}
 
@@ -2019,6 +2245,7 @@ namespace WidgetAnimMotionPathImpl
 				LeftMarker = Marker;
 				LeftHandle = Handle;
 				SetCursor(SlateApp, Handle != INDEX_NONE || Layer->GetCursorFor(Marker, Handle) == EMouseCursor::GrabHand ? EMouseCursor::GrabHandClosed : EMouseCursor::Hand);
+				bCursorOwned = true;
 				return true;
 			}
 
@@ -2032,6 +2259,16 @@ namespace WidgetAnimMotionPathImpl
 			return true;
 		}
 
+		/**
+		 * The second press of a double click comes as a double click, not a press: on a diamond or handle - or anywhere on the
+		 * designer with Paths Only - it is taken as a press, as the first was, rather than left to the designer to select or open
+		 * the widget under it.
+		 */
+		virtual bool HandleMouseButtonDoubleClickEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+		{
+			return MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && HandleMouseButtonDownEvent(SlateApp, MouseEvent);
+		}
+
 		virtual bool HandleMouseMoveEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
 		{
 			const FVector2D Screen = MouseEvent.GetScreenSpacePosition();
@@ -2039,6 +2276,7 @@ namespace WidgetAnimMotionPathImpl
 			{
 				Layer->PressMove(Screen, MouseEvent.GetModifierKeys());
 				SetCursor(SlateApp, Layer->GetCursorFor(LeftMarker, LeftHandle));
+				bCursorOwned = true;
 				return true;
 			}
 
@@ -2055,12 +2293,15 @@ namespace WidgetAnimMotionPathImpl
 			}
 
 			// Over a diamond or handle: its cursor. The move is kept from the designer, which would otherwise have Slate ask it
-			// for its own cursor straight after and put that back. Anywhere else the designer has the move, and its cursor.
+			// for its own cursor straight after and put that back. Anywhere else the designer has the move, and its cursor - the
+			// one set here given back first, since Slate doesn't always ask again on a move.
 			if (Hit.IsValid())
 			{
 				SetCursor(SlateApp, Hit->GetCursorFor(Marker, Handle));
+				bCursorOwned = true;
 				return true;
 			}
+			GiveBackCursor(SlateApp);
 			return false;
 		}
 
@@ -2073,6 +2314,32 @@ namespace WidgetAnimMotionPathImpl
 				{
 					Pressed.Reset();
 					Layer->Release(MouseEvent.GetModifierKeys(), /*bCancelled=*/false);
+
+					// Let go over a diamond or handle: its open hand again; anywhere else, the cursor given back.
+					int32 Marker = INDEX_NONE;
+					int32 Handle = INDEX_NONE;
+					const TSharedPtr<FMotionPathLayer> Hit = FindHit(SlateApp, MouseEvent.GetScreenSpacePosition(), Marker, Handle, nullptr);
+					for (const TWeakPtr<FMotionPathLayer>& Weak : GetDesignerLayers())
+					{
+						if (const TSharedPtr<FMotionPathLayer> Lit = Weak.Pin())
+						{
+							Lit->SetHover(Lit == Hit ? Marker : INDEX_NONE, Lit == Hit ? Handle : INDEX_NONE);
+						}
+					}
+					if (Hit.IsValid())
+					{
+						SetCursor(SlateApp, Hit->GetCursorFor(Marker, Handle));
+						bCursorOwned = true;
+					}
+					else
+					{
+						GiveBackCursor(SlateApp);
+					}
+					return true;
+				}
+				if (bSwallowedLeft)
+				{
+					bSwallowedLeft = false;
 					return true;
 				}
 				return false;
@@ -2154,6 +2421,43 @@ namespace WidgetAnimMotionPathImpl
 			return nullptr;
 		}
 
+		/**
+		 * Paths Only (UWidgetAnimEditorSettings::bMotionPathPathsOnly): whether a left press at Screen lands on a designer drawing
+		 * paths - the designer itself, in front, and not one of its own toolbar controls.
+		 */
+		static bool IsPathsOnlyPress(FSlateApplication& SlateApp, const FVector2D& Screen)
+		{
+			const UWidgetAnimEditorSettings& Settings = UWidgetAnimEditorSettings::Get();
+			if (!Settings.bShowMotionPaths || !Settings.bMotionPathPathsOnly)
+			{
+				return false;
+			}
+			for (const TWeakPtr<FMotionPathLayer>& Weak : GetDesignerLayers())
+			{
+				const TSharedPtr<FMotionPathLayer> Layer = Weak.Pin();
+				if (!Layer.IsValid() || !Layer->HasPaths() || !Layer->IsOver(Screen))
+				{
+					continue;
+				}
+				const FWidgetPath Path = SlateApp.LocateWindowUnderMouse(Screen, SlateApp.GetInteractiveTopLevelWindows());
+				if (Layer->IsDesignerUnder(Path) && !Layer->IsOnDesignerControl(Path))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		/** The cursor set here, given back as the normal one - once, when the mouse has left every diamond and handle. */
+		void GiveBackCursor(FSlateApplication& SlateApp)
+		{
+			if (bCursorOwned)
+			{
+				bCursorOwned = false;
+				SetCursor(SlateApp, EMouseCursor::Default);
+			}
+		}
+
 		static void SetCursor(FSlateApplication& SlateApp, EMouseCursor::Type CursorType)
 		{
 			if (const TSharedPtr<ICursor> PlatformCursor = SlateApp.GetPlatformCursor())
@@ -2167,6 +2471,12 @@ namespace WidgetAnimMotionPathImpl
 		int32 LeftHandle = INDEX_NONE;
 		TWeakPtr<FMotionPathLayer> RightPressed;
 		int32 RightMarker = INDEX_NONE;
+
+		/** A left press kept from the designer by Paths Only: its release is kept from it too. */
+		bool bSwallowedLeft = false;
+
+		/** Whether the cursor showing is one set here (a hand or grab over a diamond or handle) - see GiveBackCursor. */
+		bool bCursorOwned = false;
 	};
 
 	namespace

@@ -1017,8 +1017,16 @@ public:
 	// chip at the end of a field's row, a track played for some of a Choice's options with its Plays When row.
 	// -------------------------------------------------------------------------------------------------
 
-	/** The edited animation's parameters - null where the panel edits no Widget Animation (a plain list, the builder's own copy). */
+	/** The edited animation's parameters - the asset's, a timeline's, or the builder's working copy's; null for a plain list. */
 	TArray<FWidgetAnimParameter>* GetParameters() const;
+
+	/**
+	 * Layer LayerIndex as the preview plays it: each field bound to an Animation Parameter holds that parameter's value - its
+	 * Preview value while one is tried, else its default, through the binding's Scale and Offset - in place of the field's own
+	 * constant. What the curve editor draws and the track and key tooltips read. The layer itself when nothing of the
+	 * animation is bound; null for no such layer. Worked out once a frame.
+	 */
+	const FWidgetAnimLayer* GetDisplayLayer(int32 LayerIndex) const;
 
 	/**
 	 * A parameter's value tried out in the preview (the Parameters section's Preview row): false when the preview plays its
@@ -1058,6 +1066,18 @@ public:
 
 	/** The bind chip's menu for a field: the parameters it can take, a new one made from it, mirror, unbind. */
 	void OpenBindMenu(const TArray<int32>& LayerIndices, const FString& FieldPath, const FProperty* Field);
+
+	/** OpenBindMenu's entries, into Menu - also each field's submenu of a property bag's chip. */
+	void FillBindMenu(FMenuBuilder& Menu, const TArray<int32>& LayerIndices, const FString& FieldPath, const FProperty* Field);
+
+	/**
+	 * The bind chip for a property bag of a registered type's settings - a Particles track's User Parameters - whose rows the
+	 * bag lays out itself, so they can't carry chips of their own: one chip at the end of the bag's row, filled while any of
+	 * its fields is bound, opening a submenu per field (each OpenBindMenu's). TypeParamsHandle: the track's Type Params row
+	 * (what says which tracks it shows); BagField: the bag's field in the type's settings - bound fields' paths are
+	 * "TypeParams.<BagField>.<Name>". Null for a row that isn't on this panel's shadow or proxies.
+	 */
+	static TSharedPtr<SWidget> MakeBagBindChip(const TSharedRef<IPropertyHandle>& TypeParamsHandle, FName BagField);
 
 	/** Adds a parameter of the field's type, its value as the default and its label as the name, and binds the field to it. */
 	void AddParameterFromField(TArray<int32> LayerIndices, FString FieldPath, const FProperty* Field);
@@ -1354,6 +1374,15 @@ public:
 
 private:
 
+	/**
+	 * GetDisplayLayer's copies of the layers (its Layers), for the frame DisplayLayersFrame and the list DisplayLayersOf; empty
+	 * when nothing is bound. Kept in a transient animation object so the garbage collector sees what the copies hold - a
+	 * property bag's struct, which a layout change can leave held by nothing else until the copies are made again.
+	 */
+	mutable TStrongObjectPtr<UWidgetAnimPresetAsset> DisplayLayersHolder;
+	mutable uint64 DisplayLayersFrame = MAX_uint64;
+	mutable const TArray<FWidgetAnimLayer>* DisplayLayersOf = nullptr;
+
 	/** Once a frame while the panel exists: follow edits made elsewhere, compiles, and the asset being switched. */
 	EActiveTimerReturnType OnRefreshTimer(double InCurrentTime, float InDeltaTime);
 
@@ -1524,6 +1553,21 @@ private:
 
 	/** One track's row in the list, Indent further in for a track of a collapsed track opened in the list. */
 	TSharedRef<SWidget> MakeListLayerRow(int32 LayerIndex, int32 GroupIndex, float Indent);
+
+	/** A track row's Animation Parameters: a pill per bound field, in its parameter's type's color. */
+	TSharedRef<SWidget> MakeListBindingPills(int32 LayerIndex);
+
+	/**
+	 * A list row's tooltip: the Track Editor's for the same track, made fresh each time it opens - MakeLayerToolTip, or for a
+	 * collapsed track's row (bCollapsedHead, LayerIndex its head) MakeCollapsedToolTip.
+	 */
+	TSharedPtr<IToolTip> MakeListTrackToolTip(int32 LayerIndex, bool bCollapsedHead);
+
+	/** How many of a group's tracks have fields bound to Animation Parameters - for ", 2 tracks parametrized" on its row. */
+	int32 CountParametrizedTracks(int32 GroupIndex) const;
+
+	/** The font of ", 2 tracks parametrized" after a group's name in the list: the name's, in italics. */
+	static FSlateFontInfo GetListParametrizedFont();
 
 	/** A folder's row in the list: fold arrow, icon, name and how many groups it holds. */
 	TSharedRef<SWidget> MakeListFolderRow(const FString& Folder);

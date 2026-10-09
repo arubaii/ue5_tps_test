@@ -1120,6 +1120,87 @@ namespace WidgetAnimComponentEvents
 		}
 	}
 
+	/** One Fire Event action of a state machine the component plays: its Custom Event's name, and where it is - for its tooltip. */
+	struct FActionEventRow
+	{
+		FName FunctionName;
+		FText Machine;
+		FText EventName;
+		FText Where;
+	};
+
+	/**
+	 * Every Fire Event action's event, of every state machine the component plays - a state's On Enter / On Exit, a
+	 * transition's On Taken - once each, "On Button Charged Ready". See WidgetAnimMachineEvents::GetActionEventFunctionName.
+	 */
+	void GatherActionEvents(const UWidgetAnimationComponent& Component, TArray<FActionEventRow>& OutRows)
+	{
+		TSet<FName> Seen;
+		for (const FWidgetAnimStateMachineEntry& Entry : Component.StateMachines)
+		{
+			const UWidgetAnimStateMachineAsset* Machine = Entry.StateMachine;
+			if (!Machine)
+			{
+				continue;
+			}
+			const FText MachineName = FText::FromString(Machine->GetMachineDisplayName());
+			auto AddFrom = [&Seen, &OutRows, Machine, &MachineName](const TArray<FWidgetAnimMachineAction>& Actions, const FText& Where)
+			{
+				for (const FWidgetAnimMachineAction& Action : Actions)
+				{
+					if (Action.Kind != EWidgetAnimMachineActionKind::FireEvent)
+					{
+						continue;
+					}
+					const FName FunctionName = WidgetAnimMachineEvents::GetActionEventFunctionName(Machine, Action.EventName);
+					bool bAlreadySeen = false;
+					Seen.Add(FunctionName, &bAlreadySeen);
+					if (FunctionName.IsNone() || bAlreadySeen)
+					{
+						continue;
+					}
+					FActionEventRow& Row = OutRows.AddDefaulted_GetRef();
+					Row.FunctionName = FunctionName;
+					Row.Machine = MachineName;
+					Row.EventName = FText::FromName(Action.EventName);
+					Row.Where = Where;
+				}
+			};
+			for (const FWidgetAnimMachineLayer& Layer : Machine->Layers)
+			{
+				for (const FWidgetAnimMachineState& State : Layer.States)
+				{
+					if (State.IsSpecial())
+					{
+						continue;
+					}
+					AddFrom(State.OnEnter, FText::Format(LOCTEXT("ActionOnEnter", "entering {0} ({1})"), FText::FromName(State.Name), FText::FromName(Layer.Name)));
+					AddFrom(State.OnExit, FText::Format(LOCTEXT("ActionOnExit", "leaving {0} ({1})"), FText::FromName(State.Name), FText::FromName(Layer.Name)));
+				}
+				for (const FWidgetAnimMachineTransition& Transition : Layer.Transitions)
+				{
+					const FWidgetAnimMachineState* From = Layer.FindState(Transition.From);
+					const FWidgetAnimMachineState* To = Layer.FindState(Transition.To);
+					auto NodeName = [](const FWidgetAnimMachineState* Node)
+					{
+						if (!Node)
+						{
+							return FText::GetEmpty();
+						}
+						switch (Node->Kind)
+						{
+						case EWidgetAnimMachineNodeKind::Entry:    return LOCTEXT("EntryNode", "Entry");
+						case EWidgetAnimMachineNodeKind::Exit:     return LOCTEXT("ExitNode", "Exit");
+						case EWidgetAnimMachineNodeKind::AnyState: return LOCTEXT("AnyStateNode", "Any State");
+						default:                                   return FText::FromName(Node->Name);
+						}
+					};
+					AddFrom(Transition.OnTaken, FText::Format(LOCTEXT("ActionOnTaken", "the transition {0} -> {1} ({2})"), NodeName(From), NodeName(To), FText::FromName(Layer.Name)));
+				}
+			}
+		}
+	}
+
 	/** Blueprint's Custom Event named FunctionName - an Event track's, see WidgetAnimCues::GetEventFunctionName - or null. */
 	UK2Node_CustomEvent* FindEvent(const UBlueprint* Blueprint, FName FunctionName)
 	{
@@ -1191,12 +1272,14 @@ void FWidgetAnimationComponentDetails::AddEventRows(IDetailCategoryBuilder& Cate
 	const UWidgetAnimationComponent* Component = Objects.Num() == 1 ? Cast<UWidgetAnimationComponent>(Objects[0].Get()) : nullptr;
 	TArray<FName> FunctionNames;
 	TArray<WidgetAnimComponentEvents::FStateEventRow> StateEvents;
+	TArray<WidgetAnimComponentEvents::FActionEventRow> ActionEvents;
 	if (Component)
 	{
 		WidgetAnimComponentEvents::GatherEvents(*Component, FunctionNames);
 		WidgetAnimComponentEvents::GatherStateEvents(*Component, StateEvents);
+		WidgetAnimComponentEvents::GatherActionEvents(*Component, ActionEvents);
 	}
-	if (FunctionNames.Num() == 0 && StateEvents.Num() == 0)
+	if (FunctionNames.Num() == 0 && StateEvents.Num() == 0 && ActionEvents.Num() == 0)
 	{
 		// No Event track and no state machine, no Events: the group only appears when there is something to bind.
 		return;
@@ -1207,7 +1290,7 @@ void FWidgetAnimationComponentDetails::AddEventRows(IDetailCategoryBuilder& Cate
 	IDetailGroup& Group = Category.AddGroup(TEXT("Events"), LOCTEXT("EventsGroup", "Events"), /*bForAdvanced=*/false, /*bStartExpanded=*/true);
 	const TWeakObjectPtr<UWidgetBlueprint> WeakBlueprint = FindOwningWidgetBlueprint(Component);
 
-	// One row per event: the Event tracks' first, then the state machines' - each with its Info struct and tooltip.
+	// One row per event: the Event tracks' first, then the state machines' state events, then their Fire Event actions' - each with its Info struct and tooltip.
 	struct FRow
 	{
 		FName FunctionName;
@@ -1224,6 +1307,12 @@ void FWidgetAnimationComponentDetails::AddEventRows(IDetailCategoryBuilder& Cate
 		Rows.Add({ StateEvent.FunctionName, FWidgetAnimStateEventInfo::StaticStruct(),
 			FText::Format(StateEvent.bEntered ? WidgetAnimTips::StateEnteredEventTooltip() : WidgetAnimTips::StateExitedEventTooltip(),
 				StateEvent.Machine, StateEvent.Layer, StateEvent.State) });
+	}
+	for (const WidgetAnimComponentEvents::FActionEventRow& ActionEvent : ActionEvents)
+	{
+		// The same Info as a state event: Fire Event goes out through On State Event, with Event Name set.
+		Rows.Add({ ActionEvent.FunctionName, FWidgetAnimStateEventInfo::StaticStruct(),
+			FText::Format(WidgetAnimTips::ActionEventRowTooltip(), ActionEvent.Machine, ActionEvent.EventName, ActionEvent.Where) });
 	}
 
 	for (const FRow& Row : Rows)
@@ -1305,6 +1394,15 @@ void FWidgetAnimationComponentDetails::CustomizeDetails(IDetailLayoutBuilder& De
 	TArray<TWeakObjectPtr<UObject>> Objects;
 	DetailBuilder.GetObjectsBeingCustomized(Objects);
 
+	// Parameters lists what the animations have now - one edited since the component was last loaded or edited included.
+	for (const TWeakObjectPtr<UObject>& Object : Objects)
+	{
+		if (UWidgetAnimationComponent* Component = Cast<UWidgetAnimationComponent>(Object.Get()))
+		{
+			Component->SyncComponentParameters();
+		}
+	}
+
 	// Every Animation setting added here, in the order it is declared, so the two lists' editors sit right under
 	// the lists they edit - a category shows what is added to it before what is left to it.
 	IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(TEXT("Animation"));
@@ -1333,6 +1431,9 @@ void FWidgetAnimationComponentDetails::CustomizeDetails(IDetailLayoutBuilder& De
 	// The state machines it plays, and how its other animations compose with them.
 	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, StateMachines)));
 	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, TracksWithStateMachines)));
+
+	// The animations' parameters, set here for every one of them that has it - shown only when there are some.
+	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, ComponentParameters)));
 
 	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, bPreserveAuthoredTransforms)));
 

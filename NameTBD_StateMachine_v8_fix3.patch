@@ -1,0 +1,665 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParameters.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParameters.cpp
+index 8c0a9e8..02f5348 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParameters.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParameters.cpp
+@@ -117,10 +117,11 @@ namespace WidgetAnimParametersLocal
+ 	thread_local const FWidgetAnimParameterResolver* CurrentResolver = nullptr;
+ }
+ 
+-FWidgetAnimParameterScope::FWidgetAnimParameterScope(TConstArrayView<FWidgetAnimParameterValue> InValues, const UObject* InAnimation, FName InAnimId)
++FWidgetAnimParameterScope::FWidgetAnimParameterScope(TConstArrayView<FWidgetAnimParameterValue> InValues, const UObject* InAnimation, FName InAnimId, bool bInUnderUse)
+ 	: Values(InValues)
+ 	, Animation(InAnimation)
+ 	, AnimId(InAnimId)
++	, bUnderUse(bInUnderUse)
+ {
+ 	Outer = WidgetAnimParametersLocal::TopScope;
+ 	WidgetAnimParametersLocal::TopScope = this;
+@@ -136,9 +137,9 @@ bool FWidgetAnimParameterScope::AppliesTo(const UObject* UseAnimation, FName Use
+ 	return (!Animation || Animation == UseAnimation) && (AnimId.IsNone() || AnimId == UseAnimId);
+ }
+ 
+-void FWidgetAnimParameterScopeStack::Push(TConstArrayView<FWidgetAnimParameterValue> Values, const UObject* Animation, FName AnimId)
++void FWidgetAnimParameterScopeStack::Push(TConstArrayView<FWidgetAnimParameterValue> Values, const UObject* Animation, FName AnimId, bool bUnderUse)
+ {
+-	Scopes.Add(MakeUnique<FWidgetAnimParameterScope>(Values, Animation, AnimId));
++	Scopes.Add(MakeUnique<FWidgetAnimParameterScope>(Values, Animation, AnimId, bUnderUse));
+ }
+ 
+ void FWidgetAnimParameterScopeStack::Reset()
+@@ -184,6 +185,29 @@ bool FWidgetAnimParameterResolver::Resolve(const UWidgetAnimPresetAsset& Animati
+ 		}
+ 	}
+ 
++	// The scopes in effect, outermost first, so the innermost wins.
++	TArray<const FWidgetAnimParameterScope*, TInlineAllocator<4>> Chain;
++	for (const FWidgetAnimParameterScope* Scope = WidgetAnimParametersLocal::TopScope; Scope; Scope = Scope->Outer)
++	{
++		Chain.Insert(Scope, 0);
++	}
++
++	// Those under the use - a component's Parameters - and only what they set.
++	for (const FWidgetAnimParameterScope* Scope : Chain)
++	{
++		if (!Scope->bUnderUse || !Scope->AppliesTo(&Animation, UseAnimId))
++		{
++			continue;
++		}
++		for (const FWidgetAnimParameterValue& Value : Scope->Values)
++		{
++			if (Value.bOverride)
++			{
++				Set(Value);
++			}
++		}
++	}
++
+ 	// This use's own.
+ 	if (Entry)
+ 	{
+@@ -196,15 +220,10 @@ bool FWidgetAnimParameterResolver::Resolve(const UWidgetAnimPresetAsset& Animati
+ 		}
+ 	}
+ 
+-	// What the play was handed - outermost first, so the innermost wins.
+-	TArray<const FWidgetAnimParameterScope*, TInlineAllocator<4>> Chain;
+-	for (const FWidgetAnimParameterScope* Scope = WidgetAnimParametersLocal::TopScope; Scope; Scope = Scope->Outer)
+-	{
+-		Chain.Insert(Scope, 0);
+-	}
++	// What the play was handed.
+ 	for (const FWidgetAnimParameterScope* Scope : Chain)
+ 	{
+-		if (!Scope->AppliesTo(&Animation, UseAnimId))
++		if (Scope->bUnderUse || !Scope->AppliesTo(&Animation, UseAnimId))
+ 		{
+ 			continue;
+ 		}
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParameters.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParameters.h
+index 58dcdcf..488a08a 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParameters.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimParameters.h
+@@ -34,7 +34,9 @@ struct FWidgetAnimEntryBase;
+ //   1. Play time - Play Widget Animation With Parameters, Set Widget Animation Parameter (FWidgetAnimParameterScope);
+ //   2. the use of the animation - a Widget Animation Component entry's Parameters (FWidgetAnimEntryBase::Parameters), or a
+ //      state machine state's bindings to its inputs, which the state sets there;
+-//   3. the parameter's default.
++//   3. the Widget Animation Component's own Parameters (UWidgetAnimationComponent::ComponentParameters) - for every animation
++//      it plays that has the parameter (a scope pushed "under the use", see FWidgetAnimParameterScope::bUnderUse);
++//   4. the parameter's default.
+ // An animation inserted into another as a track takes the values of the one it plays in by name, where they are the same type.
+ // =====================================================================================================
+ 
+@@ -209,7 +211,7 @@ struct NAMETBD_API FWidgetAnimParameterCondition
+  */
+ struct NAMETBD_API FWidgetAnimParameterScope
+ {
+-	FWidgetAnimParameterScope(TConstArrayView<FWidgetAnimParameterValue> InValues, const UObject* InAnimation = nullptr, FName InAnimId = NAME_None);
++	FWidgetAnimParameterScope(TConstArrayView<FWidgetAnimParameterValue> InValues, const UObject* InAnimation = nullptr, FName InAnimId = NAME_None, bool bInUnderUse = false);
+ 	~FWidgetAnimParameterScope();
+ 
+ 	FWidgetAnimParameterScope(const FWidgetAnimParameterScope&) = delete;
+@@ -219,6 +221,13 @@ struct NAMETBD_API FWidgetAnimParameterScope
+ 	const UObject* Animation = nullptr;
+ 	FName AnimId;
+ 
++	/**
++	 * Under the use: its values go in before a use's own (an entry's Parameters, a state's Parameters From Inputs), which win
++	 * over them - a component's Parameters, for every animation it plays. Only its values ticked to be set (bOverride) count.
++	 * Off (play-time values): over the use's own.
++	 */
++	bool bUnderUse = false;
++
+ 	/** Whether it applies to a use of Animation with Anim ID UseAnimId. */
+ 	bool AppliesTo(const UObject* UseAnimation, FName UseAnimId) const;
+ 
+@@ -236,8 +245,8 @@ struct NAMETBD_API FWidgetAnimParameterScopeStack
+ 	FWidgetAnimParameterScopeStack(const FWidgetAnimParameterScopeStack&) = delete;
+ 	FWidgetAnimParameterScopeStack& operator=(const FWidgetAnimParameterScopeStack&) = delete;
+ 
+-	/** Values must outlive the stack, unchanged. */
+-	void Push(TConstArrayView<FWidgetAnimParameterValue> Values, const UObject* Animation = nullptr, FName AnimId = NAME_None);
++	/** Values must outlive the stack, unchanged. bUnderUse: see FWidgetAnimParameterScope::bUnderUse. */
++	void Push(TConstArrayView<FWidgetAnimParameterValue> Values, const UObject* Animation = nullptr, FName AnimId = NAME_None, bool bUnderUse = false);
+ 
+ 	void Reset();
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp
+index fdd592a..3b4bea4 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.cpp
+@@ -2440,6 +2440,7 @@ void UWidgetAnimationComponent::PostLoad()
+ 	AssignAdditiveValueNames();
+ 	RefreshValueOverrides();
+ 	SyncStateMachines();
++	SyncComponentParameters();
+ }
+ 
+ bool UWidgetAnimationComponent::SyncEntryGroupTargets()
+@@ -2490,6 +2491,15 @@ void UWidgetAnimationComponent::PostEditChangeProperty(FPropertyChangedEvent& Pr
+ 
+ 		// A machine picked or swapped: its Target Widgets and Inputs get a row each.
+ 		SyncStateMachines();
++
++		// An animation or machine picked, swapped or cleared: Parameters lists what is played now.
++		SyncComponentParameters();
++	}
++
++	// One of its own Parameters set or changed: what is playing takes it at once, as with Set Widget Animation Parameter.
++	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, ComponentParameters))
++	{
++		RefreshPlayingParameters(nullptr, NAME_None);
+ 	}
+ 
+ 	// Keeps each Transform layer's Keys list one-to-one with its curve: a key added on the curve gets an
+@@ -3194,7 +3204,10 @@ bool UWidgetAnimationComponent::GetWidgetAnimationParameter(FName Name, const UW
+ 		}
+ 	}
+ 
+-	// Else as an entry plays it: its own value, or the animation's default.
++	// The component's own row for it, when set here - under each entry's own value.
++	const FWidgetAnimParameterValue* ComponentRow = ComponentParameters.FindByPredicate([Name](const FWidgetAnimParameterValue& Value) { return Value.Name == Name && Value.bOverride; });
++
++	// Else as an entry plays it: its own value, the component's, or the animation's default.
+ 	for (const TArray<FWidgetAnimEntry>* Entries : { &EffectiveInEntries, &EffectiveOutEntries })
+ 	{
+ 		for (const FWidgetAnimEntry& Entry : *Entries)
+@@ -3210,15 +3223,16 @@ bool UWidgetAnimationComponent::GetWidgetAnimationParameter(FName Name, const UW
+ 				continue;
+ 			}
+ 			const FWidgetAnimParameterValue* Own = Entry.Parameters.FindByPredicate([Name](const FWidgetAnimParameterValue& Value) { return Value.Name == Name && Value.bOverride; });
+-			OutValue = Own ? *Own : FWidgetAnimParameterValue::FromDefault(*Declared);
++			OutValue = Own ? *Own : (ComponentRow ? *ComponentRow : FWidgetAnimParameterValue::FromDefault(*Declared));
+ 			return true;
+ 		}
+ 	}
+ 
+-	// An animation asked about by name that no entry here plays: its default.
+-	if (const FWidgetAnimParameter* Declared = Animation ? Animation->FindParameter(Name) : nullptr)
++	// An animation no entry here plays - one a state machine plays, or asked about by name: the component's row, else its default.
++	const FWidgetAnimParameter* Declared = Animation ? Animation->FindParameter(Name) : FindParameterDeclaration(Name);
++	if (Declared)
+ 	{
+-		OutValue = FWidgetAnimParameterValue::FromDefault(*Declared);
++		OutValue = ComponentRow ? *ComponentRow : FWidgetAnimParameterValue::FromDefault(*Declared);
+ 		return true;
+ 	}
+ 	return false;
+@@ -3226,6 +3240,12 @@ bool UWidgetAnimationComponent::GetWidgetAnimationParameter(FName Name, const UW
+ 
+ void UWidgetAnimationComponent::PushParameterScopes(FWidgetAnimParameterScopeStack& Stack) const
+ {
++	// The component's own Parameters, under each use's own values, for every animation it plays.
++	if (ComponentParameters.Num() > 0)
++	{
++		Stack.Push(ComponentParameters, nullptr, NAME_None, /*bUnderUse=*/true);
++	}
++
+ 	for (const FWidgetAnimSetParameterGroup& Group : SetParameterGroups)
+ 	{
+ 		// For an animation since unloaded: for nothing, rather than for everything.
+@@ -3237,6 +3257,100 @@ void UWidgetAnimationComponent::PushParameterScopes(FWidgetAnimParameterScopeSta
+ 	}
+ }
+ 
++void UWidgetAnimationComponent::GatherParameterDeclarations(TArray<const FWidgetAnimParameter*>& OutDeclarations) const
++{
++	OutDeclarations.Reset();
++	TSet<const UWidgetAnimPresetAsset*> Seen;
++	auto FromAnimation = [&OutDeclarations, &Seen](const UWidgetAnimPresetAsset* Animation)
++	{
++		bool bAlreadySeen = false;
++		Seen.Add(Animation, &bAlreadySeen);
++		if (!Animation || bAlreadySeen)
++		{
++			return;
++		}
++		for (const FWidgetAnimParameter& Parameter : Animation->Parameters)
++		{
++			const bool bListed = OutDeclarations.ContainsByPredicate([&Parameter](const FWidgetAnimParameter* Listed) { return Listed->Name == Parameter.Name; });
++			if (!Parameter.Name.IsNone() && !bListed)
++			{
++				OutDeclarations.Add(&Parameter);
++			}
++		}
++	};
++	for (const TArray<FWidgetAnimEntry>* Entries : { &AnimIn, &AnimOut })
++	{
++		for (const FWidgetAnimEntry& Entry : *Entries)
++		{
++			FromAnimation(Entry.Animation.Get());
++		}
++	}
++	for (const FWidgetAnimStateMachineEntry& Row : StateMachines)
++	{
++		if (Row.StateMachine)
++		{
++			TArray<UWidgetAnimPresetAsset*> Animations;
++			Row.StateMachine->GatherAnimations(Animations);
++			for (const UWidgetAnimPresetAsset* Animation : Animations)
++			{
++				FromAnimation(Animation);
++			}
++		}
++	}
++}
++
++const FWidgetAnimParameter* UWidgetAnimationComponent::FindParameterDeclaration(FName Name) const
++{
++	TArray<const FWidgetAnimParameter*> Declarations;
++	GatherParameterDeclarations(Declarations);
++	const FWidgetAnimParameter* const* Found = Declarations.FindByPredicate([Name](const FWidgetAnimParameter* Declared) { return Declared->Name == Name; });
++	return Found ? *Found : nullptr;
++}
++
++bool UWidgetAnimationComponent::SyncComponentParameters()
++{
++	TArray<const FWidgetAnimParameter*> Declarations;
++	GatherParameterDeclarations(Declarations);
++
++	// As an entry lists its animation's: a row set here and still the same parameter is kept, any other follows the default.
++	TArray<FWidgetAnimParameterValue> Synced;
++	Synced.Reserve(Declarations.Num());
++	for (const FWidgetAnimParameter* Parameter : Declarations)
++	{
++		const FWidgetAnimParameterValue* Existing = ComponentParameters.FindByPredicate([Parameter](const FWidgetAnimParameterValue& Value)
++		{
++			return Value.Name == Parameter->Name && Value.Type == Parameter->Type;
++		});
++		if (Existing && Existing->bOverride)
++		{
++			FWidgetAnimParameterValue& Kept = Synced.Add_GetRef(*Existing);
++			if (Kept.Type == EWidgetAnimParameterType::Choice && !Parameter->Options.Contains(Kept.Option))
++			{
++				Kept.Option = Parameter->GetDefaultOption();
++			}
++		}
++		else
++		{
++			FWidgetAnimParameterValue& Default = Synced.Add_GetRef(FWidgetAnimParameterValue::FromDefault(*Parameter));
++			Default.bOverride = false;
++		}
++	}
++
++	bool bChanged = Synced.Num() != ComponentParameters.Num() || bHasComponentParameters != (Synced.Num() > 0);
++	for (int32 Index = 0; !bChanged && Index < Synced.Num(); ++Index)
++	{
++		const FWidgetAnimParameterValue& Was = ComponentParameters[Index];
++		const FWidgetAnimParameterValue& Now = Synced[Index];
++		bChanged = Was.Name != Now.Name || Was.Type != Now.Type || Was.bOverride != Now.bOverride || !Was.SameValueAs(Now);
++	}
++	if (bChanged)
++	{
++		ComponentParameters = MoveTemp(Synced);
++		bHasComponentParameters = ComponentParameters.Num() > 0;
++	}
++	return bChanged;
++}
++
+ bool UWidgetAnimationComponent::SyncStateMachines()
+ {
+ 	if (StateMachines.Num() == 0)
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h
+index aaa1e4b..d6b1bfc 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimationComponent.h
+@@ -243,6 +243,20 @@ public:
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Animations With State Machines"))
+ 	EWidgetAnimTracksWithMachines TracksWithStateMachines = EWidgetAnimTracksWithMachines::AddOnTop;
+ 
++	/**
++	 * The parameters of every animation this widget plays - its Anim In and Anim Out animations and its state machines' states'
++	 * - one row each, by name. Tick a row to set it here, for every one of those animations that has it; unticked, each plays
++	 * its own default. A use's own value (an entry's Parameters, a state's Parameters From Inputs) wins over it, and Set Widget
++	 * Animation Parameter over both. Listed from the animations whenever the component is edited, loaded or shown
++	 * (SyncComponentParameters); shown only when there are some. See WidgetAnimParameters.h.
++	 */
++	UPROPERTY(EditAnywhere, Category = "Animation", meta = (DisplayName = "Parameters", EditFixedSize, TitleProperty = "Name", EditCondition = "bHasComponentParameters", EditConditionHides, HideEditConditionToggle))
++	TArray<FWidgetAnimParameterValue> ComponentParameters;
++
++	/** Whether any animation here has parameters - so Parameters is shown. Set by SyncComponentParameters. */
++	UPROPERTY()
++	bool bHasComponentParameters = false;
++
+ 	/**
+ 	 * Whether animations compose over whatever each target was authored as, instead of replacing it.
+ 	 *
+@@ -595,6 +609,22 @@ public:
+ 	/** Sizes every State Machines row's targets and inputs to its machine - see FWidgetAnimStateMachineEntry::SyncToMachine. */
+ 	bool SyncStateMachines();
+ 
++	/**
++	 * Lists in ComponentParameters the parameters of every animation this widget plays (see GatherParameterDeclarations): a row
++	 * set here keeps its value while some animation still has the parameter with that type; a row not set follows the
++	 * default. True if anything changed.
++	 */
++	bool SyncComponentParameters();
++
++	/**
++	 * The parameters of every animation this widget plays - Anim In and Anim Out entries', and every animation its state
++	 * machines play - each name once, the first declaration found winning, in the order found.
++	 */
++	void GatherParameterDeclarations(TArray<const FWidgetAnimParameter*>& OutDeclarations) const;
++
++	/** The declaration GatherParameterDeclarations lists for Name - for a Parameters row's editor. Null when none has it. */
++	const FWidgetAnimParameter* FindParameterDeclaration(FName Name) const;
++
+ 	/**
+ 	 * For the State Machine editor's Inputs panel: plays this component's state machines in the designer, from their Entry,
+ 	 * for the panel to drive. The toolbar's own preview stops. False when the designer hasn't made the widget's Slate widget
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index ef49f4e..2227ab4 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -2862,21 +2862,6 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 				? FString::Printf(TEXT("%s \u2192 %s  %s"), *TitleLabel, *Layer->TargetWidget.ToString(), *LengthLabel)
+ 				: FString::Printf(TEXT("%s  %s"), *TitleLabel, *LengthLabel);
+ 
+-			// Animation Parameters: the parameters its fields play, after the title - "Slide 0.3s  ‹Distance, Side›".
+-			if (Layer->ParameterBindings.Num() > 0 || Layer->PlaysWhen.IsSet())
+-			{
+-				TArray<FString> Bound;
+-				for (const FWidgetAnimParameterBinding& Binding : Layer->ParameterBindings)
+-				{
+-					Bound.AddUnique(Binding.Parameter.ToString());
+-				}
+-				if (Layer->PlaysWhen.IsSet())
+-				{
+-					Bound.AddUnique(Layer->PlaysWhen.Parameter.ToString());
+-				}
+-				Label = FString::Printf(TEXT("%s  \u2039%s\u203A"), *Label, *FString::Join(Bound, TEXT(", ")));
+-			}
+-
+ 			// A cue has no easing - it fires at points, not along a curve - so it says what it does there instead.
+ 			const FWidgetAnimEvaluator* CueEvaluator = bCue ? Layer->FindEvaluator() : nullptr;
+ 			EasingLabel = CueEvaluator
+@@ -2917,6 +2902,26 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			TrackText(Label, TextLeft, TextY, TitleFont, TitleColor, bSlantLayerText);
+ 		}
+ 
++		// Animation Parameters: how many of its values come from the animation's parameters - "{2 values parametrized}" - after
++		// the title, dimmed and in italics; which values and which parameters, in its tooltip. Beside a full-size title only,
++		// and only where it fits.
++		float ParametrizedWidth = 0.f;
++		const int32 NumParametrized = Layer ? Layer->ParameterBindings.Num() : 0;
++		if (bTitleFullSize && NumParametrized > 0)
++		{
++			const FString ParametrizedLabel = FString::Printf(TEXT("{%s}"),
++				*FText::Format(LOCTEXT("ParametrizedValues", "{0} {0}|plural(one=value,other=values) parametrized"), NumParametrized).ToString());
++			FSlateFontInfo ParametrizedFont;
++			const bool bItalicFace = ItalicOf(SectionFont, ParametrizedFont);
++			const FVector2f ParametrizedSize = MeasureText(ParametrizedLabel, ParametrizedFont);
++			const float ParametrizedX = TextLeft + LabelSize.X + Palette::SectionParametrizedGap;
++			if (ParametrizedX + ParametrizedSize.X + Padding <= BarX0 + BarWidth)
++			{
++				TrackText(ParametrizedLabel, ParametrizedX, TextY, ParametrizedFont, TitleColor * FLinearColor(1.f, 1.f, 1.f, Palette::SectionParametrizedTextOpacity), !bItalicFace);
++				ParametrizedWidth = Palette::SectionParametrizedGap + ParametrizedSize.X;
++			}
++		}
++
+ 		// Each segment's curve, named in the middle of its stretch - a segment with a curve of its own brighter
+ 		// than one left at the track's Easing. Any that doesn't fit between its keys, clear of the title, is left
+ 		// unnamed; its tooltip still lists every segment's curve.
+@@ -2930,7 +2935,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			// centered that way sits visibly higher than a larger one beside it.
+ 			const float TitleBaselineY = FullTextY + Measure->GetMaxCharacterHeight(LayerFont) + Measure->GetBaseline(LayerFont);
+ 			const float SegmentAscent = Measure->GetMaxCharacterHeight(SegmentFont) + Measure->GetBaseline(SegmentFont);
+-			const float TitleRight = bTitleShown ? TextLeft + LabelSize.X + 8.f : TextLeft;
++			const float TitleRight = bTitleShown ? TextLeft + LabelSize.X + ParametrizedWidth + 8.f : TextLeft;
+ 			const float KeyClearance = KeyDiamond * 0.5f + 4.f;
+ 
+ 			for (int32 Segment = 0; Segment + 1 < KeyTimes.Num(); ++Segment)
+@@ -2965,7 +2970,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		// track's - "Widget Animation, 3 tracks" - sits a little further in from its end, where its font's last letters
+ 		// otherwise touch the section's rounded edge.
+ 		const float RightPadding = Layer && Layer->IsAnimationTrack() ? Padding + Palette::AnimationTrackTextRightPadding : Padding;
+-		if (!bLabelSegments && bTitleFullSize && !EasingLabel.IsEmpty() && TextLeft - BarX0 + LabelSize.X + EasingSize.X + Padding + RightPadding + 12.f <= BarWidth)
++		if (!bLabelSegments && bTitleFullSize && !EasingLabel.IsEmpty() && TextLeft - BarX0 + LabelSize.X + ParametrizedWidth + EasingSize.X + Padding + RightPadding + 12.f <= BarWidth)
+ 		{
+ 			TrackText(EasingLabel, BarX0 + BarWidth - RightPadding - EasingSize.X, TextY, LayerFont, TitleColor * FLinearColor(1.f, 1.f, 1.f, Palette::SectionSecondaryTextOpacity), bSlantLayerText);
+ 		}
+@@ -23148,6 +23153,46 @@ namespace WidgetAnimParameterEditing
+ 		return !Path.IsEmpty();
+ 	}
+ 
++	/**
++	 * A bound field's path in words, for the track's tooltip: its field's own label, with which key or list entry and which
++	 * struct it is in - "Slide Distance", "Value (key 2)", "Translation (key 3, Transform)", "Color (User Parameters)".
++	 */
++	FString DescribeFieldPath(const FWidgetAnimLayer& Layer, const FString& FieldPath)
++	{
++		TArray<FString> Segments;
++		FieldPath.ParseIntoArray(Segments, TEXT("."));
++		if (Segments.Num() == 0)
++		{
++			return FieldPath;
++		}
++		const FProperty* Field = WidgetAnimParameters::FindField(FWidgetAnimLayer::StaticStruct(), FieldPath, &Layer);
++		const FString Words = Field ? Field->GetDisplayNameText().ToString() : FName::NameToDisplayString(Segments.Last(), false);
++
++		// Each list entry on the way ("key 2"), then the struct the field is in, unless that is the type's own settings.
++		TArray<FString> Where;
++		FString PathSoFar;
++		for (int32 SegmentIndex = 0; SegmentIndex + 1 < Segments.Num(); ++SegmentIndex)
++		{
++			const FString& Segment = Segments[SegmentIndex];
++			PathSoFar += (PathSoFar.IsEmpty() ? FString() : FString(TEXT("."))) + Segment;
++			int32 Bracket = INDEX_NONE;
++			if (Segment.FindChar(TEXT('['), Bracket))
++			{
++				const int32 EntryIndex = FCString::Atoi(*Segment.Mid(Bracket + 1));
++				const FString ListName = Segment.Left(Bracket);
++				Where.Add(ListName == TEXT("Keys")
++					? FString::Printf(TEXT("key %d"), EntryIndex + 1)
++					: FString::Printf(TEXT("%s %d"), *FName::NameToDisplayString(ListName, false), EntryIndex + 1));
++			}
++			else if (SegmentIndex + 2 == Segments.Num() && Segment != TEXT("TypeParams") && Segment != TEXT("ValueKeys"))
++			{
++				const FProperty* Parent = WidgetAnimParameters::FindField(FWidgetAnimLayer::StaticStruct(), PathSoFar, &Layer);
++				Where.Add(Parent ? Parent->GetDisplayNameText().ToString() : FName::NameToDisplayString(Segment, false));
++			}
++		}
++		return Where.Num() > 0 ? FString::Printf(TEXT("%s (%s)"), *Words, *FString::Join(Where, TEXT(", "))) : Words;
++	}
++
+ 	/** Whether any type of parameter can be bound to Field. */
+ 	bool IsBindable(const FProperty* Field)
+ 	{
+@@ -24371,6 +24416,84 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
+ 		Rows.Add(TEXT("Through"), Through);
+ 	}
+ 
++	// Animation Parameters: which of its values come from which parameter - what "{2 values parametrized}" on its section
++	// stands for - each with the parameter's value as the preview plays it (its Preview value, else its default), and when
++	// it plays at all (Plays When). Read off the track as authored, not the copy the preview plays.
++	const FWidgetAnimLayer& AuthoredLayer = (*Layers)[LayerIndex];
++	if (AuthoredLayer.ParameterBindings.Num() > 0 || AuthoredLayer.PlaysWhen.IsSet())
++	{
++		const TArray<FWidgetAnimParameter>* Declared = GetParameters();
++		auto FindDeclared = [Declared](FName Name) -> const FWidgetAnimParameter*
++		{
++			return Declared ? Declared->FindByPredicate([Name](const FWidgetAnimParameter& Parameter) { return Parameter.Name == Name; }) : nullptr;
++		};
++		const TSharedRef<SVerticalBox> Lines = SNew(SVerticalBox);
++		for (const FWidgetAnimParameterBinding& Binding : AuthoredLayer.ParameterBindings)
++		{
++			const FWidgetAnimParameter* BoundTo = FindDeclared(Binding.Parameter);
++			FString ValueWords;
++			if (BoundTo)
++			{
++				FWidgetAnimParameterValue Shown;
++				if (!GetPreviewParameter(BoundTo->Name, Shown))
++				{
++					Shown = FWidgetAnimParameterValue::FromDefault(*BoundTo);
++				}
++				ValueWords = FString::Printf(TEXT(" = %s"), *Shown.ToDisplayString());
++				if (!FMath::IsNearlyEqual(Binding.Scale, 1.f) || !FMath::IsNearlyZero(Binding.Offset))
++				{
++					ValueWords += FMath::IsNearlyZero(Binding.Offset)
++						? FString::Printf(TEXT("  (x %s)"), *FString::SanitizeFloat(Binding.Scale))
++						: FString::Printf(TEXT("  (x %s + %s)"), *FString::SanitizeFloat(Binding.Scale), *FString::SanitizeFloat(Binding.Offset));
++				}
++			}
++			const FLinearColor ParameterColor = BoundTo
++				? WidgetAnimTypePill::GetColor(WidgetAnimTypePill::FromParameterType(BoundTo->Type))
++				: FLinearColor(0.9f, 0.15f, 0.12f);
++			Lines->AddSlot()
++			.AutoHeight()
++			.Padding(FMargin(0.f, 0.f, 0.f, 1.f))
++			[
++				SNew(SHorizontalBox)
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
++				[
++					Text(WidgetAnimParameterEditing::DescribeFieldPath(AuthoredLayer, Binding.FieldPath), Palette::TooltipValue, ValueFont())
++				]
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(6.f, 0.f))
++				[
++					Text(TEXT("\u2190"), Palette::TooltipLabel, ValueFont())
++				]
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
++				[
++					Text(BoundTo ? BoundTo->Name.ToString() : FString::Printf(TEXT("%s (missing)"), *Binding.Parameter.ToString()), ParameterColor, ValueFont())
++				]
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
++				[
++					Text(ValueWords, Palette::TooltipValue, ValueFont())
++				]
++			];
++		}
++		if (AuthoredLayer.ParameterBindings.Num() > 0)
++		{
++			Rows.Add(TEXT("Parametrized"), Lines);
++		}
++		if (AuthoredLayer.PlaysWhen.IsSet())
++		{
++			TArray<FString> Options;
++			for (const FName Option : AuthoredLayer.PlaysWhen.Options)
++			{
++				Options.Add(Option.ToString());
++			}
++			const FWidgetAnimParameter* Tested = FindDeclared(AuthoredLayer.PlaysWhen.Parameter);
++			const FString Condition = !Tested
++				? FString::Printf(TEXT("%s (missing) - always"), *AuthoredLayer.PlaysWhen.Parameter.ToString())
++				: Tested->Type == EWidgetAnimParameterType::Bool
++				? FString::Printf(TEXT("%s is %s"), *Tested->Name.ToString(), AuthoredLayer.PlaysWhen.Options.Contains(FName(TEXT("False"))) ? TEXT("false") : TEXT("true"))
++				: FString::Printf(TEXT("%s is %s"), *Tested->Name.ToString(), Options.Num() > 0 ? *FString::Join(Options, TEXT(", ")) : TEXT("(no option)"));
++			Rows.Add(TEXT("Plays When"), Condition);
++		}
++	}
++
+ 	// How it moves, always - a track too short to show its easing on its section still says it here. Segments
+ 	// shaped one by one are each named, in order; one left at Track Easing by the track's own easing. Not on a cue,
+ 	// which doesn't move.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimParameterValueCustomization.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimParameterValueCustomization.cpp
+index d63ec33..7423f8a 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimParameterValueCustomization.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimParameterValueCustomization.cpp
+@@ -14,6 +14,7 @@
+ #include "Widgets/Text/STextBlock.h"
+ 
+ #include "NameTBD/WidgetAnimation/WidgetAnimParameters.h"
++#include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
+ #include "WidgetAnimTypePill.h"
+ 
+@@ -21,6 +22,23 @@
+ 
+ namespace WidgetAnimParameterValueCustomizationLocal
+ {
++	/**
++	 * A row of a Widget Animation Component's own Parameters: the declaration of its parameter among the component's
++	 * animations (see UWidgetAnimationComponent::FindParameterDeclaration). Null for a row anywhere else.
++	 */
++	const FWidgetAnimParameter* FindComponentDeclaration(const TSharedRef<IPropertyHandle>& Handle, FName ParameterName)
++	{
++		const TSharedPtr<IPropertyHandle> Array = Handle->GetParentHandle();
++		if (!Array.IsValid() || !Array->GetProperty() || Array->GetProperty()->GetFName() != GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, ComponentParameters))
++		{
++			return nullptr;
++		}
++		TArray<UObject*> Outers;
++		Handle->GetOuterObjects(Outers);
++		const UWidgetAnimationComponent* Component = Outers.Num() == 1 ? Cast<UWidgetAnimationComponent>(Outers[0]) : nullptr;
++		return Component ? Component->FindParameterDeclaration(ParameterName) : nullptr;
++	}
++
+ 	/** The animation of the entry whose Parameters the row is in - null when it isn't in one. */
+ 	const UWidgetAnimPresetAsset* FindEntryAnimation(const TSharedRef<IPropertyHandle>& Handle)
+ 	{
+@@ -84,6 +102,14 @@ void FWidgetAnimParameterValueCustomization::CustomizeHeader(TSharedRef<IPropert
+ 		NameHandle->GetValue(ParameterName);
+ 	}
+ 	const FWidgetAnimParameter* Declared = Animation ? Animation->FindParameter(ParameterName) : nullptr;
++
++	// A Widget Animation Component's own Parameters: laid out the same way, from the parameter as its animations declare it.
++	bool bOnComponent = false;
++	if (!Declared)
++	{
++		Declared = FindComponentDeclaration(PropertyHandle, ParameterName);
++		bOnComponent = Declared != nullptr;
++	}
+ 	bInEntry = Declared && OverrideHandle.IsValid();
+ 	if (!bInEntry)
+ 	{
+@@ -153,9 +179,10 @@ void FWidgetAnimParameterValueCustomization::CustomizeHeader(TSharedRef<IPropert
+ 		ValueWidget = WidgetAnimTypePill::MakeValueEditor(ValueHandle.ToSharedRef());
+ 	}
+ 
+-	const FText ToolTip = Declared->Description.IsEmpty()
+-		? LOCTEXT("ParameterValueTip", "Ticked: this use of the animation plays this value. Not ticked: the animation's default. A Play call or Set Widget Animation Parameter wins over both.")
+-		: FText::FromString(Declared->Description);
++	const FText ToolTip = !Declared->Description.IsEmpty() ? FText::FromString(Declared->Description)
++		: bOnComponent
++		? LOCTEXT("ComponentParameterValueTip", "Ticked: every animation of this widget with this parameter plays this value - unless an entry's own Parameters or a state's Parameters From Inputs set it. Not ticked: each animation's default. A Play call or Set Widget Animation Parameter wins over all of them.")
++		: LOCTEXT("ParameterValueTip", "Ticked: this use of the animation plays this value. Not ticked: the animation's default. A Play call or Set Widget Animation Parameter wins over both.");
+ 
+ 	HeaderRow
+ 		.NameContent()
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimationComponentDetails.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimationComponentDetails.cpp
+index 54f4e56..6890d90 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimationComponentDetails.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimationComponentDetails.cpp
+@@ -1394,6 +1394,15 @@ void FWidgetAnimationComponentDetails::CustomizeDetails(IDetailLayoutBuilder& De
+ 	TArray<TWeakObjectPtr<UObject>> Objects;
+ 	DetailBuilder.GetObjectsBeingCustomized(Objects);
+ 
++	// Parameters lists what the animations have now - one edited since the component was last loaded or edited included.
++	for (const TWeakObjectPtr<UObject>& Object : Objects)
++	{
++		if (UWidgetAnimationComponent* Component = Cast<UWidgetAnimationComponent>(Object.Get()))
++		{
++			Component->SyncComponentParameters();
++		}
++	}
++
+ 	// Every Animation setting added here, in the order it is declared, so the two lists' editors sit right under
+ 	// the lists they edit - a category shows what is added to it before what is left to it.
+ 	IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(TEXT("Animation"));
+@@ -1423,6 +1432,9 @@ void FWidgetAnimationComponentDetails::CustomizeDetails(IDetailLayoutBuilder& De
+ 	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, StateMachines)));
+ 	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, TracksWithStateMachines)));
+ 
++	// The animations' parameters, set here for every one of them that has it - shown only when there are some.
++	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, ComponentParameters)));
++
+ 	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, bPreserveAuthoredTransforms)));
+ 
+ 	AddEventRows(Category, Objects);
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index 20662e8..2b08911 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -120,6 +120,13 @@ namespace NameTBD
+ 			inline constexpr float SectionTextPadding = 12.0f;
+ 			inline constexpr float SectionSecondaryTextOpacity = 0.75f;
+ 
++			/**
++			 * "{2 values parametrized}" after a track's title, when some of its values are bound to Animation Parameters: in
++			 * italics, at this opacity of the title's color, this far after the title.
++			 */
++			inline constexpr float SectionParametrizedTextOpacity = 0.5f;
++			inline constexpr float SectionParametrizedGap = 8.0f;
++
+ 			/**
+ 			 * A selected section gets a selected Blueprint node's outline: a solid orange rim SectionSelectedOutlineSize
+ 			 * pixels out around the section, under its frame - the frame's alpha (SectionFrame, below 1) is what lets

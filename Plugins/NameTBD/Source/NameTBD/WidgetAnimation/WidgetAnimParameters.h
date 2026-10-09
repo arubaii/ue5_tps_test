@@ -34,7 +34,9 @@ struct FWidgetAnimEntryBase;
 //   1. Play time - Play Widget Animation With Parameters, Set Widget Animation Parameter (FWidgetAnimParameterScope);
 //   2. the use of the animation - a Widget Animation Component entry's Parameters (FWidgetAnimEntryBase::Parameters), or a
 //      state machine state's bindings to its inputs, which the state sets there;
-//   3. the parameter's default.
+//   3. the Widget Animation Component's own Parameters (UWidgetAnimationComponent::ComponentParameters) - for every animation
+//      it plays that has the parameter (a scope pushed "under the use", see FWidgetAnimParameterScope::bUnderUse);
+//   4. the parameter's default.
 // An animation inserted into another as a track takes the values of the one it plays in by name, where they are the same type.
 // =====================================================================================================
 
@@ -209,7 +211,7 @@ struct NAMETBD_API FWidgetAnimParameterCondition
  */
 struct NAMETBD_API FWidgetAnimParameterScope
 {
-	FWidgetAnimParameterScope(TConstArrayView<FWidgetAnimParameterValue> InValues, const UObject* InAnimation = nullptr, FName InAnimId = NAME_None);
+	FWidgetAnimParameterScope(TConstArrayView<FWidgetAnimParameterValue> InValues, const UObject* InAnimation = nullptr, FName InAnimId = NAME_None, bool bInUnderUse = false);
 	~FWidgetAnimParameterScope();
 
 	FWidgetAnimParameterScope(const FWidgetAnimParameterScope&) = delete;
@@ -218,6 +220,13 @@ struct NAMETBD_API FWidgetAnimParameterScope
 	TConstArrayView<FWidgetAnimParameterValue> Values;
 	const UObject* Animation = nullptr;
 	FName AnimId;
+
+	/**
+	 * Under the use: its values go in before a use's own (an entry's Parameters, a state's Parameters From Inputs), which win
+	 * over them - a component's Parameters, for every animation it plays. Only its values ticked to be set (bOverride) count.
+	 * Off (play-time values): over the use's own.
+	 */
+	bool bUnderUse = false;
 
 	/** Whether it applies to a use of Animation with Anim ID UseAnimId. */
 	bool AppliesTo(const UObject* UseAnimation, FName UseAnimId) const;
@@ -236,8 +245,8 @@ struct NAMETBD_API FWidgetAnimParameterScopeStack
 	FWidgetAnimParameterScopeStack(const FWidgetAnimParameterScopeStack&) = delete;
 	FWidgetAnimParameterScopeStack& operator=(const FWidgetAnimParameterScopeStack&) = delete;
 
-	/** Values must outlive the stack, unchanged. */
-	void Push(TConstArrayView<FWidgetAnimParameterValue> Values, const UObject* Animation = nullptr, FName AnimId = NAME_None);
+	/** Values must outlive the stack, unchanged. bUnderUse: see FWidgetAnimParameterScope::bUnderUse. */
+	void Push(TConstArrayView<FWidgetAnimParameterValue> Values, const UObject* Animation = nullptr, FName AnimId = NAME_None, bool bUnderUse = false);
 
 	void Reset();
 

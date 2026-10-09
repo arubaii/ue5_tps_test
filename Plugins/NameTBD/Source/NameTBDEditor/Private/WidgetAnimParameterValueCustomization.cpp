@@ -14,6 +14,7 @@
 #include "Widgets/Text/STextBlock.h"
 
 #include "NameTBD/WidgetAnimation/WidgetAnimParameters.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
 #include "WidgetAnimTypePill.h"
 
@@ -21,6 +22,23 @@
 
 namespace WidgetAnimParameterValueCustomizationLocal
 {
+	/**
+	 * A row of a Widget Animation Component's own Parameters: the declaration of its parameter among the component's
+	 * animations (see UWidgetAnimationComponent::FindParameterDeclaration). Null for a row anywhere else.
+	 */
+	const FWidgetAnimParameter* FindComponentDeclaration(const TSharedRef<IPropertyHandle>& Handle, FName ParameterName)
+	{
+		const TSharedPtr<IPropertyHandle> Array = Handle->GetParentHandle();
+		if (!Array.IsValid() || !Array->GetProperty() || Array->GetProperty()->GetFName() != GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, ComponentParameters))
+		{
+			return nullptr;
+		}
+		TArray<UObject*> Outers;
+		Handle->GetOuterObjects(Outers);
+		const UWidgetAnimationComponent* Component = Outers.Num() == 1 ? Cast<UWidgetAnimationComponent>(Outers[0]) : nullptr;
+		return Component ? Component->FindParameterDeclaration(ParameterName) : nullptr;
+	}
+
 	/** The animation of the entry whose Parameters the row is in - null when it isn't in one. */
 	const UWidgetAnimPresetAsset* FindEntryAnimation(const TSharedRef<IPropertyHandle>& Handle)
 	{
@@ -84,6 +102,14 @@ void FWidgetAnimParameterValueCustomization::CustomizeHeader(TSharedRef<IPropert
 		NameHandle->GetValue(ParameterName);
 	}
 	const FWidgetAnimParameter* Declared = Animation ? Animation->FindParameter(ParameterName) : nullptr;
+
+	// A Widget Animation Component's own Parameters: laid out the same way, from the parameter as its animations declare it.
+	bool bOnComponent = false;
+	if (!Declared)
+	{
+		Declared = FindComponentDeclaration(PropertyHandle, ParameterName);
+		bOnComponent = Declared != nullptr;
+	}
 	bInEntry = Declared && OverrideHandle.IsValid();
 	if (!bInEntry)
 	{
@@ -153,9 +179,10 @@ void FWidgetAnimParameterValueCustomization::CustomizeHeader(TSharedRef<IPropert
 		ValueWidget = WidgetAnimTypePill::MakeValueEditor(ValueHandle.ToSharedRef());
 	}
 
-	const FText ToolTip = Declared->Description.IsEmpty()
-		? LOCTEXT("ParameterValueTip", "Ticked: this use of the animation plays this value. Not ticked: the animation's default. A Play call or Set Widget Animation Parameter wins over both.")
-		: FText::FromString(Declared->Description);
+	const FText ToolTip = !Declared->Description.IsEmpty() ? FText::FromString(Declared->Description)
+		: bOnComponent
+		? LOCTEXT("ComponentParameterValueTip", "Ticked: every animation of this widget with this parameter plays this value - unless an entry's own Parameters or a state's Parameters From Inputs set it. Not ticked: each animation's default. A Play call or Set Widget Animation Parameter wins over all of them.")
+		: LOCTEXT("ParameterValueTip", "Ticked: this use of the animation plays this value. Not ticked: the animation's default. A Play call or Set Widget Animation Parameter wins over both.");
 
 	HeaderRow
 		.NameContent()

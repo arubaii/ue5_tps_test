@@ -1201,9 +1201,10 @@ private:
 
 const FWidgetAnimLayer* SWidgetAnimGraphCanvas::GetLayer(int32 LayerIndex) const
 {
+	// As the preview plays it: a value bound to an Animation Parameter is drawn at the parameter's value (its Preview value
+	// while one is tried, else its default) - see SWidgetAnimTimeline::GetDisplayLayer. Edits go to GetMutableLayer.
 	const TSharedPtr<SWidgetAnimTimeline> Panel = Owner.Pin();
-	const TArray<FWidgetAnimLayer>* Layers = Panel ? Panel->GetLayers() : nullptr;
-	return Layers && Layers->IsValidIndex(LayerIndex) ? &(*Layers)[LayerIndex] : nullptr;
+	return Panel ? Panel->GetDisplayLayer(LayerIndex) : nullptr;
 }
 
 FWidgetAnimLayer* SWidgetAnimGraphCanvas::GetMutableLayer(int32 LayerIndex) const
@@ -1242,7 +1243,7 @@ void SWidgetAnimGraphCanvas::RebuildModels()
 			continue;
 		}
 
-		const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+		const FWidgetAnimLayer& Layer = *Panel->GetDisplayLayer(LayerIndex);
 		FLayerModel& Model = Models.AddDefaulted_GetRef();
 		Model.Layer = LayerIndex;
 		Model.Settings = Layer.ToSettings();

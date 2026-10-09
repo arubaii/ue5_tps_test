@@ -118,6 +118,19 @@ struct NAMETBD_API FWidgetAnimMachineLayerInstance
 	UPROPERTY(Transient)
 	TArray<FWidgetAnimPlayer> BlendPlayers;
 
+	/**
+	 * The animation the state's track plays - its own, or the Random Variation picked as it started - so its parameters can be
+	 * worked out again while it plays (see WidgetAnimStateMachines::RefreshParameters). Null for a blend state.
+	 */
+	UPROPERTY(Transient)
+	TObjectPtr<UWidgetAnimPresetAsset> PlayedAnimation = nullptr;
+
+	/**
+	 * The values the state's Parameters From Inputs gave its track as it was last built - one list, or one per blend sample -
+	 * what a change of its inputs is compared with.
+	 */
+	TArray<TArray<FWidgetAnimParameterValue>> PlayedParameterInputs;
+
 	/** How much of each sample the blend state shows now, summing to 1. */
 	TArray<float> BlendWeights;
 
@@ -366,6 +379,27 @@ struct NAMETBD_API FWidgetAnimMachineLayerDebug
 
 	/** The last few actions the layer ran, in words. */
 	TArray<FString> LastActions;
+
+	/**
+	 * Each condition on another layer's state of this layer's transitions, and whether it holds now - read as the machine reads
+	 * it, every layer as it was before any moved this frame. Entered and Exited hold for their one frame, as they do in play.
+	 */
+	struct FLayerCondition
+	{
+		FGuid Transition;
+		int32 Condition = INDEX_NONE;
+		bool bHolds = false;
+	};
+	TArray<FLayerCondition> LayerConditions;
+
+	/** Condition ConditionIndex of Transition, when it is one on another layer's state; else null. */
+	const FLayerCondition* FindLayerCondition(const FGuid& Transition, int32 ConditionIndex) const
+	{
+		return LayerConditions.FindByPredicate([&Transition, ConditionIndex](const FLayerCondition& Entry)
+		{
+			return Entry.Transition == Transition && Entry.Condition == ConditionIndex;
+		});
+	}
 };
 
 namespace WidgetAnimStateMachines
@@ -456,6 +490,15 @@ namespace WidgetAnimStateMachines
 
 	/** What each layer is doing, for the editor's graph. */
 	NAMETBD_API void GetDebug(const FWidgetAnimMachineInstance& Instance, TArray<FWidgetAnimMachineLayerDebug>& OutLayers);
+
+	/**
+	 * Works out again the settings of the animations the layers' states are playing, with the parameter values as they are now -
+	 * the scopes in effect (Set Widget Animation Parameter, pushed by the caller) and each state's Parameters From Inputs - and
+	 * lays them over the states' tracks one for one, so where each part is in its play stays as it was: a playing state follows
+	 * a parameter set while it plays, as an entry's animation does. bOnlyIfInputsChanged: only the states whose Parameters From
+	 * Inputs give other values than when last built (what Tick asks each frame the inputs change). True if a track changed.
+	 */
+	NAMETBD_API bool RefreshParameters(FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineContext& Context, bool bOnlyIfInputsChanged = false);
 
 	/**
 	 * A blend state's weight for each sample, from where its input is: Blend 1D between the two samples either side of Value.X

@@ -11,6 +11,7 @@
 #include "Components/PanelWidget.h"
 #include "Components/Widget.h"
 #include "NiagaraSystem.h"
+#include "UObject/ObjectKey.h"
 
 #define LOCTEXT_NAMESPACE "WidgetAnimParticleCue"
 
@@ -87,6 +88,14 @@ void FWidgetAnimParticleCueEvaluator::Fire(const FWidgetAnimCueContext& Context)
 
 	// The track's own system and the User Parameters it changed - or, with Use Widget's Niagara System, each widget's own.
 	UNiagaraSystem* TrackSystem = CueParams->PlaysTrackSystem() ? CueParams->NiagaraSystem.Get() : nullptr;
+
+	// What Set Particle Track Parameter set on the widgets around this fire, over the track's own values.
+	FWidgetAnimParticleCueParams Adjusted;
+	if (TrackSystem && UWidgetAnimParticleTrackLibrary::ApplyTrackParameters(Context.Info, *CueParams, Adjusted))
+	{
+		CueParams = &Adjusted;
+	}
+
 	FNiagaraUIParameterOverrides Overrides;
 	const FNiagaraUIParameterOverrides* TrackOverrides = nullptr;
 	if (TrackSystem && NiagaraUIParameters::HasChanges(CueParams->UserParameters, CueParams->UserParameterDefaults))
@@ -248,6 +257,119 @@ void FWidgetAnimParticleCueEvaluator::FindParticlesWidgets(UWidget* TrackWidget,
 			return;
 		}
 	}
+}
+
+// =====================================================================================================
+// Set Particle Track Parameter
+// =====================================================================================================
+
+namespace WidgetAnimParticleTrackOverrides
+{
+	struct FOverride
+	{
+		FName AnimId;
+		FWidgetAnimParameterValue Value;
+	};
+
+	/** What each widget had set, by the widget. Widgets that are gone are let go of on the next set. */
+	TMap<TObjectKey<UWidget>, TArray<FOverride>>& GetMap()
+	{
+		static TMap<TObjectKey<UWidget>, TArray<FOverride>> Map;
+		return Map;
+	}
+
+	void Prune()
+	{
+		for (auto It = GetMap().CreateIterator(); It; ++It)
+		{
+			if (!It.Key().ResolveObjectPtr())
+			{
+				It.RemoveCurrent();
+			}
+		}
+	}
+
+	/** A User parameter's name as the track's User Parameters list it: without "User.". */
+	FName ShortName(FName Name)
+	{
+		FString Text = Name.ToString();
+		Text.RemoveFromStart(TEXT("User."));
+		return FName(*Text);
+	}
+}
+
+void UWidgetAnimParticleTrackLibrary::SetParticleTrackParameter(UWidget* Widget, FWidgetAnimParameterValue Parameter, FName AnimId)
+{
+	using namespace WidgetAnimParticleTrackOverrides;
+	if (!Widget || Parameter.Name.IsNone())
+	{
+		return;
+	}
+	Parameter.Name = ShortName(Parameter.Name);
+	Prune();
+	TArray<FOverride>& Overrides = GetMap().FindOrAdd(TObjectKey<UWidget>(Widget));
+	Overrides.RemoveAll([&Parameter, AnimId](const FOverride& Existing) { return Existing.AnimId == AnimId && Existing.Value.Name == Parameter.Name; });
+	Overrides.Add({ AnimId, Parameter });
+}
+
+void UWidgetAnimParticleTrackLibrary::ClearParticleTrackParameters(UWidget* Widget, FName AnimId)
+{
+	using namespace WidgetAnimParticleTrackOverrides;
+	TArray<FOverride>* Overrides = Widget ? GetMap().Find(TObjectKey<UWidget>(Widget)) : nullptr;
+	if (!Overrides)
+	{
+		return;
+	}
+	Overrides->RemoveAll([AnimId](const FOverride& Existing) { return AnimId.IsNone() || Existing.AnimId == AnimId; });
+	if (Overrides->Num() == 0)
+	{
+		GetMap().Remove(TObjectKey<UWidget>(Widget));
+	}
+}
+
+bool UWidgetAnimParticleTrackLibrary::ApplyTrackParameters(const FWidgetAnimCueInfo& Info, const FWidgetAnimParticleCueParams& Params, FWidgetAnimParticleCueParams& OutParams)
+{
+	using namespace WidgetAnimParticleTrackOverrides;
+	if (GetMap().Num() == 0)
+	{
+		return false;
+	}
+
+	// Nearest first: the track's widget, the widget playing it, then each User Widget around that.
+	TArray<UWidget*, TInlineAllocator<8>> Around;
+	Around.AddUnique(Info.Target.Get());
+	Around.AddUnique(Info.Host.Get());
+	for (UUserWidget* Outer = Info.Host ? Info.Host->GetTypedOuter<UUserWidget>() : nullptr; Outer; Outer = Outer->GetTypedOuter<UUserWidget>())
+	{
+		Around.AddUnique(Outer);
+	}
+
+	// Written farthest first, so the nearest has the last word.
+	bool bApplied = false;
+	for (int32 Index = Around.Num() - 1; Index >= 0; --Index)
+	{
+		const TArray<FOverride>* Overrides = Around[Index] ? GetMap().Find(TObjectKey<UWidget>(Around[Index])) : nullptr;
+		if (!Overrides)
+		{
+			continue;
+		}
+		for (const FOverride& Override : *Overrides)
+		{
+			if (!Override.AnimId.IsNone() && Override.AnimId != Info.AnimId)
+			{
+				continue;
+			}
+			if (!bApplied)
+			{
+				OutParams = Params;
+				bApplied = true;
+			}
+			// A User Parameter the track's system doesn't have is simply not written.
+			WidgetAnimParameters::WriteField(FWidgetAnimParticleCueParams::StaticStruct(), &OutParams,
+				FString::Printf(TEXT("UserParameters.%s"), *Override.Value.Name.ToString()), Override.Value);
+		}
+	}
+	return bApplied;
 }
 
 #undef LOCTEXT_NAMESPACE

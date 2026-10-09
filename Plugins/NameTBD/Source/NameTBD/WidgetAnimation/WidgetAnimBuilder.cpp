@@ -206,6 +206,7 @@ void UWidgetAnimBuilder::RebuildPreviewAnimations()
 		PreviewAsset->Description = Description;
 		PreviewAsset->LayerGroups = LayerGroups;
 		PreviewAsset->Layers = Layers;
+		PreviewAsset->Parameters = Parameters;
 		PreviewAsset->AnimationSpeedMultiplier = AnimationSpeedMultiplier;
 		PreviewAsset->MinimumLength = MinimumLength;
 		PreviewAsset->TimeUnit = TimeUnit;
@@ -229,6 +230,10 @@ void UWidgetAnimBuilder::RebuildPreviewAnimations()
 	// default, which ran every layer, and every Transform layer's keys, from the end back to the start.
 	PreviewUse.bInvertAnimation = bPreviewInvertAnimation;
 	PreviewUse.PlaybackSpeed = PreviewPlaybackSpeed;
+
+	// The panel's Preview values for the animation's parameters, as a use's own Parameters: what the preview plays instead of
+	// the defaults. Values naming a parameter the animation doesn't have are passed over.
+	PreviewUse.Parameters = PreviewParameterValues;
 
 	auto Resolver = [this](FName Path) { return ResolvePreviewGroupTarget(Path); };
 	PreviewUse.BuildSettingsResolved(FlattenedIn, Resolver);
@@ -896,6 +901,8 @@ bool UWidgetAnimBuilder::CopyAuthoredStateFrom(const UWidgetAnimBuilder& Source)
 		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Description),
 		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, LayerGroups),
 		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Layers),
+		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Parameters),
+		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, PreviewParameterValues),
 		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, AnimationSpeedMultiplier),
 		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, MinimumLength),
 		GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, TimeUnit),
@@ -923,6 +930,16 @@ bool UWidgetAnimBuilder::CopyAuthoredStateFrom(const UWidgetAnimBuilder& Source)
 	}
 
 	return bChanged;
+}
+
+void UWidgetAnimBuilder::SetPreviewParameterValues(const TArray<FWidgetAnimParameterValue>& Values)
+{
+	// Only what is watched changes - nothing authored - so no transaction, and the Class Defaults aren't dirtied.
+	ForThisAndLivePreviews([&Values](UWidgetAnimBuilder& Builder)
+	{
+		Builder.PreviewParameterValues = Values;
+		Builder.RefreshPreview(/*bForceRestart=*/false);
+	});
 }
 
 void UWidgetAnimBuilder::ForThisAndLivePreviews(TFunctionRef<void(UWidgetAnimBuilder&)> Func)
@@ -1039,6 +1056,7 @@ void UWidgetAnimBuilder::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 	const bool bAffectsPreview =
 		MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, LayerGroups)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Layers)
+		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, Parameters)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, AnimationSpeedMultiplier)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, MinimumLength)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, TimeUnit)
@@ -1394,6 +1412,7 @@ UWidgetAnimPresetAsset* UWidgetAnimBuilder::CreateWidgetAnimation(bool bChooseLo
 	Asset->Description = Description;
 	Asset->LayerGroups = LayerGroups;
 	Asset->Layers = Layers;
+	Asset->Parameters = Parameters;
 	Asset->AnimationSpeedMultiplier = AnimationSpeedMultiplier;
 	Asset->MinimumLength = MinimumLength;
 	Asset->TimeUnit = TimeUnit;

@@ -244,6 +244,20 @@ public:
 	EWidgetAnimTracksWithMachines TracksWithStateMachines = EWidgetAnimTracksWithMachines::AddOnTop;
 
 	/**
+	 * The parameters of every animation this widget plays - its Anim In and Anim Out animations and its state machines' states'
+	 * - one row each, by name. Tick a row to set it here, for every one of those animations that has it; unticked, each plays
+	 * its own default. A use's own value (an entry's Parameters, a state's Parameters From Inputs) wins over it, and Set Widget
+	 * Animation Parameter over both. Listed from the animations whenever the component is edited, loaded or shown
+	 * (SyncComponentParameters); shown only when there are some. See WidgetAnimParameters.h.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Animation", meta = (DisplayName = "Parameters", EditFixedSize, TitleProperty = "Name", EditCondition = "bHasComponentParameters", EditConditionHides, HideEditConditionToggle))
+	TArray<FWidgetAnimParameterValue> ComponentParameters;
+
+	/** Whether any animation here has parameters - so Parameters is shown. Set by SyncComponentParameters. */
+	UPROPERTY()
+	bool bHasComponentParameters = false;
+
+	/**
 	 * Whether animations compose over whatever each target was authored as, instead of replacing it.
 	 *
 	 * Off (the default): a Fade ending at 1 means opacity 1, full stop, even on a widget authored at 0.5.
@@ -583,8 +597,9 @@ public:
 
 	/**
 	 * Live parameters: the entries' animations already playing (Animation's, any when null; Anim ID AnimId, any when None) take
-	 * the parameter values as they are now - their tracks' settings worked out again, where they are in their play kept. A
-	 * state machine's state takes them the next time it starts. Called by Set / Clear Widget Animation Parameter.
+	 * the parameter values as they are now - their tracks' settings worked out again, where they are in their play kept - and
+	 * so do the states the component's state machines are playing (WidgetAnimStateMachines::RefreshParameters). Called by
+	 * Set / Clear Widget Animation Parameter.
 	 */
 	void RefreshPlayingParameters(const UWidgetAnimPresetAsset* Animation, FName AnimId);
 
@@ -593,6 +608,22 @@ public:
 
 	/** Sizes every State Machines row's targets and inputs to its machine - see FWidgetAnimStateMachineEntry::SyncToMachine. */
 	bool SyncStateMachines();
+
+	/**
+	 * Lists in ComponentParameters the parameters of every animation this widget plays (see GatherParameterDeclarations): a row
+	 * set here keeps its value while some animation still has the parameter with that type; a row not set follows the
+	 * default. True if anything changed.
+	 */
+	bool SyncComponentParameters();
+
+	/**
+	 * The parameters of every animation this widget plays - Anim In and Anim Out entries', and every animation its state
+	 * machines play - each name once, the first declaration found winning, in the order found.
+	 */
+	void GatherParameterDeclarations(TArray<const FWidgetAnimParameter*>& OutDeclarations) const;
+
+	/** The declaration GatherParameterDeclarations lists for Name - for a Parameters row's editor. Null when none has it. */
+	const FWidgetAnimParameter* FindParameterDeclaration(FName Name) const;
 
 	/**
 	 * For the State Machine editor's Inputs panel: plays this component's state machines in the designer, from their Entry,

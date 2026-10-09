@@ -131,6 +131,15 @@ void UWidgetAnimEditorSettings::SetShowMotionPaths(bool bEnabled)
 	}
 }
 
+void UWidgetAnimEditorSettings::SetMotionPathPathsOnly(bool bEnabled)
+{
+	if (bMotionPathPathsOnly != bEnabled)
+	{
+		bMotionPathPathsOnly = bEnabled;
+		SaveConfig();
+	}
+}
+
 #if WITH_EDITOR
 FText UWidgetAnimEditorSettings::GetSectionText() const
 {

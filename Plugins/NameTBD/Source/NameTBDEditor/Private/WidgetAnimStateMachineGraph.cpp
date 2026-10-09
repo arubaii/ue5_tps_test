@@ -1693,6 +1693,56 @@ bool UWidgetAnimMachineGraph::IsDebugging() const
 	return GetDebug && GetDebug(Debug);
 }
 
+TOptional<bool> UWidgetAnimMachineGraph::GetLayerConditionHeld(const FGuid& Transition, int32 ConditionIndex) const
+{
+	FWidgetAnimMachineLayerDebug Debug;
+	if (!GetDebug || !GetDebug(Debug))
+	{
+		return TOptional<bool>();
+	}
+	return ReadLayerConditionHeld(Debug, Transition, ConditionIndex);
+}
+
+TOptional<bool> UWidgetAnimMachineGraph::ReadLayerConditionHeld(const FWidgetAnimMachineLayerDebug& Debug, const FGuid& Transition, int32 ConditionIndex) const
+{
+	const FWidgetAnimMachineLayerDebug::FLayerCondition* Entry = Debug.FindLayerCondition(Transition, ConditionIndex);
+	if (!Entry)
+	{
+		return TOptional<bool>();
+	}
+	const TPair<FGuid, int32> Key(Transition, ConditionIndex);
+	const double Now = FPlatformTime::Seconds();
+	if (Entry->bHolds)
+	{
+		LayerConditionHeldTimes.Add(Key, Now);
+		return true;
+	}
+	const double* LastHeld = LayerConditionHeldTimes.Find(Key);
+	return LastHeld && Now - *LastHeld < MachineColors::LayerConditionLinger;
+}
+
+TOptional<bool> UWidgetAnimMachineGraph::GetLayerConditionsHeld(const FGuid& Transition) const
+{
+	const FWidgetAnimMachineLayer* Layer = Machine && Machine->Layers.IsValidIndex(LayerIndex) ? &Machine->Layers[LayerIndex] : nullptr;
+	const int32 TransitionIndex = Layer ? Layer->FindTransitionIndex(Transition) : INDEX_NONE;
+	FWidgetAnimMachineLayerDebug Debug;
+	if (TransitionIndex == INDEX_NONE || !GetDebug || !GetDebug(Debug))
+	{
+		return TOptional<bool>();
+	}
+	TOptional<bool> All;
+	const TArray<FWidgetAnimMachineCondition>& Conditions = Layer->Transitions[TransitionIndex].Conditions;
+	for (int32 ConditionIndex = 0; ConditionIndex < Conditions.Num(); ++ConditionIndex)
+	{
+		const TOptional<bool> Held = ReadLayerConditionHeld(Debug, Transition, ConditionIndex);
+		if (Held.IsSet())
+		{
+			All = All.Get(true) && Held.GetValue();
+		}
+	}
+	return All;
+}
+
 void UWidgetAnimMachineGraph::RebuildFromMachine()
 {
 	// Nothing found before is where it was.
@@ -4418,7 +4468,19 @@ public:
 				AllottedGeometry.ToPaintGeometry(ArrowSize, FSlateLayoutTransform(Center - ArrowSize * 0.5f), FSlateRenderTransform(FQuat2f(Angle)), FVector2f(0.5f, 0.5f)),
 				Arrow, ESlateDrawEffect::None, MachineColors::TransitionArrow);
 		}
-		return LayerId + 5;
+
+		// While a widget is watched: a dot at its top right for its conditions on other layers' states - green while they all
+		// hold, red while one doesn't - so a transition waiting on another layer reads at a glance.
+		const TOptional<bool> LayerConditionsHeld = Graph ? Graph->GetLayerConditionsHeld(TransitionNode->TransitionId) : TOptional<bool>();
+		if (LayerConditionsHeld.IsSet())
+		{
+			const FVector2f DotSize(MachineColors::LayerConditionDot, MachineColors::LayerConditionDot);
+			const FVector2f DotCenter = Center + FVector2f(Radius, -Radius) * 0.78f;
+			const FLinearColor DotColor = LayerConditionsHeld.GetValue() ? MachineColors::LayerConditionHeld : MachineColors::LayerConditionNotHeld;
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 5,
+				AllottedGeometry.ToPaintGeometry(DotSize, FSlateLayoutTransform(DotCenter - DotSize * 0.5f)), Round, ESlateDrawEffect::NoPixelSnapping, DotColor * Tint);
+		}
+		return LayerId + 6;
 	}
 
 private:
@@ -4635,6 +4697,21 @@ private:
 		Tip.Title(Node->GetNodeTitle(ENodeTitleType::FullTitle), TipPalette::TooltipControlName);
 		Tip.Kind(Transition->bEnabled ? LOCTEXT("TransitionKind", "Transition") : LOCTEXT("TransitionKindDisabled", "Transition - disabled"));
 		Tip.Row(LOCTEXT("TipWhen", "When"), Node->DescribeConditions());
+
+		// While a widget is watched: each condition on another layer's state, and whether it holds now.
+		if (const UWidgetAnimMachineGraph* MachineGraph = Node->GetMachineGraph())
+		{
+			for (int32 ConditionIndex = 0; ConditionIndex < Transition->Conditions.Num(); ++ConditionIndex)
+			{
+				const TOptional<bool> Held = MachineGraph->GetLayerConditionHeld(Node->TransitionId, ConditionIndex);
+				if (Held.IsSet())
+				{
+					Tip.Row(Held.GetValue() ? LOCTEXT("TipLayerConditionHolds", "Holds") : LOCTEXT("TipLayerConditionNotHeld", "Doesn't hold"),
+						DescribeCondition(Transition->Conditions[ConditionIndex], MachineGraph->Machine),
+						Held.GetValue() ? MachineColors::LayerConditionHeld : MachineColors::LayerConditionNotHeld);
+				}
+			}
+		}
 
 		FText Blend = GetBlendName(Transition->Blend);
 		if (Transition->Blend == EWidgetAnimMachineBlend::Animation && Transition->TransitionAnimation)

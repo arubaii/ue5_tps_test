@@ -1,0 +1,404 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 76610a8..a632db9 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -2834,9 +2834,6 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		// On a plain list, a track moving another widget than the list's own says which.
+ 		FString Label = Paint.Title;
+ 		FString EasingLabel = Paint.Secondary;
+-		// A track's title in two: its name (and the widget it moves) and its length - ", 2 values parametrized" goes between.
+-		FString TitleHead;
+-		FString TitleTail;
+ 		const bool bCue = Layer && SWidgetAnimTimeline::IsCueLayer(*Layer);
+ 		if (Layer)
+ 		{
+@@ -2862,11 +2859,9 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			{
+ 				TitleLabel = FString::Printf(TEXT("%s \u201C%s\u201D"), *TitleLabel, *Layer->TextTarget.Text);
+ 			}
+-			TitleHead = Paint.bNamesTarget
+-				? FString::Printf(TEXT("%s \u2192 %s"), *TitleLabel, *Layer->TargetWidget.ToString())
+-				: TitleLabel;
+-			TitleTail = FString::Printf(TEXT("  %s"), *LengthLabel);
+-			Label = TitleHead + TitleTail;
++			Label = Paint.bNamesTarget
++				? FString::Printf(TEXT("%s \u2192 %s  %s"), *TitleLabel, *Layer->TargetWidget.ToString(), *LengthLabel)
++				: FString::Printf(TEXT("%s  %s"), *TitleLabel, *LengthLabel);
+ 
+ 			// A cue has no easing - it fires at points, not along a curve - so it says what it does there instead.
+ 			const FWidgetAnimEvaluator* CueEvaluator = bCue ? Layer->FindEvaluator() : nullptr;
+@@ -2903,31 +2898,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		const float TextY = InnerTop + (InnerHeight - LabelSize.Y) * 0.5f;
+ 		// The full-size title's line, which the segment names and the easing sit on, even while the title is shrunk.
+ 		const float FullTextY = InnerTop + (InnerHeight - MeasureText(Label, LayerFont).Y) * 0.5f;
+-		// Animation Parameters: how many of its values come from the animation's parameters, right after its name - "Scale, 2 values
+-		// parametrized  0.30s" - dimmed and in italics; which values and which parameters, in its tooltip. Beside a full-size title
+-		// only, and only where it all fits; else the title alone.
+-		float ParametrizedWidth = 0.f;
+-		bool bParametrizedShown = false;
+-		const int32 NumParametrized = Layer ? Layer->ParameterBindings.Num() : 0;
+-		if (bTitleFullSize && NumParametrized > 0 && !TitleHead.IsEmpty())
+-		{
+-			const FString ParametrizedLabel = FText::Format(LOCTEXT("ParametrizedValues", ", {0} {0}|plural(one=value,other=values) parametrized"), NumParametrized).ToString();
+-			FSlateFontInfo ParametrizedFont;
+-			const bool bItalicFace = ItalicOf(SectionFont, ParametrizedFont);
+-			const float HeadWidth = MeasureText(TitleHead, TitleFont).X;
+-			const float ParametrizedTextWidth = MeasureText(ParametrizedLabel, ParametrizedFont).X;
+-			const float TailWidth = MeasureText(TitleTail, TitleFont).X;
+-			if (TextLeft + HeadWidth + ParametrizedTextWidth + TailWidth + Padding <= BarX0 + BarWidth)
+-			{
+-				TrackText(TitleHead, TextLeft, TextY, TitleFont, TitleColor, bSlantLayerText);
+-				TrackText(ParametrizedLabel, TextLeft + HeadWidth, TextY, ParametrizedFont, TitleColor * FLinearColor(1.f, 1.f, 1.f, Palette::SectionParametrizedTextOpacity), !bItalicFace);
+-				TrackText(TitleTail, TextLeft + HeadWidth + ParametrizedTextWidth, TextY, TitleFont, TitleColor, bSlantLayerText);
+-				// What the title takes beyond LabelSize, which measures it without.
+-				ParametrizedWidth = FMath::Max(0.f, HeadWidth + ParametrizedTextWidth + TailWidth - LabelSize.X);
+-				bParametrizedShown = true;
+-			}
+-		}
+-		if (bTitleShown && !bParametrizedShown)
++		if (bTitleShown)
+ 		{
+ 			TrackText(Label, TextLeft, TextY, TitleFont, TitleColor, bSlantLayerText);
+ 		}
+@@ -2945,7 +2916,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			// centered that way sits visibly higher than a larger one beside it.
+ 			const float TitleBaselineY = FullTextY + Measure->GetMaxCharacterHeight(LayerFont) + Measure->GetBaseline(LayerFont);
+ 			const float SegmentAscent = Measure->GetMaxCharacterHeight(SegmentFont) + Measure->GetBaseline(SegmentFont);
+-			const float TitleRight = bTitleShown ? TextLeft + LabelSize.X + ParametrizedWidth + 8.f : TextLeft;
++			const float TitleRight = bTitleShown ? TextLeft + LabelSize.X + 8.f : TextLeft;
+ 			const float KeyClearance = KeyDiamond * 0.5f + 4.f;
+ 
+ 			for (int32 Segment = 0; Segment + 1 < KeyTimes.Num(); ++Segment)
+@@ -2980,7 +2951,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		// track's - "Widget Animation, 3 tracks" - sits a little further in from its end, where its font's last letters
+ 		// otherwise touch the section's rounded edge.
+ 		const float RightPadding = Layer && Layer->IsAnimationTrack() ? Padding + Palette::AnimationTrackTextRightPadding : Padding;
+-		if (!bLabelSegments && bTitleFullSize && !EasingLabel.IsEmpty() && TextLeft - BarX0 + LabelSize.X + ParametrizedWidth + EasingSize.X + Padding + RightPadding + 12.f <= BarWidth)
++		if (!bLabelSegments && bTitleFullSize && !EasingLabel.IsEmpty() && TextLeft - BarX0 + LabelSize.X + EasingSize.X + Padding + RightPadding + 12.f <= BarWidth)
+ 		{
+ 			TrackText(EasingLabel, BarX0 + BarWidth - RightPadding - EasingSize.X, TextY, LayerFont, TitleColor * FLinearColor(1.f, 1.f, 1.f, Palette::SectionSecondaryTextOpacity), bSlantLayerText);
+ 		}
+@@ -7579,6 +7550,144 @@ private:
+ 	mutable bool bMeasured = false;
+ };
+ 
++namespace WidgetAnimParameterEditing
++{
++	FString DescribeFieldPath(const FWidgetAnimLayer& Layer, const FString& FieldPath);
++}
++
++/**
++ * A track's Animation Parameters on its row of the Animation Tracks list, after its name: a small pill for each field bound to
++ * a parameter, in that parameter's type's pin color, as the My Blueprint panel shows a variable's type - "two Floats and a
++ * Vector 2D" at a glance. The same types side by side, a little apart from the next type; red for a parameter that is gone.
++ * Read as it paints, so a binding made or removed, or a parameter's type changed, shows at once. Collapsed while nothing of
++ * the track is bound. Its tooltip says which field takes which parameter.
++ */
++class SWidgetAnimBindingPills : public SLeafWidget
++{
++public:
++
++	SLATE_BEGIN_ARGS(SWidgetAnimBindingPills) {}
++	SLATE_END_ARGS()
++
++	void Construct(const FArguments& InArgs, TWeakPtr<SWidgetAnimTimeline> InPanel, int32 InLayer)
++	{
++		Panel = InPanel;
++		Layer = InLayer;
++		SetVisibility(TAttribute<EVisibility>::CreateSP(this, &SWidgetAnimBindingPills::GetPillsVisibility));
++	}
++
++	virtual FVector2D ComputeDesiredSize(float) const override
++	{
++		TArray<FPill> Pills;
++		GatherPills(Pills);
++		return Pills.Num() > 0 ? FVector2D(GetStripWidth(Pills), WidgetAnimTimeline::Palette::ListBindingPillHeight) : FVector2D::ZeroVector;
++	}
++
++	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
++	{
++		namespace Palette = WidgetAnimTimeline::Palette;
++
++		TArray<FPill> Pills;
++		GatherPills(Pills);
++		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
++		const bool bWashedOut = Owner && (Owner->IsReadOnly() || Owner->IsLayerLocked(Layer) || Owner->IsLayerHidden(Layer));
++		const float Top = FMath::RoundToFloat((AllottedGeometry.GetLocalSize().Y - Palette::ListBindingPillHeight) * 0.5f);
++		float X = 0.f;
++		for (int32 PillIndex = 0; PillIndex < Pills.Num(); ++PillIndex)
++		{
++			if (PillIndex > 0)
++			{
++				X += Pills[PillIndex].Order == Pills[PillIndex - 1].Order ? Palette::ListBindingPillGap : Palette::ListBindingPillTypeGap;
++			}
++			FLinearColor Fill = Pills[PillIndex].Color * InWidgetStyle.GetColorAndOpacityTint();
++			Fill.A *= bWashedOut ? Palette::ListBindingPillWashedOut : 1.f;
++			FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
++				AllottedGeometry.ToPaintGeometry(FVector2f(Palette::ListBindingPillWidth, Palette::ListBindingPillHeight), FSlateLayoutTransform(FVector2f(X, Top))),
++				WidgetAnimTimeline::RoundedFill(Palette::ListBindingPillHeight * 0.5f), ESlateDrawEffect::None, Fill);
++			X += Palette::ListBindingPillWidth;
++		}
++		return LayerId;
++	}
++
++	/** For its tooltip: a line per bound field - "Start Scale \u2190 Amount (Float)". */
++	FText DescribeBindings() const
++	{
++		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
++		const TArray<FWidgetAnimLayer>* AllLayers = Owner ? Owner->GetLayers() : nullptr;
++		if (!AllLayers || !AllLayers->IsValidIndex(Layer))
++		{
++			return FText::GetEmpty();
++		}
++		const FWidgetAnimLayer& Track = (*AllLayers)[Layer];
++		TArray<FString> Lines;
++		for (const FWidgetAnimParameterBinding& Binding : Track.ParameterBindings)
++		{
++			const FWidgetAnimParameter* BoundTo = FindDeclared(*Owner, Binding.Parameter);
++			Lines.Add(FString::Printf(TEXT("%s \u2190 %s (%s)"), *WidgetAnimParameterEditing::DescribeFieldPath(Track, Binding.FieldPath), *Binding.Parameter.ToString(),
++				BoundTo ? *WidgetAnimTypePill::GetLabel(WidgetAnimTypePill::FromParameterType(BoundTo->Type)).ToString() : TEXT("missing")));
++		}
++		return FText::FromString(FString::Join(Lines, TEXT("\n")));
++	}
++
++private:
++
++	struct FPill
++	{
++		FLinearColor Color = FLinearColor::White;
++		/** Its type, for grouping: the same types side by side, the types in the order they are declared in; missing last. */
++		int32 Order = 0;
++	};
++
++	static const FWidgetAnimParameter* FindDeclared(const SWidgetAnimTimeline& Owner, FName Name)
++	{
++		const TArray<FWidgetAnimParameter>* Declared = Owner.GetParameters();
++		return Declared ? Declared->FindByPredicate([Name](const FWidgetAnimParameter& Parameter) { return Parameter.Name == Name; }) : nullptr;
++	}
++
++	void GatherPills(TArray<FPill>& OutPills) const
++	{
++		OutPills.Reset();
++		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
++		const TArray<FWidgetAnimLayer>* AllLayers = Owner ? Owner->GetLayers() : nullptr;
++		if (!AllLayers || !AllLayers->IsValidIndex(Layer))
++		{
++			return;
++		}
++		for (const FWidgetAnimParameterBinding& Binding : (*AllLayers)[Layer].ParameterBindings)
++		{
++			const FWidgetAnimParameter* BoundTo = FindDeclared(*Owner, Binding.Parameter);
++			FPill& Pill = OutPills.AddDefaulted_GetRef();
++			Pill.Order = BoundTo ? static_cast<int32>(BoundTo->Type) : MAX_int32;
++			Pill.Color = BoundTo
++				? WidgetAnimTypePill::GetColor(WidgetAnimTypePill::FromParameterType(BoundTo->Type))
++				: WidgetAnimTimeline::Palette::ListBindingPillMissing;
++		}
++		OutPills.StableSort([](const FPill& A, const FPill& B) { return A.Order < B.Order; });
++	}
++
++	static float GetStripWidth(const TArray<FPill>& Pills)
++	{
++		namespace Palette = WidgetAnimTimeline::Palette;
++		float Width = Pills.Num() * Palette::ListBindingPillWidth;
++		for (int32 PillIndex = 1; PillIndex < Pills.Num(); ++PillIndex)
++		{
++			Width += Pills[PillIndex].Order == Pills[PillIndex - 1].Order ? Palette::ListBindingPillGap : Palette::ListBindingPillTypeGap;
++		}
++		return Width;
++	}
++
++	EVisibility GetPillsVisibility() const
++	{
++		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
++		const TArray<FWidgetAnimLayer>* AllLayers = Owner ? Owner->GetLayers() : nullptr;
++		return AllLayers && AllLayers->IsValidIndex(Layer) && (*AllLayers)[Layer].ParameterBindings.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed;
++	}
++
++	TWeakPtr<SWidgetAnimTimeline> Panel;
++	int32 Layer = INDEX_NONE;
++};
++
+ class SWidgetAnimListRow : public SCompoundWidget
+ {
+ public:
+@@ -14071,15 +14180,41 @@ void SWidgetAnimTimeline::RebuildLayerList()
+ 							]
+ 						]
+ 
++						// Its name - and, when some of its tracks are bound to Animation Parameters, how many: ", 2 tracks
++						// parametrized", in italics, a little dimmer. A name too long for the row is cut at its end.
+ 						+ SHorizontalBox::Slot()
+ 						.FillWidth(1.f)
+ 						.VAlign(VAlign_Center)
+ 						.Padding(FMargin(4.f, 0.f, 6.f, 0.f))
+ 						[
+-							SNew(STextBlock)
+-							.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+-							.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+-							.Text_Lambda([this, GroupIndex]() { return GetGroupName(GroupIndex); })
++							SNew(SHorizontalBox)
++							.Clipping(EWidgetClipping::ClipToBounds)
++
++							+ SHorizontalBox::Slot()
++							.AutoWidth()
++							.VAlign(VAlign_Center)
++							[
++								SNew(STextBlock)
++								.Font(FAppStyle::GetFontStyle("NormalFontBold"))
++								.Text_Lambda([this, GroupIndex]() { return GetGroupName(GroupIndex); })
++							]
++
++							+ SHorizontalBox::Slot()
++							.FillWidth(1.f)
++							.VAlign(VAlign_Center)
++							[
++								SNew(STextBlock)
++								.Font(GetListParametrizedFont())
++								.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
++								.ColorAndOpacity(WithAlpha(ForegroundColor(), Palette::ListParametrizedTextOpacity))
++								.Text_Lambda([this, GroupIndex]()
++								{
++									const int32 NumParametrized = CountParametrizedTracks(GroupIndex);
++									return NumParametrized > 0
++										? FText::Format(LOCTEXT("GroupTracksParametrized", ", {0} {0}|plural(one=track,other=tracks) parametrized"), NumParametrized)
++										: FText::GetEmpty();
++								})
++							]
+ 						]
+ 
+ 						// The widget it animates, as a small pill on the right - or, while it is being picked in the designer, what to do.
+@@ -14297,6 +14432,44 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeListFolderRow(const FString& Folder
+ 	return Row;
+ }
+ 
++TSharedRef<SWidget> SWidgetAnimTimeline::MakeListBindingPills(int32 LayerIndex)
++{
++	const TSharedRef<SWidgetAnimBindingPills> Pills = SNew(SWidgetAnimBindingPills, SharedThis(this), LayerIndex);
++	const TWeakPtr<SWidgetAnimBindingPills> WeakPills = Pills;
++	Pills->SetToolTip(WidgetAnimTimeline::MakePanelToolTip(TAttribute<FText>::CreateLambda([WeakPills]()
++	{
++		const TSharedPtr<SWidgetAnimBindingPills> Pinned = WeakPills.Pin();
++		return Pinned ? Pinned->DescribeBindings() : FText::GetEmpty();
++	})));
++	return Pills;
++}
++
++int32 SWidgetAnimTimeline::CountParametrizedTracks(int32 GroupIndex) const
++{
++	const TArray<FWidgetAnimLayer>* Current = GetLayers();
++	if (!Current)
++	{
++		return 0;
++	}
++	int32 Count = 0;
++	for (int32 LayerIndex = 0; LayerIndex < Current->Num(); ++LayerIndex)
++	{
++		if ((*Current)[LayerIndex].ParameterBindings.Num() > 0 && GetLayerGroup(LayerIndex) == GroupIndex)
++		{
++			++Count;
++		}
++	}
++	return Count;
++}
++
++FSlateFontInfo SWidgetAnimTimeline::GetListParametrizedFont()
++{
++	// The group name's font in its italic, not bold - so it reads as a note on the name.
++	FSlateFontInfo Font = FAppStyle::GetFontStyle("NormalFontBold");
++	Font.TypefaceFontName = TEXT("Italic");
++	return Font;
++}
++
+ TSharedRef<SWidget> SWidgetAnimTimeline::MakeListLayerRow(int32 LayerIndex, int32 GroupIndex, float Indent)
+ {
+ 	using namespace WidgetAnimTimeline;
+@@ -14424,6 +14597,15 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeListLayerRow(int32 LayerIndex, int3
+ 						})
+ 					]
+ 
++					// Its Animation Parameters: a pill per bound field, in its parameter's type's color.
++					+ SHorizontalBox::Slot()
++					.AutoWidth()
++					.VAlign(VAlign_Center)
++					.Padding(FMargin(6.f, 0.f, 0.f, 0.f))
++					[
++						MakeListBindingPills(LayerIndex)
++					]
++
+ 					+ SHorizontalBox::Slot()
+ 					.FillWidth(1.f)
+ 					.VAlign(VAlign_Center)
+@@ -24449,8 +24631,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
+ 		Rows.Add(TEXT("Through"), Through);
+ 	}
+ 
+-	// Animation Parameters: which of its values come from which parameter - what ", 2 values parametrized" on its section
+-	// stands for - each with the parameter's value as the preview plays it (its Preview value, else its default), and when
++	// Animation Parameters: which of its values come from which parameter - what the pills on its row of the Animation Tracks list
++	// stand for - each with the parameter's value as the preview plays it (its Preview value, else its default), and when
+ 	// it plays at all (Plays When). Read off the track as authored, not the copy the preview plays.
+ 	const FWidgetAnimLayer& AuthoredLayer = (*Layers)[LayerIndex];
+ 	if (AuthoredLayer.ParameterBindings.Num() > 0 || AuthoredLayer.PlaysWhen.IsSet())
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+index 0db1500..1653fd9 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+@@ -1554,6 +1554,15 @@ private:
+ 	/** One track's row in the list, Indent further in for a track of a collapsed track opened in the list. */
+ 	TSharedRef<SWidget> MakeListLayerRow(int32 LayerIndex, int32 GroupIndex, float Indent);
+ 
++	/** A track row's Animation Parameters: a pill per bound field, in its parameter's type's color, with a tooltip naming each. */
++	TSharedRef<SWidget> MakeListBindingPills(int32 LayerIndex);
++
++	/** How many of a group's tracks have fields bound to Animation Parameters - for ", 2 tracks parametrized" on its row. */
++	int32 CountParametrizedTracks(int32 GroupIndex) const;
++
++	/** The font of ", 2 tracks parametrized" after a group's name in the list: the name's, in italics. */
++	static FSlateFontInfo GetListParametrizedFont();
++
+ 	/** A folder's row in the list: fold arrow, icon, name and how many groups it holds. */
+ 	TSharedRef<SWidget> MakeListFolderRow(const FString& Folder);
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index ef96acd..1133295 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -120,12 +120,6 @@ namespace NameTBD
+ 			inline constexpr float SectionTextPadding = 12.0f;
+ 			inline constexpr float SectionSecondaryTextOpacity = 0.75f;
+ 
+-			/**
+-			 * ", 2 values parametrized" after a track's name, when some of its values are bound to Animation Parameters: in
+-			 * italics, at this opacity of the title's color.
+-			 */
+-			inline constexpr float SectionParametrizedTextOpacity = 0.65f;
+-
+ 			/**
+ 			 * A selected section gets a selected Blueprint node's outline: a solid orange rim SectionSelectedOutlineSize
+ 			 * pixels out around the section, under its frame - the frame's alpha (SectionFrame, below 1) is what lets
+@@ -449,6 +443,23 @@ namespace NameTBD
+ 			inline const FLinearColor ListPinnedIcon(AnimationOrange_Normal);
+ 			inline const FLinearColor ListQuietIcon(1.00f, 1.00f, 1.00f, 0.22f);
+ 
++			// -------------------------------------------------------------------------------------------------
++			// Animation Parameters in the Animation Tracks list.
++			//   ListBindingPill*: after a track's name, a pill per field bound to a parameter, in the parameter's type's pin
++			//   color (as the My Blueprint panel's variable pill): ListBindingPillGap apart, ListBindingPillTypeGap between
++			//   types; ListBindingPillMissing for one whose parameter is gone. ListBindingPillWashedOut: their opacity on a
++			//   locked or hidden track.
++			//   ListParametrizedTextOpacity: ", 2 tracks parametrized" after a group's name, in italics, at this opacity.
++			// -------------------------------------------------------------------------------------------------
++
++			inline constexpr float ListBindingPillWidth = 10.0f;
++			inline constexpr float ListBindingPillHeight = 6.0f;
++			inline constexpr float ListBindingPillGap = 2.0f;
++			inline constexpr float ListBindingPillTypeGap = 5.0f;
++			inline constexpr float ListBindingPillWashedOut = 0.45f;
++			inline const FLinearColor ListBindingPillMissing(0.90f, 0.15f, 0.12f);
++			inline constexpr float ListParametrizedTextOpacity = 0.65f;
++
+ 			// -------------------------------------------------------------------------------------------------
+ 			// Playing backward - an inverted track, or every track while the preview's Invert is on.
+ 			//   InvertChevron: the chevrons pointing back along an inverted track, InvertChevronSpacing pixels apart.

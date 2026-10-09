@@ -1,0 +1,137 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 5dca01c..63f4021 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -2834,11 +2834,13 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 				: nullptr;
+ 			const UWidgetAnimEditorSettings& Look = UWidgetAnimEditorSettings::Get();
+ 			const float IconSizing = FMath::Min(Look.CueTrackIconSize, InnerHeight);
+-			if (CueIcon && GlyphX - BarX0 + IconSizing + Padding <= BarWidth)
++			// A little in from the section's rounded end, so the icon doesn't crowd it.
++			const float IconX = GlyphX + Palette::CueTrackIconLeftPadding;
++			if (CueIcon && IconX - BarX0 + IconSizing + Padding <= BarWidth)
+ 			{
+ 				const FLinearColor IconTint = bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Look.CueTrackIconTint) : Look.CueTrackIconTint;
+-				Box(GlyphX, InnerTop + (InnerHeight - IconSizing) * 0.5f, IconSizing, IconSizing, IconTint, SectionOverlayLayer, CueIcon);
+-				GlyphX += IconSizing + 3.f;
++				Box(IconX, InnerTop + (InnerHeight - IconSizing) * 0.5f, IconSizing, IconSizing, IconTint, SectionOverlayLayer, CueIcon);
++				GlyphX = IconX + IconSizing + 3.f;
+ 				TextLeft = GlyphX + Padding * 0.5f;
+ 			}
+ 		}
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+index 31d35e4..4d4e4a1 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+@@ -943,6 +943,9 @@ namespace WidgetAnimMotionPathImpl
+ 		/** Whether the preview is posed at the playhead - the panel on screen. Off screen it is as authored, and has no "now" to ring. */
+ 		bool bPreviewPosed = false;
+ 
++		/** Whether the preview is playing: only then is the stretch not yet played drawn fainter - see PathUnplayedOpacity. */
++		bool bPreviewPlaying = false;
++
+ 		// The mouse, from FMotionPathInput.
+ 		int32 HoveredMarker = INDEX_NONE;
+ 		int32 HoveredHandle = INDEX_NONE;
+@@ -1111,6 +1114,7 @@ namespace WidgetAnimMotionPathImpl
+ 
+ 		bPreviewPosed = Posed.bPosed;
+ 		PlayheadTime = FMath::Clamp(PanelSource->GetPlayheadAlpha(), 0.f, 1.f) * PassTime;
++		bPreviewPlaying = PanelSource->IsPlaying();
+ 		MapToCanvas(AllottedGeometry);
+ 
+ 		// Where the status is written: under the designer's toolbar.
+@@ -1707,15 +1711,18 @@ namespace WidgetAnimMotionPathImpl
+ 				return StepLength > JumpRatio * FMath::Max(Before, After);
+ 			};
+ 
+-			// The line, in runs: broken at jumps (drawn dashed), and at the playhead (what has played drawn fainter).
+-			const FLinearColor Ahead = Palette::PathLine;
+-			const FLinearColor Behind = Palette::PathLine.CopyWithNewOpacity(Palette::PathLine.A * Palette::PathPastOpacity);
++			// The line, in runs: broken at jumps (drawn dashed), and at the playhead. While the preview plays, what is still to
++			// play is drawn fainter, so the path fills in from its start as the playhead runs along it; stopped or paused, all of
++			// it is drawn full.
++			auto IsUnplayed = [this](float Time) { return bPreviewPlaying && Time > PlayheadTime + KINDA_SMALL_NUMBER; };
++			const FLinearColor Played = Palette::PathLine;
++			const FLinearColor Unplayed = Palette::PathLine.CopyWithNewOpacity(Palette::PathLine.A * Palette::PathUnplayedOpacity);
+ 			TArray<FVector2f> Run;
+-			bool bRunPast = false;
++			bool bRunUnplayed = false;
+ 			auto FlushRun = [&]()
+ 			{
+-				DrawLine(Run, Palette::PathUnderlay.CopyWithNewOpacity(Palette::PathUnderlay.A * (bRunPast ? Palette::PathPastOpacity : 1.f)), Palette::PathThickness + 2.f, LayerId);
+-				DrawLine(Run, bRunPast ? Behind : Ahead, Palette::PathThickness, LayerId + 1);
++				DrawLine(Run, Palette::PathUnderlay.CopyWithNewOpacity(Palette::PathUnderlay.A * (bRunUnplayed ? Palette::PathUnplayedOpacity : 1.f)), Palette::PathThickness + 2.f, LayerId);
++				DrawLine(Run, bRunUnplayed ? Unplayed : Played, Palette::PathThickness, LayerId + 1);
+ 				Run.Reset();
+ 			};
+ 
+@@ -1732,14 +1739,14 @@ namespace WidgetAnimMotionPathImpl
+ 					continue;
+ 				}
+ 
+-				const bool bPast = To <= PlayheadTime + KINDA_SMALL_NUMBER;
+-				if (Run.Num() > 0 && bPast != bRunPast)
++				const bool bUnplayed = IsUnplayed(To);
++				if (Run.Num() > 0 && bUnplayed != bRunUnplayed)
+ 				{
+ 					const FVector2f Joint = Run.Last();
+ 					FlushRun();
+ 					Run.Add(Joint);
+ 				}
+-				bRunPast = bPast;
++				bRunUnplayed = bUnplayed;
+ 
+ 				if (IsJump(Sample))
+ 				{
+@@ -1756,7 +1763,7 @@ namespace WidgetAnimMotionPathImpl
+ 					for (float Along = 0.f; Along < JumpLength; Along += Palette::JumpDash * 2.f)
+ 					{
+ 						DrawLine({ JumpStart + Direction * Along, JumpStart + Direction * FMath::Min(Along + Palette::JumpDash, JumpLength) },
+-							Palette::Jump.CopyWithNewOpacity(Palette::Jump.A * (bPast ? Palette::PathPastOpacity : 1.f)), 1.f, LayerId + 1);
++							Palette::Jump.CopyWithNewOpacity(Palette::Jump.A * (bUnplayed ? Palette::PathUnplayedOpacity : 1.f)), 1.f, LayerId + 1);
+ 					}
+ 					continue;
+ 				}
+@@ -1781,7 +1788,7 @@ namespace WidgetAnimMotionPathImpl
+ 				{
+ 					continue;
+ 				}
+-				const float Opacity = Time <= PlayheadTime + KINDA_SMALL_NUMBER ? Palette::PathPastOpacity : 1.f;
++				const float Opacity = IsUnplayed(Time) ? Palette::PathUnplayedOpacity : 1.f;
+ 				DrawDot(Path.Canvas[Sample], Palette::DotSize + 2.f, CircleBrush(), Palette::DotOutline.CopyWithNewOpacity(Palette::DotOutline.A * Opacity), LayerId + 2);
+ 				DrawDot(Path.Canvas[Sample], Palette::DotSize, CircleBrush(), Palette::Dot.CopyWithNewOpacity(Palette::Dot.A * Opacity), LayerId + 3);
+ 			}
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index 27c4961..7549db7 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -120,6 +120,9 @@ namespace NameTBD
+ 			inline constexpr float SectionTextPadding = 12.0f;
+ 			inline constexpr float SectionSecondaryTextOpacity = 0.75f;
+ 
++			/** How far an Event / Sound / Particles track's icon sits in from where its section's text would start. */
++			inline constexpr float CueTrackIconLeftPadding = 4.0f;
++
+ 			/**
+ 			 * A selected section gets a selected Blueprint node's outline: a solid orange rim SectionSelectedOutlineSize
+ 			 * pixels out around the section, under its frame - the frame's alpha (SectionFrame, below 1) is what lets
+@@ -771,7 +774,8 @@ namespace NameTBD
+ 			// WidgetAnimMotionPath.h). Read the way After Effects' and Rive's are: a line through every moment, a dot at
+ 			// every frame - close together where the widget moves slowly, far apart where it moves fast - and a diamond
+ 			// at every key. Drawn twice, a dark line under a light one, so it reads over any background.
+-			//   PathLine: the line ahead of the playhead; PathPastOpacity: how strongly the stretch already played is drawn.
++			//   PathLine: the line. PathUnplayedOpacity: while the preview plays, how strongly the stretch not yet played is
++			//   drawn - the path fills in to full from its start as the playhead passes; stopped or paused, it is all full.
+ 			//   Jump: the dashed line where the widget jumps without travelling - a Hold, or a step - with no dots on it.
+ 			//   Dot / DotOutline: the frame dots. Here: the ring where the widget is right now.
+ 			//   Key*: the diamonds' size and hit area; their colors are the Track Editor's keys'.
+@@ -782,7 +786,7 @@ namespace NameTBD
+ 
+ 			inline const FLinearColor PathUnderlay(0.0f, 0.0f, 0.0f, 0.55f);
+ 			inline const FLinearColor PathLine(AnimationOrange_Normal.CopyWithNewOpacity(0.95f));
+-			inline constexpr float PathPastOpacity = 0.4f;
++			inline constexpr float PathUnplayedOpacity = 0.4f;
+ 			inline constexpr float PathThickness = 1.5f;
+ 			inline const FLinearColor Jump(1.0f, 1.0f, 1.0f, 0.45f);
+ 			inline constexpr float JumpDash = 4.0f;

@@ -496,6 +496,12 @@ namespace NameTBD::Tooltips
 				"Motion Path: Every widget this animation moves shows the path it travels on the designer's canvas - even once this panel is closed: a dot at every frame (close together where they move slowly, far apart where they move fast) and a diamond at every key. Click a diamond to pick its key; drag a Transform key's diamond to move it; Alt-drag it to pull out curve handles; right-click it for its Path (Corner, Smooth, Bezier) and Easing Across (each segment or the whole track). More in Editor Preferences > Widget Animations Editor > Motion Paths.");
 		}
 
+		inline FText MotionPathsOnlyTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MotionPathsOnlyTooltip",
+				"Paths Only: While motion paths are drawn, clicks on the designer only reach them - widgets can't be selected there (no click, double click or marquee), so a widget under a key or handle never takes the click meant for it. Panning and zooming the designer, and selecting widgets in the Hierarchy, still work. Only while Motion Path is on.");
+		}
+
 		// -------------------------------------------------------------------------------------------------
 		// The Animation Tracks list
 		// -------------------------------------------------------------------------------------------------
@@ -1057,6 +1063,23 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NoParametersNote",
 				"No parameters yet. Add one with +, or from any track field's pill (at the end of its row): New Parameter From This Field.");
+		}
+
+		inline FText BagBindTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "BagBindTooltip",
+				"Bind one of these to a parameter: click for each of them, and the animation's parameters of a type it takes - or make one from it. A bound one takes the parameter's value each time the track plays, instead of the value shown below.");
+		}
+
+		inline FText BagFieldsBoundTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "BagFieldsBoundTooltip",
+				"{0}|plural(one=One of these is,other={0} of these are) bound to the animation's parameters: each takes its parameter's value as the track plays, instead of the value shown below. Click to see which, bind others or let go.");
+		}
+
+		inline FText BagBindSection()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "BagBindSection", "Bind To Parameter");
 		}
 
 		inline FText BindFieldTooltip()
@@ -1637,6 +1660,12 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "StateExitedEventTooltip",
 				"Fires in this Widget Blueprint's graph each time the {0} state machine's {1} layer leaves its {2} state - with an Info pin: the machine, layer and state, the state it goes to, and the widget playing it. Fired a frame later, so anything may be done in it.");
+		}
+
+		inline FText ActionEventRowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ActionEventRowTooltip",
+				"Fires in this Widget Blueprint's graph each time the {0} state machine's Fire Event action {1} runs - on {2} - with an Info pin: the machine, the layer, Event Name, and the widget playing it. Run once the frame's transitions are settled.");
 		}
 
 		inline FText AdditiveLayersMultipleObjects()
@@ -2227,7 +2256,7 @@ namespace NameTBD::Tooltips
 		inline FText LayerMaskBadgeTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "LayerMaskBadgeTooltip",
-				"This layer animates only some of the machine's targets (its Affects, in the layer's settings): what its states animate on the others is left to the layers under it.");
+				"This layer animates only some of the machine's targets (its Affects, in the layer's settings), or only some kinds of what its states animate (its Channels: opacity, scale, position, shear, rotation, material parameters, Shape Box outlines, texts and the rest): what it leaves out is left to the layers under it.");
 		}
 
 		inline FText ActionsBadgeTooltip()

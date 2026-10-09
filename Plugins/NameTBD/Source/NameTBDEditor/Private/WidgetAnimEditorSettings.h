@@ -214,6 +214,15 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Motion Paths", meta = (DisplayName = "Show Key Times", EditCondition = "bShowMotionPaths"))
 	bool bMotionPathKeyTimes = false;
 
+	/**
+	 * While motion paths are drawn, a click on the designer only ever reaches them: widgets can't be selected there (no click,
+	 * double click or marquee), so a widget under a key or handle never takes the click meant for it. Panning and zooming the
+	 * designer, and selecting widgets in the Hierarchy, still work. The Paths Only toggle beside Motion Path in the panel's
+	 * Track Controls sets it too.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Motion Paths", meta = (DisplayName = "Paths Only (No Widget Selection)", EditCondition = "bShowMotionPaths"))
+	bool bMotionPathPathsOnly = false;
+
 	// -------------------------------------------------------------------------------------------------
 	// New tracks
 	// -------------------------------------------------------------------------------------------------
@@ -366,6 +375,9 @@ public:
 
 	/** Show Motion Paths, saved - see bShowMotionPaths. */
 	void SetShowMotionPaths(bool bEnabled);
+
+	/** Paths Only, saved - see bMotionPathPathsOnly. */
+	void SetMotionPathPathsOnly(bool bEnabled);
 
 	static const UWidgetAnimEditorSettings& Get() { return *GetDefault<UWidgetAnimEditorSettings>(); }
 	static UWidgetAnimEditorSettings& GetMutable() { return *GetMutableDefault<UWidgetAnimEditorSettings>(); }

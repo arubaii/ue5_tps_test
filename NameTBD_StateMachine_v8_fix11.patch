@@ -1,0 +1,118 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+index 837a345..8c36d43 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+@@ -2132,6 +2132,7 @@ namespace WidgetAnimMotionPathImpl
+ 				if (Held.IsSet())
+ 				{
+ 					Cursor->SetType(Held.GetValue());
++					bCursorOwned = true;
+ 				}
+ 				return;
+ 			}
+@@ -2155,8 +2156,17 @@ namespace WidgetAnimMotionPathImpl
+ 				if (Hit.IsValid())
+ 				{
+ 					Cursor->SetType(Hit->GetCursorFor(Marker, Handle));
++					bCursorOwned = true;
++					return;
+ 				}
+ 			}
++
++			// Off every diamond and handle: the cursor given back, once.
++			if (bCursorOwned)
++			{
++				bCursorOwned = false;
++				Cursor->SetType(EMouseCursor::Default);
++			}
+ 		}
+ 
+ 		virtual bool HandleMouseButtonDownEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+@@ -2189,6 +2199,7 @@ namespace WidgetAnimMotionPathImpl
+ 				LeftMarker = Marker;
+ 				LeftHandle = Handle;
+ 				SetCursor(SlateApp, Handle != INDEX_NONE || Layer->GetCursorFor(Marker, Handle) == EMouseCursor::GrabHand ? EMouseCursor::GrabHandClosed : EMouseCursor::Hand);
++				bCursorOwned = true;
+ 				return true;
+ 			}
+ 
+@@ -2219,6 +2230,7 @@ namespace WidgetAnimMotionPathImpl
+ 			{
+ 				Layer->PressMove(Screen, MouseEvent.GetModifierKeys());
+ 				SetCursor(SlateApp, Layer->GetCursorFor(LeftMarker, LeftHandle));
++				bCursorOwned = true;
+ 				return true;
+ 			}
+ 
+@@ -2235,12 +2247,15 @@ namespace WidgetAnimMotionPathImpl
+ 			}
+ 
+ 			// Over a diamond or handle: its cursor. The move is kept from the designer, which would otherwise have Slate ask it
+-			// for its own cursor straight after and put that back. Anywhere else the designer has the move, and its cursor.
++			// for its own cursor straight after and put that back. Anywhere else the designer has the move, and its cursor - the
++			// one set here given back first, since Slate doesn't always ask again on a move.
+ 			if (Hit.IsValid())
+ 			{
+ 				SetCursor(SlateApp, Hit->GetCursorFor(Marker, Handle));
++				bCursorOwned = true;
+ 				return true;
+ 			}
++			GiveBackCursor(SlateApp);
+ 			return false;
+ 		}
+ 
+@@ -2253,6 +2268,27 @@ namespace WidgetAnimMotionPathImpl
+ 				{
+ 					Pressed.Reset();
+ 					Layer->Release(MouseEvent.GetModifierKeys(), /*bCancelled=*/false);
++
++					// Let go over a diamond or handle: its open hand again; anywhere else, the cursor given back.
++					int32 Marker = INDEX_NONE;
++					int32 Handle = INDEX_NONE;
++					const TSharedPtr<FMotionPathLayer> Hit = FindHit(SlateApp, MouseEvent.GetScreenSpacePosition(), Marker, Handle, nullptr);
++					for (const TWeakPtr<FMotionPathLayer>& Weak : GetDesignerLayers())
++					{
++						if (const TSharedPtr<FMotionPathLayer> Lit = Weak.Pin())
++						{
++							Lit->SetHover(Lit == Hit ? Marker : INDEX_NONE, Lit == Hit ? Handle : INDEX_NONE);
++						}
++					}
++					if (Hit.IsValid())
++					{
++						SetCursor(SlateApp, Hit->GetCursorFor(Marker, Handle));
++						bCursorOwned = true;
++					}
++					else
++					{
++						GiveBackCursor(SlateApp);
++					}
+ 					return true;
+ 				}
+ 				if (bSwallowedLeft)
+@@ -2366,6 +2402,16 @@ namespace WidgetAnimMotionPathImpl
+ 			return false;
+ 		}
+ 
++		/** The cursor set here, given back as the normal one - once, when the mouse has left every diamond and handle. */
++		void GiveBackCursor(FSlateApplication& SlateApp)
++		{
++			if (bCursorOwned)
++			{
++				bCursorOwned = false;
++				SetCursor(SlateApp, EMouseCursor::Default);
++			}
++		}
++
+ 		static void SetCursor(FSlateApplication& SlateApp, EMouseCursor::Type CursorType)
+ 		{
+ 			if (const TSharedPtr<ICursor> PlatformCursor = SlateApp.GetPlatformCursor())
+@@ -2382,6 +2428,9 @@ namespace WidgetAnimMotionPathImpl
+ 
+ 		/** A left press kept from the designer by Paths Only: its release is kept from it too. */
+ 		bool bSwallowedLeft = false;
++
++		/** Whether the cursor showing is one set here (a hand or grab over a diamond or handle) - see GiveBackCursor. */
++		bool bCursorOwned = false;
+ 	};
+ 
+ 	namespace

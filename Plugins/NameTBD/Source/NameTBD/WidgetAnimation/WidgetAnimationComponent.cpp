@@ -2440,6 +2440,7 @@ void UWidgetAnimationComponent::PostLoad()
 	AssignAdditiveValueNames();
 	RefreshValueOverrides();
 	SyncStateMachines();
+	SyncComponentParameters();
 }
 
 bool UWidgetAnimationComponent::SyncEntryGroupTargets()
@@ -2490,6 +2491,15 @@ void UWidgetAnimationComponent::PostEditChangeProperty(FPropertyChangedEvent& Pr
 
 		// A machine picked or swapped: its Target Widgets and Inputs get a row each.
 		SyncStateMachines();
+
+		// An animation or machine picked, swapped or cleared: Parameters lists what is played now.
+		SyncComponentParameters();
+	}
+
+	// One of its own Parameters set or changed: what is playing takes it at once, as with Set Widget Animation Parameter.
+	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, ComponentParameters))
+	{
+		RefreshPlayingParameters(nullptr, NAME_None);
 	}
 
 	// Keeps each Transform layer's Keys list one-to-one with its curve: a key added on the curve gets an
@@ -3083,7 +3093,7 @@ void UWidgetAnimationComponent::SetWidgetAnimationParameter(const FWidgetAnimPar
 
 void UWidgetAnimationComponent::RefreshPlayingParameters(const UWidgetAnimPresetAsset* Animation, FName AnimId)
 {
-	if (!AnimOwner.IsValid() || AnimPlayer.Tracks.Num() == 0)
+	if (!AnimOwner.IsValid() || (AnimPlayer.Tracks.Num() == 0 && MachineInstances.Num() == 0))
 	{
 		return;
 	}
@@ -3139,6 +3149,16 @@ void UWidgetAnimationComponent::RefreshPlayingParameters(const UWidgetAnimPreset
 			bAnyChanged = true;
 		}
 	}
+
+	// The state machines' playing states, as the entries' tracks: they follow at once rather than on their next start.
+	if (MachineInstances.Num() > 0)
+	{
+		const FWidgetAnimMachineContext& Context = GetMachineContext();
+		for (FWidgetAnimMachineInstance& Instance : MachineInstances)
+		{
+			bAnyChanged |= WidgetAnimStateMachines::RefreshParameters(Instance, Context);
+		}
+	}
 	ParameterScopes.Reset();
 
 	if (bAnyChanged)
@@ -3184,7 +3204,10 @@ bool UWidgetAnimationComponent::GetWidgetAnimationParameter(FName Name, const UW
 		}
 	}
 
-	// Else as an entry plays it: its own value, or the animation's default.
+	// The component's own row for it, when set here - under each entry's own value.
+	const FWidgetAnimParameterValue* ComponentRow = ComponentParameters.FindByPredicate([Name](const FWidgetAnimParameterValue& Value) { return Value.Name == Name && Value.bOverride; });
+
+	// Else as an entry plays it: its own value, the component's, or the animation's default.
 	for (const TArray<FWidgetAnimEntry>* Entries : { &EffectiveInEntries, &EffectiveOutEntries })
 	{
 		for (const FWidgetAnimEntry& Entry : *Entries)
@@ -3200,15 +3223,16 @@ bool UWidgetAnimationComponent::GetWidgetAnimationParameter(FName Name, const UW
 				continue;
 			}
 			const FWidgetAnimParameterValue* Own = Entry.Parameters.FindByPredicate([Name](const FWidgetAnimParameterValue& Value) { return Value.Name == Name && Value.bOverride; });
-			OutValue = Own ? *Own : FWidgetAnimParameterValue::FromDefault(*Declared);
+			OutValue = Own ? *Own : (ComponentRow ? *ComponentRow : FWidgetAnimParameterValue::FromDefault(*Declared));
 			return true;
 		}
 	}
 
-	// An animation asked about by name that no entry here plays: its default.
-	if (const FWidgetAnimParameter* Declared = Animation ? Animation->FindParameter(Name) : nullptr)
+	// An animation no entry here plays - one a state machine plays, or asked about by name: the component's row, else its default.
+	const FWidgetAnimParameter* Declared = Animation ? Animation->FindParameter(Name) : FindParameterDeclaration(Name);
+	if (Declared)
 	{
-		OutValue = FWidgetAnimParameterValue::FromDefault(*Declared);
+		OutValue = ComponentRow ? *ComponentRow : FWidgetAnimParameterValue::FromDefault(*Declared);
 		return true;
 	}
 	return false;
@@ -3216,6 +3240,12 @@ bool UWidgetAnimationComponent::GetWidgetAnimationParameter(FName Name, const UW
 
 void UWidgetAnimationComponent::PushParameterScopes(FWidgetAnimParameterScopeStack& Stack) const
 {
+	// The component's own Parameters, under each use's own values, for every animation it plays.
+	if (ComponentParameters.Num() > 0)
+	{
+		Stack.Push(ComponentParameters, nullptr, NAME_None, /*bUnderUse=*/true);
+	}
+
 	for (const FWidgetAnimSetParameterGroup& Group : SetParameterGroups)
 	{
 		// For an animation since unloaded: for nothing, rather than for everything.
@@ -3225,6 +3255,100 @@ void UWidgetAnimationComponent::PushParameterScopes(FWidgetAnimParameterScopeSta
 		}
 		Stack.Push(Group.Values, Group.Animation.Get(), Group.AnimId);
 	}
+}
+
+void UWidgetAnimationComponent::GatherParameterDeclarations(TArray<const FWidgetAnimParameter*>& OutDeclarations) const
+{
+	OutDeclarations.Reset();
+	TSet<const UWidgetAnimPresetAsset*> Seen;
+	auto FromAnimation = [&OutDeclarations, &Seen](const UWidgetAnimPresetAsset* Animation)
+	{
+		bool bAlreadySeen = false;
+		Seen.Add(Animation, &bAlreadySeen);
+		if (!Animation || bAlreadySeen)
+		{
+			return;
+		}
+		for (const FWidgetAnimParameter& Parameter : Animation->Parameters)
+		{
+			const bool bListed = OutDeclarations.ContainsByPredicate([&Parameter](const FWidgetAnimParameter* Listed) { return Listed->Name == Parameter.Name; });
+			if (!Parameter.Name.IsNone() && !bListed)
+			{
+				OutDeclarations.Add(&Parameter);
+			}
+		}
+	};
+	for (const TArray<FWidgetAnimEntry>* Entries : { &AnimIn, &AnimOut })
+	{
+		for (const FWidgetAnimEntry& Entry : *Entries)
+		{
+			FromAnimation(Entry.Animation.Get());
+		}
+	}
+	for (const FWidgetAnimStateMachineEntry& Row : StateMachines)
+	{
+		if (Row.StateMachine)
+		{
+			TArray<UWidgetAnimPresetAsset*> Animations;
+			Row.StateMachine->GatherAnimations(Animations);
+			for (const UWidgetAnimPresetAsset* Animation : Animations)
+			{
+				FromAnimation(Animation);
+			}
+		}
+	}
+}
+
+const FWidgetAnimParameter* UWidgetAnimationComponent::FindParameterDeclaration(FName Name) const
+{
+	TArray<const FWidgetAnimParameter*> Declarations;
+	GatherParameterDeclarations(Declarations);
+	const FWidgetAnimParameter* const* Found = Declarations.FindByPredicate([Name](const FWidgetAnimParameter* Declared) { return Declared->Name == Name; });
+	return Found ? *Found : nullptr;
+}
+
+bool UWidgetAnimationComponent::SyncComponentParameters()
+{
+	TArray<const FWidgetAnimParameter*> Declarations;
+	GatherParameterDeclarations(Declarations);
+
+	// As an entry lists its animation's: a row set here and still the same parameter is kept, any other follows the default.
+	TArray<FWidgetAnimParameterValue> Synced;
+	Synced.Reserve(Declarations.Num());
+	for (const FWidgetAnimParameter* Parameter : Declarations)
+	{
+		const FWidgetAnimParameterValue* Existing = ComponentParameters.FindByPredicate([Parameter](const FWidgetAnimParameterValue& Value)
+		{
+			return Value.Name == Parameter->Name && Value.Type == Parameter->Type;
+		});
+		if (Existing && Existing->bOverride)
+		{
+			FWidgetAnimParameterValue& Kept = Synced.Add_GetRef(*Existing);
+			if (Kept.Type == EWidgetAnimParameterType::Choice && !Parameter->Options.Contains(Kept.Option))
+			{
+				Kept.Option = Parameter->GetDefaultOption();
+			}
+		}
+		else
+		{
+			FWidgetAnimParameterValue& Default = Synced.Add_GetRef(FWidgetAnimParameterValue::FromDefault(*Parameter));
+			Default.bOverride = false;
+		}
+	}
+
+	bool bChanged = Synced.Num() != ComponentParameters.Num() || bHasComponentParameters != (Synced.Num() > 0);
+	for (int32 Index = 0; !bChanged && Index < Synced.Num(); ++Index)
+	{
+		const FWidgetAnimParameterValue& Was = ComponentParameters[Index];
+		const FWidgetAnimParameterValue& Now = Synced[Index];
+		bChanged = Was.Name != Now.Name || Was.Type != Now.Type || Was.bOverride != Now.bOverride || !Was.SameValueAs(Now);
+	}
+	if (bChanged)
+	{
+		ComponentParameters = MoveTemp(Synced);
+		bHasComponentParameters = ComponentParameters.Num() > 0;
+	}
+	return bChanged;
 }
 
 bool UWidgetAnimationComponent::SyncStateMachines()

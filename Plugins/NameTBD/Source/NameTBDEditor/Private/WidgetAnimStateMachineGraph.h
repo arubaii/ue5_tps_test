@@ -412,6 +412,22 @@ public:
 	 */
 	TMap<FGuid, double> LastActiveTimes;
 
+	/**
+	 * While a widget is watched: whether condition ConditionIndex of Transition - one on another layer's state - holds. One
+	 * that held within the last LayerConditionLinger seconds still counts, so a one-frame Entered / Exited is seen to fire.
+	 * Unset when nothing is watched, or the condition isn't on another layer's state.
+	 */
+	TOptional<bool> GetLayerConditionHeld(const FGuid& Transition, int32 ConditionIndex) const;
+
+	/** Whether every condition on another layer's state of Transition holds (see GetLayerConditionHeld). Unset when nothing is watched or it has none. */
+	TOptional<bool> GetLayerConditionsHeld(const FGuid& Transition) const;
+
+	/** When each such condition last held, in FPlatformTime seconds - kept as they are read. */
+	mutable TMap<TPair<FGuid, int32>, double> LayerConditionHeldTimes;
+
+	/** GetLayerConditionHeld, from the layer's debug as already read. */
+	TOptional<bool> ReadLayerConditionHeld(const FWidgetAnimMachineLayerDebug& Debug, const FGuid& Transition, int32 ConditionIndex) const;
+
 	/** Seconds the stripes on the state in play have scrolled for - moved on by the editor every frame, but not while the preview is paused. */
 	double StripeClock = 0.0;
 

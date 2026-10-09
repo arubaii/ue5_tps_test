@@ -710,6 +710,20 @@ void FWidgetAnimBuilderPanelSource::TogglePlay()
 	});
 }
 
+void FWidgetAnimBuilderPanelSource::SetPreviewParameters(const TArray<FWidgetAnimParameterValue>& Values)
+{
+	if (UWidgetAnimBuilder* Builder = GetBuilder())
+	{
+		Builder->SetPreviewParameterValues(Values);
+	}
+}
+
+const TArray<FWidgetAnimParameterValue>* FWidgetAnimBuilderPanelSource::GetPreviewParameters() const
+{
+	const UWidgetAnimBuilder* Builder = GetBuilder();
+	return Builder ? &Builder->GetPreviewParameterValues() : nullptr;
+}
+
 void FWidgetAnimBuilderPanelSource::ApplyToBuilders(TFunctionRef<void(UWidgetAnimBuilder&)> Apply)
 {
 	const UClass* BuilderClass = GetBuilderClass();

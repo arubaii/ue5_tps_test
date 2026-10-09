@@ -67,6 +67,7 @@
 #include "IDetailsView.h"
 #include "PropertyCustomizationHelpers.h"
 #include "InstancedStructDetails.h"
+#include "StructUtils/PropertyBag.h"
 #include "PropertyEditorModule.h"
 #include "PropertyHandle.h"
 #include "PropertyRestriction.h"
@@ -77,6 +78,7 @@
 #include "Misc/ConfigCacheIni.h"
 #include "Editor.h"
 #include "Styling/AppStyle.h"
+#include "Styling/SlateIconFinder.h"
 #include "Styling/CoreStyle.h"
 #include "Styling/StyleColors.h"
 #include "Curves/CurveFloat.h"
@@ -103,6 +105,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/NumericTypeInterface.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Views/SListView.h"
@@ -859,6 +862,50 @@ namespace WidgetAnimTimeline
 	}
 
 	/**
+	 * Lays Row out as its own name and value with an Animation Parameters chip at the far right of the value column - right
+	 * beside the row's Reset to Default button, so every row's chip lines up in one column. The value keeps the width the
+	 * row gives it by default (DefaultRow's), on the left; the row keeps its children.
+	 */
+	void LayOutRowWithChip(IDetailPropertyRow& Row, const TSharedRef<SWidget>& NameWidget, const TSharedRef<SWidget>& ValueWidget, const TSharedRef<SWidget>& Chip,
+		const FDetailWidgetRow& DefaultRow)
+	{
+		auto ToOptionalSize = [](const TOptional<float>& Width) { return Width.IsSet() ? FOptionalSize(Width.GetValue()) : FOptionalSize(); };
+		Row.CustomWidget(/*bShowChildren=*/true)
+			.NameContent()
+			.MinDesiredWidth(DefaultRow.NameWidget.MinWidth)
+			.MaxDesiredWidth(DefaultRow.NameWidget.MaxWidth)
+			[
+				NameWidget
+			]
+			.ValueContent()
+			.HAlign(HAlign_Fill)
+			.MinDesiredWidth(DefaultRow.ValueWidget.MinWidth)
+			.MaxDesiredWidth(TOptional<float>())
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.f)
+				.HAlign(HAlign_Left)
+				.VAlign(VAlign_Center)
+				[
+					SNew(SBox)
+					.MinDesiredWidth(ToOptionalSize(DefaultRow.ValueWidget.MinWidth))
+					.MaxDesiredWidth(ToOptionalSize(DefaultRow.ValueWidget.MaxWidth))
+					[
+						ValueWidget
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+				[
+					Chip
+				]
+			];
+	}
+
+	/**
 	 * A registered type's settings, field by field, with no Type Params row of their own - the stock instanced struct's
 	 * children, laid out where they are added. On a Blueprint type's or cue's track, its Type and its Settings are read-only -
 	 * the Settings follow the type's Settings Struct (see SWidgetAnimTimeline::SyncBlueprintTypeSettings) - each with a button
@@ -874,6 +921,7 @@ namespace WidgetAnimTimeline
 	public:
 		explicit FTypeParamsDetails(TSharedPtr<IPropertyHandle> InStructProperty)
 			: FInstancedStructDataDetails(InStructProperty)
+			, TypeParamsHandle(InStructProperty)
 		{
 		}
 
@@ -886,6 +934,23 @@ namespace WidgetAnimTimeline
 				// The fields come in order: those a later field's ShowWhen / EnableWhen read are already here.
 				FieldHandles.Add(Property->GetFName(), Handle);
 				ApplyFieldConditions(ChildRow, *Property);
+			}
+
+			// A property bag (a Particles track's User Parameters): its rows are the bag's own, so one bind chip at the end of
+			// its row binds any of its fields to an Animation Parameter. The bag's rows stay as they are, under it.
+			const FStructProperty* BagProperty = CastField<FStructProperty>(Property);
+			if (BagProperty && BagProperty->Struct == FInstancedPropertyBag::StaticStruct())
+			{
+				const TSharedPtr<SWidget> Chip = SWidgetAnimTimeline::MakeBagBindChip(TypeParamsHandle.IsValid() ? TypeParamsHandle.ToSharedRef() : Handle.ToSharedRef(), Property->GetFName());
+				TSharedPtr<SWidget> NameWidget;
+				TSharedPtr<SWidget> ValueWidget;
+				FDetailWidgetRow DefaultRow;
+				ChildRow.GetDefaultWidgets(NameWidget, ValueWidget, DefaultRow);
+				if (Chip.IsValid() && NameWidget.IsValid() && ValueWidget.IsValid())
+				{
+					LayOutRowWithChip(ChildRow, NameWidget.ToSharedRef(), ValueWidget.ToSharedRef(), Chip.ToSharedRef(), DefaultRow);
+				}
+				return;
 			}
 			const UStruct* Owner = Property ? Property->GetOwnerStruct() : nullptr;
 			const bool bBlueprintType = Owner == FWidgetAnimBlueprintTypeParams::StaticStruct();
@@ -976,6 +1041,9 @@ namespace WidgetAnimTimeline
 		}
 
 	private:
+		/** The track's Type Params row itself: its outers say which tracks the rows under it belong to. */
+		TSharedPtr<IPropertyHandle> TypeParamsHandle;
+
 		/** Whether every term of a ShowWhen / EnableWhen holds for the fields as they are now. True when one can't be read. */
 		static bool AreTermsMet(const TArray<TPair<TSharedPtr<IPropertyHandle>, TArray<FString>>>& Terms)
 		{
@@ -2736,22 +2804,43 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			}
 		}
 
-		// An Event track's name follows the editor's own event icon - the one on a Blueprint's event nodes - and a Sound
-		// track's a sound's. Under whichever name this engine version has it; none drawn if it has none.
+		// An Event track's name follows the editor's own event icon - the one on a Blueprint's event nodes - a Sound track's a
+		// sound's, and a Particles track's a Niagara system's. Under whichever name this engine version has it; none drawn if
+		// it has none.
 		if (Layer && Layer->AnimType == EWidgetAnimType::Custom)
 		{
 			static const FSlateBrush* EventIcon = PickBrush({ "GraphEditor.Event_16x", "Graph.Event_16x", "Icons.Event", "GraphEditor.CustomEvent_16x" });
 			static const FSlateBrush* SoundIcon = PickBrush({ "ClassIcon.SoundWave", "ClassIcon.SoundCue", "ClassIcon.SoundBase", "Icons.Audio" });
+			// A Particles track (NameTBDNiagara's FWidgetAnimParticleCueParams, which this module doesn't link to) by its
+			// settings' name. Its icon is Niagara's own, kept in Niagara's editor style rather than the editor's - looked up
+			// until found, as that style registers when Niagara's editor module loads.
+			const UScriptStruct* CueParams = Layer->TypeParams.GetScriptStruct();
+			const bool bParticles = CueParams && CueParams->GetFName() == FName(TEXT("WidgetAnimParticleCueParams"));
+			static const FSlateBrush* ParticlesIcon = nullptr;
+			if (bParticles && !ParticlesIcon)
+			{
+				static const FName NiagaraIconName(TEXT("ClassIcon.NiagaraSystem"));
+				const FSlateIcon NiagaraIcon = FSlateIconFinder::FindIcon(NiagaraIconName);
+				const ISlateStyle* NiagaraStyle = NiagaraIcon.GetStyleSet();
+				ParticlesIcon = NiagaraStyle ? NiagaraStyle->GetOptionalBrush(NiagaraIconName, nullptr, nullptr) : nullptr;
+				if (!ParticlesIcon)
+				{
+					ParticlesIcon = PickBrush({ "ClassIcon.ParticleSystem", "ClassIcon.ParticleSystemComponent", "ClassIcon.Emitter" });
+				}
+			}
 			const FSlateBrush* CueIcon = Layer->TypeParams.GetPtr<FWidgetAnimEventCueParams>() ? EventIcon
 				: Layer->TypeParams.GetPtr<FWidgetAnimSoundCueParams>() ? SoundIcon
+				: bParticles ? ParticlesIcon
 				: nullptr;
 			const UWidgetAnimEditorSettings& Look = UWidgetAnimEditorSettings::Get();
 			const float IconSizing = FMath::Min(Look.CueTrackIconSize, InnerHeight);
-			if (CueIcon && GlyphX - BarX0 + IconSizing + Padding <= BarWidth)
+			// A little in from the section's rounded end, so the icon doesn't crowd it.
+			const float IconX = GlyphX + Palette::CueTrackIconLeftPadding;
+			if (CueIcon && IconX - BarX0 + IconSizing + Padding <= BarWidth)
 			{
 				const FLinearColor IconTint = bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Look.CueTrackIconTint) : Look.CueTrackIconTint;
-				Box(GlyphX, InnerTop + (InnerHeight - IconSizing) * 0.5f, IconSizing, IconSizing, IconTint, SectionOverlayLayer, CueIcon);
-				GlyphX += IconSizing + 3.f;
+				Box(IconX, InnerTop + (InnerHeight - IconSizing) * 0.5f, IconSizing, IconSizing, IconTint, SectionOverlayLayer, CueIcon);
+				GlyphX = IconX + IconSizing + 3.f;
 				TextLeft = GlyphX + Padding * 0.5f;
 			}
 		}
@@ -2795,21 +2884,6 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			Label = Paint.bNamesTarget
 				? FString::Printf(TEXT("%s \u2192 %s  %s"), *TitleLabel, *Layer->TargetWidget.ToString(), *LengthLabel)
 				: FString::Printf(TEXT("%s  %s"), *TitleLabel, *LengthLabel);
-
-			// Animation Parameters: the parameters its fields play, after the title - "Slide 0.3s  ‹Distance, Side›".
-			if (Layer->ParameterBindings.Num() > 0 || Layer->PlaysWhen.IsSet())
-			{
-				TArray<FString> Bound;
-				for (const FWidgetAnimParameterBinding& Binding : Layer->ParameterBindings)
-				{
-					Bound.AddUnique(Binding.Parameter.ToString());
-				}
-				if (Layer->PlaysWhen.IsSet())
-				{
-					Bound.AddUnique(Layer->PlaysWhen.Parameter.ToString());
-				}
-				Label = FString::Printf(TEXT("%s  \u2039%s\u203A"), *Label, *FString::Join(Bound, TEXT(", ")));
-			}
 
 			// A cue has no easing - it fires at points, not along a curve - so it says what it does there instead.
 			const FWidgetAnimEvaluator* CueEvaluator = bCue ? Layer->FindEvaluator() : nullptr;
@@ -4399,6 +4473,48 @@ namespace WidgetAnimMaterialCheck
 	}
 }
 
+namespace WidgetAnimTimeline
+{
+	/**
+	 * A number box's unit inside the box, after the number - "0.3 s", "25 %" - as a property with a Units meta shows it: typed
+	 * with or without it. Unit is read each time, so a box follows the timeline switching between seconds and percent.
+	 */
+	class FUnitNumericInterface : public TDefaultNumericTypeInterface<float>
+	{
+	public:
+		explicit FUnitNumericInterface(TFunction<FString()> InUnit) : UnitOf(MoveTemp(InUnit)) {}
+
+		virtual FString ToString(const float& Number) const override
+		{
+			const FString Unit = UnitOf ? UnitOf() : FString();
+			const FString Digits = TDefaultNumericTypeInterface<float>::ToString(Number);
+			return Unit.IsEmpty() ? Digits : FString::Printf(TEXT("%s %s"), *Digits, *Unit);
+		}
+
+		virtual TOptional<float> FromString(const FString& InString, const float& InExistingValue) override
+		{
+			FString Digits = InString.TrimStartAndEnd();
+			const FString Unit = UnitOf ? UnitOf() : FString();
+			if (!Unit.IsEmpty() && Digits.EndsWith(Unit))
+			{
+				Digits.LeftChopInline(Unit.Len());
+				Digits.TrimEndInline();
+			}
+			return TDefaultNumericTypeInterface<float>::FromString(Digits, InExistingValue);
+		}
+
+		virtual bool IsCharacterValid(TCHAR InChar) const override
+		{
+			const FString Unit = UnitOf ? UnitOf() : FString();
+			int32 Found = INDEX_NONE;
+			return TDefaultNumericTypeInterface<float>::IsCharacterValid(InChar) || InChar == TEXT(' ') || Unit.FindChar(InChar, Found);
+		}
+
+	private:
+		TFunction<FString()> UnitOf;
+	};
+}
+
 /**
  * Lays out the Selection panel for whatever is selected - one key, one layer, one group, or the animation
  * itself - out of the edited object's real properties, so every edit goes through the property system as it
@@ -4540,32 +4656,8 @@ private:
 		{
 			return;
 		}
-		Row.CustomWidget(/*bShowChildren=*/true)
-			.NameContent()
-			.MinDesiredWidth(DefaultRow.NameWidget.MinWidth)
-			.MaxDesiredWidth(DefaultRow.NameWidget.MaxWidth)
-			[
-				NameWidget.ToSharedRef()
-			]
-			.ValueContent()
-			.MinDesiredWidth(DefaultRow.ValueWidget.MinWidth)
-			.MaxDesiredWidth(TOptional<float>())
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.FillWidth(1.f)
-				.VAlign(VAlign_Center)
-				[
-					ValueWidget.ToSharedRef()
-				]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
-				[
-					Chip.ToSharedRef()
-				]
-			];
+		// The chip at the far right, beside Reset to Default - every row's in one column.
+		WidgetAnimTimeline::LayOutRowWithChip(Row, NameWidget.ToSharedRef(), ValueWidget.ToSharedRef(), Chip.ToSharedRef(), DefaultRow);
 	}
 
 	static void AddChildren(IDetailCategoryBuilder& Category, const TSharedRef<IPropertyHandle>& Parent, TFunctionRef<bool(FName)> Filter, bool bAutoExpand)
@@ -5583,10 +5675,16 @@ private:
 				.FillWidth(1.f)
 				.VAlign(VAlign_Center)
 				[
+					// Its unit in the box, after the number: seconds, or percent on a percentage timeline.
 					SNew(SNumericEntryBox<float>)
 					.Font(IDetailLayoutBuilder::GetDetailFont())
 					.AllowSpin(false)
 					.MinValue(0.01f)
+					.TypeInterface(MakeShared<WidgetAnimTimeline::FUnitNumericInterface>([WeakOwner]()
+					{
+						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+						return Pinned && Pinned->IsPercentTime() ? LOCTEXT("DurationPercentUnit", "%").ToString() : LOCTEXT("DurationSecondsUnit", "s").ToString();
+					}))
 					.IsEnabled_Lambda(IsEditable)
 					.ToolTipText_Lambda([WeakOwner, LayerIndex, Handle]()
 					{
@@ -5616,21 +5714,6 @@ private:
 						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
 						const float Seconds = Pinned && Pinned->IsPercentTime() ? Value / 100.f : Value;
 						Handle->SetValue(FMath::Max(Seconds, 0.01f));
-					})
-				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
-				[
-					SNew(STextBlock)
-					.Font(IDetailLayoutBuilder::GetDetailFont())
-					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-					.Text_Lambda([WeakOwner]()
-					{
-						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
-						return Pinned && Pinned->IsPercentTime() ? LOCTEXT("DurationPercentUnit", "%") : LOCTEXT("DurationSecondsUnit", "s");
 					})
 				]
 			];
@@ -5685,6 +5768,7 @@ private:
 					.Font(IDetailLayoutBuilder::GetDetailFont())
 					.AllowSpin(false)
 					.MinValue(bDuration ? TOptional<float>(0.1f) : TOptional<float>())
+					.TypeInterface(MakeShared<WidgetAnimTimeline::FUnitNumericInterface>([]() { return LOCTEXT("PercentUnit", "%").ToString(); }))
 					.IsEnabled_Lambda([WeakOwner, LayerIndex]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->CanEditLayer(LayerIndex); })
 					.Value_Lambda([Handle]() -> TOptional<float>
 					{
@@ -5696,17 +5780,6 @@ private:
 					{
 						Handle->SetValue(Percent / 100.f);
 					})
-				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
-				[
-					SNew(STextBlock)
-					.Font(IDetailLayoutBuilder::GetDetailFont())
-					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-					.Text(LOCTEXT("PercentUnit", "%"))
 				]
 			];
 	}
@@ -7497,6 +7570,119 @@ private:
 	mutable uint64 LastPaintFrame = 0;
 	mutable FVector2D LastDesiredSize = FVector2D::ZeroVector;
 	mutable bool bMeasured = false;
+};
+
+/**
+ * A track's Animation Parameters on its row of the Animation Tracks list, after its name: a small pill for each field bound to
+ * a parameter, in that parameter's type's pin color, as the My Blueprint panel shows a variable's type - "two Floats and a
+ * Vector 2D" at a glance. The same types side by side, a little apart from the next type; red for a parameter that is gone.
+ * Read as it paints, so a binding made or removed, or a parameter's type changed, shows at once. Collapsed while nothing of
+ * the track is bound. Which field takes which parameter is in the row's tooltip - the track's own, as the Track Editor shows it.
+ */
+class SWidgetAnimBindingPills : public SLeafWidget
+{
+public:
+
+	SLATE_BEGIN_ARGS(SWidgetAnimBindingPills) {}
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs, TWeakPtr<SWidgetAnimTimeline> InPanel, int32 InLayer)
+	{
+		Panel = InPanel;
+		Layer = InLayer;
+		SetVisibility(TAttribute<EVisibility>::CreateSP(this, &SWidgetAnimBindingPills::GetPillsVisibility));
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override
+	{
+		TArray<FPill> Pills;
+		GatherPills(Pills);
+		return Pills.Num() > 0 ? FVector2D(GetStripWidth(Pills), WidgetAnimTimeline::Palette::ListBindingPillHeight) : FVector2D::ZeroVector;
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+	{
+		namespace Palette = WidgetAnimTimeline::Palette;
+
+		TArray<FPill> Pills;
+		GatherPills(Pills);
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		const bool bWashedOut = Owner && (Owner->IsReadOnly() || Owner->IsLayerLocked(Layer) || Owner->IsLayerHidden(Layer));
+		const float Top = FMath::RoundToFloat((AllottedGeometry.GetLocalSize().Y - Palette::ListBindingPillHeight) * 0.5f);
+		float X = 0.f;
+		for (int32 PillIndex = 0; PillIndex < Pills.Num(); ++PillIndex)
+		{
+			if (PillIndex > 0)
+			{
+				X += Pills[PillIndex].Order == Pills[PillIndex - 1].Order ? Palette::ListBindingPillGap : Palette::ListBindingPillTypeGap;
+			}
+			FLinearColor Fill = Pills[PillIndex].Color * InWidgetStyle.GetColorAndOpacityTint();
+			Fill.A *= bWashedOut ? Palette::ListBindingPillWashedOut : 1.f;
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+				AllottedGeometry.ToPaintGeometry(FVector2f(Palette::ListBindingPillWidth, Palette::ListBindingPillHeight), FSlateLayoutTransform(FVector2f(X, Top))),
+				WidgetAnimTimeline::RoundedFill(Palette::ListBindingPillHeight * 0.5f), ESlateDrawEffect::None, Fill);
+			X += Palette::ListBindingPillWidth;
+		}
+		return LayerId;
+	}
+
+private:
+
+	struct FPill
+	{
+		FLinearColor Color = FLinearColor::White;
+		/** Its type, for grouping: the same types side by side, the types in the order they are declared in; missing last. */
+		int32 Order = 0;
+	};
+
+	static const FWidgetAnimParameter* FindDeclared(const SWidgetAnimTimeline& Owner, FName Name)
+	{
+		const TArray<FWidgetAnimParameter>* Declared = Owner.GetParameters();
+		return Declared ? Declared->FindByPredicate([Name](const FWidgetAnimParameter& Parameter) { return Parameter.Name == Name; }) : nullptr;
+	}
+
+	void GatherPills(TArray<FPill>& OutPills) const
+	{
+		OutPills.Reset();
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		const TArray<FWidgetAnimLayer>* AllLayers = Owner ? Owner->GetLayers() : nullptr;
+		if (!AllLayers || !AllLayers->IsValidIndex(Layer))
+		{
+			return;
+		}
+		for (const FWidgetAnimParameterBinding& Binding : (*AllLayers)[Layer].ParameterBindings)
+		{
+			const FWidgetAnimParameter* BoundTo = FindDeclared(*Owner, Binding.Parameter);
+			FPill& Pill = OutPills.AddDefaulted_GetRef();
+			Pill.Order = BoundTo ? static_cast<int32>(BoundTo->Type) : MAX_int32;
+			Pill.Color = BoundTo
+				? WidgetAnimTypePill::GetColor(WidgetAnimTypePill::FromParameterType(BoundTo->Type))
+				: WidgetAnimTimeline::Palette::ListBindingPillMissing;
+		}
+		OutPills.StableSort([](const FPill& A, const FPill& B) { return A.Order < B.Order; });
+	}
+
+	static float GetStripWidth(const TArray<FPill>& Pills)
+	{
+		namespace Palette = WidgetAnimTimeline::Palette;
+		float Width = Pills.Num() * Palette::ListBindingPillWidth;
+		for (int32 PillIndex = 1; PillIndex < Pills.Num(); ++PillIndex)
+		{
+			Width += Pills[PillIndex].Order == Pills[PillIndex - 1].Order ? Palette::ListBindingPillGap : Palette::ListBindingPillTypeGap;
+		}
+		return Width;
+	}
+
+	EVisibility GetPillsVisibility() const
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		const TArray<FWidgetAnimLayer>* AllLayers = Owner ? Owner->GetLayers() : nullptr;
+		return AllLayers && AllLayers->IsValidIndex(Layer) && (*AllLayers)[Layer].ParameterBindings.Num() > 0 ? EVisibility::Visible : EVisibility::Collapsed;
+	}
+
+	TWeakPtr<SWidgetAnimTimeline> Panel;
+	int32 Layer = INDEX_NONE;
 };
 
 class SWidgetAnimListRow : public SCompoundWidget
@@ -10681,6 +10867,14 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetShowMotionPaths(bValue); },
 		[]() { return true; },
 		FindControlIcon(TEXT("WidgetAnim_MotionPath"), { "Icons.Spline", "CurveEditor.Curve" })));
+	// Beside it, as its option: clicks on the designer reach only the paths - see bMotionPathPathsOnly.
+	AddToPill(MakePillToggle(LOCTEXT("MotionPathsOnly", "Paths Only"),
+		WidgetAnimTips::MotionPathsOnlyTooltip(),
+		[]() { return UWidgetAnimEditorSettings::Get().bMotionPathPathsOnly; },
+		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetMotionPathPathsOnly(bValue); },
+		[]() { return UWidgetAnimEditorSettings::Get().bShowMotionPaths; },
+		FindControlIcon(TEXT("WidgetAnim_PathsOnly"), { "Icons.SelectInViewport", "LevelEditor.SelectMode", "Icons.Lock" })),
+		FMargin(2.f, 0.f, 0.f, 0.f));
 
 	const TSharedRef<SWidget> Pill = SNew(SBorder)
 		.BorderImage(ControlsPillBrush())
@@ -12697,6 +12891,62 @@ void SWidgetAnimTimeline::RefreshDetails()
 	DetailsView->ForceRefresh();
 }
 
+namespace WidgetAnimDetailsCopy
+{
+	/**
+	 * Copies Source over Dest field by field: equal fields are left alone, and a registered type's settings (an instanced
+	 * struct) or a property bag of the same type are stepped into rather than replaced. Replacing one frees the memory it held
+	 * - and a Details row may point straight at it: a curve's preview (a Particles track's Curve for Floats user parameter)
+	 * holds the curve itself, and would paint freed memory until the Details are made again. Copied this way, everything the
+	 * Details show stays where it is, only its values change.
+	 */
+	void CopyInPlace(const UScriptStruct* Struct, void* Dest, const void* Source)
+	{
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			const FProperty* Property = *It;
+			for (int32 ArrayIndex = 0; ArrayIndex < Property->ArrayDim; ++ArrayIndex)
+			{
+				void* DestValue = Property->ContainerPtrToValuePtr<void>(Dest, ArrayIndex);
+				const void* SourceValue = Property->ContainerPtrToValuePtr<void>(Source, ArrayIndex);
+				if (Property->Identical(DestValue, SourceValue, PPF_None))
+				{
+					continue;
+				}
+				const FStructProperty* StructProperty = CastField<FStructProperty>(Property);
+				if (StructProperty && StructProperty->Struct == FInstancedStruct::StaticStruct())
+				{
+					FInstancedStruct& DestInstanced = *static_cast<FInstancedStruct*>(DestValue);
+					const FInstancedStruct& SourceInstanced = *static_cast<const FInstancedStruct*>(SourceValue);
+					if (DestInstanced.IsValid() && DestInstanced.GetScriptStruct() == SourceInstanced.GetScriptStruct())
+					{
+						CopyInPlace(SourceInstanced.GetScriptStruct(), DestInstanced.GetMutableMemory(), SourceInstanced.GetMemory());
+						continue;
+					}
+				}
+				else if (StructProperty && StructProperty->Struct == FInstancedPropertyBag::StaticStruct())
+				{
+					FInstancedPropertyBag& DestBag = *static_cast<FInstancedPropertyBag*>(DestValue);
+					const FInstancedPropertyBag& SourceBag = *static_cast<const FInstancedPropertyBag*>(SourceValue);
+					const UPropertyBag* BagStruct = DestBag.GetPropertyBagStruct();
+					if (BagStruct && BagStruct == SourceBag.GetPropertyBagStruct())
+					{
+						CopyInPlace(BagStruct, DestBag.GetMutableValue().GetMemory(), SourceBag.GetValue().GetMemory());
+						continue;
+					}
+				}
+				Property->CopySingleValue(DestValue, SourceValue);
+			}
+		}
+	}
+
+	/** A layer copied over another in place - see CopyInPlace. */
+	void CopyLayer(FWidgetAnimLayer& Dest, const FWidgetAnimLayer& Source)
+	{
+		CopyInPlace(FWidgetAnimLayer::StaticStruct(), &Dest, &Source);
+	}
+}
+
 void SWidgetAnimTimeline::RebuildLayerProxies()
 {
 	LayerProxies.Reset();
@@ -12780,7 +13030,8 @@ void SWidgetAnimTimeline::SyncLayerProxies()
 		if (Proxy.IsValid() && Layers->IsValidIndex(Proxy->LayerIndex)
 			&& !LayerStruct->CompareScriptStruct(&Proxy->Layer, &(*Layers)[Proxy->LayerIndex], PPF_None))
 		{
-			Proxy->Layer = (*Layers)[Proxy->LayerIndex];
+			// In place: the Details showing the proxy may point into what it holds (see CopyInPlace).
+			WidgetAnimDetailsCopy::CopyLayer(Proxy->Layer, (*Layers)[Proxy->LayerIndex]);
 		}
 	}
 	NextProxyToSync = NumProxies > 0 ? (NextProxyToSync + NumToSync) % NumProxies : 0;
@@ -12953,12 +13204,21 @@ UObject* SWidgetAnimTimeline::UpdateSelectionShadow()
 	}
 
 	UWidgetAnimPresetSelectionShadow* Shadow = SelectionShadow.Get();
-	Shadow->ShadowOf = Asset;
-	Shadow->LayerIndex = Asset->Layers.IsValidIndex(Selection.Layer) ? Selection.Layer : INDEX_NONE;
-	Shadow->Layers.Reset();
-	if (Shadow->LayerIndex != INDEX_NONE)
+	const int32 WantedIndex = Asset->Layers.IsValidIndex(Selection.Layer) ? Selection.Layer : INDEX_NONE;
+	if (Shadow->ShadowOf.Get() == Asset && Shadow->LayerIndex == WantedIndex && WantedIndex != INDEX_NONE && Shadow->Layers.Num() == 1)
 	{
-		Shadow->Layers.Add(Asset->Layers[Shadow->LayerIndex]);
+		// The same track again: caught up in place, so nothing the Details still show is freed under them.
+		WidgetAnimDetailsCopy::CopyLayer(Shadow->Layers[0], Asset->Layers[WantedIndex]);
+	}
+	else
+	{
+		Shadow->ShadowOf = Asset;
+		Shadow->LayerIndex = WantedIndex;
+		Shadow->Layers.Reset();
+		if (WantedIndex != INDEX_NONE)
+		{
+			Shadow->Layers.Add(Asset->Layers[WantedIndex]);
+		}
 	}
 	WidgetAnimSelectionShadow::CopySettings(Asset, Shadow);
 	return Shadow;
@@ -12982,7 +13242,9 @@ void SWidgetAnimTimeline::SyncSelectionShadow()
 	if (Shadow->LayerIndex != INDEX_NONE && Shadow->Layers.Num() == 1 && Asset->Layers.IsValidIndex(Shadow->LayerIndex)
 		&& !FWidgetAnimLayer::StaticStruct()->CompareScriptStruct(&Shadow->Layers[0], &Asset->Layers[Shadow->LayerIndex], PPF_None))
 	{
-		Shadow->Layers[0] = Asset->Layers[Shadow->LayerIndex];
+		// In place, never replaced: the Details are still showing it - a bind changes the track under rows that may point
+		// into its settings (see WidgetAnimDetailsCopy::CopyInPlace).
+		WidgetAnimDetailsCopy::CopyLayer(Shadow->Layers[0], Asset->Layers[Shadow->LayerIndex]);
 	}
 }
 
@@ -13923,15 +14185,41 @@ void SWidgetAnimTimeline::RebuildLayerList()
 							]
 						]
 
+						// Its name - and, when some of its tracks are bound to Animation Parameters, how many: ", 2 tracks
+						// parametrized", in italics, a little dimmer. A name too long for the row is cut at its end.
 						+ SHorizontalBox::Slot()
 						.FillWidth(1.f)
 						.VAlign(VAlign_Center)
 						.Padding(FMargin(4.f, 0.f, 6.f, 0.f))
 						[
-							SNew(STextBlock)
-							.Font(FAppStyle::GetFontStyle("NormalFontBold"))
-							.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
-							.Text_Lambda([this, GroupIndex]() { return GetGroupName(GroupIndex); })
+							SNew(SHorizontalBox)
+							.Clipping(EWidgetClipping::ClipToBounds)
+
+							+ SHorizontalBox::Slot()
+							.AutoWidth()
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+								.Text_Lambda([this, GroupIndex]() { return GetGroupName(GroupIndex); })
+							]
+
+							+ SHorizontalBox::Slot()
+							.FillWidth(1.f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(STextBlock)
+								.Font(GetListParametrizedFont())
+								.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+								.ColorAndOpacity(WithAlpha(ForegroundColor(), Palette::ListParametrizedTextOpacity))
+								.Text_Lambda([this, GroupIndex]()
+								{
+									const int32 NumParametrized = CountParametrizedTracks(GroupIndex);
+									return NumParametrized > 0
+										? FText::Format(LOCTEXT("GroupTracksParametrized", ", {0} {0}|plural(one=track,other=tracks) parametrized"), NumParametrized)
+										: FText::GetEmpty();
+								})
+							]
 						]
 
 						// The widget it animates, as a small pill on the right - or, while it is being picked in the designer, what to do.
@@ -14149,6 +14437,60 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeListFolderRow(const FString& Folder
 	return Row;
 }
 
+TSharedRef<SWidget> SWidgetAnimTimeline::MakeListBindingPills(int32 LayerIndex)
+{
+	// No tooltip of its own: the row's - the track's, as the Track Editor shows it - says which field takes which parameter.
+	return SNew(SWidgetAnimBindingPills, SharedThis(this), LayerIndex);
+}
+
+TSharedPtr<IToolTip> SWidgetAnimTimeline::MakeListTrackToolTip(int32 LayerIndex, bool bCollapsedHead)
+{
+	// The Track Editor's own tooltip for the track, made fresh each time it opens - so a row says exactly what its section does.
+	const TWeakPtr<SWidgetAnimTimeline> WeakPanel = SharedThis(this);
+	return SNew(SWidgetAnimTrackToolTip,
+		[WeakPanel, LayerIndex]()
+		{
+			const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakPanel.Pin();
+			const TArray<FWidgetAnimLayer>* Current = Pinned ? Pinned->GetLayers() : nullptr;
+			return Current && Current->IsValidIndex(LayerIndex);
+		},
+		[WeakPanel, LayerIndex, bCollapsedHead]() -> TSharedRef<SWidget>
+		{
+			const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakPanel.Pin();
+			if (!Pinned)
+			{
+				return SNullWidget::NullWidget;
+			}
+			return bCollapsedHead ? Pinned->MakeCollapsedToolTip(LayerIndex) : Pinned->MakeLayerToolTip(LayerIndex);
+		});
+}
+
+int32 SWidgetAnimTimeline::CountParametrizedTracks(int32 GroupIndex) const
+{
+	const TArray<FWidgetAnimLayer>* Current = GetLayers();
+	if (!Current)
+	{
+		return 0;
+	}
+	int32 Count = 0;
+	for (int32 LayerIndex = 0; LayerIndex < Current->Num(); ++LayerIndex)
+	{
+		if ((*Current)[LayerIndex].ParameterBindings.Num() > 0 && GetLayerGroup(LayerIndex) == GroupIndex)
+		{
+			++Count;
+		}
+	}
+	return Count;
+}
+
+FSlateFontInfo SWidgetAnimTimeline::GetListParametrizedFont()
+{
+	// The group name's font in its italic, not bold - so it reads as a note on the name.
+	FSlateFontInfo Font = FAppStyle::GetFontStyle("NormalFontBold");
+	Font.TypefaceFontName = TEXT("Italic");
+	return Font;
+}
+
 TSharedRef<SWidget> SWidgetAnimTimeline::MakeListLayerRow(int32 LayerIndex, int32 GroupIndex, float Indent)
 {
 	using namespace WidgetAnimTimeline;
@@ -14160,7 +14502,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeListLayerRow(int32 LayerIndex, int3
 	const bool bAnimationTrack = GetInsertedAnimation(LayerIndex) != nullptr;
 
 	const TSharedRef<SWidgetAnimListRow> LayerRow = SNew(SWidgetAnimListRow, WeakThisPtr, GroupIndex, LayerIndex)
-		.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::ListLayerRowTooltip()))
+		.ToolTip(MakeListTrackToolTip(LayerIndex, /*bCollapsedHead=*/false))
 		[
 			SNew(SBox)
 			.HeightOverride(ListRowHeight)
@@ -14274,6 +14616,15 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeListLayerRow(int32 LayerIndex, int3
 								? GetLayerDisplayName((*Current)[LayerIndex])
 								: FText::GetEmpty();
 						})
+					]
+
+					// Its Animation Parameters: a pill per bound field, in its parameter's type's color.
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(6.f, 0.f, 0.f, 0.f))
+					[
+						MakeListBindingPills(LayerIndex)
 					]
 
 					+ SHorizontalBox::Slot()
@@ -14458,7 +14809,7 @@ void SWidgetAnimTimeline::AddCollapsedListRows(FName Name, int32 GroupIndex)
 	auto AnyPinned = [this, Name]() { return GetCollapsedState(Name).bAnyPinned; };
 
 	const TSharedRef<SWidgetAnimListRow> Row = SNew(SWidgetAnimListRow, WeakThisPtr, GroupIndex, Head, Name)
-		.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::ListCollapsedRowTooltip()))
+		.ToolTip(MakeListTrackToolTip(Head, /*bCollapsedHead=*/true))
 		[
 			SNew(SBox)
 			.HeightOverride(ListRowHeight)
@@ -16645,13 +16996,68 @@ void SWidgetAnimTimeline::SetLayersHidden(const TArray<int32>& LayerIndices, boo
 	RefreshDetails();
 }
 
+namespace WidgetAnimParameterDeclare
+{
+	/**
+	 * A parameter named Name for the field FieldPath of Layer: the field's natural type, its value now as the default, and - a
+	 * dropdown's - the field's options. False when the field can't be bound.
+	 */
+	bool FromField(const FWidgetAnimLayer& Layer, const FString& FieldPath, const FProperty* Field, FName Name, FWidgetAnimParameter& OutParameter)
+	{
+		EWidgetAnimParameterType Type = EWidgetAnimParameterType::Float;
+		if (!WidgetAnimParameters::GetNaturalType(Field, Type))
+		{
+			return false;
+		}
+
+		OutParameter = FWidgetAnimParameter();
+		OutParameter.Type = Type;
+		OutParameter.Name = Name;
+
+		// Its default: the field as it is now. A dropdown's options are the field's own.
+		FWidgetAnimParameterValue Now;
+		Now.Type = Type;
+		WidgetAnimParameters::ReadField(FWidgetAnimLayer::StaticStruct(), &Layer, FieldPath, Now);
+		OutParameter.DefaultFloat = Now.Float;
+		OutParameter.DefaultInteger = Now.Integer;
+		OutParameter.bDefaultBool = Now.bBool;
+		OutParameter.DefaultColor = Now.Color;
+		OutParameter.DefaultVector2D = Now.Vector2D;
+		if (Type == EWidgetAnimParameterType::Choice)
+		{
+			const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Field);
+			const FByteProperty* ByteProperty = CastField<FByteProperty>(Field);
+			const UEnum* Enum = EnumProperty ? EnumProperty->GetEnum() : (ByteProperty ? ByteProperty->Enum.Get() : nullptr);
+			if (Enum)
+			{
+				for (int32 Index = 0; Index < Enum->NumEnums() - (Enum->ContainsExistingMax() ? 1 : 0); ++Index)
+				{
+					if (!Enum->HasMetaData(TEXT("Hidden"), Index))
+					{
+						OutParameter.Options.Add(FName(*Enum->GetNameStringByIndex(Index)));
+					}
+				}
+			}
+			else if (!Now.Option.IsNone())
+			{
+				OutParameter.Options.Add(Now.Option);
+			}
+			OutParameter.DefaultOption = Now.Option;
+		}
+		return true;
+	}
+}
+
 namespace WidgetAnimTrackClipboard
 {
 	/**
 	 * Copied tracks on the clipboard: this header line, then one line per track - its start in authored seconds, its
-	 * group, and the track itself as exported text, Base64 so nothing in it can break the line apart.
+	 * group, and the track itself as exported text, Base64 so nothing in it can break the line apart. Then a line per
+	 * parameter the tracks are bound to, as their animation declares it: ParameterTag and the declaration, Base64 - two fields,
+	 * so a reader that only knows tracks passes over it.
 	 */
 	const TCHAR* Header = TEXT("NameTBD.WidgetAnimTracks.v1");
+	const TCHAR* ParameterTag = TEXT("P");
 
 	struct FEntry
 	{
@@ -16660,7 +17066,7 @@ namespace WidgetAnimTrackClipboard
 		FWidgetAnimLayer Layer;
 	};
 
-	bool Read(TArray<FEntry>& OutEntries)
+	bool Read(TArray<FEntry>& OutEntries, TArray<FWidgetAnimParameter>* OutParameters = nullptr)
 	{
 		OutEntries.Reset();
 
@@ -16677,6 +17083,17 @@ namespace WidgetAnimTrackClipboard
 		{
 			TArray<FString> Fields;
 			Lines[LineIndex].ParseIntoArray(Fields, TEXT("\t"));
+			if (Fields.Num() == 2 && Fields[0] == ParameterTag)
+			{
+				FString ParameterText;
+				FWidgetAnimParameter Parameter;
+				if (OutParameters && FBase64::Decode(Fields[1], ParameterText)
+					&& FWidgetAnimParameter::StaticStruct()->ImportText(*ParameterText, &Parameter, nullptr, PPF_Copy, GWarn, TEXT("WidgetAnimParameter")))
+				{
+					OutParameters->Add(Parameter);
+				}
+				continue;
+			}
 			FString Exported;
 			if (Fields.Num() != 3 || !FBase64::Decode(Fields[2], Exported))
 			{
@@ -16776,6 +17193,34 @@ void SWidgetAnimTimeline::CopyLayers(const TArray<int32>& LayerIndices)
 		++NumCopied;
 	}
 
+	// The parameters the copied tracks are bound to, as declared here - so pasting them into an animation without them can
+	// add them as they were.
+	if (const TArray<FWidgetAnimParameter>* Declared = GetParameters())
+	{
+		TSet<FName> Used;
+		for (const int32 LayerIndex : Sorted)
+		{
+			if (Layers->IsValidIndex(LayerIndex))
+			{
+				for (const FWidgetAnimParameterBinding& Binding : (*Layers)[LayerIndex].ParameterBindings)
+				{
+					Used.Add(Binding.Parameter);
+				}
+				Used.Add((*Layers)[LayerIndex].PlaysWhen.Parameter);
+			}
+		}
+		for (const FWidgetAnimParameter& Parameter : *Declared)
+		{
+			if (!Parameter.Name.IsNone() && Used.Contains(Parameter.Name))
+			{
+				FString Exported;
+				FWidgetAnimParameter::StaticStruct()->ExportText(Exported, &Parameter, nullptr, nullptr, PPF_Copy, nullptr);
+				Clipboard += FString::Printf(TEXT("\n%s\t"), WidgetAnimTrackClipboard::ParameterTag);
+				Clipboard += FBase64::Encode(Exported);
+			}
+		}
+	}
+
 	if (NumCopied > 0)
 	{
 		FPlatformApplicationMisc::ClipboardCopy(*Clipboard);
@@ -16817,9 +17262,86 @@ bool SWidgetAnimTimeline::CanPasteLayers() const
 void SWidgetAnimTimeline::PasteLayers(int32 GroupIndex, TOptional<float> AtSeconds)
 {
 	TArray<WidgetAnimTrackClipboard::FEntry> Entries;
-	if (!WidgetAnimTrackClipboard::Read(Entries))
+	TArray<FWidgetAnimParameter> CopiedParameters;
+	if (!WidgetAnimTrackClipboard::Read(Entries, &CopiedParameters))
 	{
 		return;
+	}
+
+	// Tracks bound to parameters this animation doesn't have: asked once, before anything changes, whether to add them - as
+	// the animation they were copied from declared them (else made from the field, as New Parameter From This Field does) -
+	// to let go of those bindings (the fields play their own values), or not to paste at all.
+	TArray<FWidgetAnimParameter> ParametersToAdd;
+	TSet<FName> UnbindMissing;
+	if (const TArray<FWidgetAnimParameter>* Declared = GetParameters())
+	{
+		auto IsDeclared = [Declared](FName Name)
+		{
+			return Declared->ContainsByPredicate([Name](const FWidgetAnimParameter& Parameter) { return Parameter.Name == Name; });
+		};
+		TArray<FName> Missing;
+		for (const WidgetAnimTrackClipboard::FEntry& Entry : Entries)
+		{
+			for (const FWidgetAnimParameterBinding& Binding : Entry.Layer.ParameterBindings)
+			{
+				if (!Binding.Parameter.IsNone() && !IsDeclared(Binding.Parameter))
+				{
+					Missing.AddUnique(Binding.Parameter);
+				}
+			}
+			if (Entry.Layer.PlaysWhen.IsSet() && !IsDeclared(Entry.Layer.PlaysWhen.Parameter))
+			{
+				Missing.AddUnique(Entry.Layer.PlaysWhen.Parameter);
+			}
+		}
+		if (Missing.Num() > 0)
+		{
+			TArray<FString> MissingWords;
+			for (const FName Name : Missing)
+			{
+				MissingWords.Add(Name.ToString());
+			}
+			const FText Question = FText::Format(LOCTEXT("PasteMissingParameters",
+				"The pasted tracks are bound to {0}|plural(one=a parameter,other=parameters) this animation doesn't have: {1}.\n\nYes: add {0}|plural(one=it,other=them) to this animation's Animation Parameters.\nNo: paste the tracks with those fields unbound - they play their own values.\nCancel: don't paste."),
+				Missing.Num(), FText::FromString(FString::Join(MissingWords, TEXT(", "))));
+			const EAppReturnType::Type Answer = FMessageDialog::Open(EAppMsgType::YesNoCancel, Question);
+			if (Answer == EAppReturnType::Cancel)
+			{
+				return;
+			}
+			if (Answer == EAppReturnType::Yes)
+			{
+				for (const FName Name : Missing)
+				{
+					if (const FWidgetAnimParameter* Copied = CopiedParameters.FindByPredicate([Name](const FWidgetAnimParameter& Parameter) { return Parameter.Name == Name; }))
+					{
+						ParametersToAdd.Add(*Copied);
+						continue;
+					}
+
+					// Copied before the clipboard carried declarations: made from the first field bound to it.
+					for (const WidgetAnimTrackClipboard::FEntry& Entry : Entries)
+					{
+						const FWidgetAnimParameterBinding* Binding = Entry.Layer.ParameterBindings.FindByPredicate([Name](const FWidgetAnimParameterBinding& Candidate) { return Candidate.Parameter == Name; });
+						FWidgetAnimParameter Made;
+						if (Binding && WidgetAnimParameterDeclare::FromField(Entry.Layer, Binding->FieldPath,
+							WidgetAnimParameters::FindField(FWidgetAnimLayer::StaticStruct(), Binding->FieldPath, &Entry.Layer), Name, Made))
+						{
+							ParametersToAdd.Add(Made);
+							break;
+						}
+					}
+				}
+			}
+			for (const FName Name : Missing)
+			{
+				if (!ParametersToAdd.ContainsByPredicate([Name](const FWidgetAnimParameter& Parameter) { return Parameter.Name == Name; }))
+				{
+					// Not added (No, or no field to make it from): those fields play their own values.
+					UnbindMissing.Add(Name);
+				}
+			}
+		}
 	}
 
 	const FScopedTransaction Transaction(Entries.Num() > 1
@@ -16828,6 +17350,22 @@ void SWidgetAnimTimeline::PasteLayers(int32 GroupIndex, TOptional<float> AtSecon
 	if (!BeginEdit())
 	{
 		return;
+	}
+
+	if (TArray<FWidgetAnimParameter>* Declared = GetParameters())
+	{
+		Declared->Append(ParametersToAdd);
+	}
+	if (UnbindMissing.Num() > 0)
+	{
+		for (WidgetAnimTrackClipboard::FEntry& Entry : Entries)
+		{
+			Entry.Layer.ParameterBindings.RemoveAll([&UnbindMissing](const FWidgetAnimParameterBinding& Binding) { return UnbindMissing.Contains(Binding.Parameter); });
+			if (UnbindMissing.Contains(Entry.Layer.PlaysWhen.Parameter))
+			{
+				Entry.Layer.PlaysWhen = FWidgetAnimParameterCondition();
+			}
+		}
 	}
 
 	TArray<FWidgetAnimLayerGroup>& Groups = *Source->GetGroups();
@@ -22851,6 +23389,46 @@ namespace WidgetAnimParameterEditing
 		return !Path.IsEmpty();
 	}
 
+	/**
+	 * A bound field's path in words, for the track's tooltip: its field's own label, with which key or list entry and which
+	 * struct it is in - "Slide Distance", "Value (key 2)", "Translation (key 3, Transform)", "Color (User Parameters)".
+	 */
+	FString DescribeFieldPath(const FWidgetAnimLayer& Layer, const FString& FieldPath)
+	{
+		TArray<FString> Segments;
+		FieldPath.ParseIntoArray(Segments, TEXT("."));
+		if (Segments.Num() == 0)
+		{
+			return FieldPath;
+		}
+		const FProperty* Field = WidgetAnimParameters::FindField(FWidgetAnimLayer::StaticStruct(), FieldPath, &Layer);
+		const FString Words = Field ? Field->GetDisplayNameText().ToString() : FName::NameToDisplayString(Segments.Last(), false);
+
+		// Each list entry on the way ("key 2"), then the struct the field is in, unless that is the type's own settings.
+		TArray<FString> Where;
+		FString PathSoFar;
+		for (int32 SegmentIndex = 0; SegmentIndex + 1 < Segments.Num(); ++SegmentIndex)
+		{
+			const FString& Segment = Segments[SegmentIndex];
+			PathSoFar += (PathSoFar.IsEmpty() ? FString() : FString(TEXT("."))) + Segment;
+			int32 Bracket = INDEX_NONE;
+			if (Segment.FindChar(TEXT('['), Bracket))
+			{
+				const int32 EntryIndex = FCString::Atoi(*Segment.Mid(Bracket + 1));
+				const FString ListName = Segment.Left(Bracket);
+				Where.Add(ListName == TEXT("Keys")
+					? FString::Printf(TEXT("key %d"), EntryIndex + 1)
+					: FString::Printf(TEXT("%s %d"), *FName::NameToDisplayString(ListName, false), EntryIndex + 1));
+			}
+			else if (SegmentIndex + 2 == Segments.Num() && Segment != TEXT("TypeParams") && Segment != TEXT("ValueKeys"))
+			{
+				const FProperty* Parent = WidgetAnimParameters::FindField(FWidgetAnimLayer::StaticStruct(), PathSoFar, &Layer);
+				Where.Add(Parent ? Parent->GetDisplayNameText().ToString() : FName::NameToDisplayString(Segment, false));
+			}
+		}
+		return Where.Num() > 0 ? FString::Printf(TEXT("%s (%s)"), *Words, *FString::Join(Where, TEXT(", "))) : Words;
+	}
+
 	/** Whether any type of parameter can be bound to Field. */
 	bool IsBindable(const FProperty* Field)
 	{
@@ -22920,8 +23498,69 @@ void SWidgetAnimTimeline::SetPreviewParameter(const FWidgetAnimParameterValue& V
 
 TArray<FWidgetAnimParameter>* SWidgetAnimTimeline::GetParameters() const
 {
-	UWidgetAnimPresetAsset* Asset = Source.IsValid() ? Cast<UWidgetAnimPresetAsset>(Source->GetEditedObject()) : nullptr;
-	return Asset && Source->GetLayers() == &Asset->Layers ? &Asset->Parameters : nullptr;
+	UObject* Edited = Source.IsValid() ? Source->GetEditedObject() : nullptr;
+	if (UWidgetAnimPresetAsset* Asset = Cast<UWidgetAnimPresetAsset>(Edited))
+	{
+		return Source->GetLayers() == &Asset->Layers ? &Asset->Parameters : nullptr;
+	}
+
+	// The WidgetAnimationBuilder's working copy (Animation Timeline in a builder): its own Parameters, saved with Create.
+	if (UWidgetAnimBuilder* Builder = Cast<UWidgetAnimBuilder>(Edited))
+	{
+		return Source->GetLayers() == &Builder->Layers ? &Builder->Parameters : nullptr;
+	}
+	return nullptr;
+}
+
+const FWidgetAnimLayer* SWidgetAnimTimeline::GetDisplayLayer(int32 LayerIndex) const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!Layers || !Layers->IsValidIndex(LayerIndex))
+	{
+		return nullptr;
+	}
+
+	if (!DisplayLayersHolder.IsValid())
+	{
+		DisplayLayersHolder.Reset(NewObject<UWidgetAnimPresetAsset>(GetTransientPackage(), NAME_None, RF_Transient));
+	}
+	TArray<FWidgetAnimLayer>& DisplayLayers = DisplayLayersHolder->Layers;
+	if (DisplayLayersFrame != GFrameCounter || DisplayLayersOf != Layers)
+	{
+		DisplayLayersFrame = GFrameCounter;
+		DisplayLayersOf = Layers;
+		DisplayLayers.Reset();
+
+		// The values the preview plays: every parameter's default, then the Preview values tried in the panel.
+		const TArray<FWidgetAnimParameter>* Declared = GetParameters();
+		if (Declared && Declared->Num() > 0)
+		{
+			FWidgetAnimParameterResolver Resolver;
+			for (const FWidgetAnimParameter& Parameter : *Declared)
+			{
+				if (!Parameter.Name.IsNone() && !Resolver.Values.Contains(Parameter.Name))
+				{
+					Resolver.Values.Add(Parameter.Name, FWidgetAnimParameterValue::FromDefault(Parameter));
+					Resolver.Declarations.Add(Parameter.Name, &Parameter);
+				}
+			}
+			if (const TArray<FWidgetAnimParameterValue>* Tried = Source.IsValid() ? Source->GetPreviewParameters() : nullptr)
+			{
+				for (const FWidgetAnimParameterValue& Value : *Tried)
+				{
+					Resolver.Set(Value);
+				}
+			}
+			TSet<int32> Muted;
+			if (!Resolver.Apply(*Layers, DisplayLayers, Muted))
+			{
+				DisplayLayers.Reset();
+			}
+		}
+	}
+
+	// An edit earlier this frame that added or removed a track: the layers as they are, until the next frame.
+	return DisplayLayers.Num() == Layers->Num() ? &DisplayLayers[LayerIndex] : &(*Layers)[LayerIndex];
 }
 
 int32 SWidgetAnimTimeline::AddParameter(EWidgetAnimParameterType Type)
@@ -23331,6 +23970,20 @@ TSharedPtr<SWidget> SWidgetAnimTimeline::MakeParameterBindChip(const TSharedRef<
 
 void SWidgetAnimTimeline::OpenBindMenu(const TArray<int32>& LayerIndices, const FString& FieldPath, const FProperty* Field)
 {
+	const TArray<FWidgetAnimParameter>* Declared = GetParameters();
+	const TArray<FWidgetAnimLayer>* Current = GetLayers();
+	if (!Declared || !Current || LayerIndices.Num() == 0 || !Current->IsValidIndex(LayerIndices[0]))
+	{
+		return;
+	}
+
+	FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+	FillBindMenu(Menu, LayerIndices, FieldPath, Field);
+	FSlateApplication::Get().PushMenu(AsShared(), FWidgetPath(), Menu.MakeWidget(), FSlateApplication::Get().GetCursorPos(), FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
+}
+
+void SWidgetAnimTimeline::FillBindMenu(FMenuBuilder& Menu, const TArray<int32>& LayerIndices, const FString& FieldPath, const FProperty* Field)
+{
 	using namespace WidgetAnimParameterEditing;
 
 	const TArray<FWidgetAnimParameter>* Declared = GetParameters();
@@ -23357,7 +24010,6 @@ void SWidgetAnimTimeline::OpenBindMenu(const TArray<int32>& LayerIndices, const 
 		});
 	};
 
-	FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
 	Menu.BeginSection(TEXT("Bind"), LOCTEXT("BindSection", "Bind To Parameter"));
 	bool bAnyOffered = false;
 	for (const FWidgetAnimParameter& Parameter : *Declared)
@@ -23429,16 +24081,169 @@ void SWidgetAnimTimeline::OpenBindMenu(const TArray<int32>& LayerIndices, const 
 				FCanExecuteAction::CreateLambda([bEditable]() { return bEditable; })));
 		Menu.EndSection();
 	}
+}
 
-	FSlateApplication::Get().PushMenu(AsShared(), FWidgetPath(), Menu.MakeWidget(), FSlateApplication::Get().GetCursorPos(), FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
+TSharedPtr<SWidget> SWidgetAnimTimeline::MakeBagBindChip(const TSharedRef<IPropertyHandle>& TypeParamsHandle, FName BagField)
+{
+	if (!TypeParamsHandle->IsValidHandle() || BagField.IsNone())
+	{
+		return nullptr;
+	}
+
+	// Only rows of a Widget Animations panel's Selection panel - as MakeParameterBindChip.
+	TArray<UObject*> Outers;
+	TypeParamsHandle->GetOuterObjects(Outers);
+	TSharedPtr<SWidgetAnimTimeline> Owner;
+	TArray<int32> LayerIndices;
+	for (UObject* Outer : Outers)
+	{
+		if (const UWidgetAnimPresetSelectionShadow* Shadow = Cast<UWidgetAnimPresetSelectionShadow>(Outer))
+		{
+			Owner = Shadow->Panel.Pin();
+			LayerIndices.Add(Shadow->LayerIndex);
+		}
+		else if (const UWidgetAnimLayerEditProxy* Proxy = Cast<UWidgetAnimLayerEditProxy>(Outer))
+		{
+			Owner = Proxy->Panel.Pin();
+			if (Proxy->RepresentedLayers.Num() > 0)
+			{
+				LayerIndices.Append(Proxy->RepresentedLayers);
+			}
+			else
+			{
+				LayerIndices.Add(Proxy->LayerIndex);
+			}
+		}
+		else
+		{
+			return nullptr;
+		}
+	}
+	const TArray<FWidgetAnimLayer>* Layers = Owner ? Owner->GetLayers() : nullptr;
+	if (Outers.Num() == 0 || !Owner || !Owner->GetParameters() || !Layers || LayerIndices.Num() == 0 || LayerIndices.ContainsByPredicate([Layers](int32 Index) { return !Layers->IsValidIndex(Index); }))
+	{
+		return nullptr;
+	}
+
+	const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Owner;
+	const int32 FirstLayer = LayerIndices[0];
+	const FString FieldPrefix = FString::Printf(TEXT("TypeParams.%s."), *BagField.ToString());
+	auto CountBound = [WeakOwner, FirstLayer, FieldPrefix]()
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+		const TArray<FWidgetAnimLayer>* Live = Pinned ? Pinned->GetLayers() : nullptr;
+		if (!Live || !Live->IsValidIndex(FirstLayer))
+		{
+			return 0;
+		}
+		int32 Count = 0;
+		for (const FWidgetAnimParameterBinding& Binding : (*Live)[FirstLayer].ParameterBindings)
+		{
+			Count += Binding.FieldPath.StartsWith(FieldPrefix) ? 1 : 0;
+		}
+		return Count;
+	};
+	return SNew(SButton)
+		.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+		.ContentPadding(FMargin(2.f, 0.f))
+		.VAlign(VAlign_Center)
+		.ToolTipText_Lambda([CountBound]()
+		{
+			const int32 Bound = CountBound();
+			return Bound > 0
+				? FText::Format(WidgetAnimTips::BagFieldsBoundTooltip(), Bound)
+				: WidgetAnimTips::BagBindTooltip();
+		})
+		.OnClicked_Lambda([WeakOwner, LayerIndices, FieldPrefix, BagField]()
+		{
+			const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+			const TArray<FWidgetAnimLayer>* Live = Pinned ? Pinned->GetLayers() : nullptr;
+			if (!Live || !Live->IsValidIndex(LayerIndices[0]))
+			{
+				return FReply::Handled();
+			}
+
+			// The bag's fields as the first track has them now - one submenu each, with what it is bound to in its label.
+			const FInstancedStruct& TypeParams = (*Live)[LayerIndices[0]].TypeParams;
+			const FStructProperty* BagProperty = TypeParams.IsValid() ? FindFProperty<FStructProperty>(TypeParams.GetScriptStruct(), BagField) : nullptr;
+			const FInstancedPropertyBag* Bag = BagProperty && BagProperty->Struct == FInstancedPropertyBag::StaticStruct()
+				? BagProperty->ContainerPtrToValuePtr<FInstancedPropertyBag>(TypeParams.GetMemory())
+				: nullptr;
+			const UPropertyBag* BagStruct = Bag ? Bag->GetPropertyBagStruct() : nullptr;
+			FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+			Menu.BeginSection(TEXT("BagFields"), WidgetAnimTips::BagBindSection());
+			TArray<const FProperty*> BagFields;
+			if (BagStruct)
+			{
+				for (TFieldIterator<FProperty> It(BagStruct); It; ++It)
+				{
+					BagFields.Add(*It);
+				}
+			}
+			bool bAny = false;
+			for (const FProperty* Field : BagFields)
+			{
+				if (!WidgetAnimParameterEditing::IsBindable(Field))
+				{
+					continue;
+				}
+				bAny = true;
+				const FString FieldPath = FieldPrefix + Field->GetName();
+				const FWidgetAnimParameterBinding* Binding = (*Live)[LayerIndices[0]].FindParameterBinding(FieldPath);
+				const FText Label = Binding
+					? FText::Format(LOCTEXT("BagFieldBound", "{0}  = {1}"), FText::FromString(Field->GetName()), FText::FromName(Binding->Parameter))
+					: FText::FromString(Field->GetName());
+				// By its path, never its property: the bag's struct is made again whenever its layout changes, so the field is
+				// found on the track as it is when the submenu opens.
+				const TWeakPtr<SWidgetAnimTimeline> MenuOwner = Pinned;
+				Menu.AddSubMenu(Label, FText::GetEmpty(), FNewMenuDelegate::CreateLambda([MenuOwner, LayerIndices, FieldPath](FMenuBuilder& SubMenu)
+				{
+					const TSharedPtr<SWidgetAnimTimeline> Panel = MenuOwner.Pin();
+					const TArray<FWidgetAnimLayer>* LiveLayers = Panel ? Panel->GetLayers() : nullptr;
+					const FProperty* LiveField = LiveLayers && LiveLayers->IsValidIndex(LayerIndices[0])
+						? WidgetAnimParameters::FindField(FWidgetAnimLayer::StaticStruct(), FieldPath, &(*LiveLayers)[LayerIndices[0]])
+						: nullptr;
+					if (LiveField)
+					{
+						Panel->FillBindMenu(SubMenu, LayerIndices, FieldPath, LiveField);
+					}
+				}));
+			}
+			if (!bAny)
+			{
+				Menu.AddMenuEntry(LOCTEXT("BagNoFields", "Nothing here a parameter can take"), FText::GetEmpty(), FSlateIcon(),
+					FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([]() { return false; })));
+			}
+			Menu.EndSection();
+			FSlateApplication::Get().PushMenu(Pinned.ToSharedRef(), FWidgetPath(), Menu.MakeWidget(), FSlateApplication::Get().GetCursorPos(), FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
+			return FReply::Handled();
+		})
+		[
+			SNew(SImage)
+			.DesiredSizeOverride(FVector2D(16.0, 16.0))
+			.Image_Lambda([CountBound]()
+			{
+				const FSlateBrush* Brush = FNameTBDStyle::FindIcon(CountBound() > 0 ? FNameTBDStyle::ParameterBoundIcon : FNameTBDStyle::ParameterBindIcon);
+				return Brush ? Brush : FAppStyle::GetBrush(TEXT("Icons.Link"));
+			})
+			.ColorAndOpacity(FSlateColor::UseForeground())
+		];
 }
 
 void SWidgetAnimTimeline::AddParameterFromField(TArray<int32> LayerIndices, FString FieldPath, const FProperty* Field)
 {
 	TArray<FWidgetAnimParameter>* Declared = GetParameters();
 	const TArray<FWidgetAnimLayer>* Current = GetLayers();
+	if (!Declared || !Current || LayerIndices.Num() == 0 || !Current->IsValidIndex(LayerIndices[0]))
+	{
+		return;
+	}
+
+	// The field as the track has it now, by its path: the menu that asked may have been opened on a property bag's field
+	// whose struct has been made again since (see MakeBagBindChip).
+	Field = WidgetAnimParameters::FindField(FWidgetAnimLayer::StaticStruct(), FieldPath, &(*Current)[LayerIndices[0]]);
 	EWidgetAnimParameterType Type = EWidgetAnimParameterType::Float;
-	if (!Declared || !Current || LayerIndices.Num() == 0 || !Current->IsValidIndex(LayerIndices[0]) || !WidgetAnimParameters::GetNaturalType(Field, Type))
+	if (!WidgetAnimParameters::GetNaturalType(Field, Type))
 	{
 		return;
 	}
@@ -23449,40 +24254,10 @@ void SWidgetAnimTimeline::AddParameterFromField(TArray<int32> LayerIndices, FStr
 		return;
 	}
 
+	// Named after the field, its value now as the default - a dropdown's options the field's own.
 	FWidgetAnimParameter Added;
-	Added.Type = Type;
-	Added.Name = WidgetAnimParameters::MakeUniqueName(*Declared, WidgetAnimParameterEditing::MakeNameFromField(Field));
-
-	// Its default: the field as it is now. A dropdown's options are the field's own.
-	FWidgetAnimParameterValue Now;
-	Now.Type = Type;
-	WidgetAnimParameters::ReadField(FWidgetAnimLayer::StaticStruct(), &(*Current)[LayerIndices[0]], FieldPath, Now);
-	Added.DefaultFloat = Now.Float;
-	Added.DefaultInteger = Now.Integer;
-	Added.bDefaultBool = Now.bBool;
-	Added.DefaultColor = Now.Color;
-	Added.DefaultVector2D = Now.Vector2D;
-	if (Type == EWidgetAnimParameterType::Choice)
-	{
-		const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Field);
-		const FByteProperty* ByteProperty = CastField<FByteProperty>(Field);
-		const UEnum* Enum = EnumProperty ? EnumProperty->GetEnum() : (ByteProperty ? ByteProperty->Enum.Get() : nullptr);
-		if (Enum)
-		{
-			for (int32 Index = 0; Index < Enum->NumEnums() - (Enum->ContainsExistingMax() ? 1 : 0); ++Index)
-			{
-				if (!Enum->HasMetaData(TEXT("Hidden"), Index))
-				{
-					Added.Options.Add(FName(*Enum->GetNameStringByIndex(Index)));
-				}
-			}
-		}
-		else if (!Now.Option.IsNone())
-		{
-			Added.Options.Add(Now.Option);
-		}
-		Added.DefaultOption = Now.Option;
-	}
+	WidgetAnimParameterDeclare::FromField((*Current)[LayerIndices[0]], FieldPath, Field,
+		WidgetAnimParameters::MakeUniqueName(*Declared, WidgetAnimParameterEditing::MakeNameFromField(Field)), Added);
 	Declared->Add(Added);
 
 	for (const int32 LayerIndex : LayerIndices)
@@ -23703,7 +24478,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 		return SNullWidget::NullWidget;
 	}
 
-	const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+	// Bound fields read as the preview plays them (see GetDisplayLayer).
+	const FWidgetAnimLayer& Layer = *GetDisplayLayer(LayerIndex);
 	const FVector2f Span = Spans[LayerIndex];
 	const TSharedRef<SVerticalBox> Body = SNew(SVerticalBox);
 
@@ -23874,6 +24650,82 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 			];
 		}
 		Rows.Add(TEXT("Through"), Through);
+	}
+
+	// Animation Parameters: which of its values come from which parameter - what the pills on its row of the Animation Tracks list
+	// stand for - each with the parameter's value as the preview plays it (its Preview value, else its default), and when
+	// it plays at all (Plays When). Read off the track as authored, not the copy the preview plays.
+	const FWidgetAnimLayer& AuthoredLayer = (*Layers)[LayerIndex];
+	if (AuthoredLayer.ParameterBindings.Num() > 0 || AuthoredLayer.PlaysWhen.IsSet())
+	{
+		const TArray<FWidgetAnimParameter>* Declared = GetParameters();
+		auto FindDeclared = [Declared](FName Name) -> const FWidgetAnimParameter*
+		{
+			return Declared ? Declared->FindByPredicate([Name](const FWidgetAnimParameter& Parameter) { return Parameter.Name == Name; }) : nullptr;
+		};
+		// In columns, so the parameters' names start in one line and their "=" signs line up: field, arrow, parameter, value.
+		const TSharedRef<SGridPanel> Lines = SNew(SGridPanel);
+		int32 LineIndex = 0;
+		for (const FWidgetAnimParameterBinding& Binding : AuthoredLayer.ParameterBindings)
+		{
+			const FWidgetAnimParameter* BoundTo = FindDeclared(Binding.Parameter);
+			FString ValueWords;
+			if (BoundTo)
+			{
+				FWidgetAnimParameterValue Shown;
+				if (!GetPreviewParameter(BoundTo->Name, Shown))
+				{
+					Shown = FWidgetAnimParameterValue::FromDefault(*BoundTo);
+				}
+				ValueWords = FString::Printf(TEXT("= %s"), *Shown.ToDisplayString());
+				if (!FMath::IsNearlyEqual(Binding.Scale, 1.f) || !FMath::IsNearlyZero(Binding.Offset))
+				{
+					ValueWords += FMath::IsNearlyZero(Binding.Offset)
+						? FString::Printf(TEXT("  (x %s)"), *FString::SanitizeFloat(Binding.Scale))
+						: FString::Printf(TEXT("  (x %s + %s)"), *FString::SanitizeFloat(Binding.Scale), *FString::SanitizeFloat(Binding.Offset));
+				}
+			}
+			const FLinearColor ParameterColor = BoundTo
+				? WidgetAnimTypePill::GetColor(WidgetAnimTypePill::FromParameterType(BoundTo->Type))
+				: FLinearColor(0.9f, 0.15f, 0.12f);
+			const FMargin LinePadding(0.f, 0.f, 0.f, 1.f);
+			Lines->AddSlot(0, LineIndex).VAlign(VAlign_Center).Padding(LinePadding)
+			[
+				Text(WidgetAnimParameterEditing::DescribeFieldPath(AuthoredLayer, Binding.FieldPath), Palette::TooltipValue, ValueFont())
+			];
+			Lines->AddSlot(1, LineIndex).VAlign(VAlign_Center).Padding(FMargin(6.f, 0.f, 6.f, 1.f))
+			[
+				Text(TEXT("\u2190"), Palette::TooltipLabel, ValueFont())
+			];
+			Lines->AddSlot(2, LineIndex).VAlign(VAlign_Center).Padding(LinePadding)
+			[
+				Text(BoundTo ? BoundTo->Name.ToString() : FString::Printf(TEXT("%s (missing)"), *Binding.Parameter.ToString()), ParameterColor, ValueFont())
+			];
+			Lines->AddSlot(3, LineIndex).VAlign(VAlign_Center).Padding(FMargin(6.f, 0.f, 0.f, 1.f))
+			[
+				Text(ValueWords, Palette::TooltipValue, ValueFont())
+			];
+			++LineIndex;
+		}
+		if (AuthoredLayer.ParameterBindings.Num() > 0)
+		{
+			Rows.Add(TEXT("Parametrized"), Lines);
+		}
+		if (AuthoredLayer.PlaysWhen.IsSet())
+		{
+			TArray<FString> Options;
+			for (const FName Option : AuthoredLayer.PlaysWhen.Options)
+			{
+				Options.Add(Option.ToString());
+			}
+			const FWidgetAnimParameter* Tested = FindDeclared(AuthoredLayer.PlaysWhen.Parameter);
+			const FString Condition = !Tested
+				? FString::Printf(TEXT("%s (missing) - always"), *AuthoredLayer.PlaysWhen.Parameter.ToString())
+				: Tested->Type == EWidgetAnimParameterType::Bool
+				? FString::Printf(TEXT("%s is %s"), *Tested->Name.ToString(), AuthoredLayer.PlaysWhen.Options.Contains(FName(TEXT("False"))) ? TEXT("false") : TEXT("true"))
+				: FString::Printf(TEXT("%s is %s"), *Tested->Name.ToString(), Options.Num() > 0 ? *FString::Join(Options, TEXT(", ")) : TEXT("(no option)"));
+			Rows.Add(TEXT("Plays When"), Condition);
+		}
 	}
 
 	// How it moves, always - a track too short to show its easing on its section still says it here. Segments
@@ -24238,7 +25090,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyToolTip(int32 LayerIndex, int32 
 		return SNullWidget::NullWidget;
 	}
 
-	const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+	const FWidgetAnimLayer& Layer = *GetDisplayLayer(LayerIndex);
 	TArray<float> KeyTimes;
 	GetKeyTimes(LayerIndex, KeyTimes);
 	if (!KeyTimes.IsValidIndex(KeyIndex))

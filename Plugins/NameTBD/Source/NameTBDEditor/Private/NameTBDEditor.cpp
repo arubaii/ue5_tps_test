@@ -41,6 +41,7 @@
 #include "UMGEditorModule.h"
 #include "WidgetShapeDetails.h"
 #include "StyledButtonsEditor.h"
+#include "WidgetAnimCompileChecks.h"
 #include "WidgetShapePathEditor.h"
 #include "WidgetAnimTextCanvasEditor.h"
 #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
@@ -135,6 +136,10 @@ void FNameTBDEditorModule::StartupModule()
 
 	// The ready-made buttons: their parts built once placed (never per drop preview), each with its Widget Blueprint GUID.
 	StyledButtonsEditor::Register();
+
+	// What the Widget Animations and state machines a Widget Blueprint holds or plays name but don't have, as warnings in its
+	// compile results (the same lines data validation gives their assets).
+	WidgetAnimCompileChecks::Register();
 
 	IUMGEditorModule& UMGEditorModule = FModuleManager::LoadModuleChecked<IUMGEditorModule>("UMGEditor");
 

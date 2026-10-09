@@ -190,6 +190,12 @@ namespace WidgetAnimScriptFields
 
 		/** The first field of the path, whatever it is on - what a widget or slot is told changed. */
 		FProperty* TopProperty = nullptr;
+
+		/**
+		 * The path by the fields' own names - "SlideDistance", "ValueKeys.Keys[1].Value", "TypeParams.EndValue" for a
+		 * registered type's setting - however loosely it was typed: what a parameter binding stores (see WidgetAnimParameters.h).
+		 */
+		FString ExactPath;
 	};
 
 	/** Gathers the errors ImportText writes, to say why a value didn't take. */
@@ -222,8 +228,10 @@ namespace WidgetAnimScriptFields
 	 * Follows Path from Container, a RootStruct - a track, a widget, a slot. Fallback, when given, is where a first name the
 	 * root doesn't have is looked for: a track's registered type settings.
 	 */
-	bool ResolveIn(const UStruct* RootStruct, void* RootContainer, const FString& RootWhere, FInstancedStruct* Fallback, const FString& Path, FResolved& Out, FString& OutError)
+	bool ResolveIn(const UStruct* RootStruct, void* RootContainer, const FString& RootWhere, FInstancedStruct* Fallback, const FString& Path, FResolved& Out, FString& OutError,
+		const TCHAR* FallbackField = nullptr)
 	{
+		Out.ExactPath.Reset();
 		TArray<FString> Segments;
 		Path.ParseIntoArray(Segments, TEXT("."), /*bCullEmpty=*/true);
 		if (Segments.Num() == 0)
@@ -263,6 +271,10 @@ namespace WidgetAnimScriptFields
 				Container = Fallback->GetMutableMemory();
 				Property = FindProperty(Struct, Segment);
 				Where = Fallback->GetScriptStruct()->GetDisplayNameText().ToString();
+				if (FallbackField)
+				{
+					Out.ExactPath = FallbackField;
+				}
 			}
 			if (!Property)
 			{
@@ -276,6 +288,11 @@ namespace WidgetAnimScriptFields
 			if (SegmentIndex == 0)
 			{
 				Out.TopProperty = Property;
+			}
+			Out.ExactPath += (Out.ExactPath.IsEmpty() ? FString() : FString(TEXT("."))) + Property->GetName();
+			if (ArrayIndex != INDEX_NONE)
+			{
+				Out.ExactPath += FString::Printf(TEXT("[%d]"), ArrayIndex);
 			}
 
 			void* Value = Property->ContainerPtrToValuePtr<void>(Container);
@@ -335,7 +352,7 @@ namespace WidgetAnimScriptFields
 	/** A track's field - or, by a name the track doesn't have, its registered type's setting. */
 	bool Resolve(FWidgetAnimLayer& Layer, const FString& Path, FResolved& Out, FString& OutError)
 	{
-		return ResolveIn(FWidgetAnimLayer::StaticStruct(), &Layer, TEXT("this track"), &Layer.TypeParams, Path, Out, OutError);
+		return ResolveIn(FWidgetAnimLayer::StaticStruct(), &Layer, TEXT("this track"), &Layer.TypeParams, Path, Out, OutError, TEXT("TypeParams"));
 	}
 
 	/** What kind of value a field holds - see UWidgetAnimScriptAnimation::GetTrackPropertyKind. */
@@ -1768,6 +1785,20 @@ bool UWidgetAnimScriptAnimation::SetTrackProperty(int32 Track, const FString& Pa
 	{
 		return Fail(Error);
 	}
+
+	// "$Distance": the field bound to the parameter Distance - "Slide.Distance = $Distance"; "-$Distance" mirrored. A text
+	// field takes "$5" as it is, unless the animation has a parameter of that name.
+	const FString Trimmed = Value.TrimStartAndEnd();
+	if (Trimmed.StartsWith(TEXT("$")) || Trimmed.StartsWith(TEXT("-$")))
+	{
+		const bool bMirrored = Trimmed.StartsWith(TEXT("-"));
+		const FString ParameterName = Trimmed.Mid(bMirrored ? 2 : 1);
+		const bool bTextField = CastField<FStrProperty>(Resolved.Property) || CastField<FTextProperty>(Resolved.Property) || CastField<FNameProperty>(Resolved.Property);
+		if (!bTextField || FindParameter(ParameterName))
+		{
+			return BindTrackField(Track, Path, ParameterName, bMirrored ? -1.f : 1.f, 0.f);
+		}
+	}
 	if (!WidgetAnimScriptFields::IsEditorOnlyFlag(Resolved.TrackField) && !CheckTrackEditable(Track))
 	{
 		return false;
@@ -1903,6 +1934,389 @@ TArray<FString> UWidgetAnimScriptAnimation::GetTrackStructOptions(const FString&
 		Names.Add(WidgetAnimScriptNames::ShortStructName(Option));
 	}
 	return Names;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Animation Parameters
+// ---------------------------------------------------------------------------------------------
+
+namespace WidgetAnimScriptParameters
+{
+	/** A parameter type by its name, loosely: "float", "Vector 2D", "vector2d", "number", "int". */
+	bool ParseType(const FString& Text, EWidgetAnimParameterType& OutType)
+	{
+		const FString Wanted = WidgetAnimScriptNames::Normalize(Text);
+		if (Wanted == TEXT("number") || Wanted == TEXT("double"))
+		{
+			OutType = EWidgetAnimParameterType::Float;
+			return true;
+		}
+		if (Wanted == TEXT("int") || Wanted == TEXT("int32"))
+		{
+			OutType = EWidgetAnimParameterType::Integer;
+			return true;
+		}
+		if (Wanted == TEXT("vector") || Wanted == TEXT("vec2"))
+		{
+			OutType = EWidgetAnimParameterType::Vector2D;
+			return true;
+		}
+		const UEnum* Enum = StaticEnum<EWidgetAnimParameterType>();
+		for (int32 Index = 0; Index < Enum->NumEnums() - (Enum->ContainsExistingMax() ? 1 : 0); ++Index)
+		{
+			if (WidgetAnimScriptNames::Normalize(Enum->GetNameStringByIndex(Index)) == Wanted
+				|| WidgetAnimScriptNames::Normalize(Enum->GetDisplayNameTextByIndex(Index).ToString()) == Wanted)
+			{
+				OutType = static_cast<EWidgetAnimParameterType>(Enum->GetValueByIndex(Index));
+				return true;
+			}
+		}
+		return false;
+	}
+
+	FString TypeName(EWidgetAnimParameterType Type)
+	{
+		return StaticEnum<EWidgetAnimParameterType>()->GetNameStringByValue(static_cast<int64>(Type));
+	}
+
+	/** The field of FWidgetAnimParameter that holds a default of Type. */
+	FProperty* FindDefaultField(EWidgetAnimParameterType Type)
+	{
+		FName FieldName;
+		switch (Type)
+		{
+		case EWidgetAnimParameterType::Integer:  FieldName = GET_MEMBER_NAME_CHECKED(FWidgetAnimParameter, DefaultInteger); break;
+		case EWidgetAnimParameterType::Bool:     FieldName = GET_MEMBER_NAME_CHECKED(FWidgetAnimParameter, bDefaultBool); break;
+		case EWidgetAnimParameterType::Color:    FieldName = GET_MEMBER_NAME_CHECKED(FWidgetAnimParameter, DefaultColor); break;
+		case EWidgetAnimParameterType::Vector2D: FieldName = GET_MEMBER_NAME_CHECKED(FWidgetAnimParameter, DefaultVector2D); break;
+		case EWidgetAnimParameterType::Choice:   FieldName = GET_MEMBER_NAME_CHECKED(FWidgetAnimParameter, DefaultOption); break;
+		default:                                 FieldName = GET_MEMBER_NAME_CHECKED(FWidgetAnimParameter, DefaultFloat); break;
+		}
+		return FindFProperty<FProperty>(FWidgetAnimParameter::StaticStruct(), FieldName);
+	}
+
+	/** Track fields a parameter is never bound to: what makes the track the track it is, and the binding table itself. */
+	bool IsUnbindable(FName TrackField)
+	{
+		static const FName Never[] =
+		{
+			TEXT("AnimType"), TEXT("Timing"), TEXT("Start"), TEXT("ValueName"), TEXT("ValueDrives"), TEXT("ParameterBindings"), TEXT("PlaysWhen"),
+			TEXT("LayerGroup"), TEXT("TargetWidget"), TEXT("TrackName"), TEXT("InsertedAnimation"), TEXT("InsertedGroups"), TEXT("CollapsedTrack"),
+		};
+		for (const FName Name : Never)
+		{
+			if (TrackField == Name)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+}
+
+TArray<FWidgetAnimParameter>* UWidgetAnimScriptAnimation::GetParametersArray() const
+{
+	UObject* Edited = GetEditedObject();
+	TArray<FWidgetAnimLayer>* Layers = GetLayersArray();
+	if (UWidgetAnimPresetAsset* EditedAsset = Cast<UWidgetAnimPresetAsset>(Edited))
+	{
+		return Layers == &EditedAsset->Layers ? &EditedAsset->Parameters : nullptr;
+	}
+	if (UWidgetAnimBuilder* Builder = Cast<UWidgetAnimBuilder>(Edited))
+	{
+		return Layers == &Builder->Layers ? &Builder->Parameters : nullptr;
+	}
+	return nullptr;
+}
+
+FWidgetAnimParameter* UWidgetAnimScriptAnimation::FindParameter(const FString& ParameterName) const
+{
+	TArray<FWidgetAnimParameter>* Parameters = GetParametersArray();
+	const FString Wanted = ParameterName.TrimStartAndEnd();
+	return Parameters && !Wanted.IsEmpty()
+		? Parameters->FindByPredicate([&Wanted](const FWidgetAnimParameter& Parameter) { return Parameter.Name.ToString().Equals(Wanted, ESearchCase::IgnoreCase); })
+		: nullptr;
+}
+
+bool UWidgetAnimScriptAnimation::SupportsParameters() const
+{
+	return GetParametersArray() != nullptr;
+}
+
+TArray<FString> UWidgetAnimScriptAnimation::GetParameterNames() const
+{
+	TArray<FString> Names;
+	if (const TArray<FWidgetAnimParameter>* Parameters = GetParametersArray())
+	{
+		for (const FWidgetAnimParameter& Parameter : *Parameters)
+		{
+			Names.Add(Parameter.Name.ToString());
+		}
+	}
+	return Names;
+}
+
+FString UWidgetAnimScriptAnimation::GetParameterType(const FString& ParameterName) const
+{
+	const FWidgetAnimParameter* Parameter = FindParameter(ParameterName);
+	if (!Parameter)
+	{
+		Fail(FString::Printf(TEXT("The animation has no parameter called '%s'."), *ParameterName));
+		return FString();
+	}
+	return WidgetAnimScriptParameters::TypeName(Parameter->Type);
+}
+
+FString UWidgetAnimScriptAnimation::GetParameterDefault(const FString& ParameterName) const
+{
+	const FWidgetAnimParameter* Parameter = FindParameter(ParameterName);
+	const FProperty* Field = Parameter ? WidgetAnimScriptParameters::FindDefaultField(Parameter->Type) : nullptr;
+	if (!Field)
+	{
+		Fail(FString::Printf(TEXT("The animation has no parameter called '%s'."), *ParameterName));
+		return FString();
+	}
+	return WidgetAnimScriptFields::Export(Field, Field->ContainerPtrToValuePtr<void>(Parameter));
+}
+
+TArray<FString> UWidgetAnimScriptAnimation::GetParameterOptions(const FString& ParameterName) const
+{
+	TArray<FString> Options;
+	if (const FWidgetAnimParameter* Parameter = FindParameter(ParameterName))
+	{
+		for (const FName Option : Parameter->Options)
+		{
+			Options.Add(Option.ToString());
+		}
+	}
+	return Options;
+}
+
+bool UWidgetAnimScriptAnimation::SetParameter(const FString& ParameterName, const FString& ParameterType, const FString& DefaultText, const TArray<FString>& ChoiceOptions)
+{
+	TArray<FWidgetAnimParameter>* Parameters = GetParametersArray();
+	if (!Parameters)
+	{
+		return Fail(TEXT("This list of tracks can't have Animation Parameters: only a Widget Animation, a timeline or the builder's animation can."));
+	}
+	const FString Trimmed = ParameterName.TrimStartAndEnd();
+	if (Trimmed.IsEmpty() || Trimmed.StartsWith(TEXT("$")))
+	{
+		return Fail(TEXT("A parameter needs a name (without the $ that binds a field to it)."));
+	}
+	EWidgetAnimParameterType Type = EWidgetAnimParameterType::Float;
+	if (!WidgetAnimScriptParameters::ParseType(ParameterType.IsEmpty() ? FString(TEXT("Float")) : ParameterType, Type))
+	{
+		return Fail(FString::Printf(TEXT("No parameter type is called '%s'. Use Float, Integer, Bool, Color, Vector2D or Choice."), *ParameterType));
+	}
+
+	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("SetParameter", "Set Animation Parameter"));
+	if (!Edit.IsOpen())
+	{
+		return false;
+	}
+
+	FWidgetAnimParameter* Parameter = FindParameter(Trimmed);
+	if (!Parameter)
+	{
+		Parameter = &Parameters->AddDefaulted_GetRef();
+		Parameter->Name = FName(*Trimmed);
+	}
+	const bool bTypeChanged = Parameter->Type != Type;
+	Parameter->Type = Type;
+	if (Type == EWidgetAnimParameterType::Choice)
+	{
+		if (ChoiceOptions.Num() > 0)
+		{
+			Parameter->Options.Reset();
+			for (const FString& Option : ChoiceOptions)
+			{
+				if (!Option.TrimStartAndEnd().IsEmpty())
+				{
+					Parameter->Options.AddUnique(FName(*Option.TrimStartAndEnd()));
+				}
+			}
+		}
+		if (Parameter->Options.Num() == 0)
+		{
+			Parameter->Options = { FName(TEXT("Left")), FName(TEXT("Right")) };
+		}
+		if (!Parameter->Options.Contains(Parameter->DefaultOption))
+		{
+			Parameter->DefaultOption = Parameter->Options[0];
+		}
+	}
+	if (!DefaultText.TrimStartAndEnd().IsEmpty())
+	{
+		FProperty* Field = WidgetAnimScriptParameters::FindDefaultField(Type);
+		FString Error;
+		if (!Field || !WidgetAnimScriptFields::Import(Field, Field->ContainerPtrToValuePtr<void>(Parameter), DefaultText, Error))
+		{
+			return Fail(FString::Printf(TEXT("%s's default: %s"), *Trimmed, *Error));
+		}
+		if (Type == EWidgetAnimParameterType::Choice && !Parameter->Options.Contains(Parameter->DefaultOption))
+		{
+			return Fail(FString::Printf(TEXT("'%s' isn't one of %s's options."), *DefaultText, *Trimmed));
+		}
+	}
+
+	// A new type: the bindings that can't take it let go, as in the panel; Plays When tests only a Choice or a Bool.
+	if (bTypeChanged)
+	{
+		const FName Name = Parameter->Name;
+		for (FWidgetAnimLayer& Layer : *GetLayersArray())
+		{
+			Layer.ParameterBindings.RemoveAll([&Layer, Name, Type](const FWidgetAnimParameterBinding& Binding)
+			{
+				return Binding.Parameter == Name && !WidgetAnimParameters::CanBind(WidgetAnimParameters::FindField(FWidgetAnimLayer::StaticStruct(), Binding.FieldPath, &Layer), Type);
+			});
+			if (Layer.PlaysWhen.Parameter == Name && Type != EWidgetAnimParameterType::Choice && Type != EWidgetAnimParameterType::Bool)
+			{
+				Layer.PlaysWhen = FWidgetAnimParameterCondition();
+			}
+		}
+	}
+
+	Edit.Changed(EPropertyChangeType::ValueSet);
+	return true;
+}
+
+bool UWidgetAnimScriptAnimation::RemoveParameter(const FString& ParameterName)
+{
+	TArray<FWidgetAnimParameter>* Parameters = GetParametersArray();
+	const FWidgetAnimParameter* Parameter = FindParameter(ParameterName);
+	if (!Parameters || !Parameter)
+	{
+		return Fail(FString::Printf(TEXT("The animation has no parameter called '%s'."), *ParameterName));
+	}
+
+	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("RemoveParameter", "Remove Animation Parameter"));
+	if (!Edit.IsOpen())
+	{
+		return false;
+	}
+	const FName Removed = Parameter->Name;
+	Parameters->RemoveAll([Removed](const FWidgetAnimParameter& Candidate) { return Candidate.Name == Removed; });
+	for (FWidgetAnimLayer& Layer : *GetLayersArray())
+	{
+		Layer.ParameterBindings.RemoveAll([Removed](const FWidgetAnimParameterBinding& Binding) { return Binding.Parameter == Removed; });
+		if (Layer.PlaysWhen.Parameter == Removed)
+		{
+			Layer.PlaysWhen = FWidgetAnimParameterCondition();
+		}
+	}
+	Edit.Changed(EPropertyChangeType::ValueSet);
+	return true;
+}
+
+bool UWidgetAnimScriptAnimation::BindTrackField(int32 Track, const FString& Path, const FString& ParameterName, float Scale, float Offset)
+{
+	if (!CheckTrackEditable(Track))
+	{
+		return false;
+	}
+	if (!GetParametersArray())
+	{
+		return Fail(TEXT("This list of tracks can't have Animation Parameters: only a Widget Animation, a timeline or the builder's animation can."));
+	}
+
+	FWidgetAnimLayer& Layer = (*GetLayersArray())[Track];
+	WidgetAnimScriptFields::FResolved Resolved;
+	FString Error;
+	if (!WidgetAnimScriptFields::Resolve(Layer, Path, Resolved, Error))
+	{
+		return Fail(Error);
+	}
+	if (WidgetAnimScriptParameters::IsUnbindable(Resolved.TrackField))
+	{
+		return Fail(FString::Printf(TEXT("'%s' can't be bound to a parameter: it is what makes the track the track it is."), *Path));
+	}
+
+	const FString Wanted = ParameterName.TrimStartAndEnd();
+	const FWidgetAnimParameter* Parameter = Wanted.IsEmpty() ? nullptr : FindParameter(Wanted);
+	if (!Wanted.IsEmpty() && !Parameter)
+	{
+		return Fail(FString::Printf(TEXT("The animation has no parameter called '%s': declare it first (anim.add_parameter)."), *Wanted));
+	}
+	if (Parameter && !WidgetAnimParameters::CanBind(Resolved.Property, Parameter->Type))
+	{
+		return Fail(FString::Printf(TEXT("'%s' can't take a %s parameter."), *Path, *WidgetAnimScriptParameters::TypeName(Parameter->Type)));
+	}
+
+	FWidgetAnimScriptEdit Edit(*this, Parameter ? LOCTEXT("BindField", "Bind Track Field To Parameter") : LOCTEXT("UnbindField", "Unbind Track Field"));
+	if (!Edit.IsOpen())
+	{
+		return false;
+	}
+	FWidgetAnimLayer& Edited = (*GetLayersArray())[Track];
+	Edited.ParameterBindings.RemoveAll([&Resolved](const FWidgetAnimParameterBinding& Binding) { return Binding.FieldPath == Resolved.ExactPath; });
+	if (Parameter)
+	{
+		FWidgetAnimParameterBinding& Binding = Edited.ParameterBindings.AddDefaulted_GetRef();
+		Binding.FieldPath = Resolved.ExactPath;
+		Binding.Parameter = Parameter->Name;
+		Binding.Scale = Scale;
+		Binding.Offset = Offset;
+	}
+	Edit.Changed(EPropertyChangeType::ValueSet);
+	return true;
+}
+
+FString UWidgetAnimScriptAnimation::GetTrackFieldBinding(int32 Track, const FString& Path) const
+{
+	if (!CheckTrack(Track))
+	{
+		return FString();
+	}
+	FWidgetAnimLayer& Layer = (*GetLayersArray())[Track];
+	WidgetAnimScriptFields::FResolved Resolved;
+	FString Error;
+	if (!WidgetAnimScriptFields::Resolve(Layer, Path, Resolved, Error))
+	{
+		Fail(Error);
+		return FString();
+	}
+	const FWidgetAnimParameterBinding* Binding = Layer.FindParameterBinding(Resolved.ExactPath);
+	return Binding ? Binding->Parameter.ToString() : FString();
+}
+
+bool UWidgetAnimScriptAnimation::SetTrackPlaysWhen(int32 Track, const FString& ParameterName, const TArray<FString>& PlayOptions)
+{
+	if (!CheckTrackEditable(Track))
+	{
+		return false;
+	}
+	const FString Wanted = ParameterName.TrimStartAndEnd();
+	const FWidgetAnimParameter* Parameter = Wanted.IsEmpty() ? nullptr : FindParameter(Wanted);
+	if (!Wanted.IsEmpty() && !Parameter)
+	{
+		return Fail(FString::Printf(TEXT("The animation has no parameter called '%s'."), *Wanted));
+	}
+	if (Parameter && Parameter->Type != EWidgetAnimParameterType::Choice && Parameter->Type != EWidgetAnimParameterType::Bool)
+	{
+		return Fail(FString::Printf(TEXT("Plays When tests a Choice or a Bool; %s is a %s."), *Wanted, *WidgetAnimScriptParameters::TypeName(Parameter->Type)));
+	}
+
+	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("SetPlaysWhen", "Set Track Plays When"));
+	if (!Edit.IsOpen())
+	{
+		return false;
+	}
+	FWidgetAnimParameterCondition& Condition = (*GetLayersArray())[Track].PlaysWhen;
+	Condition = FWidgetAnimParameterCondition();
+	if (Parameter)
+	{
+		Condition.Parameter = Parameter->Name;
+		for (const FString& Option : PlayOptions)
+		{
+			if (!Option.TrimStartAndEnd().IsEmpty())
+			{
+				Condition.Options.AddUnique(FName(*Option.TrimStartAndEnd()));
+			}
+		}
+	}
+	Edit.Changed(EPropertyChangeType::ValueSet);
+	return true;
 }
 
 TArray<FString> UWidgetAnimScriptAnimation::GetTrackPropertyNames(int32 Track, const FString& Path) const

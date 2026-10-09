@@ -87,6 +87,13 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (TitleProperty = "AnimType", EditCondition = "PreviewAnimation == nullptr"))
 	TArray<FWidgetAnimLayer> Layers;
 
+	/**
+	 * The animation's parameters, saved with it - see UWidgetAnimPresetAsset::Parameters. Declared and bound in the Widget
+	 * Animations panel (Animation Parameters, and the chip at the end of a track's row), as on a timeline or an asset.
+	 */
+	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (TitleProperty = "Name", EditCondition = "PreviewAnimation == nullptr"))
+	TArray<FWidgetAnimParameter> Parameters;
+
 	/** How fast the whole animation plays, saved with it - see UWidgetAnimPresetAsset::AnimationSpeedMultiplier. */
 	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (DisplayName = "Animation Speed Multiplier", ClampMin = "0.01", UIMin = "0.1", UIMax = "4.0", EditCondition = "PreviewAnimation == nullptr && TimeUnit == EWidgetAnimTimeUnit::Seconds", EditConditionHides))
 	float AnimationSpeedMultiplier = 1.f;
@@ -326,6 +333,14 @@ public:
 
 	/** True when there is a live preview of BuilderClass at all, so the toolbar knows to enable itself. */
 	static bool HasLivePreview(const UClass* BuilderClass);
+
+	/**
+	 * The values the preview plays the animation's parameters with, in place of their defaults - the Widget Animations panel's
+	 * Preview rows, for the working copy or the asset being edited. Set on this object and every live preview of it, which
+	 * play them at once. Never saved.
+	 */
+	void SetPreviewParameterValues(const TArray<FWidgetAnimParameterValue>& Values);
+	const TArray<FWidgetAnimParameterValue>& GetPreviewParameterValues() const { return PreviewParameterValues; }
 #endif
 
 	/**
@@ -475,6 +490,10 @@ private:
 	 */
 	UPROPERTY(Transient)
 	TObjectPtr<UWidgetAnimPresetAsset> PreviewAsset;
+
+	/** See SetPreviewParameterValues. Handed to the preview's use of the animation as its Parameters. */
+	UPROPERTY(Transient)
+	TArray<FWidgetAnimParameterValue> PreviewParameterValues;
 
 	/** A group's Preview Target inside this builder: that widget, or PreviewImage when it names none or nothing matches. */
 	UWidget* ResolvePreviewGroupTarget(FName Path);

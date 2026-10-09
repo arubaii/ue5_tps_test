@@ -1311,6 +1311,8 @@ namespace WidgetAnimStateMachines
 			Layer.TimeInState = 0.f;
 			Layer.PassSeconds = 0.f;
 			Layer.bStatePlayed = false;
+			Layer.PlayedAnimation = nullptr;
+			Layer.PlayedParameterInputs.Reset();
 
 			if (!Def.States.IsValidIndex(Layer.Current))
 			{
@@ -1323,6 +1325,7 @@ namespace WidgetAnimStateMachines
 			{
 				Layer.BlendPlayers.Reset();
 				Layer.BlendPlayers.SetNum(State.BlendSamples.Num());
+				Layer.PlayedParameterInputs.SetNum(State.BlendSamples.Num());
 				for (int32 SampleIndex = 0; SampleIndex < State.BlendSamples.Num(); ++SampleIndex)
 				{
 					const FWidgetAnimMachineBlendSample& Sample = State.BlendSamples[SampleIndex];
@@ -1332,6 +1335,7 @@ namespace WidgetAnimStateMachines
 					}
 					TArray<FWidgetAnimParameterValue> SampleParameters;
 					GatherParameterInputs(Instance, State, SampleParameters, Sample.Animation);
+					Layer.PlayedParameterInputs[SampleIndex] = SampleParameters;
 					TArray<FWidgetAnimSettings> SampleSettings;
 					BuildAnimationSettings(Sample.Animation, Instance.TargetPaths, Context, State.Playback, State.PlaybackSpeed, /*bFollowsProgress=*/false, SampleSettings, SampleParameters);
 					if (SampleSettings.Num() > 0)
@@ -1359,6 +1363,8 @@ namespace WidgetAnimStateMachines
 			const bool bFollowsProgress = !State.ProgressInput.IsNone() && Played->IsPercentTime();
 			TArray<FWidgetAnimParameterValue> ParameterValues;
 			GatherParameterInputs(Instance, State, ParameterValues, Played);
+			Layer.PlayedAnimation = Played;
+			Layer.PlayedParameterInputs.Add(ParameterValues);
 			TArray<FWidgetAnimSettings> Settings;
 			BuildAnimationSettings(Played, Instance.TargetPaths, Context, State.Playback, State.PlaybackSpeed, bFollowsProgress, Settings, ParameterValues);
 			if (Settings.Num() == 0)
@@ -2018,7 +2024,8 @@ namespace WidgetAnimStateMachines
 
 		/** Writes Pose into Acc by Weight: over what is there (Override), or added on top (Additive). Collects the widgets it posed. */
 		void ApplyLayer(FWidgetAnimMachinePose& Acc, const FWidgetAnimMachinePose& Pose, EWidgetAnimMachineLayerBlend Mode, float Weight, const FWidgetAnimMachineContext& Context,
-			TArray<TPair<TWeakObjectPtr<UWidget>, FWidgetAnimPartKey>>& OutPosed, const TSet<const UObject*>* WidgetMask = nullptr, bool bMaskExcludes = false)
+			TArray<TPair<TWeakObjectPtr<UWidget>, FWidgetAnimPartKey>>& OutPosed, const TSet<const UObject*>* WidgetMask = nullptr, bool bMaskExcludes = false,
+			int32 ChannelMask = FWidgetAnimMachineLayer::AllMaskChannels)
 		{
 			if (Weight <= 0.f)
 			{
@@ -2037,9 +2044,15 @@ namespace WidgetAnimStateMachines
 				return bMaskExcludes ? !bListed : bListed;
 			};
 
+			// The layer's channel mask (see FWidgetAnimMachineLayer::MaskChannels): the kinds of things it leaves to the layers under it.
+			const uint8 TransformChannels = static_cast<uint8>(ChannelMask) & WidgetAnimMachineChannels::All;
+			const bool bMaterials = (ChannelMask & static_cast<int32>(EWidgetAnimMachineLayerChannel::Material)) != 0;
+			const bool bOutlines = (ChannelMask & static_cast<int32>(EWidgetAnimMachineLayerChannel::Outline)) != 0;
+			const bool bOthers = (ChannelMask & static_cast<int32>(EWidgetAnimMachineLayerChannel::Other)) != 0;
+
 			for (int32 Index = 0; Index < Pose.Result.TargetedTransforms.Num(); ++Index)
 			{
-				const uint8 Mask = Pose.Masks.IsValidIndex(Index) ? Pose.Masks[Index] : 0;
+				const uint8 Mask = (Pose.Masks.IsValidIndex(Index) ? Pose.Masks[Index] : 0) & TransformChannels;
 				if (Mask == 0 || !Allowed(Pose.Result.TargetedTransforms[Index].TargetWidget))
 				{
 					continue;
@@ -2053,12 +2066,28 @@ namespace WidgetAnimStateMachines
 
 				if (Mode == EWidgetAnimMachineLayerBlend::Additive)
 				{
-					// As a track on top: opacity and scale multiply, the rest adds - each only as strongly as the weight.
-					Into.Opacity *= FMath::Lerp(1.f, Source.Opacity, Weight);
-					Into.Scale *= FMath::Lerp(FVector2D(1.0, 1.0), Source.Scale, static_cast<double>(Weight));
-					Into.Translation += Source.Translation * Weight;
-					Into.Shear += Source.Shear * Weight;
-					Into.Angle += Source.Angle * Weight;
+					// As a track on top: opacity and scale multiply, the rest adds - each only as strongly as the weight. A channel
+					// it doesn't animate is at rest (adds nothing), so only a channel its Channels leave out needs skipping.
+					if (Mask & WidgetAnimMachineChannels::Opacity)
+					{
+						Into.Opacity *= FMath::Lerp(1.f, Source.Opacity, Weight);
+					}
+					if (Mask & WidgetAnimMachineChannels::Scale)
+					{
+						Into.Scale *= FMath::Lerp(FVector2D(1.0, 1.0), Source.Scale, static_cast<double>(Weight));
+					}
+					if (Mask & WidgetAnimMachineChannels::Translation)
+					{
+						Into.Translation += Source.Translation * Weight;
+					}
+					if (Mask & WidgetAnimMachineChannels::Shear)
+					{
+						Into.Shear += Source.Shear * Weight;
+					}
+					if (Mask & WidgetAnimMachineChannels::Angle)
+					{
+						Into.Angle += Source.Angle * Weight;
+					}
 					continue;
 				}
 
@@ -2088,7 +2117,7 @@ namespace WidgetAnimStateMachines
 			// Material parameters are assigned, as a later track's are - by the weight, from what is there or where they rest.
 			for (const FWidgetAnimScalarTarget& Source : Pose.Result.ScalarParameters)
 			{
-				if (!Allowed(Source.TargetWidget))
+				if (!bMaterials || !Allowed(Source.TargetWidget))
 				{
 					continue;
 				}
@@ -2115,7 +2144,7 @@ namespace WidgetAnimStateMachines
 			}
 			for (const FWidgetAnimVectorTarget& Source : Pose.Result.VectorParameters)
 			{
-				if (!Allowed(Source.TargetWidget))
+				if (!bMaterials || !Allowed(Source.TargetWidget))
 				{
 					continue;
 				}
@@ -2144,7 +2173,7 @@ namespace WidgetAnimStateMachines
 			// Outlines and registered types say what their channel IS: the later layer's, unless it is only a baseline.
 			for (const FWidgetAnimShapeTarget& Source : Pose.Result.ShapeTargets)
 			{
-				if (!Allowed(Source.TargetBox))
+				if (!bOutlines || !Allowed(Source.TargetBox))
 				{
 					continue;
 				}
@@ -2164,7 +2193,7 @@ namespace WidgetAnimStateMachines
 			}
 			for (const FWidgetAnimAuthoritativeWrite& Source : Pose.Result.AuthoritativeWrites)
 			{
-				if (!Allowed(Source.TargetWidget))
+				if (!bOthers || !Allowed(Source.TargetWidget))
 				{
 					continue;
 				}
@@ -2490,6 +2519,13 @@ namespace WidgetAnimStateMachines
 			Instance.bInputsChanged = true;
 		}
 
+		// A playing state whose Parameters From Inputs read inputs that moved: its tracks take the new values now, rather than
+		// the next time the state starts.
+		if (Instance.bInputsChanged)
+		{
+			RefreshParameters(Instance, Context, /*bOnlyIfInputsChanged=*/true);
+		}
+
 		for (int32 LayerIndex = 0; LayerIndex < NumLayers; ++LayerIndex)
 		{
 			FWidgetAnimMachineLayerInstance& Layer = Instance.Layers[LayerIndex];
@@ -2549,7 +2585,8 @@ namespace WidgetAnimStateMachines
 					const FWidgetAnimMachineLayer& Def = Instance.Machine->Layers[LayerIndex];
 					TSet<const UObject*> MaskWidgets;
 					const bool bMasked = BuildLayerMask(Instance, Def, Context, MaskWidgets);
-					ApplyLayer(Acc, Layer.Output, Def.BlendMode, Layer.Weight, Context, Posed, bMasked ? &MaskWidgets : nullptr, Def.MaskMode == EWidgetAnimMachineLayerMask::AllButThese);
+					ApplyLayer(Acc, Layer.Output, Def.BlendMode, Layer.Weight, Context, Posed, bMasked ? &MaskWidgets : nullptr, Def.MaskMode == EWidgetAnimMachineLayerMask::AllButThese,
+						Def.MaskChannels);
 				}
 			}
 		}
@@ -3001,7 +3038,141 @@ namespace WidgetAnimStateMachines
 				Debug.BlendPoint = Layer.BlendPoint;
 			}
 			Debug.LastActions = Layer.LastActions;
+
+			// What the layer's conditions on other layers make of them now, for the graph to mark them held or not.
+			for (const FWidgetAnimMachineTransition& Transition : Def.Transitions)
+			{
+				for (int32 ConditionIndex = 0; ConditionIndex < Transition.Conditions.Num(); ++ConditionIndex)
+				{
+					const FWidgetAnimMachineCondition& Condition = Transition.Conditions[ConditionIndex];
+					if (Condition.TestsLayerState())
+					{
+						FWidgetAnimMachineLayerDebug::FLayerCondition& Entry = Debug.LayerConditions.AddDefaulted_GetRef();
+						Entry.Transition = Transition.Id;
+						Entry.Condition = ConditionIndex;
+						Entry.bHolds = EvaluateLayerStateCondition(Instance, Condition);
+					}
+				}
+			}
 		}
+	}
+
+	bool RefreshParameters(FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineContext& Context, bool bOnlyIfInputsChanged)
+	{
+		const UWidgetAnimStateMachineAsset* Machine = Instance.Machine.Get();
+		if (!Machine || !Instance.bStarted)
+		{
+			return false;
+		}
+
+		// Rebuilt settings laid over the track's own, one for one: only those that differ, and where each is in its play kept.
+		auto LayOver = [](FWidgetAnimPlayer& Player, FName TrackId, TArray<FWidgetAnimSettings>& Rebuilt)
+		{
+			bool bChanged = false;
+			for (FWidgetAnimTrack& Track : Player.Tracks)
+			{
+				if (Track.AnimId != TrackId || (Track.bFinished && !Track.bHoldWhenFinished))
+				{
+					continue;
+				}
+				bool bTrackChanged = false;
+				const int32 Count = FMath::Min(Rebuilt.Num(), Track.Settings.Num());
+				for (int32 Index = 0; Index < Count; ++Index)
+				{
+					if (!FWidgetAnimSettings::StaticStruct()->CompareScriptStruct(&Track.Settings[Index], &Rebuilt[Index], PPF_None))
+					{
+						Track.Settings[Index] = MoveTemp(Rebuilt[Index]);
+						bTrackChanged = true;
+					}
+				}
+				if (bTrackChanged)
+				{
+					Track.bSettled = false;
+					bChanged = true;
+				}
+			}
+			return bChanged;
+		};
+		auto SameValues = [](const TArray<FWidgetAnimParameterValue>& A, const TArray<FWidgetAnimParameterValue>& B)
+		{
+			if (A.Num() != B.Num())
+			{
+				return false;
+			}
+			for (int32 Index = 0; Index < A.Num(); ++Index)
+			{
+				if (A[Index].Name != B[Index].Name || !A[Index].SameValueAs(B[Index]))
+				{
+					return false;
+				}
+			}
+			return true;
+		};
+
+		bool bAnyChanged = false;
+		for (int32 LayerIndex = 0; LayerIndex < Instance.Layers.Num() && LayerIndex < Machine->Layers.Num(); ++LayerIndex)
+		{
+			const FWidgetAnimMachineLayer& Def = Machine->Layers[LayerIndex];
+			FWidgetAnimMachineLayerInstance& Layer = Instance.Layers[LayerIndex];
+			if (!Layer.bStateTrackStarted || !Def.States.IsValidIndex(Layer.Current))
+			{
+				continue;
+			}
+			const FWidgetAnimMachineState& State = Def.States[Layer.Current];
+			if (State.Kind != EWidgetAnimMachineNodeKind::State || (bOnlyIfInputsChanged && State.ParameterInputs.Num() == 0))
+			{
+				continue;
+			}
+
+			const FName TrackId = GetStateTrackId(State);
+			bool bLayerChanged = false;
+			auto Rebuild = [&](UWidgetAnimPresetAsset* Animation, FWidgetAnimPlayer& Player, int32 InputsIndex, bool bFollowsProgress)
+			{
+				if (!Animation || Animation->Parameters.Num() == 0)
+				{
+					return;
+				}
+				TArray<FWidgetAnimParameterValue> Values;
+				GatherParameterInputs(Instance, State, Values, Animation);
+				if (Layer.PlayedParameterInputs.Num() <= InputsIndex)
+				{
+					Layer.PlayedParameterInputs.SetNum(InputsIndex + 1);
+				}
+				if (bOnlyIfInputsChanged && SameValues(Values, Layer.PlayedParameterInputs[InputsIndex]))
+				{
+					return;
+				}
+				Layer.PlayedParameterInputs[InputsIndex] = Values;
+				TArray<FWidgetAnimSettings> Rebuilt;
+				BuildAnimationSettings(Animation, Instance.TargetPaths, Context, State.Playback, State.PlaybackSpeed, bFollowsProgress, Rebuilt, Values);
+				bLayerChanged |= LayOver(Player, TrackId, Rebuilt);
+			};
+
+			if (State.IsBlendState())
+			{
+				for (int32 SampleIndex = 0; SampleIndex < State.BlendSamples.Num() && SampleIndex < Layer.BlendPlayers.Num(); ++SampleIndex)
+				{
+					Rebuild(State.BlendSamples[SampleIndex].Animation, Layer.BlendPlayers[SampleIndex], SampleIndex, /*bFollowsProgress=*/false);
+				}
+			}
+			else if (UWidgetAnimPresetAsset* Played = Layer.PlayedAnimation)
+			{
+				Rebuild(Played, Layer.Player, 0, !State.ProgressInput.IsNone() && Played->IsPercentTime());
+			}
+
+			if (bLayerChanged)
+			{
+				// Posed again: the frame works it out anew, and a pose state is taken to its new end pose.
+				Layer.bSettled = false;
+				Layer.bPoseSettled = false;
+				bAnyChanged = true;
+			}
+		}
+		if (bAnyChanged)
+		{
+			Instance.bPoseChanged = true;
+		}
+		return bAnyChanged;
 	}
 
 	void ComputeBlendWeights(const FWidgetAnimMachineState& State, const FVector2f& Value, TArray<float>& OutWeights)

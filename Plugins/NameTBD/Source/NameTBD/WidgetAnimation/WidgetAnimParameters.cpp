@@ -117,10 +117,11 @@ namespace WidgetAnimParametersLocal
 	thread_local const FWidgetAnimParameterResolver* CurrentResolver = nullptr;
 }
 
-FWidgetAnimParameterScope::FWidgetAnimParameterScope(TConstArrayView<FWidgetAnimParameterValue> InValues, const UObject* InAnimation, FName InAnimId)
+FWidgetAnimParameterScope::FWidgetAnimParameterScope(TConstArrayView<FWidgetAnimParameterValue> InValues, const UObject* InAnimation, FName InAnimId, bool bInUnderUse)
 	: Values(InValues)
 	, Animation(InAnimation)
 	, AnimId(InAnimId)
+	, bUnderUse(bInUnderUse)
 {
 	Outer = WidgetAnimParametersLocal::TopScope;
 	WidgetAnimParametersLocal::TopScope = this;
@@ -136,9 +137,9 @@ bool FWidgetAnimParameterScope::AppliesTo(const UObject* UseAnimation, FName Use
 	return (!Animation || Animation == UseAnimation) && (AnimId.IsNone() || AnimId == UseAnimId);
 }
 
-void FWidgetAnimParameterScopeStack::Push(TConstArrayView<FWidgetAnimParameterValue> Values, const UObject* Animation, FName AnimId)
+void FWidgetAnimParameterScopeStack::Push(TConstArrayView<FWidgetAnimParameterValue> Values, const UObject* Animation, FName AnimId, bool bUnderUse)
 {
-	Scopes.Add(MakeUnique<FWidgetAnimParameterScope>(Values, Animation, AnimId));
+	Scopes.Add(MakeUnique<FWidgetAnimParameterScope>(Values, Animation, AnimId, bUnderUse));
 }
 
 void FWidgetAnimParameterScopeStack::Reset()
@@ -184,6 +185,29 @@ bool FWidgetAnimParameterResolver::Resolve(const UWidgetAnimPresetAsset& Animati
 		}
 	}
 
+	// The scopes in effect, outermost first, so the innermost wins.
+	TArray<const FWidgetAnimParameterScope*, TInlineAllocator<4>> Chain;
+	for (const FWidgetAnimParameterScope* Scope = WidgetAnimParametersLocal::TopScope; Scope; Scope = Scope->Outer)
+	{
+		Chain.Insert(Scope, 0);
+	}
+
+	// Those under the use - a component's Parameters - and only what they set.
+	for (const FWidgetAnimParameterScope* Scope : Chain)
+	{
+		if (!Scope->bUnderUse || !Scope->AppliesTo(&Animation, UseAnimId))
+		{
+			continue;
+		}
+		for (const FWidgetAnimParameterValue& Value : Scope->Values)
+		{
+			if (Value.bOverride)
+			{
+				Set(Value);
+			}
+		}
+	}
+
 	// This use's own.
 	if (Entry)
 	{
@@ -196,15 +220,10 @@ bool FWidgetAnimParameterResolver::Resolve(const UWidgetAnimPresetAsset& Animati
 		}
 	}
 
-	// What the play was handed - outermost first, so the innermost wins.
-	TArray<const FWidgetAnimParameterScope*, TInlineAllocator<4>> Chain;
-	for (const FWidgetAnimParameterScope* Scope = WidgetAnimParametersLocal::TopScope; Scope; Scope = Scope->Outer)
-	{
-		Chain.Insert(Scope, 0);
-	}
+	// What the play was handed.
 	for (const FWidgetAnimParameterScope* Scope : Chain)
 	{
-		if (!Scope->AppliesTo(&Animation, UseAnimId))
+		if (Scope->bUnderUse || !Scope->AppliesTo(&Animation, UseAnimId))
 		{
 			continue;
 		}

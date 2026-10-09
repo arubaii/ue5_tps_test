@@ -146,6 +146,12 @@ public:
 
 	/** Warns of tracks bound to parameters the animation doesn't have (renamed or deleted): they play their own values. */
 	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
+
+	/**
+	 * What IsDataValid warns of, each a line starting with AnimationName - also what a Widget Blueprint's compile reports for
+	 * an animation it plays or holds as a timeline: a binding or Plays When naming a parameter the animation doesn't have.
+	 */
+	void GatherParameterProblems(TArray<FText>& OutProblems, const FText& AnimationName) const;
 #endif
 
 private:

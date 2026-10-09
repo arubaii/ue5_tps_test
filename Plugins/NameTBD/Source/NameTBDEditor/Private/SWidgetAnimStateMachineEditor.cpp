@@ -432,6 +432,9 @@ void UWidgetAnimMachineLayerProxy::PostEditChangeProperty(FPropertyChangedEvent&
 	Target.BlendMode = Layer.BlendMode;
 	Target.Weight = Layer.Weight;
 	Target.WeightInput = Layer.WeightInput;
+	Target.MaskMode = Layer.MaskMode;
+	Target.MaskTargets = Layer.MaskTargets;
+	Target.MaskChannels = Layer.MaskChannels;
 
 	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
@@ -1931,6 +1934,42 @@ void SWidgetAnimStateMachineEditor::ShowLayer(int32 LayerIndex)
 	ShowLayerDetails();
 }
 
+namespace
+{
+	/**
+	 * A layer tab's badge: what its Affects and Channels leave out - "only 2", "all but 1", "Scale", "only 2, 3 channels".
+	 * Empty for a layer that poses everything.
+	 */
+	FText MakeLayerMaskBadgeText(const FWidgetAnimMachineLayer& Layer)
+	{
+		TArray<FText> Parts;
+		if (Layer.MaskMode == EWidgetAnimMachineLayerMask::OnlyThese)
+		{
+			Parts.Add(FText::Format(LOCTEXT("LayerMaskOnly", "only {0}"), FText::AsNumber(Layer.MaskTargets.Num())));
+		}
+		else if (Layer.MaskMode == EWidgetAnimMachineLayerMask::AllButThese)
+		{
+			Parts.Add(FText::Format(LOCTEXT("LayerMaskAllBut", "all but {0}"), FText::AsNumber(Layer.MaskTargets.Num())));
+		}
+		if (Layer.HasChannelMask())
+		{
+			const UEnum* Channels = StaticEnum<EWidgetAnimMachineLayerChannel>();
+			TArray<FText> Names;
+			for (int32 Bit = 0; Bit < 8; ++Bit)
+			{
+				if (Layer.MaskChannels & (1 << Bit))
+				{
+					Names.Add(Channels->GetDisplayNameTextByValue(static_cast<int64>(1) << Bit));
+				}
+			}
+			Parts.Add(Names.Num() == 0 ? LOCTEXT("LayerMaskNoChannels", "no channels")
+				: Names.Num() == 1 ? Names[0]
+				: FText::Format(LOCTEXT("LayerMaskChannels", "{0} channels"), FText::AsNumber(Names.Num())));
+		}
+		return FText::Join(LOCTEXT("LayerMaskJoin", ", "), Parts);
+	}
+}
+
 void SWidgetAnimStateMachineEditor::RebuildLayerTabs()
 {
 	LayerTabs->ClearChildren();
@@ -2050,7 +2089,7 @@ void SWidgetAnimStateMachineEditor::RebuildLayerTabs()
 							WidgetAnimMachineEdits::RenameLayer(Machine, LayerIndex, NewText.ToString());
 						})
 					]
-					// A layer limited to some targets (Affects): a small badge, so it reads at a glance.
+					// A layer limited to some targets (Affects) or channels (Channels): a small badge, so it reads at a glance.
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					.VAlign(VAlign_Center)
@@ -2060,14 +2099,12 @@ void SWidgetAnimStateMachineEditor::RebuildLayerTabs()
 						.BorderImage(WidgetAnimMachineStyle::RoundedBrush(3.f))
 						.BorderBackgroundColor(FLinearColor(1.f, 1.f, 1.f, 0.14f))
 						.Padding(FMargin(4.f, 0.f))
-						.Visibility(Layer.MaskMode == EWidgetAnimMachineLayerMask::All ? EVisibility::Collapsed : EVisibility::Visible)
+						.Visibility(Layer.MaskMode == EWidgetAnimMachineLayerMask::All && !Layer.HasChannelMask() ? EVisibility::Collapsed : EVisibility::Visible)
 						.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::LayerMaskBadgeTooltip()))
 						[
 							SNew(STextBlock)
 							.Font(FAppStyle::GetFontStyle(TEXT("SmallFont")))
-							.Text(Layer.MaskMode == EWidgetAnimMachineLayerMask::OnlyThese
-								? FText::Format(LOCTEXT("LayerMaskOnly", "only {0}"), FText::AsNumber(Layer.MaskTargets.Num()))
-								: FText::Format(LOCTEXT("LayerMaskAllBut", "all but {0}"), FText::AsNumber(Layer.MaskTargets.Num())))
+							.Text(MakeLayerMaskBadgeText(Layer))
 						]
 					]
 				]
