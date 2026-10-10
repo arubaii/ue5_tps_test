@@ -1,0 +1,117 @@
+{
+ "kind": "master",
+ "name": "Vignette",
+ "about": "Darkens (or tints) toward the edges - focus on the middle of a screen or card.",
+ "params": {
+  "Color": "edge color",
+  "Inner": "where it starts (0..0.7)",
+  "Outer": "where it is full",
+  "Strength": "0..1"
+ },
+ "graph": {
+  "domain": "UI",
+  "blend": "Translucent",
+  "nodes": [
+   {
+    "id": "uv",
+    "type": "TextureCoordinate"
+   },
+   {
+    "id": "d",
+    "type": "Distance",
+    "inputs": {
+     "A": "uv",
+     "B": [
+      0.5,
+      0.5
+     ]
+    }
+   },
+   {
+    "id": "inner",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Inner",
+     "DefaultValue": 0.35,
+     "Group": "Shape"
+    }
+   },
+   {
+    "id": "outer",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Outer",
+     "DefaultValue": 0.75,
+     "Group": "Shape"
+    }
+   },
+   {
+    "id": "v",
+    "type": "SmoothStep",
+    "inputs": {
+     "Min": "inner",
+     "Max": "outer",
+     "Value": "d"
+    }
+   },
+   {
+    "id": "str",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Strength",
+     "DefaultValue": 0.8,
+     "Group": "Look"
+    }
+   },
+   {
+    "id": "a0",
+    "type": "Multiply",
+    "inputs": {
+     "A": "v",
+     "B": "str"
+    }
+   },
+   {
+    "id": "col",
+    "type": "VectorParameter",
+    "props": {
+     "ParameterName": "Color",
+     "DefaultValue": "#000000",
+     "Group": "Color"
+    }
+   },
+   {
+    "id": "a1",
+    "type": "Multiply",
+    "inputs": {
+     "A": "a0",
+     "B": "col.A"
+    }
+   },
+   {
+    "id": "vc",
+    "type": "VertexColor"
+   },
+   {
+    "id": "rgb_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "col",
+     "B": "vc"
+    }
+   },
+   {
+    "id": "alpha_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "a1",
+     "B": "vc.A"
+    }
+   }
+  ],
+  "outputs": {
+   "FinalColor": "rgb_out",
+   "Opacity": "alpha_out"
+  }
+ }
+}

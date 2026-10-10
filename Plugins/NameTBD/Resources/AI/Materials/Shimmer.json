@@ -1,0 +1,220 @@
+{
+ "kind": "master",
+ "name": "Shimmer",
+ "about": "A light band sweeping across - for loading placeholders, premium buttons, 'new' badges.",
+ "params": {
+  "BaseColor": "color under the band (alpha 0 = clear)",
+  "HighlightColor": "the band",
+  "Width": "band width",
+  "Slant": "tilt",
+  "Speed": "sweeps per second",
+  "Intensity": "strength"
+ },
+ "graph": {
+  "domain": "UI",
+  "blend": "Translucent",
+  "nodes": [
+   {
+    "id": "uv",
+    "type": "TextureCoordinate"
+   },
+   {
+    "id": "u",
+    "type": "ComponentMask",
+    "props": {
+     "R": true,
+     "G": false,
+     "B": false,
+     "A": false
+    },
+    "inputs": {
+     "Input": "uv"
+    }
+   },
+   {
+    "id": "v",
+    "type": "ComponentMask",
+    "props": {
+     "R": false,
+     "G": true,
+     "B": false,
+     "A": false
+    },
+    "inputs": {
+     "Input": "uv"
+    }
+   },
+   {
+    "id": "slant",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Slant",
+     "DefaultValue": 0.35,
+     "Group": "Shape"
+    }
+   },
+   {
+    "id": "vs",
+    "type": "Multiply",
+    "inputs": {
+     "A": "v",
+     "B": "slant"
+    }
+   },
+   {
+    "id": "x0",
+    "type": "Add",
+    "inputs": {
+     "A": "u",
+     "B": "vs"
+    }
+   },
+   {
+    "id": "time",
+    "type": "Time"
+   },
+   {
+    "id": "spd",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Speed",
+     "DefaultValue": 0.5,
+     "Group": "Motion"
+    }
+   },
+   {
+    "id": "ts",
+    "type": "Multiply",
+    "inputs": {
+     "A": "time",
+     "B": "spd"
+    }
+   },
+   {
+    "id": "x1",
+    "type": "Subtract",
+    "inputs": {
+     "A": "x0",
+     "B": "ts"
+    }
+   },
+   {
+    "id": "x",
+    "type": "Frac",
+    "inputs": {
+     "Input": "x1"
+    }
+   },
+   {
+    "id": "dx0",
+    "type": "Subtract",
+    "inputs": {
+     "A": "x",
+     "B": 0.5
+    }
+   },
+   {
+    "id": "dx",
+    "type": "Abs",
+    "inputs": {
+     "Input": "dx0"
+    }
+   },
+   {
+    "id": "wid",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Width",
+     "DefaultValue": 0.08,
+     "Group": "Shape"
+    }
+   },
+   {
+    "id": "band",
+    "type": "SmoothStep",
+    "inputs": {
+     "Min": "wid",
+     "Max": 0,
+     "Value": "dx"
+    }
+   },
+   {
+    "id": "base",
+    "type": "VectorParameter",
+    "props": {
+     "ParameterName": "BaseColor",
+     "DefaultValue": "#FFFFFF00",
+     "Group": "Color"
+    }
+   },
+   {
+    "id": "hi",
+    "type": "VectorParameter",
+    "props": {
+     "ParameterName": "HighlightColor",
+     "DefaultValue": "#FFFFFFB0",
+     "Group": "Color"
+    }
+   },
+   {
+    "id": "inten",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Intensity",
+     "DefaultValue": 1.0,
+     "Group": "Look"
+    }
+   },
+   {
+    "id": "rgb",
+    "type": "Lerp",
+    "inputs": {
+     "A": "base",
+     "B": "hi",
+     "Alpha": "band"
+    }
+   },
+   {
+    "id": "ha",
+    "type": "Multiply",
+    "inputs": {
+     "A": "hi.A",
+     "B": "inten"
+    }
+   },
+   {
+    "id": "a0",
+    "type": "Lerp",
+    "inputs": {
+     "A": "base.A",
+     "B": "ha",
+     "Alpha": "band"
+    }
+   },
+   {
+    "id": "vc",
+    "type": "VertexColor"
+   },
+   {
+    "id": "rgb_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "rgb",
+     "B": "vc"
+    }
+   },
+   {
+    "id": "alpha_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "a0",
+     "B": "vc.A"
+    }
+   }
+  ],
+  "outputs": {
+   "FinalColor": "rgb_out",
+   "Opacity": "alpha_out"
+  }
+ }
+}

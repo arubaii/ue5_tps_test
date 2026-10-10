@@ -1,0 +1,102 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMcpServer.cpp b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMcpServer.cpp
+index 7405eed..b2fa850 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMcpServer.cpp
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMcpServer.cpp
+@@ -239,6 +239,7 @@ void FNameTBDAIMcpServer::WriteConnectionFile() const
+ 	Connection->SetStringField(TEXT("token"), GetMutableDefault<UNameTBDAISettings>()->GetOrCreateMcpToken());
+ 	Connection->SetStringField(TEXT("project"), FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath()));
+ 	FFileHelper::SaveStringToFile(ToString(Connection, true), *(FPaths::ProjectSavedDir() / TEXT("NameTBDAI") / TEXT("mcp.json")));
++	GetMutableDefault<UNameTBDAISettings>()->WriteClientSetupFiles();
+ }
+ 
+ FString FNameTBDAIMcpServer::HandleMessage(const FString& Body)
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAISettings.cpp b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAISettings.cpp
+index 008bc12..08e196d 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAISettings.cpp
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAISettings.cpp
+@@ -5,6 +5,7 @@
+ #include "Framework/Notifications/NotificationManager.h"
+ #include "HAL/PlatformApplicationMisc.h"
+ #include "Interfaces/IPluginManager.h"
++#include "Misc/FileHelper.h"
+ #include "Misc/Paths.h"
+ #include "NameTBDAILibrary.h"
+ #include "NameTBDAIMcpServer.h"
+@@ -144,6 +145,7 @@ void UNameTBDAISettings::PostInitProperties()
+ {
+ 	Super::PostInitProperties();
+ 	ClaudeCodeCommandLine = MakeClaudeCodeCommandLine();
++	ClaudeDesktopConfigText = MakeClaudeDesktopConfig();
+ }
+ 
+ void UNameTBDAISettings::CopyClaudeCodeCommand()
+@@ -160,8 +162,17 @@ void UNameTBDAISettings::CopyClaudeCodeCommand()
+ void UNameTBDAISettings::CopyClaudeDesktopConfig()
+ {
+ 	GetOrCreateMcpToken();
++	const FString Json = MakeClaudeDesktopConfig();
++	ClaudeDesktopConfigText = Json;
++	FPlatformApplicationMisc::ClipboardCopy(*Json);
++	FNameTBDAIMcpServer::Get().WriteConnectionFile();
++	Notify(LOCTEXT("CopiedDesktop", "Config copied (also in Saved/NameTBDAI/claude_desktop_config.json). Merge it into claude_desktop_config.json (or your client's MCP config) and restart the client."));
++}
++
++FString UNameTBDAISettings::MakeClaudeDesktopConfig() const
++{
+ 	const FString Project = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+-	const FString Json = FString::Printf(TEXT(
++	return FString::Printf(TEXT(
+ 		"{\n"
+ 		"  \"mcpServers\": {\n"
+ 		"    \"nametbd\": {\n"
+@@ -170,9 +181,16 @@ void UNameTBDAISettings::CopyClaudeDesktopConfig()
+ 		"    }\n"
+ 		"  }\n"
+ 		"}\n"), *JsonEscape(GetEnginePython()), *JsonEscape(GetBridgeScript()), *JsonEscape(Project));
+-	FPlatformApplicationMisc::ClipboardCopy(*Json);
+-	FNameTBDAIMcpServer::Get().WriteConnectionFile();
+-	Notify(LOCTEXT("CopiedDesktop", "Config copied. Merge it into claude_desktop_config.json (or your client's MCP config) and restart the client."));
++}
++
++void UNameTBDAISettings::WriteClientSetupFiles()
++{
++	GetOrCreateMcpToken();
++	ClaudeCodeCommandLine = MakeClaudeCodeCommandLine();
++	ClaudeDesktopConfigText = MakeClaudeDesktopConfig();
++	const FString Folder = FPaths::ProjectSavedDir() / TEXT("NameTBDAI");
++	FFileHelper::SaveStringToFile(ClaudeCodeCommandLine + TEXT("\n"), *(Folder / TEXT("claude_code_command.txt")));
++	FFileHelper::SaveStringToFile(ClaudeDesktopConfigText, *(Folder / TEXT("claude_desktop_config.json")));
+ }
+ 
+ void UNameTBDAISettings::RegenerateMcpToken()
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Public/NameTBDAISettings.h b/Plugins/NameTBD/Source/NameTBDAI/Public/NameTBDAISettings.h
+index c79916f..058d97e 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Public/NameTBDAISettings.h
++++ b/Plugins/NameTBD/Source/NameTBDAI/Public/NameTBDAISettings.h
+@@ -231,6 +231,13 @@ public:
+ 	UPROPERTY(Transient, VisibleAnywhere, Category = "MCP Server", meta = (DisplayName = "Claude Code Command"))
+ 	FString ClaudeCodeCommandLine;
+ 
++	/**
++	 * The JSON for claude_desktop_config.json - select it and copy, or open Saved/NameTBDAI/claude_desktop_config.json,
++	 * which the server writes when it starts (with claude_code_command.txt next to it).
++	 */
++	UPROPERTY(Transient, VisibleAnywhere, Category = "MCP Server", meta = (DisplayName = "Claude Desktop Config", MultiLine = true))
++	FString ClaudeDesktopConfigText;
++
+ 	/** Copies the Claude Code command that connects it to this editor (over HTTP, with this session's token). */
+ 	UFUNCTION(CallInEditor, Category = "MCP Server", meta = (DisplayName = "Copy Claude Code Command"))
+ 	void CopyClaudeCodeCommand();
+@@ -272,6 +279,12 @@ public:
+ 	/** The Claude Code command for this port and token (empty while there's no token). */
+ 	FString MakeClaudeCodeCommandLine() const;
+ 
++	/** The claude_desktop_config.json block (the bridge run with the engine's Python). */
++	FString MakeClaudeDesktopConfig() const;
++
++	/** Fills the two fields above and writes them to Saved/NameTBDAI/ (claude_code_command.txt, claude_desktop_config.json). */
++	void WriteClientSetupFiles();
++
+ 	virtual void PostInitProperties() override;
+ 
+ 	/** The price of a model: the table above, else built-in figures for Anthropic's current models, else null. */

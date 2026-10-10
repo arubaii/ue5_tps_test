@@ -1,0 +1,153 @@
+{
+ "kind": "master",
+ "name": "Dissolve",
+ "about": "Appears / disappears through a noisy edge that glows. Animate Progress 0 -> 1 (a Material Scalar track) to reveal.",
+ "params": {
+  "Color": "fill",
+  "EdgeColor": "the glowing edge",
+  "Progress": "0 hidden .. 1 shown",
+  "EdgeWidth": "edge width"
+ },
+ "graph": {
+  "domain": "UI",
+  "blend": "Translucent",
+  "nodes": [
+   {
+    "id": "uv",
+    "type": "TextureCoordinate"
+   },
+   {
+    "id": "n",
+    "type": "MaterialFunctionCall",
+    "function": "PanningNoise",
+    "inputs": {
+     "UV": "uv",
+     "Scale": 6,
+     "Speed": [
+      0,
+      0
+     ]
+    }
+   },
+   {
+    "id": "prog",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Progress",
+     "DefaultValue": 0.5,
+     "Group": "Motion"
+    }
+   },
+   {
+    "id": "edge",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "EdgeWidth",
+     "DefaultValue": 0.08,
+     "Group": "Shape"
+    }
+   },
+   {
+    "id": "pe",
+    "type": "Subtract",
+    "inputs": {
+     "A": "prog",
+     "B": "edge"
+    }
+   },
+   {
+    "id": "vis",
+    "type": "SmoothStep",
+    "inputs": {
+     "Min": "prog",
+     "Max": "pe",
+     "Value": "n.Result"
+    }
+   },
+   {
+    "id": "e2",
+    "type": "Multiply",
+    "inputs": {
+     "A": "edge",
+     "B": 2
+    }
+   },
+   {
+    "id": "pe2",
+    "type": "Subtract",
+    "inputs": {
+     "A": "prog",
+     "B": "e2"
+    }
+   },
+   {
+    "id": "innr",
+    "type": "SmoothStep",
+    "inputs": {
+     "Min": "pe",
+     "Max": "pe2",
+     "Value": "n.Result"
+    }
+   },
+   {
+    "id": "col",
+    "type": "VectorParameter",
+    "props": {
+     "ParameterName": "Color",
+     "DefaultValue": "@surface",
+     "Group": "Color"
+    }
+   },
+   {
+    "id": "ec",
+    "type": "VectorParameter",
+    "props": {
+     "ParameterName": "EdgeColor",
+     "DefaultValue": "@accent",
+     "Group": "Color"
+    }
+   },
+   {
+    "id": "rgb",
+    "type": "Lerp",
+    "inputs": {
+     "A": "ec",
+     "B": "col",
+     "Alpha": "innr"
+    }
+   },
+   {
+    "id": "a0",
+    "type": "Multiply",
+    "inputs": {
+     "A": "vis",
+     "B": "col.A"
+    }
+   },
+   {
+    "id": "vc",
+    "type": "VertexColor"
+   },
+   {
+    "id": "rgb_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "rgb",
+     "B": "vc"
+    }
+   },
+   {
+    "id": "alpha_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "a0",
+     "B": "vc.A"
+    }
+   }
+  ],
+  "outputs": {
+   "FinalColor": "rgb_out",
+   "Opacity": "alpha_out"
+  }
+ }
+}

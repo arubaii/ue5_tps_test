@@ -41,29 +41,29 @@ namespace WidgetAnimTrackPresets
 	};
 
 	/** <Project>/Content/WidgetAnimTrackPresets, full path. Made when bCreate and it doesn't exist yet. */
-	FString GetFolder(bool bCreate = false);
+	NAMETBDEDITOR_API FString GetFolder(bool bCreate = false);
 
 	/** Every preset that reads, by name. A file that doesn't read is left out (and logged). */
-	void GetPresets(TArray<FPreset>& OutPresets);
+	NAMETBDEDITOR_API void GetPresets(TArray<FPreset>& OutPresets);
 
 	/** The file a preset of Name is saved in - whether or not there is one yet. Empty for a name that makes no file name. */
-	FString GetPresetFile(const FString& Name);
+	NAMETBDEDITOR_API FString GetPresetFile(const FString& Name);
 
 	/** Whether Layer can be in a preset: not a track that plays another animation, whose settings are that animation's. */
-	bool CanSave(const FWidgetAnimLayer& Layer);
+	NAMETBDEDITOR_API bool CanSave(const FWidgetAnimLayer& Layer);
 
 	/**
 	 * Saves Layers - with Starts, each one's start in authored seconds, any origin - as the preset Name, replacing one of that
 	 * name. bCollapsed: they came from a collapsed track, and go back in as one. False, with OutError, when it can't.
 	 */
-	bool Save(const FString& Name, const TArray<FWidgetAnimLayer>& Layers, const TArray<float>& Starts, bool bCollapsed, FText& OutError);
+	NAMETBDEDITOR_API bool Save(const FString& Name, const TArray<FWidgetAnimLayer>& Layers, const TArray<float>& Starts, bool bCollapsed, FText& OutError);
 
 	/** Deletes a preset's file. */
-	bool Delete(const FPreset& Preset);
+	NAMETBDEDITOR_API bool Delete(const FPreset& Preset);
 
 	/**
 	 * Puts a preset track's settings on Target, keeping everything that says where Target is and how the panel shows it -
 	 * its name included.
 	 */
-	void ApplyTo(const FWidgetAnimLayer& Preset, FWidgetAnimLayer& Target);
+	NAMETBDEDITOR_API void ApplyTo(const FWidgetAnimLayer& Preset, FWidgetAnimLayer& Target);
 }

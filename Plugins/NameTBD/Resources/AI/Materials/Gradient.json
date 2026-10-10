@@ -1,0 +1,221 @@
+{
+ "kind": "master",
+ "name": "Gradient",
+ "about": "A three-color linear gradient at any Angle (0 = left to right, 90 = top to bottom) that can drift slowly (Drift).",
+ "params": {
+  "ColorA": "start",
+  "ColorB": "middle",
+  "ColorC": "end",
+  "Angle": "degrees",
+  "Drift": "0..0.3 how far it sways",
+  "DriftSpeed": "cycles per second",
+  "Opacity": "0..1"
+ },
+ "graph": {
+  "domain": "UI",
+  "blend": "Translucent",
+  "nodes": [
+   {
+    "id": "uv",
+    "type": "TextureCoordinate"
+   },
+   {
+    "id": "ang",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Angle",
+     "DefaultValue": 90,
+     "Group": "Shape"
+    }
+   },
+   {
+    "id": "angc",
+    "type": "Divide",
+    "inputs": {
+     "A": "ang",
+     "B": 360
+    }
+   },
+   {
+    "id": "cx",
+    "type": "Cosine",
+    "inputs": {
+     "Input": "angc"
+    }
+   },
+   {
+    "id": "sy",
+    "type": "Sine",
+    "inputs": {
+     "Input": "angc"
+    }
+   },
+   {
+    "id": "dir",
+    "type": "AppendVector",
+    "inputs": {
+     "A": "cx",
+     "B": "sy"
+    }
+   },
+   {
+    "id": "c",
+    "type": "Subtract",
+    "inputs": {
+     "A": "uv",
+     "B": [
+      0.5,
+      0.5
+     ]
+    }
+   },
+   {
+    "id": "dt",
+    "type": "DotProduct",
+    "inputs": {
+     "A": "c",
+     "B": "dir"
+    }
+   },
+   {
+    "id": "t0",
+    "type": "Add",
+    "inputs": {
+     "A": "dt",
+     "B": 0.5
+    }
+   },
+   {
+    "id": "time",
+    "type": "Time"
+   },
+   {
+    "id": "spd",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "DriftSpeed",
+     "DefaultValue": 0.1,
+     "Group": "Motion"
+    }
+   },
+   {
+    "id": "ts",
+    "type": "Multiply",
+    "inputs": {
+     "A": "time",
+     "B": "spd"
+    }
+   },
+   {
+    "id": "sw",
+    "type": "Sine",
+    "inputs": {
+     "Input": "ts"
+    }
+   },
+   {
+    "id": "drift",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Drift",
+     "DefaultValue": 0.0,
+     "Group": "Motion"
+    }
+   },
+   {
+    "id": "dm",
+    "type": "Multiply",
+    "inputs": {
+     "A": "sw",
+     "B": "drift"
+    }
+   },
+   {
+    "id": "t1",
+    "type": "Add",
+    "inputs": {
+     "A": "t0",
+     "B": "dm"
+    }
+   },
+   {
+    "id": "t",
+    "type": "Saturate",
+    "inputs": {
+     "Input": "t1"
+    }
+   },
+   {
+    "id": "ca",
+    "type": "VectorParameter",
+    "props": {
+     "ParameterName": "ColorA",
+     "DefaultValue": "@accent",
+     "Group": "Color"
+    }
+   },
+   {
+    "id": "cb",
+    "type": "VectorParameter",
+    "props": {
+     "ParameterName": "ColorB",
+     "DefaultValue": "@glow3",
+     "Group": "Color"
+    }
+   },
+   {
+    "id": "cc",
+    "type": "VectorParameter",
+    "props": {
+     "ParameterName": "ColorC",
+     "DefaultValue": "@glow1",
+     "Group": "Color"
+    }
+   },
+   {
+    "id": "ramp",
+    "type": "MaterialFunctionCall",
+    "function": "ColorRamp",
+    "inputs": {
+     "T": "t",
+     "ColorA": "ca",
+     "ColorB": "cb",
+     "ColorC": "cc"
+    }
+   },
+   {
+    "id": "op",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Opacity",
+     "DefaultValue": 1.0,
+     "Group": "Look"
+    }
+   },
+   {
+    "id": "vc",
+    "type": "VertexColor"
+   },
+   {
+    "id": "rgb_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "ramp.Color",
+     "B": "vc"
+    }
+   },
+   {
+    "id": "alpha_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "op",
+     "B": "vc.A"
+    }
+   }
+  ],
+  "outputs": {
+   "FinalColor": "rgb_out",
+   "Opacity": "alpha_out"
+  }
+ }
+}

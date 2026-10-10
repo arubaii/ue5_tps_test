@@ -1,0 +1,609 @@
+{
+ "RisingBubbles": {
+  "about": "Faint circles that bubble up from the bottom and fade as they rise - calm backgrounds, greeting cards.",
+  "base_systems": [],
+  "base_emitters": [
+   "/Niagara/DefaultAssets/Templates/Emitters/Fountain",
+   "Fountain"
+  ],
+  "material": "Bubble",
+  "constants": {
+   "SpawnRate.SpawnRate": 10,
+   "GravityForce.Gravity": [
+    0,
+    0,
+    30
+   ],
+   "AddVelocityInCone.VelocityStrength": 70,
+   "AddVelocityInCone.ConeAngle": 20,
+   "InitializeParticle.LifetimeMin": 3.2,
+   "InitializeParticle.LifetimeMax": 4.8,
+   "InitializeParticle.UniformSpriteSizeMin": 6,
+   "InitializeParticle.UniformSpriteSizeMax": 14,
+   "InitializeParticle.Color": [
+    1,
+    1,
+    1,
+    0.25
+   ],
+   "Drag.Drag": 0.6
+  },
+  "params": {
+   "rate": {
+    "default": 10,
+    "about": "particles per second",
+    "constants": {
+     "SpawnRate.SpawnRate": "{value}"
+    }
+   },
+   "lifetime": {
+    "default": 4,
+    "about": "seconds each lives",
+    "constants": {
+     "InitializeParticle.LifetimeMin": "{value*0.8}",
+     "InitializeParticle.LifetimeMax": "{value*1.2}",
+     "InitializeParticle.Lifetime": "{value}"
+    }
+   },
+   "size": {
+    "default": 10,
+    "about": "sprite size in px (before Particle Scale)",
+    "constants": {
+     "InitializeParticle.UniformSpriteSizeMin": "{value*0.6}",
+     "InitializeParticle.UniformSpriteSizeMax": "{value*1.4}",
+     "InitializeParticle.UniformSpriteSize": "{value}"
+    }
+   },
+   "color": {
+    "default": "#FFFFFF",
+    "about": "tint (alpha too) - on the Niagara widget's Color And Opacity",
+    "widget": {
+     "ColorAndOpacity": "{value}"
+    }
+   },
+   "opacity": {
+    "default": 0.3,
+    "about": "0..1 - on the widget's Color And Opacity alpha",
+    "widget": {
+     "ColorAndOpacity": [
+      1,
+      1,
+      1,
+      "{value}"
+     ]
+    }
+   },
+   "scale": {
+    "default": 1,
+    "about": "everything bigger or smaller - the widget's Particle Scale",
+    "widget": {
+     "ParticleScale": "{value}"
+    }
+   },
+   "rise_speed": {
+    "default": 70,
+    "about": "px per second upward",
+    "constants": {
+     "AddVelocityInCone.VelocityStrength": "{value}",
+     "GravityForce.Gravity": [
+      0,
+      0,
+      "{value*0.4}"
+     ]
+    }
+   },
+   "spread": {
+    "default": 20,
+    "about": "degrees of sideways drift",
+    "constants": {
+     "AddVelocityInCone.ConeAngle": "{value}"
+    }
+   }
+  },
+  "widget": {
+   "Origin": [
+    0.5,
+    1.0
+   ],
+   "Visibility": "HitTestInvisible",
+   "ColorAndOpacity": [
+    1,
+    1,
+    1,
+    0.25
+   ]
+  },
+  "intended_stack": "Emitter Update: Spawn Rate (User.Rate). Particle Spawn: Initialize Particle (lifetime 3-5 s, sprite size 6-14, color white a=0.25), Shape Location (box along the bottom edge, 600 wide), Add Velocity (0, 0, User.RiseSpeed) + random X +-15. Particle Update: Curl Noise Force (strength 20, frequency 0.2) for drift, Scale Color by Normalized Age (alpha 0 -> 1 -> 0), Solve Forces and Velocity. Sprite renderer: M_UI_Bubble. CPU, local space."
+ },
+ "Sparkles": {
+  "about": "Twinkling star-like glints scattered over an area - rewards, rare items, magic.",
+  "base_systems": [
+   "/NameTBD/NS_UISparkle"
+  ],
+  "base_emitters": [
+   "/Niagara/DefaultAssets/Templates/Emitters/HangingParticulates",
+   "HangingParticulates"
+  ],
+  "material": "SoftDot",
+  "constants": {
+   "SpawnRate.SpawnRate": 14,
+   "InitializeParticle.LifetimeMin": 0.6,
+   "InitializeParticle.LifetimeMax": 1.4,
+   "InitializeParticle.UniformSpriteSizeMin": 3,
+   "InitializeParticle.UniformSpriteSizeMax": 9
+  },
+  "params": {
+   "rate": {
+    "default": 10,
+    "about": "particles per second",
+    "constants": {
+     "SpawnRate.SpawnRate": "{value}"
+    }
+   },
+   "lifetime": {
+    "default": 4,
+    "about": "seconds each lives",
+    "constants": {
+     "InitializeParticle.LifetimeMin": "{value*0.8}",
+     "InitializeParticle.LifetimeMax": "{value*1.2}",
+     "InitializeParticle.Lifetime": "{value}"
+    }
+   },
+   "size": {
+    "default": 10,
+    "about": "sprite size in px (before Particle Scale)",
+    "constants": {
+     "InitializeParticle.UniformSpriteSizeMin": "{value*0.6}",
+     "InitializeParticle.UniformSpriteSizeMax": "{value*1.4}",
+     "InitializeParticle.UniformSpriteSize": "{value}"
+    }
+   },
+   "color": {
+    "default": "#FFFFFF",
+    "about": "tint (alpha too) - on the Niagara widget's Color And Opacity",
+    "widget": {
+     "ColorAndOpacity": "{value}"
+    }
+   },
+   "opacity": {
+    "default": 0.3,
+    "about": "0..1 - on the widget's Color And Opacity alpha",
+    "widget": {
+     "ColorAndOpacity": [
+      1,
+      1,
+      1,
+      "{value}"
+     ]
+    }
+   },
+   "scale": {
+    "default": 1,
+    "about": "everything bigger or smaller - the widget's Particle Scale",
+    "widget": {
+     "ParticleScale": "{value}"
+    }
+   }
+  },
+  "widget": {
+   "Origin": [
+    0.5,
+    0.5
+   ],
+   "Visibility": "HitTestInvisible"
+  },
+  "intended_stack": "Spawn Rate 14; Box location over the widget; lifetime 0.6-1.4 s; size 3-9 with Scale Sprite Size by age (0 -> 1 -> 0); color white/gold; no velocity. Sprite: SoftDot (or a 4-point star texture material)."
+ },
+ "Confetti": {
+  "about": "A one-shot burst of colorful spinning paper bits falling with gravity - wins, level ups. Play with Burst At Origin.",
+  "base_systems": [],
+  "base_emitters": [
+   "/Niagara/DefaultAssets/Templates/Emitters/ConfettiBurst",
+   "ConfettiBurst",
+   "/Niagara/DefaultAssets/Templates/Emitters/OmnidirectionalBurst",
+   "OmnidirectionalBurst"
+  ],
+  "material": "SoftDot",
+  "constants": {
+   "GravityForce.Gravity": [
+    0,
+    0,
+    -500
+   ]
+  },
+  "params": {
+   "rate": {
+    "default": 10,
+    "about": "particles per second",
+    "constants": {
+     "SpawnRate.SpawnRate": "{value}"
+    }
+   },
+   "lifetime": {
+    "default": 4,
+    "about": "seconds each lives",
+    "constants": {
+     "InitializeParticle.LifetimeMin": "{value*0.8}",
+     "InitializeParticle.LifetimeMax": "{value*1.2}",
+     "InitializeParticle.Lifetime": "{value}"
+    }
+   },
+   "size": {
+    "default": 10,
+    "about": "sprite size in px (before Particle Scale)",
+    "constants": {
+     "InitializeParticle.UniformSpriteSizeMin": "{value*0.6}",
+     "InitializeParticle.UniformSpriteSizeMax": "{value*1.4}",
+     "InitializeParticle.UniformSpriteSize": "{value}"
+    }
+   },
+   "color": {
+    "default": "#FFFFFF",
+    "about": "tint (alpha too) - on the Niagara widget's Color And Opacity",
+    "widget": {
+     "ColorAndOpacity": "{value}"
+    }
+   },
+   "opacity": {
+    "default": 0.3,
+    "about": "0..1 - on the widget's Color And Opacity alpha",
+    "widget": {
+     "ColorAndOpacity": [
+      1,
+      1,
+      1,
+      "{value}"
+     ]
+    }
+   },
+   "scale": {
+    "default": 1,
+    "about": "everything bigger or smaller - the widget's Particle Scale",
+    "widget": {
+     "ParticleScale": "{value}"
+    }
+   },
+   "count": {
+    "default": 60,
+    "about": "pieces in the burst",
+    "constants": {
+     "SpawnBurstInstantaneous.SpawnCount": "{value}"
+    }
+   }
+  },
+  "widget": {
+   "Origin": [
+    0.5,
+    0.4
+   ],
+   "Visibility": "HitTestInvisible"
+  },
+  "intended_stack": "Spawn Burst Instantaneous 60; Initialize: random colors from a palette, size 6-12, sprite rotation random; Add Velocity in Cone up, 400-700; Gravity -500; Drag 1; Sprite Rotation Rate random. Loop Behavior Once."
+ },
+ "Embers": {
+  "about": "Warm glowing specks drifting upward and flickering out - fire, forge, autumn.",
+  "base_systems": [],
+  "base_emitters": [
+   "/Niagara/DefaultAssets/Templates/Emitters/Fountain",
+   "Fountain"
+  ],
+  "material": "SoftDot",
+  "constants": {
+   "SpawnRate.SpawnRate": 18,
+   "GravityForce.Gravity": [
+    0,
+    0,
+    60
+   ],
+   "AddVelocityInCone.VelocityStrength": 40,
+   "AddVelocityInCone.ConeAngle": 35,
+   "InitializeParticle.Color": [
+    1,
+    0.55,
+    0.15,
+    0.8
+   ],
+   "InitializeParticle.UniformSpriteSizeMin": 2,
+   "InitializeParticle.UniformSpriteSizeMax": 5
+  },
+  "params": {
+   "rate": {
+    "default": 10,
+    "about": "particles per second",
+    "constants": {
+     "SpawnRate.SpawnRate": "{value}"
+    }
+   },
+   "lifetime": {
+    "default": 4,
+    "about": "seconds each lives",
+    "constants": {
+     "InitializeParticle.LifetimeMin": "{value*0.8}",
+     "InitializeParticle.LifetimeMax": "{value*1.2}",
+     "InitializeParticle.Lifetime": "{value}"
+    }
+   },
+   "size": {
+    "default": 10,
+    "about": "sprite size in px (before Particle Scale)",
+    "constants": {
+     "InitializeParticle.UniformSpriteSizeMin": "{value*0.6}",
+     "InitializeParticle.UniformSpriteSizeMax": "{value*1.4}",
+     "InitializeParticle.UniformSpriteSize": "{value}"
+    }
+   },
+   "color": {
+    "default": "#FFFFFF",
+    "about": "tint (alpha too) - on the Niagara widget's Color And Opacity",
+    "widget": {
+     "ColorAndOpacity": "{value}"
+    }
+   },
+   "opacity": {
+    "default": 0.3,
+    "about": "0..1 - on the widget's Color And Opacity alpha",
+    "widget": {
+     "ColorAndOpacity": [
+      1,
+      1,
+      1,
+      "{value}"
+     ]
+    }
+   },
+   "scale": {
+    "default": 1,
+    "about": "everything bigger or smaller - the widget's Particle Scale",
+    "widget": {
+     "ParticleScale": "{value}"
+    }
+   },
+   "rise_speed": {
+    "default": 40,
+    "about": "px per second upward",
+    "constants": {
+     "AddVelocityInCone.VelocityStrength": "{value}"
+    }
+   }
+  },
+  "widget": {
+   "Origin": [
+    0.5,
+    1.0
+   ],
+   "Visibility": "HitTestInvisible"
+  },
+  "intended_stack": "Like RisingBubbles with orange-red colors (HDR), size 2-5, curl noise stronger, color fading to dark red."
+ },
+ "GlowRing": {
+  "about": "A ring of soft lights orbiting a center - loading, focus, 'something is here'.",
+  "base_systems": [],
+  "base_emitters": [
+   "/Niagara/DefaultAssets/Templates/Emitters/HangingParticulates",
+   "HangingParticulates"
+  ],
+  "material": "SoftDot",
+  "constants": {},
+  "params": {
+   "rate": {
+    "default": 10,
+    "about": "particles per second",
+    "constants": {
+     "SpawnRate.SpawnRate": "{value}"
+    }
+   },
+   "lifetime": {
+    "default": 4,
+    "about": "seconds each lives",
+    "constants": {
+     "InitializeParticle.LifetimeMin": "{value*0.8}",
+     "InitializeParticle.LifetimeMax": "{value*1.2}",
+     "InitializeParticle.Lifetime": "{value}"
+    }
+   },
+   "size": {
+    "default": 10,
+    "about": "sprite size in px (before Particle Scale)",
+    "constants": {
+     "InitializeParticle.UniformSpriteSizeMin": "{value*0.6}",
+     "InitializeParticle.UniformSpriteSizeMax": "{value*1.4}",
+     "InitializeParticle.UniformSpriteSize": "{value}"
+    }
+   },
+   "color": {
+    "default": "#FFFFFF",
+    "about": "tint (alpha too) - on the Niagara widget's Color And Opacity",
+    "widget": {
+     "ColorAndOpacity": "{value}"
+    }
+   },
+   "opacity": {
+    "default": 0.3,
+    "about": "0..1 - on the widget's Color And Opacity alpha",
+    "widget": {
+     "ColorAndOpacity": [
+      1,
+      1,
+      1,
+      "{value}"
+     ]
+    }
+   },
+   "scale": {
+    "default": 1,
+    "about": "everything bigger or smaller - the widget's Particle Scale",
+    "widget": {
+     "ParticleScale": "{value}"
+    }
+   }
+  },
+  "widget": {
+   "Origin": [
+    0.5,
+    0.5
+   ],
+   "Visibility": "HitTestInvisible"
+  },
+  "intended_stack": "Spawn Rate 30; Shape Location: torus/ring radius 80; Rotate Around Point (speed 90 deg/s); lifetime 1.5 s; Scale Color by age."
+ },
+ "Trail": {
+  "about": "A ribbon of light following the widget as it moves (world space on purpose).",
+  "base_systems": [],
+  "base_emitters": [
+   "/Niagara/DefaultAssets/Templates/Emitters/LocationBasedRibbon",
+   "LocationBasedRibbon"
+  ],
+  "material": "SoftGlow",
+  "constants": {},
+  "params": {
+   "rate": {
+    "default": 10,
+    "about": "particles per second",
+    "constants": {
+     "SpawnRate.SpawnRate": "{value}"
+    }
+   },
+   "lifetime": {
+    "default": 4,
+    "about": "seconds each lives",
+    "constants": {
+     "InitializeParticle.LifetimeMin": "{value*0.8}",
+     "InitializeParticle.LifetimeMax": "{value*1.2}",
+     "InitializeParticle.Lifetime": "{value}"
+    }
+   },
+   "size": {
+    "default": 10,
+    "about": "sprite size in px (before Particle Scale)",
+    "constants": {
+     "InitializeParticle.UniformSpriteSizeMin": "{value*0.6}",
+     "InitializeParticle.UniformSpriteSizeMax": "{value*1.4}",
+     "InitializeParticle.UniformSpriteSize": "{value}"
+    }
+   },
+   "color": {
+    "default": "#FFFFFF",
+    "about": "tint (alpha too) - on the Niagara widget's Color And Opacity",
+    "widget": {
+     "ColorAndOpacity": "{value}"
+    }
+   },
+   "opacity": {
+    "default": 0.3,
+    "about": "0..1 - on the widget's Color And Opacity alpha",
+    "widget": {
+     "ColorAndOpacity": [
+      1,
+      1,
+      1,
+      "{value}"
+     ]
+    }
+   },
+   "scale": {
+    "default": 1,
+    "about": "everything bigger or smaller - the widget's Particle Scale",
+    "widget": {
+     "ParticleScale": "{value}"
+    }
+   }
+  },
+  "widget": {
+   "Origin": [
+    0.5,
+    0.5
+   ],
+   "Visibility": "HitTestInvisible"
+  },
+  "intended_stack": "Ribbon renderer, world space (not local), spawn per unit distance; width 8 fading by age. Leave Local Space off for this one."
+ },
+ "RisingSparkleLoop": {
+  "about": "A gentle endless column of sparkles rising - idle states, collectible highlights.",
+  "base_systems": [],
+  "base_emitters": [
+   "/Niagara/DefaultAssets/Templates/Emitters/Fountain",
+   "Fountain"
+  ],
+  "material": "SoftDot",
+  "constants": {
+   "SpawnRate.SpawnRate": 8,
+   "GravityForce.Gravity": [
+    0,
+    0,
+    20
+   ],
+   "AddVelocityInCone.VelocityStrength": 50,
+   "AddVelocityInCone.ConeAngle": 10,
+   "InitializeParticle.UniformSpriteSizeMin": 3,
+   "InitializeParticle.UniformSpriteSizeMax": 7
+  },
+  "params": {
+   "rate": {
+    "default": 10,
+    "about": "particles per second",
+    "constants": {
+     "SpawnRate.SpawnRate": "{value}"
+    }
+   },
+   "lifetime": {
+    "default": 4,
+    "about": "seconds each lives",
+    "constants": {
+     "InitializeParticle.LifetimeMin": "{value*0.8}",
+     "InitializeParticle.LifetimeMax": "{value*1.2}",
+     "InitializeParticle.Lifetime": "{value}"
+    }
+   },
+   "size": {
+    "default": 10,
+    "about": "sprite size in px (before Particle Scale)",
+    "constants": {
+     "InitializeParticle.UniformSpriteSizeMin": "{value*0.6}",
+     "InitializeParticle.UniformSpriteSizeMax": "{value*1.4}",
+     "InitializeParticle.UniformSpriteSize": "{value}"
+    }
+   },
+   "color": {
+    "default": "#FFFFFF",
+    "about": "tint (alpha too) - on the Niagara widget's Color And Opacity",
+    "widget": {
+     "ColorAndOpacity": "{value}"
+    }
+   },
+   "opacity": {
+    "default": 0.3,
+    "about": "0..1 - on the widget's Color And Opacity alpha",
+    "widget": {
+     "ColorAndOpacity": [
+      1,
+      1,
+      1,
+      "{value}"
+     ]
+    }
+   },
+   "scale": {
+    "default": 1,
+    "about": "everything bigger or smaller - the widget's Particle Scale",
+    "widget": {
+     "ParticleScale": "{value}"
+    }
+   },
+   "rise_speed": {
+    "default": 50,
+    "about": "px per second upward",
+    "constants": {
+     "AddVelocityInCone.VelocityStrength": "{value}"
+    }
+   }
+  },
+  "widget": {
+   "Origin": [
+    0.5,
+    1.0
+   ],
+   "Visibility": "HitTestInvisible"
+  },
+  "intended_stack": "Spawn Rate 8; narrow box at the bottom; rise 40-60 px/s; size 3-7 twinkling (Scale Sprite Size by a sine of age); lifetime 2-3 s."
+ }
+}

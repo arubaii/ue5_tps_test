@@ -1,0 +1,72 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.cpp b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.cpp
+index cbaf88b..f8e19cd 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.cpp
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.cpp
+@@ -668,7 +668,7 @@ namespace NameTBDAILibrary
+ 		UMaterialEditingLibrary::RecompileMaterial(Material);
+ 
+ 		// The compile's own errors - translation (graph) and shader - for the model to fix its graph from.
+-		if (FMaterialResource* Resource = Material->GetMaterialResource(GMaxRHIFeatureLevel))
++		if (FMaterialResource* Resource = Material->GetMaterialResource(GMaxRHIShaderPlatform))
+ 		{
+ 			Resource->FinishCompilation();
+ 			for (const FString& Error : Resource->GetCompileErrors())
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMcpServer.cpp b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMcpServer.cpp
+index 4a197fd..7405eed 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMcpServer.cpp
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMcpServer.cpp
+@@ -60,7 +60,7 @@ namespace
+ 		return Response;
+ 	}
+ 
+-	TSharedPtr<FJsonObject> MakeError(const TSharedPtr<FJsonValue>& Id, int32 Code, const FString& Message)
++	TSharedPtr<FJsonObject> MakeRpcError(const TSharedPtr<FJsonValue>& Id, int32 Code, const FString& Message)
+ 	{
+ 		TSharedPtr<FJsonObject> Reply = MakeShared<FJsonObject>();
+ 		Reply->SetStringField(TEXT("jsonrpc"), TEXT("2.0"));
+@@ -246,7 +246,7 @@ FString FNameTBDAIMcpServer::HandleMessage(const FString& Body)
+ 	TSharedPtr<FJsonValue> Parsed = ParseValue(Body);
+ 	if (!Parsed.IsValid())
+ 	{
+-		return ToString(MakeError(nullptr, -32700, TEXT("Parse error")));
++		return ToString(MakeRpcError(nullptr, -32700, TEXT("Parse error")));
+ 	}
+ 	if (Parsed->Type == EJson::Array)
+ 	{
+@@ -265,7 +265,7 @@ FString FNameTBDAIMcpServer::HandleMessage(const FString& Body)
+ 	}
+ 	if (Parsed->Type != EJson::Object)
+ 	{
+-		return ToString(MakeError(nullptr, -32600, TEXT("Invalid Request")));
++		return ToString(MakeRpcError(nullptr, -32600, TEXT("Invalid Request")));
+ 	}
+ 	const TSharedPtr<FJsonObject> Reply = HandleRequest(Parsed->AsObject());
+ 	return Reply.IsValid() ? ToString(Reply) : FString();
+@@ -325,12 +325,12 @@ TSharedPtr<FJsonObject> FNameTBDAIMcpServer::HandleRequest(const TSharedPtr<FJso
+ 	}
+ 	else
+ 	{
+-		return MakeError(Id, -32601, FString::Printf(TEXT("Method not found: %s"), *Method));
++		return MakeRpcError(Id, -32601, FString::Printf(TEXT("Method not found: %s"), *Method));
+ 	}
+ 
+ 	if (!Result.IsValid())
+ 	{
+-		return MakeError(Id, -32602, Error.IsEmpty() ? FString(TEXT("Invalid params")) : Error);
++		return MakeRpcError(Id, -32602, Error.IsEmpty() ? FString(TEXT("Invalid params")) : Error);
+ 	}
+ 	TSharedPtr<FJsonObject> Reply = MakeShared<FJsonObject>();
+ 	Reply->SetStringField(TEXT("jsonrpc"), TEXT("2.0"));
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAITools_Widgets.cpp b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAITools_Widgets.cpp
+index cd19f14..7d4968f 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAITools_Widgets.cpp
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAITools_Widgets.cpp
+@@ -132,7 +132,7 @@ namespace NameTBDAIWidgetTools
+ 					Kept->SetField(Pair.Key, Inner);
+ 				}
+ 			}
+-			return Kept->Values.Num() > 0 ? MakeShared<FJsonValueObject>(Kept) : nullptr;
++			return Kept->Values.Num() > 0 ? TSharedPtr<FJsonValue>(MakeShared<FJsonValueObject>(Kept)) : nullptr;
+ 		}
+ 		if (Value->Type == EJson::Array)
+ 		{

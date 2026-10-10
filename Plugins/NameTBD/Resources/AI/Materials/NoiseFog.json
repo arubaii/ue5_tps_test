@@ -1,0 +1,143 @@
+{
+ "kind": "master",
+ "name": "NoiseFog",
+ "about": "Drifting soft fog / smoke - backgrounds with depth, mystery panels.",
+ "params": {
+  "Color": "color",
+  "Scale": "fog detail",
+  "Speed": "drift (x, y per second)",
+  "Contrast": "patchiness",
+  "Density": "opacity"
+ },
+ "graph": {
+  "domain": "UI",
+  "blend": "Translucent",
+  "nodes": [
+   {
+    "id": "uv",
+    "type": "TextureCoordinate"
+   },
+   {
+    "id": "sc",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Scale",
+     "DefaultValue": 3.0,
+     "Group": "Shape"
+    }
+   },
+   {
+    "id": "spd",
+    "type": "VectorParameter",
+    "props": {
+     "ParameterName": "Speed",
+     "DefaultValue": [
+      0.03,
+      0.01,
+      0,
+      0
+     ],
+     "Group": "Motion"
+    }
+   },
+   {
+    "id": "spd2",
+    "type": "ComponentMask",
+    "props": {
+     "R": true,
+     "G": true,
+     "B": false,
+     "A": false
+    },
+    "inputs": {
+     "Input": "spd"
+    }
+   },
+   {
+    "id": "n",
+    "type": "MaterialFunctionCall",
+    "function": "PanningNoise",
+    "inputs": {
+     "UV": "uv",
+     "Scale": "sc",
+     "Speed": "spd2"
+    }
+   },
+   {
+    "id": "ct",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Contrast",
+     "DefaultValue": 1.5,
+     "Group": "Shape"
+    }
+   },
+   {
+    "id": "pw",
+    "type": "Power",
+    "inputs": {
+     "Base": "n.Result",
+     "Exponent": "ct"
+    }
+   },
+   {
+    "id": "den",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Density",
+     "DefaultValue": 0.6,
+     "Group": "Look"
+    }
+   },
+   {
+    "id": "a0",
+    "type": "Multiply",
+    "inputs": {
+     "A": "pw",
+     "B": "den"
+    }
+   },
+   {
+    "id": "col",
+    "type": "VectorParameter",
+    "props": {
+     "ParameterName": "Color",
+     "DefaultValue": "@glow3",
+     "Group": "Color"
+    }
+   },
+   {
+    "id": "a1",
+    "type": "Multiply",
+    "inputs": {
+     "A": "a0",
+     "B": "col.A"
+    }
+   },
+   {
+    "id": "vc",
+    "type": "VertexColor"
+   },
+   {
+    "id": "rgb_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "col",
+     "B": "vc"
+    }
+   },
+   {
+    "id": "alpha_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "a1",
+     "B": "vc.A"
+    }
+   }
+  ],
+  "outputs": {
+   "FinalColor": "rgb_out",
+   "Opacity": "alpha_out"
+  }
+ }
+}

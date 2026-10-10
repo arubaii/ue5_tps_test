@@ -1,0 +1,83 @@
+{
+ "kind": "function",
+ "name": "SoftCircle",
+ "about": "A soft-edged disc mask: 1 inside Radius, fading to 0 over Softness (a fraction of the radius). UV centered at 0.5.",
+ "signature": {
+  "inputs": "UV (float2), Radius (0.5), Softness (0..1)",
+  "outputs": "Result (float)"
+ },
+ "graph": {
+  "inputs": [
+   {
+    "name": "UV",
+    "type": "Vector2",
+    "preview": [
+     0.5,
+     0.5,
+     0,
+     0
+    ]
+   },
+   {
+    "name": "Radius",
+    "type": "Scalar",
+    "preview": [
+     0.5,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "name": "Softness",
+    "type": "Scalar",
+    "preview": [
+     0.5,
+     0,
+     0,
+     0
+    ]
+   }
+  ],
+  "nodes": [
+   {
+    "id": "d",
+    "type": "Distance",
+    "inputs": {
+     "A": "UV",
+     "B": [
+      0.5,
+      0.5
+     ]
+    }
+   },
+   {
+    "id": "keep",
+    "type": "OneMinus",
+    "inputs": {
+     "Input": "Softness"
+    }
+   },
+   {
+    "id": "inner",
+    "type": "Multiply",
+    "inputs": {
+     "A": "Radius",
+     "B": "keep"
+    }
+   },
+   {
+    "id": "mask",
+    "type": "SmoothStep",
+    "inputs": {
+     "Min": "Radius",
+     "Max": "inner",
+     "Value": "d"
+    }
+   }
+  ],
+  "outputs": {
+   "Result": "mask"
+  }
+ }
+}

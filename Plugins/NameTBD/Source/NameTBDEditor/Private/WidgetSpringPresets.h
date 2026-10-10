@@ -35,7 +35,7 @@ struct FWidgetSpringPreset
  * Add one from any spring's Preset menu (Save As Preset), or here.
  */
 UCLASS(config = Editor, defaultconfig, meta = (DisplayName = "Spring Presets"))
-class UWidgetSpringPresetSettings : public UDeveloperSettings
+class NAMETBDEDITOR_API UWidgetSpringPresetSettings : public UDeveloperSettings
 {
 	GENERATED_BODY()
 
@@ -66,7 +66,7 @@ namespace WidgetSpringPresets
 		FWidgetSpringParams Spring;
 	};
 
-	const TArray<FBuiltIn>& GetBuiltIns();
+	NAMETBDEDITOR_API const TArray<FBuiltIn>& GetBuiltIns();
 
 	/** Whether two springs move the same - the values their mode uses, compared closely. */
 	bool IsSameSpring(const FWidgetSpringParams& A, const FWidgetSpringParams& B);

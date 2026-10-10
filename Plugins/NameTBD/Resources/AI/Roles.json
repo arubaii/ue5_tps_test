@@ -1,0 +1,286 @@
+{
+ "$about": "House presets for add_widgets / set_widget 'role'. Values use theme tokens (@surface, @radius.large, @type.title...). Edit freely: read on every use.",
+ "card": {
+  "class": "RectangleShape",
+  "props": {
+   "bFill": true,
+   "Fill": {
+    "Type": "Color",
+    "Color": "@surface"
+   },
+   "CornerRounding": "@radius.large",
+   "Stroke": {
+    "bEnabled": true,
+    "Width": 1,
+    "Align": "Inside",
+    "Paint": {
+     "Type": "Color",
+     "Color": "@outline"
+    }
+   },
+   "bSizeToContent": false
+  },
+  "slot": {
+   "align": "fill"
+  }
+ },
+ "panel": {
+  "class": "RectangleShape",
+  "props": {
+   "bFill": true,
+   "Fill": {
+    "Type": "Color",
+    "Color": "@raised"
+   },
+   "CornerRounding": "@radius.medium",
+   "Stroke": {
+    "bEnabled": true,
+    "Width": 1,
+    "Align": "Inside",
+    "Paint": {
+     "Type": "Color",
+     "Color": "@outline"
+    }
+   }
+  }
+ },
+ "pill": {
+  "class": "RectangleShape",
+  "props": {
+   "bFill": true,
+   "bFullyRounded": true,
+   "Fill": {
+    "Type": "Color",
+    "Color": "@raised"
+   },
+   "Stroke": {
+    "bEnabled": true,
+    "Width": 1,
+    "Align": "Inside",
+    "Paint": {
+     "Type": "Color",
+     "Color": "@outline"
+    }
+   },
+   "ContentArea": "InsideStroke"
+  }
+ },
+ "badge": {
+  "class": "RectangleShape",
+  "props": {
+   "bFill": true,
+   "bFullyRounded": true,
+   "Fill": {
+    "Type": "Color",
+    "Color": "@accent"
+   }
+  },
+  "slot": {
+   "align": "top_right"
+  }
+ },
+ "divider": {
+  "class": "RectangleShape",
+  "props": {
+   "bFill": true,
+   "Fill": {
+    "Type": "Color",
+    "Color": "@outline"
+   },
+   "CornerRounding": 0,
+   "DesiredSize": [
+    1,
+    1
+   ],
+   "bSizeToContent": false
+  }
+ },
+ "scrim": {
+  "class": "RectangleShape",
+  "props": {
+   "bFill": true,
+   "Fill": {
+    "Type": "Color",
+    "Color": "@background~0.85"
+   },
+   "CornerRounding": 0,
+   "bSizeToContent": false
+  },
+  "slot": {
+   "align": "fill"
+  }
+ },
+ "display": {
+  "class": "TextBlock",
+  "props": {
+   "Font": {
+    "Size": "@type.display",
+    "TypefaceFontName": "@font.strong"
+   },
+   "ColorAndOpacity": "@text"
+  }
+ },
+ "title": {
+  "class": "TextBlock",
+  "props": {
+   "Font": {
+    "Size": "@type.title",
+    "TypefaceFontName": "@font.strong"
+   },
+   "ColorAndOpacity": "@text"
+  }
+ },
+ "heading": {
+  "class": "TextBlock",
+  "props": {
+   "Font": {
+    "Size": "@type.heading",
+    "TypefaceFontName": "@font.strong"
+   },
+   "ColorAndOpacity": "@text"
+  }
+ },
+ "body": {
+  "class": "TextBlock",
+  "props": {
+   "Font": {
+    "Size": "@type.body",
+    "TypefaceFontName": "@font.regular"
+   },
+   "ColorAndOpacity": "@text",
+   "AutoWrapText": true
+  }
+ },
+ "caption": {
+  "class": "TextBlock",
+  "props": {
+   "Font": {
+    "Size": "@type.caption",
+    "TypefaceFontName": "@font.regular"
+   },
+   "ColorAndOpacity": "@muted"
+  }
+ },
+ "label": {
+  "class": "TextBlock",
+  "props": {
+   "Font": {
+    "Size": "@type.caption",
+    "TypefaceFontName": "@font.strong",
+    "LetterSpacing": 120
+   },
+   "ColorAndOpacity": "@muted"
+  }
+ },
+ "glow": {
+  "class": "EllipseShape",
+  "props": {
+   "bFill": true,
+   "Fill": {
+    "Type": "RadialGradient",
+    "Color": "#FFFFFF",
+    "GradientCenter": [
+     0.5,
+     0.5
+    ],
+    "GradientRadius": 0.5,
+    "GradientStops": [
+     {
+      "Position": 0,
+      "Color": "@accent~0.55"
+     },
+     {
+      "Position": 1,
+      "Color": "@accent~0"
+     }
+    ]
+   },
+   "Visibility": "HitTestInvisible",
+   "bSizeToContent": false,
+   "DesiredSize": [
+    320,
+    320
+   ]
+  },
+  "slot": {
+   "align": "center"
+  }
+ },
+ "aurora": {
+  "class": "RectangleShape",
+  "props": {
+   "bFill": true,
+   "Fill": {
+    "Type": "LinearGradient",
+    "Color": "#FFFFFF",
+    "GradientAngle": -90,
+    "GradientStops": [
+     {
+      "Position": 0,
+      "Color": "@glow1~0.55"
+     },
+     {
+      "Position": 0.4,
+      "Color": "@glow2~0.32"
+     },
+     {
+      "Position": 0.75,
+      "Color": "@glow3~0.16"
+     },
+     {
+      "Position": 1,
+      "Color": "@glow3~0"
+     }
+    ]
+   },
+   "bIndividualCorners": true,
+   "CornerRadii": [
+    0,
+    0,
+    "@radius.large",
+    "@radius.large"
+   ],
+   "DesiredSize": [
+    600,
+    190
+   ],
+   "Visibility": "HitTestInvisible",
+   "bSizeToContent": false
+  },
+  "slot": {
+   "align": "bottom"
+  }
+ },
+ "particles": {
+  "class": "NiagaraUIWidget",
+  "props": {
+   "Visibility": "HitTestInvisible",
+   "Origin": [
+    0.5,
+    1.0
+   ],
+   "DesiredSize": [
+    600,
+    360
+   ]
+  },
+  "slot": {
+   "align": "fill"
+  }
+ },
+ "icon": {
+  "class": "Image",
+  "props": {
+   "ColorAndOpacity": "@text"
+  }
+ },
+ "stack": {
+  "class": "VerticalBox"
+ },
+ "row": {
+  "class": "HorizontalBox"
+ },
+ "frame": {
+  "class": "Overlay"
+ }
+}

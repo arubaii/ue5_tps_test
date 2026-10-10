@@ -1,0 +1,79 @@
+{
+ "kind": "master",
+ "name": "SoftDot",
+ "about": "A soft round dot - what particles draw with by default; also a small glow.",
+ "params": {
+  "Color": "color (alpha = strength)",
+  "Softness": "0..1, how far the edge fades"
+ },
+ "graph": {
+  "domain": "UI",
+  "blend": "Translucent",
+  "nodes": [
+   {
+    "id": "uv",
+    "type": "TextureCoordinate"
+   },
+   {
+    "id": "soft",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Softness",
+     "DefaultValue": 0.85,
+     "Group": "Look"
+    }
+   },
+   {
+    "id": "circ",
+    "type": "MaterialFunctionCall",
+    "function": "SoftCircle",
+    "inputs": {
+     "UV": "uv",
+     "Radius": 0.5,
+     "Softness": "soft"
+    }
+   },
+   {
+    "id": "col",
+    "type": "VectorParameter",
+    "props": {
+     "ParameterName": "Color",
+     "DefaultValue": "#FFFFFF",
+     "Group": "Color"
+    }
+   },
+   {
+    "id": "a1",
+    "type": "Multiply",
+    "inputs": {
+     "A": "circ.Result",
+     "B": "col.A"
+    }
+   },
+   {
+    "id": "vc",
+    "type": "VertexColor"
+   },
+   {
+    "id": "rgb_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "col",
+     "B": "vc"
+    }
+   },
+   {
+    "id": "alpha_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "a1",
+     "B": "vc.A"
+    }
+   }
+  ],
+  "outputs": {
+   "FinalColor": "rgb_out",
+   "Opacity": "alpha_out"
+  }
+ }
+}

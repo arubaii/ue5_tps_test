@@ -1,0 +1,201 @@
+{
+ "kind": "master",
+ "name": "SoftGlow",
+ "about": "A round soft glow that can breathe (PulseAmount, PulseSpeed). Behind icons, buttons, titles.",
+ "params": {
+  "Color": "color",
+  "Radius": "0..0.5",
+  "Falloff": "edge softness (higher = tighter)",
+  "Intensity": "strength",
+  "PulseSpeed": "cycles per second",
+  "PulseAmount": "0..1"
+ },
+ "graph": {
+  "domain": "UI",
+  "blend": "Translucent",
+  "nodes": [
+   {
+    "id": "uv",
+    "type": "TextureCoordinate"
+   },
+   {
+    "id": "d",
+    "type": "Distance",
+    "inputs": {
+     "A": "uv",
+     "B": [
+      0.5,
+      0.5
+     ]
+    }
+   },
+   {
+    "id": "rad",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Radius",
+     "DefaultValue": 0.5,
+     "Group": "Shape"
+    }
+   },
+   {
+    "id": "dn",
+    "type": "Divide",
+    "inputs": {
+     "A": "d",
+     "B": "rad"
+    }
+   },
+   {
+    "id": "om",
+    "type": "OneMinus",
+    "inputs": {
+     "Input": "dn"
+    }
+   },
+   {
+    "id": "sat",
+    "type": "Saturate",
+    "inputs": {
+     "Input": "om"
+    }
+   },
+   {
+    "id": "fall",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Falloff",
+     "DefaultValue": 2.0,
+     "Group": "Shape"
+    }
+   },
+   {
+    "id": "pw",
+    "type": "Power",
+    "inputs": {
+     "Base": "sat",
+     "Exponent": "fall"
+    }
+   },
+   {
+    "id": "time",
+    "type": "Time"
+   },
+   {
+    "id": "ps",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "PulseSpeed",
+     "DefaultValue": 0.5,
+     "Group": "Motion"
+    }
+   },
+   {
+    "id": "tp",
+    "type": "Multiply",
+    "inputs": {
+     "A": "time",
+     "B": "ps"
+    }
+   },
+   {
+    "id": "sn",
+    "type": "Sine",
+    "inputs": {
+     "Input": "tp"
+    }
+   },
+   {
+    "id": "pa",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "PulseAmount",
+     "DefaultValue": 0.1,
+     "Group": "Motion"
+    }
+   },
+   {
+    "id": "pm",
+    "type": "Multiply",
+    "inputs": {
+     "A": "sn",
+     "B": "pa"
+    }
+   },
+   {
+    "id": "p1",
+    "type": "Add",
+    "inputs": {
+     "A": "pm",
+     "B": 1
+    }
+   },
+   {
+    "id": "inten",
+    "type": "ScalarParameter",
+    "props": {
+     "ParameterName": "Intensity",
+     "DefaultValue": 1.0,
+     "Group": "Look"
+    }
+   },
+   {
+    "id": "i2",
+    "type": "Multiply",
+    "inputs": {
+     "A": "inten",
+     "B": "p1"
+    }
+   },
+   {
+    "id": "a0",
+    "type": "Multiply",
+    "inputs": {
+     "A": "pw",
+     "B": "i2"
+    }
+   },
+   {
+    "id": "col",
+    "type": "VectorParameter",
+    "props": {
+     "ParameterName": "Color",
+     "DefaultValue": "@accent",
+     "Group": "Color"
+    }
+   },
+   {
+    "id": "a1",
+    "type": "Multiply",
+    "inputs": {
+     "A": "a0",
+     "B": "col.A"
+    }
+   },
+   {
+    "id": "vc",
+    "type": "VertexColor"
+   },
+   {
+    "id": "rgb_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "col",
+     "B": "vc"
+    }
+   },
+   {
+    "id": "alpha_out",
+    "type": "Multiply",
+    "inputs": {
+     "A": "a1",
+     "B": "vc.A"
+    }
+   }
+  ],
+  "outputs": {
+   "FinalColor": "rgb_out",
+   "Opacity": "alpha_out"
+  }
+ }
+}

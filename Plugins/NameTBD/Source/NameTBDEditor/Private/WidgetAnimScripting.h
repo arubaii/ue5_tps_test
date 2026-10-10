@@ -38,7 +38,7 @@ class UWidgetBlueprint;
  * their editor-only flags (locked, hidden, pinned, collapsed), and aren't removed.
  */
 UCLASS(BlueprintType, Transient, meta = (DisplayName = "Widget Animation (Script)"))
-class UWidgetAnimScriptAnimation : public UObject
+class NAMETBDEDITOR_API UWidgetAnimScriptAnimation : public UObject
 {
 	GENERATED_BODY()
 
@@ -515,7 +515,7 @@ private:
  * Getting an animation to script, and the handshake with the Python half for the panel's Run. See UWidgetAnimScriptAnimation.
  */
 UCLASS(meta = (DisplayName = "Widget Animation Scripting"))
-class UWidgetAnimScriptLibrary : public UBlueprintFunctionLibrary
+class NAMETBDEDITOR_API UWidgetAnimScriptLibrary : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 

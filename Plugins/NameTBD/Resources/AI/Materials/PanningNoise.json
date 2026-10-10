@@ -1,0 +1,98 @@
+{
+ "kind": "function",
+ "name": "PanningNoise",
+ "about": "Smooth noise 0..1 drifting over time: UV x Scale, moving at Speed (UV per second).",
+ "signature": {
+  "inputs": "UV (float2), Scale (4), Speed (float2)",
+  "outputs": "Result (float)"
+ },
+ "graph": {
+  "inputs": [
+   {
+    "name": "UV",
+    "type": "Vector2",
+    "preview": [
+     0.5,
+     0.5,
+     0,
+     0
+    ]
+   },
+   {
+    "name": "Scale",
+    "type": "Scalar",
+    "preview": [
+     4,
+     0,
+     0,
+     0
+    ]
+   },
+   {
+    "name": "Speed",
+    "type": "Vector2",
+    "preview": [
+     0.05,
+     0.02,
+     0,
+     0
+    ]
+   }
+  ],
+  "nodes": [
+   {
+    "id": "t",
+    "type": "Time"
+   },
+   {
+    "id": "off",
+    "type": "Multiply",
+    "inputs": {
+     "A": "t",
+     "B": "Speed"
+    }
+   },
+   {
+    "id": "s",
+    "type": "Multiply",
+    "inputs": {
+     "A": "UV",
+     "B": "Scale"
+    }
+   },
+   {
+    "id": "p2",
+    "type": "Add",
+    "inputs": {
+     "A": "s",
+     "B": "off"
+    }
+   },
+   {
+    "id": "p3",
+    "type": "AppendVector",
+    "inputs": {
+     "A": "p2",
+     "B": 0
+    }
+   },
+   {
+    "id": "n",
+    "type": "Noise",
+    "props": {
+     "Scale": 1,
+     "Levels": 3,
+     "OutputMin": 0,
+     "OutputMax": 1,
+     "Quality": 1
+    },
+    "inputs": {
+     "Position": "p3"
+    }
+   }
+  ],
+  "outputs": {
+   "Result": "n"
+  }
+ }
+}

@@ -63,6 +63,11 @@
 			]
 		},
 		{
+			"Name": "NameTBDAI",
+			"Type": "Editor",
+			"LoadingPhase": "PostEngineInit"
+		},
+		{
 			"Name": "NameTBDNiagara",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
