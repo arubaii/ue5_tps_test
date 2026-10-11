@@ -21,7 +21,7 @@ class UWidget;
 // Input in the Widget Animations editor, next to its Value Name and smoothing: the animation then carries it, and every
 // widget that plays the animation follows the pointer or the scroll with nothing to set up where it is used.
 //
-// The input is measured on the widget the track animates - its Layer Group's target, as the entry playing the
+// The input is measured on the widget the track animates - its Track Group's target, as the entry playing the
 // animation resolves it - so a card animation tilts whichever card plays it. A Scroll input reads the Scroll Box that
 // widget is in (or is, or holds).
 //
@@ -123,7 +123,7 @@ struct NAMETBD_API FWidgetAnimInputContext
 	/** The widget whose animations are playing: the one the Widget Animation Component, button or card is on. */
 	UWidget* HostWidget = nullptr;
 
-	/** The widget the track animates - its Layer Group's target, or the host widget. Never null when an input is read. */
+	/** The widget the track animates - its Track Group's target, or the host widget. Never null when an input is read. */
 	UWidget* MeasuredWidget = nullptr;
 
 	/** Seconds since the last read. */

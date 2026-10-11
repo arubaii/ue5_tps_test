@@ -64,7 +64,7 @@ namespace NameTBD
 			inline constexpr float NestedTrackOpacity = 0.8f;
 
 			// -------------------------------------------------------------------------------------------------
-			// Layer groups - the band down the left of a group's rows, and its summary bar.
+			// Track groups - the band down the left of a group's rows, and its summary bar.
 			//
 			// Not a fixed list: group N's color is generated, stepping around the hue circle by the golden angle
 			// from GroupHueStart, so any number of groups stay distinct from their neighbors. Kept low in
@@ -333,6 +333,17 @@ namespace NameTBD
 			// -------------------------------------------------------------------------------------------------
 
 			inline const FLinearColor ControlsPill(0.00f, 0.00f, 0.00f, 0.30f);
+			// The switch beside the pill (Preview / Track Controls): a light grey pill of its own, so it reads as a different
+			// kind of control from the pill it switches. Editable in DEVELOPER ONLY (Controls Switch Color).
+			inline const FLinearColor ControlsSwitchBackground(0.55f, 0.55f, 0.55f, 0.35f);
+			// A control under the mouse (the pill's and the switch's), and the switch's lit side. The pill's lit segment is
+			// ToggleOnBackground. Rectangular, as the pill and the switch are: ControlsCornerRadius on a segment, the pill's and
+			// the switch's one ControlsPadding more so they nest. Each color editable in DEVELOPER ONLY.
+			inline const FLinearColor ControlsHover(1.00f, 1.00f, 1.00f, 0.10f);
+			inline const FLinearColor ControlsSwitchSelected = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.30f);
+			inline const FLinearColor ControlsSwitchHover(1.00f, 1.00f, 1.00f, 0.14f);
+			inline constexpr float ControlsCornerRadius = 3.0f;
+			inline constexpr float ControlsPadding = 2.0f;
 			inline const FLinearColor ControlsDivider(1.00f, 1.00f, 1.00f, 0.14f);
 			inline const FLinearColor ToggleOnBackground = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.30f);
 			inline const FLinearColor ToggleOnText(1.00f, 1.00f, 1.00f);
@@ -464,6 +475,24 @@ namespace NameTBD
 			inline constexpr float ListParametrizedTextOpacity = 0.65f;
 
 			// -------------------------------------------------------------------------------------------------
+			// Key workflow (Workflow v1).
+			//   GroupTargetIconSize: the target widget's class icon on a track group's row in the Animation Tracks list.
+			//   KeyValueCell*: a value box in the Selection panel's Key Values / Keys - selected (Ctrl+click) boxes are
+			//   framed in KeyValueCellSelected over KeyValueCellSelectedFill; a key using the authored pose reads at
+			//   KeyValueAuthoredOpacity.
+			//   KeyframeOnlyLane*: Keyframe Only: a track drawn as a thin lane between its first and last keys, this tall
+			//   (a fraction of the section), in its type color at this opacity; KeyframeOnlyLaneSelected when selected.
+			// -------------------------------------------------------------------------------------------------
+
+			inline constexpr float GroupTargetIconSize = 14.0f;
+			inline const FLinearColor KeyValueCellSelected(1.0f, 0.55f, 0.1f, 1.0f);
+			inline const FLinearColor KeyValueCellSelectedFill(1.0f, 0.55f, 0.1f, 0.14f);
+			inline constexpr float KeyValueAuthoredOpacity = 0.55f;
+			inline constexpr float KeyframeOnlyLaneRatio = 0.22f;
+			inline constexpr float KeyframeOnlyLaneOpacity = 0.55f;
+			inline constexpr float KeyframeOnlyLaneSelectedOpacity = 0.9f;
+
+			// -------------------------------------------------------------------------------------------------
 			// Playing backward - an inverted track, or every track while the preview's Invert is on.
 			//   InvertChevron: the chevrons pointing back along an inverted track, InvertChevronSpacing pixels apart.
 			// -------------------------------------------------------------------------------------------------
@@ -567,6 +596,15 @@ namespace NameTBD
 		// =================================================================================================
 		namespace StateMachineEditor
 		{
+			// -------------------------------------------------------------------------------------------------
+			// Animations dragged onto the graph (Workflow v1).
+			//   AnimationDropWash: over the graph while Widget Animations are dragged over it.
+			//   AnimationRowHover: a timeline's row in the Animations list, under the mouse.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor AnimationDropWash(1.0f, 0.55f, 0.1f, 0.08f);
+			inline const FLinearColor AnimationRowHover(1.0f, 1.0f, 1.0f, 0.06f);
+
 			// -------------------------------------------------------------------------------------------------
 			// Transitions - the wires between states.
 			//   TransitionLine: a wire at rest. TransitionDisabled: one switched off (Enabled unticked).

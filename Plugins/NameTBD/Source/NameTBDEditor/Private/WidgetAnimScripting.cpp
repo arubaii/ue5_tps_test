@@ -1028,7 +1028,7 @@ bool UWidgetAnimScriptAnimation::CheckGroup(int32 Group) const
 	}
 	if (!SupportsGroups())
 	{
-		return Fail(TEXT("This list of tracks has no Layer Groups: each track names its own widget (set its target)."));
+		return Fail(TEXT("This list of tracks has no Track Groups: each track names its own widget (set its target)."));
 	}
 	if (!Groups->IsValidIndex(Group))
 	{
@@ -1199,7 +1199,7 @@ void UWidgetAnimScriptAnimation::EndEdit()
 }
 
 // ---------------------------------------------------------------------------------------------
-// Layer Groups
+// Track Groups
 // ---------------------------------------------------------------------------------------------
 
 int32 UWidgetAnimScriptAnimation::GetNumGroups() const
@@ -1222,7 +1222,7 @@ bool UWidgetAnimScriptAnimation::SetGroupName(int32 Group, const FString& Name)
 	{
 		return false;
 	}
-	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("RenameGroup", "Rename Layer Group"));
+	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("RenameGroup", "Rename Track Group"));
 	if (!Edit.IsOpen())
 	{
 		return false;
@@ -1274,7 +1274,7 @@ bool UWidgetAnimScriptAnimation::SetGroupFolder(int32 Group, const FString& Fold
 	{
 		return false;
 	}
-	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("SetGroupFolder", "Put Layer Group in List Folder"));
+	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("SetGroupFolder", "Put Track Group in List Folder"));
 	if (!Edit.IsOpen())
 	{
 		return false;
@@ -1288,7 +1288,7 @@ int32 UWidgetAnimScriptAnimation::AddGroup(const FString& Name, const FString& T
 {
 	if (!SupportsGroups())
 	{
-		Fail(TEXT("This list of tracks has no Layer Groups: each track names its own widget (set its target)."));
+		Fail(TEXT("This list of tracks has no Track Groups: each track names its own widget (set its target)."));
 		return INDEX_NONE;
 	}
 	FString Path;
@@ -1296,7 +1296,7 @@ int32 UWidgetAnimScriptAnimation::AddGroup(const FString& Name, const FString& T
 	{
 		return INDEX_NONE;
 	}
-	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("AddGroup", "Add Layer Group"));
+	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("AddGroup", "Add Track Group"));
 	if (!Edit.IsOpen())
 	{
 		return INDEX_NONE;
@@ -1316,7 +1316,7 @@ bool UWidgetAnimScriptAnimation::RemoveGroup(int32 Group)
 	{
 		return false;
 	}
-	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("RemoveGroup", "Delete Layer Group"));
+	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("RemoveGroup", "Delete Track Group"));
 	if (!Edit.IsOpen())
 	{
 		return false;
@@ -1327,7 +1327,7 @@ bool UWidgetAnimScriptAnimation::RemoveGroup(int32 Group)
 	const int32 NumGroups = Groups.Num();
 
 	// The group's tracks go with it - every other track staying where it is in time - and every later group's tracks
-	// follow their group down one place, as the panel's Delete Layer Group does.
+	// follow their group down one place, as the panel's Delete Track Group does.
 	TArray<float> OldStarts;
 	TArray<float> OldExtras;
 	GetStarts(OldStarts);
@@ -1597,7 +1597,7 @@ bool UWidgetAnimScriptAnimation::SetTrackGroup(int32 Track, int32 Group)
 	{
 		return false;
 	}
-	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("SetTrackGroup", "Move to Layer Group"));
+	FWidgetAnimScriptEdit Edit(*this, LOCTEXT("SetTrackGroup", "Move to Track Group"));
 	if (!Edit.IsOpen())
 	{
 		return false;

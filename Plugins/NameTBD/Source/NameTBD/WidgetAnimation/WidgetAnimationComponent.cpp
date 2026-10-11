@@ -698,7 +698,7 @@ void UWidgetAnimationComponent::RefreshAnimIdConflicts()
 				continue;
 			}
 
-			// Every widget this entry animates - one per Layer Group, though groups may share one. Collected
+			// Every widget this entry animates - one per Track Group, though groups may share one. Collected
 			// first, so an entry whose own groups share a widget isn't reported as conflicting with itself.
 			TSet<UWidget*> EntryTargets;
 			for (int32 GroupIndex = 0; GroupIndex < FMath::Max(1, Entry.Animation->LayerGroups.Num()); ++GroupIndex)
@@ -2503,7 +2503,7 @@ void UWidgetAnimationComponent::PostEditChangeProperty(FPropertyChangedEvent& Pr
 	TRACE_CPUPROFILER_EVENT_SCOPE(WidgetAnimComponentPostEditChange);
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	// An animation picked, swapped or cleared: its Target Widgets get a row per Layer Group. Only once the
+	// An animation picked, swapped or cleared: its Target Widgets get a row per Track Group. Only once the
 	// edit is committed - resizing an array under a drag in progress would pull the row out from under it.
 	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{

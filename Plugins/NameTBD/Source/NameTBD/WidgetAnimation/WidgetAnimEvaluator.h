@@ -150,7 +150,7 @@ public:
 	virtual UClass* GetTrackTargetClass(const FInstancedStruct& Params) const { return GetTargetClass(); }
 
 	/**
-	 * The object this type writes when a track of it is played on Widget - the Layer Group's target, or the widget
+	 * The object this type writes when a track of it is played on Widget - the Track Group's target, or the widget
 	 * the animation is played on when the group names none.
 	 *
 	 * By default Widget itself when it is a GetTargetClass(), or else the first one inside it, depth first - so a

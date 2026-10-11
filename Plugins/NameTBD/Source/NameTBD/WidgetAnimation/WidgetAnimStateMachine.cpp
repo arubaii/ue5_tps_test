@@ -1161,6 +1161,11 @@ bool FWidgetAnimStateMachineEntry::SyncToMachine(const TArray<FString>* TargetOp
 	{
 		const FString Label = TargetName.ToString();
 		const FWidgetAnimGroupTarget* Existing = Targets.FindByPredicate([&Label](const FWidgetAnimGroupTarget& Row) { return Row.GroupName == Label; });
+		// A row kept from before groups were Track Groups ("Layer Group 1") keeps its widget, and is relabeled.
+		if (!Existing)
+		{
+			Existing = Targets.FindByPredicate([&Label](const FWidgetAnimGroupTarget& Row) { return FWidgetAnimLayerGroup::IsSameTargetName(Row.GroupName, Label); });
+		}
 
 		FWidgetAnimGroupTarget& Row = NewTargets.AddDefaulted_GetRef();
 		Row.GroupName = Label;
@@ -1253,7 +1258,12 @@ bool FWidgetAnimStateMachineEntry::SyncToMachine(const TArray<FString>* TargetOp
 FName FWidgetAnimStateMachineEntry::GetTargetPath(FName TargetName) const
 {
 	const FString Label = TargetName.ToString();
-	if (const FWidgetAnimGroupTarget* Row = Targets.FindByPredicate([&Label](const FWidgetAnimGroupTarget& Candidate) { return Candidate.GroupName == Label; }))
+	const FWidgetAnimGroupTarget* Row = Targets.FindByPredicate([&Label](const FWidgetAnimGroupTarget& Candidate) { return Candidate.GroupName == Label; });
+	if (!Row)
+	{
+		Row = Targets.FindByPredicate([&Label](const FWidgetAnimGroupTarget& Candidate) { return FWidgetAnimLayerGroup::IsSameTargetName(Candidate.GroupName, Label); });
+	}
+	if (Row)
 	{
 		return FWidgetAnimGroupTarget::IsThisWidget(Row->TargetWidgetName) ? FName(NAME_None) : Row->TargetWidgetName;
 	}

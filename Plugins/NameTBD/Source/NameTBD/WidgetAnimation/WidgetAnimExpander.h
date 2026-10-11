@@ -125,7 +125,7 @@ struct NAMETBD_API FWidgetAnimExpander
 	bool bHoldStartPose = true;
 
 	/**
-	 * The items to fan out to on Target - the widget the track moves: its Layer Group's target, or the widget the
+	 * The items to fan out to on Target - the widget the track moves: its Track Group's target, or the widget the
 	 * animation plays on. Read every time the track starts, so it sees the widget as it is then.
 	 */
 	virtual void GatherItems(UWidget* Target, TArray<FWidgetAnimExpandedItem>& OutItems) const {}

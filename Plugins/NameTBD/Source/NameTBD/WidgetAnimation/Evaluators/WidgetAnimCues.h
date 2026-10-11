@@ -167,7 +167,7 @@ enum class EWidgetAnimPlayCueOn : uint8
 {
 	PlayingWidget UMETA(DisplayName = "Widget Playing It", ToolTip = "The widget playing this animation: its Widget Animation Component, button or card - or, if it has none, the nearest one around it."),
 
-	TrackWidget UMETA(DisplayName = "Track's Widget", ToolTip = "The widget this track is aimed at - its Layer Group's target, or each item of a stagger - and its own animations, or the nearest ones around it.")
+	TrackWidget UMETA(DisplayName = "Track's Widget", ToolTip = "The widget this track is aimed at - its Track Group's target, or each item of a stagger - and its own animations, or the nearest ones around it.")
 };
 
 /**

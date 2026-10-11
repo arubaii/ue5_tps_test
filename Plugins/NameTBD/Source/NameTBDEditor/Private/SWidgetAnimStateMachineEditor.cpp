@@ -80,6 +80,8 @@
 #include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Layout/SBorder.h"
+#include "DragAndDrop/AssetDragDropOp.h"
+#include "WidgetAnimPanelSource.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSeparator.h"
@@ -1413,6 +1415,327 @@ namespace
 	}
 }
 
+// =====================================================================================================
+// Animations dragged onto the graph: Widget Animations from the Content Browser, or the Widget Blueprint's own timelines from
+// the Animations list - each makes a state that plays it, where it is let go
+// =====================================================================================================
+
+/** Timelines dragged from the editor's Animations list - see SWidgetAnimMachineAnimationRow. */
+class FWidgetAnimMachineAnimationDragOp : public FDecoratedDragDropOp
+{
+public:
+	DRAG_DROP_OPERATOR_TYPE(FWidgetAnimMachineAnimationDragOp, FDecoratedDragDropOp)
+
+	TArray<TWeakObjectPtr<UWidgetAnimPresetAsset>> Animations;
+	TArray<FString> Names;
+
+	static TSharedRef<FWidgetAnimMachineAnimationDragOp> New(UWidgetAnimPresetAsset* Animation, const FString& Name)
+	{
+		const TSharedRef<FWidgetAnimMachineAnimationDragOp> Operation = MakeShared<FWidgetAnimMachineAnimationDragOp>();
+		Operation->Animations.Add(Animation);
+		Operation->Names.Add(Name);
+		Operation->DefaultHoverText = FText::FromString(Name);
+		Operation->CurrentHoverText = Operation->DefaultHoverText;
+		Operation->Construct();
+		return Operation;
+	}
+};
+
+namespace WidgetAnimMachineAnimationDrop
+{
+	/**
+	 * The Widget Animations a drag carries - the Animations list's timelines, or Widget Animation assets from the Content Browser
+	 * - and a name for each one's state. Only counted, not loaded, unless bLoad. Nothing for any other drag.
+	 */
+	void GetAnimations(const TSharedPtr<FDragDropOperation>& Operation, bool bLoad, TArray<UWidgetAnimPresetAsset*>& OutAnimations, TArray<FString>& OutNames)
+	{
+		OutAnimations.Reset();
+		OutNames.Reset();
+		if (!Operation.IsValid())
+		{
+			return;
+		}
+		if (Operation->IsOfType<FWidgetAnimMachineAnimationDragOp>())
+		{
+			const TSharedPtr<FWidgetAnimMachineAnimationDragOp> Dragged = StaticCastSharedPtr<FWidgetAnimMachineAnimationDragOp>(Operation);
+			for (int32 Index = 0; Index < Dragged->Animations.Num(); ++Index)
+			{
+				if (UWidgetAnimPresetAsset* Animation = Dragged->Animations[Index].Get())
+				{
+					OutAnimations.Add(Animation);
+					OutNames.Add(Dragged->Names.IsValidIndex(Index) ? Dragged->Names[Index] : Animation->GetName());
+				}
+			}
+			return;
+		}
+		if (Operation->IsOfType<FAssetDragDropOp>())
+		{
+			const TSharedPtr<FAssetDragDropOp> AssetOp = StaticCastSharedPtr<FAssetDragDropOp>(Operation);
+			for (const FAssetData& Asset : AssetOp->GetAssets())
+			{
+				const UClass* AssetClass = Asset.GetClass();
+				if (!AssetClass || !AssetClass->IsChildOf(UWidgetAnimPresetAsset::StaticClass()))
+				{
+					continue;
+				}
+				UWidgetAnimPresetAsset* Loaded = bLoad ? Cast<UWidgetAnimPresetAsset>(Asset.GetAsset()) : nullptr;
+				if (!bLoad || Loaded)
+				{
+					OutAnimations.Add(Loaded);
+					// WA_Hover makes Hover, as a state added for an animation is named.
+					FString Name = Asset.AssetName.ToString();
+					Name.RemoveFromStart(TEXT("WA_"));
+					OutNames.Add(Name);
+				}
+			}
+		}
+	}
+
+	/** Whether the drag in progress carries Widget Animations to drop. */
+	bool IsDraggingAnimations()
+	{
+		if (!FSlateApplication::IsInitialized() || !FSlateApplication::Get().IsDragDropping())
+		{
+			return false;
+		}
+		TArray<UWidgetAnimPresetAsset*> Animations;
+		TArray<FString> Names;
+		GetAnimations(FSlateApplication::Get().GetDragDroppingContent(), /*bLoad=*/false, Animations, Names);
+		return Animations.Num() > 0;
+	}
+}
+
+/**
+ * Over the graph, only while Widget Animations are being dragged: takes the drop - before the graph, which would only offer
+ * what a Blueprint graph makes of an asset - and says what letting go does. Shown faintly over the graph while one is over it.
+ */
+class SWidgetAnimMachineDropZone : public SCompoundWidget
+{
+public:
+
+	SLATE_BEGIN_ARGS(SWidgetAnimMachineDropZone) {}
+		SLATE_ATTRIBUTE(bool, CanDrop)
+		/** The animations let go, a name for each one's state, and where - in screen space. */
+		SLATE_ARGUMENT(TFunction<void(const TArray<UWidgetAnimPresetAsset*>&, const TArray<FString>&, const FVector2D&)>, OnDropped)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		CanDrop = InArgs._CanDrop;
+		OnDropped = InArgs._OnDropped;
+		SetVisibility(TAttribute<EVisibility>::CreateLambda([]()
+		{
+			return WidgetAnimMachineAnimationDrop::IsDraggingAnimations() ? EVisibility::Visible : EVisibility::Collapsed;
+		}));
+
+		ChildSlot
+		[
+			SNew(SBorder)
+			.BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+			.BorderBackgroundColor_Lambda([this]() { return FSlateColor(bOver ? MachineColors::AnimationDropWash : FLinearColor::Transparent); })
+			.HAlign(HAlign_Center)
+			.VAlign(VAlign_Top)
+			.Padding(FMargin(0.f, 18.f))
+			[
+				SNew(SBorder)
+				.Visibility_Lambda([this]() { return bOver ? EVisibility::HitTestInvisible : EVisibility::Collapsed; })
+				.BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+				.Padding(FMargin(10.f, 5.f))
+				[
+					SNew(STextBlock)
+					.Text_Lambda([this]() { return CanDrop.Get(true) ? MachineTips::DropAnimationsNote() : MachineTips::DropAnimationsLockedNote(); })
+				]
+			]
+		];
+	}
+
+	virtual void OnDragEnter(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
+	{
+		bOver = true;
+	}
+
+	virtual void OnDragLeave(const FDragDropEvent& DragDropEvent) override
+	{
+		bOver = false;
+	}
+
+	virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
+	{
+		return FReply::Handled();
+	}
+
+	virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
+	{
+		bOver = false;
+		TArray<UWidgetAnimPresetAsset*> Animations;
+		TArray<FString> Names;
+		WidgetAnimMachineAnimationDrop::GetAnimations(DragDropEvent.GetOperation(), /*bLoad=*/true, Animations, Names);
+		if (Animations.Num() == 0 || !CanDrop.Get(true))
+		{
+			return FReply::Unhandled();
+		}
+		if (OnDropped)
+		{
+			OnDropped(Animations, Names, FVector2D(DragDropEvent.GetScreenSpacePosition()));
+		}
+		return FReply::Handled();
+	}
+
+private:
+
+	TAttribute<bool> CanDrop;
+	TFunction<void(const TArray<UWidgetAnimPresetAsset*>&, const TArray<FString>&, const FVector2D&)> OnDropped;
+	bool bOver = false;
+};
+
+/**
+ * A timeline of the Widget Blueprint in the editor's Animations list: dragged onto the graph, it makes a state that plays it; a
+ * double-click makes one in the middle of the graph.
+ */
+class SWidgetAnimMachineAnimationRow : public SCompoundWidget
+{
+public:
+
+	SLATE_BEGIN_ARGS(SWidgetAnimMachineAnimationRow) {}
+		SLATE_ARGUMENT(FString, Name)
+		SLATE_ARGUMENT(TFunction<void()>, OnDoubleClicked)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs, UWidgetAnimPresetAsset* InAnimation)
+	{
+		Animation = InAnimation;
+		Name = InArgs._Name;
+		OnDoubleClicked = InArgs._OnDoubleClicked;
+
+		const FSlateBrush* Own = FNameTBDStyle::Get().GetOptionalBrush(TEXT("ClassIcon.WidgetAnimPresetAsset"), nullptr, nullptr);
+		ChildSlot
+		[
+			SNew(SBorder)
+			.BorderImage(FAppStyle::GetBrush(TEXT("WhiteBrush")))
+			.BorderBackgroundColor_Lambda([this]() { return FSlateColor(IsHovered() ? MachineColors::AnimationRowHover : FLinearColor::Transparent); })
+			.Padding(FMargin(10.f, 3.f))
+			.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::AnimationRowTooltip()))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
+				[
+					SNew(SBox)
+					.WidthOverride(16.f)
+					.HeightOverride(16.f)
+					[
+						SNew(SImage)
+						.Image(Own ? Own : FAppStyle::GetBrush(TEXT("ClassIcon.DataAsset")))
+						.ColorAndOpacity(FSlateColor::UseForeground())
+					]
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(Name))
+					.Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+					.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+				]
+			]
+		];
+	}
+
+	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		return MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton
+			? FReply::Handled().DetectDrag(SharedThis(this), EKeys::LeftMouseButton)
+			: FReply::Unhandled();
+	}
+
+	virtual FReply OnDragDetected(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		UWidgetAnimPresetAsset* Dragged = Animation.Get();
+		return Dragged ? FReply::Handled().BeginDragDrop(FWidgetAnimMachineAnimationDragOp::New(Dragged, Name)) : FReply::Unhandled();
+	}
+
+	virtual FReply OnMouseButtonDoubleClick(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		if (OnDoubleClicked && MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+		{
+			OnDoubleClicked();
+			return FReply::Handled();
+		}
+		return FReply::Unhandled();
+	}
+
+	virtual FCursorReply OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const override
+	{
+		return FCursorReply::Cursor(EMouseCursor::GrabHand);
+	}
+
+private:
+
+	TWeakObjectPtr<UWidgetAnimPresetAsset> Animation;
+	FString Name;
+	TFunction<void()> OnDoubleClicked;
+};
+
+namespace WidgetAnimMachineAnimationDrop
+{
+	/**
+	 * In a machine that is an asset, every timeline its states and transitions play put back as that timeline's saved asset - made,
+	 * or brought up to date, now: an asset can't hold a Widget Blueprint's own objects. What Save State Machine To does to the copy
+	 * it saves, so the Widget Blueprint's own machine can play its timelines as they are. Returns how many timelines were saved.
+	 */
+	int32 ReplaceTimelinesWithAssets(UWidgetAnimStateMachineAsset* Saved)
+	{
+		if (!Saved)
+		{
+			return 0;
+		}
+		TMap<UWidgetAnimPresetAsset*, UWidgetAnimPresetAsset*> Done;
+		auto Swap = [&Done](TObjectPtr<UWidgetAnimPresetAsset>& Ref)
+		{
+			UWidgetAnimPresetAsset* Played = Ref.Get();
+			UWidgetBlueprint* TimelineBlueprint = nullptr;
+			int32 TimelineIndex = INDEX_NONE;
+			if (!Played || !WidgetAnimTimelineAssets::FindTimeline(Played, TimelineBlueprint, TimelineIndex))
+			{
+				return;
+			}
+			if (!Done.Contains(Played))
+			{
+				Done.Add(Played, WidgetAnimTimelineAssets::SaveAsAsset(TimelineBlueprint, TimelineIndex));
+			}
+			// Null when it couldn't be made: the state then plays nothing, rather than holding what can't be saved with it.
+			Ref = Done.FindRef(Played);
+		};
+		for (FWidgetAnimMachineLayer& Layer : Saved->Layers)
+		{
+			for (FWidgetAnimMachineState& State : Layer.States)
+			{
+				Swap(State.Animation);
+				for (FWidgetAnimMachineRandomVariation& Variation : State.RandomVariations)
+				{
+					Swap(Variation.Animation);
+				}
+				for (FWidgetAnimMachineBlendSample& Sample : State.BlendSamples)
+				{
+					Swap(Sample.Animation);
+				}
+				for (TObjectPtr<UWidgetAnimPresetAsset>& Legacy : State.RandomAnimations)
+				{
+					Swap(Legacy);
+				}
+			}
+			for (FWidgetAnimMachineTransition& Transition : Layer.Transitions)
+			{
+				Swap(Transition.TransitionAnimation);
+			}
+		}
+		return Done.Num();
+	}
+}
+
 void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
 {
 	WidgetBlueprint = InArgs._WidgetBlueprint;
@@ -1547,7 +1870,22 @@ void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
 				+ SVerticalBox::Slot()
 				.FillHeight(1.f)
 				[
-					SAssignNew(GraphHost, SBox)
+					SNew(SOverlay)
+					+ SOverlay::Slot()
+					[
+						SAssignNew(GraphHost, SBox)
+					]
+					// Widget Animations dragged over the graph - from the Content Browser, or the Animations list - make states
+					// where they are let go.
+					+ SOverlay::Slot()
+					[
+						SNew(SWidgetAnimMachineDropZone)
+						.CanDrop_Lambda([this]() { return IsMachineEditable(); })
+						.OnDropped([this](const TArray<UWidgetAnimPresetAsset*>& Animations, const TArray<FString>& Names, const FVector2D& ScreenPosition)
+						{
+							AddStatesForAnimations(Animations, Names, ScreenPosition);
+						})
+					]
 				]
 			]
 
@@ -2817,6 +3155,51 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 				]
 			];
 	}
+
+	// This Widget Blueprint's timelines, to drag onto the graph - each makes a state that plays it, with no saving first. Widget
+	// Animation assets come from the Content Browser the same way.
+	const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(WidgetBlueprint.Get());
+	// Always listed, so where to drag from is never a mystery: with no timelines yet, a word on how to get some.
+	const TSharedRef<SVerticalBox> AnimationRows = AddSection(LOCTEXT("AnimationsHeader", "Animations"), MachineTips::AnimationsPanelTooltip(), SNullWidget::NullWidget);
+	if (!Timelines || Timelines->Timelines.Num() == 0)
+	{
+		AnimationRows->AddSlot()
+			.AutoHeight()
+			.Padding(FMargin(10.f, 4.f))
+			[
+				SNew(STextBlock)
+				.AutoWrapText(true)
+				.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				.Text(MachineTips::AnimationsPanelEmptyNote())
+			];
+	}
+	else
+	{
+		for (const FWidgetAnimTimeline& Timeline : Timelines->Timelines)
+		{
+			UWidgetAnimPresetAsset* TimelineAnimation = Timeline.Animation.Get();
+			if (!TimelineAnimation)
+			{
+				continue;
+			}
+			const TWeakObjectPtr<UWidgetAnimPresetAsset> WeakAnimation = TimelineAnimation;
+			const FString TimelineName = Timeline.Name;
+			AnimationRows->AddSlot()
+				.AutoHeight()
+				[
+					SNew(SWidgetAnimMachineAnimationRow, TimelineAnimation)
+					.Name(TimelineName)
+					.OnDoubleClicked([this, WeakAnimation, TimelineName]()
+					{
+						if (UWidgetAnimPresetAsset* Played = WeakAnimation.Get())
+						{
+							AddStatesForAnimations({ Played }, { TimelineName }, TOptional<FVector2D>());
+						}
+					})
+				];
+		}
+	}
 }
 
 void SWidgetAnimStateMachineEditor::RebuildPreviewPanel()
@@ -2949,7 +3332,7 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeTargetRow(FName Target, c
 	const bool bHost = Target == HostPickKey;
 	return SNew(SHorizontalBox)
 
-		// The name takes the room: the picker beside it is kept to a set width, so "Layer Group 1" reads whole.
+		// The name takes the room: the picker beside it is kept to a set width, so "Track Group 1" reads whole.
 		+ SHorizontalBox::Slot()
 		.FillWidth(1.f)
 		.VAlign(VAlign_Center)
@@ -3383,6 +3766,97 @@ void SWidgetAnimStateMachineEditor::OpenState(const FGuid& StateId)
 	{
 		AssetEditors->OpenEditorForAsset(State->Animation.Get());
 	}
+}
+
+// -----------------------------------------------------------------------------------------------------
+// Animations dropped on the graph
+// -----------------------------------------------------------------------------------------------------
+
+UWidgetAnimPresetAsset* SWidgetAnimStateMachineEditor::ResolveAnimationForMachine(UWidgetAnimPresetAsset* Animation)
+{
+	UWidgetBlueprint* TimelineBlueprint = nullptr;
+	int32 TimelineIndex = INDEX_NONE;
+	if (!Animation || !Machine || !WidgetAnimTimelineAssets::FindTimeline(Animation, TimelineBlueprint, TimelineIndex))
+	{
+		return Animation;
+	}
+
+	// The Widget Blueprint's own machine is saved with its timelines: it holds them as they are, and plays every change at once.
+	if (IsDraftMachine(Machine) && Machine->GetOutermost() == Animation->GetOutermost())
+	{
+		return Animation;
+	}
+
+	// Anything else - an asset - can only hold an asset: the timeline's saved asset, made or brought up to date now. Said so,
+	// since an asset just appeared in the Content Browser.
+	const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(TimelineBlueprint);
+	const FText TimelineName = Timelines && Timelines->Timelines.IsValidIndex(TimelineIndex) ? FText::FromString(Timelines->Timelines[TimelineIndex].Name) : FText::FromString(Animation->GetName());
+	UWidgetAnimPresetAsset* Saved = WidgetAnimTimelineAssets::SaveAsAsset(TimelineBlueprint, TimelineIndex);
+	FNotificationInfo Info(Saved
+		? FText::Format(MachineTips::TimelinesSavedNote(), TimelineName, FText::FromString(Saved->GetName()))
+		: FText::Format(MachineTips::TimelineNotSavedNote(), TimelineName));
+	Info.ExpireDuration = 5.f;
+	FSlateNotificationManager::Get().AddNotification(Info);
+	return Saved;
+}
+
+void SWidgetAnimStateMachineEditor::AddStatesForAnimations(const TArray<UWidgetAnimPresetAsset*>& Animations, const TArray<FString>& Names, TOptional<FVector2D> ScreenPosition)
+{
+	if (!Machine || !IsMachineEditable() || Animations.Num() == 0)
+	{
+		return;
+	}
+
+	// Where they were let go, in the graph - the first state's middle near the mouse - else the middle of the graph.
+	FVector2D At = GetViewCenter();
+	const TSharedPtr<SGraphEditor> Editor = GetShownGraphEditor();
+	if (ScreenPosition.IsSet() && Editor.IsValid())
+	{
+		FVector2f ViewLocation;
+		float Zoom = 1.f;
+		Editor->GetViewLocation(ViewLocation, Zoom);
+		const FVector2f Local = Editor->GetCachedGeometry().AbsoluteToLocal(FVector2f(ScreenPosition.GetValue()));
+		At = FVector2D(ViewLocation + Local / FMath::Max(Zoom, 0.05f)) - FVector2D(60.0, 20.0);
+	}
+
+	// Side by side, a state's width and a gap apart.
+	constexpr double StateSpacing = 260.0;
+	const FScopedTransaction Transaction(Animations.Num() > 1 ? LOCTEXT("DropAnimationsTransaction", "Add States") : LOCTEXT("DropAnimationTransaction", "Add State"));
+	TArray<FGuid> Added;
+	for (int32 Index = 0; Index < Animations.Num(); ++Index)
+	{
+		UWidgetAnimPresetAsset* Played = ResolveAnimationForMachine(Animations[Index]);
+		if (!Played)
+		{
+			continue;
+		}
+		const FString StateName = Names.IsValidIndex(Index) ? Names[Index].TrimStartAndEnd() : FString();
+		const FGuid Id = WidgetAnimMachineEdits::AddState(Machine, ShownLayer, StateName.IsEmpty() ? FName(NAME_None) : FName(*StateName), At + FVector2D(StateSpacing * Index, 0.0), Played);
+		if (Id.IsValid())
+		{
+			Added.Add(Id);
+		}
+	}
+	if (Added.Num() > 0)
+	{
+		PendingSelection = Added;
+	}
+}
+
+uint32 SWidgetAnimStateMachineEditor::ComputeTimelineListSignature() const
+{
+	const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(WidgetBlueprint.Get());
+	if (!Timelines)
+	{
+		return 0;
+	}
+	uint32 Signature = GetTypeHash(Timelines->Timelines.Num()) + 1;
+	for (const FWidgetAnimTimeline& Timeline : Timelines->Timelines)
+	{
+		Signature = HashCombine(Signature, GetTypeHash(Timeline.Name));
+		Signature = HashCombine(Signature, GetTypeHash(Timeline.Animation.Get()));
+	}
+	return Signature;
 }
 
 // -----------------------------------------------------------------------------------------------------
@@ -4161,6 +4635,14 @@ void SWidgetAnimStateMachineEditor::Tick(const FGeometry& AllottedGeometry, cons
 
 	TickPendingLetGo();
 	TickJump();
+
+	// The Animations list follows the Widget Blueprint's timelines: one added, renamed or deleted lists them again.
+	const uint32 TimelinesNow = ComputeTimelineListSignature();
+	if (TimelinesNow != TimelineListSignature)
+	{
+		TimelineListSignature = TimelinesNow;
+		bPanelsDirty = true;
+	}
 
 	// The stripes on the state in play scroll on - unless the designer preview is paused.
 	if (!IsPreviewPaused())
@@ -5106,6 +5588,12 @@ uint32 SWidgetAnimStateMachineEditor::MakePreviewSignature() const
 		for (const FName TargetName : TargetNames)
 		{
 			const FName* Picked = Machine->PreviewTargetPaths.Find(TargetName);
+			// Picked under an unnamed group's name from before Track Groups - see GetPreviewTargetPath.
+			const FName Legacy = Picked ? FName() : FName(*FWidgetAnimLayerGroup::MakeLegacyDefaultName(TargetName.ToString()));
+			if (!Picked && !Legacy.IsNone())
+			{
+				Picked = Machine->PreviewTargetPaths.Find(Legacy);
+			}
 			Signature = HashCombine(Signature, GetTypeHash(TargetName));
 			Signature = HashCombine(Signature, GetTypeHash(Picked ? *Picked : TargetDefaults.FindRef(TargetName)));
 		}
@@ -5524,6 +6012,12 @@ FName SWidgetAnimStateMachineEditor::GetPreviewTargetPath(FName Target) const
 	if (const FName* Picked = Machine->PreviewTargetPaths.Find(Target))
 	{
 		return *Picked;
+	}
+	// Picked before groups were Track Groups, under the name an unnamed group had then ("Layer Group 1").
+	const FString Legacy = FWidgetAnimLayerGroup::MakeLegacyDefaultName(Target.ToString());
+	if (const FName* Kept = Legacy.IsEmpty() ? nullptr : Machine->PreviewTargetPaths.Find(FName(*Legacy)))
+	{
+		return *Kept;
 	}
 	// Not picked here: where its animation's group previews in the Widget Animations panel.
 	return Machine->GetTargetDefault(Target);
@@ -6741,6 +7235,9 @@ void SWidgetAnimStateMachineEditor::SaveDraftTo(bool bChooseLocation)
 	}
 	CopyMachineInto(Draft, Saved);
 
+	// The draft plays this Widget Blueprint's timelines as they are; the asset gets each one's saved asset in its place.
+	WidgetAnimMachineAnimationDrop::ReplaceTimelinesWithAssets(Saved);
+
 	// Remembered, so Save puts it there again.
 	if (UWidgetAnimTimelinesExtension* Extension = UWidgetAnimTimelinesExtension::Find(Blueprint))
 	{
@@ -6767,6 +7264,7 @@ void SWidgetAnimStateMachineEditor::SaveDraftToSavedAsset()
 	}
 	const FScopedTransaction Transaction(LOCTEXT("SaveDraftMachine", "Save State Machine"));
 	CopyMachineInto(Machine, Saved);
+	WidgetAnimMachineAnimationDrop::ReplaceTimelinesWithAssets(Saved);
 	TArray<UPackage*> Packages;
 	Packages.Add(Saved->GetPackage());
 	FEditorFileUtils::PromptForCheckoutAndSave(Packages, /*bCheckDirty=*/false, /*bPromptToSave=*/false);

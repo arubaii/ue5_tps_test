@@ -1,0 +1,238 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 75e49c6..399809a 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -337,26 +337,59 @@ namespace WidgetAnimTimeline
+ 	const FSlateBrush* NodeColorSpill()     { return FAppStyle::GetBrush("Graph.Node.ColorSpill"); }
+ 	const FSlateBrush* NodeTitleHighlight() { return FAppStyle::GetBrush("Graph.Node.TitleHighlight"); }
+ 
+-	/** The Animation Controls pill, and a lit segment inside it - rounded right round, as a media player's controls are. */
++	/**
++	 * The Animation Controls pill and the switch beside it, and a segment inside either - rectangular, a segment's corners
++	 * ControlsCornerRadius, the pill's one padding more so they nest. White, tinted where drawn by the DEVELOPER ONLY colors.
++	 */
+ 	const FSlateBrush* ControlsPillBrush()
+ 	{
+-		static const FSlateRoundedBoxBrush Brush(Palette::ControlsPill, 13.f);
++		static const FSlateRoundedBoxBrush Brush(FLinearColor::White, Palette::ControlsCornerRadius + Palette::ControlsPadding);
+ 		return &Brush;
+ 	}
+ 
+-	/** The switch beside the pill: the pill's shape, white - tinted where it is drawn (Controls Switch Color). */
+ 	const FSlateBrush* ControlsSwitchBrush()
+ 	{
+-		static const FSlateRoundedBoxBrush Brush(FLinearColor::White, 13.f);
+-		return &Brush;
++		return ControlsPillBrush();
+ 	}
+ 
+ 	const FSlateBrush* ControlsSegmentBrush()
+ 	{
+-		static const FSlateRoundedBoxBrush Brush(FLinearColor::White, 10.f);
++		static const FSlateRoundedBoxBrush Brush(FLinearColor::White, Palette::ControlsCornerRadius);
+ 		return &Brush;
+ 	}
+ 
++	/**
++	 * A control's button: nothing drawn of its own - the editor's SimpleButton drew its hover as a box of another shape over the
++	 * segment. The segment shows hovered and pressed itself (ControlsSegmentColor).
++	 */
++	const FButtonStyle& ControlsButtonStyle()
++	{
++		static const FButtonStyle Style = FButtonStyle(FAppStyle::Get().GetWidgetStyle<FButtonStyle>("SimpleButton"))
++			.SetNormal(FSlateNoResource())
++			.SetHovered(FSlateNoResource())
++			.SetPressed(FSlateNoResource())
++			.SetDisabled(FSlateNoResource());
++		return Style;
++	}
++
++	/** A segment's fill: lit when on, the hover color under the mouse (over the lit color when both), a touch more pressed. */
++	FLinearColor ControlsSegmentColor(bool bOn, bool bHovered, bool bPressed, const FLinearColor& Selected, const FLinearColor& Hovered)
++	{
++		FLinearColor Fill = bOn ? Selected : FLinearColor::Transparent;
++		if (bHovered || bPressed)
++		{
++			// The hover laid over what is there, as one translucent layer over another.
++			const float Over = FMath::Clamp(Hovered.A * (bPressed ? 1.5f : 1.f), 0.f, 1.f);
++			const float Alpha = Over + Fill.A * (1.f - Over);
++			if (Alpha > KINDA_SMALL_NUMBER)
++			{
++				const FLinearColor Mixed = (FLinearColor(Hovered.R, Hovered.G, Hovered.B, 1.f) * Over + FLinearColor(Fill.R, Fill.G, Fill.B, 1.f) * (Fill.A * (1.f - Over))) / Alpha;
++				Fill = FLinearColor(Mixed.R, Mixed.G, Mixed.B, Alpha);
++			}
++		}
++		return Fill;
++	}
++
+ 	/** The Track Editor's tooltips: the panel's own dark panel with a faint outline, not the editor's light tooltip. */
+ 	const FSlateBrush* ToolTipBrush()
+ 	{
+@@ -10729,12 +10762,16 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
+ 				.ColorAndOpacity_Lambda([IsOn]() { return FSlateColor(IsOn() ? Palette::ToggleOnText : Palette::ToggleOffText); })
+ 				.Text(Label));
+ 
++		// The button, known to its segment's color once made - held weakly, so the segment doesn't keep its own button alive.
++		const TSharedRef<TSharedPtr<SButton>> ButtonHolder = MakeShared<TSharedPtr<SButton>>();
++		const TSharedRef<TWeakPtr<SButton>> WeakButton = MakeShared<TWeakPtr<SButton>>();
++
+ 		// Its tip pinned above it, as the transport's are.
+-		return SNew(SWidgetAnimAnchoredTip)
++		const TSharedRef<SWidget> Toggle = SNew(SWidgetAnimAnchoredTip)
+ 			.Text(ToolTip)
+ 			[
+-				SNew(SButton)
+-				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
++				SAssignNew(*ButtonHolder, SButton)
++				.ButtonStyle(&ControlsButtonStyle())
+ 				.ContentPadding(FMargin(0.f))
+ 				.IsEnabled_Lambda([IsEnabled]() { return IsEnabled(); })
+ 				.OnClicked_Lambda([IsOn, SetOn]()
+@@ -10745,7 +10782,13 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
+ 				[
+ 					SNew(SBorder)
+ 					.BorderImage(ControlsSegmentBrush())
+-					.BorderBackgroundColor_Lambda([IsOn]() { return FSlateColor(IsOn() ? Palette::ToggleOnBackground : FLinearColor::Transparent); })
++					.BorderBackgroundColor_Lambda([IsOn, WeakButton]()
++					{
++						const TSharedPtr<SButton> Button = WeakButton->Pin();
++						const UWidgetAnimEditorSettings& Look = UWidgetAnimEditorSettings::Get();
++						return FSlateColor(ControlsSegmentColor(IsOn(), Button.IsValid() && Button->IsHovered() && Button->IsEnabled(),
++							Button.IsValid() && Button->IsPressed(), Look.ControlsSelectedColor, Look.ControlsHoveredColor));
++					})
+ 					.Padding(Icon ? FMargin(7.f, 3.f) : FMargin(10.f, 3.f))
+ 					.HAlign(HAlign_Center)
+ 					.VAlign(VAlign_Center)
+@@ -10754,6 +10797,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
+ 					]
+ 				]
+ 			];
++		*WeakButton = *ButtonHolder;
++		return Toggle;
+ 	};
+ 
+ 	// A segment for how the preview plays, which the source keeps. Shown as an icon - the plugin's own from Resources
+@@ -10894,7 +10939,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
+ 
+ 	const TSharedRef<SWidget> Pill = SNew(SBorder)
+ 		.BorderImage(ControlsPillBrush())
+-		.Padding(FMargin(3.f, 2.f))
++		.BorderBackgroundColor_Lambda([]() { return FSlateColor(UWidgetAnimEditorSettings::Get().ControlsBackgroundColor); })
++		.Padding(FMargin(Palette::ControlsPadding))
+ 		[
+ 			SNew(SWidgetSwitcher)
+ 			.WidgetIndex_Lambda([]() { return UWidgetAnimEditorSettings::Get().bControlsShowTrackControls ? 1 : 0; })
+@@ -10922,11 +10968,13 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
+ 				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+ 				.ColorAndOpacity_Lambda([IsShown]() { return FSlateColor(IsShown() ? Palette::ToggleOnText : Palette::ToggleOffText); })
+ 				.Text(Label));
+-		return SNew(SWidgetAnimAnchoredTip)
++		const TSharedRef<TSharedPtr<SButton>> ButtonHolder = MakeShared<TSharedPtr<SButton>>();
++		const TSharedRef<TWeakPtr<SButton>> WeakButton = MakeShared<TWeakPtr<SButton>>();
++		const TSharedRef<SWidget> Side = SNew(SWidgetAnimAnchoredTip)
+ 			.Text(ToolTip)
+ 			[
+-				SNew(SButton)
+-				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
++				SAssignNew(*ButtonHolder, SButton)
++				.ButtonStyle(&ControlsButtonStyle())
+ 				.ContentPadding(FMargin(0.f))
+ 				.OnClicked_Lambda([bTrackControls]()
+ 				{
+@@ -10936,7 +10984,13 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
+ 				[
+ 					SNew(SBorder)
+ 					.BorderImage(ControlsSegmentBrush())
+-					.BorderBackgroundColor_Lambda([IsShown]() { return FSlateColor(IsShown() ? Palette::ToggleOnBackground : FLinearColor::Transparent); })
++					.BorderBackgroundColor_Lambda([IsShown, WeakButton]()
++					{
++						const TSharedPtr<SButton> Button = WeakButton->Pin();
++						const UWidgetAnimEditorSettings& Look = UWidgetAnimEditorSettings::Get();
++						return FSlateColor(ControlsSegmentColor(IsShown(), Button.IsValid() && Button->IsHovered(),
++							Button.IsValid() && Button->IsPressed(), Look.ControlsSwitchSelectedColor, Look.ControlsSwitchHoveredColor));
++					})
+ 					.Padding(FMargin(7.f, 4.f))
+ 					.HAlign(HAlign_Center)
+ 					.VAlign(VAlign_Center)
+@@ -10945,12 +10999,14 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
+ 					]
+ 				]
+ 			];
++		*WeakButton = *ButtonHolder;
++		return Side;
+ 	};
+ 
+ 	const TSharedRef<SWidget> ControlsSwitch = SNew(SBorder)
+ 		.BorderImage(ControlsSwitchBrush())
+ 		.BorderBackgroundColor_Lambda([]() { return FSlateColor(UWidgetAnimEditorSettings::Get().ControlsSwitchColor); })
+-		.Padding(FMargin(3.f, 2.f))
++		.Padding(FMargin(Palette::ControlsPadding))
+ 		[
+ 			SNew(SHorizontalBox)
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.cpp
+index 00a2a55..b3c43e8 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.cpp
+@@ -23,6 +23,11 @@ UWidgetAnimEditorSettings::UWidgetAnimEditorSettings()
+ 	CueTrackIconTint = NameTBD::Colors::WidgetAnimEditor::CueTrackIcon;
+ 	MachinePlayPauseOutline = NameTBD::Colors::StateMachineEditor::FloatingButtonOutline;
+ 	ControlsSwitchColor = NameTBD::Colors::WidgetAnimEditor::ControlsSwitchBackground;
++	ControlsSwitchSelectedColor = NameTBD::Colors::WidgetAnimEditor::ControlsSwitchSelected;
++	ControlsSwitchHoveredColor = NameTBD::Colors::WidgetAnimEditor::ControlsSwitchHover;
++	ControlsBackgroundColor = NameTBD::Colors::WidgetAnimEditor::ControlsPill;
++	ControlsSelectedColor = NameTBD::Colors::WidgetAnimEditor::ToggleOnBackground;
++	ControlsHoveredColor = NameTBD::Colors::WidgetAnimEditor::ControlsHover;
+ 
+ 	FillMissingTrackColors();
+ }
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
+index d05f42d..5c4853d 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimEditorSettings.h
+@@ -377,6 +377,26 @@ public:
+ 	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Controls Switch Color"))
+ 	FLinearColor ControlsSwitchColor;
+ 
++	/** The switch's side that is shown (lit). */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Controls Switch Selected Color"))
++	FLinearColor ControlsSwitchSelectedColor;
++
++	/** The switch's side under the mouse. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Controls Switch Hovered Color"))
++	FLinearColor ControlsSwitchHoveredColor;
++
++	/** The background of the controls pill (Loop, Ping Pong... / Snapping, Linked Edges...). */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Controls Background Color"))
++	FLinearColor ControlsBackgroundColor;
++
++	/** A control of the pill that is on (lit). */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Controls Selected Color"))
++	FLinearColor ControlsSelectedColor;
++
++	/** A control of the pill under the mouse. */
++	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Controls Hovered Color"))
++	FLinearColor ControlsHoveredColor;
++
+ 	// -------------------------------------------------------------------------------------------------
+ 
+ 	/** The color a layer type's tracks are drawn in: the user's, or the default for any type not set. */
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index dfce4d4..e07e677 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -336,6 +336,14 @@ namespace NameTBD
+ 			// The switch beside the pill (Preview / Track Controls): a light grey pill of its own, so it reads as a different
+ 			// kind of control from the pill it switches. Editable in DEVELOPER ONLY (Controls Switch Color).
+ 			inline const FLinearColor ControlsSwitchBackground(0.55f, 0.55f, 0.55f, 0.35f);
++			// A control under the mouse (the pill's and the switch's), and the switch's lit side. The pill's lit segment is
++			// ToggleOnBackground. Rectangular, as the pill and the switch are: ControlsCornerRadius on a segment, the pill's and
++			// the switch's one ControlsPadding more so they nest. Each color editable in DEVELOPER ONLY.
++			inline const FLinearColor ControlsHover(1.00f, 1.00f, 1.00f, 0.10f);
++			inline const FLinearColor ControlsSwitchSelected = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.30f);
++			inline const FLinearColor ControlsSwitchHover(1.00f, 1.00f, 1.00f, 0.14f);
++			inline constexpr float ControlsCornerRadius = 3.0f;
++			inline constexpr float ControlsPadding = 2.0f;
+ 			inline const FLinearColor ControlsDivider(1.00f, 1.00f, 1.00f, 0.14f);
+ 			inline const FLinearColor ToggleOnBackground = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.30f);
+ 			inline const FLinearColor ToggleOnText(1.00f, 1.00f, 1.00f);

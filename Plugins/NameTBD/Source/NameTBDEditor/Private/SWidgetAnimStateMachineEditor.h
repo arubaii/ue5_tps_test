@@ -332,6 +332,23 @@ private:
 	bool CanRenameSelected() const;
 	void OpenState(const FGuid& StateId);
 
+	/**
+	 * Animations dropped on the graph (or a timeline double-clicked in the Animations list, ScreenPosition unset - the middle of
+	 * the graph): a state for each, side by side from where they were let go, named for it and playing it. One undo step.
+	 */
+	void AddStatesForAnimations(const TArray<UWidgetAnimPresetAsset*>& Animations, const TArray<FString>& Names, TOptional<FVector2D> ScreenPosition);
+
+	/**
+	 * What a state of this machine plays for Animation: an asset as it is; a timeline of this Widget Blueprint as it is, in its
+	 * own machine (saved with it - its changes play at once; Save State Machine To saves it as an asset in the copy it makes);
+	 * in a machine that is an asset, the timeline's saved asset, made or brought up to date now. Null when none could be made.
+	 */
+	UWidgetAnimPresetAsset* ResolveAnimationForMachine(UWidgetAnimPresetAsset* Animation);
+
+	/** The Widget Blueprint's timelines as last listed in the Animations list - a change lists them again. */
+	uint32 TimelineListSignature = 0;
+	uint32 ComputeTimelineListSignature() const;
+
 	void CopySelected();
 	bool CanCopySelected() const;
 	void CutSelected();

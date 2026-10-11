@@ -27,7 +27,7 @@ enum class EWidgetAnimTextWidgetKind : uint8
 
 /**
  * One default use of a Widget Animation on every text widget of a kind: the animation, its Anim ID and how it plays.
- * Every Layer Group of the animation plays on the text widget itself. Held softly, so project settings never load
+ * Every Track Group of the animation plays on the text widget itself. Held softly, so project settings never load
  * animations before they are used.
  */
 USTRUCT(BlueprintType)

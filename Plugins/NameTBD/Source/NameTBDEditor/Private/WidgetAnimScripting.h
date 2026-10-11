@@ -73,7 +73,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Widget Animation|Scripting")
 	FString GetAnimationName() const;
 
-	/** False for a plain list of tracks - a component's Additive Anim Layers - which has no Layer Groups: each track names its own widget. */
+	/** False for a plain list of tracks - a component's Additive Anim Layers - which has no Track Groups: each track names its own widget. */
 	UFUNCTION(BlueprintPure, Category = "Widget Animation|Scripting")
 	bool SupportsGroups() const;
 
@@ -96,13 +96,13 @@ public:
 	void EndEdit();
 
 	// ---------------------------------------------------------------------------------------------
-	// Layer Groups
+	// Track Groups
 	// ---------------------------------------------------------------------------------------------
 
 	UFUNCTION(BlueprintPure, Category = "Widget Animation|Scripting")
 	int32 GetNumGroups() const;
 
-	/** The group's name as shown: its Group Name, or "Layer Group N". */
+	/** The group's name as shown: its Group Name, or "Track Group N". */
 	UFUNCTION(BlueprintPure, Category = "Widget Animation|Scripting")
 	FString GetGroupName(int32 Group) const;
 

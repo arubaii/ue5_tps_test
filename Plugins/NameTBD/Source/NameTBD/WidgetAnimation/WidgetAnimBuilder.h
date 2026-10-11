@@ -81,7 +81,7 @@ public:
 
 	/**
 	 * The layers, exactly as a Widget Animation asset holds them: one sequence, each layer in one of the
-	 * Layer Groups. They combine rather than overwrite - opacity and scale multiply, translation and angle
+	 * Track Groups. They combine rather than overwrite - opacity and scale multiply, translation and angle
 	 * add - and Starts and Delay sequence them, across groups as freely as within one.
 	 */
 	UPROPERTY(EditDefaultsOnly, Category = "Widget Animation", meta = (TitleProperty = "AnimType", EditCondition = "PreviewAnimation == nullptr"))

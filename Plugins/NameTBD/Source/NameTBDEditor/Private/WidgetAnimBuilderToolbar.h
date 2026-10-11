@@ -18,7 +18,7 @@ class UWidgetAnimPresetAsset;
  * holding SWidgetAnimTimeline, and registers the tab its Dock in Layout button opens - through UMG's own tab
  * and layout hooks, so the tab is one of the Widget Blueprint editor's and docks beside Animations. In a
  * WidgetAnimationBuilder the panel builds a generic animation on the builder's working copy; in any other
- * Widget Blueprint it builds a WA_ asset against that widget's own widgets, one Layer Group per widget.
+ * Widget Blueprint it builds a WA_ asset against that widget's own widgets, one Track Group per widget.
  * See RegisterWidgetAnimationsDrawer and IWidgetAnimPanelSource.
  *
  * Outside a builder, it also adds Play In / Play Out / Reset, a timer, a scrubber, Loop / Ping Pong / Invert

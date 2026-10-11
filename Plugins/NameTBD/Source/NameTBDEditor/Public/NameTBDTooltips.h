@@ -355,7 +355,7 @@ namespace NameTBD::Tooltips
 		inline FText AddTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AddTooltip",
-				"Add a Layer Group - a widget for the animation to move - a track, or an existing Widget Animation's tracks.");
+				"Add a Track Group - a widget for the animation to move - a track, or an existing Widget Animation's tracks.");
 		}
 
 		// -------------------------------------------------------------------------------------------------
@@ -653,7 +653,7 @@ namespace NameTBD::Tooltips
 		}
 
 		// -------------------------------------------------------------------------------------------------
-		// Layer Group menu
+		// Track Group menu
 		// -------------------------------------------------------------------------------------------------
 
 		inline FText JumpToGroupTooltip()
@@ -1259,13 +1259,13 @@ namespace NameTBD::Tooltips
 		}
 
 		// -------------------------------------------------------------------------------------------------
-		// Folders of layer groups in the Animation Tracks list
+		// Folders of track groups in the Animation Tracks list
 		// -------------------------------------------------------------------------------------------------
 
 		inline FText MoveToFolderTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MoveToFolderTooltip",
-				"Group these layer groups under a List Folder - a folder in this panel's Animation Tracks list only, to keep a long list tidy. It isn't a folder in the Content Browser or on disk, and nothing about the animation changes.");
+				"Group these track groups under a List Folder - a folder in this panel's Animation Tracks list only, to keep a long list tidy. It isn't a folder in the Content Browser or on disk, and nothing about the animation changes.");
 		}
 
 		inline FText NewFolderHint()
@@ -1283,7 +1283,7 @@ namespace NameTBD::Tooltips
 		inline FText ListFolderRowTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ListFolderRowTooltip",
-				"A List Folder: layer groups gathered under one row of this list, to keep it tidy - it isn't a folder in the Content Browser or on disk, and changes nothing about the animation. Click to select its groups, double-click or the arrow to fold it, right-click for its menu.");
+				"A List Folder: track groups gathered under one row of this list, to keep it tidy - it isn't a folder in the Content Browser or on disk, and changes nothing about the animation. Click to select its groups, double-click or the arrow to fold it, right-click for its menu.");
 		}
 
 		inline FText ListFolderFoldTooltip()
@@ -1307,7 +1307,7 @@ namespace NameTBD::Tooltips
 		inline FText AddGroupToFolderTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AddGroupToFolderTooltip",
-				"Add a new layer group, listed in this List Folder.");
+				"Add a new track group, listed in this List Folder.");
 		}
 
 		inline FText RemoveFolderTooltip()
@@ -1337,7 +1337,7 @@ namespace NameTBD::Tooltips
 		inline FText MultipleGroupsSelectedNote()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MultipleGroupsSelectedNote",
-				"{0} layer groups selected - the settings below are {1}'s. Right-click any of them to put them all in a List Folder, hide, fold or delete them; Delete deletes them.");
+				"{0} track groups selected - the settings below are {1}'s. Right-click any of them to put them all in a List Folder, hide, fold or delete them; Delete deletes them.");
 		}
 
 		// -------------------------------------------------------------------------------------------------
@@ -1407,7 +1407,7 @@ namespace NameTBD::Tooltips
 		inline FText DesignNoWidgetNote()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DesignNoWidgetNote",
-				"No widget to read a design off yet: give the track's Layer Group a Target Widget, or open the animation in a Widget Blueprint's editor, and its keys take that widget's settings.");
+				"No widget to read a design off yet: give the track's Track Group a Target Widget, or open the animation in a Widget Blueprint's editor, and its keys take that widget's settings.");
 		}
 
 		// A registered type describes itself (FWidgetAnimEvaluator::GetDescription); these two are only for a
@@ -2112,6 +2112,66 @@ namespace NameTBD::Tooltips
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TextEditorHint",
 				"Select some text, then pick a tag above to wrap it.");
 		}
+
+		inline FText StartTimeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "StartTimeTooltip",
+				"Where the track starts in the animation - drag the box or type a time. The track is placed there on the timeline as if dragged: the tracks around it stay where they are. With several tracks selected, the earliest starts here and the others keep their places relative to it.");
+		}
+
+		inline FText KeyframeOnlyTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyframeOnlyTooltip",
+				"Keyframe Only: tracks are shown and edited as their keys, as in a dope sheet - each track a thin lane between its first and last key, its start and end keys included. Click a lane to pick its track (its keys' values show in the Selection panel), drag across lanes to box keys, drag a start or end key to resize its track. Move whole tracks with Start Time or the arrow keys.");
+		}
+
+		inline FText KeyValueCellTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueCellTooltip",
+				"{0} at this key. Type a number or math: +8 adds 8, *2 doubles, x * 2 + 1 works it out from the value here. Drag to change it. Ctrl+click to pick several boxes (Shift+click a run down a column): typing into one sets them all - each worked out from its own value - and dragging one moves them all by the same amount.");
+		}
+
+		inline FText KeyValuesHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValuesHint",
+				"Ctrl+click boxes to edit several at once. Type +8, *2 or x * 2 + 1.");
+		}
+
+		inline FText KeyValuesHintTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValuesHintTooltip",
+				"Only the values each key changes are listed - a key that only scales shows Scale, not its whole transform. Ctrl+click boxes to pick several, Shift+click for a run down a column. A number typed into a picked box goes into every picked box, worked out from each one's own value: +8 adds 8, -= 8 takes 8 off, *2 doubles, /2 halves, x * 2 + 1 uses the value as x; a plain number (or -8) sets them all to it. Dragging a picked box moves them all together. Each edit is one undo step.");
+		}
+
+		inline FText ShowAllKeyValuesTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ShowAllKeyValuesTooltip",
+				"List every value the keys hold, not only those each key changes. The ones a key leaves as they were are dimmed.");
+		}
+
+		inline FText KeyValuesMoreTracksNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValuesMoreTracksNote",
+				"And {0} more tracks - their keys are listed when at most {1} tracks are picked.");
+		}
+
+		inline FText KeyValuesAuthoredNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValuesAuthoredNote",
+				"This key uses the widget as authored - no values of its own. Turn its Use Authored off to give it some.");
+		}
+
+		inline FText KeyValuesNoneNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValuesNoneNote",
+				"No value changes at these keys. Show All Values lists them anyway.");
+		}
+
+		inline FText KeyValuesKeyTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValuesKeyTooltip",
+				"Click to move the playhead to this key.");
+		}
 	}
 
 	/** The Set Widget Animation Value node's dropdown pins, in the Blueprint graph. */
@@ -2736,7 +2796,7 @@ namespace NameTBD::Tooltips
 		inline FText NoPreviewTargetsNote()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "NoPreviewTargetsNote",
-				"No targets yet: they are the Layer Groups of the animations the states play, and appear here once a state plays one.");
+				"No targets yet: they are the Track Groups of the animations the states play, and appear here once a state plays one.");
 		}
 
 		inline FText PickTargetInDesignerTooltip()
@@ -2761,6 +2821,48 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "StateMachineDrawerTooltip",
 				"Widget Animation State Machine: states and transitions that move widgets on their own - hovered, pressed, selected, a value - built like an Animation Blueprint's state machine.");
+		}
+
+		inline FText DropAnimationsNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "DropAnimationsNote",
+				"Let go to make a state that plays each animation.");
+		}
+
+		inline FText DropAnimationsLockedNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "DropAnimationsLockedNote",
+				"The state machine is locked - unlock it to add states.");
+		}
+
+		inline FText AnimationRowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AnimationRowTooltip",
+				"A timeline of this Widget Blueprint. Drag it onto the graph to make a state that plays it, or double-click to add one in the middle of the graph. No need to save it as an asset first: this Widget Blueprint's own state machine plays it as it is, and a state machine asset gets it saved as an animation asset when it is dropped or when the machine is saved.");
+		}
+
+		inline FText AnimationsPanelTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AnimationsPanelTooltip",
+				"This Widget Blueprint's timelines, to drag onto the graph - each makes a state that plays it. Widget Animation assets can be dragged in from the Content Browser too.");
+		}
+
+		inline FText TimelinesSavedNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "TimelinesSavedNote",
+				"Saved {0} as an animation asset, so this state machine can play it: {1}.");
+		}
+
+		inline FText TimelineNotSavedNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "TimelineNotSavedNote",
+				"Couldn't save {0} as an animation asset for this state machine.");
+		}
+
+		inline FText AnimationsPanelEmptyNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AnimationsPanelEmptyNote",
+				"No timelines in this Widget Blueprint yet - make one in the Widget Animations panel (Animation Timeline) and it is listed here to drag onto the graph. Widget Animation assets can be dragged in from the Content Browser at any time.");
 		}
 	}
 

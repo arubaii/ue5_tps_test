@@ -414,7 +414,7 @@ struct NAMETBD_API FWidgetAnimMachineInput
 	FInstancedStruct Source;
 
 	/**
-	 * Which of the machine's targets Driven By is measured on - a Layer Group name its animations share. None: the widget the
+	 * Which of the machine's targets Driven By is measured on - a Track Group name its animations share. None: the widget the
 	 * machine plays on.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Measured On", GetOptions = "GetTargetNameOptions"))
@@ -718,7 +718,7 @@ struct NAMETBD_API FWidgetAnimMachineState
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Properties", meta = (DisplayName = "Plays", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
 	EWidgetAnimMachineBlendSpace BlendSpace = EWidgetAnimMachineBlendSpace::None;
 
-	/** The animation the state plays: a Widget Animation, aimed through its Layer Groups at the machine's targets. None: the state poses nothing. */
+	/** The animation the state plays: a Widget Animation, aimed through its Track Groups at the machine's targets. None: the state poses nothing. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && BlendSpace == EWidgetAnimMachineBlendSpace::None", EditConditionHides))
 	TObjectPtr<UWidgetAnimPresetAsset> Animation = nullptr;
 
@@ -857,7 +857,7 @@ struct NAMETBD_API FWidgetAnimMachineLayer
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Affects"))
 	EWidgetAnimMachineLayerMask MaskMode = EWidgetAnimMachineLayerMask::All;
 
-	/** The targets Affects names - the Layer Group names of the machine's animations; (Widget) for the widget it plays on. */
+	/** The targets Affects names - the Track Group names of the machine's animations; (Widget) for the widget it plays on. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Targets", GetOptions = "GetMaskTargetOptions", EditCondition = "MaskMode != EWidgetAnimMachineLayerMask::All", EditConditionHides))
 	TArray<FName> MaskTargets;
 
@@ -909,7 +909,7 @@ struct NAMETBD_API FWidgetAnimMachineLayer
 
 /**
  * A Widget Animation State Machine (WASM_): states, the transitions between them and the inputs they test, in layers.
- * Reusable: played by a Widget Animation Component's State Machines, which maps the machine's targets - the Layer Groups
+ * Reusable: played by a Widget Animation Component's State Machines, which maps the machine's targets - the Track Groups
  * of the animations it plays, matched by name - onto its own widgets. Edited in the Widget Animation State Machine editor:
  * the status bar drawer of any Widget Blueprint editor, or a double-click on the asset. See the note at the top of
  * WidgetAnimStateMachine.h.
@@ -957,7 +957,7 @@ public:
 	int32 FindLayerIndex(FName LayerName) const;
 
 	/**
-	 * The targets the machine's animations aim at: the Layer Group names of every animation its states and transitions play,
+	 * The targets the machine's animations aim at: the Track Group names of every animation its states and transitions play,
 	 * each once, in the order first found. A use of the machine picks a widget for each.
 	 */
 	void GetTargetNames(TArray<FName>& OutNames) const;
@@ -1249,7 +1249,7 @@ struct NAMETBD_API FWidgetAnimStateMachineEntry
 	TObjectPtr<UWidgetAnimStateMachineAsset> StateMachine = nullptr;
 
 	/**
-	 * A widget for each of the machine's targets - the Layer Group names of its animations - labeled with its name. Sized to
+	 * A widget for each of the machine's targets - the Track Group names of its animations - labeled with its name. Sized to
 	 * the machine whenever the component is edited or loaded. A new row starts on the group's Preview Target.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Target Widgets", EditFixedSize, TitleProperty = "GroupName"))

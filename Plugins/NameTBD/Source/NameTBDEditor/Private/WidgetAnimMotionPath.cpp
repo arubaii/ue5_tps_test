@@ -1127,7 +1127,7 @@ namespace WidgetAnimMotionPathImpl
 			}
 		}
 
-		// Then every other widget the animation moves - each layer group's Target Widget with a track that changes where it is -
+		// Then every other widget the animation moves - each track group's Target Widget with a track that changes where it is -
 		// so its path shows whatever is selected, or nothing.
 		if (Posed.Settings)
 		{

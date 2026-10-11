@@ -5,8 +5,8 @@
 #include "CoreMinimal.h"
 
 /**
- * The first option of the editor's widget pickers - a Layer Group's or a track's Target Widget, the state machine preview's
- * Plays On and its layer groups' rows: the widget the animation plays on itself, stored as None. Listed as "(this widget)",
+ * The first option of the editor's widget pickers - a Track Group's or a track's Target Widget, the state machine preview's
+ * Plays On and its track groups' rows: the widget the animation plays on itself, stored as None. Listed as "(this widget)",
  * never as None, which read as "no widget at all". Widget names can't hold spaces or brackets, so no path is ever taken for it.
  */
 namespace WidgetAnimTargetOption

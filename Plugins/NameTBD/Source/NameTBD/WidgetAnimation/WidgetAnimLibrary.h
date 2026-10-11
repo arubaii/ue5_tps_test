@@ -1110,7 +1110,7 @@ struct NAMETBD_API FWidgetAnimLayer
 	TObjectPtr<UWidgetAnimPresetAsset> InsertedAnimation = nullptr;
 
 	/**
-	 * For an animation track: which Layer Group of the animation it is in each of the inserted animation's own groups
+	 * For an animation track: which Track Group of the animation it is in each of the inserted animation's own groups
 	 * plays in, by position - so an inserted animation that moves three widgets moves three here. A group with no entry,
 	 * or one out of range, plays in the track's own group - which is all an animation of one group needs.
 	 */
@@ -1136,7 +1136,7 @@ struct NAMETBD_API FWidgetAnimLayer
 	bool FitsAnimationToTrack() const;
 
 	/**
-	 * Which Layer Group of its animation this layer belongs to - which widget it moves - by the group's
+	 * Which Track Group of its animation this layer belongs to - which widget it moves - by the group's
 	 * position. Set from the Widget Animations panel, never in a Details panel. Membership only: where the layer
 	 * sits in time is still its place in the animation's one list of layers and its Starts setting, so layers
 	 * of different groups sequence against each other freely. Unused wherever layers stand alone, such as a
@@ -1149,7 +1149,7 @@ struct NAMETBD_API FWidgetAnimLayer
 	 * Where a layer stands alone - a Widget Animation Component's Additive Anim Layers - the widget it moves: a path
 	 * into the Widget Blueprint the component was added in, the same kind of path an entry's Target Widgets hold.
 	 * None moves the component's own widget. Set from the component's inline track editor, never in a Details panel.
-	 * Unused in an animation, where the layer's Layer Group says which widget it moves.
+	 * Unused in an animation, where the layer's Track Group says which widget it moves.
 	 */
 	UPROPERTY()
 	FName TargetWidget;
@@ -1386,8 +1386,8 @@ struct NAMETBD_API FWidgetAnimLayerGroup
 {
 	GENERATED_BODY()
 
-	/** Optional. Left empty it reads "Layer Group 1", "Layer Group 2"... by position. Uses of the animation label this group's Target Widget with it. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer Group", meta = (DisplayName = "Group Name"))
+	/** Optional. Left empty it reads "Track Group 1", "Track Group 2"... by position. Uses of the animation label this group's Target Widget with it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Track Group", meta = (DisplayName = "Group Name"))
 	FString GroupName;
 
 	/**
@@ -1395,7 +1395,7 @@ struct NAMETBD_API FWidgetAnimLayerGroup
 	 * that widget itself. A use of the animation that has not picked its own Target Widget for this group starts
 	 * from this one.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer Group", meta = (DisplayName = "Target Widget"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Track Group", meta = (DisplayName = "Target Widget"))
 	FName PreviewTarget;
 
 #if WITH_EDITORONLY_DATA
@@ -1404,7 +1404,7 @@ struct NAMETBD_API FWidgetAnimLayerGroup
 	 * long list of groups tidy - not a folder in the Content Browser or on disk. Groups with the same List Folder name share
 	 * one. Only the panel reads it: it changes nothing about how the animation plays.
 	 */
-	UPROPERTY(EditAnywhere, Category = "Layer Group", meta = (DisplayName = "List Folder"))
+	UPROPERTY(EditAnywhere, Category = "Track Group", meta = (DisplayName = "List Folder"))
 	FString EditorFolder;
 #endif
 
@@ -1415,11 +1415,27 @@ struct NAMETBD_API FWidgetAnimLayerGroup
 	UPROPERTY()
 	TArray<FWidgetAnimLayer> Layers;
 
-	/** GroupName, or "Layer Group N" (1-based) when it was left empty. */
+	/** GroupName, or "Track Group N" (1-based) when it was left empty. */
 	FString GetDisplayName(int32 GroupIndex) const;
 
-	/** "Layer Group N" for the group at GroupIndex. */
+	/** "Track Group N" for the group at GroupIndex. */
 	static FString MakeDefaultName(int32 GroupIndex);
+
+	/**
+	 * A name stored before groups were called Track Groups - "Layer Group N", an unnamed group's name then, kept by a state
+	 * machine's targets and a use's rows - as it reads now ("Track Group N"). Any other name as it is. Stored names are
+	 * matched as they are first, so a group the user named "Layer Group 2" by hand is still found by that name.
+	 */
+	static FString UpgradeLegacyName(const FString& Name);
+
+	/** The reverse: "Layer Group N" for "Track Group N" - the name it was stored under before - or empty for any other name. */
+	static FString MakeLegacyDefaultName(const FString& Name);
+
+	/** Whether a stored target name (Stored) names the target Current: the same, or a legacy default name of it. */
+	static bool IsSameTargetName(const FString& Stored, const FString& Current)
+	{
+		return Stored == Current || UpgradeLegacyName(Stored) == Current;
+	}
 };
 
 USTRUCT(BlueprintType)
@@ -2651,7 +2667,7 @@ public:
 	static float GetStackElapsed(const TArray<FWidgetAnimSettings>& Settings, const TArray<FWidgetAnimState>& States);
 
 	/**
-	 * Whether the layer group that decides GetStackDuration's answer loops, and if so, how long one visible
+	 * Whether the track group that decides GetStackDuration's answer loops, and if so, how long one visible
 	 * repeat of it takes - the span AdvanceTimeline repeats after the first leg, doubled by OutPingPong
 	 * since a round trip is there-and-back. Returns false, with OutLoopSeconds left at 0, when nothing in
 	 * the stack drives a loop (including an empty stack).

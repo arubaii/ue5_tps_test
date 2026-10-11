@@ -17,6 +17,7 @@
 #include "SWidgetAnimStateMachineEditor.h"
 #include "WidgetAnimScripting.h"
 #include "WidgetAnimPanelSource.h"
+#include "WidgetAnimTimelines.h"
 #include "WidgetAnimDockPreference.h"
 #include "StatusBarSubsystem.h"
 #include "Styling/AppStyle.h"
@@ -76,11 +77,11 @@ namespace
 	// Widget Animations drawer, and the tab it docks into
 	//
 	// A drawer on every Widget Blueprint editor's status bar, beside Animations, holding SWidgetAnimTimeline:
-	// layer groups, their layers, tracks and keys, and a Selection panel for whatever is picked. Dock in
+	// track groups, their layers, tracks and keys, and a Selection panel for whatever is picked. Dock in
 	// Layout opens the same panel as a tab in the editor's layout instead.
 	//
 	// In a WidgetAnimationBuilder it edits the builder's working copy, for generic animations saved with
-	// Create. In any other Widget Blueprint it edits a WA_ asset directly, each Layer Group playing on one of
+	// Create. In any other Widget Blueprint it edits a WA_ asset directly, each Track Group playing on one of
 	// this widget's own widgets - see IWidgetAnimPanelSource.
 	//
 	// Either way it edits in a details view of its own. Editing through the designer's Details panel edits
@@ -927,7 +928,7 @@ namespace
 
 		FWidgetDrawerConfig Config(WidgetAnimationsDrawerId);
 		Config.ButtonText = LOCTEXT("WidgetAnimationsDrawer", "Widget Animations");
-		Config.ToolTipText = LOCTEXT("WidgetAnimationsDrawerTooltip", "Build widget animations: layer groups for each widget they move, their tracks and keys.");
+		Config.ToolTipText = LOCTEXT("WidgetAnimationsDrawerTooltip", "Build widget animations: track groups for each widget they move, their tracks and keys.");
 		Config.Icon = FNameTBDStyle::Get().GetBrush(FNameTBDStyle::WidgetAnimationsIcon);
 
 		// The panel is built on first open and kept, so its selection and zoom survive the drawer closing -
@@ -1506,8 +1507,29 @@ bool FWidgetAnimBuilderToolbar::OpenAnimationInPanel(const UWidgetBlueprint* Wid
 		return false;
 	}
 
-	// The panel edits the asset itself - Edit Existing Asset - and is docked, or brought forward if it is open already.
 	const TSharedRef<IWidgetAnimPanelSource> PanelSource = GetPanelSource(Toolkit.ToSharedRef());
+
+	// One of this Widget Blueprint's own timelines - a state of its own state machine can play one as it is - opens as that
+	// timeline, in Animation Timeline.
+	UWidgetBlueprint* TimelineBlueprint = nullptr;
+	int32 TimelineIndex = INDEX_NONE;
+	if (WidgetAnimTimelineAssets::FindTimeline(Animation, TimelineBlueprint, TimelineIndex))
+	{
+		const UWidgetAnimTimelinesExtension* Timelines = TimelineBlueprint == WidgetBlueprint ? UWidgetAnimTimelinesExtension::Find(TimelineBlueprint) : nullptr;
+		if (!Timelines || !Timelines->Timelines.IsValidIndex(TimelineIndex))
+		{
+			return false;
+		}
+		PanelSource->SetMode(IWidgetAnimPanelSource::EMode::Timeline);
+		if (!PanelSource->OpenTimeline(Timelines->Timelines[TimelineIndex].Name))
+		{
+			return false;
+		}
+		DockInLayout(Toolkit, PanelSource);
+		return true;
+	}
+
+	// The panel edits the asset itself - Edit Existing Asset - and is docked, or brought forward if it is open already.
 	PanelSource->SetMode(IWidgetAnimPanelSource::EMode::EditExistingAsset);
 	PanelSource->SetAsset(Animation);
 	if (PanelSource->GetAsset() != Animation)

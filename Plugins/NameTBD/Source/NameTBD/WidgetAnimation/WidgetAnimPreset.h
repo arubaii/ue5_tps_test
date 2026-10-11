@@ -36,12 +36,12 @@ class UWidget;
  *
  * MAKING ONE
  * In any Widget Blueprint: open the Widget Animations drawer on the status bar, on Animation Timeline make
- * or open one of that Widget Blueprint's timelines, build it against its own widgets - each Layer Group
+ * or open one of that Widget Blueprint's timelines, build it against its own widgets - each Track Group
  * animating the widget it is pointed at - and press Save as Animation Asset. For something generic meant for many places, do the same in
  * WidgetAnimationBuilder, whose Animation Name and Save Folder decide where it is saved.
  *
- * LAYER GROUPS
- * Every layer belongs to one Layer Group, one group per widget the animation moves. The layers are still
+ * TRACK GROUPS
+ * Every layer belongs to one Track Group, one group per widget the animation moves. The layers are still
  * one list in one sequence, so layers of different groups follow each other freely. Each use of the
  * animation picks a Target Widget per group - see FWidgetAnimEntry - so the asset stays reusable.
  */
@@ -61,7 +61,7 @@ public:
 	TArray<FWidgetAnimLayerGroup> LayerGroups;
 
 	/**
-	 * The animation: one list of layers, each in one of the Layer Groups. Order is sequence - a layer's Starts
+	 * The animation: one list of layers, each in one of the Track Groups. Order is sequence - a layer's Starts
 	 * reads the layer above it here, whichever group that is - so groups interleave freely.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (TitleProperty = "AnimType"))
@@ -291,20 +291,20 @@ struct NAMETBD_API FWidgetAnimEntryBase
 	void BuildSettings(TArray<FWidgetAnimSettings>& OutSettings, UWidget* Target) const;
 
 	/**
-	 * The same, with a widget per Layer Group: GroupTarget(GroupIndex) answers the widget that group's layers
+	 * The same, with a widget per Track Group: GroupTarget(GroupIndex) answers the widget that group's layers
 	 * animate, or null for the widget the animation is played on.
 	 */
 	void BuildSettings(TArray<FWidgetAnimSettings>& OutSettings, TFunctionRef<UWidget*(int32 /*GroupIndex*/)> GroupTarget) const;
 };
 
-/** Which widget one Layer Group of an entry's animation animates. */
+/** Which widget one Track Group of an entry's animation animates. */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FWidgetAnimGroupTarget
 {
 	GENERATED_BODY()
 
 	/** The group's name in the animation, kept here as the row's label. Refreshed whenever the entry is edited or loaded. */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Layer Group"))
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Track Group"))
 	FString GroupName;
 
 	/**
@@ -340,7 +340,7 @@ struct NAMETBD_API FWidgetAnimEntry : public FWidgetAnimEntryBase
 	GENERATED_BODY()
 
 	/**
-	 * A Target Widget for each Layer Group of the animation, in the animation's order and labeled with its
+	 * A Target Widget for each Track Group of the animation, in the animation's order and labeled with its
 	 * group names. Sized to the animation by the owner whenever the entry is edited or loaded - see
 	 * SyncGroupTargets - so it always lists exactly the groups there are. A new row starts on the group's
 	 * Preview Target.
@@ -388,7 +388,7 @@ struct NAMETBD_API FWidgetAnimEntry : public FWidgetAnimEntryBase
 	bool bShowTextChangeTrigger = false;
 
 	/**
-	 * The single Target Widget from before Layer Groups. No longer edited; kept so an entry saved with one
+	 * The single Target Widget from before Track Groups. No longer edited; kept so an entry saved with one
 	 * carries it into every group it has not been given a target for yet.
 	 */
 	UPROPERTY()

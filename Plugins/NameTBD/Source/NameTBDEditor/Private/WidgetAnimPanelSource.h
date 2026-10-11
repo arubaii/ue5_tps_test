@@ -25,7 +25,7 @@ class IPropertyHandle;
  *    generic animations meant for many widgets.
  *
  *  - FWidgetAnimAssetPanelSource, in every other Widget Blueprint's editor: a new animation, or a WA_ asset
- *    edited directly, each Layer Group playing on a widget of this Widget Blueprint - its Preview Target -
+ *    edited directly, each Track Group playing on a widget of this Widget Blueprint - its Preview Target -
  *    in the designer. The place for an animation that moves several parts of one sophisticated widget.
  *
  * The panel only talks to this interface, so layers, groups, keys, the transport and the Selection panel
@@ -80,7 +80,7 @@ public:
 	virtual FName GetLayersPropertyName() const { return TEXT("Layers"); }
 
 	/**
-	 * Whether the tracks can be split between Layer Groups - each moving a widget of its own. A plain list of tracks,
+	 * Whether the tracks can be split between Track Groups - each moving a widget of its own. A plain list of tracks,
 	 * such as a component's Additive Anim Layers, plays on the one widget it belongs to: it has a single group,
 	 * which the panel neither shows nor lets a track leave.
 	 */
@@ -903,4 +903,24 @@ namespace WidgetAnimSaveLocation
 	 * window doesn't. A name already taken in Folder, or one an asset can't have, can't be saved. False when cancelled.
 	 */
 	bool PromptForAssetName(const FString& Folder, const FString& DefaultName, FString& OutName);
+}
+
+/**
+ * Timelines as animations other things can hold: what lets a timeline go straight into a state machine - dragged onto its graph -
+ * with no Save Animation To first. See SWidgetAnimStateMachineEditor's drop and Save State Machine To.
+ */
+namespace WidgetAnimTimelineAssets
+{
+	/**
+	 * Whether Animation is a timeline - a Widget Blueprint's own animation object, inside its timelines (see
+	 * UWidgetAnimTimelinesExtension) - and which: its Widget Blueprint and index. False for an asset, or anything else.
+	 */
+	bool FindTimeline(const UWidgetAnimPresetAsset* Animation, UWidgetBlueprint*& OutBlueprint, int32& OutIndex);
+
+	/**
+	 * The Widget Animation asset a timeline is saved as - its Saved Asset, made when it has none yet (WA_<timeline name> in the
+	 * project's Default Save Folder, else beside the Widget Blueprint, and remembered as its Saved Asset, as Save Animation To
+	 * does) - brought up to date with the timeline and saved to disk. Null when it couldn't be made.
+	 */
+	UWidgetAnimPresetAsset* SaveAsAsset(UWidgetBlueprint* WidgetBlueprint, int32 TimelineIndex);
 }

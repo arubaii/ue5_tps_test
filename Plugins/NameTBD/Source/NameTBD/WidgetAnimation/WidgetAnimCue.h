@@ -22,7 +22,7 @@ struct FWidgetAnimValueKeys;
 //
 // A cue is a track that makes something happen at moments on the timeline rather than moving anything: an event the
 // game handles, a sound, another animation started. It is a registered type whose composition is Cue (see
-// EWidgetAnimComposition), so it is authored, placed, keyed, staggered and aimed by its Layer Group exactly as any
+// EWidgetAnimComposition), so it is authored, placed, keyed, staggered and aimed by its Track Group exactly as any
 // track is, and it loops, ping-pongs and inverts with the animation it is in. It writes nothing, so it has no pose, no
 // baseline and nothing to put back.
 //
@@ -125,7 +125,7 @@ struct NAMETBD_API FWidgetAnimCueInfo
 {
 	GENERATED_BODY()
 
-	/** The widget the cue's track is aimed at: its Layer Group's target, a staggered item, or the widget playing it. */
+	/** The widget the cue's track is aimed at: its Track Group's target, a staggered item, or the widget playing it. */
 	UPROPERTY(BlueprintReadOnly, Category = "Animation")
 	TObjectPtr<UWidget> Target = nullptr;
 

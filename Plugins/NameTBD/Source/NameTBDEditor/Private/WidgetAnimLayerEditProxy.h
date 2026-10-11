@@ -49,7 +49,7 @@ public:
 };
 
 /**
- * An animation asset standing in for itself in the Selection panel: its own settings and Layer Groups, and of its tracks
+ * An animation asset standing in for itself in the Selection panel: its own settings and Track Groups, and of its tracks
  * only the one selected - at Layers[0].
  *
  * A details view makes a property node for every property of whatever it shows, checks them all again every frame, and

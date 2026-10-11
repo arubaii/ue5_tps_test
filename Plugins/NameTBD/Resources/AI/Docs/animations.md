@@ -1,7 +1,7 @@
 # Widget Animations
 
 ## Assets, groups and tracks
-A Widget Animation (WA_ asset) is a list of tracks, each in a Layer Group; a group is one widget the animation moves (Target Widget; empty = the widget it plays on). Tracks start With Previous or After Previous plus Delay. Timing: Tween (Duration, Easing Linear / EaseIn / EaseOut / EaseInOut / Hold) or Spring (Spring: Duration and Bounce, or Stiffness / Damping / Mass - presets "@spring.Snappy", "@spring.Bouncy"...). A stagger (Expander) plays a track once per child, letter, word or line.
+A Widget Animation (WA_ asset) is a list of tracks, each in a Track Group; a group is one widget the animation moves (Target Widget; empty = the widget it plays on). Tracks start With Previous or After Previous plus Delay. Timing: Tween (Duration, Easing Linear / EaseIn / EaseOut / EaseInOut / Hold) or Spring (Spring: Duration and Bounce, or Stiffness / Damping / Mass - presets "@spring.Snappy", "@spring.Bouncy"...). A stagger (Expander) plays a track once per child, letter, word or line.
 
 ## Track types
 Fade (StartOpacity, EndOpacity), Scale (StartScale, EndScale, Overshoot), Slide (SlideFromDirection Up/Down/Left/Right, SlideDistance), Rotate (StartAngle, EndAngle), Pulse (PulseScaleAmount), Shake, Transform (keyframes of translation / scale / angle / shear, curved motion paths), MaterialScalar / MaterialVector (ScalarParameterName, StartScalarValue, EndScalarValue...), Shape (a shape's values over time), Design (brush, colors, fonts), cues (Sound, Event, Particles, Play Animation), and registered types (TypeParams).

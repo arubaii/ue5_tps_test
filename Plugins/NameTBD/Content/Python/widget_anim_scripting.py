@@ -457,7 +457,7 @@ class Slot:
 
 
 class Group:
-    """A Layer Group: one widget the animation moves, and the tracks that move it."""
+    """A Track Group: one widget the animation moves, and the tracks that move it."""
 
     def __init__(self, anim, index):
         self._anim = anim
@@ -569,7 +569,7 @@ class Track:
 
     @property
     def group(self):
-        """Its Layer Group - None in a plain list of tracks, which has none."""
+        """Its Track Group - None in a plain list of tracks, which has none."""
         if not self._anim.has_groups:
             return None
         return self._anim._group(self._raw_group())
@@ -977,7 +977,7 @@ class Animation:
         return None
 
     def add_group(self, name="", target=None):
-        """A new Layer Group, moving target (a widget's name, path or Widget; None for the widget itself)."""
+        """A new Track Group, moving target (a widget's name, path or Widget; None for the widget itself)."""
         index = self._raw.add_group(_text(name), _target_path(target))
         self._check(index >= 0)
         return self._group(index)

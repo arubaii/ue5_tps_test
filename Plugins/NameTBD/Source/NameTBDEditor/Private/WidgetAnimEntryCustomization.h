@@ -7,7 +7,7 @@
 
 /**
  * An animation entry (FWidgetAnimEntry) in the Details: its settings in their usual order, except that Target Widgets
- * comes straight after Animation - the two are read together, one row per Layer Group of the animation just picked.
+ * comes straight after Animation - the two are read together, one row per Track Group of the animation just picked.
  */
 class FWidgetAnimEntryCustomization : public IPropertyTypeCustomization
 {

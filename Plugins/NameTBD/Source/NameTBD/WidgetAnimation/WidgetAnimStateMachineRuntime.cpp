@@ -2248,7 +2248,7 @@ namespace WidgetAnimStateMachines
 				{
 					Widget = Context.Host;
 				}
-				else if (const FName* Path = Instance.TargetPaths.Find(Target))
+				else if (const FName* Path = Instance.TargetPaths.Contains(Target) ? Instance.TargetPaths.Find(Target) : Instance.TargetPaths.Find(FName(*FWidgetAnimLayerGroup::UpgradeLegacyName(Target.ToString()))))
 				{
 					Widget = Path->IsNone() ? Context.Host : (Context.ResolvePath ? Context.ResolvePath(*Path) : nullptr);
 				}

@@ -13,6 +13,7 @@
 #include "NameTBD/WidgetAnimation/WidgetAnimLibrary.h"
 
 #include "WidgetAnimLayerEditProxy.h"
+#include "WidgetAnimKeyValues.h"
 
 class IDetailsView;
 class IPropertyHandle;
@@ -96,7 +97,7 @@ public:
 		/**
 		 * The compact panel, for a plain list of tracks inside a Details panel - a component's Additive Anim Layers.
 		 * Just the Track Editor, the transport and a small Selection panel beside the tracks: no Animation Tracks
-		 * list, no Layer Groups, no Animation Timeline / Edit Existing Asset, no Dock in Layout, no Value Watcher. Its
+		 * list, no Track Groups, no Animation Timeline / Edit Existing Asset, no Dock in Layout, no Value Watcher. Its
 		 * own header strip names the list and holds Add Track, Save as Animation and Expand.
 		 */
 		SLATE_ARGUMENT(bool, Compact)
@@ -486,7 +487,14 @@ public:
 	/** The widget a group animates in this editor's preview, as a label: its path, or "(this widget)". */
 	FText GetGroupTargetLabel(int32 GroupIndex) const;
 
-	/** A group's name as shown: its Group Name, or "Layer Group N". */
+	/**
+	 * The icon of the kind of widget a group animates - an Image's, a Text Block's, a User Widget's - as the designer's Palette
+	 * and Hierarchy show it, for the group's row. Read off the preview (or the Widget Blueprint's own tree); null when there is
+	 * no widget to read it off. Cached per group until its target or the preview changes.
+	 */
+	const struct FSlateBrush* GetGroupTargetIcon(int32 GroupIndex) const;
+
+	/** A group's name as shown: its Group Name, or "Track Group N". */
 	FText GetGroupName(int32 GroupIndex) const;
 
 	// ---------------------------------------------------------------------------------------------
@@ -765,6 +773,24 @@ public:
 	void SetLayersInverted(const TArray<int32>& LayerIndices, bool bInverted);
 
 	/**
+	 * Start Time, as the Selection panel shows it in place of Starts and Delay: where the earliest of these tracks starts, in
+	 * played seconds as the timeline shows them (a fraction of the timeline on a percentage one). Unset for none.
+	 */
+	TOptional<float> GetLayersStartTime(const TArray<int32>& LayerIndices) const;
+
+	/**
+	 * Moves these tracks together so the earliest starts at Seconds, the others keeping their places relative to it, and every
+	 * other track staying exactly where it is - each one's Delay worked out from where it is, whatever its Starts says, as a
+	 * drag along the timeline does. One undoable edit, or a step of a drag begun with BeginStartTimeDrag.
+	 */
+	void SetLayersStartTime(const TArray<int32>& LayerIndices, float Seconds);
+
+	/** A Start Time box dragged: one undo step, the tracks measured from where they were at the press, until EndStartTimeDrag. */
+	void BeginStartTimeDrag();
+	void EndStartTimeDrag();
+	bool IsDraggingStartTime() const { return StartTimeTransaction.IsValid(); }
+
+	/**
 	 * Dragging the animation's start or end on the ruler: the end pulled in shortens every track it cuts into, and pulled
 	 * out lengthens the tracks ending where the animation does; the start
 	 * pushed in shortens every track starting before it and moves everything back to start at 0, and pulled out before 0
@@ -924,6 +950,58 @@ public:
 
 	/** Several keys selected - the Selection panel then offers the curve between them. */
 	bool IsKeyMultiSelection() const { return SelectedKeys.Num() > 1; }
+
+	// ---- Key values: the numbers keys hold, in the Selection panel (see WidgetAnimKeyValues, SWidgetAnimKeyValues) ----
+
+	/** One number of one key: a track, its key as the Track Editor counts them, and which of the track's channels. */
+	struct FValueCell
+	{
+		int32 Layer = INDEX_NONE;
+		int32 Key = INDEX_NONE;
+		int32 Channel = INDEX_NONE;
+
+		bool operator==(const FValueCell& Other) const { return Layer == Other.Layer && Key == Other.Key && Channel == Other.Channel; }
+		bool operator!=(const FValueCell& Other) const { return !(*this == Other); }
+	};
+
+	/** A track's channels - every number its keys hold. Worked out once per track type and key layout, and kept. */
+	const TArray<WidgetAnimKeyValues::FChannel>& GetKeyChannels(int32 LayerIndex) const;
+
+	/** A cell's number now, as authored - unset where the key holds none (see WidgetAnimKeyValues::Read). */
+	TOptional<double> GetKeyValue(const FValueCell& Cell) const;
+
+	/** Whether a cell can be set: its track editable, and the number one a key holds of its own (see WidgetAnimKeyValues::CanWrite). */
+	bool CanSetKeyValue(const FValueCell& Cell, FText* OutWhyNot = nullptr) const;
+
+	/**
+	 * Sets cells to values, one for one - one undoable edit, or a step of a drag begun with BeginKeyValueDrag. Cells that can't
+	 * be set are left as they are.
+	 */
+	void SetKeyValues(const TArray<FValueCell>& Cells, const TArray<double>& Values);
+
+	/** A value box dragged: one undo step until EndKeyValueDrag, the preview told on every step. */
+	void BeginKeyValueDrag();
+	void EndKeyValueDrag();
+	bool IsDraggingKeyValues() const { return KeyValueTransaction.IsValid(); }
+
+	/**
+	 * The value boxes picked with Ctrl+click (and Shift+click down a column): edited together - a number typed into one goes into
+	 * all, worked out against each one's own ("+8" adds 8 to each), a drag moves them all by the same amount. Forgotten whenever
+	 * the Selection panel is laid out afresh.
+	 */
+	const TArray<FValueCell>& GetSelectedValueCells() const { return SelectedValueCells; }
+	bool IsValueCellSelected(const FValueCell& Cell) const { return SelectedValueCells.Contains(Cell); }
+	void SetSelectedValueCells(const TArray<FValueCell>& Cells) { SelectedValueCells = Cells; }
+
+	/** Show All Values: every number of the keys listed, not only those each key alters. Not saved. */
+	bool IsShowingAllKeyValues() const { return bShowAllKeyValues; }
+	void SetShowAllKeyValues(bool bShowAll);
+
+	/**
+	 * The Key Values of these keys (several tracks' are listed track by track): each key's altered numbers, in boxes that take
+	 * typed math and multi-selection. One key alone reads as name and box rows; several, as a table, a row per key.
+	 */
+	TSharedRef<SWidget> MakeKeyValues(const TArray<FKeyRef>& Keys);
 
 	/**
 	 * The segments between selected keys: every segment - named by its layer and its first key - whose keys at
@@ -1363,9 +1441,9 @@ public:
 	TSharedRef<SWidget> MakeLayerContextMenu(int32 LayerIndex, int32 KeyIndex, TOptional<float> LocalSeconds, TOptional<float> ClickSeconds = TOptional<float>());
 
 	/**
-	 * Add Layer Group, Add Animation Track to each group, and Insert Existing Widget Animation. Opened within a
+	 * Add Track Group, Add Animation Track to each group, and Insert Existing Widget Animation. Opened within a
 	 * group (bWithinGroup, on an empty stretch of one of its lines), only that group's Add Animation Track, and no
-	 * Add Layer Group. AtSeconds: where on the time axis it was opened, for tracks added from it.
+	 * Add Track Group. AtSeconds: where on the time axis it was opened, for tracks added from it.
 	 */
 	TSharedRef<SWidget> MakeAddMenu(int32 GroupIndex, bool bWithinGroup = false, TOptional<float> AtSeconds = TOptional<float>());
 
@@ -1889,6 +1967,23 @@ private:
 	TSharedPtr<IDetailsView> DetailsView;
 	TSharedPtr<IDetailsView> MultiDetailsView;
 
+	/** Where the several-keys panel shows the selected keys' Key Values - filled again as the selection changes. */
+	TSharedPtr<class SBox> KeyValuesHost;
+
+	/** See GetSelectedValueCells, IsShowingAllKeyValues, BeginKeyValueDrag and GetKeyChannels. */
+	TArray<FValueCell> SelectedValueCells;
+	bool bShowAllKeyValues = false;
+	TUniquePtr<FScopedTransaction> KeyValueTransaction;
+	struct FKeyChannelCache
+	{
+		bool bValid = false;
+		EWidgetAnimType Type = EWidgetAnimType::Fade;
+		const void* Layout = nullptr;
+		const void* Evaluator = nullptr;
+		TArray<WidgetAnimKeyValues::FChannel> Channels;
+	};
+	mutable TMap<int32, FKeyChannelCache> KeyChannelCache;
+
 	/** The object the Selection panel is bound to, so a compile's new Class Defaults - or another asset - is noticed. */
 	TWeakObjectPtr<UObject> DetailsObject;
 
@@ -2063,6 +2158,19 @@ private:
 
 	FLayerDragState LayerDrag;
 	TUniquePtr<FScopedTransaction> LayerDragTransaction;
+
+	/** GetGroupTargetIcon's answers, by group: the target and preview each was worked out for. */
+	struct FGroupIconCache
+	{
+		FName Target;
+		TWeakObjectPtr<const UUserWidget> Root;
+		const FSlateBrush* Brush = nullptr;
+	};
+	mutable TMap<int32, FGroupIconCache> GroupIconCache;
+
+	/** A Start Time box being dragged: its undo step, and every track's span at the press - see BeginStartTimeDrag. */
+	TUniquePtr<FScopedTransaction> StartTimeTransaction;
+	TArray<FVector2f> StartTimeSpans;
 
 	/** Whether the current track drag has moved anything yet - a press let go in place leaves no undo step. */
 	bool bLayerDragChanged = false;

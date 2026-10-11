@@ -28,7 +28,7 @@
  *    a ring where the widget is now: the only thing that moves as the animation plays. Key times, when shown, sit beside the
  *    path, never on it.
  *
- * Shown for every widget the open animation moves - each layer group's Target Widget with a Transform, Slide or Shake track - by
+ * Shown for every widget the open animation moves - each track group's Target Widget with a Transform, Slide or Shake track - by
  * itself, whatever is selected in the designer (the selected widgets' paths through moving parents are added), whenever the
  * Widget Blueprint's Widget Animations panel has an animation open. The panel need not be on screen.
  *

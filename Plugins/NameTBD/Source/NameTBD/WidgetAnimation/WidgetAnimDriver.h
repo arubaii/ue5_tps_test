@@ -593,7 +593,7 @@ struct NAMETBD_API FWidgetAnimProgressSettings
 
 	/**
 	 * Where the progress comes from with no code: a press held, the pointer, a drag or a scroll, measured on the widget the
-	 * animation's first Layer Group plays on (or the widget it is played on). None: set it with Set Widget Animation
+	 * animation's first Track Group plays on (or the widget it is played on). None: set it with Set Widget Animation
 	 * Progress. See WidgetAnimInput.h.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Progress", meta = (DisplayName = "Progress Input", BaseStruct = "/Script/NameTBD.WidgetAnimInputSource", ExcludeBaseStruct))

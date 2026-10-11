@@ -33,7 +33,7 @@ enum class EWidgetAnimParticleCuePlace : uint8
 {
 	ParticlesWidget UMETA(DisplayName = "At Particles Widget", ToolTip = "Where the Niagara Particles widget is - at its Origin, as placed in the designer and wherever it has moved since."),
 
-	TrackWidget UMETA(DisplayName = "At Track's Widget", ToolTip = "On the widget this track is aimed at - its Layer Group's Target Widget, or each item of a stagger - at Burst Point. The Niagara Particles widget is then only the layer the particles are drawn in: one over the whole screen serves every button.")
+	TrackWidget UMETA(DisplayName = "At Track's Widget", ToolTip = "On the widget this track is aimed at - its Track Group's Target Widget, or each item of a stagger - at Burst Point. The Niagara Particles widget is then only the layer the particles are drawn in: one over the whole screen serves every button.")
 };
 
 /** Which Niagara Particles widgets a Particles cue plays on, of those it finds. */
@@ -54,7 +54,7 @@ enum class EWidgetAnimParticleCueScope : uint8
  * Widget's Niagara System: each widget plays its own system, with its own parameters - on the first found, or on all of them.
  *
  * Plays on a Niagara Particles widget: the one named by Particles Widget; else the track's widget itself when it is one (aim
- * the track's Layer Group at it - the simplest setup), or the first inside it; else the nearest around it. Seen in the
+ * the track's Track Group at it - the simplest setup), or the first inside it; else the nearest around it. Seen in the
  * editor's previews too, where that widget has Preview In Designer on.
  */
 USTRUCT(BlueprintType, meta = (DisplayName = "Particles"))

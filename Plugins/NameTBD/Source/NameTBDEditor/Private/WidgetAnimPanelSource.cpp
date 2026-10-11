@@ -1241,6 +1241,63 @@ namespace
 	}
 }
 
+namespace WidgetAnimTimelineAssets
+{
+	bool FindTimeline(const UWidgetAnimPresetAsset* Animation, UWidgetBlueprint*& OutBlueprint, int32& OutIndex)
+	{
+		OutBlueprint = nullptr;
+		OutIndex = INDEX_NONE;
+		const UWidgetAnimTimelinesExtension* Timelines = Animation ? Cast<UWidgetAnimTimelinesExtension>(Animation->GetOuter()) : nullptr;
+		UWidgetBlueprint* WidgetBlueprint = Timelines ? Cast<UWidgetBlueprint>(Timelines->GetOuter()) : nullptr;
+		const int32 Index = Timelines ? Timelines->IndexOf(Animation) : INDEX_NONE;
+		if (!WidgetBlueprint || Index == INDEX_NONE)
+		{
+			return false;
+		}
+		OutBlueprint = WidgetBlueprint;
+		OutIndex = Index;
+		return true;
+	}
+
+	UWidgetAnimPresetAsset* SaveAsAsset(UWidgetBlueprint* WidgetBlueprint, int32 TimelineIndex)
+	{
+		UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(WidgetBlueprint);
+		if (!Timelines || !Timelines->Timelines.IsValidIndex(TimelineIndex) || !Timelines->Timelines[TimelineIndex].Animation)
+		{
+			return nullptr;
+		}
+
+		FWidgetAnimTimeline& Entry = Timelines->Timelines[TimelineIndex];
+		UWidgetAnimPresetAsset* Saved = Entry.SavedAsset.IsNull() ? nullptr : Entry.SavedAsset.LoadSynchronous();
+		if (!Saved)
+		{
+			// Where Save Animation To's Default Folder is - the project's Default Save Folder, else beside the Widget Blueprint -
+			// named after the timeline, numbered when that is taken. Nothing is asked: it is made as part of what was done.
+			FString Folder = UWidgetAnimRuntimeSettings::Get().GetDefaultSavePackagePath();
+			if (Folder.IsEmpty())
+			{
+				Folder = FPackageName::GetLongPackagePath(WidgetBlueprint->GetOutermost()->GetName());
+			}
+			FString TimelinePart = WidgetAnimSaveLocation::SanitizeAssetName(Entry.Name);
+			if (TimelinePart.IsEmpty())
+			{
+				TimelinePart = TEXT("Timeline");
+			}
+			Saved = WidgetAnimSaveLocation::CreateAnimationAsset(Folder, WidgetAnimSaveLocation::MakeNumberedAssetName(Folder, TEXT("WA_") + TimelinePart), /*bChooseLocation=*/false);
+			if (!Saved)
+			{
+				return nullptr;
+			}
+			Timelines->Modify();
+			Entry.SavedAsset = Saved;
+		}
+
+		CopyTimelineInto(*Entry.Animation, *Saved);
+		UEditorLoadingAndSavingUtils::SavePackages({ Saved->GetPackage() }, /*bOnlyDirty=*/false);
+		return Saved;
+	}
+}
+
 FWidgetAnimTimeline* FWidgetAnimAssetPanelSource::GetOpenTimelineEntry() const
 {
 	UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());

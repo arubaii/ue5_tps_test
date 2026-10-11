@@ -1,0 +1,47 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+index 8b25086..e2e11ad 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+@@ -3159,9 +3159,23 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
+ 	// This Widget Blueprint's timelines, to drag onto the graph - each makes a state that plays it, with no saving first. Widget
+ 	// Animation assets come from the Content Browser the same way.
+ 	const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(WidgetBlueprint.Get());
+-	if (Timelines && Timelines->Timelines.Num() > 0)
++	// Always listed, so where to drag from is never a mystery: with no timelines yet, a word on how to get some.
++	const TSharedRef<SVerticalBox> AnimationRows = AddSection(LOCTEXT("AnimationsHeader", "Animations"), MachineTips::AnimationsPanelTooltip(), SNullWidget::NullWidget);
++	if (!Timelines || Timelines->Timelines.Num() == 0)
++	{
++		AnimationRows->AddSlot()
++			.AutoHeight()
++			.Padding(FMargin(10.f, 4.f))
++			[
++				SNew(STextBlock)
++				.AutoWrapText(true)
++				.Font(FCoreStyle::GetDefaultFontStyle("Italic", 9))
++				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
++				.Text(MachineTips::AnimationsPanelEmptyNote())
++			];
++	}
++	else
+ 	{
+-		const TSharedRef<SVerticalBox> AnimationRows = AddSection(LOCTEXT("AnimationsHeader", "Animations"), MachineTips::AnimationsPanelTooltip(), SNullWidget::NullWidget);
+ 		for (const FWidgetAnimTimeline& Timeline : Timelines->Timelines)
+ 		{
+ 			UWidgetAnimPresetAsset* TimelineAnimation = Timeline.Animation.Get();
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index 35adfe9..cd43a42 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -2858,6 +2858,12 @@ namespace NameTBD::Tooltips
+ 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "TimelineNotSavedNote",
+ 				"Couldn't save {0} as an animation asset for this state machine.");
+ 		}
++
++		inline FText AnimationsPanelEmptyNote()
++		{
++			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AnimationsPanelEmptyNote",
++				"No timelines in this Widget Blueprint yet - make one in the Widget Animations panel (Animation Timeline) and it is listed here to drag onto the graph. Widget Animation assets can be dragged in from the Content Browser at any time.");
++		}
+ 	}
+ 
+ 	/** Shape widgets (Ellipse, Triangle, Star, N-gon, Custom Shape): their Details rows and the designer's path editor. */

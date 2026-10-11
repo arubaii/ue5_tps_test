@@ -793,7 +793,7 @@ public:
 
 	virtual void BeginDestroy() override;
 
-	/** Brings every entry's Target Widgets in line with its animation's Layer Groups - see SyncEntryGroupTargets. */
+	/** Brings every entry's Target Widgets in line with its animation's Track Groups - see SyncEntryGroupTargets. */
 	virtual void PostLoad() override;
 
 #if WITH_EDITOR
@@ -802,7 +802,7 @@ public:
 #endif
 
 	/**
-	 * Sizes and labels each Anim In / Anim Out entry's Target Widgets to its animation's Layer Groups. Run on
+	 * Sizes and labels each Anim In / Anim Out entry's Target Widgets to its animation's Track Groups. Run on
 	 * load and on every edit, so the Details panel lists exactly the groups the picked animation has; the
 	 * built stacks never depend on it - an entry that is behind resolves missing groups to their defaults.
 	 */

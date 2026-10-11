@@ -22,6 +22,12 @@ UWidgetAnimEditorSettings::UWidgetAnimEditorSettings()
 	GridMinorColor = NameTBD::Colors::WidgetAnimEditor::GridMinor;
 	CueTrackIconTint = NameTBD::Colors::WidgetAnimEditor::CueTrackIcon;
 	MachinePlayPauseOutline = NameTBD::Colors::StateMachineEditor::FloatingButtonOutline;
+	ControlsSwitchColor = NameTBD::Colors::WidgetAnimEditor::ControlsSwitchBackground;
+	ControlsSwitchSelectedColor = NameTBD::Colors::WidgetAnimEditor::ControlsSwitchSelected;
+	ControlsSwitchHoveredColor = NameTBD::Colors::WidgetAnimEditor::ControlsSwitchHover;
+	ControlsBackgroundColor = NameTBD::Colors::WidgetAnimEditor::ControlsPill;
+	ControlsSelectedColor = NameTBD::Colors::WidgetAnimEditor::ToggleOnBackground;
+	ControlsHoveredColor = NameTBD::Colors::WidgetAnimEditor::ControlsHover;
 
 	FillMissingTrackColors();
 }
@@ -127,6 +133,15 @@ void UWidgetAnimEditorSettings::SetGizmoAutoKey(bool bEnabled)
 	if (bGizmoAutoKey != bEnabled)
 	{
 		bGizmoAutoKey = bEnabled;
+		SaveConfig();
+	}
+}
+
+void UWidgetAnimEditorSettings::SetKeyframeOnly(bool bEnabled)
+{
+	if (bKeyframeOnly != bEnabled)
+	{
+		bKeyframeOnly = bEnabled;
 		SaveConfig();
 	}
 }

@@ -3690,7 +3690,35 @@ FString FWidgetAnimLayerGroup::GetDisplayName(int32 GroupIndex) const
 
 FString FWidgetAnimLayerGroup::MakeDefaultName(int32 GroupIndex)
 {
-	return FString::Printf(TEXT("Layer Group %d"), GroupIndex + 1);
+	return FString::Printf(TEXT("Track Group %d"), GroupIndex + 1);
+}
+
+FString FWidgetAnimLayerGroup::UpgradeLegacyName(const FString& Name)
+{
+	static const FString LegacyStem(TEXT("Layer Group "));
+	if (Name.StartsWith(LegacyStem, ESearchCase::CaseSensitive))
+	{
+		const FString Number = Name.Mid(LegacyStem.Len());
+		if (!Number.IsEmpty() && Number.IsNumeric() && !Number.Contains(TEXT(".")) && !Number.Contains(TEXT("-")))
+		{
+			return TEXT("Track Group ") + Number;
+		}
+	}
+	return Name;
+}
+
+FString FWidgetAnimLayerGroup::MakeLegacyDefaultName(const FString& Name)
+{
+	static const FString Stem(TEXT("Track Group "));
+	if (Name.StartsWith(Stem, ESearchCase::CaseSensitive))
+	{
+		const FString Number = Name.Mid(Stem.Len());
+		if (!Number.IsEmpty() && Number.IsNumeric() && !Number.Contains(TEXT(".")) && !Number.Contains(TEXT("-")))
+		{
+			return TEXT("Layer Group ") + Number;
+		}
+	}
+	return FString();
 }
 
 bool UWidgetAnimLibrary::NormalizeLayerGroups(TArray<FWidgetAnimLayerGroup>& Groups, TArray<FWidgetAnimLayer>& Layers)
@@ -6079,7 +6107,7 @@ void UWidgetAnimLibrary::ReadValueInputs(UWidget* HostWidget, FWidgetAnimPlayer&
 			}
 			const FWidgetAnimValueId Id = FWidgetAnimValueId::In(Key.Key, Key.Value);
 
-			// Measured on the widget the track animates, as its Layer Group's target resolved it.
+			// Measured on the widget the track animates, as its Track Group's target resolved it.
 			Context.MeasuredWidget = Layer.TargetWidget ? Layer.TargetWidget.Get() : HostWidget;
 			if (!Context.MeasuredWidget)
 			{
