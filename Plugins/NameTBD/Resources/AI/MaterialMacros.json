@@ -1,0 +1,205 @@
+{
+ "about": "Macro nodes for build_ui_material / validate_material: one node in a graph ({\"id\": \"g\", \"type\": \"glow\", \"inputs\": {...}}) that expands to the tested subgraph below. Inputs are optional (each has a default); any input takes a node ref, a number, [x, y], \"#hex\" or {\"param\": \"Name\", \"value\": v}. Outputs by name (\"g.Mask\"), or the first one by the bare id. Inside: \"$Name\" is the macro's input, \"$uv\" the widget's UV.",
+ "macros": {
+  "soft_circle": {
+   "about": "soft-edged disc: 1 inside Radius, fading to 0 over Softness (UV units)",
+   "in": {"UV": {"def": "$uv"}, "Center": {"def": [0.5, 0.5]}, "Radius": {"def": 0.4}, "Softness": {"def": 0.1}},
+   "out": {"Mask": "m"},
+   "nodes": [
+    {"id": "d", "type": "Distance", "inputs": {"A": "$UV", "B": "$Center"}},
+    {"id": "in", "type": "Subtract", "inputs": {"A": "$Radius", "B": "$Softness"}},
+    {"id": "s", "type": "SmoothStep", "inputs": {"Min": "in", "Max": "$Radius", "Value": "d"}},
+    {"id": "m", "type": "OneMinus", "inputs": {"Input": "s"}}
+   ]
+  },
+  "ring": {
+   "about": "soft ring of Width at Radius around Center",
+   "in": {"UV": {"def": "$uv"}, "Center": {"def": [0.5, 0.5]}, "Radius": {"def": 0.35}, "Width": {"def": 0.04}, "Softness": {"def": 0.02}},
+   "out": {"Mask": "m"},
+   "nodes": [
+    {"id": "d", "type": "Distance", "inputs": {"A": "$UV", "B": "$Center"}},
+    {"id": "df", "type": "Subtract", "inputs": {"A": "d", "B": "$Radius"}},
+    {"id": "a", "type": "Abs", "inputs": {"Input": "df"}},
+    {"id": "hw", "type": "Multiply", "inputs": {"A": "$Width", "B": 0.5}},
+    {"id": "e", "type": "Add", "inputs": {"A": "hw", "B": "$Softness"}},
+    {"id": "s", "type": "SmoothStep", "inputs": {"Min": "hw", "Max": "e", "Value": "a"}},
+    {"id": "m", "type": "OneMinus", "inputs": {"Input": "s"}}
+   ]
+  },
+  "glow": {
+   "about": "round glow: 1 at Center falling to 0 at Radius; Falloff > 1 tightens it",
+   "in": {"UV": {"def": "$uv"}, "Center": {"def": [0.5, 0.5]}, "Radius": {"def": 0.5}, "Falloff": {"def": 2}},
+   "out": {"Mask": "p"},
+   "nodes": [
+    {"id": "d", "type": "Distance", "inputs": {"A": "$UV", "B": "$Center"}},
+    {"id": "n", "type": "Divide", "inputs": {"A": "d", "B": "$Radius"}},
+    {"id": "s", "type": "Saturate", "inputs": {"Input": "n"}},
+    {"id": "o", "type": "OneMinus", "inputs": {"Input": "s"}},
+    {"id": "p", "type": "Power", "inputs": {"Base": "o", "Exponent": "$Falloff"}}
+   ]
+  },
+  "rounded_rect": {
+   "about": "rounded rectangle mask: Size (fraction of the widget, [w, h] or one number), corner Radius and edge Softness in UV units; Distance < 0 inside",
+   "in": {"UV": {"def": "$uv"}, "Size": {"def": [0.9, 0.9]}, "Radius": {"def": 0.1}, "Softness": {"def": 0.01}},
+   "out": {"Mask": "m", "Distance": "dist"},
+   "nodes": [
+    {"id": "c", "type": "Subtract", "inputs": {"A": "$UV", "B": [0.5, 0.5]}},
+    {"id": "p", "type": "Abs", "inputs": {"Input": "c"}},
+    {"id": "hs", "type": "Multiply", "inputs": {"A": "$Size", "B": 0.5}},
+    {"id": "hr", "type": "Subtract", "inputs": {"A": "hs", "B": "$Radius"}},
+    {"id": "q", "type": "Subtract", "inputs": {"A": "p", "B": "hr"}},
+    {"id": "qm", "type": "Max", "inputs": {"A": "q", "B": 0}},
+    {"id": "len", "type": "Distance", "inputs": {"A": "qm", "B": [0, 0]}},
+    {"id": "qx", "type": "ComponentMask", "props": {"channels": "r"}, "inputs": {"Input": "q"}},
+    {"id": "qy", "type": "ComponentMask", "props": {"channels": "g"}, "inputs": {"Input": "q"}},
+    {"id": "mx", "type": "Max", "inputs": {"A": "qx", "B": "qy"}},
+    {"id": "mn", "type": "Min", "inputs": {"A": "mx", "B": 0}},
+    {"id": "d0", "type": "Add", "inputs": {"A": "len", "B": "mn"}},
+    {"id": "dist", "type": "Subtract", "inputs": {"A": "d0", "B": "$Radius"}},
+    {"id": "s", "type": "SmoothStep", "inputs": {"Min": 0, "Max": "$Softness", "Value": "dist"}},
+    {"id": "m", "type": "OneMinus", "inputs": {"Input": "s"}}
+   ]
+  },
+  "linear_gradient": {
+   "about": "ColorA to ColorB along Angle (0 = left to right, 90 = top to bottom, -90 = bottom to top); T is the 0..1 position",
+   "in": {"UV": {"def": "$uv"}, "Angle": {"def": 90}, "ColorA": {"def": "#FFFFFF"}, "ColorB": {"def": "#000000"}},
+   "out": {"Color": "col", "T": "t"},
+   "nodes": [
+    {"id": "ac", "type": "Divide", "inputs": {"A": "$Angle", "B": 360}},
+    {"id": "cx", "type": "Cosine", "inputs": {"Input": "ac"}},
+    {"id": "sy", "type": "Sine", "inputs": {"Input": "ac"}},
+    {"id": "dir", "type": "AppendVector", "inputs": {"A": "cx", "B": "sy"}},
+    {"id": "c", "type": "Subtract", "inputs": {"A": "$UV", "B": [0.5, 0.5]}},
+    {"id": "dt", "type": "DotProduct", "inputs": {"A": "c", "B": "dir"}},
+    {"id": "t0", "type": "Add", "inputs": {"A": "dt", "B": 0.5}},
+    {"id": "t", "type": "Saturate", "inputs": {"Input": "t0"}},
+    {"id": "col", "type": "LinearInterpolate", "inputs": {"A": "$ColorA", "B": "$ColorB", "Alpha": "t"}}
+   ]
+  },
+  "radial_gradient": {
+   "about": "ColorA at Center to ColorB at Radius; Falloff shapes it; T is the 0..1 position",
+   "in": {"UV": {"def": "$uv"}, "Center": {"def": [0.5, 0.5]}, "Radius": {"def": 0.5}, "ColorA": {"def": "#FFFFFF"}, "ColorB": {"def": "#000000"}, "Falloff": {"def": 1}},
+   "out": {"Color": "col", "T": "t"},
+   "nodes": [
+    {"id": "d", "type": "Distance", "inputs": {"A": "$UV", "B": "$Center"}},
+    {"id": "n", "type": "Divide", "inputs": {"A": "d", "B": "$Radius"}},
+    {"id": "s", "type": "Saturate", "inputs": {"Input": "n"}},
+    {"id": "t", "type": "Power", "inputs": {"Base": "s", "Exponent": "$Falloff"}},
+    {"id": "col", "type": "LinearInterpolate", "inputs": {"A": "$ColorA", "B": "$ColorB", "Alpha": "t"}}
+   ]
+  },
+  "color_ramp": {
+   "about": "three colors along T (0..1): ColorA at 0, ColorB at 0.5, ColorC at 1",
+   "in": {"T": {"def": 0.5}, "ColorA": {"def": "#000000"}, "ColorB": {"def": "#808080"}, "ColorC": {"def": "#FFFFFF"}},
+   "out": {"Color": "c"},
+   "nodes": [
+    {"id": "t2", "type": "Multiply", "inputs": {"A": "$T", "B": 2}},
+    {"id": "a", "type": "Saturate", "inputs": {"Input": "t2"}},
+    {"id": "b0", "type": "Subtract", "inputs": {"A": "t2", "B": 1}},
+    {"id": "b", "type": "Saturate", "inputs": {"Input": "b0"}},
+    {"id": "ab", "type": "LinearInterpolate", "inputs": {"A": "$ColorA", "B": "$ColorB", "Alpha": "a"}},
+    {"id": "bc", "type": "LinearInterpolate", "inputs": {"A": "$ColorB", "B": "$ColorC", "Alpha": "b"}},
+    {"id": "s", "type": "Add", "inputs": {"A": "ab", "B": "bc"}},
+    {"id": "c", "type": "Subtract", "inputs": {"A": "s", "B": "$ColorB"}}
+   ]
+  },
+  "panning_noise": {
+   "about": "smooth drifting noise 0..1: Scale = detail, Speed [x, y] per second",
+   "in": {"UV": {"def": "$uv"}, "Scale": {"def": 4}, "Speed": {"def": [0.05, 0.02]}},
+   "out": {"Value": "n"},
+   "nodes": [
+    {"id": "t", "type": "Time"},
+    {"id": "off", "type": "Multiply", "inputs": {"A": "t", "B": "$Speed"}},
+    {"id": "s", "type": "Multiply", "inputs": {"A": "$UV", "B": "$Scale"}},
+    {"id": "p", "type": "Add", "inputs": {"A": "s", "B": "off"}},
+    {"id": "p3", "type": "AppendVector", "inputs": {"A": "p", "B": 0}},
+    {"id": "n", "type": "Noise", "props": {"Scale": 1, "Levels": 3, "OutputMin": 0, "OutputMax": 1, "Quality": 1}, "inputs": {"Position": "p3"}}
+   ]
+  },
+  "time_wave": {
+   "about": "a value waving between Min and Max, Speed times a second (pulses, breathing)",
+   "in": {"Speed": {"def": 1}, "Min": {"def": 0}, "Max": {"def": 1}, "Phase": {"def": 0}},
+   "out": {"Value": "v"},
+   "nodes": [
+    {"id": "t", "type": "Time"},
+    {"id": "ts", "type": "Multiply", "inputs": {"A": "t", "B": "$Speed"}},
+    {"id": "tp", "type": "Add", "inputs": {"A": "ts", "B": "$Phase"}},
+    {"id": "s", "type": "Sine", "inputs": {"Input": "tp"}},
+    {"id": "h", "type": "Multiply", "inputs": {"A": "s", "B": 0.5}},
+    {"id": "n", "type": "Add", "inputs": {"A": "h", "B": 0.5}},
+    {"id": "v", "type": "LinearInterpolate", "inputs": {"A": "$Min", "B": "$Max", "Alpha": "n"}}
+   ]
+  },
+  "uv_tile": {
+   "about": "UV tiled (Tiling [u, v] or a number), offset (Offset [x, y]) and scrolling (Speed [x, y] per second)",
+   "in": {"UV": {"def": "$uv"}, "Tiling": {"def": [1, 1]}, "Offset": {"def": [0, 0]}, "Speed": {"def": [0, 0]}},
+   "out": {"UV": "r"},
+   "nodes": [
+    {"id": "t", "type": "Time"},
+    {"id": "mv", "type": "Multiply", "inputs": {"A": "t", "B": "$Speed"}},
+    {"id": "tl", "type": "Multiply", "inputs": {"A": "$UV", "B": "$Tiling"}},
+    {"id": "o", "type": "Add", "inputs": {"A": "tl", "B": "$Offset"}},
+    {"id": "r", "type": "Add", "inputs": {"A": "o", "B": "mv"}}
+   ]
+  },
+  "band": {
+   "about": "a soft straight band (shimmer, sweep) across the widget at Angle, centered at Position 0..1; Speed > 0 sweeps it (loops)",
+   "in": {"UV": {"def": "$uv"}, "Angle": {"def": 30}, "Position": {"def": 0.5}, "Width": {"def": 0.15}, "Softness": {"def": 0.1}, "Speed": {"def": 0}},
+   "out": {"Mask": "m"},
+   "nodes": [
+    {"id": "ac", "type": "Divide", "inputs": {"A": "$Angle", "B": 360}},
+    {"id": "cx", "type": "Cosine", "inputs": {"Input": "ac"}},
+    {"id": "sy", "type": "Sine", "inputs": {"Input": "ac"}},
+    {"id": "dir", "type": "AppendVector", "inputs": {"A": "cx", "B": "sy"}},
+    {"id": "c", "type": "Subtract", "inputs": {"A": "$UV", "B": [0.5, 0.5]}},
+    {"id": "dt", "type": "DotProduct", "inputs": {"A": "c", "B": "dir"}},
+    {"id": "t", "type": "Add", "inputs": {"A": "dt", "B": 0.5}},
+    {"id": "tm", "type": "Time"},
+    {"id": "mv", "type": "Multiply", "inputs": {"A": "tm", "B": "$Speed"}},
+    {"id": "pm", "type": "Add", "inputs": {"A": "$Position", "B": "mv"}},
+    {"id": "pos", "type": "Frac", "inputs": {"Input": "pm"}},
+    {"id": "df", "type": "Subtract", "inputs": {"A": "t", "B": "pos"}},
+    {"id": "a", "type": "Abs", "inputs": {"Input": "df"}},
+    {"id": "hw", "type": "Multiply", "inputs": {"A": "$Width", "B": 0.5}},
+    {"id": "e", "type": "Add", "inputs": {"A": "hw", "B": "$Softness"}},
+    {"id": "s", "type": "SmoothStep", "inputs": {"Min": "hw", "Max": "e", "Value": "a"}},
+    {"id": "m", "type": "OneMinus", "inputs": {"Input": "s"}}
+   ]
+  },
+  "stripes": {
+   "about": "repeating soft stripes (scanlines, hazard bars): Count across the widget at Angle (90 = horizontal lines), Width 0..1 of each period, Speed scrolls them",
+   "in": {"UV": {"def": "$uv"}, "Count": {"def": 20}, "Angle": {"def": 90}, "Width": {"def": 0.5}, "Softness": {"def": 0.1}, "Speed": {"def": 0}},
+   "out": {"Mask": "m"},
+   "nodes": [
+    {"id": "ac", "type": "Divide", "inputs": {"A": "$Angle", "B": 360}},
+    {"id": "cx", "type": "Cosine", "inputs": {"Input": "ac"}},
+    {"id": "sy", "type": "Sine", "inputs": {"Input": "ac"}},
+    {"id": "dir", "type": "AppendVector", "inputs": {"A": "cx", "B": "sy"}},
+    {"id": "dt", "type": "DotProduct", "inputs": {"A": "$UV", "B": "dir"}},
+    {"id": "sc", "type": "Multiply", "inputs": {"A": "dt", "B": "$Count"}},
+    {"id": "tm", "type": "Time"},
+    {"id": "mv", "type": "Multiply", "inputs": {"A": "tm", "B": "$Speed"}},
+    {"id": "x", "type": "Add", "inputs": {"A": "sc", "B": "mv"}},
+    {"id": "f", "type": "Frac", "inputs": {"Input": "x"}},
+    {"id": "d", "type": "Subtract", "inputs": {"A": "f", "B": 0.5}},
+    {"id": "a", "type": "Abs", "inputs": {"Input": "d"}},
+    {"id": "a2", "type": "Multiply", "inputs": {"A": "a", "B": 2}},
+    {"id": "e", "type": "Add", "inputs": {"A": "$Width", "B": "$Softness"}},
+    {"id": "s", "type": "SmoothStep", "inputs": {"Min": "$Width", "Max": "e", "Value": "a2"}},
+    {"id": "m", "type": "OneMinus", "inputs": {"Input": "s"}}
+   ]
+  },
+  "remap": {
+   "about": "Value from InMin..InMax to OutMin..OutMax (clamped)",
+   "in": {"Value": {"def": 0}, "InMin": {"def": 0}, "InMax": {"def": 1}, "OutMin": {"def": 0}, "OutMax": {"def": 1}},
+   "out": {"Value": "r"},
+   "nodes": [
+    {"id": "a", "type": "Subtract", "inputs": {"A": "$Value", "B": "$InMin"}},
+    {"id": "b", "type": "Subtract", "inputs": {"A": "$InMax", "B": "$InMin"}},
+    {"id": "n", "type": "Divide", "inputs": {"A": "a", "B": "b"}},
+    {"id": "s", "type": "Saturate", "inputs": {"Input": "n"}},
+    {"id": "r", "type": "LinearInterpolate", "inputs": {"A": "$OutMin", "B": "$OutMax", "Alpha": "s"}}
+   ]
+  }
+ }
+}

@@ -10778,13 +10778,15 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 			];
 	};
 
-	// ---- One pill of controls: how the preview plays - Loop, Ping Pong, Invert, Speed - then how tracks behave when
-	// dragged - Snapping, Linked Edges - and the designer's Motion Path. ------------------------------------------------
+	// ---- One pill, two sets of controls, one shown at a time - switched by the button beside it: how the preview plays (Loop,
+	// Ping Pong, Invert, Speed), or how tracks behave when edited (Snapping, Linked Edges, Auto Key, and the designer's Motion
+	// Path). Each set alone keeps the row short. ---------------------------------------------------------------------------
 
-	const TSharedRef<SHorizontalBox> PillRow = SNew(SHorizontalBox);
-	auto AddToPill = [&PillRow](const TSharedRef<SWidget>& Widget, const FMargin& Padding = FMargin(0.f))
+	const TSharedRef<SHorizontalBox> PreviewRow = SNew(SHorizontalBox);
+	const TSharedRef<SHorizontalBox> TrackRow = SNew(SHorizontalBox);
+	auto AddToRow = [](const TSharedRef<SHorizontalBox>& Row, const TSharedRef<SWidget>& Widget, const FMargin& Padding = FMargin(0.f))
 	{
-		PillRow->AddSlot()
+		Row->AddSlot()
 		.AutoWidth()
 		.VAlign(VAlign_Center)
 		.Padding(Padding)
@@ -10793,30 +10795,30 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 		];
 	};
 
-	AddToPill(MakeSegment(LOCTEXT("Loop", "Loop"),
+	AddToRow(PreviewRow, MakeSegment(LOCTEXT("Loop", "Loop"),
 		WidgetAnimTips::LoopTooltip(),
 		[](const IWidgetAnimPanelSource& In) { return In.GetLoop(); },
 		[](IWidgetAnimPanelSource& In, bool bValue) { In.SetLoop(bValue); },
 		nullptr,
 		FindControlIcon(TEXT("WidgetAnim_Loop"), { "Animation.Loop.Enabled", "Animation.Loop", "Icons.Loop", "GenericLoop" })));
-	AddToPill(MakeDivider(), FMargin(2.f, 0.f));
-	AddToPill(MakeSegment(LOCTEXT("PingPong", "Ping Pong"),
+	AddToRow(PreviewRow, MakeDivider(), FMargin(2.f, 0.f));
+	AddToRow(PreviewRow, MakeSegment(LOCTEXT("PingPong", "Ping Pong"),
 		WidgetAnimTips::PingPongTooltip(),
 		[](const IWidgetAnimPanelSource& In) { return In.GetPingPong(); },
 		[](IWidgetAnimPanelSource& In, bool bValue) { In.SetPingPong(bValue); },
 		[](const IWidgetAnimPanelSource& In) { return In.GetLoop(); },
 		FindControlIcon(TEXT("WidgetAnim_PingPong"), { "Animation.PingPong", "Icons.PingPong" })));
-	AddToPill(MakeDivider(), FMargin(2.f, 0.f));
-	AddToPill(MakeSegment(LOCTEXT("Invert", "Invert"),
+	AddToRow(PreviewRow, MakeDivider(), FMargin(2.f, 0.f));
+	AddToRow(PreviewRow, MakeSegment(LOCTEXT("Invert", "Invert"),
 		WidgetAnimTips::InvertTooltip(),
 		[](const IWidgetAnimPanelSource& In) { return In.GetInvert(); },
 		[](IWidgetAnimPanelSource& In, bool bValue) { In.SetInvert(bValue); },
 		nullptr,
 		FindControlIcon(TEXT("WidgetAnim_Invert"), { "Icons.Reverse", "Animation.Backward" })));
-	AddToPill(MakeDivider(), FMargin(2.f, 0.f));
+	AddToRow(PreviewRow, MakeDivider(), FMargin(2.f, 0.f));
 
 	// Speed: its label styled as the segments are, and a compact number beside it - both tipped "Preview Speed".
-	AddToPill(
+	AddToRow(PreviewRow,
 		SNew(SWidgetAnimAnchoredTip)
 		.Text(WidgetAnimTips::SpeedTooltip())
 		[
@@ -10826,7 +10828,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 			.Text(LOCTEXT("Speed", "Speed"))
 		],
 		FMargin(8.f, 0.f, 5.f, 0.f));
-	AddToPill(
+	AddToRow(PreviewRow,
 		SNew(SWidgetAnimAnchoredTip)
 		.Text(WidgetAnimTips::SpeedTooltip())
 		[
@@ -10846,29 +10848,36 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 			]
 		],
 		FMargin(0.f, 0.f, 4.f, 0.f));
-	AddToPill(MakeDivider(), FMargin(2.f, 0.f));
-	AddToPill(MakePillToggle(LOCTEXT("TrackSnapping", "Snapping"),
+
+	AddToRow(TrackRow, MakePillToggle(LOCTEXT("TrackSnapping", "Snapping"),
 		WidgetAnimTips::TrackSnappingTooltip(),
 		[]() { return UWidgetAnimEditorSettings::Get().bTrackSnapping; },
 		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetTrackSnapping(bValue); },
 		[]() { return true; },
 		FindControlIcon(TEXT("WidgetAnim_Snapping"), { "Sequencer.ToggleIsSnapEnabled", "EditorViewport.LocationGridSnap", "GenericCurveEditor.ToggleSnapping", "Icons.Snap" })));
-	AddToPill(MakeDivider(), FMargin(2.f, 0.f));
-	AddToPill(MakePillToggle(LOCTEXT("LinkedEdges", "Linked Edges"),
+	AddToRow(TrackRow, MakeDivider(), FMargin(2.f, 0.f));
+	AddToRow(TrackRow, MakePillToggle(LOCTEXT("LinkedEdges", "Linked Edges"),
 		WidgetAnimTips::LinkedEdgesTooltip(),
 		[]() { return UWidgetAnimEditorSettings::Get().bLinkedEdges; },
 		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetLinkedEdges(bValue); },
 		[]() { return true; },
 		FindControlIcon(TEXT("WidgetAnim_LinkedEdges"), { "Icons.Link", "Icons.Chain" })));
-	AddToPill(MakeDivider(), FMargin(2.f, 0.f));
-	AddToPill(MakePillToggle(LOCTEXT("MotionPaths", "Motion Path"),
+	AddToRow(TrackRow, MakeDivider(), FMargin(2.f, 0.f));
+	AddToRow(TrackRow, MakePillToggle(LOCTEXT("AutoKey", "Auto Key"),
+		WidgetAnimTips::AutoKeyTooltip(),
+		[]() { return UWidgetAnimEditorSettings::Get().bGizmoAutoKey; },
+		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetGizmoAutoKey(bValue); },
+		[]() { return true; },
+		FindControlIcon(TEXT("WidgetAnim_AutoKey"), { "Sequencer.SetAutoKey", "Icons.Record" })));
+	AddToRow(TrackRow, MakeDivider(), FMargin(2.f, 0.f));
+	AddToRow(TrackRow, MakePillToggle(LOCTEXT("MotionPaths", "Motion Path"),
 		WidgetAnimTips::MotionPathsTooltip(),
 		[]() { return UWidgetAnimEditorSettings::Get().bShowMotionPaths; },
 		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetShowMotionPaths(bValue); },
 		[]() { return true; },
 		FindControlIcon(TEXT("WidgetAnim_MotionPath"), { "Icons.Spline", "CurveEditor.Curve" })));
 	// Beside it, as its option: clicks on the designer reach only the paths - see bMotionPathPathsOnly.
-	AddToPill(MakePillToggle(LOCTEXT("MotionPathsOnly", "Paths Only"),
+	AddToRow(TrackRow, MakePillToggle(LOCTEXT("MotionPathsOnly", "Paths Only"),
 		WidgetAnimTips::MotionPathsOnlyTooltip(),
 		[]() { return UWidgetAnimEditorSettings::Get().bMotionPathPathsOnly; },
 		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetMotionPathPathsOnly(bValue); },
@@ -10880,7 +10889,78 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 		.BorderImage(ControlsPillBrush())
 		.Padding(FMargin(3.f, 2.f))
 		[
-			PillRow
+			SNew(SWidgetSwitcher)
+			.WidgetIndex_Lambda([]() { return UWidgetAnimEditorSettings::Get().bControlsShowTrackControls ? 1 : 0; })
+
+			+ SWidgetSwitcher::Slot()
+			[
+				PreviewRow
+			]
+
+			+ SWidgetSwitcher::Slot()
+			[
+				TrackRow
+			]
+		];
+
+	// ---- The switch beside the pill: a small pill of its own with the two sets' icons, the one shown lit - as a segmented
+	// control is. --------------------------------------------------------------------------------------------------------
+
+	auto MakeSwitchSide = [](bool bTrackControls, const FText& Label, const FText& ToolTip, const FSlateBrush* Icon) -> TSharedRef<SWidget>
+	{
+		auto IsShown = [bTrackControls]() { return UWidgetAnimEditorSettings::Get().bControlsShowTrackControls == bTrackControls; };
+		const TSharedRef<SWidget> Content = Icon
+			? MakeFixedIcon(Icon, TAttribute<FSlateColor>::CreateLambda([IsShown]() { return FSlateColor(IsShown() ? Palette::ToggleOnText : Palette::ToggleOffText); }), 12.f)
+			: StaticCastSharedRef<SWidget>(SNew(STextBlock)
+				.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+				.ColorAndOpacity_Lambda([IsShown]() { return FSlateColor(IsShown() ? Palette::ToggleOnText : Palette::ToggleOffText); })
+				.Text(Label));
+		return SNew(SWidgetAnimAnchoredTip)
+			.Text(ToolTip)
+			[
+				SNew(SButton)
+				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+				.ContentPadding(FMargin(0.f))
+				.OnClicked_Lambda([bTrackControls]()
+				{
+					UWidgetAnimEditorSettings::GetMutable().SetControlsShowTrackControls(bTrackControls);
+					return FReply::Handled();
+				})
+				[
+					SNew(SBorder)
+					.BorderImage(ControlsSegmentBrush())
+					.BorderBackgroundColor_Lambda([IsShown]() { return FSlateColor(IsShown() ? Palette::ToggleOnBackground : FLinearColor::Transparent); })
+					.Padding(FMargin(7.f, 4.f))
+					.HAlign(HAlign_Center)
+					.VAlign(VAlign_Center)
+					[
+						Content
+					]
+				]
+			];
+	};
+
+	const TSharedRef<SWidget> ControlsSwitch = SNew(SBorder)
+		.BorderImage(ControlsPillBrush())
+		.Padding(FMargin(3.f, 2.f))
+		[
+			SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				MakeSwitchSide(false, LOCTEXT("PreviewControlsSwitch", "Preview"), WidgetAnimTips::PreviewControlsSwitchTooltip(),
+					FindControlIcon(TEXT("WidgetAnim_PreviewControls"), { "Icons.Play", "GenericPlay" }))
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				MakeSwitchSide(true, LOCTEXT("TrackControlsSwitch", "Tracks"), WidgetAnimTips::TrackControlsSwitchTooltip(),
+					FindControlIcon(TEXT("WidgetAnim_TrackControls"), { "Icons.Layout", "GraphEditor.Timeline_16x" }))
+			]
 		];
 
 	// ---- The transport: Go to Start, the previous key, Play, the next key, Go to End - tight together. -------------------
@@ -10983,9 +11063,34 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 			]
 		];
 
-	// Under the Animation Tracks list: the transport and the time on one row, the pill under them - so the Track Editor
-	// runs all the way down beside them. The two rows share one width, centered: the buttons line up with the pill's
-	// left end and the time with its right, rather than the time pushing the buttons off center.
+	// The switch, the pill and the time side by side - one group, under the transport or beside it.
+	const TSharedRef<SWidget> ControlsGroup = SNew(SHorizontalBox)
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+		[
+			ControlsSwitch
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			Pill
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(6.f, 0.f, 0.f, 0.f))
+		[
+			Time
+		];
+
+	// Under the Animation Tracks list: the transport centered on its own row, the switch, pill and time under it - so the Track
+	// Editor runs all the way down beside them.
 	if (bStacked)
 	{
 		return SNew(SBorder)
@@ -10997,29 +11102,9 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 
 				+ SVerticalBox::Slot()
 				.AutoHeight()
+				.HAlign(HAlign_Center)
 				[
-					SNew(SHorizontalBox)
-
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
-					[
-						Buttons
-					]
-
-					+ SHorizontalBox::Slot()
-					.FillWidth(1.f)
-					[
-						SNew(SSpacer)
-						.Size(FVector2D(6.f, 0.f))
-					]
-
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
-					[
-						Time
-					]
+					Buttons
 				]
 
 				+ SVerticalBox::Slot()
@@ -11027,12 +11112,12 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 				.HAlign(HAlign_Center)
 				.Padding(FMargin(0.f, 3.f, 0.f, 0.f))
 				[
-					Pill
+					ControlsGroup
 				]
 			];
 	}
 
-	// Along the bottom: the pill on the left, the transport in the middle, the time on the right.
+	// Along the bottom: the switch, pill and time on the left, the transport in the middle.
 	return SNew(SBorder)
 		.BorderImage(FAppStyle::GetBrush("Brushes.Panel"))
 		.Padding(FMargin(8.f, 3.f))
@@ -11044,7 +11129,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 			.HAlign(HAlign_Left)
 			.VAlign(VAlign_Center)
 			[
-				Pill
+				ControlsGroup
 			]
 
 			+ SHorizontalBox::Slot()
@@ -11057,10 +11142,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 
 			+ SHorizontalBox::Slot()
 			.FillWidth(1.f)
-			.HAlign(HAlign_Right)
-			.VAlign(VAlign_Center)
 			[
-				Time
+				SNew(SSpacer)
 			]
 		];
 }
@@ -18990,6 +19073,441 @@ void SWidgetAnimTimeline::EndKeyPositionDrag()
 	bKeyPositionMoved = false;
 
 	// The key's Transform row changed; the Selection panel shows it fresh.
+	RefreshDetails();
+}
+
+// =====================================================================================================
+// Keying from the designer's Widget Gizmo
+// =====================================================================================================
+
+namespace WidgetGizmoKeying
+{
+	/** The four channels, in the order FindGizmoKeyTracks reports them. */
+	constexpr uint8 Channels[4] = { WidgetGizmoChannel::Translation, WidgetGizmoChannel::Scale, WidgetGizmoChannel::Shear, WidgetGizmoChannel::Angle };
+
+	/** How directly a track of this type holds Channel: 0 it is its one channel (a Scale track's Scale), 1 one of several (a Transform's), -1 not at all. */
+	int32 GetRank(const FWidgetAnimLayer& Layer, uint8 Channel)
+	{
+		switch (Layer.AnimType)
+		{
+		case EWidgetAnimType::Transform: return 1;
+		case EWidgetAnimType::Scale: return Channel == WidgetGizmoChannel::Scale ? 0 : -1;
+		case EWidgetAnimType::Rotate: return Channel == WidgetGizmoChannel::Angle ? 0 : -1;
+		default: return -1;
+		}
+	}
+
+	/** A value track's point set: its start value (point 0), a key, or its end value (the last point). Value is X, ValueY a Scale's Y. */
+	void SetPoint(FWidgetAnimLayer& Layer, int32 Point, float Value, float ValueY)
+	{
+		const int32 NumKeys = Layer.ValueKeys.Keys.Num();
+		if (Point > 0 && Point <= NumKeys)
+		{
+			Layer.ValueKeys.Keys[Point - 1].Value = Value;
+			Layer.ValueKeys.Keys[Point - 1].ValueY = ValueY;
+			return;
+		}
+		const bool bStart = Point <= 0;
+		if (Layer.AnimType == EWidgetAnimType::Scale)
+		{
+			(bStart ? Layer.StartScale : Layer.EndScale) = FVector2D(Value, ValueY);
+		}
+		else if (Layer.AnimType == EWidgetAnimType::Rotate)
+		{
+			(bStart ? Layer.StartAngle : Layer.EndAngle) = Value;
+		}
+	}
+
+	/**
+	 * A key's scale for a pose scale gone from PoseStart to PoseNew: the key times the ratio, as scales multiply. A pose at 0 has
+	 * no ratio: a key at 0 then takes the new scale itself (whatever else scales it taken as 1), any other key stays.
+	 */
+	double Rescale(double KeyStart, double PoseStart, double PoseNew)
+	{
+		if (FMath::Abs(PoseStart) > 1.e-6)
+		{
+			return KeyStart * PoseNew / PoseStart;
+		}
+		return FMath::Abs(KeyStart) > 1.e-6 ? KeyStart : PoseNew;
+	}
+
+	double Round(double Value, double Step)
+	{
+		return FMath::RoundToDouble(Value / Step) * Step;
+	}
+}
+
+bool SWidgetAnimTimeline::IsShownOnScreen() const
+{
+	// Up through every parent to a window: each visible, the window shown. A closed drawer, a tab behind another, a Details
+	// panel no longer showing it - each leaves the panel out of any window, or under something collapsed.
+	TSharedPtr<const SWidget> Walk = AsShared();
+	while (Walk.IsValid())
+	{
+		if (!Walk->GetVisibility().IsVisible())
+		{
+			return false;
+		}
+		if (Walk->Advanced_IsWindow())
+		{
+			const SWindow& Window = static_cast<const SWindow&>(*Walk);
+			return Window.IsVisible() && !Window.IsWindowMinimized();
+		}
+		Walk = Walk->GetParentWidget();
+	}
+	return false;
+}
+
+bool SWidgetAnimTimeline::CanGizmoKey() const
+{
+	// Auto Key on, and the panel open where it can be seen - a preview the source keeps posed with the panel closed (the
+	// Widget Animation Builder's) doesn't count.
+	IWidgetAnimPanelSource::FPosedAnimation Posed;
+	return UWidgetAnimEditorSettings::Get().bGizmoAutoKey && Source.IsValid() && HasAnimation() && CanEdit() && !IsDragging()
+		&& Source->GetLayers() && IsShownOnScreen() && Source->GetPosedAnimation(Posed) && Posed.bPosed;
+}
+
+uint8 SWidgetAnimTimeline::FindGizmoKeyTracks(const UWidget* PanelWidget, uint8 Channels, int32 OutLayers[4], int32 OutKeys[4], float OutLocal[4]) const
+{
+	for (int32 Index = 0; Index < 4; ++Index)
+	{
+		OutLayers[Index] = INDEX_NONE;
+		OutKeys[Index] = INDEX_NONE;
+		OutLocal[Index] = 0.f;
+	}
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!PanelWidget || !Layers || !Source.IsValid() || Channels == WidgetGizmoChannel::None)
+	{
+		return WidgetGizmoChannel::None;
+	}
+
+	TArray<FVector2f> Spans;
+	GetLayerSpans(Spans);
+	const float Playhead = GetPlayheadSeconds();
+	const float TimeScale = GetTimeScale();
+
+	// Within half a frame of the playhead: what stepping frame by frame lands on.
+	const float Slack = 0.5f / GetFrameRate();
+
+	// Per channel, the best track with a key at the playhead and the best one without - each the most directed, then the first.
+	int32 KeyedLayer[4] = { INDEX_NONE, INDEX_NONE, INDEX_NONE, INDEX_NONE };
+	int32 KeyedKey[4] = { INDEX_NONE, INDEX_NONE, INDEX_NONE, INDEX_NONE };
+	int32 KeyedRank[4] = { MAX_int32, MAX_int32, MAX_int32, MAX_int32 };
+	int32 FreeLayer[4] = { INDEX_NONE, INDEX_NONE, INDEX_NONE, INDEX_NONE };
+	int32 FreeRank[4] = { MAX_int32, MAX_int32, MAX_int32, MAX_int32 };
+	float KeyedLocal[4] = { 0.f, 0.f, 0.f, 0.f };
+	float FreeLocal[4] = { 0.f, 0.f, 0.f, 0.f };
+
+	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+	{
+		const FWidgetAnimLayer& Candidate = (*Layers)[LayerIndex];
+		if (!Spans.IsValidIndex(LayerIndex) || Candidate.Timing == EWidgetAnimTiming::Value || IsLayerHidden(LayerIndex) || !CanEditKeys(LayerIndex)
+			|| Source->GetLayerPreviewWidget(LayerIndex) != PanelWidget)
+		{
+			continue;
+		}
+
+		// Where the playhead is along the track, in its own time: only within its run. An inverted track plays its keys from
+		// the end back, so the playhead is that far from its end.
+		const float Run = Spans[LayerIndex].Y;
+		float Local = Playhead - Spans[LayerIndex].X;
+		if (Run <= KINDA_SMALL_NUMBER || Local < -Slack || Local > Run + Slack)
+		{
+			continue;
+		}
+		Local = FMath::Clamp(Local, 0.f, Run);
+		if (IsLayerInverted(LayerIndex))
+		{
+			Local = Run - Local;
+		}
+
+		// Its key at the playhead, if it has one: a Transform track's curve key, a value track's point.
+		int32 KeyAt = INDEX_NONE;
+		float Nearest = Slack;
+		if (WidgetAnimTypeIsKeyframed(Candidate.AnimType))
+		{
+			const FRichCurve* Curve = Candidate.Transform.GetActiveCurve();
+			const TArray<FRichCurveKey>* CurveKeys = Curve ? &Curve->GetConstRefOfKeys() : nullptr;
+			for (int32 Key = 0; CurveKeys && Key < CurveKeys->Num(); ++Key)
+			{
+				const float Distance = FMath::Abs((*CurveKeys)[Key].Time * TimeScale - Local);
+				if (Distance <= Nearest && Candidate.Transform.Keys.IsValidIndex(Key))
+				{
+					Nearest = Distance;
+					KeyAt = Key;
+				}
+			}
+		}
+		else
+		{
+			const float ValueRun = GetShownRunLength(LayerIndex) * TimeScale;
+			for (int32 Point = 0; Point < Candidate.ValueKeys.NumPoints(); ++Point)
+			{
+				const float Distance = FMath::Abs(Candidate.ValueKeys.GetPointTime(Point) * ValueRun - Local);
+				if (Distance <= Nearest)
+				{
+					Nearest = Distance;
+					KeyAt = Point;
+				}
+			}
+		}
+
+		for (int32 ChannelIndex = 0; ChannelIndex < 4; ++ChannelIndex)
+		{
+			const uint8 Channel = WidgetGizmoKeying::Channels[ChannelIndex];
+			const int32 Rank = (Channels & Channel) ? WidgetGizmoKeying::GetRank(Candidate, Channel) : -1;
+			if (Rank < 0)
+			{
+				continue;
+			}
+			if (KeyAt != INDEX_NONE && Rank < KeyedRank[ChannelIndex])
+			{
+				KeyedRank[ChannelIndex] = Rank;
+				KeyedLayer[ChannelIndex] = LayerIndex;
+				KeyedKey[ChannelIndex] = KeyAt;
+				KeyedLocal[ChannelIndex] = Local;
+			}
+			if (Rank < FreeRank[ChannelIndex])
+			{
+				FreeRank[ChannelIndex] = Rank;
+				FreeLayer[ChannelIndex] = LayerIndex;
+				FreeLocal[ChannelIndex] = Local;
+			}
+		}
+	}
+
+	// A key already at the playhead wins - the more directed track's when both have one; else the more directed track gets one.
+	uint8 Found = WidgetGizmoChannel::None;
+	for (int32 ChannelIndex = 0; ChannelIndex < 4; ++ChannelIndex)
+	{
+		if (KeyedLayer[ChannelIndex] != INDEX_NONE)
+		{
+			OutLayers[ChannelIndex] = KeyedLayer[ChannelIndex];
+			OutKeys[ChannelIndex] = KeyedKey[ChannelIndex];
+			OutLocal[ChannelIndex] = KeyedLocal[ChannelIndex];
+		}
+		else if (FreeLayer[ChannelIndex] != INDEX_NONE)
+		{
+			OutLayers[ChannelIndex] = FreeLayer[ChannelIndex];
+			OutLocal[ChannelIndex] = FreeLocal[ChannelIndex];
+		}
+		else
+		{
+			continue;
+		}
+		Found |= WidgetGizmoKeying::Channels[ChannelIndex];
+	}
+	return Found;
+}
+
+uint8 SWidgetAnimTimeline::GetGizmoKeyableChannels(const UWidget* PanelWidget) const
+{
+	if (!CanGizmoKey())
+	{
+		return WidgetGizmoChannel::None;
+	}
+	int32 FoundLayers[4];
+	int32 FoundKeys[4];
+	float FoundLocal[4];
+	return FindGizmoKeyTracks(PanelWidget, WidgetGizmoChannel::All, FoundLayers, FoundKeys, FoundLocal);
+}
+
+bool SWidgetAnimTimeline::BeginGizmoKeying(const TArray<UWidget*>& Widgets, const TArray<uint8>& Channels, TArray<uint8>& OutKeyed)
+{
+	OutKeyed.Init(WidgetGizmoChannel::None, Widgets.Num());
+	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
+	if (GizmoKeying.bActive || !Layers || !CanGizmoKey())
+	{
+		return false;
+	}
+
+	FGizmoKeyingState Keying;
+	Keying.LayersBefore = *Layers;
+	bool bEditing = false;
+
+	for (int32 WidgetIndex = 0; WidgetIndex < Widgets.Num(); ++WidgetIndex)
+	{
+		const uint8 Wanted = Channels.IsValidIndex(WidgetIndex) ? Channels[WidgetIndex] : WidgetGizmoChannel::None;
+		for (int32 ChannelIndex = 0; ChannelIndex < 4; ++ChannelIndex)
+		{
+			const uint8 Channel = WidgetGizmoKeying::Channels[ChannelIndex];
+			if (!(Wanted & Channel))
+			{
+				continue;
+			}
+
+			// Found again for each channel: a key added for the one before may be the key this one is on.
+			int32 FoundLayers[4];
+			int32 FoundKeys[4];
+			float FoundLocal[4];
+			if (!(FindGizmoKeyTracks(Widgets[WidgetIndex], Channel, FoundLayers, FoundKeys, FoundLocal) & Channel))
+			{
+				continue;
+			}
+			const int32 LayerIndex = FoundLayers[ChannelIndex];
+			int32 KeyIndex = FoundKeys[ChannelIndex];
+
+			if (!bEditing)
+			{
+				if (!BeginEdit())
+				{
+					return false;
+				}
+				bEditing = true;
+			}
+
+			// No key there yet: one added at the playhead, at the value the track already has - so nothing moves until the gizmo does.
+			if (KeyIndex == INDEX_NONE)
+			{
+				AddKey(LayerIndex, FoundLocal[ChannelIndex]);
+				if (!(FindGizmoKeyTracks(Widgets[WidgetIndex], Channel, FoundLayers, FoundKeys, FoundLocal) & Channel)
+					|| FoundLayers[ChannelIndex] != LayerIndex || FoundKeys[ChannelIndex] == INDEX_NONE)
+				{
+					continue;
+				}
+				KeyIndex = FoundKeys[ChannelIndex];
+				Keying.bAddedKeys = true;
+			}
+
+			FWidgetAnimLayer& Keyed = (*Layers)[LayerIndex];
+			FGizmoKey& Entry = Keying.Keys.AddDefaulted_GetRef();
+			Entry.Widget = WidgetIndex;
+			Entry.Channel = Channel;
+			Entry.Layer = LayerIndex;
+			Entry.Key = KeyIndex;
+			if (WidgetAnimTypeIsKeyframed(Keyed.AnimType))
+			{
+				// A key Using Authored Transform is somewhere of its own from now on - where it was, so nothing jumps.
+				Entry.StartTransform = Keyed.Transform.GetKeyTransform(KeyIndex);
+				FWidgetTransformKeyframe& Key = Keyed.Transform.Keys[KeyIndex];
+				if (Key.bUseAuthoredTransform)
+				{
+					Key.Transform = Entry.StartTransform;
+					Key.bUseAuthoredTransform = false;
+				}
+			}
+			else
+			{
+				Entry.StartValue = FVector2D(WidgetAnimKeyPoints::GetValue(Keyed, KeyIndex), WidgetAnimKeyPoints::GetValueY(Keyed, KeyIndex));
+			}
+			OutKeyed[WidgetIndex] |= Channel;
+		}
+	}
+
+	if (Keying.Keys.Num() == 0)
+	{
+		if (Keying.bAddedKeys)
+		{
+			*Layers = Keying.LayersBefore;
+			NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+		}
+		OutKeyed.Init(WidgetGizmoChannel::None, Widgets.Num());
+		return false;
+	}
+
+	Keying.bActive = true;
+	GizmoKeying = MoveTemp(Keying);
+	return true;
+}
+
+void SWidgetAnimTimeline::UpdateGizmoKeying(int32 WidgetIndex, const FWidgetTransform& StartPose, const FWidgetTransform& NewPose)
+{
+	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
+	if (!GizmoKeying.bActive || !Layers)
+	{
+		return;
+	}
+
+	using WidgetGizmoKeying::Round;
+	bool bWrote = false;
+	for (const FGizmoKey& Entry : GizmoKeying.Keys)
+	{
+		if (Entry.Widget != WidgetIndex || !Layers->IsValidIndex(Entry.Layer))
+		{
+			continue;
+		}
+		FWidgetAnimLayer& Keyed = (*Layers)[Entry.Layer];
+
+		if (WidgetAnimTypeIsKeyframed(Keyed.AnimType))
+		{
+			if (!Keyed.Transform.Keys.IsValidIndex(Entry.Key))
+			{
+				continue;
+			}
+			FWidgetTransform& Pose = Keyed.Transform.Keys[Entry.Key].Transform;
+			const FWidgetTransform& From = Entry.StartTransform;
+			switch (Entry.Channel)
+			{
+			case WidgetGizmoChannel::Translation:
+				Pose.Translation = FVector2D(Round(From.Translation.X + NewPose.Translation.X - StartPose.Translation.X, 0.01),
+					Round(From.Translation.Y + NewPose.Translation.Y - StartPose.Translation.Y, 0.01));
+				break;
+			case WidgetGizmoChannel::Scale:
+				Pose.Scale = FVector2D(Round(WidgetGizmoKeying::Rescale(From.Scale.X, StartPose.Scale.X, NewPose.Scale.X), 0.0001),
+					Round(WidgetGizmoKeying::Rescale(From.Scale.Y, StartPose.Scale.Y, NewPose.Scale.Y), 0.0001));
+				break;
+			case WidgetGizmoChannel::Shear:
+				Pose.Shear = FVector2D(Round(From.Shear.X + NewPose.Shear.X - StartPose.Shear.X, 0.01),
+					Round(From.Shear.Y + NewPose.Shear.Y - StartPose.Shear.Y, 0.01));
+				break;
+			case WidgetGizmoChannel::Angle:
+				Pose.Angle = static_cast<float>(Round(From.Angle + NewPose.Angle - StartPose.Angle, 0.01));
+				break;
+			default:
+				continue;
+			}
+			bWrote = true;
+			continue;
+		}
+
+		if (Entry.Channel == WidgetGizmoChannel::Scale && Keyed.AnimType == EWidgetAnimType::Scale)
+		{
+			WidgetGizmoKeying::SetPoint(Keyed, Entry.Key,
+				static_cast<float>(Round(WidgetGizmoKeying::Rescale(Entry.StartValue.X, StartPose.Scale.X, NewPose.Scale.X), 0.0001)),
+				static_cast<float>(Round(WidgetGizmoKeying::Rescale(Entry.StartValue.Y, StartPose.Scale.Y, NewPose.Scale.Y), 0.0001)));
+			bWrote = true;
+		}
+		else if (Entry.Channel == WidgetGizmoChannel::Angle && Keyed.AnimType == EWidgetAnimType::Rotate)
+		{
+			const float NewAngle = static_cast<float>(Round(Entry.StartValue.X + NewPose.Angle - StartPose.Angle, 0.01));
+			WidgetGizmoKeying::SetPoint(Keyed, Entry.Key, NewAngle, NewAngle);
+			bWrote = true;
+		}
+	}
+
+	if (bWrote)
+	{
+		// Interactive, as a key's position dragged on the motion path is: the preview follows, posed at the playhead.
+		GizmoKeying.bChanged = true;
+		NotifyGroupsChanged(EPropertyChangeType::Interactive);
+	}
+}
+
+void SWidgetAnimTimeline::EndGizmoKeying(bool bCancel)
+{
+	if (!GizmoKeying.bActive)
+	{
+		return;
+	}
+
+	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
+	if (bCancel && Layers)
+	{
+		*Layers = GizmoKeying.LayersBefore;
+		NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+		if (GizmoKeying.bAddedKeys)
+		{
+			// The keys added were picked as they were added; they are gone again.
+			ClearSelection();
+		}
+	}
+	else if (GizmoKeying.bChanged || GizmoKeying.bAddedKeys)
+	{
+		NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	}
+	GizmoKeying = FGizmoKeyingState();
+
+	// The keys' values changed; the Selection panel shows them fresh.
 	RefreshDetails();
 }
 

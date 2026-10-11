@@ -6,7 +6,7 @@
   "inputs": "UV (float2), HalfSize (float2, default 0.45), Radius (0.1), Softness (0.01)",
   "outputs": "Mask (float), Distance (float)"
  },
- "graph": {
+ "hlsl": {
   "inputs": [
    {
     "name": "UV",
@@ -49,139 +49,23 @@
     ]
    }
   ],
-  "nodes": [
-   {
-    "id": "c",
-    "type": "Subtract",
-    "inputs": {
-     "A": "UV",
-     "B": [
-      0.5,
-      0.5
-     ]
-    }
-   },
-   {
-    "id": "p",
-    "type": "Abs",
-    "inputs": {
-     "Input": "c"
-    }
-   },
-   {
-    "id": "hs",
-    "type": "Subtract",
-    "inputs": {
-     "A": "HalfSize",
-     "B": "Radius"
-    }
-   },
-   {
-    "id": "q",
-    "type": "Subtract",
-    "inputs": {
-     "A": "p",
-     "B": "hs"
-    }
-   },
-   {
-    "id": "qm",
-    "type": "Max",
-    "inputs": {
-     "A": "q",
-     "B": 0
-    }
-   },
-   {
-    "id": "len",
-    "type": "Distance",
-    "inputs": {
-     "A": "qm",
-     "B": [
-      0,
-      0
-     ]
-    }
-   },
-   {
-    "id": "qx",
-    "type": "ComponentMask",
-    "props": {
-     "R": true,
-     "G": false,
-     "B": false,
-     "A": false
-    },
-    "inputs": {
-     "Input": "q"
-    }
-   },
-   {
-    "id": "qy",
-    "type": "ComponentMask",
-    "props": {
-     "R": false,
-     "G": true,
-     "B": false,
-     "A": false
-    },
-    "inputs": {
-     "Input": "q"
-    }
-   },
-   {
-    "id": "mx",
-    "type": "Max",
-    "inputs": {
-     "A": "qx",
-     "B": "qy"
-    }
-   },
-   {
-    "id": "mn",
-    "type": "Min",
-    "inputs": {
-     "A": "mx",
-     "B": 0
-    }
-   },
-   {
-    "id": "d0",
-    "type": "Add",
-    "inputs": {
-     "A": "len",
-     "B": "mn"
-    }
-   },
-   {
-    "id": "dist",
-    "type": "Subtract",
-    "inputs": {
-     "A": "d0",
-     "B": "Radius"
-    }
-   },
-   {
-    "id": "ns",
-    "type": "Multiply",
-    "inputs": {
-     "A": "Softness",
-     "B": -1
-    }
-   },
-   {
-    "id": "mask",
-    "type": "SmoothStep",
-    "inputs": {
-     "Min": "Softness",
-     "Max": "ns",
-     "Value": "dist"
-    }
-   }
-  ],
   "outputs": {
-   "Mask": "mask",
-   "Distance": "dist"
+   "Mask": {
+    "type": "float1",
+    "code": [
+     "float2 q = abs(UV - 0.5) - (HalfSize - Radius);",
+     "float dist = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - Radius;",
+     "float s = max(Softness, 0.0001);",
+     "return 1.0 - smoothstep(-s, s, dist);"
+    ]
+   },
+   "Distance": {
+    "type": "float1",
+    "code": [
+     "float2 q = abs(UV - 0.5) - (HalfSize - Radius);",
+     "return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - Radius;"
+    ]
+   }
   }
  }
 }

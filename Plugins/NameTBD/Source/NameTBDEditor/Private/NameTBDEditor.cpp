@@ -48,6 +48,7 @@
 #include "FlowListItemStyleDetails.h"
 #include "FlowListPathEditor.h"
 #include "WidgetAnimMotionPath.h"
+#include "WidgetGizmo.h"
 #include "WidgetSpringPresets.h"
 #include "NameTBD/Widgets/FlowList/FlowListItemStyle.h"
 #include "WidgetDataBinderComponent.h"
@@ -168,6 +169,11 @@ void FNameTBDEditorModule::StartupModule()
 	FlowListPathEditorFactory = MakeShared<FFlowListPathEditorFactory>();
 	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(FlowListPathEditorFactory.ToSharedRef());
 
+	// The Widget Gizmo: moves, scales, rotates and shears the selected widgets through their Render Transform, and moves their
+	// pivot (see WidgetGizmo.h). Last, so it draws over every other extension.
+	GizmoFactory = MakeShared<FWidgetGizmoFactory>();
+	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(GizmoFactory.ToSharedRef());
+
 	ValuePinFactory = MakeShared<FWidgetAnimValuePinFactory>();
 	FEdGraphUtilities::RegisterVisualPinFactory(ValuePinFactory);
 
@@ -259,6 +265,15 @@ void FNameTBDEditorModule::ShutdownModule()
 			UMGEditorModule->GetDesignerExtensibilityManager()->RemoveDesignerExtensionFactory(FlowListPathEditorFactory.ToSharedRef());
 		}
 		FlowListPathEditorFactory.Reset();
+	}
+
+	if (GizmoFactory.IsValid())
+	{
+		if (IUMGEditorModule* UMGEditorModule = FModuleManager::GetModulePtr<IUMGEditorModule>("UMGEditor"))
+		{
+			UMGEditorModule->GetDesignerExtensibilityManager()->RemoveDesignerExtensionFactory(GizmoFactory.ToSharedRef());
+		}
+		GizmoFactory.Reset();
 	}
 
 	if (ValuePinFactory.IsValid())

@@ -11,211 +11,44 @@
   "DriftSpeed": "cycles per second",
   "Opacity": "0..1"
  },
- "graph": {
-  "domain": "UI",
+ "hlsl": {
   "blend": "Translucent",
-  "nodes": [
-   {
-    "id": "uv",
-    "type": "TextureCoordinate"
+  "params": {
+   "Angle": {
+    "value": 90,
+    "group": "Shape"
    },
-   {
-    "id": "ang",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Angle",
-     "DefaultValue": 90,
-     "Group": "Shape"
-    }
+   "DriftSpeed": {
+    "value": 0.1,
+    "group": "Motion"
    },
-   {
-    "id": "angc",
-    "type": "Divide",
-    "inputs": {
-     "A": "ang",
-     "B": 360
-    }
+   "Drift": {
+    "value": 0.0,
+    "group": "Motion"
    },
-   {
-    "id": "cx",
-    "type": "Cosine",
-    "inputs": {
-     "Input": "angc"
-    }
+   "ColorA": {
+    "value": "@accent",
+    "group": "Color"
    },
-   {
-    "id": "sy",
-    "type": "Sine",
-    "inputs": {
-     "Input": "angc"
-    }
+   "ColorB": {
+    "value": "@glow3",
+    "group": "Color"
    },
-   {
-    "id": "dir",
-    "type": "AppendVector",
-    "inputs": {
-     "A": "cx",
-     "B": "sy"
-    }
+   "ColorC": {
+    "value": "@glow1",
+    "group": "Color"
    },
-   {
-    "id": "c",
-    "type": "Subtract",
-    "inputs": {
-     "A": "uv",
-     "B": [
-      0.5,
-      0.5
-     ]
-    }
-   },
-   {
-    "id": "dt",
-    "type": "DotProduct",
-    "inputs": {
-     "A": "c",
-     "B": "dir"
-    }
-   },
-   {
-    "id": "t0",
-    "type": "Add",
-    "inputs": {
-     "A": "dt",
-     "B": 0.5
-    }
-   },
-   {
-    "id": "time",
-    "type": "Time"
-   },
-   {
-    "id": "spd",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "DriftSpeed",
-     "DefaultValue": 0.1,
-     "Group": "Motion"
-    }
-   },
-   {
-    "id": "ts",
-    "type": "Multiply",
-    "inputs": {
-     "A": "time",
-     "B": "spd"
-    }
-   },
-   {
-    "id": "sw",
-    "type": "Sine",
-    "inputs": {
-     "Input": "ts"
-    }
-   },
-   {
-    "id": "drift",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Drift",
-     "DefaultValue": 0.0,
-     "Group": "Motion"
-    }
-   },
-   {
-    "id": "dm",
-    "type": "Multiply",
-    "inputs": {
-     "A": "sw",
-     "B": "drift"
-    }
-   },
-   {
-    "id": "t1",
-    "type": "Add",
-    "inputs": {
-     "A": "t0",
-     "B": "dm"
-    }
-   },
-   {
-    "id": "t",
-    "type": "Saturate",
-    "inputs": {
-     "Input": "t1"
-    }
-   },
-   {
-    "id": "ca",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "ColorA",
-     "DefaultValue": "@accent",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "cb",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "ColorB",
-     "DefaultValue": "@glow3",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "cc",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "ColorC",
-     "DefaultValue": "@glow1",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "ramp",
-    "type": "MaterialFunctionCall",
-    "function": "ColorRamp",
-    "inputs": {
-     "T": "t",
-     "ColorA": "ca",
-     "ColorB": "cb",
-     "ColorC": "cc"
-    }
-   },
-   {
-    "id": "op",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Opacity",
-     "DefaultValue": 1.0,
-     "Group": "Look"
-    }
-   },
-   {
-    "id": "vc",
-    "type": "VertexColor"
-   },
-   {
-    "id": "rgb_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "ramp.Color",
-     "B": "vc"
-    }
-   },
-   {
-    "id": "alpha_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "op",
-     "B": "vc.A"
-    }
+   "Opacity": {
+    "value": 1.0,
+    "group": "Look"
    }
-  ],
-  "outputs": {
-   "FinalColor": "rgb_out",
-   "Opacity": "alpha_out"
-  }
+  },
+  "code": [
+   "float r = radians(Angle);",
+   "float2 dir = float2(cos(r), sin(r));",
+   "float t = saturate(dot(uv - 0.5, dir) + 0.5 + sin(6.2831853 * time * DriftSpeed) * Drift);",
+   "float3 c = t < 0.5 ? lerp(ColorA.rgb, ColorB.rgb, t * 2.0) : lerp(ColorB.rgb, ColorC.rgb, t * 2.0 - 1.0);",
+   "return float4(c, saturate(Opacity));"
+  ]
  }
 }

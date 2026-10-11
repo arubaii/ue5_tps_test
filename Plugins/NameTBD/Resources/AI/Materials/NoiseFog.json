@@ -9,135 +9,55 @@
   "Contrast": "patchiness",
   "Density": "opacity"
  },
- "graph": {
-  "domain": "UI",
+ "hlsl": {
   "blend": "Translucent",
-  "nodes": [
-   {
-    "id": "uv",
-    "type": "TextureCoordinate"
+  "params": {
+   "Scale": {
+    "value": 3.0,
+    "group": "Shape"
    },
-   {
-    "id": "sc",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Scale",
-     "DefaultValue": 3.0,
-     "Group": "Shape"
-    }
+   "Speed": {
+    "value": [
+     0.03,
+     0.01
+    ],
+    "group": "Motion"
    },
-   {
-    "id": "spd",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "Speed",
-     "DefaultValue": [
-      0.03,
-      0.01,
-      0,
-      0
-     ],
-     "Group": "Motion"
-    }
+   "Contrast": {
+    "value": 1.5,
+    "group": "Shape"
    },
-   {
-    "id": "spd2",
-    "type": "ComponentMask",
-    "props": {
-     "R": true,
-     "G": true,
-     "B": false,
-     "A": false
-    },
-    "inputs": {
-     "Input": "spd"
-    }
+   "Density": {
+    "value": 0.6,
+    "group": "Look"
    },
-   {
-    "id": "n",
-    "type": "MaterialFunctionCall",
-    "function": "PanningNoise",
-    "inputs": {
-     "UV": "uv",
-     "Scale": "sc",
-     "Speed": "spd2"
-    }
-   },
-   {
-    "id": "ct",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Contrast",
-     "DefaultValue": 1.5,
-     "Group": "Shape"
-    }
-   },
-   {
-    "id": "pw",
-    "type": "Power",
-    "inputs": {
-     "Base": "n.Result",
-     "Exponent": "ct"
-    }
-   },
-   {
-    "id": "den",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Density",
-     "DefaultValue": 0.6,
-     "Group": "Look"
-    }
-   },
-   {
-    "id": "a0",
-    "type": "Multiply",
-    "inputs": {
-     "A": "pw",
-     "B": "den"
-    }
-   },
-   {
-    "id": "col",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "Color",
-     "DefaultValue": "@glow3",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "a1",
-    "type": "Multiply",
-    "inputs": {
-     "A": "a0",
-     "B": "col.A"
-    }
-   },
-   {
-    "id": "vc",
-    "type": "VertexColor"
-   },
-   {
-    "id": "rgb_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "col",
-     "B": "vc"
-    }
-   },
-   {
-    "id": "alpha_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "a1",
-     "B": "vc.A"
-    }
+   "Color": {
+    "value": "@glow3",
+    "group": "Color"
    }
-  ],
-  "outputs": {
-   "FinalColor": "rgb_out",
-   "Opacity": "alpha_out"
-  }
+  },
+  "code": [
+   "float2 p = uv * Scale + time * Speed;",
+   "// 4 octaves of value noise at p, 0..1",
+   "float n = 0.0;",
+   "float amp = 0.5;",
+   "float2 q = p;",
+   "for (int k = 0; k < 4; k++)",
+   "{",
+   "    float2 i = floor(q);",
+   "    float2 f = frac(q);",
+   "    float2 s = f * f * (3.0 - 2.0 * f);",
+   "    float a = frac(sin(dot(i, float2(127.1, 311.7))) * 43758.5453);",
+   "    float b = frac(sin(dot(i + float2(1.0, 0.0), float2(127.1, 311.7))) * 43758.5453);",
+   "    float c = frac(sin(dot(i + float2(0.0, 1.0), float2(127.1, 311.7))) * 43758.5453);",
+   "    float d = frac(sin(dot(i + float2(1.0, 1.0), float2(127.1, 311.7))) * 43758.5453);",
+   "    n += amp * lerp(lerp(a, b, s.x), lerp(c, d, s.x), s.y);",
+   "    q = q * 2.03 + float2(17.0, 9.0);",
+   "    amp *= 0.5;",
+   "}",
+   "n /= 0.9375;",
+   "float alpha = saturate(pow(n, max(Contrast, 0.0001)) * Density * Color.a);",
+   "return float4(Color.rgb, alpha);"
+  ]
  }
 }

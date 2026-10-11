@@ -496,6 +496,24 @@ namespace NameTBD::Tooltips
 				"Motion Path: Every widget this animation moves shows the path it travels on the designer's canvas - even once this panel is closed: a dot at every frame (close together where they move slowly, far apart where they move fast) and a diamond at every key. Click a diamond to pick its key; drag a Transform key's diamond to move it; Alt-drag it to pull out curve handles; right-click it for its Path (Corner, Smooth, Bezier) and Easing Across (each segment or the whole track). More in Editor Preferences > Widget Animations Editor > Motion Paths.");
 		}
 
+		inline FText AutoKeyTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AutoKeyTooltip",
+				"Auto Key: While this panel is on screen, what the designer's Widget Gizmo does to a widget is keyed at the playhead - moving, scaling, rotating or shearing it edits the key there on the track that holds it (a Scale or Rotate track before a Transform track), or adds one. Off: the gizmo edits the widget as authored.");
+		}
+
+		inline FText PreviewControlsSwitchTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PreviewControlsSwitchTooltip",
+				"Preview Controls: How the preview plays - Loop, Ping Pong, Invert and Speed.");
+		}
+
+		inline FText TrackControlsSwitchTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TrackControlsSwitchTooltip",
+				"Track Controls: How tracks behave as they are edited - Snapping, Linked Edges, Auto Key, and the designer's Motion Path.");
+		}
+
 		inline FText MotionPathsOnlyTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "MotionPathsOnlyTooltip",

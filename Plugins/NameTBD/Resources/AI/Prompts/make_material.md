@@ -1,0 +1,4 @@
+# Make a UI material
+> Make a UI material for an effect, built so it works the first time.
+Arguments: effect - what it should look like (e.g. "a soft purple glow that breathes", "scanlines scrolling down")
+Make a UI material for: {{effect}}. If a library master fits (list_options material_masters), make an instance of it with create_material_instance. Otherwise write it in HLSL: build_ui_material {name, hlsl: {code, params, blend}} - code returns float4(color, alpha) from uv, time and the params; every color, speed and size a param; for noise and shapes use the NTB_ helpers (NTB_Noise, NTB_Fbm, NTB_SdRoundRect, NTB_Fill...). For a variation of a master, start from its code (list_options material_masters <Name>). If the compile reports errors, fix the code and rebuild with material set. Say which path you took and which parameters can be tuned.

@@ -3,6 +3,7 @@
 #include "NameTBDAISettings.h"
 
 #include "Framework/Notifications/NotificationManager.h"
+#include "HAL/IConsoleManager.h"
 #include "HAL/PlatformApplicationMisc.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/FileHelper.h"
@@ -220,11 +221,39 @@ void UNameTBDAISettings::StopMcpServerNow()
 	Notify(LOCTEXT("Stopped", "NameTBD MCP server stopped."));
 }
 
+namespace
+{
+	/** Builds (bForce: rebuilds) the library; the details go to the Output Log, a summary to a notification. */
+	void RunLibraryBuild(bool bForce)
+	{
+		TArray<FString> Report;
+		NameTBDAILibrary::BuildAll(Report, bForce);
+		int32 Problems = 0;
+		for (const FString& Line : Report)
+		{
+			Problems += Line.StartsWith(TEXT("built ")) ? 0 : 1;
+		}
+		const FString Summary = Report.Num() == 0 ? FString(TEXT("NameTBD AI library: everything is built and current."))
+			: FString::Printf(TEXT("NameTBD AI library: %d built, %d problem(s) - details in the Output Log."), Report.Num() - Problems, Problems);
+		Notify(FText::FromString(Summary), Problems == 0);
+	}
+
+	// The settings page's buttons don't run on some setups; these always do (Output Log > Cmd, or the ` console).
+	FAutoConsoleCommand BuildLibraryCommand(
+		TEXT("NameTBDAI.BuildLibrary"),
+		TEXT("Builds the NameTBD AI library (UI master materials, Material Functions, Niagara UI templates): what isn't built yet, and project copies built from an older definition."),
+		FConsoleCommandDelegate::CreateLambda([]() { RunLibraryBuild(false); }));
+
+	FAutoConsoleCommand RebuildLibraryCommand(
+		TEXT("NameTBDAI.RebuildLibrary"),
+		TEXT("Rebuilds every NameTBD AI library asset in the project's Library Folder from its definition (Resources/AI/Materials), whatever its state."),
+		FConsoleCommandDelegate::CreateLambda([]() { RunLibraryBuild(true); }));
+}
+
 void UNameTBDAISettings::BuildLibraryNow()
 {
-	TArray<FString> Report;
-	NameTBDAILibrary::BuildAll(Report);
-	Notify(FText::FromString(Report.Num() > 0 ? FString::Join(Report, TEXT("\n")) : FString(TEXT("Library is up to date."))));
+	UE_LOG(LogTemp, Display, TEXT("NameTBD AI: Build Library Now pressed."));
+	RunLibraryBuild(false);
 }
 
 #if WITH_EDITOR

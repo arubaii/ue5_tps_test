@@ -30,6 +30,23 @@ struct FPropertyChangedEvent;
 namespace WidgetAnimTrackPresets { struct FPreset; }
 
 /**
+ * The parts of a widget's render transform the designer's Widget Gizmo keys, as bits of a mask - see
+ * SWidgetAnimTimeline::BeginGizmoKeying and WidgetGizmo.h.
+ */
+namespace WidgetGizmoChannel
+{
+	enum Type : uint8
+	{
+		None = 0,
+		Translation = 1 << 0,
+		Scale = 1 << 1,
+		Shear = 1 << 2,
+		Angle = 1 << 3,
+		All = Translation | Scale | Shear | Angle
+	};
+}
+
+/**
  * The Widget Animations panel: an animation laid out the way the native Animations panel lays out a UMG
  * animation, with its layers grouped by the widget each group moves.
  *
@@ -1217,6 +1234,49 @@ public:
 	/** A keyframed track's Easing Across - see FWidgetTransformAnim::EasingSpan. One undoable edit. */
 	void SetLayerEasingSpan(int32 LayerIndex, EWidgetKeyEasingSpan Span);
 
+	// ---------------------------------------------------------------------------------------------
+	// Keying from the designer's Widget Gizmo (see WidgetGizmo.h)
+	// ---------------------------------------------------------------------------------------------
+
+	/**
+	 * Whether what the Widget Gizmo does is keyed here now: Auto Key on (UWidgetAnimEditorSettings::bGizmoAutoKey), the panel on
+	 * screen (IsShownOnScreen) with an animation open, editable, and the preview posed at the playhead. Otherwise the gizmo edits
+	 * the widget as authored.
+	 */
+	bool CanGizmoKey() const;
+
+	/** Whether the panel is where it can be seen: it and every parent visible, up to a window that is shown. */
+	bool IsShownOnScreen() const;
+
+	/**
+	 * The channels (WidgetGizmoChannel bits) of PanelWidget - a widget of the panel's preview - that a track keys at the playhead
+	 * now: each a track on that widget whose run the playhead is in, that holds the channel and whose keys can be edited. What
+	 * the gizmo's Key badge shows.
+	 */
+	uint8 GetGizmoKeyableChannels(const UWidget* PanelWidget) const;
+
+	/**
+	 * Begins keying, for each of Widgets (widgets of the panel's preview), the channels of its Channels mask at the playhead.
+	 * Each channel goes to one track: among the tracks on the widget that hold it (a Transform track holds all four, a Scale
+	 * track Scale, a Rotate track Angle), one with a key at the playhead - the more directed one (Scale, Rotate) when both
+	 * have one - else the more directed one there is, which gets a key there, at the value it already has. Call inside a
+	 * transaction; the layers as they were are kept for EndGizmoKeying(bCancel). OutKeyed: per widget, the channels that are
+	 * keyed - the gizmo writes the rest onto the widget as authored. False, with nothing changed, when none is keyed.
+	 */
+	bool BeginGizmoKeying(const TArray<UWidget*>& Widgets, const TArray<uint8>& Channels, TArray<uint8>& OutKeyed);
+
+	/**
+	 * Widget WidgetIndex's keys moved by what its pose changed since the begin: StartPose - its pose on the preview then - to
+	 * NewPose. Translation, Shear and Angle add the difference, Scale multiplies by the ratio, as tracks compose. The preview
+	 * follows next tick.
+	 */
+	void UpdateGizmoKeying(int32 WidgetIndex, const FWidgetTransform& StartPose, const FWidgetTransform& NewPose);
+
+	/** Ends it: kept, or with bCancel every layer put back as it was at the begin - keys added taken away again. */
+	void EndGizmoKeying(bool bCancel);
+
+	bool IsGizmoKeying() const { return GizmoKeying.bActive; }
+
 	/**
 	 * A track drag - moving the pressed layer's section, or resizing it from one edge - applied to every selected,
 	 * unlocked layer if the pressed one is selected, else to it alone. One transaction from press to release.
@@ -1640,8 +1700,10 @@ private:
 	TSharedRef<SWidget> MakeTimelineMenu();
 
 	/**
-	 * The transport - its buttons, the time, and one pill of controls: Loop, Ping Pong, Invert, Speed, Snapping and Linked
-	 * Edges. bStacked lays it out in two rows, for under the Animation Tracks list; otherwise in one, along the bottom.
+	 * The transport - its buttons, the time, and one pill of controls showing one set at a time, switched by the button beside it:
+	 * the preview's (Loop, Ping Pong, Invert, Speed) or the tracks' (Snapping, Linked Edges, Auto Key, Motion Path). bStacked
+	 * lays it out in two rows, for under the Animation Tracks list - the transport centered over the switch, pill and time;
+	 * otherwise in one, along the bottom.
 	 */
 	TSharedRef<SWidget> MakeTransport(bool bStacked = false);
 
@@ -1897,6 +1959,39 @@ private:
 	FWidgetTransform KeyPositionStartPose;
 	bool bKeyPositionMoved = false;
 	TUniquePtr<FScopedTransaction> KeyPositionTransaction;
+
+	/** One channel of one widget the Widget Gizmo keys: its track, its key there, and the key's value at the begin. */
+	struct FGizmoKey
+	{
+		int32 Widget = INDEX_NONE;
+		uint8 Channel = WidgetGizmoChannel::None;
+		int32 Layer = INDEX_NONE;
+
+		/** A Transform track's curve key, or a value track's point (0 its start value, the last its end value). */
+		int32 Key = INDEX_NONE;
+
+		/** A Transform track's key pose at the begin - or a value track's point: Value, and ValueY on a Scale. */
+		FWidgetTransform StartTransform;
+		FVector2D StartValue = FVector2D::ZeroVector;
+	};
+
+	/** The Widget Gizmo keying - see BeginGizmoKeying. */
+	struct FGizmoKeyingState
+	{
+		bool bActive = false;
+		bool bChanged = false;
+		bool bAddedKeys = false;
+		TArray<FGizmoKey> Keys;
+		TArray<FWidgetAnimLayer> LayersBefore;
+	};
+	FGizmoKeyingState GizmoKeying;
+
+	/**
+	 * For each channel of Channels (WidgetGizmoChannel bits, in the order Translation, Scale, Shear, Angle), the track the gizmo
+	 * keys it on for PanelWidget at the playhead and its key there (INDEX_NONE: a key to add, at OutLocal[Channel] along the
+	 * track) - INDEX_NONE layers for a channel no track takes. Returns the channels found.
+	 */
+	uint8 FindGizmoKeyTracks(const UWidget* PanelWidget, uint8 Channels, int32 OutLayers[4], int32 OutKeys[4], float OutLocal[4]) const;
 
 	/** Every selected key - keys of any tracks - in the order they were picked, the primary one last. */
 	TArray<FKeyRef> SelectedKeys;

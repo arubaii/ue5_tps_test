@@ -122,6 +122,21 @@ public:
 	bool bLinkedEdges = false;
 
 	/**
+	 * While the Widget Animations panel is on screen with an animation open, what the designer's Widget Gizmo does to a widget is
+	 * keyed at the playhead - on the track that holds it, its key there or a key added there (see WidgetGizmo.h). Off: the gizmo
+	 * always edits the widget as authored. The Auto Key toggle in the panel's Track Controls sets it too.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Track Controls", meta = (DisplayName = "Auto Key (Widget Gizmo)"))
+	bool bGizmoAutoKey = true;
+
+	/**
+	 * Which controls the panel's controls pill shows: how the preview plays (Loop, Ping Pong, Invert, Speed) or how tracks behave
+	 * (Snapping, Linked Edges, Auto Key, Motion Path). Switched by the button beside the pill; remembered.
+	 */
+	UPROPERTY(config)
+	bool bControlsShowTrackControls = false;
+
+	/**
 	 * Moving selected tracks with the Left and Right arrow keys can take them past the animation's end - making it longer -
 	 * or before its start, where the rest of the animation moves later to make room. Off, they stop at the animation's
 	 * start and end, as a track dragged with the mouse does.
@@ -375,6 +390,12 @@ public:
 
 	/** Show Motion Paths, saved - see bShowMotionPaths. */
 	void SetShowMotionPaths(bool bEnabled);
+
+	/** Auto Key, saved - see bGizmoAutoKey. */
+	void SetGizmoAutoKey(bool bEnabled);
+
+	/** Which controls the pill shows, saved - see bControlsShowTrackControls. */
+	void SetControlsShowTrackControls(bool bTrackControls);
 
 	/** Paths Only, saved - see bMotionPathPathsOnly. */
 	void SetMotionPathPathsOnly(bool bEnabled);

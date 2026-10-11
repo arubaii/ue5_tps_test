@@ -8,167 +8,32 @@
   "Thickness": "ring width",
   "Intensity": "strength"
  },
- "graph": {
-  "domain": "UI",
+ "hlsl": {
   "blend": "Translucent",
-  "nodes": [
-   {
-    "id": "uv",
-    "type": "TextureCoordinate"
+  "params": {
+   "Speed": {
+    "value": 0.6,
+    "group": "Motion"
    },
-   {
-    "id": "d",
-    "type": "Distance",
-    "inputs": {
-     "A": "uv",
-     "B": [
-      0.5,
-      0.5
-     ]
-    }
+   "Thickness": {
+    "value": 0.04,
+    "group": "Shape"
    },
-   {
-    "id": "time",
-    "type": "Time"
+   "Intensity": {
+    "value": 1.0,
+    "group": "Look"
    },
-   {
-    "id": "spd",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Speed",
-     "DefaultValue": 0.6,
-     "Group": "Motion"
-    }
-   },
-   {
-    "id": "tp",
-    "type": "Multiply",
-    "inputs": {
-     "A": "time",
-     "B": "spd"
-    }
-   },
-   {
-    "id": "ph",
-    "type": "Frac",
-    "inputs": {
-     "Input": "tp"
-    }
-   },
-   {
-    "id": "r",
-    "type": "Multiply",
-    "inputs": {
-     "A": "ph",
-     "B": 0.5
-    }
-   },
-   {
-    "id": "diff",
-    "type": "Subtract",
-    "inputs": {
-     "A": "d",
-     "B": "r"
-    }
-   },
-   {
-    "id": "ad",
-    "type": "Abs",
-    "inputs": {
-     "Input": "diff"
-    }
-   },
-   {
-    "id": "th",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Thickness",
-     "DefaultValue": 0.04,
-     "Group": "Shape"
-    }
-   },
-   {
-    "id": "ring",
-    "type": "SmoothStep",
-    "inputs": {
-     "Min": "th",
-     "Max": 0,
-     "Value": "ad"
-    }
-   },
-   {
-    "id": "fade",
-    "type": "OneMinus",
-    "inputs": {
-     "Input": "ph"
-    }
-   },
-   {
-    "id": "a0",
-    "type": "Multiply",
-    "inputs": {
-     "A": "ring",
-     "B": "fade"
-    }
-   },
-   {
-    "id": "inten",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Intensity",
-     "DefaultValue": 1.0,
-     "Group": "Look"
-    }
-   },
-   {
-    "id": "a1",
-    "type": "Multiply",
-    "inputs": {
-     "A": "a0",
-     "B": "inten"
-    }
-   },
-   {
-    "id": "col",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "Color",
-     "DefaultValue": "@accent",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "a2",
-    "type": "Multiply",
-    "inputs": {
-     "A": "a1",
-     "B": "col.A"
-    }
-   },
-   {
-    "id": "vc",
-    "type": "VertexColor"
-   },
-   {
-    "id": "rgb_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "col",
-     "B": "vc"
-    }
-   },
-   {
-    "id": "alpha_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "a2",
-     "B": "vc.A"
-    }
+   "Color": {
+    "value": "@accent",
+    "group": "Color"
    }
-  ],
-  "outputs": {
-   "FinalColor": "rgb_out",
-   "Opacity": "alpha_out"
-  }
+  },
+  "code": [
+   "float d = distance(uv, float2(0.5, 0.5));",
+   "float ph = frac(time * Speed);",
+   "float ring = 1.0 - smoothstep(0.0, max(Thickness, 0.0001), abs(d - ph * 0.5));",
+   "float alpha = saturate(ring * (1.0 - ph) * Intensity * Color.a);",
+   "return float4(Color.rgb, alpha);"
+  ]
  }
 }

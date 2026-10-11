@@ -1,0 +1,830 @@
+diff --git a/Plugins/NameTBD/NameTBD.uplugin b/Plugins/NameTBD/NameTBD.uplugin
+index 7a6a674..ba0f6b0 100644
+--- a/Plugins/NameTBD/NameTBD.uplugin
++++ b/Plugins/NameTBD/NameTBD.uplugin
+@@ -62,6 +62,11 @@
+ 				"Linux"
+ 			]
+ 		},
++		{
++			"Name": "NameTBDShaders",
++			"Type": "UncookedOnly",
++			"LoadingPhase": "PostConfigInit"
++		},
+ 		{
+ 			"Name": "NameTBDAI",
+ 			"Type": "Editor",
+diff --git a/Plugins/NameTBD/Resources/AI/Docs/materials.md b/Plugins/NameTBD/Resources/AI/Docs/materials.md
+index adfe5ee..357d33c 100644
+--- a/Plugins/NameTBD/Resources/AI/Docs/materials.md
++++ b/Plugins/NameTBD/Resources/AI/Docs/materials.md
+@@ -7,8 +7,10 @@
+ 
+ ## Writing a material in HLSL
+ hlsl: {code, params, blend, tint}. code is the body of a function returning float4(color, alpha) - a string, or a list of lines. It can use uv (float2: 0..1, (0,0) top left), time (seconds) and every param by its name. params: {Name: value} or {Name: {value, group, min, max}} - a number becomes a scalar parameter (a float in the code), a color ("#RRGGBB" / "#RRGGBBAA" / "@accent") a vector parameter (a float4 RGBA in the code: Color.rgb, Color.a), [x, y] a float2. Expose every color, size and speed as a param: later changes are then set_material_parameters on an instance, no rebuild. blend: Translucent (default), Additive (light, glows), Masked. The widget's tint and opacity (and particle colors) are multiplied in and the alpha kept in 0..1 for you ("tint": false to leave the tint out).
+-Rules that keep it compiling: end statements with ;, declare every variable with its type (float, float2, float3, float4), write numbers with a digit before and after the dot (0.5, 1.0), no function definitions, no textures, built-ins only (sin, cos, tan, atan2, frac, floor, abs, min, max, pow, sqrt, exp, lerp, saturate, clamp, step, smoothstep, distance, length, dot, normalize). smoothstep(lo, hi, x) needs lo < hi - for 1 below and 0 above, 1.0 - smoothstep(lo, hi, x). sin(6.2832 * time * Speed) waves Speed times a second. Param names: capitalized (Speed, GlowColor) - not uv, time or a built-in's name.
+-Noise (no built-in): hash a cell with frac(sin(dot(i, float2(127.1, 311.7))) * 43758.5453), blend four corners with f * f * (3.0 - 2.0 * f) - the NoiseFog master's code has a 4-octave version to copy.
++Rules that keep it compiling: end statements with ;, declare every variable with its type (float, float2, float3, float4), write numbers with a digit before and after the dot (0.5, 1.0), no function definitions, no textures, no # lines (#define: write static const float), built-ins (sin, cos, tan, atan2, frac, floor, abs, min, max, pow, sqrt, exp, lerp, saturate, clamp, step, smoothstep, distance, length, dot, normalize) plus the helpers below. sin(6.2832 * time * Speed) waves Speed times a second. Param names: capitalized (Speed, GlowColor) - not uv, time or a built-in's name.
++Portable for you: pow / sqrt / log / smoothstep run as safe versions - smoothstep works either way (smoothstep(0.5, 0.2, x) is 1 below 0.2, 0 above 0.5) and with lo == hi; pow of a negative base is 0 (square a value that can be negative as x * x). half is float. All maths is full precision, so the material looks the same on PC, console and mobile. Refused, with what to write instead: textures declared in the code, tex2D, discard / clip, Wave / Quad intrinsics (Shader Model 6 only).
++Helpers (call them in code like built-ins): NTB_Noise(p) smooth value noise 0..1; NTB_Fbm(p, octaves) layered noise 0..1 (1-8 octaves: clouds, fog, smoke); NTB_Hash(p) 0..1 per point; NTB_SdCircle(uv, center, radius) and NTB_SdRoundRect(uv, center, halfSize, cornerRadius) - signed distances (< 0 inside, UV units); NTB_Fill(distance, softness) a shape's 0..1 fill with a soft edge; NTB_Outline(distance, width, softness) a ring on its outline; NTB_Ramp3(t, colorA, colorB, colorC) three colors along t (float3s: Color.rgb); NTB_Wave(time, speed) 0..1 waving speed times a second; NTB_SafeDiv(a, b) never divides by 0.
++The built material shows its code in the graph (the Custom node's comment bubble, titled with the material's name); the node's Code setting is what compiles.
+ Compile errors come back as "compile: the hlsl code: ..." with a hint; fix the code and call build_ui_material again with material set to rebuild it in place.
+ 
+ ## Graph format
+@@ -34,6 +36,9 @@ One node each, expanded to a tested subgraph. Every input is optional (defaults
+ - stripes {UV, Count 20, Angle 90, Width 0.5, Softness 0.1, Speed 0} -> Mask: repeating stripes (scanlines, hazard bars).
+ - remap {Value, InMin 0, InMax 1, OutMin 0, OutMax 1} -> Value, clamped.
+ 
++## Example: card with a soft edge and drifting fog (HLSL, helpers)
++{name: "FogCard", hlsl: {params: {Fill: "#1B1036", Fog: "#7C5CFF", Corner: 0.08, Softness: 0.004, FogSpeed: 0.05}, code: ["float d = NTB_SdRoundRect(uv, float2(0.5, 0.5), float2(0.5, 0.5), Corner);", "float fog = NTB_Fbm(uv * 3.0 + float2(time * FogSpeed, 0.0), 4);", "float3 c = lerp(Fill.rgb, Fog.rgb, fog * 0.6);", "return float4(c, NTB_Fill(d, Softness) * Fill.a);"]}}
++
+ ## Example: pulsing ring (HLSL)
+ {name: "PulseRing", hlsl: {blend: "Additive", params: {Color: "#7C5CFF", Radius: 0.35, Width: 0.03, Speed: 1.5}, code: ["float d = distance(uv, float2(0.5, 0.5));", "float ring = 1.0 - smoothstep(0.0, Width, abs(d - Radius));", "float pulse = 0.6 + 0.4 * sin(6.2832 * time * Speed);", "return float4(Color.rgb, ring * pulse * Color.a);"]}}
+ 
+@@ -53,7 +58,7 @@ One node each, expanded to a tested subgraph. Every input is optional (defaults
+ {name: "AuroraSpecks", from_master: "Aurora", graph: {nodes: [{id: "n", type: "panning_noise", inputs: {Scale: 40, Speed: [0, -0.03]}}, {id: "specks", type: "SmoothStep", inputs: {Min: 0.78, Max: 0.82, Value: "n"}}, {id: "add", type: "Add", inputs: {A: "master.FinalColor", B: "specks"}}], outputs: {FinalColor: "add"}}}
+ 
+ ## What gets fixed for you
+-Reported under "fixed" (read it, and write it that way next time): node names models often use (Lerp is LinearInterpolate, Mul is Multiply, TexCoord is TextureCoordinate), pin names (Edge0 / Edge1 / X on SmoothStep, X / Y on A / B nodes, T on a Lerp), a float4 meeting a float3, a float2 going where a float3 is needed (appended with 0), a SmoothStep with a constant Min above Max (it only rises in Unreal: swapped, OneMinus after), a channel picked from a one-output node ("n.R" - masked out), a color going into Opacity, Opacity outside 0..1 (Saturate), BaseColor in a UI material (it is FinalColor), Opacity in a Masked material (OpacityMask), a Noise with no Position, a library function's UV left unwired, a Custom node's code without return, the same parameter made twice, and unused nodes.
++Reported under "fixed" (read it, and write it that way next time): node names models often use (Lerp is LinearInterpolate, Mul is Multiply, TexCoord is TextureCoordinate), pin names (Edge0 / Edge1 / X on SmoothStep, X / Y on A / B nodes, T on a Lerp), a float4 meeting a float3, a float2 going where a float3 is needed (appended with 0), a SmoothStep with a constant Min above Max (it only rises in Unreal: swapped, OneMinus after), a channel picked from a one-output node ("n.R" - masked out), a color going into Opacity, Opacity outside 0..1 (Saturate), BaseColor in a UI material (it is FinalColor), Opacity in a Masked material (OpacityMask), a Noise with no Position, a library function's UV left unwired, a Custom node's code without return, the same parameter made twice, and unused nodes. Listed under "added" (not slips): pow / sqrt / log / smoothstep made safe, half made float, the tint, Saturate on Opacity.
+ 
+ ## When a build fails
+ Graph problems: nothing was built - fix every listed problem and call again. Compile problems: the material was made; each error names the node (inside a macro: "g/d (inside g)") with a hint - fix and call build_ui_material again with material set to rebuild it in place. A Custom node (HLSL) is the escape hatch for dense maths: {id, type: "Custom", code: "return saturate(1 - length(uv - 0.5) * 2);", output: "float1", inputs: {uv: "$uv"}} - the inputs are the code's variable names.
+diff --git a/Plugins/NameTBD/Resources/AI/Docs/troubleshooting.md b/Plugins/NameTBD/Resources/AI/Docs/troubleshooting.md
+index 25699c0..718ac3a 100644
+--- a/Plugins/NameTBD/Resources/AI/Docs/troubleshooting.md
++++ b/Plugins/NameTBD/Resources/AI/Docs/troubleshooting.md
+@@ -11,6 +11,7 @@ Only CPU emitters with sprite or ribbon renderers draw in UI; the Widget Bluepri
+ 
+ ## Material compile errors
+ build_ui_material checks a graph before building it, so most mistakes come back at once as "errors" tied to node ids, with nothing built - fix them all and call again (validate_material checks without building). Compile errors after that name the node (a macro's inner node reads "g/d (inside g)") and carry a hint; the usual one is a width mismatch (a float3 into a float2 input - ComponentMask it). Rebuild in place with build_ui_material's material set. When a master can do the look, an instance (create_material_instance) never fails.
++"the NTB_ helpers aren't available": the plugin's NameTBDShaders module (it registers the helper shader file at editor start) didn't load - the user rebuilds the plugin and restarts the editor; until then write the maths inline (no NTB_ calls).
+ 
+ ## The chat says the model has no tool support
+ Local models must support function calling (tools). Pick a model that does, or use another provider.
+diff --git a/Plugins/NameTBD/Resources/AI/Map.md b/Plugins/NameTBD/Resources/AI/Map.md
+index 3c38b61..36e5293 100644
+--- a/Plugins/NameTBD/Resources/AI/Map.md
++++ b/Plugins/NameTBD/Resources/AI/Map.md
+@@ -21,7 +21,7 @@ You are the NameTBD AI Assistant, working inside the Unreal Editor (5.7) on the
+ - Widget Animations (WA_ assets): layers ("tracks") in Layer Groups, one group per widget moved. Track types Fade, Scale, Slide, Rotate, Pulse, Shake, Transform (keyframes, motion paths), MaterialScalar / MaterialVector (an Image's or shape's material parameter), Shape, Design, cues (Sound, Event, Particles), registered types. Timing Tween (Duration + Easing) or Spring. animate_widget plays one on a widget (motion recipe or asset; when: on_construct, on_visible, loop, by_id, out) through the widget's Widget Animation Component. create_widget_animation / add_tracks / set_track / remove_tracks edit assets; set_animation_parameter + "$Param" in fields makes one asset serve many uses. apply_track_preset / save_track_preset reuse tracks.
+ - State machines (WASM_ assets): inputs, layers, states playing animations, transitions with conditions - create_asset WidgetAnimStateMachineAsset / set_asset; played by a Widget Animation Component's State Machines (set_component).
+ - Flow List (FlowList): a panel laying children along a path (line, arc, wheel, ring, spline) by distance from the focus - carousels, wheels, cover flows; StylePreset fills Layout / Effects / Scrolling / Transitions. Flow List Scroll Bar follows one. Item looks: FlowListItemStyle component.
+-- Materials for UI, in this order: (1) create_material_instance of a library master (Aurora, SoftGlow, Shimmer, Gradient, NoiseFog, Vignette, RingPulse, Dissolve, SoftDot, Bubble) - instant, can't break; set_material_parameters for "more purple", "slower". (2) Anything else: build_ui_material {name, hlsl: {code, params, blend}} - HLSL returning float4(color, alpha) from uv, time and the params (colors arrive as float4, numbers as float); every tunable a param. smoothstep(lo, hi, x) needs lo < hi. A variation of a master: list_options material_masters <Name> shows its hlsl. Compile errors come back with a hint - fix and rebuild with material set. (Node graphs and macros still work: list_options material_nodes.) Use on a shape (set_shape_paint material=...), an Image brush, or particles.
++- Materials for UI, in this order: (1) create_material_instance of a library master (Aurora, SoftGlow, Shimmer, Gradient, NoiseFog, Vignette, RingPulse, Dissolve, SoftDot, Bubble) - instant, can't break; set_material_parameters for "more purple", "slower". (2) Anything else: build_ui_material {name, hlsl: {code, params, blend}} - HLSL returning float4(color, alpha) from uv, time and the params (colors arrive as float4, numbers as float); every tunable a param. Helpers for noise and shapes: NTB_Noise, NTB_Fbm, NTB_SdCircle, NTB_SdRoundRect, NTB_Fill (docs: materials). A variation of a master: list_options material_masters <Name> shows its hlsl. Compile errors come back with a hint - fix and rebuild with material set. (Node graphs and macros still work: list_options material_nodes.) Use on a shape (set_shape_paint material=...), an Image brush, or particles.
+ - Niagara in UI: create_niagara_ui_system from a template (RisingBubbles, Sparkles, Confetti, Embers, GlowRing, Trail, RisingSparkleLoop) with friendly params, shown by a NiagaraUIWidget (role particles, props {NiagaraSystem: path} plus the returned widget_props); set_niagara_parameters to tune. Only CPU sprite/ribbon emitters draw in UI.
+ - Data binding: the Widget Data Binder component - View Model fields bound to widgets, triggers (Went Up / Down, compare, count into field -> play animation, set parameter), list bindings (array -> one entry widget per element, animated in a Flow List), sample sets the designer's Data Preview steps through. add_trigger, add_list_binding, add_sample_set, set_component.
+ - Anything else on a widget or asset: set_widget / set_component / set_asset with field paths ("Fill.Color", "Font.Size", "Layers[0].States+"); read first with describe_widget / get_asset.
+diff --git a/Plugins/NameTBD/Resources/AI/Prompts/make_material.md b/Plugins/NameTBD/Resources/AI/Prompts/make_material.md
+index 6410348..047088f 100644
+--- a/Plugins/NameTBD/Resources/AI/Prompts/make_material.md
++++ b/Plugins/NameTBD/Resources/AI/Prompts/make_material.md
+@@ -1,4 +1,4 @@
+ # Make a UI material
+ > Make a UI material for an effect, built so it works the first time.
+ Arguments: effect - what it should look like (e.g. "a soft purple glow that breathes", "scanlines scrolling down")
+-Make a UI material for: {{effect}}. If a library master fits (list_options material_masters), make an instance of it with create_material_instance. Otherwise write it in HLSL: build_ui_material {name, hlsl: {code, params, blend}} - code returns float4(color, alpha) from uv, time and the params; every color, speed and size a param; smoothstep(lo, hi, x) with lo < hi. For a variation of a master, start from its code (list_options material_masters <Name>). If the compile reports errors, fix the code and rebuild with material set. Say which path you took and which parameters can be tuned.
++Make a UI material for: {{effect}}. If a library master fits (list_options material_masters), make an instance of it with create_material_instance. Otherwise write it in HLSL: build_ui_material {name, hlsl: {code, params, blend}} - code returns float4(color, alpha) from uv, time and the params; every color, speed and size a param; for noise and shapes use the NTB_ helpers (NTB_Noise, NTB_Fbm, NTB_SdRoundRect, NTB_Fill...). For a variation of a master, start from its code (list_options material_masters <Name>). If the compile reports errors, fix the code and rebuild with material set. Say which path you took and which parameters can be tuned.
+diff --git a/Plugins/NameTBD/Shaders/NameTBDUI.ush b/Plugins/NameTBD/Shaders/NameTBDUI.ush
+new file mode 100644
+index 0000000..d77defa
+--- /dev/null
++++ b/Plugins/NameTBD/Shaders/NameTBDUI.ush
+@@ -0,0 +1,102 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++// Helpers for the NameTBD AI's UI materials: included by their Custom nodes (Include File Paths:
++// /Plugin/NameTBDAI/NameTBDUI.ush - registered by the NameTBDShaders module). Plain HLSL, full precision, no textures and
++// no platform features, so it compiles the same for D3D, Vulkan, Metal and mobile.
++//
++// pow / sqrt / log / log2 / smoothstep in a material's code are rewritten to the NTB_ versions below, which are defined for
++// every input on every GPU: no NaN from a negative base or a zero range, smoothstep in either direction. The maths ones
++// are macros, so they take any width (float..float4) and mixed widths, exactly like the built-ins they replace.
++// Vector conditions (a ? b : c on a float3) are avoided: newer HLSL rejects them.
++
++#pragma once
++
++// ---- Safe maths ------------------------------------------------------------------------------------------------------
++
++// X with its magnitude kept at least 1e-6 (the sign kept, 0 counted as positive): a safe divisor.
++#define NTB_NonZero(X) (max(abs(X), 1e-6) * (step(0.0, (X)) * 2.0 - 1.0))
++
++// pow with the base clamped at 0 - a negative base is NaN on GPUs. To square a value that can be negative, write X * X.
++#define NTB_Pow(Base, Exponent) pow(max((Base), 0.0), (Exponent))
++#define NTB_Sqrt(X) sqrt(max((X), 0.0))
++#define NTB_Log(X) log(max((X), 1e-8))
++#define NTB_Log2(X) log2(max((X), 1e-8))
++#define NTB_SafeDiv(A, B) ((A) / NTB_NonZero(B))
++
++// smoothstep in either direction (Lo > Hi gives the falling edge) and with Lo == Hi (a hard step). The built-in is undefined
++// for Lo >= Hi on Vulkan / Metal / OpenGL - it may work on one GPU and not another.
++float NTB_Smooth01(float T) { return T * T * (3.0 - 2.0 * T); }
++float2 NTB_Smooth01(float2 T) { return T * T * (3.0 - 2.0 * T); }
++float3 NTB_Smooth01(float3 T) { return T * T * (3.0 - 2.0 * T); }
++float4 NTB_Smooth01(float4 T) { return T * T * (3.0 - 2.0 * T); }
++#define NTB_SmoothStep(Lo, Hi, X) NTB_Smooth01(saturate(((X) - (Lo)) / NTB_NonZero((Hi) - (Lo))))
++
++// ---- Noise -------------------------------------------------------------------------------------------------------------
++
++// A hash without sin(): stable on low-precision GPUs (from Dave Hoskins' "Hash without Sine").
++float NTB_Hash(float2 P)
++{
++	float3 P3 = frac(float3(P.x, P.y, P.x) * 0.1031);
++	P3 += dot(P3, P3.yzx + 33.33);
++	return frac((P3.x + P3.y) * P3.z);
++}
++
++// Smooth value noise, 0..1.
++float NTB_Noise(float2 P)
++{
++	const float2 Cell = floor(P);
++	const float2 F = frac(P);
++	const float2 S = F * F * (3.0 - 2.0 * F);
++	const float A = NTB_Hash(Cell);
++	const float B = NTB_Hash(Cell + float2(1.0, 0.0));
++	const float C = NTB_Hash(Cell + float2(0.0, 1.0));
++	const float D = NTB_Hash(Cell + float2(1.0, 1.0));
++	return lerp(lerp(A, B, S.x), lerp(C, D, S.x), S.y);
++}
++
++// Layered noise (1..8 octaves), 0..1 - clouds, fog, smoke.
++float NTB_Fbm(float2 P, int Octaves)
++{
++	float Sum = 0.0;
++	float Amplitude = 0.5;
++	float Total = 0.0;
++	[unroll] for (int Octave = 0; Octave < 8; ++Octave)
++	{
++		if (Octave < Octaves)
++		{
++			Sum += Amplitude * NTB_Noise(P);
++			Total += Amplitude;
++			P = P * 2.03 + float2(17.0, 9.0);
++			Amplitude *= 0.5;
++		}
++	}
++	return Sum / max(Total, 1e-6);
++}
++
++// ---- Shapes (signed distance: < 0 inside, in UV units) -----------------------------------------------------------------
++
++float NTB_SdCircle(float2 UV, float2 Center, float Radius) { return distance(UV, Center) - Radius; }
++
++float NTB_SdRoundRect(float2 UV, float2 Center, float2 HalfSize, float Radius)
++{
++	const float2 Q = abs(UV - Center) - (HalfSize - Radius);
++	return length(max(Q, 0.0)) + min(max(Q.x, Q.y), 0.0) - Radius;
++}
++
++// A shape's distance as a 0..1 fill with a soft edge Softness wide (centered on the outline).
++float NTB_Fill(float Distance, float Softness) { const float S = max(Softness, 1e-5); return 1.0 - NTB_SmoothStep(-S, S, Distance); }
++
++// A ring Width wide on a shape's outline.
++float NTB_Outline(float Distance, float Width, float Softness) { return NTB_Fill(abs(Distance) - Width * 0.5, Softness); }
++
++// ---- Color and time ----------------------------------------------------------------------------------------------------
++
++// Three colors along T (0..1): A at 0, B at 0.5, C at 1.
++float3 NTB_Ramp3(float T, float3 A, float3 B, float3 C)
++{
++	const float S = saturate(T);
++	return S < 0.5 ? lerp(A, B, S * 2.0) : lerp(B, C, S * 2.0 - 1.0);
++}
++
++// 0..1, waving Speed times a second.
++float NTB_Wave(float Time, float Speed) { return 0.5 + 0.5 * sin(6.2831853 * Time * Speed); }
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.cpp b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.cpp
+index 52df46f..ae68809 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.cpp
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.cpp
+@@ -25,6 +25,8 @@
+ #include "CoreGlobals.h"
+ #include "Misc/ITransaction.h"
+ #include "Templates/UnrealTemplate.h"
++#include "UObject/EnumProperty.h"
++#include "UObject/UnrealType.h"
+ #include "NameTBDAIDocs.h"
+ #include "NameTBDAIHelpers.h"
+ #include "NameTBDAIJson.h"
+@@ -255,6 +257,16 @@ namespace NameTBDAILibrary
+ 						Input.InputName = FName(*Name);
+ 						Custom->Inputs.Add(Input);
+ 					}
++					for (const FString& Include : Node.Includes)
++					{
++						Custom->IncludeFilePaths.AddUnique(Include);
++					}
++					if (UNameTBDAISettings::Get().bShowHlslInGraph)
++					{
++						// The code in the node's comment bubble, readable in the graph. Display only: Code is what compiles.
++						Custom->Desc = Node.Code;
++						Custom->bCommentBubbleVisible = true;
++					}
+ 				}
+ 				if (Node.Props.IsValid() && Node.Props->Values.Num() > 0)
+ 				{
+@@ -318,6 +330,24 @@ namespace NameTBDAILibrary
+ 			const FString Blend = Normalize(Graph.Blend);
+ 			Material->BlendMode = Blend == TEXT("additive") ? BLEND_Additive : Blend == TEXT("opaque") ? BLEND_Opaque
+ 				: Blend == TEXT("masked") ? BLEND_Masked : Blend == TEXT("alphacomposite") ? BLEND_AlphaComposite : BLEND_Translucent;
++
++			// Mobile runs a material's maths at half precision by default: time-driven waves step and noise bands after a few
++			// minutes. Full precision for the material's own expressions only - the rest of the shader keeps its default.
++			// Found by name, as the setting's form has changed between engine versions; a choice made by hand is kept.
++			const FProperty* Precision = FindFProperty<FProperty>(UMaterial::StaticClass(), TEXT("FloatPrecisionMode"));
++			const FByteProperty* AsByte = CastField<FByteProperty>(Precision);
++			const FEnumProperty* AsEnum = CastField<FEnumProperty>(Precision);
++			const UEnum* PrecisionEnum = AsByte ? AsByte->GetIntPropertyEnum() : AsEnum ? AsEnum->GetEnum() : nullptr;
++			const FNumericProperty* Underlying = AsByte ? static_cast<const FNumericProperty*>(AsByte) : AsEnum ? AsEnum->GetUnderlyingProperty() : nullptr;
++			if (PrecisionEnum && Underlying)
++			{
++				void* Value = Precision->ContainerPtrToValuePtr<void>(Material);
++				const int64 Full = PrecisionEnum->GetValueByNameString(TEXT("MFPM_Full_MaterialExpressionOnly"));
++				if (Full != INDEX_NONE && Underlying->GetSignedIntPropertyValue(Value) == PrecisionEnum->GetValueByNameString(TEXT("MFPM_Default")))
++				{
++					Underlying->SetIntPropertyValue(Value, Full);
++				}
++			}
+ 		}
+ 
+ 		/** "(Node Multiply) Arithmetic between..." -> the class short name in the parentheses ("Multiply"), or empty. */
+@@ -342,9 +372,13 @@ namespace NameTBDAILibrary
+ 		}
+ 
+ 		/** The definition's fingerprint; a master's includes the functions' (it calls them). */
++		/** Bumped when what a definition builds into changes (fix5: the NTB_ helpers, full precision, titled Custom nodes). */
++		const TCHAR* BuilderVersion = TEXT("builder 2");
++
+ 		FString Fingerprint(const FDefinition& Definition)
+ 		{
+-			FString Text = ToString(Definition.Json);
++			// The same definition builds differently with or without the helpers (NameTBDShaders), so that counts too.
++			FString Text = ToString(Definition.Json) + BuilderVersion + (NameTBDAIMaterialGraph::HelpersAvailable() ? TEXT(" helpers") : TEXT(""));
+ 			if (Definition.Kind == TEXT("master"))
+ 			{
+ 				for (const FDefinition& Each : GetDefinitions())
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMaterialGraph.cpp b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMaterialGraph.cpp
+index 240e65f..6145c48 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMaterialGraph.cpp
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMaterialGraph.cpp
+@@ -11,6 +11,7 @@
+ #include "NameTBDAIHelpers.h"
+ #include "NameTBDAIJson.h"
+ #include "NameTBDAILibrary.h"
++#include "ShaderCore.h"
+ #include "UObject/UObjectIterator.h"
+ 
+ using namespace NameTBDAIJson;
+@@ -1798,6 +1799,7 @@ namespace NameTBDAIMaterialGraph
+ 					Fix(FString::Printf(TEXT("%s: the code had no 'return' - it returns its expression now"), *Node.Id));
+ 				}
+ 				Node.Code = Code;
++				CheckCustomCode(Node);
+ 				for (const FString& Name : Node.CustomInputs)
+ 				{
+ 					bool bValid = !Name.IsEmpty() && (FChar::IsAlpha(Name[0]) || Name[0] == TEXT('_'));
+@@ -1816,6 +1818,211 @@ namespace NameTBDAIMaterialGraph
+ 				}
+ 			}
+ 
++			/** Code with its comments blanked out - the same length, so positions match the code's. */
++			static FString WithoutComments(const FString& Code)
++			{
++				FString Out = Code;
++				const int32 Len = Out.Len();
++				for (int32 At = 0; At + 1 < Len; ++At)
++				{
++					if (Out[At] == TEXT('/') && Out[At + 1] == TEXT('/'))
++					{
++						for (; At < Len && Out[At] != TEXT('\n'); ++At)
++						{
++							Out[At] = TEXT(' ');
++						}
++					}
++					else if (Out[At] == TEXT('/') && Out[At + 1] == TEXT('*'))
++					{
++						const int32 Close = Out.Find(TEXT("*/"), ESearchCase::CaseSensitive, ESearchDir::FromStart, At + 2);
++						const int32 Stop = Close == INDEX_NONE ? Len : Close + 2;
++						for (; At < Stop; ++At)
++						{
++							Out[At] = Out[At] == TEXT('\n') ? TEXT('\n') : TEXT(' ');
++						}
++						--At;
++					}
++				}
++				return Out;
++			}
++
++			/** An identifier in a Custom node's code. */
++			struct FWord
++			{
++				int32 At = 0;
++				FString Text;
++
++				/** A '(' follows: a call. */
++				bool bCall = false;
++
++				/** A '.' follows (View.ViewSizeAndInvSize) / precedes (uv.x). */
++				bool bDotAfter = false;
++				bool bMember = false;
++			};
++
++			/** Every identifier in Code (its comments blanked), numbers' suffixes and exponents (0.5f, 1e-6) left out. */
++			static TArray<FWord> WordsOf(const FString& Code)
++			{
++				TArray<FWord> Words;
++				auto IsWordChar = [](TCHAR Char) { return FChar::IsAlnum(Char) || Char == TEXT('_'); };
++				const int32 Len = Code.Len();
++				for (int32 At = 0; At < Len; ++At)
++				{
++					if (!IsWordChar(Code[At]) || (At > 0 && IsWordChar(Code[At - 1])))
++					{
++						continue;
++					}
++					int32 End = At;
++					while (End < Len && IsWordChar(Code[End]))
++					{
++						++End;
++					}
++					if (!FChar::IsDigit(Code[At]))
++					{
++						FWord Word;
++						Word.At = At;
++						Word.Text = Code.Mid(At, End - At);
++						int32 Next = End;
++						while (Next < Len && FChar::IsWhitespace(Code[Next]))
++						{
++							++Next;
++						}
++						Word.bCall = Next < Len && Code[Next] == TEXT('(');
++						Word.bDotAfter = Next < Len && Code[Next] == TEXT('.');
++						int32 Previous = At - 1;
++						while (Previous >= 0 && FChar::IsWhitespace(Code[Previous]))
++						{
++							--Previous;
++						}
++						Word.bMember = Previous >= 0 && Code[Previous] == TEXT('.');
++						Words.Add(MoveTemp(Word));
++					}
++					At = End - 1;
++				}
++				return Words;
++			}
++
++			/**
++			 * A Custom node's code made portable before the shader compiler sees it: what can't work on every platform refused
++			 * with what to write instead, half precision raised to float, and the maths that is NaN or undefined on some GPUs
++			 * (pow / sqrt / log of a negative, smoothstep with lo >= hi) run through the NTB_ helpers, which it then includes.
++			 */
++			void CheckCustomCode(FNode& Node)
++			{
++				const FString Stripped = WithoutComments(Node.Code);
++				const TArray<FWord> Words = WordsOf(Stripped);
++
++				struct FBanned
++				{
++					const TCHAR* Word;
++					bool bCall;
++					const TCHAR* Instead;
++				};
++				static const FBanned Banned[] = {
++					{ TEXT("Texture2D"), false, TEXT("a texture can't be declared in the code - wire a TextureObject into an input and sample it with Texture2DSample(Tex, TexSampler, uv)") },
++					{ TEXT("SamplerState"), false, TEXT("a sampler can't be declared in the code - a TextureObject input brings its own (<input>Sampler)") },
++					{ TEXT("tex2D"), true, TEXT("tex2D is Direct3D 9 only - wire a TextureObject into an input and use Texture2DSample(Tex, TexSampler, uv)") },
++					{ TEXT("discard"), false, TEXT("discard isn't allowed in a UI material - use blend Masked and output 0 / 1 to OpacityMask") },
++					{ TEXT("clip"), true, TEXT("clip isn't allowed in a UI material - use blend Masked and output 0 / 1 to OpacityMask") },
++					{ TEXT("groupshared"), false, TEXT("groupshared is compute-only") },
++					{ TEXT("cbuffer"), false, TEXT("a cbuffer can't be declared in the code - use params") },
++				};
++				// Shader Model 6 intrinsics (WaveActiveSum, QuadReadAcrossX...): not on mobile or older graphics APIs.
++				static const TCHAR* const Sm6[] = { TEXT("WaveActive"), TEXT("WaveRead"), TEXT("WavePrefix"), TEXT("WaveGet"), TEXT("WaveIs"), TEXT("WaveMatch"),
++					TEXT("WaveMulti"), TEXT("QuadRead"), TEXT("QuadAny"), TEXT("QuadAll") };
++				static const TSet<FString> Internals = { TEXT("View"), TEXT("ResolvedView"), TEXT("Primitive"), TEXT("Parameters") };
++				TSet<FString> Reported;
++				for (const FWord& Word : Words)
++				{
++					if (Word.bMember || Reported.Contains(Word.Text))
++					{
++						continue;
++					}
++					for (const FBanned& Item : Banned)
++					{
++						if (Word.Text == Item.Word && (Word.bCall || !Item.bCall))
++						{
++							Error(TEXT("custom"), Node.Id, FString::Printf(TEXT("'%s': %s"), Item.Word, Item.Instead));
++							Reported.Add(Word.Text);
++						}
++					}
++					for (const TCHAR* Prefix : Sm6)
++					{
++						if (Word.bCall && Word.Text.StartsWith(Prefix, ESearchCase::CaseSensitive))
++						{
++							Error(TEXT("custom"), Node.Id, FString::Printf(TEXT("'%s' needs Shader Model 6 - not on mobile or older graphics APIs; compute the value directly"), *Word.Text));
++							Reported.Add(Word.Text);
++							break;
++						}
++					}
++					if (Word.bDotAfter && Internals.Contains(Word.Text))
++					{
++						Warn(TEXT("custom"), Node.Id, FString::Printf(TEXT("'%s.' is the engine's internal shader data - it changes between engine versions and platforms; use the uv / time inputs (or wire a node into an input)"), *Word.Text));
++						Reported.Add(Word.Text);
++					}
++				}
++				TArray<FString> Lines;
++				Stripped.ParseIntoArrayLines(Lines);
++				for (const FString& Line : Lines)
++				{
++					if (Line.TrimStart().StartsWith(TEXT("#")))
++					{
++						Error(TEXT("custom"), Node.Id, TEXT("'#' lines (#include, #define...) can't go in the code - the NTB_ helpers are included for you; write constants as static const float"));
++						break;
++					}
++				}
++
++				// The rewrites, last first so the earlier positions stay right.
++				static const TMap<FString, FString> Wider = { { TEXT("half"), TEXT("float") }, { TEXT("half2"), TEXT("float2") }, { TEXT("half3"), TEXT("float3") },
++					{ TEXT("half4"), TEXT("float4") }, { TEXT("min16float"), TEXT("float") }, { TEXT("min16float2"), TEXT("float2") }, { TEXT("min16float3"), TEXT("float3") },
++					{ TEXT("min16float4"), TEXT("float4") } };
++				static const TMap<FString, FString> Safe = { { TEXT("pow"), TEXT("NTB_Pow") }, { TEXT("sqrt"), TEXT("NTB_Sqrt") }, { TEXT("log"), TEXT("NTB_Log") },
++					{ TEXT("log2"), TEXT("NTB_Log2") }, { TEXT("smoothstep"), TEXT("NTB_SmoothStep") } };
++				const bool bHelpers = HelpersAvailable();
++				bool bWidened = false;
++				bool bMadeSafe = false;
++				bool bUsesHelpers = false;
++				for (int32 Index = Words.Num() - 1; Index >= 0; --Index)
++				{
++					const FWord& Word = Words[Index];
++					if (Word.bMember)
++					{
++						continue;
++					}
++					const FString* Replacement = Wider.Find(Word.Text);
++					bWidened |= Replacement != nullptr;
++					if (!Replacement && bHelpers && Word.bCall)
++					{
++						Replacement = Safe.Find(Word.Text);
++						bMadeSafe |= Replacement != nullptr;
++					}
++					if (Replacement)
++					{
++						Node.Code = Node.Code.Left(Word.At) + *Replacement + Node.Code.Mid(Word.At + Word.Text.Len());
++					}
++					bUsesHelpers |= Word.Text.StartsWith(TEXT("NTB_"), ESearchCase::CaseSensitive) || (Replacement && Replacement->StartsWith(TEXT("NTB_")));
++				}
++				if (bWidened)
++				{
++					Added(TEXT("half / min16float are float: full precision on every GPU"));
++				}
++				if (bMadeSafe)
++				{
++					Added(TEXT("pow / sqrt / log / smoothstep run as their NTB_ versions: never NaN, smoothstep either way, the same on every GPU"));
++				}
++				if (bUsesHelpers)
++				{
++					if (bHelpers)
++					{
++						Node.Includes.AddUnique(HelpersInclude);
++					}
++					else
++					{
++						Error(TEXT("custom"), Node.Id, TEXT("the NTB_ helpers aren't available in this editor (the NameTBDShaders module didn't load) - write the maths inline"));
++					}
++				}
++			}
++
+ 			// ---- 5. Wires ---------------------------------------------------------------------------------------------
+ 
+ 			/** "n", "n.R", "g/d.Mask" -> the node's index and the output name. */
+@@ -2920,6 +3127,13 @@ namespace NameTBDAIMaterialGraph
+ 		return PrepareAt(Graph, bFunction, 0);
+ 	}
+ 
++	const TCHAR* const HelpersInclude = TEXT("/Plugin/NameTBDAI/NameTBDUI.ush");
++
++	bool HelpersAvailable()
++	{
++		return AllShaderSourceDirectoryMappings().Contains(TEXT("/Plugin/NameTBDAI"));
++	}
++
+ 	namespace
+ 	{
+ 		/** Name used in Code as a whole identifier (not part of a longer one). Case-sensitive, as HLSL is. */
+@@ -2944,6 +3158,42 @@ namespace NameTBDAIMaterialGraph
+ 			}
+ 		}
+ 
++		/** Every use of Name in Code picks color channels only (Color.rgb, Color.r, Color.xy...) - never its alpha or all four. */
++		bool UsesOnlyRgb(const FString& Code, const FString& Name)
++		{
++			auto IsIdentifierChar = [](TCHAR Char) { return FChar::IsAlnum(Char) || Char == TEXT('_'); };
++			for (int32 At = Code.Find(*Name, ESearchCase::CaseSensitive); At != INDEX_NONE; At = Code.Find(*Name, ESearchCase::CaseSensitive, ESearchDir::FromStart, At + 1))
++			{
++				int32 End = At + Name.Len();
++				if ((At > 0 && IsIdentifierChar(Code[At - 1])) || (End < Code.Len() && IsIdentifierChar(Code[End])))
++				{
++					continue;
++				}
++				while (End < Code.Len() && FChar::IsWhitespace(Code[End]))
++				{
++					++End;
++				}
++				if (End >= Code.Len() || Code[End] != TEXT('.'))
++				{
++					return false;
++				}
++				int32 Channels = 0;
++				for (++End; End < Code.Len() && IsIdentifierChar(Code[End]); ++End, ++Channels)
++				{
++					const TCHAR Char = Code[End];
++					if (Char != TEXT('r') && Char != TEXT('g') && Char != TEXT('b') && Char != TEXT('x') && Char != TEXT('y') && Char != TEXT('z'))
++					{
++						return false;
++					}
++				}
++				if (Channels == 0)
++				{
++					return false;
++				}
++			}
++			return true;
++		}
++
+ 		/** "code": a string, or a list of lines. */
+ 		FString CodeOf(const TSharedPtr<FJsonObject>& Object)
+ 		{
+@@ -3022,6 +3272,10 @@ namespace NameTBDAIMaterialGraph
+ 				Node->SetStringField(TEXT("code"), Code);
+ 				Node->SetStringField(TEXT("output"), GetString(Spec, TEXT("type"), TEXT("float1")));
+ 				Node->SetObjectField(TEXT("inputs"), Inputs);
++				TSharedPtr<FJsonObject> NodeProps = MakeShared<FJsonObject>();
++				const FString Title = GetString(Hlsl, TEXT("title"));
++				NodeProps->SetStringField(TEXT("Description"), Title.IsEmpty() ? Pair.Key : Title + TEXT(" ") + Pair.Key);
++				Node->SetObjectField(TEXT("props"), NodeProps);
+ 				Nodes.Add(MakeShared<FJsonValueObject>(Node));
+ 				Outputs->SetStringField(Pair.Key, TEXT("_out_") + Pair.Key);
+ 			}
+@@ -3079,7 +3333,12 @@ namespace NameTBDAIMaterialGraph
+ 					Param->SetField(TEXT("value"), Pair.Value);
+ 				}
+ 				Param->SetStringField(TEXT("param"), Pair.Key);
+-				if (IsColorValue(Param->TryGetField(TEXT("value"))))
++				if (IsColorValue(Param->TryGetField(TEXT("value"))) && UsesOnlyRgb(Code, Pair.Key))
++				{
++					// Only its color channels are read: the parameter's RGB straight in (float3), no alpha appended.
++					Inputs->SetObjectField(Pair.Key, Param);
++				}
++				else if (IsColorValue(Param->TryGetField(TEXT("value"))))
+ 				{
+ 					// A color reaches the code as float4: the parameter's RGB with its A appended.
+ 					TSharedPtr<FJsonObject> Append = MakeShared<FJsonObject>();
+@@ -3104,6 +3363,10 @@ namespace NameTBDAIMaterialGraph
+ 		Custom->SetStringField(TEXT("code"), Code);
+ 		Custom->SetStringField(TEXT("output"), TEXT("float4"));
+ 		Custom->SetObjectField(TEXT("inputs"), Inputs);
++		// The node's title in the graph: the material's name instead of "Custom".
++		TSharedPtr<FJsonObject> CustomProps = MakeShared<FJsonObject>();
++		CustomProps->SetStringField(TEXT("Description"), GetString(Hlsl, TEXT("title"), TEXT("HLSL")));
++		Custom->SetObjectField(TEXT("props"), CustomProps);
+ 		Nodes.Add(MakeShared<FJsonValueObject>(Custom));
+ 		for (const TCHAR* Channels : { TEXT("rgb"), TEXT("a") })
+ 		{
+@@ -3137,8 +3400,15 @@ namespace NameTBDAIMaterialGraph
+ 	{
+ 		if (const TSharedPtr<FJsonObject> Hlsl = GetObject(Definition, TEXT("hlsl")))
+ 		{
++			// Its Custom nodes are titled with the definition's name.
++			TSharedPtr<FJsonObject> Titled = MakeShared<FJsonObject>();
++			Titled->Values = Hlsl->Values;
++			if (!Titled->HasField(TEXT("title")))
++			{
++				Titled->SetStringField(TEXT("title"), GetString(Definition, TEXT("name")));
++			}
+ 			FString Error;
+-			const TSharedPtr<FJsonObject> Graph = HlslToGraph(Hlsl, bFunction, Error);
++			const TSharedPtr<FJsonObject> Graph = HlslToGraph(Titled, bFunction, Error);
+ 			if (!Graph.IsValid())
+ 			{
+ 				UE_LOG(LogTemp, Warning, TEXT("NameTBD AI: %s: %s"), *GetString(Definition, TEXT("name")), *Error);
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMaterialGraph.h b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMaterialGraph.h
+index 5d10a3d..db9f504 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMaterialGraph.h
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIMaterialGraph.h
+@@ -70,6 +70,9 @@ namespace NameTBDAIMaterialGraph
+ 		int32 CustomWidth = 3;
+ 		TArray<FString> CustomInputs;
+ 
++		/** Custom: shader files its code includes (HelpersInclude when it uses the NTB_ helpers). */
++		TArray<FString> Includes;
++
+ 		/** FunctionInput (function graphs): the input's name and width. */
+ 		FString InputName;
+ 		int32 InputWidth = 0;
+@@ -122,6 +125,12 @@ namespace NameTBDAIMaterialGraph
+ 		TSharedPtr<FJsonObject> Summary() const;
+ 	};
+ 
++	/** The helpers every Custom node may use (NTB_SmoothStep, NTB_Noise...), as a Custom node's include path. */
++	extern const TCHAR* const HelpersInclude;
++
++	/** Whether the engine can find HelpersInclude (the NameTBDShaders module mapped its folder at startup). */
++	bool HelpersAvailable();
++
+ 	/**
+ 	 * A material written as HLSL, as the node graph that runs it: {code, params, blend, tint} - each param a Scalar /
+ 	 * Vector Parameter (a color reaches the code as float4 RGBA, [x, y] as float2), "uv" (float2) and "time" (float) when
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIModule.cpp b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIModule.cpp
+index 9f19578..456490b 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIModule.cpp
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAIModule.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include "Framework/Application/SlateApplication.h"
+ #include "Framework/Docking/TabManager.h"
++#include "EdGraph/EdGraphNode.h"
++#include "Materials/MaterialExpressionCustom.h"
+ #include "Modules/ModuleManager.h"
+ #include "NameTBDAIChatSession.h"
+ #include "NameTBDAIMcpServer.h"
+@@ -11,6 +13,7 @@
+ #include "NameTBDAITools.h"
+ #include "SNameTBDAIChat.h"
+ #include "Styling/AppStyle.h"
++#include "UObject/UnrealType.h"
+ #include "Widgets/Docking/SDockTab.h"
+ #include "WorkspaceMenuStructure.h"
+ #include "WorkspaceMenuStructureModule.h"
+@@ -21,6 +24,9 @@ namespace
+ {
+ 	const FName ChatTabName(TEXT("NameTBDAIChat"));
+ 	TSharedPtr<FNameTBDAIChatSession> Session;
++
++	/** Custom nodes whose comment bubble showed their code when an edit began. */
++	TSet<const UObject*> ShowingCode;
+ }
+ 
+ TSharedRef<FNameTBDAIChatSession> NameTBDAIModule::GetSession()
+@@ -57,6 +63,29 @@ public:
+ 		.SetGroup(WorkspaceMenu::GetMenuStructure().GetToolsCategory())
+ 		.SetIcon(FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Help"));
+ 
++		// A Custom node whose comment bubble shows its code (bShowHlslInGraph) keeps showing it as the code is edited.
++		PreChangeHandle = FCoreUObjectDelegates::OnPreObjectPropertyChanged.AddLambda([](UObject* Object, const FEditPropertyChain&)
++		{
++			const UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Object);
++			if (Custom && Custom->bCommentBubbleVisible && !Custom->Code.IsEmpty() && Custom->Desc == Custom->Code)
++			{
++				ShowingCode.Add(Custom);
++			}
++		});
++		PostChangeHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddLambda([](UObject* Object, FPropertyChangedEvent& Event)
++		{
++			UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Object);
++			if (!Custom || ShowingCode.Remove(Custom) == 0 || (Event.GetPropertyName() != FName(TEXT("Code")) && Event.GetMemberPropertyName() != FName(TEXT("Code"))))
++			{
++				return;
++			}
++			Custom->Desc = Custom->Code;
++			if (Custom->GraphNode)
++			{
++				Custom->GraphNode->NodeComment = Custom->Code;
++			}
++		});
++
+ 		if (UNameTBDAISettings::Get().bStartMcpServer)
+ 		{
+ 			FString Error;
+@@ -69,6 +98,9 @@ public:
+ 
+ 	virtual void ShutdownModule() override
+ 	{
++		FCoreUObjectDelegates::OnPreObjectPropertyChanged.Remove(PreChangeHandle);
++		FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(PostChangeHandle);
++		ShowingCode.Reset();
+ 		FNameTBDAIMcpServer::Get().Stop();
+ 		if (FSlateApplication::IsInitialized())
+ 		{
+@@ -76,6 +108,10 @@ public:
+ 		}
+ 		Session.Reset();
+ 	}
++
++private:
++	FDelegateHandle PreChangeHandle;
++	FDelegateHandle PostChangeHandle;
+ };
+ 
+ IMPLEMENT_MODULE(FNameTBDAIModule, NameTBDAI)
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAITools_Content.cpp b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAITools_Content.cpp
+index 4504442..c88f14e 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAITools_Content.cpp
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAITools_Content.cpp
+@@ -172,6 +172,12 @@ namespace NameTBDAIContentTools
+ 					Hlsl->SetField(Key, Args->TryGetField(Key));
+ 				}
+ 			}
++			// The Custom node is titled with the material's name in the graph.
++			if (!Hlsl->HasField(TEXT("title")))
++			{
++				const FString Title = Args->HasField(TEXT("name")) ? GetString(Args, TEXT("name")) : FPaths::GetBaseFilename(GetString(Args, TEXT("material")));
++				Hlsl->SetStringField(TEXT("title"), Title.IsEmpty() ? FString(TEXT("HLSL")) : Title);
++			}
+ 			return NameTBDAIMaterialGraph::HlslToGraph(Hlsl, false, OutError);
+ 		}
+ 		if (MasterName.IsEmpty())
+@@ -421,7 +427,7 @@ namespace NameTBDAITools
+ 			TEXT("build_ui_material"),
+ 			TEXT("A new UI material, for a look no master covers (a master instance is better when one fits: create_material_instance). "
+ 				"Write it in HLSL: hlsl {code, params, blend}. code is the body of a function that returns float4(color, alpha); it can use uv (float2, 0..1, (0,0) top left), time (seconds) and every param by its name - a number is a float, a color (\"#RRGGBB\" or \"#RRGGBBAA\") a float4 RGBA, [x, y] a float2. Each param becomes a material parameter, so later changes are set_material_parameters on an instance - expose colors, sizes, speeds. blend: Translucent (default) | Additive (glows) | Masked. The widget's tint and opacity are applied for you, and the alpha is kept in 0..1. "
+-				"HLSL rules: statements end with ;, declare every variable (float, float2, float3, float4), no functions or textures, built-ins only (sin, cos, frac, floor, abs, pow, lerp, saturate, distance, length, dot, atan2...); smoothstep(lo, hi, x) needs lo < hi (for 1-below-0-above use 1.0 - smoothstep); sin(time * 6.2832 * Speed) waves Speed times a second. "
++				"HLSL rules: statements end with ;, declare every variable (float, float2, float3, float4), no functions, textures or # lines, built-ins (sin, cos, frac, floor, abs, pow, lerp, saturate, smoothstep, distance, length, dot, atan2...) plus the helpers NTB_Noise(p) (0..1), NTB_Fbm(p, octaves), NTB_Hash(p), NTB_SdCircle(uv, center, radius), NTB_SdRoundRect(uv, center, halfSize, radius) (distances, < 0 inside), NTB_Fill(distance, softness), NTB_Outline(distance, width, softness), NTB_Ramp3(t, colorA, colorB, colorC), NTB_Wave(time, speed); smoothstep works either way (smoothstep(0.5, 0.2, x) falls); sin(time * 6.2832 * Speed) waves Speed times a second. "
+ 				"Example: {name: \"PulseRing\", hlsl: {blend: \"Additive\", params: {Color: \"#7C5CFF\", Radius: 0.35, Speed: 1.5}, code: \"float d = distance(uv, float2(0.5, 0.5)); float ring = 1.0 - smoothstep(0.0, 0.03, abs(d - Radius)); float pulse = 0.6 + 0.4 * sin(time * 6.2832 * Speed); return float4(Color.rgb, ring * pulse * Color.a);\"}}. "
+ 				"Compile errors come back with a hint - fix the code and call again with 'material' set to rebuild in place. list_options material_masters <Name> shows a library master's own hlsl (a good start for a variation). "
+ 				"Also takes a node graph instead (graph {nodes, outputs}; macros and nodes: list_options material_nodes), and from_master + graph to add nodes on top of a master (\"master.FinalColor\" = its color)."),
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Public/NameTBDAISettings.h b/Plugins/NameTBD/Source/NameTBDAI/Public/NameTBDAISettings.h
+index ff60f1f..1c88e7f 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Public/NameTBDAISettings.h
++++ b/Plugins/NameTBD/Source/NameTBDAI/Public/NameTBDAISettings.h
+@@ -197,6 +197,14 @@ public:
+ 	UPROPERTY(config, EditAnywhere, Category = "Building", meta = (ContentDir))
+ 	FDirectoryPath LibraryFolder;
+ 
++	/**
++	 * Shows a Custom node's HLSL in the material graph, in the node's comment bubble, so a material written in code reads at
++	 * a glance - the node's Code setting (Details panel) is still what compiles. The bubble follows edits to Code while it
++	 * shows the code as it was built; type your own comment and it is left alone. Display only: no effect on the shader.
++	 */
++	UPROPERTY(config, EditAnywhere, Category = "Building")
++	bool bShowHlslInGraph = true;
++
+ 	// ---- MCP server ----------------------------------------------------------------------------------------------
+ 
+ 	/**
+diff --git a/Plugins/NameTBD/Source/NameTBDShaders/NameTBDShaders.Build.cs b/Plugins/NameTBD/Source/NameTBDShaders/NameTBDShaders.Build.cs
+new file mode 100644
+index 0000000..5a563a3
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDShaders/NameTBDShaders.Build.cs
+@@ -0,0 +1,24 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++using UnrealBuildTool;
++
++// Registers the plugin's Shaders folder as the virtual shader path /Plugin/NameTBDAI, so the Custom nodes of the AI's UI
++// materials can include NameTBDUI.ush (safe maths, noise, shapes). A mapping must be added while the engine starts
++// (LoadingPhase PostConfigInit), before the AI module loads, so it is its own small module. UncookedOnly: shaders are
++// compiled by the editor and the cooker, never by a packaged game.
++public class NameTBDShaders : ModuleRules
++{
++	public NameTBDShaders(ReadOnlyTargetRules Target) : base(Target)
++	{
++		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
++
++		PrivateDependencyModuleNames.AddRange(
++			new string[]
++			{
++				"Core",
++				"Projects",    // IPluginManager - where the plugin is
++				"RenderCore"   // AddShaderSourceDirectoryMapping
++			}
++		);
++	}
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDShaders/Private/NameTBDShadersModule.cpp b/Plugins/NameTBD/Source/NameTBDShaders/Private/NameTBDShadersModule.cpp
+new file mode 100644
+index 0000000..933fd38
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDShaders/Private/NameTBDShadersModule.cpp
+@@ -0,0 +1,33 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "Interfaces/IPluginManager.h"
++#include "Misc/Paths.h"
++#include "Modules/ModuleManager.h"
++#include "ShaderCore.h"
++
++namespace
++{
++	const TCHAR* VirtualShaderFolder = TEXT("/Plugin/NameTBDAI");
++}
++
++/** Maps /Plugin/NameTBDAI to the plugin's Shaders folder (NameTBDUI.ush), once, if the folder is there. */
++class FNameTBDShadersModule : public IModuleInterface
++{
++public:
++	virtual void StartupModule() override
++	{
++		const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("NameTBD"));
++		if (!Plugin.IsValid())
++		{
++			return;
++		}
++		const FString Folder = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Shaders"));
++		// Adding a path twice is a check() failure; without the folder the AI's materials just don't use the helpers.
++		if (FPaths::DirectoryExists(Folder) && !AllShaderSourceDirectoryMappings().Contains(VirtualShaderFolder))
++		{
++			AddShaderSourceDirectoryMapping(VirtualShaderFolder, Folder);
++		}
++	}
++};
++
++IMPLEMENT_MODULE(FNameTBDShadersModule, NameTBDShaders)

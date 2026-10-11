@@ -7,6 +7,7 @@ class FWidgetShapePathEditorFactory;
 class FWidgetAnimTextEditorFactory;
 class FFlowListPathEditorFactory;
 class FWidgetAnimMotionPathFactory;
+class FWidgetGizmoFactory;
 struct FGraphPanelPinFactory;
 
 class FNameTBDEditorModule : public IModuleInterface
@@ -33,4 +34,7 @@ private:
 
 	// Draws the motion paths of the Widget Animations panel's animation on the UMG designer's canvas.
 	TSharedPtr<FWidgetAnimMotionPathFactory> MotionPathFactory;
+
+	// Puts the Widget Gizmo - move, scale, rotate, shear and the pivot of the selected widgets - on the UMG designer's canvas.
+	TSharedPtr<FWidgetGizmoFactory> GizmoFactory;
 };

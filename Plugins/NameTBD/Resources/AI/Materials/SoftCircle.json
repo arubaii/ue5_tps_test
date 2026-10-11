@@ -6,7 +6,7 @@
   "inputs": "UV (float2), Radius (0.5), Softness (0..1)",
   "outputs": "Result (float)"
  },
- "graph": {
+ "hlsl": {
   "inputs": [
    {
     "name": "UV",
@@ -39,45 +39,15 @@
     ]
    }
   ],
-  "nodes": [
-   {
-    "id": "d",
-    "type": "Distance",
-    "inputs": {
-     "A": "UV",
-     "B": [
-      0.5,
-      0.5
-     ]
-    }
-   },
-   {
-    "id": "keep",
-    "type": "OneMinus",
-    "inputs": {
-     "Input": "Softness"
-    }
-   },
-   {
-    "id": "inner",
-    "type": "Multiply",
-    "inputs": {
-     "A": "Radius",
-     "B": "keep"
-    }
-   },
-   {
-    "id": "mask",
-    "type": "SmoothStep",
-    "inputs": {
-     "Min": "Radius",
-     "Max": "inner",
-     "Value": "d"
-    }
-   }
-  ],
   "outputs": {
-   "Result": "mask"
+   "Result": {
+    "type": "float1",
+    "code": [
+     "float d = distance(UV, float2(0.5, 0.5));",
+     "float r = max(Radius, 0.0001);",
+     "return 1.0 - smoothstep(r * (1.0 - saturate(Softness)) - 0.0001, r, d);"
+    ]
+   }
   }
  }
 }

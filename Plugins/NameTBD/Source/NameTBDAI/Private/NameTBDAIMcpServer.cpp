@@ -343,6 +343,10 @@ TSharedPtr<FJsonObject> FNameTBDAIMcpServer::HandleRequest(const TSharedPtr<FJso
 TSharedPtr<FJsonObject> FNameTBDAIMcpServer::HandleInitialize(const TSharedPtr<FJsonObject>& Params)
 {
 	const FString Asked = GetString(Params, TEXT("protocolVersion"));
+	if (TSharedPtr<FJsonObject> Client = GetObject(Params, TEXT("clientInfo")))
+	{
+		ClientLabel = FString::Printf(TEXT("mcp:%s %s"), *GetString(Client, TEXT("name"), TEXT("client")), *GetString(Client, TEXT("version"))).TrimEnd();
+	}
 	FString Version = SupportedVersions[0];
 	for (const TCHAR* Supported : SupportedVersions)
 	{
@@ -408,6 +412,7 @@ TSharedPtr<FJsonObject> FNameTBDAIMcpServer::HandleToolsCall(const TSharedPtr<FJ
 	Context.Changes = &Changes;
 	Context.bAllowWrites = Settings.bMcpAllowWrites;
 	Context.bAllowCapture = Settings.bAllowPreviewCapture;
+	Context.Model = ClientLabel.IsEmpty() ? FString(TEXT("mcp")) : ClientLabel;
 	const FNameTBDAIToolResult Outcome = NameTBDAITools::Execute(Name, GetObject(Params, TEXT("arguments")), Context);
 
 	if (Settings.bMcpSaveAfterWrites && !Changes.IsEmpty())

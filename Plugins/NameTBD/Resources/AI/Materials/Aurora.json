@@ -12,380 +12,52 @@
   "Intensity": "opacity strength",
   "Glow": "color brightness"
  },
- "graph": {
-  "domain": "UI",
+ "hlsl": {
   "blend": "Translucent",
-  "nodes": [
-   {
-    "id": "uv",
-    "type": "TextureCoordinate"
+  "params": {
+   "Speed": {
+    "value": 0.15,
+    "group": "Motion"
    },
-   {
-    "id": "u",
-    "type": "ComponentMask",
-    "props": {
-     "R": true,
-     "G": false,
-     "B": false,
-     "A": false
-    },
-    "inputs": {
-     "Input": "uv"
-    }
+   "Height": {
+    "value": 0.8,
+    "group": "Shape"
    },
-   {
-    "id": "v",
-    "type": "ComponentMask",
-    "props": {
-     "R": false,
-     "G": true,
-     "B": false,
-     "A": false
-    },
-    "inputs": {
-     "Input": "uv"
-    }
+   "Falloff": {
+    "value": 1.6,
+    "group": "Shape"
    },
-   {
-    "id": "time",
-    "type": "Time"
+   "Intensity": {
+    "value": 1.0,
+    "group": "Look"
    },
-   {
-    "id": "spd",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Speed",
-     "DefaultValue": 0.15,
-     "Group": "Motion"
-    }
+   "ColorA": {
+    "value": "@glow1",
+    "group": "Color"
    },
-   {
-    "id": "t",
-    "type": "Multiply",
-    "inputs": {
-     "A": "time",
-     "B": "spd"
-    }
+   "ColorB": {
+    "value": "@glow2",
+    "group": "Color"
    },
-   {
-    "id": "u1",
-    "type": "Multiply",
-    "inputs": {
-     "A": "u",
-     "B": 1.3
-    }
+   "ColorC": {
+    "value": "@glow3",
+    "group": "Color"
    },
-   {
-    "id": "t1",
-    "type": "Multiply",
-    "inputs": {
-     "A": "t",
-     "B": 0.6
-    }
-   },
-   {
-    "id": "w1a",
-    "type": "Add",
-    "inputs": {
-     "A": "u1",
-     "B": "t1"
-    }
-   },
-   {
-    "id": "w1s",
-    "type": "Sine",
-    "inputs": {
-     "Input": "w1a"
-    }
-   },
-   {
-    "id": "w1m",
-    "type": "Multiply",
-    "inputs": {
-     "A": "w1s",
-     "B": 0.5
-    }
-   },
-   {
-    "id": "w1",
-    "type": "Add",
-    "inputs": {
-     "A": "w1m",
-     "B": 0.5
-    }
-   },
-   {
-    "id": "u2",
-    "type": "Multiply",
-    "inputs": {
-     "A": "u",
-     "B": 2.1
-    }
-   },
-   {
-    "id": "t2",
-    "type": "Multiply",
-    "inputs": {
-     "A": "t",
-     "B": -0.9
-    }
-   },
-   {
-    "id": "w2b",
-    "type": "Add",
-    "inputs": {
-     "A": "u2",
-     "B": "t2"
-    }
-   },
-   {
-    "id": "w2a",
-    "type": "Add",
-    "inputs": {
-     "A": "w2b",
-     "B": 0.3
-    }
-   },
-   {
-    "id": "w2s",
-    "type": "Sine",
-    "inputs": {
-     "Input": "w2a"
-    }
-   },
-   {
-    "id": "w2m",
-    "type": "Multiply",
-    "inputs": {
-     "A": "w2s",
-     "B": 0.5
-    }
-   },
-   {
-    "id": "w2",
-    "type": "Add",
-    "inputs": {
-     "A": "w2m",
-     "B": 0.5
-    }
-   },
-   {
-    "id": "hgt",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Height",
-     "DefaultValue": 0.8,
-     "Group": "Shape"
-    }
-   },
-   {
-    "id": "hv",
-    "type": "Multiply",
-    "inputs": {
-     "A": "w1",
-     "B": 0.35
-    }
-   },
-   {
-    "id": "hv2",
-    "type": "Add",
-    "inputs": {
-     "A": "hv",
-     "B": 0.65
-    }
-   },
-   {
-    "id": "h",
-    "type": "Multiply",
-    "inputs": {
-     "A": "hv2",
-     "B": "hgt"
-    }
-   },
-   {
-    "id": "top",
-    "type": "OneMinus",
-    "inputs": {
-     "Input": "h"
-    }
-   },
-   {
-    "id": "fade",
-    "type": "SmoothStep",
-    "inputs": {
-     "Min": "top",
-     "Max": 1,
-     "Value": "v"
-    }
-   },
-   {
-    "id": "fall",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Falloff",
-     "DefaultValue": 1.6,
-     "Group": "Shape"
-    }
-   },
-   {
-    "id": "fadep",
-    "type": "Power",
-    "inputs": {
-     "Base": "fade",
-     "Exponent": "fall"
-    }
-   },
-   {
-    "id": "gm0",
-    "type": "Multiply",
-    "inputs": {
-     "A": "w2",
-     "B": 0.45
-    }
-   },
-   {
-    "id": "gm",
-    "type": "Add",
-    "inputs": {
-     "A": "gm0",
-     "B": 0.55
-    }
-   },
-   {
-    "id": "inten",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Intensity",
-     "DefaultValue": 1.0,
-     "Group": "Look"
-    }
-   },
-   {
-    "id": "a0",
-    "type": "Multiply",
-    "inputs": {
-     "A": "fadep",
-     "B": "gm"
-    }
-   },
-   {
-    "id": "a1",
-    "type": "Multiply",
-    "inputs": {
-     "A": "a0",
-     "B": "inten"
-    }
-   },
-   {
-    "id": "rt0",
-    "type": "Multiply",
-    "inputs": {
-     "A": "w2",
-     "B": 0.7
-    }
-   },
-   {
-    "id": "rt1",
-    "type": "Multiply",
-    "inputs": {
-     "A": "u",
-     "B": 0.3
-    }
-   },
-   {
-    "id": "rt2",
-    "type": "Add",
-    "inputs": {
-     "A": "rt0",
-     "B": "rt1"
-    }
-   },
-   {
-    "id": "rt",
-    "type": "Saturate",
-    "inputs": {
-     "Input": "rt2"
-    }
-   },
-   {
-    "id": "ca",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "ColorA",
-     "DefaultValue": "@glow1",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "cb",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "ColorB",
-     "DefaultValue": "@glow2",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "cc",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "ColorC",
-     "DefaultValue": "@glow3",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "ramp",
-    "type": "MaterialFunctionCall",
-    "function": "ColorRamp",
-    "inputs": {
-     "T": "rt",
-     "ColorA": "ca",
-     "ColorB": "cb",
-     "ColorC": "cc"
-    }
-   },
-   {
-    "id": "glow",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Glow",
-     "DefaultValue": 1.2,
-     "Group": "Look"
-    }
-   },
-   {
-    "id": "rgb",
-    "type": "Multiply",
-    "inputs": {
-     "A": "ramp.Color",
-     "B": "glow"
-    }
-   },
-   {
-    "id": "vc",
-    "type": "VertexColor"
-   },
-   {
-    "id": "rgb_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "rgb",
-     "B": "vc"
-    }
-   },
-   {
-    "id": "alpha_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "a1",
-     "B": "vc.A"
-    }
+   "Glow": {
+    "value": 1.2,
+    "group": "Look"
    }
-  ],
-  "outputs": {
-   "FinalColor": "rgb_out",
-   "Opacity": "alpha_out"
-  }
+  },
+  "code": [
+   "float tt = time * Speed;",
+   "float w1 = 0.5 + 0.5 * sin(6.2831853 * (uv.x * 1.3 + tt * 0.6));",
+   "float w2 = 0.5 + 0.5 * sin(6.2831853 * (uv.x * 2.1 - tt * 0.9 + 0.3));",
+   "float h = max((w1 * 0.35 + 0.65) * Height, 0.0001);",
+   "float fade = pow(smoothstep(1.0 - h, 1.0, uv.y), max(Falloff, 0.0001));",
+   "float alpha = saturate(fade * (w2 * 0.45 + 0.55) * Intensity);",
+   "float t = saturate(w2 * 0.7 + uv.x * 0.3);",
+   "float3 c = t < 0.5 ? lerp(ColorA.rgb, ColorB.rgb, t * 2.0) : lerp(ColorB.rgb, ColorC.rgb, t * 2.0 - 1.0);",
+   "return float4(c * Glow, alpha);"
+  ]
  }
 }

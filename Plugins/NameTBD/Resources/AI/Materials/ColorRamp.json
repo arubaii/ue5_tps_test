@@ -6,7 +6,7 @@
   "inputs": "T (float), ColorA, ColorB, ColorC (float3)",
   "outputs": "Color (float3)"
  },
- "graph": {
+ "hlsl": {
   "inputs": [
    {
     "name": "T",
@@ -49,58 +49,14 @@
     ]
    }
   ],
-  "nodes": [
-   {
-    "id": "t2",
-    "type": "Multiply",
-    "inputs": {
-     "A": "T",
-     "B": 2
-    }
-   },
-   {
-    "id": "a",
-    "type": "Saturate",
-    "inputs": {
-     "Input": "t2"
-    }
-   },
-   {
-    "id": "b0",
-    "type": "Subtract",
-    "inputs": {
-     "A": "t2",
-     "B": 1
-    }
-   },
-   {
-    "id": "b",
-    "type": "Saturate",
-    "inputs": {
-     "Input": "b0"
-    }
-   },
-   {
-    "id": "l1",
-    "type": "Lerp",
-    "inputs": {
-     "A": "ColorA",
-     "B": "ColorB",
-     "Alpha": "a"
-    }
-   },
-   {
-    "id": "l2",
-    "type": "Lerp",
-    "inputs": {
-     "A": "l1",
-     "B": "ColorC",
-     "Alpha": "b"
-    }
-   }
-  ],
   "outputs": {
-   "Color": "l2"
+   "Color": {
+    "type": "float3",
+    "code": [
+     "float t = saturate(T);",
+     "return t < 0.5 ? lerp(ColorA, ColorB, t * 2.0) : lerp(ColorB, ColorC, t * 2.0 - 1.0);"
+    ]
+   }
   }
  }
 }

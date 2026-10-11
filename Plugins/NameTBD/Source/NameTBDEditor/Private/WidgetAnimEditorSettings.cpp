@@ -122,6 +122,24 @@ void UWidgetAnimEditorSettings::SetPreviewFrameRate(float FrameRate)
 	}
 }
 
+void UWidgetAnimEditorSettings::SetGizmoAutoKey(bool bEnabled)
+{
+	if (bGizmoAutoKey != bEnabled)
+	{
+		bGizmoAutoKey = bEnabled;
+		SaveConfig();
+	}
+}
+
+void UWidgetAnimEditorSettings::SetControlsShowTrackControls(bool bTrackControls)
+{
+	if (bControlsShowTrackControls != bTrackControls)
+	{
+		bControlsShowTrackControls = bTrackControls;
+		SaveConfig();
+	}
+}
+
 void UWidgetAnimEditorSettings::SetShowMotionPaths(bool bEnabled)
 {
 	if (bShowMotionPaths != bEnabled)

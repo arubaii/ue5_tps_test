@@ -281,6 +281,10 @@ private:
 	enum class EMode : uint8 { Flat, Affine, Warped };
 
 	EMode ResolveMode(const FShapeBoxShape& InShape, const FVector2D& Size) const;
+
+	/** ShapeBox.DebugContentBox: where the content is arranged and where it was last painted, drawn over the box and logged. */
+	void PaintContentDebug(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
+	mutable FString LastContentDebugLine;
 	EVisibility GetEffectiveVisibility() const;
 	void ClearWarpState() const;
 

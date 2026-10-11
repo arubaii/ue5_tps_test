@@ -197,6 +197,14 @@ public:
 	UPROPERTY(config, EditAnywhere, Category = "Building", meta = (ContentDir))
 	FDirectoryPath LibraryFolder;
 
+	/**
+	 * Shows a Custom node's HLSL in the material graph, in the node's comment bubble, so a material written in code reads at
+	 * a glance - the node's Code setting (Details panel) is still what compiles. The bubble follows edits to Code while it
+	 * shows the code as it was built; type your own comment and it is left alone. Display only: no effect on the shader.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Building")
+	bool bShowHlslInGraph = true;
+
 	// ---- MCP server ----------------------------------------------------------------------------------------------
 
 	/**
@@ -259,7 +267,10 @@ public:
 	UFUNCTION(CallInEditor, Category = "MCP Server", meta = (DisplayName = "Stop Server"))
 	void StopMcpServerNow();
 
-	/** Builds the library (materials, Material Functions, Niagara UI templates) now rather than when first needed. */
+	/**
+	 * Builds the library (materials, Material Functions, Niagara UI templates) now rather than when first needed. Also the
+	 * console commands NameTBDAI.BuildLibrary and NameTBDAI.RebuildLibrary (every asset again).
+	 */
 	UFUNCTION(CallInEditor, Category = "Building", meta = (DisplayName = "Build Library Now"))
 	void BuildLibraryNow();
 

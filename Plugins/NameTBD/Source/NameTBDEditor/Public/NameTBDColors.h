@@ -859,5 +859,77 @@ namespace NameTBD
 			inline constexpr float PathThickness = 1.5f;
 			inline constexpr float HitRadius = 7.0f;
 		}
+
+		namespace WidgetGizmo
+		{
+			// -------------------------------------------------------------------------------------------------
+			// The Widget Gizmo over the widgets selected in the designer (see WidgetGizmo.h). Read the way Unreal's own
+			// viewport gizmo is: X red, Y green, the rotation ring blue, and whatever is under the mouse or being dragged
+			// yellow. Every line is drawn twice - a dark line under the colored one - so it reads over any background.
+			//   Pivot*: the gizmo's middle, the Render Transform Pivot - dragged to move it.
+			//   Frame: the frame the Scale handles and Shear grips sit on - FrameGap outside the widget's box as drawn, so it
+			//   never lies on the designer's own selection outline and handles.
+			//   Grip*: the Scale handles and the Shear grips.
+			//   Key*: the Auto Key chip, shown while what the gizmo does is keyed in the open animation.
+			//   Typing*: the bar under the chips while a value is typed (S 1.5, R 90...), or a Grab follows the mouse.
+			//   Chip*: the mode chips above the widget (as the Custom Shape path editor's toolbar chips).
+			//   Readout*: what a drag sets, beside the mouse.
+			//   Guide: a smart guide - an edge or middle the widget being moved or scaled lines up with.
+			// Sizes are in the designer's pixels, whatever its zoom, times the Gizmo Size preference.
+			// -------------------------------------------------------------------------------------------------
+
+			inline const FLinearColor Underlay(0.0f, 0.0f, 0.0f, 0.6f);
+			inline const FLinearColor AxisX(0.90f, 0.22f, 0.17f, 1.0f);
+			inline const FLinearColor AxisY(0.38f, 0.80f, 0.20f, 1.0f);
+			inline const FLinearColor PlaneFill(0.95f, 0.80f, 0.25f, 0.45f);
+			inline const FLinearColor PlaneOutline(0.95f, 0.80f, 0.25f, 0.95f);
+			inline const FLinearColor Ring(0.25f, 0.55f, 1.0f, 1.0f);
+			inline const FLinearColor RingSweep(0.25f, 0.55f, 1.0f, 0.55f);
+			inline const FLinearColor Hot(1.0f, 0.86f, 0.10f, 1.0f);
+			inline const FLinearColor PivotFill(1.0f, 1.0f, 1.0f, 1.0f);
+			inline const FLinearColor PivotRing(AnimationOrange_Normal);
+			inline const FLinearColor Frame(AnimationOrange_Normal.CopyWithNewOpacity(0.75f));
+			inline const FLinearColor GripFill(1.0f, 1.0f, 1.0f, 1.0f);
+			inline const FLinearColor GripOutline(0.05f, 0.05f, 0.05f, 1.0f);
+			inline const FLinearColor ShearGrip(AnimationOrange_Normal);
+			inline const FLinearColor ChipBackground(0.02f, 0.02f, 0.02f, 0.88f);
+			inline const FLinearColor ChipActive(AnimationOrange_Normal.R * 0.78f, AnimationOrange_Normal.G * 0.78f, AnimationOrange_Normal.B * 0.78f, 1.0f);
+			inline const FLinearColor ChipActiveHovered(AnimationOrange_Normal);
+			inline const FLinearColor ChipIdle(1.0f, 1.0f, 1.0f, 0.07f);
+			inline const FLinearColor ChipIdleHovered(1.0f, 1.0f, 1.0f, 0.18f);
+			inline const FLinearColor ChipText(0.86f, 0.86f, 0.86f, 1.0f);
+			inline const FLinearColor ChipTextActive(0.04f, 0.04f, 0.04f, 1.0f);
+			inline const FLinearColor ChipKeyText(0.86f, 0.86f, 0.86f, 0.5f);
+			inline const FLinearColor KeyChip(0.62f, 0.12f, 0.10f, 1.0f);
+			inline const FLinearColor KeyChipDot(1.0f, 0.32f, 0.26f, 1.0f);
+			inline const FLinearColor KeyChipText(1.0f, 0.92f, 0.90f, 1.0f);
+			inline const FLinearColor TypingBackground(0.02f, 0.02f, 0.02f, 0.92f);
+			inline const FLinearColor TypingLabel(0.86f, 0.86f, 0.86f, 1.0f);
+			inline const FLinearColor TypingValue(AnimationOrange_Hovered);
+			inline const FLinearColor TypingField(1.0f, 1.0f, 1.0f, 0.10f);
+			inline const FLinearColor TypingFieldActive(AnimationOrange_Normal.CopyWithNewOpacity(0.35f));
+			inline const FLinearColor TypingHint(0.86f, 0.86f, 0.86f, 0.5f);
+			inline const FLinearColor Guide(1.0f, 0.25f, 0.6f, 0.95f);
+			inline const FLinearColor ReadoutBackground(0.02f, 0.02f, 0.02f, 0.88f);
+			inline const FLinearColor ReadoutText(0.9f, 0.9f, 0.9f, 1.0f);
+
+			inline constexpr float LineThickness = 2.0f;
+			inline constexpr float ArrowLength = 64.0f;
+			inline constexpr float ArrowGap = 11.0f;
+			inline constexpr float ArrowHeadLength = 11.0f;
+			inline constexpr float ArrowHeadWidth = 9.0f;
+			inline constexpr float PlaneOffset = 20.0f;
+			inline constexpr float PlaneSize = 12.0f;
+			inline constexpr float RingRadius = 58.0f;
+			inline constexpr float PivotSize = 11.0f;
+			inline constexpr float PivotCross = 6.0f;
+			inline constexpr float FrameGap = 10.0f;
+			inline constexpr float GripSize = 8.0f;
+			inline constexpr float ShearGripLength = 16.0f;
+			inline constexpr float ShearGripThickness = 5.0f;
+			inline constexpr float HitSlop = 6.0f;
+			inline constexpr float ChipHeight = 18.0f;
+			inline constexpr float ChipGap = 2.0f;
+		}
 	}
 }

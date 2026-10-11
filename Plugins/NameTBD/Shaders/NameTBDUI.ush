@@ -1,0 +1,102 @@
+// Copyright AR GameSystems 2026. All rights reserved.
+
+// Helpers for the NameTBD AI's UI materials: included by their Custom nodes (Include File Paths:
+// /Plugin/NameTBDAI/NameTBDUI.ush - registered by the NameTBDShaders module). Plain HLSL, full precision, no textures and
+// no platform features, so it compiles the same for D3D, Vulkan, Metal and mobile.
+//
+// pow / sqrt / log / log2 / smoothstep in a material's code are rewritten to the NTB_ versions below, which are defined for
+// every input on every GPU: no NaN from a negative base or a zero range, smoothstep in either direction. The maths ones
+// are macros, so they take any width (float..float4) and mixed widths, exactly like the built-ins they replace.
+// Vector conditions (a ? b : c on a float3) are avoided: newer HLSL rejects them.
+
+#pragma once
+
+// ---- Safe maths ------------------------------------------------------------------------------------------------------
+
+// X with its magnitude kept at least 1e-6 (the sign kept, 0 counted as positive): a safe divisor.
+#define NTB_NonZero(X) (max(abs(X), 1e-6) * (step(0.0, (X)) * 2.0 - 1.0))
+
+// pow with the base clamped at 0 - a negative base is NaN on GPUs. To square a value that can be negative, write X * X.
+#define NTB_Pow(Base, Exponent) pow(max((Base), 0.0), (Exponent))
+#define NTB_Sqrt(X) sqrt(max((X), 0.0))
+#define NTB_Log(X) log(max((X), 1e-8))
+#define NTB_Log2(X) log2(max((X), 1e-8))
+#define NTB_SafeDiv(A, B) ((A) / NTB_NonZero(B))
+
+// smoothstep in either direction (Lo > Hi gives the falling edge) and with Lo == Hi (a hard step). The built-in is undefined
+// for Lo >= Hi on Vulkan / Metal / OpenGL - it may work on one GPU and not another.
+float NTB_Smooth01(float T) { return T * T * (3.0 - 2.0 * T); }
+float2 NTB_Smooth01(float2 T) { return T * T * (3.0 - 2.0 * T); }
+float3 NTB_Smooth01(float3 T) { return T * T * (3.0 - 2.0 * T); }
+float4 NTB_Smooth01(float4 T) { return T * T * (3.0 - 2.0 * T); }
+#define NTB_SmoothStep(Lo, Hi, X) NTB_Smooth01(saturate(((X) - (Lo)) / NTB_NonZero((Hi) - (Lo))))
+
+// ---- Noise -------------------------------------------------------------------------------------------------------------
+
+// A hash without sin(): stable on low-precision GPUs (from Dave Hoskins' "Hash without Sine").
+float NTB_Hash(float2 P)
+{
+	float3 P3 = frac(float3(P.x, P.y, P.x) * 0.1031);
+	P3 += dot(P3, P3.yzx + 33.33);
+	return frac((P3.x + P3.y) * P3.z);
+}
+
+// Smooth value noise, 0..1.
+float NTB_Noise(float2 P)
+{
+	const float2 Cell = floor(P);
+	const float2 F = frac(P);
+	const float2 S = F * F * (3.0 - 2.0 * F);
+	const float A = NTB_Hash(Cell);
+	const float B = NTB_Hash(Cell + float2(1.0, 0.0));
+	const float C = NTB_Hash(Cell + float2(0.0, 1.0));
+	const float D = NTB_Hash(Cell + float2(1.0, 1.0));
+	return lerp(lerp(A, B, S.x), lerp(C, D, S.x), S.y);
+}
+
+// Layered noise (1..8 octaves), 0..1 - clouds, fog, smoke.
+float NTB_Fbm(float2 P, int Octaves)
+{
+	float Sum = 0.0;
+	float Amplitude = 0.5;
+	float Total = 0.0;
+	[unroll] for (int Octave = 0; Octave < 8; ++Octave)
+	{
+		if (Octave < Octaves)
+		{
+			Sum += Amplitude * NTB_Noise(P);
+			Total += Amplitude;
+			P = P * 2.03 + float2(17.0, 9.0);
+			Amplitude *= 0.5;
+		}
+	}
+	return Sum / max(Total, 1e-6);
+}
+
+// ---- Shapes (signed distance: < 0 inside, in UV units) -----------------------------------------------------------------
+
+float NTB_SdCircle(float2 UV, float2 Center, float Radius) { return distance(UV, Center) - Radius; }
+
+float NTB_SdRoundRect(float2 UV, float2 Center, float2 HalfSize, float Radius)
+{
+	const float2 Q = abs(UV - Center) - (HalfSize - Radius);
+	return length(max(Q, 0.0)) + min(max(Q.x, Q.y), 0.0) - Radius;
+}
+
+// A shape's distance as a 0..1 fill with a soft edge Softness wide (centered on the outline).
+float NTB_Fill(float Distance, float Softness) { const float S = max(Softness, 1e-5); return 1.0 - NTB_SmoothStep(-S, S, Distance); }
+
+// A ring Width wide on a shape's outline.
+float NTB_Outline(float Distance, float Width, float Softness) { return NTB_Fill(abs(Distance) - Width * 0.5, Softness); }
+
+// ---- Color and time ----------------------------------------------------------------------------------------------------
+
+// Three colors along T (0..1): A at 0, B at 0.5, C at 1.
+float3 NTB_Ramp3(float T, float3 A, float3 B, float3 C)
+{
+	const float S = saturate(T);
+	return S < 0.5 ? lerp(A, B, S * 2.0) : lerp(B, C, S * 2.0 - 1.0);
+}
+
+// 0..1, waving Speed times a second.
+float NTB_Wave(float Time, float Speed) { return 0.5 + 0.5 * sin(6.2831853 * Time * Speed); }

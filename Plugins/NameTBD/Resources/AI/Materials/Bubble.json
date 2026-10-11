@@ -7,132 +7,29 @@
   "RingOpacity": "0..1",
   "FillOpacity": "0..1"
  },
- "graph": {
-  "domain": "UI",
+ "hlsl": {
   "blend": "Translucent",
-  "nodes": [
-   {
-    "id": "uv",
-    "type": "TextureCoordinate"
+  "params": {
+   "RingOpacity": {
+    "value": 0.9,
+    "group": "Look"
    },
-   {
-    "id": "outer",
-    "type": "MaterialFunctionCall",
-    "function": "SoftCircle",
-    "inputs": {
-     "UV": "uv",
-     "Radius": 0.5,
-     "Softness": 0.12
-    }
+   "FillOpacity": {
+    "value": 0.15,
+    "group": "Look"
    },
-   {
-    "id": "inner",
-    "type": "MaterialFunctionCall",
-    "function": "SoftCircle",
-    "inputs": {
-     "UV": "uv",
-     "Radius": 0.4,
-     "Softness": 0.3
-    }
-   },
-   {
-    "id": "ring0",
-    "type": "Subtract",
-    "inputs": {
-     "A": "outer.Result",
-     "B": "inner.Result"
-    }
-   },
-   {
-    "id": "ring",
-    "type": "Saturate",
-    "inputs": {
-     "Input": "ring0"
-    }
-   },
-   {
-    "id": "ringp",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "RingOpacity",
-     "DefaultValue": 0.9,
-     "Group": "Look"
-    }
-   },
-   {
-    "id": "fillp",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "FillOpacity",
-     "DefaultValue": 0.15,
-     "Group": "Look"
-    }
-   },
-   {
-    "id": "ringa",
-    "type": "Multiply",
-    "inputs": {
-     "A": "ring",
-     "B": "ringp"
-    }
-   },
-   {
-    "id": "fill",
-    "type": "Multiply",
-    "inputs": {
-     "A": "outer.Result",
-     "B": "fillp"
-    }
-   },
-   {
-    "id": "al",
-    "type": "Max",
-    "inputs": {
-     "A": "ringa",
-     "B": "fill"
-    }
-   },
-   {
-    "id": "col",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "Color",
-     "DefaultValue": "#FFFFFF",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "a1",
-    "type": "Multiply",
-    "inputs": {
-     "A": "al",
-     "B": "col.A"
-    }
-   },
-   {
-    "id": "vc",
-    "type": "VertexColor"
-   },
-   {
-    "id": "rgb_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "col",
-     "B": "vc"
-    }
-   },
-   {
-    "id": "alpha_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "a1",
-     "B": "vc.A"
-    }
+   "Color": {
+    "value": "#FFFFFF",
+    "group": "Color"
    }
-  ],
-  "outputs": {
-   "FinalColor": "rgb_out",
-   "Opacity": "alpha_out"
-  }
+  },
+  "code": [
+   "float d = distance(uv, float2(0.5, 0.5));",
+   "float outer = 1.0 - smoothstep(0.44, 0.5, d);",
+   "float inner = 1.0 - smoothstep(0.28, 0.4, d);",
+   "float ring = saturate(outer - inner);",
+   "float alpha = max(ring * RingOpacity, outer * FillOpacity) * Color.a;",
+   "return float4(Color.rgb, saturate(alpha));"
+  ]
  }
 }

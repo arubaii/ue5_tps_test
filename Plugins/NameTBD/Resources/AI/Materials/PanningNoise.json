@@ -6,7 +6,7 @@
   "inputs": "UV (float2), Scale (4), Speed (float2)",
   "outputs": "Result (float)"
  },
- "graph": {
+ "hlsl": {
   "inputs": [
    {
     "name": "UV",
@@ -39,60 +39,32 @@
     ]
    }
   ],
-  "nodes": [
-   {
-    "id": "t",
-    "type": "Time"
-   },
-   {
-    "id": "off",
-    "type": "Multiply",
-    "inputs": {
-     "A": "t",
-     "B": "Speed"
-    }
-   },
-   {
-    "id": "s",
-    "type": "Multiply",
-    "inputs": {
-     "A": "UV",
-     "B": "Scale"
-    }
-   },
-   {
-    "id": "p2",
-    "type": "Add",
-    "inputs": {
-     "A": "s",
-     "B": "off"
-    }
-   },
-   {
-    "id": "p3",
-    "type": "AppendVector",
-    "inputs": {
-     "A": "p2",
-     "B": 0
-    }
-   },
-   {
-    "id": "n",
-    "type": "Noise",
-    "props": {
-     "Scale": 1,
-     "Levels": 3,
-     "OutputMin": 0,
-     "OutputMax": 1,
-     "Quality": 1
-    },
-    "inputs": {
-     "Position": "p3"
-    }
-   }
-  ],
   "outputs": {
-   "Result": "n"
+   "Result": {
+    "type": "float1",
+    "code": [
+     "float2 p = UV * Scale + time * Speed;",
+     "// 4 octaves of value noise at p, 0..1",
+     "float n = 0.0;",
+     "float amp = 0.5;",
+     "float2 q = p;",
+     "for (int k = 0; k < 4; k++)",
+     "{",
+     "    float2 i = floor(q);",
+     "    float2 f = frac(q);",
+     "    float2 s = f * f * (3.0 - 2.0 * f);",
+     "    float a = frac(sin(dot(i, float2(127.1, 311.7))) * 43758.5453);",
+     "    float b = frac(sin(dot(i + float2(1.0, 0.0), float2(127.1, 311.7))) * 43758.5453);",
+     "    float c = frac(sin(dot(i + float2(0.0, 1.0), float2(127.1, 311.7))) * 43758.5453);",
+     "    float d = frac(sin(dot(i + float2(1.0, 1.0), float2(127.1, 311.7))) * 43758.5453);",
+     "    n += amp * lerp(lerp(a, b, s.x), lerp(c, d, s.x), s.y);",
+     "    q = q * 2.03 + float2(17.0, 9.0);",
+     "    amp *= 0.5;",
+     "}",
+     "n /= 0.9375;",
+     "return saturate(n);"
+    ]
+   }
   }
  }
 }

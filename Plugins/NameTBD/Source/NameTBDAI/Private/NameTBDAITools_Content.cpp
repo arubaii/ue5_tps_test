@@ -16,6 +16,7 @@
 #include "NameTBDAIHelpers.h"
 #include "NameTBDAIJson.h"
 #include "NameTBDAILibrary.h"
+#include "NameTBDAIMaterialGraph.h"
 #include "NameTBDAITools.h"
 #include "NiagaraSystem.h"
 #include "NiagaraUIWidget.h"
@@ -121,6 +122,82 @@ namespace NameTBDAIContentTools
 			}
 		}
 		UMaterialEditingLibrary::UpdateMaterialInstance(Instance);
+	}
+
+	/** An instance (MI_) of a library master or any material, its parameters set - create_material_instance and build_ui_material's from_master. */
+	FNameTBDAIToolResult MakeMaterialInstance(const FString& MasterName, const FString& Name, const FString& Folder, const TSharedPtr<FJsonObject>& Params, FNameTBDAIToolContext& Context)
+	{
+		FString Error;
+		UMaterialInterface* Master = NameTBDAILibrary::GetMaster(MasterName, Error);
+		if (!Master)
+		{
+			return FNameTBDAIToolResult::Fail(Error);
+		}
+		UMaterialInstanceConstantFactoryNew* Factory = NewObject<UMaterialInstanceConstantFactoryNew>();
+		Factory->InitialParent = Master;
+		UMaterialInstanceConstant* Instance = Cast<UMaterialInstanceConstant>(NameTBDAIHelpers::CreateAsset(Folder,
+			NameTBDAIHelpers::MakeAssetName(Name, TEXT("MI_")), UMaterialInstanceConstant::StaticClass(), Factory, Context, Error));
+		if (!Instance)
+		{
+			return FNameTBDAIToolResult::Fail(Error);
+		}
+		TArray<FString> Errors;
+		SetInstanceParameters(Instance, Params, Errors);
+		NameTBDAIMaterialGraph::RecordAttempt(Context.Model, nullptr, false, false, 0);
+		FNameTBDAIToolResult Result = FNameTBDAIToolResult::Ok();
+		Result.Data->SetStringField(TEXT("material"), Instance->GetPathName());
+		Result.Data->SetStringField(TEXT("master"), Master->GetPathName());
+		Result.Data->SetObjectField(TEXT("parameters"), DescribeParameters(Instance));
+		Result.Warnings = Errors;
+		return Result;
+	}
+
+	/** The graph a build / validate call means: hlsl made into one, graph, or a master's graph extended by graph. Null with OutError. */
+	TSharedPtr<FJsonObject> GraphFromArgs(const TSharedPtr<FJsonObject>& Args, FString& OutError)
+	{
+		TSharedPtr<FJsonObject> Graph = GetObject(Args, TEXT("graph"));
+		const FString MasterName = GetString(Args, TEXT("from_master"));
+		if (const TSharedPtr<FJsonObject> Hlsl = GetObject(Args, TEXT("hlsl")))
+		{
+			if (!MasterName.IsEmpty() || Graph.IsValid())
+			{
+				OutError = TEXT("Give hlsl, or graph (with from_master) - not both. A variation of a master: list_options material_masters <Name> shows its hlsl to start from.");
+				return nullptr;
+			}
+			// blend / tint written next to hlsl count too.
+			for (const TCHAR* Key : { TEXT("blend"), TEXT("tint") })
+			{
+				if (!Hlsl->HasField(Key) && Args->HasField(Key))
+				{
+					Hlsl->SetField(Key, Args->TryGetField(Key));
+				}
+			}
+			// The Custom node is titled with the material's name in the graph.
+			if (!Hlsl->HasField(TEXT("title")))
+			{
+				const FString Title = Args->HasField(TEXT("name")) ? GetString(Args, TEXT("name")) : FPaths::GetBaseFilename(GetString(Args, TEXT("material")));
+				Hlsl->SetStringField(TEXT("title"), Title.IsEmpty() ? FString(TEXT("HLSL")) : Title);
+			}
+			return NameTBDAIMaterialGraph::HlslToGraph(Hlsl, false, OutError);
+		}
+		if (MasterName.IsEmpty())
+		{
+			if (!Graph.IsValid())
+			{
+				OutError = TEXT("Give 'hlsl' ({code, params}) or 'graph' ({nodes, outputs}) - or 'from_master' to start from a library master.");
+			}
+			return Graph;
+		}
+		const TSharedPtr<FJsonObject> MasterGraph = NameTBDAILibrary::GetMasterGraph(MasterName);
+		if (!MasterGraph.IsValid())
+		{
+			TArray<FString> Names;
+			NameTBDAILibrary::DescribeMasters()->Values.GetKeys(Names);
+			Names.Remove(TEXT("$use"));
+			OutError = FString::Printf(TEXT("No library master '%s' (masters: %s)."), *MasterName, *FString::Join(Names, TEXT(", ")));
+			return nullptr;
+		}
+		return NameTBDAIMaterialGraph::MergeWithMaster(MasterGraph, Graph.IsValid() ? Graph : MakeShared<FJsonObject>(), OutError);
 	}
 
 	// ---- Which template a Niagara system was made from (for friendly parameter names) ---------------------------------
@@ -292,29 +369,7 @@ namespace NameTBDAITools
 			true, false, false,
 			[](const TSharedPtr<FJsonObject>& Args, FNameTBDAIToolContext& Context)
 			{
-				FString Error;
-				UMaterialInterface* Master = NameTBDAILibrary::GetMaster(GetString(Args, TEXT("master")), Error);
-				if (!Master)
-				{
-					return FNameTBDAIToolResult::Fail(Error);
-				}
-				UMaterialInstanceConstantFactoryNew* Factory = NewObject<UMaterialInstanceConstantFactoryNew>();
-				Factory->InitialParent = Master;
-				const FString Folder = GetString(Args, TEXT("folder"), TEXT("Materials"));
-				UMaterialInstanceConstant* Instance = Cast<UMaterialInstanceConstant>(NameTBDAIHelpers::CreateAsset(Folder,
-					NameTBDAIHelpers::MakeAssetName(GetString(Args, TEXT("name")), TEXT("MI_")), UMaterialInstanceConstant::StaticClass(), Factory, Context, Error));
-				if (!Instance)
-				{
-					return FNameTBDAIToolResult::Fail(Error);
-				}
-				TArray<FString> Errors;
-				SetInstanceParameters(Instance, GetObject(Args, TEXT("params")), Errors);
-				FNameTBDAIToolResult Result = FNameTBDAIToolResult::Ok();
-				Result.Data->SetStringField(TEXT("material"), Instance->GetPathName());
-				Result.Data->SetStringField(TEXT("master"), Master->GetPathName());
-				Result.Data->SetObjectField(TEXT("parameters"), DescribeParameters(Instance));
-				Result.Warnings = Errors;
-				return Result;
+				return MakeMaterialInstance(GetString(Args, TEXT("master")), GetString(Args, TEXT("name")), GetString(Args, TEXT("folder"), TEXT("Materials")), GetObject(Args, TEXT("params")), Context);
 			}
 		});
 
@@ -344,18 +399,79 @@ namespace NameTBDAITools
 		});
 
 		Register({
-			TEXT("build_ui_material"),
-			TEXT("Builds a whole UI material from a node graph - a new effect the masters don't cover - and compiles it, returning compile errors to fix. Expose every tunable as a ScalarParameter / VectorParameter so later changes are create_material_instance / set_material_parameters, not graph edits. Graph: {domain: UI (default), blend: Translucent | Additive | Masked, nodes: [{id, type (TextureCoordinate, VertexColor, Time, Panner, Noise, Multiply, Add, Subtract, Divide, Lerp, Sine, Power, Saturate, OneMinus, ComponentMask, AppendVector, Distance, SmoothStep, ScalarParameter, VectorParameter, TextureSampleParameter2D, MaterialFunctionCall, Custom...; list_options material_nodes), props {ParameterName, DefaultValue, R/G/B/A, Constant, Code...}, function (for MaterialFunctionCall: library function name or path), inputs {InputName: \"node\" | \"node.Output\" | number | [x,y,z] | \"#hex\"}}], outputs: {FinalColor: ref, Opacity: ref}}. Multiply the color by VertexColor.RGB and opacity by VertexColor.A so widget tints and Niagara particle colors apply. Rebuild an existing one by passing 'material'."),
+			TEXT("validate_material"),
+			TEXT("Checks a build_ui_material graph or hlsl without building anything (no asset): every problem at once, each tied to its node id with what to change, plus what would be fixed for you. HLSL code itself is only checked by the real compile (build_ui_material). Same arguments as build_ui_material."),
 			FNameTBDAISchema()
-				.Str(TEXT("name"), TEXT("New material name (M_ added). Omit when rebuilding."))
-				.Str(TEXT("material"), TEXT("An existing material (made by this tool) to rebuild from the graph."))
+				.Obj(TEXT("hlsl"), TEXT("{code, params, blend} (see build_ui_material)."))
+				.Obj(TEXT("graph"), TEXT("The node graph (see build_ui_material)."))
+				.Str(TEXT("from_master"), TEXT("A library master the graph extends."))
+				.Build(),
+			false, false, false,
+			[](const TSharedPtr<FJsonObject>& Args, FNameTBDAIToolContext& Context)
+			{
+				FString Error;
+				const TSharedPtr<FJsonObject> Graph = GraphFromArgs(Args, Error);
+				if (!Graph.IsValid())
+				{
+					return FNameTBDAIToolResult::Fail(Error);
+				}
+				const NameTBDAIMaterialGraph::FGraph Prepared = NameTBDAIMaterialGraph::Prepare(Graph);
+				NameTBDAIMaterialGraph::RecordAttempt(Context.Model, &Prepared, false, false, 0);
+				FNameTBDAIToolResult Result = FNameTBDAIToolResult::Ok(Prepared.Summary());
+				Result.Data->SetStringField(TEXT("next"), Prepared.HasErrors() ? TEXT("Fix every error, then build_ui_material.") : TEXT("build_ui_material with the same graph."));
+				return Result;
+			}
+		});
+
+		Register({
+			TEXT("build_ui_material"),
+			TEXT("A new UI material, for a look no master covers (a master instance is better when one fits: create_material_instance). "
+				"Write it in HLSL: hlsl {code, params, blend}. code is the body of a function that returns float4(color, alpha); it can use uv (float2, 0..1, (0,0) top left), time (seconds) and every param by its name - a number is a float, a color (\"#RRGGBB\" or \"#RRGGBBAA\") a float4 RGBA, [x, y] a float2. Each param becomes a material parameter, so later changes are set_material_parameters on an instance - expose colors, sizes, speeds. blend: Translucent (default) | Additive (glows) | Masked. The widget's tint and opacity are applied for you, and the alpha is kept in 0..1. "
+				"HLSL rules: statements end with ;, declare every variable (float, float2, float3, float4), no functions, textures or # lines, built-ins (sin, cos, frac, floor, abs, pow, lerp, saturate, smoothstep, distance, length, dot, atan2...) plus the helpers NTB_Noise(p) (0..1), NTB_Fbm(p, octaves), NTB_Hash(p), NTB_SdCircle(uv, center, radius), NTB_SdRoundRect(uv, center, halfSize, radius) (distances, < 0 inside), NTB_Fill(distance, softness), NTB_Outline(distance, width, softness), NTB_Ramp3(t, colorA, colorB, colorC), NTB_Wave(time, speed); smoothstep works either way (smoothstep(0.5, 0.2, x) falls); sin(time * 6.2832 * Speed) waves Speed times a second. "
+				"Example: {name: \"PulseRing\", hlsl: {blend: \"Additive\", params: {Color: \"#7C5CFF\", Radius: 0.35, Speed: 1.5}, code: \"float d = distance(uv, float2(0.5, 0.5)); float ring = 1.0 - smoothstep(0.0, 0.03, abs(d - Radius)); float pulse = 0.6 + 0.4 * sin(time * 6.2832 * Speed); return float4(Color.rgb, ring * pulse * Color.a);\"}}. "
+				"Compile errors come back with a hint - fix the code and call again with 'material' set to rebuild in place. list_options material_masters <Name> shows a library master's own hlsl (a good start for a variation). "
+				"Also takes a node graph instead (graph {nodes, outputs}; macros and nodes: list_options material_nodes), and from_master + graph to add nodes on top of a master (\"master.FinalColor\" = its color)."),
+			FNameTBDAISchema()
+				.Str(TEXT("name"), TEXT("New material name (M_ added; MI_ with from_master alone). Omit when rebuilding."))
+				.Str(TEXT("material"), TEXT("An existing material (made by this tool) to rebuild."))
 				.Str(TEXT("folder"), TEXT("Content folder (default: Output Folder/Materials)."))
-				.Obj(TEXT("graph"), TEXT("The node graph (see description)."), true)
+				.Obj(TEXT("hlsl"), TEXT("{code, params, blend} - the material in HLSL (see description)."))
+				.Obj(TEXT("graph"), TEXT("Or a node graph (see description)."))
+				.Str(TEXT("from_master"), TEXT("A library master to start from (Aurora, SoftGlow, Shimmer, Gradient, NoiseFog, Vignette, RingPulse, Dissolve, SoftDot, Bubble)."))
+				.Obj(TEXT("params"), TEXT("With from_master alone: the instance's parameters {Name: value}."))
 				.Build(),
 			true, false, false,
 			[](const TSharedPtr<FJsonObject>& Args, FNameTBDAIToolContext& Context)
 			{
+				const FString Folder = GetString(Args, TEXT("folder"), TEXT("Materials"));
+				const TSharedPtr<FJsonObject> GivenGraph = GetObject(Args, TEXT("graph"));
+				const FString MasterName = GetString(Args, TEXT("from_master"));
+				if (!MasterName.IsEmpty() && (!GivenGraph.IsValid() || GivenGraph->Values.Num() == 0) && !Args->HasField(TEXT("hlsl")))
+				{
+					// Nothing to add to the master: an instance - instant, nothing to compile.
+					FNameTBDAIToolResult Instance = MakeMaterialInstance(MasterName, GetString(Args, TEXT("name"), MasterName), Folder, GetObject(Args, TEXT("params")), Context);
+					if (Instance.bOk)
+					{
+						Instance.Data->SetStringField(TEXT("note"), TEXT("No graph given: made an instance of the master (no compile). Tune it with set_material_parameters."));
+					}
+					return Instance;
+				}
+
 				FString Error;
+				const TSharedPtr<FJsonObject> Graph = GraphFromArgs(Args, Error);
+				if (!Graph.IsValid())
+				{
+					return FNameTBDAIToolResult::Fail(Error);
+				}
+				const NameTBDAIMaterialGraph::FGraph Prepared = NameTBDAIMaterialGraph::Prepare(Graph);
+				if (Prepared.HasErrors())
+				{
+					NameTBDAIMaterialGraph::RecordAttempt(Context.Model, &Prepared, true, false, 0);
+					FNameTBDAIToolResult Result = FNameTBDAIToolResult::Fail(TEXT("The graph has problems - nothing was built. Fix every error listed and call build_ui_material again."));
+					Result.Data = Prepared.Summary();
+					return Result;
+				}
+
 				UMaterial* Material = nullptr;
 				const FString Existing = GetString(Args, TEXT("material"));
 				if (!Existing.IsEmpty())
@@ -370,24 +486,38 @@ namespace NameTBDAITools
 				else
 				{
 					UMaterialFactoryNew* Factory = NewObject<UMaterialFactoryNew>();
-					Material = Cast<UMaterial>(NameTBDAIHelpers::CreateAsset(GetString(Args, TEXT("folder"), TEXT("Materials")),
+					Material = Cast<UMaterial>(NameTBDAIHelpers::CreateAsset(Folder,
 						NameTBDAIHelpers::MakeAssetName(GetString(Args, TEXT("name"), TEXT("UIEffect")), TEXT("M_")), UMaterial::StaticClass(), Factory, Context, Error));
 					if (!Material)
 					{
 						return FNameTBDAIToolResult::Fail(Error);
 					}
 				}
+
 				TArray<FString> Problems;
-				const bool bCompiled = NameTBDAILibrary::BuildMaterialGraph(Material, GetObject(Args, TEXT("graph")), Problems);
-				FNameTBDAIToolResult Result = FNameTBDAIToolResult::Ok();
+				int32 CompileErrors = 0;
+				const bool bCompiled = NameTBDAILibrary::BuildPreparedMaterial(Material, Prepared, Problems, CompileErrors);
+				NameTBDAIMaterialGraph::RecordAttempt(Context.Model, &Prepared, true, bCompiled, CompileErrors);
+
+				FNameTBDAIToolResult Result = bCompiled ? FNameTBDAIToolResult::Ok(Prepared.Summary())
+					: FNameTBDAIToolResult::Fail(TEXT("Built, but it didn't compile - fix what's listed and call build_ui_material again with 'material' set to rebuild it."));
+				if (!bCompiled)
+				{
+					Result.Data = Prepared.Summary();
+					Result.Data->SetBoolField(TEXT("ok"), false);
+					Result.Data->SetField(TEXT("compile_errors"), Arr(Problems));
+				}
+				else
+				{
+					Result.Warnings = Problems;
+				}
 				Result.Data->SetStringField(TEXT("material"), Material->GetPathName());
 				Result.Data->SetBoolField(TEXT("compiled"), bCompiled);
 				Result.Data->SetObjectField(TEXT("parameters"), DescribeParameters(Material));
-				if (!bCompiled)
+				if (bCompiled && Prepared.Fixed.Num() > 0)
 				{
-					Result.Data->SetStringField(TEXT("next"), TEXT("Fix the graph and call build_ui_material again with 'material' set to rebuild it."));
+					Result.Data->SetStringField(TEXT("note"), TEXT("Built with the fixes listed - read them: write it that way next time."));
 				}
-				Result.Warnings = Problems;
 				return Result;
 			}
 		});

@@ -293,6 +293,7 @@ void FNameTBDAIChatSession::RunTools(const FNameTBDAITurn& Turn)
 			Context.Changes = &Current.Changes;
 			Context.bAllowWrites = !Current.bAsk;
 			Context.bAllowCapture = Settings.bAllowPreviewCapture;
+			Context.Model = StaticEnum<ENameTBDAIProvider>()->GetNameStringByValue(static_cast<int64>(ProviderKind)) + TEXT(":") + Current.Model;
 			const FNameTBDAIToolResult Result = NameTBDAITools::Execute(Call.Name, Call.Input, Context);
 			Outcome.Text = Result.ToText();
 			Outcome.bIsError = !Result.bOk;

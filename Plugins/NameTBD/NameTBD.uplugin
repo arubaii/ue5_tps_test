@@ -63,6 +63,11 @@
 			]
 		},
 		{
+			"Name": "NameTBDShaders",
+			"Type": "UncookedOnly",
+			"LoadingPhase": "PostConfigInit"
+		},
+		{
 			"Name": "NameTBDAI",
 			"Type": "Editor",
 			"LoadingPhase": "PostEngineInit"

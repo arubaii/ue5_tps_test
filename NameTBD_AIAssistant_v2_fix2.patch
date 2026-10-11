@@ -1,0 +1,228 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.cpp b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.cpp
+index ad59183..6aed9e7 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.cpp
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.cpp
+@@ -20,6 +20,8 @@
+ #include "Misc/FileHelper.h"
+ #include "Misc/Paths.h"
+ #include "Misc/SecureHash.h"
++#include "Editor.h"
++#include "Subsystems/AssetEditorSubsystem.h"
+ #include "CoreGlobals.h"
+ #include "Misc/ITransaction.h"
+ #include "Templates/UnrealTemplate.h"
+@@ -376,6 +378,37 @@ namespace NameTBDAILibrary
+ 			FFileHelper::SaveStringToFile(ToString(Stamps, true), *StampFile());
+ 		}
+ 
++		/** While BuildAll runs: where each built / rebuilt / failed asset is reported. */
++		TArray<FString>* BuildReport = nullptr;
++
++		void Report(const FString& Line, bool bProblem)
++		{
++			if (bProblem)
++			{
++				UE_LOG(LogTemp, Warning, TEXT("NameTBD AI: %s"), *Line);
++			}
++			else
++			{
++				UE_LOG(LogTemp, Display, TEXT("NameTBD AI: %s"), *Line);
++			}
++			if (BuildReport)
++			{
++				BuildReport->Add(Line);
++			}
++		}
++
++		/** An editor open on a library asset works on its own copy, and would write it back over the rebuilt one: closed first. */
++		void CloseEditorsFor(UObject* Asset)
++		{
++			if (GEditor && Asset)
++			{
++				if (UAssetEditorSubsystem* Editors = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
++				{
++					Editors->CloseAllEditorsForAsset(Asset);
++				}
++			}
++		}
++
+ 		bool IsShipped(const UObject* Asset)
+ 		{
+ 			return Asset && Asset->GetPathName().StartsWith(FString(ShippedRoot) + TEXT("/"));
+@@ -385,10 +418,15 @@ namespace NameTBDAILibrary
+ 		{
+ 			// Library assets are shared and saved at once: never part of a request's undo step (a Discard must not empty them).
+ 			TGuardValue<ITransaction*> NoUndo(GUndo, nullptr);
++			CloseEditorsFor(Material);
+ 			TArray<FString> Problems;
+-			if (!BuildMaterialGraph(Material, GetObject(Definition.Json, TEXT("graph")), Problems))
++			if (BuildMaterialGraph(Material, GetObject(Definition.Json, TEXT("graph")), Problems))
+ 			{
+-				UE_LOG(LogTemp, Warning, TEXT("NameTBD AI: library material %s: %s"), *Material->GetName(), *FString::Join(Problems, TEXT(" | ")));
++				Report(FString::Printf(TEXT("built %s"), *Material->GetName()), false);
++			}
++			else
++			{
++				Report(FString::Printf(TEXT("%s didn't compile: %s"), *Material->GetName(), *FString::Join(Problems, TEXT(" | "))), true);
+ 			}
+ 			Save(Material);
+ 			Stamp(Material->GetName(), Definition);
+@@ -397,11 +435,16 @@ namespace NameTBDAILibrary
+ 		void BuildFunctionInto(UMaterialFunction* Function, const FDefinition& Definition)
+ 		{
+ 			TGuardValue<ITransaction*> NoUndo(GUndo, nullptr);
++			CloseEditorsFor(Function);
+ 			Function->Description = GetString(Definition.Json, TEXT("about"));
+ 			TArray<FString> Problems;
+-			if (!BuildFunctionGraph(Function, GetObject(Definition.Json, TEXT("graph")), Problems))
++			if (BuildFunctionGraph(Function, GetObject(Definition.Json, TEXT("graph")), Problems))
+ 			{
+-				UE_LOG(LogTemp, Warning, TEXT("NameTBD AI: library function %s: %s"), *Function->GetName(), *FString::Join(Problems, TEXT(" | ")));
++				Report(FString::Printf(TEXT("built %s"), *Function->GetName()), false);
++			}
++			else
++			{
++				Report(FString::Printf(TEXT("%s didn't build: %s"), *Function->GetName(), *FString::Join(Problems, TEXT(" | "))), true);
+ 			}
+ 			Save(Function);
+ 			Stamp(Function->GetName(), Definition);
+@@ -994,15 +1037,31 @@ namespace NameTBDAILibrary
+ 		return System;
+ 	}
+ 
+-	void BuildAll(TArray<FString>& OutReport)
++	void BuildAll(TArray<FString>& OutReport, bool bForce)
+ 	{
+-		for (const FDefinition& Definition : GetDefinitions())
++		if (bForce)
+ 		{
+-			FString Error;
+-			const bool bOk = Definition.Kind == TEXT("function") ? GetFunction(Definition.Name, Error) != nullptr : GetMaster(Definition.Name, Error) != nullptr;
+-			if (!bOk)
++			// No stamps: every project copy counts as built from an older definition, and is rebuilt once.
++			IFileManager::Get().Delete(*StampFile(), false, false, true);
++		}
++		TGuardValue<TArray<FString>*> Collect(BuildReport, &OutReport);
++		UE_LOG(LogTemp, Display, TEXT("NameTBD AI: building the library%s (%s)..."), bForce ? TEXT(", every asset again") : TEXT(""), *UNameTBDAISettings::Get().GetLibraryFolder());
++
++		// Functions before masters: a master calls them.
++		for (const TCHAR* Kind : { TEXT("function"), TEXT("master") })
++		{
++			for (const FDefinition& Definition : GetDefinitions())
+ 			{
+-				OutReport.Add(FString::Printf(TEXT("%s: %s"), *Definition.Name, *Error));
++				if (Definition.Kind != Kind)
++				{
++					continue;
++				}
++				FString Error;
++				const bool bOk = Definition.Kind == TEXT("function") ? GetFunction(Definition.Name, Error) != nullptr : GetMaster(Definition.Name, Error) != nullptr;
++				if (!bOk)
++				{
++					Report(FString::Printf(TEXT("%s: %s"), *Definition.Name, *Error), true);
++				}
+ 			}
+ 		}
+ 		for (const auto& Pair : LoadNiagaraRecipes()->Values)
+@@ -1011,8 +1070,9 @@ namespace NameTBDAILibrary
+ 			TArray<FString> Notes;
+ 			if (!GetNiagaraTemplate(Pair.Key, Error, Notes))
+ 			{
+-				OutReport.Add(FString::Printf(TEXT("%s: %s"), *Pair.Key, *Error));
++				Report(FString::Printf(TEXT("%s: %s"), *Pair.Key, *Error), true);
+ 			}
+ 		}
++		UE_LOG(LogTemp, Display, TEXT("NameTBD AI: library done - %d line(s) above (nothing listed: everything was already built and current)."), OutReport.Num());
+ 	}
+ }
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.h b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.h
+index 3e3ab6b..5d2ba13 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.h
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAILibrary.h
+@@ -51,8 +51,13 @@ namespace NameTBDAILibrary
+ 	/** The template's recipe from Templates.json, or null. */
+ 	TSharedPtr<FJsonObject> FindNiagaraRecipe(const FString& Name);
+ 
+-	/** Builds every library asset that isn't there yet. One line per asset built or failed. */
+-	void BuildAll(TArray<FString>& OutReport);
++	/**
++	 * Builds every library asset that isn't there yet, or (a project's copy) was built from an older definition - Material
++	 * Functions first, then masters, then Niagara templates. bForce rebuilds every project copy. One line per asset built,
++	 * rebuilt or failed; each also goes to the Output Log. Run by the console commands NameTBDAI.BuildLibrary /
++	 * NameTBDAI.RebuildLibrary and Editor Preferences' Build Library Now.
++	 */
++	void BuildAll(TArray<FString>& OutReport, bool bForce = false);
+ 
+ 	/**
+ 	 * Builds a UI material from a graph (build_ui_material's format) into Material, which is emptied first: the graph is
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAISettings.cpp b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAISettings.cpp
+index 08e196d..bb09225 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAISettings.cpp
++++ b/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAISettings.cpp
+@@ -3,6 +3,7 @@
+ #include "NameTBDAISettings.h"
+ 
+ #include "Framework/Notifications/NotificationManager.h"
++#include "HAL/IConsoleManager.h"
+ #include "HAL/PlatformApplicationMisc.h"
+ #include "Interfaces/IPluginManager.h"
+ #include "Misc/FileHelper.h"
+@@ -220,11 +221,39 @@ void UNameTBDAISettings::StopMcpServerNow()
+ 	Notify(LOCTEXT("Stopped", "NameTBD MCP server stopped."));
+ }
+ 
++namespace
++{
++	/** Builds (bForce: rebuilds) the library; the details go to the Output Log, a summary to a notification. */
++	void RunLibraryBuild(bool bForce)
++	{
++		TArray<FString> Report;
++		NameTBDAILibrary::BuildAll(Report, bForce);
++		int32 Problems = 0;
++		for (const FString& Line : Report)
++		{
++			Problems += Line.StartsWith(TEXT("built ")) ? 0 : 1;
++		}
++		const FString Summary = Report.Num() == 0 ? FString(TEXT("NameTBD AI library: everything is built and current."))
++			: FString::Printf(TEXT("NameTBD AI library: %d built, %d problem(s) - details in the Output Log."), Report.Num() - Problems, Problems);
++		Notify(FText::FromString(Summary), Problems == 0);
++	}
++
++	// The settings page's buttons don't run on some setups; these always do (Output Log > Cmd, or the ` console).
++	FAutoConsoleCommand BuildLibraryCommand(
++		TEXT("NameTBDAI.BuildLibrary"),
++		TEXT("Builds the NameTBD AI library (UI master materials, Material Functions, Niagara UI templates): what isn't built yet, and project copies built from an older definition."),
++		FConsoleCommandDelegate::CreateLambda([]() { RunLibraryBuild(false); }));
++
++	FAutoConsoleCommand RebuildLibraryCommand(
++		TEXT("NameTBDAI.RebuildLibrary"),
++		TEXT("Rebuilds every NameTBD AI library asset in the project's Library Folder from its definition (Resources/AI/Materials), whatever its state."),
++		FConsoleCommandDelegate::CreateLambda([]() { RunLibraryBuild(true); }));
++}
++
+ void UNameTBDAISettings::BuildLibraryNow()
+ {
+-	TArray<FString> Report;
+-	NameTBDAILibrary::BuildAll(Report);
+-	Notify(FText::FromString(Report.Num() > 0 ? FString::Join(Report, TEXT("\n")) : FString(TEXT("Library is up to date."))));
++	UE_LOG(LogTemp, Display, TEXT("NameTBD AI: Build Library Now pressed."));
++	RunLibraryBuild(false);
+ }
+ 
+ #if WITH_EDITOR
+diff --git a/Plugins/NameTBD/Source/NameTBDAI/Public/NameTBDAISettings.h b/Plugins/NameTBD/Source/NameTBDAI/Public/NameTBDAISettings.h
+index 058d97e..ff60f1f 100644
+--- a/Plugins/NameTBD/Source/NameTBDAI/Public/NameTBDAISettings.h
++++ b/Plugins/NameTBD/Source/NameTBDAI/Public/NameTBDAISettings.h
+@@ -259,7 +259,10 @@ public:
+ 	UFUNCTION(CallInEditor, Category = "MCP Server", meta = (DisplayName = "Stop Server"))
+ 	void StopMcpServerNow();
+ 
+-	/** Builds the library (materials, Material Functions, Niagara UI templates) now rather than when first needed. */
++	/**
++	 * Builds the library (materials, Material Functions, Niagara UI templates) now rather than when first needed. Also the
++	 * console commands NameTBDAI.BuildLibrary and NameTBDAI.RebuildLibrary (every asset again).
++	 */
+ 	UFUNCTION(CallInEditor, Category = "Building", meta = (DisplayName = "Build Library Now"))
+ 	void BuildLibraryNow();
+ 

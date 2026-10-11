@@ -5,6 +5,7 @@
 #include "Components/PanelSlot.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Framework/Application/SlateApplication.h"
+#include "HAL/IConsoleManager.h"
 #include "Input/HittestGrid.h"
 #include "Layout/ArrangedChildren.h"
 #include "Layout/ArrangedWidget.h"
@@ -26,8 +27,16 @@
 // Helpers
 // =====================================================================================================
 
+DEFINE_LOG_CATEGORY_STATIC(LogShapeBox, Log, All);
+
 namespace ShapeBoxPrivate
 {
+	static TAutoConsoleVariable<int32> CVarDebugContentBox(
+		TEXT("ShapeBox.DebugContentBox"),
+		0,
+		TEXT("1: every Shape Box draws where it arranges its content (magenta) and where that content was last painted (cyan), and logs both to LogShapeBox when they change - to see why an outline (the designer's) is somewhere the content isn't drawn."),
+		ECVF_Default);
+
 	constexpr double Tolerance = 0.01;
 	constexpr double MaxAngleDegrees = 80.0;
 	constexpr double MaxWrapDegrees = 180.0;
@@ -1002,7 +1011,13 @@ int32 SShapeBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeomet
 	if (Mode != EMode::Warped)
 	{
 		ClearWarpState();
-		return SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+		const int32 MaxLayer = SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+		if (CVarDebugContentBox.GetValueOnGameThread() > 0)
+		{
+			PaintContentDebug(AllottedGeometry, OutDrawElements, MaxLayer + 1);
+			return MaxLayer + 1;
+		}
+		return MaxLayer;
 	}
 
 	// The window is drawn offscreen, so it doesn't inherit our enabled state. Push it across on change.
@@ -1089,7 +1104,54 @@ int32 SShapeBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeomet
 	}
 	PaintHitCells(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId + 1, InWidgetStyle, bEnabled);
 
+	if (CVarDebugContentBox.GetValueOnGameThread() > 0)
+	{
+		PaintContentDebug(AllottedGeometry, OutDrawElements, LayerId + 2);
+		return LayerId + 2;
+	}
 	return LayerId + 1;
+}
+
+void SShapeBox::PaintContentDebug(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const
+{
+	const TSharedRef<SWidget>& Content = ChildSlot.GetWidget();
+	auto Outline = [&OutDrawElements, LayerId](const FGeometry& Geometry, const FLinearColor& Color)
+	{
+		const FVector2f Size(Geometry.GetLocalSize());
+		FSlateDrawElement::MakeLines(OutDrawElements, LayerId, Geometry.ToPaintGeometry(),
+			TArray<FVector2f>{ FVector2f(0.f, 0.f), FVector2f(Size.X, 0.f), Size, FVector2f(0.f, Size.Y), FVector2f(0.f, 0.f) },
+			ESlateDrawEffect::None, Color, /*bAntialias=*/true, 1.f);
+	};
+
+	// Where Slate arranges the content from this box now (warped: where its window is drawn into) - magenta - and where the
+	// content itself was last painted - cyan. A designer outline follows the second.
+	FString Arranged = TEXT("(not arranged here - drawn offscreen)");
+	if (Mode != EMode::Warped)
+	{
+		FArrangedChildren Children(EVisibility::All);
+		OnArrangeChildren(AllottedGeometry, Children);
+		if (Children.Num() > 0)
+		{
+			const FGeometry& ContentGeometry = Children[0].Geometry;
+			Outline(ContentGeometry, FLinearColor(1.f, 0.f, 1.f, 1.f));
+			Arranged = FString::Printf(TEXT("at %s size %s"), *FVector2D(ContentGeometry.GetAbsolutePosition()).ToString(), *FVector2D(ContentGeometry.GetAbsoluteSize()).ToString());
+		}
+	}
+	const FGeometry& Painted = Content->GetPaintSpaceGeometry();
+	Outline(Painted, FLinearColor(0.f, 1.f, 1.f, 1.f));
+
+	static const TCHAR* ModeNames[] = { TEXT("Flat"), TEXT("Affine"), TEXT("Warped") };
+	const FString Line = FString::Printf(TEXT("Shape Box %s: mode %s, box at %s size %s, content box %s size %s (local); content arranged %s; content last painted at %s size %s; content render transform %s."),
+		*Content->GetTypeAsString(), ModeNames[static_cast<int32>(Mode)],
+		*FVector2D(AllottedGeometry.GetAbsolutePosition()).ToString(), *FVector2D(AllottedGeometry.GetAbsoluteSize()).ToString(),
+		*PaintedContentOrigin.ToString(), *PaintedContentSize.ToString(), *Arranged,
+		*FVector2D(Painted.GetAbsolutePosition()).ToString(), *FVector2D(Painted.GetAbsoluteSize()).ToString(),
+		Content->GetRenderTransform().IsSet() ? TEXT("set") : TEXT("none"));
+	if (Line != LastContentDebugLine)
+	{
+		LastContentDebugLine = Line;
+		UE_LOG(LogShapeBox, Log, TEXT("%s"), *Line);
+	}
 }
 
 bool SShapeBox::RenderContent(const FVector2D& ContentSize, float Scale, int32 InPadding, const FIntPoint& Target, float DeltaTime) const

@@ -15,5 +15,8 @@ Each request shows its tokens and an estimate (from the Model Prices table; Anth
 ## MCP server (Claude Desktop, Claude Code, Cursor)
 Turn on Start MCP Server in the settings (or press Start Server). It listens on 127.0.0.1 only and needs this project's token. Claude Code: press Copy Claude Code Command and run it. Claude Desktop and other stdio clients: press Copy Claude Desktop Config and merge it into the client's MCP config - it runs the plugin's bridge script with the engine's own Python. The same tools, docs and prompts are offered; each tool call is one undo step, saved right after (MCP Save After Writes).
 
+## Measuring models (materials)
+Every validate_material / build_ui_material call is counted per model in Saved/NameTBDAI/stats.json: materials built, how many worked on the first try, the repairs made and which mistakes each model makes. Resources/AI/Evals/run_material_eval.py runs a fixed set of 40 material prompts through any provider against the open editor (MCP server on, Allow Writes on) and reports the first-try rate; --validate-only checks graphs without building them.
+
 ## What is sent
 Only to the provider you picked: the map, tool definitions, your messages and what the tools return (settings of the widgets or assets asked about, doc topics). Never the whole project. Preview capture (off by default) sends an image of the widget built.

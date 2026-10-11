@@ -2,6 +2,8 @@
 
 #include "WidgetAnimMotionPath.h"
 
+#include "DesignerCursorOverride.h"
+
 #include "NameTBDColors.h"
 #include "SWidgetAnimTimeline.h"
 #include "WidgetAnimEditorSettings.h"
@@ -609,6 +611,11 @@ namespace WidgetAnimMotionPathImpl
 		 */
 		TOptional<EMouseCursor::Type> GetDesignerCursor() const
 		{
+			// The Widget Gizmo's, while it grabs, drags or is hovered - over everything here (see DesignerCursorOverride.h).
+			if (NameTBDDesignerCursor::Override().IsSet())
+			{
+				return NameTBDDesignerCursor::Override();
+			}
 			if (IsPressed())
 			{
 				return GetCursorFor(PressedMarker, PressedHandle) == EMouseCursor::Hand ? EMouseCursor::Hand : EMouseCursor::GrabHandClosed;

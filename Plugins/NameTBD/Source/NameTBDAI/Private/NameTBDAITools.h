@@ -84,6 +84,9 @@ struct FNameTBDAIToolContext
 
 	bool bAllowWrites = true;
 	bool bAllowCapture = false;
+
+	/** Who is asking: the chat's "provider:model", or the MCP client's name - for the per-model stats (stats.json). */
+	FString Model;
 };
 
 using FNameTBDAIToolFunction = TFunction<FNameTBDAIToolResult(const TSharedPtr<FJsonObject>& /*Args*/, FNameTBDAIToolContext& /*Context*/)>;

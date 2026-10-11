@@ -17,6 +17,7 @@
 #include "NameTBDAIHelpers.h"
 #include "NameTBDAIJson.h"
 #include "NameTBDAILibrary.h"
+#include "NameTBDAIMaterialGraph.h"
 #include "NameTBDAITools.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/UObjectIterator.h"
@@ -244,9 +245,9 @@ namespace NameTBDAITools
 		// ---- list_options ----
 		Register({
 			TEXT("list_options"),
-			TEXT("Valid values, so you never guess: kind = widget_classes | components | track_types | motion_recipes | spring_presets | track_presets | material_masters | material_functions | material_nodes | niagara_templates | theme | enum (name in 'filter', e.g. EWidgetAnimEasing) | fields (a class or struct's editable fields with types and meaning: name in 'filter', e.g. RectangleShape, FWidgetShapePaint, FWidgetAnimLayer)."),
+			TEXT("Valid values, so you never guess: kind = widget_classes | components | track_types | motion_recipes | spring_presets | track_presets | material_masters (filter = one master: its params and graph) | material_functions | material_nodes (build_ui_material's macros and nodes with exact inputs and output widths; filter = one node in detail, or \"all\") | material_macros | niagara_templates | theme | enum (name in 'filter', e.g. EWidgetAnimEasing) | fields (a class or struct's editable fields with types and meaning: name in 'filter', e.g. RectangleShape, FWidgetShapePaint, FWidgetAnimLayer)."),
 			FNameTBDAISchema()
-				.Str(TEXT("kind"), TEXT("What to list."), true, { TEXT("widget_classes"), TEXT("components"), TEXT("track_types"), TEXT("motion_recipes"), TEXT("spring_presets"), TEXT("track_presets"), TEXT("material_masters"), TEXT("material_functions"), TEXT("material_nodes"), TEXT("niagara_templates"), TEXT("theme"), TEXT("enum"), TEXT("fields") })
+				.Str(TEXT("kind"), TEXT("What to list."), true, { TEXT("widget_classes"), TEXT("components"), TEXT("track_types"), TEXT("motion_recipes"), TEXT("spring_presets"), TEXT("track_presets"), TEXT("material_masters"), TEXT("material_functions"), TEXT("material_nodes"), TEXT("material_macros"), TEXT("niagara_templates"), TEXT("theme"), TEXT("enum"), TEXT("fields") })
 				.Str(TEXT("filter"), TEXT("Narrows the list; for enum / fields, the type's name."))
 				.Str(TEXT("field_filter"), TEXT("For fields: only fields whose name contains this."))
 				.Build(),
@@ -299,7 +300,9 @@ namespace NameTBDAITools
 				}
 				else if (Kind == TEXT("material_masters"))
 				{
-					Out = NameTBDAILibrary::DescribeMasters();
+					// One master named: its parameters and graph (to extend with build_ui_material's from_master).
+					const TSharedPtr<FJsonObject> One = Filter.IsEmpty() ? nullptr : NameTBDAILibrary::DescribeMaster(Filter);
+					Out = One.IsValid() ? One : NameTBDAILibrary::DescribeMasters();
 				}
 				else if (Kind == TEXT("material_functions"))
 				{
@@ -307,22 +310,11 @@ namespace NameTBDAITools
 				}
 				else if (Kind == TEXT("material_nodes"))
 				{
-					TArray<FString> Names;
-					const FString Key = Normalize(Filter);
-					for (TObjectIterator<UClass> It; It; ++It)
-					{
-						if (It->IsChildOf(UMaterialExpression::StaticClass()) && !It->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_Hidden))
-						{
-							const FString Name = It->GetName().Replace(TEXT("MaterialExpression"), TEXT(""));
-							if (Key.IsEmpty() || Normalize(Name).Contains(Key))
-							{
-								Names.Add(Name);
-							}
-						}
-					}
-					Names.Sort();
-					Out->SetField(TEXT("material_nodes"), Arr(Names));
-					Out->SetStringField(TEXT("note"), TEXT("A node's settings and input names: list_options fields MaterialExpression<Name>."));
+					Out = NameTBDAIMaterialGraph::DescribeNodes(Filter);
+				}
+				else if (Kind == TEXT("material_macros"))
+				{
+					Out = NameTBDAIMaterialGraph::DescribeMacros();
 				}
 				else if (Kind == TEXT("niagara_templates"))
 				{

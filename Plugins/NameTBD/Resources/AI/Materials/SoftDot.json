@@ -6,74 +6,22 @@
   "Color": "color (alpha = strength)",
   "Softness": "0..1, how far the edge fades"
  },
- "graph": {
-  "domain": "UI",
+ "hlsl": {
   "blend": "Translucent",
-  "nodes": [
-   {
-    "id": "uv",
-    "type": "TextureCoordinate"
+  "params": {
+   "Softness": {
+    "value": 0.85,
+    "group": "Look"
    },
-   {
-    "id": "soft",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Softness",
-     "DefaultValue": 0.85,
-     "Group": "Look"
-    }
-   },
-   {
-    "id": "circ",
-    "type": "MaterialFunctionCall",
-    "function": "SoftCircle",
-    "inputs": {
-     "UV": "uv",
-     "Radius": 0.5,
-     "Softness": "soft"
-    }
-   },
-   {
-    "id": "col",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "Color",
-     "DefaultValue": "#FFFFFF",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "a1",
-    "type": "Multiply",
-    "inputs": {
-     "A": "circ.Result",
-     "B": "col.A"
-    }
-   },
-   {
-    "id": "vc",
-    "type": "VertexColor"
-   },
-   {
-    "id": "rgb_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "col",
-     "B": "vc"
-    }
-   },
-   {
-    "id": "alpha_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "a1",
-     "B": "vc.A"
-    }
+   "Color": {
+    "value": "#FFFFFF",
+    "group": "Color"
    }
-  ],
-  "outputs": {
-   "FinalColor": "rgb_out",
-   "Opacity": "alpha_out"
-  }
+  },
+  "code": [
+   "float d = distance(uv, float2(0.5, 0.5));",
+   "float m = 1.0 - smoothstep(0.5 * (1.0 - saturate(Softness)) - 0.0001, 0.5, d);",
+   "return float4(Color.rgb, m * Color.a);"
+  ]
  }
 }

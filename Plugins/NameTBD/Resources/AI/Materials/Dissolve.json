@@ -8,146 +8,51 @@
   "Progress": "0 hidden .. 1 shown",
   "EdgeWidth": "edge width"
  },
- "graph": {
-  "domain": "UI",
+ "hlsl": {
   "blend": "Translucent",
-  "nodes": [
-   {
-    "id": "uv",
-    "type": "TextureCoordinate"
+  "params": {
+   "Progress": {
+    "value": 0.5,
+    "group": "Motion"
    },
-   {
-    "id": "n",
-    "type": "MaterialFunctionCall",
-    "function": "PanningNoise",
-    "inputs": {
-     "UV": "uv",
-     "Scale": 6,
-     "Speed": [
-      0,
-      0
-     ]
-    }
+   "EdgeWidth": {
+    "value": 0.08,
+    "group": "Shape"
    },
-   {
-    "id": "prog",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Progress",
-     "DefaultValue": 0.5,
-     "Group": "Motion"
-    }
+   "Color": {
+    "value": "@surface",
+    "group": "Color"
    },
-   {
-    "id": "edge",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "EdgeWidth",
-     "DefaultValue": 0.08,
-     "Group": "Shape"
-    }
-   },
-   {
-    "id": "pe",
-    "type": "Subtract",
-    "inputs": {
-     "A": "prog",
-     "B": "edge"
-    }
-   },
-   {
-    "id": "vis",
-    "type": "SmoothStep",
-    "inputs": {
-     "Min": "prog",
-     "Max": "pe",
-     "Value": "n.Result"
-    }
-   },
-   {
-    "id": "e2",
-    "type": "Multiply",
-    "inputs": {
-     "A": "edge",
-     "B": 2
-    }
-   },
-   {
-    "id": "pe2",
-    "type": "Subtract",
-    "inputs": {
-     "A": "prog",
-     "B": "e2"
-    }
-   },
-   {
-    "id": "innr",
-    "type": "SmoothStep",
-    "inputs": {
-     "Min": "pe",
-     "Max": "pe2",
-     "Value": "n.Result"
-    }
-   },
-   {
-    "id": "col",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "Color",
-     "DefaultValue": "@surface",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "ec",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "EdgeColor",
-     "DefaultValue": "@accent",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "rgb",
-    "type": "Lerp",
-    "inputs": {
-     "A": "ec",
-     "B": "col",
-     "Alpha": "innr"
-    }
-   },
-   {
-    "id": "a0",
-    "type": "Multiply",
-    "inputs": {
-     "A": "vis",
-     "B": "col.A"
-    }
-   },
-   {
-    "id": "vc",
-    "type": "VertexColor"
-   },
-   {
-    "id": "rgb_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "rgb",
-     "B": "vc"
-    }
-   },
-   {
-    "id": "alpha_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "a0",
-     "B": "vc.A"
-    }
+   "EdgeColor": {
+    "value": "@accent",
+    "group": "Color"
    }
-  ],
-  "outputs": {
-   "FinalColor": "rgb_out",
-   "Opacity": "alpha_out"
-  }
+  },
+  "code": [
+   "float2 p = uv * 6.0;",
+   "// 4 octaves of value noise at p, 0..1",
+   "float n = 0.0;",
+   "float amp = 0.5;",
+   "float2 q = p;",
+   "for (int k = 0; k < 4; k++)",
+   "{",
+   "    float2 i = floor(q);",
+   "    float2 f = frac(q);",
+   "    float2 s = f * f * (3.0 - 2.0 * f);",
+   "    float a = frac(sin(dot(i, float2(127.1, 311.7))) * 43758.5453);",
+   "    float b = frac(sin(dot(i + float2(1.0, 0.0), float2(127.1, 311.7))) * 43758.5453);",
+   "    float c = frac(sin(dot(i + float2(0.0, 1.0), float2(127.1, 311.7))) * 43758.5453);",
+   "    float d = frac(sin(dot(i + float2(1.0, 1.0), float2(127.1, 311.7))) * 43758.5453);",
+   "    n += amp * lerp(lerp(a, b, s.x), lerp(c, d, s.x), s.y);",
+   "    q = q * 2.03 + float2(17.0, 9.0);",
+   "    amp *= 0.5;",
+   "}",
+   "n /= 0.9375;",
+   "float e = max(EdgeWidth, 0.0001);",
+   "float prog = saturate(Progress) * (1.0 + 2.0 * e);",
+   "float shown = 1.0 - smoothstep(prog - e, prog, n);",
+   "float inside = 1.0 - smoothstep(prog - 2.0 * e, prog - e, n);",
+   "return float4(lerp(EdgeColor.rgb, Color.rgb, inside), shown * Color.a);"
+  ]
  }
 }

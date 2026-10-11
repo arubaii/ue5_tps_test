@@ -1,0 +1,2406 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+index 43b835d..18cdf67 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDEditor.cpp
+@@ -48,6 +48,7 @@
+ #include "FlowListItemStyleDetails.h"
+ #include "FlowListPathEditor.h"
+ #include "WidgetAnimMotionPath.h"
++#include "WidgetGizmo.h"
+ #include "WidgetSpringPresets.h"
+ #include "NameTBD/Widgets/FlowList/FlowListItemStyle.h"
+ #include "WidgetDataBinderComponent.h"
+@@ -168,6 +169,11 @@ void FNameTBDEditorModule::StartupModule()
+ 	FlowListPathEditorFactory = MakeShared<FFlowListPathEditorFactory>();
+ 	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(FlowListPathEditorFactory.ToSharedRef());
+ 
++	// The Widget Gizmo: moves, scales, rotates and shears the selected widgets through their Render Transform, and moves their
++	// pivot (see WidgetGizmo.h). Last, so it draws over every other extension.
++	GizmoFactory = MakeShared<FWidgetGizmoFactory>();
++	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(GizmoFactory.ToSharedRef());
++
+ 	ValuePinFactory = MakeShared<FWidgetAnimValuePinFactory>();
+ 	FEdGraphUtilities::RegisterVisualPinFactory(ValuePinFactory);
+ 
+@@ -261,6 +267,15 @@ void FNameTBDEditorModule::ShutdownModule()
+ 		FlowListPathEditorFactory.Reset();
+ 	}
+ 
++	if (GizmoFactory.IsValid())
++	{
++		if (IUMGEditorModule* UMGEditorModule = FModuleManager::GetModulePtr<IUMGEditorModule>("UMGEditor"))
++		{
++			UMGEditorModule->GetDesignerExtensibilityManager()->RemoveDesignerExtensionFactory(GizmoFactory.ToSharedRef());
++		}
++		GizmoFactory.Reset();
++	}
++
+ 	if (ValuePinFactory.IsValid())
+ 	{
+ 		FEdGraphUtilities::UnregisterVisualPinFactory(ValuePinFactory);
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmo.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmo.cpp
+new file mode 100644
+index 0000000..36bc8c1
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmo.cpp
+@@ -0,0 +1,2067 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "WidgetGizmo.h"
++
++#include "NameTBDColors.h"
++#include "WidgetGizmoSettings.h"
++
++#include "Brushes/SlateColorBrush.h"
++#include "Brushes/SlateRoundedBoxBrush.h"
++#include "Components/Widget.h"
++#include "Fonts/FontMeasure.h"
++#include "Framework/Application/IInputProcessor.h"
++#include "Framework/Application/SlateApplication.h"
++#include "GenericPlatform/ICursor.h"
++#include "Layout/WidgetPath.h"
++#include "Rendering/DrawElements.h"
++#include "Rendering/SlateRenderer.h"
++#include "ScopedTransaction.h"
++#include "Styling/CoreStyle.h"
++#include "WidgetBlueprint.h"
++#include "Widgets/SWindow.h"
++
++#define LOCTEXT_NAMESPACE "WidgetGizmo"
++
++namespace WidgetGizmoImpl
++{
++	namespace Palette = NameTBD::Colors::WidgetGizmo;
++
++	/** How far the mouse must move, in the designer's pixels, before a press on a handle becomes a drag. */
++	constexpr double DragThreshold = 2.0;
++
++	/** The most selected widgets that get a gizmo at once. */
++	constexpr int32 MaxTargets = 8;
++
++	/** What the gizmo's handles do - switched with the Scale / Rotate / Shear keys and the chips above the widget. */
++	enum class EMode : uint8
++	{
++		Move,
++		Scale,
++		Rotate,
++		Shear
++	};
++
++	/** One mode and one Hide for every designer, as the level editor's gizmo mode is one for every viewport. Not saved. */
++	EMode& GizmoMode()
++	{
++		static EMode Mode = EMode::Move;
++		return Mode;
++	}
++
++	bool& GizmoHidden()
++	{
++		static bool bHidden = false;
++		return bHidden;
++	}
++
++	/** What part of the gizmo is under the mouse, or pressed. */
++	enum class EHandle : uint8
++	{
++		None,
++		Chip,
++		Pivot,
++		MoveX,
++		MoveY,
++		MoveXY,
++		Rotate,
++		Scale,
++		Shear
++	};
++
++	/** The chips above the widget, left to right. */
++	enum class EChip : uint8
++	{
++		Move,
++		Scale,
++		Rotate,
++		Shear,
++		Hide
++	};
++
++	struct FHit
++	{
++		EHandle Handle = EHandle::None;
++
++		/** Which selected widget's gizmo - an index into the layer's targets. */
++		int32 Target = INDEX_NONE;
++
++		/** Scale: the box point (0-3 corners from the top left, clockwise; 4-7 edge middles: top, right, bottom, left). Shear: the
++		 * edge (0 top, 1 right, 2 bottom, 3 left). Chip: its EChip. */
++		int32 Index = INDEX_NONE;
++
++		bool IsValid() const { return Handle != EHandle::None; }
++		bool operator==(const FHit& Other) const { return Handle == Other.Handle && Target == Other.Target && Index == Other.Index; }
++		bool operator!=(const FHit& Other) const { return !(*this == Other); }
++	};
++
++	/** Where box point Index (see FHit::Index) is in the widget's box, as a fraction of its size. */
++	FVector2D BoxFraction(int32 Index)
++	{
++		static const FVector2D Fractions[8] =
++		{
++			FVector2D(0.0, 0.0), FVector2D(1.0, 0.0), FVector2D(1.0, 1.0), FVector2D(0.0, 1.0),
++			FVector2D(0.5, 0.0), FVector2D(1.0, 0.5), FVector2D(0.5, 1.0), FVector2D(0.0, 0.5)
++		};
++		return Fractions[FMath::Clamp(Index, 0, 7)];
++	}
++
++	double RoundTo(double Value, double Step)
++	{
++		return FMath::RoundToDouble(Value / Step) * Step;
++	}
++
++	/** How far along G the move D goes, in steps of G. Zero when G has no length. */
++	double Project(const FVector2D& D, const FVector2D& G)
++	{
++		const double LengthSquared = G.SizeSquared();
++		return LengthSquared > 1.e-12 ? FVector2D::DotProduct(D, G) / LengthSquared : 0.0;
++	}
++
++	/** The (a, b) for which a * ColumnA + b * ColumnB = Wanted; each projected on its own when the two are parallel. */
++	FVector2D SolveTwo(const FVector2D& ColumnA, const FVector2D& ColumnB, const FVector2D& Wanted)
++	{
++		const double Determinant = ColumnA.X * ColumnB.Y - ColumnB.X * ColumnA.Y;
++		if (FMath::Abs(Determinant) < 1.e-9)
++		{
++			return FVector2D(Project(Wanted, ColumnA), Project(Wanted, ColumnB));
++		}
++		return FVector2D(
++			(ColumnB.Y * Wanted.X - ColumnB.X * Wanted.Y) / Determinant,
++			(-ColumnA.Y * Wanted.X + ColumnA.X * Wanted.Y) / Determinant);
++	}
++
++	double DistanceToSegment(const FVector2D& Point, const FVector2D& From, const FVector2D& To)
++	{
++		const FVector2D Along = To - From;
++		const double Fraction = FMath::Clamp(Project(Point - From, Along), 0.0, 1.0);
++		return FVector2D::Distance(Point, From + Along * Fraction);
++	}
++
++	/** Whether Point is inside a rectangle of half extents Half about Center, turned by Angle (radians). */
++	bool IsInTurnedRect(const FVector2D& Point, const FVector2D& Center, double Angle, const FVector2D& Half)
++	{
++		const FVector2D Offset = Point - Center;
++		const double Cos = FMath::Cos(Angle);
++		const double Sin = FMath::Sin(Angle);
++		const double Along = Offset.X * Cos + Offset.Y * Sin;
++		const double Across = -Offset.X * Sin + Offset.Y * Cos;
++		return FMath::Abs(Along) <= Half.X && FMath::Abs(Across) <= Half.Y;
++	}
++
++	double AngleOf(const FVector2D& Direction)
++	{
++		return FMath::Atan2(Direction.Y, Direction.X);
++	}
++
++	// =================================================================================================
++	// 2D affine maps
++	// =================================================================================================
++
++	/**
++	 * A 2D affine map in doubles: Point' = (M00 x + M01 y + Tx, M10 x + M11 y + Ty). Slate's own transforms are read into it by
++	 * where they put the origin and the two unit steps - so whatever order Slate composes scale, shear and turn in, the
++	 * gizmo places and solves with exactly what Slate draws.
++	 */
++	struct FAffine
++	{
++		double M00 = 1.0;
++		double M01 = 0.0;
++		double M10 = 0.0;
++		double M11 = 1.0;
++		double Tx = 0.0;
++		double Ty = 0.0;
++
++		template <typename TransformType>
++		static FAffine From(const TransformType& Transform)
++		{
++			const FVector2f Origin = Transform.TransformPoint(FVector2f(0.f, 0.f));
++			const FVector2f ColumnX = Transform.TransformPoint(FVector2f(1.f, 0.f)) - Origin;
++			const FVector2f ColumnY = Transform.TransformPoint(FVector2f(0.f, 1.f)) - Origin;
++			FAffine Out;
++			Out.M00 = ColumnX.X;
++			Out.M10 = ColumnX.Y;
++			Out.M01 = ColumnY.X;
++			Out.M11 = ColumnY.Y;
++			Out.Tx = Origin.X;
++			Out.Ty = Origin.Y;
++			return Out;
++		}
++
++		FVector2D Apply(const FVector2D& Point) const
++		{
++			return FVector2D(M00 * Point.X + M01 * Point.Y + Tx, M10 * Point.X + M11 * Point.Y + Ty);
++		}
++
++		FVector2D ApplyVector(const FVector2D& Vector) const
++		{
++			return FVector2D(M00 * Vector.X + M01 * Vector.Y, M10 * Vector.X + M11 * Vector.Y);
++		}
++
++		double Determinant() const { return M00 * M11 - M01 * M10; }
++
++		/** The map back - the identity when this one flattens everything onto a line. */
++		FAffine Inverse() const
++		{
++			FAffine Out;
++			const double Det = Determinant();
++			if (FMath::Abs(Det) < 1.e-12)
++			{
++				return Out;
++			}
++			const double InverseDet = 1.0 / Det;
++			Out.M00 = M11 * InverseDet;
++			Out.M01 = -M01 * InverseDet;
++			Out.M10 = -M10 * InverseDet;
++			Out.M11 = M00 * InverseDet;
++			Out.Tx = -(Out.M00 * Tx + Out.M01 * Ty);
++			Out.Ty = -(Out.M10 * Tx + Out.M11 * Ty);
++			return Out;
++		}
++
++		/** This map, then Next. */
++		FAffine Then(const FAffine& Next) const
++		{
++			FAffine Out;
++			Out.M00 = Next.M00 * M00 + Next.M01 * M10;
++			Out.M01 = Next.M00 * M01 + Next.M01 * M11;
++			Out.M10 = Next.M10 * M00 + Next.M11 * M10;
++			Out.M11 = Next.M10 * M01 + Next.M11 * M11;
++			Out.Tx = Next.M00 * Tx + Next.M01 * Ty + Next.Tx;
++			Out.Ty = Next.M10 * Tx + Next.M11 * Ty + Next.Ty;
++			return Out;
++		}
++	};
++
++	/** A widget's render transform about its pivot (PivotPx from its top left): what Slate draws its box with. */
++	FAffine PivotedPose(const FWidgetTransform& Pose, const FVector2D& PivotPx)
++	{
++		const FVector2f Pivot(PivotPx);
++		return FAffine::From(Concatenate(Concatenate(FSlateRenderTransform(-Pivot), Pose.ToSlateRenderTransform()), FSlateRenderTransform(Pivot)));
++	}
++
++	// =================================================================================================
++	// Brushes
++	// =================================================================================================
++
++	const FSlateBrush* CircleBrush()
++	{
++		static const FSlateRoundedBoxBrush Brush(FLinearColor::White);
++		return &Brush;
++	}
++
++	const FSlateBrush* SquareBrush()
++	{
++		static const FSlateColorBrush Brush(FLinearColor::White);
++		return &Brush;
++	}
++
++	/** White, and tinted where it is drawn: MakeBox colors a rounded box's fill only by its tint. */
++	const FSlateBrush* RoundedBrush()
++	{
++		static const FSlateRoundedBoxBrush Brush(FLinearColor::White, 3.f);
++		return &Brush;
++	}
++
++	// =================================================================================================
++	// One selected widget
++	// =================================================================================================
++
++	struct FTarget
++	{
++		/** The Widget Blueprint's own widget (saved) and the designer's preview of it (drawn). */
++		TWeakObjectPtr<UWidget> Template;
++		TWeakObjectPtr<UWidget> Preview;
++
++		/** Its Render Transform and Render Transform Pivot as authored - the template's. */
++		FWidgetTransform Pose;
++		FVector2D Pivot = FVector2D(0.5, 0.5);
++
++		bool bLocked = false;
++
++		/** Whether it could be placed on the designer this paint: it has a Slate widget with a size. */
++		bool bPlaced = false;
++
++		/** Its box's size, in its own units. */
++		FVector2D Size = FVector2D::ZeroVector;
++
++		/** Its box, before its own pose, onto the designer's canvas: its layout, then everything above it as drawn now. */
++		FAffine BoxToCanvas;
++
++		// Worked out each paint, on the designer's canvas.
++		FVector2D PivotCanvas = FVector2D::ZeroVector;
++		FVector2D Points[8];
++		/** The directions Translation moves it in - its parent's X and Y. */
++		FVector2D AxisX = FVector2D(1.0, 0.0);
++		FVector2D AxisY = FVector2D(0.0, 1.0);
++		/** The direction of its top edge as drawn, in radians. */
++		double BoxAngle = 0.0;
++
++		FVector2D GetPivotPx() const { return Pivot * Size; }
++
++		/** Where BoxPoint (its own units, from its top left) is drawn with PoseToUse about PivotToUse (a fraction of its size). */
++		FVector2D ToCanvas(const FWidgetTransform& PoseToUse, const FVector2D& PivotToUse, const FVector2D& BoxPoint) const
++		{
++			return PivotedPose(PoseToUse, PivotToUse * Size).Then(BoxToCanvas).Apply(BoxPoint);
++		}
++
++		FString GetName() const
++		{
++			const UWidget* Named = Template.IsValid() ? Template.Get() : Preview.Get();
++			return Named ? Named->GetName() : FString();
++		}
++	};
++
++	/** A chip above the widget, as drawn this paint. */
++	struct FChip
++	{
++		EChip Kind = EChip::Move;
++		FVector2D TopLeft = FVector2D::ZeroVector;
++		FVector2D Size = FVector2D::ZeroVector;
++		FString Label;
++		FString Key;
++		float LabelWidth = 0.f;
++	};
++
++	class FGizmoLayer;
++
++	/** Every designer's gizmo alive now - what FGizmoInput hit-tests. Each adds itself as it is made. */
++	TArray<TWeakPtr<FGizmoLayer>>& GetDesignerLayers()
++	{
++		static TArray<TWeakPtr<FGizmoLayer>> Layers;
++		return Layers;
++	}
++
++	/** Takes the mouse and the keys for the gizmos - registered while any exists. See FGizmoInput below. */
++	void AcquireInput();
++	void ReleaseInput();
++
++	void RepaintAll();
++
++	// =================================================================================================
++	// The layer
++	// =================================================================================================
++
++	/**
++	 * One designer's gizmo, drawn over it by its extension's Paint (see FWidgetGizmoExtension) every frame the designer is drawn.
++	 * Not a widget: what it draws is part of the designer's own drawing, and its handles take the mouse through FGizmoInput.
++	 */
++	class FGizmoLayer : public TSharedFromThis<FGizmoLayer>
++	{
++	public:
++		FGizmoLayer()
++		{
++			AcquireInput();
++		}
++
++		~FGizmoLayer()
++		{
++			CancelDrag();
++			ReleaseInput();
++		}
++
++		/** Listed for FGizmoInput - once it is owned by a shared pointer. */
++		void Register()
++		{
++			GetDesignerLayers().RemoveAll([](const TWeakPtr<FGizmoLayer>& Weak) { return !Weak.IsValid(); });
++			GetDesignerLayers().Add(AsShared());
++		}
++
++		/** Places the gizmo on every selected widget and draws it over the designer, in the designer's own space (DesignerGeometry). */
++		void Paint(const TSet<FWidgetReference>& Selection, const FGeometry& DesignerGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId);
++
++		// ---------------------------------------------------------------------------------------------
++		// What FGizmoInput asks
++		// ---------------------------------------------------------------------------------------------
++
++		/** Whether a gizmo is drawn - enabled, not hidden, and a selected widget placed. */
++		bool IsShowing() const
++		{
++			return UWidgetGizmoSettings::Get().bEnableGizmo && !GizmoHidden() && HasTargets();
++		}
++
++		/** Whether a widget is selected in this designer that the gizmo can act on (shown or hidden). */
++		bool HasTargets() const
++		{
++			return Targets.ContainsByPredicate([](const FTarget& Target) { return Target.bPlaced && !Target.bLocked; });
++		}
++
++		/** Whether this designer has been drawn and Screen is over it as last drawn. Whether it is in front is IsDesignerUnder's. */
++		bool IsOver(const FVector2D& Screen) const
++		{
++			return PaintedFrame > 0 && Designer.IsUnderLocation(Screen);
++		}
++
++		/** Whether Path - what is under the mouse - goes through this layer's designer: not a menu, drawer or window over it. */
++		bool IsDesignerUnder(const FWidgetPath& Path)
++		{
++			if (!Path.IsValid())
++			{
++				return false;
++			}
++			const TSharedPtr<SWidget> OwnDesigner = DesignerWidget.Pin();
++			for (int32 Index = Path.Widgets.Num() - 1; Index >= 0; --Index)
++			{
++				const FArrangedWidget& Arranged = Path.Widgets[Index];
++				if (OwnDesigner.IsValid() && Arranged.Widget == OwnDesigner.ToSharedRef())
++				{
++					return true;
++				}
++				// The widget exactly where the gizmo is drawn - the one the designer painted it with, whatever its type.
++				if (IsDesignerRect(Arranged.Geometry))
++				{
++					DesignerWidget = Arranged.Widget;
++					return true;
++				}
++			}
++			return false;
++		}
++
++		/**
++		 * Whether the keyboard is with this layer's designer: Focused - the widget with keyboard focus - is the designer or
++		 * inside it, or is the designer view around the canvas the gizmo is drawn over.
++		 */
++		bool IsKeyboardIn(const TSharedPtr<SWidget>& Focused) const
++		{
++			const TSharedPtr<SWidget> OwnDesigner = DesignerWidget.Pin();
++			if (!Focused.IsValid() || !OwnDesigner.IsValid())
++			{
++				return false;
++			}
++			for (TSharedPtr<SWidget> Walk = Focused; Walk.IsValid(); Walk = Walk->GetParentWidget())
++			{
++				if (Walk == OwnDesigner)
++				{
++					return true;
++				}
++			}
++			// The designer view takes the keyboard when a widget is clicked; the canvas the gizmo is drawn with may be inside it.
++			int32 Depth = 0;
++			for (TSharedPtr<SWidget> Walk = OwnDesigner; Walk.IsValid() && Depth < 8; Walk = Walk->GetParentWidget(), ++Depth)
++			{
++				if (Walk == Focused)
++				{
++					return Focused->GetType() == FName(TEXT("SDesignerView"));
++				}
++			}
++			return false;
++		}
++
++		/** The handle drawn at Screen this paint, if any. */
++		FHit HitTest(const FVector2D& Screen) const;
++
++		void SetHover(const FHit& Hit)
++		{
++			if (Hovered != Hit)
++			{
++				Hovered = Hit;
++				RequestRepaint();
++			}
++		}
++
++		const FHit& GetHovered() const { return Hovered; }
++
++		/** The cursor over (or pressing) Hit. */
++		EMouseCursor::Type GetCursorFor(const FHit& Hit) const;
++
++		/** A left press on what HitTest found. A chip acts at once; a handle is held until let go - a click, or past the threshold a drag. */
++		void Press(const FHit& Hit, const FVector2D& Screen);
++
++		bool IsPressed() const { return Drag.bPressed; }
++		bool IsDragging() const { return Drag.bDragging; }
++		const FHit& GetPressed() const { return Drag.Hit; }
++
++		/** The mouse moved while pressed (or a modifier changed): past the threshold the drag starts, and follows it. */
++		void PressMove(const FVector2D& Screen, const FModifierKeysState& Modifiers);
++
++		/** The modifiers changed during a drag: worked out again where the mouse last was (Shift snaps, Ctrl frees the pivot). */
++		void ModifiersChanged(const FModifierKeysState& Modifiers)
++		{
++			if (Drag.bDragging)
++			{
++				PressMove(Drag.LastScreen, Modifiers);
++			}
++		}
++
++		/** The press let go: a drag is kept as one undo step. */
++		void Release();
++
++		/** Escape or a right click mid-drag, or the gizmo going: everything put back as it was at the press, no undo step. */
++		void CancelDrag();
++
++		/** Has the designer painted again - the hovered or pressed handle's look, or a drag, changed. */
++		void RequestRepaint() const
++		{
++			if (const TSharedPtr<SWidget> OwnDesigner = DesignerWidget.Pin())
++			{
++				OwnDesigner->Invalidate(EInvalidateWidgetReason::Paint);
++			}
++		}
++
++	private:
++		/** The press being held, and - once past the threshold - the drag. */
++		struct FDrag
++		{
++			bool bPressed = false;
++			bool bDragging = false;
++			FHit Hit;
++
++			/** The widget as pressed: its place on the canvas, pose and pivot. Every move is worked out from it, so nothing drifts. */
++			FTarget Start;
++			FVector2D PressCanvas = FVector2D::ZeroVector;
++			/** From the press to the handle's middle - kept, so the handle stays where it was grabbed under the mouse. */
++			FVector2D GrabOffset = FVector2D::ZeroVector;
++			FVector2D LastScreen = FVector2D::ZeroVector;
++
++			/** Shear: which of Shear X (0) or Y (1) the grabbed edge slides. */
++			int32 ShearComponent = 0;
++
++			/** Rotate: the mouse's angle about the pivot last move, and how far it has turned since the press (radians). */
++			double RotateLastAngle = 0.0;
++			double RotateTurned = 0.0;
++
++			/** What the drag has set. */
++			FWidgetTransform Pose;
++			FVector2D Pivot = FVector2D(0.5, 0.5);
++			FString Readout;
++			FVector2D ReadoutAt = FVector2D::ZeroVector;
++
++			TUniquePtr<FScopedTransaction> Transaction;
++		};
++
++		/** Every selected widget this designer has, in a stable order (by name), with its pose as authored. */
++		void GatherTargets(const TSet<FWidgetReference>& Selection);
++
++		/** Where Target's box is on the canvas this paint, and its handles. False when it has no Slate widget with a size. */
++		bool Place(FTarget& Target) const;
++
++		/** Up the first selected widget's preview to the designer widget the gizmo is drawn over - see IsDesignerRect. */
++		void FindDesignerWidget();
++
++		/** Whether Geometry (desktop space) covers exactly the designer the gizmo was last drawn over - to the pixel. */
++		bool IsDesignerRect(const FGeometry& Geometry) const
++		{
++			const FVector2D Position(Geometry.GetAbsolutePosition());
++			const FVector2D AbsoluteSize(Geometry.GetAbsoluteSize());
++			return FVector2D::Distance(Position, FVector2D(Designer.GetAbsolutePosition())) < 2.0
++				&& FVector2D::Distance(AbsoluteSize, FVector2D(Designer.GetAbsoluteSize())) < 2.0;
++		}
++
++		FVector2D ScreenToCanvas(const FVector2D& Screen) const { return DesktopToCanvas.Apply(Screen); }
++
++		/** The middle of the handle Hit names, on the canvas. */
++		FVector2D GetHandleCanvas(const FTarget& Target, const FHit& Hit) const;
++
++		bool BeginDrag();
++		void UpdateDrag(const FVector2D& Mouse, const FModifierKeysState& Modifiers);
++
++		/** Sets the drag's pose (and pivot) on the template and the preview. */
++		void ApplyToWidgets(const FWidgetTransform& NewPose, const FVector2D& NewPivot, bool bSetPivot);
++
++		void ResetDrag()
++		{
++			Drag.bPressed = false;
++			Drag.bDragging = false;
++			Drag.Hit = FHit();
++			Drag.Readout.Reset();
++			Drag.Transaction.Reset();
++		}
++
++		/** Lays the chips out above Target, inside the canvas. */
++		void LayOutChips(const FTarget& Target);
++
++		int32 PaintTarget(const FTarget& Target, int32 TargetIndex, const FGeometry& Geometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
++		int32 PaintChips(const FGeometry& Geometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
++		int32 PaintReadout(const FGeometry& Geometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
++
++		bool IsHot(int32 TargetIndex, EHandle Handle, int32 Index = INDEX_NONE) const
++		{
++			const FHit Asked{ Handle, TargetIndex, Index };
++			return Drag.bPressed ? Drag.Hit == Asked : Hovered == Asked;
++		}
++
++		double GetGizmoScale() const { return FMath::Clamp(static_cast<double>(UWidgetGizmoSettings::Get().GizmoSize), 0.5, 3.0); }
++
++		/** The designer as last painted, moved onto the desktop (the mouse's space), and the frame it was painted. */
++		FGeometry Designer;
++		uint64 PaintedFrame = 0;
++		FAffine DesktopToCanvas;
++		FVector2D CanvasSize = FVector2D::ZeroVector;
++
++		/** The designer widget itself - see FindDesignerWidget. */
++		mutable TWeakPtr<SWidget> DesignerWidget;
++		double NextDesignerSearch = 0.0;
++
++		TArray<FTarget> Targets;
++		TArray<FChip> Chips;
++
++		FHit Hovered;
++		FDrag Drag;
++	};
++
++	// ---------------------------------------------------------------------------------------------
++	// Placing
++	// ---------------------------------------------------------------------------------------------
++
++	void FGizmoLayer::GatherTargets(const TSet<FWidgetReference>& Selection)
++	{
++		Targets.Reset();
++		for (const FWidgetReference& Reference : Selection)
++		{
++			UWidget* SelectedPreview = Reference.GetPreview();
++			UWidget* SelectedTemplate = Reference.GetTemplate();
++			if (!SelectedPreview)
++			{
++				continue;
++			}
++			FTarget& Target = Targets.AddDefaulted_GetRef();
++			Target.Template = SelectedTemplate;
++			Target.Preview = SelectedPreview;
++			UWidget* Authored = SelectedTemplate ? SelectedTemplate : SelectedPreview;
++			Target.Pose = Authored->GetRenderTransform();
++			Target.Pivot = Authored->GetRenderTransformPivot();
++			Target.bLocked = Authored->IsLockedInDesigner();
++		}
++		Targets.Sort([](const FTarget& A, const FTarget& B) { return A.GetName() < B.GetName(); });
++		if (Targets.Num() > MaxTargets)
++		{
++			Targets.SetNum(MaxTargets);
++		}
++	}
++
++	bool FGizmoLayer::Place(FTarget& Target) const
++	{
++		const UWidget* PlacedPreview = Target.Preview.Get();
++		const TSharedPtr<SWidget> SlateWidget = PlacedPreview ? PlacedPreview->GetCachedWidget() : nullptr;
++		if (!SlateWidget.IsValid())
++		{
++			return false;
++		}
++		const FGeometry& WidgetGeometry = SlateWidget->GetTickSpaceGeometry();
++		const FVector2D LocalSize(WidgetGeometry.GetLocalSize());
++		if (LocalSize.X <= 0.0 || LocalSize.Y <= 0.0)
++		{
++			return false;
++		}
++		Target.Size = LocalSize;
++
++		// Through the widget's layout and its Slate parent as drawn - never the widget's own render transform as last drawn,
++		// which lags a frame behind a drag. Without a parent (never in the designer): its own, its pose now taken off.
++		FAffine BoxToDesktop;
++		if (const TSharedPtr<SWidget> Above = SlateWidget->GetParentWidget())
++		{
++			const FGeometry& AboveGeometry = Above->GetTickSpaceGeometry();
++			BoxToDesktop = FAffine::From(WidgetGeometry.GetAccumulatedLayoutTransform())
++				.Then(FAffine::From(AboveGeometry.GetAccumulatedLayoutTransform().Inverse()))
++				.Then(FAffine::From(AboveGeometry.GetAccumulatedRenderTransform()));
++		}
++		else
++		{
++			const FAffine Now = PivotedPose(PlacedPreview->GetRenderTransform(), PlacedPreview->GetRenderTransformPivot() * LocalSize);
++			BoxToDesktop = Now.Inverse().Then(FAffine::From(WidgetGeometry.GetAccumulatedRenderTransform()));
++		}
++		Target.BoxToCanvas = BoxToDesktop.Then(DesktopToCanvas);
++
++		const FAffine Posed = PivotedPose(Target.Pose, Target.GetPivotPx()).Then(Target.BoxToCanvas);
++		Target.PivotCanvas = Posed.Apply(Target.GetPivotPx());
++		for (int32 Index = 0; Index < 8; ++Index)
++		{
++			Target.Points[Index] = Posed.Apply(BoxFraction(Index) * Target.Size);
++		}
++
++		const FVector2D StepX = Target.BoxToCanvas.ApplyVector(FVector2D(1.0, 0.0));
++		const FVector2D StepY = Target.BoxToCanvas.ApplyVector(FVector2D(0.0, 1.0));
++		Target.AxisX = StepX.SizeSquared() > 1.e-12 ? StepX.GetSafeNormal() : FVector2D(1.0, 0.0);
++		Target.AxisY = StepY.SizeSquared() > 1.e-12 ? StepY.GetSafeNormal() : FVector2D(0.0, 1.0);
++
++		const FVector2D TopEdge = Target.Points[1] - Target.Points[0];
++		Target.BoxAngle = TopEdge.SizeSquared() > 1.e-6 ? AngleOf(TopEdge) : AngleOf(Target.AxisX);
++		return true;
++	}
++
++	void FGizmoLayer::FindDesignerWidget()
++	{
++		if (DesignerWidget.IsValid() || Targets.Num() == 0)
++		{
++			return;
++		}
++		const double Now = FPlatformTime::Seconds();
++		if (Now < NextDesignerSearch)
++		{
++			return;
++		}
++		NextDesignerSearch = Now + 1.0;
++
++		// Up the selected widget's parents to the one exactly where the gizmo is drawn - matched by place, not by type: the
++		// designer's own widget isn't always the one it hands its geometry from (see WidgetAnimMotionPath.cpp).
++		const UWidget* FirstPreview = Targets[0].Preview.Get();
++		TSharedPtr<SWidget> Walk = FirstPreview ? FirstPreview->GetCachedWidget() : nullptr;
++		while (Walk.IsValid() && !IsDesignerRect(Walk->GetTickSpaceGeometry()))
++		{
++			Walk = Walk->GetParentWidget();
++		}
++		DesignerWidget = Walk;
++	}
++
++	void FGizmoLayer::LayOutChips(const FTarget& Target)
++	{
++		Chips.Reset();
++		const UWidgetGizmoSettings& Settings = UWidgetGizmoSettings::Get();
++		const FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 8);
++		const TSharedRef<FSlateFontMeasure> Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
++
++		struct FChipText
++		{
++			EChip Kind;
++			FText Label;
++			const FInputChord* Chord;
++		};
++		const FChipText Entries[] =
++		{
++			{ EChip::Move, LOCTEXT("ChipMove", "Move"), nullptr },
++			{ EChip::Scale, LOCTEXT("ChipScale", "Scale"), &Settings.ScaleKey },
++			{ EChip::Rotate, LOCTEXT("ChipRotate", "Rotate"), &Settings.RotateKey },
++			{ EChip::Shear, LOCTEXT("ChipShear", "Shear"), &Settings.ShearKey },
++			{ EChip::Hide, LOCTEXT("ChipHide", "Hide"), &Settings.HideKey },
++		};
++
++		constexpr float PaddingX = 6.f;
++		constexpr float KeyGap = 4.f;
++		double RowWidth = 0.0;
++		for (const FChipText& Entry : Entries)
++		{
++			FChip& Chip = Chips.AddDefaulted_GetRef();
++			Chip.Kind = Entry.Kind;
++			Chip.Label = Entry.Label.ToString();
++			Chip.Key = Entry.Chord && Entry.Chord->IsValidChord() ? Entry.Chord->GetInputText().ToString() : FString();
++			Chip.LabelWidth = static_cast<float>(FVector2D(Measure->Measure(Chip.Label, Font)).X);
++			const double KeyWidth = Chip.Key.IsEmpty() ? 0.0 : FVector2D(Measure->Measure(Chip.Key, Font)).X + KeyGap;
++			Chip.Size = FVector2D(Chip.LabelWidth + KeyWidth + PaddingX * 2.0, Palette::ChipHeight);
++			RowWidth += Chip.Size.X + Palette::ChipGap;
++		}
++		RowWidth -= Palette::ChipGap;
++
++		// Above the widget's box as drawn, at its left; below it when there is no room above. Always inside the canvas.
++		FVector2D BoxMin(TNumericLimits<double>::Max(), TNumericLimits<double>::Max());
++		FVector2D BoxMax(-TNumericLimits<double>::Max(), -TNumericLimits<double>::Max());
++		for (int32 Index = 0; Index < 4; ++Index)
++		{
++			BoxMin = FVector2D(FMath::Min(BoxMin.X, Target.Points[Index].X), FMath::Min(BoxMin.Y, Target.Points[Index].Y));
++			BoxMax = FVector2D(FMath::Max(BoxMax.X, Target.Points[Index].X), FMath::Max(BoxMax.Y, Target.Points[Index].Y));
++		}
++		constexpr double Margin = 4.0;
++		constexpr double Gap = 10.0;
++		double Top = BoxMin.Y - Gap - Palette::ChipHeight;
++		if (Top < Margin)
++		{
++			Top = BoxMax.Y + Gap;
++		}
++		Top = FMath::Clamp(Top, Margin, FMath::Max(Margin, CanvasSize.Y - Palette::ChipHeight - Margin));
++		double Left = FMath::Clamp(BoxMin.X, Margin, FMath::Max(Margin, CanvasSize.X - RowWidth - Margin));
++
++		for (FChip& Chip : Chips)
++		{
++			Chip.TopLeft = FVector2D(Left, Top);
++			Left += Chip.Size.X + Palette::ChipGap;
++		}
++	}
++
++	FVector2D FGizmoLayer::GetHandleCanvas(const FTarget& Target, const FHit& Hit) const
++	{
++		switch (Hit.Handle)
++		{
++		case EHandle::Scale:
++			return Target.Points[FMath::Clamp(Hit.Index, 0, 7)];
++		case EHandle::Shear:
++			return Target.Points[4 + FMath::Clamp(Hit.Index, 0, 3)];
++		default:
++			return Target.PivotCanvas;
++		}
++	}
++
++	// ---------------------------------------------------------------------------------------------
++	// Hit testing
++	// ---------------------------------------------------------------------------------------------
++
++	FHit FGizmoLayer::HitTest(const FVector2D& Screen) const
++	{
++		FHit Hit;
++		if (!IsShowing())
++		{
++			return Hit;
++		}
++		const FVector2D Mouse = ScreenToCanvas(Screen);
++		if (Mouse.X < 0.0 || Mouse.Y < 0.0 || Mouse.X > CanvasSize.X || Mouse.Y > CanvasSize.Y)
++		{
++			return Hit;
++		}
++
++		for (const FChip& Chip : Chips)
++		{
++			if (Mouse.X >= Chip.TopLeft.X && Mouse.Y >= Chip.TopLeft.Y && Mouse.X <= Chip.TopLeft.X + Chip.Size.X && Mouse.Y <= Chip.TopLeft.Y + Chip.Size.Y)
++			{
++				Hit.Handle = EHandle::Chip;
++				Hit.Index = static_cast<int32>(Chip.Kind);
++				return Hit;
++			}
++		}
++
++		const double GizmoScale = GetGizmoScale();
++		const double Slop = Palette::HitSlop;
++		const EMode Mode = GizmoMode();
++		for (int32 TargetIndex = Targets.Num() - 1; TargetIndex >= 0; --TargetIndex)
++		{
++			const FTarget& Target = Targets[TargetIndex];
++			if (!Target.bPlaced || Target.bLocked)
++			{
++				continue;
++			}
++			Hit.Target = TargetIndex;
++
++			// The pivot first: it is on top in every mode.
++			if (FVector2D::Distance(Mouse, Target.PivotCanvas) <= Palette::PivotSize * 0.5 * GizmoScale + Slop * 0.5)
++			{
++				Hit.Handle = EHandle::Pivot;
++				return Hit;
++			}
++
++			switch (Mode)
++			{
++			case EMode::Move:
++			{
++				const FVector2D PlaneCenter = Target.PivotCanvas + (Target.AxisX + Target.AxisY) * (Palette::PlaneOffset * GizmoScale);
++				const double PlaneHalf = Palette::PlaneSize * 0.5 * GizmoScale + 2.0;
++				if (IsInTurnedRect(Mouse, PlaneCenter, AngleOf(Target.AxisX), FVector2D(PlaneHalf, PlaneHalf)))
++				{
++					Hit.Handle = EHandle::MoveXY;
++					return Hit;
++				}
++				const double From = Palette::ArrowGap * GizmoScale;
++				const double To = Palette::ArrowLength * GizmoScale;
++				if (DistanceToSegment(Mouse, Target.PivotCanvas + Target.AxisX * From, Target.PivotCanvas + Target.AxisX * To) <= Slop)
++				{
++					Hit.Handle = EHandle::MoveX;
++					return Hit;
++				}
++				if (DistanceToSegment(Mouse, Target.PivotCanvas + Target.AxisY * From, Target.PivotCanvas + Target.AxisY * To) <= Slop)
++				{
++					Hit.Handle = EHandle::MoveY;
++					return Hit;
++				}
++				break;
++			}
++			case EMode::Rotate:
++			{
++				const double Radius = Palette::RingRadius * GizmoScale;
++				if (FMath::Abs(FVector2D::Distance(Mouse, Target.PivotCanvas) - Radius) <= Slop)
++				{
++					Hit.Handle = EHandle::Rotate;
++					return Hit;
++				}
++				break;
++			}
++			case EMode::Scale:
++			{
++				const double Half = Palette::GripSize * 0.5 * GizmoScale + Slop * 0.5;
++				for (int32 Index = 0; Index < 8; ++Index)
++				{
++					if (IsInTurnedRect(Mouse, Target.Points[Index], Target.BoxAngle, FVector2D(Half, Half)))
++					{
++						Hit.Handle = EHandle::Scale;
++						Hit.Index = Index;
++						return Hit;
++					}
++				}
++				break;
++			}
++			case EMode::Shear:
++			{
++				const FVector2D Half(Palette::ShearGripLength * 0.5 * GizmoScale + Slop * 0.5, Palette::ShearGripThickness * 0.5 * GizmoScale + Slop * 0.5);
++				for (int32 Edge = 0; Edge < 4; ++Edge)
++				{
++					const FVector2D EdgeDirection = (Edge % 2 == 0) ? Target.Points[1] - Target.Points[0] : Target.Points[3] - Target.Points[0];
++					if (IsInTurnedRect(Mouse, Target.Points[4 + Edge], AngleOf(EdgeDirection), Half))
++					{
++						Hit.Handle = EHandle::Shear;
++						Hit.Index = Edge;
++						return Hit;
++					}
++				}
++				break;
++			}
++			}
++		}
++		return FHit();
++	}
++
++	EMouseCursor::Type FGizmoLayer::GetCursorFor(const FHit& Hit) const
++	{
++		const bool bHeld = Drag.bPressed && Drag.Hit == Hit;
++		auto ResizeAlong = [](const FVector2D& Direction)
++		{
++			// Folded onto 0..180 degrees: a line has no way round.
++			double Degrees = FMath::RadiansToDegrees(AngleOf(Direction));
++			Degrees = FMath::Fmod(Degrees + 360.0, 180.0);
++			if (Degrees < 22.5 || Degrees >= 157.5)
++			{
++				return EMouseCursor::ResizeLeftRight;
++			}
++			if (Degrees < 67.5)
++			{
++				return EMouseCursor::ResizeSouthEast;
++			}
++			if (Degrees < 112.5)
++			{
++				return EMouseCursor::ResizeUpDown;
++			}
++			return EMouseCursor::ResizeSouthWest;
++		};
++
++		const FTarget* Target = Targets.IsValidIndex(Hit.Target) ? &Targets[Hit.Target] : nullptr;
++		switch (Hit.Handle)
++		{
++		case EHandle::Chip:
++			return EMouseCursor::Hand;
++		case EHandle::Pivot:
++			return bHeld ? EMouseCursor::GrabHandClosed : EMouseCursor::GrabHand;
++		case EHandle::MoveX:
++		case EHandle::MoveY:
++		case EHandle::MoveXY:
++			return EMouseCursor::CardinalCross;
++		case EHandle::Rotate:
++			return bHeld ? EMouseCursor::GrabHandClosed : EMouseCursor::GrabHand;
++		case EHandle::Scale:
++			if (Target)
++			{
++				const FVector2D Middle = (Target->Points[0] + Target->Points[2]) * 0.5;
++				return ResizeAlong(Target->Points[FMath::Clamp(Hit.Index, 0, 7)] - Middle);
++			}
++			return EMouseCursor::ResizeSouthEast;
++		case EHandle::Shear:
++			if (Target)
++			{
++				return ResizeAlong(Hit.Index % 2 == 0 ? Target->Points[1] - Target->Points[0] : Target->Points[3] - Target->Points[0]);
++			}
++			return EMouseCursor::ResizeLeftRight;
++		default:
++			return EMouseCursor::Default;
++		}
++	}
++
++	// ---------------------------------------------------------------------------------------------
++	// Pressing and dragging
++	// ---------------------------------------------------------------------------------------------
++
++	void FGizmoLayer::Press(const FHit& Hit, const FVector2D& Screen)
++	{
++		if (Hit.Handle == EHandle::Chip)
++		{
++			switch (static_cast<EChip>(Hit.Index))
++			{
++			case EChip::Move: GizmoMode() = EMode::Move; break;
++			case EChip::Scale: GizmoMode() = EMode::Scale; break;
++			case EChip::Rotate: GizmoMode() = EMode::Rotate; break;
++			case EChip::Shear: GizmoMode() = EMode::Shear; break;
++			case EChip::Hide: GizmoHidden() = true; break;
++			}
++			RepaintAll();
++			return;
++		}
++		if (!Targets.IsValidIndex(Hit.Target))
++		{
++			return;
++		}
++
++		const FTarget& Target = Targets[Hit.Target];
++		ResetDrag();
++		Drag.bPressed = true;
++		Drag.Hit = Hit;
++		Drag.Start = Target;
++		Drag.Pose = Target.Pose;
++		Drag.Pivot = Target.Pivot;
++		Drag.PressCanvas = ScreenToCanvas(Screen);
++		Drag.LastScreen = Screen;
++		Drag.GrabOffset = GetHandleCanvas(Target, Hit) - Drag.PressCanvas;
++		Drag.RotateLastAngle = AngleOf(Drag.PressCanvas - Target.PivotCanvas);
++		Drag.RotateTurned = 0.0;
++
++		// Shear: the grabbed edge slides along itself - by whichever of Shear X or Y moves it along itself most (top and bottom
++		// slide sideways, the sides up and down, whatever order Slate composes the shear in).
++		if (Hit.Handle == EHandle::Shear)
++		{
++			const FVector2D EdgeDirection = (Hit.Index % 2 == 0 ? Target.Points[1] - Target.Points[0] : Target.Points[3] - Target.Points[0]).GetSafeNormal();
++			const FVector2D BoxPoint = BoxFraction(4 + Hit.Index) * Target.Size;
++			double BestScore = -1.0;
++			for (int32 Component = 0; Component < 2; ++Component)
++			{
++				FWidgetTransform Nudged = Target.Pose;
++				double& Angle = Component == 0 ? Nudged.Shear.X : Nudged.Shear.Y;
++				Angle = FMath::Clamp(Angle + 1.0, -89.0, 89.0);
++				const FVector2D Moved = Target.ToCanvas(Nudged, Target.Pivot, BoxPoint) - Target.ToCanvas(Target.Pose, Target.Pivot, BoxPoint);
++				const double Score = FMath::Abs(FVector2D::DotProduct(Moved, EdgeDirection));
++				if (Score > BestScore)
++				{
++					BestScore = Score;
++					Drag.ShearComponent = Component;
++				}
++			}
++		}
++		RequestRepaint();
++	}
++
++	void FGizmoLayer::PressMove(const FVector2D& Screen, const FModifierKeysState& Modifiers)
++	{
++		if (!Drag.bPressed)
++		{
++			return;
++		}
++		Drag.LastScreen = Screen;
++		const FVector2D Mouse = ScreenToCanvas(Screen);
++		if (!Drag.bDragging)
++		{
++			if (FVector2D::Distance(Mouse, Drag.PressCanvas) < DragThreshold)
++			{
++				return;
++			}
++			if (!BeginDrag())
++			{
++				ResetDrag();
++				RequestRepaint();
++				return;
++			}
++		}
++		UpdateDrag(Mouse, Modifiers);
++		RequestRepaint();
++	}
++
++	bool FGizmoLayer::BeginDrag()
++	{
++		UWidget* DraggedTemplate = Drag.Start.Template.Get();
++		if (!Drag.Start.Preview.IsValid())
++		{
++			return false;
++		}
++
++		FText Description;
++		switch (Drag.Hit.Handle)
++		{
++		case EHandle::Pivot: Description = LOCTEXT("MovePivot", "Move Widget Pivot"); break;
++		case EHandle::Rotate: Description = LOCTEXT("RotateWidget", "Rotate Widget"); break;
++		case EHandle::Scale: Description = LOCTEXT("ScaleWidget", "Scale Widget"); break;
++		case EHandle::Shear: Description = LOCTEXT("ShearWidget", "Shear Widget"); break;
++		default: Description = LOCTEXT("MoveWidget", "Move Widget"); break;
++		}
++		Drag.Transaction = MakeUnique<FScopedTransaction>(Description);
++		if (DraggedTemplate)
++		{
++			DraggedTemplate->Modify();
++		}
++		Drag.bDragging = true;
++		return true;
++	}
++
++	void FGizmoLayer::UpdateDrag(const FVector2D& Mouse, const FModifierKeysState& Modifiers)
++	{
++		const UWidgetGizmoSettings& Settings = UWidgetGizmoSettings::Get();
++		const FTarget& Start = Drag.Start;
++		const bool bShift = Modifiers.IsShiftDown();
++		const bool bCtrl = Modifiers.IsControlDown() || Modifiers.IsCommandDown();
++		const FVector2D Wanted = Mouse + Drag.GrabOffset;
++
++		FWidgetTransform NewPose = Start.Pose;
++		FVector2D NewPivot = Start.Pivot;
++		bool bSetPivot = false;
++
++		switch (Drag.Hit.Handle)
++		{
++		case EHandle::MoveX:
++		case EHandle::MoveY:
++		case EHandle::MoveXY:
++		{
++			// Translation is in the parent's units: one unit moves the widget by these on the canvas.
++			const FVector2D Delta = Mouse - Drag.PressCanvas;
++			const FVector2D PerX = Start.BoxToCanvas.ApplyVector(FVector2D(1.0, 0.0));
++			const FVector2D PerY = Start.BoxToCanvas.ApplyVector(FVector2D(0.0, 1.0));
++			FVector2D Units = FVector2D::ZeroVector;
++			if (Drag.Hit.Handle == EHandle::MoveX)
++			{
++				Units.X = Project(Delta, PerX);
++			}
++			else if (Drag.Hit.Handle == EHandle::MoveY)
++			{
++				Units.Y = Project(Delta, PerY);
++			}
++			else
++			{
++				Units = SolveTwo(PerX, PerY, Delta);
++				if (bShift)
++				{
++					// Kept on the axis it has moved along most, on screen.
++					if (FMath::Abs(Units.X) * PerX.Size() >= FMath::Abs(Units.Y) * PerY.Size())
++					{
++						Units.Y = 0.0;
++					}
++					else
++					{
++						Units.X = 0.0;
++					}
++				}
++			}
++			if (Units.X != 0.0)
++			{
++				NewPose.Translation.X = RoundTo(Start.Pose.Translation.X + Units.X, 0.1);
++			}
++			if (Units.Y != 0.0)
++			{
++				NewPose.Translation.Y = RoundTo(Start.Pose.Translation.Y + Units.Y, 0.1);
++			}
++			Drag.Readout = FString::Printf(TEXT("X %.1f   Y %.1f"), NewPose.Translation.X, NewPose.Translation.Y);
++			break;
++		}
++
++		case EHandle::Scale:
++		{
++			// The grabbed point follows the mouse, the box scaling about the pivot (as the Render Transform scales). Its place is
++			// linear in Scale X and Y, so one step of each says exactly how far to go.
++			const int32 Index = FMath::Clamp(Drag.Hit.Index, 0, 7);
++			const FVector2D BoxPoint = BoxFraction(Index) * Start.Size;
++			const FVector2D StartScale = Start.Pose.Scale;
++			auto At = [&Start, &BoxPoint](double ScaleX, double ScaleY)
++			{
++				FWidgetTransform Scaled = Start.Pose;
++				Scaled.Scale = FVector2D(ScaleX, ScaleY);
++				return Start.ToCanvas(Scaled, Start.Pivot, BoxPoint);
++			};
++			const FVector2D From = At(StartScale.X, StartScale.Y);
++			const FVector2D PerX = At(StartScale.X + 1.0, StartScale.Y) - From;
++			const FVector2D PerY = At(StartScale.X, StartScale.Y + 1.0) - From;
++			const FVector2D Delta = Wanted - From;
++			const bool bCorner = Index < 4;
++			const bool bSides = Index == 5 || Index == 7;
++
++			FVector2D NewScale = StartScale;
++			if (bShift)
++			{
++				// Proportions kept: both scales grow by one factor.
++				const FVector2D Along = bCorner ? PerX * StartScale.X + PerY * StartScale.Y : (bSides ? PerX * StartScale.X : PerY * StartScale.Y);
++				if (Along.SizeSquared() > 1.e-12)
++				{
++					NewScale = StartScale * (1.0 + Project(Delta, Along));
++				}
++			}
++			else if (bCorner)
++			{
++				NewScale = StartScale + SolveTwo(PerX, PerY, Delta);
++			}
++			else if (bSides)
++			{
++				NewScale.X = StartScale.X + Project(Delta, PerX);
++			}
++			else
++			{
++				NewScale.Y = StartScale.Y + Project(Delta, PerY);
++			}
++			NewPose.Scale = FVector2D(RoundTo(NewScale.X, 0.001), RoundTo(NewScale.Y, 0.001));
++			Drag.Readout = FString::Printf(TEXT("Scale %.3f x %.3f"), NewPose.Scale.X, NewPose.Scale.Y);
++			break;
++		}
++
++		case EHandle::Rotate:
++		{
++			// Turned by how far the mouse has gone round the pivot since the press - every turn counted.
++			const FVector2D FromCenter = Mouse - Start.PivotCanvas;
++			if (FromCenter.SizeSquared() > 16.0)
++			{
++				const double MouseAngle = AngleOf(FromCenter);
++				double Step = MouseAngle - Drag.RotateLastAngle;
++				while (Step > UE_DOUBLE_PI)
++				{
++					Step -= 2.0 * UE_DOUBLE_PI;
++				}
++				while (Step < -UE_DOUBLE_PI)
++				{
++					Step += 2.0 * UE_DOUBLE_PI;
++				}
++				Drag.RotateTurned += Step;
++				Drag.RotateLastAngle = MouseAngle;
++			}
++			// A positive Angle turns clockwise on screen, as the mouse going round clockwise does - unless the widget is drawn mirrored.
++			const double Direction = Start.BoxToCanvas.Determinant() < 0.0 ? -1.0 : 1.0;
++			double NewAngle = Start.Pose.Angle + Direction * FMath::RadiansToDegrees(Drag.RotateTurned);
++			const double Snap = FMath::Max(0.1, static_cast<double>(Settings.RotationSnap));
++			NewAngle = bShift ? RoundTo(NewAngle, Snap) : RoundTo(NewAngle, 0.01);
++			NewPose.Angle = static_cast<float>(NewAngle);
++			Drag.Readout = FString::Printf(TEXT("%.2f\u00B0"), NewAngle);
++			break;
++		}
++
++		case EHandle::Shear:
++		{
++			// The grabbed edge's middle follows the mouse along the edge. Slate shears by the tangent of the angle, and the
++			// point moves linearly with that tangent - so it is solved for the tangent, then turned back into degrees.
++			const int32 Edge = FMath::Clamp(Drag.Hit.Index, 0, 3);
++			const FVector2D BoxPoint = BoxFraction(4 + Edge) * Start.Size;
++			const int32 Component = Drag.ShearComponent;
++			auto At = [&Start, &BoxPoint, Component](double Slope)
++			{
++				FWidgetTransform Sheared = Start.Pose;
++				const double Degrees = FMath::Clamp(FMath::RadiansToDegrees(FMath::Atan(Slope)), -89.0, 89.0);
++				(Component == 0 ? Sheared.Shear.X : Sheared.Shear.Y) = Degrees;
++				return Start.ToCanvas(Sheared, Start.Pivot, BoxPoint);
++			};
++			const double StartDegrees = Component == 0 ? Start.Pose.Shear.X : Start.Pose.Shear.Y;
++			const double StartSlope = FMath::Tan(FMath::DegreesToRadians(FMath::Clamp(StartDegrees, -89.0, 89.0)));
++			constexpr double SlopeStep = 0.01;
++			const FVector2D From = At(StartSlope);
++			const FVector2D PerSlope = (At(StartSlope + SlopeStep) - From) / SlopeStep;
++			const double NewSlope = StartSlope + Project(Wanted - From, PerSlope);
++			double NewDegrees = FMath::Clamp(FMath::RadiansToDegrees(FMath::Atan(NewSlope)), -89.0, 89.0);
++			const double Snap = FMath::Max(0.1, static_cast<double>(Settings.ShearSnap));
++			NewDegrees = bShift ? RoundTo(NewDegrees, Snap) : RoundTo(NewDegrees, 0.01);
++			(Component == 0 ? NewPose.Shear.X : NewPose.Shear.Y) = NewDegrees;
++			Drag.Readout = FString::Printf(TEXT("Shear %.2f\u00B0, %.2f\u00B0"), NewPose.Shear.X, NewPose.Shear.Y);
++			break;
++		}
++
++		case EHandle::Pivot:
++		{
++			// The pivot goes to the point of the box under the mouse; Translation makes up for it, so the widget stays exactly
++			// where it is drawn: with A the pose's scale, shear and turn, moving the pivot from P to P' moves the box by
++			// (A - I)(P - P'), which Translation takes back.
++			const FAffine CanvasToBox = PivotedPose(Start.Pose, Start.GetPivotPx()).Then(Start.BoxToCanvas).Inverse();
++			FVector2D NewPivotPx = CanvasToBox.Apply(Wanted);
++
++			// Snapped to the box's corners, edge middles and middle when the mouse comes close to one (Ctrl: free).
++			const double SnapDistance = Settings.PivotSnapDistance;
++			if (!bCtrl && SnapDistance > 0.0)
++			{
++				double Nearest = SnapDistance;
++				for (int32 Row = 0; Row < 3; ++Row)
++				{
++					for (int32 Column = 0; Column < 3; ++Column)
++					{
++						const FVector2D Fraction(Column * 0.5, Row * 0.5);
++						const double Distance = FVector2D::Distance(Start.ToCanvas(Start.Pose, Start.Pivot, Fraction * Start.Size), Wanted);
++						if (Distance <= Nearest)
++						{
++							Nearest = Distance;
++							NewPivotPx = Fraction * Start.Size;
++						}
++					}
++				}
++			}
++
++			NewPivot = FVector2D(
++				Start.Size.X > 0.0 ? RoundTo(NewPivotPx.X / Start.Size.X, 0.0001) : Start.Pivot.X,
++				Start.Size.Y > 0.0 ? RoundTo(NewPivotPx.Y / Start.Size.Y, 0.0001) : Start.Pivot.Y);
++			const FVector2D Back = Start.GetPivotPx() - NewPivot * Start.Size;
++			const FVector2D Turned = FAffine::From(Start.Pose.ToSlateRenderTransform()).ApplyVector(Back);
++			NewPose.Translation = FVector2D(
++				RoundTo(Start.Pose.Translation.X + Back.X - Turned.X, 0.01),
++				RoundTo(Start.Pose.Translation.Y + Back.Y - Turned.Y, 0.01));
++			bSetPivot = true;
++			Drag.Readout = FString::Printf(TEXT("Pivot %.3f, %.3f"), NewPivot.X, NewPivot.Y);
++			break;
++		}
++
++		default:
++			return;
++		}
++
++		Drag.ReadoutAt = Mouse;
++		ApplyToWidgets(NewPose, NewPivot, bSetPivot);
++	}
++
++	void FGizmoLayer::ApplyToWidgets(const FWidgetTransform& NewPose, const FVector2D& NewPivot, bool bSetPivot)
++	{
++		Drag.Pose = NewPose;
++		Drag.Pivot = NewPivot;
++		auto Set = [&NewPose, &NewPivot, bSetPivot](UWidget* Widget)
++		{
++			Widget->SetRenderTransform(NewPose);
++			if (bSetPivot)
++			{
++				Widget->SetRenderTransformPivot(NewPivot);
++			}
++		};
++		UWidget* DraggedTemplate = Drag.Start.Template.Get();
++		UWidget* DraggedPreview = Drag.Start.Preview.Get();
++		if (DraggedTemplate)
++		{
++			Set(DraggedTemplate);
++		}
++		if (DraggedPreview && DraggedPreview != DraggedTemplate)
++		{
++			Set(DraggedPreview);
++		}
++	}
++
++	void FGizmoLayer::Release()
++	{
++		if (Drag.bDragging)
++		{
++			// One undo step for the drag. Marked changed without a broadcast - the Details panel shows the preview, which
++			// already has the values - as the Custom Shape path editor does.
++			Drag.Transaction.Reset();
++			if (UWidget* DraggedTemplate = Drag.Start.Template.Get())
++			{
++				DraggedTemplate->MarkPackageDirty();
++				if (UWidgetBlueprint* OwningBlueprint = DraggedTemplate->GetTypedOuter<UWidgetBlueprint>())
++				{
++					OwningBlueprint->Status = BS_Dirty;
++				}
++			}
++		}
++		ResetDrag();
++		RequestRepaint();
++	}
++
++	void FGizmoLayer::CancelDrag()
++	{
++		if (Drag.bDragging)
++		{
++			ApplyToWidgets(Drag.Start.Pose, Drag.Start.Pivot, /*bSetPivot=*/true);
++			if (Drag.Transaction.IsValid())
++			{
++				Drag.Transaction->Cancel();
++			}
++		}
++		ResetDrag();
++		RequestRepaint();
++	}
++
++	// ---------------------------------------------------------------------------------------------
++	// Drawing
++	// ---------------------------------------------------------------------------------------------
++
++	void FGizmoLayer::Paint(const TSet<FWidgetReference>& Selection, const FGeometry& DesignerGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId)
++	{
++		// The designer as it is painted now: its own local space is the canvas. DesignerGeometry is in its window's space, while
++		// the mouse and the widgets' tick geometry are in desktop space - so the gizmo is drawn through DesignerGeometry and
++		// placed and hit-tested through Designer, the same geometry moved onto the desktop (as the motion paths are).
++		Designer = DesignerGeometry;
++		if (const SWindow* Window = OutDrawElements.GetPaintWindow())
++		{
++			Designer.AppendTransform(FSlateLayoutTransform(FVector2f(FVector2D(Window->GetPositionInScreen()))));
++		}
++		PaintedFrame = GFrameCounter;
++		DesktopToCanvas = FAffine::From(Designer.GetAccumulatedRenderTransform()).Inverse();
++		CanvasSize = FVector2D(DesignerGeometry.GetLocalSize());
++		Chips.Reset();
++
++		if (!UWidgetGizmoSettings::Get().bEnableGizmo)
++		{
++			if (Drag.bPressed)
++			{
++				CancelDrag();
++			}
++			Targets.Reset();
++			Hovered = FHit();
++			return;
++		}
++
++		GatherTargets(Selection);
++		for (FTarget& Target : Targets)
++		{
++			Target.bPlaced = Place(Target);
++		}
++		FindDesignerWidget();
++
++		// A pressed widget no longer selected (an undo, a compile): the drag is let go where it is.
++		if (Drag.bPressed && !Targets.ContainsByPredicate([this](const FTarget& Target) { return Target.Template == Drag.Start.Template && Target.Preview == Drag.Start.Preview; }))
++		{
++			Release();
++		}
++		if (Hovered.IsValid() && Hovered.Handle != EHandle::Chip && !Targets.IsValidIndex(Hovered.Target))
++		{
++			Hovered = FHit();
++		}
++
++		if (GizmoHidden() || !HasTargets())
++		{
++			return;
++		}
++
++		OutDrawElements.PushClip(FSlateClippingZone(DesignerGeometry));
++		int32 MaxLayer = LayerId;
++		for (int32 TargetIndex = 0; TargetIndex < Targets.Num(); ++TargetIndex)
++		{
++			const FTarget& Target = Targets[TargetIndex];
++			if (Target.bPlaced && !Target.bLocked)
++			{
++				MaxLayer = FMath::Max(MaxLayer, PaintTarget(Target, TargetIndex, DesignerGeometry, OutDrawElements, LayerId));
++			}
++		}
++
++		// The chips over the first widget the gizmo acts on - one row, whatever is selected.
++		const FTarget* First = Targets.FindByPredicate([](const FTarget& Target) { return Target.bPlaced && !Target.bLocked; });
++		if (First)
++		{
++			LayOutChips(*First);
++			MaxLayer = PaintChips(DesignerGeometry, OutDrawElements, MaxLayer + 1);
++		}
++		PaintReadout(DesignerGeometry, OutDrawElements, MaxLayer + 1);
++		OutDrawElements.PopClip();
++	}
++
++	int32 FGizmoLayer::PaintTarget(const FTarget& Target, int32 TargetIndex, const FGeometry& Geometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const
++	{
++		const double GizmoScale = GetGizmoScale();
++		const float Thickness = Palette::LineThickness * static_cast<float>(GizmoScale);
++		const int32 UnderLayer = LayerId;
++		const int32 LineLayer = LayerId + 1;
++		const int32 FillLayer = LayerId + 2;
++		const int32 TopLayer = LayerId + 3;
++
++		auto ToPoint = [](const FVector2D& Point) { return FVector2f(Point); };
++
++		// A line drawn twice: dark and wider under, colored over - so it reads on any background.
++		auto Polyline = [&](const TArray<FVector2f>& Points, const FLinearColor& LineColor, float LineThickness)
++		{
++			if (Points.Num() < 2)
++			{
++				return;
++			}
++			FSlateDrawElement::MakeLines(OutDrawElements, UnderLayer, Geometry.ToPaintGeometry(), Points, ESlateDrawEffect::None, Palette::Underlay, /*bAntialias=*/true, LineThickness + 2.f);
++			FSlateDrawElement::MakeLines(OutDrawElements, LineLayer, Geometry.ToPaintGeometry(), Points, ESlateDrawEffect::None, LineColor, /*bAntialias=*/true, LineThickness);
++		};
++		auto Segment = [&](const FVector2D& From, const FVector2D& To, const FLinearColor& LineColor, float LineThickness)
++		{
++			Polyline(TArray<FVector2f>{ ToPoint(From), ToPoint(To) }, LineColor, LineThickness);
++		};
++		auto TurnedBox = [&](const FVector2D& Center, const FVector2D& BoxSize, double Angle, const FSlateBrush* Brush, const FLinearColor& BoxColor, int32 Layer)
++		{
++			const FVector2f Size2f(BoxSize);
++			FSlateDrawElement::MakeBox(OutDrawElements, Layer,
++				Geometry.ToPaintGeometry(Size2f, FSlateLayoutTransform(ToPoint(Center) - Size2f * 0.5f),
++					FSlateRenderTransform(FQuat2f(static_cast<float>(Angle))), FVector2f(0.5f, 0.5f)),
++				Brush, ESlateDrawEffect::None, BoxColor);
++		};
++		auto Disc = [&](const FVector2D& Center, double Diameter, const FLinearColor& DiscColor, int32 Layer)
++		{
++			TurnedBox(Center, FVector2D(Diameter, Diameter), 0.0, CircleBrush(), DiscColor, Layer);
++		};
++		auto Circle = [&](const FVector2D& Center, double Radius, double FromAngle, double ToAngle, int32 Steps)
++		{
++			TArray<FVector2f> Points;
++			Points.Reserve(Steps + 1);
++			for (int32 Step = 0; Step <= Steps; ++Step)
++			{
++				const double Angle = FMath::Lerp(FromAngle, ToAngle, static_cast<double>(Step) / Steps);
++				Points.Add(ToPoint(Center + FVector2D(FMath::Cos(Angle), FMath::Sin(Angle)) * Radius));
++			}
++			return Points;
++		};
++
++		const EMode Mode = GizmoMode();
++		const FVector2D& Pivot = Target.PivotCanvas;
++
++		// The box as drawn, which the Scale and Shear handles sit on.
++		if (Mode == EMode::Scale || Mode == EMode::Shear)
++		{
++			TArray<FVector2f> Outline;
++			for (int32 Index = 0; Index <= 4; ++Index)
++			{
++				Outline.Add(ToPoint(Target.Points[Index % 4]));
++			}
++			Polyline(Outline, Palette::Box, 1.f);
++		}
++
++		switch (Mode)
++		{
++		case EMode::Move:
++		{
++			auto Arrow = [&](const FVector2D& Axis, const FLinearColor& ArrowColor)
++			{
++				const FVector2D Tip = Pivot + Axis * (Palette::ArrowLength * GizmoScale);
++				const FVector2D HeadBase = Tip - Axis * (Palette::ArrowHeadLength * GizmoScale);
++				const FVector2D Across(-Axis.Y, Axis.X);
++				const double HalfWidth = Palette::ArrowHeadWidth * 0.5 * GizmoScale;
++				Segment(Pivot + Axis * (Palette::ArrowGap * GizmoScale), HeadBase, ArrowColor, Thickness);
++
++				// The head: its outline under, then filled with a fan of lines from the tip.
++				const FVector2D Left = HeadBase + Across * HalfWidth;
++				const FVector2D Right = HeadBase - Across * HalfWidth;
++				FSlateDrawElement::MakeLines(OutDrawElements, UnderLayer, Geometry.ToPaintGeometry(),
++					TArray<FVector2f>{ ToPoint(Tip), ToPoint(Left), ToPoint(Right), ToPoint(Tip) }, ESlateDrawEffect::None, Palette::Underlay, true, 3.f);
++				constexpr int32 FanLines = 7;
++				for (int32 Line = 0; Line < FanLines; ++Line)
++				{
++					const FVector2D Along = FMath::Lerp(Left, Right, static_cast<double>(Line) / (FanLines - 1));
++					FSlateDrawElement::MakeLines(OutDrawElements, FillLayer, Geometry.ToPaintGeometry(),
++						TArray<FVector2f>{ ToPoint(Tip), ToPoint(Along) }, ESlateDrawEffect::None, ArrowColor, true, 2.f);
++				}
++			};
++			Arrow(Target.AxisX, IsHot(TargetIndex, EHandle::MoveX) ? Palette::Hot : Palette::AxisX);
++			Arrow(Target.AxisY, IsHot(TargetIndex, EHandle::MoveY) ? Palette::Hot : Palette::AxisY);
++
++			// The square between them: moves both ways.
++			const bool bPlaneHot = IsHot(TargetIndex, EHandle::MoveXY);
++			const FVector2D PlaneCenter = Pivot + (Target.AxisX + Target.AxisY) * (Palette::PlaneOffset * GizmoScale);
++			const double PlaneSize = Palette::PlaneSize * GizmoScale;
++			const double PlaneAngle = AngleOf(Target.AxisX);
++			TurnedBox(PlaneCenter, FVector2D(PlaneSize + 2.0, PlaneSize + 2.0), PlaneAngle, SquareBrush(), Palette::Underlay, UnderLayer);
++			TurnedBox(PlaneCenter, FVector2D(PlaneSize, PlaneSize), PlaneAngle, SquareBrush(), bPlaneHot ? Palette::Hot : Palette::PlaneFill, FillLayer);
++			break;
++		}
++
++		case EMode::Rotate:
++		{
++			const double Radius = Palette::RingRadius * GizmoScale;
++			const bool bRingHot = IsHot(TargetIndex, EHandle::Rotate);
++			Polyline(Circle(Pivot, Radius, 0.0, 2.0 * UE_DOUBLE_PI, 72), bRingHot ? Palette::Hot : Palette::Ring, bRingHot ? Thickness + 1.f : Thickness);
++
++			// While turning: where it started, where it is, and the sweep between.
++			if (Drag.bDragging && Drag.Hit.Handle == EHandle::Rotate && Drag.Hit.Target == TargetIndex)
++			{
++				const double StartAngle = AngleOf(Drag.PressCanvas - Drag.Start.PivotCanvas);
++				const double EndAngle = StartAngle + Drag.RotateTurned;
++				const FVector2D StartPoint = Pivot + FVector2D(FMath::Cos(StartAngle), FMath::Sin(StartAngle)) * Radius;
++				const FVector2D EndPoint = Pivot + FVector2D(FMath::Cos(EndAngle), FMath::Sin(EndAngle)) * Radius;
++				Segment(Pivot, StartPoint, Palette::RingSweep, 1.f);
++				Segment(Pivot, EndPoint, Palette::Hot, 1.f);
++				const int32 Steps = FMath::Clamp(FMath::CeilToInt(FMath::Abs(Drag.RotateTurned) / (2.0 * UE_DOUBLE_PI) * 72.0), 2, 720);
++				FSlateDrawElement::MakeLines(OutDrawElements, FillLayer, Geometry.ToPaintGeometry(), Circle(Pivot, Radius, StartAngle, EndAngle, Steps),
++					ESlateDrawEffect::None, Palette::RingSweep, true, Thickness + 3.f);
++			}
++			break;
++		}
++
++		case EMode::Scale:
++		{
++			const double GripSize = Palette::GripSize * GizmoScale;
++			for (int32 Index = 0; Index < 8; ++Index)
++			{
++				const bool bGripHot = IsHot(TargetIndex, EHandle::Scale, Index);
++				const double Size = bGripHot ? GripSize * 1.25 : GripSize;
++				TurnedBox(Target.Points[Index], FVector2D(Size + 2.0, Size + 2.0), Target.BoxAngle, SquareBrush(), Palette::GripOutline, FillLayer);
++				TurnedBox(Target.Points[Index], FVector2D(Size, Size), Target.BoxAngle, SquareBrush(), bGripHot ? Palette::Hot : Palette::GripFill, TopLayer);
++			}
++			break;
++		}
++
++		case EMode::Shear:
++		{
++			for (int32 Edge = 0; Edge < 4; ++Edge)
++			{
++				const bool bGripHot = IsHot(TargetIndex, EHandle::Shear, Edge);
++				const FVector2D EdgeDirection = Edge % 2 == 0 ? Target.Points[1] - Target.Points[0] : Target.Points[3] - Target.Points[0];
++				const double Angle = AngleOf(EdgeDirection);
++				const double Grow = bGripHot ? 1.2 : 1.0;
++				const FVector2D GripSize(Palette::ShearGripLength * GizmoScale * Grow, Palette::ShearGripThickness * GizmoScale * Grow);
++				TurnedBox(Target.Points[4 + Edge], GripSize + FVector2D(2.0, 2.0), Angle, RoundedBrush(), Palette::GripOutline, FillLayer);
++				TurnedBox(Target.Points[4 + Edge], GripSize, Angle, RoundedBrush(), bGripHot ? Palette::Hot : Palette::ShearGrip, TopLayer);
++			}
++			break;
++		}
++		}
++
++		// The pivot - the gizmo's middle, dragged to move it: a ring with a cross through it, on top of everything.
++		{
++			const bool bPivotHot = IsHot(TargetIndex, EHandle::Pivot);
++			const double PivotSize = Palette::PivotSize * GizmoScale;
++			const double Radius = PivotSize * 0.5;
++			const double CrossLength = Palette::PivotCross * GizmoScale;
++			const FLinearColor RingColor = bPivotHot ? Palette::Hot : Palette::PivotRing;
++			const FVector2D Directions[4] = { FVector2D(1.0, 0.0), FVector2D(-1.0, 0.0), FVector2D(0.0, 1.0), FVector2D(0.0, -1.0) };
++			for (const FVector2D& Direction : Directions)
++			{
++				Segment(Pivot + Direction * (Radius + 1.0), Pivot + Direction * (Radius + CrossLength), RingColor, 1.5f);
++			}
++			Disc(Pivot, PivotSize + 2.0, Palette::Underlay, FillLayer);
++			Disc(Pivot, PivotSize, RingColor, TopLayer);
++			Disc(Pivot, FMath::Max(2.0, PivotSize - 5.0), Palette::PivotFill, TopLayer + 1);
++		}
++		return TopLayer + 1;
++	}
++
++	int32 FGizmoLayer::PaintChips(const FGeometry& Geometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const
++	{
++		if (Chips.Num() == 0)
++		{
++			return LayerId;
++		}
++		const FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 8);
++		constexpr float PaddingX = 6.f;
++		constexpr float KeyGap = 4.f;
++		const EMode Mode = GizmoMode();
++
++		// The row's background, then each chip on it.
++		const FVector2D RowMin = Chips[0].TopLeft - FVector2D(2.0, 2.0);
++		const FVector2D RowMax = Chips.Last().TopLeft + Chips.Last().Size + FVector2D(2.0, 2.0);
++		FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
++			Geometry.ToPaintGeometry(FVector2f(RowMax - RowMin), FSlateLayoutTransform(FVector2f(RowMin))),
++			RoundedBrush(), ESlateDrawEffect::None, Palette::ChipBackground);
++
++		for (const FChip& Chip : Chips)
++		{
++			const bool bActive = (Chip.Kind == EChip::Move && Mode == EMode::Move) || (Chip.Kind == EChip::Scale && Mode == EMode::Scale)
++				|| (Chip.Kind == EChip::Rotate && Mode == EMode::Rotate) || (Chip.Kind == EChip::Shear && Mode == EMode::Shear);
++			const bool bChipHovered = Hovered.Handle == EHandle::Chip && Hovered.Index == static_cast<int32>(Chip.Kind);
++			const FLinearColor Fill = bActive ? (bChipHovered ? Palette::ChipActiveHovered : Palette::ChipActive) : (bChipHovered ? Palette::ChipIdleHovered : Palette::ChipIdle);
++			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
++				Geometry.ToPaintGeometry(FVector2f(Chip.Size), FSlateLayoutTransform(FVector2f(Chip.TopLeft))),
++				RoundedBrush(), ESlateDrawEffect::None, Fill);
++
++			const float TextHeight = 12.f;
++			const FVector2f TextAt = FVector2f(Chip.TopLeft) + FVector2f(PaddingX, (Palette::ChipHeight - TextHeight) * 0.5f - 1.f);
++			FSlateDrawElement::MakeText(OutDrawElements, LayerId + 2,
++				Geometry.ToPaintGeometry(FVector2f(Chip.LabelWidth + 2.f, TextHeight + 2.f), FSlateLayoutTransform(TextAt)),
++				Chip.Label, Font, ESlateDrawEffect::None, bActive ? Palette::ChipTextActive : Palette::ChipText);
++			if (!Chip.Key.IsEmpty())
++			{
++				const FVector2f KeyAt = TextAt + FVector2f(Chip.LabelWidth + KeyGap, 0.f);
++				FSlateDrawElement::MakeText(OutDrawElements, LayerId + 2,
++					Geometry.ToPaintGeometry(FVector2f(static_cast<float>(Chip.Size.X) - (KeyAt.X - static_cast<float>(Chip.TopLeft.X)), TextHeight + 2.f), FSlateLayoutTransform(KeyAt)),
++					Chip.Key, Font, ESlateDrawEffect::None, bActive ? Palette::ChipTextActive.CopyWithNewOpacity(0.6f) : Palette::ChipKeyText);
++			}
++		}
++		return LayerId + 2;
++	}
++
++	int32 FGizmoLayer::PaintReadout(const FGeometry& Geometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const
++	{
++		if (!Drag.bDragging || Drag.Readout.IsEmpty())
++		{
++			return LayerId;
++		}
++		const FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 8);
++		const TSharedRef<FSlateFontMeasure> Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
++		const FVector2D Padding(5.0, 2.0);
++		const FVector2D TextSize(Measure->Measure(Drag.Readout, Font));
++		const FVector2D BoxSize = TextSize + Padding * 2.0;
++
++		// Beside the mouse, below and to the right of it; kept inside the canvas.
++		FVector2D TopLeft = Drag.ReadoutAt + FVector2D(16.0, 18.0);
++		TopLeft.X = FMath::Clamp(TopLeft.X, 2.0, FMath::Max(2.0, CanvasSize.X - BoxSize.X - 2.0));
++		TopLeft.Y = FMath::Clamp(TopLeft.Y, 2.0, FMath::Max(2.0, CanvasSize.Y - BoxSize.Y - 2.0));
++
++		FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
++			Geometry.ToPaintGeometry(FVector2f(BoxSize), FSlateLayoutTransform(FVector2f(TopLeft))),
++			RoundedBrush(), ESlateDrawEffect::None, Palette::ReadoutBackground);
++		FSlateDrawElement::MakeText(OutDrawElements, LayerId + 1,
++			Geometry.ToPaintGeometry(FVector2f(TextSize + FVector2D(2.0, 2.0)), FSlateLayoutTransform(FVector2f(TopLeft + Padding))),
++			Drag.Readout, Font, ESlateDrawEffect::None, Palette::ReadoutText);
++		return LayerId + 1;
++	}
++
++	void RepaintAll()
++	{
++		for (const TWeakPtr<FGizmoLayer>& Weak : GetDesignerLayers())
++		{
++			if (const TSharedPtr<FGizmoLayer> Layer = Weak.Pin())
++			{
++				Layer->RequestRepaint();
++			}
++		}
++	}
++
++	// =================================================================================================
++	// Input - the handles take the mouse, the gizmo's keys switch its mode
++	// =================================================================================================
++
++	/**
++	 * Takes the mouse for the gizmos' handles and chips before the designer sees it: a left press on one - where the designer
++	 * itself is under the mouse, not a menu or drawer over it - is consumed, so the designer neither selects nor marquees, and
++	 * the moves and the release that follow are the gizmo's until the button is let go. Moving over a handle lights it up and
++	 * shows its cursor. The gizmo's keys (UWidgetGizmoSettings) are taken while the designer has the keyboard, or the mouse is
++	 * over it and no text is being typed - and only while a widget the gizmo can act on is selected. Everything else passes
++	 * through untouched. Registered first, ahead of the motion paths' input, so a handle wins over a diamond under it.
++	 */
++	class FGizmoInput : public IInputProcessor
++	{
++	public:
++		virtual void Tick(const float DeltaTime, FSlateApplication& SlateApp, TSharedRef<ICursor> Cursor) override
++		{
++			if (const TSharedPtr<FGizmoLayer> Layer = Pressed.Pin())
++			{
++				// A release that never came here - the window lost focus mid-drag: the drag is kept where it is.
++				if (!SlateApp.GetPressedMouseButtons().Contains(EKeys::LeftMouseButton))
++				{
++					Pressed.Reset();
++					Layer->Release();
++					GiveBackCursor(*Cursor);
++					return;
++				}
++
++				// Shift or Ctrl pressed or let go mid-drag: worked out again at once, without waiting for the mouse to move.
++				const FModifierKeysState Modifiers = SlateApp.GetModifierKeys();
++				const bool bShift = Modifiers.IsShiftDown();
++				const bool bCtrl = Modifiers.IsControlDown() || Modifiers.IsCommandDown();
++				if (bShift != bLastShift || bCtrl != bLastCtrl)
++				{
++					bLastShift = bShift;
++					bLastCtrl = bCtrl;
++					Layer->ModifiersChanged(Modifiers);
++				}
++
++				Cursor->SetType(Layer->GetCursorFor(Layer->GetPressed()));
++				bCursorOwned = true;
++				return;
++			}
++
++			if (bSwallowLeft && !SlateApp.GetPressedMouseButtons().Contains(EKeys::LeftMouseButton))
++			{
++				bSwallowLeft = false;
++			}
++
++			// Kept up every frame while a handle is lit: Slate asks the designer for its own cursor whenever it likes.
++			for (const TWeakPtr<FGizmoLayer>& Weak : GetDesignerLayers())
++			{
++				const TSharedPtr<FGizmoLayer> Layer = Weak.Pin();
++				if (Layer.IsValid() && Layer->GetHovered().IsValid())
++				{
++					Cursor->SetType(Layer->GetCursorFor(Layer->GetHovered()));
++					bCursorOwned = true;
++					return;
++				}
++			}
++			GiveBackCursor(*Cursor);
++		}
++
++		virtual bool HandleMouseButtonDownEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
++		{
++			const FKey Button = MouseEvent.GetEffectingButton();
++
++			// A right press mid-drag puts it back, as Escape does; its release is kept from the designer too.
++			if (Button == EKeys::RightMouseButton)
++			{
++				if (const TSharedPtr<FGizmoLayer> Layer = Pressed.Pin())
++				{
++					Pressed.Reset();
++					Layer->CancelDrag();
++					bSwallowRight = true;
++					bSwallowLeft = true;
++					return true;
++				}
++				return false;
++			}
++			if (Button != EKeys::LeftMouseButton)
++			{
++				return false;
++			}
++
++			FHit Hit;
++			const TSharedPtr<FGizmoLayer> Layer = FindHit(SlateApp, MouseEvent.GetScreenSpacePosition(), Hit);
++			if (!Layer.IsValid())
++			{
++				return false;
++			}
++			Layer->Press(Hit, MouseEvent.GetScreenSpacePosition());
++			if (Layer->IsPressed())
++			{
++				Pressed = Layer;
++				bLastShift = MouseEvent.IsShiftDown();
++				bLastCtrl = MouseEvent.IsControlDown() || MouseEvent.IsCommandDown();
++				SetCursor(SlateApp, Layer->GetCursorFor(Hit));
++				bCursorOwned = true;
++			}
++			else
++			{
++				// A chip: it acted; its release is the designer's no more than its press was.
++				bSwallowLeft = true;
++			}
++			return true;
++		}
++
++		/** The second press of a double click comes as a double click: on a handle it is a press, as the first was. */
++		virtual bool HandleMouseButtonDoubleClickEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
++		{
++			return MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && HandleMouseButtonDownEvent(SlateApp, MouseEvent);
++		}
++
++		virtual bool HandleMouseMoveEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
++		{
++			const FVector2D Screen = MouseEvent.GetScreenSpacePosition();
++			if (const TSharedPtr<FGizmoLayer> Layer = Pressed.Pin())
++			{
++				Layer->PressMove(Screen, MouseEvent.GetModifierKeys());
++				SetCursor(SlateApp, Layer->GetCursorFor(Layer->GetPressed()));
++				bCursorOwned = true;
++				return true;
++			}
++
++			// Lit up under the mouse - and its cursor. The move is kept from the designer, which would otherwise have Slate ask it
++			// for its own cursor straight after.
++			FHit Hit;
++			const TSharedPtr<FGizmoLayer> HitLayer = FindHit(SlateApp, Screen, Hit);
++			for (const TWeakPtr<FGizmoLayer>& Weak : GetDesignerLayers())
++			{
++				if (const TSharedPtr<FGizmoLayer> Layer = Weak.Pin())
++				{
++					Layer->SetHover(Layer == HitLayer ? Hit : FHit());
++				}
++			}
++			if (HitLayer.IsValid())
++			{
++				SetCursor(SlateApp, HitLayer->GetCursorFor(Hit));
++				bCursorOwned = true;
++				return true;
++			}
++			if (bCursorOwned)
++			{
++				bCursorOwned = false;
++				SetCursor(SlateApp, EMouseCursor::Default);
++			}
++			return false;
++		}
++
++		virtual bool HandleMouseButtonUpEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
++		{
++			const FKey Button = MouseEvent.GetEffectingButton();
++			if (Button == EKeys::RightMouseButton && bSwallowRight)
++			{
++				bSwallowRight = false;
++				return true;
++			}
++			if (Button != EKeys::LeftMouseButton)
++			{
++				return false;
++			}
++			if (const TSharedPtr<FGizmoLayer> Layer = Pressed.Pin())
++			{
++				Pressed.Reset();
++				Layer->Release();
++				return true;
++			}
++			if (bSwallowLeft)
++			{
++				bSwallowLeft = false;
++				return true;
++			}
++			return false;
++		}
++
++		virtual bool HandleKeyDownEvent(FSlateApplication& SlateApp, const FKeyEvent& InKeyEvent) override
++		{
++			const FKey Key = InKeyEvent.GetKey();
++
++			// Mid-drag: Escape puts everything back; the gizmo's keys wait for the drag to end.
++			if (const TSharedPtr<FGizmoLayer> Layer = Pressed.Pin())
++			{
++				if (Key == EKeys::Escape)
++				{
++					Pressed.Reset();
++					Layer->CancelDrag();
++					// The left button is still held: its release was the gizmo's press, and is kept from the designer too.
++					bSwallowLeft = true;
++					return true;
++				}
++				return IsGizmoKey(InKeyEvent);
++			}
++
++			const UWidgetGizmoSettings& Settings = UWidgetGizmoSettings::Get();
++			if (!Settings.bEnableGizmo || !IsGizmoKey(InKeyEvent))
++			{
++				return false;
++			}
++			const TSharedPtr<FGizmoLayer> Layer = FindKeyLayer(SlateApp);
++			if (!Layer.IsValid())
++			{
++				return false;
++			}
++			if (InKeyEvent.IsRepeat())
++			{
++				return true;
++			}
++
++			if (Matches(Settings.HideKey, InKeyEvent))
++			{
++				GizmoHidden() = !GizmoHidden();
++			}
++			else
++			{
++				// A mode's key switches to it - and shows the gizmo if it was hidden; pressed again in that mode, back to Move.
++				const EMode Asked = Matches(Settings.ScaleKey, InKeyEvent) ? EMode::Scale : (Matches(Settings.RotateKey, InKeyEvent) ? EMode::Rotate : EMode::Shear);
++				GizmoMode() = (GizmoMode() == Asked && !GizmoHidden()) ? EMode::Move : Asked;
++				GizmoHidden() = false;
++			}
++			for (const TWeakPtr<FGizmoLayer>& Weak : GetDesignerLayers())
++			{
++				if (const TSharedPtr<FGizmoLayer> Lit = Weak.Pin())
++				{
++					Lit->SetHover(FHit());
++				}
++			}
++			RepaintAll();
++			return true;
++		}
++
++		virtual const TCHAR* GetDebugName() const override { return TEXT("WidgetGizmo"); }
++
++	private:
++		static bool Matches(const FInputChord& Chord, const FKeyEvent& InKeyEvent)
++		{
++			return Chord.Key.IsValid() && Chord.Key == InKeyEvent.GetKey()
++				&& Chord.NeedsShift() == InKeyEvent.IsShiftDown()
++				&& Chord.NeedsControl() == InKeyEvent.IsControlDown()
++				&& Chord.NeedsAlt() == InKeyEvent.IsAltDown()
++				&& Chord.NeedsCommand() == InKeyEvent.IsCommandDown();
++		}
++
++		static bool IsGizmoKey(const FKeyEvent& InKeyEvent)
++		{
++			const UWidgetGizmoSettings& Settings = UWidgetGizmoSettings::Get();
++			return Matches(Settings.ScaleKey, InKeyEvent) || Matches(Settings.RotateKey, InKeyEvent)
++				|| Matches(Settings.ShearKey, InKeyEvent) || Matches(Settings.HideKey, InKeyEvent);
++		}
++
++		/** The layer whose handle or chip is at Screen - checked against what was drawn, then that its designer is on top. */
++		static TSharedPtr<FGizmoLayer> FindHit(FSlateApplication& SlateApp, const FVector2D& Screen, FHit& OutHit)
++		{
++			for (const TWeakPtr<FGizmoLayer>& Weak : GetDesignerLayers())
++			{
++				const TSharedPtr<FGizmoLayer> Layer = Weak.Pin();
++				if (!Layer.IsValid() || !Layer->IsShowing() || !Layer->IsOver(Screen))
++				{
++					continue;
++				}
++				const FHit Hit = Layer->HitTest(Screen);
++				if (!Hit.IsValid())
++				{
++					continue;
++				}
++				// Only where the designer itself is under the mouse - not a menu, a drawer or another window over it.
++				const FWidgetPath Path = SlateApp.LocateWindowUnderMouse(Screen, SlateApp.GetInteractiveTopLevelWindows());
++				if (!Layer->IsDesignerUnder(Path))
++				{
++					continue;
++				}
++				OutHit = Hit;
++				return Layer;
++			}
++			OutHit = FHit();
++			return nullptr;
++		}
++
++		/**
++		 * The layer the gizmo's keys are for: the one whose designer has the keyboard, else the one under the mouse - never while
++		 * text is being typed anywhere (a Details field, a rename in the Hierarchy) - and only with a widget it can act on.
++		 */
++		static TSharedPtr<FGizmoLayer> FindKeyLayer(FSlateApplication& SlateApp)
++		{
++			const TSharedPtr<SWidget> Focused = SlateApp.GetKeyboardFocusedWidget();
++			if (Focused.IsValid() && Focused->GetType().ToString().Contains(TEXT("EditableText")))
++			{
++				return nullptr;
++			}
++			for (const TWeakPtr<FGizmoLayer>& Weak : GetDesignerLayers())
++			{
++				const TSharedPtr<FGizmoLayer> Layer = Weak.Pin();
++				if (Layer.IsValid() && Layer->HasTargets() && Layer->IsKeyboardIn(Focused))
++				{
++					return Layer;
++				}
++			}
++			const FVector2D Screen = SlateApp.GetCursorPos();
++			for (const TWeakPtr<FGizmoLayer>& Weak : GetDesignerLayers())
++			{
++				const TSharedPtr<FGizmoLayer> Layer = Weak.Pin();
++				if (Layer.IsValid() && Layer->HasTargets() && Layer->IsOver(Screen)
++					&& Layer->IsDesignerUnder(SlateApp.LocateWindowUnderMouse(Screen, SlateApp.GetInteractiveTopLevelWindows())))
++				{
++					return Layer;
++				}
++			}
++			return nullptr;
++		}
++
++		void GiveBackCursor(ICursor& Cursor)
++		{
++			if (bCursorOwned)
++			{
++				bCursorOwned = false;
++				Cursor.SetType(EMouseCursor::Default);
++			}
++		}
++
++		static void SetCursor(FSlateApplication& SlateApp, EMouseCursor::Type CursorType)
++		{
++			if (const TSharedPtr<ICursor> PlatformCursor = SlateApp.GetPlatformCursor())
++			{
++				PlatformCursor->SetType(CursorType);
++			}
++		}
++
++		TWeakPtr<FGizmoLayer> Pressed;
++		bool bSwallowLeft = false;
++		bool bSwallowRight = false;
++		bool bLastShift = false;
++		bool bLastCtrl = false;
++
++		/** Whether the cursor showing is one set here - given back once the mouse leaves every handle. */
++		bool bCursorOwned = false;
++	};
++
++	namespace
++	{
++		TSharedPtr<FGizmoInput>& GetInput()
++		{
++			static TSharedPtr<FGizmoInput> Input;
++			return Input;
++		}
++
++		int32& GetInputUsers()
++		{
++			static int32 Users = 0;
++			return Users;
++		}
++	}
++
++	void AcquireInput()
++	{
++		if (++GetInputUsers() == 1 && FSlateApplication::IsInitialized())
++		{
++			GetInput() = MakeShared<FGizmoInput>();
++			// First of every preprocessor: a handle wins over a motion path diamond drawn under it.
++			FSlateApplication::Get().RegisterInputPreProcessor(GetInput(), 0);
++		}
++	}
++
++	void ReleaseInput()
++	{
++		if (--GetInputUsers() > 0)
++		{
++			return;
++		}
++		GetInputUsers() = 0;
++		if (GetInput().IsValid() && FSlateApplication::IsInitialized())
++		{
++			FSlateApplication::Get().UnregisterInputPreProcessor(GetInput());
++		}
++		GetInput().Reset();
++	}
++}
++
++// =====================================================================================================
++// Extension - the designer draws the gizmo through it, every frame it is drawn
++// =====================================================================================================
++
++FWidgetGizmoExtension::FWidgetGizmoExtension()
++{
++	ExtensionId = FName(TEXT("WidgetGizmo"));
++}
++
++FWidgetGizmoExtension::~FWidgetGizmoExtension()
++{
++	Layer.Reset();
++}
++
++void FWidgetGizmoExtension::Paint(const TSet<FWidgetReference>& Selection, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++	FSlateWindowElementList& OutDrawElements, int32 LayerId) const
++{
++	using namespace WidgetGizmoImpl;
++
++	if (!Layer.IsValid())
++	{
++		Layer = MakeShared<FGizmoLayer>();
++		Layer->Register();
++	}
++	Layer->Paint(Selection, AllottedGeometry, OutDrawElements, LayerId);
++}
++
++TSharedRef<FDesignerExtension> FWidgetGizmoFactory::CreateDesignerExtension() const
++{
++	return MakeShared<FWidgetGizmoExtension>();
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmo.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmo.h
+new file mode 100644
+index 0000000..fdbf255
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmo.h
+@@ -0,0 +1,72 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++
++#include "DesignerExtension.h"
++#include "IHasDesignerExtensibility.h"
++#include "WidgetReference.h"
++
++/**
++ * The Widget Gizmo: moves, scales, rotates and shears the widgets selected in the UMG designer, the way a 2D tool's transform
++ * gizmo does (Unreal's viewport, Figma, After Effects, Rive) - not a widget, nothing to place: it shows over every widget
++ * clicked in the designer.
++ *
++ * It edits the widget's Render Transform (Translation, Scale, Shear, Angle) about its Render Transform Pivot, and sits on that
++ * pivot. Its modes, each with its own handles:
++ *  - Move (the default): an X and a Y arrow (along the widget's parent's axes, which is what Translation moves along) and a
++ *    square between them that moves freely. Shift on the square keeps the move to the axis moved along most.
++ *  - Scale (S): a handle at each corner and edge middle of the widget's box as drawn - corners scale both ways (Shift: keeping
++ *    the proportions), edges one way - always about the pivot, as the Render Transform scales.
++ *  - Rotate (R): a ring about the pivot. Shift turns in steps of Rotation Snap.
++ *  - Shear (Z): a grip on each edge; the top and bottom slide sideways, the sides up and down. Shift in steps of Shear Snap.
++ * Pressing a mode's key again goes back to Move; the chips above the widget do the same with the mouse. In every mode the
++ * gizmo itself - its middle, the pivot - can be dragged: that moves the Render Transform Pivot, and the Translation is made up
++ * for it, so the widget stays exactly where it is and only what it turns and scales about moves. The pivot snaps to the box's
++ * corners, edge middles and middle (Ctrl held: free). H hides the gizmo and shows it again. Escape or a right click during a
++ * drag puts everything back. Every drag is one undo step.
++ *
++ * Keys, size, snapping and whether the gizmo shows at all: Editor Preferences > Plugins > Widget Gizmo (UWidgetGizmoSettings).
++ * The keys act only while the designer has the keyboard, or the mouse is over it and no text is being typed, and a widget is
++ * selected.
++ *
++ * Drawn and hit-tested the way the motion paths are (see WidgetAnimMotionPath.h): the designer calls each extension's Paint
++ * every frame it draws, after its preview, so the gizmo is part of the designer's own drawing, in its space and clipped to it;
++ * the mouse and keys come through an input preprocessor that hit-tests what was drawn - only where the designer itself is
++ * under the mouse - before the designer sees them. It is asked first, so on a widget with a motion path the gizmo's handles
++ * win over a diamond under them (H hides the gizmo to reach it).
++ *
++ * Edits go to the Widget Blueprint's own widget (the template, which is saved) and to the designer's preview (so they show at
++ * once). The gizmo is placed from the template's values over the preview's layout - never the preview's render transform as
++ * last drawn, which lags a frame behind a drag and would make the gizmo shake.
++ */
++namespace WidgetGizmoImpl
++{
++	class FGizmoLayer;
++}
++
++class FWidgetGizmoExtension : public FDesignerExtension
++{
++public:
++	FWidgetGizmoExtension();
++	virtual ~FWidgetGizmoExtension();
++
++	// FDesignerExtension
++	/** Every frame the designer is drawn, after its preview: the gizmo over each selected widget. */
++	virtual void Paint(const TSet<FWidgetReference>& Selection, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++		FSlateWindowElementList& OutDrawElements, int32 LayerId) const override;
++
++private:
++	/** This designer's gizmo - made on its first paint. */
++	mutable TSharedPtr<WidgetGizmoImpl::FGizmoLayer> Layer;
++};
++
++/** Hands the designer a fresh gizmo extension per designer opened. */
++class FWidgetGizmoFactory : public IDesignerExtensionFactory, public TSharedFromThis<FWidgetGizmoFactory>
++{
++public:
++	virtual ~FWidgetGizmoFactory() = default;
++
++	virtual TSharedRef<FDesignerExtension> CreateDesignerExtension() const override;
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmoSettings.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmoSettings.cpp
+new file mode 100644
+index 0000000..765376a
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmoSettings.cpp
+@@ -0,0 +1,29 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "WidgetGizmoSettings.h"
++
++#include "InputCoreTypes.h"
++
++#define LOCTEXT_NAMESPACE "WidgetGizmoSettings"
++
++UWidgetGizmoSettings::UWidgetGizmoSettings()
++	: ScaleKey(EKeys::S)
++	, RotateKey(EKeys::R)
++	, ShearKey(EKeys::Z)
++	, HideKey(EKeys::H)
++{
++}
++
++#if WITH_EDITOR
++FText UWidgetGizmoSettings::GetSectionText() const
++{
++	return LOCTEXT("SectionText", "Widget Gizmo");
++}
++
++FText UWidgetGizmoSettings::GetSectionDescription() const
++{
++	return LOCTEXT("SectionDescription", "The gizmo that moves, scales, rotates and shears the widgets selected in the UMG designer, and moves their pivot: whether it shows, its keys, its size and its snapping.");
++}
++#endif
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmoSettings.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmoSettings.h
+new file mode 100644
+index 0000000..f48dbad
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmoSettings.h
+@@ -0,0 +1,85 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Engine/DeveloperSettings.h"
++#include "Framework/Commands/InputChord.h"
++
++#include "WidgetGizmoSettings.generated.h"
++
++/**
++ * The Widget Gizmo's per-user preferences: Editor Preferences > Plugins > Widget Gizmo.
++ *
++ * The gizmo moves, scales, rotates and shears the widgets selected in the UMG designer through their Render Transform, about
++ * their Render Transform Pivot - which is moved by dragging the gizmo itself. See WidgetGizmo.h.
++ *
++ * Per user and per project (EditorPerProjectUserSettings), like the Widget Animations Editor's preferences: one person's keys
++ * never land in anyone else's editor.
++ */
++UCLASS(config = EditorPerProjectUserSettings, meta = (DisplayName = "Widget Gizmo"))
++class UWidgetGizmoSettings : public UDeveloperSettings
++{
++	GENERATED_BODY()
++
++public:
++
++	UWidgetGizmoSettings();
++
++	/**
++	 * Shows the gizmo over every widget selected in the UMG designer. Off: no gizmo, and its keys are left to the editor.
++	 * Hide Gizmo (H) only hides it until it is pressed again; this turns it off for good.
++	 */
++	UPROPERTY(config, EditAnywhere, Category = "Gizmo", meta = (DisplayName = "Enable Widget Gizmo"))
++	bool bEnableGizmo = true;
++
++	/** How big the gizmo is drawn, whatever the designer's zoom: 1 is the default size. */
++	UPROPERTY(config, EditAnywhere, Category = "Gizmo", meta = (DisplayName = "Gizmo Size", ClampMin = "0.5", ClampMax = "3", UIMin = "0.5", UIMax = "3"))
++	float GizmoSize = 1.f;
++
++	/**
++	 * The key that switches the gizmo to Scale - handles at the widget's corners and edges - and, pressed again, back to Move.
++	 * Only while the designer has the keyboard or the mouse, and a widget is selected.
++	 */
++	UPROPERTY(config, EditAnywhere, Category = "Keys", meta = (DisplayName = "Scale"))
++	FInputChord ScaleKey;
++
++	/** The key that switches the gizmo to Rotate - a ring about the pivot - and, pressed again, back to Move. */
++	UPROPERTY(config, EditAnywhere, Category = "Keys", meta = (DisplayName = "Rotate"))
++	FInputChord RotateKey;
++
++	/** The key that switches the gizmo to Shear - a grip on each edge - and, pressed again, back to Move. */
++	UPROPERTY(config, EditAnywhere, Category = "Keys", meta = (DisplayName = "Shear"))
++	FInputChord ShearKey;
++
++	/** The key that hides the gizmo, and shows it again. Hidden, the designer gets every press as if there were no gizmo. */
++	UPROPERTY(config, EditAnywhere, Category = "Keys", meta = (DisplayName = "Hide Gizmo"))
++	FInputChord HideKey;
++
++	/** While rotating with Shift held, the angle goes in steps of this many degrees. */
++	UPROPERTY(config, EditAnywhere, Category = "Snapping", meta = (DisplayName = "Rotation Snap (Shift)", ClampMin = "0.1", ClampMax = "90", UIMin = "1", UIMax = "90", Units = "Degrees"))
++	float RotationSnap = 15.f;
++
++	/** While shearing with Shift held, the shear goes in steps of this many degrees. */
++	UPROPERTY(config, EditAnywhere, Category = "Snapping", meta = (DisplayName = "Shear Snap (Shift)", ClampMin = "0.1", ClampMax = "45", UIMin = "1", UIMax = "45", Units = "Degrees"))
++	float ShearSnap = 5.f;
++
++	/**
++	 * While moving the pivot, it snaps to the widget's corners, edge middles and middle when it comes within this many pixels
++	 * of one (Ctrl held: no snapping). 0: never.
++	 */
++	UPROPERTY(config, EditAnywhere, Category = "Snapping", meta = (DisplayName = "Pivot Snap Distance", ClampMin = "0", ClampMax = "32", UIMin = "0", UIMax = "32"))
++	float PivotSnapDistance = 8.f;
++
++	static const UWidgetGizmoSettings& Get() { return *GetDefault<UWidgetGizmoSettings>(); }
++
++	// UDeveloperSettings
++	virtual FName GetContainerName() const override { return TEXT("Editor"); }
++	virtual FName GetCategoryName() const override { return TEXT("Plugins"); }
++	virtual FName GetSectionName() const override { return TEXT("WidgetGizmo"); }
++
++#if WITH_EDITOR
++	virtual FText GetSectionText() const override;
++	virtual FText GetSectionDescription() const override;
++#endif
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index f71a695..13e2add 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -859,5 +859,62 @@ namespace NameTBD
+ 			inline constexpr float PathThickness = 1.5f;
+ 			inline constexpr float HitRadius = 7.0f;
+ 		}
++
++		namespace WidgetGizmo
++		{
++			// -------------------------------------------------------------------------------------------------
++			// The Widget Gizmo over the widgets selected in the designer (see WidgetGizmo.h). Read the way Unreal's own
++			// viewport gizmo is: X red, Y green, the rotation ring blue, and whatever is under the mouse or being dragged
++			// yellow. Every line is drawn twice - a dark line under the colored one - so it reads over any background.
++			//   Pivot*: the gizmo's middle, the Render Transform Pivot - dragged to move it.
++			//   Box: the widget's box as drawn, in Scale and Shear, which the handles sit on.
++			//   Grip*: the Scale handles and the Shear grips.
++			//   Chip*: the mode chips above the widget (as the Custom Shape path editor's toolbar chips).
++			//   Readout*: what a drag sets, beside the mouse.
++			// Sizes are in the designer's pixels, whatever its zoom, times the Gizmo Size preference.
++			// -------------------------------------------------------------------------------------------------
++
++			inline const FLinearColor Underlay(0.0f, 0.0f, 0.0f, 0.6f);
++			inline const FLinearColor AxisX(0.90f, 0.22f, 0.17f, 1.0f);
++			inline const FLinearColor AxisY(0.38f, 0.80f, 0.20f, 1.0f);
++			inline const FLinearColor PlaneFill(0.95f, 0.80f, 0.25f, 0.45f);
++			inline const FLinearColor PlaneOutline(0.95f, 0.80f, 0.25f, 0.95f);
++			inline const FLinearColor Ring(0.25f, 0.55f, 1.0f, 1.0f);
++			inline const FLinearColor RingSweep(0.25f, 0.55f, 1.0f, 0.55f);
++			inline const FLinearColor Hot(1.0f, 0.86f, 0.10f, 1.0f);
++			inline const FLinearColor PivotFill(1.0f, 1.0f, 1.0f, 1.0f);
++			inline const FLinearColor PivotRing(AnimationOrange_Normal);
++			inline const FLinearColor Box(1.0f, 1.0f, 1.0f, 0.6f);
++			inline const FLinearColor GripFill(1.0f, 1.0f, 1.0f, 1.0f);
++			inline const FLinearColor GripOutline(0.05f, 0.05f, 0.05f, 1.0f);
++			inline const FLinearColor ShearGrip(AnimationOrange_Normal);
++			inline const FLinearColor ChipBackground(0.02f, 0.02f, 0.02f, 0.88f);
++			inline const FLinearColor ChipActive(AnimationOrange_Normal.R * 0.78f, AnimationOrange_Normal.G * 0.78f, AnimationOrange_Normal.B * 0.78f, 1.0f);
++			inline const FLinearColor ChipActiveHovered(AnimationOrange_Normal);
++			inline const FLinearColor ChipIdle(1.0f, 1.0f, 1.0f, 0.07f);
++			inline const FLinearColor ChipIdleHovered(1.0f, 1.0f, 1.0f, 0.18f);
++			inline const FLinearColor ChipText(0.86f, 0.86f, 0.86f, 1.0f);
++			inline const FLinearColor ChipTextActive(0.04f, 0.04f, 0.04f, 1.0f);
++			inline const FLinearColor ChipKeyText(0.86f, 0.86f, 0.86f, 0.5f);
++			inline const FLinearColor ReadoutBackground(0.02f, 0.02f, 0.02f, 0.88f);
++			inline const FLinearColor ReadoutText(0.9f, 0.9f, 0.9f, 1.0f);
++
++			inline constexpr float LineThickness = 2.0f;
++			inline constexpr float ArrowLength = 64.0f;
++			inline constexpr float ArrowGap = 11.0f;
++			inline constexpr float ArrowHeadLength = 11.0f;
++			inline constexpr float ArrowHeadWidth = 9.0f;
++			inline constexpr float PlaneOffset = 20.0f;
++			inline constexpr float PlaneSize = 12.0f;
++			inline constexpr float RingRadius = 58.0f;
++			inline constexpr float PivotSize = 11.0f;
++			inline constexpr float PivotCross = 6.0f;
++			inline constexpr float GripSize = 8.0f;
++			inline constexpr float ShearGripLength = 16.0f;
++			inline constexpr float ShearGripThickness = 5.0f;
++			inline constexpr float HitSlop = 6.0f;
++			inline constexpr float ChipHeight = 18.0f;
++			inline constexpr float ChipGap = 2.0f;
++		}
+ 	}
+ }
+\ No newline at end of file
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h
+index 023d800..8690860 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDEditor.h
+@@ -7,6 +7,7 @@ class FWidgetShapePathEditorFactory;
+ class FWidgetAnimTextEditorFactory;
+ class FFlowListPathEditorFactory;
+ class FWidgetAnimMotionPathFactory;
++class FWidgetGizmoFactory;
+ struct FGraphPanelPinFactory;
+ 
+ class FNameTBDEditorModule : public IModuleInterface
+@@ -33,4 +34,7 @@ private:
+ 
+ 	// Draws the motion paths of the Widget Animations panel's animation on the UMG designer's canvas.
+ 	TSharedPtr<FWidgetAnimMotionPathFactory> MotionPathFactory;
++
++	// Puts the Widget Gizmo - move, scale, rotate, shear and the pivot of the selected widgets - on the UMG designer's canvas.
++	TSharedPtr<FWidgetGizmoFactory> GizmoFactory;
+ };
+\ No newline at end of file

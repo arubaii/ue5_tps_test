@@ -51,4 +51,7 @@ private:
 	TSharedPtr<IHttpRouter> Router;
 	FHttpRouteHandle RouteHandle;
 	FString SessionId;
+
+	/** The client's name and version from initialize ("claude-code 2.1"), for the per-model stats. */
+	FString ClientLabel;
 };

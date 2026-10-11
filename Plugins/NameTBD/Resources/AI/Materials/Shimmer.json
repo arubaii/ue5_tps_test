@@ -10,211 +10,40 @@
   "Speed": "sweeps per second",
   "Intensity": "strength"
  },
- "graph": {
-  "domain": "UI",
+ "hlsl": {
   "blend": "Translucent",
-  "nodes": [
-   {
-    "id": "uv",
-    "type": "TextureCoordinate"
+  "params": {
+   "Slant": {
+    "value": 0.35,
+    "group": "Shape"
    },
-   {
-    "id": "u",
-    "type": "ComponentMask",
-    "props": {
-     "R": true,
-     "G": false,
-     "B": false,
-     "A": false
-    },
-    "inputs": {
-     "Input": "uv"
-    }
+   "Speed": {
+    "value": 0.5,
+    "group": "Motion"
    },
-   {
-    "id": "v",
-    "type": "ComponentMask",
-    "props": {
-     "R": false,
-     "G": true,
-     "B": false,
-     "A": false
-    },
-    "inputs": {
-     "Input": "uv"
-    }
+   "Width": {
+    "value": 0.08,
+    "group": "Shape"
    },
-   {
-    "id": "slant",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Slant",
-     "DefaultValue": 0.35,
-     "Group": "Shape"
-    }
+   "BaseColor": {
+    "value": "#FFFFFF00",
+    "group": "Color"
    },
-   {
-    "id": "vs",
-    "type": "Multiply",
-    "inputs": {
-     "A": "v",
-     "B": "slant"
-    }
+   "HighlightColor": {
+    "value": "#FFFFFFB0",
+    "group": "Color"
    },
-   {
-    "id": "x0",
-    "type": "Add",
-    "inputs": {
-     "A": "u",
-     "B": "vs"
-    }
-   },
-   {
-    "id": "time",
-    "type": "Time"
-   },
-   {
-    "id": "spd",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Speed",
-     "DefaultValue": 0.5,
-     "Group": "Motion"
-    }
-   },
-   {
-    "id": "ts",
-    "type": "Multiply",
-    "inputs": {
-     "A": "time",
-     "B": "spd"
-    }
-   },
-   {
-    "id": "x1",
-    "type": "Subtract",
-    "inputs": {
-     "A": "x0",
-     "B": "ts"
-    }
-   },
-   {
-    "id": "x",
-    "type": "Frac",
-    "inputs": {
-     "Input": "x1"
-    }
-   },
-   {
-    "id": "dx0",
-    "type": "Subtract",
-    "inputs": {
-     "A": "x",
-     "B": 0.5
-    }
-   },
-   {
-    "id": "dx",
-    "type": "Abs",
-    "inputs": {
-     "Input": "dx0"
-    }
-   },
-   {
-    "id": "wid",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Width",
-     "DefaultValue": 0.08,
-     "Group": "Shape"
-    }
-   },
-   {
-    "id": "band",
-    "type": "SmoothStep",
-    "inputs": {
-     "Min": "wid",
-     "Max": 0,
-     "Value": "dx"
-    }
-   },
-   {
-    "id": "base",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "BaseColor",
-     "DefaultValue": "#FFFFFF00",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "hi",
-    "type": "VectorParameter",
-    "props": {
-     "ParameterName": "HighlightColor",
-     "DefaultValue": "#FFFFFFB0",
-     "Group": "Color"
-    }
-   },
-   {
-    "id": "inten",
-    "type": "ScalarParameter",
-    "props": {
-     "ParameterName": "Intensity",
-     "DefaultValue": 1.0,
-     "Group": "Look"
-    }
-   },
-   {
-    "id": "rgb",
-    "type": "Lerp",
-    "inputs": {
-     "A": "base",
-     "B": "hi",
-     "Alpha": "band"
-    }
-   },
-   {
-    "id": "ha",
-    "type": "Multiply",
-    "inputs": {
-     "A": "hi.A",
-     "B": "inten"
-    }
-   },
-   {
-    "id": "a0",
-    "type": "Lerp",
-    "inputs": {
-     "A": "base.A",
-     "B": "ha",
-     "Alpha": "band"
-    }
-   },
-   {
-    "id": "vc",
-    "type": "VertexColor"
-   },
-   {
-    "id": "rgb_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "rgb",
-     "B": "vc"
-    }
-   },
-   {
-    "id": "alpha_out",
-    "type": "Multiply",
-    "inputs": {
-     "A": "a0",
-     "B": "vc.A"
-    }
+   "Intensity": {
+    "value": 1.0,
+    "group": "Look"
    }
-  ],
-  "outputs": {
-   "FinalColor": "rgb_out",
-   "Opacity": "alpha_out"
-  }
+  },
+  "code": [
+   "float x = frac(uv.x + uv.y * Slant - time * Speed);",
+   "float band = 1.0 - smoothstep(0.0, max(Width, 0.0001), abs(x - 0.5));",
+   "float3 c = lerp(BaseColor.rgb, HighlightColor.rgb, band);",
+   "float alpha = lerp(BaseColor.a, HighlightColor.a * Intensity, band);",
+   "return float4(c, saturate(alpha));"
+  ]
  }
 }
