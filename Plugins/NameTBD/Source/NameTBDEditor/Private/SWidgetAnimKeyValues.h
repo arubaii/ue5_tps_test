@@ -13,8 +13,9 @@ class SVerticalBox;
  * a Transform key that only scales shows Scale X and Y, not its whole Transform.
  *
  * One key: a row per value, name and box. Several keys (a track picked - every key of it - or several keys picked): a table
- * per track, a row per key and a column per value any of them alters, a box only where that key alters it. Show All Values
- * puts every value in, the ones a key doesn't alter dimmed.
+ * per track, a row per key and a column per value. Keys picked list every value they hold, the ones a key doesn't alter dimmed.
+ * A track picked lists only the values its keys alter, a box only where that key alters it - unless Show All Values, which only
+ * a track's list offers, puts every value in, dimmed as a key's are.
  *
  * Every box is the track's own number, read live: typed in - plain numbers or math ("+8", "*2", "x * 2 + 1", see
  * WidgetAnimKeyValues::Evaluate) - or dragged. Ctrl+click picks several boxes (Shift+click a run down a column): typing into
@@ -25,9 +26,14 @@ class SWidgetAnimKeyValues : public SCompoundWidget
 {
 public:
 
-	SLATE_BEGIN_ARGS(SWidgetAnimKeyValues) {}
+	SLATE_BEGIN_ARGS(SWidgetAnimKeyValues)
+		: _ForTracks(false)
+	{}
 		/** The keys to list, as the Track Editor counts them. Several tracks' are listed track by track, in the order given. */
 		SLATE_ARGUMENT(TArray<SWidgetAnimTimeline::FKeyRef>, Keys)
+
+		/** Listed for tracks picked - all their keys - rather than keys picked: only the values altered, and Show All Values. */
+		SLATE_ARGUMENT(bool, ForTracks)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs, TWeakPtr<SWidgetAnimTimeline> InPanel);
@@ -68,4 +74,7 @@ private:
 	TArray<FTrackPart> Parts;
 	TArray<TArray<TSharedPtr<FRowItem>>> PartRows;
 	int32 NumTracksLeftOut = 0;
+
+	/** Every value the keys hold is listed, not only those altered: keys picked, or a track's with Show All Values. */
+	bool bListAll = false;
 };

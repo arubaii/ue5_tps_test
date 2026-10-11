@@ -239,13 +239,59 @@ namespace NameTBD::Tooltips
 		inline FText NewTimelineTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewTimelineTooltip",
-				"Press Enter for a new, empty timeline in this Widget Blueprint - named Timeline 1, Timeline 2 and so on unless a name is typed - opened straight away.");
+				"Press Enter for a new Track Sheet in this Widget Blueprint: a timeline of tracks, each running from a start to an end, its keys along it - named Timeline 1, Timeline 2 and so on unless a name is typed - opened straight away. Chosen now, for the timeline's life.");
 		}
 
 		inline FText NewTimelineButtonTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewTimelineButtonTooltip",
-				"New Timeline: make this Widget Blueprint's first animation timeline, named Timeline 1. Rename it from the timeline picker above.");
+				"New Track Sheet: make this Widget Blueprint's first animation timeline as a Track Sheet - tracks, each running from a start to an end, its keys along it - named Timeline 1. Rename it from the timeline picker above. Chosen now, for the timeline's life.");
+		}
+
+		inline FText KeyRowKindTakenNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyRowKindTakenNote",
+				"{1} already has a {0} row: a Key Group keeps one row of each kind of key.");
+		}
+
+		inline FText KeyRowPreviousTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyRowPreviousTooltip", "To the previous key of the sheet - any row's, before the playhead: it is picked, and the playhead goes to it.");
+		}
+
+		inline FText KeyRowNextTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyRowNextTooltip", "To the next key of the sheet - any row's, after the playhead: it is picked, and the playhead goes to it.");
+		}
+
+		inline FText KeyRowAddTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyRowAddTooltip",
+				"Add a key to this row at the playhead - before its first key or after its last too - holding what the row has there. Its values show in the Selection panel.");
+		}
+
+		inline FText KeyRowRemoveTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyRowRemoveTooltip",
+				"Take the key at the playhead off this row. A row's last key takes the row with it.");
+		}
+
+		inline FText AddDopeKeyTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "AddDopeKeyTooltip",
+				"Add Key: a key of the kind picked - Fade, Scale, Transform... - on this group's widget, where the menu was opened (or at the playhead): a row of its own, holding the widget as it is. Place more keys along the row by right-clicking it, or with the diamond in the Keys list.");
+		}
+
+		inline FText NewDopeSheetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewDopeSheetTooltip",
+				"Press Enter for a new Dope Sheet in this Widget Blueprint: a timeline of keys only. Every row is one kind of key on one widget - Fade, Scale, Transform... - its keys placed anywhere, dragged, deleted, eased; no tracks with a start and end to manage. Chosen now, for the timeline's life. It saves and plays as any animation, each row holding its first key until it gets there.");
+		}
+
+		inline FText NewDopeSheetButtonTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewDopeSheetButtonTooltip",
+				"New Dope Sheet: make this Widget Blueprint's first timeline as a Dope Sheet - keys only, as a dope sheet edits them: right-click to Add Key of any kind, then place more keys along its row. Chosen now, for the timeline's life.");
 		}
 
 		inline FText NewTimelineHint()
@@ -451,7 +497,7 @@ namespace NameTBD::Tooltips
 		inline FText PrevKeyTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PrevKeyTooltip",
-				"Previous Key: The previous key or track edge (,)");
+				"Previous Key: The previous key or track edge - in a Dope Sheet, the previous key of any row (,)");
 		}
 
 		inline FText PauseTooltip()
@@ -469,7 +515,7 @@ namespace NameTBD::Tooltips
 		inline FText NextKeyTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NextKeyTooltip",
-				"Next Key: The next key or track edge (.)");
+				"Next Key: The next key or track edge - in a Dope Sheet, the next key of any row (.)");
 		}
 
 		inline FText ToEndTooltip()
@@ -1908,7 +1954,7 @@ namespace NameTBD::Tooltips
 		inline FText GraphCurveTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphCurveTooltip",
-				"Curve To Next Key: how each selected key moves on to the next. Bezier keeps the shape it has now and gives it handles to drag. On a track with no keys, the presets set its Easing.");
+				"Curve To Next Key: how each selected key moves on to the next. Cubic (User) keeps the shape it has now and gives it handles to drag. On a track with no keys, the presets set its Easing.");
 		}
 
 		inline FText GraphCurveNone()
@@ -2119,11 +2165,6 @@ namespace NameTBD::Tooltips
 				"Where the track starts in the animation - drag the box or type a time. The track is placed there on the timeline as if dragged: the tracks around it stay where they are. With several tracks selected, the earliest starts here and the others keep their places relative to it.");
 		}
 
-		inline FText KeyframeOnlyTooltip()
-		{
-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyframeOnlyTooltip",
-				"Keyframe Only: tracks are shown and edited as their keys, as in a dope sheet - each track a thin lane between its first and last key, its start and end keys included. Click a lane to pick its track (its keys' values show in the Selection panel), drag across lanes to box keys, drag a start or end key to resize its track. Move whole tracks with Start Time or the arrow keys.");
-		}
 
 		inline FText KeyValueCellTooltip()
 		{
@@ -2131,22 +2172,10 @@ namespace NameTBD::Tooltips
 				"{0} at this key. Type a number or math: +8 adds 8, *2 doubles, x * 2 + 1 works it out from the value here. Drag to change it. Ctrl+click to pick several boxes (Shift+click a run down a column): typing into one sets them all - each worked out from its own value - and dragging one moves them all by the same amount.");
 		}
 
-		inline FText KeyValuesHint()
-		{
-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValuesHint",
-				"Ctrl+click boxes to edit several at once. Type +8, *2 or x * 2 + 1.");
-		}
-
-		inline FText KeyValuesHintTooltip()
-		{
-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValuesHintTooltip",
-				"Only the values each key changes are listed - a key that only scales shows Scale, not its whole transform. Ctrl+click boxes to pick several, Shift+click for a run down a column. A number typed into a picked box goes into every picked box, worked out from each one's own value: +8 adds 8, -= 8 takes 8 off, *2 doubles, /2 halves, x * 2 + 1 uses the value as x; a plain number (or -8) sets them all to it. Dragging a picked box moves them all together. Each edit is one undo step.");
-		}
-
 		inline FText ShowAllKeyValuesTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ShowAllKeyValuesTooltip",
-				"List every value the keys hold, not only those each key changes. The ones a key leaves as they were are dimmed.");
+				"List every value this track's keys hold, not only those each key changes. The ones a key leaves as they were are dimmed. A key picked on its own always lists every value.");
 		}
 
 		inline FText KeyValuesMoreTracksNote()
@@ -2844,7 +2873,37 @@ namespace NameTBD::Tooltips
 		inline FText AnimationsPanelTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AnimationsPanelTooltip",
-				"This Widget Blueprint's timelines, to drag onto the graph - each makes a state that plays it. Widget Animation assets can be dragged in from the Content Browser too.");
+				"Every Widget Animation asset in the project, searched by name: drag one onto the graph (or double-click it) and a state is made that plays it. Assets can be dragged in from the Content Browser too.");
+		}
+
+		inline FText TimelinesPanelTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "TimelinesPanelTooltip",
+				"This Widget Blueprint's timelines, to drag onto the graph (or double-click) - each makes a state that plays it, with no saving first. A Dope Sheet timeline shows the key icon.");
+		}
+
+		inline FText AnimationAssetRowTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AnimationAssetRowTooltip",
+				"{0}\nDrag onto the graph, or double-click, to add a state that plays it.");
+		}
+
+		inline FText NoAnimationAssetsNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "NoAnimationAssetsNote",
+				"No Widget Animation assets in the project yet - save a timeline as one in the Widget Animations panel, or make one in the Content Browser.");
+		}
+
+		inline FText NoAnimationAssetsMatchNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "NoAnimationAssetsMatchNote",
+				"No Widget Animation asset has that in its name.");
+		}
+
+		inline FText MoreAnimationAssetsNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "MoreAnimationAssetsNote",
+				"{0} more - search to narrow them down.");
 		}
 
 		inline FText TimelinesSavedNote()

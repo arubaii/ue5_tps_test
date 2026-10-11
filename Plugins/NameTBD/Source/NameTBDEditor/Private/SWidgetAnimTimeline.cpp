@@ -130,6 +130,9 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Text/SInlineEditableTextBlock.h"
 #include "WidgetAnimNameField.h"
+#include "WidgetAnimDopeSheet.h"
+#include "DragAndDrop/DecoratedDragDropOp.h"
+#include "WidgetAnimTimelines.h"
 #include "IDetailGroup.h"
 #include "Widgets/Colors/SColorBlock.h"
 #include "Widgets/Colors/SColorPicker.h"
@@ -502,6 +505,57 @@ namespace WidgetAnimTimeline
 		return Column;
 	}
 
+	/**
+	 * Where a key at X (local units) is centered: on the middle of the line LineThickness wide a playhead, or a start or end
+	 * marker, draws there (SnapColumn, from X + 0.5) - so a line through a key runs exactly through its middle. Placed on X
+	 * itself, a key sat up to a pixel to one side of the line on it.
+	 */
+	float KeyCenterX(const FGeometry& Geometry, float X, float LineThickness)
+	{
+		const FPixelColumn Column = SnapColumn(Geometry, X + 0.5f, FMath::Max(LineThickness, 1.f), 0.f);
+		return Column.LineLeft + Column.LineWidth * 0.5f;
+	}
+
+	/**
+	 * A key's diamond - a square of Side turned 45 degrees - centered on Center (local units), drawn from its four points rather
+	 * than as a turned box: its reach either way a whole number of physical pixels, its middle on a pixel's middle up and down
+	 * and where Center.X puts it across (KeyCenterX). Turned boxes centered between pixels came out a pixel heavier on one side,
+	 * and an outline a pixel or two bigger than its fill showed on some sides and not others. Laid one over another, each a
+	 * whole pixel further out, diamonds stay concentric: an outline is even all round, a ring the same width on every side.
+	 */
+	void MakeKeyDiamond(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& Geometry, const FVector2f& Center, float Side, const FLinearColor& Color)
+	{
+		const float Scale = PixelScale(Geometry);
+		const FVector2f Origin = Geometry.GetAccumulatedLayoutTransform().GetTranslation();
+		const float ReachPixels = FMath::Max(1.f, FMath::RoundToFloat(Side * UE_INV_SQRT_2 * Scale));
+		// Across: on the half pixel nearest where it is put - a pixel's middle, or between two for a line an even number wide.
+		const float CenterXPixel = FMath::RoundToFloat((Origin.X + Center.X * Scale) * 2.f) * 0.5f;
+		const float CenterYPixel = FMath::FloorToFloat(Origin.Y + Center.Y * Scale) + 0.5f;
+		auto ToLocal = [&](float XPixel, float YPixel) { return FVector2f((XPixel - Origin.X) / Scale, (YPixel - Origin.Y) / Scale); };
+
+		const FSlateResourceHandle Handle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(*WhiteBrush());
+		const FSlateRenderTransform& Transform = Geometry.GetAccumulatedRenderTransform();
+		const FColor VertexColor = Color.ToFColor(/*bSRGB=*/true);
+		TArray<FSlateVertex> Vertices;
+		Vertices.Reserve(4);
+		for (const FVector2f& Point : {
+			ToLocal(CenterXPixel, CenterYPixel - ReachPixels),
+			ToLocal(CenterXPixel + ReachPixels, CenterYPixel),
+			ToLocal(CenterXPixel, CenterYPixel + ReachPixels),
+			ToLocal(CenterXPixel - ReachPixels, CenterYPixel) })
+		{
+			Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(Transform, Point, FVector2f(0.5f, 0.5f), VertexColor));
+		}
+		TArray<SlateIndex> Indices = { 0, 1, 2, 0, 2, 3 };
+		FSlateDrawElement::MakeCustomVerts(OutDrawElements, LayerId, Handle, Vertices, Indices, nullptr, 0, 0);
+	}
+
+	/** The side of a diamond Pixels physical pixels further out all round than one of Side - an outline, a ring. */
+	float GrowDiamond(const FGeometry& Geometry, float Side, float Pixels)
+	{
+		return Side + Pixels * UE_SQRT_2 / PixelScale(Geometry);
+	}
+
 	/** X, in local units, moved onto the nearest whole physical pixel. */
 	float SnapX(const FGeometry& Geometry, float X)
 	{
@@ -554,13 +608,74 @@ namespace WidgetAnimTimeline
 	}
 
 	/**
-	 * An animation timeline's icon, wherever one is named: the editor's own Blueprint Timeline icon - the closest thing
-	 * it has to an animation kept inside a Blueprint - else a sequence's.
+	 * A cue track's icon: an Event track's the editor's own event icon - the one on a Blueprint's event nodes - a Sound track's a
+	 * sound's, and a Particles track's a Niagara system's. Under whichever name this engine version has it; null if it has none,
+	 * or Layer is no cue.
+	 */
+	const FSlateBrush* GetCueTrackIcon(const FWidgetAnimLayer& Layer)
+	{
+		if (Layer.AnimType != EWidgetAnimType::Custom)
+		{
+			return nullptr;
+		}
+		static const FSlateBrush* EventIcon = PickBrush({ "GraphEditor.Event_16x", "Graph.Event_16x", "Icons.Event", "GraphEditor.CustomEvent_16x" });
+		static const FSlateBrush* SoundIcon = PickBrush({ "ClassIcon.SoundWave", "ClassIcon.SoundCue", "ClassIcon.SoundBase", "Icons.Audio" });
+		// A Particles track (NameTBDNiagara's FWidgetAnimParticleCueParams, which this module doesn't link to) by its settings'
+		// name. Its icon is Niagara's own, kept in Niagara's editor style rather than the editor's - looked up until found, as
+		// that style registers when Niagara's editor module loads.
+		const UScriptStruct* CueParams = Layer.TypeParams.GetScriptStruct();
+		const bool bParticles = CueParams && CueParams->GetFName() == FName(TEXT("WidgetAnimParticleCueParams"));
+		static const FSlateBrush* ParticlesIcon = nullptr;
+		if (bParticles && !ParticlesIcon)
+		{
+			static const FName NiagaraIconName(TEXT("ClassIcon.NiagaraSystem"));
+			const FSlateIcon NiagaraIcon = FSlateIconFinder::FindIcon(NiagaraIconName);
+			const ISlateStyle* NiagaraStyle = NiagaraIcon.GetStyleSet();
+			ParticlesIcon = NiagaraStyle ? NiagaraStyle->GetOptionalBrush(NiagaraIconName, nullptr, nullptr) : nullptr;
+			if (!ParticlesIcon)
+			{
+				ParticlesIcon = PickBrush({ "ClassIcon.ParticleSystem", "ClassIcon.ParticleSystemComponent", "ClassIcon.Emitter" });
+			}
+		}
+		return Layer.TypeParams.GetPtr<FWidgetAnimEventCueParams>() ? EventIcon
+			: Layer.TypeParams.GetPtr<FWidgetAnimSoundCueParams>() ? SoundIcon
+			: bParticles ? ParticlesIcon
+			: nullptr;
+	}
+
+	/**
+	 * An animation timeline's icon, wherever one is named: the plugin's own (FNameTBDStyle::TimelineIcon) - else the editor's
+	 * Blueprint Timeline icon, or a sequence's, should its file be missing.
 	 */
 	const FSlateBrush* TimelineIcon()
 	{
+		if (const FSlateBrush* Own = FNameTBDStyle::FindIcon(FNameTBDStyle::TimelineIcon))
+		{
+			return Own;
+		}
 		static const FSlateBrush* Icon = PickBrush({ "GraphEditor.Timeline_16x", "ClassIcon.TimelineTemplate", "ClassIcon.LevelSequence" });
 		return Icon;
+	}
+
+	/** A Dope Sheet timeline's icon (FNameTBDStyle::DopeSheetIcon) - the timeline's should its file be missing. */
+	const FSlateBrush* DopeSheetIcon()
+	{
+		const FSlateBrush* Own = FNameTBDStyle::FindIcon(FNameTBDStyle::DopeSheetIcon);
+		return Own ? Own : TimelineIcon();
+	}
+
+	/** A Track Sheet timeline's icon (FNameTBDStyle::TrackSheetIcon) - the timeline's should its file be missing. */
+	const FSlateBrush* TrackSheetIcon()
+	{
+		const FSlateBrush* Own = FNameTBDStyle::FindIcon(FNameTBDStyle::TrackSheetIcon);
+		return Own ? Own : TimelineIcon();
+	}
+
+	/** The icon a timeline is named with: its kind's - a Dope Sheet's or a Track Sheet's. */
+	FName TimelineKindIconName(bool bDopeSheet)
+	{
+		const FName Wanted = bDopeSheet ? FNameTBDStyle::DopeSheetIcon : FNameTBDStyle::TrackSheetIcon;
+		return FNameTBDStyle::FindIcon(Wanted) ? Wanted : FNameTBDStyle::TimelineIcon;
 	}
 
 	/** A Widget Animation asset's icon, as the Content Browser shows it. */
@@ -1492,6 +1607,22 @@ private:
 		return ViewMin + X / FMath::Max(Width, 1.f) * (ViewMax - ViewMin);
 	}
 
+	/**
+	 * Where the playhead goes for a scrub by hand at X: there - or, on a Dope Sheet, onto a key within a few pixels of it (see
+	 * SWidgetAnimTimeline::SnapScrubToKeys).
+	 */
+	float ScrubSecondsAt(float X, float Width) const
+	{
+		const float Seconds = XToTime(X, Width);
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		if (!Owner)
+		{
+			return Seconds;
+		}
+		const float SecondsPerPixel = (ViewMax - ViewMin) / FMath::Max(Width, 1.f);
+		return Owner->SnapScrubToKeys(Seconds, SWidgetAnimTimeline::ScrubKeySnapPixels * SecondsPerPixel);
+	}
+
 	/** The snap distance in seconds at the current zoom - 0 with Track Snapping off. */
 	float GetSnapThresholdSeconds(float Width) const
 	{
@@ -1747,7 +1878,10 @@ private:
 		Owner->GetKeyTimes(LayerIndex, KeyTimes);
 
 		int32 Best = INDEX_NONE;
-		float BestDistance = WidgetAnimTimeline::KeyHitRadius;
+		// A Dope Sheet's keys are drawn at Dope Sheet Key Size, and grabbed anywhere on them.
+		float BestDistance = Owner->IsDopeSheet()
+			? FMath::Max(WidgetAnimTimeline::KeyHitRadius, UWidgetAnimEditorSettings::Get().DopeSheetKeySize * 0.5f + 2.f)
+			: WidgetAnimTimeline::KeyHitRadius;
 		for (int32 Index = 0; Index < KeyTimes.Num(); ++Index)
 		{
 			const float Distance = FMath::Abs(TimeToX(Start + KeyTimes[Index], Width) - X);
@@ -1796,6 +1930,32 @@ private:
 				Hit.bOnFold = Local.X >= FoldX - 4.f && Local.X <= FoldX + FoldArrowSize + 4.f;
 			}
 			return Hit;
+		}
+
+		// A Dope Sheet's rows are only their keyframes: a key under the mouse, or nothing - between keys is empty space (a press
+		// there boxes keys, a right-click there offers a keyframe there). A collapsed row is still grabbed whole, below.
+		if (Owner->IsDopeSheet())
+		{
+			bool bAnyCollapsed = false;
+			for (const int32 LayerIndex : Line->Layers)
+			{
+				if (IsCollapsedBar(LayerIndex))
+				{
+					bAnyCollapsed = true;
+					continue;
+				}
+				const int32 Key = KeyAt(LayerIndex, Local.X, Width);
+				if (Key != INDEX_NONE)
+				{
+					Hit.Layer = LayerIndex;
+					Hit.Key = Key;
+					return Hit;
+				}
+			}
+			if (!bAnyCollapsed)
+			{
+				return Hit;
+			}
 		}
 
 		for (const int32 LayerIndex : Line->Layers)
@@ -2129,8 +2289,15 @@ private:
 	bool bMarqueeAdd = false;
 	bool bMarqueeToggle = false;
 
-	/** A selection box started on a Keyframe Only lane: let go without dragging, it was a click that picked the track. */
+	/** A selection box started on a Dope Sheet row's lane: let go without dragging, it was a click that picked the track. */
 	bool bMarqueeKeepsSelection = false;
+
+	/**
+	 * A Dope Sheet's key dragged up or down onto another row's line: that row, and whether the dragged key's row goes below it -
+	 * the whole row moves there when the drag ends (SWidgetAnimTimeline::MoveKeyRow). INDEX_NONE while it stays on its own line.
+	 */
+	int32 PendingRowTarget = INDEX_NONE;
+	bool bPendingRowBelow = false;
 
 	/**
 	 * A plain press on one of several selected keys keeps them all selected, so they can be dragged together.
@@ -2282,21 +2449,18 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			Color);
 	};
 
+	// A key's diamond, centered on the line through it (see KeyCenterX and MakeKeyDiamond): the start or end marker's, for a key
+	// on one - they are thicker - else the line a playhead on it would draw. Where the markers are is set once they are known.
+	float KeyRangeStartX = -TNumericLimits<float>::Max();
+	float KeyRangeEndX = -TNumericLimits<float>::Max();
 	auto Diamond = [&](float X, float Y, float DiamondSize, const FLinearColor& Color, int32 Layer)
 	{
-		const float Half = DiamondSize * 0.5f;
-		FSlateDrawElement::MakeBox(
-			OutDrawElements,
-			Layer,
-			AllottedGeometry.ToPaintGeometry(
-				FVector2f(DiamondSize, DiamondSize),
-				FSlateLayoutTransform(FVector2f(X - Half, Y - Half)),
-				FSlateRenderTransform(FQuat2f(FMath::DegreesToRadians(45.f))),
-				FVector2f(0.5f, 0.5f)),
-			Flat,
-			ESlateDrawEffect::None,
-			Color);
+		const UWidgetAnimEditorSettings& KeyLook = UWidgetAnimEditorSettings::Get();
+		const bool bOnMarker = FMath::Abs(X - KeyRangeStartX) < 0.5f || FMath::Abs(X - KeyRangeEndX) < 0.5f;
+		const float CenterX = WidgetAnimTimeline::KeyCenterX(AllottedGeometry, X, bOnMarker ? KeyLook.RangeLineThickness : KeyLook.PlayheadLineThickness);
+		WidgetAnimTimeline::MakeKeyDiamond(OutDrawElements, Layer, AllottedGeometry, FVector2f(CenterX, Y), DiamondSize, Color);
 	};
+	auto Grown = [&](float DiamondSize, float Pixels) { return WidgetAnimTimeline::GrowDiamond(AllottedGeometry, DiamondSize, Pixels); };
 
 	const TSharedRef<FSlateFontMeasure> Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 	auto MeasureText = [&Measure](const FString& String, const FSlateFontInfo& Font) { return FVector2f(Measure->Measure(String, Font)); };
@@ -2350,6 +2514,8 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 
 	const float StartX = TimeToX(0.f, Size.X);
 	const float EndX = TimeToX(PassSeconds, Size.X);
+	KeyRangeStartX = StartX;
+	KeyRangeEndX = EndX;
 	const float RowsBottom = FMath::Min(GetLineTop(Lines.Num()), Size.Y);
 
 	// Section text is the graph node title's - the macro node's - read from the editor's own style rather than
@@ -2455,8 +2621,8 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 	const float KeyDiamond = FMath::Clamp(RowHeight * Palette::KeySizeRatio, Palette::KeySizeMin, Palette::KeySizeMax);
 	const float SummaryDiamond = FMath::Min(FMath::Max(KeyDiamond * 0.85f, 4.f), KeyDiamond);
 
-	// Keyframe Only: tracks drawn as lanes under their keys rather than as sections - see UWidgetAnimEditorSettings::bKeyframeOnly.
-	const bool bKeyframeLanes = UWidgetAnimEditorSettings::Get().bKeyframeOnly;
+	// A Dope Sheet: rows drawn as faint lanes under their keys rather than as sections - see SWidgetAnimTimeline::IsDopeSheet.
+	const bool bKeyframeLanes = Owner->IsDopeSheet();
 
 	// ---- Lines ---------------------------------------------------------------------------------------------------
 	//
@@ -2558,7 +2724,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 		// The stagger's tail: a thinner band of the track's color from the end of its first item to the end of its
 		// last, with a tick where each item after the first starts - when the preview has counted them. The ticks
 		// are left out once they would crowd into a smear.
-		if (Layer && TailRight > BarX0 + BarWidth + 0.5f)
+		if (Layer && !bLane && TailRight > BarX0 + BarWidth + 0.5f)
 		{
 			const float TailHeight = BarHeight * Palette::SectionStaggerTailHeight;
 			const float TailTop = BarTop + (BarHeight - TailHeight) * 0.5f;
@@ -2631,21 +2797,8 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 		const bool bDerivedLength = Layer && SWidgetAnimTimeline::HasDerivedLength(*Layer);
 		const bool bStriped = bValueDriven || bDerivedLength;
 
-		// Keyframe Only: no section - a thin lane in the track's color from its start to its end, under its keys, which are what
-		// is edited. Selected, it is outlined as a section is.
-		if (bLane)
-		{
-			const float LaneHeight = FMath::Max(FMath::RoundToFloat(BarHeight * Palette::KeyframeOnlyLaneRatio), 3.f);
-			const float LaneTop = InnerTop + (InnerHeight - LaneHeight) * 0.5f;
-			if (Paint.bSelected)
-			{
-				const float Rim = Palette::SectionSelectedOutlineSize;
-				Box(BarX0 - Rim, LaneTop - Rim, BarWidth + Rim * 2.f, LaneHeight + Rim * 2.f, Palette::SectionSelectedOutline, OutlineLayer, RoundedFill(LaneHeight * 0.5f + Rim));
-			}
-			const FLinearColor LaneColor = bBarHovered && !bWashedOut ? TypeColor * Palette::SectionHoverLift : TypeColor;
-			Box(BarX0, LaneTop, BarWidth, LaneHeight, WithAlpha(LaneColor, Paint.bSelected ? Palette::KeyframeOnlyLaneSelectedOpacity : Palette::KeyframeOnlyLaneOpacity), BodyLayer, RoundedFill(LaneHeight * 0.5f));
-		}
-		else
+		// A Dope Sheet: nothing of a track at all - no section, no lane, no line between keys. Only its keyframes are drawn (below).
+		if (!bLane)
 		{
 			if (Paint.bSelected)
 			{
@@ -2850,7 +3003,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 		}
 
 		// The resize handle: a lit strip along the edge under the mouse, or the one being dragged.
-		const EEdge LitEdge = bInteractive ? GetLitEdge(LayerIndex) : EEdge::None;
+		const EEdge LitEdge = bInteractive && !bLane ? GetLitEdge(LayerIndex) : EEdge::None;
 		if (LitEdge != EEdge::None)
 		{
 			const float HandleX = LitEdge == EEdge::Start ? BarX0 : BarX0 + BarWidth - Palette::SectionEdgeHandleWidth;
@@ -2883,7 +3036,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 		}
 		for (const FSlateBrush* Glyph : { Paint.Glyph, Paint.bHidden ? HiddenBrush : nullptr, Paint.bLocked ? LockBrush : nullptr, Paint.bPinned ? PinBrush : nullptr })
 		{
-			if (Glyph && GlyphX - BarX0 + Palette::LockedGlyphSize + Padding <= BarWidth)
+			if (Glyph && !bLane && GlyphX - BarX0 + Palette::LockedGlyphSize + Padding <= BarWidth)
 			{
 				const float GlyphSize = FMath::Min(Palette::LockedGlyphSize, InnerHeight);
 				Box(GlyphX, InnerTop + (InnerHeight - GlyphSize) * 0.5f, GlyphSize, GlyphSize, Palette::LockedGlyph, SectionOverlayLayer, Glyph);
@@ -2892,34 +3045,10 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			}
 		}
 
-		// An Event track's name follows the editor's own event icon - the one on a Blueprint's event nodes - a Sound track's a
-		// sound's, and a Particles track's a Niagara system's. Under whichever name this engine version has it; none drawn if
-		// it has none.
-		if (Layer && Layer->AnimType == EWidgetAnimType::Custom)
+		// A cue track's name follows its icon (GetCueTrackIcon). A Dope Sheet's cue keys wear it inside them instead - see below.
+		if (Layer && !bLane && Layer->AnimType == EWidgetAnimType::Custom)
 		{
-			static const FSlateBrush* EventIcon = PickBrush({ "GraphEditor.Event_16x", "Graph.Event_16x", "Icons.Event", "GraphEditor.CustomEvent_16x" });
-			static const FSlateBrush* SoundIcon = PickBrush({ "ClassIcon.SoundWave", "ClassIcon.SoundCue", "ClassIcon.SoundBase", "Icons.Audio" });
-			// A Particles track (NameTBDNiagara's FWidgetAnimParticleCueParams, which this module doesn't link to) by its
-			// settings' name. Its icon is Niagara's own, kept in Niagara's editor style rather than the editor's - looked up
-			// until found, as that style registers when Niagara's editor module loads.
-			const UScriptStruct* CueParams = Layer->TypeParams.GetScriptStruct();
-			const bool bParticles = CueParams && CueParams->GetFName() == FName(TEXT("WidgetAnimParticleCueParams"));
-			static const FSlateBrush* ParticlesIcon = nullptr;
-			if (bParticles && !ParticlesIcon)
-			{
-				static const FName NiagaraIconName(TEXT("ClassIcon.NiagaraSystem"));
-				const FSlateIcon NiagaraIcon = FSlateIconFinder::FindIcon(NiagaraIconName);
-				const ISlateStyle* NiagaraStyle = NiagaraIcon.GetStyleSet();
-				ParticlesIcon = NiagaraStyle ? NiagaraStyle->GetOptionalBrush(NiagaraIconName, nullptr, nullptr) : nullptr;
-				if (!ParticlesIcon)
-				{
-					ParticlesIcon = PickBrush({ "ClassIcon.ParticleSystem", "ClassIcon.ParticleSystemComponent", "ClassIcon.Emitter" });
-				}
-			}
-			const FSlateBrush* CueIcon = Layer->TypeParams.GetPtr<FWidgetAnimEventCueParams>() ? EventIcon
-				: Layer->TypeParams.GetPtr<FWidgetAnimSoundCueParams>() ? SoundIcon
-				: bParticles ? ParticlesIcon
-				: nullptr;
+			const FSlateBrush* CueIcon = WidgetAnimTimeline::GetCueTrackIcon(*Layer);
 			const UWidgetAnimEditorSettings& Look = UWidgetAnimEditorSettings::Get();
 			const float IconSizing = FMath::Min(Look.CueTrackIconSize, InnerHeight);
 			// A little in from the section's rounded end, so the icon doesn't crowd it.
@@ -3081,13 +3210,25 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			const FLinearColor MarkerColor = bWashedOut ? SWidgetAnimTimeline::GetLockedColor(Palette::CueMarker) : Palette::CueMarker;
 			for (const TPair<int32, float>& CuePoint : CuePoints)
 			{
-				if (KeyTimes.IsValidIndex(CuePoint.Key))
+				if (KeyTimes.IsValidIndex(CuePoint.Key) && !bLane)
 				{
 					const float MarkerX = TimeToX(Span.X + KeyTimes[CuePoint.Key], Size.X);
 					Box(MarkerX - Palette::CueMarkerWidth * 0.5f, InnerTop, Palette::CueMarkerWidth, InnerHeight, MarkerColor, SectionOverlayLayer);
 				}
 			}
 		}
+
+		// A Dope Sheet's keys wear their row's type color, outlined white where that color is too dark to read on the dark outline -
+		// at Dope Sheet Key Size (DEVELOPER ONLY), as big as they need to be to grab.
+		const float DopeKeySize = UWidgetAnimEditorSettings::Get().DopeSheetKeySize;
+		const float TypeLuminance = TypeColor.GetLuminance();
+		const FLinearColor DopeOutline = TypeLuminance < Palette::DopeKeyDarkLuminance ? Palette::DopeKeyLightOutline : Palette::KeyOutline;
+		float LastDrawnX = -TNumericLimits<float>::Max();
+
+		// A Dope Sheet's cue keys wear their cue's icon; a Sound key shows how long its sound plays (see the keys below).
+		const FSlateBrush* DopeCueIcon = bLane && bCue ? WidgetAnimTimeline::GetCueTrackIcon(*Layer) : nullptr;
+		const FWidgetAnimSoundCueParams* DopeSound = bLane && bCue ? Layer->TypeParams.GetPtr<FWidgetAnimSoundCueParams>() : nullptr;
+		const float DopeSoundSeconds = DopeSound ? FWidgetAnimSoundCueEvaluator::GetSoundLength(*DopeSound) : -1.f;
 
 		for (int32 Key = 0; Key < KeyTimes.Num(); ++Key)
 		{
@@ -3097,6 +3238,71 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			const bool bSelected = bInteractive && Owner->IsKeySelected(LayerIndex, Key);
 			const bool bPressed = bInteractive && bKeysEditable && IsKeyPressed(LayerIndex, Key);
 			const bool bHovered = bInteractive && !bPressed && Drag == EDrag::None && Hover.Layer == LayerIndex && Hover.Key == Key;
+
+			if (bLane)
+			{
+				// A single-key row's two points are one key: drawn once.
+				if (FMath::Abs(X - LastDrawnX) < 1.f)
+				{
+					continue;
+				}
+				LastDrawnX = X;
+
+				FLinearColor Fill = bKeysEditable ? TypeColor : SWidgetAnimTimeline::GetLockedColor(TypeColor);
+				float DopeScale = 1.f;
+				if (bHovered)
+				{
+					Fill = Fill * Palette::DopeKeyHoverLift;
+					DopeScale = 1.15f;
+				}
+				if (bPressed)
+				{
+					Fill = Fill * Palette::DopeKeyPressedDim;
+					DopeScale = 0.95f;
+				}
+				Fill.A = bSilentCueKey && !bSelected ? Palette::CueSilentKeyOpacity : 1.f;
+				if (bSelected)
+				{
+					Diamond(X, KeyY, Grown(DopeKeySize * DopeScale, 3.f), Palette::KeySelectedGlow, KeyGlowLayer);
+				}
+				Diamond(X, KeyY, Grown(DopeKeySize * DopeScale, 1.f), bSelected ? Palette::KeySelected : DopeOutline, KeyOutlineLayer);
+				Diamond(X, KeyY, DopeKeySize * DopeScale, Fill, KeyFillLayer);
+
+				// Where its middle is drawn, for what goes in or over it.
+				const UWidgetAnimEditorSettings& KeyLook = UWidgetAnimEditorSettings::Get();
+				const bool bOnMarker = FMath::Abs(X - KeyRangeStartX) < 0.5f || FMath::Abs(X - KeyRangeEndX) < 0.5f;
+				const float KeyMiddleX = WidgetAnimTimeline::KeyCenterX(AllottedGeometry, X, bOnMarker ? KeyLook.RangeLineThickness : KeyLook.PlayheadLineThickness);
+				const float KeyReach = DopeKeySize * DopeScale * UE_INV_SQRT_2;
+
+				// A Sound key: how long its sound plays, a bar from the key's middle to where it stops - under the key.
+				if (DopeSoundSeconds > 0.f && !bSilentCueKey)
+				{
+					const float SoundEndX = TimeToX(Span.X + KeyTimes[Key] + DopeSoundSeconds, Size.X);
+					const float SoundBarTop = WidgetAnimTimeline::SnapY(AllottedGeometry, KeyY - Palette::DopeSoundBarHeight * 0.5f);
+					if (SoundEndX > KeyMiddleX)
+					{
+						Box(KeyMiddleX, SoundBarTop, SoundEndX - KeyMiddleX, Palette::DopeSoundBarHeight, WithAlpha(Fill, Fill.A * Palette::DopeSoundBarOpacity), SectionOverlayLayer);
+						Box(SoundEndX - Palette::DopeSoundBarCapWidth, SoundBarTop - 2.f, Palette::DopeSoundBarCapWidth, Palette::DopeSoundBarHeight + 4.f, Fill, SectionOverlayLayer);
+					}
+				}
+
+				// A cue key: the cue's icon inside it - an event's, a sound's, a particle system's.
+				if (DopeCueIcon)
+				{
+					const float CueIconSize = FMath::RoundToFloat(DopeKeySize * DopeScale * Palette::DopeKeyIconScale);
+					const FLinearColor CueIconTint = Fill.GetLuminance() > 0.45f ? Palette::DopeKeyIconDark : Palette::DopeKeyIconLight;
+					Box(KeyMiddleX - CueIconSize * 0.5f, KeyY - CueIconSize * 0.5f, CueIconSize, CueIconSize, WithAlpha(CueIconTint, CueIconTint.A * Fill.A), LabelLayer, DopeCueIcon);
+				}
+
+				// A hidden row: its eye over each key, so a key that plays nothing reads as hidden where it is.
+				if (Paint.bHidden && HiddenBrush)
+				{
+					const float HiddenGlyphSize = Palette::DopeKeyHiddenGlyphSize;
+					const float HiddenGlyphTop = FMath::Max(KeyY - KeyReach - HiddenGlyphSize - 1.f, InnerTop - HiddenGlyphSize * 0.5f);
+					Box(KeyMiddleX - HiddenGlyphSize * 0.5f, HiddenGlyphTop, HiddenGlyphSize, HiddenGlyphSize, Palette::DopeKeyHiddenGlyph, LabelLayer, HiddenBrush);
+				}
+				continue;
+			}
 
 			FLinearColor Color = bKeysEditable ? Palette::Key : Palette::KeyReadOnly;
 			float Scale = 1.f;
@@ -3119,9 +3325,9 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 
 			if (bSelected)
 			{
-				Diamond(X, KeyY, KeyDiamond * Scale + 5.f, Palette::KeySelectedGlow, KeyGlowLayer);
+				Diamond(X, KeyY, Grown(KeyDiamond * Scale, 3.f), Palette::KeySelectedGlow, KeyGlowLayer);
 			}
-			Diamond(X, KeyY, KeyDiamond * Scale + 2.f, Palette::KeyOutline, KeyOutlineLayer);
+			Diamond(X, KeyY, Grown(KeyDiamond * Scale, 1.f), Palette::KeyOutline, KeyOutlineLayer);
 			Diamond(X, KeyY, KeyDiamond * Scale, Color, KeyFillLayer);
 		}
 	};
@@ -3295,8 +3501,12 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 				// The stretch the group is moving, as a parent row summarizes its children in Sequencer: a quiet band in its
 				// (muted) color, edged above and below with a hairline of it, and closed at each end with a firmer cap - so
 				// where the group starts and stops reads at a glance, and the keys over it stand out.
-				const float X0 = TimeToX(GroupSpan.X, Size.X);
-				const float X1 = TimeToX(GroupSpan.Y, Size.X);
+				// A Dope Sheet's Key Group: from its first key to its last - its rows' hidden points (a single key's, a hair before
+				// it) aren't keys, and draw nothing.
+				const FVector2f KeySpan = Owner->IsDopeSheet() ? Owner->GetGroupKeySpan(Line.Group) : GroupSpan;
+				const FVector2f BandSpan = KeySpan.Y >= KeySpan.X ? KeySpan : GroupSpan;
+				const float X0 = TimeToX(BandSpan.X, Size.X);
+				const float X1 = TimeToX(BandSpan.Y, Size.X);
 				const float BandWidth = FMath::Max(X1 - X0, 4.f);
 				const float BandHeight = FMath::Clamp(RowHeight * Palette::GroupBandHeightRatio, 8.f, 14.f);
 				const float BandTop = FMath::RoundToFloat(CenterY - BandHeight * 0.5f);
@@ -3339,7 +3549,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 					for (const float KeyTime : KeyTimes)
 					{
 						const float X = TimeToX(Spans[LayerIndex].X + KeyTime, Size.X);
-						Diamond(X, CenterY, SummaryDiamond + 2.f, Palette::KeySummaryOutline, KeyOutlineLayer);
+						Diamond(X, CenterY, Grown(SummaryDiamond, 1.f), Palette::KeySummaryOutline, KeyOutlineLayer);
 						Diamond(X, CenterY, SummaryDiamond, Palette::KeySummary, KeyFillLayer);
 					}
 				}
@@ -3692,6 +3902,17 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 		SWidgetAnimTimeline::PaintPlayhead(OutDrawElements, AllottedGeometry, PlayheadLayer, TimeToX(PlayheadSeconds, Size.X), RulerHeight, Size.Y, 0.f, Size.X, Owner->FormatPlayheadTag(PlayheadSeconds));
 	}
 
+	// A Dope Sheet's key dragged onto another row's line: a line where its row will go.
+	if (Drag == EDrag::Key && PendingRowTarget != INDEX_NONE)
+	{
+		const int32 TargetLine = Owner->GetLayerLine(PendingRowTarget);
+		if (TargetLine != INDEX_NONE)
+		{
+			const float InsertY = GetLineTop(TargetLine) + (bPendingRowBelow ? RowHeight - 2.f : 0.f);
+			Box(0.f, InsertY, Size.X, 2.f, Palette::KeySelected, PlayheadLayer + 3);
+		}
+	}
+
 	// When the lines run past the bottom: a slim bar down the right edge showing where they are scrolled to.
 	const float MaxScroll = GetMaxScrollY(Size.Y);
 	if (MaxScroll > 0.f && !(Owner && Owner->IsInline()) && UWidgetAnimEditorSettings::Get().bShowVerticalScrollBarWhenNeeded)
@@ -3755,7 +3976,7 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonDown(const FGeometry& MyGeometry,
 		}
 
 		Drag = EDrag::Scrub;
-		Owner->ScrubToSeconds(XToTime(Local.X, Width));
+		Owner->ScrubToSeconds(ScrubSecondsAt(Local.X, Width));
 		return Reply;
 	}
 
@@ -3774,8 +3995,9 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonDown(const FGeometry& MyGeometry,
 	FHit Hit = HitTest(Local, Width);
 	const FTrackLine* Line = GetLine(Hit.Line);
 
-	// A start or end key among several keys picked drags them all, as any picked key does - not its track's edge.
-	if (Hit.Key != INDEX_NONE && Owner->IsKeyMultiSelection() && Owner->IsKeySelected(Hit.Layer, Hit.Key))
+	// A start or end key among several keys picked drags them all, as any picked key does - not its track's edge. On a Dope
+	// Sheet there are no edges to drag: a row's first and last keys are keys like any other.
+	if ((Hit.Key != INDEX_NONE && Owner->IsKeyMultiSelection() && Owner->IsKeySelected(Hit.Layer, Hit.Key)) || Owner->IsDopeSheet())
 	{
 		Hit.Edge = EEdge::None;
 	}
@@ -3937,9 +4159,9 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonDown(const FGeometry& MyGeometry,
 		return Reply;
 	}
 
-	// Keyframe Only: a track is edited only through its keys, so its lane isn't grabbed. A press picks the track - its keys show
-	// in the Selection panel - and, dragged, boxes keys from there.
-	if (Hit.bOnSection && UWidgetAnimEditorSettings::Get().bKeyframeOnly)
+	// A Dope Sheet: a row is edited only through its keys, so its lane isn't grabbed. A press picks the row - its keys show in
+	// the Selection panel - and, dragged, boxes keys from there.
+	if (Hit.bOnSection && Owner->IsDopeSheet())
 	{
 		Owner->SelectLayer(Hit.Layer);
 		MarqueeStart = Local;
@@ -3985,12 +4207,28 @@ void SWidgetAnimTimelineTracks::ApplyDragAt(const FVector2f& Local, float Width)
 	switch (Drag)
 	{
 	case EDrag::Scrub:
-		Owner->ScrubToSeconds(XToTime(Local.X, Width));
+		Owner->ScrubToSeconds(ScrubSecondsAt(Local.X, Width));
 		break;
 
 	case EDrag::Key:
+	{
 		Owner->UpdateKeyDrag(XToTime(Local.X, Width) + PressKeyOffset - GetLayerSpan(PressLayer).X, GetSnapThresholdSeconds(Width));
+
+		// A Dope Sheet: up or down onto another row's line takes the key's whole row there, once let go.
+		PendingRowTarget = INDEX_NONE;
+		if (Owner->IsDopeSheet())
+		{
+			const int32 OverLine = LineAt(Local.Y);
+			const FTrackLine* Over = GetLine(OverLine);
+			const int32 OwnLine = Owner->GetLayerLine(PressLayer);
+			if (Over && Over->Kind == FTrackLine::EKind::Lane && Over->Layers.Num() == 1 && Over->Layers[0] != PressLayer && OwnLine != INDEX_NONE)
+			{
+				PendingRowTarget = Over->Layers[0];
+				bPendingRowBelow = OverLine > OwnLine;
+			}
+		}
 		break;
+	}
 
 	case EDrag::Range:
 		Owner->UpdateRangeDrag(XToTime(Local.X, Width), GetSnapThresholdSeconds(Width));
@@ -4074,7 +4312,7 @@ FReply SWidgetAnimTimelineTracks::OnMouseMove(const FGeometry& MyGeometry, const
 			else
 			{
 				Drag = EDrag::Scrub;
-				Owner->ScrubToSeconds(XToTime(Local.X, Width));
+				Owner->ScrubToSeconds(ScrubSecondsAt(Local.X, Width));
 			}
 		}
 		break;
@@ -4163,7 +4401,14 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonUp(const FGeometry& MyGeometry, c
 	if (Owner && Ended == EDrag::Key)
 	{
 		Owner->EndKeyDrag();
+
+		// Let go on another row's line: the key's whole row moves there - its own undo step, after the key's.
+		if (PendingRowTarget != INDEX_NONE)
+		{
+			Owner->MoveKeyRow(PressLayer, PendingRowTarget, bPendingRowBelow);
+		}
 	}
+	PendingRowTarget = INDEX_NONE;
 
 	if (Owner && (Ended == EDrag::Layer || Ended == EDrag::Range))
 	{
@@ -4179,7 +4424,7 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonUp(const FGeometry& MyGeometry, c
 	// The animation's start or end pressed and let go in place: a click on the ruler, which scrubs there.
 	if (Owner && Ended == EDrag::RangePending)
 	{
-		Owner->ScrubToSeconds(XToTime(MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()).X, MyGeometry.GetLocalSize().X));
+		Owner->ScrubToSeconds(ScrubSecondsAt(MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()).X, MyGeometry.GetLocalSize().X));
 	}
 
 	// Pressed on one of several selected layers and let go without dragging: a click, which selects it alone - or, on a
@@ -4253,6 +4498,16 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonUp(const FGeometry& MyGeometry, c
 					Owner->SelectLayer(Line->AnimationLayer);
 				}
 				PushMenu(MouseEvent, Owner->MakeLayerContextMenu(Line->AnimationLayer, INDEX_NONE, TOptional<float>(), ClickSeconds));
+			}
+			else if (Hit.Layer == INDEX_NONE && Owner->IsDopeSheet() && Line->Layers.Num() == 1 && Owner->CanDopeKeys(Line->Layers[0]))
+			{
+				// A Dope Sheet row's line, off its keys: its menu, with a key to place right there - before its first, after its last.
+				const int32 RowLayer = Line->Layers[0];
+				if (!Owner->IsLayerSelected(RowLayer))
+				{
+					Owner->SelectLayer(RowLayer);
+				}
+				PushMenu(MouseEvent, Owner->MakeLayerContextMenu(RowLayer, INDEX_NONE, TOptional<float>(XToTime(Local.X, Width) - GetLayerSpan(RowLayer).X), ClickSeconds));
 			}
 			else if (Hit.Layer == INDEX_NONE)
 			{
@@ -4435,8 +4690,8 @@ FCursorReply SWidgetAnimTimelineTracks::OnCursorQuery(const FGeometry& MyGeometr
 		return FCursorReply::Cursor(EMouseCursor::ResizeUpDown);
 	}
 
-	// A section edge that can be dragged offers to resize.
-	if (Hover.Edge != EEdge::None)
+	// A section edge that can be dragged offers to resize - never on a Dope Sheet, which has no sections, only keys.
+	if (Hover.Edge != EEdge::None && !(Owner && Owner->IsDopeSheet()))
 	{
 		return FCursorReply::Cursor(EMouseCursor::ResizeLeftRight);
 	}
@@ -4761,8 +5016,11 @@ namespace WidgetAnimTimeline
 			];
 	}
 
-	/** Key Values: these keys' values - those each one changes - as one row of the category. See SWidgetAnimKeyValues. */
-	inline void AddKeyValuesRow(IDetailCategoryBuilder& Category, const TWeakPtr<SWidgetAnimTimeline>& WeakOwner, const TArray<SWidgetAnimTimeline::FKeyRef>& Keys)
+	/**
+	 * Key Values: these keys' values as one row of the category - every value each holds, or with bForTracks (a track's keys,
+	 * listed for the track) those each one changes, with Show All Values. See SWidgetAnimKeyValues.
+	 */
+	inline void AddKeyValuesRow(IDetailCategoryBuilder& Category, const TWeakPtr<SWidgetAnimTimeline>& WeakOwner, const TArray<SWidgetAnimTimeline::FKeyRef>& Keys, bool bForTracks = false)
 	{
 		const TSharedPtr<SWidgetAnimTimeline> Owner = WeakOwner.Pin();
 		if (!Owner || Keys.Num() == 0)
@@ -4775,7 +5033,7 @@ namespace WidgetAnimTimeline
 				SNew(SBox)
 				.Padding(FMargin(0.f, 4.f))
 				[
-					Owner->MakeKeyValues(Keys)
+					Owner->MakeKeyValues(Keys, bForTracks)
 				]
 			];
 	}
@@ -4789,7 +5047,10 @@ namespace WidgetAnimTimeline
 		{
 			if (Layers && Layers->IsValidIndex(LayerIndex) && Owner.GetKeyChannels(LayerIndex).Num() > 0)
 			{
-				const int32 NumKeys = WidgetAnimKeyValues::GetNumKeys((*Layers)[LayerIndex]);
+				// As the Track Editor counts them: a Dope Sheet's single key is one key, not its two points.
+				TArray<float> ShownKeys;
+				Owner.GetKeyTimes(LayerIndex, ShownKeys);
+				const int32 NumKeys = FMath::Min(WidgetAnimKeyValues::GetNumKeys((*Layers)[LayerIndex]), ShownKeys.Num());
 				for (int32 Key = 0; Key < NumKeys; ++Key)
 				{
 					Keys.Add(SWidgetAnimTimeline::FKeyRef{ LayerIndex, Key });
@@ -4808,6 +5069,22 @@ namespace WidgetAnimTimeline
  * Registered on the panel's own details view only, for both kinds of edited object. Every category they
  * would normally show is hidden, and only the selected part is added back.
  */
+namespace WidgetAnimTimeline
+{
+	/**
+	 * What the panel calls a Track Group, as shown: on a Dope Sheet, whose rows are keys, a Key Group ("Track Group" -> "Key
+	 * Group" in the text). Only the words shown - a group's stored name, and what scripts and the state machine match, stay.
+	 */
+	FText KeyGroupText(const SWidgetAnimTimeline* Owner, const FText& Text)
+	{
+		if (!Owner || !Owner->IsDopeSheet())
+		{
+			return Text;
+		}
+		return FText::FromString(Text.ToString().Replace(TEXT("Track Group"), TEXT("Key Group"), ESearchCase::CaseSensitive));
+	}
+}
+
 class FWidgetAnimSelectionDetails : public IDetailCustomization
 {
 public:
@@ -4874,7 +5151,7 @@ public:
 				const int32 NumSelectedGroups = Owner->GetSelectedGroups().Num();
 				if (NumSelectedGroups > 1)
 				{
-					IDetailCategoryBuilder& Note = DetailBuilder.EditCategory("WidgetAnimSelection_Groups", LOCTEXT("GroupsCategory", "Track Groups"));
+					IDetailCategoryBuilder& Note = DetailBuilder.EditCategory("WidgetAnimSelection_Groups", WidgetAnimTimeline::KeyGroupText(Panel.Pin().Get(), LOCTEXT("GroupsCategory", "Track Groups")));
 					AddNoteRow(Note, FText::Format(WidgetAnimTips::MultipleGroupsSelectedNote(), FText::AsNumber(NumSelectedGroups), Owner->GetGroupName(Selection.Group)));
 				}
 				CustomizeGroup(DetailBuilder, GroupHandle.ToSharedRef(), *Source);
@@ -4921,9 +5198,9 @@ public:
 
 private:
 
-	void AddKeyValuesRow(IDetailCategoryBuilder& Category, const TArray<SWidgetAnimTimeline::FKeyRef>& Keys)
+	void AddKeyValuesRow(IDetailCategoryBuilder& Category, const TArray<SWidgetAnimTimeline::FKeyRef>& Keys, bool bForTracks = false)
 	{
-		WidgetAnimTimeline::AddKeyValuesRow(Category, Panel, Keys);
+		WidgetAnimTimeline::AddKeyValuesRow(Category, Panel, Keys, bForTracks);
 	}
 
 	/**
@@ -5127,7 +5404,7 @@ private:
 	/** A group: its name, and the widget it animates here - picked from this Widget Blueprint's own widgets. */
 	void CustomizeGroup(IDetailLayoutBuilder& DetailBuilder, const TSharedRef<IPropertyHandle>& GroupHandle, const IWidgetAnimPanelSource& Source)
 	{
-		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Group", LOCTEXT("GroupCategory", "Track Group"));
+		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Group", WidgetAnimTimeline::KeyGroupText(Panel.Pin().Get(), LOCTEXT("GroupCategory", "Track Group")));
 
 		const TSharedPtr<IPropertyHandle> NameHandle = GroupHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FWidgetAnimLayerGroup, GroupName));
 		if (NameHandle.IsValid())
@@ -5277,15 +5554,18 @@ private:
 	{
 		// Two categories: Track Properties - what every track has, from its Track Group down to its Easing and timing - and
 		// Track Values, what only this kind of track has: a Fade's opacities, a Shape's fields, a registered type's settings.
-		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Layer", LOCTEXT("TrackPropertiesCategory", "Track Properties"));
-		IDetailCategoryBuilder& Values = DetailBuilder.EditCategory("WidgetAnimSelection_TrackValues", LOCTEXT("TrackValuesCategory", "Track Values"));
-
+		// A Dope Sheet's row is a key: Key Properties and Key Values, with no name and no preset of its own.
 		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		const bool bDopeRow = Owner && Owner->IsDopeSheet();
+		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Layer",
+			bDopeRow ? LOCTEXT("DopeKeyPropertiesCategory", "Key Properties") : LOCTEXT("TrackPropertiesCategory", "Track Properties"));
+		IDetailCategoryBuilder& Values = DetailBuilder.EditCategory("WidgetAnimSelection_TrackValues",
+			bDopeRow ? LOCTEXT("DopeKeyValuesCategory", "Key Values") : LOCTEXT("TrackValuesCategory", "Track Values"));
 
 		// Its name - given here, or with Rename in its menu (as the State Machine editor names a state in its Details). Empty, it
 		// is called by its type, shown as the hint. Once, at the top: what the track is, then where it plays.
 		const TArray<FWidgetAnimLayer>* NamedLayers = Owner ? Owner->GetLayers() : nullptr;
-		if (Owner && NamedLayers && NamedLayers->IsValidIndex(LayerIndex))
+		if (Owner && NamedLayers && NamedLayers->IsValidIndex(LayerIndex) && !bDopeRow)
 		{
 			const TWeakPtr<SWidgetAnimTimeline> WeakNameOwner = Owner;
 			auto GetNamedLayer = [WeakNameOwner, LayerIndex]() -> const FWidgetAnimLayer*
@@ -5336,7 +5616,7 @@ private:
 			TSharedPtr<FString> Initial;
 			for (int32 GroupIndex = 0; GroupIndex < Groups->Num(); ++GroupIndex)
 			{
-				TSharedPtr<FString> Item = MakeShared<FString>((*Groups)[GroupIndex].GetDisplayName(GroupIndex));
+				TSharedPtr<FString> Item = MakeShared<FString>(Owner->GetGroupName(GroupIndex).ToString());
 				if (GroupIndex == CurrentGroup)
 				{
 					Initial = Item;
@@ -5346,11 +5626,11 @@ private:
 
 			const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Owner;
 			const TWeakPtr<TArray<TSharedPtr<FString>>> WeakOptions = GroupOptions;
-			Category.AddCustomRow(LOCTEXT("LayerGroupRow", "Track Group"))
+			Category.AddCustomRow(WidgetAnimTimeline::KeyGroupText(Panel.Pin().Get(), LOCTEXT("LayerGroupRow", "Track Group")))
 				.NameContent()
 				[
 					SNew(STextBlock)
-					.Text(LOCTEXT("LayerGroupLabel", "Track Group"))
+					.Text(WidgetAnimTimeline::KeyGroupText(Panel.Pin().Get(), LOCTEXT("LayerGroupLabel", "Track Group")))
 					.Font(IDetailLayoutBuilder::GetDetailFont())
 				]
 				.ValueContent()
@@ -5446,7 +5726,7 @@ private:
 		}
 
 		// Presets: a saved track's settings put on this one in one pick - or this one's saved under a name.
-		if (Owner && TargetLayers && TargetLayers->IsValidIndex(LayerIndex) && !(*TargetLayers)[LayerIndex].IsAnimationTrack())
+		if (Owner && TargetLayers && TargetLayers->IsValidIndex(LayerIndex) && !(*TargetLayers)[LayerIndex].IsAnimationTrack() && !bDopeRow)
 		{
 			const TWeakPtr<SWidgetAnimTimeline> WeakPresetOwner = Owner;
 			Category.AddCustomRow(LOCTEXT("TrackPresetRow", "Preset"))
@@ -5729,14 +6009,14 @@ private:
 		}
 
 		// Keys: every key of the track with only the values it changes - Key 2 its scale, Key 3 its angle - to edit many at
-		// once (Ctrl+click boxes, type +8). See SWidgetAnimKeyValues.
+		// once, or all of them with Show All Values. See SWidgetAnimKeyValues.
 		if (Owner && CurrentLayer && !CurrentLayer->IsAnimationTrack() && WidgetAnimKeyValues::GetNumKeys(*CurrentLayer) >= 2)
 		{
 			const TArray<SWidgetAnimTimeline::FKeyRef> Keys = WidgetAnimTimeline::GetAllKeys(*Owner, { LayerIndex });
 			if (Keys.Num() > 0)
 			{
 				IDetailCategoryBuilder& KeysCategory = DetailBuilder.EditCategory("WidgetAnimSelection_Keys", LOCTEXT("TrackKeysCategory", "Keys"));
-				AddKeyValuesRow(KeysCategory, Keys);
+				AddKeyValuesRow(KeysCategory, Keys, /*bForTracks=*/true);
 			}
 		}
 	}
@@ -6295,7 +6575,7 @@ private:
 		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Key", LOCTEXT("KeyCategory", "Key"));
 		const FName CurveName = GET_MEMBER_NAME_CHECKED(FWidgetTransformKeyframe, CurveToNext);
 
-		// First, the values this key changes - a key that only scales shows Scale X and Y - to type or drag. See SWidgetAnimKeyValues.
+		// First, every value this key holds - those it doesn't change dimmed - to type or drag. See SWidgetAnimKeyValues.
 		AddKeyValuesRow(Category, { SWidgetAnimTimeline::FKeyRef{ LayerIndex, KeyIndex } });
 
 		// A Shape track's key: its shape's fields only when they apply - a shape it targets, or a kind picked for the widget
@@ -7326,7 +7606,7 @@ private:
 				})
 			];
 
-		// Under its time, the values it changes - its opacity, its scale's X and Y, its color's channels - to type or drag, as
+		// Under its time, every value it holds - its opacity, its scale's X and Y, its color's channels - to type or drag, as
 		// every key's. See SWidgetAnimKeyValues. What isn't a number stays as it was: a Slide's direction, a color's picker
 		// (folded away), a registered type's own settings (which hold its start and end values).
 		AddKeyValuesRow(Category, { SWidgetAnimTimeline::FKeyRef{ LayerIndex, KeyIndex } });
@@ -7546,7 +7826,7 @@ public:
 			if (Keys.Num() > 0)
 			{
 				IDetailCategoryBuilder& KeysCategory = DetailBuilder.EditCategory("WidgetAnimSelection_Keys", LOCTEXT("TrackKeysCategory", "Keys"));
-				WidgetAnimTimeline::AddKeyValuesRow(KeysCategory, Panel, Keys);
+				WidgetAnimTimeline::AddKeyValuesRow(KeysCategory, Panel, Keys, /*bForTracks=*/true);
 			}
 		}
 
@@ -7937,6 +8217,25 @@ private:
 	int32 Layer = INDEX_NONE;
 };
 
+/** A Dope Sheet's row dragged in the Animation Keys list, to another place among the rows (see SWidgetAnimTimeline::MoveKeyRow). */
+class FWidgetAnimKeyRowDragOp : public FDecoratedDragDropOp
+{
+public:
+	DRAG_DROP_OPERATOR_TYPE(FWidgetAnimKeyRowDragOp, FDecoratedDragDropOp)
+
+	int32 Layer = INDEX_NONE;
+
+	static TSharedRef<FWidgetAnimKeyRowDragOp> New(int32 InLayer, const FText& Label)
+	{
+		const TSharedRef<FWidgetAnimKeyRowDragOp> Operation = MakeShared<FWidgetAnimKeyRowDragOp>();
+		Operation->Layer = InLayer;
+		Operation->DefaultHoverText = Label;
+		Operation->CurrentHoverText = Label;
+		Operation->Construct();
+		return Operation;
+	}
+};
+
 class SWidgetAnimListRow : public SCompoundWidget
 {
 public:
@@ -8038,7 +8337,72 @@ public:
 			Owner->SelectLayer(Layer);
 		}
 		Owner->RevealLayer(Layer);
+
+		// A Dope Sheet's row is dragged up and down the list to reorder the rows.
+		if (Owner->IsDopeSheet() && Owner->CanEditLayer(Layer))
+		{
+			Reply.DetectDrag(SharedThis(this), EKeys::LeftMouseButton);
+		}
 		return Reply;
+	}
+
+	virtual FReply OnDragDetected(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		const TArray<FWidgetAnimLayer>* Layers = Owner ? Owner->GetLayers() : nullptr;
+		if (!Owner || IsGroupRow() || !Collapsed.IsNone() || !Layers || !Layers->IsValidIndex(Layer))
+		{
+			return FReply::Unhandled();
+		}
+		bCollapseSelectionOnRelease = false;
+		return FReply::Handled().BeginDragDrop(FWidgetAnimKeyRowDragOp::New(Layer, SWidgetAnimTimeline::GetLayerTypeName((*Layers)[Layer])));
+	}
+
+	virtual void OnDragEnter(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
+	{
+		UpdateDropTarget(MyGeometry, DragDropEvent);
+	}
+
+	virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
+	{
+		return UpdateDropTarget(MyGeometry, DragDropEvent) ? FReply::Handled() : FReply::Unhandled();
+	}
+
+	virtual void OnDragLeave(const FDragDropEvent& DragDropEvent) override
+	{
+		bDropTarget = false;
+	}
+
+	virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
+	{
+		const bool bWasTarget = UpdateDropTarget(MyGeometry, DragDropEvent);
+		bDropTarget = false;
+		const TSharedPtr<FWidgetAnimKeyRowDragOp> Operation = DragDropEvent.GetOperationAs<FWidgetAnimKeyRowDragOp>();
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		if (!bWasTarget || !Operation.IsValid() || !Owner)
+		{
+			return FReply::Unhandled();
+		}
+		Owner->MoveKeyRow(Operation->Layer, Layer, bDropBelow);
+		return FReply::Handled();
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+	{
+		const int32 Painted = SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+		if (!bDropTarget)
+		{
+			return Painted;
+		}
+
+		// Where the dragged row goes: a line along this row's top or bottom edge.
+		const FVector2f RowSize = AllottedGeometry.GetLocalSize();
+		const float LineY = bDropBelow ? RowSize.Y - 2.f : 0.f;
+		FSlateDrawElement::MakeBox(OutDrawElements, Painted + 1,
+			AllottedGeometry.ToPaintGeometry(FVector2f(RowSize.X, 2.f), FSlateLayoutTransform(FVector2f(0.f, LineY))),
+			FCoreStyle::Get().GetBrush("WhiteBrush"), ESlateDrawEffect::None, NameTBD::Colors::WidgetAnimEditor::KeySelected);
+		return Painted + 1;
 	}
 
 	virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
@@ -8126,6 +8490,22 @@ private:
 
 	/** Right-pressed here: the menu opens when the button comes up. */
 	bool bMenuPending = false;
+
+	/** A Dope Sheet row dragged over this one: whether it would go here, and below this row rather than above. */
+	bool bDropTarget = false;
+	bool bDropBelow = false;
+
+	bool UpdateDropTarget(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent)
+	{
+		const TSharedPtr<FWidgetAnimKeyRowDragOp> Operation = DragDropEvent.GetOperationAs<FWidgetAnimKeyRowDragOp>();
+		bDropTarget = Operation.IsValid() && !IsGroupRow() && Collapsed.IsNone() && Operation->Layer != Layer;
+		if (bDropTarget)
+		{
+			const FVector2f Local = MyGeometry.AbsoluteToLocal(DragDropEvent.GetScreenSpacePosition());
+			bDropBelow = Local.Y > MyGeometry.GetLocalSize().Y * 0.5f;
+		}
+		return bDropTarget;
+	}
 };
 
 /**
@@ -9196,38 +9576,21 @@ void SWidgetAnimTimeline::Construct(const FArguments& InArgs)
 										.HAlign(HAlign_Center)
 										.Padding(FMargin(0.f, 8.f, 0.f, 0.f))
 										[
-											SNew(SButton)
-											.ButtonStyle(&OrangeButtonStyle())
-											.ContentPadding(FMargin(10.f, 3.f))
+											// What kind of timeline, chosen now and kept: tracks from a start to an end, or a Dope Sheet of keys.
+											SNew(SHorizontalBox)
 											.Visibility_Lambda([this]() { return Source.IsValid() && Source->IsEditingTimeline() ? EVisibility::Visible : EVisibility::Collapsed; })
-											.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::NewTimelineButtonTooltip()))
-											.OnClicked_Lambda([this]()
-											{
-												if (Source.IsValid())
-												{
-													SwitchEditedAnimation([this]() { Source->CreateTimeline(FString()); });
-												}
-												return FReply::Handled();
-											})
+
+											+ SHorizontalBox::Slot()
+											.AutoWidth()
+											.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
 											[
-												SNew(SHorizontalBox)
+												MakeNewTimelineButton(/*bDopeSheet=*/false)
+											]
 
-												+ SHorizontalBox::Slot()
-												.AutoWidth()
-												.VAlign(VAlign_Center)
-												.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
-												[
-													WidgetAnimTimeline::MakeFixedIcon(WidgetAnimTimeline::TimelineIcon(), FSlateColor::UseForeground())
-												]
-
-												+ SHorizontalBox::Slot()
-												.AutoWidth()
-												.VAlign(VAlign_Center)
-												[
-													SNew(STextBlock)
-													.Font(FAppStyle::GetFontStyle("NormalFontBold"))
-													.Text(LOCTEXT("MakeFirstTimeline", "New Timeline"))
-												]
+											+ SHorizontalBox::Slot()
+											.AutoWidth()
+											[
+												MakeNewTimelineButton(/*bDopeSheet=*/true)
 											]
 										]
 									]
@@ -9502,7 +9865,9 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 			Menu.AddMenuEntry(
 				LOCTEXT("AnimationTimeline", "Animation Timeline"),
 				WidgetAnimTips::TimelineModeTooltip(),
-				FSlateIcon(FAppStyle::GetAppStyleSetName(), FAppStyle::Get().GetOptionalBrush("GraphEditor.Timeline_16x", nullptr, nullptr) ? FName("GraphEditor.Timeline_16x") : FName("ClassIcon.TimelineTemplate")),
+				FNameTBDStyle::FindIcon(FNameTBDStyle::TimelineIcon)
+					? FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::TimelineIcon)
+					: FSlateIcon(FAppStyle::GetAppStyleSetName(), FAppStyle::Get().GetOptionalBrush("GraphEditor.Timeline_16x", nullptr, nullptr) ? FName("GraphEditor.Timeline_16x") : FName("ClassIcon.TimelineTemplate")),
 				FUIAction(FExecuteAction::CreateLambda([SwitchMode]() { SwitchMode(EMode::Timeline); })));
 			Menu.AddMenuEntry(
 				LOCTEXT("EditExistingAsset", "Edit Existing Asset"),
@@ -9619,7 +9984,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
 			.BorderBackgroundColor(FStyleColors::Input)
 			.Padding(FMargin(6.f, 2.f))
-			.Visibility_Lambda([this, IsEditingExisting]() { return Source.IsValid() && Source->IsBuilder() && !IsEditingExisting() ? EVisibility::Visible : EVisibility::Collapsed; })
+			// Not where the builder keeps timelines: its working copy is one of them, named in the timeline picker.
+			.Visibility_Lambda([this, IsEditingExisting]() { return Source.IsValid() && Source->IsBuilder() && !Source->SupportsTimelines() && !IsEditingExisting() ? EVisibility::Visible : EVisibility::Collapsed; })
 			.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::BuilderAnimationNameTooltip()))
 			.OnMouseDoubleClick_Lambda([WeakBuilderNameText](const FGeometry&, const FPointerEvent& MouseEvent)
 			{
@@ -10125,7 +10491,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
 namespace
 {
 	/** The strip across the top of the list or the Track Editor: its name, small and quiet, and room for its buttons. */
-	TSharedRef<SWidget> MakeSectionHeader(const FText& Label, const TSharedRef<SWidget>& Right)
+	TSharedRef<SWidget> MakeSectionHeader(const TAttribute<FText>& Label, const TSharedRef<SWidget>& Right)
 	{
 		using namespace WidgetAnimTimeline;
 
@@ -10518,7 +10884,11 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerListHeader()
 	// + Add, built the way the editor's own green "+ Add" buttons are - a plus in the accent green beside the
 	// label, on a plain combo button - rather than with SPositiveActionButton, which would add another module
 	// to link against for one button.
-	return MakeSectionHeader(LOCTEXT("AnimationLayersHeader", "Animation Tracks"),
+	// A Dope Sheet's list is its Keys viewer.
+	return MakeSectionHeader(TAttribute<FText>::CreateLambda([this]()
+		{
+			return IsDopeSheet() ? LOCTEXT("DopeKeysHeader", "Animation Keys") : LOCTEXT("AnimationLayersHeader", "Animation Tracks");
+		}),
 		SNew(SComboButton)
 		.IsEnabled_Lambda([this]() { return CanEdit(); })
 		.HasDownArrow(false)
@@ -11065,21 +11435,22 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 		[](IWidgetAnimPanelSource& In, bool bValue) { In.SetLoop(bValue); },
 		nullptr,
 		FindControlIcon(TEXT("WidgetAnim_Loop"), { "Animation.Loop.Enabled", "Animation.Loop", "Icons.Loop", "GenericLoop" })));
-	AddToRow(PreviewRow, MakeDivider(), FMargin(2.f, 0.f));
 	AddToRow(PreviewRow, MakeSegment(LOCTEXT("PingPong", "Ping Pong"),
 		WidgetAnimTips::PingPongTooltip(),
 		[](const IWidgetAnimPanelSource& In) { return In.GetPingPong(); },
 		[](IWidgetAnimPanelSource& In, bool bValue) { In.SetPingPong(bValue); },
 		[](const IWidgetAnimPanelSource& In) { return In.GetLoop(); },
-		FindControlIcon(TEXT("WidgetAnim_PingPong"), { "Animation.PingPong", "Icons.PingPong" })));
-	AddToRow(PreviewRow, MakeDivider(), FMargin(2.f, 0.f));
+		FindControlIcon(TEXT("WidgetAnim_PingPong"), { "Animation.PingPong", "Icons.PingPong" })),
+		FMargin(2.f, 0.f, 0.f, 0.f));
 	AddToRow(PreviewRow, MakeSegment(LOCTEXT("Invert", "Invert"),
 		WidgetAnimTips::InvertTooltip(),
 		[](const IWidgetAnimPanelSource& In) { return In.GetInvert(); },
 		[](IWidgetAnimPanelSource& In, bool bValue) { In.SetInvert(bValue); },
 		nullptr,
-		FindControlIcon(TEXT("WidgetAnim_Invert"), { "Icons.Reverse", "Animation.Backward" })));
-	AddToRow(PreviewRow, MakeDivider(), FMargin(2.f, 0.f));
+		FindControlIcon(TEXT("WidgetAnim_Invert"), { "Icons.Reverse", "Animation.Backward" })),
+		FMargin(2.f, 0.f, 0.f, 0.f));
+	// The one divider: how the preview plays on its left, how fast on its right.
+	AddToRow(PreviewRow, MakeDivider(), FMargin(4.f, 0.f));
 
 	// Speed: its label styled as the segments are, and a compact number beside it - both tipped "Preview Speed".
 	AddToRow(PreviewRow,
@@ -11119,34 +11490,29 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTransport(bool bStacked)
 		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetTrackSnapping(bValue); },
 		[]() { return true; },
 		FindControlIcon(TEXT("WidgetAnim_Snapping"), { "Sequencer.ToggleIsSnapEnabled", "EditorViewport.LocationGridSnap", "GenericCurveEditor.ToggleSnapping", "Icons.Snap" })));
-	AddToRow(TrackRow, MakeDivider(), FMargin(2.f, 0.f));
 	AddToRow(TrackRow, MakePillToggle(LOCTEXT("LinkedEdges", "Linked Edges"),
 		WidgetAnimTips::LinkedEdgesTooltip(),
 		[]() { return UWidgetAnimEditorSettings::Get().bLinkedEdges; },
 		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetLinkedEdges(bValue); },
 		[]() { return true; },
-		FindControlIcon(TEXT("WidgetAnim_LinkedEdges"), { "Icons.Link", "Icons.Chain" })));
-	AddToRow(TrackRow, MakeDivider(), FMargin(2.f, 0.f));
+		FindControlIcon(TEXT("WidgetAnim_LinkedEdges"), { "Icons.Link", "Icons.Chain" })),
+		FMargin(2.f, 0.f, 0.f, 0.f));
+	// The one divider: how keys and tracks are edited on its left, what the designer does with them on its right. (A Dope Sheet is
+	// chosen when a timeline is made, not toggled here - see IWidgetAnimPanelSource::IsDopeSheet.)
+	AddToRow(TrackRow, MakeDivider(), FMargin(4.f, 0.f));
 	AddToRow(TrackRow, MakePillToggle(LOCTEXT("AutoKey", "Auto Key"),
 		WidgetAnimTips::AutoKeyTooltip(),
 		[]() { return UWidgetAnimEditorSettings::Get().bGizmoAutoKey; },
 		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetGizmoAutoKey(bValue); },
 		[]() { return true; },
 		FindControlIcon(TEXT("WidgetAnim_AutoKey"), { "Sequencer.SetAutoKey", "Icons.Record" })));
-	AddToRow(TrackRow, MakeDivider(), FMargin(2.f, 0.f));
-	AddToRow(TrackRow, MakePillToggle(LOCTEXT("KeyframeOnly", "Keyframe Only"),
-		WidgetAnimTips::KeyframeOnlyTooltip(),
-		[]() { return UWidgetAnimEditorSettings::Get().bKeyframeOnly; },
-		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetKeyframeOnly(bValue); },
-		[]() { return true; },
-		FindControlIcon(TEXT("WidgetAnim_KeyframeOnly"), { "Sequencer.KeyDiamond", "Icons.Keyframe", "CurveEditor.Key" })));
-	AddToRow(TrackRow, MakeDivider(), FMargin(2.f, 0.f));
 	AddToRow(TrackRow, MakePillToggle(LOCTEXT("MotionPaths", "Motion Path"),
 		WidgetAnimTips::MotionPathsTooltip(),
 		[]() { return UWidgetAnimEditorSettings::Get().bShowMotionPaths; },
 		[](bool bValue) { UWidgetAnimEditorSettings::GetMutable().SetShowMotionPaths(bValue); },
 		[]() { return true; },
-		FindControlIcon(TEXT("WidgetAnim_MotionPath"), { "Icons.Spline", "CurveEditor.Curve" })));
+		FindControlIcon(TEXT("WidgetAnim_MotionPath"), { "Icons.Spline", "CurveEditor.Curve" })),
+		FMargin(2.f, 0.f, 0.f, 0.f));
 	// Beside it, as its option: clicks on the designer reach only the paths - see bMotionPathPathsOnly.
 	AddToRow(TrackRow, MakePillToggle(LOCTEXT("MotionPathsOnly", "Paths Only"),
 		WidgetAnimTips::MotionPathsOnlyTooltip(),
@@ -11721,9 +12087,10 @@ bool SWidgetAnimTimeline::CanMoveKey(int32 LayerIndex, int32 KeyIndex) const
 		return false;
 	}
 
-	// A keyed track's first and last keys are its start and its end: where the track is, not points along it.
+	// A keyed track's first and last keys are its start and its end: where the track is, not points along it. On a Dope Sheet
+	// they are keys like any other - moving one moves where the row starts or ends (see SetDopeKeyTimes).
 	const FWidgetAnimLayer& Layer = (*GetLayers())[LayerIndex];
-	return WidgetAnimTypeIsKeyframed(Layer.AnimType) || (KeyIndex > 0 && KeyIndex < KeyTimes.Num() - 1);
+	return WidgetAnimTypeIsKeyframed(Layer.AnimType) || CanDopeKeys(LayerIndex) || (KeyIndex > 0 && KeyIndex < KeyTimes.Num() - 1);
 }
 
 bool SWidgetAnimTimeline::CanDeleteKey(int32 LayerIndex, int32 KeyIndex) const
@@ -11738,6 +12105,12 @@ bool SWidgetAnimTimeline::CanDeleteKey(int32 LayerIndex, int32 KeyIndex) const
 	if (!KeyTimes.IsValidIndex(KeyIndex))
 	{
 		return false;
+	}
+
+	// On a Dope Sheet any key can go: a first or last one hands its place to the next, the last of all takes the row with it.
+	if (CanDopeKeys(LayerIndex))
+	{
+		return true;
 	}
 
 	// Two keys is the least a Transform track can move between; any other track always keeps its start and end.
@@ -11983,23 +12356,22 @@ void SWidgetAnimTimeline::FocusPreviewOnKey(int32 LayerIndex, int32 KeyIndex)
 		return;
 	}
 
-	// Without staggers the source knows best - it mirrors a key for Invert, too. With one, only the panel knows how far
-	// it reaches, so the key is found on the panel's own timeline: the layer's start plus the key's time into it.
-	const bool bAnyFan = TrackFans.ContainsByPredicate([](float Fan) { return Fan > 0.f; });
-	if (!bAnyFan)
-	{
-		Source->FocusKey(LayerIndex, KeyIndex);
-		return;
-	}
-
+	// Exactly where the key is drawn - the middle of its diamond - on the panel's own timeline: the track's start plus the key's
+	// time into it, as the Track Editor places it. Asking the source to find the key instead put the playhead near it but not on
+	// it: its time worked out apart from the panel's, by the key's point on the track rather than the key as shown (a Dope Sheet's
+	// single key is two points). An inverted preview plays its keys from the other end, so the key is posed at the mirrored
+	// moment, as the source's own FocusKey poses it.
 	TArray<FVector2f> Spans;
 	GetLayerSpans(Spans);
 	TArray<float> KeyTimes;
 	GetKeyTimes(LayerIndex, KeyTimes);
-	if (Spans.IsValidIndex(LayerIndex) && KeyTimes.IsValidIndex(KeyIndex))
+	if (!Spans.IsValidIndex(LayerIndex) || !KeyTimes.IsValidIndex(KeyIndex))
 	{
-		ScrubToSeconds(Spans[LayerIndex].X + KeyTimes[KeyIndex]);
+		Source->FocusKey(LayerIndex, KeyIndex);
+		return;
 	}
+	const float KeySeconds = Spans[LayerIndex].X + KeyTimes[KeyIndex];
+	ScrubToSeconds(Source->GetInvert() ? GetPassSeconds() - KeySeconds : KeySeconds);
 }
 
 FVector2f SWidgetAnimTimeline::GetGroupSpan(int32 GroupIndex) const
@@ -12059,6 +12431,24 @@ const TArray<FWidgetAnimLayer>* SWidgetAnimTimeline::GetContextLayers() const
 
 void SWidgetAnimTimeline::GetKeyTimes(int32 LayerIndex, TArray<float>& OutTimes) const
 {
+	GetPointTimes(LayerIndex, OutTimes);
+
+	// A Dope Sheet's single key is one key, wherever keys are shown, picked or counted - its two points stay out of sight (they
+	// hold the same values: see SyncSingleKeyRow). It is where its LAST point is: the row is laid out to end exactly at its key,
+	// with nothing after it (see MakeSingleKeyTimes) - unless it is at the animation's very start, where it is its first point.
+	if (OutTimes.Num() == 2 && OutTimes[1] - OutTimes[0] <= MinLayerSeconds * 1.5f && IsDopeSheet())
+	{
+		const float RowStart = TrackSpans.IsValidIndex(LayerIndex) ? TrackSpans[LayerIndex].X : 0.f;
+		if (RowStart > SingleKeyAtStartTolerance)
+		{
+			OutTimes[0] = OutTimes[1];
+		}
+		OutTimes.SetNum(1);
+	}
+}
+
+void SWidgetAnimTimeline::GetPointTimes(int32 LayerIndex, TArray<float>& OutTimes) const
+{
 	OutTimes.Reset();
 
 	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
@@ -12090,11 +12480,12 @@ void SWidgetAnimTimeline::GetKeyTimes(int32 LayerIndex, TArray<float>& OutTimes)
 	}
 
 	// Its start, every key at its place along the run, and its end - the start and end values being keys too. With Start
-	// And End Keys (or Keyframe Only) always, so a track that simply goes from its start to its end shows its two values as
-	// keys to click; a press on one picks it, a drag resizes the track from that edge (see the Track Editor's HitTest).
-	// Without, only once it has a key between them. In the Graph Editor, always: points on its curve, picked there.
+	// And End Keys (or on a Dope Sheet) always, so a track that simply goes from its start to its end shows its two values as
+	// keys to click; a press on one picks it, a drag resizes the track from that edge (see the Track Editor's HitTest) - on a
+	// Dope Sheet, moves that key. Without, only once it has a key between them. In the Graph Editor, always: points on its
+	// curve, picked there.
 	const bool bGraphed = IsGraphOpen() && GraphLayers.Contains(LayerIndex);
-	const bool bEdgeKeys = UWidgetAnimEditorSettings::Get().ShowsEdgeKeys();
+	const bool bEdgeKeys = UWidgetAnimEditorSettings::Get().bShowEdgeKeys || IsDopeSheet();
 	if (WidgetAnimTypeSupportsValueKeys(Layer.AnimType) && (Layer.ValueKeys.Keys.Num() > 0 || bGraphed || bEdgeKeys))
 	{
 		const float RunSeconds = GetShownRunLength(LayerIndex) * TimeScale;
@@ -12171,9 +12562,15 @@ FText SWidgetAnimTimeline::GetGroupName(int32 GroupIndex) const
 		return LOCTEXT("ThisWidgetGroup", "This Widget");
 	}
 
+	// An unnamed group on a Dope Sheet reads "Key Group N".
 	return Groups && Groups->IsValidIndex(GroupIndex)
-		? FText::FromString((*Groups)[GroupIndex].GetDisplayName(GroupIndex))
+		? ToKeyGroupText(FText::FromString((*Groups)[GroupIndex].GetDisplayName(GroupIndex)))
 		: FText::GetEmpty();
+}
+
+FText SWidgetAnimTimeline::ToKeyGroupText(const FText& Text) const
+{
+	return WidgetAnimTimeline::KeyGroupText(this, Text);
 }
 
 FString SWidgetAnimTimeline::GetGroupFolder(int32 GroupIndex) const
@@ -12459,16 +12856,29 @@ void SWidgetAnimTimeline::StepToMarker(int32 Direction)
 		int32 Key;
 	};
 
+	// A Dope Sheet steps from key to key, every row's - its rows' starts and ends are only where their first and last keys are
+	// (a single key's hidden point a hair before it), so they are no stops of their own.
+	const bool bKeysOnly = IsDopeSheet();
 	TArray<FMarker> Markers;
-	Markers.Add({ 0.f, INDEX_NONE, INDEX_NONE });
-	Markers.Add({ GetPassSeconds(), INDEX_NONE, INDEX_NONE });
+	if (!bKeysOnly)
+	{
+		Markers.Add({ 0.f, INDEX_NONE, INDEX_NONE });
+		Markers.Add({ GetPassSeconds(), INDEX_NONE, INDEX_NONE });
+	}
 
 	TArray<FVector2f> Spans;
 	GetLayerSpans(Spans);
 	for (int32 LayerIndex = 0; LayerIndex < Spans.Num(); ++LayerIndex)
 	{
-		Markers.Add({ Spans[LayerIndex].X, INDEX_NONE, INDEX_NONE });
-		Markers.Add({ Spans[LayerIndex].X + Spans[LayerIndex].Y, INDEX_NONE, INDEX_NONE });
+		if (bKeysOnly && !IsLayerInView(LayerIndex))
+		{
+			continue;
+		}
+		if (!bKeysOnly)
+		{
+			Markers.Add({ Spans[LayerIndex].X, INDEX_NONE, INDEX_NONE });
+			Markers.Add({ Spans[LayerIndex].X + Spans[LayerIndex].Y, INDEX_NONE, INDEX_NONE });
+		}
 
 		TArray<float> KeyTimes;
 		GetKeyTimes(LayerIndex, KeyTimes);
@@ -13804,7 +14214,7 @@ FText SWidgetAnimTimeline::GetDetailsTitle() const
 
 	if (IsMultiSelection())
 	{
-		return FText::Format(LOCTEXT("SelectionLayers", "Selection: {0} Tracks{1}"), FText::AsNumber(SelectedLayers.Num()), Suffix);
+		return FText::Format(IsDopeSheet() ? LOCTEXT("DopeSelectionLayers", "Selection: {0} Keys{1}") : LOCTEXT("SelectionLayers", "Selection: {0} Tracks{1}"), FText::AsNumber(SelectedLayers.Num()), Suffix);
 	}
 
 	const FText GroupName = GetGroupName(Selection.Group);
@@ -13831,7 +14241,7 @@ FText SWidgetAnimTimeline::GetDetailsTitle() const
 				TypeName,
 				Suffix);
 		}
-		return FText::Format(LOCTEXT("SelectionLayerNoGroup", "Selection: {0} track{1}"), TypeName, Suffix);
+		return FText::Format(IsDopeSheet() ? LOCTEXT("DopeSelectionLayerNoGroup", "Selection: {0} key{1}") : LOCTEXT("SelectionLayerNoGroup", "Selection: {0} track{1}"), TypeName, Suffix);
 	}
 
 	if (Selection.Key != INDEX_NONE)
@@ -13848,7 +14258,7 @@ FText SWidgetAnimTimeline::GetDetailsTitle() const
 			Suffix);
 	}
 
-	return FText::Format(LOCTEXT("SelectionLayer", "Selection: {0} track ({1}){2}"), TypeName, GroupName, Suffix);
+	return FText::Format(IsDopeSheet() ? LOCTEXT("DopeSelectionLayer", "Selection: {0} key ({1}){2}") : LOCTEXT("SelectionLayer", "Selection: {0} track ({1}){2}"), TypeName, GroupName, Suffix);
 }
 
 // -----------------------------------------------------------------------------------------------------
@@ -14318,12 +14728,16 @@ void SWidgetAnimTimeline::GetListOrder(TArray<int32>& OutOrder, const FLayoutInd
 		}
 
 		Members = Index.GroupMembers[GroupIndex];
-		Members.StableSort([&Spans](int32 A, int32 B)
+		// A Dope Sheet's rows in their own order - the Track Editor's lines, and what dragging a row changes (MoveKeyRow).
+		if (!IsDopeSheet())
 		{
-			const float StartA = Spans.IsValidIndex(A) ? Spans[A].X : 0.f;
-			const float StartB = Spans.IsValidIndex(B) ? Spans[B].X : 0.f;
-			return StartA < StartB - KINDA_SMALL_NUMBER;
-		});
+			Members.StableSort([&Spans](int32 A, int32 B)
+			{
+				const float StartA = Spans.IsValidIndex(A) ? Spans[A].X : 0.f;
+				const float StartB = Spans.IsValidIndex(B) ? Spans[B].X : 0.f;
+				return StartA < StartB - KINDA_SMALL_NUMBER;
+			});
+		}
 
 		if (OutGroupSlices)
 		{
@@ -14348,6 +14762,9 @@ uint32 SWidgetAnimTimeline::ComputeListSignature(const FLayoutIndex& Index, cons
 	GetListOrder(Order, Index, Spans);
 
 	uint32 Hash = GetTypeHash(Order.Num());
+
+	// A Dope Sheet's list is its Keys viewer, made of other rows: switching between one and a timeline of tracks lists afresh.
+	Hash = HashCombine(Hash, GetTypeHash(IsDopeSheet()));
 
 	// Each track's group and collapsed track, which decide its row - and whether its group is shown at all (see
 	// IsGroupAllCollapsed) - changed by a collapse, an expand, or an undo of either.
@@ -14414,6 +14831,8 @@ void SWidgetAnimTimeline::RebuildLayerList()
 	}
 
 	LayerList->ClearChildren();
+	ListTrackNameFields.Reset();
+	ListCollapsedNameFields.Reset();
 
 	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
 	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
@@ -14929,6 +15348,74 @@ FSlateFontInfo SWidgetAnimTimeline::GetListParametrizedFont()
 	return Font;
 }
 
+/**
+ * A key's diamond in the Keys viewer (a Dope Sheet's list): in its row's type color, outlined as the Track Editor outlines it -
+ * filled while a key of the row is at the playhead (IsFilled), hollow otherwise. Hovered, a touch lighter.
+ */
+class SWidgetAnimKeyGlyph : public SLeafWidget
+{
+public:
+
+	SLATE_BEGIN_ARGS(SWidgetAnimKeyGlyph)
+		: _GlyphSize(9.f)
+	{}
+		SLATE_ATTRIBUTE(FLinearColor, GlyphColor)
+		SLATE_ATTRIBUTE(bool, IsFilled)
+		SLATE_ARGUMENT(float, GlyphSize)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		GlyphColor = InArgs._GlyphColor;
+		IsFilled = InArgs._IsFilled;
+		GlyphSize = InArgs._GlyphSize;
+	}
+
+	virtual FVector2D ComputeDesiredSize(float) const override
+	{
+		// The diamond's points reach GlyphSize / sqrt 2 either way, its outline a pixel past them.
+		const float Across = FMath::CeilToFloat(GlyphSize * UE_SQRT_2) + 3.f;
+		return FVector2D(Across, Across);
+	}
+
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+	{
+		using namespace WidgetAnimTimeline;
+
+		// On a pixel's middle, both ways - the diamond's points then fall on whole pixels, the same either side (MakeKeyDiamond).
+		const FVector2f Center(SnapColumn(AllottedGeometry, AllottedGeometry.GetLocalSize().X * 0.5f, 1.f, 0.f).LineLeft + 0.5f / PixelScale(AllottedGeometry),
+			AllottedGeometry.GetLocalSize().Y * 0.5f);
+		const FLinearColor Color = GlyphColor.Get(FLinearColor::White);
+		auto Diamond = [&](float DiamondSize, const FLinearColor& DiamondColor, int32 Layer)
+		{
+			MakeKeyDiamond(OutDrawElements, Layer, AllottedGeometry, Center, DiamondSize, DiamondColor * InWidgetStyle.GetColorAndOpacityTint());
+		};
+
+		const FLinearColor Outline = Color.GetLuminance() < Palette::DopeKeyDarkLuminance ? Palette::DopeKeyLightOutline : Palette::KeyOutline;
+		const FLinearColor Lit = IsHovered() ? Color * Palette::DopeKeyHoverLift : Color;
+		if (IsFilled.Get(true))
+		{
+			// An outline one pixel wide all round, then the fill.
+			Diamond(GrowDiamond(AllottedGeometry, GlyphSize, 1.f), Outline, LayerId);
+			Diamond(GlyphSize, Lit, LayerId + 1);
+		}
+		else
+		{
+			// Hollow: a ring of the color, two pixels wide all round, round a dark middle.
+			Diamond(GlyphSize, Lit, LayerId);
+			Diamond(GrowDiamond(AllottedGeometry, GlyphSize, -2.f), Palette::KeyOutline, LayerId + 1);
+		}
+		return LayerId + 1;
+	}
+
+private:
+
+	TAttribute<FLinearColor> GlyphColor;
+	TAttribute<bool> IsFilled;
+	float GlyphSize = 9.f;
+};
+
 TSharedRef<SWidget> SWidgetAnimTimeline::MakeListLayerRow(int32 LayerIndex, int32 GroupIndex, float Indent)
 {
 	using namespace WidgetAnimTimeline;
@@ -14938,6 +15425,15 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeListLayerRow(int32 LayerIndex, int3
 	auto IsWashedOut = [this, LayerIndex]() { return IsReadOnly() || IsLayerLocked(LayerIndex) || IsLayerHidden(LayerIndex); };
 	auto IsRowHovered = [RowWidget]() { const TSharedPtr<SWidget> Pinned = RowWidget->Pin(); return Pinned.IsValid() && Pinned->IsHovered(); };
 	const bool bAnimationTrack = GetInsertedAnimation(LayerIndex) != nullptr;
+
+	// A Dope Sheet's list is its Keys viewer: each row a kind of key on its group's widget - its diamond in the type's color, how
+	// many keys it has, and the keys at hand: to the previous one, one placed or taken off at the playhead, to the next.
+	const bool bKeyRow = IsDopeSheet() && !bAnimationTrack;
+	auto RowTypeColor = [this, LayerIndex]()
+	{
+		const TArray<FWidgetAnimLayer>* Current = GetLayers();
+		return Current && Current->IsValidIndex(LayerIndex) ? GetLayerTypeColor((*Current)[LayerIndex]) : FLinearColor::White;
+	};
 
 	const TSharedRef<SWidgetAnimListRow> LayerRow = SNew(SWidgetAnimListRow, WeakThisPtr, GroupIndex, LayerIndex)
 		.ToolTip(MakeListTrackToolTip(LayerIndex, /*bCollapsedHead=*/false))
@@ -15036,24 +15532,18 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeListLayerRow(int32 LayerIndex, int3
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					.VAlign(VAlign_Center)
-					.Padding(FMargin(bAnimationTrack ? 3.f : 18.f, 0.f, 0.f, 0.f))
+					.Padding(FMargin(bAnimationTrack ? 3.f : (bKeyRow ? 6.f : 18.f), 0.f, bKeyRow ? 4.f : 0.f, 0.f))
 					[
-						SNew(STextBlock)
-						.ColorAndOpacity_Lambda([IsWashedOut, bAnimationTrack]()
-						{
-							if (bAnimationTrack)
-							{
-								return FSlateColor(IsWashedOut() ? GetLockedColor(Palette::LayerAnimation) : Palette::LayerAnimation);
-							}
-							return IsWashedOut() ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground();
-						})
-						.Text_Lambda([this, LayerIndex]()
-						{
-							const TArray<FWidgetAnimLayer>* Current = GetLayers();
-							return Current && Current->IsValidIndex(LayerIndex)
-								? GetLayerDisplayName((*Current)[LayerIndex])
-								: FText::GetEmpty();
-						})
+						bKeyRow
+							? StaticCastSharedRef<SWidget>(SNew(SWidgetAnimKeyGlyph).GlyphColor_Lambda(RowTypeColor).IsFilled(true))
+							: SNullWidget::NullWidget
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						MakeListLayerName(LayerIndex, bAnimationTrack, IsWashedOut)
 					]
 
 					// Its Animation Parameters: a pill per bound field, in its parameter's type's color.
@@ -15190,16 +15680,18 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeListLayerRow(int32 LayerIndex, int3
 						]
 					]
 
-					// When it runs, from the top of the animation.
+					// When it runs, from the top of the animation - a key row: its keys at hand instead.
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					.VAlign(VAlign_Center)
-					.Padding(FMargin(6.f, 0.f, 8.f, 0.f))
+					.Padding(FMargin(6.f, 0.f, bKeyRow ? 4.f : 8.f, 0.f))
 					[
-						SNew(STextBlock)
-						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-						.Text_Lambda([this, LayerIndex]() { return GetLayerTimeRange(LayerIndex); })
+						bKeyRow
+							? MakeKeyRowControls(LayerIndex)
+							: StaticCastSharedRef<SWidget>(SNew(STextBlock)
+								.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+								.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+								.Text_Lambda([this, LayerIndex]() { return GetLayerTimeRange(LayerIndex); }))
 					]
 				]
 
@@ -15220,6 +15712,249 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeListLayerRow(int32 LayerIndex, int3
 	return SNew(SWidgetAnimRestingRow)
 		[
 			LayerRow
+		];
+}
+
+TSharedRef<SWidget> SWidgetAnimTimeline::MakeListLayerName(int32 LayerIndex, bool bAnimationTrack, TFunction<bool()> IsWashedOut)
+{
+	using namespace WidgetAnimTimeline;
+
+	// Its type - or the name it was given. Renamed in place: a double-click on it, or Rename in its menu (BeginRenameLayer).
+	const TSharedRef<SWidgetAnimNameField> NameField = SNew(SWidgetAnimNameField)
+		.Font(FAppStyle::GetFontStyle("NormalFont"))
+		// A Dope Sheet's key rows are what they key - never named.
+		.IsReadOnly_Lambda([this, LayerIndex]() { return !CanEditLayer(LayerIndex) || IsDopeSheet(); })
+		.TextColor_Lambda([IsWashedOut, bAnimationTrack]()
+		{
+			if (bAnimationTrack)
+			{
+				return FSlateColor(IsWashedOut() ? GetLockedColor(Palette::LayerAnimation) : Palette::LayerAnimation);
+			}
+			return IsWashedOut() ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground();
+		})
+		.Text_Lambda([this, LayerIndex]()
+		{
+			const TArray<FWidgetAnimLayer>* Current = GetLayers();
+			return Current && Current->IsValidIndex(LayerIndex)
+				? GetLayerDisplayName((*Current)[LayerIndex])
+				: FText::GetEmpty();
+		})
+		.OnTextCommitted_Lambda([this, LayerIndex](const FText& NewText, ETextCommit::Type)
+		{
+			const TArray<FWidgetAnimLayer>* Current = GetLayers();
+			if (!Current || !Current->IsValidIndex(LayerIndex))
+			{
+				return;
+			}
+			// Left as shown - its type's name while it has none of its own - is no rename.
+			const FString Typed = NewText.ToString().TrimStartAndEnd();
+			if (Typed != GetLayerDisplayName((*Current)[LayerIndex]).ToString())
+			{
+				RenameLayer(LayerIndex, Typed);
+			}
+		});
+	ListTrackNameFields.Add(LayerIndex, NameField);
+	return NameField;
+}
+
+void SWidgetAnimTimeline::BeginRenameLayer(int32 LayerIndex)
+{
+	if (!CanEditLayer(LayerIndex) || IsDopeSheet())
+	{
+		return;
+	}
+
+	// Its row shown: the list opened onto it if its group was folded there, then the name typed in place - a tick later, once
+	// the menu that asked for it has closed and given the focus back.
+	const int32 GroupIndex = GetLayerGroup(LayerIndex);
+	if (GroupIndex != INDEX_NONE && IsListGroupCollapsed(GroupIndex))
+	{
+		ToggleListGroupCollapsed(GroupIndex);
+	}
+	const FName CollapsedName = GetLayerCollapsedName(LayerIndex);
+	if (!CollapsedName.IsNone() && !ListOpenCollapsed.Contains(CollapsedName) && CollapsedName != ActiveCollapsed)
+	{
+		ListOpenCollapsed.Add(CollapsedName);
+		RebuildLayerList();
+	}
+
+	const TWeakPtr<SWidgetAnimTimeline> WeakPanel = SharedThis(this);
+	RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateLambda([WeakPanel, LayerIndex](double, float)
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakPanel.Pin();
+		if (!Pinned)
+		{
+			return EActiveTimerReturnType::Stop;
+		}
+		const TWeakPtr<SWidgetAnimNameField>* Found = Pinned->ListTrackNameFields.Find(LayerIndex);
+		const TSharedPtr<SWidgetAnimNameField> Field = Found ? Found->Pin() : nullptr;
+		if (Field.IsValid())
+		{
+			Field->EnterEditingMode();
+		}
+		else
+		{
+			// No list to type it in (the compact panel): a small box where the menu was.
+			Pinned->OpenRenamePopup(LayerIndex, NAME_None);
+		}
+		return EActiveTimerReturnType::Stop;
+	}));
+}
+
+void SWidgetAnimTimeline::BeginRenameCollapsed(FName Name)
+{
+	if (!CanEdit() || Name.IsNone())
+	{
+		return;
+	}
+	const TWeakPtr<SWidgetAnimTimeline> WeakPanel = SharedThis(this);
+	RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateLambda([WeakPanel, Name](double, float)
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakPanel.Pin();
+		if (!Pinned)
+		{
+			return EActiveTimerReturnType::Stop;
+		}
+		const TWeakPtr<SWidgetAnimNameField>* Found = Pinned->ListCollapsedNameFields.Find(Name);
+		const TSharedPtr<SWidgetAnimNameField> Field = Found ? Found->Pin() : nullptr;
+		if (Field.IsValid())
+		{
+			Field->EnterEditingMode();
+		}
+		else
+		{
+			Pinned->OpenRenamePopup(INDEX_NONE, Name);
+		}
+		return EActiveTimerReturnType::Stop;
+	}));
+}
+
+void SWidgetAnimTimeline::OpenRenamePopup(int32 LayerIndex, FName CollapsedName)
+{
+	const TArray<FWidgetAnimLayer>* Current = GetLayers();
+	FText Initial;
+	if (!CollapsedName.IsNone())
+	{
+		Initial = FText::FromName(CollapsedName);
+	}
+	else if (Current && Current->IsValidIndex(LayerIndex))
+	{
+		Initial = GetLayerDisplayName((*Current)[LayerIndex]);
+	}
+	else
+	{
+		return;
+	}
+
+	const TSharedRef<SEditableTextBox> NameBox = SNew(SEditableTextBox)
+		.Text(Initial)
+		.SelectAllTextWhenFocused(true)
+		.MinDesiredWidth(180.f)
+		.OnTextCommitted_Lambda([this, LayerIndex, CollapsedName, Initial](const FText& NewText, ETextCommit::Type CommitType)
+		{
+			FSlateApplication::Get().DismissAllMenus();
+			const FString Typed = NewText.ToString().TrimStartAndEnd();
+			if (CommitType != ETextCommit::OnEnter || Typed == Initial.ToString())
+			{
+				return;
+			}
+			if (!CollapsedName.IsNone())
+			{
+				if (!Typed.IsEmpty())
+				{
+					RenameCollapsed(CollapsedName, Typed);
+				}
+			}
+			else
+			{
+				RenameLayer(LayerIndex, Typed);
+			}
+		});
+	FSlateApplication::Get().PushMenu(
+		SharedThis(this),
+		FWidgetPath(),
+		SNew(SBox).Padding(FMargin(6.f))[NameBox],
+		FSlateApplication::Get().GetCursorPos(),
+		FPopupTransitionEffect(FPopupTransitionEffect::TypeInPopup));
+	FSlateApplication::Get().SetKeyboardFocus(NameBox, EFocusCause::SetDirectly);
+}
+
+TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyRowControls(int32 LayerIndex)
+{
+	using namespace WidgetAnimTimeline;
+
+	auto MakeArrow = [this, LayerIndex](int32 Direction)
+	{
+		return SNew(SButton)
+			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+			.ContentPadding(FMargin(1.f, 0.f))
+			.ToolTip(MakePanelToolTip(Direction < 0 ? WidgetAnimTips::KeyRowPreviousTooltip() : WidgetAnimTips::KeyRowNextTooltip()))
+			.OnClicked_Lambda([this, LayerIndex, Direction]() { StepRowKey(LayerIndex, Direction); return FReply::Handled(); })
+			[
+				MakeFixedIcon(Direction < 0
+					? PickBrush({ "Icons.ChevronLeft", "Animation.Backward_Step" })
+					: PickBrush({ "Icons.ChevronRight", "Animation.Forward_Step" }),
+					FSlateColor::UseSubduedForeground(), 10.f)
+			];
+	};
+
+	return SNew(SHorizontalBox)
+
+		// How many keys, quietly.
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
+		[
+			SNew(STextBlock)
+			.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+			.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+			.Text_Lambda([this, LayerIndex]()
+			{
+				const int32 Count = GetRowKeyCount(LayerIndex);
+				return FText::Format(LOCTEXT("KeyRowCount", "{0} {0}|plural(one=key,other=keys)"), FText::AsNumber(Count));
+			})
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			MakeArrow(-1)
+		]
+
+		// A key at the playhead: filled, and clicked takes it off. None: hollow, and clicked places one there.
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			SNew(SButton)
+			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+			.ContentPadding(FMargin(1.f, 0.f))
+			.IsEnabled_Lambda([this, LayerIndex]() { return CanDopeKeys(LayerIndex); })
+			.ToolTip(MakePanelToolTip(TAttribute<FText>::CreateLambda([this, LayerIndex]()
+			{
+				return FindRowKeyAt(LayerIndex, GetPlayheadSeconds()) != INDEX_NONE ? WidgetAnimTips::KeyRowRemoveTooltip() : WidgetAnimTips::KeyRowAddTooltip();
+			})))
+			.OnClicked_Lambda([this, LayerIndex]() { ToggleRowKeyAtPlayhead(LayerIndex); return FReply::Handled(); })
+			[
+				SNew(SWidgetAnimKeyGlyph)
+				.GlyphSize(8.f)
+				.GlyphColor_Lambda([this, LayerIndex]()
+				{
+					const TArray<FWidgetAnimLayer>* Current = GetLayers();
+					const FLinearColor Color = Current && Current->IsValidIndex(LayerIndex) ? GetLayerTypeColor((*Current)[LayerIndex]) : FLinearColor::White;
+					return IsLayerLocked(LayerIndex) || IsLayerHidden(LayerIndex) ? GetLockedColor(Color) : Color;
+				})
+				.IsFilled_Lambda([this, LayerIndex]() { return FindRowKeyAt(LayerIndex, GetPlayheadSeconds()) != INDEX_NONE; })
+			]
+		]
+
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			MakeArrow(1)
 		];
 }
 
@@ -15245,6 +15980,23 @@ void SWidgetAnimTimeline::AddCollapsedListRows(FName Name, int32 GroupIndex)
 	auto AllSelected = [this, Name]() { return GetCollapsedState(Name).bAllSelected; };
 	auto AllHidden = [this, Name]() { return GetCollapsedState(Name).bAllHidden; };
 	auto AnyPinned = [this, Name]() { return GetCollapsedState(Name).bAnyPinned; };
+
+	// Its name, renamed in place from its menu's Rename - a double-click on the row still opens it.
+	const TSharedRef<SWidgetAnimNameField> CollapsedNameField = SNew(SWidgetAnimNameField)
+		.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+		.RenameOnDoubleClick(false)
+		.IsReadOnly_Lambda([this]() { return !CanEdit(); })
+		.TextColor_Lambda([this, AllHidden]() { return IsReadOnly() || AllHidden() ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground(); })
+		.Text(FText::FromName(Name))
+		.OnTextCommitted_Lambda([this, Name](const FText& NewText, ETextCommit::Type)
+		{
+			const FString Typed = NewText.ToString().TrimStartAndEnd();
+			if (!Typed.IsEmpty() && Typed != Name.ToString())
+			{
+				RenameCollapsed(Name, Typed);
+			}
+		});
+	ListCollapsedNameFields.Add(Name, CollapsedNameField);
 
 	const TSharedRef<SWidgetAnimListRow> Row = SNew(SWidgetAnimListRow, WeakThisPtr, GroupIndex, Head, Name)
 		.ToolTip(MakeListTrackToolTip(Head, /*bCollapsedHead=*/true))
@@ -15356,11 +16108,26 @@ void SWidgetAnimTimeline::AddCollapsedListRows(FName Name, int32 GroupIndex)
 					.VAlign(VAlign_Center)
 					.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
 					[
-						SNew(STextBlock)
-						.Font(FAppStyle::GetFontStyle("NormalFontBold"))
-						.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
-						.ColorAndOpacity_Lambda([this, AllHidden]() { return IsReadOnly() || AllHidden() ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground(); })
-						.Text(FText::Format(LOCTEXT("CollapsedListName", "{0}  ({1})"), FText::FromName(Name), FText::AsNumber(Members.Num())))
+						SNew(SHorizontalBox)
+
+						// Renamed in place from its menu's Rename - a double-click here still opens it.
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.VAlign(VAlign_Center)
+						[
+							CollapsedNameField
+						]
+
+						+ SHorizontalBox::Slot()
+						.FillWidth(1.f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(STextBlock)
+							.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+							.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+							.ColorAndOpacity_Lambda([this, AllHidden]() { return IsReadOnly() || AllHidden() ? FSlateColor::UseSubduedForeground() : FSlateColor::UseForeground(); })
+							.Text(FText::Format(LOCTEXT("CollapsedListCount", "  ({0})"), FText::AsNumber(Members.Num())))
+						]
 					]
 
 					// Pin every one of its tracks - or unpin them.
@@ -15859,10 +16626,12 @@ void SWidgetAnimTimeline::UpdateTrackLayout()
 
 	// Where a layer asks to be. A layer with no line of its own set comes after every line that is set, in its
 	// order in the sequence - which is how older animations lay out: one track per line, as they always did.
-	auto LineKey = [Layers](int32 LayerIndex)
+	// A Dope Sheet: every row a line of its own, in its group's row order - the order the Animation Keys list shows them in.
+	const bool bRowPerLine = IsDopeSheet();
+	auto LineKey = [Layers, bRowPerLine](int32 LayerIndex)
 	{
 		const int32 Line = (*Layers)[LayerIndex].EditorLine;
-		return Line >= 0 ? Line : 1000000 + LayerIndex;
+		return bRowPerLine ? LayerIndex : (Line >= 0 ? Line : 1000000 + LayerIndex);
 	};
 
 	// Where a track is drawn - a collapsed track's head across all of its tracks - and where it ends, a stagger's tail
@@ -16609,7 +17378,7 @@ namespace
 
 void SWidgetAnimTimeline::AddGroup()
 {
-	const FScopedTransaction Transaction(LOCTEXT("AddGroupTransaction", "Add Track Group"));
+	const FScopedTransaction Transaction(ToKeyGroupText(LOCTEXT("AddGroupTransaction", "Add Track Group")));
 	if (!BeginEdit())
 	{
 		return;
@@ -16632,7 +17401,7 @@ void SWidgetAnimTimeline::DuplicateGroup(int32 GroupIndex)
 		return;
 	}
 
-	const FScopedTransaction Transaction(LOCTEXT("DuplicateGroupTransaction", "Duplicate Track Group"));
+	const FScopedTransaction Transaction(ToKeyGroupText(LOCTEXT("DuplicateGroupTransaction", "Duplicate Track Group")));
 	if (!BeginEdit())
 	{
 		return;
@@ -16693,7 +17462,7 @@ void SWidgetAnimTimeline::DeleteGroup(int32 GroupIndex)
 		return;
 	}
 
-	const FScopedTransaction Transaction(LOCTEXT("DeleteGroupTransaction", "Delete Track Group"));
+	const FScopedTransaction Transaction(ToKeyGroupText(LOCTEXT("DeleteGroupTransaction", "Delete Track Group")));
 	if (!BeginEdit())
 	{
 		return;
@@ -16781,7 +17550,7 @@ void SWidgetAnimTimeline::DeleteGroups(TArray<int32> GroupIndices)
 	}
 
 	// Last first, so the ones still to go keep their places. One step to undo, however many go.
-	const FScopedTransaction Transaction(GroupIndices.Num() > 1 ? LOCTEXT("DeleteGroupsTransaction", "Delete Track Groups") : LOCTEXT("DeleteOneGroupTransaction", "Delete Track Group"));
+	const FScopedTransaction Transaction(GroupIndices.Num() > 1 ? ToKeyGroupText(LOCTEXT("DeleteGroupsTransaction", "Delete Track Groups")) : ToKeyGroupText(LOCTEXT("DeleteOneGroupTransaction", "Delete Track Group")));
 	GroupIndices.Sort([](int32 A, int32 B) { return A > B; });
 	int32 Previous = INDEX_NONE;
 	for (const int32 GroupIndex : GroupIndices)
@@ -16814,8 +17583,8 @@ void SWidgetAnimTimeline::SetGroupsFolder(const TArray<int32>& GroupIndices, con
 	}
 
 	const FScopedTransaction Transaction(NewFolder.IsEmpty()
-		? LOCTEXT("RemoveFromFolderTransaction", "Take Track Groups Out of List Folder")
-		: LOCTEXT("MoveToFolderTransaction", "Put Track Groups in List Folder"));
+		? ToKeyGroupText(LOCTEXT("RemoveFromFolderTransaction", "Take Track Groups Out of List Folder"))
+		: ToKeyGroupText(LOCTEXT("MoveToFolderTransaction", "Put Track Groups in List Folder")));
 	if (!BeginEdit())
 	{
 		return;
@@ -16891,7 +17660,7 @@ void SWidgetAnimTimeline::MoveGroupTo(int32 GroupIndex, int32 InsertBefore)
 		return;
 	}
 
-	const FScopedTransaction Transaction(LOCTEXT("ReorderGroupTransaction", "Reorder Track Group"));
+	const FScopedTransaction Transaction(ToKeyGroupText(LOCTEXT("ReorderGroupTransaction", "Reorder Track Group")));
 	if (!BeginEdit())
 	{
 		return;
@@ -16960,6 +17729,29 @@ void SWidgetAnimTimeline::MoveGroupTo(int32 GroupIndex, int32 InsertBefore)
 
 void SWidgetAnimTimeline::AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, const FInstancedStruct* InitialTypeParams, TOptional<float> AtSeconds, const FWidgetAnimLayer* Preset)
 {
+	// A Dope Sheet keeps one row per kind of key in a Key Group: a key of a kind the group already has goes on that row.
+	if (IsDopeSheet() && !Preset)
+	{
+		const int32 RowGroup = GetDefaultGroup(GroupIndex);
+		const UScriptStruct* Kind = AnimType == EWidgetAnimType::Custom && InitialTypeParams ? InitialTypeParams->GetScriptStruct() : nullptr;
+		const int32 Row = RowGroup != INDEX_NONE ? FindKeyRow(RowGroup, AnimType, Kind) : INDEX_NONE;
+		if (Row != INDEX_NONE)
+		{
+			const float At = AtSeconds.IsSet() ? FMath::Max(AtSeconds.GetValue(), 0.f) : GetPlayheadSeconds();
+			const int32 Existing = FindRowKeyAt(Row, At);
+			if (Existing != INDEX_NONE)
+			{
+				SelectKey(Row, Existing);
+			}
+			else
+			{
+				AddDopeKey(Row, At);
+			}
+			RevealLayer(Row);
+			return;
+		}
+	}
+
 	const FScopedTransaction Transaction(LOCTEXT("AddLayerTransaction", "Add Animation Track"));
 	if (!BeginEdit())
 	{
@@ -16984,6 +17776,19 @@ void SWidgetAnimTimeline::AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, c
 
 	// As long as the editor preferences' Default Track Length says - in the animation's own seconds, as Duration is.
 	NewLayer.Duration = FMath::Max(UWidgetAnimEditorSettings::Get().DefaultTrackLength, MinLayerSeconds);
+
+	// A Dope Sheet's Add Key: one key, where the menu was opened - or at the playhead - its start and end a hair apart.
+	const bool bDopeKey = IsDopeSheet() && !Preset;
+	if (bDopeKey)
+	{
+		if (!AtSeconds.IsSet())
+		{
+			AtSeconds = GetPlayheadSeconds();
+		}
+		// Laid out to end at the key (MakeSingleKeyTimes): its start a hair before it.
+		AtSeconds = MakeSingleKeyTimes(FMath::Max(AtSeconds.GetValue(), 0.f))[0];
+		NewLayer.Duration = MinLayerSeconds / FMath::Max(GetTimeScale(), KINDA_SMALL_NUMBER);
+	}
 
 	// Added inside a collapsed track open on its own: one of its tracks.
 	NewLayer.CollapsedTrack = ActiveCollapsed;
@@ -17073,17 +17878,72 @@ void SWidgetAnimTimeline::AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, c
 			}
 		}
 	}
+	// A Dope Sheet's single key: both points hold the same - the widget at rest (a keyframed row's first key, as authored; any
+	// other row's end, where a track settles) - so the key changes nothing until it is edited.
+	if (bDopeKey && CanEditKeys(InsertAt))
+	{
+		if (WidgetAnimTypeIsKeyframed(Added.AnimType))
+		{
+			FRichCurve* Curve = Added.Transform.Curve.GetRichCurve();
+			if (Curve)
+			{
+				// Made again as two keys - through the curve's own calls, which keep its key handles right.
+				const float FirstValue = Curve->GetNumKeys() > 0 ? Curve->GetFirstKey().Value : 0.f;
+				const float LastValue = Curve->GetNumKeys() > 0 ? Curve->GetLastKey().Value : 1.f;
+				while (Curve->GetNumKeys() > 0)
+				{
+					Curve->DeleteKey(Curve->GetFirstKeyHandle());
+				}
+				Curve->SetKeyInterpMode(Curve->AddKey(0.f, FirstValue), RCIM_Linear);
+				Curve->SetKeyInterpMode(Curve->AddKey(MinLayerSeconds / FMath::Max(GetTimeScale(), KINDA_SMALL_NUMBER), LastValue), RCIM_Linear);
+				Added.Transform.SyncKeysToCurve();
+			}
+			CopyRowPoint(InsertAt, 0, 1);
+
+			// A Dope Sheet's keys say where the widget is, each of its own: none Uses Authored. Each holds the widget as it is now
+			// all the same - a transform of nothing over it, the outline of its box, the settings of its shape or its look (put
+			// in its keys as the track was made) - so a key changes nothing until it is edited, and every field is there to edit.
+			const UShapeBox* DopeBox = Added.AnimType == EWidgetAnimType::ShapeBox ? UWidgetAnimLibrary::ResolveShapeBox(Source->GetLayerPreviewWidget(InsertAt)) : nullptr;
+			for (FWidgetTransformKeyframe& Key : Added.Transform.Keys)
+			{
+				Key.bUseAuthoredShape = false;
+				Key.bUseAuthoredTransform = false;
+				if (DopeBox)
+				{
+					Key.Shape = DopeBox->GetShape();
+				}
+			}
+		}
+		else
+		{
+			CopyRowPoint(InsertAt, 1, 0);
+		}
+	}
+
 	PinLayerStarts(OldStarts, OldIndicesAfterInserting(Layers.Num(), InsertAt, 1));
 	TrackCollapsedGroups.Remove(GroupIndex);
 	ListCollapsedGroups.Remove(GroupIndex);
 
 	NotifyGroupsChanged(EPropertyChangeType::ArrayAdd);
 	RebuildRows();
-	SelectLayer(InsertAt);
+	if (bDopeKey && CanEditKeys(InsertAt))
+	{
+		SelectKey(InsertAt, 0);
+	}
+	else
+	{
+		SelectLayer(InsertAt);
+	}
 }
 
 void SWidgetAnimTimeline::DuplicateLayer(int32 LayerIndex)
 {
+	// A second row of the same kind of key, in the same Key Group: never on a Dope Sheet.
+	if (IsDopeSheet())
+	{
+		return;
+	}
+
 	const TArray<FWidgetAnimLayer>* Current = GetLayers();
 	if (!Current || !Current->IsValidIndex(LayerIndex))
 	{
@@ -17699,6 +18559,12 @@ bool SWidgetAnimTimeline::CanPasteLayers() const
 
 void SWidgetAnimTimeline::PasteLayers(int32 GroupIndex, TOptional<float> AtSeconds)
 {
+	// A Dope Sheet's rows are one per kind of key in a group: pasted rows would stand beside rows of their own kind.
+	if (IsDopeSheet())
+	{
+		return;
+	}
+
 	TArray<WidgetAnimTrackClipboard::FEntry> Entries;
 	TArray<FWidgetAnimParameter> CopiedParameters;
 	if (!WidgetAnimTrackClipboard::Read(Entries, &CopiedParameters))
@@ -18047,6 +18913,14 @@ void SWidgetAnimTimeline::SetLayerGroup(int32 LayerIndex, int32 GroupIndex)
 	const TArray<FWidgetAnimLayerGroup>* Groups = GetGroups();
 	if (!Current || !Groups || !Current->IsValidIndex(LayerIndex) || !Groups->IsValidIndex(GroupIndex) || GetLayerGroup(LayerIndex) == GroupIndex || !CanEditLayer(LayerIndex))
 	{
+		return;
+	}
+
+	// A Dope Sheet's Key Group has one row of each kind of key: a row can't join a group that already has its kind.
+	const FWidgetAnimLayer& Moving = (*Current)[LayerIndex];
+	if (IsDopeSheet() && FindKeyRow(GroupIndex, Moving.AnimType, Moving.TypeParams.GetScriptStruct(), LayerIndex) != INDEX_NONE)
+	{
+		NotifyOneRowPerKind(FText::Format(WidgetAnimTips::KeyRowKindTakenNote(), GetLayerTypeName(Moving), GetGroupName(GroupIndex)));
 		return;
 	}
 
@@ -18602,6 +19476,21 @@ void SWidgetAnimTimeline::AddKey(int32 LayerIndex, float LocalSeconds)
 		return;
 	}
 
+	// A Dope Sheet row takes a key anywhere: before its first key, after its last, or a second on a row of one - see AddDopeKey.
+	// Between its keys, as any track does, below.
+	if (CanDopeKeys(LayerIndex))
+	{
+		TArray<float> RowKeys;
+		GetKeyTimes(LayerIndex, RowKeys);
+		if (RowKeys.Num() < 2 || IsSingleKeyRow(LayerIndex) || LocalSeconds <= RowKeys[0] || LocalSeconds >= RowKeys.Last())
+		{
+			TArray<FVector2f> RowSpans;
+			GetLayerSpans(RowSpans);
+			AddDopeKey(LayerIndex, (RowSpans.IsValidIndex(LayerIndex) ? RowSpans[LayerIndex].X : 0.f) + LocalSeconds);
+			return;
+		}
+	}
+
 	FWidgetAnimLayer& Layer = (*Source->GetLayers())[LayerIndex];
 
 	if (!WidgetAnimTypeIsKeyframed(Layer.AnimType))
@@ -18792,6 +19681,25 @@ void SWidgetAnimTimeline::DeleteKey(int32 LayerIndex, int32 KeyIndex)
 		return;
 	}
 
+	// A Dope Sheet's key: its row put right around what is left - or, its only key, the row deleted with it.
+	if (CanDopeKeys(LayerIndex))
+	{
+		const FScopedTransaction Transaction(LOCTEXT("DeleteDopeKeyTransaction", "Delete Key"));
+		if (!BeginEdit())
+		{
+			return;
+		}
+		if (RemoveDopeKey(LayerIndex, KeyIndex))
+		{
+			DeleteLayer(LayerIndex);
+			return;
+		}
+		NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+		UpdateTrackLayout();
+		SelectLayer(LayerIndex);
+		return;
+	}
+
 	FWidgetAnimLayer& Layer = (*Source->GetLayers())[LayerIndex];
 
 	if (!WidgetAnimTypeIsKeyframed(Layer.AnimType))
@@ -18874,8 +19782,19 @@ void SWidgetAnimTimeline::DeleteSelectedKeys()
 	}
 
 	const int32 PrimaryLayer = Selection.Layer;
+	TArray<int32> EmptiedRows;
 	for (const FKeyRef& Ref : Doomed)
 	{
+		// A Dope Sheet's keys: each row put right around what is left; a row whose only key went is deleted after.
+		if (CanDopeKeys(Ref.Layer))
+		{
+			if (RemoveDopeKey(Ref.Layer, Ref.Key))
+			{
+				EmptiedRows.AddUnique(Ref.Layer);
+			}
+			continue;
+		}
+
 		FWidgetAnimLayer& Layer = (*Layers)[Ref.Layer];
 		if (!WidgetAnimTypeIsKeyframed(Layer.AnimType))
 		{
@@ -18903,6 +19822,18 @@ void SWidgetAnimTimeline::DeleteSelectedKeys()
 	}
 
 	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	if (EmptiedRows.Num() > 0)
+	{
+		// Last first, so deleting one never moves another still to go.
+		EmptiedRows.Sort([](int32 A, int32 B) { return A > B; });
+		for (const int32 Row : EmptiedRows)
+		{
+			DeleteLayer(Row);
+		}
+		ClearSelection();
+		return;
+	}
+	UpdateTrackLayout();
 	SelectLayer(PrimaryLayer);
 }
 
@@ -19076,6 +20007,26 @@ void SWidgetAnimTimeline::BeginKeyDrag(int32 LayerIndex, int32 KeyIndex)
 		return;
 	}
 
+	// A Dope Sheet: a single-key row's one key is its two points - both go - and every row's keys are measured on the time axis.
+	bDopeKeyDrag = IsDopeSheet();
+	DopeDragTimes.Reset();
+	if (bDopeKeyDrag)
+	{
+		const TArray<FKeyRef> Pressed = Moving;
+		for (const FKeyRef& Ref : Pressed)
+		{
+			if (IsSingleKeyRow(Ref.Layer))
+			{
+				Moving.AddUnique(FKeyRef{ Ref.Layer, 0 });
+				Moving.AddUnique(FKeyRef{ Ref.Layer, 1 });
+			}
+			if (CanDopeKeys(Ref.Layer) && !DopeDragTimes.Contains(Ref.Layer))
+			{
+				GetRowKeySeconds(Ref.Layer, DopeDragTimes.Add(Ref.Layer), /*bPoints=*/true);
+			}
+		}
+	}
+
 	DragLayer = LayerIndex;
 	DragKey = KeyIndex;
 	DragPressedOriginalTime = PressedTimes[KeyIndex];
@@ -19114,6 +20065,12 @@ void SWidgetAnimTimeline::UpdateKeyDrag(float LocalSeconds, float SnapThresholdS
 {
 	if (!IsDraggingKey() || DragKeys.Num() == 0 || DragKeys.Num() != DragKeyOriginalTimes.Num())
 	{
+		return;
+	}
+
+	if (bDopeKeyDrag)
+	{
+		UpdateDopeKeyDrag(LocalSeconds, SnapThresholdSeconds);
 		return;
 	}
 
@@ -19203,6 +20160,83 @@ void SWidgetAnimTimeline::UpdateKeyDrag(float LocalSeconds, float SnapThresholdS
 	UpdateTrackLayout();
 }
 
+void SWidgetAnimTimeline::UpdateDopeKeyDrag(float LocalSeconds, float SnapThresholdSeconds)
+{
+	// The mouse on the time axis: LocalSeconds is from where the pressed row starts now, which a drag of its first key moves.
+	const float PressedStart = GetShownSpan(DragLayer).X;
+	const float WantedSeconds = PressedStart + LocalSeconds;
+	const TArray<float>* PressedRow = DopeDragTimes.Find(DragLayer);
+	const float PressedOriginal = PressedRow && PressedRow->IsValidIndex(DragKey) ? (*PressedRow)[DragKey] : KeyDragLayerStart + DragPressedOriginalTime;
+
+	float Wanted = RoundSeconds(WantedSeconds);
+	TOptional<float> SnappedTo;
+	float Adjust = 0.f;
+	float Target = 0.f;
+	if (SnapThresholdSeconds > 0.f && FindSnap(KeySnapTargets, { WantedSeconds }, SnapThresholdSeconds, Adjust, Target))
+	{
+		Wanted = WantedSeconds + Adjust;
+		SnappedTo = Target;
+	}
+
+	// Every key by the same amount, none past a neighbor that stays (a row's keys at least the shortest a track runs apart), none
+	// before the animation's start.
+	constexpr float MaxSeconds = 600.f;
+	float Lowest = -MaxSeconds;
+	float Highest = MaxSeconds;
+	for (int32 Index = 0; Index < DragKeys.Num(); ++Index)
+	{
+		const FKeyRef& Ref = DragKeys[Index];
+		const TArray<float>* Row = DopeDragTimes.Find(Ref.Layer);
+		if (!Row || !Row->IsValidIndex(Ref.Key))
+		{
+			// A row that isn't a Dope Sheet's (a spring): its keys between its start and end, as anywhere.
+			Lowest = FMath::Max(Lowest, -DragKeyOriginalTimes[Index]);
+			continue;
+		}
+		const float Original = (*Row)[Ref.Key];
+		Lowest = FMath::Max(Lowest, -Original);
+		if (Ref.Key > 0 && !DragKeys.Contains(FKeyRef{ Ref.Layer, Ref.Key - 1 }))
+		{
+			Lowest = FMath::Max(Lowest, (*Row)[Ref.Key - 1] + MinLayerSeconds - Original);
+		}
+		if (Ref.Key + 1 < Row->Num() && !DragKeys.Contains(FKeyRef{ Ref.Layer, Ref.Key + 1 }))
+		{
+			Highest = FMath::Min(Highest, (*Row)[Ref.Key + 1] - MinLayerSeconds - Original);
+		}
+	}
+
+	const float WantedDelta = Wanted - PressedOriginal;
+	const float Delta = Lowest <= Highest ? FMath::Clamp(WantedDelta, Lowest, Highest) : 0.f;
+	SnapIndicator = SnappedTo.IsSet() && FMath::IsNearlyEqual(Delta, WantedDelta, WidgetAnimTimeline::MinKeySpacing) ? SnappedTo : TOptional<float>();
+
+	// Each row's keys from where they were at the press, the carried ones moved - its start, length and keys put there.
+	for (const TPair<int32, TArray<float>>& Row : DopeDragTimes)
+	{
+		TArray<float> Seconds = Row.Value;
+		for (const FKeyRef& Ref : DragKeys)
+		{
+			if (Ref.Layer == Row.Key && Seconds.IsValidIndex(Ref.Key))
+			{
+				Seconds[Ref.Key] = Row.Value[Ref.Key] + Delta;
+			}
+		}
+		SetDopeKeyTimes(Row.Key, Seconds);
+	}
+
+	// Rows that aren't a Dope Sheet's, as any track's keys move.
+	for (int32 Index = 0; Index < DragKeys.Num(); ++Index)
+	{
+		if (!DopeDragTimes.Contains(DragKeys[Index].Layer))
+		{
+			SetKeyTime(DragKeys[Index].Layer, DragKeys[Index].Key, DragKeyOriginalTimes[Index] + Delta);
+		}
+	}
+
+	NotifyGroupsChanged(EPropertyChangeType::Interactive);
+	FocusPreviewOnKey(DragLayer, DragKey);
+	UpdateTrackLayout();
+}
+
 void SWidgetAnimTimeline::EndKeyDrag()
 {
 	if (!IsDraggingKey())
@@ -19217,7 +20251,10 @@ void SWidgetAnimTimeline::EndKeyDrag()
 	DragKey = INDEX_NONE;
 	DragKeys.Reset();
 	DragKeyOriginalTimes.Reset();
+	DopeDragTimes.Reset();
+	bDopeKeyDrag = false;
 	SnapIndicator.Reset();
+	UpdateTrackLayout();
 
 	// The key's Time row changed; the Selection panel shows it fresh.
 	RefreshDetails();
@@ -19400,6 +20437,7 @@ void SWidgetAnimTimeline::UpdateKeyPositionDrag(const FVector2D& Delta)
 	Key.Transform.Translation = Rounded;
 	Key.bUseAuthoredTransform = false;
 	bKeyPositionMoved = true;
+	SyncSingleKeyRow(KeyPositionLayer, KeyPositionKey);
 
 	// Interactive, as a key's time dragged is: the preview follows live, held on the key.
 	NotifyGroupsChanged(EPropertyChangeType::Interactive);
@@ -19564,16 +20602,22 @@ uint8 SWidgetAnimTimeline::FindGizmoKeyTracks(const UWidget* PanelWidget, uint8 
 
 		// Where the playhead is along the track, in its own time: only within its run. An inverted track plays its keys from
 		// the end back, so the playhead is that far from its end.
+		// A Dope Sheet's row takes a key anywhere along it - before its first key or after its last too (see AddDopeKey).
 		const float Run = Spans[LayerIndex].Y;
 		float Local = Playhead - Spans[LayerIndex].X;
-		if (Run <= KINDA_SMALL_NUMBER || Local < -Slack || Local > Run + Slack)
+		const bool bDopeRow = CanDopeKeys(LayerIndex);
+		if (!bDopeRow && (Run <= KINDA_SMALL_NUMBER || Local < -Slack || Local > Run + Slack))
 		{
 			continue;
 		}
-		Local = FMath::Clamp(Local, 0.f, Run);
-		if (IsLayerInverted(LayerIndex))
+		const bool bWithinRun = Local >= -Slack && Local <= Run + Slack;
+		if (bWithinRun)
 		{
-			Local = Run - Local;
+			Local = FMath::Clamp(Local, 0.f, Run);
+			if (IsLayerInverted(LayerIndex))
+			{
+				Local = Run - Local;
+			}
 		}
 
 		// Its key at the playhead, if it has one: a Transform track's curve key, a value track's point.
@@ -19832,6 +20876,15 @@ void SWidgetAnimTimeline::UpdateGizmoKeying(int32 WidgetIndex, const FWidgetTran
 
 	if (bWrote)
 	{
+		// A Dope Sheet's single key is two points: both take what the gizmo set.
+		for (const FGizmoKey& Entry : GizmoKeying.Keys)
+		{
+			if (Entry.Widget == WidgetIndex)
+			{
+				SyncSingleKeyRow(Entry.Layer, Entry.Key);
+			}
+		}
+
 		// Interactive, as a key's position dragged on the motion path is: the preview follows, posed at the playhead.
 		GizmoKeying.bChanged = true;
 		NotifyGroupsChanged(EPropertyChangeType::Interactive);
@@ -20440,7 +21493,8 @@ void SWidgetAnimTimeline::UpdateRangeDrag(float Seconds, float SnapThresholdSeco
 			const float Fan = GetLayerFanSeconds(LayerIndex);
 			const float Start = State.OriginalStarts[LayerIndex];
 			const float End = Start + State.OriginalLengths[LayerIndex] + Fan;
-			Lowest = FMath::Max(Lowest, CanResizeLayer(LayerIndex, /*bStartEdge=*/false) ? Start + MinLayerSeconds + Fan : End);
+			// A Dope Sheet's rows end at their last keys, and keys are never squeezed: its end comes in as far as the last key.
+			Lowest = FMath::Max(Lowest, CanResizeLayer(LayerIndex, /*bStartEdge=*/false) && !IsDopeSheet() ? Start + MinLayerSeconds + Fan : End);
 		}
 
 		const float Highest = bKeepsMinimumLength ? State.OriginalEnd + MaxSeconds : State.OriginalEnd;
@@ -20842,7 +21896,8 @@ void SWidgetAnimTimeline::CollapseLayers(const TArray<int32>& LayerIndices)
 	}
 
 	TArray<FWidgetAnimLayer>& Layers = *Source->GetLayers();
-	const FName Name = WidgetAnimCollapsed::MakeUniqueName(Layers, TEXT("Collapsed Tracks"));
+	// A Dope Sheet's rows are keys: Collapsed Keys.
+	const FName Name = WidgetAnimCollapsed::MakeUniqueName(Layers, IsDopeSheet() ? TEXT("Collapsed Keys") : TEXT("Collapsed Tracks"));
 	for (const int32 LayerIndex : LayerIndices)
 	{
 		if (Layers.IsValidIndex(LayerIndex))
@@ -21930,10 +22985,14 @@ void SWidgetAnimTimeline::ApplyPickedTarget(UWidget* Picked)
 float SWidgetAnimTimeline::GetNewTrackStart(TOptional<float> AtSeconds) const
 {
 	// Added from a menu opened on the Track Editor: where the menu was opened. Otherwise after the track it follows in the
-	// sequence - the selected one, or the last - as AddLayer places it, or at 0 for the first.
+	// sequence - the selected one, or the last - as AddLayer places it, or at 0 for the first. A Dope Sheet's key: at the playhead.
 	if (AtSeconds.IsSet())
 	{
 		return FMath::Max(AtSeconds.GetValue(), 0.f);
+	}
+	if (IsDopeSheet())
+	{
+		return GetPlayheadSeconds();
 	}
 
 	const int32 InsertAt = GetInsertIndex();
@@ -22119,6 +23178,12 @@ void SWidgetAnimTimeline::GoToEnd()
 
 void SWidgetAnimTimeline::AddInsertAnimationEntry(FMenuBuilder& Menu, int32 GroupIndex, TOptional<float> AtSeconds)
 {
+	// An animation track has no keys of its own: nothing a Dope Sheet can hold.
+	if (IsDopeSheet())
+	{
+		return;
+	}
+
 	// With when it will start, as Add Animation Track says: where the menu was opened, or after the track it follows.
 	Menu.AddSubMenu(
 		FText::Format(LOCTEXT("InsertAnimationAt", "Insert Existing Widget Animation ({0})"), FText::FromString(FormatTime(GetNewTrackStart(AtSeconds)))),
@@ -22255,13 +23320,19 @@ void SWidgetAnimTimeline::AddTrackSubMenu(FMenuBuilder& Menu, int32 GroupIndex, 
 	const bool bNameGroup = Groups && Groups->IsValidIndex(GroupIndex) && (!Source.IsValid() || Source->SupportsLayerGroups());
 	// With when it will start: where the menu was opened, or after the track it follows.
 	const FText StartsAt = FText::FromString(FormatTime(GetNewTrackStart(AtSeconds)));
-	const FText Label = bNameGroup
-		? FText::Format(LOCTEXT("AddTrackToGroupAt", "Add Animation Track to {0} ({1})"), GetGroupName(GroupIndex), StartsAt)
-		: FText::Format(LOCTEXT("AddTrackAt", "Add Animation Track ({0})"), StartsAt);
+	// A Dope Sheet adds a key - of any kind a track can be - where a timeline of tracks adds a track.
+	const bool bDope = IsDopeSheet();
+	const FText Label = bDope
+		? (bNameGroup
+			? FText::Format(LOCTEXT("AddKeyToGroupAt", "Add Key to {0} ({1})"), GetGroupName(GroupIndex), StartsAt)
+			: FText::Format(LOCTEXT("AddDopeKeyAt", "Add Key ({0})"), StartsAt))
+		: (bNameGroup
+			? FText::Format(LOCTEXT("AddTrackToGroupAt", "Add Animation Track to {0} ({1})"), GetGroupName(GroupIndex), StartsAt)
+			: FText::Format(LOCTEXT("AddTrackAt", "Add Animation Track ({0})"), StartsAt));
 
 	Menu.AddSubMenu(
 		Label,
-		WidgetAnimTips::AddTrackToGroupTooltip(),
+		bDope ? WidgetAnimTips::AddDopeKeyTooltip() : WidgetAnimTips::AddTrackToGroupTooltip(),
 		FNewMenuDelegate::CreateLambda([this, GroupIndex, AtSeconds](FMenuBuilder& SubMenu)
 		{
 			AddTrackTypeEntries(SubMenu, GroupIndex, AtSeconds);
@@ -22273,44 +23344,50 @@ void SWidgetAnimTimeline::AddTrackSubMenu(FMenuBuilder& Menu, int32 GroupIndex, 
 
 void SWidgetAnimTimeline::AddTrackTypeEntries(FMenuBuilder& Menu, int32 GroupIndex, TOptional<float> AtSeconds)
 {
+	// A Dope Sheet's keys have no presets, and only the kinds that hold keys (no Pulse, no Shake) are keys.
+	const bool bDope = IsDopeSheet();
+
 	// A saved track preset, first: a new track made from it, starting where any new track would.
-	Menu.AddSubMenu(
-		LOCTEXT("AddFromPreset", "From Preset"),
-		WidgetAnimTips::AddTrackFromPresetTooltip(),
-		FNewMenuDelegate::CreateLambda([this, GroupIndex, AtSeconds](FMenuBuilder& SubMenu)
-		{
-			TArray<WidgetAnimTrackPresets::FPreset> Presets;
-			WidgetAnimTrackPresets::GetPresets(Presets);
-
-			SubMenu.BeginSection("Presets", LOCTEXT("AddPresetsSection", "Presets"));
-			if (Presets.Num() == 0)
+	if (!bDope)
+	{
+		Menu.AddSubMenu(
+			LOCTEXT("AddFromPreset", "From Preset"),
+			WidgetAnimTips::AddTrackFromPresetTooltip(),
+			FNewMenuDelegate::CreateLambda([this, GroupIndex, AtSeconds](FMenuBuilder& SubMenu)
 			{
-				SubMenu.AddWidget(WidgetAnimPresetMenu::MakeNote(WidgetAnimTips::NoTrackPresetsToAddNote()), FText::GetEmpty(), /*bNoIndent=*/true);
-			}
-			for (const WidgetAnimTrackPresets::FPreset& Preset : Presets)
-			{
-				SubMenu.AddMenuEntry(
-					FUIAction(FExecuteAction::CreateLambda([this, GroupIndex, AtSeconds, Preset]() { AddLayersFromPreset(GroupIndex, Preset, AtSeconds); })),
-					WidgetAnimPresetMenu::MakeRow(Preset),
-					NAME_None,
-					FText::Format(Preset.bCollapsed ? WidgetAnimTips::AddCollapsedFromNamedPresetTooltip() : WidgetAnimTips::AddTrackFromNamedPresetTooltip(), FText::FromString(Preset.Name)));
-			}
-			SubMenu.EndSection();
+				TArray<WidgetAnimTrackPresets::FPreset> Presets;
+				WidgetAnimTrackPresets::GetPresets(Presets);
 
-			SubMenu.BeginSection("PresetFiles", LOCTEXT("AddPresetFilesSection", "Your Presets"));
-			SubMenu.AddMenuEntry(
-				LOCTEXT("AddOpenTrackPresetsFolder", "Open Presets Folder"),
-				WidgetAnimTips::OpenTrackPresetsFolderTooltip(),
-				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.FolderOpen"),
-				FUIAction(FExecuteAction::CreateLambda([]()
+				SubMenu.BeginSection("Presets", LOCTEXT("AddPresetsSection", "Presets"));
+				if (Presets.Num() == 0)
 				{
-					FPlatformProcess::ExploreFolder(*WidgetAnimTrackPresets::GetFolder(/*bCreate=*/true));
-				})));
-			SubMenu.EndSection();
-		}),
-		/*bInOpenSubMenuOnClick=*/false,
-		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Save"));
-	Menu.AddMenuSeparator();
+					SubMenu.AddWidget(WidgetAnimPresetMenu::MakeNote(WidgetAnimTips::NoTrackPresetsToAddNote()), FText::GetEmpty(), /*bNoIndent=*/true);
+				}
+				for (const WidgetAnimTrackPresets::FPreset& Preset : Presets)
+				{
+					SubMenu.AddMenuEntry(
+						FUIAction(FExecuteAction::CreateLambda([this, GroupIndex, AtSeconds, Preset]() { AddLayersFromPreset(GroupIndex, Preset, AtSeconds); })),
+						WidgetAnimPresetMenu::MakeRow(Preset),
+						NAME_None,
+						FText::Format(Preset.bCollapsed ? WidgetAnimTips::AddCollapsedFromNamedPresetTooltip() : WidgetAnimTips::AddTrackFromNamedPresetTooltip(), FText::FromString(Preset.Name)));
+				}
+				SubMenu.EndSection();
+
+				SubMenu.BeginSection("PresetFiles", LOCTEXT("AddPresetFilesSection", "Your Presets"));
+				SubMenu.AddMenuEntry(
+					LOCTEXT("AddOpenTrackPresetsFolder", "Open Presets Folder"),
+					WidgetAnimTips::OpenTrackPresetsFolderTooltip(),
+					FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.FolderOpen"),
+					FUIAction(FExecuteAction::CreateLambda([]()
+					{
+						FPlatformProcess::ExploreFolder(*WidgetAnimTrackPresets::GetFolder(/*bCreate=*/true));
+					})));
+				SubMenu.EndSection();
+			}),
+			/*bInOpenSubMenuOnClick=*/false,
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Save"));
+		Menu.AddMenuSeparator();
+	}
 
 	// The built-in types, grouped by what they do: Standard - the everyday motions; Transformation - the keyframed poses and
 	// shapes; Visual - how the widget looks. Any built-in type in none of them (one added later) follows under Other.
@@ -22327,7 +23404,13 @@ void SWidgetAnimTimeline::AddTrackTypeEntries(FMenuBuilder& Menu, int32 GroupInd
 		{ "Visual", LOCTEXT("VisualTypesSection", "Visual"), { EWidgetAnimType::Design, EWidgetAnimType::MaterialScalar, EWidgetAnimType::MaterialVector } },
 	};
 	TArray<EWidgetAnimType> Offered;
-	WidgetAnimTimeline::ForEachAnimType([&Offered](EWidgetAnimType AnimType) { Offered.Add(AnimType); });
+	WidgetAnimTimeline::ForEachAnimType([&Offered, bDope](EWidgetAnimType AnimType)
+	{
+		if (!bDope || WidgetAnimTypeIsKeyframed(AnimType) || WidgetAnimTypeSupportsValueKeys(AnimType))
+		{
+			Offered.Add(AnimType);
+		}
+	});
 
 	auto AddTypeEntry = [this, &Menu, GroupIndex, AtSeconds](EWidgetAnimType AnimType)
 	{
@@ -22487,7 +23570,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeAddMenu(int32 GroupIndex, bool bWit
 		// Loose entries rather than a section of their own: the registered and Blueprint types open sections of
 		// their own, and a menu section can't be opened inside another. Headed with when the track will start.
 		AddMenuHeading(Menu,
-			FText::Format(LOCTEXT("AddTrackHeadingAt", "Add Animation Track ({0})"), FText::FromString(FormatTime(GetNewTrackStart(AtSeconds)))),
+			FText::Format(IsDopeSheet() ? LOCTEXT("AddKeyHeadingAt", "Add Key ({0})") : LOCTEXT("AddTrackHeadingAt", "Add Animation Track ({0})"), FText::FromString(FormatTime(GetNewTrackStart(AtSeconds)))),
 			WidgetAnimTimeline::Palette::MenuAddIconTint);
 		AddTrackTypeEntries(Menu, GetDefaultGroup(GroupIndex), AtSeconds);
 
@@ -22505,9 +23588,9 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeAddMenu(int32 GroupIndex, bool bWit
 	// Opened within a group, the menu is about that group: a new group would be beside the point there.
 	if (!bInGroup)
 	{
-		Menu.BeginSection("Group", LOCTEXT("GroupSection", "Track Group"));
+		Menu.BeginSection("Group", ToKeyGroupText(LOCTEXT("GroupSection", "Track Group")));
 		Menu.AddMenuEntry(
-			LOCTEXT("AddGroup", "Add Track Group"),
+			ToKeyGroupText(LOCTEXT("AddGroup", "Add Track Group")),
 			WidgetAnimTips::AddGroupTooltip(),
 			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.FolderClosed"),
 			FUIAction(FExecuteAction::CreateLambda([this]() { AddGroup(); })));
@@ -22516,7 +23599,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeAddMenu(int32 GroupIndex, bool bWit
 
 	// Within a group, just that group's. Elsewhere every group, each with every track type in a menu of its own - so
 	// a track can go in any group from there, not just the one selected.
-	Menu.BeginSection("Tracks", LOCTEXT("TracksSection", "Tracks"));
+	Menu.BeginSection("Tracks", IsDopeSheet() ? LOCTEXT("KeysSection", "Keys") : LOCTEXT("TracksSection", "Tracks"));
 	if (bInGroup)
 	{
 		AddTrackSubMenu(Menu, GroupIndex, AtSeconds);
@@ -22544,6 +23627,11 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeAddMenu(int32 GroupIndex, bool bWit
 
 void SWidgetAnimTimeline::AddPasteEntry(FMenuBuilder& Menu, int32 GroupIndex, TOptional<float> AtSeconds)
 {
+	if (IsDopeSheet())
+	{
+		return;
+	}
+
 	Menu.AddMenuEntry(
 		LOCTEXT("PasteTracks", "Paste"),
 		WidgetAnimTips::PasteTracksTooltip(),
@@ -22559,6 +23647,12 @@ void SWidgetAnimTimeline::AddPasteEntry(FMenuBuilder& Menu, int32 GroupIndex, TO
 
 void SWidgetAnimTimeline::AddClipboardEntries(FMenuBuilder& Menu, const TArray<int32>& LayerIndices, int32 GroupIndex, TOptional<float> AtSeconds)
 {
+	// Rows aren't copied on a Dope Sheet (see PasteLayers).
+	if (IsDopeSheet())
+	{
+		return;
+	}
+
 	const bool bSeveral = LayerIndices.Num() > 1;
 	bool bAnyUnlocked = false;
 	for (const int32 LayerIndex : LayerIndices)
@@ -22567,7 +23661,8 @@ void SWidgetAnimTimeline::AddClipboardEntries(FMenuBuilder& Menu, const TArray<i
 	}
 
 	Menu.AddMenuEntry(
-		bSeveral ? LOCTEXT("CutTracks", "Cut Tracks") : LOCTEXT("CutTrack", "Cut Track"),
+		IsDopeSheet() ? (bSeveral ? LOCTEXT("DopeCutKeys", "Cut Keys") : LOCTEXT("DopeCutKey", "Cut Key"))
+			: (bSeveral ? LOCTEXT("CutTracks", "Cut Tracks") : LOCTEXT("CutTrack", "Cut Track")),
 		WidgetAnimTips::CutTracksTooltip(),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCommands.Cut"),
 		FUIAction(
@@ -22579,7 +23674,8 @@ void SWidgetAnimTimeline::AddClipboardEntries(FMenuBuilder& Menu, const TArray<i
 		FText::FromString(TEXT("Ctrl+X")));
 
 	Menu.AddMenuEntry(
-		bSeveral ? LOCTEXT("CopyTracks", "Copy Tracks") : LOCTEXT("CopyTrack", "Copy Track"),
+		IsDopeSheet() ? (bSeveral ? LOCTEXT("DopeCopyKeys", "Copy Keys") : LOCTEXT("DopeCopyKey", "Copy Key"))
+			: (bSeveral ? LOCTEXT("CopyTracks", "Copy Tracks") : LOCTEXT("CopyTrack", "Copy Track")),
 		WidgetAnimTips::CopyTracksTooltip(),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCommands.Copy"),
 		FUIAction(FExecuteAction::CreateLambda([this, LayerIndices]() { CopyLayers(LayerIndices); })),
@@ -22594,7 +23690,8 @@ void SWidgetAnimTimeline::AddClipboardEntries(FMenuBuilder& Menu, const TArray<i
 void SWidgetAnimTimeline::AddFocusEntries(FMenuBuilder& Menu, const TArray<int32>& LayerIndices)
 {
 	Menu.AddMenuEntry(
-		LayerIndices.Num() > 1 ? LOCTEXT("FocusTracks", "Focus Tracks") : LOCTEXT("FocusTrack", "Focus Track"),
+		IsDopeSheet() ? (LayerIndices.Num() > 1 ? LOCTEXT("DopeFocusKeys", "Focus Keys") : LOCTEXT("DopeFocusKey", "Focus Key"))
+			: (LayerIndices.Num() > 1 ? LOCTEXT("FocusTracks", "Focus Tracks") : LOCTEXT("FocusTrack", "Focus Track")),
 		WidgetAnimTips::FocusTracksTooltip(),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Filter"),
 		FUIAction(FExecuteAction::CreateLambda([this, LayerIndices]() { FocusLayers(LayerIndices); })));
@@ -23018,7 +24115,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeGroupsContextMenu(const TArray<int3
 {
 	FMenuBuilder Menu(/*bShouldCloseWindowAfterMenuSelection=*/true, nullptr);
 	AddMenuHeading(Menu,
-		FText::Format(LOCTEXT("GroupsHeading", "{0} Track Groups"), FText::AsNumber(GroupIndices.Num())),
+		FText::Format(ToKeyGroupText(LOCTEXT("GroupsHeading", "{0} Track Groups")), FText::AsNumber(GroupIndices.Num())),
 		GetGroupColor(GroupIndices.Num() > 0 ? GroupIndices[0] : 0));
 
 	// Every track of every one of them, to hide or show.
@@ -23081,7 +24178,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeGroupsContextMenu(const TArray<int3
 		return Menu.MakeWidget();
 	}
 
-	Menu.BeginSection("Groups", LOCTEXT("GroupsSectionContext", "Track Groups"));
+	Menu.BeginSection("Groups", ToKeyGroupText(LOCTEXT("GroupsSectionContext", "Track Groups")));
 	AddFolderEntries(Menu, GroupIndices);
 	Menu.AddMenuEntry(
 		LOCTEXT("DeleteGroups", "Delete Groups"),
@@ -23183,12 +24280,12 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeFolderContextMenu(const FString& Fo
 		/*bInOpenSubMenuOnClick=*/false,
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Edit"));
 	Menu.AddMenuEntry(
-		LOCTEXT("AddGroupToFolder", "Add Track Group to List Folder"),
+		ToKeyGroupText(LOCTEXT("AddGroupToFolder", "Add Track Group to List Folder")),
 		WidgetAnimTips::AddGroupToFolderTooltip(),
 		FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::MenuAddIcon),
 		FUIAction(FExecuteAction::CreateLambda([this, Folder]()
 		{
-			const FScopedTransaction Transaction(LOCTEXT("AddGroupToFolderTransaction", "Add Track Group"));
+			const FScopedTransaction Transaction(ToKeyGroupText(LOCTEXT("AddGroupToFolderTransaction", "Add Track Group")));
 			if (!BeginEdit())
 			{
 				return;
@@ -23283,13 +24380,13 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeGroupContextMenu(int32 GroupIndex, 
 		return Menu.MakeWidget();
 	}
 
-	Menu.BeginSection("Tracks", LOCTEXT("GroupTracksSection", "Tracks"));
+	Menu.BeginSection("Tracks", IsDopeSheet() ? LOCTEXT("GroupKeysSection", "Keys") : LOCTEXT("GroupTracksSection", "Tracks"));
 	AddTrackSubMenu(Menu, GroupIndex, AtSeconds);
 	AddInsertAnimationEntry(Menu, GroupIndex, AtSeconds);
 	AddPasteEntry(Menu, GroupIndex, AtSeconds);
 	Menu.EndSection();
 
-	Menu.BeginSection("Group", LOCTEXT("GroupSectionContext", "Track Group"));
+	Menu.BeginSection("Group", ToKeyGroupText(LOCTEXT("GroupSectionContext", "Track Group")));
 
 	// Its Preview Target, by clicking the widget in the designer.
 	if (CanPickTargetInDesigner())
@@ -23337,7 +24434,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeGroupContextMenu(int32 GroupIndex, 
 		FUIAction(FExecuteAction::CreateLambda([this, GroupIndex]() { DeleteGroup(GroupIndex); })));
 
 	Menu.AddMenuEntry(
-		LOCTEXT("AddGroupContext", "Add Track Group"),
+		ToKeyGroupText(LOCTEXT("AddGroupContext", "Add Track Group")),
 		WidgetAnimTips::AddGroupTooltip(),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.FolderClosed"),
 		FUIAction(FExecuteAction::CreateLambda([this]() { AddGroup(); })));
@@ -23422,6 +24519,9 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 	const int32 GroupIndex = GetLayerGroup(LayerIndex);
 	const TArray<int32> ActedOn = GetActedOnLayers(LayerIndex);
 
+	// A Dope Sheet's rows are called keys - Hide Key, Delete Key - and the diamonds on them keyframes.
+	const bool bDope = IsDopeSheet();
+
 	// Where on the time axis the track was right-clicked - unset from the Animation Tracks list: a track added from
 	// here starts there.
 	const TOptional<float> AddAtSeconds = ClickSeconds;
@@ -23437,13 +24537,14 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 	}
 
 	// Hiding is a way of looking at the animation, so it is offered even while the panel is locked read-only.
-	auto AddHideEntries = [this, &Menu, &ActedOn, bAnyHidden, bAnyShown]()
+	auto AddHideEntries = [this, &Menu, &ActedOn, bAnyHidden, bAnyShown, bDope]()
 	{
 		const bool bSeveral = ActedOn.Num() > 1;
 		if (bAnyShown)
 		{
 			Menu.AddMenuEntry(
-				bSeveral ? LOCTEXT("HideTracks", "Hide Tracks") : LOCTEXT("HideTrack", "Hide Track"),
+				bDope ? (bSeveral ? LOCTEXT("DopeHideKeys", "Hide Keys") : LOCTEXT("DopeHideKey", "Hide Key"))
+					: (bSeveral ? LOCTEXT("HideTracks", "Hide Tracks") : LOCTEXT("HideTrack", "Hide Track")),
 				WidgetAnimTips::HideTrackTooltip(),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Hidden"),
 				FUIAction(FExecuteAction::CreateLambda([this, ActedOn]() { SetLayersHidden(ActedOn, /*bHidden=*/true); })));
@@ -23451,7 +24552,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 		if (bAnyHidden)
 		{
 			Menu.AddMenuEntry(
-				bSeveral ? LOCTEXT("ShowTracks", "Show Tracks") : LOCTEXT("ShowTrack", "Show Track"),
+				bDope ? (bSeveral ? LOCTEXT("DopeShowKeys", "Show Keys") : LOCTEXT("DopeShowKey", "Show Key"))
+					: (bSeveral ? LOCTEXT("ShowTracks", "Show Tracks") : LOCTEXT("ShowTrack", "Show Track")),
 				WidgetAnimTips::ShowTrackTooltip(),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Visible"),
 				FUIAction(FExecuteAction::CreateLambda([this, ActedOn]() { SetLayersHidden(ActedOn, /*bHidden=*/false); })));
@@ -23469,13 +24571,14 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 	{
 		(IsLayerPinned(Index) ? bAnyPinned : bAnyUnpinned) = true;
 	}
-	auto AddPinEntries = [this, &Menu, &ActedOn, bAnyPinned, bAnyUnpinned]()
+	auto AddPinEntries = [this, &Menu, &ActedOn, bAnyPinned, bAnyUnpinned, bDope]()
 	{
 		const bool bSeveral = ActedOn.Num() > 1;
 		if (bAnyUnpinned)
 		{
 			Menu.AddMenuEntry(
-				bSeveral ? LOCTEXT("PinTracks", "Pin Tracks") : LOCTEXT("PinTrack", "Pin Track"),
+				bDope ? (bSeveral ? LOCTEXT("DopePinKeys", "Pin Keys") : LOCTEXT("DopePinKey", "Pin Key"))
+					: (bSeveral ? LOCTEXT("PinTracks", "Pin Tracks") : LOCTEXT("PinTrack", "Pin Track")),
 				WidgetAnimTips::PinTrackTooltip(),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Pinned"),
 				FUIAction(FExecuteAction::CreateLambda([this, ActedOn]() { SetLayersPinned(ActedOn, /*bPinned=*/true); })));
@@ -23483,7 +24586,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 		if (bAnyPinned)
 		{
 			Menu.AddMenuEntry(
-				bSeveral ? LOCTEXT("UnpinTracks", "Unpin Tracks") : LOCTEXT("UnpinTrack", "Unpin Track"),
+				bDope ? (bSeveral ? LOCTEXT("DopeUnpinKeys", "Unpin Keys") : LOCTEXT("DopeUnpinKey", "Unpin Key"))
+					: (bSeveral ? LOCTEXT("UnpinTracks", "Unpin Tracks") : LOCTEXT("UnpinTrack", "Unpin Track")),
 				WidgetAnimTips::UnpinTrackTooltip(),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Unpinned"),
 				FUIAction(FExecuteAction::CreateLambda([this, ActedOn]() { SetLayersPinned(ActedOn, /*bPinned=*/false); })));
@@ -23491,7 +24595,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 	};
 
 	// Invert Track: plays it from its end back to its start - ticked while every one acted on is inverted on its own.
-	auto AddInvertEntry = [this, &Menu, &ActedOn]()
+	auto AddInvertEntry = [this, &Menu, &ActedOn, bDope]()
 	{
 		const bool bAllInverted = ActedOn.Num() > 0 && Algo::AllOf(ActedOn, [this](int32 Index) { return IsLayerInvertedOnItsOwn(Index); });
 		bool bAnyEditable = false;
@@ -23500,7 +24604,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 			bAnyEditable |= CanEditLayer(Index);
 		}
 		Menu.AddMenuEntry(
-			ActedOn.Num() > 1 ? LOCTEXT("InvertTracks", "Invert Tracks") : LOCTEXT("InvertTrack", "Invert Track"),
+			bDope ? (ActedOn.Num() > 1 ? LOCTEXT("DopeInvertKeys", "Invert Keys") : LOCTEXT("DopeInvertKey", "Invert Key"))
+				: (ActedOn.Num() > 1 ? LOCTEXT("InvertTracks", "Invert Tracks") : LOCTEXT("InvertTrack", "Invert Track")),
 			WidgetAnimTips::InvertTrackTooltip(),
 			// A check box in the icon column rather than the menu's own, which sits left of it - see FNameTBDStyle::MenuCheckedIcon.
 			// The menu closes on the click, so the icon is set once, here.
@@ -23511,53 +24616,39 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 	};
 
 	// Folding tracks into a collapsed track - or, on one, opening it, expanding it and renaming it.
-	auto AddCollapseEntries = [this, &Menu, &ActedOn, bOnCollapsed, CollapsedName]()
+	auto AddCollapseEntries = [this, &Menu, &ActedOn, bOnCollapsed, CollapsedName, bDope]()
 	{
 		if (bOnCollapsed)
 		{
 			Menu.AddMenuEntry(
-				LOCTEXT("OpenCollapsed", "Open Collapsed Track"),
+				bDope ? LOCTEXT("DopeOpenCollapsed", "Open Collapsed Keys") : LOCTEXT("OpenCollapsed", "Open Collapsed Track"),
 				WidgetAnimTips::OpenCollapsedTooltip(),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Search"),
 				FUIAction(FExecuteAction::CreateLambda([this, CollapsedName]() { EnterCollapsed(CollapsedName); })));
 			Menu.AddMenuEntry(
-				LOCTEXT("ExpandCollapsed", "Expand Collapsed Track"),
+				bDope ? LOCTEXT("DopeExpandCollapsed", "Expand Collapsed Keys") : LOCTEXT("ExpandCollapsed", "Expand Collapsed Track"),
 				WidgetAnimTips::ExpandCollapsedTooltip(),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Expand"),
 				FUIAction(
 					FExecuteAction::CreateLambda([this, CollapsedName]() { ExpandCollapsed(CollapsedName); }),
 					FCanExecuteAction::CreateLambda([this]() { return CanEdit(); })));
 
-			// Renamed right here, as a Blueprint node's title is: typed, and taken on Enter.
-			if (CanEdit())
-			{
-				Menu.AddWidget(
-					SNew(SBox)
-					.WidthOverride(180.f)
-					.Padding(FMargin(0.f, 2.f, 8.f, 2.f))
-					[
-						SNew(SEditableTextBox)
-						.Text(FText::FromName(CollapsedName))
-						.SelectAllTextWhenFocused(true)
-						.ToolTipText(WidgetAnimTips::RenameCollapsedTooltip())
-						.OnTextCommitted_Lambda([this, CollapsedName](const FText& NewText, ETextCommit::Type CommitType)
-						{
-							if (CommitType == ETextCommit::OnEnter)
-							{
-								RenameCollapsed(CollapsedName, NewText.ToString());
-								FSlateApplication::Get().DismissAllMenus();
-							}
-						})
-					],
-					LOCTEXT("RenameCollapsedLabel", "Name"));
-			}
+			// Renamed in place, on its row in the Animation Tracks list - as a file is renamed in the Content Browser.
+			Menu.AddMenuEntry(
+				LOCTEXT("RenameCollapsed", "Rename"),
+				WidgetAnimTips::RenameCollapsedTooltip(),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCommands.Rename"),
+				FUIAction(
+					FExecuteAction::CreateLambda([this, CollapsedName]() { BeginRenameCollapsed(CollapsedName); }),
+					FCanExecuteAction::CreateLambda([this]() { return CanEdit(); })));
 			return;
 		}
 
 		if (CanCollapseLayers(ActedOn))
 		{
 			Menu.AddMenuEntry(
-				ActedOn.Num() > 1 ? LOCTEXT("CollapseTracks", "Collapse Tracks") : LOCTEXT("CollapseTrack", "Collapse Track"),
+				bDope ? (ActedOn.Num() > 1 ? LOCTEXT("DopeCollapseKeys", "Collapse Keys") : LOCTEXT("DopeCollapseKey", "Collapse Key"))
+					: (ActedOn.Num() > 1 ? LOCTEXT("CollapseTracks", "Collapse Tracks") : LOCTEXT("CollapseTrack", "Collapse Track")),
 				WidgetAnimTips::CollapseTracksTooltip(),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Collapse"),
 				FUIAction(FExecuteAction::CreateLambda([this, ActedOn]() { CollapseLayers(ActedOn); })));
@@ -23577,36 +24668,21 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 			AddMenuHeading(Menu,
 				bOne
 					? FText::Format(LOCTEXT("TrackMenuHeading", "{0}  ({1})"), GetLayerDisplayName((*HeadingLayers)[LayerIndex]), GetLayerWhereName(LayerIndex))
-					: LOCTEXT("MultipleTracksMenuHeading", "Multiple Tracks"),
+					: (bDope ? LOCTEXT("DopeMultipleKeysMenuHeading", "Multiple Keys") : LOCTEXT("MultipleTracksMenuHeading", "Multiple Tracks")),
 				bOne ? GetLayerTypeColor((*HeadingLayers)[LayerIndex]) : GetGroupColor(GroupIndex));
 		}
 	}
 
-	// Its name, first, right under the heading: renamed right here, as a collapsed track is - typed, and taken on Enter.
-	// Cleared, it is named by its type again.
-	if (ActedOn.Num() == 1 && !bOnCollapsed && CanEditLayer(LayerIndex))
+	// Rename, first, right under the heading: the name is then typed in place, on the track's row in the Animation Tracks list
+	// (as a file is renamed in the Content Browser). Cleared, it is named by its type again. A Dope Sheet's key rows have no
+	// names of their own - they are what they key.
+	if (ActedOn.Num() == 1 && !bOnCollapsed && CanEditLayer(LayerIndex) && !IsDopeSheet())
 	{
-		const TArray<FWidgetAnimLayer>* NameLayers = GetLayers();
-		const FText CurrentName = NameLayers && NameLayers->IsValidIndex(LayerIndex) ? GetLayerDisplayName((*NameLayers)[LayerIndex]) : FText::GetEmpty();
-		Menu.AddWidget(
-			SNew(SBox)
-			.WidthOverride(180.f)
-			.Padding(FMargin(0.f, 2.f, 8.f, 2.f))
-			[
-				SNew(SEditableTextBox)
-				.Text(CurrentName)
-				.SelectAllTextWhenFocused(true)
-				.ToolTipText(WidgetAnimTips::RenameTrackTooltip())
-				.OnTextCommitted_Lambda([this, LayerIndex](const FText& NewText, ETextCommit::Type CommitType)
-				{
-					if (CommitType == ETextCommit::OnEnter)
-					{
-						RenameLayer(LayerIndex, NewText.ToString());
-						FSlateApplication::Get().DismissAllMenus();
-					}
-				})
-			],
-			LOCTEXT("RenameTrackLabel", "Name"));
+		Menu.AddMenuEntry(
+			LOCTEXT("RenameTrack", "Rename"),
+			WidgetAnimTips::RenameTrackTooltip(),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCommands.Rename"),
+			FUIAction(FExecuteAction::CreateLambda([this, LayerIndex]() { BeginRenameLayer(LayerIndex); })));
 	}
 
 	// The Graph Editor is a way of looking too - and of editing, where the tracks can be - so it is offered first, either way.
@@ -23620,15 +24696,14 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 				WidgetAnimTips::OpenGraphEditorTooltip(),
 				bEngineIcon ? FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCurveEditor.TabIcon") : FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::GraphEditorIcon),
 				FUIAction(FExecuteAction::CreateLambda([this, Graphable]() { OpenGraph(Graphable); })));
-			Menu.AddSeparator();
 		}
 	}
 
 	// Jumping there only looks at the animation, so it is offered whatever can be edited.
-	auto AddJumpEntry = [this, &Menu, LayerIndex]()
+	auto AddJumpEntry = [this, &Menu, LayerIndex, bDope]()
 	{
 		Menu.AddMenuEntry(
-			LOCTEXT("JumpToTrack", "Jump to Track"),
+			bDope ? LOCTEXT("DopeJumpToKey", "Jump to Key") : LOCTEXT("JumpToTrack", "Jump to Track"),
 			WidgetAnimTips::JumpToTrackTooltip(),
 			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Search"),
 			FUIAction(FExecuteAction::CreateLambda([this, LayerIndex]() { JumpToLayer(LayerIndex); })));
@@ -23650,7 +24725,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 		// Copying only reads the animation, so it is offered while it can't be edited.
 		Menu.BeginSection("Clipboard", LOCTEXT("ClipboardSection", "Clipboard"));
 		Menu.AddMenuEntry(
-			ActedOn.Num() > 1 ? LOCTEXT("CopyTracksReadOnly", "Copy Tracks") : LOCTEXT("CopyTrackReadOnly", "Copy Track"),
+			bDope ? (ActedOn.Num() > 1 ? LOCTEXT("DopeCopyKeysReadOnly", "Copy Keys") : LOCTEXT("DopeCopyKeyReadOnly", "Copy Key"))
+				: (ActedOn.Num() > 1 ? LOCTEXT("CopyTracksReadOnly", "Copy Tracks") : LOCTEXT("CopyTrackReadOnly", "Copy Track")),
 			WidgetAnimTips::CopyTracksTooltip(),
 			FSlateIcon(FAppStyle::GetAppStyleSetName(), "GenericCommands.Copy"),
 			FUIAction(FExecuteAction::CreateLambda([this, ActedOn]() { CopyLayers(ActedOn); })));
@@ -23679,7 +24755,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 
 	if (CanEditKeys(LayerIndex) && ActedOn.Num() == 1)
 	{
-		Menu.BeginSection("Keys", LOCTEXT("KeysSection", "Keys"));
+		Menu.BeginSection("Keys", bDope ? LOCTEXT("DopeKeyframesSection", "Keyframes") : LOCTEXT("KeysSection", "Keys"));
 
 		if (KeyIndex != INDEX_NONE)
 		{
@@ -23695,7 +24771,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 				}
 
 				Menu.AddMenuEntry(
-					FText::Format(LOCTEXT("DeleteSelectedKeys", "Delete {0} Selected {0}|plural(one=Key,other=Keys)"), FText::AsNumber(NumDeletable)),
+					FText::Format(bDope ? LOCTEXT("DopeDeleteSelectedKeyframes", "Delete {0} Selected {0}|plural(one=Keyframe,other=Keyframes)")
+						: LOCTEXT("DeleteSelectedKeys", "Delete {0} Selected {0}|plural(one=Key,other=Keys)"), FText::AsNumber(NumDeletable)),
 					WidgetAnimTips::DeleteSelectedKeysTooltip(),
 					FSlateIcon(),
 					FUIAction(
@@ -23708,7 +24785,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 				if (Segments.Num() > 0)
 				{
 					Menu.AddSubMenu(
-						LOCTEXT("CurveBetweenSelectedKeys", "Curve Between Selected Keys"),
+						bDope ? LOCTEXT("DopeCurveBetweenSelectedKeyframes", "Curve Between Selected Keyframes") : LOCTEXT("CurveBetweenSelectedKeys", "Curve Between Selected Keys"),
 						WidgetAnimTips::CurveBetweenSelectedKeysTooltip(),
 						FNewMenuDelegate::CreateLambda([this, Segments](FMenuBuilder& SubMenu) { AddSegmentCurveEntries(SubMenu, Segments); }));
 				}
@@ -23716,7 +24793,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 			else
 			{
 				Menu.AddMenuEntry(
-					LOCTEXT("DeleteKey", "Delete Key"),
+					bDope ? LOCTEXT("DopeDeleteKeyframe", "Delete Keyframe") : LOCTEXT("DeleteKey", "Delete Key"),
 					WidgetAnimTips::DeleteKeyTooltip(),
 					FSlateIcon(),
 					FUIAction(
@@ -23728,7 +24805,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 				{
 					const TArray<FKeyRef> Segments = { FKeyRef{ LayerIndex, KeyIndex } };
 					Menu.AddSubMenu(
-						LOCTEXT("CurveToNextKey", "Curve To Next Key"),
+						bDope ? LOCTEXT("DopeCurveToNextKeyframe", "Curve To Next Keyframe") : LOCTEXT("CurveToNextKey", "Curve To Next Key"),
 						WidgetAnimTips::CurveToNextKeyTooltip(),
 						FNewMenuDelegate::CreateLambda([this, Segments](FMenuBuilder& SubMenu) { AddSegmentCurveEntries(SubMenu, Segments); }));
 				}
@@ -23742,22 +24819,26 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 			GetLayerSpans(MenuSpans);
 			const float AnimationSeconds = (MenuSpans.IsValidIndex(LayerIndex) ? MenuSpans[LayerIndex].X : 0.f) + Seconds;
 			Menu.AddMenuEntry(
-				FText::Format(LOCTEXT("AddKeyHereAtTime", "Add Key Here ({0})"), FText::FromString(FormatTime(AnimationSeconds))),
+				FText::Format(bDope ? LOCTEXT("DopeAddKeyframeHereAtTime", "Add Keyframe Here ({0})") : LOCTEXT("AddKeyHereAtTime", "Add Key Here ({0})"), FText::FromString(FormatTime(AnimationSeconds))),
 				WidgetAnimTips::AddKeyHereTooltip(),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.PlusCircle"),
 				FUIAction(FExecuteAction::CreateLambda([this, LayerIndex, Seconds]() { AddKey(LayerIndex, Seconds); })));
 		}
 		else
 		{
-			// From the Animation Tracks list there is no "here" - the playhead is, when it is on the track.
+			// From the Animation Tracks list there is no "here" - the playhead is, when it is on the track (anywhere, on a Dope
+			// Sheet row, whose keys go anywhere - unless one is there already).
 			TArray<FVector2f> MenuSpans;
 			GetLayerSpans(MenuSpans);
 			const float Playhead = GetPlayheadSeconds();
-			if (MenuSpans.IsValidIndex(LayerIndex) && Playhead > MenuSpans[LayerIndex].X && Playhead < MenuSpans[LayerIndex].X + MenuSpans[LayerIndex].Y)
+			const bool bOnRow = CanDopeKeys(LayerIndex)
+				? FindRowKeyAt(LayerIndex, Playhead) == INDEX_NONE
+				: MenuSpans.IsValidIndex(LayerIndex) && Playhead > MenuSpans[LayerIndex].X && Playhead < MenuSpans[LayerIndex].X + MenuSpans[LayerIndex].Y;
+			if (MenuSpans.IsValidIndex(LayerIndex) && bOnRow)
 			{
 				const float Seconds = Playhead - MenuSpans[LayerIndex].X;
 				Menu.AddMenuEntry(
-					FText::Format(LOCTEXT("AddKeyAtPlayheadTime", "Add Key at Playhead ({0})"), FText::FromString(FormatTime(Playhead))),
+					FText::Format(bDope ? LOCTEXT("DopeAddKeyframeAtPlayheadTime", "Add Keyframe at Playhead ({0})") : LOCTEXT("AddKeyAtPlayheadTime", "Add Key at Playhead ({0})"), FText::FromString(FormatTime(Playhead))),
 					WidgetAnimTips::AddKeyAtPlayheadTooltip(),
 					FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.PlusCircle"),
 					FUIAction(FExecuteAction::CreateLambda([this, LayerIndex, Seconds]() { AddKey(LayerIndex, Seconds); })));
@@ -23799,7 +24880,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 	// Several tracks selected, this one among them: what they can all do together.
 	if (ActedOn.Num() > 1)
 	{
-		Menu.BeginSection("Selected", FText::Format(LOCTEXT("SelectedTracksSection", "{0} Selected Tracks"), FText::AsNumber(ActedOn.Num())));
+		Menu.BeginSection("Selected", FText::Format(bDope ? LOCTEXT("DopeSelectedKeysSection", "{0} Selected Keys") : LOCTEXT("SelectedTracksSection", "{0} Selected Tracks"), FText::AsNumber(ActedOn.Num())));
 
 		AddHideEntries();
 		AddPinEntries();
@@ -23813,7 +24894,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 		if (bAnyUnlocked)
 		{
 			Menu.AddMenuEntry(
-				LOCTEXT("LockSelected", "Lock Tracks"),
+				bDope ? LOCTEXT("DopeLockSelected", "Lock Keys") : LOCTEXT("LockSelected", "Lock Tracks"),
 				WidgetAnimTips::LockSelectedTooltip(),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Lock"),
 				FUIAction(FExecuteAction::CreateLambda([this, ActedOn]() { SetLayersLocked(ActedOn, /*bLocked=*/true); })));
@@ -23821,21 +24902,25 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 		if (bAnyLocked)
 		{
 			Menu.AddMenuEntry(
-				LOCTEXT("UnlockSelected", "Unlock Tracks"),
+				bDope ? LOCTEXT("DopeUnlockSelected", "Unlock Keys") : LOCTEXT("UnlockSelected", "Unlock Tracks"),
 				FText::GetEmpty(),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Unlock"),
 				FUIAction(FExecuteAction::CreateLambda([this, ActedOn]() { SetLayersLocked(ActedOn, /*bLocked=*/false); })));
 		}
 
-		Menu.AddSubMenu(
-			LOCTEXT("TrackPresetsSubMenuMulti", "Track Presets"),
-			WidgetAnimTips::SaveTrackPresetsMenuTooltip(),
-			FNewMenuDelegate::CreateLambda([this, ActedOn](FMenuBuilder& SubMenu) { AddPresetEntries(SubMenu, ActedOn, /*bApply=*/false); }),
-			/*bInOpenSubMenuOnClick=*/false,
-			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Save"));
+		// Keys have no presets.
+		if (!bDope)
+		{
+			Menu.AddSubMenu(
+				LOCTEXT("TrackPresetsSubMenuMulti", "Track Presets"),
+				WidgetAnimTips::SaveTrackPresetsMenuTooltip(),
+				FNewMenuDelegate::CreateLambda([this, ActedOn](FMenuBuilder& SubMenu) { AddPresetEntries(SubMenu, ActedOn, /*bApply=*/false); }),
+				/*bInOpenSubMenuOnClick=*/false,
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Save"));
+		}
 
 		Menu.AddMenuEntry(
-			LOCTEXT("DeleteSelected", "Delete Tracks"),
+			bDope ? LOCTEXT("DopeDeleteSelected", "Delete Keys") : LOCTEXT("DeleteSelected", "Delete Tracks"),
 			WidgetAnimTips::DeleteSelectedTooltip(),
 			FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::MenuDeleteIcon),
 			FUIAction(
@@ -23856,7 +24941,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 
 	const bool bLocked = IsLayerLocked(LayerIndex);
 
-	Menu.BeginSection("Track", LOCTEXT("TrackSection", "Track"));
+	Menu.BeginSection("Track", bDope ? LOCTEXT("DopeKeySection", "Key") : LOCTEXT("TrackSection", "Track"));
 
 	AddJumpEntry();
 	AddHideEntries();
@@ -23870,21 +24955,26 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 
 	// Locking: the track stays selectable - its settings can be looked at - but nothing moves or edits it.
 	Menu.AddMenuEntry(
-		bLocked ? LOCTEXT("UnlockTrack", "Unlock Track") : LOCTEXT("LockTrack", "Lock Track"),
+		bDope ? (bLocked ? LOCTEXT("DopeUnlockKey", "Unlock Key") : LOCTEXT("DopeLockKey", "Lock Key"))
+			: (bLocked ? LOCTEXT("UnlockTrack", "Unlock Track") : LOCTEXT("LockTrack", "Lock Track")),
 		bLocked
 			? WidgetAnimTips::UnlockTrackMenuTooltip()
 			: WidgetAnimTips::LockTrackMenuTooltip(),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), bLocked ? "Icons.Unlock" : "Icons.Lock"),
 		FUIAction(FExecuteAction::CreateLambda([this, LayerIndex, bLocked]() { SetLayersLocked({ LayerIndex }, !bLocked); })));
 
-	Menu.AddMenuEntry(
-		LOCTEXT("Duplicate", "Duplicate Track"),
-		FText::GetEmpty(),
-		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Duplicate"),
-		FUIAction(FExecuteAction::CreateLambda([this, LayerIndex]() { DuplicateLayer(LayerIndex); })));
+	// A Dope Sheet has one row of each kind of key in a group: no duplicate row.
+	if (!bDope)
+	{
+		Menu.AddMenuEntry(
+			LOCTEXT("Duplicate", "Duplicate Track"),
+			FText::GetEmpty(),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Duplicate"),
+			FUIAction(FExecuteAction::CreateLambda([this, LayerIndex]() { DuplicateLayer(LayerIndex); })));
+	}
 
-	// Presets: this track saved as one, under its name - adding one is Add Animation Track's From Preset.
-	if (!bOnCollapsed && !GetInsertedAnimation(LayerIndex))
+	// Presets: this track saved as one, under its name - adding one is Add Animation Track's From Preset. Keys have none.
+	if (!bOnCollapsed && !GetInsertedAnimation(LayerIndex) && !bDope)
 	{
 		Menu.AddSubMenu(
 			LOCTEXT("TrackPresetsSubMenu", "Track Presets"),
@@ -23895,7 +24985,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 	}
 
 	Menu.AddMenuEntry(
-		LOCTEXT("DeleteTrack", "Delete Track"),
+		bDope ? LOCTEXT("DopeDeleteKeyRow", "Delete Key") : LOCTEXT("DeleteTrack", "Delete Track"),
 		FText::GetEmpty(),
 		// Trash can, in red: the one entry here that takes something away.
 		FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::MenuDeleteIcon),
@@ -23915,7 +25005,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 	if (!Source.IsValid() || Source->SupportsLayerGroups())
 	{
 		Menu.AddMenuEntry(
-			LOCTEXT("AddGroupLayerContext", "Add Track Group"),
+			ToKeyGroupText(LOCTEXT("AddGroupLayerContext", "Add Track Group")),
 			WidgetAnimTips::AddGroupTooltip(),
 			FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.FolderClosed"),
 			FUIAction(FExecuteAction::CreateLambda([this]() { AddGroup(); })));
@@ -23925,7 +25015,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerContextMenu(int32 LayerIndex, 
 		if (Groups && Groups->Num() > 1 && CanEditLayer(LayerIndex))
 		{
 			Menu.AddSubMenu(
-				LOCTEXT("MoveToLayerGroup", "Move to Track Group"),
+				ToKeyGroupText(LOCTEXT("MoveToLayerGroup", "Move to Track Group")),
 				WidgetAnimTips::MoveToGroupTooltip(),
 				FNewMenuDelegate::CreateLambda([this, GroupIndex, LayerIndex](FMenuBuilder& SubMenu)
 				{
@@ -24004,8 +25094,8 @@ void SWidgetAnimTimeline::AddSegmentCurveEntries(FMenuBuilder& Menu, const TArra
 	const bool bCustomCurrent = bAgree && Shared.IsSet() && Shared.GetValue().Easing == EWidgetAnimSegmentEasing::Custom;
 	Menu.AddSubMenu(
 		bCustomCurrent && Shared.GetValue().CustomCurve
-			? FText::Format(LOCTEXT("SegmentCurveCustomCurrent", "Custom Curve ({0})"), FText::FromString(Shared.GetValue().CustomCurve->GetName()))
-			: LOCTEXT("SegmentCurveCustom", "Custom Curve"),
+			? FText::Format(LOCTEXT("SegmentCurveCustomCurrent", "Curve Asset ({0})"), FText::FromString(Shared.GetValue().CustomCurve->GetName()))
+			: LOCTEXT("SegmentCurveCustom", "Curve Asset"),
 		WidgetAnimTips::SegmentCurveCustomTooltip(),
 		FNewMenuDelegate::CreateLambda([this, Segments](FMenuBuilder& SubMenu)
 		{
@@ -24315,6 +25405,9 @@ void SWidgetAnimTimeline::SetKeyValues(const TArray<FValueCell>& Cells, const TA
 		if (Layers.IsValidIndex(Cell.Layer) && Channels.IsValidIndex(Cell.Channel))
 		{
 			WidgetAnimKeyValues::Write(Layers[Cell.Layer], Cell.Key, Channels[Cell.Channel], Values[Index]);
+
+			// A Dope Sheet's single key is two points: both hold what was typed.
+			SyncSingleKeyRow(Cell.Layer, Cell.Key);
 		}
 	}
 	NotifyGroupsChanged(bDragged ? EPropertyChangeType::Interactive : EPropertyChangeType::ValueSet);
@@ -24329,9 +25422,9 @@ void SWidgetAnimTimeline::SetShowAllKeyValues(bool bShowAll)
 	}
 }
 
-TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyValues(const TArray<FKeyRef>& Keys)
+TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyValues(const TArray<FKeyRef>& Keys, bool bForTracks)
 {
-	return SNew(SWidgetAnimKeyValues, SharedThis(this)).Keys(Keys);
+	return SNew(SWidgetAnimKeyValues, SharedThis(this)).Keys(Keys).ForTracks(bForTracks);
 }
 
 // -----------------------------------------------------------------------------------------------------
@@ -26266,7 +27359,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyToolTip(int32 LayerIndex, int32 
 	const int32 NumKeys = KeyTimes.Num();
 	const float LocalTime = KeyTimes[KeyIndex];
 	const bool bKeyframed = WidgetAnimTypeIsKeyframed(Layer.AnimType);
-	const FString Where = KeyIndex == 0 ? TEXT("Start") : KeyIndex == NumKeys - 1 ? TEXT("End") : FString();
+	// A Dope Sheet's keys are keys, not a start and an end.
+	const FString Where = IsDopeSheet() ? FString() : KeyIndex == 0 ? TEXT("Start") : KeyIndex == NumKeys - 1 ? TEXT("End") : FString();
 	const FString Title = Where.IsEmpty()
 		? FString::Printf(TEXT("Key %d of %d"), KeyIndex + 1, NumKeys)
 		: FString::Printf(TEXT("Key %d of %d  \u00B7  %s"), KeyIndex + 1, NumKeys, *Where);
@@ -27058,7 +28152,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelinePicker()
 			.VAlign(VAlign_Center)
 			.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
 			[
-				MakeFixedIcon(TimelineIcon())
+				MakeFixedIcon(TAttribute<const FSlateBrush*>::CreateLambda([this]() { return IsDopeSheet() ? DopeSheetIcon() : TrackSheetIcon(); }))
 			]
 
 			+ SHorizontalBox::Slot()
@@ -27089,6 +28183,44 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelinePicker()
 		];
 }
 
+TSharedRef<SWidget> SWidgetAnimTimeline::MakeNewTimelineButton(bool bDopeSheet)
+{
+	using namespace WidgetAnimTimeline;
+
+	return SNew(SButton)
+		.ButtonStyle(&OrangeButtonStyle())
+		.ContentPadding(FMargin(10.f, 3.f))
+		.ToolTip(MakePanelToolTip(bDopeSheet ? WidgetAnimTips::NewDopeSheetButtonTooltip() : WidgetAnimTips::NewTimelineButtonTooltip()))
+		.OnClicked_Lambda([this, bDopeSheet]()
+		{
+			if (Source.IsValid())
+			{
+				SwitchEditedAnimation([this, bDopeSheet]() { Source->CreateTimeline(FString(), FString(), bDopeSheet); });
+			}
+			return FReply::Handled();
+		})
+		[
+			SNew(SHorizontalBox)
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
+			[
+				MakeFixedIcon(bDopeSheet ? DopeSheetIcon() : TrackSheetIcon(), FSlateColor::UseForeground())
+			]
+
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+				.Text(bDopeSheet ? LOCTEXT("MakeFirstDopeSheet", "New Dope Sheet") : LOCTEXT("MakeFirstTrackSheet", "New Track Sheet"))
+			]
+		];
+}
+
 TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelineMenu()
 {
 	using namespace WidgetAnimTimeline;
@@ -27107,12 +28239,17 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelineMenu()
 	if (Names.Num() > 0)
 	{
 		Menu.BeginSection("Timelines", LOCTEXT("TimelinesSection", "Timelines in This Widget Blueprint"));
+		const UWidgetAnimTimelinesExtension* ListedTimelines = UWidgetAnimTimelinesExtension::Find(Source->GetWidgetBlueprint());
 		for (const FString& Name : Names)
 		{
+			// Each with what it is: a Track Sheet, or a Dope Sheet.
+			const int32 ListedIndex = ListedTimelines ? ListedTimelines->IndexOf(Name) : INDEX_NONE;
+			const bool bListedDope = ListedIndex != INDEX_NONE && WidgetAnimDopeSheet::IsDopeSheet(ListedTimelines->Timelines[ListedIndex].Animation.Get());
+			const FName ListedIcon = TimelineKindIconName(bListedDope);
 			Menu.AddMenuEntry(
 				FText::FromString(Name),
 				WidgetAnimTips::OpenTimelineTooltip(),
-				FSlateIcon(),
+				FNameTBDStyle::FindIcon(ListedIcon) ? FSlateIcon(FNameTBDStyle::GetStyleSetName(), ListedIcon) : FSlateIcon(),
 				FUIAction(
 					FExecuteAction::CreateLambda([this, Name]()
 					{
@@ -27131,9 +28268,9 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelineMenu()
 
 	Menu.BeginSection("Timeline", LOCTEXT("TimelineSection", "Timeline"));
 
-	// A new one, named as it is made.
+	// A new Track Sheet - tracks, each from a start to an end - named as it is made.
 	Menu.AddSubMenu(
-		LOCTEXT("NewTimelineEntry", "New Timeline"),
+		LOCTEXT("NewTrackSheetEntry", "New Track Sheet"),
 		WidgetAnimTips::NewTimelineTooltip(),
 		FNewMenuDelegate::CreateLambda([this](FMenuBuilder& SubMenu)
 		{
@@ -27148,7 +28285,26 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelineMenu()
 				FText::GetEmpty(), /*bNoIndent=*/true);
 		}),
 		false,
-		FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::MenuAddIcon));
+		FSlateIcon(FNameTBDStyle::GetStyleSetName(), TimelineKindIconName(/*bDopeSheet=*/false)));
+
+	// Or a Dope Sheet: keys only, as a dope sheet edits them - chosen now, for the timeline's life.
+	Menu.AddSubMenu(
+		LOCTEXT("NewDopeSheetEntry", "New Dope Sheet"),
+		WidgetAnimTips::NewDopeSheetTooltip(),
+		FNewMenuDelegate::CreateLambda([this](FMenuBuilder& SubMenu)
+		{
+			SubMenu.AddWidget(
+				WidgetAnimFolderMenu::MakeNameBox(FText::GetEmpty(), WidgetAnimTips::NewTimelineHint(), [this](const FString& Name)
+				{
+					if (Source.IsValid())
+					{
+						SwitchEditedAnimation([this, &Name]() { Source->CreateTimeline(Name, FString(), /*bDopeSheet=*/true); });
+					}
+				}, /*bAllowEmpty=*/true),
+				FText::GetEmpty(), /*bNoIndent=*/true);
+		}),
+		false,
+		FSlateIcon(FNameTBDStyle::GetStyleSetName(), TimelineKindIconName(/*bDopeSheet=*/true)));
 
 	if (!Open.IsEmpty())
 	{
@@ -27205,11 +28361,565 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelineMenu()
 					}
 				}
 				SwitchEditedAnimation([this, &Open]() { Source->DeleteTimeline(Open); });
-			})));
+			}),
+			// A builder's working copy is its own, and stays.
+			FCanExecuteAction::CreateLambda([this, Open]() { return Source.IsValid() && Source->CanDeleteTimeline(Open); })));
 	}
 	Menu.EndSection();
 
 	return Menu.MakeWidget();
+}
+
+// -----------------------------------------------------------------------------------------------------
+// Dope Sheet (Key Mode) - see WidgetAnimDopeSheet.h and the section in SWidgetAnimTimeline.h
+// -----------------------------------------------------------------------------------------------------
+
+bool SWidgetAnimTimeline::IsDopeSheet() const
+{
+	return !bCompact && Source.IsValid() && WidgetAnimDopeSheet::IsDopeSheet(Cast<UWidgetAnimPresetAsset>(Source->GetEditedObject()));
+}
+
+bool SWidgetAnimTimeline::CanDopeKeys(int32 LayerIndex) const
+{
+	if (!IsDopeSheet() || !CanEditKeys(LayerIndex))
+	{
+		return false;
+	}
+	// A spring's length is its settle time and a typed text's its text: neither a row's keys can set.
+	const FWidgetAnimLayer& Layer = (*GetLayers())[LayerIndex];
+	return WidgetAnimTypeIsKeyframed(Layer.AnimType) || (!Layer.IsSpringTimed() && !HasDerivedLength(Layer));
+}
+
+bool SWidgetAnimTimeline::IsSingleKeyRow(int32 LayerIndex) const
+{
+	if (!IsDopeSheet())
+	{
+		return false;
+	}
+	TArray<float> PointTimes;
+	GetPointTimes(LayerIndex, PointTimes);
+	return PointTimes.Num() == 2 && PointTimes[1] - PointTimes[0] <= MinLayerSeconds * 1.5f;
+}
+
+int32 SWidgetAnimTimeline::GetRowKeyCount(int32 LayerIndex) const
+{
+	TArray<float> KeyTimes;
+	GetKeyTimes(LayerIndex, KeyTimes);
+	return KeyTimes.Num();
+}
+
+void SWidgetAnimTimeline::GetRowKeySeconds(int32 LayerIndex, TArray<float>& OutSeconds, bool bPoints) const
+{
+	if (bPoints)
+	{
+		GetPointTimes(LayerIndex, OutSeconds);
+	}
+	else
+	{
+		GetKeyTimes(LayerIndex, OutSeconds);
+	}
+	TArray<FVector2f> Spans;
+	GetLayerSpans(Spans);
+	const float Start = Spans.IsValidIndex(LayerIndex) ? Spans[LayerIndex].X : 0.f;
+	for (float& Seconds : OutSeconds)
+	{
+		Seconds += Start;
+	}
+}
+
+int32 SWidgetAnimTimeline::FindRowKeyAt(int32 LayerIndex, float Seconds) const
+{
+	TArray<float> KeySeconds;
+	GetRowKeySeconds(LayerIndex, KeySeconds);
+	const float Reach = FMath::Max(0.5f / FMath::Max(GetFrameRate(), 1.f), WidgetAnimTimeline::MinKeySpacing);
+	for (int32 Key = 0; Key < KeySeconds.Num(); ++Key)
+	{
+		if (FMath::Abs(KeySeconds[Key] - Seconds) <= Reach)
+		{
+			return Key;
+		}
+	}
+	return INDEX_NONE;
+}
+
+FVector2f SWidgetAnimTimeline::GetGroupKeySpan(int32 GroupIndex) const
+{
+	FVector2f Range(TNumericLimits<float>::Max(), -TNumericLimits<float>::Max());
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	for (int32 LayerIndex = 0; Layers && LayerIndex < Layers->Num(); ++LayerIndex)
+	{
+		if (GetLayerGroup(LayerIndex) != GroupIndex || !IsLayerInView(LayerIndex))
+		{
+			continue;
+		}
+		TArray<float> KeySeconds;
+		GetRowKeySeconds(LayerIndex, KeySeconds);
+		for (const float KeyAt : KeySeconds)
+		{
+			Range.X = FMath::Min(Range.X, KeyAt);
+			Range.Y = FMath::Max(Range.Y, KeyAt);
+		}
+	}
+	return Range;
+}
+
+float SWidgetAnimTimeline::SnapScrubToKeys(float Seconds, float Reach) const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!IsDopeSheet() || !Layers || Reach <= 0.f)
+	{
+		return Seconds;
+	}
+
+	float Best = Seconds;
+	float BestDistance = Reach;
+	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
+	{
+		if (!IsLayerInView(LayerIndex))
+		{
+			continue;
+		}
+		TArray<float> KeySeconds;
+		GetRowKeySeconds(LayerIndex, KeySeconds);
+		for (const float KeyAt : KeySeconds)
+		{
+			const float Distance = FMath::Abs(KeyAt - Seconds);
+			if (Distance <= BestDistance)
+			{
+				Best = KeyAt;
+				BestDistance = Distance;
+			}
+		}
+	}
+	return Best;
+}
+
+TArray<float> SWidgetAnimTimeline::MakeSingleKeyTimes(float Seconds)
+{
+	// Its hidden first point a hair before the key, so the row ends at the key and nothing of it runs on after. A key at the very
+	// start can't have anything before it: its hidden point is a hair after.
+	return Seconds >= MinLayerSeconds
+		? TArray<float>{ Seconds - MinLayerSeconds, Seconds }
+		: TArray<float>{ 0.f, MinLayerSeconds };
+}
+
+void SWidgetAnimTimeline::SetDopeKeyTimes(int32 LayerIndex, const TArray<float>& Seconds)
+{
+	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
+	if (!Layers || !Layers->IsValidIndex(LayerIndex) || Seconds.Num() < 2)
+	{
+		return;
+	}
+
+	FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+	const float TimeScale = FMath::Max(GetTimeScale(), KINDA_SMALL_NUMBER);
+	const float Start = FMath::Max(Seconds[0], 0.f);
+	const float Length = FMath::Max(Seconds.Last() - Start, MinLayerSeconds);
+
+	if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
+	{
+		// The first key at the track's start; every key's time from there, as the curve keeps them (authored seconds).
+		FRichCurve* Curve = Layer.Transform.Curve.ExternalCurve == nullptr ? Layer.Transform.Curve.GetRichCurve() : nullptr;
+		if (!Curve || Curve->Keys.Num() != Seconds.Num())
+		{
+			return;
+		}
+		for (int32 Key = 0; Key < Curve->Keys.Num(); ++Key)
+		{
+			Curve->Keys[Key].Time = FMath::Max(Seconds[Key] - Start, 0.f) / TimeScale;
+		}
+		Layer.Transform.SyncKeysToCurve();
+	}
+	else
+	{
+		// The keys between at their fractions of the new run, so each stays where it is on the time axis.
+		if (Layer.ValueKeys.NumPoints() != Seconds.Num())
+		{
+			return;
+		}
+		for (int32 Point = 1; Point + 1 < Seconds.Num(); ++Point)
+		{
+			Layer.ValueKeys.Keys[Point - 1].Time = FMath::Clamp((Seconds[Point] - Start) / Length, 0.f, 1.f);
+		}
+	}
+
+	// Its start and length - every other track staying exactly where it is (see ApplyLayerSpans). Its run as it now is, so the
+	// tracks after it are measured from where it really ends.
+	TArray<FVector2f> Spans;
+	GetLayerSpans(Spans);
+	if (!Spans.IsValidIndex(LayerIndex))
+	{
+		return;
+	}
+	if (TrackRuns.IsValidIndex(LayerIndex))
+	{
+		TrackRuns[LayerIndex] = Length / TimeScale;
+	}
+	TArray<float> NewStarts;
+	TArray<float> NewLengths;
+	for (const FVector2f& Span : Spans)
+	{
+		NewStarts.Add(Span.X);
+		NewLengths.Add(Span.Y);
+	}
+	NewStarts[LayerIndex] = Start;
+	NewLengths[LayerIndex] = Length;
+	ApplyLayerSpans(NewStarts, NewLengths);
+}
+
+void SWidgetAnimTimeline::CopyRowPoint(int32 LayerIndex, int32 FromPoint, int32 ToPoint)
+{
+	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
+	if (!Layers || !Layers->IsValidIndex(LayerIndex) || FromPoint == ToPoint)
+	{
+		return;
+	}
+	FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+
+	// A keyframe is copied whole - its pose, its shape, whether it uses the widget as authored - keeping its own time.
+	if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
+	{
+		TArray<FWidgetTransformKeyframe>& Keyframes = Layer.Transform.Keys;
+		if (Keyframes.IsValidIndex(FromPoint) && Keyframes.IsValidIndex(ToPoint))
+		{
+			const float KeptTime = Keyframes[ToPoint].Time;
+			Keyframes[ToPoint] = Keyframes[FromPoint];
+			Keyframes[ToPoint].Time = KeptTime;
+		}
+		return;
+	}
+
+	// Any other track's point, number by number - every value it holds of its own (a Slide's end, a registered type's start
+	// and end are its settings, and stay).
+	const TArray<WidgetAnimKeyValues::FChannel>& Channels = GetKeyChannels(LayerIndex);
+	for (const WidgetAnimKeyValues::FChannel& Channel : Channels)
+	{
+		if (!WidgetAnimKeyValues::CanWrite(Layer, ToPoint, Channel))
+		{
+			continue;
+		}
+		const TOptional<double> Value = WidgetAnimKeyValues::Read(Layer, FromPoint, Channel);
+		if (Value.IsSet())
+		{
+			WidgetAnimKeyValues::Write(Layer, ToPoint, Channel, Value.GetValue());
+		}
+	}
+}
+
+void SWidgetAnimTimeline::SyncSingleKeyRow(int32 LayerIndex, int32 FromPoint)
+{
+	if (IsSingleKeyRow(LayerIndex))
+	{
+		CopyRowPoint(LayerIndex, FromPoint, FromPoint == 0 ? 1 : 0);
+	}
+}
+
+void SWidgetAnimTimeline::AddDopeKey(int32 LayerIndex, float Seconds)
+{
+	if (!CanDopeKeys(LayerIndex))
+	{
+		return;
+	}
+	Seconds = FMath::Max(Seconds, 0.f);
+
+	TArray<float> KeySeconds;
+	GetRowKeySeconds(LayerIndex, KeySeconds, /*bPoints=*/true);
+	if (KeySeconds.Num() < 2 || FindRowKeyAt(LayerIndex, Seconds) != INDEX_NONE)
+	{
+		return;
+	}
+
+	TArray<FVector2f> Spans;
+	GetLayerSpans(Spans);
+	const float RowStart = Spans.IsValidIndex(LayerIndex) ? Spans[LayerIndex].X : 0.f;
+
+	// One key so far: the second goes where it was placed - its two points spread out to the two keys, both holding the
+	// value the one had.
+	if (IsSingleKeyRow(LayerIndex))
+	{
+		const FScopedTransaction Transaction(LOCTEXT("AddDopeKeyTransaction", "Add Key"));
+		if (!BeginEdit())
+		{
+			return;
+		}
+		TArray<float> ShownSeconds;
+		GetRowKeySeconds(LayerIndex, ShownSeconds);
+		const float Kept = ShownSeconds.Num() > 0 ? ShownSeconds[0] : KeySeconds[0];
+		SetDopeKeyTimes(LayerIndex, { FMath::Min(Kept, Seconds), FMath::Max(Kept, Seconds) });
+		NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+		UpdateTrackLayout();
+		SelectKey(LayerIndex, Seconds < Kept ? 0 : 1);
+		return;
+	}
+
+	// Between its first key and its last: as any track's key is added - on the way between its neighbors.
+	if (Seconds > KeySeconds[0] && Seconds < KeySeconds.Last())
+	{
+		AddKey(LayerIndex, Seconds - RowStart);
+		return;
+	}
+
+	const FScopedTransaction Transaction(LOCTEXT("AddDopeKeyTransaction", "Add Key"));
+	if (!BeginEdit())
+	{
+		return;
+	}
+
+	FWidgetAnimLayer& Layer = (*Source->GetLayers())[LayerIndex];
+	const bool bBefore = Seconds < KeySeconds[0];
+	int32 NewKey = INDEX_NONE;
+
+	if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
+	{
+		// A key on the curve before its first (every key moved later by as much first, so none goes below 0) or after its last;
+		// the times are put right below. It holds the key it leads into or follows - its pose, its shape, whether it uses the
+		// widget as authored - so nothing moves until it is edited.
+		FRichCurve* Curve = Layer.Transform.Curve.GetRichCurve();
+		if (!Curve || Curve->Keys.Num() == 0)
+		{
+			return;
+		}
+		const float TimeScale = FMath::Max(GetTimeScale(), KINDA_SMALL_NUMBER);
+		const float Gap = FMath::Max(bBefore ? KeySeconds[0] - Seconds : Seconds - KeySeconds.Last(), MinLayerSeconds) / TimeScale;
+		if (bBefore)
+		{
+			// The keyframes too: a key added is matched to them by time (see FWidgetTransformAnim::SyncKeysToCurve).
+			for (int32 Key = Curve->Keys.Num() - 1; Key >= 0; --Key)
+			{
+				Curve->Keys[Key].Time += Gap;
+			}
+			for (FWidgetTransformKeyframe& Keyframe : Layer.Transform.Keys)
+			{
+				Keyframe.Time += Gap;
+			}
+		}
+		const float PlaceAt = bBefore ? 0.f : Curve->Keys.Last().Time + Gap;
+		const FKeyHandle Added = Curve->AddKey(PlaceAt, Curve->Eval(PlaceAt));
+		Curve->SetKeyInterpMode(Added, RCIM_Linear);
+		Layer.Transform.SyncKeysToCurve();
+		NewKey = bBefore ? 0 : Curve->Keys.Num() - 1;
+		CopyRowPoint(LayerIndex, bBefore ? 1 : NewKey - 1, NewKey);
+	}
+	else
+	{
+		// The first or last point becomes a key between, holding its value; the track's start or end - the new key - holds that
+		// value too, so the row reads exactly as it did until the new key is edited.
+		FWidgetAnimValueKeys& ValueKeys = Layer.ValueKeys;
+		const int32 Edge = bBefore ? 0 : ValueKeys.NumPoints() - 1;
+		FWidgetAnimValueKey Moved;
+		Moved.Value = WidgetAnimKeyPoints::GetValue(Layer, Edge);
+		Moved.ValueY = WidgetAnimKeyPoints::GetValueY(Layer, Edge);
+		Moved.Color = WidgetAnimKeyPoints::GetColor(Layer, Edge);
+		if (bBefore)
+		{
+			// The old start's segment curve stays with it; the new first stretch moves by the track's easing.
+			Moved.CurveToNext = ValueKeys.StartCurve;
+			ValueKeys.StartCurve = FWidgetAnimSegmentCurve();
+			ValueKeys.Keys.Insert(Moved, 0);
+			NewKey = 0;
+		}
+		else
+		{
+			ValueKeys.Keys.Add(Moved);
+			NewKey = ValueKeys.NumPoints() - 1;
+		}
+	}
+
+	if (bBefore)
+	{
+		KeySeconds.Insert(Seconds, 0);
+	}
+	else
+	{
+		KeySeconds.Add(Seconds);
+	}
+	SetDopeKeyTimes(LayerIndex, KeySeconds);
+
+	NotifyGroupsChanged(EPropertyChangeType::ValueSet);
+	UpdateTrackLayout();
+	SelectKey(LayerIndex, NewKey);
+}
+
+bool SWidgetAnimTimeline::RemoveDopeKey(int32 LayerIndex, int32 KeyIndex)
+{
+	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
+	if (!Layers || !Layers->IsValidIndex(LayerIndex))
+	{
+		return false;
+	}
+
+	TArray<float> KeySeconds;
+	GetRowKeySeconds(LayerIndex, KeySeconds, /*bPoints=*/true);
+	if (!KeySeconds.IsValidIndex(KeyIndex) || KeySeconds.Num() < 2)
+	{
+		return false;
+	}
+
+	// Its only key: the row goes with it.
+	if (IsSingleKeyRow(LayerIndex))
+	{
+		return true;
+	}
+
+	FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+	const int32 LastKey = KeySeconds.Num() - 1;
+
+	// Two keys: one left, as a single-key row holding its value.
+	if (KeySeconds.Num() == 2)
+	{
+		const int32 Kept = KeyIndex == 0 ? 1 : 0;
+		CopyRowPoint(LayerIndex, Kept, KeyIndex);
+		SetDopeKeyTimes(LayerIndex, MakeSingleKeyTimes(KeySeconds[Kept]));
+		return false;
+	}
+
+	if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
+	{
+		FRichCurve* Curve = Layer.Transform.Curve.GetRichCurve();
+		if (!Curve || !Curve->Keys.IsValidIndex(KeyIndex))
+		{
+			return false;
+		}
+		const FKeyHandle Handle = Curve->FindKey(Curve->Keys[KeyIndex].Time, KINDA_SMALL_NUMBER);
+		if (Handle == FKeyHandle::Invalid())
+		{
+			return false;
+		}
+		Curve->DeleteKey(Handle);
+		Layer.Transform.SyncKeysToCurve();
+	}
+	else if (KeyIndex == 0)
+	{
+		// The key after the start takes its place: its values become the start's, its curve the start's.
+		CopyRowPoint(LayerIndex, 1, 0);
+		Layer.ValueKeys.StartCurve = Layer.ValueKeys.Keys[0].CurveToNext;
+		Layer.ValueKeys.Keys.RemoveAt(0);
+	}
+	else if (KeyIndex == LastKey)
+	{
+		// The key before the end takes its place.
+		CopyRowPoint(LayerIndex, LastKey - 1, LastKey);
+		Layer.ValueKeys.Keys.RemoveAt(Layer.ValueKeys.Keys.Num() - 1);
+	}
+	else
+	{
+		Layer.ValueKeys.Keys.RemoveAt(KeyIndex - 1);
+	}
+
+	KeySeconds.RemoveAt(KeyIndex);
+	SetDopeKeyTimes(LayerIndex, KeySeconds);
+	return false;
+}
+
+void SWidgetAnimTimeline::MoveKeyRow(int32 LayerIndex, int32 TargetLayer, bool bAfterTarget)
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	if (!IsDopeSheet() || !Layers || !Layers->IsValidIndex(LayerIndex) || !Layers->IsValidIndex(TargetLayer) || LayerIndex == TargetLayer || !CanEditLayer(LayerIndex))
+	{
+		return;
+	}
+
+	// Into the target's Key Group, if it is another - refused there when that group already has a row of its kind.
+	const FScopedTransaction Transaction(LOCTEXT("MoveKeyRowTransaction", "Move Key Row"));
+	const int32 TargetGroup = GetLayerGroup(TargetLayer);
+	if (GetLayerGroup(LayerIndex) != TargetGroup)
+	{
+		SetLayerGroup(LayerIndex, TargetGroup);
+		if (GetLayerGroup(LayerIndex) != TargetGroup)
+		{
+			return;
+		}
+	}
+
+	// Its place among the rows is its place in the sequence (see GetListOrder): every key stays where it is in time.
+	MoveLayerTo(LayerIndex, bAfterTarget ? TargetLayer + 1 : TargetLayer);
+}
+
+int32 SWidgetAnimTimeline::FindKeyRow(int32 GroupIndex, EWidgetAnimType AnimType, const UScriptStruct* Kind, int32 Ignore) const
+{
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	for (int32 LayerIndex = 0; Layers && LayerIndex < Layers->Num(); ++LayerIndex)
+	{
+		const FWidgetAnimLayer& Candidate = (*Layers)[LayerIndex];
+		if (LayerIndex == Ignore || Candidate.IsAnimationTrack() || Candidate.AnimType != AnimType || GetLayerGroup(LayerIndex) != GroupIndex)
+		{
+			continue;
+		}
+		// A registered type is its settings struct: a Count row and a Sound row are different kinds.
+		if (AnimType == EWidgetAnimType::Custom && Candidate.TypeParams.GetScriptStruct() != Kind)
+		{
+			continue;
+		}
+		return LayerIndex;
+	}
+	return INDEX_NONE;
+}
+
+void SWidgetAnimTimeline::NotifyOneRowPerKind(const FText& Message)
+{
+	FNotificationInfo Info(Message);
+	Info.ExpireDuration = 4.f;
+	FSlateNotificationManager::Get().AddNotification(Info);
+}
+
+void SWidgetAnimTimeline::ToggleRowKeyAtPlayhead(int32 LayerIndex)
+{
+	if (!CanDopeKeys(LayerIndex))
+	{
+		return;
+	}
+	const int32 Existing = FindRowKeyAt(LayerIndex, GetPlayheadSeconds());
+	if (Existing != INDEX_NONE)
+	{
+		DeleteKey(LayerIndex, Existing);
+	}
+	else
+	{
+		AddDopeKey(LayerIndex, GetPlayheadSeconds());
+	}
+}
+
+void SWidgetAnimTimeline::StepRowKey(int32 LayerIndex, int32 Direction)
+{
+	// To the next or previous key of the whole sheet - every row's, not only this one's - picked, the playhead on it. Keys at
+	// the same moment as one: this row's is the one picked, when it has one there.
+	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+	const float Playhead = GetPlayheadSeconds();
+	const float Reach = FMath::Max(0.5f / FMath::Max(GetFrameRate(), 1.f), WidgetAnimTimeline::MinKeySpacing);
+
+	TOptional<float> Best;
+	int32 BestLayer = INDEX_NONE;
+	int32 BestKey = INDEX_NONE;
+	for (int32 Row = 0; Layers && Row < Layers->Num(); ++Row)
+	{
+		if (!IsLayerInView(Row))
+		{
+			continue;
+		}
+		TArray<float> KeySeconds;
+		GetRowKeySeconds(Row, KeySeconds);
+		for (int32 Key = 0; Key < KeySeconds.Num(); ++Key)
+		{
+			const float Seconds = KeySeconds[Key];
+			const bool bAhead = Direction > 0 ? Seconds > Playhead + Reach : Seconds < Playhead - Reach;
+			if (!bAhead)
+			{
+				continue;
+			}
+			const bool bCloser = !Best.IsSet() || (Direction > 0 ? Seconds < Best.GetValue() - Reach : Seconds > Best.GetValue() + Reach);
+			const bool bSameMoment = Best.IsSet() && FMath::Abs(Seconds - Best.GetValue()) <= Reach;
+			if (bCloser || (bSameMoment && Row == LayerIndex && BestLayer != LayerIndex))
+			{
+				Best = Seconds;
+				BestLayer = Row;
+				BestKey = Key;
+			}
+		}
+	}
+	if (BestLayer != INDEX_NONE)
+	{
+		SelectKey(BestLayer, BestKey);
+	}
 }
 
 // -----------------------------------------------------------------------------------------------------

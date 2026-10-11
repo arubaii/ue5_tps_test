@@ -226,6 +226,13 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
 		Settings.LoopGroup = LoopGroup;
 		Settings.TargetWidget = Target;
 
+		// A Dope Sheet's row holds its first key until it gets there, as a dope sheet's keys do - its own tracks only, not the
+		// placeholder that keeps a pass going after them.
+		if (Animation->bDopeSheet && Animation->Layers.IsValidIndex(Index))
+		{
+			Settings.bHoldStartPose = true;
+		}
+
 		// What its value-driven tracks' values belong to: this animation - those of an animation inserted into it as a
 		// track included, set with this one's name as its own are. See FWidgetAnimValueId.
 		Settings.ValueScope = Animation;

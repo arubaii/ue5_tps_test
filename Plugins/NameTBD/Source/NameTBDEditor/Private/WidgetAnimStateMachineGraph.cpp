@@ -2,6 +2,7 @@
 
 #include "WidgetAnimStateMachineGraph.h"
 
+#include "Algo/Reverse.h"
 #include "ConnectionDrawingPolicy.h"
 #include "CoreGlobals.h"
 #include "EdGraph/EdGraphPin.h"
@@ -277,6 +278,21 @@ namespace WidgetAnimMachineEdits
 		Route.Insert(Offset, FMath::Clamp(Index, 0, Route.Num()));
 		FinishEdit(Machine);
 		return true;
+	}
+
+	void SetReroutes(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Transition, const TArray<FVector2D>& Offsets)
+	{
+		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
+		const int32 TransitionIndex = Layer ? Layer->FindTransitionIndex(Transition) : INDEX_NONE;
+		if (TransitionIndex == INDEX_NONE)
+		{
+			return;
+		}
+
+		const FScopedTransaction ScopedTransaction(LOCTEXT("AddReroutes", "Add Reroute Points"));
+		Machine->Modify();
+		Layer->Transitions[TransitionIndex].EditorReroutePoints = Offsets;
+		FinishEdit(Machine);
 	}
 
 	void ClearReroutes(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& Transitions)
@@ -1904,6 +1920,58 @@ UWidgetAnimMachineGraph* UWidgetAnimMachineGraphNode::GetMachineGraph() const
 	return Cast<UWidgetAnimMachineGraph>(GetGraph());
 }
 
+TArray<FVector2D> UWidgetAnimMachineGraph::TakePendingDragReroutes(const FGuid& From, const FGuid& To, const FVector2D* ToPosition)
+{
+	TArray<FVector2D> Offsets;
+	const TArray<FVector2f> Points = MoveTemp(PendingDragReroutes);
+	PendingDragReroutes.Reset();
+	PendingDragRerouteScreen.Reset();
+	if (Points.Num() == 0)
+	{
+		return Offsets;
+	}
+
+	// Kept, as every reroute point is, from halfway between the corners of the two nodes the wire joins (GetPlacementAnchor).
+	const UWidgetAnimMachineGraphNode* FromNode = FindStateNode(GetShownNodeId(From));
+	const UWidgetAnimMachineGraphNode* ToNode = FindStateNode(GetShownNodeId(To));
+	if (!FromNode || (!ToNode && !ToPosition))
+	{
+		return Offsets;
+	}
+	const FVector2f FromCorner(static_cast<float>(FromNode->NodePosX), static_cast<float>(FromNode->NodePosY));
+	const FVector2f ToCorner = ToPosition
+		? FVector2f(*ToPosition)
+		: FVector2f(static_cast<float>(ToNode->NodePosX), static_cast<float>(ToNode->NodePosY));
+	const FVector2f Anchor = (FromCorner + ToCorner) * 0.5f;
+	for (const FVector2f& Point : Points)
+	{
+		Offsets.Add(FVector2D(Point - Anchor));
+	}
+	return Offsets;
+}
+
+int32 UWidgetAnimMachineGraph::RemoveForeignNodes()
+{
+	int32 NumRemoved = 0;
+	const TArray<UEdGraphNode*> Current = Nodes;
+	for (UEdGraphNode* Node : Current)
+	{
+		if (!Node || Node->IsA<UWidgetAnimMachineGraphNode>() || Node->IsA<UWidgetAnimMachineTransitionNode>()
+			|| Node->IsA<UWidgetAnimMachineRerouteNode>() || Node->IsA<UEdGraphNode_Comment>())
+		{
+			continue;
+		}
+		Node->BreakAllNodeLinks();
+		RemoveNode(Node);
+		++NumRemoved;
+	}
+	if (NumRemoved > 0)
+	{
+		NotifyGraphChanged();
+	}
+	return NumRemoved;
+}
+
 FGuid UWidgetAnimMachineGraph::GetShownNodeId(const FGuid& StateId) const
 {
 	const FWidgetAnimMachineLayer* Layer = GetLayer();
@@ -2791,6 +2859,13 @@ FGuid UWidgetAnimMachineGraphSchema::AddPresetState(UWidgetAnimMachineGraph* Gra
 			WidgetAnimMachineEdits::AddCondition(Graph->Machine, Graph->LayerIndex, TransitionId, Input, EWidgetAnimMachineCompare::IsTrue);
 		}
 
+		// The wire dragged out to make it, through the points dropped with R on the way.
+		const TArray<FVector2D> Reroutes = Graph->TakePendingDragReroutes(From->StateId, StateId, &Location);
+		if (TransitionId.IsValid() && Reroutes.Num() > 0)
+		{
+			WidgetAnimMachineEdits::SetReroutes(Graph->Machine, Graph->LayerIndex, TransitionId, Reroutes);
+		}
+
 		// Holding: and back again when it is let go before its Hold Time - the hold not completed, blended back from wherever
 		// the state had got to. (Not to Entry or Any State: nothing goes back into those.)
 		if (bHolding && !Input.IsNone())
@@ -2883,8 +2958,19 @@ bool UWidgetAnimMachineGraphSchema::TryCreateConnection(UEdGraphPin* A, UEdGraph
 		return false;
 	}
 
-	// Made in the machine; the graph shows it on the next tick, rebuilt - never under the drag that made it.
-	WidgetAnimMachineEdits::AddTransition(Graph->Machine, Graph->LayerIndex, From->StateId, To->StateId);
+	// Made in the machine; the graph shows it on the next tick, rebuilt - never under the drag that made it. Routed through the
+	// points dropped with R on the way (dragged from the state it goes to, they were dropped from that end: turned round).
+	const FScopedTransaction Transaction(LOCTEXT("AddTransitionByDrag", "Add Transition"));
+	const FGuid TransitionId = WidgetAnimMachineEdits::AddTransition(Graph->Machine, Graph->LayerIndex, From->StateId, To->StateId);
+	if (A->Direction == EGPD_Input)
+	{
+		Algo::Reverse(Graph->PendingDragReroutes);
+	}
+	const TArray<FVector2D> Reroutes = Graph->TakePendingDragReroutes(From->StateId, To->StateId);
+	if (TransitionId.IsValid() && Reroutes.Num() > 0)
+	{
+		WidgetAnimMachineEdits::SetReroutes(Graph->Machine, Graph->LayerIndex, TransitionId, Reroutes);
+	}
 	Graph->RequestRebuild();
 	return true;
 }
@@ -5187,13 +5273,45 @@ public:
 		const bool bFromMouse = Pin && Pin->Direction == EGPD_Input;
 		const FVector2f Mouse = bFromMouse ? StartPoint : EndPoint;
 
-		const FVector2f Side = WidgetAnimMachineWires::GetFacingSide(Box, Mouse);
-		const FVector2f Edge = WidgetAnimMachineWires::GetSideMiddle(Box, Side);
-		const float Length = FMath::Max((Mouse - Edge).Size() * 0.6f, 36.f * ZoomFactor);
-		const FVector2f Tangent = Side.GetSafeNormal() * Length;
+		// Reroute points dropped with R on the way (see UWidgetAnimMachineGraph::PendingDragReroutes): the wire runs through each,
+		// out of the side facing the first, each a dot as a reroute point is.
+		const TArray<FVector2f> Dropped = Graph ? Graph->PendingDragRerouteScreen : TArray<FVector2f>();
+		const FVector2f Toward = Dropped.Num() > 0 ? Dropped[0] : Mouse;
 
-		FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Edge, Tangent, Mouse, Tangent,
-			MachineColors::WireThickness * ZoomFactor, ESlateDrawEffect::None, MachineColors::TransitionLine);
+		const FVector2f Side = WidgetAnimMachineWires::GetFacingSide(Box, Toward);
+		const FVector2f Edge = WidgetAnimMachineWires::GetSideMiddle(Box, Side);
+		if (Dropped.Num() == 0)
+		{
+			const float Length = FMath::Max((Mouse - Edge).Size() * 0.6f, 36.f * ZoomFactor);
+			const FVector2f Tangent = Side.GetSafeNormal() * Length;
+
+			FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Edge, Tangent, Mouse, Tangent,
+				MachineColors::WireThickness * ZoomFactor, ESlateDrawEffect::None, MachineColors::TransitionLine);
+			return;
+		}
+
+		TArray<FVector2f, TInlineAllocator<8>> Route;
+		Route.Add(Edge);
+		Route.Append(Dropped);
+		Route.Add(Mouse);
+		for (int32 Index = 0; Index + 1 < Route.Num(); ++Index)
+		{
+			const FVector2f Start = Route[Index];
+			const FVector2f End = Route[Index + 1];
+			const float Length = FMath::Max((End - Start).Size() * 0.5f, 12.f * ZoomFactor);
+			// Each point crossed the way from the one before it to the one after it, as the wire it makes will be.
+			const FVector2f StartDirection = Index == 0 ? Side.GetSafeNormal() : (End - Route[Index - 1]).GetSafeNormal();
+			const FVector2f EndDirection = Index + 2 < Route.Num() ? (Route[Index + 2] - Start).GetSafeNormal() : (End - Start).GetSafeNormal();
+			FSlateDrawElement::MakeDrawSpaceSpline(DrawElementsList, WireLayerID, Start, StartDirection * Length, End, EndDirection * Length,
+				MachineColors::WireThickness * ZoomFactor, ESlateDrawEffect::None, MachineColors::TransitionLine);
+		}
+		const float Diameter = WidgetAnimMachineWires::RerouteDiameter * ZoomFactor;
+		for (const FVector2f& Point : Dropped)
+		{
+			FSlateDrawElement::MakeBox(DrawElementsList, WireLayerID + 1,
+				FPaintGeometry(Point - FVector2f(Diameter, Diameter) * 0.5f, FVector2f(Diameter, Diameter), 1.f),
+				WidgetAnimMachineStyle::RoundBrush(), ESlateDrawEffect::None, MachineColors::TransitionLine.CopyWithNewOpacity(1.f));
+		}
 	}
 
 private:

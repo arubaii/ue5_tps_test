@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "UObject/GCObject.h"
+#include "AssetRegistry/AssetData.h"
 #include "Widgets/SCompoundWidget.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimStateMachine.h"
 #include "WidgetAnimMachineJump.h"
@@ -229,6 +230,20 @@ public:
 	 */
 	bool HandleGraphDoubleClick(const FPointerEvent& MouseEvent);
 
+	/**
+	 * R pressed (or let go) while a wire is dragged out of a state over the graph, before the graph editor sees it: pressed, a
+	 * reroute point is dropped under the mouse and the wire runs on from it - the transition the drag makes is routed through
+	 * it (see UWidgetAnimMachineGraph::PendingDragReroutes). Taken either way while such a drag is on, so the graph editor never
+	 * makes a reroute knot of its own, unjoined to anything. True if taken.
+	 */
+	bool HandleGraphRerouteKey(const FKeyEvent& KeyEvent, bool bPressed);
+
+	/** Whether a wire is being dragged over the shown graph - see HandleGraphRerouteKey. */
+	bool IsDraggingWireOverGraph() const;
+
+	/** The shown graph's dropped reroute points kept while their drag is on, and placed on screen for its preview. */
+	void UpdatePendingDragReroutes();
+
 	// Picking a preview target in the designer - see FWidgetAnimMachinePickInput.
 	bool IsPickingTarget() const { return PickingTarget.IsSet(); }
 	void UpdatePickHover(const FVector2D& ScreenPosition);
@@ -304,6 +319,26 @@ private:
 
 	/** The Inputs panel's folded categories - the panel's own, never saved. */
 	TSet<FString> CollapsedInputCategories;
+
+	/** The left panel's folded sections (Inputs, Widget Inputs, Timelines, Animations, Preview), by heading - never saved. */
+	TSet<FString> FoldedPanelSections;
+	void ToggleFoldedPanelSection(const FString& Key);
+
+	/**
+	 * The Animations section: every Widget Animation asset in the project, by name (gathered from the asset registry, not
+	 * loaded), the search typed over them, and the rows shown. Gathered again on the tick after the registry tells of an asset
+	 * added, removed or renamed.
+	 */
+	TArray<FAssetData> AnimationAssets;
+	FString AnimationAssetFilter;
+	TSharedPtr<SVerticalBox> AnimationAssetRows;
+	bool bAnimationAssetsDirty = true;
+	FDelegateHandle AnimationAssetAddedHandle;
+	FDelegateHandle AnimationAssetRemovedHandle;
+	FDelegateHandle AnimationAssetRenamedHandle;
+	void GatherAnimationAssets();
+	void RefillAnimationAssetRows();
+	void OnAnimationAssetsChanged();
 	void RebuildPreviewPanel();
 	void OnMachineChanged(UWidgetAnimStateMachineAsset* ChangedMachine);
 

@@ -480,17 +480,37 @@ namespace NameTBD
 			//   KeyValueCell*: a value box in the Selection panel's Key Values / Keys - selected (Ctrl+click) boxes are
 			//   framed in KeyValueCellSelected over KeyValueCellSelectedFill; a key using the authored pose reads at
 			//   KeyValueAuthoredOpacity.
-			//   KeyframeOnlyLane*: Keyframe Only: a track drawn as a thin lane between its first and last keys, this tall
-			//   (a fraction of the section), in its type color at this opacity; KeyframeOnlyLaneSelected when selected.
+			//   DopeKey*: a Dope Sheet's keyframes (see below).
 			// -------------------------------------------------------------------------------------------------
 
 			inline constexpr float GroupTargetIconSize = 14.0f;
 			inline const FLinearColor KeyValueCellSelected(1.0f, 0.55f, 0.1f, 1.0f);
 			inline const FLinearColor KeyValueCellSelectedFill(1.0f, 0.55f, 0.1f, 0.14f);
 			inline constexpr float KeyValueAuthoredOpacity = 0.55f;
-			inline constexpr float KeyframeOnlyLaneRatio = 0.22f;
-			inline constexpr float KeyframeOnlyLaneOpacity = 0.55f;
-			inline constexpr float KeyframeOnlyLaneSelectedOpacity = 0.9f;
+			/**
+			 * A Dope Sheet's keyframes (no lane or section - keys only, sized by Dope Sheet Key Size, DEVELOPER ONLY): in their row's
+			 * type color, outlined dark, or white where the color itself is too dark to read against the dark outline (relative
+			 * luminance under DopeKeyDarkLuminance - a black Design key, a dark material). Selected keys keep their color and take the
+			 * selection orange as their outline and glow.
+			 */
+			inline constexpr float DopeKeyDarkLuminance = 0.12f;
+			inline const FLinearColor DopeKeyLightOutline(1.00f, 1.00f, 1.00f, 0.95f);
+			inline constexpr float DopeKeyHoverLift = 1.25f;
+			inline constexpr float DopeKeyPressedDim = 0.7f;
+			/**
+			 * Over a Dope Sheet's key: a cue key's icon inside it (DopeKeyIconScale of the key's size, dark on a light key, light
+			 * on a dark one); a hidden row's eye over each key (DopeKeyHiddenGlyph, DopeKeyHiddenGlyphSize). Under a Sound key: how
+			 * long its sound plays, a bar from the key in the row's color (DopeSoundBarOpacity, DopeSoundBarHeight) closed by a cap
+			 * (DopeSoundBarCapWidth).
+			 */
+			inline constexpr float DopeKeyIconScale = 0.62f;
+			inline const FLinearColor DopeKeyIconDark(0.03f, 0.03f, 0.03f, 0.9f);
+			inline const FLinearColor DopeKeyIconLight(1.00f, 1.00f, 1.00f, 0.95f);
+			inline const FLinearColor DopeKeyHiddenGlyph(0.85f, 0.85f, 0.85f, 0.95f);
+			inline constexpr float DopeKeyHiddenGlyphSize = 11.f;
+			inline constexpr float DopeSoundBarOpacity = 0.45f;
+			inline constexpr float DopeSoundBarHeight = 4.f;
+			inline constexpr float DopeSoundBarCapWidth = 2.f;
 
 			// -------------------------------------------------------------------------------------------------
 			// Playing backward - an inverted track, or every track while the preview's Invert is on.

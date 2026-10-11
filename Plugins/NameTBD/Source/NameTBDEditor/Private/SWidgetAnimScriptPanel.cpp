@@ -585,7 +585,8 @@ void SWidgetAnimScriptPanel::Construct(const FArguments& InArgs)
 	const FSlateBrush* CloseIcon = PickBrush({ TEXT("Icons.X"), TEXT("Icons.Close"), TEXT("Symbols.X") });
 
 	// What a run edits: a timeline by the panel's timeline icon, an asset by its class icon.
-	const FSlateBrush* TimelineIcon = PickBrush({ TEXT("GraphEditor.Timeline_16x"), TEXT("ClassIcon.TimelineTemplate"), TEXT("ClassIcon.LevelSequence") });
+	const FSlateBrush* OwnTimelineIcon = FNameTBDStyle::FindIcon(FNameTBDStyle::TimelineIcon);
+	const FSlateBrush* TimelineIcon = OwnTimelineIcon ? OwnTimelineIcon : PickBrush({ TEXT("GraphEditor.Timeline_16x"), TEXT("ClassIcon.TimelineTemplate"), TEXT("ClassIcon.LevelSequence") });
 	const FSlateBrush* OwnAssetIcon = FNameTBDStyle::Get().GetOptionalBrush("ClassIcon.WidgetAnimPresetAsset", nullptr, nullptr);
 	const FSlateBrush* AssetIcon = OwnAssetIcon ? OwnAssetIcon : PickBrush({ TEXT("ClassIcon.DataAsset") });
 

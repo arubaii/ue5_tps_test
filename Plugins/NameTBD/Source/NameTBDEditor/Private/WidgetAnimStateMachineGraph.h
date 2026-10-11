@@ -76,6 +76,9 @@ namespace WidgetAnimMachineEdits
 	 */
 	bool AddReroute(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Transition, int32 Index, const FVector2D& Offset);
 
+	/** Gives a transition's wire exactly these reroute points (offsets from GetPlacementAnchor, from the node it leaves). */
+	void SetReroutes(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Transition, const TArray<FVector2D>& Offsets);
+
 	/** Takes every reroute point off transitions' wires. */
 	void ClearReroutes(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& Transitions);
 
@@ -346,6 +349,27 @@ public:
 
 	/** Makes the graph's nodes again from the machine's layer. */
 	void RebuildFromMachine();
+
+	/**
+	 * Reroute points dropped with R along the wire being dragged out of a state (SWidgetAnimStateMachineEditor::HandleGraphRerouteKey):
+	 * in graph space, in the order dropped - and where each is on screen this frame, for the dragged wire's preview. They go onto
+	 * the transition the drag makes (TakePendingDragReroutes); a drag that makes none forgets them. Never a node of their own, so
+	 * nothing is left behind unjoined.
+	 */
+	TArray<FVector2f> PendingDragReroutes;
+	TArray<FVector2f> PendingDragRerouteScreen;
+
+	/**
+	 * PendingDragReroutes as reroute offsets of a transition from From to To (their shown nodes; ToPosition is To's place when
+	 * it was only just added), in the order the wire runs - and forgotten.
+	 */
+	TArray<FVector2D> TakePendingDragReroutes(const FGuid& From, const FGuid& To, const FVector2D* ToPosition = nullptr);
+
+	/**
+	 * Any node in the graph that isn't the machine's - a state, a transition, a reroute point, a comment box - such as a reroute
+	 * knot the graph editor makes of its own on a wire let go in empty space: taken out, its links with it. Returns how many.
+	 */
+	int32 RemoveForeignNodes();
 
 	/** Asks for RebuildFromMachine on the next tick of the editor showing it - never under a drag or a menu in progress. */
 	void RequestRebuild() { bRebuildRequested = true; }

@@ -12,6 +12,7 @@ class UUserWidget;
 class UWidget;
 class UWidgetAnimBuilder;
 class UWidgetAnimPresetAsset;
+class UWidgetAnimTimelinesExtension;
 class UWidgetBlueprint;
 class IPropertyHandle;
 
@@ -307,13 +308,16 @@ public:
 	 * Makes a timeline, named Name (numbered when taken), or with no Name the next of "Timeline 1", "Timeline 2"... - a copy
 	 * of the one called CopyOf when given - and opens it. One undo step. Returns its name, or empty if none was made.
 	 */
-	virtual FString CreateTimeline(const FString& Name, const FString& CopyOf = FString()) { return FString(); }
+	virtual FString CreateTimeline(const FString& Name, const FString& CopyOf = FString(), bool bDopeSheet = false) { return FString(); }
 
 	/** Renames a timeline (numbered when taken). One undo step. Returns its new name, or empty if it wasn't renamed. */
 	virtual FString RenameTimeline(const FString& Name, const FString& NewName) { return FString(); }
 
 	/** Deletes a timeline and its animation. One undo step; an open one is replaced by the next. */
 	virtual bool DeleteTimeline(const FString& Name) { return false; }
+
+	/** Whether the timeline called Name can be deleted - all can, but a builder's working copy. */
+	virtual bool CanDeleteTimeline(const FString& Name) const { return true; }
 
 	/** Whether the panel is in Animation Timeline on a timeline of a Widget Blueprint (not the builder, not a plain list). */
 	bool IsEditingTimeline() const { return SupportsTimelines() && GetMode() == EMode::Timeline; }
@@ -386,6 +390,28 @@ private:
 UUserWidget* FindWidgetAnimDesignerPreview(const UWidgetBlueprint* Blueprint);
 
 /**
+ * Which designer previews a Widget Animations panel on screen is posing now - so that every other preview of the same widgets
+ * (the State Machine editor's designer preview, which plays on an active timer of its own and kept going with its drawer
+ * closed) stands down for it. Two previews writing the same widgets every frame showed neither: the panel's animation jumped
+ * between poses that weren't its own - worst on (this widget), the designer preview itself, where the machine plays by default.
+ */
+namespace WidgetAnimPanelPosing
+{
+	/** Root is posed by a panel on screen: marked once a tick while it is, taken back when it stops. */
+	void Claim(const UUserWidget* Root);
+	void Release(const UUserWidget* Root);
+
+	/** Whether a panel on screen poses Root now. */
+	bool IsPosing(const UUserWidget* Root);
+
+	/** Asks the panel posing Root to pose it again on its next tick - another preview standing down just put its widgets back. */
+	void RequestRepose(const UUserWidget* Root);
+
+	/** Whether a repose of Root was asked for since last asked; asking clears it. */
+	bool TakeRepose(const UUserWidget* Root);
+}
+
+/**
  * A designer preview widget's render transform (and, into OutOpacity, its render opacity) as authored in Blueprint: read from
  * the Widget Blueprint's own widget of the same name - or, for the preview itself, its class defaults - never from the preview,
  * whose transform whatever plays on it changes. The preview widget's own values when it isn't one of Blueprint's.
@@ -396,6 +422,11 @@ FWidgetTransform GetWidgetAnimAuthoredTransform(const UWidget* PreviewWidget, co
  * In a WidgetAnimationBuilder's editor: the builder's working copy - or, while its Preview Animation is set,
  * that asset, edited in place - played by the builder's own designer preview. Opening a WA_ asset's Edit in
  * Widget Animation Builder lands here, editing it.
+ *
+ * Timelines, as in any Widget Blueprint: the working copy is the first, named by its Animation Name and never deleted; any
+ * more are made from the panel and kept in the builder's Widget Blueprint (UWidgetAnimTimelinesExtension), as every Widget
+ * Blueprint keeps its own. One of those open is the builder's Preview Animation, edited in place - so the builder's preview
+ * plays it - but is Animation Timeline, not Edit Existing Asset: GetAsset never answers it.
  */
 class FWidgetAnimBuilderPanelSource : public IWidgetAnimPanelSource
 {
@@ -441,20 +472,60 @@ public:
 	virtual UWidgetAnimPresetAsset* GetAsset() const override;
 	virtual void SetAsset(UWidgetAnimPresetAsset* Asset) override;
 
-	/** The builder's Create: Animation Name and Save Folder decide where it goes, unless bChooseLocation. */
+	/**
+	 * The builder's Create: Animation Name and Save Folder decide where it goes, unless bChooseLocation. Another of its timelines
+	 * open: saved as a timeline of any Widget Blueprint is, in Save Folder.
+	 */
 	virtual UWidgetAnimPresetAsset* SaveAsNewAsset(bool bChooseLocation = false) override;
 	virtual FString GetDefaultSaveFolder() const override;
+
+	/** Another of its timelines open: the asset it was last saved as, as in any Widget Blueprint. None for the working copy. */
+	virtual UWidgetAnimPresetAsset* GetSavedAsset() const override;
+	virtual bool SaveToSavedAsset() override;
 
 	virtual bool IsBuilder() const override { return true; }
 	virtual UWidgetAnimBuilder* GetBuilder() const override;
 	virtual UWidgetBlueprint* GetWidgetBlueprint() const override { return Blueprint.Get(); }
 
+	virtual bool SupportsTimelines() const override { return true; }
+	virtual void GetTimelineNames(TArray<FString>& OutNames) const override;
+	virtual FString GetTimelineName() const override;
+	virtual bool OpenTimeline(const FString& Name) override;
+	virtual FString CreateTimeline(const FString& Name, const FString& CopyOf = FString(), bool bDopeSheet = false) override;
+	virtual FString RenameTimeline(const FString& Name, const FString& NewName) override;
+	virtual bool DeleteTimeline(const FString& Name) override;
+	virtual bool CanDeleteTimeline(const FString& Name) const override;
+
 private:
 
 	UClass* GetBuilderClass() const;
 
-	/** Sets the builder's Preview Animation - the asset being edited, or none - and tells every live preview. */
-	void SetPreviewAnimation(UWidgetAnimPresetAsset* Asset);
+	/**
+	 * Sets the builder's Preview Animation - the asset being edited, one of its timelines, or none - and tells every live preview.
+	 * One undo step when bTransact; opening a timeline is not an edit, and is none.
+	 */
+	void SetPreviewAnimation(UWidgetAnimPresetAsset* Asset, bool bTransact = true);
+
+	/** The working copy's name as a timeline: its Animation Name, or "Widget Animation" left empty. */
+	FString GetWorkingTimelineName() const;
+
+	/** Whether Animation is one of the timelines kept in the builder's Widget Blueprint. */
+	bool IsExtraTimeline(const UWidgetAnimPresetAsset* Animation) const;
+
+	/** The timeline kept in the builder's Widget Blueprint that is open, or null - the working copy open, or Edit Existing Asset. */
+	UWidgetAnimPresetAsset* GetOpenExtraTimeline() const;
+
+	/** Base made unique among Timelines (Ignore keeping its own), and never the working copy's name. */
+	FString MakeUniqueTimelineName(const UWidgetAnimTimelinesExtension& Timelines, const FString& Base, int32 Ignore) const;
+
+	/** Saves the open timeline kept in the builder's Widget Blueprint as a new asset, as SaveAsNewAsset does for any timeline. */
+	UWidgetAnimPresetAsset* SaveExtraTimelineAsNewAsset(bool bChooseLocation);
+
+	/** The timeline kept here that was open before Edit Existing Asset was picked - opened again on the way back. */
+	TWeakObjectPtr<UWidgetAnimPresetAsset> LastExtraTimeline;
+
+	/** Saved assets found gone - see FWidgetAnimAssetPanelSource::MissingSavedAssets. */
+	mutable TSet<FSoftObjectPath> MissingSavedAssets;
 
 	/** Edit Existing Asset picked, before an asset has been. The builder only records the asset itself. */
 	bool bEditExistingPicked = false;
@@ -536,7 +607,7 @@ public:
 	virtual void GetTimelineNames(TArray<FString>& OutNames) const override;
 	virtual FString GetTimelineName() const override;
 	virtual bool OpenTimeline(const FString& Name) override;
-	virtual FString CreateTimeline(const FString& Name, const FString& CopyOf = FString()) override;
+	virtual FString CreateTimeline(const FString& Name, const FString& CopyOf = FString(), bool bDopeSheet = false) override;
 	virtual FString RenameTimeline(const FString& Name, const FString& NewName) override;
 	virtual bool DeleteTimeline(const FString& Name) override;
 

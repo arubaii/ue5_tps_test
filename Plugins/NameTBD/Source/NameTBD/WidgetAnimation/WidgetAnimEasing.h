@@ -13,18 +13,21 @@
  * depends on nothing else in the plugin, so every animation family can share one easing implementation
  * rather than each one growing its own copy. WidgetAnimLibrary.h includes this transitively, so nothing
  * that used to say EWidgetAnimEasing needs its includes changed.
+ *
+ * Its values are shown under Unreal's own names: the curve editor's key interpolations (Linear, Constant) and the Ease node's
+ * (Ease In, Ease Out, Ease In Out); a Curve asset as Sequencer's easing calls one. The value names stay, for saved data and scripts.
  */
 UENUM(BlueprintType)
 enum class EWidgetAnimEasing : uint8
 {
-	Linear,
-	EaseIn,
-	EaseOut,
-	EaseInOut,
-	Custom,
+	Linear    UMETA(ToolTip = "A constant speed from start to end."),
+	EaseIn    UMETA(DisplayName = "Ease In", ToolTip = "Leaves slowly and arrives at speed."),
+	EaseOut   UMETA(DisplayName = "Ease Out", ToolTip = "Leaves at speed and settles into the end."),
+	EaseInOut UMETA(DisplayName = "Ease In Out", ToolTip = "Slow away from the start, slow into the end."),
+	Custom    UMETA(DisplayName = "Curve Asset", ToolTip = "Follows a Curve asset from 0 to 1."),
 
 
-	Hold UMETA(ToolTip = "Stays on the value it starts from, then jumps to the next the moment it arrives - no travel in between.")
+	Hold UMETA(DisplayName = "Constant", ToolTip = "Stays on the value it starts from, then jumps to the next the moment it arrives - no travel in between.")
 };
 
 /**
@@ -89,10 +92,10 @@ enum class EWidgetAnimSegmentEasing : uint8
 	EaseIn    UMETA(DisplayName = "Ease In", ToolTip = "Leaves this key slowly and arrives at the next at speed."),
 	EaseOut   UMETA(DisplayName = "Ease Out", ToolTip = "Leaves this key at speed and settles into the next."),
 	EaseInOut UMETA(DisplayName = "Ease In Out", ToolTip = "Slow away from this key, slow into the next."),
-	Hold      UMETA(ToolTip = "Stays on this key's value, then jumps to the next key's the moment it arrives."),
-	Custom    UMETA(ToolTip = "Follows a Curve asset from 0 to 1 across the segment."),
+	Hold      UMETA(DisplayName = "Constant", ToolTip = "Stays on this key's value, then jumps to the next key's the moment it arrives."),
+	Custom    UMETA(DisplayName = "Curve Asset", ToolTip = "Follows a Curve asset from 0 to 1 across the segment."),
 
-	Bezier    UMETA(ToolTip = "Shaped by two handles, dragged in the Graph Editor: how fast it leaves this key and how it arrives at the next - past either end for an overshoot or a wind-up.")
+	Bezier    UMETA(DisplayName = "Cubic (User)", ToolTip = "Shaped by two handles, dragged in the Graph Editor: how fast it leaves this key and how it arrives at the next - past either end for an overshoot or a wind-up.")
 };
 
 /** How one segment - from a key to the next - moves. See EWidgetAnimSegmentEasing. */
@@ -106,7 +109,7 @@ struct NAMETBD_API FWidgetAnimSegmentCurve
 	EWidgetAnimSegmentEasing Easing = EWidgetAnimSegmentEasing::Track;
 
 	/** The curve a Custom segment follows, read from 0 to 1. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curve", meta = (DisplayName = "Custom Segment Curve", EditCondition = "Easing == EWidgetAnimSegmentEasing::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Curve", meta = (DisplayName = "Segment Curve Asset", EditCondition = "Easing == EWidgetAnimSegmentEasing::Custom", EditConditionHides))
 	TObjectPtr<UCurveFloat> CustomCurve = nullptr;
 
 	/**

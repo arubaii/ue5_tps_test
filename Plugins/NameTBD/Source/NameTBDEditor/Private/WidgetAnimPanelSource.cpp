@@ -405,26 +405,59 @@ UWidgetAnimBuilder* FWidgetAnimBuilderPanelSource::GetBuilder() const
 
 FWidgetAnimBuilderPanelSource::EMode FWidgetAnimBuilderPanelSource::GetMode() const
 {
-	const UWidgetAnimBuilder* Builder = GetBuilder();
-	return (Builder && Builder->PreviewAnimation) || bEditExistingPicked ? EMode::EditExistingAsset : EMode::Timeline;
+	// One of the builder's own timelines open is Animation Timeline, though the builder previews it as it would an asset.
+	if (bEditExistingPicked)
+	{
+		return EMode::EditExistingAsset;
+	}
+	return GetAsset() ? EMode::EditExistingAsset : EMode::Timeline;
 }
 
 void FWidgetAnimBuilderPanelSource::SetMode(EMode Mode)
 {
-	bEditExistingPicked = Mode == EMode::EditExistingAsset;
-
-	// Back to the builder's own layers: the asset being edited is let go of. Going the other way waits for one
-	// to be picked.
-	if (Mode == EMode::Timeline)
+	if (Mode == EMode::EditExistingAsset)
 	{
-		SetPreviewAnimation(nullptr);
+		// The timeline open is let go of, to be opened again on the way back; the asset waits to be picked.
+		if (UWidgetAnimPresetAsset* Open = GetOpenExtraTimeline())
+		{
+			LastExtraTimeline = Open;
+			SetPreviewAnimation(nullptr, /*bTransact=*/false);
+		}
+		bEditExistingPicked = true;
+		return;
 	}
+
+	// Back to the builder's timelines: the asset being edited is let go of, and the timeline open before it opens again - the
+	// working copy when that was it.
+	bEditExistingPicked = false;
+	UWidgetAnimPresetAsset* Reopen = LastExtraTimeline.Get();
+	const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
+	SetPreviewAnimation(Timelines && Reopen && Timelines->IndexOf(Reopen) != INDEX_NONE ? Reopen : nullptr, /*bTransact=*/false);
 }
 
 UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::GetAsset() const
 {
+	// Not one of the builder's own timelines, which is open in Animation Timeline rather than edited as an asset.
 	const UWidgetAnimBuilder* Builder = GetBuilder();
-	return Builder ? Builder->PreviewAnimation.Get() : nullptr;
+	UWidgetAnimPresetAsset* Previewed = Builder ? Builder->PreviewAnimation.Get() : nullptr;
+	return Previewed && !IsExtraTimeline(Previewed) ? Previewed : nullptr;
+}
+
+bool FWidgetAnimBuilderPanelSource::IsExtraTimeline(const UWidgetAnimPresetAsset* Animation) const
+{
+	const UWidgetAnimTimelinesExtension* Timelines = Animation ? UWidgetAnimTimelinesExtension::Find(Blueprint.Get()) : nullptr;
+	return Timelines && Timelines->IndexOf(Animation) != INDEX_NONE;
+}
+
+UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::GetOpenExtraTimeline() const
+{
+	if (bEditExistingPicked)
+	{
+		return nullptr;
+	}
+	const UWidgetAnimBuilder* Builder = GetBuilder();
+	UWidgetAnimPresetAsset* Previewed = Builder ? Builder->PreviewAnimation.Get() : nullptr;
+	return Previewed && IsExtraTimeline(Previewed) ? Previewed : nullptr;
 }
 
 void FWidgetAnimBuilderPanelSource::SetAsset(UWidgetAnimPresetAsset* Asset)
@@ -433,7 +466,7 @@ void FWidgetAnimBuilderPanelSource::SetAsset(UWidgetAnimPresetAsset* Asset)
 	SetPreviewAnimation(Asset);
 }
 
-void FWidgetAnimBuilderPanelSource::SetPreviewAnimation(UWidgetAnimPresetAsset* Asset)
+void FWidgetAnimBuilderPanelSource::SetPreviewAnimation(UWidgetAnimPresetAsset* Asset, bool bTransact)
 {
 	UWidgetAnimBuilder* Builder = GetBuilder();
 	if (!Builder || Builder->PreviewAnimation == Asset)
@@ -441,8 +474,14 @@ void FWidgetAnimBuilderPanelSource::SetPreviewAnimation(UWidgetAnimPresetAsset* 
 		return;
 	}
 
-	const FScopedTransaction Transaction(LOCTEXT("SetEditedAsset", "Edit Widget Animation Asset"));
-	Builder->Modify();
+	// Opening one of the builder's own timelines is not an edit: nothing to undo, nothing to save - as opening a timeline in any
+	// other Widget Blueprint isn't.
+	TOptional<FScopedTransaction> Transaction;
+	if (bTransact)
+	{
+		Transaction.Emplace(LOCTEXT("SetEditedAsset", "Edit Widget Animation Asset"));
+		Builder->Modify();
+	}
 	Builder->PreviewAnimation = Asset;
 
 	// Told to the builder as a Details edit would be, so every live preview switches to what is now edited.
@@ -465,6 +504,12 @@ UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::SaveAsNewAsset(bool bChoo
 		return nullptr;
 	}
 
+	// One of the builder's own timelines: as a timeline of any Widget Blueprint is saved, in Save Folder - and stays open.
+	if (GetOpenExtraTimeline())
+	{
+		return SaveExtraTimelineAsNewAsset(bChooseLocation);
+	}
+
 	// The builder's own Create - named by Animation Name, in Save Folder - then straight on to editing what
 	// was saved, so further changes Update it. The working copy stays as it is for the next variant.
 	UWidgetAnimPresetAsset* Created = Builder->CreateWidgetAnimation(bChooseLocation);
@@ -477,35 +522,38 @@ UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::SaveAsNewAsset(bool bChoo
 
 UObject* FWidgetAnimBuilderPanelSource::GetEditedObject() const
 {
-	// Edit Existing Asset: the asset (none until one is picked). Animation Timeline: the builder's working copy.
+	// Edit Existing Asset: the asset (none until one is picked). Animation Timeline: the timeline open - the builder's working
+	// copy, or another of its timelines.
 	if (GetMode() == EMode::EditExistingAsset)
 	{
 		return GetAsset();
+	}
+	if (UWidgetAnimPresetAsset* Open = GetOpenExtraTimeline())
+	{
+		return Open;
 	}
 	return GetBuilder();
 }
 
 TArray<FWidgetAnimLayerGroup>* FWidgetAnimBuilderPanelSource::GetGroups() const
 {
-	if (GetMode() == EMode::EditExistingAsset)
+	UObject* Edited = GetEditedObject();
+	if (UWidgetAnimPresetAsset* Asset = Cast<UWidgetAnimPresetAsset>(Edited))
 	{
-		UWidgetAnimPresetAsset* Asset = GetAsset();
-		return Asset ? &Asset->LayerGroups : nullptr;
+		return &Asset->LayerGroups;
 	}
-
-	UWidgetAnimBuilder* Builder = GetBuilder();
+	UWidgetAnimBuilder* Builder = Cast<UWidgetAnimBuilder>(Edited);
 	return Builder ? &Builder->LayerGroups : nullptr;
 }
 
 TArray<FWidgetAnimLayer>* FWidgetAnimBuilderPanelSource::GetLayers() const
 {
-	if (GetMode() == EMode::EditExistingAsset)
+	UObject* Edited = GetEditedObject();
+	if (UWidgetAnimPresetAsset* Asset = Cast<UWidgetAnimPresetAsset>(Edited))
 	{
-		UWidgetAnimPresetAsset* Asset = GetAsset();
-		return Asset ? &Asset->Layers : nullptr;
+		return &Asset->Layers;
 	}
-
-	UWidgetAnimBuilder* Builder = GetBuilder();
+	UWidgetAnimBuilder* Builder = Cast<UWidgetAnimBuilder>(Edited);
 	return Builder ? &Builder->Layers : nullptr;
 }
 
@@ -822,6 +870,61 @@ namespace
 	}
 }
 
+namespace WidgetAnimPanelPosing
+{
+	namespace
+	{
+		TMap<TWeakObjectPtr<const UUserWidget>, double>& GetPosed()
+		{
+			static TMap<TWeakObjectPtr<const UUserWidget>, double> Posed;
+			return Posed;
+		}
+
+		TSet<TWeakObjectPtr<const UUserWidget>>& GetReposes()
+		{
+			static TSet<TWeakObjectPtr<const UUserWidget>> Reposes;
+			return Reposes;
+		}
+	}
+
+	void Claim(const UUserWidget* Root)
+	{
+		if (Root)
+		{
+			GetPosed().Add(Root, FPlatformTime::Seconds());
+		}
+	}
+
+	void Release(const UUserWidget* Root)
+	{
+		if (Root)
+		{
+			GetPosed().Remove(Root);
+			GetReposes().Remove(Root);
+		}
+	}
+
+	bool IsPosing(const UUserWidget* Root)
+	{
+		// Claimed within the panel's idle time: a panel that stopped being drawn without saying so lets go by itself.
+		const double* ClaimedAt = Root ? GetPosed().Find(Root) : nullptr;
+		return ClaimedAt && FPlatformTime::Seconds() - *ClaimedAt < PanelIdleSeconds;
+	}
+
+	void RequestRepose(const UUserWidget* Root)
+	{
+		if (Root)
+		{
+			GetReposes().Add(Root);
+		}
+	}
+
+	bool TakeRepose(const UUserWidget* Root)
+	{
+		return Root && GetReposes().Remove(Root) > 0;
+	}
+}
+
 FWidgetAnimAssetPanelSource::FWidgetAnimAssetPanelSource(TWeakObjectPtr<UWidgetBlueprint> InBlueprint)
 	: Blueprint(InBlueprint)
 {
@@ -1029,7 +1132,7 @@ bool FWidgetAnimAssetPanelSource::OpenTimeline(const FString& Name)
 	return true;
 }
 
-FString FWidgetAnimAssetPanelSource::CreateTimeline(const FString& Name, const FString& CopyOf)
+FString FWidgetAnimAssetPanelSource::CreateTimeline(const FString& Name, const FString& CopyOf, bool bDopeSheet)
 {
 	UWidgetBlueprint* WidgetBlueprint = Blueprint.Get();
 	if (!WidgetBlueprint)
@@ -1056,6 +1159,12 @@ FString FWidgetAnimAssetPanelSource::CreateTimeline(const FString& Name, const F
 	if (Index == INDEX_NONE)
 	{
 		return FString();
+	}
+
+	// A Dope Sheet is chosen here, once, for the timeline's life (a copy is what it copies).
+	if (!CopyFrom && bDopeSheet && Timelines->Timelines[Index].Animation)
+	{
+		Timelines->Timelines[Index].Animation->bDopeSheet = true;
 	}
 
 	const FString Made = Timelines->Timelines[Index].Name;
@@ -1236,8 +1345,122 @@ namespace
 		Target.TimeUnit = Timeline.TimeUnit;
 		Target.Progress = Timeline.Progress;
 		Target.Parameters = Timeline.Parameters;
+		// A Dope Sheet stays one, opened from the asset as from the timeline - and plays as one.
+		Target.bDopeSheet = Timeline.bDopeSheet;
 		Target.PostEditChange();
 		Target.MarkPackageDirty();
+	}
+
+	/** The entry of WidgetBlueprint's timelines that plays Timeline, or null. */
+	FWidgetAnimTimeline* FindTimelineEntry(const UWidgetBlueprint* WidgetBlueprint, const UWidgetAnimPresetAsset* Timeline)
+	{
+		UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(WidgetBlueprint);
+		const int32 Index = Timelines && Timeline ? Timelines->IndexOf(Timeline) : INDEX_NONE;
+		return Index != INDEX_NONE ? &Timelines->Timelines[Index] : nullptr;
+	}
+
+	/**
+	 * The asset a timeline was last saved as. Saved in an earlier session: loaded once, when first asked for. One that is gone is
+	 * remembered in Missing as gone, rather than looked for on disk every frame the Save button is drawn.
+	 */
+	UWidgetAnimPresetAsset* LoadTimelineSavedAsset(const FWidgetAnimTimeline* Entry, TSet<FSoftObjectPath>& Missing)
+	{
+		if (!Entry || Entry->SavedAsset.IsNull())
+		{
+			return nullptr;
+		}
+		if (UWidgetAnimPresetAsset* Loaded = Entry->SavedAsset.Get())
+		{
+			return Loaded;
+		}
+		const FSoftObjectPath Path = Entry->SavedAsset.ToSoftObjectPath();
+		if (Missing.Contains(Path))
+		{
+			return nullptr;
+		}
+		UWidgetAnimPresetAsset* Loaded = Entry->SavedAsset.LoadSynchronous();
+		if (!Loaded)
+		{
+			Missing.Add(Path);
+		}
+		return Loaded;
+	}
+
+	/** Puts the timeline called TimelineName into Saved, the asset it was saved as, and writes that to disk - said in a toast. */
+	bool SaveTimelineToAsset(const UWidgetAnimPresetAsset& Timeline, UWidgetAnimPresetAsset& Saved, const FString& TimelineName)
+	{
+		CopyTimelineInto(Timeline, Saved);
+		const bool bWritten = UEditorLoadingAndSavingUtils::SavePackages({ Saved.GetPackage() }, /*bOnlyDirty=*/false);
+		ShowPanelNote(bWritten
+			? FText::Format(LOCTEXT("SavedTimelineToAsset", "Saved timeline {0} to {1}."), FText::FromString(TimelineName), FText::FromString(Saved.GetName()))
+			: FText::Format(LOCTEXT("SaveTimelineToAssetFailed", "Couldn't save {0}."), FText::FromString(Saved.GetName())),
+			bWritten);
+		return bWritten;
+	}
+
+	/**
+	 * Saves the timeline called TimelineName, of WidgetBlueprint, as a new Widget Animation asset in Folder: named after it - Intro
+	 * -> WA_Intro - numbered when that is taken (WA_Intro_1), and asked for before it is made: in the editor's Save Asset As window
+	 * when bChooseLocation, in a small window of its own otherwise. Remembered as the timeline's own asset, so Save updates it.
+	 */
+	UWidgetAnimPresetAsset* SaveTimelineAsNewAsset(const UWidgetBlueprint* WidgetBlueprint, const UWidgetAnimPresetAsset& Timeline, const FString& TimelineName,
+		const FString& Folder, bool bChooseLocation, TSet<FSoftObjectPath>& Missing)
+	{
+		FString TimelinePart = WidgetAnimSaveLocation::SanitizeAssetName(TimelineName);
+		if (TimelinePart.IsEmpty())
+		{
+			TimelinePart = TEXT("Timeline");
+		}
+		const FString DefaultName = WidgetAnimSaveLocation::MakeNumberedAssetName(Folder, TEXT("WA_") + TimelinePart);
+
+		UWidgetAnimPresetAsset* NewAsset = nullptr;
+		if (bChooseLocation)
+		{
+			NewAsset = WidgetAnimSaveLocation::CreateAnimationAsset(Folder, DefaultName, /*bChooseLocation=*/true);
+		}
+		else
+		{
+			FString Name;
+			if (!WidgetAnimSaveLocation::PromptForAssetName(Folder, DefaultName, Name))
+			{
+				return nullptr;
+			}
+			NewAsset = WidgetAnimSaveLocation::CreateAnimationAsset(Folder, Name, /*bChooseLocation=*/false);
+		}
+
+		if (!NewAsset)
+		{
+			return nullptr;
+		}
+
+		CopyTimelineInto(Timeline, *NewAsset);
+
+		// Saved straight away, as the builder's Create does, so closing the editor can't quietly lose it.
+		UEditorLoadingAndSavingUtils::SavePackages({ NewAsset->GetPackage() }, /*bOnlyDirty=*/false);
+
+		// Remembered as the timeline's own asset: Save updates it from now on, rather than asking where to make another.
+		if (UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(WidgetBlueprint))
+		{
+			const int32 Index = Timelines->IndexOf(&Timeline);
+			if (Index != INDEX_NONE)
+			{
+				Timelines->Modify();
+				Timelines->Timelines[Index].SavedAsset = NewAsset;
+				Missing.Remove(FSoftObjectPath(NewAsset));
+			}
+		}
+
+		if (GEditor)
+		{
+			TArray<UObject*> ToSelect{ NewAsset };
+			GEditor->SyncBrowserToObjects(ToSelect);
+		}
+
+		// The timeline stays open and as it was: it is this Widget Blueprint's own, and the asset is a copy of it for other
+		// widgets to use - kept up to date by Save.
+		ShowPanelNote(FText::Format(LOCTEXT("SavedTimelineAsAssetLinked", "Saved timeline {0} as {1}. Save updates it from now on."),
+			FText::FromString(TimelineName), FText::FromString(NewAsset->GetName())), true);
+		return NewAsset;
 	}
 }
 
@@ -1300,55 +1523,19 @@ namespace WidgetAnimTimelineAssets
 
 FWidgetAnimTimeline* FWidgetAnimAssetPanelSource::GetOpenTimelineEntry() const
 {
-	UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
-	const UWidgetAnimPresetAsset* Timeline = Mode == EMode::Timeline ? GetOpenTimeline() : nullptr;
-	const int32 Index = Timelines && Timeline ? Timelines->IndexOf(Timeline) : INDEX_NONE;
-	return Index != INDEX_NONE ? &Timelines->Timelines[Index] : nullptr;
+	return FindTimelineEntry(Blueprint.Get(), Mode == EMode::Timeline ? GetOpenTimeline() : nullptr);
 }
 
 UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::GetSavedAsset() const
 {
-	const FWidgetAnimTimeline* Entry = GetOpenTimelineEntry();
-	if (!Entry || Entry->SavedAsset.IsNull())
-	{
-		return nullptr;
-	}
-	if (UWidgetAnimPresetAsset* Loaded = Entry->SavedAsset.Get())
-	{
-		return Loaded;
-	}
-
-	// Saved in an earlier session: loaded once, when first asked for. One that is gone is remembered as gone, rather than
-	// looked for on disk every frame the Save button is drawn.
-	const FSoftObjectPath Path = Entry->SavedAsset.ToSoftObjectPath();
-	if (MissingSavedAssets.Contains(Path))
-	{
-		return nullptr;
-	}
-	UWidgetAnimPresetAsset* Loaded = Entry->SavedAsset.LoadSynchronous();
-	if (!Loaded)
-	{
-		MissingSavedAssets.Add(Path);
-	}
-	return Loaded;
+	return LoadTimelineSavedAsset(GetOpenTimelineEntry(), MissingSavedAssets);
 }
 
 bool FWidgetAnimAssetPanelSource::SaveToSavedAsset()
 {
 	const UWidgetAnimPresetAsset* Timeline = Mode == EMode::Timeline ? GetOpenTimeline() : nullptr;
 	UWidgetAnimPresetAsset* Saved = GetSavedAsset();
-	if (!Timeline || !Saved)
-	{
-		return false;
-	}
-
-	CopyTimelineInto(*Timeline, *Saved);
-	const bool bWritten = UEditorLoadingAndSavingUtils::SavePackages({ Saved->GetPackage() }, /*bOnlyDirty=*/false);
-	ShowPanelNote(bWritten
-		? FText::Format(LOCTEXT("SavedTimelineToAsset", "Saved timeline {0} to {1}."), FText::FromString(OpenTimelineName), FText::FromString(Saved->GetName()))
-		: FText::Format(LOCTEXT("SaveTimelineToAssetFailed", "Couldn't save {0}."), FText::FromString(Saved->GetName())),
-		bWritten);
-	return bWritten;
+	return Timeline && Saved && SaveTimelineToAsset(*Timeline, *Saved, OpenTimelineName);
 }
 
 UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset(bool bChooseLocation)
@@ -1359,65 +1546,239 @@ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset(bool bChoose
 	{
 		return nullptr;
 	}
-
-	// Named after the timeline - Intro -> WA_Intro - numbered when that is taken (WA_Intro_1), and asked for before it is made:
-	// in the editor's Save Asset As window for a Custom Location, in a small window of its own for the Default Folder.
 	const FString Folder = GetDefaultSaveFolder().IsEmpty() ? FString(TEXT("/Game")) : GetDefaultSaveFolder();
-	FString TimelinePart = WidgetAnimSaveLocation::SanitizeAssetName(OpenTimelineName);
-	if (TimelinePart.IsEmpty())
-	{
-		TimelinePart = TEXT("Timeline");
-	}
-	const FString DefaultName = WidgetAnimSaveLocation::MakeNumberedAssetName(Folder, TEXT("WA_") + TimelinePart);
+	return SaveTimelineAsNewAsset(WidgetBlueprint, *Timeline, OpenTimelineName, Folder, bChooseLocation, MissingSavedAssets);
+}
 
-	UWidgetAnimPresetAsset* NewAsset = nullptr;
-	if (bChooseLocation)
+// =====================================================================================================
+// FWidgetAnimBuilderPanelSource - its timelines
+// =====================================================================================================
+
+FString FWidgetAnimBuilderPanelSource::GetWorkingTimelineName() const
+{
+	const UWidgetAnimBuilder* Builder = GetBuilder();
+	return Builder && !Builder->AnimationName.TrimStartAndEnd().IsEmpty() ? Builder->AnimationName.TrimStartAndEnd() : FString(TEXT("Widget Animation"));
+}
+
+FString FWidgetAnimBuilderPanelSource::MakeUniqueTimelineName(const UWidgetAnimTimelinesExtension& Timelines, const FString& Base, int32 Ignore) const
+{
+	// Unique among the timelines kept in the Widget Blueprint, and never the working copy's name: numbered on past it.
+	const FString Working = GetWorkingTimelineName();
+	FString Unique = Timelines.MakeUniqueName(Base, Ignore);
+	for (int32 Number = 2; Unique.Equals(Working, ESearchCase::IgnoreCase); ++Number)
 	{
-		NewAsset = WidgetAnimSaveLocation::CreateAnimationAsset(Folder, DefaultName, /*bChooseLocation=*/true);
+		Unique = Timelines.MakeUniqueName(FString::Printf(TEXT("%s %d"), *Base, Number), Ignore);
 	}
-	else
+	return Unique;
+}
+
+void FWidgetAnimBuilderPanelSource::GetTimelineNames(TArray<FString>& OutNames) const
+{
+	OutNames.Reset();
+	OutNames.Add(GetWorkingTimelineName());
+	if (const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get()))
 	{
-		FString Name;
-		if (!WidgetAnimSaveLocation::PromptForAssetName(Folder, DefaultName, Name))
+		for (const FWidgetAnimTimeline& Timeline : Timelines->Timelines)
 		{
-			return nullptr;
+			if (Timeline.Animation)
+			{
+				OutNames.Add(Timeline.Name);
+			}
 		}
-		NewAsset = WidgetAnimSaveLocation::CreateAnimationAsset(Folder, Name, /*bChooseLocation=*/false);
+	}
+}
+
+FString FWidgetAnimBuilderPanelSource::GetTimelineName() const
+{
+	if (GetMode() != EMode::Timeline)
+	{
+		return FString();
+	}
+	if (const FWidgetAnimTimeline* Entry = FindTimelineEntry(Blueprint.Get(), GetOpenExtraTimeline()))
+	{
+		return Entry->Name;
+	}
+	return GetWorkingTimelineName();
+}
+
+bool FWidgetAnimBuilderPanelSource::OpenTimeline(const FString& Name)
+{
+	if (!GetBuilder())
+	{
+		return false;
 	}
 
-	if (!NewAsset)
+	UWidgetAnimPresetAsset* Animation = nullptr;
+	if (!Name.Equals(GetWorkingTimelineName(), ESearchCase::IgnoreCase))
+	{
+		const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
+		const int32 Index = Timelines ? Timelines->IndexOf(Name) : INDEX_NONE;
+		Animation = Index != INDEX_NONE ? Timelines->Timelines[Index].Animation.Get() : nullptr;
+		if (!Animation)
+		{
+			return false;
+		}
+	}
+
+	bEditExistingPicked = false;
+	LastExtraTimeline = Animation;
+	SetPreviewAnimation(Animation, /*bTransact=*/false);
+	return true;
+}
+
+FString FWidgetAnimBuilderPanelSource::CreateTimeline(const FString& Name, const FString& CopyOf, bool bDopeSheet)
+{
+	UWidgetBlueprint* WidgetBlueprint = Blueprint.Get();
+	const UWidgetAnimBuilder* Builder = GetBuilder();
+	if (!WidgetBlueprint || !Builder)
+	{
+		return FString();
+	}
+
+	// What it copies: another of the timelines kept here, or the working copy.
+	const bool bCopyWorking = !CopyOf.IsEmpty() && CopyOf.Equals(GetWorkingTimelineName(), ESearchCase::IgnoreCase);
+	const UWidgetAnimTimelinesExtension* Existing = UWidgetAnimTimelinesExtension::Find(WidgetBlueprint);
+	const int32 CopyIndex = Existing && !CopyOf.IsEmpty() && !bCopyWorking ? Existing->IndexOf(CopyOf) : INDEX_NONE;
+	const UWidgetAnimPresetAsset* CopyFrom = CopyIndex != INDEX_NONE ? Existing->Timelines[CopyIndex].Animation.Get() : nullptr;
+
+	const FScopedTransaction Transaction(CopyFrom || bCopyWorking
+		? LOCTEXT("DuplicateTimeline", "Duplicate Animation Timeline")
+		: LOCTEXT("NewTimeline", "New Animation Timeline"));
+	UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::FindOrAdd(WidgetBlueprint);
+	if (!Timelines)
+	{
+		return FString();
+	}
+	Timelines->Modify();
+
+	const int32 Index = Timelines->AddTimeline(Name, CopyFrom);
+	if (Index == INDEX_NONE || !Timelines->Timelines[Index].Animation)
+	{
+		return FString();
+	}
+	FWidgetAnimTimeline& Made = Timelines->Timelines[Index];
+	Made.Name = MakeUniqueTimelineName(*Timelines, Made.Name, Index);
+
+	if (bCopyWorking)
+	{
+		// The working copy, as the builder's Create saves it.
+		UWidgetAnimPresetAsset& Copy = *Made.Animation;
+		Copy.Description = Builder->Description;
+		Copy.LayerGroups = Builder->LayerGroups;
+		Copy.Layers = Builder->Layers;
+		Copy.AnimationSpeedMultiplier = Builder->AnimationSpeedMultiplier;
+		Copy.MinimumLength = Builder->MinimumLength;
+		Copy.TimeUnit = Builder->TimeUnit;
+		Copy.Progress = Builder->Progress;
+		Copy.Parameters = Builder->Parameters;
+		if (Copy.LayerGroups.Num() == 0)
+		{
+			Copy.LayerGroups.AddDefaulted();
+		}
+	}
+	else if (!CopyFrom && bDopeSheet)
+	{
+		// A Dope Sheet is chosen here, once, for the timeline's life (a copy is what it copies).
+		Made.Animation->bDopeSheet = true;
+	}
+
+	const FString MadeName = Made.Name;
+	OpenTimeline(MadeName);
+	return MadeName;
+}
+
+FString FWidgetAnimBuilderPanelSource::RenameTimeline(const FString& Name, const FString& NewName)
+{
+	const FString Trimmed = NewName.TrimStartAndEnd();
+	UWidgetAnimBuilder* Builder = GetBuilder();
+	if (Trimmed.IsEmpty() || !Builder)
+	{
+		return FString();
+	}
+	UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
+
+	// The working copy: its Animation Name, as its Details would set it - numbered past the other timelines' names.
+	if (Name.Equals(GetWorkingTimelineName(), ESearchCase::IgnoreCase))
+	{
+		const FString Unique = Timelines ? Timelines->MakeUniqueName(Trimmed) : Trimmed;
+		if (Unique == Builder->AnimationName)
+		{
+			return Unique;
+		}
+		const FScopedTransaction Transaction(LOCTEXT("RenameBuilderAnimation", "Rename Widget Animation"));
+		Builder->Modify();
+		Builder->AnimationName = Unique;
+		FProperty* Property = FindFProperty<FProperty>(UWidgetAnimBuilder::StaticClass(), GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, AnimationName));
+		FPropertyChangedEvent Event(Property, EPropertyChangeType::ValueSet);
+		Builder->PostEditChangeProperty(Event);
+		Builder->MarkPackageDirty();
+		return Unique;
+	}
+
+	const int32 Index = Timelines ? Timelines->IndexOf(Name) : INDEX_NONE;
+	if (Index == INDEX_NONE)
+	{
+		return FString();
+	}
+	const FString Unique = MakeUniqueTimelineName(*Timelines, Trimmed, Index);
+	if (Unique == Timelines->Timelines[Index].Name)
+	{
+		return Unique;
+	}
+	const FScopedTransaction Transaction(LOCTEXT("RenameTimeline", "Rename Animation Timeline"));
+	Timelines->Modify();
+	Timelines->Timelines[Index].Name = Unique;
+	return Unique;
+}
+
+bool FWidgetAnimBuilderPanelSource::CanDeleteTimeline(const FString& Name) const
+{
+	// The working copy is the builder's own, and stays.
+	return !Name.Equals(GetWorkingTimelineName(), ESearchCase::IgnoreCase);
+}
+
+bool FWidgetAnimBuilderPanelSource::DeleteTimeline(const FString& Name)
+{
+	UWidgetAnimTimelinesExtension* Timelines = CanDeleteTimeline(Name) ? UWidgetAnimTimelinesExtension::Find(Blueprint.Get()) : nullptr;
+	const int32 Index = Timelines ? Timelines->IndexOf(Name) : INDEX_NONE;
+	if (Index == INDEX_NONE)
+	{
+		return false;
+	}
+
+	// The working copy opens in its place. The animation object stays where it is, unreferenced, so an undo can put the
+	// timeline back as it was.
+	if (Timelines->Timelines[Index].Animation.Get() == GetOpenExtraTimeline())
+	{
+		OpenTimeline(GetWorkingTimelineName());
+	}
+	const FScopedTransaction Transaction(LOCTEXT("DeleteTimeline", "Delete Animation Timeline"));
+	Timelines->Modify();
+	Timelines->Timelines.RemoveAt(Index);
+	return true;
+}
+
+UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::GetSavedAsset() const
+{
+	return LoadTimelineSavedAsset(FindTimelineEntry(Blueprint.Get(), GetOpenExtraTimeline()), MissingSavedAssets);
+}
+
+bool FWidgetAnimBuilderPanelSource::SaveToSavedAsset()
+{
+	const UWidgetAnimPresetAsset* Open = GetOpenExtraTimeline();
+	UWidgetAnimPresetAsset* Saved = GetSavedAsset();
+	return Open && Saved && SaveTimelineToAsset(*Open, *Saved, GetTimelineName());
+}
+
+UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::SaveExtraTimelineAsNewAsset(bool bChooseLocation)
+{
+	const UWidgetAnimPresetAsset* Open = GetOpenExtraTimeline();
+	if (!Open)
 	{
 		return nullptr;
 	}
-
-	CopyTimelineInto(*Timeline, *NewAsset);
-
-	// Saved straight away, as the builder's Create does, so closing the editor can't quietly lose it.
-	UEditorLoadingAndSavingUtils::SavePackages({ NewAsset->GetPackage() }, /*bOnlyDirty=*/false);
-
-	// Remembered as the timeline's own asset: Save updates it from now on, rather than asking where to make another.
-	if (UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get()))
-	{
-		const int32 Index = Timelines->IndexOf(Timeline);
-		if (Index != INDEX_NONE)
-		{
-			Timelines->Modify();
-			Timelines->Timelines[Index].SavedAsset = NewAsset;
-			MissingSavedAssets.Remove(FSoftObjectPath(NewAsset));
-		}
-	}
-
-	if (GEditor)
-	{
-		TArray<UObject*> ToSelect{ NewAsset };
-		GEditor->SyncBrowserToObjects(ToSelect);
-	}
-
-	// The timeline stays open and as it was: it is this Widget Blueprint's own, and the asset is a copy of it for other
-	// widgets to use - kept up to date by Save.
-	ShowPanelNote(FText::Format(LOCTEXT("SavedTimelineAsAssetLinked", "Saved timeline {0} as {1}. Save updates it from now on."),
-		FText::FromString(OpenTimelineName), FText::FromString(NewAsset->GetName())), true);
-	return NewAsset;
+	const FString Folder = GetDefaultSaveFolder().IsEmpty() ? FString(TEXT("/Game")) : GetDefaultSaveFolder();
+	return SaveTimelineAsNewAsset(Blueprint.Get(), *Open, GetTimelineName(), Folder, bChooseLocation, MissingSavedAssets);
 }
 
 float FWidgetAnimAssetPanelSource::GetPlayheadAlpha() const
@@ -1610,6 +1971,7 @@ void FWidgetAnimAssetPanelSource::RestorePreview()
 	// and a rebuilt preview is already back as authored.
 	if (UUserWidget* Root = PosedRoot.Get())
 	{
+		WidgetAnimPanelPosing::Release(Root);
 		if (IsValid(Root))
 		{
 			UWidgetAnimLibrary::RestoreWidgetAnimBaselines(Baselines);
@@ -1713,6 +2075,14 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
 		PosedSignature = FlattenedSignature;
 		bPoseStale = true;
 		++PosedVersion;
+	}
+
+	// Posed by this panel while it is on screen - every other preview of these widgets stands down - and posed again when one
+	// that stood down put its widgets back over the pose.
+	WidgetAnimPanelPosing::Claim(Root);
+	if (WidgetAnimPanelPosing::TakeRepose(Root))
+	{
+		bPoseStale = true;
 	}
 
 	// The clock. One pass is the animation at this Speed; Loop wraps it, Ping Pong bounces it.

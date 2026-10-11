@@ -130,25 +130,16 @@ public:
 	bool bGizmoAutoKey = true;
 
 	/**
-	 * Keyframe Only: the Track Editor shows tracks as their keys - each track a thin lane between its first and last key, every
-	 * key a diamond, a track's start and end included - and edits them only through those keys, as a dope sheet does. A press on
-	 * a lane picks its track (its keys show in the Selection panel) and, dragged, boxes keys; a track's start and end keys
-	 * resize it from that end. Tracks are still moved with Start Time, or the arrow keys. The Keyframe Only toggle in the
-	 * panel's Track Controls sets it too.
-	 */
-	UPROPERTY(config, EditAnywhere, Category = "Track Controls", meta = (DisplayName = "Keyframe Only"))
-	bool bKeyframeOnly = false;
-
-	/**
 	 * Every track that travels from a start value to an end value shows its start and end as keys in the Track Editor - diamonds
 	 * on its edges - not only once it has a key between them. Clicked, they show the start or end value in the Selection panel;
-	 * dragged, they resize the track from that edge. Always on in Keyframe Only.
+	 * dragged, they resize the track from that edge. Always on in a Dope Sheet (see WidgetAnimDopeSheet.h), whose keys are all
+	 * there is.
 	 */
 	UPROPERTY(config, EditAnywhere, Category = "Track Controls", meta = (DisplayName = "Start And End Keys"))
 	bool bShowEdgeKeys = true;
 
-	/** Whether tracks show their start and end as keys: Start And End Keys, or Keyframe Only. */
-	bool ShowsEdgeKeys() const { return bShowEdgeKeys || bKeyframeOnly; }
+	/** Whether tracks show their start and end as keys: Start And End Keys (a Dope Sheet always does - see SWidgetAnimTimeline::GetKeyTimes). */
+	bool ShowsEdgeKeys() const { return bShowEdgeKeys; }
 
 	/**
 	 * Which controls the panel's controls pill shows: how the preview plays (Loop, Ping Pong, Invert, Speed) or how tracks behave
@@ -324,6 +315,13 @@ public:
 	// Taken out before the plugin is published, with the values settled on written into NameTBDColors.h as their defaults.
 	// -------------------------------------------------------------------------------------------------
 
+	/**
+	 * How big a Dope Sheet's keyframes are drawn - and grabbed - in the Track Editor, in pixels across the diamond. Their outline and
+	 * selection glow grow with them. Not the keys of a timeline of tracks, which follow the line height.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Dope Sheet Key Size", ClampMin = "6", ClampMax = "40", UIMin = "6", UIMax = "32"))
+	float DopeSheetKeySize = 14.f;
+
 	/** The animation's start line and its triangle in the ruler. */
 	UPROPERTY(config, EditAnywhere, Category = "DEVELOPER ONLY", meta = (DisplayName = "Start Color"))
 	FLinearColor RangeStartColor;
@@ -438,9 +436,6 @@ public:
 
 	/** Auto Key, saved - see bGizmoAutoKey. */
 	void SetGizmoAutoKey(bool bEnabled);
-
-	/** Keyframe Only, saved - see bKeyframeOnly. */
-	void SetKeyframeOnly(bool bEnabled);
 
 	/** Which controls the pill shows, saved - see bControlsShowTrackControls. */
 	void SetControlsShowTrackControls(bool bTrackControls);

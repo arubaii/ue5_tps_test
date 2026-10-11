@@ -137,15 +137,6 @@ void UWidgetAnimEditorSettings::SetGizmoAutoKey(bool bEnabled)
 	}
 }
 
-void UWidgetAnimEditorSettings::SetKeyframeOnly(bool bEnabled)
-{
-	if (bKeyframeOnly != bEnabled)
-	{
-		bKeyframeOnly = bEnabled;
-		SaveConfig();
-	}
-}
-
 void UWidgetAnimEditorSettings::SetControlsShowTrackControls(bool bTrackControls)
 {
 	if (bControlsShowTrackControls != bTrackControls)

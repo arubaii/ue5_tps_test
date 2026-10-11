@@ -26,6 +26,7 @@ public:
 		: _Font(FAppStyle::GetFontStyle("NormalFontBold"))
 		, _TextColor(FSlateColor::UseForeground())
 		, _IsReadOnly(false)
+		, _RenameOnDoubleClick(true)
 	{}
 		/** The name as it is. */
 		SLATE_ATTRIBUTE(FText, Text)
@@ -33,6 +34,8 @@ public:
 		SLATE_ATTRIBUTE(FSlateColor, TextColor)
 		/** True: double-clicking does nothing. */
 		SLATE_ATTRIBUTE(bool, IsReadOnly)
+		/** False: a double-click is left to what holds the field (a row that opens on it), and only EnterEditingMode renames. */
+		SLATE_ARGUMENT(bool, RenameOnDoubleClick)
 		/** The name typed - Enter, or clicking away. Not called on Escape. */
 		SLATE_EVENT(FOnTextCommitted, OnTextCommitted)
 	SLATE_END_ARGS()
@@ -41,6 +44,7 @@ public:
 	{
 		NameText = InArgs._Text;
 		bReadOnly = InArgs._IsReadOnly;
+		bRenameOnDoubleClick = InArgs._RenameOnDoubleClick;
 		OnCommitted = InArgs._OnTextCommitted;
 
 		ChildSlot
@@ -55,6 +59,7 @@ public:
 				.Font(InArgs._Font)
 				.Text(NameText)
 				.ColorAndOpacity(InArgs._TextColor)
+				.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
 			]
 
 			+ SWidgetSwitcher::Slot()
@@ -90,7 +95,7 @@ public:
 
 	virtual FReply OnMouseButtonDoubleClick(const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent) override
 	{
-		if (InMouseEvent.GetEffectingButton() != EKeys::LeftMouseButton || bReadOnly.Get() || IsEditing())
+		if (!bRenameOnDoubleClick || InMouseEvent.GetEffectingButton() != EKeys::LeftMouseButton || bReadOnly.Get() || IsEditing())
 		{
 			return FReply::Unhandled();
 		}
@@ -116,6 +121,7 @@ private:
 
 	TAttribute<FText> NameText;
 	TAttribute<bool> bReadOnly;
+	bool bRenameOnDoubleClick = true;
 	FOnTextCommitted OnCommitted;
 	TSharedPtr<SWidgetSwitcher> Switcher;
 	TSharedPtr<SEditableTextBox> Box;

@@ -1,0 +1,153 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
+index ded5ab2..4b3d069 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
+@@ -536,7 +536,12 @@ FText SWidgetAnimKeyValues::GetKeyName(int32 LayerIndex, int32 Key) const
+ 	const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
+ 	const int32 NumKeys = WidgetAnimKeyValues::GetNumKeys(Layer);
+ 	FText Name;
+-	if (!WidgetAnimTypeIsKeyframed(Layer.AnimType) && Key == 0)
++	if (Owner->IsDopeSheet())
++	{
++		// A Dope Sheet's keys are keys, counted from 1 - never a start and an end.
++		Name = FText::Format(LOCTEXT("DopeKeyNumber", "Key {0}"), FText::AsNumber(Key + 1));
++	}
++	else if (!WidgetAnimTypeIsKeyframed(Layer.AnimType) && Key == 0)
+ 	{
+ 		Name = LOCTEXT("StartKey", "Start");
+ 	}
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index d757c00..6217046 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -4849,7 +4849,10 @@ namespace WidgetAnimTimeline
+ 		{
+ 			if (Layers && Layers->IsValidIndex(LayerIndex) && Owner.GetKeyChannels(LayerIndex).Num() > 0)
+ 			{
+-				const int32 NumKeys = WidgetAnimKeyValues::GetNumKeys((*Layers)[LayerIndex]);
++				// As the Track Editor counts them: a Dope Sheet's single key is one key, not its two points.
++				TArray<float> ShownKeys;
++				Owner.GetKeyTimes(LayerIndex, ShownKeys);
++				const int32 NumKeys = FMath::Min(WidgetAnimKeyValues::GetNumKeys((*Layers)[LayerIndex]), ShownKeys.Num());
+ 				for (int32 Key = 0; Key < NumKeys; ++Key)
+ 				{
+ 					Keys.Add(SWidgetAnimTimeline::FKeyRef{ LayerIndex, Key });
+@@ -12113,6 +12116,18 @@ const TArray<FWidgetAnimLayer>* SWidgetAnimTimeline::GetContextLayers() const
+ }
+ 
+ void SWidgetAnimTimeline::GetKeyTimes(int32 LayerIndex, TArray<float>& OutTimes) const
++{
++	GetPointTimes(LayerIndex, OutTimes);
++
++	// A Dope Sheet's single key is one key, wherever keys are shown, picked or counted - its two points stay out of sight (the
++	// second follows the first: see SyncSingleKeyRow).
++	if (OutTimes.Num() == 2 && OutTimes[1] - OutTimes[0] <= MinLayerSeconds * 1.5f && IsDopeSheet())
++	{
++		OutTimes.SetNum(1);
++	}
++}
++
++void SWidgetAnimTimeline::GetPointTimes(int32 LayerIndex, TArray<float>& OutTimes) const
+ {
+ 	OutTimes.Reset();
+ 
+@@ -19602,7 +19617,7 @@ void SWidgetAnimTimeline::BeginKeyDrag(int32 LayerIndex, int32 KeyIndex)
+ 			}
+ 			if (CanDopeKeys(Ref.Layer) && !DopeDragTimes.Contains(Ref.Layer))
+ 			{
+-				GetRowKeySeconds(Ref.Layer, DopeDragTimes.Add(Ref.Layer));
++				GetRowKeySeconds(Ref.Layer, DopeDragTimes.Add(Ref.Layer), /*bPoints=*/true);
+ 			}
+ 		}
+ 	}
+@@ -26923,7 +26938,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyToolTip(int32 LayerIndex, int32
+ 	const int32 NumKeys = KeyTimes.Num();
+ 	const float LocalTime = KeyTimes[KeyIndex];
+ 	const bool bKeyframed = WidgetAnimTypeIsKeyframed(Layer.AnimType);
+-	const FString Where = KeyIndex == 0 ? TEXT("Start") : KeyIndex == NumKeys - 1 ? TEXT("End") : FString();
++	// A Dope Sheet's keys are keys, not a start and an end.
++	const FString Where = IsDopeSheet() ? FString() : KeyIndex == 0 ? TEXT("Start") : KeyIndex == NumKeys - 1 ? TEXT("End") : FString();
+ 	const FString Title = Where.IsEmpty()
+ 		? FString::Printf(TEXT("Key %d of %d"), KeyIndex + 1, NumKeys)
+ 		: FString::Printf(TEXT("Key %d of %d  \u00B7  %s"), KeyIndex + 1, NumKeys, *Where);
+@@ -27959,21 +27975,28 @@ bool SWidgetAnimTimeline::IsSingleKeyRow(int32 LayerIndex) const
+ 	{
+ 		return false;
+ 	}
+-	TArray<float> KeyTimes;
+-	GetKeyTimes(LayerIndex, KeyTimes);
+-	return KeyTimes.Num() == 2 && KeyTimes[1] - KeyTimes[0] <= MinLayerSeconds * 1.5f;
++	TArray<float> PointTimes;
++	GetPointTimes(LayerIndex, PointTimes);
++	return PointTimes.Num() == 2 && PointTimes[1] - PointTimes[0] <= MinLayerSeconds * 1.5f;
+ }
+ 
+ int32 SWidgetAnimTimeline::GetRowKeyCount(int32 LayerIndex) const
+ {
+ 	TArray<float> KeyTimes;
+ 	GetKeyTimes(LayerIndex, KeyTimes);
+-	return IsSingleKeyRow(LayerIndex) ? 1 : KeyTimes.Num();
++	return KeyTimes.Num();
+ }
+ 
+-void SWidgetAnimTimeline::GetRowKeySeconds(int32 LayerIndex, TArray<float>& OutSeconds) const
++void SWidgetAnimTimeline::GetRowKeySeconds(int32 LayerIndex, TArray<float>& OutSeconds, bool bPoints) const
+ {
+-	GetKeyTimes(LayerIndex, OutSeconds);
++	if (bPoints)
++	{
++		GetPointTimes(LayerIndex, OutSeconds);
++	}
++	else
++	{
++		GetKeyTimes(LayerIndex, OutSeconds);
++	}
+ 	TArray<FVector2f> Spans;
+ 	GetLayerSpans(Spans);
+ 	const float Start = Spans.IsValidIndex(LayerIndex) ? Spans[LayerIndex].X : 0.f;
+@@ -28118,7 +28141,7 @@ void SWidgetAnimTimeline::AddDopeKey(int32 LayerIndex, float Seconds)
+ 	Seconds = FMath::Max(Seconds, 0.f);
+ 
+ 	TArray<float> KeySeconds;
+-	GetRowKeySeconds(LayerIndex, KeySeconds);
++	GetRowKeySeconds(LayerIndex, KeySeconds, /*bPoints=*/true);
+ 	if (KeySeconds.Num() < 2 || FindRowKeyAt(LayerIndex, Seconds) != INDEX_NONE)
+ 	{
+ 		return;
+@@ -28242,7 +28265,7 @@ bool SWidgetAnimTimeline::RemoveDopeKey(int32 LayerIndex, int32 KeyIndex)
+ 	}
+ 
+ 	TArray<float> KeySeconds;
+-	GetRowKeySeconds(LayerIndex, KeySeconds);
++	GetRowKeySeconds(LayerIndex, KeySeconds, /*bPoints=*/true);
+ 	if (!KeySeconds.IsValidIndex(KeyIndex) || KeySeconds.Num() < 2)
+ 	{
+ 		return false;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+index 21a2adc..06e76e8 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+@@ -454,6 +454,12 @@ public:
+ 	 */
+ 	void GetKeyTimes(int32 LayerIndex, TArray<float>& OutTimes) const;
+ 
++	/**
++	 * Every point of a layer's keys, as stored - GetKeyTimes, except that a Dope Sheet's single key (two points a hair apart, see
++	 * IsSingleKeyRow) is both of its points here and one key there. What the Dope Sheet's edits work on.
++	 */
++	void GetPointTimes(int32 LayerIndex, TArray<float>& OutTimes) const;
++
+ 	/**
+ 	 * Jump to Edited Key (Editor Preferences): an edit to the selected key - or to the selected track's start or end value -
+ 	 * moves the preview there, so the change shows as it is made.
+@@ -2275,8 +2281,8 @@ private:
+ 	TMap<int32, TArray<float>> DopeDragTimes;
+ 	bool bDopeKeyDrag = false;
+ 
+-	/** Every key time of a row on the time axis (played seconds): its start plus GetKeyTimes. */
+-	void GetRowKeySeconds(int32 LayerIndex, TArray<float>& OutSeconds) const;
++	/** Every key time of a row on the time axis (played seconds): its start plus GetKeyTimes - or, bPoints, GetPointTimes. */
++	void GetRowKeySeconds(int32 LayerIndex, TArray<float>& OutSeconds, bool bPoints = false) const;
+ 
+ 	/**
+ 	 * A Dope Sheet row's keys put at Seconds (on the time axis, in order, one per key it has): its start at the first, its length

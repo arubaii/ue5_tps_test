@@ -1,0 +1,2139 @@
+diff --git a/Plugins/NameTBD/Resources/AI/Docs/animations.md b/Plugins/NameTBD/Resources/AI/Docs/animations.md
+index ecd546a..297f8fd 100644
+--- a/Plugins/NameTBD/Resources/AI/Docs/animations.md
++++ b/Plugins/NameTBD/Resources/AI/Docs/animations.md
+@@ -1,7 +1,7 @@
+ # Widget Animations
+ 
+ ## Assets, groups and tracks
+-A Widget Animation (WA_ asset) is a list of tracks, each in a Track Group; a group is one widget the animation moves (Target Widget; empty = the widget it plays on). Tracks start With Previous or After Previous plus Delay. Timing: Tween (Duration, Easing Linear / EaseIn / EaseOut / EaseInOut / Hold - the editor shows Hold as "Constant", Custom as "Curve Asset" and a segment's Bezier as "Cubic (User)", Unreal's names; scripts keep the value names) or Spring (Spring: Duration and Bounce, or Stiffness / Damping / Mass - presets "@spring.Snappy", "@spring.Bouncy"...). A stagger (Expander) plays a track once per child, letter, word or line. A timeline made as a Dope Sheet (Key Mode, editor only) is the same data edited as keys only: each track is a row of keys, its start and end being its first and last key.
++A Widget Animation (WA_ asset) is a list of tracks, each in a Track Group; a group is one widget the animation moves (Target Widget; empty = the widget it plays on). Tracks start With Previous or After Previous plus Delay. Timing: Tween (Duration, Easing Linear / EaseIn / EaseOut / EaseInOut / Hold - the editor shows Hold as "Constant", Custom as "Curve Asset" and a segment's Bezier as "Cubic (User)", Unreal's names; scripts keep the value names) or Spring (Spring: Duration and Bounce, or Stiffness / Damping / Mass - presets "@spring.Snappy", "@spring.Bouncy"...). A stagger (Expander) plays a track once per child, letter, word or line. A timeline is made as a Track Sheet (tracks, each from a start to an end) or a Dope Sheet (Key Mode): the same data, a Dope Sheet edited as keys only - each track is a row of keys, its start and end being its first and last key - and played with each row holding its first key's value until it gets there (a row of one key holds it throughout).
+ 
+ ## Track types
+ Fade (StartOpacity, EndOpacity), Scale (StartScale, EndScale, Overshoot), Slide (SlideFromDirection Up/Down/Left/Right, SlideDistance), Rotate (StartAngle, EndAngle), Pulse (PulseScaleAmount), Shake, Transform (keyframes of translation / scale / angle / shear, curved motion paths), MaterialScalar / MaterialVector (ScalarParameterName, StartScalarValue, EndScalarValue...), Shape (a shape's values over time), Design (brush, colors, fonts), cues (Sound, Event, Particles, Play Animation), and registered types (TypeParams).
+diff --git a/Plugins/NameTBD/Resources/WidgetAnim_TrackSheet.svg b/Plugins/NameTBD/Resources/WidgetAnim_TrackSheet.svg
+new file mode 100644
+index 0000000..dcfba6b
+--- /dev/null
++++ b/Plugins/NameTBD/Resources/WidgetAnim_TrackSheet.svg
+@@ -0,0 +1,6 @@
++<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
++<path d="M1 4H15M1 8H15M1 12H15" stroke="white" stroke-width="0.9" stroke-linecap="round" opacity="0.4"/>
++<rect x="1.5" y="2.8" width="7" height="2.4" rx="1.2" fill="white"/>
++<rect x="6" y="6.8" width="8.5" height="2.4" rx="1.2" fill="white"/>
++<rect x="3.5" y="10.8" width="6" height="2.4" rx="1.2" fill="white"/>
++</svg>
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.cpp
+index 51ac031..39e1488 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.cpp
+@@ -226,6 +226,13 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
+ 		Settings.LoopGroup = LoopGroup;
+ 		Settings.TargetWidget = Target;
+ 
++		// A Dope Sheet's row holds its first key until it gets there, as a dope sheet's keys do - its own tracks only, not the
++		// placeholder that keeps a pass going after them.
++		if (Animation->bDopeSheet && Animation->Layers.IsValidIndex(Index))
++		{
++			Settings.bHoldStartPose = true;
++		}
++
+ 		// What its value-driven tracks' values belong to: this animation - those of an animation inserted into it as a
+ 		// track included, set with this one's name as its own are. See FWidgetAnimValueId.
+ 		Settings.ValueScope = Animation;
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h
+index 005955a..7aac074 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h
+@@ -106,15 +106,15 @@ public:
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation", meta = (TitleProperty = "Name"))
+ 	TArray<FWidgetAnimParameter> Parameters;
+ 
+-#if WITH_EDITORONLY_DATA
+ 	/**
+ 	 * Made as a Dope Sheet (Key Mode): the Widget Animations panel edits it as keys only - each row one kind of key on one widget,
+ 	 * no bars, no start and end to drag, no names or presets. Chosen when the timeline is made and kept for its life (copied with
+-	 * it, saved as an asset with it). Editor only: it plays exactly as any other animation - its rows are tracks, its keys their keys.
++	 * it, saved as an asset with it). Its rows are tracks and its keys their keys; the one thing it changes in how it plays is
++	 * what a row shows before its first key: that key's value, as keys do in any dope sheet, rather than the widget as
++	 * authored (see FWidgetAnimSettings::bHoldStartPose) - so a row of one key holds it for the whole animation.
+ 	 */
+ 	UPROPERTY()
+ 	bool bDopeSheet = false;
+-#endif
+ 
+ 	/** The parameter called Name, or null. */
+ 	const FWidgetAnimParameter* FindParameter(FName Name) const
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp
+index 034c296..01a0575 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/NameTBDStyle.cpp
+@@ -176,6 +176,7 @@ TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
+           { ParameterMirroredIcon, TEXT("WidgetAnim_ParameterMirrored.svg") },
+           { StateMachineActionsIcon, TEXT("WidgetAnim_StateMachineActions.svg") },
+           { TimelineIcon, TEXT("WidgetAnim_Timeline.svg") },
++          { TrackSheetIcon, TEXT("WidgetAnim_TrackSheet.svg") },
+           { DopeSheetIcon, TEXT("WidgetAnim_DopeSheet.svg") },
+        };
+        for (const TPair<FName, const TCHAR*>& Icon : Icons)
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
+index 4b3d069..fb7aba2 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
+@@ -102,7 +102,7 @@ public:
+ 	{}
+ 		SLATE_ARGUMENT(float, Width)
+ 
+-		/** Shown though the key doesn't alter it (Show All Values): dimmed. */
++		/** Shown though the key doesn't alter it (a key's list, or a track's with Show All Values): dimmed. */
+ 		SLATE_ARGUMENT(bool, Dimmed)
+ 
+ 		/** Every cell of this one's column in its table, top to bottom - what Shift+click picks a run of. */
+@@ -371,7 +371,9 @@ void SWidgetAnimKeyValues::Construct(const FArguments& InArgs, TWeakPtr<SWidgetA
+ 		ChildSlot[SNullWidget::NullWidget];
+ 		return;
+ 	}
+-	const bool bShowAll = Owner->IsShowingAllKeyValues();
++	const bool bForTracks = InArgs._ForTracks;
++	bListAll = !bForTracks || Owner->IsShowingAllKeyValues();
++	const bool bShowAll = bListAll;
+ 
+ 	// The keys by track, tracks in the order first given, keys in order along each.
+ 	for (const SWidgetAnimTimeline::FKeyRef& Ref : InArgs._Keys)
+@@ -447,10 +449,12 @@ void SWidgetAnimKeyValues::Construct(const FArguments& InArgs, TWeakPtr<SWidgetA
+ 	}
+ 
+ 	const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Panel;
+-	const TSharedRef<SVerticalBox> Box = SNew(SVerticalBox)
++	const TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+ 
+-		// How to edit them, and Show All Values.
+-		+ SVerticalBox::Slot()
++	// A track's list: Show All Values. Keys picked list every value already.
++	if (bForTracks)
++	{
++		Box->AddSlot()
+ 		.AutoHeight()
+ 		.Padding(FMargin(0.f, 2.f, 0.f, 6.f))
+ 		[
+@@ -458,20 +462,13 @@ void SWidgetAnimKeyValues::Construct(const FArguments& InArgs, TWeakPtr<SWidgetA
+ 
+ 			+ SHorizontalBox::Slot()
+ 			.FillWidth(1.f)
+-			.VAlign(VAlign_Center)
+ 			[
+-				SNew(STextBlock)
+-				.AutoWrapText(true)
+-				.Font(IDetailLayoutBuilder::GetDetailFontItalic())
+-				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+-				.Text(Tips::KeyValuesHint())
+-				.ToolTipText(Tips::KeyValuesHintTooltip())
++				SNullWidget::NullWidget
+ 			]
+ 
+ 			+ SHorizontalBox::Slot()
+ 			.AutoWidth()
+ 			.VAlign(VAlign_Center)
+-			.Padding(FMargin(8.f, 0.f, 0.f, 0.f))
+ 			[
+ 				SNew(SCheckBox)
+ 				.ToolTipText(Tips::ShowAllKeyValuesTooltip())
+@@ -494,6 +491,7 @@ void SWidgetAnimKeyValues::Construct(const FArguments& InArgs, TWeakPtr<SWidgetA
+ 				]
+ 			]
+ 		];
++	}
+ 
+ 	for (int32 PartIndex = 0; PartIndex < Parts.Num(); ++PartIndex)
+ 	{
+@@ -698,7 +696,7 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeCell(const FTrackPart& Part, int32
+ {
+ 	const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+ 	const bool bAltered = Part.Shown.IsValidIndex(Row) && Part.Shown[Row].IsValidIndex(Column) && Part.Shown[Row][Column];
+-	if (!Owner || (!bAltered && !Owner->IsShowingAllKeyValues()))
++	if (!Owner || (!bAltered && !bListAll))
+ 	{
+ 		// Not a value this key alters: nothing in its place, so each key reads as what it changes.
+ 		return SNew(SBox).WidthOverride(Width);
+@@ -713,7 +711,7 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeCell(const FTrackPart& Part, int32
+ 	TArray<SWidgetAnimTimeline::FValueCell> ColumnCells;
+ 	for (int32 Other = 0; Other < Part.Keys.Num(); ++Other)
+ 	{
+-		if (Owner->IsShowingAllKeyValues() || (Part.Shown.IsValidIndex(Other) && Part.Shown[Other].IsValidIndex(Column) && Part.Shown[Other][Column]))
++		if (bListAll || (Part.Shown.IsValidIndex(Other) && Part.Shown[Other].IsValidIndex(Column) && Part.Shown[Other][Column]))
+ 		{
+ 			SWidgetAnimTimeline::FValueCell& InColumn = ColumnCells.AddDefaulted_GetRef();
+ 			InColumn.Layer = Part.Layer;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.h
+index d1882a3..41ada5b 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.h
+@@ -13,8 +13,9 @@ class SVerticalBox;
+  * a Transform key that only scales shows Scale X and Y, not its whole Transform.
+  *
+  * One key: a row per value, name and box. Several keys (a track picked - every key of it - or several keys picked): a table
+- * per track, a row per key and a column per value any of them alters, a box only where that key alters it. Show All Values
+- * puts every value in, the ones a key doesn't alter dimmed.
++ * per track, a row per key and a column per value. Keys picked list every value they hold, the ones a key doesn't alter dimmed.
++ * A track picked lists only the values its keys alter, a box only where that key alters it - unless Show All Values, which only
++ * a track's list offers, puts every value in, dimmed as a key's are.
+  *
+  * Every box is the track's own number, read live: typed in - plain numbers or math ("+8", "*2", "x * 2 + 1", see
+  * WidgetAnimKeyValues::Evaluate) - or dragged. Ctrl+click picks several boxes (Shift+click a run down a column): typing into
+@@ -25,9 +26,14 @@ class SWidgetAnimKeyValues : public SCompoundWidget
+ {
+ public:
+ 
+-	SLATE_BEGIN_ARGS(SWidgetAnimKeyValues) {}
++	SLATE_BEGIN_ARGS(SWidgetAnimKeyValues)
++		: _ForTracks(false)
++	{}
+ 		/** The keys to list, as the Track Editor counts them. Several tracks' are listed track by track, in the order given. */
+ 		SLATE_ARGUMENT(TArray<SWidgetAnimTimeline::FKeyRef>, Keys)
++
++		/** Listed for tracks picked - all their keys - rather than keys picked: only the values altered, and Show All Values. */
++		SLATE_ARGUMENT(bool, ForTracks)
+ 	SLATE_END_ARGS()
+ 
+ 	void Construct(const FArguments& InArgs, TWeakPtr<SWidgetAnimTimeline> InPanel);
+@@ -68,4 +74,7 @@ private:
+ 	TArray<FTrackPart> Parts;
+ 	TArray<TArray<TSharedPtr<FRowItem>>> PartRows;
+ 	int32 NumTracksLeftOut = 0;
++
++	/** Every value the keys hold is listed, not only those altered: keys picked, or a track's with Show All Values. */
++	bool bListAll = false;
+ };
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+index 459b6af..c42f9b1 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimStateMachineEditor.cpp
+@@ -773,7 +773,6 @@ public:
+ 		{
+ 			return;
+ 		}
+-		bRunning = false;
+ 
+ 		const TSharedPtr<FActiveTimerHandle> Handle = TimerHandle.Pin();
+ 		const TSharedPtr<SWidget> Widget = TimerWidget.Pin();
+@@ -781,6 +780,17 @@ public:
+ 		{
+ 			Widget->UnRegisterActiveTimer(Handle.ToSharedRef());
+ 		}
++		Release();
++	}
++
++	/** Everything Stop does but take its timer off - from inside the timer, which ends itself. */
++	void Release()
++	{
++		if (!bRunning)
++		{
++			return;
++		}
++		bRunning = false;
+ 		TimerHandle.Reset();
+ 		TimerWidget.Reset();
+ 
+@@ -869,6 +879,16 @@ private:
+ 		{
+ 			return EActiveTimerReturnType::Stop;
+ 		}
++
++		// The Widget Animations panel on screen poses this preview: the machine stands down - its widgets put back, the panel
++		// asked to pose them again - and starts over once the editor sees the panel gone (see UpdatePreviews).
++		if (WidgetAnimPanelPosing::IsPosing(Root.Get()))
++		{
++			const TWeakObjectPtr<UUserWidget> Yielded = Root;
++			Release();
++			WidgetAnimPanelPosing::RequestRepose(Yielded.Get());
++			return EActiveTimerReturnType::Stop;
++		}
+ 		Tick(bPaused ? 0.f : InDeltaTime);
+ 		return EActiveTimerReturnType::Continue;
+ 	}
+@@ -3293,7 +3313,7 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
+ 				[
+ 					SNew(SWidgetAnimMachineAnimationRow, TimelineAnimation)
+ 					.Name(TimelineName)
+-					.Icon(FNameTBDStyle::FindIcon(WidgetAnimDopeSheet::IsDopeSheet(TimelineAnimation) ? FNameTBDStyle::DopeSheetIcon : FNameTBDStyle::TimelineIcon))
++					.Icon(FNameTBDStyle::FindIcon(WidgetAnimDopeSheet::IsDopeSheet(TimelineAnimation) ? FNameTBDStyle::DopeSheetIcon : FNameTBDStyle::TrackSheetIcon))
+ 					.OnDoubleClicked([this, WeakAnimation, TimelineName]()
+ 					{
+ 						if (UWidgetAnimPresetAsset* Played = WeakAnimation.Get())
+@@ -5957,6 +5977,18 @@ void SWidgetAnimStateMachineEditor::UpdatePreviews()
+ 		}
+ 	}
+ 
++	// The Widget Animations panel on screen poses the designer's preview: the machine stands down until it is closed - both
++	// writing the same widgets every frame showed neither (see WidgetAnimPanelPosing).
++	if (WidgetAnimPanelPosing::IsPosing(PreviewRoot.Get()))
++	{
++		if ((PreviewHost.IsValid() && PreviewHost->IsRunning()) || PreviewComponents.Num() > 0)
++		{
++			StopPreviews();
++			WidgetAnimPanelPosing::RequestRepose(PreviewRoot.Get());
++		}
++		return;
++	}
++
+ 	const uint32 Signature = MakePreviewSignature();
+ 	const bool bRestart = !PreviewSignature.IsSet() || Signature != PreviewSignature.GetValue();
+ 	PreviewSignature = Signature;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index f912987..c561376 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -505,6 +505,57 @@ namespace WidgetAnimTimeline
+ 		return Column;
+ 	}
+ 
++	/**
++	 * Where a key at X (local units) is centered: on the middle of the line LineThickness wide a playhead, or a start or end
++	 * marker, draws there (SnapColumn, from X + 0.5) - so a line through a key runs exactly through its middle. Placed on X
++	 * itself, a key sat up to a pixel to one side of the line on it.
++	 */
++	float KeyCenterX(const FGeometry& Geometry, float X, float LineThickness)
++	{
++		const FPixelColumn Column = SnapColumn(Geometry, X + 0.5f, FMath::Max(LineThickness, 1.f), 0.f);
++		return Column.LineLeft + Column.LineWidth * 0.5f;
++	}
++
++	/**
++	 * A key's diamond - a square of Side turned 45 degrees - centered on Center (local units), drawn from its four points rather
++	 * than as a turned box: its reach either way a whole number of physical pixels, its middle on a pixel's middle up and down
++	 * and where Center.X puts it across (KeyCenterX). Turned boxes centered between pixels came out a pixel heavier on one side,
++	 * and an outline a pixel or two bigger than its fill showed on some sides and not others. Laid one over another, each a
++	 * whole pixel further out, diamonds stay concentric: an outline is even all round, a ring the same width on every side.
++	 */
++	void MakeKeyDiamond(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& Geometry, const FVector2f& Center, float Side, const FLinearColor& Color)
++	{
++		const float Scale = PixelScale(Geometry);
++		const FVector2f Origin = Geometry.GetAccumulatedLayoutTransform().GetTranslation();
++		const float ReachPixels = FMath::Max(1.f, FMath::RoundToFloat(Side * UE_INV_SQRT_2 * Scale));
++		// Across: on the half pixel nearest where it is put - a pixel's middle, or between two for a line an even number wide.
++		const float CenterXPixel = FMath::RoundToFloat((Origin.X + Center.X * Scale) * 2.f) * 0.5f;
++		const float CenterYPixel = FMath::FloorToFloat(Origin.Y + Center.Y * Scale) + 0.5f;
++		auto ToLocal = [&](float XPixel, float YPixel) { return FVector2f((XPixel - Origin.X) / Scale, (YPixel - Origin.Y) / Scale); };
++
++		const FSlateResourceHandle Handle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(*WhiteBrush());
++		const FSlateRenderTransform& Transform = Geometry.GetAccumulatedRenderTransform();
++		const FColor VertexColor = Color.ToFColor(/*bSRGB=*/true);
++		TArray<FSlateVertex> Vertices;
++		Vertices.Reserve(4);
++		for (const FVector2f& Point : {
++			ToLocal(CenterXPixel, CenterYPixel - ReachPixels),
++			ToLocal(CenterXPixel + ReachPixels, CenterYPixel),
++			ToLocal(CenterXPixel, CenterYPixel + ReachPixels),
++			ToLocal(CenterXPixel - ReachPixels, CenterYPixel) })
++		{
++			Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(Transform, Point, FVector2f(0.5f, 0.5f), VertexColor));
++		}
++		TArray<SlateIndex> Indices = { 0, 1, 2, 0, 2, 3 };
++		FSlateDrawElement::MakeCustomVerts(OutDrawElements, LayerId, Handle, Vertices, Indices, nullptr, 0, 0);
++	}
++
++	/** The side of a diamond Pixels physical pixels further out all round than one of Side - an outline, a ring. */
++	float GrowDiamond(const FGeometry& Geometry, float Side, float Pixels)
++	{
++		return Side + Pixels * UE_SQRT_2 / PixelScale(Geometry);
++	}
++
+ 	/** X, in local units, moved onto the nearest whole physical pixel. */
+ 	float SnapX(const FGeometry& Geometry, float X)
+ 	{
+@@ -556,6 +607,42 @@ namespace WidgetAnimTimeline
+ 		return nullptr;
+ 	}
+ 
++	/**
++	 * A cue track's icon: an Event track's the editor's own event icon - the one on a Blueprint's event nodes - a Sound track's a
++	 * sound's, and a Particles track's a Niagara system's. Under whichever name this engine version has it; null if it has none,
++	 * or Layer is no cue.
++	 */
++	const FSlateBrush* GetCueTrackIcon(const FWidgetAnimLayer& Layer)
++	{
++		if (Layer.AnimType != EWidgetAnimType::Custom)
++		{
++			return nullptr;
++		}
++		static const FSlateBrush* EventIcon = PickBrush({ "GraphEditor.Event_16x", "Graph.Event_16x", "Icons.Event", "GraphEditor.CustomEvent_16x" });
++		static const FSlateBrush* SoundIcon = PickBrush({ "ClassIcon.SoundWave", "ClassIcon.SoundCue", "ClassIcon.SoundBase", "Icons.Audio" });
++		// A Particles track (NameTBDNiagara's FWidgetAnimParticleCueParams, which this module doesn't link to) by its settings'
++		// name. Its icon is Niagara's own, kept in Niagara's editor style rather than the editor's - looked up until found, as
++		// that style registers when Niagara's editor module loads.
++		const UScriptStruct* CueParams = Layer.TypeParams.GetScriptStruct();
++		const bool bParticles = CueParams && CueParams->GetFName() == FName(TEXT("WidgetAnimParticleCueParams"));
++		static const FSlateBrush* ParticlesIcon = nullptr;
++		if (bParticles && !ParticlesIcon)
++		{
++			static const FName NiagaraIconName(TEXT("ClassIcon.NiagaraSystem"));
++			const FSlateIcon NiagaraIcon = FSlateIconFinder::FindIcon(NiagaraIconName);
++			const ISlateStyle* NiagaraStyle = NiagaraIcon.GetStyleSet();
++			ParticlesIcon = NiagaraStyle ? NiagaraStyle->GetOptionalBrush(NiagaraIconName, nullptr, nullptr) : nullptr;
++			if (!ParticlesIcon)
++			{
++				ParticlesIcon = PickBrush({ "ClassIcon.ParticleSystem", "ClassIcon.ParticleSystemComponent", "ClassIcon.Emitter" });
++			}
++		}
++		return Layer.TypeParams.GetPtr<FWidgetAnimEventCueParams>() ? EventIcon
++			: Layer.TypeParams.GetPtr<FWidgetAnimSoundCueParams>() ? SoundIcon
++			: bParticles ? ParticlesIcon
++			: nullptr;
++	}
++
+ 	/**
+ 	 * An animation timeline's icon, wherever one is named: the plugin's own (FNameTBDStyle::TimelineIcon) - else the editor's
+ 	 * Blueprint Timeline icon, or a sequence's, should its file be missing.
+@@ -577,6 +664,20 @@ namespace WidgetAnimTimeline
+ 		return Own ? Own : TimelineIcon();
+ 	}
+ 
++	/** A Track Sheet timeline's icon (FNameTBDStyle::TrackSheetIcon) - the timeline's should its file be missing. */
++	const FSlateBrush* TrackSheetIcon()
++	{
++		const FSlateBrush* Own = FNameTBDStyle::FindIcon(FNameTBDStyle::TrackSheetIcon);
++		return Own ? Own : TimelineIcon();
++	}
++
++	/** The icon a timeline is named with: its kind's - a Dope Sheet's or a Track Sheet's. */
++	FName TimelineKindIconName(bool bDopeSheet)
++	{
++		const FName Wanted = bDopeSheet ? FNameTBDStyle::DopeSheetIcon : FNameTBDStyle::TrackSheetIcon;
++		return FNameTBDStyle::FindIcon(Wanted) ? Wanted : FNameTBDStyle::TimelineIcon;
++	}
++
+ 	/** A Widget Animation asset's icon, as the Content Browser shows it. */
+ 	const FSlateBrush* AnimationAssetIcon()
+ 	{
+@@ -1506,6 +1607,22 @@ private:
+ 		return ViewMin + X / FMath::Max(Width, 1.f) * (ViewMax - ViewMin);
+ 	}
+ 
++	/**
++	 * Where the playhead goes for a scrub by hand at X: there - or, on a Dope Sheet, onto a key within a few pixels of it (see
++	 * SWidgetAnimTimeline::SnapScrubToKeys).
++	 */
++	float ScrubSecondsAt(float X, float Width) const
++	{
++		const float Seconds = XToTime(X, Width);
++		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
++		if (!Owner)
++		{
++			return Seconds;
++		}
++		const float SecondsPerPixel = (ViewMax - ViewMin) / FMath::Max(Width, 1.f);
++		return Owner->SnapScrubToKeys(Seconds, SWidgetAnimTimeline::ScrubKeySnapPixels * SecondsPerPixel);
++	}
++
+ 	/** The snap distance in seconds at the current zoom - 0 with Track Snapping off. */
+ 	float GetSnapThresholdSeconds(float Width) const
+ 	{
+@@ -2332,21 +2449,18 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			Color);
+ 	};
+ 
++	// A key's diamond, centered on the line through it (see KeyCenterX and MakeKeyDiamond): the start or end marker's, for a key
++	// on one - they are thicker - else the line a playhead on it would draw. Where the markers are is set once they are known.
++	float KeyRangeStartX = -TNumericLimits<float>::Max();
++	float KeyRangeEndX = -TNumericLimits<float>::Max();
+ 	auto Diamond = [&](float X, float Y, float DiamondSize, const FLinearColor& Color, int32 Layer)
+ 	{
+-		const float Half = DiamondSize * 0.5f;
+-		FSlateDrawElement::MakeBox(
+-			OutDrawElements,
+-			Layer,
+-			AllottedGeometry.ToPaintGeometry(
+-				FVector2f(DiamondSize, DiamondSize),
+-				FSlateLayoutTransform(FVector2f(X - Half, Y - Half)),
+-				FSlateRenderTransform(FQuat2f(FMath::DegreesToRadians(45.f))),
+-				FVector2f(0.5f, 0.5f)),
+-			Flat,
+-			ESlateDrawEffect::None,
+-			Color);
++		const UWidgetAnimEditorSettings& KeyLook = UWidgetAnimEditorSettings::Get();
++		const bool bOnMarker = FMath::Abs(X - KeyRangeStartX) < 0.5f || FMath::Abs(X - KeyRangeEndX) < 0.5f;
++		const float CenterX = WidgetAnimTimeline::KeyCenterX(AllottedGeometry, X, bOnMarker ? KeyLook.RangeLineThickness : KeyLook.PlayheadLineThickness);
++		WidgetAnimTimeline::MakeKeyDiamond(OutDrawElements, Layer, AllottedGeometry, FVector2f(CenterX, Y), DiamondSize, Color);
+ 	};
++	auto Grown = [&](float DiamondSize, float Pixels) { return WidgetAnimTimeline::GrowDiamond(AllottedGeometry, DiamondSize, Pixels); };
+ 
+ 	const TSharedRef<FSlateFontMeasure> Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+ 	auto MeasureText = [&Measure](const FString& String, const FSlateFontInfo& Font) { return FVector2f(Measure->Measure(String, Font)); };
+@@ -2400,6 +2514,8 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 
+ 	const float StartX = TimeToX(0.f, Size.X);
+ 	const float EndX = TimeToX(PassSeconds, Size.X);
++	KeyRangeStartX = StartX;
++	KeyRangeEndX = EndX;
+ 	const float RowsBottom = FMath::Min(GetLineTop(Lines.Num()), Size.Y);
+ 
+ 	// Section text is the graph node title's - the macro node's - read from the editor's own style rather than
+@@ -2929,34 +3045,10 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 			}
+ 		}
+ 
+-		// An Event track's name follows the editor's own event icon - the one on a Blueprint's event nodes - a Sound track's a
+-		// sound's, and a Particles track's a Niagara system's. Under whichever name this engine version has it; none drawn if
+-		// it has none.
++		// A cue track's name follows its icon (GetCueTrackIcon). A Dope Sheet's cue keys wear it inside them instead - see below.
+ 		if (Layer && !bLane && Layer->AnimType == EWidgetAnimType::Custom)
+ 		{
+-			static const FSlateBrush* EventIcon = PickBrush({ "GraphEditor.Event_16x", "Graph.Event_16x", "Icons.Event", "GraphEditor.CustomEvent_16x" });
+-			static const FSlateBrush* SoundIcon = PickBrush({ "ClassIcon.SoundWave", "ClassIcon.SoundCue", "ClassIcon.SoundBase", "Icons.Audio" });
+-			// A Particles track (NameTBDNiagara's FWidgetAnimParticleCueParams, which this module doesn't link to) by its
+-			// settings' name. Its icon is Niagara's own, kept in Niagara's editor style rather than the editor's - looked up
+-			// until found, as that style registers when Niagara's editor module loads.
+-			const UScriptStruct* CueParams = Layer->TypeParams.GetScriptStruct();
+-			const bool bParticles = CueParams && CueParams->GetFName() == FName(TEXT("WidgetAnimParticleCueParams"));
+-			static const FSlateBrush* ParticlesIcon = nullptr;
+-			if (bParticles && !ParticlesIcon)
+-			{
+-				static const FName NiagaraIconName(TEXT("ClassIcon.NiagaraSystem"));
+-				const FSlateIcon NiagaraIcon = FSlateIconFinder::FindIcon(NiagaraIconName);
+-				const ISlateStyle* NiagaraStyle = NiagaraIcon.GetStyleSet();
+-				ParticlesIcon = NiagaraStyle ? NiagaraStyle->GetOptionalBrush(NiagaraIconName, nullptr, nullptr) : nullptr;
+-				if (!ParticlesIcon)
+-				{
+-					ParticlesIcon = PickBrush({ "ClassIcon.ParticleSystem", "ClassIcon.ParticleSystemComponent", "ClassIcon.Emitter" });
+-				}
+-			}
+-			const FSlateBrush* CueIcon = Layer->TypeParams.GetPtr<FWidgetAnimEventCueParams>() ? EventIcon
+-				: Layer->TypeParams.GetPtr<FWidgetAnimSoundCueParams>() ? SoundIcon
+-				: bParticles ? ParticlesIcon
+-				: nullptr;
++			const FSlateBrush* CueIcon = WidgetAnimTimeline::GetCueTrackIcon(*Layer);
+ 			const UWidgetAnimEditorSettings& Look = UWidgetAnimEditorSettings::Get();
+ 			const float IconSizing = FMath::Min(Look.CueTrackIconSize, InnerHeight);
+ 			// A little in from the section's rounded end, so the icon doesn't crowd it.
+@@ -3133,6 +3225,11 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 		const FLinearColor DopeOutline = TypeLuminance < Palette::DopeKeyDarkLuminance ? Palette::DopeKeyLightOutline : Palette::KeyOutline;
+ 		float LastDrawnX = -TNumericLimits<float>::Max();
+ 
++		// A Dope Sheet's cue keys wear their cue's icon; a Sound key shows how long its sound plays (see the keys below).
++		const FSlateBrush* DopeCueIcon = bLane && bCue ? WidgetAnimTimeline::GetCueTrackIcon(*Layer) : nullptr;
++		const FWidgetAnimSoundCueParams* DopeSound = bLane && bCue ? Layer->TypeParams.GetPtr<FWidgetAnimSoundCueParams>() : nullptr;
++		const float DopeSoundSeconds = DopeSound ? FWidgetAnimSoundCueEvaluator::GetSoundLength(*DopeSound) : -1.f;
++
+ 		for (int32 Key = 0; Key < KeyTimes.Num(); ++Key)
+ 		{
+ 			const float X = TimeToX(Span.X + KeyTimes[Key], Size.X);
+@@ -3166,10 +3263,44 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 				Fill.A = bSilentCueKey && !bSelected ? Palette::CueSilentKeyOpacity : 1.f;
+ 				if (bSelected)
+ 				{
+-					Diamond(X, KeyY, DopeKeySize * DopeScale + 6.f, Palette::KeySelectedGlow, KeyGlowLayer);
++					Diamond(X, KeyY, Grown(DopeKeySize * DopeScale, 3.f), Palette::KeySelectedGlow, KeyGlowLayer);
+ 				}
+-				Diamond(X, KeyY, DopeKeySize * DopeScale + 2.5f, bSelected ? Palette::KeySelected : DopeOutline, KeyOutlineLayer);
++				Diamond(X, KeyY, Grown(DopeKeySize * DopeScale, 1.f), bSelected ? Palette::KeySelected : DopeOutline, KeyOutlineLayer);
+ 				Diamond(X, KeyY, DopeKeySize * DopeScale, Fill, KeyFillLayer);
++
++				// Where its middle is drawn, for what goes in or over it.
++				const UWidgetAnimEditorSettings& KeyLook = UWidgetAnimEditorSettings::Get();
++				const bool bOnMarker = FMath::Abs(X - KeyRangeStartX) < 0.5f || FMath::Abs(X - KeyRangeEndX) < 0.5f;
++				const float KeyMiddleX = WidgetAnimTimeline::KeyCenterX(AllottedGeometry, X, bOnMarker ? KeyLook.RangeLineThickness : KeyLook.PlayheadLineThickness);
++				const float KeyReach = DopeKeySize * DopeScale * UE_INV_SQRT_2;
++
++				// A Sound key: how long its sound plays, a bar from the key's middle to where it stops - under the key.
++				if (DopeSoundSeconds > 0.f && !bSilentCueKey)
++				{
++					const float SoundEndX = TimeToX(Span.X + KeyTimes[Key] + DopeSoundSeconds, Size.X);
++					const float SoundBarTop = WidgetAnimTimeline::SnapY(AllottedGeometry, KeyY - Palette::DopeSoundBarHeight * 0.5f);
++					if (SoundEndX > KeyMiddleX)
++					{
++						Box(KeyMiddleX, SoundBarTop, SoundEndX - KeyMiddleX, Palette::DopeSoundBarHeight, WithAlpha(Fill, Fill.A * Palette::DopeSoundBarOpacity), SectionOverlayLayer);
++						Box(SoundEndX - Palette::DopeSoundBarCapWidth, SoundBarTop - 2.f, Palette::DopeSoundBarCapWidth, Palette::DopeSoundBarHeight + 4.f, Fill, SectionOverlayLayer);
++					}
++				}
++
++				// A cue key: the cue's icon inside it - an event's, a sound's, a particle system's.
++				if (DopeCueIcon)
++				{
++					const float CueIconSize = FMath::RoundToFloat(DopeKeySize * DopeScale * Palette::DopeKeyIconScale);
++					const FLinearColor CueIconTint = Fill.GetLuminance() > 0.45f ? Palette::DopeKeyIconDark : Palette::DopeKeyIconLight;
++					Box(KeyMiddleX - CueIconSize * 0.5f, KeyY - CueIconSize * 0.5f, CueIconSize, CueIconSize, WithAlpha(CueIconTint, CueIconTint.A * Fill.A), LabelLayer, DopeCueIcon);
++				}
++
++				// A hidden row: its eye over each key, so a key that plays nothing reads as hidden where it is.
++				if (Paint.bHidden && HiddenBrush)
++				{
++					const float HiddenGlyphSize = Palette::DopeKeyHiddenGlyphSize;
++					const float HiddenGlyphTop = FMath::Max(KeyY - KeyReach - HiddenGlyphSize - 1.f, InnerTop - HiddenGlyphSize * 0.5f);
++					Box(KeyMiddleX - HiddenGlyphSize * 0.5f, HiddenGlyphTop, HiddenGlyphSize, HiddenGlyphSize, Palette::DopeKeyHiddenGlyph, LabelLayer, HiddenBrush);
++				}
+ 				continue;
+ 			}
+ 
+@@ -3194,9 +3325,9 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 
+ 			if (bSelected)
+ 			{
+-				Diamond(X, KeyY, KeyDiamond * Scale + 5.f, Palette::KeySelectedGlow, KeyGlowLayer);
++				Diamond(X, KeyY, Grown(KeyDiamond * Scale, 3.f), Palette::KeySelectedGlow, KeyGlowLayer);
+ 			}
+-			Diamond(X, KeyY, KeyDiamond * Scale + 2.f, Palette::KeyOutline, KeyOutlineLayer);
++			Diamond(X, KeyY, Grown(KeyDiamond * Scale, 1.f), Palette::KeyOutline, KeyOutlineLayer);
+ 			Diamond(X, KeyY, KeyDiamond * Scale, Color, KeyFillLayer);
+ 		}
+ 	};
+@@ -3370,21 +3501,21 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 				// The stretch the group is moving, as a parent row summarizes its children in Sequencer: a quiet band in its
+ 				// (muted) color, edged above and below with a hairline of it, and closed at each end with a firmer cap - so
+ 				// where the group starts and stops reads at a glance, and the keys over it stand out.
+-				const float X0 = TimeToX(GroupSpan.X, Size.X);
+-				const float X1 = TimeToX(GroupSpan.Y, Size.X);
++				// A Dope Sheet's Key Group: from its first key to its last - its rows' hidden points (a single key's, a hair before
++				// it) aren't keys, and draw nothing.
++				const FVector2f KeySpan = Owner->IsDopeSheet() ? Owner->GetGroupKeySpan(Line.Group) : GroupSpan;
++				const FVector2f BandSpan = KeySpan.Y >= KeySpan.X ? KeySpan : GroupSpan;
++				const float X0 = TimeToX(BandSpan.X, Size.X);
++				const float X1 = TimeToX(BandSpan.Y, Size.X);
+ 				const float BandWidth = FMath::Max(X1 - X0, 4.f);
+ 				const float BandHeight = FMath::Clamp(RowHeight * Palette::GroupBandHeightRatio, 8.f, 14.f);
+ 				const float BandTop = FMath::RoundToFloat(CenterY - BandHeight * 0.5f);
+ 				const FLinearColor BandColor = bReadOnly ? SWidgetAnimTimeline::GetLockedColor(GroupColor) : GroupColor;
+-				// A Dope Sheet has no lengths to show: its group's line is only its keys.
+-				if (!Owner->IsDopeSheet())
+-				{
+-					Box(X0, BandTop, BandWidth, BandHeight, WithAlpha(BandColor, Palette::GroupBandFillOpacity), FrameLayer, RoundedFill(2.f));
+-					Box(X0 + 1.f, BandTop, BandWidth - 2.f, 1.f, WithAlpha(BandColor, Palette::GroupBandEdgeOpacity), BodyLayer);
+-					Box(X0 + 1.f, BandTop + BandHeight - 1.f, BandWidth - 2.f, 1.f, WithAlpha(BandColor, Palette::GroupBandEdgeOpacity), BodyLayer);
+-					Box(X0, BandTop, Palette::GroupBandCapWidth, BandHeight, BandColor, BodyLayer, RoundedFill(2.f));
+-					Box(X0 + BandWidth - Palette::GroupBandCapWidth, BandTop, Palette::GroupBandCapWidth, BandHeight, BandColor, BodyLayer, RoundedFill(2.f));
+-				}
++				Box(X0, BandTop, BandWidth, BandHeight, WithAlpha(BandColor, Palette::GroupBandFillOpacity), FrameLayer, RoundedFill(2.f));
++				Box(X0 + 1.f, BandTop, BandWidth - 2.f, 1.f, WithAlpha(BandColor, Palette::GroupBandEdgeOpacity), BodyLayer);
++				Box(X0 + 1.f, BandTop + BandHeight - 1.f, BandWidth - 2.f, 1.f, WithAlpha(BandColor, Palette::GroupBandEdgeOpacity), BodyLayer);
++				Box(X0, BandTop, Palette::GroupBandCapWidth, BandHeight, BandColor, BodyLayer, RoundedFill(2.f));
++				Box(X0 + BandWidth - Palette::GroupBandCapWidth, BandTop, Palette::GroupBandCapWidth, BandHeight, BandColor, BodyLayer, RoundedFill(2.f));
+ 
+ 				// Every key of the group's layers shown here, light and dark-outlined so they read on any group color. Only
+ 				// the group's own layers, as this frame's layout has them - not every layer asked whether it is the group's.
+@@ -3418,7 +3549,7 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
+ 					for (const float KeyTime : KeyTimes)
+ 					{
+ 						const float X = TimeToX(Spans[LayerIndex].X + KeyTime, Size.X);
+-						Diamond(X, CenterY, SummaryDiamond + 2.f, Palette::KeySummaryOutline, KeyOutlineLayer);
++						Diamond(X, CenterY, Grown(SummaryDiamond, 1.f), Palette::KeySummaryOutline, KeyOutlineLayer);
+ 						Diamond(X, CenterY, SummaryDiamond, Palette::KeySummary, KeyFillLayer);
+ 					}
+ 				}
+@@ -3845,7 +3976,7 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonDown(const FGeometry& MyGeometry,
+ 		}
+ 
+ 		Drag = EDrag::Scrub;
+-		Owner->ScrubToSeconds(XToTime(Local.X, Width));
++		Owner->ScrubToSeconds(ScrubSecondsAt(Local.X, Width));
+ 		return Reply;
+ 	}
+ 
+@@ -4076,7 +4207,7 @@ void SWidgetAnimTimelineTracks::ApplyDragAt(const FVector2f& Local, float Width)
+ 	switch (Drag)
+ 	{
+ 	case EDrag::Scrub:
+-		Owner->ScrubToSeconds(XToTime(Local.X, Width));
++		Owner->ScrubToSeconds(ScrubSecondsAt(Local.X, Width));
+ 		break;
+ 
+ 	case EDrag::Key:
+@@ -4181,7 +4312,7 @@ FReply SWidgetAnimTimelineTracks::OnMouseMove(const FGeometry& MyGeometry, const
+ 			else
+ 			{
+ 				Drag = EDrag::Scrub;
+-				Owner->ScrubToSeconds(XToTime(Local.X, Width));
++				Owner->ScrubToSeconds(ScrubSecondsAt(Local.X, Width));
+ 			}
+ 		}
+ 		break;
+@@ -4293,7 +4424,7 @@ FReply SWidgetAnimTimelineTracks::OnMouseButtonUp(const FGeometry& MyGeometry, c
+ 	// The animation's start or end pressed and let go in place: a click on the ruler, which scrubs there.
+ 	if (Owner && Ended == EDrag::RangePending)
+ 	{
+-		Owner->ScrubToSeconds(XToTime(MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()).X, MyGeometry.GetLocalSize().X));
++		Owner->ScrubToSeconds(ScrubSecondsAt(MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()).X, MyGeometry.GetLocalSize().X));
+ 	}
+ 
+ 	// Pressed on one of several selected layers and let go without dragging: a click, which selects it alone - or, on a
+@@ -4885,8 +5016,11 @@ namespace WidgetAnimTimeline
+ 			];
+ 	}
+ 
+-	/** Key Values: these keys' values - those each one changes - as one row of the category. See SWidgetAnimKeyValues. */
+-	inline void AddKeyValuesRow(IDetailCategoryBuilder& Category, const TWeakPtr<SWidgetAnimTimeline>& WeakOwner, const TArray<SWidgetAnimTimeline::FKeyRef>& Keys)
++	/**
++	 * Key Values: these keys' values as one row of the category - every value each holds, or with bForTracks (a track's keys,
++	 * listed for the track) those each one changes, with Show All Values. See SWidgetAnimKeyValues.
++	 */
++	inline void AddKeyValuesRow(IDetailCategoryBuilder& Category, const TWeakPtr<SWidgetAnimTimeline>& WeakOwner, const TArray<SWidgetAnimTimeline::FKeyRef>& Keys, bool bForTracks = false)
+ 	{
+ 		const TSharedPtr<SWidgetAnimTimeline> Owner = WeakOwner.Pin();
+ 		if (!Owner || Keys.Num() == 0)
+@@ -4899,7 +5033,7 @@ namespace WidgetAnimTimeline
+ 				SNew(SBox)
+ 				.Padding(FMargin(0.f, 4.f))
+ 				[
+-					Owner->MakeKeyValues(Keys)
++					Owner->MakeKeyValues(Keys, bForTracks)
+ 				]
+ 			];
+ 	}
+@@ -5064,9 +5198,9 @@ public:
+ 
+ private:
+ 
+-	void AddKeyValuesRow(IDetailCategoryBuilder& Category, const TArray<SWidgetAnimTimeline::FKeyRef>& Keys)
++	void AddKeyValuesRow(IDetailCategoryBuilder& Category, const TArray<SWidgetAnimTimeline::FKeyRef>& Keys, bool bForTracks = false)
+ 	{
+-		WidgetAnimTimeline::AddKeyValuesRow(Category, Panel, Keys);
++		WidgetAnimTimeline::AddKeyValuesRow(Category, Panel, Keys, bForTracks);
+ 	}
+ 
+ 	/**
+@@ -5875,14 +6009,14 @@ private:
+ 		}
+ 
+ 		// Keys: every key of the track with only the values it changes - Key 2 its scale, Key 3 its angle - to edit many at
+-		// once (Ctrl+click boxes, type +8). See SWidgetAnimKeyValues.
++		// once, or all of them with Show All Values. See SWidgetAnimKeyValues.
+ 		if (Owner && CurrentLayer && !CurrentLayer->IsAnimationTrack() && WidgetAnimKeyValues::GetNumKeys(*CurrentLayer) >= 2)
+ 		{
+ 			const TArray<SWidgetAnimTimeline::FKeyRef> Keys = WidgetAnimTimeline::GetAllKeys(*Owner, { LayerIndex });
+ 			if (Keys.Num() > 0)
+ 			{
+ 				IDetailCategoryBuilder& KeysCategory = DetailBuilder.EditCategory("WidgetAnimSelection_Keys", LOCTEXT("TrackKeysCategory", "Keys"));
+-				AddKeyValuesRow(KeysCategory, Keys);
++				AddKeyValuesRow(KeysCategory, Keys, /*bForTracks=*/true);
+ 			}
+ 		}
+ 	}
+@@ -6441,7 +6575,7 @@ private:
+ 		IDetailCategoryBuilder& Category = DetailBuilder.EditCategory("WidgetAnimSelection_Key", LOCTEXT("KeyCategory", "Key"));
+ 		const FName CurveName = GET_MEMBER_NAME_CHECKED(FWidgetTransformKeyframe, CurveToNext);
+ 
+-		// First, the values this key changes - a key that only scales shows Scale X and Y - to type or drag. See SWidgetAnimKeyValues.
++		// First, every value this key holds - those it doesn't change dimmed - to type or drag. See SWidgetAnimKeyValues.
+ 		AddKeyValuesRow(Category, { SWidgetAnimTimeline::FKeyRef{ LayerIndex, KeyIndex } });
+ 
+ 		// A Shape track's key: its shape's fields only when they apply - a shape it targets, or a kind picked for the widget
+@@ -7472,7 +7606,7 @@ private:
+ 				})
+ 			];
+ 
+-		// Under its time, the values it changes - its opacity, its scale's X and Y, its color's channels - to type or drag, as
++		// Under its time, every value it holds - its opacity, its scale's X and Y, its color's channels - to type or drag, as
+ 		// every key's. See SWidgetAnimKeyValues. What isn't a number stays as it was: a Slide's direction, a color's picker
+ 		// (folded away), a registered type's own settings (which hold its start and end values).
+ 		AddKeyValuesRow(Category, { SWidgetAnimTimeline::FKeyRef{ LayerIndex, KeyIndex } });
+@@ -7692,7 +7826,7 @@ public:
+ 			if (Keys.Num() > 0)
+ 			{
+ 				IDetailCategoryBuilder& KeysCategory = DetailBuilder.EditCategory("WidgetAnimSelection_Keys", LOCTEXT("TrackKeysCategory", "Keys"));
+-				WidgetAnimTimeline::AddKeyValuesRow(KeysCategory, Panel, Keys);
++				WidgetAnimTimeline::AddKeyValuesRow(KeysCategory, Panel, Keys, /*bForTracks=*/true);
+ 			}
+ 		}
+ 
+@@ -9850,7 +9984,8 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeHeader()
+ 			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+ 			.BorderBackgroundColor(FStyleColors::Input)
+ 			.Padding(FMargin(6.f, 2.f))
+-			.Visibility_Lambda([this, IsEditingExisting]() { return Source.IsValid() && Source->IsBuilder() && !IsEditingExisting() ? EVisibility::Visible : EVisibility::Collapsed; })
++			// Not where the builder keeps timelines: its working copy is one of them, named in the timeline picker.
++			.Visibility_Lambda([this, IsEditingExisting]() { return Source.IsValid() && Source->IsBuilder() && !Source->SupportsTimelines() && !IsEditingExisting() ? EVisibility::Visible : EVisibility::Collapsed; })
+ 			.ToolTip(WidgetAnimTimeline::MakePanelToolTip(WidgetAnimTips::BuilderAnimationNameTooltip()))
+ 			.OnMouseDoubleClick_Lambda([WeakBuilderNameText](const FGeometry&, const FPointerEvent& MouseEvent)
+ 			{
+@@ -12221,23 +12356,22 @@ void SWidgetAnimTimeline::FocusPreviewOnKey(int32 LayerIndex, int32 KeyIndex)
+ 		return;
+ 	}
+ 
+-	// Without staggers the source knows best - it mirrors a key for Invert, too. With one, only the panel knows how far
+-	// it reaches, so the key is found on the panel's own timeline: the layer's start plus the key's time into it.
+-	const bool bAnyFan = TrackFans.ContainsByPredicate([](float Fan) { return Fan > 0.f; });
+-	if (!bAnyFan)
+-	{
+-		Source->FocusKey(LayerIndex, KeyIndex);
+-		return;
+-	}
+-
++	// Exactly where the key is drawn - the middle of its diamond - on the panel's own timeline: the track's start plus the key's
++	// time into it, as the Track Editor places it. Asking the source to find the key instead put the playhead near it but not on
++	// it: its time worked out apart from the panel's, by the key's point on the track rather than the key as shown (a Dope Sheet's
++	// single key is two points). An inverted preview plays its keys from the other end, so the key is posed at the mirrored
++	// moment, as the source's own FocusKey poses it.
+ 	TArray<FVector2f> Spans;
+ 	GetLayerSpans(Spans);
+ 	TArray<float> KeyTimes;
+ 	GetKeyTimes(LayerIndex, KeyTimes);
+-	if (Spans.IsValidIndex(LayerIndex) && KeyTimes.IsValidIndex(KeyIndex))
++	if (!Spans.IsValidIndex(LayerIndex) || !KeyTimes.IsValidIndex(KeyIndex))
+ 	{
+-		ScrubToSeconds(Spans[LayerIndex].X + KeyTimes[KeyIndex]);
++		Source->FocusKey(LayerIndex, KeyIndex);
++		return;
+ 	}
++	const float KeySeconds = Spans[LayerIndex].X + KeyTimes[KeyIndex];
++	ScrubToSeconds(Source->GetInvert() ? GetPassSeconds() - KeySeconds : KeySeconds);
+ }
+ 
+ FVector2f SWidgetAnimTimeline::GetGroupSpan(int32 GroupIndex) const
+@@ -12722,16 +12856,29 @@ void SWidgetAnimTimeline::StepToMarker(int32 Direction)
+ 		int32 Key;
+ 	};
+ 
++	// A Dope Sheet steps from key to key, every row's - its rows' starts and ends are only where their first and last keys are
++	// (a single key's hidden point a hair before it), so they are no stops of their own.
++	const bool bKeysOnly = IsDopeSheet();
+ 	TArray<FMarker> Markers;
+-	Markers.Add({ 0.f, INDEX_NONE, INDEX_NONE });
+-	Markers.Add({ GetPassSeconds(), INDEX_NONE, INDEX_NONE });
++	if (!bKeysOnly)
++	{
++		Markers.Add({ 0.f, INDEX_NONE, INDEX_NONE });
++		Markers.Add({ GetPassSeconds(), INDEX_NONE, INDEX_NONE });
++	}
+ 
+ 	TArray<FVector2f> Spans;
+ 	GetLayerSpans(Spans);
+ 	for (int32 LayerIndex = 0; LayerIndex < Spans.Num(); ++LayerIndex)
+ 	{
+-		Markers.Add({ Spans[LayerIndex].X, INDEX_NONE, INDEX_NONE });
+-		Markers.Add({ Spans[LayerIndex].X + Spans[LayerIndex].Y, INDEX_NONE, INDEX_NONE });
++		if (bKeysOnly && !IsLayerInView(LayerIndex))
++		{
++			continue;
++		}
++		if (!bKeysOnly)
++		{
++			Markers.Add({ Spans[LayerIndex].X, INDEX_NONE, INDEX_NONE });
++			Markers.Add({ Spans[LayerIndex].X + Spans[LayerIndex].Y, INDEX_NONE, INDEX_NONE });
++		}
+ 
+ 		TArray<float> KeyTimes;
+ 		GetKeyTimes(LayerIndex, KeyTimes);
+@@ -15226,7 +15373,9 @@ public:
+ 
+ 	virtual FVector2D ComputeDesiredSize(float) const override
+ 	{
+-		return FVector2D(GlyphSize + 4.f, GlyphSize + 4.f);
++		// The diamond's points reach GlyphSize / sqrt 2 either way, its outline a pixel past them.
++		const float Across = FMath::CeilToFloat(GlyphSize * UE_SQRT_2) + 3.f;
++		return FVector2D(Across, Across);
+ 	}
+ 
+ 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+@@ -15234,29 +15383,28 @@ public:
+ 	{
+ 		using namespace WidgetAnimTimeline;
+ 
+-		const FVector2f Center = AllottedGeometry.GetLocalSize() * 0.5f;
++		// On a pixel's middle, both ways - the diamond's points then fall on whole pixels, the same either side (MakeKeyDiamond).
++		const FVector2f Center(SnapColumn(AllottedGeometry, AllottedGeometry.GetLocalSize().X * 0.5f, 1.f, 0.f).LineLeft + 0.5f / PixelScale(AllottedGeometry),
++			AllottedGeometry.GetLocalSize().Y * 0.5f);
+ 		const FLinearColor Color = GlyphColor.Get(FLinearColor::White);
+ 		auto Diamond = [&](float DiamondSize, const FLinearColor& DiamondColor, int32 Layer)
+ 		{
+-			const float Half = DiamondSize * 0.5f;
+-			FSlateDrawElement::MakeBox(OutDrawElements, Layer,
+-				AllottedGeometry.ToPaintGeometry(FVector2f(DiamondSize, DiamondSize), FSlateLayoutTransform(Center - FVector2f(Half, Half)),
+-					FSlateRenderTransform(FQuat2f(FMath::DegreesToRadians(45.f))), FVector2f(0.5f, 0.5f)),
+-				WhiteBrush(), ESlateDrawEffect::None, DiamondColor * InWidgetStyle.GetColorAndOpacityTint());
++			MakeKeyDiamond(OutDrawElements, Layer, AllottedGeometry, Center, DiamondSize, DiamondColor * InWidgetStyle.GetColorAndOpacityTint());
+ 		};
+ 
+ 		const FLinearColor Outline = Color.GetLuminance() < Palette::DopeKeyDarkLuminance ? Palette::DopeKeyLightOutline : Palette::KeyOutline;
+ 		const FLinearColor Lit = IsHovered() ? Color * Palette::DopeKeyHoverLift : Color;
+ 		if (IsFilled.Get(true))
+ 		{
+-			Diamond(GlyphSize + 2.f, Outline, LayerId);
++			// An outline one pixel wide all round, then the fill.
++			Diamond(GrowDiamond(AllottedGeometry, GlyphSize, 1.f), Outline, LayerId);
+ 			Diamond(GlyphSize, Lit, LayerId + 1);
+ 		}
+ 		else
+ 		{
+-			// Hollow: a ring of the color round a dark middle.
++			// Hollow: a ring of the color, two pixels wide all round, round a dark middle.
+ 			Diamond(GlyphSize, Lit, LayerId);
+-			Diamond(FMath::Max(GlyphSize - 3.f, 1.f), Palette::KeyOutline, LayerId + 1);
++			Diamond(GrowDiamond(AllottedGeometry, GlyphSize, -2.f), Palette::KeyOutline, LayerId + 1);
+ 		}
+ 		return LayerId + 1;
+ 	}
+@@ -17751,6 +17899,20 @@ void SWidgetAnimTimeline::AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, c
+ 				Added.Transform.SyncKeysToCurve();
+ 			}
+ 			CopyRowPoint(InsertAt, 0, 1);
++
++			// A Dope Sheet's keys say where the widget is, each of its own: none Uses Authored. Each holds the widget as it is now
++			// all the same - a transform of nothing over it, the outline of its box, the settings of its shape or its look (put
++			// in its keys as the track was made) - so a key changes nothing until it is edited, and every field is there to edit.
++			const UShapeBox* DopeBox = Added.AnimType == EWidgetAnimType::ShapeBox ? UWidgetAnimLibrary::ResolveShapeBox(Source->GetLayerPreviewWidget(InsertAt)) : nullptr;
++			for (FWidgetTransformKeyframe& Key : Added.Transform.Keys)
++			{
++				Key.bUseAuthoredShape = false;
++				Key.bUseAuthoredTransform = false;
++				if (DopeBox)
++				{
++					Key.Shape = DopeBox->GetShape();
++				}
++			}
+ 		}
+ 		else
+ 		{
+@@ -25260,9 +25422,9 @@ void SWidgetAnimTimeline::SetShowAllKeyValues(bool bShowAll)
+ 	}
+ }
+ 
+-TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyValues(const TArray<FKeyRef>& Keys)
++TSharedRef<SWidget> SWidgetAnimTimeline::MakeKeyValues(const TArray<FKeyRef>& Keys, bool bForTracks)
+ {
+-	return SNew(SWidgetAnimKeyValues, SharedThis(this)).Keys(Keys);
++	return SNew(SWidgetAnimKeyValues, SharedThis(this)).Keys(Keys).ForTracks(bForTracks);
+ }
+ 
+ // -----------------------------------------------------------------------------------------------------
+@@ -27990,7 +28152,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelinePicker()
+ 			.VAlign(VAlign_Center)
+ 			.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+ 			[
+-				MakeFixedIcon(TAttribute<const FSlateBrush*>::CreateLambda([this]() { return IsDopeSheet() ? DopeSheetIcon() : TimelineIcon(); }))
++				MakeFixedIcon(TAttribute<const FSlateBrush*>::CreateLambda([this]() { return IsDopeSheet() ? DopeSheetIcon() : TrackSheetIcon(); }))
+ 			]
+ 
+ 			+ SHorizontalBox::Slot()
+@@ -28045,7 +28207,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeNewTimelineButton(bool bDopeSheet)
+ 			.VAlign(VAlign_Center)
+ 			.Padding(FMargin(0.f, 0.f, 5.f, 0.f))
+ 			[
+-				MakeFixedIcon(bDopeSheet ? DopeSheetIcon() : TimelineIcon(), FSlateColor::UseForeground())
++				MakeFixedIcon(bDopeSheet ? DopeSheetIcon() : TrackSheetIcon(), FSlateColor::UseForeground())
+ 			]
+ 
+ 			+ SHorizontalBox::Slot()
+@@ -28054,7 +28216,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeNewTimelineButton(bool bDopeSheet)
+ 			[
+ 				SNew(STextBlock)
+ 				.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+-				.Text(bDopeSheet ? LOCTEXT("MakeFirstDopeSheet", "New Dope Sheet") : LOCTEXT("MakeFirstTimeline", "New Timeline"))
++				.Text(bDopeSheet ? LOCTEXT("MakeFirstDopeSheet", "New Dope Sheet") : LOCTEXT("MakeFirstTrackSheet", "New Track Sheet"))
+ 			]
+ 		];
+ }
+@@ -28080,10 +28242,10 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelineMenu()
+ 		const UWidgetAnimTimelinesExtension* ListedTimelines = UWidgetAnimTimelinesExtension::Find(Source->GetWidgetBlueprint());
+ 		for (const FString& Name : Names)
+ 		{
+-			// Each with what it is: a timeline of tracks, or a Dope Sheet.
++			// Each with what it is: a Track Sheet, or a Dope Sheet.
+ 			const int32 ListedIndex = ListedTimelines ? ListedTimelines->IndexOf(Name) : INDEX_NONE;
+ 			const bool bListedDope = ListedIndex != INDEX_NONE && WidgetAnimDopeSheet::IsDopeSheet(ListedTimelines->Timelines[ListedIndex].Animation.Get());
+-			const FName ListedIcon = bListedDope ? FNameTBDStyle::DopeSheetIcon : FNameTBDStyle::TimelineIcon;
++			const FName ListedIcon = TimelineKindIconName(bListedDope);
+ 			Menu.AddMenuEntry(
+ 				FText::FromString(Name),
+ 				WidgetAnimTips::OpenTimelineTooltip(),
+@@ -28106,9 +28268,9 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelineMenu()
+ 
+ 	Menu.BeginSection("Timeline", LOCTEXT("TimelineSection", "Timeline"));
+ 
+-	// A new one, named as it is made.
++	// A new Track Sheet - tracks, each from a start to an end - named as it is made.
+ 	Menu.AddSubMenu(
+-		LOCTEXT("NewTimelineEntry", "New Timeline"),
++		LOCTEXT("NewTrackSheetEntry", "New Track Sheet"),
+ 		WidgetAnimTips::NewTimelineTooltip(),
+ 		FNewMenuDelegate::CreateLambda([this](FMenuBuilder& SubMenu)
+ 		{
+@@ -28123,7 +28285,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelineMenu()
+ 				FText::GetEmpty(), /*bNoIndent=*/true);
+ 		}),
+ 		false,
+-		FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::MenuAddIcon));
++		FSlateIcon(FNameTBDStyle::GetStyleSetName(), TimelineKindIconName(/*bDopeSheet=*/false)));
+ 
+ 	// Or a Dope Sheet: keys only, as a dope sheet edits them - chosen now, for the timeline's life.
+ 	Menu.AddSubMenu(
+@@ -28142,9 +28304,7 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelineMenu()
+ 				FText::GetEmpty(), /*bNoIndent=*/true);
+ 		}),
+ 		false,
+-		FNameTBDStyle::FindIcon(FNameTBDStyle::DopeSheetIcon)
+-			? FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::DopeSheetIcon)
+-			: FSlateIcon(FNameTBDStyle::GetStyleSetName(), FNameTBDStyle::MenuAddIcon));
++		FSlateIcon(FNameTBDStyle::GetStyleSetName(), TimelineKindIconName(/*bDopeSheet=*/true)));
+ 
+ 	if (!Open.IsEmpty())
+ 	{
+@@ -28201,7 +28361,9 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeTimelineMenu()
+ 					}
+ 				}
+ 				SwitchEditedAnimation([this, &Open]() { Source->DeleteTimeline(Open); });
+-			})));
++			}),
++			// A builder's working copy is its own, and stays.
++			FCanExecuteAction::CreateLambda([this, Open]() { return Source.IsValid() && Source->CanDeleteTimeline(Open); })));
+ 	}
+ 	Menu.EndSection();
+ 
+@@ -28280,6 +28442,58 @@ int32 SWidgetAnimTimeline::FindRowKeyAt(int32 LayerIndex, float Seconds) const
+ 	return INDEX_NONE;
+ }
+ 
++FVector2f SWidgetAnimTimeline::GetGroupKeySpan(int32 GroupIndex) const
++{
++	FVector2f Range(TNumericLimits<float>::Max(), -TNumericLimits<float>::Max());
++	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
++	for (int32 LayerIndex = 0; Layers && LayerIndex < Layers->Num(); ++LayerIndex)
++	{
++		if (GetLayerGroup(LayerIndex) != GroupIndex || !IsLayerInView(LayerIndex))
++		{
++			continue;
++		}
++		TArray<float> KeySeconds;
++		GetRowKeySeconds(LayerIndex, KeySeconds);
++		for (const float KeyAt : KeySeconds)
++		{
++			Range.X = FMath::Min(Range.X, KeyAt);
++			Range.Y = FMath::Max(Range.Y, KeyAt);
++		}
++	}
++	return Range;
++}
++
++float SWidgetAnimTimeline::SnapScrubToKeys(float Seconds, float Reach) const
++{
++	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
++	if (!IsDopeSheet() || !Layers || Reach <= 0.f)
++	{
++		return Seconds;
++	}
++
++	float Best = Seconds;
++	float BestDistance = Reach;
++	for (int32 LayerIndex = 0; LayerIndex < Layers->Num(); ++LayerIndex)
++	{
++		if (!IsLayerInView(LayerIndex))
++		{
++			continue;
++		}
++		TArray<float> KeySeconds;
++		GetRowKeySeconds(LayerIndex, KeySeconds);
++		for (const float KeyAt : KeySeconds)
++		{
++			const float Distance = FMath::Abs(KeyAt - Seconds);
++			if (Distance <= BestDistance)
++			{
++				Best = KeyAt;
++				BestDistance = Distance;
++			}
++		}
++	}
++	return Best;
++}
++
+ TArray<float> SWidgetAnimTimeline::MakeSingleKeyTimes(float Seconds)
+ {
+ 	// Its hidden first point a hair before the key, so the row ends at the key and nothing of it runs on after. A key at the very
+@@ -28667,23 +28881,44 @@ void SWidgetAnimTimeline::ToggleRowKeyAtPlayhead(int32 LayerIndex)
+ 
+ void SWidgetAnimTimeline::StepRowKey(int32 LayerIndex, int32 Direction)
+ {
+-	TArray<float> KeySeconds;
+-	GetRowKeySeconds(LayerIndex, KeySeconds);
++	// To the next or previous key of the whole sheet - every row's, not only this one's - picked, the playhead on it. Keys at
++	// the same moment as one: this row's is the one picked, when it has one there.
++	const TArray<FWidgetAnimLayer>* Layers = GetLayers();
+ 	const float Playhead = GetPlayheadSeconds();
+ 	const float Reach = FMath::Max(0.5f / FMath::Max(GetFrameRate(), 1.f), WidgetAnimTimeline::MinKeySpacing);
+ 
+ 	TOptional<float> Best;
+-	for (const float Seconds : KeySeconds)
++	int32 BestLayer = INDEX_NONE;
++	int32 BestKey = INDEX_NONE;
++	for (int32 Row = 0; Layers && Row < Layers->Num(); ++Row)
+ 	{
+-		const bool bAhead = Direction > 0 ? Seconds > Playhead + Reach : Seconds < Playhead - Reach;
+-		if (bAhead && (!Best.IsSet() || (Direction > 0 ? Seconds < Best.GetValue() : Seconds > Best.GetValue())))
++		if (!IsLayerInView(Row))
+ 		{
+-			Best = Seconds;
++			continue;
++		}
++		TArray<float> KeySeconds;
++		GetRowKeySeconds(Row, KeySeconds);
++		for (int32 Key = 0; Key < KeySeconds.Num(); ++Key)
++		{
++			const float Seconds = KeySeconds[Key];
++			const bool bAhead = Direction > 0 ? Seconds > Playhead + Reach : Seconds < Playhead - Reach;
++			if (!bAhead)
++			{
++				continue;
++			}
++			const bool bCloser = !Best.IsSet() || (Direction > 0 ? Seconds < Best.GetValue() - Reach : Seconds > Best.GetValue() + Reach);
++			const bool bSameMoment = Best.IsSet() && FMath::Abs(Seconds - Best.GetValue()) <= Reach;
++			if (bCloser || (bSameMoment && Row == LayerIndex && BestLayer != LayerIndex))
++			{
++				Best = Seconds;
++				BestLayer = Row;
++				BestKey = Key;
++			}
+ 		}
+ 	}
+-	if (Best.IsSet())
++	if (BestLayer != INDEX_NONE)
+ 	{
+-		ScrubToSeconds(Best.GetValue());
++		SelectKey(BestLayer, BestKey);
+ 	}
+ }
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+index e6a9a83..e521570 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+@@ -1011,15 +1011,16 @@ public:
+ 	bool IsValueCellSelected(const FValueCell& Cell) const { return SelectedValueCells.Contains(Cell); }
+ 	void SetSelectedValueCells(const TArray<FValueCell>& Cells) { SelectedValueCells = Cells; }
+ 
+-	/** Show All Values: every number of the keys listed, not only those each key alters. Not saved. */
++	/** Show All Values, on a track's list of its keys: every number of the keys listed, not only those each key alters. Not saved. */
+ 	bool IsShowingAllKeyValues() const { return bShowAllKeyValues; }
+ 	void SetShowAllKeyValues(bool bShowAll);
+ 
+ 	/**
+-	 * The Key Values of these keys (several tracks' are listed track by track): each key's altered numbers, in boxes that take
+-	 * typed math and multi-selection. One key alone reads as name and box rows; several, as a table, a row per key.
++	 * The Key Values of these keys (several tracks' are listed track by track): each key's numbers, in boxes that take typed math
++	 * and multi-selection - every one it holds, or with bForTracks (a track's keys, listed for the track) those it alters, with
++	 * Show All Values. One key alone reads as name and box rows; several, as a table, a row per key.
+ 	 */
+-	TSharedRef<SWidget> MakeKeyValues(const TArray<FKeyRef>& Keys);
++	TSharedRef<SWidget> MakeKeyValues(const TArray<FKeyRef>& Keys, bool bForTracks = false);
+ 
+ 	/**
+ 	 * The segments between selected keys: every segment - named by its layer and its first key - whose keys at
+@@ -1322,6 +1323,19 @@ public:
+ 	/** The row's key at Seconds (within half a frame), or INDEX_NONE. */
+ 	int32 FindRowKeyAt(int32 LayerIndex, float Seconds) const;
+ 
++	/** From a Key Group's first key to its last, of its rows shown (played seconds) - Y below X when it has none. */
++	FVector2f GetGroupKeySpan(int32 GroupIndex) const;
++
++	/**
++	 * Where a scrub by hand to Seconds lands on a Dope Sheet: on the nearest key of any row shown, when one is within Reach
++	 * (seconds) - a slight pull, so the playhead settles on a key rather than a hair beside it. Seconds as it is otherwise, and
++	 * anywhere but a Dope Sheet.
++	 */
++	float SnapScrubToKeys(float Seconds, float Reach) const;
++
++	/** How near a key, in pixels, a scrub by hand is pulled onto it on a Dope Sheet. See SnapScrubToKeys. */
++	static constexpr float ScrubKeySnapPixels = 6.f;
++
+ 	/**
+ 	 * A Dope Sheet's row of a kind of key in a Key Group - a type, and a registered type's settings struct (Kind) - other than
+ 	 * Ignore, or INDEX_NONE. A group has at most one of each kind: Add Key puts a key of a kind it has on that row.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimDopeSheet.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimDopeSheet.h
+index 8720cb9..72b76ef 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimDopeSheet.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimDopeSheet.h
+@@ -8,18 +8,14 @@
+ /**
+  * Dope Sheet timelines (Key Mode): an animation made as a Dope Sheet is edited as keys only - every row of the Track Editor is
+  * one kind of key on one widget, its keys diamonds in that kind's color, with no bars, no start and end to drag, and no names
+- * or presets. Chosen when the timeline is made and kept for its life; saved and played exactly as any other animation (the
+- * rows are tracks, their keys the tracks' keys). See UWidgetAnimPresetAsset::bDopeSheet.
++ * or presets. Chosen when the timeline is made and kept for its life; saved and played as any other animation (the rows are
++ * tracks, their keys the tracks' keys), each row holding its first key until it gets there. See UWidgetAnimPresetAsset::bDopeSheet.
+  */
+ namespace WidgetAnimDopeSheet
+ {
+ 	/** Whether Animation was made as a Dope Sheet. */
+ 	inline bool IsDopeSheet(const UWidgetAnimPresetAsset* Animation)
+ 	{
+-#if WITH_EDITORONLY_DATA
+ 		return Animation && Animation->bDopeSheet;
+-#else
+-		return false;
+-#endif
+ 	}
+ }
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
+index c235d4c..c872597 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.cpp
+@@ -405,26 +405,59 @@ UWidgetAnimBuilder* FWidgetAnimBuilderPanelSource::GetBuilder() const
+ 
+ FWidgetAnimBuilderPanelSource::EMode FWidgetAnimBuilderPanelSource::GetMode() const
+ {
+-	const UWidgetAnimBuilder* Builder = GetBuilder();
+-	return (Builder && Builder->PreviewAnimation) || bEditExistingPicked ? EMode::EditExistingAsset : EMode::Timeline;
++	// One of the builder's own timelines open is Animation Timeline, though the builder previews it as it would an asset.
++	if (bEditExistingPicked)
++	{
++		return EMode::EditExistingAsset;
++	}
++	return GetAsset() ? EMode::EditExistingAsset : EMode::Timeline;
+ }
+ 
+ void FWidgetAnimBuilderPanelSource::SetMode(EMode Mode)
+ {
+-	bEditExistingPicked = Mode == EMode::EditExistingAsset;
+-
+-	// Back to the builder's own layers: the asset being edited is let go of. Going the other way waits for one
+-	// to be picked.
+-	if (Mode == EMode::Timeline)
++	if (Mode == EMode::EditExistingAsset)
+ 	{
+-		SetPreviewAnimation(nullptr);
++		// The timeline open is let go of, to be opened again on the way back; the asset waits to be picked.
++		if (UWidgetAnimPresetAsset* Open = GetOpenExtraTimeline())
++		{
++			LastExtraTimeline = Open;
++			SetPreviewAnimation(nullptr, /*bTransact=*/false);
++		}
++		bEditExistingPicked = true;
++		return;
+ 	}
++
++	// Back to the builder's timelines: the asset being edited is let go of, and the timeline open before it opens again - the
++	// working copy when that was it.
++	bEditExistingPicked = false;
++	UWidgetAnimPresetAsset* Reopen = LastExtraTimeline.Get();
++	const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
++	SetPreviewAnimation(Timelines && Reopen && Timelines->IndexOf(Reopen) != INDEX_NONE ? Reopen : nullptr, /*bTransact=*/false);
+ }
+ 
+ UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::GetAsset() const
+ {
++	// Not one of the builder's own timelines, which is open in Animation Timeline rather than edited as an asset.
++	const UWidgetAnimBuilder* Builder = GetBuilder();
++	UWidgetAnimPresetAsset* Previewed = Builder ? Builder->PreviewAnimation.Get() : nullptr;
++	return Previewed && !IsExtraTimeline(Previewed) ? Previewed : nullptr;
++}
++
++bool FWidgetAnimBuilderPanelSource::IsExtraTimeline(const UWidgetAnimPresetAsset* Animation) const
++{
++	const UWidgetAnimTimelinesExtension* Timelines = Animation ? UWidgetAnimTimelinesExtension::Find(Blueprint.Get()) : nullptr;
++	return Timelines && Timelines->IndexOf(Animation) != INDEX_NONE;
++}
++
++UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::GetOpenExtraTimeline() const
++{
++	if (bEditExistingPicked)
++	{
++		return nullptr;
++	}
+ 	const UWidgetAnimBuilder* Builder = GetBuilder();
+-	return Builder ? Builder->PreviewAnimation.Get() : nullptr;
++	UWidgetAnimPresetAsset* Previewed = Builder ? Builder->PreviewAnimation.Get() : nullptr;
++	return Previewed && IsExtraTimeline(Previewed) ? Previewed : nullptr;
+ }
+ 
+ void FWidgetAnimBuilderPanelSource::SetAsset(UWidgetAnimPresetAsset* Asset)
+@@ -433,7 +466,7 @@ void FWidgetAnimBuilderPanelSource::SetAsset(UWidgetAnimPresetAsset* Asset)
+ 	SetPreviewAnimation(Asset);
+ }
+ 
+-void FWidgetAnimBuilderPanelSource::SetPreviewAnimation(UWidgetAnimPresetAsset* Asset)
++void FWidgetAnimBuilderPanelSource::SetPreviewAnimation(UWidgetAnimPresetAsset* Asset, bool bTransact)
+ {
+ 	UWidgetAnimBuilder* Builder = GetBuilder();
+ 	if (!Builder || Builder->PreviewAnimation == Asset)
+@@ -441,8 +474,14 @@ void FWidgetAnimBuilderPanelSource::SetPreviewAnimation(UWidgetAnimPresetAsset*
+ 		return;
+ 	}
+ 
+-	const FScopedTransaction Transaction(LOCTEXT("SetEditedAsset", "Edit Widget Animation Asset"));
+-	Builder->Modify();
++	// Opening one of the builder's own timelines is not an edit: nothing to undo, nothing to save - as opening a timeline in any
++	// other Widget Blueprint isn't.
++	TOptional<FScopedTransaction> Transaction;
++	if (bTransact)
++	{
++		Transaction.Emplace(LOCTEXT("SetEditedAsset", "Edit Widget Animation Asset"));
++		Builder->Modify();
++	}
+ 	Builder->PreviewAnimation = Asset;
+ 
+ 	// Told to the builder as a Details edit would be, so every live preview switches to what is now edited.
+@@ -465,6 +504,12 @@ UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::SaveAsNewAsset(bool bChoo
+ 		return nullptr;
+ 	}
+ 
++	// One of the builder's own timelines: as a timeline of any Widget Blueprint is saved, in Save Folder - and stays open.
++	if (GetOpenExtraTimeline())
++	{
++		return SaveExtraTimelineAsNewAsset(bChooseLocation);
++	}
++
+ 	// The builder's own Create - named by Animation Name, in Save Folder - then straight on to editing what
+ 	// was saved, so further changes Update it. The working copy stays as it is for the next variant.
+ 	UWidgetAnimPresetAsset* Created = Builder->CreateWidgetAnimation(bChooseLocation);
+@@ -477,35 +522,38 @@ UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::SaveAsNewAsset(bool bChoo
+ 
+ UObject* FWidgetAnimBuilderPanelSource::GetEditedObject() const
+ {
+-	// Edit Existing Asset: the asset (none until one is picked). Animation Timeline: the builder's working copy.
++	// Edit Existing Asset: the asset (none until one is picked). Animation Timeline: the timeline open - the builder's working
++	// copy, or another of its timelines.
+ 	if (GetMode() == EMode::EditExistingAsset)
+ 	{
+ 		return GetAsset();
+ 	}
++	if (UWidgetAnimPresetAsset* Open = GetOpenExtraTimeline())
++	{
++		return Open;
++	}
+ 	return GetBuilder();
+ }
+ 
+ TArray<FWidgetAnimLayerGroup>* FWidgetAnimBuilderPanelSource::GetGroups() const
+ {
+-	if (GetMode() == EMode::EditExistingAsset)
++	UObject* Edited = GetEditedObject();
++	if (UWidgetAnimPresetAsset* Asset = Cast<UWidgetAnimPresetAsset>(Edited))
+ 	{
+-		UWidgetAnimPresetAsset* Asset = GetAsset();
+-		return Asset ? &Asset->LayerGroups : nullptr;
++		return &Asset->LayerGroups;
+ 	}
+-
+-	UWidgetAnimBuilder* Builder = GetBuilder();
++	UWidgetAnimBuilder* Builder = Cast<UWidgetAnimBuilder>(Edited);
+ 	return Builder ? &Builder->LayerGroups : nullptr;
+ }
+ 
+ TArray<FWidgetAnimLayer>* FWidgetAnimBuilderPanelSource::GetLayers() const
+ {
+-	if (GetMode() == EMode::EditExistingAsset)
++	UObject* Edited = GetEditedObject();
++	if (UWidgetAnimPresetAsset* Asset = Cast<UWidgetAnimPresetAsset>(Edited))
+ 	{
+-		UWidgetAnimPresetAsset* Asset = GetAsset();
+-		return Asset ? &Asset->Layers : nullptr;
++		return &Asset->Layers;
+ 	}
+-
+-	UWidgetAnimBuilder* Builder = GetBuilder();
++	UWidgetAnimBuilder* Builder = Cast<UWidgetAnimBuilder>(Edited);
+ 	return Builder ? &Builder->Layers : nullptr;
+ }
+ 
+@@ -822,6 +870,61 @@ namespace
+ 	}
+ }
+ 
++namespace WidgetAnimPanelPosing
++{
++	namespace
++	{
++		TMap<TWeakObjectPtr<const UUserWidget>, double>& GetPosed()
++		{
++			static TMap<TWeakObjectPtr<const UUserWidget>, double> Posed;
++			return Posed;
++		}
++
++		TSet<TWeakObjectPtr<const UUserWidget>>& GetReposes()
++		{
++			static TSet<TWeakObjectPtr<const UUserWidget>> Reposes;
++			return Reposes;
++		}
++	}
++
++	void Claim(const UUserWidget* Root)
++	{
++		if (Root)
++		{
++			GetPosed().Add(Root, FPlatformTime::Seconds());
++		}
++	}
++
++	void Release(const UUserWidget* Root)
++	{
++		if (Root)
++		{
++			GetPosed().Remove(Root);
++			GetReposes().Remove(Root);
++		}
++	}
++
++	bool IsPosing(const UUserWidget* Root)
++	{
++		// Claimed within the panel's idle time: a panel that stopped being drawn without saying so lets go by itself.
++		const double* ClaimedAt = Root ? GetPosed().Find(Root) : nullptr;
++		return ClaimedAt && FPlatformTime::Seconds() - *ClaimedAt < PanelIdleSeconds;
++	}
++
++	void RequestRepose(const UUserWidget* Root)
++	{
++		if (Root)
++		{
++			GetReposes().Add(Root);
++		}
++	}
++
++	bool TakeRepose(const UUserWidget* Root)
++	{
++		return Root && GetReposes().Remove(Root) > 0;
++	}
++}
++
+ FWidgetAnimAssetPanelSource::FWidgetAnimAssetPanelSource(TWeakObjectPtr<UWidgetBlueprint> InBlueprint)
+ 	: Blueprint(InBlueprint)
+ {
+@@ -1059,12 +1162,10 @@ FString FWidgetAnimAssetPanelSource::CreateTimeline(const FString& Name, const F
+ 	}
+ 
+ 	// A Dope Sheet is chosen here, once, for the timeline's life (a copy is what it copies).
+-#if WITH_EDITORONLY_DATA
+ 	if (!CopyFrom && bDopeSheet && Timelines->Timelines[Index].Animation)
+ 	{
+ 		Timelines->Timelines[Index].Animation->bDopeSheet = true;
+ 	}
+-#endif
+ 
+ 	const FString Made = Timelines->Timelines[Index].Name;
+ 	OpenTimeline(Made);
+@@ -1244,13 +1345,123 @@ namespace
+ 		Target.TimeUnit = Timeline.TimeUnit;
+ 		Target.Progress = Timeline.Progress;
+ 		Target.Parameters = Timeline.Parameters;
+-#if WITH_EDITORONLY_DATA
+-		// A Dope Sheet stays one, opened from the asset as from the timeline.
++		// A Dope Sheet stays one, opened from the asset as from the timeline - and plays as one.
+ 		Target.bDopeSheet = Timeline.bDopeSheet;
+-#endif
+ 		Target.PostEditChange();
+ 		Target.MarkPackageDirty();
+ 	}
++
++	/** The entry of WidgetBlueprint's timelines that plays Timeline, or null. */
++	FWidgetAnimTimeline* FindTimelineEntry(const UWidgetBlueprint* WidgetBlueprint, const UWidgetAnimPresetAsset* Timeline)
++	{
++		UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(WidgetBlueprint);
++		const int32 Index = Timelines && Timeline ? Timelines->IndexOf(Timeline) : INDEX_NONE;
++		return Index != INDEX_NONE ? &Timelines->Timelines[Index] : nullptr;
++	}
++
++	/**
++	 * The asset a timeline was last saved as. Saved in an earlier session: loaded once, when first asked for. One that is gone is
++	 * remembered in Missing as gone, rather than looked for on disk every frame the Save button is drawn.
++	 */
++	UWidgetAnimPresetAsset* LoadTimelineSavedAsset(const FWidgetAnimTimeline* Entry, TSet<FSoftObjectPath>& Missing)
++	{
++		if (!Entry || Entry->SavedAsset.IsNull())
++		{
++			return nullptr;
++		}
++		if (UWidgetAnimPresetAsset* Loaded = Entry->SavedAsset.Get())
++		{
++			return Loaded;
++		}
++		const FSoftObjectPath Path = Entry->SavedAsset.ToSoftObjectPath();
++		if (Missing.Contains(Path))
++		{
++			return nullptr;
++		}
++		UWidgetAnimPresetAsset* Loaded = Entry->SavedAsset.LoadSynchronous();
++		if (!Loaded)
++		{
++			Missing.Add(Path);
++		}
++		return Loaded;
++	}
++
++	/** Puts the timeline called TimelineName into Saved, the asset it was saved as, and writes that to disk - said in a toast. */
++	bool SaveTimelineToAsset(const UWidgetAnimPresetAsset& Timeline, UWidgetAnimPresetAsset& Saved, const FString& TimelineName)
++	{
++		CopyTimelineInto(Timeline, Saved);
++		const bool bWritten = UEditorLoadingAndSavingUtils::SavePackages({ Saved.GetPackage() }, /*bOnlyDirty=*/false);
++		ShowPanelNote(bWritten
++			? FText::Format(LOCTEXT("SavedTimelineToAsset", "Saved timeline {0} to {1}."), FText::FromString(TimelineName), FText::FromString(Saved.GetName()))
++			: FText::Format(LOCTEXT("SaveTimelineToAssetFailed", "Couldn't save {0}."), FText::FromString(Saved.GetName())),
++			bWritten);
++		return bWritten;
++	}
++
++	/**
++	 * Saves the timeline called TimelineName, of WidgetBlueprint, as a new Widget Animation asset in Folder: named after it - Intro
++	 * -> WA_Intro - numbered when that is taken (WA_Intro_1), and asked for before it is made: in the editor's Save Asset As window
++	 * when bChooseLocation, in a small window of its own otherwise. Remembered as the timeline's own asset, so Save updates it.
++	 */
++	UWidgetAnimPresetAsset* SaveTimelineAsNewAsset(const UWidgetBlueprint* WidgetBlueprint, const UWidgetAnimPresetAsset& Timeline, const FString& TimelineName,
++		const FString& Folder, bool bChooseLocation, TSet<FSoftObjectPath>& Missing)
++	{
++		FString TimelinePart = WidgetAnimSaveLocation::SanitizeAssetName(TimelineName);
++		if (TimelinePart.IsEmpty())
++		{
++			TimelinePart = TEXT("Timeline");
++		}
++		const FString DefaultName = WidgetAnimSaveLocation::MakeNumberedAssetName(Folder, TEXT("WA_") + TimelinePart);
++
++		UWidgetAnimPresetAsset* NewAsset = nullptr;
++		if (bChooseLocation)
++		{
++			NewAsset = WidgetAnimSaveLocation::CreateAnimationAsset(Folder, DefaultName, /*bChooseLocation=*/true);
++		}
++		else
++		{
++			FString Name;
++			if (!WidgetAnimSaveLocation::PromptForAssetName(Folder, DefaultName, Name))
++			{
++				return nullptr;
++			}
++			NewAsset = WidgetAnimSaveLocation::CreateAnimationAsset(Folder, Name, /*bChooseLocation=*/false);
++		}
++
++		if (!NewAsset)
++		{
++			return nullptr;
++		}
++
++		CopyTimelineInto(Timeline, *NewAsset);
++
++		// Saved straight away, as the builder's Create does, so closing the editor can't quietly lose it.
++		UEditorLoadingAndSavingUtils::SavePackages({ NewAsset->GetPackage() }, /*bOnlyDirty=*/false);
++
++		// Remembered as the timeline's own asset: Save updates it from now on, rather than asking where to make another.
++		if (UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(WidgetBlueprint))
++		{
++			const int32 Index = Timelines->IndexOf(&Timeline);
++			if (Index != INDEX_NONE)
++			{
++				Timelines->Modify();
++				Timelines->Timelines[Index].SavedAsset = NewAsset;
++				Missing.Remove(FSoftObjectPath(NewAsset));
++			}
++		}
++
++		if (GEditor)
++		{
++			TArray<UObject*> ToSelect{ NewAsset };
++			GEditor->SyncBrowserToObjects(ToSelect);
++		}
++
++		// The timeline stays open and as it was: it is this Widget Blueprint's own, and the asset is a copy of it for other
++		// widgets to use - kept up to date by Save.
++		ShowPanelNote(FText::Format(LOCTEXT("SavedTimelineAsAssetLinked", "Saved timeline {0} as {1}. Save updates it from now on."),
++			FText::FromString(TimelineName), FText::FromString(NewAsset->GetName())), true);
++		return NewAsset;
++	}
+ }
+ 
+ namespace WidgetAnimTimelineAssets
+@@ -1312,124 +1523,262 @@ namespace WidgetAnimTimelineAssets
+ 
+ FWidgetAnimTimeline* FWidgetAnimAssetPanelSource::GetOpenTimelineEntry() const
+ {
+-	UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
+-	const UWidgetAnimPresetAsset* Timeline = Mode == EMode::Timeline ? GetOpenTimeline() : nullptr;
+-	const int32 Index = Timelines && Timeline ? Timelines->IndexOf(Timeline) : INDEX_NONE;
+-	return Index != INDEX_NONE ? &Timelines->Timelines[Index] : nullptr;
++	return FindTimelineEntry(Blueprint.Get(), Mode == EMode::Timeline ? GetOpenTimeline() : nullptr);
+ }
+ 
+ UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::GetSavedAsset() const
+ {
+-	const FWidgetAnimTimeline* Entry = GetOpenTimelineEntry();
+-	if (!Entry || Entry->SavedAsset.IsNull())
++	return LoadTimelineSavedAsset(GetOpenTimelineEntry(), MissingSavedAssets);
++}
++
++bool FWidgetAnimAssetPanelSource::SaveToSavedAsset()
++{
++	const UWidgetAnimPresetAsset* Timeline = Mode == EMode::Timeline ? GetOpenTimeline() : nullptr;
++	UWidgetAnimPresetAsset* Saved = GetSavedAsset();
++	return Timeline && Saved && SaveTimelineToAsset(*Timeline, *Saved, OpenTimelineName);
++}
++
++UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset(bool bChooseLocation)
++{
++	const UWidgetBlueprint* WidgetBlueprint = Blueprint.Get();
++	const UWidgetAnimPresetAsset* Timeline = Mode == EMode::Timeline ? GetOpenTimeline() : nullptr;
++	if (!WidgetBlueprint || !Timeline)
+ 	{
+ 		return nullptr;
+ 	}
+-	if (UWidgetAnimPresetAsset* Loaded = Entry->SavedAsset.Get())
++	const FString Folder = GetDefaultSaveFolder().IsEmpty() ? FString(TEXT("/Game")) : GetDefaultSaveFolder();
++	return SaveTimelineAsNewAsset(WidgetBlueprint, *Timeline, OpenTimelineName, Folder, bChooseLocation, MissingSavedAssets);
++}
++
++// =====================================================================================================
++// FWidgetAnimBuilderPanelSource - its timelines
++// =====================================================================================================
++
++FString FWidgetAnimBuilderPanelSource::GetWorkingTimelineName() const
++{
++	const UWidgetAnimBuilder* Builder = GetBuilder();
++	return Builder && !Builder->AnimationName.TrimStartAndEnd().IsEmpty() ? Builder->AnimationName.TrimStartAndEnd() : FString(TEXT("Widget Animation"));
++}
++
++FString FWidgetAnimBuilderPanelSource::MakeUniqueTimelineName(const UWidgetAnimTimelinesExtension& Timelines, const FString& Base, int32 Ignore) const
++{
++	// Unique among the timelines kept in the Widget Blueprint, and never the working copy's name: numbered on past it.
++	const FString Working = GetWorkingTimelineName();
++	FString Unique = Timelines.MakeUniqueName(Base, Ignore);
++	for (int32 Number = 2; Unique.Equals(Working, ESearchCase::IgnoreCase); ++Number)
+ 	{
+-		return Loaded;
++		Unique = Timelines.MakeUniqueName(FString::Printf(TEXT("%s %d"), *Base, Number), Ignore);
+ 	}
++	return Unique;
++}
+ 
+-	// Saved in an earlier session: loaded once, when first asked for. One that is gone is remembered as gone, rather than
+-	// looked for on disk every frame the Save button is drawn.
+-	const FSoftObjectPath Path = Entry->SavedAsset.ToSoftObjectPath();
+-	if (MissingSavedAssets.Contains(Path))
++void FWidgetAnimBuilderPanelSource::GetTimelineNames(TArray<FString>& OutNames) const
++{
++	OutNames.Reset();
++	OutNames.Add(GetWorkingTimelineName());
++	if (const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get()))
+ 	{
+-		return nullptr;
++		for (const FWidgetAnimTimeline& Timeline : Timelines->Timelines)
++		{
++			if (Timeline.Animation)
++			{
++				OutNames.Add(Timeline.Name);
++			}
++		}
+ 	}
+-	UWidgetAnimPresetAsset* Loaded = Entry->SavedAsset.LoadSynchronous();
+-	if (!Loaded)
++}
++
++FString FWidgetAnimBuilderPanelSource::GetTimelineName() const
++{
++	if (GetMode() != EMode::Timeline)
+ 	{
+-		MissingSavedAssets.Add(Path);
++		return FString();
+ 	}
+-	return Loaded;
++	if (const FWidgetAnimTimeline* Entry = FindTimelineEntry(Blueprint.Get(), GetOpenExtraTimeline()))
++	{
++		return Entry->Name;
++	}
++	return GetWorkingTimelineName();
+ }
+ 
+-bool FWidgetAnimAssetPanelSource::SaveToSavedAsset()
++bool FWidgetAnimBuilderPanelSource::OpenTimeline(const FString& Name)
+ {
+-	const UWidgetAnimPresetAsset* Timeline = Mode == EMode::Timeline ? GetOpenTimeline() : nullptr;
+-	UWidgetAnimPresetAsset* Saved = GetSavedAsset();
+-	if (!Timeline || !Saved)
++	if (!GetBuilder())
+ 	{
+ 		return false;
+ 	}
+ 
+-	CopyTimelineInto(*Timeline, *Saved);
+-	const bool bWritten = UEditorLoadingAndSavingUtils::SavePackages({ Saved->GetPackage() }, /*bOnlyDirty=*/false);
+-	ShowPanelNote(bWritten
+-		? FText::Format(LOCTEXT("SavedTimelineToAsset", "Saved timeline {0} to {1}."), FText::FromString(OpenTimelineName), FText::FromString(Saved->GetName()))
+-		: FText::Format(LOCTEXT("SaveTimelineToAssetFailed", "Couldn't save {0}."), FText::FromString(Saved->GetName())),
+-		bWritten);
+-	return bWritten;
++	UWidgetAnimPresetAsset* Animation = nullptr;
++	if (!Name.Equals(GetWorkingTimelineName(), ESearchCase::IgnoreCase))
++	{
++		const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
++		const int32 Index = Timelines ? Timelines->IndexOf(Name) : INDEX_NONE;
++		Animation = Index != INDEX_NONE ? Timelines->Timelines[Index].Animation.Get() : nullptr;
++		if (!Animation)
++		{
++			return false;
++		}
++	}
++
++	bEditExistingPicked = false;
++	LastExtraTimeline = Animation;
++	SetPreviewAnimation(Animation, /*bTransact=*/false);
++	return true;
+ }
+ 
+-UWidgetAnimPresetAsset* FWidgetAnimAssetPanelSource::SaveAsNewAsset(bool bChooseLocation)
++FString FWidgetAnimBuilderPanelSource::CreateTimeline(const FString& Name, const FString& CopyOf, bool bDopeSheet)
+ {
+-	const UWidgetBlueprint* WidgetBlueprint = Blueprint.Get();
+-	const UWidgetAnimPresetAsset* Timeline = Mode == EMode::Timeline ? GetOpenTimeline() : nullptr;
+-	if (!WidgetBlueprint || !Timeline)
++	UWidgetBlueprint* WidgetBlueprint = Blueprint.Get();
++	const UWidgetAnimBuilder* Builder = GetBuilder();
++	if (!WidgetBlueprint || !Builder)
+ 	{
+-		return nullptr;
++		return FString();
+ 	}
+ 
+-	// Named after the timeline - Intro -> WA_Intro - numbered when that is taken (WA_Intro_1), and asked for before it is made:
+-	// in the editor's Save Asset As window for a Custom Location, in a small window of its own for the Default Folder.
+-	const FString Folder = GetDefaultSaveFolder().IsEmpty() ? FString(TEXT("/Game")) : GetDefaultSaveFolder();
+-	FString TimelinePart = WidgetAnimSaveLocation::SanitizeAssetName(OpenTimelineName);
+-	if (TimelinePart.IsEmpty())
++	// What it copies: another of the timelines kept here, or the working copy.
++	const bool bCopyWorking = !CopyOf.IsEmpty() && CopyOf.Equals(GetWorkingTimelineName(), ESearchCase::IgnoreCase);
++	const UWidgetAnimTimelinesExtension* Existing = UWidgetAnimTimelinesExtension::Find(WidgetBlueprint);
++	const int32 CopyIndex = Existing && !CopyOf.IsEmpty() && !bCopyWorking ? Existing->IndexOf(CopyOf) : INDEX_NONE;
++	const UWidgetAnimPresetAsset* CopyFrom = CopyIndex != INDEX_NONE ? Existing->Timelines[CopyIndex].Animation.Get() : nullptr;
++
++	const FScopedTransaction Transaction(CopyFrom || bCopyWorking
++		? LOCTEXT("DuplicateTimeline", "Duplicate Animation Timeline")
++		: LOCTEXT("NewTimeline", "New Animation Timeline"));
++	UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::FindOrAdd(WidgetBlueprint);
++	if (!Timelines)
+ 	{
+-		TimelinePart = TEXT("Timeline");
++		return FString();
+ 	}
+-	const FString DefaultName = WidgetAnimSaveLocation::MakeNumberedAssetName(Folder, TEXT("WA_") + TimelinePart);
++	Timelines->Modify();
+ 
+-	UWidgetAnimPresetAsset* NewAsset = nullptr;
+-	if (bChooseLocation)
++	const int32 Index = Timelines->AddTimeline(Name, CopyFrom);
++	if (Index == INDEX_NONE || !Timelines->Timelines[Index].Animation)
+ 	{
+-		NewAsset = WidgetAnimSaveLocation::CreateAnimationAsset(Folder, DefaultName, /*bChooseLocation=*/true);
++		return FString();
+ 	}
+-	else
+-	{
+-		FString Name;
+-		if (!WidgetAnimSaveLocation::PromptForAssetName(Folder, DefaultName, Name))
++	FWidgetAnimTimeline& Made = Timelines->Timelines[Index];
++	Made.Name = MakeUniqueTimelineName(*Timelines, Made.Name, Index);
++
++	if (bCopyWorking)
++	{
++		// The working copy, as the builder's Create saves it.
++		UWidgetAnimPresetAsset& Copy = *Made.Animation;
++		Copy.Description = Builder->Description;
++		Copy.LayerGroups = Builder->LayerGroups;
++		Copy.Layers = Builder->Layers;
++		Copy.AnimationSpeedMultiplier = Builder->AnimationSpeedMultiplier;
++		Copy.MinimumLength = Builder->MinimumLength;
++		Copy.TimeUnit = Builder->TimeUnit;
++		Copy.Progress = Builder->Progress;
++		Copy.Parameters = Builder->Parameters;
++		if (Copy.LayerGroups.Num() == 0)
+ 		{
+-			return nullptr;
++			Copy.LayerGroups.AddDefaulted();
+ 		}
+-		NewAsset = WidgetAnimSaveLocation::CreateAnimationAsset(Folder, Name, /*bChooseLocation=*/false);
+ 	}
+-
+-	if (!NewAsset)
++	else if (!CopyFrom && bDopeSheet)
+ 	{
+-		return nullptr;
++		// A Dope Sheet is chosen here, once, for the timeline's life (a copy is what it copies).
++		Made.Animation->bDopeSheet = true;
+ 	}
+ 
+-	CopyTimelineInto(*Timeline, *NewAsset);
++	const FString MadeName = Made.Name;
++	OpenTimeline(MadeName);
++	return MadeName;
++}
+ 
+-	// Saved straight away, as the builder's Create does, so closing the editor can't quietly lose it.
+-	UEditorLoadingAndSavingUtils::SavePackages({ NewAsset->GetPackage() }, /*bOnlyDirty=*/false);
++FString FWidgetAnimBuilderPanelSource::RenameTimeline(const FString& Name, const FString& NewName)
++{
++	const FString Trimmed = NewName.TrimStartAndEnd();
++	UWidgetAnimBuilder* Builder = GetBuilder();
++	if (Trimmed.IsEmpty() || !Builder)
++	{
++		return FString();
++	}
++	UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get());
+ 
+-	// Remembered as the timeline's own asset: Save updates it from now on, rather than asking where to make another.
+-	if (UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(Blueprint.Get()))
++	// The working copy: its Animation Name, as its Details would set it - numbered past the other timelines' names.
++	if (Name.Equals(GetWorkingTimelineName(), ESearchCase::IgnoreCase))
+ 	{
+-		const int32 Index = Timelines->IndexOf(Timeline);
+-		if (Index != INDEX_NONE)
++		const FString Unique = Timelines ? Timelines->MakeUniqueName(Trimmed) : Trimmed;
++		if (Unique == Builder->AnimationName)
+ 		{
+-			Timelines->Modify();
+-			Timelines->Timelines[Index].SavedAsset = NewAsset;
+-			MissingSavedAssets.Remove(FSoftObjectPath(NewAsset));
++			return Unique;
+ 		}
++		const FScopedTransaction Transaction(LOCTEXT("RenameBuilderAnimation", "Rename Widget Animation"));
++		Builder->Modify();
++		Builder->AnimationName = Unique;
++		FProperty* Property = FindFProperty<FProperty>(UWidgetAnimBuilder::StaticClass(), GET_MEMBER_NAME_CHECKED(UWidgetAnimBuilder, AnimationName));
++		FPropertyChangedEvent Event(Property, EPropertyChangeType::ValueSet);
++		Builder->PostEditChangeProperty(Event);
++		Builder->MarkPackageDirty();
++		return Unique;
+ 	}
+ 
+-	if (GEditor)
++	const int32 Index = Timelines ? Timelines->IndexOf(Name) : INDEX_NONE;
++	if (Index == INDEX_NONE)
+ 	{
+-		TArray<UObject*> ToSelect{ NewAsset };
+-		GEditor->SyncBrowserToObjects(ToSelect);
++		return FString();
+ 	}
++	const FString Unique = MakeUniqueTimelineName(*Timelines, Trimmed, Index);
++	if (Unique == Timelines->Timelines[Index].Name)
++	{
++		return Unique;
++	}
++	const FScopedTransaction Transaction(LOCTEXT("RenameTimeline", "Rename Animation Timeline"));
++	Timelines->Modify();
++	Timelines->Timelines[Index].Name = Unique;
++	return Unique;
++}
+ 
+-	// The timeline stays open and as it was: it is this Widget Blueprint's own, and the asset is a copy of it for other
+-	// widgets to use - kept up to date by Save.
+-	ShowPanelNote(FText::Format(LOCTEXT("SavedTimelineAsAssetLinked", "Saved timeline {0} as {1}. Save updates it from now on."),
+-		FText::FromString(OpenTimelineName), FText::FromString(NewAsset->GetName())), true);
+-	return NewAsset;
++bool FWidgetAnimBuilderPanelSource::CanDeleteTimeline(const FString& Name) const
++{
++	// The working copy is the builder's own, and stays.
++	return !Name.Equals(GetWorkingTimelineName(), ESearchCase::IgnoreCase);
++}
++
++bool FWidgetAnimBuilderPanelSource::DeleteTimeline(const FString& Name)
++{
++	UWidgetAnimTimelinesExtension* Timelines = CanDeleteTimeline(Name) ? UWidgetAnimTimelinesExtension::Find(Blueprint.Get()) : nullptr;
++	const int32 Index = Timelines ? Timelines->IndexOf(Name) : INDEX_NONE;
++	if (Index == INDEX_NONE)
++	{
++		return false;
++	}
++
++	// The working copy opens in its place. The animation object stays where it is, unreferenced, so an undo can put the
++	// timeline back as it was.
++	if (Timelines->Timelines[Index].Animation.Get() == GetOpenExtraTimeline())
++	{
++		OpenTimeline(GetWorkingTimelineName());
++	}
++	const FScopedTransaction Transaction(LOCTEXT("DeleteTimeline", "Delete Animation Timeline"));
++	Timelines->Modify();
++	Timelines->Timelines.RemoveAt(Index);
++	return true;
++}
++
++UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::GetSavedAsset() const
++{
++	return LoadTimelineSavedAsset(FindTimelineEntry(Blueprint.Get(), GetOpenExtraTimeline()), MissingSavedAssets);
++}
++
++bool FWidgetAnimBuilderPanelSource::SaveToSavedAsset()
++{
++	const UWidgetAnimPresetAsset* Open = GetOpenExtraTimeline();
++	UWidgetAnimPresetAsset* Saved = GetSavedAsset();
++	return Open && Saved && SaveTimelineToAsset(*Open, *Saved, GetTimelineName());
++}
++
++UWidgetAnimPresetAsset* FWidgetAnimBuilderPanelSource::SaveExtraTimelineAsNewAsset(bool bChooseLocation)
++{
++	const UWidgetAnimPresetAsset* Open = GetOpenExtraTimeline();
++	if (!Open)
++	{
++		return nullptr;
++	}
++	const FString Folder = GetDefaultSaveFolder().IsEmpty() ? FString(TEXT("/Game")) : GetDefaultSaveFolder();
++	return SaveTimelineAsNewAsset(Blueprint.Get(), *Open, GetTimelineName(), Folder, bChooseLocation, MissingSavedAssets);
+ }
+ 
+ float FWidgetAnimAssetPanelSource::GetPlayheadAlpha() const
+@@ -1622,6 +1971,7 @@ void FWidgetAnimAssetPanelSource::RestorePreview()
+ 	// and a rebuilt preview is already back as authored.
+ 	if (UUserWidget* Root = PosedRoot.Get())
+ 	{
++		WidgetAnimPanelPosing::Release(Root);
+ 		if (IsValid(Root))
+ 		{
+ 			UWidgetAnimLibrary::RestoreWidgetAnimBaselines(Baselines);
+@@ -1727,6 +2077,14 @@ bool FWidgetAnimAssetPanelSource::Tick(float DeltaTime)
+ 		++PosedVersion;
+ 	}
+ 
++	// Posed by this panel while it is on screen - every other preview of these widgets stands down - and posed again when one
++	// that stood down put its widgets back over the pose.
++	WidgetAnimPanelPosing::Claim(Root);
++	if (WidgetAnimPanelPosing::TakeRepose(Root))
++	{
++		bPoseStale = true;
++	}
++
+ 	// The clock. One pass is the animation at this Speed; Loop wraps it, Ping Pong bounces it.
+ 	const float PassSeconds = FlattenedPassSeconds / FMath::Max(Speed, 0.01f);
+ 	const float OldAlpha = Alpha;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
+index d1a7048..0b28e0b 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimPanelSource.h
+@@ -12,6 +12,7 @@ class UUserWidget;
+ class UWidget;
+ class UWidgetAnimBuilder;
+ class UWidgetAnimPresetAsset;
++class UWidgetAnimTimelinesExtension;
+ class UWidgetBlueprint;
+ class IPropertyHandle;
+ 
+@@ -315,6 +316,9 @@ public:
+ 	/** Deletes a timeline and its animation. One undo step; an open one is replaced by the next. */
+ 	virtual bool DeleteTimeline(const FString& Name) { return false; }
+ 
++	/** Whether the timeline called Name can be deleted - all can, but a builder's working copy. */
++	virtual bool CanDeleteTimeline(const FString& Name) const { return true; }
++
+ 	/** Whether the panel is in Animation Timeline on a timeline of a Widget Blueprint (not the builder, not a plain list). */
+ 	bool IsEditingTimeline() const { return SupportsTimelines() && GetMode() == EMode::Timeline; }
+ 
+@@ -385,6 +389,28 @@ private:
+  */
+ UUserWidget* FindWidgetAnimDesignerPreview(const UWidgetBlueprint* Blueprint);
+ 
++/**
++ * Which designer previews a Widget Animations panel on screen is posing now - so that every other preview of the same widgets
++ * (the State Machine editor's designer preview, which plays on an active timer of its own and kept going with its drawer
++ * closed) stands down for it. Two previews writing the same widgets every frame showed neither: the panel's animation jumped
++ * between poses that weren't its own - worst on (this widget), the designer preview itself, where the machine plays by default.
++ */
++namespace WidgetAnimPanelPosing
++{
++	/** Root is posed by a panel on screen: marked once a tick while it is, taken back when it stops. */
++	void Claim(const UUserWidget* Root);
++	void Release(const UUserWidget* Root);
++
++	/** Whether a panel on screen poses Root now. */
++	bool IsPosing(const UUserWidget* Root);
++
++	/** Asks the panel posing Root to pose it again on its next tick - another preview standing down just put its widgets back. */
++	void RequestRepose(const UUserWidget* Root);
++
++	/** Whether a repose of Root was asked for since last asked; asking clears it. */
++	bool TakeRepose(const UUserWidget* Root);
++}
++
+ /**
+  * A designer preview widget's render transform (and, into OutOpacity, its render opacity) as authored in Blueprint: read from
+  * the Widget Blueprint's own widget of the same name - or, for the preview itself, its class defaults - never from the preview,
+@@ -396,6 +422,11 @@ FWidgetTransform GetWidgetAnimAuthoredTransform(const UWidget* PreviewWidget, co
+  * In a WidgetAnimationBuilder's editor: the builder's working copy - or, while its Preview Animation is set,
+  * that asset, edited in place - played by the builder's own designer preview. Opening a WA_ asset's Edit in
+  * Widget Animation Builder lands here, editing it.
++ *
++ * Timelines, as in any Widget Blueprint: the working copy is the first, named by its Animation Name and never deleted; any
++ * more are made from the panel and kept in the builder's Widget Blueprint (UWidgetAnimTimelinesExtension), as every Widget
++ * Blueprint keeps its own. One of those open is the builder's Preview Animation, edited in place - so the builder's preview
++ * plays it - but is Animation Timeline, not Edit Existing Asset: GetAsset never answers it.
+  */
+ class FWidgetAnimBuilderPanelSource : public IWidgetAnimPanelSource
+ {
+@@ -441,20 +472,60 @@ public:
+ 	virtual UWidgetAnimPresetAsset* GetAsset() const override;
+ 	virtual void SetAsset(UWidgetAnimPresetAsset* Asset) override;
+ 
+-	/** The builder's Create: Animation Name and Save Folder decide where it goes, unless bChooseLocation. */
++	/**
++	 * The builder's Create: Animation Name and Save Folder decide where it goes, unless bChooseLocation. Another of its timelines
++	 * open: saved as a timeline of any Widget Blueprint is, in Save Folder.
++	 */
+ 	virtual UWidgetAnimPresetAsset* SaveAsNewAsset(bool bChooseLocation = false) override;
+ 	virtual FString GetDefaultSaveFolder() const override;
+ 
++	/** Another of its timelines open: the asset it was last saved as, as in any Widget Blueprint. None for the working copy. */
++	virtual UWidgetAnimPresetAsset* GetSavedAsset() const override;
++	virtual bool SaveToSavedAsset() override;
++
+ 	virtual bool IsBuilder() const override { return true; }
+ 	virtual UWidgetAnimBuilder* GetBuilder() const override;
+ 	virtual UWidgetBlueprint* GetWidgetBlueprint() const override { return Blueprint.Get(); }
+ 
++	virtual bool SupportsTimelines() const override { return true; }
++	virtual void GetTimelineNames(TArray<FString>& OutNames) const override;
++	virtual FString GetTimelineName() const override;
++	virtual bool OpenTimeline(const FString& Name) override;
++	virtual FString CreateTimeline(const FString& Name, const FString& CopyOf = FString(), bool bDopeSheet = false) override;
++	virtual FString RenameTimeline(const FString& Name, const FString& NewName) override;
++	virtual bool DeleteTimeline(const FString& Name) override;
++	virtual bool CanDeleteTimeline(const FString& Name) const override;
++
+ private:
+ 
+ 	UClass* GetBuilderClass() const;
+ 
+-	/** Sets the builder's Preview Animation - the asset being edited, or none - and tells every live preview. */
+-	void SetPreviewAnimation(UWidgetAnimPresetAsset* Asset);
++	/**
++	 * Sets the builder's Preview Animation - the asset being edited, one of its timelines, or none - and tells every live preview.
++	 * One undo step when bTransact; opening a timeline is not an edit, and is none.
++	 */
++	void SetPreviewAnimation(UWidgetAnimPresetAsset* Asset, bool bTransact = true);
++
++	/** The working copy's name as a timeline: its Animation Name, or "Widget Animation" left empty. */
++	FString GetWorkingTimelineName() const;
++
++	/** Whether Animation is one of the timelines kept in the builder's Widget Blueprint. */
++	bool IsExtraTimeline(const UWidgetAnimPresetAsset* Animation) const;
++
++	/** The timeline kept in the builder's Widget Blueprint that is open, or null - the working copy open, or Edit Existing Asset. */
++	UWidgetAnimPresetAsset* GetOpenExtraTimeline() const;
++
++	/** Base made unique among Timelines (Ignore keeping its own), and never the working copy's name. */
++	FString MakeUniqueTimelineName(const UWidgetAnimTimelinesExtension& Timelines, const FString& Base, int32 Ignore) const;
++
++	/** Saves the open timeline kept in the builder's Widget Blueprint as a new asset, as SaveAsNewAsset does for any timeline. */
++	UWidgetAnimPresetAsset* SaveExtraTimelineAsNewAsset(bool bChooseLocation);
++
++	/** The timeline kept here that was open before Edit Existing Asset was picked - opened again on the way back. */
++	TWeakObjectPtr<UWidgetAnimPresetAsset> LastExtraTimeline;
++
++	/** Saved assets found gone - see FWidgetAnimAssetPanelSource::MissingSavedAssets. */
++	mutable TSet<FSoftObjectPath> MissingSavedAssets;
+ 
+ 	/** Edit Existing Asset picked, before an asset has been. The builder only records the asset itself. */
+ 	bool bEditExistingPicked = false;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index d1c299b..8e597be 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -497,6 +497,20 @@ namespace NameTBD
+ 			inline const FLinearColor DopeKeyLightOutline(1.00f, 1.00f, 1.00f, 0.95f);
+ 			inline constexpr float DopeKeyHoverLift = 1.25f;
+ 			inline constexpr float DopeKeyPressedDim = 0.7f;
++			/**
++			 * Over a Dope Sheet's key: a cue key's icon inside it (DopeKeyIconScale of the key's size, dark on a light key, light
++			 * on a dark one); a hidden row's eye over each key (DopeKeyHiddenGlyph, DopeKeyHiddenGlyphSize). Under a Sound key: how
++			 * long its sound plays, a bar from the key in the row's color (DopeSoundBarOpacity, DopeSoundBarHeight) closed by a cap
++			 * (DopeSoundBarCapWidth).
++			 */
++			inline constexpr float DopeKeyIconScale = 0.62f;
++			inline const FLinearColor DopeKeyIconDark(0.03f, 0.03f, 0.03f, 0.9f);
++			inline const FLinearColor DopeKeyIconLight(1.00f, 1.00f, 1.00f, 0.95f);
++			inline const FLinearColor DopeKeyHiddenGlyph(0.85f, 0.85f, 0.85f, 0.95f);
++			inline constexpr float DopeKeyHiddenGlyphSize = 11.f;
++			inline constexpr float DopeSoundBarOpacity = 0.45f;
++			inline constexpr float DopeSoundBarHeight = 4.f;
++			inline constexpr float DopeSoundBarCapWidth = 2.f;
+ 
+ 			// -------------------------------------------------------------------------------------------------
+ 			// Playing backward - an inverted track, or every track while the preview's Invert is on.
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.h
+index 723ea82..88366ab 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDStyle.h
+@@ -50,11 +50,13 @@ public:
+ 	static inline const FName SaveIcon = TEXT("NameTBD.Save");
+ 
+ 	/**
+-	 * An animation timeline, wherever one is named (the panel's mode and picker, the State Machine editor's Timelines): a
+-	 * clapper over a strip of keyed lanes (Resources/WidgetAnim_Timeline.svg). A Dope Sheet timeline's: keys on lanes, no bars
+-	 * (Resources/WidgetAnim_DopeSheet.svg).
++	 * An animation timeline in general (the panel's Animation Timeline mode, the Script area): a clapper over a strip of keyed
++	 * lanes (Resources/WidgetAnim_Timeline.svg). Each timeline by its kind, wherever one is named (the panel's picker and its
++	 * list, the State Machine editor's Timelines): a Track Sheet's, bars on lanes (Resources/WidgetAnim_TrackSheet.svg); a Dope
++	 * Sheet's, keys on lanes, no bars (Resources/WidgetAnim_DopeSheet.svg).
+ 	 */
+ 	static inline const FName TimelineIcon = TEXT("NameTBD.Timeline.TimelineIcon");
++	static inline const FName TrackSheetIcon = TEXT("NameTBD.Timeline.TrackSheetIcon");
+ 	static inline const FName DopeSheetIcon = TEXT("NameTBD.Timeline.DopeSheetIcon");
+ 
+ 	/** The Widget Animations panel's Graph Editor, where the editor has no Curve Editor icon of its own. */
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index e7622c7..381d276 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -239,13 +239,13 @@ namespace NameTBD::Tooltips
+ 		inline FText NewTimelineTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewTimelineTooltip",
+-				"Press Enter for a new, empty timeline in this Widget Blueprint - named Timeline 1, Timeline 2 and so on unless a name is typed - opened straight away.");
++				"Press Enter for a new Track Sheet in this Widget Blueprint: a timeline of tracks, each running from a start to an end, its keys along it - named Timeline 1, Timeline 2 and so on unless a name is typed - opened straight away. Chosen now, for the timeline's life.");
+ 		}
+ 
+ 		inline FText NewTimelineButtonTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewTimelineButtonTooltip",
+-				"New Timeline: make this Widget Blueprint's first animation timeline, named Timeline 1. Rename it from the timeline picker above.");
++				"New Track Sheet: make this Widget Blueprint's first animation timeline as a Track Sheet - tracks, each running from a start to an end, its keys along it - named Timeline 1. Rename it from the timeline picker above. Chosen now, for the timeline's life.");
+ 		}
+ 
+ 		inline FText KeyRowKindTakenNote()
+@@ -256,12 +256,12 @@ namespace NameTBD::Tooltips
+ 
+ 		inline FText KeyRowPreviousTooltip()
+ 		{
+-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyRowPreviousTooltip", "To this row's previous key: the playhead goes there.");
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyRowPreviousTooltip", "To the previous key of the sheet - any row's, before the playhead: it is picked, and the playhead goes to it.");
+ 		}
+ 
+ 		inline FText KeyRowNextTooltip()
+ 		{
+-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyRowNextTooltip", "To this row's next key: the playhead goes there.");
++			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyRowNextTooltip", "To the next key of the sheet - any row's, after the playhead: it is picked, and the playhead goes to it.");
+ 		}
+ 
+ 		inline FText KeyRowAddTooltip()
+@@ -285,7 +285,7 @@ namespace NameTBD::Tooltips
+ 		inline FText NewDopeSheetTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NewDopeSheetTooltip",
+-				"Press Enter for a new Dope Sheet in this Widget Blueprint: a timeline of keys only. Every row is one kind of key on one widget - Fade, Scale, Transform... - its keys placed anywhere, dragged, deleted, eased; no tracks with a start and end to manage. Chosen now, for the timeline's life. It saves and plays exactly as any animation.");
++				"Press Enter for a new Dope Sheet in this Widget Blueprint: a timeline of keys only. Every row is one kind of key on one widget - Fade, Scale, Transform... - its keys placed anywhere, dragged, deleted, eased; no tracks with a start and end to manage. Chosen now, for the timeline's life. It saves and plays as any animation, each row holding its first key until it gets there.");
+ 		}
+ 
+ 		inline FText NewDopeSheetButtonTooltip()
+@@ -497,7 +497,7 @@ namespace NameTBD::Tooltips
+ 		inline FText PrevKeyTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "PrevKeyTooltip",
+-				"Previous Key: The previous key or track edge (,)");
++				"Previous Key: The previous key or track edge - in a Dope Sheet, the previous key of any row (,)");
+ 		}
+ 
+ 		inline FText PauseTooltip()
+@@ -515,7 +515,7 @@ namespace NameTBD::Tooltips
+ 		inline FText NextKeyTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "NextKeyTooltip",
+-				"Next Key: The next key or track edge (.)");
++				"Next Key: The next key or track edge - in a Dope Sheet, the next key of any row (.)");
+ 		}
+ 
+ 		inline FText ToEndTooltip()
+@@ -2172,22 +2172,10 @@ namespace NameTBD::Tooltips
+ 				"{0} at this key. Type a number or math: +8 adds 8, *2 doubles, x * 2 + 1 works it out from the value here. Drag to change it. Ctrl+click to pick several boxes (Shift+click a run down a column): typing into one sets them all - each worked out from its own value - and dragging one moves them all by the same amount.");
+ 		}
+ 
+-		inline FText KeyValuesHint()
+-		{
+-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValuesHint",
+-				"Ctrl+click boxes to edit several at once. Type +8, *2 or x * 2 + 1.");
+-		}
+-
+-		inline FText KeyValuesHintTooltip()
+-		{
+-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValuesHintTooltip",
+-				"Only the values each key changes are listed - a key that only scales shows Scale, not its whole transform. Ctrl+click boxes to pick several, Shift+click for a run down a column. A number typed into a picked box goes into every picked box, worked out from each one's own value: +8 adds 8, -= 8 takes 8 off, *2 doubles, /2 halves, x * 2 + 1 uses the value as x; a plain number (or -8) sets them all to it. Dragging a picked box moves them all together. Each edit is one undo step.");
+-		}
+-
+ 		inline FText ShowAllKeyValuesTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ShowAllKeyValuesTooltip",
+-				"List every value the keys hold, not only those each key changes. The ones a key leaves as they were are dimmed.");
++				"List every value this track's keys hold, not only those each key changes. The ones a key leaves as they were are dimmed. A key picked on its own always lists every value.");
+ 		}
+ 
+ 		inline FText KeyValuesMoreTracksNote()

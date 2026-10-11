@@ -455,6 +455,12 @@ public:
 	void GetKeyTimes(int32 LayerIndex, TArray<float>& OutTimes) const;
 
 	/**
+	 * Every point of a layer's keys, as stored - GetKeyTimes, except that a Dope Sheet's single key (two points a hair apart, see
+	 * IsSingleKeyRow) is both of its points here and one key there. What the Dope Sheet's edits work on.
+	 */
+	void GetPointTimes(int32 LayerIndex, TArray<float>& OutTimes) const;
+
+	/**
 	 * Jump to Edited Key (Editor Preferences): an edit to the selected key - or to the selected track's start or end value -
 	 * moves the preview there, so the change shows as it is made.
 	 */
@@ -494,8 +500,11 @@ public:
 	 */
 	const struct FSlateBrush* GetGroupTargetIcon(int32 GroupIndex) const;
 
-	/** A group's name as shown: its Group Name, or "Track Group N". */
+	/** A group's name as shown: its Group Name, or "Track Group N" ("Key Group N" on a Dope Sheet). */
 	FText GetGroupName(int32 GroupIndex) const;
+
+	/** Text naming a Track Group, as shown: on a Dope Sheet, "Track Group" reads "Key Group". */
+	FText ToKeyGroupText(const FText& Text) const;
 
 	// ---------------------------------------------------------------------------------------------
 	// Folders - see FWidgetAnimLayerGroup::EditorFolder. Only the list reads them; nothing about playing changes.
@@ -713,6 +722,15 @@ public:
 	 * names it by its type again.
 	 */
 	void RenameLayer(int32 LayerIndex, const FString& NewName);
+
+	/**
+	 * Rename from a track's menu: its name typed in place on its row in the Animation Tracks list (the list opened onto it
+	 * first), or in a small box where there is no list. Never on a Dope Sheet, whose key rows have no names.
+	 */
+	void BeginRenameLayer(int32 LayerIndex);
+
+	/** Rename from a collapsed track's menu, the same way. */
+	void BeginRenameCollapsed(FName Name);
 
 	/** Selects every track of a collapsed track, its head the primary one - or, with bToggle, adds them or takes them out. */
 	void SelectCollapsed(FName Name, bool bToggle = false);
@@ -993,15 +1011,16 @@ public:
 	bool IsValueCellSelected(const FValueCell& Cell) const { return SelectedValueCells.Contains(Cell); }
 	void SetSelectedValueCells(const TArray<FValueCell>& Cells) { SelectedValueCells = Cells; }
 
-	/** Show All Values: every number of the keys listed, not only those each key alters. Not saved. */
+	/** Show All Values, on a track's list of its keys: every number of the keys listed, not only those each key alters. Not saved. */
 	bool IsShowingAllKeyValues() const { return bShowAllKeyValues; }
 	void SetShowAllKeyValues(bool bShowAll);
 
 	/**
-	 * The Key Values of these keys (several tracks' are listed track by track): each key's altered numbers, in boxes that take
-	 * typed math and multi-selection. One key alone reads as name and box rows; several, as a table, a row per key.
+	 * The Key Values of these keys (several tracks' are listed track by track): each key's numbers, in boxes that take typed math
+	 * and multi-selection - every one it holds, or with bForTracks (a track's keys, listed for the track) those it alters, with
+	 * Show All Values. One key alone reads as name and box rows; several, as a table, a row per key.
 	 */
-	TSharedRef<SWidget> MakeKeyValues(const TArray<FKeyRef>& Keys);
+	TSharedRef<SWidget> MakeKeyValues(const TArray<FKeyRef>& Keys, bool bForTracks = false);
 
 	/**
 	 * The segments between selected keys: every segment - named by its layer and its first key - whose keys at
@@ -1261,6 +1280,81 @@ public:
 	/** Deletes a key. A Transform layer always keeps at least two; any other layer keeps its start and end. */
 	void DeleteKey(int32 LayerIndex, int32 KeyIndex);
 
+	// ---------------------------------------------------------------------------------------------
+	// Dope Sheet (Key Mode) - see WidgetAnimDopeSheet.h
+	//
+	// A timeline made as a Dope Sheet is edited as keys only. Every row of the Track Editor is one kind of key (a track of that
+	// type) on one widget: its keys are diamonds in the type's color, on a faint lane from its first key to its last, with no
+	// section to drag and no start or end of its own - the first and last keys are keys like any other, dragged, deleted, and
+	// added before or after them (the track's start, length and key fractions are worked out from where its keys are, so
+	// nothing else moves). A row starts as one key, wherever Add Key put it - stored as a start and an end a hair apart,
+	// holding the same values (IsSingleKeyRow) - and grows as keys are placed. Rows have no names or presets; everything
+	// else a track has (hide, pin, lock, focus, collapse, easing, curves between keys) a row has, under the word "Key".
+	// Saved and played exactly as any animation: the rows are tracks.
+	// ---------------------------------------------------------------------------------------------
+
+	/** Whether the animation on screen was made as a Dope Sheet (never the compact panel). Chosen when it is made, never toggled. */
+	bool IsDopeSheet() const;
+
+	/** The empty panel's New Timeline - or New Dope Sheet - button: what kind of timeline is chosen as it is made. */
+	TSharedRef<SWidget> MakeNewTimelineButton(bool bDopeSheet);
+
+	/** Whether a row's keys are edited as a Dope Sheet's: a track of a keyed type that isn't spring-timed, its length its own. */
+	bool CanDopeKeys(int32 LayerIndex) const;
+
+	/** Whether a Dope Sheet row is one key: its two points a hair apart (see the section above). */
+	bool IsSingleKeyRow(int32 LayerIndex) const;
+
+	/**
+	 * Where a single-key row's two points go for a key at Seconds (on the time axis): a hair before it and on it, so the row ends
+	 * at the key with nothing after - or, at the very start, on it and a hair after. GetKeyTimes shows the one at the key.
+	 */
+	static TArray<float> MakeSingleKeyTimes(float Seconds);
+
+	/** How close to the animation's start a single-key row's start counts as at it - its key is then its first point. */
+	static constexpr float SingleKeyAtStartTolerance = 0.0005f;
+
+	/** How many keys a Dope Sheet row shows: 1 for a single-key row, else its points. */
+	int32 GetRowKeyCount(int32 LayerIndex) const;
+
+	/** A key placed on a Dope Sheet row at Seconds (played, on the time axis) - anywhere, before its first key or after its last too. */
+	void AddDopeKey(int32 LayerIndex, float Seconds);
+
+	/** The row's key at Seconds (within half a frame), or INDEX_NONE. */
+	int32 FindRowKeyAt(int32 LayerIndex, float Seconds) const;
+
+	/** From a Key Group's first key to its last, of its rows shown (played seconds) - Y below X when it has none. */
+	FVector2f GetGroupKeySpan(int32 GroupIndex) const;
+
+	/**
+	 * Where a scrub by hand to Seconds lands on a Dope Sheet: on the nearest key of any row shown, when one is within Reach
+	 * (seconds) - a slight pull, so the playhead settles on a key rather than a hair beside it. Seconds as it is otherwise, and
+	 * anywhere but a Dope Sheet.
+	 */
+	float SnapScrubToKeys(float Seconds, float Reach) const;
+
+	/** How near a key, in pixels, a scrub by hand is pulled onto it on a Dope Sheet. See SnapScrubToKeys. */
+	static constexpr float ScrubKeySnapPixels = 6.f;
+
+	/**
+	 * A Dope Sheet's row of a kind of key in a Key Group - a type, and a registered type's settings struct (Kind) - other than
+	 * Ignore, or INDEX_NONE. A group has at most one of each kind: Add Key puts a key of a kind it has on that row.
+	 */
+	int32 FindKeyRow(int32 GroupIndex, EWidgetAnimType AnimType, const UScriptStruct* Kind, int32 Ignore = INDEX_NONE) const;
+
+	/**
+	 * A Dope Sheet's row moved above (or, bAfterTarget, below) TargetLayer's row - into its Key Group too, when that has no row of
+	 * its kind. What dragging a row in the Animation Keys list, or a key up or down in the Track Editor, does. One undo step; no
+	 * key moves in time.
+	 */
+	void MoveKeyRow(int32 LayerIndex, int32 TargetLayer, bool bAfterTarget);
+
+	/** The key viewer's diamond: a key at the playhead taken off the row, or one put there. */
+	void ToggleRowKeyAtPlayhead(int32 LayerIndex);
+
+	/** The key viewer's arrows: the playhead to the row's previous (Direction -1) or next (+1) key. */
+	void StepRowKey(int32 LayerIndex, int32 Direction);
+
 	/** Deletes every selected key that can be, as one undoable step. */
 	void DeleteSelectedKeys();
 
@@ -1274,6 +1368,9 @@ public:
 	void UpdateKeyDrag(float LocalSeconds, float SnapThresholdSeconds);
 	void EndKeyDrag();
 	bool IsDraggingKey() const { return KeyDragTransaction.IsValid(); }
+
+	/** UpdateKeyDrag on a Dope Sheet: the carried keys moved on the time axis, each row's start and length following its keys. */
+	void UpdateDopeKeyDrag(float LocalSeconds, float SnapThresholdSeconds);
 
 	// ---------------------------------------------------------------------------------------------
 	// Motion paths - where the animated widgets travel, drawn over the designer's canvas whatever is selected (see WidgetAnimMotionPath.h)
@@ -1857,6 +1954,22 @@ private:
 	/** The collapsed tracks opened in the list, showing a row for each of their tracks. */
 	TSet<FName> ListOpenCollapsed;
 
+	/** The names on the list's rows, by track and by collapsed track - what Rename types into. Remade with the list. */
+	TMap<int32, TWeakPtr<class SWidgetAnimNameField>> ListTrackNameFields;
+	TMap<FName, TWeakPtr<class SWidgetAnimNameField>> ListCollapsedNameFields;
+
+	/** A track's name on its row in the list, renamed in place. */
+	TSharedRef<SWidget> MakeListLayerName(int32 LayerIndex, bool bAnimationTrack, TFunction<bool()> IsWashedOut);
+
+	/** A Keys viewer row's controls (a Dope Sheet's list): its key count, and to the previous key, a key at the playhead, to the next. */
+	TSharedRef<SWidget> MakeKeyRowControls(int32 LayerIndex);
+
+	/** Says why a Dope Sheet row couldn't go where it was sent: its Key Group already has a row of its kind. */
+	void NotifyOneRowPerKind(const FText& Message);
+
+	/** Rename's box at the mouse, where a row isn't there to type into. */
+	void OpenRenamePopup(int32 LayerIndex, FName CollapsedName);
+
 	/**
 	 * Keeps every track's bMutedByEditorScope in step with what the panel shows on its own - the collapsed track open, the
 	 * tracks in the Graph Editor - so the previews play only them.
@@ -2202,6 +2315,34 @@ private:
 	/** A key drag's layer start, and what the key can snap to - both worked out at the press. */
 	float KeyDragLayerStart = 0.f;
 	TArray<float> KeySnapTargets;
+
+	/**
+	 * A Dope Sheet's key drag: every carried row's keys where they were at the press, in played seconds on the time axis -
+	 * a row's first and last keys move its start and end, so the drag is measured on the axis rather than from its start.
+	 */
+	TMap<int32, TArray<float>> DopeDragTimes;
+	bool bDopeKeyDrag = false;
+
+	/** Every key time of a row on the time axis (played seconds): its start plus GetKeyTimes - or, bPoints, GetPointTimes. */
+	void GetRowKeySeconds(int32 LayerIndex, TArray<float>& OutSeconds, bool bPoints = false) const;
+
+	/**
+	 * A Dope Sheet row's keys put at Seconds (on the time axis, in order, one per key it has): its start at the first, its length
+	 * to the last, every key between at its place - nothing else moves. No transaction of its own.
+	 */
+	void SetDopeKeyTimes(int32 LayerIndex, const TArray<float>& Seconds);
+
+	/** Every value of point FromPoint copied onto point ToPoint of a row (a keyframed row: the whole key, its time kept). */
+	void CopyRowPoint(int32 LayerIndex, int32 FromPoint, int32 ToPoint);
+
+	/** A single-key row's two points made the same again, from FromPoint - after a value of one of them was set. */
+	void SyncSingleKeyRow(int32 LayerIndex, int32 FromPoint);
+
+	/**
+	 * One key taken off a Dope Sheet row, no transaction of its own: a first or last key hands its place to the next one in; the
+	 * last two leave a single key. True when the row's only key was asked for - the row itself is then the caller's to delete.
+	 */
+	bool RemoveDopeKey(int32 LayerIndex, int32 KeyIndex);
 
 	TOptional<float> SnapIndicator;
 

@@ -175,6 +175,9 @@ TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
           { ParameterBoundIcon, TEXT("WidgetAnim_ParameterBound.svg") },
           { ParameterMirroredIcon, TEXT("WidgetAnim_ParameterMirrored.svg") },
           { StateMachineActionsIcon, TEXT("WidgetAnim_StateMachineActions.svg") },
+          { TimelineIcon, TEXT("WidgetAnim_Timeline.svg") },
+          { TrackSheetIcon, TEXT("WidgetAnim_TrackSheet.svg") },
+          { DopeSheetIcon, TEXT("WidgetAnim_DopeSheet.svg") },
        };
        for (const TPair<FName, const TCHAR*>& Icon : Icons)
        {

@@ -102,7 +102,7 @@ public:
 	{}
 		SLATE_ARGUMENT(float, Width)
 
-		/** Shown though the key doesn't alter it (Show All Values): dimmed. */
+		/** Shown though the key doesn't alter it (a key's list, or a track's with Show All Values): dimmed. */
 		SLATE_ARGUMENT(bool, Dimmed)
 
 		/** Every cell of this one's column in its table, top to bottom - what Shift+click picks a run of. */
@@ -371,7 +371,9 @@ void SWidgetAnimKeyValues::Construct(const FArguments& InArgs, TWeakPtr<SWidgetA
 		ChildSlot[SNullWidget::NullWidget];
 		return;
 	}
-	const bool bShowAll = Owner->IsShowingAllKeyValues();
+	const bool bForTracks = InArgs._ForTracks;
+	bListAll = !bForTracks || Owner->IsShowingAllKeyValues();
+	const bool bShowAll = bListAll;
 
 	// The keys by track, tracks in the order first given, keys in order along each.
 	for (const SWidgetAnimTimeline::FKeyRef& Ref : InArgs._Keys)
@@ -447,10 +449,12 @@ void SWidgetAnimKeyValues::Construct(const FArguments& InArgs, TWeakPtr<SWidgetA
 	}
 
 	const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Panel;
-	const TSharedRef<SVerticalBox> Box = SNew(SVerticalBox)
+	const TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
 
-		// How to edit them, and Show All Values.
-		+ SVerticalBox::Slot()
+	// A track's list: Show All Values. Keys picked list every value already.
+	if (bForTracks)
+	{
+		Box->AddSlot()
 		.AutoHeight()
 		.Padding(FMargin(0.f, 2.f, 0.f, 6.f))
 		[
@@ -458,20 +462,13 @@ void SWidgetAnimKeyValues::Construct(const FArguments& InArgs, TWeakPtr<SWidgetA
 
 			+ SHorizontalBox::Slot()
 			.FillWidth(1.f)
-			.VAlign(VAlign_Center)
 			[
-				SNew(STextBlock)
-				.AutoWrapText(true)
-				.Font(IDetailLayoutBuilder::GetDetailFontItalic())
-				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-				.Text(Tips::KeyValuesHint())
-				.ToolTipText(Tips::KeyValuesHintTooltip())
+				SNullWidget::NullWidget
 			]
 
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
 			.VAlign(VAlign_Center)
-			.Padding(FMargin(8.f, 0.f, 0.f, 0.f))
 			[
 				SNew(SCheckBox)
 				.ToolTipText(Tips::ShowAllKeyValuesTooltip())
@@ -494,6 +491,7 @@ void SWidgetAnimKeyValues::Construct(const FArguments& InArgs, TWeakPtr<SWidgetA
 				]
 			]
 		];
+	}
 
 	for (int32 PartIndex = 0; PartIndex < Parts.Num(); ++PartIndex)
 	{
@@ -536,7 +534,12 @@ FText SWidgetAnimKeyValues::GetKeyName(int32 LayerIndex, int32 Key) const
 	const FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
 	const int32 NumKeys = WidgetAnimKeyValues::GetNumKeys(Layer);
 	FText Name;
-	if (!WidgetAnimTypeIsKeyframed(Layer.AnimType) && Key == 0)
+	if (Owner->IsDopeSheet())
+	{
+		// A Dope Sheet's keys are keys, counted from 1 - never a start and an end.
+		Name = FText::Format(LOCTEXT("DopeKeyNumber", "Key {0}"), FText::AsNumber(Key + 1));
+	}
+	else if (!WidgetAnimTypeIsKeyframed(Layer.AnimType) && Key == 0)
 	{
 		Name = LOCTEXT("StartKey", "Start");
 	}
@@ -693,7 +696,7 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeCell(const FTrackPart& Part, int32
 {
 	const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
 	const bool bAltered = Part.Shown.IsValidIndex(Row) && Part.Shown[Row].IsValidIndex(Column) && Part.Shown[Row][Column];
-	if (!Owner || (!bAltered && !Owner->IsShowingAllKeyValues()))
+	if (!Owner || (!bAltered && !bListAll))
 	{
 		// Not a value this key alters: nothing in its place, so each key reads as what it changes.
 		return SNew(SBox).WidthOverride(Width);
@@ -708,7 +711,7 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeCell(const FTrackPart& Part, int32
 	TArray<SWidgetAnimTimeline::FValueCell> ColumnCells;
 	for (int32 Other = 0; Other < Part.Keys.Num(); ++Other)
 	{
-		if (Owner->IsShowingAllKeyValues() || (Part.Shown.IsValidIndex(Other) && Part.Shown[Other].IsValidIndex(Column) && Part.Shown[Other][Column]))
+		if (bListAll || (Part.Shown.IsValidIndex(Other) && Part.Shown[Other].IsValidIndex(Column) && Part.Shown[Other][Column]))
 		{
 			SWidgetAnimTimeline::FValueCell& InColumn = ColumnCells.AddDefaulted_GetRef();
 			InColumn.Layer = Part.Layer;

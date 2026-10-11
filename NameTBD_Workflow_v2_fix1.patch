@@ -1,0 +1,20 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEasing.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEasing.h
+index 0cb577e..7214eb6 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEasing.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimEasing.h
+@@ -13,12 +13,13 @@
+  * depends on nothing else in the plugin, so every animation family can share one easing implementation
+  * rather than each one growing its own copy. WidgetAnimLibrary.h includes this transitively, so nothing
+  * that used to say EWidgetAnimEasing needs its includes changed.
++ *
++ * Its values are shown under Unreal's own names: the curve editor's key interpolations (Linear, Constant) and the Ease node's
++ * (Ease In, Ease Out, Ease In Out); a Curve asset as Sequencer's easing calls one. The value names stay, for saved data and scripts.
+  */
+ UENUM(BlueprintType)
+ enum class EWidgetAnimEasing : uint8
+ {
+-	// Shown under Unreal's own names: the curve editor's key interpolations (Linear, Constant) and the Ease node's (Ease In,
+-	// Ease Out, Ease In Out); a Curve asset as Sequencer's easing calls one. The value names stay, for saved data and scripts.
+ 	Linear    UMETA(ToolTip = "A constant speed from start to end."),
+ 	EaseIn    UMETA(DisplayName = "Ease In", ToolTip = "Leaves slowly and arrives at speed."),
+ 	EaseOut   UMETA(DisplayName = "Ease Out", ToolTip = "Leaves at speed and settles into the end."),

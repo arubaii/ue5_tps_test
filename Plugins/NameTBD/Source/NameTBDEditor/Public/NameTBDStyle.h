@@ -49,6 +49,16 @@ public:
 	static inline const FName ShapeEditIcon = TEXT("NameTBD.Shape.Edit");
 	static inline const FName SaveIcon = TEXT("NameTBD.Save");
 
+	/**
+	 * An animation timeline in general (the panel's Animation Timeline mode, the Script area): a clapper over a strip of keyed
+	 * lanes (Resources/WidgetAnim_Timeline.svg). Each timeline by its kind, wherever one is named (the panel's picker and its
+	 * list, the State Machine editor's Timelines): a Track Sheet's, bars on lanes (Resources/WidgetAnim_TrackSheet.svg); a Dope
+	 * Sheet's, keys on lanes, no bars (Resources/WidgetAnim_DopeSheet.svg).
+	 */
+	static inline const FName TimelineIcon = TEXT("NameTBD.Timeline.TimelineIcon");
+	static inline const FName TrackSheetIcon = TEXT("NameTBD.Timeline.TrackSheetIcon");
+	static inline const FName DopeSheetIcon = TEXT("NameTBD.Timeline.DopeSheetIcon");
+
 	/** The Widget Animations panel's Graph Editor, where the editor has no Curve Editor icon of its own. */
 	static inline const FName GraphEditorIcon = TEXT("NameTBD.GraphEditor");
 
