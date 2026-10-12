@@ -22,7 +22,7 @@ FText FWidgetAnimParticleCueEvaluator::GetDisplayName() const
 
 FText FWidgetAnimParticleCueEvaluator::GetDescription() const
 {
-	return LOCTEXT("ParticlesDescription", "Fires Niagara particles on a Niagara Particles widget, or on every one found: a burst of the track's own Niagara System and User Parameters (or each widget's own) where the widget is or on the track's widget; or Play, Stop Emitting, Clear. Seen in the editor's previews too.");
+	return LOCTEXT("ParticlesDescription", "Fires Niagara particles on a Niagara Particles widget, or on every one found: a burst of the track's own Niagara System and User Parameters (or, with Use Widget's Niagara System, each widget's own) where the widget is or on the track's widget; or Play, Stop Emitting, Clear. Seen in the editor's previews too.");
 }
 
 FText FWidgetAnimParticleCueEvaluator::GetTrackSummary(const FInstancedStruct& Params) const
@@ -40,12 +40,12 @@ FText FWidgetAnimParticleCueEvaluator::GetTrackSummary(const FInstancedStruct& P
 	case EWidgetAnimParticleCueAction::BurstAtTarget:
 		What = TrackSystem
 			? FText::Format(LOCTEXT("BurstSystemSummary", "Burst {0}"), FText::FromString(TrackSystem->GetName()))
-			: LOCTEXT("BurstSummary", "Burst");
+			: CueParams->PlaysNothing() ? LOCTEXT("BurstNoneSummary", "Burst (no system)") : LOCTEXT("BurstSummary", "Burst");
 		break;
 	case EWidgetAnimParticleCueAction::Play:
 		What = TrackSystem
 			? FText::Format(LOCTEXT("PlaySystemSummary", "Play {0}"), FText::FromString(TrackSystem->GetName()))
-			: LOCTEXT("PlaySummary", "Play");
+			: CueParams->PlaysNothing() ? LOCTEXT("PlayNoneSummary", "Play (no system)") : LOCTEXT("PlaySummary", "Play");
 		break;
 	case EWidgetAnimParticleCueAction::StopEmitting:
 		What = LOCTEXT("StopSummary", "Stop Emitting");
@@ -70,6 +70,12 @@ void FWidgetAnimParticleCueEvaluator::Fire(const FWidgetAnimCueContext& Context)
 	const FWidgetAnimParticleCueParams* CueParams = Context.Params ? GetParams(*Context.Params) : nullptr;
 	UWidget* TrackWidget = Context.Info.Target ? Context.Info.Target.Get() : Context.Info.Host.Get();
 	if (!CueParams || !TrackWidget)
+	{
+		return;
+	}
+
+	// Use Widget's Niagara System off and no system picked: the track plays None - nothing - never the widget's own.
+	if (CueParams->PlaysNothing())
 	{
 		return;
 	}
@@ -133,7 +139,7 @@ void FWidgetAnimParticleCueEvaluator::Fire(const FWidgetAnimCueContext& Context)
 			}
 			break;
 		case EWidgetAnimParticleCueAction::Play:
-			// The track's system as the widget's own, or the widget's system when the track names none (or uses the widget's).
+			// The track's system as the widget's own, or the widget's system with Use Widget's Niagara System.
 			Particles->PlayWithOverrides(TrackSystem, TrackOverrides);
 			break;
 		case EWidgetAnimParticleCueAction::StopEmitting:

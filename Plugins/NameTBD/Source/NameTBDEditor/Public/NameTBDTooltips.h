@@ -557,7 +557,7 @@ namespace NameTBD::Tooltips
 		inline FText TrackControlsSwitchTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "TrackControlsSwitchTooltip",
-				"Track Controls: How tracks behave as they are edited - Snapping, Linked Edges, Auto Key, and the designer's Motion Path.");
+				"Timeline Controls: How tracks and keys behave as they are edited - Snapping, Linked Edges, Auto Key, and the designer's Motion Path.");
 		}
 
 		inline FText MotionPathsOnlyTooltip()
@@ -898,6 +898,24 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyCurveSpringNote",
 				"{0} Spring tracks among them spring across their whole run, and have no curves between keys.");
+		}
+
+		inline FText KeyTracksTimingTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyTracksTimingTooltip",
+				"Timing of every track the selected keys are on: Tween (Duration and Easing) or Spring. Value-driven and locked tracks are left as they are.");
+		}
+
+		inline FText KeyTracksEasingTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyTracksEasingTooltip",
+				"Easing of every tween track the selected keys are on. A Curve Asset is picked on the track itself.");
+		}
+
+		inline FText KeyTracksSpringTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyTracksSpringTooltip",
+				"Spring of every spring track the selected keys are on - a built-in feel for them all. Fine-tune one track's spring by selecting the track.");
 		}
 
 		inline FText KeyCurvePanelHelp()
@@ -1954,7 +1972,7 @@ namespace NameTBD::Tooltips
 		inline FText GraphCurveTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "GraphCurveTooltip",
-				"Curve To Next Key: how each selected key moves on to the next. Cubic (User) keeps the shape it has now and gives it handles to drag. On a track with no keys, the presets set its Easing.");
+				"Curve To Next Key: how each selected key moves on to the next. Handles keeps the shape it has now and gives it handles to drag. On a track with no keys, the presets set its Easing.");
 		}
 
 		inline FText GraphCurveNone()
@@ -2172,10 +2190,65 @@ namespace NameTBD::Tooltips
 				"{0} at this key. Type a number or math: +8 adds 8, *2 doubles, x * 2 + 1 works it out from the value here. Drag to change it. Ctrl+click to pick several boxes (Shift+click a run down a column): typing into one sets them all - each worked out from its own value - and dragging one moves them all by the same amount.");
 		}
 
-		inline FText ShowAllKeyValuesTooltip()
+		inline FText DragSteppingTooltip()
 		{
-			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "ShowAllKeyValuesTooltip",
-				"List every value this track's keys hold, not only those each key changes. The ones a key leaves as they were are dimmed. A key picked on its own always lists every value.");
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DragSteppingTooltip",
+				"Drag: how a dragged key or track follows the mouse - wherever it is, or in whole steps of the step set here, in the timeline's own unit (seconds, percent, or frames while time shows in frames). Left and Right move the selected keys - or, with no key selected, the selected tracks - by one step either way (ten with Shift).");
+		}
+
+		inline FText DragFollowCursorTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DragFollowCursorTooltip",
+				"Follow Cursor: a dragged key or track goes wherever the mouse is - snapping, when Snapping is on, aside.");
+		}
+
+		inline FText DragStepsTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DragStepsTooltip",
+				"Steps: a dragged key lands on the step grid (0, one step, two steps...); a dragged track moves by whole steps. Snapping, when it is on, still catches the key on what it comes near.");
+		}
+
+		inline FText DragStepSizeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "DragStepSizeTooltip",
+				"The step, in the timeline's own unit: seconds, percent of a percentage timeline, or frames while time shows in frames. Each unit keeps its own step.");
+		}
+
+		/**
+		 * A Key Values box's short description, by what it sets: "Point.<what>" for a start-to-end track's value, "Transform.<part>"
+		 * for a Transform key, a Shape Box setting's name ("EdgeBow", "Corners.Style"). Empty for one with none here - the box then
+		 * uses its setting's own tooltip. Shown under the value's name, in the panel's own tooltip (see SWidgetAnimKeyValues).
+		 */
+		inline FText KeyValueDescription(const FString& What)
+		{
+			if (What == TEXT("Point.Opacity")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Opacity", "How see-through the widget is at this key: 0 invisible, 1 solid."); }
+			if (What == TEXT("Point.Scale")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Scale", "The widget's size at this key, about its pivot: 1 as designed, 2 twice as big."); }
+			if (What == TEXT("Point.Distance")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Distance", "How far away the widget slides in from at this key, in Slate units. 0 is where it is laid out."); }
+			if (What == TEXT("Point.Angle")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Angle", "The widget's turn at this key, in degrees, clockwise about its pivot."); }
+			if (What == TEXT("Point.Value")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Value", "The material parameter's value at this key."); }
+			if (What == TEXT("Point.Color")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Color", "That channel of the color at this key: 0 to 1, more for an HDR glow."); }
+			if (What == TEXT("Point.Registered")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Registered", "This track's value at this key - what it travels through on its way from start to end."); }
+			if (What == TEXT("Transform.Translation")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Transform_Translation", "Moves the widget from where it is laid out, in Slate units: X to the right, Y down."); }
+			if (What == TEXT("Transform.Scale")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Transform_Scale", "Sizes the widget about its pivot: 1 as designed, 2 twice as big, negative mirrors it."); }
+			if (What == TEXT("Transform.Shear")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Transform_Shear", "Slants the widget, in degrees: X leans its sides, Y its top and bottom."); }
+			if (What == TEXT("Transform.Angle")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Transform_Angle", "Turns the widget about its pivot, in degrees, clockwise."); }
+			if (What == TEXT("Extrude")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Extrude", "Moves edges outward, in Slate units: +X the right edge, -X the left, +Y the top, -Y the bottom. The content is laid out at the grown size."); }
+			if (What == TEXT("Inset")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Inset", "Pulls edges inward, in Slate units: +X the right edge, -X the left, +Y the top, -Y the bottom. The content is laid out at the shrunk size."); }
+			if (What == TEXT("Corners.Style")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Corners_Style", "How the corner is cut: Bevel slides it along its edges, so the whole side leans; Chamfer cuts it off with a straight line."); }
+			if (What == TEXT("Corners.Size")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Corners_Size", "How far the corner is cut, in Slate units: X along its top or bottom edge, Y along its side. 0 leaves it square."); }
+			if (What == TEXT("Bend")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Bend", "Arcs the whole box, content and all: how far its middle moves from its ends. Y bends a row (positive sags), X a column."); }
+			if (What == TEXT("EdgeBow")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_EdgeBow", "Curves that one edge, in Slate units at its middle: positive bulges it out, negative pinches it in."); }
+			if (What == TEXT("Angle")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Angle", "Turns the box in depth, in degrees: X brings its right side toward you, Y its bottom."); }
+			if (What == TEXT("Wrap")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Wrap", "Wraps the box round a curved surface, in degrees of arc across it: X across its width, Y across its height."); }
+			if (What == TEXT("Perspective")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Perspective", "How strong the depth taper of Angle and Wrap is: 0 none, 1 strong. 0.3 to 0.6 suits most HUDs."); }
+			if (What == TEXT("Rotation")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Rotation", "Spins the finished shape about its middle, in degrees, clockwise - after everything else."); }
+			return FText::GetEmpty();
+		}
+
+		inline FText KeyChoiceCellTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyChoiceCellTooltip",
+				"{0} at this key - pick one from the list. Ctrl+click to pick several boxes (Shift+click a run down a column): a choice made in one is made in them all.");
 		}
 
 		inline FText KeyValuesMoreTracksNote()
@@ -2193,7 +2266,7 @@ namespace NameTBD::Tooltips
 		inline FText KeyValuesNoneNote()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValuesNoneNote",
-				"No value changes at these keys. Show All Values lists them anyway.");
+				"No value changes at these keys.");
 		}
 
 		inline FText KeyValuesKeyTooltip()

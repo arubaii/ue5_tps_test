@@ -32,6 +32,17 @@ enum class EWidgetAnimScriptEditorTheme : uint8
 	HighContrast UMETA(DisplayName = "High Contrast")
 };
 
+/** How a dragged key or track follows the mouse in the Track Editor - the Drag control on the Track Editor's strip. */
+UENUM()
+enum class EWidgetAnimDragStepping : uint8
+{
+	/** Wherever the mouse is (snapping, when Snapping is on, aside). */
+	FollowCursor UMETA(DisplayName = "Follow Cursor"),
+
+	/** The mouse, in whole steps of Drag Step: a key lands on the step grid, a track moves by whole steps. */
+	Steps UMETA(DisplayName = "Steps")
+};
+
 /** How much of a motion path is drawn on the designer's canvas. */
 UENUM()
 enum class EWidgetAnimMotionPathRange : uint8
@@ -155,6 +166,26 @@ public:
 	 */
 	UPROPERTY(config, EditAnywhere, Category = "Track Controls", meta = (DisplayName = "Arrow Keys Can Extend the Animation"))
 	bool bArrowKeysExtendAnimation = true;
+
+	/**
+	 * How a dragged key or track follows the mouse: wherever it is, or in whole steps of the Drag Step below - in the timeline's
+	 * own unit. The Drag control on the Track Editor's strip sets it too. Left and Right always move the selected keys or tracks
+	 * by one step (ten with Shift), whichever is picked.
+	 */
+	UPROPERTY(config, EditAnywhere, Category = "Track Controls", meta = (DisplayName = "Drag"))
+	EWidgetAnimDragStepping DragStepping = EWidgetAnimDragStepping::FollowCursor;
+
+	/** The step of a seconds timeline: what Steps drags in, and what Left / Right move by. */
+	UPROPERTY(config, EditAnywhere, Category = "Track Controls", meta = (DisplayName = "Drag Step (Seconds)", ClampMin = "0.001", ClampMax = "10", UIMin = "0.01", UIMax = "1", Units = "s"))
+	float DragStepSeconds = 0.05f;
+
+	/** The step of a percentage timeline, in percent of it. */
+	UPROPERTY(config, EditAnywhere, Category = "Track Controls", meta = (DisplayName = "Drag Step (Percent)", ClampMin = "0.01", ClampMax = "100", UIMin = "0.5", UIMax = "25"))
+	float DragStepPercent = 5.f;
+
+	/** The step while Show Time In Frames is on, in frames of its Frame Rate. */
+	UPROPERTY(config, EditAnywhere, Category = "Track Controls", meta = (DisplayName = "Drag Step (Frames)", ClampMin = "1", ClampMax = "1000", UIMin = "1", UIMax = "30"))
+	int32 DragStepFrames = 1;
 
 	/**
 	 * Editing a key - its value, its curve, a Transform or Shape key's pose - jumps the preview to that key, so the change
@@ -426,6 +457,12 @@ public:
 
 	void SetTrackSnapping(bool bEnabled);
 	void SetLinkedEdges(bool bEnabled);
+
+	/** Drag and its steps, saved - see DragStepping. */
+	void SetDragStepping(EWidgetAnimDragStepping Stepping);
+	void SetDragStepSeconds(float Seconds);
+	void SetDragStepPercent(float Percent);
+	void SetDragStepFrames(int32 Frames);
 
 	/** Show Time In Frames and its Frame Rate, saved - see bShowTimeInFrames. */
 	void SetShowTimeInFrames(bool bEnabled);

@@ -2,11 +2,13 @@
 
 #include "WidgetAnimKeyValues.h"
 
+#include "NameTBDTooltips.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimLibrary.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimTransform.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimEvaluator.h"
 #include "Styling/SlateBrush.h"
 #include "StructUtils/PropertyBag.h"
+#include "UObject/EnumProperty.h"
 #include "UObject/UnrealType.h"
 
 #define LOCTEXT_NAMESPACE "WidgetAnimKeyValues"
@@ -18,20 +20,97 @@ namespace WidgetAnimKeyValues
 		/** Most numbers a Shape Box or Shape key lists - a shape has a few dozen; a struct of hundreds would only be noise. */
 		constexpr int32 MaxFieldChannels = 160;
 
+		/**
+		 * A registered type's start or end number as a setting of its own - the StartValue / EndValue its settings struct holds,
+		 * which every registered type that travels between two numbers it is given reads its endpoints from (Count Up, Text
+		 * Reveal, Scramble, Wave, Shake, Letter Spacing, Blueprint types). Null for a type whose ends are fixed (a Shape, a
+		 * Design, a cue) - those stay read-only.
+		 */
+		const FNumericProperty* FindRegisteredEndpoint(const FWidgetAnimLayer& Layer, bool bStart)
+		{
+			const UScriptStruct* Struct = Layer.TypeParams.GetScriptStruct();
+			const FNumericProperty* Numeric = Struct ? CastField<FNumericProperty>(Struct->FindPropertyByName(bStart ? FName(TEXT("StartValue")) : FName(TEXT("EndValue")))) : nullptr;
+			return Numeric && !Numeric->IsEnum() ? Numeric : nullptr;
+		}
+
+		/** Value kept inside the setting's own Clamp Min / Clamp Max, as its Details row would keep it. */
+		double ClampToMeta(const FProperty* Property, double Value)
+		{
+			if (Property->HasMetaData(TEXT("ClampMin")))
+			{
+				Value = FMath::Max(Value, FCString::Atod(*Property->GetMetaData(TEXT("ClampMin"))));
+			}
+			if (Property->HasMetaData(TEXT("ClampMax")))
+			{
+				Value = FMath::Min(Value, FCString::Atod(*Property->GetMetaData(TEXT("ClampMax"))));
+			}
+			return Value;
+		}
+
 		/** How far apart two numbers may be and still be the same number - what an unchanged channel is. */
 		bool IsSame(double A, double B)
 		{
 			return FMath::Abs(A - B) <= 1.e-4 * FMath::Max(1.0, FMath::Max(FMath::Abs(A), FMath::Abs(B)));
 		}
 
-		FChannel MakePointChannel(const FText& Label, EPointField Field, float DragStep)
+		FChannel MakePointChannel(const FText& Label, EPointField Field, float DragStep, TOptional<double> SliderMin = TOptional<double>(), TOptional<double> SliderMax = TOptional<double>())
 		{
 			FChannel Channel;
 			Channel.Label = Label;
 			Channel.Source = ESource::Point;
 			Channel.PointField = Field;
 			Channel.DragStep = DragStep;
+			Channel.SliderMin = SliderMin;
+			Channel.SliderMax = SliderMax;
 			return Channel;
+		}
+
+		/** A line of description for a point channel: the plugin's own for it ("Point.Opacity"). */
+		FChannel Described(FChannel Channel, const TCHAR* What)
+		{
+			Channel.Description = NameTBD::Tooltips::WidgetAnimEditor::KeyValueDescription(What);
+			return Channel;
+		}
+
+		/** The first sentence of a setting's own tooltip - its doc comment - as a key value's line of description. */
+		FText FirstSentence(const FProperty* Property)
+		{
+			if (!Property)
+			{
+				return FText::GetEmpty();
+			}
+			FString Tip = Property->GetToolTipText(/*bShortTooltip=*/true).ToString();
+			int32 End = INDEX_NONE;
+			if (Tip.FindChar(TEXT('\n'), End))
+			{
+				Tip.LeftInline(End);
+			}
+			const int32 Stop = Tip.Find(TEXT(". "));
+			if (Stop != INDEX_NONE)
+			{
+				Tip.LeftInline(Stop + 1);
+			}
+			Tip.TrimStartAndEndInline();
+			// A tooltip that only repeats the name says nothing.
+			return Tip.IsEmpty() || Tip == Property->GetName() || Tip == Property->GetDisplayNameText().ToString() ? FText::GetEmpty() : FText::FromString(Tip);
+		}
+
+		/** A setting's own drag range: its UIMin / UIMax, else ClampMin / ClampMax - only when it has both ends. */
+		void ReadSliderRange(const FProperty* Property, FChannel& Channel)
+		{
+			if (!Property)
+			{
+				return;
+			}
+			for (const TPair<const TCHAR*, const TCHAR*>& Keys : { TPair<const TCHAR*, const TCHAR*>(TEXT("UIMin"), TEXT("UIMax")), TPair<const TCHAR*, const TCHAR*>(TEXT("ClampMin"), TEXT("ClampMax")) })
+			{
+				if (Property->HasMetaData(Keys.Key) && Property->HasMetaData(Keys.Value))
+				{
+					Channel.SliderMin = FCString::Atod(*Property->GetMetaData(Keys.Key));
+					Channel.SliderMax = FCString::Atod(*Property->GetMetaData(Keys.Value));
+					return;
+				}
+			}
 		}
 
 		FText ColorPart(const FText& Base, EPointField Field)
@@ -47,7 +126,7 @@ namespace WidgetAnimKeyValues
 		{
 			for (const EPointField Field : { EPointField::ColorR, EPointField::ColorG, EPointField::ColorB, EPointField::ColorA })
 			{
-				Out.Add(MakePointChannel(ColorPart(Base, Field), Field, 0.01f));
+				Out.Add(Described(MakePointChannel(ColorPart(Base, Field), Field, 0.01f, 0.0, 1.0), TEXT("Point.Color")));
 			}
 		}
 
@@ -64,20 +143,63 @@ namespace WidgetAnimKeyValues
 			{
 				return;
 			}
-			if (const FNumericProperty* Numeric = CastField<FNumericProperty>(Property))
+			// A number, a choice from a list (a corner's Bevel / Chamfer - shown as a drop-down) or an on/off (a check box).
+			const FNumericProperty* Numeric = CastField<FNumericProperty>(Property);
+			const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Property);
+			const FBoolProperty* BoolProperty = CastField<FBoolProperty>(Property);
+			if (Numeric || EnumProperty || BoolProperty)
 			{
-				// A choice from a list is no number to type.
-				if (!Numeric->IsEnum())
+				const UEnum* Enum = EnumProperty ? EnumProperty->GetEnum() : Numeric && Numeric->IsEnum() ? Numeric->GetIntPropertyEnum() : nullptr;
+				if ((EnumProperty || (Numeric && Numeric->IsEnum())) && !Enum)
 				{
-					FChannel& Channel = Out.AddDefaulted_GetRef();
-					Channel.Label = FText::FromString(Label);
-					Channel.Source = ESource::Field;
-					Channel.RootName = RootName;
-					Channel.RootProperty = Root;
-					Channel.RootClass = Root->GetClass();
-					Channel.Tail = Tail;
-					Channel.bInteger = !Numeric->IsFloatingPoint();
-					Channel.DragStep = Channel.bInteger ? 1.f : GuessDragStep(Label, bColor);
+					return;
+				}
+				FChannel& Channel = Out.AddDefaulted_GetRef();
+				Channel.Label = FText::FromString(Label);
+				Channel.Source = ESource::Field;
+				Channel.RootName = RootName;
+				Channel.RootProperty = Root;
+				Channel.RootClass = Root->GetClass();
+				// What it does: a Shape Box setting's line from the plugin's tooltips ("Corners.Style"), else the number's own tooltip,
+				// else its setting's.
+				FString What = RootName.ToString();
+				if (What == TEXT("Corners") && Tail.Num() >= 2)
+				{
+					What += TEXT(".") + Tail[1]->GetName();
+				}
+				Channel.Description = NameTBD::Tooltips::WidgetAnimEditor::KeyValueDescription(What);
+				if (Channel.Description.IsEmpty())
+				{
+					Channel.Description = FirstSentence(Property);
+				}
+				if (Channel.Description.IsEmpty() && Property != Root)
+				{
+					Channel.Description = FirstSentence(Root);
+				}
+				if (Tail.Num() > 0)
+				{
+					// One number of a setting of several: listed under the setting's name, without it.
+					const FString GroupName = Root->GetDisplayNameText().ToString();
+					Channel.Group = FText::FromString(GroupName);
+					FString Short = Label;
+					Short.RemoveFromStart(GroupName + TEXT(" "));
+					Channel.ShortLabel = FText::FromString(Short);
+				}
+				Channel.Tail = Tail;
+				Channel.Enum = Enum;
+				Channel.bBool = BoolProperty != nullptr;
+				Channel.bInteger = Enum || BoolProperty || (Numeric && !Numeric->IsFloatingPoint());
+				Channel.DragStep = Channel.bInteger ? 1.f : GuessDragStep(Label, bColor);
+				// Its own range (the member's, else the setting's around it, as a struct's members carry none); a color 0 to 1.
+				ReadSliderRange(Property, Channel);
+				if (!Channel.SliderMin.IsSet() && Tail.Num() > 0)
+				{
+					ReadSliderRange(Root, Channel);
+				}
+				if (!Channel.SliderMin.IsSet() && bColor && !Channel.bInteger)
+				{
+					Channel.SliderMin = 0.0;
+					Channel.SliderMax = 1.0;
 				}
 				return;
 			}
@@ -133,7 +255,7 @@ namespace WidgetAnimKeyValues
 		}
 
 		/** Down through the channel's structs from its setting to the number itself, and that number's property. */
-		const void* WalkField(const FChannel& Channel, const void* Root, const FNumericProperty*& OutLeaf)
+		const void* WalkField(const FChannel& Channel, const void* Root, const FProperty*& OutLeaf)
 		{
 			OutLeaf = nullptr;
 			const void* At = Root;
@@ -148,19 +270,60 @@ namespace WidgetAnimKeyValues
 			// The leaf: the last member, or the setting itself - a bag's looked up again, so its own property is read.
 			if (Channel.Tail.Num() > 0)
 			{
-				OutLeaf = CastField<FNumericProperty>(Channel.Tail.Last());
+				OutLeaf = Channel.Tail.Last();
 			}
 			return At;
 		}
 
-		const FNumericProperty* FindRootLeaf(const FWidgetAnimLayer& Layer, int32 Key, const FChannel& Channel)
+		const FProperty* FindRootLeaf(const FWidgetAnimLayer& Layer, int32 Key, const FChannel& Channel)
 		{
 			if (Layer.AnimType == EWidgetAnimType::ShapeBox)
 			{
-				return CastField<FNumericProperty>(Channel.RootProperty);
+				return Channel.RootProperty;
 			}
 			const FPropertyBagPropertyDesc* Desc = Layer.Transform.Keys.IsValidIndex(Key) ? Layer.Transform.Keys[Key].ShapeValues.FindPropertyDescByName(Channel.RootName) : nullptr;
-			return Desc ? CastField<FNumericProperty>(Desc->CachedProperty) : nullptr;
+			return Desc ? Desc->CachedProperty : nullptr;
+		}
+
+		/** A leaf's value as a number: a number as it is, a choice as its entry's value, an on/off as 1 or 0. Unset for anything else. */
+		TOptional<double> ReadLeaf(const FProperty* Leaf, const void* At)
+		{
+			if (const FBoolProperty* BoolProperty = CastField<FBoolProperty>(Leaf))
+			{
+				return BoolProperty->GetPropertyValue(At) ? 1.0 : 0.0;
+			}
+			const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Leaf);
+			const FNumericProperty* Numeric = EnumProperty ? EnumProperty->GetUnderlyingProperty() : CastField<FNumericProperty>(Leaf);
+			if (!Numeric)
+			{
+				return TOptional<double>();
+			}
+			return Numeric->IsFloatingPoint() ? Numeric->GetFloatingPointPropertyValue(At) : static_cast<double>(Numeric->GetSignedIntPropertyValue(At));
+		}
+
+		/** Sets a leaf from a number - see ReadLeaf. False for a leaf that is none of those. */
+		bool WriteLeaf(const FProperty* Leaf, void* At, double Value)
+		{
+			if (const FBoolProperty* BoolProperty = CastField<FBoolProperty>(Leaf))
+			{
+				BoolProperty->SetPropertyValue(At, Value >= 0.5);
+				return true;
+			}
+			const FEnumProperty* EnumProperty = CastField<FEnumProperty>(Leaf);
+			const FNumericProperty* Numeric = EnumProperty ? EnumProperty->GetUnderlyingProperty() : CastField<FNumericProperty>(Leaf);
+			if (!Numeric)
+			{
+				return false;
+			}
+			if (Numeric->IsFloatingPoint())
+			{
+				Numeric->SetFloatingPointPropertyValue(At, Value);
+			}
+			else
+			{
+				Numeric->SetIntPropertyValue(At, static_cast<int64>(FMath::RoundHalfFromZero(Value)));
+			}
+			return true;
 		}
 
 		double ReadTransformField(const FWidgetTransform& Transform, int32 Field)
@@ -419,20 +582,20 @@ namespace WidgetAnimKeyValues
 		switch (Layer.AnimType)
 		{
 		case EWidgetAnimType::Fade:
-			OutChannels.Add(MakePointChannel(LOCTEXT("Opacity", "Opacity"), EPointField::Value, 0.01f));
+			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Opacity", "Opacity"), EPointField::Value, 0.01f, 0.0, 1.0), TEXT("Point.Opacity")));
 			return;
 		case EWidgetAnimType::Scale:
-			OutChannels.Add(MakePointChannel(LOCTEXT("ScaleX", "Scale X"), EPointField::Value, 0.01f));
-			OutChannels.Add(MakePointChannel(LOCTEXT("ScaleY", "Scale Y"), EPointField::ValueY, 0.01f));
+			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScaleX", "Scale X"), EPointField::Value, 0.01f), TEXT("Point.Scale")));
+			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScaleY", "Scale Y"), EPointField::ValueY, 0.01f), TEXT("Point.Scale")));
 			return;
 		case EWidgetAnimType::Slide:
-			OutChannels.Add(MakePointChannel(LOCTEXT("Distance", "Distance"), EPointField::Value, 1.f));
+			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Distance", "Distance"), EPointField::Value, 1.f), TEXT("Point.Distance")));
 			return;
 		case EWidgetAnimType::Rotate:
-			OutChannels.Add(MakePointChannel(LOCTEXT("Angle", "Angle"), EPointField::Value, 1.f));
+			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Angle", "Angle"), EPointField::Value, 1.f), TEXT("Point.Angle")));
 			return;
 		case EWidgetAnimType::MaterialScalar:
-			OutChannels.Add(MakePointChannel(LOCTEXT("ScalarValue", "Value"), EPointField::Value, 0.01f));
+			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScalarValue", "Value"), EPointField::Value, 0.01f), TEXT("Point.Value")));
 			return;
 		case EWidgetAnimType::MaterialVector:
 			AddColorChannels(LOCTEXT("VectorValue", "Value"), OutChannels);
@@ -447,7 +610,7 @@ namespace WidgetAnimKeyValues
 			const EWidgetAnimKeyContent Content = Evaluator->GetKeyContent(Layer.TypeParams);
 			if (Content != EWidgetAnimKeyContent::Color)
 			{
-				OutChannels.Add(MakePointChannel(Evaluator->GetTrackValueLabel(Layer.TypeParams), EPointField::Value, 0.1f));
+				OutChannels.Add(Described(MakePointChannel(Evaluator->GetTrackValueLabel(Layer.TypeParams), EPointField::Value, 0.1f), TEXT("Point.Registered")));
 			}
 			if (Content != EWidgetAnimKeyContent::Value)
 			{
@@ -475,6 +638,8 @@ namespace WidgetAnimKeyValues
 				Channel.Source = ESource::Transform;
 				Channel.TransformField = Field;
 				Channel.DragStep = TransformSteps[Field];
+				static const TCHAR* TransformParts[] = { TEXT("Transform.Translation"), TEXT("Transform.Translation"), TEXT("Transform.Scale"), TEXT("Transform.Scale"), TEXT("Transform.Shear"), TEXT("Transform.Shear"), TEXT("Transform.Angle") };
+				Channel.Description = NameTBD::Tooltips::WidgetAnimEditor::KeyValueDescription(TransformParts[Field]);
 			}
 			return;
 		}
@@ -576,7 +741,7 @@ namespace WidgetAnimKeyValues
 			{
 				return TOptional<double>();
 			}
-			const FNumericProperty* Leaf = nullptr;
+			const FProperty* Leaf = nullptr;
 			const void* Value = WalkField(Channel, GetFieldRoot(Layer, Key, Channel), Leaf);
 			if (!Leaf)
 			{
@@ -586,7 +751,7 @@ namespace WidgetAnimKeyValues
 			{
 				return TOptional<double>();
 			}
-			return Leaf->IsFloatingPoint() ? Leaf->GetFloatingPointPropertyValue(Value) : static_cast<double>(Leaf->GetSignedIntPropertyValue(Value));
+			return ReadLeaf(Leaf, Value);
 		}
 		}
 		return TOptional<double>();
@@ -612,7 +777,7 @@ namespace WidgetAnimKeyValues
 		if (Channel.Source == ESource::Point)
 		{
 			const bool bEdge = Key == 0 || Key == NumKeys - 1;
-			if (bEdge && Layer.AnimType == EWidgetAnimType::Custom)
+			if (bEdge && Layer.AnimType == EWidgetAnimType::Custom && (IsColorField(Channel.PointField) || !FindRegisteredEndpoint(Layer, /*bStart=*/Key == 0)))
 			{
 				return No(LOCTEXT("RegisteredEdgeWhyNot", "This track's start and end values are its own settings - set them under Track Values."));
 			}
@@ -690,6 +855,26 @@ namespace WidgetAnimKeyValues
 			case EWidgetAnimType::MaterialVector:
 				WriteColorField(bStart ? Layer.StartVectorValue : Layer.EndVectorValue, Channel.PointField, Number);
 				return true;
+			case EWidgetAnimType::Custom:
+			{
+				// Its Start / End setting, at full precision, inside the setting's own limits.
+				const FNumericProperty* Endpoint = FindRegisteredEndpoint(Layer, bStart);
+				void* Memory = Endpoint ? Endpoint->ContainerPtrToValuePtr<void>(Layer.TypeParams.GetMutableMemory()) : nullptr;
+				if (!Memory)
+				{
+					return false;
+				}
+				const double Clamped = ClampToMeta(Endpoint, Value);
+				if (Endpoint->IsFloatingPoint())
+				{
+					Endpoint->SetFloatingPointPropertyValue(Memory, Clamped);
+				}
+				else
+				{
+					Endpoint->SetIntPropertyValue(Memory, static_cast<int64>(FMath::RoundHalfFromZero(Clamped)));
+				}
+				return true;
+			}
 			default:
 				return false;
 			}
@@ -710,23 +895,89 @@ namespace WidgetAnimKeyValues
 
 		case ESource::Field:
 		{
-			const FNumericProperty* Leaf = nullptr;
+			const FProperty* Leaf = nullptr;
 			void* At = const_cast<void*>(WalkField(Channel, GetFieldRoot(Layer, Key, Channel), Leaf));
 			if (!Leaf)
 			{
 				Leaf = FindRootLeaf(Layer, Key, Channel);
 			}
-			if (!Leaf || !At)
+			return Leaf && At && WriteLeaf(Leaf, At, Value);
+		}
+		}
+		return false;
+	}
+
+	bool GetFieldPath(const FWidgetAnimLayer& Layer, int32 Key, const FChannel& Channel, FString& OutPath)
+	{
+		const int32 NumKeys = GetNumKeys(Layer);
+		if (Key < 0 || Key >= NumKeys)
+		{
+			return false;
+		}
+
+		// A color channel's part of its color, a point's number by its field.
+		auto ColorMember = [](EPointField Field)
+		{
+			return Field == EPointField::ColorR ? TEXT("R") : Field == EPointField::ColorG ? TEXT("G") : Field == EPointField::ColorB ? TEXT("B") : TEXT("A");
+		};
+
+		switch (Channel.Source)
+		{
+		case ESource::Point:
+		{
+			if (Key > 0 && Key < NumKeys - 1)
 			{
+				const FString KeyPath = FString::Printf(TEXT("ValueKeys.Keys[%d]."), Key - 1);
+				OutPath = IsColorField(Channel.PointField) ? KeyPath + TEXT("Color.") + ColorMember(Channel.PointField)
+					: KeyPath + (Channel.PointField == EPointField::ValueY ? TEXT("ValueY") : TEXT("Value"));
+				return true;
+			}
+			const bool bStart = Key == 0;
+			switch (Layer.AnimType)
+			{
+			case EWidgetAnimType::Fade:
+				OutPath = bStart ? TEXT("StartOpacity") : TEXT("EndOpacity");
+				return true;
+			case EWidgetAnimType::Scale:
+				OutPath = FString(bStart ? TEXT("StartScale.") : TEXT("EndScale.")) + (Channel.PointField == EPointField::ValueY ? TEXT("Y") : TEXT("X"));
+				return true;
+			case EWidgetAnimType::Slide:
+				OutPath = TEXT("SlideDistance");
+				return bStart;
+			case EWidgetAnimType::Rotate:
+				OutPath = bStart ? TEXT("StartAngle") : TEXT("EndAngle");
+				return true;
+			case EWidgetAnimType::MaterialScalar:
+				OutPath = bStart ? TEXT("StartScalarValue") : TEXT("EndScalarValue");
+				return true;
+			case EWidgetAnimType::MaterialVector:
+				OutPath = FString(bStart ? TEXT("StartVectorValue.") : TEXT("EndVectorValue.")) + ColorMember(Channel.PointField);
+				return true;
+			case EWidgetAnimType::Custom:
+				if (IsColorField(Channel.PointField) || !FindRegisteredEndpoint(Layer, bStart))
+				{
+					return false;
+				}
+				OutPath = bStart ? TEXT("TypeParams.StartValue") : TEXT("TypeParams.EndValue");
+				return true;
+			default:
 				return false;
 			}
-			if (Leaf->IsFloatingPoint())
+		}
+
+		case ESource::Transform:
+		{
+			static const TCHAR* TransformMembers[] = { TEXT("Translation.X"), TEXT("Translation.Y"), TEXT("Scale.X"), TEXT("Scale.Y"), TEXT("Shear.X"), TEXT("Shear.Y"), TEXT("Angle") };
+			OutPath = FString::Printf(TEXT("Transform.Keys[%d].Transform.%s"), Key, TransformMembers[FMath::Clamp(Channel.TransformField, 0, 6)]);
+			return true;
+		}
+
+		case ESource::Field:
+		{
+			OutPath = FString::Printf(TEXT("Transform.Keys[%d].%s.%s"), Key, Layer.AnimType == EWidgetAnimType::ShapeBox ? TEXT("Shape") : TEXT("ShapeValues"), *Channel.RootName.ToString());
+			for (const FProperty* Member : Channel.Tail)
 			{
-				Leaf->SetFloatingPointPropertyValue(At, Value);
-			}
-			else
-			{
-				Leaf->SetIntPropertyValue(At, static_cast<int64>(Value));
+				OutPath += TEXT(".") + Member->GetName();
 			}
 			return true;
 		}

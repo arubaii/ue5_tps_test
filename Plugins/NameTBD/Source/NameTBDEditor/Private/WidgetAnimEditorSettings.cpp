@@ -128,6 +128,45 @@ void UWidgetAnimEditorSettings::SetPreviewFrameRate(float FrameRate)
 	}
 }
 
+void UWidgetAnimEditorSettings::SetDragStepping(EWidgetAnimDragStepping Stepping)
+{
+	if (DragStepping != Stepping)
+	{
+		DragStepping = Stepping;
+		SaveConfig();
+	}
+}
+
+void UWidgetAnimEditorSettings::SetDragStepSeconds(float Seconds)
+{
+	const float Clamped = FMath::Clamp(Seconds, 0.001f, 10.f);
+	if (!FMath::IsNearlyEqual(DragStepSeconds, Clamped))
+	{
+		DragStepSeconds = Clamped;
+		SaveConfig();
+	}
+}
+
+void UWidgetAnimEditorSettings::SetDragStepPercent(float Percent)
+{
+	const float Clamped = FMath::Clamp(Percent, 0.01f, 100.f);
+	if (!FMath::IsNearlyEqual(DragStepPercent, Clamped))
+	{
+		DragStepPercent = Clamped;
+		SaveConfig();
+	}
+}
+
+void UWidgetAnimEditorSettings::SetDragStepFrames(int32 Frames)
+{
+	const int32 Clamped = FMath::Clamp(Frames, 1, 1000);
+	if (DragStepFrames != Clamped)
+	{
+		DragStepFrames = Clamped;
+		SaveConfig();
+	}
+}
+
 void UWidgetAnimEditorSettings::SetGizmoAutoKey(bool bEnabled)
 {
 	if (bGizmoAutoKey != bEnabled)

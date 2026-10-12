@@ -1,0 +1,464 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
+index 966ef57..4206c32 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
+@@ -87,6 +87,19 @@ namespace WidgetAnimKeyValueCells
+ 		bool bWhole = false;
+ 	};
+ 
++	/**
++	 * A value's name's tooltip, in the panel's own style: "Name: what it does" - its line from the plugin's tooltips (see
++	 * WidgetAnimKeyValues::FChannel::Description). Null for a value with no description.
++	 */
++	TSharedPtr<IToolTip> MakeChannelToolTip(const WidgetAnimKeyValues::FChannel* Channel)
++	{
++		if (!Channel || Channel->Description.IsEmpty())
++		{
++			return nullptr;
++		}
++		return SWidgetAnimTimeline::MakeStyledToolTip(FText::Format(LOCTEXT("ChannelToolTipFormat", "{0}: {1}"), Channel->Label, Channel->Description));
++	}
++
+ 	const FSlateBrush* SelectedOutline()
+ 	{
+ 		static const FSlateRoundedBoxBrush Brush(Palette::KeyValueCellSelectedFill, 3.f, Palette::KeyValueCellSelected, 1.5f);
+@@ -126,6 +139,7 @@ public:
+ 		const double Step = Channel ? static_cast<double>(Channel->DragStep) : 0.1;
+ 		const bool bWhole = Channel && Channel->bInteger;
+ 		const FText Label = Channel ? Channel->Label : FText::GetEmpty();
++		const FText Description = Channel ? Channel->Description : FText::GetEmpty();
+ 		const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Panel;
+ 		const SWidgetAnimTimeline::FValueCell Shown = Cell;
+ 
+@@ -134,15 +148,18 @@ public:
+ 			const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+ 			return Pinned && Pinned->CanSetKeyValue(Shown);
+ 		};
+-		auto CellToolTip = [WeakOwner, Shown, Label]()
++		// What it is first - "Edge Bow Top: curves that one edge..." - then how to edit it, or why it can't be.
++		auto CellToolTip = [WeakOwner, Shown, Label, Description]()
+ 		{
+ 			const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
++			const FText Named = Description.IsEmpty() ? Label : FText::Format(LOCTEXT("CellDescribedFormat", "{0}: {1}"), Label, Description);
+ 			FText WhyNot;
+ 			if (Pinned && !Pinned->CanSetKeyValue(Shown, &WhyNot) && !WhyNot.IsEmpty())
+ 			{
+-				return FText::Format(LOCTEXT("CellWhyNotFormat", "{0}\n{1}"), Label, WhyNot);
++				return FText::Format(LOCTEXT("CellWhyNotFormat", "{0}\n{1}"), Named, WhyNot);
+ 			}
+-			return FText::Format(Tips::KeyValueCellTooltip(), Label);
++			const FText HowTo = FText::Format(Tips::KeyValueCellTooltip(), Label);
++			return Description.IsEmpty() ? HowTo : FText::Format(LOCTEXT("CellHowToFormat", "{0}\n\n{1}"), Named, HowTo);
+ 		};
+ 
+ 		// What the box is: a drop-down for a choice from a list, a check box for an on/off, else a number to type or drag.
+@@ -153,16 +170,18 @@ public:
+ 			Editor = SNew(SComboButton)
+ 				.ContentPadding(FMargin(4.f, 1.f))
+ 				.IsEnabled_Lambda(CanSet)
+-				.ToolTipText_Lambda([WeakOwner, Shown, Label]()
++				.ToolTip(SWidgetAnimTimeline::MakeStyledToolTip(TAttribute<FText>::CreateLambda([WeakOwner, Shown, Label, Description]()
+ 				{
+ 					const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
++					const FText Named = Description.IsEmpty() ? Label : FText::Format(LOCTEXT("ChoiceDescribedFormat", "{0}: {1}"), Label, Description);
+ 					FText WhyNot;
+ 					if (Pinned && !Pinned->CanSetKeyValue(Shown, &WhyNot) && !WhyNot.IsEmpty())
+ 					{
+-						return FText::Format(LOCTEXT("ChoiceWhyNotFormat", "{0}\n{1}"), Label, WhyNot);
++						return FText::Format(LOCTEXT("ChoiceWhyNotFormat", "{0}\n{1}"), Named, WhyNot);
+ 					}
+-					return FText::Format(Tips::KeyChoiceCellTooltip(), Label);
+-				})
++					const FText HowTo = FText::Format(Tips::KeyChoiceCellTooltip(), Label);
++					return Description.IsEmpty() ? HowTo : FText::Format(LOCTEXT("ChoiceHowToFormat", "{0}\n\n{1}"), Named, HowTo);
++				})))
+ 				.OnGetMenuContent(this, &SWidgetAnimValueCell::MakeChoiceMenu)
+ 				.ButtonContent()
+ 				[
+@@ -189,7 +208,7 @@ public:
+ 				[
+ 					SNew(SCheckBox)
+ 					.IsEnabled_Lambda(CanSet)
+-					.ToolTipText_Lambda(CellToolTip)
++					.ToolTip(SWidgetAnimTimeline::MakeStyledToolTip(TAttribute<FText>::CreateLambda(CellToolTip)))
+ 					.IsChecked_Lambda([WeakOwner, Shown]()
+ 					{
+ 						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+@@ -208,9 +227,12 @@ public:
+ 				.Font(IDetailLayoutBuilder::GetDetailFont())
+ 				.AllowSpin(true)
+ 				.Delta(Step)
+-				// Its own range where it has one; else none - an entry box's default bar runs 0 to 100.
++				// Its own range where it has one; else none - an entry box's default bar runs 0 to 100. With no range the spin box
++				// must be told to move linearly - one Delta (Step) per pixel - or it adds the value to itself each step and runs off
++				// to infinity at the slightest drag.
+ 				.MinSliderValue(Channel ? Channel->SliderMin : TOptional<double>())
+ 				.MaxSliderValue(Channel ? Channel->SliderMax : TOptional<double>())
++				.LinearDeltaSensitivity(1)
+ 				.UndeterminedString(LOCTEXT("NoValue", "-"))
+ 				.TypeInterface(MakeShared<FInterface>(Typed.ToSharedRef(), bWhole))
+ 				.Value_Lambda([WeakOwner, Shown]() -> TOptional<double>
+@@ -219,7 +241,7 @@ public:
+ 					return Pinned ? Pinned->GetKeyValue(Shown) : TOptional<double>();
+ 				})
+ 				.IsEnabled_Lambda(CanSet)
+-				.ToolTipText_Lambda(CellToolTip)
++				.ToolTip(SWidgetAnimTimeline::MakeStyledToolTip(TAttribute<FText>::CreateLambda(CellToolTip)))
+ 				.OnValueCommitted(this, &SWidgetAnimValueCell::OnCommitted)
+ 				.OnBeginSliderMovement(this, &SWidgetAnimValueCell::OnBeginDrag)
+ 				.OnValueChanged(this, &SWidgetAnimValueCell::OnDragged)
+@@ -754,6 +776,7 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeSingleKey(const FTrackPart& Part)
+ 						SNew(STextBlock)
+ 						.Font(IDetailLayoutBuilder::GetDetailFont())
+ 						.Text(Channels.IsValidIndex(GroupChannel) ? Channels[GroupChannel].ShortLabel : FText::GetEmpty())
++						.ToolTip(WidgetAnimKeyValueCells::MakeChannelToolTip(Channels.IsValidIndex(GroupChannel) ? &Channels[GroupChannel] : nullptr))
+ 					]
+ 
+ 					+ SHorizontalBox::Slot()
+@@ -808,6 +831,7 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeSingleKey(const FTrackPart& Part)
+ 				SNew(STextBlock)
+ 				.Font(IDetailLayoutBuilder::GetDetailFont())
+ 				.Text(Channels.IsValidIndex(ChannelIndex) ? Channels[ChannelIndex].Label : FText::GetEmpty())
++				.ToolTip(WidgetAnimKeyValueCells::MakeChannelToolTip(Channels.IsValidIndex(ChannelIndex) ? &Channels[ChannelIndex] : nullptr))
+ 			]
+ 
+ 			+ SHorizontalBox::Slot()
+@@ -925,6 +949,7 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeTable(int32 PartIndex)
+ 	for (const int32 ChannelIndex : Part.Columns)
+ 	{
+ 		const FText Label = Channels.IsValidIndex(ChannelIndex) ? Channels[ChannelIndex].Label : FText::GetEmpty();
++		const TSharedPtr<IToolTip> HeaderToolTip = WidgetAnimKeyValueCells::MakeChannelToolTip(Channels.IsValidIndex(ChannelIndex) ? &Channels[ChannelIndex] : nullptr);
+ 		Header->AddSlot()
+ 		.AutoWidth()
+ 		[
+@@ -936,7 +961,7 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeTable(int32 PartIndex)
+ 				.Font(IDetailLayoutBuilder::GetDetailFontBold())
+ 				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+ 				.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+-				.ToolTipText(Label)
++				.ToolTip(HeaderToolTip.IsValid() ? HeaderToolTip : SWidgetAnimTimeline::MakeStyledToolTip(Label))
+ 				.Text(Label)
+ 			]
+ 		];
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 96a702e..01c3389 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -4983,8 +4983,11 @@ namespace WidgetAnimTimeline
+ 				.AllowSpin(true)
+ 				.MinValue(0.f)
+ 				.MinSliderValue(0.f)
+-				// No top to the drag: an entry box's slider otherwise runs 0 to 100, a bar meaning nothing for a time.
++				// No top to the drag: an entry box's slider otherwise runs 0 to 100, a bar meaning nothing for a time. Without a
++				// range the spin box grows the value by itself on every step (exponentially, to infinity) unless told to move it
++				// linearly: one Delta per pixel.
+ 				.MaxSliderValue(TOptional<float>())
++				.LinearDeltaSensitivity(1)
+ 				.Delta_Lambda([IsPercent]() { return IsPercent() ? 0.1f : 0.01f; })
+ 				.ToolTipText(NameTBD::Tooltips::WidgetAnimEditor::StartTimeTooltip())
+ 				.TypeInterface(MakeShared<FUnitNumericInterface>([IsPercent]()
+@@ -6241,6 +6244,7 @@ private:
+ 					.MinValue(0.01f)
+ 					.MinSliderValue(0.01f)
+ 					.MaxSliderValue(TOptional<float>())
++					.LinearDeltaSensitivity(1)
+ 					.Delta_Lambda([WeakOwner]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->IsPercentTime() ? 0.1f : 0.01f; })
+ 					.OnBeginSliderMovement_Lambda([Spin]() { Spin->Begin(LOCTEXT("DragDurationTransaction", "Set Track Duration")); })
+ 					.OnValueChanged_Lambda([Spin, Handle, ToSeconds](float Value) { Spin->Step(Handle, ToSeconds(Value)); })
+@@ -7417,6 +7421,8 @@ private:
+ 				.AllowSpin(true)
+ 				.MinSliderValue(TOptional<float>())
+ 				.MaxSliderValue(TOptional<float>())
++				.LinearDeltaSensitivity(1)
++				.Delta(bInteger ? 1.f : 0.05f)
+ 				.Font(IDetailLayoutBuilder::GetDetailFont())
+ 				.Value_Lambda([Current, Part, bInteger]() -> TOptional<float>
+ 				{
+@@ -20275,6 +20281,11 @@ void SWidgetAnimTimeline::BeginKeyDrag(int32 LayerIndex, int32 KeyIndex)
+ 	}
+ 	SnapIndicator.Reset();
+ 
++	// A key's width at this zoom: no closer than that to a neighbor that stays.
++	constexpr float KeyDragGapPixels = 12.f;
++	const float GapPixels = IsDopeSheet() ? FMath::Max(UWidgetAnimEditorSettings::Get().DopeSheetKeySize, KeyDragGapPixels) : KeyDragGapPixels;
++	KeyDragGapSeconds = FMath::Max(GapPixels * GetSecondsPerPixel(), WidgetAnimTimeline::MinKeySpacing);
++
+ 	// One undo step for the whole drag, however many frames it moves through.
+ 	KeyDragTransaction = MakeUnique<FScopedTransaction>(DragKeys.Num() > 1
+ 		? LOCTEXT("MoveKeysTransaction", "Move Keys")
+@@ -20342,12 +20353,12 @@ void SWidgetAnimTimeline::UpdateKeyDrag(float LocalSeconds, float SnapThresholdS
+ 		}
+ 		else if (!DragKeys.Contains(FKeyRef{ Ref.Layer, Ref.Key - 1 }))
+ 		{
+-			Lowest = FMath::Max(Lowest, KeyTimes[Ref.Key - 1] + WidgetAnimTimeline::MinKeySpacing - Original);
++			Lowest = FMath::Max(Lowest, KeyTimes[Ref.Key - 1] + KeyDragGapSeconds - Original);
+ 		}
+ 
+ 		if (Ref.Key + 1 < KeyTimes.Num() && !DragKeys.Contains(FKeyRef{ Ref.Layer, Ref.Key + 1 }))
+ 		{
+-			Highest = FMath::Min(Highest, KeyTimes[Ref.Key + 1] - WidgetAnimTimeline::MinKeySpacing - Original);
++			Highest = FMath::Min(Highest, KeyTimes[Ref.Key + 1] - KeyDragGapSeconds - Original);
+ 		}
+ 	}
+ 
+@@ -20435,11 +20446,11 @@ void SWidgetAnimTimeline::UpdateDopeKeyDrag(float LocalSeconds, float SnapThresh
+ 		Lowest = FMath::Max(Lowest, -Original);
+ 		if (Ref.Key > 0 && !DragKeys.Contains(FKeyRef{ Ref.Layer, Ref.Key - 1 }))
+ 		{
+-			Lowest = FMath::Max(Lowest, (*Row)[Ref.Key - 1] + MinLayerSeconds - Original);
++			Lowest = FMath::Max(Lowest, (*Row)[Ref.Key - 1] + FMath::Max(MinLayerSeconds, KeyDragGapSeconds) - Original);
+ 		}
+ 		if (Ref.Key + 1 < Row->Num() && !DragKeys.Contains(FKeyRef{ Ref.Layer, Ref.Key + 1 }))
+ 		{
+-			Highest = FMath::Min(Highest, (*Row)[Ref.Key + 1] - MinLayerSeconds - Original);
++			Highest = FMath::Min(Highest, (*Row)[Ref.Key + 1] - FMath::Max(MinLayerSeconds, KeyDragGapSeconds) - Original);
+ 		}
+ 	}
+ 
+@@ -20560,11 +20571,22 @@ void SWidgetAnimTimeline::UpdateKeySwap(float Wanted)
+ 	// Every other key in its slot's time from the press - the one passed takes the place the dragged one left - and the
+ 	// dragged one where it is wanted, between its new neighbors.
+ 	constexpr float MaxSeconds = 600.f;
+-	const float Spacing = bDopeKeyDrag ? MinLayerSeconds : WidgetAnimTimeline::MinKeySpacing;
++	// Never on top of a neighbor: at least a key's width from each (KeyDragGapSeconds) - halfway between the two when they are
++	// closer than two widths apart.
++	const float Spacing = FMath::Max(bDopeKeyDrag ? MinLayerSeconds : WidgetAnimTimeline::MinKeySpacing, KeyDragGapSeconds);
+ 	const float Lowest = Target > 0 ? SwapRowTimes[Target - 1] + Spacing : 0.f;
+ 	const float Highest = Target + 1 < NumKeys ? SwapRowTimes[Target + 1] - Spacing : MaxSeconds;
+ 	TArray<float> NewTimes = SwapRowTimes;
+-	NewTimes[Target] = Lowest <= Highest ? FMath::Clamp(Wanted, Lowest, Highest) : SwapRowTimes[Target];
++	if (Lowest <= Highest)
++	{
++		NewTimes[Target] = FMath::Clamp(Wanted, Lowest, Highest);
++	}
++	else
++	{
++		const float Before = Target > 0 ? SwapRowTimes[Target - 1] : 0.f;
++		const float After = Target + 1 < NumKeys ? SwapRowTimes[Target + 1] : Before + 2.f * Spacing;
++		NewTimes[Target] = (Before + After) * 0.5f;
++	}
+ 
+ 	if (bDopeKeyDrag)
+ 	{
+@@ -26190,6 +26212,11 @@ FText SWidgetAnimTimeline::GetLayerTypeName(const FWidgetAnimLayer& Layer)
+ 	return GetAnimTypeName(Layer.AnimType);
+ }
+ 
++TSharedPtr<IToolTip> SWidgetAnimTimeline::MakeStyledToolTip(const TAttribute<FText>& Text)
++{
++	return WidgetAnimTimeline::MakePanelToolTip(Text);
++}
++
+ FText SWidgetAnimTimeline::GetLayerDisplayName(const FWidgetAnimLayer& Layer)
+ {
+ 	const FString Name = Layer.TrackName.TrimStartAndEnd();
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+index fa6c6ed..925e8a4 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+@@ -1591,6 +1591,9 @@ public:
+ 	/** What a track is shown as: the name it was given (see RenameLayer), else GetLayerTypeName. */
+ 	static FText GetLayerDisplayName(const FWidgetAnimLayer& Layer);
+ 
++	/** A line of help in the panel's own tooltip - its dark panel and text - for widgets laid out outside this file (Key Values). */
++	static TSharedPtr<IToolTip> MakeStyledToolTip(const TAttribute<FText>& Text);
++
+ 	/**
+ 	 * Base - trimmed - or, when another renamed track in Layers (other than the one at IgnoreIndex) has it, "Base 2",
+ 	 * "Base 3"... Names compare ignoring case. Empty stays empty.
+@@ -2375,6 +2378,13 @@ private:
+ 	 */
+ 	bool bSwapDrag = false;
+ 
++	/**
++	 * How close a dragged key may come to a neighbor that stays, in seconds: a key's width on screen at the zoom of the press
++	 * (Dope Sheet Key Size on a Dope Sheet, KeyDragGapPixels in the Track Editor), so two keys never sit on one another - a
++	 * dragged key stops beside its neighbor and, dragged on past it, swaps places with it. Worked out at the press.
++	 */
++	float KeyDragGapSeconds = 0.f;
++
+ 	/** The key pressed, by its index at the press - DragKey follows it as a reordering drag moves it to another slot. */
+ 	int32 DragPressedKey = INDEX_NONE;
+ 	TArray<float> SwapRowTimes;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.cpp
+index e44ef09..45e1c38 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include "WidgetAnimKeyValues.h"
+ 
++#include "NameTBDTooltips.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimLibrary.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimTransform.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimEvaluator.h"
+@@ -64,6 +65,36 @@ namespace WidgetAnimKeyValues
+ 			return Channel;
+ 		}
+ 
++		/** A line of description for a point channel: the plugin's own for it ("Point.Opacity"). */
++		FChannel Described(FChannel Channel, const TCHAR* What)
++		{
++			Channel.Description = NameTBD::Tooltips::WidgetAnimEditor::KeyValueDescription(What);
++			return Channel;
++		}
++
++		/** The first sentence of a setting's own tooltip - its doc comment - as a key value's line of description. */
++		FText FirstSentence(const FProperty* Property)
++		{
++			if (!Property)
++			{
++				return FText::GetEmpty();
++			}
++			FString Tip = Property->GetToolTipText(/*bShortTooltip=*/true).ToString();
++			int32 End = INDEX_NONE;
++			if (Tip.FindChar(TEXT('\n'), End))
++			{
++				Tip.LeftInline(End);
++			}
++			const int32 Stop = Tip.Find(TEXT(". "));
++			if (Stop != INDEX_NONE)
++			{
++				Tip.LeftInline(Stop + 1);
++			}
++			Tip.TrimStartAndEndInline();
++			// A tooltip that only repeats the name says nothing.
++			return Tip.IsEmpty() || Tip == Property->GetName() || Tip == Property->GetDisplayNameText().ToString() ? FText::GetEmpty() : FText::FromString(Tip);
++		}
++
+ 		/** A setting's own drag range: its UIMin / UIMax, else ClampMin / ClampMax - only when it has both ends. */
+ 		void ReadSliderRange(const FProperty* Property, FChannel& Channel)
+ 		{
+@@ -95,7 +126,7 @@ namespace WidgetAnimKeyValues
+ 		{
+ 			for (const EPointField Field : { EPointField::ColorR, EPointField::ColorG, EPointField::ColorB, EPointField::ColorA })
+ 			{
+-				Out.Add(MakePointChannel(ColorPart(Base, Field), Field, 0.01f, 0.0, 1.0));
++				Out.Add(Described(MakePointChannel(ColorPart(Base, Field), Field, 0.01f, 0.0, 1.0), TEXT("Point.Color")));
+ 			}
+ 		}
+ 
+@@ -129,6 +160,22 @@ namespace WidgetAnimKeyValues
+ 				Channel.RootName = RootName;
+ 				Channel.RootProperty = Root;
+ 				Channel.RootClass = Root->GetClass();
++				// What it does: a Shape Box setting's line from the plugin's tooltips ("Corners.Style"), else the number's own tooltip,
++				// else its setting's.
++				FString What = RootName.ToString();
++				if (What == TEXT("Corners") && Tail.Num() >= 2)
++				{
++					What += TEXT(".") + Tail[1]->GetName();
++				}
++				Channel.Description = NameTBD::Tooltips::WidgetAnimEditor::KeyValueDescription(What);
++				if (Channel.Description.IsEmpty())
++				{
++					Channel.Description = FirstSentence(Property);
++				}
++				if (Channel.Description.IsEmpty() && Property != Root)
++				{
++					Channel.Description = FirstSentence(Root);
++				}
+ 				if (Tail.Num() > 0)
+ 				{
+ 					// One number of a setting of several: listed under the setting's name, without it.
+@@ -535,20 +582,20 @@ namespace WidgetAnimKeyValues
+ 		switch (Layer.AnimType)
+ 		{
+ 		case EWidgetAnimType::Fade:
+-			OutChannels.Add(MakePointChannel(LOCTEXT("Opacity", "Opacity"), EPointField::Value, 0.01f, 0.0, 1.0));
++			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Opacity", "Opacity"), EPointField::Value, 0.01f, 0.0, 1.0), TEXT("Point.Opacity")));
+ 			return;
+ 		case EWidgetAnimType::Scale:
+-			OutChannels.Add(MakePointChannel(LOCTEXT("ScaleX", "Scale X"), EPointField::Value, 0.01f));
+-			OutChannels.Add(MakePointChannel(LOCTEXT("ScaleY", "Scale Y"), EPointField::ValueY, 0.01f));
++			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScaleX", "Scale X"), EPointField::Value, 0.01f), TEXT("Point.Scale")));
++			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScaleY", "Scale Y"), EPointField::ValueY, 0.01f), TEXT("Point.Scale")));
+ 			return;
+ 		case EWidgetAnimType::Slide:
+-			OutChannels.Add(MakePointChannel(LOCTEXT("Distance", "Distance"), EPointField::Value, 1.f));
++			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Distance", "Distance"), EPointField::Value, 1.f), TEXT("Point.Distance")));
+ 			return;
+ 		case EWidgetAnimType::Rotate:
+-			OutChannels.Add(MakePointChannel(LOCTEXT("Angle", "Angle"), EPointField::Value, 1.f));
++			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Angle", "Angle"), EPointField::Value, 1.f), TEXT("Point.Angle")));
+ 			return;
+ 		case EWidgetAnimType::MaterialScalar:
+-			OutChannels.Add(MakePointChannel(LOCTEXT("ScalarValue", "Value"), EPointField::Value, 0.01f));
++			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScalarValue", "Value"), EPointField::Value, 0.01f), TEXT("Point.Value")));
+ 			return;
+ 		case EWidgetAnimType::MaterialVector:
+ 			AddColorChannels(LOCTEXT("VectorValue", "Value"), OutChannels);
+@@ -563,7 +610,7 @@ namespace WidgetAnimKeyValues
+ 			const EWidgetAnimKeyContent Content = Evaluator->GetKeyContent(Layer.TypeParams);
+ 			if (Content != EWidgetAnimKeyContent::Color)
+ 			{
+-				OutChannels.Add(MakePointChannel(Evaluator->GetTrackValueLabel(Layer.TypeParams), EPointField::Value, 0.1f));
++				OutChannels.Add(Described(MakePointChannel(Evaluator->GetTrackValueLabel(Layer.TypeParams), EPointField::Value, 0.1f), TEXT("Point.Registered")));
+ 			}
+ 			if (Content != EWidgetAnimKeyContent::Value)
+ 			{
+@@ -591,6 +638,8 @@ namespace WidgetAnimKeyValues
+ 				Channel.Source = ESource::Transform;
+ 				Channel.TransformField = Field;
+ 				Channel.DragStep = TransformSteps[Field];
++				static const TCHAR* TransformParts[] = { TEXT("Transform.Translation"), TEXT("Transform.Translation"), TEXT("Transform.Scale"), TEXT("Transform.Scale"), TEXT("Transform.Shear"), TEXT("Transform.Shear"), TEXT("Transform.Angle") };
++				Channel.Description = NameTBD::Tooltips::WidgetAnimEditor::KeyValueDescription(TransformParts[Field]);
+ 			}
+ 			return;
+ 		}
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.h
+index 615a80d..4b006c0 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.h
+@@ -98,6 +98,9 @@ namespace WidgetAnimKeyValues
+ 		 */
+ 		FText Group;
+ 		FText ShortLabel;
++
++		/** What it does, in a line - NameTBD::Tooltips::WidgetAnimEditor::KeyValueDescription, else its setting's own tooltip. */
++		FText Description;
+ 	};
+ 
+ 	/** Every channel of a track, in the order the Selection panel lists them. None for a track whose keys hold no number. */
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index 7d0caef..1e8c674 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -2214,6 +2214,37 @@ namespace NameTBD::Tooltips
+ 				"The step, in the timeline's own unit: seconds, percent of a percentage timeline, or frames while time shows in frames. Each unit keeps its own step.");
+ 		}
+ 
++		/**
++		 * A Key Values box's short description, by what it sets: "Point.<what>" for a start-to-end track's value, "Transform.<part>"
++		 * for a Transform key, a Shape Box setting's name ("EdgeBow", "Corners.Style"). Empty for one with none here - the box then
++		 * uses its setting's own tooltip. Shown under the value's name, in the panel's own tooltip (see SWidgetAnimKeyValues).
++		 */
++		inline FText KeyValueDescription(const FString& What)
++		{
++			if (What == TEXT("Point.Opacity")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Opacity", "How see-through the widget is at this key: 0 invisible, 1 solid."); }
++			if (What == TEXT("Point.Scale")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Scale", "The widget's size at this key, about its pivot: 1 as designed, 2 twice as big."); }
++			if (What == TEXT("Point.Distance")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Distance", "How far away the widget slides in from at this key, in Slate units. 0 is where it is laid out."); }
++			if (What == TEXT("Point.Angle")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Angle", "The widget's turn at this key, in degrees, clockwise about its pivot."); }
++			if (What == TEXT("Point.Value")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Value", "The material parameter's value at this key."); }
++			if (What == TEXT("Point.Color")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Color", "That channel of the color at this key: 0 to 1, more for an HDR glow."); }
++			if (What == TEXT("Point.Registered")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Point_Registered", "This track's value at this key - what it travels through on its way from start to end."); }
++			if (What == TEXT("Transform.Translation")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Transform_Translation", "Moves the widget from where it is laid out, in Slate units: X to the right, Y down."); }
++			if (What == TEXT("Transform.Scale")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Transform_Scale", "Sizes the widget about its pivot: 1 as designed, 2 twice as big, negative mirrors it."); }
++			if (What == TEXT("Transform.Shear")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Transform_Shear", "Slants the widget, in degrees: X leans its sides, Y its top and bottom."); }
++			if (What == TEXT("Transform.Angle")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Transform_Angle", "Turns the widget about its pivot, in degrees, clockwise."); }
++			if (What == TEXT("Extrude")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Extrude", "Moves edges outward, in Slate units: +X the right edge, -X the left, +Y the top, -Y the bottom. The content is laid out at the grown size."); }
++			if (What == TEXT("Inset")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Inset", "Pulls edges inward, in Slate units: +X the right edge, -X the left, +Y the top, -Y the bottom. The content is laid out at the shrunk size."); }
++			if (What == TEXT("Corners.Style")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Corners_Style", "How the corner is cut: Bevel slides it along its edges, so the whole side leans; Chamfer cuts it off with a straight line."); }
++			if (What == TEXT("Corners.Size")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Corners_Size", "How far the corner is cut, in Slate units: X along its top or bottom edge, Y along its side. 0 leaves it square."); }
++			if (What == TEXT("Bend")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Bend", "Arcs the whole box, content and all: how far its middle moves from its ends. Y bends a row (positive sags), X a column."); }
++			if (What == TEXT("EdgeBow")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_EdgeBow", "Curves that one edge, in Slate units at its middle: positive bulges it out, negative pinches it in."); }
++			if (What == TEXT("Angle")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Angle", "Turns the box in depth, in degrees: X brings its right side toward you, Y its bottom."); }
++			if (What == TEXT("Wrap")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Wrap", "Wraps the box round a curved surface, in degrees of arc across it: X across its width, Y across its height."); }
++			if (What == TEXT("Perspective")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Perspective", "How strong the depth taper of Angle and Wrap is: 0 none, 1 strong. 0.3 to 0.6 suits most HUDs."); }
++			if (What == TEXT("Rotation")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyValueDescription_Rotation", "Spins the finished shape about its middle, in degrees, clockwise - after everything else."); }
++			return FText::GetEmpty();
++		}
++
+ 		inline FText KeyChoiceCellTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyChoiceCellTooltip",

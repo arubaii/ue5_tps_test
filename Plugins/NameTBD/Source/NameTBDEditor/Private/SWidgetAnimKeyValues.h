@@ -13,9 +13,10 @@ class SVerticalBox;
  * a Transform key that only scales shows Scale X and Y, not its whole Transform.
  *
  * One key: a row per value, name and box. Several keys (a track picked - every key of it - or several keys picked): a table
- * per track, a row per key and a column per value. Keys picked list every value they hold, the ones a key doesn't alter dimmed.
- * A track picked lists only the values its keys alter, a box only where that key alters it - unless Show All Values, which only
- * a track's list offers, puts every value in, dimmed as a key's are.
+ * per track, a row per key and a column per value. Keys picked list every value they hold. A track picked lists only the values
+ * its keys alter, a box only where that key alters it. No box is dimmed: one that can be set looks it - only one that can't
+ * (a Slide's end) is greyed, being disabled. A table's rows are laid out as they are while they fit MaxTableHeight (no space
+ * left under them); past that, a list of that height.
  *
  * Every box is the track's own number, read live: typed in - plain numbers or math ("+8", "*2", "x * 2 + 1", see
  * WidgetAnimKeyValues::Evaluate) - or dragged. Ctrl+click picks several boxes (Shift+click a run down a column): typing into
@@ -32,7 +33,7 @@ public:
 		/** The keys to list, as the Track Editor counts them. Several tracks' are listed track by track, in the order given. */
 		SLATE_ARGUMENT(TArray<SWidgetAnimTimeline::FKeyRef>, Keys)
 
-		/** Listed for tracks picked - all their keys - rather than keys picked: only the values altered, and Show All Values. */
+		/** Listed for tracks picked - all their keys - rather than keys picked: only the values altered. */
 		SLATE_ARGUMENT(bool, ForTracks)
 	SLATE_END_ARGS()
 
@@ -75,6 +76,6 @@ private:
 	TArray<TArray<TSharedPtr<FRowItem>>> PartRows;
 	int32 NumTracksLeftOut = 0;
 
-	/** Every value the keys hold is listed, not only those altered: keys picked, or a track's with Show All Values. */
+	/** Every value the keys hold is listed, not only those altered: keys picked (a track's list shows only those altered). */
 	bool bListAll = false;
 };

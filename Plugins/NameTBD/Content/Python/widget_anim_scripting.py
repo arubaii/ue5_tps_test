@@ -140,7 +140,8 @@ class Falloff:
 
 
 class Smoothing:
-    """How a value-driven track travels to each new value."""
+    """How a value-driven track travels to each new value. IMMEDIATE is kept for old scripts: it is TWEEN with Hold
+    (Constant) easing, which jumps to each new value the same way - the editor no longer offers it."""
     IMMEDIATE = "Immediate"
     TWEEN = "Tween"
     SPRING = "Spring"

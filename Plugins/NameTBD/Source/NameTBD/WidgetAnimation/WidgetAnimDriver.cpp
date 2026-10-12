@@ -129,7 +129,7 @@ namespace WidgetAnimValue
 			}
 		}
 
-		if (bSnap || Motion.Smoothing == EWidgetAnimValueSmoothing::Immediate)
+		if (bSnap || Motion.JumpsToValues())
 		{
 			if (!bChanged && !State.IsMoving())
 			{
@@ -238,7 +238,7 @@ namespace WidgetAnimValue
 
 		// No faster than the whole track in Minimum Time To Fill. A spring held back keeps moving at that speed, so it
 		// neither builds up energy it would spend overshooting later nor stops dead once it is let go.
-		if (Options.MinimumTimeToFill > KINDA_SMALL_NUMBER && Motion.Smoothing != EWidgetAnimValueSmoothing::Immediate)
+		if (Options.MinimumTimeToFill > KINDA_SMALL_NUMBER && !Motion.JumpsToValues())
 		{
 			const float MaxStep = DeltaTime / Options.MinimumTimeToFill;
 			for (int32 Channel = 0; Channel < NumChannels; ++Channel)

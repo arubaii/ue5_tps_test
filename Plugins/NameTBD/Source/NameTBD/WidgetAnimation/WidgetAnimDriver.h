@@ -183,9 +183,9 @@ enum class EWidgetAnimTransformPart : uint8
 UENUM(BlueprintType)
 enum class EWidgetAnimValueSmoothing : uint8
 {
-	Immediate UMETA(ToolTip = "Jumps to each new value. For values that already move smoothly, such as a slider's position."),
+	Immediate UMETA(ToolTip = "Jumps to each new value. For values that already move smoothly, such as a slider's position. The same as Tween with Constant easing."),
 
-	Tween UMETA(ToolTip = "Eases to each new value over the track's Duration, by its Easing. Every new value starts a new ease from wherever it had gotten to."),
+	Tween UMETA(ToolTip = "Eases to each new value over the track's Duration, by its Easing. Every new value starts a new ease from wherever it had gotten to. With Constant easing it jumps to each new value at once - for values that already move smoothly, such as a slider's position."),
 
 	Spring UMETA(ToolTip = "Chases each new value with the track's spring, keeping its speed when the value changes again mid-way. What makes jumpy values, such as load progress arriving in chunks, look smooth."),
 
@@ -465,6 +465,12 @@ struct NAMETBD_API FWidgetAnimValueMotion
 	float SteadyCatchUpTime = 1.f;
 
 	int32 NumChannels = 1;
+
+	/** Whether each new value is shown at once, with nothing to travel: Immediate, or a Tween with Constant (Hold) easing. */
+	bool JumpsToValues() const
+	{
+		return Smoothing == EWidgetAnimValueSmoothing::Immediate || (Smoothing == EWidgetAnimValueSmoothing::Tween && TweenEasing == EWidgetAnimEasing::Hold);
+	}
 };
 
 /**

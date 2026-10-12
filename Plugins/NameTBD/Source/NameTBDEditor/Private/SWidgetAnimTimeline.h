@@ -1011,14 +1011,10 @@ public:
 	bool IsValueCellSelected(const FValueCell& Cell) const { return SelectedValueCells.Contains(Cell); }
 	void SetSelectedValueCells(const TArray<FValueCell>& Cells) { SelectedValueCells = Cells; }
 
-	/** Show All Values, on a track's list of its keys: every number of the keys listed, not only those each key alters. Not saved. */
-	bool IsShowingAllKeyValues() const { return bShowAllKeyValues; }
-	void SetShowAllKeyValues(bool bShowAll);
-
 	/**
 	 * The Key Values of these keys (several tracks' are listed track by track): each key's numbers, in boxes that take typed math
-	 * and multi-selection - every one it holds, or with bForTracks (a track's keys, listed for the track) those it alters, with
-	 * Show All Values. One key alone reads as name and box rows; several, as a table, a row per key.
+	 * and multi-selection - every one it holds, or with bForTracks (a track's keys, listed for the track) those it alters.
+	 * One key alone reads as name and box rows; several, as a table, a row per key.
 	 */
 	TSharedRef<SWidget> MakeKeyValues(const TArray<FKeyRef>& Keys, bool bForTracks = false);
 
@@ -1193,6 +1189,14 @@ public:
 	 */
 	static TSharedPtr<SWidget> MakeBagBindChip(const TSharedRef<IPropertyHandle>& TypeParamsHandle, FName BagField);
 
+	/**
+	 * The bind chip for a Key Values box (SWidgetAnimKeyValues): the key's number as a field of its track
+	 * (WidgetAnimKeyValues::GetFieldPath - "ValueKeys.Keys[1].Value", "Transform.Keys[2].Transform.Scale.X") - the same chip and
+	 * menu as a Selection panel row's. Null where the animation has no parameters or the number can't be bound (a Slide's end).
+	 * Given the box, it is wrapped so that while bound it reads the parameter's name and value instead.
+	 */
+	TSharedPtr<SWidget> MakeKeyValueBindChip(const FValueCell& Cell, TSharedPtr<SWidget>* InOutValueWidget = nullptr);
+
 	/** Adds a parameter of the field's type, its value as the default and its label as the name, and binds the field to it. */
 	void AddParameterFromField(TArray<int32> LayerIndices, FString FieldPath, const FProperty* Field);
 
@@ -1359,6 +1363,12 @@ public:
 	void DeleteSelectedKeys();
 
 	/**
+	 * Whether deleting this key deletes its whole row: a Dope Sheet row whose keys can't be retimed one by one (a spring, a Sound
+	 * whose sound sets its length - see CanDopeKeys), at its first or last key.
+	 */
+	bool IsDeletedWithRow(int32 LayerIndex, int32 KeyIndex) const;
+
+	/**
 	 * A key drag: one transaction from press to release, the preview following every move in between. With
 	 * Track Snapping on, the key snaps to other tracks' edges, their keys and the playhead within
 	 * SnapThresholdSeconds. Pressed on one of several selected keys, every one of them that can move goes with
@@ -1371,6 +1381,20 @@ public:
 
 	/** UpdateKeyDrag on a Dope Sheet: the carried keys moved on the time axis, each row's start and length following its keys. */
 	void UpdateDopeKeyDrag(float LocalSeconds, float SnapThresholdSeconds);
+
+	/** A key drag moved by DeltaSeconds from where the pressed key was at the press - no snapping, no steps: Left / Right. */
+	void UpdateKeyDragBy(float DeltaSeconds);
+
+	/**
+	 * The Drag control (UWidgetAnimEditorSettings::DragStepping): whether drags go in whole steps, and the step in played seconds -
+	 * Drag Step (Seconds), (Percent) on a percentage timeline, or (Frames) at the Frame Rate while time shows in frames. The step
+	 * is also what Left / Right move keys and tracks by.
+	 */
+	bool DragsInSteps() const;
+	float GetDragStepSeconds() const;
+
+	/** Seconds on the step grid (Steps), or as they are (Follow Cursor). */
+	float StepDragSeconds(float Seconds) const;
 
 	// ---------------------------------------------------------------------------------------------
 	// Motion paths - where the animated widgets travel, drawn over the designer's canvas whatever is selected (see WidgetAnimMotionPath.h)
@@ -1408,6 +1432,16 @@ public:
 
 	/** A keyframed track's Easing Across - see FWidgetTransformAnim::EasingSpan. One undoable edit. */
 	void SetLayerEasingSpan(int32 LayerIndex, EWidgetKeyEasingSpan Span);
+
+	/**
+	 * The tracks of the keys picked whose Timing can be set from the several-keys panel: editable, not an animation track, not
+	 * value-driven. That panel's Timing, Easing and Spring rows set them all, one undo step each - so many keys picked (a box
+	 * across Dope Sheet rows, say) can have their timing changed together, as several tracks picked can.
+	 */
+	TArray<int32> GetSelectedKeyTimingTracks() const;
+	void SetSelectedKeyTracksTiming(EWidgetAnimTiming Timing);
+	void SetSelectedKeyTracksEasing(EWidgetAnimEasing Easing);
+	void SetSelectedKeyTracksSpring(const FWidgetSpringParams& Spring);
 
 	// ---------------------------------------------------------------------------------------------
 	// Keying from the designer's Widget Gizmo (see WidgetGizmo.h)
@@ -1556,6 +1590,9 @@ public:
 
 	/** What a track is shown as: the name it was given (see RenameLayer), else GetLayerTypeName. */
 	static FText GetLayerDisplayName(const FWidgetAnimLayer& Layer);
+
+	/** A line of help in the panel's own tooltip - its dark panel and text - for widgets laid out outside this file (Key Values). */
+	static TSharedPtr<IToolTip> MakeStyledToolTip(const TAttribute<FText>& Text);
 
 	/**
 	 * Base - trimmed - or, when another renamed track in Layers (other than the one at IgnoreIndex) has it, "Base 2",
@@ -2083,9 +2120,8 @@ private:
 	/** Where the several-keys panel shows the selected keys' Key Values - filled again as the selection changes. */
 	TSharedPtr<class SBox> KeyValuesHost;
 
-	/** See GetSelectedValueCells, IsShowingAllKeyValues, BeginKeyValueDrag and GetKeyChannels. */
+	/** See GetSelectedValueCells, BeginKeyValueDrag and GetKeyChannels. */
 	TArray<FValueCell> SelectedValueCells;
-	bool bShowAllKeyValues = false;
 	TUniquePtr<FScopedTransaction> KeyValueTransaction;
 	struct FKeyChannelCache
 	{
@@ -2289,15 +2325,19 @@ private:
 	bool bLayerDragChanged = false;
 
 	/**
-	 * Moving the selected tracks with Left or Right (Direction -1 or 1): a track drag driven by the keyboard, so locks,
-	 * staggers, collapsed tracks and undo work as they do for the mouse. A press moves them a few pixels' worth (ten times
-	 * that with Shift); held, they keep going, slowly at first and then faster, until the key is let go - one undo step for
-	 * the whole move. Returns false when nothing selected can move.
+	 * Moving the selected keys - or, with none picked, the selected tracks - with Left or Right (Direction -1 or 1): a key or
+	 * track drag driven by the keyboard, so locks, staggers, collapsed tracks, neighbors and undo work as they do for the mouse.
+	 * A press moves them one Drag Step (GetDragStepSeconds - ten with Shift); held, they keep going a step at a time, slowly at
+	 * first and then faster, until the key is let go - one undo step for the whole move. Returns false when nothing selected
+	 * can move.
 	 */
 	bool BeginKeyboardMove(int32 Direction, bool bLarge);
 	void EndKeyboardMove();
 	// Anything else that ends the drag - a switch to another animation, the panel locked - ends the keyboard move with it.
-	bool IsKeyboardMoving() const { return KeyboardMoveDirection != 0 && IsDraggingLayers(); }
+	bool IsKeyboardMoving() const { return KeyboardMoveDirection != 0 && (bKeyboardMovesKeys ? IsDraggingKey() : IsDraggingLayers()); }
+
+	/** The move so far, in whole steps of the Drag Step (at least one) - what is applied of KeyboardMoveOffset. */
+	float GetKeyboardMoveApplied() const;
 
 	/** While a keyboard move is held: carries the tracks on, faster the longer the key is down. */
 	EActiveTimerReturnType TickKeyboardMove(double CurrentTime, float DeltaTime);
@@ -2310,6 +2350,12 @@ private:
 	float KeyboardMoveOffset = 0.f;
 	double KeyboardMoveStartTime = 0.0;
 	bool bKeyboardMoveLarge = false;
+
+	/** Whether the keyboard move carries keys (a key drag) rather than tracks (a track drag). */
+	bool bKeyboardMovesKeys = false;
+
+	/** Set while UpdateKeyDragBy moves keys: no steps, no rounding onto the grid - the move is already whole steps. */
+	bool bKeyDragUnstepped = false;
 	TSharedPtr<FActiveTimerHandle> KeyboardMoveTimer;
 
 	/** A key drag's layer start, and what the key can snap to - both worked out at the press. */
@@ -2322,6 +2368,35 @@ private:
 	 */
 	TMap<int32, TArray<float>> DopeDragTimes;
 	bool bDopeKeyDrag = false;
+
+	/**
+	 * A key drag that reorders: one key dragged on its own across the others of its row. Passed over a neighbor, the two swap
+	 * places - the neighbor takes the slot the dragged key left, as list rows do - rather than the dragged key stopping on it
+	 * (it used to be held a hair from it, so the two read as one key). SwapRowTimes: the row's key times at the press (a track's
+	 * own seconds; a Dope Sheet row's on the time axis); SwapIndex: where the dragged key's contents are now; SwapMin / SwapMax:
+	 * the slots it may take (a track's start and end stay where they are). See UpdateKeySwap.
+	 */
+	bool bSwapDrag = false;
+
+	/**
+	 * How close a dragged key may come to a neighbor that stays, in seconds: a key's width on screen at the zoom of the press
+	 * (Dope Sheet Key Size on a Dope Sheet, KeyDragGapPixels in the Track Editor), so two keys never sit on one another - a
+	 * dragged key stops beside its neighbor and, dragged on past it, swaps places with it. Worked out at the press.
+	 */
+	float KeyDragGapSeconds = 0.f;
+
+	/** The key pressed, by its index at the press - DragKey follows it as a reordering drag moves it to another slot. */
+	int32 DragPressedKey = INDEX_NONE;
+	TArray<float> SwapRowTimes;
+	int32 SwapIndex = INDEX_NONE;
+	int32 SwapMin = 0;
+	int32 SwapMax = 0;
+
+	/** UpdateKeyDrag / UpdateDopeKeyDrag for a reordering drag: the dragged key at Wanted (as SwapRowTimes count time). */
+	void UpdateKeySwap(float Wanted);
+
+	/** Swaps two neighboring keys' contents - every value, a key's pose or shape - leaving their times. False when it can't. */
+	bool SwapKeyContents(int32 LayerIndex, int32 KeyA, int32 KeyB);
 
 	/** Every key time of a row on the time axis (played seconds): its start plus GetKeyTimes - or, bPoints, GetPointTimes. */
 	void GetRowKeySeconds(int32 LayerIndex, TArray<float>& OutSeconds, bool bPoints = false) const;

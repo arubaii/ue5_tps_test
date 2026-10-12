@@ -494,6 +494,21 @@ namespace NameTBD
 			 * selection orange as their outline and glow.
 			 */
 			inline constexpr float DopeKeyDarkLuminance = 0.12f;
+			/**
+			 * A selected Dope Sheet key's glow and outline, grown with the key - at Dope Sheet Key Size the Track Editor's fixed 3 px glow
+			 * was too faint to see: a soft outer ring (DopeKeySelectedHalo, DopeKeySelectedHaloRatio of the key's size), the
+			 * KeySelectedGlow ring inside it (DopeKeySelectedGlowRatio), and a selection-orange outline DopeKeySelectedOutline px wide.
+			 */
+			inline const FLinearColor DopeKeySelectedHalo = FLinearColor(AnimationOrange_Normal).CopyWithNewOpacity(0.14f);
+			inline constexpr float DopeKeySelectedHaloRatio = 0.5f;
+			inline constexpr float DopeKeySelectedGlowRatio = 0.3f;
+			inline constexpr float DopeKeySelectedOutline = 2.f;
+			/**
+			 * A cue key (Sound, Event, Particles, Play Animation) on a Dope Sheet is drawn DopeCueKeyScale times a key's size, its icon
+			 * DopeKeyIconScale of that with a one-pixel DopeKeyIconShadow under it - at a plain key's size its icon was nearly illegible.
+			 */
+			inline constexpr float DopeCueKeyScale = 1.35f;
+			inline const FLinearColor DopeKeyIconShadow(0.f, 0.f, 0.f, 0.6f);
 			inline const FLinearColor DopeKeyLightOutline(1.00f, 1.00f, 1.00f, 0.95f);
 			inline constexpr float DopeKeyHoverLift = 1.25f;
 			inline constexpr float DopeKeyPressedDim = 0.7f;
@@ -503,7 +518,7 @@ namespace NameTBD
 			 * long its sound plays, a bar from the key in the row's color (DopeSoundBarOpacity, DopeSoundBarHeight) closed by a cap
 			 * (DopeSoundBarCapWidth).
 			 */
-			inline constexpr float DopeKeyIconScale = 0.62f;
+			inline constexpr float DopeKeyIconScale = 0.78f;
 			inline const FLinearColor DopeKeyIconDark(0.03f, 0.03f, 0.03f, 0.9f);
 			inline const FLinearColor DopeKeyIconLight(1.00f, 1.00f, 1.00f, 0.95f);
 			inline const FLinearColor DopeKeyHiddenGlyph(0.85f, 0.85f, 0.85f, 0.95f);

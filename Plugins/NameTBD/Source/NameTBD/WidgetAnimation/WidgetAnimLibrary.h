@@ -405,10 +405,11 @@ struct NAMETBD_API FWidgetAnimSettings
 	FName ValueName;
 
 	/**
-	 * How a value-driven track travels to each new value: Immediate jumps, Tween eases over Duration by Easing, Spring
-	 * chases it with the spring, Steady moves at Steady Speed. Part of the motion, so authored here only - a widget can't override it.
+	 * How a value-driven track travels to each new value: Tween eases over Duration by Easing (Constant: jumps at once),
+	 * Spring chases it with the spring, Steady moves at Steady Speed. Part of the motion, so authored here only - a widget
+	 * can't override it. Immediate isn't offered: it is Tween with Constant easing.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value", EditConditionHides, InvalidEnumValues = "Immediate"))
 	EWidgetAnimValueSmoothing ValueSmoothing = EWidgetAnimValueSmoothing::Spring;
 
 	/**
@@ -892,10 +893,12 @@ struct NAMETBD_API FWidgetAnimLayer
 	FName ValueName;
 
 	/**
-	 * How a value-driven track travels to each new value: Immediate jumps, Tween eases over Duration by Easing, Spring
-	 * chases it with the spring, Steady moves at Steady Speed. Part of the motion, so authored here only - a widget can't override it.
+	 * How a value-driven track travels to each new value: Tween eases over Duration by Easing (Constant: jumps at once),
+	 * Spring chases it with the spring, Steady moves at Steady Speed. Part of the motion, so authored here only - a widget
+	 * can't override it. Immediate isn't offered: it is Tween with Constant easing, and a track saved with it loads as that
+	 * (see PostSerialize).
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (EditCondition = "Timing == EWidgetAnimTiming::Value", EditConditionHides, InvalidEnumValues = "Immediate"))
 	EWidgetAnimValueSmoothing ValueSmoothing = EWidgetAnimValueSmoothing::Spring;
 
 	/**
@@ -1249,6 +1252,18 @@ struct NAMETBD_API FWidgetAnimLayer
 
 	/** The reverse, for migrating data authored before animations were split into layers and entries. */
 	static FWidgetAnimLayer FromSettings(const FWidgetAnimSettings& Settings);
+
+	/** Loaded: a value-driven track saved with Immediate smoothing becomes Tween with Constant easing - the same motion. */
+	void PostSerialize(const FArchive& Ar);
+};
+
+template<>
+struct TStructOpsTypeTraits<FWidgetAnimLayer> : public TStructOpsTypeTraitsBase2<FWidgetAnimLayer>
+{
+	enum
+	{
+		WithPostSerialize = true
+	};
 };
 
 /**

@@ -11,11 +11,14 @@
 #include "Styling/AppStyle.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Images/SImage.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SExpandableArea.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/SNullWidget.h"
@@ -33,9 +36,12 @@ namespace WidgetAnimKeyValueCells
 
 	/** Sizes of the table: the key column, a value column, a value box in a one-key list, and the most a table grows to. */
 	constexpr float KeyColumnWidth = 92.f;
-	constexpr float ValueColumnWidth = 78.f;
-	constexpr float SingleValueWidth = 120.f;
+	constexpr float ValueColumnWidth = 98.f;
+	constexpr float SingleValueWidth = 140.f;
 	constexpr float MaxTableHeight = 320.f;
+
+	/** A table row's height as laid out (a value box and its padding) - how many rows fit before the table scrolls. */
+	constexpr float TableRowHeight = 26.f;
 
 	/** What was typed into a value box, kept by its number interface so the commit can work it out for every box picked with it. */
 	struct FTyped
@@ -81,6 +87,19 @@ namespace WidgetAnimKeyValueCells
 		bool bWhole = false;
 	};
 
+	/**
+	 * A value's name's tooltip, in the panel's own style: "Name: what it does" - its line from the plugin's tooltips (see
+	 * WidgetAnimKeyValues::FChannel::Description). Null for a value with no description.
+	 */
+	TSharedPtr<IToolTip> MakeChannelToolTip(const WidgetAnimKeyValues::FChannel* Channel)
+	{
+		if (!Channel || Channel->Description.IsEmpty())
+		{
+			return nullptr;
+		}
+		return SWidgetAnimTimeline::MakeStyledToolTip(FText::Format(LOCTEXT("ChannelToolTipFormat", "{0}: {1}"), Channel->Label, Channel->Description));
+	}
+
 	const FSlateBrush* SelectedOutline()
 	{
 		static const FSlateRoundedBoxBrush Brush(Palette::KeyValueCellSelectedFill, 3.f, Palette::KeyValueCellSelected, 1.5f);
@@ -98,12 +117,8 @@ public:
 
 	SLATE_BEGIN_ARGS(SWidgetAnimValueCell)
 		: _Width(80.f)
-		, _Dimmed(false)
 	{}
 		SLATE_ARGUMENT(float, Width)
-
-		/** Shown though the key doesn't alter it (a key's list, or a track's with Show All Values): dimmed. */
-		SLATE_ARGUMENT(bool, Dimmed)
 
 		/** Every cell of this one's column in its table, top to bottom - what Shift+click picks a run of. */
 		SLATE_ARGUMENT(TArray<SWidgetAnimTimeline::FValueCell>, Column)
@@ -124,8 +139,117 @@ public:
 		const double Step = Channel ? static_cast<double>(Channel->DragStep) : 0.1;
 		const bool bWhole = Channel && Channel->bInteger;
 		const FText Label = Channel ? Channel->Label : FText::GetEmpty();
+		const FText Description = Channel ? Channel->Description : FText::GetEmpty();
 		const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Panel;
 		const SWidgetAnimTimeline::FValueCell Shown = Cell;
+
+		auto CanSet = [WeakOwner, Shown]()
+		{
+			const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+			return Pinned && Pinned->CanSetKeyValue(Shown);
+		};
+		// What it is first - "Edge Bow Top: curves that one edge..." - then how to edit it, or why it can't be.
+		auto CellToolTip = [WeakOwner, Shown, Label, Description]()
+		{
+			const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+			const FText Named = Description.IsEmpty() ? Label : FText::Format(LOCTEXT("CellDescribedFormat", "{0}: {1}"), Label, Description);
+			FText WhyNot;
+			if (Pinned && !Pinned->CanSetKeyValue(Shown, &WhyNot) && !WhyNot.IsEmpty())
+			{
+				return FText::Format(LOCTEXT("CellWhyNotFormat", "{0}\n{1}"), Named, WhyNot);
+			}
+			const FText HowTo = FText::Format(Tips::KeyValueCellTooltip(), Label);
+			return Description.IsEmpty() ? HowTo : FText::Format(LOCTEXT("CellHowToFormat", "{0}\n\n{1}"), Named, HowTo);
+		};
+
+		// What the box is: a drop-down for a choice from a list, a check box for an on/off, else a number to type or drag.
+		TSharedPtr<SWidget> Editor;
+		if (Channel && Channel->Enum)
+		{
+			const UEnum* Enum = Channel->Enum;
+			Editor = SNew(SComboButton)
+				.ContentPadding(FMargin(4.f, 1.f))
+				.IsEnabled_Lambda(CanSet)
+				.ToolTip(SWidgetAnimTimeline::MakeStyledToolTip(TAttribute<FText>::CreateLambda([WeakOwner, Shown, Label, Description]()
+				{
+					const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+					const FText Named = Description.IsEmpty() ? Label : FText::Format(LOCTEXT("ChoiceDescribedFormat", "{0}: {1}"), Label, Description);
+					FText WhyNot;
+					if (Pinned && !Pinned->CanSetKeyValue(Shown, &WhyNot) && !WhyNot.IsEmpty())
+					{
+						return FText::Format(LOCTEXT("ChoiceWhyNotFormat", "{0}\n{1}"), Named, WhyNot);
+					}
+					const FText HowTo = FText::Format(Tips::KeyChoiceCellTooltip(), Label);
+					return Description.IsEmpty() ? HowTo : FText::Format(LOCTEXT("ChoiceHowToFormat", "{0}\n\n{1}"), Named, HowTo);
+				})))
+				.OnGetMenuContent(this, &SWidgetAnimValueCell::MakeChoiceMenu)
+				.ButtonContent()
+				[
+					SNew(STextBlock)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+					.Text_Lambda([WeakOwner, Shown, Enum]()
+					{
+						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+						const TOptional<double> Value = Pinned ? Pinned->GetKeyValue(Shown) : TOptional<double>();
+						if (!Value.IsSet())
+						{
+							return LOCTEXT("NoChoice", "-");
+						}
+						const int32 Index = Enum->GetIndexByValue(static_cast<int64>(FMath::RoundHalfFromZero(Value.GetValue())));
+						return Index != INDEX_NONE ? Enum->GetDisplayNameTextByIndex(Index) : FText::AsNumber(static_cast<int64>(Value.GetValue()));
+					})
+				];
+		}
+		else if (Channel && Channel->bBool)
+		{
+			Editor = SNew(SBox)
+				.HAlign(HAlign_Left)
+				[
+					SNew(SCheckBox)
+					.IsEnabled_Lambda(CanSet)
+					.ToolTip(SWidgetAnimTimeline::MakeStyledToolTip(TAttribute<FText>::CreateLambda(CellToolTip)))
+					.IsChecked_Lambda([WeakOwner, Shown]()
+					{
+						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+						const TOptional<double> Value = Pinned ? Pinned->GetKeyValue(Shown) : TOptional<double>();
+						return !Value.IsSet() ? ECheckBoxState::Undetermined : Value.GetValue() >= 0.5 ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+					})
+					.OnCheckStateChanged_Lambda([this](ECheckBoxState State)
+					{
+						SetEditedCells(State == ECheckBoxState::Checked ? 1.0 : 0.0);
+					})
+				];
+		}
+		else
+		{
+			Editor = SNew(SNumericEntryBox<double>)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.AllowSpin(true)
+				.Delta(Step)
+				// Its own range where it has one; else none - an entry box's default bar runs 0 to 100. With no range the spin box
+				// must be told to move linearly - one Delta (Step) per pixel - or it adds the value to itself each step and runs off
+				// to infinity at the slightest drag.
+				.MinSliderValue(Channel ? Channel->SliderMin : TOptional<double>())
+				.MaxSliderValue(Channel ? Channel->SliderMax : TOptional<double>())
+				.LinearDeltaSensitivity(1)
+				.UndeterminedString(LOCTEXT("NoValue", "-"))
+				.TypeInterface(MakeShared<FInterface>(Typed.ToSharedRef(), bWhole))
+				.Value_Lambda([WeakOwner, Shown]() -> TOptional<double>
+				{
+					const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+					return Pinned ? Pinned->GetKeyValue(Shown) : TOptional<double>();
+				})
+				.IsEnabled_Lambda(CanSet)
+				.ToolTip(SWidgetAnimTimeline::MakeStyledToolTip(TAttribute<FText>::CreateLambda(CellToolTip)))
+				.OnValueCommitted(this, &SWidgetAnimValueCell::OnCommitted)
+				.OnBeginSliderMovement(this, &SWidgetAnimValueCell::OnBeginDrag)
+				.OnValueChanged(this, &SWidgetAnimValueCell::OnDragged)
+				.OnEndSliderMovement(this, &SWidgetAnimValueCell::OnEndDrag);
+		}
+
+		// Its bind chip, where the animation has parameters: bound, the box reads the parameter's name and value instead.
+		const TSharedPtr<SWidget> Chip = Owner ? Owner->MakeKeyValueBindChip(Cell, &Editor) : nullptr;
 
 		ChildSlot
 		[
@@ -134,41 +258,28 @@ public:
 			[
 				SNew(SOverlay)
 
+				// Never dimmed: a box that can be set reads as one - only one that can't (a Slide's end) is greyed, by being disabled.
 				+ SOverlay::Slot()
 				[
-					SNew(SBox)
-					.RenderOpacity(InArgs._Dimmed ? Palette::KeyValueAuthoredOpacity : 1.f)
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.f)
+					.VAlign(VAlign_Center)
 					[
-						SNew(SNumericEntryBox<double>)
-						.Font(IDetailLayoutBuilder::GetDetailFont())
-						.AllowSpin(true)
-						.Delta(Step)
-						.UndeterminedString(LOCTEXT("NoValue", "-"))
-						.TypeInterface(MakeShared<FInterface>(Typed.ToSharedRef(), bWhole))
-						.Value_Lambda([WeakOwner, Shown]() -> TOptional<double>
-						{
-							const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
-							return Pinned ? Pinned->GetKeyValue(Shown) : TOptional<double>();
-						})
-						.IsEnabled_Lambda([WeakOwner, Shown]()
-						{
-							const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
-							return Pinned && Pinned->CanSetKeyValue(Shown);
-						})
-						.ToolTipText_Lambda([WeakOwner, Shown, Label]()
-						{
-							const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
-							FText WhyNot;
-							if (Pinned && !Pinned->CanSetKeyValue(Shown, &WhyNot) && !WhyNot.IsEmpty())
-							{
-								return FText::Format(LOCTEXT("CellWhyNotFormat", "{0}\n{1}"), Label, WhyNot);
-							}
-							return FText::Format(Tips::KeyValueCellTooltip(), Label);
-						})
-						.OnValueCommitted(this, &SWidgetAnimValueCell::OnCommitted)
-						.OnBeginSliderMovement(this, &SWidgetAnimValueCell::OnBeginDrag)
-						.OnValueChanged(this, &SWidgetAnimValueCell::OnDragged)
-						.OnEndSliderMovement(this, &SWidgetAnimValueCell::OnEndDrag)
+						SNew(SBox)
+						.Clipping(EWidgetClipping::ClipToBounds)
+						[
+							Editor.ToSharedRef()
+						]
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(1.f, 0.f, 0.f, 0.f))
+					[
+						Chip.IsValid() ? Chip.ToSharedRef() : SNullWidget::NullWidget
 					]
 				]
 
@@ -248,6 +359,60 @@ public:
 	}
 
 private:
+
+	/** A choice box's list: every entry of its enum (hidden ones left out), the one it holds ticked. Picked: set on every box edited. */
+	TSharedRef<SWidget> MakeChoiceMenu()
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		const TArray<WidgetAnimKeyValues::FChannel>* Channels = Owner ? &Owner->GetKeyChannels(Cell.Layer) : nullptr;
+		const UEnum* Enum = Channels && Channels->IsValidIndex(Cell.Channel) ? (*Channels)[Cell.Channel].Enum : nullptr;
+		FMenuBuilder Menu(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+		if (!Enum)
+		{
+			return Menu.MakeWidget();
+		}
+		const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Panel;
+		const SWidgetAnimTimeline::FValueCell Shown = Cell;
+		const int32 NumEntries = Enum->ContainsExistingMax() ? Enum->NumEnums() - 1 : Enum->NumEnums();
+		for (int32 Index = 0; Index < NumEntries; ++Index)
+		{
+			if (Enum->HasMetaData(TEXT("Hidden"), Index))
+			{
+				continue;
+			}
+			const double EntryValue = static_cast<double>(Enum->GetValueByIndex(Index));
+			Menu.AddMenuEntry(
+				Enum->GetDisplayNameTextByIndex(Index),
+				Enum->GetToolTipTextByIndex(Index),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateSP(this, &SWidgetAnimValueCell::SetEditedCells, EntryValue),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateLambda([WeakOwner, Shown, EntryValue]()
+					{
+						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+						const TOptional<double> Value = Pinned ? Pinned->GetKeyValue(Shown) : TOptional<double>();
+						return Value.IsSet() && FMath::IsNearlyEqual(Value.GetValue(), EntryValue);
+					})),
+				NAME_None,
+				EUserInterfaceActionType::RadioButton);
+		}
+		return Menu.MakeWidget();
+	}
+
+	/** A choice picked or an on/off ticked: the same value on every box edited with this one, as one undo step. */
+	void SetEditedCells(double Value)
+	{
+		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+		if (!Owner)
+		{
+			return;
+		}
+		const TArray<SWidgetAnimTimeline::FValueCell> Cells = GetEditedCells();
+		TArray<double> Values;
+		Values.Init(Value, Cells.Num());
+		Owner->SetKeyValues(Cells, Values);
+	}
 
 	/** What an edit of this box edits: every box picked with it, when it is one of several picked - else itself alone. */
 	TArray<SWidgetAnimTimeline::FValueCell> GetEditedCells() const
@@ -372,7 +537,7 @@ void SWidgetAnimKeyValues::Construct(const FArguments& InArgs, TWeakPtr<SWidgetA
 		return;
 	}
 	const bool bForTracks = InArgs._ForTracks;
-	bListAll = !bForTracks || Owner->IsShowingAllKeyValues();
+	bListAll = !bForTracks;
 	const bool bShowAll = bListAll;
 
 	// The keys by track, tracks in the order first given, keys in order along each.
@@ -396,7 +561,7 @@ void SWidgetAnimKeyValues::Construct(const FArguments& InArgs, TWeakPtr<SWidgetA
 		Part->Keys.AddUnique(Ref.Key);
 	}
 
-	// Which channels each track's list shows: those any of its keys alters (every one, with Show All Values), in the track's order.
+	// Which channels each track's list shows: those any of its keys alters (keys picked: every one), in the track's order.
 	for (FTrackPart& Part : Parts)
 	{
 		Part.Keys.Sort();
@@ -448,50 +613,7 @@ void SWidgetAnimKeyValues::Construct(const FArguments& InArgs, TWeakPtr<SWidgetA
 		}
 	}
 
-	const TWeakPtr<SWidgetAnimTimeline> WeakOwner = Panel;
 	const TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
-
-	// A track's list: Show All Values. Keys picked list every value already.
-	if (bForTracks)
-	{
-		Box->AddSlot()
-		.AutoHeight()
-		.Padding(FMargin(0.f, 2.f, 0.f, 6.f))
-		[
-			SNew(SHorizontalBox)
-
-			+ SHorizontalBox::Slot()
-			.FillWidth(1.f)
-			[
-				SNullWidget::NullWidget
-			]
-
-			+ SHorizontalBox::Slot()
-			.AutoWidth()
-			.VAlign(VAlign_Center)
-			[
-				SNew(SCheckBox)
-				.ToolTipText(Tips::ShowAllKeyValuesTooltip())
-				.IsChecked_Lambda([WeakOwner]()
-				{
-					const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
-					return Pinned && Pinned->IsShowingAllKeyValues() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-				})
-				.OnCheckStateChanged_Lambda([WeakOwner](ECheckBoxState State)
-				{
-					if (const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin())
-					{
-						Pinned->SetShowAllKeyValues(State == ECheckBoxState::Checked);
-					}
-				})
-				[
-					SNew(STextBlock)
-					.Font(IDetailLayoutBuilder::GetDetailFont())
-					.Text(LOCTEXT("ShowAllValues", "Show All Values"))
-				]
-			]
-		];
-	}
 
 	for (int32 PartIndex = 0; PartIndex < Parts.Num(); ++PartIndex)
 	{
@@ -617,10 +739,85 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeSingleKey(const FTrackPart& Part)
 	const TArray<WidgetAnimKeyValues::FChannel>& Channels = Owner->GetKeyChannels(Part.Layer);
 	const TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
 
+	// A setting of several numbers - a Shape Box's Corners, Edge Bow - folds under its name: its rows go in a box of their own.
+	// Folded at first; opened or closed, it stays so for every key shown after (by the setting's name, for this editor session).
+	static TSet<FString> OpenGroups;
+	constexpr int32 MinFoldedRows = 3;
+	auto GroupOf = [&Channels, &Part](int32 Column) -> FString
+	{
+		const int32 ChannelIndex = Part.Columns.IsValidIndex(Column) ? Part.Columns[Column] : INDEX_NONE;
+		return Channels.IsValidIndex(ChannelIndex) ? Channels[ChannelIndex].Group.ToString() : FString();
+	};
+
 	for (int32 Column = 0; Column < Part.Columns.Num(); ++Column)
 	{
+		const FString GroupName = GroupOf(Column);
+		int32 GroupEnd = Column;
+		while (!GroupName.IsEmpty() && GroupEnd + 1 < Part.Columns.Num() && GroupOf(GroupEnd + 1) == GroupName)
+		{
+			++GroupEnd;
+		}
+		if (!GroupName.IsEmpty() && GroupEnd - Column + 1 >= MinFoldedRows)
+		{
+			const TSharedRef<SVerticalBox> GroupBox = SNew(SVerticalBox);
+			for (int32 InGroup = Column; InGroup <= GroupEnd; ++InGroup)
+			{
+				const int32 GroupChannel = Part.Columns[InGroup];
+				GroupBox->AddSlot()
+				.AutoHeight()
+				.Padding(FMargin(8.f, 1.f, 0.f, 1.f))
+				[
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.f)
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Font(IDetailLayoutBuilder::GetDetailFont())
+						.Text(Channels.IsValidIndex(GroupChannel) ? Channels[GroupChannel].ShortLabel : FText::GetEmpty())
+						.ToolTip(WidgetAnimKeyValueCells::MakeChannelToolTip(Channels.IsValidIndex(GroupChannel) ? &Channels[GroupChannel] : nullptr))
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						MakeCell(Part, 0, InGroup, SingleValueWidth)
+					]
+				];
+			}
+			Box->AddSlot()
+			.AutoHeight()
+			.Padding(FMargin(0.f, 2.f))
+			[
+				SNew(SExpandableArea)
+				.AreaTitle(FText::FromString(GroupName))
+				.AreaTitleFont(IDetailLayoutBuilder::GetDetailFontBold())
+				.InitiallyCollapsed(!OpenGroups.Contains(GroupName))
+				.OnAreaExpansionChanged_Lambda([GroupName](bool bExpanded)
+				{
+					if (bExpanded)
+					{
+						OpenGroups.Add(GroupName);
+					}
+					else
+					{
+						OpenGroups.Remove(GroupName);
+					}
+				})
+				.BorderBackgroundColor(FLinearColor::Transparent)
+				.Padding(FMargin(0.f))
+				.BodyContent()
+				[
+					GroupBox
+				]
+			];
+			Column = GroupEnd;
+			continue;
+		}
+
 		const int32 ChannelIndex = Part.Columns[Column];
-		const bool bShown = Part.Shown[0][Column];
 		Box->AddSlot()
 		.AutoHeight()
 		.Padding(FMargin(0.f, 1.f))
@@ -633,8 +830,8 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeSingleKey(const FTrackPart& Part)
 			[
 				SNew(STextBlock)
 				.Font(IDetailLayoutBuilder::GetDetailFont())
-				.ColorAndOpacity(bShown ? FSlateColor::UseForeground() : FSlateColor::UseSubduedForeground())
 				.Text(Channels.IsValidIndex(ChannelIndex) ? Channels[ChannelIndex].Label : FText::GetEmpty())
+				.ToolTip(WidgetAnimKeyValueCells::MakeChannelToolTip(Channels.IsValidIndex(ChannelIndex) ? &Channels[ChannelIndex] : nullptr))
 			]
 
 			+ SHorizontalBox::Slot()
@@ -722,7 +919,6 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeCell(const FTrackPart& Part, int32
 
 	return SNew(SWidgetAnimValueCell, Panel, Cell)
 		.Width(Width)
-		.Dimmed(!bAltered)
 		.Column(ColumnCells);
 }
 
@@ -753,6 +949,7 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeTable(int32 PartIndex)
 	for (const int32 ChannelIndex : Part.Columns)
 	{
 		const FText Label = Channels.IsValidIndex(ChannelIndex) ? Channels[ChannelIndex].Label : FText::GetEmpty();
+		const TSharedPtr<IToolTip> HeaderToolTip = WidgetAnimKeyValueCells::MakeChannelToolTip(Channels.IsValidIndex(ChannelIndex) ? &Channels[ChannelIndex] : nullptr);
 		Header->AddSlot()
 		.AutoWidth()
 		[
@@ -764,46 +961,76 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeTable(int32 PartIndex)
 				.Font(IDetailLayoutBuilder::GetDetailFontBold())
 				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 				.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
-				.ToolTipText(Label)
+				.ToolTip(HeaderToolTip.IsValid() ? HeaderToolTip : SWidgetAnimTimeline::MakeStyledToolTip(Label))
 				.Text(Label)
 			]
 		];
 	}
 
-	// The rows - a list, so a track of hundreds of keys only makes the rows in view.
-	const TSharedRef<SListView<TSharedPtr<FRowItem>>> List = SNew(SListView<TSharedPtr<FRowItem>>)
-		.ListItemsSource(&PartRows[PartIndex])
-		.SelectionMode(ESelectionMode::None)
-		.OnGenerateRow_Lambda([this](TSharedPtr<FRowItem> Item, const TSharedRef<STableViewBase>& OwnerTable) -> TSharedRef<ITableRow>
+	// One row: the key's label, then a box per column.
+	auto MakeRow = [this](const TSharedPtr<FRowItem>& Item) -> TSharedRef<SHorizontalBox>
+	{
+		const TSharedRef<SHorizontalBox> RowBox = SNew(SHorizontalBox);
+		if (Item.IsValid() && Parts.IsValidIndex(Item->Part))
 		{
-			const TSharedRef<SHorizontalBox> RowBox = SNew(SHorizontalBox);
-			if (Item.IsValid() && Parts.IsValidIndex(Item->Part))
+			const FTrackPart& RowPart = Parts[Item->Part];
+			RowBox->AddSlot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				MakeKeyLabel(RowPart, Item->Row)
+			];
+			for (int32 Column = 0; Column < RowPart.Columns.Num(); ++Column)
 			{
-				const FTrackPart& RowPart = Parts[Item->Part];
 				RowBox->AddSlot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
+				.Padding(FMargin(1.f))
 				[
-					MakeKeyLabel(RowPart, Item->Row)
+					MakeCell(RowPart, Item->Row, Column, ValueColumnWidth - 2.f)
 				];
-				for (int32 Column = 0; Column < RowPart.Columns.Num(); ++Column)
-				{
-					RowBox->AddSlot()
-					.AutoWidth()
-					.VAlign(VAlign_Center)
-					.Padding(FMargin(1.f))
-					[
-						MakeCell(RowPart, Item->Row, Column, ValueColumnWidth - 2.f)
-					];
-				}
 			}
-			return SNew(STableRow<TSharedPtr<FRowItem>>, OwnerTable)
-				.Padding(FMargin(0.f, 1.f))
-				[
-					RowBox
-				];
-		});
+		}
+		return RowBox;
+	};
 
+	// The rows. As many as fit are laid out as they are - exactly their height, nothing left under them. More than fit: a
+	// list as tall as the most a table grows to, so a track of hundreds of keys only makes the rows in view.
+	TSharedPtr<SWidget> Rows;
+	if (PartRows[PartIndex].Num() * TableRowHeight <= MaxTableHeight)
+	{
+		const TSharedRef<SVerticalBox> RowsBox = SNew(SVerticalBox);
+		for (const TSharedPtr<FRowItem>& Item : PartRows[PartIndex])
+		{
+			RowsBox->AddSlot()
+			.AutoHeight()
+			.Padding(FMargin(0.f, 1.f))
+			[
+				MakeRow(Item)
+			];
+		}
+		Rows = RowsBox;
+	}
+	else
+	{
+		Rows = SNew(SBox)
+			.HeightOverride(MaxTableHeight)
+			[
+				SNew(SListView<TSharedPtr<FRowItem>>)
+				.ListItemsSource(&PartRows[PartIndex])
+				.SelectionMode(ESelectionMode::None)
+				.OnGenerateRow_Lambda([MakeRow](TSharedPtr<FRowItem> Item, const TSharedRef<STableViewBase>& OwnerTable) -> TSharedRef<ITableRow>
+				{
+					return SNew(STableRow<TSharedPtr<FRowItem>>, OwnerTable)
+						.Padding(FMargin(0.f, 1.f))
+						[
+							MakeRow(Item)
+						];
+				})
+			];
+	}
+
+	// Sideways scrolling when the table is wider than the panel (its bar is collapsed - no room taken - otherwise).
 	return SNew(SScrollBox)
 		.Orientation(Orient_Horizontal)
 		+ SScrollBox::Slot()
@@ -823,11 +1050,7 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeTable(int32 PartIndex)
 				+ SVerticalBox::Slot()
 				.AutoHeight()
 				[
-					SNew(SBox)
-					.MaxDesiredHeight(MaxTableHeight)
-					[
-						List
-					]
+					Rows.ToSharedRef()
 				]
 			]
 		];

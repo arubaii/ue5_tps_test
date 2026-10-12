@@ -50,8 +50,8 @@ enum class EWidgetAnimParticleCueScope : uint8
  * opens, stopping as it closes.
  *
  * The track carries its own Niagara System and User Parameters: it plays that, whatever the Niagara Particles widget is set
- * to - leave it empty to play the widget's own. So one Particles widget serves every track, each with its effect. Or Use
- * Widget's Niagara System: each widget plays its own system, with its own parameters - on the first found, or on all of them.
+ * to - left None, it plays nothing. So one Particles widget serves every track, each with its effect. Or Use Widget's Niagara
+ * System: each widget plays its own system, with its own parameters - on the first found, or on all of them.
  *
  * Plays on a Niagara Particles widget: the one named by Particles Widget; else the track's widget itself when it is one (aim
  * the track's Track Group at it - the simplest setup), or the first inside it; else the nearest around it. Seen in the
@@ -77,9 +77,10 @@ struct NAMETBDNIAGARA_API FWidgetAnimParticleCueParams : public FWidgetAnimCuePa
 	EWidgetAnimParticleCueScope ActOn = EWidgetAnimParticleCueScope::FirstFound;
 
 	/**
-	 * The system this track plays - burst, or played as the widget's system. None: the Niagara Particles widget's own. The
-	 * widget's User Parameters reach it too, by name, under the track's own below. For a burst, a one-shot system (Loop
-	 * Behavior: Once). Greyed out while Use Widget's Niagara System is on.
+	 * The system this track plays - burst, or played as the widget's system. None: nothing is burst or played (to play the
+	 * Niagara Particles widget's own, turn on Use Widget's Niagara System). The widget's User Parameters reach it too, by
+	 * name, under the track's own below. For a burst, a one-shot system (Loop Behavior: Once). Greyed out while Use Widget's
+	 * Niagara System is on.
 	 *
 	 * Shown and greyed by the Widget Animations panel (ShowWhen / EnableWhen - see FTypeParamsDetails in SWidgetAnimTimeline.cpp)
 	 * rather than an EditCondition: a property bag under an EditCondition came back read-only.
@@ -123,6 +124,12 @@ struct NAMETBDNIAGARA_API FWidgetAnimParticleCueParams : public FWidgetAnimCuePa
 	bool PlaysTrackSystem() const
 	{
 		return !bUseWidgetSystem && (Action == EWidgetAnimParticleCueAction::BurstAtTarget || Action == EWidgetAnimParticleCueAction::Play);
+	}
+
+	/** Whether a Burst / Play fires nothing: the track's own system is asked for (Use Widget's Niagara System off) and is None. */
+	bool PlaysNothing() const
+	{
+		return PlaysTrackSystem() && NiagaraSystem == nullptr;
 	}
 
 	/** Whether it acts on every Niagara Particles widget found, not just the first. */

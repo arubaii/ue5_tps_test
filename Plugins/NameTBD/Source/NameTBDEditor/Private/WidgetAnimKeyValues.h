@@ -6,13 +6,15 @@
 
 class FFieldClass;
 class FProperty;
+class UEnum;
 struct FWidgetAnimLayer;
 
 /**
  * A track's keys as their values - the numbers each key holds, one "channel" per number: a Transform key's Translation X,
  * Translation Y, Scale X... a Fade's Opacity, a Scale track's Scale X and Y, a Shape Box or Shape key's every number (a corner's
- * Size X, a fill color's R). What the Selection panel's Key Values and Keys list (SWidgetAnimKeyValues) show and edit, a key's
- * channels at a time, and only those the key alters.
+ * Size X, a fill color's R) - and its choices and on/offs, held as numbers (a corner's Style, a shape's Fill). What the
+ * Selection panel's Key Values and Keys list (SWidgetAnimKeyValues) show and edit, a key's channels at a time, and only those
+ * the key alters.
  *
  * Keys are counted as the Track Editor draws them: on a track that travels from a start value to an end value, key 0 is its
  * start value, the last key its end value and every key between one of its Value Keys; on a keyframed track (Transform, Shape
@@ -66,11 +68,39 @@ namespace WidgetAnimKeyValues
 		FFieldClass* RootClass = nullptr;
 		TArray<const FProperty*> Tail;
 
-		/** Whether the number is whole - typed and dragged in whole steps. */
+		/**
+		 * A choice from a list - a Shape Box corner's Bevel / Chamfer, a shape's Fit: its list. Shown as a drop-down of the
+		 * entries' names, read and written as the entry's value. Null for a number.
+		 */
+		const UEnum* Enum = nullptr;
+
+		/** On or off - a shape's Fill: shown as a check box, read and written as 1 or 0. */
+		bool bBool = false;
+
+		/** Whether the number is whole - typed and dragged in whole steps. A choice's and an on/off's are. */
 		bool bInteger = false;
 
 		/** A step for dragging it: finer for scales, opacities and colors than for distances and angles. */
 		float DragStep = 0.1f;
+
+		/**
+		 * The range its box's drag bar spans, when it has a natural one - an opacity's or a color's 0 to 1, a setting's own UIMin /
+		 * UIMax (Perspective 0 to 1, Angle -45 to 45). Unset: the box drags freely with no bar (an entry box's own default was a
+		 * 0 to 100 bar, meaningless for a scale of 1 or a translation of 400).
+		 */
+		TOptional<double> SliderMin;
+		TOptional<double> SliderMax;
+
+		/**
+		 * The setting it is one number of, when that holds several - a Shape Box's Corners, Edge Bow - with the name the box is
+		 * listed under inside it ("Top Left Size X"). A key's list folds a setting of several numbers under its name. Empty for a
+		 * number that is a setting of its own.
+		 */
+		FText Group;
+		FText ShortLabel;
+
+		/** What it does, in a line - NameTBD::Tooltips::WidgetAnimEditor::KeyValueDescription, else its setting's own tooltip. */
+		FText Description;
 	};
 
 	/** Every channel of a track, in the order the Selection panel lists them. None for a track whose keys hold no number. */
@@ -93,6 +123,14 @@ namespace WidgetAnimKeyValues
 	 * it, at the pose it stood for (identity), and takes the number. False when it can't be set (see CanWrite).
 	 */
 	bool Write(FWidgetAnimLayer& Layer, int32 Key, const FChannel& Channel, double Value);
+
+	/**
+	 * The channel's number at a key as a path into its track - what an Animation Parameter is bound to (see
+	 * FWidgetAnimParameterBinding::FieldPath): "ValueKeys.Keys[1].Value", "StartOpacity", "Transform.Keys[2].Transform.Scale.X",
+	 * "Transform.Keys[0].Shape.Corners.TopLeft.Style", "TypeParams.StartValue". False where the number isn't a field of its own
+	 * (a Slide's end, a registered type's fixed start or end).
+	 */
+	bool GetFieldPath(const FWidgetAnimLayer& Layer, int32 Key, const FChannel& Channel, FString& OutPath);
 
 	/** Whether the channel is altered at a key - see the note at the top. */
 	bool IsAltered(const FWidgetAnimLayer& Layer, int32 Key, const FChannel& Channel);

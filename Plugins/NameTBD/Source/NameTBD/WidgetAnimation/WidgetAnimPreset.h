@@ -109,9 +109,9 @@ public:
 	/**
 	 * Made as a Dope Sheet (Key Mode): the Widget Animations panel edits it as keys only - each row one kind of key on one widget,
 	 * no bars, no start and end to drag, no names or presets. Chosen when the timeline is made and kept for its life (copied with
-	 * it, saved as an asset with it). Its rows are tracks and its keys their keys; the one thing it changes in how it plays is
-	 * what a row shows before its first key: that key's value, as keys do in any dope sheet, rather than the widget as
-	 * authored (see FWidgetAnimSettings::bHoldStartPose) - so a row of one key holds it for the whole animation.
+	 * it, saved as an asset with it). Its rows are tracks and its keys their keys, and it plays as any animation: before a row's first key
+	 * the widget is as authored - no key's value shows before its time (Workflow v2_fix6_fix4; a row used to hold its first key
+	 * from the start).
 	 */
 	UPROPERTY()
 	bool bDopeSheet = false;

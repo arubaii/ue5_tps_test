@@ -5215,6 +5215,18 @@ FWidgetAnimSettings FWidgetAnimLayer::ToSettings() const
 	return Out;
 }
 
+void FWidgetAnimLayer::PostSerialize(const FArchive& Ar)
+{
+	// Immediate is no longer offered: on a value-driven track it is Tween with Constant easing, which jumps the same way
+	// (FWidgetAnimValueMotion::JumpsToValues). A track that isn't value-driven keeps it - it means nothing there, and its
+	// Easing is its own tween's.
+	if (Ar.IsLoading() && Timing == EWidgetAnimTiming::Value && ValueSmoothing == EWidgetAnimValueSmoothing::Immediate)
+	{
+		ValueSmoothing = EWidgetAnimValueSmoothing::Tween;
+		Easing = EWidgetAnimEasing::Hold;
+	}
+}
+
 FWidgetAnimLayer FWidgetAnimLayer::FromSettings(const FWidgetAnimSettings& Settings)
 {
 	FWidgetAnimLayer Out;

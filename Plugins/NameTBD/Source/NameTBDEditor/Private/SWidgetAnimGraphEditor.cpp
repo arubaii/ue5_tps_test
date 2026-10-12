@@ -926,6 +926,10 @@ namespace WidgetAnimGraph
 		return &Brush;
 	}
 
+	/**
+	 * The key readout's box. Drawn with Palette::TooltipBackground as its tint: MakeBox fills a rounded box with the tint it is
+	 * given, not the brush's own fill color - a white tint drew a white box under the white text.
+	 */
 	const FSlateBrush* ReadoutBrush()
 	{
 		static const FSlateRoundedBoxBrush Brush(Palette::TooltipBackground, 4.f, Palette::TooltipOutline, 1.f);
@@ -2044,7 +2048,11 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
 		}
 		else
 		{
-			// Dashed by length along the line: 7 pixels drawn, 4 left out.
+			// Dashed by length along the line: 7 pixels drawn, 4 left out - cut exactly where each dash starts and ends, inside a
+			// segment too. (Before, a whole segment was drawn or left out by where it started: a long straight stretch - a
+			// linear or held stretch is two points - came out solid or missing, so the curve was only sometimes dashed.)
+			constexpr float DashOn = 7.f;
+			constexpr float DashPeriod = 11.f;
 			TArray<FVector2f> Dash;
 			float Along = 0.f;
 			for (int32 Index = 0; Index + 1 < Curve.Points.Num(); ++Index)
@@ -2052,23 +2060,40 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
 				const FVector2f A = Curve.Points[Index];
 				const FVector2f B = Curve.Points[Index + 1];
 				const float Length = (B - A).Size();
-				const bool bOn = FMath::Fmod(Along, 11.f) < 7.f;
-				if (bOn)
+				if (Length <= UE_KINDA_SMALL_NUMBER)
 				{
-					if (Dash.Num() == 0)
-					{
-						Dash.Add(A);
-					}
-					Dash.Add(B);
+					continue;
 				}
-				else if (Dash.Num() > 0)
+				float Done = 0.f;
+				while (Done < Length)
 				{
-					Lines(CurveLayer, Dash, Curve.Color, Thickness);
-					Dash.Reset();
+					// Where in the pattern this piece starts, and how far it runs before the pattern changes (or the segment ends).
+					const float Phase = FMath::Fmod(Along + Done, DashPeriod);
+					const bool bOn = Phase < DashOn;
+					const float Run = FMath::Min((bOn ? DashOn : DashPeriod) - Phase, Length - Done);
+					const FVector2f From = FMath::Lerp(A, B, Done / Length);
+					const FVector2f To = FMath::Lerp(A, B, (Done + Run) / Length);
+					if (bOn)
+					{
+						if (Dash.Num() == 0)
+						{
+							Dash.Add(From);
+						}
+						Dash.Add(To);
+					}
+					else if (Dash.Num() > 0)
+					{
+						Lines(CurveLayer, Dash, Curve.Color, Thickness);
+						Dash.Reset();
+					}
+					Done += FMath::Max(Run, 0.01f);
 				}
 				Along += Length;
 			}
-			Lines(CurveLayer, Dash, Curve.Color, Thickness);
+			if (Dash.Num() > 1)
+			{
+				Lines(CurveLayer, Dash, Curve.Color, Thickness);
+			}
 		}
 	}
 
@@ -2204,7 +2229,7 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
 			const FVector2f LineSize = FVector2f(Measure->Measure(Line, SmallFont));
 			const FVector2f BoxSize = LineSize + FVector2f(12.f, 6.f);
 			const FVector2f At(FMath::Clamp(Readout->Position.X + 10.f, 0.f, FMath::Max(Size.X - BoxSize.X, 0.f)), FMath::Clamp(Readout->Position.Y - BoxSize.Y - 8.f, 0.f, FMath::Max(Size.Y - BoxSize.Y, 0.f)));
-			Box(OverlayLayer + 4, At, BoxSize, ReadoutBrush(), FLinearColor::White);
+			Box(OverlayLayer + 4, At, BoxSize, ReadoutBrush(), Palette::TooltipBackground);
 			Text(OverlayLayer + 5, Line, At + FVector2f(6.f, 3.f), SmallFont, Palette::TooltipValue);
 		}
 		else if (Layer && Model.PointTimes.IsValidIndex(Readout->Key.Point))
@@ -2217,7 +2242,7 @@ int32 SWidgetAnimGraphCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& A
 			const FVector2f LineSize = FVector2f(Measure->Measure(Line, SmallFont));
 			const FVector2f BoxSize = LineSize + FVector2f(12.f, 6.f);
 			const FVector2f At(FMath::Clamp(Readout->Position.X + 10.f, 0.f, FMath::Max(Size.X - BoxSize.X, 0.f)), FMath::Clamp(Readout->Position.Y - BoxSize.Y - 8.f, 0.f, FMath::Max(Size.Y - BoxSize.Y, 0.f)));
-			Box(OverlayLayer + 4, At, BoxSize, ReadoutBrush(), FLinearColor::White);
+			Box(OverlayLayer + 4, At, BoxSize, ReadoutBrush(), Palette::TooltipBackground);
 			Text(OverlayLayer + 5, Line, At + FVector2f(6.f, 3.f), SmallFont, Palette::TooltipValue);
 		}
 	}

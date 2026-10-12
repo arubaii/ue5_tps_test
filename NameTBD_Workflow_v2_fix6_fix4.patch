@@ -1,0 +1,590 @@
+diff --git a/Plugins/NameTBD/Resources/AI/Docs/animations.md b/Plugins/NameTBD/Resources/AI/Docs/animations.md
+index 2eaaa76..d47c679 100644
+--- a/Plugins/NameTBD/Resources/AI/Docs/animations.md
++++ b/Plugins/NameTBD/Resources/AI/Docs/animations.md
+@@ -1,7 +1,7 @@
+ # Widget Animations
+ 
+ ## Assets, groups and tracks
+-A Widget Animation (WA_ asset) is a list of tracks, each in a Track Group; a group is one widget the animation moves (Target Widget; empty = the widget it plays on). Tracks start With Previous or After Previous plus Delay. Timing: Tween (Duration, Easing Linear / EaseIn / EaseOut / EaseInOut / Hold - the editor shows EaseInOut as "Cubic", Hold as "Constant", Custom as "Curve Asset" and a segment's Bezier as "Handles"; scripts keep the value names) or Spring (Spring: Duration and Bounce, or Stiffness / Damping / Mass - presets "@spring.Snappy", "@spring.Bouncy"...). A stagger (Expander) plays a track once per child, letter, word or line. A timeline is made as a Track Sheet (tracks, each from a start to an end) or a Dope Sheet (Key Mode): the same data, a Dope Sheet edited as keys only - each track is a row of keys, its start and end being its first and last key - and played with each row holding its first key's value until it gets there (a row of one key holds it throughout).
++A Widget Animation (WA_ asset) is a list of tracks, each in a Track Group; a group is one widget the animation moves (Target Widget; empty = the widget it plays on). Tracks start With Previous or After Previous plus Delay. Timing: Tween (Duration, Easing Linear / EaseIn / EaseOut / EaseInOut / Hold - the editor shows EaseInOut as "Cubic", Hold as "Constant", Custom as "Curve Asset" and a segment's Bezier as "Handles"; scripts keep the value names) or Spring (Spring: Duration and Bounce, or Stiffness / Damping / Mass - presets "@spring.Snappy", "@spring.Bouncy"...). A stagger (Expander) plays a track once per child, letter, word or line. A timeline is made as a Track Sheet (tracks, each from a start to an end) or a Dope Sheet (Key Mode): the same data, a Dope Sheet edited as keys only - each track is a row of keys, its start and end being its first and last key - and played with each row leaving its widget as authored until its first key, holding its last key after.
+ 
+ ## Track types
+ Fade (StartOpacity, EndOpacity), Scale (StartScale, EndScale, Overshoot), Slide (SlideFromDirection Up/Down/Left/Right, SlideDistance), Rotate (StartAngle, EndAngle), Pulse (PulseScaleAmount), Shake, Transform (keyframes of translation / scale / angle / shear, curved motion paths), MaterialScalar / MaterialVector (ScalarParameterName, StartScalarValue, EndScalarValue...), Shape (a shape's values over time), Design (brush, colors, fonts), cues (Sound, Event, Particles, Play Animation), and registered types (TypeParams).
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.cpp
+index 39e1488..063abee 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.cpp
+@@ -226,12 +226,9 @@ void FWidgetAnimEntryBase::BuildSettings(TArray<FWidgetAnimSettings>& OutSetting
+ 		Settings.LoopGroup = LoopGroup;
+ 		Settings.TargetWidget = Target;
+ 
+-		// A Dope Sheet's row holds its first key until it gets there, as a dope sheet's keys do - its own tracks only, not the
+-		// placeholder that keeps a pass going after them.
+-		if (Animation->bDopeSheet && Animation->Layers.IsValidIndex(Index))
+-		{
+-			Settings.bHoldStartPose = true;
+-		}
++		// A Dope Sheet's row is no different here: before its first key it leaves the widget as authored - a key's value is never
++		// shown before the key's time. (It used to hold its first key from the animation's start: a key's rotation showed before
++		// the playhead reached it.)
+ 
+ 		// What its value-driven tracks' values belong to: this animation - those of an animation inserted into it as a
+ 		// track included, set with this one's name as its own are. See FWidgetAnimValueId.
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h
+index 7aac074..dc10371 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimPreset.h
+@@ -109,9 +109,9 @@ public:
+ 	/**
+ 	 * Made as a Dope Sheet (Key Mode): the Widget Animations panel edits it as keys only - each row one kind of key on one widget,
+ 	 * no bars, no start and end to drag, no names or presets. Chosen when the timeline is made and kept for its life (copied with
+-	 * it, saved as an asset with it). Its rows are tracks and its keys their keys; the one thing it changes in how it plays is
+-	 * what a row shows before its first key: that key's value, as keys do in any dope sheet, rather than the widget as
+-	 * authored (see FWidgetAnimSettings::bHoldStartPose) - so a row of one key holds it for the whole animation.
++	 * it, saved as an asset with it). Its rows are tracks and its keys their keys, and it plays as any animation: before a row's first key
++	 * the widget is as authored - no key's value shows before its time (Workflow v2_fix6_fix4; a row used to hold its first key
++	 * from the start).
+ 	 */
+ 	UPROPERTY()
+ 	bool bDopeSheet = false;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
+index 724d374..966ef57 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
+@@ -18,6 +18,7 @@
+ #include "Widgets/Input/SNumericEntryBox.h"
+ #include "Widgets/Layout/SBorder.h"
+ #include "Widgets/Layout/SBox.h"
++#include "Widgets/Layout/SExpandableArea.h"
+ #include "Widgets/Layout/SScrollBox.h"
+ #include "Widgets/SBoxPanel.h"
+ #include "Widgets/SNullWidget.h"
+@@ -207,6 +208,9 @@ public:
+ 				.Font(IDetailLayoutBuilder::GetDetailFont())
+ 				.AllowSpin(true)
+ 				.Delta(Step)
++				// Its own range where it has one; else none - an entry box's default bar runs 0 to 100.
++				.MinSliderValue(Channel ? Channel->SliderMin : TOptional<double>())
++				.MaxSliderValue(Channel ? Channel->SliderMax : TOptional<double>())
+ 				.UndeterminedString(LOCTEXT("NoValue", "-"))
+ 				.TypeInterface(MakeShared<FInterface>(Typed.ToSharedRef(), bWhole))
+ 				.Value_Lambda([WeakOwner, Shown]() -> TOptional<double>
+@@ -713,8 +717,83 @@ TSharedRef<SWidget> SWidgetAnimKeyValues::MakeSingleKey(const FTrackPart& Part)
+ 	const TArray<WidgetAnimKeyValues::FChannel>& Channels = Owner->GetKeyChannels(Part.Layer);
+ 	const TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
+ 
++	// A setting of several numbers - a Shape Box's Corners, Edge Bow - folds under its name: its rows go in a box of their own.
++	// Folded at first; opened or closed, it stays so for every key shown after (by the setting's name, for this editor session).
++	static TSet<FString> OpenGroups;
++	constexpr int32 MinFoldedRows = 3;
++	auto GroupOf = [&Channels, &Part](int32 Column) -> FString
++	{
++		const int32 ChannelIndex = Part.Columns.IsValidIndex(Column) ? Part.Columns[Column] : INDEX_NONE;
++		return Channels.IsValidIndex(ChannelIndex) ? Channels[ChannelIndex].Group.ToString() : FString();
++	};
++
+ 	for (int32 Column = 0; Column < Part.Columns.Num(); ++Column)
+ 	{
++		const FString GroupName = GroupOf(Column);
++		int32 GroupEnd = Column;
++		while (!GroupName.IsEmpty() && GroupEnd + 1 < Part.Columns.Num() && GroupOf(GroupEnd + 1) == GroupName)
++		{
++			++GroupEnd;
++		}
++		if (!GroupName.IsEmpty() && GroupEnd - Column + 1 >= MinFoldedRows)
++		{
++			const TSharedRef<SVerticalBox> GroupBox = SNew(SVerticalBox);
++			for (int32 InGroup = Column; InGroup <= GroupEnd; ++InGroup)
++			{
++				const int32 GroupChannel = Part.Columns[InGroup];
++				GroupBox->AddSlot()
++				.AutoHeight()
++				.Padding(FMargin(8.f, 1.f, 0.f, 1.f))
++				[
++					SNew(SHorizontalBox)
++
++					+ SHorizontalBox::Slot()
++					.FillWidth(1.f)
++					.VAlign(VAlign_Center)
++					[
++						SNew(STextBlock)
++						.Font(IDetailLayoutBuilder::GetDetailFont())
++						.Text(Channels.IsValidIndex(GroupChannel) ? Channels[GroupChannel].ShortLabel : FText::GetEmpty())
++					]
++
++					+ SHorizontalBox::Slot()
++					.AutoWidth()
++					.VAlign(VAlign_Center)
++					[
++						MakeCell(Part, 0, InGroup, SingleValueWidth)
++					]
++				];
++			}
++			Box->AddSlot()
++			.AutoHeight()
++			.Padding(FMargin(0.f, 2.f))
++			[
++				SNew(SExpandableArea)
++				.AreaTitle(FText::FromString(GroupName))
++				.AreaTitleFont(IDetailLayoutBuilder::GetDetailFontBold())
++				.InitiallyCollapsed(!OpenGroups.Contains(GroupName))
++				.OnAreaExpansionChanged_Lambda([GroupName](bool bExpanded)
++				{
++					if (bExpanded)
++					{
++						OpenGroups.Add(GroupName);
++					}
++					else
++					{
++						OpenGroups.Remove(GroupName);
++					}
++				})
++				.BorderBackgroundColor(FLinearColor::Transparent)
++				.Padding(FMargin(0.f))
++				.BodyContent()
++				[
++					GroupBox
++				]
++			];
++			Column = GroupEnd;
++			continue;
++		}
++
+ 		const int32 ChannelIndex = Part.Columns[Column];
+ 		Box->AddSlot()
+ 		.AutoHeight()
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index c33f03d..96a702e 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -4983,6 +4983,8 @@ namespace WidgetAnimTimeline
+ 				.AllowSpin(true)
+ 				.MinValue(0.f)
+ 				.MinSliderValue(0.f)
++				// No top to the drag: an entry box's slider otherwise runs 0 to 100, a bar meaning nothing for a time.
++				.MaxSliderValue(TOptional<float>())
+ 				.Delta_Lambda([IsPercent]() { return IsPercent() ? 0.1f : 0.01f; })
+ 				.ToolTipText(NameTBD::Tooltips::WidgetAnimEditor::StartTimeTooltip())
+ 				.TypeInterface(MakeShared<FUnitNumericInterface>([IsPercent]()
+@@ -6238,6 +6240,7 @@ private:
+ 					.AllowSpin(true)
+ 					.MinValue(0.01f)
+ 					.MinSliderValue(0.01f)
++					.MaxSliderValue(TOptional<float>())
+ 					.Delta_Lambda([WeakOwner]() { const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin(); return Pinned && Pinned->IsPercentTime() ? 0.1f : 0.01f; })
+ 					.OnBeginSliderMovement_Lambda([Spin]() { Spin->Begin(LOCTEXT("DragDurationTransaction", "Set Track Duration")); })
+ 					.OnValueChanged_Lambda([Spin, Handle, ToSeconds](float Value) { Spin->Step(Handle, ToSeconds(Value)); })
+@@ -7412,6 +7415,8 @@ private:
+ 		{
+ 			return SNew(SNumericEntryBox<float>)
+ 				.AllowSpin(true)
++				.MinSliderValue(TOptional<float>())
++				.MaxSliderValue(TOptional<float>())
+ 				.Font(IDetailLayoutBuilder::GetDetailFont())
+ 				.Value_Lambda([Current, Part, bInteger]() -> TOptional<float>
+ 				{
+@@ -20212,9 +20217,36 @@ void SWidgetAnimTimeline::BeginKeyDrag(int32 LayerIndex, int32 KeyIndex)
+ 	DragLayer = LayerIndex;
+ 	DragKey = KeyIndex;
+ 	DragPressedOriginalTime = PressedTimes[KeyIndex];
++	DragPressedKey = KeyIndex;
+ 	DragKeys = Moving;
+ 	DragKeyOriginalTimes.Reset();
+ 
++	// One key alone, on a row with others: dragged over them, it swaps places with them (see bSwapDrag).
++	bSwapDrag = false;
++	SwapRowTimes.Reset();
++	if (Moving.Num() == 1 && Moving[0].Layer == LayerIndex && Moving[0].Key == KeyIndex)
++	{
++		const FWidgetAnimLayer& PressedLayer = (*GetLayers())[LayerIndex];
++		if (bDopeKeyDrag)
++		{
++			if (const TArray<float>* Row = DopeDragTimes.Find(LayerIndex))
++			{
++				SwapRowTimes = *Row;
++				SwapMin = 0;
++				SwapMax = Row->Num() - 1;
++			}
++		}
++		else
++		{
++			SwapRowTimes = PressedTimes;
++			const bool bKeyframed = WidgetAnimTypeIsKeyframed(PressedLayer.AnimType);
++			SwapMin = bKeyframed ? 0 : 1;
++			SwapMax = bKeyframed ? PressedTimes.Num() - 1 : PressedTimes.Num() - 2;
++		}
++		bSwapDrag = SwapRowTimes.IsValidIndex(KeyIndex) && SwapMax - SwapMin >= 1 && KeyIndex >= SwapMin && KeyIndex <= SwapMax;
++		SwapIndex = KeyIndex;
++	}
++
+ 	TSet<int32> MovingLayers;
+ 	for (const FKeyRef& Ref : DragKeys)
+ 	{
+@@ -20278,6 +20310,13 @@ void SWidgetAnimTimeline::UpdateKeyDrag(float LocalSeconds, float SnapThresholdS
+ 		SnappedTo = Target;
+ 	}
+ 
++	if (bSwapDrag && !bDopeKeyDrag)
++	{
++		SnapIndicator = SnappedTo;
++		UpdateKeySwap(Wanted);
++		return;
++	}
++
+ 	// Every key moves by the same amount, held so none passes a neighbor that isn't moving with it. Keys are
+ 	// kept in their order: a Transform curve re-sorts its keys by time, and the pose values sit alongside them by
+ 	// position - a key dragged past its neighbor would carry the neighbor's pose, not its own.
+@@ -20358,7 +20397,7 @@ void SWidgetAnimTimeline::UpdateDopeKeyDrag(float LocalSeconds, float SnapThresh
+ 	const float PressedStart = GetShownSpan(DragLayer).X;
+ 	const float WantedSeconds = PressedStart + LocalSeconds;
+ 	const TArray<float>* PressedRow = DopeDragTimes.Find(DragLayer);
+-	const float PressedOriginal = PressedRow && PressedRow->IsValidIndex(DragKey) ? (*PressedRow)[DragKey] : KeyDragLayerStart + DragPressedOriginalTime;
++	const float PressedOriginal = PressedRow && PressedRow->IsValidIndex(DragPressedKey) ? (*PressedRow)[DragPressedKey] : KeyDragLayerStart + DragPressedOriginalTime;
+ 
+ 	float Wanted = bKeyDragUnstepped ? WantedSeconds : RoundSeconds(StepDragSeconds(WantedSeconds));
+ 	TOptional<float> SnappedTo;
+@@ -20370,6 +20409,13 @@ void SWidgetAnimTimeline::UpdateDopeKeyDrag(float LocalSeconds, float SnapThresh
+ 		SnappedTo = Target;
+ 	}
+ 
++	if (bSwapDrag)
++	{
++		SnapIndicator = SnappedTo;
++		UpdateKeySwap(Wanted);
++		return;
++	}
++
+ 	// Every key by the same amount, none past a neighbor that stays (a row's keys at least the shortest a track runs apart), none
+ 	// before the animation's start.
+ 	constexpr float MaxSeconds = 600.f;
+@@ -20429,6 +20475,145 @@ void SWidgetAnimTimeline::UpdateDopeKeyDrag(float LocalSeconds, float SnapThresh
+ 	UpdateTrackLayout();
+ }
+ 
++bool SWidgetAnimTimeline::SwapKeyContents(int32 LayerIndex, int32 KeyA, int32 KeyB)
++{
++	TArray<FWidgetAnimLayer>* Layers = Source.IsValid() ? Source->GetLayers() : nullptr;
++	if (!Layers || !Layers->IsValidIndex(LayerIndex) || KeyA == KeyB)
++	{
++		return false;
++	}
++	FWidgetAnimLayer& Layer = (*Layers)[LayerIndex];
++
++	// A keyframed track's keys hold everything they are - pose, shape, path, curve on - by index beside the curve's times.
++	if (WidgetAnimTypeIsKeyframed(Layer.AnimType))
++	{
++		if (!Layer.Transform.Keys.IsValidIndex(KeyA) || !Layer.Transform.Keys.IsValidIndex(KeyB))
++		{
++			return false;
++		}
++		Layer.Transform.Keys.Swap(KeyA, KeyB);
++		return true;
++	}
++
++	// Two keys between the start and end: their whole value keys, each keeping its place in time.
++	const int32 NumKeys = WidgetAnimKeyValues::GetNumKeys(Layer);
++	if (KeyA > 0 && KeyB > 0 && KeyA < NumKeys - 1 && KeyB < NumKeys - 1 && Layer.ValueKeys.Keys.IsValidIndex(KeyA - 1) && Layer.ValueKeys.Keys.IsValidIndex(KeyB - 1))
++	{
++		const float TimeA = Layer.ValueKeys.Keys[KeyA - 1].Time;
++		const float TimeB = Layer.ValueKeys.Keys[KeyB - 1].Time;
++		Layer.ValueKeys.Keys.Swap(KeyA - 1, KeyB - 1);
++		Layer.ValueKeys.Keys[KeyA - 1].Time = TimeA;
++		Layer.ValueKeys.Keys[KeyB - 1].Time = TimeB;
++		return true;
++	}
++
++	// A start or end (a Dope Sheet row's first or last key): its values, channel by channel - only if every one can be set.
++	const TArray<WidgetAnimKeyValues::FChannel>& Channels = GetKeyChannels(LayerIndex);
++	TArray<TPair<double, double>> Values;
++	for (const WidgetAnimKeyValues::FChannel& Channel : Channels)
++	{
++		const TOptional<double> A = WidgetAnimKeyValues::Read(Layer, KeyA, Channel);
++		const TOptional<double> B = WidgetAnimKeyValues::Read(Layer, KeyB, Channel);
++		if (!A.IsSet() || !B.IsSet() || !WidgetAnimKeyValues::CanWrite(Layer, KeyA, Channel) || !WidgetAnimKeyValues::CanWrite(Layer, KeyB, Channel))
++		{
++			return false;
++		}
++		Values.Add(TPair<double, double>(A.GetValue(), B.GetValue()));
++	}
++	for (int32 Index = 0; Index < Channels.Num(); ++Index)
++	{
++		WidgetAnimKeyValues::Write(Layer, KeyA, Channels[Index], Values[Index].Value);
++		WidgetAnimKeyValues::Write(Layer, KeyB, Channels[Index], Values[Index].Key);
++	}
++	return true;
++}
++
++void SWidgetAnimTimeline::UpdateKeySwap(float Wanted)
++{
++	const int32 NumKeys = SwapRowTimes.Num();
++	if (!bSwapDrag || !SwapRowTimes.IsValidIndex(SwapIndex) || DragKeys.Num() != 1)
++	{
++		return;
++	}
++	const int32 Original = DragKeys[0].Key;
++
++	// The slot it goes to: past every other key earlier than where it is wanted, within the slots it may take.
++	int32 Target = 0;
++	for (int32 Key = 0; Key < NumKeys; ++Key)
++	{
++		Target += Key != Original && SwapRowTimes[Key] < Wanted ? 1 : 0;
++	}
++	Target = FMath::Clamp(Target, SwapMin, SwapMax);
++
++	// Its contents carried there one neighbor at a time; a neighbor whose values can't be set stops it where it is.
++	while (SwapIndex != Target)
++	{
++		const int32 Next = SwapIndex + (Target > SwapIndex ? 1 : -1);
++		if (!SwapKeyContents(DragLayer, SwapIndex, Next))
++		{
++			Target = SwapIndex;
++			break;
++		}
++		SwapIndex = Next;
++	}
++
++	// Every other key in its slot's time from the press - the one passed takes the place the dragged one left - and the
++	// dragged one where it is wanted, between its new neighbors.
++	constexpr float MaxSeconds = 600.f;
++	const float Spacing = bDopeKeyDrag ? MinLayerSeconds : WidgetAnimTimeline::MinKeySpacing;
++	const float Lowest = Target > 0 ? SwapRowTimes[Target - 1] + Spacing : 0.f;
++	const float Highest = Target + 1 < NumKeys ? SwapRowTimes[Target + 1] - Spacing : MaxSeconds;
++	TArray<float> NewTimes = SwapRowTimes;
++	NewTimes[Target] = Lowest <= Highest ? FMath::Clamp(Wanted, Lowest, Highest) : SwapRowTimes[Target];
++
++	if (bDopeKeyDrag)
++	{
++		SetDopeKeyTimes(DragLayer, NewTimes);
++	}
++	else
++	{
++		// Keys moving earlier first, from the first; then those moving later, from the last - so none is ever set onto the
++		// time of one yet to move (a Transform curve finds its keys by time).
++		TArray<float> CurrentTimes;
++		GetKeyTimes(DragLayer, CurrentTimes);
++		for (int32 Key = 0; Key < NumKeys && Key < CurrentTimes.Num(); ++Key)
++		{
++			if (NewTimes[Key] < CurrentTimes[Key])
++			{
++				SetKeyTime(DragLayer, Key, NewTimes[Key]);
++			}
++		}
++		for (int32 Key = FMath::Min(NumKeys, CurrentTimes.Num()) - 1; Key >= 0; --Key)
++		{
++			if (NewTimes[Key] > CurrentTimes[Key])
++			{
++				SetKeyTime(DragLayer, Key, NewTimes[Key]);
++			}
++		}
++	}
++
++	// The selection follows the key to its new slot.
++	if (DragKey != SwapIndex)
++	{
++		const FKeyRef Old{ DragLayer, DragKey };
++		const FKeyRef Moved{ DragLayer, SwapIndex };
++		const int32 Found = SelectedKeys.IndexOfByKey(Old);
++		if (Found != INDEX_NONE)
++		{
++			SelectedKeys[Found] = Moved;
++		}
++		if (Selection.Layer == DragLayer && Selection.Key == DragKey)
++		{
++			Selection.Key = SwapIndex;
++		}
++		DragKey = SwapIndex;
++	}
++
++	NotifyGroupsChanged(EPropertyChangeType::Interactive);
++	FocusPreviewOnKey(DragLayer, DragKey);
++	UpdateTrackLayout();
++}
++
+ void SWidgetAnimTimeline::UpdateKeyDragBy(float DeltaSeconds)
+ {
+ 	if (!IsDraggingKey())
+@@ -20442,7 +20627,7 @@ void SWidgetAnimTimeline::UpdateKeyDragBy(float DeltaSeconds)
+ 	if (bDopeKeyDrag)
+ 	{
+ 		const TArray<float>* PressedRow = DopeDragTimes.Find(DragLayer);
+-		const float PressedOriginal = PressedRow && PressedRow->IsValidIndex(DragKey) ? (*PressedRow)[DragKey] : KeyDragLayerStart + DragPressedOriginalTime;
++		const float PressedOriginal = PressedRow && PressedRow->IsValidIndex(DragPressedKey) ? (*PressedRow)[DragPressedKey] : KeyDragLayerStart + DragPressedOriginalTime;
+ 		UpdateKeyDrag(PressedOriginal + DeltaSeconds - GetShownSpan(DragLayer).X, /*SnapThresholdSeconds=*/0.f);
+ 	}
+ 	else
+@@ -20497,6 +20682,9 @@ void SWidgetAnimTimeline::EndKeyDrag()
+ 	DragKeyOriginalTimes.Reset();
+ 	DopeDragTimes.Reset();
+ 	bDopeKeyDrag = false;
++	bSwapDrag = false;
++	SwapRowTimes.Reset();
++	SwapIndex = INDEX_NONE;
+ 	SnapIndicator.Reset();
+ 	UpdateTrackLayout();
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+index b10ed87..fa6c6ed 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.h
+@@ -2366,6 +2366,28 @@ private:
+ 	TMap<int32, TArray<float>> DopeDragTimes;
+ 	bool bDopeKeyDrag = false;
+ 
++	/**
++	 * A key drag that reorders: one key dragged on its own across the others of its row. Passed over a neighbor, the two swap
++	 * places - the neighbor takes the slot the dragged key left, as list rows do - rather than the dragged key stopping on it
++	 * (it used to be held a hair from it, so the two read as one key). SwapRowTimes: the row's key times at the press (a track's
++	 * own seconds; a Dope Sheet row's on the time axis); SwapIndex: where the dragged key's contents are now; SwapMin / SwapMax:
++	 * the slots it may take (a track's start and end stay where they are). See UpdateKeySwap.
++	 */
++	bool bSwapDrag = false;
++
++	/** The key pressed, by its index at the press - DragKey follows it as a reordering drag moves it to another slot. */
++	int32 DragPressedKey = INDEX_NONE;
++	TArray<float> SwapRowTimes;
++	int32 SwapIndex = INDEX_NONE;
++	int32 SwapMin = 0;
++	int32 SwapMax = 0;
++
++	/** UpdateKeyDrag / UpdateDopeKeyDrag for a reordering drag: the dragged key at Wanted (as SwapRowTimes count time). */
++	void UpdateKeySwap(float Wanted);
++
++	/** Swaps two neighboring keys' contents - every value, a key's pose or shape - leaving their times. False when it can't. */
++	bool SwapKeyContents(int32 LayerIndex, int32 KeyA, int32 KeyB);
++
+ 	/** Every key time of a row on the time axis (played seconds): its start plus GetKeyTimes - or, bPoints, GetPointTimes. */
+ 	void GetRowKeySeconds(int32 LayerIndex, TArray<float>& OutSeconds, bool bPoints = false) const;
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimDopeSheet.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimDopeSheet.h
+index 72b76ef..cebbaff 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimDopeSheet.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimDopeSheet.h
+@@ -9,7 +9,7 @@
+  * Dope Sheet timelines (Key Mode): an animation made as a Dope Sheet is edited as keys only - every row of the Track Editor is
+  * one kind of key on one widget, its keys diamonds in that kind's color, with no bars, no start and end to drag, and no names
+  * or presets. Chosen when the timeline is made and kept for its life; saved and played as any other animation (the rows are
+- * tracks, their keys the tracks' keys), each row holding its first key until it gets there. See UWidgetAnimPresetAsset::bDopeSheet.
++ * tracks, their keys the tracks' keys), each row leaving its widget as authored until its first key. See UWidgetAnimPresetAsset::bDopeSheet.
+  */
+ namespace WidgetAnimDopeSheet
+ {
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.cpp
+index 575362d..e44ef09 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.cpp
+@@ -52,16 +52,36 @@ namespace WidgetAnimKeyValues
+ 			return FMath::Abs(A - B) <= 1.e-4 * FMath::Max(1.0, FMath::Max(FMath::Abs(A), FMath::Abs(B)));
+ 		}
+ 
+-		FChannel MakePointChannel(const FText& Label, EPointField Field, float DragStep)
++		FChannel MakePointChannel(const FText& Label, EPointField Field, float DragStep, TOptional<double> SliderMin = TOptional<double>(), TOptional<double> SliderMax = TOptional<double>())
+ 		{
+ 			FChannel Channel;
+ 			Channel.Label = Label;
+ 			Channel.Source = ESource::Point;
+ 			Channel.PointField = Field;
+ 			Channel.DragStep = DragStep;
++			Channel.SliderMin = SliderMin;
++			Channel.SliderMax = SliderMax;
+ 			return Channel;
+ 		}
+ 
++		/** A setting's own drag range: its UIMin / UIMax, else ClampMin / ClampMax - only when it has both ends. */
++		void ReadSliderRange(const FProperty* Property, FChannel& Channel)
++		{
++			if (!Property)
++			{
++				return;
++			}
++			for (const TPair<const TCHAR*, const TCHAR*>& Keys : { TPair<const TCHAR*, const TCHAR*>(TEXT("UIMin"), TEXT("UIMax")), TPair<const TCHAR*, const TCHAR*>(TEXT("ClampMin"), TEXT("ClampMax")) })
++			{
++				if (Property->HasMetaData(Keys.Key) && Property->HasMetaData(Keys.Value))
++				{
++					Channel.SliderMin = FCString::Atod(*Property->GetMetaData(Keys.Key));
++					Channel.SliderMax = FCString::Atod(*Property->GetMetaData(Keys.Value));
++					return;
++				}
++			}
++		}
++
+ 		FText ColorPart(const FText& Base, EPointField Field)
+ 		{
+ 			const FText Part = Field == EPointField::ColorR ? LOCTEXT("ColorR", "R")
+@@ -75,7 +95,7 @@ namespace WidgetAnimKeyValues
+ 		{
+ 			for (const EPointField Field : { EPointField::ColorR, EPointField::ColorG, EPointField::ColorB, EPointField::ColorA })
+ 			{
+-				Out.Add(MakePointChannel(ColorPart(Base, Field), Field, 0.01f));
++				Out.Add(MakePointChannel(ColorPart(Base, Field), Field, 0.01f, 0.0, 1.0));
+ 			}
+ 		}
+ 
+@@ -109,11 +129,31 @@ namespace WidgetAnimKeyValues
+ 				Channel.RootName = RootName;
+ 				Channel.RootProperty = Root;
+ 				Channel.RootClass = Root->GetClass();
++				if (Tail.Num() > 0)
++				{
++					// One number of a setting of several: listed under the setting's name, without it.
++					const FString GroupName = Root->GetDisplayNameText().ToString();
++					Channel.Group = FText::FromString(GroupName);
++					FString Short = Label;
++					Short.RemoveFromStart(GroupName + TEXT(" "));
++					Channel.ShortLabel = FText::FromString(Short);
++				}
+ 				Channel.Tail = Tail;
+ 				Channel.Enum = Enum;
+ 				Channel.bBool = BoolProperty != nullptr;
+ 				Channel.bInteger = Enum || BoolProperty || (Numeric && !Numeric->IsFloatingPoint());
+ 				Channel.DragStep = Channel.bInteger ? 1.f : GuessDragStep(Label, bColor);
++				// Its own range (the member's, else the setting's around it, as a struct's members carry none); a color 0 to 1.
++				ReadSliderRange(Property, Channel);
++				if (!Channel.SliderMin.IsSet() && Tail.Num() > 0)
++				{
++					ReadSliderRange(Root, Channel);
++				}
++				if (!Channel.SliderMin.IsSet() && bColor && !Channel.bInteger)
++				{
++					Channel.SliderMin = 0.0;
++					Channel.SliderMax = 1.0;
++				}
+ 				return;
+ 			}
+ 			const FStructProperty* StructProperty = CastField<FStructProperty>(Property);
+@@ -495,7 +535,7 @@ namespace WidgetAnimKeyValues
+ 		switch (Layer.AnimType)
+ 		{
+ 		case EWidgetAnimType::Fade:
+-			OutChannels.Add(MakePointChannel(LOCTEXT("Opacity", "Opacity"), EPointField::Value, 0.01f));
++			OutChannels.Add(MakePointChannel(LOCTEXT("Opacity", "Opacity"), EPointField::Value, 0.01f, 0.0, 1.0));
+ 			return;
+ 		case EWidgetAnimType::Scale:
+ 			OutChannels.Add(MakePointChannel(LOCTEXT("ScaleX", "Scale X"), EPointField::Value, 0.01f));
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.h
+index 5b77b35..615a80d 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.h
+@@ -82,6 +82,22 @@ namespace WidgetAnimKeyValues
+ 
+ 		/** A step for dragging it: finer for scales, opacities and colors than for distances and angles. */
+ 		float DragStep = 0.1f;
++
++		/**
++		 * The range its box's drag bar spans, when it has a natural one - an opacity's or a color's 0 to 1, a setting's own UIMin /
++		 * UIMax (Perspective 0 to 1, Angle -45 to 45). Unset: the box drags freely with no bar (an entry box's own default was a
++		 * 0 to 100 bar, meaningless for a scale of 1 or a translation of 400).
++		 */
++		TOptional<double> SliderMin;
++		TOptional<double> SliderMax;
++
++		/**
++		 * The setting it is one number of, when that holds several - a Shape Box's Corners, Edge Bow - with the name the box is
++		 * listed under inside it ("Top Left Size X"). A key's list folds a setting of several numbers under its name. Empty for a
++		 * number that is a setting of its own.
++		 */
++		FText Group;
++		FText ShortLabel;
+ 	};
+ 
+ 	/** Every channel of a track, in the order the Selection panel lists them. None for a track whose keys hold no number. */
