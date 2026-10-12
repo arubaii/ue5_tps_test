@@ -32,7 +32,7 @@ namespace WidgetAnimMachineJump
 		TMap<FName, float> Values;
 		TMap<FName, FVector2D> Vectors;
 
-		/** Triggers to fire, and the built-in Clicked. */
+		/** Triggers to fire, and the built-in pulses (Clicked, the Events, the Gamepad buttons). */
 		TSet<FName> Fire;
 
 		/** Hovered, Pressed, Focused, Selected, Disabled, Closing. */

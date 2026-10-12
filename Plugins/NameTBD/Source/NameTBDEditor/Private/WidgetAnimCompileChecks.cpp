@@ -8,6 +8,7 @@
 #include "WidgetBlueprint.h"
 #include "WidgetAnimTimelines.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimationStateMachineComponent.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimStateMachine.h"
 
@@ -80,7 +81,8 @@ void WidgetAnimCompileChecks::Gather(const UBlueprint* Blueprint, TArray<FText>&
 	};
 
 	// Everything stored inside the Widget Blueprint: its timelines' animations and its own machine (kept in the timelines
-	// extension), and the Widget Animation Components on its widgets. Designer preview copies are never inside it.
+	// extension), and the Widget Animation Components and State Machine Components on its widgets. Designer preview copies are
+	// never inside it.
 	ForEachObjectWithOuter(Blueprint, [&CheckAnimation, &CheckMachine](UObject* Object)
 	{
 		if (!IsValid(Object) || Object->HasAnyFlags(RF_Transient))
@@ -99,6 +101,13 @@ void WidgetAnimCompileChecks::Gather(const UBlueprint* Blueprint, TArray<FText>&
 				{
 					CheckAnimation(Entry.Animation);
 				}
+			}
+		}
+		else if (const UWidgetAnimationStateMachineComponent* MachineComponent = Cast<UWidgetAnimationStateMachineComponent>(Object))
+		{
+			for (const FWidgetAnimStateMachineEntry& Entry : MachineComponent->StateMachines)
+			{
+				CheckMachine(Entry.StateMachine);
 			}
 		}
 		else if (const UWidgetAnimStateMachineAsset* Machine = Cast<UWidgetAnimStateMachineAsset>(Object))

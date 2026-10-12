@@ -98,9 +98,42 @@ int32 FWidgetAnimMachineLayer::FindStateIndexByName(FName StateName) const
 	return StateName.IsNone() ? INDEX_NONE : States.IndexOfByPredicate([StateName](const FWidgetAnimMachineState& State) { return State.Name == StateName; });
 }
 
-int32 FWidgetAnimMachineLayer::FindSpecialIndex(EWidgetAnimMachineNodeKind Kind) const
+int32 FWidgetAnimMachineLayer::FindSpecialIndex(EWidgetAnimMachineNodeKind Kind, const FGuid& ParentMachine) const
 {
-	return States.IndexOfByPredicate([Kind](const FWidgetAnimMachineState& State) { return State.Kind == Kind; });
+	return States.IndexOfByPredicate([Kind, &ParentMachine](const FWidgetAnimMachineState& State) { return State.Kind == Kind && State.ParentMachine == ParentMachine; });
+}
+
+int32 FWidgetAnimMachineLayer::FindParentIndex(int32 Index) const
+{
+	return States.IsValidIndex(Index) && States[Index].ParentMachine.IsValid() ? FindStateIndex(States[Index].ParentMachine) : INDEX_NONE;
+}
+
+bool FWidgetAnimMachineLayer::IsWithin(int32 Index, int32 Ancestor) const
+{
+	if (!States.IsValidIndex(Ancestor))
+	{
+		return false;
+	}
+	// Up through the sub-machines it is in - never further than there are states, whatever a broken asset says.
+	for (int32 Step = 0; States.IsValidIndex(Index) && Step <= States.Num(); ++Step)
+	{
+		if (Index == Ancestor)
+		{
+			return true;
+		}
+		Index = FindParentIndex(Index);
+	}
+	return false;
+}
+
+int32 FWidgetAnimMachineLayer::GetDepth(int32 Index) const
+{
+	int32 Depth = 0;
+	for (int32 Parent = FindParentIndex(Index); Parent != INDEX_NONE && Depth <= States.Num(); Parent = FindParentIndex(Parent))
+	{
+		++Depth;
+	}
+	return Depth;
 }
 
 int32 FWidgetAnimMachineLayer::FindTransitionIndex(const FGuid& Id) const
@@ -324,6 +357,19 @@ FName UWidgetAnimStateMachineAsset::MakeUniqueLayerName(FName BaseName, int32 Ex
 	return Candidate;
 }
 
+FName UWidgetAnimStateMachineAsset::MakeNewLayerName() const
+{
+	// Numbered from 1, so the first layer added over Base reads "Layer 1" rather than a bare "Layer" followed by "Layer 2".
+	for (int32 Number = 1;; ++Number)
+	{
+		const FName Candidate(*FString::Printf(TEXT("Layer %d"), Number));
+		if (FindLayerIndex(Candidate) == INDEX_NONE)
+		{
+			return Candidate;
+		}
+	}
+}
+
 FName UWidgetAnimStateMachineAsset::MakeUniqueInputName(FName BaseName, int32 ExceptIndex) const
 {
 	const FString Base = BaseName.IsNone() ? FString(TEXT("Input")) : BaseName.GetPlainNameString();
@@ -395,31 +441,71 @@ bool UWidgetAnimStateMachineAsset::Normalize()
 			bChanged = true;
 		}
 
-		// Its special nodes: one each, made if missing - a layer added in the Details comes with none - and extra ones
-		// dropped, a duplicated node never being anything but a mistake.
-		const FWidgetAnimMachineLayer Fresh = MakeLayer(Layer.Name);
-		for (const EWidgetAnimMachineNodeKind Kind : { EWidgetAnimMachineNodeKind::Entry, EWidgetAnimMachineNodeKind::AnyState, EWidgetAnimMachineNodeKind::Exit })
+		// A node in a sub-machine that is gone (or is no sub-machine) is moved up to the layer's own graph - never lost; the
+		// special nodes among them go with the extras below. A sub-machine inside itself, however deep, is cut loose the same way.
+		for (FWidgetAnimMachineState& State : Layer.States)
 		{
-			int32 Found = INDEX_NONE;
-			for (int32 Index = Layer.States.Num() - 1; Index >= 0; --Index)
+			if (!State.ParentMachine.IsValid())
 			{
-				if (Layer.States[Index].Kind != Kind)
+				continue;
+			}
+			const FWidgetAnimMachineState* Parent = Layer.FindState(State.ParentMachine);
+			if (!Parent || !Parent->IsSubMachine() || Parent->Id == State.Id)
+			{
+				State.ParentMachine.Invalidate();
+				bChanged = true;
+			}
+		}
+		for (int32 Index = 0; Index < Layer.States.Num(); ++Index)
+		{
+			if (Layer.States[Index].ParentMachine.IsValid() && Layer.GetDepth(Index) > Layer.States.Num())
+			{
+				Layer.States[Index].ParentMachine.Invalidate();
+				bChanged = true;
+			}
+		}
+
+		// Its special nodes, and every sub-machine's: one each, made if missing - a layer added in the Details comes with none,
+		// a state just made a sub-machine too - and extra ones dropped, a duplicated node never being anything but a mistake.
+		const FWidgetAnimMachineLayer Fresh = MakeLayer(Layer.Name);
+		TArray<FGuid> Scopes;
+		Scopes.Add(FGuid());
+		for (const FWidgetAnimMachineState& State : Layer.States)
+		{
+			if (State.IsSubMachine())
+			{
+				Scopes.Add(State.Id);
+			}
+		}
+		for (const FGuid& Scope : Scopes)
+		{
+			for (const EWidgetAnimMachineNodeKind Kind : { EWidgetAnimMachineNodeKind::Entry, EWidgetAnimMachineNodeKind::AnyState, EWidgetAnimMachineNodeKind::Exit })
+			{
+				int32 Found = INDEX_NONE;
+				for (int32 Index = Layer.States.Num() - 1; Index >= 0; --Index)
 				{
-					continue;
+					if (Layer.States[Index].Kind != Kind || Layer.States[Index].ParentMachine != Scope)
+					{
+						continue;
+					}
+					if (Found == INDEX_NONE)
+					{
+						Found = Index;
+						continue;
+					}
+					Layer.States.RemoveAt(Found);
+					Found = Index;
+					bChanged = true;
 				}
 				if (Found == INDEX_NONE)
 				{
-					Found = Index;
-					continue;
+					// Placed as a new layer's are - a sub-machine's graph is laid out like one.
+					FWidgetAnimMachineState Special = Fresh.States[Fresh.FindSpecialIndex(Kind)];
+					Special.Id = FGuid::NewGuid();
+					Special.ParentMachine = Scope;
+					Layer.States.Add(Special);
+					bChanged = true;
 				}
-				Layer.States.RemoveAt(Found);
-				Found = Index;
-				bChanged = true;
-			}
-			if (Found == INDEX_NONE)
-			{
-				Layer.States.Add(Fresh.States[Fresh.FindSpecialIndex(Kind)]);
-				bChanged = true;
 			}
 		}
 
@@ -460,7 +546,9 @@ bool UWidgetAnimStateMachineAsset::Normalize()
 				|| From->Kind == EWidgetAnimMachineNodeKind::Exit
 				|| To->Kind == EWidgetAnimMachineNodeKind::Entry
 				|| To->Kind == EWidgetAnimMachineNodeKind::AnyState
-				|| Transition.From == Transition.To;
+				|| Transition.From == Transition.To
+				// Between two nodes of the same graph: a sub-machine's insides are reached through its Entry.
+				|| From->ParentMachine != To->ParentMachine;
 		});
 		bChanged |= Layer.Transitions.Num() != NumBefore;
 
@@ -481,10 +569,15 @@ bool UWidgetAnimStateMachineAsset::Normalize()
 		}
 
 #if WITH_EDITORONLY_DATA
-		// Comment boxes: an id each, as the graph knows them by.
+		// Comment boxes: an id each, as the graph knows them by - and in a graph that is there.
 		TSet<FGuid> SeenComments;
 		for (FWidgetAnimMachineComment& Comment : Layer.Comments)
 		{
+			if (Comment.ParentMachine.IsValid() && !Scopes.Contains(Comment.ParentMachine))
+			{
+				Comment.ParentMachine.Invalidate();
+				bChanged = true;
+			}
 			bool bSeen = false;
 			if (Comment.Id.IsValid())
 			{
@@ -625,7 +718,8 @@ TArray<FString> UWidgetAnimStateMachineAsset::GetConditionStateOptions() const
 	{
 		for (const FWidgetAnimMachineState& State : Layer.States)
 		{
-			if (State.Kind == EWidgetAnimMachineNodeKind::State || State.Kind == EWidgetAnimMachineNodeKind::Exit)
+			// States inside sub-machines too; the layer's own Exit, never a sub-machine's.
+			if (State.Kind == EWidgetAnimMachineNodeKind::State || (State.Kind == EWidgetAnimMachineNodeKind::Exit && !State.ParentMachine.IsValid()))
 			{
 				Options.AddUnique(State.Name.ToString());
 			}
@@ -637,7 +731,7 @@ TArray<FString> UWidgetAnimStateMachineAsset::GetConditionStateOptions() const
 TArray<FString> UWidgetAnimStateMachineAsset::GetMaskTargetOptions() const
 {
 	TArray<FString> Options;
-	Options.Add(MaskHostTarget.ToString());
+	Options.Add(FWidgetAnimGroupTarget::ThisWidget.ToString());
 	TArray<FName> Names;
 	GetTargetNames(Names);
 	for (const FName Name : Names)
@@ -645,6 +739,11 @@ TArray<FString> UWidgetAnimStateMachineAsset::GetMaskTargetOptions() const
 		Options.Add(Name.ToString());
 	}
 	return Options;
+}
+
+TArray<FString> UWidgetAnimStateMachineAsset::GetWidgetInputTargetOptions() const
+{
+	return GetMaskTargetOptions();
 }
 
 TArray<FString> UWidgetAnimStateMachineAsset::GetInputCategoryOptions() const
@@ -909,21 +1008,153 @@ namespace WidgetAnimMachineInputs
 	const FName Closing(TEXT("Closing"));
 	const FName Clicked(TEXT("Clicked"));
 
+	const FName HoverEntered(TEXT("Hover Entered"));
+	const FName HoverExited(TEXT("Hover Exited"));
+	const FName PressStarted(TEXT("Press Started"));
+	const FName Released(TEXT("Released"));
+	const FName FocusGained(TEXT("Focus Gained"));
+	const FName FocusLost(TEXT("Focus Lost"));
+	const FName DoubleClicked(TEXT("Double Clicked"));
+	const FName RightClicked(TEXT("Right Clicked"));
+
+	const FName Accept(TEXT("Accept"));
+	const FName Back(TEXT("Back"));
+	const FName GamepadFaceBottom(TEXT("Gamepad Face Bottom"));
+	const FName GamepadFaceRight(TEXT("Gamepad Face Right"));
+	const FName GamepadFaceLeft(TEXT("Gamepad Face Left"));
+	const FName GamepadFaceTop(TEXT("Gamepad Face Top"));
+	const FName GamepadLeftShoulder(TEXT("Gamepad Left Shoulder"));
+	const FName GamepadRightShoulder(TEXT("Gamepad Right Shoulder"));
+	const FName GamepadLeftTrigger(TEXT("Gamepad Left Trigger"));
+	const FName GamepadRightTrigger(TEXT("Gamepad Right Trigger"));
+	const FName GamepadDPadUp(TEXT("Gamepad D-Pad Up"));
+	const FName GamepadDPadDown(TEXT("Gamepad D-Pad Down"));
+	const FName GamepadDPadLeft(TEXT("Gamepad D-Pad Left"));
+	const FName GamepadDPadRight(TEXT("Gamepad D-Pad Right"));
+	const FName GamepadMenu(TEXT("Gamepad Menu"));
+	const FName GamepadView(TEXT("Gamepad View"));
+	const FName GamepadLeftStick(TEXT("Gamepad Left Stick Click"));
+	const FName GamepadRightStick(TEXT("Gamepad Right Stick Click"));
+
+	namespace
+	{
+		/** One built-in input: where it is listed, whether it is a pulse, and the gamepad button it reads. */
+		struct FBuiltInEntry
+		{
+			FName Name;
+			FName Group;
+			FName SubGroup;
+			bool bPulse = false;
+			FKey Key;
+		};
+
+		const TArray<FBuiltInEntry>& GetEntries()
+		{
+			static const FName Events(TEXT("Events"));
+			static const FName Gamepad(TEXT("Gamepad"));
+			static const FName Navigation(TEXT("Navigation"));
+			static const FName FaceButtons(TEXT("Face Buttons"));
+			static const FName Shoulders(TEXT("Shoulders And Triggers"));
+			static const FName DPad(TEXT("D-Pad"));
+			static const FName MenuAndSticks(TEXT("Menu And Sticks"));
+
+			// The first seven keep their bits - their order is the one they always had.
+			static const TArray<FBuiltInEntry> Entries =
+			{
+				{ Hovered, NAME_None, NAME_None, false, EKeys::Invalid },
+				{ Pressed, NAME_None, NAME_None, false, EKeys::Invalid },
+				{ Focused, NAME_None, NAME_None, false, EKeys::Invalid },
+				{ Selected, NAME_None, NAME_None, false, EKeys::Invalid },
+				{ Disabled, NAME_None, NAME_None, false, EKeys::Invalid },
+				{ Closing, NAME_None, NAME_None, false, EKeys::Invalid },
+				{ Clicked, NAME_None, NAME_None, true, EKeys::Invalid },
+
+				{ HoverEntered, Events, NAME_None, true, EKeys::Invalid },
+				{ HoverExited, Events, NAME_None, true, EKeys::Invalid },
+				{ PressStarted, Events, NAME_None, true, EKeys::Invalid },
+				{ Released, Events, NAME_None, true, EKeys::Invalid },
+				{ FocusGained, Events, NAME_None, true, EKeys::Invalid },
+				{ FocusLost, Events, NAME_None, true, EKeys::Invalid },
+				{ DoubleClicked, Events, NAME_None, true, EKeys::Invalid },
+				{ RightClicked, Events, NAME_None, true, EKeys::Invalid },
+
+				{ Accept, Gamepad, Navigation, true, EKeys::Invalid },
+				{ Back, Gamepad, Navigation, true, EKeys::Invalid },
+				{ GamepadFaceBottom, Gamepad, FaceButtons, true, EKeys::Gamepad_FaceButton_Bottom },
+				{ GamepadFaceRight, Gamepad, FaceButtons, true, EKeys::Gamepad_FaceButton_Right },
+				{ GamepadFaceLeft, Gamepad, FaceButtons, true, EKeys::Gamepad_FaceButton_Left },
+				{ GamepadFaceTop, Gamepad, FaceButtons, true, EKeys::Gamepad_FaceButton_Top },
+				{ GamepadLeftShoulder, Gamepad, Shoulders, true, EKeys::Gamepad_LeftShoulder },
+				{ GamepadRightShoulder, Gamepad, Shoulders, true, EKeys::Gamepad_RightShoulder },
+				{ GamepadLeftTrigger, Gamepad, Shoulders, true, EKeys::Gamepad_LeftTrigger },
+				{ GamepadRightTrigger, Gamepad, Shoulders, true, EKeys::Gamepad_RightTrigger },
+				{ GamepadDPadUp, Gamepad, DPad, true, EKeys::Gamepad_DPad_Up },
+				{ GamepadDPadDown, Gamepad, DPad, true, EKeys::Gamepad_DPad_Down },
+				{ GamepadDPadLeft, Gamepad, DPad, true, EKeys::Gamepad_DPad_Left },
+				{ GamepadDPadRight, Gamepad, DPad, true, EKeys::Gamepad_DPad_Right },
+				{ GamepadMenu, Gamepad, MenuAndSticks, true, EKeys::Gamepad_Special_Right },
+				{ GamepadView, Gamepad, MenuAndSticks, true, EKeys::Gamepad_Special_Left },
+				{ GamepadLeftStick, Gamepad, MenuAndSticks, true, EKeys::Gamepad_LeftThumbstick },
+				{ GamepadRightStick, Gamepad, MenuAndSticks, true, EKeys::Gamepad_RightThumbstick },
+			};
+			return Entries;
+		}
+
+		const FBuiltInEntry* FindEntry(FName Name)
+		{
+			return Name.IsNone() ? nullptr : GetEntries().FindByPredicate([Name](const FBuiltInEntry& Entry) { return Entry.Name == Name; });
+		}
+	}
+
 	const TArray<FName>& GetBuiltIns()
 	{
-		static const TArray<FName> BuiltIns = { Hovered, Pressed, Focused, Selected, Disabled, Closing, Clicked };
+		static const TArray<FName> BuiltIns = []()
+		{
+			TArray<FName> Names;
+			for (const FBuiltInEntry& Entry : GetEntries())
+			{
+				Names.Add(Entry.Name);
+			}
+			// A bit each in a uint64 mask (GetBuiltInBit).
+			check(Names.Num() <= 64);
+			return Names;
+		}();
 		return BuiltIns;
 	}
 
-	uint8 GetBuiltInBit(FName Name)
+	uint64 GetBuiltInBit(FName Name)
 	{
-		const int32 Index = GetBuiltIns().IndexOfByKey(Name);
-		return Index == INDEX_NONE ? 0 : static_cast<uint8>(1u << Index);
+		const int32 Index = Name.IsNone() ? INDEX_NONE : GetBuiltIns().IndexOfByKey(Name);
+		return Index == INDEX_NONE ? 0 : (uint64(1) << Index);
 	}
 
 	bool IsBuiltIn(FName Name)
 	{
 		return GetBuiltInBit(Name) != 0;
+	}
+
+	bool IsBuiltInPulse(FName Name)
+	{
+		const FBuiltInEntry* Entry = FindEntry(Name);
+		return Entry && Entry->bPulse;
+	}
+
+	FName GetBuiltInGroup(FName Name)
+	{
+		const FBuiltInEntry* Entry = FindEntry(Name);
+		return Entry ? Entry->Group : NAME_None;
+	}
+
+	FName GetBuiltInSubGroup(FName Name)
+	{
+		const FBuiltInEntry* Entry = FindEntry(Name);
+		return Entry ? Entry->SubGroup : NAME_None;
+	}
+
+	FKey GetBuiltInKey(FName Name)
+	{
+		const FBuiltInEntry* Entry = FindEntry(Name);
+		return Entry ? Entry->Key : EKeys::Invalid;
 	}
 
 	FText GetBuiltInDescription(FName Name)
@@ -955,6 +1186,51 @@ namespace WidgetAnimMachineInputs
 		if (Name == Clicked)
 		{
 			return LOCTEXT("ClickedBuiltIn", "Built in, Fired the frame the widget is clicked: a Context Menu Button's action going off - on release or on press, as it is set, and every repeat of a Hold button - or any other widget let go while hovered or focused after being pressed. Not when the press is dragged off.");
+		}
+		if (Name == HoverEntered)
+		{
+			return LOCTEXT("HoverEnteredBuiltIn", "Built in, Fired the frame the widget becomes Hovered: the pointer moving onto it. Once, where Hovered stays true for as long as it is there.");
+		}
+		if (Name == HoverExited)
+		{
+			return LOCTEXT("HoverExitedBuiltIn", "Built in, Fired the frame the widget stops being Hovered: the pointer moving off it.");
+		}
+		if (Name == PressStarted)
+		{
+			return LOCTEXT("PressStartedBuiltIn", "Built in, Fired the frame the widget becomes Pressed: the press going down - a Button's or Common UI button's by mouse, keyboard or gamepad, else the left mouse button over it.");
+		}
+		if (Name == Released)
+		{
+			return LOCTEXT("ReleasedBuiltIn", "Built in, Fired the frame the widget stops being Pressed: the press let go, wherever the pointer is - Clicked is the one let go over the widget.");
+		}
+		if (Name == FocusGained)
+		{
+			return LOCTEXT("FocusGainedBuiltIn", "Built in, Fired the frame the widget becomes Focused: it, or something inside it, takes keyboard or gamepad focus.");
+		}
+		if (Name == FocusLost)
+		{
+			return LOCTEXT("FocusLostBuiltIn", "Built in, Fired the frame the widget stops being Focused: focus moving to something outside it.");
+		}
+		if (Name == DoubleClicked)
+		{
+			return LOCTEXT("DoubleClickedBuiltIn", "Built in, Fired the frame the left mouse button is double-clicked over the widget. The first click of the two is a Clicked of its own.");
+		}
+		if (Name == RightClicked)
+		{
+			return LOCTEXT("RightClickedBuiltIn", "Built in, Fired the frame the right mouse button is let go over the widget, after being pressed over it: a context menu's click.");
+		}
+		if (Name == Accept)
+		{
+			return LOCTEXT("AcceptBuiltIn", "Built in, Fired the frame the UI's confirm button is pressed while the widget, or something inside it, has focus: the gamepad's accept button (the bottom face button on most platforms, as Slate's navigation config has it), or Enter or Space.");
+		}
+		if (Name == Back)
+		{
+			return LOCTEXT("BackBuiltIn", "Built in, Fired the frame the UI's cancel button is pressed while the widget, or something inside it, has focus: the gamepad's back button (the right face button on most platforms, as Slate's navigation config has it), or Escape.");
+		}
+		const FKey Key = GetBuiltInKey(Name);
+		if (Key.IsValid())
+		{
+			return FText::Format(LOCTEXT("GamepadBuiltIn", "Built in, Fired the frame {0} is pressed while the widget, or something inside it, has keyboard or gamepad focus. Not again while it is held."), Key.GetDisplayName());
 		}
 		return FText::GetEmpty();
 	}
@@ -1154,6 +1430,22 @@ bool FWidgetAnimStateMachineEntry::SyncToMachine(const TArray<FString>* TargetOp
 		return TargetOptions->ContainsByPredicate([&NameString](const FString& Option) { return Option.Equals(NameString, ESearchCase::IgnoreCase); });
 	};
 
+	// Each target's animations - those with a Track Group of its name - for its row to show.
+	TMap<FName, TArray<FString>> AnimationsByTarget;
+	if (StateMachine)
+	{
+		TArray<UWidgetAnimPresetAsset*> Animations;
+		StateMachine->GatherAnimations(Animations);
+		for (const UWidgetAnimPresetAsset* Animation : Animations)
+		{
+			const int32 NumGroups = Animation ? Animation->LayerGroups.Num() : 0;
+			for (int32 GroupIndex = 0; GroupIndex < NumGroups; ++GroupIndex)
+			{
+				AnimationsByTarget.FindOrAdd(FName(*Animation->LayerGroups[GroupIndex].GetDisplayName(GroupIndex))).AddUnique(Animation->GetName());
+			}
+		}
+	}
+
 	// Rows by target name, so a target that moved in the list keeps its widget.
 	TArray<FWidgetAnimGroupTarget> NewTargets;
 	NewTargets.Reserve(TargetNames.Num());
@@ -1169,6 +1461,11 @@ bool FWidgetAnimStateMachineEntry::SyncToMachine(const TArray<FString>* TargetOp
 
 		FWidgetAnimGroupTarget& Row = NewTargets.AddDefaulted_GetRef();
 		Row.GroupName = Label;
+		Row.bListsAnimations = true;
+		if (const TArray<FString>* Listed = AnimationsByTarget.Find(TargetName))
+		{
+			Row.Animations = FString::Join(*Listed, TEXT(", "));
+		}
 		if (Existing)
 		{
 			Row.TargetWidgetName = Existing->TargetWidgetName;
@@ -1192,7 +1489,8 @@ bool FWidgetAnimStateMachineEntry::SyncToMachine(const TArray<FString>* TargetOp
 	{
 		for (int32 Index = 0; Index < NewTargets.Num(); ++Index)
 		{
-			if (NewTargets[Index].GroupName != Targets[Index].GroupName || NewTargets[Index].TargetWidgetName != Targets[Index].TargetWidgetName)
+			if (NewTargets[Index].GroupName != Targets[Index].GroupName || NewTargets[Index].TargetWidgetName != Targets[Index].TargetWidgetName
+				|| NewTargets[Index].Animations != Targets[Index].Animations || NewTargets[Index].bListsAnimations != Targets[Index].bListsAnimations)
 			{
 				return true;
 			}

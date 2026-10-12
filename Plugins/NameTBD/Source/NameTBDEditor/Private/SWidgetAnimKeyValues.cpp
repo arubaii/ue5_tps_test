@@ -136,7 +136,6 @@ public:
 		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
 		const TArray<WidgetAnimKeyValues::FChannel>* Channels = Owner ? &Owner->GetKeyChannels(Cell.Layer) : nullptr;
 		const WidgetAnimKeyValues::FChannel* Channel = Channels && Channels->IsValidIndex(Cell.Channel) ? &(*Channels)[Cell.Channel] : nullptr;
-		const double Step = Channel ? static_cast<double>(Channel->DragStep) : 0.1;
 		const bool bWhole = Channel && Channel->bInteger;
 		const FText Label = Channel ? Channel->Label : FText::GetEmpty();
 		const FText Description = Channel ? Channel->Description : FText::GetEmpty();
@@ -226,13 +225,16 @@ public:
 			Editor = SNew(SNumericEntryBox<double>)
 				.Font(IDetailLayoutBuilder::GetDetailFont())
 				.AllowSpin(true)
-				.Delta(Step)
-				// Its own range where it has one; else none - an entry box's default bar runs 0 to 100. With no range the spin box
-				// must be told to move linearly - one Delta (Step) per pixel - or it adds the value to itself each step and runs off
-				// to infinity at the slightest drag.
+				// Dragged as a Details panel's number is: faster the bigger the number, Shift faster, Ctrl slower; a whole number in
+				// whole steps.
+				.Delta(bWhole ? 1.0 : 0.0)
+				// Its own bar where it has one (both ends); else none - an entry box's default bar runs 0 to 100. No hard limits:
+				// an entry box's default Min / Max Value are the numeric limits, and with them set the spin box never drags freely -
+				// it drags across the whole range of a double, a pixel's move worth some 10^306.
+				.MinValue(TOptional<double>())
+				.MaxValue(TOptional<double>())
 				.MinSliderValue(Channel ? Channel->SliderMin : TOptional<double>())
 				.MaxSliderValue(Channel ? Channel->SliderMax : TOptional<double>())
-				.LinearDeltaSensitivity(1)
 				.UndeterminedString(LOCTEXT("NoValue", "-"))
 				.TypeInterface(MakeShared<FInterface>(Typed.ToSharedRef(), bWhole))
 				.Value_Lambda([WeakOwner, Shown]() -> TOptional<double>
@@ -381,21 +383,57 @@ private:
 				continue;
 			}
 			const double EntryValue = static_cast<double>(Enum->GetValueByIndex(Index));
+			const FText EntryName = Enum->GetDisplayNameTextByIndex(Index);
+
+			// In the panel's own tooltip, as the box itself: "Bevel: what it does" - the plugin's line for it, else its own tooltip.
+			FText EntryDescription = WidgetAnimKeyValueCells::Tips::KeyChoiceDescription(Enum->GetName() + TEXT(".") + Enum->GetNameStringByIndex(Index));
+			if (EntryDescription.IsEmpty())
+			{
+				EntryDescription = Enum->GetToolTipTextByIndex(Index);
+			}
+			const FText EntryTip = EntryDescription.IsEmpty() || EntryDescription.EqualTo(EntryName)
+				? FText::GetEmpty()
+				: FText::Format(LOCTEXT("ChoiceEntryToolTipFormat", "{0}: {1}"), EntryName, EntryDescription);
+
+			auto IsPicked = [WeakOwner, Shown, EntryValue]()
+			{
+				const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+				const TOptional<double> Value = Pinned ? Pinned->GetKeyValue(Shown) : TOptional<double>();
+				return Value.IsSet() && FMath::IsNearlyEqual(Value.GetValue(), EntryValue);
+			};
+
+			// The entry as a widget rather than a label - only a widget takes the panel's tooltip - with its own radio mark, the
+			// one the menu draws for a radio entry.
 			Menu.AddMenuEntry(
-				Enum->GetDisplayNameTextByIndex(Index),
-				Enum->GetToolTipTextByIndex(Index),
-				FSlateIcon(),
-				FUIAction(
-					FExecuteAction::CreateSP(this, &SWidgetAnimValueCell::SetEditedCells, EntryValue),
-					FCanExecuteAction(),
-					FIsActionChecked::CreateLambda([WeakOwner, Shown, EntryValue]()
-					{
-						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
-						const TOptional<double> Value = Pinned ? Pinned->GetKeyValue(Shown) : TOptional<double>();
-						return Value.IsSet() && FMath::IsNearlyEqual(Value.GetValue(), EntryValue);
-					})),
+				FUIAction(FExecuteAction::CreateSP(this, &SWidgetAnimValueCell::SetEditedCells, EntryValue)),
+				SNew(SBox)
+				.ToolTip(EntryTip.IsEmpty() ? TSharedPtr<IToolTip>() : SWidgetAnimTimeline::MakeStyledToolTip(EntryTip))
+				[
+					SNew(SHorizontalBox)
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
+					[
+						SNew(SCheckBox)
+						.Style(FAppStyle::Get(), "Menu.RadioButton")
+						.Visibility(EVisibility::HitTestInvisible)
+						.IsChecked_Lambda([IsPicked]() { return IsPicked() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+					]
+
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.f)
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.TextStyle(FAppStyle::Get(), "Menu.Label")
+						.Text(EntryName)
+					]
+				],
 				NAME_None,
-				EUserInterfaceActionType::RadioButton);
+				FText::GetEmpty(),
+				EUserInterfaceActionType::Button);
 		}
 		return Menu.MakeWidget();
 	}

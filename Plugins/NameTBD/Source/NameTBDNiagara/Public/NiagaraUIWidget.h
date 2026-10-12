@@ -388,6 +388,13 @@ public:
 	 */
 	void PlayWithOverrides(UNiagaraSystem* System, const FNiagaraUIParameterOverrides* Overrides);
 
+	/**
+	 * Plays nothing as this widget's system - a Play track whose own Niagara System is None: whatever plays as the widget's
+	 * system (Auto Play's, a track's) stops, its particles gone at once as when another system takes its place, and Auto Play
+	 * doesn't start it again. Bursts play on. The widget's Niagara System and User Parameters are kept: Play starts it again.
+	 */
+	void PlayNothing();
+
 	// ---------------------------------------------------------------------------------------------
 	// For the Slate widget and the module's ticker - not for gameplay code
 	// ---------------------------------------------------------------------------------------------

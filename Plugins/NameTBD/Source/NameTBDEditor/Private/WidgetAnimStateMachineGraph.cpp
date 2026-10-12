@@ -114,7 +114,8 @@ namespace
 
 namespace WidgetAnimMachineEdits
 {
-	FGuid AddState(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, FName Name, const FVector2D& Position, UWidgetAnimPresetAsset* Animation)
+	FGuid AddState(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, FName Name, const FVector2D& Position, UWidgetAnimPresetAsset* Animation,
+		const FGuid& ParentMachine)
 	{
 		if (!GetLayerForEdit(Machine, LayerIndex))
 		{
@@ -133,10 +134,15 @@ namespace WidgetAnimMachineEdits
 		const FName Wanted = !Name.IsNone() ? Name : (Animation ? FName(*WidgetAnimCues::GetEventAnimationName(Animation)) : FName(TEXT("State")));
 		State.Name = UWidgetAnimStateMachineAsset::MakeUniqueStateName(Layer, Wanted, State.Id);
 		State.EditorPosition = Position;
+		// In the sub-machine open, if it still is one.
+		const FWidgetAnimMachineState* Parent = Layer.FindState(ParentMachine);
+		State.ParentMachine = Parent && Parent->IsSubMachine() ? ParentMachine : FGuid();
+		const FGuid Scope = State.ParentMachine;
 		const FGuid Id = State.Id;
 
-		// The layer's first state is where Entry goes, so a new machine plays something as soon as it has a state.
-		const int32 EntryIndex = Layer.FindSpecialIndex(EWidgetAnimMachineNodeKind::Entry);
+		// The graph's first state is where its Entry goes, so a new machine - or sub-machine - plays something as soon as it has
+		// a state.
+		const int32 EntryIndex = Layer.FindSpecialIndex(EWidgetAnimMachineNodeKind::Entry, Scope);
 		const bool bEntryGoesNowhere = Layer.States.IsValidIndex(EntryIndex) && !Layer.Transitions.ContainsByPredicate([&Layer, EntryIndex](const FWidgetAnimMachineTransition& Transition)
 		{
 			return Transition.From == Layer.States[EntryIndex].Id;
@@ -166,7 +172,8 @@ namespace WidgetAnimMachineEdits
 		return FromState && ToState
 			&& FromState->Kind != EWidgetAnimMachineNodeKind::Exit
 			&& ToState->Kind != EWidgetAnimMachineNodeKind::Entry
-			&& ToState->Kind != EWidgetAnimMachineNodeKind::AnyState;
+			&& ToState->Kind != EWidgetAnimMachineNodeKind::AnyState
+			&& FromState->ParentMachine == ToState->ParentMachine;
 	}
 
 	FGuid AddTransition(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& From, const FGuid& To)
@@ -182,7 +189,8 @@ namespace WidgetAnimMachineEdits
 		const FWidgetAnimMachineState* FromState = Layer.FindState(From);
 		const FWidgetAnimMachineState* ToState = Layer.FindState(To);
 		const bool bFromEntry = FromState && FromState->Kind == EWidgetAnimMachineNodeKind::Entry;
-		const bool bToExit = ToState && ToState->Kind == EWidgetAnimMachineNodeKind::Exit;
+		// The layer's own Exit, that is: a sub-machine's Exit is where it finishes, not how the widget closes.
+		const bool bToExit = ToState && ToState->Kind == EWidgetAnimMachineNodeKind::Exit && !ToState->ParentMachine.IsValid();
 
 		FWidgetAnimMachineTransition& Transition = Layer.Transitions.AddDefaulted_GetRef();
 		Transition.Id = FGuid::NewGuid();
@@ -222,6 +230,94 @@ namespace WidgetAnimMachineEdits
 		FinishEdit(Machine);
 	}
 
+	EWidgetAnimMachineCompare GetTrueCompare(const UWidgetAnimStateMachineAsset* Machine, FName Input)
+	{
+		// A machine's own input of the name wins over a built-in one, as everywhere.
+		const FWidgetAnimMachineInput* Own = Machine ? Machine->FindInput(Input) : nullptr;
+		if (Own)
+		{
+			return Own->Type == EWidgetAnimMachineInputType::Trigger ? EWidgetAnimMachineCompare::Fired : EWidgetAnimMachineCompare::IsTrue;
+		}
+		return WidgetAnimMachineInputs::IsBuiltInPulse(Input) ? EWidgetAnimMachineCompare::Fired : EWidgetAnimMachineCompare::IsTrue;
+	}
+
+	void AddWidgetInputConditions(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& TransitionId)
+	{
+		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
+		const int32 Index = Layer ? Layer->FindTransitionIndex(TransitionId) : INDEX_NONE;
+		if (Index == INDEX_NONE || Layer->Transitions[Index].Conditions.Num() > 0)
+		{
+			return;
+		}
+		const FWidgetAnimMachineState* From = Layer->FindState(Layer->Transitions[Index].From);
+		const FWidgetAnimMachineState* To = Layer->FindState(Layer->Transitions[Index].To);
+
+		// The input a state was made for - if the machine can still read it: a built-in, or its own input of that name.
+		auto InputOf = [Machine](const FWidgetAnimMachineState* State) -> FName
+		{
+			const FName Input = State && State->Kind == EWidgetAnimMachineNodeKind::State ? State->EditorWidgetInput : FName();
+			return !Input.IsNone() && (WidgetAnimMachineInputs::IsBuiltIn(Input) || Machine->FindInput(Input)) ? Input : FName();
+		};
+		const FName IntoInput = InputOf(To);
+		const FName OutOfInput = IntoInput.IsNone() ? InputOf(From) : FName();
+		if (IntoInput.IsNone() && OutOfInput.IsNone())
+		{
+			return;
+		}
+
+		const FScopedTransaction Transaction(LOCTEXT("AddWidgetInputCondition", "Add Transition Condition"));
+		Machine->Modify();
+		FWidgetAnimMachineTransition& Transition = Layer->Transitions[Index];
+		if (!IntoInput.IsNone())
+		{
+			FWidgetAnimMachineCondition& Condition = Transition.Conditions.AddDefaulted_GetRef();
+			Condition.Input = IntoInput;
+			Condition.Compare = GetTrueCompare(Machine, IntoInput);
+		}
+		else if (GetTrueCompare(Machine, OutOfInput) == EWidgetAnimMachineCompare::Fired)
+		{
+			// A pulse is never "false" for long: out of its state once the state has played.
+			Transition.ExitTime = EWidgetAnimMachineExitTime::WhenFinished;
+		}
+		else
+		{
+			// Is False - for a Press And Hold, Is Let Go.
+			FWidgetAnimMachineCondition& Condition = Transition.Conditions.AddDefaulted_GetRef();
+			Condition.Input = OutOfInput;
+			Condition.Compare = EWidgetAnimMachineCompare::IsFalse;
+		}
+		FinishEdit(Machine);
+	}
+
+	bool IsSubMachineEmpty(const FWidgetAnimMachineLayer& Layer, const FGuid& SubMachine)
+	{
+		return !Layer.States.ContainsByPredicate([&SubMachine](const FWidgetAnimMachineState& State)
+		{
+			return State.ParentMachine == SubMachine && State.Kind == EWidgetAnimMachineNodeKind::State;
+		});
+	}
+
+	void SetSubMachine(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& StateId, bool bSubMachine)
+	{
+		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
+		const int32 Index = Layer ? Layer->FindStateIndex(StateId) : INDEX_NONE;
+		if (Index == INDEX_NONE || Layer->States[Index].Kind != EWidgetAnimMachineNodeKind::State || Layer->States[Index].bSubMachine == bSubMachine
+			|| (!bSubMachine && !IsSubMachineEmpty(*Layer, StateId)))
+		{
+			return;
+		}
+		const FScopedTransaction Transaction(bSubMachine ? LOCTEXT("MakeSubMachine", "Convert To Sub-Machine") : LOCTEXT("MakePlainState", "Convert To State"));
+		Machine->Modify();
+		Layer->States[Index].bSubMachine = bSubMachine;
+		if (!bSubMachine)
+		{
+			// Its Entry, Any State and Exit go with it; the transitions between them with them.
+			Layer->States.RemoveAll([&StateId](const FWidgetAnimMachineState& State) { return State.ParentMachine == StateId; });
+		}
+		// Normalize gives a new sub-machine its Entry, Any State and Exit.
+		FinishEdit(Machine);
+	}
+
 	void Delete(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& States, const TArray<FGuid>& Transitions,
 		const TArray<FGuid>& Comments, const TMap<FGuid, TArray<int32>>& Reroutes)
 	{
@@ -255,9 +351,30 @@ namespace WidgetAnimMachineEdits
 			}
 		}
 
-		Layer->States.RemoveAll([&States](const FWidgetAnimMachineState& State) { return State.Kind == EWidgetAnimMachineNodeKind::State && States.Contains(State.Id); });
+		// A sub-machine goes with everything inside it, however deep - and its graph's comment boxes.
+		TSet<FGuid> Gone;
+		for (const FWidgetAnimMachineState& State : Layer->States)
+		{
+			if (State.Kind == EWidgetAnimMachineNodeKind::State && States.Contains(State.Id))
+			{
+				Gone.Add(State.Id);
+			}
+		}
+		for (bool bGrew = Gone.Num() > 0; bGrew; )
+		{
+			bGrew = false;
+			for (const FWidgetAnimMachineState& State : Layer->States)
+			{
+				if (State.ParentMachine.IsValid() && Gone.Contains(State.ParentMachine) && !Gone.Contains(State.Id))
+				{
+					Gone.Add(State.Id);
+					bGrew = true;
+				}
+			}
+		}
+		Layer->States.RemoveAll([&Gone](const FWidgetAnimMachineState& State) { return Gone.Contains(State.Id); });
 		Layer->Transitions.RemoveAll([&Transitions](const FWidgetAnimMachineTransition& Transition) { return Transitions.Contains(Transition.Id); });
-		Layer->Comments.RemoveAll([&Comments](const FWidgetAnimMachineComment& Comment) { return Comments.Contains(Comment.Id); });
+		Layer->Comments.RemoveAll([&Comments, &Gone](const FWidgetAnimMachineComment& Comment) { return Comments.Contains(Comment.Id) || Gone.Contains(Comment.ParentMachine); });
 
 		// Normalize drops the transitions whose state went.
 		FinishEdit(Machine);
@@ -477,8 +594,10 @@ namespace WidgetAnimMachineEdits
 	void SetEntryState(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& State)
 	{
 		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
-		const int32 EntryIndex = Layer ? Layer->FindSpecialIndex(EWidgetAnimMachineNodeKind::Entry) : INDEX_NONE;
-		if (EntryIndex == INDEX_NONE || !Layer->FindState(State))
+		const FWidgetAnimMachineState* Target = Layer ? Layer->FindState(State) : nullptr;
+		// The Entry of the graph it is in - a sub-machine's, inside one.
+		const int32 EntryIndex = Target ? Layer->FindSpecialIndex(EWidgetAnimMachineNodeKind::Entry, Target->ParentMachine) : INDEX_NONE;
+		if (EntryIndex == INDEX_NONE)
 		{
 			return;
 		}
@@ -577,7 +696,7 @@ namespace WidgetAnimMachineEdits
 		}
 		const FScopedTransaction Transaction(LOCTEXT("AddLayer", "Add State Machine Layer"));
 		Machine->Modify();
-		const int32 Index = Machine->Layers.Add(UWidgetAnimStateMachineAsset::MakeLayer(Machine->MakeUniqueLayerName(TEXT("Layer"))));
+		const int32 Index = Machine->Layers.Add(UWidgetAnimStateMachineAsset::MakeLayer(Machine->MakeNewLayerName()));
 		FinishEdit(Machine);
 		return Index;
 	}
@@ -901,7 +1020,7 @@ namespace WidgetAnimMachineEdits
 		FinishEdit(Machine);
 	}
 
-	FGuid AddComment(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FBox2D& Bounds, const FString& Text)
+	FGuid AddComment(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FBox2D& Bounds, const FString& Text, const FGuid& ParentMachine)
 	{
 		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
 		if (!Layer)
@@ -915,6 +1034,7 @@ namespace WidgetAnimMachineEdits
 		Comment.Text = Text;
 		Comment.Position = Bounds.Min;
 		Comment.Size = FVector2D(FMath::Max(Bounds.GetSize().X, 64.0), FMath::Max(Bounds.GetSize().Y, 48.0));
+		Comment.ParentMachine = ParentMachine;
 		const FGuid Id = Comment.Id;
 		FinishEdit(Machine);
 		return Id;
@@ -964,9 +1084,30 @@ namespace WidgetAnimMachineEdits
 		}
 
 		FWidgetAnimMachineClipboard Clipboard;
+		TSet<FGuid> Copied;
 		for (const FWidgetAnimMachineState& State : Layer->States)
 		{
 			if (State.Kind == EWidgetAnimMachineNodeKind::State && States.Contains(State.Id))
+			{
+				Copied.Add(State.Id);
+			}
+		}
+		// A sub-machine with everything inside it - its Entry, Any State and Exit too.
+		for (bool bGrew = Copied.Num() > 0; bGrew; )
+		{
+			bGrew = false;
+			for (const FWidgetAnimMachineState& State : Layer->States)
+			{
+				if (State.ParentMachine.IsValid() && Copied.Contains(State.ParentMachine) && !Copied.Contains(State.Id))
+				{
+					Copied.Add(State.Id);
+					bGrew = true;
+				}
+			}
+		}
+		for (const FWidgetAnimMachineState& State : Layer->States)
+		{
+			if (Copied.Contains(State.Id))
 			{
 				Clipboard.States.Add(State);
 			}
@@ -983,7 +1124,7 @@ namespace WidgetAnimMachineEdits
 		}
 		for (const FWidgetAnimMachineComment& Comment : Layer->Comments)
 		{
-			if (Comments.Contains(Comment.Id))
+			if (Comments.Contains(Comment.Id) || Copied.Contains(Comment.ParentMachine))
 			{
 				Clipboard.Comments.Add(Comment);
 			}
@@ -1004,7 +1145,7 @@ namespace WidgetAnimMachineEdits
 		return Text.StartsWith(ClipboardPrefix);
 	}
 
-	TArray<FGuid> PasteText(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FString& Text, const FVector2D& Location)
+	TArray<FGuid> PasteText(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FString& Text, const FVector2D& Location, const FGuid& ParentMachine)
 	{
 		TArray<FGuid> Pasted;
 		FWidgetAnimMachineLayer* Layer = GetLayerForEdit(Machine, LayerIndex);
@@ -1021,32 +1162,67 @@ namespace WidgetAnimMachineEdits
 			return Pasted;
 		}
 
+		// What was copied from one graph: the nodes whose sub-machine wasn't copied with them. What is inside a copied
+		// sub-machine stays inside it, in its own graph, where it was.
+		TSet<FGuid> CopiedIds;
+		for (const FWidgetAnimMachineState& State : Clipboard.States)
+		{
+			CopiedIds.Add(State.Id);
+		}
+		auto IsTopOfPaste = [&CopiedIds](const FGuid& Parent) { return !Parent.IsValid() || !CopiedIds.Contains(Parent); };
+
 		// The copied nodes' top left goes where they are pasted; everything keeps its place relative to it.
 		FVector2D TopLeft(TNumericLimits<double>::Max(), TNumericLimits<double>::Max());
 		for (const FWidgetAnimMachineState& State : Clipboard.States)
 		{
-			TopLeft = FVector2D(FMath::Min(TopLeft.X, State.EditorPosition.X), FMath::Min(TopLeft.Y, State.EditorPosition.Y));
+			if (IsTopOfPaste(State.ParentMachine))
+			{
+				TopLeft = FVector2D(FMath::Min(TopLeft.X, State.EditorPosition.X), FMath::Min(TopLeft.Y, State.EditorPosition.Y));
+			}
 		}
 		for (const FWidgetAnimMachineComment& Comment : Clipboard.Comments)
 		{
-			TopLeft = FVector2D(FMath::Min(TopLeft.X, Comment.Position.X), FMath::Min(TopLeft.Y, Comment.Position.Y));
+			if (IsTopOfPaste(Comment.ParentMachine))
+			{
+				TopLeft = FVector2D(FMath::Min(TopLeft.X, Comment.Position.X), FMath::Min(TopLeft.Y, Comment.Position.Y));
+			}
 		}
 		const FVector2D Offset = Location - TopLeft;
+
+		// Into the sub-machine open, if it still is one.
+		const FWidgetAnimMachineState* Into = Layer->FindState(ParentMachine);
+		const FGuid PasteScope = Into && Into->IsSubMachine() ? ParentMachine : FGuid();
 
 		const FScopedTransaction Transaction(LOCTEXT("PasteStates", "Paste States"));
 		Machine->Modify();
 
 		TMap<FGuid, FGuid> NewIds;
+		for (const FWidgetAnimMachineState& State : Clipboard.States)
+		{
+			NewIds.Add(State.Id, FGuid::NewGuid());
+		}
 		for (FWidgetAnimMachineState State : Clipboard.States)
 		{
-			const FGuid NewId = FGuid::NewGuid();
-			NewIds.Add(State.Id, NewId);
+			const bool bTop = IsTopOfPaste(State.ParentMachine);
+			const FGuid NewId = NewIds.FindChecked(State.Id);
 			State.Id = NewId;
-			State.Kind = EWidgetAnimMachineNodeKind::State;
-			State.EditorPosition += Offset;
+			if (bTop)
+			{
+				// Where it was pasted. A sub-machine's insides keep their own kinds, and their places in its graph.
+				State.Kind = EWidgetAnimMachineNodeKind::State;
+				State.EditorPosition += Offset;
+				State.ParentMachine = PasteScope;
+			}
+			else
+			{
+				State.ParentMachine = NewIds.FindChecked(State.ParentMachine);
+			}
 			State.Name = UWidgetAnimStateMachineAsset::MakeUniqueStateName(*Layer, State.Name, NewId);
 			Layer->States.Add(State);
-			Pasted.Add(NewId);
+			if (bTop)
+			{
+				Pasted.Add(NewId);
+			}
 		}
 		for (FWidgetAnimMachineTransition Transition : Clipboard.Transitions)
 		{
@@ -1063,10 +1239,19 @@ namespace WidgetAnimMachineEdits
 		}
 		for (FWidgetAnimMachineComment Comment : Clipboard.Comments)
 		{
+			const bool bTop = IsTopOfPaste(Comment.ParentMachine);
 			Comment.Id = FGuid::NewGuid();
-			Comment.Position += Offset;
+			if (bTop)
+			{
+				Comment.Position += Offset;
+				Comment.ParentMachine = PasteScope;
+				Pasted.Add(Comment.Id);
+			}
+			else
+			{
+				Comment.ParentMachine = NewIds.FindChecked(Comment.ParentMachine);
+			}
 			Layer->Comments.Add(Comment);
-			Pasted.Add(Comment.Id);
 		}
 
 		FinishEdit(Machine);
@@ -1783,9 +1968,24 @@ void UWidgetAnimMachineGraph::RebuildFromMachine()
 		return;
 	}
 
-	// Comment boxes first, so they are under everything.
+	// A sub-machine opened that is gone, or no longer one (undone, deleted): back to the layer's own graph.
+	if (OpenMachine.IsValid())
+	{
+		const FWidgetAnimMachineState* Opened = Layer->FindState(OpenMachine);
+		if (!Opened || !Opened->IsSubMachine())
+		{
+			OpenMachine.Invalidate();
+			OpenGroup.Invalidate();
+		}
+	}
+
+	// Comment boxes first, so they are under everything - the open graph's.
 	for (const FWidgetAnimMachineComment& Comment : Layer->Comments)
 	{
+		if (Comment.ParentMachine != OpenMachine)
+		{
+			continue;
+		}
 		UEdGraphNode_Comment* Node = NewObject<UEdGraphNode_Comment>(this, NAME_None, RF_Transient);
 		Node->NodeGuid = Comment.Id;
 		Node->NodePosX = FMath::RoundToInt32(Comment.Position.X);
@@ -1808,12 +2008,16 @@ void UWidgetAnimMachineGraph::RebuildFromMachine()
 		OpenGroup.Invalidate();
 	}
 
-	// Collapsed groups, at the top of the layer: a box each, in place of their states.
+	// Collapsed groups, at the top of the open graph: a box each, in place of their states.
 	if (!OpenGroup.IsValid())
 	{
 		for (const FWidgetAnimMachineStateGroup& Group : Layer->EditorGroups)
 		{
-			if (!Group.bCollapsed)
+			const bool bInOpenGraph = Layer->States.ContainsByPredicate([this, &Group](const FWidgetAnimMachineState& Member)
+			{
+				return Member.EditorGroup == Group.Id && Member.ParentMachine == OpenMachine;
+			});
+			if (!Group.bCollapsed || !bInOpenGraph)
 			{
 				continue;
 			}
@@ -1976,7 +2180,7 @@ FGuid UWidgetAnimMachineGraph::GetShownNodeId(const FGuid& StateId) const
 {
 	const FWidgetAnimMachineLayer* Layer = GetLayer();
 	const FWidgetAnimMachineState* State = Layer ? Layer->FindState(StateId) : nullptr;
-	if (!State)
+	if (!State || State->ParentMachine != OpenMachine)
 	{
 		return FGuid();
 	}
@@ -1988,6 +2192,17 @@ FGuid UWidgetAnimMachineGraph::GetShownNodeId(const FGuid& StateId) const
 	return Group && Group->bCollapsed ? Group->Id : StateId;
 }
 
+void UWidgetAnimMachineGraph::GetOpenMachinePath(TArray<FGuid>& OutPath) const
+{
+	OutPath.Reset();
+	const FWidgetAnimMachineLayer* Layer = GetLayer();
+	const int32 Opened = Layer ? Layer->FindStateIndex(OpenMachine) : INDEX_NONE;
+	for (int32 Index = Opened, Step = 0; Layer && Index != INDEX_NONE && Step <= Layer->States.Num(); Index = Layer->FindParentIndex(Index), ++Step)
+	{
+		OutPath.Insert(Layer->States[Index].Id, 0);
+	}
+}
+
 const FWidgetAnimMachineStateGroup* UWidgetAnimMachineGraphNode::GetGroup() const
 {
 	const UWidgetAnimMachineGraph* Graph = GetMachineGraph();
@@ -1995,16 +2210,38 @@ const FWidgetAnimMachineStateGroup* UWidgetAnimMachineGraphNode::GetGroup() cons
 	return bIsGroup && Layer ? WidgetAnimMachineEdits::FindGroup(*Layer, StateId) : nullptr;
 }
 
+bool UWidgetAnimMachineGraphNode::IsInSubMachine() const
+{
+	const FWidgetAnimMachineState* State = bIsGroup ? nullptr : GetState();
+	return State && State->ParentMachine.IsValid();
+}
+
 bool UWidgetAnimMachineGraphNode::ShowsState(const FGuid& State) const
 {
-	if (!bIsGroup)
+	if (!State.IsValid())
 	{
-		return State.IsValid() && State == StateId;
+		return false;
 	}
+	if (!bIsGroup && State == StateId)
+	{
+		return true;
+	}
+	// A sub-machine shows any state inside it; a group's box any of its states - or any state inside one of them.
 	const UWidgetAnimMachineGraph* Graph = GetMachineGraph();
 	const FWidgetAnimMachineLayer* Layer = Graph ? Graph->GetLayer() : nullptr;
-	const FWidgetAnimMachineState* Found = Layer ? Layer->FindState(State) : nullptr;
-	return Found && Found->EditorGroup == StateId;
+	if (!Layer)
+	{
+		return false;
+	}
+	for (int32 Index = Layer->FindStateIndex(State), Step = 0; Index != INDEX_NONE && Step <= Layer->States.Num(); Index = Layer->FindParentIndex(Index), ++Step)
+	{
+		const FWidgetAnimMachineState& Around = Layer->States[Index];
+		if (bIsGroup ? Around.EditorGroup == StateId : Around.Id == StateId)
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 const FWidgetAnimMachineState* UWidgetAnimMachineGraphNode::GetState() const
@@ -2031,6 +2268,15 @@ FText UWidgetAnimMachineGraphNode::GetNodeTitle(ENodeTitleType::Type TitleType) 
 		const FWidgetAnimMachineStateGroup* Group = GetGroup();
 		return Group ? FText::FromName(Group->Name) : LOCTEXT("MissingGroup", "(gone)");
 	}
+	// Entry, Any State and Exit by what they are: a sub-machine's have names of their own only to keep every name in the layer
+	// unique ("Entry 2").
+	switch (Kind)
+	{
+	case EWidgetAnimMachineNodeKind::Entry:    return LOCTEXT("EntryTitle", "Entry");
+	case EWidgetAnimMachineNodeKind::AnyState: return LOCTEXT("AnyStateTitle", "Any State");
+	case EWidgetAnimMachineNodeKind::Exit:     return LOCTEXT("ExitTitle", "Exit");
+	default:                                    break;
+	}
 	const FWidgetAnimMachineState* State = GetState();
 	return State ? FText::FromName(State->Name) : LOCTEXT("MissingState", "(gone)");
 }
@@ -2043,9 +2289,9 @@ FText UWidgetAnimMachineGraphNode::GetTooltipText() const
 	}
 	switch (Kind)
 	{
-	case EWidgetAnimMachineNodeKind::Entry:    return MachineTips::EntryNodeTooltip();
-	case EWidgetAnimMachineNodeKind::Exit:     return MachineTips::ExitNodeTooltip();
-	case EWidgetAnimMachineNodeKind::AnyState: return MachineTips::AnyStateNodeTooltip();
+	case EWidgetAnimMachineNodeKind::Entry:    return IsInSubMachine() ? MachineTips::SubMachineEntryNodeTooltip() : MachineTips::EntryNodeTooltip();
+	case EWidgetAnimMachineNodeKind::Exit:     return IsInSubMachine() ? MachineTips::SubMachineExitNodeTooltip() : MachineTips::ExitNodeTooltip();
+	case EWidgetAnimMachineNodeKind::AnyState: return IsInSubMachine() ? MachineTips::SubMachineAnyStateNodeTooltip() : MachineTips::AnyStateNodeTooltip();
 	default:
 		break;
 	}
@@ -2053,6 +2299,10 @@ FText UWidgetAnimMachineGraphNode::GetTooltipText() const
 	if (!State)
 	{
 		return FText::GetEmpty();
+	}
+	if (State->IsSubMachine())
+	{
+		return MachineTips::SubMachineNodeHint();
 	}
 	return FText::Format(MachineTips::StateNodeTooltip(),
 		FText::FromName(State->Name),
@@ -2288,7 +2538,8 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
 	}
 
 	FToolMenuSection& Section = Menu->AddSection(TEXT("WidgetAnimMachineState"), LOCTEXT("StateSection", "State"));
-	if (Kind == EWidgetAnimMachineNodeKind::Entry || Kind == EWidgetAnimMachineNodeKind::Exit)
+	// The layer's own Entry and Exit: a sub-machine's are only gone through on the way.
+	if ((Kind == EWidgetAnimMachineNodeKind::Entry || Kind == EWidgetAnimMachineNodeKind::Exit) && !IsInSubMachine())
 	{
 		// Back to the start, or out through Exit - as a double-click does.
 		const bool bEntry = Kind == EWidgetAnimMachineNodeKind::Entry;
@@ -2337,20 +2588,64 @@ void UWidgetAnimMachineGraphNode::GetNodeContextMenuActions(UToolMenu* Menu, UGr
 					WidgetAnimMachineEdits::SetEntryState(Graph->Machine, Graph->LayerIndex, Node->StateId);
 				}
 			})));
-		Section.AddMenuEntry(
-			TEXT("OpenStateAnimation"),
-			LOCTEXT("OpenStateAnimation", "Open Animation"),
-			MachineTips::OpenStateAnimationTooltip(),
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateLambda([WeakSelf]()
-			{
-				const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
-				UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
-				if (Graph && Graph->OnOpenState)
+		const FWidgetAnimMachineState* Own = GetState();
+		const bool bSubMachine = Own && Own->IsSubMachine();
+		if (bSubMachine)
+		{
+			// A sub-machine: into its graph (or double-click it).
+			Section.AddMenuEntry(
+				TEXT("OpenSubMachine"),
+				LOCTEXT("OpenSubMachineMenu", "Open Sub-Machine"),
+				MachineTips::OpenSubMachineTooltip(),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateLambda([WeakSelf]()
 				{
-					Graph->OnOpenState(Node->StateId);
-				}
-			})));
+					const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+					UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+					if (Graph)
+					{
+						Graph->OpenMachineView(Node->StateId);
+					}
+				})));
+		}
+		else
+		{
+			Section.AddMenuEntry(
+				TEXT("OpenStateAnimation"),
+				LOCTEXT("OpenStateAnimation", "Open Animation"),
+				MachineTips::OpenStateAnimationTooltip(),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateLambda([WeakSelf]()
+				{
+					const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+					UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+					if (Graph && Graph->OnOpenState)
+					{
+						Graph->OnOpenState(Node->StateId);
+					}
+				})));
+		}
+
+		// A state into a sub-machine, or an empty sub-machine back into a state.
+		const UWidgetAnimMachineGraph* OwnGraph = GetMachineGraph();
+		const FWidgetAnimMachineLayer* OwnLayer = OwnGraph ? OwnGraph->GetLayer() : nullptr;
+		const bool bCanUnmake = bSubMachine && OwnLayer && WidgetAnimMachineEdits::IsSubMachineEmpty(*OwnLayer, StateId);
+		Section.AddMenuEntry(
+			TEXT("ConvertSubMachine"),
+			bSubMachine ? LOCTEXT("ConvertToStateMenu", "Convert To State") : LOCTEXT("ConvertToSubMachineMenu", "Convert To Sub-Machine"),
+			bSubMachine ? (bCanUnmake ? MachineTips::ConvertToStateTooltip() : MachineTips::ConvertToStateNotEmptyTooltip()) : MachineTips::ConvertToSubMachineTooltip(),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateLambda([WeakSelf, bSubMachine]()
+				{
+					const UWidgetAnimMachineGraphNode* Node = WeakSelf.Get();
+					UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+					if (Graph)
+					{
+						WidgetAnimMachineEdits::SetSubMachine(Graph->Machine, Graph->LayerIndex, Node->StateId, !bSubMachine);
+					}
+				}),
+				FCanExecuteAction::CreateLambda([bSubMachine, bCanUnmake]() { return !bSubMachine || bCanUnmake; })));
 		Section.AddMenuEntry(
 			TEXT("CollapseToGroup"),
 			LOCTEXT("CollapseToGroupMenu", "Collapse States"),
@@ -2759,7 +3054,7 @@ namespace
 	struct FWidgetAnimMachineAction_AddComment : public FEdGraphSchemaAction
 	{
 		FWidgetAnimMachineAction_AddComment()
-			: FEdGraphSchemaAction(LOCTEXT("StatesCategory", "State Machine"), LOCTEXT("AddCommentAction", "Add Comment"), MachineTips::AddCommentTooltip(), 1)
+			: FEdGraphSchemaAction(FText::GetEmpty(), LOCTEXT("AddCommentAction", "Add Comment"), MachineTips::AddCommentTooltip(), 1)
 		{
 		}
 
@@ -2770,7 +3065,7 @@ namespace
 			if (Graph && Graph->Machine)
 			{
 				const FVector2D Min(Location);
-				WidgetAnimMachineEdits::AddComment(Graph->Machine, Graph->LayerIndex, FBox2D(Min, Min + FVector2D(400.0, 200.0)), LOCTEXT("NewComment", "Comment").ToString());
+				WidgetAnimMachineEdits::AddComment(Graph->Machine, Graph->LayerIndex, FBox2D(Min, Min + FVector2D(400.0, 200.0)), LOCTEXT("NewComment", "Comment").ToString(), Graph->OpenMachine);
 				Graph->RequestRebuild();
 			}
 			return nullptr;
@@ -2784,6 +3079,7 @@ UWidgetAnimMachineGraphNode* UWidgetAnimMachineGraphSchema::GetStateNode(const U
 }
 
 const FName UWidgetAnimMachineGraphSchema::HoldingPreset(TEXT("Holding"));
+const FName UWidgetAnimMachineGraphSchema::SubMachinePreset(TEXT("Sub-Machine"));
 
 FText UWidgetAnimMachineGraphSchema::GetPresetTooltip(const TPair<FName, FName>& Preset)
 {
@@ -2791,23 +3087,51 @@ FText UWidgetAnimMachineGraphSchema::GetPresetTooltip(const TPair<FName, FName>&
 	{
 		return MachineTips::AddHoldingStateTooltip();
 	}
-	return Preset.Value.IsNone()
-		? MachineTips::AddIdleStateTooltip()
-		: FText::Format(MachineTips::AddPresetStateTooltip(), FText::FromName(Preset.Key), FText::FromName(Preset.Value));
+	if (Preset.Value.IsNone())
+	{
+		return MachineTips::AddIdleStateTooltip();
+	}
+	// A pulse is Fired, and a wire out of its state waits for it to finish.
+	return FText::Format(WidgetAnimMachineInputs::IsBuiltInPulse(Preset.Value) ? MachineTips::AddPulsePresetStateTooltip() : MachineTips::AddPresetStateTooltip(),
+		FText::FromName(Preset.Key), FText::FromName(Preset.Value), WidgetAnimMachineInputs::GetBuiltInDescription(Preset.Value));
+}
+
+FText UWidgetAnimMachineGraphSchema::GetPresetCategory(const TPair<FName, FName>& Preset)
+{
+	// Idle at the top of the menu, with Add State - never in a category that opens folded.
+	if (Preset.Key != HoldingPreset && Preset.Value.IsNone())
+	{
+		return FText::GetEmpty();
+	}
+	const FText WidgetInputs = LOCTEXT("WidgetInputsTopCategory", "Widget Inputs");
+	const FName Group = Preset.Key == HoldingPreset ? FName() : WidgetAnimMachineInputs::GetBuiltInGroup(Preset.Value);
+	if (Group.IsNone())
+	{
+		return WidgetInputs;
+	}
+	const FName SubGroup = WidgetAnimMachineInputs::GetBuiltInSubGroup(Preset.Value);
+	return SubGroup.IsNone()
+		? FText::Format(LOCTEXT("WidgetInputsGroupCategory", "{0}|{1}"), WidgetInputs, FText::FromName(Group))
+		: FText::Format(LOCTEXT("WidgetInputsSubGroupCategory", "{0}|{1}|{2}"), WidgetInputs, FText::FromName(Group), FText::FromName(SubGroup));
 }
 
 const TArray<TPair<FName, FName>>& UWidgetAnimMachineGraphSchema::GetPresetStates()
 {
-	static const TArray<TPair<FName, FName>> Presets =
+	// Idle; then every widget input, in the Widget Inputs panel's order - Holding, on the machine's Press And Hold, after Pressed.
+	static const TArray<TPair<FName, FName>> Presets = []()
 	{
-		TPair<FName, FName>(TEXT("Idle"), NAME_None),
-		TPair<FName, FName>(WidgetAnimMachineInputs::Hovered, WidgetAnimMachineInputs::Hovered),
-		TPair<FName, FName>(WidgetAnimMachineInputs::Pressed, WidgetAnimMachineInputs::Pressed),
-		TPair<FName, FName>(HoldingPreset, NAME_None),
-		TPair<FName, FName>(WidgetAnimMachineInputs::Selected, WidgetAnimMachineInputs::Selected),
-		TPair<FName, FName>(WidgetAnimMachineInputs::Focused, WidgetAnimMachineInputs::Focused),
-		TPair<FName, FName>(WidgetAnimMachineInputs::Disabled, WidgetAnimMachineInputs::Disabled),
-	};
+		TArray<TPair<FName, FName>> Made;
+		Made.Add(TPair<FName, FName>(FName(TEXT("Idle")), FName()));
+		for (const FName BuiltIn : WidgetAnimMachineInputs::GetBuiltIns())
+		{
+			Made.Add(TPair<FName, FName>(BuiltIn, BuiltIn));
+			if (BuiltIn == WidgetAnimMachineInputs::Pressed)
+			{
+				Made.Add(TPair<FName, FName>(HoldingPreset, FName()));
+			}
+		}
+		return Made;
+	}();
 	return Presets;
 }
 
@@ -2835,20 +3159,33 @@ FGuid UWidgetAnimMachineGraphSchema::AddPresetState(UWidgetAnimMachineGraph* Gra
 		Input = Hold ? Hold->Name : WidgetAnimMachineEdits::AddInput(Graph->Machine, EWidgetAnimMachineInputType::Hold);
 	}
 
-	const FGuid StateId = WidgetAnimMachineEdits::AddState(Graph->Machine, Graph->LayerIndex, Preset, Location);
+	// In the graph open: a sub-machine's, or the layer's own.
+	const FGuid StateId = WidgetAnimMachineEdits::AddState(Graph->Machine, Graph->LayerIndex, Preset, Location, nullptr, Graph->OpenMachine);
 
-	// Added inside an open group: the state joins it, or the group's view would not show it.
-	if (StateId.IsValid() && Graph->OpenGroup.IsValid() && Graph->Machine->Layers.IsValidIndex(Graph->LayerIndex))
+	if (StateId.IsValid() && Graph->Machine->Layers.IsValidIndex(Graph->LayerIndex))
 	{
 		FWidgetAnimMachineLayer& Layer = Graph->Machine->Layers[Graph->LayerIndex];
-		if (WidgetAnimMachineEdits::FindGroup(Layer, Graph->OpenGroup))
+		if (FWidgetAnimMachineState* Added = Layer.States.FindByPredicate([&StateId](const FWidgetAnimMachineState& Candidate) { return Candidate.Id == StateId; }))
 		{
-			if (FWidgetAnimMachineState* Added = Layer.States.FindByPredicate([&StateId](const FWidgetAnimMachineState& Candidate) { return Candidate.Id == StateId; }))
+			// Added inside an open group: the state joins it, or the group's view would not show it.
+			if (Graph->OpenGroup.IsValid() && WidgetAnimMachineEdits::FindGroup(Layer, Graph->OpenGroup))
 			{
 				Graph->Machine->Modify();
 				Added->EditorGroup = Graph->OpenGroup;
 			}
+			// Made for a widget input: wires drawn into it and out of it are given their conditions (AddWidgetInputConditions).
+			if (!Input.IsNone())
+			{
+				Graph->Machine->Modify();
+				Added->EditorWidgetInput = Input;
+			}
 		}
+	}
+
+	// A sub-machine: given its Entry, Any State and Exit.
+	if (StateId.IsValid() && Preset == SubMachinePreset)
+	{
+		WidgetAnimMachineEdits::SetSubMachine(Graph->Machine, Graph->LayerIndex, StateId, true);
 	}
 
 	if (From && StateId.IsValid())
@@ -2856,7 +3193,12 @@ FGuid UWidgetAnimMachineGraphSchema::AddPresetState(UWidgetAnimMachineGraph* Gra
 		const FGuid TransitionId = WidgetAnimMachineEdits::AddTransition(Graph->Machine, Graph->LayerIndex, From->StateId, StateId);
 		if (TransitionId.IsValid() && !Input.IsNone())
 		{
-			WidgetAnimMachineEdits::AddCondition(Graph->Machine, Graph->LayerIndex, TransitionId, Input, EWidgetAnimMachineCompare::IsTrue);
+			WidgetAnimMachineEdits::AddCondition(Graph->Machine, Graph->LayerIndex, TransitionId, Input, WidgetAnimMachineEdits::GetTrueCompare(Graph->Machine, Input));
+		}
+		else if (TransitionId.IsValid())
+		{
+			// Dragged out of a widget input state: the way out of it.
+			WidgetAnimMachineEdits::AddWidgetInputConditions(Graph->Machine, Graph->LayerIndex, TransitionId);
 		}
 
 		// The wire dragged out to make it, through the points dropped with R on the way.
@@ -2890,9 +3232,12 @@ void UWidgetAnimMachineGraphSchema::GetGraphContextActions(FGraphContextMenuBuil
 		return;
 	}
 
-	ContextMenuBuilder.AddAction(MakeShared<FWidgetAnimMachineAction_AddState>(NAME_None, LOCTEXT("StatesCategory", "State Machine"), LOCTEXT("AddState", "Add State"), MachineTips::AddStateActionTooltip(), 2));
+	// At the top of the menu, uncategorized: shown as it opens, never folded away in a category.
+	ContextMenuBuilder.AddAction(MakeShared<FWidgetAnimMachineAction_AddState>(NAME_None, FText::GetEmpty(), LOCTEXT("AddState", "Add State"), MachineTips::AddStateActionTooltip(), 3));
+	ContextMenuBuilder.AddAction(MakeShared<FWidgetAnimMachineAction_AddState>(SubMachinePreset, FText::GetEmpty(), LOCTEXT("AddSubMachine", "Add Sub-Machine"), MachineTips::AddSubMachineTooltip(), 3));
 
-	// Ready-named states for the built-in inputs - those already in the layer left out.
+	// Ready-named states for Idle and every widget input, under Widget Inputs as the panel lists them - those already in the
+	// layer left out.
 	const UWidgetAnimMachineGraph* Graph = Cast<UWidgetAnimMachineGraph>(ContextMenuBuilder.CurrentGraph);
 	const FWidgetAnimMachineLayer* Layer = Graph ? Graph->GetLayer() : nullptr;
 	for (const TPair<FName, FName>& Preset : GetPresetStates())
@@ -2903,7 +3248,7 @@ void UWidgetAnimMachineGraphSchema::GetGraphContextActions(FGraphContextMenuBuil
 		}
 		const FText Name = FText::Format(LOCTEXT("AddPresetState", "Add {0} State"), FText::FromName(Preset.Key));
 		const FText ToolTip = GetPresetTooltip(Preset);
-		ContextMenuBuilder.AddAction(MakeShared<FWidgetAnimMachineAction_AddState>(Preset.Key, LOCTEXT("CommonStatesCategory", "State Machine|Common States"), Name, ToolTip, 1));
+		ContextMenuBuilder.AddAction(MakeShared<FWidgetAnimMachineAction_AddState>(Preset.Key, GetPresetCategory(Preset), Name, ToolTip, Preset.Value.IsNone() && Preset.Key != HoldingPreset ? 2 : 1));
 	}
 
 	if (!ContextMenuBuilder.FromPin)
@@ -2962,6 +3307,8 @@ bool UWidgetAnimMachineGraphSchema::TryCreateConnection(UEdGraphPin* A, UEdGraph
 	// points dropped with R on the way (dragged from the state it goes to, they were dropped from that end: turned round).
 	const FScopedTransaction Transaction(LOCTEXT("AddTransitionByDrag", "Add Transition"));
 	const FGuid TransitionId = WidgetAnimMachineEdits::AddTransition(Graph->Machine, Graph->LayerIndex, From->StateId, To->StateId);
+	// Into or out of a state made for a widget input: its condition comes with it.
+	WidgetAnimMachineEdits::AddWidgetInputConditions(Graph->Machine, Graph->LayerIndex, TransitionId);
 	if (A->Direction == EGPD_Input)
 	{
 		Algo::Reverse(Graph->PendingDragReroutes);
@@ -3922,8 +4269,17 @@ public:
 			return FReply::Handled();
 		}
 
-		// Entry and Exit are jumped to as well: Entry starts the preview again, Exit takes the layer out the way it closes.
-		const bool bEntryOrExit = Node && (Node->Kind == EWidgetAnimMachineNodeKind::Entry || Node->Kind == EWidgetAnimMachineNodeKind::Exit);
+		// A sub-machine opens - its graph shown.
+		const FWidgetAnimMachineState* State = Node ? Node->GetState() : nullptr;
+		if (Graph && State && State->IsSubMachine())
+		{
+			Graph->OpenMachineView(Node->StateId);
+			return FReply::Handled();
+		}
+
+		// The layer's Entry and Exit are jumped to as well: Entry starts the preview again, Exit takes the layer out the way it
+		// closes. A sub-machine's are only gone through.
+		const bool bEntryOrExit = Node && !Node->IsInSubMachine() && (Node->Kind == EWidgetAnimMachineNodeKind::Entry || Node->Kind == EWidgetAnimMachineNodeKind::Exit);
 		if (bEntryOrExit && Graph && Graph->OnJumpToState)
 		{
 			Graph->OnJumpToState(Node->StateId);
@@ -4254,6 +4610,14 @@ private:
 			{
 				return FindBrush({ TEXT("GraphEditor.SubGraph_16x"), TEXT("Graph.StateNode.Icon") });
 			}
+			// A sub-machine: a state machine's, as an Animation Blueprint's state machine node wears.
+			if (const FWidgetAnimMachineState* State = Node ? Node->GetState() : nullptr)
+			{
+				if (State->IsSubMachine())
+				{
+					return FindBrush({ TEXT("GraphEditor.StateMachine_16x"), TEXT("ClassIcon.AnimStateMachine"), TEXT("GraphEditor.SubGraph_16x") });
+				}
+			}
 			return FindBrush({ TEXT("Graph.StateNode.Icon") });
 		}
 	}
@@ -4286,6 +4650,12 @@ private:
 		if (!State || State->Kind != EWidgetAnimMachineNodeKind::State)
 		{
 			return FText::GetEmpty();
+		}
+
+		// A sub-machine: how many states it holds.
+		if (State->IsSubMachine())
+		{
+			return FText::Format(LOCTEXT("SubMachineSubtitle", "Sub-Machine, {0} {0}|plural(one=state,other=states)"), CountInside(*State));
 		}
 
 		// A blend state: by what, over how many.
@@ -4322,6 +4692,21 @@ private:
 		return FText::Format(LOCTEXT("StateSubtitle", "{0}, {1}"), FText::FromString(State->Animation->GetName()), Playback);
 	}
 
+	/** How many states a sub-machine holds, in its own graph (not counting those in sub-machines inside it). */
+	int32 CountInside(const FWidgetAnimMachineState& SubMachine) const
+	{
+		const UWidgetAnimMachineGraphNode* Node = GetMachineNode();
+		const UWidgetAnimMachineGraph* Graph = Node ? Node->GetMachineGraph() : nullptr;
+		const FWidgetAnimMachineLayer* Layer = Graph ? Graph->GetLayer() : nullptr;
+		int32 Count = 0;
+		for (int32 Index = 0; Layer && Index < Layer->States.Num(); ++Index)
+		{
+			const FWidgetAnimMachineState& Member = Layer->States[Index];
+			Count += Member.ParentMachine == SubMachine.Id && Member.Kind == EWidgetAnimMachineNodeKind::State ? 1 : 0;
+		}
+		return Count;
+	}
+
 	/** Its tooltip: in the plugin's style, what it is and plays, and how to work it. */
 	TSharedPtr<SWidget> MakeToolTipContent() const
 	{
@@ -4345,11 +4730,38 @@ private:
 		}
 
 		WidgetAnimMachineStyle::FTipBuilder Tip;
-		Tip.Title(FText::FromName(State->Name), TipPalette::TooltipControlName);
+		Tip.Title(Node->GetNodeTitle(ENodeTitleType::FullTitle), TipPalette::TooltipControlName);
 		if (Node->Kind != EWidgetAnimMachineNodeKind::State)
 		{
 			Tip.Kind(StaticEnum<EWidgetAnimMachineNodeKind>()->GetDisplayNameTextByValue(static_cast<int64>(Node->Kind)));
 			Tip.Paragraph(Node->GetTooltipText());
+			return Tip.Build();
+		}
+
+		// A sub-machine: what is inside, and how to get there.
+		if (State->IsSubMachine())
+		{
+			Tip.Kind(LOCTEXT("SubMachineKind", "Sub-Machine"));
+			Tip.Row(LOCTEXT("TipSubMachineStates", "States"), FText::AsNumber(CountInside(*State)));
+			FWidgetAnimMachineLayerDebug SubDebug;
+			if (GetDebug(SubDebug) && Node->ShowsState(SubDebug.CurrentState) && SubDebug.CurrentState != State->Id)
+			{
+				const UWidgetAnimMachineGraph* Graph = Node->GetMachineGraph();
+				const FWidgetAnimMachineLayer* Layer = Graph ? Graph->GetLayer() : nullptr;
+				const FWidgetAnimMachineState* Inner = Layer ? Layer->FindState(SubDebug.CurrentState) : nullptr;
+				if (Inner)
+				{
+					Tip.Row(LOCTEXT("TipSubMachineIn", "In"), Inner->IsSpecial()
+						? StaticEnum<EWidgetAnimMachineNodeKind>()->GetDisplayNameTextByValue(static_cast<int64>(Inner->Kind))
+						: FText::FromName(Inner->Name));
+				}
+			}
+			if (!State->Comment.IsEmpty())
+			{
+				Tip.Divider();
+				Tip.Paragraph(FText::FromString(State->Comment));
+			}
+			Tip.Hint(MachineTips::SubMachineNodeHint());
 			return Tip.Build();
 		}
 

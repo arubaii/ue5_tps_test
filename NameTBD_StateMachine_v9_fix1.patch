@@ -1,0 +1,190 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.cpp
+index 4e4c522..ee34613 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.cpp
+@@ -12,7 +12,9 @@
+ #include "Framework/Application/IInputProcessor.h"
+ #include "Framework/Application/SlateApplication.h"
+ #include "Layout/Geometry.h"
++#include "Layout/WidgetPath.h"
+ #include "Widgets/SWidget.h"
++#include "Widgets/SWindow.h"
+ 
+ // =====================================================================================================
+ // Measuring
+@@ -73,6 +75,36 @@ namespace WidgetAnimInputPrivate
+ 		return Visibility == ESlateVisibility::Visible || Visibility == ESlateVisibility::SelfHitTestInvisible;
+ 	}
+ 
++	/**
++	 * Whether Widget is in what Slate hit-tests at Point - drawn on top there, through its children - whatever has the mouse
++	 * captured. The widgets hit are worked out once per frame and point, however many widgets ask.
++	 */
++	bool IsUnderPoint(const UWidget* Widget, const FVector2f& Point)
++	{
++		const TSharedPtr<SWidget> Slate = Widget ? Widget->GetCachedWidget() : nullptr;
++		if (!Slate.IsValid() || !FSlateApplication::IsInitialized())
++		{
++			return false;
++		}
++		static TArray<TWeakPtr<SWidget>> Hit;
++		static uint64 HitFrame = TNumericLimits<uint64>::Max();
++		static FVector2f HitPoint = FVector2f::ZeroVector;
++		if (HitFrame != GFrameCounter || !HitPoint.Equals(Point, 0.01f))
++		{
++			HitFrame = GFrameCounter;
++			HitPoint = Point;
++			Hit.Reset();
++			FSlateApplication& SlateApp = FSlateApplication::Get();
++			const FWidgetPath Path = SlateApp.LocateWindowUnderMouse(FVector2D(Point), SlateApp.GetInteractiveTopLevelWindows(), /*bIgnoreEnabledStatus=*/true);
++			for (int32 Index = 0; Index < Path.Widgets.Num(); ++Index)
++			{
++				Hit.Add(Path.Widgets[Index].Widget);
++			}
++		}
++		const SWidget* Wanted = Slate.Get();
++		return Hit.ContainsByPredicate([Wanted](const TWeakPtr<SWidget>& Candidate) { return Candidate.Pin().Get() == Wanted; });
++	}
++
+ 	bool IsFocused(const UWidget* Widget)
+ 	{
+ 		return Widget && (Widget->HasAnyUserFocus() || Widget->HasFocusedDescendants());
+@@ -115,7 +147,14 @@ bool WidgetAnimInput::IsPointerOver(const UWidget* Widget, const FVector2f& Poin
+ 	// can't be hit, itself or through its children, is never hovered in Slate's sense, so its rectangle answers instead.
+ 	if (WidgetAnimInputPrivate::IsHitTestable(Visibility))
+ 	{
+-		return Widget->IsHovered();
++		if (Widget->IsHovered())
++		{
++			return true;
++		}
++		// Something has the mouse captured - the game viewport takes it on any press nothing in the UI handles, such as one on
++		// an Image - and Slate then hovers nothing else: what is hit at the pointer answers instead, until it lets go.
++		return FSlateApplication::IsInitialized() && FSlateApplication::Get().HasAnyMouseCaptor()
++			&& WidgetAnimInputPrivate::IsUnderPoint(Widget, PointerPosition);
+ 	}
+ 
+ 	FVector2f Local;
+@@ -127,6 +166,26 @@ bool WidgetAnimInput::IsPointerOver(const UWidget* Widget, const FVector2f& Poin
+ 	return Local.X >= 0.f && Local.Y >= 0.f && Local.X <= Size.X && Local.Y <= Size.Y;
+ }
+ 
++bool WidgetAnimInput::IsPointUnder(const UWidget* Widget, const FVector2f& Point)
++{
++	if (!Widget)
++	{
++		return false;
++	}
++	const ESlateVisibility Visibility = Widget->GetVisibility();
++	if (Visibility == ESlateVisibility::Collapsed || Visibility == ESlateVisibility::Hidden)
++	{
++		return false;
++	}
++	if (WidgetAnimInputPrivate::IsHitTestable(Visibility))
++	{
++		return WidgetAnimInputPrivate::IsUnderPoint(Widget, Point);
++	}
++	FVector2f Local;
++	FVector2f Size;
++	return ToUnanimatedLocal(Widget, Point, Local, Size) && Local.X >= 0.f && Local.Y >= 0.f && Local.X <= Size.X && Local.Y <= Size.Y;
++}
++
+ bool WidgetAnimInput::ToUnanimatedLocal(const UWidget* Widget, const FVector2f& DesktopPoint, FVector2f& OutLocal, FVector2f& OutSize)
+ {
+ 	FSlateRenderTransform Transform;
+@@ -475,7 +534,8 @@ bool FWidgetAnimInput_Interaction::Sample(const FWidgetAnimInputContext& Context
+ 	bHasPressCount = true;
+ 	if (bNewPress)
+ 	{
+-		bPressStartedOver = WidgetAnimInput::IsPointerOver(Widget, Presses.Position);
++		// Where the press was made - not hover now, which a press nothing handled takes away (the game viewport captures it).
++		bPressStartedOver = WidgetAnimInput::IsPointUnder(Widget, Presses.Position);
+ 	}
+ 	else if (bDown && !bWasDown)
+ 	{
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.h
+index ed358aa..dee1736 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.h
+@@ -279,6 +279,13 @@ namespace WidgetAnimInput
+ 	 */
+ 	NAMETBD_API bool IsPointerOver(const UWidget* Widget, const FVector2f& PointerPosition);
+ 
++	/**
++	 * Whether a point - where an event was, rather than where the pointer is - is over Widget: what Slate hit-tests there, which
++	 * knows what is on top and doesn't depend on hover (lost to whatever has the mouse captured), when the widget or its children
++	 * can be hit; its laid-out rectangle otherwise.
++	 */
++	NAMETBD_API bool IsPointUnder(const UWidget* Widget, const FVector2f& Point);
++
+ 	/**
+ 	 * A desktop point in Widget's local space, and its size - as laid out, without Widget's own render transform, so
+ 	 * an animation moving the widget doesn't move its measurements. False when it has no geometry yet.
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimStateMachineRuntime.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimStateMachineRuntime.cpp
+index eaa9128..972a5bf 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimStateMachineRuntime.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimStateMachineRuntime.cpp
+@@ -867,7 +867,7 @@ namespace WidgetAnimStateMachines
+ 			if (Reads(WidgetAnimMachineInputs::DoubleClicked))
+ 			{
+ 				const WidgetAnimInput::FPointerEventCount DoubleClick = WidgetAnimInput::GetDoubleClickCount();
+-				if (IsNew(WidgetAnimMachineInputs::DoubleClicked, DoubleClick.Count) && WidgetAnimInput::IsPointerOver(Widget, DoubleClick.Position))
++				if (IsNew(WidgetAnimMachineInputs::DoubleClicked, DoubleClick.Count) && WidgetAnimInput::IsPointUnder(Widget, DoubleClick.Position))
+ 				{
+ 					Fire(WidgetAnimMachineInputs::DoubleClicked);
+ 				}
+@@ -881,11 +881,11 @@ namespace WidgetAnimStateMachines
+ 				const WidgetAnimInput::FPointerEventCount RightRelease = WidgetAnimInput::GetRightReleaseCount();
+ 				if (IsNew(RightPressCountName, RightPress.Count))
+ 				{
+-					Instance.bRightPressOver = WidgetAnimInput::IsPointerOver(Widget, RightPress.Position);
++					Instance.bRightPressOver = WidgetAnimInput::IsPointUnder(Widget, RightPress.Position);
+ 				}
+ 				if (IsNew(WidgetAnimMachineInputs::RightClicked, RightRelease.Count))
+ 				{
+-					if (Instance.bRightPressOver && WidgetAnimInput::IsPointerOver(Widget, RightRelease.Position))
++					if (Instance.bRightPressOver && WidgetAnimInput::IsPointUnder(Widget, RightRelease.Position))
+ 					{
+ 						Fire(WidgetAnimMachineInputs::RightClicked);
+ 					}
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+index f26d06b..d57768e 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimStateMachineGraph.cpp
+@@ -3054,7 +3054,7 @@ namespace
+ 	struct FWidgetAnimMachineAction_AddComment : public FEdGraphSchemaAction
+ 	{
+ 		FWidgetAnimMachineAction_AddComment()
+-			: FEdGraphSchemaAction(LOCTEXT("StatesCategory", "State Machine"), LOCTEXT("AddCommentAction", "Add Comment"), MachineTips::AddCommentTooltip(), 1)
++			: FEdGraphSchemaAction(FText::GetEmpty(), LOCTEXT("AddCommentAction", "Add Comment"), MachineTips::AddCommentTooltip(), 1)
+ 		{
+ 		}
+ 
+@@ -3098,12 +3098,12 @@ FText UWidgetAnimMachineGraphSchema::GetPresetTooltip(const TPair<FName, FName>&
+ 
+ FText UWidgetAnimMachineGraphSchema::GetPresetCategory(const TPair<FName, FName>& Preset)
+ {
+-	const FText Root = LOCTEXT("StatesCategory", "State Machine");
++	// Idle at the top of the menu, with Add State - never in a category that opens folded.
+ 	if (Preset.Key != HoldingPreset && Preset.Value.IsNone())
+ 	{
+-		return Root;
++		return FText::GetEmpty();
+ 	}
+-	const FText WidgetInputs = FText::Format(LOCTEXT("WidgetInputsCategory", "{0}|Widget Inputs"), Root);
++	const FText WidgetInputs = LOCTEXT("WidgetInputsTopCategory", "Widget Inputs");
+ 	const FName Group = Preset.Key == HoldingPreset ? FName() : WidgetAnimMachineInputs::GetBuiltInGroup(Preset.Value);
+ 	if (Group.IsNone())
+ 	{
+@@ -3232,8 +3232,9 @@ void UWidgetAnimMachineGraphSchema::GetGraphContextActions(FGraphContextMenuBuil
+ 		return;
+ 	}
+ 
+-	ContextMenuBuilder.AddAction(MakeShared<FWidgetAnimMachineAction_AddState>(NAME_None, LOCTEXT("StatesCategory", "State Machine"), LOCTEXT("AddState", "Add State"), MachineTips::AddStateActionTooltip(), 2));
+-	ContextMenuBuilder.AddAction(MakeShared<FWidgetAnimMachineAction_AddState>(SubMachinePreset, LOCTEXT("StatesCategory", "State Machine"), LOCTEXT("AddSubMachine", "Add Sub-Machine"), MachineTips::AddSubMachineTooltip(), 2));
++	// At the top of the menu, uncategorized: shown as it opens, never folded away in a category.
++	ContextMenuBuilder.AddAction(MakeShared<FWidgetAnimMachineAction_AddState>(NAME_None, FText::GetEmpty(), LOCTEXT("AddState", "Add State"), MachineTips::AddStateActionTooltip(), 3));
++	ContextMenuBuilder.AddAction(MakeShared<FWidgetAnimMachineAction_AddState>(SubMachinePreset, FText::GetEmpty(), LOCTEXT("AddSubMachine", "Add Sub-Machine"), MachineTips::AddSubMachineTooltip(), 3));
+ 
+ 	// Ready-named states for Idle and every widget input, under Widget Inputs as the panel lists them - those already in the
+ 	// layer left out.

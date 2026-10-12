@@ -328,6 +328,18 @@ struct NAMETBD_API FWidgetAnimGroupTarget
 	FName TargetWidgetName;
 
 	/**
+	 * The animations the group is in - on a state machine's Animation Target Widgets, where a target is the Track Group of that
+	 * name in every animation the machine plays: their names, as the row's machine lists them. Empty, and not shown, on an
+	 * animation entry's Target Widgets, whose animation is the entry's own.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Animation", meta = (DisplayName = "Animations", EditCondition = "bListsAnimations", EditConditionHides, HideEditConditionToggle))
+	FString Animations;
+
+	/** Whether Animations is listed - on a state machine's row. */
+	UPROPERTY()
+	bool bListsAnimations = false;
+
+	/**
 	 * What the Widget Animation Component's Target Widget dropdown offers first, and stores, for the widget the entry is
 	 * on. Read as None wherever a target is resolved - see IsThisWidget.
 	 */

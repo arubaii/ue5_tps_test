@@ -413,6 +413,25 @@ void UNiagaraUIWidget::PlayWithOverrides(UNiagaraSystem* System, const FNiagaraU
 	Play(/*bRestart=*/true);
 }
 
+void UNiagaraUIWidget::PlayNothing()
+{
+	bAutoPlayDone = true;
+	Main.bPendingPlay = false;
+	if (IsValid(Main.Component))
+	{
+		// Quietly, as when Set Niagara System swaps it: On Finished is for the system ending, not for being replaced.
+		DropOverrides(Main);
+		Main.Component->OnSystemFinished.RemoveAll(this);
+		Main.Component->DeactivateImmediate();
+		Main.Component->OnSystemFinished.AddUniqueDynamic(this, &UNiagaraUIWidget::HandleSystemFinished);
+	}
+	Main.Overrides.Reset();
+	if (MyParticles.IsValid())
+	{
+		MyParticles->Invalidate(EInvalidateWidgetReason::Paint);
+	}
+}
+
 void UNiagaraUIWidget::SetPaused(bool bPaused)
 {
 	bUserPaused = bPaused;

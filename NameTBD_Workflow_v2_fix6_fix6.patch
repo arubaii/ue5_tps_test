@@ -1,0 +1,407 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
+index 4206c32..a5eff62 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimKeyValues.cpp
+@@ -136,7 +136,6 @@ public:
+ 		const TSharedPtr<SWidgetAnimTimeline> Owner = Panel.Pin();
+ 		const TArray<WidgetAnimKeyValues::FChannel>* Channels = Owner ? &Owner->GetKeyChannels(Cell.Layer) : nullptr;
+ 		const WidgetAnimKeyValues::FChannel* Channel = Channels && Channels->IsValidIndex(Cell.Channel) ? &(*Channels)[Cell.Channel] : nullptr;
+-		const double Step = Channel ? static_cast<double>(Channel->DragStep) : 0.1;
+ 		const bool bWhole = Channel && Channel->bInteger;
+ 		const FText Label = Channel ? Channel->Label : FText::GetEmpty();
+ 		const FText Description = Channel ? Channel->Description : FText::GetEmpty();
+@@ -226,13 +225,16 @@ public:
+ 			Editor = SNew(SNumericEntryBox<double>)
+ 				.Font(IDetailLayoutBuilder::GetDetailFont())
+ 				.AllowSpin(true)
+-				.Delta(Step)
+-				// Its own range where it has one; else none - an entry box's default bar runs 0 to 100. With no range the spin box
+-				// must be told to move linearly - one Delta (Step) per pixel - or it adds the value to itself each step and runs off
+-				// to infinity at the slightest drag.
++				// Dragged as a Details panel's number is: faster the bigger the number, Shift faster, Ctrl slower; a whole number in
++				// whole steps.
++				.Delta(bWhole ? 1.0 : 0.0)
++				// Its own bar where it has one (both ends); else none - an entry box's default bar runs 0 to 100. No hard limits:
++				// an entry box's default Min / Max Value are the numeric limits, and with them set the spin box never drags freely -
++				// it drags across the whole range of a double, a pixel's move worth some 10^306.
++				.MinValue(TOptional<double>())
++				.MaxValue(TOptional<double>())
+ 				.MinSliderValue(Channel ? Channel->SliderMin : TOptional<double>())
+ 				.MaxSliderValue(Channel ? Channel->SliderMax : TOptional<double>())
+-				.LinearDeltaSensitivity(1)
+ 				.UndeterminedString(LOCTEXT("NoValue", "-"))
+ 				.TypeInterface(MakeShared<FInterface>(Typed.ToSharedRef(), bWhole))
+ 				.Value_Lambda([WeakOwner, Shown]() -> TOptional<double>
+@@ -381,21 +383,57 @@ private:
+ 				continue;
+ 			}
+ 			const double EntryValue = static_cast<double>(Enum->GetValueByIndex(Index));
++			const FText EntryName = Enum->GetDisplayNameTextByIndex(Index);
++
++			// In the panel's own tooltip, as the box itself: "Bevel: what it does" - the plugin's line for it, else its own tooltip.
++			FText EntryDescription = WidgetAnimKeyValueCells::Tips::KeyChoiceDescription(Enum->GetName() + TEXT(".") + Enum->GetNameStringByIndex(Index));
++			if (EntryDescription.IsEmpty())
++			{
++				EntryDescription = Enum->GetToolTipTextByIndex(Index);
++			}
++			const FText EntryTip = EntryDescription.IsEmpty() || EntryDescription.EqualTo(EntryName)
++				? FText::GetEmpty()
++				: FText::Format(LOCTEXT("ChoiceEntryToolTipFormat", "{0}: {1}"), EntryName, EntryDescription);
++
++			auto IsPicked = [WeakOwner, Shown, EntryValue]()
++			{
++				const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
++				const TOptional<double> Value = Pinned ? Pinned->GetKeyValue(Shown) : TOptional<double>();
++				return Value.IsSet() && FMath::IsNearlyEqual(Value.GetValue(), EntryValue);
++			};
++
++			// The entry as a widget rather than a label - only a widget takes the panel's tooltip - with its own radio mark, the
++			// one the menu draws for a radio entry.
+ 			Menu.AddMenuEntry(
+-				Enum->GetDisplayNameTextByIndex(Index),
+-				Enum->GetToolTipTextByIndex(Index),
+-				FSlateIcon(),
+-				FUIAction(
+-					FExecuteAction::CreateSP(this, &SWidgetAnimValueCell::SetEditedCells, EntryValue),
+-					FCanExecuteAction(),
+-					FIsActionChecked::CreateLambda([WeakOwner, Shown, EntryValue]()
+-					{
+-						const TSharedPtr<SWidgetAnimTimeline> Pinned = WeakOwner.Pin();
+-						const TOptional<double> Value = Pinned ? Pinned->GetKeyValue(Shown) : TOptional<double>();
+-						return Value.IsSet() && FMath::IsNearlyEqual(Value.GetValue(), EntryValue);
+-					})),
++				FUIAction(FExecuteAction::CreateSP(this, &SWidgetAnimValueCell::SetEditedCells, EntryValue)),
++				SNew(SBox)
++				.ToolTip(EntryTip.IsEmpty() ? TSharedPtr<IToolTip>() : SWidgetAnimTimeline::MakeStyledToolTip(EntryTip))
++				[
++					SNew(SHorizontalBox)
++
++					+ SHorizontalBox::Slot()
++					.AutoWidth()
++					.VAlign(VAlign_Center)
++					.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
++					[
++						SNew(SCheckBox)
++						.Style(FAppStyle::Get(), "Menu.RadioButton")
++						.Visibility(EVisibility::HitTestInvisible)
++						.IsChecked_Lambda([IsPicked]() { return IsPicked() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
++					]
++
++					+ SHorizontalBox::Slot()
++					.FillWidth(1.f)
++					.VAlign(VAlign_Center)
++					[
++						SNew(STextBlock)
++						.TextStyle(FAppStyle::Get(), "Menu.Label")
++						.Text(EntryName)
++					]
++				],
+ 				NAME_None,
+-				EUserInterfaceActionType::RadioButton);
++				FText::GetEmpty(),
++				EUserInterfaceActionType::Button);
+ 		}
+ 		return Menu.MakeWidget();
+ 	}
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+index 01c3389..7943c9c 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/SWidgetAnimTimeline.cpp
+@@ -4985,7 +4985,9 @@ namespace WidgetAnimTimeline
+ 				.MinSliderValue(0.f)
+ 				// No top to the drag: an entry box's slider otherwise runs 0 to 100, a bar meaning nothing for a time. Without a
+ 				// range the spin box grows the value by itself on every step (exponentially, to infinity) unless told to move it
+-				// linearly: one Delta per pixel.
++				// linearly: one Delta per pixel. No Max Value either: an entry box's default is the numeric limit, which gives the
++				// spin box a range after all - 0 to 10^38, a pixel's drag worth some 10^36.
++				.MaxValue(TOptional<float>())
+ 				.MaxSliderValue(TOptional<float>())
+ 				.LinearDeltaSensitivity(1)
+ 				.Delta_Lambda([IsPercent]() { return IsPercent() ? 0.1f : 0.01f; })
+@@ -6242,6 +6244,7 @@ private:
+ 					.Font(IDetailLayoutBuilder::GetDetailFont())
+ 					.AllowSpin(true)
+ 					.MinValue(0.01f)
++					.MaxValue(TOptional<float>())
+ 					.MinSliderValue(0.01f)
+ 					.MaxSliderValue(TOptional<float>())
+ 					.LinearDeltaSensitivity(1)
+@@ -7419,6 +7422,9 @@ private:
+ 		{
+ 			return SNew(SNumericEntryBox<float>)
+ 				.AllowSpin(true)
++				// No range at all, so it drags freely: an entry box's default Min / Max Value (the numeric limits) would make one.
++				.MinValue(TOptional<float>())
++				.MaxValue(TOptional<float>())
+ 				.MinSliderValue(TOptional<float>())
+ 				.MaxSliderValue(TOptional<float>())
+ 				.LinearDeltaSensitivity(1)
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.cpp
+index 45e1c38..a55d5a4 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.cpp
+@@ -53,13 +53,12 @@ namespace WidgetAnimKeyValues
+ 			return FMath::Abs(A - B) <= 1.e-4 * FMath::Max(1.0, FMath::Max(FMath::Abs(A), FMath::Abs(B)));
+ 		}
+ 
+-		FChannel MakePointChannel(const FText& Label, EPointField Field, float DragStep, TOptional<double> SliderMin = TOptional<double>(), TOptional<double> SliderMax = TOptional<double>())
++		FChannel MakePointChannel(const FText& Label, EPointField Field, TOptional<double> SliderMin = TOptional<double>(), TOptional<double> SliderMax = TOptional<double>())
+ 		{
+ 			FChannel Channel;
+ 			Channel.Label = Label;
+ 			Channel.Source = ESource::Point;
+ 			Channel.PointField = Field;
+-			Channel.DragStep = DragStep;
+ 			Channel.SliderMin = SliderMin;
+ 			Channel.SliderMax = SliderMax;
+ 			return Channel;
+@@ -126,16 +125,10 @@ namespace WidgetAnimKeyValues
+ 		{
+ 			for (const EPointField Field : { EPointField::ColorR, EPointField::ColorG, EPointField::ColorB, EPointField::ColorA })
+ 			{
+-				Out.Add(Described(MakePointChannel(ColorPart(Base, Field), Field, 0.01f, 0.0, 1.0), TEXT("Point.Color")));
++				Out.Add(Described(MakePointChannel(ColorPart(Base, Field), Field, 0.0, 1.0), TEXT("Point.Color")));
+ 			}
+ 		}
+ 
+-		/** A drag step that suits a setting by its name: hundredths for scales, opacities, alphas and colors, tenths for the rest. */
+-		float GuessDragStep(const FString& Label, bool bColor)
+-		{
+-			return bColor || Label.Contains(TEXT("Scale")) || Label.Contains(TEXT("Opacity")) || Label.Contains(TEXT("Alpha")) ? 0.01f : 0.1f;
+-		}
+-
+ 		/** Every number inside Property's value, down through its structs - as the Graph Editor's channels are gathered. */
+ 		void CollectFields(const FProperty* Root, FName RootName, const FProperty* Property, TArray<const FProperty*>& Tail, const FString& Label, bool bColor, int32 Depth, TArray<FChannel>& Out)
+ 		{
+@@ -189,7 +182,6 @@ namespace WidgetAnimKeyValues
+ 				Channel.Enum = Enum;
+ 				Channel.bBool = BoolProperty != nullptr;
+ 				Channel.bInteger = Enum || BoolProperty || (Numeric && !Numeric->IsFloatingPoint());
+-				Channel.DragStep = Channel.bInteger ? 1.f : GuessDragStep(Label, bColor);
+ 				// Its own range (the member's, else the setting's around it, as a struct's members carry none); a color 0 to 1.
+ 				ReadSliderRange(Property, Channel);
+ 				if (!Channel.SliderMin.IsSet() && Tail.Num() > 0)
+@@ -582,20 +574,20 @@ namespace WidgetAnimKeyValues
+ 		switch (Layer.AnimType)
+ 		{
+ 		case EWidgetAnimType::Fade:
+-			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Opacity", "Opacity"), EPointField::Value, 0.01f, 0.0, 1.0), TEXT("Point.Opacity")));
++			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Opacity", "Opacity"), EPointField::Value, 0.0, 1.0), TEXT("Point.Opacity")));
+ 			return;
+ 		case EWidgetAnimType::Scale:
+-			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScaleX", "Scale X"), EPointField::Value, 0.01f), TEXT("Point.Scale")));
+-			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScaleY", "Scale Y"), EPointField::ValueY, 0.01f), TEXT("Point.Scale")));
++			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScaleX", "Scale X"), EPointField::Value), TEXT("Point.Scale")));
++			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScaleY", "Scale Y"), EPointField::ValueY), TEXT("Point.Scale")));
+ 			return;
+ 		case EWidgetAnimType::Slide:
+-			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Distance", "Distance"), EPointField::Value, 1.f), TEXT("Point.Distance")));
++			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Distance", "Distance"), EPointField::Value), TEXT("Point.Distance")));
+ 			return;
+ 		case EWidgetAnimType::Rotate:
+-			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Angle", "Angle"), EPointField::Value, 1.f), TEXT("Point.Angle")));
++			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Angle", "Angle"), EPointField::Value), TEXT("Point.Angle")));
+ 			return;
+ 		case EWidgetAnimType::MaterialScalar:
+-			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScalarValue", "Value"), EPointField::Value, 0.01f), TEXT("Point.Value")));
++			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScalarValue", "Value"), EPointField::Value), TEXT("Point.Value")));
+ 			return;
+ 		case EWidgetAnimType::MaterialVector:
+ 			AddColorChannels(LOCTEXT("VectorValue", "Value"), OutChannels);
+@@ -610,7 +602,7 @@ namespace WidgetAnimKeyValues
+ 			const EWidgetAnimKeyContent Content = Evaluator->GetKeyContent(Layer.TypeParams);
+ 			if (Content != EWidgetAnimKeyContent::Color)
+ 			{
+-				OutChannels.Add(Described(MakePointChannel(Evaluator->GetTrackValueLabel(Layer.TypeParams), EPointField::Value, 0.1f), TEXT("Point.Registered")));
++				OutChannels.Add(Described(MakePointChannel(Evaluator->GetTrackValueLabel(Layer.TypeParams), EPointField::Value), TEXT("Point.Registered")));
+ 			}
+ 			if (Content != EWidgetAnimKeyContent::Value)
+ 			{
+@@ -630,14 +622,12 @@ namespace WidgetAnimKeyValues
+ 				LOCTEXT("ShearY", "Shear Y"),
+ 				LOCTEXT("TransformAngle", "Angle"),
+ 			};
+-			static const float TransformSteps[] = { 1.f, 1.f, 0.01f, 0.01f, 0.1f, 0.1f, 1.f };
+ 			for (int32 Field = 0; Field < UE_ARRAY_COUNT(TransformLabels); ++Field)
+ 			{
+ 				FChannel& Channel = OutChannels.AddDefaulted_GetRef();
+ 				Channel.Label = TransformLabels[Field];
+ 				Channel.Source = ESource::Transform;
+ 				Channel.TransformField = Field;
+-				Channel.DragStep = TransformSteps[Field];
+ 				static const TCHAR* TransformParts[] = { TEXT("Transform.Translation"), TEXT("Transform.Translation"), TEXT("Transform.Scale"), TEXT("Transform.Scale"), TEXT("Transform.Shear"), TEXT("Transform.Shear"), TEXT("Transform.Angle") };
+ 				Channel.Description = NameTBD::Tooltips::WidgetAnimEditor::KeyValueDescription(TransformParts[Field]);
+ 			}
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.h
+index 4b006c0..42f353a 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimKeyValues.h
+@@ -77,12 +77,9 @@ namespace WidgetAnimKeyValues
+ 		/** On or off - a shape's Fill: shown as a check box, read and written as 1 or 0. */
+ 		bool bBool = false;
+ 
+-		/** Whether the number is whole - typed and dragged in whole steps. A choice's and an on/off's are. */
++		/** Whether the number is whole - shown and dragged in whole steps. A choice's and an on/off's are. */
+ 		bool bInteger = false;
+ 
+-		/** A step for dragging it: finer for scales, opacities and colors than for distances and angles. */
+-		float DragStep = 0.1f;
+-
+ 		/**
+ 		 * The range its box's drag bar spans, when it has a natural one - an opacity's or a color's 0 to 1, a setting's own UIMin /
+ 		 * UIMax (Perspective 0 to 1, Angle -45 to 45). Unset: the box drags freely with no bar (an entry box's own default was a
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index 1e8c674..3929f9f 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -2245,6 +2245,17 @@ namespace NameTBD::Tooltips
+ 			return FText::GetEmpty();
+ 		}
+ 
++		/**
++		 * A Key Values choice's entry's description, by its list's name and the entry's ("EShapeBoxCornerStyle.Bevel"). Empty for one
++		 * with none here - the entry then uses its own tooltip. Shown in the panel's own tooltip on the entry in the box's drop-down.
++		 */
++		inline FText KeyChoiceDescription(const FString& What)
++		{
++			if (What == TEXT("EShapeBoxCornerStyle.Bevel")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyChoiceDescription_Corner_Bevel", "Slides the corner along its edges, so a whole side leans: the cut runs the full length of the side. Size X leans the left or right side, Y the top or bottom edge; negative flares it outward."); }
++			if (What == TEXT("EShapeBoxCornerStyle.Chamfer")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyChoiceDescription_Corner_Chamfer", "Cuts the corner off with a straight line, leaving the rest of both edges where they were. Size X and Y are the lengths of the cut's legs - both above 0."); }
++			return FText::GetEmpty();
++		}
++
+ 		inline FText KeyChoiceCellTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyChoiceCellTooltip",
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIWidget.cpp b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIWidget.cpp
+index e2b2303..05aa0f3 100644
+--- a/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIWidget.cpp
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/NiagaraUIWidget.cpp
+@@ -413,6 +413,25 @@ void UNiagaraUIWidget::PlayWithOverrides(UNiagaraSystem* System, const FNiagaraU
+ 	Play(/*bRestart=*/true);
+ }
+ 
++void UNiagaraUIWidget::PlayNothing()
++{
++	bAutoPlayDone = true;
++	Main.bPendingPlay = false;
++	if (IsValid(Main.Component))
++	{
++		// Quietly, as when Set Niagara System swaps it: On Finished is for the system ending, not for being replaced.
++		DropOverrides(Main);
++		Main.Component->OnSystemFinished.RemoveAll(this);
++		Main.Component->DeactivateImmediate();
++		Main.Component->OnSystemFinished.AddUniqueDynamic(this, &UNiagaraUIWidget::HandleSystemFinished);
++	}
++	Main.Overrides.Reset();
++	if (MyParticles.IsValid())
++	{
++		MyParticles->Invalidate(EInvalidateWidgetReason::Paint);
++	}
++}
++
+ void UNiagaraUIWidget::SetPaused(bool bPaused)
+ {
+ 	bUserPaused = bPaused;
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Private/WidgetAnimParticleCue.cpp b/Plugins/NameTBD/Source/NameTBDNiagara/Private/WidgetAnimParticleCue.cpp
+index 37d7caa..05c8833 100644
+--- a/Plugins/NameTBD/Source/NameTBDNiagara/Private/WidgetAnimParticleCue.cpp
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Private/WidgetAnimParticleCue.cpp
+@@ -45,7 +45,7 @@ FText FWidgetAnimParticleCueEvaluator::GetTrackSummary(const FInstancedStruct& P
+ 	case EWidgetAnimParticleCueAction::Play:
+ 		What = TrackSystem
+ 			? FText::Format(LOCTEXT("PlaySystemSummary", "Play {0}"), FText::FromString(TrackSystem->GetName()))
+-			: CueParams->PlaysNothing() ? LOCTEXT("PlayNoneSummary", "Play (no system)") : LOCTEXT("PlaySummary", "Play");
++			: CueParams->PlaysNothing() ? LOCTEXT("PlayNoneSummary", "Play None (stops)") : LOCTEXT("PlaySummary", "Play");
+ 		break;
+ 	case EWidgetAnimParticleCueAction::StopEmitting:
+ 		What = LOCTEXT("StopSummary", "Stop Emitting");
+@@ -74,8 +74,10 @@ void FWidgetAnimParticleCueEvaluator::Fire(const FWidgetAnimCueContext& Context)
+ 		return;
+ 	}
+ 
+-	// Use Widget's Niagara System off and no system picked: the track plays None - nothing - never the widget's own.
+-	if (CueParams->PlaysNothing())
++	// Use Widget's Niagara System off and no system picked: the track plays None - never the widget's own. A burst of None is
++	// nothing; Play plays None as the widget's system, so whatever the widget had playing (its Auto Play) stops there.
++	const bool bPlaysNothing = CueParams->PlaysNothing();
++	if (bPlaysNothing && CueParams->Action != EWidgetAnimParticleCueAction::Play)
+ 	{
+ 		return;
+ 	}
+@@ -92,6 +94,15 @@ void FWidgetAnimParticleCueEvaluator::Fire(const FWidgetAnimCueContext& Context)
+ 		return;
+ 	}
+ 
++	if (bPlaysNothing)
++	{
++		for (UNiagaraUIWidget* Particles : Found)
++		{
++			Particles->PlayNothing();
++		}
++		return;
++	}
++
+ 	// The track's own system and the User Parameters it changed - or, with Use Widget's Niagara System, each widget's own.
+ 	UNiagaraSystem* TrackSystem = CueParams->PlaysTrackSystem() ? CueParams->NiagaraSystem.Get() : nullptr;
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
+index e006e6e..00224e1 100644
+--- a/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
+@@ -388,6 +388,13 @@ public:
+ 	 */
+ 	void PlayWithOverrides(UNiagaraSystem* System, const FNiagaraUIParameterOverrides* Overrides);
+ 
++	/**
++	 * Plays nothing as this widget's system - a Play track whose own Niagara System is None: whatever plays as the widget's
++	 * system (Auto Play's, a track's) stops, its particles gone at once as when another system takes its place, and Auto Play
++	 * doesn't start it again. Bursts play on. The widget's Niagara System and User Parameters are kept: Play starts it again.
++	 */
++	void PlayNothing();
++
+ 	// ---------------------------------------------------------------------------------------------
+ 	// For the Slate widget and the module's ticker - not for gameplay code
+ 	// ---------------------------------------------------------------------------------------------
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Public/WidgetAnimParticleCue.h b/Plugins/NameTBD/Source/NameTBDNiagara/Public/WidgetAnimParticleCue.h
+index 55b8201..d0d5629 100644
+--- a/Plugins/NameTBD/Source/NameTBDNiagara/Public/WidgetAnimParticleCue.h
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Public/WidgetAnimParticleCue.h
+@@ -50,8 +50,9 @@ enum class EWidgetAnimParticleCueScope : uint8
+  * opens, stopping as it closes.
+  *
+  * The track carries its own Niagara System and User Parameters: it plays that, whatever the Niagara Particles widget is set
+- * to - left None, it plays nothing. So one Particles widget serves every track, each with its effect. Or Use Widget's Niagara
+- * System: each widget plays its own system, with its own parameters - on the first found, or on all of them.
++ * to - left None, it plays nothing: a burst of nothing, or Play of nothing as the widget's system, which stops the one it had
++ * playing. So one Particles widget serves every track, each with its effect. Or Use Widget's Niagara System: each widget plays
++ * its own system, with its own parameters - on the first found, or on all of them.
+  *
+  * Plays on a Niagara Particles widget: the one named by Particles Widget; else the track's widget itself when it is one (aim
+  * the track's Track Group at it - the simplest setup), or the first inside it; else the nearest around it. Seen in the
+@@ -77,10 +78,10 @@ struct NAMETBDNIAGARA_API FWidgetAnimParticleCueParams : public FWidgetAnimCuePa
+ 	EWidgetAnimParticleCueScope ActOn = EWidgetAnimParticleCueScope::FirstFound;
+ 
+ 	/**
+-	 * The system this track plays - burst, or played as the widget's system. None: nothing is burst or played (to play the
+-	 * Niagara Particles widget's own, turn on Use Widget's Niagara System). The widget's User Parameters reach it too, by
+-	 * name, under the track's own below. For a burst, a one-shot system (Loop Behavior: Once). Greyed out while Use Widget's
+-	 * Niagara System is on.
++	 * The system this track plays - burst, or played as the widget's system. None: nothing is burst, and Play plays nothing as
++	 * the widget's system - what the widget had playing (its Auto Play) stops (to play the Niagara Particles widget's own, turn
++	 * on Use Widget's Niagara System). The widget's User Parameters reach it too, by name, under the track's own below. For a
++	 * burst, a one-shot system (Loop Behavior: Once). Greyed out while Use Widget's Niagara System is on.
+ 	 *
+ 	 * Shown and greyed by the Widget Animations panel (ShowWhen / EnableWhen - see FTypeParamsDetails in SWidgetAnimTimeline.cpp)
+ 	 * rather than an EditCondition: a property bag under an EditCondition came back read-only.
+@@ -126,7 +127,10 @@ struct NAMETBDNIAGARA_API FWidgetAnimParticleCueParams : public FWidgetAnimCuePa
+ 		return !bUseWidgetSystem && (Action == EWidgetAnimParticleCueAction::BurstAtTarget || Action == EWidgetAnimParticleCueAction::Play);
+ 	}
+ 
+-	/** Whether a Burst / Play fires nothing: the track's own system is asked for (Use Widget's Niagara System off) and is None. */
++	/**
++	 * Whether a Burst / Play plays None: the track's own system is asked for (Use Widget's Niagara System off) and is None. A
++	 * burst then fires nothing; Play stops what the widget plays as its system (UNiagaraUIWidget::PlayNothing).
++	 */
+ 	bool PlaysNothing() const
+ 	{
+ 		return PlaysTrackSystem() && NiagaraSystem == nullptr;

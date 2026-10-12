@@ -109,9 +109,12 @@ public:
 
 	/**
 	 * The Widget Animation Components in Scope: those of the designer preview when its editor is open, then those the
-	 * Blueprints store, nested User Widgets' Blueprints included. The same component may be listed more than once.
+	 * Blueprints store, nested User Widgets' Blueprints included. The same component may be listed more than once. With
+	 * OutMachineComponents, the Widget Animation State Machine Components the Blueprints store in Scope too - a live one is
+	 * played by a Widget Animation Component, which lists its machines (GetPlayedMachineRows).
 	 */
-	static void GatherComponentsInScope(const FWidgetAnimValueSourceScope& Scope, TArray<const class UWidgetAnimationComponent*>& OutComponents);
+	static void GatherComponentsInScope(const FWidgetAnimValueSourceScope& Scope, TArray<const class UWidgetAnimationComponent*>& OutComponents,
+		TArray<const class UWidgetAnimationStateMachineComponent*>* OutMachineComponents = nullptr);
 
 protected:
 

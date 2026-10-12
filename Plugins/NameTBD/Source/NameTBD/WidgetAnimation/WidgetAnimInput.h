@@ -198,6 +198,9 @@ struct NAMETBD_API FWidgetAnimInput_Interaction : public FWidgetAnimInputSource
 private:
 	bool bPressStartedOver = false;
 	bool bWasDown = false;
+	/** The left presses counted when last sampled (WidgetAnimInput::GetLeftPressCount) - bHasPressCount once there is one. */
+	uint32 LastPressCount = 0;
+	bool bHasPressCount = false;
 };
 
 /**
@@ -271,10 +274,18 @@ private:
 namespace WidgetAnimInput
 {
 	/**
-	 * Whether the pointer is over Widget: Slate's own hover, which knows what is on top, when the widget or its
-	 * children can be hit; its laid-out rectangle otherwise.
+	 * Whether the pointer is over Widget: Slate's own hover, which knows what is on top, when Slate's hit test can reach the
+	 * widget (nothing from it outwards is Not Hit-Testable (Self & All Children)). Otherwise its own Visible parts - itself
+	 * when Visible, and every Visible widget inside it, by each one's own setting - or, with none, its laid-out rectangle.
 	 */
 	NAMETBD_API bool IsPointerOver(const UWidget* Widget, const FVector2f& PointerPosition);
+
+	/**
+	 * Whether a point - where an event was, rather than where the pointer is - is over Widget: what Slate hit-tests there, which
+	 * knows what is on top and doesn't depend on hover (lost to whatever has the mouse captured), when Slate's hit test can reach
+	 * the widget; otherwise its own Visible parts, as IsPointerOver.
+	 */
+	NAMETBD_API bool IsPointUnder(const UWidget* Widget, const FVector2f& Point);
 
 	/**
 	 * A desktop point in Widget's local space, and its size - as laid out, without Widget's own render transform, so
@@ -296,6 +307,35 @@ namespace WidgetAnimInput
 
 	/** A two-axis value as the value Axes asks for. */
 	NAMETBD_API FVector4 FromAxes(EWidgetAnimInputAxes Axes, const FVector2D& Value);
+
+	/**
+	 * Input events counted as Slate sees them, before any widget handles them - for what a state machine's built-in pulses
+	 * (Double Clicked, Right Clicked, Accept, Back, the Gamepad buttons) can't read off a widget's state. Each is a count of
+	 * the times it happened since the counting began: a reader keeps the count it last saw, and a new count is a new event,
+	 * whenever in the frame it came. Counting starts with the first call of StartCountingEvents (a machine that reads any
+	 * of them calls it), and stops with StopCountingEvents (the module's shutdown).
+	 */
+	NAMETBD_API void StartCountingEvents();
+	NAMETBD_API void StopCountingEvents();
+
+	/** Presses of Key - first presses, not a held key's repeats. */
+	NAMETBD_API uint32 GetKeyPressCount(const FKey& Key);
+
+	/** Presses of the UI's confirm (bAccept) or cancel button, as Slate's navigation config reads them - keys and gamepads alike. */
+	NAMETBD_API uint32 GetNavigationPressCount(bool bAccept);
+
+	/** A mouse event that was counted: how many so far, and where the last one was, in desktop space. */
+	struct FPointerEventCount
+	{
+		uint32 Count = 0;
+		FVector2f Position = FVector2f::ZeroVector;
+	};
+
+	/** Left button presses (a touch's too, and the second press of a double-click); left button double-clicks; right button presses and releases. */
+	NAMETBD_API FPointerEventCount GetLeftPressCount();
+	NAMETBD_API FPointerEventCount GetDoubleClickCount();
+	NAMETBD_API FPointerEventCount GetRightPressCount();
+	NAMETBD_API FPointerEventCount GetRightReleaseCount();
 
 	/** The kind of value Axes gives. */
 	inline EWidgetAnimValueKind KindOfAxes(EWidgetAnimInputAxes Axes)

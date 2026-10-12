@@ -1,0 +1,312 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.cpp
+index ee34613..3561f3e 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.cpp
+@@ -13,6 +13,7 @@
+ #include "Framework/Application/SlateApplication.h"
+ #include "Layout/Geometry.h"
+ #include "Layout/WidgetPath.h"
++#include "NameTBD/Widgets/ShapeBox.h"
+ #include "Widgets/SWidget.h"
+ #include "Widgets/SWindow.h"
+ 
+@@ -70,9 +71,128 @@ namespace WidgetAnimInputPrivate
+ 		return OutRect.GetSize().SizeSquared() > UE_KINDA_SMALL_NUMBER;
+ 	}
+ 
+-	bool IsHitTestable(ESlateVisibility Visibility)
++	/** The widget around Widget in its tree: its parent, or - at the top of a User Widget's tree - that User Widget. */
++	const UWidget* GetOuterWidget(const UWidget* Widget)
+ 	{
+-		return Visibility == ESlateVisibility::Visible || Visibility == ESlateVisibility::SelfHitTestInvisible;
++		const UWidget* Parent = Widget->GetParent();
++		return Parent ? Parent : Widget->GetTypedOuter<UUserWidget>();
++	}
++
++	/**
++	 * Whether Slate's hit test can reach Widget - itself, or something inside it: neither it nor anything around it is Not
++	 * Hit-Testable (Self & All Children), Collapsed or Hidden. Where it can't, a press or hover on it is worked out from its
++	 * widgets' own settings instead (IsOverOwnParts).
++	 */
++	bool CanSlateHit(const UWidget* Widget)
++	{
++		static constexpr int32 MaxDepth = 64;
++		int32 Depth = 0;
++		for (const UWidget* Search = Widget; Search && Depth < MaxDepth; Search = GetOuterWidget(Search), ++Depth)
++		{
++			const ESlateVisibility Setting = Search->GetVisibility();
++			if (Setting == ESlateVisibility::HitTestInvisible || Setting == ESlateVisibility::Collapsed || Setting == ESlateVisibility::Hidden)
++			{
++				return false;
++			}
++		}
++		return true;
++	}
++
++	/** Whether Widget is drawn: neither it nor anything around it is Collapsed or Hidden. */
++	bool IsShownInTree(const UWidget* Widget)
++	{
++		static constexpr int32 MaxDepth = 64;
++		int32 Depth = 0;
++		for (const UWidget* Search = Widget; Search && Depth < MaxDepth; Search = GetOuterWidget(Search), ++Depth)
++		{
++			const ESlateVisibility Setting = Search->GetVisibility();
++			if (Setting == ESlateVisibility::Collapsed || Setting == ESlateVisibility::Hidden)
++			{
++				return false;
++			}
++		}
++		return true;
++	}
++
++	/**
++	 * Point in the space Widget is laid out in: Point itself - or, inside a Shape Box drawing its content warped (offscreen,
++	 * into a window of its own), where Point lands in that content. False when it misses the Shape Box's drawn shape.
++	 */
++	bool ToLayoutSpace(const UWidget* Widget, const FVector2f& Point, FVector2f& OutPoint)
++	{
++		OutPoint = Point;
++		static constexpr int32 MaxDepth = 64;
++		int32 Depth = 0;
++		for (const UWidget* Search = GetOuterWidget(Widget); Search && Depth < MaxDepth; Search = GetOuterWidget(Search), ++Depth)
++		{
++			if (const UShapeBox* Box = Cast<UShapeBox>(Search))
++			{
++				FVector2D Content;
++				bool bOnShape = false;
++				if (Box->MapDesktopToContent(FVector2D(Point), Content, bOnShape))
++				{
++					OutPoint = FVector2f(Content);
++					return bOnShape;
++				}
++				return true;
++			}
++		}
++		return true;
++	}
++
++	/** Whether Point is on Widget as it is drawn: its laid-out box, with every render transform on it and around it. */
++	bool IsOnDrawnBox(const UWidget* Widget, const FVector2f& Point)
++	{
++		const TSharedPtr<SWidget> Slate = Widget->GetCachedWidget();
++		FVector2f InLayout;
++		if (!Slate.IsValid() || !ToLayoutSpace(Widget, Point, InLayout))
++		{
++			return false;
++		}
++		const FGeometry& Geometry = Slate->GetTickSpaceGeometry();
++		return Geometry.GetLocalSize().SizeSquared() > UE_KINDA_SMALL_NUMBER && Geometry.IsUnderLocation(InLayout);
++	}
++
++	/**
++	 * Whether Point is on a part of Widget a press can land on, by its widgets' own settings: Widget itself when it is Visible,
++	 * and every widget inside it that is - into nested User Widgets - wherever each is drawn, whatever is set around it.
++	 * bOutAnyVisible: whether it has any such part at all.
++	 */
++	bool IsOnVisiblePart(const UWidget* Widget, const FVector2f& Point, bool& bOutAnyVisible, int32 Depth = 0)
++	{
++		static constexpr int32 MaxDepth = 64;
++		if (!Widget || Depth > MaxDepth)
++		{
++			return false;
++		}
++		const ESlateVisibility Setting = Widget->GetVisibility();
++		if (Setting == ESlateVisibility::Collapsed || Setting == ESlateVisibility::Hidden)
++		{
++			return false;
++		}
++		if (Setting == ESlateVisibility::Visible)
++		{
++			bOutAnyVisible = true;
++			if (IsOnDrawnBox(Widget, Point))
++			{
++				return true;
++			}
++		}
++		if (const UUserWidget* AsUserWidget = Cast<UUserWidget>(Widget))
++		{
++			return AsUserWidget->WidgetTree && IsOnVisiblePart(AsUserWidget->WidgetTree->RootWidget, Point, bOutAnyVisible, Depth + 1);
++		}
++		if (const UPanelWidget* Panel = Cast<UPanelWidget>(Widget))
++		{
++			for (int32 Index = 0; Index < Panel->GetChildrenCount(); ++Index)
++			{
++				if (IsOnVisiblePart(Panel->GetChildAt(Index), Point, bOutAnyVisible, Depth + 1))
++				{
++					return true;
++				}
++			}
++		}
++		return false;
+ 	}
+ 
+ 	/**
+@@ -110,6 +230,34 @@ namespace WidgetAnimInputPrivate
+ 		return Widget && (Widget->HasAnyUserFocus() || Widget->HasFocusedDescendants());
+ 	}
+ 
++	/**
++	 * Whether Point is over a widget Slate's hit test can't reach (see CanSlateHit): on one of its Visible parts, by the widgets'
++	 * own settings (IsOnVisiblePart) - so a press on an Image inside a widget set Not Hit-Testable is on both, and one beside
++	 * them on neither. A widget with no Visible part at all - a decoration let through, a measured box - answers by its
++	 * laid-out rectangle, as it always has.
++	 */
++	bool IsOverOwnParts(const UWidget* Widget, const FVector2f& Point)
++	{
++		if (!IsShownInTree(Widget))
++		{
++			return false;
++		}
++		bool bAnyVisible = false;
++		if (IsOnVisiblePart(Widget, Point, bAnyVisible))
++		{
++			return true;
++		}
++		if (bAnyVisible)
++		{
++			return false;
++		}
++		FVector2f InLayout;
++		FVector2f Local;
++		FVector2f Size;
++		return ToLayoutSpace(Widget, Point, InLayout) && WidgetAnimInput::ToUnanimatedLocal(Widget, InLayout, Local, Size)
++			&& Local.X >= 0.f && Local.Y >= 0.f && Local.X <= Size.X && Local.Y <= Size.Y;
++	}
++
+ 	/** One point measured in Units, from its local position and the widget's size. */
+ 	FVector2D MeasurePointer(EWidgetAnimPointerUnits Units, const FVector2f& Local, const FVector2f& Size)
+ 	{
+@@ -143,9 +291,10 @@ bool WidgetAnimInput::IsPointerOver(const UWidget* Widget, const FVector2f& Poin
+ 		return false;
+ 	}
+ 
+-	// Slate's hover knows what is drawn on top of what, so a card under a popup isn't hovered through it. A widget that
+-	// can't be hit, itself or through its children, is never hovered in Slate's sense, so its rectangle answers instead.
+-	if (WidgetAnimInputPrivate::IsHitTestable(Visibility))
++	// Slate's hover knows what is drawn on top of what, so a card under a popup isn't hovered through it. A widget Slate
++	// can't hit - set, or inside something set, Not Hit-Testable (Self & All Children) - is never hovered in Slate's sense:
++	// its own Visible parts answer instead.
++	if (WidgetAnimInputPrivate::CanSlateHit(Widget))
+ 	{
+ 		if (Widget->IsHovered())
+ 		{
+@@ -156,14 +305,7 @@ bool WidgetAnimInput::IsPointerOver(const UWidget* Widget, const FVector2f& Poin
+ 		return FSlateApplication::IsInitialized() && FSlateApplication::Get().HasAnyMouseCaptor()
+ 			&& WidgetAnimInputPrivate::IsUnderPoint(Widget, PointerPosition);
+ 	}
+-
+-	FVector2f Local;
+-	FVector2f Size;
+-	if (!ToUnanimatedLocal(Widget, PointerPosition, Local, Size))
+-	{
+-		return false;
+-	}
+-	return Local.X >= 0.f && Local.Y >= 0.f && Local.X <= Size.X && Local.Y <= Size.Y;
++	return WidgetAnimInputPrivate::IsOverOwnParts(Widget, PointerPosition);
+ }
+ 
+ bool WidgetAnimInput::IsPointUnder(const UWidget* Widget, const FVector2f& Point)
+@@ -177,13 +319,12 @@ bool WidgetAnimInput::IsPointUnder(const UWidget* Widget, const FVector2f& Point
+ 	{
+ 		return false;
+ 	}
+-	if (WidgetAnimInputPrivate::IsHitTestable(Visibility))
++	// What Slate hit-tests there, when it can reach the widget; else the widget's own Visible parts - see IsPointerOver.
++	if (WidgetAnimInputPrivate::CanSlateHit(Widget))
+ 	{
+ 		return WidgetAnimInputPrivate::IsUnderPoint(Widget, Point);
+ 	}
+-	FVector2f Local;
+-	FVector2f Size;
+-	return ToUnanimatedLocal(Widget, Point, Local, Size) && Local.X >= 0.f && Local.Y >= 0.f && Local.X <= Size.X && Local.Y <= Size.Y;
++	return WidgetAnimInputPrivate::IsOverOwnParts(Widget, Point);
+ }
+ 
+ bool WidgetAnimInput::ToUnanimatedLocal(const UWidget* Widget, const FVector2f& DesktopPoint, FVector2f& OutLocal, FVector2f& OutSize)
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.h
+index dee1736..b2eed8b 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/WidgetAnimInput.h
+@@ -274,15 +274,16 @@ private:
+ namespace WidgetAnimInput
+ {
+ 	/**
+-	 * Whether the pointer is over Widget: Slate's own hover, which knows what is on top, when the widget or its
+-	 * children can be hit; its laid-out rectangle otherwise.
++	 * Whether the pointer is over Widget: Slate's own hover, which knows what is on top, when Slate's hit test can reach the
++	 * widget (nothing from it outwards is Not Hit-Testable (Self & All Children)). Otherwise its own Visible parts - itself
++	 * when Visible, and every Visible widget inside it, by each one's own setting - or, with none, its laid-out rectangle.
+ 	 */
+ 	NAMETBD_API bool IsPointerOver(const UWidget* Widget, const FVector2f& PointerPosition);
+ 
+ 	/**
+ 	 * Whether a point - where an event was, rather than where the pointer is - is over Widget: what Slate hit-tests there, which
+-	 * knows what is on top and doesn't depend on hover (lost to whatever has the mouse captured), when the widget or its children
+-	 * can be hit; its laid-out rectangle otherwise.
++	 * knows what is on top and doesn't depend on hover (lost to whatever has the mouse captured), when Slate's hit test can reach
++	 * the widget; otherwise its own Visible parts, as IsPointerOver.
+ 	 */
+ 	NAMETBD_API bool IsPointUnder(const UWidget* Widget, const FVector2f& Point);
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/ShapeBox.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/ShapeBox.cpp
+index 9d7146c..f0b3252 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/ShapeBox.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/ShapeBox.cpp
+@@ -848,6 +848,17 @@ FVector2D SShapeBox::GetWarpedLocalPosition(const FVector2D& NormalizedPoint) co
+ 	return ShapeBoxPrivate::FShapeEvaluator(Shape.Get(), Size).Evaluate(NormalizedPoint.X, NormalizedPoint.Y);
+ }
+ 
++bool SShapeBox::MapDesktopToContent(const FVector2D& Desktop, FVector2D& OutContent, bool& bOutOnShape) const
++{
++	if (Mode != EMode::Warped || !Window.IsValid())
++	{
++		return false;
++	}
++	// The content window's own space is the texture's pixels - what its hit-test grid, and so the widgets in it, are laid out in.
++	bOutOnShape = LocalToPixel(GetTickSpaceGeometry().AbsoluteToLocal(Desktop), OutContent);
++	return true;
++}
++
+ bool SShapeBox::IsLocalPointInShape(const FVector2D& LocalPoint) const
+ {
+ 	using namespace ShapeBoxPrivate;
+@@ -1721,6 +1732,11 @@ FVector2D UShapeBox::GetWarpedLocalPosition(FVector2D NormalizedPoint) const
+ 	return Shape.Evaluate(GetCachedGeometry().GetLocalSize(), NormalizedPoint);
+ }
+ 
++bool UShapeBox::MapDesktopToContent(const FVector2D& Desktop, FVector2D& OutContent, bool& bOutOnShape) const
++{
++	return MyShapeBox.IsValid() && MyShapeBox->MapDesktopToContent(Desktop, OutContent, bOutOnShape);
++}
++
+ #if WITH_EDITOR
+ const FText UShapeBox::GetPaletteCategory()
+ {
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/ShapeBox.h b/Plugins/NameTBD/Source/NameTBD/Widgets/ShapeBox.h
+index 2e82c44..f3c3de6 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/ShapeBox.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/ShapeBox.h
+@@ -269,6 +269,13 @@ public:
+ 	 */
+ 	bool IsLocalPointInShape(const FVector2D& LocalPoint) const;
+ 
++	/**
++	 * While the content is drawn warped (offscreen, into a window of its own): true, with where Desktop lands in that window -
++	 * the space the content's widgets are laid out in - and bOutOnShape false when Desktop misses the drawn shape. False when
++	 * the content is laid out in place, in desktop space like any other widget's.
++	 */
++	bool MapDesktopToContent(const FVector2D& Desktop, FVector2D& OutContent, bool& bOutOnShape) const;
++
+ 	// SWidget
+ 	void SetRequestedVisibility(TAttribute<EVisibility> InVisibility);
+ 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
+@@ -452,6 +459,9 @@ public:
+ 	UFUNCTION(BlueprintPure, Category = "Shape Box")
+ 	FVector2D GetWarpedLocalPosition(FVector2D NormalizedPoint) const;
+ 
++	/** SShapeBox::MapDesktopToContent, on the box as built. False when it isn't built, or doesn't draw its content warped. */
++	bool MapDesktopToContent(const FVector2D& Desktop, FVector2D& OutContent, bool& bOutOnShape) const;
++
+ 	// UWidget
+ 	virtual void SetVisibility(ESlateVisibility InVisibility) override;
+ 	virtual void SynchronizeProperties() override;

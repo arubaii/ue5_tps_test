@@ -7,6 +7,7 @@
 #include "WidgetAnimTargetOption.h"
 
 #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimationStateMachineComponent.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimStateMachine.h"
 #include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimCues.h"
@@ -211,8 +212,11 @@ namespace
 		return Animated && Animated->IsDesignTime() && !Component->IsTemplate();
 	}
 
-	/** The Widget Blueprint a component belongs to: the one it is stored in, or - for a live one - the one its preview was made from. */
-	UWidgetBlueprint* FindOwningWidgetBlueprint(const UWidgetAnimationComponent* Component)
+	/**
+	 * The Widget Blueprint a component - a Widget Animation Component or a State Machine Component - belongs to: the one it is
+	 * stored in, or - for a live one - the one its preview was made from.
+	 */
+	UWidgetBlueprint* FindOwningWidgetBlueprint(const UObject* Component)
 	{
 		if (!Component)
 		{
@@ -224,7 +228,9 @@ namespace
 			return Stored;
 		}
 
-		const UWidget* Animated = Component->GetAnimatedWidget();
+		const UWidgetAnimationComponent* AsPlayer = Cast<UWidgetAnimationComponent>(Component);
+		const UWidgetAnimationStateMachineComponent* AsMachines = Cast<UWidgetAnimationStateMachineComponent>(Component);
+		const UWidget* Animated = AsPlayer ? AsPlayer->GetAnimatedWidget() : AsMachines ? AsMachines->GetAnimatedWidget() : nullptr;
 		const UUserWidget* Root = Animated ? Animated->GetTypedOuter<UUserWidget>() : nullptr;
 		if (const UUserWidget* AsUserWidget = Cast<UUserWidget>(Animated))
 		{
@@ -1015,6 +1021,36 @@ TSharedRef<IDetailCustomization> FWidgetAnimationComponentDetails::MakeInstance(
 
 namespace WidgetAnimComponentEvents
 {
+	/** The Event tracks of the animations the states of Machines play - they fire as the state plays them - as GatherEvents lists them. */
+	void GatherMachineTrackEvents(const TArray<FWidgetAnimStateMachineEntry>& Machines, TArray<FName>& OutFunctionNames)
+	{
+		for (const FWidgetAnimStateMachineEntry& Entry : Machines)
+		{
+			if (!Entry.StateMachine)
+			{
+				continue;
+			}
+			TArray<UWidgetAnimPresetAsset*> Animations;
+			Entry.StateMachine->GatherAnimations(Animations);
+			for (const UWidgetAnimPresetAsset* Animation : Animations)
+			{
+				if (!Animation)
+				{
+					continue;
+				}
+				UWidgetAnimLibrary::ForEachLayerIncludingInserted(Animation->Layers, Animation, [&OutFunctionNames](const UWidgetAnimPresetAsset* In, const FWidgetAnimLayer& Layer)
+				{
+					const FWidgetAnimEventCueParams* Event = Layer.AnimType == EWidgetAnimType::Custom ? Layer.TypeParams.GetPtr<FWidgetAnimEventCueParams>() : nullptr;
+					const FName FunctionName = Event ? WidgetAnimCues::GetEventFunctionName(In, Event->EventName) : NAME_None;
+					if (!FunctionName.IsNone())
+					{
+						OutFunctionNames.AddUnique(FunctionName);
+					}
+				});
+			}
+		}
+	}
+
 	/**
 	 * Every Event track's event in Component's Anim In and Anim Out animations and its additive tracks - those of every
 	 * animation inserted into them as a track too, named by the animation each is authored in - once each, in the order
@@ -1048,23 +1084,7 @@ namespace WidgetAnimComponentEvents
 		FromLayers(Component.AdditiveAnimLayersIn, nullptr);
 		FromLayers(Component.AdditiveAnimLayersOut, nullptr);
 
-		// The Event tracks of the animations its state machines' states play - they fire as the state plays them.
-		for (const FWidgetAnimStateMachineEntry& Entry : Component.StateMachines)
-		{
-			if (!Entry.StateMachine)
-			{
-				continue;
-			}
-			TArray<UWidgetAnimPresetAsset*> Animations;
-			Entry.StateMachine->GatherAnimations(Animations);
-			for (const UWidgetAnimPresetAsset* Animation : Animations)
-			{
-				if (Animation)
-				{
-					FromLayers(Animation->Layers, Animation);
-				}
-			}
-		}
+		GatherMachineTrackEvents(Component.StateMachines, OutFunctionNames);
 	}
 
 	/** One state event of a state machine the component plays: its Custom Event's name, and what it is - for its tooltip. */
@@ -1081,10 +1101,10 @@ namespace WidgetAnimComponentEvents
 	 * Every state's Entered and Exited event, of every state machine the component plays, once each - "On Button Entered
 	 * Hovered". See WidgetAnimMachineEvents::GetStateEventFunctionName.
 	 */
-	void GatherStateEvents(const UWidgetAnimationComponent& Component, TArray<FStateEventRow>& OutRows)
+	void GatherStateEvents(const TArray<FWidgetAnimStateMachineEntry>& Machines, TArray<FStateEventRow>& OutRows)
 	{
 		TSet<FName> Seen;
-		for (const FWidgetAnimStateMachineEntry& Entry : Component.StateMachines)
+		for (const FWidgetAnimStateMachineEntry& Entry : Machines)
 		{
 			const UWidgetAnimStateMachineAsset* Machine = Entry.StateMachine;
 			if (!Machine)
@@ -1133,10 +1153,10 @@ namespace WidgetAnimComponentEvents
 	 * Every Fire Event action's event, of every state machine the component plays - a state's On Enter / On Exit, a
 	 * transition's On Taken - once each, "On Button Charged Ready". See WidgetAnimMachineEvents::GetActionEventFunctionName.
 	 */
-	void GatherActionEvents(const UWidgetAnimationComponent& Component, TArray<FActionEventRow>& OutRows)
+	void GatherActionEvents(const TArray<FWidgetAnimStateMachineEntry>& Machines, TArray<FActionEventRow>& OutRows)
 	{
 		TSet<FName> Seen;
-		for (const FWidgetAnimStateMachineEntry& Entry : Component.StateMachines)
+		for (const FWidgetAnimStateMachineEntry& Entry : Machines)
 		{
 			const UWidgetAnimStateMachineAsset* Machine = Entry.StateMachine;
 			if (!Machine)
@@ -1269,15 +1289,23 @@ namespace WidgetAnimComponentEvents
 
 void FWidgetAnimationComponentDetails::AddEventRows(IDetailCategoryBuilder& Category, const TArray<TWeakObjectPtr<UObject>>& Objects)
 {
-	const UWidgetAnimationComponent* Component = Objects.Num() == 1 ? Cast<UWidgetAnimationComponent>(Objects[0].Get()) : nullptr;
+	const UObject* Shown = Objects.Num() == 1 ? Objects[0].Get() : nullptr;
+	const UWidgetAnimationComponent* Component = Cast<UWidgetAnimationComponent>(Shown);
+	const UWidgetAnimationStateMachineComponent* MachineComponent = Cast<UWidgetAnimationStateMachineComponent>(Shown);
 	TArray<FName> FunctionNames;
 	TArray<WidgetAnimComponentEvents::FStateEventRow> StateEvents;
 	TArray<WidgetAnimComponentEvents::FActionEventRow> ActionEvents;
 	if (Component)
 	{
 		WidgetAnimComponentEvents::GatherEvents(*Component, FunctionNames);
-		WidgetAnimComponentEvents::GatherStateEvents(*Component, StateEvents);
-		WidgetAnimComponentEvents::GatherActionEvents(*Component, ActionEvents);
+		WidgetAnimComponentEvents::GatherStateEvents(Component->StateMachines, StateEvents);
+		WidgetAnimComponentEvents::GatherActionEvents(Component->StateMachines, ActionEvents);
+	}
+	else if (MachineComponent)
+	{
+		WidgetAnimComponentEvents::GatherMachineTrackEvents(MachineComponent->StateMachines, FunctionNames);
+		WidgetAnimComponentEvents::GatherStateEvents(MachineComponent->StateMachines, StateEvents);
+		WidgetAnimComponentEvents::GatherActionEvents(MachineComponent->StateMachines, ActionEvents);
 	}
 	if (FunctionNames.Num() == 0 && StateEvents.Num() == 0 && ActionEvents.Num() == 0)
 	{
@@ -1288,7 +1316,7 @@ void FWidgetAnimationComponentDetails::AddEventRows(IDetailCategoryBuilder& Cate
 	// A group of the component's own category, open from the start: UMG draws a UI component's Details as one block, with
 	// no headers for categories of their own, so an Events category would only run on under the Animation settings.
 	IDetailGroup& Group = Category.AddGroup(TEXT("Events"), LOCTEXT("EventsGroup", "Events"), /*bForAdvanced=*/false, /*bStartExpanded=*/true);
-	const TWeakObjectPtr<UWidgetBlueprint> WeakBlueprint = FindOwningWidgetBlueprint(Component);
+	const TWeakObjectPtr<UWidgetBlueprint> WeakBlueprint = FindOwningWidgetBlueprint(Shown);
 
 	// One row per event: the Event tracks' first, then the state machines' state events, then their Fire Event actions' - each with its Info struct and tooltip.
 	struct FRow
@@ -1428,9 +1456,33 @@ void FWidgetAnimationComponentDetails::CustomizeDetails(IDetailLayoutBuilder& De
 		Category.AddProperty(ValuesHandle);
 	}
 
-	// The state machines it plays, and how its other animations compose with them.
-	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, StateMachines)));
-	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, TracksWithStateMachines)));
+	// The state machines it plays, and how its other animations compose with them - shown only while it has some, set up before
+	// state machines moved to the Widget Animation State Machine Component, with a note saying so.
+	const TSharedRef<IPropertyHandle> MachinesHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, StateMachines));
+	const TSharedRef<IPropertyHandle> TracksWithMachinesHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, TracksWithStateMachines));
+	const bool bAnyMachines = Objects.ContainsByPredicate([](const TWeakObjectPtr<UObject>& Object)
+	{
+		const UWidgetAnimationComponent* Shown = Cast<UWidgetAnimationComponent>(Object.Get());
+		return Shown && Shown->StateMachines.Num() > 0;
+	});
+	if (bAnyMachines)
+	{
+		Category.AddCustomRow(WidgetAnimTips::LegacyStateMachinesNote())
+		.WholeRowContent()
+		[
+			SNew(STextBlock)
+			.AutoWrapText(true)
+			.Font(IDetailLayoutBuilder::GetDetailFontItalic())
+			.Text(WidgetAnimTips::LegacyStateMachinesNote())
+		];
+		Category.AddProperty(MachinesHandle);
+		Category.AddProperty(TracksWithMachinesHandle);
+	}
+	else
+	{
+		DetailBuilder.HideProperty(MachinesHandle);
+		DetailBuilder.HideProperty(TracksWithMachinesHandle);
+	}
 
 	// The animations' parameters, set here for every one of them that has it - shown only when there are some.
 	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationComponent, ComponentParameters)));
@@ -1590,6 +1642,29 @@ void FWidgetAnimationComponentDetails::AddListEditor(IDetailLayoutBuilder& Detai
 	// The plain array is left out: the editor above is the list. Hidden, not removed - the editor still tells its edits
 	// through this handle, as a Details edit would be told.
 	DetailBuilder.HideProperty(Handle);
+}
+
+// =====================================================================================================
+// FWidgetAnimationStateMachineComponentDetails
+// =====================================================================================================
+
+TSharedRef<IDetailCustomization> FWidgetAnimationStateMachineComponentDetails::MakeInstance()
+{
+	return MakeShared<FWidgetAnimationStateMachineComponentDetails>();
+}
+
+void FWidgetAnimationStateMachineComponentDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
+{
+	TArray<TWeakObjectPtr<UObject>> Objects;
+	DetailBuilder.GetObjectsBeingCustomized(Objects);
+
+	// Its settings in the order they are declared, then the Events group - a category shows what is added to it first.
+	IDetailCategoryBuilder& Category = DetailBuilder.EditCategory(TEXT("State Machine"));
+	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationStateMachineComponent, StateMachines)));
+	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationStateMachineComponent, TracksWithStateMachines)));
+	Category.AddProperty(DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimationStateMachineComponent, bPreserveAuthoredTransforms)));
+
+	FWidgetAnimationComponentDetails::AddEventRows(Category, Objects);
 }
 
 #undef LOCTEXT_NAMESPACE

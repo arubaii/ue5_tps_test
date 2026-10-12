@@ -7,6 +7,7 @@
 #include "Components/PanelWidget.h"
 #include "Components/Widget.h"
 #include "WidgetAnimationComponent.h"
+#include "WidgetAnimationStateMachineComponent.h"
 #include "WidgetAnimStateMachine.h"
 
 namespace WidgetAnimStateMachineSearch
@@ -56,7 +57,7 @@ namespace WidgetAnimStateMachineSearch
 		{
 			return false;
 		}
-		if (!StateMachine && Component->StateMachines.Num() == 0)
+		if (!StateMachine && !Component->HasPlayedMachineRows())
 		{
 			return false;
 		}
@@ -71,6 +72,16 @@ void UWidgetAnimStateMachineLibrary::FindComponents(UObject* Target, const UWidg
 	if (UWidgetAnimationComponent* Direct = Cast<UWidgetAnimationComponent>(Target))
 	{
 		OutComponents.Add(Direct);
+		return;
+	}
+
+	// A State Machine Component: what plays its machines.
+	if (const UWidgetAnimationStateMachineComponent* MachineComponent = Cast<UWidgetAnimationStateMachineComponent>(Target))
+	{
+		if (UWidgetAnimationComponent* Player = MachineComponent->GetPlayer())
+		{
+			OutComponents.Add(Player);
+		}
 		return;
 	}
 

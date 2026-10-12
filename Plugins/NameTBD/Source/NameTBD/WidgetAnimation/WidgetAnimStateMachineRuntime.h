@@ -262,6 +262,41 @@ struct FWidgetAnimMachinePendingAction
 	FName State;
 };
 
+/**
+ * What reads the built-in inputs off one widget - the widget a machine plays on, or one a layer's Widget Input Targets names -
+ * with what it needs between frames, and what it read last.
+ */
+struct FWidgetAnimMachineWidgetReader
+{
+	/** The widget, as the layer names it: a widget path, or one of the machine's targets. None for the widget the machine plays on. */
+	FName Name;
+
+	/** The widget, once found - found again should it go. */
+	TWeakObjectPtr<UWidget> Widget;
+
+	/** What it read last. */
+	FWidgetAnimMachineWidgetState State;
+
+	/** How many times a Context Menu Button it reads had gone off when last read - for the built-in Clicked. */
+	uint32 LastClickCount = 0;
+	bool bHasClickCount = false;
+
+	/**
+	 * The counted input events (WidgetAnimInput::GetKeyPressCount and the rest) as it last saw them, by the built-in pulse that
+	 * reads each - a changed count is a new event. Only for the pulses the machine reads; an entry is made on the first read, so
+	 * what happened before the machine started never fires.
+	 */
+	TMap<FName, uint32> LastEventCounts;
+
+	/** A right press counted over the widget, waiting for its release - for the built-in Right Clicked. */
+	bool bRightPressOver = false;
+
+	/** The plain-widget readers of the built-in inputs, when no provider answers for the widget. */
+	FWidgetAnimInput_Interaction HoverReader;
+	FWidgetAnimInput_Interaction PressReader;
+	FWidgetAnimInput_Interaction FocusReader;
+};
+
 /** One state machine as a Widget Animation Component plays it. */
 USTRUCT()
 struct NAMETBD_API FWidgetAnimMachineInstance
@@ -297,18 +332,36 @@ struct NAMETBD_API FWidgetAnimMachineInstance
 	/** The built-in Closing input. */
 	bool bClosing = false;
 
-	/** The built-in inputs the machine reads (WidgetAnimMachineInputs::GetBuiltInBit), and what they read last. */
-	uint8 UsedBuiltIns = 0;
-	FWidgetAnimMachineWidgetState WidgetState;
+	/** The built-in inputs the machine reads (WidgetAnimMachineInputs::GetBuiltInBit). */
+	uint64 UsedBuiltIns = 0;
 
-	/** How many times a Context Menu Button the machine plays on had gone off when last read - for the built-in Clicked. */
-	uint32 LastClickCount = 0;
-	bool bHasClickCount = false;
+	/** What reads them off the widget the machine plays on, and what it read last - what every layer reads by default. */
+	FWidgetAnimMachineWidgetReader HostReader;
 
-	/** The plain-widget readers of the built-in inputs, when no provider answers for the widget. */
-	FWidgetAnimInput_Interaction HoverReader;
-	FWidgetAnimInput_Interaction PressReader;
-	FWidgetAnimInput_Interaction FocusReader;
+	/**
+	 * What reads them off the widgets the layers' Widget Input Targets name, other than the one the machine plays on - each
+	 * once, however many layers name it.
+	 */
+	TArray<FWidgetAnimMachineWidgetReader> TargetReaders;
+
+	/**
+	 * Per layer, the readers its Widget Input Targets name - an index into TargetReaders, or INDEX_NONE for HostReader. Empty
+	 * for a layer that names none: it reads HostReader.
+	 */
+	TArray<TArray<int32>> LayerReaders;
+
+	/** Per layer that names widgets, the built-in inputs as those widgets read together (true when any of them is). Runtime only. */
+	TArray<FWidgetAnimMachineWidgetState> LayerWidgetStates;
+
+	/** The layer whose transitions, blend and parameters are being worked out - whose built-in inputs are read. INDEX_NONE: the host's. */
+	int32 ReadingLayer = INDEX_NONE;
+
+	/** The built-in inputs as the layer being worked out reads them (ReadingLayer): its widgets', or the host's. */
+	const FWidgetAnimMachineWidgetState& GetReadWidgetState() const
+	{
+		return LayerReaders.IsValidIndex(ReadingLayer) && LayerReaders[ReadingLayer].Num() > 0 && LayerWidgetStates.IsValidIndex(ReadingLayer)
+			? LayerWidgetStates[ReadingLayer] : HostReader.State;
+	}
 
 	/** An input changed since the layers last looked: a settled layer looks again. */
 	bool bInputsChanged = true;
@@ -358,6 +411,9 @@ struct NAMETBD_API FWidgetAnimMachineContext
 struct NAMETBD_API FWidgetAnimMachineLayerDebug
 {
 	FGuid CurrentState;
+
+	/** The sub-machine states CurrentState is inside, outermost first - empty at the top of the layer. */
+	TArray<FGuid> CurrentMachines;
 	FGuid PreviousState;
 	FGuid ActiveTransition;
 

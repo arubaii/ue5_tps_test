@@ -61,7 +61,8 @@ namespace WidgetAnimMachineJumpLocal
 			}
 			for (const FName BuiltIn : WidgetAnimMachineInputs::GetBuiltIns())
 			{
-				if (BuiltIn != WidgetAnimMachineInputs::Clicked)
+				// Pulses are fired, not held.
+				if (!WidgetAnimMachineInputs::IsBuiltInPulse(BuiltIn))
 				{
 					Plan.BuiltIns.Add(BuiltIn, false);
 				}
@@ -94,9 +95,10 @@ namespace WidgetAnimMachineJumpLocal
 		/** The input as the plan has it, read as the runtime reads it: a number, and whether it is "true". */
 		bool Read(FName Name, EWidgetAnimMachineVectorPart Part, float& OutNumber, bool& OutTruthy) const
 		{
-			if (WidgetAnimMachineInputs::IsBuiltIn(Name))
+			// A machine's own input of the same name wins over a built-in, as at runtime.
+			if (WidgetAnimMachineInputs::IsBuiltIn(Name) && !Machine.FindInput(Name))
 			{
-				OutTruthy = Name == WidgetAnimMachineInputs::Clicked ? Plan.Fire.Contains(Name) : Plan.BuiltIns.FindRef(Name);
+				OutTruthy = WidgetAnimMachineInputs::IsBuiltInPulse(Name) ? Plan.Fire.Contains(Name) : Plan.BuiltIns.FindRef(Name);
 				OutNumber = OutTruthy ? 1.f : 0.f;
 				return true;
 			}
@@ -287,9 +289,23 @@ namespace WidgetAnimMachineJumpLocal
 				}
 				return;
 			}
-			if (WidgetAnimMachineInputs::IsBuiltIn(Condition.Input))
+			if (WidgetAnimMachineInputs::IsBuiltIn(Condition.Input) && !Machine.FindInput(Condition.Input))
 			{
-				Plan.BuiltIns.Add(Condition.Input, Number > 0.5f);
+				if (WidgetAnimMachineInputs::IsBuiltInPulse(Condition.Input))
+				{
+					if (Number > 0.5f)
+					{
+						Plan.Fire.Add(Condition.Input);
+					}
+					else
+					{
+						Plan.Fire.Remove(Condition.Input);
+					}
+				}
+				else
+				{
+					Plan.BuiltIns.Add(Condition.Input, Number > 0.5f);
+				}
 				return;
 			}
 			Plan.Values.Add(Condition.Input, Number);
@@ -372,7 +388,7 @@ namespace WidgetAnimMachineJumpLocal
 
 			const FName Name = Condition.Input;
 			const FWidgetAnimMachineInput* Input = Machine.FindInput(Name);
-			const bool bBuiltIn = WidgetAnimMachineInputs::IsBuiltIn(Name);
+			const bool bBuiltIn = WidgetAnimMachineInputs::IsBuiltIn(Name) && !Input;
 
 			switch (Condition.Compare)
 			{
@@ -380,7 +396,7 @@ namespace WidgetAnimMachineJumpLocal
 			case EWidgetAnimMachineCompare::Fired:
 				if (bBuiltIn)
 				{
-					if (Name == WidgetAnimMachineInputs::Clicked)
+					if (WidgetAnimMachineInputs::IsBuiltInPulse(Name))
 					{
 						Plan.Fire.Add(Name);
 					}
@@ -559,7 +575,7 @@ namespace WidgetAnimMachineJumpLocal
 				return false;
 			}
 			const FWidgetAnimMachineInput* Input = Machine.FindInput(Name);
-			const bool bBuiltIn = WidgetAnimMachineInputs::IsBuiltIn(Name);
+			const bool bBuiltIn = WidgetAnimMachineInputs::IsBuiltIn(Name) && !Input;
 			const EWidgetAnimMachineInputType Type = Input ? Input->Type : EWidgetAnimMachineInputType::Bool;
 
 			switch (Condition.Compare)
@@ -567,7 +583,7 @@ namespace WidgetAnimMachineJumpLocal
 			case EWidgetAnimMachineCompare::IsTrue:
 			case EWidgetAnimMachineCompare::Fired:
 				Plan.Fire.Remove(Name);
-				if (bBuiltIn)
+				if (bBuiltIn && !WidgetAnimMachineInputs::IsBuiltInPulse(Name))
 				{
 					Plan.BuiltIns.Add(Name, false);
 				}
@@ -688,14 +704,53 @@ namespace WidgetAnimMachineJump
 			return false;
 		}
 		const FWidgetAnimMachineLayer& Layer = Machine.Layers[LayerIndex];
-		const int32 EntryIndex = Layer.FindSpecialIndex(EWidgetAnimMachineNodeKind::Entry);
-		const int32 AnyIndex = Layer.FindSpecialIndex(EWidgetAnimMachineNodeKind::AnyState);
+
+		// Planned in the graph the target is in - the layer's own, or a sub-machine's: its Entry and Any State, its states.
+		const FWidgetAnimMachineState* TargetNode = Layer.FindState(Target);
+		const FGuid Scope = TargetNode ? TargetNode->ParentMachine : FGuid();
+		const int32 EntryIndex = Layer.FindSpecialIndex(EWidgetAnimMachineNodeKind::Entry, Scope);
+		const int32 AnyIndex = Layer.FindSpecialIndex(EWidgetAnimMachineNodeKind::AnyState, Scope);
 		const FGuid EntryId = Layer.States.IsValidIndex(EntryIndex) ? Layer.States[EntryIndex].Id : FGuid();
 		const FGuid AnyId = Layer.States.IsValidIndex(AnyIndex) ? Layer.States[AnyIndex].Id : FGuid();
-		const FGuid Start = Layer.FindState(From) ? From : EntryId;
 
-		// States are gone through; the layer's Exit only arrived at, as the last step - nothing leaves it.
-		const FWidgetAnimMachineState* TargetNode = Layer.FindState(Target);
+		// Where the layer is, in that graph: the node itself, or the sub-machine round it that is in that graph.
+		FGuid InScope;
+		for (int32 Index = Layer.FindStateIndex(From), Step = 0; Index != INDEX_NONE && Step <= Layer.States.Num(); Index = Layer.FindParentIndex(Index), ++Step)
+		{
+			if (Layer.States[Index].ParentMachine == Scope)
+			{
+				InScope = Layer.States[Index].Id;
+				break;
+			}
+		}
+
+		// Outside the sub-machine the target is in: into the sub-machine first, then on inside it from its Entry - with the
+		// inputs as the way in left them.
+		if (Scope.IsValid() && !InScope.IsValid() && Layer.FindState(From))
+		{
+			TArray<FStep> Outer;
+			FText OuterProblem;
+			Plan(Machine, LayerIndex, From, Scope, CurrentValues, CurrentVectors, Outer, OuterProblem);
+			if (Outer.Num() == 0)
+			{
+				OutProblem = OuterProblem;
+				return false;
+			}
+			TMap<FName, float> ValuesThen = CurrentValues;
+			ValuesThen.Append(Outer.Last().Plan.Values);
+			TMap<FName, FVector2D> VectorsThen = CurrentVectors;
+			VectorsThen.Append(Outer.Last().Plan.Vectors);
+			TArray<FStep> Inner;
+			FText InnerProblem;
+			const bool bInner = Plan(Machine, LayerIndex, EntryId, Target, ValuesThen, VectorsThen, Inner, InnerProblem);
+			OutSteps = MoveTemp(Outer);
+			OutSteps.Append(Inner);
+			OutProblem = !OuterProblem.IsEmpty() ? OuterProblem : InnerProblem;
+			return bInner;
+		}
+		const FGuid Start = InScope.IsValid() ? InScope : EntryId;
+
+		// States are gone through; an Exit only arrived at, as the last step - nothing leaves it.
 		const bool bToExit = TargetNode && TargetNode->Kind == EWidgetAnimMachineNodeKind::Exit;
 		auto IsStateNode = [&Layer, &Target, bToExit](const FGuid& Id)
 		{

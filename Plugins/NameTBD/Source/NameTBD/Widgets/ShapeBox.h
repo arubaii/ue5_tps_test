@@ -269,6 +269,13 @@ public:
 	 */
 	bool IsLocalPointInShape(const FVector2D& LocalPoint) const;
 
+	/**
+	 * While the content is drawn warped (offscreen, into a window of its own): true, with where Desktop lands in that window -
+	 * the space the content's widgets are laid out in - and bOutOnShape false when Desktop misses the drawn shape. False when
+	 * the content is laid out in place, in desktop space like any other widget's.
+	 */
+	bool MapDesktopToContent(const FVector2D& Desktop, FVector2D& OutContent, bool& bOutOnShape) const;
+
 	// SWidget
 	void SetRequestedVisibility(TAttribute<EVisibility> InVisibility);
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
@@ -451,6 +458,9 @@ public:
 	/** Where a point of the content (0..1 across the extruded/inset box, (1,0) = top right) is drawn, in this widget's local space. */
 	UFUNCTION(BlueprintPure, Category = "Shape Box")
 	FVector2D GetWarpedLocalPosition(FVector2D NormalizedPoint) const;
+
+	/** SShapeBox::MapDesktopToContent, on the box as built. False when it isn't built, or doesn't draw its content warped. */
+	bool MapDesktopToContent(const FVector2D& Desktop, FVector2D& OutContent, bool& bOutOnShape) const;
 
 	// UWidget
 	virtual void SetVisibility(ESlateVisibility InVisibility) override;

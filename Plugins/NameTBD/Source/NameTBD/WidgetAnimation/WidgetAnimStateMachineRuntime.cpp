@@ -471,38 +471,59 @@ namespace WidgetAnimStateMachines
 		// Inputs
 		// -------------------------------------------------------------------------------------------------
 
-		/** Whether a built-in input is true. */
+		/** Reads the built-in inputs as layer LayerIndex does - off its Widget Input Targets - while it lives. */
+		struct FReadingLayerScope
+		{
+			FReadingLayerScope(FWidgetAnimMachineInstance& InInstance, int32 LayerIndex)
+				: Owner(InInstance)
+				, Was(InInstance.ReadingLayer)
+			{
+				Owner.ReadingLayer = LayerIndex;
+			}
+
+			~FReadingLayerScope()
+			{
+				Owner.ReadingLayer = Was;
+			}
+
+			FWidgetAnimMachineInstance& Owner;
+			int32 Was;
+		};
+
+		/** Whether a built-in input is true - as the layer being worked out reads it, off its Widget Input Targets. */
 		bool GetBuiltInValue(const FWidgetAnimMachineInstance& Instance, FName Name)
 		{
 			if (Name == WidgetAnimMachineInputs::Closing)
 			{
 				return Instance.bClosing;
 			}
+			const FWidgetAnimMachineWidgetState& WidgetState = Instance.GetReadWidgetState();
 			if (Name == WidgetAnimMachineInputs::Hovered)
 			{
-				return Instance.WidgetState.bHovered;
+				return WidgetState.bHovered;
 			}
 			if (Name == WidgetAnimMachineInputs::Pressed)
 			{
-				return Instance.WidgetState.bPressed;
+				return WidgetState.bPressed;
 			}
 			if (Name == WidgetAnimMachineInputs::Focused)
 			{
-				return Instance.WidgetState.bFocused;
+				return WidgetState.bFocused;
 			}
 			if (Name == WidgetAnimMachineInputs::Selected)
 			{
-				return Instance.WidgetState.bSelected;
+				return WidgetState.bSelected;
 			}
 			if (Name == WidgetAnimMachineInputs::Disabled)
 			{
-				return Instance.WidgetState.bDisabled;
+				return WidgetState.bDisabled;
 			}
 			if (Name == WidgetAnimMachineInputs::Clicked)
 			{
-				return Instance.WidgetState.bClicked;
+				return WidgetState.bClicked;
 			}
-			return false;
+			// The Events and the Gamepad buttons: Fired this frame.
+			return (WidgetState.Fired & WidgetAnimMachineInputs::GetBuiltInBit(Name)) != 0;
 		}
 
 		/** The number a condition reads off a Vector 2D. */
@@ -524,7 +545,8 @@ namespace WidgetAnimStateMachines
 		bool ReadAsNumber(const FWidgetAnimMachineInstance& Instance, FName Name, float& OutNumber, bool& OutTruthy,
 			EWidgetAnimMachineVectorPart Part = EWidgetAnimMachineVectorPart::Length, bool bPrevious = false)
 		{
-			if (WidgetAnimMachineInputs::IsBuiltIn(Name))
+			// A machine's own input of the same name (one made before that built-in was added) wins over it.
+			if (WidgetAnimMachineInputs::IsBuiltIn(Name) && !Instance.FindInput(Name))
 			{
 				OutTruthy = GetBuiltInValue(Instance, Name);
 				OutNumber = OutTruthy ? 1.f : 0.f;
@@ -613,12 +635,16 @@ namespace WidgetAnimStateMachines
 			}
 			const int32 Now = Instance.LayerStatesNow.IsValidIndex(LayerIndex) ? Instance.LayerStatesNow[LayerIndex] : INDEX_NONE;
 			const int32 Before = Instance.LayerStatesBefore.IsValidIndex(LayerIndex) ? Instance.LayerStatesBefore[LayerIndex] : INDEX_NONE;
+			// In a sub-machine is in it, whichever of its states the layer is in.
+			const FWidgetAnimMachineLayer& Other = Machine->Layers[LayerIndex];
+			const bool bInNow = Other.IsWithin(Now, StateIndex);
+			const bool bInBefore = Other.IsWithin(Before, StateIndex);
 			switch (Condition.LayerTest)
 			{
-			case EWidgetAnimMachineLayerStateTest::IsNotIn: return Now != StateIndex;
-			case EWidgetAnimMachineLayerStateTest::Entered: return Now == StateIndex && Before != StateIndex;
-			case EWidgetAnimMachineLayerStateTest::Exited:  return Now != StateIndex && Before == StateIndex;
-			default:                                         return Now == StateIndex;
+			case EWidgetAnimMachineLayerStateTest::IsNotIn: return !bInNow;
+			case EWidgetAnimMachineLayerStateTest::Entered: return bInNow && !bInBefore;
+			case EWidgetAnimMachineLayerStateTest::Exited:  return !bInNow && bInBefore;
+			default:                                         return bInNow;
 			}
 		}
 
@@ -772,21 +798,20 @@ namespace WidgetAnimStateMachines
 		}
 
 		/** The built-in inputs of a plain widget: Slate's hover and focus, a Button's press, a Check Box's check. */
-		void ReadPlainWidgetState(FWidgetAnimMachineInstance& Instance, FWidgetAnimInputContext& InputContext, FWidgetAnimMachineWidgetState& OutState)
+		void ReadPlainWidgetState(FWidgetAnimMachineWidgetReader& Reader, uint64 Used, FWidgetAnimInputContext& InputContext, FWidgetAnimMachineWidgetState& OutState)
 		{
 			FVector4 Value;
-			const uint8 Used = Instance.UsedBuiltIns;
 			if (Used & WidgetAnimMachineInputs::GetBuiltInBit(WidgetAnimMachineInputs::Hovered))
 			{
-				OutState.bHovered = Instance.HoverReader.Sample(InputContext, Value) && Value.X > 0.5;
+				OutState.bHovered = Reader.HoverReader.Sample(InputContext, Value) && Value.X > 0.5;
 			}
 			if (Used & WidgetAnimMachineInputs::GetBuiltInBit(WidgetAnimMachineInputs::Pressed))
 			{
-				OutState.bPressed = Instance.PressReader.Sample(InputContext, Value) && Value.X > 0.5;
+				OutState.bPressed = Reader.PressReader.Sample(InputContext, Value) && Value.X > 0.5;
 			}
 			if (Used & WidgetAnimMachineInputs::GetBuiltInBit(WidgetAnimMachineInputs::Focused))
 			{
-				OutState.bFocused = Instance.FocusReader.Sample(InputContext, Value) && Value.X > 0.5;
+				OutState.bFocused = Reader.FocusReader.Sample(InputContext, Value) && Value.X > 0.5;
 			}
 			if (const UCheckBox* CheckBox = Cast<UCheckBox>(InputContext.MeasuredWidget))
 			{
@@ -800,11 +825,239 @@ namespace WidgetAnimStateMachines
 				// Clicked: its action went off since last read - on press or on release, as it is set, and every repeat of a
 				// Hold button. Its own count, so a press dragged off, or one during a cooldown, isn't a click.
 				const uint32 Count = Button->GetActionCount();
-				OutState.bClicked = Instance.bHasClickCount && Count != Instance.LastClickCount;
-				Instance.LastClickCount = Count;
-				Instance.bHasClickCount = true;
+				OutState.bClicked = Reader.bHasClickCount && Count != Reader.LastClickCount;
+				Reader.LastClickCount = Count;
+				Reader.bHasClickCount = true;
 			}
 			OutState.bDisabled = IsDisabledInTree(InputContext.MeasuredWidget);
+		}
+
+		/** The built-in pulses read off counted input events rather than the widget's state: a mask of them. */
+		uint64 GetCountedEventPulses()
+		{
+			static const uint64 Mask = []()
+			{
+				uint64 Pulses = 0;
+				for (const FName Name : WidgetAnimMachineInputs::GetBuiltIns())
+				{
+					if (Name == WidgetAnimMachineInputs::DoubleClicked || Name == WidgetAnimMachineInputs::RightClicked || Name == WidgetAnimMachineInputs::Accept
+						|| Name == WidgetAnimMachineInputs::Back || WidgetAnimMachineInputs::GetBuiltInKey(Name).IsValid())
+					{
+						Pulses |= WidgetAnimMachineInputs::GetBuiltInBit(Name);
+					}
+				}
+				return Pulses;
+			}();
+			return Mask;
+		}
+
+		/**
+		 * Double Clicked, Right Clicked, Accept, Back and the Gamepad buttons, from the input events counted as Slate saw them
+		 * (WidgetAnimInput::StartCountingEvents): a count changed since the machine last looked is a new event. The mouse ones
+		 * where they happened over Widget; the buttons while Widget, or something inside it, has focus (InOutState.bFocused - read
+		 * whenever any of them is). Into InOutState.Fired.
+		 */
+		void ReadCountedEvents(FWidgetAnimMachineWidgetReader& Reader, uint64 UsedBuiltIns, UWidget* Widget, FWidgetAnimMachineWidgetState& InOutState)
+		{
+			const uint64 Used = UsedBuiltIns & GetCountedEventPulses();
+			if (Used == 0)
+			{
+				return;
+			}
+			WidgetAnimInput::StartCountingEvents();
+
+			// A count other than the one last seen: an event since. The first look only notes the count - what happened before the
+			// machine started never fires.
+			auto IsNew = [&Reader](FName Name, uint32 Count)
+			{
+				uint32* Last = Reader.LastEventCounts.Find(Name);
+				if (!Last)
+				{
+					Reader.LastEventCounts.Add(Name, Count);
+					return false;
+				}
+				const bool bNew = *Last != Count;
+				*Last = Count;
+				return bNew;
+			};
+			auto Reads = [Used](FName Name) { return (Used & WidgetAnimMachineInputs::GetBuiltInBit(Name)) != 0; };
+			auto Fire = [&InOutState](FName Name) { InOutState.Fired |= WidgetAnimMachineInputs::GetBuiltInBit(Name); };
+
+			if (Reads(WidgetAnimMachineInputs::DoubleClicked))
+			{
+				const WidgetAnimInput::FPointerEventCount DoubleClick = WidgetAnimInput::GetDoubleClickCount();
+				if (IsNew(WidgetAnimMachineInputs::DoubleClicked, DoubleClick.Count) && WidgetAnimInput::IsPointUnder(Widget, DoubleClick.Position))
+				{
+					Fire(WidgetAnimMachineInputs::DoubleClicked);
+				}
+			}
+
+			if (Reads(WidgetAnimMachineInputs::RightClicked))
+			{
+				// Pressed over the widget, then let go over it - as a click is - so a right press dragged off is no click.
+				static const FName RightPressCountName(TEXT("Right Pressed (counted)"));
+				const WidgetAnimInput::FPointerEventCount RightPress = WidgetAnimInput::GetRightPressCount();
+				const WidgetAnimInput::FPointerEventCount RightRelease = WidgetAnimInput::GetRightReleaseCount();
+				if (IsNew(RightPressCountName, RightPress.Count))
+				{
+					Reader.bRightPressOver = WidgetAnimInput::IsPointUnder(Widget, RightPress.Position);
+				}
+				if (IsNew(WidgetAnimMachineInputs::RightClicked, RightRelease.Count))
+				{
+					if (Reader.bRightPressOver && WidgetAnimInput::IsPointUnder(Widget, RightRelease.Position))
+					{
+						Fire(WidgetAnimMachineInputs::RightClicked);
+					}
+					Reader.bRightPressOver = false;
+				}
+			}
+
+			// The buttons: noted whatever the focus, so a press made elsewhere never fires once focus arrives.
+			for (const FName Name : WidgetAnimMachineInputs::GetBuiltIns())
+			{
+				if (!Reads(Name) || Name == WidgetAnimMachineInputs::DoubleClicked || Name == WidgetAnimMachineInputs::RightClicked)
+				{
+					continue;
+				}
+				const uint32 Count = Name == WidgetAnimMachineInputs::Accept ? WidgetAnimInput::GetNavigationPressCount(/*bAccept=*/true)
+					: Name == WidgetAnimMachineInputs::Back ? WidgetAnimInput::GetNavigationPressCount(/*bAccept=*/false)
+					: WidgetAnimInput::GetKeyPressCount(WidgetAnimMachineInputs::GetBuiltInKey(Name));
+				if (IsNew(Name, Count) && InOutState.bFocused)
+				{
+					Fire(Name);
+				}
+			}
+		}
+
+		/**
+		 * Reads the built-in inputs off Widget into Reader.State - the ones Used names, the Common UI module answering for its
+		 * buttons. True when anything read differently from last time.
+		 */
+		bool ReadWidgetBuiltIns(FWidgetAnimMachineWidgetReader& Reader, uint64 Used, UWidget* Widget, FWidgetAnimInputContext& InputContext)
+		{
+			FWidgetAnimMachineWidgetState State;
+			const bool bProviderAnswered = WidgetAnimMachineWidgetStates::ReadFromProviders(Widget, State);
+			if (!bProviderAnswered)
+			{
+				InputContext.MeasuredWidget = Widget;
+				ReadPlainWidgetState(Reader, Used, InputContext, State);
+			}
+
+			// Selected by what it sits in - a Flow List's selected item, and everything inside it - where the widget has no
+			// selection of its own: a provider's answer, or a Check Box's checked state, stands.
+			if (!State.bSelected && !bProviderAnswered && !Cast<UCheckBox>(Widget))
+			{
+				State.bSelected = WidgetAnimMachineWidgetStates::IsSelectedByContainer(Widget);
+			}
+			const FWidgetAnimMachineWidgetState& Was = Reader.State;
+
+			// Clicked, where nothing said: a press let go while the widget is still hovered or focused - as a Button counts a
+			// click. A press dragged off and let go elsewhere isn't one.
+			if (!State.bClicked && !Reader.bHasClickCount && Was.bPressed && !State.bPressed && (State.bHovered || State.bFocused))
+			{
+				State.bClicked = true;
+			}
+
+			// The Events: each Fired the frame its state turns - whoever read the state, a provider or the widget itself.
+			auto FireIf = [&State, Used](FName Name, bool bHappened)
+			{
+				const uint64 Bit = WidgetAnimMachineInputs::GetBuiltInBit(Name);
+				if (bHappened && (Used & Bit) != 0)
+				{
+					State.Fired |= Bit;
+				}
+			};
+			FireIf(WidgetAnimMachineInputs::HoverEntered, State.bHovered && !Was.bHovered);
+			FireIf(WidgetAnimMachineInputs::HoverExited, !State.bHovered && Was.bHovered);
+			FireIf(WidgetAnimMachineInputs::PressStarted, State.bPressed && !Was.bPressed);
+			FireIf(WidgetAnimMachineInputs::Released, !State.bPressed && Was.bPressed);
+			FireIf(WidgetAnimMachineInputs::FocusGained, State.bFocused && !Was.bFocused);
+			FireIf(WidgetAnimMachineInputs::FocusLost, !State.bFocused && Was.bFocused);
+
+			// Double Clicked, Right Clicked, Accept, Back and the Gamepad buttons, from the input Slate saw.
+			ReadCountedEvents(Reader, Used, Widget, State);
+
+			if (State.bHovered != Was.bHovered || State.bPressed != Was.bPressed || State.bFocused != Was.bFocused || State.bSelected != Was.bSelected
+				|| State.bDisabled != Was.bDisabled || State.bClicked != Was.bClicked || State.Fired != Was.Fired)
+			{
+				Reader.State = State;
+				return true;
+			}
+			return false;
+		}
+
+		/**
+		 * The widget a layer names - in its Widget Input Targets or its Animations Affect: the widget the machine plays on for
+		 * (This Widget) or (Widget); one of the machine's targets, where this use of it puts that target; else a widget path, in
+		 * the User Widget the machine plays in. Null when it isn't there.
+		 */
+		UWidget* ResolveLayerWidget(const FWidgetAnimMachineInstance& Instance, FName Name, const FWidgetAnimMachineContext& Context)
+		{
+			if (UWidgetAnimStateMachineAsset::NamesHostWidget(Name))
+			{
+				return Context.Host;
+			}
+			const FName* TargetPath = Instance.TargetPaths.Find(Name);
+			if (!TargetPath)
+			{
+				TargetPath = Instance.TargetPaths.Find(FName(*FWidgetAnimLayerGroup::UpgradeLegacyName(Name.ToString())));
+			}
+			if (TargetPath)
+			{
+				return TargetPath->IsNone() ? Context.Host : (Context.ResolvePath ? Context.ResolvePath(*TargetPath) : nullptr);
+			}
+			return Context.ResolvePath ? Context.ResolvePath(Name) : nullptr;
+		}
+
+		/**
+		 * The built-in inputs off the widgets the layers' Widget Input Targets name, and each such layer's, as its widgets read
+		 * together: true when any of them is, Fired when any of them fired. A widget that isn't there reads nothing. bHostChanged:
+		 * the widget the machine plays on read differently this frame - a layer may name it among others.
+		 */
+		void ReadLayerWidgets(FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineContext& Context, FWidgetAnimInputContext& InputContext, bool bHostChanged)
+		{
+			bool bAnyRead = bHostChanged;
+			for (FWidgetAnimMachineWidgetReader& Reader : Instance.TargetReaders)
+			{
+				UWidget* Widget = Reader.Widget.Get();
+				if (!Widget)
+				{
+					Widget = ResolveLayerWidget(Instance, Reader.Name, Context);
+					Reader.Widget = Widget;
+				}
+				if (Widget)
+				{
+					bAnyRead |= ReadWidgetBuiltIns(Reader, Instance.UsedBuiltIns, Widget, InputContext);
+				}
+				else if (Reader.State.bHovered || Reader.State.bPressed || Reader.State.bFocused || Reader.State.bSelected || Reader.State.bDisabled)
+				{
+					Reader.State = FWidgetAnimMachineWidgetState();
+					bAnyRead = true;
+				}
+			}
+			if (!bAnyRead && Instance.LayerWidgetStates.Num() == Instance.LayerReaders.Num())
+			{
+				return;
+			}
+
+			Instance.LayerWidgetStates.SetNum(Instance.LayerReaders.Num());
+			for (int32 LayerIndex = 0; LayerIndex < Instance.LayerReaders.Num(); ++LayerIndex)
+			{
+				FWidgetAnimMachineWidgetState Combined;
+				for (const int32 ReaderIndex : Instance.LayerReaders[LayerIndex])
+				{
+					const FWidgetAnimMachineWidgetState& Read = Instance.TargetReaders.IsValidIndex(ReaderIndex) ? Instance.TargetReaders[ReaderIndex].State : Instance.HostReader.State;
+					Combined.bHovered |= Read.bHovered;
+					Combined.bPressed |= Read.bPressed;
+					Combined.bFocused |= Read.bFocused;
+					Combined.bSelected |= Read.bSelected;
+					Combined.bDisabled |= Read.bDisabled;
+					Combined.bClicked |= Read.bClicked;
+					Combined.Fired |= Read.Fired;
+				}
+				Instance.LayerWidgetStates[LayerIndex] = Combined;
+			}
+			Instance.bInputsChanged = true;
 		}
 
 		/** Reads every input that has somewhere to be read from, and the built-in ones. Runtime only. */
@@ -901,37 +1154,18 @@ namespace WidgetAnimStateMachines
 				Input.bHasSample = true;
 			}
 
-			// The built-in ones, only when the machine reads any - the Common UI module answers for its buttons.
+			// The built-in ones, only when the machine reads any - the Common UI module answers for its buttons. Off the widget the
+			// machine plays on, and off each widget a layer's Widget Input Targets name, for that layer.
 			if ((Instance.UsedBuiltIns & ~WidgetAnimMachineInputs::GetBuiltInBit(WidgetAnimMachineInputs::Closing)) != 0)
 			{
-				FWidgetAnimMachineWidgetState State;
-				const bool bProviderAnswered = WidgetAnimMachineWidgetStates::ReadFromProviders(Context.Host, State);
-				if (!bProviderAnswered)
+				const bool bHostChanged = ReadWidgetBuiltIns(Instance.HostReader, Instance.UsedBuiltIns, Context.Host, InputContext);
+				if (bHostChanged)
 				{
-					InputContext.MeasuredWidget = Context.Host;
-					ReadPlainWidgetState(Instance, InputContext, State);
-				}
-
-				// Selected by what it sits in - a Flow List's selected item, and everything inside it - where the widget has no
-				// selection of its own: a provider's answer, or a Check Box's checked state, stands.
-				if (!State.bSelected && !bProviderAnswered && !Cast<UCheckBox>(Context.Host))
-				{
-					State.bSelected = WidgetAnimMachineWidgetStates::IsSelectedByContainer(Context.Host);
-				}
-				const FWidgetAnimMachineWidgetState& Was = Instance.WidgetState;
-
-				// Clicked, where nothing said: a press let go while the widget is still hovered or focused - as a Button counts a
-				// click. A press dragged off and let go elsewhere isn't one.
-				if (!State.bClicked && !Instance.bHasClickCount && Was.bPressed && !State.bPressed && (State.bHovered || State.bFocused))
-				{
-					State.bClicked = true;
-				}
-
-				if (State.bHovered != Was.bHovered || State.bPressed != Was.bPressed || State.bFocused != Was.bFocused || State.bSelected != Was.bSelected
-					|| State.bDisabled != Was.bDisabled || State.bClicked != Was.bClicked)
-				{
-					Instance.WidgetState = State;
 					Instance.bInputsChanged = true;
+				}
+				if (Instance.TargetReaders.Num() > 0)
+				{
+					ReadLayerWidgets(Instance, Context, InputContext, bHostChanged);
 				}
 			}
 		}
@@ -952,7 +1186,7 @@ namespace WidgetAnimStateMachines
 				}
 
 				const bool bSourced = Input.Source.IsValid() && Input.bHasSample;
-				const bool bDown = Input.bHoldSetDown || (bSourced ? Input.bHoldSourceDown : Instance.WidgetState.bPressed);
+				const bool bDown = Input.bHoldSetDown || (bSourced ? Input.bHoldSourceDown : Instance.HostReader.State.bPressed);
 				if (!bDown)
 				{
 					// Let go - complete or not: ready for the next press. A press that had started is let go this frame
@@ -1379,6 +1613,31 @@ namespace WidgetAnimStateMachines
 			UpdateProgress(Instance, Def, Layer, /*bSnap=*/true);
 		}
 
+		/** Whether the node at Index is the layer's own Exit - a sub-machine's Exit only finishes that sub-machine. */
+		bool IsLayerExit(const FWidgetAnimMachineLayer& Def, int32 Index)
+		{
+			return Def.States.IsValidIndex(Index) && Def.States[Index].Kind == EWidgetAnimMachineNodeKind::Exit && !Def.States[Index].ParentMachine.IsValid();
+		}
+
+		/** The nodes a layer at Index is in, outermost first: the sub-machines round it, then the node itself. */
+		void GetActiveChain(const FWidgetAnimMachineLayer& Def, int32 Index, TArray<int32, TInlineAllocator<4>>& OutChain)
+		{
+			OutChain.Reset();
+			for (int32 Step = 0; Def.States.IsValidIndex(Index) && Step <= Def.States.Num(); ++Step)
+			{
+				OutChain.Insert(Index, 0);
+				Index = Def.FindParentIndex(Index);
+			}
+		}
+
+		/**
+		 * Where a layer going to the node at ToIndex ends up: there - or, for a sub-machine, in through its Entry, along the first
+		 * of the Entry's transitions whose conditions hold, as deep as that leads. Stops at a sub-machine's Entry when none holds:
+		 * the layer waits there, inside it. OutEntered: every node entered on the way, outermost first, the last one where it is.
+		 */
+		void ResolveEntered(const FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineLayer& Def, int32 ToIndex, TArray<int32, TInlineAllocator<4>>& OutEntered,
+			TArray<int32, TInlineAllocator<4>>& OutEntryTransitions);
+
 		/** Finishes the running transition: the layer is in its state, nothing left blending. */
 		void FinishTransition(const FWidgetAnimMachineLayer& Def, FWidgetAnimMachineLayerInstance& Layer)
 		{
@@ -1388,39 +1647,67 @@ namespace WidgetAnimStateMachines
 			Layer.BlendElapsed = 0.f;
 			Layer.FromPose.Reset();
 			Layer.Springs.Reset();
-			Layer.bExited = Def.States.IsValidIndex(Layer.Current) && Def.States[Layer.Current].Kind == EWidgetAnimMachineNodeKind::Exit;
+			Layer.bExited = IsLayerExit(Def, Layer.Current);
 		}
 
-		void SendStateEvents(const FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineLayer& Def, int32 Left, int32 Entered, const FWidgetAnimMachineContext& Context)
+		void ResolveEntered(const FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineLayer& Def, int32 ToIndex, TArray<int32, TInlineAllocator<4>>& OutEntered,
+			TArray<int32, TInlineAllocator<4>>& OutEntryTransitions)
 		{
-			if (!Context.OnStateEvent || Context.bDesignTime)
+			OutEntered.Reset();
+			OutEntryTransitions.Reset();
+			int32 At = ToIndex;
+			for (int32 Step = 0; Def.States.IsValidIndex(At) && Step <= Def.States.Num(); ++Step)
+			{
+				OutEntered.Add(At);
+				if (!Def.States[At].IsSubMachine())
+				{
+					return;
+				}
+				const int32 EntryIndex = Def.FindSpecialIndex(EWidgetAnimMachineNodeKind::Entry, Def.States[At].Id);
+				if (EntryIndex == INDEX_NONE)
+				{
+					return;
+				}
+				OutEntered.Add(EntryIndex);
+				const FGuid EntryId = Def.States[EntryIndex].Id;
+				int32 Taken = INDEX_NONE;
+				for (int32 Index = 0; Index < Def.Transitions.Num(); ++Index)
+				{
+					const FWidgetAnimMachineTransition& FromEntry = Def.Transitions[Index];
+					if (FromEntry.bEnabled && FromEntry.From == EntryId && ConditionsHold(Instance, FromEntry))
+					{
+						Taken = Index;
+						break;
+					}
+				}
+				if (Taken == INDEX_NONE)
+				{
+					// Nothing to go to yet: inside, at its Entry, until a way on holds.
+					return;
+				}
+				OutEntryTransitions.Add(Taken);
+				// Past the Entry: it is gone through, not stayed in.
+				OutEntered.Pop();
+				At = Def.FindStateIndex(Def.Transitions[Taken].To);
+			}
+		}
+
+		/** A state left or entered, as the State Entered / State Exited events tell it. */
+		void SendStateEvent(const FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineLayer& Def, int32 StateIndex, int32 OtherIndex, bool bEntered, const FWidgetAnimMachineContext& Context)
+		{
+			if (!Context.OnStateEvent || Context.bDesignTime || !Def.States.IsValidIndex(StateIndex) || Def.States[StateIndex].Kind != EWidgetAnimMachineNodeKind::State)
 			{
 				return;
 			}
-
-			const bool bLeftState = Def.States.IsValidIndex(Left) && Def.States[Left].Kind == EWidgetAnimMachineNodeKind::State;
-			const bool bEnteredState = Def.States.IsValidIndex(Entered) && Def.States[Entered].Kind == EWidgetAnimMachineNodeKind::State;
-			const FName LeftName = bLeftState ? Def.States[Left].Name : FName();
-			const FName EnteredName = bEnteredState ? Def.States[Entered].Name : FName();
-
+			const bool bOtherState = Def.States.IsValidIndex(OtherIndex) && Def.States[OtherIndex].Kind == EWidgetAnimMachineNodeKind::State;
 			FWidgetAnimStateEventInfo Info;
 			Info.Machine = Instance.Machine;
 			Info.Layer = Def.Name;
 			Info.Host = Context.Host;
-			if (bLeftState)
-			{
-				Info.State = LeftName;
-				Info.OtherState = EnteredName;
-				Info.bEntered = false;
-				Context.OnStateEvent(Info);
-			}
-			if (bEnteredState)
-			{
-				Info.State = EnteredName;
-				Info.OtherState = LeftName;
-				Info.bEntered = true;
-				Context.OnStateEvent(Info);
-			}
+			Info.State = Def.States[StateIndex].Name;
+			Info.OtherState = bOtherState ? Def.States[OtherIndex].Name : FName();
+			Info.bEntered = bEntered;
+			Context.OnStateEvent(Info);
 		}
 
 		/** Starts Transition: from the pose the layer shows now, to where it points. */
@@ -1429,9 +1716,74 @@ namespace WidgetAnimStateMachines
 			const FWidgetAnimMachineLayer& Def = Instance.Machine->Layers[LayerIndex];
 			FWidgetAnimMachineLayerInstance& Layer = Instance.Layers[LayerIndex];
 			const FWidgetAnimMachineTransition& Transition = Def.Transitions[TransitionIndex];
-			const int32 ToIndex = Def.FindStateIndex(Transition.To);
-			if (ToIndex == INDEX_NONE)
+			const int32 TargetIndex = Def.FindStateIndex(Transition.To);
+			if (TargetIndex == INDEX_NONE)
 			{
+				return;
+			}
+
+			// What is left: the state the layer is in, and each sub-machine round it up to the graph the transition is in - a
+			// transition of a sub-machine's own leaves all of it. Innermost first.
+			const int32 FromIndex = Def.FindStateIndex(Transition.From);
+			const FGuid TransitionScope = Def.States.IsValidIndex(FromIndex) ? Def.States[FromIndex].ParentMachine : FGuid();
+			TArray<int32, TInlineAllocator<4>> LeftChain;
+			for (int32 At = Layer.Current, Step = 0; Def.States.IsValidIndex(At) && Step <= Def.States.Num(); At = Def.FindParentIndex(At), ++Step)
+			{
+				LeftChain.Add(At);
+				if (Def.States[At].ParentMachine == TransitionScope)
+				{
+					break;
+				}
+			}
+
+			// Where it ends up - in through a sub-machine's Entry, as deep as that leads.
+			TArray<int32, TInlineAllocator<4>> Entered;
+			TArray<int32, TInlineAllocator<4>> EntryTransitions;
+			ResolveEntered(Instance, Def, TargetIndex, Entered, EntryTransitions);
+			const int32 ToIndex = Entered.Num() > 0 ? Entered.Last() : TargetIndex;
+			const int32 Left = Layer.Current;
+
+			// The events and actions of the way: each state left (innermost first) and entered (outermost first), the transitions
+			// taken - all run once every layer has moved.
+			auto QueueTheWay = [&]()
+			{
+				for (const int32 LeftIndex : LeftChain)
+				{
+					SendStateEvent(Instance, Def, LeftIndex, ToIndex, /*bEntered=*/false, Context);
+					if (Def.States[LeftIndex].Kind == EWidgetAnimMachineNodeKind::State)
+					{
+						QueueActions(Instance, LayerIndex, Def.States[LeftIndex].Name, Def.States[LeftIndex].OnExit);
+					}
+				}
+				QueueActions(Instance, LayerIndex, NAME_None, Transition.OnTaken);
+				for (const int32 EntryTransition : EntryTransitions)
+				{
+					QueueActions(Instance, LayerIndex, NAME_None, Def.Transitions[EntryTransition].OnTaken);
+				}
+				for (const int32 EnteredIndex : Entered)
+				{
+					SendStateEvent(Instance, Def, EnteredIndex, Left, /*bEntered=*/true, Context);
+					if (Def.States[EnteredIndex].Kind == EWidgetAnimMachineNodeKind::State)
+					{
+						QueueActions(Instance, LayerIndex, Def.States[EnteredIndex].Name, Def.States[EnteredIndex].OnEnter);
+					}
+				}
+			};
+
+			// A sub-machine's Exit: the sub-machine is done, and holds where it got to - its last state's tracks play on as they
+			// were, nothing blends - until a transition of its own takes the layer on.
+			if (Def.States.IsValidIndex(ToIndex) && Def.States[ToIndex].Kind == EWidgetAnimMachineNodeKind::Exit && Def.States[ToIndex].ParentMachine.IsValid())
+			{
+				Layer.Previous = Layer.Current;
+				Layer.Current = ToIndex;
+				Layer.Transition = INDEX_NONE;
+				Layer.Phase = EWidgetAnimMachineBlendPhase::None;
+				Layer.BlendElapsed = 0.f;
+				Layer.bSettled = false;
+				Layer.bStateTrackStarted = true;
+				Layer.bStatePlayed = true;
+				FinishTransition(Def, Layer);
+				QueueTheWay();
 				return;
 			}
 
@@ -1441,7 +1793,6 @@ namespace WidgetAnimStateMachines
 			StopTracks(Layer);
 			Layer.FromPose = Layer.Output;
 
-			const int32 Left = Layer.Current;
 			Layer.Previous = Layer.Current;
 			Layer.Current = ToIndex;
 			Layer.Transition = TransitionIndex;
@@ -1486,26 +1837,23 @@ namespace WidgetAnimStateMachines
 				FinishTransition(Def, Layer);
 			}
 
-			SendStateEvents(Instance, Def, Left, ToIndex, Context);
-
-			// Its actions, and the states', run once every layer has moved: the one left, the way taken, the one entered.
-			if (Def.States.IsValidIndex(Left) && Def.States[Left].Kind == EWidgetAnimMachineNodeKind::State)
-			{
-				QueueActions(Instance, LayerIndex, Def.States[Left].Name, Def.States[Left].OnExit);
-			}
-			QueueActions(Instance, LayerIndex, NAME_None, Transition.OnTaken);
-			if (Def.States.IsValidIndex(ToIndex) && Def.States[ToIndex].Kind == EWidgetAnimMachineNodeKind::State)
-			{
-				QueueActions(Instance, LayerIndex, Def.States[ToIndex].Name, Def.States[ToIndex].OnEnter);
-			}
+			QueueTheWay();
 		}
 
-		/** Whether the state the layer is in has played enough for Transition to leave it. */
-		bool ExitTimeAllows(const FWidgetAnimMachineLayer& Def, const FWidgetAnimMachineLayerInstance& Layer, const FWidgetAnimMachineTransition& Transition)
+		/**
+		 * Whether the node at LevelIndex - the state the layer is in, or a sub-machine round it - has played enough for Transition
+		 * to leave it. A sub-machine has played once the layer is at its Exit.
+		 */
+		bool ExitTimeAllows(const FWidgetAnimMachineLayer& Def, const FWidgetAnimMachineLayerInstance& Layer, const FWidgetAnimMachineTransition& Transition, int32 LevelIndex)
 		{
-			if (Transition.ExitTime == EWidgetAnimMachineExitTime::Immediately || !Def.States.IsValidIndex(Layer.Current))
+			if (Transition.ExitTime == EWidgetAnimMachineExitTime::Immediately || !Def.States.IsValidIndex(Layer.Current) || !Def.States.IsValidIndex(LevelIndex))
 			{
 				return true;
+			}
+			if (LevelIndex != Layer.Current)
+			{
+				const FWidgetAnimMachineState& Leaf = Def.States[Layer.Current];
+				return Leaf.Kind == EWidgetAnimMachineNodeKind::Exit && Leaf.ParentMachine == Def.States[LevelIndex].Id;
 			}
 			if (Def.States[Layer.Current].Kind != EWidgetAnimMachineNodeKind::State)
 			{
@@ -1523,7 +1871,11 @@ namespace WidgetAnimStateMachines
 			return Layer.bStatePlayed || (Layer.PassSeconds > KINDA_SMALL_NUMBER && Layer.TimeInState >= Transition.ExitAtProgress * Layer.PassSeconds);
 		}
 
-		/** The transition the layer takes now - Any State's first, then its state's, each in priority order - or INDEX_NONE. */
+		/**
+		 * The transition the layer takes now, or INDEX_NONE. Outermost first: for each node the layer is in - each sub-machine round
+		 * its state, then the state - that graph's Any State's, then the node's own, each in priority order. So a sub-machine's
+		 * own transitions can be taken from anywhere inside it, before anything in there.
+		 */
 		int32 FindTransitionToTake(const FWidgetAnimMachineInstance& Instance, int32 LayerIndex)
 		{
 			const FWidgetAnimMachineLayer& Def = Instance.Machine->Layers[LayerIndex];
@@ -1539,72 +1891,78 @@ namespace WidgetAnimStateMachines
 				return INDEX_NONE;
 			}
 
-			const FWidgetAnimMachineState& Current = Def.States[Layer.Current];
-
-			// A Random transition that could be taken: one of the Random ones from the same node that could be, by weight.
-			auto PickRandom = [&Instance, &Def, &Layer, &Current](int32 Found) -> int32
+			TArray<int32, TInlineAllocator<4>> Chain;
+			GetActiveChain(Def, Layer.Current, Chain);
+			for (const int32 LevelIndex : Chain)
 			{
-				const FWidgetAnimMachineTransition& First = Def.Transitions[Found];
-				if (!First.bRandom)
+				const FWidgetAnimMachineState& Level = Def.States[LevelIndex];
+
+				// A Random transition that could be taken: one of the Random ones from the same node that could be, by weight.
+				auto PickRandom = [&Instance, &Def, &Layer, &Level, LevelIndex](int32 Found) -> int32
 				{
-					return Found;
+					const FWidgetAnimMachineTransition& First = Def.Transitions[Found];
+					if (!First.bRandom)
+					{
+						return Found;
+					}
+					TArray<int32, TInlineAllocator<8>> Pool;
+					float Total = 0.f;
+					for (int32 Index = 0; Index < Def.Transitions.Num(); ++Index)
+					{
+						const FWidgetAnimMachineTransition& Candidate = Def.Transitions[Index];
+						if (Candidate.bEnabled && Candidate.bRandom && Candidate.From == First.From && Candidate.To != Level.Id
+							&& Candidate.RandomWeight > 0.f && ConditionsHold(Instance, Candidate) && ExitTimeAllows(Def, Layer, Candidate, LevelIndex))
+						{
+							Pool.Add(Index);
+							Total += Candidate.RandomWeight;
+						}
+					}
+					if (Pool.Num() == 0 || Total <= 0.f)
+					{
+						return Found;
+					}
+					float Roll = FMath::FRandRange(0.f, Total);
+					for (const int32 Index : Pool)
+					{
+						Roll -= Def.Transitions[Index].RandomWeight;
+						if (Roll <= 0.f)
+						{
+							return Index;
+						}
+					}
+					return Pool.Last();
+				};
+
+				// At an Exit the layer waits - at its own, to be brought back in through Entry; at a sub-machine's, for a transition
+				// of the sub-machine's own, already looked at. Nothing leaves an Exit.
+				if (Level.Kind == EWidgetAnimMachineNodeKind::Exit)
+				{
+					return INDEX_NONE;
 				}
-				TArray<int32, TInlineAllocator<8>> Pool;
-				float Total = 0.f;
+
+				// That graph's Any State's, unless the layer is at that graph's Entry, which picks the first state on its own. Never
+				// back into the node the layer is in or heading to: a held condition would start it again every frame.
+				if (Level.Kind != EWidgetAnimMachineNodeKind::Entry)
+				{
+					const int32 AnyIndex = Def.FindSpecialIndex(EWidgetAnimMachineNodeKind::AnyState, Level.ParentMachine);
+					const FGuid AnyId = Def.States.IsValidIndex(AnyIndex) ? Def.States[AnyIndex].Id : FGuid();
+					for (int32 Index = 0; AnyId.IsValid() && Index < Def.Transitions.Num(); ++Index)
+					{
+						const FWidgetAnimMachineTransition& Transition = Def.Transitions[Index];
+						if (Transition.bEnabled && Transition.From == AnyId && Transition.To != Level.Id && ConditionsHold(Instance, Transition) && ExitTimeAllows(Def, Layer, Transition, LevelIndex))
+						{
+							return PickRandom(Index);
+						}
+					}
+				}
+
 				for (int32 Index = 0; Index < Def.Transitions.Num(); ++Index)
 				{
-					const FWidgetAnimMachineTransition& Candidate = Def.Transitions[Index];
-					if (Candidate.bEnabled && Candidate.bRandom && Candidate.From == First.From && Candidate.To != Current.Id
-						&& Candidate.RandomWeight > 0.f && ConditionsHold(Instance, Candidate) && ExitTimeAllows(Def, Layer, Candidate))
-					{
-						Pool.Add(Index);
-						Total += Candidate.RandomWeight;
-					}
-				}
-				if (Pool.Num() == 0 || Total <= 0.f)
-				{
-					return Found;
-				}
-				float Roll = FMath::FRandRange(0.f, Total);
-				for (const int32 Index : Pool)
-				{
-					Roll -= Def.Transitions[Index].RandomWeight;
-					if (Roll <= 0.f)
-					{
-						return Index;
-					}
-				}
-				return Pool.Last();
-			};
-
-			// At Exit the layer waits to be brought back in through Entry; nothing leaves it.
-			if (Current.Kind == EWidgetAnimMachineNodeKind::Exit)
-			{
-				return INDEX_NONE;
-			}
-
-			// Any State's, unless the layer is at Entry, which picks the first state on its own. Never back into the state the
-			// layer is in or heading to: a held condition would start it again every frame.
-			if (Current.Kind != EWidgetAnimMachineNodeKind::Entry)
-			{
-				const int32 AnyIndex = Def.FindSpecialIndex(EWidgetAnimMachineNodeKind::AnyState);
-				const FGuid AnyId = Def.States.IsValidIndex(AnyIndex) ? Def.States[AnyIndex].Id : FGuid();
-				for (int32 Index = 0; AnyId.IsValid() && Index < Def.Transitions.Num(); ++Index)
-				{
 					const FWidgetAnimMachineTransition& Transition = Def.Transitions[Index];
-					if (Transition.bEnabled && Transition.From == AnyId && Transition.To != Current.Id && ConditionsHold(Instance, Transition) && ExitTimeAllows(Def, Layer, Transition))
+					if (Transition.bEnabled && Transition.From == Level.Id && ConditionsHold(Instance, Transition) && ExitTimeAllows(Def, Layer, Transition, LevelIndex))
 					{
 						return PickRandom(Index);
 					}
-				}
-			}
-
-			for (int32 Index = 0; Index < Def.Transitions.Num(); ++Index)
-			{
-				const FWidgetAnimMachineTransition& Transition = Def.Transitions[Index];
-				if (Transition.bEnabled && Transition.From == Current.Id && ConditionsHold(Instance, Transition) && ExitTimeAllows(Def, Layer, Transition))
-				{
-					return PickRandom(Index);
 				}
 			}
 			return INDEX_NONE;
@@ -1634,11 +1992,14 @@ namespace WidgetAnimStateMachines
 						return;
 					}
 				}
+				const int32 TargetIndex = Def.Transitions.IsValidIndex(Chosen) ? Def.FindStateIndex(Def.Transitions[Chosen].To) : INDEX_NONE;
 				StartTransition(Instance, LayerIndex, Chosen, Context);
 				if (Instance.Layers[LayerIndex].Phase != EWidgetAnimMachineBlendPhase::None)
 				{
 					return;
 				}
+				// Where it went, and - for a sub-machine - where inside it that led.
+				Visited.Add(TargetIndex);
 				Visited.Add(Instance.Layers[LayerIndex].Current);
 			}
 		}
@@ -1646,6 +2007,7 @@ namespace WidgetAnimStateMachines
 		/** Puts a layer at its Entry and takes Entry's transitions. */
 		void EnterLayer(FWidgetAnimMachineInstance& Instance, int32 LayerIndex, const FWidgetAnimMachineContext& Context)
 		{
+			const FReadingLayerScope Reading(Instance, LayerIndex);
 			const FWidgetAnimMachineLayer& Def = Instance.Machine->Layers[LayerIndex];
 			FWidgetAnimMachineLayerInstance& Layer = Instance.Layers[LayerIndex];
 			StopTracks(Layer);
@@ -1723,6 +2085,7 @@ namespace WidgetAnimStateMachines
 		/** Moves one layer DeltaTime on and works out its pose. */
 		void TickLayer(FWidgetAnimMachineInstance& Instance, int32 LayerIndex, const FWidgetAnimMachineContext& Context, float DeltaTime)
 		{
+			const FReadingLayerScope Reading(Instance, LayerIndex);
 			const FWidgetAnimMachineLayer& Def = Instance.Machine->Layers[LayerIndex];
 			FWidgetAnimMachineLayerInstance& Layer = Instance.Layers[LayerIndex];
 			const FWidgetAnimBaselineSet& Baselines = Context.Baselines ? *Context.Baselines : GetEmptyBaselines();
@@ -1776,7 +2139,7 @@ namespace WidgetAnimStateMachines
 
 			// Closing, and waiting for a way to Exit that never comes - its conditions can't hold - would hold the screen open
 			// for good. A few seconds is long enough for any exit worth waiting for.
-			if (Instance.bClosing && !Layer.bExited && Def.HasExitPath() && !(Def.Transitions.IsValidIndex(Layer.Transition) && Def.States.IsValidIndex(Layer.Current) && Def.States[Layer.Current].Kind == EWidgetAnimMachineNodeKind::Exit))
+			if (Instance.bClosing && !Layer.bExited && Def.HasExitPath() && !(Def.Transitions.IsValidIndex(Layer.Transition) && IsLayerExit(Def, Layer.Current)))
 			{
 				Layer.ClosingWait += DeltaTime;
 				if (Layer.ClosingWait > 3.f)
@@ -1973,7 +2336,7 @@ namespace WidgetAnimStateMachines
 				const bool bAnimationDone = Layer.Player.Tracks.Num() == 0 || !Layer.Player.Tracks.ContainsByPredicate([](const FWidgetAnimTrack& Track) { return !Track.bFinished; });
 				if (bAnimationDone && Linear >= 1.f)
 				{
-					const bool bToExit = Def.States.IsValidIndex(Layer.Current) && Def.States[Layer.Current].Kind == EWidgetAnimMachineNodeKind::Exit;
+					const bool bToExit = IsLayerExit(Def, Layer.Current);
 					if (bToExit)
 					{
 						// Exit holds the transition animation's end pose: Anim Out stays out.
@@ -2232,8 +2595,9 @@ namespace WidgetAnimStateMachines
 		}
 
 		/**
-		 * The widgets a layer's Affects names - its targets as this use of the machine maps them, (Widget) the host - and the
-		 * Shape Box each is or sits in. False for a layer that affects everything.
+		 * The widgets a layer's Animations Affect names - widget paths, its targets as this use of the machine maps them, (This
+		 * Widget) the host; the host alone when it names none - and the Shape Box each is or sits in. False for a layer that
+		 * affects everything.
 		 */
 		bool BuildLayerMask(const FWidgetAnimMachineInstance& Instance, const FWidgetAnimMachineLayer& Def, const FWidgetAnimMachineContext& Context, TSet<const UObject*>& OutWidgets)
 		{
@@ -2241,17 +2605,10 @@ namespace WidgetAnimStateMachines
 			{
 				return false;
 			}
-			for (const FName Target : Def.MaskTargets)
+			static const TArray<FName> HostOnly = { FName() };
+			for (const FName Target : Def.MaskTargets.Num() > 0 ? Def.MaskTargets : HostOnly)
 			{
-				UWidget* Widget = nullptr;
-				if (Target == UWidgetAnimStateMachineAsset::MaskHostTarget)
-				{
-					Widget = Context.Host;
-				}
-				else if (const FName* Path = Instance.TargetPaths.Contains(Target) ? Instance.TargetPaths.Find(Target) : Instance.TargetPaths.Find(FName(*FWidgetAnimLayerGroup::UpgradeLegacyName(Target.ToString()))))
-				{
-					Widget = Path->IsNone() ? Context.Host : (Context.ResolvePath ? Context.ResolvePath(*Path) : nullptr);
-				}
+				UWidget* Widget = ResolveLayerWidget(Instance, Target, Context);
 				if (Widget)
 				{
 					OutWidgets.Add(Widget);
@@ -2317,20 +2674,21 @@ namespace WidgetAnimStateMachines
 			}
 		}
 
-		/** Which built-in inputs a machine reads. */
-		uint8 FindUsedBuiltIns(const UWidgetAnimStateMachineAsset& Machine)
+		/** Which built-in inputs a machine reads - not a name the machine has an input of its own for, which wins over the built-in. */
+		uint64 FindUsedBuiltIns(const UWidgetAnimStateMachineAsset& Machine)
 		{
-			uint8 Used = 0;
+			auto BitOf = [&Machine](FName Name) { return Machine.FindInput(Name) ? uint64(0) : WidgetAnimMachineInputs::GetBuiltInBit(Name); };
+			uint64 Used = 0;
 			for (const FWidgetAnimMachineLayer& Layer : Machine.Layers)
 			{
 				for (const FWidgetAnimMachineTransition& Transition : Layer.Transitions)
 				{
 					for (const FWidgetAnimMachineCondition& Condition : Transition.Conditions)
 					{
-						Used |= WidgetAnimMachineInputs::GetBuiltInBit(Condition.Input);
+						Used |= BitOf(Condition.Input);
 						if (Condition.CompareTo == EWidgetAnimMachineCompareTo::Input)
 						{
-							Used |= WidgetAnimMachineInputs::GetBuiltInBit(Condition.OtherInput);
+							Used |= BitOf(Condition.OtherInput);
 						}
 					}
 				}
@@ -2422,9 +2780,57 @@ namespace WidgetAnimStateMachines
 				| WidgetAnimMachineInputs::GetBuiltInBit(WidgetAnimMachineInputs::Hovered)
 				| WidgetAnimMachineInputs::GetBuiltInBit(WidgetAnimMachineInputs::Focused);
 		}
-		Instance.HoverReader.State = EWidgetAnimInteractionState::Hovered;
-		Instance.PressReader.State = EWidgetAnimInteractionState::Pressed;
-		Instance.FocusReader.State = EWidgetAnimInteractionState::Focused;
+
+		// The Events are worked out from the states they turn, and the buttons fire only while the widget has focus: those
+		// states are read too.
+		auto ReadsToo = [&Instance](FName Pulse, FName StateRead)
+		{
+			if (Instance.UsedBuiltIns & WidgetAnimMachineInputs::GetBuiltInBit(Pulse))
+			{
+				Instance.UsedBuiltIns |= WidgetAnimMachineInputs::GetBuiltInBit(StateRead);
+			}
+		};
+		ReadsToo(WidgetAnimMachineInputs::HoverEntered, WidgetAnimMachineInputs::Hovered);
+		ReadsToo(WidgetAnimMachineInputs::HoverExited, WidgetAnimMachineInputs::Hovered);
+		ReadsToo(WidgetAnimMachineInputs::PressStarted, WidgetAnimMachineInputs::Pressed);
+		ReadsToo(WidgetAnimMachineInputs::Released, WidgetAnimMachineInputs::Pressed);
+		ReadsToo(WidgetAnimMachineInputs::FocusGained, WidgetAnimMachineInputs::Focused);
+		ReadsToo(WidgetAnimMachineInputs::FocusLost, WidgetAnimMachineInputs::Focused);
+		for (const FName Name : WidgetAnimMachineInputs::GetBuiltIns())
+		{
+			if (Name == WidgetAnimMachineInputs::Accept || Name == WidgetAnimMachineInputs::Back || WidgetAnimMachineInputs::GetBuiltInKey(Name).IsValid())
+			{
+				ReadsToo(Name, WidgetAnimMachineInputs::Focused);
+			}
+		}
+		auto SetUpReader = [](FWidgetAnimMachineWidgetReader& Reader)
+		{
+			Reader.HoverReader.State = EWidgetAnimInteractionState::Hovered;
+			Reader.PressReader.State = EWidgetAnimInteractionState::Pressed;
+			Reader.FocusReader.State = EWidgetAnimInteractionState::Focused;
+		};
+		SetUpReader(Instance.HostReader);
+
+		// The widgets each layer's Widget Input Targets name: a reader for each, shared by the layers that name it.
+		Instance.LayerReaders.SetNum(Machine->Layers.Num());
+		for (int32 LayerIndex = 0; LayerIndex < Machine->Layers.Num(); ++LayerIndex)
+		{
+			for (const FName WidgetName : Machine->Layers[LayerIndex].WidgetInputTargets)
+			{
+				int32 ReaderIndex = INDEX_NONE;
+				if (!UWidgetAnimStateMachineAsset::NamesHostWidget(WidgetName))
+				{
+					ReaderIndex = Instance.TargetReaders.IndexOfByPredicate([WidgetName](const FWidgetAnimMachineWidgetReader& Candidate) { return Candidate.Name == WidgetName; });
+					if (ReaderIndex == INDEX_NONE)
+					{
+						ReaderIndex = Instance.TargetReaders.AddDefaulted();
+						Instance.TargetReaders[ReaderIndex].Name = WidgetName;
+						SetUpReader(Instance.TargetReaders[ReaderIndex]);
+					}
+				}
+				Instance.LayerReaders[LayerIndex].AddUnique(ReaderIndex);
+			}
+		}
 
 		Instance.Layers.SetNum(Machine->Layers.Num());
 	}
@@ -2549,7 +2955,20 @@ namespace WidgetAnimStateMachines
 			Input.PreviousNumber = Input.Number;
 			Input.PreviousVector = Input.Vector;
 		}
-		Instance.WidgetState.bClicked = false;
+		auto SpendPulses = [](FWidgetAnimMachineWidgetState& WidgetState)
+		{
+			WidgetState.bClicked = false;
+			WidgetState.Fired = 0;
+		};
+		SpendPulses(Instance.HostReader.State);
+		for (FWidgetAnimMachineWidgetReader& Reader : Instance.TargetReaders)
+		{
+			SpendPulses(Reader.State);
+		}
+		for (FWidgetAnimMachineWidgetState& LayerState : Instance.LayerWidgetStates)
+		{
+			SpendPulses(LayerState);
+		}
 		Instance.bInputsChanged = false;
 
 		// The actions the frame's transitions queued: after the inputs were spent, so what they set and fire is seen next frame -
@@ -2637,7 +3056,7 @@ namespace WidgetAnimStateMachines
 			FWidgetAnimMachineLayerInstance& Layer = Instance.Layers[LayerIndex];
 			Layer.ClosingWait = 0.f;
 			const FWidgetAnimMachineLayer& Def = Instance.Machine->Layers[LayerIndex];
-			const bool bAtExit = Def.States.IsValidIndex(Layer.Current) && Def.States[Layer.Current].Kind == EWidgetAnimMachineNodeKind::Exit;
+			const bool bAtExit = IsLayerExit(Def, Layer.Current);
 			if (!bClosing && (Layer.bExited || bAtExit))
 			{
 				// Back in through Entry - blending in from the pose Exit left, so nothing snaps.
@@ -2824,7 +3243,7 @@ namespace WidgetAnimStateMachines
 
 	void SetBuiltIn(FWidgetAnimMachineInstance& Instance, FName Input, bool bValue)
 	{
-		FWidgetAnimMachineWidgetState& State = Instance.WidgetState;
+		FWidgetAnimMachineWidgetState& State = Instance.HostReader.State;
 		bool* Field = Input == WidgetAnimMachineInputs::Hovered ? &State.bHovered
 			: Input == WidgetAnimMachineInputs::Pressed ? &State.bPressed
 			: Input == WidgetAnimMachineInputs::Focused ? &State.bFocused
@@ -2833,9 +3252,21 @@ namespace WidgetAnimStateMachines
 			: Input == WidgetAnimMachineInputs::Closing ? &Instance.bClosing
 			: Input == WidgetAnimMachineInputs::Clicked ? &State.bClicked
 			: nullptr;
-		if (Field && *Field != bValue)
+		if (Field)
 		{
-			*Field = bValue;
+			if (*Field != bValue)
+			{
+				*Field = bValue;
+				Instance.bInputsChanged = true;
+			}
+			return;
+		}
+
+		// The Events and the Gamepad buttons: fired (a pulse, spent at the end of the frame).
+		const uint64 Bit = WidgetAnimMachineInputs::IsBuiltInPulse(Input) ? WidgetAnimMachineInputs::GetBuiltInBit(Input) : uint64(0);
+		if (Bit != 0 && ((State.Fired & Bit) != 0) != bValue)
+		{
+			State.Fired = bValue ? (State.Fired | Bit) : (State.Fired & ~Bit);
 			Instance.bInputsChanged = true;
 		}
 	}
@@ -2853,8 +3284,9 @@ namespace WidgetAnimStateMachines
 			{
 				continue;
 			}
+			// In a sub-machine is in it, whichever of its states the layer is in.
 			const int32 Current = Instance.Layers[LayerIndex].Current;
-			if (Def.States.IsValidIndex(Current) && Def.States[Current].Name == State)
+			if (Def.IsWithin(Current, Def.FindStateIndexByName(State)))
 			{
 				return true;
 			}
@@ -2979,6 +3411,10 @@ namespace WidgetAnimStateMachines
 			const FWidgetAnimMachineLayerInstance& Layer = Instance.Layers[LayerIndex];
 			FWidgetAnimMachineLayerDebug& Debug = OutLayers.AddDefaulted_GetRef();
 			Debug.CurrentState = Def.States.IsValidIndex(Layer.Current) ? Def.States[Layer.Current].Id : FGuid();
+			for (int32 Parent = Def.FindParentIndex(Layer.Current), Step = 0; Parent != INDEX_NONE && Step <= Def.States.Num(); Parent = Def.FindParentIndex(Parent), ++Step)
+			{
+				Debug.CurrentMachines.Insert(Def.States[Parent].Id, 0);
+			}
 			Debug.PreviousState = Def.States.IsValidIndex(Layer.Previous) ? Def.States[Layer.Previous].Id : FGuid();
 			Debug.ActiveTransition = Def.Transitions.IsValidIndex(Layer.Transition) ? Def.Transitions[Layer.Transition].Id : FGuid();
 			if (Def.Transitions.IsValidIndex(Layer.Transition))
@@ -3118,6 +3554,7 @@ namespace WidgetAnimStateMachines
 			{
 				continue;
 			}
+			const FReadingLayerScope Reading(Instance, LayerIndex);
 			const FWidgetAnimMachineState& State = Def.States[Layer.Current];
 			if (State.Kind != EWidgetAnimMachineNodeKind::State || (bOnlyIfInputsChanged && State.ParameterInputs.Num() == 0))
 			{

@@ -53,13 +53,12 @@ namespace WidgetAnimKeyValues
 			return FMath::Abs(A - B) <= 1.e-4 * FMath::Max(1.0, FMath::Max(FMath::Abs(A), FMath::Abs(B)));
 		}
 
-		FChannel MakePointChannel(const FText& Label, EPointField Field, float DragStep, TOptional<double> SliderMin = TOptional<double>(), TOptional<double> SliderMax = TOptional<double>())
+		FChannel MakePointChannel(const FText& Label, EPointField Field, TOptional<double> SliderMin = TOptional<double>(), TOptional<double> SliderMax = TOptional<double>())
 		{
 			FChannel Channel;
 			Channel.Label = Label;
 			Channel.Source = ESource::Point;
 			Channel.PointField = Field;
-			Channel.DragStep = DragStep;
 			Channel.SliderMin = SliderMin;
 			Channel.SliderMax = SliderMax;
 			return Channel;
@@ -126,14 +125,8 @@ namespace WidgetAnimKeyValues
 		{
 			for (const EPointField Field : { EPointField::ColorR, EPointField::ColorG, EPointField::ColorB, EPointField::ColorA })
 			{
-				Out.Add(Described(MakePointChannel(ColorPart(Base, Field), Field, 0.01f, 0.0, 1.0), TEXT("Point.Color")));
+				Out.Add(Described(MakePointChannel(ColorPart(Base, Field), Field, 0.0, 1.0), TEXT("Point.Color")));
 			}
-		}
-
-		/** A drag step that suits a setting by its name: hundredths for scales, opacities, alphas and colors, tenths for the rest. */
-		float GuessDragStep(const FString& Label, bool bColor)
-		{
-			return bColor || Label.Contains(TEXT("Scale")) || Label.Contains(TEXT("Opacity")) || Label.Contains(TEXT("Alpha")) ? 0.01f : 0.1f;
 		}
 
 		/** Every number inside Property's value, down through its structs - as the Graph Editor's channels are gathered. */
@@ -189,7 +182,6 @@ namespace WidgetAnimKeyValues
 				Channel.Enum = Enum;
 				Channel.bBool = BoolProperty != nullptr;
 				Channel.bInteger = Enum || BoolProperty || (Numeric && !Numeric->IsFloatingPoint());
-				Channel.DragStep = Channel.bInteger ? 1.f : GuessDragStep(Label, bColor);
 				// Its own range (the member's, else the setting's around it, as a struct's members carry none); a color 0 to 1.
 				ReadSliderRange(Property, Channel);
 				if (!Channel.SliderMin.IsSet() && Tail.Num() > 0)
@@ -582,20 +574,20 @@ namespace WidgetAnimKeyValues
 		switch (Layer.AnimType)
 		{
 		case EWidgetAnimType::Fade:
-			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Opacity", "Opacity"), EPointField::Value, 0.01f, 0.0, 1.0), TEXT("Point.Opacity")));
+			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Opacity", "Opacity"), EPointField::Value, 0.0, 1.0), TEXT("Point.Opacity")));
 			return;
 		case EWidgetAnimType::Scale:
-			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScaleX", "Scale X"), EPointField::Value, 0.01f), TEXT("Point.Scale")));
-			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScaleY", "Scale Y"), EPointField::ValueY, 0.01f), TEXT("Point.Scale")));
+			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScaleX", "Scale X"), EPointField::Value), TEXT("Point.Scale")));
+			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScaleY", "Scale Y"), EPointField::ValueY), TEXT("Point.Scale")));
 			return;
 		case EWidgetAnimType::Slide:
-			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Distance", "Distance"), EPointField::Value, 1.f), TEXT("Point.Distance")));
+			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Distance", "Distance"), EPointField::Value), TEXT("Point.Distance")));
 			return;
 		case EWidgetAnimType::Rotate:
-			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Angle", "Angle"), EPointField::Value, 1.f), TEXT("Point.Angle")));
+			OutChannels.Add(Described(MakePointChannel(LOCTEXT("Angle", "Angle"), EPointField::Value), TEXT("Point.Angle")));
 			return;
 		case EWidgetAnimType::MaterialScalar:
-			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScalarValue", "Value"), EPointField::Value, 0.01f), TEXT("Point.Value")));
+			OutChannels.Add(Described(MakePointChannel(LOCTEXT("ScalarValue", "Value"), EPointField::Value), TEXT("Point.Value")));
 			return;
 		case EWidgetAnimType::MaterialVector:
 			AddColorChannels(LOCTEXT("VectorValue", "Value"), OutChannels);
@@ -610,7 +602,7 @@ namespace WidgetAnimKeyValues
 			const EWidgetAnimKeyContent Content = Evaluator->GetKeyContent(Layer.TypeParams);
 			if (Content != EWidgetAnimKeyContent::Color)
 			{
-				OutChannels.Add(Described(MakePointChannel(Evaluator->GetTrackValueLabel(Layer.TypeParams), EPointField::Value, 0.1f), TEXT("Point.Registered")));
+				OutChannels.Add(Described(MakePointChannel(Evaluator->GetTrackValueLabel(Layer.TypeParams), EPointField::Value), TEXT("Point.Registered")));
 			}
 			if (Content != EWidgetAnimKeyContent::Value)
 			{
@@ -630,14 +622,12 @@ namespace WidgetAnimKeyValues
 				LOCTEXT("ShearY", "Shear Y"),
 				LOCTEXT("TransformAngle", "Angle"),
 			};
-			static const float TransformSteps[] = { 1.f, 1.f, 0.01f, 0.01f, 0.1f, 0.1f, 1.f };
 			for (int32 Field = 0; Field < UE_ARRAY_COUNT(TransformLabels); ++Field)
 			{
 				FChannel& Channel = OutChannels.AddDefaulted_GetRef();
 				Channel.Label = TransformLabels[Field];
 				Channel.Source = ESource::Transform;
 				Channel.TransformField = Field;
-				Channel.DragStep = TransformSteps[Field];
 				static const TCHAR* TransformParts[] = { TEXT("Transform.Translation"), TEXT("Transform.Translation"), TEXT("Transform.Scale"), TEXT("Transform.Scale"), TEXT("Transform.Shear"), TEXT("Transform.Shear"), TEXT("Transform.Angle") };
 				Channel.Description = NameTBD::Tooltips::WidgetAnimEditor::KeyValueDescription(TransformParts[Field]);
 			}

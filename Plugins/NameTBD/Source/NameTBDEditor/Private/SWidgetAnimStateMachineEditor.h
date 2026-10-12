@@ -168,9 +168,27 @@ public:
 	UFUNCTION()
 	TArray<FString> GetNumberInputOptions() const;
 
-	/** Backs the layer's Targets: (Widget), then every target. */
+	/**
+	 * Backs the layer's Affected Widgets: (This Widget), then the widgets of the widget the machine is previewed on, as paths -
+	 * or, previewed on none, the machine's targets.
+	 */
 	UFUNCTION()
 	TArray<FString> GetMaskTargetOptions() const;
+
+	/** Backs the layer's Widget Input Targets: as GetMaskTargetOptions. */
+	UFUNCTION()
+	TArray<FString> GetWidgetInputTargetOptions() const;
+
+	/** The widgets of the widget the editor previews the machine on, as paths, (this widget) first. Set by the editor. */
+	TFunction<TArray<FString>()> GetPreviewWidgetOptions;
+
+	/** Whether the editor previews the machine on a widget - what the layer's "No widget picked" notes are shown for. Set by the editor. */
+	TFunction<bool()> HasPreviewWidget;
+
+private:
+
+	/** GetMaskTargetOptions and GetWidgetInputTargetOptions. */
+	TArray<FString> GetLayerWidgetOptions() const;
 };
 
 /**
@@ -244,6 +262,12 @@ public:
 	/** The shown graph's dropped reroute points kept while their drag is on, and placed on screen for its preview. */
 	void UpdatePendingDragReroutes();
 
+	/**
+	 * The asset's own window's toolbar, at the window's top: its Target Widget Blueprint, play / pause and restart for the
+	 * preview, the widget watched in Play In Editor, and Find. See FWidgetAnimStateMachineAssetEditor.
+	 */
+	TSharedRef<SWidget> MakeStandaloneToolbar();
+
 	// Picking a preview target in the designer - see FWidgetAnimMachinePickInput.
 	bool IsPickingTarget() const { return PickingTarget.IsSet(); }
 	void UpdatePickHover(const FVector2D& ScreenPosition);
@@ -259,6 +283,37 @@ private:
 	TObjectPtr<UWidgetAnimStateMachineAsset> Machine = nullptr;
 	TWeakObjectPtr<UWidgetBlueprint> WidgetBlueprint;
 	bool bInDrawer = false;
+
+	/**
+	 * The asset's own window - no Widget Blueprint around it: no bar over the graph (its toolbar is the window's - see
+	 * MakeStandaloneToolbar), the lock in the layer row, and the preview on the Target Widget Blueprint's own widget.
+	 */
+	bool bStandalone = false;
+
+	/** The asset's own window: the Widget Blueprint the machine is tried on (FWidgetAnimStateMachineAsset::PreviewWidgetBlueprint). */
+	TWeakObjectPtr<UWidgetBlueprint> TargetWidgetBlueprint;
+
+	/** The asset's own window: a design-time widget of the Target Widget Blueprint, shown in the Preview section and played on. */
+	TObjectPtr<UUserWidget> StandalonePreview = nullptr;
+	TSharedPtr<SBox> StandalonePreviewBox;
+
+	/** The Widget Blueprint whose timelines are listed to drag in: the one the editor is in, else the Target Widget Blueprint. */
+	UWidgetBlueprint* GetTimelineBlueprint() const;
+
+	/** Whether there is a widget to preview on: a designer, or the asset's own window's Target Widget Blueprint. */
+	bool HasPreviewBlueprint() const;
+
+	void SetTargetWidgetBlueprint(UWidgetBlueprint* Blueprint);
+
+	/** The Target Widget Blueprint's preview widget, made (again, after a compile) when it isn't the class's own. */
+	void EnsureStandalonePreview();
+	void DropStandalonePreview();
+
+	/** The lock (see bMachineLocked): on the bar, or - in the asset's own window - at the right of the layer row. */
+	TSharedRef<SWidget> MakeLockButton();
+
+	/** Play In Editor: which widget playing the machine is watched. */
+	TSharedRef<SWidget> MakeDebugPicker();
 	FSimpleDelegate OnDockInLayout;
 
 	/** One graph per layer, made as the layer is first shown. */
@@ -305,6 +360,9 @@ private:
 	UWidgetAnimMachineGraph* GetOrMakeGraph(int32 LayerIndex);
 	TSharedPtr<SGraphEditor> GetShownGraphEditor() const;
 	UWidgetAnimMachineGraph* GetShownGraph() const;
+
+	/** The sub-machine the shown graph has open - where new states, comments and pastes go. Invalid: the layer's own graph. */
+	FGuid GetOpenMachine() const;
 	void ShowLayer(int32 LayerIndex);
 	void RebuildLayerTabs();
 	void RebuildInputs();
@@ -314,11 +372,20 @@ private:
 	void RemoveInputFromPanel(FName Input);
 	void OpenInputMenu(FName Input, const FPointerEvent& MouseEvent);
 
-	/** A category's heading in the Inputs panel: click to fold it, double-click its name to rename the category. */
-	void AddInputCategoryHeader(const TSharedRef<SVerticalBox>& Rows, const FString& Category);
+	/**
+	 * A category's heading in the Inputs panel: click to fold it, double-click its name to rename the category. Returns the box
+	 * its rows go in, hidden while it is folded (folding rebuilds nothing).
+	 */
+	TSharedRef<SVerticalBox> AddInputCategoryHeader(const TSharedRef<SVerticalBox>& Rows, const FString& Category);
 
 	/** The Inputs panel's folded categories - the panel's own, never saved. */
 	TSet<FString> CollapsedInputCategories;
+
+	/**
+	 * The Widget Inputs panel's sub-dropdowns (Events, Gamepad and each of its groups - "Gamepad/D-Pad") opened or closed by
+	 * hand. One not in here is open when the machine reads any of its inputs.
+	 */
+	TMap<FName, bool> WidgetInputGroupsOpen;
 
 	/** The left panel's folded sections (Inputs, Widget Inputs, Timelines, Animations, Preview), by heading - never saved. */
 	TSet<FString> FoldedPanelSections;
@@ -402,6 +469,15 @@ private:
 
 	/** Adds a state - a preset's, for a built-in input, or a plain one for None - in the middle of the view, and selects it. */
 	void AddStateAtViewCenter(FName Preset);
+
+	/** A point on screen, in the shown graph. */
+	FVector2D ScreenToGraph(const FVector2D& ScreenPosition) const;
+
+	/** Whether a Widget Inputs row can be dragged onto the graph: the machine doesn't read it yet, and the layer has no state for it. */
+	bool CanDragWidgetInput(FName Input) const;
+
+	/** A widget input dropped on the graph from the Widget Inputs panel: the state for it, where it was let go, selected. */
+	void AddWidgetInputState(FName Input, const FVector2D& ScreenPosition);
 
 	/** Q: the selected states lined up with the states they connect to - never onto another state. */
 	void StraightenSelected();
@@ -609,14 +685,62 @@ private:
 	/** Jump To Active State, beside Add State: back to the state in play when the graph has been scrolled away from it. */
 	TSharedRef<SWidget> MakeJumpToActiveButton();
 
+	// -------------------------------------------------------------------------------------------------
+	// Find (Ctrl + F)
+	// -------------------------------------------------------------------------------------------------
+
+	/** A state or transition Find turned up: in which layer, its id, and how the list shows it. */
+	struct FFindHit
+	{
+		int32 Layer = INDEX_NONE;
+		FGuid Id;
+		FText Title;
+		FText Where;
+		bool bTransition = false;
+		bool bSubMachine = false;
+	};
+
+	/**
+	 * Find, over the graph's top right: a search box and the states and transitions of every layer and sub-machine whose name -
+	 * or, for a transition, its route or conditions - has what is typed. Enter or a click goes to the one picked (FocusOn, opening
+	 * its layer and sub-machine, and selects it); Up and Down pick; Escape closes it.
+	 */
+	TSharedRef<SWidget> MakeFindPanel();
+	void OpenFind();
+	void CloseFind();
+	void RefreshFind();
+	void GoToFindHit(int32 HitIndex);
+	bool bFindOpen = false;
+	FString FindText;
+	int32 FindPicked = 0;
+	TArray<FFindHit> FindHits;
+	TSharedPtr<class SSearchBox> FindBox;
+	TSharedPtr<SVerticalBox> FindResults;
+
 	/** Play / pause the preview, floating over the graph at its bottom left. */
 	TSharedRef<SWidget> MakePlayPauseButton();
 
 	/** State Machine mode: the Widget Blueprint's own machine's name, as a field on the bar - double-click to rename it. */
 	TSharedRef<SWidget> MakeDraftNameField();
 
-	/** In the layer row, while collapsed states are open on their own: the layer (the way back to all of it), then them. */
+	/**
+	 * In the layer row, while a sub-machine or collapsed states are open: the layer (the way back to all of it), each sub-machine
+	 * in to the one open, then the collapsed states. Its steps are made again when that changes - see RefreshBreadcrumb.
+	 */
 	TSharedRef<SWidget> MakeGroupBreadcrumb();
+	void RefreshBreadcrumb();
+	TSharedPtr<SBox> BreadcrumbBox;
+	uint32 BreadcrumbSignature = 0;
+
+	/**
+	 * Brings a state or a transition of a layer into view - showing the layer, opening the sub-machine it is in - and, bSelect,
+	 * selects it (its Details shown). The graph may need making again first: done once it is (TickPendingFocus).
+	 */
+	void FocusOn(int32 LayerIndex, const FGuid& Id, bool bSelect);
+	void TickPendingFocus();
+	FGuid PendingFocusId;
+	bool bPendingFocusSelect = false;
+	int32 PendingFocusFrames = 0;
 
 	/** The lock: the machine read-only - a preview - as the Widget Animations panel's lock. See IsMachineEditable. */
 	bool bMachineLocked = false;

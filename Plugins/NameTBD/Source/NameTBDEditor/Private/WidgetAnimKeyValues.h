@@ -77,11 +77,8 @@ namespace WidgetAnimKeyValues
 		/** On or off - a shape's Fill: shown as a check box, read and written as 1 or 0. */
 		bool bBool = false;
 
-		/** Whether the number is whole - typed and dragged in whole steps. A choice's and an on/off's are. */
+		/** Whether the number is whole - shown and dragged in whole steps. A choice's and an on/off's are. */
 		bool bInteger = false;
-
-		/** A step for dragging it: finer for scales, opacities and colors than for distances and angles. */
-		float DragStep = 0.1f;
 
 		/**
 		 * The range its box's drag bar spans, when it has a natural one - an opacity's or a color's 0 to 1, a setting's own UIMin /

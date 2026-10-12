@@ -9,9 +9,13 @@
 #include "Components/PanelWidget.h"
 #include "Components/ScrollBox.h"
 #include "Components/Widget.h"
+#include "Framework/Application/IInputProcessor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Layout/Geometry.h"
+#include "Layout/WidgetPath.h"
+#include "NameTBD/Widgets/ShapeBox.h"
 #include "Widgets/SWidget.h"
+#include "Widgets/SWindow.h"
 
 // =====================================================================================================
 // Measuring
@@ -67,14 +71,191 @@ namespace WidgetAnimInputPrivate
 		return OutRect.GetSize().SizeSquared() > UE_KINDA_SMALL_NUMBER;
 	}
 
-	bool IsHitTestable(ESlateVisibility Visibility)
+	/** The widget around Widget in its tree: its parent, or - at the top of a User Widget's tree - that User Widget. */
+	const UWidget* GetOuterWidget(const UWidget* Widget)
 	{
-		return Visibility == ESlateVisibility::Visible || Visibility == ESlateVisibility::SelfHitTestInvisible;
+		const UWidget* Parent = Widget->GetParent();
+		return Parent ? Parent : Widget->GetTypedOuter<UUserWidget>();
+	}
+
+	/**
+	 * Whether Slate's hit test can reach Widget - itself, or something inside it: neither it nor anything around it is Not
+	 * Hit-Testable (Self & All Children), Collapsed or Hidden. Where it can't, a press or hover on it is worked out from its
+	 * widgets' own settings instead (IsOverOwnParts).
+	 */
+	bool CanSlateHit(const UWidget* Widget)
+	{
+		static constexpr int32 MaxDepth = 64;
+		int32 Depth = 0;
+		for (const UWidget* Search = Widget; Search && Depth < MaxDepth; Search = GetOuterWidget(Search), ++Depth)
+		{
+			const ESlateVisibility Setting = Search->GetVisibility();
+			if (Setting == ESlateVisibility::HitTestInvisible || Setting == ESlateVisibility::Collapsed || Setting == ESlateVisibility::Hidden)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Whether Widget is drawn: neither it nor anything around it is Collapsed or Hidden. */
+	bool IsShownInTree(const UWidget* Widget)
+	{
+		static constexpr int32 MaxDepth = 64;
+		int32 Depth = 0;
+		for (const UWidget* Search = Widget; Search && Depth < MaxDepth; Search = GetOuterWidget(Search), ++Depth)
+		{
+			const ESlateVisibility Setting = Search->GetVisibility();
+			if (Setting == ESlateVisibility::Collapsed || Setting == ESlateVisibility::Hidden)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Point in the space Widget is laid out in: Point itself - or, inside a Shape Box drawing its content warped (offscreen,
+	 * into a window of its own), where Point lands in that content. False when it misses the Shape Box's drawn shape.
+	 */
+	bool ToLayoutSpace(const UWidget* Widget, const FVector2f& Point, FVector2f& OutPoint)
+	{
+		OutPoint = Point;
+		static constexpr int32 MaxDepth = 64;
+		int32 Depth = 0;
+		for (const UWidget* Search = GetOuterWidget(Widget); Search && Depth < MaxDepth; Search = GetOuterWidget(Search), ++Depth)
+		{
+			if (const UShapeBox* Box = Cast<UShapeBox>(Search))
+			{
+				FVector2D Content;
+				bool bOnShape = false;
+				if (Box->MapDesktopToContent(FVector2D(Point), Content, bOnShape))
+				{
+					OutPoint = FVector2f(Content);
+					return bOnShape;
+				}
+				return true;
+			}
+		}
+		return true;
+	}
+
+	/** Whether Point is on Widget as it is drawn: its laid-out box, with every render transform on it and around it. */
+	bool IsOnDrawnBox(const UWidget* Widget, const FVector2f& Point)
+	{
+		const TSharedPtr<SWidget> Slate = Widget->GetCachedWidget();
+		FVector2f InLayout;
+		if (!Slate.IsValid() || !ToLayoutSpace(Widget, Point, InLayout))
+		{
+			return false;
+		}
+		const FGeometry& Geometry = Slate->GetTickSpaceGeometry();
+		return Geometry.GetLocalSize().SizeSquared() > UE_KINDA_SMALL_NUMBER && Geometry.IsUnderLocation(InLayout);
+	}
+
+	/**
+	 * Whether Point is on a part of Widget a press can land on, by its widgets' own settings: Widget itself when it is Visible,
+	 * and every widget inside it that is - into nested User Widgets - wherever each is drawn, whatever is set around it.
+	 * bOutAnyVisible: whether it has any such part at all.
+	 */
+	bool IsOnVisiblePart(const UWidget* Widget, const FVector2f& Point, bool& bOutAnyVisible, int32 Depth = 0)
+	{
+		static constexpr int32 MaxDepth = 64;
+		if (!Widget || Depth > MaxDepth)
+		{
+			return false;
+		}
+		const ESlateVisibility Setting = Widget->GetVisibility();
+		if (Setting == ESlateVisibility::Collapsed || Setting == ESlateVisibility::Hidden)
+		{
+			return false;
+		}
+		if (Setting == ESlateVisibility::Visible)
+		{
+			bOutAnyVisible = true;
+			if (IsOnDrawnBox(Widget, Point))
+			{
+				return true;
+			}
+		}
+		if (const UUserWidget* AsUserWidget = Cast<UUserWidget>(Widget))
+		{
+			return AsUserWidget->WidgetTree && IsOnVisiblePart(AsUserWidget->WidgetTree->RootWidget, Point, bOutAnyVisible, Depth + 1);
+		}
+		if (const UPanelWidget* Panel = Cast<UPanelWidget>(Widget))
+		{
+			for (int32 Index = 0; Index < Panel->GetChildrenCount(); ++Index)
+			{
+				if (IsOnVisiblePart(Panel->GetChildAt(Index), Point, bOutAnyVisible, Depth + 1))
+				{
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Whether Widget is in what Slate hit-tests at Point - drawn on top there, through its children - whatever has the mouse
+	 * captured. The widgets hit are worked out once per frame and point, however many widgets ask.
+	 */
+	bool IsUnderPoint(const UWidget* Widget, const FVector2f& Point)
+	{
+		const TSharedPtr<SWidget> Slate = Widget ? Widget->GetCachedWidget() : nullptr;
+		if (!Slate.IsValid() || !FSlateApplication::IsInitialized())
+		{
+			return false;
+		}
+		static TArray<TWeakPtr<SWidget>> Hit;
+		static uint64 HitFrame = TNumericLimits<uint64>::Max();
+		static FVector2f HitPoint = FVector2f::ZeroVector;
+		if (HitFrame != GFrameCounter || !HitPoint.Equals(Point, 0.01f))
+		{
+			HitFrame = GFrameCounter;
+			HitPoint = Point;
+			Hit.Reset();
+			FSlateApplication& SlateApp = FSlateApplication::Get();
+			const FWidgetPath Path = SlateApp.LocateWindowUnderMouse(FVector2D(Point), SlateApp.GetInteractiveTopLevelWindows(), /*bIgnoreEnabledStatus=*/true);
+			for (int32 Index = 0; Index < Path.Widgets.Num(); ++Index)
+			{
+				Hit.Add(Path.Widgets[Index].Widget);
+			}
+		}
+		const SWidget* Wanted = Slate.Get();
+		return Hit.ContainsByPredicate([Wanted](const TWeakPtr<SWidget>& Candidate) { return Candidate.Pin().Get() == Wanted; });
 	}
 
 	bool IsFocused(const UWidget* Widget)
 	{
 		return Widget && (Widget->HasAnyUserFocus() || Widget->HasFocusedDescendants());
+	}
+
+	/**
+	 * Whether Point is over a widget Slate's hit test can't reach (see CanSlateHit): on one of its Visible parts, by the widgets'
+	 * own settings (IsOnVisiblePart) - so a press on an Image inside a widget set Not Hit-Testable is on both, and one beside
+	 * them on neither. A widget with no Visible part at all - a decoration let through, a measured box - answers by its
+	 * laid-out rectangle, as it always has.
+	 */
+	bool IsOverOwnParts(const UWidget* Widget, const FVector2f& Point)
+	{
+		if (!IsShownInTree(Widget))
+		{
+			return false;
+		}
+		bool bAnyVisible = false;
+		if (IsOnVisiblePart(Widget, Point, bAnyVisible))
+		{
+			return true;
+		}
+		if (bAnyVisible)
+		{
+			return false;
+		}
+		FVector2f InLayout;
+		FVector2f Local;
+		FVector2f Size;
+		return ToLayoutSpace(Widget, Point, InLayout) && WidgetAnimInput::ToUnanimatedLocal(Widget, InLayout, Local, Size)
+			&& Local.X >= 0.f && Local.Y >= 0.f && Local.X <= Size.X && Local.Y <= Size.Y;
 	}
 
 	/** One point measured in Units, from its local position and the widget's size. */
@@ -110,20 +291,40 @@ bool WidgetAnimInput::IsPointerOver(const UWidget* Widget, const FVector2f& Poin
 		return false;
 	}
 
-	// Slate's hover knows what is drawn on top of what, so a card under a popup isn't hovered through it. A widget that
-	// can't be hit, itself or through its children, is never hovered in Slate's sense, so its rectangle answers instead.
-	if (WidgetAnimInputPrivate::IsHitTestable(Visibility))
+	// Slate's hover knows what is drawn on top of what, so a card under a popup isn't hovered through it. A widget Slate
+	// can't hit - set, or inside something set, Not Hit-Testable (Self & All Children) - is never hovered in Slate's sense:
+	// its own Visible parts answer instead.
+	if (WidgetAnimInputPrivate::CanSlateHit(Widget))
 	{
-		return Widget->IsHovered();
+		if (Widget->IsHovered())
+		{
+			return true;
+		}
+		// Something has the mouse captured - the game viewport takes it on any press nothing in the UI handles, such as one on
+		// an Image - and Slate then hovers nothing else: what is hit at the pointer answers instead, until it lets go.
+		return FSlateApplication::IsInitialized() && FSlateApplication::Get().HasAnyMouseCaptor()
+			&& WidgetAnimInputPrivate::IsUnderPoint(Widget, PointerPosition);
 	}
+	return WidgetAnimInputPrivate::IsOverOwnParts(Widget, PointerPosition);
+}
 
-	FVector2f Local;
-	FVector2f Size;
-	if (!ToUnanimatedLocal(Widget, PointerPosition, Local, Size))
+bool WidgetAnimInput::IsPointUnder(const UWidget* Widget, const FVector2f& Point)
+{
+	if (!Widget)
 	{
 		return false;
 	}
-	return Local.X >= 0.f && Local.Y >= 0.f && Local.X <= Size.X && Local.Y <= Size.Y;
+	const ESlateVisibility Visibility = Widget->GetVisibility();
+	if (Visibility == ESlateVisibility::Collapsed || Visibility == ESlateVisibility::Hidden)
+	{
+		return false;
+	}
+	// What Slate hit-tests there, when it can reach the widget; else the widget's own Visible parts - see IsPointerOver.
+	if (WidgetAnimInputPrivate::CanSlateHit(Widget))
+	{
+		return WidgetAnimInputPrivate::IsUnderPoint(Widget, Point);
+	}
+	return WidgetAnimInputPrivate::IsOverOwnParts(Widget, Point);
 }
 
 bool WidgetAnimInput::ToUnanimatedLocal(const UWidget* Widget, const FVector2f& DesktopPoint, FVector2f& OutLocal, FVector2f& OutSize)
@@ -185,6 +386,167 @@ bool WidgetAnimInput::GetPointerPosition(FVector2f& OutPosition)
 	}
 	OutPosition = Position;
 	return true;
+}
+
+// =====================================================================================================
+// Counted events
+// =====================================================================================================
+
+namespace WidgetAnimInputPrivate
+{
+	/** What the counter has seen. Shared by every reader; only the game thread touches it. */
+	struct FEventCounts
+	{
+		TMap<FKey, uint32> KeyPresses;
+		uint32 AcceptPresses = 0;
+		uint32 BackPresses = 0;
+		WidgetAnimInput::FPointerEventCount LeftPresses;
+		WidgetAnimInput::FPointerEventCount DoubleClicks;
+		WidgetAnimInput::FPointerEventCount RightPresses;
+		WidgetAnimInput::FPointerEventCount RightReleases;
+	};
+
+	FEventCounts& GetEventCounts()
+	{
+		static FEventCounts Counts;
+		return Counts;
+	}
+
+	/** Sees input before any widget does - and lets it all through. */
+	class FEventCounter : public IInputProcessor
+	{
+	public:
+
+		virtual void Tick(const float DeltaTime, FSlateApplication& SlateApp, TSharedRef<ICursor> Cursor) override
+		{
+		}
+
+		virtual bool HandleKeyDownEvent(FSlateApplication& SlateApp, const FKeyEvent& InKeyEvent) override
+		{
+			if (InKeyEvent.IsRepeat())
+			{
+				return false;
+			}
+			FEventCounts& Counts = GetEventCounts();
+			const FKey Key = InKeyEvent.GetKey();
+			++Counts.KeyPresses.FindOrAdd(Key);
+
+			// Confirm and cancel as the platform has them (a swapped layout's included); a gamepad face button the navigation
+			// config says nothing about falls back to the usual bottom / right.
+			const EUINavigationAction Action = SlateApp.GetNavigationActionFromKey(InKeyEvent);
+			if (Action == EUINavigationAction::Accept || (Action == EUINavigationAction::Invalid && Key == EKeys::Gamepad_FaceButton_Bottom))
+			{
+				++Counts.AcceptPresses;
+			}
+			else if (Action == EUINavigationAction::Back || (Action == EUINavigationAction::Invalid && Key == EKeys::Gamepad_FaceButton_Right))
+			{
+				++Counts.BackPresses;
+			}
+			return false;
+		}
+
+		virtual bool HandleMouseButtonDownEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+		{
+			if (MouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
+			{
+				Count(GetEventCounts().RightPresses, MouseEvent);
+			}
+			else if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton || MouseEvent.IsTouchEvent())
+			{
+				Count(GetEventCounts().LeftPresses, MouseEvent);
+			}
+			return false;
+		}
+
+		virtual bool HandleMouseButtonUpEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+		{
+			if (MouseEvent.GetEffectingButton() == EKeys::RightMouseButton)
+			{
+				Count(GetEventCounts().RightReleases, MouseEvent);
+			}
+			return false;
+		}
+
+		virtual bool HandleMouseButtonDoubleClickEvent(FSlateApplication& SlateApp, const FPointerEvent& MouseEvent) override
+		{
+			if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+			{
+				// A double-click's second press comes as this event alone: a press too.
+				Count(GetEventCounts().LeftPresses, MouseEvent);
+				Count(GetEventCounts().DoubleClicks, MouseEvent);
+			}
+			return false;
+		}
+
+		virtual const TCHAR* GetDebugName() const override { return TEXT("WidgetAnimInputEvents"); }
+
+	private:
+
+		static void Count(WidgetAnimInput::FPointerEventCount& Counted, const FPointerEvent& MouseEvent)
+		{
+			++Counted.Count;
+			const FVector2D Position = MouseEvent.GetScreenSpacePosition();
+			Counted.Position = FVector2f(static_cast<float>(Position.X), static_cast<float>(Position.Y));
+		}
+	};
+
+	TSharedPtr<FEventCounter>& GetEventCounter()
+	{
+		static TSharedPtr<FEventCounter> Counter;
+		return Counter;
+	}
+}
+
+void WidgetAnimInput::StartCountingEvents()
+{
+	TSharedPtr<WidgetAnimInputPrivate::FEventCounter>& Counter = WidgetAnimInputPrivate::GetEventCounter();
+	if (Counter.IsValid() || !FSlateApplication::IsInitialized())
+	{
+		return;
+	}
+	Counter = MakeShared<WidgetAnimInputPrivate::FEventCounter>();
+	FSlateApplication::Get().RegisterInputPreProcessor(Counter);
+}
+
+void WidgetAnimInput::StopCountingEvents()
+{
+	TSharedPtr<WidgetAnimInputPrivate::FEventCounter>& Counter = WidgetAnimInputPrivate::GetEventCounter();
+	if (Counter.IsValid() && FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().UnregisterInputPreProcessor(Counter);
+	}
+	Counter.Reset();
+}
+
+uint32 WidgetAnimInput::GetKeyPressCount(const FKey& Key)
+{
+	return WidgetAnimInputPrivate::GetEventCounts().KeyPresses.FindRef(Key);
+}
+
+uint32 WidgetAnimInput::GetNavigationPressCount(bool bAccept)
+{
+	const WidgetAnimInputPrivate::FEventCounts& Counts = WidgetAnimInputPrivate::GetEventCounts();
+	return bAccept ? Counts.AcceptPresses : Counts.BackPresses;
+}
+
+WidgetAnimInput::FPointerEventCount WidgetAnimInput::GetLeftPressCount()
+{
+	return WidgetAnimInputPrivate::GetEventCounts().LeftPresses;
+}
+
+WidgetAnimInput::FPointerEventCount WidgetAnimInput::GetDoubleClickCount()
+{
+	return WidgetAnimInputPrivate::GetEventCounts().DoubleClicks;
+}
+
+WidgetAnimInput::FPointerEventCount WidgetAnimInput::GetRightPressCount()
+{
+	return WidgetAnimInputPrivate::GetEventCounts().RightPresses;
+}
+
+WidgetAnimInput::FPointerEventCount WidgetAnimInput::GetRightReleaseCount()
+{
+	return WidgetAnimInputPrivate::GetEventCounts().RightReleases;
 }
 
 FVector4 WidgetAnimInput::FromAxes(EWidgetAnimInputAxes Axes, const FVector2D& Value)
@@ -302,13 +664,28 @@ bool FWidgetAnimInput_Interaction::Sample(const FWidgetAnimInputContext& Context
 	UWidget* Widget = Context.MeasuredWidget;
 	const bool bHovered = Context.bHasPointer && WidgetAnimInput::IsPointerOver(Widget, Context.PointerPosition);
 
-	// Pressed is watched every frame whatever State is, so switching State at runtime doesn't start mid-press.
+	// Pressed is watched every frame whatever State is, so switching State at runtime doesn't start mid-press. The presses
+	// are counted as Slate saw them (WidgetAnimInput::StartCountingEvents), where they were made: so a press over the widget is
+	// seen however short it was - let go again before this look - and wherever the pointer has gone since.
 	const bool bDown = WidgetAnimInput::IsMouseButtonDown(EKeys::LeftMouseButton);
-	if (bDown && !bWasDown)
+	WidgetAnimInput::StartCountingEvents();
+	const WidgetAnimInput::FPointerEventCount Presses = WidgetAnimInput::GetLeftPressCount();
+	const bool bNewPress = bHasPressCount && Presses.Count != LastPressCount;
+	LastPressCount = Presses.Count;
+	bHasPressCount = true;
+	if (bNewPress)
 	{
+		// Where the press was made - not hover now, which a press nothing handled takes away (the game viewport captures it).
+		bPressStartedOver = WidgetAnimInput::IsPointUnder(Widget, Presses.Position);
+	}
+	else if (bDown && !bWasDown)
+	{
+		// Counting only just began: the press as it is seen now.
 		bPressStartedOver = bHovered;
 	}
-	else if (!bDown)
+	// Down over the widget - or pressed over it and let go since the last look: on for this one look, so it is never missed.
+	const bool bPressedOver = bPressStartedOver && (bDown || bNewPress);
+	if (!bDown)
 	{
 		bPressStartedOver = false;
 	}
@@ -322,14 +699,16 @@ bool FWidgetAnimInput_Interaction::Sample(const FWidgetAnimInputContext& Context
 		break;
 
 	case EWidgetAnimInteractionState::Pressed:
-		// A Button knows its own pressed state, keyboard and gamepad presses included.
+		// A Button knows its own pressed state, keyboard and gamepad presses included - but lets go of it the moment it loses
+		// focus, which a press action that opens something does within the press: the mouse press over it counts too, so a
+		// single click is seen as one (rather than only a double-click's second press, made once focus had moved).
 		if (const UButton* Button = Cast<UButton>(Widget))
 		{
-			bOn = Button->IsPressed();
+			bOn = Button->IsPressed() || (bPressedOver && Button->GetIsEnabled());
 		}
 		else
 		{
-			bOn = bDown && bPressStartedOver;
+			bOn = bPressedOver;
 		}
 		break;
 

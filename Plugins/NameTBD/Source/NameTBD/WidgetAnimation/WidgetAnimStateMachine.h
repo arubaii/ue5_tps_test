@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
+#include "InputCoreTypes.h"
 #include "Misc/Guid.h"
 #include "StructUtils/InstancedStruct.h"
 #include "WidgetAnimEasing.h"
@@ -212,9 +213,9 @@ enum class EWidgetAnimMachineLayerStateTest : uint8
 UENUM(BlueprintType)
 enum class EWidgetAnimMachineLayerMask : uint8
 {
-	All UMETA(ToolTip = "Every target: the layer poses whatever its states' animations move."),
-	OnlyThese UMETA(DisplayName = "Only These", ToolTip = "Only the targets listed: what the states animate on any other widget is left out, for the layers under it to keep."),
-	AllButThese UMETA(DisplayName = "All But These", ToolTip = "Every target but those listed: those are left to the layers under it.")
+	All UMETA(DisplayName = "All Widgets", ToolTip = "Every widget: the layer poses whatever its states' animations move."),
+	OnlyThese UMETA(DisplayName = "Only These", ToolTip = "Only the widgets listed in Affected Widgets - (This Widget) when none is: what the states animate on any other widget is left out, for the layers under it to keep."),
+	AllButThese UMETA(DisplayName = "All But These", ToolTip = "Every widget but those listed in Affected Widgets - but (This Widget) when none is: those are left to the layers under it.")
 };
 
 /**
@@ -674,6 +675,10 @@ struct NAMETBD_API FWidgetAnimMachineComment
 
 	UPROPERTY()
 	bool bColorBubble = false;
+
+	/** The sub-machine whose graph it is drawn in (see FWidgetAnimMachineState::bSubMachine); invalid: the layer's own graph. */
+	UPROPERTY()
+	FGuid ParentMachine;
 };
 
 /**
@@ -715,18 +720,18 @@ struct NAMETBD_API FWidgetAnimMachineState
 	EWidgetAnimMachineNodeKind Kind = EWidgetAnimMachineNodeKind::State;
 
 	/** Single Animation, or a Blend 1D / 2D of several by an input. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Properties", meta = (DisplayName = "Plays", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Properties", meta = (DisplayName = "Plays", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && !bSubMachine", EditConditionHides))
 	EWidgetAnimMachineBlendSpace BlendSpace = EWidgetAnimMachineBlendSpace::None;
 
 	/** The animation the state plays: a Widget Animation, aimed through its Track Groups at the machine's targets. None: the state poses nothing. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && BlendSpace == EWidgetAnimMachineBlendSpace::None", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && !bSubMachine && BlendSpace == EWidgetAnimMachineBlendSpace::None", EditConditionHides))
 	TObjectPtr<UWidgetAnimPresetAsset> Animation = nullptr;
 
 	/**
 	 * More animations to pick from, each with its Chance: each time the state starts it plays one of these by its chance, or
 	 * else Animation - idle variety. The chances add up to 1 at most; what is left over is Animation's.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Random Variations", TitleProperty = "Animation", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && BlendSpace == EWidgetAnimMachineBlendSpace::None", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Random Variations", TitleProperty = "Animation", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && !bSubMachine && BlendSpace == EWidgetAnimMachineBlendSpace::None", EditConditionHides))
 	TArray<FWidgetAnimMachineRandomVariation> RandomVariations;
 
 	/** The Random Variations of StateMachine v1, with no chance each: moved into RandomVariations as the asset loads (Normalize). */
@@ -737,28 +742,28 @@ struct NAMETBD_API FWidgetAnimMachineState
 	UWidgetAnimPresetAsset* PickRandomAnimation(float Roll) const;
 
 	/** Blend 1D: a Float, Integer or Press And Hold input. Blend 2D: a Vector 2D input. Where between the samples the state is. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Blend Input", GetOptions = "GetBlendInputOptions", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && BlendSpace != EWidgetAnimMachineBlendSpace::None", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Blend Input", GetOptions = "GetBlendInputOptions", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && !bSubMachine && BlendSpace != EWidgetAnimMachineBlendSpace::None", EditConditionHides))
 	FName BlendInput;
 
 	/** The animations blended, each at its place on the Blend Input. Played together, at the state's speed and playback, and mixed by where the input is. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Blend Samples", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && BlendSpace != EWidgetAnimMachineBlendSpace::None", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Blend Samples", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && !bSubMachine && BlendSpace != EWidgetAnimMachineBlendSpace::None", EditConditionHides))
 	TArray<FWidgetAnimMachineBlendSample> BlendSamples;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Properties", meta = (EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Properties", meta = (EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && !bSubMachine", EditConditionHides))
 	EWidgetAnimMachineStatePlayback Playback = EWidgetAnimMachineStatePlayback::Once;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Properties", meta = (ClampMin = "0.01", UIMin = "0.1", UIMax = "4", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Properties", meta = (ClampMin = "0.01", UIMin = "0.1", UIMax = "4", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && !bSubMachine", EditConditionHides))
 	float PlaybackSpeed = 1.f;
 
 	/** A Float input the state's speed follows, as it plays - multiplying Playback Speed (held at 0 or more). None: Playback Speed alone. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Speed Input", GetOptions = "GetNumberInputOptions", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Speed Input", GetOptions = "GetNumberInputOptions", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && !bSubMachine", EditConditionHides))
 	FName SpeedInput;
 
 	/**
 	 * For a percentage animation (Time In Percent): the Number input its progress follows, 0 for 0% and 1 for 100% - a charge
 	 * meter - or a Press And Hold, filling as it is held: a hold ring. None: it plays from 0% to 100% over one second.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Progress Input", GetOptions = "GetNumberInputOptions", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Progress Input", GetOptions = "GetNumberInputOptions", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && !bSubMachine", EditConditionHides))
 	FName ProgressInput;
 
 	/**
@@ -767,8 +772,22 @@ struct NAMETBD_API FWidgetAnimMachineState
 	 * the new value at once, where each is in its play. A value set on the widget with Set Widget Animation Parameter wins
 	 * over these. See FWidgetAnimMachineParameterBinding.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Parameters From Inputs", TitleProperty = "Parameter", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Play", meta = (DisplayName = "Parameters From Inputs", TitleProperty = "Parameter", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State && !bSubMachine", EditConditionHides))
 	TArray<FWidgetAnimMachineParameterBinding> ParameterInputs;
+
+	/**
+	 * A sub-machine: the state holds a graph of its own - its own Entry, Any State and Exit, and states and transitions between
+	 * them, each with this state's id as its Parent Machine - and plays that instead of an animation. Entered, it goes in through
+	 * its Entry; while the layer is anywhere inside it, this state's own transitions (and its graph's Any State's) can still be
+	 * taken - checked before the ones inside - and its When Finished and At Progress exit times wait for the inside to reach its
+	 * Exit, which holds the pose it had. Made from the graph (Add Sub-Machine, or Convert To Sub-Machine); opened by a double-click.
+	 */
+	UPROPERTY()
+	bool bSubMachine = false;
+
+	/** The sub-machine state whose graph this node is in (see bSubMachine); invalid: the layer's own graph. */
+	UPROPERTY()
+	FGuid ParentMachine;
 
 	/** What it does as it is entered: set an input, fire a trigger, send an event - run once the frame's transitions are settled. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Actions", meta = (DisplayName = "On Enter", EditCondition = "Kind == EWidgetAnimMachineNodeKind::State", EditConditionHides))
@@ -779,7 +798,7 @@ struct NAMETBD_API FWidgetAnimMachineState
 	TArray<FWidgetAnimMachineAction> OnExit;
 
 	/** Whether it blends several animations - see BlendSpace. */
-	bool IsBlendState() const { return Kind == EWidgetAnimMachineNodeKind::State && BlendSpace != EWidgetAnimMachineBlendSpace::None; }
+	bool IsBlendState() const { return Kind == EWidgetAnimMachineNodeKind::State && BlendSpace != EWidgetAnimMachineBlendSpace::None && !bSubMachine; }
 
 	/** Whether it has any action to run. */
 	bool HasActions() const { return OnEnter.Num() > 0 || OnExit.Num() > 0; }
@@ -822,9 +841,20 @@ struct NAMETBD_API FWidgetAnimMachineState
 	/** The collapsed group it is shown in, in the graph - see FWidgetAnimMachineStateGroup. Invalid: none. */
 	UPROPERTY()
 	FGuid EditorGroup;
+
+	/**
+	 * The widget input it was made for from the graph's Widget Inputs (a built-in input, or for Holding the machine's Press And
+	 * Hold): a wire then drawn into it is given the condition that input Is True (Fired, for a pulse), and one drawn out of it
+	 * Is False (When Finished, for a pulse). None for any other state. Only how the graph helps: nothing at runtime.
+	 */
+	UPROPERTY()
+	FName EditorWidgetInput;
 #endif
 
 	bool IsSpecial() const { return Kind != EWidgetAnimMachineNodeKind::State; }
+
+	/** Whether it is a sub-machine: a state with a graph of its own. */
+	bool IsSubMachine() const { return Kind == EWidgetAnimMachineNodeKind::State && bSubMachine; }
 };
 
 /** One layer of a machine: a graph of states and the transitions between them, running alongside the other layers. */
@@ -850,15 +880,30 @@ struct NAMETBD_API FWidgetAnimMachineLayer
 	FName WeightInput;
 
 	/**
-	 * Which of the machine's targets the layer may animate: All (the default), Only These, or All But These. What its states
-	 * animate on a target left out is dropped before the layer is blended, so the layers under it keep it - two Override layers
-	 * on one widget no longer have to be ordered just so.
+	 * The widgets the layer reads its widget inputs off - Hovered, Pressed, Focused, Selected, Disabled, Clicked, the Events
+	 * and the Gamepad buttons - picked from the widget the machine is previewed on: (This Widget) for the widget it plays on, or
+	 * a widget inside it by its path (one of the machine's targets names the widget each use puts that target on). With
+	 * several, an input is true when it is on any of them. None listed: (This Widget), as every layer read before. Closing,
+	 * and the inputs the machine declares, are the machine's own and the same on every layer.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Affects"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Widget Input Targets", GetOptions = "GetWidgetInputTargetOptions"))
+	TArray<FName> WidgetInputTargets;
+
+	/**
+	 * Which widgets the layer's animations may pose: All Widgets (the default), Only These, or All But These - those listed in
+	 * Affected Widgets. What its states animate on a widget left out is dropped before the layer is blended, so the layers
+	 * under it keep it - two Override layers on one widget no longer have to be ordered just so. Not what the layer reads its
+	 * Hovered, Pressed and the other widget inputs off: that is Widget Input Targets.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Animations Affect"))
 	EWidgetAnimMachineLayerMask MaskMode = EWidgetAnimMachineLayerMask::All;
 
-	/** The targets Affects names - the Track Group names of the machine's animations; (Widget) for the widget it plays on. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Targets", GetOptions = "GetMaskTargetOptions", EditCondition = "MaskMode != EWidgetAnimMachineLayerMask::All", EditConditionHides))
+	/**
+	 * The widgets Animations Affect names, picked from the widget the machine is previewed on: (This Widget) for the widget it
+	 * plays on, or a widget inside it by its path. One of the machine's targets - a Track Group name of its animations, as
+	 * picked before - names the widget each use of the machine puts that target on. None listed: (This Widget).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layer", meta = (DisplayName = "Affected Widgets", GetOptions = "GetMaskTargetOptions", EditCondition = "MaskMode != EWidgetAnimMachineLayerMask::All", EditConditionHides))
 	TArray<FName> MaskTargets;
 
 	/**
@@ -899,12 +944,26 @@ struct NAMETBD_API FWidgetAnimMachineLayer
 
 	int32 FindStateIndex(const FGuid& Id) const;
 	int32 FindStateIndexByName(FName StateName) const;
-	int32 FindSpecialIndex(EWidgetAnimMachineNodeKind Kind) const;
+
+	/** Entry, Any State or Exit of a graph: the layer's own (ParentMachine invalid), or a sub-machine's. */
+	int32 FindSpecialIndex(EWidgetAnimMachineNodeKind Kind, const FGuid& ParentMachine = FGuid()) const;
 	int32 FindTransitionIndex(const FGuid& Id) const;
 	const FWidgetAnimMachineState* FindState(const FGuid& Id) const;
 
 	/** Whether any transition goes to Exit: whether this layer has an exit to play as the widget closes. */
 	bool HasExitPath() const;
+
+	/**
+	 * Whether the node at Index is Ancestor, or inside it - in its sub-machine, or one inside that. What a layer in an inner state
+	 * is "in", for Is In State and conditions on another layer's state.
+	 */
+	bool IsWithin(int32 Index, int32 Ancestor) const;
+
+	/** The sub-machine state the node at Index is inside, as an index - INDEX_NONE at the top of the layer. */
+	int32 FindParentIndex(int32 Index) const;
+
+	/** How many sub-machines deep the node at Index is: 0 at the top of the layer. */
+	int32 GetDepth(int32 Index) const;
 };
 
 /**
@@ -947,6 +1006,13 @@ public:
 
 	UPROPERTY()
 	TMap<FName, FName> PreviewTargetPaths;
+
+	/**
+	 * The machine's own editor window (no designer of its own): the Widget Blueprint it is tried on - picked as its Target Widget
+	 * Blueprint - whose timelines it lists to drag in, and a preview of which it plays on.
+	 */
+	UPROPERTY()
+	FSoftObjectPath PreviewWidgetBlueprint;
 #endif
 
 	/** The machine's name in events and messages: the asset's name without WASM_ (WASM_Button is Button). */
@@ -983,6 +1049,8 @@ public:
 	/** BaseName, or BaseName with a number after it, unused by any state of Layer. */
 	static FName MakeUniqueStateName(const FWidgetAnimMachineLayer& Layer, FName BaseName, const FGuid& Except = FGuid());
 	FName MakeUniqueLayerName(FName BaseName, int32 ExceptIndex = INDEX_NONE) const;
+	/** A new layer's name: "Layer 1", "Layer 2"... the first no layer has. */
+	FName MakeNewLayerName() const;
 	FName MakeUniqueInputName(FName BaseName, int32 ExceptIndex = INDEX_NONE) const;
 
 	/** A layer with its Entry, Any State and Exit placed, and nothing else. */
@@ -1012,9 +1080,16 @@ public:
 	UFUNCTION()
 	TArray<FString> GetConditionStateOptions() const;
 
-	/** Backs a layer's Targets dropdown: (Widget), then every target. */
+	/**
+	 * Backs a layer's Affected Widgets dropdown: (This Widget), then every target. (The State Machine editor lists the widgets
+	 * of the widget it previews on instead.)
+	 */
 	UFUNCTION()
 	TArray<FString> GetMaskTargetOptions() const;
+
+	/** Backs a layer's Widget Input Targets dropdown: as GetMaskTargetOptions. */
+	UFUNCTION()
+	TArray<FString> GetWidgetInputTargetOptions() const;
 
 	/** The categories the machine's inputs are in, sorted - for the Inputs panel's Move To Category. */
 	TArray<FString> GetInputCategoryOptions() const;
@@ -1027,8 +1102,11 @@ public:
 	UFUNCTION()
 	TArray<FString> GetSettableInputOptions() const;
 
-	/** What a layer's Targets name the widget the machine plays on: "(Widget)". */
+	/** What a layer's Affected Widgets named the widget the machine plays on before (This Widget) did: "(Widget)". */
 	static const FName MaskHostTarget;
+
+	/** Whether a name in a layer's Affected Widgets or Widget Input Targets is the widget the machine plays on: None, (This Widget) or (Widget). */
+	static bool NamesHostWidget(FName Name) { return FWidgetAnimGroupTarget::IsThisWidget(Name) || Name == MaskHostTarget; }
 
 	/**
 	 * After a layer or state is renamed: every condition naming it by its old name follows it. Layer None renames a layer;
@@ -1069,7 +1147,11 @@ public:
 // Built-in inputs
 // =====================================================================================================
 
-/** The inputs every machine has without declaring them, read from the widget it plays on. */
+/**
+ * The inputs every machine has without declaring them, read from the widget it plays on. Most are true or false (Hovered, Pressed,
+ * Focused...); the rest are pulses, Fired the one frame something happens, as a Trigger is (Clicked, the Events, the Gamepad
+ * buttons - IsBuiltInPulse). A machine's own input of the same name, in a machine made before a built-in was added, wins over it.
+ */
 namespace WidgetAnimMachineInputs
 {
 	NAMETBD_API extern const FName Hovered;
@@ -1088,13 +1170,62 @@ namespace WidgetAnimMachineInputs
 	 */
 	NAMETBD_API extern const FName Clicked;
 
-	/** All seven, in that order. */
+	/** Events - pulses, each the frame its state turns: Hovered on and off, Pressed on and off, Focused on and off. */
+	NAMETBD_API extern const FName HoverEntered;
+	NAMETBD_API extern const FName HoverExited;
+	NAMETBD_API extern const FName PressStarted;
+	NAMETBD_API extern const FName Released;
+	NAMETBD_API extern const FName FocusGained;
+	NAMETBD_API extern const FName FocusLost;
+
+	/** Events - pulses: the left mouse button double-clicked over the widget; the right one pressed and let go over it. */
+	NAMETBD_API extern const FName DoubleClicked;
+	NAMETBD_API extern const FName RightClicked;
+
+	/**
+	 * Gamepad - pulses, each the frame its button is pressed while the widget (or something inside it) has keyboard or gamepad
+	 * focus. Accept and Back are the UI's own confirm and cancel, whichever buttons the platform uses for them (Slate's
+	 * navigation config) - Enter / Space and Escape on a keyboard too.
+	 */
+	NAMETBD_API extern const FName Accept;
+	NAMETBD_API extern const FName Back;
+	NAMETBD_API extern const FName GamepadFaceBottom;
+	NAMETBD_API extern const FName GamepadFaceRight;
+	NAMETBD_API extern const FName GamepadFaceLeft;
+	NAMETBD_API extern const FName GamepadFaceTop;
+	NAMETBD_API extern const FName GamepadLeftShoulder;
+	NAMETBD_API extern const FName GamepadRightShoulder;
+	NAMETBD_API extern const FName GamepadLeftTrigger;
+	NAMETBD_API extern const FName GamepadRightTrigger;
+	NAMETBD_API extern const FName GamepadDPadUp;
+	NAMETBD_API extern const FName GamepadDPadDown;
+	NAMETBD_API extern const FName GamepadDPadLeft;
+	NAMETBD_API extern const FName GamepadDPadRight;
+	NAMETBD_API extern const FName GamepadMenu;
+	NAMETBD_API extern const FName GamepadView;
+	NAMETBD_API extern const FName GamepadLeftStick;
+	NAMETBD_API extern const FName GamepadRightStick;
+
+	/** Every built-in input: the first seven as they always were, then the Events, then the Gamepad buttons. At most 64. */
 	NAMETBD_API const TArray<FName>& GetBuiltIns();
 
 	/** Which bit of a built-in mask Name is, or 0 for an input that isn't built in. */
-	NAMETBD_API uint8 GetBuiltInBit(FName Name);
+	NAMETBD_API uint64 GetBuiltInBit(FName Name);
 
 	NAMETBD_API bool IsBuiltIn(FName Name);
+
+	/** Whether a built-in input is a pulse - Fired the one frame, as a Trigger is - rather than true or false. */
+	NAMETBD_API bool IsBuiltInPulse(FName Name);
+
+	/**
+	 * Where a built-in input is listed in the editor: None for the first seven, "Events", or "Gamepad" - and, in Gamepad, its
+	 * sub-group ("Navigation", "Face Buttons", "Shoulders And Triggers", "D-Pad", "Menu And Sticks"; None elsewhere).
+	 */
+	NAMETBD_API FName GetBuiltInGroup(FName Name);
+	NAMETBD_API FName GetBuiltInSubGroup(FName Name);
+
+	/** The gamepad button a Gamepad built-in reads (EKeys::Invalid for any other, Accept and Back included). */
+	NAMETBD_API FKey GetBuiltInKey(FName Name);
 
 	/** A line about a built-in input, for its tooltip. */
 	NAMETBD_API FText GetBuiltInDescription(FName Name);
@@ -1111,6 +1242,12 @@ struct NAMETBD_API FWidgetAnimMachineWidgetState
 
 	/** Clicked this frame - a pulse. A provider that knows sets it; otherwise it is a press let go over the widget. */
 	bool bClicked = false;
+
+	/**
+	 * The other pulses Fired this frame - the Events and the Gamepad buttons - as a mask of WidgetAnimMachineInputs::GetBuiltInBit.
+	 * Worked out by the machine from the states above and the input it sees; a provider leaves it alone.
+	 */
+	uint64 Fired = 0;
 };
 
 /**
@@ -1249,10 +1386,11 @@ struct NAMETBD_API FWidgetAnimStateMachineEntry
 	TObjectPtr<UWidgetAnimStateMachineAsset> StateMachine = nullptr;
 
 	/**
-	 * A widget for each of the machine's targets - the Track Group names of its animations - labeled with its name. Sized to
-	 * the machine whenever the component is edited or loaded. A new row starts on the group's Preview Target.
+	 * A widget for each of the machine's targets - the Track Group names of its animations - labeled with its name and the
+	 * animations it is a group of. Sized to the machine whenever the component is edited or loaded. A new row starts on the
+	 * group's Preview Target.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Target Widgets", EditFixedSize, TitleProperty = "GroupName"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Animation Target Widgets", EditFixedSize, TitleProperty = "{GroupName} ({Animations})"))
 	TArray<FWidgetAnimGroupTarget> Targets;
 
 	/** This widget's own settings for the machine's inputs, one row per input. Untick a row and the machine's are used. */

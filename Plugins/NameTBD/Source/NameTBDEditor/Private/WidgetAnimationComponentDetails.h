@@ -33,21 +33,36 @@ public:
 	virtual void CustomizeDetails(const TSharedPtr<IDetailLayoutBuilder>& DetailBuilder) override;
 	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 
+	/**
+	 * The Events group, open from the start, at the end of Category: one row per Event track in the component's animations
+	 * and additive tracks, and in the animations inserted into them as tracks - "On Card Event Track Landed Fired" for a Landed
+	 * track in WA_Card - then one per state event and Fire Event action of the state machines it plays, each with a + that adds
+	 * its event to the Widget Blueprint's graph and shows it, as a button's On Clicked does, or shows the one already there.
+	 * For a Widget Animation Component, or a Widget Animation State Machine Component (its machines'). See
+	 * WidgetAnimCues::GetEventFunctionName.
+	 */
+	static void AddEventRows(class IDetailCategoryBuilder& Category, const TArray<TWeakObjectPtr<UObject>>& Objects);
+
 private:
 
 	/** One list's editor, under its own row, with the list's plain array field hidden. */
 	void AddListEditor(IDetailLayoutBuilder& DetailBuilder, class IDetailCategoryBuilder& Category, FName PropertyName, bool bOut,
 		const TArray<TWeakObjectPtr<UObject>>& Objects);
 
-	/**
-	 * The Events group, open from the start, at the end of the Animation category: one row per Event track in the
-	 * component's animations and additive tracks, and in the animations inserted into them as tracks - "On Card Event
-	 * Track Landed Fired" for a Landed track in WA_Card - with a + that adds its event to the Widget Blueprint's graph and
-	 * shows it, as a button's On Clicked does, or shows the one already there. The event is a Custom Event named for its
-	 * animation and track, with an Info pin (see WidgetAnimCues::GetEventFunctionName).
-	 */
-	void AddEventRows(class IDetailCategoryBuilder& Category, const TArray<TWeakObjectPtr<UObject>>& Objects);
-
 	/** The builder these Details were laid out by - refreshed after a list is handed over to an entry. */
 	TWeakPtr<IDetailLayoutBuilder> WeakDetailBuilder;
+};
+
+/**
+ * The Details of a Widget Animation State Machine Component: its State Machines, how a Widget Animation Component's own
+ * animations compose with them and Preserve Authored Transforms, then the Events group of its machines' state events and
+ * Fire Event actions (and their animations' Event tracks), as a Widget Animation Component lists them.
+ */
+class FWidgetAnimationStateMachineComponentDetails : public IDetailCustomization
+{
+public:
+
+	static TSharedRef<IDetailCustomization> MakeInstance();
+
+	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 };

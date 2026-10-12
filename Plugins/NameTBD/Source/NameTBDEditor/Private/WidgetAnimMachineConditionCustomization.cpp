@@ -7,6 +7,7 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "IDetailChildrenBuilder.h"
 #include "IDetailPropertyRow.h"
+#include "NameTBDTooltips.h"
 #include "PropertyHandle.h"
 #include "SWidgetAnimStateMachineEditor.h"
 #include "Widgets/Input/SComboButton.h"
@@ -31,16 +32,13 @@ namespace
 
 	EConditionInputKind GetInputKind(const UWidgetAnimStateMachineAsset* Machine, FName Input)
 	{
-		// The built-in inputs are true or false - but for Clicked, a pulse, as a Trigger is.
-		if (Input == WidgetAnimMachineInputs::Clicked)
-		{
-			return EConditionInputKind::Trigger;
-		}
-		if (WidgetAnimMachineInputs::IsBuiltIn(Input))
-		{
-			return EConditionInputKind::Bool;
-		}
+		// The built-in inputs are true or false - or pulses (Clicked, the Events, the Gamepad buttons), as a Trigger is. A machine's
+		// own input of the same name wins over a built-in, as at runtime.
 		const FWidgetAnimMachineInput* Definition = Machine && !Input.IsNone() ? Machine->FindInput(Input) : nullptr;
+		if (!Definition && WidgetAnimMachineInputs::IsBuiltIn(Input))
+		{
+			return WidgetAnimMachineInputs::IsBuiltInPulse(Input) ? EConditionInputKind::Trigger : EConditionInputKind::Bool;
+		}
 		if (!Definition)
 		{
 			return EConditionInputKind::Unknown;
@@ -173,6 +171,95 @@ namespace
 			return LOCTEXT("MovedTip", "The frame it moves at all.");
 		}
 		return StaticEnum<EWidgetAnimMachineCompare>()->GetToolTipTextByIndex(static_cast<int32>(Compare));
+	}
+
+	/** One input in the Input picker - picked, it is the condition's input. */
+	void AddInputEntry(FMenuBuilder& Menu, const TSharedPtr<IPropertyHandle>& InputHandle, FName Input, const FText& Tooltip)
+	{
+		Menu.AddMenuEntry(FText::FromName(Input), Tooltip, FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateLambda([InputHandle, Input]() { InputHandle->SetValue(Input); }),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateLambda([InputHandle, Input]() { return GetName(InputHandle) == Input; })),
+			NAME_None, EUserInterfaceActionType::RadioButton);
+	}
+
+	/** The built-in inputs of one group (and sub-group, for the Gamepad's) - those a machine's own input doesn't stand in for. */
+	TArray<FName> GetBuiltInsIn(const UWidgetAnimStateMachineAsset* Machine, FName Group, FName SubGroup)
+	{
+		return WidgetAnimMachineInputs::GetBuiltIns().FilterByPredicate([Machine, Group, SubGroup](FName BuiltIn)
+		{
+			return WidgetAnimMachineInputs::GetBuiltInGroup(BuiltIn) == Group && WidgetAnimMachineInputs::GetBuiltInSubGroup(BuiltIn) == SubGroup
+				&& !(Machine && Machine->FindInput(BuiltIn));
+		});
+	}
+
+	/**
+	 * The Input picker: the machine's own inputs, then the Widget Inputs as the Inputs panel lists them - the widget's states and
+	 * Clicked, then Events and Gamepad (by its groups) in sub-menus of their own.
+	 */
+	void FillInputMenu(FMenuBuilder& Menu, const TSharedPtr<IPropertyHandle>& InputHandle, const UWidgetAnimStateMachineAsset* Machine)
+	{
+		Menu.BeginSection(NAME_None, LOCTEXT("MachineInputsSection", "Inputs"));
+		if (!Machine || Machine->Inputs.Num() == 0)
+		{
+			Menu.AddMenuEntry(LOCTEXT("NoMachineInputs", "No inputs yet"), LOCTEXT("NoMachineInputsTip", "Add one in the Inputs panel."),
+				FSlateIcon(), FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([]() { return false; })));
+		}
+		else
+		{
+			for (const FWidgetAnimMachineInput& Candidate : Machine->Inputs)
+			{
+				if (!Candidate.Name.IsNone())
+				{
+					const FText TypeName = StaticEnum<EWidgetAnimMachineInputType>()->GetDisplayNameTextByValue(static_cast<int64>(Candidate.Type));
+					AddInputEntry(Menu, InputHandle, Candidate.Name, Candidate.Description.IsEmpty()
+						? TypeName
+						: FText::Format(LOCTEXT("MachineInputEntryTip", "{0}: {1}"), TypeName, FText::FromString(Candidate.Description)));
+				}
+			}
+		}
+		Menu.EndSection();
+
+		static const FName EventsGroup(TEXT("Events"));
+		static const FName GamepadGroup(TEXT("Gamepad"));
+		Menu.BeginSection(NAME_None, LOCTEXT("WidgetInputsSection", "Widget Inputs"));
+		for (const FName BuiltIn : GetBuiltInsIn(Machine, NAME_None, NAME_None))
+		{
+			AddInputEntry(Menu, InputHandle, BuiltIn, WidgetAnimMachineInputs::GetBuiltInDescription(BuiltIn));
+		}
+		const TWeakObjectPtr<const UWidgetAnimStateMachineAsset> WeakMachine(Machine);
+		Menu.AddSubMenu(LOCTEXT("EventsSubMenu", "Events"), NameTBD::Tooltips::StateMachineEditor::BuiltInEventsGroupTooltip(),
+			FNewMenuDelegate::CreateLambda([InputHandle, WeakMachine](FMenuBuilder& SubMenu)
+			{
+				for (const FName BuiltIn : GetBuiltInsIn(WeakMachine.Get(), EventsGroup, NAME_None))
+				{
+					AddInputEntry(SubMenu, InputHandle, BuiltIn, WidgetAnimMachineInputs::GetBuiltInDescription(BuiltIn));
+				}
+			}));
+		Menu.AddSubMenu(LOCTEXT("GamepadSubMenu", "Gamepad"), NameTBD::Tooltips::StateMachineEditor::BuiltInGamepadGroupTooltip(),
+			FNewMenuDelegate::CreateLambda([InputHandle, WeakMachine](FMenuBuilder& SubMenu)
+			{
+				// A section for each kind of button, in the order they are listed.
+				TArray<FName> SubGroups;
+				for (const FName BuiltIn : WidgetAnimMachineInputs::GetBuiltIns())
+				{
+					if (WidgetAnimMachineInputs::GetBuiltInGroup(BuiltIn) == GamepadGroup)
+					{
+						SubGroups.AddUnique(WidgetAnimMachineInputs::GetBuiltInSubGroup(BuiltIn));
+					}
+				}
+				for (const FName SubGroup : SubGroups)
+				{
+					SubMenu.BeginSection(NAME_None, FText::FromName(SubGroup));
+					for (const FName BuiltIn : GetBuiltInsIn(WeakMachine.Get(), GamepadGroup, SubGroup))
+					{
+						AddInputEntry(SubMenu, InputHandle, BuiltIn, WidgetAnimMachineInputs::GetBuiltInDescription(BuiltIn));
+					}
+					SubMenu.EndSection();
+				}
+			}));
+		Menu.EndSection();
 	}
 
 	/** A number as a condition shows it: whole for an Integer. */
@@ -544,7 +631,8 @@ void FWidgetAnimMachineConditionCustomization::CustomizeChildren(TSharedRef<IPro
 				}
 				for (const FWidgetAnimMachineState& Candidate : Machine->Layers[LayerIndex].States)
 				{
-					if (Candidate.Kind != EWidgetAnimMachineNodeKind::State && Candidate.Kind != EWidgetAnimMachineNodeKind::Exit)
+					// States inside sub-machines too; the layer's own Exit, never a sub-machine's.
+					if (Candidate.Kind != EWidgetAnimMachineNodeKind::State && (Candidate.Kind != EWidgetAnimMachineNodeKind::Exit || Candidate.ParentMachine.IsValid()))
 					{
 						continue;
 					}
@@ -559,9 +647,33 @@ void FWidgetAnimMachineConditionCustomization::CustomizeChildren(TSharedRef<IPro
 			})
 	];
 
-	// Input: as it is - its dropdown of the machine's inputs and the built-in ones. Picked, Compare is put right for it: the
-	// one it had, if it still applies, else the first that does.
-	ChildBuilder.AddProperty(InputHandle.ToSharedRef()).Visibility(TAttribute<EVisibility>::CreateLambda([Show]() { return Show(true); }));
+	// Input: the machine's inputs, then the built-in ones - Events and Gamepad in sub-menus, as the Inputs panel folds them. Picked,
+	// Compare is put right for it: the one it had, if it still applies, else the first that does.
+	IDetailPropertyRow& InputRow = ChildBuilder.AddProperty(InputHandle.ToSharedRef());
+	InputRow.Visibility(TAttribute<EVisibility>::CreateLambda([Show]() { return Show(true); }));
+	InputRow.CustomWidget()
+	.NameContent()
+	[
+		InputHandle->CreatePropertyNameWidget()
+	]
+	.ValueContent()
+	.MinDesiredWidth(140.f)
+	[
+		MakeNameCombo(
+			[InputHandle]()
+			{
+				FName Picked;
+				if (InputHandle->GetValue(Picked) == FPropertyAccess::MultipleValues)
+				{
+					return LOCTEXT("MultipleInputs", "Multiple Values");
+				}
+				return Picked.IsNone() ? LOCTEXT("PickInput", "Pick an input") : FText::FromName(Picked);
+			},
+			[InputHandle, WeakMachine](FMenuBuilder& Menu)
+			{
+				FillInputMenu(Menu, InputHandle, WeakMachine.Get());
+			})
+	];
 	const TWeakPtr<IPropertyHandle> WeakInput = InputHandle;
 	const TWeakPtr<IPropertyHandle> WeakCompare = CompareHandle;
 	InputHandle->SetOnPropertyValueChanged(FSimpleDelegate::CreateLambda([WeakInput, WeakCompare, WeakMachine]()

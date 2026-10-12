@@ -25,6 +25,7 @@
 #include "NameTBD/WidgetAnimation/WidgetAnimLibrary.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimationStateMachineComponent.h"
 #include "UObject/UObjectHash.h"
 #include "UObject/UnrealType.h"
 
@@ -295,7 +296,7 @@ namespace SetWidgetAnimationValueNode
 	 * package - a container, an extension - and on the components' own outers, since which of them holds the list
 	 * isn't something to depend on.
 	 */
-	TMap<const UObject*, FName> FindHeldNames(UPackage* Package, const TArray<const UWidgetAnimationComponent*>& Components)
+	TMap<const UObject*, FName> FindHeldNames(UPackage* Package, const TArray<const UObject*>& Components)
 	{
 		TMap<const UObject*, FName> Names;
 		TSet<const UObject*> Scanned;
@@ -310,7 +311,7 @@ namespace SetWidgetAnimationValueNode
 			return true;
 		}, /*bIncludeNestedObjects=*/true);
 
-		for (const UWidgetAnimationComponent* Component : Components)
+		for (const UObject* Component : Components)
 		{
 			for (const UObject* Outer = Component->GetOuter(); Outer && !Outer->IsA<UPackage>(); Outer = Outer->GetOuter())
 			{
@@ -406,7 +407,8 @@ namespace SetWidgetAnimationValueNode
 	 * widget, else those kept for the scope's widget or one inside it - and the Widget Blueprints of the User Widgets
 	 * placed in that part of the tree, whose own components the node reaches too.
 	 */
-	void CollectStoredComponents(const FWidgetAnimValueSourceScope& Scope, TArray<const UWidgetAnimationComponent*>& OutComponents, TArray<const UBlueprint*>& OutNested)
+	void CollectStoredComponents(const FWidgetAnimValueSourceScope& Scope, TArray<const UWidgetAnimationComponent*>& OutComponents, TArray<const UBlueprint*>& OutNested,
+		TArray<const UWidgetAnimationStateMachineComponent*>* OutMachineComponents)
 	{
 		const UWidgetBlueprint* WidgetBlueprint = Cast<UWidgetBlueprint>(Scope.Blueprint);
 		UWidgetTree* Tree = WidgetBlueprint ? WidgetBlueprint->WidgetTree.Get() : nullptr;
@@ -439,33 +441,48 @@ namespace SetWidgetAnimationValueNode
 			}
 		}
 
-		TArray<const UWidgetAnimationComponent*> Stored;
-		ForEachObjectWithPackage(Scope.Blueprint->GetPackage(), [&Stored](UObject* Object)
+		// The Widget Animation Components - and, when asked for, the State Machine Components.
+		TArray<const UObject*> Stored;
+		ForEachObjectWithPackage(Scope.Blueprint->GetPackage(), [&Stored, OutMachineComponents](UObject* Object)
 		{
 			// Everything in the Blueprint's package, Transient copies included: after a compile the copies the component
 			// lists pair with their widgets can be flagged Transient, and skipping them left nothing to offer. Nothing
 			// live is in the package - previews and game widgets live elsewhere - so nothing else gets in this way.
-			const UWidgetAnimationComponent* Component = Cast<UWidgetAnimationComponent>(Object);
-			if (Component && !Component->HasAnyFlags(RF_ClassDefaultObject))
+			const bool bWanted = Object->IsA<UWidgetAnimationComponent>() || (OutMachineComponents && Object->IsA<UWidgetAnimationStateMachineComponent>());
+			if (bWanted && !Object->HasAnyFlags(RF_ClassDefaultObject))
 			{
-				Stored.Add(Component);
+				Stored.Add(Object);
 			}
 			return true;
 		}, /*bIncludeNestedObjects=*/true);
 
+		auto Take = [&OutComponents, OutMachineComponents](const UObject* Component)
+		{
+			if (const UWidgetAnimationComponent* AsPlayer = Cast<UWidgetAnimationComponent>(Component))
+			{
+				OutComponents.Add(AsPlayer);
+			}
+			else if (const UWidgetAnimationStateMachineComponent* AsMachines = Cast<UWidgetAnimationStateMachineComponent>(Component))
+			{
+				OutMachineComponents->Add(AsMachines);
+			}
+		};
 		if (Scope.WidgetName.IsNone())
 		{
-			OutComponents.Append(Stored);
+			for (const UObject* Component : Stored)
+			{
+				Take(Component);
+			}
 		}
 		else
 		{
 			const TMap<const UObject*, FName> HeldNames = FindHeldNames(Scope.Blueprint->GetPackage(), Stored);
-			for (const UWidgetAnimationComponent* Component : Stored)
+			for (const UObject* Component : Stored)
 			{
 				const FName* HeldName = HeldNames.Find(Component);
 				if (HeldName && InScope.Contains(*HeldName))
 				{
-					OutComponents.Add(Component);
+					Take(Component);
 				}
 			}
 		}
@@ -536,7 +553,8 @@ FWidgetAnimValueSourceScope UK2Node_SetWidgetAnimationValue::FindScopeFor(const 
 	return Scope;
 }
 
-void UK2Node_SetWidgetAnimationValue::GatherComponentsInScope(const FWidgetAnimValueSourceScope& Scope, TArray<const UWidgetAnimationComponent*>& Components)
+void UK2Node_SetWidgetAnimationValue::GatherComponentsInScope(const FWidgetAnimValueSourceScope& Scope, TArray<const UWidgetAnimationComponent*>& Components,
+	TArray<const UWidgetAnimationStateMachineComponent*>* OutMachineComponents)
 {
 	if (!Scope.Blueprint)
 	{
@@ -574,7 +592,7 @@ void UK2Node_SetWidgetAnimationValue::GatherComponentsInScope(const FWidgetAnimV
 		}
 
 		TArray<const UBlueprint*> Nested;
-		SetWidgetAnimationValueNode::CollectStoredComponents(Next, Components, Nested);
+		SetWidgetAnimationValueNode::CollectStoredComponents(Next, Components, Nested, OutMachineComponents);
 		for (const UBlueprint* NestedBlueprint : Nested)
 		{
 			FWidgetAnimValueSourceScope Inner;
@@ -677,7 +695,7 @@ void UK2Node_SetWidgetAnimationValue::LogValueSourceSearch() const
 		return true;
 	}, /*bIncludeNestedObjects=*/true);
 
-	const TMap<const UObject*, FName> HeldNames = SetWidgetAnimationValueNode::FindHeldNames(Scope.Blueprint->GetPackage(), Stored);
+	const TMap<const UObject*, FName> HeldNames = SetWidgetAnimationValueNode::FindHeldNames(Scope.Blueprint->GetPackage(), TArray<const UObject*>(Stored));
 	for (const UWidgetAnimationComponent* Component : Stored)
 	{
 		const FName* HeldName = HeldNames.Find(Component);

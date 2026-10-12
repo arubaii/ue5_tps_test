@@ -17,6 +17,7 @@
 class SWidget;
 class FActiveTimerHandle;
 class UWidgetAnimationComponent;
+class UWidgetAnimationStateMachineComponent;
 
 // =====================================================================================================
 // Versioning (UUserWidget_Animatable migration)
@@ -228,17 +229,18 @@ public:
 	TArray<FWidgetAnimValueOverride> ValueOverrides;
 
 	/**
-	 * State machines this widget plays: each a Widget Animation State Machine (WASM_) - states, transitions and inputs - with
-	 * a widget picked for each of its targets. A machine moves the widget between its states on its own as its inputs change:
-	 * hovered, pressed, selected, a value from a View Model. Its Entry plays as the widget is constructed (or with Play In),
-	 * and its way to Exit as the widget closes, which a screen closing waits for. See WidgetAnimStateMachine.h.
+	 * State machines this widget plays, set up before they moved to the Widget Animation State Machine Component - where new
+	 * ones go: each a Widget Animation State Machine (WASM_) with a widget picked for each of its targets. Still played as they
+	 * were, together with the State Machine Component's on the same widget; shown only while there are some. See
+	 * UWidgetAnimationStateMachineComponent.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "State Machines", TitleProperty = "StateMachine"))
 	TArray<FWidgetAnimStateMachineEntry> StateMachines;
 
 	/**
-	 * How Anim In, Anim Out and everything played by Anim ID compose with the state machines: on top of them (the default), or
-	 * under them - covered wherever an Override layer of a machine animates. See EWidgetAnimTracksWithMachines.
+	 * How Anim In, Anim Out and everything played by Anim ID compose with the state machines here: on top of them (the default),
+	 * or under them - covered wherever an Override layer of a machine animates. A Widget Animation State Machine Component on
+	 * the same widget says it for its machines instead. See EWidgetAnimTracksWithMachines.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Animations With State Machines"))
 	EWidgetAnimTracksWithMachines TracksWithStateMachines = EWidgetAnimTracksWithMachines::AddOnTop;
@@ -573,8 +575,30 @@ public:
 	/** Whether a machine here - StateMachine, or any when null - has an input of that name, declared or built in. */
 	bool HasStateMachineInput(const UWidgetAnimStateMachineAsset* StateMachine, FName Input) const;
 
-	/** Whether StateMachine is one of the State Machines here. */
+	/** Whether StateMachine is played here - one of the State Machines here, or of the State Machine Component it plays for. */
 	bool PlaysStateMachine(const UWidgetAnimStateMachineAsset* StateMachine) const;
+
+	/**
+	 * The State Machines rows played here: this component's own, then those of the Widget Animation State Machine Component on
+	 * the same widget, which this component plays for it. What FWidgetAnimMachineInstance::RowIndex counts through.
+	 */
+	void GetPlayedMachineRows(TArray<const FWidgetAnimStateMachineEntry*>& OutRows) const;
+
+	/** The played row at RowIndex (see GetPlayedMachineRows), or null. */
+	const FWidgetAnimStateMachineEntry* GetPlayedMachineRow(int32 RowIndex) const;
+
+	/** Whether any State Machines row is played here - its own, or the State Machine Component's on its widget. */
+	bool HasPlayedMachineRows() const;
+
+	/** The Widget Animation State Machine Component on the same widget, whose machines this component plays - or null. */
+	UWidgetAnimationStateMachineComponent* GetMachineComponent() const;
+
+	/**
+	 * Makes this the player of a Widget Animation State Machine Component on InWidget that has no Widget Animation Component
+	 * beside it: bound to InWidget as one added in the designer is - its paths into the Widget Blueprint around it. The State
+	 * Machine Component tells it of its owner's lifecycle (NotifyOwnerConstructed and the rest).
+	 */
+	void BindAsMachinePlayer(UWidget* InWidget, bool bInPreserveAuthoredTransforms);
 
 	/**
 	 * Sets an animation parameter on this widget's uses of Animation (every animation when null) with Anim ID AnimId (any when
@@ -774,6 +798,13 @@ public:
 	 */
 	UFUNCTION()
 	TArray<FString> GetAnimTargetWidgetOptions() const;
+
+	/**
+	 * GetAnimTargetWidgetOptions, for any UI component on a widget: Component, on WidgetOwner - null for the Details panel's
+	 * template, which stands for its live copy's widget. bOwnTree: paths go into WidgetOwner's own tree, as for a User Widget
+	 * bound onto itself by code.
+	 */
+	static TArray<FString> GatherTargetWidgetOptions(const UObject* Component, UWidget* WidgetOwner, bool bOwnTree);
 
 	const TArray<FWidgetAnimSettings>& GetFlattenedAnimIn() const { return FlattenedIn; }
 	const TArray<FWidgetAnimSettings>& GetFlattenedAnimOut() const { return FlattenedOut; }
@@ -1138,6 +1169,9 @@ private:
 
 	/** Whether any machine is playing. */
 	bool AreMachinesRunning() const;
+
+	/** How the frame's other tracks compose with the machines: the State Machine Component's say, when this plays one's. */
+	EWidgetAnimTracksWithMachines GetTracksWithMachines() const;
 
 	/** Whether a machine with a way to Exit hasn't got there yet - what Playing Out waits on besides the exit's tracks. */
 	bool AreMachinesExiting() const;

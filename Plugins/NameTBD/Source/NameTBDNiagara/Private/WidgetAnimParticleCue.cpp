@@ -45,7 +45,7 @@ FText FWidgetAnimParticleCueEvaluator::GetTrackSummary(const FInstancedStruct& P
 	case EWidgetAnimParticleCueAction::Play:
 		What = TrackSystem
 			? FText::Format(LOCTEXT("PlaySystemSummary", "Play {0}"), FText::FromString(TrackSystem->GetName()))
-			: CueParams->PlaysNothing() ? LOCTEXT("PlayNoneSummary", "Play (no system)") : LOCTEXT("PlaySummary", "Play");
+			: CueParams->PlaysNothing() ? LOCTEXT("PlayNoneSummary", "Play None (stops)") : LOCTEXT("PlaySummary", "Play");
 		break;
 	case EWidgetAnimParticleCueAction::StopEmitting:
 		What = LOCTEXT("StopSummary", "Stop Emitting");
@@ -74,8 +74,10 @@ void FWidgetAnimParticleCueEvaluator::Fire(const FWidgetAnimCueContext& Context)
 		return;
 	}
 
-	// Use Widget's Niagara System off and no system picked: the track plays None - nothing - never the widget's own.
-	if (CueParams->PlaysNothing())
+	// Use Widget's Niagara System off and no system picked: the track plays None - never the widget's own. A burst of None is
+	// nothing; Play plays None as the widget's system, so whatever the widget had playing (its Auto Play) stops there.
+	const bool bPlaysNothing = CueParams->PlaysNothing();
+	if (bPlaysNothing && CueParams->Action != EWidgetAnimParticleCueAction::Play)
 	{
 		return;
 	}
@@ -89,6 +91,15 @@ void FWidgetAnimParticleCueEvaluator::Fire(const FWidgetAnimCueContext& Context)
 			*TrackWidget->GetName(),
 			CueParams->ParticlesWidget.IsNone() ? TEXT("") : TEXT(" named "),
 			CueParams->ParticlesWidget.IsNone() ? TEXT("") : *CueParams->ParticlesWidget.ToString()));
+		return;
+	}
+
+	if (bPlaysNothing)
+	{
+		for (UNiagaraUIWidget* Particles : Found)
+		{
+			Particles->PlayNothing();
+		}
 		return;
 	}
 

@@ -15,10 +15,12 @@
 #include "WidgetAnimTransform.h"
 #include "Engine/Engine.h"
 #include "Serialization/CustomVersion.h"
+#include "UObject/UObjectHash.h"
 #include "UObject/UObjectIterator.h"
 #include "UObject/UnrealType.h"
 #include "Widgets/SWidget.h"
 #include "WidgetAnimStateMachineRuntime.h"
+#include "WidgetAnimationStateMachineComponent.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimationComponent, Log, All);
@@ -378,12 +380,25 @@ namespace WidgetAnimComponentOptions
 	 * The widget a live copy of Template is on - a designer preview's component made from it. What the Details panel's
 	 * template, which is on no widget itself, stands for.
 	 */
-	UWidget* FindLiveOwner(const UWidgetAnimationComponent* Template)
+	UWidget* FindLiveOwner(const UObject* Template)
 	{
-		for (TObjectIterator<UWidgetAnimationComponent> It(RF_ClassDefaultObject | RF_ArchetypeObject, /*bIncludeDerivedClasses=*/true, EInternalObjectFlags::Garbage); It; ++It)
+		// The widget a component is on: a Widget Animation Component's, or a State Machine Component's.
+		auto OwnerOf = [](const UObject* Candidate) -> UWidget*
 		{
-			const UWidgetAnimationComponent* Candidate = *It;
-			if (Candidate == Template || !Candidate->GetAnimatedWidget())
+			if (const UWidgetAnimationComponent* AsPlayer = Cast<UWidgetAnimationComponent>(Candidate))
+			{
+				return AsPlayer->GetAnimatedWidget();
+			}
+			const UWidgetAnimationStateMachineComponent* AsMachines = Cast<UWidgetAnimationStateMachineComponent>(Candidate);
+			return AsMachines ? AsMachines->GetAnimatedWidget() : nullptr;
+		};
+
+		TArray<UObject*> Candidates;
+		GetObjectsOfClass(Template->GetClass(), Candidates, /*bIncludeDerivedClasses=*/true, RF_ClassDefaultObject | RF_ArchetypeObject, EInternalObjectFlags::Garbage);
+		for (const UObject* Candidate : Candidates)
+		{
+			UWidget* CandidateOwner = OwnerOf(Candidate);
+			if (Candidate == Template || !CandidateOwner)
 			{
 				continue;
 			}
@@ -392,7 +407,7 @@ namespace WidgetAnimComponentOptions
 			{
 				if (Archetype == Template)
 				{
-					return Candidate->GetAnimatedWidget();
+					return CandidateOwner;
 				}
 				if (Archetype->HasAnyFlags(RF_ClassDefaultObject))
 				{
@@ -407,14 +422,18 @@ namespace WidgetAnimComponentOptions
 
 TArray<FString> UWidgetAnimationComponent::GetAnimTargetWidgetOptions() const
 {
+	return GatherTargetWidgetOptions(this, AnimOwner.Get(), bBoundByCode);
+}
+
+TArray<FString> UWidgetAnimationComponent::GatherTargetWidgetOptions(const UObject* Component, UWidget* WidgetOwner, bool bOwnTree)
+{
 	TArray<FString> Options;
 
 	// The widget the component is on - or, for the Details panel's template, the one its live copy is on.
-	UWidget* WidgetOwner = AnimOwner.Get();
 #if WITH_EDITOR
-	if (!WidgetOwner)
+	if (!WidgetOwner && Component)
 	{
-		WidgetOwner = WidgetAnimComponentOptions::FindLiveOwner(this);
+		WidgetOwner = WidgetAnimComponentOptions::FindLiveOwner(Component);
 	}
 #endif
 
@@ -424,7 +443,7 @@ TArray<FString> UWidgetAnimationComponent::GetAnimTargetWidgetOptions() const
 		// own tree, so that is what is offered. Otherwise the widget and everything inside it, named as they are in the
 		// tree it sits in - which is how targets are looked up.
 		UUserWidget* OwnerAsUserWidget = Cast<UUserWidget>(WidgetOwner);
-		if (OwnerAsUserWidget && (bBoundByCode || !WidgetOwner->GetTypedOuter<UUserWidget>()))
+		if (OwnerAsUserWidget && (bOwnTree || !WidgetOwner->GetTypedOuter<UUserWidget>()))
 		{
 			UWidgetAnimLibrary::GatherTargetableWidgetPathsInTree(OwnerAsUserWidget, Options);
 		}
@@ -437,11 +456,11 @@ TArray<FString> UWidgetAnimationComponent::GetAnimTargetWidgetOptions() const
 	{
 		// No widget to ask: the Widget Blueprint's tree as authored - its generated class keeps it - from the widget the
 		// component is kept for, or all of it when that can't be told.
-		const UWidgetBlueprintGeneratedClass* AuthoredClass = GetTypedOuter<UWidgetBlueprintGeneratedClass>();
+		const UWidgetBlueprintGeneratedClass* AuthoredClass = Component ? Component->GetTypedOuter<UWidgetBlueprintGeneratedClass>() : nullptr;
 #if WITH_EDITORONLY_DATA
-		if (!AuthoredClass)
+		if (!AuthoredClass && Component)
 		{
-			if (const UBlueprint* Blueprint = GetTypedOuter<UBlueprint>())
+			if (const UBlueprint* Blueprint = Component->GetTypedOuter<UBlueprint>())
 			{
 				AuthoredClass = Cast<UWidgetBlueprintGeneratedClass>(Blueprint->GeneratedClass);
 			}
@@ -449,7 +468,7 @@ TArray<FString> UWidgetAnimationComponent::GetAnimTargetWidgetOptions() const
 #endif
 		if (const UWidgetTree* AuthoredTree = AuthoredClass ? AuthoredClass->GetWidgetTreeArchetype() : nullptr)
 		{
-			const FName HeldName = WidgetAnimComponentOptions::FindHeldUnderName(this);
+			const FName HeldName = WidgetAnimComponentOptions::FindHeldUnderName(Component);
 			UWidget* Kept = HeldName.IsNone() ? nullptr : AuthoredTree->FindWidget(HeldName);
 			UWidgetAnimLibrary::GatherTargetableWidgetPaths(Kept ? Kept : AuthoredTree->RootWidget.Get(), Options);
 		}
@@ -992,7 +1011,7 @@ void UWidgetAnimationComponent::EnsureRuntimeBaselines()
 
 	// The state machines' widgets are captured too - in the same first call, since there is no second.
 	TArray<FWidgetAnimSettings> MachineSettings;
-	if (StateMachines.Num() > 0 && !(bPreserveAuthoredTransforms ? AnimBaselines.bCaptured : ResetPoseBaselines.bCaptured))
+	if (HasPlayedMachineRows() && !(bPreserveAuthoredTransforms ? AnimBaselines.bCaptured : ResetPoseBaselines.bCaptured))
 	{
 		MachineSettings = FlattenedIn;
 		GatherMachineSettings(MachineSettings);
@@ -2599,14 +2618,16 @@ void UWidgetAnimationComponent::InitializeMachines()
 
 	MachineInstances.Reset();
 	MachineLastPosed.Reset();
-	for (int32 RowIndex = 0; RowIndex < StateMachines.Num(); ++RowIndex)
+	TArray<const FWidgetAnimStateMachineEntry*> Rows;
+	GetPlayedMachineRows(Rows);
+	for (int32 RowIndex = 0; RowIndex < Rows.Num(); ++RowIndex)
 	{
-		if (!StateMachines[RowIndex].StateMachine)
+		if (!Rows[RowIndex]->StateMachine)
 		{
 			continue;
 		}
 		FWidgetAnimMachineInstance& Instance = MachineInstances.AddDefaulted_GetRef();
-		WidgetAnimStateMachines::Initialize(Instance, StateMachines[RowIndex], RowIndex);
+		WidgetAnimStateMachines::Initialize(Instance, *Rows[RowIndex], RowIndex);
 
 		for (const FKeptInput& Entry : Kept)
 		{
@@ -2634,7 +2655,7 @@ void UWidgetAnimationComponent::StartMachines(bool bOnlyOnConstruct)
 	{
 		return;
 	}
-	if (MachineInstances.Num() == 0 && StateMachines.Num() > 0)
+	if (MachineInstances.Num() == 0 && HasPlayedMachineRows())
 	{
 		InitializeMachines();
 	}
@@ -2644,7 +2665,8 @@ void UWidgetAnimationComponent::StartMachines(bool bOnlyOnConstruct)
 	PushParameterScopes(ParameterScopes);
 	for (FWidgetAnimMachineInstance& Instance : MachineInstances)
 	{
-		const bool bAsked = !bOnlyOnConstruct || (StateMachines.IsValidIndex(Instance.RowIndex) && StateMachines[Instance.RowIndex].bStartOnConstruct);
+		const FWidgetAnimStateMachineEntry* Row = GetPlayedMachineRow(Instance.RowIndex);
+		const bool bAsked = !bOnlyOnConstruct || (Row && Row->bStartOnConstruct);
 		if (!Instance.bStarted && bAsked)
 		{
 			WidgetAnimStateMachines::Start(Instance, Context);
@@ -2655,6 +2677,60 @@ void UWidgetAnimationComponent::StartMachines(bool bOnlyOnConstruct)
 bool UWidgetAnimationComponent::AreMachinesRunning() const
 {
 	return MachineInstances.ContainsByPredicate([](const FWidgetAnimMachineInstance& Instance) { return Instance.bStarted; });
+}
+
+void UWidgetAnimationComponent::GetPlayedMachineRows(TArray<const FWidgetAnimStateMachineEntry*>& OutRows) const
+{
+	OutRows.Reset();
+	for (const FWidgetAnimStateMachineEntry& Row : StateMachines)
+	{
+		OutRows.Add(&Row);
+	}
+	if (const UWidgetAnimationStateMachineComponent* Machines = GetMachineComponent())
+	{
+		for (const FWidgetAnimStateMachineEntry& Row : Machines->StateMachines)
+		{
+			OutRows.Add(&Row);
+		}
+	}
+}
+
+const FWidgetAnimStateMachineEntry* UWidgetAnimationComponent::GetPlayedMachineRow(int32 RowIndex) const
+{
+	if (StateMachines.IsValidIndex(RowIndex))
+	{
+		return &StateMachines[RowIndex];
+	}
+	const UWidgetAnimationStateMachineComponent* Machines = GetMachineComponent();
+	const int32 MachinesIndex = RowIndex - StateMachines.Num();
+	return Machines && Machines->StateMachines.IsValidIndex(MachinesIndex) ? &Machines->StateMachines[MachinesIndex] : nullptr;
+}
+
+bool UWidgetAnimationComponent::HasPlayedMachineRows() const
+{
+	if (StateMachines.Num() > 0)
+	{
+		return true;
+	}
+	const UWidgetAnimationStateMachineComponent* Machines = GetMachineComponent();
+	return Machines && Machines->StateMachines.Num() > 0;
+}
+
+UWidgetAnimationStateMachineComponent* UWidgetAnimationComponent::GetMachineComponent() const
+{
+	return UWidgetAnimationStateMachineComponent::FindWidgetAnimationStateMachineComponent(AnimOwner.Get());
+}
+
+EWidgetAnimTracksWithMachines UWidgetAnimationComponent::GetTracksWithMachines() const
+{
+	const UWidgetAnimationStateMachineComponent* Machines = GetMachineComponent();
+	return Machines && Machines->StateMachines.Num() > 0 ? Machines->TracksWithStateMachines : TracksWithStateMachines;
+}
+
+void UWidgetAnimationComponent::BindAsMachinePlayer(UWidget* InWidget, bool bInPreserveAuthoredTransforms)
+{
+	bPreserveAuthoredTransforms = bInPreserveAuthoredTransforms;
+	SetAnimOwner(InWidget, /*bByCode=*/false);
 }
 
 bool UWidgetAnimationComponent::ReactsToVisibility() const
@@ -2677,9 +2753,11 @@ bool UWidgetAnimationComponent::AreMachinesExiting() const
 void UWidgetAnimationComponent::GatherMachineSettings(TArray<FWidgetAnimSettings>& OutSettings)
 {
 	const FWidgetAnimMachineContext& Context = GetMachineContext();
-	for (const FWidgetAnimStateMachineEntry& Row : StateMachines)
+	TArray<const FWidgetAnimStateMachineEntry*> Rows;
+	GetPlayedMachineRows(Rows);
+	for (const FWidgetAnimStateMachineEntry* Row : Rows)
 	{
-		WidgetAnimStateMachines::GatherAllSettings(Row, Context, OutSettings);
+		WidgetAnimStateMachines::GatherAllSettings(*Row, Context, OutSettings);
 	}
 }
 
@@ -2700,7 +2778,7 @@ bool UWidgetAnimationComponent::ForEachMachine(const UWidgetAnimStateMachineAsse
 {
 	// Set before the widget is constructed - a View Model bound early, a Blueprint setting Selected in Pre Construct: the
 	// instances are made now, not started, so the value is there when they start (InitializeMachines keeps it).
-	if (MachineInstances.Num() == 0 && StateMachines.Num() > 0)
+	if (MachineInstances.Num() == 0 && HasPlayedMachineRows())
 	{
 		InitializeMachines();
 	}
@@ -2763,7 +2841,7 @@ bool UWidgetAnimationComponent::TickMachines(float DeltaTime)
 
 void UWidgetAnimationComponent::ComposeMachines(FWidgetAnimResult& Result)
 {
-	WidgetAnimStateMachines::Compose(MakeArrayView(MachineInstances), TracksWithStateMachines, GetMachineContext(), Result, MachineLastPosed);
+	WidgetAnimStateMachines::Compose(MakeArrayView(MachineInstances), GetTracksWithMachines(), GetMachineContext(), Result, MachineLastPosed);
 }
 
 bool UWidgetAnimationComponent::AreTracksHolding(bool& bOutReadsInputs) const
@@ -2888,6 +2966,12 @@ void UWidgetAnimationComponent::FlushStateEvents()
 	for (const FWidgetAnimStateEventInfo& Info : Events)
 	{
 		OnStateMachineStateChanged.Broadcast(Info);
+
+		// And the State Machine Component's, whose machines this plays.
+		if (UWidgetAnimationStateMachineComponent* Machines = GetMachineComponent())
+		{
+			Machines->OnStateMachineStateChanged.Broadcast(Info);
+		}
 
 		// Its Custom Event - On <Machine> Entered <State>, or a Fire Event action's On <Machine> <Event Name> - on the nearest
 		// User Widget around the widget playing the machine that has one: the Widget Blueprint the component was set up in, usually.
@@ -3071,9 +3155,11 @@ bool UWidgetAnimationComponent::HasStateMachineInput(const UWidgetAnimStateMachi
 	{
 		return false;
 	}
-	for (const FWidgetAnimStateMachineEntry& Row : StateMachines)
+	TArray<const FWidgetAnimStateMachineEntry*> Rows;
+	GetPlayedMachineRows(Rows);
+	for (const FWidgetAnimStateMachineEntry* Row : Rows)
 	{
-		if (Row.StateMachine && (!StateMachine || Row.StateMachine == StateMachine) && (Row.StateMachine->FindInput(Input) || WidgetAnimMachineInputs::IsBuiltIn(Input)))
+		if (Row->StateMachine && (!StateMachine || Row->StateMachine == StateMachine) && (Row->StateMachine->FindInput(Input) || WidgetAnimMachineInputs::IsBuiltIn(Input)))
 		{
 			return true;
 		}
@@ -3083,7 +3169,9 @@ bool UWidgetAnimationComponent::HasStateMachineInput(const UWidgetAnimStateMachi
 
 bool UWidgetAnimationComponent::PlaysStateMachine(const UWidgetAnimStateMachineAsset* StateMachine) const
 {
-	return StateMachine && StateMachines.ContainsByPredicate([StateMachine](const FWidgetAnimStateMachineEntry& Row) { return Row.StateMachine == StateMachine; });
+	TArray<const FWidgetAnimStateMachineEntry*> Rows;
+	GetPlayedMachineRows(Rows);
+	return StateMachine && Rows.ContainsByPredicate([StateMachine](const FWidgetAnimStateMachineEntry* Row) { return Row->StateMachine == StateMachine; });
 }
 
 void UWidgetAnimationComponent::SetWidgetAnimationParameter(const FWidgetAnimParameterValue& Value, const UWidgetAnimPresetAsset* Animation, FName AnimId)
@@ -3319,12 +3407,14 @@ void UWidgetAnimationComponent::GatherParameterDeclarations(TArray<const FWidget
 			FromAnimation(Entry.Animation.Get());
 		}
 	}
-	for (const FWidgetAnimStateMachineEntry& Row : StateMachines)
+	TArray<const FWidgetAnimStateMachineEntry*> Rows;
+	GetPlayedMachineRows(Rows);
+	for (const FWidgetAnimStateMachineEntry* Row : Rows)
 	{
-		if (Row.StateMachine)
+		if (Row->StateMachine)
 		{
 			TArray<UWidgetAnimPresetAsset*> Animations;
-			Row.StateMachine->GatherAnimations(Animations);
+			Row->StateMachine->GatherAnimations(Animations);
 			for (const UWidgetAnimPresetAsset* Animation : Animations)
 			{
 				FromAnimation(Animation);
@@ -3409,7 +3499,7 @@ bool UWidgetAnimationComponent::SyncStateMachines()
 bool UWidgetAnimationComponent::StartDesignerStateMachinePreview()
 {
 	UWidget* AnimatedWidget = AnimOwner.Get();
-	if (!AnimatedWidget || !AnimatedWidget->IsDesignTime() || StateMachines.Num() == 0)
+	if (!AnimatedWidget || !AnimatedWidget->IsDesignTime() || !HasPlayedMachineRows())
 	{
 		return false;
 	}
@@ -3436,6 +3526,10 @@ bool UWidgetAnimationComponent::StartDesignerStateMachinePreview()
 	AnimBaselines.ResetBaselines();
 	RebuildEffectiveAnimations();
 	SyncStateMachines();
+	if (UWidgetAnimationStateMachineComponent* Machines = GetMachineComponent())
+	{
+		Machines->SyncStateMachines();
+	}
 	InitializeMachines();
 	TArray<FWidgetAnimSettings> InToCapture = FlattenedIn;
 	GatherMachineSettings(InToCapture);

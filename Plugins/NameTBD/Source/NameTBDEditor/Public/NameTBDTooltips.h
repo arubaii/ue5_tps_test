@@ -1732,6 +1732,12 @@ namespace NameTBD::Tooltips
 				"This event is in the graph already: goes to it.");
 		}
 
+		inline FText LegacyStateMachinesNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "LegacyStateMachinesNote",
+				"These state machines play as they always have. New ones go on a Widget Animation State Machine Component - Add Component, on this widget - which plays together with this component.");
+		}
+
 		inline FText StateEnteredEventTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "StateEnteredEventTooltip",
@@ -2245,6 +2251,17 @@ namespace NameTBD::Tooltips
 			return FText::GetEmpty();
 		}
 
+		/**
+		 * A Key Values choice's entry's description, by its list's name and the entry's ("EShapeBoxCornerStyle.Bevel"). Empty for one
+		 * with none here - the entry then uses its own tooltip. Shown in the panel's own tooltip on the entry in the box's drop-down.
+		 */
+		inline FText KeyChoiceDescription(const FString& What)
+		{
+			if (What == TEXT("EShapeBoxCornerStyle.Bevel")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyChoiceDescription_Corner_Bevel", "Slides the corner along its edges, so a whole side leans: the cut runs the full length of the side. Size X leans the left or right side, Y the top or bottom edge; negative flares it outward."); }
+			if (What == TEXT("EShapeBoxCornerStyle.Chamfer")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyChoiceDescription_Corner_Chamfer", "Cuts the corner off with a straight line, leaving the rest of both edges where they were. Size X and Y are the lengths of the cut's legs - both above 0."); }
+			return FText::GetEmpty();
+		}
+
 		inline FText KeyChoiceCellTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyChoiceCellTooltip",
@@ -2342,13 +2359,13 @@ namespace NameTBD::Tooltips
 		inline FText StateMachinePicker()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "StateMachinePicker",
-				"The state machine (WASM_) whose input to set: one a Widget Animation Component on the Target or inside it plays, in its State Machines. Unconnected, the Target is this widget.");
+				"The state machine (WASM_) whose input to set: one a Widget Animation State Machine Component on the Target or inside it plays, in its State Machines. Unconnected, the Target is this widget.");
 		}
 
 		inline FText StateMachineMissing()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "StateMachineMissing",
-				"No Widget Animation Component on the Target or inside it plays this state machine anymore - it was removed, or the Target changed. The node still sets it on any that plays it at runtime; pick one that does to be sure.");
+				"No Widget Animation State Machine Component on the Target or inside it plays this state machine anymore - it was removed, or the Target changed. The node still sets it on any that plays it at runtime; pick one that does to be sure.");
 		}
 
 		inline FText MachineInputPicker()
@@ -2378,7 +2395,7 @@ namespace NameTBD::Tooltips
 		inline FText NoStateMachines()
 		{
 			return NSLOCTEXT("NameTBDTooltips.WidgetAnimValuePins", "NoStateMachines",
-				"No Widget Animation Component on the Target or inside it plays a state machine. Add one to a component's State Machines and it shows up.");
+				"No Widget Animation State Machine Component on the Target or inside it plays a state machine. Add one to its State Machines and it shows up.");
 		}
 
 		inline FText NoMachineInputs()
@@ -2394,7 +2411,7 @@ namespace NameTBD::Tooltips
 		inline FText NoMachineNote()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "NoMachineNote",
-				"No state machine open. Pick a Widget Animation State Machine (WASM_) above, or make one with New - then add it to a Widget Animation Component's State Machines to play it.");
+				"No state machine open. Pick a Widget Animation State Machine (WASM_) above, or make one with New - then add it to a Widget Animation State Machine Component's State Machines to play it.");
 		}
 
 		inline FText EntryNodeTooltip()
@@ -2436,7 +2453,19 @@ namespace NameTBD::Tooltips
 		inline FText LayerMaskBadgeTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "LayerMaskBadgeTooltip",
-				"This layer animates only some of the machine's targets (its Affects, in the layer's settings), or only some kinds of what its states animate (its Channels: opacity, scale, position, shear, rotation, material parameters, Shape Box outlines, texts and the rest): what it leaves out is left to the layers under it.");
+				"This layer animates only some widgets (its Animations Affect, in the layer's settings), or only some kinds of what its states animate (its Channels: opacity, scale, position, shear, rotation, material parameters, Shape Box outlines, texts and the rest): what it leaves out is left to the layers under it. Or it reads its widget inputs - Hovered, Pressed and the rest - off widgets of its own (its Widget Input Targets).");
+		}
+
+		inline FText LayerNoWidgetInputTargetsWarning()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "LayerNoWidgetInputTargetsWarning",
+				"No widget picked: this layer reads its widget inputs - Hovered, Pressed and the rest - off (This Widget), the widget the machine plays on.");
+		}
+
+		inline FText LayerNoAffectedWidgetsWarning()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "LayerNoAffectedWidgetsWarning",
+				"No widget picked: Animations Affect defaults to (This Widget), the widget the machine plays on.");
 		}
 
 		inline FText ActionsBadgeTooltip()
@@ -2466,7 +2495,7 @@ namespace NameTBD::Tooltips
 		inline FText DraftMachineModeTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "DraftMachineModeTooltip",
-				"This Widget Blueprint's own state machine: kept and saved with the Widget Blueprint until Save State Machine To makes it an asset. Previews in the designer like any machine; a Widget Animation Component plays the asset it is saved as.");
+				"This Widget Blueprint's own state machine: kept and saved with the Widget Blueprint until Save State Machine To makes it an asset. Previews in the designer like any machine; a Widget Animation State Machine Component plays the asset it is saved as.");
 		}
 
 		inline FText EditExistingMachineTooltip()
@@ -2478,7 +2507,7 @@ namespace NameTBD::Tooltips
 		inline FText SaveDraftToTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "SaveDraftToTooltip",
-				"Save State Machine To: makes a Widget Animation State Machine asset of this Widget Blueprint's machine - in the Default Folder, or wherever the editor's Save Asset As window says - for a Widget Animation Component to play. The machine stays open here; Save puts later changes into that asset.");
+				"Save State Machine To: makes a Widget Animation State Machine asset of this Widget Blueprint's machine - in the Default Folder, or wherever the editor's Save Asset As window says - for a Widget Animation State Machine Component to play. The machine stays open here; Save puts later changes into that asset.");
 		}
 
 		inline FText SaveDraftToSavedTooltip()
@@ -2497,6 +2526,114 @@ namespace NameTBD::Tooltips
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "LockMachineTooltip",
 				"Lock the machine so that it is read only: a preview, with its graph, layers, inputs and Details grayed out. The preview's inputs still work, to try it.");
+		}
+
+		inline FText LeaveSubMachineTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "LeaveSubMachineTooltip",
+				"Back to the layer's own graph. Each step of the trail is the way back to it - the sub-machines on the way in.");
+		}
+
+		inline FText SubMachineCrumbTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "SubMachineCrumbTooltip",
+				"Back to this sub-machine's graph.");
+		}
+
+		inline FText SubMachineEntryNodeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "SubMachineEntryNodeTooltip",
+				"Entry: the way into this sub-machine. Whenever a transition goes to the sub-machine, the layer comes in here and on, at once, to the first state its transitions lead to - the first whose conditions hold - and waits here, inside, while none does.");
+		}
+
+		inline FText SubMachineExitNodeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "SubMachineExitNodeTooltip",
+				"Exit: where this sub-machine is finished. Reached, the layer holds the pose it had, and the sub-machine's own transitions waiting on When Finished (or At Progress) can be taken - not the widget's way out, as the layer's own Exit is.");
+		}
+
+		inline FText SubMachineAnyStateNodeTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "SubMachineAnyStateNodeTooltip",
+				"Any State: its transitions can be taken from whichever state of this sub-machine the layer is in - after the sub-machine's own transitions, before the state's.");
+		}
+
+		inline FText SubMachineNodeHint()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "SubMachineNodeHint",
+				"A sub-machine: a state with a graph of its own, entered through its Entry. Its transitions can be taken from any state inside it, before theirs - so one Disabled arrow out of it covers them all. Double-click to open it; the trail over the graph leads back.");
+		}
+
+		inline FText OpenSubMachineTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "OpenSubMachineTooltip",
+				"Shows the sub-machine's own graph (or double-click it). Back with the trail in the layer row, above the graph.");
+		}
+
+		inline FText ConvertToSubMachineTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "ConvertToSubMachineTooltip",
+				"Makes this state a sub-machine: a graph of its own, with its Entry, Any State and Exit, in place of the animation it plays. Its transitions stay - and can then be taken from anywhere inside it.");
+		}
+
+		inline FText ConvertToStateTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "ConvertToStateTooltip",
+				"Makes this sub-machine a plain state again, playing an animation. It has nothing inside it but its Entry, Any State and Exit, which go.");
+		}
+
+		inline FText ConvertToStateNotEmptyTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "ConvertToStateNotEmptyTooltip",
+				"Only a sub-machine with no states inside it can be made a plain state again - delete them first, or move them out with Cut and Paste.");
+		}
+
+		inline FText AddSubMachineTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddSubMachineTooltip",
+				"Add Sub-Machine: a state with a graph of its own - its own Entry, Any State and Exit, and states inside - entered through its Entry. Its transitions can be taken from any state inside it: one way out for a whole set of states. Double-click it to open it.");
+		}
+
+		inline FText AddPulsePresetStateTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddPulsePresetStateTooltip",
+				"{0}: a state for the widget input {1} - {2} Dragged from a state, or a wire drawn into it later, its transition comes with the condition {1} Fired; a wire drawn out of it waits for the state to finish playing (When Finished).");
+		}
+
+		inline FText DropWidgetInputNote()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "DropWidgetInputNote",
+				"Let go to make a {0} state - wires drawn into it and out of it come with their conditions.");
+		}
+
+		inline FText FindTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "FindTooltip",
+				"Find (Ctrl + F): the states and transitions of every layer and sub-machine whose name - or, for a transition, its route or conditions - has what is typed. Enter or a click goes to the one picked, and selects it; Up and Down pick; Escape closes it.");
+		}
+
+		inline FText CloseFindTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "CloseFindTooltip",
+				"Close Find (Escape).");
+		}
+
+		inline FText TargetWidgetBlueprintTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "TargetWidgetBlueprintTooltip",
+				"Target Widget Blueprint: the Widget Blueprint this machine is tried on here. Its timelines are listed to drag onto the graph (each saved as an asset as it is dropped, as a machine asset plays assets), and its widget is shown under Preview, where the machine plays on its Preview Targets - or the Widget Animation State Machine Components in it that play this machine. Kept with the machine.");
+		}
+
+		inline FText PreviewRestartTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewRestartTooltip",
+				"Restart: every preview input back to its default, and the preview started again from Entry.");
+		}
+
+		inline FText StandalonePreviewTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "StandalonePreviewTooltip",
+				"The Target Widget Blueprint's widget, as its designer shows it: the machine plays here, driven by the Inputs panel. Compile the Widget Blueprint and it is made again.");
 		}
 
 		inline FText LeaveGroupTooltip()
@@ -2610,7 +2747,7 @@ namespace NameTBD::Tooltips
 		inline FText LayerTabTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "LayerTabTooltip",
-				"Layer {0}: {1}, weight {2}. Each layer is its own state machine, playing at the same time as the others - Override layers replace what the layers under them animate, Additive ones add to it. Click for its settings; double-click to rename it.");
+				"{0}: {1}, weight {2}. Each layer is its own state machine, playing at the same time as the others - Override layers replace what the layers under them animate, Additive ones add to it. Click for its settings; double-click to rename it.");
 		}
 
 		inline FText AddLayerTooltip()
@@ -2670,7 +2807,19 @@ namespace NameTBD::Tooltips
 		inline FText BuiltInPanelTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "BuiltInPanelTooltip",
-				"The built-in inputs, read from the widget itself - a Common UI button's states when the widget is one, its mouse and focus otherwise. Toggle them here to see each state in the preview.");
+				"The built-in inputs, read from the widget itself - a Common UI button's states when the widget is one, its mouse and focus otherwise. Toggle them here to see each state in the preview; fire the pulses (Clicked, Events, Gamepad) to see what they start.");
+		}
+
+		inline FText BuiltInEventsGroupTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "BuiltInEventsGroupTooltip",
+				"Events: pulses, Fired the one frame something happens to the widget - the pointer entering or leaving it, a press going down or let go, focus arriving or leaving, a double-click, a right-click. Test them with Fired, as a Trigger. Click to fold.");
+		}
+
+		inline FText BuiltInGamepadGroupTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "BuiltInGamepadGroupTooltip",
+				"Gamepad: pulses, each Fired the frame its button is pressed while the widget, or something inside it, has focus - Accept and Back as the platform has them (Enter / Space and Escape on a keyboard too), and every other button by name. Test them with Fired, as a Trigger. Click to fold.");
 		}
 
 		inline FText NewMachineTooltip()
@@ -2688,7 +2837,7 @@ namespace NameTBD::Tooltips
 		inline FText PreviewToggleTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewToggleTooltip",
-				"Preview In Designer: plays the machine in the designer, driven by the Inputs panel - on its Preview Targets, or on the widgets whose Widget Animation Component plays it (see Preview, on the left).");
+				"Preview In Designer: plays the machine in the designer, driven by the Inputs panel - on its Preview Targets, or on the widgets whose Widget Animation State Machine Component plays it (see Preview, on the left).");
 		}
 
 		inline FText JumpToActiveTooltip()
@@ -2724,7 +2873,7 @@ namespace NameTBD::Tooltips
 		inline FText NoDebugTargetsTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "NoDebugTargetsTooltip",
-				"No widget in the game being played has a Widget Animation Component playing this machine.");
+				"No widget in the game being played has a Widget Animation State Machine Component playing this machine.");
 		}
 
 		inline FText DebugTargetTooltip()
@@ -2778,7 +2927,7 @@ namespace NameTBD::Tooltips
 		inline FText NoComponentsStatus()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "NoComponentsStatus",
-				"No Widget Animation Component in the designer plays this machine");
+				"No Widget Animation State Machine Component in the designer plays this machine");
 		}
 
 		inline FText MachinePickerTooltip()
@@ -2790,7 +2939,7 @@ namespace NameTBD::Tooltips
 		inline FText AddStateButtonTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddStateButtonTooltip",
-				"Add State: a state in the middle of the view - a plain one, or one ready-named for a built-in input: Hovered, Pressed, Selected, Focused, Disabled. Right-click the graph for the same, where you click.");
+				"Add State: a state in the middle of the view - a plain one, a sub-machine, or one ready-named for a widget input: Hovered, Pressed, the Events, the Gamepad buttons... Right-click the graph for the same, where you click (under Widget Inputs).");
 		}
 
 		inline FText AddIdleStateTooltip()
@@ -2808,7 +2957,7 @@ namespace NameTBD::Tooltips
 		inline FText AddPresetStateTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "AddPresetStateTooltip",
-				"{0}: a state for the built-in {1} input. Dragged from a state, its transition comes with the condition {1} Is True.");
+				"{0}: a state for the widget input {1} - {2} Dragged from a state, or a wire drawn into it later, its transition comes with the condition {1} Is True; a wire drawn out of it, {1} Is False.");
 		}
 
 		inline FText PresetStateExistsTooltip()
@@ -2856,13 +3005,13 @@ namespace NameTBD::Tooltips
 		inline FText BuiltInUnusedTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "BuiltInUnusedTooltip",
-				"{0}: no transition or setting of this machine reads it, so it can't be set here. {1}");
+				"{0}: no transition or setting of this machine reads it, so it can't be set here - drag it onto the graph for a state made for it. {1}");
 		}
 
 		inline FText PreviewPanelTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewPanelTooltip",
-				"Preview: where the machine plays in the designer. Targets plays it on widgets picked here - no Widget Animation Component needed. Components plays it on the widgets whose Widget Animation Component plays it.");
+				"Preview: where the machine plays in the designer. Targets plays it on widgets picked here - no Widget Animation State Machine Component needed. Components plays it on the widgets whose Widget Animation State Machine Component plays it.");
 		}
 
 		inline FText PreviewTargetsSourceTooltip()
@@ -2874,13 +3023,13 @@ namespace NameTBD::Tooltips
 		inline FText PreviewComponentsSourceTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewComponentsSourceTooltip",
-				"Components: the preview plays on every widget of the designer whose Widget Animation Component plays this machine - only the selected one's, when it has the machine.");
+				"Components: the preview plays on every widget of the designer whose Widget Animation State Machine Component plays this machine - only the selected one's, when it has the machine.");
 		}
 
 		inline FText PreviewComponentsNote()
 		{
 			return NSLOCTEXT("NameTBDTooltips.StateMachineEditor", "PreviewComponentsNote",
-				"Playing on the widgets whose Widget Animation Component plays this machine, with their own Target Widgets.");
+				"Playing on the widgets whose Widget Animation State Machine Component plays this machine, with their own Animation Target Widgets.");
 		}
 
 		inline FText PreviewHostTooltip()

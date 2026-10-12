@@ -26,6 +26,7 @@
 #include "WidgetAnimationComponentDetails.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimBuilder.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
+#include "NameTBD/WidgetAnimation/WidgetAnimationStateMachineComponent.h"
 #include "EdGraphUtilities.h"
 #include "WidgetAnimValuePinFactory.h"
 #include "WidgetAnimEntryCustomization.h"
@@ -105,6 +106,11 @@ void FNameTBDEditorModule::StartupModule()
 	PropertyModule.RegisterCustomClassLayout(
 		UWidgetAnimationComponent::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetAnimationComponentDetails::MakeInstance));
+
+	// The State Machine Component's: its settings, and the Events group of its machines.
+	PropertyModule.RegisterCustomClassLayout(
+		UWidgetAnimationStateMachineComponent::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetAnimationStateMachineComponentDetails::MakeInstance));
 
 	// Every animation entry - a component's, a button's, a card's - shows Target Widgets right under its Animation.
 	PropertyModule.RegisterCustomPropertyTypeLayout(
@@ -301,6 +307,7 @@ void FNameTBDEditorModule::ShutdownModule()
 		PropertyModule->NotifyCustomizationModuleChanged();
 		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimBuilder"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimationComponent"));
+		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetAnimationStateMachineComponent"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimEntry"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimMachineCondition"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetAnimParameterValue"));

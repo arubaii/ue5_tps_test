@@ -848,6 +848,17 @@ FVector2D SShapeBox::GetWarpedLocalPosition(const FVector2D& NormalizedPoint) co
 	return ShapeBoxPrivate::FShapeEvaluator(Shape.Get(), Size).Evaluate(NormalizedPoint.X, NormalizedPoint.Y);
 }
 
+bool SShapeBox::MapDesktopToContent(const FVector2D& Desktop, FVector2D& OutContent, bool& bOutOnShape) const
+{
+	if (Mode != EMode::Warped || !Window.IsValid())
+	{
+		return false;
+	}
+	// The content window's own space is the texture's pixels - what its hit-test grid, and so the widgets in it, are laid out in.
+	bOutOnShape = LocalToPixel(GetTickSpaceGeometry().AbsoluteToLocal(Desktop), OutContent);
+	return true;
+}
+
 bool SShapeBox::IsLocalPointInShape(const FVector2D& LocalPoint) const
 {
 	using namespace ShapeBoxPrivate;
@@ -1719,6 +1730,11 @@ FVector2D UShapeBox::GetWarpedLocalPosition(FVector2D NormalizedPoint) const
 		return MyShapeBox->GetWarpedLocalPosition(NormalizedPoint);
 	}
 	return Shape.Evaluate(GetCachedGeometry().GetLocalSize(), NormalizedPoint);
+}
+
+bool UShapeBox::MapDesktopToContent(const FVector2D& Desktop, FVector2D& OutContent, bool& bOutOnShape) const
+{
+	return MyShapeBox.IsValid() && MyShapeBox->MapDesktopToContent(Desktop, OutContent, bOutOnShape);
 }
 
 #if WITH_EDITOR

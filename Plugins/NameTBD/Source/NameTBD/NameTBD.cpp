@@ -12,6 +12,7 @@
 #include "WidgetAnimation/Evaluators/WidgetAnimShapeTrack.h"
 #include "WidgetAnimation/Evaluators/WidgetAnimDesignTrack.h"
 #include "WidgetAnimation/WidgetAnimCue.h"
+#include "WidgetAnimation/WidgetAnimInput.h"
 #include "WidgetAnimation/WidgetAnimationComponent.h"
 #include "WidgetAnimation/WidgetAnimStateMachine.h"
 #include "Widgets/FlowList/FlowList.h"
@@ -88,6 +89,9 @@ void FNameTBDModule::ShutdownModule()
 	// Cues passed on the last frame have nothing left to fire into.
 	WidgetAnimCues::DiscardPending();
 	UWidgetAnimationComponent::ShutdownRuntimeClock();
+
+	// The input counter the state machines' built-in pulses read goes with the code it runs.
+	WidgetAnimInput::StopCountingEvents();
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -4,6 +4,8 @@
 
 #include "AssetTypeCategories.h"
 #include "Framework/Docking/TabManager.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/MultiBox/MultiBoxExtender.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimStateMachine.h"
 #include "NameTBDColors.h"
 #include "NameTBDTooltips.h"
@@ -98,8 +100,13 @@ void FWidgetAnimStateMachineAssetEditor::InitEditor(const EToolkitMode::Type Mod
 {
 	EditedMachine = Machine;
 
-	// One tab, filling the window: the editor has its own toolbar, inputs and Details.
-	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout(TEXT("Standalone_WidgetAnimStateMachineEditor_v1"))
+	// Made first: the window's toolbar holds its controls (MakeStandaloneToolbar).
+	MachineEditor = SNew(SWidgetAnimStateMachineEditor)
+		.Machine(EditedMachine);
+
+	// One tab, filling the window - no tab row over it: there is nothing to switch to, and its tab could only be closed by mistake.
+	// (v2: a layout kept from before, with the row shown, is not used.)
+	const TSharedRef<FTabManager::FLayout> Layout = FTabManager::NewLayout(TEXT("Standalone_WidgetAnimStateMachineEditor_v2"))
 		->AddArea
 		(
 			FTabManager::NewPrimaryArea()
@@ -114,6 +121,22 @@ void FWidgetAnimStateMachineAssetEditor::InitEditor(const EToolkitMode::Type Mod
 
 	InitAssetEditor(Mode, InitToolkitHost, WidgetAnimStateMachineAssetEditor::AppIdentifier, Layout,
 		/*bCreateDefaultStandaloneMenu=*/true, /*bCreateDefaultToolbar=*/true, Machine);
+
+	// The window's toolbar: after Save and Browse, the machine's own - Target Widget Blueprint, play / pause and restart, the
+	// widget watched in Play In Editor, Find.
+	const TSharedRef<FExtender> ToolbarExtender = MakeShared<FExtender>();
+	const TWeakPtr<SWidgetAnimStateMachineEditor> WeakEditor = MachineEditor;
+	ToolbarExtender->AddToolBarExtension(TEXT("Asset"), EExtensionHook::After, GetToolkitCommands(), FToolBarExtensionDelegate::CreateLambda([WeakEditor](FToolBarBuilder& Builder)
+	{
+		if (const TSharedPtr<SWidgetAnimStateMachineEditor> Pinned = WeakEditor.Pin())
+		{
+			Builder.BeginSection(TEXT("WidgetAnimStateMachine"));
+			Builder.AddToolBarWidget(Pinned->MakeStandaloneToolbar());
+			Builder.EndSection();
+		}
+	}));
+	AddToolbarExtender(ToolbarExtender);
+	RegenerateMenusAndToolbars();
 }
 
 void FWidgetAnimStateMachineAssetEditor::RegisterTabSpawners(const TSharedRef<FTabManager>& InTabManager)

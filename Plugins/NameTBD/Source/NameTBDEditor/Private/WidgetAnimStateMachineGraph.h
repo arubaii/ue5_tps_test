@@ -51,8 +51,28 @@ struct FWidgetAnimMachineClipboard
 /** Every edit the editor makes to a machine: each in its own transaction, the machine normalized and told after. */
 namespace WidgetAnimMachineEdits
 {
-	/** Adds a state to Layer at Position, with Animation, and returns its id. */
-	FGuid AddState(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, FName Name, const FVector2D& Position, UWidgetAnimPresetAsset* Animation = nullptr);
+	/** Adds a state to Layer at Position, with Animation - in the sub-machine ParentMachine (invalid: the layer's own graph) - and returns its id. */
+	FGuid AddState(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, FName Name, const FVector2D& Position, UWidgetAnimPresetAsset* Animation = nullptr,
+		const FGuid& ParentMachine = FGuid());
+
+	/**
+	 * Makes a state a sub-machine - a graph of its own, with its Entry, Any State and Exit - or (bSubMachine false) a plain state
+	 * again, which only one with nothing inside it but those three can be.
+	 */
+	void SetSubMachine(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& State, bool bSubMachine);
+
+	/** Whether a sub-machine holds nothing but its Entry, Any State and Exit. */
+	bool IsSubMachineEmpty(const FWidgetAnimMachineLayer& Layer, const FGuid& SubMachine);
+
+	/**
+	 * The condition a wire drawn between states gets from a widget input state at either end (FWidgetAnimMachineState::
+	 * EditorWidgetInput): into one, its input Is True (Fired, for a pulse); out of one, Is False - or, for a pulse, When
+	 * Finished. Into one wins when both ends are. Nothing when neither is, or the transition has conditions already.
+	 */
+	void AddWidgetInputConditions(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& Transition);
+
+	/** The compare a condition on Input starts with: Fired for a pulse or a Trigger, Is True for anything else. */
+	EWidgetAnimMachineCompare GetTrueCompare(const UWidgetAnimStateMachineAsset* Machine, FName Input);
 
 	/** Adds a transition between two nodes of Layer, set up for where it goes - a Cut from Entry, Closing Is True to Exit - and returns its id. Invalid when the two can't be joined. */
 	FGuid AddTransition(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& From, const FGuid& To);
@@ -145,8 +165,8 @@ namespace WidgetAnimMachineEdits
 	/** A state's comment bubble: its text, and whether it is shown. */
 	void SetStateComment(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FGuid& State, const FString& Comment, bool bVisible);
 
-	/** Adds a comment box round Bounds, and returns its id. */
-	FGuid AddComment(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FBox2D& Bounds, const FString& Text);
+	/** Adds a comment box round Bounds - in the sub-machine ParentMachine's graph (invalid: the layer's own) - and returns its id. */
+	FGuid AddComment(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FBox2D& Bounds, const FString& Text, const FGuid& ParentMachine = FGuid());
 
 	/**
 	 * Writes comment boxes as the graph has them now - moved, resized, retitled, recolored - into the layer. Not told to anyone:
@@ -154,7 +174,10 @@ namespace WidgetAnimMachineEdits
 	 */
 	bool UpdateComments(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FWidgetAnimMachineComment>& Comments);
 
-	/** The states, the transitions among them and the comment boxes, as text for the clipboard. Entry, Any State and Exit are left out. */
+	/**
+	 * The states, the transitions among them and the comment boxes, as text for the clipboard. Entry, Any State and Exit are left
+	 * out - but a sub-machine's go with it, with everything inside it.
+	 */
 	FString CopyToText(const UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const TArray<FGuid>& States, const TArray<FGuid>& Comments);
 
 	/** Whether Text is something CopyToText made. */
@@ -162,9 +185,10 @@ namespace WidgetAnimMachineEdits
 
 	/**
 	 * Adds what Text holds to the layer as new states, transitions and comment boxes - new ids, unique names - with the top
-	 * left of what was copied at Location. Returns the new states' and comments' ids.
+	 * left of what was copied at Location, in the sub-machine ParentMachine's graph (invalid: the layer's own). Returns the new
+	 * states' and comments' ids.
 	 */
-	TArray<FGuid> PasteText(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FString& Text, const FVector2D& Location);
+	TArray<FGuid> PasteText(UWidgetAnimStateMachineAsset* Machine, int32 LayerIndex, const FString& Text, const FVector2D& Location, const FGuid& ParentMachine = FGuid());
 
 	/** A new machine's content: one layer with an Idle state that Entry goes to. */
 	void SetUpNewMachine(UWidgetAnimStateMachineAsset* Machine);
@@ -341,7 +365,22 @@ public:
 	/** Shows a collapsed group's states alone - or, with an invalid id, the whole layer - from the next tick. */
 	void OpenGroupView(const FGuid& Group) { OpenGroup = Group; RequestRebuild(); }
 
-	/** The node a state is shown as: its own, or - in a collapsed group, at the top of the layer - its group's box. Invalid when it isn't shown. */
+	/**
+	 * The sub-machine opened - double-clicked - so the graph shows what is inside it: its Entry, Any State, Exit, states and
+	 * transitions (see FWidgetAnimMachineState::bSubMachine). Invalid: the layer's own graph. Set with OpenMachineView.
+	 */
+	FGuid OpenMachine;
+
+	/** Shows a sub-machine's graph - or, with an invalid id, the layer's own - from the next tick. Any open collapsed states close. */
+	void OpenMachineView(const FGuid& SubMachine) { OpenMachine = SubMachine; OpenGroup.Invalidate(); RequestRebuild(); }
+
+	/** The sub-machines from the layer's own graph in to the one open, outermost first: the trail over the graph. */
+	void GetOpenMachinePath(TArray<FGuid>& OutPath) const;
+
+	/**
+	 * The node a state is shown as: its own, or - in a collapsed group, at the top of its graph - its group's box. Invalid when it
+	 * isn't shown: in another sub-machine's graph than the one open, or in a group other than the one open.
+	 */
 	FGuid GetShownNodeId(const FGuid& StateId) const;
 
 	/** The selected states, for Collapse To Group. Set by the editor. */
@@ -503,8 +542,14 @@ public:
 	/** A group box's group, or null. */
 	const FWidgetAnimMachineStateGroup* GetGroup() const;
 
-	/** Whether the state being watched is this node's - or, for a group's box, one of its states. */
+	/**
+	 * Whether the state being watched is this node's - or inside it, for a sub-machine; or, for a group's box, one of its states
+	 * (or inside one of them).
+	 */
 	bool ShowsState(const FGuid& State) const;
+
+	/** Whether the node is in a sub-machine's graph rather than the layer's own. */
+	bool IsInSubMachine() const;
 
 	UWidgetAnimMachineGraph* GetMachineGraph() const;
 
@@ -640,9 +685,9 @@ public:
 	static UWidgetAnimMachineGraphNode* GetStateNode(const UEdGraphPin* Pin);
 
 	/**
-	 * The states the Add State menus offer ready-named, one for each built-in input a state is usually made for - Hovered,
-	 * Pressed, Selected, Focused, Disabled - and Idle and Holding. Each paired with the input it is for (None for Idle and
-	 * Holding - Holding's is the machine's Press And Hold).
+	 * The states the Add State menus offer ready-named: Idle, and one for every widget input - the widget's states (Holding,
+	 * on the machine's Press And Hold, after Pressed), the Events and the Gamepad buttons. Each paired with the input it is for
+	 * (None for Idle and Holding - Holding's is the machine's Press And Hold).
 	 */
 	static const TArray<TPair<FName, FName>>& GetPresetStates();
 
@@ -654,6 +699,15 @@ public:
 
 	/** What a preset state is for, for its menu entry. */
 	static FText GetPresetTooltip(const TPair<FName, FName>& Preset);
+
+	/**
+	 * Where a preset sits in the graph's right-click menu: Idle with Add State; the widget's own inputs under Widget Inputs, the
+	 * Events and the Gamepad buttons (each kind of button) in sub-categories of it - as the Widget Inputs panel lists them.
+	 */
+	static FText GetPresetCategory(const TPair<FName, FName>& Preset);
+
+	/** The Add Sub-Machine preset: a state with a graph of its own. */
+	static const FName SubMachinePreset;
 
 	/**
 	 * Adds a preset state - or a plain one, for None - at Location: named for it, and, dragged from a state, joined from that

@@ -4985,7 +4985,9 @@ namespace WidgetAnimTimeline
 				.MinSliderValue(0.f)
 				// No top to the drag: an entry box's slider otherwise runs 0 to 100, a bar meaning nothing for a time. Without a
 				// range the spin box grows the value by itself on every step (exponentially, to infinity) unless told to move it
-				// linearly: one Delta per pixel.
+				// linearly: one Delta per pixel. No Max Value either: an entry box's default is the numeric limit, which gives the
+				// spin box a range after all - 0 to 10^38, a pixel's drag worth some 10^36.
+				.MaxValue(TOptional<float>())
 				.MaxSliderValue(TOptional<float>())
 				.LinearDeltaSensitivity(1)
 				.Delta_Lambda([IsPercent]() { return IsPercent() ? 0.1f : 0.01f; })
@@ -6242,6 +6244,7 @@ private:
 					.Font(IDetailLayoutBuilder::GetDetailFont())
 					.AllowSpin(true)
 					.MinValue(0.01f)
+					.MaxValue(TOptional<float>())
 					.MinSliderValue(0.01f)
 					.MaxSliderValue(TOptional<float>())
 					.LinearDeltaSensitivity(1)
@@ -7419,6 +7422,9 @@ private:
 		{
 			return SNew(SNumericEntryBox<float>)
 				.AllowSpin(true)
+				// No range at all, so it drags freely: an entry box's default Min / Max Value (the numeric limits) would make one.
+				.MinValue(TOptional<float>())
+				.MaxValue(TOptional<float>())
 				.MinSliderValue(TOptional<float>())
 				.MaxSliderValue(TOptional<float>())
 				.LinearDeltaSensitivity(1)

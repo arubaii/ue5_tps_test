@@ -64,6 +64,7 @@
 #include "WidgetAnimNameField.h"
 #include "WidgetAnimStateMachineAssetEditor.h"
 #include "WidgetAnimStateMachineGraph.h"
+#include "WidgetAnimMachineConditionCustomization.h"
 #include "WidgetAnimTimelines.h"
 #include "WidgetBlueprint.h"
 #include "WidgetBlueprintEditor.h"
@@ -241,7 +242,8 @@ TArray<FString> UWidgetAnimMachineTransitionProxy::GetConditionStateOptions() co
 		}
 		for (const FWidgetAnimMachineState& Candidate : Live->Layers[Index].States)
 		{
-			if (Candidate.Kind == EWidgetAnimMachineNodeKind::State || Candidate.Kind == EWidgetAnimMachineNodeKind::Exit)
+			// States inside sub-machines too; the layer's own Exit, never a sub-machine's.
+			if (Candidate.Kind == EWidgetAnimMachineNodeKind::State || (Candidate.Kind == EWidgetAnimMachineNodeKind::Exit && !Candidate.ParentMachine.IsValid()))
 			{
 				Options.AddUnique(Candidate.Name.ToString());
 			}
@@ -441,6 +443,7 @@ void UWidgetAnimMachineLayerProxy::PostEditChangeProperty(FPropertyChangedEvent&
 	Target.MaskMode = Layer.MaskMode;
 	Target.MaskTargets = Layer.MaskTargets;
 	Target.MaskChannels = Layer.MaskChannels;
+	Target.WidgetInputTargets = Layer.WidgetInputTargets;
 
 	if (PropertyChangedEvent.ChangeType != EPropertyChangeType::Interactive)
 	{
@@ -459,6 +462,24 @@ TArray<FString> UWidgetAnimMachineLayerProxy::GetNumberInputOptions() const
 
 TArray<FString> UWidgetAnimMachineLayerProxy::GetMaskTargetOptions() const
 {
+	return GetLayerWidgetOptions();
+}
+
+TArray<FString> UWidgetAnimMachineLayerProxy::GetWidgetInputTargetOptions() const
+{
+	return GetLayerWidgetOptions();
+}
+
+TArray<FString> UWidgetAnimMachineLayerProxy::GetLayerWidgetOptions() const
+{
+	// Previewed on a widget: its widgets, by path - (This Widget) first, for the widget the machine plays on.
+	if (HasPreviewWidget && HasPreviewWidget() && GetPreviewWidgetOptions)
+	{
+		TArray<FString> Options = GetPreviewWidgetOptions();
+		Options.RemoveAll([](const FString& Option) { return WidgetAnimTargetOption::IsThisWidget(Option); });
+		Options.Insert(FWidgetAnimGroupTarget::ThisWidget.ToString(), 0);
+		return Options;
+	}
 	const UWidgetAnimStateMachineAsset* Live = Machine.Get();
 	return Live ? Live->GetMaskTargetOptions() : TArray<FString>();
 }
@@ -625,7 +646,8 @@ namespace
 
 	/**
 	 * A layer: its settings, and the machine's own under them - what the Details show when nothing is picked: the Widget
-	 * Blueprint's own machine's Name, and the machine's Description.
+	 * Blueprint's own machine's Name, and the machine's Description. Under Widget Input Targets and Affected Widgets, while
+	 * they name no widget on a machine previewed on one, a note of what they then default to: (This Widget).
 	 */
 	class FWidgetAnimMachineLayerDetails : public IDetailCustomization
 	{
@@ -640,6 +662,35 @@ namespace
 			if (!Machine)
 			{
 				return;
+			}
+
+			// The layer's own settings, in their order, with the notes among them.
+			const TSharedRef<IPropertyHandle> LayerHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UWidgetAnimMachineLayerProxy, Layer), UWidgetAnimMachineLayerProxy::StaticClass());
+			if (LayerHandle->IsValidHandle())
+			{
+				DetailBuilder.HideProperty(LayerHandle);
+				IDetailCategoryBuilder& LayerCategory = DetailBuilder.EditCategory(TEXT("Layer"));
+				const TWeakObjectPtr<const UWidgetAnimMachineLayerProxy> WeakProxy(Proxy);
+				uint32 NumChildren = 0;
+				LayerHandle->GetNumChildren(NumChildren);
+				for (uint32 Index = 0; Index < NumChildren; ++Index)
+				{
+					const TSharedPtr<IPropertyHandle> Child = LayerHandle->GetChildHandle(Index);
+					const FProperty* Field = Child.IsValid() ? Child->GetProperty() : nullptr;
+					if (!Field || !Field->HasAnyPropertyFlags(CPF_Edit))
+					{
+						continue;
+					}
+					LayerCategory.AddProperty(Child);
+					if (Field->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineLayer, WidgetInputTargets))
+					{
+						AddNoWidgetNote(LayerCategory, WeakProxy, /*bInputTargets=*/true);
+					}
+					else if (Field->GetFName() == GET_MEMBER_NAME_CHECKED(FWidgetAnimMachineLayer, MaskTargets))
+					{
+						AddNoWidgetNote(LayerCategory, WeakProxy, /*bInputTargets=*/false);
+					}
+				}
 			}
 			IDetailCategoryBuilder& MachineCategory = DetailBuilder.EditCategory(TEXT("StateMachine"), LOCTEXT("MachineCategory", "State Machine"));
 			if (UWidgetAnimTimelinesExtension* Extension = WidgetAnimDraftMachineName::ExtensionOf(Machine))
@@ -668,6 +719,53 @@ namespace
 			TArray<UObject*> MachineObjects;
 			MachineObjects.Add(Machine);
 			MachineCategory.AddExternalObjectProperty(MachineObjects, GET_MEMBER_NAME_CHECKED(UWidgetAnimStateMachineAsset, Description));
+		}
+
+	private:
+
+		/**
+		 * The note under Widget Input Targets (bInputTargets) or Affected Widgets: shown while the list names no widget - Affected
+		 * Widgets only while Animations Affect isn't All Widgets - and the machine is previewed on a widget.
+		 */
+		static void AddNoWidgetNote(IDetailCategoryBuilder& LayerCategory, const TWeakObjectPtr<const UWidgetAnimMachineLayerProxy>& WeakProxy, bool bInputTargets)
+		{
+			const FText Note = bInputTargets ? MachineTips::LayerNoWidgetInputTargetsWarning() : MachineTips::LayerNoAffectedWidgetsWarning();
+			LayerCategory.AddCustomRow(Note)
+			.Visibility(TAttribute<EVisibility>::CreateLambda([WeakProxy, bInputTargets]()
+			{
+				const UWidgetAnimMachineLayerProxy* Live = WeakProxy.Get();
+				if (!Live || !Live->HasPreviewWidget || !Live->HasPreviewWidget())
+				{
+					return EVisibility::Collapsed;
+				}
+				// The layer as edited now, not as it was when the Details were made.
+				const FWidgetAnimMachineLayer& Shown = Live->Layer;
+				const bool bNamesNone = bInputTargets ? Shown.WidgetInputTargets.Num() == 0
+					: Shown.MaskMode != EWidgetAnimMachineLayerMask::All && Shown.MaskTargets.Num() == 0;
+				return bNamesNone ? EVisibility::Visible : EVisibility::Collapsed;
+			}))
+			.WholeRowContent()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Top)
+				.Padding(FMargin(0.f, 1.f, 6.f, 0.f))
+				[
+					SNew(SImage)
+					.Image(FAppStyle::GetBrush("Icons.Warning"))
+					.DesiredSizeOverride(FVector2D(16.f, 16.f))
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.f)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.AutoWrapText(true)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.Text(Note)
+				]
+			];
 		}
 	};
 
@@ -1554,6 +1652,9 @@ namespace WidgetAnimMachineAnimationDrop
 		}
 	}
 
+	/** The widget input a drag from the Widget Inputs panel carries, or None for any other drag. */
+	FName GetDraggedWidgetInput(const TSharedPtr<FDragDropOperation>& Operation);
+
 	/** Whether the drag in progress carries Widget Animations to drop. */
 	bool IsDraggingAnimations()
 	{
@@ -1568,9 +1669,83 @@ namespace WidgetAnimMachineAnimationDrop
 	}
 }
 
+/** A widget input dragged from the Widget Inputs panel - see SWidgetAnimMachineWidgetInputDragSource. */
+class FWidgetAnimMachineWidgetInputDragOp : public FDecoratedDragDropOp
+{
+public:
+	DRAG_DROP_OPERATOR_TYPE(FWidgetAnimMachineWidgetInputDragOp, FDecoratedDragDropOp)
+
+	FName Input;
+
+	static TSharedRef<FWidgetAnimMachineWidgetInputDragOp> New(FName InInput)
+	{
+		const TSharedRef<FWidgetAnimMachineWidgetInputDragOp> Operation = MakeShared<FWidgetAnimMachineWidgetInputDragOp>();
+		Operation->Input = InInput;
+		Operation->DefaultHoverText = FText::Format(LOCTEXT("WidgetInputDragHover", "{0} State"), FText::FromName(InInput));
+		Operation->CurrentHoverText = Operation->DefaultHoverText;
+		Operation->Construct();
+		return Operation;
+	}
+};
+
+FName WidgetAnimMachineAnimationDrop::GetDraggedWidgetInput(const TSharedPtr<FDragDropOperation>& Operation)
+{
+	return Operation.IsValid() && Operation->IsOfType<FWidgetAnimMachineWidgetInputDragOp>()
+		? StaticCastSharedPtr<FWidgetAnimMachineWidgetInputDragOp>(Operation)->Input
+		: FName();
+}
+
 /**
- * Over the graph, only while Widget Animations are being dragged: takes the drop - before the graph, which would only offer
- * what a Blueprint graph makes of an asset - and says what letting go does. Shown faintly over the graph while one is over it.
+ * A Widget Inputs panel row that can be dragged onto the graph - while the machine doesn't read its input yet, and the layer has
+ * no state for it - where letting go makes the state for it, as the graph's right-click Widget Inputs does.
+ */
+class SWidgetAnimMachineWidgetInputDragSource : public SCompoundWidget
+{
+public:
+
+	SLATE_BEGIN_ARGS(SWidgetAnimMachineWidgetInputDragSource) {}
+		SLATE_ARGUMENT(FName, Input)
+		SLATE_ATTRIBUTE(bool, CanDrag)
+		SLATE_DEFAULT_SLOT(FArguments, Content)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs)
+	{
+		Input = InArgs._Input;
+		CanDrag = InArgs._CanDrag;
+		ChildSlot
+		[
+			InArgs._Content.Widget
+		];
+	}
+
+	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		return MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && CanDrag.Get(false)
+			? FReply::Handled().DetectDrag(SharedThis(this), EKeys::LeftMouseButton)
+			: FReply::Unhandled();
+	}
+
+	virtual FReply OnDragDetected(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+	{
+		return CanDrag.Get(false) ? FReply::Handled().BeginDragDrop(FWidgetAnimMachineWidgetInputDragOp::New(Input)) : FReply::Unhandled();
+	}
+
+	virtual FCursorReply OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const override
+	{
+		return CanDrag.Get(false) ? FCursorReply::Cursor(EMouseCursor::GrabHand) : FCursorReply::Unhandled();
+	}
+
+private:
+
+	FName Input;
+	TAttribute<bool> CanDrag;
+};
+
+/**
+ * Over the graph, only while Widget Animations - or a widget input from the Widget Inputs panel - are being dragged: takes the
+ * drop - before the graph, which would only offer what a Blueprint graph makes of an asset - and says what letting go does.
+ * Shown faintly over the graph while one is over it.
  */
 class SWidgetAnimMachineDropZone : public SCompoundWidget
 {
@@ -1580,15 +1755,20 @@ public:
 		SLATE_ATTRIBUTE(bool, CanDrop)
 		/** The animations let go, a name for each one's state, and where - in screen space. */
 		SLATE_ARGUMENT(TFunction<void(const TArray<UWidgetAnimPresetAsset*>&, const TArray<FString>&, const FVector2D&)>, OnDropped)
+		/** A widget input let go, from the Widget Inputs panel, and where - in screen space. */
+		SLATE_ARGUMENT(TFunction<void(FName, const FVector2D&)>, OnWidgetInputDropped)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs)
 	{
 		CanDrop = InArgs._CanDrop;
 		OnDropped = InArgs._OnDropped;
+		OnWidgetInputDropped = InArgs._OnWidgetInputDropped;
 		SetVisibility(TAttribute<EVisibility>::CreateLambda([]()
 		{
-			return WidgetAnimMachineAnimationDrop::IsDraggingAnimations() ? EVisibility::Visible : EVisibility::Collapsed;
+			const bool bDraggingInput = FSlateApplication::IsInitialized() && FSlateApplication::Get().IsDragDropping()
+				&& !WidgetAnimMachineAnimationDrop::GetDraggedWidgetInput(FSlateApplication::Get().GetDragDroppingContent()).IsNone();
+			return WidgetAnimMachineAnimationDrop::IsDraggingAnimations() || bDraggingInput ? EVisibility::Visible : EVisibility::Collapsed;
 		}));
 
 		ChildSlot
@@ -1606,7 +1786,17 @@ public:
 				.Padding(FMargin(10.f, 5.f))
 				[
 					SNew(STextBlock)
-					.Text_Lambda([this]() { return CanDrop.Get(true) ? MachineTips::DropAnimationsNote() : MachineTips::DropAnimationsLockedNote(); })
+					.Text_Lambda([this]()
+					{
+						if (!CanDrop.Get(true))
+						{
+							return MachineTips::DropAnimationsLockedNote();
+						}
+						const FName Input = FSlateApplication::Get().IsDragDropping()
+							? WidgetAnimMachineAnimationDrop::GetDraggedWidgetInput(FSlateApplication::Get().GetDragDroppingContent())
+							: FName();
+						return Input.IsNone() ? MachineTips::DropAnimationsNote() : FText::Format(MachineTips::DropWidgetInputNote(), FText::FromName(Input));
+					})
 				]
 			]
 		];
@@ -1630,6 +1820,16 @@ public:
 	virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
 	{
 		bOver = false;
+		const FName Input = WidgetAnimMachineAnimationDrop::GetDraggedWidgetInput(DragDropEvent.GetOperation());
+		if (!Input.IsNone())
+		{
+			if (!CanDrop.Get(true) || !OnWidgetInputDropped)
+			{
+				return FReply::Unhandled();
+			}
+			OnWidgetInputDropped(Input, FVector2D(DragDropEvent.GetScreenSpacePosition()));
+			return FReply::Handled();
+		}
 		TArray<UWidgetAnimPresetAsset*> Animations;
 		TArray<FString> Names;
 		WidgetAnimMachineAnimationDrop::GetAnimations(DragDropEvent.GetOperation(), /*bLoad=*/true, Animations, Names);
@@ -1648,6 +1848,7 @@ private:
 
 	TAttribute<bool> CanDrop;
 	TFunction<void(const TArray<UWidgetAnimPresetAsset*>&, const TArray<FString>&, const FVector2D&)> OnDropped;
+	TFunction<void(FName, const FVector2D&)> OnWidgetInputDropped;
 	bool bOver = false;
 };
 
@@ -1818,12 +2019,36 @@ void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
 {
 	WidgetBlueprint = InArgs._WidgetBlueprint;
 	bInDrawer = InArgs._InDrawer;
+	bStandalone = !WidgetBlueprint.IsValid();
 	OnDockInLayout = InArgs._OnDockInLayout;
 
 	StateProxy = NewObject<UWidgetAnimMachineStateProxy>(GetTransientPackage(), NAME_None, RF_Transient);
 	TransitionProxy = NewObject<UWidgetAnimMachineTransitionProxy>(GetTransientPackage(), NAME_None, RF_Transient);
 	InputProxy = NewObject<UWidgetAnimMachineInputProxy>(GetTransientPackage(), NAME_None, RF_Transient);
 	LayerProxy = NewObject<UWidgetAnimMachineLayerProxy>(GetTransientPackage(), NAME_None, RF_Transient);
+	{
+		// A layer's Affected Widgets and Widget Input Targets list the widgets of the widget the machine is previewed on.
+		const TWeakPtr<SWidgetAnimStateMachineEditor> WeakLayerOwner = SharedThis(this);
+		LayerProxy->GetPreviewWidgetOptions = [WeakLayerOwner]()
+		{
+			const TSharedPtr<SWidgetAnimStateMachineEditor> Pinned = WeakLayerOwner.Pin();
+			if (!Pinned.IsValid())
+			{
+				return TArray<FString>();
+			}
+			// The asset's own window: its Target Widget Blueprint's preview, made now if the Preview section hasn't yet.
+			if (Pinned->bStandalone)
+			{
+				Pinned->EnsureStandalonePreview();
+			}
+			return Pinned->GetTargetOptions();
+		};
+		LayerProxy->HasPreviewWidget = [WeakLayerOwner]()
+		{
+			const TSharedPtr<SWidgetAnimStateMachineEditor> Pinned = WeakLayerOwner.Pin();
+			return Pinned.IsValid() && Pinned->HasPreviewBlueprint();
+		};
+	}
 	PreviewHost = MakeShared<FWidgetAnimMachinePreviewHost>();
 
 	MapGraphCommands();
@@ -1914,10 +2139,15 @@ void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
 			.OnSlotResized(SplitResized(MakeSplitKey(bInDrawer, TEXT("Graph"))))
 			[
 				SNew(SVerticalBox)
+				// The bar: not in the asset's own window, whose toolbar is the window's (MakeStandaloneToolbar).
 				+ SVerticalBox::Slot()
 				.AutoHeight()
 				[
-					MakeToolbar()
+					SNew(SBox)
+					.Visibility(bStandalone ? EVisibility::Collapsed : EVisibility::Visible)
+					[
+						MakeToolbar()
+					]
 				]
 				+ SVerticalBox::Slot()
 				.AutoHeight()
@@ -1979,6 +2209,18 @@ void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
 					[
 						MakeJumpToActiveButton()
 					]
+					// The asset's own window: the lock, at the far right - it has no bar.
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+					[
+						SNew(SBox)
+						.Visibility(bStandalone ? EVisibility::Visible : EVisibility::Collapsed)
+						[
+							MakeLockButton()
+						]
+					]
 				]
 				+ SVerticalBox::Slot()
 				.FillHeight(1.f)
@@ -1990,6 +2232,14 @@ void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
 					]
 					// Widget Animations dragged over the graph - from the Content Browser, or the Animations list - make states
 					// where they are let go.
+					// Find (Ctrl + F): over the graph's top right while open.
+					+ SOverlay::Slot()
+					.HAlign(HAlign_Right)
+					.VAlign(VAlign_Top)
+					.Padding(FMargin(8.f))
+					[
+						MakeFindPanel()
+					]
 					+ SOverlay::Slot()
 					[
 						SNew(SWidgetAnimMachineDropZone)
@@ -1997,6 +2247,10 @@ void SWidgetAnimStateMachineEditor::Construct(const FArguments& InArgs)
 						.OnDropped([this](const TArray<UWidgetAnimPresetAsset*>& Animations, const TArray<FString>& Names, const FVector2D& ScreenPosition)
 						{
 							AddStatesForAnimations(Animations, Names, ScreenPosition);
+						})
+						.OnWidgetInputDropped([this](FName Input, const FVector2D& ScreenPosition)
+						{
+							AddWidgetInputState(Input, ScreenPosition);
 						})
 					]
 				]
@@ -2053,6 +2307,7 @@ SWidgetAnimStateMachineEditor::~SWidgetAnimStateMachineEditor()
 	}
 	CancelTargetPick();
 	StopPreviews();
+	DropStandalonePreview();
 }
 
 void SWidgetAnimStateMachineEditor::AddReferencedObjects(FReferenceCollector& Collector)
@@ -2063,6 +2318,7 @@ void SWidgetAnimStateMachineEditor::AddReferencedObjects(FReferenceCollector& Co
 	Collector.AddReferencedObject(TransitionProxy);
 	Collector.AddReferencedObject(InputProxy);
 	Collector.AddReferencedObject(LayerProxy);
+	Collector.AddReferencedObject(StandalonePreview);
 }
 
 void SWidgetAnimStateMachineEditor::RegisterDetailLayouts()
@@ -2154,6 +2410,17 @@ void SWidgetAnimStateMachineEditor::SetMachine(UWidgetAnimStateMachineAsset* InM
 	bPreviewSourceChosen = false;
 	PendingSelection.Reset();
 	bPanelsDirty = true;
+
+	// The asset's own window: the Widget Blueprint this machine was last tried on.
+	if (bStandalone)
+	{
+		DropStandalonePreview();
+		TargetWidgetBlueprint = Machine ? Cast<UWidgetBlueprint>(Machine->PreviewWidgetBlueprint.TryLoad()) : nullptr;
+	}
+	if (bFindOpen)
+	{
+		RefreshFind();
+	}
 
 	if (Machine)
 	{
@@ -2278,6 +2545,12 @@ UWidgetAnimMachineGraph* SWidgetAnimStateMachineEditor::GetShownGraph() const
 	return Graphs.IsValidIndex(ShownLayer) ? Graphs[ShownLayer].Get() : nullptr;
 }
 
+FGuid SWidgetAnimStateMachineEditor::GetOpenMachine() const
+{
+	const UWidgetAnimMachineGraph* Graph = GetShownGraph();
+	return Graph ? Graph->OpenMachine : FGuid();
+}
+
 TSharedRef<SGraphEditor> SWidgetAnimStateMachineEditor::MakeGraphEditor(UWidgetAnimMachineGraph* Graph)
 {
 	SGraphEditor::FGraphEditorEvents Events;
@@ -2378,7 +2651,7 @@ void SWidgetAnimStateMachineEditor::ShowLayer(int32 LayerIndex)
 			.Visibility_Lambda([WeakGraph]()
 			{
 				const UWidgetAnimMachineGraph* Shown = WeakGraph.Get();
-				return Shown && Shown->OpenGroup.IsValid() ? EVisibility::HitTestInvisible : EVisibility::Collapsed;
+				return Shown && (Shown->OpenGroup.IsValid() || Shown->OpenMachine.IsValid()) ? EVisibility::HitTestInvisible : EVisibility::Collapsed;
 			})
 		]
 		// Play / pause the preview: floating at the bottom left.
@@ -2395,19 +2668,34 @@ void SWidgetAnimStateMachineEditor::ShowLayer(int32 LayerIndex)
 namespace
 {
 	/**
-	 * A layer tab's badge: what its Affects and Channels leave out - "only 2", "all but 1", "Scale", "only 2, 3 channels".
-	 * Empty for a layer that poses everything.
+	 * A layer as its tooltip names it: "Base Layer", "Hover Layer" - its name with "Layer" after it, unless the name already has
+	 * the word at either end ("Layer 1" stays "Layer 1", never "Layer 1 Layer").
+	 */
+	FText MakeLayerTitle(FName LayerName)
+	{
+		const FString Name = LayerName.ToString();
+		const bool bSaysLayer = Name.Equals(TEXT("Layer"), ESearchCase::IgnoreCase) || Name.StartsWith(TEXT("Layer "), ESearchCase::IgnoreCase)
+			|| Name.EndsWith(TEXT(" Layer"), ESearchCase::IgnoreCase);
+		return bSaysLayer ? FText::FromString(Name) : FText::Format(LOCTEXT("LayerTitle", "{0} Layer"), FText::FromString(Name));
+	}
+
+	/**
+	 * A layer tab's badge: what its Animations Affect and Channels leave out - "only 2", "all but 1", "Scale", "only 2, 3
+	 * channels" - and how many widgets its Widget Input Targets read, "inputs 2". Empty for a layer that poses everything and
+	 * reads the widget the machine plays on.
 	 */
 	FText MakeLayerMaskBadgeText(const FWidgetAnimMachineLayer& Layer)
 	{
 		TArray<FText> Parts;
+		// None listed is (This Widget): one.
+		const int32 NumAffected = FMath::Max(Layer.MaskTargets.Num(), 1);
 		if (Layer.MaskMode == EWidgetAnimMachineLayerMask::OnlyThese)
 		{
-			Parts.Add(FText::Format(LOCTEXT("LayerMaskOnly", "only {0}"), FText::AsNumber(Layer.MaskTargets.Num())));
+			Parts.Add(FText::Format(LOCTEXT("LayerMaskOnly", "only {0}"), FText::AsNumber(NumAffected)));
 		}
 		else if (Layer.MaskMode == EWidgetAnimMachineLayerMask::AllButThese)
 		{
-			Parts.Add(FText::Format(LOCTEXT("LayerMaskAllBut", "all but {0}"), FText::AsNumber(Layer.MaskTargets.Num())));
+			Parts.Add(FText::Format(LOCTEXT("LayerMaskAllBut", "all but {0}"), FText::AsNumber(NumAffected)));
 		}
 		if (Layer.HasChannelMask())
 		{
@@ -2423,6 +2711,10 @@ namespace
 			Parts.Add(Names.Num() == 0 ? LOCTEXT("LayerMaskNoChannels", "no channels")
 				: Names.Num() == 1 ? Names[0]
 				: FText::Format(LOCTEXT("LayerMaskChannels", "{0} channels"), FText::AsNumber(Names.Num())));
+		}
+		if (Layer.WidgetInputTargets.Num() > 0)
+		{
+			Parts.Add(FText::Format(LOCTEXT("LayerInputTargets", "inputs {0}"), FText::AsNumber(Layer.WidgetInputTargets.Num())));
 		}
 		return FText::Join(LOCTEXT("LayerMaskJoin", ", "), Parts);
 	}
@@ -2476,7 +2768,7 @@ void SWidgetAnimStateMachineEditor::RebuildLayerTabs()
 					return FSlateColor(IsShowingLayer(LayerIndex) ? MachineColors::InputRowSelected : FLinearColor(1.f, 1.f, 1.f, 0.12f));
 				})
 				.Padding(FMargin(10.f, 3.f))
-				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(FText::Format(MachineTips::LayerTabTooltip(), FText::FromName(Layer.Name), Blend, FText::AsNumber(Layer.Weight))))
+				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(FText::Format(MachineTips::LayerTabTooltip(), MakeLayerTitle(Layer.Name), Blend, FText::AsNumber(Layer.Weight))))
 				.OnMouseButtonDown_Lambda([this, LayerIndex](const FGeometry&, const FPointerEvent& MouseEvent)
 				{
 					if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
@@ -2547,7 +2839,8 @@ void SWidgetAnimStateMachineEditor::RebuildLayerTabs()
 							WidgetAnimMachineEdits::RenameLayer(Machine, LayerIndex, NewText.ToString());
 						})
 					]
-					// A layer limited to some targets (Affects) or channels (Channels): a small badge, so it reads at a glance.
+					// A layer limited to some widgets (Animations Affect) or channels (Channels), or reading its widget inputs off
+					// widgets of its own (Widget Input Targets): a small badge, so it reads at a glance.
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					.VAlign(VAlign_Center)
@@ -2557,7 +2850,7 @@ void SWidgetAnimStateMachineEditor::RebuildLayerTabs()
 						.BorderImage(WidgetAnimMachineStyle::RoundedBrush(3.f))
 						.BorderBackgroundColor(FLinearColor(1.f, 1.f, 1.f, 0.14f))
 						.Padding(FMargin(4.f, 0.f))
-						.Visibility(Layer.MaskMode == EWidgetAnimMachineLayerMask::All && !Layer.HasChannelMask() ? EVisibility::Collapsed : EVisibility::Visible)
+						.Visibility(Layer.MaskMode == EWidgetAnimMachineLayerMask::All && !Layer.HasChannelMask() && Layer.WidgetInputTargets.Num() == 0 ? EVisibility::Collapsed : EVisibility::Visible)
 						.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::LayerMaskBadgeTooltip()))
 						[
 							SNew(STextBlock)
@@ -2817,7 +3110,7 @@ namespace
 	}
 }
 
-void SWidgetAnimStateMachineEditor::AddInputCategoryHeader(const TSharedRef<SVerticalBox>& Rows, const FString& Category)
+TSharedRef<SVerticalBox> SWidgetAnimStateMachineEditor::AddInputCategoryHeader(const TSharedRef<SVerticalBox>& Rows, const FString& Category)
 {
 	// A strip edge to edge, set off from the rows above it.
 	Rows->AddSlot()
@@ -2845,13 +3138,15 @@ void SWidgetAnimStateMachineEditor::AddInputCategoryHeader(const TSharedRef<SVer
 						{
 							CollapsedInputCategories.Add(Category);
 						}
-						RebuildInputs();
 						return FReply::Handled();
 					})
 					[
 						SNew(SImage)
 						.ColorAndOpacity(FSlateColor::UseForeground())
-						.Image(FAppStyle::GetBrush(CollapsedInputCategories.Contains(Category) ? TEXT("TreeArrow_Collapsed") : TEXT("TreeArrow_Expanded")))
+						.Image_Lambda([this, Category]()
+						{
+							return FAppStyle::GetBrush(CollapsedInputCategories.Contains(Category) ? TEXT("TreeArrow_Collapsed") : TEXT("TreeArrow_Expanded"));
+						})
 					]
 				]
 				+ SHorizontalBox::Slot()
@@ -2876,6 +3171,19 @@ void SWidgetAnimStateMachineEditor::AddInputCategoryHeader(const TSharedRef<SVer
 				]
 			]
 		];
+
+	// Its rows: shown while it is unfolded.
+	const TSharedRef<SVerticalBox> CategoryRows = SNew(SVerticalBox);
+	Rows->AddSlot()
+		.AutoHeight()
+		[
+			SNew(SBox)
+			.Visibility_Lambda([this, Category]() { return CollapsedInputCategories.Contains(Category) ? EVisibility::Collapsed : EVisibility::Visible; })
+			[
+				CategoryRows
+			]
+		];
+	return CategoryRows;
 }
 
 void SWidgetAnimStateMachineEditor::RebuildInputs()
@@ -2893,9 +3201,11 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 	{
 		const TSharedRef<SVerticalBox> Rows = SNew(SVerticalBox);
 		const FString FoldKey = Title.ToString();
+		// Set off from the section above it - the first one in the panel flush with the top, level with the graph's row beside it.
+		const bool bFirstInPanel = InputsBox->NumSlots() == 0 && PreviewBox->NumSlots() == 0;
 		InputsBox->AddSlot()
 			.AutoHeight()
-			.Padding(FMargin(0.f, 10.f, 0.f, 0.f))
+			.Padding(FMargin(0.f, bFirstInPanel ? 0.f : 10.f, 0.f, 0.f))
 			[
 				MakePanelSection(Title, ToolTip, Extra, Rows,
 					TAttribute<bool>::CreateLambda([this, FoldKey]() { return FoldedPanelSections.Contains(FoldKey); }),
@@ -2940,7 +3250,7 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 	}
 
 	// One row: the name, its type's pill, its value - unread inputs (nothing in the machine reads them) dimmed, and listed last.
-	auto AddInputRow = [this, InputRows](const FWidgetAnimMachineInput& Input)
+	auto AddInputRow = [this](const TSharedRef<SVerticalBox>& CategoryRows, const FWidgetAnimMachineInput& Input)
 	{
 		const FName Name = Input.Name;
 		const EWidgetAnimMachineInputType Type = Input.Type;
@@ -3059,7 +3369,7 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 		const FText RowTip = FText::Format(MachineTips::InputRowTooltip(), FText::FromName(Name), Description);
 
 		TSharedPtr<SInlineEditableTextBlock> NameText;
-		InputRows->AddSlot()
+		CategoryRows->AddSlot()
 			.AutoHeight()
 			[
 				// Click: its settings in the Details. Double-click: rename it. Right-click: its menu. Selected, edge to edge.
@@ -3191,29 +3501,28 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 			return Machine->UsesInput(Left->Name) && !Machine->UsesInput(Right->Name);
 		});
 
-		if (!Category.IsEmpty())
-		{
-			AddInputCategoryHeader(InputRows, Category);
-			if (CollapsedInputCategories.Contains(Category))
-			{
-				continue;
-			}
-		}
+		// A category's rows are built folded or not, and shown as it is: folding rebuilds nothing, so the panel doesn't jump.
+		const TSharedRef<SVerticalBox> CategoryRows = Category.IsEmpty() ? InputRows : AddInputCategoryHeader(InputRows, Category);
 		for (const FWidgetAnimMachineInput* Input : InCategory)
 		{
-			AddInputRow(*Input);
+			AddInputRow(CategoryRows, *Input);
 		}
 	}
 
 	// The widget's own, read off it at runtime - set here to try the machine in the designer. One the machine doesn't read is
 	// grayed and italic, and can't be ticked: ticking it would do nothing.
 	const TSharedRef<SVerticalBox> WidgetRows = AddSection(LOCTEXT("WidgetHeader", "Widget Inputs"), MachineTips::BuiltInPanelTooltip(), SNullWidget::NullWidget);
-	// Those the machine reads first, the rest after them.
-	TArray<FName> BuiltIns = WidgetAnimMachineInputs::GetBuiltIns();
-	Algo::StableSort(BuiltIns, [this](FName Left, FName Right) { return Machine->UsesInput(Left) && !Machine->UsesInput(Right); });
-	for (const FName BuiltIn : BuiltIns)
+
+	// One built-in input's row - Indent: how far in its group puts it.
+	auto AddBuiltInRow = [this](const TSharedRef<SVerticalBox>& Rows, FName BuiltIn, float Indent)
 	{
+		// The machine has an input of its own by this name (made before the built-in was added): that one is what it reads.
+		if (Machine->FindInput(BuiltIn))
+		{
+			return;
+		}
 		const bool bUsed = Machine->UsesInput(BuiltIn);
+		const bool bPulse = WidgetAnimMachineInputs::IsBuiltInPulse(BuiltIn);
 		if (!bUsed && BuiltInValues.FindRef(BuiltIn))
 		{
 			SetBuiltInValue(BuiltIn, false);
@@ -3222,9 +3531,9 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 		const FText Tip = bUsed
 			? WidgetAnimMachineInputs::GetBuiltInDescription(BuiltIn)
 			: FText::Format(MachineTips::BuiltInUnusedTooltip(), FText::FromName(BuiltIn), WidgetAnimMachineInputs::GetBuiltInDescription(BuiltIn));
-		// Clicked is a pulse: fired, not ticked.
+		// A pulse (Clicked, the Events, the Gamepad buttons) is fired, not ticked.
 		TSharedRef<SWidget> BuiltInControl = SNullWidget::NullWidget;
-		if (BuiltIn == WidgetAnimMachineInputs::Clicked)
+		if (bPulse)
 		{
 			BuiltInControl = SNew(SButton)
 				.Text(LOCTEXT("FireClicked", "Fire"))
@@ -3240,10 +3549,15 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 				.OnCheckStateChanged_Lambda([this, BuiltIn, bUsed](ECheckBoxState State) { SetBuiltInValue(BuiltIn, bUsed && State == ECheckBoxState::Checked); });
 		}
 
-		WidgetRows->AddSlot()
+		// Dragged onto the graph - while nothing reads it and the layer has no state for it - it makes the state for it.
+		Rows->AddSlot()
 			.AutoHeight()
-			.Padding(RowPadding)
+			.Padding(FMargin(RowPadding.Left + Indent, RowPadding.Top, RowPadding.Right, RowPadding.Bottom))
 			[
+				SNew(SWidgetAnimMachineWidgetInputDragSource)
+				.Input(BuiltIn)
+				.CanDrag_Lambda([this, BuiltIn]() { return CanDragWidgetInput(BuiltIn); })
+				[
 				SNew(SHorizontalBox)
 				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(Tip))
 				+ SHorizontalBox::Slot()
@@ -3255,7 +3569,7 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 					.Font(bUsed ? FCoreStyle::GetDefaultFontStyle("Regular", 10) : FCoreStyle::GetDefaultFontStyle("Italic", 10))
 					.ColorAndOpacity(bUsed ? FSlateColor::UseForeground() : FSlateColor(MachineColors::BuiltInUnused))
 				]
-				// In the same columns as the machine's own inputs: Bool, and Clicked a Trigger.
+				// In the same columns as the machine's own inputs: a Bool, or a pulse as a Trigger.
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
@@ -3263,7 +3577,7 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 					SNew(SBox)
 					.WidthOverride(WidgetAnimTypePill::TypeColumnWidth)
 					[
-						WidgetAnimTypePill::MakePill(BuiltIn == WidgetAnimMachineInputs::Clicked ? WidgetAnimTypePill::EKind::Trigger : WidgetAnimTypePill::EKind::Bool, /*bMuted=*/!bUsed)
+						WidgetAnimTypePill::MakePill(bPulse ? WidgetAnimTypePill::EKind::Trigger : WidgetAnimTypePill::EKind::Bool, /*bMuted=*/!bUsed)
 					]
 				]
 				+ SHorizontalBox::Slot()
@@ -3277,11 +3591,138 @@ void SWidgetAnimStateMachineEditor::RebuildInputs()
 						BuiltInControl
 					]
 				]
+				]
 			];
+	};
+
+	// A group's folding heading, and the box its rows go in: open as it was left, else open when the machine reads any of its
+	// inputs. Says how many it reads. Its rows are built either way and only shown or hidden, so folding rebuilds nothing.
+	auto AddBuiltInGroup = [this](const TSharedRef<SVerticalBox>& Rows, FName GroupKey, const FText& Label, const FText& GroupTip, float Indent,
+		const TArray<FName>& GroupInputs) -> TSharedRef<SVerticalBox>
+	{
+		int32 NumRead = 0;
+		for (const FName BuiltIn : GroupInputs)
+		{
+			NumRead += Machine->UsesInput(BuiltIn) ? 1 : 0;
+		}
+		const bool bOpenUnlessToggled = NumRead > 0;
+		auto IsGroupOpen = [this, GroupKey, bOpenUnlessToggled]()
+		{
+			const bool* Remembered = WidgetInputGroupsOpen.Find(GroupKey);
+			return Remembered ? *Remembered : bOpenUnlessToggled;
+		};
+		const FText Shown = NumRead > 0 ? FText::Format(LOCTEXT("BuiltInGroupRead", "{0}  ({1} read)"), Label, FText::AsNumber(NumRead)) : Label;
+
+		Rows->AddSlot()
+			.AutoHeight()
+			.Padding(FMargin(Indent, 4.f, 0.f, 1.f))
+			[
+				SNew(SBorder)
+				.BorderImage(GetRowBrush())
+				.BorderBackgroundColor(FLinearColor(1.f, 1.f, 1.f, 0.05f))
+				.Padding(FMargin(4.f, 2.f, 8.f, 2.f))
+				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(GroupTip))
+				.OnMouseButtonDown_Lambda([this, GroupKey, IsGroupOpen](const FGeometry&, const FPointerEvent& MouseEvent)
+				{
+					if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
+					{
+						return FReply::Unhandled();
+					}
+					WidgetInputGroupsOpen.Add(GroupKey, !IsGroupOpen());
+					return FReply::Handled();
+				})
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+					[
+						SNew(SImage)
+						.ColorAndOpacity(FSlateColor::UseForeground())
+						.Image_Lambda([IsGroupOpen]() { return FAppStyle::GetBrush(IsGroupOpen() ? TEXT("TreeArrow_Expanded") : TEXT("TreeArrow_Collapsed")); })
+					]
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.f)
+					.VAlign(VAlign_Center)
+					[
+						SNew(STextBlock)
+						.Font(FAppStyle::GetFontStyle(TEXT("NormalFontBold")))
+						.ColorAndOpacity(NumRead > 0 ? FSlateColor(FStyleColors::White) : FSlateColor(MachineColors::BuiltInUnused))
+						.Text(Shown)
+					]
+				]
+			];
+
+		const TSharedRef<SVerticalBox> GroupRows = SNew(SVerticalBox);
+		Rows->AddSlot()
+			.AutoHeight()
+			[
+				SNew(SBox)
+				.Visibility_Lambda([IsGroupOpen]() { return IsGroupOpen() ? EVisibility::Visible : EVisibility::Collapsed; })
+				[
+					GroupRows
+				]
+			];
+		return GroupRows;
+	};
+
+	// Those the machine reads first, the rest after them - in each group.
+	TArray<FName> BuiltIns = WidgetAnimMachineInputs::GetBuiltIns();
+	Algo::StableSort(BuiltIns, [this](FName Left, FName Right) { return Machine->UsesInput(Left) && !Machine->UsesInput(Right); });
+	auto InGroup = [&BuiltIns](FName Group, FName SubGroup)
+	{
+		return BuiltIns.FilterByPredicate([Group, SubGroup](FName BuiltIn)
+		{
+			return WidgetAnimMachineInputs::GetBuiltInGroup(BuiltIn) == Group && (SubGroup.IsNone() || WidgetAnimMachineInputs::GetBuiltInSubGroup(BuiltIn) == SubGroup);
+		});
+	};
+	constexpr float GroupIndent = 12.f;
+
+	// The widget's states, and Clicked, as they always were.
+	for (const FName BuiltIn : InGroup(NAME_None, NAME_None))
+	{
+		AddBuiltInRow(WidgetRows, BuiltIn, 0.f);
 	}
 
-	// This Widget Blueprint's timelines, to drag onto the graph - each makes a state that plays it, with no saving first.
-	const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(WidgetBlueprint.Get());
+	// Events: a sub-dropdown of their own.
+	static const FName EventsGroup(TEXT("Events"));
+	const TArray<FName> EventInputs = InGroup(EventsGroup, NAME_None);
+	const TSharedRef<SVerticalBox> EventRows = AddBuiltInGroup(WidgetRows, EventsGroup, LOCTEXT("BuiltInEventsGroup", "Events"), MachineTips::BuiltInEventsGroupTooltip(), 0.f,
+		EventInputs);
+	for (const FName BuiltIn : EventInputs)
+	{
+		AddBuiltInRow(EventRows, BuiltIn, GroupIndent);
+	}
+
+	// Gamepad: a sub-dropdown, and one inside it for each kind of button.
+	static const FName GamepadGroup(TEXT("Gamepad"));
+	const TArray<FName> GamepadInputs = InGroup(GamepadGroup, NAME_None);
+	const TSharedRef<SVerticalBox> GamepadRows = AddBuiltInGroup(WidgetRows, GamepadGroup, LOCTEXT("BuiltInGamepadGroup", "Gamepad"), MachineTips::BuiltInGamepadGroupTooltip(),
+		0.f, GamepadInputs);
+	TArray<FName> SubGroups;
+	for (const FName BuiltIn : WidgetAnimMachineInputs::GetBuiltIns())
+	{
+		if (WidgetAnimMachineInputs::GetBuiltInGroup(BuiltIn) == GamepadGroup)
+		{
+			SubGroups.AddUnique(WidgetAnimMachineInputs::GetBuiltInSubGroup(BuiltIn));
+		}
+	}
+	for (const FName SubGroup : SubGroups)
+	{
+		const TArray<FName> InSubGroup = InGroup(GamepadGroup, SubGroup);
+		const FName SubGroupKey(*FString::Printf(TEXT("%s/%s"), *GamepadGroup.ToString(), *SubGroup.ToString()));
+		const TSharedRef<SVerticalBox> SubGroupRows = AddBuiltInGroup(GamepadRows, SubGroupKey, FText::FromName(SubGroup), MachineTips::BuiltInGamepadGroupTooltip(),
+			GroupIndent, InSubGroup);
+		for (const FName BuiltIn : InSubGroup)
+		{
+			AddBuiltInRow(SubGroupRows, BuiltIn, GroupIndent * 2.f);
+		}
+	}
+
+	// This Widget Blueprint's timelines (the Target Widget Blueprint's, in the asset's own window), to drag onto the graph - each
+	// makes a state that plays it.
+	const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(GetTimelineBlueprint());
 	// Always listed, so where to drag from is never a mystery: with no timelines yet, a word on how to get some.
 	const TSharedRef<SVerticalBox> TimelineRows = AddSection(LOCTEXT("TimelinesHeader", "Timelines"), MachineTips::TimelinesPanelTooltip(), SNullWidget::NullWidget);
 	if (!Timelines || Timelines->Timelines.Num() == 0)
@@ -3454,10 +3895,15 @@ void SWidgetAnimStateMachineEditor::RefillAnimationAssetRows()
 
 void SWidgetAnimStateMachineEditor::RebuildPreviewPanel()
 {
+	// The asset's own window's preview widget is let go of by the box about to go, before a new one takes it.
+	if (StandalonePreviewBox.IsValid())
+	{
+		StandalonePreviewBox->SetContent(SNullWidget::NullWidget);
+	}
 	PreviewBox->ClearChildren();
 
-	// Only where there is a designer to preview in.
-	if (!Machine || !WidgetBlueprint.IsValid())
+	// Only where there is a designer to preview in - or, in the asset's own window, a Target Widget Blueprint.
+	if (!Machine || !HasPreviewBlueprint())
 	{
 		return;
 	}
@@ -3518,6 +3964,27 @@ void SWidgetAnimStateMachineEditor::RebuildPreviewPanel()
 				TAttribute<bool>::CreateLambda([this]() { return FoldedPanelSections.Contains(TEXT("Preview")); }),
 				[this]() { ToggleFoldedPanelSection(TEXT("Preview")); })
 		];
+
+	// The asset's own window: the Target Widget Blueprint's widget itself, played on here.
+	if (bStandalone)
+	{
+		PreviewRows->AddSlot()
+			.AutoHeight()
+			.Padding(FMargin(0.f, 2.f, 0.f, 6.f))
+			[
+				SNew(SBorder)
+				.BorderImage(FAppStyle::GetBrush(TEXT("Brushes.Panel")))
+				.Padding(FMargin(2.f))
+				[
+					SAssignNew(StandalonePreviewBox, SBox)
+					.HeightOverride(220.f)
+					.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::StandalonePreviewTooltip()))
+					[
+						StandalonePreview ? StandalonePreview->TakeWidget() : SNullWidget::NullWidget
+					]
+				]
+			];
+	}
 
 	if (PreviewSource == EPreviewSource::Components)
 	{
@@ -3733,6 +4200,12 @@ void SWidgetAnimStateMachineEditor::OnMachineChanged(UWidgetAnimStateMachineAsse
 	else if (Shown && Shown == LayerProxy.Get())
 	{
 		Refresh(LayerProxy.Get(), FWidgetAnimMachineLayer::StaticStruct(), &UWidgetAnimMachineLayerProxy::Layer);
+	}
+
+	// Find's results, as the machine is now.
+	if (bFindOpen)
+	{
+		RefreshFind();
 	}
 
 	bPanelsDirty = true;
@@ -4083,7 +4556,8 @@ void SWidgetAnimStateMachineEditor::AddStatesForAnimations(const TArray<UWidgetA
 			continue;
 		}
 		const FString StateName = Names.IsValidIndex(Index) ? Names[Index].TrimStartAndEnd() : FString();
-		const FGuid Id = WidgetAnimMachineEdits::AddState(Machine, ShownLayer, StateName.IsEmpty() ? FName(NAME_None) : FName(*StateName), At + FVector2D(StateSpacing * Index, 0.0), Played);
+		const FGuid Id = WidgetAnimMachineEdits::AddState(Machine, ShownLayer, StateName.IsEmpty() ? FName(NAME_None) : FName(*StateName), At + FVector2D(StateSpacing * Index, 0.0), Played,
+			GetOpenMachine());
 		if (Id.IsValid())
 		{
 			Added.Add(Id);
@@ -4095,9 +4569,45 @@ void SWidgetAnimStateMachineEditor::AddStatesForAnimations(const TArray<UWidgetA
 	}
 }
 
+FVector2D SWidgetAnimStateMachineEditor::ScreenToGraph(const FVector2D& ScreenPosition) const
+{
+	const TSharedPtr<SGraphEditor> Editor = GetShownGraphEditor();
+	if (!Editor.IsValid())
+	{
+		return GetViewCenter();
+	}
+	FVector2f ViewLocation;
+	float Zoom = 1.f;
+	Editor->GetViewLocation(ViewLocation, Zoom);
+	const FVector2f Local = Editor->GetCachedGeometry().AbsoluteToLocal(FVector2f(ScreenPosition));
+	return FVector2D(ViewLocation + Local / FMath::Max(Zoom, 0.05f));
+}
+
+bool SWidgetAnimStateMachineEditor::CanDragWidgetInput(FName Input) const
+{
+	// Not read by the machine yet, and no state for it in the layer shown: one dragged in is the state for it.
+	return IsMachineEditable() && Machine->Layers.IsValidIndex(ShownLayer) && !Machine->UsesInput(Input) && !Machine->FindInput(Input)
+		&& Machine->Layers[ShownLayer].FindStateIndexByName(Input) == INDEX_NONE;
+}
+
+void SWidgetAnimStateMachineEditor::AddWidgetInputState(FName Input, const FVector2D& ScreenPosition)
+{
+	UWidgetAnimMachineGraph* Graph = GetShownGraph();
+	if (!Graph || !CanDragWidgetInput(Input))
+	{
+		return;
+	}
+	// Its middle near the mouse, as a state for a dropped animation is.
+	const FGuid Added = UWidgetAnimMachineGraphSchema::AddPresetState(Graph, Input, ScreenToGraph(ScreenPosition) - FVector2D(60.0, 20.0), nullptr);
+	if (Added.IsValid())
+	{
+		PendingSelection = { Added };
+	}
+}
+
 uint32 SWidgetAnimStateMachineEditor::ComputeTimelineListSignature() const
 {
-	const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(WidgetBlueprint.Get());
+	const UWidgetAnimTimelinesExtension* Timelines = UWidgetAnimTimelinesExtension::Find(GetTimelineBlueprint());
 	if (!Timelines)
 	{
 		return 0;
@@ -4162,7 +4672,7 @@ void SWidgetAnimStateMachineEditor::PasteHere()
 	FString Text;
 	FPlatformApplicationMisc::ClipboardPaste(Text);
 	const FVector2f Location = Editor->GetPasteLocation2f();
-	PendingSelection = WidgetAnimMachineEdits::PasteText(Machine, ShownLayer, Text, FVector2D(Location));
+	PendingSelection = WidgetAnimMachineEdits::PasteText(Machine, ShownLayer, Text, FVector2D(Location), GetOpenMachine());
 }
 
 bool SWidgetAnimStateMachineEditor::CanPaste() const
@@ -4196,7 +4706,7 @@ void SWidgetAnimStateMachineEditor::DuplicateSelected()
 	// A step down and right of what was duplicated - never on top of it - and the clipboard left alone.
 	FSlateRect Bounds;
 	const FVector2D At = Editor->GetBoundsForSelectedNodes(Bounds, 0.f) ? FVector2D(Bounds.Left + 40.f, Bounds.Top + 40.f) : GetViewCenter();
-	PendingSelection = WidgetAnimMachineEdits::PasteText(Machine, ShownLayer, Text, At);
+	PendingSelection = WidgetAnimMachineEdits::PasteText(Machine, ShownLayer, Text, At, GetOpenMachine());
 }
 
 void SWidgetAnimStateMachineEditor::AddCommentAroundSelection()
@@ -4219,7 +4729,7 @@ void SWidgetAnimStateMachineEditor::AddCommentAroundSelection()
 		const FVector2D At(FVector2f(Editor->GetPasteLocation2f()));
 		Box = FBox2D(At, At + FVector2D(400.0, 200.0));
 	}
-	const FGuid Added = WidgetAnimMachineEdits::AddComment(Machine, ShownLayer, Box, LOCTEXT("NewComment", "Comment").ToString());
+	const FGuid Added = WidgetAnimMachineEdits::AddComment(Machine, ShownLayer, Box, LOCTEXT("NewComment", "Comment").ToString(), GetOpenMachine());
 	if (Added.IsValid())
 	{
 		PendingSelection = { Added };
@@ -4280,23 +4790,91 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeAddStateMenu()
 		MachineTips::AddStateActionTooltip(),
 		FSlateIcon(),
 		FUIAction(FExecuteAction::CreateLambda([this]() { AddStateAtViewCenter(NAME_None); })));
+	Menu.AddMenuEntry(
+		LOCTEXT("AddSubMachineEntry", "Sub-Machine"),
+		MachineTips::AddSubMachineTooltip(),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("GraphEditor.StateMachine_16x")),
+		FUIAction(FExecuteAction::CreateLambda([this]() { AddStateAtViewCenter(UWidgetAnimMachineGraphSchema::SubMachinePreset); })));
 
-	Menu.BeginSection(TEXT("CommonStates"), LOCTEXT("CommonStatesSection", "Common States"));
+	// One entry per preset: greyed, with a word why, when the layer has that state already.
 	const FWidgetAnimMachineLayer* Layer = Machine && Machine->Layers.IsValidIndex(ShownLayer) ? &Machine->Layers[ShownLayer] : nullptr;
-	for (const TPair<FName, FName>& Preset : UWidgetAnimMachineGraphSchema::GetPresetStates())
+	auto AddPresetEntry = [this, Layer](FMenuBuilder& Into, const TPair<FName, FName>& Preset)
 	{
 		const FName PresetName = Preset.Key;
 		const bool bExists = Layer && Layer->FindStateIndexByName(PresetName) != INDEX_NONE;
-		const FText ToolTip = bExists
+		const FText PresetTip = bExists
 			? FText::Format(MachineTips::PresetStateExistsTooltip(), FText::FromName(PresetName))
 			: UWidgetAnimMachineGraphSchema::GetPresetTooltip(Preset);
-		Menu.AddMenuEntry(
+		Into.AddMenuEntry(
 			FText::FromName(PresetName),
-			ToolTip,
+			PresetTip,
 			FSlateIcon(),
 			FUIAction(
 				FExecuteAction::CreateLambda([this, PresetName]() { AddStateAtViewCenter(PresetName); }),
 				FCanExecuteAction::CreateLambda([bExists]() { return !bExists; })));
+	};
+
+	// Idle, then the Widget Inputs as the panel lists them: the widget's states, then Events and Gamepad as sub-menus - the
+	// Gamepad's a section for each kind of button.
+	const TArray<TPair<FName, FName>>& Presets = UWidgetAnimMachineGraphSchema::GetPresetStates();
+	for (const TPair<FName, FName>& Preset : Presets)
+	{
+		if (Preset.Value.IsNone() && Preset.Key != UWidgetAnimMachineGraphSchema::HoldingPreset)
+		{
+			AddPresetEntry(Menu, Preset);
+		}
+	}
+	Menu.BeginSection(TEXT("WidgetInputStates"), LOCTEXT("WidgetInputStatesSection", "Widget Inputs"));
+	for (const TPair<FName, FName>& Preset : Presets)
+	{
+		const bool bWidgetState = Preset.Key == UWidgetAnimMachineGraphSchema::HoldingPreset
+			|| (!Preset.Value.IsNone() && WidgetAnimMachineInputs::GetBuiltInGroup(Preset.Value).IsNone());
+		if (bWidgetState)
+		{
+			AddPresetEntry(Menu, Preset);
+		}
+	}
+	for (const FName Group : { FName(TEXT("Events")), FName(TEXT("Gamepad")) })
+	{
+		TArray<TPair<FName, FName>> InGroup;
+		for (const TPair<FName, FName>& Preset : Presets)
+		{
+			if (!Preset.Value.IsNone() && WidgetAnimMachineInputs::GetBuiltInGroup(Preset.Value) == Group)
+			{
+				InGroup.Add(Preset);
+			}
+		}
+		if (InGroup.Num() == 0)
+		{
+			continue;
+		}
+		Menu.AddSubMenu(
+			FText::FromName(Group),
+			Group == FName(TEXT("Events")) ? MachineTips::BuiltInEventsGroupTooltip() : MachineTips::BuiltInGamepadGroupTooltip(),
+			FNewMenuDelegate::CreateLambda([InGroup, AddPresetEntry](FMenuBuilder& SubMenu)
+			{
+				FName Section;
+				bool bSectionOpen = false;
+				for (const TPair<FName, FName>& Preset : InGroup)
+				{
+					const FName SubGroup = WidgetAnimMachineInputs::GetBuiltInSubGroup(Preset.Value);
+					if (!SubGroup.IsNone() && (SubGroup != Section || !bSectionOpen))
+					{
+						if (bSectionOpen)
+						{
+							SubMenu.EndSection();
+						}
+						SubMenu.BeginSection(SubGroup, FText::FromName(SubGroup));
+						Section = SubGroup;
+						bSectionOpen = true;
+					}
+					AddPresetEntry(SubMenu, Preset);
+				}
+				if (bSectionOpen)
+				{
+					SubMenu.EndSection();
+				}
+			}));
 	}
 	Menu.EndSection();
 	return Menu.MakeWidget();
@@ -5088,6 +5666,8 @@ void SWidgetAnimStateMachineEditor::Tick(const FGeometry& AllottedGeometry, cons
 		RebuildLayerTabs();
 	}
 
+	RefreshBreadcrumb();
+	TickPendingFocus();
 	CommitGraphEdits();
 	UpdatePreviews();
 	UpdateTargetPick();
@@ -5116,6 +5696,33 @@ FReply SWidgetAnimStateMachineEditor::OnPreviewKeyDown(const FGeometry& MyGeomet
 			}
 		}
 		return FReply::Handled();
+	}
+
+	// Ctrl / Cmd + F: Find, anywhere in the editor but a text being typed (the find box's own included: it has it already).
+	if (!bTyping && Key == EKeys::F && (InKeyEvent.IsControlDown() || InKeyEvent.IsCommandDown()) && !InKeyEvent.IsAltDown() && !InKeyEvent.IsShiftDown())
+	{
+		OpenFind();
+		return FReply::Handled();
+	}
+
+	// Find's own keys, while its box has the keyboard: Escape closes it, Up and Down pick a result, Enter goes to it.
+	if (bFindOpen && FindBox.IsValid() && (FindBox->HasKeyboardFocus() || FindBox->HasFocusedDescendants()))
+	{
+		if (Key == EKeys::Escape)
+		{
+			CloseFind();
+			return FReply::Handled();
+		}
+		if ((Key == EKeys::Up || Key == EKeys::Down) && FindHits.Num() > 0)
+		{
+			FindPicked = (FindPicked + (Key == EKeys::Down ? 1 : FindHits.Num() - 1)) % FindHits.Num();
+			return FReply::Handled();
+		}
+		if (Key == EKeys::Enter)
+		{
+			GoToFindHit(FindPicked);
+			return FReply::Handled();
+		}
 	}
 
 	// Only while the graph has the keyboard.
@@ -5156,6 +5763,11 @@ FReply SWidgetAnimStateMachineEditor::OnKeyDown(const FGeometry& MyGeometry, con
 
 UUserWidget* SWidgetAnimStateMachineEditor::GetDesignerPreview() const
 {
+	// The asset's own window: the Target Widget Blueprint's preview, made here.
+	if (bStandalone)
+	{
+		return StandalonePreview;
+	}
 	FWidgetBlueprintEditor* Editor = FindWidgetBlueprintEditor(WidgetBlueprint.Get());
 	return Editor ? Editor->GetPreview() : nullptr;
 }
@@ -5164,7 +5776,7 @@ void SWidgetAnimStateMachineEditor::FindPreviewComponents(TArray<UWidgetAnimatio
 {
 	OutComponents.Reset();
 	FWidgetBlueprintEditor* Editor = FindWidgetBlueprintEditor(WidgetBlueprint.Get());
-	UUserWidget* Preview = Editor ? Editor->GetPreview() : nullptr;
+	UUserWidget* Preview = bStandalone ? StandalonePreview.Get() : (Editor ? Editor->GetPreview() : nullptr);
 	if (!Preview || !Machine)
 	{
 		return;
@@ -5181,7 +5793,7 @@ void SWidgetAnimStateMachineEditor::FindPreviewComponents(TArray<UWidgetAnimatio
 
 	// Only the selected widget's, when one that plays the machine is selected: one button of a row tried on its own.
 	UWidget* Selected = nullptr;
-	if (Editor->GetSelectedWidgets().Num() == 1)
+	if (Editor && Editor->GetSelectedWidgets().Num() == 1)
 	{
 		Selected = Editor->GetSelectedWidgets().CreateConstIterator()->GetPreview();
 	}
@@ -5431,9 +6043,13 @@ void SWidgetAnimStateMachineEditor::ApplyJumpPlan(const WidgetAnimMachineJump::F
 			FireInput(Input.Name);
 		}
 	}
-	if (Plan.Fire.Contains(WidgetAnimMachineInputs::Clicked))
+	// The built-in pulses the plan fires: Clicked, the Events, the Gamepad buttons.
+	for (const FName BuiltIn : WidgetAnimMachineInputs::GetBuiltIns())
 	{
-		FireBuiltIn(WidgetAnimMachineInputs::Clicked);
+		if (WidgetAnimMachineInputs::IsBuiltInPulse(BuiltIn) && Plan.Fire.Contains(BuiltIn) && !Machine->FindInput(BuiltIn))
+		{
+			FireBuiltIn(BuiltIn);
+		}
 	}
 }
 
@@ -5450,7 +6066,10 @@ void SWidgetAnimStateMachineEditor::TickJump()
 	constexpr double GiveUpSeconds = 4.0;
 	FWidgetAnimMachineLayerDebug Debug;
 	const bool bWatched = GetLayerDebug(JumpLayer, Debug);
-	const bool bArrived = bWatched && Debug.CurrentState == JumpSteps[JumpStep].To && !Debug.ActiveTransition.IsValid();
+	// Arrived: in the step's state - or, for a sub-machine, anywhere inside it.
+	const FWidgetAnimMachineLayer* JumpLayerDef = Machine && Machine->Layers.IsValidIndex(JumpLayer) ? &Machine->Layers[JumpLayer] : nullptr;
+	const bool bInStep = JumpLayerDef && JumpLayerDef->IsWithin(JumpLayerDef->FindStateIndex(Debug.CurrentState), JumpLayerDef->FindStateIndex(JumpSteps[JumpStep].To));
+	const bool bArrived = bWatched && bInStep && !Debug.ActiveTransition.IsValid();
 	const double Now = FPlatformTime::Seconds();
 	if (!bArrived && Now - JumpStepTime < GiveUpSeconds)
 	{
@@ -5525,18 +6144,85 @@ void SWidgetAnimStateMachineEditor::JumpToActiveState()
 	{
 		return;
 	}
+	// Brought into view - inside the sub-machine it is in - not selected: the Details keep showing what they show.
+	FocusOn(LayerIndex, StateId, /*bSelect=*/false);
+}
+
+void SWidgetAnimStateMachineEditor::FocusOn(int32 LayerIndex, const FGuid& Id, bool bSelect)
+{
+	if (!Machine || !Machine->Layers.IsValidIndex(LayerIndex) || !Id.IsValid())
+	{
+		return;
+	}
 	if (LayerIndex != ShownLayer)
 	{
 		ShowLayer(LayerIndex);
 	}
-	const TSharedPtr<SGraphEditor> Editor = GetShownGraphEditor();
-	const UWidgetAnimMachineGraph* Graph = GetShownGraph();
-	const UWidgetAnimMachineGraphNode* Node = Graph ? Graph->FindStateNode(StateId) : nullptr;
-	if (Editor.IsValid() && Node)
+	UWidgetAnimMachineGraph* Graph = GetShownGraph();
+	if (!Graph)
 	{
-		// Brought into view, not selected: the Details keep showing what they show.
-		Editor->JumpToNode(Node, /*bRequestRename=*/false, /*bSelectNode=*/false);
+		return;
 	}
+
+	// The graph it is in: a state's own, a transition's states'. Opened if it isn't the one shown - and any collapsed states open
+	// that it isn't in, closed.
+	const FWidgetAnimMachineLayer& Layer = Machine->Layers[LayerIndex];
+	const FWidgetAnimMachineState* State = Layer.FindState(Id);
+	if (!State)
+	{
+		const int32 TransitionIndex = Layer.FindTransitionIndex(Id);
+		State = TransitionIndex != INDEX_NONE ? Layer.FindState(Layer.Transitions[TransitionIndex].From) : nullptr;
+	}
+	if (!State)
+	{
+		return;
+	}
+	if (Graph->OpenMachine != State->ParentMachine)
+	{
+		Graph->OpenMachineView(State->ParentMachine);
+	}
+	else if (Graph->OpenGroup.IsValid() && State->EditorGroup != Graph->OpenGroup)
+	{
+		Graph->OpenGroupView(FGuid());
+	}
+	PendingFocusId = Id;
+	bPendingFocusSelect = bSelect;
+	// A few frames for the graph to be made again, if it has to be.
+	PendingFocusFrames = 4;
+}
+
+void SWidgetAnimStateMachineEditor::TickPendingFocus()
+{
+	if (!PendingFocusId.IsValid())
+	{
+		return;
+	}
+	const TSharedPtr<SGraphEditor> Editor = GetShownGraphEditor();
+	UWidgetAnimMachineGraph* Graph = GetShownGraph();
+	UEdGraphNode* Node = nullptr;
+	if (Graph)
+	{
+		Node = Graph->FindTransitionNode(PendingFocusId);
+		if (!Node)
+		{
+			// A state - or the box of the collapsed states it is shown in.
+			Node = Graph->FindStateNode(Graph->GetShownNodeId(PendingFocusId));
+		}
+	}
+	if (!Editor.IsValid() || !Node)
+	{
+		if (--PendingFocusFrames <= 0)
+		{
+			PendingFocusId.Invalidate();
+		}
+		return;
+	}
+	PendingFocusId.Invalidate();
+	if (bPendingFocusSelect)
+	{
+		Editor->ClearSelectionSet();
+	}
+	Editor->JumpToNode(Node, /*bRequestRename=*/false, /*bSelectNode=*/bPendingFocusSelect);
 }
 
 bool SWidgetAnimStateMachineEditor::IsPreviewPaused() const
@@ -5944,7 +6630,11 @@ uint32 SWidgetAnimStateMachineEditor::MakePreviewSignature() const
 
 void SWidgetAnimStateMachineEditor::UpdatePreviews()
 {
-	if (!WidgetBlueprint.IsValid() || !Machine)
+	if (bStandalone)
+	{
+		EnsureStandalonePreview();
+	}
+	if (!HasPreviewBlueprint() || !Machine)
 	{
 		return;
 	}
@@ -6870,74 +7560,16 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeToolbar()
 		.VAlign(VAlign_Center)
 		.Padding(FMargin(4.f, 2.f))
 		[
-			SNew(SComboButton)
-			.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::DebugMenuTooltip()))
-			.Visibility_Lambda([]() { return GEditor && GEditor->PlayWorld ? EVisibility::Visible : EVisibility::Collapsed; })
-			.OnGetMenuContent(this, &SWidgetAnimStateMachineEditor::MakeDebugMenu)
-			.ButtonContent()
-			[
-				SNew(STextBlock)
-				.Text(this, &SWidgetAnimStateMachineEditor::GetDebugLabel)
-			]
+			MakeDebugPicker()
 		]
 
-		// The lock: the machine read-only - a preview - as the Widget Animations panel's lock makes its animation. Its graph,
-		// inputs, layers and Details can't be edited; the preview's inputs still work, to try it.
+		// The lock: the machine read-only - a preview - as the Widget Animations panel's lock makes its animation.
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
 		.VAlign(VAlign_Center)
 		.Padding(FMargin(2.f, 0.f))
 		[
-			SNew(SButton)
-			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
-			.ContentPadding(FMargin(4.f, 2.f))
-			.IsEnabled_Lambda([this]() { return Machine != nullptr; })
-			.ToolTip(WidgetAnimMachineStyle::MakeToolTip(TAttribute<FText>::CreateLambda([this]()
-			{
-				return bMachineLocked ? NameTBD::Tooltips::WidgetAnimEditor::UnlockTooltip() : MachineTips::LockMachineTooltip();
-			})))
-			.OnClicked_Lambda([this]()
-			{
-				bMachineLocked = !bMachineLocked;
-				RebuildInputs();
-				RebuildLayerTabs();
-				return FReply::Handled();
-			})
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				[
-					SNew(SBox)
-					.WidthOverride(16.f)
-					.HeightOverride(16.f)
-					[
-						SNew(SImage)
-						.Image_Lambda([this]()
-						{
-							return bMachineLocked
-								? FindEditorBrush({ TEXT("Icons.Lock"), TEXT("PropertyWindow.Locked") })
-								: FindEditorBrush({ TEXT("Icons.Unlock"), TEXT("PropertyWindow.Unlocked") });
-						})
-						.ColorAndOpacity_Lambda([this]()
-						{
-							return bMachineLocked ? FSlateColor(NameTBD::Colors::WidgetAnimEditor::ReadOnlyLabel) : FSlateColor::UseForeground();
-						})
-					]
-				]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
-				[
-					SNew(STextBlock)
-					.Visibility_Lambda([this]() { return bMachineLocked ? EVisibility::Visible : EVisibility::Collapsed; })
-					.Font(FAppStyle::GetFontStyle("NormalFontBold"))
-					.ColorAndOpacity(NameTBD::Colors::WidgetAnimEditor::ReadOnlyLabel)
-					.Text(LOCTEXT("MachineReadOnlyLabel", "Read Only"))
-				]
-			]
+			MakeLockButton()
 		]
 
 		// Save. Editing an asset: that asset. The Widget Blueprint's own machine, saved as an asset before: into that asset
@@ -7041,6 +7673,539 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeToolbar()
 		];
 }
 
+TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeDebugPicker()
+{
+	return SNew(SComboButton)
+		.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::DebugMenuTooltip()))
+		.Visibility_Lambda([]() { return GEditor && GEditor->PlayWorld ? EVisibility::Visible : EVisibility::Collapsed; })
+		.OnGetMenuContent(this, &SWidgetAnimStateMachineEditor::MakeDebugMenu)
+		.ButtonContent()
+		[
+			SNew(STextBlock)
+			.Text(this, &SWidgetAnimStateMachineEditor::GetDebugLabel)
+		];
+}
+
+TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeLockButton()
+{
+	// Its graph, inputs, layers and Details can't be edited while locked; the preview's inputs still work, to try it.
+	return SNew(SButton)
+		.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+		.ContentPadding(FMargin(4.f, 2.f))
+		.IsEnabled_Lambda([this]() { return Machine != nullptr; })
+		.ToolTip(WidgetAnimMachineStyle::MakeToolTip(TAttribute<FText>::CreateLambda([this]()
+		{
+			return bMachineLocked ? NameTBD::Tooltips::WidgetAnimEditor::UnlockTooltip() : MachineTips::LockMachineTooltip();
+		})))
+		.OnClicked_Lambda([this]()
+		{
+			bMachineLocked = !bMachineLocked;
+			RebuildInputs();
+			RebuildLayerTabs();
+			return FReply::Handled();
+		})
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(SBox)
+				.WidthOverride(16.f)
+				.HeightOverride(16.f)
+				[
+					SNew(SImage)
+					.Image_Lambda([this]()
+					{
+						return bMachineLocked
+							? FindEditorBrush({ TEXT("Icons.Lock"), TEXT("PropertyWindow.Locked") })
+							: FindEditorBrush({ TEXT("Icons.Unlock"), TEXT("PropertyWindow.Unlocked") });
+					})
+					.ColorAndOpacity_Lambda([this]()
+					{
+						return bMachineLocked ? FSlateColor(NameTBD::Colors::WidgetAnimEditor::ReadOnlyLabel) : FSlateColor::UseForeground();
+					})
+				]
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+			[
+				SNew(STextBlock)
+				.Visibility_Lambda([this]() { return bMachineLocked ? EVisibility::Visible : EVisibility::Collapsed; })
+				.Font(FAppStyle::GetFontStyle("NormalFontBold"))
+				.ColorAndOpacity(NameTBD::Colors::WidgetAnimEditor::ReadOnlyLabel)
+				.Text(LOCTEXT("MachineReadOnlyLabel", "Read Only"))
+			]
+		];
+}
+
+// -----------------------------------------------------------------------------------------------------
+// The asset's own window
+// -----------------------------------------------------------------------------------------------------
+
+UWidgetBlueprint* SWidgetAnimStateMachineEditor::GetTimelineBlueprint() const
+{
+	return WidgetBlueprint.IsValid() ? WidgetBlueprint.Get() : TargetWidgetBlueprint.Get();
+}
+
+bool SWidgetAnimStateMachineEditor::HasPreviewBlueprint() const
+{
+	return WidgetBlueprint.IsValid() || (bStandalone && TargetWidgetBlueprint.IsValid());
+}
+
+void SWidgetAnimStateMachineEditor::SetTargetWidgetBlueprint(UWidgetBlueprint* Blueprint)
+{
+	if (!bStandalone || TargetWidgetBlueprint.Get() == Blueprint)
+	{
+		return;
+	}
+	StopPreviews();
+	DropStandalonePreview();
+	TargetWidgetBlueprint = Blueprint;
+	PreviewSignature.Reset();
+	bPreviewSourceChosen = false;
+
+	// Kept with the machine, as its Preview Targets are: it opens on the same one next time.
+	if (Machine)
+	{
+		const FSoftObjectPath Path(Blueprint);
+		if (Machine->PreviewWidgetBlueprint != Path)
+		{
+			Machine->Modify();
+			Machine->PreviewWidgetBlueprint = Path;
+			Machine->MarkPackageDirty();
+		}
+	}
+	bPanelsDirty = true;
+}
+
+void SWidgetAnimStateMachineEditor::EnsureStandalonePreview()
+{
+	const UWidgetBlueprint* Blueprint = bStandalone ? TargetWidgetBlueprint.Get() : nullptr;
+	UClass* WidgetClass = Blueprint ? Blueprint->GeneratedClass.Get() : nullptr;
+	if (StandalonePreview && StandalonePreview->GetClass() == WidgetClass)
+	{
+		return;
+	}
+
+	// Made again for the class as it is - compiled since, it is a new class - and what played on the old one stopped.
+	StopPreviews();
+	DropStandalonePreview();
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!WidgetClass || !WidgetClass->IsChildOf(UUserWidget::StaticClass()) || WidgetClass->HasAnyClassFlags(CLASS_Abstract) || !World)
+	{
+		return;
+	}
+	// As the designer makes its preview: at design time, transient, never saved.
+	UUserWidget* Made = NewObject<UUserWidget>(World, WidgetClass, NAME_None, RF_Transient);
+	Made->SetDesignerFlags(EWidgetDesignFlags::Designing);
+	StandalonePreview = Made;
+	if (StandalonePreviewBox.IsValid())
+	{
+		StandalonePreviewBox->SetContent(Made->TakeWidget());
+	}
+	PreviewSignature.Reset();
+}
+
+void SWidgetAnimStateMachineEditor::DropStandalonePreview()
+{
+	if (StandalonePreviewBox.IsValid())
+	{
+		StandalonePreviewBox->SetContent(SNullWidget::NullWidget);
+	}
+	StandalonePreview = nullptr;
+}
+
+TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeStandaloneToolbar()
+{
+	// A button of the toolbar's own look: an icon, and its word under it as the asset editors' toolbars have them.
+	auto MakeToolButton = [](TAttribute<const FSlateBrush*> Icon, const FText& Label, TAttribute<FText> ButtonTip, TAttribute<bool> Enabled, TFunction<void()> OnClicked,
+		const FSlateColor& Tint = FSlateColor::UseForeground())
+	{
+		return SNew(SButton)
+			.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+			.ContentPadding(FMargin(6.f, 2.f))
+			.IsEnabled(Enabled)
+			.ToolTip(WidgetAnimMachineStyle::MakeToolTip(ButtonTip))
+			.OnClicked_Lambda([OnClicked]() { OnClicked(); return FReply::Handled(); })
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.HAlign(HAlign_Center)
+				[
+					SNew(SBox)
+					.WidthOverride(20.f)
+					.HeightOverride(20.f)
+					[
+						SNew(SImage)
+						.Image(Icon)
+						.ColorAndOpacity(Tint)
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.HAlign(HAlign_Center)
+				[
+					SNew(STextBlock)
+					.Font(FAppStyle::GetFontStyle(TEXT("SmallFont")))
+					.Text(Label)
+				]
+			];
+	};
+	auto CanPreview = [this]() { return HasPreviewBlueprint() && bPreviewInDesigner && !(GEditor && GEditor->PlayWorld); };
+
+	return SNew(SHorizontalBox)
+
+		// Target Widget Blueprint: what the machine is tried on here - its timelines listed, its widget previewed.
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(4.f, 0.f, 2.f, 0.f))
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("TargetWidgetBlueprintLabel", "Target Widget Blueprint"))
+			.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::TargetWidgetBlueprintTooltip()))
+		]
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(4.f, 0.f, 10.f, 0.f))
+		[
+			SNew(SBox)
+			.WidthOverride(220.f)
+			.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::TargetWidgetBlueprintTooltip()))
+			[
+				SNew(SObjectPropertyEntryBox)
+				.AllowedClass(UWidgetBlueprint::StaticClass())
+				.AllowClear(true)
+				.DisplayThumbnail(false)
+				.DisplayUseSelected(true)
+				.DisplayBrowse(true)
+				.ObjectPath_Lambda([this]() { return TargetWidgetBlueprint.IsValid() ? TargetWidgetBlueprint->GetPathName() : FString(); })
+				.OnObjectChanged_Lambda([this](const FAssetData& AssetData) { SetTargetWidgetBlueprint(Cast<UWidgetBlueprint>(AssetData.GetAsset())); })
+			]
+		]
+
+		// Play / pause and Restart: the preview on the Target Widget Blueprint.
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			MakeToolButton(
+				TAttribute<const FSlateBrush*>::CreateLambda([this]()
+				{
+					return bPreviewPaused
+						? FindEditorBrush({ TEXT("Icons.Play"), TEXT("PlayWorld.ResumePlaySession"), TEXT("GenericPlay") })
+						: FindEditorBrush({ TEXT("Icons.Pause"), TEXT("PlayWorld.PausePlaySession"), TEXT("GenericPause") });
+				}),
+				LOCTEXT("PreviewPlayPauseLabel", "Play"),
+				TAttribute<FText>::CreateLambda([this]() { return bPreviewPaused ? MachineTips::PreviewPlayTooltip() : MachineTips::PreviewPauseTooltip(); }),
+				TAttribute<bool>::CreateLambda(CanPreview),
+				[this]() { bPreviewPaused = !bPreviewPaused; },
+				FSlateColor(NameTBD::Colors::WidgetAnimEditor::PlayTint))
+		]
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			MakeToolButton(
+				FindEditorBrush({ TEXT("Icons.Refresh"), TEXT("GenericCommands.Redo"), TEXT("Icons.Undo") }),
+				LOCTEXT("PreviewRestartLabel", "Restart"),
+				MachineTips::PreviewRestartTooltip(),
+				TAttribute<bool>::CreateLambda(CanPreview),
+				[this]() { RestartFromEntry(); })
+		]
+
+		// Play In Editor: the widget watched, beside them.
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		.Padding(FMargin(6.f, 0.f))
+		[
+			MakeDebugPicker()
+		]
+
+		// Find (Ctrl + F).
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.VAlign(VAlign_Center)
+		[
+			MakeToolButton(
+				FindEditorBrush({ TEXT("Icons.Search"), TEXT("Symbols.SearchGlass") }),
+				LOCTEXT("FindLabel", "Find"),
+				MachineTips::FindTooltip(),
+				TAttribute<bool>::CreateLambda([this]() { return Machine != nullptr; }),
+				[this]() { if (bFindOpen) { CloseFind(); } else { OpenFind(); } })
+		];
+}
+
+// -----------------------------------------------------------------------------------------------------
+// Find
+// -----------------------------------------------------------------------------------------------------
+
+TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeFindPanel()
+{
+	return SNew(SBox)
+		.WidthOverride(340.f)
+		.Visibility_Lambda([this]() { return bFindOpen && Machine ? EVisibility::Visible : EVisibility::Collapsed; })
+		[
+			SNew(SBorder)
+			.BorderImage(WidgetAnimMachineStyle::RoundedBrush(4.f))
+			.BorderBackgroundColor(FStyleColors::Panel)
+			.Padding(FMargin(6.f))
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.f)
+					[
+						SAssignNew(FindBox, SSearchBox)
+						.HintText(LOCTEXT("FindHint", "Find states and transitions"))
+						.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::FindTooltip()))
+						.OnTextChanged_Lambda([this](const FText& Typed)
+						{
+							FindText = Typed.ToString();
+							FindPicked = 0;
+							RefreshFind();
+						})
+						.OnTextCommitted_Lambda([this](const FText&, ETextCommit::Type CommitType)
+						{
+							if (CommitType == ETextCommit::OnEnter)
+							{
+								GoToFindHit(FindPicked);
+							}
+						})
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(4.f, 0.f, 0.f, 0.f))
+					[
+						SNew(SButton)
+						.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+						.ContentPadding(FMargin(2.f))
+						.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::CloseFindTooltip()))
+						.OnClicked_Lambda([this]() { CloseFind(); return FReply::Handled(); })
+						[
+							MakeFixedIcon(FindEditorBrush({ TEXT("Icons.X"), TEXT("Icons.Delete") }))
+						]
+					]
+				]
+				+ SVerticalBox::Slot()
+				.AutoHeight()
+				.MaxHeight(360.f)
+				.Padding(FMargin(0.f, 4.f, 0.f, 0.f))
+				[
+					SNew(SScrollBox)
+					+ SScrollBox::Slot()
+					[
+						SAssignNew(FindResults, SVerticalBox)
+					]
+				]
+			]
+		];
+}
+
+void SWidgetAnimStateMachineEditor::OpenFind()
+{
+	if (!Machine)
+	{
+		return;
+	}
+	bFindOpen = true;
+	RefreshFind();
+	if (FindBox.IsValid())
+	{
+		FSlateApplication::Get().SetKeyboardFocus(FindBox, EFocusCause::SetDirectly);
+	}
+}
+
+void SWidgetAnimStateMachineEditor::CloseFind()
+{
+	bFindOpen = false;
+	if (const TSharedPtr<SGraphEditor> Editor = GetShownGraphEditor())
+	{
+		FSlateApplication::Get().SetKeyboardFocus(Editor, EFocusCause::SetDirectly);
+	}
+}
+
+void SWidgetAnimStateMachineEditor::RefreshFind()
+{
+	FindHits.Reset();
+	if (!FindResults.IsValid())
+	{
+		return;
+	}
+	FindResults->ClearChildren();
+	if (!Machine)
+	{
+		return;
+	}
+
+	const FString Needle = FindText.TrimStartAndEnd();
+	auto Matches = [&Needle](const FString& Haystack) { return Needle.IsEmpty() || Haystack.Contains(Needle, ESearchCase::IgnoreCase); };
+
+	// A node as the graph names it: Entry, Any State and Exit by what they are.
+	auto NodeName = [](const FWidgetAnimMachineState& Node) -> FString
+	{
+		switch (Node.Kind)
+		{
+		case EWidgetAnimMachineNodeKind::Entry:    return TEXT("Entry");
+		case EWidgetAnimMachineNodeKind::AnyState: return TEXT("Any State");
+		case EWidgetAnimMachineNodeKind::Exit:     return TEXT("Exit");
+		default:                                    return Node.Name.ToString();
+		}
+	};
+	// Where it is: its layer, then each sub-machine in to its graph.
+	auto WhereOf = [](const FWidgetAnimMachineLayer& Layer, const FGuid& ParentMachine) -> FText
+	{
+		TArray<FString> Steps;
+		for (int32 Index = Layer.FindStateIndex(ParentMachine), Step = 0; Index != INDEX_NONE && Step <= Layer.States.Num(); Index = Layer.FindParentIndex(Index), ++Step)
+		{
+			Steps.Insert(Layer.States[Index].Name.ToString(), 0);
+		}
+		Steps.Insert(Layer.Name.ToString(), 0);
+		return FText::FromString(FString::Join(Steps, TEXT(" > ")));
+	};
+
+	constexpr int32 MaxHits = 60;
+	for (int32 LayerIndex = 0; LayerIndex < Machine->Layers.Num() && FindHits.Num() < MaxHits; ++LayerIndex)
+	{
+		const FWidgetAnimMachineLayer& Layer = Machine->Layers[LayerIndex];
+		for (const FWidgetAnimMachineState& Node : Layer.States)
+		{
+			if (Node.Kind == EWidgetAnimMachineNodeKind::State && Matches(Node.Name.ToString()) && FindHits.Num() < MaxHits)
+			{
+				FFindHit& Hit = FindHits.AddDefaulted_GetRef();
+				Hit.Layer = LayerIndex;
+				Hit.Id = Node.Id;
+				Hit.Title = FText::FromName(Node.Name);
+				Hit.Where = WhereOf(Layer, Node.ParentMachine);
+				Hit.bSubMachine = Node.IsSubMachine();
+			}
+		}
+		// Transitions only for something typed: unfiltered, the states are the list.
+		if (Needle.IsEmpty())
+		{
+			continue;
+		}
+		for (const FWidgetAnimMachineTransition& Transition : Layer.Transitions)
+		{
+			const FWidgetAnimMachineState* From = Layer.FindState(Transition.From);
+			const FWidgetAnimMachineState* To = Layer.FindState(Transition.To);
+			if (!From || !To || FindHits.Num() >= MaxHits)
+			{
+				continue;
+			}
+			const FString Route = FString::Printf(TEXT("%s -> %s"), *NodeName(*From), *NodeName(*To));
+			TArray<FString> Conditions;
+			for (const FWidgetAnimMachineCondition& Condition : Transition.Conditions)
+			{
+				Conditions.Add(FWidgetAnimMachineConditionCustomization::Describe(Machine, Condition).ToString());
+			}
+			const FString Rule = Conditions.Num() > 0 ? FString::Join(Conditions, TEXT(" and ")) : FString(TEXT("Always"));
+			if (!Matches(Route) && !Matches(Rule))
+			{
+				continue;
+			}
+			FFindHit& Hit = FindHits.AddDefaulted_GetRef();
+			Hit.Layer = LayerIndex;
+			Hit.Id = Transition.Id;
+			Hit.Title = FText::FromString(Route);
+			Hit.Where = FText::Format(LOCTEXT("FindTransitionWhere", "{0} - {1}"), WhereOf(Layer, From->ParentMachine), FText::FromString(Rule));
+			Hit.bTransition = true;
+		}
+	}
+	FindPicked = FindHits.Num() > 0 ? FMath::Clamp(FindPicked, 0, FindHits.Num() - 1) : 0;
+
+	if (FindHits.Num() == 0)
+	{
+		FindResults->AddSlot()
+			.AutoHeight()
+			.Padding(FMargin(4.f, 2.f))
+			[
+				SNew(STextBlock)
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				.Text(LOCTEXT("FindNothing", "Nothing found"))
+			];
+		return;
+	}
+	for (int32 HitIndex = 0; HitIndex < FindHits.Num(); ++HitIndex)
+	{
+		const FFindHit& Hit = FindHits[HitIndex];
+		const FSlateBrush* Icon = Hit.bTransition
+			? FindEditorBrush({ TEXT("Graph.TransitionNode.Icon"), TEXT("Icons.ArrowRight") })
+			: Hit.bSubMachine ? FindEditorBrush({ TEXT("GraphEditor.StateMachine_16x"), TEXT("GraphEditor.SubGraph_16x") })
+			: FindEditorBrush({ TEXT("Graph.StateNode.Icon"), TEXT("Icons.Box") });
+		FindResults->AddSlot()
+			.AutoHeight()
+			[
+				SNew(SBorder)
+				.BorderImage(GetRowBrush())
+				.BorderBackgroundColor_Lambda([this, HitIndex]() { return FSlateColor(HitIndex == FindPicked ? MachineColors::InputRowSelected : FLinearColor::Transparent); })
+				.Padding(FMargin(4.f, 2.f))
+				.OnMouseButtonDown_Lambda([this, HitIndex](const FGeometry&, const FPointerEvent& MouseEvent)
+				{
+					if (MouseEvent.GetEffectingButton() != EKeys::LeftMouseButton)
+					{
+						return FReply::Unhandled();
+					}
+					FindPicked = HitIndex;
+					GoToFindHit(HitIndex);
+					return FReply::Handled();
+				})
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(FMargin(0.f, 0.f, 6.f, 0.f))
+					[
+						MakeFixedIcon(Icon)
+					]
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.f)
+					.VAlign(VAlign_Center)
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(STextBlock)
+							.Text(Hit.Title)
+							.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+						]
+						+ SVerticalBox::Slot()
+						.AutoHeight()
+						[
+							SNew(STextBlock)
+							.Font(FAppStyle::GetFontStyle(TEXT("SmallFont")))
+							.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+							.Text(Hit.Where)
+							.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
+						]
+					]
+				]
+			];
+	}
+}
+
+void SWidgetAnimStateMachineEditor::GoToFindHit(int32 HitIndex)
+{
+	if (!FindHits.IsValidIndex(HitIndex))
+	{
+		return;
+	}
+	const FFindHit Hit = FindHits[HitIndex];
+	FocusOn(Hit.Layer, Hit.Id, /*bSelect=*/true);
+}
+
 TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeJumpToActiveButton()
 {
 	return
@@ -7099,30 +8264,67 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeJumpToActiveButton()
 TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeGroupBreadcrumb()
 {
 	// Where the graph is, in the layer row - as the Widget Animations panel shows a collapsed track open in its header: the
-	// layer, the way back to all of it, then the collapsed states open on their own.
-	return SNew(SBorder)
-		.BorderImage(FAppStyle::GetBrush(TEXT("NoBorder")))
-		.Padding(FMargin(2.f, 0.f))
+	// layer (the way back to all of it), each sub-machine in to the one open, then the collapsed states open on their own.
+	// Made again whenever that changes (RefreshBreadcrumb, from Tick).
+	return SAssignNew(BreadcrumbBox, SBox)
 		.Visibility_Lambda([this]()
 		{
 			const UWidgetAnimMachineGraph* Shown = GetShownGraph();
-			return Shown && Shown->OpenGroup.IsValid() ? EVisibility::Visible : EVisibility::Collapsed;
-		})
-		[
-			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot()
+			return Shown && (Shown->OpenGroup.IsValid() || Shown->OpenMachine.IsValid()) ? EVisibility::Visible : EVisibility::Collapsed;
+		});
+}
+
+void SWidgetAnimStateMachineEditor::RefreshBreadcrumb()
+{
+	UWidgetAnimMachineGraph* Shown = GetShownGraph();
+	const FWidgetAnimMachineLayer* Layer = Shown ? Shown->GetLayer() : nullptr;
+	if (!BreadcrumbBox.IsValid())
+	{
+		return;
+	}
+
+	// Only made again when where the graph is - or a name on the way - changes.
+	TArray<FGuid> Path;
+	if (Shown)
+	{
+		Shown->GetOpenMachinePath(Path);
+	}
+	const FWidgetAnimMachineStateGroup* Group = Layer && Shown ? WidgetAnimMachineEdits::FindGroup(*Layer, Shown->OpenGroup) : nullptr;
+	uint32 Signature = GetTypeHash(ShownLayer) + 1;
+	Signature = HashCombine(Signature, GetTypeHash(Layer ? Layer->Name : FName()));
+	for (const FGuid& Step : Path)
+	{
+		const FWidgetAnimMachineState* SubMachine = Layer ? Layer->FindState(Step) : nullptr;
+		Signature = HashCombine(Signature, GetTypeHash(Step));
+		Signature = HashCombine(Signature, GetTypeHash(SubMachine ? SubMachine->Name : FName()));
+	}
+	Signature = HashCombine(Signature, GetTypeHash(Group ? Group->Id : FGuid()));
+	Signature = HashCombine(Signature, GetTypeHash(Group ? Group->Name : FName()));
+	if (Signature == BreadcrumbSignature)
+	{
+		return;
+	}
+	BreadcrumbSignature = Signature;
+
+	const TSharedRef<SHorizontalBox> Trail = SNew(SHorizontalBox);
+	const TWeakObjectPtr<UWidgetAnimMachineGraph> WeakGraph(Shown);
+
+	// A step of the trail that goes back there when clicked: the layer (Target invalid), or a sub-machine.
+	auto AddCrumbButton = [&Trail, WeakGraph](const FText& Label, const FSlateBrush* Icon, const FGuid& Target, const FText& Tip)
+	{
+		Trail->AddSlot()
 			.AutoWidth()
 			.VAlign(VAlign_Center)
 			[
 				SNew(SButton)
 				.ButtonStyle(FAppStyle::Get(), "SimpleButton")
 				.ContentPadding(FMargin(3.f, 1.f))
-				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(MachineTips::LeaveGroupTooltip()))
-				.OnClicked_Lambda([this]()
+				.ToolTip(WidgetAnimMachineStyle::MakeToolTip(Tip))
+				.OnClicked_Lambda([WeakGraph, Target]()
 				{
-					if (UWidgetAnimMachineGraph* Shown = GetShownGraph())
+					if (UWidgetAnimMachineGraph* Graph = WeakGraph.Get())
 					{
-						Shown->OpenGroupView(FGuid());
+						Graph->OpenMachineView(Target);
 					}
 					return FReply::Handled();
 				})
@@ -7133,7 +8335,7 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeGroupBreadcrumb()
 					.VAlign(VAlign_Center)
 					.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
 					[
-						MakeFixedIcon(FindEditorBrush({ TEXT("Icons.ArrowLeft"), TEXT("Icons.ChevronLeft") }))
+						MakeFixedIcon(Icon)
 					]
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
@@ -7142,46 +8344,76 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeGroupBreadcrumb()
 						SNew(STextBlock)
 						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
 						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
-						.Text_Lambda([this]()
-						{
-							const UWidgetAnimMachineGraph* Shown = GetShownGraph();
-							const FWidgetAnimMachineLayer* Layer = Shown ? Shown->GetLayer() : nullptr;
-							return Layer ? FText::FromName(Layer->Name) : FText::GetEmpty();
-						})
+						.Text(Label)
 					]
 				]
-			]
-			+ SHorizontalBox::Slot()
+			];
+	};
+	auto AddChevron = [&Trail]()
+	{
+		Trail->AddSlot()
 			.AutoWidth()
 			.VAlign(VAlign_Center)
 			.Padding(FMargin(3.f, 0.f))
 			[
 				MakeFixedIcon(FindEditorBrush({ TEXT("Icons.ChevronRight"), TEXT("TreeArrow_Collapsed") }))
-			]
-			+ SHorizontalBox::Slot()
+			];
+	};
+	// Where the graph is now: bold, not a button.
+	auto AddHere = [&Trail](const FText& Label, const FSlateBrush* Icon, const FSlateColor& Color)
+	{
+		Trail->AddSlot()
 			.AutoWidth()
 			.VAlign(VAlign_Center)
 			.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
 			[
-				MakeFixedIcon(FindEditorBrush({ TEXT("GraphEditor.SubGraph_16x"), TEXT("Icons.FolderClosed") }))
-			]
-			+ SHorizontalBox::Slot()
+				MakeFixedIcon(Icon)
+			];
+		Trail->AddSlot()
 			.AutoWidth()
 			.VAlign(VAlign_Center)
 			.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
 			[
 				SNew(STextBlock)
 				.Font(FAppStyle::GetFontStyle(TEXT("NormalFontBold")))
-				.ColorAndOpacity(NameTBD::Colors::WidgetAnimEditor::CollapsedNodeText)
-				.Text_Lambda([this]()
-				{
-					const UWidgetAnimMachineGraph* Shown = GetShownGraph();
-					const FWidgetAnimMachineLayer* Layer = Shown ? Shown->GetLayer() : nullptr;
-					const FWidgetAnimMachineStateGroup* Group = Layer ? WidgetAnimMachineEdits::FindGroup(*Layer, Shown->OpenGroup) : nullptr;
-					return Group ? FText::FromName(Group->Name) : FText::GetEmpty();
-				})
-			]
-		];
+				.ColorAndOpacity(Color)
+				.Text(Label)
+			];
+	};
+
+	const FSlateBrush* MachineIcon = FindEditorBrush({ TEXT("GraphEditor.StateMachine_16x"), TEXT("ClassIcon.AnimStateMachine"), TEXT("GraphEditor.SubGraph_16x") });
+	AddCrumbButton(Layer ? FText::FromName(Layer->Name) : FText::GetEmpty(), FindEditorBrush({ TEXT("Icons.ArrowLeft"), TEXT("Icons.ChevronLeft") }), FGuid(),
+		Path.Num() > 0 ? MachineTips::LeaveSubMachineTooltip() : MachineTips::LeaveGroupTooltip());
+	for (int32 StepIndex = 0; StepIndex < Path.Num(); ++StepIndex)
+	{
+		const FWidgetAnimMachineState* SubMachine = Layer ? Layer->FindState(Path[StepIndex]) : nullptr;
+		const FText Name = SubMachine ? FText::FromName(SubMachine->Name) : FText::GetEmpty();
+		AddChevron();
+		const bool bLast = StepIndex == Path.Num() - 1;
+		if (bLast && !Group)
+		{
+			AddHere(Name, MachineIcon, FSlateColor(FStyleColors::White));
+		}
+		else
+		{
+			// A sub-machine on the way - or the one open, under the collapsed states open in it: back to it.
+			AddCrumbButton(Name, MachineIcon, Path[StepIndex], MachineTips::SubMachineCrumbTooltip());
+		}
+	}
+	if (Group)
+	{
+		AddChevron();
+		AddHere(FText::FromName(Group->Name), FindEditorBrush({ TEXT("GraphEditor.SubGraph_16x"), TEXT("Icons.FolderClosed") }),
+			FSlateColor(NameTBD::Colors::WidgetAnimEditor::CollapsedNodeText));
+	}
+
+	BreadcrumbBox->SetContent(
+		SNew(SBorder)
+		.BorderImage(FAppStyle::GetBrush(TEXT("NoBorder")))
+		.Padding(FMargin(2.f, 0.f))
+		[
+			Trail
+		]);
 }
 
 TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakeDraftNameField()
@@ -7310,7 +8542,8 @@ TSharedRef<SWidget> SWidgetAnimStateMachineEditor::MakePlayPauseButton()
 	// Floating at the graph's bottom left, on a dark backing as the graph's own overlays are, with a faint outline that sets it
 	// off from the graph. Play and Pause both in the Widget Animations panel's Play orange.
 	return SNew(SOverlay)
-		.Visibility_Lambda([this]() { return WidgetBlueprint.IsValid() ? EVisibility::Visible : EVisibility::Collapsed; })
+		// In a Widget Blueprint; the asset's own window has it on its toolbar.
+		.Visibility_Lambda([this]() { return WidgetBlueprint.IsValid() && !bStandalone ? EVisibility::Visible : EVisibility::Collapsed; })
 		+ SOverlay::Slot()
 		[
 			SNew(SBorder)
@@ -7395,7 +8628,7 @@ FText SWidgetAnimStateMachineEditor::GetPreviewStatus() const
 	{
 		return IsDebuggingPlay() ? MachineTips::DebuggingStatus() : MachineTips::NotPlayingStatus();
 	}
-	if (!WidgetBlueprint.IsValid())
+	if (!HasPreviewBlueprint())
 	{
 		return MachineTips::AssetEditorStatus();
 	}
@@ -7647,17 +8880,20 @@ UWidgetAnimStateMachineAsset* SWidgetAnimStateMachineEditor::FindMachineInWidget
 	UWidgetAnimStateMachineAsset* OfSelected = nullptr;
 	ForEachComponentInTree(Preview, [&First, &OfSelected, Selected](UWidgetAnimationComponent* Component)
 	{
-		for (const FWidgetAnimStateMachineEntry& Row : Component->StateMachines)
+		// Its own rows and the State Machine Component's it plays.
+		TArray<const FWidgetAnimStateMachineEntry*> Rows;
+		Component->GetPlayedMachineRows(Rows);
+		for (const FWidgetAnimStateMachineEntry* Row : Rows)
 		{
-			if (!Row.StateMachine)
+			if (!Row->StateMachine)
 			{
 				continue;
 			}
-			First = First ? First : Row.StateMachine.Get();
+			First = First ? First : Row->StateMachine.Get();
 			const UWidget* Animated = Component->GetAnimatedWidget();
 			if (!OfSelected && Selected && Animated && (Animated == Selected || Animated->IsIn(Selected)))
 			{
-				OfSelected = Row.StateMachine;
+				OfSelected = Row->StateMachine;
 			}
 		}
 	});
