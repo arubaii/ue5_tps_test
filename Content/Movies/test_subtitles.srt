@@ -1,0 +1,7 @@
+1
+00:00:00,300 --> 00:00:02,300
+This is the first subtitle.
+
+2
+00:00:02,700 --> 00:00:04,800
+And this is the second one.

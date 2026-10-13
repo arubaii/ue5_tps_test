@@ -197,6 +197,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (DisplayName = "Muted"))
 	bool bMuted = false;
 
+	/**
+	 * Where it is heard from. 2D (UI): the same everywhere. World (On Diegetic Screen): on a Diegetic Screen, from the screen in
+	 * the world - by distance and direction, muffled through walls (World Audio); anywhere else, 2D.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (DisplayName = "Audio Space"))
+	EMediaBoxAudioSpace AudioSpace = EMediaBoxAudioSpace::UI;
+
+	/** How it is heard in the world: falloff, occlusion through walls, reverb - or a Sound Attenuation asset. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (DisplayName = "World Audio", EditCondition = "AudioSpace == EMediaBoxAudioSpace::World"))
+	FMediaBoxWorldAudio WorldAudio;
+
 	// ---------------------------------------------------------------------------------------------
 	// Subtitles
 	// ---------------------------------------------------------------------------------------------
@@ -205,6 +216,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Show Subtitles"))
 	bool bShowSubtitles = true;
 
+	/**
+	 * How big the text is, as a part of the video's height - so it fits any video size: 0.045 is about YouTube's (16 pt on a
+	 * 360 px player). Overrides Font's size; the Margin grows and shrinks with it. 0: Font's own size, whatever the video's.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Text Size", ClampMin = "0.0", ClampMax = "0.2", UIMax = "0.1", EditCondition = "bShowSubtitles"))
+	float SubtitleTextSize = 0.045f;
+
+	/** The subtitle font. Its size is used only while Text Size is 0 (Text Size sets it from the video's height). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Font", EditCondition = "bShowSubtitles"))
 	FSlateFontInfo SubtitleFont;
 
@@ -215,7 +234,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Background", EditCondition = "bShowSubtitles"))
 	FLinearColor SubtitleBackground = FLinearColor(0.f, 0.f, 0.f, 0.6f);
 
-	/** Space from the bottom of the box to the last line, and around each line's text. */
+	/**
+	 * Space from the bottom of the box to the last line (X), and around each line's text (Y) - at a 14 pt text size; scaled
+	 * with Text Size. Lines wrap to the box's width less this.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Margin", EditCondition = "bShowSubtitles"))
 	FVector2D SubtitleMargin = FVector2D(6.0, 8.0);
 
@@ -332,7 +354,7 @@ public:
 	// ---------------------------------------------------------------------------------------------
 
 	/** Advances it: triggers, fades, events. Called by its pool every frame. */
-	void TickMediaBox(float DeltaTime);
+	virtual void TickMediaBox(float DeltaTime);
 
 	//~ UWidget
 	virtual void SynchronizeProperties() override;
@@ -348,6 +370,9 @@ protected:
 
 	UFUNCTION()
 	TArray<FString> GetHoverTargetOptions() const;
+
+	/** Extra space under the subtitles, in the box's units - a controls bar over the bottom of the video. 0 by default. */
+	float SubtitleBottomInset = 0.f;
 
 private:
 

@@ -1,0 +1,149 @@
+diff --git a/Docs/Design/MediaBox.md b/Docs/Design/MediaBox.md
+index 7862a4f..8175dff 100644
+--- a/Docs/Design/MediaBox.md
++++ b/Docs/Design/MediaBox.md
+@@ -37,14 +37,14 @@ Starting a clip from cold in the Media Framework goes: open the source (async),
+ - **Media:** `MediaClip` (shown as Clip), `WarmGroup`, `bPreviewInDesigner` (default on; silent unless Audio In Designer).
+ - **Playback:** `PlayWhen` (default Manual), `HoverTargetName` (dropdown of the tree's widgets; None = the nearest `UButton` around it, through the User Widgets it is in, else itself - hovered = the pointer over its area, as it is Hit Test Invisible by default), `HoverDelay`, `AfterTrigger` (default Stop And Rewind), `bPauseWhenHidden` (default on), `PlaybackRate`, `MachineInputs` (advanced).
+ - **Appearance:** `Fit` (default Contain), `ContentAlignment`, `CropFocus`, `LetterboxColor` (default transparent), `Tint`, `DesiredSize` (320 x 180), `VideoFadeIn` / `VideoFadeOut` (advanced; below 0 = settings), `ErrorImage`.
+-- **Audio:** `AudioVolume`, `bMuted`. **Subtitles:** `bShowSubtitles` (default on), `SubtitleFont` (default Regular 14), `SubtitleColor`, `SubtitleBackground`, `SubtitleMargin`.
++- **Audio:** `AudioVolume`, `bMuted`. **Subtitles:** `bShowSubtitles` (default on), `SubtitleTextSize` (font size = video height x this, default 0.045 ~ YouTube; Margin scaled by size / 14; 0 = the Font's own size), `SubtitleFont` (default Regular 14), `SubtitleColor`, `SubtitleBackground`, `SubtitleMargin`.
+ - **Events:** On Opened, On First Frame, On Looped, On Ended, On Error (Reason), On Subtitle Changed, On Status Changed. **Blueprint:** Play, Pause, Stop, Toggle Play Pause, Seek, Set Clip (bPlayNow), Get Clip, Set Hover Target, Set Playback Rate, Set Volume, Set Muted, Get Status, Is Playing, Get Time, Get Duration, Get Progress, Get Current Subtitle, Get Media Player / Get Media Texture (pooled - not to keep).
+ - **Ticking:** registers with its pool in `RebuildWidget`, leaves (and gives back its lease, leaves its group) in `ReleaseSlateResources` (not while unreachable); the pool ticks it (`TickMediaBox`) before rebalancing.
+ - **Tick:** every 0.5 s looks up its Diegetic Screen (`AnyScreensExist` / `FindScreenForWidget`) and its group place. The trigger (held for Hover Delay) starting: focuses its group target, `StartPlayback(true)`. Ending (and no Play pending): After Trigger. Wanting to play: paused while hidden (Pause When Hidden), else `StartPlayback(false)` (an ended clip is restarted only by a new trigger or Play). Events polled from the leased player; the video alpha fades in once the frame is in (On First Frame), out while stopping (then the lease is released with rewind). Subtitle, status, state machine inputs updated. Repaints (`Invalidate(Paint)`) while the video moves, and tells its Diegetic Screen `MarkContentChanged` - so a When Changed screen redraws only while the video plays.
+ - **Hidden:** not painted for 2 frames; on a Diegetic Screen, the screen not shown or asleep (a paused video never asks a rarely drawn screen to draw again).
+ - **Pause / Stop under a trigger** hold until the trigger starts again (`bHeldPaused`). Stop fades back to the poster with the audio; Set Clip with another clip releases at once (the new poster shows that frame).
+ - **Warm Groups:** a box joins its Warm Group with its hover target and clip unless Play When is Manual (`UpdateGroupMembership`). Play and Set Clip focus the group's target with that clip (`SetGroupFocusByClip`). Buttons of a shared preview join with Add To Media Warm Group.
+-- **Drawing (`SMediaBox`, leaf):** letterbox (whole box), poster under the video while the video alpha < 1, video (the leased Media Texture) at the video alpha, error image (status Error, its Image Size capped to the box, centred), subtitle lines bottom-up centred, each on its background. Fit uses the video's size once it has a frame, else the poster's, so they lie exactly over each other; Cover crops by UV region around Crop Focus.
++- **Drawing (`SMediaBox`, leaf):** letterbox (whole box), poster under the video while the video alpha < 1, video (the leased Media Texture) at the video alpha, error image (status Error, its Image Size capped to the box, centred), subtitle lines bottom-up centred, each on its background - sized by Text Size, each authored line wrapped at spaces to the box width less margins, all inside a clip to the box (`PushClip`). Fit uses the video's size once it has a frame, else the poster's, so they lie exactly over each other; Cover crops by UV region around Crop Focus.
+ - **State machine inputs** (`FMediaBoxMachineInputs`): Playing (Bool), Progress (Number, passed on 0.005 steps), First Frame / Looped / Ended / Error (Triggers), through `UWidgetAnimStateMachineLibrary` on the box (searching parents), optionally only one machine. Not at design time.
+ - **Compiler notes / warnings** (`ValidateCompiledDefaults`): no clip with a trigger (note), clip without a source (warning), clip without a poster (note), hover / focus trigger in no Warm Group (note).
+ 
+@@ -76,7 +76,7 @@ Add To / Remove From Media Warm Group, Clear Media Warm Group, Set Media Warm Gr
+ - Whether a paused, opened Bink player at frame 0 is cheap enough to pool, versus reopening.
+ - Hover intent: thresholds tuned by hand; no cone / direction filter yet.
+ - Shape masking (a video clipped to a Shape Box outline) waits on Shapes "Clip To Shape" (OpenItems).
+-- Subtitles drawn as plain lines (no wrapping, no styling from tags); the Animated Text widget isn't used for them.
++- Subtitles drawn as plain lines (wrapped at spaces, no styling from tags); the Animated Text widget isn't used for them.
+ - Platform support check in the validator (which players a target platform has for a file type).
+ - Media Box With Controls: no keyboard shortcuts (Space / K, arrows), no double-click fullscreen; the YouTube timings are approximations of its desktop player, not measured.
+ - The Warm Group anchor uses desktop pointer space; targets on a Diegetic Screen are ranked by the desktop pointer, not the world pointer.
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp
+index 0e8af41..8e1320a 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp
+@@ -12,6 +12,7 @@
+ #include "Framework/Application/SlateApplication.h"
+ #include "MediaTexture.h"
+ #include "Rendering/DrawElements.h"
++#include "Layout/Clipping.h"
+ #include "Styling/CoreStyle.h"
+ 
+ namespace SMediaBoxPrivate
+@@ -138,21 +139,58 @@ int32 SMediaBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeomet
+ 		FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 2, AllottedGeometry.ToPaintGeometry(ErrorDrawn, FSlateLayoutTransform((Area - ErrorDrawn) * 0.5f)), &OwnerBox->ErrorImage, Effects, WidgetTint * OwnerBox->ErrorImage.GetTint(InWidgetStyle));
+ 	}
+ 
+-	// The subtitle line, at the bottom, centred, a line at a time.
++	// The subtitle line: at the bottom, centred, sized to the video (Text Size), wrapped to its width, kept inside the box.
+ 	if (OwnerBox->bShowSubtitles && !OwnerBox->CurrentSubtitle.IsEmpty() && MediaBoxRuntime::AreSubtitlesEnabled() && FSlateApplication::IsInitialized())
+ 	{
+ 		const TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
++
++		FSlateFontInfo SubtitleFontNow = OwnerBox->SubtitleFont;
++		if (OwnerBox->SubtitleTextSize > 0.f)
++		{
++			SubtitleFontNow.Size = FMath::Max(4.f, Area.Y * OwnerBox->SubtitleTextSize);
++		}
++		const float MarginScale = OwnerBox->SubtitleTextSize > 0.f ? SubtitleFontNow.Size / 14.f : 1.f;
++		const FVector2f Margin = FVector2f(OwnerBox->SubtitleMargin) * MarginScale;
++		const float MaxTextWidth = FMath::Max(1.f, Area.X - Margin.Y * 4.f);
++
++		// Each authored line, wrapped at spaces to the box's width (a single word too wide is left whole, and clipped).
++		TArray<FString> Authored;
++		OwnerBox->CurrentSubtitle.ToString().ParseIntoArrayLines(Authored);
+ 		TArray<FString> Lines;
+-		OwnerBox->CurrentSubtitle.ToString().ParseIntoArrayLines(Lines);
++		for (const FString& AuthoredLine : Authored)
++		{
++			TArray<FString> Words;
++			AuthoredLine.ParseIntoArrayWS(Words);
++			FString Current;
++			for (const FString& Word : Words)
++			{
++				const FString Candidate = Current.IsEmpty() ? Word : Current + TEXT(" ") + Word;
++				if (!Current.IsEmpty() && FontMeasure->Measure(Candidate, SubtitleFontNow).X > MaxTextWidth)
++				{
++					Lines.Add(Current);
++					Current = Word;
++				}
++				else
++				{
++					Current = Candidate;
++				}
++			}
++			if (!Current.IsEmpty())
++			{
++				Lines.Add(Current);
++			}
++		}
++
++		// Never drawn outside the box.
++		OutDrawElements.PushClip(FSlateClippingZone(AllottedGeometry));
+ 
+-		const FVector2f Margin = FVector2f(OwnerBox->SubtitleMargin);
+ 		float Bottom = Area.Y - Margin.X - FMath::Max(0.f, OwnerBox->SubtitleBottomInset);
+ 		const FLinearColor TextColor = OwnerBox->SubtitleColor * WidgetTint;
+ 		const FLinearColor BackColor = OwnerBox->SubtitleBackground * WidgetTint;
+ 		for (int32 LineIndex = Lines.Num() - 1; LineIndex >= 0; --LineIndex)
+ 		{
+ 			const FString& Line = Lines[LineIndex];
+-			const FVector2f TextSize = FVector2f(FVector2D(FontMeasure->Measure(Line, OwnerBox->SubtitleFont)));
++			const FVector2f TextSize = FVector2f(FVector2D(FontMeasure->Measure(Line, SubtitleFontNow)));
+ 			const FVector2f BackSize = TextSize + FVector2f(Margin.Y * 2.f, Margin.Y * 0.5f);
+ 			const FVector2f BackAt((Area.X - BackSize.X) * 0.5f, Bottom - BackSize.Y);
+ 			if (BackColor.A > 0.f)
+@@ -160,9 +198,11 @@ int32 SMediaBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeomet
+ 				FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 3, AllottedGeometry.ToPaintGeometry(BackSize, FSlateLayoutTransform(BackAt)), FCoreStyle::Get().GetBrush("WhiteBrush"), Effects, BackColor);
+ 			}
+ 			const FVector2f TextAt = BackAt + (BackSize - TextSize) * 0.5f;
+-			FSlateDrawElement::MakeText(OutDrawElements, LayerId + 4, AllottedGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(TextAt)), Line, OwnerBox->SubtitleFont, Effects, TextColor);
++			FSlateDrawElement::MakeText(OutDrawElements, LayerId + 4, AllottedGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(TextAt)), Line, SubtitleFontNow, Effects, TextColor);
+ 			Bottom = BackAt.Y;
+ 		}
++
++		OutDrawElements.PopClip();
+ 		return LayerId + 4;
+ 	}
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h
+index 7083de7..c7b925e 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h
+@@ -205,6 +205,14 @@ public:
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Show Subtitles"))
+ 	bool bShowSubtitles = true;
+ 
++	/**
++	 * How big the text is, as a part of the video's height - so it fits any video size: 0.045 is about YouTube's (16 pt on a
++	 * 360 px player). Overrides Font's size; the Margin grows and shrinks with it. 0: Font's own size, whatever the video's.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Text Size", ClampMin = "0.0", ClampMax = "0.2", UIMax = "0.1", EditCondition = "bShowSubtitles"))
++	float SubtitleTextSize = 0.045f;
++
++	/** The subtitle font. Its size is used only while Text Size is 0 (Text Size sets it from the video's height). */
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Font", EditCondition = "bShowSubtitles"))
+ 	FSlateFontInfo SubtitleFont;
+ 
+@@ -215,7 +223,10 @@ public:
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Background", EditCondition = "bShowSubtitles"))
+ 	FLinearColor SubtitleBackground = FLinearColor(0.f, 0.f, 0.f, 0.6f);
+ 
+-	/** Space from the bottom of the box to the last line, and around each line's text. */
++	/**
++	 * Space from the bottom of the box to the last line (X), and around each line's text (Y) - at a 14 pt text size; scaled
++	 * with Text Size. Lines wrap to the box's width less this.
++	 */
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Margin", EditCondition = "bShowSubtitles"))
+ 	FVector2D SubtitleMargin = FVector2D(6.0, 8.0);
+ 

@@ -12,6 +12,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "MediaTexture.h"
 #include "Rendering/DrawElements.h"
+#include "Layout/Clipping.h"
 #include "Styling/CoreStyle.h"
 
 namespace SMediaBoxPrivate
@@ -138,21 +139,58 @@ int32 SMediaBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeomet
 		FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 2, AllottedGeometry.ToPaintGeometry(ErrorDrawn, FSlateLayoutTransform((Area - ErrorDrawn) * 0.5f)), &OwnerBox->ErrorImage, Effects, WidgetTint * OwnerBox->ErrorImage.GetTint(InWidgetStyle));
 	}
 
-	// The subtitle line, at the bottom, centred, a line at a time.
+	// The subtitle line: at the bottom, centred, sized to the video (Text Size), wrapped to its width, kept inside the box.
 	if (OwnerBox->bShowSubtitles && !OwnerBox->CurrentSubtitle.IsEmpty() && MediaBoxRuntime::AreSubtitlesEnabled() && FSlateApplication::IsInitialized())
 	{
 		const TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
-		TArray<FString> Lines;
-		OwnerBox->CurrentSubtitle.ToString().ParseIntoArrayLines(Lines);
 
-		const FVector2f Margin = FVector2f(OwnerBox->SubtitleMargin);
-		float Bottom = Area.Y - Margin.X;
+		FSlateFontInfo SubtitleFontNow = OwnerBox->SubtitleFont;
+		if (OwnerBox->SubtitleTextSize > 0.f)
+		{
+			SubtitleFontNow.Size = FMath::Max(4.f, Area.Y * OwnerBox->SubtitleTextSize);
+		}
+		const float MarginScale = OwnerBox->SubtitleTextSize > 0.f ? SubtitleFontNow.Size / 14.f : 1.f;
+		const FVector2f Margin = FVector2f(OwnerBox->SubtitleMargin) * MarginScale;
+		const float MaxTextWidth = FMath::Max(1.f, Area.X - Margin.Y * 4.f);
+
+		// Each authored line, wrapped at spaces to the box's width (a single word too wide is left whole, and clipped).
+		TArray<FString> Authored;
+		OwnerBox->CurrentSubtitle.ToString().ParseIntoArrayLines(Authored);
+		TArray<FString> Lines;
+		for (const FString& AuthoredLine : Authored)
+		{
+			TArray<FString> Words;
+			AuthoredLine.ParseIntoArrayWS(Words);
+			FString Current;
+			for (const FString& Word : Words)
+			{
+				const FString Candidate = Current.IsEmpty() ? Word : Current + TEXT(" ") + Word;
+				if (!Current.IsEmpty() && FontMeasure->Measure(Candidate, SubtitleFontNow).X > MaxTextWidth)
+				{
+					Lines.Add(Current);
+					Current = Word;
+				}
+				else
+				{
+					Current = Candidate;
+				}
+			}
+			if (!Current.IsEmpty())
+			{
+				Lines.Add(Current);
+			}
+		}
+
+		// Never drawn outside the box.
+		OutDrawElements.PushClip(FSlateClippingZone(AllottedGeometry));
+
+		float Bottom = Area.Y - Margin.X - FMath::Max(0.f, OwnerBox->SubtitleBottomInset);
 		const FLinearColor TextColor = OwnerBox->SubtitleColor * WidgetTint;
 		const FLinearColor BackColor = OwnerBox->SubtitleBackground * WidgetTint;
 		for (int32 LineIndex = Lines.Num() - 1; LineIndex >= 0; --LineIndex)
 		{
 			const FString& Line = Lines[LineIndex];
-			const FVector2f TextSize = FVector2f(FVector2D(FontMeasure->Measure(Line, OwnerBox->SubtitleFont)));
+			const FVector2f TextSize = FVector2f(FVector2D(FontMeasure->Measure(Line, SubtitleFontNow)));
 			const FVector2f BackSize = TextSize + FVector2f(Margin.Y * 2.f, Margin.Y * 0.5f);
 			const FVector2f BackAt((Area.X - BackSize.X) * 0.5f, Bottom - BackSize.Y);
 			if (BackColor.A > 0.f)
@@ -160,9 +198,11 @@ int32 SMediaBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeomet
 				FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 3, AllottedGeometry.ToPaintGeometry(BackSize, FSlateLayoutTransform(BackAt)), FCoreStyle::Get().GetBrush("WhiteBrush"), Effects, BackColor);
 			}
 			const FVector2f TextAt = BackAt + (BackSize - TextSize) * 0.5f;
-			FSlateDrawElement::MakeText(OutDrawElements, LayerId + 4, AllottedGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(TextAt)), Line, OwnerBox->SubtitleFont, Effects, TextColor);
+			FSlateDrawElement::MakeText(OutDrawElements, LayerId + 4, AllottedGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(TextAt)), Line, SubtitleFontNow, Effects, TextColor);
 			Bottom = BackAt.Y;
 		}
+
+		OutDrawElements.PopClip();
 		return LayerId + 4;
 	}
 

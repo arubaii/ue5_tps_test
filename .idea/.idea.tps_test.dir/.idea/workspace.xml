@@ -16,8 +16,20 @@
     <list default="true" id="dc1934b2-75b5-4bee-9119-3fe06808e968" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/CLAUDE.md" beforeDir="false" afterPath="$PROJECT_DIR$/CLAUDE.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Docs/Design/OpenItems.md" beforeDir="false" afterPath="$PROJECT_DIR$/Docs/Design/OpenItems.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/NameTBD.uplugin" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/NameTBD.uplugin" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Docs/Design/MediaBox.md" beforeDir="false" afterPath="$PROJECT_DIR$/Docs/Design/MediaBox.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_Menu_Example.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_Menu_Example.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Resources/AI/Docs/media.md" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Resources/AI/Docs/media.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/NameTBDMedia.Build.cs" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/NameTBDMedia.Build.cs" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBox.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBox.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxClip.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxClip.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/NameTBDMediaModule.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/NameTBDMediaModule.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxClip.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxClip.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxSettings.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxSettings.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />

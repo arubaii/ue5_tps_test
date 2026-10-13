@@ -1,0 +1,12 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/NameTBDMedia.Build.cs b/Plugins/NameTBD/Source/NameTBDMedia/NameTBDMedia.Build.cs
+index f5c84ad..0ed2776 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/NameTBDMedia.Build.cs
++++ b/Plugins/NameTBD/Source/NameTBDMedia/NameTBDMedia.Build.cs
+@@ -29,6 +29,7 @@ public class NameTBDMedia : ModuleRules
+ 			{
+ 				"Slate",
+ 				"SlateCore",
++				"InputCore",    // EKeys, for Media Box With Controls' click to play / pause
+ 				"Media",        // the Media Framework's interfaces under UMediaPlayer
+ 				"AudioMixer",   // UMediaSoundComponent's base (USynthComponent)
+ 				"RenderCore",   // FlushRenderingCommands, for Generate Poster

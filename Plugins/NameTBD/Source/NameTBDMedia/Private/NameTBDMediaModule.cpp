@@ -1,6 +1,7 @@
 // Copyright AR GameSystems 2026. All rights reserved.
 
 #include "HAL/IConsoleManager.h"
+#include "Misc/CoreDelegates.h"
 #include "MediaBoxCue.h"
 #include "MediaBoxLog.h"
 #include "MediaBoxPool.h"
@@ -57,13 +58,23 @@ public:
 	virtual void StartupModule() override
 	{
 		FWidgetAnimEvaluatorRegistry::Get().Register(MakeShared<FWidgetAnimMediaCueEvaluator>());
+
+		// The editor's pool is closed while everything is still alive - its players' audio components live in worlds the engine
+		// tears down before modules shut down.
+		PreExitHandle = FCoreDelegates::OnEnginePreExit.AddStatic(&UMediaBoxPool::ShutdownEditorPool);
 	}
 
 	virtual void ShutdownModule() override
 	{
+		FCoreDelegates::OnEnginePreExit.Remove(PreExitHandle);
 		FWidgetAnimEvaluatorRegistry::Get().Unregister(FWidgetAnimMediaCueParams::StaticStruct());
+
+		// A module unloaded while the editor runs (hot reload) closes its pool here; at exit, pre-exit already did.
 		UMediaBoxPool::ShutdownEditorPool();
 	}
+
+private:
+	FDelegateHandle PreExitHandle;
 };
 
 IMPLEMENT_MODULE(FNameTBDMediaModule, NameTBDMedia)

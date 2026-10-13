@@ -20,7 +20,7 @@ UE **5.7** project `tps_test`. The work is the plugin `Plugins/NameTBD` ("UI com
 - `NameTBDUncooked` (UncookedOnly): timelines saved on the Widget Blueprint.
 - `NameTBDEditor` (Editor): animation panel (`SWidgetAnim*`), state machine editor, designer extensions (motion paths, gizmo, path editors), details customizations.
 - `NameTBDCommonUI`, `NameTBDMVVM` (Widget Data Binder), `NameTBDNiagara` (Niagara Particles widget + cue; the only module depending on Niagara).
-- `NameTBDMedia` (Runtime): Media Box video widget, clips, warm player pool, Media cue / Media Progress input, transport bar base; the only module depending on the Media Framework.
+- `NameTBDMedia` (Runtime): Media Box video widget (and Media Box With Controls), clips, warm player pool, Media cue / Media Progress input, transport bar base; the only module depending on the Media Framework.
 - `NameTBDAI` (Editor): in-editor AI chat, MCP server, tools, content library (`Resources/AI/`).
 - `NameTBDShaders` (UncookedOnly, PostConfigInit): maps `Shaders/` to `/Plugin/NameTBDAI`.
 

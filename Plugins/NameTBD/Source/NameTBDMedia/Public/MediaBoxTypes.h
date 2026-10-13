@@ -3,6 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/EngineTypes.h" // ECollisionChannel
 
 #include "MediaBoxTypes.generated.h"
 
@@ -72,6 +73,57 @@ enum class EMediaBoxAudio : uint8
 	Silent UMETA(ToolTip = "No audio.")
 };
 
+/** Where a Media Box's audio is heard from. */
+UENUM(BlueprintType)
+enum class EMediaBoxAudioSpace : uint8
+{
+	UI UMETA(DisplayName = "2D (UI)", ToolTip = "Heard the same everywhere, as UI sound - wherever the Media Box is."),
+
+	World UMETA(DisplayName = "World (On Diegetic Screen)", ToolTip = "On a Diegetic Screen: heard from the screen in the world - quieter with distance, from its direction, muffled through walls (World Audio). Not on a screen: 2D, as UI.")
+};
+
+/**
+ * How a Media Box on a Diegetic Screen is heard in the world (Audio Space World). Every player hears it from their own camera,
+ * so it works the same in single player, split screen and multiplayer.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBDMEDIA_API FMediaBoxWorldAudio
+{
+	GENERATED_BODY()
+
+	/** A Sound Attenuation asset to use instead of the values below - for a project's own falloff curves, reverb, focus... */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio")
+	TObjectPtr<class USoundAttenuation> Attenuation = nullptr;
+
+	/** Full volume within this distance of the screen (cm). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Inner Radius", ClampMin = "0.0", UIMax = "2000.0", Units = "cm", EditCondition = "Attenuation == nullptr"))
+	float InnerRadius = 300.f;
+
+	/** Fades to silence over this distance beyond Inner Radius (cm). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Falloff Distance", ClampMin = "1.0", UIMax = "10000.0", Units = "cm", EditCondition = "Attenuation == nullptr"))
+	float FalloffDistance = 2500.f;
+
+	/** Muffled and quieter when something blocks the line from the listener to the screen - a wall, a door. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Occlusion", EditCondition = "Attenuation == nullptr"))
+	bool bOcclusion = true;
+
+	/** What blocks it: the collision channel traced from the listener to the screen. The screen's own actor never blocks it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Occlusion Channel", EditCondition = "Attenuation == nullptr && bOcclusion"))
+	TEnumAsByte<ECollisionChannel> OcclusionChannel = ECC_Visibility;
+
+	/** How muffled it is behind a wall: a low-pass filter at this frequency (Hz). Lower is more muffled. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Occluded Low Pass", ClampMin = "100.0", ClampMax = "20000.0", Units = "Hz", EditCondition = "Attenuation == nullptr && bOcclusion"))
+	float OccludedLowPass = 1500.f;
+
+	/** How loud it is behind a wall, 0 - 1. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Occluded Volume", ClampMin = "0.0", ClampMax = "1.0", EditCondition = "Attenuation == nullptr && bOcclusion"))
+	float OccludedVolume = 0.4f;
+
+	/** Sent to the level's reverb (Audio Volumes), so it sounds like it is in the room. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Reverb", EditCondition = "Attenuation == nullptr"))
+	bool bReverb = true;
+};
+
 /** Where a Media Box is, for Blueprint. */
 UENUM(BlueprintType)
 enum class EMediaBoxStatus : uint8
@@ -89,6 +141,97 @@ enum class EMediaBoxStatus : uint8
 	Ended UMETA(ToolTip = "Played to its end (and doesn't loop)."),
 
 	Error UMETA(ToolTip = "Its video couldn't be opened or played - see On Error.")
+};
+
+/**
+ * Which values a Media Box With Controls' controls bar follows for showing and hiding. YouTube: the YouTube desktop player's
+ * (the values below are those, greyed out). Custom: the values below as set.
+ */
+UENUM(BlueprintType)
+enum class EMediaBoxControlsPreset : uint8
+{
+	YouTube UMETA(DisplayName = "YouTube", ToolTip = "Like the YouTube desktop player: shown while the pointer moves over the video, hidden 3 s after it stops moving (or as soon as it leaves) while playing, always shown while paused or stopped, faded in and out quickly, the pointer hidden with the controls, a click on the video plays / pauses."),
+
+	Custom UMETA(ToolTip = "The values below, as set here.")
+};
+
+/**
+ * When a Media Box With Controls shows and hides its controls bar. Starts at the YouTube values (see YouTube()); Preset YouTube
+ * uses those whatever the fields say.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBDMEDIA_API FMediaBoxControlsBehavior
+{
+	GENERATED_BODY()
+
+	/** YouTube: the YouTube desktop player's values (greyed out below). Custom: the values below. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls")
+	EMediaBoxControlsPreset Preset = EMediaBoxControlsPreset::YouTube;
+
+	/** Hides the controls while the video plays and nobody is using them. Off: they are always shown. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Auto Hide", EditCondition = "Preset == EMediaBoxControlsPreset::Custom"))
+	bool bAutoHide = true;
+
+	/** While playing with the pointer over the video: hidden this many seconds after the pointer last moved. 0: not hidden while the pointer is over it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Hide After Idle", ClampMin = "0.0", UIMax = "10.0", Units = "s", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
+	float HideAfterIdle = 3.f;
+
+	/** While playing: hidden this many seconds after the pointer leaves the video. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Hide After Unhovered", ClampMin = "0.0", UIMax = "5.0", Units = "s", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
+	float HideAfterUnhovered = 0.1f;
+
+	/** Keeps the controls shown while the video is paused. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Show While Paused", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
+	bool bShowWhilePaused = true;
+
+	/** Keeps the controls shown while stopped, ended or loading - before the video plays. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Show While Stopped", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
+	bool bShowWhileStopped = true;
+
+	/** Keeps them shown while the pointer is over the controls themselves. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Show While Over Controls", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
+	bool bShowWhileOverControls = true;
+
+	/** Keeps them shown while one of them has keyboard / gamepad focus. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Show While Focused", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
+	bool bShowWhileFocused = true;
+
+	/** Shows them for Hide After Idle when the video starts, pauses or plays on - so the change is seen. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Show On Play / Pause", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
+	bool bShowOnPlaybackChange = true;
+
+	/** Seconds the controls take to fade in. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Fade In", ClampMin = "0.0", UIMax = "1.0", Units = "s", EditCondition = "Preset == EMediaBoxControlsPreset::Custom"))
+	float FadeInTime = 0.1f;
+
+	/** Seconds the controls take to fade out. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Fade Out", ClampMin = "0.0", UIMax = "1.0", Units = "s", EditCondition = "Preset == EMediaBoxControlsPreset::Custom"))
+	float FadeOutTime = 0.25f;
+
+	/** Hides the mouse pointer over the video while the controls are hidden. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Hide Pointer With Controls", EditCondition = "Preset == EMediaBoxControlsPreset::Custom"))
+	bool bHidePointer = true;
+
+	/** A click on the video (not on the controls) plays or pauses it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Click To Play / Pause", EditCondition = "Preset == EMediaBoxControlsPreset::Custom"))
+	bool bClickToPlayPause = true;
+
+	/** Raises the subtitles above the controls while they are shown. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Lift Subtitles", EditCondition = "Preset == EMediaBoxControlsPreset::Custom"))
+	bool bLiftSubtitles = true;
+
+	/** The YouTube desktop player's values. */
+	static FMediaBoxControlsBehavior YouTube() { return FMediaBoxControlsBehavior(); }
+
+	/** The values to follow: YouTube()'s for Preset YouTube, else these. */
+	FMediaBoxControlsBehavior Resolve() const
+	{
+		if (Preset == EMediaBoxControlsPreset::YouTube)
+		{
+			return YouTube();
+		}
+		return *this;
+	}
 };
 
 /** One subtitle line of a clip: shown from Start to End (seconds into the video). */

@@ -1,0 +1,412 @@
+diff --git a/Docs/Design/MediaBox.md b/Docs/Design/MediaBox.md
+index c6c95fa..7908f79 100644
+--- a/Docs/Design/MediaBox.md
++++ b/Docs/Design/MediaBox.md
+@@ -30,6 +30,7 @@ Starting a clip from cold in the Media Framework goes: open the source (async),
+   - **Audio:** Separate Sound restarted at the video's time when it has drifted past Audio Resync Threshold (checked every 0.25 s against a wall clock started with it); pitch follows the rate. Fades out by ramping the volume multiplier, then stops. Volume = box volume (0 when muted) x clip volume x fade.
+ - **Leases:** `Acquire(Clip, Owner)` takes the clip's unleased player (a Ready one counts as a **warm start**), else a free one, else the longest-unwanted one not on the wanted list, else a new one (`ColdStarts`). `Release(Player, bRewind, AudioFadeOut)` rewinds it (Settling -> Ready: warm again for the next hover), or pauses it; a failed one is closed. A lease whose owner was garbage collected (`bHasLease` with no valid owner) is taken back each tick.
+ - **What is warm:** each tick `RankWanted` scores pinned clips (`PinClip`, counted) first, then per **Warm Group** its targets (widget + clip): the focused one, then by distance from the anchor to each target's rectangle. The anchor is the focused target when it was focused after the pointer last moved (gamepad), else the pointer's position plus its smoothed speed x Hover Intent Look Ahead (or the pointer alone with Hover Intent off). Each group gives at most Warm Per Group clips; all together at most Max Warm Players (`MediaBox.MaxWarmPlayers` overrides). `Rebalance` opens what is wanted and not open, closes unleased players nobody wants once over capacity (longest unwanted first), and drops free players beyond capacity + leased. Groups drop targets whose widget or clip is gone.
++- **Shutdown:** the editor pool is held on the heap and closed on `FCoreDelegates::OnEnginePreExit` (while worlds and audio components still exist), or in `ShutdownModule` for a module unloaded while the editor runs; never once `GExitPurge` / UObjects are gone (the holder is left behind). `Get` makes no editor pool once exit is requested. Before this, closing the editor crashed in `StopAudio` on audio components the engine had already destroyed.
+ - **Stats / cvars:** `stat MediaBox` (Pool Tick, Players, Warm Players, Leased Players, Media Boxes), `MediaBox.Log 1` (opened, warm, closed, warm / cold starts), `MediaBox.MaxWarmPlayers N`. `Get Media Box Pool Stats` in Blueprint.
+ 
+ ## Widget (`UMediaBox`, "Media Box", palette NameTBD)
+@@ -56,7 +57,7 @@ Starting a clip from cold in the Media Framework goes: open the source (async),
+ 
+ ## Media Box With Controls (`UMediaBoxWithControls`, `MediaBoxWithControls.h`)
+ - **What:** a `UMediaBox` subclass with a controls bar over the video - a video player. Defaults: Visible (takes the pointer), Letterbox Color black, Desired Size 640 x 360.
+-- **Bar:** `ControlsClass` (`TSubclassOf<UMediaBoxTransportBar>`), else Project Settings > Media Box > **Default Controls Class** (`TSoftClassPtr`), else none. Made in `RebuildWidget` with `CreateWidget(this, ...)` (designer flags copied in the designer), never added to the Widget Blueprint's tree (GUID rule); `SetMediaBox(this)`. Laid over the video in `SMediaBoxControlsHost` (private, in the .cpp): an `SOverlay` of the `SMediaBox` and the bar, `ControlsAlignment` (Bottom / Top...) stretched across, `ControlsPadding`. A new Controls Class takes effect when the widget is next built.
++- **Bar:** `ControlsClass` (`TSubclassOf<UMediaBoxTransportBar>`), else Project Settings > Media Box > **Default Controls Class** (`TSoftClassPtr`), else none. Made in `RebuildWidget` with `CreateWidget(this, ...)` (designer flags copied in the designer), never added to the Widget Blueprint's tree (GUID rule); `SetMediaBox(this)`. Laid over the video in `SMediaBoxControlsHost` (private, in the .cpp): an `SOverlay` of the `SMediaBox` and an `SMediaBoxControlsFrame` (an `SPanel` with the bar as its one child, filling the video, asking for no size - so the bar's designed size never makes the widget bigger, Self Hit Test Invisible). **Sizing:** the frame scales the bar evenly to `ControlsHeight` x the video's height (default 0.13, YouTube's 48 px on 360 px), within `ControlsMinHeight` / `ControlsMaxHeight` (0 = no limit), never wider than the video (scale capped at inner width / designed width), and lays it out at the video's inner width / scale x its designed height - so its Fill slots (the scrub bar) take the width. `ControlsHeight` 0, or a bar with no desired height (a Canvas Panel root): unscaled. Placed by `ControlsAlignment` (Bottom / Top / Center) inside `ControlsPadding` (video units, not scaled). The drawn height feeds Lift Subtitles. A new Controls Class takes effect when the widget is next built.
+ - **Behaviour:** `bOverrideControlsBehavior` (inline toggle) + `ControlsBehavior`, else **Default Controls Behavior** in the settings. `FMediaBoxControlsBehavior` (`MediaBoxTypes.h`): `Preset` (`EMediaBoxControlsPreset`: YouTube / Custom; YouTube uses `YouTube()` whatever the fields hold, the fields greyed), Auto Hide, Hide After Idle (3 s), Hide After Unhovered (0.1 s), Show While Paused, Show While Stopped (also loading / ended), Show While Over Controls, Show While Focused, Show On Play / Pause, Fade In (0.1 s), Fade Out (0.25 s), Hide Pointer With Controls, Click To Play / Pause, Lift Subtitles. The defaults are the YouTube values.
+ - **Tick** (`TickMediaBox` override, after the box's): hover from the host's `IsHovered`; activity = the pointer moving over it, entering it, a click, `ShowControls`, and (Show On Play / Pause) a status change. Playing: shown while over the controls / focused in them, else while hovered and active within Hide After Idle, else for Hide After Unhovered after leaving (and never past idle). Not playing: Show While Paused / Show While Stopped. Never hidden in the designer. The alpha fades by Fade In / Fade Out, goes to the bar's Render Opacity; at 0 the bar is Hidden (its own visibility back when shown). The pointer is `EMouseCursor::None` over the video while the bar is hidden. Lift Subtitles sets the box's `SubtitleBottomInset` (protected, new; 0 for a plain Media Box) to the bar's height x alpha when the bar is at the bottom.
+ - **Click:** the host's `OnMouseButtonDown` (left, not over the bar) calls `TogglePlayPause` when Click To Play / Pause.
+@@ -87,4 +88,5 @@ Add To / Remove From Media Warm Group, Clear Media Warm Group, Set Media Warm Gr
+ - The open-to-first-frame cost per player in 5.7, and so how big the pool needs to be.
+ - Generate Poster's colour (gamma of an RGBA8 render target read back into an sRGB texture).
+ - That the Bink Media plugin is still bundled with 5.7.
++- Media Box With Controls: the bar's Widget Blueprint root should be a box or overlay (a Canvas Panel root has no desired height, so it isn't scaled).
+ - Media Box With Controls: `CreateWidget` with a `UWidget` owner in the designer (no world), and a bar made that way drawing and ticking as a designer preview; `SWidget::SetCursor(EMouseCursor::None)` hiding the pointer over a game viewport.
+diff --git a/Plugins/NameTBD/Resources/AI/Docs/media.md b/Plugins/NameTBD/Resources/AI/Docs/media.md
+index cad0499..4a21adc 100644
+--- a/Plugins/NameTBD/Resources/AI/Docs/media.md
++++ b/Plugins/NameTBD/Resources/AI/Docs/media.md
+@@ -4,7 +4,7 @@
+ MediaBox ("Media Box", module NameTBDMedia) plays a Media Box Clip in UMG. Clip = the video (Media Source), a Poster (still of its first frame, shown at once and whenever stopped), Start Time, Loop / Loop Start / Loop End, Audio (Auto, Embedded, Separate Sound, Silent) and Sound, Subtitles (paste SRT / VTT into Subtitle Text). Play When: Manual, Visible, Hovered, Focused, Hovered Or Focused; Hover Target (None = the button it is in); After Trigger (Stop And Rewind, Pause, Keep Playing); Hover Delay. Fit: Contain, Cover (Crop Focus), Stretch. Events: On Opened, On First Frame, On Looped, On Ended, On Error, On Subtitle Changed, On Status Changed. Functions: Play, Pause, Stop, Seek, Set Clip, Set Volume, Set Muted, Get Progress.
+ 
+ ## Video player with controls
+-MediaBoxWithControls ("Media Box With Controls") is a Media Box with a controls bar over it. Controls Class: a Widget Blueprint whose parent class is MediaBoxTransportBar (None: Project Settings > Media Box > Default Controls Class). Controls Behavior (tick to override the project's Default Controls Behavior): Preset YouTube (shown while the pointer moves, hidden 3 s after it stops or 0.1 s after it leaves while playing, always shown while paused, fades 0.1 s in / 0.25 s out, pointer hidden with the bar, click plays / pauses, subtitles lifted above the bar) or Custom (set Hide After Idle, Hide After Unhovered, the Show While... switches, fades). Controls Alignment / Padding place the bar.
++MediaBoxWithControls ("Media Box With Controls") is a Media Box with a controls bar over it. Controls Class: a Widget Blueprint whose parent class is MediaBoxTransportBar (None: Project Settings > Media Box > Default Controls Class). Controls Behavior (tick to override the project's Default Controls Behavior): Preset YouTube (shown while the pointer moves, hidden 3 s after it stops or 0.1 s after it leaves while playing, always shown while paused, fades 0.1 s in / 0.25 s out, pointer hidden with the bar, click plays / pauses, subtitles lifted above the bar) or Custom (set Hide After Idle, Hide After Unhovered, the Show While... switches, fades). Controls Height (0.13 of the video height, like YouTube; Min / Max Height limits) scales the bar evenly to fit any video size and stretches it across; design the bar with a Horizontal Box or Overlay root, not a Canvas Panel. Controls Alignment / Padding place the bar.
+ 
+ ## Instant start
+ Give every preview of one screen the same Warm Group name: the pool keeps the hovered or focused clip and its neighbours (or what the pointer heads for) open and paused on frame 0, so the next hover starts that frame. For one shared preview driven by buttons: Add To Media Warm Group on each button (with its clip), Set Clip (Play Now) from On Hovered, Stop from On Unhovered. Keep Media Clip Warm pins a clip. Project Settings > Plugins > Media Box: Max Warm Players (4), Warm Per Group (3), fades, Sound Class.
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp
+index 42ded09..cc5ed61 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp
+@@ -44,10 +44,15 @@ namespace MediaBoxPoolPrivate
+ 	constexpr double SyncCheckInterval = 0.25;
+ 
+ 	/** The editor's pool: for widgets in worlds without a game instance - the designer, editor worlds. */
+-	TStrongObjectPtr<UMediaBoxPool>& GetEditorPool()
++	/**
++	 * The editor's pool: for widgets in worlds without a game instance - the designer, editor worlds. Held on the heap and let
++	 * go of only while UObjects are alive (ShutdownEditorPool): a static TStrongObjectPtr would be destroyed at process exit,
++	 * after the UObject system.
++	 */
++	TStrongObjectPtr<UMediaBoxPool>*& GetEditorPoolHolder()
+ 	{
+-		static TStrongObjectPtr<UMediaBoxPool> EditorPool;
+-		return EditorPool;
++		static TStrongObjectPtr<UMediaBoxPool>* Holder = nullptr;
++		return Holder;
+ 	}
+ 
+ 	FTimespan ToTimespan(float Seconds)
+@@ -689,23 +694,41 @@ UMediaBoxPool* UMediaBoxPool::Get(const UObject* WorldContext)
+ 		}
+ 	}
+ 
+-	TStrongObjectPtr<UMediaBoxPool>& EditorPool = MediaBoxPoolPrivate::GetEditorPool();
+-	if (!EditorPool.IsValid())
++	// Not once the engine is on its way out: nothing new is made then.
++	if (IsEngineExitRequested() || !UObjectInitialized())
+ 	{
+-		EditorPool.Reset(NewObject<UMediaBoxPool>(GetTransientPackage(), TEXT("MediaBoxEditorPool"), RF_Transient));
+-		EditorPool->Startup();
++		return nullptr;
++	}
++
++	TStrongObjectPtr<UMediaBoxPool>*& Holder = MediaBoxPoolPrivate::GetEditorPoolHolder();
++	if (!Holder)
++	{
++		Holder = new TStrongObjectPtr<UMediaBoxPool>(NewObject<UMediaBoxPool>(GetTransientPackage(), TEXT("MediaBoxEditorPool"), RF_Transient));
++		(*Holder)->Startup();
+ 	}
+-	return EditorPool.Get();
++	return Holder->Get();
+ }
+ 
+ void UMediaBoxPool::ShutdownEditorPool()
+ {
+-	TStrongObjectPtr<UMediaBoxPool>& EditorPool = MediaBoxPoolPrivate::GetEditorPool();
+-	if (EditorPool.IsValid())
++	TStrongObjectPtr<UMediaBoxPool>*& Holder = MediaBoxPoolPrivate::GetEditorPoolHolder();
++	if (!Holder)
++	{
++		return;
++	}
++
++	// Only while UObjects are alive (the engine's pre-exit). Later - module shutdown at exit - the worlds, audio components
++	// and the pool itself may already be destroyed: the holder is left behind rather than touched.
++	if (!UObjectInitialized() || GExitPurge)
++	{
++		return;
++	}
++	if (UMediaBoxPool* EditorPool = Holder->Get())
+ 	{
+ 		EditorPool->Shutdown();
+-		EditorPool.Reset();
+ 	}
++	delete Holder;
++	Holder = nullptr;
+ }
+ 
+ void UMediaBoxPool::Startup()
+@@ -725,7 +748,7 @@ void UMediaBoxPool::Shutdown()
+ 	}
+ 	for (UMediaBoxPlayer* PooledPlayer : Players)
+ 	{
+-		if (PooledPlayer)
++		if (IsValid(PooledPlayer))
+ 		{
+ 			PooledPlayer->Close();
+ 			PooledPlayer->DestroyAudio();
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
+index 52330a3..eea47c7 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
+@@ -13,6 +13,9 @@
+ #include "Widgets/SCompoundWidget.h"
+ #include "Widgets/SNullWidget.h"
+ #include "Widgets/SOverlay.h"
++#include "Widgets/SPanel.h"
++#include "Layout/Children.h"
++#include "Layout/ArrangedChildren.h"
+ 
+ #if WITH_EDITOR
+ #include "Editor/WidgetCompilerLog.h"
+@@ -21,19 +24,143 @@
+ #define LOCTEXT_NAMESPACE "MediaBoxWithControls"
+ 
+ /**
+- * What a Media Box With Controls is in Slate: the video (SMediaBox) with the controls bar over it. Takes the click on the video
+- * (not on the controls) for Click To Play / Pause; everything else is read by the widget each tick.
++ * Lays the controls bar over the video: scaled evenly so it is Height x the video's height tall (within Min / Max Height),
++ * stretched across the video's width (laid out at width / scale, so its own Fill slots - the scrub bar - take the room), along
++ * the bottom or top, inside Padding. Asks for no size of its own: the bar's designed size never makes the Media Box bigger. Only
++ * the bar takes the pointer; the rest of the area goes through to the video.
++ */
++class SMediaBoxControlsFrame : public SPanel
++{
++public:
++	SLATE_BEGIN_ARGS(SMediaBoxControlsFrame)
++		: _Alignment(VAlign_Bottom)
++		, _Height(0.13f)
++		, _MinHeight(0.f)
++		, _MaxHeight(0.f)
++	{
++		_Visibility = EVisibility::SelfHitTestInvisible;
++	}
++		SLATE_DEFAULT_SLOT(FArguments, Content)
++		SLATE_ARGUMENT(EVerticalAlignment, Alignment)
++		SLATE_ARGUMENT(float, Height)
++		SLATE_ARGUMENT(float, MinHeight)
++		SLATE_ARGUMENT(float, MaxHeight)
++		SLATE_ARGUMENT(FMargin, Padding)
++	SLATE_END_ARGS()
++
++	SMediaBoxControlsFrame()
++		: BarChildren(this)
++	{
++	}
++
++	void Construct(const FArguments& InArgs)
++	{
++		BarAlignment = InArgs._Alignment;
++		HeightPart = InArgs._Height;
++		MinBarHeight = InArgs._MinHeight;
++		MaxBarHeight = InArgs._MaxHeight;
++		BarPadding = InArgs._Padding;
++		BarChildren.Add(InArgs._Content.Widget);
++	}
++
++	virtual void OnArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const override
++	{
++		if (BarChildren.Num() == 0)
++		{
++			LastBarHeight = 0.f;
++			return;
++		}
++		const TSharedRef<SWidget> Bar = BarChildren.GetChildAt(0);
++		if (!ArrangedChildren.Accepts(Bar->GetVisibility()))
++		{
++			return;
++		}
++
++		const FVector2f Area = FVector2f(FVector2D(AllottedGeometry.GetLocalSize()));
++		const FVector2f Inner(FMath::Max(1.f, Area.X - static_cast<float>(BarPadding.GetTotalSpaceAlong<Orient_Horizontal>())),
++			FMath::Max(1.f, Area.Y - static_cast<float>(BarPadding.GetTotalSpaceAlong<Orient_Vertical>())));
++		const FVector2f Designed = FVector2f(FVector2D(Bar->GetDesiredSize()));
++
++		// The scale: the bar to Height x the video's height, within the limits - and no wider than fits, so nothing in it is
++		// squeezed. Unscaled when Height is 0, or the bar has no height of its own (a Canvas Panel root).
++		float Scale = 1.f;
++		if (HeightPart > 0.f && Designed.Y > KINDA_SMALL_NUMBER)
++		{
++			float Target = Area.Y * HeightPart;
++			if (MinBarHeight > 0.f)
++			{
++				Target = FMath::Max(Target, MinBarHeight);
++			}
++			if (MaxBarHeight > 0.f)
++			{
++				Target = FMath::Min(Target, MaxBarHeight);
++			}
++			Scale = Target / Designed.Y;
++			if (Designed.X > KINDA_SMALL_NUMBER)
++			{
++				Scale = FMath::Min(Scale, Inner.X / Designed.X);
++			}
++			Scale = FMath::Max(Scale, KINDA_SMALL_NUMBER);
++		}
++
++		// Laid out at the video's width in the bar's own units, its designed height; drawn scaled.
++		const float BarHeight = Designed.Y > KINDA_SMALL_NUMBER ? Designed.Y : Inner.Y * HeightPart;
++		const FVector2f LocalSize(Inner.X / Scale, FMath::Min(BarHeight, Inner.Y / Scale));
++		const float ShownHeight = LocalSize.Y * Scale;
++		const float Top = BarAlignment == VAlign_Top ? static_cast<float>(BarPadding.Top)
++			: BarAlignment == VAlign_Center ? static_cast<float>(BarPadding.Top) + (Inner.Y - ShownHeight) * 0.5f
++			: Area.Y - static_cast<float>(BarPadding.Bottom) - ShownHeight;
++
++		ArrangedChildren.AddWidget(AllottedGeometry.MakeChild(Bar, LocalSize, FSlateLayoutTransform(Scale, FVector2f(static_cast<float>(BarPadding.Left), Top))));
++		LastBarHeight = ShownHeight;
++	}
++
++	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override
++	{
++		return FVector2D::ZeroVector;
++	}
++
++	virtual FChildren* GetChildren() override
++	{
++		return &BarChildren;
++	}
++
++	/** The bar's height as drawn, in the video's units - for lifting the subtitles above it. */
++	float GetShownBarHeight() const
++	{
++		return LastBarHeight;
++	}
++
++private:
++	TSlotlessChildren<SWidget> BarChildren;
++	EVerticalAlignment BarAlignment = VAlign_Bottom;
++	float HeightPart = 0.13f;
++	float MinBarHeight = 0.f;
++	float MaxBarHeight = 0.f;
++	FMargin BarPadding;
++	mutable float LastBarHeight = 0.f;
++};
++
++/**
++ * What a Media Box With Controls is in Slate: the video (SMediaBox) with the controls bar over it (in SMediaBoxControlsFrame).
++ * Takes the click on the video (not on the controls) for Click To Play / Pause; everything else is read by the widget each tick.
+  */
+ class SMediaBoxControlsHost : public SCompoundWidget
+ {
+ public:
+ 	SLATE_BEGIN_ARGS(SMediaBoxControlsHost)
+ 		: _ControlsAlignment(VAlign_Bottom)
++		, _ControlsHeight(0.13f)
++		, _ControlsMinHeight(0.f)
++		, _ControlsMaxHeight(0.f)
+ 	{}
+ 		SLATE_ARGUMENT(UMediaBoxWithControls*, OwnerBox)
+ 		SLATE_ARGUMENT(TSharedPtr<SWidget>, Video)
+ 		SLATE_ARGUMENT(TSharedPtr<SWidget>, Controls)
+ 		SLATE_ARGUMENT(EVerticalAlignment, ControlsAlignment)
++		SLATE_ARGUMENT(float, ControlsHeight)
++		SLATE_ARGUMENT(float, ControlsMinHeight)
++		SLATE_ARGUMENT(float, ControlsMaxHeight)
+ 		SLATE_ARGUMENT(FMargin, ControlsPadding)
+ 	SLATE_END_ARGS()
+ 
+@@ -42,6 +169,20 @@ public:
+ 		WeakOwnerBox = InArgs._OwnerBox;
+ 		ControlsContent = InArgs._Controls;
+ 
++		TSharedRef<SWidget> ControlsLayer = SNullWidget::NullWidget;
++		if (ControlsContent.IsValid())
++		{
++			ControlsLayer = SAssignNew(ControlsFrame, SMediaBoxControlsFrame)
++				.Alignment(InArgs._ControlsAlignment)
++				.Height(InArgs._ControlsHeight)
++				.MinHeight(InArgs._ControlsMinHeight)
++				.MaxHeight(InArgs._ControlsMaxHeight)
++				.Padding(InArgs._ControlsPadding)
++				[
++					ControlsContent.ToSharedRef()
++				];
++		}
++
+ 		ChildSlot
+ 		[
+ 			SNew(SOverlay)
+@@ -51,10 +192,9 @@ public:
+ 			]
+ 			+ SOverlay::Slot()
+ 			.HAlign(HAlign_Fill)
+-			.VAlign(InArgs._ControlsAlignment)
+-			.Padding(InArgs._ControlsPadding)
++			.VAlign(VAlign_Fill)
+ 			[
+-				ControlsContent.IsValid() ? ControlsContent.ToSharedRef() : SNullWidget::NullWidget
++				ControlsLayer
+ 			]
+ 		];
+ 	}
+@@ -66,10 +206,10 @@ public:
+ 			&& ControlsContent->GetTickSpaceGeometry().IsUnderLocation(ScreenPosition);
+ 	}
+ 
+-	/** The bar's height in this widget's units, for lifting the subtitles. */
++	/** The bar's height as drawn, in this widget's units, for lifting the subtitles. */
+ 	float GetControlsHeight() const
+ 	{
+-		return ControlsContent.IsValid() ? static_cast<float>(ControlsContent->GetDesiredSize().Y) : 0.f;
++		return ControlsFrame.IsValid() ? ControlsFrame->GetShownBarHeight() : 0.f;
+ 	}
+ 
+ 	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
+@@ -86,6 +226,7 @@ public:
+ private:
+ 	TWeakObjectPtr<UMediaBoxWithControls> WeakOwnerBox;
+ 	TSharedPtr<SWidget> ControlsContent;
++	TSharedPtr<SMediaBoxControlsFrame> ControlsFrame;
+ };
+ 
+ UMediaBoxWithControls::UMediaBoxWithControls()
+@@ -155,6 +296,9 @@ TSharedRef<SWidget> UMediaBoxWithControls::RebuildWidget()
+ 		.Video(Video)
+ 		.Controls(Controls)
+ 		.ControlsAlignment(ControlsAlignment.GetValue())
++		.ControlsHeight(ControlsHeight)
++		.ControlsMinHeight(ControlsMinHeight)
++		.ControlsMaxHeight(ControlsMaxHeight)
+ 		.ControlsPadding(ControlsPadding);
+ 
+ 	// Shown as it first appears (YouTube shows its bar until the video plays).
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/NameTBDMediaModule.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/NameTBDMediaModule.cpp
+index 901cfdd..e8f9ff2 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Private/NameTBDMediaModule.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/NameTBDMediaModule.cpp
+@@ -1,6 +1,7 @@
+ // Copyright AR GameSystems 2026. All rights reserved.
+ 
+ #include "HAL/IConsoleManager.h"
++#include "Misc/CoreDelegates.h"
+ #include "MediaBoxCue.h"
+ #include "MediaBoxLog.h"
+ #include "MediaBoxPool.h"
+@@ -57,13 +58,23 @@ public:
+ 	virtual void StartupModule() override
+ 	{
+ 		FWidgetAnimEvaluatorRegistry::Get().Register(MakeShared<FWidgetAnimMediaCueEvaluator>());
++
++		// The editor's pool is closed while everything is still alive - its players' audio components live in worlds the engine
++		// tears down before modules shut down.
++		PreExitHandle = FCoreDelegates::OnEnginePreExit.AddStatic(&UMediaBoxPool::ShutdownEditorPool);
+ 	}
+ 
+ 	virtual void ShutdownModule() override
+ 	{
++		FCoreDelegates::OnEnginePreExit.Remove(PreExitHandle);
+ 		FWidgetAnimEvaluatorRegistry::Get().Unregister(FWidgetAnimMediaCueParams::StaticStruct());
++
++		// A module unloaded while the editor runs (hot reload) closes its pool here; at exit, pre-exit already did.
+ 		UMediaBoxPool::ShutdownEditorPool();
+ 	}
++
++private:
++	FDelegateHandle PreExitHandle;
+ };
+ 
+ IMPLEMENT_MODULE(FNameTBDMediaModule, NameTBDMedia)
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxWithControls.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxWithControls.h
+index a385b3f..35a8f10 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxWithControls.h
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxWithControls.h
+@@ -60,7 +60,23 @@ public:
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Controls", meta = (DisplayName = "Controls Alignment"))
+ 	TEnumAsByte<EVerticalAlignment> ControlsAlignment = VAlign_Bottom;
+ 
+-	/** Space between the video's edges and the bar. */
++	/**
++	 * How tall the bar is, as a part of the video's height: 0.13 is YouTube's (a 48 px bar on a 360 px player). The bar is scaled
++	 * evenly to that height and stretched across the video's width, whatever size it was designed at and whatever size the video
++	 * is - so one bar fits a skill-card preview and a full-screen trailer alike. 0: the bar's own designed size, unscaled.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Controls", meta = (DisplayName = "Controls Height", ClampMin = "0.0", ClampMax = "0.5", UIMax = "0.3"))
++	float ControlsHeight = 0.13f;
++
++	/** The bar is never made shorter than this (Slate units) - so it stays usable on a small video. 0: no limit. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Controls", meta = (DisplayName = "Controls Min Height", ClampMin = "0.0", UIMax = "64.0", EditCondition = "ControlsHeight > 0"))
++	float ControlsMinHeight = 0.f;
++
++	/** The bar is never made taller than this (Slate units) - so it doesn't grow huge on a full-screen video. 0: no limit. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Controls", meta = (DisplayName = "Controls Max Height", ClampMin = "0.0", UIMax = "200.0", EditCondition = "ControlsHeight > 0"))
++	float ControlsMaxHeight = 0.f;
++
++	/** Space between the video's edges and the bar, in the video's units (not scaled with the bar). */
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Controls", meta = (DisplayName = "Controls Padding"))
+ 	FMargin ControlsPadding;
+ 

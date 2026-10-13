@@ -1,0 +1,140 @@
+diff --git a/Docs/Design/MediaBox.md b/Docs/Design/MediaBox.md
+index db655da..378656c 100644
+--- a/Docs/Design/MediaBox.md
++++ b/Docs/Design/MediaBox.md
+@@ -28,6 +28,7 @@ Starting a clip from cold in the Media Framework goes: open the source (async),
+   - **Play:** Ready / Paused / Ended (from Start Time) play at once (`Play`, rate, audio started at the video's time); while Opening / Priming / Settling the request is kept and played the moment it can be.
+   - **Loops:** whole-video loops are counted when the time goes back (`OnEndReached` ignored while looping); a range seeks to Loop Start 1/120 s before Loop End; a range ending at the video's end seeks back on `OnEndReached`. The Separate Sound is restarted at the loop point.
+   - **Audio components** (`EnsureAudio`): owned by an actor so they tick and activate like any component (the Media Sound Component takes the player's samples in its tick; ownerless it stayed silent): 2D - a per-world hidden `AMediaBoxAudioActor` (transient, not replicated, never on a dedicated server, `Get` spawns on first use); World Audio - the Diegetic Screen's own actor, attached to the screen at `GetScreenCenter` (so a sound's occlusion trace, which ignores its owner, never hits the TV itself). Editor worlds (designer audio) keep them ownerless. Remade when the owner, screen, world or the clip's audio kind changes. `ConfigureAudioSpace`: 2D = UI sound, no spatialization; World = world sound (pauses with the game), spatialized, `AttenuationSettings` asset or `AttenuationOverrides` built from World Audio. Each client/player hears from its own listener, so split screen and multiplayer need nothing more; no audio on a dedicated server.
++  - **Warm start, embedded audio:** a warm player was opened with no Media Sound Component (made only at the first play), so the player had no audio listener (`bEmbeddedSinkAtOpen` false); `StartAudio` then seeks once to the current time so the player sends its audio to the new listener. Heard on a Diegetic Screen (cold start) but not in a HUD widget (warm start) before this. `MediaBox.Log 1` logs the component made, the resync, and a play with no audio component.
+   - **Audio:** Separate Sound restarted at the video's time when it has drifted past Audio Resync Threshold (checked every 0.25 s against a wall clock started with it); pitch follows the rate. Fades out by ramping the volume multiplier, then stops. Volume = box volume (0 when muted) x clip volume x fade.
+ - **Leases:** `Acquire(Clip, Owner)` takes the clip's unleased player (a Ready one counts as a **warm start**), else a free one, else the longest-unwanted one not on the wanted list, else a new one (`ColdStarts`). `Release(Player, bRewind, AudioFadeOut)` rewinds it (Settling -> Ready: warm again for the next hover), or pauses it; a failed one is closed. A lease whose owner was garbage collected (`bHasLease` with no valid owner) is taken back each tick.
+ - **What is warm:** each tick `RankWanted` scores pinned clips (`PinClip`, counted) first, then per **Warm Group** its targets (widget + clip): the focused one, then by distance from the anchor to each target's rectangle. The anchor is the focused target when it was focused after the pointer last moved (gamepad), else the pointer's position plus its smoothed speed x Hover Intent Look Ahead (or the pointer alone with Hover Intent off). Each group gives at most Warm Per Group clips; all together at most Max Warm Players (`MediaBox.MaxWarmPlayers` overrides). `Rebalance` opens what is wanted and not open, closes unleased players nobody wants once over capacity (longest unwanted first), and drops free players beyond capacity + leased. Groups drop targets whose widget or clip is gone.
+@@ -58,7 +59,7 @@ Starting a clip from cold in the Media Framework goes: open the source (async),
+ 
+ ## Media Box With Controls (`UMediaBoxWithControls`, `MediaBoxWithControls.h`)
+ - **What:** a `UMediaBox` subclass with a controls bar over the video - a video player. Defaults: Visible (takes the pointer), Letterbox Color black, Desired Size 640 x 360.
+-- **Bar:** `ControlsClass` (`TSubclassOf<UMediaBoxTransportBar>`), else Project Settings > Media Box > **Default Controls Class** (`TSoftClassPtr`), else none. Made in `RebuildWidget` with `CreateWidget(this, ...)` (designer flags copied in the designer), never added to the Widget Blueprint's tree (GUID rule); `SetMediaBox(this)`. Laid over the video in `SMediaBoxControlsHost` (private, in the .cpp): an `SOverlay` of the `SMediaBox` and an `SMediaBoxControlsFrame` (an `SPanel` with the bar as its one child, filling the video, asking for no size - so the bar's designed size never makes the widget bigger, Self Hit Test Invisible). **Sizing:** the frame scales the bar evenly to `ControlsHeight` x the video's height (default 0.13, YouTube's 48 px on 360 px), within `ControlsMinHeight` / `ControlsMaxHeight` (0 = no limit), never wider than the video (scale capped at inner width / designed width), and lays it out at the video's inner width / scale x its designed height - so its Fill slots (the scrub bar) take the width. `ControlsHeight` 0, or a bar with no desired height (a Canvas Panel root): unscaled. Placed by `ControlsAlignment` (Bottom / Top / Center) inside `ControlsPadding` (video units, not scaled). The drawn height feeds Lift Subtitles. A new Controls Class takes effect when the widget is next built.
++- **Bar:** `ControlsClass` (`TSubclassOf<UMediaBoxTransportBar>`), else Project Settings > Media Box > **Default Controls Class** (`TSoftClassPtr`), else none. Made in `RebuildWidget` with `CreateWidget(this, ...)` (designer flags copied in the designer), never added to the Widget Blueprint's tree (GUID rule); `SetMediaBox(this)`. Laid over the video in `SMediaBoxControlsHost` (private, in the .cpp): an `SOverlay` of the `SMediaBox` and an `SMediaBoxControlsFrame` (an `SPanel` with the bar as its one child, filling the video, asking for no size - so the bar's designed size never makes the widget bigger, Self Hit Test Invisible). **Sizing:** the frame scales the bar evenly to `ControlsHeight` x the video's height (default 0.13, YouTube's 48 px on 360 px), within `ControlsMinHeight` / `ControlsMaxHeight` (0 = no limit), never wider than the video (scale capped at inner width / designed width), and lays it out at the video's inner width / scale x its designed height - so its Fill slots (the scrub bar) take the width. `ControlsHeight` 0, or a bar with no desired height (a Canvas Panel root): unscaled. Placed by `ControlsAlignment` (Bottom / Top / Center) inside `ControlsPadding` (video units, not scaled). The drawn height feeds Lift Subtitles. The frame is volatile (painted every frame) and, in `Tick`, invalidates the bar (layout + paint) whenever its total scale changes - a cached drawing at an old scale showed blurry text in the designer. A new Controls Class takes effect when the widget is next built.
+ - **Behaviour:** `bOverrideControlsBehavior` (inline toggle) + `ControlsBehavior`, else **Default Controls Behavior** in the settings. `FMediaBoxControlsBehavior` (`MediaBoxTypes.h`): `Preset` (`EMediaBoxControlsPreset`: YouTube / Custom; YouTube uses `YouTube()` whatever the fields hold, the fields greyed), Auto Hide, Hide After Idle (3 s), Hide After Unhovered (0.1 s), Show While Paused, Show While Stopped (also loading / ended), Show While Over Controls, Show While Focused, Show On Play / Pause, Fade In (0.1 s), Fade Out (0.25 s), Hide Pointer With Controls, Click To Play / Pause, Lift Subtitles. The defaults are the YouTube values.
+ - **Tick** (`TickMediaBox` override, after the box's): hover from the host's `IsHovered`; activity = the pointer moving over it, entering it, a click, `ShowControls`, and (Show On Play / Pause) a status change. Playing: shown while over the controls / focused in them, else while hovered and active within Hide After Idle, else for Hide After Unhovered after leaving (and never past idle). Not playing: Show While Paused / Show While Stopped. Never hidden in the designer. The alpha fades by Fade In / Fade Out, goes to the bar's Render Opacity; at 0 the bar is Hidden (its own visibility back when shown). The pointer is `EMouseCursor::None` over the video while the bar is hidden. Lift Subtitles sets the box's `SubtitleBottomInset` (protected, new; 0 for a plain Media Box) to the bar's height x alpha when the bar is at the bottom.
+ - **Click:** the host's `OnMouseButtonDown` (left, not over the bar) calls `TogglePlayPause` when Click To Play / Pause.
+@@ -91,6 +92,6 @@ Add To / Remove From Media Warm Group, Clear Media Warm Group, Set Media Warm Gr
+ - Generate Poster's colour (gamma of an RGBA8 render target read back into an sRGB texture).
+ - That the Bink Media plugin is still bundled with 5.7.
+ - Media Box With Controls clips to its bounds (ClipToBounds): a Background Blur in the bar never spreads outside the video. A Background Blur placed over the bar's buttons (later in an Overlay) still blurs them.
+-- Embedded audio silence (fixed by owned components) and World Audio occlusion: not heard in the engine yet.
++- The warm-start audio resync (one seek as audio starts) and the designer blur fix (volatile frame): causes inferred, not seen in the engine. Embedded audio silence (fixed by owned components) and World Audio occlusion: not heard in the engine yet.
+ - Media Box With Controls: the bar's Widget Blueprint root should be a box or overlay (a Canvas Panel root has no desired height, so it isn't scaled).
+ - Media Box With Controls: `CreateWidget` with a `UWidget` owner in the designer (no world), and a bar made that way drawing and ticking as a designer preview; `SWidget::SetCursor(EMouseCursor::None)` hiding the pointer over a game viewport.
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp
+index a21307a..b10a957 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp
+@@ -165,6 +165,7 @@ void UMediaBoxPlayer::HandleMediaOpened(FString OpenedUrl)
+ 
+ 	// The whole video loops in the player itself (seamless); a range loops by seeking back (see Tick).
+ 	MediaPlayer->SetLooping(Clip->LoopsWholeVideo());
++	bEmbeddedSinkAtOpen = IsValid(EmbeddedSound);
+ 
+ 	if (Clip->StartTime > 0.f && MediaPlayer->SupportsSeeking())
+ 	{
+@@ -462,6 +463,8 @@ void UMediaBoxPlayer::EnsureAudio(UWorld* InAudioWorld, USceneComponent* ScreenC
+ 			EmbeddedSound->SoundClass = MediaSoundClass;
+ 		}
+ 		EmbeddedSound->SetMediaPlayer(MediaPlayer);
++		bEmbeddedSinkAtOpen = false;
++		MEDIABOX_LOG(TEXT("Media Box: %s - embedded audio component made (%s)"), *MediaBoxPoolPrivate::DescribeClip(Clip), bInWorld ? TEXT("world") : TEXT("2D"));
+ 		if (WantedOwner)
+ 		{
+ 			EmbeddedSound->RegisterComponent();
+@@ -587,6 +590,20 @@ void UMediaBoxPlayer::StartAudio()
+ 			EmbeddedSound->Start();
+ 		}
+ 		bAudioPlaying = true;
++
++		// Opened before this audio listener existed (a warm start): a seek to where it is makes the player send its audio
++		// from here on. Once per open.
++		if (!bEmbeddedSinkAtOpen && MediaPlayer->SupportsSeeking())
++		{
++			bEmbeddedSinkAtOpen = true;
++			MediaPlayer->Seek(MediaBoxPoolPrivate::ToTimespan(GetTime()));
++			MEDIABOX_LOG(TEXT("Media Box: %s - audio listener added after open, resynced at %.2f s"), *MediaBoxPoolPrivate::DescribeClip(Clip), GetTime());
++		}
++	}
++	else
++	{
++		MEDIABOX_LOG(TEXT("Media Box: %s - no audio component to start (audio %d, sound %s)"), *MediaBoxPoolPrivate::DescribeClip(Clip),
++			Clip ? static_cast<int32>(Clip->GetResolvedAudio()) : -1, (Clip && Clip->Sound) ? *Clip->Sound->GetName() : TEXT("none"));
+ 	}
+ 	ApplyAudioVolume();
+ }
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
+index b607b15..f75aa65 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
+@@ -55,6 +55,10 @@ public:
+ 
+ 	void Construct(const FArguments& InArgs)
+ 	{
++		// Drawn afresh every frame: a cached drawing of the bar made at another scale (the designer as it lays out, zooms, or the
++		// box resized) would be shown stretched - blurry text. The bar is small; the video under it repaints every frame anyway.
++		ForceVolatile(true);
++
+ 		BarAlignment = InArgs._Alignment;
+ 		HeightPart = InArgs._Height;
+ 		MinBarHeight = InArgs._MinHeight;
+@@ -115,6 +119,7 @@ public:
+ 
+ 		ArrangedChildren.AddWidget(AllottedGeometry.MakeChild(Bar, LocalSize, FSlateLayoutTransform(Scale, FVector2f(static_cast<float>(BarPadding.Left), Top))));
+ 		LastBarHeight = ShownHeight;
++		ArrangedScale = Scale * AllottedGeometry.Scale;
+ 	}
+ 
+ 	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override
+@@ -122,6 +127,19 @@ public:
+ 		return FVector2D::ZeroVector;
+ 	}
+ 
++	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override
++	{
++		SPanel::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
++
++		// The bar drawn at a new scale: everything in it laid out and painted again, its text rasterized at that scale.
++		if (BarWidget.IsValid() && !FMath::IsNearlyEqual(ArrangedScale, PaintedScale, 0.001f))
++		{
++			PaintedScale = ArrangedScale;
++			BarWidget->Invalidate(EInvalidateWidgetReason::Layout | EInvalidateWidgetReason::Paint);
++			Invalidate(EInvalidateWidgetReason::Layout);
++		}
++	}
++
+ 	virtual FChildren* GetChildren() override
+ 	{
+ 		return &BarChildren;
+@@ -142,6 +160,8 @@ private:
+ 	float MaxBarHeight = 0.f;
+ 	FMargin BarPadding;
+ 	mutable float LastBarHeight = 0.f;
++	mutable float ArrangedScale = 1.f;
++	float PaintedScale = 1.f;
+ };
+ 
+ /**
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h
+index 4aae5ba..8af0e9b 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h
+@@ -189,6 +189,12 @@ private:
+ 	TWeakObjectPtr<USoundBase> AudioForSound;
+ 	EMediaBoxAudio AudioForKind = EMediaBoxAudio::Auto;
+ 
++	/**
++	 * Whether the Embedded Sound component existed when the clip was opened. A warm player is opened with no audio listener; one
++	 * added later is given the player's audio by a seek to where it is, as the audio starts (StartAudio).
++	 */
++	bool bEmbeddedSinkAtOpen = false;
++
+ 	/** Leased and not yet given back - a lease whose owner has gone (garbage collected) is taken back by the pool. */
+ 	bool bHasLease = false;
+ 

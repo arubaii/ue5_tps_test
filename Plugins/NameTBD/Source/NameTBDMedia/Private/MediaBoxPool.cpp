@@ -15,6 +15,9 @@
 #include "Framework/Application/SlateApplication.h"
 #include "HAL/PlatformTime.h"
 #include "Kismet/GameplayStatics.h"
+#include "NameTBD/Diegetic/DiegeticScreenComponent.h"
+#include "Sound/SoundAttenuation.h"
+#include "UObject/ObjectKey.h"
 #include "MediaPlayer.h"
 #include "MediaSoundComponent.h"
 #include "MediaSource.h"
@@ -44,10 +47,15 @@ namespace MediaBoxPoolPrivate
 	constexpr double SyncCheckInterval = 0.25;
 
 	/** The editor's pool: for widgets in worlds without a game instance - the designer, editor worlds. */
-	TStrongObjectPtr<UMediaBoxPool>& GetEditorPool()
+	/**
+	 * The editor's pool: for widgets in worlds without a game instance - the designer, editor worlds. Held on the heap and let
+	 * go of only while UObjects are alive (ShutdownEditorPool): a static TStrongObjectPtr would be destroyed at process exit,
+	 * after the UObject system.
+	 */
+	TStrongObjectPtr<UMediaBoxPool>*& GetEditorPoolHolder()
 	{
-		static TStrongObjectPtr<UMediaBoxPool> EditorPool;
-		return EditorPool;
+		static TStrongObjectPtr<UMediaBoxPool>* Holder = nullptr;
+		return Holder;
 	}
 
 	FTimespan ToTimespan(float Seconds)
@@ -157,6 +165,7 @@ void UMediaBoxPlayer::HandleMediaOpened(FString OpenedUrl)
 
 	// The whole video loops in the player itself (seamless); a range loops by seeking back (see Tick).
 	MediaPlayer->SetLooping(Clip->LoopsWholeVideo());
+	bEmbeddedSinkAtOpen = IsValid(EmbeddedSound);
 
 	if (Clip->StartTime > 0.f && MediaPlayer->SupportsSeeking())
 	{
@@ -225,12 +234,12 @@ void UMediaBoxPlayer::HandleSeekCompleted()
 	}
 }
 
-void UMediaBoxPlayer::Play(UWorld* InAudioWorld, bool bWithAudio)
+void UMediaBoxPlayer::Play(UWorld* InAudioWorld, bool bWithAudio, USceneComponent* ScreenComponent, const FMediaBoxWorldAudio* WorldAudio, AActor* LocalOwner)
 {
 	bAudioWanted = bWithAudio;
 	if (bWithAudio)
 	{
-		EnsureAudio(InAudioWorld);
+		EnsureAudio(InAudioWorld, ScreenComponent, WorldAudio, LocalOwner);
 	}
 
 	switch (State)
@@ -385,33 +394,65 @@ bool UMediaBoxPlayer::WantsEmbeddedSound() const
 	return Clip && Clip->GetResolvedAudio() == EMediaBoxAudio::Embedded;
 }
 
-void UMediaBoxPlayer::EnsureAudio(UWorld* InAudioWorld)
+void UMediaBoxPlayer::EnsureAudio(UWorld* InAudioWorld, USceneComponent* ScreenComponent, const FMediaBoxWorldAudio* WorldAudio, AActor* LocalOwner)
 {
-	if (!InAudioWorld)
+	if (!InAudioWorld || !Clip)
 	{
 		return;
 	}
-	if (AudioWorld.Get() != InAudioWorld)
+
+	// Who owns the components: the screen's actor for World Audio (its own collision then never occludes it - a sound's
+	// occlusion trace ignores its owner); for 2D the Media Box's own player controller (local, begun play, always there while
+	// its HUD is), else the world's hidden 2D audio actor. Editor worlds (designer audio) keep them ownerless.
+	const bool bInWorld = ScreenComponent && WorldAudio && ScreenComponent->GetOwner();
+	AActor* WantedOwner = nullptr;
+	if (bInWorld)
 	{
-		DestroyAudio();
-		AudioWorld = InAudioWorld;
+		WantedOwner = ScreenComponent->GetOwner();
+	}
+	else if (InAudioWorld->IsGameWorld())
+	{
+		WantedOwner = (LocalOwner && LocalOwner->GetWorld() == InAudioWorld && LocalOwner->HasActorBegunPlay()) ? LocalOwner : AMediaBoxAudioActor::Get(InAudioWorld);
+	}
+	if (InAudioWorld->IsGameWorld() && !WantedOwner)
+	{
+		return; // No audio here (a dedicated server).
 	}
 
+	const EMediaBoxAudio Kind = Clip->GetResolvedAudio();
+	const bool bSameHost = AudioWorld.Get() == InAudioWorld && AudioOwner.Get() == WantedOwner && AudioScreen.Get() == (bInWorld ? ScreenComponent : nullptr);
+	if (!bSameHost || AudioForKind != Kind)
+	{
+		DestroyAudio();
+	}
+	AudioWorld = InAudioWorld;
+	AudioOwner = WantedOwner;
+	AudioScreen = bInWorld ? ScreenComponent : nullptr;
+	AudioForKind = Kind;
+
 	USoundClass* MediaSoundClass = UMediaBoxSettings::Get().SoundClass.LoadSynchronous();
+	UObject* ComponentOuter = WantedOwner ? static_cast<UObject*>(WantedOwner) : static_cast<UObject*>(this);
 
 	if (WantsSeparateSound())
 	{
 		if (!IsValid(SeparateSound))
 		{
-			// 2D, kept across level changes with the pool, never destroyed when it stops: started again on the next play.
-			SeparateSound = UGameplayStatics::CreateSound2D(InAudioWorld, Clip->Sound, 1.f, 1.f, 0.f, nullptr, /*bPersistAcrossLevelTransition=*/true, /*bAutoDestroy=*/false);
-			if (SeparateSound)
+			SeparateSound = NewObject<UAudioComponent>(ComponentOuter, NAME_None, RF_Transient);
+			SeparateSound->bAutoActivate = false;
+			SeparateSound->bAutoDestroy = false;
+			SeparateSound->bStopWhenOwnerDestroyed = true;
+			if (MediaSoundClass)
 			{
-				SeparateSound->bIsUISound = true;
-				if (MediaSoundClass)
-				{
-					SeparateSound->SoundClassOverride = MediaSoundClass;
-				}
+				SeparateSound->SoundClassOverride = MediaSoundClass;
+			}
+			SeparateSound->SetSound(Clip->Sound);
+			if (WantedOwner)
+			{
+				SeparateSound->RegisterComponent();
+			}
+			else
+			{
+				SeparateSound->RegisterComponentWithWorld(InAudioWorld);
 			}
 		}
 		else if (SeparateSound->Sound != Clip->Sound)
@@ -423,16 +464,88 @@ void UMediaBoxPlayer::EnsureAudio(UWorld* InAudioWorld)
 
 	if (WantsEmbeddedSound() && !IsValid(EmbeddedSound))
 	{
-		// Ownerless, registered with the world so it ticks and reaches the audio device; 2D, a UI sound.
-		EmbeddedSound = NewObject<UMediaSoundComponent>(this, NAME_None, RF_Transient);
-		EmbeddedSound->bIsUISound = true;
-		EmbeddedSound->bAllowSpatialization = false;
+		EmbeddedSound = NewObject<UMediaSoundComponent>(ComponentOuter, NAME_None, RF_Transient);
+		EmbeddedSound->bAutoActivate = false;
 		if (MediaSoundClass)
 		{
 			EmbeddedSound->SoundClass = MediaSoundClass;
 		}
 		EmbeddedSound->SetMediaPlayer(MediaPlayer);
-		EmbeddedSound->RegisterComponentWithWorld(InAudioWorld);
+		bEmbeddedSinkAtOpen = false;
+		MEDIABOX_LOG(TEXT("Media Box: %s - embedded audio component made (%s)"), *MediaBoxPoolPrivate::DescribeClip(Clip), bInWorld ? TEXT("world") : TEXT("2D"));
+		if (WantedOwner)
+		{
+			EmbeddedSound->RegisterComponent();
+		}
+		else
+		{
+			EmbeddedSound->RegisterComponentWithWorld(InAudioWorld);
+		}
+		// It takes the player's audio in its tick: ticking from now on, whether started or not - and while the game is paused,
+		// or a video in a pause menu is silent.
+		EmbeddedSound->SetTickableWhenPaused(true);
+		EmbeddedSound->SetComponentTickEnabled(true);
+	}
+
+	// Placed on the screen (World Audio): attached at the middle of its face, so it moves with it.
+	if (bInWorld)
+	{
+		FVector Center = ScreenComponent->GetComponentLocation();
+		if (const UDiegeticScreenComponent* DiegeticScreen = Cast<UDiegeticScreenComponent>(ScreenComponent))
+		{
+			Center = DiegeticScreen->GetScreenCenter();
+		}
+		for (USceneComponent* AudioComponent : { static_cast<USceneComponent*>(SeparateSound.Get()), static_cast<USceneComponent*>(EmbeddedSound.Get()) })
+		{
+			if (IsValid(AudioComponent) && AudioComponent->GetAttachParent() != ScreenComponent)
+			{
+				AudioComponent->AttachToComponent(ScreenComponent, FAttachmentTransformRules::KeepRelativeTransform);
+				AudioComponent->SetWorldLocation(Center);
+			}
+		}
+	}
+
+	ConfigureAudioSpace(bInWorld ? WorldAudio : nullptr);
+}
+
+void UMediaBoxPlayer::ConfigureAudioSpace(const FMediaBoxWorldAudio* WorldAudio)
+{
+	FSoundAttenuationSettings Attenuation;
+	if (WorldAudio && !WorldAudio->Attenuation)
+	{
+		Attenuation.bAttenuate = true;
+		Attenuation.bSpatialize = true;
+		Attenuation.AttenuationShape = EAttenuationShape::Sphere;
+		Attenuation.AttenuationShapeExtents = FVector(WorldAudio->InnerRadius, 0.f, 0.f);
+		Attenuation.FalloffDistance = WorldAudio->FalloffDistance;
+		Attenuation.bAttenuateWithLPF = true;
+		Attenuation.LPFRadiusMin = WorldAudio->InnerRadius;
+		Attenuation.LPFRadiusMax = WorldAudio->InnerRadius + WorldAudio->FalloffDistance;
+		Attenuation.bEnableOcclusion = WorldAudio->bOcclusion;
+		Attenuation.OcclusionTraceChannel = WorldAudio->OcclusionChannel;
+		Attenuation.OcclusionLowPassFilterFrequency = WorldAudio->OccludedLowPass;
+		Attenuation.OcclusionVolumeAttenuation = WorldAudio->OccludedVolume;
+		Attenuation.OcclusionInterpolationTime = 0.2f;
+		Attenuation.bUseComplexCollisionForOcclusion = false;
+		Attenuation.bEnableReverbSend = WorldAudio->bReverb;
+	}
+
+	// 2D: a UI sound (plays on while the game is paused, never spatialized). World: a world sound (paused with the game).
+	if (IsValid(SeparateSound))
+	{
+		SeparateSound->bIsUISound = WorldAudio == nullptr;
+		SeparateSound->bAllowSpatialization = WorldAudio != nullptr;
+		SeparateSound->AttenuationSettings = WorldAudio ? WorldAudio->Attenuation.Get() : nullptr;
+		SeparateSound->bOverrideAttenuation = WorldAudio && !WorldAudio->Attenuation;
+		SeparateSound->AttenuationOverrides = Attenuation;
+	}
+	if (IsValid(EmbeddedSound))
+	{
+		EmbeddedSound->bIsUISound = WorldAudio == nullptr;
+		EmbeddedSound->bAllowSpatialization = WorldAudio != nullptr;
+		EmbeddedSound->AttenuationSettings = WorldAudio ? WorldAudio->Attenuation.Get() : nullptr;
+		EmbeddedSound->bOverrideAttenuation = WorldAudio && !WorldAudio->Attenuation;
+		EmbeddedSound->AttenuationOverrides = Attenuation;
 	}
 }
 
@@ -453,6 +566,8 @@ void UMediaBoxPlayer::DestroyAudio()
 	}
 	EmbeddedSound = nullptr;
 
+	AudioOwner.Reset();
+	AudioScreen.Reset();
 	bAudioPlaying = false;
 	bAudioFadingOut = false;
 	AudioFade = 1.f;
@@ -485,6 +600,26 @@ void UMediaBoxPlayer::StartAudio()
 			EmbeddedSound->Start();
 		}
 		bAudioPlaying = true;
+
+		MEDIABOX_LOG(TEXT("Media Box: %s - embedded audio started (playing %d, active %d, ticking %d, volume %.2f, owner %s, 2D %d, game paused %d)"),
+			*MediaBoxPoolPrivate::DescribeClip(Clip), EmbeddedSound->IsPlaying() ? 1 : 0, EmbeddedSound->IsActive() ? 1 : 0,
+			EmbeddedSound->IsComponentTickEnabled() ? 1 : 0, Volume * (Clip ? Clip->Volume : 1.f),
+			EmbeddedSound->GetOwner() ? *EmbeddedSound->GetOwner()->GetName() : TEXT("none"), EmbeddedSound->bIsUISound ? 1 : 0,
+			(EmbeddedSound->GetWorld() && EmbeddedSound->GetWorld()->IsPaused()) ? 1 : 0);
+
+		// Opened before this audio listener existed (a warm start): a seek to where it is makes the player send its audio
+		// from here on. Once per open.
+		if (!bEmbeddedSinkAtOpen && MediaPlayer->SupportsSeeking())
+		{
+			bEmbeddedSinkAtOpen = true;
+			MediaPlayer->Seek(MediaBoxPoolPrivate::ToTimespan(GetTime()));
+			MEDIABOX_LOG(TEXT("Media Box: %s - audio listener added after open, resynced at %.2f s"), *MediaBoxPoolPrivate::DescribeClip(Clip), GetTime());
+		}
+	}
+	else
+	{
+		MEDIABOX_LOG(TEXT("Media Box: %s - no audio component to start (audio %d, sound %s)"), *MediaBoxPoolPrivate::DescribeClip(Clip),
+			Clip ? static_cast<int32>(Clip->GetResolvedAudio()) : -1, (Clip && Clip->Sound) ? *Clip->Sound->GetName() : TEXT("none"));
 	}
 	ApplyAudioVolume();
 }
@@ -689,23 +824,41 @@ UMediaBoxPool* UMediaBoxPool::Get(const UObject* WorldContext)
 		}
 	}
 
-	TStrongObjectPtr<UMediaBoxPool>& EditorPool = MediaBoxPoolPrivate::GetEditorPool();
-	if (!EditorPool.IsValid())
+	// Not once the engine is on its way out: nothing new is made then.
+	if (IsEngineExitRequested() || !UObjectInitialized())
 	{
-		EditorPool.Reset(NewObject<UMediaBoxPool>(GetTransientPackage(), TEXT("MediaBoxEditorPool"), RF_Transient));
-		EditorPool->Startup();
+		return nullptr;
 	}
-	return EditorPool.Get();
+
+	TStrongObjectPtr<UMediaBoxPool>*& Holder = MediaBoxPoolPrivate::GetEditorPoolHolder();
+	if (!Holder)
+	{
+		Holder = new TStrongObjectPtr<UMediaBoxPool>(NewObject<UMediaBoxPool>(GetTransientPackage(), TEXT("MediaBoxEditorPool"), RF_Transient));
+		(*Holder)->Startup();
+	}
+	return Holder->Get();
 }
 
 void UMediaBoxPool::ShutdownEditorPool()
 {
-	TStrongObjectPtr<UMediaBoxPool>& EditorPool = MediaBoxPoolPrivate::GetEditorPool();
-	if (EditorPool.IsValid())
+	TStrongObjectPtr<UMediaBoxPool>*& Holder = MediaBoxPoolPrivate::GetEditorPoolHolder();
+	if (!Holder)
+	{
+		return;
+	}
+
+	// Only while UObjects are alive (the engine's pre-exit). Later - module shutdown at exit - the worlds, audio components
+	// and the pool itself may already be destroyed: the holder is left behind rather than touched.
+	if (!UObjectInitialized() || GExitPurge)
+	{
+		return;
+	}
+	if (UMediaBoxPool* EditorPool = Holder->Get())
 	{
 		EditorPool->Shutdown();
-		EditorPool.Reset();
 	}
+	delete Holder;
+	Holder = nullptr;
 }
 
 void UMediaBoxPool::Startup()
@@ -725,7 +878,7 @@ void UMediaBoxPool::Shutdown()
 	}
 	for (UMediaBoxPlayer* PooledPlayer : Players)
 	{
-		if (PooledPlayer)
+		if (IsValid(PooledPlayer))
 		{
 			PooledPlayer->Close();
 			PooledPlayer->DestroyAudio();
@@ -1241,4 +1394,44 @@ void UMediaBoxSubsystem::Deinitialize()
 		Pool = nullptr;
 	}
 	Super::Deinitialize();
+}
+
+// =====================================================================================================
+// AMediaBoxAudioActor
+// =====================================================================================================
+
+AMediaBoxAudioActor::AMediaBoxAudioActor()
+{
+	PrimaryActorTick.bCanEverTick = false;
+	bReplicates = false;
+	SetCanBeDamaged(false);
+	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
+}
+
+AMediaBoxAudioActor* AMediaBoxAudioActor::Get(UWorld* World)
+{
+	if (!World || !World->IsGameWorld() || World->GetNetMode() == NM_DedicatedServer || IsRunningDedicatedServer())
+	{
+		return nullptr;
+	}
+
+	static TMap<TObjectKey<UWorld>, TWeakObjectPtr<AMediaBoxAudioActor>> Actors;
+	for (auto It = Actors.CreateIterator(); It; ++It)
+	{
+		if (!It.Value().IsValid())
+		{
+			It.RemoveCurrent();
+		}
+	}
+	if (AMediaBoxAudioActor* Existing = Actors.FindRef(World).Get())
+	{
+		return Existing;
+	}
+
+	FActorSpawnParameters Params;
+	Params.ObjectFlags |= RF_Transient;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AMediaBoxAudioActor* Spawned = World->SpawnActor<AMediaBoxAudioActor>(Params);
+	Actors.Add(World, Spawned);
+	return Spawned;
 }

@@ -1,0 +1,511 @@
+diff --git a/Docs/Design/MediaBox.md b/Docs/Design/MediaBox.md
+index 8175dff..db655da 100644
+--- a/Docs/Design/MediaBox.md
++++ b/Docs/Design/MediaBox.md
+@@ -27,6 +27,7 @@ Starting a clip from cold in the Media Framework goes: open the source (async),
+   - **Warming:** `Open` primes the clip's Sound (`UGameplayStatics::PrimeSound`), sets the desired player name, `OpenSource`. `OnMediaOpened`: `SetLooping(LoopsWholeVideo)`, seek to Start Time, `Play` silently (no audio started) = **Priming**. Once the video time has moved past Start Time (and one more frame), or after 45 frames: the frame is in (`IsFrameReady`). Nobody waiting: `Pause`, seek back to Start Time = **Settling**, then **Ready** on `OnSeekCompleted` (or after 30 frames). A Media Box already waiting: plays on from there (a cold start, a frame or so in).
+   - **Play:** Ready / Paused / Ended (from Start Time) play at once (`Play`, rate, audio started at the video's time); while Opening / Priming / Settling the request is kept and played the moment it can be.
+   - **Loops:** whole-video loops are counted when the time goes back (`OnEndReached` ignored while looping); a range seeks to Loop Start 1/120 s before Loop End; a range ending at the video's end seeks back on `OnEndReached`. The Separate Sound is restarted at the loop point.
++  - **Audio components** (`EnsureAudio`): owned by an actor so they tick and activate like any component (the Media Sound Component takes the player's samples in its tick; ownerless it stayed silent): 2D - a per-world hidden `AMediaBoxAudioActor` (transient, not replicated, never on a dedicated server, `Get` spawns on first use); World Audio - the Diegetic Screen's own actor, attached to the screen at `GetScreenCenter` (so a sound's occlusion trace, which ignores its owner, never hits the TV itself). Editor worlds (designer audio) keep them ownerless. Remade when the owner, screen, world or the clip's audio kind changes. `ConfigureAudioSpace`: 2D = UI sound, no spatialization; World = world sound (pauses with the game), spatialized, `AttenuationSettings` asset or `AttenuationOverrides` built from World Audio. Each client/player hears from its own listener, so split screen and multiplayer need nothing more; no audio on a dedicated server.
+   - **Audio:** Separate Sound restarted at the video's time when it has drifted past Audio Resync Threshold (checked every 0.25 s against a wall clock started with it); pitch follows the rate. Fades out by ramping the volume multiplier, then stops. Volume = box volume (0 when muted) x clip volume x fade.
+ - **Leases:** `Acquire(Clip, Owner)` takes the clip's unleased player (a Ready one counts as a **warm start**), else a free one, else the longest-unwanted one not on the wanted list, else a new one (`ColdStarts`). `Release(Player, bRewind, AudioFadeOut)` rewinds it (Settling -> Ready: warm again for the next hover), or pauses it; a failed one is closed. A lease whose owner was garbage collected (`bHasLease` with no valid owner) is taken back each tick.
+ - **What is warm:** each tick `RankWanted` scores pinned clips (`PinClip`, counted) first, then per **Warm Group** its targets (widget + clip): the focused one, then by distance from the anchor to each target's rectangle. The anchor is the focused target when it was focused after the pointer last moved (gamepad), else the pointer's position plus its smoothed speed x Hover Intent Look Ahead (or the pointer alone with Hover Intent off). Each group gives at most Warm Per Group clips; all together at most Max Warm Players (`MediaBox.MaxWarmPlayers` overrides). `Rebalance` opens what is wanted and not open, closes unleased players nobody wants once over capacity (longest unwanted first), and drops free players beyond capacity + leased. Groups drop targets whose widget or clip is gone.
+@@ -37,7 +38,7 @@ Starting a clip from cold in the Media Framework goes: open the source (async),
+ - **Media:** `MediaClip` (shown as Clip), `WarmGroup`, `bPreviewInDesigner` (default on; silent unless Audio In Designer).
+ - **Playback:** `PlayWhen` (default Manual), `HoverTargetName` (dropdown of the tree's widgets; None = the nearest `UButton` around it, through the User Widgets it is in, else itself - hovered = the pointer over its area, as it is Hit Test Invisible by default), `HoverDelay`, `AfterTrigger` (default Stop And Rewind), `bPauseWhenHidden` (default on), `PlaybackRate`, `MachineInputs` (advanced).
+ - **Appearance:** `Fit` (default Contain), `ContentAlignment`, `CropFocus`, `LetterboxColor` (default transparent), `Tint`, `DesiredSize` (320 x 180), `VideoFadeIn` / `VideoFadeOut` (advanced; below 0 = settings), `ErrorImage`.
+-- **Audio:** `AudioVolume`, `bMuted`. **Subtitles:** `bShowSubtitles` (default on), `SubtitleTextSize` (font size = video height x this, default 0.045 ~ YouTube; Margin scaled by size / 14; 0 = the Font's own size), `SubtitleFont` (default Regular 14), `SubtitleColor`, `SubtitleBackground`, `SubtitleMargin`.
++- **Audio:** `AudioVolume`, `bMuted`, `AudioSpace` (`EMediaBoxAudioSpace`: 2D (UI) - default, the old behaviour / World (On Diegetic Screen)), `WorldAudio` (`FMediaBoxWorldAudio`: Attenuation asset, else Inner Radius 300 cm, Falloff Distance 2500 cm, Occlusion on (channel Visibility, low pass 1500 Hz, volume 0.4, 0.2 s interpolation, simple collision), Reverb send on). **Subtitles:** `bShowSubtitles` (default on), `SubtitleTextSize` (font size = video height x this, default 0.045 ~ YouTube; Margin scaled by size / 14; 0 = the Font's own size), `SubtitleFont` (default Regular 14), `SubtitleColor`, `SubtitleBackground`, `SubtitleMargin`.
+ - **Events:** On Opened, On First Frame, On Looped, On Ended, On Error (Reason), On Subtitle Changed, On Status Changed. **Blueprint:** Play, Pause, Stop, Toggle Play Pause, Seek, Set Clip (bPlayNow), Get Clip, Set Hover Target, Set Playback Rate, Set Volume, Set Muted, Get Status, Is Playing, Get Time, Get Duration, Get Progress, Get Current Subtitle, Get Media Player / Get Media Texture (pooled - not to keep).
+ - **Ticking:** registers with its pool in `RebuildWidget`, leaves (and gives back its lease, leaves its group) in `ReleaseSlateResources` (not while unreachable); the pool ticks it (`TickMediaBox`) before rebalancing.
+ - **Tick:** every 0.5 s looks up its Diegetic Screen (`AnyScreensExist` / `FindScreenForWidget`) and its group place. The trigger (held for Hover Delay) starting: focuses its group target, `StartPlayback(true)`. Ending (and no Play pending): After Trigger. Wanting to play: paused while hidden (Pause When Hidden), else `StartPlayback(false)` (an ended clip is restarted only by a new trigger or Play). Events polled from the leased player; the video alpha fades in once the frame is in (On First Frame), out while stopping (then the lease is released with rewind). Subtitle, status, state machine inputs updated. Repaints (`Invalidate(Paint)`) while the video moves, and tells its Diegetic Screen `MarkContentChanged` - so a When Changed screen redraws only while the video plays.
+@@ -79,6 +80,7 @@ Add To / Remove From Media Warm Group, Clear Media Warm Group, Set Media Warm Gr
+ - Subtitles drawn as plain lines (wrapped at spaces, no styling from tags); the Animated Text widget isn't used for them.
+ - Platform support check in the validator (which players a target platform has for a file type).
+ - Media Box With Controls: no keyboard shortcuts (Space / K, arrows), no double-click fullscreen; the YouTube timings are approximations of its desktop player, not measured.
++- World Audio: the screen is looked up as the box starts playing; a box moved onto a screen while playing stays 2D until it plays again. Playback isn't synchronised between multiplayer clients (each plays its own copy; a replicated start time on the screen would do it).
+ - The Warm Group anchor uses desktop pointer space; targets on a Diegetic Screen are ranked by the desktop pointer, not the world pointer.
+ 
+ ## Unverified
+@@ -88,5 +90,7 @@ Add To / Remove From Media Warm Group, Clear Media Warm Group, Set Media Warm Gr
+ - The open-to-first-frame cost per player in 5.7, and so how big the pool needs to be.
+ - Generate Poster's colour (gamma of an RGBA8 render target read back into an sRGB texture).
+ - That the Bink Media plugin is still bundled with 5.7.
++- Media Box With Controls clips to its bounds (ClipToBounds): a Background Blur in the bar never spreads outside the video. A Background Blur placed over the bar's buttons (later in an Overlay) still blurs them.
++- Embedded audio silence (fixed by owned components) and World Audio occlusion: not heard in the engine yet.
+ - Media Box With Controls: the bar's Widget Blueprint root should be a box or overlay (a Canvas Panel root has no desired height, so it isn't scaled).
+ - Media Box With Controls: `CreateWidget` with a `UWidget` owner in the designer (no world), and a bar made that way drawing and ticking as a designer preview; `SWidget::SetCursor(EMouseCursor::None)` hiding the pointer over a game viewport.
+diff --git a/Plugins/NameTBD/Resources/AI/Docs/media.md b/Plugins/NameTBD/Resources/AI/Docs/media.md
+index aa9680f..732e6ea 100644
+--- a/Plugins/NameTBD/Resources/AI/Docs/media.md
++++ b/Plugins/NameTBD/Resources/AI/Docs/media.md
+@@ -6,6 +6,9 @@ MediaBox ("Media Box", module NameTBDMedia) plays a Media Box Clip in UMG. Clip
+ ## Video player with controls
+ MediaBoxWithControls ("Media Box With Controls") is a Media Box with a controls bar over it. Controls Class: a Widget Blueprint whose parent class is MediaBoxTransportBar (None: Project Settings > Media Box > Default Controls Class). Controls Behavior (tick to override the project's Default Controls Behavior): Preset YouTube (shown while the pointer moves, hidden 3 s after it stops or 0.1 s after it leaves while playing, always shown while paused, fades 0.1 s in / 0.25 s out, pointer hidden with the bar, click plays / pauses, subtitles lifted above the bar) or Custom (set Hide After Idle, Hide After Unhovered, the Show While... switches, fades). Controls Height (0.13 of the video height, like YouTube; Min / Max Height limits) scales the bar evenly to fit any video size and stretches it across; design the bar with a Horizontal Box or Overlay root, not a Canvas Panel. Controls Alignment / Padding place the bar.
+ 
++## Audio in the world
++Audio Space World (On Diegetic Screen): a Media Box on a Diegetic Screen is heard from the screen - falloff (Inner Radius, Falloff Distance), muffled through walls (Occlusion, channel Visibility), level reverb; or give World Audio a Sound Attenuation asset. Each player hears it from their own camera (multiplayer and split screen work). Default 2D (UI).
++
+ ## Instant start
+ Give every preview of one screen the same Warm Group name: the pool keeps the hovered or focused clip and its neighbours (or what the pointer heads for) open and paused on frame 0, so the next hover starts that frame. For one shared preview driven by buttons: Add To Media Warm Group on each button (with its clip), Set Clip (Play Now) from On Hovered, Stop from On Unhovered. Keep Media Clip Warm pins a clip. Project Settings > Plugins > Media Box: Max Warm Players (4), Warm Per Group (3), fades, Sound Class.
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBox.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBox.cpp
+index 854c8a4..8afb08d 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBox.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBox.cpp
+@@ -418,7 +418,17 @@ void UMediaBox::StartPlayback(bool bRestartIfEnded)
+ 		}
+ #endif
+ 	}
+-	LeasedPlayer->Play(AudioWorld, bWithAudio && AudioWorld != nullptr);
++	// World Audio: heard from the Diegetic Screen it is on (looked up now if it hasn't been yet). Elsewhere: 2D.
++	USceneComponent* ScreenForAudio = nullptr;
++	if (AudioSpace == EMediaBoxAudioSpace::World && !IsDesignTime())
++	{
++		if (!DiegeticScreen.IsValid() && UDiegeticScreenComponent::AnyScreensExist())
++		{
++			DiegeticScreen = UDiegeticScreenComponent::FindScreenForWidget(this);
++		}
++		ScreenForAudio = DiegeticScreen.Get();
++	}
++	LeasedPlayer->Play(AudioWorld, bWithAudio && AudioWorld != nullptr, ScreenForAudio, ScreenForAudio ? &WorldAudio : nullptr);
+ }
+ 
+ void UMediaBox::BeginStop(bool bFade)
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp
+index cc5ed61..a21307a 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp
+@@ -15,6 +15,9 @@
+ #include "Framework/Application/SlateApplication.h"
+ #include "HAL/PlatformTime.h"
+ #include "Kismet/GameplayStatics.h"
++#include "NameTBD/Diegetic/DiegeticScreenComponent.h"
++#include "Sound/SoundAttenuation.h"
++#include "UObject/ObjectKey.h"
+ #include "MediaPlayer.h"
+ #include "MediaSoundComponent.h"
+ #include "MediaSource.h"
+@@ -230,12 +233,12 @@ void UMediaBoxPlayer::HandleSeekCompleted()
+ 	}
+ }
+ 
+-void UMediaBoxPlayer::Play(UWorld* InAudioWorld, bool bWithAudio)
++void UMediaBoxPlayer::Play(UWorld* InAudioWorld, bool bWithAudio, USceneComponent* ScreenComponent, const FMediaBoxWorldAudio* WorldAudio)
+ {
+ 	bAudioWanted = bWithAudio;
+ 	if (bWithAudio)
+ 	{
+-		EnsureAudio(InAudioWorld);
++		EnsureAudio(InAudioWorld, ScreenComponent, WorldAudio);
+ 	}
+ 
+ 	switch (State)
+@@ -390,33 +393,57 @@ bool UMediaBoxPlayer::WantsEmbeddedSound() const
+ 	return Clip && Clip->GetResolvedAudio() == EMediaBoxAudio::Embedded;
+ }
+ 
+-void UMediaBoxPlayer::EnsureAudio(UWorld* InAudioWorld)
++void UMediaBoxPlayer::EnsureAudio(UWorld* InAudioWorld, USceneComponent* ScreenComponent, const FMediaBoxWorldAudio* WorldAudio)
+ {
+-	if (!InAudioWorld)
++	if (!InAudioWorld || !Clip)
+ 	{
+ 		return;
+ 	}
+-	if (AudioWorld.Get() != InAudioWorld)
++
++	// Who owns the components: the screen's actor for World Audio (its own collision then never occludes it - a sound's
++	// occlusion trace ignores its owner), else the world's hidden 2D audio actor. Editor worlds (designer audio) keep them
++	// ownerless.
++	const bool bInWorld = ScreenComponent && WorldAudio && ScreenComponent->GetOwner();
++	AActor* WantedOwner = bInWorld ? ScreenComponent->GetOwner() : (InAudioWorld->IsGameWorld() ? AMediaBoxAudioActor::Get(InAudioWorld) : nullptr);
++	if (InAudioWorld->IsGameWorld() && !WantedOwner)
++	{
++		return; // No audio here (a dedicated server).
++	}
++
++	const EMediaBoxAudio Kind = Clip->GetResolvedAudio();
++	const bool bSameHost = AudioWorld.Get() == InAudioWorld && AudioOwner.Get() == WantedOwner && AudioScreen.Get() == (bInWorld ? ScreenComponent : nullptr);
++	if (!bSameHost || AudioForKind != Kind)
+ 	{
+ 		DestroyAudio();
+-		AudioWorld = InAudioWorld;
+ 	}
++	AudioWorld = InAudioWorld;
++	AudioOwner = WantedOwner;
++	AudioScreen = bInWorld ? ScreenComponent : nullptr;
++	AudioForKind = Kind;
+ 
+ 	USoundClass* MediaSoundClass = UMediaBoxSettings::Get().SoundClass.LoadSynchronous();
++	UObject* ComponentOuter = WantedOwner ? static_cast<UObject*>(WantedOwner) : static_cast<UObject*>(this);
+ 
+ 	if (WantsSeparateSound())
+ 	{
+ 		if (!IsValid(SeparateSound))
+ 		{
+-			// 2D, kept across level changes with the pool, never destroyed when it stops: started again on the next play.
+-			SeparateSound = UGameplayStatics::CreateSound2D(InAudioWorld, Clip->Sound, 1.f, 1.f, 0.f, nullptr, /*bPersistAcrossLevelTransition=*/true, /*bAutoDestroy=*/false);
+-			if (SeparateSound)
++			SeparateSound = NewObject<UAudioComponent>(ComponentOuter, NAME_None, RF_Transient);
++			SeparateSound->bAutoActivate = false;
++			SeparateSound->bAutoDestroy = false;
++			SeparateSound->bStopWhenOwnerDestroyed = true;
++			if (MediaSoundClass)
+ 			{
+-				SeparateSound->bIsUISound = true;
+-				if (MediaSoundClass)
+-				{
+-					SeparateSound->SoundClassOverride = MediaSoundClass;
+-				}
++				SeparateSound->SoundClassOverride = MediaSoundClass;
++			}
++			SeparateSound->SetSound(Clip->Sound);
++			if (WantedOwner)
++			{
++				SeparateSound->RegisterComponent();
++			}
++			else
++			{
++				SeparateSound->RegisterComponentWithWorld(InAudioWorld);
+ 			}
+ 		}
+ 		else if (SeparateSound->Sound != Clip->Sound)
+@@ -428,16 +455,84 @@ void UMediaBoxPlayer::EnsureAudio(UWorld* InAudioWorld)
+ 
+ 	if (WantsEmbeddedSound() && !IsValid(EmbeddedSound))
+ 	{
+-		// Ownerless, registered with the world so it ticks and reaches the audio device; 2D, a UI sound.
+-		EmbeddedSound = NewObject<UMediaSoundComponent>(this, NAME_None, RF_Transient);
+-		EmbeddedSound->bIsUISound = true;
+-		EmbeddedSound->bAllowSpatialization = false;
++		EmbeddedSound = NewObject<UMediaSoundComponent>(ComponentOuter, NAME_None, RF_Transient);
++		EmbeddedSound->bAutoActivate = false;
+ 		if (MediaSoundClass)
+ 		{
+ 			EmbeddedSound->SoundClass = MediaSoundClass;
+ 		}
+ 		EmbeddedSound->SetMediaPlayer(MediaPlayer);
+-		EmbeddedSound->RegisterComponentWithWorld(InAudioWorld);
++		if (WantedOwner)
++		{
++			EmbeddedSound->RegisterComponent();
++		}
++		else
++		{
++			EmbeddedSound->RegisterComponentWithWorld(InAudioWorld);
++		}
++		// It takes the player's audio in its tick: ticking from now on, whether started or not.
++		EmbeddedSound->SetComponentTickEnabled(true);
++	}
++
++	// Placed on the screen (World Audio): attached at the middle of its face, so it moves with it.
++	if (bInWorld)
++	{
++		FVector Center = ScreenComponent->GetComponentLocation();
++		if (const UDiegeticScreenComponent* DiegeticScreen = Cast<UDiegeticScreenComponent>(ScreenComponent))
++		{
++			Center = DiegeticScreen->GetScreenCenter();
++		}
++		for (USceneComponent* AudioComponent : { static_cast<USceneComponent*>(SeparateSound.Get()), static_cast<USceneComponent*>(EmbeddedSound.Get()) })
++		{
++			if (IsValid(AudioComponent) && AudioComponent->GetAttachParent() != ScreenComponent)
++			{
++				AudioComponent->AttachToComponent(ScreenComponent, FAttachmentTransformRules::KeepRelativeTransform);
++				AudioComponent->SetWorldLocation(Center);
++			}
++		}
++	}
++
++	ConfigureAudioSpace(bInWorld ? WorldAudio : nullptr);
++}
++
++void UMediaBoxPlayer::ConfigureAudioSpace(const FMediaBoxWorldAudio* WorldAudio)
++{
++	FSoundAttenuationSettings Attenuation;
++	if (WorldAudio && !WorldAudio->Attenuation)
++	{
++		Attenuation.bAttenuate = true;
++		Attenuation.bSpatialize = true;
++		Attenuation.AttenuationShape = EAttenuationShape::Sphere;
++		Attenuation.AttenuationShapeExtents = FVector(WorldAudio->InnerRadius, 0.f, 0.f);
++		Attenuation.FalloffDistance = WorldAudio->FalloffDistance;
++		Attenuation.bAttenuateWithLPF = true;
++		Attenuation.LPFRadiusMin = WorldAudio->InnerRadius;
++		Attenuation.LPFRadiusMax = WorldAudio->InnerRadius + WorldAudio->FalloffDistance;
++		Attenuation.bEnableOcclusion = WorldAudio->bOcclusion;
++		Attenuation.OcclusionTraceChannel = WorldAudio->OcclusionChannel;
++		Attenuation.OcclusionLowPassFilterFrequency = WorldAudio->OccludedLowPass;
++		Attenuation.OcclusionVolumeAttenuation = WorldAudio->OccludedVolume;
++		Attenuation.OcclusionInterpolationTime = 0.2f;
++		Attenuation.bUseComplexCollisionForOcclusion = false;
++		Attenuation.bEnableReverbSend = WorldAudio->bReverb;
++	}
++
++	// 2D: a UI sound (plays on while the game is paused, never spatialized). World: a world sound (paused with the game).
++	if (IsValid(SeparateSound))
++	{
++		SeparateSound->bIsUISound = WorldAudio == nullptr;
++		SeparateSound->bAllowSpatialization = WorldAudio != nullptr;
++		SeparateSound->AttenuationSettings = WorldAudio ? WorldAudio->Attenuation.Get() : nullptr;
++		SeparateSound->bOverrideAttenuation = WorldAudio && !WorldAudio->Attenuation;
++		SeparateSound->AttenuationOverrides = Attenuation;
++	}
++	if (IsValid(EmbeddedSound))
++	{
++		EmbeddedSound->bIsUISound = WorldAudio == nullptr;
++		EmbeddedSound->bAllowSpatialization = WorldAudio != nullptr;
++		EmbeddedSound->AttenuationSettings = WorldAudio ? WorldAudio->Attenuation.Get() : nullptr;
++		EmbeddedSound->bOverrideAttenuation = WorldAudio && !WorldAudio->Attenuation;
++		EmbeddedSound->AttenuationOverrides = Attenuation;
+ 	}
+ }
+ 
+@@ -458,6 +553,8 @@ void UMediaBoxPlayer::DestroyAudio()
+ 	}
+ 	EmbeddedSound = nullptr;
+ 
++	AudioOwner.Reset();
++	AudioScreen.Reset();
+ 	bAudioPlaying = false;
+ 	bAudioFadingOut = false;
+ 	AudioFade = 1.f;
+@@ -1265,3 +1362,43 @@ void UMediaBoxSubsystem::Deinitialize()
+ 	}
+ 	Super::Deinitialize();
+ }
++
++// =====================================================================================================
++// AMediaBoxAudioActor
++// =====================================================================================================
++
++AMediaBoxAudioActor::AMediaBoxAudioActor()
++{
++	PrimaryActorTick.bCanEverTick = false;
++	bReplicates = false;
++	SetCanBeDamaged(false);
++	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
++}
++
++AMediaBoxAudioActor* AMediaBoxAudioActor::Get(UWorld* World)
++{
++	if (!World || !World->IsGameWorld() || World->GetNetMode() == NM_DedicatedServer || IsRunningDedicatedServer())
++	{
++		return nullptr;
++	}
++
++	static TMap<TObjectKey<UWorld>, TWeakObjectPtr<AMediaBoxAudioActor>> Actors;
++	for (auto It = Actors.CreateIterator(); It; ++It)
++	{
++		if (!It.Value().IsValid())
++		{
++			It.RemoveCurrent();
++		}
++	}
++	if (AMediaBoxAudioActor* Existing = Actors.FindRef(World).Get())
++	{
++		return Existing;
++	}
++
++	FActorSpawnParameters Params;
++	Params.ObjectFlags |= RF_Transient;
++	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
++	AMediaBoxAudioActor* Spawned = World->SpawnActor<AMediaBoxAudioActor>(Params);
++	Actors.Add(World, Spawned);
++	return Spawned;
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
+index b96d79a..b607b15 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
+@@ -236,6 +236,9 @@ UMediaBoxWithControls::UMediaBoxWithControls()
+ {
+ 	// A player takes the pointer: hover shows the controls, a click plays / pauses, the bar's buttons are clicked.
+ 	SetVisibilityInternal(ESlateVisibility::Visible);
++
++	// The bar (and anything in it, a Background Blur too) never draws outside the video.
++	SetClipping(EWidgetClipping::ClipToBounds);
+ 	LetterboxColor = FLinearColor::Black;
+ 	DesiredSize = FVector2D(640.0, 360.0);
+ }
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h
+index c7b925e..7dc1b19 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h
+@@ -197,6 +197,17 @@ public:
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (DisplayName = "Muted"))
+ 	bool bMuted = false;
+ 
++	/**
++	 * Where it is heard from. 2D (UI): the same everywhere. World (On Diegetic Screen): on a Diegetic Screen, from the screen in
++	 * the world - by distance and direction, muffled through walls (World Audio); anywhere else, 2D.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (DisplayName = "Audio Space"))
++	EMediaBoxAudioSpace AudioSpace = EMediaBoxAudioSpace::UI;
++
++	/** How it is heard in the world: falloff, occlusion through walls, reverb - or a Sound Attenuation asset. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (DisplayName = "World Audio", EditCondition = "AudioSpace == EMediaBoxAudioSpace::World"))
++	FMediaBoxWorldAudio WorldAudio;
++
+ 	// ---------------------------------------------------------------------------------------------
+ 	// Subtitles
+ 	// ---------------------------------------------------------------------------------------------
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h
+index 25e2647..4aae5ba 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h
+@@ -6,10 +6,16 @@
+ #include "Containers/Ticker.h"
+ #include "Subsystems/GameInstanceSubsystem.h"
+ #include "UObject/Object.h"
++#include "GameFramework/Actor.h"
++
++#include "MediaBoxTypes.h"
+ 
+ #include "MediaBoxPool.generated.h"
+ 
++class AActor;
+ class UAudioComponent;
++class USceneComponent;
++class USoundBase;
+ class UMediaBox;
+ class UMediaBoxClip;
+ class UMediaPlayer;
+@@ -60,8 +66,11 @@ public:
+ 	/** Closes what is open and lets go of its audio. */
+ 	void Close();
+ 
+-	/** Plays from where it is: at once when warm, else as soon as its first frame is in. AudioWorld plays its audio. */
+-	void Play(UWorld* AudioWorld, bool bWithAudio);
++	/**
++	 * Plays from where it is: at once when warm, else as soon as its first frame is in. Its audio plays in InAudioWorld - 2D,
++	 * or, with ScreenComponent and WorldAudio, from that Diegetic Screen in the world.
++	 */
++	void Play(UWorld* InAudioWorld, bool bWithAudio, USceneComponent* ScreenComponent = nullptr, const FMediaBoxWorldAudio* WorldAudio = nullptr);
+ 
+ 	/** Pauses (audio fades out over FadeOut seconds). */
+ 	void Pause(float FadeOut);
+@@ -145,8 +154,15 @@ private:
+ 	bool WantsSeparateSound() const;
+ 	bool WantsEmbeddedSound() const;
+ 
+-	/** The audio components, made (again) in AudioWorld when they don't exist there yet. */
+-	void EnsureAudio(UWorld* InAudioWorld);
++	/**
++	 * The audio components, made (again) when they don't exist yet where they are wanted: owned by a hidden local actor of
++	 * InAudioWorld (2D), or by ScreenComponent's actor and attached to it (World Audio). Owned components tick and activate as
++	 * any do - the Media Sound Component needs its tick to receive the video's audio.
++	 */
++	void EnsureAudio(UWorld* InAudioWorld, USceneComponent* ScreenComponent, const FMediaBoxWorldAudio* WorldAudio);
++
++	/** Puts 2D or world settings (attenuation, occlusion) on the audio components. */
++	void ConfigureAudioSpace(const FMediaBoxWorldAudio* WorldAudio);
+ 	void DestroyAudio();
+ 
+ 	UPROPERTY(Transient)
+@@ -167,6 +183,12 @@ private:
+ 	TWeakObjectPtr<UObject> LeaseOwner;
+ 	TWeakObjectPtr<UWorld> AudioWorld;
+ 
++	/** The actor owning the audio components now, the screen they are attached to (World Audio), and which audio they are for. */
++	TWeakObjectPtr<AActor> AudioOwner;
++	TWeakObjectPtr<USceneComponent> AudioScreen;
++	TWeakObjectPtr<USoundBase> AudioForSound;
++	EMediaBoxAudio AudioForKind = EMediaBoxAudio::Auto;
++
+ 	/** Leased and not yet given back - a lease whose owner has gone (garbage collected) is taken back by the pool. */
+ 	bool bHasLease = false;
+ 
+@@ -202,6 +224,22 @@ private:
+ 	double NextSyncCheck = 0.0;
+ };
+ 
++/**
++ * Holds the 2D audio components of the Media Boxes playing in one world: a hidden, transient, local actor (never replicated, never
++ * saved), made on first use. Owned components tick and activate normally.
++ */
++UCLASS(Transient, NotPlaceable, NotBlueprintable)
++class NAMETBDMEDIA_API AMediaBoxAudioActor : public AActor
++{
++	GENERATED_BODY()
++
++public:
++	AMediaBoxAudioActor();
++
++	/** The world's audio actor, made on first use. Null in a world that has no audio (a dedicated server). */
++	static AMediaBoxAudioActor* Get(UWorld* World);
++};
++
+ /** One widget in a Warm Group and the clip it plays (or shows) when hovered or focused. */
+ USTRUCT()
+ struct NAMETBDMEDIA_API FMediaBoxWarmTarget
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h
+index d413119..2b81e35 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h
+@@ -3,6 +3,7 @@
+ #pragma once
+ 
+ #include "CoreMinimal.h"
++#include "Engine/EngineTypes.h" // ECollisionChannel
+ 
+ #include "MediaBoxTypes.generated.h"
+ 
+@@ -72,6 +73,57 @@ enum class EMediaBoxAudio : uint8
+ 	Silent UMETA(ToolTip = "No audio.")
+ };
+ 
++/** Where a Media Box's audio is heard from. */
++UENUM(BlueprintType)
++enum class EMediaBoxAudioSpace : uint8
++{
++	UI UMETA(DisplayName = "2D (UI)", ToolTip = "Heard the same everywhere, as UI sound - wherever the Media Box is."),
++
++	World UMETA(DisplayName = "World (On Diegetic Screen)", ToolTip = "On a Diegetic Screen: heard from the screen in the world - quieter with distance, from its direction, muffled through walls (World Audio). Not on a screen: 2D, as UI.")
++};
++
++/**
++ * How a Media Box on a Diegetic Screen is heard in the world (Audio Space World). Every player hears it from their own camera,
++ * so it works the same in single player, split screen and multiplayer.
++ */
++USTRUCT(BlueprintType)
++struct NAMETBDMEDIA_API FMediaBoxWorldAudio
++{
++	GENERATED_BODY()
++
++	/** A Sound Attenuation asset to use instead of the values below - for a project's own falloff curves, reverb, focus... */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio")
++	TObjectPtr<class USoundAttenuation> Attenuation = nullptr;
++
++	/** Full volume within this distance of the screen (cm). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Inner Radius", ClampMin = "0.0", UIMax = "2000.0", Units = "cm", EditCondition = "Attenuation == nullptr"))
++	float InnerRadius = 300.f;
++
++	/** Fades to silence over this distance beyond Inner Radius (cm). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Falloff Distance", ClampMin = "1.0", UIMax = "10000.0", Units = "cm", EditCondition = "Attenuation == nullptr"))
++	float FalloffDistance = 2500.f;
++
++	/** Muffled and quieter when something blocks the line from the listener to the screen - a wall, a door. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Occlusion", EditCondition = "Attenuation == nullptr"))
++	bool bOcclusion = true;
++
++	/** What blocks it: the collision channel traced from the listener to the screen. The screen's own actor never blocks it. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Occlusion Channel", EditCondition = "Attenuation == nullptr && bOcclusion"))
++	TEnumAsByte<ECollisionChannel> OcclusionChannel = ECC_Visibility;
++
++	/** How muffled it is behind a wall: a low-pass filter at this frequency (Hz). Lower is more muffled. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Occluded Low Pass", ClampMin = "100.0", ClampMax = "20000.0", Units = "Hz", EditCondition = "Attenuation == nullptr && bOcclusion"))
++	float OccludedLowPass = 1500.f;
++
++	/** How loud it is behind a wall, 0 - 1. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Occluded Volume", ClampMin = "0.0", ClampMax = "1.0", EditCondition = "Attenuation == nullptr && bOcclusion"))
++	float OccludedVolume = 0.4f;
++
++	/** Sent to the level's reverb (Audio Volumes), so it sounds like it is in the room. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "World Audio", meta = (DisplayName = "Reverb", EditCondition = "Attenuation == nullptr"))
++	bool bReverb = true;
++};
++
+ /** Where a Media Box is, for Blueprint. */
+ UENUM(BlueprintType)
+ enum class EMediaBoxStatus : uint8

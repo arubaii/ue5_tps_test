@@ -6,10 +6,16 @@
 #include "Containers/Ticker.h"
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "UObject/Object.h"
+#include "GameFramework/Actor.h"
+
+#include "MediaBoxTypes.h"
 
 #include "MediaBoxPool.generated.h"
 
+class AActor;
 class UAudioComponent;
+class USceneComponent;
+class USoundBase;
 class UMediaBox;
 class UMediaBoxClip;
 class UMediaPlayer;
@@ -60,8 +66,12 @@ public:
 	/** Closes what is open and lets go of its audio. */
 	void Close();
 
-	/** Plays from where it is: at once when warm, else as soon as its first frame is in. AudioWorld plays its audio. */
-	void Play(UWorld* AudioWorld, bool bWithAudio);
+	/**
+	 * Plays from where it is: at once when warm, else as soon as its first frame is in. Its audio plays in InAudioWorld - 2D
+	 * (held by LocalOwner, the Media Box's player controller, when given), or, with ScreenComponent and WorldAudio, from that
+	 * Diegetic Screen in the world.
+	 */
+	void Play(UWorld* InAudioWorld, bool bWithAudio, USceneComponent* ScreenComponent = nullptr, const FMediaBoxWorldAudio* WorldAudio = nullptr, AActor* LocalOwner = nullptr);
 
 	/** Pauses (audio fades out over FadeOut seconds). */
 	void Pause(float FadeOut);
@@ -145,8 +155,15 @@ private:
 	bool WantsSeparateSound() const;
 	bool WantsEmbeddedSound() const;
 
-	/** The audio components, made (again) in AudioWorld when they don't exist there yet. */
-	void EnsureAudio(UWorld* InAudioWorld);
+	/**
+	 * The audio components, made (again) when they don't exist yet where they are wanted: owned by a hidden local actor of
+	 * InAudioWorld (2D), or by ScreenComponent's actor and attached to it (World Audio). Owned components tick and activate as
+	 * any do - the Media Sound Component needs its tick to receive the video's audio.
+	 */
+	void EnsureAudio(UWorld* InAudioWorld, USceneComponent* ScreenComponent, const FMediaBoxWorldAudio* WorldAudio, AActor* LocalOwner);
+
+	/** Puts 2D or world settings (attenuation, occlusion) on the audio components. */
+	void ConfigureAudioSpace(const FMediaBoxWorldAudio* WorldAudio);
 	void DestroyAudio();
 
 	UPROPERTY(Transient)
@@ -166,6 +183,18 @@ private:
 
 	TWeakObjectPtr<UObject> LeaseOwner;
 	TWeakObjectPtr<UWorld> AudioWorld;
+
+	/** The actor owning the audio components now, the screen they are attached to (World Audio), and which audio they are for. */
+	TWeakObjectPtr<AActor> AudioOwner;
+	TWeakObjectPtr<USceneComponent> AudioScreen;
+	TWeakObjectPtr<USoundBase> AudioForSound;
+	EMediaBoxAudio AudioForKind = EMediaBoxAudio::Auto;
+
+	/**
+	 * Whether the Embedded Sound component existed when the clip was opened. A warm player is opened with no audio listener; one
+	 * added later is given the player's audio by a seek to where it is, as the audio starts (StartAudio).
+	 */
+	bool bEmbeddedSinkAtOpen = false;
 
 	/** Leased and not yet given back - a lease whose owner has gone (garbage collected) is taken back by the pool. */
 	bool bHasLease = false;
@@ -200,6 +229,22 @@ private:
 	float AudioStartMediaTime = 0.f;
 	double AudioStartWallTime = 0.0;
 	double NextSyncCheck = 0.0;
+};
+
+/**
+ * Holds the 2D audio components of the Media Boxes playing in one world: a hidden, transient, local actor (never replicated, never
+ * saved), made on first use. Owned components tick and activate normally.
+ */
+UCLASS(Transient, NotPlaceable, NotBlueprintable)
+class NAMETBDMEDIA_API AMediaBoxAudioActor : public AActor
+{
+	GENERATED_BODY()
+
+public:
+	AMediaBoxAudioActor();
+
+	/** The world's audio actor, made on first use. Null in a world that has no audio (a dedicated server). */
+	static AMediaBoxAudioActor* Get(UWorld* World);
 };
 
 /** One widget in a Warm Group and the clip it plays (or shows) when hovered or focused. */

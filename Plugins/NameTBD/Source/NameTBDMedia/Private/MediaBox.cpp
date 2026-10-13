@@ -15,6 +15,7 @@
 #include "Engine/Texture.h"
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
+#include "GameFramework/PlayerController.h"
 #include "HAL/PlatformTime.h"
 #include "MediaPlayer.h"
 #include "MediaTexture.h"
@@ -418,7 +419,17 @@ void UMediaBox::StartPlayback(bool bRestartIfEnded)
 		}
 #endif
 	}
-	LeasedPlayer->Play(AudioWorld, bWithAudio && AudioWorld != nullptr);
+	// World Audio: heard from the Diegetic Screen it is on (looked up now if it hasn't been yet). Elsewhere: 2D.
+	USceneComponent* ScreenForAudio = nullptr;
+	if (AudioSpace == EMediaBoxAudioSpace::World && !IsDesignTime())
+	{
+		if (!DiegeticScreen.IsValid() && UDiegeticScreenComponent::AnyScreensExist())
+		{
+			DiegeticScreen = UDiegeticScreenComponent::FindScreenForWidget(this);
+		}
+		ScreenForAudio = DiegeticScreen.Get();
+	}
+	LeasedPlayer->Play(AudioWorld, bWithAudio && AudioWorld != nullptr, ScreenForAudio, ScreenForAudio ? &WorldAudio : nullptr, IsDesignTime() ? nullptr : GetOwningPlayer());
 }
 
 void UMediaBox::BeginStop(bool bFade)

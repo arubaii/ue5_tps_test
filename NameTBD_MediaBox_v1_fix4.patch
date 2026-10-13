@@ -1,0 +1,34 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
+index eea47c7..b96d79a 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
+@@ -60,17 +60,19 @@ public:
+ 		MinBarHeight = InArgs._MinHeight;
+ 		MaxBarHeight = InArgs._MaxHeight;
+ 		BarPadding = InArgs._Padding;
++		BarWidget = InArgs._Content.Widget;
+ 		BarChildren.Add(InArgs._Content.Widget);
+ 	}
+ 
+ 	virtual void OnArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const override
+ 	{
+-		if (BarChildren.Num() == 0)
++		if (!BarWidget.IsValid())
+ 		{
+ 			LastBarHeight = 0.f;
+ 			return;
+ 		}
+-		const TSharedRef<SWidget> Bar = BarChildren.GetChildAt(0);
++		// Kept as our own pointer: in this const function the child list only hands out const widgets.
++		const TSharedRef<SWidget> Bar = BarWidget.ToSharedRef();
+ 		if (!ArrangedChildren.Accepts(Bar->GetVisibility()))
+ 		{
+ 			return;
+@@ -133,6 +135,7 @@ public:
+ 
+ private:
+ 	TSlotlessChildren<SWidget> BarChildren;
++	TSharedPtr<SWidget> BarWidget;
+ 	EVerticalAlignment BarAlignment = VAlign_Bottom;
+ 	float HeightPart = 0.13f;
+ 	float MinBarHeight = 0.f;

@@ -29,6 +29,7 @@ public class NameTBDMedia : ModuleRules
 			{
 				"Slate",
 				"SlateCore",
+				"InputCore",    // EKeys, for Media Box With Controls' click to play / pause
 				"Media",        // the Media Framework's interfaces under UMediaPlayer
 				"AudioMixer",   // UMediaSoundComponent's base (USynthComponent)
 				"RenderCore",   // FlushRenderingCommands, for Generate Poster

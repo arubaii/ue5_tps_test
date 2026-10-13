@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
+#include "Engine/EngineTypes.h" // FFilePath
 
 #include "MediaBoxTypes.h"
 
@@ -90,9 +91,19 @@ public:
 	// Subtitles
 	// ---------------------------------------------------------------------------------------------
 
+#if WITH_EDITORONLY_DATA
 	/**
-	 * Paste a SubRip (.srt) or WebVTT (.vtt) file's text here; it is read into Subtitles below as soon as it is changed. Kept
-	 * so it can be edited again.
+	 * A SubRip (.srt) or WebVTT (.vtt) file to take the subtitles from. Picking it reads it at once into Subtitle Text and
+	 * Subtitles, so the lines are kept inside this clip and ship with it - the file itself isn't needed in the game. Edited the
+	 * file since? Reload Subtitle File.
+	 */
+	UPROPERTY(EditAnywhere, Category = "Subtitles", meta = (DisplayName = "Subtitle File", FilePathFilter = "Subtitles (*.srt;*.vtt)|*.srt;*.vtt"))
+	FFilePath SubtitleFile;
+#endif
+
+	/**
+	 * The subtitle file's text (SRT / VTT) - filled by Subtitle File, or pasted here; it is read into Subtitles below as soon as
+	 * it is changed. Kept so it can be edited again.
 	 */
 	UPROPERTY(EditAnywhere, Category = "Subtitles", meta = (DisplayName = "Subtitle Text (SRT / VTT)", MultiLine = true))
 	FString SubtitleText;
@@ -116,6 +127,10 @@ public:
 	 */
 	UFUNCTION(CallInEditor, Category = "Video", meta = (DisplayName = "Generate Poster"))
 	void GeneratePoster();
+
+	/** Reads Subtitle File again into Subtitle Text and Subtitles - after the .srt / .vtt was edited. */
+	UFUNCTION(CallInEditor, Category = "Subtitles", meta = (DisplayName = "Reload Subtitle File"))
+	void ReloadSubtitleFile();
 #endif
 
 	// ---------------------------------------------------------------------------------------------

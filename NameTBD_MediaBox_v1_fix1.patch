@@ -1,0 +1,722 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+index e9cbd76..eb2abd0 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -20,7 +20,7 @@ UE **5.7** project `tps_test`. The work is the plugin `Plugins/NameTBD` ("UI com
+ - `NameTBDUncooked` (UncookedOnly): timelines saved on the Widget Blueprint.
+ - `NameTBDEditor` (Editor): animation panel (`SWidgetAnim*`), state machine editor, designer extensions (motion paths, gizmo, path editors), details customizations.
+ - `NameTBDCommonUI`, `NameTBDMVVM` (Widget Data Binder), `NameTBDNiagara` (Niagara Particles widget + cue; the only module depending on Niagara).
+-- `NameTBDMedia` (Runtime): Media Box video widget, clips, warm player pool, Media cue / Media Progress input, transport bar base; the only module depending on the Media Framework.
++- `NameTBDMedia` (Runtime): Media Box video widget (and Media Box With Controls), clips, warm player pool, Media cue / Media Progress input, transport bar base; the only module depending on the Media Framework.
+ - `NameTBDAI` (Editor): in-editor AI chat, MCP server, tools, content library (`Resources/AI/`).
+ - `NameTBDShaders` (UncookedOnly, PostConfigInit): maps `Shaders/` to `/Plugin/NameTBDAI`.
+ 
+diff --git a/Docs/Design/MediaBox.md b/Docs/Design/MediaBox.md
+index 269bb61..c6c95fa 100644
+--- a/Docs/Design/MediaBox.md
++++ b/Docs/Design/MediaBox.md
+@@ -54,6 +54,14 @@ Starting a clip from cold in the Media Framework goes: open the source (async),
+ ## Transport bar (`UMediaBoxTransportBar`, abstract `UUserWidget`)
+ - Optional `BindWidgetOptional` parts: PlayPauseButton, StopButton, ScrubBar (Slider; pauses while dragged, plays on after), TimeText ("0:05 / 0:12", or elapsed only), VolumeSlider, MuteButton, SubtitlesButton (toggles the global switch), SubtitleText. Drives the box named Media Box around it (`MediaBoxFind::Find`), or Set Media Box. On Playing Changed / On Muted Changed for icons. The parts come from the user's own Widget Blueprint (GUID rule: nothing made in `OnCreationFromPalette`).
+ 
++## Media Box With Controls (`UMediaBoxWithControls`, `MediaBoxWithControls.h`)
++- **What:** a `UMediaBox` subclass with a controls bar over the video - a video player. Defaults: Visible (takes the pointer), Letterbox Color black, Desired Size 640 x 360.
++- **Bar:** `ControlsClass` (`TSubclassOf<UMediaBoxTransportBar>`), else Project Settings > Media Box > **Default Controls Class** (`TSoftClassPtr`), else none. Made in `RebuildWidget` with `CreateWidget(this, ...)` (designer flags copied in the designer), never added to the Widget Blueprint's tree (GUID rule); `SetMediaBox(this)`. Laid over the video in `SMediaBoxControlsHost` (private, in the .cpp): an `SOverlay` of the `SMediaBox` and the bar, `ControlsAlignment` (Bottom / Top...) stretched across, `ControlsPadding`. A new Controls Class takes effect when the widget is next built.
++- **Behaviour:** `bOverrideControlsBehavior` (inline toggle) + `ControlsBehavior`, else **Default Controls Behavior** in the settings. `FMediaBoxControlsBehavior` (`MediaBoxTypes.h`): `Preset` (`EMediaBoxControlsPreset`: YouTube / Custom; YouTube uses `YouTube()` whatever the fields hold, the fields greyed), Auto Hide, Hide After Idle (3 s), Hide After Unhovered (0.1 s), Show While Paused, Show While Stopped (also loading / ended), Show While Over Controls, Show While Focused, Show On Play / Pause, Fade In (0.1 s), Fade Out (0.25 s), Hide Pointer With Controls, Click To Play / Pause, Lift Subtitles. The defaults are the YouTube values.
++- **Tick** (`TickMediaBox` override, after the box's): hover from the host's `IsHovered`; activity = the pointer moving over it, entering it, a click, `ShowControls`, and (Show On Play / Pause) a status change. Playing: shown while over the controls / focused in them, else while hovered and active within Hide After Idle, else for Hide After Unhovered after leaving (and never past idle). Not playing: Show While Paused / Show While Stopped. Never hidden in the designer. The alpha fades by Fade In / Fade Out, goes to the bar's Render Opacity; at 0 the bar is Hidden (its own visibility back when shown). The pointer is `EMouseCursor::None` over the video while the bar is hidden. Lift Subtitles sets the box's `SubtitleBottomInset` (protected, new; 0 for a plain Media Box) to the bar's height x alpha when the bar is at the bottom.
++- **Click:** the host's `OnMouseButtonDown` (left, not over the bar) calls `TogglePlayPause` when Click To Play / Pause.
++- **Blueprint:** Get Controls, Show Controls, Are Controls Shown, Get Resolved Controls Behavior. Compiler note when there is no bar class at all.
++
+ ## Library (`UMediaBoxLibrary`)
+ Add To / Remove From Media Warm Group, Clear Media Warm Group, Set Media Warm Group Focus, Keep Media Clip Warm (counted pin), Set / Are Media Box Subtitles Enabled (starts at the project setting), Get Media Box Pool Stats.
+ 
+@@ -69,6 +77,7 @@ Add To / Remove From Media Warm Group, Clear Media Warm Group, Set Media Warm Gr
+ - Shape masking (a video clipped to a Shape Box outline) waits on Shapes "Clip To Shape" (OpenItems).
+ - Subtitles drawn as plain lines (no wrapping, no styling from tags); the Animated Text widget isn't used for them.
+ - Platform support check in the validator (which players a target platform has for a file type).
++- Media Box With Controls: no keyboard shortcuts (Space / K, arrows), no double-click fullscreen; the YouTube timings are approximations of its desktop player, not measured.
+ - The Warm Group anchor uses desktop pointer space; targets on a Diegetic Screen are ranked by the desktop pointer, not the world pointer.
+ 
+ ## Unverified
+@@ -78,3 +87,4 @@ Add To / Remove From Media Warm Group, Clear Media Warm Group, Set Media Warm Gr
+ - The open-to-first-frame cost per player in 5.7, and so how big the pool needs to be.
+ - Generate Poster's colour (gamma of an RGBA8 render target read back into an sRGB texture).
+ - That the Bink Media plugin is still bundled with 5.7.
++- Media Box With Controls: `CreateWidget` with a `UWidget` owner in the designer (no world), and a bar made that way drawing and ticking as a designer preview; `SWidget::SetCursor(EMouseCursor::None)` hiding the pointer over a game viewport.
+diff --git a/Plugins/NameTBD/Resources/AI/Docs/media.md b/Plugins/NameTBD/Resources/AI/Docs/media.md
+index ed9a2c3..cad0499 100644
+--- a/Plugins/NameTBD/Resources/AI/Docs/media.md
++++ b/Plugins/NameTBD/Resources/AI/Docs/media.md
+@@ -3,6 +3,9 @@
+ ## The widget
+ MediaBox ("Media Box", module NameTBDMedia) plays a Media Box Clip in UMG. Clip = the video (Media Source), a Poster (still of its first frame, shown at once and whenever stopped), Start Time, Loop / Loop Start / Loop End, Audio (Auto, Embedded, Separate Sound, Silent) and Sound, Subtitles (paste SRT / VTT into Subtitle Text). Play When: Manual, Visible, Hovered, Focused, Hovered Or Focused; Hover Target (None = the button it is in); After Trigger (Stop And Rewind, Pause, Keep Playing); Hover Delay. Fit: Contain, Cover (Crop Focus), Stretch. Events: On Opened, On First Frame, On Looped, On Ended, On Error, On Subtitle Changed, On Status Changed. Functions: Play, Pause, Stop, Seek, Set Clip, Set Volume, Set Muted, Get Progress.
+ 
++## Video player with controls
++MediaBoxWithControls ("Media Box With Controls") is a Media Box with a controls bar over it. Controls Class: a Widget Blueprint whose parent class is MediaBoxTransportBar (None: Project Settings > Media Box > Default Controls Class). Controls Behavior (tick to override the project's Default Controls Behavior): Preset YouTube (shown while the pointer moves, hidden 3 s after it stops or 0.1 s after it leaves while playing, always shown while paused, fades 0.1 s in / 0.25 s out, pointer hidden with the bar, click plays / pauses, subtitles lifted above the bar) or Custom (set Hide After Idle, Hide After Unhovered, the Show While... switches, fades). Controls Alignment / Padding place the bar.
++
+ ## Instant start
+ Give every preview of one screen the same Warm Group name: the pool keeps the hovered or focused clip and its neighbours (or what the pointer heads for) open and paused on frame 0, so the next hover starts that frame. For one shared preview driven by buttons: Add To Media Warm Group on each button (with its clip), Set Clip (Play Now) from On Hovered, Stop from On Unhovered. Keep Media Clip Warm pins a clip. Project Settings > Plugins > Media Box: Max Warm Players (4), Warm Per Group (3), fades, Sound Class.
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
+new file mode 100644
+index 0000000..52330a3
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp
+@@ -0,0 +1,336 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "MediaBoxWithControls.h"
++
++#include "MediaBoxSettings.h"
++#include "MediaBoxTransportBar.h"
++
++#include "Blueprint/UserWidget.h"
++#include "Framework/Application/SlateApplication.h"
++#include "HAL/PlatformTime.h"
++#include "Input/Reply.h"
++#include "InputCoreTypes.h"
++#include "Widgets/SCompoundWidget.h"
++#include "Widgets/SNullWidget.h"
++#include "Widgets/SOverlay.h"
++
++#if WITH_EDITOR
++#include "Editor/WidgetCompilerLog.h"
++#endif
++
++#define LOCTEXT_NAMESPACE "MediaBoxWithControls"
++
++/**
++ * What a Media Box With Controls is in Slate: the video (SMediaBox) with the controls bar over it. Takes the click on the video
++ * (not on the controls) for Click To Play / Pause; everything else is read by the widget each tick.
++ */
++class SMediaBoxControlsHost : public SCompoundWidget
++{
++public:
++	SLATE_BEGIN_ARGS(SMediaBoxControlsHost)
++		: _ControlsAlignment(VAlign_Bottom)
++	{}
++		SLATE_ARGUMENT(UMediaBoxWithControls*, OwnerBox)
++		SLATE_ARGUMENT(TSharedPtr<SWidget>, Video)
++		SLATE_ARGUMENT(TSharedPtr<SWidget>, Controls)
++		SLATE_ARGUMENT(EVerticalAlignment, ControlsAlignment)
++		SLATE_ARGUMENT(FMargin, ControlsPadding)
++	SLATE_END_ARGS()
++
++	void Construct(const FArguments& InArgs)
++	{
++		WeakOwnerBox = InArgs._OwnerBox;
++		ControlsContent = InArgs._Controls;
++
++		ChildSlot
++		[
++			SNew(SOverlay)
++			+ SOverlay::Slot()
++			[
++				InArgs._Video.IsValid() ? InArgs._Video.ToSharedRef() : SNullWidget::NullWidget
++			]
++			+ SOverlay::Slot()
++			.HAlign(HAlign_Fill)
++			.VAlign(InArgs._ControlsAlignment)
++			.Padding(InArgs._ControlsPadding)
++			[
++				ControlsContent.IsValid() ? ControlsContent.ToSharedRef() : SNullWidget::NullWidget
++			]
++		];
++	}
++
++	/** The bar's area in desktop space, for telling a click on the video from one on the bar. */
++	bool IsOverControls(const FVector2D& ScreenPosition) const
++	{
++		return ControlsContent.IsValid() && ControlsContent->GetVisibility().IsVisible()
++			&& ControlsContent->GetTickSpaceGeometry().IsUnderLocation(ScreenPosition);
++	}
++
++	/** The bar's height in this widget's units, for lifting the subtitles. */
++	float GetControlsHeight() const
++	{
++		return ControlsContent.IsValid() ? static_cast<float>(ControlsContent->GetDesiredSize().Y) : 0.f;
++	}
++
++	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
++	{
++		UMediaBoxWithControls* OwnerBox = WeakOwnerBox.Get();
++		if (OwnerBox && MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && !IsOverControls(MouseEvent.GetScreenSpacePosition())
++			&& OwnerBox->HandleVideoClicked())
++		{
++			return FReply::Handled();
++		}
++		return FReply::Unhandled();
++	}
++
++private:
++	TWeakObjectPtr<UMediaBoxWithControls> WeakOwnerBox;
++	TSharedPtr<SWidget> ControlsContent;
++};
++
++UMediaBoxWithControls::UMediaBoxWithControls()
++{
++	// A player takes the pointer: hover shows the controls, a click plays / pauses, the bar's buttons are clicked.
++	SetVisibilityInternal(ESlateVisibility::Visible);
++	LetterboxColor = FLinearColor::Black;
++	DesiredSize = FVector2D(640.0, 360.0);
++}
++
++FMediaBoxControlsBehavior UMediaBoxWithControls::GetResolvedControlsBehavior() const
++{
++	return (bOverrideControlsBehavior ? ControlsBehavior : UMediaBoxSettings::Get().DefaultControlsBehavior).Resolve();
++}
++
++TSubclassOf<UMediaBoxTransportBar> UMediaBoxWithControls::ResolveControlsClass() const
++{
++	if (ControlsClass)
++	{
++		return ControlsClass;
++	}
++	return UMediaBoxSettings::Get().DefaultControlsClass.LoadSynchronous();
++}
++
++void UMediaBoxWithControls::EnsureControlsWidget()
++{
++	const TSubclassOf<UMediaBoxTransportBar> BarClass = ResolveControlsClass();
++	if (ControlsWidget && ControlsWidget->GetClass() == BarClass.Get())
++	{
++		return;
++	}
++
++	ControlsWidget = nullptr;
++	if (!BarClass || BarClass->HasAnyClassFlags(CLASS_Abstract))
++	{
++		return;
++	}
++
++	// Made by this widget, not put in the Widget Blueprint's tree: it is the player's own part.
++	ControlsWidget = CreateWidget<UMediaBoxTransportBar>(this, BarClass);
++	if (ControlsWidget)
++	{
++#if WITH_EDITOR
++		if (IsDesignTime())
++		{
++			ControlsWidget->SetDesignerFlags(GetDesignerFlags());
++		}
++#endif
++		ControlsWidget->SetMediaBox(this);
++		ControlsShownVisibility = ControlsWidget->GetVisibility();
++		if (ControlsShownVisibility == ESlateVisibility::Hidden || ControlsShownVisibility == ESlateVisibility::Collapsed)
++		{
++			ControlsShownVisibility = ESlateVisibility::SelfHitTestInvisible;
++		}
++	}
++}
++
++TSharedRef<SWidget> UMediaBoxWithControls::RebuildWidget()
++{
++	const TSharedRef<SWidget> Video = Super::RebuildWidget();
++
++	EnsureControlsWidget();
++	TSharedPtr<SWidget> Controls = ControlsWidget ? ControlsWidget->TakeWidget() : TSharedPtr<SWidget>();
++
++	MyControlsHost = SNew(SMediaBoxControlsHost)
++		.OwnerBox(this)
++		.Video(Video)
++		.Controls(Controls)
++		.ControlsAlignment(ControlsAlignment.GetValue())
++		.ControlsPadding(ControlsPadding);
++
++	// Shown as it first appears (YouTube shows its bar until the video plays).
++	ControlsAlpha = 1.f;
++	LastActivityTime = FPlatformTime::Seconds();
++	ApplyControlsAlpha();
++	return MyControlsHost.ToSharedRef();
++}
++
++void UMediaBoxWithControls::SynchronizeProperties()
++{
++	// Another Controls Class takes effect when the widget is next built (the designer rebuilds its preview on every change).
++	Super::SynchronizeProperties();
++	ApplyControlsAlpha();
++}
++
++void UMediaBoxWithControls::ReleaseSlateResources(bool bReleaseChildren)
++{
++	Super::ReleaseSlateResources(bReleaseChildren);
++	if (ControlsWidget && !IsUnreachable())
++	{
++		ControlsWidget->ReleaseSlateResources(bReleaseChildren);
++	}
++	MyControlsHost.Reset();
++	bPointerHidden = false;
++}
++
++#if WITH_EDITOR
++void UMediaBoxWithControls::ValidateCompiledDefaults(IWidgetCompilerLog& CompileLog) const
++{
++	Super::ValidateCompiledDefaults(CompileLog);
++	if (!ResolveControlsClass())
++	{
++		CompileLog.Note(FText::Format(LOCTEXT("NoControlsNote", "{0}: no Controls Class, and no Default Controls Class in Project Settings > Plugins > Media Box - it shows no controls bar."), FText::FromString(GetName())));
++	}
++}
++#endif
++
++void UMediaBoxWithControls::ShowControls()
++{
++	LastActivityTime = FPlatformTime::Seconds();
++}
++
++bool UMediaBoxWithControls::HandleVideoClicked()
++{
++	if (!GetResolvedControlsBehavior().bClickToPlayPause)
++	{
++		return false;
++	}
++	TogglePlayPause();
++	ShowControls();
++	return true;
++}
++
++void UMediaBoxWithControls::TickMediaBox(float DeltaTime)
++{
++	Super::TickMediaBox(DeltaTime);
++
++	if (!MyControlsHost.IsValid())
++	{
++		return;
++	}
++
++	const FMediaBoxControlsBehavior Behavior = GetResolvedControlsBehavior();
++	const double Now = FPlatformTime::Seconds();
++
++	// The pointer: over the video, moving.
++	const bool bHovered = MyControlsHost->IsHovered();
++	if (FSlateApplication::IsInitialized())
++	{
++		const FVector2f Pointer = FVector2f(FVector2D(FSlateApplication::Get().GetCursorPos()));
++		if (bHovered && !Pointer.Equals(LastPointerPosition, 0.5f))
++		{
++			LastActivityTime = Now;
++		}
++		LastPointerPosition = Pointer;
++	}
++	if (bWasHovered && !bHovered)
++	{
++		LastUnhoverTime = Now;
++	}
++	if (!bWasHovered && bHovered)
++	{
++		LastActivityTime = Now;
++	}
++	bWasHovered = bHovered;
++
++	// Started, paused, played on: shown for a moment so the change is seen.
++	const EMediaBoxStatus CurrentStatus = GetStatus();
++	if (CurrentStatus != LastSeenStatus)
++	{
++		if (Behavior.bShowOnPlaybackChange && LastSeenStatus != EMediaBoxStatus::Empty)
++		{
++			LastActivityTime = Now;
++		}
++		LastSeenStatus = CurrentStatus;
++	}
++
++	bool bShow = true;
++	if (Behavior.bAutoHide && !IsDesignTime())
++	{
++		const bool bPlaying = CurrentStatus == EMediaBoxStatus::Playing;
++		if (!bPlaying)
++		{
++			bShow = CurrentStatus == EMediaBoxStatus::Paused ? Behavior.bShowWhilePaused : Behavior.bShowWhileStopped;
++		}
++		else
++		{
++			const bool bOverControls = Behavior.bShowWhileOverControls && ControlsWidget && ControlsWidget->IsHovered();
++			const bool bFocused = Behavior.bShowWhileFocused && ControlsWidget && (ControlsWidget->HasAnyUserFocus() || ControlsWidget->HasFocusedDescendants());
++			const bool bRecent = Now - LastActivityTime < Behavior.HideAfterIdle;
++			if (bOverControls || bFocused)
++			{
++				bShow = true;
++			}
++			else if (bHovered)
++			{
++				bShow = Behavior.HideAfterIdle <= 0.f || bRecent;
++			}
++			else
++			{
++				// Left: hidden Hide After Unhovered after leaving - or sooner, once it would have hidden for being idle.
++				bShow = Now - LastUnhoverTime < Behavior.HideAfterUnhovered && (Behavior.HideAfterIdle <= 0.f || bRecent);
++			}
++		}
++	}
++
++	// Faded toward shown or hidden.
++	const float PreviousAlpha = ControlsAlpha;
++	if (bShow)
++	{
++		ControlsAlpha = Behavior.FadeInTime > 0.f ? FMath::Min(1.f, ControlsAlpha + DeltaTime / Behavior.FadeInTime) : 1.f;
++	}
++	else
++	{
++		ControlsAlpha = Behavior.FadeOutTime > 0.f ? FMath::Max(0.f, ControlsAlpha - DeltaTime / Behavior.FadeOutTime) : 0.f;
++	}
++
++	// The subtitles kept above the bar while it shows.
++	const float NewInset = Behavior.bLiftSubtitles && ControlsWidget && ControlsAlignment == VAlign_Bottom
++		? (MyControlsHost->GetControlsHeight() + static_cast<float>(ControlsPadding.Bottom)) * ControlsAlpha
++		: 0.f;
++	if (!FMath::IsNearlyEqual(NewInset, SubtitleBottomInset))
++	{
++		SubtitleBottomInset = NewInset;
++		InvalidateLayoutAndVolatility();
++	}
++
++	// The pointer hidden with the controls, while over the video.
++	const bool bHidePointer = Behavior.bHidePointer && bHovered && ControlsAlpha <= 0.f && !IsDesignTime();
++	if (bHidePointer != bPointerHidden)
++	{
++		bPointerHidden = bHidePointer;
++		MyControlsHost->SetCursor(bHidePointer ? TOptional<EMouseCursor::Type>(EMouseCursor::None) : TOptional<EMouseCursor::Type>());
++	}
++
++	if (ControlsAlpha != PreviousAlpha)
++	{
++		ApplyControlsAlpha();
++	}
++}
++
++void UMediaBoxWithControls::ApplyControlsAlpha()
++{
++	if (!ControlsWidget)
++	{
++		return;
++	}
++	ControlsWidget->SetRenderOpacity(ControlsAlpha);
++
++	// Hidden once faded out, so it takes no clicks; its own visibility when shown.
++	const ESlateVisibility Wanted = ControlsAlpha > 0.f ? ControlsShownVisibility : ESlateVisibility::Hidden;
++	if (ControlsWidget->GetVisibility() != Wanted)
++	{
++		ControlsWidget->SetVisibility(Wanted);
++	}
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp
+index fcec10c..0e8af41 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp
+@@ -146,7 +146,7 @@ int32 SMediaBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeomet
+ 		OwnerBox->CurrentSubtitle.ToString().ParseIntoArrayLines(Lines);
+ 
+ 		const FVector2f Margin = FVector2f(OwnerBox->SubtitleMargin);
+-		float Bottom = Area.Y - Margin.X;
++		float Bottom = Area.Y - Margin.X - FMath::Max(0.f, OwnerBox->SubtitleBottomInset);
+ 		const FLinearColor TextColor = OwnerBox->SubtitleColor * WidgetTint;
+ 		const FLinearColor BackColor = OwnerBox->SubtitleBackground * WidgetTint;
+ 		for (int32 LineIndex = Lines.Num() - 1; LineIndex >= 0; --LineIndex)
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h
+index 996a093..7083de7 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h
+@@ -332,7 +332,7 @@ public:
+ 	// ---------------------------------------------------------------------------------------------
+ 
+ 	/** Advances it: triggers, fades, events. Called by its pool every frame. */
+-	void TickMediaBox(float DeltaTime);
++	virtual void TickMediaBox(float DeltaTime);
+ 
+ 	//~ UWidget
+ 	virtual void SynchronizeProperties() override;
+@@ -349,6 +349,9 @@ protected:
+ 	UFUNCTION()
+ 	TArray<FString> GetHoverTargetOptions() const;
+ 
++	/** Extra space under the subtitles, in the box's units - a controls bar over the bottom of the video. 0 by default. */
++	float SubtitleBottomInset = 0.f;
++
+ private:
+ 
+ 	friend class SMediaBox;
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxSettings.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxSettings.h
+index 79be300..f41a0ce 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxSettings.h
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxSettings.h
+@@ -5,8 +5,11 @@
+ #include "CoreMinimal.h"
+ #include "Engine/DeveloperSettings.h"
+ 
++#include "MediaBoxTypes.h"
++
+ #include "MediaBoxSettings.generated.h"
+ 
++class UMediaBoxTransportBar;
+ class USoundClass;
+ 
+ /**
+@@ -103,6 +106,24 @@ public:
+ 	UPROPERTY(Config, EditAnywhere, Category = "Audio", meta = (DisplayName = "Audio In Designer"))
+ 	bool bAudioInDesigner = false;
+ 
++	// -------------------------------------------------------------------------------------------------
++	// Controls
++	// -------------------------------------------------------------------------------------------------
++
++	/**
++	 * The controls bar every Media Box With Controls shows when its own Controls Class is None - a Widget Blueprint whose parent
++	 * class is Media Box Transport Bar. None here too: no controls bar.
++	 */
++	UPROPERTY(Config, EditAnywhere, Category = "Controls", meta = (DisplayName = "Default Controls Class"))
++	TSoftClassPtr<UMediaBoxTransportBar> DefaultControlsClass;
++
++	/**
++	 * When the controls bar of a Media Box With Controls shows and hides, unless the widget overrides it (Override Controls
++	 * Behavior). Preset YouTube: like the YouTube desktop player; Custom: the values set here.
++	 */
++	UPROPERTY(Config, EditAnywhere, Category = "Controls", meta = (DisplayName = "Default Controls Behavior"))
++	FMediaBoxControlsBehavior DefaultControlsBehavior;
++
+ 	// -------------------------------------------------------------------------------------------------
+ 	// Subtitles
+ 	// -------------------------------------------------------------------------------------------------
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h
+index 13cd7e1..d413119 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h
+@@ -91,6 +91,97 @@ enum class EMediaBoxStatus : uint8
+ 	Error UMETA(ToolTip = "Its video couldn't be opened or played - see On Error.")
+ };
+ 
++/**
++ * Which values a Media Box With Controls' controls bar follows for showing and hiding. YouTube: the YouTube desktop player's
++ * (the values below are those, greyed out). Custom: the values below as set.
++ */
++UENUM(BlueprintType)
++enum class EMediaBoxControlsPreset : uint8
++{
++	YouTube UMETA(DisplayName = "YouTube", ToolTip = "Like the YouTube desktop player: shown while the pointer moves over the video, hidden 3 s after it stops moving (or as soon as it leaves) while playing, always shown while paused or stopped, faded in and out quickly, the pointer hidden with the controls, a click on the video plays / pauses."),
++
++	Custom UMETA(ToolTip = "The values below, as set here.")
++};
++
++/**
++ * When a Media Box With Controls shows and hides its controls bar. Starts at the YouTube values (see YouTube()); Preset YouTube
++ * uses those whatever the fields say.
++ */
++USTRUCT(BlueprintType)
++struct NAMETBDMEDIA_API FMediaBoxControlsBehavior
++{
++	GENERATED_BODY()
++
++	/** YouTube: the YouTube desktop player's values (greyed out below). Custom: the values below. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls")
++	EMediaBoxControlsPreset Preset = EMediaBoxControlsPreset::YouTube;
++
++	/** Hides the controls while the video plays and nobody is using them. Off: they are always shown. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Auto Hide", EditCondition = "Preset == EMediaBoxControlsPreset::Custom"))
++	bool bAutoHide = true;
++
++	/** While playing with the pointer over the video: hidden this many seconds after the pointer last moved. 0: not hidden while the pointer is over it. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Hide After Idle", ClampMin = "0.0", UIMax = "10.0", Units = "s", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
++	float HideAfterIdle = 3.f;
++
++	/** While playing: hidden this many seconds after the pointer leaves the video. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Hide After Unhovered", ClampMin = "0.0", UIMax = "5.0", Units = "s", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
++	float HideAfterUnhovered = 0.1f;
++
++	/** Keeps the controls shown while the video is paused. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Show While Paused", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
++	bool bShowWhilePaused = true;
++
++	/** Keeps the controls shown while stopped, ended or loading - before the video plays. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Show While Stopped", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
++	bool bShowWhileStopped = true;
++
++	/** Keeps them shown while the pointer is over the controls themselves. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Show While Over Controls", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
++	bool bShowWhileOverControls = true;
++
++	/** Keeps them shown while one of them has keyboard / gamepad focus. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Show While Focused", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
++	bool bShowWhileFocused = true;
++
++	/** Shows them for Hide After Idle when the video starts, pauses or plays on - so the change is seen. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Show On Play / Pause", EditCondition = "Preset == EMediaBoxControlsPreset::Custom && bAutoHide"))
++	bool bShowOnPlaybackChange = true;
++
++	/** Seconds the controls take to fade in. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Fade In", ClampMin = "0.0", UIMax = "1.0", Units = "s", EditCondition = "Preset == EMediaBoxControlsPreset::Custom"))
++	float FadeInTime = 0.1f;
++
++	/** Seconds the controls take to fade out. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Fade Out", ClampMin = "0.0", UIMax = "1.0", Units = "s", EditCondition = "Preset == EMediaBoxControlsPreset::Custom"))
++	float FadeOutTime = 0.25f;
++
++	/** Hides the mouse pointer over the video while the controls are hidden. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Hide Pointer With Controls", EditCondition = "Preset == EMediaBoxControlsPreset::Custom"))
++	bool bHidePointer = true;
++
++	/** A click on the video (not on the controls) plays or pauses it. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Click To Play / Pause", EditCondition = "Preset == EMediaBoxControlsPreset::Custom"))
++	bool bClickToPlayPause = true;
++
++	/** Raises the subtitles above the controls while they are shown. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Controls", meta = (DisplayName = "Lift Subtitles", EditCondition = "Preset == EMediaBoxControlsPreset::Custom"))
++	bool bLiftSubtitles = true;
++
++	/** The YouTube desktop player's values. */
++	static FMediaBoxControlsBehavior YouTube() { return FMediaBoxControlsBehavior(); }
++
++	/** The values to follow: YouTube()'s for Preset YouTube, else these. */
++	FMediaBoxControlsBehavior Resolve() const
++	{
++		if (Preset == EMediaBoxControlsPreset::YouTube)
++		{
++			return YouTube();
++		}
++		return *this;
++	}
++};
++
+ /** One subtitle line of a clip: shown from Start to End (seconds into the video). */
+ USTRUCT(BlueprintType)
+ struct NAMETBDMEDIA_API FMediaBoxSubtitleCue
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxWithControls.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxWithControls.h
+new file mode 100644
+index 0000000..a385b3f
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxWithControls.h
+@@ -0,0 +1,136 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Layout/Margin.h"
++#include "Types/SlateEnums.h"
++
++#include "MediaBox.h"
++#include "MediaBoxTypes.h"
++
++#include "MediaBoxWithControls.generated.h"
++
++class SMediaBoxControlsHost;
++class UMediaBoxTransportBar;
++
++/**
++ * Media Box With Controls: a Media Box with a controls bar over it - a video player. Everything a Media Box does, it does, plus
++ * the controls bar (any Widget Blueprint whose parent class is Media Box Transport Bar) laid over the video and driving it,
++ * shown and hidden as the player's are on YouTube: while the pointer moves over the video, hidden a few seconds after it stops
++ * (or as soon as it leaves) while playing, always shown while paused. A click on the video plays / pauses it.
++ *
++ * The bar is its own Controls Class, else Project Settings > Plugins > Media Box > Default Controls Class. When it shows and
++ * hides is Controls Behavior (Preset YouTube or Custom), else the project's Default Controls Behavior.
++ *
++ * The bar is made by this widget at runtime (and in the designer, for a preview), never added to the Widget Blueprint's tree.
++ */
++UCLASS(meta = (DisplayName = "Media Box With Controls", PrioritizeCategories = "Media Controls Playback Appearance Audio Subtitles"))
++class NAMETBDMEDIA_API UMediaBoxWithControls : public UMediaBox
++{
++	GENERATED_BODY()
++
++public:
++	UMediaBoxWithControls();
++
++	// ---------------------------------------------------------------------------------------------
++	// Controls
++	// ---------------------------------------------------------------------------------------------
++
++	/**
++	 * The controls bar: a Widget Blueprint whose parent class is Media Box Transport Bar (its parts PlayPauseButton, ScrubBar,
++	 * TimeText... are wired up by name). None: Project Settings > Plugins > Media Box > Default Controls Class - and none there
++	 * either: no controls bar.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Controls", meta = (DisplayName = "Controls Class"))
++	TSubclassOf<UMediaBoxTransportBar> ControlsClass;
++
++	/** Uses Controls Behavior below for when the bar shows and hides. Off: Project Settings > Plugins > Media Box > Default Controls Behavior. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Controls", meta = (InlineEditConditionToggle))
++	bool bOverrideControlsBehavior = false;
++
++	/**
++	 * When the bar shows and hides. Preset YouTube: like the YouTube desktop player; Custom: the values set here. Ticked off: Project
++	 * Settings > Plugins > Media Box > Default Controls Behavior.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Controls", meta = (DisplayName = "Controls Behavior", EditCondition = "bOverrideControlsBehavior"))
++	FMediaBoxControlsBehavior ControlsBehavior;
++
++	/** Where the bar sits over the video: along its bottom (default) or its top, stretched across it. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Controls", meta = (DisplayName = "Controls Alignment"))
++	TEnumAsByte<EVerticalAlignment> ControlsAlignment = VAlign_Bottom;
++
++	/** Space between the video's edges and the bar. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Controls", meta = (DisplayName = "Controls Padding"))
++	FMargin ControlsPadding;
++
++	// ---------------------------------------------------------------------------------------------
++	// Blueprint
++	// ---------------------------------------------------------------------------------------------
++
++	/** The controls bar made from Controls Class. None when there is none (or before it is first shown). */
++	UFUNCTION(BlueprintPure, Category = "Media Box|Controls")
++	UMediaBoxTransportBar* GetControls() const { return ControlsWidget; }
++
++	/** Shows the controls now, as a pointer movement would (they then hide as Controls Behavior says). */
++	UFUNCTION(BlueprintCallable, Category = "Media Box|Controls")
++	void ShowControls();
++
++	/** Whether the controls are showing (or fading in or out). */
++	UFUNCTION(BlueprintPure, Category = "Media Box|Controls")
++	bool AreControlsShown() const { return ControlsAlpha > 0.f; }
++
++	/** The values the bar follows now: Controls Behavior or the project's, YouTube's when its Preset is YouTube. */
++	UFUNCTION(BlueprintPure, Category = "Media Box|Controls")
++	FMediaBoxControlsBehavior GetResolvedControlsBehavior() const;
++
++	// ---------------------------------------------------------------------------------------------
++
++	virtual void TickMediaBox(float DeltaTime) override;
++
++	//~ UWidget
++	virtual void SynchronizeProperties() override;
++	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
++#if WITH_EDITOR
++	virtual void ValidateCompiledDefaults(class IWidgetCompilerLog& CompileLog) const override;
++#endif
++
++protected:
++	//~ UWidget
++	virtual TSharedRef<SWidget> RebuildWidget() override;
++
++private:
++
++	friend class SMediaBoxControlsHost;
++
++	/** Controls Class, else the project's default. */
++	TSubclassOf<UMediaBoxTransportBar> ResolveControlsClass() const;
++
++	/** Makes the bar (again, when its class changed). */
++	void EnsureControlsWidget();
++
++	/** A click on the video (not on the controls). True when it was used. */
++	bool HandleVideoClicked();
++
++	/** Puts the bar's opacity, visibility and the pointer as ControlsAlpha says. */
++	void ApplyControlsAlpha();
++
++	UPROPERTY(Transient)
++	TObjectPtr<UMediaBoxTransportBar> ControlsWidget = nullptr;
++
++	TSharedPtr<SMediaBoxControlsHost> MyControlsHost;
++
++	/** 0 hidden, 1 shown. */
++	float ControlsAlpha = 1.f;
++
++	/** When the pointer last moved over the video (or the controls were last asked for), and when it last left it. */
++	double LastActivityTime = 0.0;
++	double LastUnhoverTime = -1000.0;
++	bool bWasHovered = false;
++	FVector2f LastPointerPosition = FVector2f::ZeroVector;
++	EMediaBoxStatus LastSeenStatus = EMediaBoxStatus::Empty;
++
++	/** The bar's own visibility, put back whenever it is shown. */
++	ESlateVisibility ControlsShownVisibility = ESlateVisibility::SelfHitTestInvisible;
++	bool bPointerHidden = false;
++};

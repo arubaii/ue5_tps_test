@@ -1,0 +1,140 @@
+diff --git a/Docs/Design/MediaBox.md b/Docs/Design/MediaBox.md
+index 7908f79..7862a4f 100644
+--- a/Docs/Design/MediaBox.md
++++ b/Docs/Design/MediaBox.md
+@@ -16,7 +16,7 @@ Starting a clip from cold in the Media Framework goes: open the source (async),
+ ## Clip (`UMediaBoxClip`, "Media Box Clip")
+ - **Video:** `MediaSource`, `Poster` (any `UTexture`), `StartTime`, `bLoop` (default on), `LoopStart`, `LoopEnd` (0 = the video's end), `PlayerName` (advanced; None: the project's, else the engine's pick), `PosterTime` (advanced; below 0 = Start Time).
+ - **Audio:** `Audio` (`EMediaBoxAudio`, default Auto = Separate Sound when `Sound` is set, else Embedded), `Sound`, `Volume`.
+-- **Subtitles:** `SubtitleText` (paste SRT / VTT; parsed into `Subtitles` on edit, and in `PostLoad` when `Subtitles` is empty), `Subtitles` (`TArray<FMediaBoxSubtitleCue>`, editable).
++- **Subtitles:** `SubtitleFile` (editor-only `FFilePath`, picker filtered to .srt / .vtt; picking it - or **Reload Subtitle File**, `CallInEditor` - reads the file into `SubtitleText` and `Subtitles`, relative paths tried from the project dir, a notification reports the line count or the failure; the file isn't needed in the game), `SubtitleText` (paste SRT / VTT; parsed into `Subtitles` on edit, and in `PostLoad` when `Subtitles` is empty), `Subtitles` (`TArray<FMediaBoxSubtitleCue>`, editable).
+ - **Generate Poster** (`CallInEditor`, editor only): its own transient player + texture, opened, played to Poster Time, paused, 4 frames later drawn to an RGBA8 render target with `FCanvas`, `ReadPixels`, written into a texture asset `<Clip>_Poster` next to the clip (`Source.Init` BGRA8, sRGB, UI group, no mips; reused when the clip's poster already is that asset), set as `Poster`. Driven by an `FTSTicker` job; gives up after 15 s or on `HasError`; a Slate notification reports the result.
+ - **Data Validation** (`IsDataValid`): no source (error), `MediaSource->Validate()` false (error), MP4/M4V/MOV with `moov` after `mdat` (warning: re-encode with `-movflags +faststart`; top-level boxes read, up to 64), no poster (warning), Separate Sound without a Sound (error), Loop End at or before Loop Start (error).
+ - `LoopsWholeVideo()` = loop with Loop Start 0 and Loop End 0: the player's own `SetLooping` (seamless). Any other range loops by seeking.
+diff --git a/Plugins/NameTBD/Resources/AI/Docs/media.md b/Plugins/NameTBD/Resources/AI/Docs/media.md
+index 4a21adc..aa9680f 100644
+--- a/Plugins/NameTBD/Resources/AI/Docs/media.md
++++ b/Plugins/NameTBD/Resources/AI/Docs/media.md
+@@ -1,7 +1,7 @@
+ # Video in UI (Media Box)
+ 
+ ## The widget
+-MediaBox ("Media Box", module NameTBDMedia) plays a Media Box Clip in UMG. Clip = the video (Media Source), a Poster (still of its first frame, shown at once and whenever stopped), Start Time, Loop / Loop Start / Loop End, Audio (Auto, Embedded, Separate Sound, Silent) and Sound, Subtitles (paste SRT / VTT into Subtitle Text). Play When: Manual, Visible, Hovered, Focused, Hovered Or Focused; Hover Target (None = the button it is in); After Trigger (Stop And Rewind, Pause, Keep Playing); Hover Delay. Fit: Contain, Cover (Crop Focus), Stretch. Events: On Opened, On First Frame, On Looped, On Ended, On Error, On Subtitle Changed, On Status Changed. Functions: Play, Pause, Stop, Seek, Set Clip, Set Volume, Set Muted, Get Progress.
++MediaBox ("Media Box", module NameTBDMedia) plays a Media Box Clip in UMG. Clip = the video (Media Source), a Poster (still of its first frame, shown at once and whenever stopped), Start Time, Loop / Loop Start / Loop End, Audio (Auto, Embedded, Separate Sound, Silent) and Sound, Subtitles (pick an .srt / .vtt as Subtitle File, or paste its text into Subtitle Text). Play When: Manual, Visible, Hovered, Focused, Hovered Or Focused; Hover Target (None = the button it is in); After Trigger (Stop And Rewind, Pause, Keep Playing); Hover Delay. Fit: Contain, Cover (Crop Focus), Stretch. Events: On Opened, On First Frame, On Looped, On Ended, On Error, On Subtitle Changed, On Status Changed. Functions: Play, Pause, Stop, Seek, Set Clip, Set Volume, Set Muted, Get Progress.
+ 
+ ## Video player with controls
+ MediaBoxWithControls ("Media Box With Controls") is a Media Box with a controls bar over it. Controls Class: a Widget Blueprint whose parent class is MediaBoxTransportBar (None: Project Settings > Media Box > Default Controls Class). Controls Behavior (tick to override the project's Default Controls Behavior): Preset YouTube (shown while the pointer moves, hidden 3 s after it stops or 0.1 s after it leaves while playing, always shown while paused, fades 0.1 s in / 0.25 s out, pointer hidden with the bar, click plays / pauses, subtitles lifted above the bar) or Custom (set Hide After Idle, Hide After Unhovered, the Show While... switches, fades). Controls Height (0.13 of the video height, like YouTube; Min / Max Height limits) scales the bar evenly to fit any video size and stretches it across; design the bar with a Horizontal Box or Overlay root, not a Canvas Panel. Controls Alignment / Padding place the bar.
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxClip.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxClip.cpp
+index fd89fe9..51812d3 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxClip.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxClip.cpp
+@@ -9,6 +9,7 @@
+ #include "FileMediaSource.h"
+ #include "HAL/FileManager.h"
+ #include "MediaSource.h"
++#include "Misc/FileHelper.h"
+ #include "Misc/Paths.h"
+ #include "Sound/SoundBase.h"
+ 
+@@ -65,6 +66,10 @@ void UMediaBoxClip::PostEditChangeProperty(FPropertyChangedEvent& PropertyChange
+ 	{
+ 		MediaBoxSubtitles::Parse(SubtitleText, Subtitles);
+ 	}
++	else if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UMediaBoxClip, SubtitleFile) && !SubtitleFile.FilePath.IsEmpty())
++	{
++		ReloadSubtitleFile();
++	}
+ 	Super::PostEditChangeProperty(PropertyChangedEvent);
+ }
+ 
+@@ -370,6 +375,45 @@ void UMediaBoxClip::GeneratePoster()
+ 		return TickJob(Job);
+ 	}));
+ }
++void UMediaBoxClip::ReloadSubtitleFile()
++{
++	using namespace MediaBoxPosterMaker;
++
++	if (SubtitleFile.FilePath.IsEmpty())
++	{
++		Notify(LOCTEXT("NoSubtitleFile", "Reload Subtitle File: no Subtitle File picked."), false);
++		return;
++	}
++
++	// The picker may give a path relative to the project (or to the engine's binaries): tried as given, then from the project.
++	FString Path = SubtitleFile.FilePath;
++	if (FPaths::IsRelative(Path))
++	{
++		const FString FromProject = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), Path);
++		Path = FPaths::FileExists(FromProject) ? FromProject : FPaths::ConvertRelativePathToFull(Path);
++	}
++
++	FString Loaded;
++	if (!FFileHelper::LoadFileToString(Loaded, *Path))
++	{
++		Notify(FText::Format(LOCTEXT("SubtitleFileUnreadable", "Couldn't read the subtitle file {0}."), FText::FromString(Path)), false);
++		return;
++	}
++
++	TArray<FMediaBoxSubtitleCue> Parsed;
++	MediaBoxSubtitles::Parse(Loaded, Parsed);
++	if (Parsed.Num() == 0)
++	{
++		Notify(FText::Format(LOCTEXT("SubtitleFileEmpty", "No subtitle lines found in {0} - is it SRT or WebVTT?"), FText::FromString(FPaths::GetCleanFilename(Path))), false);
++		return;
++	}
++
++	Modify();
++	SubtitleText = Loaded;
++	Subtitles = MoveTemp(Parsed);
++	MarkPackageDirty();
++	Notify(FText::Format(LOCTEXT("SubtitleFileRead", "{0}: {1} subtitle lines read from {2}."), FText::FromString(GetName()), FText::AsNumber(Subtitles.Num()), FText::FromString(FPaths::GetCleanFilename(Path))), true);
++}
+ #endif // WITH_EDITOR
+ 
+ // =====================================================================================================
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxClip.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxClip.h
+index 4968040..624f67c 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxClip.h
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxClip.h
+@@ -4,6 +4,7 @@
+ 
+ #include "CoreMinimal.h"
+ #include "Engine/DataAsset.h"
++#include "Engine/EngineTypes.h" // FFilePath
+ 
+ #include "MediaBoxTypes.h"
+ 
+@@ -90,9 +91,19 @@ public:
+ 	// Subtitles
+ 	// ---------------------------------------------------------------------------------------------
+ 
++#if WITH_EDITORONLY_DATA
+ 	/**
+-	 * Paste a SubRip (.srt) or WebVTT (.vtt) file's text here; it is read into Subtitles below as soon as it is changed. Kept
+-	 * so it can be edited again.
++	 * A SubRip (.srt) or WebVTT (.vtt) file to take the subtitles from. Picking it reads it at once into Subtitle Text and
++	 * Subtitles, so the lines are kept inside this clip and ship with it - the file itself isn't needed in the game. Edited the
++	 * file since? Reload Subtitle File.
++	 */
++	UPROPERTY(EditAnywhere, Category = "Subtitles", meta = (DisplayName = "Subtitle File", FilePathFilter = "Subtitles (*.srt;*.vtt)|*.srt;*.vtt"))
++	FFilePath SubtitleFile;
++#endif
++
++	/**
++	 * The subtitle file's text (SRT / VTT) - filled by Subtitle File, or pasted here; it is read into Subtitles below as soon as
++	 * it is changed. Kept so it can be edited again.
+ 	 */
+ 	UPROPERTY(EditAnywhere, Category = "Subtitles", meta = (DisplayName = "Subtitle Text (SRT / VTT)", MultiLine = true))
+ 	FString SubtitleText;
+@@ -116,6 +127,10 @@ public:
+ 	 */
+ 	UFUNCTION(CallInEditor, Category = "Video", meta = (DisplayName = "Generate Poster"))
+ 	void GeneratePoster();
++
++	/** Reads Subtitle File again into Subtitle Text and Subtitles - after the .srt / .vtt was edited. */
++	UFUNCTION(CallInEditor, Category = "Subtitles", meta = (DisplayName = "Reload Subtitle File"))
++	void ReloadSubtitleFile();
+ #endif
+ 
+ 	// ---------------------------------------------------------------------------------------------

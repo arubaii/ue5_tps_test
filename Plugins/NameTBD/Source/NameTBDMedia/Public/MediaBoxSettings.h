@@ -5,8 +5,11 @@
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
 
+#include "MediaBoxTypes.h"
+
 #include "MediaBoxSettings.generated.h"
 
+class UMediaBoxTransportBar;
 class USoundClass;
 
 /**
@@ -102,6 +105,24 @@ public:
 	/** Plays the audio in the Widget Blueprint designer too, where a Media Box has Preview In Designer on. Off: designer previews are silent. */
 	UPROPERTY(Config, EditAnywhere, Category = "Audio", meta = (DisplayName = "Audio In Designer"))
 	bool bAudioInDesigner = false;
+
+	// -------------------------------------------------------------------------------------------------
+	// Controls
+	// -------------------------------------------------------------------------------------------------
+
+	/**
+	 * The controls bar every Media Box With Controls shows when its own Controls Class is None - a Widget Blueprint whose parent
+	 * class is Media Box Transport Bar. None here too: no controls bar.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Controls", meta = (DisplayName = "Default Controls Class"))
+	TSoftClassPtr<UMediaBoxTransportBar> DefaultControlsClass;
+
+	/**
+	 * When the controls bar of a Media Box With Controls shows and hides, unless the widget overrides it (Override Controls
+	 * Behavior). Preset YouTube: like the YouTube desktop player; Custom: the values set here.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Controls", meta = (DisplayName = "Default Controls Behavior"))
+	FMediaBoxControlsBehavior DefaultControlsBehavior;
 
 	// -------------------------------------------------------------------------------------------------
 	// Subtitles

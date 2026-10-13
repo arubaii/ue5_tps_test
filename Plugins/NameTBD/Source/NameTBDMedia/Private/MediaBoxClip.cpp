@@ -9,6 +9,7 @@
 #include "FileMediaSource.h"
 #include "HAL/FileManager.h"
 #include "MediaSource.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Sound/SoundBase.h"
 
@@ -64,6 +65,10 @@ void UMediaBoxClip::PostEditChangeProperty(FPropertyChangedEvent& PropertyChange
 	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UMediaBoxClip, SubtitleText))
 	{
 		MediaBoxSubtitles::Parse(SubtitleText, Subtitles);
+	}
+	else if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UMediaBoxClip, SubtitleFile) && !SubtitleFile.FilePath.IsEmpty())
+	{
+		ReloadSubtitleFile();
 	}
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
@@ -369,6 +374,45 @@ void UMediaBoxClip::GeneratePoster()
 	{
 		return TickJob(Job);
 	}));
+}
+void UMediaBoxClip::ReloadSubtitleFile()
+{
+	using namespace MediaBoxPosterMaker;
+
+	if (SubtitleFile.FilePath.IsEmpty())
+	{
+		Notify(LOCTEXT("NoSubtitleFile", "Reload Subtitle File: no Subtitle File picked."), false);
+		return;
+	}
+
+	// The picker may give a path relative to the project (or to the engine's binaries): tried as given, then from the project.
+	FString Path = SubtitleFile.FilePath;
+	if (FPaths::IsRelative(Path))
+	{
+		const FString FromProject = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), Path);
+		Path = FPaths::FileExists(FromProject) ? FromProject : FPaths::ConvertRelativePathToFull(Path);
+	}
+
+	FString Loaded;
+	if (!FFileHelper::LoadFileToString(Loaded, *Path))
+	{
+		Notify(FText::Format(LOCTEXT("SubtitleFileUnreadable", "Couldn't read the subtitle file {0}."), FText::FromString(Path)), false);
+		return;
+	}
+
+	TArray<FMediaBoxSubtitleCue> Parsed;
+	MediaBoxSubtitles::Parse(Loaded, Parsed);
+	if (Parsed.Num() == 0)
+	{
+		Notify(FText::Format(LOCTEXT("SubtitleFileEmpty", "No subtitle lines found in {0} - is it SRT or WebVTT?"), FText::FromString(FPaths::GetCleanFilename(Path))), false);
+		return;
+	}
+
+	Modify();
+	SubtitleText = Loaded;
+	Subtitles = MoveTemp(Parsed);
+	MarkPackageDirty();
+	Notify(FText::Format(LOCTEXT("SubtitleFileRead", "{0}: {1} subtitle lines read from {2}."), FText::FromString(GetName()), FText::AsNumber(Subtitles.Num()), FText::FromString(FPaths::GetCleanFilename(Path))), true);
 }
 #endif // WITH_EDITOR
 
