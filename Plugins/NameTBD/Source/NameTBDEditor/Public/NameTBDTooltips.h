@@ -3553,7 +3553,7 @@ namespace NameTBD::Tooltips
 		inline FText CreateScreenMaterialTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.DiegeticScreen", "CopyScreenMaterialTooltip",
-				"Copy To Project: copies the plugin's screen material these screens are drawn with into /Game/Diegetic, sets their Material to Custom and gives them the copy - to change the material itself (Material Automatic needs nothing of you: the plugin's own draws every Screen Look). The copy keeps the parameters, so Screen Look still drives it.");
+				"Copy To Project: copies the plugin's screen material these screens are drawn with into /Game/Diegetic, sets their Material to Custom and gives them the copy - to make a screen material of your own from it (Material Automatic needs nothing of you: the plugin's own draws Glass and every Screen Look). The copy keeps the parameters, so Glass and Screen Look still drive it.");
 		}
 
 		inline FText MaterialCreatedNotice()

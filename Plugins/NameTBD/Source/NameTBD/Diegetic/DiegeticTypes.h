@@ -24,10 +24,12 @@ class USoundAttenuation;
 //
 // Not every diegetic UI is a flat panel on a wall. A screen is shown on its own Panel (flat or curved) or on a Mesh Surface (the
 // material slot of any mesh: a monitor model, a wrist device, a gun's ammo counter), placed As Placed, facing the camera, or
-// floating In Front Of The Player (a projected menu), and looked through a Screen Look (clean UMG, terminal, hologram, frosted
-// glass, LCD) drawn by the plugin's own screen materials. Quick Setup sets all of that for the common kinds of diegetic UI at
-// once. Screens on one actor can share a Focus Group (a control desk of several monitors) and a Context object (the data they
-// show: the weapon, the door, the room).
+// floating In Front Of The Player (a projected menu). The plugin's own screen materials draw it exactly as UMG does - premultiplied
+// alpha, so lowering a widget's opacity only makes it see-through - writing depth where it is solid, so the world's particles and
+// other translucency behind it stay behind it. Glass is an effect of its own on top of that (a pane that blurs, bends, tints and
+// splits the world behind, from Glass presets); Screen Look adds sample looks (terminal, hologram, LCD) for testing - a game's own
+// looks are its own materials. Screens on one actor can share a Focus Group (a control desk of several monitors) and a Context
+// object (the data they show: the weapon, the door, the room).
 //
 // See DiegeticScreenComponent.h, DiegeticInteractorComponent.h and DiegeticUISubsystem.h, and Docs/Design/DiegeticUI.md.
 
@@ -77,30 +79,6 @@ enum class EDiegeticScreenSizing : uint8
 	PhysicalSize UMETA(DisplayName = "Physical Size", ToolTip = "The screen is Physical Size centimetres wide and high, with Pixel Density pixels to the centimetre: Draw Size and the component's scale (Y and Z) are worked out from them. Change the density to make the text crisper or cheaper without changing the screen's size.")
 };
 
-/**
- * The common kinds of diegetic UI. Picking one sets the screen's Look, Display, Placement, Use, Presence and Updates for that
- * kind at once (Apply Quick Setup); every setting can be changed afterwards. Custom changes nothing.
- */
-UENUM(BlueprintType)
-enum class EDiegeticScreenKind : uint8
-{
-	Custom UMETA(ToolTip = "Changes nothing: the settings below are as set."),
-
-	WallTerminal UMETA(DisplayName = "Wall Terminal", ToolTip = "A computer terminal the player walks up to and uses (Fallout): green phosphor CRT look, Focus View, wakes as the player comes near."),
-
-	Monitor UMETA(ToolTip = "A screen on a modelled monitor, TV or console (Alien: Isolation): shown on the mesh's screen material slot, clean look, Point And Click."),
-
-	Hologram UMETA(ToolTip = "A projected hologram in the world (Dead Space): additive, scan lines, glitch, faces the camera's direction (yaw), wakes as the player comes near."),
-
-	HologramMenu UMETA(DisplayName = "Hologram Menu", ToolTip = "A menu projected in front of the player that keeps the game running (Dead Space inventory): floats in front of the camera, hologram look, used without moving the camera, hidden until shown (Set Screen Shown)."),
-
-	DeviceDisplay UMETA(DisplayName = "Device Display", ToolTip = "A small display on equipment - a wrist device, an ammo counter, a suit readout (Pip-Boy, Dead Space RIG): attach the screen (or the mesh it shows on) to a socket. LCD look, not clickable, redraws only when it changes."),
-
-	Sign UMETA(ToolTip = "A sign, kiosk or room label: clean look, not clickable, redraws only when it changes, freezes far away."),
-
-	GlassPanel UMETA(DisplayName = "Glass Panel", ToolTip = "A sci-fi glass panel: frosted glass that blurs the world behind it, Point And Click.")
-};
-
 /** Where a Diegetic Screen's picture is shown. */
 UENUM(BlueprintType)
 enum class EDiegeticDisplay : uint8
@@ -127,14 +105,14 @@ enum class EDiegeticPlacement : uint8
 UENUM(BlueprintType)
 enum class EDiegeticMaterialMode : uint8
 {
-	Automatic UMETA(ToolTip = "The plugin's own screen material for its Screen Look: matches the widget as UMG draws it (premultiplied alpha, scene exposure undone, no fog, no motion blur smear), and draws every look - terminal, hologram, frosted glass with background blur. Made in /NameTBD/Diegetic the first time the editor needs it."),
+	Automatic UMETA(ToolTip = "The plugin's own screen material: draws the widget as UMG does (premultiplied alpha, scene exposure undone, no fog), writes depth where it is solid (particles behind it stay behind it), draws Glass and the sample Screen Looks. Made in /NameTBD/Diegetic the first time the editor needs it."),
 
 	EngineDefault UMETA(DisplayName = "Engine Default", ToolTip = "The Widget Component's own materials, chosen by Blend Mode and Two Sided. No Screen Look."),
 
 	Custom UMETA(ToolTip = "Element 0 of Materials, as a Widget Component uses it. Screen Look's parameters are still handed to it: a material with parameters of the same names follows them (copy the plugin's with Copy Screen Material To Project).")
 };
 
-/** A ready-made Screen Look. Picking one sets the look's values; Custom leaves them as set. */
+/** A ready-made Screen Look (sample looks for testing; a game's own look is its own material). Picking one sets the look's values; Custom leaves them as set. */
 UENUM(BlueprintType)
 enum class EDiegeticLookPreset : uint8
 {
@@ -145,8 +123,6 @@ enum class EDiegeticLookPreset : uint8
 	TerminalAmber UMETA(DisplayName = "Terminal (Amber)", ToolTip = "An amber phosphor CRT terminal."),
 
 	Hologram UMETA(ToolTip = "A projected hologram: additive light, cyan tint, moving scan lines, glitches, fading at grazing angles."),
-
-	FrostedGlass UMETA(DisplayName = "Frosted Glass", ToolTip = "Glass that blurs and tints the world behind the screen's transparent parts."),
 
 	LCDPanel UMETA(DisplayName = "LCD Panel", ToolTip = "A flat LCD: a fine pixel grid and a little glow."),
 
@@ -304,7 +280,10 @@ struct NAMETBD_API FDiegeticDisplaySettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Display", meta = (UseComponentPicker, AllowedClasses = "/Script/Engine.MeshComponent", EditCondition = "Display == EDiegeticDisplay::MeshSurface", EditConditionHides))
 	FComponentReference Mesh;
 
-	/** Mesh Surface: the material slot that is the screen, by name. None: the first slot. */
+	/**
+	 * Mesh Surface: the material slot that is the screen, by name. None: the first slot - or, with Keep Mesh Material, any (the
+	 * picture goes wherever the mesh's UVs fall in UV Region).
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Display", meta = (EditCondition = "Display == EDiegeticDisplay::MeshSurface", EditConditionHides))
 	FName MaterialSlot;
 
@@ -314,6 +293,14 @@ struct NAMETBD_API FDiegeticDisplaySettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Display", meta = (EditCondition = "Display == EDiegeticDisplay::MeshSurface", EditConditionHides))
 	FVector2D UVMax = FVector2D(1.0, 1.0);
+
+	/**
+	 * Mesh Surface: the mesh keeps its own materials everywhere, and the screen is drawn over them only inside UV Region - a display
+	 * set into a device's casing, a label on a crate, a panel in a wall, all one material. Where the widget is see-through, the
+	 * mesh's material shows. Uses the mesh's Overlay Material (put back when the screen goes). Off: the slot shows the screen alone.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Display", meta = (EditCondition = "Display == EDiegeticDisplay::MeshSurface", EditConditionHides))
+	bool bKeepMeshMaterial = false;
 };
 
 /** Where a Diegetic Screen puts itself each frame. See EDiegeticPlacement. */
@@ -436,35 +423,112 @@ struct NAMETBD_API FDiegeticScreenLook
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Look|Hologram", meta = (ClampMin = "0", ClampMax = "1", UIMin = "0", UIMax = "0.5"))
 	float Glitch = 0.f;
 
+	/** The values of a ready-made look. Custom: the defaults (Clean). */
+	static FDiegeticScreenLook MakePreset(EDiegeticLookPreset InPreset);
+};
+
+/**
+ * A ready-made Glass. Picking one sets Glass's values (its Corner Radius and Background Blur Widgets are kept: they are the
+ * pane's shape and the widget's, not the glass's look); Custom leaves them as set.
+ */
+UENUM(BlueprintType)
+enum class EDiegeticGlassPreset : uint8
+{
+	None UMETA(DisplayName = "No Glass", ToolTip = "No glass: the widget is drawn over the world as it is - where it is see-through, the world shows plainly. Background Blur widgets on it still blur their own areas (Background Blur Widgets)."),
+
+	Clear UMETA(ToolTip = "Clear glass: the world behind sharp, bent a little at the pane's edges, with a faint colour split, sheen and rim."),
+
+	Frosted UMETA(ToolTip = "Frosted glass: the world behind blurred and lightly scattered, cool tint, bent at the edges."),
+
+	HeavyFrost UMETA(DisplayName = "Heavy Frost", ToolTip = "Heavily frosted glass: the world behind only as soft shapes and colours."),
+
+	Smoked UMETA(ToolTip = "Smoked glass: the world behind darkened, slightly blurred, with a sheen at grazing angles."),
+
+	SciFi UMETA(DisplayName = "Sci-Fi Pane", ToolTip = "A sci-fi cockpit or HUD pane: cyan tint, strong edge bend and colour split, a glowing rim."),
+
+	Custom UMETA(ToolTip = "Glass with the values as set.")
+};
+
+/**
+ * Glass: the screen as a pane of glass, its widget drawn on it. The world behind the pane - wherever the widget is see-through -
+ * is seen through the glass: blurred, scattered, bent at the pane's edges and by ripples, its colours split, tinted, with a sheen
+ * at grazing angles and a lit rim. Lowering the widget's opacity shows more of the glass. With No Glass the widget is drawn over
+ * the world as it is (lowering its opacity only makes it see-through). Distances are in the widget's pixels, so the glass looks
+ * the same at any Draw Size or Pixel Density. Needs Material Automatic (the glass material is picked on its own) - or a Custom
+ * material with parameters of the same names.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FDiegeticGlass
+{
+	GENERATED_BODY()
+
+	/** A ready-made glass: picking one sets the values below. No Glass: none. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass")
+	EDiegeticGlassPreset Preset = EDiegeticGlassPreset::None;
+
+	/** How far the world behind is blurred, in the widget's pixels. 0: sharp. Material parameter GlassBlur. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (ClampMin = "0", UIMin = "0", UIMax = "64", EditCondition = "Preset != EDiegeticGlassPreset::None"))
+	float Blur = 0.f;
+
+	/** A frosted surface's grain: the world behind scattered by up to this much, in the widget's pixels. Material parameter GlassFrost. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (ClampMin = "0", UIMin = "0", UIMax = "8", EditCondition = "Preset != EDiegeticGlassPreset::None"))
+	float Frost = 0.f;
+
 	/**
-	 * Frosted glass: the world behind the screen's transparent parts is blurred by this much, in the widget's pixels. 0: not
-	 * blurred. A Background Blur widget on the screen blurs its own area by its own Blur Strength either way (see Blur Background
-	 * Blur Widgets). Needs Material Mode Automatic (the glass variant is picked on its own). Material parameter BackgroundBlur.
+	 * How far the world behind is bent at the pane's edges, as a thick pane's bevel bends it - the world from just outside drawn in
+	 * along the rim - in the widget's pixels. Material parameter GlassRefraction.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Look|Glass", meta = (ClampMin = "0", UIMin = "0", UIMax = "64"))
-	float BackgroundBlur = 0.f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (ClampMin = "0", UIMin = "0", UIMax = "64", EditCondition = "Preset != EDiegeticGlassPreset::None"))
+	float Refraction = 0.f;
 
-	/** Frosted glass: the colour the blurred world behind is tinted toward, by its alpha. Material parameter GlassTint. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Look|Glass")
-	FLinearColor GlassTint = FLinearColor(1.f, 1.f, 1.f, 0.f);
+	/** How far in from the pane's edges the bevel - its bend and its rim light - reaches, in the widget's pixels. Material parameter GlassBevelWidth. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (ClampMin = "1", UIMin = "4", UIMax = "200", EditCondition = "Preset != EDiegeticGlassPreset::None"))
+	float BevelWidth = 24.f;
 
-	/** Frosted glass: how bright the blurred world behind is, 0 to 2. Material parameter BlurBrightness. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Look|Glass", meta = (ClampMin = "0", UIMin = "0", UIMax = "2"))
-	float BlurBrightness = 1.f;
+	/** Uneven glass: the world behind wavers by up to this much across the whole pane, slowly moving, in the widget's pixels. Material parameter GlassRipple. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (ClampMin = "0", UIMin = "0", UIMax = "16", EditCondition = "Preset != EDiegeticGlassPreset::None"))
+	float Ripple = 0.f;
+
+	/**
+	 * The world behind's red and blue pulled apart, growing toward the pane's edges, as a lens splits light: how far apart at the
+	 * edges, in the widget's pixels. Material parameter GlassChromaticAberration.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (ClampMin = "0", UIMin = "0", UIMax = "8", EditCondition = "Preset != EDiegeticGlassPreset::None"))
+	float ChromaticAberration = 0.f;
+
+	/** The colour the glass lets through (alpha: how much it colours, 0 to 1): white is clear, grey is smoked. Material parameter GlassTint. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (EditCondition = "Preset != EDiegeticGlassPreset::None"))
+	FLinearColor Tint = FLinearColor(1.f, 1.f, 1.f, 0.f);
+
+	/** How bright the world behind is through the glass, 0 to 2. Material parameter GlassBrightness. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (ClampMin = "0", UIMin = "0", UIMax = "2", EditCondition = "Preset != EDiegeticGlassPreset::None"))
+	float Brightness = 1.f;
+
+	/** The glass brightening as it is seen edge-on, as glass reflects more at grazing angles, 0 to 1. Material parameter GlassSheen. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (ClampMin = "0", ClampMax = "1", UIMin = "0", UIMax = "1", EditCondition = "Preset != EDiegeticGlassPreset::None"))
+	float Sheen = 0.f;
+
+	/** Light along the pane's rim (alpha: how bright, above 1 glows with bloom). Material parameter GlassEdgeHighlight. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (EditCondition = "Preset != EDiegeticGlassPreset::None"))
+	FLinearColor EdgeHighlight = FLinearColor(1.f, 1.f, 1.f, 0.f);
+
+	/** The pane's corners rounded by this much, in the widget's pixels; outside them the widget alone is drawn. Material parameter GlassCornerRadius. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (ClampMin = "0", UIMin = "0", UIMax = "200", EditCondition = "Preset != EDiegeticGlassPreset::None"))
+	float CornerRadius = 0.f;
 
 	/**
 	 * Background Blur widgets on the screen blur the world behind their area, as they blur what is behind them on the HUD (by their
-	 * Blur Strength and corner radius; up to 8 on a screen). A Background Blur can't do that itself on a screen (the engine draws
-	 * it opaque - UE-41001): its own drawing is turned off there, and the screen material does the blur.
+	 * Blur Strength and corner radius; up to 8 on a screen) - with or without glass. A Background Blur can't do that itself on a
+	 * screen (the engine draws it opaque there - UE-41001): its own drawing is turned off on a screen, and the glass material blurs.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Look|Glass")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass", meta = (DisplayName = "Background Blur Widgets"))
 	bool bBlurBackgroundBlurWidgets = true;
 
-	/** The values of a ready-made look. Custom: the defaults (Clean). */
-	static FDiegeticScreenLook MakePreset(EDiegeticLookPreset InPreset);
+	/** The values of a ready-made glass. Custom: as No Glass's, but on. */
+	static FDiegeticGlass MakePreset(EDiegeticGlassPreset InPreset);
 
-	/** Whether drawing it needs the glass material (it blurs the world behind). */
-	bool NeedsBackgroundBlur() const { return BackgroundBlur > 0.f; }
+	/** Whether the screen is a pane of glass. */
+	bool IsEnabled() const { return Preset != EDiegeticGlassPreset::None; }
 };
 
 /** Where a Diegetic Screen's UI sounds play from. */

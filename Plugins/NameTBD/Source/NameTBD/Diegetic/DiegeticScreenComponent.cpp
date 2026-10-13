@@ -103,9 +103,21 @@ namespace DiegeticScreenPrivate
 	const FName AdditiveParam(TEXT("Additive"));
 	const FName EdgeFadeParam(TEXT("EdgeFade"));
 	const FName GlitchParam(TEXT("Glitch"));
-	const FName BackgroundBlurParam(TEXT("BackgroundBlur"));
+
+	/** Glass's material parameters (the glass material's). */
+	const FName GlassPaneParam(TEXT("GlassPane"));
+	const FName GlassBlurParam(TEXT("GlassBlur"));
+	const FName GlassFrostParam(TEXT("GlassFrost"));
+	const FName GlassRefractionParam(TEXT("GlassRefraction"));
+	const FName GlassBevelWidthParam(TEXT("GlassBevelWidth"));
+	const FName GlassRippleParam(TEXT("GlassRipple"));
+	const FName GlassChromaticAberrationParam(TEXT("GlassChromaticAberration"));
 	const FName GlassTintParam(TEXT("GlassTint"));
-	const FName BlurBrightnessParam(TEXT("BlurBrightness"));
+	const FName GlassBrightnessParam(TEXT("GlassBrightness"));
+	const FName GlassSheenParam(TEXT("GlassSheen"));
+	const FName GlassEdgeHighlightParam(TEXT("GlassEdgeHighlight"));
+	const FName GlassCornerRadiusParam(TEXT("GlassCornerRadius"));
+
 	const FName ScreenPixelsParam(TEXT("ScreenPixels"));
 	const FName ShowBackFaceParam(TEXT("ShowBackFace"));
 	const FName UVRegionParam(TEXT("UVRegion"));
@@ -249,7 +261,9 @@ UMaterialInterface* UDiegeticScreenComponent::GetAutomaticMaterial(EDiegeticMate
 
 EDiegeticMaterialVariant UDiegeticScreenComponent::GetWantedVariant() const
 {
-	if (ScreenLook.NeedsBackgroundBlur() || (ScreenLook.bBlurBackgroundBlurWidgets && bHasBlurWidgets))
+	// Glass only when asked for - a pane of glass, or Background Blur widgets to blur behind. A see-through widget alone is drawn
+	// over the world as it is.
+	if (Glass.IsEnabled() || (Glass.bBlurBackgroundBlurWidgets && bHasBlurWidgets))
 	{
 		return EDiegeticMaterialVariant::Glass;
 	}
@@ -330,8 +344,12 @@ UPrimitiveComponent* UDiegeticScreenComponent::GetDisplayPrimitive() const
 void UDiegeticScreenComponent::SetUpMeshSurface()
 {
 	UMeshComponent* Mesh = GetDisplayMesh();
-	const int32 Slot = !Mesh ? INDEX_NONE : DisplaySettings.MaterialSlot.IsNone() ? 0 : Mesh->GetMaterialIndex(DisplaySettings.MaterialSlot);
-	if (!Mesh || Slot == INDEX_NONE || Slot >= Mesh->GetNumMaterials())
+	// Keep Mesh Material: drawn over the whole mesh (its overlay material), its own materials left alone - on one slot when one is
+	// named (only its faces are clicked), else on any. Otherwise the slot (the first, when none is named) shows the screen alone.
+	const bool bOverlay = DisplaySettings.bKeepMeshMaterial;
+	const bool bAnySlot = bOverlay && DisplaySettings.MaterialSlot.IsNone();
+	const int32 Slot = !Mesh || bAnySlot ? INDEX_NONE : DisplaySettings.MaterialSlot.IsNone() ? 0 : Mesh->GetMaterialIndex(DisplaySettings.MaterialSlot);
+	if (!Mesh || (!bAnySlot && (Slot == INDEX_NONE || Slot >= Mesh->GetNumMaterials())))
 	{
 		TearDownMeshSurface();
 		UE_LOG(LogDiegeticScreen, Warning, TEXT("Diegetic Screen %s: Mesh Surface has no mesh, or the mesh has no slot %s - nothing is shown."),
@@ -350,19 +368,28 @@ void UDiegeticScreenComponent::SetUpMeshSurface()
 		return;
 	}
 
-	if (SurfaceMesh.Get() != Mesh || SurfaceSlot != Slot)
+	if (SurfaceMesh.Get() != Mesh || SurfaceSlot != Slot || bSurfaceOverlay != bOverlay)
 	{
 		TearDownMeshSurface();
 		SurfaceMesh = Mesh;
 		SurfaceSlot = Slot;
-		SurfaceOriginalMaterial = Mesh->GetMaterial(Slot);
+		bSurfaceOverlay = bOverlay;
+		SurfaceOriginalMaterial = bOverlay ? Mesh->GetOverlayMaterial() : Mesh->GetMaterial(Slot);
 	}
 	if (!MeshMaterial || MeshMaterial->Parent != Base)
 	{
 		MeshMaterial = UMaterialInstanceDynamic::Create(Base, this);
 		SurfaceTarget.Reset();
 	}
-	if (Mesh->GetMaterial(Slot) != MeshMaterial)
+	if (bOverlay)
+	{
+		// Outside UV Region the screen material covers nothing (no colour, no opacity, no depth): the mesh's own material shows.
+		if (Mesh->GetOverlayMaterial() != MeshMaterial)
+		{
+			Mesh->SetOverlayMaterial(MeshMaterial);
+		}
+	}
+	else if (Mesh->GetMaterial(Slot) != MeshMaterial)
 	{
 		Mesh->SetMaterial(Slot, MeshMaterial);
 	}
@@ -383,7 +410,11 @@ void UDiegeticScreenComponent::SetUpMeshSurface()
 void UDiegeticScreenComponent::TearDownMeshSurface()
 {
 	UMeshComponent* Mesh = SurfaceMesh.Get();
-	if (Mesh && SurfaceSlot != INDEX_NONE && Mesh->GetMaterial(SurfaceSlot) == MeshMaterial)
+	if (Mesh && bSurfaceOverlay && Mesh->GetOverlayMaterial() == MeshMaterial)
+	{
+		Mesh->SetOverlayMaterial(SurfaceOriginalMaterial);
+	}
+	else if (Mesh && !bSurfaceOverlay && SurfaceSlot != INDEX_NONE && Mesh->GetMaterial(SurfaceSlot) == MeshMaterial)
 	{
 		Mesh->SetMaterial(SurfaceSlot, SurfaceOriginalMaterial);
 	}
@@ -395,6 +426,7 @@ void UDiegeticScreenComponent::TearDownMeshSurface()
 	}
 	SurfaceMesh.Reset();
 	SurfaceSlot = INDEX_NONE;
+	bSurfaceOverlay = false;
 	SurfaceOriginalMaterial = nullptr;
 	MeshMaterial = nullptr;
 	SurfaceTarget.Reset();
@@ -436,11 +468,15 @@ bool UDiegeticScreenComponent::TraceMeshSurface(const FVector& Start, const FVec
 	{
 		return false;
 	}
-	// Only on the screen's slot - not the monitor's frame.
+	// Only on the screen's slot - not the monitor's frame. Keep Mesh Material: the named slot's own material, or any face.
 	int32 Section = 0;
-	if (Hit.FaceIndex != INDEX_NONE && Mesh->GetMaterialFromCollisionFaceIndex(Hit.FaceIndex, Section) != MeshMaterial)
+	if (Hit.FaceIndex != INDEX_NONE && (!bSurfaceOverlay || SurfaceSlot != INDEX_NONE))
 	{
-		return false;
+		const UMaterialInterface* Wanted = bSurfaceOverlay ? Mesh->GetMaterial(SurfaceSlot) : MeshMaterial.Get();
+		if (Mesh->GetMaterialFromCollisionFaceIndex(Hit.FaceIndex, Section) != Wanted)
+		{
+			return false;
+		}
 	}
 	FVector2D UV;
 	if (!UGameplayStatics::FindCollisionUV(Hit, 0, UV))
@@ -522,7 +558,7 @@ void UDiegeticScreenComponent::CollectBlurWidgets()
 		}
 		const float Strength = DiegeticScreenPrivate::ReadBlurStrength(Blur);
 		BlurWidgets.Add(Key, Strength);
-		if (ScreenLook.bBlurBackgroundBlurWidgets && Strength > 0.f)
+		if (Glass.bBlurBackgroundBlurWidgets && Strength > 0.f)
 		{
 			Blur->SetBlurStrength(0.f);
 		}
@@ -550,6 +586,24 @@ void UDiegeticScreenComponent::RestoreBlurWidgets()
 	bHasBlurWidgets = false;
 }
 
+void UDiegeticScreenComponent::CollectBlurWidgetsInEditor()
+{
+	// As FlushWidgetState does in game: when the widget changes, and every so often after.
+	UUserWidget* Current = GetUserWidgetObject();
+	const double Now = FPlatformTime::Seconds();
+	if (EditorBlurWidget.Get() != Current)
+	{
+		EditorBlurWidget = Current;
+		bCollectBlur = true;
+	}
+	if (bCollectBlur || Now >= NextBlurCollectTime)
+	{
+		bCollectBlur = false;
+		NextBlurCollectTime = Now + DiegeticScreenPrivate::BlurCollectInterval;
+		CollectBlurWidgets();
+	}
+}
+
 void UDiegeticScreenComponent::ApplyBlurRegions()
 {
 	using namespace DiegeticScreenPrivate;
@@ -562,7 +616,7 @@ void UDiegeticScreenComponent::ApplyBlurRegions()
 	TArray<FLinearColor> Values;
 	Values.Add(FLinearColor::Black);
 	const FVector2D Pixels = GetCurrentDrawSize();
-	if (ScreenLook.bBlurBackgroundBlurWidgets && Pixels.X > 0.0 && Pixels.Y > 0.0)
+	if (Glass.bBlurBackgroundBlurWidgets && Pixels.X > 0.0 && Pixels.Y > 0.0)
 	{
 		for (TPair<TWeakObjectPtr<UBackgroundBlur>, float>& Pair : BlurWidgets)
 		{
@@ -902,6 +956,14 @@ bool UDiegeticScreenComponent::ShouldDrawWidget() const
 
 void UDiegeticScreenComponent::DrawWidgetToRenderTarget(float DeltaTime)
 {
+	// An editor world has no subsystem to take over the Background Blur widgets: done here, before the widget is drawn, so the
+	// editor shows the screen as play does (a Background Blur left to itself draws opaque on a screen).
+	const UWorld* World = GetWorld();
+	if (!bScheduled && World && !World->IsGameWorld())
+	{
+		CollectBlurWidgetsInEditor();
+	}
+
 	Super::DrawWidgetToRenderTarget(DeltaTime);
 
 	bDrawScheduled = false;
@@ -981,13 +1043,29 @@ void UDiegeticScreenComponent::SetUpdateMode(EDiegeticUpdateMode NewMode)
 
 void UDiegeticScreenComponent::SetScreenLook(const FDiegeticScreenLook& NewLook)
 {
+	ScreenLook = NewLook;
+	ApplyScreenLook(/*bForce=*/false);
+}
+
+void UDiegeticScreenComponent::SetLookPreset(EDiegeticLookPreset NewPreset)
+{
+	if (NewPreset == EDiegeticLookPreset::Custom)
+	{
+		ScreenLook.Preset = NewPreset;
+		return;
+	}
+	SetScreenLook(FDiegeticScreenLook::MakePreset(NewPreset));
+}
+
+void UDiegeticScreenComponent::SetGlass(const FDiegeticGlass& NewGlass)
+{
 	// Background Blur widgets handed back to Slate (or taken from it) when that changes: collected again, the new way.
-	if (NewLook.bBlurBackgroundBlurWidgets != ScreenLook.bBlurBackgroundBlurWidgets)
+	if (NewGlass.bBlurBackgroundBlurWidgets != Glass.bBlurBackgroundBlurWidgets)
 	{
 		RestoreBlurWidgets();
 		bCollectBlur = true;
 	}
-	ScreenLook = NewLook;
+	Glass = NewGlass;
 	if (GetWantedVariant() != AppliedVariant)
 	{
 		ApplyMaterialSetup();
@@ -998,23 +1076,29 @@ void UDiegeticScreenComponent::SetScreenLook(const FDiegeticScreenLook& NewLook)
 	}
 }
 
-void UDiegeticScreenComponent::SetLookPreset(EDiegeticLookPreset NewPreset)
+void UDiegeticScreenComponent::SetGlassPreset(EDiegeticGlassPreset NewPreset)
 {
-	if (NewPreset == EDiegeticLookPreset::Custom)
+	FDiegeticGlass NewGlass = Glass;
+	if (NewPreset == EDiegeticGlassPreset::Custom)
 	{
-		ScreenLook.Preset = NewPreset;
-		return;
+		NewGlass.Preset = NewPreset;
 	}
-	FDiegeticScreenLook Look = FDiegeticScreenLook::MakePreset(NewPreset);
-	Look.bBlurBackgroundBlurWidgets = ScreenLook.bBlurBackgroundBlurWidgets;
-	SetScreenLook(Look);
+	else
+	{
+		// The pane's shape and the widget's Background Blur widgets aren't the glass's look: kept.
+		NewGlass = FDiegeticGlass::MakePreset(NewPreset);
+		NewGlass.CornerRadius = Glass.CornerRadius;
+		NewGlass.bBlurBackgroundBlurWidgets = Glass.bBlurBackgroundBlurWidgets;
+	}
+	SetGlass(NewGlass);
 }
 
 void UDiegeticScreenComponent::ApplyScreenLook(bool bForce)
 {
 	UMaterialInstanceDynamic* Instance = GetMaterialInstance();
-	const bool bLookChanged = !FDiegeticScreenLook::StaticStruct()->CompareScriptStruct(&LookApplied, &ScreenLook, PPF_None);
-	if (!bForce && !bLookChanged && LookAppliedTo.Get() == Instance)
+	const bool bChanged = !FDiegeticScreenLook::StaticStruct()->CompareScriptStruct(&LookApplied, &ScreenLook, PPF_None)
+		|| !FDiegeticGlass::StaticStruct()->CompareScriptStruct(&GlassApplied, &Glass, PPF_None);
+	if (!bForce && !bChanged && LookAppliedTo.Get() == Instance)
 	{
 		return;
 	}
@@ -1025,6 +1109,7 @@ void UDiegeticScreenComponent::ApplyScreenLook(bool bForce)
 	}
 	LookAppliedTo = Instance;
 	LookApplied = ScreenLook;
+	GlassApplied = Glass;
 	AppliedBlurRegions.Reset();
 }
 
@@ -1057,9 +1142,21 @@ void UDiegeticScreenComponent::ApplyLookTo(UMaterialInstanceDynamic* Instance) c
 	Instance->SetScalarParameterValue(AdditiveParam, Look.Additive);
 	Instance->SetScalarParameterValue(EdgeFadeParam, Look.EdgeFade);
 	Instance->SetScalarParameterValue(GlitchParam, Look.Glitch);
-	Instance->SetScalarParameterValue(BackgroundBlurParam, Look.BackgroundBlur);
-	Instance->SetVectorParameterValue(GlassTintParam, Look.GlassTint);
-	Instance->SetScalarParameterValue(BlurBrightnessParam, Look.BlurBrightness);
+
+	// Glass. Off: a pane that changes nothing (whatever values it keeps), so Background Blur widgets only blur their areas.
+	const FDiegeticGlass Pane = Glass.IsEnabled() ? Glass : FDiegeticGlass();
+	Instance->SetScalarParameterValue(GlassPaneParam, Glass.IsEnabled() ? 1.f : 0.f);
+	Instance->SetScalarParameterValue(GlassBlurParam, Pane.Blur);
+	Instance->SetScalarParameterValue(GlassFrostParam, Pane.Frost);
+	Instance->SetScalarParameterValue(GlassRefractionParam, Pane.Refraction);
+	Instance->SetScalarParameterValue(GlassBevelWidthParam, Pane.BevelWidth);
+	Instance->SetScalarParameterValue(GlassRippleParam, Pane.Ripple);
+	Instance->SetScalarParameterValue(GlassChromaticAberrationParam, Pane.ChromaticAberration);
+	Instance->SetVectorParameterValue(GlassTintParam, Pane.Tint);
+	Instance->SetScalarParameterValue(GlassBrightnessParam, Pane.Brightness);
+	Instance->SetScalarParameterValue(GlassSheenParam, Pane.Sheen);
+	Instance->SetVectorParameterValue(GlassEdgeHighlightParam, Pane.EdgeHighlight);
+	Instance->SetScalarParameterValue(GlassCornerRadiusParam, Pane.CornerRadius);
 
 	// What the screen knows of itself: its pixels (glow, pixel grid and blur are in widget pixels) and whether its back shows.
 	const FVector2D Pixels = GetCurrentDrawSize();
@@ -1393,108 +1490,6 @@ void UDiegeticScreenComponent::UpdatePlacement(const FVector& ViewLocation, cons
 }
 
 // =====================================================================================================
-// Quick Setup
-// =====================================================================================================
-
-void UDiegeticScreenComponent::ApplyQuickSetup(EDiegeticScreenKind Kind)
-{
-	QuickSetup = Kind;
-	if (Kind == EDiegeticScreenKind::Custom)
-	{
-		return;
-	}
-
-	// Every kind starts from the same place: drawn with the plugin's material, on its own panel, as placed, shown, always awake.
-	const bool bKeepBlurWidgets = ScreenLook.bBlurBackgroundBlurWidgets;
-	MaterialMode = EDiegeticMaterialMode::Automatic;
-	DisplaySettings.Display = EDiegeticDisplay::Panel;
-	PlacementSettings.Placement = EDiegeticPlacement::AsPlaced;
-	bStartShown = true;
-	PresenceSettings = FDiegeticPresenceSettings();
-	UpdateSettings = FDiegeticUpdateSettings();
-	UseSettings = FDiegeticUseSettings();
-
-	auto SizeInCentimetres = [this](double Width, double Height, float Density)
-	{
-		ScreenSizing = EDiegeticScreenSizing::PhysicalSize;
-		PhysicalSize = FVector2D(Width, Height);
-		PixelDensity = Density;
-	};
-
-	switch (Kind)
-	{
-	case EDiegeticScreenKind::WallTerminal:
-		SizeInCentimetres(60.0, 45.0, 16.f);
-		ScreenLook = FDiegeticScreenLook::MakePreset(EDiegeticLookPreset::TerminalGreen);
-		UseSettings.UseMode = EDiegeticUseMode::FocusView;
-		PresenceSettings.WakeDistance = 800.f;
-		break;
-
-	case EDiegeticScreenKind::Monitor:
-		ScreenSizing = EDiegeticScreenSizing::DrawSize;
-		SetDrawSize(FVector2D(1920.0, 1080.0));
-		DisplaySettings.Display = EDiegeticDisplay::MeshSurface;
-		ScreenLook = FDiegeticScreenLook::MakePreset(EDiegeticLookPreset::Clean);
-		break;
-
-	case EDiegeticScreenKind::Hologram:
-		SizeInCentimetres(100.0, 60.0, 10.f);
-		ScreenLook = FDiegeticScreenLook::MakePreset(EDiegeticLookPreset::Hologram);
-		PlacementSettings.Placement = EDiegeticPlacement::FaceCameraYaw;
-		PresenceSettings.WakeDistance = 1200.f;
-		PresenceSettings.SleepBehavior = EDiegeticSleepBehavior::Hide;
-		SetTwoSided(true);
-		break;
-
-	case EDiegeticScreenKind::HologramMenu:
-		SizeInCentimetres(70.0, 45.0, 16.f);
-		ScreenLook = FDiegeticScreenLook::MakePreset(EDiegeticLookPreset::Hologram);
-		ScreenLook.EdgeFade = 0.2f;
-		ScreenLook.Glitch = 0.05f;
-		PlacementSettings.Placement = EDiegeticPlacement::InFrontOfPlayer;
-		UseSettings.UseMode = EDiegeticUseMode::FocusView;
-		UseSettings.bMoveCamera = false;
-		UseSettings.bBlockPawnInput = false;
-		UpdateSettings.UpdateMode = EDiegeticUpdateMode::Realtime;
-		bStartShown = false;
-		break;
-
-	case EDiegeticScreenKind::DeviceDisplay:
-		SizeInCentimetres(12.0, 8.0, 24.f);
-		ScreenLook = FDiegeticScreenLook::MakePreset(EDiegeticLookPreset::LCDPanel);
-		UseSettings.UseMode = EDiegeticUseMode::None;
-		UpdateSettings.UpdateMode = EDiegeticUpdateMode::OnDemand;
-		break;
-
-	case EDiegeticScreenKind::Sign:
-		ScreenLook = FDiegeticScreenLook::MakePreset(EDiegeticLookPreset::Clean);
-		UseSettings.UseMode = EDiegeticUseMode::None;
-		UpdateSettings.UpdateMode = EDiegeticUpdateMode::OnDemand;
-		UpdateSettings.HeartbeatRate = 0.5f;
-		UpdateSettings.MaxUpdateDistance = 3000.f;
-		break;
-
-	case EDiegeticScreenKind::GlassPanel:
-		SizeInCentimetres(120.0, 70.0, 12.f);
-		ScreenLook = FDiegeticScreenLook::MakePreset(EDiegeticLookPreset::FrostedGlass);
-		break;
-
-	default:
-		break;
-	}
-	ScreenLook.bBlurBackgroundBlurWidgets = bKeepBlurWidgets;
-
-	ApplySizing();
-	UpdateTextureInfo();
-	if (IsRegistered())
-	{
-		ApplyMaterialSetup();
-	}
-	bShownByUser = bStartShown || bShownByUser;
-	bContentChanged = true;
-}
-
-// =====================================================================================================
 // State machine inputs
 // =====================================================================================================
 
@@ -1709,18 +1704,30 @@ void UDiegeticScreenComponent::PostEditChangeProperty(FPropertyChangedEvent& Pro
 		ApplySizing();
 	}
 
-	// Quick Setup and a look's Preset set other settings: before the Widget Component reacts, so it sees them too.
-	if (Name == GET_MEMBER_NAME_CHECKED(UDiegeticScreenComponent, QuickSetup))
-	{
-		ApplyQuickSetup(QuickSetup);
-	}
+	// A Preset sets the other values: before the Widget Component reacts, so it sees them too.
 	if (Name == GET_MEMBER_NAME_CHECKED(UDiegeticScreenComponent, ScreenLook)
 		&& PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(FDiegeticScreenLook, Preset)
 		&& ScreenLook.Preset != EDiegeticLookPreset::Custom)
 	{
-		const bool bKeepBlurWidgets = ScreenLook.bBlurBackgroundBlurWidgets;
 		ScreenLook = FDiegeticScreenLook::MakePreset(ScreenLook.Preset);
-		ScreenLook.bBlurBackgroundBlurWidgets = bKeepBlurWidgets;
+	}
+	if (Name == GET_MEMBER_NAME_CHECKED(UDiegeticScreenComponent, Glass))
+	{
+		const FName Changed = PropertyChangedEvent.GetPropertyName();
+		if (Changed == GET_MEMBER_NAME_CHECKED(FDiegeticGlass, Preset) && Glass.Preset != EDiegeticGlassPreset::Custom)
+		{
+			const float KeptCorner = Glass.CornerRadius;
+			const bool bKeptBlurWidgets = Glass.bBlurBackgroundBlurWidgets;
+			Glass = FDiegeticGlass::MakePreset(Glass.Preset);
+			Glass.CornerRadius = KeptCorner;
+			Glass.bBlurBackgroundBlurWidgets = bKeptBlurWidgets;
+		}
+		if (Changed == GET_MEMBER_NAME_CHECKED(FDiegeticGlass, bBlurBackgroundBlurWidgets))
+		{
+			// Handed back to Slate (or taken from it): collected again, the new way.
+			RestoreBlurWidgets();
+			bCollectBlur = true;
+		}
 	}
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
@@ -1736,7 +1743,7 @@ void UDiegeticScreenComponent::PostEditChangeProperty(FPropertyChangedEvent& Pro
 	if (Name == GET_MEMBER_NAME_CHECKED(UDiegeticScreenComponent, ScreenLook)
 		|| Name == GET_MEMBER_NAME_CHECKED(UDiegeticScreenComponent, MaterialMode)
 		|| Name == GET_MEMBER_NAME_CHECKED(UDiegeticScreenComponent, DisplaySettings)
-		|| Name == GET_MEMBER_NAME_CHECKED(UDiegeticScreenComponent, QuickSetup)
+		|| Name == GET_MEMBER_NAME_CHECKED(UDiegeticScreenComponent, Glass)
 		|| Name == BlendModeName || Name == TwoSidedName || Name == MaterialsName)
 	{
 		ApplyMaterialSetup();
@@ -1789,9 +1796,15 @@ void UDiegeticScreenComponent::CheckForErrors()
 			Warn(LOCTEXT("NoHitUV", "Diegetic Screen on a Mesh Surface can't be clicked: turn on Project Settings > Physics > Support UV From Hit Results (and give the mesh complex collision)."));
 		}
 	}
-	if (MaterialMode == EDiegeticMaterialMode::EngineDefault && (ScreenLook.Preset != EDiegeticLookPreset::Clean || ScreenLook.NeedsBackgroundBlur()))
+	if (MaterialMode == EDiegeticMaterialMode::EngineDefault && (ScreenLook.Preset != EDiegeticLookPreset::Clean || Glass.IsEnabled()))
 	{
-		Warn(LOCTEXT("LookWithoutMaterial", "Diegetic Screen with a Screen Look and Material Engine Default: the engine's material has none of the look's effects. Set Material to Automatic."));
+		Warn(LOCTEXT("LookWithoutMaterial", "Diegetic Screen with Glass or a Screen Look and Material Engine Default: the engine's material has none of their effects. Set Material to Automatic."));
+	}
+	if (!bStartShown)
+	{
+		FMessageLog(TEXT("MapCheck")).Info()
+			->AddToken(FUObjectToken::Create(OwningActor))
+			->AddToken(FTextToken::Create(LOCTEXT("StartHidden", "Diegetic Screen with Start Shown off: nothing of it shows in game until Set Screen Shown or Open Diegetic Menu is called.")));
 	}
 }
 #endif

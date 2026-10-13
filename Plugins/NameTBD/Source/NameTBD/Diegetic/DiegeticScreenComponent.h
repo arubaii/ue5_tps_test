@@ -22,9 +22,9 @@ class UWidget;
 /** The plugin's screen materials (Material Mode Automatic): one for each way a screen can need drawing. */
 enum class EDiegeticMaterialVariant : uint8
 {
-	/** Translucent (premultiplied alpha): every look but background blur. */
+	/** Translucent (premultiplied alpha, depth written where solid): plain screens and every Screen Look. */
 	Panel,
-	/** Translucent with the world behind blurred: Frosted Glass, Background Blur widgets. */
+	/** The same with the world behind seen through glass: Glass on, or Background Blur widgets on the screen. */
 	Glass,
 	/** Opaque: a screen with Blend Mode Opaque, cheapest. */
 	Opaque
@@ -48,10 +48,12 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FDiegeticScreenUseEvent, UDiegeticS
  * - The plugin's own systems on its widget: pointer-driven Widget Animation inputs and state machine inputs read this screen's
  *   pointer (not the desktop's), UI sounds play from where they are on it, and the widget is told about the screen through the
  *   Diegetic Screen Widget interface and the ScreenAwake / ScreenAimedAt / ScreenInUse / ScreenDistance state machine inputs.
- * - Drawn with the plugin's own screen materials (Material Mode Automatic): exactly as UMG draws the widget, or with a Screen
- *   Look - terminal, hologram, frosted glass that blurs the world behind (Background Blur widgets on it too), LCD.
+ * - Drawn with the plugin's own screen materials (Material Mode Automatic): exactly as UMG draws the widget (its opacity is only
+ *   opacity), writing depth where it is solid so the world's particles behind it stay behind it. Glass makes it a pane of glass
+ *   (blur, frost, refraction, colour split, tint, sheen, rim - Glass presets); Background Blur widgets on it blur the world behind
+ *   their areas. Screen Look adds sample looks (terminal, hologram, LCD).
  * - Shown on its own panel, or on a Mesh Surface (a material slot of any mesh); placed as placed, facing the camera, or
- *   floating in front of the player (Placement). Quick Setup sets everything for the common kinds of diegetic UI at once.
+ *   floating in front of the player (Placement).
  * - A Context object its widget can ask for (the weapon, the door), and Focus Groups for screens used together.
  *
  * In an editor world (not playing) it redraws as the engine has it; its look and material show, a Mesh Surface doesn't.
@@ -69,15 +71,7 @@ public:
 	// Authored settings
 	// -------------------------------------------------------------------------------------------------
 
-	/**
-	 * The kind of diegetic UI this is: picking one sets Look, Display, Placement, Use, Presence, Updates and size for it at once
-	 * (a wall terminal, a monitor, a hologram, a menu in front of the player, a device display, a sign, a glass panel). Change any
-	 * setting afterwards. See EDiegeticScreenKind.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Diegetic Screen", meta = (DisplayName = "Quick Setup"))
-	EDiegeticScreenKind QuickSetup = EDiegeticScreenKind::Custom;
-
-	/** Which material it is drawn with. Automatic: the plugin's own, for its Screen Look. See EDiegeticMaterialMode. */
+	/** Which material it is drawn with. Automatic: the plugin's own, for its Glass and Screen Look. See EDiegeticMaterialMode. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Diegetic Screen", meta = (DisplayName = "Material"))
 	EDiegeticMaterialMode MaterialMode = EDiegeticMaterialMode::Automatic;
 
@@ -87,7 +81,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Diegetic Screen", meta = (DisplayName = "Placement"))
 	FDiegeticPlacementSettings PlacementSettings;
 
-	/** Shown when play starts. Off: hidden until Set Screen Shown (a menu opened by the player). */
+	/**
+	 * Shown when play starts. Off: nothing of it shows in game until Set Screen Shown or Open Diegetic Menu shows it (a menu the
+	 * player opens) - the editor still shows it where it is placed.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Diegetic Screen")
 	bool bStartShown = true;
 
@@ -122,6 +119,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Diegetic Screen", meta = (DisplayName = "Use"))
 	FDiegeticUseSettings UseSettings;
 
+	/** The screen as a pane of glass, its widget drawn on it - see FDiegeticGlass. Pick a Preset; No Glass by default. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Diegetic Screen")
+	FDiegeticGlass Glass;
+
+	/** Sample looks of the plugin's screen material (terminal, hologram, LCD) - for testing; Clean draws the widget as UMG does. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Diegetic Screen", meta = (DisplayName = "Screen Look"))
 	FDiegeticScreenLook ScreenLook;
 
@@ -170,7 +172,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Diegetic Screen")
 	void SetUpdateMode(EDiegeticUpdateMode NewMode);
 
-	/** Hands a new Screen Look to its material (the glass variant is picked when it blurs). */
+	/** Hands a new Screen Look to its material. */
 	UFUNCTION(BlueprintCallable, Category = "Diegetic Screen")
 	void SetScreenLook(const FDiegeticScreenLook& NewLook);
 
@@ -178,9 +180,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Diegetic Screen")
 	void SetLookPreset(EDiegeticLookPreset NewPreset);
 
-	/** Sets everything for a kind of diegetic UI, as Quick Setup does in the Details. Custom changes nothing. */
+	/** Hands new Glass to its material (the glass material is picked when it is on, the plain one when it is off). */
 	UFUNCTION(BlueprintCallable, Category = "Diegetic Screen")
-	void ApplyQuickSetup(EDiegeticScreenKind Kind);
+	void SetGlass(const FDiegeticGlass& NewGlass);
+
+	/** Gives it a ready-made glass (its Corner Radius and Background Blur Widgets kept). No Glass turns it off. */
+	UFUNCTION(BlueprintCallable, Category = "Diegetic Screen")
+	void SetGlassPreset(EDiegeticGlassPreset NewPreset);
 
 	/**
 	 * Shows it (playing its widget in) or hides it (playing it out, then hiding it) whatever the distance - a menu opened and closed
@@ -416,7 +422,7 @@ private:
 	/** TextureInfo, from Draw Size. */
 	void UpdateTextureInfo();
 
-	/** Hands Screen Look to the material instances (the Widget Component's, the mesh's), when they or the look changed. */
+	/** Hands Screen Look and Glass to the material instances (the Widget Component's, the mesh's), when they or the values changed. */
 	void ApplyScreenLook(bool bForce);
 	void ApplyLookTo(UMaterialInstanceDynamic* Instance) const;
 
@@ -435,6 +441,9 @@ private:
 
 	/** The Background Blur widgets on the widget: found when it changes, their own drawing turned off (UE-41001). */
 	void CollectBlurWidgets();
+
+	/** An editor world (no subsystem ticks there): the Background Blur widgets collected from the redraw, so it shows what play does. */
+	void CollectBlurWidgetsInEditor();
 	void RestoreBlurWidgets();
 
 	/** Their areas this frame, handed to the material as BlurRegion0..7 / BlurShape0..7. */
@@ -493,9 +502,10 @@ private:
 	WidgetAnimInput::FPointerEventCount RightPresses;
 	WidgetAnimInput::FPointerEventCount RightReleases;
 
-	/** The material instance Screen Look was last handed to, and the look handed. */
+	/** The material instance Screen Look and Glass were last handed to, and what was handed. */
 	TWeakObjectPtr<UMaterialInstanceDynamic> LookAppliedTo;
 	FDiegeticScreenLook LookApplied;
+	FDiegeticGlass GlassApplied;
 
 	/** The Context set with Set Screen Context. */
 	UPROPERTY(Transient)
@@ -506,6 +516,8 @@ private:
 	TObjectPtr<UMaterialInstanceDynamic> MeshMaterial = nullptr;
 	TWeakObjectPtr<UMeshComponent> SurfaceMesh;
 	int32 SurfaceSlot = INDEX_NONE;
+	/** Keep Mesh Material: on the mesh's overlay material (SurfaceOriginalMaterial is then the overlay it had). */
+	bool bSurfaceOverlay = false;
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInterface> SurfaceOriginalMaterial = nullptr;
 	TWeakObjectPtr<UTextureRenderTarget2D> SurfaceTarget;
@@ -516,6 +528,9 @@ private:
 
 	/** The Background Blur widgets on the widget, with the Blur Strength each had before its drawing was turned off. */
 	TMap<TWeakObjectPtr<UBackgroundBlur>, float> BlurWidgets;
+
+	/** An editor world: the widget its Background Blur widgets were last collected from. */
+	TWeakObjectPtr<UUserWidget> EditorBlurWidget;
 
 	/** The blur regions last handed to the material (count, then each region and shape), to set only what changed. */
 	TArray<FLinearColor> AppliedBlurRegions;

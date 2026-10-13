@@ -29,7 +29,7 @@ UE **5.7** project `tps_test`. The work is the plugin `Plugins/NameTBD` ("UI com
 - `Shapes.md`: shape widgets, outline materials, shapes holding a child.
 - `Buttons.md`: Context Menu Button, Shape/Design Targets and Looks, ready-made buttons, hidden parts, GUID rule, button preview toolbar.
 - `NiagaraUI.md`: Niagara in UMG, User Parameters, Particles cue.
-- `DiegeticUI.md`: UI in the world: the kinds of diegetic UI (Quick Setup), Diegetic Screen (sizing, redraw scheduling/budget, presence, use, display on a panel or a Mesh Surface, placement, context, sounds), looks and the generated screen materials (premultiplied, background blur), Diegetic Interactor (aim, input, Focus View, focus groups), Terminal Text, world pointer for Widget Animation / state machine inputs.
+- `DiegeticUI.md`: UI in the world: the kinds of diegetic UI, Diegetic Screen (sizing, redraw scheduling/budget, presence, use, display on a panel or a Mesh Surface, placement, context, sounds), the generated screen materials (core rendering: premultiplied, depth/velocity, translucency pass), Glass (presets, blur, refraction, aberration, Background Blur widgets) and sample looks, Diegetic Interactor (aim, input, Focus View, focus groups), Terminal Text, world pointer for Widget Animation / state machine inputs.
 - `FlowList.md`: Flow List, virtual list, item style, scroll bar, spline path editor.
 - `StateMachine.md`: state machine asset/runtime/editor, Widget Inputs, sub-machines, State Machine Component, Animation Parameters.
 - `DataBinding.md`: Widget Data Binder rules and Data Preview.

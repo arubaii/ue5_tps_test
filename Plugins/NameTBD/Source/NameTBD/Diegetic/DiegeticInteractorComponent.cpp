@@ -288,6 +288,7 @@ void UDiegeticInteractorComponent::UpdateAim()
 		UsingGroup.Append(Group);
 	}
 	FVector BestPanelPoint = FVector::ZeroVector;
+	double BestReach = 0.0;
 	auto Consider = [&](UDiegeticScreenComponent* Screen)
 	{
 		const bool bInUsedGroup = UsingGroup.Contains(Screen);
@@ -361,11 +362,13 @@ void UDiegeticInteractorComponent::UpdateAim()
 
 		// Within reach of the pawn (the screen's own, or this interactor's), unless it is in use (or of the group in use).
 		const float ScreenReach = Screen->UseSettings.ReachDistance > 0.f ? Screen->UseSettings.ReachDistance : InteractionDistance;
-		if (!bInUsedGroup && FVector::Dist(ReachFrom, Point) > ScreenReach)
+		const double FromPawn = FVector::Dist(ReachFrom, Point);
+		if (!bInUsedGroup && FromPawn > ScreenReach)
 		{
 			return;
 		}
 		Best = Screen;
+		BestReach = FromPawn;
 		BestDistance = Distance;
 		BestNormal = Normal;
 		BestPanelPoint = PanelPoint;
@@ -423,7 +426,10 @@ void UDiegeticInteractorComponent::UpdateAim()
 		Aim.bBlockingHit = true;
 		Aim.TraceStart = Origin;
 		Aim.TraceEnd = RayEnd;
-		Aim.Distance = static_cast<float>(BestDistance);
+		// Its distance from the pawn - what reach was measured by - not from the camera: the Widget Interaction Component holds the
+		// hit to Interaction Distance, and a third-person camera sits metres behind the pawn (only screens within Interaction
+		// Distance of the camera itself could be clicked).
+		Aim.Distance = static_cast<float>(BestReach);
 		Aim.Time = static_cast<float>(BestDistance / RayLength);
 	}
 	else if (bAimAtWidgetComponents && bBlocked)
@@ -435,6 +441,7 @@ void UDiegeticInteractorComponent::UpdateAim()
 			Aim = Blocking;
 			Aim.TraceStart = Origin;
 			Aim.TraceEnd = RayEnd;
+			Aim.Distance = static_cast<float>(FVector::Dist(ReachFrom, Blocking.ImpactPoint));
 		}
 	}
 	SetCustomHitResult(Aim);
