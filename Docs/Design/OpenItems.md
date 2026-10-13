@@ -22,4 +22,5 @@
 - A literal "&&" can't be targeted by a text track's Part of the Text.
 - **State machine**: see "Still open (state machine)" (v9 follow-ups). Animation Parameters: nothing planned left.
 - **Diegetic UI** (DiegeticUI v1 follow-ups): see "Still open (diegetic UI)" - Info Cards opening inside a screen first.
+- **Media Box** (MediaBox v1 follow-ups): see "Still open" in `MediaBox.md` - first compile in the engine expected to need small API fixes ("Unverified" there).
 

@@ -1,0 +1,5221 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+index e13a32f..e9cbd76 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -20,6 +20,7 @@ UE **5.7** project `tps_test`. The work is the plugin `Plugins/NameTBD` ("UI com
+ - `NameTBDUncooked` (UncookedOnly): timelines saved on the Widget Blueprint.
+ - `NameTBDEditor` (Editor): animation panel (`SWidgetAnim*`), state machine editor, designer extensions (motion paths, gizmo, path editors), details customizations.
+ - `NameTBDCommonUI`, `NameTBDMVVM` (Widget Data Binder), `NameTBDNiagara` (Niagara Particles widget + cue; the only module depending on Niagara).
++- `NameTBDMedia` (Runtime): Media Box video widget, clips, warm player pool, Media cue / Media Progress input, transport bar base; the only module depending on the Media Framework.
+ - `NameTBDAI` (Editor): in-editor AI chat, MCP server, tools, content library (`Resources/AI/`).
+ - `NameTBDShaders` (UncookedOnly, PostConfigInit): maps `Shaders/` to `/Plugin/NameTBDAI`.
+ 
+@@ -34,4 +35,5 @@ UE **5.7** project `tps_test`. The work is the plugin `Plugins/NameTBD` ("UI com
+ - `StateMachine.md`: state machine asset/runtime/editor, Widget Inputs, sub-machines, State Machine Component, Animation Parameters.
+ - `DataBinding.md`: Widget Data Binder rules and Data Preview.
+ - `AIAssistant.md`: AI tool layer, MCP, chat, material generation.
++- `MediaBox.md`: Media Box (video in UI that starts with no lag): clips, posters, warm pool and Warm Groups, hover prediction, audio sync, subtitles, Media cue / input, transport bar.
+ - `OpenItems.md`: cross-cutting follow-ups not yet asked for.
+diff --git a/Docs/Design/MediaBox.md b/Docs/Design/MediaBox.md
+new file mode 100644
+index 0000000..269bb61
+--- /dev/null
++++ b/Docs/Design/MediaBox.md
+@@ -0,0 +1,80 @@
++# Media Box: video in UI with no start-up lag (module NameTBDMedia)
++
++## Goal
++Hover a skill (or any button, card or list item) and a short preview clip plays **at once**, with audio: no black frame, no wait, no hitch. Horizon Zero Dawn's skill tree is the reference. The same widget is the general drop-in video for menus, attract screens, tutorials and diegetic TVs.
++
++## Why UMG video starts late, and the rule
++Starting a clip from cold in the Media Framework goes: open the source (async), read the container, start the decoder, decode up to the first frame, upload it to the Media Texture, start the audio sink. That costs from about a frame to a few hundred ms. On top of that, `Play` before `OnMediaOpened` does nothing; the texture shows black (or the last clip) until a sample arrives; audio needs a Media Sound Component on an actor; one Media Player / Media Texture asset shared by several widgets makes them fight.
++
++**Rule:** the hover never waits on any of that. It all happens **before** the hover, in the warm pool. The hover only calls `Play` on a player that is already open and paused on frame 0, behind a poster that is already showing.
++
++## Module and files (`Plugins/NameTBD/Source/NameTBDMedia`, Runtime)
++- Depends on `MediaAssets` (public), `Media`, `AudioMixer`, `RenderCore`, `RHI`, `Slate`, `SlateCore`; editor builds add `UnrealEd`, `AssetRegistry`. Keeps the core `NameTBD` module free of the Media Framework (as `NameTBDNiagara` does for Niagara). Listed in `NameTBD.uplugin`. No player plugin is forced on: the project enables the one it uses (ElectraPlayer, WmfMedia, BinkMedia, ImgMedia).
++- `MediaBoxTypes.h`: enums `EMediaBoxFit` (Contain / Cover / Stretch), `EMediaBoxTrigger` (Manual / Visible / Hovered / Focused / Hovered Or Focused), `EMediaBoxAfterTrigger` (Stop And Rewind / Pause / Keep Playing), `EMediaBoxAudio` (Auto / Embedded / Separate Sound / Silent), `EMediaBoxStatus`; `FMediaBoxSubtitleCue`; `MediaBoxSubtitles::Parse` / `FindCue` (defined in `MediaBoxClip.cpp`).
++- `MediaBoxClip.h` (`UMediaBoxClip`, data asset), `MediaBoxSettings.h` (`UMediaBoxSettings`, Project Settings > Plugins > Media Box), `MediaBoxPool.h` (`UMediaBoxPlayer`, `UMediaBoxPool`, `UMediaBoxSubsystem`), `MediaBox.h` (`UMediaBox`) + `Private/SMediaBox.*`, `MediaBoxCue.h` (Media cue, Media Progress input, `MediaBoxFind::Find`), `MediaBoxLibrary.h`, `MediaBoxTransportBar.h`, `Private/MediaBoxLog.h` (`LogMediaBox`, `MediaBoxRuntime::` cvars and subtitles switch), `Private/NameTBDMediaModule.cpp`.
++
++## Clip (`UMediaBoxClip`, "Media Box Clip")
++- **Video:** `MediaSource`, `Poster` (any `UTexture`), `StartTime`, `bLoop` (default on), `LoopStart`, `LoopEnd` (0 = the video's end), `PlayerName` (advanced; None: the project's, else the engine's pick), `PosterTime` (advanced; below 0 = Start Time).
++- **Audio:** `Audio` (`EMediaBoxAudio`, default Auto = Separate Sound when `Sound` is set, else Embedded), `Sound`, `Volume`.
++- **Subtitles:** `SubtitleText` (paste SRT / VTT; parsed into `Subtitles` on edit, and in `PostLoad` when `Subtitles` is empty), `Subtitles` (`TArray<FMediaBoxSubtitleCue>`, editable).
++- **Generate Poster** (`CallInEditor`, editor only): its own transient player + texture, opened, played to Poster Time, paused, 4 frames later drawn to an RGBA8 render target with `FCanvas`, `ReadPixels`, written into a texture asset `<Clip>_Poster` next to the clip (`Source.Init` BGRA8, sRGB, UI group, no mips; reused when the clip's poster already is that asset), set as `Poster`. Driven by an `FTSTicker` job; gives up after 15 s or on `HasError`; a Slate notification reports the result.
++- **Data Validation** (`IsDataValid`): no source (error), `MediaSource->Validate()` false (error), MP4/M4V/MOV with `moov` after `mdat` (warning: re-encode with `-movflags +faststart`; top-level boxes read, up to 64), no poster (warning), Separate Sound without a Sound (error), Loop End at or before Loop Start (error).
++- `LoopsWholeVideo()` = loop with Loop Start 0 and Loop End 0: the player's own `SetLooping` (seamless). Any other range loops by seeking.
++
++## Warm pool (`UMediaBoxPool`)
++- **Where:** one per game instance (`UMediaBoxSubsystem`, so warm players outlive level changes); one editor pool (`TStrongObjectPtr`, transient package) for widgets whose world has no game instance (the designer, editor worlds), shut down with the module. `UMediaBoxPool::Get(WorldContext)` picks. Ticked by the core `FTSTicker` (runs while the game is paused).
++- **Pooled player (`UMediaBoxPlayer`):** its own `UMediaPlayer` (`PlayOnOpen` off) and `UMediaTexture` (`AutoClear` off, so a warm frame stays), created once; per clip a Separate Sound (`CreateSound2D`, UI sound, persists across level transitions, not auto-destroyed) or an Embedded `UMediaSoundComponent` (ownerless, `RegisterComponentWithWorld`, 2D, UI sound), both in the Sound Class from the settings. States (`EMediaBoxPlayerState`): Free, Opening, Priming, Settling, Ready (warm), Playing, Paused, Ended, Failed.
++  - **Warming:** `Open` primes the clip's Sound (`UGameplayStatics::PrimeSound`), sets the desired player name, `OpenSource`. `OnMediaOpened`: `SetLooping(LoopsWholeVideo)`, seek to Start Time, `Play` silently (no audio started) = **Priming**. Once the video time has moved past Start Time (and one more frame), or after 45 frames: the frame is in (`IsFrameReady`). Nobody waiting: `Pause`, seek back to Start Time = **Settling**, then **Ready** on `OnSeekCompleted` (or after 30 frames). A Media Box already waiting: plays on from there (a cold start, a frame or so in).
++  - **Play:** Ready / Paused / Ended (from Start Time) play at once (`Play`, rate, audio started at the video's time); while Opening / Priming / Settling the request is kept and played the moment it can be.
++  - **Loops:** whole-video loops are counted when the time goes back (`OnEndReached` ignored while looping); a range seeks to Loop Start 1/120 s before Loop End; a range ending at the video's end seeks back on `OnEndReached`. The Separate Sound is restarted at the loop point.
++  - **Audio:** Separate Sound restarted at the video's time when it has drifted past Audio Resync Threshold (checked every 0.25 s against a wall clock started with it); pitch follows the rate. Fades out by ramping the volume multiplier, then stops. Volume = box volume (0 when muted) x clip volume x fade.
++- **Leases:** `Acquire(Clip, Owner)` takes the clip's unleased player (a Ready one counts as a **warm start**), else a free one, else the longest-unwanted one not on the wanted list, else a new one (`ColdStarts`). `Release(Player, bRewind, AudioFadeOut)` rewinds it (Settling -> Ready: warm again for the next hover), or pauses it; a failed one is closed. A lease whose owner was garbage collected (`bHasLease` with no valid owner) is taken back each tick.
++- **What is warm:** each tick `RankWanted` scores pinned clips (`PinClip`, counted) first, then per **Warm Group** its targets (widget + clip): the focused one, then by distance from the anchor to each target's rectangle. The anchor is the focused target when it was focused after the pointer last moved (gamepad), else the pointer's position plus its smoothed speed x Hover Intent Look Ahead (or the pointer alone with Hover Intent off). Each group gives at most Warm Per Group clips; all together at most Max Warm Players (`MediaBox.MaxWarmPlayers` overrides). `Rebalance` opens what is wanted and not open, closes unleased players nobody wants once over capacity (longest unwanted first), and drops free players beyond capacity + leased. Groups drop targets whose widget or clip is gone.
++- **Stats / cvars:** `stat MediaBox` (Pool Tick, Players, Warm Players, Leased Players, Media Boxes), `MediaBox.Log 1` (opened, warm, closed, warm / cold starts), `MediaBox.MaxWarmPlayers N`. `Get Media Box Pool Stats` in Blueprint.
++
++## Widget (`UMediaBox`, "Media Box", palette NameTBD)
++- **Media:** `MediaClip` (shown as Clip), `WarmGroup`, `bPreviewInDesigner` (default on; silent unless Audio In Designer).
++- **Playback:** `PlayWhen` (default Manual), `HoverTargetName` (dropdown of the tree's widgets; None = the nearest `UButton` around it, through the User Widgets it is in, else itself - hovered = the pointer over its area, as it is Hit Test Invisible by default), `HoverDelay`, `AfterTrigger` (default Stop And Rewind), `bPauseWhenHidden` (default on), `PlaybackRate`, `MachineInputs` (advanced).
++- **Appearance:** `Fit` (default Contain), `ContentAlignment`, `CropFocus`, `LetterboxColor` (default transparent), `Tint`, `DesiredSize` (320 x 180), `VideoFadeIn` / `VideoFadeOut` (advanced; below 0 = settings), `ErrorImage`.
++- **Audio:** `AudioVolume`, `bMuted`. **Subtitles:** `bShowSubtitles` (default on), `SubtitleFont` (default Regular 14), `SubtitleColor`, `SubtitleBackground`, `SubtitleMargin`.
++- **Events:** On Opened, On First Frame, On Looped, On Ended, On Error (Reason), On Subtitle Changed, On Status Changed. **Blueprint:** Play, Pause, Stop, Toggle Play Pause, Seek, Set Clip (bPlayNow), Get Clip, Set Hover Target, Set Playback Rate, Set Volume, Set Muted, Get Status, Is Playing, Get Time, Get Duration, Get Progress, Get Current Subtitle, Get Media Player / Get Media Texture (pooled - not to keep).
++- **Ticking:** registers with its pool in `RebuildWidget`, leaves (and gives back its lease, leaves its group) in `ReleaseSlateResources` (not while unreachable); the pool ticks it (`TickMediaBox`) before rebalancing.
++- **Tick:** every 0.5 s looks up its Diegetic Screen (`AnyScreensExist` / `FindScreenForWidget`) and its group place. The trigger (held for Hover Delay) starting: focuses its group target, `StartPlayback(true)`. Ending (and no Play pending): After Trigger. Wanting to play: paused while hidden (Pause When Hidden), else `StartPlayback(false)` (an ended clip is restarted only by a new trigger or Play). Events polled from the leased player; the video alpha fades in once the frame is in (On First Frame), out while stopping (then the lease is released with rewind). Subtitle, status, state machine inputs updated. Repaints (`Invalidate(Paint)`) while the video moves, and tells its Diegetic Screen `MarkContentChanged` - so a When Changed screen redraws only while the video plays.
++- **Hidden:** not painted for 2 frames; on a Diegetic Screen, the screen not shown or asleep (a paused video never asks a rarely drawn screen to draw again).
++- **Pause / Stop under a trigger** hold until the trigger starts again (`bHeldPaused`). Stop fades back to the poster with the audio; Set Clip with another clip releases at once (the new poster shows that frame).
++- **Warm Groups:** a box joins its Warm Group with its hover target and clip unless Play When is Manual (`UpdateGroupMembership`). Play and Set Clip focus the group's target with that clip (`SetGroupFocusByClip`). Buttons of a shared preview join with Add To Media Warm Group.
++- **Drawing (`SMediaBox`, leaf):** letterbox (whole box), poster under the video while the video alpha < 1, video (the leased Media Texture) at the video alpha, error image (status Error, its Image Size capped to the box, centred), subtitle lines bottom-up centred, each on its background. Fit uses the video's size once it has a frame, else the poster's, so they lie exactly over each other; Cover crops by UV region around Crop Focus.
++- **State machine inputs** (`FMediaBoxMachineInputs`): Playing (Bool), Progress (Number, passed on 0.005 steps), First Frame / Looped / Ended / Error (Triggers), through `UWidgetAnimStateMachineLibrary` on the box (searching parents), optionally only one machine. Not at design time.
++- **Compiler notes / warnings** (`ValidateCompiledDefaults`): no clip with a trigger (note), clip without a source (warning), clip without a poster (note), hover / focus trigger in no Warm Group (note).
++
++## Widget Animations
++- **Media cue** (`FWidgetAnimMediaCueParams`, registered in `StartupModule`): Action Play / Pause / Stop / Toggle Play Pause / Seek (Seek Time) / Set Clip (Clip, Play Clip), on the box named Media Box, else the track's widget, inside it, or the nearest around it (`MediaBoxFind::Find`). Fires at design time (the box decides with Preview In Designer).
++- **Media Progress value input** (`FWidgetAnimInput_MediaProgress`, no registration needed): Progress 0-1 / Seconds / Playing, from the named box or the one found from the measured widget; looked up once per measured widget.
++
++## Transport bar (`UMediaBoxTransportBar`, abstract `UUserWidget`)
++- Optional `BindWidgetOptional` parts: PlayPauseButton, StopButton, ScrubBar (Slider; pauses while dragged, plays on after), TimeText ("0:05 / 0:12", or elapsed only), VolumeSlider, MuteButton, SubtitlesButton (toggles the global switch), SubtitleText. Drives the box named Media Box around it (`MediaBoxFind::Find`), or Set Media Box. On Playing Changed / On Muted Changed for icons. The parts come from the user's own Widget Blueprint (GUID rule: nothing made in `OnCreationFromPalette`).
++
++## Library (`UMediaBoxLibrary`)
++Add To / Remove From Media Warm Group, Clear Media Warm Group, Set Media Warm Group Focus, Keep Media Clip Warm (counted pin), Set / Are Media Box Subtitles Enabled (starts at the project setting), Get Media Box Pool Stats.
++
++## Encoding advice (what the validator can't check)
++- **Bink 2** (BinkMedia plugin): fastest open, small memory, audio in the file - best for shipping previews.
++- **MP4 / H.264** through Electra: keyframe on frame 0, short GOP (e.g. 0.5 s) so range loops and seeks don't hitch, `+faststart`, modest size (640 x 360 for a skill card), AAC audio or a separate .wav (Separate Sound).
++- **Img Media** (JPG / PNG / EXR sequence): frame-exact, no audio - pair with Separate Sound.
++
++## Still open
++- Pool size per platform (hardware decoder limits on consoles and mobile) - set per platform config for now.
++- Whether a paused, opened Bink player at frame 0 is cheap enough to pool, versus reopening.
++- Hover intent: thresholds tuned by hand; no cone / direction filter yet.
++- Shape masking (a video clipped to a Shape Box outline) waits on Shapes "Clip To Shape" (OpenItems).
++- Subtitles drawn as plain lines (no wrapping, no styling from tags); the Animated Text widget isn't used for them.
++- Platform support check in the validator (which players a target platform has for a file type).
++- The Warm Group anchor uses desktop pointer space; targets on a Diegetic Screen are ranked by the desktop pointer, not the world pointer.
++
++## Unverified
++- **Nothing here has been compiled or run** (no engine in the container). Expect small API fixes on first compile.
++- APIs assumed from memory of 5.x: `UMediaPlayer::OnSeekCompleted`, `IsClosed`, `HasError`, `IsReady`, `SetDesiredPlayerName`; `UMediaTexture::GetWidth/GetHeight`, `AutoClear`; `UGameplayStatics::PrimeSound`; `UMediaSoundComponent` ticking when registered ownerless; `FSlateBrush::SetUVRegion(FBox2f)`; Slate drawing a `UMediaTexture` brush directly; `FTextureSource::Init(..., TSF_BGRA8, ...)`.
++- That "time moved past Start Time + one frame" means the frame is in the texture on every player (Electra, WMF, Bink, Img Media), and that a paused, sought-back Electra player resumes on the next frame with audio in step.
++- The open-to-first-frame cost per player in 5.7, and so how big the pool needs to be.
++- Generate Poster's colour (gamma of an RGBA8 render target read back into an sRGB texture).
++- That the Bink Media plugin is still bundled with 5.7.
+diff --git a/Docs/Design/OpenItems.md b/Docs/Design/OpenItems.md
+index 4cf13db..99a8188 100644
+--- a/Docs/Design/OpenItems.md
++++ b/Docs/Design/OpenItems.md
+@@ -22,4 +22,5 @@
+ - A literal "&&" can't be targeted by a text track's Part of the Text.
+ - **State machine**: see "Still open (state machine)" (v9 follow-ups). Animation Parameters: nothing planned left.
+ - **Diegetic UI** (DiegeticUI v1 follow-ups): see "Still open (diegetic UI)" - Info Cards opening inside a screen first.
++- **Media Box** (MediaBox v1 follow-ups): see "Still open" in `MediaBox.md` - first compile in the engine expected to need small API fixes ("Unverified" there).
+ 
+diff --git a/Plugins/NameTBD/NameTBD.uplugin b/Plugins/NameTBD/NameTBD.uplugin
+index ba0f6b0..bb442df 100644
+--- a/Plugins/NameTBD/NameTBD.uplugin
++++ b/Plugins/NameTBD/NameTBD.uplugin
+@@ -81,6 +81,16 @@
+ 				"Mac",
+ 				"Linux"
+ 			]
++		},
++		{
++			"Name": "NameTBDMedia",
++			"Type": "Runtime",
++			"LoadingPhase": "Default",
++			"PlatformAllowList": [
++				"Win64",
++				"Mac",
++				"Linux"
++			]
+ 		}
+ 	],
+ 	"Plugins": [
+diff --git a/Plugins/NameTBD/Resources/AI/Docs/media.md b/Plugins/NameTBD/Resources/AI/Docs/media.md
+new file mode 100644
+index 0000000..ed9a2c3
+--- /dev/null
++++ b/Plugins/NameTBD/Resources/AI/Docs/media.md
+@@ -0,0 +1,10 @@
++# Video in UI (Media Box)
++
++## The widget
++MediaBox ("Media Box", module NameTBDMedia) plays a Media Box Clip in UMG. Clip = the video (Media Source), a Poster (still of its first frame, shown at once and whenever stopped), Start Time, Loop / Loop Start / Loop End, Audio (Auto, Embedded, Separate Sound, Silent) and Sound, Subtitles (paste SRT / VTT into Subtitle Text). Play When: Manual, Visible, Hovered, Focused, Hovered Or Focused; Hover Target (None = the button it is in); After Trigger (Stop And Rewind, Pause, Keep Playing); Hover Delay. Fit: Contain, Cover (Crop Focus), Stretch. Events: On Opened, On First Frame, On Looped, On Ended, On Error, On Subtitle Changed, On Status Changed. Functions: Play, Pause, Stop, Seek, Set Clip, Set Volume, Set Muted, Get Progress.
++
++## Instant start
++Give every preview of one screen the same Warm Group name: the pool keeps the hovered or focused clip and its neighbours (or what the pointer heads for) open and paused on frame 0, so the next hover starts that frame. For one shared preview driven by buttons: Add To Media Warm Group on each button (with its clip), Set Clip (Play Now) from On Hovered, Stop from On Unhovered. Keep Media Clip Warm pins a clip. Project Settings > Plugins > Media Box: Max Warm Players (4), Warm Per Group (3), fades, Sound Class.
++
++## Recipes
++Skill tree preview: a Media Box inside each skill button, Play When Hovered Or Focused, Warm Group "SkillTree", Fit Cover. Card preview: a Media Box in the Info Card's content, Play When Visible. Trailer panel: Play When Manual, a Media cue (Play) in the panel's entrance animation, Stop in its exit; a Media Box Transport Bar Widget Blueprint (parts PlayPauseButton, ScrubBar, TimeText...) under it. Progress bar: a value track with the Media Progress input.
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/NameTBDMedia.Build.cs b/Plugins/NameTBD/Source/NameTBDMedia/NameTBDMedia.Build.cs
+new file mode 100644
+index 0000000..f5c84ad
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/NameTBDMedia.Build.cs
+@@ -0,0 +1,52 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++using UnrealBuildTool;
++
++// Video in UI: the Media Box widget, its clips, the warm player pool that lets a clip start the instant it is hovered, the
++// Media cue and Media Progress input of the Widget Animations, and a transport bar base class. Kept out of the core NameTBD
++// module so the library itself never depends on the Media Framework; only this module does.
++public class NameTBDMedia : ModuleRules
++{
++	public NameTBDMedia(ReadOnlyTargetRules Target) : base(Target)
++	{
++		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
++
++		PublicDependencyModuleNames.AddRange(
++			new string[]
++			{
++				"Core",
++				"CoreUObject",
++				"Engine",
++				"UMG",
++				"MediaAssets",
++				"DeveloperSettings",
++				"NameTBD"
++			}
++		);
++
++		PrivateDependencyModuleNames.AddRange(
++			new string[]
++			{
++				"Slate",
++				"SlateCore",
++				"Media",        // the Media Framework's interfaces under UMediaPlayer
++				"AudioMixer",   // UMediaSoundComponent's base (USynthComponent)
++				"RenderCore",   // FlushRenderingCommands, for Generate Poster
++				"RHI"           // GMaxRHIFeatureLevel, for Generate Poster
++			}
++		);
++
++		// Editor-only: Generate Poster saves a texture asset next to the clip. Kept out of game builds, where that code is
++		// compiled out by WITH_EDITOR.
++		if (Target.bBuildEditor)
++		{
++			PrivateDependencyModuleNames.AddRange(
++				new string[]
++				{
++					"UnrealEd",
++					"AssetRegistry"
++				}
++			);
++		}
++	}
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBox.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBox.cpp
+new file mode 100644
+index 0000000..854c8a4
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBox.cpp
+@@ -0,0 +1,857 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "MediaBox.h"
++
++#include "MediaBoxClip.h"
++#include "MediaBoxLog.h"
++#include "MediaBoxPool.h"
++#include "MediaBoxSettings.h"
++#include "SMediaBox.h"
++
++#include "Blueprint/UserWidget.h"
++#include "Blueprint/WidgetTree.h"
++#include "Components/Button.h"
++#include "Components/PanelWidget.h"
++#include "Engine/Texture.h"
++#include "Engine/World.h"
++#include "Framework/Application/SlateApplication.h"
++#include "HAL/PlatformTime.h"
++#include "MediaPlayer.h"
++#include "MediaTexture.h"
++#include "NameTBD/Diegetic/DiegeticScreenComponent.h"
++#include "NameTBD/WidgetAnimation/WidgetAnimStateMachineLibrary.h"
++#include "Styling/CoreStyle.h"
++
++#if WITH_EDITOR
++#include "Editor.h"
++#include "Editor/WidgetCompilerLog.h"
++#endif
++
++#define LOCTEXT_NAMESPACE "MediaBox"
++
++namespace MediaBoxPrivate
++{
++	/** Frames it may go undrawn before it counts as hidden - one frame of slack for a skipped paint. */
++	constexpr uint64 HiddenAfterFrames = 2;
++
++	/** How often the Diegetic Screen it is on is looked up again, and its Warm Group place checked. */
++	constexpr double LookupInterval = 0.5;
++
++	/** Progress changes smaller than this aren't passed to the state machine. */
++	constexpr float ProgressStep = 0.005f;
++}
++
++UMediaBox::UMediaBox()
++{
++	// A preview is decoration: hover and clicks go through it to the button it is in.
++	SetVisibilityInternal(ESlateVisibility::HitTestInvisible);
++
++	if (!IsRunningDedicatedServer())
++	{
++		SubtitleFont = FCoreStyle::GetDefaultFontStyle("Regular", 14);
++	}
++}
++
++// ---------------------------------------------------------------------------------------------
++// UWidget
++// ---------------------------------------------------------------------------------------------
++
++TSharedRef<SWidget> UMediaBox::RebuildWidget()
++{
++	MyMediaBox = SNew(SMediaBox).OwnerBox(this);
++
++	if (UMediaBoxPool* Pool = GetPool())
++	{
++		Pool->RegisterBox(this);
++		RegisteredPool = Pool;
++	}
++	UpdateBrushes();
++	UpdateGroupMembership();
++	return MyMediaBox.ToSharedRef();
++}
++
++void UMediaBox::SynchronizeProperties()
++{
++	Super::SynchronizeProperties();
++
++	// A clip changed in the Details (or a Blueprint's construction): what played stops, the new poster shows.
++	if (LeasedPlayer && LeasedPlayer->GetClip() != MediaClip)
++	{
++		ReleasePlayer(/*bRewind=*/true);
++	}
++	if (LeasedPlayer)
++	{
++		LeasedPlayer->SetRate(PlaybackRate);
++		LeasedPlayer->SetVolume(GetEffectiveVolume());
++	}
++	UpdateBrushes();
++	UpdateGroupMembership();
++	UpdateStatus();
++
++	if (MyMediaBox.IsValid())
++	{
++		MyMediaBox->Invalidate(EInvalidateWidgetReason::LayoutAndVolatility);
++	}
++}
++
++void UMediaBox::ReleaseSlateResources(bool bReleaseChildren)
++{
++	Super::ReleaseSlateResources(bReleaseChildren);
++
++	MyMediaBox.Reset();
++
++	// Not while being garbage collected: the pool takes back a lease whose box has gone by itself.
++	if (!IsUnreachable())
++	{
++		ReleasePlayer(/*bRewind=*/true);
++		if (UMediaBoxPool* Pool = RegisteredPool.Get())
++		{
++			if (!JoinedGroup.IsNone())
++			{
++				Pool->RemoveFromGroup(JoinedGroup, JoinedTarget.Get());
++			}
++			Pool->UnregisterBox(this);
++		}
++	}
++	JoinedGroup = NAME_None;
++	JoinedTarget.Reset();
++	RegisteredPool.Reset();
++	LeasedPlayer = nullptr;
++	VideoAlpha = 0.f;
++}
++
++#if WITH_EDITOR
++const FText UMediaBox::GetPaletteCategory()
++{
++	return LOCTEXT("PaletteCategory", "NameTBD");
++}
++
++void UMediaBox::ValidateCompiledDefaults(IWidgetCompilerLog& CompileLog) const
++{
++	Super::ValidateCompiledDefaults(CompileLog);
++
++	const FText WidgetName = FText::FromString(GetName());
++	if (!MediaClip)
++	{
++		if (PlayWhen != EMediaBoxTrigger::Manual)
++		{
++			CompileLog.Note(FText::Format(LOCTEXT("NoClipNote", "{0}: no Clip - it plays nothing until Set Clip gives it one."), WidgetName));
++		}
++		return;
++	}
++	if (!MediaClip->MediaSource)
++	{
++		CompileLog.Warning(FText::Format(LOCTEXT("NoSourceWarning", "{0}: its Clip {1} has no Media Source."), WidgetName, FText::FromString(MediaClip->GetName())));
++	}
++	if (!MediaClip->Poster)
++	{
++		CompileLog.Note(FText::Format(LOCTEXT("NoPosterNote", "{0}: its Clip {1} has no Poster - the box is empty until the first frame arrives. Generate Poster on the clip makes one."), WidgetName, FText::FromString(MediaClip->GetName())));
++	}
++	if (PlayWhen != EMediaBoxTrigger::Manual && PlayWhen != EMediaBoxTrigger::Visible && WarmGroup.IsNone())
++	{
++		CompileLog.Note(FText::Format(LOCTEXT("NoGroupNote", "{0}: plays on hover or focus but is in no Warm Group - give the previews of this screen one Warm Group name so the next hover starts at once."), WidgetName));
++	}
++}
++#endif
++
++TArray<FString> UMediaBox::GetHoverTargetOptions() const
++{
++	TArray<FString> Options;
++	Options.Add(TEXT("None"));
++	if (const UWidgetTree* Tree = GetTypedOuter<UWidgetTree>())
++	{
++		Tree->ForEachWidget([this, &Options](UWidget* Widget)
++		{
++			if (Widget && Widget != this)
++			{
++				Options.Add(Widget->GetName());
++			}
++		});
++	}
++	return Options;
++}
++
++// ---------------------------------------------------------------------------------------------
++// Blueprint
++// ---------------------------------------------------------------------------------------------
++
++void UMediaBox::Play()
++{
++	bPlayRequested = true;
++	bHeldPaused = false;
++	if (CanPlayHere() && MediaClip)
++	{
++		if (!WarmGroup.IsNone())
++		{
++			if (UMediaBoxPool* Pool = GetPool())
++			{
++				Pool->SetGroupFocusByClip(WarmGroup, MediaClip);
++			}
++		}
++		StartPlayback(/*bRestartIfEnded=*/true);
++	}
++	UpdateStatus();
++}
++
++void UMediaBox::Pause()
++{
++	bPlayRequested = false;
++	if (bTriggerActive)
++	{
++		bHeldPaused = true;
++	}
++	if (LeasedPlayer)
++	{
++		LeasedPlayer->Pause(UMediaBoxSettings::Get().AudioFadeOut);
++	}
++	UpdateStatus();
++}
++
++void UMediaBox::Stop()
++{
++	if (bTriggerActive)
++	{
++		bHeldPaused = true;
++	}
++	BeginStop(/*bFade=*/true);
++	UpdateStatus();
++}
++
++void UMediaBox::TogglePlayPause()
++{
++	if (IsPlaying() || (LeasedPlayer && !bStopping && Status == EMediaBoxStatus::Loading))
++	{
++		Pause();
++	}
++	else
++	{
++		Play();
++	}
++}
++
++void UMediaBox::Seek(float Seconds)
++{
++	if (LeasedPlayer && !bStopping)
++	{
++		LeasedPlayer->Seek(Seconds);
++	}
++	else
++	{
++		PendingSeek = FMath::Max(0.f, Seconds);
++	}
++}
++
++void UMediaBox::SetClip(UMediaBoxClip* NewClip, bool bPlayNow)
++{
++	if (NewClip != MediaClip)
++	{
++		// What played stops at once - no fade: the new clip's poster is shown on this frame.
++		ReleasePlayer(/*bRewind=*/true);
++		MediaClip = NewClip;
++		PendingSeek = -1.f;
++		bPlayRequested = false;
++		UpdateBrushes();
++		UpdateGroupMembership();
++	}
++	if (bPlayNow)
++	{
++		Play();
++	}
++	UpdateStatus();
++	if (MyMediaBox.IsValid())
++	{
++		MyMediaBox->Invalidate(EInvalidateWidgetReason::Paint);
++	}
++}
++
++void UMediaBox::SetHoverTarget(UWidget* NewHoverTarget)
++{
++	HoverTargetOverride = NewHoverTarget;
++	UpdateGroupMembership();
++}
++
++void UMediaBox::SetPlaybackRate(float NewRate)
++{
++	PlaybackRate = FMath::Max(0.05f, NewRate);
++	if (LeasedPlayer)
++	{
++		LeasedPlayer->SetRate(PlaybackRate);
++	}
++}
++
++void UMediaBox::SetVolume(float NewVolume)
++{
++	AudioVolume = FMath::Max(0.f, NewVolume);
++	if (LeasedPlayer)
++	{
++		LeasedPlayer->SetVolume(GetEffectiveVolume());
++	}
++}
++
++void UMediaBox::SetMuted(bool bNewMuted)
++{
++	bMuted = bNewMuted;
++	if (LeasedPlayer)
++	{
++		LeasedPlayer->SetVolume(GetEffectiveVolume());
++	}
++}
++
++bool UMediaBox::IsPlaying() const
++{
++	return Status == EMediaBoxStatus::Playing;
++}
++
++float UMediaBox::GetTime() const
++{
++	return LeasedPlayer && !bStopping ? LeasedPlayer->GetTime() : 0.f;
++}
++
++float UMediaBox::GetDuration() const
++{
++	return LeasedPlayer ? LeasedPlayer->GetDuration() : 0.f;
++}
++
++float UMediaBox::GetProgress() const
++{
++	const float Duration = GetDuration();
++	return Duration > 0.f ? FMath::Clamp(GetTime() / Duration, 0.f, 1.f) : 0.f;
++}
++
++UMediaPlayer* UMediaBox::GetMediaPlayer() const
++{
++	return LeasedPlayer ? LeasedPlayer->GetMediaPlayer() : nullptr;
++}
++
++UMediaTexture* UMediaBox::GetMediaTexture() const
++{
++	return LeasedPlayer ? LeasedPlayer->GetMediaTexture() : nullptr;
++}
++
++// ---------------------------------------------------------------------------------------------
++// Playing
++// ---------------------------------------------------------------------------------------------
++
++bool UMediaBox::CanPlayHere() const
++{
++	return !IsDesignTime() || bPreviewInDesigner;
++}
++
++UMediaBoxPool* UMediaBox::GetPool() const
++{
++	if (UMediaBoxPool* Pool = RegisteredPool.Get())
++	{
++		return Pool;
++	}
++	return UMediaBoxPool::Get(this);
++}
++
++float UMediaBox::GetFadeIn() const
++{
++	return VideoFadeIn >= 0.f ? VideoFadeIn : UMediaBoxSettings::Get().VideoFadeIn;
++}
++
++float UMediaBox::GetFadeOut() const
++{
++	return VideoFadeOut >= 0.f ? VideoFadeOut : UMediaBoxSettings::Get().VideoFadeOut;
++}
++
++float UMediaBox::GetEffectiveVolume() const
++{
++	return bMuted ? 0.f : AudioVolume;
++}
++
++void UMediaBox::StartPlayback(bool bRestartIfEnded)
++{
++	UMediaBoxPool* Pool = GetPool();
++	if (!Pool || !MediaClip)
++	{
++		return;
++	}
++
++	const bool bWasStopping = bStopping;
++	bStopping = false;
++
++	if (!LeasedPlayer)
++	{
++		LeasedPlayer = Pool->Acquire(MediaClip, this);
++		if (!LeasedPlayer)
++		{
++			return;
++		}
++		bSentOpened = false;
++		bSentFirstFrame = false;
++		bSentError = false;
++		SeenLoops = 0;
++		SeenEnds = 0;
++		VideoBrush.SetResourceObject(LeasedPlayer->GetMediaTexture());
++		LeasedPlayer->SetRate(PlaybackRate);
++		LeasedPlayer->SetVolume(GetEffectiveVolume());
++	}
++
++	if (PendingSeek >= 0.f)
++	{
++		LeasedPlayer->Seek(PendingSeek);
++		PendingSeek = -1.f;
++	}
++
++	const EMediaBoxPlayerState PlayerState = LeasedPlayer->GetState();
++	const bool bNeedsPlay = PlayerState == EMediaBoxPlayerState::Ready || PlayerState == EMediaBoxPlayerState::Paused
++		|| PlayerState == EMediaBoxPlayerState::Opening || PlayerState == EMediaBoxPlayerState::Priming || PlayerState == EMediaBoxPlayerState::Settling
++		|| (PlayerState == EMediaBoxPlayerState::Ended && bRestartIfEnded)
++		|| (PlayerState == EMediaBoxPlayerState::Playing && bWasStopping);
++	if (!bNeedsPlay)
++	{
++		return;
++	}
++
++	// Audio in a game; in the designer only with Audio In Designer, through the editor's world.
++	UWorld* AudioWorld = GetWorld();
++	bool bWithAudio = MediaClip->GetResolvedAudio() != EMediaBoxAudio::Silent;
++	if (IsDesignTime())
++	{
++		bWithAudio = bWithAudio && UMediaBoxSettings::Get().bAudioInDesigner;
++#if WITH_EDITOR
++		if (bWithAudio && !AudioWorld && GEditor)
++		{
++			AudioWorld = GEditor->GetEditorWorldContext().World();
++		}
++#endif
++	}
++	LeasedPlayer->Play(AudioWorld, bWithAudio && AudioWorld != nullptr);
++}
++
++void UMediaBox::BeginStop(bool bFade)
++{
++	bPlayRequested = false;
++	if (!LeasedPlayer)
++	{
++		VideoAlpha = 0.f;
++		return;
++	}
++
++	if (!bFade || GetFadeOut() <= 0.f || VideoAlpha <= 0.f)
++	{
++		ReleasePlayer(/*bRewind=*/true);
++		return;
++	}
++
++	// The video plays on under the fade back to the poster; its audio fades with it.
++	bStopping = true;
++	LeasedPlayer->FadeOutAudio(UMediaBoxSettings::Get().AudioFadeOut);
++}
++
++void UMediaBox::ReleasePlayer(bool bRewind)
++{
++	if (LeasedPlayer)
++	{
++		if (UMediaBoxPool* Pool = GetPool())
++		{
++			Pool->Release(LeasedPlayer, bRewind, UMediaBoxSettings::Get().AudioFadeOut);
++		}
++		LeasedPlayer = nullptr;
++	}
++	VideoBrush.SetResourceObject(nullptr);
++	VideoAlpha = 0.f;
++	bStopping = false;
++	bPausedByHidden = false;
++
++	if (SubtitleIndex != INDEX_NONE || !CurrentSubtitle.IsEmpty())
++	{
++		SubtitleIndex = INDEX_NONE;
++		CurrentSubtitle = FText::GetEmpty();
++		OnSubtitleChanged.Broadcast(this, CurrentSubtitle);
++	}
++	if (MyMediaBox.IsValid())
++	{
++		MyMediaBox->Invalidate(EInvalidateWidgetReason::Paint);
++	}
++}
++
++void UMediaBox::UpdateBrushes()
++{
++	UTexture* PosterTexture = MediaClip ? MediaClip->Poster.Get() : nullptr;
++	PosterBrush.SetResourceObject(PosterTexture);
++	if (PosterTexture)
++	{
++		PosterBrush.ImageSize = FVector2D(PosterTexture->GetSurfaceWidth(), PosterTexture->GetSurfaceHeight());
++	}
++	VideoBrush.SetResourceObject(LeasedPlayer ? LeasedPlayer->GetMediaTexture() : nullptr);
++}
++
++UWidget* UMediaBox::ResolveHoverTarget() const
++{
++	if (UWidget* Override = HoverTargetOverride.Get())
++	{
++		return Override;
++	}
++	if (UWidget* Cached = CachedHoverTarget.Get())
++	{
++		if (CachedHoverTargetName == HoverTargetName)
++		{
++			return Cached;
++		}
++	}
++
++	UWidget* Found = nullptr;
++	if (!HoverTargetName.IsNone())
++	{
++		// By name: in the Widget Blueprint it is in, then in each around it.
++		for (UUserWidget* UserWidget = GetTypedOuter<UUserWidget>(); UserWidget && !Found; UserWidget = UserWidget->GetTypedOuter<UUserWidget>())
++		{
++			Found = UserWidget->GetWidgetFromName(HoverTargetName);
++		}
++	}
++	if (!Found)
++	{
++		// The nearest button around it - through the User Widgets it is in, out to the screen.
++		const UWidget* From = this;
++		while (From && !Found)
++		{
++			for (UPanelWidget* Parent = From->GetParent(); Parent; Parent = Parent->GetParent())
++			{
++				if (Parent->IsA<UButton>())
++				{
++					Found = Parent;
++					break;
++				}
++			}
++			From = From->GetTypedOuter<UUserWidget>();
++		}
++	}
++
++	CachedHoverTarget = Found ? Found : const_cast<UMediaBox*>(this);
++	CachedHoverTargetName = HoverTargetName;
++	return CachedHoverTarget.Get();
++}
++
++bool UMediaBox::IsHiddenNow()
++{
++	if (!MyMediaBox.IsValid())
++	{
++		return true;
++	}
++
++	// On a Diegetic Screen: hidden while the screen is (it may draw rarely; a paused video would never ask it to draw again).
++	if (const UDiegeticScreenComponent* Screen = DiegeticScreen.Get())
++	{
++		return !Screen->IsScreenShown() || !Screen->IsAwake();
++	}
++	return GFrameCounter > LastPaintFrame + MediaBoxPrivate::HiddenAfterFrames;
++}
++
++bool UMediaBox::IsTriggerHeld()
++{
++	switch (PlayWhen)
++	{
++	case EMediaBoxTrigger::Visible:
++		return !IsHiddenNow();
++	case EMediaBoxTrigger::Hovered:
++	case EMediaBoxTrigger::Focused:
++	case EMediaBoxTrigger::HoveredOrFocused:
++	{
++		UWidget* Target = ResolveHoverTarget();
++		if (!Target || IsHiddenNow())
++		{
++			return false;
++		}
++
++		bool bHovered = false;
++		if (PlayWhen != EMediaBoxTrigger::Focused)
++		{
++			if (Target == this)
++			{
++				// Itself: it doesn't take hover (Hit Test Invisible), so the pointer over its area counts.
++				if (FSlateApplication::IsInitialized() && MyMediaBox.IsValid())
++				{
++					bHovered = GetCachedGeometry().IsUnderLocation(FSlateApplication::Get().GetCursorPos());
++				}
++			}
++			else
++			{
++				bHovered = Target->IsHovered();
++			}
++		}
++		const bool bFocused = PlayWhen != EMediaBoxTrigger::Hovered && (Target->HasAnyUserFocus() || Target->HasFocusedDescendants());
++		return bHovered || bFocused;
++	}
++	default:
++		return false;
++	}
++}
++
++void UMediaBox::UpdateGroupMembership()
++{
++	UMediaBoxPool* Pool = RegisteredPool.Get();
++	if (!Pool)
++	{
++		return;
++	}
++
++	// Manual boxes play what they are told: they say nothing about what will be hovered next.
++	const bool bJoins = !WarmGroup.IsNone() && MediaClip && PlayWhen != EMediaBoxTrigger::Manual && CanPlayHere();
++	UWidget* Target = bJoins ? ResolveHoverTarget() : nullptr;
++
++	if (!JoinedGroup.IsNone() && (JoinedGroup != WarmGroup || JoinedTarget.Get() != Target || !bJoins))
++	{
++		Pool->RemoveFromGroup(JoinedGroup, JoinedTarget.Get());
++		JoinedGroup = NAME_None;
++		JoinedTarget.Reset();
++	}
++	if (bJoins && Target)
++	{
++		Pool->AddToGroup(WarmGroup, Target, MediaClip);
++		JoinedGroup = WarmGroup;
++		JoinedTarget = Target;
++	}
++}
++
++void UMediaBox::TickMediaBox(float DeltaTime)
++{
++	using namespace MediaBoxPrivate;
++
++	const double Now = FPlatformTime::Seconds();
++	if (Now >= NextScreenLookup)
++	{
++		NextScreenLookup = Now + LookupInterval;
++		DiegeticScreen = UDiegeticScreenComponent::AnyScreensExist() ? UDiegeticScreenComponent::FindScreenForWidget(this) : nullptr;
++		UpdateGroupMembership();
++	}
++
++	if (!CanPlayHere() || !MediaClip)
++	{
++		if (LeasedPlayer)
++		{
++			ReleasePlayer(/*bRewind=*/true);
++		}
++		UpdateStatus();
++		return;
++	}
++
++	// The trigger, held for Hover Delay.
++	const bool bHeld = IsTriggerHeld();
++	TriggerHeldFor = bHeld ? TriggerHeldFor + DeltaTime : 0.f;
++	const bool bNowActive = bHeld && TriggerHeldFor >= HoverDelay;
++
++	if (bNowActive && !bTriggerActive)
++	{
++		bTriggerActive = true;
++		bHeldPaused = false;
++		if (!JoinedGroup.IsNone())
++		{
++			if (UMediaBoxPool* Pool = GetPool())
++			{
++				Pool->SetGroupFocus(JoinedGroup, JoinedTarget.Get());
++			}
++		}
++		StartPlayback(/*bRestartIfEnded=*/true);
++	}
++	else if (!bNowActive && bTriggerActive)
++	{
++		bTriggerActive = false;
++		bHeldPaused = false;
++		if (!bPlayRequested)
++		{
++			switch (AfterTrigger)
++			{
++			case EMediaBoxAfterTrigger::StopAndRewind:
++				BeginStop(/*bFade=*/true);
++				break;
++			case EMediaBoxAfterTrigger::Pause:
++				if (LeasedPlayer)
++				{
++					LeasedPlayer->Pause(UMediaBoxSettings::Get().AudioFadeOut);
++				}
++				break;
++			case EMediaBoxAfterTrigger::KeepPlaying:
++				bPlayRequested = true;
++				break;
++			default:
++				break;
++			}
++		}
++	}
++
++	// Playing, or paused while hidden.
++	const bool bWantsPlay = bPlayRequested || (bTriggerActive && !bHeldPaused);
++	if (bWantsPlay && !bStopping)
++	{
++		if (bPauseWhenHidden && IsHiddenNow())
++		{
++			if (LeasedPlayer && !bPausedByHidden)
++			{
++				LeasedPlayer->Pause(0.f);
++				bPausedByHidden = true;
++			}
++		}
++		else
++		{
++			bPausedByHidden = false;
++			StartPlayback(/*bRestartIfEnded=*/false);
++		}
++	}
++
++	if (LeasedPlayer)
++	{
++		// What the player has to say: opened, failed, looped, ended.
++		if (!bSentOpened && LeasedPlayer->IsOpened())
++		{
++			bSentOpened = true;
++			OnOpened.Broadcast(this);
++		}
++		if (!bSentError && LeasedPlayer->HasFailed())
++		{
++			bSentError = true;
++			bPlayRequested = false;
++			OnError.Broadcast(this, LeasedPlayer->GetError());
++			FireMachineTrigger(MachineInputs.Error);
++		}
++		while (LeasedPlayer && SeenLoops < LeasedPlayer->GetLoopCount())
++		{
++			++SeenLoops;
++			OnLooped.Broadcast(this);
++			FireMachineTrigger(MachineInputs.Looped);
++		}
++		while (LeasedPlayer && SeenEnds < LeasedPlayer->GetEndCount())
++		{
++			++SeenEnds;
++			bPlayRequested = false;
++			OnEnded.Broadcast(this);
++			FireMachineTrigger(MachineInputs.Ended);
++		}
++	}
++
++	// The video over the poster: fading in once its first frame is in, back out as it stops.
++	const float PreviousAlpha = VideoAlpha;
++	if (LeasedPlayer)
++	{
++		const EMediaBoxPlayerState PlayerState = LeasedPlayer->GetState();
++		const bool bShowsVideo = LeasedPlayer->IsFrameReady() && (PlayerState == EMediaBoxPlayerState::Playing
++			|| PlayerState == EMediaBoxPlayerState::Paused || PlayerState == EMediaBoxPlayerState::Ended);
++
++		if (bStopping)
++		{
++			VideoAlpha -= DeltaTime / FMath::Max(GetFadeOut(), KINDA_SMALL_NUMBER);
++			if (VideoAlpha <= 0.f)
++			{
++				ReleasePlayer(/*bRewind=*/true);
++			}
++		}
++		else if (bShowsVideo && VideoAlpha < 1.f)
++		{
++			const float FadeIn = GetFadeIn();
++			VideoAlpha = FadeIn > 0.f ? FMath::Min(1.f, VideoAlpha + DeltaTime / FadeIn) : 1.f;
++			if (!bSentFirstFrame)
++			{
++				bSentFirstFrame = true;
++				OnFirstFrame.Broadcast(this);
++				FireMachineTrigger(MachineInputs.FirstFrame);
++			}
++		}
++	}
++
++	UpdateSubtitle();
++	UpdateStatus();
++	UpdateMachineInputs(/*bForce=*/false);
++
++	// Repainted while the video moves; a Diegetic Screen told it has a new frame to draw.
++	const bool bMoving = (LeasedPlayer && (LeasedPlayer->IsPlaying() || VideoAlpha > 0.f)) || VideoAlpha != PreviousAlpha;
++	if (bMoving)
++	{
++		if (MyMediaBox.IsValid())
++		{
++			MyMediaBox->Invalidate(EInvalidateWidgetReason::Paint);
++		}
++		if (UDiegeticScreenComponent* Screen = DiegeticScreen.Get())
++		{
++			Screen->MarkContentChanged();
++		}
++	}
++}
++
++void UMediaBox::UpdateSubtitle()
++{
++	int32 NewIndex = INDEX_NONE;
++	if (LeasedPlayer && !bStopping && MediaClip && MediaClip->Subtitles.Num() > 0)
++	{
++		NewIndex = MediaBoxSubtitles::FindCue(MediaClip->Subtitles, LeasedPlayer->GetTime());
++	}
++	if (NewIndex != SubtitleIndex)
++	{
++		SubtitleIndex = NewIndex;
++		CurrentSubtitle = NewIndex != INDEX_NONE ? MediaClip->Subtitles[NewIndex].Text : FText::GetEmpty();
++		OnSubtitleChanged.Broadcast(this, CurrentSubtitle);
++		if (MyMediaBox.IsValid())
++		{
++			MyMediaBox->Invalidate(EInvalidateWidgetReason::Paint);
++		}
++	}
++}
++
++void UMediaBox::UpdateStatus()
++{
++	EMediaBoxStatus NewStatus = EMediaBoxStatus::Stopped;
++	if (!MediaClip)
++	{
++		NewStatus = EMediaBoxStatus::Empty;
++	}
++	else if (LeasedPlayer && !bStopping)
++	{
++		switch (LeasedPlayer->GetState())
++		{
++		case EMediaBoxPlayerState::Failed:
++			NewStatus = EMediaBoxStatus::Error;
++			break;
++		case EMediaBoxPlayerState::Playing:
++			NewStatus = VideoAlpha > 0.f || LeasedPlayer->IsFrameReady() ? EMediaBoxStatus::Playing : EMediaBoxStatus::Loading;
++			break;
++		case EMediaBoxPlayerState::Paused:
++			NewStatus = EMediaBoxStatus::Paused;
++			break;
++		case EMediaBoxPlayerState::Ended:
++			NewStatus = EMediaBoxStatus::Ended;
++			break;
++		default:
++			NewStatus = (bPlayRequested || (bTriggerActive && !bHeldPaused)) ? EMediaBoxStatus::Loading : EMediaBoxStatus::Stopped;
++			break;
++		}
++	}
++
++	if (NewStatus != Status)
++	{
++		Status = NewStatus;
++		OnStatusChanged.Broadcast(this, Status);
++	}
++}
++
++void UMediaBox::UpdateMachineInputs(bool bForce)
++{
++	if (MachineInputs.IsEmpty() || IsDesignTime())
++	{
++		return;
++	}
++
++	const bool bPlayingNow = Status == EMediaBoxStatus::Playing;
++	if (!MachineInputs.Playing.IsNone() && (bForce || bPlayingNow != bMachinePlaying))
++	{
++		bMachinePlaying = bPlayingNow;
++		UWidgetAnimStateMachineLibrary::SetStateMachineBool(this, MachineInputs.StateMachine, MachineInputs.Playing, bPlayingNow);
++	}
++
++	const float ProgressNow = GetProgress();
++	if (!MachineInputs.Progress.IsNone() && (bForce || FMath::Abs(ProgressNow - MachineProgress) >= MediaBoxPrivate::ProgressStep || (ProgressNow == 0.f && MachineProgress != 0.f)))
++	{
++		MachineProgress = ProgressNow;
++		UWidgetAnimStateMachineLibrary::SetStateMachineNumber(this, MachineInputs.StateMachine, MachineInputs.Progress, ProgressNow);
++	}
++}
++
++void UMediaBox::FireMachineTrigger(FName Input) const
++{
++	if (!Input.IsNone() && !IsDesignTime())
++	{
++		UWidgetAnimStateMachineLibrary::FireStateMachineTrigger(const_cast<UMediaBox*>(this), MachineInputs.StateMachine, Input);
++	}
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxClip.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxClip.cpp
+new file mode 100644
+index 0000000..fd89fe9
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxClip.cpp
+@@ -0,0 +1,520 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "MediaBoxClip.h"
++
++#include "MediaBoxLog.h"
++#include "MediaBoxSettings.h"
++
++#include "Engine/Texture.h"
++#include "FileMediaSource.h"
++#include "HAL/FileManager.h"
++#include "MediaSource.h"
++#include "Misc/Paths.h"
++#include "Sound/SoundBase.h"
++
++#if WITH_EDITOR
++#include "AssetRegistry/AssetRegistryModule.h"
++#include "CanvasItem.h"
++#include "CanvasTypes.h"
++#include "Containers/Ticker.h"
++#include "Engine/Texture2D.h"
++#include "Engine/TextureRenderTarget2D.h"
++#include "Framework/Notifications/NotificationManager.h"
++#include "MediaPlayer.h"
++#include "MediaTexture.h"
++#include "Misc/DataValidation.h"
++#include "Misc/PackageName.h"
++#include "RenderingThread.h"
++#include "RHI.h"
++#include "UObject/Package.h"
++#include "UObject/StrongObjectPtr.h"
++#include "Widgets/Notifications/SNotificationList.h"
++#endif
++
++#define LOCTEXT_NAMESPACE "MediaBoxClip"
++
++EMediaBoxAudio UMediaBoxClip::GetResolvedAudio() const
++{
++	if (Audio == EMediaBoxAudio::Auto)
++	{
++		return Sound ? EMediaBoxAudio::SeparateSound : EMediaBoxAudio::Embedded;
++	}
++	return Audio;
++}
++
++FName UMediaBoxClip::GetPlayerName() const
++{
++	return PlayerName.IsNone() ? UMediaBoxSettings::Get().PlayerName : PlayerName;
++}
++
++void UMediaBoxClip::PostLoad()
++{
++	Super::PostLoad();
++
++	// Pasted text never read (an asset saved by hand, or made in code): read it now.
++	if (Subtitles.Num() == 0 && !SubtitleText.IsEmpty())
++	{
++		MediaBoxSubtitles::Parse(SubtitleText, Subtitles);
++	}
++}
++
++#if WITH_EDITOR
++void UMediaBoxClip::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
++{
++	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UMediaBoxClip, SubtitleText))
++	{
++		MediaBoxSubtitles::Parse(SubtitleText, Subtitles);
++	}
++	Super::PostEditChangeProperty(PropertyChangedEvent);
++}
++
++namespace MediaBoxClipPrivate
++{
++	/**
++	 * Whether an MP4 / MOV file has its index (moov) before its media data (mdat) - "fast start": a player can start it without
++	 * reading to the end of the file. Unset when the file can't be read or isn't laid out as boxes.
++	 */
++	TOptional<bool> IsFastStart(const FString& Path)
++	{
++		const TUniquePtr<FArchive> Reader(IFileManager::Get().CreateFileReader(*Path));
++		if (!Reader)
++		{
++			return {};
++		}
++
++		const int64 FileSize = Reader->TotalSize();
++		int64 Offset = 0;
++		bool bSeenMediaData = false;
++		for (int32 BoxIndex = 0; BoxIndex < 64 && Offset + 8 <= FileSize; ++BoxIndex)
++		{
++			uint8 Header[16];
++			Reader->Seek(Offset);
++			Reader->Serialize(Header, 8);
++			uint64 BoxSize = (uint64(Header[0]) << 24) | (uint64(Header[1]) << 16) | (uint64(Header[2]) << 8) | uint64(Header[3]);
++			const bool bIsIndex = FMemory::Memcmp(Header + 4, "moov", 4) == 0;
++			const bool bIsMediaData = FMemory::Memcmp(Header + 4, "mdat", 4) == 0;
++			if (BoxSize == 1 && Offset + 16 <= FileSize)
++			{
++				Reader->Serialize(Header + 8, 8);
++				BoxSize = 0;
++				for (int32 ByteIndex = 8; ByteIndex < 16; ++ByteIndex)
++				{
++					BoxSize = (BoxSize << 8) | uint64(Header[ByteIndex]);
++				}
++			}
++			else if (BoxSize == 0)
++			{
++				BoxSize = uint64(FileSize - Offset);
++			}
++
++			if (bIsIndex)
++			{
++				return !bSeenMediaData;
++			}
++			if (bIsMediaData)
++			{
++				bSeenMediaData = true;
++			}
++			if (BoxSize < 8)
++			{
++				return {};
++			}
++			Offset += int64(BoxSize);
++		}
++		return {};
++	}
++}
++
++EDataValidationResult UMediaBoxClip::IsDataValid(FDataValidationContext& Context) const
++{
++	EDataValidationResult Result = Super::IsDataValid(Context);
++
++	if (!MediaSource)
++	{
++		Context.AddError(LOCTEXT("NoSource", "No Media Source: the clip plays nothing."));
++		return EDataValidationResult::Invalid;
++	}
++	if (!MediaSource->Validate())
++	{
++		Context.AddError(FText::Format(LOCTEXT("SourceInvalid", "Its Media Source {0} isn't valid - is the file there?"), FText::FromString(MediaSource->GetName())));
++		Result = EDataValidationResult::Invalid;
++	}
++
++	if (const UFileMediaSource* FileSource = Cast<UFileMediaSource>(MediaSource))
++	{
++		const FString Path = FileSource->GetFullPath();
++		const FString Extension = FPaths::GetExtension(Path).ToLower();
++		if (Extension == TEXT("mp4") || Extension == TEXT("m4v") || Extension == TEXT("mov"))
++		{
++			const TOptional<bool> bFastStart = MediaBoxClipPrivate::IsFastStart(Path);
++			if (bFastStart.IsSet() && !bFastStart.GetValue())
++			{
++				Context.AddWarning(FText::Format(LOCTEXT("NotFastStart", "{0} has its index at the end of the file: it opens slower. Re-encode it with the index first (ffmpeg: -movflags +faststart)."), FText::FromString(FPaths::GetCleanFilename(Path))));
++			}
++		}
++	}
++
++	if (!Poster)
++	{
++		Context.AddWarning(LOCTEXT("NoPoster", "No Poster: the Media Box shows nothing until the first frame arrives. Generate Poster makes one from the video."));
++	}
++	if (Audio == EMediaBoxAudio::SeparateSound && !Sound)
++	{
++		Context.AddError(LOCTEXT("NoSound", "Audio is Separate Sound but there is no Sound."));
++		Result = EDataValidationResult::Invalid;
++	}
++	if (bLoop && LoopEnd > 0.f && LoopEnd <= LoopStart)
++	{
++		Context.AddError(LOCTEXT("BadLoop", "Loop End is at or before Loop Start."));
++		Result = EDataValidationResult::Invalid;
++	}
++
++	return Result == EDataValidationResult::NotValidated ? EDataValidationResult::Valid : Result;
++}
++
++// ---------------------------------------------------------------------------------------------
++// Generate Poster
++// ---------------------------------------------------------------------------------------------
++
++namespace MediaBoxPosterMaker
++{
++	/** One poster being made: a player of its own, opened, played to Poster Time, paused, its frame copied out. */
++	struct FJob
++	{
++		TWeakObjectPtr<UMediaBoxClip> Clip;
++		TStrongObjectPtr<UMediaPlayer> Player;
++		TStrongObjectPtr<UMediaTexture> Texture;
++		float At = 0.f;
++		int32 Step = 0;
++		int32 Frames = 0;
++		double StartedAt = 0.0;
++	};
++
++	void Notify(const FText& Message, bool bSuccess)
++	{
++		FNotificationInfo Info(Message);
++		Info.ExpireDuration = bSuccess ? 4.f : 8.f;
++		FSlateNotificationManager::Get().AddNotification(Info);
++		if (!bSuccess)
++		{
++			UE_LOG(LogMediaBox, Warning, TEXT("%s"), *Message.ToString());
++		}
++	}
++
++	/** Copies the media texture's frame into a texture asset next to the clip (or into its existing poster) and sets it. */
++	bool Capture(FJob& Job)
++	{
++		UMediaBoxClip* PosterClip = Job.Clip.Get();
++		UMediaTexture* Source = Job.Texture.Get();
++		const int32 Width = Source ? Source->GetWidth() : 0;
++		const int32 Height = Source ? Source->GetHeight() : 0;
++		if (!PosterClip || Width <= 0 || Height <= 0 || !Source->GetResource())
++		{
++			return false;
++		}
++
++		UTextureRenderTarget2D* Target = NewObject<UTextureRenderTarget2D>(GetTransientPackage(), NAME_None, RF_Transient);
++		Target->RenderTargetFormat = RTF_RGBA8;
++		Target->ClearColor = FLinearColor::Black;
++		Target->InitAutoFormat(Width, Height);
++		Target->UpdateResourceImmediate(true);
++
++		FTextureRenderTargetResource* TargetResource = Target->GameThread_GetRenderTargetResource();
++		if (!TargetResource)
++		{
++			return false;
++		}
++		{
++			FCanvas Canvas(TargetResource, nullptr, FGameTime::GetTimeSinceAppStart(), GMaxRHIFeatureLevel);
++			FCanvasTileItem Tile(FVector2D::ZeroVector, Source->GetResource(), FVector2D(Width, Height), FLinearColor::White);
++			Tile.BlendMode = SE_BLEND_Opaque;
++			Canvas.DrawItem(Tile);
++			Canvas.Flush_GameThread(true);
++		}
++		FlushRenderingCommands();
++
++		TArray<FColor> Pixels;
++		if (!TargetResource->ReadPixels(Pixels) || Pixels.Num() != Width * Height)
++		{
++			return false;
++		}
++		for (FColor& Pixel : Pixels)
++		{
++			Pixel.A = 255;
++		}
++
++		// Into the clip's poster when it is one made here before (same name), else a new texture <clip>_Poster.
++		const FString AssetName = PosterClip->GetName() + TEXT("_Poster");
++		const FString PackageName = FPackageName::GetLongPackagePath(PosterClip->GetOutermost()->GetName()) / AssetName;
++		UTexture2D* PosterTexture = Cast<UTexture2D>(PosterClip->Poster.Get());
++		if (!PosterTexture || PosterTexture->GetName() != AssetName)
++		{
++			UPackage* Package = CreatePackage(*PackageName);
++			PosterTexture = FindObject<UTexture2D>(Package, *AssetName);
++			if (!PosterTexture)
++			{
++				PosterTexture = NewObject<UTexture2D>(Package, *AssetName, RF_Public | RF_Standalone | RF_Transactional);
++				FAssetRegistryModule::AssetCreated(PosterTexture);
++			}
++		}
++
++		PosterTexture->Modify();
++		PosterTexture->Source.Init(Width, Height, 1, 1, TSF_BGRA8, reinterpret_cast<const uint8*>(Pixels.GetData()));
++		PosterTexture->SRGB = true;
++		PosterTexture->LODGroup = TEXTUREGROUP_UI;
++		PosterTexture->MipGenSettings = TMGS_NoMipmaps;
++		PosterTexture->CompressionSettings = TC_Default;
++		PosterTexture->PostEditChange();
++		PosterTexture->MarkPackageDirty();
++
++		PosterClip->Modify();
++		PosterClip->Poster = PosterTexture;
++		PosterClip->PostEditChange();
++		PosterClip->MarkPackageDirty();
++		return true;
++	}
++
++	/** Advances a job; false once it is done (made or failed). */
++	bool TickJob(const TSharedRef<FJob>& Job)
++	{
++		UMediaPlayer* Player = Job->Player.Get();
++		UMediaBoxClip* PosterClip = Job->Clip.Get();
++		if (!Player || !PosterClip)
++		{
++			return false;
++		}
++
++		const double Elapsed = FPlatformTime::Seconds() - Job->StartedAt;
++		if (Player->HasError() || Elapsed > 15.0)
++		{
++			Notify(FText::Format(LOCTEXT("PosterFailed", "Generate Poster: couldn't play {0} (is its player plugin enabled in the editor?)."), FText::FromString(PosterClip->GetName())), false);
++			Player->Close();
++			return false;
++		}
++
++		++Job->Frames;
++		switch (Job->Step)
++		{
++		case 0:
++			// Opening.
++			if (Player->IsReady())
++			{
++				if (Job->At > 0.f && Player->SupportsSeeking())
++				{
++					Player->Seek(FTimespan::FromSeconds(Job->At));
++				}
++				Player->Play();
++				Job->Step = 1;
++				Job->Frames = 0;
++			}
++			return true;
++		case 1:
++			// Playing, until a frame past Poster Time is in.
++			if (Player->GetTime().GetTotalSeconds() > Job->At + 0.02 || Job->Frames > 120)
++			{
++				Player->Pause();
++				Job->Step = 2;
++				Job->Frames = 0;
++			}
++			return true;
++		default:
++			// A few frames for the texture to catch up, then the copy.
++			if (Job->Frames < 4)
++			{
++				return true;
++			}
++			if (Capture(*Job))
++			{
++				Notify(FText::Format(LOCTEXT("PosterMade", "Generate Poster: {0} has its poster."), FText::FromString(PosterClip->GetName())), true);
++			}
++			else
++			{
++				Notify(FText::Format(LOCTEXT("PosterNoFrame", "Generate Poster: no frame came from {0}."), FText::FromString(PosterClip->GetName())), false);
++			}
++			Player->Close();
++			return false;
++		}
++	}
++}
++
++void UMediaBoxClip::GeneratePoster()
++{
++	using namespace MediaBoxPosterMaker;
++
++	if (!MediaSource)
++	{
++		Notify(LOCTEXT("PosterNoSource", "Generate Poster: the clip has no Media Source."), false);
++		return;
++	}
++
++	const TSharedRef<FJob> Job = MakeShared<FJob>();
++	Job->Clip = this;
++	Job->At = PosterTime >= 0.f ? PosterTime : StartTime;
++	Job->StartedAt = FPlatformTime::Seconds();
++	Job->Player.Reset(NewObject<UMediaPlayer>(GetTransientPackage(), NAME_None, RF_Transient));
++	Job->Player->PlayOnOpen = false;
++	Job->Player->SetDesiredPlayerName(GetPlayerName());
++	Job->Texture.Reset(NewObject<UMediaTexture>(GetTransientPackage(), NAME_None, RF_Transient));
++	Job->Texture->AutoClear = false;
++	Job->Texture->SetMediaPlayer(Job->Player.Get());
++	Job->Texture->UpdateResource();
++
++	if (!Job->Player->OpenSource(MediaSource))
++	{
++		Notify(FText::Format(LOCTEXT("PosterOpenFailed", "Generate Poster: couldn't open {0}."), FText::FromString(MediaSource->GetUrl())), false);
++		return;
++	}
++
++	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Job](float)
++	{
++		return TickJob(Job);
++	}));
++}
++#endif // WITH_EDITOR
++
++// =====================================================================================================
++// Subtitles
++// =====================================================================================================
++
++namespace MediaBoxSubtitlesPrivate
++{
++	/** "01:02:03,500", "02:03.500", "3.5" - seconds, or below 0 when it isn't a time. */
++	double ParseTime(FString Text)
++	{
++		Text.TrimStartAndEndInline();
++		Text.ReplaceInline(TEXT(","), TEXT("."));
++		TArray<FString> Parts;
++		Text.ParseIntoArray(Parts, TEXT(":"), /*InCullEmpty=*/false);
++		if (Parts.Num() == 0 || Parts.Num() > 3)
++		{
++			return -1.0;
++		}
++		double Seconds = 0.0;
++		for (const FString& Part : Parts)
++		{
++			if (Part.IsEmpty() || !Part.IsNumeric())
++			{
++				return -1.0;
++			}
++			Seconds = Seconds * 60.0 + FCString::Atod(*Part);
++		}
++		return Seconds;
++	}
++
++	/** Takes out <i>, </b>, <c.yellow>, {\an8}-style markup. */
++	FString StripTags(const FString& Line)
++	{
++		FString Out;
++		Out.Reserve(Line.Len());
++		int32 Depth = 0;
++		for (const TCHAR Char : Line)
++		{
++			if (Char == TEXT('<') || Char == TEXT('{'))
++			{
++				++Depth;
++			}
++			else if ((Char == TEXT('>') || Char == TEXT('}')) && Depth > 0)
++			{
++				--Depth;
++			}
++			else if (Depth == 0)
++			{
++				Out.AppendChar(Char);
++			}
++		}
++		return Out.TrimStartAndEnd();
++	}
++}
++
++void MediaBoxSubtitles::Parse(const FString& Source, TArray<FMediaBoxSubtitleCue>& OutCues)
++{
++	using namespace MediaBoxSubtitlesPrivate;
++
++	OutCues.Reset();
++
++	FString Normalized = Source;
++	Normalized.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
++	Normalized.ReplaceInline(TEXT("\r"), TEXT("\n"));
++	TArray<FString> Lines;
++	Normalized.ParseIntoArray(Lines, TEXT("\n"), /*InCullEmpty=*/false);
++
++	int32 LineIndex = 0;
++	while (LineIndex < Lines.Num())
++	{
++		FString Line = Lines[LineIndex].TrimStartAndEnd();
++		if (Line.Len() > 0 && Line[0] == TCHAR(0xFEFF))
++		{
++			Line.RightChopInline(1);
++		}
++
++		// WebVTT blocks that aren't cues: skipped to the next blank line.
++		if (Line.StartsWith(TEXT("NOTE")) || Line.StartsWith(TEXT("STYLE")) || Line.StartsWith(TEXT("REGION")))
++		{
++			while (LineIndex < Lines.Num() && !Lines[LineIndex].TrimStartAndEnd().IsEmpty())
++			{
++				++LineIndex;
++			}
++			continue;
++		}
++
++		const int32 Arrow = Line.Find(TEXT("-->"));
++		if (Arrow == INDEX_NONE)
++		{
++			++LineIndex;
++			continue;
++		}
++
++		// The end time is the first word after the arrow; WebVTT cue settings may follow it.
++		FString EndText = Line.Mid(Arrow + 3).TrimStart();
++		int32 Space = INDEX_NONE;
++		if (EndText.FindChar(TEXT(' '), Space) || EndText.FindChar(TEXT('\t'), Space))
++		{
++			EndText.LeftInline(Space);
++		}
++		const double Start = ParseTime(Line.Left(Arrow));
++		const double End = ParseTime(EndText);
++
++		// Its text: the lines under it, up to a blank line.
++		++LineIndex;
++		TArray<FString> TextLines;
++		while (LineIndex < Lines.Num() && !Lines[LineIndex].TrimStartAndEnd().IsEmpty())
++		{
++			const FString Stripped = StripTags(Lines[LineIndex]);
++			if (!Stripped.IsEmpty())
++			{
++				TextLines.Add(Stripped);
++			}
++			++LineIndex;
++		}
++
++		if (Start >= 0.0 && End > Start && TextLines.Num() > 0)
++		{
++			FMediaBoxSubtitleCue& Cue = OutCues.AddDefaulted_GetRef();
++			Cue.Start = static_cast<float>(Start);
++			Cue.End = static_cast<float>(End);
++			Cue.Text = FText::FromString(FString::Join(TextLines, TEXT("\n")));
++		}
++	}
++
++	OutCues.StableSort([](const FMediaBoxSubtitleCue& A, const FMediaBoxSubtitleCue& B) { return A.Start < B.Start; });
++}
++
++int32 MediaBoxSubtitles::FindCue(TConstArrayView<FMediaBoxSubtitleCue> Cues, float Seconds)
++{
++	int32 Found = INDEX_NONE;
++	for (int32 CueIndex = 0; CueIndex < Cues.Num(); ++CueIndex)
++	{
++		const FMediaBoxSubtitleCue& Cue = Cues[CueIndex];
++		if (Cue.Start > Seconds)
++		{
++			break;
++		}
++		if (Seconds < Cue.End)
++		{
++			Found = CueIndex;
++		}
++	}
++	return Found;
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxCue.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxCue.cpp
+new file mode 100644
+index 0000000..591fb03
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxCue.cpp
+@@ -0,0 +1,199 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "MediaBoxCue.h"
++
++#include "MediaBox.h"
++#include "MediaBoxClip.h"
++
++#include "Blueprint/UserWidget.h"
++#include "Blueprint/WidgetTree.h"
++#include "Components/PanelWidget.h"
++#include "Components/Widget.h"
++
++#define LOCTEXT_NAMESPACE "MediaBoxCue"
++
++namespace MediaBoxFindPrivate
++{
++	/** The first Media Box at or beneath Widget, through panels and into User Widgets. */
++	UMediaBox* FindUnder(UWidget* Widget)
++	{
++		if (!Widget)
++		{
++			return nullptr;
++		}
++		if (UMediaBox* Box = Cast<UMediaBox>(Widget))
++		{
++			return Box;
++		}
++		if (const UUserWidget* UserWidget = Cast<UUserWidget>(Widget))
++		{
++			return UserWidget->WidgetTree ? FindUnder(UserWidget->WidgetTree->RootWidget) : nullptr;
++		}
++		if (const UPanelWidget* Panel = Cast<UPanelWidget>(Widget))
++		{
++			for (int32 ChildIndex = 0; ChildIndex < Panel->GetChildrenCount(); ++ChildIndex)
++			{
++				if (UMediaBox* Box = FindUnder(Panel->GetChildAt(ChildIndex)))
++				{
++					return Box;
++				}
++			}
++		}
++		return nullptr;
++	}
++
++	/** The User Widget a widget is in, or the widget itself when it is one. */
++	UUserWidget* FirstUserWidget(UWidget* Widget)
++	{
++		if (UUserWidget* AsUserWidget = Cast<UUserWidget>(Widget))
++		{
++			return AsUserWidget;
++		}
++		return Widget ? Widget->GetTypedOuter<UUserWidget>() : nullptr;
++	}
++}
++
++UMediaBox* MediaBoxFind::Find(UWidget* From, UWidget* Host, FName BoxName)
++{
++	using namespace MediaBoxFindPrivate;
++
++	if (!BoxName.IsNone())
++	{
++		for (UWidget* Start : { From, Host })
++		{
++			for (UUserWidget* UserWidget = FirstUserWidget(Start); UserWidget; UserWidget = UserWidget->GetTypedOuter<UUserWidget>())
++			{
++				if (UMediaBox* Named = Cast<UMediaBox>(UserWidget->GetWidgetFromName(BoxName)))
++				{
++					return Named;
++				}
++			}
++		}
++		return nullptr;
++	}
++
++	if (UMediaBox* Under = FindUnder(From))
++	{
++		return Under;
++	}
++	for (UUserWidget* UserWidget = FirstUserWidget(From); UserWidget; UserWidget = UserWidget->GetTypedOuter<UUserWidget>())
++	{
++		if (UMediaBox* Around = FindUnder(UserWidget))
++		{
++			return Around;
++		}
++	}
++	return nullptr;
++}
++
++// =====================================================================================================
++// Media cue
++// =====================================================================================================
++
++FText FWidgetAnimMediaCueEvaluator::GetDisplayName() const
++{
++	return LOCTEXT("MediaName", "Media");
++}
++
++FText FWidgetAnimMediaCueEvaluator::GetDescription() const
++{
++	return LOCTEXT("MediaDescription", "Plays, pauses, stops, seeks or swaps the clip of a Media Box: the one named, else the track's widget, inside it, or the nearest around it. Seen in the editor's previews where the box has Preview In Designer on.");
++}
++
++FText FWidgetAnimMediaCueEvaluator::GetTrackSummary(const FInstancedStruct& Params) const
++{
++	const FWidgetAnimMediaCueParams* CueParams = GetParams(Params);
++	if (!CueParams)
++	{
++		return FText::GetEmpty();
++	}
++
++	FText What;
++	switch (CueParams->Action)
++	{
++	case EWidgetAnimMediaCueAction::Play:            What = LOCTEXT("PlaySummary", "Play"); break;
++	case EWidgetAnimMediaCueAction::Pause:           What = LOCTEXT("PauseSummary", "Pause"); break;
++	case EWidgetAnimMediaCueAction::Stop:            What = LOCTEXT("StopSummary", "Stop"); break;
++	case EWidgetAnimMediaCueAction::TogglePlayPause: What = LOCTEXT("ToggleSummary", "Toggle Play / Pause"); break;
++	case EWidgetAnimMediaCueAction::Seek:            What = FText::Format(LOCTEXT("SeekSummary", "Seek {0} s"), FText::AsNumber(CueParams->SeekTime)); break;
++	case EWidgetAnimMediaCueAction::SetClip:
++	default:
++		What = CueParams->CueClip
++			? FText::Format(LOCTEXT("SetClipSummary", "Set Clip {0}"), FText::FromString(CueParams->CueClip->GetName()))
++			: LOCTEXT("SetClipNoneSummary", "Set Clip (none)");
++		break;
++	}
++
++	return CueParams->MediaBoxName.IsNone()
++		? What
++		: FText::Format(LOCTEXT("SummaryOnBox", "{0} on {1}"), What, FText::FromName(CueParams->MediaBoxName));
++}
++
++void FWidgetAnimMediaCueEvaluator::Fire(const FWidgetAnimCueContext& Context) const
++{
++	const FWidgetAnimMediaCueParams* CueParams = Context.Params ? GetParams(*Context.Params) : nullptr;
++	UWidget* TrackWidget = Context.Info.Target ? Context.Info.Target.Get() : Context.Info.Host.Get();
++	if (!CueParams || !TrackWidget)
++	{
++		return;
++	}
++
++	UMediaBox* Box = MediaBoxFind::Find(TrackWidget, Context.Info.Host, CueParams->MediaBoxName);
++	if (!Box)
++	{
++		return;
++	}
++
++	switch (CueParams->Action)
++	{
++	case EWidgetAnimMediaCueAction::Play:            Box->Play(); break;
++	case EWidgetAnimMediaCueAction::Pause:           Box->Pause(); break;
++	case EWidgetAnimMediaCueAction::Stop:            Box->Stop(); break;
++	case EWidgetAnimMediaCueAction::TogglePlayPause: Box->TogglePlayPause(); break;
++	case EWidgetAnimMediaCueAction::Seek:            Box->Seek(CueParams->SeekTime); break;
++	case EWidgetAnimMediaCueAction::SetClip:         Box->SetClip(CueParams->CueClip, CueParams->bPlayClip); break;
++	default: break;
++	}
++}
++
++// =====================================================================================================
++// Media Progress input
++// =====================================================================================================
++
++bool FWidgetAnimInput_MediaProgress::Sample(const FWidgetAnimInputContext& Context, FVector4& OutValue)
++{
++	// Looked up once per widget it measures, not every frame.
++	if (!Found.IsValid() || FoundFor.Get() != Context.MeasuredWidget)
++	{
++		Found = MediaBoxFind::Find(Context.MeasuredWidget, Context.HostWidget, MediaBoxName);
++		FoundFor = Context.MeasuredWidget;
++	}
++	const UMediaBox* Box = Found.Get();
++	if (!Box)
++	{
++		return false;
++	}
++
++	double Value = 0.0;
++	switch (Measure)
++	{
++	case EMediaBoxInputMeasure::Seconds: Value = Box->GetTime(); break;
++	case EMediaBoxInputMeasure::Playing: Value = Box->IsPlaying() ? 1.0 : 0.0; break;
++	case EMediaBoxInputMeasure::Progress:
++	default:                             Value = Box->GetProgress(); break;
++	}
++	OutValue = WidgetAnimValue::FromFloat(Value);
++	return true;
++}
++
++FString FWidgetAnimInput_MediaProgress::GetSummary() const
++{
++	switch (Measure)
++	{
++	case EMediaBoxInputMeasure::Seconds: return TEXT("Media Seconds");
++	case EMediaBoxInputMeasure::Playing: return TEXT("Media Playing");
++	default:                             return TEXT("Media Progress");
++	}
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxLibrary.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxLibrary.cpp
+new file mode 100644
+index 0000000..7780b3c
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxLibrary.cpp
+@@ -0,0 +1,71 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "MediaBoxLibrary.h"
++
++#include "MediaBoxClip.h"
++#include "MediaBoxLog.h"
++#include "MediaBoxPool.h"
++
++#include "Components/Widget.h"
++
++void UMediaBoxLibrary::AddToMediaWarmGroup(UWidget* Widget, FName Group, UMediaBoxClip* Clip)
++{
++	if (UMediaBoxPool* Pool = Widget ? UMediaBoxPool::Get(Widget) : nullptr)
++	{
++		Pool->AddToGroup(Group, Widget, Clip);
++	}
++}
++
++void UMediaBoxLibrary::RemoveFromMediaWarmGroup(UWidget* Widget, FName Group)
++{
++	if (UMediaBoxPool* Pool = Widget ? UMediaBoxPool::Get(Widget) : nullptr)
++	{
++		Pool->RemoveFromGroup(Group, Widget);
++	}
++}
++
++void UMediaBoxLibrary::ClearMediaWarmGroup(UObject* WorldContextObject, FName Group)
++{
++	if (UMediaBoxPool* Pool = UMediaBoxPool::Get(WorldContextObject))
++	{
++		Pool->ClearGroup(Group);
++	}
++}
++
++void UMediaBoxLibrary::SetMediaWarmGroupFocus(UWidget* Widget, FName Group)
++{
++	if (UMediaBoxPool* Pool = Widget ? UMediaBoxPool::Get(Widget) : nullptr)
++	{
++		Pool->SetGroupFocus(Group, Widget);
++	}
++}
++
++void UMediaBoxLibrary::KeepMediaClipWarm(UObject* WorldContextObject, UMediaBoxClip* Clip, bool bKeepWarm)
++{
++	if (UMediaBoxPool* Pool = UMediaBoxPool::Get(WorldContextObject))
++	{
++		Pool->PinClip(Clip, bKeepWarm);
++	}
++}
++
++void UMediaBoxLibrary::SetMediaBoxSubtitlesEnabled(bool bEnabled)
++{
++	MediaBoxRuntime::SetSubtitlesEnabled(bEnabled);
++}
++
++bool UMediaBoxLibrary::AreMediaBoxSubtitlesEnabled()
++{
++	return MediaBoxRuntime::AreSubtitlesEnabled();
++}
++
++void UMediaBoxLibrary::GetMediaBoxPoolStats(UObject* WorldContextObject, int32& WarmPlayers, int32& PlayingPlayers, int32& WarmStarts, int32& ColdStarts)
++{
++	WarmPlayers = PlayingPlayers = WarmStarts = ColdStarts = 0;
++	if (const UMediaBoxPool* Pool = UMediaBoxPool::Get(WorldContextObject))
++	{
++		WarmPlayers = Pool->GetNumWarm();
++		PlayingPlayers = Pool->GetNumLeased();
++		WarmStarts = Pool->WarmStarts;
++		ColdStarts = Pool->ColdStarts;
++	}
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxLog.h b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxLog.h
+new file mode 100644
+index 0000000..eee8e9b
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxLog.h
+@@ -0,0 +1,27 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++
++/**
++ * The Media Box's log category, shared by its files. Declared once here and defined once, in NameTBDMediaModule.cpp: a static
++ * category in each .cpp is two definitions of one type as soon as a unity build puts the two files together.
++ */
++DECLARE_LOG_CATEGORY_EXTERN(LogMediaBox, Log, All);
++
++namespace MediaBoxRuntime
++{
++	/** MediaBox.Log 1: players opened, warmed, leased, closed; warm and cold starts. */
++	bool IsLogging();
++
++	/** MediaBox.MaxWarmPlayers: below 0 (the default) the project setting is used. */
++	int32 GetMaxWarmPlayersOverride();
++
++	/** Set Media Box Subtitles Enabled - starts at the project setting. */
++	bool AreSubtitlesEnabled();
++	void SetSubtitlesEnabled(bool bEnabled);
++}
++
++#define MEDIABOX_LOG(Format, ...) \
++	do { if (MediaBoxRuntime::IsLogging()) { UE_LOG(LogMediaBox, Log, Format, ##__VA_ARGS__); } } while (0)
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp
+new file mode 100644
+index 0000000..42ded09
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp
+@@ -0,0 +1,1244 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "MediaBoxPool.h"
++
++#include "MediaBox.h"
++#include "MediaBoxClip.h"
++#include "MediaBoxLog.h"
++#include "MediaBoxSettings.h"
++
++#include "Components/AudioComponent.h"
++#include "Components/Widget.h"
++#include "Engine/Engine.h"
++#include "Engine/GameInstance.h"
++#include "Engine/World.h"
++#include "Framework/Application/SlateApplication.h"
++#include "HAL/PlatformTime.h"
++#include "Kismet/GameplayStatics.h"
++#include "MediaPlayer.h"
++#include "MediaSoundComponent.h"
++#include "MediaSource.h"
++#include "MediaTexture.h"
++#include "Sound/SoundBase.h"
++#include "Sound/SoundClass.h"
++#include "Stats/Stats.h"
++#include "UObject/StrongObjectPtr.h"
++
++DECLARE_STATS_GROUP(TEXT("MediaBox"), STATGROUP_MediaBox, STATCAT_Advanced);
++DECLARE_CYCLE_STAT(TEXT("Pool Tick"), STAT_MediaBoxPoolTick, STATGROUP_MediaBox);
++DECLARE_DWORD_COUNTER_STAT(TEXT("Players"), STAT_MediaBoxPlayers, STATGROUP_MediaBox);
++DECLARE_DWORD_COUNTER_STAT(TEXT("Warm Players"), STAT_MediaBoxWarmPlayers, STATGROUP_MediaBox);
++DECLARE_DWORD_COUNTER_STAT(TEXT("Leased Players"), STAT_MediaBoxLeasedPlayers, STATGROUP_MediaBox);
++DECLARE_DWORD_COUNTER_STAT(TEXT("Media Boxes"), STAT_MediaBoxBoxes, STATGROUP_MediaBox);
++
++namespace MediaBoxPoolPrivate
++{
++	/** Frames a step (priming, settling) may take before it is given up as done - so a player that never reports can't hang. */
++	constexpr int32 MaxPrimeFrames = 45;
++	constexpr int32 MaxSettleFrames = 30;
++
++	/** How far back from Loop End a range loop seeks back - about one frame early, so the frame after Loop End is never seen. */
++	constexpr float LoopEndLead = 1.f / 120.f;
++
++	/** How often a Separate Sound is checked against the video. */
++	constexpr double SyncCheckInterval = 0.25;
++
++	/** The editor's pool: for widgets in worlds without a game instance - the designer, editor worlds. */
++	TStrongObjectPtr<UMediaBoxPool>& GetEditorPool()
++	{
++		static TStrongObjectPtr<UMediaBoxPool> EditorPool;
++		return EditorPool;
++	}
++
++	FTimespan ToTimespan(float Seconds)
++	{
++		return FTimespan::FromSeconds(FMath::Max(0.0, static_cast<double>(Seconds)));
++	}
++
++	FString DescribeClip(const UMediaBoxClip* ForClip)
++	{
++		return ForClip ? ForClip->GetName() : TEXT("(none)");
++	}
++}
++
++// =====================================================================================================
++// UMediaBoxPlayer
++// =====================================================================================================
++
++void UMediaBoxPlayer::Initialize()
++{
++	MediaPlayer = NewObject<UMediaPlayer>(this, NAME_None, RF_Transient);
++	MediaPlayer->PlayOnOpen = false;
++	MediaPlayer->OnMediaOpened.AddDynamic(this, &UMediaBoxPlayer::HandleMediaOpened);
++	MediaPlayer->OnMediaOpenFailed.AddDynamic(this, &UMediaBoxPlayer::HandleMediaOpenFailed);
++	MediaPlayer->OnEndReached.AddDynamic(this, &UMediaBoxPlayer::HandleEndReached);
++	MediaPlayer->OnSeekCompleted.AddDynamic(this, &UMediaBoxPlayer::HandleSeekCompleted);
++
++	// Keeps its last frame while paused - a warm player's first frame stays in it until the hover. A new clip's frames are never
++	// shown before its own first one is in (IsFrameReady), so what a previous clip left behind is never seen.
++	MediaTexture = NewObject<UMediaTexture>(this, NAME_None, RF_Transient);
++	MediaTexture->AutoClear = false;
++	MediaTexture->ClearColor = FLinearColor::Transparent;
++	MediaTexture->SetMediaPlayer(MediaPlayer);
++	MediaTexture->UpdateResource();
++}
++
++bool UMediaBoxPlayer::Open(UMediaBoxClip* NewClip)
++{
++	Close();
++
++	Clip = NewClip;
++	if (!Clip || !Clip->MediaSource)
++	{
++		Fail(TEXT("the clip has no Media Source"));
++		return false;
++	}
++
++	// Its sound is loaded and its first chunk cached now, with the video, so it starts on the frame the video does.
++	if (Clip->Sound && Clip->GetResolvedAudio() == EMediaBoxAudio::SeparateSound)
++	{
++		UGameplayStatics::PrimeSound(Clip->Sound);
++	}
++
++	MediaPlayer->PlayOnOpen = false;
++	MediaPlayer->SetDesiredPlayerName(Clip->GetPlayerName());
++
++	// Opening may report back at once, inside OpenSource: the state says so first.
++	State = EMediaBoxPlayerState::Opening;
++	StepFrames = 0;
++	MEDIABOX_LOG(TEXT("Media Box: opening %s"), *Clip->GetName());
++	if (!MediaPlayer->OpenSource(Clip->MediaSource))
++	{
++		Fail(FString::Printf(TEXT("the player couldn't open %s (is its player plugin enabled for this platform?)"), *Clip->MediaSource->GetUrl()));
++		return false;
++	}
++	return true;
++}
++
++void UMediaBoxPlayer::Close()
++{
++	StopAudio(0.f);
++	if (MediaPlayer && State != EMediaBoxPlayerState::Free)
++	{
++		MediaPlayer->Close();
++	}
++	if (Clip)
++	{
++		MEDIABOX_LOG(TEXT("Media Box: closed %s"), *Clip->GetName());
++	}
++
++	State = EMediaBoxPlayerState::Free;
++	Clip = nullptr;
++	Error.Reset();
++	bFrameReady = false;
++	bPlayRequested = false;
++	StepFrames = 0;
++	LastTime = 0.f;
++	LoopCount = 0;
++	EndCount = 0;
++	Rate = 1.f;
++}
++
++void UMediaBoxPlayer::Fail(const FString& Reason)
++{
++	State = EMediaBoxPlayerState::Failed;
++	Error = Reason;
++	bPlayRequested = false;
++	StopAudio(0.f);
++	UE_LOG(LogMediaBox, Warning, TEXT("Media Box: %s - %s"), *MediaBoxPoolPrivate::DescribeClip(Clip), *Reason);
++}
++
++void UMediaBoxPlayer::HandleMediaOpened(FString OpenedUrl)
++{
++	if (State != EMediaBoxPlayerState::Opening || !Clip)
++	{
++		return;
++	}
++
++	// The whole video loops in the player itself (seamless); a range loops by seeking back (see Tick).
++	MediaPlayer->SetLooping(Clip->LoopsWholeVideo());
++
++	if (Clip->StartTime > 0.f && MediaPlayer->SupportsSeeking())
++	{
++		MediaPlayer->Seek(MediaBoxPoolPrivate::ToTimespan(Clip->StartTime));
++	}
++
++	// Played silently (no audio started) until its first frame is in the texture; then paused back on its start - warm - or,
++	// if a Media Box is already waiting for it, played on from there with its audio.
++	PrimeFrom = Clip->StartTime;
++	LastTime = PrimeFrom;
++	MediaPlayer->Play();
++	State = EMediaBoxPlayerState::Priming;
++	StepFrames = 0;
++}
++
++void UMediaBoxPlayer::HandleMediaOpenFailed(FString FailedUrl)
++{
++	Fail(FString::Printf(TEXT("couldn't open %s"), *FailedUrl));
++}
++
++void UMediaBoxPlayer::HandleEndReached()
++{
++	if (State != EMediaBoxPlayerState::Playing || !Clip)
++	{
++		return;
++	}
++
++	// A whole-video loop is the player's own; its loops are counted as time going back (Tick).
++	if (MediaPlayer->IsLooping())
++	{
++		return;
++	}
++
++	if (Clip->bLoop)
++	{
++		// A range whose end is the video's end: back to Loop Start.
++		const float LoopFrom = Clip->LoopStart;
++		MediaPlayer->Seek(MediaBoxPoolPrivate::ToTimespan(LoopFrom));
++		MediaPlayer->Play();
++		++LoopCount;
++		LastTime = LoopFrom;
++		if (bAudioPlaying && IsValid(SeparateSound) && WantsSeparateSound())
++		{
++			SeparateSound->Play(LoopFrom);
++			AudioStartMediaTime = LoopFrom;
++			AudioStartWallTime = FPlatformTime::Seconds();
++		}
++		return;
++	}
++
++	State = EMediaBoxPlayerState::Ended;
++	++EndCount;
++	StopAudio(0.05f);
++}
++
++void UMediaBoxPlayer::HandleSeekCompleted()
++{
++	if (State == EMediaBoxPlayerState::Settling)
++	{
++		State = EMediaBoxPlayerState::Ready;
++		MEDIABOX_LOG(TEXT("Media Box: %s is warm"), *MediaBoxPoolPrivate::DescribeClip(Clip));
++		if (bPlayRequested)
++		{
++			StartPlaying();
++		}
++	}
++}
++
++void UMediaBoxPlayer::Play(UWorld* InAudioWorld, bool bWithAudio)
++{
++	bAudioWanted = bWithAudio;
++	if (bWithAudio)
++	{
++		EnsureAudio(InAudioWorld);
++	}
++
++	switch (State)
++	{
++	case EMediaBoxPlayerState::Ready:
++	case EMediaBoxPlayerState::Paused:
++	case EMediaBoxPlayerState::Ended:
++		StartPlaying();
++		break;
++	case EMediaBoxPlayerState::Opening:
++	case EMediaBoxPlayerState::Priming:
++	case EMediaBoxPlayerState::Settling:
++		bPlayRequested = true;
++		break;
++	case EMediaBoxPlayerState::Playing:
++		// Already playing; a fade out in progress (a quick unhover and hover again) is called off.
++		if (bAudioFadingOut)
++		{
++			bAudioFadingOut = false;
++			AudioFade = 1.f;
++			ApplyAudioVolume();
++		}
++		break;
++	default:
++		break;
++	}
++}
++
++void UMediaBoxPlayer::StartPlaying()
++{
++	if (!Clip)
++	{
++		return;
++	}
++	if (State == EMediaBoxPlayerState::Ended)
++	{
++		MediaPlayer->Seek(MediaBoxPoolPrivate::ToTimespan(Clip->StartTime));
++		LastTime = Clip->StartTime;
++	}
++
++	MediaPlayer->Play();
++	if (!FMath::IsNearlyEqual(Rate, 1.f))
++	{
++		MediaPlayer->SetRate(Rate);
++	}
++	State = EMediaBoxPlayerState::Playing;
++	bPlayRequested = false;
++	StartAudio();
++}
++
++void UMediaBoxPlayer::Pause(float FadeOut)
++{
++	bPlayRequested = false;
++	if (State == EMediaBoxPlayerState::Playing)
++	{
++		MediaPlayer->Pause();
++		State = EMediaBoxPlayerState::Paused;
++	}
++	StopAudio(FadeOut);
++}
++
++void UMediaBoxPlayer::Rewind(float FadeOut)
++{
++	bPlayRequested = false;
++	StopAudio(FadeOut);
++
++	switch (State)
++	{
++	case EMediaBoxPlayerState::Playing:
++	case EMediaBoxPlayerState::Paused:
++	case EMediaBoxPlayerState::Ended:
++	case EMediaBoxPlayerState::Ready:
++		if (MediaPlayer->SupportsSeeking() && Clip)
++		{
++			MediaPlayer->Pause();
++			MediaPlayer->Seek(MediaBoxPoolPrivate::ToTimespan(Clip->StartTime));
++			LastTime = Clip->StartTime;
++			State = EMediaBoxPlayerState::Settling;
++			StepFrames = 0;
++		}
++		else
++		{
++			// Can't seek (a live stream): opened again from the start, warm again once it has its frame.
++			UMediaBoxClip* ReopenClip = Clip;
++			Open(ReopenClip);
++		}
++		break;
++	default:
++		// Opening or priming: it carries on to Ready by itself, now that nobody waits for it to play.
++		break;
++	}
++}
++
++void UMediaBoxPlayer::Seek(float Seconds)
++{
++	if (!IsOpened())
++	{
++		return;
++	}
++	MediaPlayer->Seek(MediaBoxPoolPrivate::ToTimespan(Seconds));
++	LastTime = Seconds;
++	if (State == EMediaBoxPlayerState::Ended)
++	{
++		State = EMediaBoxPlayerState::Paused;
++	}
++	if (State == EMediaBoxPlayerState::Playing && bAudioPlaying && IsValid(SeparateSound) && WantsSeparateSound())
++	{
++		SeparateSound->Play(Seconds);
++		AudioStartMediaTime = Seconds;
++		AudioStartWallTime = FPlatformTime::Seconds();
++	}
++}
++
++void UMediaBoxPlayer::SetRate(float NewRate)
++{
++	Rate = FMath::Max(0.01f, NewRate);
++	if (State == EMediaBoxPlayerState::Playing)
++	{
++		MediaPlayer->SetRate(Rate);
++	}
++	if (IsValid(SeparateSound))
++	{
++		SeparateSound->SetPitchMultiplier(Rate);
++		AudioStartMediaTime = GetTime();
++		AudioStartWallTime = FPlatformTime::Seconds();
++	}
++}
++
++void UMediaBoxPlayer::SetVolume(float NewVolume)
++{
++	Volume = FMath::Max(0.f, NewVolume);
++	ApplyAudioVolume();
++}
++
++float UMediaBoxPlayer::GetTime() const
++{
++	return MediaPlayer ? static_cast<float>(MediaPlayer->GetTime().GetTotalSeconds()) : 0.f;
++}
++
++float UMediaBoxPlayer::GetDuration() const
++{
++	return MediaPlayer && IsOpened() ? static_cast<float>(MediaPlayer->GetDuration().GetTotalSeconds()) : 0.f;
++}
++
++bool UMediaBoxPlayer::WantsSeparateSound() const
++{
++	return Clip && Clip->Sound && Clip->GetResolvedAudio() == EMediaBoxAudio::SeparateSound;
++}
++
++bool UMediaBoxPlayer::WantsEmbeddedSound() const
++{
++	return Clip && Clip->GetResolvedAudio() == EMediaBoxAudio::Embedded;
++}
++
++void UMediaBoxPlayer::EnsureAudio(UWorld* InAudioWorld)
++{
++	if (!InAudioWorld)
++	{
++		return;
++	}
++	if (AudioWorld.Get() != InAudioWorld)
++	{
++		DestroyAudio();
++		AudioWorld = InAudioWorld;
++	}
++
++	USoundClass* MediaSoundClass = UMediaBoxSettings::Get().SoundClass.LoadSynchronous();
++
++	if (WantsSeparateSound())
++	{
++		if (!IsValid(SeparateSound))
++		{
++			// 2D, kept across level changes with the pool, never destroyed when it stops: started again on the next play.
++			SeparateSound = UGameplayStatics::CreateSound2D(InAudioWorld, Clip->Sound, 1.f, 1.f, 0.f, nullptr, /*bPersistAcrossLevelTransition=*/true, /*bAutoDestroy=*/false);
++			if (SeparateSound)
++			{
++				SeparateSound->bIsUISound = true;
++				if (MediaSoundClass)
++				{
++					SeparateSound->SoundClassOverride = MediaSoundClass;
++				}
++			}
++		}
++		else if (SeparateSound->Sound != Clip->Sound)
++		{
++			SeparateSound->Stop();
++			SeparateSound->SetSound(Clip->Sound);
++		}
++	}
++
++	if (WantsEmbeddedSound() && !IsValid(EmbeddedSound))
++	{
++		// Ownerless, registered with the world so it ticks and reaches the audio device; 2D, a UI sound.
++		EmbeddedSound = NewObject<UMediaSoundComponent>(this, NAME_None, RF_Transient);
++		EmbeddedSound->bIsUISound = true;
++		EmbeddedSound->bAllowSpatialization = false;
++		if (MediaSoundClass)
++		{
++			EmbeddedSound->SoundClass = MediaSoundClass;
++		}
++		EmbeddedSound->SetMediaPlayer(MediaPlayer);
++		EmbeddedSound->RegisterComponentWithWorld(InAudioWorld);
++	}
++}
++
++void UMediaBoxPlayer::DestroyAudio()
++{
++	if (IsValid(SeparateSound))
++	{
++		SeparateSound->Stop();
++		SeparateSound->DestroyComponent();
++	}
++	SeparateSound = nullptr;
++
++	if (IsValid(EmbeddedSound))
++	{
++		EmbeddedSound->Stop();
++		EmbeddedSound->SetMediaPlayer(nullptr);
++		EmbeddedSound->DestroyComponent();
++	}
++	EmbeddedSound = nullptr;
++
++	bAudioPlaying = false;
++	bAudioFadingOut = false;
++	AudioFade = 1.f;
++}
++
++void UMediaBoxPlayer::StartAudio()
++{
++	if (!bAudioWanted)
++	{
++		return;
++	}
++
++	bAudioFadingOut = false;
++	AudioFade = 1.f;
++
++	if (WantsSeparateSound() && IsValid(SeparateSound))
++	{
++		const float AtTime = GetTime();
++		SeparateSound->SetPitchMultiplier(Rate);
++		SeparateSound->Play(AtTime);
++		AudioStartMediaTime = AtTime;
++		AudioStartWallTime = FPlatformTime::Seconds();
++		NextSyncCheck = AudioStartWallTime + MediaBoxPoolPrivate::SyncCheckInterval;
++		bAudioPlaying = true;
++	}
++	else if (WantsEmbeddedSound() && IsValid(EmbeddedSound))
++	{
++		if (!EmbeddedSound->IsPlaying())
++		{
++			EmbeddedSound->Start();
++		}
++		bAudioPlaying = true;
++	}
++	ApplyAudioVolume();
++}
++
++void UMediaBoxPlayer::StopAudio(float FadeOut)
++{
++	if (!bAudioPlaying)
++	{
++		return;
++	}
++	if (FadeOut > 0.f)
++	{
++		bAudioFadingOut = true;
++		AudioFadeDuration = FadeOut;
++		return;
++	}
++
++	if (IsValid(SeparateSound))
++	{
++		SeparateSound->Stop();
++	}
++	if (IsValid(EmbeddedSound))
++	{
++		EmbeddedSound->Stop();
++	}
++	bAudioPlaying = false;
++	bAudioFadingOut = false;
++	AudioFade = 1.f;
++}
++
++void UMediaBoxPlayer::ApplyAudioVolume()
++{
++	const float ClipVolume = Clip ? Clip->Volume : 1.f;
++	const float Level = Volume * ClipVolume * AudioFade;
++	if (IsValid(SeparateSound))
++	{
++		SeparateSound->SetVolumeMultiplier(Level);
++	}
++	if (IsValid(EmbeddedSound))
++	{
++		EmbeddedSound->SetVolumeMultiplier(Level);
++	}
++}
++
++void UMediaBoxPlayer::Tick(float DeltaTime)
++{
++	using namespace MediaBoxPoolPrivate;
++
++	// Audio fading out: down to silence, then stopped.
++	if (bAudioFadingOut)
++	{
++		AudioFade -= DeltaTime / FMath::Max(AudioFadeDuration, KINDA_SMALL_NUMBER);
++		if (AudioFade <= 0.f)
++		{
++			AudioFade = 0.f;
++			bAudioFadingOut = false;
++			StopAudio(0.f);
++		}
++		else
++		{
++			ApplyAudioVolume();
++		}
++	}
++
++	switch (State)
++	{
++	case EMediaBoxPlayerState::Opening:
++		break;
++
++	case EMediaBoxPlayerState::Priming:
++	{
++		// The first frame is in once the video's time has moved on from where it started (a frame later, to be sure the
++		// texture has it), or after a while whatever it says.
++		++StepFrames;
++		const bool bAdvanced = GetTime() > PrimeFrom + 0.0005f;
++		if (bAdvanced && !bFrameReady)
++		{
++			bFrameReady = true;
++			break;
++		}
++		if (!bFrameReady && StepFrames <= MaxPrimeFrames)
++		{
++			break;
++		}
++		bFrameReady = true;
++
++		if (bPlayRequested)
++		{
++			// A Media Box waits for it: plays on from here - a cold start, a frame or so in.
++			if (!FMath::IsNearlyEqual(Rate, 1.f))
++			{
++				MediaPlayer->SetRate(Rate);
++			}
++			State = EMediaBoxPlayerState::Playing;
++			bPlayRequested = false;
++			StartAudio();
++			break;
++		}
++
++		// Nobody waits: paused, and back on its very first frame - warm.
++		MediaPlayer->Pause();
++		if (Clip && MediaPlayer->SupportsSeeking() && GetTime() > Clip->StartTime + 1.f / 60.f)
++		{
++			MediaPlayer->Seek(ToTimespan(Clip->StartTime));
++			LastTime = Clip->StartTime;
++			State = EMediaBoxPlayerState::Settling;
++			StepFrames = 0;
++		}
++		else
++		{
++			State = EMediaBoxPlayerState::Ready;
++			MEDIABOX_LOG(TEXT("Media Box: %s is warm"), *DescribeClip(Clip));
++		}
++		break;
++	}
++
++	case EMediaBoxPlayerState::Settling:
++		if (++StepFrames > MaxSettleFrames)
++		{
++			HandleSeekCompleted();
++		}
++		break;
++
++	case EMediaBoxPlayerState::Playing:
++	{
++		if (MediaPlayer->IsClosed())
++		{
++			Fail(TEXT("the player closed while playing"));
++			break;
++		}
++
++		const float Now = GetTime();
++
++		// The player's own loop wrapping round: time went back.
++		if (MediaPlayer->IsLooping() && Now + 0.25f < LastTime)
++		{
++			++LoopCount;
++			if (bAudioPlaying && WantsSeparateSound() && IsValid(SeparateSound))
++			{
++				SeparateSound->Play(Now);
++				AudioStartMediaTime = Now;
++				AudioStartWallTime = FPlatformTime::Seconds();
++			}
++		}
++		// A range loop: back to Loop Start just before Loop End.
++		else if (Clip && Clip->bLoop && !Clip->LoopsWholeVideo() && Clip->LoopEnd > 0.f && Now >= Clip->LoopEnd - LoopEndLead)
++		{
++			const float LoopFrom = Clip->LoopStart;
++			MediaPlayer->Seek(ToTimespan(LoopFrom));
++			++LoopCount;
++			LastTime = LoopFrom;
++			if (bAudioPlaying && WantsSeparateSound() && IsValid(SeparateSound))
++			{
++				SeparateSound->Play(LoopFrom);
++				AudioStartMediaTime = LoopFrom;
++				AudioStartWallTime = FPlatformTime::Seconds();
++			}
++			break;
++		}
++
++		// A Separate Sound kept in step: started again at the video's time when it has drifted too far.
++		if (bAudioPlaying && !bAudioFadingOut && WantsSeparateSound() && IsValid(SeparateSound))
++		{
++			const double WallNow = FPlatformTime::Seconds();
++			if (WallNow >= NextSyncCheck)
++			{
++				NextSyncCheck = WallNow + SyncCheckInterval;
++				const float Expected = AudioStartMediaTime + static_cast<float>(WallNow - AudioStartWallTime) * Rate;
++				if (FMath::Abs(Expected - Now) > UMediaBoxSettings::Get().AudioResyncThreshold)
++				{
++					SeparateSound->Play(Now);
++					AudioStartMediaTime = Now;
++					AudioStartWallTime = WallNow;
++				}
++			}
++		}
++
++		LastTime = Now;
++		break;
++	}
++
++	default:
++		break;
++	}
++}
++
++// =====================================================================================================
++// UMediaBoxPool
++// =====================================================================================================
++
++UMediaBoxPool* UMediaBoxPool::Get(const UObject* WorldContext)
++{
++	const UWorld* World = (WorldContext && GEngine) ? GEngine->GetWorldFromContextObject(WorldContext, EGetWorldErrorMode::ReturnNull) : nullptr;
++	if (const UGameInstance* GameInstance = World ? World->GetGameInstance() : nullptr)
++	{
++		if (const UMediaBoxSubsystem* Subsystem = GameInstance->GetSubsystem<UMediaBoxSubsystem>())
++		{
++			if (UMediaBoxPool* GamePool = Subsystem->GetPool())
++			{
++				return GamePool;
++			}
++		}
++	}
++
++	TStrongObjectPtr<UMediaBoxPool>& EditorPool = MediaBoxPoolPrivate::GetEditorPool();
++	if (!EditorPool.IsValid())
++	{
++		EditorPool.Reset(NewObject<UMediaBoxPool>(GetTransientPackage(), TEXT("MediaBoxEditorPool"), RF_Transient));
++		EditorPool->Startup();
++	}
++	return EditorPool.Get();
++}
++
++void UMediaBoxPool::ShutdownEditorPool()
++{
++	TStrongObjectPtr<UMediaBoxPool>& EditorPool = MediaBoxPoolPrivate::GetEditorPool();
++	if (EditorPool.IsValid())
++	{
++		EditorPool->Shutdown();
++		EditorPool.Reset();
++	}
++}
++
++void UMediaBoxPool::Startup()
++{
++	if (!TickHandle.IsValid())
++	{
++		TickHandle = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateUObject(this, &UMediaBoxPool::Tick));
++	}
++}
++
++void UMediaBoxPool::Shutdown()
++{
++	if (TickHandle.IsValid())
++	{
++		FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
++		TickHandle.Reset();
++	}
++	for (UMediaBoxPlayer* PooledPlayer : Players)
++	{
++		if (PooledPlayer)
++		{
++			PooledPlayer->Close();
++			PooledPlayer->DestroyAudio();
++		}
++	}
++	Players.Reset();
++	Groups.Reset();
++	Pinned.Reset();
++	Boxes.Reset();
++}
++
++void UMediaBoxPool::BeginDestroy()
++{
++	if (TickHandle.IsValid())
++	{
++		FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
++		TickHandle.Reset();
++	}
++	Super::BeginDestroy();
++}
++
++UMediaBoxPlayer* UMediaBoxPool::MakePlayer()
++{
++	UMediaBoxPlayer* NewPlayer = NewObject<UMediaBoxPlayer>(this, NAME_None, RF_Transient);
++	NewPlayer->Initialize();
++	Players.Add(NewPlayer);
++	return NewPlayer;
++}
++
++UMediaBoxPlayer* UMediaBoxPool::Acquire(UMediaBoxClip* NewClip, UObject* Owner)
++{
++	if (!NewClip)
++	{
++		return nullptr;
++	}
++
++	// The clip's own warm player - Ready plays at once - else one opening it already.
++	UMediaBoxPlayer* Found = nullptr;
++	for (UMediaBoxPlayer* PooledPlayer : Players)
++	{
++		if (PooledPlayer && !PooledPlayer->IsLeased() && PooledPlayer->GetClip() == NewClip && !PooledPlayer->HasFailed())
++		{
++			if (!Found || PooledPlayer->IsReady())
++			{
++				Found = PooledPlayer;
++			}
++		}
++	}
++
++	if (Found)
++	{
++		if (Found->IsReady())
++		{
++			++WarmStarts;
++			MEDIABOX_LOG(TEXT("Media Box: warm start of %s"), *NewClip->GetName());
++		}
++		else
++		{
++			++ColdStarts;
++			MEDIABOX_LOG(TEXT("Media Box: start of %s while it was still warming"), *NewClip->GetName());
++		}
++	}
++	else
++	{
++		TArray<UMediaBoxClip*> Wanted;
++		RankWanted(Wanted);
++		Found = FindPlayerToReuse(Wanted, /*bAllowNew=*/false);
++		if (!Found)
++		{
++			Found = MakePlayer();
++		}
++		Found->Open(NewClip);
++		++ColdStarts;
++		MEDIABOX_LOG(TEXT("Media Box: cold start of %s (it wasn't warm)"), *NewClip->GetName());
++	}
++
++	Found->LeaseOwner = Owner;
++	Found->bHasLease = true;
++	Found->LoopCount = 0;
++	Found->EndCount = 0;
++	Found->LastWantedTime = FPlatformTime::Seconds();
++	return Found;
++}
++
++void UMediaBoxPool::Release(UMediaBoxPlayer* PooledPlayer, bool bRewind, float AudioFadeOut)
++{
++	if (!PooledPlayer)
++	{
++		return;
++	}
++	PooledPlayer->LeaseOwner.Reset();
++	PooledPlayer->bHasLease = false;
++	PooledPlayer->LastWantedTime = FPlatformTime::Seconds();
++	PooledPlayer->SetRate(1.f);
++
++	if (PooledPlayer->HasFailed())
++	{
++		PooledPlayer->Close();
++	}
++	else if (bRewind)
++	{
++		PooledPlayer->Rewind(AudioFadeOut);
++	}
++	else
++	{
++		PooledPlayer->Pause(AudioFadeOut);
++	}
++}
++
++void UMediaBoxPool::RegisterBox(UMediaBox* Box)
++{
++	Boxes.AddUnique(Box);
++}
++
++void UMediaBoxPool::UnregisterBox(UMediaBox* Box)
++{
++	Boxes.RemoveSingleSwap(Box);
++}
++
++void UMediaBoxPool::AddToGroup(FName Group, UWidget* Widget, UMediaBoxClip* TargetClip)
++{
++	if (Group.IsNone() || !Widget)
++	{
++		return;
++	}
++	FMediaBoxWarmGroup& WarmGroup = Groups.FindOrAdd(Group);
++	for (FMediaBoxWarmTarget& Target : WarmGroup.Targets)
++	{
++		if (Target.Widget.Get() == Widget)
++		{
++			Target.Clip = TargetClip;
++			return;
++		}
++	}
++	FMediaBoxWarmTarget& Added = WarmGroup.Targets.AddDefaulted_GetRef();
++	Added.Widget = Widget;
++	Added.Clip = TargetClip;
++}
++
++void UMediaBoxPool::RemoveFromGroup(FName Group, UWidget* Widget)
++{
++	if (FMediaBoxWarmGroup* WarmGroup = Groups.Find(Group))
++	{
++		WarmGroup->Targets.RemoveAll([Widget](const FMediaBoxWarmTarget& Target) { return Target.Widget.Get() == Widget; });
++		if (WarmGroup->Targets.Num() == 0)
++		{
++			Groups.Remove(Group);
++		}
++	}
++}
++
++void UMediaBoxPool::ClearGroup(FName Group)
++{
++	Groups.Remove(Group);
++}
++
++void UMediaBoxPool::SetGroupFocus(FName Group, UWidget* Widget)
++{
++	if (FMediaBoxWarmGroup* WarmGroup = Groups.Find(Group))
++	{
++		WarmGroup->Focus = Widget;
++		WarmGroup->FocusTime = FPlatformTime::Seconds();
++	}
++}
++
++void UMediaBoxPool::SetGroupFocusByClip(FName Group, UMediaBoxClip* FocusClip)
++{
++	if (FMediaBoxWarmGroup* WarmGroup = Groups.Find(Group))
++	{
++		for (const FMediaBoxWarmTarget& Target : WarmGroup->Targets)
++		{
++			if (Target.Clip == FocusClip && Target.Widget.IsValid())
++			{
++				WarmGroup->Focus = Target.Widget;
++				WarmGroup->FocusTime = FPlatformTime::Seconds();
++				return;
++			}
++		}
++	}
++}
++
++void UMediaBoxPool::PinClip(UMediaBoxClip* TargetClip, bool bKeepWarm)
++{
++	if (!TargetClip)
++	{
++		return;
++	}
++	if (bKeepWarm)
++	{
++		++Pinned.FindOrAdd(TargetClip);
++	}
++	else if (int32* Count = Pinned.Find(TargetClip))
++	{
++		if (--(*Count) <= 0)
++		{
++			Pinned.Remove(TargetClip);
++		}
++	}
++}
++
++int32 UMediaBoxPool::GetNumWarm() const
++{
++	int32 Count = 0;
++	for (const UMediaBoxPlayer* PooledPlayer : Players)
++	{
++		Count += (PooledPlayer && PooledPlayer->IsReady() && !PooledPlayer->IsLeased()) ? 1 : 0;
++	}
++	return Count;
++}
++
++int32 UMediaBoxPool::GetNumLeased() const
++{
++	int32 Count = 0;
++	for (const UMediaBoxPlayer* PooledPlayer : Players)
++	{
++		Count += (PooledPlayer && PooledPlayer->IsLeased()) ? 1 : 0;
++	}
++	return Count;
++}
++
++void UMediaBoxPool::UpdatePointer(float DeltaTime)
++{
++	if (!FSlateApplication::IsInitialized())
++	{
++		bHasPointer = false;
++		return;
++	}
++
++	const FVector2f Position = FVector2f(FVector2D(FSlateApplication::Get().GetCursorPos()));
++	if (bHasPointer && DeltaTime > 0.f)
++	{
++		const FVector2f Moved = Position - PointerPosition;
++		if (Moved.SizeSquared() > 0.25f)
++		{
++			PointerMoveTime = FPlatformTime::Seconds();
++		}
++		// Smoothed, so one jittery frame doesn't send the guess across the screen.
++		PointerVelocity = FMath::Lerp(PointerVelocity, Moved / DeltaTime, 0.35f);
++	}
++	PointerPosition = Position;
++	bHasPointer = true;
++}
++
++void UMediaBoxPool::RankWanted(TArray<UMediaBoxClip*>& OutClips)
++{
++	OutClips.Reset();
++	const UMediaBoxSettings& Settings = UMediaBoxSettings::Get();
++	const int32 Capacity = Settings.GetMaxWarmPlayers();
++	if (Capacity <= 0)
++	{
++		return;
++	}
++
++	// (clip, score): lower is wanted more. Pinned clips first, then each group's ranks.
++	TMap<UMediaBoxClip*, float> Scores;
++	for (const TPair<TObjectPtr<UMediaBoxClip>, int32>& Pin : Pinned)
++	{
++		if (Pin.Key)
++		{
++			Scores.Add(Pin.Key, 0.f);
++		}
++	}
++
++	const FVector2f Predicted = PointerPosition + (Settings.bHoverIntent ? PointerVelocity * Settings.HoverIntentLookAhead : FVector2f::ZeroVector);
++
++	for (auto GroupIt = Groups.CreateIterator(); GroupIt; ++GroupIt)
++	{
++		FMediaBoxWarmGroup& WarmGroup = GroupIt.Value();
++		WarmGroup.Targets.RemoveAll([](const FMediaBoxWarmTarget& Target) { return !Target.Widget.IsValid() || !Target.Clip; });
++		if (WarmGroup.Targets.Num() == 0)
++		{
++			GroupIt.RemoveCurrent();
++			continue;
++		}
++
++		// Ranked around the focused target when it was focused after the pointer last moved (a gamepad), else around where the
++		// pointer is heading.
++		const UWidget* FocusWidget = WarmGroup.Focus.Get();
++		const bool bFromFocus = FocusWidget && (!bHasPointer || WarmGroup.FocusTime >= PointerMoveTime);
++		FVector2f Anchor = Predicted;
++		if (bFromFocus)
++		{
++			Anchor = FVector2f(FVector2D(FocusWidget->GetCachedGeometry().GetAbsolutePositionAtCoordinates(FVector2D(0.5, 0.5))));
++		}
++
++		TArray<TPair<float, UMediaBoxClip*>, TInlineAllocator<32>> Ranked;
++		for (const FMediaBoxWarmTarget& Target : WarmGroup.Targets)
++		{
++			const UWidget* TargetWidget = Target.Widget.Get();
++			const FGeometry& Geometry = TargetWidget->GetCachedGeometry();
++			float Distance = TNumericLimits<float>::Max();
++			if (TargetWidget == FocusWidget)
++			{
++				Distance = -1.f;
++			}
++			else if (!FVector2D(Geometry.GetLocalSize()).IsNearlyZero() && (bFromFocus || bHasPointer))
++			{
++				// Distance to its edge, not its middle: a big card the pointer is already over is nearest.
++				const FVector2f TopLeft = FVector2f(FVector2D(Geometry.GetAbsolutePositionAtCoordinates(FVector2D(0.0, 0.0))));
++				const FVector2f BottomRight = FVector2f(FVector2D(Geometry.GetAbsolutePositionAtCoordinates(FVector2D(1.0, 1.0))));
++				const FVector2f Closest(FMath::Clamp(Anchor.X, FMath::Min(TopLeft.X, BottomRight.X), FMath::Max(TopLeft.X, BottomRight.X)),
++					FMath::Clamp(Anchor.Y, FMath::Min(TopLeft.Y, BottomRight.Y), FMath::Max(TopLeft.Y, BottomRight.Y)));
++				Distance = FVector2f::Distance(Anchor, Closest);
++			}
++			Ranked.Emplace(Distance, Target.Clip.Get());
++		}
++		Ranked.StableSort([](const TPair<float, UMediaBoxClip*>& A, const TPair<float, UMediaBoxClip*>& B) { return A.Key < B.Key; });
++
++		int32 Taken = 0;
++		TArray<UMediaBoxClip*, TInlineAllocator<16>> Seen;
++		for (const TPair<float, UMediaBoxClip*>& Entry : Ranked)
++		{
++			if (Taken >= Settings.WarmPerGroup)
++			{
++				break;
++			}
++			if (Seen.Contains(Entry.Value))
++			{
++				continue;
++			}
++			Seen.Add(Entry.Value);
++			const float Score = 1.f + static_cast<float>(Taken) + FMath::Min(FMath::Max(Entry.Key, 0.f), 100000.f) * 1.e-6f;
++			float& Existing = Scores.FindOrAdd(Entry.Value, Score);
++			Existing = FMath::Min(Existing, Score);
++			++Taken;
++		}
++	}
++
++	Scores.ValueSort([](float A, float B) { return A < B; });
++	for (const TPair<UMediaBoxClip*, float>& Entry : Scores)
++	{
++		if (OutClips.Num() >= Capacity)
++		{
++			break;
++		}
++		if (Entry.Key->MediaSource)
++		{
++			OutClips.Add(Entry.Key);
++		}
++	}
++}
++
++UMediaBoxPlayer* UMediaBoxPool::FindPlayerToReuse(TConstArrayView<UMediaBoxClip*> Keep, bool bAllowNew)
++{
++	UMediaBoxPlayer* Best = nullptr;
++	for (UMediaBoxPlayer* PooledPlayer : Players)
++	{
++		if (!PooledPlayer || PooledPlayer->IsLeased())
++		{
++			continue;
++		}
++		if (PooledPlayer->IsFree())
++		{
++			return PooledPlayer;
++		}
++		if (Keep.Contains(PooledPlayer->GetClip()))
++		{
++			continue;
++		}
++		if (!Best || PooledPlayer->LastWantedTime < Best->LastWantedTime)
++		{
++			Best = PooledPlayer;
++		}
++	}
++
++	// A new one only while there is room; otherwise the longest unwanted one is taken over.
++	if (bAllowNew)
++	{
++		return MakePlayer();
++	}
++	return Best;
++}
++
++void UMediaBoxPool::Rebalance()
++{
++	TArray<UMediaBoxClip*> Wanted;
++	RankWanted(Wanted);
++
++	const int32 Capacity = UMediaBoxSettings::Get().GetMaxWarmPlayers();
++	const double Now = FPlatformTime::Seconds();
++
++	auto CountUnleasedOpen = [this]()
++	{
++		int32 Count = 0;
++		for (const UMediaBoxPlayer* PooledPlayer : Players)
++		{
++			Count += (PooledPlayer && !PooledPlayer->IsLeased() && !PooledPlayer->IsFree()) ? 1 : 0;
++		}
++		return Count;
++	};
++
++	for (UMediaBoxClip* WantedClip : Wanted)
++	{
++		UMediaBoxPlayer* Existing = nullptr;
++		for (UMediaBoxPlayer* PooledPlayer : Players)
++		{
++			if (PooledPlayer && PooledPlayer->GetClip() == WantedClip)
++			{
++				Existing = PooledPlayer;
++				break;
++			}
++		}
++		if (Existing)
++		{
++			Existing->LastWantedTime = Now;
++			continue;
++		}
++
++		UMediaBoxPlayer* Slot = FindPlayerToReuse(Wanted, CountUnleasedOpen() < Capacity);
++		if (!Slot)
++		{
++			break;
++		}
++		Slot->Open(WantedClip);
++		Slot->LastWantedTime = Now;
++	}
++
++	// Over capacity: the longest unwanted ones are closed. Players beyond what is open and leased are let go of.
++	int32 Open = CountUnleasedOpen();
++	while (Open > Capacity)
++	{
++		UMediaBoxPlayer* Oldest = nullptr;
++		for (UMediaBoxPlayer* PooledPlayer : Players)
++		{
++			if (PooledPlayer && !PooledPlayer->IsLeased() && !PooledPlayer->IsFree() && !Wanted.Contains(PooledPlayer->GetClip())
++				&& (!Oldest || PooledPlayer->LastWantedTime < Oldest->LastWantedTime))
++			{
++				Oldest = PooledPlayer;
++			}
++		}
++		if (!Oldest)
++		{
++			break;
++		}
++		Oldest->Close();
++		--Open;
++	}
++
++	const int32 MaxPlayers = FMath::Max(Capacity, 0) + GetNumLeased();
++	for (int32 Index = Players.Num() - 1; Index >= 0 && Players.Num() > MaxPlayers; --Index)
++	{
++		UMediaBoxPlayer* PooledPlayer = Players[Index];
++		if (!PooledPlayer || (PooledPlayer->IsFree() && !PooledPlayer->IsLeased()))
++		{
++			if (PooledPlayer)
++			{
++				PooledPlayer->DestroyAudio();
++			}
++			Players.RemoveAtSwap(Index);
++		}
++	}
++}
++
++bool UMediaBoxPool::Tick(float DeltaTime)
++{
++	SCOPE_CYCLE_COUNTER(STAT_MediaBoxPoolTick);
++
++	UpdatePointer(DeltaTime);
++
++	// The Media Boxes first: they lease and release players.
++	Boxes.RemoveAll([](const TWeakObjectPtr<UMediaBox>& Box) { return !Box.IsValid(); });
++	const TArray<TWeakObjectPtr<UMediaBox>> BoxesNow = Boxes;
++	for (const TWeakObjectPtr<UMediaBox>& Box : BoxesNow)
++	{
++		if (UMediaBox* LiveBox = Box.Get())
++		{
++			LiveBox->TickMediaBox(DeltaTime);
++		}
++	}
++
++	// Leases whose Media Box has gone without giving them back (garbage collected): taken back, rewound, warm again.
++	for (UMediaBoxPlayer* PooledPlayer : Players)
++	{
++		if (PooledPlayer && PooledPlayer->bHasLease && !PooledPlayer->LeaseOwner.IsValid())
++		{
++			Release(PooledPlayer, /*bRewind=*/true, 0.f);
++		}
++	}
++
++	Rebalance();
++
++	for (UMediaBoxPlayer* PooledPlayer : Players)
++	{
++		if (PooledPlayer)
++		{
++			PooledPlayer->Tick(DeltaTime);
++		}
++	}
++
++	SET_DWORD_STAT(STAT_MediaBoxPlayers, Players.Num());
++	SET_DWORD_STAT(STAT_MediaBoxWarmPlayers, GetNumWarm());
++	SET_DWORD_STAT(STAT_MediaBoxLeasedPlayers, GetNumLeased());
++	SET_DWORD_STAT(STAT_MediaBoxBoxes, Boxes.Num());
++	return true;
++}
++
++// =====================================================================================================
++// UMediaBoxSubsystem
++// =====================================================================================================
++
++void UMediaBoxSubsystem::Initialize(FSubsystemCollectionBase& Collection)
++{
++	Super::Initialize(Collection);
++	Pool = NewObject<UMediaBoxPool>(this, TEXT("MediaBoxPool"), RF_Transient);
++	Pool->Startup();
++}
++
++void UMediaBoxSubsystem::Deinitialize()
++{
++	if (Pool)
++	{
++		Pool->Shutdown();
++		Pool = nullptr;
++	}
++	Super::Deinitialize();
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxSettings.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxSettings.cpp
+new file mode 100644
+index 0000000..498e8ab
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxSettings.cpp
+@@ -0,0 +1,22 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "MediaBoxSettings.h"
++
++#include "MediaBoxLog.h"
++
++#define LOCTEXT_NAMESPACE "MediaBoxSettings"
++
++#if WITH_EDITOR
++FText UMediaBoxSettings::GetSectionText() const
++{
++	return LOCTEXT("SectionText", "Media Box");
++}
++#endif
++
++int32 UMediaBoxSettings::GetMaxWarmPlayers() const
++{
++	const int32 Override = MediaBoxRuntime::GetMaxWarmPlayersOverride();
++	return Override >= 0 ? Override : FMath::Max(0, MaxWarmPlayers);
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxTransportBar.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxTransportBar.cpp
+new file mode 100644
+index 0000000..343c874
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxTransportBar.cpp
+@@ -0,0 +1,228 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "MediaBoxTransportBar.h"
++
++#include "MediaBox.h"
++#include "MediaBoxCue.h"
++#include "MediaBoxLibrary.h"
++
++#include "Components/Button.h"
++#include "Components/Slider.h"
++#include "Components/TextBlock.h"
++
++#define LOCTEXT_NAMESPACE "MediaBoxTransportBar"
++
++void UMediaBoxTransportBar::NativeConstruct()
++{
++	Super::NativeConstruct();
++
++	if (PlayPauseButton)
++	{
++		PlayPauseButton->OnClicked.AddUniqueDynamic(this, &UMediaBoxTransportBar::HandlePlayPauseClicked);
++	}
++	if (StopButton)
++	{
++		StopButton->OnClicked.AddUniqueDynamic(this, &UMediaBoxTransportBar::HandleStopClicked);
++	}
++	if (MuteButton)
++	{
++		MuteButton->OnClicked.AddUniqueDynamic(this, &UMediaBoxTransportBar::HandleMuteClicked);
++	}
++	if (SubtitlesButton)
++	{
++		SubtitlesButton->OnClicked.AddUniqueDynamic(this, &UMediaBoxTransportBar::HandleSubtitlesClicked);
++	}
++	if (ScrubBar)
++	{
++		ScrubBar->OnMouseCaptureBegin.AddUniqueDynamic(this, &UMediaBoxTransportBar::HandleScrubBegin);
++		ScrubBar->OnMouseCaptureEnd.AddUniqueDynamic(this, &UMediaBoxTransportBar::HandleScrubEnd);
++		ScrubBar->OnControllerCaptureBegin.AddUniqueDynamic(this, &UMediaBoxTransportBar::HandleScrubBegin);
++		ScrubBar->OnControllerCaptureEnd.AddUniqueDynamic(this, &UMediaBoxTransportBar::HandleScrubEnd);
++		ScrubBar->OnValueChanged.AddUniqueDynamic(this, &UMediaBoxTransportBar::HandleScrubChanged);
++	}
++	if (VolumeSlider)
++	{
++		VolumeSlider->OnValueChanged.AddUniqueDynamic(this, &UMediaBoxTransportBar::HandleVolumeChanged);
++	}
++	bReportedOnce = false;
++}
++
++void UMediaBoxTransportBar::NativeDestruct()
++{
++	if (bScrubbing)
++	{
++		HandleScrubEnd();
++	}
++	Super::NativeDestruct();
++}
++
++void UMediaBoxTransportBar::SetMediaBox(UMediaBox* NewMediaBox)
++{
++	DrivenBox = NewMediaBox;
++	bBoxSetByHand = NewMediaBox != nullptr;
++	bReportedOnce = false;
++}
++
++UMediaBox* UMediaBoxTransportBar::FindDrivenBox()
++{
++	if (!DrivenBox.IsValid() && !bBoxSetByHand)
++	{
++		DrivenBox = MediaBoxFind::Find(this, nullptr, MediaBoxName);
++	}
++	return DrivenBox.Get();
++}
++
++FText UMediaBoxTransportBar::FormatTime(float Seconds)
++{
++	const int32 Whole = FMath::Max(0, FMath::FloorToInt(Seconds));
++	const int32 Hours = Whole / 3600;
++	const int32 Minutes = (Whole / 60) % 60;
++	const int32 Rest = Whole % 60;
++	return Hours > 0
++		? FText::FromString(FString::Printf(TEXT("%d:%02d:%02d"), Hours, Minutes, Rest))
++		: FText::FromString(FString::Printf(TEXT("%d:%02d"), Minutes, Rest));
++}
++
++void UMediaBoxTransportBar::NativeTick(const FGeometry& MyGeometry, float InDeltaTime)
++{
++	Super::NativeTick(MyGeometry, InDeltaTime);
++
++	UMediaBox* Box = FindDrivenBox();
++	if (!Box)
++	{
++		return;
++	}
++
++	const float Duration = Box->GetDuration();
++	const float Elapsed = Box->GetTime();
++
++	if (ScrubBar && !bScrubbing)
++	{
++		ScrubBar->SetValue(Duration > 0.f ? FMath::Clamp(Elapsed / Duration, 0.f, 1.f) : 0.f);
++	}
++
++	if (TimeText)
++	{
++		const int32 ShownSeconds = FMath::FloorToInt(Elapsed);
++		const int32 ShownDuration = FMath::FloorToInt(Duration);
++		if (ShownSeconds != LastShownSeconds || ShownDuration != LastShownDuration)
++		{
++			LastShownSeconds = ShownSeconds;
++			LastShownDuration = ShownDuration;
++			TimeText->SetText(bElapsedTimeOnly || Duration <= 0.f
++				? FormatTime(Elapsed)
++				: FText::Format(LOCTEXT("TimeOfDuration", "{0} / {1}"), FormatTime(Elapsed), FormatTime(Duration)));
++		}
++	}
++
++	if (SubtitleText && !Box->GetCurrentSubtitle().EqualTo(LastSubtitle))
++	{
++		LastSubtitle = Box->GetCurrentSubtitle();
++		SubtitleText->SetText(UMediaBoxLibrary::AreMediaBoxSubtitlesEnabled() ? LastSubtitle : FText::GetEmpty());
++	}
++
++	if (VolumeSlider && !bReportedOnce)
++	{
++		VolumeSlider->SetValue(FMath::Clamp(Box->AudioVolume, 0.f, 1.f));
++	}
++
++	const bool bPlayingNow = Box->IsPlaying() || Box->GetStatus() == EMediaBoxStatus::Loading;
++	if (bPlayingNow != bWasPlaying || !bReportedOnce)
++	{
++		bWasPlaying = bPlayingNow;
++		OnPlayingChanged(bPlayingNow);
++	}
++	if (Box->bMuted != bWasMuted || !bReportedOnce)
++	{
++		bWasMuted = Box->bMuted;
++		OnMutedChanged(bWasMuted);
++	}
++	bReportedOnce = true;
++}
++
++void UMediaBoxTransportBar::HandlePlayPauseClicked()
++{
++	if (UMediaBox* Box = FindDrivenBox())
++	{
++		Box->TogglePlayPause();
++	}
++}
++
++void UMediaBoxTransportBar::HandleStopClicked()
++{
++	if (UMediaBox* Box = FindDrivenBox())
++	{
++		Box->Stop();
++	}
++}
++
++void UMediaBoxTransportBar::HandleMuteClicked()
++{
++	if (UMediaBox* Box = FindDrivenBox())
++	{
++		Box->SetMuted(!Box->bMuted);
++	}
++}
++
++void UMediaBoxTransportBar::HandleSubtitlesClicked()
++{
++	UMediaBoxLibrary::SetMediaBoxSubtitlesEnabled(!UMediaBoxLibrary::AreMediaBoxSubtitlesEnabled());
++	LastSubtitle = FText::GetEmpty();
++	if (SubtitleText)
++	{
++		SubtitleText->SetText(FText::GetEmpty());
++	}
++}
++
++void UMediaBoxTransportBar::HandleScrubBegin()
++{
++	bScrubbing = true;
++	if (UMediaBox* Box = FindDrivenBox())
++	{
++		// Paused while dragged, so the frames follow the bar; played on after if it was playing.
++		bResumeAfterScrub = Box->IsPlaying();
++		if (bResumeAfterScrub)
++		{
++			Box->Pause();
++		}
++	}
++}
++
++void UMediaBoxTransportBar::HandleScrubEnd()
++{
++	bScrubbing = false;
++	if (UMediaBox* Box = FindDrivenBox())
++	{
++		if (bResumeAfterScrub)
++		{
++			Box->Play();
++		}
++	}
++	bResumeAfterScrub = false;
++}
++
++void UMediaBoxTransportBar::HandleScrubChanged(float NewValue)
++{
++	if (!bScrubbing)
++	{
++		return;
++	}
++	if (UMediaBox* Box = FindDrivenBox())
++	{
++		Box->Seek(NewValue * Box->GetDuration());
++	}
++}
++
++void UMediaBoxTransportBar::HandleVolumeChanged(float NewValue)
++{
++	if (UMediaBox* Box = FindDrivenBox())
++	{
++		Box->SetVolume(NewValue);
++		if (Box->bMuted && NewValue > 0.f)
++		{
++			Box->SetMuted(false);
++		}
++	}
++}
++
++#undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/NameTBDMediaModule.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/NameTBDMediaModule.cpp
+new file mode 100644
+index 0000000..901cfdd
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/NameTBDMediaModule.cpp
+@@ -0,0 +1,69 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "HAL/IConsoleManager.h"
++#include "MediaBoxCue.h"
++#include "MediaBoxLog.h"
++#include "MediaBoxPool.h"
++#include "MediaBoxSettings.h"
++#include "Modules/ModuleManager.h"
++#include "NameTBD/WidgetAnimation/WidgetAnimEvaluator.h"
++
++DEFINE_LOG_CATEGORY(LogMediaBox);
++
++namespace MediaBoxRuntime
++{
++	static TAutoConsoleVariable<int32> CVarLog(
++		TEXT("MediaBox.Log"),
++		0,
++		TEXT("1: log the Media Box warm pool - players opened, warmed, leased and closed, and every warm (instant) or cold start."));
++
++	static TAutoConsoleVariable<int32> CVarMaxWarmPlayers(
++		TEXT("MediaBox.MaxWarmPlayers"),
++		-1,
++		TEXT("How many players the Media Box warm pool keeps warm. Below 0: Project Settings > Plugins > Media Box > Max Warm Players."));
++
++	static TOptional<bool> SubtitlesOverride;
++
++	bool IsLogging()
++	{
++		return CVarLog.GetValueOnGameThread() != 0;
++	}
++
++	int32 GetMaxWarmPlayersOverride()
++	{
++		return CVarMaxWarmPlayers.GetValueOnGameThread();
++	}
++
++	bool AreSubtitlesEnabled()
++	{
++		return SubtitlesOverride.Get(UMediaBoxSettings::Get().bSubtitlesEnabled);
++	}
++
++	void SetSubtitlesEnabled(bool bEnabled)
++	{
++		SubtitlesOverride = bEnabled;
++	}
++}
++
++/**
++ * The Media Box module's setup: the Media cue, registered with the Widget Animations as any registered type is - listed under
++ * Cues in the Add Track menu. The core library never depends on the Media Framework; it only meets this cue through the
++ * registry. The Media Progress value input needs no registration (see WidgetAnimInput.h).
++ */
++class FNameTBDMediaModule : public IModuleInterface
++{
++public:
++
++	virtual void StartupModule() override
++	{
++		FWidgetAnimEvaluatorRegistry::Get().Register(MakeShared<FWidgetAnimMediaCueEvaluator>());
++	}
++
++	virtual void ShutdownModule() override
++	{
++		FWidgetAnimEvaluatorRegistry::Get().Unregister(FWidgetAnimMediaCueParams::StaticStruct());
++		UMediaBoxPool::ShutdownEditorPool();
++	}
++};
++
++IMPLEMENT_MODULE(FNameTBDMediaModule, NameTBDMedia)
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp
+new file mode 100644
+index 0000000..fcec10c
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp
+@@ -0,0 +1,170 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#include "SMediaBox.h"
++
++#include "MediaBox.h"
++#include "MediaBoxClip.h"
++#include "MediaBoxLog.h"
++#include "MediaBoxPool.h"
++
++#include "Engine/Texture.h"
++#include "Fonts/FontMeasure.h"
++#include "Framework/Application/SlateApplication.h"
++#include "MediaTexture.h"
++#include "Rendering/DrawElements.h"
++#include "Styling/CoreStyle.h"
++
++namespace SMediaBoxPrivate
++{
++	/** The size of what a brush shows: its texture's, else none (it then fills the box). */
++	FVector2f GetTextureSize(const UTexture* Texture)
++	{
++		if (!Texture)
++		{
++			return FVector2f::ZeroVector;
++		}
++		return FVector2f(Texture->GetSurfaceWidth(), Texture->GetSurfaceHeight());
++	}
++
++	/** Where in the box, how big, and which part of the image, for Fit. */
++	void LayOut(EMediaBoxFit Fit, const FVector2f& Area, const FVector2f& MediaSize, const FVector2D& Alignment, const FVector2D& CropFocus,
++		FVector2f& OutOffset, FVector2f& OutSize, FBox2f& OutUV)
++	{
++		OutOffset = FVector2f::ZeroVector;
++		OutSize = Area;
++		OutUV = FBox2f(FVector2f(0.f, 0.f), FVector2f(1.f, 1.f));
++
++		if (Fit == EMediaBoxFit::Stretch || MediaSize.X <= 0.f || MediaSize.Y <= 0.f || Area.X <= 0.f || Area.Y <= 0.f)
++		{
++			return;
++		}
++
++		if (Fit == EMediaBoxFit::Contain)
++		{
++			const float Scale = FMath::Min(Area.X / MediaSize.X, Area.Y / MediaSize.Y);
++			OutSize = MediaSize * Scale;
++			OutOffset = (Area - OutSize) * FVector2f(Alignment);
++			return;
++		}
++
++		// Cover: the whole box, the image cropped to it around Crop Focus.
++		const float Scale = FMath::Max(Area.X / MediaSize.X, Area.Y / MediaSize.Y);
++		const FVector2f Shown = Area / (MediaSize * Scale);
++		const FVector2f UVMin = (FVector2f(1.f, 1.f) - Shown) * FVector2f(CropFocus);
++		OutUV = FBox2f(UVMin, UVMin + Shown);
++	}
++
++	void DrawImage(FSlateWindowElementList& OutDrawElements, int32 Layer, const FGeometry& Geometry, const FSlateBrush& Brush,
++		const FVector2f& Offset, const FVector2f& Size, const FBox2f& UV, const FLinearColor& Color, ESlateDrawEffect Effects)
++	{
++		FSlateBrush Drawn = Brush;
++		Drawn.DrawAs = ESlateBrushDrawType::Image;
++		Drawn.Tiling = ESlateBrushTileType::NoTile;
++		Drawn.SetUVRegion(UV);
++		FSlateDrawElement::MakeBox(OutDrawElements, Layer, Geometry.ToPaintGeometry(Size, FSlateLayoutTransform(Offset)), &Drawn, Effects, Color);
++	}
++}
++
++void SMediaBox::Construct(const FArguments& InArgs)
++{
++	WeakOwnerBox = InArgs._OwnerBox;
++}
++
++FVector2D SMediaBox::ComputeDesiredSize(float LayoutScaleMultiplier) const
++{
++	const UMediaBox* OwnerBox = WeakOwnerBox.Get();
++	return OwnerBox ? OwnerBox->DesiredSize : FVector2D(320.0, 180.0);
++}
++
++int32 SMediaBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
++{
++	using namespace SMediaBoxPrivate;
++
++	UMediaBox* OwnerBox = WeakOwnerBox.Get();
++	if (!OwnerBox)
++	{
++		return LayerId;
++	}
++	OwnerBox->NotifyPainted();
++
++	const ESlateDrawEffect Effects = ShouldBeEnabled(bParentEnabled) ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
++	const FLinearColor WidgetTint = InWidgetStyle.GetColorAndOpacityTint();
++	const FLinearColor ImageTint = WidgetTint * OwnerBox->Tint;
++	const FVector2f Area = FVector2f(FVector2D(AllottedGeometry.GetLocalSize()));
++
++	// The letterbox: the whole box.
++	if (OwnerBox->LetterboxColor.A > 0.f)
++	{
++		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), FCoreStyle::Get().GetBrush("WhiteBrush"), Effects, WidgetTint * OwnerBox->LetterboxColor);
++	}
++
++	const UMediaBoxClip* PaintedClip = OwnerBox->MediaClip;
++	const UTexture* PosterTexture = PaintedClip ? PaintedClip->Poster.Get() : nullptr;
++	const UMediaBoxPlayer* PaintedPlayer = OwnerBox->LeasedPlayer;
++	const UMediaTexture* VideoTexture = PaintedPlayer ? PaintedPlayer->GetMediaTexture() : nullptr;
++
++	// The video's size once it has a frame, else the poster's - so the poster and video lie exactly over each other.
++	FVector2f MediaSize = VideoTexture && PaintedPlayer->IsFrameReady() ? GetTextureSize(VideoTexture) : FVector2f::ZeroVector;
++	if (MediaSize.X <= 0.f || MediaSize.Y <= 0.f)
++	{
++		MediaSize = GetTextureSize(PosterTexture);
++	}
++
++	FVector2f Offset;
++	FVector2f Size;
++	FBox2f UV;
++	LayOut(OwnerBox->Fit, Area, MediaSize, OwnerBox->ContentAlignment, OwnerBox->CropFocus, Offset, Size, UV);
++
++	// The poster, under the video, until the video covers it.
++	const float VideoAlpha = FMath::Clamp(OwnerBox->VideoAlpha, 0.f, 1.f);
++	if (PosterTexture && VideoAlpha < 1.f)
++	{
++		DrawImage(OutDrawElements, LayerId, AllottedGeometry, OwnerBox->PosterBrush, Offset, Size, UV, ImageTint, Effects);
++	}
++
++	// The video, fading in over it.
++	if (VideoTexture && VideoAlpha > 0.f)
++	{
++		FLinearColor VideoTint = ImageTint;
++		VideoTint.A *= VideoAlpha;
++		DrawImage(OutDrawElements, LayerId + 1, AllottedGeometry, OwnerBox->VideoBrush, Offset, Size, UV, VideoTint, Effects);
++	}
++
++	// Can't play: the error image over the poster.
++	if (OwnerBox->Status == EMediaBoxStatus::Error && OwnerBox->ErrorImage.GetResourceObject())
++	{
++		const FVector2f ErrorSize = FVector2f(OwnerBox->ErrorImage.ImageSize);
++		const FVector2f ErrorDrawn = (ErrorSize.X > 0.f && ErrorSize.Y > 0.f) ? FVector2f(FMath::Min(ErrorSize.X, Area.X), FMath::Min(ErrorSize.Y, Area.Y)) : Area;
++		FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 2, AllottedGeometry.ToPaintGeometry(ErrorDrawn, FSlateLayoutTransform((Area - ErrorDrawn) * 0.5f)), &OwnerBox->ErrorImage, Effects, WidgetTint * OwnerBox->ErrorImage.GetTint(InWidgetStyle));
++	}
++
++	// The subtitle line, at the bottom, centred, a line at a time.
++	if (OwnerBox->bShowSubtitles && !OwnerBox->CurrentSubtitle.IsEmpty() && MediaBoxRuntime::AreSubtitlesEnabled() && FSlateApplication::IsInitialized())
++	{
++		const TSharedRef<FSlateFontMeasure> FontMeasure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
++		TArray<FString> Lines;
++		OwnerBox->CurrentSubtitle.ToString().ParseIntoArrayLines(Lines);
++
++		const FVector2f Margin = FVector2f(OwnerBox->SubtitleMargin);
++		float Bottom = Area.Y - Margin.X;
++		const FLinearColor TextColor = OwnerBox->SubtitleColor * WidgetTint;
++		const FLinearColor BackColor = OwnerBox->SubtitleBackground * WidgetTint;
++		for (int32 LineIndex = Lines.Num() - 1; LineIndex >= 0; --LineIndex)
++		{
++			const FString& Line = Lines[LineIndex];
++			const FVector2f TextSize = FVector2f(FVector2D(FontMeasure->Measure(Line, OwnerBox->SubtitleFont)));
++			const FVector2f BackSize = TextSize + FVector2f(Margin.Y * 2.f, Margin.Y * 0.5f);
++			const FVector2f BackAt((Area.X - BackSize.X) * 0.5f, Bottom - BackSize.Y);
++			if (BackColor.A > 0.f)
++			{
++				FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 3, AllottedGeometry.ToPaintGeometry(BackSize, FSlateLayoutTransform(BackAt)), FCoreStyle::Get().GetBrush("WhiteBrush"), Effects, BackColor);
++			}
++			const FVector2f TextAt = BackAt + (BackSize - TextSize) * 0.5f;
++			FSlateDrawElement::MakeText(OutDrawElements, LayerId + 4, AllottedGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(TextAt)), Line, OwnerBox->SubtitleFont, Effects, TextColor);
++			Bottom = BackAt.Y;
++		}
++		return LayerId + 4;
++	}
++
++	return LayerId + 2;
++}
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.h b/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.h
+new file mode 100644
+index 0000000..de32658
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.h
+@@ -0,0 +1,28 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Widgets/SLeafWidget.h"
++
++class UMediaBox;
++
++/**
++ * What a Media Box draws: its letterbox, the clip's poster, the video fading in over it, the error image, the subtitle line.
++ * Everything it draws comes from its UMediaBox; it only lays it out (Fit, Alignment, Crop Focus) and paints it.
++ */
++class SMediaBox : public SLeafWidget
++{
++public:
++	SLATE_BEGIN_ARGS(SMediaBox) {}
++		SLATE_ARGUMENT(UMediaBox*, OwnerBox)
++	SLATE_END_ARGS()
++
++	void Construct(const FArguments& InArgs);
++
++	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
++	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override;
++
++private:
++	TWeakObjectPtr<UMediaBox> WeakOwnerBox;
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h
+new file mode 100644
+index 0000000..996a093
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h
+@@ -0,0 +1,440 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Components/Widget.h"
++#include "Fonts/SlateFontInfo.h"
++#include "Styling/SlateBrush.h"
++
++#include "MediaBoxTypes.h"
++
++#include "MediaBox.generated.h"
++
++class SMediaBox;
++class UDiegeticScreenComponent;
++class UMediaBox;
++class UMediaBoxClip;
++class UMediaBoxPlayer;
++class UMediaBoxPool;
++class UMediaPlayer;
++class UMediaTexture;
++class UWidgetAnimStateMachineAsset;
++
++/**
++ * The state machine inputs a Media Box sets as it plays - on the state machines played on it, in it or around it (as Set State
++ * Machine Input aims). Each is the name of an input of the machine; None sets nothing.
++ */
++USTRUCT(BlueprintType)
++struct NAMETBDMEDIA_API FMediaBoxMachineInputs
++{
++	GENERATED_BODY()
++
++	/** Only this machine's inputs. None: any machine found with an input of the name. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Machine", meta = (DisplayName = "State Machine"))
++	TObjectPtr<UWidgetAnimStateMachineAsset> StateMachine = nullptr;
++
++	/** A Bool input: true while the video plays. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Machine", meta = (DisplayName = "Playing (Bool)"))
++	FName Playing;
++
++	/** A Number input: how far through the video, 0 - 1. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Machine", meta = (DisplayName = "Progress (Number)"))
++	FName Progress;
++
++	/** A Trigger: fired as the video's first frame shows. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Machine", meta = (DisplayName = "First Frame (Trigger)"))
++	FName FirstFrame;
++
++	/** A Trigger: fired each time it loops. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Machine", meta = (DisplayName = "Looped (Trigger)"))
++	FName Looped;
++
++	/** A Trigger: fired as it reaches its end (a clip that doesn't loop). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Machine", meta = (DisplayName = "Ended (Trigger)"))
++	FName Ended;
++
++	/** A Trigger: fired when it can't be opened or played. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "State Machine", meta = (DisplayName = "Error (Trigger)"))
++	FName Error;
++
++	bool IsEmpty() const { return Playing.IsNone() && Progress.IsNone() && FirstFrame.IsNone() && Looped.IsNone() && Ended.IsNone() && Error.IsNone(); }
++};
++
++DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMediaBoxEvent, UMediaBox*, MediaBox);
++DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMediaBoxError, UMediaBox*, MediaBox, const FString&, Reason);
++DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMediaBoxSubtitle, UMediaBox*, MediaBox, const FText&, Subtitle);
++DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMediaBoxStatus, UMediaBox*, MediaBox, EMediaBoxStatus, NewStatus);
++
++/**
++ * Media Box: a video in UI that starts the instant it is asked to - a skill hovered plays its preview clip, with audio, on that
++ * frame. See the note at the top of MediaBoxTypes.h.
++ *
++ * Give it a Media Box Clip (the video, its poster, its audio) and say when it plays (Play When): Hovered Or Focused for a
++ * preview inside a button, Visible for one inside an Info Card, Manual for Blueprint and Media cues. The clip's poster shows
++ * at once and the video fades in over it as its first frame arrives - at once when the clip was warm.
++ *
++ * Warm: give the Media Boxes of a screen one Warm Group name and the pool keeps the one hovered or focused and its neighbours
++ * open and paused on their first frames - the next hover starts at once. A button that only changes what one shared Media
++ * Box plays joins the group with Add To Media Warm Group.
++ *
++ * Every Media Box has a player of its own while it plays (never a shared Media Player asset): any number can be on screen.
++ * It pauses while not drawn (Pause When Hidden), its audio is a 2D UI sound, and on a Diegetic Screen it redraws the screen
++ * only when a new frame is in.
++ */
++UCLASS(meta = (DisplayName = "Media Box", PrioritizeCategories = "Media Playback Appearance Audio Subtitles"))
++class NAMETBDMEDIA_API UMediaBox : public UWidget
++{
++	GENERATED_BODY()
++
++public:
++	UMediaBox();
++
++	// ---------------------------------------------------------------------------------------------
++	// Media
++	// ---------------------------------------------------------------------------------------------
++
++	/** What it plays: the video, its poster, its audio, where it starts and loops, its subtitles. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Media", meta = (DisplayName = "Clip"))
++	TObjectPtr<UMediaBoxClip> MediaClip = nullptr;
++
++	/**
++	 * The Warm Group it is in - one name for every Media Box (and Add To Media Warm Group button) of a screen. The pool keeps the
++	 * one hovered or focused and those nearest it warm, so the next one starts at once. None: in no group (still warm while
++	 * it plays and for a while after).
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Media", meta = (DisplayName = "Warm Group"))
++	FName WarmGroup;
++
++	/** Plays in the Widget Blueprint designer too, as it would in the game (silently, unless Project Settings > Media Box > Audio In Designer). Off: the poster. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Media", meta = (DisplayName = "Preview In Designer"))
++	bool bPreviewInDesigner = true;
++
++	// ---------------------------------------------------------------------------------------------
++	// Playback
++	// ---------------------------------------------------------------------------------------------
++
++	/** When it plays on its own. Play, Pause and Stop work whatever is picked. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "Play When"))
++	EMediaBoxTrigger PlayWhen = EMediaBoxTrigger::Manual;
++
++	/**
++	 * The widget whose hover or focus plays it, by name in the Widget Blueprint (or set with Set Hover Target). None: the button
++	 * it is in (the nearest Button or Context Menu Button around it), else itself.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "Hover Target", GetOptions = "GetHoverTargetOptions", EditCondition = "PlayWhen == EMediaBoxTrigger::Hovered || PlayWhen == EMediaBoxTrigger::Focused || PlayWhen == EMediaBoxTrigger::HoveredOrFocused"))
++	FName HoverTargetName;
++
++	/** Seconds the hover (or focus) has to last before it plays - so sweeping the pointer across a row doesn't start every clip. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "Hover Delay", ClampMin = "0.0", UIMax = "1.0", Units = "s", EditCondition = "PlayWhen != EMediaBoxTrigger::Manual"))
++	float HoverDelay = 0.f;
++
++	/** What happens when what started it ends: unhovered, unfocused, hidden. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "After Trigger", EditCondition = "PlayWhen != EMediaBoxTrigger::Manual"))
++	EMediaBoxAfterTrigger AfterTrigger = EMediaBoxAfterTrigger::StopAndRewind;
++
++	/** Pauses while it isn't drawn - collapsed, scrolled away, on a screen not shown - and plays on when it is drawn again. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "Pause When Hidden"))
++	bool bPauseWhenHidden = true;
++
++	/** Playback speed: 1 as recorded, 0.5 half speed. A Separate Sound is pitched with it. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "Playback Rate", ClampMin = "0.05", UIMin = "0.25", UIMax = "2.0"))
++	float PlaybackRate = 1.f;
++
++	/** The state machine inputs it sets as it plays: Playing, Progress, First Frame, Looped, Ended, Error. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", AdvancedDisplay, meta = (DisplayName = "State Machine Inputs"))
++	FMediaBoxMachineInputs MachineInputs;
++
++	// ---------------------------------------------------------------------------------------------
++	// Appearance
++	// ---------------------------------------------------------------------------------------------
++
++	/** How the video (and poster) is laid in the box: all of it (Contain), filling it (Cover), or stretched. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance")
++	EMediaBoxFit Fit = EMediaBoxFit::Contain;
++
++	/** Contain: where the video sits in the box when its shape differs - 0.5, 0.5 the middle. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Alignment", EditCondition = "Fit == EMediaBoxFit::Contain"))
++	FVector2D ContentAlignment = FVector2D(0.5, 0.5);
++
++	/** Cover: which part of the video stays when it is cropped - 0.5, 0.5 the middle, 0.5, 0 its top. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Crop Focus", EditCondition = "Fit == EMediaBoxFit::Cover"))
++	FVector2D CropFocus = FVector2D(0.5, 0.5);
++
++	/** Fills the whole box behind the video - the bars around a Contain fit. Transparent by default. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Letterbox Color"))
++	FLinearColor LetterboxColor = FLinearColor::Transparent;
++
++	/** Multiplies the video and poster. Render Opacity and the parents' colors apply too. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance")
++	FLinearColor Tint = FLinearColor::White;
++
++	/** How big it asks to be. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Desired Size"))
++	FVector2D DesiredSize = FVector2D(320.0, 180.0);
++
++	/** Seconds the video takes to fade in over the poster. Below 0: Project Settings > Media Box > Video Fade In. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", AdvancedDisplay, meta = (DisplayName = "Video Fade In", UIMin = "-1.0", UIMax = "1.0", Units = "s"))
++	float VideoFadeIn = -1.f;
++
++	/** Seconds the video takes to fade back to the poster as it stops. Below 0: Project Settings > Media Box > Video Fade Out. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", AdvancedDisplay, meta = (DisplayName = "Video Fade Out", UIMin = "-1.0", UIMax = "1.0", Units = "s"))
++	float VideoFadeOut = -1.f;
++
++	/** Shown over the poster when the video can't be played (On Error says why). None: just the poster. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Error Image"))
++	FSlateBrush ErrorImage;
++
++	// ---------------------------------------------------------------------------------------------
++	// Audio
++	// ---------------------------------------------------------------------------------------------
++
++	/** Its audio's volume, times the clip's. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (DisplayName = "Volume", ClampMin = "0.0", UIMax = "2.0"))
++	float AudioVolume = 1.f;
++
++	/** Plays without audio. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (DisplayName = "Muted"))
++	bool bMuted = false;
++
++	// ---------------------------------------------------------------------------------------------
++	// Subtitles
++	// ---------------------------------------------------------------------------------------------
++
++	/** Draws the clip's subtitles at the bottom of the box, while subtitles are on (Set Media Box Subtitles Enabled). */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Show Subtitles"))
++	bool bShowSubtitles = true;
++
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Font", EditCondition = "bShowSubtitles"))
++	FSlateFontInfo SubtitleFont;
++
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Text Color", EditCondition = "bShowSubtitles"))
++	FLinearColor SubtitleColor = FLinearColor::White;
++
++	/** Behind each line. Transparent for none. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Background", EditCondition = "bShowSubtitles"))
++	FLinearColor SubtitleBackground = FLinearColor(0.f, 0.f, 0.f, 0.6f);
++
++	/** Space from the bottom of the box to the last line, and around each line's text. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Margin", EditCondition = "bShowSubtitles"))
++	FVector2D SubtitleMargin = FVector2D(6.0, 8.0);
++
++	// ---------------------------------------------------------------------------------------------
++	// Events
++	// ---------------------------------------------------------------------------------------------
++
++	/** Its player has opened the video. */
++	UPROPERTY(BlueprintAssignable, Category = "Media Box|Events")
++	FOnMediaBoxEvent OnOpened;
++
++	/** The video's first frame is showing (fading in over the poster). */
++	UPROPERTY(BlueprintAssignable, Category = "Media Box|Events")
++	FOnMediaBoxEvent OnFirstFrame;
++
++	/** It looped back to Loop Start. */
++	UPROPERTY(BlueprintAssignable, Category = "Media Box|Events")
++	FOnMediaBoxEvent OnLooped;
++
++	/** It reached its end (a clip that doesn't loop). */
++	UPROPERTY(BlueprintAssignable, Category = "Media Box|Events")
++	FOnMediaBoxEvent OnEnded;
++
++	/** It couldn't open or play the video - why, in Reason. The poster (and Error Image) stay. */
++	UPROPERTY(BlueprintAssignable, Category = "Media Box|Events")
++	FOnMediaBoxError OnError;
++
++	/** The subtitle line changed - empty when none shows. Fired whether or not Show Subtitles draws them. */
++	UPROPERTY(BlueprintAssignable, Category = "Media Box|Events")
++	FOnMediaBoxSubtitle OnSubtitleChanged;
++
++	/** Its status changed: loading, playing, paused, stopped, ended, error. */
++	UPROPERTY(BlueprintAssignable, Category = "Media Box|Events")
++	FOnMediaBoxStatus OnStatusChanged;
++
++	// ---------------------------------------------------------------------------------------------
++	// Blueprint
++	// ---------------------------------------------------------------------------------------------
++
++	/** Plays (from where it is, or from the start once stopped). Plays until Pause or Stop, whatever Play When says. */
++	UFUNCTION(BlueprintCallable, Category = "Media Box")
++	void Play();
++
++	/** Pauses where it is. */
++	UFUNCTION(BlueprintCallable, Category = "Media Box")
++	void Pause();
++
++	/** Stops: fades back to the poster and goes back to the start - warm, so the next Play is at once. */
++	UFUNCTION(BlueprintCallable, Category = "Media Box")
++	void Stop();
++
++	/** Play when paused or stopped, Pause when playing. */
++	UFUNCTION(BlueprintCallable, Category = "Media Box")
++	void TogglePlayPause();
++
++	/** Jumps to Seconds into the video. */
++	UFUNCTION(BlueprintCallable, Category = "Media Box")
++	void Seek(float Seconds);
++
++	/**
++	 * Plays another clip: what plays now stops at once and NewClip's poster shows; bPlayNow plays it (at once when warm). For one
++	 * shared preview that hovered buttons change - call it from each button's On Hovered, and Stop from On Unhovered.
++	 */
++	UFUNCTION(BlueprintCallable, Category = "Media Box")
++	void SetClip(UMediaBoxClip* NewClip, bool bPlayNow = true);
++
++	UFUNCTION(BlueprintPure, Category = "Media Box")
++	UMediaBoxClip* GetClip() const { return MediaClip; }
++
++	/** The widget whose hover or focus plays it - over Hover Target's name. None: back to Hover Target. */
++	UFUNCTION(BlueprintCallable, Category = "Media Box")
++	void SetHoverTarget(UWidget* NewHoverTarget);
++
++	UFUNCTION(BlueprintCallable, Category = "Media Box")
++	void SetPlaybackRate(float NewRate);
++
++	UFUNCTION(BlueprintCallable, Category = "Media Box")
++	void SetVolume(float NewVolume);
++
++	UFUNCTION(BlueprintCallable, Category = "Media Box")
++	void SetMuted(bool bNewMuted);
++
++	UFUNCTION(BlueprintPure, Category = "Media Box")
++	EMediaBoxStatus GetStatus() const { return Status; }
++
++	/** Whether the video is playing (not loading, paused or stopped). */
++	UFUNCTION(BlueprintPure, Category = "Media Box")
++	bool IsPlaying() const;
++
++	/** Seconds into the video. 0 while stopped. */
++	UFUNCTION(BlueprintPure, Category = "Media Box")
++	float GetTime() const;
++
++	/** The video's length in seconds. 0 until it has been opened. */
++	UFUNCTION(BlueprintPure, Category = "Media Box")
++	float GetDuration() const;
++
++	/** How far through the video, 0 - 1. */
++	UFUNCTION(BlueprintPure, Category = "Media Box")
++	float GetProgress() const;
++
++	/** The subtitle line showing now. Empty when none. */
++	UFUNCTION(BlueprintPure, Category = "Media Box")
++	FText GetCurrentSubtitle() const { return CurrentSubtitle; }
++
++	/** The Media Player it plays through now - a pooled one, only while it plays. None when stopped. Don't keep it. */
++	UFUNCTION(BlueprintPure, Category = "Media Box")
++	UMediaPlayer* GetMediaPlayer() const;
++
++	/** The Media Texture its video is in now - for a material of your own. None when stopped. Don't keep it. */
++	UFUNCTION(BlueprintPure, Category = "Media Box")
++	UMediaTexture* GetMediaTexture() const;
++
++	// ---------------------------------------------------------------------------------------------
++
++	/** Advances it: triggers, fades, events. Called by its pool every frame. */
++	void TickMediaBox(float DeltaTime);
++
++	//~ UWidget
++	virtual void SynchronizeProperties() override;
++	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
++#if WITH_EDITOR
++	virtual const FText GetPaletteCategory() override;
++	virtual void ValidateCompiledDefaults(class IWidgetCompilerLog& CompileLog) const override;
++#endif
++
++protected:
++	//~ UWidget
++	virtual TSharedRef<SWidget> RebuildWidget() override;
++
++	UFUNCTION()
++	TArray<FString> GetHoverTargetOptions() const;
++
++private:
++
++	friend class SMediaBox;
++
++	/** Whether it plays here: always in a game; in the designer with Preview In Designer. */
++	bool CanPlayHere() const;
++
++	UMediaBoxPool* GetPool() const;
++
++	/** Leases a player when it has none and plays it - an ended clip from its start only when bRestartIfEnded (a new hover, Play). */
++	void StartPlayback(bool bRestartIfEnded);
++	void BeginStop(bool bFade);
++	void ReleasePlayer(bool bRewind);
++	void UpdateStatus();
++	void UpdateBrushes();
++	void UpdateGroupMembership();
++	void UpdateSubtitle();
++	void UpdateMachineInputs(bool bForce);
++	void FireMachineTrigger(FName Input) const;
++
++	UWidget* ResolveHoverTarget() const;
++	bool IsTriggerHeld();
++	bool IsHiddenNow();
++
++	float GetFadeIn() const;
++	float GetFadeOut() const;
++	float GetEffectiveVolume() const;
++
++	/** Called by SMediaBox as it paints: when it was last drawn. */
++	void NotifyPainted() { LastPaintFrame = GFrameCounter; }
++
++	TSharedPtr<SMediaBox> MyMediaBox;
++
++	UPROPERTY(Transient)
++	TObjectPtr<UMediaBoxPlayer> LeasedPlayer = nullptr;
++
++	UPROPERTY(Transient)
++	FSlateBrush PosterBrush;
++
++	UPROPERTY(Transient)
++	FSlateBrush VideoBrush;
++
++	TWeakObjectPtr<UWidget> HoverTargetOverride;
++	mutable TWeakObjectPtr<UWidget> CachedHoverTarget;
++	mutable FName CachedHoverTargetName;
++
++	TWeakObjectPtr<UDiegeticScreenComponent> DiegeticScreen;
++	double NextScreenLookup = 0.0;
++
++	/** The group and target it last joined, so it can leave them again. */
++	FName JoinedGroup;
++	TWeakObjectPtr<UWidget> JoinedTarget;
++
++	/** The pool it registered with. */
++	TWeakObjectPtr<UMediaBoxPool> RegisteredPool;
++
++	EMediaBoxStatus Status = EMediaBoxStatus::Empty;
++	FText CurrentSubtitle;
++	int32 SubtitleIndex = INDEX_NONE;
++
++	/** 0 the poster, 1 the video. */
++	float VideoAlpha = 0.f;
++
++	uint64 LastPaintFrame = 0;
++
++	/** Play was called (or a trigger that ends in Keep Playing): plays whatever the trigger says. */
++	bool bPlayRequested = false;
++	/** Pause was called while a trigger holds it: stays paused until the trigger starts again. */
++	bool bHeldPaused = false;
++	bool bTriggerActive = false;
++	bool bTriggerHeldLastFrame = false;
++	float TriggerHeldFor = 0.f;
++	bool bPausedByHidden = false;
++	bool bStopping = false;
++
++	/** Seconds to seek to once it has a player (Seek while stopped). Below 0: none. */
++	float PendingSeek = -1.f;
++
++	/** Events already sent for this lease. */
++	bool bSentOpened = false;
++	bool bSentFirstFrame = false;
++	bool bSentError = false;
++	int32 SeenLoops = 0;
++	int32 SeenEnds = 0;
++
++	/** Last values given to the state machine inputs. */
++	bool bMachinePlaying = false;
++	float MachineProgress = -1.f;
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxClip.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxClip.h
+new file mode 100644
+index 0000000..4968040
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxClip.h
+@@ -0,0 +1,138 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Engine/DataAsset.h"
++
++#include "MediaBoxTypes.h"
++
++#include "MediaBoxClip.generated.h"
++
++class UMediaSource;
++class USoundBase;
++class UTexture;
++
++/**
++ * Media Box Clip: one video as a Media Box plays it - the video, the still shown before its first frame (Poster), its audio,
++ * where it starts and loops, its subtitles. One per skill preview, tutorial video or menu backdrop; the Media Box, Warm
++ * Groups and Media cues all take clips.
++ *
++ * For a clip that starts at once: give it a Poster (Generate Poster makes one from the video), give previews a Separate
++ * Sound, and encode the video for a fast start (see Docs/Design/MediaBox.md - a keyframe on the first frame, the MP4 index
++ * at the front; Data Validation warns about the index).
++ */
++UCLASS(BlueprintType, meta = (DisplayName = "Media Box Clip"))
++class NAMETBDMEDIA_API UMediaBoxClip : public UDataAsset
++{
++	GENERATED_BODY()
++
++public:
++
++	// ---------------------------------------------------------------------------------------------
++	// Video
++	// ---------------------------------------------------------------------------------------------
++
++	/** The video: a File Media Source (an .mp4, .bk2...), Img Media Source (an image sequence), Stream Media Source... */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Video", meta = (DisplayName = "Media Source"))
++	TObjectPtr<UMediaSource> MediaSource = nullptr;
++
++	/**
++	 * Shown the instant the Media Box is asked to play, until the video's first frame is in, and whenever it is stopped - so the
++	 * box is never black and never waits. Make it the video's first frame (Generate Poster) and the start is seamless.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Video")
++	TObjectPtr<UTexture> Poster = nullptr;
++
++	/** Where in the video it plays from (seconds). */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Video", meta = (DisplayName = "Start Time", ClampMin = "0.0", Units = "s"))
++	float StartTime = 0.f;
++
++	/** Plays again from Loop Start each time it reaches Loop End. Off: it stops at its end (On Ended). */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Video", meta = (DisplayName = "Loop"))
++	bool bLoop = true;
++
++	/**
++	 * Where each loop starts again (seconds) - after an intro that plays once. Looping the whole video (Loop Start 0, Loop End
++	 * 0) uses the player's own seamless loop; a range loops by seeking back, which a short-GOP encode makes hitch-free.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Video", meta = (DisplayName = "Loop Start", EditCondition = "bLoop", ClampMin = "0.0", Units = "s"))
++	float LoopStart = 0.f;
++
++	/** Where each loop ends (seconds). 0: the video's end. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Video", meta = (DisplayName = "Loop End", EditCondition = "bLoop", ClampMin = "0.0", Units = "s"))
++	float LoopEnd = 0.f;
++
++	/** The media player plugin to open it with (ElectraPlayer, WmfMedia, BinkMedia, ImgMedia...). None: Project Settings > Media Box, else the engine's pick. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Video", AdvancedDisplay, meta = (DisplayName = "Player Name"))
++	FName PlayerName;
++
++	// ---------------------------------------------------------------------------------------------
++	// Audio
++	// ---------------------------------------------------------------------------------------------
++
++	/** Where the audio comes from: the video file's own track, the Sound below, or none. Auto: the Sound when set. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio")
++	EMediaBoxAudio Audio = EMediaBoxAudio::Auto;
++
++	/**
++	 * The clip's audio as a sound asset, played in step with the video (Separate Sound) - loaded and primed with the clip, so it
++	 * starts on the very frame the video does. Export the video's audio track to a .wav and import it.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio")
++	TObjectPtr<USoundBase> Sound = nullptr;
++
++	/** The clip's own volume, under the Media Box's. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Audio", meta = (ClampMin = "0.0", UIMax = "2.0"))
++	float Volume = 1.f;
++
++	// ---------------------------------------------------------------------------------------------
++	// Subtitles
++	// ---------------------------------------------------------------------------------------------
++
++	/**
++	 * Paste a SubRip (.srt) or WebVTT (.vtt) file's text here; it is read into Subtitles below as soon as it is changed. Kept
++	 * so it can be edited again.
++	 */
++	UPROPERTY(EditAnywhere, Category = "Subtitles", meta = (DisplayName = "Subtitle Text (SRT / VTT)", MultiLine = true))
++	FString SubtitleText;
++
++	/** The clip's subtitle lines. Filled from Subtitle Text, or edited here. A Media Box draws them (Show Subtitles) and reports them (On Subtitle Changed). */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles")
++	TArray<FMediaBoxSubtitleCue> Subtitles;
++
++	// ---------------------------------------------------------------------------------------------
++	// Editor
++	// ---------------------------------------------------------------------------------------------
++
++	/** Where in the video Generate Poster takes its still (seconds). Below 0: Start Time. */
++	UPROPERTY(EditAnywhere, Category = "Video", AdvancedDisplay, meta = (DisplayName = "Poster Time", Units = "s"))
++	float PosterTime = -1.f;
++
++#if WITH_EDITOR
++	/**
++	 * Opens the video, takes the frame at Poster Time and saves it as a texture next to this clip (<clip>_Poster), set as
++	 * Poster. Takes a moment; a notification says when it is done. Needs the clip's video player plugin enabled in the editor.
++	 */
++	UFUNCTION(CallInEditor, Category = "Video", meta = (DisplayName = "Generate Poster"))
++	void GeneratePoster();
++#endif
++
++	// ---------------------------------------------------------------------------------------------
++
++	/** Where its audio comes from, Auto resolved. */
++	EMediaBoxAudio GetResolvedAudio() const;
++
++	/** Whether its loop is the whole video, which the player loops itself (seamless). */
++	bool LoopsWholeVideo() const { return bLoop && LoopStart <= 0.f && LoopEnd <= 0.f; }
++
++	/** The player plugin to ask for: Player Name, else the project's. */
++	FName GetPlayerName() const;
++
++	virtual void PostLoad() override;
++
++#if WITH_EDITOR
++	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
++	virtual EDataValidationResult IsDataValid(class FDataValidationContext& Context) const override;
++#endif
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxCue.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxCue.h
+new file mode 100644
+index 0000000..877284c
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxCue.h
+@@ -0,0 +1,120 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "NameTBD/WidgetAnimation/WidgetAnimCue.h"
++#include "NameTBD/WidgetAnimation/WidgetAnimInput.h"
++
++#include "MediaBoxCue.generated.h"
++
++class UMediaBox;
++class UMediaBoxClip;
++class UWidget;
++
++namespace MediaBoxFind
++{
++	/**
++	 * The Media Box something plays on: the one named BoxName in the User Widgets around From (or Host); unnamed, From itself
++	 * or the first inside it, else the first in each User Widget around it, nearest first. Null when none.
++	 */
++	NAMETBDMEDIA_API UMediaBox* Find(UWidget* From, UWidget* Host, FName BoxName);
++}
++
++/** What a Media cue does when it fires. */
++UENUM(BlueprintType)
++enum class EWidgetAnimMediaCueAction : uint8
++{
++	Play UMETA(ToolTip = "Plays the Media Box (at once when its clip is warm)."),
++
++	Pause UMETA(ToolTip = "Pauses it where it is."),
++
++	Stop UMETA(ToolTip = "Stops it: back to the poster and the start."),
++
++	TogglePlayPause UMETA(DisplayName = "Toggle Play / Pause"),
++
++	Seek UMETA(ToolTip = "Jumps to Seek Time."),
++
++	SetClip UMETA(DisplayName = "Set Clip", ToolTip = "Gives it the cue's Clip (and plays it, with Play Clip).")
++};
++
++/**
++ * Media: plays, pauses, stops, seeks or swaps the clip of a Media Box at a moment of the animation - a trailer starting as a
++ * panel finishes opening, stopping as it closes.
++ *
++ * Acts on the Media Box named in Media Box; else the track's widget itself when it is one (aim the track's Track Group at it),
++ * or the first inside it; else the nearest around it. Seen in the editor's previews where that box has Preview In Designer on.
++ */
++USTRUCT(BlueprintType, meta = (DisplayName = "Media"))
++struct NAMETBDMEDIA_API FWidgetAnimMediaCueParams : public FWidgetAnimCueParams
++{
++	GENERATED_BODY()
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Media")
++	EWidgetAnimMediaCueAction Action = EWidgetAnimMediaCueAction::Play;
++
++	/** The clip Set Clip gives the Media Box. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Media", meta = (DisplayName = "Clip", EditCondition = "Action == EWidgetAnimMediaCueAction::SetClip", EditConditionHides))
++	TObjectPtr<UMediaBoxClip> CueClip = nullptr;
++
++	/** Set Clip plays the new clip too. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Media", meta = (DisplayName = "Play Clip", EditCondition = "Action == EWidgetAnimMediaCueAction::SetClip", EditConditionHides))
++	bool bPlayClip = true;
++
++	/** Where Seek jumps to, in seconds into the video. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Media", meta = (DisplayName = "Seek Time", ClampMin = "0.0", Units = "s", EditCondition = "Action == EWidgetAnimMediaCueAction::Seek", EditConditionHides))
++	float SeekTime = 0.f;
++
++	/**
++	 * The Media Box to act on, by its name in the Widget Blueprint the track's widget is in or any around it. None: the track's
++	 * widget when it is one, else the first inside it, else the nearest around it.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Media", meta = (DisplayName = "Media Box"))
++	FName MediaBoxName;
++};
++
++class NAMETBDMEDIA_API FWidgetAnimMediaCueEvaluator : public TWidgetAnimCueEvaluator<FWidgetAnimMediaCueParams>
++{
++public:
++
++	virtual FText GetDisplayName() const override;
++	virtual FText GetDescription() const override;
++	virtual FText GetTrackSummary(const FInstancedStruct& Params) const override;
++	virtual bool FiresAtDesignTime(const FInstancedStruct& Params) const override { return true; }
++	virtual void Fire(const FWidgetAnimCueContext& Context) const override;
++};
++
++/** What a Media Progress input gives. */
++UENUM(BlueprintType)
++enum class EMediaBoxInputMeasure : uint8
++{
++	Progress UMETA(ToolTip = "How far through the video, 0 - 1."),
++
++	Seconds UMETA(ToolTip = "Seconds into the video."),
++
++	Playing UMETA(ToolTip = "1 while the video plays, 0 while it doesn't.")
++};
++
++/**
++ * Where a Media Box's video is: a progress bar under a trailer, motion timed to a clip, a glow while it plays. Reads the Media
++ * Box named in Media Box, else the track's widget when it is one, the first inside it, else the nearest around it.
++ */
++USTRUCT(BlueprintType, meta = (DisplayName = "Media Progress"))
++struct NAMETBDMEDIA_API FWidgetAnimInput_MediaProgress : public FWidgetAnimInputSource
++{
++	GENERATED_BODY()
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input")
++	EMediaBoxInputMeasure Measure = EMediaBoxInputMeasure::Progress;
++
++	/** The Media Box to read, by name. None: the track's widget, inside it, or around it. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Input", meta = (DisplayName = "Media Box"))
++	FName MediaBoxName;
++
++	virtual bool Sample(const FWidgetAnimInputContext& Context, FVector4& OutValue) override;
++	virtual FString GetSummary() const override;
++
++private:
++	TWeakObjectPtr<UMediaBox> Found;
++	TWeakObjectPtr<UWidget> FoundFor;
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxLibrary.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxLibrary.h
+new file mode 100644
+index 0000000..7e81f05
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxLibrary.h
+@@ -0,0 +1,65 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Kismet/BlueprintFunctionLibrary.h"
++
++#include "MediaBoxLibrary.generated.h"
++
++class UMediaBoxClip;
++class UWidget;
++
++/**
++ * The Media Box warm pool from Blueprint: Warm Groups for buttons that change what a shared Media Box plays, clips kept warm by
++ * hand, the subtitles option, and the pool's numbers. See MediaBoxTypes.h.
++ */
++UCLASS(meta = (DisplayName = "Media Box Library"))
++class NAMETBDMEDIA_API UMediaBoxLibrary : public UBlueprintFunctionLibrary
++{
++	GENERATED_BODY()
++
++public:
++
++	/**
++	 * Puts Widget (a skill button) in Warm Group with the clip it plays when hovered or focused - for a screen whose buttons all
++	 * play into one shared Media Box (Set Clip from On Hovered). The pool keeps the clips of the one focused and those nearest it
++	 * (or nearest where the pointer is heading) warm. Media Boxes that play on their own hover join their Warm Group by themselves.
++	 * Widget leaves the group when it is destroyed.
++	 */
++	UFUNCTION(BlueprintCallable, Category = "Media Box|Warm", meta = (DefaultToSelf = "Widget", Keywords = "video preload prewarm"))
++	static void AddToMediaWarmGroup(UWidget* Widget, FName Group, UMediaBoxClip* Clip);
++
++	UFUNCTION(BlueprintCallable, Category = "Media Box|Warm", meta = (DefaultToSelf = "Widget"))
++	static void RemoveFromMediaWarmGroup(UWidget* Widget, FName Group);
++
++	/** Empties Group - a screen closing. */
++	UFUNCTION(BlueprintCallable, Category = "Media Box|Warm", meta = (WorldContext = "WorldContextObject"))
++	static void ClearMediaWarmGroup(UObject* WorldContextObject, FName Group);
++
++	/** Tells Group that Widget is hovered or focused now, so its clip and its neighbours' are warmed first. Media Boxes do this themselves. */
++	UFUNCTION(BlueprintCallable, Category = "Media Box|Warm", meta = (DefaultToSelf = "Widget"))
++	static void SetMediaWarmGroupFocus(UWidget* Widget, FName Group);
++
++	/**
++	 * Keeps Clip warm whatever the Warm Groups say (bKeepWarm), or stops doing so - the clip a menu plays as it opens, warmed
++	 * during the loading screen. Counted: call it as many times off as on.
++	 */
++	UFUNCTION(BlueprintCallable, Category = "Media Box|Warm", meta = (WorldContext = "WorldContextObject", Keywords = "video preload prewarm"))
++	static void KeepMediaClipWarm(UObject* WorldContextObject, UMediaBoxClip* Clip, bool bKeepWarm = true);
++
++	/** Turns the subtitles every Media Box (with Show Subtitles) draws on or off - the game's subtitles option. Starts at Project Settings > Media Box. */
++	UFUNCTION(BlueprintCallable, Category = "Media Box|Subtitles")
++	static void SetMediaBoxSubtitlesEnabled(bool bEnabled);
++
++	UFUNCTION(BlueprintPure, Category = "Media Box|Subtitles")
++	static bool AreMediaBoxSubtitlesEnabled();
++
++	/**
++	 * The warm pool's numbers: players warm (ready to play at once) and playing now, and how many starts were warm (instant)
++	 * or cold (waited for the video) since the game started. Cold starts that keep climbing: raise Max Warm Players, or put the
++	 * screen's previews in one Warm Group.
++	 */
++	UFUNCTION(BlueprintCallable, Category = "Media Box|Warm", meta = (WorldContext = "WorldContextObject"))
++	static void GetMediaBoxPoolStats(UObject* WorldContextObject, int32& WarmPlayers, int32& PlayingPlayers, int32& WarmStarts, int32& ColdStarts);
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h
+new file mode 100644
+index 0000000..25e2647
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h
+@@ -0,0 +1,341 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Containers/Ticker.h"
++#include "Subsystems/GameInstanceSubsystem.h"
++#include "UObject/Object.h"
++
++#include "MediaBoxPool.generated.h"
++
++class UAudioComponent;
++class UMediaBox;
++class UMediaBoxClip;
++class UMediaPlayer;
++class UMediaSoundComponent;
++class UMediaTexture;
++class UWidget;
++class UWorld;
++
++/** Where a pooled player is. Not reflected: the pool's own bookkeeping. */
++enum class EMediaBoxPlayerState : uint8
++{
++	/** Nothing open. */
++	Free,
++	/** OpenSource called, waiting for the player to open it. */
++	Opening,
++	/** Open, playing silently until the first frame is in the texture. */
++	Priming,
++	/** Paused, sought back to the clip's start, waiting for the seek to land. */
++	Settling,
++	/** Paused on the clip's first frame, ready to play at once - "warm". */
++	Ready,
++	Playing,
++	Paused,
++	/** Played to the end (no loop). */
++	Ended,
++	/** Couldn't open or play the clip. */
++	Failed
++};
++
++/**
++ * One pooled player: a Media Player, the Media Texture it draws into and the audio that goes with it, opened on one clip at a
++ * time. Made per pool, never shared assets - two Media Boxes never fight over one player. A Media Box leases one while it plays;
++ * the rest are kept warm by the pool. See MediaBoxTypes.h.
++ */
++UCLASS(Transient)
++class NAMETBDMEDIA_API UMediaBoxPlayer : public UObject
++{
++	GENERATED_BODY()
++
++public:
++
++	/** Makes the Media Player and Media Texture. Called once, by the pool. */
++	void Initialize();
++
++	/** Opens NewClip, warming it: open, first frame, back to its start, paused. False when it couldn't even start opening. */
++	bool Open(UMediaBoxClip* NewClip);
++
++	/** Closes what is open and lets go of its audio. */
++	void Close();
++
++	/** Plays from where it is: at once when warm, else as soon as its first frame is in. AudioWorld plays its audio. */
++	void Play(UWorld* AudioWorld, bool bWithAudio);
++
++	/** Pauses (audio fades out over FadeOut seconds). */
++	void Pause(float FadeOut);
++
++	/** Back to the start, paused, warm again for the next Play (audio fades out over FadeOut seconds). */
++	void Rewind(float FadeOut);
++
++	void Seek(float Seconds);
++	void SetRate(float NewRate);
++
++	/** Fades the audio out over FadeOut seconds (then stops it), the video playing on - a Media Box fading back to its poster. */
++	void FadeOutAudio(float FadeOut) { StopAudio(FadeOut); }
++
++	/** The volume the audio plays at (the Media Box's, muted or not, times the clip's). */
++	void SetVolume(float NewVolume);
++
++	/** Advances opening, priming, loops, audio fades and audio sync. Called by the pool every frame. */
++	void Tick(float DeltaTime);
++
++	EMediaBoxPlayerState GetState() const { return State; }
++	UMediaBoxClip* GetClip() const { return Clip; }
++	UMediaPlayer* GetMediaPlayer() const { return MediaPlayer; }
++	UMediaTexture* GetMediaTexture() const { return MediaTexture; }
++
++	bool IsFree() const { return State == EMediaBoxPlayerState::Free; }
++	bool IsReady() const { return State == EMediaBoxPlayerState::Ready; }
++	bool HasFailed() const { return State == EMediaBoxPlayerState::Failed; }
++	bool IsPlaying() const { return State == EMediaBoxPlayerState::Playing; }
++
++	/** Whether the texture holds a frame of this clip - the video can be shown over the poster. */
++	bool IsFrameReady() const { return bFrameReady; }
++
++	/** Whether it has been opened (On Opened). */
++	bool IsOpened() const { return State != EMediaBoxPlayerState::Free && State != EMediaBoxPlayerState::Opening && State != EMediaBoxPlayerState::Failed; }
++
++	/** Seconds into the video. */
++	float GetTime() const;
++
++	/** The video's length in seconds; 0 until opened (or for a live stream). */
++	float GetDuration() const;
++
++	/** Why it failed, when it has. */
++	const FString& GetError() const { return Error; }
++
++	/** Counted for the lease: loops done, ends reached. */
++	int32 GetLoopCount() const { return LoopCount; }
++	int32 GetEndCount() const { return EndCount; }
++
++	/** The Media Box using it, if any. */
++	UObject* GetLeaseOwner() const { return LeaseOwner.Get(); }
++	bool IsLeased() const { return LeaseOwner.IsValid(); }
++
++	/** When it was last leased or last asked to be warm - the pool closes the longest unwanted first. */
++	double LastWantedTime = 0.0;
++
++private:
++
++	friend class UMediaBoxPool;
++
++	UFUNCTION()
++	void HandleMediaOpened(FString OpenedUrl);
++
++	UFUNCTION()
++	void HandleMediaOpenFailed(FString FailedUrl);
++
++	UFUNCTION()
++	void HandleEndReached();
++
++	UFUNCTION()
++	void HandleSeekCompleted();
++
++	void Fail(const FString& Reason);
++
++	/** Plays from the state it is in now (Ready, Paused, Ended, or straight out of priming). */
++	void StartPlaying();
++
++	/** Starts the clip's audio at the video's time (Separate Sound) or the Media Sound Component (Embedded). */
++	void StartAudio();
++	void StopAudio(float FadeOut);
++	void ApplyAudioVolume();
++	bool WantsSeparateSound() const;
++	bool WantsEmbeddedSound() const;
++
++	/** The audio components, made (again) in AudioWorld when they don't exist there yet. */
++	void EnsureAudio(UWorld* InAudioWorld);
++	void DestroyAudio();
++
++	UPROPERTY(Transient)
++	TObjectPtr<UMediaPlayer> MediaPlayer = nullptr;
++
++	UPROPERTY(Transient)
++	TObjectPtr<UMediaTexture> MediaTexture = nullptr;
++
++	UPROPERTY(Transient)
++	TObjectPtr<UMediaSoundComponent> EmbeddedSound = nullptr;
++
++	UPROPERTY(Transient)
++	TObjectPtr<UAudioComponent> SeparateSound = nullptr;
++
++	UPROPERTY(Transient)
++	TObjectPtr<UMediaBoxClip> Clip = nullptr;
++
++	TWeakObjectPtr<UObject> LeaseOwner;
++	TWeakObjectPtr<UWorld> AudioWorld;
++
++	/** Leased and not yet given back - a lease whose owner has gone (garbage collected) is taken back by the pool. */
++	bool bHasLease = false;
++
++	EMediaBoxPlayerState State = EMediaBoxPlayerState::Free;
++	FString Error;
++
++	bool bFrameReady = false;
++	bool bPlayRequested = false;
++	bool bAudioWanted = true;
++
++	/** Frames spent priming / settling - each step gives up waiting after a while rather than hang. */
++	int32 StepFrames = 0;
++	float PrimeFrom = 0.f;
++
++	/** The video time last frame - a native loop wrapping round shows as time going back. */
++	float LastTime = 0.f;
++
++	int32 LoopCount = 0;
++	int32 EndCount = 0;
++
++	float Rate = 1.f;
++	float Volume = 1.f;
++
++	/** The audio fade: 1 full, falling to 0 over AudioFadeDuration, then the audio stops. */
++	float AudioFade = 1.f;
++	float AudioFadeDuration = 0.f;
++	bool bAudioFadingOut = false;
++	bool bAudioPlaying = false;
++
++	/** Separate Sound clock: the video time it was started at, and when (platform seconds). For keeping it in step. */
++	float AudioStartMediaTime = 0.f;
++	double AudioStartWallTime = 0.0;
++	double NextSyncCheck = 0.0;
++};
++
++/** One widget in a Warm Group and the clip it plays (or shows) when hovered or focused. */
++USTRUCT()
++struct NAMETBDMEDIA_API FMediaBoxWarmTarget
++{
++	GENERATED_BODY()
++
++	TWeakObjectPtr<UWidget> Widget;
++
++	UPROPERTY(Transient)
++	TObjectPtr<UMediaBoxClip> Clip = nullptr;
++};
++
++/** The clips of one screen - a skill tree - from which the pool keeps the likeliest next hovers warm. */
++USTRUCT()
++struct NAMETBDMEDIA_API FMediaBoxWarmGroup
++{
++	GENERATED_BODY()
++
++	UPROPERTY(Transient)
++	TArray<FMediaBoxWarmTarget> Targets;
++
++	/** The target last focused or hovered (Set Warm Group Focus, or a Media Box of the group starting) and when. */
++	TWeakObjectPtr<UWidget> Focus;
++	double FocusTime = 0.0;
++};
++
++/**
++ * The warm pool: every pooled player of one game instance (or of the editor, for the designer), the Warm Groups and pinned
++ * clips that say which clips should be warm, and the Media Boxes, which it ticks. Each frame it ranks what is wanted - pinned
++ * clips, then each group's focused target and those nearest it (or nearest where the pointer is heading) - and keeps the top
++ * Max Warm Players of them open and paused on their first frame; a Media Box asking for one of those plays it at once.
++ */
++UCLASS(Transient)
++class NAMETBDMEDIA_API UMediaBoxPool : public UObject
++{
++	GENERATED_BODY()
++
++public:
++
++	/** The pool for WorldContext's game instance; the editor's own for a world without one (the designer, editor worlds). */
++	static UMediaBoxPool* Get(const UObject* WorldContext);
++
++	/** The editor's pool, if made - for module shutdown. */
++	static void ShutdownEditorPool();
++
++	void Startup();
++	void Shutdown();
++
++	virtual void BeginDestroy() override;
++
++	/**
++	 * A player for NewClip, leased to Owner until Release: the warm one when there is one (it plays at once), else one opened
++	 * now. Never null for a clip with a Media Source.
++	 */
++	UMediaBoxPlayer* Acquire(UMediaBoxClip* NewClip, UObject* Owner);
++
++	/** Gives a leased player back. bRewind puts it back on its first frame, warm for the next hover. */
++	void Release(UMediaBoxPlayer* PooledPlayer, bool bRewind, float AudioFadeOut);
++
++	void RegisterBox(UMediaBox* Box);
++	void UnregisterBox(UMediaBox* Box);
++
++	// Warm Groups -------------------------------------------------------------------------------
++
++	void AddToGroup(FName Group, UWidget* Widget, UMediaBoxClip* TargetClip);
++	void RemoveFromGroup(FName Group, UWidget* Widget);
++	void ClearGroup(FName Group);
++	void SetGroupFocus(FName Group, UWidget* Widget);
++
++	/** Focuses the group's target that plays FocusClip (the first one) - a shared Media Box told to play it. */
++	void SetGroupFocusByClip(FName Group, UMediaBoxClip* FocusClip);
++
++	/** Keeps TargetClip warm whatever the groups say (bKeepWarm), or stops doing so. Counted: as many offs as ons. */
++	void PinClip(UMediaBoxClip* TargetClip, bool bKeepWarm);
++
++	// Stats -------------------------------------------------------------------------------------
++
++	int32 GetNumWarm() const;
++	int32 GetNumLeased() const;
++	int32 WarmStarts = 0;
++	int32 ColdStarts = 0;
++
++private:
++
++	bool Tick(float DeltaTime);
++
++	/** Which clips should be warm, likeliest first (at most the pool's capacity). */
++	void RankWanted(TArray<UMediaBoxClip*>& OutClips);
++
++	/** Opens what RankWanted asks for, closing what nobody wants once over capacity. */
++	void Rebalance();
++
++	/** An unleased player to open a clip on: a free one, else the longest unwanted one not in Keep, else a new one (bAllowNew). */
++	UMediaBoxPlayer* FindPlayerToReuse(TConstArrayView<UMediaBoxClip*> Keep, bool bAllowNew);
++
++	UMediaBoxPlayer* MakePlayer();
++
++	void UpdatePointer(float DeltaTime);
++
++	UPROPERTY(Transient)
++	TArray<TObjectPtr<UMediaBoxPlayer>> Players;
++
++	UPROPERTY(Transient)
++	TMap<FName, FMediaBoxWarmGroup> Groups;
++
++	UPROPERTY(Transient)
++	TMap<TObjectPtr<UMediaBoxClip>, int32> Pinned;
++
++	TArray<TWeakObjectPtr<UMediaBox>> Boxes;
++
++	FTSTicker::FDelegateHandle TickHandle;
++
++	/** The pointer, in desktop space, its smoothed speed, and when it last moved - for guessing the next hover. */
++	FVector2f PointerPosition = FVector2f::ZeroVector;
++	FVector2f PointerVelocity = FVector2f::ZeroVector;
++	bool bHasPointer = false;
++	double PointerMoveTime = 0.0;
++};
++
++/** Holds the warm pool of a game instance, so warm players outlive level changes. */
++UCLASS()
++class NAMETBDMEDIA_API UMediaBoxSubsystem : public UGameInstanceSubsystem
++{
++	GENERATED_BODY()
++
++public:
++
++	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
++	virtual void Deinitialize() override;
++
++	UMediaBoxPool* GetPool() const { return Pool; }
++
++private:
++
++	UPROPERTY(Transient)
++	TObjectPtr<UMediaBoxPool> Pool = nullptr;
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxSettings.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxSettings.h
+new file mode 100644
+index 0000000..79be300
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxSettings.h
+@@ -0,0 +1,113 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Engine/DeveloperSettings.h"
++
++#include "MediaBoxSettings.generated.h"
++
++class USoundClass;
++
++/**
++ * Project Settings > Plugins > Media Box: what every Media Box in the project shares - how many players are kept warm, the
++ * fades, how audio follows the video, and how the next hover is guessed. See MediaBoxTypes.h.
++ */
++UCLASS(Config = Game, DefaultConfig, meta = (DisplayName = "Media Box"))
++class NAMETBDMEDIA_API UMediaBoxSettings : public UDeveloperSettings
++{
++	GENERATED_BODY()
++
++public:
++
++	static const UMediaBoxSettings& Get() { return *GetDefault<UMediaBoxSettings>(); }
++
++	virtual FName GetCategoryName() const override { return TEXT("Plugins"); }
++
++#if WITH_EDITOR
++	virtual FText GetSectionText() const override;
++#endif
++
++	/** Max Warm Players, or the MediaBox.MaxWarmPlayers console value when that is 0 or more. */
++	int32 GetMaxWarmPlayers() const;
++
++	// -------------------------------------------------------------------------------------------------
++	// Warm Pool
++	// -------------------------------------------------------------------------------------------------
++
++	/**
++	 * How many players are kept open and paused on a clip's first frame, ready to play at once - besides those playing. Each
++	 * holds a decoder and a frame of video in memory: 4 covers the clip hovered, the one fading out and the two most likely
++	 * next. Consoles and phones may allow fewer hardware decoders at once; lower it there (per platform config). 0: no warm
++	 * players, every clip starts cold (the poster still shows at once).
++	 */
++	UPROPERTY(Config, EditAnywhere, Category = "Warm Pool", meta = (DisplayName = "Max Warm Players", ClampMin = "0", UIMax = "16"))
++	int32 MaxWarmPlayers = 4;
++
++	/**
++	 * Of each Warm Group, how many clips are kept warm: the focused (or hovered) one and those nearest it on screen - or nearest
++	 * where the pointer is heading. The pool's Max Warm Players still caps them all.
++	 */
++	UPROPERTY(Config, EditAnywhere, Category = "Warm Pool", meta = (DisplayName = "Warm Per Group", ClampMin = "1", UIMax = "16"))
++	int32 WarmPerGroup = 3;
++
++	/**
++	 * Guesses the next hover from where the pointer is heading (its speed, Hover Intent Look Ahead seconds ahead) and warms what
++	 * is there before it arrives. Off: from where the pointer is.
++	 */
++	UPROPERTY(Config, EditAnywhere, Category = "Warm Pool", meta = (DisplayName = "Hover Intent"))
++	bool bHoverIntent = true;
++
++	UPROPERTY(Config, EditAnywhere, Category = "Warm Pool", meta = (DisplayName = "Hover Intent Look Ahead", EditCondition = "bHoverIntent", ClampMin = "0.0", UIMax = "0.5", Units = "s"))
++	float HoverIntentLookAhead = 0.15f;
++
++	/**
++	 * The media player plugin every Media Box asks for by name - ElectraPlayer, WmfMedia, BinkMedia, ImgMedia... None: the
++	 * engine picks per file and platform. A clip's own Player Name wins.
++	 */
++	UPROPERTY(Config, EditAnywhere, Category = "Warm Pool", meta = (DisplayName = "Player Name"))
++	FName PlayerName;
++
++	// -------------------------------------------------------------------------------------------------
++	// Fades
++	// -------------------------------------------------------------------------------------------------
++
++	/** How long the video takes to fade in over the poster once its first frame is in - hides the cut. 0: a cut. */
++	UPROPERTY(Config, EditAnywhere, Category = "Fades", meta = (DisplayName = "Video Fade In", ClampMin = "0.0", UIMax = "1.0", Units = "s"))
++	float VideoFadeIn = 0.08f;
++
++	/** How long the video takes to fade back to the poster as it stops (Stop And Rewind). 0: a cut. */
++	UPROPERTY(Config, EditAnywhere, Category = "Fades", meta = (DisplayName = "Video Fade Out", ClampMin = "0.0", UIMax = "1.0", Units = "s"))
++	float VideoFadeOut = 0.12f;
++
++	/** How long the audio takes to fade out as the video stops or pauses, rather than being cut. */
++	UPROPERTY(Config, EditAnywhere, Category = "Fades", meta = (DisplayName = "Audio Fade Out", ClampMin = "0.0", UIMax = "1.0", Units = "s"))
++	float AudioFadeOut = 0.15f;
++
++	// -------------------------------------------------------------------------------------------------
++	// Audio
++	// -------------------------------------------------------------------------------------------------
++
++	/** The Sound Class every Media Box's audio plays in - the UI or voice class, for the game's volume sliders. None: the sound's own. */
++	UPROPERTY(Config, EditAnywhere, Category = "Audio", meta = (DisplayName = "Sound Class"))
++	TSoftObjectPtr<USoundClass> SoundClass;
++
++	/**
++	 * A Separate Sound drifting further than this from the video is put back in step (started again at the video's time). Short
++	 * previews never drift that far.
++	 */
++	UPROPERTY(Config, EditAnywhere, Category = "Audio", meta = (DisplayName = "Audio Resync Threshold", ClampMin = "0.01", UIMax = "0.5", Units = "s"))
++	float AudioResyncThreshold = 0.08f;
++
++	/** Plays the audio in the Widget Blueprint designer too, where a Media Box has Preview In Designer on. Off: designer previews are silent. */
++	UPROPERTY(Config, EditAnywhere, Category = "Audio", meta = (DisplayName = "Audio In Designer"))
++	bool bAudioInDesigner = false;
++
++	// -------------------------------------------------------------------------------------------------
++	// Subtitles
++	// -------------------------------------------------------------------------------------------------
++
++	/** Whether Media Boxes draw their clips' subtitles - the game's subtitles option. Set at runtime with Set Media Box Subtitles Enabled. */
++	UPROPERTY(Config, EditAnywhere, Category = "Subtitles", meta = (DisplayName = "Subtitles Enabled"))
++	bool bSubtitlesEnabled = true;
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTransportBar.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTransportBar.h
+new file mode 100644
+index 0000000..9335161
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTransportBar.h
+@@ -0,0 +1,125 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Blueprint/UserWidget.h"
++
++#include "MediaBoxTransportBar.generated.h"
++
++class UButton;
++class UMediaBox;
++class USlider;
++class UTextBlock;
++
++/**
++ * Media Box Transport Bar: the controls under a video - play / pause, stop, a scrub bar, the time, volume, mute, subtitles -
++ * as a Widget Blueprint you lay out yourself. Make a Widget Blueprint with this as its parent class and add any of the named
++ * parts (each optional): PlayPauseButton, StopButton, ScrubBar (Slider), TimeText, VolumeSlider, MuteButton, SubtitlesButton,
++ * SubtitleText. Each part is wired up by its name; style them as any Button, Slider or Text (Context Menu Buttons work, being
++ * Buttons). On Playing Changed / On Muted Changed swap icons.
++ *
++ * Drives the Media Box named Media Box in the Widget Blueprint it is in (or any around it); None: the first one found around
++ * it. Or Set Media Box.
++ */
++UCLASS(Abstract, meta = (DisplayName = "Media Box Transport Bar"))
++class NAMETBDMEDIA_API UMediaBoxTransportBar : public UUserWidget
++{
++	GENERATED_BODY()
++
++public:
++
++	/** The Media Box it drives, by name around it. None: the first found around it. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Media Box", meta = (DisplayName = "Media Box"))
++	FName MediaBoxName;
++
++	/** How the time reads: false "0:05 / 0:12", true "0:05". */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Media Box", meta = (DisplayName = "Elapsed Time Only"))
++	bool bElapsedTimeOnly = false;
++
++	UFUNCTION(BlueprintCallable, Category = "Media Box")
++	void SetMediaBox(UMediaBox* NewMediaBox);
++
++	UFUNCTION(BlueprintPure, Category = "Media Box")
++	UMediaBox* GetMediaBox() const { return DrivenBox.Get(); }
++
++	/** The video started or stopped playing - swap the play / pause icon here. */
++	UFUNCTION(BlueprintImplementableEvent, Category = "Media Box")
++	void OnPlayingChanged(bool bPlaying);
++
++	/** The Media Box was muted or unmuted - swap the speaker icon here. */
++	UFUNCTION(BlueprintImplementableEvent, Category = "Media Box")
++	void OnMutedChanged(bool bIsMuted);
++
++protected:
++
++	virtual void NativeConstruct() override;
++	virtual void NativeDestruct() override;
++	virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
++
++	UPROPERTY(BlueprintReadOnly, Category = "Parts", meta = (BindWidgetOptional))
++	TObjectPtr<UButton> PlayPauseButton = nullptr;
++
++	UPROPERTY(BlueprintReadOnly, Category = "Parts", meta = (BindWidgetOptional))
++	TObjectPtr<UButton> StopButton = nullptr;
++
++	UPROPERTY(BlueprintReadOnly, Category = "Parts", meta = (BindWidgetOptional))
++	TObjectPtr<USlider> ScrubBar = nullptr;
++
++	UPROPERTY(BlueprintReadOnly, Category = "Parts", meta = (BindWidgetOptional))
++	TObjectPtr<UTextBlock> TimeText = nullptr;
++
++	UPROPERTY(BlueprintReadOnly, Category = "Parts", meta = (BindWidgetOptional))
++	TObjectPtr<USlider> VolumeSlider = nullptr;
++
++	UPROPERTY(BlueprintReadOnly, Category = "Parts", meta = (BindWidgetOptional))
++	TObjectPtr<UButton> MuteButton = nullptr;
++
++	UPROPERTY(BlueprintReadOnly, Category = "Parts", meta = (BindWidgetOptional))
++	TObjectPtr<UButton> SubtitlesButton = nullptr;
++
++	/** Shows the current subtitle line here, for subtitles drawn outside the video. */
++	UPROPERTY(BlueprintReadOnly, Category = "Parts", meta = (BindWidgetOptional))
++	TObjectPtr<UTextBlock> SubtitleText = nullptr;
++
++private:
++
++	UFUNCTION()
++	void HandlePlayPauseClicked();
++
++	UFUNCTION()
++	void HandleStopClicked();
++
++	UFUNCTION()
++	void HandleMuteClicked();
++
++	UFUNCTION()
++	void HandleSubtitlesClicked();
++
++	UFUNCTION()
++	void HandleScrubBegin();
++
++	UFUNCTION()
++	void HandleScrubEnd();
++
++	UFUNCTION()
++	void HandleScrubChanged(float NewValue);
++
++	UFUNCTION()
++	void HandleVolumeChanged(float NewValue);
++
++	UMediaBox* FindDrivenBox();
++
++	static FText FormatTime(float Seconds);
++
++	TWeakObjectPtr<UMediaBox> DrivenBox;
++	bool bBoxSetByHand = false;
++	bool bScrubbing = false;
++	bool bResumeAfterScrub = false;
++	bool bWasPlaying = false;
++	bool bWasMuted = false;
++	bool bReportedOnce = false;
++	FText LastSubtitle;
++	int32 LastShownSeconds = -1;
++	int32 LastShownDuration = -1;
++};
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h
+new file mode 100644
+index 0000000..13cd7e1
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h
+@@ -0,0 +1,121 @@
++// Copyright AR GameSystems 2026. All rights reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++
++#include "MediaBoxTypes.generated.h"
++
++// =====================================================================================================
++// Media Box
++// =====================================================================================================
++//
++// Video in UI that starts the moment it is asked to: a skill hovered in a skill tree plays its preview clip, with audio, on
++// that same frame - the way Horizon Zero Dawn's skill tree does.
++//
++// Nothing slow happens at the hover. The slow steps - opening the file, starting the decoder, decoding the first frame,
++// loading the sound - happen beforehand, in the warm pool (UMediaBoxPool): a few players kept open and paused on each
++// clip's first frame, chosen by what the player is likely to hover next (Warm Groups). The hover only calls Play on one of
++// those, behind the clip's poster (a still of its first frame), which shows at once whatever happens. See
++// Docs/Design/MediaBox.md.
++
++/** How the video (and its poster) is laid in the Media Box. */
++UENUM(BlueprintType)
++enum class EMediaBoxFit : uint8
++{
++	Contain UMETA(ToolTip = "All of the video shows, as big as fits, its shape kept. The Media Box's Letterbox Color fills the rest."),
++
++	Cover UMETA(ToolTip = "The video fills the whole Media Box, its shape kept; what overflows is cropped (Crop Focus says which part stays)."),
++
++	Stretch UMETA(ToolTip = "The video is stretched to the Media Box's shape.")
++};
++
++/**
++ * When a Media Box plays on its own. Whatever is picked, Play, Pause and Stop work too. A trigger that ends (unhovered, hidden)
++ * does what After Trigger says.
++ */
++UENUM(BlueprintType)
++enum class EMediaBoxTrigger : uint8
++{
++	Manual UMETA(ToolTip = "Only when told to: Play, Set Clip with Play, a Media cue."),
++
++	Visible UMETA(ToolTip = "While the Media Box is shown - a preview in an Info Card plays as the card opens."),
++
++	Hovered UMETA(ToolTip = "While its Hover Target (by default the button it is in, else itself) is hovered."),
++
++	Focused UMETA(ToolTip = "While its Hover Target has keyboard / gamepad focus, or something inside it has."),
++
++	HoveredOrFocused UMETA(DisplayName = "Hovered Or Focused", ToolTip = "While its Hover Target is hovered or focused - mouse and gamepad alike. What a skill tree wants.")
++};
++
++/** What a Media Box does when what started it ends: unhovered, unfocused, hidden. */
++UENUM(BlueprintType)
++enum class EMediaBoxAfterTrigger : uint8
++{
++	StopAndRewind UMETA(DisplayName = "Stop And Rewind", ToolTip = "Fades back to the poster and goes back to the start: the next hover plays it from the beginning, at once (its player stays warm)."),
++
++	Pause UMETA(ToolTip = "Pauses where it is; the next time it plays, it carries on from there."),
++
++	KeepPlaying UMETA(DisplayName = "Keep Playing", ToolTip = "Plays on until it ends (or Stop).")
++};
++
++/** Where a clip's audio comes from. */
++UENUM(BlueprintType)
++enum class EMediaBoxAudio : uint8
++{
++	Auto UMETA(ToolTip = "Separate Sound when the clip has a Sound, else the video file's own audio."),
++
++	Embedded UMETA(ToolTip = "The video file's own audio track, played through a Media Sound Component (2D, UI sound)."),
++
++	SeparateSound UMETA(DisplayName = "Separate Sound", ToolTip = "The clip's Sound, played in step with the video. Starts with no wait at all (it is loaded and primed with the clip), so it is the one recommended for previews."),
++
++	Silent UMETA(ToolTip = "No audio.")
++};
++
++/** Where a Media Box is, for Blueprint. */
++UENUM(BlueprintType)
++enum class EMediaBoxStatus : uint8
++{
++	Empty UMETA(ToolTip = "No clip."),
++
++	Loading UMETA(ToolTip = "Asked to play, waiting for its player (opening, or its first frame)."),
++
++	Playing,
++
++	Paused,
++
++	Stopped UMETA(ToolTip = "At rest: the poster shows."),
++
++	Ended UMETA(ToolTip = "Played to its end (and doesn't loop)."),
++
++	Error UMETA(ToolTip = "Its video couldn't be opened or played - see On Error.")
++};
++
++/** One subtitle line of a clip: shown from Start to End (seconds into the video). */
++USTRUCT(BlueprintType)
++struct NAMETBDMEDIA_API FMediaBoxSubtitleCue
++{
++	GENERATED_BODY()
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Subtitles", meta = (Units = "s"))
++	float Start = 0.f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Subtitles", meta = (Units = "s"))
++	float End = 0.f;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Subtitles", meta = (MultiLine = true))
++	FText Text;
++};
++
++namespace MediaBoxSubtitles
++{
++	/**
++	 * Reads SubRip (.srt) or WebVTT (.vtt) text into cues, sorted by start: "00:00:01,500 --> 00:00:03,000" timings (a dot for
++	 * the comma too, hours optional), the lines under each up to a blank line. Cue numbers, a WEBVTT header, NOTE / STYLE blocks
++	 * and cue settings after the end time are skipped; <i>-style tags are taken out. Malformed blocks are skipped.
++	 */
++	NAMETBDMEDIA_API void Parse(const FString& Source, TArray<FMediaBoxSubtitleCue>& OutCues);
++
++	/** The cue shown at Seconds, or INDEX_NONE. Cues are sorted by start; overlapping ones: the last that started. */
++	NAMETBDMEDIA_API int32 FindCue(TConstArrayView<FMediaBoxSubtitleCue> Cues, float Seconds);
++}

@@ -16,20 +16,8 @@
     <list default="true" id="dc1934b2-75b5-4bee-9119-3fe06808e968" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/CLAUDE.md" beforeDir="false" afterPath="$PROJECT_DIR$/CLAUDE.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Docs/Design/DiegeticUI.md" beforeDir="false" afterPath="$PROJECT_DIR$/Docs/Design/DiegeticUI.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Config/DefaultNameTBD.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Config/DefaultNameTBD.ini" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/Diegetic/M_DiegeticScreen.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/Diegetic/M_DiegeticScreen.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/Diegetic/M_DiegeticScreen_Glass.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/Diegetic/M_DiegeticScreen_Glass.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/Diegetic/M_DiegeticScreen_Opaque.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/Diegetic/M_DiegeticScreen_Opaque.uasset" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Resources/AI/Docs/diegetic.md" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Resources/AI/Docs/diegetic.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticInteractorComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticInteractorComponent.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticTypes.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticTypes.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticTypes.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticTypes.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/DiegeticScreenMaterial.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/DiegeticScreenMaterial.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/DiegeticScreenMaterial.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/DiegeticScreenMaterial.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Docs/Design/OpenItems.md" beforeDir="false" afterPath="$PROJECT_DIR$/Docs/Design/OpenItems.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/NameTBD.uplugin" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/NameTBD.uplugin" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
