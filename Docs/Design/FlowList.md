@@ -1,0 +1,81 @@
+# Flow List
+
+## Flow List architecture (short)
+- **What it is**: `UFlowList` (palette: NameTBD > Flow List) is a panel that lays its children along a **path** by each child's signed **distance from the focus**, measured in items, and styles each child from that distance. It covers scroll lists, carousels, cover flows, picker wheels, Persona-style dials and slanted menus, tapering push/pop lists, rings and stacks. Files are in `Source/NameTBD/Widgets/FlowList/`.
+- **Data** (`FlowListTypes.h`): four groups on the widget, all `BlueprintReadOnly` with setters, plus a `StylePreset` dropdown that fills them.
+  - `FFlowListLayout`: path `Type` (Line, Arc, Wheel, Ring, Spline), Orientation, Angle, Focus Anchor/Offset, Item Pivot, Align To Path, per-path settings, Spacing, Item Size, Pitch Override, Desired Size.
+  - `FFlowListEffects`: `FFlowListChannel`s for Scale, Squash, Opacity, Rotation, Cross Offset and Spread, plus Tint (`FFlowListColorChannel`), Spacing Follows Scale, Edge Fade, Z Order and Cull Distance. A channel is Off, Falloff (At Focus → At Edge over Distance items, with an easing and a Same/Opposite/Separate mirror for the items before the focus), or Curve (an `FRuntimeFloatCurve` over the signed distance).
+  - `FFlowListScrolling`: Snap To Items, Loop, Stop At Content End, drag (sensitivity, Fling Coast, Max Items Per Fling, Elastic/Clamp overscroll), `ScrollSpring` (`FWidgetSpringParams`), wheel, navigation, Focus Follows Selection, **Stick Scrolls** (analog stick scrolling with speed, max speed, acceleration time, dead zone, response, invert; fix9), Select While Scrolling, Click To Focus.
+  - `FFlowListTransitions`: Animate Changes, **Use Basic Animations** (on: Enter/Exit `FFlowListTransition` - duration, delay, easing, opacity, scale, offset along/across the path, rotation; off: **Anim Enter Item / Anim Exit Item**, `TArray<FWidgetAnimEntryBase>` played on each item), `ReorderSpring`, **Intro** (`FFlowListIntro`: Play Intro, Stagger), Keep Focused Item. Legacy `bPlayIntro` / `Stagger` are hidden UPROPERTYs migrated into Intro by `PostSerialize`.
+  - `FlowListTypes::ApplyPreset` holds the presets.
+- **Slate** (`SFlowList.h/.cpp`, an `SPanel`):
+  - Scroll position is in items. A slot's `Place` springs to its `ItemIndex`, which is how items slide aside on insert, remove and move.
+  - `ComputeLayout` sweeps outward from the focus, integrating each pitch scaled by Scale × Squash (Simpson's rule per item) when Spacing Follows Scale is on. That's what makes a taper pack into a curve.
+  - Uniform scale goes in the **layout** transform (text stays crisp). Turn and squash go in a **render** transform about the pivot, composed after the child's own render transform, so Widget Animations on items still play.
+  - Opacity and tint go through the child's `FWidgetStyle` in `OnPaint`. Each item paints at `MaxLayer + 1`.
+  - Motion states: Idle, Drag, Coast, Spring, Stick (fix9: the stick's speed, from `UpdateStick`; read by the `FFlowListStickInput` input preprocessor).
+    - Drag uses a UIScrollView rubber band past the ends.
+    - Release: with snapping, it springs to round(position + velocity × Fling Coast), starting at the release velocity. Without snapping, it coasts with exponential decay.
+    - Wheel and keys accumulate on the spring's target. Springs use `UWidgetAnimSpringLibrary::AdvanceSpring`.
+  - Ticking is an active timer that stops when idle.
+  - Pointer handling:
+    - The press is seen in `OnPreviewMouseButtonDown`.
+    - If a child (a button) holds the mouse, the list polls the cursor. Once past the drag threshold, along the list's axis, it calls `ReleaseAllPointerCapture` to take the drag, so grabbing a button never clicks it.
+    - A drag mostly across the list is left alone (nested scrolling).
+    - A press on a moving list catches it.
+  - Removed children stay in the panel as leaving ghosts: hit-test-invisible, playing Exit, not items. `RestoreAnchor` keeps the focused item in place across structure changes (`ShiftFrame`). Removing the focused item lets the next one slide in (push/pop).
+  - Navigation along the list's orientation moves one item, returns `Explicit` focus to the item's first focusable widget, and returns `Escape` at the ends. `OnFocusChanging` scrolls to an item that gains non-mouse focus.
+  - The designer draws the path and focus point (`Show Path In Designer`).
+  - Item Widget Animations (Use Basic Animations off): Slate keeps Enter/Exit timing (`SetItemAnimationLengths`, from the entries' stack durations) but draws nothing of them; `OnItemTransitionStarted(Widget, bEnter)` fires once each entrance/exit passes its stagger, and `UFlowList` plays the entries on the item through an `FWidgetAnimPlayer` + baselines per item (`ItemAnimations`, ticked on an `FTSTicker`). Baselines are restored when the item leaves for good or a virtual entry goes back to the pool. An entering item isn't drawn until its animation starts.
+  - The item's own pose from its entrance/exit animation (opacity, scale, move, turn, shear of the item itself) is taken out of the player's result (`UFlowList::PoseItemAnimation`: `EvaluateWidgetAnimPlayer`, then `ApplyComposedResult` for the rest) and drawn by the Slate list (`SFlowList::SetItemAnimationPose`, about the item's Render Transform Pivot, over its own render transform, under the list's turn and squash). The item's own Render Transform / Opacity are never written, and its entry is dropped from the baselines.
+  - `FlowList.LogItemAnimations` (console): 1 logs previews, the computed entrance/exit lengths, each Add/Remove (asked to animate, Animate Changes, whether the entrance/exit started), each entrance/exit start and how many entries started; 2 also each frame's pose. Always-on one-time warnings: item not found; no usable Anim Enter/Exit Item entry; an item removed with nothing to play as it leaves.
+  - Cues (`EFlowListItemCue`): Transition (Add/Remove/shown/intro/previews), View (**Play As Items Scroll In And Out**: `SFlowList::UpdateViewCues` each animated frame compares each slot's in-view flag - its box at the list's scale overlaps the list, worked out in `ComputeLayout` before any fade, kept in `CachedInView` - with the last; what is in view the first time is silent) and Selection (**Play On Selection**: queued in `SetSelected`). View and selection cues are queued (`PendingCues`) and told in `FlushCues` after the frame's step. For those two the pose is held in the designer too (`bHoldPose`). A direction with nothing to play (no usable Anim Exit Item, say) leaves the item exactly as it is - no exit is made up from the entrance.
+  - Selecting an item of a Flow List in the designer puts Enter / Exit above its top right corner, previewing that one item (`UFlowList::PreviewItem`, `SFlowList::PlayItemPreview`).
+  - Items are matched to the Slate widgets the list holds by `UFlowListSlot::SlateContent` (what `BuildSlot` handed the Slate list) or a virtual entry's `Slate`, through `UFlowList::GetItemSlateWidget` - never by `GetCachedWidget` alone, which in the designer can be the inner widget of a design-time wrapper. A start that finds no item logs one warning (`LogFlowList`).
+  - Designer preview: item entrances/exits also play at design time; a finished entrance restores the item's baselines there. Editing anything under Transitions on the template plays the entrances in the designer's preview next frame (`PreviewInDesigner`, previews found by `FindDesignerPreviews`: same name, preview owner's class generated by the template's Blueprint).
+  - Spline curve sampling is shared: `FlowListTypes::BuildSplineCurve` (Catmull-Rom, `SplineStepsPerSpan` = 16), used by `SFlowList::BuildSpline` and the designer's path editor.
+- **UMG** (`FlowList.h/.cpp`):
+  - `UFlowList : UPanelWidget` with `UFlowListSlot` (Padding, Size Override).
+  - `IFlowListItem` (BlueprintNativeEvent `OnFlowListSelected`, and `OnFlowListDistanceChanged` when Report Item Distance is on).
+  - Events: OnSelectionChanged, OnSettled, OnItemClicked, OnScrolled, OnItemExited, OnEdgeReached.
+  - Sounds: Select tick (rate-limited in real time), Settle, Edge, through `FUISoundPlayer`.
+  - Item API: AddItem / PushFront / InsertItem / RemoveItem(At) / PopFront / PopBack / MoveItem / ClearItems. Scrolling API: ScrollToIndex / ScrollToItem / ScrollBy / Set/GetScrollPosition / Get/SetScrollFraction / GetViewFraction (for a custom scroll bar).
+  - Leaving UMG widgets are held in `LeavingItems` (a strong UPROPERTY) until their exit ends, because Image and Border hand Slate raw brush pointers.
+- **Performance** (v2):
+  - `SFlowList::GetLayout` works the layout out once per frame for a geometry, keyed on frame, `LayoutVersion`, scroll, size and render transform. Arrange, paint and every hit test share it.
+  - **Virtual list:** `UFlowList::EntryWidgetClass` plus `SetListItems`.
+    - The Slate side holds `VirtualCount` items by index. `LiveOrder` has one entry per item, `INDEX_NONE` where no entry is shown.
+    - `UpdateRealized` realizes the items within the view plus 2 (given back past +1.5) through `OnRealizeEntry` / `OnReleaseEntry`.
+    - The UMG side pools entries (`FFlowListEntryWidget`, kept with their Slate widget so reuse doesn't rebuild) and tells them their item through `IFlowListEntry`.
+    - Items are even: Item Size, or the first entry's size.
+    - `NotifyVirtualInserted/Removed` slide and keep focus like the child list. Entries leave through Exit before going back to the pool.
+- **Hover Magnify** (`FFlowListEffects::Magnify`):
+  - The pointer is projected onto the path's direction at the focus (`MagnifyCenter`, in items), and `MagnifyAt(d)` multiplies Scale and, through `SpacingFactor`, the spacing.
+  - `MagnifyAmount` eases with `FadeTime`. The active timer keeps running while the pointer is over the list.
+- **Finding lists:**
+  - `UFlowList::FindFlowListOfItem` walks up through panels, out of Widget Blueprints, and through the virtual entry registry (`FlowListRegistry::EntryLists`).
+  - `FindNearestFlowList` searches the item's list, then itself, then inside, then widens outward, or finds a list by name.
+  - `OnListUpdated` (native multicast) fires every animated frame and on item or selection changes.
+- **State machine plumbing:**
+  - `FWidgetAnimInput_FlowList` (`FlowListInput.h`) is a Value Input, offered in every Driven By and value track. Measures: Selected Index / Value, Scroll Position / Progress / Speed, Is Scrolling, Item Count, and, on an item, Item Index / Distance / Focus / Is Selected.
+  - `UFlowListSlot::ItemValue` gives an item a stable number for Selected Value.
+  - The built-in Selected input also reads `WidgetAnimMachineWidgetStates::IsSelectedByContainer`. The Flow List registers `UFlowList::IsInSelectedItem` with it in `FNameTBDModule::StartupModule`, so a widget inside the selected item is Selected in every machine.
+  - Best practice adopted: the list publishes, and the reacting widget owns the machine. A character portrait's Widget Animation Component has an Integer input Driven By Flow List (Selected Index or Value) and a state per character. The list knows nothing of it.
+- **Item looks:** `UFlowListItemStyle` (`FlowListItemStyle.h`) is a UI Component on an item or anything inside it. It's in the designer's Add Component.
+  - Edits of the template in Details are pushed to the designer's preview copies at once (`PushEditsToPreviewCopies`), since component edits don't rebuild the preview.
+  - Details (`FFlowListItemStyleDetails`) show only what applies: empty look bags, Material Parameters on a widget with no material slot (while empty), and the Transition under Nearness To Focus are hidden. Trigger, a spring's Mode, Is Color and Material Parameters array changes force a Details refresh next tick (rows a component edit hides/shows weren't being re-laid out in the designer).
+  - Trigger: Selected, Nearness To Focus, Hovered, or Selected Or Hovered. A spring `Transition` moves between the looks (Nearness follows the list directly).
+  - Looks are property bags, reusing the Design track's machinery: Selected/Unselected design settings (brush, outline, colors, font, padding; `WidgetDesignAnimation`) and shape settings (`WidgetShapeAnimation`, and Shape Box through `ApplyShapeToBox`).
+  - Also: material parameters, render opacity and transform, and Anim IDs played each way.
+  - Only settings that differ between the two looks are written.
+  - `FFlowListItemStyleDetails` (editor) lays the bags out for the owner widget as Details are shown. It finds the owner through a live preview copy or the authored tree, as the Widget Animation Component does.
+- **Scroll bar:** `UFlowListScrollBar` / `SFlowListScrollBar` (`FlowListScrollBar.h`), v3 rewrite.
+  - Style Preset (Custom, Minimal, Classic, Segmented, Arc, Dial, Page Dots) fills the settings, as the list's presets do.
+  - Path: Straight, Curve (a circular arc set in Details by Curve Bow, Curve Length and Curve Rotation, with the bar's Orientation) or Spline (Spline Points in fractions of the bar, drawn on the canvas with the Flow List's spline editor); End Padding for Straight/Curve. Everything - track, thumb, fill, ticks, dots - lies along it (`FBarPath`: flattened points + distances, `At` / `Project` / `Slice`). `RefreshBar()` redraws after a direct edit.
+  - Track / Thumb / Fill are `FFlowListScrollBarLine`s: `FWidgetShapePaint` (color, gradient, image), thickness and hover thickness, hover and pressed tints, cap, dashes, outline. Drawn with the shape geometry (`WidgetShapeGeometry::BuildStroke`, `CutForGradient`) and custom verts.
+  - Thumb Kind: Bar or Knob (any brush, size and hover size, tints, Align Knob To Path). Smooth Thumb follows the list on `ThumbSpring`.
+  - Ticks: one per item (Max Ticks, every N beyond), lit and lengthened at the current item, Tick Offset across.
+  - Dots lie along the path too (Align Dots To Path), hit-tested as circles.
+  - It follows its list by name or the nearest one, through `OnListUpdated`. Dragging the thumb (projected onto the path) calls `SetScrollFraction`, and letting go calls `SnapToNearestItem`.
+- **Spline path editor** (editor, `FlowListPathEditor.h/.cpp`): a UMG designer extension like the Custom Shape's (`WidgetShapePathEditor`), for a Flow List (Layout Type Spline) and a Flow List Scroll Bar (Path Spline) alike - `SplineTarget` adapts the two (a scroll bar has no focus marker). A selected Flow List's toolbar also always has **Enter** / **Exit**, which preview the items' entrances and exits (`UFlowList::PreviewEntrances` / `PreviewExits`, `SFlowList::PlayExitPreview`). Selecting one with a Spline path shows Edit Path above it; while editing: drag points (snapping, Shift 45 degrees, Ctrl no snap), box-select, drag the focus marker along the curve (Spline Focus; Shift snaps to quarters), double-click the curve to insert, Pen adds at the ends, Delete (two stay), Reverse, arrows nudge, Enter/Escape finish. Writes the template and the preview (`SetListLayout`), one transaction per gesture; state kept by list name.
+
