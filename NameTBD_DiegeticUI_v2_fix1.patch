@@ -1,0 +1,272 @@
+diff --git a/Docs/Design/DiegeticUI.md b/Docs/Design/DiegeticUI.md
+index 87451a1..6511e9d 100644
+--- a/Docs/Design/DiegeticUI.md
++++ b/Docs/Design/DiegeticUI.md
+@@ -61,7 +61,7 @@
+ 
+ ### Looks and materials (`FDiegeticScreenLook`, `EDiegeticMaterialMode`, `DiegeticScreenMaterial.*`)
+ - **Material** (`MaterialMode`): **Automatic** (new screens) = the plugin's own materials, picked per variant (`EDiegeticMaterialVariant`, `GetWantedVariant`): **Glass** when the look blurs (Background Blur > 0) or the widget holds Background Blur widgets (and Blur Background Blur Widgets is on), else **Opaque** for Blend Mode Opaque, else **Panel**. **Engine Default** = the Widget Component's own (a plugin material left in Materials is removed). **Custom** = Materials element 0, look parameters still handed over. Screens saved before v2 load as Engine Default (custom version `DiegeticScreenVer` 1, `PostLoad`), so nothing changes under them.
+-- **Materials** (made by the editor, `DiegeticScreenMaterial::Get` / `MakeMissing`): `M_DiegeticScreen`, `_Glass`, `_Opaque` in `/NameTBD/Diegetic` (the plugin's Content, when the plugin is the project's and writable; else `/Game/NameTBD/Diegetic`, the settings' paths updated and a warning to cook it). Made on the next tick after a screen first asks (never inside a registration), saved, every registered screen refreshed (`RefreshMaterial`); rebuilt in place when their `DiegeticMaterialVersion` parameter is older than the builder's (2). A packaged game loads them by the settings' paths (`UDiegeticUISettings::ScreenMaterial` / `GlassScreenMaterial` / `OpaqueScreenMaterial`, warning once when missing); the plugin's `Config/DefaultGame.ini` always cooks `/NameTBD/Diegetic`, and screens saved in levels reference them through Materials too.
++- **Materials** (made by the editor, `DiegeticScreenMaterial::Get` / `MakeMissing`): `M_DiegeticScreen`, `_Glass`, `_Opaque` in `/NameTBD/Diegetic` (the plugin's Content, when the plugin is the project's and writable; else `/Game/NameTBD/Diegetic`, the settings' paths updated and a warning to cook it). Made (v2_fix1) once the editor is idle after a screen first asks - a 0.25 s ticker waiting while anything is dragged (placing an actor from Place Actors: making, compiling and saving assets mid drag-drop froze the editor with no log), a transaction is open, a slow task runs, a game plays in the editor, packages load or garbage is collected (`CanMakeNow`); each variant at most once a session (`bMadeThisSession` - a failure is logged, never retried in a loop); compiled as an edit is (`PreEditChange` / `PostEditChange`, shaders in the background, no blocking slow task); saved straight to disk (`UPackage::SavePackage`, no dialogs or source-control prompts; a read-only file is warned about); then every registered screen refreshed (`RefreshMaterial`). Rebuilt in place when their `DiegeticMaterialVersion` parameter node (read off the graph, not the compiled parameter data, which lags a fresh build) is older than the builder's (2). Until made, screens draw with the engine's material. Screens ask on every registration (a dragged actor re-registers every frame), so the editor only finds loaded objects then; the disk is looked at once per variant (`bSearchedMissing`), and the provider never falls back to loading by path. A packaged game loads them by the settings' paths (`UDiegeticUISettings::ScreenMaterial` / `GlassScreenMaterial` / `OpaqueScreenMaterial`, warning once when missing); the plugin's `Config/DefaultGame.ini` always cooks `/NameTBD/Diegetic`, and screens saved in levels reference them through Materials too.
+ - **Matching UMG:** surface, unlit, **AlphaComposite** (premultiplied - Slate draws into the transparent-black render target premultiplied; the engine's Translucent widget materials multiply by alpha twice, which darkens soft edges and glass panes), emissive x (1 / Eye Adaptation) by **IgnoreSceneExposure** (1 = auto exposure undone), translucency **after DOF** (Glass: before, where Scene Color is read), **Responsive AA**, no vertex fog. Two-sided with the back face hidden in the graph (`TwoSidedSign`) unless the screen is Two Sided (`ShowBackFace`), so one material serves both. The tonemapper still applies (see Still open).
+ - **Look parameters** (Screen custom node, widget sampled with `SampleLevel 0` - the render target has no mips): Preset (`EDiegeticLookPreset`: Clean, Terminal (Green), Terminal (Amber), Hologram, Frosted Glass, LCD Panel, Custom - `MakePreset`; picking one in the Details or `SetLookPreset` sets the values), Brightness, IgnoreSceneExposure, PhosphorColor + Monochrome, Glow + GlowRadius (16 taps, in widget pixels), ScanlineIntensity / Count / Speed, RollingBar, Curvature, ChromaticAberration, Vignette, Flicker (24 Hz), Noise, PixelGrid (RGB sub-pixel stripes per widget pixel), Hologram: Additive (opacity scaled down - AlphaComposite with low opacity adds light), EdgeFade (camera vector . vertex normal), Glitch (rows jump). Set by the screen: ScreenPixels (Draw Size), ShowBackFace, UVRegion (Mesh Surface), BlurRegion0..7 / BlurShape0..7 / BlurRegionCount.
+ - **Background blur** (Glass): Blur Setup custom node works out a radius (Background Blur over the whole screen, or each Background Blur widget's radius inside its rounded rectangle - signed distance) in widget pixels -> screen pixels (`ddx`/`ddy` of the widget-pixel position) -> view UV (View Size); 12 Scene Color taps (Coordinates mode, a golden-angle spiral) averaged; tinted toward GlassTint by its alpha (by luminance), x BlurBrightness; added under the widget's transparent parts (`Color += Behind * (1 - Alpha) * Mask`, `Alpha += (1 - Alpha) * Mask`). Scene Color is the opaque scene only (no other translucency behind).
+@@ -114,6 +114,6 @@
+ - That `Enter` (sent as Accept) presses a Context Menu Button / Common UI button focused by the virtual user, and that D-pad keys navigate inside the virtual window.
+ - The widget render target is sRGB (`PF_B8G8R8A8`, not forced linear), so sampler type Color is right in the screen material.
+ - (v2) The generated materials compile on every platform; Scene Color in Coordinates mode takes the View UV from Screen Position; Scene Color returns the scene without pre-exposure (so the blurred world needs no exposure fix); `UMaterialExpressionEyeAdaptation` gives the exposure the scene is multiplied by; `TranslucencyPass` / `bEnableResponsiveAA` / `bUseTranslucencyVertexFog` names; Custom node texture-object inputs get `<Name>Sampler`; a vector parameter's outputs 0 = RGB, 4 = A.
+-- (v2) `bRenderInDepthPass` exists as a member; `UGameplayStatics::FindCollisionUV`, `GetMaterialFromCollisionFaceIndex`; the plugin's `Config/DefaultGame.ini` being merged into the project's Game config (else add `/NameTBD/Diegetic` to Directories To Always Cook by hand); saving the generated materials while PIE runs.
++- (v2) `bRenderInDepthPass` exists as a member; `UGameplayStatics::FindCollisionUV`, `GetMaterialFromCollisionFaceIndex`; the plugin's `Config/DefaultGame.ini` being merged into the project's Game config (else add `/NameTBD/Diegetic` to Directories To Always Cook by hand); saving the generated materials with `UPackage::SavePackage` + `FSavePackageArgs` (5.1+); `GIsSlowTask` and `UMaterial::GetExpressions`.
+ - (v2) Slate's Background Blur kernel spreading about 2 px per unit of Blur Strength (the blur may look stronger or weaker than on the HUD).
+ - Enhanced Input: an input component pushed by a component (not an actor's `EnableInput`) receives bindings, and adding / removing the Aim context each time the aim crosses a button doesn't cost a visible frame.
+diff --git a/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp b/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp
+index d654bb6..8cbc5d6 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp
+@@ -217,19 +217,21 @@ void UDiegeticScreenComponent::SetEditorMaterialProvider(TFunction<UMaterialInte
+ 
+ UMaterialInterface* UDiegeticScreenComponent::GetAutomaticMaterial(EDiegeticMaterialVariant Variant)
+ {
++	// The editor: its own (made when first needed - null until then, and the engine's material draws meanwhile). Nothing is
++	// loaded by path here: a screen asks every time it registers, which a dragged-in actor does every frame.
+ 	if (const TFunction<UMaterialInterface*(EDiegeticMaterialVariant)>& Provider = DiegeticScreenPrivate::GetEditorMaterialProvider())
+ 	{
+-		if (UMaterialInterface* Made = Provider(Variant))
+-		{
+-			return Made;
+-		}
++		return Provider(Variant);
+ 	}
+ 
+-	// A packaged game: the materials Project Settings names (cooked with /NameTBD/Diegetic - see the plugin's DefaultGame.ini).
++	// A packaged game: the materials Project Settings names (cooked with /NameTBD/Diegetic - see the plugin's DefaultGame.ini),
++	// looked for once.
+ 	static TWeakObjectPtr<UMaterialInterface> Loaded[3];
++	static bool bTried[3] = {};
+ 	TWeakObjectPtr<UMaterialInterface>& Cached = Loaded[static_cast<int32>(Variant)];
+-	if (!Cached.IsValid())
++	if (!Cached.IsValid() && !bTried[static_cast<int32>(Variant)])
+ 	{
++		bTried[static_cast<int32>(Variant)] = true;
+ 		const TSoftObjectPtr<UMaterialInterface>& Path = UDiegeticUISettings::Get().GetScreenMaterial(Variant);
+ 		Cached = Path.IsNull() ? nullptr : Path.LoadSynchronous();
+ 		if (!Cached.IsValid())
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/DiegeticScreenMaterial.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/DiegeticScreenMaterial.cpp
+index 788bf2c..87ab580 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/DiegeticScreenMaterial.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/DiegeticScreenMaterial.cpp
+@@ -6,7 +6,8 @@
+ #include "Containers/Ticker.h"
+ #include "Engine/Texture2D.h"
+ #include "Factories/MaterialFactoryNew.h"
+-#include "FileHelpers.h"
++#include "Editor.h"
++#include "Framework/Application/SlateApplication.h"
+ #include "HAL/FileManager.h"
+ #include "IAssetTools.h"
+ #include "Interfaces/IPluginManager.h"
+@@ -32,6 +33,8 @@
+ #include "Materials/MaterialExpressionVertexNormalWS.h"
+ #include "Materials/MaterialExpressionViewSize.h"
+ #include "Misc/PackageName.h"
++#include "UObject/Package.h"
++#include "UObject/SavePackage.h"
+ #include "Modules/ModuleManager.h"
+ #include "NameTBD/Diegetic/DiegeticUISettings.h"
+ #include "UObject/UObjectIterator.h"
+@@ -438,24 +441,63 @@ return (T0.rgb + T1.rgb + T2.rgb + T3.rgb + T4.rgb + T5.rgb + T6.rgb + T7.rgb +
+ 		}
+ 	}
+ 
+-	/** Whether a material was built at the current version. */
+-	bool IsCurrent(const UMaterialInterface* Material)
++	/**
++	 * Whether a material was built at the current version: its DiegeticMaterialVersion parameter node, read off the graph itself
++	 * (not the compiled parameter data, which lags a fresh build - and a material that never reads as current would be rebuilt
++	 * over and over).
++	 */
++	bool IsCurrent(const UMaterial* Material)
+ 	{
+-		float Built = 0.f;
+-		return Material && Material->GetScalarParameterDefaultValue(FHashedMaterialParameterInfo(VersionParam), Built) && Built >= BuildVersion;
++		if (!Material)
++		{
++			return false;
++		}
++		for (const TObjectPtr<UMaterialExpression>& Expression : Material->GetExpressions())
++		{
++			const UMaterialExpressionScalarParameter* Param = Cast<UMaterialExpressionScalarParameter>(Expression.Get());
++			if (Param && Param->ParameterName == VersionParam)
++			{
++				return Param->DefaultValue >= BuildVersion;
++			}
++		}
++		return false;
+ 	}
+ 
++	/** Variants looked for on disk and not there: not looked for again (a screen asks every time it registers) until made. */
++	bool bSearchedMissing[3] = {};
++
++	/** Variants made or rebuilt this session: never again in it, whatever they read as. */
++	bool bMadeThisSession[3] = {};
++
+ 	/** The material for a variant where it is (the plugin's folder, else the project's), current or not. */
+ 	UMaterial* Find(EDiegeticMaterialVariant Variant)
+ 	{
++		const int32 Index = static_cast<int32>(Variant);
+ 		for (const TCHAR* Folder : { PluginFolder, ProjectFolder })
+ 		{
+ 			const FString Path = FString::Printf(TEXT("%s/%s.%s"), Folder, AssetName(Variant), AssetName(Variant));
+-			if (UMaterial* Found = LoadObject<UMaterial>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet))
++			if (UMaterial* Loaded = FindObject<UMaterial>(nullptr, *Path))
++			{
++				return Loaded;
++			}
++		}
++		if (bSearchedMissing[Index])
++		{
++			return nullptr;
++		}
++		for (const TCHAR* Folder : { PluginFolder, ProjectFolder })
++		{
++			const FString PackageName = FString::Printf(TEXT("%s/%s"), Folder, AssetName(Variant));
++			if (FPackageName::DoesPackageExist(PackageName))
+ 			{
+-				return Found;
++				const FString Path = FString::Printf(TEXT("%s.%s"), *PackageName, AssetName(Variant));
++				if (UMaterial* Loaded = LoadObject<UMaterial>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet))
++				{
++					return Loaded;
++				}
+ 			}
+ 		}
++		bSearchedMissing[Index] = true;
+ 		return nullptr;
+ 	}
+ 
+@@ -474,6 +516,34 @@ return (T0.rgb + T1.rgb + T2.rgb + T3.rgb + T4.rgb + T5.rgb + T6.rgb + T7.rgb +
+ 		return ProjectFolder;
+ 	}
+ 
++	/**
++	 * Whether the editor is somewhere materials can be made, compiled and saved: not while anything is being dragged (an actor
++	 * from Place Actors - a dialog or slow task then freezes the editor), a transaction is open, a slow task runs, packages load,
++	 * garbage is collected, or a game plays in the editor.
++	 */
++	bool CanMakeNow()
++	{
++		if (!GEditor || GEditor->PlayWorld || GEditor->IsTransactionActive() || GIsSlowTask || IsGarbageCollecting() || IsAsyncLoading())
++		{
++			return false;
++		}
++		return !FSlateApplication::IsInitialized() || !FSlateApplication::Get().IsDragDropping();
++	}
++
++	/** Saves a package straight to disk: no dialogs, no source control prompts. Warns when it can't. */
++	void SaveQuietly(UMaterial* Material)
++	{
++		UPackage* Package = Material->GetOutermost();
++		const FString Filename = FPackageName::LongPackageNameToFilename(Package->GetName(), FPackageName::GetAssetPackageExtension());
++		FSavePackageArgs Args;
++		Args.TopLevelFlags = RF_Public | RF_Standalone;
++		Args.SaveFlags = SAVE_NoError;
++		if (!UPackage::SavePackage(Package, Material, *Filename, Args))
++		{
++			UE_LOG(LogDiegeticScreenMaterial, Warning, TEXT("Couldn't save %s (read-only or checked in?): save it by hand, or Diegetic Screens set to Material Automatic in a packaged game use the engine's material."), *Filename);
++		}
++	}
++
+ 	bool bMakeQueued = false;
+ 	bool bMaking = false;
+ }
+@@ -483,23 +553,28 @@ UMaterialInterface* DiegeticScreenMaterial::Get(EDiegeticMaterialVariant Variant
+ 	using namespace DiegeticScreenMaterialPrivate;
+ 
+ 	UMaterial* Found = Find(Variant);
+-	if (IsCurrent(Found))
++	if (bMadeThisSession[static_cast<int32>(Variant)] || IsCurrent(Found))
+ 	{
+ 		return Found;
+ 	}
+ 
+-	// Missing or older: made next tick, never inside whatever asked (a screen registering, a level loading).
++	// Missing or older: made later, once the editor is somewhere it can be (CanMakeNow) - never inside whatever asked (a screen
++	// registering as an actor is dragged in, a level loading).
+ 	if (!bMakeQueued && !bMaking)
+ 	{
+ 		bMakeQueued = true;
+ 		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([](float)
+ 		{
++			if (!CanMakeNow())
++			{
++				return true;
++			}
+ 			bMakeQueued = false;
+ 			MakeMissing();
+ 			return false;
+-		}));
++		}), 0.25f);
+ 	}
+-	// An older one still draws meanwhile.
++	// An older one still draws meanwhile; a missing one, the engine's material.
+ 	return Found;
+ }
+ 
+@@ -512,15 +587,18 @@ void DiegeticScreenMaterial::MakeMissing()
+ 	}
+ 	TGuardValue<bool> Making(bMaking, true);
+ 
+-	TArray<UPackage*> ToSave;
++	bool bMadeAny = false;
+ 	FString MadeFolder;
+ 	for (const EDiegeticMaterialVariant Variant : { EDiegeticMaterialVariant::Panel, EDiegeticMaterialVariant::Glass, EDiegeticMaterialVariant::Opaque })
+ 	{
++		const int32 Index = static_cast<int32>(Variant);
+ 		UMaterial* Material = Find(Variant);
+-		if (IsCurrent(Material))
++		if (bMadeThisSession[Index] || IsCurrent(Material))
+ 		{
+ 			continue;
+ 		}
++		// Once a session, whatever happens: a failure is reported, never retried in a loop.
++		bMadeThisSession[Index] = true;
+ 
+ 		if (Material)
+ 		{
+@@ -538,21 +616,20 @@ void DiegeticScreenMaterial::MakeMissing()
+ 				UE_LOG(LogDiegeticScreenMaterial, Error, TEXT("Couldn't make %s in %s: Diegetic Screens set to Material Automatic use the engine's material."), AssetName(Variant), *Folder);
+ 				continue;
+ 			}
++			bSearchedMissing[Index] = false;
+ 			MadeFolder = Folder;
+ 		}
+ 
+ 		Build(Material, Variant);
+-		UMaterialEditingLibrary::RecompileMaterial(Material);
++		// Compiled the way an edit in the material editor is (its shaders in the background) - no blocking slow task.
++		Material->PreEditChange(nullptr);
++		Material->PostEditChange();
+ 		Material->MarkPackageDirty();
+-		ToSave.Add(Material->GetOutermost());
++		SaveQuietly(Material);
++		bMadeAny = true;
+ 		UE_LOG(LogDiegeticScreenMaterial, Log, TEXT("Made %s (version %.0f)."), *Material->GetPathName(), BuildVersion);
+ 	}
+ 
+-	if (ToSave.Num() > 0)
+-	{
+-		UEditorLoadingAndSavingUtils::SavePackages(ToSave, /*bOnlyDirty=*/false);
+-	}
+-
+ 	// Made in the project's folder: a packaged game loads them from there - and has to cook them (the plugin's DefaultGame.ini
+ 	// only names its own folder).
+ 	if (MadeFolder == ProjectFolder)
+@@ -570,7 +647,7 @@ void DiegeticScreenMaterial::MakeMissing()
+ 	}
+ 
+ 	// Every screen picks them up.
+-	if (ToSave.Num() > 0)
++	if (bMadeAny)
+ 	{
+ 		for (TObjectIterator<UDiegeticScreenComponent> It; It; ++It)
+ 		{

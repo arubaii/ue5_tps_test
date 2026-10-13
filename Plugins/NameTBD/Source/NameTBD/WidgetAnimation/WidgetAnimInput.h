@@ -42,6 +42,11 @@ class UWidget;
 // A game or licensee module adds an input of its own by deriving a USTRUCT from FWidgetAnimInputSource and overriding
 // Sample; it is offered on every value track with no registration. Its non-reflected members are its runtime state,
 // one copy per playing track.
+//
+// A widget drawn into the world - on a Diegetic Screen (NameTBD/Diegetic) - has a pointer of its own: the one a Widget
+// Interaction Component points at its screen with, in the space of the screen's window rather than the desktop's. The
+// context then carries that pointer (bWorldPointer, WorldPointer), and the inputs read it instead of the mouse - see
+// FWorldPointer and ReadPointer below.
 
 /** How a two-axis input - a position, an offset - is handed to its tracks. */
 UENUM(BlueprintType)
@@ -115,6 +120,58 @@ enum class EWidgetAnimScrollMeasure : uint8
 	PositionInView UMETA(DisplayName = "Position In View", ToolTip = "Where the widget measured is within the Scroll Box's visible area: 0 as its leading edge comes into view at the far end, 0.5 when it is in the middle, 1 as its trailing edge leaves at the near end. Items that fade and rise into place as they are scrolled into view, or parallax.")
 };
 
+class UWidgetComponent;
+
+namespace WidgetAnimInput
+{
+	/** A mouse event that was counted: how many so far, and where the last one was, in desktop space. */
+	struct FPointerEventCount
+	{
+		uint32 Count = 0;
+		FVector2f Position = FVector2f::ZeroVector;
+	};
+
+	/**
+	 * The pointer of a widget drawn into the world rather than on the desktop - a Diegetic Screen's - pointed at by a Widget
+	 * Interaction Component. Positions are in the space of the widget's absolute geometry: its screen's window. Counts are of
+	 * the presses made on that screen, which Slate's own input processing never sees (and double-clicks aren't made there).
+	 */
+	struct FWorldPointer
+	{
+		/** The component the widget is drawn by - for hit-testing a point on it. */
+		TWeakObjectPtr<UWidgetComponent> Surface;
+
+		/** Where the pointer is on it - or was last, once it has left. Only when bHasPosition: a pointer has been on it. */
+		FVector2f Position = FVector2f::ZeroVector;
+		bool bHasPosition = false;
+
+		/** Whether a pointer is on it now. */
+		bool bOver = false;
+
+		/** Whether a left or right button pressed on it is still held. */
+		bool bLeftDown = false;
+		bool bRightDown = false;
+
+		FPointerEventCount LeftPresses;
+		FPointerEventCount RightPresses;
+		FPointerEventCount RightReleases;
+		FPointerEventCount DoubleClicks;
+
+		/** Whether a button pressed on it is held: the left or right mouse button. False for any other. */
+		bool IsDown(const FKey& Button) const
+		{
+			return Button == EKeys::LeftMouseButton ? bLeftDown : Button == EKeys::RightMouseButton ? bRightDown : false;
+		}
+	};
+
+	/**
+	 * What finds the world pointer of the surface a widget is drawn on: false for a widget on the desktop. Set by the module
+	 * that draws widgets into the world (the Diegetic UI's, at startup); null = every widget is on the desktop.
+	 */
+	using FWorldPointerResolver = TFunction<bool(const UWidget* /*Widget*/, FWorldPointer& /*OutPointer*/)>;
+	NAMETBD_API void SetWorldPointerResolver(FWorldPointerResolver InResolver);
+}
+
 /**
  * Everything an input is given when it is read, once per frame per track.
  */
@@ -132,6 +189,13 @@ struct NAMETBD_API FWidgetAnimInputContext
 	/** Where the pointer is, in desktop space (the space of a widget's absolute geometry). Only when bHasPointer. */
 	FVector2f PointerPosition = FVector2f::ZeroVector;
 	bool bHasPointer = false;
+
+	/**
+	 * The host widget is drawn into the world: PointerPosition is WorldPointer's, in its surface's space, and button state and
+	 * counted presses are WorldPointer's too. Set by WidgetAnimInput::ReadPointer.
+	 */
+	bool bWorldPointer = false;
+	WidgetAnimInput::FWorldPointer WorldPointer;
 };
 
 /**
@@ -288,6 +352,21 @@ namespace WidgetAnimInput
 	NAMETBD_API bool IsPointUnder(const UWidget* Widget, const FVector2f& Point);
 
 	/**
+	 * IsPointUnder for a point given in the context's pointer space: the desktop's, or - with a world pointer - its surface's,
+	 * hit-tested by the surface (UWidgetComponent::GetHitWidgetPath).
+	 */
+	NAMETBD_API bool IsPointUnder(const FWidgetAnimInputContext& Context, const UWidget* Widget, const FVector2f& Point);
+
+	/**
+	 * Fills the context's pointer for its HostWidget: the world pointer of the surface the widget is drawn on (bWorldPointer),
+	 * or the desktop's (GetPointerPosition). What every reader of inputs calls once per frame, before sampling.
+	 */
+	NAMETBD_API void ReadPointer(FWidgetAnimInputContext& Context);
+
+	/** Whether Button is held, from the context's pointer: its world pointer's buttons, or the mouse's (IsMouseButtonDown). */
+	NAMETBD_API bool IsButtonDown(const FWidgetAnimInputContext& Context, const FKey& Button);
+
+	/**
 	 * A desktop point in Widget's local space, and its size - as laid out, without Widget's own render transform, so
 	 * an animation moving the widget doesn't move its measurements. False when it has no geometry yet.
 	 */
@@ -323,13 +402,6 @@ namespace WidgetAnimInput
 
 	/** Presses of the UI's confirm (bAccept) or cancel button, as Slate's navigation config reads them - keys and gamepads alike. */
 	NAMETBD_API uint32 GetNavigationPressCount(bool bAccept);
-
-	/** A mouse event that was counted: how many so far, and where the last one was, in desktop space. */
-	struct FPointerEventCount
-	{
-		uint32 Count = 0;
-		FVector2f Position = FVector2f::ZeroVector;
-	};
 
 	/** Left button presses (a touch's too, and the second press of a double-click); left button double-clicks; right button presses and releases. */
 	NAMETBD_API FPointerEventCount GetLeftPressCount();

@@ -3537,4 +3537,34 @@ namespace NameTBD::Tooltips
 		}
 	}
 
+	/** A Diegetic Screen's Details (DiegeticScreenDetails.h). */
+	namespace DiegeticScreen
+	{
+		inline FText ScreenMaterialLabel()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DiegeticScreen", "ScreenMaterialLabel", "Screen Material");
+		}
+
+		inline FText CreateScreenMaterialButton()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DiegeticScreen", "CopyScreenMaterialButton", "Copy To Project");
+		}
+
+		inline FText CreateScreenMaterialTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DiegeticScreen", "CopyScreenMaterialTooltip",
+				"Copy To Project: copies the plugin's screen material these screens are drawn with into /Game/Diegetic, sets their Material to Custom and gives them the copy - to change the material itself (Material Automatic needs nothing of you: the plugin's own draws every Screen Look). The copy keeps the parameters, so Screen Look still drives it.");
+		}
+
+		inline FText MaterialCreatedNotice()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DiegeticScreen", "MaterialCopiedNotice", "Copied the screen material to {0} and gave it to the selected screens (Material Custom). Save it with the level.");
+		}
+
+		inline FText MaterialFailedNotice()
+		{
+			return NSLOCTEXT("NameTBDTooltips.DiegeticScreen", "MaterialFailedNotice", "Couldn't make the screen material: {0}");
+		}
+	}
+
 }

@@ -1,0 +1,36 @@
+diff --git a/Docs/Design/DiegeticUI.md b/Docs/Design/DiegeticUI.md
+index e54c04e..4c67ede 100644
+--- a/Docs/Design/DiegeticUI.md
++++ b/Docs/Design/DiegeticUI.md
+@@ -15,7 +15,7 @@
+ 
+ ## As built (DiegeticUI v1, runtime `NameTBD/Diegetic/`, editor `NameTBDEditor`)
+ - **What:** UI that lives in the world - terminals, wrist displays, signs, holograms - made from ordinary Widget Blueprints, with the plugin's own systems working on them as on the HUD. Four pieces: **Diegetic Screen** (`UDiegeticScreenComponent`, a `UWidgetComponent`), **Diegetic Interactor** (`UDiegeticInteractorComponent`, a `UWidgetInteractionComponent`), the **Diegetic UI Subsystem** (`UDiegeticUISubsystem`, a tickable world subsystem, Game/PIE worlds only) and **Project Settings > Plugins > Diegetic UI** (`UDiegeticUISettings`). Plus `ADiegeticScreenActor` (drop-in actor: plain root + screen, Physical Size on), `UDiegeticUILibrary` (Blueprint), the **Diegetic Screen Widget** interface (`IDiegeticScreenWidget`, `DiegeticTypes.h`) and **Copy To Project** (v2; was Create Screen Material) in the screen's Details.
+-- **Editor worlds:** a screen redraws as a plain Widget Component there (`bScheduled` false; the engine's redraws), with its material and look; a Mesh Surface only shows in game worlds. Everything else below is runtime.
++- **Editor worlds:** a screen redraws as a plain Widget Component there (`bScheduled` false; the engine's redraws), with its material and look; a Mesh Surface only shows in game worlds (in the editor the mesh keeps its slot's material and the screen's own panel isn't drawn - `bRenderInMainPass` / `bRenderInDepthPass` off - else it would sit on the display face and flicker against it). Everything else below is runtime.
+ 
+ ### Diegetic Screen (`DiegeticScreenComponent.h`)
+ - **Sizing:** Draw Size (engine) or **Physical Size** (cm) + **Pixel Density** (px/cm, default 12 -> 160 x 90 cm = 1920 x 1080): `ApplySizing` sets Draw Size and the component's relative Y/Z scale (exact size whatever the pixel rounding; X untouched) in `OnRegister` (before Super, so the window/body are made at that size) and on edits. **Texture** (read-only) shows the render target's pixels and MB (BGRA8, no mips).
+diff --git a/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp b/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp
+index 8cbc5d6..d7ebf1b 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp
+@@ -289,6 +289,18 @@ void UDiegeticScreenComponent::ApplyMaterialSetup()
+ 	else
+ 	{
+ 		TearDownMeshSurface();
++		// Nor is a Mesh Surface's own panel drawn in the editor: it sits on the mesh's display face and fights it for depth (the
++		// face flickers). The mesh shows its own slot until play. Game worlds: set by SetUpMeshSurface / TearDownMeshSurface.
++		if (World && !World->IsGameWorld())
++		{
++			const bool bShowPanel = DisplaySettings.Display != EDiegeticDisplay::MeshSurface;
++			if (bRenderInMainPass != bShowPanel)
++			{
++				bRenderInMainPass = bShowPanel;
++				bRenderInDepthPass = bShowPanel;
++				MarkRenderStateDirty();
++			}
++		}
+ 	}
+ 	ApplyScreenLook(/*bForce=*/true);
+ }

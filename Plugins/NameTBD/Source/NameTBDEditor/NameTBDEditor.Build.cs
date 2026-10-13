@@ -41,6 +41,7 @@ public class NameTBDEditor : ModuleRules
 			"StructUtilsEditor", // FInstancedStructDataDetails, for a registered type's settings laid out field by field
 			"AppFramework",      // the color picker, for the Text Editor's Color menu
 			"NameTBDMVVM",       // the Widget Data Binder's Details: its Data Preview
+			"MaterialEditor",    // UMaterialEditingLibrary: a Diegetic Screen's Create Screen Material
 		});
 		if (Target.bBuildEditor)
 		{

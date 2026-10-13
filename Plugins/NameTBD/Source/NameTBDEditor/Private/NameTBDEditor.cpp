@@ -54,6 +54,9 @@
 #include "NameTBD/Widgets/FlowList/FlowListItemStyle.h"
 #include "WidgetDataBinderComponent.h"
 #include "WidgetDataBinderDetails.h"
+#include "DiegeticScreenDetails.h"
+#include "DiegeticScreenMaterial.h"
+#include "NameTBD/Diegetic/DiegeticScreenComponent.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
 
@@ -146,10 +149,22 @@ void FNameTBDEditorModule::StartupModule()
 	PropertyModule.RegisterCustomClassLayout(
 		UWidgetDataBinderComponent::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetDataBinderDetails::MakeInstance));
+
+	// A Diegetic Screen's Details: Copy To Project, which copies the plugin's screen material into the project for changing.
+	PropertyModule.RegisterCustomClassLayout(
+		UDiegeticScreenComponent::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FDiegeticScreenDetails::MakeInstance));
 	PropertyModule.NotifyCustomizationModuleChanged();
 
 	// The ready-made buttons: their parts built once placed (never per drop preview), each with its Widget Blueprint GUID.
 	StyledButtonsEditor::Register();
+
+	// The plugin's screen materials (a Diegetic Screen's Material Automatic): made in the editor when first needed, and rebuilt
+	// when out of date - see DiegeticScreenMaterial.h.
+	UDiegeticScreenComponent::SetEditorMaterialProvider([](EDiegeticMaterialVariant Variant)
+	{
+		return DiegeticScreenMaterial::Get(Variant);
+	});
 
 	// What the Widget Animations and state machines a Widget Blueprint holds or plays name but don't have, as warnings in its
 	// compile results (the same lines data validation gives their assets).
@@ -231,6 +246,7 @@ void FNameTBDEditorModule::StartupModule()
 void FNameTBDEditorModule::ShutdownModule()
 {
 	StyledButtonsEditor::Unregister();
+	UDiegeticScreenComponent::SetEditorMaterialProvider(nullptr);
 
 	// The State Machine editors kept for the status bar drawers, while what they hold on to is still there.
 	WidgetAnimStateMachineEditorHooks::Shutdown();
@@ -314,6 +330,7 @@ void FNameTBDEditorModule::ShutdownModule()
 		PropertyModule->UnregisterCustomClassLayout(TEXT("ShapeWidget"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("FlowListItemStyle"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetDataBinderComponent"));
+		PropertyModule->UnregisterCustomClassLayout(TEXT("DiegeticScreenComponent"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetSpringParams"));
 
 	}

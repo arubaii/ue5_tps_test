@@ -16,6 +16,7 @@
 #include "WidgetAnimation/WidgetAnimationComponent.h"
 #include "WidgetAnimation/WidgetAnimStateMachine.h"
 #include "Widgets/FlowList/FlowList.h"
+#include "Diegetic/DiegeticScreenComponent.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDModule"
 
@@ -62,6 +63,19 @@ void FNameTBDModule::StartupModule()
 	{
 		return UFlowList::IsInSelectedItem(Widget);
 	});
+
+	// A widget a Diegetic Screen draws into the world reads that screen's pointer in its Widget Animation and state machine
+	// inputs, not the desktop's - see WidgetAnimInput::FWorldPointer.
+	WidgetAnimInput::SetWorldPointerResolver([](const UWidget* Widget, WidgetAnimInput::FWorldPointer& OutPointer)
+	{
+		const UDiegeticScreenComponent* Screen = UDiegeticScreenComponent::FindScreenForWidget(Widget);
+		if (!Screen)
+		{
+			return false;
+		}
+		Screen->GetWorldPointer(OutPointer);
+		return true;
+	});
 }
 
 void FNameTBDModule::ShutdownModule()
@@ -92,6 +106,7 @@ void FNameTBDModule::ShutdownModule()
 
 	// The input counter the state machines' built-in pulses read goes with the code it runs.
 	WidgetAnimInput::StopCountingEvents();
+	WidgetAnimInput::SetWorldPointerResolver(nullptr);
 }
 
 #undef LOCTEXT_NAMESPACE

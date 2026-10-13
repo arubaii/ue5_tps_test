@@ -1,0 +1,228 @@
+diff --git a/Docs/Design/DiegeticUI.md b/Docs/Design/DiegeticUI.md
+index 50ec37a..e8d9200 100644
+--- a/Docs/Design/DiegeticUI.md
++++ b/Docs/Design/DiegeticUI.md
+@@ -12,7 +12,8 @@
+ - **Use** (`FDiegeticUseSettings`): **Point And Click** (default), **Focus View**, **Not Usable**; Reach Distance (0 = the interactor's), View Fill, Camera Blend Time, Camera Offset (screen space), Block Pawn Input, Show Mouse Cursor.
+ - **Screen Look** (`FDiegeticScreenLook`): Brightness, ScanlineIntensity / Count, Curvature, ChromaticAberration, Vignette, Flicker, Noise - scalar parameters of those names on the Widget Component's material instance, set only when the instance or the look changed (`LookAppliedTo` / `LookApplied`). A material without them ignores them.
+ - **Sound** (`FDiegeticSoundSettings`): **Play Sounds In The World** (on): every UI sound of a widget on the screen - `FUISoundPlayer` Play / PlayOneShot / PlayFaded, so buttons, cards, Flow Lists and Sound cues - plays from where that widget is on the screen (`GetWorldLocationOfWidget`: the middle of its drawn box, window space -> `WidgetToWorld`), with the screen's Attenuation asset, or a sphere of Inner Radius (150 cm) fading over Falloff Distance (1500 cm) (`bOverrideAttenuation`). An audio component from `CreateSound2D` with `bAllowSpatialization` turned on (still a UI sound: plays while paused). The place is worked out at request time; a delayed sound plays where its widget was. HUD widgets: unchanged (`PlaySound2D`).
+-- **State machine inputs** (`Set State Machine Inputs`, on): ScreenAwake, ScreenAimedAt, ScreenInUse (Bool), ScreenDistance (Number, cm from the nearest camera, sent when it moved 5 cm) on the root widget's machines - through its Widget Animation Component (which plays a State Machine Component's machines too), else its State Machine Component. A machine without the input ignores it. Pushed again when the widget or its window changes (`SyncRegistration`), so a widget constructed after the screen's first presence hears the state.
++- **State machine inputs** (`Set State Machine Inputs`, on): ScreenAwake, ScreenAimedAt, ScreenInUse (Bool), ScreenDistance (Number, cm from the nearest camera, sent when it moved 5 cm) on the root widget's machines - through what plays them, `UWidgetAnimationComponent::FindWidgetAnimationComponent` (its own Widget Animation Component, or the one its State Machine Component made); never the State Machine Component itself, which can make objects. A machine without the input ignores it. Pushed again when the widget or its window changes: `SyncRegistration` only notes it (`bPushWidgetState`) and the subsystem's tick passes it on (`FlushWidgetState`).
++- **Recompiles during PIE** (fix2): nothing touches the widget from `SetWidget` / `InitWidget` (a Blueprint recompile calls them while it replaces the widget), and every call into the widget - machine inputs, the interface, Anim In / Out, `IsAnyAnimationPlaying`, focus - goes through `GetSafeWidget()`: valid, not being destroyed, its class without a newer version (`CLASS_NewerVersionExists`), not during garbage collection, and already built into the window.
+ - **Interface / events:** `IDiegeticScreenWidget` on the root User Widget: On Screen Wake / Sleep / Aim Changed / Use Changed / **On Screen Back** (return true = handled, stay in use). Component delegates On Screen Wake / Sleep / Aim Changed / Use Begin / Use End.
+ - **Lookups** (`FindScreenForWidget`, static; `AnyScreensExist` makes everything free with no screen): the outermost User Widget of the widget's outer chain against the screens' root widgets, else a Slate parent walk from it to a screen's `SVirtualWindow` (widgets made at runtime and added to a panel on a screen). Game thread only; kept by `SyncRegistration` (registration, `InitWidget`, `SetWidget`, every scheduler tick) and `Unregister` (removes by value).
+ - **Map check** (`CheckForErrors`): Space = Screen, no Widget Class, texture over 4096², Receive Hardware Input on with a usable Use Mode.
+diff --git a/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticInteractorComponent.cpp b/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticInteractorComponent.cpp
+index 65ec2db..d192c7c 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticInteractorComponent.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticInteractorComponent.cpp
+@@ -516,7 +516,7 @@ void UDiegeticInteractorComponent::BackFromScreen()
+ 	{
+ 		return;
+ 	}
+-	UUserWidget* Root = Screen->GetUserWidgetObject();
++	UUserWidget* Root = Screen->GetSafeWidget();
+ 	if (Root && Root->Implements<UDiegeticScreenWidget>() && IDiegeticScreenWidget::Execute_OnScreenBack(Root, Screen))
+ 	{
+ 		return;
+@@ -642,7 +642,7 @@ bool UDiegeticInteractorComponent::BeginUsing(UDiegeticScreenComponent* Screen)
+ 	}
+ 
+ 	// A gamepad uses it by focus: its widget's Desired Focus, else the first widget that takes focus.
+-	if (UUserWidget* Root = Screen->GetUserWidgetObject())
++	if (UUserWidget* Root = Screen->GetSafeWidget())
+ 	{
+ 		UWidget* Target = Root->GetDesiredFocusWidget();
+ 		if (!Target)
+diff --git a/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp b/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp
+index 7ddd67b..a08f268 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.cpp
+@@ -13,8 +13,8 @@
+ #include "Layout/Geometry.h"
+ #include "Materials/MaterialInstanceDynamic.h"
+ #include "NameTBD/WidgetAnimation/WidgetAnimationComponent.h"
+-#include "NameTBD/WidgetAnimation/WidgetAnimationStateMachineComponent.h"
+ #include "UObject/ObjectKey.h"
++#include "UObject/UObjectGlobals.h"
+ #include "Widgets/SWidget.h"
+ #include "Widgets/SWindow.h"
+ 
+@@ -188,16 +188,41 @@ void UDiegeticScreenComponent::SyncRegistration()
+ 	++Lookups.NumScreens;
+ 
+ 	// A new widget - or the same one just constructed into its window, its state machines started - hears the screen's state.
+-	if (bWidgetChanged && Current && bPresenceKnown)
++	// Not from here: this runs inside SetWidget / InitWidget, which a Blueprint recompile during PIE calls while it is replacing
++	// the widget. The subsystem's next tick passes it on (FlushWidgetState), once the widget is safe to touch.
++	if (bWidgetChanged && Current)
+ 	{
+-		SetWidgetBool(DiegeticScreenPrivate::ScreenAwakeInput, bAwake);
+-		SetWidgetBool(DiegeticScreenPrivate::ScreenAimedAtInput, IsAimedAt());
+-		SetWidgetBool(DiegeticScreenPrivate::ScreenInUseInput, IsInUse());
+-		LastSentDistance = -1.f;
++		bPushWidgetState = true;
+ 	}
+ 	bContentChanged = true;
+ }
+ 
++UUserWidget* UDiegeticScreenComponent::GetSafeWidget() const
++{
++	UUserWidget* Root = GetUserWidgetObject();
++	// Never a widget a recompile is replacing (its class has a newer version, or it is on its way out), and never one not yet
++	// built into the screen's window: its components and state machines aren't there to talk to.
++	if (!IsValid(Root) || IsGarbageCollecting() || Root->HasAnyFlags(RF_BeginDestroyed | RF_FinishDestroyed)
++		|| Root->GetClass()->HasAnyClassFlags(CLASS_NewerVersionExists) || !Root->GetCachedWidget().IsValid())
++	{
++		return nullptr;
++	}
++	return Root;
++}
++
++void UDiegeticScreenComponent::FlushWidgetState()
++{
++	if (!bPushWidgetState || !bPresenceKnown || !GetSafeWidget())
++	{
++		return;
++	}
++	bPushWidgetState = false;
++	SetWidgetBool(DiegeticScreenPrivate::ScreenAwakeInput, bAwake);
++	SetWidgetBool(DiegeticScreenPrivate::ScreenAimedAtInput, IsAimedAt());
++	SetWidgetBool(DiegeticScreenPrivate::ScreenInUseInput, IsInUse());
++	LastSentDistance = -1.f;
++}
++
+ void UDiegeticScreenComponent::Unregister()
+ {
+ 	if (!bInLookups)
+@@ -350,7 +375,7 @@ bool UDiegeticScreenComponent::IsWidgetAnimating() const
+ 	{
+ 		return true;
+ 	}
+-	const UUserWidget* Root = GetUserWidgetObject();
++	const UUserWidget* Root = GetSafeWidget();
+ 	return Root && Root->IsAnyAnimationPlaying();
+ }
+ 
+@@ -573,7 +598,7 @@ void UDiegeticScreenComponent::BroadcastWake(bool bInitial)
+ 		bHiddenAsleep = false;
+ 	}
+ 
+-	UUserWidget* Root = GetUserWidgetObject();
++	UUserWidget* Root = GetSafeWidget();
+ 	if (!bInitial && PresenceSettings.bPlayAnimInOut && PresenceSettings.WakeDistance > 0.f)
+ 	{
+ 		if (UWidgetAnimationComponent* Player = UWidgetAnimationComponent::FindWidgetAnimationComponent(Root))
+@@ -594,7 +619,7 @@ void UDiegeticScreenComponent::BroadcastSleep(bool bInitial)
+ {
+ 	SleepStartTime = FPlatformTime::Seconds();
+ 
+-	UUserWidget* Root = GetUserWidgetObject();
++	UUserWidget* Root = GetSafeWidget();
+ 	if (PresenceSettings.bPlayAnimInOut)
+ 	{
+ 		if (UWidgetAnimationComponent* Player = UWidgetAnimationComponent::FindWidgetAnimationComponent(Root))
+@@ -627,20 +652,13 @@ void UDiegeticScreenComponent::SetWidgetBool(FName Input, bool bValue) const
+ 	{
+ 		return;
+ 	}
+-	UUserWidget* Root = GetUserWidgetObject();
+-	if (!Root)
+-	{
+-		return;
+-	}
+-	// What plays the widget's machines - its own Widget Animation Component, or the one its State Machine Component made.
+-	if (UWidgetAnimationComponent* Player = UWidgetAnimationComponent::FindWidgetAnimationComponent(Root))
++	// What plays the widget's machines - its own Widget Animation Component, or the one its State Machine Component made for
++	// it (found the same way). Never the State Machine Component itself: asking it can make that component, which mustn't
++	// happen while a recompile is replacing the widget.
++	if (UWidgetAnimationComponent* Player = UWidgetAnimationComponent::FindWidgetAnimationComponent(GetSafeWidget()))
+ 	{
+ 		Player->SetStateMachineBool(Input, bValue);
+ 	}
+-	else if (UWidgetAnimationStateMachineComponent* Machines = UWidgetAnimationStateMachineComponent::FindWidgetAnimationStateMachineComponent(Root))
+-	{
+-		Machines->SetStateMachineBool(Input, bValue);
+-	}
+ }
+ 
+ void UDiegeticScreenComponent::SetWidgetNumber(FName Input, float Value) const
+@@ -649,19 +667,10 @@ void UDiegeticScreenComponent::SetWidgetNumber(FName Input, float Value) const
+ 	{
+ 		return;
+ 	}
+-	UUserWidget* Root = GetUserWidgetObject();
+-	if (!Root)
+-	{
+-		return;
+-	}
+-	if (UWidgetAnimationComponent* Player = UWidgetAnimationComponent::FindWidgetAnimationComponent(Root))
++	if (UWidgetAnimationComponent* Player = UWidgetAnimationComponent::FindWidgetAnimationComponent(GetSafeWidget()))
+ 	{
+ 		Player->SetStateMachineNumber(Input, Value);
+ 	}
+-	else if (UWidgetAnimationStateMachineComponent* Machines = UWidgetAnimationStateMachineComponent::FindWidgetAnimationStateMachineComponent(Root))
+-	{
+-		Machines->SetStateMachineNumber(Input, Value);
+-	}
+ }
+ 
+ // =====================================================================================================
+@@ -694,7 +703,7 @@ void UDiegeticScreenComponent::NotifyAimed(UDiegeticInteractorComponent* Interac
+ 		return;
+ 	}
+ 	SetWidgetBool(DiegeticScreenPrivate::ScreenAimedAtInput, bNow);
+-	if (UUserWidget* Root = GetUserWidgetObject())
++	if (UUserWidget* Root = GetSafeWidget())
+ 	{
+ 		if (Root->Implements<UDiegeticScreenWidget>())
+ 		{
+@@ -787,7 +796,7 @@ void UDiegeticScreenComponent::SetUserInteractor(UDiegeticInteractorComponent* I
+ 	APlayerController* PreviousUser = Previous ? Previous->GetInteractingPlayer() : nullptr;
+ 	UserInteractor = Interactor;
+ 
+-	UUserWidget* Root = GetUserWidgetObject();
++	UUserWidget* Root = GetSafeWidget();
+ 	const bool bTellWidget = Root && Root->Implements<UDiegeticScreenWidget>();
+ 	if (Previous)
+ 	{
+diff --git a/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.h b/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.h
+index 8defbf4..b2ac3e1 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.h
++++ b/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticScreenComponent.h
+@@ -246,6 +246,15 @@ public:
+ 	/** Keeps the widget lookups in step with the widget and window it has now. */
+ 	void SyncRegistration();
+ 
++	/** Passes the screen's state to a widget that changed (SyncRegistration noted it) once it is safe to touch. Subsystem tick. */
++	void FlushWidgetState();
++
++	/**
++	 * The widget on it, when it is safe to talk to: built into the screen's window, and not being replaced by a Blueprint
++	 * recompile (PIE) or destroyed. Null otherwise.
++	 */
++	UUserWidget* GetSafeWidget() const;
++
+ 	/** An interactor started or stopped pointing at it. */
+ 	void NotifyAimed(UDiegeticInteractorComponent* Interactor, bool bAimed);
+ 
+@@ -313,6 +322,7 @@ private:
+ 	bool bKeepAwake = false;
+ 	bool bHiddenAsleep = false;
+ 	bool bContentChanged = true;
++	bool bPushWidgetState = false;
+ 	bool bAnyViewInFront = true;
+ 	float ViewDistance = 0.f;
+ 	float PawnDistance = 0.f;
+diff --git a/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticUISubsystem.cpp b/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticUISubsystem.cpp
+index f375d6c..ad65300 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticUISubsystem.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticUISubsystem.cpp
+@@ -242,6 +242,7 @@ void UDiegeticUISubsystem::ScheduleScreens(double Now, float RealDeltaTime)
+ 			continue;
+ 		}
+ 		Screen->SyncRegistration();
++		Screen->FlushWidgetState();
+ 		Screen->SetDrawScheduled(false);
+ 
+ 		// Distances: to the nearest camera (redraws) and the nearest pawn (presence). Whether a camera is in front of its face.

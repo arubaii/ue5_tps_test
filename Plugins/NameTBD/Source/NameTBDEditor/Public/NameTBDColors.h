@@ -723,7 +723,7 @@ namespace NameTBD
 			inline const FLinearColor TransitionTween(0.86f, 0.86f, 0.88f);
 			inline const FLinearColor TransitionSpring(0.45f, 0.88f, 0.70f);
 			inline const FLinearColor TransitionAnimation(AnimationOrange_Normal);
-			inline const FLinearColor TransitionCut(0.42f, 0.git 42f, 0.45f);
+			inline const FLinearColor TransitionCut(0.42f, 0.42f, 0.45f);
 			inline const FLinearColor TransitionArrow(0.03f, 0.03f, 0.035f, 0.90f);
 			inline constexpr float TransitionArrowSize = 11.0f;
 			inline const FLinearColor TransitionSelected(1.0f, 1.0f, 1.0f, 0.95f);

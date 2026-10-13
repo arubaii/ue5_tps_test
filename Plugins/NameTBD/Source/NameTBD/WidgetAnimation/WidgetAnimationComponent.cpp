@@ -21,6 +21,7 @@
 #include "Widgets/SWidget.h"
 #include "WidgetAnimStateMachineRuntime.h"
 #include "WidgetAnimationStateMachineComponent.h"
+#include "NameTBD/Diegetic/DiegeticScreenComponent.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimationComponent, Log, All);
@@ -988,6 +989,16 @@ void UWidgetAnimationComponent::RuntimeTick(float DeltaTime)
 	}
 
 	TickAnimationPlayback(DeltaTime);
+
+	// On a widget a Diegetic Screen draws into the world, something may have moved: a screen redrawing only When Changed
+	// redraws. Not while everything rests (the frame was skipped). Free when no screen exists.
+	if (bPosedLastTick && UDiegeticScreenComponent::AnyScreensExist())
+	{
+		if (UDiegeticScreenComponent* Screen = UDiegeticScreenComponent::FindScreenForWidget(AnimatedWidget))
+		{
+			Screen->NoteAnimating();
+		}
+	}
 }
 
 bool UWidgetAnimationComponent::IsVisibleState(ESlateVisibility Visibility)
@@ -1053,6 +1064,7 @@ void UWidgetAnimationComponent::ApplyCurrentAnimPose()
 void UWidgetAnimationComponent::TickPlayer(UWidget* AnimatedWidget, float DeltaTime, TArray<FName>& OutJustFinished)
 {
 	++PlayerTickDepth;
+	bPosedLastTick = false;
 
 	// A frame with time, while everything rests, is skipped: the pose it would work out is the one already applied. A
 	// pose asked for outright (no time: a track just started, a reset) is always worked out and applied. See
@@ -1088,6 +1100,7 @@ void UWidgetAnimationComponent::TickPlayer(UWidget* AnimatedWidget, float DeltaT
 			}
 			ComposeMachines(Result);
 			UWidgetAnimLibrary::ApplyComposedResult(AnimatedWidget, Result, GetPlayerBaselines());
+			bPosedLastTick = true;
 			UWidgetAnimLibrary::ReleaseFinishedTracks(AnimPlayer);
 			for (FWidgetAnimMachineInstance& Instance : MachineInstances)
 			{
@@ -1106,6 +1119,7 @@ void UWidgetAnimationComponent::TickPlayer(UWidget* AnimatedWidget, float DeltaT
 	{
 		UWidgetAnimLibrary::TickWidgetAnimPlayer(AnimatedWidget, AnimPlayer, GetPlayerBaselines(), DeltaTime, OutJustFinished);
 		NoteTracksAfterTick();
+		bPosedLastTick = true;
 	}
 	--PlayerTickDepth;
 

@@ -9,6 +9,7 @@
 #include "Components/PanelWidget.h"
 #include "Components/ScrollBox.h"
 #include "Components/Widget.h"
+#include "Components/WidgetComponent.h"
 #include "Framework/Application/IInputProcessor.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Layout/Geometry.h"
@@ -225,6 +226,23 @@ namespace WidgetAnimInputPrivate
 		return Hit.ContainsByPredicate([Wanted](const TWeakPtr<SWidget>& Candidate) { return Candidate.Pin().Get() == Wanted; });
 	}
 
+	/** What finds a widget's world pointer - see WidgetAnimInput::SetWorldPointerResolver. Game thread only. */
+	WidgetAnimInput::FWorldPointerResolver& GetWorldPointerResolver()
+	{
+		static WidgetAnimInput::FWorldPointerResolver Resolver;
+		return Resolver;
+	}
+
+	/**
+	 * IsPointerOver from the context's pointer. A world pointer that has left its surface is over nothing there, whatever was
+	 * under the place it was last: its position is only kept so Keep Following holds still.
+	 */
+	bool IsPointerOverIn(const FWidgetAnimInputContext& Context, const UWidget* Widget)
+	{
+		return Context.bHasPointer && (!Context.bWorldPointer || Context.WorldPointer.bOver)
+			&& WidgetAnimInput::IsPointerOver(Widget, Context.PointerPosition);
+	}
+
 	bool IsFocused(const UWidget* Widget)
 	{
 		return Widget && (Widget->HasAnyUserFocus() || Widget->HasFocusedDescendants());
@@ -325,6 +343,63 @@ bool WidgetAnimInput::IsPointUnder(const UWidget* Widget, const FVector2f& Point
 		return WidgetAnimInputPrivate::IsUnderPoint(Widget, Point);
 	}
 	return WidgetAnimInputPrivate::IsOverOwnParts(Widget, Point);
+}
+
+bool WidgetAnimInput::IsPointUnder(const FWidgetAnimInputContext& Context, const UWidget* Widget, const FVector2f& Point)
+{
+	if (!Context.bWorldPointer)
+	{
+		return IsPointUnder(Widget, Point);
+	}
+	if (!Widget)
+	{
+		return false;
+	}
+	const ESlateVisibility Visibility = Widget->GetVisibility();
+	if (Visibility == ESlateVisibility::Collapsed || Visibility == ESlateVisibility::Hidden)
+	{
+		return false;
+	}
+	if (!WidgetAnimInputPrivate::CanSlateHit(Widget))
+	{
+		return WidgetAnimInputPrivate::IsOverOwnParts(Widget, Point);
+	}
+
+	// The surface's own hit test: its window isn't one of the desktop's, so LocateWindowUnderMouse can't see into it.
+	UWidgetComponent* Surface = Context.WorldPointer.Surface.Get();
+	const TSharedPtr<SWidget> Slate = Widget->GetCachedWidget();
+	if (!Surface || !Slate.IsValid())
+	{
+		return false;
+	}
+	const TArray<FWidgetAndPointer> Path = Surface->GetHitWidgetPath(FVector2D(Point), /*bIgnoreEnabledStatus=*/true);
+	const SWidget* Wanted = Slate.Get();
+	return Path.ContainsByPredicate([Wanted](const FWidgetAndPointer& Entry) { return &Entry.Widget.Get() == Wanted; });
+}
+
+void WidgetAnimInput::SetWorldPointerResolver(FWorldPointerResolver InResolver)
+{
+	WidgetAnimInputPrivate::GetWorldPointerResolver() = MoveTemp(InResolver);
+}
+
+void WidgetAnimInput::ReadPointer(FWidgetAnimInputContext& Context)
+{
+	Context.bWorldPointer = false;
+	const FWorldPointerResolver& Resolver = WidgetAnimInputPrivate::GetWorldPointerResolver();
+	if (Resolver && Context.HostWidget && Resolver(Context.HostWidget, Context.WorldPointer))
+	{
+		Context.bWorldPointer = true;
+		Context.PointerPosition = Context.WorldPointer.Position;
+		Context.bHasPointer = Context.WorldPointer.bHasPosition;
+		return;
+	}
+	Context.WorldPointer = FWorldPointer();
+	Context.bHasPointer = GetPointerPosition(Context.PointerPosition);
+}
+
+bool WidgetAnimInput::IsButtonDown(const FWidgetAnimInputContext& Context, const FKey& Button)
+{
+	return Context.bWorldPointer ? Context.WorldPointer.IsDown(Button) : IsMouseButtonDown(Button);
 }
 
 bool WidgetAnimInput::ToUnanimatedLocal(const UWidget* Widget, const FVector2f& DesktopPoint, FVector2f& OutLocal, FVector2f& OutSize)
@@ -622,7 +697,7 @@ bool FWidgetAnimInput_PointerPosition::Sample(const FWidgetAnimInputContext& Con
 		return false;
 	}
 
-	const bool bMeasure = WhenAway == EWidgetAnimPointerAway::KeepFollowing || WidgetAnimInput::IsPointerOver(Context.MeasuredWidget, Context.PointerPosition);
+	const bool bMeasure = WhenAway == EWidgetAnimPointerAway::KeepFollowing || WidgetAnimInputPrivate::IsPointerOverIn(Context, Context.MeasuredWidget);
 
 	FVector2D Value;
 	if (bMeasure)
@@ -662,21 +737,25 @@ FString FWidgetAnimInput_PointerPosition::GetSummary() const
 bool FWidgetAnimInput_Interaction::Sample(const FWidgetAnimInputContext& Context, FVector4& OutValue)
 {
 	UWidget* Widget = Context.MeasuredWidget;
-	const bool bHovered = Context.bHasPointer && WidgetAnimInput::IsPointerOver(Widget, Context.PointerPosition);
+	const bool bHovered = WidgetAnimInputPrivate::IsPointerOverIn(Context, Widget);
 
 	// Pressed is watched every frame whatever State is, so switching State at runtime doesn't start mid-press. The presses
 	// are counted as Slate saw them (WidgetAnimInput::StartCountingEvents), where they were made: so a press over the widget is
-	// seen however short it was - let go again before this look - and wherever the pointer has gone since.
-	const bool bDown = WidgetAnimInput::IsMouseButtonDown(EKeys::LeftMouseButton);
-	WidgetAnimInput::StartCountingEvents();
-	const WidgetAnimInput::FPointerEventCount Presses = WidgetAnimInput::GetLeftPressCount();
+	// seen however short it was - let go again before this look - and wherever the pointer has gone since. On a widget drawn
+	// into the world, its surface's pointer counted them instead.
+	const bool bDown = WidgetAnimInput::IsButtonDown(Context, EKeys::LeftMouseButton);
+	if (!Context.bWorldPointer)
+	{
+		WidgetAnimInput::StartCountingEvents();
+	}
+	const WidgetAnimInput::FPointerEventCount Presses = Context.bWorldPointer ? Context.WorldPointer.LeftPresses : WidgetAnimInput::GetLeftPressCount();
 	const bool bNewPress = bHasPressCount && Presses.Count != LastPressCount;
 	LastPressCount = Presses.Count;
 	bHasPressCount = true;
 	if (bNewPress)
 	{
 		// Where the press was made - not hover now, which a press nothing handled takes away (the game viewport captures it).
-		bPressStartedOver = WidgetAnimInput::IsPointUnder(Widget, Presses.Position);
+		bPressStartedOver = WidgetAnimInput::IsPointUnder(Context, Widget, Presses.Position);
 	}
 	else if (bDown && !bWasDown)
 	{
@@ -743,12 +822,12 @@ FString FWidgetAnimInput_Interaction::GetSummary() const
 bool FWidgetAnimInput_Drag::Sample(const FWidgetAnimInputContext& Context, FVector4& OutValue)
 {
 	UWidget* Widget = Context.MeasuredWidget;
-	const bool bDown = Context.bHasPointer && WidgetAnimInput::IsMouseButtonDown(Button);
+	const bool bDown = Context.bHasPointer && WidgetAnimInput::IsButtonDown(Context, Button);
 
 	if (bDown && !bWasDown)
 	{
 		// Only a press that starts over the widget drags it; one that starts elsewhere and slides over it doesn't.
-		if (WidgetAnimInput::IsPointerOver(Widget, Context.PointerPosition))
+		if (WidgetAnimInputPrivate::IsPointerOverIn(Context, Widget))
 		{
 			bDragging = true;
 			bPastDeadZone = false;

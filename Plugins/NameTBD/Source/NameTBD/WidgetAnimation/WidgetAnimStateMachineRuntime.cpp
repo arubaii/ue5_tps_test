@@ -855,9 +855,11 @@ namespace WidgetAnimStateMachines
 		 * Double Clicked, Right Clicked, Accept, Back and the Gamepad buttons, from the input events counted as Slate saw them
 		 * (WidgetAnimInput::StartCountingEvents): a count changed since the machine last looked is a new event. The mouse ones
 		 * where they happened over Widget; the buttons while Widget, or something inside it, has focus (InOutState.bFocused - read
-		 * whenever any of them is). Into InOutState.Fired.
+		 * whenever any of them is). Into InOutState.Fired. The mouse ones of a widget drawn into the world are its surface's
+		 * pointer's (InputContext.bWorldPointer) - counted by the Widget Interaction Component pointing at it, where Slate's
+		 * counting never sees them.
 		 */
-		void ReadCountedEvents(FWidgetAnimMachineWidgetReader& Reader, uint64 UsedBuiltIns, UWidget* Widget, FWidgetAnimMachineWidgetState& InOutState)
+		void ReadCountedEvents(FWidgetAnimMachineWidgetReader& Reader, uint64 UsedBuiltIns, UWidget* Widget, const FWidgetAnimInputContext& InputContext, FWidgetAnimMachineWidgetState& InOutState)
 		{
 			const uint64 Used = UsedBuiltIns & GetCountedEventPulses();
 			if (Used == 0)
@@ -885,8 +887,8 @@ namespace WidgetAnimStateMachines
 
 			if (Reads(WidgetAnimMachineInputs::DoubleClicked))
 			{
-				const WidgetAnimInput::FPointerEventCount DoubleClick = WidgetAnimInput::GetDoubleClickCount();
-				if (IsNew(WidgetAnimMachineInputs::DoubleClicked, DoubleClick.Count) && WidgetAnimInput::IsPointUnder(Widget, DoubleClick.Position))
+				const WidgetAnimInput::FPointerEventCount DoubleClick = InputContext.bWorldPointer ? InputContext.WorldPointer.DoubleClicks : WidgetAnimInput::GetDoubleClickCount();
+				if (IsNew(WidgetAnimMachineInputs::DoubleClicked, DoubleClick.Count) && WidgetAnimInput::IsPointUnder(InputContext, Widget, DoubleClick.Position))
 				{
 					Fire(WidgetAnimMachineInputs::DoubleClicked);
 				}
@@ -896,15 +898,15 @@ namespace WidgetAnimStateMachines
 			{
 				// Pressed over the widget, then let go over it - as a click is - so a right press dragged off is no click.
 				static const FName RightPressCountName(TEXT("Right Pressed (counted)"));
-				const WidgetAnimInput::FPointerEventCount RightPress = WidgetAnimInput::GetRightPressCount();
-				const WidgetAnimInput::FPointerEventCount RightRelease = WidgetAnimInput::GetRightReleaseCount();
+				const WidgetAnimInput::FPointerEventCount RightPress = InputContext.bWorldPointer ? InputContext.WorldPointer.RightPresses : WidgetAnimInput::GetRightPressCount();
+				const WidgetAnimInput::FPointerEventCount RightRelease = InputContext.bWorldPointer ? InputContext.WorldPointer.RightReleases : WidgetAnimInput::GetRightReleaseCount();
 				if (IsNew(RightPressCountName, RightPress.Count))
 				{
-					Reader.bRightPressOver = WidgetAnimInput::IsPointUnder(Widget, RightPress.Position);
+					Reader.bRightPressOver = WidgetAnimInput::IsPointUnder(InputContext, Widget, RightPress.Position);
 				}
 				if (IsNew(WidgetAnimMachineInputs::RightClicked, RightRelease.Count))
 				{
-					if (Reader.bRightPressOver && WidgetAnimInput::IsPointUnder(Widget, RightRelease.Position))
+					if (Reader.bRightPressOver && WidgetAnimInput::IsPointUnder(InputContext, Widget, RightRelease.Position))
 					{
 						Fire(WidgetAnimMachineInputs::RightClicked);
 					}
@@ -975,7 +977,7 @@ namespace WidgetAnimStateMachines
 			FireIf(WidgetAnimMachineInputs::FocusLost, !State.bFocused && Was.bFocused);
 
 			// Double Clicked, Right Clicked, Accept, Back and the Gamepad buttons, from the input Slate saw.
-			ReadCountedEvents(Reader, Used, Widget, State);
+			ReadCountedEvents(Reader, Used, Widget, InputContext, State);
 
 			if (State.bHovered != Was.bHovered || State.bPressed != Was.bPressed || State.bFocused != Was.bFocused || State.bSelected != Was.bSelected
 				|| State.bDisabled != Was.bDisabled || State.bClicked != Was.bClicked || State.Fired != Was.Fired)
@@ -1071,7 +1073,7 @@ namespace WidgetAnimStateMachines
 			FWidgetAnimInputContext InputContext;
 			InputContext.HostWidget = Context.Host;
 			InputContext.DeltaTime = DeltaTime;
-			InputContext.bHasPointer = WidgetAnimInput::GetPointerPosition(InputContext.PointerPosition);
+			WidgetAnimInput::ReadPointer(InputContext);
 
 			for (FWidgetAnimMachineInputState& Input : Instance.Inputs)
 			{

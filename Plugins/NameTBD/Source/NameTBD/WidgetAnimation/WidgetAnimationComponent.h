@@ -1054,6 +1054,9 @@ private:
 	bool bTracksResting = false;
 	bool bRestReadsInputs = false;
 
+	/** Whether the last TickPlayer worked a pose out and applied it (it wasn't skipped as resting): something may have moved. */
+	bool bPosedLastTick = false;
+
 	/** Whether every track has finished and holds still - no stagger waiting to fan out. Whether any reads a Value Input. */
 	bool AreTracksHolding(bool& bOutReadsInputs) const;
 

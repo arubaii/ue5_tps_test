@@ -3,10 +3,13 @@
 #include "UISoundTypes.h"
 
 #include "Components/AudioComponent.h"
+#include "Components/Widget.h"
 #include "Containers/Ticker.h"
 #include "Engine/World.h"
 #include "TimerManager.h"
 #include "Kismet/GameplayStatics.h"
+#include "NameTBD/Diegetic/DiegeticScreenComponent.h"
+#include "Sound/SoundAttenuation.h"
 
 namespace UISoundTypesLocal
 {
@@ -28,6 +31,74 @@ namespace UISoundTypesLocal
 		}
 
 		return World->IsGameWorld() ? World : nullptr;
+	}
+
+	/**
+	 * Where a UI sound for WorldContext plays: flat (2D), as UI sounds are - or, for a widget on a Diegetic Screen with Play
+	 * Sounds In The World on, from where the widget is on it, fading with distance (the screen's Attenuation, or its Inner
+	 * Radius and Falloff Distance). Worked out when the sound is asked for: a delayed sound plays where its widget was.
+	 */
+	struct FSoundPlace
+	{
+		bool bInWorld = false;
+		FVector Location = FVector::ZeroVector;
+		TWeakObjectPtr<USoundAttenuation> Attenuation;
+		FSoundAttenuationSettings Falloff;
+	};
+
+	FSoundPlace ResolvePlace(const UObject* WorldContext)
+	{
+		FSoundPlace Place;
+		const UDiegeticScreenComponent* Screen = UDiegeticScreenComponent::FindScreenForObject(WorldContext);
+		if (!Screen || !Screen->SoundSettings.bSpatialize)
+		{
+			return Place;
+		}
+		Place.bInWorld = true;
+		Place.Location = Screen->GetWorldLocationOfWidget(Cast<UWidget>(WorldContext));
+		Place.Attenuation = Screen->SoundSettings.Attenuation;
+		Place.Falloff.bAttenuate = true;
+		Place.Falloff.bSpatialize = true;
+		Place.Falloff.AttenuationShape = EAttenuationShape::Sphere;
+		Place.Falloff.AttenuationShapeExtents = FVector(FMath::Max(Screen->SoundSettings.InnerRadius, 0.f), 0.f, 0.f);
+		Place.Falloff.FalloffDistance = FMath::Max(Screen->SoundSettings.FalloffDistance, 1.f);
+		return Place;
+	}
+
+	/** An audio component for the sound, not yet playing, where Place says - destroyed when it finishes. */
+	UAudioComponent* CreateSoundAt(UWorld* World, const FSoundPlace& Place, USoundBase* Sound, float Volume, float Pitch)
+	{
+		UAudioComponent* Audio = UGameplayStatics::CreateSound2D(World, Sound, Volume, Pitch,
+			/*StartTime=*/0.f, /*ConcurrencySettings=*/nullptr, /*bPersistAcrossLevelTransition=*/false, /*bAutoDestroy=*/true);
+		if (Audio && Place.bInWorld)
+		{
+			Audio->bAllowSpatialization = true;
+			Audio->SetWorldLocation(Place.Location);
+			if (USoundAttenuation* Asset = Place.Attenuation.Get())
+			{
+				Audio->AttenuationSettings = Asset;
+			}
+			else
+			{
+				Audio->bOverrideAttenuation = true;
+				Audio->AttenuationOverrides = Place.Falloff;
+			}
+		}
+		return Audio;
+	}
+
+	/** Plays the sound once, where Place says. */
+	void PlaySoundAt(UWorld* World, const FSoundPlace& Place, USoundBase* Sound, float Volume, float Pitch)
+	{
+		if (!Place.bInWorld)
+		{
+			UGameplayStatics::PlaySound2D(World, Sound, Volume, Pitch);
+			return;
+		}
+		if (UAudioComponent* Audio = CreateSoundAt(World, Place, Sound, Volume, Pitch))
+		{
+			Audio->Play();
+		}
 	}
 }
 
@@ -57,9 +128,10 @@ void FUISoundPlayer::Play(const UObject* WorldContext, FUISoundRuntime& Runtime,
 	const float Jitter = Slot.PitchVariation > 0.0f ? FMath::FRandRange(-Slot.PitchVariation, Slot.PitchVariation) : 0.0f;
 	const float Pitch = FMath::Max(0.01f, Slot.PitchMultiplier + Jitter);
 
+	const UISoundTypesLocal::FSoundPlace Place = UISoundTypesLocal::ResolvePlace(WorldContext);
 	if (Slot.Delay <= 0.0f)
 	{
-		UGameplayStatics::PlaySound2D(World, Sound, Volume, Pitch);
+		UISoundTypesLocal::PlaySoundAt(World, Place, Sound, Volume, Pitch);
 		return;
 	}
 
@@ -70,11 +142,11 @@ void FUISoundPlayer::Play(const UObject* WorldContext, FUISoundRuntime& Runtime,
 	TWeakObjectPtr<UWorld> WeakWorld(World);
 	World->GetTimerManager().SetTimer(
 		Handle,
-		FTimerDelegate::CreateLambda([WeakWorld, Sound, Volume, Pitch]()
+		FTimerDelegate::CreateLambda([WeakWorld, Place, Sound, Volume, Pitch]()
 		{
 			if (UWorld* TimerWorld = WeakWorld.Get())
 			{
-				UGameplayStatics::PlaySound2D(TimerWorld, Sound, Volume, Pitch);
+				UISoundTypesLocal::PlaySoundAt(TimerWorld, Place, Sound, Volume, Pitch);
 			}
 		}),
 		Slot.Delay,
@@ -126,7 +198,7 @@ void FUISoundPlayer::PlayOneShot(const UObject* WorldContext, USoundBase* Sound,
 
 	if (UWorld* World = UISoundTypesLocal::ResolvePlayableWorld(WorldContext))
 	{
-		UGameplayStatics::PlaySound2D(World, Sound, FMath::Max(0.0f, VolumeMultiplier), FMath::Max(0.01f, PitchMultiplier));
+		UISoundTypesLocal::PlaySoundAt(World, UISoundTypesLocal::ResolvePlace(WorldContext), Sound, FMath::Max(0.0f, VolumeMultiplier), FMath::Max(0.01f, PitchMultiplier));
 	}
 }
 
@@ -145,8 +217,8 @@ void FUISoundPlayer::PlayFaded(const UObject* WorldContext, USoundBase* Sound, f
 	}
 
 	// An audio component rather than a fire-and-forget sound: the fades are the component's. Destroyed when it finishes.
-	UAudioComponent* Audio = UGameplayStatics::CreateSound2D(World, Sound, FMath::Max(0.0f, VolumeMultiplier), FMath::Max(0.01f, PitchMultiplier),
-		/*StartTime=*/0.f, /*ConcurrencySettings=*/nullptr, /*bPersistAcrossLevelTransition=*/false, /*bAutoDestroy=*/true);
+	UAudioComponent* Audio = UISoundTypesLocal::CreateSoundAt(World, UISoundTypesLocal::ResolvePlace(WorldContext), Sound,
+		FMath::Max(0.0f, VolumeMultiplier), FMath::Max(0.01f, PitchMultiplier));
 	if (!Audio)
 	{
 		return;

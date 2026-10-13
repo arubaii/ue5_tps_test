@@ -6072,7 +6072,7 @@ void UWidgetAnimLibrary::ReadValueInputs(UWidget* HostWidget, FWidgetAnimPlayer&
 	FWidgetAnimInputContext Context;
 	Context.HostWidget = HostWidget;
 	Context.DeltaTime = DeltaTime;
-	Context.bHasPointer = WidgetAnimInput::GetPointerPosition(Context.PointerPosition);
+	WidgetAnimInput::ReadPointer(Context);
 
 	// Read first and set after: setting a value can size a track's states, which mustn't happen under the loop.
 	struct FFeed
