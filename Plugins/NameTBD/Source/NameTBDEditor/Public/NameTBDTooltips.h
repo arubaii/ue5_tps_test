@@ -3567,4 +3567,24 @@ namespace NameTBD::Tooltips
 		}
 	}
 
+	/** SVG assets: the Content Browser's right-click menu. */
+	namespace SVG
+	{
+		inline FText CreateSVGTextureLabel()
+		{
+			return NSLOCTEXT("NameTBDTooltips.SVG", "CreateSVGTextureLabel", "Create SVG Texture");
+		}
+
+		inline FText CreateSVGTextureTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.SVG", "CreateSVGTextureTooltip",
+				"Makes a Texture 2D drawn from this SVG at a fixed resolution, next to it, for engine widgets that take textures (Image, Button styles). Its colours, Draw In White and resolution are in the texture's Details. Plugin widgets and the SVG Image draw the SVG itself, sharp at any size.");
+		}
+
+		inline FText CreateSVGTextureFailed()
+		{
+			return NSLOCTEXT("NameTBDTooltips.SVG", "CreateSVGTextureFailed", "Couldn't make an SVG Texture from {0}: {1}");
+		}
+	}
+
 }

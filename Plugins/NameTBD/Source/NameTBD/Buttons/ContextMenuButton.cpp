@@ -34,6 +34,7 @@
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/Texture2D.h"
+#include "NameTBD/Widgets/WidgetSVGImage.h"
 #include "Containers/Ticker.h"
 #include "Styling/SlateTypes.h"
 #include "Fonts/SlateFontInfo.h"
@@ -1424,7 +1425,12 @@ void FContextMenuDesignStateOverride::ApplyTo(FContextMenuWidgetDesign& Target) 
 	if (bOverrideTint)         { Target.Tint = Tint; }
 	if (bOverrideOutlineTint)  { Target.OutlineTint = OutlineTint; }
 	if (bOverrideOpacity)      { Target.Opacity = Opacity; }
-	if (bOverrideBrushTexture) { Target.BrushTexture = BrushTexture; }
+	if (bOverrideBrushTexture)
+	{
+		Target.BrushImageSource = BrushImageSource;
+		Target.BrushTexture = BrushTexture;
+		Target.BrushSVG = BrushSVG;
+	}
 	if (bOverrideMaterial)
 	{
 		Target.Material = Material;
@@ -1656,6 +1662,8 @@ void UContextMenuButton::PostLoad()
 				|| Design.Opacity != FreshDesign.Opacity
 				|| Design.bDriveBrushTexture != FreshDesign.bDriveBrushTexture
 				|| Design.BrushTexture != FreshDesign.BrushTexture
+				|| Design.BrushImageSource != FreshDesign.BrushImageSource
+				|| Design.BrushSVG != FreshDesign.BrushSVG
 				|| Design.bDriveMaterial != FreshDesign.bDriveMaterial
 				|| Design.Material != FreshDesign.Material
 				|| Design.MaterialScalars.Num() != 0
@@ -2065,7 +2073,12 @@ void UContextMenuButton::RestoreRuntimeDesignBaselines()
 		ApplyColorToWidget(Widget, Target.BaselineTint);
 		ApplyOutlineTintToWidget(Widget, Target.BaselineOutlineTint);
 		Widget->SetRenderOpacity(Target.BaselineOpacity);
-		if (UTexture2D* BaselineTexture = Target.BaselineBrushTexture.Get())
+		StopSVGOnWidget(Widget);
+		if (UWidgetSVG* BaselineSVGAsset = Target.BaselineSVG.Get())
+		{
+			ShowSVGOnWidget(Widget, BaselineSVGAsset);
+		}
+		else if (UTexture2D* BaselineTexture = Target.BaselineBrushTexture.Get())
 		{
 			ApplyBrushTextureToWidget(Widget, BaselineTexture);
 		}
@@ -2874,6 +2887,7 @@ void UContextMenuButton::ReleaseSlateResources(bool bReleaseChildren)
 	StopPressDuration();
 	bIsVisualTimerActive = false;
 	bIsButtonAnimTimerActive = false;
+	bIsTargetSVGTimerActive = false;
 #if WITH_EDITOR
 	bIsDesignPreviewWatcherActive = false;
 #endif
@@ -2900,6 +2914,9 @@ void UContextMenuButton::ReleaseSlateResources(bool bReleaseChildren)
 void UContextMenuButton::OnWidgetRebuilt()
 {
 	Super::OnWidgetRebuilt();
+
+	// SVGs drawn into Image / Border / Button targets keep following their size on the new Slate widget.
+	StartTargetSVGTimer();
 
 	ResolveInstanceOverrides();
 
@@ -4139,7 +4156,9 @@ void UContextMenuButton::SeedInstanceOverrides(FContextMenuButtonInstanceOverrid
 				Default.Tint = Source->Tint;
 				Default.OutlineTint = Source->OutlineTint;
 				Default.Opacity = Source->Opacity;
+				Default.BrushImageSource = Source->BrushImageSource;
 				Default.BrushTexture = Source->BrushTexture;
+				Default.BrushSVG = Source->BrushSVG;
 				Default.Material = Source->Material;
 				Default.MaterialScalars = Source->MaterialScalars;
 				Default.MaterialVectors = Source->MaterialVectors;
@@ -4165,7 +4184,12 @@ void UContextMenuButton::SeedInstanceOverrides(FContextMenuButtonInstanceOverrid
 			if (!PatchSlot.bOverrideTint)         { PatchSlot.Tint = Source->Tint; }
 			if (!PatchSlot.bOverrideOutlineTint)  { PatchSlot.OutlineTint = Source->OutlineTint; }
 			if (!PatchSlot.bOverrideOpacity)      { PatchSlot.Opacity = Source->Opacity; }
-			if (!PatchSlot.bOverrideBrushTexture) { PatchSlot.BrushTexture = Source->BrushTexture; }
+			if (!PatchSlot.bOverrideBrushTexture)
+			{
+				PatchSlot.BrushImageSource = Source->BrushImageSource;
+				PatchSlot.BrushTexture = Source->BrushTexture;
+				PatchSlot.BrushSVG = Source->BrushSVG;
+			}
 			if (!PatchSlot.bOverrideMaterial)     { PatchSlot.Material = Source->Material; }
 
 			// The parameter LIST always tracks the button - a material swapped or a parameter renamed has to
@@ -5173,6 +5197,7 @@ void UContextMenuButton::InitializeRuntimeDesignTargets()
 		Entry.BaselineOpacity = Entry.CurrentOpacity;
 		Entry.BaselineBrushTexture = ExtractWidgetBrushTexture(Widget);
 		Entry.BaselineMaterial = ExtractWidgetMaterial(Widget);
+		Entry.BaselineSVG = ExtractWidgetSVG(Widget);
 		Entry.bHasBaseline = true;
 
 		// Material parameters have no reliable "current" to read back per parameter, so they start at the
@@ -5261,10 +5286,22 @@ bool UContextMenuButton::ApplyDesignTarget(FContextMenuRuntimeDesignTarget& Targ
 		Target.bHasAppliedBrush = true;
 		Target.LastBrushState = State;
 
-		UTexture2D* DesiredTexture = Design.bDriveBrushTexture ? Design.BrushTexture.Get() : Target.BaselineBrushTexture.Get();
-		if (DesiredTexture)
+		// An SVG for this state; otherwise this state's texture, or what the widget was authored with (an SVG or a texture).
+		UWidgetSVG* DesiredSVG = Design.bDriveBrushTexture
+			? (Design.BrushImageSource == EWidgetImageSource::SVG ? Design.BrushSVG.Get() : nullptr)
+			: Target.BaselineSVG.Get();
+		if (DesiredSVG)
 		{
-			ApplyBrushTextureToWidget(Widget, DesiredTexture);
+			ShowSVGOnWidget(Widget, DesiredSVG);
+		}
+		else
+		{
+			StopSVGOnWidget(Widget);
+			UTexture2D* DesiredTexture = Design.bDriveBrushTexture ? Design.BrushTexture.Get() : Target.BaselineBrushTexture.Get();
+			if (DesiredTexture && !(Design.bDriveBrushTexture && Design.BrushImageSource == EWidgetImageSource::SVG))
+			{
+				ApplyBrushTextureToWidget(Widget, DesiredTexture);
+			}
 		}
 	}
 
@@ -5550,6 +5587,7 @@ void UContextMenuButton::ApplyBrushTextureToWidget(UWidget* Widget, UTexture2D* 
 	{
 		FWidgetShapePaint& Paint = Shape->GetImagePaint();
 		Paint.Type = EWidgetShapePaintType::Image;
+		Paint.ImageSource = EWidgetImageSource::Texture;
 		Paint.Image.SetResourceObject(Texture);
 		Shape->InvalidateShape();
 		return;
@@ -5591,6 +5629,7 @@ void UContextMenuButton::ApplyMaterialToWidget(UWidget* Widget, UMaterialInterfa
 	{
 		FWidgetShapePaint& Paint = Shape->GetImagePaint();
 		Paint.Type = EWidgetShapePaintType::Image;
+		Paint.ImageSource = EWidgetImageSource::Texture;
 		Paint.Image.SetResourceObject(Material);
 		Shape->InvalidateShape();
 	}
@@ -5633,7 +5672,7 @@ UTexture2D* UContextMenuButton::ExtractWidgetBrushTexture(UWidget* Widget)
 	if (const UShapeWidget* Shape = GetDesignShape(Widget))
 	{
 		const FWidgetShapePaint& Paint = Shape->GetImagePaint();
-		return Paint.Type == EWidgetShapePaintType::Image ? Cast<UTexture2D>(Paint.Image.GetResourceObject()) : nullptr;
+		return Paint.DrawsBrush() ? Cast<UTexture2D>(Paint.Image.GetResourceObject()) : nullptr;
 	}
 	if (UImage* Image = Cast<UImage>(Widget))
 	{
@@ -5651,6 +5690,192 @@ UTexture2D* UContextMenuButton::ExtractWidgetBrushTexture(UWidget* Widget)
 	// Text and retainers have no brush texture to speak of; null means "nothing to restore", which is the
 	// right answer rather than a failure.
 	return nullptr;
+}
+
+UWidgetSVG* UContextMenuButton::ExtractWidgetSVG(UWidget* Widget)
+{
+	if (const UShapeWidget* Shape = GetDesignShape(Widget))
+	{
+		const FWidgetShapePaint& Paint = Shape->GetImagePaint();
+		return Paint.DrawsSVG() ? Paint.SVG.Get() : nullptr;
+	}
+	if (const UWidgetSVGImage* SVGImage = Cast<UWidgetSVGImage>(Widget))
+	{
+		return SVGImage->SVG;
+	}
+	return nullptr;
+}
+
+void UContextMenuButton::ShowSVGOnWidget(UWidget* Widget, UWidgetSVG* SVG)
+{
+	if (!Widget || !SVG)
+	{
+		return;
+	}
+
+	// Widgets that draw SVGs themselves take it as it is.
+	if (UShapeWidget* Shape = GetDesignShape(Widget))
+	{
+		FWidgetShapePaint& Paint = Shape->GetImagePaint();
+		Paint.Type = EWidgetShapePaintType::Image;
+		Paint.ImageSource = EWidgetImageSource::SVG;
+		Paint.SVG = SVG;
+		Shape->InvalidateShape();
+		return;
+	}
+	if (UWidgetSVGImage* SVGImage = Cast<UWidgetSVGImage>(Widget))
+	{
+		SVGImage->SetSVG(SVG);
+		return;
+	}
+
+	// An Image, Border or Button: its brush becomes the SVG drawn at its size, what it had kept to put back.
+	UImage* Image = Cast<UImage>(Widget);
+	UBorder* Border = Cast<UBorder>(Widget);
+	UButton* Button = Cast<UButton>(Widget);
+	if (!Image && !Border && !Button)
+	{
+		return;
+	}
+
+	FContextMenuTargetSVG& Entry = TargetSVGs.FindOrAdd(Widget);
+	if (!Entry.BrushBefore.IsSet() && !Entry.StyleBefore.IsSet())
+	{
+		if (Image)
+		{
+			Entry.BrushBefore = Image->GetBrush();
+		}
+		else if (Border)
+		{
+			Entry.BrushBefore = Border->Background;
+		}
+		else
+		{
+			Entry.StyleBefore = Button->GetStyle();
+		}
+	}
+	if (Entry.SVG.Get() != SVG)
+	{
+		Entry.SVG = SVG;
+		Entry.PushedResource = NAME_None;
+	}
+	PushTargetSVG(Widget, Entry);
+	StartTargetSVGTimer();
+}
+
+void UContextMenuButton::StopSVGOnWidget(UWidget* Widget)
+{
+	FContextMenuTargetSVG Entry;
+	if (!Widget || !TargetSVGs.RemoveAndCopyValue(Widget, Entry))
+	{
+		return;
+	}
+
+	// Put back before the drawing goes (Entry, going out of scope, lets go of it).
+	if (Entry.BrushBefore.IsSet())
+	{
+		if (UImage* Image = Cast<UImage>(Widget))
+		{
+			Image->SetBrush(Entry.BrushBefore.GetValue());
+		}
+		else if (UBorder* Border = Cast<UBorder>(Widget))
+		{
+			Border->SetBrush(Entry.BrushBefore.GetValue());
+		}
+	}
+	else if (Entry.StyleBefore.IsSet())
+	{
+		if (UButton* Button = Cast<UButton>(Widget))
+		{
+			Button->SetStyle(Entry.StyleBefore.GetValue());
+		}
+	}
+}
+
+void UContextMenuButton::PushTargetSVG(UWidget* Widget, FContextMenuTargetSVG& Entry)
+{
+	const TSharedPtr<SWidget> TargetSlate = Widget ? Widget->GetCachedWidget() : nullptr;
+	UWidgetSVG* SVG = Entry.SVG.Get();
+	if (!TargetSlate.IsValid() || !SVG)
+	{
+		return;
+	}
+
+	// The widget's size on screen; before its first layout, the SVG's own size.
+	const FGeometry& TargetGeometry = Widget->GetCachedGeometry();
+	const FVector2D LaidOutSize = TargetGeometry.GetLocalSize();
+	const bool bLaidOut = LaidOutSize.X > 0.0 && LaidOutSize.Y > 0.0;
+	const FSlateBrush* Drawn = bLaidOut
+		? Entry.Drawing.Get(SVG, nullptr, TargetGeometry, FVector2f(static_cast<float>(LaidOutSize.X), static_cast<float>(LaidOutSize.Y)), *TargetSlate)
+		: Entry.Drawing.GetAtPixelSize(SVG, nullptr, FIntPoint(FMath::Max(FMath::CeilToInt32(SVG->SVGSize.X), 1), FMath::Max(FMath::CeilToInt32(SVG->SVGSize.Y), 1)), TargetSlate.Get());
+	if (!Drawn || Drawn->GetResourceName() == Entry.PushedResource)
+	{
+		return;
+	}
+	Entry.PushedResource = Drawn->GetResourceName();
+
+	// The drawing as the image, with the look (draw as, margin, tint, size) the widget's brush already has.
+	auto WithLookOf = [Drawn](const FSlateBrush& Look)
+	{
+		FSlateBrush Result = *Drawn;
+		Result.DrawAs = Look.DrawAs;
+		Result.Tiling = Look.Tiling;
+		Result.Mirroring = Look.Mirroring;
+		Result.Margin = Look.Margin;
+		Result.TintColor = Look.TintColor;
+		Result.OutlineSettings = Look.OutlineSettings;
+		Result.ImageSize = Look.ImageSize;
+		return Result;
+	};
+
+	if (UImage* Image = Cast<UImage>(Widget))
+	{
+		Image->SetBrush(WithLookOf(Image->GetBrush()));
+	}
+	else if (UBorder* Border = Cast<UBorder>(Widget))
+	{
+		Border->SetBrush(WithLookOf(Border->Background));
+	}
+	else if (UButton* Button = Cast<UButton>(Widget))
+	{
+		FButtonStyle SVGButtonStyle = Button->GetStyle();
+		SVGButtonStyle.Normal = WithLookOf(SVGButtonStyle.Normal);
+		SVGButtonStyle.Hovered = WithLookOf(SVGButtonStyle.Hovered);
+		SVGButtonStyle.Pressed = WithLookOf(SVGButtonStyle.Pressed);
+		SVGButtonStyle.Disabled = WithLookOf(SVGButtonStyle.Disabled);
+		Button->SetStyle(SVGButtonStyle);
+	}
+}
+
+void UContextMenuButton::StartTargetSVGTimer()
+{
+	TSharedPtr<SWidget> SlateWidget = GetCachedWidget();
+	if (!bIsTargetSVGTimerActive && SlateWidget.IsValid() && TargetSVGs.Num() > 0)
+	{
+		bIsTargetSVGTimerActive = true;
+		SlateWidget->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateUObject(this, &UContextMenuButton::TickTargetSVGs));
+	}
+}
+
+EActiveTimerReturnType UContextMenuButton::TickTargetSVGs(double InCurrentTime, float InDeltaTime)
+{
+	for (auto It = TargetSVGs.CreateIterator(); It; ++It)
+	{
+		UWidget* Widget = It.Key().Get();
+		if (!Widget || !It.Value().SVG.IsValid())
+		{
+			It.RemoveCurrent();
+			continue;
+		}
+		PushTargetSVG(Widget, It.Value());
+	}
+
+	if (TargetSVGs.Num() == 0)
+	{
+		bIsTargetSVGTimerActive = false;
+		return EActiveTimerReturnType::Stop;
+	}
+	return EActiveTimerReturnType::Continue;
 }
 
 UMaterialInterface* UContextMenuButton::ExtractWidgetMaterial(UWidget* Widget)
@@ -5863,7 +6088,7 @@ void UContextMenuButton::ApplyDesignPreviews()
 		else if (const UShapeWidget* Shape = Cast<UShapeWidget>(Widget))
 		{
 			const FWidgetShapePaint& Paint = Shape->GetImagePaint();
-			UObject* Resource = Paint.Type == EWidgetShapePaintType::Image ? Paint.Image.GetResourceObject() : nullptr;
+			UObject* Resource = Paint.DrawsBrush() ? Paint.Image.GetResourceObject() : nullptr;
 			Baseline.BrushTexture = Cast<UTexture2D>(Resource);
 			Baseline.Material = Cast<UMaterialInterface>(Resource);
 		}
@@ -5885,6 +6110,7 @@ void UContextMenuButton::ApplyDesignPreviews()
 		{
 			Baseline.Material = Cast<UMaterialInterface>(Text->GetFont().FontMaterial);
 		}
+		Baseline.SVG = ExtractWidgetSVG(Widget);
 
 		// Per-state now, and read off the resolved design rather than off the target: a channel this state
 		// doesn't drive is simply left showing whatever the widget was authored as, which is exactly what the
@@ -5905,7 +6131,11 @@ void UContextMenuButton::ApplyDesignPreviews()
 			Widget->SetRenderOpacity(Design.Opacity);
 		}
 
-		if (Design.bDriveBrushTexture && Design.BrushTexture)
+		if (Design.bDriveBrushTexture && Design.BrushImageSource == EWidgetImageSource::SVG)
+		{
+			ShowSVGOnWidget(Widget, Design.BrushSVG);
+		}
+		else if (Design.bDriveBrushTexture && Design.BrushTexture)
 		{
 			ApplyBrushTextureToWidget(Widget, Design.BrushTexture);
 		}
@@ -5954,6 +6184,9 @@ void UContextMenuButton::ClearDesignPreviews()
 		ApplyOutlineTintToWidget(Widget, Baseline.OutlineTint);
 		Widget->SetRenderOpacity(Baseline.Opacity);
 
+		// An SVG drawn into an Image, Border or Button's brush: its own brush back first.
+		StopSVGOnWidget(Widget);
+
 		if (Baseline.bIsButton)
 		{
 			if (UButton* Button = Cast<UButton>(Widget))
@@ -5968,6 +6201,12 @@ void UContextMenuButton::ClearDesignPreviews()
 		else if (UMaterialInterface* Mat = Baseline.Material.Get())
 		{
 			ApplyMaterialToWidget(Widget, Mat);
+		}
+
+		// A shape or SVG Image authored with an SVG gets it back.
+		if (UWidgetSVG* BaselineSVGAsset = Baseline.SVG.Get())
+		{
+			ShowSVGOnWidget(Widget, BaselineSVGAsset);
 		}
 	}
 

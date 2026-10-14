@@ -12,6 +12,13 @@ namespace NameTBD
 		const FLinearColor AnimationOrange_Pressed  = FLinearColor(FColor(235, 196, 148));
 		const FLinearColor AnimationOrange_Disabled = FLinearColor(FColor(186, 117, 52));
 		
+		/** SVG assets in the Content Browser: the asset colour and the thumbnail's backdrop. */
+		namespace SVG
+		{
+			inline const FColor AssetType = FColor(64, 160, 192);
+			inline const FColor ThumbnailBackground = FColor(30, 30, 30);
+		}
+
 		namespace WidgetAnimEditor
 		{
 			// -------------------------------------------------------------------------------------------------

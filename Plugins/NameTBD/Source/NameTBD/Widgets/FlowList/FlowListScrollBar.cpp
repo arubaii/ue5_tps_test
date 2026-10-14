@@ -510,10 +510,20 @@ void SFlowListScrollBar::PaintLine(const TArray<FVector2f>& Points, const FFlowL
 	// A gradient's cells about six pixels across on screen, as a shape's.
 	WidgetShapeGeometry::CutForGradient(Mesh, Line.Paint, Frame, 6.f / PixelScale);
 
-	const bool bImage = Line.Paint.Type == EWidgetShapePaintType::Image && Line.Paint.Image.GetResourceObject() != nullptr;
-	const FLinearColor BrushTint = bImage ? Line.Paint.Image.GetTint(WidgetStyle) : FLinearColor::White;
+	// An SVG paint is drawn at the size of the bar's box on screen; the line waits for its first drawing.
+	const FSlateBrush* SVGImage = nullptr;
+	if (Line.Paint.DrawsSVG())
+	{
+		SVGImage = LineSVGBrushes.FindOrAdd(&Line).Get(Line.Paint.SVG, nullptr, Geometry, Frame.Size, *this);
+		if (!SVGImage)
+		{
+			return;
+		}
+	}
+	const bool bImage = SVGImage || Line.Paint.DrawsBrush();
+	const FLinearColor BrushTint = (bImage && !SVGImage) ? Line.Paint.Image.GetTint(WidgetStyle) : FLinearColor::White;
 	const FLinearColor Multiply = BrushTint * WidgetTint * Tint;
-	PaintMesh(Mesh, bImage ? &Line.Paint.Image : nullptr, Line.Paint.MapsAlongOutline() ? &Line.Paint : nullptr, Frame, Geometry, OutDrawElements, LayerId + 1,
+	PaintMesh(Mesh, SVGImage ? SVGImage : bImage ? &Line.Paint.Image : nullptr, Line.Paint.MapsAlongOutline() ? &Line.Paint : nullptr, Frame, Geometry, OutDrawElements, LayerId + 1,
 		[&Line, &Multiply](int32, const FVector2f& BoxPoint) { return Line.Paint.Evaluate(BoxPoint) * Multiply; });
 }
 
@@ -640,7 +650,13 @@ int32 SFlowListScrollBar::PaintBar(const FGeometry& AllottedGeometry, FSlateWind
 				: AllottedGeometry.MakeChild(KnobSize, Layout);
 			const FLinearColor Tint = Bar->KnobBrush.GetTint(InWidgetStyle) * InWidgetStyle.GetColorAndOpacityTint()
 				* MakeTint(Bar->KnobHoverTint, Bar->KnobPressedTint, HoverAmount, bDragging, Opacity);
-			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 6, KnobGeometry.ToPaintGeometry(), &Bar->KnobBrush, ESlateDrawEffect::None, Tint);
+			// An SVG knob: drawn as an image at the knob's size on screen (nothing until its first drawing is ready).
+			const FSlateBrush* KnobImage = Bar->KnobImageSource == EWidgetImageSource::SVG
+				? KnobSVGBrush.Get(Bar->KnobSVG, nullptr, KnobGeometry, KnobSize, *this) : &Bar->KnobBrush;
+			if (KnobImage)
+			{
+				FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 6, KnobGeometry.ToPaintGeometry(), KnobImage, ESlateDrawEffect::None, Tint);
+			}
 		}
 		else if (Bar->Thumb.bShow)
 		{
@@ -720,8 +736,14 @@ int32 SFlowListScrollBar::PaintDots(const FGeometry& AllottedGeometry, FSlateWin
 	const bool bVertical = IsVertical();
 	const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint() * MakeTint(Bar->DotHoverTint, FLinearColor::White, HoverAmount, false, Opacity);
 	float Along = (Path.Total - Total) * 0.5f;
-	for (const FDot& Dot : Dots)
+	const bool bSVGDots = Bar->DotImageSource == EWidgetImageSource::SVG;
+	if (bSVGDots && DotSVGBrushes.Num() != Dots.Num())
 	{
+		DotSVGBrushes.SetNum(Dots.Num());
+	}
+	for (int32 DotIndex = 0; DotIndex < Dots.Num(); ++DotIndex)
+	{
+		const FDot& Dot = Dots[DotIndex];
 		FVector2f Tangent;
 		const FVector2f Middle = Path.At(Along + Dot.Size.X * 0.5f, &Tangent);
 
@@ -732,7 +754,12 @@ int32 SFlowListScrollBar::PaintDots(const FGeometry& AllottedGeometry, FSlateWin
 		const FGeometry DotGeometry = Bar->bAlignDotsToPath && FMath::Abs(Angle) > KINDA_SMALL_NUMBER
 			? AllottedGeometry.MakeChild(Drawn, Layout, MakeTurn(Angle, Drawn * 0.5f), FVector2f::ZeroVector)
 			: AllottedGeometry.MakeChild(Drawn, Layout);
-		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, DotGeometry.ToPaintGeometry(), &Bar->DotBrush, ESlateDrawEffect::None, Dot.Color * Tint);
+		// An SVG dot: drawn as an image at the dot's size on screen (nothing until its first drawing is ready).
+		const FSlateBrush* DotImage = bSVGDots ? DotSVGBrushes[DotIndex].Get(Bar->DotSVG, nullptr, DotGeometry, Drawn, *this) : &Bar->DotBrush;
+		if (DotImage)
+		{
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId, DotGeometry.ToPaintGeometry(), DotImage, ESlateDrawEffect::None, Dot.Color * Tint);
+		}
 
 		// A little more than the dot itself, so small dots are easy to hit.
 		DotHits.Add({ Dot.Index, Middle, FMath::Max(Dot.Size.X, Dot.Size.Y) * 0.5f + 4.f });

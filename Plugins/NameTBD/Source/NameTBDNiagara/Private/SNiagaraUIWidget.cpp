@@ -44,7 +44,20 @@ int32 SNiagaraUIWidget::OnPaint(const FPaintArgs& Args, const FGeometry& Allotte
 	Settings.Tint = InWidgetStyle.GetColorAndOpacityTint() * Particles->ColorAndOpacity;
 	Settings.CullRect = MyCullingRect;
 	Settings.MaterialRemap = &Particles->MaterialRemap;
-	Settings.ParticleImage = Particles->ParticleImage.GetResourceObject() ? &Particles->ParticleImage : nullptr;
+	if (Particles->ParticleImageSource == EWidgetImageSource::SVG && Particles->ParticleSVG)
+	{
+		// One drawing for every particle, its longest side Particle SVG Resolution (a soft dot until it is ready).
+		const FVector2D SVGSize = Particles->ParticleSVG->SVGSize;
+		const double Side = FMath::Clamp(Particles->ParticleSVGResolution, 8, 1024);
+		const double SVGScale = Side / FMath::Max(FMath::Max(SVGSize.X, SVGSize.Y), 1.0);
+		const FIntPoint PixelSize(FMath::Max(FMath::CeilToInt32(SVGSize.X * SVGScale), 1), FMath::Max(FMath::CeilToInt32(SVGSize.Y * SVGScale), 1));
+		Settings.ParticleImage = ParticleSVGBrush.GetAtPixelSize(Particles->ParticleSVG, &Particles->ParticleImage, PixelSize, this);
+	}
+	else
+	{
+		ParticleSVGBrush.Reset();
+		Settings.ParticleImage = Particles->ParticleImage.GetResourceObject() ? &Particles->ParticleImage : nullptr;
+	}
 	Settings.Owner = Particles;
 
 	Mesh.Build(Sources, Settings);

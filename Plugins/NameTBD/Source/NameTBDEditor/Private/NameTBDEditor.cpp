@@ -20,6 +20,9 @@
 #include "ToolMenus.h"
 
 #include "NameTBDAssetTypeActions.h"
+#include "WidgetSVGFactory.h"
+#include "NameTBD/Widgets/WidgetSVG.h"
+#include "Engine/Texture2D.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
 #include "WidgetAnimBuilderDetails.h"
@@ -93,6 +96,18 @@ void FNameTBDEditorModule::StartupModule()
 	TSharedPtr<IAssetTypeActions> MachineAction = MakeShared<FWidgetAnimStateMachineAssetTypeActions>();
 	AssetTools.RegisterAssetTypeActions(MachineAction.ToSharedRef());
 	RegisteredAssetTypeActions.Add(MachineAction);
+
+	// SVGs (.svg imported): User Interface category, Reimport and Create SVG Texture, and a thumbnail of the SVG.
+	TSharedPtr<IAssetTypeActions> SVGAction = MakeShared<FWidgetSVGAssetTypeActions>();
+	AssetTools.RegisterAssetTypeActions(SVGAction.ToSharedRef());
+	RegisteredAssetTypeActions.Add(SVGAction);
+	UThumbnailManager::Get().RegisterCustomRenderer(UWidgetSVG::StaticClass(), UWidgetSVGThumbnailRenderer::StaticClass());
+
+	// SVG Textures (Texture 2Ds made from an SVG): their SVG settings at the top of the texture's Details. Applied with
+	// the engine's own texture customization (registered on Texture), not instead of it.
+	PropertyModule.RegisterCustomClassLayout(
+		UTexture2D::StaticClass()->GetFName(),
+		FOnGetDetailCustomizationInstance::CreateStatic(&FWidgetSVGTextureDetails::MakeInstance));
 
 	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateLambda([]()
 	{
@@ -331,6 +346,7 @@ void FNameTBDEditorModule::ShutdownModule()
 		PropertyModule->UnregisterCustomClassLayout(TEXT("FlowListItemStyle"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("WidgetDataBinderComponent"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("DiegeticScreenComponent"));
+		PropertyModule->UnregisterCustomClassLayout(TEXT("Texture2D"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetSpringParams"));
 
 	}
@@ -346,6 +362,7 @@ void FNameTBDEditorModule::ShutdownModule()
 	if (UObjectInitialized())
 	{
 		UThumbnailManager::Get().UnregisterCustomRenderer(UWidgetAnimPresetAsset::StaticClass());
+		UThumbnailManager::Get().UnregisterCustomRenderer(UWidgetSVG::StaticClass());
 	}
 	
 	

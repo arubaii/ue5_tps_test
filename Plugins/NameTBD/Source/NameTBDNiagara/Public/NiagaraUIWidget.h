@@ -8,6 +8,7 @@
 #include "StructUtils/PropertyBag.h"
 
 #include "NiagaraUIParameters.h"
+#include "NameTBD/Widgets/WidgetSVG.h"
 
 #include "NiagaraUIWidget.generated.h"
 
@@ -203,6 +204,21 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Particle Image"))
 	FSlateBrush ParticleImage;
+
+	/** Where the Particle Image comes from: the brush above (Texture 2D), or an SVG drawn once at Particle SVG Resolution. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance")
+	EWidgetImageSource ParticleImageSource = EWidgetImageSource::Texture;
+
+	/** The Particle Image as an SVG, for Particle Image Source SVG. The brush's Tint still applies. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Particle SVG", EditCondition = "ParticleImageSource == EWidgetImageSource::SVG", EditConditionHides))
+	TObjectPtr<UWidgetSVG> ParticleSVG = nullptr;
+
+	/**
+	 * The Particle SVG's longest side in pixels: drawn once at this and shared by every particle (they come in many sizes,
+	 * so it isn't redrawn per particle). Raise it for particles drawn big on screen.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Particle SVG Resolution", ClampMin = "8", ClampMax = "1024", UIMin = "16", UIMax = "512", EditCondition = "ParticleImageSource == EWidgetImageSource::SVG", EditConditionHides))
+	int32 ParticleSVGResolution = 128;
 
 	/**
 	 * The User Interface material to draw with in place of a renderer's material - the system's own surface material on

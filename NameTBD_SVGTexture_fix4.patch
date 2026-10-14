@@ -1,0 +1,13 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
+index 8ee8ad3..de91741 100644
+--- a/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
++++ b/Plugins/NameTBD/Source/NameTBDNiagara/Public/NiagaraUIWidget.h
+@@ -217,7 +217,7 @@ public:
+ 	 * The Particle SVG's longest side in pixels: drawn once at this and shared by every particle (they come in many sizes,
+ 	 * so it isn't redrawn per particle). Raise it for particles drawn big on screen.
+ 	 */
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Particle SVG Resolution", ClampMin = "8", ClampMax = "1024", UIMin = "16", UIMax = "512", Units = "px", EditCondition = "ParticleImageSource == EWidgetImageSource::SVG", EditConditionHides))
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Particle SVG Resolution", ClampMin = "8", ClampMax = "1024", UIMin = "16", UIMax = "512", EditCondition = "ParticleImageSource == EWidgetImageSource::SVG", EditConditionHides))
+ 	int32 ParticleSVGResolution = 128;
+ 
+ 	/**

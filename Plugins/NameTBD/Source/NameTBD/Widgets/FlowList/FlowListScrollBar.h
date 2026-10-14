@@ -10,6 +10,7 @@
 
 #include "NameTBD/WidgetAnimation/WidgetAnimSpring.h"
 #include "NameTBD/Widgets/Shapes/WidgetShapeTypes.h"
+#include "NameTBD/Widgets/WidgetSVGBrush.h"
 
 #include "FlowListScrollBar.generated.h"
 
@@ -215,6 +216,11 @@ private:
 	};
 	mutable TArray<FDotHit> DotHits;
 
+	/** SVGs drawn at the size they are shown: a line's Image paint (by line), the knob, and each dot (in drawing order). */
+	mutable TMap<const FFlowListScrollBarLine*, FWidgetSVGBrush> LineSVGBrushes;
+	mutable FWidgetSVGBrush KnobSVGBrush;
+	mutable TArray<FWidgetSVGBrush> DotSVGBrushes;
+
 	// Reused from paint to paint.
 	mutable TArray<FSlateVertex> Vertices;
 	mutable TArray<SlateIndex> Indices;
@@ -329,6 +335,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll Bar|Bar", meta = (EditCondition = "Style == EFlowListScrollBarStyle::Bar && ThumbKind == EFlowListScrollBarThumbKind::Knob", EditConditionHides))
 	FSlateBrush KnobBrush;
 
+	/** Where the knob's image comes from: Knob Brush's (Texture 2D), or an SVG drawn at the knob's size on screen. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll Bar|Bar", meta = (EditCondition = "Style == EFlowListScrollBarStyle::Bar && ThumbKind == EFlowListScrollBarThumbKind::Knob", EditConditionHides))
+	EWidgetImageSource KnobImageSource = EWidgetImageSource::Texture;
+
+	/** The knob's SVG, for Knob Image Source SVG: drawn as an image in Knob Brush's place, Knob Brush's Tint still applied. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll Bar|Bar", meta = (DisplayName = "Knob SVG", EditCondition = "Style == EFlowListScrollBarStyle::Bar && ThumbKind == EFlowListScrollBarThumbKind::Knob && KnobImageSource == EWidgetImageSource::SVG", EditConditionHides))
+	TObjectPtr<UWidgetSVG> KnobSVG = nullptr;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll Bar|Bar", meta = (EditCondition = "Style == EFlowListScrollBarStyle::Bar && ThumbKind == EFlowListScrollBarThumbKind::Knob", EditConditionHides))
 	FVector2D KnobSize = FVector2D(14.0, 14.0);
 
@@ -392,6 +406,14 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll Bar|Dots", meta = (EditCondition = "Style == EFlowListScrollBarStyle::Dots", EditConditionHides))
 	FSlateBrush DotBrush;
+
+	/** Where a dot's image comes from: Dot Brush's (Texture 2D), or an SVG drawn at each dot's size on screen. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll Bar|Dots", meta = (EditCondition = "Style == EFlowListScrollBarStyle::Dots", EditConditionHides))
+	EWidgetImageSource DotImageSource = EWidgetImageSource::Texture;
+
+	/** The dots' SVG, for Dot Image Source SVG: drawn as an image in Dot Brush's place, Dot Brush's Tint still applied. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll Bar|Dots", meta = (DisplayName = "Dot SVG", EditCondition = "Style == EFlowListScrollBarStyle::Dots && DotImageSource == EWidgetImageSource::SVG", EditConditionHides))
+	TObjectPtr<UWidgetSVG> DotSVG = nullptr;
 
 	/** A dot's size: X along the path, Y across it. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Scroll Bar|Dots", meta = (EditCondition = "Style == EFlowListScrollBarStyle::Dots", EditConditionHides))

@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Widgets/SLeafWidget.h"
+#include "NameTBD/Widgets/WidgetSVGBrush.h"
 
 class UMediaBox;
 
@@ -25,4 +26,7 @@ public:
 
 private:
 	TWeakObjectPtr<UMediaBox> WeakOwnerBox;
+
+	/** The Error Image as an SVG (Error Image Source SVG), drawn at the size it is shown. */
+	mutable FWidgetSVGBrush ErrorSVGBrush;
 };

@@ -132,11 +132,18 @@ int32 SMediaBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeomet
 	}
 
 	// Can't play: the error image over the poster.
-	if (OwnerBox->Status == EMediaBoxStatus::Error && OwnerBox->ErrorImage.GetResourceObject())
+	// An SVG one is at the SVG's own size, drawn at the size it is shown (nothing until its first drawing is ready).
+	const bool bErrorSVG = OwnerBox->ErrorImageSource == EWidgetImageSource::SVG && OwnerBox->ErrorSVG;
+	if (OwnerBox->Status == EMediaBoxStatus::Error && (bErrorSVG || OwnerBox->ErrorImage.GetResourceObject()))
 	{
-		const FVector2f ErrorSize = FVector2f(OwnerBox->ErrorImage.ImageSize);
+		const FVector2f ErrorSize = bErrorSVG ? FVector2f(OwnerBox->ErrorSVG->SVGSize) : FVector2f(OwnerBox->ErrorImage.ImageSize);
 		const FVector2f ErrorDrawn = (ErrorSize.X > 0.f && ErrorSize.Y > 0.f) ? FVector2f(FMath::Min(ErrorSize.X, Area.X), FMath::Min(ErrorSize.Y, Area.Y)) : Area;
-		FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 2, AllottedGeometry.ToPaintGeometry(ErrorDrawn, FSlateLayoutTransform((Area - ErrorDrawn) * 0.5f)), &OwnerBox->ErrorImage, Effects, WidgetTint * OwnerBox->ErrorImage.GetTint(InWidgetStyle));
+		const FGeometry ErrorGeometry = AllottedGeometry.MakeChild(ErrorDrawn, FSlateLayoutTransform((Area - ErrorDrawn) * 0.5f));
+		const FSlateBrush* ErrorBrush = bErrorSVG ? ErrorSVGBrush.Get(OwnerBox->ErrorSVG, nullptr, ErrorGeometry, ErrorDrawn, *this) : &OwnerBox->ErrorImage;
+		if (ErrorBrush)
+		{
+			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 2, ErrorGeometry.ToPaintGeometry(), ErrorBrush, Effects, WidgetTint * OwnerBox->ErrorImage.GetTint(InWidgetStyle));
+		}
 	}
 
 	// The subtitle line: at the bottom, centred, sized to the video (Text Size), wrapped to its width, kept inside the box.

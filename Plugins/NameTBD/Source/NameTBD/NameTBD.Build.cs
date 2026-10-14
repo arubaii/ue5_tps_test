@@ -1,3 +1,4 @@
+using System.IO;
 using UnrealBuildTool;
 
 public class NameTBD : ModuleRules
@@ -28,6 +29,9 @@ public class NameTBD : ModuleRules
 				"EnhancedInput"
 			}
 		);
+
+		// nanosvg (Source/ThirdParty/nanosvg, header-only): SVGs are drawn with it (WidgetSVGRaster.cpp), in games too.
+		PrivateIncludePaths.Add(Path.Combine(ModuleDirectory, "..", "ThirdParty", "nanosvg"));
 
 		// Editor-only: Widget Anim Builder's Create Widget Animation button creates, saves and selects assets.
 		// Kept out of game builds, where that code is compiled out by WITH_EDITOR.

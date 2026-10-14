@@ -8,6 +8,7 @@
 #include "Styling/SlateBrush.h"
 
 #include "MediaBoxTypes.h"
+#include "NameTBD/Widgets/WidgetSVG.h"
 
 #include "MediaBox.generated.h"
 
@@ -184,6 +185,14 @@ public:
 	/** Shown over the poster when the video can't be played (On Error says why). None: just the poster. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Error Image"))
 	FSlateBrush ErrorImage;
+
+	/** Where the Error Image comes from: the brush above (Texture 2D), or an SVG drawn at the size it is shown. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance")
+	EWidgetImageSource ErrorImageSource = EWidgetImageSource::Texture;
+
+	/** The Error Image as an SVG, for Error Image Source SVG: at the SVG's own size (held to the box), the brush's Tint still applied. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Appearance", meta = (DisplayName = "Error SVG", EditCondition = "ErrorImageSource == EWidgetImageSource::SVG", EditConditionHides))
+	TObjectPtr<UWidgetSVG> ErrorSVG = nullptr;
 
 	// ---------------------------------------------------------------------------------------------
 	// Audio

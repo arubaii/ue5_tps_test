@@ -6,6 +6,7 @@
 #include "Widgets/SLeafWidget.h"
 
 #include "NiagaraUIMesh.h"
+#include "NameTBD/Widgets/WidgetSVGBrush.h"
 
 class UNiagaraUIWidget;
 
@@ -33,5 +34,8 @@ private:
 	TWeakObjectPtr<UNiagaraUIWidget> OwnerWidget;
 
 	mutable FNiagaraUIMesh Mesh;
+
+	/** The Particle SVG (Particle Image Source SVG), drawn once at Particle SVG Resolution. */
+	mutable FWidgetSVGBrush ParticleSVGBrush;
 	mutable TArray<FNiagaraUISource> Sources;
 };

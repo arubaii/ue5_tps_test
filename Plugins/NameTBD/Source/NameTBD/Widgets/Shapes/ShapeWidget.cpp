@@ -427,7 +427,7 @@ void SWidgetShape::Rebuild(const UShapeWidget& Shape, const FVector2f& LocalSize
 	WidgetShapeGeometry::CutForGradient(StrokeMesh, Shape.Stroke.Paint, Frame, CellSize);
 }
 
-void SWidgetShape::PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, bool bStroke, const FGeometry& AllottedGeometry,
+void SWidgetShape::PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, FWidgetSVGBrush& PaintSVG, bool bStroke, const FGeometry& AllottedGeometry,
 	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle) const
 {
 	using namespace ShapeWidgetPrivate;
@@ -435,9 +435,24 @@ void SWidgetShape::PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePai
 	const FSlateRenderTransform& Transform = AllottedGeometry.GetAccumulatedRenderTransform();
 	const FLinearColor WidgetTint = InWidgetStyle.GetColorAndOpacityTint();
 
-	const bool bImage = Paint.Type == EWidgetShapePaintType::Image && Paint.Image.GetResourceObject() != nullptr;
-	const FSlateBrush& Brush = bImage ? Paint.Image : GetUntexturedBrush();
-	const FLinearColor BrushTint = bImage ? Paint.Image.GetTint(InWidgetStyle) : FLinearColor::White;
+	// An SVG is drawn at the size of the shape's box on screen; nothing is painted until its first drawing is ready.
+	const FSlateBrush* SVGImage = nullptr;
+	if (Paint.DrawsSVG())
+	{
+		SVGImage = PaintSVG.Get(Paint.SVG, nullptr, AllottedGeometry, Frame.Size, *this);
+		if (!SVGImage)
+		{
+			return;
+		}
+	}
+	else
+	{
+		PaintSVG.Reset();
+	}
+
+	const bool bImage = SVGImage || Paint.DrawsBrush();
+	const FSlateBrush& Brush = SVGImage ? *SVGImage : bImage ? Paint.Image : GetUntexturedBrush();
+	const FLinearColor BrushTint = (bImage && !SVGImage) ? Paint.Image.GetTint(InWidgetStyle) : FLinearColor::White;
 
 	// An image from an atlas covers only part of its texture: its UV Region says which.
 	const FBox2f UVRegion = Brush.GetUVRegion();
@@ -495,11 +510,11 @@ int32 SWidgetShape::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
 
 	if (Shape->bFill && !FillMesh.IsEmpty())
 	{
-		PaintMesh(FillMesh, Shape->Fill, /*bStroke=*/false, AllottedGeometry, OutDrawElements, LayerId, InWidgetStyle);
+		PaintMesh(FillMesh, Shape->Fill, FillSVG, /*bStroke=*/false, AllottedGeometry, OutDrawElements, LayerId, InWidgetStyle);
 	}
 	if (!StrokeMesh.IsEmpty())
 	{
-		PaintMesh(StrokeMesh, Shape->Stroke.Paint, /*bStroke=*/true, AllottedGeometry, OutDrawElements, LayerId + 1, InWidgetStyle);
+		PaintMesh(StrokeMesh, Shape->Stroke.Paint, StrokeSVG, /*bStroke=*/true, AllottedGeometry, OutDrawElements, LayerId + 1, InWidgetStyle);
 	}
 	int32 MaxLayer = LayerId + 1;
 
@@ -588,6 +603,7 @@ namespace ShapeWidgetPrivate
 		if (Material)
 		{
 			Paint.Type = EWidgetShapePaintType::Image;
+			Paint.ImageSource = EWidgetImageSource::Texture;
 			Paint.Image.SetResourceObject(Material);
 		}
 		else if (Paint.Type == EWidgetShapePaintType::Image)

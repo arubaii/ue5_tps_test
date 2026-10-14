@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Styling/SlateBrush.h"
+#include "NameTBD/Widgets/WidgetSVG.h"
 
 #include "WidgetShapeTypes.generated.h"
 
@@ -94,9 +95,20 @@ struct NAMETBD_API FWidgetShapePaint
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Interp, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::RadialGradient", EditConditionHides, ClampMin = "0.001", UIMin = "0.05", UIMax = "1"))
 	float GradientRadius = 0.5f;
 
-	/** The image or material, for Image. Stretched across the shape's box (its Image Size isn't used), tinted by its Tint. */
+	/**
+	 * Where an Image paint's picture comes from: the Image brush (Texture 2D: a texture or a material), or an SVG drawn at
+	 * the size the shape is shown, so it is sharp at any size.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::Image", EditConditionHides))
+	EWidgetImageSource ImageSource = EWidgetImageSource::Texture;
+
+	/** The image or material, for Image. Stretched across the shape's box (its Image Size isn't used), tinted by its Tint. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::Image && ImageSource == EWidgetImageSource::Texture", EditConditionHides))
 	FSlateBrush Image;
+
+	/** The SVG, for Image with Image Source SVG: stretched across the shape's box like the brush, tinted by Color. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::Image && ImageSource == EWidgetImageSource::SVG", EditConditionHides, DisplayName = "SVG"))
+	TObjectPtr<UWidgetSVG> SVG = nullptr;
 
 	/** How the image lies over what it paints. Along Outline is for strokes: on a fill it is stretched over the shape, as Stretch Over Shape. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::Image", EditConditionHides))
@@ -111,6 +123,12 @@ struct NAMETBD_API FWidgetShapePaint
 	float ImageTileLength = 0.f;
 
 	FWidgetShapePaint();
+
+	/** Whether this is an Image paint drawn from an SVG (Image Source SVG, an SVG set). */
+	bool DrawsSVG() const { return Type == EWidgetShapePaintType::Image && ImageSource == EWidgetImageSource::SVG && SVG != nullptr; }
+
+	/** Whether this is an Image paint drawn from its brush (Image Source Texture 2D, a texture or material set). */
+	bool DrawsBrush() const { return Type == EWidgetShapePaintType::Image && ImageSource == EWidgetImageSource::Texture && Image.GetResourceObject() != nullptr; }
 
 	/** Whether this paints an image laid along the outline (strokes only). */
 	bool MapsAlongOutline() const { return Type == EWidgetShapePaintType::Image && ImageMapping == EWidgetShapeImageMapping::AlongOutline; }

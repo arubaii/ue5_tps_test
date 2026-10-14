@@ -1,0 +1,546 @@
+diff --git a/Docs/Design/Buttons.md b/Docs/Design/Buttons.md
+index 3576140..960cbcf 100644
+--- a/Docs/Design/Buttons.md
++++ b/Docs/Design/Buttons.md
+@@ -6,6 +6,10 @@
+   - Only settings whose Look differs from the shape *as authored* in some state are written (`GatherLookProperties` vs `FindLookBaseline`: Background Look for Self, otherwise captured the first time a Look reaches that shape, kept in `LookBaselines`). They blend at the Shape channel's speed/curve/delay (`WidgetShapeAnimation::WriteBlend`, start captured into `StartLook` on each state change). Designer previews write them at once (`WriteLook`).
+   - Vector targets: Transform goes on the shape itself (never on a Shape Box around it); a Self vector background gets no Shape Box shape. Shape Presets carry no Look: `ResolveShapeForState` keeps the target's own; retargeting at a vector shape (or setting a Background Shape with a Self target) switches the target to Custom.
+ - **Design Targets on shapes** (`GetDesignShape`: a shape widget, or a button's Background Shape): Tint = Fill color, Outline Tint = Stroke color, Brush Texture / Material / material parameters = `GetImagePaint()`'s image.
++- **Design Targets show SVGs:** a state's brush channel has **Brush Image Source** (`EWidgetImageSource`, default Texture 2D; it now carries the channel's inline toggle) with **Brush Texture** or **Brush SVG** under it (placement overrides: the same three under Override Brush Texture). Swapped at the state change like a texture (a Switch button: a play SVG for Normal, a pause SVG for Enabled).
++  - On a shape (or the button's Background Shape), the Image paint is set to Image Source SVG. On an **SVG Image**, its SVG is set (`ShowSVGOnWidget`).
++  - On an **Image, Border or Button** (the Context Menu Button itself without a Background Shape too), the brush becomes the SVG drawn at the widget's size on screen (`FContextMenuTargetSVG` in `TargetSVGs`: an `FWidgetSVGBrush` with the brush or style it had before). Each state brush keeps its look (Draw As, Margin, Tint, outline, Image Size). `TickTargetSVGs`, an active timer on the button running while any is shown and restarted in `OnWidgetRebuilt`, pushes a new drawing in when the widget's size changes. `StopSVGOnWidget` puts the old brush or style back before a texture or the baseline goes on.
++  - Baselines: `ExtractWidgetSVG` (a shape's SVG paint, an SVG Image's SVG) is restored like the texture baseline, at runtime and by `ClearDesignPreviews`. A shape's texture baseline ignores a leftover brush under an SVG paint (`DrawsBrush`).
+ - **Self** (`SelfTargetName`): target dropdowns offer Self for the button; a stored button name still works. `FindWidgetInButtonTree` also matches a name without its instance number among the button's own widgets (Label vs Label_1), so pasted/duplicated buttons keep their targets.
+ - New settings: **Click Only Enables** (a click never un-enables; off on the ready-made Radio/Tile since fix6), **Repeat While Held** (Hold), **Progress Widget / Progress Value / Progress Range** (Hold: a shape value or a Progress Bar follows the press duration, via `BroadcastPressProgress`).
+ - **Palette drops (fix4):** `OnCreationFromPalette` builds nothing - it only sets `bPendingDefaultContent` (editor-only data). The editor module (`StyledButtonsEditor`) builds the parts once the button has really been placed (fix5): after any compile of the Widget Blueprint (a drop always compiles) and whenever a Context Menu Button's Details are shown, it schedules `BuildPendingInBlueprint`, which runs on a later tick once no drag-drop is in progress and the blueprint isn't compiling, and builds every pending button **of the Widget Blueprint's own tree hierarchy** - never the designer preview copies (which is what the UMG Details panel shows; their blueprint is found through `WidgetGeneratedByClass`). The pending flag is consumed before the transaction (`ConsumePendingDefaultContent`), so undoing the build leaves the button empty instead of rebuilding it; the build (`BuildDefaultContentForEditor`) is one undoable transaction, every part gets a GUID, the blueprint is marked structurally modified. Before every Widget Blueprint compile (`GEditor->OnBlueprintPreCompile`), every widget in its tree without a GUID gets one (through reflection on `WidgetVariableNameToGuidMap`); next tick, parts left behind by discarded drop previews (outside the hierarchy, their ready-made button already moved out of the tree by the designer) are moved to the transient package. **Rule:** never create widgets in a Widget Blueprint's tree from `OnCreationFromPalette` - the designer calls it for every drop preview and gives no GUID to children.
+diff --git a/Docs/Design/SVG.md b/Docs/Design/SVG.md
+index 8bb1817..d53d982 100644
+--- a/Docs/Design/SVG.md
++++ b/Docs/Design/SVG.md
+@@ -13,6 +13,7 @@
+     - The Flow List scroll bar's Knob and Dots (FlowList.md).
+     - The Media Box's Error Image (MediaBox.md).
+     - Niagara Particles' Particle Image (NiagaraUI.md): drawn once at a set resolution, since particles come in many sizes.
++    - The Context Menu Button's Design Targets: a state's brush channel (Buttons.md). Shown on shapes, SVG Images, and Image / Border / Button brushes drawn at the widget's size.
+   - **Engine widgets** (Image, Button styles...) take textures, so for them right-click an SVG > **Create SVG Texture** (below).
+ - **Colours (the "black SVG" fix):**
+   - **Colors** (`TArray<FWidgetSVGColor>`, `EditFixedSize`) lists every colour the SVG uses (fills, strokes, gradient stops; first-use order; opacity left out), with **Draw As** next to each. Draw As alpha multiplies the SVG's own opacity.
+@@ -65,7 +66,6 @@
+ ## Still open
+ - **SVG features nanosvg lacks:** `<text>`, filters, masks, clip paths, `<use>`/symbols, most CSS (`<style>` beyond simple cases), images. Such parts are dropped. A file that relies on them needs flattening (e.g. text to paths) before import.
+ - **Not given an Image Source:**
+-  - The Context Menu Button's Looks (their texture channel sets engine widgets' brushes and shape paints' brush).
+   - Info Card settings' Icon (a soft texture).
+   - A Media Box Clip's Poster (a texture shown under the video).
+ - Per-widget colour overrides (one SVG in several colours without Draw In White + tint) aren't there; the colours are the asset's.
+@@ -78,6 +78,7 @@
+   - `FSlateRenderTransform::TransformVector`, `FTextureCompilingManager::FinishCompilation`.
+   - `FAssetTypeActions_Base::GetActions(…, FToolMenuSection&)`, `UThumbnailRenderer::AllowsRealtimeThumbnails`.
+   - `IInterface_AssetUserData` on `UTexture`, `AddExternalObjectProperty`, and `UAssetUserData` being subclassable from a plugin.
++- That a brush holding a Slate dynamic image survives `UImage::SetBrush` / `UButton::SetStyle` and draws (a Design Target on an Image, Border or Button).
+ - That a dynamic image's UVs wrap past 1 for a stroke laid Along Outline (as a tiling texture's do).
+ - That a class layout on `Texture2D` is applied alongside the engine's `Texture` one.
+ - That non-power-of-two SVG Textures get mips in 5.7.
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+index 3c2b283..6975122 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+@@ -34,6 +34,7 @@
+ #include "Materials/MaterialInterface.h"
+ #include "Materials/MaterialInstanceDynamic.h"
+ #include "Engine/Texture2D.h"
++#include "NameTBD/Widgets/WidgetSVGImage.h"
+ #include "Containers/Ticker.h"
+ #include "Styling/SlateTypes.h"
+ #include "Fonts/SlateFontInfo.h"
+@@ -1424,7 +1425,12 @@ void FContextMenuDesignStateOverride::ApplyTo(FContextMenuWidgetDesign& Target)
+ 	if (bOverrideTint)         { Target.Tint = Tint; }
+ 	if (bOverrideOutlineTint)  { Target.OutlineTint = OutlineTint; }
+ 	if (bOverrideOpacity)      { Target.Opacity = Opacity; }
+-	if (bOverrideBrushTexture) { Target.BrushTexture = BrushTexture; }
++	if (bOverrideBrushTexture)
++	{
++		Target.BrushImageSource = BrushImageSource;
++		Target.BrushTexture = BrushTexture;
++		Target.BrushSVG = BrushSVG;
++	}
+ 	if (bOverrideMaterial)
+ 	{
+ 		Target.Material = Material;
+@@ -1656,6 +1662,8 @@ void UContextMenuButton::PostLoad()
+ 				|| Design.Opacity != FreshDesign.Opacity
+ 				|| Design.bDriveBrushTexture != FreshDesign.bDriveBrushTexture
+ 				|| Design.BrushTexture != FreshDesign.BrushTexture
++				|| Design.BrushImageSource != FreshDesign.BrushImageSource
++				|| Design.BrushSVG != FreshDesign.BrushSVG
+ 				|| Design.bDriveMaterial != FreshDesign.bDriveMaterial
+ 				|| Design.Material != FreshDesign.Material
+ 				|| Design.MaterialScalars.Num() != 0
+@@ -2065,7 +2073,12 @@ void UContextMenuButton::RestoreRuntimeDesignBaselines()
+ 		ApplyColorToWidget(Widget, Target.BaselineTint);
+ 		ApplyOutlineTintToWidget(Widget, Target.BaselineOutlineTint);
+ 		Widget->SetRenderOpacity(Target.BaselineOpacity);
+-		if (UTexture2D* BaselineTexture = Target.BaselineBrushTexture.Get())
++		StopSVGOnWidget(Widget);
++		if (UWidgetSVG* BaselineSVGAsset = Target.BaselineSVG.Get())
++		{
++			ShowSVGOnWidget(Widget, BaselineSVGAsset);
++		}
++		else if (UTexture2D* BaselineTexture = Target.BaselineBrushTexture.Get())
+ 		{
+ 			ApplyBrushTextureToWidget(Widget, BaselineTexture);
+ 		}
+@@ -2874,6 +2887,7 @@ void UContextMenuButton::ReleaseSlateResources(bool bReleaseChildren)
+ 	StopPressDuration();
+ 	bIsVisualTimerActive = false;
+ 	bIsButtonAnimTimerActive = false;
++	bIsTargetSVGTimerActive = false;
+ #if WITH_EDITOR
+ 	bIsDesignPreviewWatcherActive = false;
+ #endif
+@@ -2901,6 +2915,9 @@ void UContextMenuButton::OnWidgetRebuilt()
+ {
+ 	Super::OnWidgetRebuilt();
+ 
++	// SVGs drawn into Image / Border / Button targets keep following their size on the new Slate widget.
++	StartTargetSVGTimer();
++
+ 	ResolveInstanceOverrides();
+ 
+ 	// The chain above the button is only fully established once it has been built into a tree, and it can
+@@ -4139,7 +4156,9 @@ void UContextMenuButton::SeedInstanceOverrides(FContextMenuButtonInstanceOverrid
+ 				Default.Tint = Source->Tint;
+ 				Default.OutlineTint = Source->OutlineTint;
+ 				Default.Opacity = Source->Opacity;
++				Default.BrushImageSource = Source->BrushImageSource;
+ 				Default.BrushTexture = Source->BrushTexture;
++				Default.BrushSVG = Source->BrushSVG;
+ 				Default.Material = Source->Material;
+ 				Default.MaterialScalars = Source->MaterialScalars;
+ 				Default.MaterialVectors = Source->MaterialVectors;
+@@ -4165,7 +4184,12 @@ void UContextMenuButton::SeedInstanceOverrides(FContextMenuButtonInstanceOverrid
+ 			if (!PatchSlot.bOverrideTint)         { PatchSlot.Tint = Source->Tint; }
+ 			if (!PatchSlot.bOverrideOutlineTint)  { PatchSlot.OutlineTint = Source->OutlineTint; }
+ 			if (!PatchSlot.bOverrideOpacity)      { PatchSlot.Opacity = Source->Opacity; }
+-			if (!PatchSlot.bOverrideBrushTexture) { PatchSlot.BrushTexture = Source->BrushTexture; }
++			if (!PatchSlot.bOverrideBrushTexture)
++			{
++				PatchSlot.BrushImageSource = Source->BrushImageSource;
++				PatchSlot.BrushTexture = Source->BrushTexture;
++				PatchSlot.BrushSVG = Source->BrushSVG;
++			}
+ 			if (!PatchSlot.bOverrideMaterial)     { PatchSlot.Material = Source->Material; }
+ 
+ 			// The parameter LIST always tracks the button - a material swapped or a parameter renamed has to
+@@ -5173,6 +5197,7 @@ void UContextMenuButton::InitializeRuntimeDesignTargets()
+ 		Entry.BaselineOpacity = Entry.CurrentOpacity;
+ 		Entry.BaselineBrushTexture = ExtractWidgetBrushTexture(Widget);
+ 		Entry.BaselineMaterial = ExtractWidgetMaterial(Widget);
++		Entry.BaselineSVG = ExtractWidgetSVG(Widget);
+ 		Entry.bHasBaseline = true;
+ 
+ 		// Material parameters have no reliable "current" to read back per parameter, so they start at the
+@@ -5261,10 +5286,22 @@ bool UContextMenuButton::ApplyDesignTarget(FContextMenuRuntimeDesignTarget& Targ
+ 		Target.bHasAppliedBrush = true;
+ 		Target.LastBrushState = State;
+ 
+-		UTexture2D* DesiredTexture = Design.bDriveBrushTexture ? Design.BrushTexture.Get() : Target.BaselineBrushTexture.Get();
+-		if (DesiredTexture)
++		// An SVG for this state; otherwise this state's texture, or what the widget was authored with (an SVG or a texture).
++		UWidgetSVG* DesiredSVG = Design.bDriveBrushTexture
++			? (Design.BrushImageSource == EWidgetImageSource::SVG ? Design.BrushSVG.Get() : nullptr)
++			: Target.BaselineSVG.Get();
++		if (DesiredSVG)
+ 		{
+-			ApplyBrushTextureToWidget(Widget, DesiredTexture);
++			ShowSVGOnWidget(Widget, DesiredSVG);
++		}
++		else
++		{
++			StopSVGOnWidget(Widget);
++			UTexture2D* DesiredTexture = Design.bDriveBrushTexture ? Design.BrushTexture.Get() : Target.BaselineBrushTexture.Get();
++			if (DesiredTexture && !(Design.bDriveBrushTexture && Design.BrushImageSource == EWidgetImageSource::SVG))
++			{
++				ApplyBrushTextureToWidget(Widget, DesiredTexture);
++			}
+ 		}
+ 	}
+ 
+@@ -5635,7 +5672,7 @@ UTexture2D* UContextMenuButton::ExtractWidgetBrushTexture(UWidget* Widget)
+ 	if (const UShapeWidget* Shape = GetDesignShape(Widget))
+ 	{
+ 		const FWidgetShapePaint& Paint = Shape->GetImagePaint();
+-		return Paint.Type == EWidgetShapePaintType::Image ? Cast<UTexture2D>(Paint.Image.GetResourceObject()) : nullptr;
++		return Paint.DrawsBrush() ? Cast<UTexture2D>(Paint.Image.GetResourceObject()) : nullptr;
+ 	}
+ 	if (UImage* Image = Cast<UImage>(Widget))
+ 	{
+@@ -5655,6 +5692,192 @@ UTexture2D* UContextMenuButton::ExtractWidgetBrushTexture(UWidget* Widget)
+ 	return nullptr;
+ }
+ 
++UWidgetSVG* UContextMenuButton::ExtractWidgetSVG(UWidget* Widget)
++{
++	if (const UShapeWidget* Shape = GetDesignShape(Widget))
++	{
++		const FWidgetShapePaint& Paint = Shape->GetImagePaint();
++		return Paint.DrawsSVG() ? Paint.SVG.Get() : nullptr;
++	}
++	if (const UWidgetSVGImage* SVGImage = Cast<UWidgetSVGImage>(Widget))
++	{
++		return SVGImage->SVG;
++	}
++	return nullptr;
++}
++
++void UContextMenuButton::ShowSVGOnWidget(UWidget* Widget, UWidgetSVG* SVG)
++{
++	if (!Widget || !SVG)
++	{
++		return;
++	}
++
++	// Widgets that draw SVGs themselves take it as it is.
++	if (UShapeWidget* Shape = GetDesignShape(Widget))
++	{
++		FWidgetShapePaint& Paint = Shape->GetImagePaint();
++		Paint.Type = EWidgetShapePaintType::Image;
++		Paint.ImageSource = EWidgetImageSource::SVG;
++		Paint.SVG = SVG;
++		Shape->InvalidateShape();
++		return;
++	}
++	if (UWidgetSVGImage* SVGImage = Cast<UWidgetSVGImage>(Widget))
++	{
++		SVGImage->SetSVG(SVG);
++		return;
++	}
++
++	// An Image, Border or Button: its brush becomes the SVG drawn at its size, what it had kept to put back.
++	UImage* Image = Cast<UImage>(Widget);
++	UBorder* Border = Cast<UBorder>(Widget);
++	UButton* Button = Cast<UButton>(Widget);
++	if (!Image && !Border && !Button)
++	{
++		return;
++	}
++
++	FContextMenuTargetSVG& Entry = TargetSVGs.FindOrAdd(Widget);
++	if (!Entry.BrushBefore.IsSet() && !Entry.StyleBefore.IsSet())
++	{
++		if (Image)
++		{
++			Entry.BrushBefore = Image->GetBrush();
++		}
++		else if (Border)
++		{
++			Entry.BrushBefore = Border->Background;
++		}
++		else
++		{
++			Entry.StyleBefore = Button->GetStyle();
++		}
++	}
++	if (Entry.SVG.Get() != SVG)
++	{
++		Entry.SVG = SVG;
++		Entry.PushedResource = NAME_None;
++	}
++	PushTargetSVG(Widget, Entry);
++	StartTargetSVGTimer();
++}
++
++void UContextMenuButton::StopSVGOnWidget(UWidget* Widget)
++{
++	FContextMenuTargetSVG Entry;
++	if (!Widget || !TargetSVGs.RemoveAndCopyValue(Widget, Entry))
++	{
++		return;
++	}
++
++	// Put back before the drawing goes (Entry, going out of scope, lets go of it).
++	if (Entry.BrushBefore.IsSet())
++	{
++		if (UImage* Image = Cast<UImage>(Widget))
++		{
++			Image->SetBrush(Entry.BrushBefore.GetValue());
++		}
++		else if (UBorder* Border = Cast<UBorder>(Widget))
++		{
++			Border->SetBrush(Entry.BrushBefore.GetValue());
++		}
++	}
++	else if (Entry.StyleBefore.IsSet())
++	{
++		if (UButton* Button = Cast<UButton>(Widget))
++		{
++			Button->SetStyle(Entry.StyleBefore.GetValue());
++		}
++	}
++}
++
++void UContextMenuButton::PushTargetSVG(UWidget* Widget, FContextMenuTargetSVG& Entry)
++{
++	const TSharedPtr<SWidget> TargetSlate = Widget ? Widget->GetCachedWidget() : nullptr;
++	UWidgetSVG* SVG = Entry.SVG.Get();
++	if (!TargetSlate.IsValid() || !SVG)
++	{
++		return;
++	}
++
++	// The widget's size on screen; before its first layout, the SVG's own size.
++	const FGeometry& TargetGeometry = Widget->GetCachedGeometry();
++	const FVector2D LaidOutSize = TargetGeometry.GetLocalSize();
++	const bool bLaidOut = LaidOutSize.X > 0.0 && LaidOutSize.Y > 0.0;
++	const FSlateBrush* Drawn = bLaidOut
++		? Entry.Drawing.Get(SVG, nullptr, TargetGeometry, FVector2f(static_cast<float>(LaidOutSize.X), static_cast<float>(LaidOutSize.Y)), *TargetSlate)
++		: Entry.Drawing.GetAtPixelSize(SVG, nullptr, FIntPoint(FMath::Max(FMath::CeilToInt32(SVG->SVGSize.X), 1), FMath::Max(FMath::CeilToInt32(SVG->SVGSize.Y), 1)), TargetSlate.Get());
++	if (!Drawn || Drawn->GetResourceName() == Entry.PushedResource)
++	{
++		return;
++	}
++	Entry.PushedResource = Drawn->GetResourceName();
++
++	// The drawing as the image, with the look (draw as, margin, tint, size) the widget's brush already has.
++	auto WithLookOf = [Drawn](const FSlateBrush& Look)
++	{
++		FSlateBrush Result = *Drawn;
++		Result.DrawAs = Look.DrawAs;
++		Result.Tiling = Look.Tiling;
++		Result.Mirroring = Look.Mirroring;
++		Result.Margin = Look.Margin;
++		Result.TintColor = Look.TintColor;
++		Result.OutlineSettings = Look.OutlineSettings;
++		Result.ImageSize = Look.ImageSize;
++		return Result;
++	};
++
++	if (UImage* Image = Cast<UImage>(Widget))
++	{
++		Image->SetBrush(WithLookOf(Image->GetBrush()));
++	}
++	else if (UBorder* Border = Cast<UBorder>(Widget))
++	{
++		Border->SetBrush(WithLookOf(Border->Background));
++	}
++	else if (UButton* Button = Cast<UButton>(Widget))
++	{
++		FButtonStyle SVGButtonStyle = Button->GetStyle();
++		SVGButtonStyle.Normal = WithLookOf(SVGButtonStyle.Normal);
++		SVGButtonStyle.Hovered = WithLookOf(SVGButtonStyle.Hovered);
++		SVGButtonStyle.Pressed = WithLookOf(SVGButtonStyle.Pressed);
++		SVGButtonStyle.Disabled = WithLookOf(SVGButtonStyle.Disabled);
++		Button->SetStyle(SVGButtonStyle);
++	}
++}
++
++void UContextMenuButton::StartTargetSVGTimer()
++{
++	TSharedPtr<SWidget> SlateWidget = GetCachedWidget();
++	if (!bIsTargetSVGTimerActive && SlateWidget.IsValid() && TargetSVGs.Num() > 0)
++	{
++		bIsTargetSVGTimerActive = true;
++		SlateWidget->RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateUObject(this, &UContextMenuButton::TickTargetSVGs));
++	}
++}
++
++EActiveTimerReturnType UContextMenuButton::TickTargetSVGs(double InCurrentTime, float InDeltaTime)
++{
++	for (auto It = TargetSVGs.CreateIterator(); It; ++It)
++	{
++		UWidget* Widget = It.Key().Get();
++		if (!Widget || !It.Value().SVG.IsValid())
++		{
++			It.RemoveCurrent();
++			continue;
++		}
++		PushTargetSVG(Widget, It.Value());
++	}
++
++	if (TargetSVGs.Num() == 0)
++	{
++		bIsTargetSVGTimerActive = false;
++		return EActiveTimerReturnType::Stop;
++	}
++	return EActiveTimerReturnType::Continue;
++}
++
+ UMaterialInterface* UContextMenuButton::ExtractWidgetMaterial(UWidget* Widget)
+ {
+ 	if (!Widget)
+@@ -5865,7 +6088,7 @@ void UContextMenuButton::ApplyDesignPreviews()
+ 		else if (const UShapeWidget* Shape = Cast<UShapeWidget>(Widget))
+ 		{
+ 			const FWidgetShapePaint& Paint = Shape->GetImagePaint();
+-			UObject* Resource = Paint.Type == EWidgetShapePaintType::Image ? Paint.Image.GetResourceObject() : nullptr;
++			UObject* Resource = Paint.DrawsBrush() ? Paint.Image.GetResourceObject() : nullptr;
+ 			Baseline.BrushTexture = Cast<UTexture2D>(Resource);
+ 			Baseline.Material = Cast<UMaterialInterface>(Resource);
+ 		}
+@@ -5887,6 +6110,7 @@ void UContextMenuButton::ApplyDesignPreviews()
+ 		{
+ 			Baseline.Material = Cast<UMaterialInterface>(Text->GetFont().FontMaterial);
+ 		}
++		Baseline.SVG = ExtractWidgetSVG(Widget);
+ 
+ 		// Per-state now, and read off the resolved design rather than off the target: a channel this state
+ 		// doesn't drive is simply left showing whatever the widget was authored as, which is exactly what the
+@@ -5907,7 +6131,11 @@ void UContextMenuButton::ApplyDesignPreviews()
+ 			Widget->SetRenderOpacity(Design.Opacity);
+ 		}
+ 
+-		if (Design.bDriveBrushTexture && Design.BrushTexture)
++		if (Design.bDriveBrushTexture && Design.BrushImageSource == EWidgetImageSource::SVG)
++		{
++			ShowSVGOnWidget(Widget, Design.BrushSVG);
++		}
++		else if (Design.bDriveBrushTexture && Design.BrushTexture)
+ 		{
+ 			ApplyBrushTextureToWidget(Widget, Design.BrushTexture);
+ 		}
+@@ -5956,6 +6184,9 @@ void UContextMenuButton::ClearDesignPreviews()
+ 		ApplyOutlineTintToWidget(Widget, Baseline.OutlineTint);
+ 		Widget->SetRenderOpacity(Baseline.Opacity);
+ 
++		// An SVG drawn into an Image, Border or Button's brush: its own brush back first.
++		StopSVGOnWidget(Widget);
++
+ 		if (Baseline.bIsButton)
+ 		{
+ 			if (UButton* Button = Cast<UButton>(Widget))
+@@ -5971,6 +6202,12 @@ void UContextMenuButton::ClearDesignPreviews()
+ 		{
+ 			ApplyMaterialToWidget(Widget, Mat);
+ 		}
++
++		// A shape or SVG Image authored with an SVG gets it back.
++		if (UWidgetSVG* BaselineSVGAsset = Baseline.SVG.Get())
++		{
++			ShowSVGOnWidget(Widget, BaselineSVGAsset);
++		}
+ 	}
+ 
+ 	DesignPreviewBaselines.Reset();
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+index 27f8990..bd2acca 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+@@ -19,6 +19,8 @@
+ #include "NameTBD/WidgetAnimation/WidgetAnimHost.h"
+ #include "NameTBD/Widgets/ShapeBox.h"
+ #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
++#include "NameTBD/Widgets/WidgetSVG.h"
++#include "NameTBD/Widgets/WidgetSVGBrush.h"
+ #include "StructUtils/PropertyBag.h"
+ 
+ #include "ContextMenuButton.generated.h"
+@@ -178,10 +180,22 @@ struct NAMETBD_API FContextMenuWidgetDesign
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (InlineEditConditionToggle))
+ 	bool bDriveBrushTexture = false;
+ 
+-	/** Swaps the widget's brush texture (Image and Border only). Switches at the state change rather than blending. */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (EditCondition = "bDriveBrushTexture", DisplayName = "Brush Texture"))
++	/**
++	 * Swaps the widget's image - a texture (Brush Texture) or an SVG (Brush SVG) - at the state change rather than blending.
++	 * An SVG is drawn sharp at the widget's size on screen: on a shape (its Image paint), an SVG Image (its SVG), and on an
++	 * Image, Border or Button (their brush, redrawn when the widget's size changes).
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (EditCondition = "bDriveBrushTexture", DisplayName = "Brush Image Source"))
++	EWidgetImageSource BrushImageSource = EWidgetImageSource::Texture;
++
++	/** The texture for this state (Brush Image Source Texture 2D). Image, Border, Button and shapes. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (EditCondition = "bDriveBrushTexture && BrushImageSource == EWidgetImageSource::Texture", EditConditionHides, DisplayName = "Brush Texture"))
+ 	TObjectPtr<UTexture2D> BrushTexture = nullptr;
+ 
++	/** The SVG for this state (Brush Image Source SVG): a play icon for Normal and a pause icon for Enabled, say. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (EditCondition = "bDriveBrushTexture && BrushImageSource == EWidgetImageSource::SVG", EditConditionHides, DisplayName = "Brush SVG"))
++	TObjectPtr<UWidgetSVG> BrushSVG = nullptr;
++
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (InlineEditConditionToggle))
+ 	bool bDriveMaterial = false;
+ 
+@@ -937,9 +951,15 @@ struct NAMETBD_API FContextMenuDesignStateOverride
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (DisplayName = "Override Brush Texture", EditCondition = "bBrushTextureApplicable", EditConditionHides))
+ 	bool bOverrideBrushTexture = false;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (EditCondition = "bBrushTextureApplicable && bOverrideBrushTexture", EditConditionHides, DisplayName = "Brush Texture"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (EditCondition = "bBrushTextureApplicable && bOverrideBrushTexture", EditConditionHides, DisplayName = "Brush Image Source"))
++	EWidgetImageSource BrushImageSource = EWidgetImageSource::Texture;
++
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (EditCondition = "bBrushTextureApplicable && bOverrideBrushTexture && BrushImageSource == EWidgetImageSource::Texture", EditConditionHides, DisplayName = "Brush Texture"))
+ 	TObjectPtr<UTexture2D> BrushTexture = nullptr;
+ 
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (EditCondition = "bBrushTextureApplicable && bOverrideBrushTexture && BrushImageSource == EWidgetImageSource::SVG", EditConditionHides, DisplayName = "Brush SVG"))
++	TObjectPtr<UWidgetSVG> BrushSVG = nullptr;
++
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (DisplayName = "Override Material", EditCondition = "bMaterialApplicable", EditConditionHides))
+ 	bool bOverrideMaterial = false;
+ 
+@@ -1264,6 +1284,20 @@ struct FContextMenuLookBaseline
+ 	FInstancedPropertyBag Look;
+ };
+ 
++/**
++ * An Image, Border or Button a Design Target shows an SVG on (not a USTRUCT: runtime only). Its brush (or the button's
++ * every state brush) is the SVG drawn at the widget's size on screen, pushed in again whenever that drawing changes;
++ * what it had before is kept to put back.
++ */
++struct FContextMenuTargetSVG
++{
++	TWeakObjectPtr<UWidgetSVG> SVG;
++	FWidgetSVGBrush Drawing;
++	FName PushedResource;
++	TOptional<FSlateBrush> BrushBefore;
++	TOptional<FButtonStyle> StyleBefore;
++};
++
+ /** Runtime-only resolved design target (not a USTRUCT: widgets are held weakly, nothing to serialize). */
+ struct FContextMenuRuntimeDesignTarget
+ {
+@@ -1285,6 +1319,8 @@ struct FContextMenuRuntimeDesignTarget
+ 	float BaselineOpacity = 1.0f;
+ 	TWeakObjectPtr<UTexture2D> BaselineBrushTexture;
+ 	TWeakObjectPtr<UMaterialInterface> BaselineMaterial;
++	/** The SVG a shape or SVG Image target was authored with (null if it shows a texture or nothing). */
++	TWeakObjectPtr<UWidgetSVG> BaselineSVG;
+ 	bool bHasBaseline = false;
+ 	TMap<FName, float> CurrentScalars;
+ 	TMap<FName, FLinearColor> CurrentVectors;
+@@ -2541,6 +2577,29 @@ protected:
+ 	/** The texture currently on the widget's brush, or null if its brush isn't a texture. Used to capture a baseline. */
+ 	static UTexture2D* ExtractWidgetBrushTexture(UWidget* Widget);
+ 
++	/** The SVG a shape (its Image paint) or an SVG Image shows, or null. Used to capture a baseline. */
++	static UWidgetSVG* ExtractWidgetSVG(UWidget* Widget);
++
++	/**
++	 * Shows SVG on a design target: a shape's Image paint (Image Source SVG), an SVG Image's SVG, or - on an Image, Border
++	 * or Button - a brush of the SVG drawn at the widget's size, kept sharp by TickTargetSVGs. Nothing for other widgets.
++	 */
++	void ShowSVGOnWidget(UWidget* Widget, UWidgetSVG* SVG);
++
++	/** An Image, Border or Button stops showing an SVG through a drawn brush: what it had before is put back. */
++	void StopSVGOnWidget(UWidget* Widget);
++
++	/** Pushes Entry's drawing for Widget's current size into it, when the drawing has changed. */
++	static void PushTargetSVG(UWidget* Widget, FContextMenuTargetSVG& Entry);
++
++	/** Keeps every drawn-brush SVG at its widget's size; runs while any is shown. */
++	EActiveTimerReturnType TickTargetSVGs(double InCurrentTime, float InDeltaTime);
++	void StartTargetSVGTimer();
++
++	/** Image, Border and Button targets showing an SVG through a drawn brush, by widget. */
++	TMap<TWeakObjectPtr<UWidget>, FContextMenuTargetSVG> TargetSVGs;
++	bool bIsTargetSVGTimerActive = false;
++
+ 	/** The material currently on the widget, or null if it isn't using one. Used to capture a baseline. */
+ 	static UMaterialInterface* ExtractWidgetMaterial(UWidget* Widget);
+ 
+@@ -2560,6 +2619,7 @@ protected:
+ 		float Opacity = 1.0f;
+ 		TWeakObjectPtr<UTexture2D> BrushTexture;
+ 		TWeakObjectPtr<UMaterialInterface> Material;
++		TWeakObjectPtr<UWidgetSVG> SVG;
+ 		bool bIsButton = false;
+ 		FButtonStyle ButtonStyle;
+ 	};

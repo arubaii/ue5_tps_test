@@ -12,6 +12,7 @@
 
 #include "WidgetShapeGeometry.h"
 #include "WidgetShapeTypes.h"
+#include "NameTBD/Widgets/WidgetSVGBrush.h"
 
 #include "ShapeWidget.generated.h"
 
@@ -118,7 +119,7 @@ public:
 
 private:
 	void Rebuild(const UShapeWidget& ShapeWidget, const FVector2f& LocalSize, float PixelScale) const;
-	void PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, bool bStroke, const FGeometry& AllottedGeometry,
+	void PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, FWidgetSVGBrush& PaintSVG, bool bStroke, const FGeometry& AllottedGeometry,
 		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle) const;
 
 	/** A widget is held and not collapsed. */
@@ -173,6 +174,10 @@ private:
 	mutable FWidgetShapeMesh StrokeMesh;
 	mutable TArray<FSlateVertex> Vertices;
 	mutable TArray<SlateIndex> Indices;
+
+	/** The fill's and the stroke's SVG, for an Image paint with Image Source SVG: drawn at the shape's box size on screen. */
+	mutable FWidgetSVGBrush FillSVG;
+	mutable FWidgetSVGBrush StrokeSVG;
 };
 
 // =====================================================================================================
