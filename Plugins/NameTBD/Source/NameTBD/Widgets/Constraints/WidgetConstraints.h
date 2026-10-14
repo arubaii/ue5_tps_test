@@ -101,6 +101,18 @@ enum class EWidgetConstraintActivation : uint8
 	NearPointer UMETA(DisplayName = "Near Pointer", ToolTip = "While the pointer is within Activation Radius of the widget's edges, fading in as it nears - a magnetic button that starts leaning before it is reached.")
 };
 
+/**
+ * What a constraint does while a Widget Animation moves the widget it is on - its Render Transform keyed away from where it
+ * was authored, the motion path the designer draws.
+ */
+UENUM(BlueprintType)
+enum class EWidgetConstraintWhileAnimated : uint8
+{
+	ActOver UMETA(DisplayName = "Act Over the Animation", ToolTip = "As always: the constraint acts on wherever the animation puts the widget (a Stay Inside keeps a keyed pupil in its eye)."),
+	LetGo UMETA(DisplayName = "Let Go", ToolTip = "Fades out (over Activation Fade) while the widget is animated, so the keys alone place it, and back in as it comes home: a pupil that follows the cursor until a keyed look plays."),
+	FollowKeys UMETA(DisplayName = "Follow the Keys", ToolTip = "The animated place becomes this constraint's target, in place of the pointer, widget or point: the widget is carried to each key with the constraint's own smoothing and limits (a pupil looks where the keys say, springing there, staying in its eye), and the keyed offset isn't added on top. As the animation ends the target goes back to the pointer - smoothly, with Smooth on.")
+};
+
 /** A value of a constraint that can be animated (the Constraint track) or set by name from Blueprint. */
 UENUM(BlueprintType)
 enum class EWidgetConstraintChannel : uint8
@@ -122,8 +134,11 @@ struct NAMETBD_API FWidgetConstraintTarget
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Target")
 	EWidgetConstraintTargetKind Kind = EWidgetConstraintTargetKind::Widget;
 
-	/** The widget, for Widget. Set Target Widget overrides it at runtime (a widget made by code). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Target", meta = (EditCondition = "Kind == EWidgetConstraintTargetKind::Widget", EditConditionHides, GetOptions = "GetWidgetOptions"))
+	/**
+	 * The widget, for Widget - any widget of this Widget Blueprint, a parent of this one included. Always shown: picking one
+	 * makes the Kind Widget. Set Target Widget overrides it at runtime (a widget made by code).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Target", meta = (GetOptions = "GetWidgetOptions"))
 	FName Widget;
 
 	/** Which point of the widget (or parent): (0, 0) its top left, (0.5, 0.5) its middle, (1, 1) its bottom right. */
@@ -166,6 +181,19 @@ struct NAMETBD_API FWidgetConstraintContext
 	bool bPointerOver = false;
 	bool bPressed = false;
 
+	/** Whether a Widget Animation has the widget away from where it was authored, and the place it puts the pivot (layout space). */
+	bool bAnimated = false;
+	FVector2f AnimatedPoint = FVector2f::ZeroVector;
+
+	/**
+	 * Set for the constraint being applied when it follows the animation (Follow the Keys, while animated): its target is
+	 * AnimatedPoint, whatever it is set to.
+	 */
+	bool bFollowAnimation = false;
+
+	/** A preview pose worked out with no lasting effect (the designer's motion paths): no smoothing, fades or remembered offsets. */
+	bool bStateless = false;
+
 	/** Where another widget is: its local space to this widget's layout space, and its size. Its constraints already solved. */
 	TFunction<bool(const UWidget*, FSlateRenderTransform&, FVector2f&)> ResolveWidget;
 
@@ -203,6 +231,14 @@ public:
 	/** When it acts. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Constraint")
 	EWidgetConstraintActivation Activation = EWidgetConstraintActivation::Always;
+
+	/**
+	 * While a Widget Animation moves the widget (keys on its motion path): act over it, let go so the keys place it, or follow
+	 * the keys - the keyed place becomes the target (a pupil that follows the cursor looks where the keys say instead, springing
+	 * there with Smooth, still kept in its eye).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Constraint")
+	EWidgetConstraintWhileAnimated WhileAnimated = EWidgetConstraintWhileAnimated::ActOver;
 
 	/** Near Pointer: how far from the widget's edges the pointer starts to pull, in Slate units. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Constraint", meta = (EditCondition = "Activation == EWidgetConstraintActivation::NearPointer", EditConditionHides, ClampMin = "0", UIMax = "400", ForceUnits = "px"))
@@ -266,6 +302,19 @@ public:
 	/** Runs the whole step - activation, Solve, Strength, smoothing - from Pose. What the Constraints component calls. */
 	FWidgetConstraintPose Apply(const FWidgetConstraintContext& Context, const FWidgetConstraintPose& Pose, float MasterStrength);
 
+	/**
+	 * The step with no lasting effect - Solve at Strength, no activation fade, smoothing or remembered state: a pose for a
+	 * preview (the designer's motion paths). Context.bStateless must be set.
+	 */
+	FWidgetConstraintPose ApplyStateless(const FWidgetConstraintContext& Context, const FWidgetConstraintPose& Pose, float MasterStrength);
+
+	/** The name Blueprint and the Constraint track can find it by: its Name, else its kind's ("Follow Path"). */
+	FName GetDisplayName() const;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
 	/** The widget named by a Widget target, or the runtime override. */
 	UWidget* ResolveTargetWidget(const FWidgetConstraintContext& Context, const FWidgetConstraintTarget& Target) const;
 
@@ -275,6 +324,9 @@ public:
 protected:
 	/** Remembers where the target was this frame - what the designer's line to it is drawn to. */
 	void NoteTarget(const FWidgetConstraintPose& TargetPose);
+
+	/** The target as it is set (what GetTargetPose gives when the constraint isn't following the animation). */
+	bool GetSetTargetPose(const FWidgetConstraintContext& Context, const FWidgetConstraintTarget& Target, FWidgetConstraintPose& OutPose);
 
 	TWeakObjectPtr<UWidget> TargetOverride;
 	FVector2f LastTarget = FVector2f::ZeroVector;
@@ -310,7 +362,7 @@ class NAMETBD_API UWidgetCopyPositionConstraint : public UWidgetConstraint
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target", meta = (ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target")
 	FWidgetConstraintTarget Target;
 
 	/** Screen: goes to where the target is. Local: takes on the target's own animated offset. */
@@ -369,7 +421,7 @@ class NAMETBD_API UWidgetCopyRotationConstraint : public UWidgetConstraint
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target", meta = (ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target")
 	FWidgetConstraintTarget Target;
 
 	/** Screen: the target's turn as drawn. Local: the target's own Render Transform angle (gears turning together). */
@@ -407,7 +459,7 @@ class NAMETBD_API UWidgetCopyScaleConstraint : public UWidgetConstraint
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target", meta = (ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target")
 	FWidgetConstraintTarget Target;
 
 	/** Screen: the target's size as drawn. Local: the target's own Render Transform scale. */
@@ -444,7 +496,7 @@ class NAMETBD_API UWidgetCopyTransformConstraint : public UWidgetConstraint
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target", meta = (ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target")
 	FWidgetConstraintTarget Target;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Copy", meta = (DisplayName = "Copy Position"))
@@ -501,7 +553,7 @@ class NAMETBD_API UWidgetDistanceConstraint : public UWidgetConstraint
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target", meta = (ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target")
 	FWidgetConstraintTarget Target;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Distance")
@@ -555,20 +607,20 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Path")
 	EWidgetConstraintPathSource PathSource = EWidgetConstraintPathSource::ShapeOutline;
 
-	/** The shape, widget or Widget Path Layer whose path it follows. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Path", meta = (EditCondition = "PathSource != EWidgetConstraintPathSource::Circle", EditConditionHides, GetOptions = "GetWidgetOptions"))
+	/** The shape, widget or Widget Path Layer whose path it follows (any widget of this Widget Blueprint; picking one with Path Source Circle picks the source that fits it). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Path", meta = (GetOptions = "GetWidgetOptions"))
 	FName PathWidget;
 
 	/** Widget Edge: the edge's shape. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Path", meta = (EditCondition = "PathSource == EWidgetConstraintPathSource::WidgetBox", EditConditionHides))
 	EWidgetConstraintEdgeShape EdgeShape = EWidgetConstraintEdgeShape::Auto;
 
-	/** Widget Path Connection: its first node. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Path", meta = (EditCondition = "PathSource == EWidgetConstraintPathSource::WidgetPathConnection", EditConditionHides, GetOptions = "GetWidgetOptions"))
+	/** Widget Path Connection: its first node (picking one makes the Path Source Widget Path Connection). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Path", meta = (GetOptions = "GetWidgetOptions"))
 	FName ConnectionFrom;
 
-	/** Widget Path Connection: its second node. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Path", meta = (EditCondition = "PathSource == EWidgetConstraintPathSource::WidgetPathConnection", EditConditionHides, GetOptions = "GetWidgetOptions"))
+	/** Widget Path Connection: its second node (picking one makes the Path Source Widget Path Connection). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Path", meta = (GetOptions = "GetWidgetOptions"))
 	FName ConnectionTo;
 
 	/** Circle: its middle - and, Closest To Target, what it slides toward. */
@@ -627,6 +679,9 @@ public:
 	virtual bool SetChannel(EWidgetConstraintChannel Channel, float Value) override;
 	virtual bool GetChannel(EWidgetConstraintChannel Channel, float& OutValue) const override;
 	virtual void ResetMotion() override;
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 private:
 	bool BuildPath(const FWidgetConstraintContext& Context, TArray<FVector2f>& OutPoints, bool& bOutClosed);
@@ -644,7 +699,7 @@ class NAMETBD_API UWidgetLookAtConstraint : public UWidgetConstraint
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target", meta = (ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target")
 	FWidgetConstraintTarget Target;
 
 	/** Which way the widget points at rest, in degrees clockwise from right: 0 right, -90 up, 90 down, 180 left. */
@@ -694,7 +749,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Area")
 	EWidgetConstraintArea Area = EWidgetConstraintArea::Parent;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Area", meta = (EditCondition = "Area == EWidgetConstraintArea::Widget", EditConditionHides, GetOptions = "GetWidgetOptions"))
+	/** The area, for Widget - any widget of this Widget Blueprint (picking one makes the Area Widget). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Area", meta = (GetOptions = "GetWidgetOptions"))
 	FName AreaWidget;
 
 	/** The area's shape: its box, the ellipse in it (round eyes), or as drawn. */
@@ -715,6 +771,9 @@ public:
 
 	virtual bool Solve(const FWidgetConstraintContext& Context, const FWidgetConstraintPose& Pose, FWidgetConstraintPose& OutPose) override;
 	virtual void GetDependencies(const FWidgetConstraintContext& Context, TArray<const UWidget*>& OutWidgets) const override;
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 private:
 	const UWidget* GetAreaWidget(const FWidgetConstraintContext& Context) const;
@@ -761,7 +820,7 @@ class NAMETBD_API UWidgetRemapConstraint : public UWidgetConstraint
 	GENERATED_BODY()
 
 public:
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target", meta = (ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Target")
 	FWidgetConstraintTarget Target;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Map")
@@ -818,7 +877,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Parallax")
 	EWidgetConstraintParallaxArea Area = EWidgetConstraintParallaxArea::Screen;
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Parallax", meta = (EditCondition = "Area == EWidgetConstraintParallaxArea::Widget", EditConditionHides, GetOptions = "GetWidgetOptions"))
+	/** The area, for Widget - any widget of this Widget Blueprint (picking one makes the Area Widget). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Parallax", meta = (GetOptions = "GetWidgetOptions"))
 	FName AreaWidget;
 
 	/** How far it moves with the pointer at the area's edge, in Slate units; negative moves against it (the far background). */
@@ -833,6 +893,9 @@ public:
 	virtual void GetDependencies(const FWidgetConstraintContext& Context, TArray<const UWidget*>& OutWidgets) const override;
 	virtual bool SetChannel(EWidgetConstraintChannel Channel, float Value) override;
 	virtual bool GetChannel(EWidgetConstraintChannel Channel, float& OutValue) const override;
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
 
 private:
 	const UWidget* GetAreaWidget(const FWidgetConstraintContext& Context) const;

@@ -1,0 +1,35 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Paths/WidgetPathLayer.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/Paths/WidgetPathLayer.cpp
+index e39b706..8863bf1 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Paths/WidgetPathLayer.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Paths/WidgetPathLayer.cpp
+@@ -1484,13 +1484,6 @@ int32 SWidgetPathLayer::OnPaint(const FPaintArgs& Args, const FGeometry& Allotte
+ // UWidgetPathLayer
+ // =====================================================================================================
+ 
+-bool IWidgetPathNode::GetWidgetPathNodeState_Implementation(EWidgetPathState& State, FName& CustomState) const
+-{
+-	State = EWidgetPathState::Locked;
+-	CustomState = NAME_None;
+-	return false;
+-}
+-
+ UWidgetPathLayer::UWidgetPathLayer(const FObjectInitializer& ObjectInitializer)
+ 	: Super(ObjectInitializer)
+ {
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Pointer/PointerEffects.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/Pointer/PointerEffects.cpp
+index 831d260..0f6dd5d 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Pointer/PointerEffects.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Pointer/PointerEffects.cpp
+@@ -856,12 +856,6 @@ int32 SPointerEffectsSurface::OnPaint(const FPaintArgs& Args, const FGeometry& A
+ // UPointerEffectsComponent
+ // =====================================================================================================
+ 
+-bool IPointerEffectsConditionSource::GetPointerEffectCondition_Implementation(FName Condition, bool& bMet) const
+-{
+-	bMet = false;
+-	return false;
+-}
+-
+ UPointerEffectsComponent::UPointerEffectsComponent()
+ {
+ 	MakePreset(Preset, Tilt, Magnet, Press, Lights, Ripple);

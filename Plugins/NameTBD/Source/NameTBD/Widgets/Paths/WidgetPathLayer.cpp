@@ -11,6 +11,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Rendering/DrawElements.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimInput.h"
+#include "NameTBD/Widgets/WidgetEditorHooks.h"
 #include "NameTBD/Widgets/WidgetEffectsDraw.h"
 #include "NameTBD/Widgets/WidgetTreeLookup.h"
 #include "NameTBD/Widgets/Shadow/DropShadow.h"
@@ -197,6 +198,80 @@ namespace WidgetPathLayerPrivate
 		return Hash;
 	}
 
+	/** Cache slots past the passes': a look's extra strokes, MaxStrokes for each piece slot. */
+	constexpr int32 StrokeCacheSlot = 1000;
+	constexpr int32 MaxStrokes = 64;
+
+	/** Which part of a look a material instance is for (one instance per line, look and part). */
+	enum EMaterialSlot : int32
+	{
+		MaterialSlotLine = 0,
+		MaterialSlotGlow,
+		MaterialSlotFlow,
+		MaterialSlotStartMarker,
+		MaterialSlotEndMarker,
+		MaterialSlotStrokes = 16
+	};
+
+	/** A picture's square, Size across at Center, its top (local -Y) toward Up: UVs 0..1 in each vertex's Along. */
+	void AppendQuad(FWidgetShapeMesh& Mesh, const FVector2f& Center, const FVector2f& Up, float Size, float Coverage)
+	{
+		FVector2f UpDirection = Up.GetSafeNormal();
+		if (UpDirection.IsNearlyZero())
+		{
+			UpDirection = FVector2f(0.f, -1.f);
+		}
+		const FVector2f Down = -UpDirection;
+		const FVector2f Right(Down.Y, -Down.X);
+		const uint32 Base = static_cast<uint32>(Mesh.Vertices.Num());
+		const FVector2f Corners[4] = { FVector2f(0.f, 0.f), FVector2f(1.f, 0.f), FVector2f(1.f, 1.f), FVector2f(0.f, 1.f) };
+		for (const FVector2f& Corner : Corners)
+		{
+			const FVector2f Position = Center + Right * ((Corner.X - 0.5f) * Size) + Down * ((Corner.Y - 0.5f) * Size);
+			Mesh.Vertices.Add(FWidgetShapeMeshVertex(Position, Coverage, Corner, 1.f));
+		}
+		Mesh.Indices.Append({ Base, Base + 1, Base + 2, Base, Base + 2, Base + 3 });
+	}
+
+	/**
+	 * Ribbons (a stroke whose width and offset change along it) over the part of Route between From and To (distances along
+	 * it), dashed when DashLength > 0 - each dash its own ribbon. WidthAt and OffsetAt take the distance along the whole route.
+	 */
+	void BuildRibbons(const TArray<FVector2f>& Route, float From, float To, float DashLength, float DashGap, float DashOffset,
+		TFunctionRef<float(float)> WidthAt, TFunctionRef<float(float)> OffsetAt, float AntiAlias, float TotalLength, FWidgetShapeMesh& Out)
+	{
+		if (To <= From || Route.Num() < 2)
+		{
+			return;
+		}
+		TArray<FVector2f> Run;
+		auto AddRun = [&](float RunStart, float RunEnd)
+		{
+			if (RunEnd - RunStart <= 0.05f)
+			{
+				return;
+			}
+			WidgetPathGeometry::CutBetween(Route, RunStart, RunEnd, Run);
+			if (Run.Num() >= 2)
+			{
+				WidgetPathGeometry::BuildRibbon(Run, [&WidthAt, RunStart](float Distance) { return WidthAt(RunStart + Distance); },
+					[&OffsetAt, RunStart](float Distance) { return OffsetAt(RunStart + Distance); }, AntiAlias, RunStart, TotalLength, Out);
+			}
+		};
+		if (DashLength <= 0.f)
+		{
+			AddRun(From, To);
+			return;
+		}
+		const float Period = FMath::Max(DashLength + (DashGap > 0.f ? DashGap : DashLength), 0.5f);
+		const float First = FMath::FloorToFloat((From + DashOffset) / Period) * Period - DashOffset;
+		int32 Guard = 0;
+		for (float DashStart = First; DashStart < To && Guard < 10000; DashStart += Period, ++Guard)
+		{
+			AddRun(FMath::Max(DashStart, From), FMath::Min(DashStart + DashLength, To));
+		}
+	}
+
 	uint32 HashTransform(const FSlateRenderTransform& Transform)
 	{
 		float A, B, C, D;
@@ -224,6 +299,7 @@ void SWidgetPathLayer::SetLooks(const TArray<FWidgetPathLook>& InLooks)
 		State.Caches.Reset();
 	}
 	SVGBrushes.Reset();
+	Materials.Reset();
 	Invalidate(EInvalidateWidgetReason::Paint);
 	Wake();
 }
@@ -315,8 +391,57 @@ void SWidgetPathLayer::SetEdges(const TArray<FWidgetPathSlateEdge>& InEdges, boo
 
 	Edges = MoveTemp(NewEdges);
 	EdgeByKey = MoveTemp(NewByKey);
+	ResolveNodes();
+
+	// The material instances of lines that are gone, or of looks they no longer show, are let go.
+	TSet<uint64> KeepMaterials;
+	for (const FEdgeState& State : Edges)
+	{
+		const int32 Shown[3] = { State.ShownLook, State.PreviousLook, State.Edge.ProgressLook };
+		for (const int32 Look : Shown)
+		{
+			if (!Looks.IsValidIndex(Look))
+			{
+				continue;
+			}
+			for (int32 Slot = 0; Slot < WidgetPathLayerPrivate::MaterialSlotStrokes + Looks[Look].Strokes.Num(); ++Slot)
+			{
+				KeepMaterials.Add(MaterialKey(State.Edge.Key, Look, Slot));
+			}
+		}
+	}
+	Materials.Prune(KeepMaterials);
+
 	Invalidate(EInvalidateWidgetReason::Paint);
 	Wake();
+}
+
+bool SWidgetPathLayer::ResolveNodes() const
+{
+	bool bChanged = false;
+	auto Resolve = [&bChanged](const TWeakObjectPtr<UWidget>& Widget, TWeakPtr<SWidget>& Slate)
+	{
+		const UWidget* Node = Widget.Get();
+		if (!Node)
+		{
+			return;
+		}
+		// The node's current Slate widget: a node built after the layer (later in its panel), or built again (the designer's
+		// compile, a rebuilt preview), has a new one - or had none when the line was set.
+		const TSharedPtr<SWidget> Cached = Node->GetCachedWidget();
+		if (Cached != Slate.Pin())
+		{
+			Slate = Cached;
+			bChanged = true;
+		}
+	};
+	for (FEdgeState& State : Edges)
+	{
+		Resolve(State.Edge.FromWidget, State.Edge.From);
+		Resolve(State.Edge.ToWidget, State.Edge.To);
+		Resolve(State.Edge.OrbitCenterWidget, State.Edge.OrbitCenter);
+	}
+	return bChanged;
 }
 
 bool SWidgetPathLayer::GetRoute(uint64 Key, TArray<FVector2f>& OutPoints) const
@@ -432,8 +557,9 @@ EActiveTimerReturnType SWidgetPathLayer::OnActiveTick(double InCurrentTime, floa
 		bMoving |= State.ShownProgress.Advance(InDeltaTime);
 	}
 
+	const bool bResolved = ResolveNodes();
 	const uint32 Placement = HashNodePlacement();
-	const bool bPlaced = Placement != LastPlacementHash;
+	const bool bPlaced = bResolved || Placement != LastPlacementHash;
 	LastPlacementHash = Placement;
 
 	if (bMoving || bPlaced || IsAnimating())
@@ -728,6 +854,138 @@ FWidgetShapeMesh& SWidgetPathLayer::GetCache(FEdgeState& State, int32 Slot, uint
 	return Added.Mesh;
 }
 
+uint64 SWidgetPathLayer::MaterialKey(uint64 EdgeKey, int32 Look, int32 Slot)
+{
+	return EdgeKey * 0x9E3779B97F4A7C15ull + (static_cast<uint64>(Look + 1) << 12) + static_cast<uint64>(Slot);
+}
+
+const TArray<FVector2f>& SWidgetPathLayer::GetLookRoute(const FEdgeState& State, int32 Look, double Now, TArray<FVector2f>& Scratch) const
+{
+	if (!Looks.IsValidIndex(Look) || !Looks[Look].Distortion.IsActive() || State.Points.Num() < 3)
+	{
+		return State.Points;
+	}
+	const uint32 Seed = static_cast<uint32>(State.Edge.Key ^ (State.Edge.Key >> 32));
+	WidgetPathGeometry::Distort(State.Points, Looks[Look].Distortion, Now, Seed, Scratch);
+	return Scratch;
+}
+
+void SWidgetPathLayer::MakeMaterialInputs(const FDrawPiece& Piece, const FWidgetPathLook& Look, float TileLength, FWidgetEffectMaterialInputs& Out) const
+{
+	const FEdgeState& State = Edges[Piece.Edge];
+	Out.Add(TEXT("PathLength"), State.Length);
+	Out.Add(TEXT("PathWidth"), Look.Width);
+	Out.Add(TEXT("PathRandom"), State.Edge.Random);
+	Out.Add(TEXT("PathRevealStart"), Piece.Start);
+	Out.Add(TEXT("PathRevealEnd"), Piece.End);
+	Out.Add(TEXT("PathProgress"), FMath::Clamp(State.ShownProgress.Value, 0.f, 1.f));
+	Out.Add(TEXT("PathHighlighted"), State.Edge.bHighlighted ? 1.f : 0.f);
+	Out.Add(TEXT("PathHovered"), State.Edge.bHovered ? 1.f : 0.f);
+	Out.Add(TEXT("PathSelected"), State.Edge.bSelected ? 1.f : 0.f);
+	Out.Add(TEXT("PathTileLength"), TileLength);
+}
+
+void SWidgetPathLayer::PaintImageQuad(uint64 Key, const FWidgetEffectImage& Image, const FWidgetEffectMaterialInputs& Inputs, const FVector2f& Center, const FVector2f& Up,
+	float Size, const FLinearColor& Tint, const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 PassLayer, const FWidgetStyle& InWidgetStyle) const
+{
+	const FSlateBrush* Brush = Materials.GetBrush(Key, Image, &Inputs, AllottedGeometry, FVector2f(Size, Size), *this);
+	if (!Brush || Size <= 0.f || Tint.A <= 0.002f)
+	{
+		return;
+	}
+	FWidgetShapeMesh Quad;
+	WidgetPathLayerPrivate::AppendQuad(Quad, Center, Up, Size, 1.f);
+	FLinearColor Color = Tint;
+	if (Image.ImageSource == EWidgetImageSource::Texture)
+	{
+		Color *= Image.Image.GetTint(InWidgetStyle);
+	}
+	WidgetEffectsDraw::PaintMesh(OutDrawElements, PassLayer, AllottedGeometry, Quad, InWidgetStyle.GetColorAndOpacityTint(),
+		[Color](const FWidgetShapeMeshVertex&) { return Color; }, Brush, [](const FWidgetShapeMeshVertex& Vertex) { return Vertex.Along; });
+}
+
+void SWidgetPathLayer::PaintStrokes(const FDrawPiece& Piece, bool bAbove, const TArray<FVector2f>& Route, const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
+	int32 PassLayer, const FWidgetStyle& InWidgetStyle, float PixelScale, double Now) const
+{
+	using namespace WidgetPathLayerPrivate;
+
+	FEdgeState& State = Edges[Piece.Edge];
+	const FWidgetPathLook& Look = Looks[Piece.Look];
+	if (Look.Strokes.Num() == 0 || Route.Num() < 2)
+	{
+		return;
+	}
+	const float Length = WidgetShapeGeometry::GetLength(Route, /*bClosed=*/false);
+	if (Length <= 0.f)
+	{
+		return;
+	}
+	const float AntiAlias = 1.f / FMath::Max(PixelScale, 0.01f);
+	const FLinearColor WidgetTint = InWidgetStyle.GetColorAndOpacityTint();
+	const float BreathScale = Breath(Look, Now);
+	const uint32 RouteHash = HashCombineFast(State.RouteHash, GetTypeHash(Route.Num() > 2 ? Route[Route.Num() / 2] : Route[0]));
+
+	for (int32 StrokeIndex = 0; StrokeIndex < Look.Strokes.Num(); ++StrokeIndex)
+	{
+		const FWidgetPathStroke& Stroke = Look.Strokes[StrokeIndex];
+		if (!Stroke.bEnabled || Stroke.bAboveLine != bAbove || Stroke.Width <= 0.f)
+		{
+			continue;
+		}
+		const float Opacity = Piece.Opacity * Look.Opacity * Stroke.Opacity * (Stroke.bBreathe ? BreathScale : 1.f);
+		if (Opacity <= 0.002f)
+		{
+			continue;
+		}
+
+		const float Period = Stroke.DashLength + (Stroke.DashGap > 0.f ? Stroke.DashGap : Stroke.DashLength);
+		const float DashOffset = Stroke.DashLength > 0.f && Stroke.DashSpeed != 0.f ? -Wrap(Now * Stroke.DashSpeed, Period) : 0.f;
+		uint32 Hash = HashCombineFast(RouteHash, Stroke.GetHash());
+		Hash = HashCombineFast(Hash, HashCombineFast(GetTypeHash(FMath::RoundToInt(Piece.Start * 10000.f)), GetTypeHash(FMath::RoundToInt(Piece.End * 10000.f))));
+		Hash = HashCombineFast(Hash, HashCombineFast(GetTypeHash(PixelScale), GetTypeHash(DashOffset)));
+		bool bStale = false;
+		FWidgetShapeMesh& Mesh = GetCache(State, StrokeCacheSlot + Piece.Slot * MaxStrokes + StrokeIndex, Hash, bStale);
+		if (bStale)
+		{
+			BuildRibbons(Route, Piece.Start * Length, Piece.End * Length, Stroke.DashLength, Stroke.DashGap, DashOffset,
+				[&Stroke, Length](float Distance) { return Stroke.Width * FMath::Max(FMath::Lerp(Stroke.StartWidthScale, Stroke.EndWidthScale, FMath::Clamp(Distance / Length, 0.f, 1.f)), 0.f); },
+				[&Stroke](float) { return Stroke.Offset; }, AntiAlias, Length, Mesh);
+		}
+		if (Mesh.IsEmpty())
+		{
+			continue;
+		}
+
+		if (Stroke.Paint == EWidgetPathPaint::Image && Stroke.Image.IsSet())
+		{
+			const float Repeat = Stroke.ImageTileLength > KINDA_SMALL_NUMBER ? Stroke.ImageTileLength : Length;
+			FWidgetEffectMaterialInputs Inputs;
+			MakeMaterialInputs(Piece, Look, Repeat, Inputs);
+			const FSlateBrush* Brush = Materials.GetBrush(MaterialKey(State.Edge.Key, Piece.Look, MaterialSlotStrokes + StrokeIndex), Stroke.Image, &Inputs, AllottedGeometry,
+				FVector2f(Repeat, FMath::Max(Stroke.Width, 1.f)), *this);
+			if (Brush)
+			{
+				FLinearColor Tint = Stroke.Color;
+				if (Stroke.Image.ImageSource == EWidgetImageSource::Texture)
+				{
+					Tint *= Stroke.Image.Image.GetTint(InWidgetStyle);
+				}
+				Tint.A *= Opacity;
+				const float Scroll = Stroke.ImageScrollSpeed != 0.f ? Wrap(Now * Stroke.ImageScrollSpeed, Repeat) : 0.f;
+				WidgetEffectsDraw::PaintMesh(OutDrawElements, PassLayer, AllottedGeometry, Mesh, WidgetTint, [Tint](const FWidgetShapeMeshVertex&) { return Tint; }, Brush,
+					[Repeat, Scroll](const FWidgetShapeMeshVertex& Vertex) { return FVector2f((Vertex.Along.X - Scroll) / Repeat, Vertex.Along.Y); });
+			}
+			continue;
+		}
+		WidgetEffectsDraw::PaintMesh(OutDrawElements, PassLayer, AllottedGeometry, Mesh, WidgetTint, [&Stroke, Opacity, Length](const FWidgetShapeMeshVertex& Vertex)
+		{
+			FLinearColor Color = Stroke.ColorAt(Vertex.Along.X / Length);
+			Color.A *= Opacity;
+			return Color;
+		});
+	}
+}
+
 void SWidgetPathLayer::PaintPiece(const FDrawPiece& Piece, int32 Pass, const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
 	int32 PassLayer, const FWidgetStyle& InWidgetStyle, float PixelScale, float Tolerance, double Now) const
 {
@@ -735,11 +993,30 @@ void SWidgetPathLayer::PaintPiece(const FDrawPiece& Piece, int32 Pass, const FGe
 
 	FEdgeState& State = Edges[Piece.Edge];
 	const FWidgetPathLook& Look = Looks[Piece.Look];
-	const float Length = State.Length;
 	const float Opacity = Piece.Opacity * Look.Opacity;
-	if (Length <= 0.f || Opacity <= 0.002f)
+	if (State.Length <= 0.f || Opacity <= 0.002f)
 	{
 		return;
+	}
+
+	// The route this look draws along: the line's own, or moved by the look's distortion (waves, lightning).
+	TArray<FVector2f> Distorted;
+	const TArray<FVector2f>& Route = GetLookRoute(State, Piece.Look, Now, Distorted);
+	const bool bDistorted = &Route != &State.Points;
+	const float Length = bDistorted ? WidgetShapeGeometry::GetLength(Route, /*bClosed=*/false) : State.Length;
+	if (Length <= 0.f || Route.Num() < 2)
+	{
+		return;
+	}
+	uint32 RouteHash = State.RouteHash;
+	if (bDistorted)
+	{
+		RouteHash = HashCombineFast(RouteHash, Look.Distortion.GetHash());
+		if (Look.Distortion.IsAnimated())
+		{
+			// Moving: built again every frame it moves.
+			RouteHash = HashCombineFast(RouteHash, GetTypeHash(Now));
+		}
 	}
 
 	const float AntiAlias = 1.f / FMath::Max(PixelScale, 0.01f);
@@ -747,21 +1024,36 @@ void SWidgetPathLayer::PaintPiece(const FDrawPiece& Piece, int32 Pass, const FGe
 	const float BreathScale = Breath(Look, Now);
 	const EWidgetShapeLineJoin Join = State.Edge.Routing.Corner == EWidgetPathCorner::Sharp ? EWidgetShapeLineJoin::Miter : EWidgetShapeLineJoin::Round;
 	const int32 CacheSlot = Piece.Slot * PassCount + Pass;
+	const bool bVarying = Look.HasVaryingWidth();
+	const bool bStartImage = Look.StartMarkerImage.IsSet();
+	const bool bEndImage = Look.EndMarkerImage.IsSet();
 
 	// The line is pulled back from an end that carries an arrowhead - only when this piece reaches that end.
-	const float StartInset = Piece.Start <= 0.001f ? MarkerInset(Look.StartMarker, Look.MarkerSize, Look.Width) : 0.f;
-	const float EndInset = Piece.End >= 0.999f ? MarkerInset(Look.EndMarker, Look.MarkerSize, Look.Width) : 0.f;
+	const float StartInset = Piece.Start <= 0.001f && !bStartImage ? MarkerInset(Look.StartMarker, Look.MarkerSize, Look.Width) : 0.f;
+	const float EndInset = Piece.End >= 0.999f && !bEndImage ? MarkerInset(Look.EndMarker, Look.MarkerSize, Look.Width) : 0.f;
 	TArray<FVector2f> CutPoints;
-	const TArray<FVector2f>* LinePoints = &State.Points;
+	const TArray<FVector2f>* LinePoints = &Route;
 	if (StartInset > 0.f || EndInset > 0.f)
 	{
-		WidgetPathGeometry::CutBetween(State.Points, StartInset, Length - EndInset, CutPoints);
+		WidgetPathGeometry::CutBetween(Route, StartInset, Length - EndInset, CutPoints);
 		LinePoints = &CutPoints;
 	}
+	// Where the piece is drawn, in distance along the route (varying-width lines are built on the whole route, cut there).
+	const float DrawFrom = FMath::Max(Piece.Start * Length, StartInset);
+	const float DrawTo = FMath::Min(Piece.End * Length, Length - EndInset);
+	auto WidthAt = [&Look, Length](float Extra)
+	{
+		return [&Look, Length, Extra](float Distance) { return Look.Width * Look.WidthScaleAt(Distance / Length) + Extra; };
+	};
+	auto NoOffset = [](float) { return 0.f; };
 
-	uint32 BaseHash = HashCombineFast(State.RouteHash, GetTypeHash(Piece.Look));
+	uint32 BaseHash = HashCombineFast(RouteHash, GetTypeHash(Piece.Look));
 	BaseHash = HashCombineFast(BaseHash, HashCombineFast(GetTypeHash(FMath::RoundToInt(Piece.Start * 10000.f)), GetTypeHash(FMath::RoundToInt(Piece.End * 10000.f))));
 	BaseHash = HashCombineFast(BaseHash, HashCombineFast(GetTypeHash(PixelScale), GetTypeHash(StartInset + EndInset * 7.f)));
+	if (bVarying)
+	{
+		BaseHash = HashCombineFast(BaseHash, HashCombineFast(GetTypeHash(Look.StartWidthScale), GetTypeHash(Look.EndWidthScale)));
+	}
 
 	auto Solid = [](const FLinearColor& Color)
 	{
@@ -776,37 +1068,76 @@ void SWidgetPathLayer::PaintPiece(const FDrawPiece& Piece, int32 Pass, const FGe
 		{
 			return;
 		}
+		const bool bGlowImage = Look.GlowImage.IsSet();
 		uint32 Hash = HashCombineFast(BaseHash, HashCombineFast(GetTypeHash(Look.Width), GetTypeHash(Look.GlowSize)));
+		Hash = HashCombineFast(Hash, GetTypeHash(bGlowImage));
 		bool bStale = false;
 		FWidgetShapeMesh& Mesh = GetCache(State, CacheSlot, Hash, bStale);
 		if (bStale)
 		{
-			BuildPolyline(*LinePoints, Look.Width + Look.GlowSize, EWidgetShapeLineCap::Round, EWidgetShapeLineJoin::Round, Look.GlowSize + AntiAlias, Tolerance, Mesh,
-				0.f, 0.f, 0.f, Piece.Start, Piece.End);
+			if (bGlowImage)
+			{
+				// A picture across the whole glow: hard edges, its own falloff.
+				BuildRibbons(Route, Piece.Start * Length, Piece.End * Length, 0.f, 0.f, 0.f, WidthAt(Look.GlowSize * 2.f), NoOffset, AntiAlias, Length, Mesh);
+			}
+			else if (bVarying)
+			{
+				BuildRibbons(Route, Piece.Start * Length, Piece.End * Length, 0.f, 0.f, 0.f, WidthAt(Look.GlowSize), NoOffset, Look.GlowSize + AntiAlias, Length, Mesh);
+			}
+			else
+			{
+				BuildPolyline(Route, Look.Width + Look.GlowSize, EWidgetShapeLineCap::Round, EWidgetShapeLineJoin::Round, Look.GlowSize + AntiAlias, Tolerance, Mesh,
+					0.f, 0.f, 0.f, Piece.Start, Piece.End);
+			}
 		}
 		FLinearColor Color = Look.GlowColor;
 		Color.A *= Opacity * BreathScale;
+		if (bGlowImage)
+		{
+			FWidgetEffectMaterialInputs Inputs;
+			MakeMaterialInputs(Piece, Look, Length, Inputs);
+			const FSlateBrush* Brush = Materials.GetBrush(MaterialKey(State.Edge.Key, Piece.Look, MaterialSlotGlow), Look.GlowImage, &Inputs, AllottedGeometry,
+				FVector2f(Length, Look.Width + Look.GlowSize * 2.f), *this);
+			if (Brush)
+			{
+				if (Look.GlowImage.ImageSource == EWidgetImageSource::Texture)
+				{
+					Color *= Look.GlowImage.Image.GetTint(InWidgetStyle);
+				}
+				WidgetEffectsDraw::PaintMesh(OutDrawElements, PassLayer, AllottedGeometry, Mesh, WidgetTint, Solid(Color), Brush,
+					[Length](const FWidgetShapeMeshVertex& Vertex) { return FVector2f(Vertex.Along.X / Length, Vertex.Along.Y); });
+			}
+			return;
+		}
 		WidgetEffectsDraw::PaintMesh(OutDrawElements, PassLayer, AllottedGeometry, Mesh, WidgetTint, Solid(Color));
 		break;
 	}
 
 	case PassOutline:
 	{
-		if (!Look.bOutline || Look.OutlineWidth <= 0.f || Look.OutlineColor.A <= 0.f)
+		if (Look.bOutline && Look.OutlineWidth > 0.f && Look.OutlineColor.A > 0.f)
 		{
-			return;
+			uint32 Hash = HashCombineFast(BaseHash, HashCombineFast(GetTypeHash(Look.Width), GetTypeHash(Look.OutlineWidth)));
+			Hash = HashCombineFast(Hash, GetTypeHash(static_cast<uint8>(Look.Cap)));
+			bool bStale = false;
+			FWidgetShapeMesh& Mesh = GetCache(State, CacheSlot, Hash, bStale);
+			if (bStale)
+			{
+				if (bVarying)
+				{
+					BuildRibbons(Route, DrawFrom, DrawTo, 0.f, 0.f, 0.f, WidthAt(Look.OutlineWidth * 2.f), NoOffset, AntiAlias, Length, Mesh);
+				}
+				else
+				{
+					BuildPolyline(*LinePoints, Look.Width + Look.OutlineWidth * 2.f, Look.Cap, Join, AntiAlias, Tolerance, Mesh, 0.f, 0.f, 0.f, Piece.Start, Piece.End);
+				}
+			}
+			FLinearColor Color = Look.OutlineColor;
+			Color.A *= Opacity;
+			WidgetEffectsDraw::PaintMesh(OutDrawElements, PassLayer, AllottedGeometry, Mesh, WidgetTint, Solid(Color));
 		}
-		uint32 Hash = HashCombineFast(BaseHash, HashCombineFast(GetTypeHash(Look.Width), GetTypeHash(Look.OutlineWidth)));
-		Hash = HashCombineFast(Hash, GetTypeHash(static_cast<uint8>(Look.Cap)));
-		bool bStale = false;
-		FWidgetShapeMesh& Mesh = GetCache(State, CacheSlot, Hash, bStale);
-		if (bStale)
-		{
-			BuildPolyline(*LinePoints, Look.Width + Look.OutlineWidth * 2.f, Look.Cap, Join, AntiAlias, Tolerance, Mesh, 0.f, 0.f, 0.f, Piece.Start, Piece.End);
-		}
-		FLinearColor Color = Look.OutlineColor;
-		Color.A *= Opacity;
-		WidgetEffectsDraw::PaintMesh(OutDrawElements, PassLayer, AllottedGeometry, Mesh, WidgetTint, Solid(Color));
+		// Strokes under the line, over its casing.
+		PaintStrokes(Piece, /*bAbove=*/false, Route, AllottedGeometry, OutDrawElements, PassLayer, InWidgetStyle, PixelScale, Now);
 		break;
 	}
 
@@ -825,7 +1156,14 @@ void SWidgetPathLayer::PaintPiece(const FDrawPiece& Piece, int32 Pass, const FGe
 		FWidgetShapeMesh& Mesh = GetCache(State, CacheSlot, Hash, bStale);
 		if (bStale)
 		{
-			BuildPolyline(*LinePoints, Look.Width, Look.Cap, Join, AntiAlias, Tolerance, Mesh, Look.DashLength, Look.DashGap, DashOffset, Piece.Start, Piece.End);
+			if (bVarying)
+			{
+				BuildRibbons(Route, DrawFrom, DrawTo, Look.DashLength, Look.DashGap, DashOffset, WidthAt(0.f), NoOffset, AntiAlias, Length, Mesh);
+			}
+			else
+			{
+				BuildPolyline(*LinePoints, Look.Width, Look.Cap, Join, AntiAlias, Tolerance, Mesh, Look.DashLength, Look.DashGap, DashOffset, Piece.Start, Piece.End);
+			}
 		}
 		if (Mesh.IsEmpty())
 		{
@@ -853,7 +1191,11 @@ void SWidgetPathLayer::PaintPiece(const FDrawPiece& Piece, int32 Pass, const FGe
 			}
 			else if (Look.ImageSource == EWidgetImageSource::Texture && Look.Image.GetResourceObject())
 			{
-				Brush = &Look.Image;
+				// A texture as it is; a material through an instance of its own for this line, with the live values.
+				FWidgetEffectMaterialInputs Inputs;
+				MakeMaterialInputs(Piece, Look, Repeat, Inputs);
+				Brush = Materials.GetBrush(MaterialKey(State.Edge.Key, Piece.Look, MaterialSlotLine), Look.GetLineImage(), &Inputs, AllottedGeometry,
+					FVector2f(Repeat, FMath::Max(Look.Width, 1.f)), *this);
 				Tint *= Look.Image.GetTint(InWidgetStyle);
 			}
 			if (Brush)
@@ -905,7 +1247,14 @@ void SWidgetPathLayer::PaintPiece(const FDrawPiece& Piece, int32 Pass, const FGe
 			FWidgetShapeMesh& Mesh = GetCache(State, CacheSlot, Hash, bStale);
 			if (bStale)
 			{
-				BuildPolyline(*LinePoints, Look.Width, Look.Cap, Join, AntiAlias, Tolerance, Mesh, 0.f, 0.f, 0.f, Piece.Start, Piece.End);
+				if (bVarying)
+				{
+					BuildRibbons(Route, DrawFrom, DrawTo, 0.f, 0.f, 0.f, WidthAt(0.f), NoOffset, AntiAlias, Length, Mesh);
+				}
+				else
+				{
+					BuildPolyline(*LinePoints, Look.Width, Look.Cap, Join, AntiAlias, Tolerance, Mesh, 0.f, 0.f, 0.f, Piece.Start, Piece.End);
+				}
 			}
 			const FLinearColor FlowColor = Look.FlowColor;
 			const float BandLength = FMath::Clamp(Look.FlowLength, 1.f, Spacing);
@@ -921,11 +1270,13 @@ void SWidgetPathLayer::PaintPiece(const FDrawPiece& Piece, int32 Pass, const FGe
 			return;
 		}
 
-		// Dots or arrows travelling along the piece, fading in and out at its ends.
+		// Dots or arrows travelling along the piece, fading in and out at its ends - or a picture for each.
+		const bool bFlowImage = Look.FlowImage.IsSet();
 		const float From = Piece.Start * Length;
 		const float To = Piece.End * Length;
 		uint32 Hash = HashCombineFast(BaseHash, HashCombineFast(GetTypeHash(Look.FlowSize), GetTypeHash(Spacing)));
 		Hash = HashCombineFast(Hash, HashCombineFast(GetTypeHash(Travel), GetTypeHash(static_cast<uint8>(Look.Flow))));
+		Hash = HashCombineFast(Hash, GetTypeHash(bFlowImage));
 		bool bStale = false;
 		FWidgetShapeMesh& Mesh = GetCache(State, CacheSlot, Hash, bStale);
 		if (bStale)
@@ -940,7 +1291,7 @@ void SWidgetPathLayer::PaintPiece(const FDrawPiece& Piece, int32 Pass, const FGe
 				}
 				FVector2f Point;
 				FVector2f Direction;
-				if (!WidgetPathGeometry::SampleAt(State.Points, Distance, Point, Direction))
+				if (!WidgetPathGeometry::SampleAt(Route, Distance, Point, Direction))
 				{
 					continue;
 				}
@@ -949,8 +1300,13 @@ void SWidgetPathLayer::PaintPiece(const FDrawPiece& Piece, int32 Pass, const FGe
 				{
 					continue;
 				}
-				// Arrows point the way the flow goes.
+				// Arrows (and pictures) point the way the flow goes.
 				const FVector2f Way = Look.FlowSpeed < 0.f ? -Direction : Direction;
+				if (bFlowImage)
+				{
+					AppendQuad(Mesh, Point, Way, Look.FlowSize, EdgeFade);
+					continue;
+				}
 				Mark.Reset();
 				if (Look.Flow == EWidgetPathFlow::Dots)
 				{
@@ -968,15 +1324,65 @@ void SWidgetPathLayer::PaintPiece(const FDrawPiece& Piece, int32 Pass, const FGe
 		}
 		FLinearColor Color = Look.FlowColor;
 		Color.A = FlowAlpha;
+		if (bFlowImage)
+		{
+			FWidgetEffectMaterialInputs Inputs;
+			MakeMaterialInputs(Piece, Look, Spacing, Inputs);
+			const FSlateBrush* Brush = Materials.GetBrush(MaterialKey(State.Edge.Key, Piece.Look, MaterialSlotFlow), Look.FlowImage, &Inputs, AllottedGeometry,
+				FVector2f(Look.FlowSize, Look.FlowSize), *this);
+			if (Brush)
+			{
+				if (Look.FlowImage.ImageSource == EWidgetImageSource::Texture)
+				{
+					Color *= Look.FlowImage.Image.GetTint(InWidgetStyle);
+				}
+				WidgetEffectsDraw::PaintMesh(OutDrawElements, PassLayer, AllottedGeometry, Mesh, WidgetTint, Solid(Color), Brush,
+					[](const FWidgetShapeMeshVertex& Vertex) { return Vertex.Along; });
+			}
+			return;
+		}
 		WidgetEffectsDraw::PaintMesh(OutDrawElements, PassLayer, AllottedGeometry, Mesh, WidgetTint, Solid(Color));
 		break;
 	}
 
 	case PassMarkers:
 	{
-		const bool bStart = Look.StartMarker != EWidgetPathMarker::None && Piece.Start <= 0.001f;
-		const bool bEnd = Look.EndMarker != EWidgetPathMarker::None && Piece.End >= 0.999f;
+		// Strokes over the line and its flow, under the markers.
+		PaintStrokes(Piece, /*bAbove=*/true, Route, AllottedGeometry, OutDrawElements, PassLayer, InWidgetStyle, PixelScale, Now);
+
+		const bool bStart = Piece.Start <= 0.001f && (bStartImage || Look.StartMarker != EWidgetPathMarker::None);
+		const bool bEnd = Piece.End >= 0.999f && (bEndImage || Look.EndMarker != EWidgetPathMarker::None);
 		if (!bStart && !bEnd)
+		{
+			return;
+		}
+
+		// Pictures: their top at the end of the line, pointing out of it - toward the node.
+		if ((bStart && bStartImage) || (bEnd && bEndImage))
+		{
+			FWidgetEffectMaterialInputs Inputs;
+			MakeMaterialInputs(Piece, Look, Length, Inputs);
+			FVector2f Point;
+			FVector2f Direction;
+			if (bStart && bStartImage && WidgetPathGeometry::SampleAt(Route, 0.f, Point, Direction))
+			{
+				FLinearColor Color = Look.ColorAt(0.f);
+				Color.A *= Opacity;
+				PaintImageQuad(MaterialKey(State.Edge.Key, Piece.Look, MaterialSlotStartMarker), Look.StartMarkerImage, Inputs, Route[0] + Direction * (Look.MarkerSize * 0.5f),
+					-Direction, Look.MarkerSize, Color, AllottedGeometry, OutDrawElements, PassLayer, InWidgetStyle);
+			}
+			if (bEnd && bEndImage && WidgetPathGeometry::SampleAt(Route, Length, Point, Direction))
+			{
+				FLinearColor Color = Look.ColorAt(1.f);
+				Color.A *= Opacity;
+				PaintImageQuad(MaterialKey(State.Edge.Key, Piece.Look, MaterialSlotEndMarker), Look.EndMarkerImage, Inputs, Route.Last() - Direction * (Look.MarkerSize * 0.5f),
+					Direction, Look.MarkerSize, Color, AllottedGeometry, OutDrawElements, PassLayer, InWidgetStyle);
+			}
+		}
+
+		const bool bStartShape = bStart && !bStartImage && Look.StartMarker != EWidgetPathMarker::None;
+		const bool bEndShape = bEnd && !bEndImage && Look.EndMarker != EWidgetPathMarker::None;
+		if (!bStartShape && !bEndShape)
 		{
 			return;
 		}
@@ -986,33 +1392,33 @@ void SWidgetPathLayer::PaintPiece(const FDrawPiece& Piece, int32 Pass, const FGe
 		State.Caches.Reserve(State.Caches.Num() + 2);
 		bool bStale = false;
 		FWidgetShapeMesh& StartMesh = GetCache(State, CacheSlot, Hash, bStale);
-		if (bStale && bStart)
+		if (bStale && bStartShape)
 		{
 			FVector2f Point;
 			FVector2f Direction;
-			if (WidgetPathGeometry::SampleAt(State.Points, 0.f, Point, Direction))
+			if (WidgetPathGeometry::SampleAt(Route, 0.f, Point, Direction))
 			{
-				BuildMarker(Look.StartMarker, State.Points[0], -Direction, Look.MarkerSize, Look.Width, AntiAlias, Tolerance, StartMesh);
+				BuildMarker(Look.StartMarker, Route[0], -Direction, Look.MarkerSize, Look.Width, AntiAlias, Tolerance, StartMesh);
 			}
 		}
 		bool bEndStale = false;
 		FWidgetShapeMesh& EndMesh = GetCache(State, CacheSlot + PassCount * 8, Hash, bEndStale);
-		if (bEndStale && bEnd)
+		if (bEndStale && bEndShape)
 		{
 			FVector2f Point;
 			FVector2f Direction;
-			if (WidgetPathGeometry::SampleAt(State.Points, Length, Point, Direction))
+			if (WidgetPathGeometry::SampleAt(Route, Length, Point, Direction))
 			{
-				BuildMarker(Look.EndMarker, State.Points.Last(), Direction, Look.MarkerSize, Look.Width, AntiAlias, Tolerance, EndMesh);
+				BuildMarker(Look.EndMarker, Route.Last(), Direction, Look.MarkerSize, Look.Width, AntiAlias, Tolerance, EndMesh);
 			}
 		}
-		if (bStart)
+		if (bStartShape)
 		{
 			FLinearColor Color = Look.ColorAt(0.f);
 			Color.A *= Opacity;
 			WidgetEffectsDraw::PaintMesh(OutDrawElements, PassLayer, AllottedGeometry, StartMesh, WidgetTint, Solid(Color));
 		}
-		if (bEnd)
+		if (bEndShape)
 		{
 			FLinearColor Color = Look.ColorAt(1.f);
 			Color.A *= Opacity;
@@ -1035,6 +1441,9 @@ int32 SWidgetPathLayer::OnPaint(const FPaintArgs& Args, const FGeometry& Allotte
 	{
 		return LayerId;
 	}
+
+	// Nodes built or rebuilt since the lines were set are found now, not on the next sync.
+	ResolveNodes();
 
 	const float PixelScale = WidgetEffectsDraw::QuantizeScale(WidgetEffectsDraw::GetPixelScale(AllottedGeometry));
 	const float Tolerance = WidgetShapeGeometry::GetTolerance(PixelScale);
@@ -1149,18 +1558,104 @@ void UWidgetPathLayer::PostEditChangeProperty(FPropertyChangedEvent& PropertyCha
 {
 	const FName ChangedName = PropertyChangedEvent.GetPropertyName();
 	const FName MemberName = PropertyChangedEvent.GetMemberPropertyName();
+	bool bLookChanged = false;
 	if (ChangedName == GET_MEMBER_NAME_CHECKED(UWidgetPathLayer, Preset))
 	{
 		WidgetPathPresets::Apply(Preset, Routing, Styles, Rules);
+		if (Preset != EWidgetPathPreset::Custom)
+		{
+			PresetAsset = nullptr;
+		}
+		bLookChanged = true;
+	}
+	else if (ChangedName == GET_MEMBER_NAME_CHECKED(UWidgetPathLayer, PresetAsset))
+	{
+		if (PresetAsset)
+		{
+			ApplyPresetAsset(PresetAsset);
+		}
+		bLookChanged = true;
 	}
 	else if (MemberName == GET_MEMBER_NAME_CHECKED(UWidgetPathLayer, Routing) || MemberName == GET_MEMBER_NAME_CHECKED(UWidgetPathLayer, Styles)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UWidgetPathLayer, Rules))
 	{
 		Preset = EWidgetPathPreset::Custom;
+		PresetAsset = nullptr;
+		bLookChanged = true;
 	}
 	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	// The Details panel edits the designer's preview copy and hands only the edited value on to the Widget Blueprint's own
+	// widget: the routing, styles and rules a preset just wrote would be lost at the next compile. They are written there too.
+	if (bLookChanged)
+	{
+		SyncLookToTemplate();
+	}
 }
 #endif
+
+void UWidgetPathLayer::SyncLookToTemplate()
+{
+#if WITH_EDITOR
+	UWidgetPathLayer* Template = Cast<UWidgetPathLayer>(WidgetEditorHooks::FindDesignerTemplate(this));
+	if (!Template)
+	{
+		return;
+	}
+	Template->Modify();
+	Template->Preset = Preset;
+	Template->PresetAsset = PresetAsset;
+	Template->Routing = Routing;
+	Template->Styles = Styles;
+	Template->Rules = Rules;
+	Template->MarkPackageDirty();
+#endif
+}
+
+void UWidgetPathLayer::PostLoad()
+{
+	Super::PostLoad();
+	NormalizeStates();
+}
+
+void UWidgetPathLayer::NormalizeStates()
+{
+	WidgetPathStates::Normalize(DefaultState, DefaultCustomState);
+	WidgetPathStates::Normalize(UnlockedNodeState, UnlockedCustomState);
+	WidgetPathStates::Normalize(AvailableNodeState, AvailableCustomState);
+	for (FWidgetPathNodeState& Entry : Nodes)
+	{
+		WidgetPathStates::Normalize(Entry.NodeState, Entry.CustomState);
+	}
+	for (FWidgetPathStyleRule& Rule : Rules)
+	{
+		WidgetPathStates::NormalizeFilter(Rule.FromNodeState, Rule.FromCustomState);
+		WidgetPathStates::NormalizeFilter(Rule.ToNodeState, Rule.ToCustomState);
+	}
+}
+
+FName UWidgetPathLayer::GetDefaultStateName() const
+{
+	const FName Name = WidgetPathStates::Resolve(DefaultState, DefaultCustomState);
+	return Name.IsNone() ? WidgetPathPresets::Locked() : Name;
+}
+
+FName UWidgetPathLayer::GetUnlockedStateName() const
+{
+	const FName Name = WidgetPathStates::Resolve(UnlockedNodeState, UnlockedCustomState);
+	return Name.IsNone() ? WidgetPathPresets::Unlocked() : Name;
+}
+
+FName UWidgetPathLayer::GetAvailableStateName() const
+{
+	const FName Name = WidgetPathStates::Resolve(AvailableNodeState, AvailableCustomState);
+	return Name.IsNone() ? WidgetPathPresets::Available() : Name;
+}
+
+bool UWidgetPathLayer::CanRouteThrough(FName StateName) const
+{
+	return !bUnavailableBlocksRoutes || StateName != WidgetPathPresets::Unavailable();
+}
 
 // ---------------------------------------------------------------------------------------------
 // Graph
@@ -1189,7 +1684,7 @@ void UWidgetPathLayer::CacheNames()
 	{
 		if (!Entry.Widget.IsNone())
 		{
-			AuthoredStates.Add(Entry.Widget, Entry.State);
+			AuthoredStates.Add(Entry.Widget, Entry.GetState());
 		}
 	}
 }
@@ -1259,7 +1754,7 @@ FName UWidgetPathLayer::GetRawState(UWidget* Node) const
 {
 	if (!Node)
 	{
-		return DefaultNodeState;
+		return GetDefaultStateName();
 	}
 	if (const FNodeRecord* Record = NodeRecords.Find(TObjectKey<UWidget>(Node)))
 	{
@@ -1279,7 +1774,7 @@ FName UWidgetPathLayer::GetRawState(UWidget* Node) const
 			return *Authored;
 		}
 	}
-	return DefaultNodeState;
+	return GetDefaultStateName();
 }
 
 void UWidgetPathLayer::ComputeStates(const TArray<FEdgeInfo>& InEdges, TMap<UWidget*, FName>& OutStates) const
@@ -1296,24 +1791,28 @@ void UWidgetPathLayer::ComputeStates(const TArray<FEdgeInfo>& InEdges, TMap<UWid
 			OutStates.Add(Edge.To, GetRawState(Edge.To));
 		}
 	}
-	if (!bDeriveAvailable || AvailableState.IsNone())
+	if (!bDeriveAvailable)
 	{
 		return;
 	}
 
-	// Derived from the raw states only, so one Available doesn't make the next one Available.
+	// Derived from the raw states only, so one Available doesn't make the next one Available. Only a node in the default
+	// state becomes Available - an Unavailable one stays so.
+	const FName UnlockedName = GetUnlockedStateName();
+	const FName DefaultName = GetDefaultStateName();
+	const FName AvailableName = GetAvailableStateName();
 	const TMap<UWidget*, FName> Raw = OutStates;
 	for (const FEdgeInfo& Edge : InEdges)
 	{
 		const FName FromState = Raw.FindRef(Edge.From);
 		const FName ToState = Raw.FindRef(Edge.To);
-		if (FromState == UnlockedState && ToState == DefaultNodeState)
+		if (FromState == UnlockedName && ToState == DefaultName)
 		{
-			OutStates.Add(Edge.To, AvailableState);
+			OutStates.Add(Edge.To, AvailableName);
 		}
-		if (!bRoutesFollowDirection && ToState == UnlockedState && FromState == DefaultNodeState)
+		if (!bRoutesFollowDirection && ToState == UnlockedName && FromState == DefaultName)
 		{
-			OutStates.Add(Edge.From, AvailableState);
+			OutStates.Add(Edge.From, AvailableName);
 		}
 	}
 }
@@ -1321,7 +1820,8 @@ void UWidgetPathLayer::ComputeStates(const TArray<FEdgeInfo>& InEdges, TMap<UWid
 TArray<UWidget*> UWidgetPathLayer::FindRouteIn(const TArray<FEdgeInfo>& InEdges, const TMap<UWidget*, FName>& States, UWidget* Target) const
 {
 	TArray<UWidget*> Route;
-	if (!Target || States.FindRef(Target) == UnlockedState)
+	const FName UnlockedName = GetUnlockedStateName();
+	if (!Target || States.FindRef(Target) == UnlockedName || !CanRouteThrough(States.FindRef(Target)))
 	{
 		return Route;
 	}
@@ -1350,8 +1850,14 @@ TArray<UWidget*> UWidgetPathLayer::FindRouteIn(const TArray<FEdgeInfo>& InEdges,
 			{
 				continue;
 			}
+			const FName NextState = States.FindRef(Next);
+			if (NextState != UnlockedName && !CanRouteThrough(NextState))
+			{
+				// An unavailable node is a dead end: no route goes through it.
+				continue;
+			}
 			TowardTarget.Add(Next, Current);
-			if (States.FindRef(Next) == UnlockedState)
+			if (NextState == UnlockedName)
 			{
 				Found = Next;
 				break;
@@ -1410,8 +1916,10 @@ int32 UWidgetPathLayer::ResolveStyle(const FEdgeInfo& Edge, const TMap<UWidget*,
 		{
 			continue;
 		}
-		const bool bForward = StateMatches(Rule.FromState, FromState) && StateMatches(Rule.ToState, ToState);
-		const bool bBackward = Rule.bEitherWay && StateMatches(Rule.FromState, ToState) && StateMatches(Rule.ToState, FromState);
+		const FName RuleFrom = Rule.GetFromState();
+		const FName RuleTo = Rule.GetToState();
+		const bool bForward = StateMatches(RuleFrom, FromState) && StateMatches(RuleTo, ToState);
+		const bool bBackward = Rule.bEitherWay && StateMatches(RuleFrom, ToState) && StateMatches(RuleTo, FromState);
 		if (!bForward && !bBackward)
 		{
 			continue;
@@ -1573,7 +2081,8 @@ void UWidgetPathLayer::Push(bool bAnimate)
 		}
 	}
 
-	const int32 DefaultProgressLook = FindStyleIndex(UnlockedState);
+	const int32 DefaultProgressLook = FindStyleIndex(GetUnlockedStateName());
+	UWidget* HoveredWidget = HoveredNode.Get();
 	TArray<FWidgetPathSlateEdge> SlateEdges;
 	SlateEdges.Reserve(EdgeInfos.Num());
 	for (const FEdgeInfo& Edge : EdgeInfos)
@@ -1581,6 +2090,9 @@ void UWidgetPathLayer::Push(bool bAnimate)
 		const FWidgetPathRouting& EdgeRouting = Edge.Routing ? *Edge.Routing : Routing;
 		FWidgetPathSlateEdge& Slate = SlateEdges.AddDefaulted_GetRef();
 		Slate.Key = Edge.Key;
+		// The Slate layer finds the nodes' Slate widgets from these itself, whenever they are built or rebuilt.
+		Slate.FromWidget = Edge.From;
+		Slate.ToWidget = Edge.To;
 		Slate.From = Edge.From->GetCachedWidget();
 		Slate.To = Edge.To->GetCachedWidget();
 		Slate.FromShape = ReadNodeShape(Edge.From, EdgeRouting);
@@ -1588,9 +2100,15 @@ void UWidgetPathLayer::Push(bool bAnimate)
 		Slate.Routing = EdgeRouting;
 		if (UWidget* Center = FindNode(EdgeRouting.OrbitCenter))
 		{
+			Slate.OrbitCenterWidget = Center;
 			Slate.OrbitCenter = Center->GetCachedWidget();
 		}
-		Slate.Look = ResolveStyle(Edge, States, Lit.Contains(Edge.Key));
+		const bool bLit = Lit.Contains(Edge.Key);
+		Slate.Look = ResolveStyle(Edge, States, bLit);
+		Slate.bHighlighted = bLit;
+		Slate.bHovered = HoveredWidget && (Edge.From == HoveredWidget || Edge.To == HoveredWidget);
+		Slate.bSelected = Selected && (Edge.From == Selected || Edge.To == Selected);
+		Slate.Random = static_cast<float>((Edge.Key ^ (Edge.Key >> 29)) % 10007ull) / 10006.f;
 		const int32 ProgressLook = FindStyleIndex(Edge.ProgressStyle);
 		Slate.ProgressLook = ProgressLook != INDEX_NONE ? ProgressLook : DefaultProgressLook;
 		Slate.Progress = FMath::Clamp(Edge.Progress, 0.f, 1.f);
@@ -1636,14 +2154,19 @@ void UWidgetPathLayer::PollNodes(float DeltaTime)
 				{
 					continue;
 				}
-				const FName Read = IWidgetPathNode::Execute_GetWidgetPathNodeState(Node);
+				EWidgetPathState ReadKind = EWidgetPathState::Locked;
+				FName ReadCustom;
+				const bool bReports = IWidgetPathNode::Execute_GetWidgetPathNodeState(Node, ReadKind, ReadCustom);
+				const FName Read = bReports ? WidgetPathStates::Resolve(ReadKind, ReadCustom) : NAME_None;
 				FNodeRecord& Record = NodeRecords.FindOrAdd(TObjectKey<UWidget>(Node));
 				if (Record.ReadState != Read)
 				{
 					Record.Widget = Node;
 					Record.ReadState = Read;
 					NoteStateChange(Node);
-					OnNodeStateChanged.Broadcast(Node, GetRawState(Node));
+					FName ChangedCustom;
+					const EWidgetPathState Changed = WidgetPathStates::FromName(GetRawState(Node), ChangedCustom);
+					OnNodeStateChanged.Broadcast(Node, Changed, ChangedCustom);
 					bChanged = true;
 				}
 			}
@@ -1808,42 +2331,41 @@ bool UWidgetPathLayer::SetConnectionProgress(UWidget* FromNode, UWidget* ToNode,
 	return false;
 }
 
-void UWidgetPathLayer::SetNodeState(UWidget* Node, FName State, bool bAnimate)
+bool UWidgetPathLayer::SetNodeStateName(UWidget* Node, FName StateName)
 {
 	if (!Node)
 	{
-		return;
+		return false;
 	}
 	FNodeRecord& Record = NodeRecords.FindOrAdd(TObjectKey<UWidget>(Node));
 	Record.Widget = Node;
-	if (Record.SetState == State)
+	if (Record.SetState == StateName)
 	{
-		return;
+		return false;
 	}
-	Record.SetState = State;
+	Record.SetState = StateName;
 	NoteStateChange(Node);
-	OnNodeStateChanged.Broadcast(Node, GetRawState(Node));
-	Push(bAnimate);
+	FName ChangedCustom;
+	const EWidgetPathState Changed = WidgetPathStates::FromName(GetRawState(Node), ChangedCustom);
+	OnNodeStateChanged.Broadcast(Node, Changed, ChangedCustom);
+	return true;
 }
 
-void UWidgetPathLayer::SetNodeStates(const TArray<UWidget*>& InNodes, FName State, bool bAnimate)
+void UWidgetPathLayer::SetNodeState(UWidget* Node, EWidgetPathState State, FName CustomState, bool bAnimate)
 {
+	if (SetNodeStateName(Node, WidgetPathStates::Resolve(State, CustomState)))
+	{
+		Push(bAnimate);
+	}
+}
+
+void UWidgetPathLayer::SetNodeStates(const TArray<UWidget*>& InNodes, EWidgetPathState State, FName CustomState, bool bAnimate)
+{
+	const FName StateName = WidgetPathStates::Resolve(State, CustomState);
 	bool bChanged = false;
 	for (UWidget* Node : InNodes)
 	{
-		if (!Node)
-		{
-			continue;
-		}
-		FNodeRecord& Record = NodeRecords.FindOrAdd(TObjectKey<UWidget>(Node));
-		Record.Widget = Node;
-		if (Record.SetState != State)
-		{
-			Record.SetState = State;
-			NoteStateChange(Node);
-			OnNodeStateChanged.Broadcast(Node, GetRawState(Node));
-			bChanged = true;
-		}
+		bChanged |= SetNodeStateName(Node, StateName);
 	}
 	if (bChanged)
 	{
@@ -1851,7 +2373,7 @@ void UWidgetPathLayer::SetNodeStates(const TArray<UWidget*>& InNodes, FName Stat
 	}
 }
 
-FName UWidgetPathLayer::GetNodeState(UWidget* Node) const
+FName UWidgetPathLayer::GetNodeStateName(UWidget* Node) const
 {
 	TArray<FEdgeInfo> EdgeInfos;
 	GatherEdges(EdgeInfos);
@@ -1864,8 +2386,20 @@ FName UWidgetPathLayer::GetNodeState(UWidget* Node) const
 	return GetRawState(Node);
 }
 
-TArray<UWidget*> UWidgetPathLayer::GetNodesInState(FName State) const
+EWidgetPathState UWidgetPathLayer::GetNodeState(UWidget* Node, FName& CustomState) const
 {
+	return WidgetPathStates::FromName(GetNodeStateName(Node), CustomState);
+}
+
+bool UWidgetPathLayer::IsNodeInState(UWidget* Node, EWidgetPathState State, FName CustomState) const
+{
+	const FName Wanted = WidgetPathStates::Resolve(State, CustomState);
+	return Node && !Wanted.IsNone() && GetNodeStateName(Node) == Wanted;
+}
+
+TArray<UWidget*> UWidgetPathLayer::GetNodesInState(EWidgetPathState State, FName CustomState) const
+{
+	const FName Wanted = WidgetPathStates::Resolve(State, CustomState);
 	TArray<FEdgeInfo> EdgeInfos;
 	GatherEdges(EdgeInfos);
 	TMap<UWidget*, FName> States;
@@ -1873,7 +2407,7 @@ TArray<UWidget*> UWidgetPathLayer::GetNodesInState(FName State) const
 	TArray<UWidget*> Out;
 	for (const TPair<UWidget*, FName>& Entry : States)
 	{
-		if (Entry.Value == State)
+		if (!Wanted.IsNone() && Entry.Value == Wanted)
 		{
 			Out.Add(Entry.Key);
 		}
@@ -1970,8 +2504,60 @@ void UWidgetPathLayer::ApplyPreset(EWidgetPathPreset InPreset)
 {
 	Preset = InPreset;
 	WidgetPathPresets::Apply(Preset, Routing, Styles, Rules);
+	if (Preset != EWidgetPathPreset::Custom)
+	{
+		PresetAsset = nullptr;
+	}
 	bLooksDirty = true;
 	Push(false);
+}
+
+void UWidgetPathLayer::ApplyPresetAsset(UWidgetPathPresetAsset* InPresetAsset)
+{
+	if (!InPresetAsset)
+	{
+		return;
+	}
+	PresetAsset = InPresetAsset;
+	Preset = EWidgetPathPreset::Custom;
+	if (InPresetAsset->bApplyRouting)
+	{
+		Routing = InPresetAsset->Routing;
+	}
+	Styles = InPresetAsset->Styles;
+	Rules = InPresetAsset->Rules;
+	bLooksDirty = true;
+	Push(false);
+}
+
+void UWidgetPathLayer::CopyToPresetAsset(UWidgetPathPresetAsset* Target) const
+{
+	if (!Target)
+	{
+		return;
+	}
+	Target->Modify();
+	Target->Routing = Routing;
+	Target->Styles = Styles;
+	Target->Rules = Rules;
+	Target->MarkPackageDirty();
+}
+
+void UWidgetPathLayer::SaveAsPreset()
+{
+#if WITH_EDITOR
+	const FString DefaultName = FString::Printf(TEXT("WPP_%s"), *GetName());
+	UWidgetPathPresetAsset* Created = Cast<UWidgetPathPresetAsset>(WidgetEditorHooks::CreateAsset(UWidgetPathPresetAsset::StaticClass(), DefaultName));
+	if (!Created)
+	{
+		return;
+	}
+	CopyToPresetAsset(Created);
+	Modify();
+	PresetAsset = Created;
+	Preset = EWidgetPathPreset::Custom;
+	SyncLookToTemplate();
+#endif
 }
 
 void UWidgetPathLayer::SetStyleLook(FName StyleName, const FWidgetPathLook& InLook)

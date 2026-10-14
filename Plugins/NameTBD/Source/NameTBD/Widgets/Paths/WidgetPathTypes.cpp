@@ -2,6 +2,7 @@
 
 #include "WidgetPathTypes.h"
 
+#include "Materials/MaterialInterface.h"
 #include "NameTBD/Widgets/WidgetEffectsDraw.h"
 #include "NameTBD/Widgets/Shapes/WidgetShapeGeometry.h"
 
@@ -38,6 +39,39 @@ uint32 FWidgetPathRouting::GetHash() const
 	return Hash;
 }
 
+uint32 FWidgetPathDistortion::GetHash() const
+{
+	uint32 Hash = HashCombineFast(GetTypeHash(WaveAmplitude), GetTypeHash(Wavelength));
+	Hash = HashCombineFast(Hash, HashCombineFast(GetTypeHash(WaveSpeed), GetTypeHash(JitterAmplitude)));
+	Hash = HashCombineFast(Hash, HashCombineFast(GetTypeHash(JitterSpacing), GetTypeHash(JitterRate)));
+	return HashCombineFast(Hash, HashCombineFast(GetTypeHash(bSmoothJitter), GetTypeHash(EndFade)));
+}
+
+FWidgetPathStroke::FWidgetPathStroke()
+{
+	GradientStops.Add(FWidgetShapeGradientStop(0.f, FLinearColor::White));
+	GradientStops.Add(FWidgetShapeGradientStop(1.f, FLinearColor(1.f, 1.f, 1.f, 0.35f)));
+}
+
+FLinearColor FWidgetPathStroke::ColorAt(float Fraction) const
+{
+	return Paint == EWidgetPathPaint::Gradient ? WidgetPathColors::Sample(GradientStops, Fraction, Color) : Color;
+}
+
+bool FWidgetPathStroke::IsAnimated() const
+{
+	return (DashLength > 0.f && DashSpeed != 0.f)
+		|| (Paint == EWidgetPathPaint::Image && (ImageScrollSpeed != 0.f || Image.GetMaterial() != nullptr));
+}
+
+uint32 FWidgetPathStroke::GetHash() const
+{
+	uint32 Hash = HashCombineFast(GetTypeHash(Width), GetTypeHash(Offset));
+	Hash = HashCombineFast(Hash, HashCombineFast(GetTypeHash(StartWidthScale), GetTypeHash(EndWidthScale)));
+	Hash = HashCombineFast(Hash, HashCombineFast(GetTypeHash(DashLength), GetTypeHash(DashGap)));
+	return HashCombineFast(Hash, GetTypeHash(bAboveLine));
+}
+
 FWidgetPathLook::FWidgetPathLook()
 {
 	GradientStops.Add(FWidgetShapeGradientStop(0.f, FLinearColor::White));
@@ -46,48 +80,217 @@ FWidgetPathLook::FWidgetPathLook()
 
 bool FWidgetPathLook::IsAnimated() const
 {
+	// A material can move on its own (its Time): drawn again every frame while it shows.
+	const bool bMaterial = (Paint == EWidgetPathPaint::Image && ImageSource == EWidgetImageSource::Texture && Cast<UMaterialInterface>(Image.GetResourceObject()))
+		|| (bGlow && GlowImage.GetMaterial()) || (Flow != EWidgetPathFlow::None && FlowImage.GetMaterial())
+		|| StartMarkerImage.GetMaterial() || EndMarkerImage.GetMaterial();
+	bool bStrokes = false;
+	for (const FWidgetPathStroke& Stroke : Strokes)
+	{
+		bStrokes |= Stroke.bEnabled && (Stroke.IsAnimated() || (Stroke.bBreathe && Breathe > 0.f));
+	}
 	return (DashLength > 0.f && DashSpeed != 0.f)
 		|| (Flow != EWidgetPathFlow::None && FlowSpeed != 0.f)
 		|| Breathe > 0.f
-		|| (Paint == EWidgetPathPaint::Image && ImageScrollSpeed != 0.f);
+		|| (Paint == EWidgetPathPaint::Image && ImageScrollSpeed != 0.f)
+		|| Distortion.IsAnimated()
+		|| bMaterial
+		|| bStrokes;
 }
 
 FLinearColor FWidgetPathLook::ColorAt(float Fraction) const
 {
-	if (Paint != EWidgetPathPaint::Gradient || GradientStops.Num() == 0)
+	return Paint == EWidgetPathPaint::Gradient ? WidgetPathColors::Sample(GradientStops, Fraction, Color) : Color;
+}
+
+bool FWidgetPathLook::HasVaryingWidth() const
+{
+	return StartWidthScale != 1.f || EndWidthScale != 1.f || bUseWidthCurve;
+}
+
+float FWidgetPathLook::WidthScaleAt(float Fraction) const
+{
+	const float Along = FMath::Clamp(Fraction, 0.f, 1.f);
+	float Scale = FMath::Lerp(StartWidthScale, EndWidthScale, Along);
+	if (bUseWidthCurve)
 	{
-		return Color;
+		if (const FRichCurve* Shape = WidthCurve.GetRichCurveConst())
+		{
+			if (Shape->GetNumKeys() > 0)
+			{
+				Scale *= Shape->Eval(Along);
+			}
+		}
+	}
+	return FMath::Max(Scale, 0.f);
+}
+
+FWidgetEffectImage FWidgetPathLook::GetLineImage() const
+{
+	FWidgetEffectImage Line;
+	Line.ImageSource = ImageSource;
+	Line.Image = Image;
+	Line.SVG = SVG;
+	Line.MaterialParameters = MaterialParameters;
+	return Line;
+}
+
+namespace WidgetPathColors
+{
+	FLinearColor Sample(const TArray<FWidgetShapeGradientStop>& Stops, float Fraction, const FLinearColor& Tint)
+	{
+		if (Stops.Num() == 0)
+		{
+			return Tint;
+		}
+
+		// Stops in any order: the nearest below and above Fraction.
+		const float Position = FMath::Clamp(Fraction, 0.f, 1.f);
+		const FWidgetShapeGradientStop* Below = nullptr;
+		const FWidgetShapeGradientStop* Above = nullptr;
+		for (const FWidgetShapeGradientStop& Stop : Stops)
+		{
+			if (Stop.Position <= Position && (!Below || Stop.Position >= Below->Position))
+			{
+				Below = &Stop;
+			}
+			if (Stop.Position >= Position && (!Above || Stop.Position <= Above->Position))
+			{
+				Above = &Stop;
+			}
+		}
+		FLinearColor Blended;
+		if (!Below)
+		{
+			Blended = Above->Color;
+		}
+		else if (!Above || Above == Below || Above->Position <= Below->Position)
+		{
+			Blended = Below->Color;
+		}
+		else
+		{
+			Blended = FMath::Lerp(Below->Color, Above->Color, (Position - Below->Position) / (Above->Position - Below->Position));
+		}
+		return Blended * Tint;
+	}
+}
+
+// =====================================================================================================
+// States
+// =====================================================================================================
+
+FName FWidgetPathStyleRule::GetFromState() const
+{
+	return WidgetPathStates::ResolveFilter(FromNodeState, FromCustomState);
+}
+
+FName FWidgetPathStyleRule::GetToState() const
+{
+	return WidgetPathStates::ResolveFilter(ToNodeState, ToCustomState);
+}
+
+FName FWidgetPathNodeState::GetState() const
+{
+	return WidgetPathStates::Resolve(NodeState, CustomState);
+}
+
+namespace WidgetPathStates
+{
+	FName GetName(EWidgetPathState State)
+	{
+		switch (State)
+		{
+		case EWidgetPathState::Locked: return WidgetPathPresets::Locked();
+		case EWidgetPathState::Unlocked: return WidgetPathPresets::Unlocked();
+		case EWidgetPathState::Available: return WidgetPathPresets::Available();
+		case EWidgetPathState::Unavailable: return WidgetPathPresets::Unavailable();
+		default: return NAME_None;
+		}
 	}
 
-	// Stops in any order: the nearest below and above Fraction.
-	const float Position = FMath::Clamp(Fraction, 0.f, 1.f);
-	const FWidgetShapeGradientStop* Below = nullptr;
-	const FWidgetShapeGradientStop* Above = nullptr;
-	for (const FWidgetShapeGradientStop& Stop : GradientStops)
+	FName Resolve(EWidgetPathState State, FName CustomState)
 	{
-		if (Stop.Position <= Position && (!Below || Stop.Position >= Below->Position))
+		return CustomState.IsNone() ? GetName(State) : CustomState;
+	}
+
+	FName ResolveFilter(EWidgetPathStateFilter Filter, FName CustomState)
+	{
+		if (!CustomState.IsNone())
 		{
-			Below = &Stop;
+			return CustomState;
 		}
-		if (Stop.Position >= Position && (!Above || Stop.Position <= Above->Position))
+		switch (Filter)
 		{
-			Above = &Stop;
+		case EWidgetPathStateFilter::Locked: return WidgetPathPresets::Locked();
+		case EWidgetPathStateFilter::Unlocked: return WidgetPathPresets::Unlocked();
+		case EWidgetPathStateFilter::Available: return WidgetPathPresets::Available();
+		case EWidgetPathStateFilter::Unavailable: return WidgetPathPresets::Unavailable();
+		default: return NAME_None;
 		}
 	}
-	FLinearColor Blended;
-	if (!Below)
+
+	EWidgetPathState FromName(FName Name, FName& OutCustomState)
 	{
-		Blended = Above->Color;
+		OutCustomState = NAME_None;
+		// FName compares without case: "unlocked" is Unlocked.
+		if (Name.IsNone() || Name == WidgetPathPresets::Locked())
+		{
+			return EWidgetPathState::Locked;
+		}
+		if (Name == WidgetPathPresets::Unlocked())
+		{
+			return EWidgetPathState::Unlocked;
+		}
+		if (Name == WidgetPathPresets::Available())
+		{
+			return EWidgetPathState::Available;
+		}
+		if (Name == WidgetPathPresets::Unavailable())
+		{
+			return EWidgetPathState::Unavailable;
+		}
+		OutCustomState = Name;
+		return EWidgetPathState::Custom;
 	}
-	else if (!Above || Above == Below || Above->Position <= Below->Position)
+
+	void Normalize(EWidgetPathState& State, FName& CustomState)
 	{
-		Blended = Below->Color;
+		if (CustomState.IsNone())
+		{
+			return;
+		}
+		FName Remaining;
+		const EWidgetPathState BuiltIn = FromName(CustomState, Remaining);
+		if (Remaining.IsNone())
+		{
+			State = BuiltIn;
+			CustomState = NAME_None;
+		}
 	}
-	else
+
+	void NormalizeFilter(EWidgetPathStateFilter& Filter, FName& CustomState)
 	{
-		Blended = FMath::Lerp(Below->Color, Above->Color, (Position - Below->Position) / (Above->Position - Below->Position));
+		if (CustomState.IsNone())
+		{
+			return;
+		}
+		FName Remaining;
+		const EWidgetPathState BuiltIn = FromName(CustomState, Remaining);
+		if (!Remaining.IsNone())
+		{
+			return;
+		}
+		switch (BuiltIn)
+		{
+		case EWidgetPathState::Locked: Filter = EWidgetPathStateFilter::Locked; break;
+		case EWidgetPathState::Unlocked: Filter = EWidgetPathStateFilter::Unlocked; break;
+		case EWidgetPathState::Available: Filter = EWidgetPathStateFilter::Available; break;
+		case EWidgetPathState::Unavailable: Filter = EWidgetPathStateFilter::Unavailable; break;
+		default: return;
+		}
+		CustomState = NAME_None;
 	}
-	return Blended * Color;
 }
 
 // =====================================================================================================
@@ -759,6 +962,144 @@ namespace WidgetPathGeometry
 		OutDirection = (Points.Last() - Points[Points.Num() - 2]).GetSafeNormal();
 		return true;
 	}
+
+	void BuildRibbon(const TArray<FVector2f>& Points, TFunctionRef<float(float)> WidthAt, TFunctionRef<float(float)> OffsetAt, float AntiAlias,
+		float AlongStart, float TotalLength, FWidgetShapeMesh& Out)
+	{
+		const int32 Count = Points.Num();
+		if (Count < 2)
+		{
+			return;
+		}
+		const float Fringe = FMath::Max(AntiAlias, 0.01f) * 0.5f;
+		const uint32 Base = static_cast<uint32>(Out.Vertices.Num());
+		Out.Vertices.Reserve(Out.Vertices.Num() + Count * 4);
+		Out.Indices.Reserve(Out.Indices.Num() + (Count - 1) * 18);
+
+		float Walked = 0.f;
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			if (Index > 0)
+			{
+				Walked += FVector2f::Distance(Points[Index - 1], Points[Index]);
+			}
+
+			// The way the line runs here (the two segments' directions together - the miter), and how far a side must go along it
+			// to keep the width across a turn.
+			FVector2f In = Index > 0 ? (Points[Index] - Points[Index - 1]).GetSafeNormal() : FVector2f::ZeroVector;
+			FVector2f Next = Index < Count - 1 ? (Points[Index + 1] - Points[Index]).GetSafeNormal() : FVector2f::ZeroVector;
+			In = In.IsNearlyZero() ? Next : In;
+			Next = Next.IsNearlyZero() ? In : Next;
+			FVector2f Tangent = (In + Next).GetSafeNormal();
+			if (Tangent.IsNearlyZero())
+			{
+				Tangent = Next;
+			}
+			const FVector2f Normal(-Tangent.Y, Tangent.X);
+			const FVector2f SegmentNormal(-Next.Y, Next.X);
+			const float Miter = 1.f / FMath::Max(FVector2f::DotProduct(Normal, SegmentNormal), 0.25f);
+
+			// Across: a solid core and an anti-aliased fringe each side; thinner than the fringe, a faint line rather than a thin one.
+			const float Width = FMath::Max(WidthAt(Walked), 0.f);
+			const float Offset = OffsetAt(Walked);
+			float Inner = Width * 0.5f - Fringe;
+			float Coverage = 1.f;
+			if (Inner < 0.f)
+			{
+				Coverage = FMath::Clamp(Width / (Fringe * 2.f), 0.f, 1.f);
+				Inner = 0.f;
+			}
+			const float Outer = Inner + Fringe * 2.f;
+			const float Across[4] = { Offset - Outer, Offset - Inner, Offset + Inner, Offset + Outer };
+			const float Covered[4] = { 0.f, Coverage, Coverage, 0.f };
+			for (int32 Side = 0; Side < 4; ++Side)
+			{
+				const FVector2f Position = Points[Index] + Normal * (Across[Side] * Miter);
+				const float V = (Across[Side] - Across[0]) / FMath::Max(Outer * 2.f, KINDA_SMALL_NUMBER);
+				Out.Vertices.Add(FWidgetShapeMeshVertex(Position, Covered[Side], FVector2f(AlongStart + Walked, V), TotalLength));
+			}
+			if (Index > 0)
+			{
+				const uint32 A = Base + static_cast<uint32>((Index - 1) * 4);
+				const uint32 B = Base + static_cast<uint32>(Index * 4);
+				for (uint32 Strip = 0; Strip < 3; ++Strip)
+				{
+					Out.Indices.Append({ A + Strip, A + Strip + 1, B + Strip + 1, A + Strip, B + Strip + 1, B + Strip });
+				}
+			}
+		}
+	}
+
+	namespace
+	{
+		/** A well-mixed hash of two numbers (murmur3's finalizer), as a value in -1..1. */
+		float SignedNoise(uint32 Seed, int32 Knot)
+		{
+			uint32 Hash = Seed ^ (static_cast<uint32>(Knot) * 0x9E3779B1u);
+			Hash ^= Hash >> 16;
+			Hash *= 0x85EBCA6Bu;
+			Hash ^= Hash >> 13;
+			Hash *= 0xC2B2AE35u;
+			Hash ^= Hash >> 16;
+			return static_cast<float>(Hash & 0xFFFFu) / 65535.f * 2.f - 1.f;
+		}
+	}
+
+	void Distort(const TArray<FVector2f>& Points, const FWidgetPathDistortion& Distortion, double Time, uint32 Seed, TArray<FVector2f>& Out)
+	{
+		Out = Points;
+		const int32 Count = Points.Num();
+		if (Count < 3 || !Distortion.IsActive())
+		{
+			return;
+		}
+		TArray<float> Distances;
+		Distances.SetNumUninitialized(Count);
+		Distances[0] = 0.f;
+		for (int32 Index = 1; Index < Count; ++Index)
+		{
+			Distances[Index] = Distances[Index - 1] + FVector2f::Distance(Points[Index - 1], Points[Index]);
+		}
+		const float Length = Distances.Last();
+		if (Length <= KINDA_SMALL_NUMBER)
+		{
+			return;
+		}
+
+		// The jitter's pattern changes JitterRate times a second, all at once - lightning flickering to a new bolt.
+		const uint32 JitterSeed = HashCombineFast(Seed, Distortion.JitterRate > 0.f ? static_cast<uint32>(FMath::FloorToInt64(Time * Distortion.JitterRate)) : 0u);
+		const float Wavelength = FMath::Max(Distortion.Wavelength, 6.f);
+		const float Spacing = FMath::Max(Distortion.JitterSpacing, 4.f);
+		const float Fade = FMath::Max(Distortion.EndFade, 0.f);
+		for (int32 Index = 1; Index < Count - 1; ++Index)
+		{
+			const float Along = Distances[Index];
+			const FVector2f Tangent = (Points[Index + 1] - Points[Index - 1]).GetSafeNormal();
+			const FVector2f Normal(-Tangent.Y, Tangent.X);
+			float Sideways = 0.f;
+			if (Distortion.WaveAmplitude > 0.f)
+			{
+				Sideways += Distortion.WaveAmplitude * FMath::Sin(UE_TWO_PI * static_cast<float>((Along - Distortion.WaveSpeed * Time) / Wavelength));
+			}
+			if (Distortion.JitterAmplitude > 0.f)
+			{
+				const float Knots = Along / Spacing;
+				const int32 Knot = FMath::FloorToInt(Knots);
+				float Alpha = Knots - static_cast<float>(Knot);
+				if (Distortion.bSmoothJitter)
+				{
+					Alpha = Alpha * Alpha * (3.f - 2.f * Alpha);
+				}
+				Sideways += Distortion.JitterAmplitude * FMath::Lerp(SignedNoise(JitterSeed, Knot), SignedNoise(JitterSeed, Knot + 1), Alpha);
+			}
+			if (Fade > 0.f)
+			{
+				const float Edge = FMath::Clamp(FMath::Min(Along, Length - Along) / Fade, 0.f, 1.f);
+				Sideways *= Edge * Edge * (3.f - 2.f * Edge);
+			}
+			Out[Index] = Points[Index] + Normal * Sideways;
+		}
+	}
 }
 
 // =====================================================================================================
@@ -770,10 +1111,12 @@ namespace WidgetPathPresets
 	FName Locked() { static const FName Name(TEXT("Locked")); return Name; }
 	FName Available() { static const FName Name(TEXT("Available")); return Name; }
 	FName Unlocked() { static const FName Name(TEXT("Unlocked")); return Name; }
+	FName Unavailable() { static const FName Name(TEXT("Unavailable")); return Name; }
 
 	FName LockedStyle() { static const FName Name(TEXT("Locked")); return Name; }
 	FName AvailableStyle() { static const FName Name(TEXT("Available")); return Name; }
 	FName UnlockedStyle() { static const FName Name(TEXT("Unlocked")); return Name; }
+	FName UnavailableStyle() { static const FName Name(TEXT("Unavailable")); return Name; }
 	FName HighlightedStyle() { static const FName Name(TEXT("Highlighted")); return Name; }
 
 	namespace
@@ -845,13 +1188,34 @@ namespace WidgetPathPresets
 			Style.Look.DrawOrder = DrawOrder;
 		}
 
-		/** The rules every preset uses: a highlighted route first, then unlocked to unlocked, unlocked to available, the rest locked. */
+		/**
+		 * The rules every preset uses: a highlighted route first, then any line touching an unavailable node, unlocked to
+		 * unlocked, unlocked to available, the rest locked.
+		 */
 		void AddDefaultRules(TArray<FWidgetPathStyleRule>& Rules)
 		{
-			Rules.Add(FWidgetPathStyleRule(NAME_None, NAME_None, HighlightedStyle(), EWidgetPathMatch::Yes));
-			Rules.Add(FWidgetPathStyleRule(Unlocked(), Unlocked(), UnlockedStyle()));
-			Rules.Add(FWidgetPathStyleRule(Unlocked(), Available(), AvailableStyle()));
-			Rules.Add(FWidgetPathStyleRule(NAME_None, NAME_None, LockedStyle()));
+			Rules.Add(FWidgetPathStyleRule(EWidgetPathStateFilter::Any, EWidgetPathStateFilter::Any, HighlightedStyle(), EWidgetPathMatch::Yes));
+			Rules.Add(FWidgetPathStyleRule(EWidgetPathStateFilter::Unavailable, EWidgetPathStateFilter::Any, UnavailableStyle()));
+			Rules.Add(FWidgetPathStyleRule(EWidgetPathStateFilter::Unlocked, EWidgetPathStateFilter::Unlocked, UnlockedStyle()));
+			Rules.Add(FWidgetPathStyleRule(EWidgetPathStateFilter::Unlocked, EWidgetPathStateFilter::Available, AvailableStyle()));
+			Rules.Add(FWidgetPathStyleRule(EWidgetPathStateFilter::Any, EWidgetPathStateFilter::Any, LockedStyle()));
+		}
+
+		/** A preset's Unavailable look, from its Locked one: a faint dotted red-grey line - clearly not a way forward. */
+		FWidgetPathLook MakeUnavailable(const FWidgetPathLook& LockedLook)
+		{
+			FWidgetPathLook Look = LockedLook;
+			Look.Paint = EWidgetPathPaint::Color;
+			Look.Color = SRGB(170, 90, 90, FMath::Min(LockedLook.Color.A, 0.55f));
+			Look.bGlow = false;
+			Look.Breathe = 0.f;
+			Look.Flow = EWidgetPathFlow::None;
+			Look.Cap = EWidgetShapeLineCap::Round;
+			Look.DashLength = 0.5f;
+			Look.DashGap = FMath::Max(Look.Width * 2.5f, 5.f);
+			Look.DashSpeed = 0.f;
+			Look.Opacity = 0.75f;
+			return Look;
 		}
 	}
 
@@ -1032,5 +1396,50 @@ namespace WidgetPathPresets
 		default:
 			break;
 		}
+
+		// Every preset's Unavailable style, under the rest, from its Locked look.
+		if (const FWidgetPathStyle* LockedEntry = OutStyles.FindByPredicate([](const FWidgetPathStyle& Style) { return Style.Name == LockedStyle(); }))
+		{
+			const FWidgetPathLook UnavailableLook = MakeUnavailable(LockedEntry->Look);
+			AddStyle(OutStyles, UnavailableStyle(), UnavailableLook, -1);
+		}
+	}
+}
+
+// =====================================================================================================
+// Preset asset
+// =====================================================================================================
+
+UWidgetPathPresetAsset::UWidgetPathPresetAsset()
+{
+	WidgetPathPresets::Apply(EWidgetPathPreset::SkillTree, Routing, Styles, Rules);
+}
+
+TArray<FString> UWidgetPathPresetAsset::GetStyleOptions() const
+{
+	TArray<FString> Names;
+	Names.Add(TEXT("None"));
+	for (const FWidgetPathStyle& Style : Styles)
+	{
+		if (!Style.Name.IsNone())
+		{
+			Names.AddUnique(Style.Name.ToString());
+		}
+	}
+	return Names;
+}
+
+TArray<FString> UWidgetPathPresetAsset::GetWidgetOptions() const
+{
+	return { TEXT("None") };
+}
+
+void UWidgetPathPresetAsset::PostLoad()
+{
+	Super::PostLoad();
+	for (FWidgetPathStyleRule& Rule : Rules)
+	{
+		WidgetPathStates::NormalizeFilter(Rule.FromNodeState, Rule.FromCustomState);
+		WidgetPathStates::NormalizeFilter(Rule.ToNodeState, Rule.ToCustomState);
 	}
 }

@@ -30,9 +30,12 @@ class NAMETBD_API IWidgetPathNode
 	GENERATED_BODY()
 
 public:
-	/** The node's state - Locked, Available, Unlocked, or any name the layer's rules use. None: the layer decides (Set Node State, Nodes, Default Node State). */
+	/**
+	 * The node's state: Locked, Unlocked, Available or Unavailable - or a Custom State of the game's own (it wins over State).
+	 * Return false to let the layer decide (Set Node State, Nodes, Default Node State).
+	 */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Widget Path")
-	FName GetWidgetPathNodeState() const;
+	bool GetWidgetPathNodeState(EWidgetPathState& State, FName& CustomState) const;
 };
 
 /** How the Slate layer reads a node's outline. */
@@ -49,6 +52,14 @@ struct FWidgetPathSlateEdge
 {
 	/** The same for the same two nodes from one sync to the next - what a change of look is matched by. */
 	uint64 Key = 0;
+
+	/**
+	 * The nodes' widgets: their Slate widgets are found from them whenever they change - a node built after the layer (it comes
+	 * later in its panel), a node rebuilt (the designer's compile) - so a line never waits on its next sync to be drawn.
+	 */
+	TWeakObjectPtr<UWidget> FromWidget;
+	TWeakObjectPtr<UWidget> ToWidget;
+	TWeakObjectPtr<UWidget> OrbitCenterWidget;
 
 	TWeakPtr<SWidget> From;
 	TWeakPtr<SWidget> To;
@@ -67,6 +78,12 @@ struct FWidgetPathSlateEdge
 
 	/** How many steps from the tree's roots it is - its place in the intro. */
 	int32 Depth = 0;
+
+	/** What its materials are told (PathHighlighted, PathHovered, PathSelected, PathRandom). */
+	bool bHighlighted = false;
+	bool bHovered = false;
+	bool bSelected = false;
+	float Random = 0.f;
 };
 
 /** How the Slate layer animates. */
@@ -111,6 +128,9 @@ public:
 
 	/** At design time nothing is polled, and the intro isn't played on its own. */
 	void SetDesignTime(bool bInDesignTime) { bDesignTime = bInDesignTime; }
+
+	/** Finds the nodes' Slate widgets again from their widgets (any built or rebuilt since). True when any changed. */
+	bool ResolveNodes() const;
 
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
 		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
@@ -170,6 +190,23 @@ private:
 	void PaintPiece(const FDrawPiece& Piece, int32 Pass, const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
 		int32 PassLayer, const FWidgetStyle& InWidgetStyle, float PixelScale, float Tolerance, double Now) const;
 
+	/** The route a look draws along: the line's, or - with a Distortion - moved as it says now. */
+	const TArray<FVector2f>& GetLookRoute(const FEdgeState& State, int32 Look, double Now, TArray<FVector2f>& Scratch) const;
+
+	/** A look's extra strokes, under the line (bAbove false) or over it. */
+	void PaintStrokes(const FDrawPiece& Piece, bool bAbove, const TArray<FVector2f>& Route, const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
+		int32 PassLayer, const FWidgetStyle& InWidgetStyle, float PixelScale, double Now) const;
+
+	/** A picture drawn as a quad of Size at Center, its up (local -Y) along Up. */
+	void PaintImageQuad(uint64 Key, const FWidgetEffectImage& Image, const FWidgetEffectMaterialInputs& Inputs, const FVector2f& Center, const FVector2f& Up,
+		float Size, const FLinearColor& Tint, const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 PassLayer, const FWidgetStyle& InWidgetStyle) const;
+
+	/** The live values a piece's materials are given. */
+	void MakeMaterialInputs(const FDrawPiece& Piece, const FWidgetPathLook& Look, float TileLength, FWidgetEffectMaterialInputs& Out) const;
+
+	/** A key for one material instance: the line, the look and what in it. */
+	static uint64 MaterialKey(uint64 EdgeKey, int32 Look, int32 Slot);
+
 	TArray<FWidgetPathLook> Looks;
 	mutable TArray<FEdgeState> Edges;
 	TMap<uint64, int32> EdgeByKey;
@@ -181,9 +218,12 @@ private:
 
 	/** The SVGs looks lay along their lines, one drawing per look. */
 	mutable TMap<int32, TSharedPtr<FWidgetSVGBrush>> SVGBrushes;
+
+	/** The looks' materials (an instance per line and look and part) and their other pictures. */
+	mutable FWidgetEffectMaterials Materials;
 };
 
-DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnWidgetPathNodeStateChanged, UWidget*, Node, FName, State);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnWidgetPathNodeStateChanged, UWidget*, Node, EWidgetPathState, State, FName, CustomState);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWidgetPathNodeEvent, UWidget*, Node);
 
 /**
@@ -199,9 +239,13 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnWidgetPathNodeEvent, UWidget*, No
  * or chamfered corners, on 45-degree diagonals, as arcs, round an orbit or through waypoints. A change of state draws the new
  * look along the line from the node that was reached. Presets fill everything in for the common looks.
  *
- * Node states come from Set Node State (or the Nodes list, or the nodes themselves through the Widget Path Node interface);
- * Available is worked out on its own (a locked node next to an unlocked one). The layer also answers graph questions -
- * the route to a node, a node's neighbours - for the game's own unlock logic.
+ * Node states are picked, not typed - Locked, Unlocked, Available, Unavailable - with a Custom State for a game's own (it
+ * wins wherever it is given). They come from Set Node State (or the Nodes list, or the nodes themselves through the Widget
+ * Path Node interface); Available is worked out on its own (a locked node next to an unlocked one). The layer also answers
+ * graph questions - the route to a node, a node's neighbours - for the game's own unlock logic.
+ *
+ * Looks are kept as presets: the built-in ones (Preset), or a Widget Path Preset asset of your own (Preset Asset; Save As
+ * Preset makes one from this layer).
  */
 UCLASS(meta = (DisplayName = "Widget Path Layer"))
 class NAMETBD_API UWidgetPathLayer : public UWidget
@@ -215,8 +259,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Widget Path")
 	EWidgetPathPreset Preset = EWidgetPathPreset::SkillTree;
 
+	/**
+	 * A look of your own, saved as an asset (Save As Preset makes one from this layer): picking one puts its routing, styles
+	 * and rules here, as a built-in Preset does - every tree of a game sharing one look. Applied again with Apply Preset Asset
+	 * after the asset is edited.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Widget Path")
+	TObjectPtr<UWidgetPathPresetAsset> PresetAsset = nullptr;
+
 	/** How every line runs (a connection can override it). */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Routing", meta = (ShowOnlyInnerProperties))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Routing")
 	FWidgetPathRouting Routing;
 
 	/** The looks lines can take, by name. */
@@ -236,12 +288,20 @@ public:
 	TArray<FWidgetPathNodeState> Nodes;
 
 	/** The state of a node nothing has set. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Nodes", meta = (DisplayName = "Default Node State"))
+	EWidgetPathState DefaultState = EWidgetPathState::Locked;
+
+	/** A state of the game's own for nodes nothing has set - wins over Default Node State. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Nodes")
-	FName DefaultNodeState = TEXT("Locked");
+	FName DefaultCustomState;
 
 	/** The state that counts as reached: what Derive Available and routes start from. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Nodes", meta = (DisplayName = "Unlocked State"))
+	EWidgetPathState UnlockedNodeState = EWidgetPathState::Unlocked;
+
+	/** A state of the game's own that counts as reached - wins over Unlocked State. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Nodes")
-	FName UnlockedState = TEXT("Unlocked");
+	FName UnlockedCustomState;
 
 	/**
 	 * A node in Default Node State connected to a node in Unlocked State reads as Available State - so the game only says what
@@ -250,8 +310,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Nodes")
 	bool bDeriveAvailable = true;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Nodes", meta = (DisplayName = "Available State", EditCondition = "bDeriveAvailable", EditConditionHides))
+	EWidgetPathState AvailableNodeState = EWidgetPathState::Available;
+
+	/** A state of the game's own that Derive Available gives - wins over Available State. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Nodes", meta = (EditCondition = "bDeriveAvailable", EditConditionHides))
-	FName AvailableState = TEXT("Available");
+	FName AvailableCustomState;
+
+	/** Routes (Find Route, the highlighted route to a hovered or selected node) never pass through or end at an Unavailable node. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Nodes", meta = (DisplayName = "Routes Avoid Unavailable"))
+	bool bUnavailableBlocksRoutes = true;
 
 	/** Asks each node implementing Widget Path Node for its state, ten times a second, at runtime. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Nodes")
@@ -334,21 +402,35 @@ public:
 	// Nodes
 	// ---------------------------------------------------------------------------------------------
 
-	/** Sets a node's state (Locked, Unlocked, or any name the rules use). Its lines move to their new look as Transition says. */
-	UFUNCTION(BlueprintCallable, Category = "Widget Path|Nodes")
-	void SetNodeState(UWidget* Node, FName State, bool bAnimate = true);
+	/**
+	 * Sets a node's state: Locked, Unlocked, Available or Unavailable - or a Custom State of the game's own, which wins over
+	 * State when given (Custom with no Custom State clears what was set). Its lines move to their new look as Transition says.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget Path|Nodes", meta = (AdvancedDisplay = "CustomState"))
+	void SetNodeState(UWidget* Node, EWidgetPathState State, FName CustomState = NAME_None, bool bAnimate = true);
 
-	/** Sets the state of several nodes at once. */
-	UFUNCTION(BlueprintCallable, Category = "Widget Path|Nodes")
-	void SetNodeStates(const TArray<UWidget*>& InNodes, FName State, bool bAnimate = true);
+	/** Sets the state of several nodes at once (Custom State wins over State when given). */
+	UFUNCTION(BlueprintCallable, Category = "Widget Path|Nodes", meta = (AdvancedDisplay = "CustomState"))
+	void SetNodeStates(const TArray<UWidget*>& InNodes, EWidgetPathState State, FName CustomState = NAME_None, bool bAnimate = true);
 
-	/** A node's state as the rules see it: set, read, authored or derived (Available), else Default Node State. */
+	/**
+	 * A node's state as the rules see it: set, read, authored or derived (Available), else Default Node State. A state of the
+	 * game's own comes back as Custom, its name in Custom State.
+	 */
 	UFUNCTION(BlueprintPure, Category = "Widget Path|Nodes")
-	FName GetNodeState(UWidget* Node) const;
+	EWidgetPathState GetNodeState(UWidget* Node, FName& CustomState) const;
 
-	/** Every node (widget on a line) whose state is State. */
+	/** A node's state as a name - "Locked", "Unlocked", "Available", "Unavailable" or a Custom State - for text and saving. */
 	UFUNCTION(BlueprintPure, Category = "Widget Path|Nodes")
-	TArray<UWidget*> GetNodesInState(FName State) const;
+	FName GetNodeStateName(UWidget* Node) const;
+
+	/** Whether a node is in State (or in Custom State, when given). */
+	UFUNCTION(BlueprintPure, Category = "Widget Path|Nodes", meta = (AdvancedDisplay = "CustomState"))
+	bool IsNodeInState(UWidget* Node, EWidgetPathState State, FName CustomState = NAME_None) const;
+
+	/** Every node (widget on a line) in State - or in Custom State, when given. */
+	UFUNCTION(BlueprintPure, Category = "Widget Path|Nodes", meta = (AdvancedDisplay = "CustomState"))
+	TArray<UWidget*> GetNodesInState(EWidgetPathState State, FName CustomState = NAME_None) const;
 
 	/** Forgets the states set at runtime: back to the authored Nodes list and Default Node State. */
 	UFUNCTION(BlueprintCallable, Category = "Widget Path|Nodes")
@@ -401,6 +483,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Widget Path|Look")
 	void ApplyPreset(EWidgetPathPreset InPreset);
 
+	/** Puts a Widget Path Preset asset's routing (when it applies routing), styles and rules on the layer; it becomes the Preset Asset. */
+	UFUNCTION(BlueprintCallable, Category = "Widget Path|Look")
+	void ApplyPresetAsset(UWidgetPathPresetAsset* InPresetAsset);
+
+	/** Writes this layer's routing, styles and rules into a Widget Path Preset asset (at runtime too - an in-game theme editor). */
+	UFUNCTION(BlueprintCallable, Category = "Widget Path|Look")
+	void CopyToPresetAsset(UWidgetPathPresetAsset* Target) const;
+
+	/** Editor: saves this layer's routing, styles and rules as a new Widget Path Preset asset (the Save Asset As window), and picks it. */
+	UFUNCTION(CallInEditor, Category = "Widget Path")
+	void SaveAsPreset();
+
 	/** Changes (or adds) a style's look. */
 	UFUNCTION(BlueprintCallable, Category = "Widget Path|Look")
 	void SetStyleLook(FName StyleName, const FWidgetPathLook& InLook);
@@ -440,6 +534,9 @@ public:
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
+	// UObject
+	virtual void PostLoad() override;
+
 protected:
 	virtual TSharedRef<SWidget> RebuildWidget() override;
 
@@ -467,6 +564,23 @@ private:
 		FName ReadState;
 		uint32 ChangeSerial = 0;
 	};
+
+	/** The state names in use, as the rules match them. */
+	FName GetDefaultStateName() const;
+	FName GetUnlockedStateName() const;
+	FName GetAvailableStateName() const;
+
+	/** Sets a node's state by name (None clears it); true when it changed. */
+	bool SetNodeStateName(UWidget* Node, FName StateName);
+
+	/** Whether a route may pass through or end at a node in this state. */
+	bool CanRouteThrough(FName StateName) const;
+
+	/** Moves custom names that are built-in states' into the enums (assets from before the built-in states). */
+	void NormalizeStates();
+
+	/** Editor: copies the routing, styles, rules and presets onto the Widget Blueprint's own widget when this is a designer preview copy. */
+	void SyncLookToTemplate();
 
 	/** One line, both ends found. */
 	struct FEdgeInfo

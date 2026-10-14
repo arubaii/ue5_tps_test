@@ -3,11 +3,16 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Curves/CurveFloat.h"
+#include "Engine/DataAsset.h"
 #include "Styling/SlateBrush.h"
+#include "NameTBD/Widgets/WidgetEffectImage.h"
 #include "NameTBD/Widgets/WidgetSVG.h"
 #include "NameTBD/Widgets/Shapes/WidgetShapeTypes.h"
 
 #include "WidgetPathTypes.generated.h"
+
+struct FWidgetShapeMesh;
 
 /*
  * Widget Paths: lines drawn between widgets - the links of a skill tree, a talent web, a quest or tech tree, a level map, a
@@ -18,12 +23,17 @@
  *              step, 45-degree diagonals (metro / circuit), a bowed arc, round an orbit (radial trees), or through waypoints;
  *              corners round, sharp or chamfered; which side of each node it leaves and enters; how far short of the node it
  *              stops; the node's shape (box, rounded box, circle), so a line ends exactly at its edge.
- *   Looks    - what a line looks like: width, a color, a gradient along it or an image / material / SVG laid along it (U along,
- *              V across), dashes that can march, an outline, a soft glow that can breathe, things flowing along it (a pulse of
- *              light, dots, arrows), markers at its ends (arrows, dots, diamonds, bars).
- *   Styles   - named looks: Locked, Available, Unlocked, Highlighted...
- *   Rules    - which style a line takes from the states of the nodes at its ends (Locked, Available, Unlocked, or any name
- *              the game uses), whether it is on a highlighted route, and whether an end is hovered or selected.
+ *   Looks    - what a line looks like: width (tapering, or along a curve), a color, a gradient along it or an image / material
+ *              / SVG laid along it (U along, V across), dashes that can march, an outline, a soft glow that can breathe (or
+ *              an image / material glow), things flowing along it (a pulse of light, dots, arrows - or pictures), markers at
+ *              its ends (arrows, dots, diamonds, bars - or pictures), more strokes under or over it (offset, tapered, dashed,
+ *              each with its own paint or material), and a distortion of the path itself (waves, lightning). A material
+ *              anywhere in a look gets its own instance per line and live values (see FWidgetPathLook).
+ *   Styles   - named looks: Locked, Available, Unlocked, Unavailable, Highlighted...
+ *   Rules    - which style a line takes from the states of the nodes at its ends (Locked, Unlocked, Available, Unavailable,
+ *              or a Custom State the game names), whether it is on a highlighted route, and whether an end is hovered or
+ *              selected.
+ *   Presets  - ready-made routing, styles and rules (EWidgetPathPreset), or a Widget Path Preset asset of your own.
  *
  * Positions are in the layer's own Slate units (its local space). Everything is drawn as vector geometry (the shapes' stroke
  * builder: anti-aliased at any scale, real caps and joins and dashes), so no texture is needed for any of it.
@@ -159,6 +169,32 @@ enum class EWidgetPathHoverHighlight : uint8
 	RouteTo UMETA(DisplayName = "Route To It", ToolTip = "The shortest route to the hovered node from the nearest node in Route From State (Unlocked): what it would take to get there - as Path of Exile previews a passive's path.")
 };
 
+/**
+ * A node's state. Locked, Unlocked, Available and Unavailable are built in - the presets, the rules and Derive Available use
+ * them, picked from this list rather than typed. A state of the game's own is named by a Custom State beside it, which wins
+ * over the one picked here.
+ */
+UENUM(BlueprintType)
+enum class EWidgetPathState : uint8
+{
+	Locked UMETA(ToolTip = "Not reached yet: what a node nothing has set is (Default Node State)."),
+	Unlocked UMETA(ToolTip = "Reached - bought, allocated, learned. Routes start from it, and the Locked nodes next to it read Available (Derive Available)."),
+	Available UMETA(ToolTip = "Can be unlocked now: worked out on its own next to an Unlocked node (Derive Available), or set."),
+	Unavailable UMETA(ToolTip = "Can't be unlocked - a requirement not met, the other side of a choice taken, a level too low. Routes don't pass through it (Routes Avoid Unavailable)."),
+	Custom UMETA(ToolTip = "A state of the game's own, named by Custom State ('Maxed', 'Upgraded', 'Disabled'...): what Get Node State reports for one. Set with no Custom State, it clears what was set (the node goes back to what it reports, was authored, or Default Node State).")
+};
+
+/** Which node state a style rule asks for (a Custom State beside it wins). */
+UENUM(BlueprintType)
+enum class EWidgetPathStateFilter : uint8
+{
+	Any UMETA(ToolTip = "Any state - unless a Custom State is named beside it."),
+	Locked,
+	Unlocked,
+	Available,
+	Unavailable
+};
+
 /** A ready-made set of routing, styles and rules. Picking one replaces them; editing them makes it Custom. */
 UENUM(BlueprintType)
 enum class EWidgetPathPreset : uint8
@@ -260,7 +296,142 @@ struct NAMETBD_API FWidgetPathRouting
 	uint32 GetHash() const;
 };
 
-/** What one style of line looks like. */
+/**
+ * Moves a line's path sideways as it runs - a wave, a wobble, a crackle of lightning - for one look (a highlighted route can
+ * crackle while the locked web lies still). The ends fade back onto the route, so the line still meets its nodes.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetPathDistortion
+{
+	GENERATED_BODY()
+
+	/** How far a wave swings to each side, in Slate units. 0: no wave. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion", meta = (ClampMin = "0", UIMax = "24", ForceUnits = "px"))
+	float WaveAmplitude = 0.f;
+
+	/** How long one wave is, in Slate units. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion", meta = (EditCondition = "WaveAmplitude > 0", ClampMin = "6", UIMax = "200", ForceUnits = "px"))
+	float Wavelength = 40.f;
+
+	/** How fast the waves travel along the line, in Slate units a second (negative: back toward the From node). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion", meta = (EditCondition = "WaveAmplitude > 0", UIMin = "-200", UIMax = "200"))
+	float WaveSpeed = 0.f;
+
+	/** Random sideways kinks, in Slate units - lightning, a hand-drawn wobble. 0: none. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion", meta = (ClampMin = "0", UIMax = "24", ForceUnits = "px"))
+	float JitterAmplitude = 0.f;
+
+	/** How far apart the kinks are, in Slate units. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion", meta = (EditCondition = "JitterAmplitude > 0", ClampMin = "4", UIMax = "100", ForceUnits = "px"))
+	float JitterSpacing = 18.f;
+
+	/** How many times a second the kinks change (0: they stay put). About 12 for lightning. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion", meta = (EditCondition = "JitterAmplitude > 0", ClampMin = "0", UIMax = "30"))
+	float JitterRate = 0.f;
+
+	/** Smooth kinks (a wobble) rather than sharp ones (lightning). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion", meta = (EditCondition = "JitterAmplitude > 0"))
+	bool bSmoothJitter = false;
+
+	/** How far from each end the distortion fades in, in Slate units, so the line still meets its nodes. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Distortion", meta = (ClampMin = "0", UIMax = "100", ForceUnits = "px"))
+	float EndFade = 16.f;
+
+	bool IsActive() const { return WaveAmplitude > 0.f || JitterAmplitude > 0.f; }
+	bool IsAnimated() const { return (WaveAmplitude > 0.f && WaveSpeed != 0.f) || (JitterAmplitude > 0.f && JitterRate > 0.f); }
+	uint32 GetHash() const;
+};
+
+/**
+ * One more stroke along a line, under or over it: a dark casing under a light core, rails either side (two strokes offset +-4),
+ * a tapering shadow, a material's energy beam over a plain line, a dashed edge. Each is offset, tapered, dashed and painted as
+ * it says - a color, a gradient, or a texture / material / SVG laid along it (U along, V across).
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FWidgetPathStroke
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (DisplayName = "Enabled"))
+	bool bEnabled = true;
+
+	/** Drawn over the line and what flows along it, rather than under them. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (DisplayName = "Above Line"))
+	bool bAboveLine = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (ClampMin = "0", UIMin = "0.5", UIMax = "40", ForceUnits = "px"))
+	float Width = 8.f;
+
+	/** Sideways from the line, in Slate units: positive to the right of the way it runs (From to To), negative to the left. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (UIMin = "-24", UIMax = "24", ForceUnits = "px"))
+	float Offset = 0.f;
+
+	/** Its width at the From end, as a multiple of Width (in between, a straight blend to End Width Scale). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (ClampMin = "0", UIMax = "2"))
+	float StartWidthScale = 1.f;
+
+	/** Its width at the To end, as a multiple of Width: 0 tapers it to a point. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (ClampMin = "0", UIMax = "2"))
+	float EndWidthScale = 1.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke")
+	EWidgetPathPaint Paint = EWidgetPathPaint::Color;
+
+	/** Its color - and with a gradient or an image, a tint over it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke")
+	FLinearColor Color = FLinearColor(0.f, 0.f, 0.f, 0.5f);
+
+	/** Colors along it, 0 at the From node and 1 at the To node. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (EditCondition = "Paint == EWidgetPathPaint::Gradient", EditConditionHides))
+	TArray<FWidgetShapeGradientStop> GradientStops;
+
+	/**
+	 * Laid along it: U along (once, or every Image Tile Length), V across. A material gets its own instance per line and the
+	 * values listed under the look's Material Inputs.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (EditCondition = "Paint == EWidgetPathPaint::Image", EditConditionHides))
+	FWidgetEffectImage Image;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (EditCondition = "Paint == EWidgetPathPaint::Image", EditConditionHides, ClampMin = "0", UIMax = "200", ForceUnits = "px"))
+	float ImageTileLength = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (EditCondition = "Paint == EWidgetPathPaint::Image", EditConditionHides, UIMin = "-200", UIMax = "200"))
+	float ImageScrollSpeed = 0.f;
+
+	/** The length of each dash, in Slate units. 0: solid. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (ClampMin = "0", UIMax = "40", ForceUnits = "px"))
+	float DashLength = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (EditCondition = "DashLength > 0", ClampMin = "0", UIMax = "40", ForceUnits = "px"))
+	float DashGap = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (EditCondition = "DashLength > 0", UIMin = "-100", UIMax = "100"))
+	float DashSpeed = 0.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (ClampMin = "0", ClampMax = "1"))
+	float Opacity = 1.f;
+
+	/** Breathes with the look's Breathe, as the glow and the flow do. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Stroke", meta = (DisplayName = "Breathe With Look"))
+	bool bBreathe = false;
+
+	FWidgetPathStroke();
+
+	FLinearColor ColorAt(float Fraction) const;
+	bool IsAnimated() const;
+	uint32 GetHash() const;
+};
+
+/**
+ * What one style of line looks like. Everything a look draws can use a material: the line (Paint Image with a material), the
+ * glow (Glow Image), the flowing marks (Flow Image), the markers (Start / End Marker Image) and every Stroke. Each material gets
+ * its own instance per line and these live values as scalar parameters, beside its own Material Parameters - so a technical
+ * artist can build any line: PathLength (the line's length, Slate units), PathWidth (the look's Width), PathRandom (0..1, the
+ * same for a line every frame - offset noise per line), PathRevealStart / PathRevealEnd (the part of the line drawn, 0..1 -
+ * the draw-on transition), PathProgress (the connection's Progress), PathHighlighted, PathHovered, PathSelected (0 or 1), and
+ * PathTileLength (Image Tile Length, or the whole length). Its UVs: U along (0..1 per tile, or once over the line), V across
+ * (0 to 1); its vertex color the tint and opacity.
+ */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FWidgetPathLook
 {
@@ -269,6 +440,21 @@ struct NAMETBD_API FWidgetPathLook
 	/** In Slate units. Under a pixel on screen it fades rather than thins. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Line", meta = (ClampMin = "0", UIMin = "0.5", UIMax = "24", ForceUnits = "px"))
 	float Width = 3.f;
+
+	/** The width at the From end, as a multiple of Width (in between, a straight blend to End Width Scale) - a line tapering from its source. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Line", meta = (ClampMin = "0", UIMax = "3"))
+	float StartWidthScale = 1.f;
+
+	/** The width at the To end, as a multiple of Width: 0 tapers the line to a point. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Line", meta = (ClampMin = "0", UIMax = "3"))
+	float EndWidthScale = 1.f;
+
+	/** Shapes the width along the line with a curve (X 0 at the From node, 1 at the To node; Y multiplies Width) - a brush stroke, a bulge in the middle. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Line", meta = (DisplayName = "Use Width Curve"))
+	bool bUseWidthCurve = false;
+
+	UPROPERTY(EditAnywhere, Category = "Line", meta = (EditCondition = "bUseWidthCurve", EditConditionHides))
+	FRuntimeFloatCurve WidthCurve;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Line")
 	EWidgetPathPaint Paint = EWidgetPathPaint::Color;
@@ -285,13 +471,17 @@ struct NAMETBD_API FWidgetPathLook
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Line", meta = (EditCondition = "Paint == EWidgetPathPaint::Image", EditConditionHides))
 	EWidgetImageSource ImageSource = EWidgetImageSource::Texture;
 
-	/** The texture or material laid along the line (U along, V across), tinted by its Tint and by Color. */
+	/** The texture or material laid along the line (U along, V across), tinted by its Tint and by Color. A material gets the live values listed on the look. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Line", meta = (EditCondition = "Paint == EWidgetPathPaint::Image && ImageSource == EWidgetImageSource::Texture", EditConditionHides))
 	FSlateBrush Image;
 
 	/** The SVG laid along the line, drawn at one tile's size on screen, tinted by Color. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Line", meta = (EditCondition = "Paint == EWidgetPathPaint::Image && ImageSource == EWidgetImageSource::SVG", EditConditionHides, DisplayName = "SVG"))
 	TObjectPtr<UWidgetSVG> SVG = nullptr;
+
+	/** Set on Image's material (when it is one), beside the live values. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Line", meta = (EditCondition = "Paint == EWidgetPathPaint::Image && ImageSource == EWidgetImageSource::Texture", EditConditionHides, TitleProperty = "Name"))
+	TArray<FWidgetMaterialParameter> MaterialParameters;
 
 	/** How long one repeat of the image is along the line, in Slate units. 0: once along the whole line (U 0 to 1). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Line", meta = (EditCondition = "Paint == EWidgetPathPaint::Image", EditConditionHides, ClampMin = "0", UIMax = "200", ForceUnits = "px"))
@@ -339,6 +529,13 @@ struct NAMETBD_API FWidgetPathLook
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (EditCondition = "bGlow", EditConditionHides))
 	FLinearColor GlowColor = FLinearColor(0.4f, 0.75f, 1.f, 0.5f);
 
+	/**
+	 * Draws the glow with a picture or material laid along it (U along over the whole line, V across the glow) instead of a
+	 * plain soft fade, tinted by Glow Color - a heat haze, sparks, a custom falloff. Empty: the soft fade.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (EditCondition = "bGlow", EditConditionHides))
+	FWidgetEffectImage GlowImage;
+
 	/** Breathes the glow and the flow (0 steady, 1 fading fully out and in) - a node waiting to be unlocked. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glow", meta = (ClampMin = "0", ClampMax = "1"))
 	float Breathe = 0.f;
@@ -363,12 +560,19 @@ struct NAMETBD_API FWidgetPathLook
 	float FlowSpacing = 80.f;
 
 	/** How big the dots or arrows are, in Slate units. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flow", meta = (EditCondition = "Flow == EWidgetPathFlow::Dots || Flow == EWidgetPathFlow::Arrows", EditConditionHides, ClampMin = "1", UIMax = "24", ForceUnits = "px"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flow", meta = (EditCondition = "Flow == EWidgetPathFlow::Dots || Flow == EWidgetPathFlow::Arrows", EditConditionHides, ClampMin = "1", UIMax = "48", ForceUnits = "px"))
 	float FlowSize = 5.f;
 
 	/** How long each pulse of light is, in Slate units. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flow", meta = (EditCondition = "Flow == EWidgetPathFlow::Pulse", EditConditionHides, ClampMin = "2", UIMax = "200", ForceUnits = "px"))
 	float FlowLength = 36.f;
+
+	/**
+	 * Dots / Arrows: a picture (texture, material or SVG) drawn for each mark instead - a spark, a rune, a particle sprite -
+	 * Flow Size across, turned to the way the line runs, tinted by Flow Color. A material also gets PathFlowIndex (which mark).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flow", meta = (EditCondition = "Flow == EWidgetPathFlow::Dots || Flow == EWidgetPathFlow::Arrows", EditConditionHides))
+	FWidgetEffectImage FlowImage;
 
 	/** A mark at the first node's end. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Markers")
@@ -379,8 +583,24 @@ struct NAMETBD_API FWidgetPathLook
 	EWidgetPathMarker EndMarker = EWidgetPathMarker::None;
 
 	/** How big the markers are, in Slate units. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Markers", meta = (ClampMin = "1", UIMax = "32", ForceUnits = "px"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Markers", meta = (ClampMin = "1", UIMax = "64", ForceUnits = "px"))
 	float MarkerSize = 9.f;
+
+	/** A picture (texture, material or SVG) at the first node's end instead of Start Marker's shape, Marker Size across, pointing back along the line (its top toward the node). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Markers")
+	FWidgetEffectImage StartMarkerImage;
+
+	/** A picture at the second node's end instead of End Marker's shape, Marker Size across, pointing the way the line runs (its top toward the node). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Markers")
+	FWidgetEffectImage EndMarkerImage;
+
+	/** More strokes along the line, under or over it - casings, rails, cores, a material beam. Drawn in order. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Strokes", meta = (TitleProperty = "Paint"))
+	TArray<FWidgetPathStroke> Strokes;
+
+	/** Waves or a jitter on the path itself (every part of the look follows it). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape")
+	FWidgetPathDistortion Distortion;
 
 	/** The whole line's opacity. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Line", meta = (ClampMin = "0", ClampMax = "1"))
@@ -392,12 +612,27 @@ struct NAMETBD_API FWidgetPathLook
 
 	FWidgetPathLook();
 
-	/** Whether anything about it moves on its own (marching dashes, flow, breathing, a scrolling image). */
+	/** Whether anything about it moves on its own (marching dashes, flow, breathing, a scrolling image, a moving distortion, a material). */
 	bool IsAnimated() const;
 
 	/** The color at a fraction along the line (0 its first node, 1 its second), Color included. */
 	FLinearColor ColorAt(float Fraction) const;
+
+	/** The width multiplier at a fraction along the line (taper and width curve). */
+	float WidthScaleAt(float Fraction) const;
+
+	/** Whether the width changes along the line. */
+	bool HasVaryingWidth() const;
+
+	/** The line's picture as an effect image (Image or SVG, with Material Parameters). */
+	FWidgetEffectImage GetLineImage() const;
 };
+
+/** Colors along a line from gradient stops (any order), times Tint. No stops: Tint. */
+namespace WidgetPathColors
+{
+	NAMETBD_API FLinearColor Sample(const TArray<FWidgetShapeGradientStop>& Stops, float Fraction, const FLinearColor& Tint);
+}
 
 /** A named look lines can take. */
 USTRUCT(BlueprintType)
@@ -409,26 +644,36 @@ struct NAMETBD_API FWidgetPathStyle
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style")
 	FName Name;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (ShowOnlyInnerProperties))
+	/** What lines of this style look like. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style")
 	FWidgetPathLook Look;
 };
 
 /**
  * Which style a line takes. Rules are tried in order; the first whose every condition holds gives the line its style.
- * States are the node states (Locked, Available, Unlocked, or whatever names the game uses); None matches any state.
+ * States are picked from the built-in ones (Locked, Unlocked, Available, Unavailable; Any matches any) - or named by a Custom
+ * State, which wins over the one picked.
  */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FWidgetPathStyleRule
 {
 	GENERATED_BODY()
 
-	/** The state of the line's first (From) node. None: any. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rule")
-	FName FromState;
+	/** The state of the line's first (From) node. Any: any. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rule", meta = (DisplayName = "From State"))
+	EWidgetPathStateFilter FromNodeState = EWidgetPathStateFilter::Any;
 
-	/** The state of the line's second (To) node. None: any. */
+	/** A state of the game's own for the From node - wins over From State. None: From State. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rule")
-	FName ToState;
+	FName FromCustomState;
+
+	/** The state of the line's second (To) node. Any: any. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rule", meta = (DisplayName = "To State"))
+	EWidgetPathStateFilter ToNodeState = EWidgetPathStateFilter::Any;
+
+	/** A state of the game's own for the To node - wins over To State. None: To State. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rule")
+	FName ToCustomState;
 
 	/** Also matches with the two states the other way round - most links in a tree don't care which end is which. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rule")
@@ -451,8 +696,14 @@ struct NAMETBD_API FWidgetPathStyleRule
 	FName Style;
 
 	FWidgetPathStyleRule() = default;
-	FWidgetPathStyleRule(FName InFrom, FName InTo, FName InStyle, EWidgetPathMatch InHighlighted = EWidgetPathMatch::Any)
-		: FromState(InFrom), ToState(InTo), Highlighted(InHighlighted), Style(InStyle) {}
+	FWidgetPathStyleRule(EWidgetPathStateFilter InFrom, EWidgetPathStateFilter InTo, FName InStyle, EWidgetPathMatch InHighlighted = EWidgetPathMatch::Any)
+		: FromNodeState(InFrom), ToNodeState(InTo), Highlighted(InHighlighted), Style(InStyle) {}
+
+	/** The From node's state as matched (None: any). */
+	FName GetFromState() const;
+
+	/** The To node's state as matched (None: any). */
+	FName GetToState() const;
 };
 
 /** One line between two widgets, as authored on the layer. */
@@ -501,10 +752,36 @@ struct NAMETBD_API FWidgetPathNodeState
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Node", meta = (GetOptions = "GetWidgetOptions"))
 	FName Widget;
 
-	/** Locked, Available, Unlocked - or any name the game uses (rules match it by name). */
+	/** Locked, Unlocked, Available or Unavailable (Custom: Custom State's). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Node", meta = (DisplayName = "State"))
+	EWidgetPathState NodeState = EWidgetPathState::Locked;
+
+	/** A state of the game's own (the rules match it by name) - wins over State. None: State. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Node")
-	FName State;
+	FName CustomState;
+
+	/** The state as the rules see it (None: Custom with no name). */
+	FName GetState() const;
 };
+
+namespace WidgetPathStates
+{
+	/** A built-in state's name ("Locked", "Unlocked", "Available", "Unavailable"); None for Custom. */
+	NAMETBD_API FName GetName(EWidgetPathState State);
+
+	/** A state as the rules match it: Custom State when given, else the built-in state's name (None: Custom with no name). */
+	NAMETBD_API FName Resolve(EWidgetPathState State, FName CustomState);
+
+	/** A rule's state as matched: Custom State when given, else the built-in state's name (None: Any). */
+	NAMETBD_API FName ResolveFilter(EWidgetPathStateFilter Filter, FName CustomState);
+
+	/** A state name back as a built-in state - or Custom, with the name in OutCustomState. None reads Locked. */
+	NAMETBD_API EWidgetPathState FromName(FName Name, FName& OutCustomState);
+
+	/** A custom name that is a built-in state's (as assets from before the built-in states saved them) moved into the enum. */
+	NAMETBD_API void Normalize(EWidgetPathState& State, FName& CustomState);
+	NAMETBD_API void NormalizeFilter(EWidgetPathStateFilter& Filter, FName& CustomState);
+}
 
 // =====================================================================================================
 // Geometry
@@ -562,6 +839,18 @@ namespace WidgetPathGeometry
 
 	/** A side's outward direction (Center and Auto: zero). */
 	NAMETBD_API FVector2f SideNormal(EWidgetPathSide Side);
+
+	/**
+	 * A stroke along Points whose width (WidthAt) and sideways offset (OffsetAt, positive to the right of the way it runs)
+	 * change with the distance along it - tapers, rails. Flat ends, anti-aliased sides. Both functions take the distance from
+	 * Points' first point. Each vertex's Along: X AlongStart + that distance, Y 0..1 across (left to right); OutlineLength
+	 * TotalLength.
+	 */
+	NAMETBD_API void BuildRibbon(const TArray<FVector2f>& Points, TFunctionRef<float(float)> WidthAt, TFunctionRef<float(float)> OffsetAt, float AntiAlias,
+		float AlongStart, float TotalLength, FWidgetShapeMesh& Out);
+
+	/** Points moved sideways as Distortion says at Time (seconds); Seed gives each line a jitter of its own. */
+	NAMETBD_API void Distort(const TArray<FVector2f>& Points, const FWidgetPathDistortion& Distortion, double Time, uint32 Seed, TArray<FVector2f>& Out);
 }
 
 // =====================================================================================================
@@ -574,13 +863,53 @@ namespace WidgetPathPresets
 	NAMETBD_API FName Locked();
 	NAMETBD_API FName Available();
 	NAMETBD_API FName Unlocked();
+	NAMETBD_API FName Unavailable();
 
 	/** The style names the presets make. */
 	NAMETBD_API FName LockedStyle();
 	NAMETBD_API FName AvailableStyle();
 	NAMETBD_API FName UnlockedStyle();
+	NAMETBD_API FName UnavailableStyle();
 	NAMETBD_API FName HighlightedStyle();
 
 	/** Fills routing, styles and rules for Preset (nothing for Custom). */
 	NAMETBD_API void Apply(EWidgetPathPreset Preset, FWidgetPathRouting& OutRouting, TArray<FWidgetPathStyle>& OutStyles, TArray<FWidgetPathStyleRule>& OutRules);
 }
+
+/**
+ * A Widget Path look of your own, kept as an asset and picked on any Widget Path Layer (its Preset Asset), so a game's
+ * trees all share one look: the routing, the styles and the rules. Made from a layer with Save As Preset (its Details), or
+ * from the Content Browser (Miscellaneous > Data Asset > Widget Path Preset) and filled in here.
+ */
+UCLASS(BlueprintType, meta = (DisplayName = "Widget Path Preset"))
+class NAMETBD_API UWidgetPathPresetAsset : public UDataAsset
+{
+	GENERATED_BODY()
+
+public:
+	UWidgetPathPresetAsset();
+
+	/** Puts its Routing on the layer too (off: only the styles and rules, the layer keeps how its lines run). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Widget Path Preset", meta = (DisplayName = "Apply Routing"))
+	bool bApplyRouting = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Routing", meta = (EditCondition = "bApplyRouting"))
+	FWidgetPathRouting Routing;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Styles", meta = (TitleProperty = "Name"))
+	TArray<FWidgetPathStyle> Styles;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Styles", meta = (TitleProperty = "Style"))
+	TArray<FWidgetPathStyleRule> Rules;
+
+	/** The style names offered in the rules' dropdowns. */
+	UFUNCTION()
+	TArray<FString> GetStyleOptions() const;
+
+	/** Widget names have no tree here: only None. */
+	UFUNCTION()
+	TArray<FString> GetWidgetOptions() const;
+
+	// UObject
+	virtual void PostLoad() override;
+};

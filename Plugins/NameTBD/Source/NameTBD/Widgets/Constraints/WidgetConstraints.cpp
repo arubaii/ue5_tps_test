@@ -5,6 +5,7 @@
 #include "Blueprint/UserWidget.h"
 #include "Components/PanelWidget.h"
 #include "Components/Widget.h"
+#include "UObject/UnrealType.h"
 #include "NameTBD/Widgets/WidgetEffectsDraw.h"
 #include "NameTBD/Widgets/WidgetTreeLookup.h"
 #include "NameTBD/Widgets/Paths/WidgetPathLayer.h"
@@ -270,6 +271,42 @@ TArray<FString> UWidgetConstraint::GetWidgetOptions() const
 	return Names;
 }
 
+FName UWidgetConstraint::GetDisplayName() const
+{
+	if (!ConstraintName.IsNone())
+	{
+		return ConstraintName;
+	}
+#if WITH_EDITOR
+	return FName(*GetClass()->GetDisplayNameText().ToString());
+#else
+	// The kind's name as the Details shows it: "UWidgetFollowPathConstraint" -> "Follow Path".
+	FString Name = GetClass()->GetName();
+	Name.RemoveFromStart(TEXT("Widget"));
+	Name.RemoveFromEnd(TEXT("Constraint"));
+	return FName(*FName::NameToDisplayString(Name, false));
+#endif
+}
+
+#if WITH_EDITOR
+void UWidgetConstraint::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	// A widget picked for a target that isn't a widget target makes it one - the Widget field is always shown, and picking
+	// from it is what was meant.
+	const FStructProperty* Member = CastField<FStructProperty>(PropertyChangedEvent.MemberProperty);
+	if (Member && Member->Struct == FWidgetConstraintTarget::StaticStruct()
+		&& PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(FWidgetConstraintTarget, Widget))
+	{
+		FWidgetConstraintTarget* Edited = Member->ContainerPtrToValuePtr<FWidgetConstraintTarget>(this);
+		if (Edited && !Edited->Widget.IsNone())
+		{
+			Edited->Kind = EWidgetConstraintTargetKind::Widget;
+		}
+	}
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+#endif
+
 void UWidgetConstraint::ResetMotion()
 {
 	bActivationStarted = false;
@@ -316,6 +353,22 @@ UWidget* UWidgetConstraint::ResolveTargetWidget(const FWidgetConstraintContext& 
 
 bool UWidgetConstraint::GetTargetPose(const FWidgetConstraintContext& Context, const FWidgetConstraintTarget& Target, FWidgetConstraintPose& OutPose)
 {
+	const bool bFound = GetSetTargetPose(Context, Target, OutPose);
+	if (Context.bFollowAnimation)
+	{
+		// Following the animation: the keyed place is the target's place (its turn and size, when it has them, kept).
+		if (!bFound)
+		{
+			OutPose = FWidgetConstraintPose();
+		}
+		OutPose.Position = WidgetConstraintsPrivate::ToDouble(Context.AnimatedPoint);
+		return true;
+	}
+	return bFound;
+}
+
+bool UWidgetConstraint::GetSetTargetPose(const FWidgetConstraintContext& Context, const FWidgetConstraintTarget& Target, FWidgetConstraintPose& OutPose)
+{
 	using namespace WidgetConstraintsPrivate;
 
 	OutPose = FWidgetConstraintPose();
@@ -338,8 +391,11 @@ bool UWidgetConstraint::GetTargetPose(const FWidgetConstraintContext& Context, c
 	case EWidgetConstraintTargetKind::Pointer:
 		if (Context.bHasPointer)
 		{
-			LastPointer = Context.Pointer;
-			bHasLastPointer = true;
+			if (!Context.bStateless)
+			{
+				LastPointer = Context.Pointer;
+				bHasLastPointer = true;
+			}
 			OutPose.Position = ToDouble(Context.Pointer);
 			return true;
 		}
@@ -359,6 +415,15 @@ bool UWidgetConstraint::GetTargetPose(const FWidgetConstraintContext& Context, c
 
 float UWidgetConstraint::ComputeActivation(const FWidgetConstraintContext& Context) const
 {
+	// Animated: let go, or follow the keys whatever the pointer does.
+	if (Context.bAnimated && WhileAnimated == EWidgetConstraintWhileAnimated::LetGo)
+	{
+		return 0.f;
+	}
+	if (Context.bFollowAnimation)
+	{
+		return 1.f;
+	}
 	switch (Activation)
 	{
 	case EWidgetConstraintActivation::WhileHovered:
@@ -465,6 +530,25 @@ FWidgetConstraintPose UWidgetConstraint::Apply(const FWidgetConstraintContext& C
 	return Out;
 }
 
+FWidgetConstraintPose UWidgetConstraint::ApplyStateless(const FWidgetConstraintContext& Context, const FWidgetConstraintPose& Pose, float MasterStrength)
+{
+	FWidgetConstraintPose Solved = Pose;
+	if (!bEnabled || !Solve(Context, Pose, Solved))
+	{
+		return Pose;
+	}
+	const float Blend = FMath::Clamp(Strength * MasterStrength * ComputeActivation(Context), 0.f, 1.f);
+	FWidgetConstraintPose Out = Pose;
+	Out.Position = Pose.Position + (Solved.Position - Pose.Position) * Blend;
+	Out.Angle = Pose.Angle + WidgetConstraintMath::AngleDelta(Pose.Angle, Solved.Angle) * Blend;
+	const FVector2D ScaleRatio(
+		FMath::Abs(Pose.Scale.X) > KINDA_SMALL_NUMBER ? Solved.Scale.X / Pose.Scale.X : 1.0,
+		FMath::Abs(Pose.Scale.Y) > KINDA_SMALL_NUMBER ? Solved.Scale.Y / Pose.Scale.Y : 1.0);
+	Out.Scale = Pose.Scale * FVector2D(FMath::Lerp(1.0, ScaleRatio.X, static_cast<double>(Blend)), FMath::Lerp(1.0, ScaleRatio.Y, static_cast<double>(Blend)));
+	Out.Opacity = FMath::Lerp(Pose.Opacity, Solved.Opacity, Blend);
+	return Out;
+}
+
 void UWidgetConstraint::GetDebugLines(const FWidgetConstraintContext& Context, const FWidgetConstraintPose& Pose, TArray<FVector2f>& OutSegments) const
 {
 	if (bHasLastTarget)
@@ -509,18 +593,20 @@ bool UWidgetCopyPositionConstraint::Solve(const FWidgetConstraintContext& Contex
 			return false;
 		}
 		FVector2f TargetPoint = ToFloat(TargetPose.Position);
-		if (bKeepStartingOffset)
+		// Following the animation, it goes all the way to the keyed place (its smoothing still carries it there).
+		const FVector2f Amount = Context.bFollowAnimation ? FVector2f(1.f, 1.f) : ToFloat(CopyAmount);
+		if (bKeepStartingOffset && !Context.bFollowAnimation)
 		{
-			if (!bHasStartingOffset)
+			if (!bHasStartingOffset && !Context.bStateless)
 			{
 				StartingOffset = ToFloat(Context.Rest.Position) - TargetPoint;
 				bHasStartingOffset = true;
 			}
-			TargetPoint += StartingOffset;
+			TargetPoint += bHasStartingOffset ? StartingOffset : FVector2f::ZeroVector;
 		}
 		NoteTarget(TargetPose);
-		Desired.X = bCopyX ? FMath::Lerp(Desired.X, TargetPoint.X, static_cast<float>(CopyAmount.X)) : Desired.X;
-		Desired.Y = bCopyY ? FMath::Lerp(Desired.Y, TargetPoint.Y, static_cast<float>(CopyAmount.Y)) : Desired.Y;
+		Desired.X = bCopyX ? FMath::Lerp(Desired.X, TargetPoint.X, Amount.X) : Desired.X;
+		Desired.Y = bCopyY ? FMath::Lerp(Desired.Y, TargetPoint.Y, Amount.Y) : Desired.Y;
 	}
 	Desired += ToFloat(Offset);
 
@@ -717,20 +803,27 @@ bool UWidgetCopyTransformConstraint::Solve(const FWidgetConstraintContext& Conte
 	const FWidgetConstraintPose TargetPose = WidgetConstraintMath::PoseFromTransform(Frame, Size, ToFloat(Target.Anchor));
 	NoteTarget(TargetPose);
 	const FVector2f AnchorPoint = Size * ToFloat(Target.Anchor);
+	FVector2f StartLocal = StartingLocal;
+	float StartAngle = StartingAngle;
 	if (bKeepStartingOffset && !bHasStarting)
 	{
-		StartingLocal = Frame.Inverse().TransformPoint(ToFloat(Context.Rest.Position)) - AnchorPoint;
-		StartingAngle = WidgetConstraintMath::AngleDelta(TargetPose.Angle, Context.Rest.Angle);
-		bHasStarting = true;
+		StartLocal = Frame.Inverse().TransformPoint(ToFloat(Context.Rest.Position)) - AnchorPoint;
+		StartAngle = WidgetConstraintMath::AngleDelta(TargetPose.Angle, Context.Rest.Angle);
+		if (!Context.bStateless)
+		{
+			StartingLocal = StartLocal;
+			StartingAngle = StartAngle;
+			bHasStarting = true;
+		}
 	}
-	const FVector2f Local = bKeepStartingOffset ? StartingLocal : ToFloat(Offset);
+	const FVector2f Local = bKeepStartingOffset ? StartLocal : ToFloat(Offset);
 	if (bCopyPosition)
 	{
 		OutPose.Position = ToDouble(Frame.TransformPoint(AnchorPoint + Local));
 	}
 	if (bCopyRotation)
 	{
-		OutPose.Angle = TargetPose.Angle + AngleOffset + (bKeepStartingOffset ? StartingAngle : 0.f);
+		OutPose.Angle = TargetPose.Angle + AngleOffset + (bKeepStartingOffset ? StartAngle : 0.f);
 	}
 	if (bCopyScale)
 	{
@@ -967,11 +1060,17 @@ bool UWidgetFollowPathConstraint::Solve(const FWidgetConstraintContext& Context,
 	bool bClosed = true;
 	if (!BuildPath(Context, Points, bClosed))
 	{
-		DebugPath.Reset();
+		if (!Context.bStateless)
+		{
+			DebugPath.Reset();
+		}
 		return false;
 	}
-	DebugPath = Points;
-	bDebugClosed = bClosed;
+	if (!Context.bStateless)
+	{
+		DebugPath = Points;
+		bDebugClosed = bClosed;
+	}
 
 	const float Length = WidgetShapeGeometry::GetLength(Points, bClosed);
 	if (Length <= KINDA_SMALL_NUMBER)
@@ -993,12 +1092,15 @@ bool UWidgetFollowPathConstraint::Solve(const FWidgetConstraintContext& Context,
 	}
 	else
 	{
-		Travelled += Speed * Context.DeltaTime;
-		if (bWraps)
+		if (!Context.bStateless)
 		{
-			// Kept small: whole turns don't change where it is.
-			const float Turn = bPositionInPixels ? Length : 1.f;
-			Travelled = FMath::Fmod(Travelled, Turn);
+			Travelled += Speed * Context.DeltaTime;
+			if (bWraps)
+			{
+				// Kept small: whole turns don't change where it is.
+				const float Turn = bPositionInPixels ? Length : 1.f;
+				Travelled = FMath::Fmod(Travelled, Turn);
+			}
 		}
 		const float Position = PathPosition + Travelled;
 		Distance = bPositionInPixels ? Position : Position * Length;
@@ -1016,7 +1118,10 @@ bool UWidgetFollowPathConstraint::Solve(const FWidgetConstraintContext& Context,
 	{
 		Distance = FMath::Clamp(Distance, 0.f, Length);
 	}
-	CurrentFraction = Distance / Length;
+	if (!Context.bStateless)
+	{
+		CurrentFraction = Distance / Length;
+	}
 
 	FVector2f Point;
 	FVector2f Direction;
@@ -1080,6 +1185,27 @@ void UWidgetFollowPathConstraint::ResetMotion()
 	Super::ResetMotion();
 	Travelled = 0.f;
 }
+
+#if WITH_EDITOR
+void UWidgetFollowPathConstraint::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	const FName ChangedName = PropertyChangedEvent.GetPropertyName();
+	if ((ChangedName == GET_MEMBER_NAME_CHECKED(UWidgetFollowPathConstraint, ConnectionFrom) || ChangedName == GET_MEMBER_NAME_CHECKED(UWidgetFollowPathConstraint, ConnectionTo))
+		&& (!ConnectionFrom.IsNone() || !ConnectionTo.IsNone()))
+	{
+		PathSource = EWidgetConstraintPathSource::WidgetPathConnection;
+	}
+	else if (ChangedName == GET_MEMBER_NAME_CHECKED(UWidgetFollowPathConstraint, PathWidget) && !PathWidget.IsNone() && PathSource == EWidgetConstraintPathSource::Circle)
+	{
+		// A path widget picked while on Circle: the source that fits what was picked.
+		const UWidget* Picked = WidgetTreeLookup::FindWidget(this, PathWidget);
+		PathSource = Cast<UWidgetPathLayer>(Picked) ? EWidgetConstraintPathSource::WidgetPathConnection
+			: Cast<UShapeWidget>(Picked) ? EWidgetConstraintPathSource::ShapeOutline
+			: EWidgetConstraintPathSource::WidgetBox;
+	}
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+#endif
 
 // =====================================================================================================
 // Look At
@@ -1228,6 +1354,17 @@ void UWidgetStayInsideConstraint::GetDependencies(const FWidgetConstraintContext
 	OutWidgets.Add(GetAreaWidget(Context));
 }
 
+#if WITH_EDITOR
+void UWidgetStayInsideConstraint::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UWidgetStayInsideConstraint, AreaWidget) && !AreaWidget.IsNone())
+	{
+		Area = EWidgetConstraintArea::Widget;
+	}
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+#endif
+
 // =====================================================================================================
 // Remap
 // =====================================================================================================
@@ -1326,10 +1463,12 @@ const UWidget* UWidgetPointerParallaxConstraint::GetAreaWidget(const FWidgetCons
 bool UWidgetPointerParallaxConstraint::Solve(const FWidgetConstraintContext& Context, const FWidgetConstraintPose& Pose, FWidgetConstraintPose& OutPose)
 {
 	OutPose = Pose;
-	if (!Context.bHasPointer)
+	// Following the animation, the keyed place stands in for the pointer.
+	if (!Context.bHasPointer && !Context.bFollowAnimation)
 	{
 		return false;
 	}
+	const FVector2f PointerPoint = Context.bFollowAnimation ? Context.AnimatedPoint : Context.Pointer;
 	const UWidget* AreaOf = GetAreaWidget(Context);
 	FSlateRenderTransform Frame;
 	FVector2f AreaSize;
@@ -1339,7 +1478,7 @@ bool UWidgetPointerParallaxConstraint::Solve(const FWidgetConstraintContext& Con
 	}
 
 	// -1 at the area's left / top edge, 1 at its right / bottom.
-	const FVector2f Local = Frame.Inverse().TransformPoint(Context.Pointer);
+	const FVector2f Local = Frame.Inverse().TransformPoint(PointerPoint);
 	const FVector2f Centered(FMath::Clamp(Local.X / AreaSize.X * 2.f - 1.f, -1.f, 1.f), FMath::Clamp(Local.Y / AreaSize.Y * 2.f - 1.f, -1.f, 1.f));
 	OutPose.Position += FVector2D(Centered.X * Depth.X, Centered.Y * Depth.Y);
 	OutPose.Angle += Centered.X * Tilt;
@@ -1353,6 +1492,17 @@ void UWidgetPointerParallaxConstraint::GetDependencies(const FWidgetConstraintCo
 		OutWidgets.Add(Context.FindWidget(AreaWidget));
 	}
 }
+
+#if WITH_EDITOR
+void UWidgetPointerParallaxConstraint::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UWidgetPointerParallaxConstraint, AreaWidget) && !AreaWidget.IsNone())
+	{
+		Area = EWidgetConstraintParallaxArea::Widget;
+	}
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+#endif
 
 bool UWidgetPointerParallaxConstraint::SetChannel(EWidgetConstraintChannel Channel, float Value)
 {

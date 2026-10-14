@@ -10,6 +10,8 @@
 #include "WidgetAnimPanelSource.h"
 #include "WidgetAnimScripting.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimLibrary.h"
+#include "NameTBD/WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.h"
+#include "NameTBD/Widgets/Constraints/WidgetConstraintComponent.h"
 
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
@@ -1133,9 +1135,11 @@ namespace WidgetAnimMotionPathImpl
 		{
 			for (const FWidgetAnimSettings& Layer : *Posed.Settings)
 			{
+				// A Constraint track moves its widget too (a ball sent round a ring by its Path Position).
 				const bool bMovesPosition = Layer.AnimType == EWidgetAnimType::Slide
 					|| Layer.AnimType == EWidgetAnimType::Shake
-					|| (Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.IsAnimatingTransform());
+					|| (Layer.AnimType == EWidgetAnimType::Transform && Layer.Transform.IsAnimatingTransform())
+					|| Layer.TypeParams.GetScriptStruct() == FWidgetAnimConstraintParams::StaticStruct();
 				UWidget* Target = Layer.TargetWidget ? Layer.TargetWidget.Get() : FallbackWidget;
 				if (bMovesPosition && !Layer.bMuted && Target)
 				{
@@ -1283,9 +1287,49 @@ namespace WidgetAnimMotionPathImpl
 		{
 			Result.ResetKeepingCapacity();
 			UWidgetAnimLibrary::EvaluateExpandedStackAtTime(LayersToPose, FMath::Min(StackTime, PassTime), /*bAtEnd=*/StackTime >= PassTime, Posed.bIsOutAnimation, Baselines, Result);
+			const int32 First = OutPoses.Num();
 			for (const TWeakObjectPtr<UWidget>& Link : PosedChain)
 			{
 				OutPoses.Add(UWidgetAnimLibrary::GetResultPose(Result, Link.Get(), FallbackWidget, ChainBaselines));
+			}
+
+			// A constrained widget is drawn where its constraints put it at that moment - its Constraint tracks' values too - so
+			// the path shows where it will really be (a keyed pupil kept in its eye, a ball sent round its ring).
+			UWidget* Shown = PosedChain.Num() > 0 ? PosedChain[0].Get() : nullptr;
+			UWidgetConstraintComponent* Constraints = Shown ? UWidgetConstraintComponent::FindConstraintComponent(Shown) : nullptr;
+			if (!Constraints || !OutPoses.IsValidIndex(First))
+			{
+				return;
+			}
+			struct FHeld
+			{
+				UWidgetConstraint* Constraint = nullptr;
+				EWidgetConstraintChannel Channel = EWidgetConstraintChannel::Strength;
+				float Value = 0.f;
+			};
+			TArray<FHeld, TInlineAllocator<4>> Held;
+			for (const FWidgetAnimAuthoritativeWrite& Write : Result.AuthoritativeWrites)
+			{
+				const FWidgetAnimConstraintParams* Track = Write.Evaluator && !Write.bIsBaseline ? Write.GetParams().GetPtr<FWidgetAnimConstraintParams>() : nullptr;
+				if (!Track || Write.Evaluator->ResolveTarget(Write.TargetWidget ? Write.TargetWidget : FallbackWidget, Write.GetParams()) != Constraints)
+				{
+					continue;
+				}
+				UWidgetConstraint* Constraint = Constraints->FindConstraint(Track->ConstraintName);
+				FHeld Kept;
+				if (Constraint && Constraint->GetChannel(Track->Channel, Kept.Value))
+				{
+					Kept.Constraint = Constraint;
+					Kept.Channel = Track->Channel;
+					Held.Add(Kept);
+					Constraint->SetChannel(Track->Channel, static_cast<float>(Write.Value));
+				}
+			}
+			Constraints->PreviewTransform(OutPoses[First], OutPoses[First]);
+			// Put back as they were, last first: the preview's own pose is untouched.
+			for (int32 Index = Held.Num() - 1; Index >= 0; --Index)
+			{
+				Held[Index].Constraint->SetChannel(Held[Index].Channel, Held[Index].Value);
 			}
 		};
 

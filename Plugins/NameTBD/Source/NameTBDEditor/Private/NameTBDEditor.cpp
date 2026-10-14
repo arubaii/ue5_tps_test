@@ -61,6 +61,8 @@
 #include "DiegeticScreenDetails.h"
 #include "DiegeticScreenMaterial.h"
 #include "NameTBD/Diegetic/DiegeticScreenComponent.h"
+#include "NameTBD/Widgets/WidgetEditorHooks.h"
+#include "Factories/DataAssetFactory.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
 
@@ -218,6 +220,20 @@ void FNameTBDEditorModule::StartupModule()
 	ValuePinFactory = MakeShared<FWidgetAnimValuePinFactory>();
 	FEdGraphUtilities::RegisterVisualPinFactory(ValuePinFactory);
 
+	// Save As Preset (a Widget Path Layer's, a Pointer Effects component's): a new data asset through the editor's Save Asset
+	// As window - the runtime module asks for it through WidgetEditorHooks.
+	WidgetEditorHooks::SetAssetCreator([](UClass* AssetClass, const FString& DefaultName) -> UObject*
+	{
+		if (!AssetClass)
+		{
+			return nullptr;
+		}
+		IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>(TEXT("AssetTools")).Get();
+		UDataAssetFactory* Factory = NewObject<UDataAssetFactory>();
+		Factory->DataAssetClass = AssetClass;
+		return AssetTools.CreateAssetWithDialog(DefaultName, TEXT("/Game"), AssetClass, Factory, NAME_None, /*bCallConfigureProperties=*/false);
+	});
+
 	// Sound cues heard in the editor's previews, through the editor's own preview audio - the runtime module can't reach
 	// it, so it is handed this. One at a time: a new cue sound cuts off the last. See WidgetAnimCue.h.
 	WidgetAnimCues::SetPreviewSoundPlayer([](USoundBase* Sound, float Volume, float Pitch, const WidgetAnimCues::FSoundFade& Fade)
@@ -265,6 +281,7 @@ void FNameTBDEditorModule::StartupModule()
 
 void FNameTBDEditorModule::ShutdownModule()
 {
+	WidgetEditorHooks::SetAssetCreator(nullptr);
 	StyledButtonsEditor::Unregister();
 	UDiegeticScreenComponent::SetEditorMaterialProvider(nullptr);
 

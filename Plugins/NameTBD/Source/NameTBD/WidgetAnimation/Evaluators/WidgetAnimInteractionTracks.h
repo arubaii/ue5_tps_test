@@ -23,7 +23,7 @@ struct NAMETBD_API FWidgetAnimConstraintParams : public FWidgetAnimTypeParams
 {
 	GENERATED_BODY()
 
-	/** The constraint's Name on the widget's Constraints. None: the first. */
+	/** The constraint: its Name on the widget's Constraints, or - for one left unnamed - its kind's name as the Details show it ("Follow Path"). None: the first. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Constraint", meta = (DisplayName = "Constraint"))
 	FName ConstraintName;
 

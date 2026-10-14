@@ -4,7 +4,9 @@
 
 #include "CoreMinimal.h"
 #include "Extensions/UIComponent.h"
+#include "Misc/EngineVersionComparison.h"
 #include "Rendering/SlateRenderTransform.h"
+#include "Slate/WidgetTransform.h"
 #include "Templates/SubclassOf.h"
 #include "Widgets/SCompoundWidget.h"
 #include "NameTBD/Widgets/Constraints/WidgetConstraints.h"
@@ -55,11 +57,15 @@ private:
  * them each frame, so chains (a tail of dots following the cursor) don't lag a frame per link. Solved in the designer too
  * (Solve In Designer), where the pointer isn't there and the lines each constraint is tied to are drawn (Show In Designer).
  *
+ * Constraints and Widget Animations work together: each constraint says what it does while an animation moves the widget
+ * (While Animated - act over it, let go, or follow the keys), and the designer's motion paths draw where the constraints put
+ * the widget, so keys can be placed where it will really be.
+ *
  * Recipes: a ball round a ring - Follow Path, Shape Outline of an Ellipse, Speed 0.25 (or a Constraint track on Path
- * Position). Eyes following the cursor - on each pupil: Copy Position to the Pointer (Copy Amount 0.15, Smooth) then Stay
- * Inside the eye (Ellipse). A magnetic button - Copy Position to the Pointer, Copy Amount 0.3, Activation Near Pointer, Limit
- * 12, Smooth with Bounce. A knob dragged round a dial - Follow Path, Closest To Target, target the Pointer, Activation While
- * Pressed (Hold Last).
+ * Position). Eyes following the cursor - on each pupil: Copy Position to the Pointer (Copy Amount 0.15, Smooth, While
+ * Animated Follow the Keys) then Stay Inside the eye (Ellipse): keyed looks then play through the same spring and socket. A
+ * magnetic button - Copy Position to the Pointer, Copy Amount 0.3, Activation Near Pointer, Limit 12, Smooth with Bounce. A
+ * knob dragged round a dial - Follow Path, Closest To Target, target the Pointer, Activation While Pressed (Hold Last).
  */
 UCLASS(DefaultToInstanced, EditInlineNew, BlueprintType, meta = (DisplayName = "Constraints"))
 class NAMETBD_API UWidgetConstraintComponent : public UUIComponent
@@ -85,9 +91,13 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Constraints")
 	bool bShowInDesigner = true;
 
-	/** The constraint named Constraint Name (the first when None). */
+	/** The constraint named InName - its Name, else its kind's name ("Follow Path") - or the first when None. */
 	UFUNCTION(BlueprintPure, Category = "Widget Constraints")
 	UWidgetConstraint* FindConstraint(FName InName) const;
+
+	/** The names the constraints can be found by (their Name, else their kind's) - what a Constraint track's dropdown lists. */
+	UFUNCTION(BlueprintPure, Category = "Widget Constraints")
+	TArray<FName> GetConstraintNames() const;
 
 	UFUNCTION(BlueprintPure, Category = "Widget Constraints")
 	UWidgetConstraint* GetConstraintAt(int32 Index) const;
@@ -134,9 +144,25 @@ public:
 	/** Stops solving (the module shutting down). */
 	static void ShutdownSolver();
 
+	/**
+	 * Where the constraints would draw the widget if its own Render Transform were OwnTransform, as a Render Transform -
+	 * worked out with no lasting effect (no smoothing, fades or remembered offsets; no pointer at design time). What the
+	 * designer's motion paths draw for a constrained widget. False when it can't be worked out (not laid out yet).
+	 */
+	bool PreviewTransform(const FWidgetTransform& OwnTransform, FWidgetTransform& OutTransform);
+
+	/** The widget's Render Transform as authored: its Widget Blueprint's own widget's (in the designer), else its archetype's. */
+	static FWidgetTransform GetAuthoredTransform(const UWidget* Widget);
+
 protected:
 	// UUIComponent
 	virtual TSharedRef<SWidget> RebuildWidgetWithContent(const TSharedRef<SWidget> OwnerContent) override;
+#if UE_VERSION_OLDER_THAN(5, 6, 0)
+	virtual bool OnInitialize() override;
+#else
+	virtual void OnInitialize() override;
+	virtual void OnPreConstruct(bool bIsDesignTime) override;
+#endif
 
 	// UObject
 	virtual void BeginDestroy() override;
@@ -145,6 +171,23 @@ private:
 	static void SolveAll(float DeltaTime);
 	void GatherDependencies(TArray<const UWidget*>& OutWidgets) const;
 	void SolveFrame(float DeltaTime, const TMap<const UWidget*, UWidgetConstraintComponent*>& ByOwner);
+
+	/** Registers it so it is solved and found (Find Constraint Component, the Constraint track) - from when it is initialized. */
+	void Register();
+
+	/** The context for solving the widget with its own Render Transform at Own: false when it isn't laid out. */
+	bool MakeContext(const FWidgetTransform& Own, float DeltaTime, const TMap<const UWidget*, UWidgetConstraintComponent*>* ByOwner, FWidgetConstraintContext& OutContext) const;
+
+	/** Whether any enabled constraint follows the animation (While Animated: Follow the Keys). */
+	bool AnyFollowsAnimation() const;
+
+	/** Seconds since the widget was last seen animated - it stays "animated" a moment, so a key passing through rest doesn't flick the target. */
+	float SinceAnimated = 1000.f;
+
+	/** The widget's authored Render Transform (see GetAuthoredTransform), its template looked up once. */
+	FWidgetTransform ReadAuthoredTransform() const;
+	mutable TWeakObjectPtr<const UWidget> AuthoredSource;
+	mutable TWeakObjectPtr<const UWidget> AuthoredFor;
 
 	TWeakPtr<SWidgetConstraintHost> MyHost;
 
