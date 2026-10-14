@@ -1,0 +1,26 @@
+﻿diff --git a/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDDropShadowBox.h b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDDropShadowBox.h
+--- a/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDDropShadowBox.h
++++ b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDDropShadowBox.h
+@@ -4,15 +4,17 @@
+ 
+ #include "CoreMinimal.h"
++#include "UObject/NoExportTypes.h"
+ #include "Components/ContentWidget.h"
+-#include "Extensions/WidgetExtension.h"
+ #include "Core/NameTBDTypes.h"
+ #include "Widgets/SNameTBDDropShadow.h"
+ #include "NameTBDDropShadowBox.generated.h"
+ 
++class UNameTBDDropShadowBox;
++
+ /**
+- * Attachable Drop Shadow Widget Component (UWidgetExtension) that can be attached
+- * dynamically at runtime or in Blueprints to ANY UWidget to provide simple or sleek modern drop shadows.
++ * Attachable Drop Shadow Widget Component that can be attached dynamically
++ * at runtime or in Blueprints to ANY UWidget to provide simple or sleek modern drop shadows.
+  */
+-UCLASS(BlueprintType, Blueprintable, meta = (DisplayName = "NameTBD Drop Shadow Component"))
+-class NAMETBD_API UNameTBDDropShadowComponent : public UWidgetExtension
++UCLASS(BlueprintType, Blueprintable, EditInlineNew, DefaultToInstanced, meta = (DisplayName = "NameTBD Drop Shadow Component"))
++class NAMETBD_API UNameTBDDropShadowComponent : public UObject
+ {

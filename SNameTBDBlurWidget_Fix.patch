@@ -1,0 +1,9 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDBlurWidget.cpp b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDBlurWidget.cpp
+--- a/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDBlurWidget.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDBlurWidget.cpp
+@@ -55,5 +55,4 @@
+ 	{
+ 		InternalRHIBlur->SetBlurRadius(TOptional<int32>());
+ 	}
+-	InternalRHIBlur->SetLowQualityFallbackBrush(&FallbackRoundedBrush);
+ }

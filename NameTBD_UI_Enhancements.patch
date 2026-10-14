@@ -1,0 +1,4022 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Public/Core/NameTBDTypes.h b/Plugins/NameTBD/Source/NameTBD/Public/Core/NameTBDTypes.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Public/Core/NameTBDTypes.h
+@@ -0,0 +1,243 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "UObject/Interface.h"
++#include "Styling/SlateBrush.h"
++#include "Curves/CurveFloat.h"
++#include "NameTBDTypes.generated.h"
++
++/**
++ * Easing functions used across NameTBD animated widgets.
++ */
++UENUM(BlueprintType)
++enum class ENameTBDEasingType : uint8
++{
++	Linear UMETA(DisplayName = "Linear"),
++	EaseInQuad UMETA(DisplayName = "Ease In (Quad)"),
++	EaseOutQuad UMETA(DisplayName = "Ease Out (Quad)"),
++	EaseInOutQuad UMETA(DisplayName = "Ease In Out (Quad)"),
++	EaseOutCubic UMETA(DisplayName = "Ease Out (Cubic)"),
++	EaseInOutCubic UMETA(DisplayName = "Ease In Out (Cubic)"),
++	EaseOutQuart UMETA(DisplayName = "Ease Out (Quart)"),
++	EaseInOutQuart UMETA(DisplayName = "Ease In Out (Quart)"),
++	EaseOutBack UMETA(DisplayName = "Ease Out (Overshoot / Back)"),
++	Spring UMETA(DisplayName = "Spring Damper")
++};
++
++/**
++ * Procedural or brush-based shape primitives supported by runtime design targets.
++ */
++UENUM(BlueprintType)
++enum class ENameTBDShapePrimitive : uint8
++{
++	RoundedRect UMETA(DisplayName = "Rounded Rectangle"),
++	Circle UMETA(DisplayName = "Circle / Pill"),
++	Square UMETA(DisplayName = "Sharp Square / Box"),
++	LinearBar UMETA(DisplayName = "Linear Bar"),
++	CircularRing UMETA(DisplayName = "Circular Ring / Arc"),
++	HybridBar UMETA(DisplayName = "Hybrid Linear + Circular"),
++	CustomBrush UMETA(DisplayName = "Custom Brush / SVG Icon")
++};
++
++/**
++ * Motion preset for interactive widgets and buttons.
++ * Every motion field is immediately followed by EnterDuration and ExitDuration.
++ */
++UENUM(BlueprintType)
++enum class ENameTBDMotionType : uint8
++{
++	Instant UMETA(DisplayName = "Instant (No Interpolation)"),
++	SmoothLerp UMETA(DisplayName = "Smooth Eased Interpolation"),
++	ElevationLift UMETA(DisplayName = "Elevation Lift & Scale"),
++	SpringPop UMETA(DisplayName = "Spring Pop"),
++	Flip3D UMETA(DisplayName = "3D Perspective Flip")
++};
++
++/**
++ * Standardized motion configuration ensuring EnterDuration and ExitDuration
++ * immediately follow the Motion field whenever motion is not Instant.
++ */
++USTRUCT(BlueprintType)
++struct NAMETBD_API FNameTBDMotionSettings
++{
++	GENERATED_BODY()
++
++	/** Motion behavior when entering or exiting the state. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion")
++	ENameTBDMotionType Motion = ENameTBDMotionType::SmoothLerp;
++
++	/** Duration (in seconds) when entering/activating the motion state. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	float EnterDuration = 0.22f;
++
++	/** Duration (in seconds) when exiting/deactivating the motion state. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	float ExitDuration = 0.18f;
++
++	/** Easing curve applied to the motion transition. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	ENameTBDEasingType Easing = ENameTBDEasingType::EaseOutCubic;
++
++	/** Optional scale multiplier applied on hover/active state. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (ClampMin = "0.5", ClampMax = "2.0", EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	float TargetScale = 1.03f;
++
++	/** Optional vertical elevation offset (in slate units) when active. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	FVector2D TargetTranslationOffset = FVector2D(0.0, -2.0);
++};
++
++/**
++ * A runtime-switchable shape/design target.
++ * Allows widgets to switch between icons, shapes (e.g. Circle to Square when recording),
++ * or color/corner presets at runtime by TargetID or normalized value range.
++ */
++USTRUCT(BlueprintType)
++struct NAMETBD_API FNameTBDDesignTarget
++{
++	GENERATED_BODY()
++
++	/** Optional identifier used to activate this design target at runtime (e.g., "Muted", "HalfVolume", "Recording"). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design Target")
++	FName TargetID = NAME_None;
++
++	/** Shape primitive to render when this target is active. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design Target")
++	ENameTBDShapePrimitive ShapePrimitive = ENameTBDShapePrimitive::RoundedRect;
++
++	/** Optional brush/SVG icon for this target state. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design Target")
++	FSlateBrush TargetBrush;
++
++	/** Primary tint/fill color override when this target is active. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design Target")
++	FLinearColor PrimaryColor = FLinearColor::White;
++
++	/** Corner radius (4D: TopLeft, TopRight, BottomRight, BottomLeft) for morphing shapes (e.g., Circle -> Square). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design Target")
++	FVector4 CornerRadii = FVector4(8.0, 8.0, 8.0, 8.0);
++
++	/** Minimum normalized value [0..1] for automatic value-based target selection (e.g., volume slider thresholds). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design Target", meta = (ClampMin = "0.0", ClampMax = "1.0"))
++	float MinValueThreshold = 0.0f;
++
++	/** Maximum normalized value [0..1] for automatic value-based target selection. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design Target", meta = (ClampMin = "0.0", ClampMax = "1.0"))
++	float MaxValueThreshold = 1.0f;
++};
++
++UINTERFACE(MinimalAPI, Blueprintable)
++class UNameTBDDesignTargetInterface : public UInterface
++{
++	GENERATED_BODY()
++};
++
++/**
++ * Public runtime API for querying and switching Shape/Design Targets on any supporting NameTBD widget.
++ */
++class NAMETBD_API INameTBDDesignTargetInterface
++{
++	GENERATED_BODY()
++
++public:
++	/** Switches the active shape/design target by its optional TargetID. Returns true if found. */
++	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "NameTBD|Design Targets")
++	bool SetActiveDesignTargetByID(FName InTargetID, bool bAnimateTransition = true);
++
++	/** Selects the first design target whose [MinValueThreshold, MaxValueThreshold] encompasses NormalizedValue. */
++	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "NameTBD|Design Targets")
++	bool SetActiveDesignTargetByValue(float NormalizedValue, bool bAnimateTransition = true);
++
++	/** Returns the currently active design target ID (or NAME_None if using default design). */
++	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "NameTBD|Design Targets")
++	FName GetActiveDesignTargetID() const;
++};
++
++/**
++ * Math & Brush helper functions for easing and procedural rounded-box rendering.
++ */
++namespace NameTBDMath
++{
++	FORCEINLINE float EvaluateEasing(ENameTBDEasingType Easing, float Alpha)
++	{
++		const float T = FMath::Clamp(Alpha, 0.0f, 1.0f);
++		switch (Easing)
++		{
++		case ENameTBDEasingType::Linear:
++			return T;
++		case ENameTBDEasingType::EaseInQuad:
++			return T * T;
++		case ENameTBDEasingType::EaseOutQuad:
++			return 1.0f - (1.0f - T) * (1.0f - T);
++		case ENameTBDEasingType::EaseInOutQuad:
++			return T < 0.5f ? 2.0f * T * T : 1.0f - FMath::Pow(-2.0f * T + 2.0f, 2.0f) * 0.5f;
++		case ENameTBDEasingType::EaseOutCubic:
++			return 1.0f - FMath::Pow(1.0f - T, 3.0f);
++		case ENameTBDEasingType::EaseInOutCubic:
++			return T < 0.5f ? 4.0f * T * T * T : 1.0f - FMath::Pow(-2.0f * T + 2.0f, 3.0f) * 0.5f;
++		case ENameTBDEasingType::EaseOutQuart:
++			return 1.0f - FMath::Pow(1.0f - T, 4.0f);
++		case ENameTBDEasingType::EaseInOutQuart:
++			return T < 0.5f ? 8.0f * T * T * T * T : 1.0f - FMath::Pow(-2.0f * T + 2.0f, 4.0f) * 0.5f;
++		case ENameTBDEasingType::EaseOutBack:
++		{
++			constexpr float C1 = 1.70158f;
++			constexpr float C3 = C1 + 1.0f;
++			return 1.0f + C3 * FMath::Pow(T - 1.0f, 3.0f) + C1 * FMath::Pow(T - 1.0f, 2.0f);
++		}
++		case ENameTBDEasingType::Spring:
++		{
++			return 1.0f - FMath::Exp(-6.0f * T) * FMath::Cos(10.0f * T);
++		}
++		default:
++			return T;
++		}
++	}
++
++	/** Signed distance to a 2D rounded box with per-corner radii (TL, TR, BR, BL). */
++	FORCEINLINE float SdRoundedBox(const FVector2D& Point, const FVector2D& HalfExtents, const FVector4& CornerRadii)
++	{
++		double Radius = (Point.X > 0.0)
++			? ((Point.Y > 0.0) ? CornerRadii.Z : CornerRadii.Y)
++			: ((Point.Y > 0.0) ? CornerRadii.W : CornerRadii.X);
++
++		Radius = FMath::Min(Radius, FMath::Min(HalfExtents.X, HalfExtents.Y));
++		const FVector2D Q = FVector2D(FMath::Abs(Point.X), FMath::Abs(Point.Y)) - HalfExtents + FVector2D(Radius, Radius);
++		const FVector2D MaxQ(FMath::Max(Q.X, 0.0), FMath::Max(Q.Y, 0.0));
++		return static_cast<float>(MaxQ.Size() + FMath::Min(FMath::Max(Q.X, Q.Y), 0.0) - Radius);
++	}
++
++	/** Multi-stop color gradient evaluation for t in [0..1]. */
++	FORCEINLINE FLinearColor SampleGradient(const TArray<FLinearColor>& Stops, float Alpha)
++	{
++		if (Stops.Num() == 0)
++		{
++			return FLinearColor::White;
++		}
++		if (Stops.Num() == 1)
++		{
++			return Stops[0];
++		}
++		const float Clamped = FMath::Clamp(Alpha, 0.0f, 1.0f);
++		const float Scaled = Clamped * static_cast<float>(Stops.Num() - 1);
++		const int32 IndexA = FMath::FloorToInt(Scaled);
++		const int32 IndexB = FMath::Min(IndexA + 1, Stops.Num() - 1);
++		const float Frac = Scaled - static_cast<float>(IndexA);
++		return FLinearColor::LerpUsingHSV(Stops[IndexA], Stops[IndexB], Frac);
++	}
++
++	/** Creates an anti-aliased hardware RoundedBox FSlateBrush for the given 4-corner radii. */
++	FORCEINLINE FSlateBrush MakeRoundedBoxBrush(const FVector4& InCornerRadii, float InOutlineWidth = 0.0f, const FLinearColor& InOutlineColor = FLinearColor::Transparent)
++	{
++		FSlateBrush Brush;
++		Brush.DrawAs = ESlateBrushDrawType::RoundedBox;
++		Brush.TintColor = FSlateColor(FLinearColor::White);
++		Brush.OutlineSettings.RoundingType = ESlateBrushRoundingType::FixedRadius;
++		Brush.OutlineSettings.CornerRadii = InCornerRadii;
++		Brush.OutlineSettings.Width = InOutlineWidth;
++		Brush.OutlineSettings.Color = FSlateColor(InOutlineColor);
++		return Brush;
++	}
++}
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDProgressBar.h b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDProgressBar.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDProgressBar.h
+@@ -0,0 +1,171 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Widgets/SLeafWidget.h"
++#include "Core/NameTBDTypes.h"
++#include "SNameTBDProgressBar.generated.h"
++
++/**
++ * Bar geometry shape (Linear, Circular, or Both/Hybrid).
++ */
++UENUM(BlueprintType)
++enum class ENameTBDProgressBarShape : uint8
++{
++	Linear UMETA(DisplayName = "Linear"),
++	Circular UMETA(DisplayName = "Circular / Radial"),
++	Both UMETA(DisplayName = "Both (Linear Track + Circular Node)")
++};
++
++/**
++ * Fill direction for linear mode.
++ */
++UENUM(BlueprintType)
++enum class ENameTBDLinearFillDirection : uint8
++{
++	LeftToRight UMETA(DisplayName = "Left to Right"),
++	RightToLeft UMETA(DisplayName = "Right to Left"),
++	BottomToTop UMETA(DisplayName = "Bottom to Top"),
++	TopToBottom UMETA(DisplayName = "Top to Bottom"),
++	CenterOutward UMETA(DisplayName = "Center Outward")
++};
++
++/**
++ * Configuration struct passed between UNameTBDProgressBar and SNameTBDProgressBar.
++ */
++USTRUCT(BlueprintType)
++struct NAMETBD_API FNameTBDProgressBarStyle
++{
++	GENERATED_BODY()
++
++	/** Shape of the bar: Linear, Circular, or Both. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape")
++	ENameTBDProgressBarShape Shape = ENameTBDProgressBarShape::Linear;
++
++	/** Fill direction when using Linear or Both shape. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape")
++	ENameTBDLinearFillDirection FillDirection = ENameTBDLinearFillDirection::LeftToRight;
++
++	/** Explicit bar length (in Slate units) for linear mode or outer diameter for circular mode. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (ClampMin = "8.0"))
++	float BarLength = 260.0f;
++
++	/** Explicit bar thickness/width (in Slate units). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (ClampMin = "2.0"))
++	float BarWidth = 22.0f;
++
++	/** Corner radius for linear bar and segments. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (ClampMin = "0.0"))
++	float CornerRadius = 8.0f;
++
++	/** Start angle in degrees for circular mode (0 = top / 12 o'clock). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Circular", meta = (ClampMin = "-360.0", ClampMax = "360.0"))
++	float CircularStartAngle = 0.0f;
++
++	/** Sweep arc angle in degrees for circular mode (360 = full circle). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Circular", meta = (ClampMin = "10.0", ClampMax = "360.0"))
++	float CircularSweepAngle = 360.0f;
++
++	/** Whether circular fill progresses clockwise. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Circular")
++	bool bClockwise = true;
++
++	/** Background track color (supports transparency). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Colors")
++	FLinearColor BackgroundColor = FLinearColor(0.06f, 0.07f, 0.09f, 0.75f);
++
++	/** Primary fill color (used when GradientColors has fewer than 2 entries). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Colors")
++	FLinearColor FillColor = FLinearColor(0.12f, 0.68f, 0.98f, 1.0f);
++
++	/** Optional multi-stop gradient colors for the fill bar. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Colors")
++	TArray<FLinearColor> GradientColors;
++
++	/** If true, gradient maps to current Percent value (e.g., low = red, high = green) instead of spatial UV. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Colors")
++	bool bSampleGradientByValue = false;
++
++	/** Delayed ghost/trail bar color when taking damage (value decreases). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation|Ghost Bar")
++	FLinearColor DamageGhostColor = FLinearColor(0.95f, 0.22f, 0.26f, 0.90f);
++
++	/** Delayed ghost/preview bar color when healing/gaining (value increases). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation|Ghost Bar")
++	FLinearColor HealGhostColor = FLinearColor(0.20f, 0.92f, 0.52f, 0.85f);
++
++	/** Enable delayed ghost trail bar on value changes. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation|Ghost Bar")
++	bool bEnableGhostBar = true;
++
++	/** Hold delay (in seconds) before the ghost bar begins catching up after damage/heal. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation|Ghost Bar", meta = (ClampMin = "0.0", EditCondition = "bEnableGhostBar"))
++	float GhostHoldDelay = 0.30f;
++
++	/** Number of segments (1 = continuous bar, >1 divides the bar into discrete parts). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Segments", meta = (ClampMin = "1", ClampMax = "100"))
++	int32 SegmentCount = 1;
++
++	/** Gap thickness in Slate units (or degrees for circular) between segments. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Segments", meta = (ClampMin = "0.0", EditCondition = "SegmentCount > 1"))
++	float SegmentGap = 3.0f;
++
++	/** Edge anti-aliasing / smoothness feather width in Slate units. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering", meta = (ClampMin = "0.0", ClampMax = "10.0"))
++	float EdgeSmoothness = 1.25f;
++
++	/** Optional opacity mask brush multiplied over the progress bar. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rendering")
++	FSlateBrush OpacityMaskBrush;
++};
++
++/**
++ * Slate implementation of the Extended/Improved Progress Bar.
++ */
++class NAMETBD_API SNameTBDProgressBar : public SLeafWidget
++{
++public:
++	SLATE_BEGIN_ARGS(SNameTBDProgressBar)
++		: _Percent(0.75f)
++		, _Style()
++		, _MotionSettings()
++	{}
++		SLATE_ATTRIBUTE(float, Percent)
++		SLATE_ARGUMENT(FNameTBDProgressBarStyle, Style)
++		SLATE_ARGUMENT(FNameTBDMotionSettings, MotionSettings)
++	SLATE_END_ARGS()
++
++	void Construct(const FArguments& InArgs);
++
++	void SetPercent(TAttribute<float> InPercent);
++	float GetTargetPercent() const { return TargetPercent; }
++	float GetDisplayedPercent() const { return DisplayedPrimaryPercent; }
++	float GetGhostPercent() const { return DisplayedGhostPercent; }
++
++	void SetStyle(const FNameTBDProgressBarStyle& InStyle);
++	void SetMotionSettings(const FNameTBDMotionSettings& InMotion);
++
++	// SWidget interface
++	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override;
++	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
++	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
++
++private:
++	void PaintLinearBar(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32& InOutLayerId, const FLinearColor& Tint, const FVector2D& LocalOrigin, const FVector2D& LocalSize) const;
++	void PaintCircularBar(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32& InOutLayerId, const FLinearColor& Tint, const FVector2D& Center, float OuterRadius, float Thickness) const;
++	void AppendArcRibbon(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& AllottedGeometry, const FVector2D& Center, float InnerR, float OuterR, float StartDeg, float EndDeg, const FLinearColor& ColorStart, const FLinearColor& ColorEnd, float FeatherWidth) const;
++	FLinearColor ResolveFillColor(float NormalizedU) const;
++
++private:
++	TAttribute<float> PercentAttribute;
++	FNameTBDProgressBarStyle Style;
++	FNameTBDMotionSettings MotionSettings;
++
++	float TargetPercent = 0.75f;
++	float DisplayedPrimaryPercent = 0.75f;
++	float DisplayedGhostPercent = 0.75f;
++	float GhostDelayTimer = 0.0f;
++	bool bLastChangeWasDamage = true;
++};
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDProgressBar.cpp b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDProgressBar.cpp
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDProgressBar.cpp
+@@ -0,0 +1,400 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#include "Widgets/SNameTBDProgressBar.h"
++#include "Rendering/DrawElements.h"
++#include "Styling/CoreStyle.h"
++#include "Framework/Application/SlateApplication.h"
++
++void SNameTBDProgressBar::Construct(const FArguments& InArgs)
++{
++	PercentAttribute = InArgs._Percent;
++	Style = InArgs._Style;
++	MotionSettings = InArgs._MotionSettings;
++
++	const float Initial = FMath::Clamp(PercentAttribute.Get(0.75f), 0.0f, 1.0f);
++	TargetPercent = Initial;
++	DisplayedPrimaryPercent = Initial;
++	DisplayedGhostPercent = Initial;
++
++	SetCanTick(true);
++}
++
++void SNameTBDProgressBar::SetPercent(TAttribute<float> InPercent)
++{
++	PercentAttribute = MoveTemp(InPercent);
++	const float NewTarget = FMath::Clamp(PercentAttribute.Get(TargetPercent), 0.0f, 1.0f);
++	if (!FMath::IsNearlyEqual(NewTarget, TargetPercent, KINDA_SMALL_NUMBER))
++	{
++		bLastChangeWasDamage = (NewTarget < TargetPercent);
++		TargetPercent = NewTarget;
++		GhostDelayTimer = Style.GhostHoldDelay;
++
++		if (MotionSettings.Motion == ENameTBDMotionType::Instant)
++		{
++			DisplayedPrimaryPercent = TargetPercent;
++			DisplayedGhostPercent = TargetPercent;
++		}
++	}
++}
++
++void SNameTBDProgressBar::SetStyle(const FNameTBDProgressBarStyle& InStyle)
++{
++	Style = InStyle;
++	Invalidate(EInvalidateWidgetReason::LayoutAndVolatility);
++}
++
++void SNameTBDProgressBar::SetMotionSettings(const FNameTBDMotionSettings& InMotion)
++{
++	MotionSettings = InMotion;
++}
++
++FVector2D SNameTBDProgressBar::ComputeDesiredSize(float LayoutScaleMultiplier) const
++{
++	if (Style.Shape == ENameTBDProgressBarShape::Circular)
++	{
++		return FVector2D(Style.BarLength, Style.BarLength);
++	}
++	if (Style.Shape == ENameTBDProgressBarShape::Both)
++	{
++		const float CircleDiameter = Style.BarWidth * 2.4f;
++		return FVector2D(Style.BarLength + CircleDiameter, FMath::Max(Style.BarWidth, CircleDiameter));
++	}
++	const bool bVertical = (Style.FillDirection == ENameTBDLinearFillDirection::BottomToTop || Style.FillDirection == ENameTBDLinearFillDirection::TopToBottom);
++	return bVertical ? FVector2D(Style.BarWidth, Style.BarLength) : FVector2D(Style.BarLength, Style.BarWidth);
++}
++
++void SNameTBDProgressBar::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
++{
++	SLeafWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
++
++	if (PercentAttribute.IsBound())
++	{
++		SetPercent(PercentAttribute.Get());
++	}
++
++	if (MotionSettings.Motion == ENameTBDMotionType::Instant)
++	{
++		DisplayedPrimaryPercent = TargetPercent;
++		DisplayedGhostPercent = TargetPercent;
++		return;
++	}
++
++	// Use EnterDuration when increasing (healing/filling) and ExitDuration when decreasing (damage/draining)
++	const float PrimaryDuration = bLastChangeWasDamage
++		? FMath::Max(MotionSettings.ExitDuration, 0.001f)
++		: FMath::Max(MotionSettings.EnterDuration, 0.001f);
++
++	const float PrimarySpeed = 1.0f / PrimaryDuration;
++	if (bLastChangeWasDamage)
++	{
++		// Primary bar drops fast on damage, ghost bar trails behind after GhostHoldDelay
++		DisplayedPrimaryPercent = FMath::FInterpConstantTo(DisplayedPrimaryPercent, TargetPercent, InDeltaTime, PrimarySpeed * 2.0f);
++		if (Style.bEnableGhostBar)
++		{
++			if (GhostDelayTimer > 0.0f)
++			{
++				GhostDelayTimer -= InDeltaTime;
++			}
++			else
++			{
++				DisplayedGhostPercent = FMath::FInterpTo(DisplayedGhostPercent, TargetPercent, InDeltaTime, PrimarySpeed * 3.5f);
++			}
++		}
++		else
++		{
++			DisplayedGhostPercent = DisplayedPrimaryPercent;
++		}
++	}
++	else
++	{
++		// Ghost bar jumps ahead on heal to preview gain, primary bar smoothly fills up to meet it
++		DisplayedGhostPercent = FMath::FInterpTo(DisplayedGhostPercent, TargetPercent, InDeltaTime, PrimarySpeed * 5.0f);
++		if (GhostDelayTimer > 0.0f)
++		{
++			GhostDelayTimer -= InDeltaTime;
++		}
++		else
++		{
++			DisplayedPrimaryPercent = FMath::FInterpTo(DisplayedPrimaryPercent, TargetPercent, InDeltaTime, PrimarySpeed * 3.0f);
++		}
++	}
++}
++
++FLinearColor SNameTBDProgressBar::ResolveFillColor(float NormalizedU) const
++{
++	if (Style.GradientColors.Num() >= 2)
++	{
++		const float LookupAlpha = Style.bSampleGradientByValue ? DisplayedPrimaryPercent : NormalizedU;
++		return NameTBDMath::SampleGradient(Style.GradientColors, LookupAlpha);
++	}
++	return Style.FillColor;
++}
++
++int32 SNameTBDProgressBar::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
++{
++	const FLinearColor WidgetTint = InWidgetStyle.GetColorAndOpacityTint();
++	const FVector2D LocalSize = AllottedGeometry.GetLocalSize();
++
++	if (Style.Shape == ENameTBDProgressBarShape::Linear)
++	{
++		PaintLinearBar(AllottedGeometry, OutDrawElements, LayerId, WidgetTint, FVector2D::ZeroVector, LocalSize);
++	}
++	else if (Style.Shape == ENameTBDProgressBarShape::Circular)
++	{
++		const float OuterRadius = static_cast<float>(FMath::Min(LocalSize.X, LocalSize.Y) * 0.5);
++		PaintCircularBar(AllottedGeometry, OutDrawElements, LayerId, WidgetTint, LocalSize * 0.5, OuterRadius, Style.BarWidth);
++	}
++	else // ENameTBDProgressBarShape::Both
++	{
++		const float CircleDiameter = static_cast<float>(FMath::Min(LocalSize.Y, static_cast<double>(Style.BarWidth * 2.4f)));
++		const float CircleRadius = CircleDiameter * 0.5f;
++		const FVector2D CircleCenter(CircleRadius, LocalSize.Y * 0.5);
++		PaintCircularBar(AllottedGeometry, OutDrawElements, LayerId, WidgetTint, CircleCenter, CircleRadius, Style.BarWidth * 0.45f);
++
++		const FVector2D LinearOrigin(CircleDiameter + 4.0, (LocalSize.Y - Style.BarWidth) * 0.5);
++		const FVector2D LinearSize(FMath::Max(0.0, LocalSize.X - CircleDiameter - 4.0), Style.BarWidth);
++		PaintLinearBar(AllottedGeometry, OutDrawElements, LayerId, WidgetTint, LinearOrigin, LinearSize);
++	}
++
++	if (Style.OpacityMaskBrush.GetResourceObject() != nullptr)
++	{
++		++LayerId;
++		FSlateDrawElement::MakeBox(
++			OutDrawElements,
++			LayerId,
++			AllottedGeometry.ToPaintGeometry(),
++			&Style.OpacityMaskBrush,
++			ESlateDrawEffect::None,
++			FLinearColor(1.0f, 1.0f, 1.0f, Style.OpacityMaskBrush.TintColor.GetSpecifiedColor().A)
++		);
++	}
++
++	return LayerId;
++}
++
++void SNameTBDProgressBar::PaintLinearBar(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
++	int32& InOutLayerId, const FLinearColor& Tint, const FVector2D& LocalOrigin, const FVector2D& LocalSize) const
++{
++	const FVector4 Radii(Style.CornerRadius, Style.CornerRadius, Style.CornerRadius, Style.CornerRadius);
++	const FSlateBrush RoundedBrush = NameTBDMath::MakeRoundedBoxBrush(Radii);
++	const FSlateBrush* BrushToUse = (Style.CornerRadius > 0.0f) ? &RoundedBrush : FCoreStyle::Get().GetBrush("GenericWhiteBox");
++
++	const int32 NumSegments = FMath::Max(1, Style.SegmentCount);
++	const bool bVertical = (Style.FillDirection == ENameTBDLinearFillDirection::BottomToTop || Style.FillDirection == ENameTBDLinearFillDirection::TopToBottom);
++	const float TotalMainAxis = static_cast<float>(bVertical ? LocalSize.Y : LocalSize.X);
++	const float TotalGap = (NumSegments > 1) ? Style.SegmentGap * static_cast<float>(NumSegments - 1) : 0.0f;
++	const float SegmentMainSize = FMath::Max(1.0f, (TotalMainAxis - TotalGap) / static_cast<float>(NumSegments));
++
++	const float LowPercent = FMath::Min(DisplayedPrimaryPercent, DisplayedGhostPercent);
++	const float HighPercent = FMath::Max(DisplayedPrimaryPercent, DisplayedGhostPercent);
++	const FLinearColor GhostColor = (bLastChangeWasDamage ? Style.DamageGhostColor : Style.HealGhostColor) * Tint;
++	const FLinearColor TrackColor = Style.BackgroundColor * Tint;
++
++	for (int32 SegIdx = 0; SegIdx < NumSegments; ++SegIdx)
++	{
++		const float SegStartNorm = static_cast<float>(SegIdx) / static_cast<float>(NumSegments);
++		const float SegEndNorm = static_cast<float>(SegIdx + 1) / static_cast<float>(NumSegments);
++		const float OffsetAlongMain = static_cast<float>(SegIdx) * (SegmentMainSize + Style.SegmentGap);
++
++		FVector2D SegPos = LocalOrigin;
++		FVector2D SegSize = LocalSize;
++		if (bVertical)
++		{
++			SegPos.Y += (Style.FillDirection == ENameTBDLinearFillDirection::BottomToTop)
++				? (TotalMainAxis - OffsetAlongMain - SegmentMainSize)
++				: OffsetAlongMain;
++			SegSize.Y = SegmentMainSize;
++		}
++		else
++		{
++			SegPos.X += (Style.FillDirection == ENameTBDLinearFillDirection::RightToLeft)
++				? (TotalMainAxis - OffsetAlongMain - SegmentMainSize)
++				: OffsetAlongMain;
++			SegSize.X = SegmentMainSize;
++		}
++
++		// 1. Background Track Segment
++		FSlateDrawElement::MakeBox(
++			OutDrawElements,
++			InOutLayerId,
++			AllottedGeometry.ToPaintGeometry(SegSize, FSlateLayoutTransform(SegPos)),
++			BrushToUse,
++			ESlateDrawEffect::None,
++			TrackColor
++		);
++
++		// 2. Ghost Segment Fill
++		if (Style.bEnableGhostBar && HighPercent > SegStartNorm)
++		{
++			const float LocalGhostFill = FMath::Clamp((HighPercent - SegStartNorm) / (SegEndNorm - SegStartNorm), 0.0f, 1.0f);
++			FVector2D GhostSize = SegSize;
++			FVector2D GhostPos = SegPos;
++			if (bVertical)
++			{
++				GhostSize.Y *= LocalGhostFill;
++				if (Style.FillDirection == ENameTBDLinearFillDirection::BottomToTop)
++				{
++					GhostPos.Y = SegPos.Y + (SegSize.Y - GhostSize.Y);
++				}
++			}
++			else
++			{
++				GhostSize.X *= LocalGhostFill;
++				if (Style.FillDirection == ENameTBDLinearFillDirection::RightToLeft)
++				{
++					GhostPos.X = SegPos.X + (SegSize.X - GhostSize.X);
++				}
++			}
++
++			FSlateDrawElement::MakeBox(
++				OutDrawElements,
++				InOutLayerId + 1,
++				AllottedGeometry.ToPaintGeometry(GhostSize, FSlateLayoutTransform(GhostPos)),
++				BrushToUse,
++				ESlateDrawEffect::None,
++				GhostColor
++			);
++		}
++
++		// 3. Primary Fill Segment (with multi-stop gradient support)
++		const float PrimaryFillTarget = bLastChangeWasDamage ? LowPercent : DisplayedPrimaryPercent;
++		if (PrimaryFillTarget > SegStartNorm)
++		{
++			const float LocalFill = FMath::Clamp((PrimaryFillTarget - SegStartNorm) / (SegEndNorm - SegStartNorm), 0.0f, 1.0f);
++			FVector2D FillSize = SegSize;
++			FVector2D FillPos = SegPos;
++
++			if (bVertical)
++			{
++				FillSize.Y *= LocalFill;
++				if (Style.FillDirection == ENameTBDLinearFillDirection::BottomToTop)
++				{
++					FillPos.Y = SegPos.Y + (SegSize.Y - FillSize.Y);
++				}
++			}
++			else if (Style.FillDirection == ENameTBDLinearFillDirection::CenterOutward)
++			{
++				FillSize.X *= LocalFill;
++				FillPos.X = SegPos.X + (SegSize.X - FillSize.X) * 0.5;
++			}
++			else
++			{
++				FillSize.X *= LocalFill;
++				if (Style.FillDirection == ENameTBDLinearFillDirection::RightToLeft)
++				{
++					FillPos.X = SegPos.X + (SegSize.X - FillSize.X);
++				}
++			}
++
++			const FLinearColor SegColor = ResolveFillColor((SegStartNorm + SegEndNorm) * 0.5f * LocalFill) * Tint;
++			FSlateDrawElement::MakeBox(
++				OutDrawElements,
++				InOutLayerId + 2,
++				AllottedGeometry.ToPaintGeometry(FillSize, FSlateLayoutTransform(FillPos)),
++				BrushToUse,
++				ESlateDrawEffect::None,
++				SegColor
++			);
++		}
++	}
++
++	InOutLayerId += 3;
++}
++
++void SNameTBDProgressBar::PaintCircularBar(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
++	int32& InOutLayerId, const FLinearColor& Tint, const FVector2D& Center, float OuterRadius, float Thickness) const
++{
++	const float InnerRadius = FMath::Max(1.0f, OuterRadius - Thickness);
++	const int32 NumSegments = FMath::Max(1, Style.SegmentCount);
++	const float TotalGapDeg = (NumSegments > 1) ? (Style.SegmentGap * static_cast<float>(NumSegments)) : 0.0f;
++	const float AvailableSweep = FMath::Max(1.0f, Style.CircularSweepAngle - TotalGapDeg);
++	const float SegSweep = AvailableSweep / static_cast<float>(NumSegments);
++	const float DirSign = Style.bClockwise ? 1.0f : -1.0f;
++
++	const float LowPercent = FMath::Min(DisplayedPrimaryPercent, DisplayedGhostPercent);
++	const float HighPercent = FMath::Max(DisplayedPrimaryPercent, DisplayedGhostPercent);
++	const FLinearColor GhostColor = (bLastChangeWasDamage ? Style.DamageGhostColor : Style.HealGhostColor) * Tint;
++	const FLinearColor TrackColor = Style.BackgroundColor * Tint;
++
++	for (int32 SegIdx = 0; SegIdx < NumSegments; ++SegIdx)
++	{
++		const float SegStartNorm = static_cast<float>(SegIdx) / static_cast<float>(NumSegments);
++		const float SegEndNorm = static_cast<float>(SegIdx + 1) / static_cast<float>(NumSegments);
++		const float SegStartDeg = Style.CircularStartAngle + DirSign * static_cast<float>(SegIdx) * (SegSweep + (NumSegments > 1 ? Style.SegmentGap : 0.0f));
++		const float SegEndDeg = SegStartDeg + DirSign * SegSweep;
++
++		// 1. Background Track Arc
++		AppendArcRibbon(OutDrawElements, InOutLayerId, AllottedGeometry, Center, InnerRadius, OuterRadius, SegStartDeg, SegEndDeg, TrackColor, TrackColor, Style.EdgeSmoothness);
++
++		// 2. Ghost Arc
++		if (Style.bEnableGhostBar && HighPercent > SegStartNorm)
++		{
++			const float LocalGhost = FMath::Clamp((HighPercent - SegStartNorm) / (SegEndNorm - SegStartNorm), 0.0f, 1.0f);
++			const float GhostEndDeg = FMath::Lerp(SegStartDeg, SegEndDeg, LocalGhost);
++			AppendArcRibbon(OutDrawElements, InOutLayerId + 1, AllottedGeometry, Center, InnerRadius, OuterRadius, SegStartDeg, GhostEndDeg, GhostColor, GhostColor, Style.EdgeSmoothness);
++		}
++
++		// 3. Primary Fill Arc
++		const float PrimaryFillTarget = bLastChangeWasDamage ? LowPercent : DisplayedPrimaryPercent;
++		if (PrimaryFillTarget > SegStartNorm)
++		{
++			const float LocalFill = FMath::Clamp((PrimaryFillTarget - SegStartNorm) / (SegEndNorm - SegStartNorm), 0.0f, 1.0f);
++			const float FillEndDeg = FMath::Lerp(SegStartDeg, SegEndDeg, LocalFill);
++			const FLinearColor CStart = ResolveFillColor(SegStartNorm) * Tint;
++			const FLinearColor CEnd = ResolveFillColor(FMath::Lerp(SegStartNorm, SegEndNorm, LocalFill)) * Tint;
++			AppendArcRibbon(OutDrawElements, InOutLayerId + 2, AllottedGeometry, Center, InnerRadius, OuterRadius, SegStartDeg, FillEndDeg, CStart, CEnd, Style.EdgeSmoothness);
++		}
++	}
++
++	InOutLayerId += 3;
++}
++
++void SNameTBDProgressBar::AppendArcRibbon(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& AllottedGeometry,
++	const FVector2D& Center, float InnerR, float OuterR, float StartDeg, float EndDeg,
++	const FLinearColor& ColorStart, const FLinearColor& ColorEnd, float FeatherWidth) const
++{
++	(void)FeatherWidth;
++	const float ArcSpan = FMath::Abs(EndDeg - StartDeg);
++	if (ArcSpan <= 0.05f)
++	{
++		return;
++	}
++
++	const int32 Steps = FMath::Clamp(FMath::CeilToInt(ArcSpan / 4.0f), 4, 96);
++	TArray<FSlateVertex> Vertices;
++	TArray<SlateIndex> Indices;
++	Vertices.Reserve((Steps + 1) * 2);
++	Indices.Reserve(Steps * 6);
++
++	const FSlateRenderTransform& RenderTransform = AllottedGeometry.GetAccumulatedRenderTransform();
++
++	for (int32 i = 0; i <= Steps; ++i)
++	{
++		const float Alpha = static_cast<float>(i) / static_cast<float>(Steps);
++		const float AngleRad = FMath::DegreesToRadians(FMath::Lerp(StartDeg, EndDeg, Alpha) - 90.0f);
++		const FVector2D Dir(FMath::Cos(AngleRad), FMath::Sin(AngleRad));
++
++		const FVector2D InnerPt = Center + Dir * InnerR;
++		const FVector2D OuterPt = Center + Dir * OuterR;
++		const FColor StepColor = FLinearColor::LerpUsingHSV(ColorStart, ColorEnd, Alpha).ToFColor(true);
++
++		Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(RenderTransform, FVector2f(InnerPt), FVector2f(Alpha, 0.0f), StepColor));
++		Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(RenderTransform, FVector2f(OuterPt), FVector2f(Alpha, 1.0f), StepColor));
++
++		if (i < Steps)
++		{
++			const int32 BaseIdx = i * 2;
++			Indices.Add(BaseIdx);
++			Indices.Add(BaseIdx + 1);
++			Indices.Add(BaseIdx + 2);
++
++			Indices.Add(BaseIdx + 1);
++			Indices.Add(BaseIdx + 3);
++			Indices.Add(BaseIdx + 2);
++		}
++	}
++
++	const FSlateResourceHandle& ResourceHandle = FCoreStyle::Get().GetBrush("GenericWhiteBox")->GetRenderingResource();
++	FSlateDrawElement::MakeCustomVerts(OutDrawElements, LayerId, ResourceHandle, Vertices, Indices, nullptr, 0, 0);
++}
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDProgressBar.h b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDProgressBar.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDProgressBar.h
+@@ -0,0 +1,95 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Components/Widget.h"
++#include "Core/NameTBDTypes.h"
++#include "Widgets/SNameTBDProgressBar.h"
++#include "NameTBDProgressBar.generated.h"
++
++DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnNameTBDProgressBarValueChanged, float, NewPercent, float, OldPercent);
++
++/**
++ * UMG Extended/Improved Progress Bar supporting Linear, Circular, and Hybrid (Both) shapes,
++ * automatic damage/heal ghost bar animations, multi-stop gradients, segments, smoothness,
++ * and runtime shape/design target switching.
++ */
++UCLASS(meta = (DisplayName = "NameTBD Progress Bar"))
++class NAMETBD_API UNameTBDProgressBar : public UWidget, public INameTBDDesignTargetInterface
++{
++	GENERATED_BODY()
++
++public:
++	UNameTBDProgressBar();
++
++	/** Current progress value in [0..1]. Compatible with vanilla ProgressBar SetPercent/GetPercent. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Progress", meta = (ClampMin = "0.0", ClampMax = "1.0", UIMin = "0.0", UIMax = "1.0"))
++	float Percent = 0.75f;
++
++	/** Optional bindable delegate for Percent. */
++	UPROPERTY()
++	FGetFloat PercentDelegate;
++
++	/** Complete visual and geometric style of the progress bar. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Appearance")
++	FNameTBDProgressBarStyle BarStyle;
++
++	/** Motion and Enter/Exit duration settings for value changes. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion")
++	FNameTBDMotionSettings ValueChangeMotion;
++
++	/** Optional runtime shape/design targets (e.g., changing bar shape or color states by ID or threshold). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design Targets")
++	TArray<FNameTBDDesignTarget> DesignTargets;
++
++	/** Currently active design target ID. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design Targets")
++	FName ActiveDesignTargetID = NAME_None;
++
++	/** Fired whenever SetPercent changes the target percent. */
++	UPROPERTY(BlueprintAssignable, Category = "Progress|Events")
++	FOnNameTBDProgressBarValueChanged OnPercentChanged;
++
++public:
++	/** Sets the current progress bar fill percent [0..1] (vanilla UMG ProgressBar compatible). */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Progress Bar")
++	void SetPercent(float InPercent);
++
++	/** Gets the current target progress bar percent [0..1] (vanilla UMG ProgressBar compatible). */
++	UFUNCTION(BlueprintPure, Category = "NameTBD|Progress Bar")
++	float GetPercent() const { return Percent; }
++
++	/** Gets the currently animated/displayed primary percent [0..1]. */
++	UFUNCTION(BlueprintPure, Category = "NameTBD|Progress Bar")
++	float GetDisplayedPercent() const;
++
++	/** Sets the bar shape (Linear, Circular, or Both) at runtime. */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Progress Bar")
++	void SetBarShape(ENameTBDProgressBarShape InShape);
++
++	/** Sets the number of segments and gap size at runtime. */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Progress Bar")
++	void SetSegments(int32 InSegmentCount, float InSegmentGap = 3.0f);
++
++	// INameTBDDesignTargetInterface
++	virtual bool SetActiveDesignTargetByID_Implementation(FName InTargetID, bool bAnimateTransition = true) override;
++	virtual bool SetActiveDesignTargetByValue_Implementation(float NormalizedValue, bool bAnimateTransition = true) override;
++	virtual FName GetActiveDesignTargetID_Implementation() const override { return ActiveDesignTargetID; }
++
++	// UWidget interface
++	virtual void SynchronizeProperties() override;
++	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
++
++#if WITH_EDITOR
++	virtual const FText GetPaletteCategory() override;
++#endif
++
++protected:
++	virtual TSharedRef<SWidget> RebuildWidget() override;
++	void ApplyDesignTarget(const FNameTBDDesignTarget& Target);
++	float HandleGetPercent() const;
++
++protected:
++	TSharedPtr<SNameTBDProgressBar> MyProgressBar;
++};
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDProgressBar.cpp b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDProgressBar.cpp
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDProgressBar.cpp
+@@ -0,0 +1,155 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#include "Widgets/NameTBDProgressBar.h"
++
++#define LOCTEXT_NAMESPACE "NameTBD"
++
++UNameTBDProgressBar::UNameTBDProgressBar()
++{
++	ValueChangeMotion.Motion = ENameTBDMotionType::SmoothLerp;
++	ValueChangeMotion.EnterDuration = 0.28f;
++	ValueChangeMotion.ExitDuration = 0.16f;
++}
++
++float UNameTBDProgressBar::HandleGetPercent() const
++{
++	if (PercentDelegate.IsBound())
++	{
++		return PercentDelegate.Execute();
++	}
++	return Percent;
++}
++
++TSharedRef<SWidget> UNameTBDProgressBar::RebuildWidget()
++{
++	TAttribute<float> PercentBinding = PercentDelegate.IsBound()
++		? TAttribute<float>::Create(TAttribute<float>::FGetter::CreateUObject(this, &UNameTBDProgressBar::HandleGetPercent))
++		: TAttribute<float>(Percent);
++
++	MyProgressBar = SNew(SNameTBDProgressBar)
++		.Percent(PercentBinding)
++		.Style(BarStyle)
++		.MotionSettings(ValueChangeMotion);
++
++	return MyProgressBar.ToSharedRef();
++}
++
++void UNameTBDProgressBar::SynchronizeProperties()
++{
++	Super::SynchronizeProperties();
++	if (MyProgressBar.IsValid())
++	{
++		TAttribute<float> PercentBinding = PercentDelegate.IsBound()
++			? TAttribute<float>::Create(TAttribute<float>::FGetter::CreateUObject(this, &UNameTBDProgressBar::HandleGetPercent))
++			: TAttribute<float>(Percent);
++
++		MyProgressBar->SetStyle(BarStyle);
++		MyProgressBar->SetMotionSettings(ValueChangeMotion);
++		MyProgressBar->SetPercent(PercentBinding);
++	}
++}
++
++void UNameTBDProgressBar::ReleaseSlateResources(bool bReleaseChildren)
++{
++	Super::ReleaseSlateResources(bReleaseChildren);
++	MyProgressBar.Reset();
++}
++
++void UNameTBDProgressBar::SetPercent(float InPercent)
++{
++	const float Clamped = FMath::Clamp(InPercent, 0.0f, 1.0f);
++	if (!FMath::IsNearlyEqual(Percent, Clamped, KINDA_SMALL_NUMBER))
++	{
++		const float OldPercent = Percent;
++		Percent = Clamped;
++		if (MyProgressBar.IsValid())
++		{
++			MyProgressBar->SetPercent(Percent);
++		}
++		OnPercentChanged.Broadcast(Percent, OldPercent);
++	}
++}
++
++float UNameTBDProgressBar::GetDisplayedPercent() const
++{
++	return MyProgressBar.IsValid() ? MyProgressBar->GetDisplayedPercent() : Percent;
++}
++
++void UNameTBDProgressBar::SetBarShape(ENameTBDProgressBarShape InShape)
++{
++	BarStyle.Shape = InShape;
++	if (MyProgressBar.IsValid())
++	{
++		MyProgressBar->SetStyle(BarStyle);
++	}
++}
++
++void UNameTBDProgressBar::SetSegments(int32 InSegmentCount, float InSegmentGap)
++{
++	BarStyle.SegmentCount = FMath::Max(1, InSegmentCount);
++	BarStyle.SegmentGap = FMath::Max(0.0f, InSegmentGap);
++	if (MyProgressBar.IsValid())
++	{
++		MyProgressBar->SetStyle(BarStyle);
++	}
++}
++
++void UNameTBDProgressBar::ApplyDesignTarget(const FNameTBDDesignTarget& Target)
++{
++	ActiveDesignTargetID = Target.TargetID;
++	BarStyle.FillColor = Target.PrimaryColor;
++	BarStyle.CornerRadius = static_cast<float>(Target.CornerRadii.X);
++	if (Target.ShapePrimitive == ENameTBDShapePrimitive::LinearBar)
++	{
++		BarStyle.Shape = ENameTBDProgressBarShape::Linear;
++	}
++	else if (Target.ShapePrimitive == ENameTBDShapePrimitive::CircularRing)
++	{
++		BarStyle.Shape = ENameTBDProgressBarShape::Circular;
++	}
++	else if (Target.ShapePrimitive == ENameTBDShapePrimitive::HybridBar)
++	{
++		BarStyle.Shape = ENameTBDProgressBarShape::Both;
++	}
++	if (MyProgressBar.IsValid())
++	{
++		MyProgressBar->SetStyle(BarStyle);
++	}
++}
++
++bool UNameTBDProgressBar::SetActiveDesignTargetByID_Implementation(FName InTargetID, bool bAnimateTransition)
++{
++	(void)bAnimateTransition;
++	for (const FNameTBDDesignTarget& Target : DesignTargets)
++	{
++		if (Target.TargetID == InTargetID)
++		{
++			ApplyDesignTarget(Target);
++			return true;
++		}
++	}
++	return false;
++}
++
++bool UNameTBDProgressBar::SetActiveDesignTargetByValue_Implementation(float NormalizedValue, bool bAnimateTransition)
++{
++	(void)bAnimateTransition;
++	for (const FNameTBDDesignTarget& Target : DesignTargets)
++	{
++		if (NormalizedValue >= Target.MinValueThreshold && NormalizedValue <= Target.MaxValueThreshold)
++		{
++			ApplyDesignTarget(Target);
++			return true;
++		}
++	}
++	return false;
++}
++
++#if WITH_EDITOR
++const FText UNameTBDProgressBar::GetPaletteCategory()
++{
++	return LOCTEXT("NameTBDPaletteCategory", "NameTBD");
++}
++#endif
++
++#undef LOCTEXT_NAMESPACE
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDBlurWidget.h b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDBlurWidget.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDBlurWidget.h
+@@ -0,0 +1,147 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Widgets/SCompoundWidget.h"
++#include "Core/NameTBDTypes.h"
++#include "SNameTBDBlurWidget.generated.h"
++
++/**
++ * Modern blur and glassmorphism visual mode.
++ */
++UENUM(BlueprintType)
++enum class ENameTBDBlurMode : uint8
++{
++	StandardGaussian UMETA(DisplayName = "Standard Gaussian Blur"),
++	FrostedGlass UMETA(DisplayName = "Frosted Glass (Glassmorphism)"),
++	AcrylicLayered UMETA(DisplayName = "Acrylic Layered (Tint + Frost + Rim)"),
++	ChromaticEdgeGlass UMETA(DisplayName = "Chromatic Iridescent Glass")
++};
++
++/**
++ * Light or Dark theme preset for Glassmorphism contrast & legibility.
++ */
++UENUM(BlueprintType)
++enum class ENameTBDGlassThemeMode : uint8
++{
++	Custom UMETA(DisplayName = "Custom Settings"),
++	LightMode UMETA(DisplayName = "Light Theme Glass (Crisp Boundary, Soft White Film)"),
++	DarkMode UMETA(DisplayName = "Dark Theme Glass (Subtle Rim, Deep Charcoal Film)")
++};
++
++/**
++ * Complete Glassmorphism & Better Blur style settings.
++ * Works across all graphics APIs supported by Slate native blur (D3D11, D3D12, Vulkan, Metal).
++ */
++USTRUCT(BlueprintType)
++struct NAMETBD_API FNameTBDGlassBlurStyle
++{
++	GENERATED_BODY()
++
++	/** Visual blur mode. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glassmorphism")
++	ENameTBDBlurMode BlurMode = ENameTBDBlurMode::FrostedGlass;
++
++	/** Optional Light/Dark theme preset for contrast and boundary tuning. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glassmorphism")
++	ENameTBDGlassThemeMode ThemePreset = ENameTBDGlassThemeMode::Custom;
++
++	/** Blur radius in pixels (10-30px sweet spot for glassmorphism; 4-15px for mobile/buttons). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blur", meta = (ClampMin = "0.0", ClampMax = "100.0"))
++	float BlurStrength = 16.0f;
++
++	/** Optional explicit low-pass downsample override (0 = auto-computed from BlurStrength). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blur", meta = (ClampMin = "0", ClampMax = "64"))
++	int32 OverrideBlurRadius = 0;
++
++	/** Semi-transparent solid overlay tint (10-30% opacity recommended to preserve WCAG text contrast). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass Surface")
++	FLinearColor SurfaceTint = FLinearColor(0.92f, 0.96f, 1.0f, 0.18f);
++
++	/** Optional gradient stops for vibrant glass surface wash. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass Surface")
++	TArray<FLinearColor> SurfaceGradientStops;
++
++	/** Per-corner rounding radii (TopLeft, TopRight, BottomRight, BottomLeft). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass Surface")
++	FVector4 CornerRadii = FVector4(14.0, 14.0, 14.0, 14.0);
++
++	/** Subtle frost micro-diffusion intensity [0..1] for acrylic/frosted texture. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glass Surface", meta = (ClampMin = "0.0", ClampMax = "1.0"))
++	float FrostLuminance = 0.08f;
++
++	/** Enables directional specular rim lighting along the glass border. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rim Lighting")
++	bool bEnableSpecularRim = true;
++
++	/** Thickness of the glass rim border in Slate units. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rim Lighting", meta = (ClampMin = "0.0", ClampMax = "8.0", EditCondition = "bEnableSpecularRim"))
++	float RimThickness = 1.25f;
++
++	/** Directional light angle in degrees (e.g., -45 = top-left light source). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rim Lighting", meta = (ClampMin = "-180.0", ClampMax = "180.0", EditCondition = "bEnableSpecularRim"))
++	float LightDirectionDegrees = -45.0f;
++
++	/** Highlight color on the edge facing the light source. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rim Lighting", meta = (EditCondition = "bEnableSpecularRim"))
++	FLinearColor RimHighlightColor = FLinearColor(1.0f, 1.0f, 1.0f, 0.55f);
++
++	/** Subtle shadow/ambient color on the edge opposite the light source. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rim Lighting", meta = (EditCondition = "bEnableSpecularRim"))
++	FLinearColor RimLowlightColor = FLinearColor(1.0f, 1.0f, 1.0f, 0.10f);
++
++	/** Non-blur fallback color when blur strength is 0 or disabled for low-spec hardware. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fallback")
++	FLinearColor LowSpecFallbackColor = FLinearColor(0.12f, 0.14f, 0.18f, 0.85f);
++};
++
++/**
++ * Slate Glassmorphic Blur Widget that works on all graphics APIs supported by native Slate blur
++ * while adding frosted tint films, directional specular rim borders, and interactive elevation modulation.
++ */
++class NAMETBD_API SNameTBDBlurWidget : public SCompoundWidget
++{
++public:
++	SLATE_BEGIN_ARGS(SNameTBDBlurWidget)
++		: _Style()
++		, _Padding(FMargin(12.0f))
++		, _HAlign(HAlign_Fill)
++		, _VAlign(VAlign_Fill)
++	{}
++		SLATE_ARGUMENT(FNameTBDGlassBlurStyle, Style)
++		SLATE_ATTRIBUTE(FMargin, Padding)
++		SLATE_ARGUMENT(EHorizontalAlignment, HAlign)
++		SLATE_ARGUMENT(EVerticalAlignment, VAlign)
++		SLATE_DEFAULT_SLOT(FArguments, Content)
++	SLATE_END_ARGS()
++
++	void Construct(const FArguments& InArgs);
++
++	void SetStyle(const FNameTBDGlassBlurStyle& InStyle);
++	const FNameTBDGlassBlurStyle& GetStyle() const { return Style; }
++
++	void SetContent(const TSharedRef<SWidget>& InContent);
++	void SetContentPadding(TAttribute<FMargin> InPadding);
++
++	/** Interactive modulation used by UNameTBDBlurButton (0 = idle, 1 = hovered, 2 = pressed). */
++	void SetInteractiveModulation(float InBlurMultiplier, float InTintBrightnessOffset, float InRimBoost);
++
++	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
++
++private:
++	void PaintSpecularRimBorder(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FLinearColor& WidgetTint, const FNameTBDGlassBlurStyle& EffectiveStyle) const;
++	FNameTBDGlassBlurStyle ResolveEffectiveStyle() const;
++	void SyncInternalBlurWidget();
++
++private:
++	FNameTBDGlassBlurStyle Style;
++	TSharedPtr<class SBackgroundBlur> InternalRHIBlur;
++	TSharedPtr<class SBox> ContentHostBox;
++	FSlateBrush FallbackRoundedBrush;
++
++	float InteractiveBlurMultiplier = 1.0f;
++	float InteractiveTintOffset = 0.0f;
++	float InteractiveRimBoost = 0.0f;
++};
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDBlurWidget.cpp b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDBlurWidget.cpp
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDBlurWidget.cpp
+@@ -0,0 +1,234 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#include "Widgets/SNameTBDBlurWidget.h"
++#include "Rendering/DrawElements.h"
++#include "Styling/CoreStyle.h"
++#include "Widgets/Layout/SBackgroundBlur.h"
++#include "Widgets/Layout/SBox.h"
++#include "Framework/Application/SlateApplication.h"
++
++void SNameTBDBlurWidget::Construct(const FArguments& InArgs)
++{
++	Style = InArgs._Style;
++	FallbackRoundedBrush = NameTBDMath::MakeRoundedBoxBrush(Style.CornerRadii);
++	FallbackRoundedBrush.TintColor = FSlateColor(Style.LowSpecFallbackColor);
++
++	ChildSlot
++	[
++		SAssignNew(InternalRHIBlur, SBackgroundBlur)
++		.BlurStrength(Style.BlurStrength)
++		.CornerRadius(Style.CornerRadii)
++		.LowQualityFallbackBrush(&FallbackRoundedBrush)
++		.Padding(FMargin(0.0f))
++		.HAlign(InArgs._HAlign)
++		.VAlign(InArgs._VAlign)
++		[
++			SAssignNew(ContentHostBox, SBox)
++			.Padding(InArgs._Padding)
++			[
++				InArgs._Content.Widget
++			]
++		]
++	];
++
++	SyncInternalBlurWidget();
++}
++
++void SNameTBDBlurWidget::SyncInternalBlurWidget()
++{
++	if (!InternalRHIBlur.IsValid())
++	{
++		return;
++	}
++
++	const FNameTBDGlassBlurStyle Effective = ResolveEffectiveStyle();
++	FallbackRoundedBrush = NameTBDMath::MakeRoundedBoxBrush(Effective.CornerRadii);
++	FallbackRoundedBrush.TintColor = FSlateColor(Effective.LowSpecFallbackColor);
++
++	InternalRHIBlur->SetBlurStrength(Effective.BlurStrength);
++	InternalRHIBlur->SetCornerRadius(Effective.CornerRadii);
++	if (Effective.OverrideBlurRadius > 0)
++	{
++		InternalRHIBlur->SetBlurRadius(Effective.OverrideBlurRadius);
++	}
++	else
++	{
++		InternalRHIBlur->SetBlurRadius(TOptional<int32>());
++	}
++	InternalRHIBlur->SetLowQualityFallbackBrush(&FallbackRoundedBrush);
++}
++
++void SNameTBDBlurWidget::SetStyle(const FNameTBDGlassBlurStyle& InStyle)
++{
++	Style = InStyle;
++	SyncInternalBlurWidget();
++	Invalidate(EInvalidateWidgetReason::Paint);
++}
++
++void SNameTBDBlurWidget::SetContent(const TSharedRef<SWidget>& InContent)
++{
++	if (ContentHostBox.IsValid())
++	{
++		ContentHostBox->SetContent(InContent);
++	}
++}
++
++void SNameTBDBlurWidget::SetContentPadding(TAttribute<FMargin> InPadding)
++{
++	if (ContentHostBox.IsValid())
++	{
++		ContentHostBox->SetPadding(MoveTemp(InPadding));
++	}
++}
++
++void SNameTBDBlurWidget::SetInteractiveModulation(float InBlurMultiplier, float InTintBrightnessOffset, float InRimBoost)
++{
++	InteractiveBlurMultiplier = InBlurMultiplier;
++	InteractiveTintOffset = InTintBrightnessOffset;
++	InteractiveRimBoost = InRimBoost;
++	SyncInternalBlurWidget();
++	Invalidate(EInvalidateWidgetReason::Paint);
++}
++
++FNameTBDGlassBlurStyle SNameTBDBlurWidget::ResolveEffectiveStyle() const
++{
++	FNameTBDGlassBlurStyle Effective = Style;
++	if (Effective.ThemePreset == ENameTBDGlassThemeMode::LightMode)
++	{
++		Effective.SurfaceTint = FLinearColor(0.98f, 0.99f, 1.0f, 0.28f);
++		Effective.RimHighlightColor = FLinearColor(1.0f, 1.0f, 1.0f, 0.72f);
++		Effective.RimLowlightColor = FLinearColor(0.75f, 0.80f, 0.88f, 0.25f);
++	}
++	else if (Effective.ThemePreset == ENameTBDGlassThemeMode::DarkMode)
++	{
++		Effective.SurfaceTint = FLinearColor(0.06f, 0.08f, 0.12f, 0.32f);
++		Effective.RimHighlightColor = FLinearColor(0.78f, 0.84f, 0.96f, 0.35f);
++		Effective.RimLowlightColor = FLinearColor(0.20f, 0.24f, 0.32f, 0.12f);
++	}
++
++	Effective.BlurStrength = FMath::Max(0.0f, Effective.BlurStrength * InteractiveBlurMultiplier);
++	Effective.SurfaceTint.R = FMath::Clamp(Effective.SurfaceTint.R + InteractiveTintOffset, 0.0f, 1.0f);
++	Effective.SurfaceTint.G = FMath::Clamp(Effective.SurfaceTint.G + InteractiveTintOffset, 0.0f, 1.0f);
++	Effective.SurfaceTint.B = FMath::Clamp(Effective.SurfaceTint.B + InteractiveTintOffset, 0.0f, 1.0f);
++	Effective.RimHighlightColor.A = FMath::Clamp(Effective.RimHighlightColor.A + InteractiveRimBoost, 0.0f, 1.0f);
++	return Effective;
++}
++
++int32 SNameTBDBlurWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
++{
++	const bool bEnabled = ShouldBeEnabled(bParentEnabled);
++	const ESlateDrawEffect DrawEffects = bEnabled ? ESlateDrawEffect::None : ESlateDrawEffect::DisabledEffect;
++	const FLinearColor WidgetTint = InWidgetStyle.GetColorAndOpacityTint();
++	const FNameTBDGlassBlurStyle Effective = ResolveEffectiveStyle();
++	const FSlateBrush RoundedSurfaceBrush = NameTBDMath::MakeRoundedBoxBrush(Effective.CornerRadii);
++
++	// 1. Paint underlying SBackgroundBlur (executes RHI Gaussian blur on D3D11/D3D12/Vulkan/Metal)
++	// plus child content at high layer
++	int32 PostBlurLayerId = SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bEnabled);
++
++	// 2. Semi-Opaque Glass Tint Film (drawn right above blur layer so text remains crisp and readable)
++	FLinearColor FilmColor = Effective.SurfaceTint;
++	if (Effective.SurfaceGradientStops.Num() >= 2)
++	{
++		FilmColor = NameTBDMath::SampleGradient(Effective.SurfaceGradientStops, 0.5f);
++	}
++	FSlateDrawElement::MakeBox(
++		OutDrawElements,
++		LayerId + 1,
++		AllottedGeometry.ToPaintGeometry(),
++		&RoundedSurfaceBrush,
++		DrawEffects,
++		FilmColor * WidgetTint
++	);
++
++	// 3. Acrylic / Frosted Micro-Luminance Diffusion Layer
++	if (Effective.BlurMode != ENameTBDBlurMode::StandardGaussian && Effective.FrostLuminance > KINDA_SMALL_NUMBER)
++	{
++		const FLinearColor FrostOverlay(1.0f, 1.0f, 1.0f, Effective.FrostLuminance * 0.35f);
++		FSlateDrawElement::MakeBox(
++			OutDrawElements,
++			LayerId + 1,
++			AllottedGeometry.ToPaintGeometry(),
++			&RoundedSurfaceBrush,
++			DrawEffects,
++			FrostOverlay * WidgetTint
++		);
++	}
++
++	// 4. Directional Specular Rim Lighting Border on top of glass surface
++	if (Effective.bEnableSpecularRim && Effective.RimThickness > 0.0f)
++	{
++		++PostBlurLayerId;
++		PaintSpecularRimBorder(AllottedGeometry, OutDrawElements, PostBlurLayerId, WidgetTint, Effective);
++	}
++
++	return PostBlurLayerId;
++}
++
++void SNameTBDBlurWidget::PaintSpecularRimBorder(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements,
++	int32 LayerId, const FLinearColor& WidgetTint, const FNameTBDGlassBlurStyle& EffectiveStyle) const
++{
++	const FVector2D LocalSize = AllottedGeometry.GetLocalSize();
++	if (LocalSize.X <= 2.0 || LocalSize.Y <= 2.0)
++	{
++		return;
++	}
++
++	const float LightRad = FMath::DegreesToRadians(EffectiveStyle.LightDirectionDegrees);
++	const FVector2D LightDir(FMath::Cos(LightRad), FMath::Sin(LightRad));
++	const FSlateRenderTransform& RenderTransform = AllottedGeometry.GetAccumulatedRenderTransform();
++
++	// Construct perimeter quad strip with directional rim specular falloff
++	constexpr int32 PerimeterSteps = 32;
++	TArray<FSlateVertex> Vertices;
++	TArray<SlateIndex> Indices;
++	Vertices.Reserve((PerimeterSteps + 1) * 2);
++	Indices.Reserve(PerimeterSteps * 6);
++
++	const FVector2D HalfSize = LocalSize * 0.5;
++	const double RawAvgRadius = (EffectiveStyle.CornerRadii.X + EffectiveStyle.CornerRadii.Y + EffectiveStyle.CornerRadii.Z + EffectiveStyle.CornerRadii.W) * 0.25;
++	const float AvgRadius = static_cast<float>(FMath::Clamp(RawAvgRadius, 0.0, FMath::Min(HalfSize.X, HalfSize.Y)));
++
++	for (int32 i = 0; i <= PerimeterSteps; ++i)
++	{
++		const float T = static_cast<float>(i) / static_cast<float>(PerimeterSteps);
++		const float Angle = T * 2.0f * PI;
++		const FVector2D UnitNormal(FMath::Cos(Angle), FMath::Sin(Angle));
++
++		const FVector2D InnerBox = HalfSize - FVector2D(AvgRadius, AvgRadius);
++		const FVector2D CornerCenter(
++			FMath::Sign(UnitNormal.X) * InnerBox.X,
++			FMath::Sign(UnitNormal.Y) * InnerBox.Y
++		);
++		const FVector2D OuterPt = HalfSize + CornerCenter + UnitNormal * AvgRadius;
++		const FVector2D InnerPt = OuterPt - UnitNormal * EffectiveStyle.RimThickness;
++
++		const float SpecularFactor = static_cast<float>(FMath::Clamp((FVector2D::DotProduct(UnitNormal, LightDir) + 1.0) * 0.5, 0.0, 1.0));
++		FLinearColor EdgeColor = FLinearColor::LerpUsingHSV(EffectiveStyle.RimLowlightColor, EffectiveStyle.RimHighlightColor, SpecularFactor);
++		if (EffectiveStyle.BlurMode == ENameTBDBlurMode::ChromaticEdgeGlass)
++		{
++			EdgeColor.R *= (0.85f + 0.3f * SpecularFactor);
++			EdgeColor.B *= (1.15f - 0.2f * SpecularFactor);
++		}
++		const FColor PackedColor = (EdgeColor * WidgetTint).ToFColor(true);
++
++		Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(RenderTransform, FVector2f(InnerPt), FVector2f(T, 0.0f), PackedColor));
++		Vertices.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(RenderTransform, FVector2f(OuterPt), FVector2f(T, 1.0f), PackedColor));
++
++		if (i < PerimeterSteps)
++		{
++			const int32 Base = i * 2;
++			Indices.Add(Base);
++			Indices.Add(Base + 1);
++			Indices.Add(Base + 2);
++
++			Indices.Add(Base + 1);
++			Indices.Add(Base + 3);
++			Indices.Add(Base + 2);
++		}
++	}
++
++	const FSlateResourceHandle& Handle = FCoreStyle::Get().GetBrush("GenericWhiteBox")->GetRenderingResource();
++	FSlateDrawElement::MakeCustomVerts(OutDrawElements, LayerId, Handle, Vertices, Indices, nullptr, 0, 0);
++}
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDBlurWidget.h b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDBlurWidget.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDBlurWidget.h
+@@ -0,0 +1,81 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Components/ContentWidget.h"
++#include "Core/NameTBDTypes.h"
++#include "Widgets/SNameTBDBlurWidget.h"
++#include "NameTBDBlurWidget.generated.h"
++
++/**
++ * Sleek, modern Glassmorphism Blur container widget.
++ * Combines hardware RHI backdrop blur (on all graphics APIs supported by native Slate blur)
++ * with contrast-preserving tint overlays, frosted diffusion, and directional specular rim lighting.
++ */
++UCLASS(meta = (DisplayName = "NameTBD Glass Blur"))
++class NAMETBD_API UNameTBDBlurWidget : public UContentWidget, public INameTBDDesignTargetInterface
++{
++	GENERATED_BODY()
++
++public:
++	UNameTBDBlurWidget();
++
++	/** Complete glassmorphism and backdrop blur configuration. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glassmorphism")
++	FNameTBDGlassBlurStyle GlassStyle;
++
++	/** Padding between the glass border and child content. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
++	FMargin ContentPadding = FMargin(16.0f);
++
++	/** Horizontal alignment of the child slot. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
++	TEnumAsByte<EHorizontalAlignment> HorizontalAlignment = HAlign_Fill;
++
++	/** Vertical alignment of the child slot. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
++	TEnumAsByte<EVerticalAlignment> VerticalAlignment = VAlign_Fill;
++
++	/** Optional runtime shape/design targets for switching glass tint, corner radii, or blur presets. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design Targets")
++	TArray<FNameTBDDesignTarget> DesignTargets;
++
++	/** Currently active design target ID. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design Targets")
++	FName ActiveDesignTargetID = NAME_None;
++
++public:
++	/** Updates the blur strength at runtime. */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Glass Blur")
++	void SetBlurStrength(float InBlurStrength);
++
++	/** Updates the glass surface tint color and opacity at runtime. */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Glass Blur")
++	void SetSurfaceTint(FLinearColor InSurfaceTint);
++
++	/** Switches between Custom, LightMode, and DarkMode glass presets at runtime. */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Glass Blur")
++	void SetThemePreset(ENameTBDGlassThemeMode InThemePreset);
++
++	// INameTBDDesignTargetInterface
++	virtual bool SetActiveDesignTargetByID_Implementation(FName InTargetID, bool bAnimateTransition = true) override;
++	virtual bool SetActiveDesignTargetByValue_Implementation(float NormalizedValue, bool bAnimateTransition = true) override;
++	virtual FName GetActiveDesignTargetID_Implementation() const override { return ActiveDesignTargetID; }
++
++	// UWidget interface
++	virtual void SynchronizeProperties() override;
++	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
++
++#if WITH_EDITOR
++	virtual const FText GetPaletteCategory() override;
++#endif
++
++protected:
++	virtual TSharedRef<SWidget> RebuildWidget() override;
++	virtual void OnSlotAdded(UPanelSlot* InSlot) override;
++	virtual void OnSlotRemoved(UPanelSlot* InSlot) override;
++
++protected:
++	TSharedPtr<SNameTBDBlurWidget> MyBlurWidget;
++};
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDBlurWidget.cpp b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDBlurWidget.cpp
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDBlurWidget.cpp
+@@ -0,0 +1,131 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#include "Widgets/NameTBDBlurWidget.h"
++#include "Widgets/Layout/SBox.h"
++
++#define LOCTEXT_NAMESPACE "NameTBD"
++
++UNameTBDBlurWidget::UNameTBDBlurWidget()
++{
++	bIsVariable = true;
++}
++
++TSharedRef<SWidget> UNameTBDBlurWidget::RebuildWidget()
++{
++	MyBlurWidget = SNew(SNameTBDBlurWidget)
++		.Style(GlassStyle)
++		.Padding(ContentPadding)
++		.HAlign(HorizontalAlignment)
++		.VAlign(VerticalAlignment);
++
++	if (GetChildrenCount() > 0)
++	{
++		if (UWidget* ChildContent = GetContentSlot()->Content)
++		{
++			MyBlurWidget->SetContent(ChildContent->TakeWidget());
++		}
++	}
++
++	return MyBlurWidget.ToSharedRef();
++}
++
++void UNameTBDBlurWidget::SynchronizeProperties()
++{
++	Super::SynchronizeProperties();
++	if (MyBlurWidget.IsValid())
++	{
++		MyBlurWidget->SetStyle(GlassStyle);
++		MyBlurWidget->SetContentPadding(ContentPadding);
++	}
++}
++
++void UNameTBDBlurWidget::ReleaseSlateResources(bool bReleaseChildren)
++{
++	Super::ReleaseSlateResources(bReleaseChildren);
++	MyBlurWidget.Reset();
++}
++
++void UNameTBDBlurWidget::OnSlotAdded(UPanelSlot* InSlot)
++{
++	if (MyBlurWidget.IsValid() && InSlot && InSlot->Content)
++	{
++		MyBlurWidget->SetContent(InSlot->Content->TakeWidget());
++	}
++}
++
++void UNameTBDBlurWidget::OnSlotRemoved(UPanelSlot* InSlot)
++{
++	(void)InSlot;
++	if (MyBlurWidget.IsValid())
++	{
++		MyBlurWidget->SetContent(SNullWidget::NullWidget);
++	}
++}
++
++void UNameTBDBlurWidget::SetBlurStrength(float InBlurStrength)
++{
++	GlassStyle.BlurStrength = FMath::Max(0.0f, InBlurStrength);
++	if (MyBlurWidget.IsValid())
++	{
++		MyBlurWidget->SetStyle(GlassStyle);
++	}
++}
++
++void UNameTBDBlurWidget::SetSurfaceTint(FLinearColor InSurfaceTint)
++{
++	GlassStyle.SurfaceTint = InSurfaceTint;
++	if (MyBlurWidget.IsValid())
++	{
++		MyBlurWidget->SetStyle(GlassStyle);
++	}
++}
++
++void UNameTBDBlurWidget::SetThemePreset(ENameTBDGlassThemeMode InThemePreset)
++{
++	GlassStyle.ThemePreset = InThemePreset;
++	if (MyBlurWidget.IsValid())
++	{
++		MyBlurWidget->SetStyle(GlassStyle);
++	}
++}
++
++bool UNameTBDBlurWidget::SetActiveDesignTargetByID_Implementation(FName InTargetID, bool bAnimateTransition)
++{
++	(void)bAnimateTransition;
++	for (const FNameTBDDesignTarget& Target : DesignTargets)
++	{
++		if (Target.TargetID == InTargetID)
++		{
++			ActiveDesignTargetID = Target.TargetID;
++			GlassStyle.SurfaceTint = Target.PrimaryColor;
++			GlassStyle.CornerRadii = Target.CornerRadii;
++			if (MyBlurWidget.IsValid())
++			{
++				MyBlurWidget->SetStyle(GlassStyle);
++			}
++			return true;
++		}
++	}
++	return false;
++}
++
++bool UNameTBDBlurWidget::SetActiveDesignTargetByValue_Implementation(float NormalizedValue, bool bAnimateTransition)
++{
++	for (const FNameTBDDesignTarget& Target : DesignTargets)
++	{
++		if (NormalizedValue >= Target.MinValueThreshold && NormalizedValue <= Target.MaxValueThreshold)
++		{
++			return Execute_SetActiveDesignTargetByID(this, Target.TargetID, bAnimateTransition);
++		}
++	}
++	return false;
++}
++
++#if WITH_EDITOR
++const FText UNameTBDBlurWidget::GetPaletteCategory()
++{
++	return LOCTEXT("NameTBDPaletteCategory", "NameTBD");
++}
++#endif
++
++#undef LOCTEXT_NAMESPACE
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDBlurButton.h b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDBlurButton.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDBlurButton.h
+@@ -0,0 +1,129 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Components/ContentWidget.h"
++#include "Core/NameTBDTypes.h"
++#include "Widgets/SNameTBDBlurWidget.h"
++#include "NameTBDBlurButton.generated.h"
++
++DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnNameTBDBlurButtonEvent);
++
++/**
++ * Glassmorphic Blur Button widget.
++ * Combines modern frosted glass backdrop blur with interactive hover/press states,
++ * EnterDuration and ExitDuration immediately following its Motion field, and runtime Design Targets.
++ */
++UCLASS(meta = (DisplayName = "NameTBD Glass Blur Button"))
++class NAMETBD_API UNameTBDBlurButton : public UContentWidget, public INameTBDDesignTargetInterface
++{
++	GENERATED_BODY()
++
++public:
++	UNameTBDBlurButton();
++
++	/** Base glassmorphism style for the button. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Glassmorphism")
++	FNameTBDGlassBlurStyle GlassStyle;
++
++	/** Motion preset for hover/press transitions. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion")
++	ENameTBDMotionType Motion = ENameTBDMotionType::ElevationLift;
++
++	/** Duration (in seconds) when entering the hovered/active motion state. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	float EnterDuration = 0.18f;
++
++	/** Duration (in seconds) when exiting the hovered/active motion state. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	float ExitDuration = 0.14f;
++
++	/** Easing curve for the button motion. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	ENameTBDEasingType MotionEasing = ENameTBDEasingType::EaseOutCubic;
++
++	/** Blur multiplier when hovered. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction")
++	float HoverBlurMultiplier = 1.25f;
++
++	/** Surface brightness boost when hovered. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction")
++	float HoverTintBrightnessOffset = 0.06f;
++
++	/** Rim highlight boost when hovered. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction")
++	float HoverRimBoost = 0.25f;
++
++	/** Scale applied when hovered. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction")
++	float HoverScale = 1.03f;
++
++	/** Scale applied when pressed. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Interaction")
++	float PressedScale = 0.97f;
++
++	/** Inner padding for button content. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Layout")
++	FMargin ContentPadding = FMargin(18.0f, 10.0f);
++
++	/** Runtime shape/design targets (e.g., volume icon states or circle-to-square recording toggle). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design Targets")
++	TArray<FNameTBDDesignTarget> DesignTargets;
++
++	/** Currently active design target ID. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design Targets")
++	FName ActiveDesignTargetID = NAME_None;
++
++	/** Called when the button is clicked. */
++	UPROPERTY(BlueprintAssignable, Category = "Button|Event")
++	FOnNameTBDBlurButtonEvent OnClicked;
++
++	/** Called when the button is pressed. */
++	UPROPERTY(BlueprintAssignable, Category = "Button|Event")
++	FOnNameTBDBlurButtonEvent OnPressed;
++
++	/** Called when the button is released. */
++	UPROPERTY(BlueprintAssignable, Category = "Button|Event")
++	FOnNameTBDBlurButtonEvent OnReleased;
++
++	/** Called when the button is hovered. */
++	UPROPERTY(BlueprintAssignable, Category = "Button|Event")
++	FOnNameTBDBlurButtonEvent OnHovered;
++
++	/** Called when the button is unhovered. */
++	UPROPERTY(BlueprintAssignable, Category = "Button|Event")
++	FOnNameTBDBlurButtonEvent OnUnhovered;
++
++public:
++	// INameTBDDesignTargetInterface
++	virtual bool SetActiveDesignTargetByID_Implementation(FName InTargetID, bool bAnimateTransition = true) override;
++	virtual bool SetActiveDesignTargetByValue_Implementation(float NormalizedValue, bool bAnimateTransition = true) override;
++	virtual FName GetActiveDesignTargetID_Implementation() const override { return ActiveDesignTargetID; }
++
++	// UWidget interface
++	virtual void SynchronizeProperties() override;
++	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
++
++#if WITH_EDITOR
++	virtual const FText GetPaletteCategory() override;
++#endif
++
++protected:
++	virtual TSharedRef<SWidget> RebuildWidget() override;
++	virtual void OnSlotAdded(UPanelSlot* InSlot) override;
++	virtual void OnSlotRemoved(UPanelSlot* InSlot) override;
++
++	FReply HandleSlateClicked();
++	void HandleSlatePressed();
++	void HandleSlateReleased();
++	void HandleSlateHovered();
++	void HandleSlateUnhovered();
++	void RefreshInteractiveState();
++
++protected:
++	TSharedPtr<SNameTBDBlurWidget> MyBlurSurface;
++	TSharedPtr<class SButton> MyInputButton;
++	bool bIsHoveredState = false;
++	bool bIsPressedState = false;
++};
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDBlurButton.cpp b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDBlurButton.cpp
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDBlurButton.cpp
+@@ -0,0 +1,190 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#include "Widgets/NameTBDBlurButton.h"
++#include "Widgets/Input/SButton.h"
++#include "Styling/CoreStyle.h"
++
++#define LOCTEXT_NAMESPACE "NameTBD"
++
++UNameTBDBlurButton::UNameTBDBlurButton()
++{
++	bIsVariable = true;
++	GlassStyle.BlurStrength = 12.0f;
++	GlassStyle.CornerRadii = FVector4(20.0, 20.0, 20.0, 20.0);
++}
++
++TSharedRef<SWidget> UNameTBDBlurButton::RebuildWidget()
++{
++	MyBlurSurface = SNew(SNameTBDBlurWidget)
++		.Style(GlassStyle)
++		.Padding(ContentPadding)
++		.HAlign(HAlign_Center)
++		.VAlign(VAlign_Center);
++
++	if (GetChildrenCount() > 0)
++	{
++		if (UWidget* ChildContent = GetContentSlot()->Content)
++		{
++			MyBlurSurface->SetContent(ChildContent->TakeWidget());
++		}
++	}
++
++	MyInputButton = SNew(SButton)
++		.ButtonStyle(&FCoreStyle::Get().GetWidgetStyle<FButtonStyle>("NoBorder"))
++		.ContentPadding(FMargin(0.0f))
++		.OnClicked(BIND_UOBJECT_DELEGATE(FOnClicked, HandleSlateClicked))
++		.OnPressed(BIND_UOBJECT_DELEGATE(FSimpleDelegate, HandleSlatePressed))
++		.OnReleased(BIND_UOBJECT_DELEGATE(FSimpleDelegate, HandleSlateReleased))
++		.OnHovered_UObject(this, &UNameTBDBlurButton::HandleSlateHovered)
++		.OnUnhovered_UObject(this, &UNameTBDBlurButton::HandleSlateUnhovered)
++		[
++			MyBlurSurface.ToSharedRef()
++		];
++
++	return MyInputButton.ToSharedRef();
++}
++
++void UNameTBDBlurButton::SynchronizeProperties()
++{
++	Super::SynchronizeProperties();
++	if (MyBlurSurface.IsValid())
++	{
++		MyBlurSurface->SetStyle(GlassStyle);
++		MyBlurSurface->SetContentPadding(ContentPadding);
++	}
++}
++
++void UNameTBDBlurButton::ReleaseSlateResources(bool bReleaseChildren)
++{
++	Super::ReleaseSlateResources(bReleaseChildren);
++	MyBlurSurface.Reset();
++	MyInputButton.Reset();
++}
++
++void UNameTBDBlurButton::OnSlotAdded(UPanelSlot* InSlot)
++{
++	if (MyBlurSurface.IsValid() && InSlot && InSlot->Content)
++	{
++		MyBlurSurface->SetContent(InSlot->Content->TakeWidget());
++	}
++}
++
++void UNameTBDBlurButton::OnSlotRemoved(UPanelSlot* InSlot)
++{
++	(void)InSlot;
++	if (MyBlurSurface.IsValid())
++	{
++		MyBlurSurface->SetContent(SNullWidget::NullWidget);
++	}
++}
++
++FReply UNameTBDBlurButton::HandleSlateClicked()
++{
++	OnClicked.Broadcast();
++	return FReply::Handled();
++}
++
++void UNameTBDBlurButton::HandleSlatePressed()
++{
++	bIsPressedState = true;
++	RefreshInteractiveState();
++	OnPressed.Broadcast();
++}
++
++void UNameTBDBlurButton::HandleSlateReleased()
++{
++	bIsPressedState = false;
++	RefreshInteractiveState();
++	OnReleased.Broadcast();
++}
++
++void UNameTBDBlurButton::HandleSlateHovered()
++{
++	bIsHoveredState = true;
++	RefreshInteractiveState();
++	OnHovered.Broadcast();
++}
++
++void UNameTBDBlurButton::HandleSlateUnhovered()
++{
++	bIsHoveredState = false;
++	RefreshInteractiveState();
++	OnUnhovered.Broadcast();
++}
++
++void UNameTBDBlurButton::RefreshInteractiveState()
++{
++	if (!MyBlurSurface.IsValid())
++	{
++		return;
++	}
++
++	if (bIsPressedState)
++	{
++		MyBlurSurface->SetInteractiveModulation(HoverBlurMultiplier * 1.1f, HoverTintBrightnessOffset * 0.5f, HoverRimBoost * 1.25f);
++		SetRenderScale(FVector2D(PressedScale, PressedScale));
++	}
++	else if (bIsHoveredState)
++	{
++		MyBlurSurface->SetInteractiveModulation(HoverBlurMultiplier, HoverTintBrightnessOffset, HoverRimBoost);
++		SetRenderScale(FVector2D(HoverScale, HoverScale));
++	}
++	else
++	{
++		MyBlurSurface->SetInteractiveModulation(1.0f, 0.0f, 0.0f);
++		SetRenderScale(FVector2D(1.0, 1.0));
++	}
++}
++
++bool UNameTBDBlurButton::SetActiveDesignTargetByID_Implementation(FName InTargetID, bool bAnimateTransition)
++{
++	(void)bAnimateTransition;
++	for (const FNameTBDDesignTarget& Target : DesignTargets)
++	{
++		if (Target.TargetID == InTargetID)
++		{
++			ActiveDesignTargetID = Target.TargetID;
++			GlassStyle.SurfaceTint = Target.PrimaryColor;
++			if (Target.ShapePrimitive == ENameTBDShapePrimitive::Circle)
++			{
++				GlassStyle.CornerRadii = FVector4(999.0, 999.0, 999.0, 999.0);
++			}
++			else if (Target.ShapePrimitive == ENameTBDShapePrimitive::Square)
++			{
++				GlassStyle.CornerRadii = FVector4(0.0, 0.0, 0.0, 0.0);
++			}
++			else
++			{
++				GlassStyle.CornerRadii = Target.CornerRadii;
++			}
++
++			if (MyBlurSurface.IsValid())
++			{
++				MyBlurSurface->SetStyle(GlassStyle);
++			}
++			return true;
++		}
++	}
++	return false;
++}
++
++bool UNameTBDBlurButton::SetActiveDesignTargetByValue_Implementation(float NormalizedValue, bool bAnimateTransition)
++{
++	for (const FNameTBDDesignTarget& Target : DesignTargets)
++	{
++		if (NormalizedValue >= Target.MinValueThreshold && NormalizedValue <= Target.MaxValueThreshold)
++		{
++			return Execute_SetActiveDesignTargetByID(this, Target.TargetID, bAnimateTransition);
++		}
++	}
++	return false;
++}
++
++#if WITH_EDITOR
++const FText UNameTBDBlurButton::GetPaletteCategory()
++{
++	return LOCTEXT("NameTBDPaletteCategory", "NameTBD");
++}
++#endif
++
++#undef LOCTEXT_NAMESPACE
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDDropShadow.h b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDDropShadow.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDDropShadow.h
+@@ -0,0 +1,104 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Widgets/SCompoundWidget.h"
++#include "Core/NameTBDTypes.h"
++#include "SNameTBDDropShadow.generated.h"
++
++/**
++ * Drop shadow style presets from simple classic drop shadow to sleek modern dual-layer elevation.
++ */
++UENUM(BlueprintType)
++enum class ENameTBDShadowStylePreset : uint8
++{
++	SimpleDrop UMETA(DisplayName = "Simple Drop Shadow"),
++	ModernElevation UMETA(DisplayName = "Sleek Modern Elevation (Ambient + Key Dual-Layer)"),
++	ColoredNeonGlow UMETA(DisplayName = "Colored Ambient / Neon Glow"),
++	ContactFloorShadow UMETA(DisplayName = "Contact Floor Shadow"),
++	SoftFloat UMETA(DisplayName = "Soft Floating Card Shadow")
++};
++
++/**
++ * Configuration struct for Drop Shadow rendering.
++ */
++USTRUCT(BlueprintType)
++struct NAMETBD_API FNameTBDDropShadowStyle
++{
++	GENERATED_BODY()
++
++	/** Preset controlling single-layer vs sleek dual-layer (ambient + key) shadow composition. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shadow")
++	ENameTBDShadowStylePreset Preset = ENameTBDShadowStylePreset::ModernElevation;
++
++	/** Primary directional key shadow offset in Slate units. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shadow")
++	FVector2D ShadowOffset = FVector2D(0.0, 8.0);
++
++	/** Soft blur falloff radius in Slate units. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shadow", meta = (ClampMin = "0.0", ClampMax = "128.0"))
++	float BlurRadius = 22.0f;
++
++	/** Expansion/contraction of the shadow footprint before blur falloff. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shadow", meta = (ClampMin = "-32.0", ClampMax = "64.0"))
++	float Spread = 0.0f;
++
++	/** Primary shadow color and opacity. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shadow")
++	FLinearColor ShadowColor = FLinearColor(0.0f, 0.0f, 0.02f, 0.34f);
++
++	/** Secondary tight ambient occlusion shadow color (used in ModernElevation mode). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shadow|Dual Layer", meta = (EditCondition = "Preset == ENameTBDShadowStylePreset::ModernElevation"))
++	FLinearColor AmbientShadowColor = FLinearColor(0.0f, 0.0f, 0.02f, 0.16f);
++
++	/** Corner radius of the shadow caster matching the target widget (TL, TR, BR, BL). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shadow")
++	FVector4 CornerRadii = FVector4(12.0, 12.0, 12.0, 12.0);
++
++	/** Number of smooth penumbra rings used to render the analytical soft shadow [4..24]. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shadow|Quality", meta = (ClampMin = "4", ClampMax = "24"))
++	int32 QualityRings = 12;
++};
++
++/**
++ * Slate widget that renders simple or sleek modern multi-layered analytical SDF drop shadows
++ * behind any child or target widget.
++ */
++class NAMETBD_API SNameTBDDropShadow : public SCompoundWidget
++{
++public:
++	SLATE_BEGIN_ARGS(SNameTBDDropShadow)
++		: _ShadowStyle()
++		, _MotionSettings()
++	{}
++		SLATE_ARGUMENT(FNameTBDDropShadowStyle, ShadowStyle)
++		SLATE_ARGUMENT(FNameTBDMotionSettings, MotionSettings)
++		SLATE_DEFAULT_SLOT(FArguments, Content)
++	SLATE_END_ARGS()
++
++	void Construct(const FArguments& InArgs);
++
++	void SetShadowStyle(const FNameTBDDropShadowStyle& InStyle);
++	const FNameTBDDropShadowStyle& GetShadowStyle() const { return TargetStyle; }
++
++	void SetMotionSettings(const FNameTBDMotionSettings& InMotion);
++	void SetContent(const TSharedRef<SWidget>& InContent);
++
++	/** Smoothly transitions the elevation factor (e.g., 1.0 = normal, 1.5 = lifted on hover). */
++	void SetElevationMultiplier(float InMultiplier);
++
++	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
++	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
++
++private:
++	void PaintSoftShadowLayer(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId,
++		const FVector2D& Offset, float InBlurRadius, float InSpread, const FLinearColor& Color, const FVector4& Radii, int32 Rings) const;
++
++private:
++	FNameTBDDropShadowStyle TargetStyle;
++	FNameTBDMotionSettings MotionSettings;
++	float CurrentElevationMultiplier = 1.0f;
++	float TargetElevationMultiplier = 1.0f;
++};
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDDropShadow.cpp b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDDropShadow.cpp
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDDropShadow.cpp
+@@ -0,0 +1,183 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#include "Widgets/SNameTBDDropShadow.h"
++#include "Rendering/DrawElements.h"
++#include "Styling/CoreStyle.h"
++
++void SNameTBDDropShadow::Construct(const FArguments& InArgs)
++{
++	TargetStyle = InArgs._ShadowStyle;
++	MotionSettings = InArgs._MotionSettings;
++	SetCanTick(true);
++
++	ChildSlot
++	[
++		InArgs._Content.Widget
++	];
++}
++
++void SNameTBDDropShadow::SetShadowStyle(const FNameTBDDropShadowStyle& InStyle)
++{
++	TargetStyle = InStyle;
++	Invalidate(EInvalidateWidgetReason::Paint);
++}
++
++void SNameTBDDropShadow::SetMotionSettings(const FNameTBDMotionSettings& InMotion)
++{
++	MotionSettings = InMotion;
++}
++
++void SNameTBDDropShadow::SetContent(const TSharedRef<SWidget>& InContent)
++{
++	ChildSlot
++	[
++		InContent
++	];
++}
++
++void SNameTBDDropShadow::SetElevationMultiplier(float InMultiplier)
++{
++	TargetElevationMultiplier = FMath::Max(0.0f, InMultiplier);
++	if (MotionSettings.Motion == ENameTBDMotionType::Instant)
++	{
++		CurrentElevationMultiplier = TargetElevationMultiplier;
++	}
++}
++
++void SNameTBDDropShadow::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
++{
++	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
++
++	if (!FMath::IsNearlyEqual(CurrentElevationMultiplier, TargetElevationMultiplier, KINDA_SMALL_NUMBER))
++	{
++		const bool bEntering = TargetElevationMultiplier > CurrentElevationMultiplier;
++		const float Duration = bEntering ? FMath::Max(MotionSettings.EnterDuration, 0.001f) : FMath::Max(MotionSettings.ExitDuration, 0.001f);
++		CurrentElevationMultiplier = FMath::FInterpTo(CurrentElevationMultiplier, TargetElevationMultiplier, InDeltaTime, 1.0f / Duration);
++	}
++}
++
++int32 SNameTBDDropShadow::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
++{
++	const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
++	const int32 Rings = FMath::Clamp(TargetStyle.QualityRings, 4, 24);
++	const FVector2D ScaledOffset = TargetStyle.ShadowOffset * static_cast<double>(CurrentElevationMultiplier);
++	const float ScaledBlur = TargetStyle.BlurRadius * CurrentElevationMultiplier;
++
++	if (TargetStyle.Preset == ENameTBDShadowStylePreset::ModernElevation)
++	{
++		// 1. Tight Ambient Contact Layer
++		PaintSoftShadowLayer(
++			AllottedGeometry,
++			OutDrawElements,
++			LayerId,
++			ScaledOffset * 0.25,
++			FMath::Max(2.0f, ScaledBlur * 0.35f),
++			TargetStyle.Spread * 0.5f,
++			TargetStyle.AmbientShadowColor * Tint,
++			TargetStyle.CornerRadii,
++			FMath::Max(4, Rings / 2)
++		);
++		++LayerId;
++
++		// 2. Wide Key Directional Penumbra Layer
++		PaintSoftShadowLayer(
++			AllottedGeometry,
++			OutDrawElements,
++			LayerId,
++			ScaledOffset,
++			ScaledBlur,
++			TargetStyle.Spread,
++			TargetStyle.ShadowColor * Tint,
++			TargetStyle.CornerRadii,
++			Rings
++		);
++		++LayerId;
++	}
++	else if (TargetStyle.Preset == ENameTBDShadowStylePreset::ContactFloorShadow)
++	{
++		const FVector2D LocalSize = AllottedGeometry.GetLocalSize();
++		const FVector2D FloorOffset(ScaledOffset.X, LocalSize.Y * 0.42 + ScaledOffset.Y);
++		PaintSoftShadowLayer(
++			AllottedGeometry,
++			OutDrawElements,
++			LayerId,
++			FloorOffset,
++			ScaledBlur * 0.8f,
++			static_cast<float>(-LocalSize.Y * 0.32),
++			TargetStyle.ShadowColor * Tint,
++			FVector4(LocalSize.X * 0.5, LocalSize.X * 0.5, LocalSize.X * 0.5, LocalSize.X * 0.5),
++			Rings
++		);
++		++LayerId;
++	}
++	else
++	{
++		// SimpleDrop, ColoredNeonGlow, SoftFloat
++		PaintSoftShadowLayer(
++			AllottedGeometry,
++			OutDrawElements,
++			LayerId,
++			ScaledOffset,
++			ScaledBlur,
++			TargetStyle.Spread,
++			TargetStyle.ShadowColor * Tint,
++			TargetStyle.CornerRadii,
++			Rings
++		);
++		++LayerId;
++	}
++
++	return SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
++}
++
++void SNameTBDDropShadow::PaintSoftShadowLayer(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId,
++	const FVector2D& Offset, float InBlurRadius, float InSpread, const FLinearColor& Color, const FVector4& Radii, int32 Rings) const
++{
++	if (Color.A <= KINDA_SMALL_NUMBER)
++	{
++		return;
++	}
++
++	const FVector2D BaseSize = AllottedGeometry.GetLocalSize();
++	if (BaseSize.X <= 0.0 || BaseSize.Y <= 0.0)
++	{
++		return;
++	}
++
++	const float EffectiveBlur = FMath::Max(0.5f, InBlurRadius);
++
++	// Concentric Gaussian-weighted rounded-box penumbra shells from outermost soft edge to core shadow
++	for (int32 RingIdx = Rings - 1; RingIdx >= 0; --RingIdx)
++	{
++		const float NormalizedDist = static_cast<float>(RingIdx) / static_cast<float>(Rings);
++		const double Expansion = static_cast<double>(InSpread + NormalizedDist * EffectiveBlur);
++
++		const float GaussianWeight = FMath::Exp(-3.5f * NormalizedDist * NormalizedDist) / static_cast<float>(Rings) * 2.2f;
++		FLinearColor ShellColor = Color;
++		ShellColor.A = FMath::Clamp(Color.A * GaussianWeight, 0.0f, 1.0f);
++
++		const FVector2D ShellOrigin = Offset - FVector2D(Expansion, Expansion);
++		const FVector2D ShellSize = BaseSize + FVector2D(Expansion * 2.0, Expansion * 2.0);
++
++		if (ShellSize.X > 0.0 && ShellSize.Y > 0.0)
++		{
++			const FVector4 ExpandedRadii(
++				FMath::Max(0.0, Radii.X + Expansion),
++				FMath::Max(0.0, Radii.Y + Expansion),
++				FMath::Max(0.0, Radii.Z + Expansion),
++				FMath::Max(0.0, Radii.W + Expansion)
++			);
++			const FSlateBrush ShellRoundedBrush = NameTBDMath::MakeRoundedBoxBrush(ExpandedRadii);
++
++			FSlateDrawElement::MakeBox(
++				OutDrawElements,
++				LayerId,
++				AllottedGeometry.ToPaintGeometry(ShellSize, FSlateLayoutTransform(ShellOrigin)),
++				&ShellRoundedBrush,
++				ESlateDrawEffect::None,
++				ShellColor
++			);
++		}
++	}
++}
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDDropShadowBox.h b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDDropShadowBox.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDDropShadowBox.h
+@@ -0,0 +1,125 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "UObject/NoExportTypes.h"
++#include "Components/ContentWidget.h"
++#include "Core/NameTBDTypes.h"
++#include "Widgets/SNameTBDDropShadow.h"
++#include "NameTBDDropShadowBox.generated.h"
++
++class UNameTBDDropShadowBox;
++
++/**
++ * Attachable Drop Shadow Widget Component that can be attached dynamically
++ * at runtime or in Blueprints to ANY UWidget to provide simple or sleek modern drop shadows.
++ */
++UCLASS(BlueprintType, Blueprintable, EditInlineNew, DefaultToInstanced, meta = (DisplayName = "NameTBD Drop Shadow Component"))
++class NAMETBD_API UNameTBDDropShadowComponent : public UObject
++{
++	GENERATED_BODY()
++
++public:
++	/** Shadow configuration for the attached widget. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Drop Shadow")
++	FNameTBDDropShadowStyle ShadowStyle;
++
++	/** Motion and Enter/Exit duration settings when animating shadow elevation. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion")
++	FNameTBDMotionSettings ElevationMotion;
++
++public:
++	/** Attaches a UNameTBDDropShadowComponent to any target UWidget and returns the component instance. */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Drop Shadow", meta = (DefaultToSelf = "TargetWidget"))
++	static UNameTBDDropShadowComponent* AttachDropShadowToWidget(UWidget* TargetWidget, FNameTBDDropShadowStyle InStyle);
++
++	/** Finds an existing Drop Shadow component on TargetWidget, if present. */
++	UFUNCTION(BlueprintPure, Category = "NameTBD|Drop Shadow", meta = (DefaultToSelf = "TargetWidget"))
++	static UNameTBDDropShadowComponent* GetDropShadowComponent(const UWidget* TargetWidget);
++
++	/** Updates the shadow style on this component. */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Drop Shadow")
++	void SetShadowStyle(const FNameTBDDropShadowStyle& InStyle);
++
++	/** Animates the shadow elevation multiplier (e.g., 1.4 when hovering or dragging a widget). */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Drop Shadow")
++	void SetElevationMultiplier(float InMultiplier);
++
++	/** Returns the UWidget this drop shadow component is attached to. */
++	UFUNCTION(BlueprintPure, Category = "NameTBD|Drop Shadow")
++	UWidget* GetTargetWidget() const { return AttachedWidget.Get(); }
++
++	TSharedRef<SWidget> WrapSlateWidget(const TSharedRef<SWidget>& InChildWidget);
++
++private:
++	void BindToTargetWidget(UWidget* InTargetWidget, const FNameTBDDropShadowStyle& InStyle);
++
++private:
++	UPROPERTY(Transient)
++	TWeakObjectPtr<UWidget> AttachedWidget;
++
++	UPROPERTY(Transient)
++	TObjectPtr<UNameTBDDropShadowBox> InjectedShadowBox = nullptr;
++
++	TSharedPtr<SNameTBDDropShadow> ShadowSlateWrapper;
++};
++
++/**
++ * UMG Drop Shadow wrapper widget that can wrap any widget hierarchy in the UMG Designer
++ * to render simple or sleek modern dual-layer elevation shadows.
++ */
++UCLASS(meta = (DisplayName = "NameTBD Drop Shadow Box"))
++class NAMETBD_API UNameTBDDropShadowBox : public UContentWidget, public INameTBDDesignTargetInterface
++{
++	GENERATED_BODY()
++
++public:
++	UNameTBDDropShadowBox();
++
++	/** Visual style of the drop shadow (Simple, Modern Dual-Layer Elevation, Colored Glow, Contact). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Drop Shadow")
++	FNameTBDDropShadowStyle ShadowStyle;
++
++	/** Motion settings (with EnterDuration and ExitDuration right after Motion) for shadow elevation transitions. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion")
++	FNameTBDMotionSettings ElevationMotion;
++
++	/** Optional runtime design targets for switching shadow color/elevation presets. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design Targets")
++	TArray<FNameTBDDesignTarget> DesignTargets;
++
++	/** Currently active design target ID. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design Targets")
++	FName ActiveDesignTargetID = NAME_None;
++
++public:
++	/** Updates the drop shadow configuration at runtime. */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Drop Shadow")
++	void SetShadowStyle(const FNameTBDDropShadowStyle& InStyle);
++
++	/** Smoothly transitions the shadow elevation multiplier (e.g. 1.0 = normal, 1.5 = lifted). */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Drop Shadow")
++	void SetElevationMultiplier(float InMultiplier);
++
++	// INameTBDDesignTargetInterface
++	virtual bool SetActiveDesignTargetByID_Implementation(FName InTargetID, bool bAnimateTransition = true) override;
++	virtual bool SetActiveDesignTargetByValue_Implementation(float NormalizedValue, bool bAnimateTransition = true) override;
++	virtual FName GetActiveDesignTargetID_Implementation() const override { return ActiveDesignTargetID; }
++
++	// UWidget interface
++	virtual void SynchronizeProperties() override;
++	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
++
++#if WITH_EDITOR
++	virtual const FText GetPaletteCategory() override;
++#endif
++
++protected:
++	virtual TSharedRef<SWidget> RebuildWidget() override;
++	virtual void OnSlotAdded(UPanelSlot* InSlot) override;
++	virtual void OnSlotRemoved(UPanelSlot* InSlot) override;
++
++protected:
++	TSharedPtr<SNameTBDDropShadow> MyDropShadow;
++};
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDDropShadowBox.cpp b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDDropShadowBox.cpp
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDDropShadowBox.cpp
+@@ -0,0 +1,234 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#include "Widgets/NameTBDDropShadowBox.h"
++#include "Components/PanelWidget.h"
++#include "Components/PanelSlot.h"
++#include "UObject/StrongObjectPtr.h"
++
++#define LOCTEXT_NAMESPACE "NameTBD"
++
++namespace NameTBDDropShadowRegistry
++{
++	static TMap<TWeakObjectPtr<const UWidget>, TWeakObjectPtr<UNameTBDDropShadowComponent>> GWidgetShadowComponents;
++}
++
++UNameTBDDropShadowComponent* UNameTBDDropShadowComponent::AttachDropShadowToWidget(UWidget* TargetWidget, FNameTBDDropShadowStyle InStyle)
++{
++	if (!TargetWidget)
++	{
++		return nullptr;
++	}
++
++	if (UNameTBDDropShadowComponent* Existing = GetDropShadowComponent(TargetWidget))
++	{
++		Existing->SetShadowStyle(InStyle);
++		return Existing;
++	}
++
++	UNameTBDDropShadowComponent* NewComp = NewObject<UNameTBDDropShadowComponent>(TargetWidget);
++	NewComp->BindToTargetWidget(TargetWidget, InStyle);
++	NameTBDDropShadowRegistry::GWidgetShadowComponents.Add(TargetWidget, NewComp);
++	return NewComp;
++}
++
++UNameTBDDropShadowComponent* UNameTBDDropShadowComponent::GetDropShadowComponent(const UWidget* TargetWidget)
++{
++	if (!TargetWidget)
++	{
++		return nullptr;
++	}
++	if (const TWeakObjectPtr<UNameTBDDropShadowComponent>* Found = NameTBDDropShadowRegistry::GWidgetShadowComponents.Find(TargetWidget))
++	{
++		return Found->Get();
++	}
++	return nullptr;
++}
++
++void UNameTBDDropShadowComponent::BindToTargetWidget(UWidget* InTargetWidget, const FNameTBDDropShadowStyle& InStyle)
++{
++	AttachedWidget = InTargetWidget;
++	ShadowStyle = InStyle;
++
++	if (UNameTBDDropShadowBox* DirectShadowBox = Cast<UNameTBDDropShadowBox>(InTargetWidget))
++	{
++		InjectedShadowBox = DirectShadowBox;
++		DirectShadowBox->SetShadowStyle(InStyle);
++		return;
++	}
++
++	if (UNameTBDDropShadowBox* ExistingParentBox = Cast<UNameTBDDropShadowBox>(InTargetWidget->GetParent()))
++	{
++		InjectedShadowBox = ExistingParentBox;
++		ExistingParentBox->SetShadowStyle(InStyle);
++		return;
++	}
++
++	// Non-destructively insert a UNameTBDDropShadowBox into the target widget's existing UPanelSlot
++	// so all UCanvasPanelSlot / UVerticalBoxSlot / UOverlaySlot layout properties remain intact.
++	if (UPanelSlot* HostSlot = InTargetWidget->Slot)
++	{
++		InjectedShadowBox = NewObject<UNameTBDDropShadowBox>(InTargetWidget->GetOuter());
++		InjectedShadowBox->ShadowStyle = InStyle;
++		InjectedShadowBox->ElevationMotion = ElevationMotion;
++
++		HostSlot->Content = InjectedShadowBox;
++		InjectedShadowBox->Slot = HostSlot;
++		InTargetWidget->Slot = nullptr;
++
++		InjectedShadowBox->SetContent(InTargetWidget);
++		HostSlot->SynchronizeProperties();
++	}
++}
++
++void UNameTBDDropShadowComponent::SetShadowStyle(const FNameTBDDropShadowStyle& InStyle)
++{
++	ShadowStyle = InStyle;
++	if (InjectedShadowBox)
++	{
++		InjectedShadowBox->SetShadowStyle(ShadowStyle);
++	}
++	if (ShadowSlateWrapper.IsValid())
++	{
++		ShadowSlateWrapper->SetShadowStyle(ShadowStyle);
++	}
++}
++
++void UNameTBDDropShadowComponent::SetElevationMultiplier(float InMultiplier)
++{
++	if (InjectedShadowBox)
++	{
++		InjectedShadowBox->SetElevationMultiplier(InMultiplier);
++	}
++	if (ShadowSlateWrapper.IsValid())
++	{
++		ShadowSlateWrapper->SetElevationMultiplier(InMultiplier);
++	}
++}
++
++TSharedRef<SWidget> UNameTBDDropShadowComponent::WrapSlateWidget(const TSharedRef<SWidget>& InChildWidget)
++{
++	ShadowSlateWrapper = SNew(SNameTBDDropShadow)
++		.ShadowStyle(ShadowStyle)
++		.MotionSettings(ElevationMotion)
++		[
++			InChildWidget
++		];
++	return ShadowSlateWrapper.ToSharedRef();
++}
++
++// ============================================================================
++// UNameTBDDropShadowBox
++// ============================================================================
++
++UNameTBDDropShadowBox::UNameTBDDropShadowBox()
++{
++	bIsVariable = true;
++}
++
++TSharedRef<SWidget> UNameTBDDropShadowBox::RebuildWidget()
++{
++	MyDropShadow = SNew(SNameTBDDropShadow)
++		.ShadowStyle(ShadowStyle)
++		.MotionSettings(ElevationMotion);
++
++	if (GetChildrenCount() > 0)
++	{
++		if (UWidget* ChildContent = GetContentSlot()->Content)
++		{
++			MyDropShadow->SetContent(ChildContent->TakeWidget());
++		}
++	}
++
++	return MyDropShadow.ToSharedRef();
++}
++
++void UNameTBDDropShadowBox::SynchronizeProperties()
++{
++	Super::SynchronizeProperties();
++	if (MyDropShadow.IsValid())
++	{
++		MyDropShadow->SetShadowStyle(ShadowStyle);
++		MyDropShadow->SetMotionSettings(ElevationMotion);
++	}
++}
++
++void UNameTBDDropShadowBox::ReleaseSlateResources(bool bReleaseChildren)
++{
++	Super::ReleaseSlateResources(bReleaseChildren);
++	MyDropShadow.Reset();
++}
++
++void UNameTBDDropShadowBox::OnSlotAdded(UPanelSlot* InSlot)
++{
++	if (MyDropShadow.IsValid() && InSlot && InSlot->Content)
++	{
++		MyDropShadow->SetContent(InSlot->Content->TakeWidget());
++	}
++}
++
++void UNameTBDDropShadowBox::OnSlotRemoved(UPanelSlot* InSlot)
++{
++	(void)InSlot;
++	if (MyDropShadow.IsValid())
++	{
++		MyDropShadow->SetContent(SNullWidget::NullWidget);
++	}
++}
++
++void UNameTBDDropShadowBox::SetShadowStyle(const FNameTBDDropShadowStyle& InStyle)
++{
++	ShadowStyle = InStyle;
++	if (MyDropShadow.IsValid())
++	{
++		MyDropShadow->SetShadowStyle(ShadowStyle);
++	}
++}
++
++void UNameTBDDropShadowBox::SetElevationMultiplier(float InMultiplier)
++{
++	if (MyDropShadow.IsValid())
++	{
++		MyDropShadow->SetElevationMultiplier(InMultiplier);
++	}
++}
++
++bool UNameTBDDropShadowBox::SetActiveDesignTargetByID_Implementation(FName InTargetID, bool bAnimateTransition)
++{
++	(void)bAnimateTransition;
++	for (const FNameTBDDesignTarget& Target : DesignTargets)
++	{
++		if (Target.TargetID == InTargetID)
++		{
++			ActiveDesignTargetID = Target.TargetID;
++			ShadowStyle.ShadowColor = Target.PrimaryColor;
++			ShadowStyle.CornerRadii = Target.CornerRadii;
++			if (MyDropShadow.IsValid())
++			{
++				MyDropShadow->SetShadowStyle(ShadowStyle);
++			}
++			return true;
++		}
++	}
++	return false;
++}
++
++bool UNameTBDDropShadowBox::SetActiveDesignTargetByValue_Implementation(float NormalizedValue, bool bAnimateTransition)
++{
++	for (const FNameTBDDesignTarget& Target : DesignTargets)
++	{
++		if (NormalizedValue >= Target.MinValueThreshold && NormalizedValue <= Target.MaxValueThreshold)
++		{
++			return Execute_SetActiveDesignTargetByID(this, Target.TargetID, bAnimateTransition);
++		}
++	}
++	return false;
++}
++
++#if WITH_EDITOR
++const FText UNameTBDDropShadowBox::GetPaletteCategory()
++{
++	return LOCTEXT("NameTBDPaletteCategory", "NameTBD");
++}
++#endif
++
++#undef LOCTEXT_NAMESPACE
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDFoldableDropdown.h b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDFoldableDropdown.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDFoldableDropdown.h
+@@ -0,0 +1,76 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Widgets/SCompoundWidget.h"
++#include "Core/NameTBDTypes.h"
++#include "SNameTBDFoldableDropdown.generated.h"
++
++/**
++ * Collapse/Expand animation style for the Foldable Dropdown widget.
++ */
++UENUM(BlueprintType)
++enum class ENameTBDFoldAnimationMode : uint8
++{
++	SlideAndClip UMETA(DisplayName = "Smooth Height Slide & Clip"),
++	SlideAndFade UMETA(DisplayName = "Smooth Slide + Opacity Fade"),
++	Scale3DUnfold UMETA(DisplayName = "3D Accordion Unfold")
++};
++
++DECLARE_DELEGATE_OneParam(FOnNameTBDFoldStateChangedSlate, bool /*bIsExpanded*/);
++
++/**
++ * Slate implementation of a smooth foldable/collapsible dropdown container.
++ * Animates layout size, scissor clipping, child opacity, and header chevron rotation.
++ */
++class NAMETBD_API SNameTBDFoldableDropdown : public SCompoundWidget
++{
++public:
++	SLATE_BEGIN_ARGS(SNameTBDFoldableDropdown)
++		: _bInitiallyExpanded(false)
++		, _AnimationMode(ENameTBDFoldAnimationMode::SlideAndFade)
++		, _MotionSettings()
++		, _bShowChevron(true)
++	{}
++		SLATE_ARGUMENT(bool, bInitiallyExpanded)
++		SLATE_ARGUMENT(ENameTBDFoldAnimationMode, AnimationMode)
++		SLATE_ARGUMENT(FNameTBDMotionSettings, MotionSettings)
++		SLATE_ARGUMENT(bool, bShowChevron)
++		SLATE_NAMED_SLOT(FArguments, HeaderContent)
++		SLATE_NAMED_SLOT(FArguments, BodyContent)
++		SLATE_EVENT(FOnNameTBDFoldStateChangedSlate, OnExpansionChanged)
++	SLATE_END_ARGS()
++
++	void Construct(const FArguments& InArgs);
++
++	void SetExpanded(bool bInExpanded, bool bAnimate = true);
++	bool IsExpanded() const { return bTargetExpanded; }
++	float GetExpansionAlpha() const { return CurrentAlpha; }
++
++	void SetHeaderContent(const TSharedRef<SWidget>& InHeader);
++	void SetBodyContent(const TSharedRef<SWidget>& InBody);
++	void SetMotionSettings(const FNameTBDMotionSettings& InMotion);
++	void SetAnimationMode(ENameTBDFoldAnimationMode InMode);
++
++	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
++	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override;
++	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
++
++private:
++	FReply HandleHeaderClicked();
++
++private:
++	TSharedPtr<class SBox> HeaderContainer;
++	TSharedPtr<class SBox> BodyContainer;
++	FOnNameTBDFoldStateChangedSlate OnExpansionChanged;
++
++	ENameTBDFoldAnimationMode AnimationMode = ENameTBDFoldAnimationMode::SlideAndFade;
++	FNameTBDMotionSettings MotionSettings;
++	bool bTargetExpanded = false;
++	bool bShowChevron = true;
++
++	float RawProgress = 0.0f;
++	float CurrentAlpha = 0.0f;
++};
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDFoldableDropdown.cpp b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDFoldableDropdown.cpp
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDFoldableDropdown.cpp
+@@ -0,0 +1,192 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#include "Widgets/SNameTBDFoldableDropdown.h"
++#include "Widgets/Layout/SBox.h"
++#include "Widgets/Input/SButton.h"
++#include "Widgets/SBoxPanel.h"
++#include "Rendering/DrawElements.h"
++#include "Styling/CoreStyle.h"
++
++void SNameTBDFoldableDropdown::Construct(const FArguments& InArgs)
++{
++	bTargetExpanded = InArgs._bInitiallyExpanded;
++	AnimationMode = InArgs._AnimationMode;
++	MotionSettings = InArgs._MotionSettings;
++	bShowChevron = InArgs._bShowChevron;
++	OnExpansionChanged = InArgs._OnExpansionChanged;
++
++	RawProgress = bTargetExpanded ? 1.0f : 0.0f;
++	CurrentAlpha = RawProgress;
++
++	SetCanTick(true);
++
++	ChildSlot
++	[
++		SNew(SVerticalBox)
++		+ SVerticalBox::Slot()
++		.AutoHeight()
++		[
++			SNew(SButton)
++			.ButtonStyle(&FCoreStyle::Get().GetWidgetStyle<FButtonStyle>("NoBorder"))
++			.ContentPadding(FMargin(0.0f))
++			.OnClicked(this, &SNameTBDFoldableDropdown::HandleHeaderClicked)
++			[
++				SAssignNew(HeaderContainer, SBox)
++				[
++					InArgs._HeaderContent.Widget
++				]
++			]
++		]
++		+ SVerticalBox::Slot()
++		.AutoHeight()
++		[
++			SAssignNew(BodyContainer, SBox)
++			.Clipping(EWidgetClipping::ClipToBoundsAlways)
++			[
++				InArgs._BodyContent.Widget
++			]
++		]
++	];
++}
++
++FReply SNameTBDFoldableDropdown::HandleHeaderClicked()
++{
++	SetExpanded(!bTargetExpanded, true);
++	return FReply::Handled();
++}
++
++void SNameTBDFoldableDropdown::SetExpanded(bool bInExpanded, bool bAnimate)
++{
++	if (bTargetExpanded != bInExpanded)
++	{
++		bTargetExpanded = bInExpanded;
++		if (!bAnimate || MotionSettings.Motion == ENameTBDMotionType::Instant)
++		{
++			RawProgress = bTargetExpanded ? 1.0f : 0.0f;
++			CurrentAlpha = RawProgress;
++		}
++		OnExpansionChanged.ExecuteIfBound(bTargetExpanded);
++		Invalidate(EInvalidateWidgetReason::LayoutAndVolatility);
++	}
++}
++
++void SNameTBDFoldableDropdown::SetHeaderContent(const TSharedRef<SWidget>& InHeader)
++{
++	if (HeaderContainer.IsValid())
++	{
++		HeaderContainer->SetContent(InHeader);
++	}
++}
++
++void SNameTBDFoldableDropdown::SetBodyContent(const TSharedRef<SWidget>& InBody)
++{
++	if (BodyContainer.IsValid())
++	{
++		BodyContainer->SetContent(InBody);
++	}
++}
++
++void SNameTBDFoldableDropdown::SetMotionSettings(const FNameTBDMotionSettings& InMotion)
++{
++	MotionSettings = InMotion;
++}
++
++void SNameTBDFoldableDropdown::SetAnimationMode(ENameTBDFoldAnimationMode InMode)
++{
++	AnimationMode = InMode;
++}
++
++void SNameTBDFoldableDropdown::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
++{
++	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
++
++	const float Goal = bTargetExpanded ? 1.0f : 0.0f;
++	if (!FMath::IsNearlyEqual(RawProgress, Goal, KINDA_SMALL_NUMBER))
++	{
++		if (MotionSettings.Motion == ENameTBDMotionType::Instant)
++		{
++			RawProgress = Goal;
++		}
++		else
++		{
++			const float Duration = bTargetExpanded
++				? FMath::Max(MotionSettings.EnterDuration, 0.001f)
++				: FMath::Max(MotionSettings.ExitDuration, 0.001f);
++
++			RawProgress = FMath::FInterpConstantTo(RawProgress, Goal, InDeltaTime, 1.0f / Duration);
++		}
++
++		CurrentAlpha = FMath::Clamp(NameTBDMath::EvaluateEasing(MotionSettings.Easing, RawProgress), 0.0f, 1.0f);
++
++		if (BodyContainer.IsValid())
++		{
++			BodyContainer->SetVisibility(CurrentAlpha <= 0.001f ? EVisibility::Collapsed : EVisibility::SelfHitTestInvisible);
++			if (AnimationMode == ENameTBDFoldAnimationMode::Scale3DUnfold)
++			{
++				BodyContainer->SetRenderTransformPivot(FVector2D(0.5, 0.0));
++				BodyContainer->SetRenderTransform(FSlateRenderTransform(FScale2D(1.0f, FMath::Max(0.01f, CurrentAlpha))));
++			}
++			else
++			{
++				BodyContainer->SetRenderTransform(FSlateRenderTransform());
++			}
++		}
++
++		Invalidate(EInvalidateWidgetReason::Layout);
++	}
++}
++
++FVector2D SNameTBDFoldableDropdown::ComputeDesiredSize(float LayoutScaleMultiplier) const
++{
++	(void)LayoutScaleMultiplier;
++	const FVector2D HeaderSize = HeaderContainer.IsValid() ? HeaderContainer->GetDesiredSize() : FVector2D::ZeroVector;
++	const FVector2D BodyFullSize = BodyContainer.IsValid() ? BodyContainer->GetDesiredSize() : FVector2D::ZeroVector;
++
++	const double AnimatedBodyHeight = BodyFullSize.Y * static_cast<double>(CurrentAlpha);
++	return FVector2D(FMath::Max(HeaderSize.X, BodyFullSize.X), HeaderSize.Y + AnimatedBodyHeight);
++}
++
++int32 SNameTBDFoldableDropdown::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
++{
++	FWidgetStyle ModifiedStyle = InWidgetStyle;
++	if (AnimationMode == ENameTBDFoldAnimationMode::SlideAndFade || AnimationMode == ENameTBDFoldAnimationMode::Scale3DUnfold)
++	{
++		ModifiedStyle.BlendColorAndOpacityTint(FLinearColor(1.0f, 1.0f, 1.0f, FMath::Lerp(0.15f, 1.0f, CurrentAlpha)));
++	}
++
++	int32 OutLayer = SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, ModifiedStyle, bParentEnabled);
++
++	if (bShowChevron && HeaderContainer.IsValid())
++	{
++		const FVector2D HeaderSize = HeaderContainer->GetDesiredSize();
++		const FVector2D ChevronCenter(AllottedGeometry.GetLocalSize().X - 18.0, FMath::Max(12.0, HeaderSize.Y * 0.5));
++		const double AngleRad = FMath::DegreesToRadians(FMath::Lerp(0.0, 180.0, static_cast<double>(CurrentAlpha)));
++		const double CosA = FMath::Cos(AngleRad);
++		const double SinA = FMath::Sin(AngleRad);
++
++		auto RotatePt = [&](const FVector2D& LocalPt) -> FVector2D
++		{
++			return ChevronCenter + FVector2D(LocalPt.X * CosA - LocalPt.Y * SinA, LocalPt.X * SinA + LocalPt.Y * CosA);
++		};
++
++		TArray<FVector2D> ChevronPoints;
++		ChevronPoints.Add(RotatePt(FVector2D(-5.0, -2.5)));
++		ChevronPoints.Add(RotatePt(FVector2D(0.0, 2.5)));
++		ChevronPoints.Add(RotatePt(FVector2D(5.0, -2.5)));
++
++		++OutLayer;
++		FSlateDrawElement::MakeLines(
++			OutDrawElements,
++			OutLayer,
++			AllottedGeometry.ToPaintGeometry(),
++			ChevronPoints,
++			ESlateDrawEffect::None,
++			InWidgetStyle.GetColorAndOpacityTint(),
++			true,
++			1.75f
++		);
++	}
++
++	return OutLayer;
++}
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDFoldableDropdown.h b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDFoldableDropdown.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDFoldableDropdown.h
+@@ -0,0 +1,122 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Components/Widget.h"
++#include "Components/NamedSlotInterface.h"
++#include "Core/NameTBDTypes.h"
++#include "Widgets/SNameTBDFoldableDropdown.h"
++#include "NameTBDFoldableDropdown.generated.h"
++
++DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNameTBDFoldableExpansionChanged, bool, bIsExpanded);
++
++/**
++ * Better Dropdown (Foldable) UMG Widget with smooth collapse and open animations.
++ * Provides two named slots (HeaderContent and BodyContent), Enter/Exit durations right after Motion,
++ * animated chevron indicator, and optional accordion group auto-collapse.
++ */
++UCLASS(meta = (DisplayName = "NameTBD Foldable Dropdown"))
++class NAMETBD_API UNameTBDFoldableDropdown : public UWidget, public INamedSlotInterface, public INameTBDDesignTargetInterface
++{
++	GENERATED_BODY()
++
++public:
++	UNameTBDFoldableDropdown();
++
++	/** Whether the foldable dropdown starts in the expanded/open state. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foldable")
++	bool bIsExpanded = false;
++
++	/** Fold/Unfold visual animation mode. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foldable")
++	ENameTBDFoldAnimationMode AnimationMode = ENameTBDFoldAnimationMode::SlideAndFade;
++
++	/** Motion preset for opening and collapsing. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion")
++	ENameTBDMotionType Motion = ENameTBDMotionType::SmoothLerp;
++
++	/** Duration (in seconds) for the open / expand animation. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	float EnterDuration = 0.26f;
++
++	/** Duration (in seconds) for the collapse / close animation. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	float ExitDuration = 0.20f;
++
++	/** Easing curve for the open and collapse animations. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	ENameTBDEasingType Easing = ENameTBDEasingType::EaseOutCubic;
++
++	/** Whether to draw the animated chevron arrow in the header. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foldable")
++	bool bShowHeaderChevron = true;
++
++	/** Optional accordion group name. Expanding one foldable in a group automatically collapses sibling foldables with the same group name. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foldable")
++	FName AccordionGroupName = NAME_None;
++
++	/** Optional runtime shape/design targets. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design Targets")
++	TArray<FNameTBDDesignTarget> DesignTargets;
++
++	/** Currently active design target ID. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design Targets")
++	FName ActiveDesignTargetID = NAME_None;
++
++	/** Fired when the dropdown is expanded or collapsed. */
++	UPROPERTY(BlueprintAssignable, Category = "Foldable|Events")
++	FOnNameTBDFoldableExpansionChanged OnExpansionChanged;
++
++protected:
++	UPROPERTY()
++	TObjectPtr<UWidget> HeaderContent;
++
++	UPROPERTY()
++	TObjectPtr<UWidget> BodyContent;
++
++public:
++	/** Expands or collapses the dropdown with optional smooth animation. */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Foldable Dropdown")
++	void SetExpanded(bool bInExpanded, bool bAnimate = true);
++
++	/** Toggles the current expanded/collapsed state. */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Foldable Dropdown")
++	void ToggleExpanded(bool bAnimate = true);
++
++	/** Returns true if currently expanded (or animating toward expanded). */
++	UFUNCTION(BlueprintPure, Category = "NameTBD|Foldable Dropdown")
++	bool IsExpanded() const { return bIsExpanded; }
++
++	/** Returns the current normalized expansion alpha [0..1]. */
++	UFUNCTION(BlueprintPure, Category = "NameTBD|Foldable Dropdown")
++	float GetExpansionAlpha() const;
++
++	// INamedSlotInterface
++	virtual void GetSlotNames(TArray<FName>& SlotNames) const override;
++	virtual UWidget* GetContentForSlot(FName SlotName) const override;
++	virtual void SetContentForSlot(FName SlotName, UWidget* Content) override;
++
++	// INameTBDDesignTargetInterface
++	virtual bool SetActiveDesignTargetByID_Implementation(FName InTargetID, bool bAnimateTransition = true) override;
++	virtual bool SetActiveDesignTargetByValue_Implementation(float NormalizedValue, bool bAnimateTransition = true) override;
++	virtual FName GetActiveDesignTargetID_Implementation() const override { return ActiveDesignTargetID; }
++
++	// UWidget interface
++	virtual void SynchronizeProperties() override;
++	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
++
++#if WITH_EDITOR
++	virtual const FText GetPaletteCategory() override;
++#endif
++
++protected:
++	virtual TSharedRef<SWidget> RebuildWidget() override;
++	void HandleSlateExpansionChanged(bool bNewExpanded);
++	FNameTBDMotionSettings BuildMotionStruct() const;
++
++protected:
++	TSharedPtr<SNameTBDFoldableDropdown> MyFoldable;
++	static const FName HeaderSlotName;
++	static const FName BodySlotName;
++};
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDFoldableDropdown.cpp b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDFoldableDropdown.cpp
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDFoldableDropdown.cpp
+@@ -0,0 +1,194 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#include "Widgets/NameTBDFoldableDropdown.h"
++#include "Components/PanelWidget.h"
++
++#define LOCTEXT_NAMESPACE "NameTBD"
++
++const FName UNameTBDFoldableDropdown::HeaderSlotName(TEXT("HeaderContent"));
++const FName UNameTBDFoldableDropdown::BodySlotName(TEXT("BodyContent"));
++
++UNameTBDFoldableDropdown::UNameTBDFoldableDropdown()
++{
++	bIsVariable = true;
++}
++
++FNameTBDMotionSettings UNameTBDFoldableDropdown::BuildMotionStruct() const
++{
++	FNameTBDMotionSettings Settings;
++	Settings.Motion = Motion;
++	Settings.EnterDuration = EnterDuration;
++	Settings.ExitDuration = ExitDuration;
++	Settings.Easing = Easing;
++	return Settings;
++}
++
++TSharedRef<SWidget> UNameTBDFoldableDropdown::RebuildWidget()
++{
++	MyFoldable = SNew(SNameTBDFoldableDropdown)
++		.bInitiallyExpanded(bIsExpanded)
++		.AnimationMode(AnimationMode)
++		.MotionSettings(BuildMotionStruct())
++		.bShowChevron(bShowHeaderChevron)
++		.OnExpansionChanged(BIND_UOBJECT_DELEGATE(FOnNameTBDFoldStateChangedSlate, HandleSlateExpansionChanged))
++		.HeaderContent()
++		[
++			HeaderContent ? HeaderContent->TakeWidget() : SNullWidget::NullWidget
++		]
++		.BodyContent()
++		[
++			BodyContent ? BodyContent->TakeWidget() : SNullWidget::NullWidget
++		];
++
++	return MyFoldable.ToSharedRef();
++}
++
++void UNameTBDFoldableDropdown::SynchronizeProperties()
++{
++	Super::SynchronizeProperties();
++	if (MyFoldable.IsValid())
++	{
++		MyFoldable->SetMotionSettings(BuildMotionStruct());
++		MyFoldable->SetAnimationMode(AnimationMode);
++		MyFoldable->SetExpanded(bIsExpanded, false);
++	}
++}
++
++void UNameTBDFoldableDropdown::ReleaseSlateResources(bool bReleaseChildren)
++{
++	Super::ReleaseSlateResources(bReleaseChildren);
++	MyFoldable.Reset();
++	if (bReleaseChildren)
++	{
++		if (HeaderContent)
++		{
++			HeaderContent->ReleaseSlateResources(true);
++		}
++		if (BodyContent)
++		{
++			BodyContent->ReleaseSlateResources(true);
++		}
++	}
++}
++
++void UNameTBDFoldableDropdown::SetExpanded(bool bInExpanded, bool bAnimate)
++{
++	bIsExpanded = bInExpanded;
++	if (MyFoldable.IsValid())
++	{
++		MyFoldable->SetExpanded(bInExpanded, bAnimate);
++	}
++	else
++	{
++		HandleSlateExpansionChanged(bInExpanded);
++	}
++}
++
++void UNameTBDFoldableDropdown::ToggleExpanded(bool bAnimate)
++{
++	SetExpanded(!bIsExpanded, bAnimate);
++}
++
++float UNameTBDFoldableDropdown::GetExpansionAlpha() const
++{
++	return MyFoldable.IsValid() ? MyFoldable->GetExpansionAlpha() : (bIsExpanded ? 1.0f : 0.0f);
++}
++
++void UNameTBDFoldableDropdown::HandleSlateExpansionChanged(bool bNewExpanded)
++{
++	bIsExpanded = bNewExpanded;
++
++	if (bIsExpanded && !AccordionGroupName.IsNone())
++	{
++		if (UPanelWidget* ParentPanel = GetParent())
++		{
++			const int32 SiblingCount = ParentPanel->GetChildrenCount();
++			for (int32 i = 0; i < SiblingCount; ++i)
++			{
++				if (UNameTBDFoldableDropdown* Sibling = Cast<UNameTBDFoldableDropdown>(ParentPanel->GetChildAt(i)))
++				{
++					if (Sibling != this && Sibling->AccordionGroupName == AccordionGroupName && Sibling->IsExpanded())
++					{
++						Sibling->SetExpanded(false, true);
++					}
++				}
++			}
++		}
++	}
++
++	OnExpansionChanged.Broadcast(bIsExpanded);
++}
++
++void UNameTBDFoldableDropdown::GetSlotNames(TArray<FName>& SlotNames) const
++{
++	SlotNames.Add(HeaderSlotName);
++	SlotNames.Add(BodySlotName);
++}
++
++UWidget* UNameTBDFoldableDropdown::GetContentForSlot(FName SlotName) const
++{
++	if (SlotName == HeaderSlotName)
++	{
++		return HeaderContent;
++	}
++	if (SlotName == BodySlotName)
++	{
++		return BodyContent;
++	}
++	return nullptr;
++}
++
++void UNameTBDFoldableDropdown::SetContentForSlot(FName SlotName, UWidget* Content)
++{
++	if (SlotName == HeaderSlotName)
++	{
++		HeaderContent = Content;
++		if (MyFoldable.IsValid())
++		{
++			MyFoldable->SetHeaderContent(Content ? Content->TakeWidget() : SNullWidget::NullWidget);
++		}
++	}
++	else if (SlotName == BodySlotName)
++	{
++		BodyContent = Content;
++		if (MyFoldable.IsValid())
++		{
++			MyFoldable->SetBodyContent(Content ? Content->TakeWidget() : SNullWidget::NullWidget);
++		}
++	}
++}
++
++bool UNameTBDFoldableDropdown::SetActiveDesignTargetByID_Implementation(FName InTargetID, bool bAnimateTransition)
++{
++	(void)bAnimateTransition;
++	for (const FNameTBDDesignTarget& Target : DesignTargets)
++	{
++		if (Target.TargetID == InTargetID)
++		{
++			ActiveDesignTargetID = Target.TargetID;
++			return true;
++		}
++	}
++	return false;
++}
++
++bool UNameTBDFoldableDropdown::SetActiveDesignTargetByValue_Implementation(float NormalizedValue, bool bAnimateTransition)
++{
++	for (const FNameTBDDesignTarget& Target : DesignTargets)
++	{
++		if (NormalizedValue >= Target.MinValueThreshold && NormalizedValue <= Target.MaxValueThreshold)
++		{
++			return Execute_SetActiveDesignTargetByID(this, Target.TargetID, bAnimateTransition);
++		}
++	}
++	return false;
++}
++
++#if WITH_EDITOR
++const FText UNameTBDFoldableDropdown::GetPaletteCategory()
++{
++	return LOCTEXT("NameTBDPaletteCategory", "NameTBD");
++}
++#endif
++
++#undef LOCTEXT_NAMESPACE
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDFlippableCard.h b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDFlippableCard.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDFlippableCard.h
+@@ -0,0 +1,86 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Widgets/SCompoundWidget.h"
++#include "Core/NameTBDTypes.h"
++#include "SNameTBDFlippableCard.generated.h"
++
++/**
++ * Axis along which the two-sided Flippable Card rotates.
++ */
++UENUM(BlueprintType)
++enum class ENameTBDCardFlipAxis : uint8
++{
++	Horizontal UMETA(DisplayName = "Horizontal (Flip Left / Right)"),
++	Vertical UMETA(DisplayName = "Vertical (Flip Up / Down)"),
++	Diagonal UMETA(DisplayName = "Diagonal 3D Flip")
++};
++
++DECLARE_DELEGATE_OneParam(FOnNameTBDCardFaceChangedSlate, bool /*bIsShowingBack*/);
++
++/**
++ * Slate implementation of a two-sided Flippable Card with 3D perspective-simulated flip animation,
++ * automatic 90-degree midpoint face swap, dynamic elevation scale pop, and specular tilt sheen.
++ */
++class NAMETBD_API SNameTBDFlippableCard : public SCompoundWidget
++{
++public:
++	SLATE_BEGIN_ARGS(SNameTBDFlippableCard)
++		: _bInitiallyShowBack(false)
++		, _FlipAxis(ENameTBDCardFlipAxis::Horizontal)
++		, _MotionSettings()
++		, _MidFlipElevationScale(1.08f)
++		, _PerspectiveSkewStrength(0.14f)
++		, _bFlipOnClick(false)
++	{}
++		SLATE_ARGUMENT(bool, bInitiallyShowBack)
++		SLATE_ARGUMENT(ENameTBDCardFlipAxis, FlipAxis)
++		SLATE_ARGUMENT(FNameTBDMotionSettings, MotionSettings)
++		SLATE_ARGUMENT(float, MidFlipElevationScale)
++		SLATE_ARGUMENT(float, PerspectiveSkewStrength)
++		SLATE_ARGUMENT(bool, bFlipOnClick)
++		SLATE_NAMED_SLOT(FArguments, FrontContent)
++		SLATE_NAMED_SLOT(FArguments, BackContent)
++		SLATE_EVENT(FOnNameTBDCardFaceChangedSlate, OnFaceChanged)
++	SLATE_END_ARGS()
++
++	void Construct(const FArguments& InArgs);
++
++	void FlipToBack(bool bAnimate = true);
++	void FlipToFront(bool bAnimate = true);
++	void ToggleFlip(bool bAnimate = true);
++
++	bool IsShowingBack() const { return bTargetShowBack; }
++	float GetFlipProgress() const { return CurrentFlipAlpha; }
++
++	void SetFrontContent(const TSharedRef<SWidget>& InFront);
++	void SetBackContent(const TSharedRef<SWidget>& InBack);
++	void SetMotionSettings(const FNameTBDMotionSettings& InMotion);
++	void SetFlipAxis(ENameTBDCardFlipAxis InAxis);
++	void SetFlipOnClick(bool bInFlipOnClick) { bFlipOnClick = bInFlipOnClick; }
++
++	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
++	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
++	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
++
++private:
++	void UpdateActiveFaceVisibilityAndTransform();
++
++private:
++	TSharedPtr<class SBox> FrontSlotBox;
++	TSharedPtr<class SBox> BackSlotBox;
++	FOnNameTBDCardFaceChangedSlate OnFaceChanged;
++
++	ENameTBDCardFlipAxis FlipAxis = ENameTBDCardFlipAxis::Horizontal;
++	FNameTBDMotionSettings MotionSettings;
++	float MidFlipElevationScale = 1.08f;
++	float PerspectiveSkewStrength = 0.14f;
++	bool bFlipOnClick = false;
++
++	bool bTargetShowBack = false;
++	float RawFlipProgress = 0.0f;
++	float CurrentFlipAlpha = 0.0f;
++};
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDFlippableCard.cpp b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDFlippableCard.cpp
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDFlippableCard.cpp
+@@ -0,0 +1,236 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#include "Widgets/SNameTBDFlippableCard.h"
++#include "Widgets/Layout/SBox.h"
++#include "Widgets/SOverlay.h"
++#include "Rendering/DrawElements.h"
++#include "Styling/CoreStyle.h"
++
++void SNameTBDFlippableCard::Construct(const FArguments& InArgs)
++{
++	bTargetShowBack = InArgs._bInitiallyShowBack;
++	FlipAxis = InArgs._FlipAxis;
++	MotionSettings = InArgs._MotionSettings;
++	MidFlipElevationScale = InArgs._MidFlipElevationScale;
++	PerspectiveSkewStrength = InArgs._PerspectiveSkewStrength;
++	bFlipOnClick = InArgs._bFlipOnClick;
++	OnFaceChanged = InArgs._OnFaceChanged;
++
++	RawFlipProgress = bTargetShowBack ? 1.0f : 0.0f;
++	CurrentFlipAlpha = RawFlipProgress;
++
++	SetCanTick(true);
++
++	ChildSlot
++	[
++		SNew(SOverlay)
++		+ SOverlay::Slot()
++		.HAlign(HAlign_Fill)
++		.VAlign(VAlign_Fill)
++		[
++			SAssignNew(FrontSlotBox, SBox)
++			[
++				InArgs._FrontContent.Widget
++			]
++		]
++		+ SOverlay::Slot()
++		.HAlign(HAlign_Fill)
++		.VAlign(VAlign_Fill)
++		[
++			SAssignNew(BackSlotBox, SBox)
++			[
++				InArgs._BackContent.Widget
++			]
++		]
++	];
++
++	UpdateActiveFaceVisibilityAndTransform();
++}
++
++void SNameTBDFlippableCard::FlipToBack(bool bAnimate)
++{
++	if (!bTargetShowBack)
++	{
++		bTargetShowBack = true;
++		if (!bAnimate || MotionSettings.Motion == ENameTBDMotionType::Instant)
++		{
++			RawFlipProgress = 1.0f;
++			CurrentFlipAlpha = 1.0f;
++			UpdateActiveFaceVisibilityAndTransform();
++		}
++		OnFaceChanged.ExecuteIfBound(bTargetShowBack);
++	}
++}
++
++void SNameTBDFlippableCard::FlipToFront(bool bAnimate)
++{
++	if (bTargetShowBack)
++	{
++		bTargetShowBack = false;
++		if (!bAnimate || MotionSettings.Motion == ENameTBDMotionType::Instant)
++		{
++			RawFlipProgress = 0.0f;
++			CurrentFlipAlpha = 0.0f;
++			UpdateActiveFaceVisibilityAndTransform();
++		}
++		OnFaceChanged.ExecuteIfBound(bTargetShowBack);
++	}
++}
++
++void SNameTBDFlippableCard::ToggleFlip(bool bAnimate)
++{
++	if (bTargetShowBack)
++	{
++		FlipToFront(bAnimate);
++	}
++	else
++	{
++		FlipToBack(bAnimate);
++	}
++}
++
++void SNameTBDFlippableCard::SetFrontContent(const TSharedRef<SWidget>& InFront)
++{
++	if (FrontSlotBox.IsValid())
++	{
++		FrontSlotBox->SetContent(InFront);
++	}
++}
++
++void SNameTBDFlippableCard::SetBackContent(const TSharedRef<SWidget>& InBack)
++{
++	if (BackSlotBox.IsValid())
++	{
++		BackSlotBox->SetContent(InBack);
++	}
++}
++
++void SNameTBDFlippableCard::SetMotionSettings(const FNameTBDMotionSettings& InMotion)
++{
++	MotionSettings = InMotion;
++}
++
++void SNameTBDFlippableCard::SetFlipAxis(ENameTBDCardFlipAxis InAxis)
++{
++	FlipAxis = InAxis;
++	UpdateActiveFaceVisibilityAndTransform();
++}
++
++FReply SNameTBDFlippableCard::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
++{
++	if (bFlipOnClick && MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
++	{
++		ToggleFlip(true);
++		return FReply::Handled();
++	}
++	return SCompoundWidget::OnMouseButtonDown(MyGeometry, MouseEvent);
++}
++
++void SNameTBDFlippableCard::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
++{
++	SCompoundWidget::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
++
++	const float Goal = bTargetShowBack ? 1.0f : 0.0f;
++	if (!FMath::IsNearlyEqual(RawFlipProgress, Goal, KINDA_SMALL_NUMBER))
++	{
++		if (MotionSettings.Motion == ENameTBDMotionType::Instant)
++		{
++			RawFlipProgress = Goal;
++		}
++		else
++		{
++			const float Duration = bTargetShowBack
++				? FMath::Max(MotionSettings.EnterDuration, 0.001f)
++				: FMath::Max(MotionSettings.ExitDuration, 0.001f);
++
++			RawFlipProgress = FMath::FInterpConstantTo(RawFlipProgress, Goal, InDeltaTime, 1.0f / Duration);
++		}
++
++		CurrentFlipAlpha = FMath::Clamp(NameTBDMath::EvaluateEasing(MotionSettings.Easing, RawFlipProgress), 0.0f, 1.0f);
++		UpdateActiveFaceVisibilityAndTransform();
++	}
++}
++
++void SNameTBDFlippableCard::UpdateActiveFaceVisibilityAndTransform()
++{
++	const bool bDisplayBackNow = (CurrentFlipAlpha >= 0.5f);
++
++	if (FrontSlotBox.IsValid())
++	{
++		FrontSlotBox->SetVisibility(bDisplayBackNow ? EVisibility::Collapsed : EVisibility::SelfHitTestInvisible);
++	}
++	if (BackSlotBox.IsValid())
++	{
++		BackSlotBox->SetVisibility(bDisplayBackNow ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed);
++	}
++
++	const float Theta = CurrentFlipAlpha * PI;
++	const float AxialScale = FMath::Max(0.02f, FMath::Abs(FMath::Cos(Theta)));
++	const float SinTheta = FMath::Sin(Theta);
++	const float LiftScale = FMath::Lerp(1.0f, MidFlipElevationScale, SinTheta);
++	const float SkewFactor = FMath::Sin(Theta * 2.0f) * PerspectiveSkewStrength;
++
++	FMatrix2x2 TransformMatrix(1.0f, 0.0f, 0.0f, 1.0f);
++	if (FlipAxis == ENameTBDCardFlipAxis::Horizontal)
++	{
++		TransformMatrix = FMatrix2x2(AxialScale * LiftScale, SkewFactor, 0.0f, LiftScale);
++	}
++	else if (FlipAxis == ENameTBDCardFlipAxis::Vertical)
++	{
++		TransformMatrix = FMatrix2x2(LiftScale, 0.0f, SkewFactor, AxialScale * LiftScale);
++	}
++	else
++	{
++		const float DiagScale = FMath::Lerp(AxialScale, 1.0f, 0.35f) * LiftScale;
++		TransformMatrix = FMatrix2x2(DiagScale, SkewFactor, SkewFactor, DiagScale);
++	}
++
++	SetRenderTransformPivot(FVector2D(0.5, 0.5));
++	SetRenderTransform(FSlateRenderTransform(TransformMatrix, FVector2D(0.0, -SinTheta * 6.0)));
++}
++
++int32 SNameTBDFlippableCard::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
++{
++	const float SinTheta = FMath::Sin(CurrentFlipAlpha * PI);
++	const FSlateBrush* WhiteBrush = FCoreStyle::Get().GetBrush("GenericWhiteBox");
++
++	if (SinTheta > 0.01f)
++	{
++		const FVector2D LocalSize = AllottedGeometry.GetLocalSize();
++		const FVector2D ShadowOffset(0.0, 6.0 + static_cast<double>(SinTheta) * 14.0);
++		const FLinearColor ShadowColor(0.0f, 0.0f, 0.02f, 0.28f * SinTheta);
++
++		FSlateDrawElement::MakeBox(
++			OutDrawElements,
++			LayerId,
++			AllottedGeometry.ToPaintGeometry(LocalSize, FSlateLayoutTransform(ShadowOffset)),
++			WhiteBrush,
++			ESlateDrawEffect::None,
++			ShadowColor * InWidgetStyle.GetColorAndOpacityTint()
++		);
++		++LayerId;
++	}
++
++	int32 OutLayer = SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
++
++	if (SinTheta > 0.02f)
++	{
++		++OutLayer;
++		const bool bApproachingEdge = (CurrentFlipAlpha < 0.5f);
++		const FLinearColor SheenColor = bApproachingEdge
++			? FLinearColor(0.0f, 0.0f, 0.0f, SinTheta * 0.22f)
++			: FLinearColor(1.0f, 1.0f, 1.0f, SinTheta * 0.16f);
++
++		FSlateDrawElement::MakeBox(
++			OutDrawElements,
++			OutLayer,
++			AllottedGeometry.ToPaintGeometry(),
++			WhiteBrush,
++			ESlateDrawEffect::None,
++			SheenColor * InWidgetStyle.GetColorAndOpacityTint()
++		);
++	}
++
++	return OutLayer;
++}
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDFlippableCard.h b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDFlippableCard.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDFlippableCard.h
+@@ -0,0 +1,130 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Components/Widget.h"
++#include "Components/NamedSlotInterface.h"
++#include "Core/NameTBDTypes.h"
++#include "Widgets/SNameTBDFlippableCard.h"
++#include "NameTBDFlippableCard.generated.h"
++
++DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNameTBDFlippableCardFlipped, bool, bIsShowingBack);
++
++/**
++ * Two-Sided Flippable Card UMG Widget with 3D perspective flip animation.
++ * Exposes FrontContent and BackContent named slots, EnterDuration and ExitDuration right after Motion,
++ * configurable flip axis, and runtime Design Target support.
++ */
++UCLASS(meta = (DisplayName = "NameTBD Flippable Card"))
++class NAMETBD_API UNameTBDFlippableCard : public UWidget, public INamedSlotInterface, public INameTBDDesignTargetInterface
++{
++	GENERATED_BODY()
++
++public:
++	UNameTBDFlippableCard();
++
++	/** Whether the card starts flipped to the back face. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flippable Card")
++	bool bShowBackFace = false;
++
++	/** Axis of rotation for the 3D card flip. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flippable Card")
++	ENameTBDCardFlipAxis FlipAxis = ENameTBDCardFlipAxis::Horizontal;
++
++	/** If true, clicking anywhere on the card automatically toggles between Front and Back. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Flippable Card")
++	bool bFlipOnClick = false;
++
++	/** Motion preset for the card flip transition. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion")
++	ENameTBDMotionType Motion = ENameTBDMotionType::Flip3D;
++
++	/** Duration (in seconds) when flipping from Front to Back (entering flipped state). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2.5", EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	float EnterDuration = 0.42f;
++
++	/** Duration (in seconds) when flipping from Back to Front (exiting flipped state). */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2.5", EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	float ExitDuration = 0.38f;
++
++	/** Easing curve applied to the flip rotation. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (EditCondition = "Motion != ENameTBDMotionType::Instant", EditConditionHides))
++	ENameTBDEasingType Easing = ENameTBDEasingType::EaseInOutCubic;
++
++	/** Scale boost at the 90-degree midpoint of the flip to simulate 3D camera proximity. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (ClampMin = "1.0", ClampMax = "1.5"))
++	float MidFlipElevationScale = 1.08f;
++
++	/** Perspective skew intensity during the flip rotation. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Motion", meta = (ClampMin = "0.0", ClampMax = "0.5"))
++	float PerspectiveSkewStrength = 0.14f;
++
++	/** Optional runtime shape/design targets. */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design Targets")
++	TArray<FNameTBDDesignTarget> DesignTargets;
++
++	/** Currently active design target ID. */
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design Targets")
++	FName ActiveDesignTargetID = NAME_None;
++
++	/** Broadcast whenever the card is flipped to Front or Back. */
++	UPROPERTY(BlueprintAssignable, Category = "Flippable Card|Events")
++	FOnNameTBDFlippableCardFlipped OnCardFlipped;
++
++protected:
++	UPROPERTY()
++	TObjectPtr<UWidget> FrontContent;
++
++	UPROPERTY()
++	TObjectPtr<UWidget> BackContent;
++
++public:
++	/** Flips the card to show the BackContent slot. */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Flippable Card")
++	void FlipToBack(bool bAnimate = true);
++
++	/** Flips the card to show the FrontContent slot. */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Flippable Card")
++	void FlipToFront(bool bAnimate = true);
++
++	/** Toggles between FrontContent and BackContent. */
++	UFUNCTION(BlueprintCallable, Category = "NameTBD|Flippable Card")
++	void ToggleFlip(bool bAnimate = true);
++
++	/** Returns true if the card is currently targeting or showing the back face. */
++	UFUNCTION(BlueprintPure, Category = "NameTBD|Flippable Card")
++	bool IsShowingBackFace() const { return bShowBackFace; }
++
++	/** Returns the normalized flip progress [0 = Front, 0.5 = 90deg edge, 1 = Back]. */
++	UFUNCTION(BlueprintPure, Category = "NameTBD|Flippable Card")
++	float GetFlipProgress() const;
++
++	// INamedSlotInterface
++	virtual void GetSlotNames(TArray<FName>& SlotNames) const override;
++	virtual UWidget* GetContentForSlot(FName SlotName) const override;
++	virtual void SetContentForSlot(FName SlotName, UWidget* Content) override;
++
++	// INameTBDDesignTargetInterface
++	virtual bool SetActiveDesignTargetByID_Implementation(FName InTargetID, bool bAnimateTransition = true) override;
++	virtual bool SetActiveDesignTargetByValue_Implementation(float NormalizedValue, bool bAnimateTransition = true) override;
++	virtual FName GetActiveDesignTargetID_Implementation() const override { return ActiveDesignTargetID; }
++
++	// UWidget interface
++	virtual void SynchronizeProperties() override;
++	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
++
++#if WITH_EDITOR
++	virtual const FText GetPaletteCategory() override;
++#endif
++
++protected:
++	virtual TSharedRef<SWidget> RebuildWidget() override;
++	void HandleSlateFaceChanged(bool bNewShowingBack);
++	FNameTBDMotionSettings BuildMotionStruct() const;
++
++protected:
++	TSharedPtr<SNameTBDFlippableCard> MyFlippableCard;
++	static const FName FrontSlotName;
++	static const FName BackSlotName;
++};
+
+diff --git a/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDFlippableCard.cpp b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDFlippableCard.cpp
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDFlippableCard.cpp
+@@ -0,0 +1,204 @@
++// Copyright NameTBD Plugin. All Rights Reserved.
++
++#include "Widgets/NameTBDFlippableCard.h"
++
++#define LOCTEXT_NAMESPACE "NameTBD"
++
++const FName UNameTBDFlippableCard::FrontSlotName(TEXT("FrontContent"));
++const FName UNameTBDFlippableCard::BackSlotName(TEXT("BackContent"));
++
++UNameTBDFlippableCard::UNameTBDFlippableCard()
++{
++	bIsVariable = true;
++}
++
++FNameTBDMotionSettings UNameTBDFlippableCard::BuildMotionStruct() const
++{
++	FNameTBDMotionSettings Settings;
++	Settings.Motion = Motion;
++	Settings.EnterDuration = EnterDuration;
++	Settings.ExitDuration = ExitDuration;
++	Settings.Easing = Easing;
++	return Settings;
++}
++
++TSharedRef<SWidget> UNameTBDFlippableCard::RebuildWidget()
++{
++	MyFlippableCard = SNew(SNameTBDFlippableCard)
++		.bInitiallyShowBack(bShowBackFace)
++		.FlipAxis(FlipAxis)
++		.MotionSettings(BuildMotionStruct())
++		.MidFlipElevationScale(MidFlipElevationScale)
++		.PerspectiveSkewStrength(PerspectiveSkewStrength)
++		.bFlipOnClick(bFlipOnClick)
++		.OnFaceChanged(BIND_UOBJECT_DELEGATE(FOnNameTBDCardFaceChangedSlate, HandleSlateFaceChanged))
++		.FrontContent()
++		[
++			FrontContent ? FrontContent->TakeWidget() : SNullWidget::NullWidget
++		]
++		.BackContent()
++		[
++			BackContent ? BackContent->TakeWidget() : SNullWidget::NullWidget
++		];
++
++	return MyFlippableCard.ToSharedRef();
++}
++
++void UNameTBDFlippableCard::SynchronizeProperties()
++{
++	Super::SynchronizeProperties();
++	if (MyFlippableCard.IsValid())
++	{
++		MyFlippableCard->SetMotionSettings(BuildMotionStruct());
++		MyFlippableCard->SetFlipAxis(FlipAxis);
++		MyFlippableCard->SetFlipOnClick(bFlipOnClick);
++		if (bShowBackFace)
++		{
++			MyFlippableCard->FlipToBack(false);
++		}
++		else
++		{
++			MyFlippableCard->FlipToFront(false);
++		}
++	}
++}
++
++void UNameTBDFlippableCard::ReleaseSlateResources(bool bReleaseChildren)
++{
++	Super::ReleaseSlateResources(bReleaseChildren);
++	MyFlippableCard.Reset();
++	if (bReleaseChildren)
++	{
++		if (FrontContent)
++		{
++			FrontContent->ReleaseSlateResources(true);
++		}
++		if (BackContent)
++		{
++			BackContent->ReleaseSlateResources(true);
++		}
++	}
++}
++
++void UNameTBDFlippableCard::FlipToBack(bool bAnimate)
++{
++	bShowBackFace = true;
++	if (MyFlippableCard.IsValid())
++	{
++		MyFlippableCard->FlipToBack(bAnimate);
++	}
++	else
++	{
++		HandleSlateFaceChanged(true);
++	}
++}
++
++void UNameTBDFlippableCard::FlipToFront(bool bAnimate)
++{
++	bShowBackFace = false;
++	if (MyFlippableCard.IsValid())
++	{
++		MyFlippableCard->FlipToFront(bAnimate);
++	}
++	else
++	{
++		HandleSlateFaceChanged(false);
++	}
++}
++
++void UNameTBDFlippableCard::ToggleFlip(bool bAnimate)
++{
++	if (bShowBackFace)
++	{
++		FlipToFront(bAnimate);
++	}
++	else
++	{
++		FlipToBack(bAnimate);
++	}
++}
++
++float UNameTBDFlippableCard::GetFlipProgress() const
++{
++	return MyFlippableCard.IsValid() ? MyFlippableCard->GetFlipProgress() : (bShowBackFace ? 1.0f : 0.0f);
++}
++
++void UNameTBDFlippableCard::HandleSlateFaceChanged(bool bNewShowingBack)
++{
++	bShowBackFace = bNewShowingBack;
++	OnCardFlipped.Broadcast(bShowBackFace);
++}
++
++void UNameTBDFlippableCard::GetSlotNames(TArray<FName>& SlotNames) const
++{
++	SlotNames.Add(FrontSlotName);
++	SlotNames.Add(BackSlotName);
++}
++
++UWidget* UNameTBDFlippableCard::GetContentForSlot(FName SlotName) const
++{
++	if (SlotName == FrontSlotName)
++	{
++		return FrontContent;
++	}
++	if (SlotName == BackSlotName)
++	{
++		return BackContent;
++	}
++	return nullptr;
++}
++
++void UNameTBDFlippableCard::SetContentForSlot(FName SlotName, UWidget* Content)
++{
++	if (SlotName == FrontSlotName)
++	{
++		FrontContent = Content;
++		if (MyFlippableCard.IsValid())
++		{
++			MyFlippableCard->SetFrontContent(Content ? Content->TakeWidget() : SNullWidget::NullWidget);
++		}
++	}
++	else if (SlotName == BackSlotName)
++	{
++		BackContent = Content;
++		if (MyFlippableCard.IsValid())
++		{
++			MyFlippableCard->SetBackContent(Content ? Content->TakeWidget() : SNullWidget::NullWidget);
++		}
++	}
++}
++
++bool UNameTBDFlippableCard::SetActiveDesignTargetByID_Implementation(FName InTargetID, bool bAnimateTransition)
++{
++	(void)bAnimateTransition;
++	for (const FNameTBDDesignTarget& Target : DesignTargets)
++	{
++		if (Target.TargetID == InTargetID)
++		{
++			ActiveDesignTargetID = Target.TargetID;
++			return true;
++		}
++	}
++	return false;
++}
++
++bool UNameTBDFlippableCard::SetActiveDesignTargetByValue_Implementation(float NormalizedValue, bool bAnimateTransition)
++{
++	for (const FNameTBDDesignTarget& Target : DesignTargets)
++	{
++		if (NormalizedValue >= Target.MinValueThreshold && NormalizedValue <= Target.MaxValueThreshold)
++		{
++			return Execute_SetActiveDesignTargetByID(this, Target.TargetID, bAnimateTransition);
++		}
++	}
++	return false;
++}
++
++#if WITH_EDITOR
++const FText UNameTBDFlippableCard::GetPaletteCategory()
++{
++	return LOCTEXT("NameTBDPaletteCategory", "NameTBD");
++}
++#endif
++
++#undef LOCTEXT_NAMESPACE
