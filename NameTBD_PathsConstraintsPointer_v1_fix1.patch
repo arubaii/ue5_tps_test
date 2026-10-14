@@ -1,0 +1,112 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintComponent.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintComponent.cpp
+index 6fec50a..a432fe7 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintComponent.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintComponent.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include "WidgetConstraintComponent.h"
+ 
++#include "Components/PanelWidget.h"
+ #include "Components/Widget.h"
+ #include "Framework/Application/SlateApplication.h"
+ #include "Layout/ArrangedChildren.h"
+@@ -21,8 +22,8 @@ namespace WidgetConstraintHostPrivate
+ 		float B00, B01, B10, B11;
+ 		A.GetMatrix().GetMatrix(A00, A01, A10, A11);
+ 		B.GetMatrix().GetMatrix(B00, B01, B10, B11);
+-		const FVector2f TranslationA = A.GetTranslation();
+-		const FVector2f TranslationB = B.GetTranslation();
++		const FVector2f TranslationA = FVector2f(A.GetTranslation());
++		const FVector2f TranslationB = FVector2f(B.GetTranslation());
+ 		return FMath::IsNearlyEqual(A00, B00, 1e-5f) && FMath::IsNearlyEqual(A01, B01, 1e-5f) && FMath::IsNearlyEqual(A10, B10, 1e-5f)
+ 			&& FMath::IsNearlyEqual(A11, B11, 1e-5f) && FVector2f::DistSquared(TranslationA, TranslationB) < 1e-6f;
+ 	}
+@@ -137,7 +138,7 @@ namespace WidgetConstraintSolver
+ 	{
+ 		float A, B, C, D;
+ 		Transform.GetMatrix().GetMatrix(A, B, C, D);
+-		const FVector2f Translation = Transform.GetTranslation();
++		const FVector2f Translation = FVector2f(Transform.GetTranslation());
+ 		return FMath::IsNearlyEqual(A, 1.f, 1e-4f) && FMath::IsNearlyZero(B, 1e-4f) && FMath::IsNearlyZero(C, 1e-4f) && FMath::IsNearlyEqual(D, 1.f, 1e-4f)
+ 			&& FMath::IsNearlyZero(Translation.X, 1e-3f) && FMath::IsNearlyZero(Translation.Y, 1e-3f);
+ 	}
+@@ -218,10 +219,10 @@ void UWidgetConstraintComponent::SolveAll(float DeltaTime)
+ 			Registered.RemoveAtSwap(Index, 1, EAllowShrinking::No);
+ 			continue;
+ 		}
+-		if (const UWidget* Owner = Component->GetOwner().Get())
++		if (const UWidget* OwnerWidget = Component->GetOwner().Get())
+ 		{
+ 			Live.Add(Component);
+-			ByOwner.Add(Owner, Component);
++			ByOwner.Add(OwnerWidget, Component);
+ 		}
+ 	}
+ 	if (Live.Num() == 0)
+@@ -278,7 +279,7 @@ void UWidgetConstraintComponent::GatherDependencies(TArray<const UWidget*>& OutW
+ 		}
+ 	}
+ 	// Solved after a constrained widget it is inside.
+-	for (const UWidget* Parent = Context.Owner ? Context.Owner->GetParent() : nullptr; Parent; Parent = Parent->GetParent())
++	for (const UWidget* Parent = Context.Owner ? static_cast<const UWidget*>(Context.Owner->GetParent()) : nullptr; Parent; Parent = static_cast<const UWidget*>(Parent->GetParent()))
+ 	{
+ 		OutWidgets.Add(Parent);
+ 	}
+@@ -286,14 +287,14 @@ void UWidgetConstraintComponent::GatherDependencies(TArray<const UWidget*>& OutW
+ 
+ void UWidgetConstraintComponent::SolveFrame(float DeltaTime, const TMap<const UWidget*, UWidgetConstraintComponent*>& ByOwner)
+ {
+-	UWidget* Owner = GetOwner().Get();
++	UWidget* OwnerWidget = GetOwner().Get();
+ 	const TSharedPtr<SWidgetConstraintHost> Host = MyHost.Pin();
+-	if (!Owner || !Host.IsValid())
++	if (!OwnerWidget || !Host.IsValid())
+ 	{
+ 		return;
+ 	}
+ 
+-	const bool bDesignTime = Owner->IsDesignTime();
++	const bool bDesignTime = OwnerWidget->IsDesignTime();
+ 	if (bDesignTime && !bSolveInDesigner)
+ 	{
+ 		Host->SetSolved(FSlateRenderTransform(), false, 1.f);
+@@ -311,15 +312,15 @@ void UWidgetConstraintComponent::SolveFrame(float DeltaTime, const TMap<const UW
+ 	}
+ 
+ 	FWidgetConstraintContext Context;
+-	Context.Owner = Owner;
++	Context.Owner = OwnerWidget;
+ 	Context.Size = FVector2f(static_cast<float>(LocalSize.X), static_cast<float>(LocalSize.Y));
+ 	Context.HostToDesktop = HostGeometry.GetAccumulatedRenderTransform();
+ 	Context.DesktopToHost = Context.HostToDesktop.Inverse();
+ 	Context.DeltaTime = FMath::Min(DeltaTime, 0.1f);
+ 	Context.bDesignTime = bDesignTime;
+ 
+-	const FWidgetTransform& Own = Owner->GetRenderTransform();
+-	const FVector2D PivotFraction = Owner->GetRenderTransformPivot();
++	const FWidgetTransform& Own = OwnerWidget->GetRenderTransform();
++	const FVector2D PivotFraction = OwnerWidget->GetRenderTransformPivot();
+ 	Context.PivotPoint = Context.Size * FVector2f(static_cast<float>(PivotFraction.X), static_cast<float>(PivotFraction.Y));
+ 	Context.Rest.Position = FVector2D(Context.PivotPoint.X, Context.PivotPoint.Y) + Own.Translation;
+ 	Context.Rest.Angle = Own.Angle;
+@@ -330,16 +331,16 @@ void UWidgetConstraintComponent::SolveFrame(float DeltaTime, const TMap<const UW
+ 	if (!bDesignTime)
+ 	{
+ 		FWidgetAnimInputContext Input;
+-		Input.HostWidget = Owner;
+-		Input.MeasuredWidget = Owner;
++		Input.HostWidget = OwnerWidget;
++		Input.MeasuredWidget = OwnerWidget;
+ 		WidgetAnimInput::ReadPointer(Input);
+ 		if (Input.bHasPointer && (!Input.bWorldPointer || Input.WorldPointer.bOver))
+ 		{
+ 			Context.bHasPointer = true;
+ 			Context.Pointer = Context.DesktopToHost.TransformPoint(Input.PointerPosition);
+ 			Context.bPointerOver = Input.bWorldPointer
+-				? WidgetAnimInput::IsPointUnder(Input, Owner, Input.PointerPosition)
+-				: WidgetAnimInput::IsPointerOver(Owner, Input.PointerPosition);
++				? WidgetAnimInput::IsPointUnder(Input, OwnerWidget, Input.PointerPosition)
++				: WidgetAnimInput::IsPointerOver(OwnerWidget, Input.PointerPosition);
+ 		}
+ 		const bool bDown = WidgetAnimInput::IsButtonDown(Input, EKeys::LeftMouseButton);
+ 		if (bDown && !bWasDown)

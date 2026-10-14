@@ -51,6 +51,7 @@
 #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
 #include "FlowListItemStyleDetails.h"
 #include "FlowListPathEditor.h"
+#include "WidgetPathConnectTool.h"
 #include "WidgetAnimMotionPath.h"
 #include "WidgetGizmo.h"
 #include "WidgetSpringPresets.h"
@@ -205,6 +206,10 @@ void FNameTBDEditorModule::StartupModule()
 	FlowListPathEditorFactory = MakeShared<FFlowListPathEditorFactory>();
 	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(FlowListPathEditorFactory.ToSharedRef());
 
+	// Widget Paths: Connect / Disconnect over several selected widgets, for a Widget Blueprint with a Widget Path Layer.
+	WidgetPathConnectFactory = MakeShared<FWidgetPathConnectFactory>();
+	UMGEditorModule.GetDesignerExtensibilityManager()->AddDesignerExtensionFactory(WidgetPathConnectFactory.ToSharedRef());
+
 	// The Widget Gizmo: moves, scales, rotates and shears the selected widgets through their Render Transform, and moves their
 	// pivot (see WidgetGizmo.h). Last, so it draws over every other extension.
 	GizmoFactory = MakeShared<FWidgetGizmoFactory>();
@@ -302,6 +307,15 @@ void FNameTBDEditorModule::ShutdownModule()
 			UMGEditorModule->GetDesignerExtensibilityManager()->RemoveDesignerExtensionFactory(FlowListPathEditorFactory.ToSharedRef());
 		}
 		FlowListPathEditorFactory.Reset();
+	}
+
+	if (WidgetPathConnectFactory.IsValid())
+	{
+		if (IUMGEditorModule* UMGEditorModule = FModuleManager::GetModulePtr<IUMGEditorModule>("UMGEditor"))
+		{
+			UMGEditorModule->GetDesignerExtensibilityManager()->RemoveDesignerExtensionFactory(WidgetPathConnectFactory.ToSharedRef());
+		}
+		WidgetPathConnectFactory.Reset();
 	}
 
 	if (GizmoFactory.IsValid())

@@ -11,12 +11,14 @@
 #include "WidgetAnimation/Evaluators/WidgetAnimBlueprintCue.h"
 #include "WidgetAnimation/Evaluators/WidgetAnimShapeTrack.h"
 #include "WidgetAnimation/Evaluators/WidgetAnimDesignTrack.h"
+#include "WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.h"
 #include "WidgetAnimation/WidgetAnimCue.h"
 #include "WidgetAnimation/WidgetAnimInput.h"
 #include "WidgetAnimation/WidgetAnimationComponent.h"
 #include "WidgetAnimation/WidgetAnimStateMachine.h"
 #include "Widgets/FlowList/FlowList.h"
 #include "Diegetic/DiegeticScreenComponent.h"
+#include "Widgets/Constraints/WidgetConstraintComponent.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDModule"
 
@@ -58,6 +60,11 @@ void FNameTBDModule::StartupModule()
 	// And a Design track's keys onto its widget, the same way. See WidgetAnimDesignTrack.h.
 	Registry.Register(MakeShared<FWidgetAnimDesignKeysEvaluator>());
 
+	// The interaction tracks, listed under Interaction: a widget's Constraints and Pointer Effects animated. See
+	// WidgetAnimInteractionTracks.h.
+	Registry.Register(MakeShared<FWidgetAnimConstraintEvaluator>());
+	Registry.Register(MakeShared<FWidgetAnimPointerEffectsEvaluator>());
+
 	// A widget in a Flow List's selected item reads Selected in every state machine - see UFlowList::IsInSelectedItem.
 	NameTBDModuleLocal::FlowListSelectedProvider = WidgetAnimMachineWidgetStates::RegisterSelectedProvider([](UWidget* Widget)
 	{
@@ -96,6 +103,8 @@ void FNameTBDModule::ShutdownModule()
 	Registry.Unregister(FWidgetAnimBlueprintCueParams::StaticStruct());
 	Registry.Unregister(FWidgetAnimShapeKeysParams::StaticStruct());
 	Registry.Unregister(FWidgetAnimDesignKeysParams::StaticStruct());
+	Registry.Unregister(FWidgetAnimConstraintParams::StaticStruct());
+	Registry.Unregister(FWidgetAnimPointerEffectsParams::StaticStruct());
 
 	WidgetAnimMachineWidgetStates::UnregisterSelectedProvider(NameTBDModuleLocal::FlowListSelectedProvider);
 	NameTBDModuleLocal::FlowListSelectedProvider = INDEX_NONE;
@@ -107,6 +116,9 @@ void FNameTBDModule::ShutdownModule()
 	// The input counter the state machines' built-in pulses read goes with the code it runs.
 	WidgetAnimInput::StopCountingEvents();
 	WidgetAnimInput::SetWorldPointerResolver(nullptr);
+
+	// Constraints stop being solved with the code that solves them.
+	UWidgetConstraintComponent::ShutdownSolver();
 }
 
 #undef LOCTEXT_NAMESPACE

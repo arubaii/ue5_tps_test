@@ -3449,6 +3449,22 @@ namespace NameTBD::Tooltips
 		}
 	}
 
+	/** The Widget Path Layer's Connect tool on the designer's canvas (several widgets selected). */
+	namespace WidgetPathTools
+	{
+		inline FText ConnectTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetPathTools", "ConnectTooltip",
+				"Connect: add a Widget Path Layer connection from each selected widget to the next, in order along the way they are spread (left to right, or top to bottom) - select a row of nodes and click once to chain them. Connections that already exist are kept.");
+		}
+
+		inline FText DisconnectTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.WidgetPathTools", "DisconnectTooltip",
+				"Disconnect: remove the Widget Path Layer connections between the selected widgets.");
+		}
+	}
+
 	/** The Widget Data Binder's Data Preview: its data, live in the designer. */
 	namespace DataPreview
 	{

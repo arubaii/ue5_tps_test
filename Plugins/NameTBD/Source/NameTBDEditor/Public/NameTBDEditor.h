@@ -6,6 +6,7 @@ class IAssetTypeActions;
 class FWidgetShapePathEditorFactory;
 class FWidgetAnimTextEditorFactory;
 class FFlowListPathEditorFactory;
+class FWidgetPathConnectFactory;
 class FWidgetAnimMotionPathFactory;
 class FWidgetGizmoFactory;
 struct FGraphPanelPinFactory;
@@ -31,6 +32,9 @@ private:
 
 	// Puts the Flow List's Spline path editor on the UMG designer's canvas.
 	TSharedPtr<FFlowListPathEditorFactory> FlowListPathEditorFactory;
+
+	// Puts the Widget Path Layer's Connect / Disconnect toolbar over several selected widgets on the UMG designer's canvas.
+	TSharedPtr<FWidgetPathConnectFactory> WidgetPathConnectFactory;
 
 	// Draws the motion paths of the Widget Animations panel's animation on the UMG designer's canvas.
 	TSharedPtr<FWidgetAnimMotionPathFactory> MotionPathFactory;
