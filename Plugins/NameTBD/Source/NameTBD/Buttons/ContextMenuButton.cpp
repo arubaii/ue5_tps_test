@@ -2007,6 +2007,7 @@ void UContextMenuButton::PlayDesignerPreviewState(EContextMenuDesignPreview Stat
 		}
 		ApplyDesignPreviews();
 		CacheResolvedOverridesSnapshot();
+		OnVisualStateChanged(State == EContextMenuDesignPreview::None ? EContextMenuState::Normal : PreviewToState(State), /*bInstant=*/true);
 		return;
 	}
 
@@ -2023,6 +2024,7 @@ void UContextMenuButton::PlayDesignerPreviewState(EContextMenuDesignPreview Stat
 		CurrentShapeState = From;
 		CurrentDesignState = From;
 		ApplyTransitions(0.f, /*bInstant=*/true);
+		OnVisualStateChanged(From, /*bInstant=*/true);
 
 		bIsDesignerStateTimerActive = true;
 		const int32 Serial = ++DesignerStateSerial;
@@ -2032,6 +2034,7 @@ void UContextMenuButton::PlayDesignerPreviewState(EContextMenuDesignPreview Stat
 	CurrentShapeState = Goal;
 	CurrentDesignState = Goal;
 	PushVisualStateToSlate(Goal);
+	OnVisualStateChanged(Goal, /*bInstant=*/false);
 }
 
 void UContextMenuButton::StopDesignerPreviewState()
@@ -3842,10 +3845,16 @@ void UContextMenuButton::UpdateButtonState(bool bInstant)
 		CurrentShapeState = NewShapeState;
 		CurrentDesignState = NewDesignState;
 		ApplyTransitions(0.0f, /*bInstant=*/true);
+		OnVisualStateChanged(NewDesignState, /*bInstant=*/true);
 		return;
 	}
 
 	HandleStateSounds(NewDesignState, /*bSuppressPlayback=*/false);
+
+	if (CurrentDesignState != NewDesignState)
+	{
+		OnVisualStateChanged(NewDesignState, /*bInstant=*/false);
+	}
 
 	if (CurrentShapeState != NewShapeState || CurrentDesignState != NewDesignState)
 	{

@@ -1500,6 +1500,16 @@ namespace WidgetShapeGeometry
 		}
 	}
 
+	void CutAtLevel(FWidgetShapeMesh& Mesh, float Level, TFunctionRef<float(const FVector2f&)> ValueOf)
+	{
+		using namespace WidgetShapeGeometryPrivate;
+
+		if (!Mesh.IsEmpty())
+		{
+			CutAlong(Mesh, Level, [&ValueOf](const FVector2f& Position) { return ValueOf(Position); });
+		}
+	}
+
 	bool IsInside(const FWidgetShapeOutline& Outline, const FVector2f& LocalPoint)
 	{
 		using namespace WidgetShapeGeometryPrivate;

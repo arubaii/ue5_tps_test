@@ -1,0 +1,54 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Glass/GlassPanel.h b/Plugins/NameTBD/Source/NameTBD/Widgets/Glass/GlassPanel.h
+index e2539e4..1b8c5e0 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Glass/GlassPanel.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Glass/GlassPanel.h
+@@ -6,6 +6,7 @@
+ #include "Components/ContentWidget.h"
+ #include "Widgets/SCompoundWidget.h"
+ #include "Widgets/SLeafWidget.h"
++#include "NameTBD/Widgets/Shapes/WidgetShapeGeometry.h"
+ #include "NameTBD/Widgets/Shapes/WidgetShapeTypes.h"
+ #include "NameTBD/Widgets/WidgetMotion.h"
+ #include "NameTBD/Widgets/WidgetSVGBrush.h"
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Progress/AdvancedProgressBar.h b/Plugins/NameTBD/Source/NameTBD/Widgets/Progress/AdvancedProgressBar.h
+index 3408061..e93080a 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Progress/AdvancedProgressBar.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Progress/AdvancedProgressBar.h
+@@ -5,6 +5,7 @@
+ #include "CoreMinimal.h"
+ #include "Components/Widget.h"
+ #include "Widgets/SLeafWidget.h"
++#include "NameTBD/Widgets/Shapes/WidgetShapeGeometry.h"
+ #include "NameTBD/Widgets/Shapes/WidgetShapeTypes.h"
+ #include "NameTBD/Widgets/WidgetMotion.h"
+ #include "NameTBD/Widgets/WidgetSVGBrush.h"
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetEffectsDraw.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetEffectsDraw.cpp
+index dcc9962..8c6d166 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetEffectsDraw.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetEffectsDraw.cpp
+@@ -353,7 +353,11 @@ namespace WidgetEffectsDraw
+ 		const bool bImage = SVGImage || Paint.DrawsBrush();
+ 		const FSlateBrush* Brush = SVGImage ? SVGImage : bImage ? &Paint.Image : nullptr;
+ 		const FLinearColor BrushTint = (bImage && !SVGImage) ? Paint.Image.GetTint(InWidgetStyle) : FLinearColor::White;
+-		const FBox2f UVRegion = Brush ? Brush->GetUVRegion() : FBox2f(ForceInit);
++		FBox2f UVRegion(ForceInit);
++		if (Brush)
++		{
++			UVRegion = Brush->GetUVRegion();
++		}
+ 		const bool bHasUVRegion = bImage && UVRegion.bIsValid && UVRegion.GetArea() > 0.f;
+ 		const FWidgetShapeFrame Frame = MakeBoxFrame(Box);
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetEffectsDraw.h b/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetEffectsDraw.h
+index 697b847..7fa83a8 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetEffectsDraw.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/WidgetEffectsDraw.h
+@@ -11,7 +11,7 @@ class SWidget;
+ struct FGeometry;
+ struct FSlateBrush;
+ struct FWidgetShapePaint;
+-struct FWidgetStyle;
++class FWidgetStyle;
+ 
+ /**
+  * Drawing shared by the effect widgets - Glass Panel, Drop Shadow, Flip Card, Foldable Dropdown, Advanced Progress Bar - on

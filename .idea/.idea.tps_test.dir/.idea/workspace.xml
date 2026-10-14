@@ -15,37 +15,47 @@
   <component name="ChangeListManager">
     <list default="true" id="dc1934b2-75b5-4bee-9119-3fe06808e968" name="Changes" comment="">
       <change beforePath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/.idea.tps_test.dir/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/CLAUDE.md" beforeDir="false" afterPath="$PROJECT_DIR$/CLAUDE.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Docs/Design/Buttons.md" beforeDir="false" afterPath="$PROJECT_DIR$/Docs/Design/Buttons.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Docs/Design/MediaBox.md" beforeDir="false" afterPath="$PROJECT_DIR$/Docs/Design/MediaBox.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Docs/Design/MotionPathsAndGizmo.md" beforeDir="false" afterPath="$PROJECT_DIR$/Docs/Design/MotionPathsAndGizmo.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/AI/WBP_VideoControls.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/AI/WBP_VideoControls.uasset" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Docs/Design/DiegeticUI.md" beforeDir="false" afterPath="$PROJECT_DIR$/Docs/Design/DiegeticUI.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Docs/Design/Shapes.md" beforeDir="false" afterPath="$PROJECT_DIR$/Docs/Design/Shapes.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Config/DefaultNameTBD.ini" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Config/DefaultNameTBD.ini" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_Menu_Example.uasset" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Content/NameTBD/W_Menu_Example.uasset" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Resources/AI/Docs/buttons.md" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Resources/AI/Docs/buttons.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Resources/AI/Docs/media.md" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Resources/AI/Docs/media.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Resources/AI/Docs/diegetic.md" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Resources/AI/Docs/diegetic.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Resources/AI/Map.md" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Resources/AI/Map.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/ChoiceButtons.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Buttons/Widgets/StyledButtons.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmo.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetGizmo.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBox.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBox.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxClip.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxClip.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxLibrary.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxLibrary.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxLog.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxLog.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxPool.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxTransportBar.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxTransportBar.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxWithControls.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/NameTBDMediaModule.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/NameTBDMediaModule.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.cpp" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Private/SMediaBox.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBox.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxClip.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxClip.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxLibrary.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxLibrary.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxPool.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxSettings.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxSettings.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTransportBar.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTransportBar.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTypes.h" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxWithControls.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxWithControls.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticTerminalText.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Diegetic/DiegeticTerminalText.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDBlurButton.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDBlurWidget.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDDropShadowBox.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDFlippableCard.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDFoldableDropdown.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Private/Widgets/NameTBDProgressBar.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDBlurWidget.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDDropShadow.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDFlippableCard.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDFoldableDropdown.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Private/Widgets/SNameTBDProgressBar.cpp" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Public/Core/NameTBDTypes.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDBlurButton.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDBlurWidget.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDDropShadowBox.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDFlippableCard.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDFoldableDropdown.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Public/Widgets/NameTBDProgressBar.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDBlurWidget.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDDropShadow.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDFlippableCard.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDFoldableDropdown.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Public/Widgets/SNameTBDProgressBar.h" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/ShapeBox.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/ShapeBox.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.h" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/WidgetShapeGeometry.h" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAITools_Data.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAITools_Data.cpp" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAITools_Widgets.cpp" beforeDir="false" afterPath="$PROJECT_DIR$/Plugins/NameTBD/Source/NameTBDAI/Private/NameTBDAITools_Widgets.cpp" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />

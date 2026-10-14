@@ -92,7 +92,7 @@ namespace NameTBDAITools
 
 		Register({
 			TEXT("set_component"),
-			TEXT("Adds a UI component to a widget (if it has none of that class) and/or sets its fields: WidgetAnimationComponent (Anim In / Anim Out entries, State Machines, Parameters), WidgetDataBinderComponent (View Model, Field Bindings, Triggers, List Bindings, Mock Values, Sample Sets), FlowListItemStyle (selected / unselected looks)... list_options components; fields: list_options fields <class>. \"List+\" appends."),
+			TEXT("Adds a UI component to a widget (if it has none of that class) and/or sets its fields: WidgetAnimationComponent (Anim In / Anim Out entries, State Machines, Parameters), WidgetDataBinderComponent (View Model, Field Bindings, Triggers, List Bindings, Mock Values, Sample Sets), FlowListItemStyle (selected / unselected looks), DropShadowComponent (Preset, Layers, ShadowColor, Elevation, bReactToHover)... list_options components; fields: list_options fields <class>. \"List+\" appends."),
 			FNameTBDAISchema()
 				.Str(TEXT("blueprint"), TEXT("Widget Blueprint (omit: the one built last or open)."))
 				.Str(TEXT("widget"), TEXT("Widget it's on (omit: the root)."))

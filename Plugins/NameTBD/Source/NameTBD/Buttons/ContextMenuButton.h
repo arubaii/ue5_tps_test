@@ -2651,6 +2651,13 @@ protected:
 	virtual void HandleLayoutSizeChanged(const FVector2D& NewSize) {}
 
 	/**
+	 * The state the button's designs now show changed (hovered - navigation focus included -, pressed, enabled, disabled, back
+	 * to normal), or was set outright (bInstant: a rebuild, a refresh, the designer toolbar's pick without its blend). For parts
+	 * that animate themselves rather than through targets: a Glass Button's glass. The base does nothing.
+	 */
+	virtual void OnVisualStateChanged(EContextMenuState NewState, bool bInstant) {}
+
+	/**
 	 * Builds what a ready-made button is made of - its children, Background Look, Shape and Design Targets. Called when the
 	 * button is dragged in from the Palette (and, for a ready-made button left empty, when it is built at runtime). The plain
 	 * Context Menu Button builds nothing.

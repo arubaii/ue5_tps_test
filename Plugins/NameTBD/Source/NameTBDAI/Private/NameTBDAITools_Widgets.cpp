@@ -210,6 +210,10 @@ namespace NameTBDAIWidgetTools
 		{
 			return FindClass(TEXT("SegmentedChoiceButton"), UStyledButtonBase::StaticClass());
 		}
+		if (Key == TEXT("glass") || Key == TEXT("glassbutton"))
+		{
+			return FindClass(TEXT("GlassButton"), UStyledButtonBase::StaticClass());
+		}
 		return FindClass(Kind, UStyledButtonBase::StaticClass());
 	}
 
@@ -267,7 +271,7 @@ namespace NameTBDAIWidgetTools
 			Class = ResolveReadyMadeKind(ButtonKind);
 			if (!Class)
 			{
-				Build.Warnings.Add(FString::Printf(TEXT("No ready-made button '%s': generic, pill_switch, checkbox, radio, menu_item, hold, tile, choice, segmented."), *ButtonKind));
+				Build.Warnings.Add(FString::Printf(TEXT("No ready-made button '%s': generic, pill_switch, checkbox, radio, menu_item, hold, tile, choice, segmented, glass."), *ButtonKind));
 				return nullptr;
 			}
 		}
@@ -563,7 +567,7 @@ namespace NameTBDAIWidgetTools
 
 	FString SpecSchemaHelp()
 	{
-		return TEXT("A widget spec: {class (widget class or Widget Blueprint path; optional with role), name, role (house preset: card, panel, pill, divider, display, title, heading, body, caption, label, glow, aurora, particles, icon, stack, row, frame - list_options fields isn't needed for these), text (Text field shorthand), button (ready-made kind: generic, pill_switch, checkbox, radio, menu_item, hold, tile, choice, segmented), label (a ready-made button's label), props {field: value}, slot {align: top_left|top|center|bottom|fill..., padding, any slot field}, children [specs]}. Values take theme tokens: \"@accent\", \"@text~0.6\", \"@space.4\", \"@radius.large\", \"@type.title\", \"@font.strong\", \"@spring.Bouncy\"; colors as \"#RRGGBB[AA]\".");
+		return TEXT("A widget spec: {class (widget class or Widget Blueprint path; optional with role), name, role (house preset: card, panel, pill, divider, display, title, heading, body, caption, label, glow, aurora, particles, icon, stack, row, frame - list_options fields isn't needed for these), text (Text field shorthand), button (ready-made kind: generic, pill_switch, checkbox, radio, menu_item, hold, tile, choice, segmented, glass), label (a ready-made button's label), props {field: value}, slot {align: top_left|top|center|bottom|fill..., padding, any slot field}, children [specs]}. Values take theme tokens: \"@accent\", \"@text~0.6\", \"@space.4\", \"@radius.large\", \"@type.title\", \"@font.strong\", \"@spring.Bouncy\"; colors as \"#RRGGBB[AA]\".");
 	}
 }
 

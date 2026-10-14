@@ -176,6 +176,13 @@ namespace WidgetShapeGeometry
 	 */
 	NAMETBD_API void CutForGradient(FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, const FWidgetShapeFrame& Frame, float CellSize);
 
+	/**
+	 * Cuts a mesh along the line where ValueOf (a function of local position, linear for the cut to be exact) equals Level, so
+	 * colors that are linear on either side of it can be given per vertex and still be drawn exactly - what CutForGradient does
+	 * at each stop, for any value: a progress fill's leading edge, a band of light moving along a bar.
+	 */
+	NAMETBD_API void CutAtLevel(FWidgetShapeMesh& Mesh, float Level, TFunctionRef<float(const FVector2f&)> ValueOf);
+
 	/** Whether a local point is inside the outline's fill (even-odd, open contours closed across). */
 	NAMETBD_API bool IsInside(const FWidgetShapeOutline& Outline, const FVector2f& LocalPoint);
 

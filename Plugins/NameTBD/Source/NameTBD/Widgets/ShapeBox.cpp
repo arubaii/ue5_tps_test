@@ -38,7 +38,8 @@ namespace ShapeBoxPrivate
 		ECVF_Default);
 
 	constexpr double Tolerance = 0.01;
-	constexpr double MaxAngleDegrees = 80.0;
+	// Short of edge-on (90): a Flip Card turns its faces all the way round through this. The Details still stop Angle at 80.
+	constexpr double MaxAngleDegrees = 89.5;
 	constexpr double MaxWrapDegrees = 180.0;
 	constexpr double MaxPerspectiveFov = 90.0;
 

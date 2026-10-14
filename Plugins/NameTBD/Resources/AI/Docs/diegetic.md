@@ -16,7 +16,7 @@ Glass is a separate effect: Glass > Preset No Glass (default), Clear, Frosted, H
 Screen Look > Preset (Clean, Terminal Green / Amber, Hologram, LCD Panel) are sample looks for testing; a game's own look (hologram, CRT) is its own material - Copy To Project in the Details makes an editable copy of the plugin's to start from (Material Custom).
 
 ## Data and devices
-Inside the widget: Get Diegetic Screen Context (the object the screen shows - Set Screen Context, Context Actor, else the screen's actor) and Get Diegetic Screen Owner: an ammo counter reads its weapon with no wiring. Screens on one actor with the same Focus Group are used together (a desk of monitors). Terminal Text (palette NameTBD) types lines with a blinking caret and key clicks - a boot sequence written in its Text types itself out.
+Inside the widget: Get Diegetic Screen Context (the object the screen shows - Set Screen Context, Context Actor, else the screen's actor) and Get Diegetic Screen Owner: an ammo counter reads its weapon with no wiring. Screens on one actor with the same Focus Group are used together (a desk of monitors).
 
 ## Cost
 Update Mode: By Distance (default), When Changed (signs, readouts), Every Frame (hero screens). A per-frame budget spreads redraws; screens pointed at redraw every frame. Console: stat NameTBDDiegetic, NameTBD.Diegetic.Debug 1.
