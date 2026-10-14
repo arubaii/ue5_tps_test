@@ -4,6 +4,7 @@
 
 #include "MediaBoxSettings.h"
 #include "MediaBoxTransportBar.h"
+#include "SMediaBox.h"
 
 #include "Blueprint/UserWidget.h"
 #include "Framework/Application/SlateApplication.h"
@@ -14,6 +15,7 @@
 #include "Widgets/SNullWidget.h"
 #include "Widgets/SOverlay.h"
 #include "Widgets/SPanel.h"
+#include "Widgets/Layout/SBox.h"
 #include "Layout/Children.h"
 #include "Layout/ArrangedChildren.h"
 
@@ -65,7 +67,15 @@ public:
 		MaxBarHeight = InArgs._MaxHeight;
 		BarPadding = InArgs._Padding;
 		BarWidget = InArgs._Content.Widget;
-		BarChildren.Add(InArgs._Content.Widget);
+
+		// The bar sits in a holder that undoes any render scale above the video (see Tick): laid out that much bigger, drawn
+		// shrunk back, so its text is rasterized at the size it is shown.
+		BarHolder = SNew(SBox)
+		[
+			BarWidget.ToSharedRef()
+		];
+		BarHolder->SetRenderTransformPivot(FVector2D::ZeroVector);
+		BarChildren.Add(BarHolder.ToSharedRef());
 	}
 
 	virtual void OnArrangeChildren(const FGeometry& AllottedGeometry, FArrangedChildren& ArrangedChildren) const override
@@ -77,7 +87,7 @@ public:
 		}
 		// Kept as our own pointer: in this const function the child list only hands out const widgets.
 		const TSharedRef<SWidget> Bar = BarWidget.ToSharedRef();
-		if (!ArrangedChildren.Accepts(Bar->GetVisibility()))
+		if (!ArrangedChildren.Accepts(Bar->GetVisibility()) || !BarHolder.IsValid())
 		{
 			return;
 		}
@@ -117,9 +127,11 @@ public:
 			: BarAlignment == VAlign_Center ? static_cast<float>(BarPadding.Top) + (Inner.Y - ShownHeight) * 0.5f
 			: Area.Y - static_cast<float>(BarPadding.Bottom) - ShownHeight;
 
-		ArrangedChildren.AddWidget(AllottedGeometry.MakeChild(Bar, LocalSize, FSlateLayoutTransform(Scale, FVector2f(static_cast<float>(BarPadding.Left), Top))));
+		// Laid out HolderScale times bigger (the render scale above), the holder's render transform shrinking it back: drawn the
+		// same size, its text sharp.
+		ArrangedChildren.AddWidget(AllottedGeometry.MakeChild(BarHolder.ToSharedRef(), LocalSize, FSlateLayoutTransform(Scale * HolderScale, FVector2f(static_cast<float>(BarPadding.Left), Top))));
 		LastBarHeight = ShownHeight;
-		ArrangedScale = Scale * AllottedGeometry.Scale;
+		ArrangedScale = Scale * HolderScale * AllottedGeometry.Scale;
 	}
 
 	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override
@@ -130,6 +142,16 @@ public:
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override
 	{
 		SPanel::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
+
+		// A render scale above the video (the Widget Gizmo, an animation) - not seen by layout - is undone around the bar: its text
+		// was stretched (blurry) under it, while a size change through layout (the Canvas Panel's handles) stayed sharp.
+		const float CrispScale = SMediaBox::GetCrispScale(AllottedGeometry);
+		if (BarHolder.IsValid() && !FMath::IsNearlyEqual(CrispScale, HolderScale))
+		{
+			HolderScale = CrispScale;
+			BarHolder->SetRenderTransform(HolderScale != 1.f ? TOptional<FSlateRenderTransform>(FSlateRenderTransform(1.f / HolderScale)) : TOptional<FSlateRenderTransform>());
+			Invalidate(EInvalidateWidgetReason::Layout);
+		}
 
 		// The bar drawn at a new scale: everything in it laid out and painted again, its text rasterized at that scale.
 		if (BarWidget.IsValid() && !FMath::IsNearlyEqual(ArrangedScale, PaintedScale, 0.001f))
@@ -154,6 +176,8 @@ public:
 private:
 	TSlotlessChildren<SWidget> BarChildren;
 	TSharedPtr<SWidget> BarWidget;
+	TSharedPtr<SBox> BarHolder;
+	float HolderScale = 1.f;
 	EVerticalAlignment BarAlignment = VAlign_Bottom;
 	float HeightPart = 0.13f;
 	float MinBarHeight = 0.f;
@@ -261,6 +285,9 @@ UMediaBoxWithControls::UMediaBoxWithControls()
 	SetClipping(EWidgetClipping::ClipToBounds);
 	LetterboxColor = FLinearColor::Black;
 	DesiredSize = FVector2D(640.0, 360.0);
+
+	// A player waiting for its play button: warm while shown, so the first play starts at once.
+	bKeepWarmWhileShown = true;
 }
 
 FMediaBoxControlsBehavior UMediaBoxWithControls::GetResolvedControlsBehavior() const
@@ -310,10 +337,8 @@ void UMediaBoxWithControls::EnsureControlsWidget()
 	}
 }
 
-TSharedRef<SWidget> UMediaBoxWithControls::RebuildWidget()
+TSharedRef<SWidget> UMediaBoxWithControls::BuildBoxContent(const TSharedRef<SWidget>& Video)
 {
-	const TSharedRef<SWidget> Video = Super::RebuildWidget();
-
 	EnsureControlsWidget();
 	TSharedPtr<SWidget> Controls = ControlsWidget ? ControlsWidget->TakeWidget() : TSharedPtr<SWidget>();
 
@@ -386,6 +411,13 @@ void UMediaBoxWithControls::TickMediaBox(float DeltaTime)
 	if (!MyControlsHost.IsValid())
 	{
 		return;
+	}
+
+	// The bar follows the box from here too: in the designer a User Widget's own tick may not run, and the bar should still show
+	// the time, the scrub position and the rest as the preview plays (it updates once a frame, whoever asks first).
+	if (ControlsWidget)
+	{
+		ControlsWidget->RefreshFromMediaBox(DeltaTime);
 	}
 
 	const FMediaBoxControlsBehavior Behavior = GetResolvedControlsBehavior();

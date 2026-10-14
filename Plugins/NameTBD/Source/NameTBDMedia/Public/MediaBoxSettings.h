@@ -104,7 +104,7 @@ public:
 
 	/** Plays the audio in the Widget Blueprint designer too, where a Media Box has Preview In Designer on. Off: designer previews are silent. */
 	UPROPERTY(Config, EditAnywhere, Category = "Audio", meta = (DisplayName = "Audio In Designer"))
-	bool bAudioInDesigner = false;
+	bool bAudioInDesigner = true;
 
 	// -------------------------------------------------------------------------------------------------
 	// Controls
@@ -131,4 +131,39 @@ public:
 	/** Whether Media Boxes draw their clips' subtitles - the game's subtitles option. Set at runtime with Set Media Box Subtitles Enabled. */
 	UPROPERTY(Config, EditAnywhere, Category = "Subtitles", meta = (DisplayName = "Subtitles Enabled"))
 	bool bSubtitlesEnabled = true;
+
+	/**
+	 * The subtitle language Media Boxes show, as a culture code (en, fr, de, es-MX...) - a clip without it shows its own Subtitles.
+	 * A Media Box's own Subtitle Language wins. Set at runtime with Set Media Box Subtitle Language.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Subtitles", meta = (DisplayName = "Subtitle Language", EditCondition = "!bSubtitlesFollowGameLanguage"))
+	FString SubtitleLanguage = TEXT("en");
+
+	/** The subtitle language is the game's own language (its current culture) rather than Subtitle Language. */
+	UPROPERTY(Config, EditAnywhere, Category = "Subtitles", meta = (DisplayName = "Follow Game Language"))
+	bool bSubtitlesFollowGameLanguage = false;
+
+	// -------------------------------------------------------------------------------------------------
+	// Fullscreen
+	// -------------------------------------------------------------------------------------------------
+
+	/** How a Media Box goes full screen (Set Fullscreen, a controls bar's FullscreenButton) and back: at once, a fade, or growing from where it is. */
+	UPROPERTY(Config, EditAnywhere, Category = "Fullscreen", meta = (DisplayName = "Fullscreen Transition"))
+	EMediaBoxFullscreenTransition FullscreenTransition = EMediaBoxFullscreenTransition::Zoom;
+
+	/** Seconds the transition takes, each way. */
+	UPROPERTY(Config, EditAnywhere, Category = "Fullscreen", meta = (DisplayName = "Fullscreen Transition Time", ClampMin = "0.0", UIMax = "1.0", Units = "s", EditCondition = "FullscreenTransition != EMediaBoxFullscreenTransition::None"))
+	float FullscreenTransitionTime = 0.25f;
+
+	/** Behind the full-screen video - the bars around a video of another shape than the screen. */
+	UPROPERTY(Config, EditAnywhere, Category = "Fullscreen", meta = (DisplayName = "Fullscreen Backdrop"))
+	FLinearColor FullscreenBackdrop = FLinearColor::Black;
+
+	/** Escape leaves full screen (the full-screen video takes keyboard focus while shown). */
+	UPROPERTY(Config, EditAnywhere, Category = "Fullscreen", meta = (DisplayName = "Escape Leaves Fullscreen"))
+	bool bEscapeLeavesFullscreen = true;
+
+	/** Where the full-screen video is put among the viewport's widgets: above the game's UI by default. */
+	UPROPERTY(Config, EditAnywhere, Category = "Fullscreen", meta = (DisplayName = "Fullscreen Z Order"))
+	int32 FullscreenZOrder = 1000;
 };

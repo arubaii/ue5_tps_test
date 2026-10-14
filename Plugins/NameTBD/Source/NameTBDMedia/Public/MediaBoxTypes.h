@@ -250,6 +250,89 @@ struct NAMETBDMEDIA_API FMediaBoxSubtitleCue
 	FText Text;
 };
 
+/**
+ * A clip's subtitles in one more language: its cues, and the file / text they were read from. The clip's own Subtitles are its
+ * first language (Subtitle Language, English by default).
+ */
+USTRUCT(BlueprintType)
+struct NAMETBDMEDIA_API FMediaBoxSubtitleTrack
+{
+	GENERATED_BODY()
+
+	/** The language, as a culture code: en, fr, de, es-MX, pt-BR, ja... Matched to the language asked for (fr-CA finds fr). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles")
+	FString Language;
+
+	/** Its name in menus: Français, Deutsch... Empty: the culture's own name for Language. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Display Name"))
+	FText DisplayName;
+
+#if WITH_EDITORONLY_DATA
+	/** A SubRip (.srt) or WebVTT (.vtt) file in this language, read into Subtitle Text and Cues as it is picked (Reload Subtitle File reads it again). */
+	UPROPERTY(EditAnywhere, Category = "Subtitles", meta = (DisplayName = "Subtitle File", FilePathFilter = "Subtitles (*.srt;*.vtt)|*.srt;*.vtt"))
+	FFilePath SubtitleFile;
+#endif
+
+	/** The subtitle file's text (SRT / VTT) - filled by Subtitle File, or pasted; read into Cues when changed. */
+	UPROPERTY(EditAnywhere, Category = "Subtitles", meta = (DisplayName = "Subtitle Text (SRT / VTT)", MultiLine = true))
+	FString SubtitleText;
+
+	/** The lines, filled from Subtitle Text, or edited here. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles")
+	TArray<FMediaBoxSubtitleCue> Cues;
+};
+
+/** How a Media Box goes full screen and back (Project Settings > Media Box > Fullscreen Transition). */
+UENUM(BlueprintType)
+enum class EMediaBoxFullscreenTransition : uint8
+{
+	None UMETA(ToolTip = "At once."),
+
+	Fade UMETA(ToolTip = "The full-screen video fades in over the screen, and out again."),
+
+	Zoom UMETA(ToolTip = "The video grows from where it is on screen to fill it, and shrinks back.")
+};
+
+/**
+ * How a Media Box Transport Bar writes a time. The defaults read 0:05, 1:02:03.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBDMEDIA_API FMediaBoxTimeDisplay
+{
+	GENERATED_BODY()
+
+	/** An hour or more shows as hours: 1:02:03. Off: minutes go on counting - 62:03. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time", meta = (DisplayName = "Wrap Minutes Into Hours"))
+	bool bWrapMinutesIntoHours = true;
+
+	/** Hours always show, even at 0: 0:00:05. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time", meta = (DisplayName = "Always Show Hours", EditCondition = "bWrapMinutesIntoHours"))
+	bool bAlwaysShowHours = false;
+
+	/** The leading part has two digits: 00:05 rather than 0:05. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time", meta = (DisplayName = "Pad Leading Digits"))
+	bool bPadLeading = false;
+
+	/** Shows parts of a second: 0:05.25. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time", meta = (DisplayName = "Show Milliseconds"))
+	bool bShowMilliseconds = false;
+
+	/** How many digits of the parts of a second: 1 (tenths) to 3 (milliseconds). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time", meta = (DisplayName = "Millisecond Digits", ClampMin = "1", ClampMax = "3", EditCondition = "bShowMilliseconds"))
+	int32 MillisecondDigits = 2;
+
+	/** Between hours, minutes and seconds. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time", meta = (DisplayName = "Delimiter"))
+	FString Delimiter = TEXT(":");
+
+	/** Between the seconds and their parts. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Time", meta = (DisplayName = "Millisecond Delimiter", EditCondition = "bShowMilliseconds"))
+	FString MillisecondDelimiter = TEXT(".");
+
+	/** Seconds written this way. */
+	FString Format(float Seconds) const;
+};
+
 namespace MediaBoxSubtitles
 {
 	/**

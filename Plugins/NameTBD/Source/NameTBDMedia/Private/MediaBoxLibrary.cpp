@@ -58,6 +58,16 @@ bool UMediaBoxLibrary::AreMediaBoxSubtitlesEnabled()
 	return MediaBoxRuntime::AreSubtitlesEnabled();
 }
 
+void UMediaBoxLibrary::SetMediaBoxSubtitleLanguage(const FString& Language)
+{
+	MediaBoxRuntime::SetSubtitleLanguage(Language);
+}
+
+FString UMediaBoxLibrary::GetMediaBoxSubtitleLanguage()
+{
+	return MediaBoxRuntime::GetSubtitleLanguage();
+}
+
 void UMediaBoxLibrary::GetMediaBoxPoolStats(UObject* WorldContextObject, int32& WarmPlayers, int32& PlayingPlayers, int32& WarmStarts, int32& ColdStarts)
 {
 	WarmPlayers = PlayingPlayers = WarmStarts = ColdStarts = 0;

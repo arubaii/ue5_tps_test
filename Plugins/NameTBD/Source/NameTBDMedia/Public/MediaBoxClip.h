@@ -112,6 +112,26 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles")
 	TArray<FMediaBoxSubtitleCue> Subtitles;
 
+	/** The language of Subtitles above, as a culture code (en, fr, de, es-MX...): English unless set. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Subtitle Language"))
+	FString SubtitleLanguage = TEXT("en");
+
+	/** Its name in menus. Empty: the culture's own name for Subtitle Language. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Subtitle Language Name"))
+	FText SubtitleLanguageName;
+
+	/**
+	 * The subtitles in other languages, each from its own .srt / .vtt. A Media Box shows the language asked for (its own Subtitle
+	 * Language, else Set Media Box Subtitle Language, else Project Settings > Media Box > Subtitle Language) - fr-CA finds fr - and
+	 * Subtitles above when the clip has no such language.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Other Languages", TitleProperty = "Language"))
+	TArray<FMediaBoxSubtitleTrack> OtherSubtitleTracks;
+
+	/** The video's length in seconds, once any player has opened it this session (0 before) - for showing the length before it plays. */
+	UPROPERTY(Transient, BlueprintReadOnly, Category = "Video")
+	float KnownDuration = 0.f;
+
 	// ---------------------------------------------------------------------------------------------
 	// Editor
 	// ---------------------------------------------------------------------------------------------
@@ -128,9 +148,12 @@ public:
 	UFUNCTION(CallInEditor, Category = "Video", meta = (DisplayName = "Generate Poster"))
 	void GeneratePoster();
 
-	/** Reads Subtitle File again into Subtitle Text and Subtitles - after the .srt / .vtt was edited. */
+	/** Reads Subtitle File again into Subtitle Text and Subtitles - after the .srt / .vtt was edited - and each other language's file. */
 	UFUNCTION(CallInEditor, Category = "Subtitles", meta = (DisplayName = "Reload Subtitle File"))
 	void ReloadSubtitleFile();
+
+	/** Reads one other language's Subtitle File into its text and cues. False when it couldn't. */
+	bool ReadSubtitleTrackFile(FMediaBoxSubtitleTrack& Track);
 #endif
 
 	// ---------------------------------------------------------------------------------------------
@@ -143,6 +166,19 @@ public:
 
 	/** The player plugin to ask for: Player Name, else the project's. */
 	FName GetPlayerName() const;
+
+	/**
+	 * The subtitle cues for Language: the track of that language, else one sharing its main part (fr-CA and fr), else Subtitles.
+	 * OutLanguage: the language of the cues returned.
+	 */
+	TConstArrayView<FMediaBoxSubtitleCue> GetSubtitleCues(const FString& Language, FString* OutLanguage = nullptr) const;
+
+	/** The languages it has subtitles in - Subtitle Language first (only when it has Subtitles) - with their names for menus. */
+	UFUNCTION(BlueprintCallable, Category = "Media Box|Subtitles")
+	void GetSubtitleLanguages(TArray<FString>& Languages, TArray<FText>& LanguageNames) const;
+
+	/** A language's name for menus: the name given here, else the culture's own name (English, Français), else the code. */
+	FText GetSubtitleLanguageName(const FString& Language) const;
 
 	virtual void PostLoad() override;
 

@@ -79,8 +79,19 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, DisplayPriority = "1"))
 	EStyledButtonMotion Motion = EStyledButtonMotion::Smooth;
 
+	/**
+	 * Seconds the motion takes on its way in - hovered, pressed, switched on, chosen. Motion still gives its curve (Bouncy still
+	 * overshoots). 0: Motion's own pace (Snappy ~0.05 s, Smooth ~0.08 s, Bouncy ~0.12 s, Gentle ~0.2 s).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (DisplayName = "Enter Duration", EditCondition = "bUseStyle && Motion != EStyledButtonMotion::Instant", EditConditionHides, DisplayPriority = "2", ClampMin = "0.0", UIMax = "2.0", Units = "s"))
+	float EnterDuration = 0.f;
+
+	/** Seconds the motion takes on its way back out - unhovered, released, switched off. 0: Motion's own pace. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (DisplayName = "Exit Duration", EditCondition = "bUseStyle && Motion != EStyledButtonMotion::Instant", EditConditionHides, DisplayPriority = "3", ClampMin = "0.0", UIMax = "2.0", Units = "s"))
+	float ExitDuration = 0.f;
+
 	/** The color of on, chosen and active: a checked box, a switch that is on, a hover outline, a highlight. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, DisplayPriority = "2"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Style", meta = (EditCondition = "bUseStyle", EditConditionHides, DisplayPriority = "4"))
 	FLinearColor AccentColor;
 
 	/** Makes the looks again from the Style settings - after setting them from Blueprint. */
@@ -223,6 +234,15 @@ protected:
 
 	/** Color, lighter by Amount (0..1) toward white, alpha kept - a hover. */
 	static FLinearColor Lighter(const FLinearColor& Color, float Amount);
+
+	/**
+	 * A Design Target's blend speed for Duration seconds (most of the way there by then), else Motion's. Design Targets ease
+	 * toward their goal, so the speed is about 3 / duration.
+	 */
+	float GetDesignSpeed(float Duration) const;
+
+	/** A Shape Target's blend speed for Duration seconds (all the way there by then), else Motion's: 1 / duration. */
+	float GetShapeSpeed(float Duration) const;
 };
 
 // =====================================================================================================
@@ -307,6 +327,19 @@ protected:
 	virtual void BuildParts() override;
 	virtual void ApplyStyle() override;
 	virtual bool HandleNavigation(EUINavigation Direction) override;
+
+	/** The knob follows the size the switch is laid out at (a slot bigger or smaller than Track Size), not only Track Size. */
+	virtual bool WantsLayoutSizeChanges() const override { return bUseStyle; }
+	virtual void HandleLayoutSizeChanged(const FVector2D& NewSize) override;
+
+	/** The knob's size and how far it slides, for a track of TrackExtent. */
+	void ComputeKnob(const FVector2D& TrackExtent, float& OutKnob, float& OutTravel) const;
+
+	/** Sizes the knob, its padding and its switched-on slide for a track of TrackExtent - the parts and Shape Target only. */
+	void FitKnob(const FVector2D& TrackExtent, bool bMarkModified);
+
+	/** The size the knob was last fitted to. */
+	FVector2D FittedTrackSize = FVector2D::ZeroVector;
 };
 
 /** On or off, a check mark drawing itself on. Its enabled state is the value. */

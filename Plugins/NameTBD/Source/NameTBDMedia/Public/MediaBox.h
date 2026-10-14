@@ -13,6 +13,9 @@
 #include "MediaBox.generated.h"
 
 class SMediaBox;
+class SMediaBoxFullscreenLayer;
+class SMediaBoxFullscreenSlot;
+class UGameViewportClient;
 class UDiegeticScreenComponent;
 class UMediaBox;
 class UMediaBoxClip;
@@ -66,6 +69,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMediaBoxEvent, UMediaBox*, MediaB
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMediaBoxError, UMediaBox*, MediaBox, const FString&, Reason);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMediaBoxSubtitle, UMediaBox*, MediaBox, const FText&, Subtitle);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMediaBoxStatus, UMediaBox*, MediaBox, EMediaBoxStatus, NewStatus);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnMediaBoxFullscreen, UMediaBox*, MediaBox, bool, bIsFullscreen);
 
 /**
  * Media Box: a video in UI that starts the instant it is asked to - a skill hovered plays its preview clip, with audio, on that
@@ -107,9 +111,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Media", meta = (DisplayName = "Warm Group"))
 	FName WarmGroup;
 
-	/** Plays in the Widget Blueprint designer too, as it would in the game (silently, unless Project Settings > Media Box > Audio In Designer). Off: the poster. */
+	/** Plays in the Widget Blueprint designer too, as it would in the game (with audio, unless Project Settings > Media Box > Audio In Designer is off). Off: the poster. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Media", meta = (DisplayName = "Preview In Designer"))
 	bool bPreviewInDesigner = true;
+
+	/**
+	 * Keeps its clip warm - opened and paused on its first frame - while it is shown, so Play starts at once rather than opening
+	 * the video first (about half a second). For a video player waiting for its play button. Costs a warm player for as long as it
+	 * shows; hover previews are better kept warm by a Warm Group.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Media", meta = (DisplayName = "Keep Warm While Shown"))
+	bool bKeepWarmWhileShown = false;
 
 	// ---------------------------------------------------------------------------------------------
 	// Playback
@@ -134,9 +146,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "After Trigger", EditCondition = "PlayWhen != EMediaBoxTrigger::Manual"))
 	EMediaBoxAfterTrigger AfterTrigger = EMediaBoxAfterTrigger::StopAndRewind;
 
-	/** Pauses while it isn't drawn - collapsed, scrolled away, on a screen not shown - and plays on when it is drawn again. */
+	/** Pauses while it isn't drawn - collapsed, scrolled away, on a screen not shown. Resume When Visible says whether it plays on when drawn again. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "Pause When Hidden"))
 	bool bPauseWhenHidden = true;
+
+	/**
+	 * Plays on by itself when it is drawn again after Pause When Hidden paused it. Off: it stays paused, as if Pause was pressed
+	 * (Play, or its trigger starting again, plays it). A hover or Visible trigger ends as it is hidden anyway (After Trigger).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "Resume When Visible", EditCondition = "bPauseWhenHidden"))
+	bool bResumeWhenVisible = false;
 
 	/** Playback speed: 1 as recorded, 0.5 half speed. A Separate Sound is pitched with it. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Playback", meta = (DisplayName = "Playback Rate", ClampMin = "0.05", UIMin = "0.25", UIMax = "2.0"))
@@ -226,6 +245,13 @@ public:
 	bool bShowSubtitles = true;
 
 	/**
+	 * Its subtitle language, as a culture code (en, fr, de, es-MX...). Empty: the game's (Set Media Box Subtitle Language, else Project
+	 * Settings > Media Box > Subtitle Language - English). A clip without the language shows its own Subtitles.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Subtitles", meta = (DisplayName = "Subtitle Language"))
+	FString SubtitleLanguage;
+
+	/**
 	 * How big the text is, as a part of the video's height - so it fits any video size: 0.045 is about YouTube's (16 pt on a
 	 * 360 px player). Overrides Font's size; the Margin grows and shrinks with it. 0: Font's own size, whatever the video's.
 	 */
@@ -282,6 +308,10 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Media Box|Events")
 	FOnMediaBoxStatus OnStatusChanged;
 
+	/** It went full screen, or back. */
+	UPROPERTY(BlueprintAssignable, Category = "Media Box|Events")
+	FOnMediaBoxFullscreen OnFullscreenChanged;
+
 	// ---------------------------------------------------------------------------------------------
 	// Blueprint
 	// ---------------------------------------------------------------------------------------------
@@ -320,14 +350,72 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Media Box")
 	void SetHoverTarget(UWidget* NewHoverTarget);
 
+	/** Playback speed: 1 as recorded, 0.5 half, 2 double (as far as the player allows). A Separate Sound is pitched with it. */
 	UFUNCTION(BlueprintCallable, Category = "Media Box")
 	void SetPlaybackRate(float NewRate);
+
+	UFUNCTION(BlueprintPure, Category = "Media Box")
+	float GetPlaybackRate() const { return PlaybackRate; }
 
 	UFUNCTION(BlueprintCallable, Category = "Media Box")
 	void SetVolume(float NewVolume);
 
+	UFUNCTION(BlueprintPure, Category = "Media Box")
+	float GetVolume() const { return AudioVolume; }
+
 	UFUNCTION(BlueprintCallable, Category = "Media Box")
 	void SetMuted(bool bNewMuted);
+
+	UFUNCTION(BlueprintPure, Category = "Media Box")
+	bool IsMuted() const { return bMuted; }
+
+	/**
+	 * A scrub bar is grabbed: pauses (remembering whether it played) so the frames follow the bar. Scrub To while dragged, End Scrub
+	 * as it is let go.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Media Box|Scrub")
+	void BeginScrub();
+
+	/** Shows Seconds into the video while scrubbing - jumps sent no faster than the player keeps up with, the latest kept. A stopped box opens its video for it. */
+	UFUNCTION(BlueprintCallable, Category = "Media Box|Scrub")
+	void ScrubTo(float Seconds);
+
+	/** The scrub bar is let go: lands exactly where it was left, and plays on if it played before (and bPlayOn). */
+	UFUNCTION(BlueprintCallable, Category = "Media Box|Scrub")
+	void EndScrub(bool bPlayOn = true);
+
+	UFUNCTION(BlueprintPure, Category = "Media Box|Scrub")
+	bool IsScrubbing() const { return bScrubbing; }
+
+	/** Whether it played as the scrub began - it plays on as it ends. */
+	UFUNCTION(BlueprintPure, Category = "Media Box|Scrub")
+	bool WillPlayAfterScrub() const { return bScrubbing && bResumeAfterScrub; }
+
+	/** Its subtitle language (culture code), over the game's. Empty: the game's again. */
+	UFUNCTION(BlueprintCallable, Category = "Media Box|Subtitles")
+	void SetSubtitleLanguage(const FString& NewLanguage);
+
+	/** The subtitle language it shows: its own Subtitle Language, else the game's. */
+	UFUNCTION(BlueprintPure, Category = "Media Box|Subtitles")
+	FString GetSubtitleLanguage() const;
+
+	/** The languages its clip has subtitles in, with their names for a menu. */
+	UFUNCTION(BlueprintCallable, Category = "Media Box|Subtitles")
+	void GetSubtitleLanguages(TArray<FString>& Languages, TArray<FText>& LanguageNames) const;
+
+	/**
+	 * Fills the game's viewport with it (bNewFullscreen), or puts it back. The video, its subtitles and a With Controls' bar go full
+	 * screen; its place in the layout is kept. Project Settings > Media Box > Fullscreen Transition: at once, a fade, or a zoom from
+	 * where it is. Escape leaves. Not in the designer.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Media Box|Fullscreen")
+	void SetFullscreen(bool bNewFullscreen);
+
+	UFUNCTION(BlueprintCallable, Category = "Media Box|Fullscreen")
+	void ToggleFullscreen();
+
+	UFUNCTION(BlueprintPure, Category = "Media Box|Fullscreen")
+	bool IsFullscreen() const { return bFullscreen; }
 
 	UFUNCTION(BlueprintPure, Category = "Media Box")
 	EMediaBoxStatus GetStatus() const { return Status; }
@@ -340,7 +428,7 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Media Box")
 	float GetTime() const;
 
-	/** The video's length in seconds. 0 until it has been opened. */
+	/** The video's length in seconds. 0 until it has been opened (by any player: a warm one, or an earlier play). */
 	UFUNCTION(BlueprintPure, Category = "Media Box")
 	float GetDuration() const;
 
@@ -377,6 +465,9 @@ protected:
 	//~ UWidget
 	virtual TSharedRef<SWidget> RebuildWidget() override;
 
+	/** What the box shows around its video (Video): the video itself here; Media Box With Controls lays its bar over it. */
+	virtual TSharedRef<SWidget> BuildBoxContent(const TSharedRef<SWidget>& Video) { return Video; }
+
 	UFUNCTION()
 	TArray<FString> GetHoverTargetOptions() const;
 
@@ -394,6 +485,16 @@ private:
 
 	/** Leases a player when it has none and plays it - an ended clip from its start only when bRestartIfEnded (a new hover, Play). */
 	void StartPlayback(bool bRestartIfEnded);
+
+	/** Leases a player for the clip when it has none (not played). False when it couldn't. */
+	bool EnsureLease();
+
+	/** Keep Warm While Shown: pins its clip in the pool while shown, lets go a while after it is hidden (or changes clip). */
+	void UpdateWarmPin(float DeltaTime);
+	void ReleaseWarmPin();
+
+	void FinishExitFullscreen();
+	void RemoveFullscreenLayerNow();
 	void BeginStop(bool bFade);
 	void ReleasePlayer(bool bRewind);
 	void UpdateStatus();
@@ -415,6 +516,27 @@ private:
 	void NotifyPainted() { LastPaintFrame = GFrameCounter; }
 
 	TSharedPtr<SMediaBox> MyMediaBox;
+
+	/** Its place in the layout, lending its content to the full-screen layer. */
+	TSharedPtr<SMediaBoxFullscreenSlot> MyFullscreenSlot;
+
+	/** The full-screen layer while full screen (or going back), and the viewport it is on. */
+	TSharedPtr<SMediaBoxFullscreenLayer> FullscreenLayer;
+	TWeakObjectPtr<UGameViewportClient> FullscreenViewport;
+	bool bFullscreen = false;
+
+	/** The clip pinned warm while shown (Keep Warm While Shown), and for how long it has been hidden. */
+	UPROPERTY(Transient)
+	TObjectPtr<UMediaBoxClip> WarmPinnedClip = nullptr;
+	TWeakObjectPtr<UMediaBoxPool> WarmPinPool;
+	float HiddenFor = 0.f;
+
+	/** Scrubbing (Begin Scrub ... End Scrub), and whether it played as it began. */
+	bool bScrubbing = false;
+	bool bResumeAfterScrub = false;
+
+	/** The subtitle language last shown, to tell when it changes. */
+	FString ShownSubtitleLanguage;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMediaBoxPlayer> LeasedPlayer = nullptr;

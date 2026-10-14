@@ -21,6 +21,10 @@ namespace MediaBoxRuntime
 	/** Set Media Box Subtitles Enabled - starts at the project setting. */
 	bool AreSubtitlesEnabled();
 	void SetSubtitlesEnabled(bool bEnabled);
+
+	/** Set Media Box Subtitle Language - starts at the project setting (or the game's language, with Follow Game Language). */
+	FString GetSubtitleLanguage();
+	void SetSubtitleLanguage(const FString& Language);
 }
 
 #define MEDIABOX_LOG(Format, ...) \

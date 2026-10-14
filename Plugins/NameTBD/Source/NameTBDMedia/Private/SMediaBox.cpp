@@ -66,6 +66,21 @@ namespace SMediaBoxPrivate
 	}
 }
 
+float SMediaBox::GetCrispScale(const FGeometry& Geometry)
+{
+	const float LayoutScale = Geometry.GetAccumulatedLayoutTransform().GetScale();
+	if (LayoutScale <= KINDA_SMALL_NUMBER)
+	{
+		return 1.f;
+	}
+	const FSlateRenderTransform& Render = Geometry.GetAccumulatedRenderTransform();
+	const float Drawn = FMath::Max(Render.TransformVector(FVector2f(1.f, 0.f)).Size(), Render.TransformVector(FVector2f(0.f, 1.f)).Size());
+	const float Ratio = FMath::Clamp(Drawn / LayoutScale, 0.25f, 8.f);
+	// In steps, so a scale being dragged doesn't rasterize the font at every size on the way.
+	const float Stepped = FMath::RoundToFloat(Ratio * 8.f) / 8.f;
+	return FMath::IsNearlyEqual(Stepped, 1.f) ? 1.f : Stepped;
+}
+
 void SMediaBox::Construct(const FArguments& InArgs)
 {
 	WeakOwnerBox = InArgs._OwnerBox;
@@ -191,6 +206,10 @@ int32 SMediaBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeomet
 		// Never drawn outside the box.
 		OutDrawElements.PushClip(FSlateClippingZone(AllottedGeometry));
 
+		const float CrispScale = GetCrispScale(AllottedGeometry);
+		FSlateFontInfo CrispFont = SubtitleFontNow;
+		CrispFont.Size = SubtitleFontNow.Size * CrispScale;
+
 		float Bottom = Area.Y - Margin.X - FMath::Max(0.f, OwnerBox->SubtitleBottomInset);
 		const FLinearColor TextColor = OwnerBox->SubtitleColor * WidgetTint;
 		const FLinearColor BackColor = OwnerBox->SubtitleBackground * WidgetTint;
@@ -205,7 +224,16 @@ int32 SMediaBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeomet
 				FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 3, AllottedGeometry.ToPaintGeometry(BackSize, FSlateLayoutTransform(BackAt)), FCoreStyle::Get().GetBrush("WhiteBrush"), Effects, BackColor);
 			}
 			const FVector2f TextAt = BackAt + (BackSize - TextSize) * 0.5f;
-			FSlateDrawElement::MakeText(OutDrawElements, LayerId + 4, AllottedGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(TextAt)), Line, SubtitleFontNow, Effects, TextColor);
+			// Under a render scale (the Widget Gizmo, an animation): the font at the size it is shown, the geometry shrunk back.
+			if (CrispScale != 1.f)
+			{
+				const FGeometry TextGeometry = AllottedGeometry.MakeChild(TextSize * CrispScale, FSlateLayoutTransform(TextAt), FSlateRenderTransform(1.f / CrispScale), FVector2f::ZeroVector);
+				FSlateDrawElement::MakeText(OutDrawElements, LayerId + 4, TextGeometry.ToPaintGeometry(), Line, CrispFont, Effects, TextColor);
+			}
+			else
+			{
+				FSlateDrawElement::MakeText(OutDrawElements, LayerId + 4, AllottedGeometry.ToPaintGeometry(TextSize, FSlateLayoutTransform(TextAt)), Line, SubtitleFontNow, Effects, TextColor);
+			}
 			Bottom = BackAt.Y;
 		}
 

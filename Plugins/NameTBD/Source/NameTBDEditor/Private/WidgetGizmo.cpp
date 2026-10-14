@@ -20,6 +20,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "GenericPlatform/ICursor.h"
+#include "Layout/Children.h"
 #include "Layout/WidgetPath.h"
 #include "Rendering/DrawElements.h"
 #include "Rendering/SlateRenderer.h"
@@ -318,6 +319,113 @@ namespace WidgetGizmoImpl
 	{
 		const FVector2f Pivot(PivotPx);
 		return FAffine::From(Concatenate(Concatenate(FSlateRenderTransform(-Pivot), Pose.ToSlateRenderTransform()), FSlateRenderTransform(Pivot)));
+	}
+
+	// =================================================================================================
+	// Panels in the designer
+	// =================================================================================================
+
+	/**
+	 * At design time the designer draws a panel (Vertical Box, Canvas Panel...) inside a wrapper of its own: an overlay of the
+	 * panel's Slate widget and its dashed outline. The wrapper is what its parent lays out and what the designer outlines and
+	 * selects - so a Render Transform on the panel's own widget moved its children while the panel's box stayed put. Returns the
+	 * wrapper (and the panel's own widget in OutInner), or null for a widget drawn without one.
+	 */
+	TSharedPtr<SWidget> FindDesignWrapper(const UWidget* Widget, TSharedPtr<SWidget>& OutInner)
+	{
+		OutInner.Reset();
+		const TSharedPtr<SWidget> Cached = (Widget && Widget->IsDesignTime() && Widget->IsA<UPanelWidget>()) ? Widget->GetCachedWidget() : nullptr;
+		if (!Cached.IsValid())
+		{
+			return nullptr;
+		}
+
+		// The Slate widgets of the panel's own children, and of its parent's: never taken for the wrapper's parts.
+		TSet<const SWidget*> Owned;
+		auto AddChildrenOf = [&Owned](const UPanelWidget* Panel)
+		{
+			for (int32 ChildIndex = 0; Panel && ChildIndex < Panel->GetChildrenCount(); ++ChildIndex)
+			{
+				if (const UWidget* Child = Panel->GetChildAt(ChildIndex))
+				{
+					Owned.Add(Child->GetCachedWidget().Get());
+				}
+			}
+		};
+		AddChildrenOf(Cast<UPanelWidget>(Widget));
+		AddChildrenOf(Widget->GetParent());
+
+		// An overlay holding exactly the content and a dashed outline that takes no hits.
+		auto IsWrapper = [&Owned](const TSharedPtr<SWidget>& Candidate, TSharedPtr<SWidget>& OutContent)
+		{
+			static const FName OverlayType(TEXT("SOverlay"));
+			static const FName BorderType(TEXT("SBorder"));
+			FChildren* Children = Candidate.IsValid() && Candidate->GetType() == OverlayType ? Candidate->GetChildren() : nullptr;
+			if (!Children || Children->Num() != 2)
+			{
+				return false;
+			}
+			const TSharedRef<SWidget> Content = Children->GetChildAt(0);
+			const TSharedRef<SWidget> Outline = Children->GetChildAt(1);
+			if (Outline->GetType() != BorderType || Outline->GetVisibility().IsHitTestVisible() || Owned.Contains(&Outline.Get()) || Owned.Contains(&Content.Get()))
+			{
+				return false;
+			}
+			OutContent = Content;
+			return true;
+		};
+
+		TSharedPtr<SWidget> Content;
+		if (IsWrapper(Cached, Content))
+		{
+			OutInner = Content;
+			return Cached;
+		}
+		const TSharedPtr<SWidget> Above = Cached->GetParentWidget();
+		const UPanelWidget* ParentPanel = Widget->GetParent();
+		if (Above.IsValid() && (!ParentPanel || ParentPanel->GetCachedWidget() != Above) && IsWrapper(Above, Content) && Content == Cached)
+		{
+			OutInner = Cached;
+			return Above;
+		}
+		return nullptr;
+	}
+
+	/** Puts a designer panel's Render Transform on its wrapper (see FindDesignWrapper), so its box moves with its children. */
+	void HoistDesignTransform(const UWidget* Widget)
+	{
+		TSharedPtr<SWidget> Inner;
+		const TSharedPtr<SWidget> Wrapper = FindDesignWrapper(Widget, Inner);
+		if (!Wrapper.IsValid() || !Inner.IsValid())
+		{
+			return;
+		}
+
+		const FWidgetTransform& Pose = Widget->GetRenderTransform();
+		const TOptional<FSlateRenderTransform> Wanted = Pose.IsIdentity() ? TOptional<FSlateRenderTransform>() : TOptional<FSlateRenderTransform>(Pose.ToSlateRenderTransform());
+		const FVector2D WantedPivot = Widget->GetRenderTransformPivot();
+		const TOptional<FSlateRenderTransform>& OnWrapper = Wrapper->GetRenderTransform();
+		const bool bSame = OnWrapper.IsSet() == Wanted.IsSet() && (!Wanted.IsSet() || OnWrapper.GetValue() == Wanted.GetValue());
+		if (!bSame)
+		{
+			Wrapper->SetRenderTransform(Wanted);
+		}
+		if (!FVector2D(Wrapper->GetRenderTransformPivot()).Equals(WantedPivot))
+		{
+			Wrapper->SetRenderTransformPivot(WantedPivot);
+		}
+		if (Inner->GetRenderTransform().IsSet())
+		{
+			Inner->SetRenderTransform(TOptional<FSlateRenderTransform>());
+		}
+	}
+
+	/** The Slate widget a widget is laid out as: a designer panel's wrapper, else its own. */
+	TSharedPtr<SWidget> GetLaidOutWidget(const UWidget* Widget)
+	{
+		TSharedPtr<SWidget> Inner;
+		const TSharedPtr<SWidget> Wrapper = FindDesignWrapper(Widget, Inner);
+		return Wrapper.IsValid() ? Wrapper : (Widget ? Widget->GetCachedWidget() : nullptr);
 	}
 
 	// =================================================================================================
@@ -1002,7 +1110,7 @@ namespace WidgetGizmoImpl
 	bool FGizmoLayer::Place(FTarget& Target) const
 	{
 		const UWidget* PlacedPreview = Target.Preview.Get();
-		const TSharedPtr<SWidget> SlateWidget = PlacedPreview ? PlacedPreview->GetCachedWidget() : nullptr;
+		const TSharedPtr<SWidget> SlateWidget = GetLaidOutWidget(PlacedPreview);
 		if (!SlateWidget.IsValid())
 		{
 			return false;
@@ -1700,6 +1808,7 @@ namespace WidgetGizmoImpl
 			{
 				EditedPreview->SetRenderTransformPivot(NewPivot);
 			}
+			HoistDesignTransform(EditedPreview);
 		}
 	}
 
@@ -2663,6 +2772,8 @@ namespace WidgetGizmoImpl
 		GatherTargets(Selection);
 		for (FTarget& Target : Targets)
 		{
+			// A panel's box moves with its children (its Render Transform on the designer's wrapper round it).
+			HoistDesignTransform(Target.Preview.Get());
 			Target.bPlaced = Place(Target);
 		}
 		FindDesignerWidget();

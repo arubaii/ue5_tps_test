@@ -24,6 +24,13 @@ public:
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
 	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override;
 
+	/**
+	 * How much bigger than its layout scale Geometry is drawn: the Render Transform scale above it (a Widget Gizmo scale, an
+	 * animation). Slate rasterizes text at the layout scale only, so text under a render scale is stretched - blurry. Text laid out
+	 * this much bigger, under a render transform shrinking it back, is drawn sharp. 1 without a render scale; steps of 1/8.
+	 */
+	static float GetCrispScale(const FGeometry& Geometry);
+
 private:
 	TWeakObjectPtr<UMediaBox> WeakOwnerBox;
 

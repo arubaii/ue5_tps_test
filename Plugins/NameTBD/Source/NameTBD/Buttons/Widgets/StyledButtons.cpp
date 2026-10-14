@@ -287,6 +287,15 @@ FContextMenuShapeTarget& UStyledButtonBase::AddShapeTarget(UWidget* Part)
 		break;
 	}
 
+	// Enter / Exit Duration over Motion's pace: the way in at the Enter speed, back to Normal at the Exit speed.
+	if (Motion != EStyledButtonMotion::Instant && (EnterDuration > 0.f || ExitDuration > 0.f))
+	{
+		const float MotionSpeed = Target.TransformInterpolationSpeed;
+		Target.TransformInterpolationSpeed = GetShapeSpeed(EnterDuration);
+		Target.bSeparateExitSpeed = true;
+		Target.ExitInterpolationSpeed = ExitDuration > 0.f ? GetShapeSpeed(ExitDuration) : MotionSpeed;
+	}
+
 	// No Look on the Base Shape: the base is the part as it is. Each state given a Look below holds only what is used.
 	Target.BaseShape.bIsVectorShape = Part == this ? BackgroundShape != nullptr : (Part && Part->IsA<UShapeWidget>());
 	return Target;
@@ -326,7 +335,46 @@ FContextMenuDesignTarget& UStyledButtonBase::AddDesignTarget(UWidget* Part)
 	case EStyledButtonMotion::Instant: Target.InterpolationSpeed = 0.f; break;
 	default:                           Target.InterpolationSpeed = 15.f; break;
 	}
+	if (Motion != EStyledButtonMotion::Instant && (EnterDuration > 0.f || ExitDuration > 0.f))
+	{
+		const float MotionSpeed = Target.InterpolationSpeed;
+		Target.InterpolationSpeed = GetDesignSpeed(EnterDuration);
+		Target.bSeparateExitSpeed = true;
+		Target.ExitInterpolationSpeed = ExitDuration > 0.f ? GetDesignSpeed(ExitDuration) : MotionSpeed;
+	}
 	return Target;
+}
+
+float UStyledButtonBase::GetShapeSpeed(float Duration) const
+{
+	if (Duration > 0.f)
+	{
+		return 1.f / FMath::Max(Duration, 0.001f);
+	}
+	switch (Motion)
+	{
+	case EStyledButtonMotion::Snappy:  return 22.f;
+	case EStyledButtonMotion::Bouncy:  return 8.f;
+	case EStyledButtonMotion::Gentle:  return 5.f;
+	case EStyledButtonMotion::Instant: return 0.f;
+	case EStyledButtonMotion::Smooth:
+	default:                           return 12.f;
+	}
+}
+
+float UStyledButtonBase::GetDesignSpeed(float Duration) const
+{
+	if (Duration > 0.f)
+	{
+		return 3.f / FMath::Max(Duration, 0.001f);
+	}
+	switch (Motion)
+	{
+	case EStyledButtonMotion::Snappy:  return 28.f;
+	case EStyledButtonMotion::Gentle:  return 7.f;
+	case EStyledButtonMotion::Instant: return 0.f;
+	default:                           return 15.f;
+	}
 }
 
 FContextMenuWidgetDesign& UStyledButtonBase::OverrideDesign(FContextMenuDesignTarget& Target, EContextMenuState State)
@@ -470,15 +518,77 @@ void UPillSwitchButton::BuildParts()
 	SetButtonContent(KnobSizeBox);
 }
 
+void UPillSwitchButton::ComputeKnob(const FVector2D& TrackExtent, float& OutKnob, float& OutTravel) const
+{
+	// The track is the button: the knob sits inside it, Knob Inset from its edges, and slides the track's width less its own.
+	const float Inset = FMath::Max(KnobInset, 0.f);
+	OutKnob = FMath::Max(static_cast<float>(TrackExtent.Y) - 2.f * Inset, 1.f);
+	OutTravel = FMath::Max(static_cast<float>(TrackExtent.X) - 2.f * Inset - OutKnob, 0.f);
+}
+
+void UPillSwitchButton::FitKnob(const FVector2D& TrackExtent, bool bMarkModified)
+{
+	float KnobExtent = 0.f;
+	float Travel = 0.f;
+	ComputeKnob(TrackExtent, KnobExtent, Travel);
+	const float Inset = FMath::Max(KnobInset, 0.f);
+	FittedTrackSize = TrackExtent;
+
+	// The knob's box and the padding around it: together exactly the track, so the switch asks for the size it has.
+	if (UButtonSlot* ContentSlot = Cast<UButtonSlot>(GetPartsSlot()))
+	{
+		if (bMarkModified)
+		{
+			ContentSlot->Modify();
+		}
+		ContentSlot->SetPadding(FMargin(Inset, Inset, Inset + Travel, Inset));
+		ContentSlot->SetHorizontalAlignment(HAlign_Left);
+		ContentSlot->SetVerticalAlignment(VAlign_Top);
+	}
+	SetBoxSize(bMarkModified ? FindPart(StyledButtonParts::KnobBox) : GetPart(StyledButtonParts::KnobBox), FVector2D(KnobExtent, KnobExtent));
+
+	// The slide when on: the knob's Shape Target (the one on the knob that moves it when Enabled).
+	const UWidget* KnobPart = GetPart(StyledButtonParts::Knob);
+	const FName KnobTargetName = KnobPart ? TargetNameOf(KnobPart) : NAME_None;
+	for (FContextMenuShapeTarget& Target : ShapeTargets)
+	{
+		if (!KnobTargetName.IsNone() && Target.TargetWidgetName == KnobTargetName && Target.bOverrideEnabledShape)
+		{
+			Target.EnabledShape.Transform.Translation = FVector2D(Travel, 0.0);
+		}
+	}
+}
+
+void UPillSwitchButton::HandleLayoutSizeChanged(const FVector2D& NewSize)
+{
+	// Only once styled, and only when the size really differs from what the knob was fitted to (no loop: fitting asks for this size).
+	if (!bUseStyle || NewSize.X <= 1.0 || NewSize.Y <= 1.0 || NewSize.Equals(FittedTrackSize, 0.5) || !GetPart(StyledButtonParts::Knob))
+	{
+		return;
+	}
+	FitKnob(NewSize, /*bMarkModified=*/false);
+
+	// Shown again at the new size: the runtime blend re-reads its goal; the designer's preview repaints.
+	if (IsDesignTime())
+	{
+#if WITH_EDITOR
+		ApplyDesignPreviews();
+#endif
+	}
+	else
+	{
+		RefreshButtonState(/*bInstant=*/true);
+	}
+}
+
 void UPillSwitchButton::ApplyStyle()
 {
 	using namespace StyledButtonTheme;
 	BeginStyle();
 
-	// The track is the button: the knob sits inside it, Knob Inset from its edges, and slides the track's width less its own.
-	const float Inset = FMath::Max(KnobInset, 0.f);
-	const float Knob = FMath::Max(static_cast<float>(TrackSize.Y) - 2.f * Inset, 1.f);
-	const float Travel = FMath::Max(static_cast<float>(TrackSize.X) - 2.f * Inset - Knob, 0.f);
+	float Knob = 0.f;
+	float Travel = 0.f;
+	ComputeKnob(TrackSize, Knob, Travel);
 
 	const FLinearColor Track = TrackColor;
 	const FLinearColor Edge = OutlineColor;
@@ -488,8 +598,6 @@ void UPillSwitchButton::ApplyStyle()
 		Solid(Shape, Track);
 		Outline(Shape, 1.5f, Edge);
 	});
-	SetContentLayout(FMargin(Inset, Inset, Inset + Travel, Inset), HAlign_Left, VAlign_Top);
-	SetBoxSize(FindPart(StyledButtonParts::KnobBox), FVector2D(Knob, Knob));
 
 	const FLinearColor Accent = AccentColor;
 	FContextMenuShapeTarget& Self = AddShapeTarget(this);
@@ -522,6 +630,9 @@ void UPillSwitchButton::ApplyStyle()
 			Shape.Fill.Color = KnobOn;
 		});
 	}
+
+	// The knob's box, padding and slide for Track Size; laid out bigger or smaller by its slot, it is fitted again to that size.
+	FitKnob(TrackSize, /*bMarkModified=*/true);
 	AddDisabledFade();
 }
 

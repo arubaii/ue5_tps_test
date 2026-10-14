@@ -56,6 +56,16 @@ public:
 	static bool AreMediaBoxSubtitlesEnabled();
 
 	/**
+	 * The subtitle language every Media Box shows (a box's own Subtitle Language wins), as a culture code: en, fr, de, es-MX... A clip
+	 * without it shows its own Subtitles. Empty: back to Project Settings > Media Box > Subtitle Language.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Media Box|Subtitles")
+	static void SetMediaBoxSubtitleLanguage(const FString& Language);
+
+	UFUNCTION(BlueprintPure, Category = "Media Box|Subtitles")
+	static FString GetMediaBoxSubtitleLanguage();
+
+	/**
 	 * The warm pool's numbers: players warm (ready to play at once) and playing now, and how many starts were warm (instant)
 	 * or cold (waited for the video) since the game started. Cold starts that keep climbing: raise Max Warm Players, or put the
 	 * screen's previews in one Warm Group.

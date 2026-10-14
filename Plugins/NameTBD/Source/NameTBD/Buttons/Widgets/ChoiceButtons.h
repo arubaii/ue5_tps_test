@@ -85,8 +85,23 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice")
 	EChoiceButtonMode Mode = EChoiceButtonMode::Options;
 
-	/** The choices, in order. */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (EditCondition = "Mode == EChoiceButtonMode::Options", EditConditionHides))
+	/**
+	 * Takes the choices from an enum - any enum, C++ or Blueprint (User Defined Enum): its display names, in order, hidden values
+	 * skipped. The Options list then follows the enum. None: the Options list as typed. From Blueprint: Set Options From Enum.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (DisplayName = "Options From Enum", GetOptions = "GetEnumPathOptions", EditCondition = "Mode == EChoiceButtonMode::Options", EditConditionHides))
+	FString OptionsEnum;
+
+	/** The enum Options From Enum names, kept as a reference so a packaged game has it. */
+	UPROPERTY()
+	TObjectPtr<UEnum> OptionsEnumObject = nullptr;
+
+	/** Details-panel mirror: the choices come from an enum (Options is then filled from it). */
+	UPROPERTY()
+	bool bOptionsFromEnum = false;
+
+	/** The choices, in order. Filled from the enum while Options From Enum is set. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (EditCondition = "Mode == EChoiceButtonMode::Options && !bOptionsFromEnum", EditConditionHides))
 	TArray<FText> Options;
 
 	/** Which choice is chosen. */
@@ -153,6 +168,26 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Choice")
 	FText GetDisplayText() const;
 
+	/** Takes the choices from Enum (any enum; None: back to the Options list) and selects the entry whose value is SelectedEnumValue (the first when there is none). */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Choice")
+	void SetOptionsFromEnum(UEnum* Enum, int64 SelectedEnumValue = 0);
+
+	/** The enum the choices come from, or None. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Choice")
+	UEnum* GetOptionsEnum() const;
+
+	/** The chosen entry's enum value (convert it to your enum with Byte To Enum / a cast); the selected index when the choices aren't from an enum. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Choice")
+	int64 GetSelectedEnumValue() const;
+
+	/** The chosen entry's enum name (e.g. EQuality::High); None when the choices aren't from an enum. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Choice")
+	FName GetSelectedEnumName() const;
+
+	/** Selects the entry whose enum value is EnumValue. False when the enum has no such (shown) entry. */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Choice")
+	bool SetSelectedEnumValue(int64 EnumValue, bool bBroadcast = false);
+
 #if WITH_EDITOR
 	virtual int32 GetDesignerPreviewValueCount() const override;
 	virtual int32 GetDesignerPreviewValueIndex() const override;
@@ -186,6 +221,21 @@ protected:
 
 	/** The value's Text Block, found when the display updates - not on every frame of its slide. */
 	TWeakObjectPtr<UTextBlock> KickedValueText;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
+	/** Every enum there is, by path, for Options From Enum. */
+	UFUNCTION()
+	TArray<FString> GetEnumPathOptions() const;
+
+	/** Options filled from the enum (when there is one); the enum values of the entries shown, index for index. */
+	void RefreshEnumOptions();
+
+	/** The enum values of the entries shown, index for index with Options (saved: a packaged game can't tell Hidden entries). */
+	UPROPERTY()
+	TArray<int64> EnumValues;
 };
 
 /**
@@ -236,7 +286,23 @@ public:
 
 	// ---- Choice ----------------------------------------------------------------------------------
 
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice")
+	/**
+	 * Takes the choices from an enum - any enum, C++ or Blueprint (User Defined Enum): its display names, in order, hidden values
+	 * skipped. The Options list then follows the enum. None: the Options list as typed. From Blueprint: Set Options From Enum.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (DisplayName = "Options From Enum", GetOptions = "GetEnumPathOptions"))
+	FString OptionsEnum;
+
+	/** The enum Options From Enum names, kept as a reference so a packaged game has it. */
+	UPROPERTY()
+	TObjectPtr<UEnum> OptionsEnumObject = nullptr;
+
+	/** Details-panel mirror: the choices come from an enum (Options is then filled from it). */
+	UPROPERTY()
+	bool bOptionsFromEnum = false;
+
+	/** The choices, in order. Filled from the enum while Options From Enum is set. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (EditCondition = "!bOptionsFromEnum", EditConditionHides))
 	TArray<FText> Options;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Choice", meta = (ClampMin = "0"))
@@ -260,6 +326,26 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Choice")
 	FText GetSelectedOption() const;
+
+	/** Takes the choices from Enum (any enum; None: back to the Options list) and selects the entry whose value is SelectedEnumValue (the first when there is none). */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Choice")
+	void SetOptionsFromEnum(UEnum* Enum, int64 SelectedEnumValue = 0);
+
+	/** The enum the choices come from, or None. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Choice")
+	UEnum* GetOptionsEnum() const;
+
+	/** The chosen entry's enum value (convert it to your enum with Byte To Enum / a cast); the selected index when the choices aren't from an enum. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Choice")
+	int64 GetSelectedEnumValue() const;
+
+	/** The chosen entry's enum name (e.g. EQuality::High); None when the choices aren't from an enum. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Choice")
+	FName GetSelectedEnumName() const;
+
+	/** Selects the entry whose enum value is EnumValue. False when the enum has no such (shown) entry. */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Choice")
+	bool SetSelectedEnumValue(int64 EnumValue, bool bBroadcast = false);
 
 #if WITH_EDITOR
 	virtual int32 GetDesignerPreviewValueCount() const override { return Options.Num(); }
@@ -313,4 +399,19 @@ protected:
 
 	/** The designer's toolbar picked a choice: the highlight slides there as it does at runtime (else the designer snaps). */
 	bool bAnimateInDesigner = false;
+
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
+	/** Every enum there is, by path, for Options From Enum. */
+	UFUNCTION()
+	TArray<FString> GetEnumPathOptions() const;
+
+	/** Options filled from the enum (when there is one); the enum values of the entries shown, index for index. */
+	void RefreshEnumOptions();
+
+	/** The enum values of the entries shown, index for index with Options (saved: a packaged game can't tell Hidden entries). */
+	UPROPERTY()
+	TArray<int64> EnumValues;
 };

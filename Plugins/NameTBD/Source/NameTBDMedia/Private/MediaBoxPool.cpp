@@ -46,6 +46,19 @@ namespace MediaBoxPoolPrivate
 	/** How often a Separate Sound is checked against the video. */
 	constexpr double SyncCheckInterval = 0.25;
 
+	/** A seek counts as landed once the player's time is this near where it went, or after SeekGiveUp seconds. */
+	constexpr float SeekLandedWithin = 0.12f;
+	constexpr double SeekGiveUp = 0.6;
+
+	/** A scrub's next jump goes once the last has landed, or after this long whatever. */
+	constexpr double ScrubInterval = 0.08;
+
+	/** The audio stops this quickly on Pause: the picture stops at once, so the sound mustn't run on past it. */
+	constexpr float PauseAudioFade = 0.03f;
+
+	/** Played on from where it was paused when the player has wandered more than this from it. */
+	constexpr float ResumeTolerance = 1.f / 60.f;
+
 	/** The editor's pool: for widgets in worlds without a game instance - the designer, editor worlds. */
 	/**
 	 * The editor's pool: for widgets in worlds without a game instance - the designer, editor worlds. Held on the heap and let
@@ -145,6 +158,9 @@ void UMediaBoxPlayer::Close()
 	LoopCount = 0;
 	EndCount = 0;
 	Rate = 1.f;
+	PendingSeekTime = -1.f;
+	QueuedScrubTime = -1.f;
+	PausedAtTime = -1.f;
 }
 
 void UMediaBoxPlayer::Fail(const FString& Reason)
@@ -223,6 +239,13 @@ void UMediaBoxPlayer::HandleEndReached()
 
 void UMediaBoxPlayer::HandleSeekCompleted()
 {
+	// A seek sent by Seek / Scrub has landed: a scrub waiting may go on the next tick. The time shown keeps to where it went
+	// until the player reads it too (Tick).
+	if (PendingSeekTime >= 0.f)
+	{
+		PendingSeekSentAt = FMath::Min(PendingSeekSentAt, FPlatformTime::Seconds() - MediaBoxPoolPrivate::ScrubInterval);
+	}
+
 	if (State == EMediaBoxPlayerState::Settling)
 	{
 		State = EMediaBoxPlayerState::Ready;
@@ -279,6 +302,14 @@ void UMediaBoxPlayer::StartPlaying()
 		MediaPlayer->Seek(MediaBoxPoolPrivate::ToTimespan(Clip->StartTime));
 		LastTime = Clip->StartTime;
 	}
+	else if (State == EMediaBoxPlayerState::Paused && PausedAtTime >= 0.f && PendingSeekTime < 0.f && MediaPlayer->SupportsSeeking()
+		&& FMath::Abs(GetPlayerTime() - PausedAtTime) > MediaBoxPoolPrivate::ResumeTolerance)
+	{
+		// The player moved on from the frame it was paused on (it decodes ahead): back to exactly that frame, so play picks up there.
+		MediaPlayer->Seek(MediaBoxPoolPrivate::ToTimespan(PausedAtTime));
+		LastTime = PausedAtTime;
+	}
+	PausedAtTime = -1.f;
 
 	MediaPlayer->Play();
 	if (!FMath::IsNearlyEqual(Rate, 1.f))
@@ -297,13 +328,18 @@ void UMediaBoxPlayer::Pause(float FadeOut)
 	{
 		MediaPlayer->Pause();
 		State = EMediaBoxPlayerState::Paused;
+		PausedAtTime = GetTime();
 	}
-	StopAudio(FadeOut);
+	// The picture stops at once: the audio only takes a moment, never runs on past it (a skip when played on).
+	StopAudio(FMath::Min(FadeOut, MediaBoxPoolPrivate::PauseAudioFade));
 }
 
 void UMediaBoxPlayer::Rewind(float FadeOut)
 {
 	bPlayRequested = false;
+	PendingSeekTime = -1.f;
+	QueuedScrubTime = -1.f;
+	PausedAtTime = -1.f;
 	StopAudio(FadeOut);
 
 	switch (State)
@@ -333,24 +369,63 @@ void UMediaBoxPlayer::Rewind(float FadeOut)
 	}
 }
 
+void UMediaBoxPlayer::SendSeek(float Seconds, bool bScrub)
+{
+	const float Clamped = FMath::Max(0.f, Seconds);
+	if (bScrub && MediaPlayer->SupportsScrubbing())
+	{
+		MediaPlayer->Scrub(MediaBoxPoolPrivate::ToTimespan(Clamped));
+	}
+	else
+	{
+		MediaPlayer->Seek(MediaBoxPoolPrivate::ToTimespan(Clamped));
+	}
+	PendingSeekTime = Clamped;
+	PendingSeekSentAt = FPlatformTime::Seconds();
+	LastTime = Clamped;
+
+	// Warm (paused on its first frame) or ended: now paused here, so its frame shows.
+	if (State == EMediaBoxPlayerState::Ended || State == EMediaBoxPlayerState::Ready)
+	{
+		State = EMediaBoxPlayerState::Paused;
+	}
+	if (State == EMediaBoxPlayerState::Paused)
+	{
+		PausedAtTime = Clamped;
+	}
+	if (State == EMediaBoxPlayerState::Playing && bAudioPlaying && IsValid(SeparateSound) && WantsSeparateSound())
+	{
+		SeparateSound->Play(Clamped);
+		AudioStartMediaTime = Clamped;
+		AudioStartWallTime = FPlatformTime::Seconds();
+	}
+}
+
 void UMediaBoxPlayer::Seek(float Seconds)
 {
 	if (!IsOpened())
 	{
 		return;
 	}
-	MediaPlayer->Seek(MediaBoxPoolPrivate::ToTimespan(Seconds));
-	LastTime = Seconds;
-	if (State == EMediaBoxPlayerState::Ended)
+	QueuedScrubTime = -1.f;
+	SendSeek(Seconds, /*bScrub=*/false);
+}
+
+void UMediaBoxPlayer::Scrub(float Seconds)
+{
+	if (!IsOpened())
 	{
-		State = EMediaBoxPlayerState::Paused;
+		return;
 	}
-	if (State == EMediaBoxPlayerState::Playing && bAudioPlaying && IsValid(SeparateSound) && WantsSeparateSound())
+	// One jump on its way at a time: the newest wanted waits for it (Tick), older ones are dropped.
+	const bool bOneOnItsWay = PendingSeekTime >= 0.f && FPlatformTime::Seconds() - PendingSeekSentAt < MediaBoxPoolPrivate::ScrubInterval;
+	if (bOneOnItsWay)
 	{
-		SeparateSound->Play(Seconds);
-		AudioStartMediaTime = Seconds;
-		AudioStartWallTime = FPlatformTime::Seconds();
+		QueuedScrubTime = FMath::Max(0.f, Seconds);
+		return;
 	}
+	QueuedScrubTime = -1.f;
+	SendSeek(Seconds, /*bScrub=*/true);
 }
 
 void UMediaBoxPlayer::SetRate(float NewRate)
@@ -376,12 +451,32 @@ void UMediaBoxPlayer::SetVolume(float NewVolume)
 
 float UMediaBoxPlayer::GetTime() const
 {
+	// Where a jump is going, not where the player still is: a scrub bar and time text never flick back to the old time.
+	if (QueuedScrubTime >= 0.f)
+	{
+		return QueuedScrubTime;
+	}
+	if (PendingSeekTime >= 0.f)
+	{
+		return PendingSeekTime;
+	}
+	return GetPlayerTime();
+}
+
+float UMediaBoxPlayer::GetPlayerTime() const
+{
 	return MediaPlayer ? static_cast<float>(MediaPlayer->GetTime().GetTotalSeconds()) : 0.f;
 }
 
 float UMediaBoxPlayer::GetDuration() const
 {
-	return MediaPlayer && IsOpened() ? static_cast<float>(MediaPlayer->GetDuration().GetTotalSeconds()) : 0.f;
+	const float Duration = MediaPlayer && IsOpened() ? static_cast<float>(MediaPlayer->GetDuration().GetTotalSeconds()) : 0.f;
+	// Kept on the clip: its length is known before it plays next time (a controls bar showing it on a stopped video).
+	if (Clip && Duration > 0.f)
+	{
+		Clip->KnownDuration = Duration;
+	}
+	return Duration;
 }
 
 bool UMediaBoxPlayer::WantsSeparateSound() const
@@ -668,6 +763,40 @@ void UMediaBoxPlayer::Tick(float DeltaTime)
 {
 	using namespace MediaBoxPoolPrivate;
 
+	// A jump on its way: landed once the player is there (or after a while whatever it says); a scrub waiting goes then.
+	if (PendingSeekTime >= 0.f)
+	{
+		const double Waited = FPlatformTime::Seconds() - PendingSeekSentAt;
+		const bool bThere = FMath::Abs(GetPlayerTime() - PendingSeekTime) <= SeekLandedWithin;
+		if ((bThere && Waited >= ScrubInterval * 0.5) || Waited >= SeekGiveUp)
+		{
+			PendingSeekTime = -1.f;
+		}
+	}
+	if (QueuedScrubTime >= 0.f && (PendingSeekTime < 0.f || FPlatformTime::Seconds() - PendingSeekSentAt >= ScrubInterval) && IsOpened())
+	{
+		const float Next = QueuedScrubTime;
+		QueuedScrubTime = -1.f;
+		SendSeek(Next, /*bScrub=*/true);
+	}
+
+	// The clip's length, known as soon as any player has it open (a stopped controls bar can show it).
+	if (Clip && Clip->KnownDuration <= 0.f && IsOpened())
+	{
+		GetDuration();
+	}
+
+	// Outside a game world (the designer's audio, through the editor's world) nothing ticks the Media Sound Component, which takes
+	// the player's audio in its tick: ticked here.
+	if (bAudioPlaying && IsValid(EmbeddedSound) && EmbeddedSound->IsRegistered())
+	{
+		const UWorld* SoundWorld = EmbeddedSound->GetWorld();
+		if (!SoundWorld || !SoundWorld->IsGameWorld())
+		{
+			static_cast<UActorComponent*>(EmbeddedSound.Get())->TickComponent(DeltaTime, LEVELTICK_All, nullptr);
+		}
+	}
+
 	// Audio fading out: down to silence, then stopped.
 	if (bAudioFadingOut)
 	{
@@ -694,7 +823,7 @@ void UMediaBoxPlayer::Tick(float DeltaTime)
 		// The first frame is in once the video's time has moved on from where it started (a frame later, to be sure the
 		// texture has it), or after a while whatever it says.
 		++StepFrames;
-		const bool bAdvanced = GetTime() > PrimeFrom + 0.0005f;
+		const bool bAdvanced = GetPlayerTime() > PrimeFrom + 0.0005f;
 		if (bAdvanced && !bFrameReady)
 		{
 			bFrameReady = true;
@@ -721,7 +850,7 @@ void UMediaBoxPlayer::Tick(float DeltaTime)
 
 		// Nobody waits: paused, and back on its very first frame - warm.
 		MediaPlayer->Pause();
-		if (Clip && MediaPlayer->SupportsSeeking() && GetTime() > Clip->StartTime + 1.f / 60.f)
+		if (Clip && MediaPlayer->SupportsSeeking() && GetPlayerTime() > Clip->StartTime + 1.f / 60.f)
 		{
 			MediaPlayer->Seek(ToTimespan(Clip->StartTime));
 			LastTime = Clip->StartTime;
@@ -751,10 +880,10 @@ void UMediaBoxPlayer::Tick(float DeltaTime)
 			break;
 		}
 
-		const float Now = GetTime();
+		const float Now = GetPlayerTime();
 
-		// The player's own loop wrapping round: time went back.
-		if (MediaPlayer->IsLooping() && Now + 0.25f < LastTime)
+		// The player's own loop wrapping round: time went back (not a jump asked for).
+		if (MediaPlayer->IsLooping() && Now + 0.25f < LastTime && PendingSeekTime < 0.f)
 		{
 			++LoopCount;
 			if (bAudioPlaying && WantsSeparateSound() && IsValid(SeparateSound))
@@ -765,7 +894,7 @@ void UMediaBoxPlayer::Tick(float DeltaTime)
 			}
 		}
 		// A range loop: back to Loop Start just before Loop End.
-		else if (Clip && Clip->bLoop && !Clip->LoopsWholeVideo() && Clip->LoopEnd > 0.f && Now >= Clip->LoopEnd - LoopEndLead)
+		else if (Clip && Clip->bLoop && !Clip->LoopsWholeVideo() && Clip->LoopEnd > 0.f && Now >= Clip->LoopEnd - LoopEndLead && PendingSeekTime < 0.f)
 		{
 			const float LoopFrom = Clip->LoopStart;
 			MediaPlayer->Seek(ToTimespan(LoopFrom));
@@ -781,7 +910,7 @@ void UMediaBoxPlayer::Tick(float DeltaTime)
 		}
 
 		// A Separate Sound kept in step: started again at the video's time when it has drifted too far.
-		if (bAudioPlaying && !bAudioFadingOut && WantsSeparateSound() && IsValid(SeparateSound))
+		if (bAudioPlaying && !bAudioFadingOut && PendingSeekTime < 0.f && WantsSeparateSound() && IsValid(SeparateSound))
 		{
 			const double WallNow = FPlatformTime::Seconds();
 			if (WallNow >= NextSyncCheck)

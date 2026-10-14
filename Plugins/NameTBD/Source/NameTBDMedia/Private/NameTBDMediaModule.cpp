@@ -1,6 +1,8 @@
 // Copyright AR GameSystems 2026. All rights reserved.
 
 #include "HAL/IConsoleManager.h"
+#include "Internationalization/Culture.h"
+#include "Internationalization/Internationalization.h"
 #include "Misc/CoreDelegates.h"
 #include "MediaBoxCue.h"
 #include "MediaBoxLog.h"
@@ -43,6 +45,30 @@ namespace MediaBoxRuntime
 	void SetSubtitlesEnabled(bool bEnabled)
 	{
 		SubtitlesOverride = bEnabled;
+	}
+
+	static TOptional<FString> SubtitleLanguageOverride;
+
+	FString GetSubtitleLanguage()
+	{
+		if (SubtitleLanguageOverride.IsSet())
+		{
+			return SubtitleLanguageOverride.GetValue();
+		}
+		const UMediaBoxSettings& Settings = UMediaBoxSettings::Get();
+		return Settings.bSubtitlesFollowGameLanguage ? FInternationalization::Get().GetCurrentLanguage()->GetName() : Settings.SubtitleLanguage;
+	}
+
+	void SetSubtitleLanguage(const FString& Language)
+	{
+		if (Language.IsEmpty())
+		{
+			SubtitleLanguageOverride.Reset();
+		}
+		else
+		{
+			SubtitleLanguageOverride = Language;
+		}
 	}
 }
 

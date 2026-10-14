@@ -7,12 +7,14 @@
 #include "MediaBoxPool.h"
 #include "MediaBoxSettings.h"
 #include "SMediaBox.h"
+#include "SMediaBoxFullscreen.h"
 
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Button.h"
 #include "Components/PanelWidget.h"
 #include "Engine/Texture.h"
+#include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
 #include "Framework/Application/SlateApplication.h"
 #include "GameFramework/PlayerController.h"
@@ -40,6 +42,9 @@ namespace MediaBoxPrivate
 
 	/** Progress changes smaller than this aren't passed to the state machine. */
 	constexpr float ProgressStep = 0.005f;
+
+	/** Keep Warm While Shown lets go of its clip once hidden this long (not for a frame or two of not being drawn). */
+	constexpr float UnpinAfterHidden = 1.f;
 }
 
 UMediaBox::UMediaBox()
@@ -68,7 +73,13 @@ TSharedRef<SWidget> UMediaBox::RebuildWidget()
 	}
 	UpdateBrushes();
 	UpdateGroupMembership();
-	return MyMediaBox.ToSharedRef();
+
+	// Its place in the layout: what it shows can go full screen and come back to it.
+	MyFullscreenSlot = SNew(SMediaBoxFullscreenSlot)
+	[
+		BuildBoxContent(MyMediaBox.ToSharedRef())
+	];
+	return MyFullscreenSlot.ToSharedRef();
 }
 
 void UMediaBox::SynchronizeProperties()
@@ -99,7 +110,12 @@ void UMediaBox::ReleaseSlateResources(bool bReleaseChildren)
 {
 	Super::ReleaseSlateResources(bReleaseChildren);
 
+	RemoveFullscreenLayerNow();
+	MyFullscreenSlot.Reset();
 	MyMediaBox.Reset();
+
+	// The warm pin always (the pool counts pins; a box gone by garbage collection would hold one for good).
+	ReleaseWarmPin();
 
 	// Not while being garbage collected: the pool takes back a lease whose box has gone by itself.
 	if (!IsUnreachable())
@@ -119,6 +135,8 @@ void UMediaBox::ReleaseSlateResources(bool bReleaseChildren)
 	RegisteredPool.Reset();
 	LeasedPlayer = nullptr;
 	VideoAlpha = 0.f;
+	bScrubbing = false;
+	bResumeAfterScrub = false;
 }
 
 #if WITH_EDITOR
@@ -242,11 +260,224 @@ void UMediaBox::Seek(float Seconds)
 	}
 }
 
+void UMediaBox::BeginScrub()
+{
+	if (bScrubbing)
+	{
+		return;
+	}
+	bScrubbing = true;
+	bResumeAfterScrub = IsPlaying() || (Status == EMediaBoxStatus::Loading && (bPlayRequested || (bTriggerActive && !bHeldPaused)));
+
+	// Paused while dragged: the frames follow the bar. Played on (or not) by End Scrub.
+	bPlayRequested = false;
+	if (bTriggerActive)
+	{
+		bHeldPaused = true;
+	}
+	if (LeasedPlayer && !bStopping)
+	{
+		LeasedPlayer->Pause(0.f);
+	}
+	UpdateStatus();
+}
+
+void UMediaBox::ScrubTo(float Seconds)
+{
+	if (!bScrubbing)
+	{
+		Seek(Seconds);
+		return;
+	}
+	// A stopped box (its poster showing) opens its video, so the frame under the bar shows.
+	if ((!LeasedPlayer || bStopping) && CanPlayHere() && MediaClip)
+	{
+		// Fading back to its poster: called back, and held still for the scrub.
+		const bool bWasStopping = bStopping && LeasedPlayer;
+		bStopping = false;
+		if (EnsureLease() && bWasStopping)
+		{
+			LeasedPlayer->Pause(0.f);
+		}
+	}
+	if (LeasedPlayer && LeasedPlayer->IsOpened())
+	{
+		LeasedPlayer->Scrub(Seconds);
+	}
+	else
+	{
+		PendingSeek = FMath::Max(0.f, Seconds);
+	}
+}
+
+void UMediaBox::EndScrub(bool bPlayOn)
+{
+	if (!bScrubbing)
+	{
+		return;
+	}
+	bScrubbing = false;
+
+	// Lands exactly where the bar was let go (a scrub may have stopped on the frame before it).
+	if (LeasedPlayer && LeasedPlayer->IsOpened())
+	{
+		LeasedPlayer->Seek(LeasedPlayer->GetTime());
+	}
+	const bool bPlayAgain = bPlayOn && bResumeAfterScrub;
+	bResumeAfterScrub = false;
+	if (bPlayAgain)
+	{
+		Play();
+	}
+	UpdateStatus();
+}
+
+void UMediaBox::SetSubtitleLanguage(const FString& NewLanguage)
+{
+	SubtitleLanguage = NewLanguage;
+	UpdateSubtitle();
+}
+
+FString UMediaBox::GetSubtitleLanguage() const
+{
+	return SubtitleLanguage.IsEmpty() ? MediaBoxRuntime::GetSubtitleLanguage() : SubtitleLanguage;
+}
+
+void UMediaBox::GetSubtitleLanguages(TArray<FString>& Languages, TArray<FText>& LanguageNames) const
+{
+	Languages.Reset();
+	LanguageNames.Reset();
+	if (MediaClip)
+	{
+		MediaClip->GetSubtitleLanguages(Languages, LanguageNames);
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Fullscreen
+// ---------------------------------------------------------------------------------------------
+
+void UMediaBox::ToggleFullscreen()
+{
+	SetFullscreen(!bFullscreen);
+}
+
+void UMediaBox::SetFullscreen(bool bNewFullscreen)
+{
+	if (bNewFullscreen == bFullscreen || IsDesignTime())
+	{
+		return;
+	}
+	const UMediaBoxSettings& Settings = UMediaBoxSettings::Get();
+
+	if (!bNewFullscreen)
+	{
+		if (!FullscreenLayer.IsValid())
+		{
+			return;
+		}
+		bFullscreen = false;
+		const FSlateRect BackTo = MyFullscreenSlot.IsValid() ? MyFullscreenSlot->GetDesktopRect() : FSlateRect();
+		TWeakObjectPtr<UMediaBox> WeakBox(this);
+		FullscreenLayer->BeginExit(BackTo, /*bInstant=*/false, [WeakBox]()
+		{
+			if (UMediaBox* Box = WeakBox.Get())
+			{
+				Box->FinishExitFullscreen();
+			}
+		});
+		OnFullscreenChanged.Broadcast(this, false);
+		return;
+	}
+
+	// Going back out still: comes back in from where it is.
+	if (FullscreenLayer.IsValid())
+	{
+		bFullscreen = true;
+		FullscreenLayer->BeginEnter();
+		OnFullscreenChanged.Broadcast(this, true);
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	UGameViewportClient* Viewport = World ? World->GetGameViewport() : nullptr;
+	if (!Viewport || !MyFullscreenSlot.IsValid())
+	{
+		return;
+	}
+	const FSlateRect From = MyFullscreenSlot->GetDesktopRect();
+	const TSharedPtr<SWidget> Content = MyFullscreenSlot->LendContent();
+	if (!Content.IsValid())
+	{
+		return;
+	}
+
+	FullscreenLayer = SNew(SMediaBoxFullscreenLayer)
+		.OwnerBox(this)
+		.From(From)
+		.Transition(Settings.FullscreenTransition)
+		.TransitionTime(Settings.FullscreenTransitionTime)
+		.Backdrop(Settings.FullscreenBackdrop)
+		.bEscapeLeaves(Settings.bEscapeLeavesFullscreen)
+		[
+			Content.ToSharedRef()
+		];
+	Viewport->AddViewportWidgetContent(FullscreenLayer.ToSharedRef(), Settings.FullscreenZOrder);
+	FullscreenViewport = Viewport;
+
+	// Escape reaches it.
+	if (Settings.bEscapeLeavesFullscreen && FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().SetKeyboardFocus(FullscreenLayer, EFocusCause::SetDirectly);
+	}
+
+	bFullscreen = true;
+	OnFullscreenChanged.Broadcast(this, true);
+}
+
+void UMediaBox::FinishExitFullscreen()
+{
+	// Asked to go full screen again meanwhile: stays.
+	if (bFullscreen || !FullscreenLayer.IsValid())
+	{
+		return;
+	}
+	RemoveFullscreenLayerNow();
+}
+
+void UMediaBox::RemoveFullscreenLayerNow()
+{
+	if (!FullscreenLayer.IsValid())
+	{
+		return;
+	}
+	const TSharedPtr<SWidget> Content = FullscreenLayer->TakeContent();
+	if (UGameViewportClient* Viewport = FullscreenViewport.Get())
+	{
+		Viewport->RemoveViewportWidgetContent(FullscreenLayer.ToSharedRef());
+	}
+	FullscreenLayer.Reset();
+	FullscreenViewport.Reset();
+	if (Content.IsValid() && MyFullscreenSlot.IsValid())
+	{
+		MyFullscreenSlot->ReturnContent(Content.ToSharedRef());
+	}
+	if (bFullscreen)
+	{
+		bFullscreen = false;
+		if (!IsUnreachable())
+		{
+			OnFullscreenChanged.Broadcast(this, false);
+		}
+	}
+}
+
 void UMediaBox::SetClip(UMediaBoxClip* NewClip, bool bPlayNow)
 {
 	if (NewClip != MediaClip)
 	{
 		// What played stops at once - no fade: the new clip's poster is shown on this frame.
+		ReleaseWarmPin();
 		ReleasePlayer(/*bRewind=*/true);
 		MediaClip = NewClip;
 		PendingSeek = -1.f;
@@ -305,12 +536,17 @@ bool UMediaBox::IsPlaying() const
 
 float UMediaBox::GetTime() const
 {
-	return LeasedPlayer && !bStopping ? LeasedPlayer->GetTime() : 0.f;
+	if (LeasedPlayer && !bStopping)
+	{
+		return LeasedPlayer->GetTime();
+	}
+	return PendingSeek > 0.f ? PendingSeek : 0.f;
 }
 
 float UMediaBox::GetDuration() const
 {
-	return LeasedPlayer ? LeasedPlayer->GetDuration() : 0.f;
+	const float FromPlayer = LeasedPlayer ? LeasedPlayer->GetDuration() : 0.f;
+	return FromPlayer > 0.f ? FromPlayer : (MediaClip ? MediaClip->KnownDuration : 0.f);
 }
 
 float UMediaBox::GetProgress() const
@@ -362,23 +598,19 @@ float UMediaBox::GetEffectiveVolume() const
 	return bMuted ? 0.f : AudioVolume;
 }
 
-void UMediaBox::StartPlayback(bool bRestartIfEnded)
+bool UMediaBox::EnsureLease()
 {
 	UMediaBoxPool* Pool = GetPool();
 	if (!Pool || !MediaClip)
 	{
-		return;
+		return false;
 	}
-
-	const bool bWasStopping = bStopping;
-	bStopping = false;
-
 	if (!LeasedPlayer)
 	{
 		LeasedPlayer = Pool->Acquire(MediaClip, this);
 		if (!LeasedPlayer)
 		{
-			return;
+			return false;
 		}
 		bSentOpened = false;
 		bSentFirstFrame = false;
@@ -388,6 +620,23 @@ void UMediaBox::StartPlayback(bool bRestartIfEnded)
 		VideoBrush.SetResourceObject(LeasedPlayer->GetMediaTexture());
 		LeasedPlayer->SetRate(PlaybackRate);
 		LeasedPlayer->SetVolume(GetEffectiveVolume());
+	}
+	return true;
+}
+
+void UMediaBox::StartPlayback(bool bRestartIfEnded)
+{
+	if (!GetPool() || !MediaClip || bScrubbing)
+	{
+		return;
+	}
+
+	const bool bWasStopping = bStopping;
+	bStopping = false;
+
+	if (!EnsureLease())
+	{
+		return;
 	}
 
 	if (PendingSeek >= 0.f)
@@ -543,6 +792,12 @@ bool UMediaBox::IsHiddenNow()
 		return true;
 	}
 
+	// Full screen: on the viewport, whatever screen it was on.
+	if (FullscreenLayer.IsValid())
+	{
+		return GFrameCounter > LastPaintFrame + MediaBoxPrivate::HiddenAfterFrames;
+	}
+
 	// On a Diegetic Screen: hidden while the screen is (it may draw rarely; a paused video would never ask it to draw again).
 	if (const UDiegeticScreenComponent* Screen = DiegeticScreen.Get())
 	{
@@ -629,6 +884,8 @@ void UMediaBox::TickMediaBox(float DeltaTime)
 		UpdateGroupMembership();
 	}
 
+	UpdateWarmPin(DeltaTime);
+
 	if (!CanPlayHere() || !MediaClip)
 	{
 		if (LeasedPlayer)
@@ -684,7 +941,7 @@ void UMediaBox::TickMediaBox(float DeltaTime)
 	}
 
 	// Playing, or paused while hidden.
-	const bool bWantsPlay = bPlayRequested || (bTriggerActive && !bHeldPaused);
+	const bool bWantsPlay = (bPlayRequested || (bTriggerActive && !bHeldPaused)) && !bScrubbing;
 	if (bWantsPlay && !bStopping)
 	{
 		if (bPauseWhenHidden && IsHiddenNow())
@@ -693,6 +950,16 @@ void UMediaBox::TickMediaBox(float DeltaTime)
 			{
 				LeasedPlayer->Pause(0.f);
 				bPausedByHidden = true;
+			}
+		}
+		else if (bPausedByHidden && !bResumeWhenVisible)
+		{
+			// Shown again, Resume When Visible off: stays paused, as if Pause was pressed.
+			bPausedByHidden = false;
+			bPlayRequested = false;
+			if (bTriggerActive)
+			{
+				bHeldPaused = true;
 			}
 		}
 		else
@@ -782,21 +1049,65 @@ void UMediaBox::TickMediaBox(float DeltaTime)
 
 void UMediaBox::UpdateSubtitle()
 {
+	// The cues of the language asked for (else the clip's own Subtitles).
+	FString CuesLanguage;
+	const TConstArrayView<FMediaBoxSubtitleCue> Cues = MediaClip ? MediaClip->GetSubtitleCues(GetSubtitleLanguage(), &CuesLanguage) : TConstArrayView<FMediaBoxSubtitleCue>();
+	const bool bLanguageChanged = CuesLanguage != ShownSubtitleLanguage;
+	ShownSubtitleLanguage = CuesLanguage;
+
 	int32 NewIndex = INDEX_NONE;
-	if (LeasedPlayer && !bStopping && MediaClip && MediaClip->Subtitles.Num() > 0)
+	if (LeasedPlayer && !bStopping && Cues.Num() > 0)
 	{
-		NewIndex = MediaBoxSubtitles::FindCue(MediaClip->Subtitles, LeasedPlayer->GetTime());
+		NewIndex = MediaBoxSubtitles::FindCue(Cues, LeasedPlayer->GetTime());
 	}
-	if (NewIndex != SubtitleIndex)
+	if (NewIndex != SubtitleIndex || bLanguageChanged)
 	{
 		SubtitleIndex = NewIndex;
-		CurrentSubtitle = NewIndex != INDEX_NONE ? MediaClip->Subtitles[NewIndex].Text : FText::GetEmpty();
+		CurrentSubtitle = Cues.IsValidIndex(NewIndex) ? Cues[NewIndex].Text : FText::GetEmpty();
 		OnSubtitleChanged.Broadcast(this, CurrentSubtitle);
 		if (MyMediaBox.IsValid())
 		{
 			MyMediaBox->Invalidate(EInvalidateWidgetReason::Paint);
 		}
 	}
+}
+
+void UMediaBox::UpdateWarmPin(float DeltaTime)
+{
+	// Hidden a while (not just a frame undrawn): let go.
+	HiddenFor = IsHiddenNow() ? HiddenFor + DeltaTime : 0.f;
+	UMediaBoxClip* Wanted = (bKeepWarmWhileShown && MediaClip && MediaClip->MediaSource && CanPlayHere()
+		&& HiddenFor < MediaBoxPrivate::UnpinAfterHidden) ? MediaClip.Get() : nullptr;
+
+	// Not before it has been drawn once (LastPaintFrame 0): a box never shown warms nothing.
+	if (Wanted && LastPaintFrame == 0)
+	{
+		Wanted = nullptr;
+	}
+	if (Wanted == WarmPinnedClip)
+	{
+		return;
+	}
+	ReleaseWarmPin();
+	if (UMediaBoxPool* Pool = Wanted ? GetPool() : nullptr)
+	{
+		Pool->PinClip(Wanted, /*bKeepWarm=*/true);
+		WarmPinnedClip = Wanted;
+		WarmPinPool = Pool;
+	}
+}
+
+void UMediaBox::ReleaseWarmPin()
+{
+	if (WarmPinnedClip)
+	{
+		if (UMediaBoxPool* Pool = WarmPinPool.Get())
+		{
+			Pool->PinClip(WarmPinnedClip, /*bKeepWarm=*/false);
+		}
+	}
+	WarmPinnedClip = nullptr;
+	WarmPinPool.Reset();
 }
 
 void UMediaBox::UpdateStatus()

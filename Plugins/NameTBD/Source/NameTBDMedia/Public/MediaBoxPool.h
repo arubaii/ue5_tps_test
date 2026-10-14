@@ -79,8 +79,20 @@ public:
 	/** Back to the start, paused, warm again for the next Play (audio fades out over FadeOut seconds). */
 	void Rewind(float FadeOut);
 
+	/** Jumps to Seconds, exactly. Get Time reads Seconds from now on, until the player has got there. */
 	void Seek(float Seconds);
+
+	/**
+	 * Jumps to Seconds for a scrub bar being dragged: at most one jump on its way at a time (the latest wanted is kept and sent as
+	 * the last lands), the player's own scrubbing when it has it - so the frame follows the bar without a queue of seeks behind it.
+	 */
+	void Scrub(float Seconds);
+
+	/** Whether a Seek or Scrub hasn't landed yet. */
+	bool IsSeeking() const { return PendingSeekTime >= 0.f; }
+
 	void SetRate(float NewRate);
+	float GetRate() const { return Rate; }
 
 	/** Fades the audio out over FadeOut seconds (then stops it), the video playing on - a Media Box fading back to its poster. */
 	void FadeOutAudio(float FadeOut) { StopAudio(FadeOut); }
@@ -107,8 +119,11 @@ public:
 	/** Whether it has been opened (On Opened). */
 	bool IsOpened() const { return State != EMediaBoxPlayerState::Free && State != EMediaBoxPlayerState::Opening && State != EMediaBoxPlayerState::Failed; }
 
-	/** Seconds into the video. */
+	/** Seconds into the video - where a Seek or Scrub on its way goes, until it gets there. */
 	float GetTime() const;
+
+	/** Seconds into the video, as the player says now. */
+	float GetPlayerTime() const;
 
 	/** The video's length in seconds; 0 until opened (or for a live stream). */
 	float GetDuration() const;
@@ -224,6 +239,19 @@ private:
 	float AudioFadeDuration = 0.f;
 	bool bAudioFadingOut = false;
 	bool bAudioPlaying = false;
+
+	/** Where a Seek / Scrub goes until the player is there (below 0: none), and when it was sent (platform seconds). */
+	float PendingSeekTime = -1.f;
+	double PendingSeekSentAt = 0.0;
+
+	/** A scrub's next jump, kept while the last is on its way. Below 0: none. */
+	float QueuedScrubTime = -1.f;
+
+	/** Where it was paused (below 0: not paused by Pause) - played on from exactly there. */
+	float PausedAtTime = -1.f;
+
+	/** Sends a seek (bScrub: the player's scrubbing when it has it) and remembers where it goes. */
+	void SendSeek(float Seconds, bool bScrub);
 
 	/** Separate Sound clock: the video time it was started at, and when (platform seconds). For keeping it in step. */
 	float AudioStartMediaTime = 0.f;

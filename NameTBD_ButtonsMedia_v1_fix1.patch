@@ -1,0 +1,133 @@
+diff --git a/Docs/Design/MediaBox.md b/Docs/Design/MediaBox.md
+index e580ca1..2b35cc6 100644
+--- a/Docs/Design/MediaBox.md
++++ b/Docs/Design/MediaBox.md
+@@ -62,8 +62,8 @@ Starting a clip from cold in the Media Framework goes: open the source (async),
+ - **Media Progress value input** (`FWidgetAnimInput_MediaProgress`, no registration needed): Progress 0-1 / Seconds / Playing, from the named box or the one found from the measured widget; looked up once per measured widget.
+ 
+ ## Transport bar (`UMediaBoxTransportBar`, abstract `UUserWidget`)
+-- Optional `BindWidgetOptional` parts: PlayPauseButton, StopButton, ScrubBar (Slider; Begin Scrub / Scrub To / End Scrub on the box), TimeText, VolumeSlider, MuteButton, SubtitlesButton (toggles the global switch), SubtitleText, **SubtitleLanguageButton** (Cycle Subtitle Language), **SubtitleLanguageText** (the shown language's name), **PlaybackSpeedButton** (Cycle Playback Speed), **PlaybackSpeedText**, **FullscreenButton** (Toggle Fullscreen). Drives the box named Media Box around it (`MediaBoxFind::Find`), or Set Media Box. The parts come from the user's own Widget Blueprint (GUID rule: nothing made in `OnCreationFromPalette`).
+-- **Every control is a function** (`Media Box|Controls`), the parts only call them - so a right-click Info Card or a settings menu can be built without the named parts: Toggle Play Pause, Play / Pause / Stop Video, Is Video Playing, Seek To, Seek By, Get Video Time / Duration, Toggle Mute, Set Muted / Is Muted, Set / Get Volume (above 0 unmutes), Toggle Subtitles, Set / Are Subtitles Enabled, Cycle Subtitle Language, Set / Get Subtitle Language (on the box), Get Subtitle Language Name, Get Subtitle Languages, Set / Get Playback Speed, Cycle Playback Speed (next above the current, round to the slowest), Get Playback Speed Text (for menu entries), Toggle / Set / Is Fullscreen, Format Video Time. Events for icons: On Playing Changed (counts loading and a scrub that will play on), On Muted Changed, On Volume Changed, On Playback Speed Changed, On Fullscreen Changed, On Subtitles Enabled Changed, On Subtitle Language Changed (each fired once as the bar finds its box).
++- Optional `BindWidgetOptional` parts: PlayPauseButton, StopButton, ScrubBar (Slider; Begin Scrub / Scrub To / End Scrub on the box), TimeText, VolumeSlider, MuteButton, SubtitlesButton (toggles the global switch), SubtitleText, **SubtitleLanguageButton** (Cycle Subtitle Language), **SubtitleLanguageText** (the shown language's name), **PlaybackSpeedButton** (Cycle Video Playback Speed), **PlaybackSpeedText**, **FullscreenButton** (Toggle Fullscreen). Drives the box named Media Box around it (`MediaBoxFind::Find`), or Set Media Box. The parts come from the user's own Widget Blueprint (GUID rule: nothing made in `OnCreationFromPalette`).
++- **Every control is a function** (`Media Box|Controls`), the parts only call them - so a right-click Info Card or a settings menu can be built without the named parts: Toggle Play Pause, Play / Pause / Stop Video, Is Video Playing, Seek To, Seek By, Get Video Time / Duration, Toggle Mute, Set Muted / Is Muted, Set / Get Volume (above 0 unmutes), Toggle Subtitles, Set / Are Subtitles Enabled, Cycle Subtitle Language, Set / Get Subtitle Language (on the box), Get Subtitle Language Name, Get Subtitle Languages, Set / Get Video Playback Speed, Cycle Video Playback Speed (next above the current, round to the slowest), Get Video Playback Speed Text (for menu entries), Toggle / Set / Is Fullscreen, Format Video Time. ("Video" in the speed functions' names: `UUserWidget` already has a `SetPlaybackSpeed` UFUNCTION, for widget animations, which UHT won't let a subclass declare again.) Events for icons: On Playing Changed (counts loading and a scrub that will play on), On Muted Changed, On Volume Changed, On Playback Speed Changed, On Fullscreen Changed, On Subtitles Enabled Changed, On Subtitle Language Changed (each fired once as the bar finds its box).
+ - **Time:** TimeText's own authored text is the format when it holds `{StartTime}` (where the video is), `{EndTime}` (its length) or `{Remaining}` (captured once, `CaptureTimeTemplate`); else **Time Format** (default `{StartTime} / {EndTime}`). **Not Started Time Format** (empty = Time Format): before it has started (Stopped / Empty / Loading at 0 s) - e.g. `{EndTime}` alone. Without a template and with no known length (or Elapsed Time Only, now advanced, legacy): `{StartTime}` alone, as before. **Time Display** (`FMediaBoxTimeDisplay`): Wrap Minutes Into Hours (on; off: 62:03), Always Show Hours, Pad Leading Digits, Show Milliseconds + Millisecond Digits (1 - 3), Delimiter (`:`), Millisecond Delimiter (`.`); floored, never rounded. The defaults read exactly as before (0:05, 1:02:03).
+ - **Scrub:** **Pause When Scrubbed To Start** (default on): let go at the bar's start (value <= 0.005 or <= 0.1 s) it stays paused there (`EndScrub(false)`). Value changes are only acted on while scrubbing (the bar following the video never seeks).
+ - **Speed:** Playback Speeds (0.25 - 2 in quarters), Playback Speed Format (`{Speed}x`), Normal Speed Text (`Normal`; empty = the format).
+diff --git a/Plugins/NameTBD/Resources/AI/Docs/media.md b/Plugins/NameTBD/Resources/AI/Docs/media.md
+index 0c713b6..f1c7717 100644
+--- a/Plugins/NameTBD/Resources/AI/Docs/media.md
++++ b/Plugins/NameTBD/Resources/AI/Docs/media.md
+@@ -8,7 +8,7 @@ Subtitle languages: a clip's Subtitles are in Subtitle Language (en); Other Lang
+ ## Video player with controls
+ MediaBoxWithControls ("Media Box With Controls") is a Media Box with a controls bar over it. Controls Class: a Widget Blueprint whose parent class is MediaBoxTransportBar (None: Project Settings > Media Box > Default Controls Class). Controls Behavior (tick to override the project's Default Controls Behavior): Preset YouTube (shown while the pointer moves, hidden 3 s after it stops or 0.1 s after it leaves while playing, always shown while paused, fades 0.1 s in / 0.25 s out, pointer hidden with the bar, click plays / pauses, subtitles lifted above the bar) or Custom (set Hide After Idle, Hide After Unhovered, the Show While... switches, fades). Controls Height (0.13 of the video height, like YouTube; Min / Max Height limits) scales the bar evenly to fit any video size and stretches it across; design the bar with a Horizontal Box or Overlay root, not a Canvas Panel. Controls Alignment / Padding place the bar.
+ 
+-Transport bar parts (all optional, by name): PlayPauseButton, StopButton, ScrubBar, TimeText, VolumeSlider, MuteButton, SubtitlesButton, SubtitleText, SubtitleLanguageButton, SubtitleLanguageText, PlaybackSpeedButton, PlaybackSpeedText, FullscreenButton. Every control is also a function on the bar (Toggle Play Pause, Set / Get Playback Speed, Cycle Playback Speed, Toggle Fullscreen, Cycle Subtitle Language, Set / Get Volume, Toggle Mute...) for menus of your own (a right-click Info Card). TimeText: type {StartTime}, {EndTime}, {Remaining} into its text (or set Time Format); Not Started Time Format before it plays; Time Display (hours, milliseconds, delimiters). Pause When Scrubbed To Start (on). Remember Volume + Volume Save Name keep the volume between sessions.
++Transport bar parts (all optional, by name): PlayPauseButton, StopButton, ScrubBar, TimeText, VolumeSlider, MuteButton, SubtitlesButton, SubtitleText, SubtitleLanguageButton, SubtitleLanguageText, PlaybackSpeedButton, PlaybackSpeedText, FullscreenButton. Every control is also a function on the bar (Toggle Play Pause, Set / Get Video Playback Speed, Cycle Video Playback Speed, Toggle Fullscreen, Cycle Subtitle Language, Set / Get Volume, Toggle Mute...) for menus of your own (a right-click Info Card). TimeText: type {StartTime}, {EndTime}, {Remaining} into its text (or set Time Format); Not Started Time Format before it plays; Time Display (hours, milliseconds, delimiters). Pause When Scrubbed To Start (on). Remember Volume + Volume Save Name keep the volume between sessions.
+ 
+ ## Audio in the world
+ Audio Space World (On Diegetic Screen): a Media Box on a Diegetic Screen is heard from the screen - falloff (Inner Radius, Falloff Distance), muffled through walls (Occlusion, channel Visibility), level reverb; or give World Audio a Sound Attenuation asset. Each player hears it from their own camera (multiplayer and split screen work). Default 2D (UI).
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxTransportBar.cpp b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxTransportBar.cpp
+index 3e61b8d..d366928 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxTransportBar.cpp
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Private/MediaBoxTransportBar.cpp
+@@ -221,7 +221,7 @@ void UMediaBoxTransportBar::RefreshFromMediaBox(float DeltaTime)
+ 	const float SpeedNow = Box->GetPlaybackRate();
+ 	if (PlaybackSpeedText && (!bReportedOnce || !FMath::IsNearlyEqual(SpeedNow, LastSpeed)))
+ 	{
+-		PlaybackSpeedText->SetText(GetPlaybackSpeedText(SpeedNow));
++		PlaybackSpeedText->SetText(GetVideoPlaybackSpeedText(SpeedNow));
+ 	}
+ 
+ 	const FString LanguageNow = Box->GetSubtitleLanguage();
+@@ -499,7 +499,7 @@ void UMediaBoxTransportBar::GetSubtitleLanguages(TArray<FString>& Languages, TAr
+ 	}
+ }
+ 
+-void UMediaBoxTransportBar::SetPlaybackSpeed(float NewSpeed)
++void UMediaBoxTransportBar::SetVideoPlaybackSpeed(float NewSpeed)
+ {
+ 	if (UMediaBox* Box = FindDrivenBox())
+ 	{
+@@ -507,13 +507,13 @@ void UMediaBoxTransportBar::SetPlaybackSpeed(float NewSpeed)
+ 	}
+ }
+ 
+-float UMediaBoxTransportBar::GetPlaybackSpeed() const
++float UMediaBoxTransportBar::GetVideoPlaybackSpeed() const
+ {
+ 	const UMediaBox* Box = FindDrivenBox();
+ 	return Box ? Box->GetPlaybackRate() : 1.f;
+ }
+ 
+-void UMediaBoxTransportBar::CyclePlaybackSpeed()
++void UMediaBoxTransportBar::CycleVideoPlaybackSpeed()
+ {
+ 	if (PlaybackSpeeds.Num() == 0)
+ 	{
+@@ -522,7 +522,7 @@ void UMediaBoxTransportBar::CyclePlaybackSpeed()
+ 	// The next speed above the current one, round to the slowest.
+ 	TArray<float> Sorted = PlaybackSpeeds;
+ 	Sorted.Sort();
+-	const float Current = GetPlaybackSpeed();
++	const float Current = GetVideoPlaybackSpeed();
+ 	float Next = Sorted[0];
+ 	for (const float Candidate : Sorted)
+ 	{
+@@ -532,10 +532,10 @@ void UMediaBoxTransportBar::CyclePlaybackSpeed()
+ 			break;
+ 		}
+ 	}
+-	SetPlaybackSpeed(Next);
++	SetVideoPlaybackSpeed(Next);
+ }
+ 
+-FText UMediaBoxTransportBar::GetPlaybackSpeedText(float Speed) const
++FText UMediaBoxTransportBar::GetVideoPlaybackSpeedText(float Speed) const
+ {
+ 	if (FMath::IsNearlyEqual(Speed, 1.f) && !NormalSpeedText.IsEmpty())
+ 	{
+@@ -602,7 +602,7 @@ void UMediaBoxTransportBar::HandleSubtitleLanguageClicked()
+ 
+ void UMediaBoxTransportBar::HandlePlaybackSpeedClicked()
+ {
+-	CyclePlaybackSpeed();
++	CycleVideoPlaybackSpeed();
+ }
+ 
+ void UMediaBoxTransportBar::HandleFullscreenClicked()
+diff --git a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTransportBar.h b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTransportBar.h
+index 8f28c6b..e36c26b 100644
+--- a/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTransportBar.h
++++ b/Plugins/NameTBD/Source/NameTBDMedia/Public/MediaBoxTransportBar.h
+@@ -22,7 +22,7 @@ class UTextBlock;
+  * PlaybackSpeedText, FullscreenButton. Each part is wired up by its name; style them as any Button, Slider or Text (Context Menu
+  * Buttons work, being Buttons). The On ... Changed events swap icons.
+  *
+- * Every control is also a function (Toggle Play Pause, Set Playback Speed / Get Playback Speed, Toggle Fullscreen, Cycle Subtitle
++ * Every control is also a function (Toggle Play Pause, Set Video Playback Speed / Get Video Playback Speed, Toggle Fullscreen, Cycle Subtitle
+  * Language...): build your own - a right-click Info Card with the speeds, YouTube's settings menu - and call them, with or without
+  * the named parts.
+  *
+@@ -190,18 +190,18 @@ public:
+ 
+ 	/** Plays at NewSpeed: 1 normal, 0.5 half, 2 double. */
+ 	UFUNCTION(BlueprintCallable, Category = "Media Box|Controls")
+-	void SetPlaybackSpeed(float NewSpeed);
++	void SetVideoPlaybackSpeed(float NewSpeed);
+ 
+ 	UFUNCTION(BlueprintPure, Category = "Media Box|Controls")
+-	float GetPlaybackSpeed() const;
++	float GetVideoPlaybackSpeed() const;
+ 
+ 	/** The next of Playback Speeds (round to the slowest). */
+ 	UFUNCTION(BlueprintCallable, Category = "Media Box|Controls")
+-	void CyclePlaybackSpeed();
++	void CycleVideoPlaybackSpeed();
+ 
+ 	/** A speed as PlaybackSpeedText writes it ("1.5x", "Normal") - for a speed menu's entries. */
+ 	UFUNCTION(BlueprintPure, Category = "Media Box|Controls")
+-	FText GetPlaybackSpeedText(float Speed) const;
++	FText GetVideoPlaybackSpeedText(float Speed) const;
+ 
+ 	UFUNCTION(BlueprintCallable, Category = "Media Box|Controls")
+ 	void ToggleFullscreen();

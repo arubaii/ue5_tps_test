@@ -1094,6 +1094,25 @@ int32 SContextMenuSlateButton::OnPaint(const FPaintArgs& Args, const FGeometry& 
 		}
 	}
 
+	// Laid out at a new size: told to an owner whose parts follow its size (a switch's knob), deferred as above.
+	if (Owner && Owner->WantsLayoutSizeChanges())
+	{
+		const FVector2D PaintedSize = AllottedGeometry.GetLocalSize();
+		if (!PaintedSize.Equals(LastReportedLayoutSize, 0.01))
+		{
+			LastReportedLayoutSize = PaintedSize;
+			TWeakObjectPtr<UContextMenuButton> WeakSizeOwner(Owner);
+			FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakSizeOwner, PaintedSize](float)
+			{
+				if (UContextMenuButton* StrongOwner = WeakSizeOwner.Get())
+				{
+					StrongOwner->HandleLayoutSizeChanged(PaintedSize);
+				}
+				return false; // one-shot
+			}));
+		}
+	}
+
 	if (!Owner || !BrushLayer.IsValid())
 	{
 		return SButton::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
@@ -3896,6 +3915,354 @@ void UContextMenuButton::RefreshButtonState(bool bInstant)
 }
 
 // ------------------------------------------------------------------
+// Targets at runtime (by Target ID)
+// ------------------------------------------------------------------
+
+void UContextMenuButton::SetTargetActive(FName InTargetId, bool bMakeActive, bool bInstant)
+{
+	if (InTargetId.IsNone())
+	{
+		return;
+	}
+
+	TArray<int32> ChangedShapes;
+	TArray<int32> ChangedDesigns;
+	TArray<int32> ActivatedShapes;
+	TArray<int32> ActivatedDesigns;
+	for (int32 Index = 0; Index < ShapeTargets.Num(); ++Index)
+	{
+		FContextMenuShapeTarget& Target = ShapeTargets[Index];
+		if (Target.TargetId == InTargetId && Target.bActive != bMakeActive)
+		{
+			Target.bActive = bMakeActive;
+			ChangedShapes.Add(Index);
+			if (bMakeActive)
+			{
+				ActivatedShapes.Add(Index);
+			}
+		}
+	}
+	for (int32 Index = 0; Index < DesignTargets.Num(); ++Index)
+	{
+		FContextMenuDesignTarget& Target = DesignTargets[Index];
+		if (Target.TargetId == InTargetId && Target.bActive != bMakeActive)
+		{
+			Target.bActive = bMakeActive;
+			ChangedDesigns.Add(Index);
+			if (bMakeActive)
+			{
+				ActivatedDesigns.Add(Index);
+			}
+		}
+	}
+	ApplyChangedTargets(ChangedShapes, ChangedDesigns, ActivatedShapes, ActivatedDesigns, bInstant);
+}
+
+void UContextMenuButton::SetTargetVariant(FName InTargetId, bool bInstant)
+{
+	if (InTargetId.IsNone())
+	{
+		return;
+	}
+
+	// The widgets the variant's targets drive: on those, every other target with an ID is switched off.
+	TSet<FName> VariantWidgets;
+	for (const FContextMenuShapeTarget& Target : ShapeTargets)
+	{
+		if (Target.TargetId == InTargetId)
+		{
+			VariantWidgets.Add(Target.TargetWidgetName);
+		}
+	}
+	for (const FContextMenuDesignTarget& Target : DesignTargets)
+	{
+		if (Target.TargetId == InTargetId)
+		{
+			VariantWidgets.Add(Target.TargetWidgetName);
+		}
+	}
+	if (VariantWidgets.Num() == 0)
+	{
+		return;
+	}
+
+	TArray<int32> ChangedShapes;
+	TArray<int32> ChangedDesigns;
+	TArray<int32> ActivatedShapes;
+	TArray<int32> ActivatedDesigns;
+	for (int32 Index = 0; Index < ShapeTargets.Num(); ++Index)
+	{
+		FContextMenuShapeTarget& Target = ShapeTargets[Index];
+		if (Target.TargetId.IsNone() || !VariantWidgets.Contains(Target.TargetWidgetName))
+		{
+			continue;
+		}
+		const bool bWanted = Target.TargetId == InTargetId;
+		if (Target.bActive != bWanted)
+		{
+			Target.bActive = bWanted;
+			ChangedShapes.Add(Index);
+			if (bWanted)
+			{
+				ActivatedShapes.Add(Index);
+			}
+		}
+	}
+	for (int32 Index = 0; Index < DesignTargets.Num(); ++Index)
+	{
+		FContextMenuDesignTarget& Target = DesignTargets[Index];
+		if (Target.TargetId.IsNone() || !VariantWidgets.Contains(Target.TargetWidgetName))
+		{
+			continue;
+		}
+		const bool bWanted = Target.TargetId == InTargetId;
+		if (Target.bActive != bWanted)
+		{
+			Target.bActive = bWanted;
+			ChangedDesigns.Add(Index);
+			if (bWanted)
+			{
+				ActivatedDesigns.Add(Index);
+			}
+		}
+	}
+	ApplyChangedTargets(ChangedShapes, ChangedDesigns, ActivatedShapes, ActivatedDesigns, bInstant);
+}
+
+bool UContextMenuButton::IsTargetActive(FName InTargetId) const
+{
+	return ShapeTargets.ContainsByPredicate([InTargetId](const FContextMenuShapeTarget& Target) { return Target.TargetId == InTargetId && Target.bActive; })
+		|| DesignTargets.ContainsByPredicate([InTargetId](const FContextMenuDesignTarget& Target) { return Target.TargetId == InTargetId && Target.bActive; });
+}
+
+TArray<FName> UContextMenuButton::GetTargetIds() const
+{
+	TArray<FName> Ids;
+	for (const FContextMenuShapeTarget& Target : ShapeTargets)
+	{
+		if (!Target.TargetId.IsNone())
+		{
+			Ids.AddUnique(Target.TargetId);
+		}
+	}
+	for (const FContextMenuDesignTarget& Target : DesignTargets)
+	{
+		if (!Target.TargetId.IsNone())
+		{
+			Ids.AddUnique(Target.TargetId);
+		}
+	}
+	return Ids;
+}
+
+bool UContextMenuButton::GetShapeTargetById(FName InTargetId, FContextMenuShapeTarget& OutShapeTarget) const
+{
+	if (const FContextMenuShapeTarget* Found = InTargetId.IsNone() ? nullptr : ShapeTargets.FindByPredicate([InTargetId](const FContextMenuShapeTarget& Target) { return Target.TargetId == InTargetId; }))
+	{
+		OutShapeTarget = *Found;
+		return true;
+	}
+	return false;
+}
+
+bool UContextMenuButton::SetShapeTargetById(FName InTargetId, const FContextMenuShapeTarget& NewShapeTarget, bool bInstant)
+{
+	TArray<int32> ChangedShapes;
+	TArray<int32> ActivatedShapes;
+	for (int32 Index = 0; Index < ShapeTargets.Num() && !InTargetId.IsNone(); ++Index)
+	{
+		if (ShapeTargets[Index].TargetId == InTargetId)
+		{
+			const bool bWasActive = ShapeTargets[Index].bActive;
+			ShapeTargets[Index] = NewShapeTarget;
+			ShapeTargets[Index].TargetId = InTargetId;
+			ChangedShapes.Add(Index);
+			if (!bWasActive && NewShapeTarget.bActive)
+			{
+				ActivatedShapes.Add(Index);
+			}
+		}
+	}
+	ApplyChangedTargets(ChangedShapes, {}, ActivatedShapes, {}, bInstant);
+	return ChangedShapes.Num() > 0;
+}
+
+bool UContextMenuButton::GetDesignTargetById(FName InTargetId, FContextMenuDesignTarget& OutDesignTarget) const
+{
+	if (const FContextMenuDesignTarget* Found = InTargetId.IsNone() ? nullptr : DesignTargets.FindByPredicate([InTargetId](const FContextMenuDesignTarget& Target) { return Target.TargetId == InTargetId; }))
+	{
+		OutDesignTarget = *Found;
+		return true;
+	}
+	return false;
+}
+
+bool UContextMenuButton::SetDesignTargetById(FName InTargetId, const FContextMenuDesignTarget& NewDesignTarget, bool bInstant)
+{
+	TArray<int32> ChangedDesigns;
+	TArray<int32> ActivatedDesigns;
+	for (int32 Index = 0; Index < DesignTargets.Num() && !InTargetId.IsNone(); ++Index)
+	{
+		if (DesignTargets[Index].TargetId == InTargetId)
+		{
+			const bool bWasActive = DesignTargets[Index].bActive;
+			DesignTargets[Index] = NewDesignTarget;
+			DesignTargets[Index].TargetId = InTargetId;
+			ChangedDesigns.Add(Index);
+			if (!bWasActive && NewDesignTarget.bActive)
+			{
+				ActivatedDesigns.Add(Index);
+			}
+		}
+	}
+	ApplyChangedTargets({}, ChangedDesigns, {}, ActivatedDesigns, bInstant);
+	return ChangedDesigns.Num() > 0;
+}
+
+bool UContextMenuButton::SetDesignTargetImage(FName InTargetId, UWidgetSVG* NewSVG, UTexture2D* NewTexture, bool bInstant)
+{
+	auto SetImage = [NewSVG, NewTexture](FContextMenuWidgetDesign& Design, bool bForce)
+	{
+		if (!bForce && !Design.bDriveBrushTexture)
+		{
+			return;
+		}
+		Design.bDriveBrushTexture = NewSVG != nullptr || NewTexture != nullptr;
+		Design.BrushImageSource = NewSVG ? EWidgetImageSource::SVG : EWidgetImageSource::Texture;
+		Design.BrushSVG = NewSVG;
+		Design.BrushTexture = NewSVG ? nullptr : NewTexture;
+	};
+
+	TArray<int32> ChangedDesigns;
+	for (int32 Index = 0; Index < DesignTargets.Num() && !InTargetId.IsNone(); ++Index)
+	{
+		FContextMenuDesignTarget& Target = DesignTargets[Index];
+		if (Target.TargetId != InTargetId)
+		{
+			continue;
+		}
+		// The base always; each overridden state too, so the image is the same whatever the state (its tint and the rest stay).
+		SetImage(Target.BaseDesign, /*bForce=*/true);
+		const bool bAnyImage = NewSVG != nullptr || NewTexture != nullptr;
+		SetImage(Target.Normal, bAnyImage && Target.bOverrideNormalDesign);
+		SetImage(Target.Hovered, bAnyImage && Target.bOverrideHoveredDesign);
+		SetImage(Target.Pressed, bAnyImage && Target.bOverridePressedDesign);
+		SetImage(Target.Disabled, bAnyImage && Target.bOverrideDisabledDesign);
+		SetImage(Target.Enabled, bAnyImage && Target.bOverrideEnabledDesign);
+		ChangedDesigns.Add(Index);
+	}
+	ApplyChangedTargets({}, ChangedDesigns, {}, {}, bInstant);
+	return ChangedDesigns.Num() > 0;
+}
+
+bool UContextMenuButton::SetShapeTargetTransform(FName InTargetId, EContextMenuState ForState, const FWidgetTransform& NewTransform, bool bInstant)
+{
+	TArray<int32> ChangedShapes;
+	for (int32 Index = 0; Index < ShapeTargets.Num() && !InTargetId.IsNone(); ++Index)
+	{
+		FContextMenuShapeTarget& Target = ShapeTargets[Index];
+		if (Target.TargetId != InTargetId)
+		{
+			continue;
+		}
+		FContextMenuShapeStateSettings* Settings = &Target.BaseShape;
+		switch (ForState)
+		{
+		case EContextMenuState::Normal:   Settings = Target.bOverrideNormalShape ? &Target.NormalShape : Settings; break;
+		case EContextMenuState::Hovered:  Settings = Target.bOverrideHoveredShape ? &Target.HoveredShape : Settings; break;
+		case EContextMenuState::Pressed:  Settings = Target.bOverridePressedShape ? &Target.PressedShape : Settings; break;
+		case EContextMenuState::Disabled: Settings = Target.bOverrideDisabledShape ? &Target.DisabledShape : Settings; break;
+		case EContextMenuState::Enabled:  Settings = Target.bOverrideEnabledShape ? &Target.EnabledShape : Settings; break;
+		default: break;
+		}
+		Settings->Transform = NewTransform;
+		ChangedShapes.Add(Index);
+	}
+	ApplyChangedTargets(ChangedShapes, {}, {}, {}, bInstant);
+	return ChangedShapes.Num() > 0;
+}
+
+void UContextMenuButton::ApplyChangedTargets(const TArray<int32>& ChangedShapes, const TArray<int32>& ChangedDesigns, const TArray<int32>& ActivatedShapes, const TArray<int32>& ActivatedDesigns, bool bInstant)
+{
+	if (ChangedShapes.Num() == 0 && ChangedDesigns.Num() == 0)
+	{
+		return;
+	}
+
+#if WITH_EDITOR
+	// The designer's preview shows the authored state at once.
+	if (IsDesignTime())
+	{
+		ApplyDesignPreviews();
+		return;
+	}
+#endif
+
+	// Not resolved yet (not built): the first build resolves them as they are now.
+	if (!bHasInitializedRuntimeShapeTargets || !bHasInitializedRuntimeDesignTargets || !GetCachedWidget().IsValid())
+	{
+		return;
+	}
+
+	for (FContextMenuRuntimeShapeTarget& Entry : RuntimeShapeTargets)
+	{
+		if (!ChangedShapes.Contains(Entry.AuthoredIndex))
+		{
+			continue;
+		}
+		// Re-read the goal, and blend to it from wherever the target is now.
+		Entry.bHasResolvedGoal = false;
+		Entry.bHasInitializedState = false;
+
+		// Switched on: it starts where the widget is - the target switched off on the same widget (a variant) left it there.
+		if (ActivatedShapes.Contains(Entry.AuthoredIndex))
+		{
+			const FContextMenuRuntimeShapeTarget* Previous = RuntimeShapeTargets.FindByPredicate([&Entry, &ChangedShapes, &ActivatedShapes](const FContextMenuRuntimeShapeTarget& Other)
+			{
+				return &Other != &Entry && Other.Widget == Entry.Widget && Other.bHasInitializedState
+					&& ChangedShapes.Contains(Other.AuthoredIndex) && !ActivatedShapes.Contains(Other.AuthoredIndex);
+			});
+			if (Previous)
+			{
+				Entry.CurrentTransform = Previous->CurrentTransform;
+				Entry.CurrentShape = Previous->CurrentShape;
+			}
+			else if (UWidget* EntryWidget = Entry.Widget.Get(); EntryWidget && EntryWidget != this)
+			{
+				Entry.CurrentTransform = EntryWidget->GetRenderTransform();
+			}
+		}
+	}
+
+	for (FContextMenuRuntimeDesignTarget& Entry : RuntimeDesignTargets)
+	{
+		if (!ChangedDesigns.Contains(Entry.AuthoredIndex))
+		{
+			continue;
+		}
+		// Discrete swaps (image, material) happen again; a target switched on blends from what its widget shows now.
+		Entry.bHasAppliedBrush = false;
+		Entry.bHasAppliedMaterial = false;
+		Entry.bHasResolvedMaterial = false;
+		if (UWidget* EntryWidget = Entry.Widget.Get(); EntryWidget && ActivatedDesigns.Contains(Entry.AuthoredIndex))
+		{
+			Entry.CurrentTint = ExtractWidgetColor(EntryWidget);
+			Entry.CurrentOutlineTint = ExtractWidgetOutlineTint(EntryWidget);
+			Entry.CurrentOpacity = EntryWidget->GetRenderOpacity();
+		}
+	}
+
+	if (bInstant)
+	{
+		ApplyTransitions(0.0f, /*bInstant=*/true);
+	}
+	else
+	{
+		StartVisualUpdateTimer();
+	}
+}
+
+// ------------------------------------------------------------------
 // Sound
 // ------------------------------------------------------------------
 //
@@ -4532,6 +4899,11 @@ bool UContextMenuButton::ApplyTransitions(float DeltaTime, bool bInstant)
 	bool bShapesDone = true;
 	for (FContextMenuRuntimeShapeTarget& Target : RuntimeShapeTargets)
 	{
+		// Switched off (Set Target Active / Set Target Variant): skipped, its widget left to the others.
+		if (ShapeTargets.IsValidIndex(Target.AuthoredIndex) && !ShapeTargets[Target.AuthoredIndex].bActive)
+		{
+			continue;
+		}
 		bShapesDone &= ApplyShapeTarget(Target, CurrentShapeState, DeltaTime, bInstant);
 	}
 
@@ -4539,6 +4911,10 @@ bool UContextMenuButton::ApplyTransitions(float DeltaTime, bool bInstant)
 	bool bDesignsDone = true;
 	for (FContextMenuRuntimeDesignTarget& Target : RuntimeDesignTargets)
 	{
+		if (DesignTargets.IsValidIndex(Target.AuthoredIndex) && !DesignTargets[Target.AuthoredIndex].bActive)
+		{
+			continue;
+		}
 		bDesignsDone &= ApplyDesignTarget(Target, CurrentDesignState, DeltaTime, bInstant);
 	}
 
@@ -4566,7 +4942,14 @@ bool UContextMenuButton::ApplyShapeTarget(FContextMenuRuntimeShapeTarget& Target
 		Target.bHasResolvedGoal = true;
 	}
 	const FContextMenuShapeStateSettings& TargetShape = Target.ResolvedGoal;
-	const FContextMenuResolvedInterpolation Interp = Preset ? Preset->GetResolvedInterpolation() : Authored.GetResolvedInterpolation();
+	FContextMenuResolvedInterpolation Interp = Preset ? Preset->GetResolvedInterpolation() : Authored.GetResolvedInterpolation();
+
+	// Back to rest (Normal): the target's own exit speed, for both channels, when it has one.
+	if (!Preset && Authored.bSeparateExitSpeed && State == EContextMenuState::Normal)
+	{
+		Interp.TransformSpeed = Authored.ExitInterpolationSpeed;
+		Interp.SizeSpeed = Authored.ExitInterpolationSpeed;
+	}
 
 	// A state change resets the blend from wherever this target currently sits, and re-arms the delay. Done
 	// here, per target, rather than once for the whole button, since every target can carry its own speed,
@@ -5252,6 +5635,11 @@ bool UContextMenuButton::ApplyDesignTarget(FContextMenuRuntimeDesignTarget& Targ
 		{
 			Speed = Preset->InterpolationSpeed;
 		}
+	}
+	else if (Authored.bSeparateExitSpeed && State == EContextMenuState::Normal)
+	{
+		// Back to rest: its own exit speed.
+		Speed = Authored.ExitInterpolationSpeed;
 	}
 	bool bDone = true;
 
@@ -5994,7 +6382,7 @@ void UContextMenuButton::ApplyDesignPreviews()
 	// directly rather than through the runtime blend, since a preview should show up immediately, not ease in.
 	for (const FContextMenuShapeTarget& ShapeAuthored : ShapeTargets)
 	{
-		UWidget* ShapeWidget = FindWidgetInButtonTree(ShapeAuthored.TargetWidgetName);
+		UWidget* ShapeWidget = ShapeAuthored.bActive ? FindWidgetInButtonTree(ShapeAuthored.TargetWidgetName) : nullptr;
 		if (!ShapeWidget)
 		{
 			continue;
@@ -6055,7 +6443,7 @@ void UContextMenuButton::ApplyDesignPreviews()
 	// Now apply the corresponding state to all the design targets
 	for (const FContextMenuDesignTarget& Authored : DesignTargets)
 	{
-		UWidget* Widget = FindWidgetInButtonTree(Authored.TargetWidgetName);
+		UWidget* Widget = Authored.bActive ? FindWidgetInButtonTree(Authored.TargetWidgetName) : nullptr;
 		if (!Widget)
 		{
 			continue;

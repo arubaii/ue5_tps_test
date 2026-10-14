@@ -12,6 +12,13 @@
 #include "Components/SizeBox.h"
 #include "Components/TextBlock.h"
 #include "Types/WidgetActiveTimerDelegate.h"
+#include "UObject/Class.h"
+#include "UObject/UObjectIterator.h"
+
+#if WITH_EDITOR
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Modules/ModuleManager.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "ChoiceButtons"
 
@@ -27,6 +34,114 @@ namespace ChoiceButtonParts
 	const FName Segments(TEXT("Segments"));
 	const FName Highlight(TEXT("Highlight"));
 	const FName HighlightBox(TEXT("HighlightBox"));
+}
+
+// =====================================================================================================
+// Choices from an enum
+// =====================================================================================================
+
+namespace ChoiceButtonEnum
+{
+	/** The enum at Path (loaded if it isn't yet), else Kept (the reference saved with the button). */
+	UEnum* Resolve(const FString& Path, UEnum* Kept)
+	{
+		if (Path.IsEmpty())
+		{
+			return nullptr;
+		}
+		if (Kept && Kept->GetPathName() == Path)
+		{
+			return Kept;
+		}
+		if (UEnum* Found = FindObject<UEnum>(nullptr, *Path))
+		{
+			return Found;
+		}
+		return Path.StartsWith(TEXT("/Script/")) ? nullptr : LoadObject<UEnum>(nullptr, *Path, nullptr, LOAD_NoWarn | LOAD_Quiet);
+	}
+
+	/** Enum's entries as choices: display names and values, in order - hidden ones and the _MAX entry left out. */
+	void Gather(const UEnum* Enum, TArray<FText>& OutTexts, TArray<int64>& OutValues)
+	{
+		OutTexts.Reset();
+		OutValues.Reset();
+		if (!Enum)
+		{
+			return;
+		}
+		const int32 Count = Enum->ContainsExistingMax() ? Enum->NumEnums() - 1 : Enum->NumEnums();
+		for (int32 EntryIndex = 0; EntryIndex < Count; ++EntryIndex)
+		{
+#if WITH_EDITORONLY_DATA
+			if (Enum->HasMetaData(TEXT("Hidden"), EntryIndex))
+			{
+				continue;
+			}
+#endif
+			OutTexts.Add(Enum->GetDisplayNameTextByIndex(EntryIndex));
+			OutValues.Add(Enum->GetValueByIndex(EntryIndex));
+		}
+	}
+
+	/** Every enum: those loaded (C++ and loaded Blueprint enums) and, in the editor, every User Defined Enum asset - by path, sorted by name. */
+	TArray<FString> GatherPaths()
+	{
+		TArray<FString> Paths;
+		Paths.Add(FString());
+		TSet<FString> Seen;
+		for (TObjectIterator<UEnum> It; It; ++It)
+		{
+			const UEnum* Enum = *It;
+			if (!Enum || Enum->HasAnyFlags(RF_Transient | RF_ClassDefaultObject) || Enum->GetOutermost() == GetTransientPackage())
+			{
+				continue;
+			}
+			const FString Name = Enum->GetName();
+			if (Name.StartsWith(TEXT("TRASH_")) || Name.StartsWith(TEXT("REINST_")) || Name.StartsWith(TEXT("SKEL_")))
+			{
+				continue;
+			}
+			const FString Path = Enum->GetPathName();
+			if (!Seen.Contains(Path))
+			{
+				Seen.Add(Path);
+				Paths.Add(Path);
+			}
+		}
+#if WITH_EDITOR
+		if (FModuleManager::Get().IsModuleLoaded(TEXT("AssetRegistry")))
+		{
+			const IAssetRegistry& AssetRegistry = FModuleManager::GetModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry")).Get();
+			TArray<FAssetData> EnumAssets;
+			AssetRegistry.GetAssetsByClass(FTopLevelAssetPath(TEXT("/Script/Engine"), TEXT("UserDefinedEnum")), EnumAssets);
+			for (const FAssetData& EnumAsset : EnumAssets)
+			{
+				const FString Path = EnumAsset.GetObjectPathString();
+				if (!Seen.Contains(Path))
+				{
+					Seen.Add(Path);
+					Paths.Add(Path);
+				}
+			}
+		}
+#endif
+		// By the enum's own name (the part after the last dot), so EQuality is found under E whatever its module.
+		Paths.Sort([](const FString& A, const FString& B)
+		{
+			int32 DotA = INDEX_NONE;
+			int32 DotB = INDEX_NONE;
+			A.FindLastChar(TEXT('.'), DotA);
+			B.FindLastChar(TEXT('.'), DotB);
+			return A.Mid(DotA + 1) < B.Mid(DotB + 1);
+		});
+		return Paths;
+	}
+
+	/** Index of EnumValue in Values, or INDEX_NONE. */
+	int32 FindValue(const TArray<int64>& Values, int64 EnumValue)
+	{
+		return Values.IndexOfByKey(EnumValue);
+	}
 }
 
 // =====================================================================================================
@@ -156,6 +271,84 @@ void UChoiceButton::SetOptions(const TArray<FText>& InOptions, int32 InSelectedI
 	UpdateDisplay(0);
 }
 
+void UChoiceButton::RefreshEnumOptions()
+{
+	UEnum* Enum = ChoiceButtonEnum::Resolve(OptionsEnum, OptionsEnumObject);
+	bOptionsFromEnum = !OptionsEnum.IsEmpty();
+	if (!Enum)
+	{
+		EnumValues.Reset();
+		return;
+	}
+	OptionsEnumObject = Enum;
+#if !WITH_EDITORONLY_DATA
+	// A packaged game has no enum metadata (which entries are Hidden): the lists saved with the button stand.
+	if (EnumValues.Num() > 0 && EnumValues.Num() == Options.Num())
+	{
+		return;
+	}
+#endif
+	ChoiceButtonEnum::Gather(Enum, Options, EnumValues);
+}
+
+TArray<FString> UChoiceButton::GetEnumPathOptions() const
+{
+	return ChoiceButtonEnum::GatherPaths();
+}
+
+void UChoiceButton::SetOptionsFromEnum(UEnum* Enum, int64 SelectedEnumValue)
+{
+	OptionsEnum = Enum ? Enum->GetPathName() : FString();
+	OptionsEnumObject = Enum;
+	EnumValues.Reset();
+	RefreshEnumOptions();
+	const int32 Found = ChoiceButtonEnum::FindValue(EnumValues, SelectedEnumValue);
+	SetSelectedIndex(Found != INDEX_NONE ? Found : 0);
+}
+
+UEnum* UChoiceButton::GetOptionsEnum() const
+{
+	return OptionsEnum.IsEmpty() ? nullptr : OptionsEnumObject.Get();
+}
+
+int64 UChoiceButton::GetSelectedEnumValue() const
+{
+	return EnumValues.IsValidIndex(SelectedIndex) ? EnumValues[SelectedIndex] : static_cast<int64>(SelectedIndex);
+}
+
+FName UChoiceButton::GetSelectedEnumName() const
+{
+	const UEnum* Enum = GetOptionsEnum();
+	return Enum && EnumValues.IsValidIndex(SelectedIndex) ? Enum->GetNameByValue(EnumValues[SelectedIndex]) : NAME_None;
+}
+
+bool UChoiceButton::SetSelectedEnumValue(int64 EnumValue, bool bBroadcast)
+{
+	const int32 Found = ChoiceButtonEnum::FindValue(EnumValues, EnumValue);
+	if (Found == INDEX_NONE)
+	{
+		return false;
+	}
+	SetSelectedIndex(Found, bBroadcast);
+	return true;
+}
+
+#if WITH_EDITOR
+void UChoiceButton::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UChoiceButton, OptionsEnum))
+	{
+		if (OptionsEnum.IsEmpty())
+		{
+			OptionsEnumObject = nullptr;
+		}
+		RefreshEnumOptions();
+		SelectedIndex = Options.Num() > 0 ? FMath::Clamp(SelectedIndex, 0, Options.Num() - 1) : 0;
+	}
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+#endif
+
 bool UChoiceButton::HandleNavigation(EUINavigation Direction)
 {
 	if (!bLeftRightSteps || (Direction != EUINavigation::Left && Direction != EUINavigation::Right))
@@ -187,6 +380,12 @@ void UChoiceButton::HandleChoiceClicked(bool bWillDestroyCard, bool bIsEnabling)
 void UChoiceButton::SynchronizeProperties()
 {
 	Super::SynchronizeProperties();
+
+	// Options From Enum: the choices follow the enum (a renamed or added entry shows without editing the button).
+	if (!OptionsEnum.IsEmpty() || bOptionsFromEnum)
+	{
+		RefreshEnumOptions();
+	}
 
 	SelectedIndex = Options.Num() > 0 ? FMath::Clamp(SelectedIndex, 0, Options.Num() - 1) : 0;
 	MaxValue = FMath::Max(MaxValue, MinValue);
@@ -481,6 +680,11 @@ FText USegmentedChoiceButton::GetSelectedOption() const
 
 float USegmentedChoiceButton::GetSlideSpeed() const
 {
+	// Enter Duration: most of the way there in that time (the slide eases out).
+	if (EnterDuration > 0.f && Motion != EStyledButtonMotion::Instant)
+	{
+		return 3.f / FMath::Max(EnterDuration, 0.001f);
+	}
 	switch (Motion)
 	{
 	case EStyledButtonMotion::Snappy:  return 30.f;
@@ -515,6 +719,84 @@ void USegmentedChoiceButton::SetOptions(const TArray<FText>& InOptions, int32 In
 	HighlightPosition = static_cast<float>(SelectedIndex);
 	StartSlide();
 }
+
+void USegmentedChoiceButton::RefreshEnumOptions()
+{
+	UEnum* Enum = ChoiceButtonEnum::Resolve(OptionsEnum, OptionsEnumObject);
+	bOptionsFromEnum = !OptionsEnum.IsEmpty();
+	if (!Enum)
+	{
+		EnumValues.Reset();
+		return;
+	}
+	OptionsEnumObject = Enum;
+#if !WITH_EDITORONLY_DATA
+	// A packaged game has no enum metadata (which entries are Hidden): the lists saved with the button stand.
+	if (EnumValues.Num() > 0 && EnumValues.Num() == Options.Num())
+	{
+		return;
+	}
+#endif
+	ChoiceButtonEnum::Gather(Enum, Options, EnumValues);
+}
+
+TArray<FString> USegmentedChoiceButton::GetEnumPathOptions() const
+{
+	return ChoiceButtonEnum::GatherPaths();
+}
+
+void USegmentedChoiceButton::SetOptionsFromEnum(UEnum* Enum, int64 SelectedEnumValue)
+{
+	OptionsEnum = Enum ? Enum->GetPathName() : FString();
+	OptionsEnumObject = Enum;
+	EnumValues.Reset();
+	RefreshEnumOptions();
+	const int32 Found = ChoiceButtonEnum::FindValue(EnumValues, SelectedEnumValue);
+	SetOptions(Options, Found != INDEX_NONE ? Found : 0);
+}
+
+UEnum* USegmentedChoiceButton::GetOptionsEnum() const
+{
+	return OptionsEnum.IsEmpty() ? nullptr : OptionsEnumObject.Get();
+}
+
+int64 USegmentedChoiceButton::GetSelectedEnumValue() const
+{
+	return EnumValues.IsValidIndex(SelectedIndex) ? EnumValues[SelectedIndex] : static_cast<int64>(SelectedIndex);
+}
+
+FName USegmentedChoiceButton::GetSelectedEnumName() const
+{
+	const UEnum* Enum = GetOptionsEnum();
+	return Enum && EnumValues.IsValidIndex(SelectedIndex) ? Enum->GetNameByValue(EnumValues[SelectedIndex]) : NAME_None;
+}
+
+bool USegmentedChoiceButton::SetSelectedEnumValue(int64 EnumValue, bool bBroadcast)
+{
+	const int32 Found = ChoiceButtonEnum::FindValue(EnumValues, EnumValue);
+	if (Found == INDEX_NONE)
+	{
+		return false;
+	}
+	SetSelectedIndex(Found, bBroadcast);
+	return true;
+}
+
+#if WITH_EDITOR
+void USegmentedChoiceButton::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(USegmentedChoiceButton, OptionsEnum))
+	{
+		if (OptionsEnum.IsEmpty())
+		{
+			OptionsEnumObject = nullptr;
+		}
+		RefreshEnumOptions();
+		SelectedIndex = Options.Num() > 0 ? FMath::Clamp(SelectedIndex, 0, Options.Num() - 1) : 0;
+	}
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+#endif
 
 bool USegmentedChoiceButton::HandleNavigation(EUINavigation Direction)
 {
@@ -555,6 +837,11 @@ void USegmentedChoiceButton::HandleSegmentClicked(bool bWillDestroyCard, bool bI
 void USegmentedChoiceButton::SynchronizeProperties()
 {
 	Super::SynchronizeProperties();
+
+	if (!OptionsEnum.IsEmpty() || bOptionsFromEnum)
+	{
+		RefreshEnumOptions();
+	}
 
 	SelectedIndex = Options.Num() > 0 ? FMath::Clamp(SelectedIndex, 0, Options.Num() - 1) : 0;
 	bHasCachedSlideParts = false;

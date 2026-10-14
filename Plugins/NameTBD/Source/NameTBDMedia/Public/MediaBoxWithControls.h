@@ -112,8 +112,8 @@ public:
 #endif
 
 protected:
-	//~ UWidget
-	virtual TSharedRef<SWidget> RebuildWidget() override;
+	//~ UMediaBox
+	virtual TSharedRef<SWidget> BuildBoxContent(const TSharedRef<SWidget>& Video) override;
 
 private:
 

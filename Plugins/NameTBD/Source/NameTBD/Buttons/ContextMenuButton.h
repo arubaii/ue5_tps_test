@@ -260,6 +260,18 @@ struct NAMETBD_API FContextMenuDesignTarget
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (DisplayName = "Target Widget", GetOptions = "GetColorTargetWidgetOptions"))
 	FName TargetWidgetName;
 
+	/**
+	 * Optional name for changing this target at runtime: Set Target Variant, Set Target Active, Set Design Target By ID, Set
+	 * Design Target Image. Several targets may share one (all are changed). Give the targets that take turns on one widget each
+	 * their own ID - a volume icon's Full, Half and Muted - and Set Target Variant picks one.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (DisplayName = "Target ID"))
+	FName TargetId;
+
+	/** Applied while on. Off: skipped, as if it weren't there (the widget shows what the other targets give it). Switched at runtime by Set Target Active / Set Target Variant. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (DisplayName = "Active"))
+	bool bActive = true;
+
 	// ---- Source ----
 
 	/** Use Project Settings: the design comes from a named Design Preset. Every channel is then the preset's, and the states below are hidden. */
@@ -340,6 +352,13 @@ struct NAMETBD_API FContextMenuDesignTarget
 	/** How fast this target blends between states. 0 snaps instantly. Brush/Material swaps always snap. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
 	float InterpolationSpeed = 15.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (InlineEditConditionToggle))
+	bool bSeparateExitSpeed = false;
+
+	/** How fast it blends back to Normal (unhovered, switched off) - its exit. Unticked: Interpolation Speed both ways. 0 snaps. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (DisplayName = "Exit Interpolation Speed", EditCondition = "bSeparateExitSpeed", ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
+	float ExitInterpolationSpeed = 15.0f;
 
 	/** The design for one state, honoring the button's Enabled Matches Hover Design. */
 	const FContextMenuWidgetDesign& GetDesignForState(EContextMenuState State, bool bEnabledMatchesHover) const;
@@ -703,6 +722,18 @@ struct NAMETBD_API FContextMenuShapeTarget
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (DisplayName = "Target Widget", GetOptions = "GetColorTargetWidgetOptions"))
 	FName TargetWidgetName;
 
+	/**
+	 * Optional name for changing this target at runtime: Set Target Variant, Set Target Active, Set Shape Target By ID, Set Shape
+	 * Target Transform. Several targets may share one (all are changed). Two targets on one shape with their own IDs - Idle (a
+	 * circle) and Recording (a square) - and Set Target Variant blends from one to the other.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (DisplayName = "Target ID"))
+	FName TargetId;
+
+	/** Applied while on. Off: skipped, as if it weren't there. Switched at runtime by Set Target Active / Set Target Variant. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (DisplayName = "Active"))
+	bool bActive = true;
+
 	// ---- Source ----
 
 	/** Use Project Settings: pick a Shape Preset from Project Settings > Game > Info Card. Custom: author the state shapes and speeds below. */
@@ -790,6 +821,16 @@ struct NAMETBD_API FContextMenuShapeTarget
 	/** Seconds to wait after the state changes before Shape starts moving. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Delay", EditCondition = "bSeparateTransformAndSize", ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
 	float SizeDelay = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (InlineEditConditionToggle))
+	bool bSeparateExitSpeed = false;
+
+	/**
+	 * How fast it blends back to Normal (unhovered, switched off) - its exit - for Transform and Shape alike. Unticked: the speeds
+	 * above both ways. 0 snaps. Custom shapes only (a Shape Preset keeps its own speeds).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Exit Interpolation Speed", EditCondition = "bSeparateExitSpeed", ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
+	float ExitInterpolationSpeed = 5.0f;
 
 	/**
 	 * The shape for a state, honoring the button's Enabled Matches Hover Shape. Preset substitution and any
@@ -1504,6 +1545,9 @@ private:
 	 * callback, so paint is where a change first becomes visible; the owner is then notified on the next tick.
 	 */
 	mutable bool bLastPaintedSelfEnabled = true;
+
+	/** The layout size last told to an owner that wants it (UContextMenuButton::WantsLayoutSizeChanges). */
+	mutable FVector2D LastReportedLayoutSize = FVector2D(-1.0, -1.0);
 };
 
 /** Which of the button's events an owning widget's Event Dispatcher is being matched against. */
@@ -1856,6 +1900,67 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|State")
 	void RefreshButtonState(bool bInstant = false);
+
+	// ------------------------------------------------------------------
+	// Targets at runtime (by Target ID)
+	// ------------------------------------------------------------------
+
+	/**
+	 * Switches every Shape and Design Target whose Target ID is InTargetId on or off. A target switched on blends from where its
+	 * widget is now to its state's look (bInstant: at once). A target switched off is skipped, the widget left as it is.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Targets", meta = (DisplayName = "Set Target Active"))
+	void SetTargetActive(FName InTargetId, bool bMakeActive, bool bInstant = false);
+
+	/**
+	 * Switches on the targets with Target ID InTargetId and switches off every other target (with a Target ID) on the same widgets
+	 * - one of several looks for one widget: a volume icon's Full / Half / Muted, a record button's Idle circle / Recording
+	 * square. Targets without a Target ID are never switched off.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Targets", meta = (DisplayName = "Set Target Variant"))
+	void SetTargetVariant(FName InTargetId, bool bInstant = false);
+
+	/** Whether any target with Target ID InTargetId is on. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Targets", meta = (DisplayName = "Is Target Active"))
+	bool IsTargetActive(FName InTargetId) const;
+
+	/** Every Target ID the Shape and Design Targets use, once each. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Targets", meta = (DisplayName = "Get Target IDs"))
+	TArray<FName> GetTargetIds() const;
+
+	/** The first Shape Target with Target ID InTargetId. False when there is none. */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Targets", meta = (DisplayName = "Get Shape Target By ID"))
+	bool GetShapeTargetById(FName InTargetId, FContextMenuShapeTarget& OutShapeTarget) const;
+
+	/**
+	 * Replaces every Shape Target with Target ID InTargetId with NewShapeTarget (its Target ID kept) and blends to it (bInstant:
+	 * at once). Change what Get Shape Target By ID gave and set it back. False when there is none.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Targets", meta = (DisplayName = "Set Shape Target By ID"))
+	bool SetShapeTargetById(FName InTargetId, const FContextMenuShapeTarget& NewShapeTarget, bool bInstant = false);
+
+	/** The first Design Target with Target ID InTargetId. False when there is none. */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Targets", meta = (DisplayName = "Get Design Target By ID"))
+	bool GetDesignTargetById(FName InTargetId, FContextMenuDesignTarget& OutDesignTarget) const;
+
+	/** Replaces every Design Target with Target ID InTargetId with NewDesignTarget (its Target ID kept) and blends to it. False when there is none. */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Targets", meta = (DisplayName = "Set Design Target By ID"))
+	bool SetDesignTargetById(FName InTargetId, const FContextMenuDesignTarget& NewDesignTarget, bool bInstant = false);
+
+	/**
+	 * Shows NewSVG (else NewTexture) on the Design Targets with Target ID InTargetId, in every state: their Base Design and each
+	 * state they override get the image. An icon that follows a value - a speaker for the volume. Both None: the image is no longer
+	 * driven (the widget's own shows). False when there is no such target.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Targets", meta = (DisplayName = "Set Design Target Image"))
+	bool SetDesignTargetImage(FName InTargetId, UWidgetSVG* NewSVG, UTexture2D* NewTexture, bool bInstant = false);
+
+	/**
+	 * Sets the Transform the Shape Targets with Target ID InTargetId have in ForState (their Base Shape when the state isn't
+	 * overridden) and blends to it. False when there is no such target.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Targets", meta = (DisplayName = "Set Shape Target Transform"))
+	bool SetShapeTargetTransform(FName InTargetId, EContextMenuState ForState, const FWidgetTransform& NewTransform, bool bInstant = false);
 
 	// ------------------------------------------------------------------
 	// Action
@@ -2446,6 +2551,12 @@ protected:
 	void InitializeRuntimeShapeTargets();
 	void InitializeRuntimeDesignTargets();
 
+	/**
+	 * After targets were changed at runtime (Target ID API): the runtime entries of the changed ones are made to re-read their goal,
+	 * those switched on start from where their widget is now, and the button blends (or snaps) to them. The designer repaints its preview.
+	 */
+	void ApplyChangedTargets(const TArray<int32>& ChangedShapes, const TArray<int32>& ChangedDesigns, const TArray<int32>& ActivatedShapes, const TArray<int32>& ActivatedDesigns, bool bInstant);
+
 	// Sound
 	/** Plays whatever the Sound Sets have for this state, honoring each set's delay, repeat limit and first-state suppression. */
 	void HandleStateSounds(EContextMenuState State, bool bSuppressPlayback);
@@ -2532,6 +2643,12 @@ protected:
 	 * value on left and right. The base takes none.
 	 */
 	virtual bool HandleNavigation(EUINavigation Direction) { return false; }
+
+	/** Whether HandleLayoutSizeChanged is wanted: a button whose parts follow the size it is laid out at. Off by default. */
+	virtual bool WantsLayoutSizeChanges() const { return false; }
+
+	/** Laid out (and drawn) at a new size - the slot made it bigger or smaller than it asks to be. Called on the next tick. */
+	virtual void HandleLayoutSizeChanged(const FVector2D& NewSize) {}
 
 	/**
 	 * Builds what a ready-made button is made of - its children, Background Look, Shape and Design Targets. Called when the
