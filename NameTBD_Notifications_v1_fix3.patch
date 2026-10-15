@@ -1,0 +1,56 @@
+--- a/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationSubsystem.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationSubsystem.cpp
+@@ -339,9 +339,25 @@
+ 	Record.Priority = Request.bOverridePriority ? Request.Priority : Record.TypeSettings.Priority;
+ 	Record.Severity = Request.bOverrideSeverity ? Request.Severity : Record.TypeSettings.Severity;
+ 
+-	// The same type and title as written ("+{Value} XP" is one key for every XP post), unless the poster names the key.
+-	Record.StackKey = !Request.StackKey.IsNone() ? Request.StackKey
+-		: FName(*FString::Printf(TEXT("%s|%s"), *Request.Type.ToString(), *Request.Title.ToString().Left(160)));
++	// Unless the poster names the key:
++	// - Merge / Replace: the type and the title as written - "+{Value} XP" is one key for every XP post, "Objective Updated"
++	//   replaces the last one whatever its body says.
++	// - Always New / Ignore (and Cooldown): the type and the whole text as shown, title and body with their arguments - only a
++	//   true repeat is dropped ("Saved / Slot 1" and "Saved / Slot 2" are two notifications). Hashed (case kept) to keep the
++	//   name short.
++	if (!Request.StackKey.IsNone())
++	{
++		Record.StackKey = Request.StackKey;
++	}
++	else if (Record.TypeSettings.StackPolicy == ENotificationStackPolicy::Merge || Record.TypeSettings.StackPolicy == ENotificationStackPolicy::Replace)
++	{
++		Record.StackKey = FName(*FString::Printf(TEXT("%s|%s"), *Request.Type.ToString(), *Request.Title.ToString().Left(160)));
++	}
++	else
++	{
++		const FString Shown = NotificationUtils::FormatText(Request.Title, Request).ToString() + TEXT("\n") + NotificationUtils::FormatText(Request.Body, Request).ToString();
++		Record.StackKey = FName(*FString::Printf(TEXT("%s|%08x|%d"), *Request.Type.ToString(), FCrc::StrCrc32(*Shown), Shown.Len()));
++	}
+ }
+ 
+ float UNotificationSubsystem::ResolveDuration(const FNotificationRecord& Record) const
+--- a/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationTypes.h
++++ b/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationTypes.h
+@@ -238,8 +238,9 @@
+ 	float Progress = -1.f;
+ 
+ 	/**
+-	 * What makes two notifications "the same one" for stacking (an item's ID for a loot feed, a player's for their messages).
+-	 * None: the type and the Title as written.
++	 * What makes two notifications "the same one" for stacking and Cooldown (an item's ID for a loot feed, a player's for their
++	 * messages). None: for Merge / Replace types the type and the Title as written; otherwise the type and the whole text shown
++	 * (title and body), so only an exact repeat counts as the same.
+ 	 */
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Notification")
+ 	FName StackKey = NAME_None;
+--- a/Docs/Design/Notifications.md
++++ b/Docs/Design/Notifications.md
+@@ -33,7 +33,7 @@
+ - Plain gameplay tags (`UE_DEFINE_GAMEPLAY_TAG_COMMENT`): projects add their own anywhere. Type and channel settings are looked up by the tag, then each parent tag, then the defaults - `Notification.Type.Social.Invite` takes Social's settings until it has its own.
+ 
+ ## Posting (`FNotificationRequest`)
+-- **Type** (picks the settings), **Title** / **Body** (FText, formatted: `{Count}`, `{Value}`, and **Text Args** by name), **Icon** (Image Source Texture 2D / SVG + Tint; none: the type's, then the card's severity glyph), **Count** (shown "x3" from 2), **Value** (XP, gold), **Progress** (0..1, negative none), **Stack Key** (what makes two "the same": an item ID; None = type + Title as written, so "+{Value} XP" is one key), **Actions** + **Timeout Action Id**, **Payload** (`FInstancedStruct` for custom entries), **Context Object**.
++- **Type** (picks the settings), **Title** / **Body** (FText, formatted: `{Count}`, `{Value}`, and **Text Args** by name), **Icon** (Image Source Texture 2D / SVG + Tint; none: the type's, then the card's severity glyph), **Count** (shown "x3" from 2), **Value** (XP, gold), **Progress** (0..1, negative none), **Stack Key** (what makes two "the same" for stacking and Cooldown: an item ID; None = for Merge / Replace types the type + Title as written, so "+{Value} XP" is one key and a new objective replaces the last; for Always New / Ignore types the type + the whole text shown, title and body formatted, so only an exact repeat is dropped), **Actions** + **Timeout Action Id**, **Payload** (`FInstancedStruct` for custom entries), **Context Object**.
+ - **Overrides** (inline toggles): Channel, Priority, Severity, Duration (0 = until dismissed).
+ - Blueprint: `Show Notification` (Type, Title, Body), `Post Notification` (request), `Post Notification And Wait` (async: On Posted / On Action / On Finished), `Update Notification`, `Set Notification Progress`, `Dismiss Notification`, `Respond To Notification`, `Make Notification Action`, `Is Valid (Notification Handle)`, `Push / Pop Notification Suppression`, `Get Notification Subsystem`. The subsystem's own functions and events are callable / bindable directly.
+ - C++: `UNotificationSubsystem::Get(WorldContext, Player)->PostNotification(Request)` or `PostNotificationWithCallbacks(Request, OnAction, OnFinished)`.

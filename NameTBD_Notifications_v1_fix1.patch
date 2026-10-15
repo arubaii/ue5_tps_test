@@ -1,0 +1,430 @@
+--- a/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationHost.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationHost.cpp
+@@ -954,6 +954,10 @@
+ 
+ UNotificationSubsystem* UNotificationHost::FindSubsystem() const
+ {
++	if (UNotificationSubsystem* Override = SubsystemOverride.Get())
++	{
++		return Override;
++	}
+ 	return UNotificationSubsystem::Get(this, GetOwningPlayer());
+ }
+ 
+--- a/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationHost.h
++++ b/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationHost.h
+@@ -449,6 +449,12 @@
+ 	int32 GetShownCount() const;
+ 
+ 	// For the notification subsystem
++	/** Made by the subsystem because nothing else showed its channel (Create Default Hosts); replaced by a host of yours. */
++	bool bIsDefaultHost = false;
++
++	/** The subsystem it belongs to when it isn't inside a player's widget (a default host). */
++	TWeakObjectPtr<UNotificationSubsystem> SubsystemOverride;
++
+ 	bool IsLive() const;
+ 	bool ShowsChannel(const FGameplayTag& Channel) const;
+ 	int32 GetCapacity(const FNotificationChannelSettings& ChannelSettings) const;
+--- a/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationSettings.h
++++ b/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationSettings.h
+@@ -60,6 +60,23 @@
+ 	FGameplayTag DefaultChannel;
+ 
+ 	// -------------------------------------------------------------------------------------------------
++	// Hosts
++	// -------------------------------------------------------------------------------------------------
++
++	/**
++	 * When a notification has nowhere to show - no Notification Host for its channel has been placed yet - one is put on the
++	 * player's screen by itself (Toasts top right, Feed top left, Banner top center, Hints bottom center; any other channel as
++	 * toasts), so notifications work with nothing set up. A host of your own for the channel replaces it as soon as it is made.
++	 * Off: notifications wait for a host of yours (a warning is logged once per channel).
++	 */
++	UPROPERTY(Config, EditAnywhere, Category = "Hosts")
++	bool bCreateDefaultHosts = true;
++
++	/** Seconds a notification waits for a host of yours before a default one is made (a HUD made a moment after the first post). */
++	UPROPERTY(Config, EditAnywhere, Category = "Hosts", meta = (EditCondition = "bCreateDefaultHosts", ClampMin = "0", UIMax = "5", Units = "s"))
++	float DefaultHostDelay = 0.5f;
++
++	// -------------------------------------------------------------------------------------------------
+ 	// Timing
+ 	// -------------------------------------------------------------------------------------------------
+ 
+--- a/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationSubsystem.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationSubsystem.cpp
+@@ -6,6 +6,7 @@
+ #include "Components/ActorComponent.h"
+ #include "Engine/Engine.h"
+ #include "Engine/GameInstance.h"
++#include "Engine/GameViewportClient.h"
+ #include "Engine/LocalPlayer.h"
+ #include "Engine/World.h"
+ #include "Framework/Application/IInputProcessor.h"
+@@ -16,6 +17,7 @@
+ #include "HAL/IConsoleManager.h"
+ #include "Kismet/GameplayStatics.h"
+ #include "Stats/Stats.h"
++#include "Widgets/Layout/SBox.h"
+ #include "NotificationHost.h"
+ #include "NotificationSettings.h"
+ 
+@@ -277,6 +279,7 @@
+ 		PreloadHandle->CancelHandle();
+ 		PreloadHandle.Reset();
+ 	}
++	RemoveDefaultHosts(/*bAll=*/true);
+ 	Hosts.Reset();
+ 	Super::Deinitialize();
+ }
+@@ -1054,10 +1057,21 @@
+ 
+ void UNotificationSubsystem::RegisterHost(UNotificationHost* Host)
+ {
+-	if (Host)
++	if (!Host)
+ 	{
+-		Hosts.AddUnique(Host);
+-		Host->ApplyPreferences();
++		return;
++	}
++	Hosts.AddUnique(Host);
++	Host->ApplyPreferences();
++	if (!Host->bIsDefaultHost && Host->Source == ENotificationHostSource::Live)
++	{
++		// The game has its own host for these channels: default ones for them step aside (what they show moves over).
++		GameHostChannels.AppendTags(Host->Channels);
++		RemoveDefaultHosts(/*bAll=*/false, &Host->Channels);
++		for (const FGameplayTag& Channel : Host->Channels)
++		{
++			WarnedNoHost.Remove(Channel);
++		}
+ 	}
+ }
+ 
+@@ -1140,6 +1154,144 @@
+ 	return Best;
+ }
+ 
++void UNotificationSubsystem::HandleNoHost(const FGameplayTag& Channel, double Now)
++{
++	const UNotificationSettings& Settings = UNotificationSettings::Get();
++	const bool bGameHasHost = Channel.MatchesAny(GameHostChannels);
++	if (Settings.bCreateDefaultHosts && !bGameHasHost)
++	{
++		const double WaitingSince = NoHostSince.FindOrAdd(Channel, Now);
++		if (Now - WaitingSince >= Settings.DefaultHostDelay)
++		{
++			NoHostSince.Remove(Channel);
++			AddDefaultHost(Channel);
++		}
++		return;
++	}
++	if (!WarnedNoHost.Contains(Channel))
++	{
++		WarnedNoHost.Add(Channel);
++		UE_LOG(LogNameTBDNotifications, Warning, TEXT("Notifications on %s are waiting: no Notification Host on screen shows that channel (%s)."),
++			*Channel.ToString(), bGameHasHost
++				? TEXT("the game's host for it isn't on screen - hidden, collapsed or removed")
++				: TEXT("place a Notification Host with it in its Channels, or turn on Create Default Hosts in Project Settings > Plugins > Notifications"));
++	}
++}
++
++void UNotificationSubsystem::AddDefaultHost(const FGameplayTag& Channel)
++{
++	using namespace NotificationTags;
++
++	// A default host that a map change took off the screen is replaced, not counted.
++	RemoveDefaultHosts(/*bAll=*/false);
++	for (const TObjectPtr<UNotificationHost>& Existing : DefaultHosts)
++	{
++		if (Existing && Existing->ShowsChannel(Channel))
++		{
++			return;
++		}
++	}
++
++	ULocalPlayer* LocalPlayer = GetLocalPlayer();
++	UGameViewportClient* Viewport = LocalPlayer ? LocalPlayer->ViewportClient : nullptr;
++	if (!Viewport)
++	{
++		return;
++	}
++
++	// Where each built-in channel usually goes on a HUD.
++	ENotificationHostPreset HostPreset = ENotificationHostPreset::Toasts;
++	EHorizontalAlignment Across = HAlign_Right;
++	EVerticalAlignment Down = VAlign_Top;
++	float HostWidth = 380.f;
++	FMargin Margin(32.f, 32.f);
++	if (Channel.MatchesTag(Channel_Banner))
++	{
++		HostPreset = ENotificationHostPreset::Banner;
++		Across = HAlign_Center;
++		HostWidth = 720.f;
++		Margin = FMargin(32.f, 96.f, 32.f, 32.f);
++	}
++	else if (Channel.MatchesTag(Channel_Feed))
++	{
++		HostPreset = ENotificationHostPreset::Feed;
++		Across = HAlign_Left;
++		HostWidth = 360.f;
++	}
++	else if (Channel.MatchesTag(Channel_Hint))
++	{
++		HostPreset = ENotificationHostPreset::Hints;
++		Across = HAlign_Center;
++		Down = VAlign_Bottom;
++		HostWidth = 640.f;
++		Margin = FMargin(32.f, 32.f, 32.f, 120.f);
++	}
++
++	UNotificationHost* Host = NewObject<UNotificationHost>(this, NAME_None, RF_Transient);
++	Host->bIsDefaultHost = true;
++	Host->SubsystemOverride = this;
++	Host->bPreviewInDesigner = false;
++	Host->ApplyPreset(HostPreset);
++	if (HostPreset == ENotificationHostPreset::Toasts && !Channel.MatchesTag(Channel_Toast))
++	{
++		Host->Channels = FGameplayTagContainer(Channel);
++	}
++	// Any host of the game's for the channel wins over it.
++	Host->HostPriority = -1000;
++
++	const TSharedRef<SWidget> HostWidget = Host->TakeWidget();
++	const TSharedRef<SWidget> Placed = SNew(SBox)
++		.HAlign(Across)
++		.VAlign(Down)
++		.Padding(Margin)
++		[
++			SNew(SBox)
++			.WidthOverride(HostWidth)
++			[
++				HostWidget
++			]
++		];
++	Viewport->AddViewportWidgetForPlayer(LocalPlayer, Placed, 9000);
++	DefaultHosts.Add(Host);
++	DefaultHostWidgets.Add(Placed);
++
++	UE_LOG(LogNameTBDNotifications, Display, TEXT("No Notification Host shows %s: added a default one to the player's screen (Create Default Hosts in Project Settings > Plugins > Notifications). Place a Notification Host in your HUD to choose where it goes and how it looks."),
++		*Channel.ToString());
++}
++
++void UNotificationSubsystem::RemoveDefaultHosts(bool bAll, const FGameplayTagContainer* CoveredChannels)
++{
++	ULocalPlayer* LocalPlayer = GetLocalPlayer();
++	UGameViewportClient* Viewport = LocalPlayer ? LocalPlayer->ViewportClient : nullptr;
++	for (int32 Index = DefaultHosts.Num() - 1; Index >= 0; --Index)
++	{
++		UNotificationHost* Host = DefaultHosts[Index];
++		bool bRemove = bAll || !Host || !Host->IsOnScreen();
++		if (!bRemove && CoveredChannels)
++		{
++			for (const FGameplayTag& Shown : Host->Channels)
++			{
++				bRemove |= Shown.MatchesAny(*CoveredChannels);
++			}
++		}
++		if (!bRemove)
++		{
++			continue;
++		}
++		if (Viewport && LocalPlayer && DefaultHostWidgets[Index].IsValid())
++		{
++			Viewport->RemoveViewportWidgetForPlayer(LocalPlayer, DefaultHostWidgets[Index].ToSharedRef());
++		}
++		if (Host)
++		{
++			// Unregisters it: what it showed waits for the next host of its channel, with the time it had.
++			Host->ReleaseSlateResources(true);
++		}
++		DefaultHosts.RemoveAt(Index);
++		DefaultHostWidgets.RemoveAt(Index);
++	}
++}
++
+ void UNotificationSubsystem::PushViewToHost(const FNotificationRecord& Record, bool bStacked)
+ {
+ 	if (Record.State != ENotificationState::Visible)
+@@ -1320,9 +1472,17 @@
+ 		return;
+ 	}
+ 
+-	if (!Host)
++	if (Host)
+ 	{
+-		if (!ChannelSettings.bWaitForHost)
++		NoHostSince.Remove(Channel);
++	}
++	else
++	{
++		if (ChannelSettings.bWaitForHost)
++		{
++			HandleNoHost(Channel, Now);
++		}
++		else
+ 		{
+ 			TArray<int32> Drop;
+ 			for (const FNotificationRecord* Record : Waiting)
+@@ -1810,8 +1970,9 @@
+ 	{
+ 		if (const UNotificationHost* Host = Weak.Get())
+ 		{
+-			UE_LOG(LogNameTBDNotifications, Display, TEXT("  host %s  live %s  channels %s  showing %d"),
+-				*Host->GetName(), Host->IsLive() ? TEXT("yes") : TEXT("no"), *Host->Channels.ToStringSimple(), Host->GetShownCount());
++			UE_LOG(LogNameTBDNotifications, Display, TEXT("  host %s%s  live %s  channels %s  showing %d"),
++				*Host->GetName(), Host->bIsDefaultHost ? TEXT(" (default)") : TEXT(""), Host->IsLive() ? TEXT("yes") : TEXT("no"),
++				*Host->Channels.ToStringSimple(), Host->GetShownCount());
+ 		}
+ 	}
+ }
+@@ -1824,7 +1985,36 @@
+ {
+ 	UNotificationSubsystem* FindFor(UWorld* World)
+ 	{
+-		return World ? UNotificationSubsystem::Get(World) : nullptr;
++		if (UNotificationSubsystem* Direct = World ? UNotificationSubsystem::Get(World) : nullptr)
++		{
++			return Direct;
++		}
++		// Typed in the editor's Output Log while playing, a command gets the editor's world, which has no player: use the game's.
++		if (GEngine)
++		{
++			for (const FWorldContext& Context : GEngine->GetWorldContexts())
++			{
++				if ((Context.WorldType == EWorldType::PIE || Context.WorldType == EWorldType::Game) && Context.World())
++				{
++					if (UNotificationSubsystem* InGame = UNotificationSubsystem::Get(Context.World()))
++					{
++						return InGame;
++					}
++				}
++			}
++		}
++		UE_LOG(LogNameTBDNotifications, Warning, TEXT("NameTBD.Notify: no local player to notify - run the command while playing (PIE or a game)."));
++		return nullptr;
++	}
++
++	/** Says on screen and in the log what a command did, so it is never silent. */
++	void Report(const FString& Message)
++	{
++		UE_LOG(LogNameTBDNotifications, Display, TEXT("%s"), *Message);
++		if (GEngine)
++		{
++			GEngine->AddOnScreenDebugMessage(-1, 4.f, FColor::Cyan, Message);
++		}
+ 	}
+ 
+ 	FNotificationRequest Make(const FGameplayTag& Type, const FText& Title, const FText& Body)
+@@ -1849,6 +2039,8 @@
+ 			const FGameplayTag Type = FGameplayTag::RequestGameplayTag(FName(*Args[0]), /*ErrorIfNotFound=*/false);
+ 			const FString Title = FString::Join(TArrayView<const FString>(Args).RightChop(1), TEXT(" "));
+ 			Subsystem->PostNotification(Make(Type, FText::FromString(Title.IsEmpty() ? Args[0] : Title), FText::GetEmpty()));
++			Report(Type.IsValid() ? FString::Printf(TEXT("NameTBD.Notify.Post: posted a %s notification."), *Type.ToString())
++				: FString::Printf(TEXT("NameTBD.Notify.Post: '%s' isn't a gameplay tag - posted with the default type."), *Args[0]));
+ 		}));
+ 
+ 	FAutoConsoleCommandWithWorldAndArgs TestCommand(
+@@ -1896,6 +2088,7 @@
+ 			Invite.Actions = { Accept, Decline };
+ 			Invite.TimeoutActionId = TEXT("Decline");
+ 			Subsystem->PostNotification(Invite);
++			Report(TEXT("NameTBD.Notify.Test: posted the test notifications (NameTBD.Notify.Dump lists them and the hosts showing them)."));
+ 		}));
+ 
+ 	FAutoConsoleCommandWithWorldAndArgs ClearCommand(
+--- a/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationSubsystem.h
++++ b/Plugins/NameTBD/Source/NameTBD/Notifications/NotificationSubsystem.h
+@@ -12,6 +12,7 @@
+ 
+ class APlayerController;
+ class FNotificationInputProcessor;
++class SWidget;
+ class UNotificationHost;
+ 
+ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnNotificationEvent, const FNotificationView&, Notification);
+@@ -386,12 +387,34 @@
+ 
+ 	bool MatchesFilter(const FNotificationRecord& Record, const FGameplayTagContainer& TypesOrChannels) const;
+ 
++	/**
++	 * Channel has waiting notifications and no live host: after Default Host Delay, puts a default host for it on the player's
++	 * screen (Create Default Hosts, and no host of the game's has ever shown it), else warns once.
++	 */
++	void HandleNoHost(const FGameplayTag& Channel, double Now);
++	void AddDefaultHost(const FGameplayTag& Channel);
++
++	/** Takes default hosts off the screen: those no longer on it (a map change cleared the viewport), or (bAll) every one. */
++	void RemoveDefaultHosts(bool bAll, const FGameplayTagContainer* CoveredChannels = nullptr);
++
+ 	UWorld* GetPlayerWorld() const;
+ 	APlayerController* GetPlayerController() const;
+ 
+ 	TArray<TSharedRef<FNotificationRecord>> Records;
+ 	TArray<TWeakObjectPtr<UNotificationHost>> Hosts;
+ 
++	/** Hosts the subsystem made itself (Create Default Hosts), and the Slate it put on the player's screen for each. */
++	UPROPERTY(Transient)
++	TArray<TObjectPtr<UNotificationHost>> DefaultHosts;
++	TArray<TSharedPtr<SWidget>> DefaultHostWidgets;
++
++	/** Every channel a host of the game's has been made for: those never get a default host. */
++	FGameplayTagContainer GameHostChannels;
++
++	/** Channel -> real seconds it started waiting with no host; channels already warned about. */
++	TMap<FGameplayTag, double> NoHostSince;
++	TSet<FGameplayTag> WarnedNoHost;
++
+ 	struct FSuppression
+ 	{
+ 		int32 Id = 0;
+--- a/Docs/Design/Notifications.md
++++ b/Docs/Design/Notifications.md
+@@ -72,6 +72,7 @@
+ - **States:** Pending (waiting), Visible, Leaving (its host plays it out; gone when the host says so, or after 5 s if the host stopped ticking).
+ - **Schedule** (per channel with something waiting): the host = the live hosts showing the channel, highest Host Priority (ties: the last registered). Held ones skipped (game paused for pausing types, cinematic mode, Hold / Freeze suppressions). Gap. Fill up to capacity (Leaving ones still count, so a one-at-a-time banner waits for the exit). Still full: preempt the lowest-priority one on screen below the waiting one's priority (shown Min Display Time; requeued or dismissed), else Make Room lets the oldest go.
+ - **Time:** stops while the host is hovered / pressed (Pause On Hover), while the game is paused (types that pause), while a Freeze suppression covers it, while one of its keys is being held. Duration resolved at first show: type or override, + reading time, at least Minimum Duration (2 s), at least Minimum Action Duration (10 s) with actions, x Duration Scale; Keep Until Dismissed makes it 0. Timeout: the Timeout Action is taken (reason Timed Out), else it goes.
++- **Default hosts** (settings **Create Default Hosts**, on; **Default Host Delay** 0.5 s): when notifications of a channel wait with no live host and no host of the game's has ever registered for that channel, the subsystem makes one (`AddDefaultHost`: a `UNotificationHost` with the channel's preset - Toasts top right, Feed top left, Banner top center, Hints bottom center, any other channel as toasts - Host Priority -1000, put on the player's screen with `UGameViewportClient::AddViewportWidgetForPlayer`, Z order 9000). A Live host of the game's registering for the channel removes it (what it showed moves over with its time); one a map change took off the screen is replaced when needed; all go on Deinitialize. Off, or once the game has its own host for the channel: notifications wait, and a warning is logged once per channel naming why (no host placed, or the game's host isn't on screen).
+ - **Hosts going away:** a host that isn't live (removed, collapsed anywhere up its parents, not in a window, Slate released) sends its notifications back to waiting with the time they had; a Hold suppression or cinematic mode does the same (no second Shown sound or announcement when they come back).
+ - **Actions and keys** (`FNotificationInputProcessor`, a Slate input pre-processor, so it works whatever has focus): the **shortcut target** is the most important visible notification with a keyed action (or any dismissable one when a Dismiss key is set), newest first. A press of an action's Gamepad / Keyboard Key takes it (consumed); with Hold Time the key must be held (progress shown on the button, its time frozen meanwhile; releasing cancels; the release is consumed). Dismiss Gamepad / Keyboard Key (settings) closes the target. In split screen keys answer only the player whose Slate user sent them. The last device used (key / stick vs mouse / keyboard) picks which key a hint shows.
+ - **Suppressions:** `Push Notification Suppression(Mode, Types Or Channels)` returns an id; they add up. Hold (cutscene: nothing new, shown ones leave and return later), Freeze (menu over the HUD: shown ones stay frozen, nothing new), Drop (new ones go straight to history). Settings **Hold During Cinematics** treats the player controller's cinematic mode as a Hold.
+@@ -110,6 +111,7 @@
+ - Add **Notification Relay** to the Player Controller class. Server: `Post Notification To Player` (local controllers directly, remote ones through the relay's reliable Client RPC; a warning names a controller without a relay), `Post Notification To All Players`, relay `Post To Owning Player`, `Clear On Owning Player`. The request travels whole (texts, tags, actions, payload, asset references); handles stay client-side - update a networked toast by posting again with the same Stack Key and a Replace / Merge type.
+ 
+ ## Console
++Commands work from the game console or the editor's Output Log while playing (a command given the editor's world uses the PIE / game world), and say on screen and in the log what they did; with no local player they warn.
+ `NameTBD.Notify.Test` (one of each built-in type: toasts, banner, feed merging x3 and +150 XP, a hint, an invite with hold-to-accept and Decline on timeout), `NameTBD.Notify.Post <Type> <Title...>`, `NameTBD.Notify.Clear`, `NameTBD.Notify.Dump` (records with state, time, host; hosts with live / channels / count), `NameTBD.Notify.DND [0|1]`. Verbose log: `log LogNameTBDNotifications Verbose`.
+ 
+ ## Beyond the request (production expectations added)
+@@ -123,6 +125,7 @@
+ - **Keys through a Slate input pre-processor** with `FKey`s, not Enhanced Input or CommonUI actions: it works with any focus and input mode and needs neither plugin; CommonUI action data is left as an option (Still open).
+ - A Merge type is never throttled by Cooldown (merging is its throttle); Ignore reports the existing handle with reason Throttled to the new post's callbacks.
+ - A notification preempted in a channel with Requeue Preempted comes back with its remaining time; without it, it goes (Preempted).
++- Default hosts are on by default, so a project sees notifications with nothing set up; they never appear for a channel the game has placed a host for (a hidden HUD then holds notifications, as intended).
+ - Muted / Do Not Disturb notifications go to the history unread (as platform notification centers do), never shown later.
+ - Ids are unique for the session across players; restored history gets fresh ids.
+ 
+@@ -146,8 +149,10 @@
+ - Mouse capture on an item frame while its card's buttons are clicked; touch reaching `OnMouseButtonDown` through Slate's fallback.
+ - Reliable Client RPC with `FNotificationRequest` (an `FInstancedStruct` payload, `FKey`s, an object pointer).
+ - `FCoreStyle::GetDefaultFontStyle` defaults in a USTRUCT constructor (as Media Box's subtitle font).
++- Default hosts: a `UNotificationHost` made with the subsystem as outer (not in a widget tree) taking its widget; `ULocalPlayer::ViewportClient` and `AddViewportWidgetForPlayer` / `RemoveViewportWidgetForPlayer` in 5.7; the viewport clearing them on map change (pruned and remade).
+ 
+ ## Check by hand
++0. With nothing placed: PIE, `NameTBD.Notify.Test` - default hosts appear (toasts top right, feed top left, banner top center, hint bottom center) and the log says each was added.
+ 1. Add a Notification Host (preset Toasts) to the HUD's top-right in a Canvas slot (anchored top-right, size ~400 x 600), a second with preset Feed top-left, Banner top-center (stretched), Hints bottom-center. The designer shows samples for each.
+ 2. PIE, console `NameTBD.Notify.Test`: toasts slide in, newest nearest the corner, "+N" when more than 4; the banner pops, then the next after it leaves; Iron Ore shows x3 (count pops), XP shows "+150 XP"; the hint rises.
+ 3. Hover a toast: its timer bar stops; leave: it runs. Swipe one sideways: it flies off. Click the close button.
+--- a/Plugins/NameTBD/Resources/AI/Docs/notifications.md
++++ b/Plugins/NameTBD/Resources/AI/Docs/notifications.md
+@@ -7,7 +7,7 @@
+ Blueprint Show Notification (Type, Title, Body) or Post Notification (FNotificationRequest: Type tag Notification.Type.Info / Success / Warning / Error / Reward / Loot / Elimination / Objective / Achievement / Social / System / Hint, Title and Body with {Count}, {Value} and TextArgs, Icon (Texture or SVG), Count, Value, Progress 0-1, StackKey (same key merges: "Wood x3"), Actions (ActionId, Label, Style Primary / Secondary / Destructive, GamepadKey, KeyboardKey, HoldTime, bDismisses), TimeoutActionId, overrides for Channel / Priority / Severity / Duration, Payload struct, ContextObject). Post Notification And Wait (async: On Posted, On Action, On Finished). Update Notification, Set Notification Progress, Dismiss Notification, Respond To Notification, Push / Pop Notification Suppression (Hold, Freeze, Drop - for cutscenes and menus). Server: Post Notification To Player / To All Players (needs a Notification Relay component on the Player Controller).
+ 
+ ## Behavior
+-Per type (Project Settings > Plugins > Notifications > Types): Channel, Priority (Low, Normal, High, Critical), Severity, Duration (0 = until dismissed) + reading time, MaxQueueTime, StackPolicy (None, Merge, Replace, Ignore), Cooldown, CancelsTypes, bIgnoreSuppression, bKeepInHistory, sounds (Shown, Stacked, Action, Dismissed). Per channel: MaxVisible, MaxQueued, preemption, MakeRoom (feeds), Gap (banners). Player preferences (Set Notification Preferences): bDoNotDisturb, MutedTypes, DurationScale (accessibility, up to 10x), bKeepUntilDismissed, bScreenReaderAnnouncements, bReduceMotion, bPlaySounds. History: Get Notification History, Get Unread Count, Mark Notifications Read. Test in PIE with the console command NameTBD.Notify.Test.
++Per type (Project Settings > Plugins > Notifications > Types): Channel, Priority (Low, Normal, High, Critical), Severity, Duration (0 = until dismissed) + reading time, MaxQueueTime, StackPolicy (None, Merge, Replace, Ignore), Cooldown, CancelsTypes, bIgnoreSuppression, bKeepInHistory, sounds (Shown, Stacked, Action, Dismissed). Per channel: MaxVisible, MaxQueued, preemption, MakeRoom (feeds), Gap (banners). Player preferences (Set Notification Preferences): bDoNotDisturb, MutedTypes, DurationScale (accessibility, up to 10x), bKeepUntilDismissed, bScreenReaderAnnouncements, bReduceMotion, bPlaySounds. History: Get Notification History, Get Unread Count, Mark Notifications Read. Test in PIE with the console command NameTBD.Notify.Test. With no NotificationHost placed for a channel, a default one is put on screen by itself (Create Default Hosts in the settings); a placed host replaces it.
+ 
+ ## Custom entry widget
+ A Widget Blueprint whose parent is NotificationEntryWidget; optional parts named TitleText, BodyText, IconImage, IconSVG, CountText, ProgressBar, TimerBar, ActionsPanel (with ActionWidgetClass, a NotificationActionWidget with ActionButton, LabelText, KeyText, HoldBar) are filled in automatically. Events On Notification Set / Updated (bStacked: pop the count) / Cleared.

@@ -25,3 +25,4 @@
 - **Media Box** (MediaBox v1 follow-ups): see "Still open" in `MediaBox.md` - first compile in the engine expected to need small API fixes ("Unverified" there).
 - **Widget Paths** (WidgetPaths v1 follow-ups): see "Still open" in `WidgetPaths.md` - obstacle-avoiding routes, clickable lines, waypoint editing on the canvas. First compile in the engine expected to need small API fixes ("Unverified" there).
 - **Constraints and Pointer Effects** (v1 follow-ups): see "Still open" in `ConstraintsAndPointerEffects.md` - 2D rigging (IK, bones) deliberately left out; a canvas gizmo for constraint targets; shadows that follow the pointer's light.
+- **Notifications** (v1 follow-ups): see "Still open" in `Notifications.md` - CommonUI action prompts, grouped summaries, server-side handles. First compile in the engine expected to need small API fixes ("Unverified" there).
