@@ -19,6 +19,7 @@
 #include "NameTBD/Buttons/ContextMenuButton.h"
 #include "NameTBD/Widgets/WidgetEditorHooks.h"
 #include "NameTBD/Widgets/WidgetEffectsDraw.h"
+#include "NameTBD/Widgets/WidgetTreeLookup.h"
 #include "NameTBD/Widgets/Shadow/DropShadow.h"
 #include "NameTBD/Widgets/Shapes/ShapeWidget.h"
 #include "NameTBD/Widgets/Shapes/WidgetShapeGeometry.h"
@@ -139,6 +140,36 @@ void SPointerEffectsHost::Construct(const FArguments& InArgs)
 	PressSpring.Value = 1.f;
 }
 
+TOptional<float>& FPointerEffectsAnimatedInputs::Get(EPointerEffectsInput Input)
+{
+	switch (Input)
+	{
+	case EPointerEffectsInput::PointerY: return PointerY;
+	case EPointerEffectsInput::Hover: return Hover;
+	case EPointerEffectsInput::Press: return Press;
+	default: return PointerX;
+	}
+}
+
+const TOptional<float>& FPointerEffectsAnimatedInputs::Get(EPointerEffectsInput Input) const
+{
+	return const_cast<FPointerEffectsAnimatedInputs*>(this)->Get(Input);
+}
+
+void SPointerEffectsHost::SetAnimatedInputs(const FPointerEffectsAnimatedInputs& InInputs)
+{
+	AnimatedInputs = InInputs;
+	if (Settings.bDesignTime)
+	{
+		// The designer: posed at once where the animation puts the pointer (a scrub, a preview playing).
+		Step(0.f, /*bSnap=*/true);
+	}
+	else
+	{
+		Wake();
+	}
+}
+
 void SPointerEffectsHost::SetSettings(const FPointerEffectsSettings& InSettings)
 {
 	Settings = InSettings;
@@ -146,8 +177,9 @@ void SPointerEffectsHost::SetSettings(const FPointerEffectsSettings& InSettings)
 	OverlayGates.SetNum(Settings.Overlays.Num());
 	if (Settings.bDesignTime)
 	{
-		// The designer: posed once where Designer Pointer says, nothing polled.
+		// The designer: posed once where Designer Pointer says, nothing polled - unless it follows a widget an animation moves.
 		Step(0.f, /*bSnap=*/true);
+		Wake();
 	}
 	else
 	{
@@ -183,6 +215,7 @@ void SPointerEffectsHost::CopyMotionFrom(const SPointerEffectsHost& Other)
 	PressHold = Other.PressHold;
 	Ripples = Other.Ripples;
 	VirtualPointer = Other.VirtualPointer;
+	bWasAnimatedPress = Other.bWasAnimatedPress;
 }
 
 void SPointerEffectsHost::SetVirtualPointer(TOptional<FVector2D> InUV)
@@ -198,7 +231,7 @@ FVector4f SPointerEffectsHost::GetCorners(const FVector2f& Size) const
 
 void SPointerEffectsHost::Wake()
 {
-	if (!TickTimer.IsValid() && !Settings.bDesignTime)
+	if (!TickTimer.IsValid() && (!Settings.bDesignTime || StepsInDesigner()))
 	{
 		TickTimer = RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateSP(this, &SPointerEffectsHost::OnActiveTick));
 	}
@@ -206,7 +239,7 @@ void SPointerEffectsHost::Wake()
 
 EActiveTimerReturnType SPointerEffectsHost::OnActiveTick(double InCurrentTime, float InDeltaTime)
 {
-	if (Settings.bDesignTime || !Owner.IsValid())
+	if ((Settings.bDesignTime && !StepsInDesigner()) || !Owner.IsValid())
 	{
 		TickTimer.Reset();
 		return EActiveTimerReturnType::Stop;
@@ -347,6 +380,50 @@ void SPointerEffectsHost::Step(float DeltaTime, bool bSnap)
 			Near = 0.f;
 		}
 	}
+	// Another widget read as the pointer (Pointer Source: Widget) - a Constraint Target an animation moves: its middle, in the
+	// designer too. Over while inside the box, near by its distance, like a pointer.
+	auto PlacePointer = [&](const FVector2f& At)
+	{
+		Local = At;
+		bHasPointer = true;
+		const float DX = FMath::Max3(-Local.X, 0.f, Local.X - Size.X);
+		const float DY = FMath::Max3(-Local.Y, 0.f, Local.Y - Size.Y);
+		bOver = DX <= 0.f && DY <= 0.f;
+		Near = 1.f - FMath::Clamp(FMath::Sqrt(DX * DX + DY * DY) / FMath::Max(Settings.ProximityRange, 1.f), 0.f, 1.f);
+	};
+	if (const UWidget* SourceWidget = bUsable ? PointerWidget.Get() : nullptr)
+	{
+		const TSharedPtr<SWidget> SourceSlate = SourceWidget->GetCachedWidget();
+		if (SourceSlate.IsValid())
+		{
+			const FGeometry& SourceGeometry = SourceSlate->GetTickSpaceGeometry();
+			const FVector2D SourceSize = SourceGeometry.GetLocalSize();
+			const FVector2f SourceMiddle(static_cast<float>(SourceSize.X) * 0.5f, static_cast<float>(SourceSize.Y) * 0.5f);
+			PlacePointer(Geometry.GetAccumulatedRenderTransform().Inverse().TransformPoint(SourceGeometry.GetAccumulatedRenderTransform().TransformPoint(SourceMiddle)));
+		}
+	}
+
+	// Parts of the pointer an animation sets (the Pointer Effects track), over all of that: an axis not set is the middle.
+	float HoverAmount = bOver ? 1.f : 0.f;
+	if (bUsable)
+	{
+		if (AnimatedInputs.PointerX.IsSet() || AnimatedInputs.PointerY.IsSet())
+		{
+			PlacePointer(Size * FVector2f(AnimatedInputs.PointerX.Get(0.5f), AnimatedInputs.PointerY.Get(0.5f)));
+			HoverAmount = bOver ? 1.f : 0.f;
+		}
+		if (AnimatedInputs.Hover.IsSet())
+		{
+			HoverAmount = FMath::Clamp(AnimatedInputs.Hover.GetValue(), 0.f, 1.f);
+			bOver = HoverAmount > 0.5f;
+			Near = FMath::Max(Near, HoverAmount);
+			if (!bHasPointer)
+			{
+				bHasPointer = true;
+				Local = Size * 0.5f;
+			}
+		}
+	}
 	bWasOver = bOver;
 
 	// A press is one that started over the widget, still held - or one caught as it happened, held a moment so a click
@@ -368,11 +445,20 @@ void SPointerEffectsHost::Step(float DeltaTime, bool bSnap)
 	}
 	bWasDown = bDown;
 	PressHold = FMath::Max(PressHold - DeltaTime, 0.f);
-	const bool bPressed = !Settings.bDesignTime && bPressStartedOver && (bDown || PressHold > 0.f);
+
+	// An animated press (the Pointer Effects track's Press): held above 0.5, a click each time it rises past it.
+	const bool bAnimatedPress = bUsable && AnimatedInputs.Press.IsSet() && AnimatedInputs.Press.GetValue() > 0.5f;
+	if (bAnimatedPress && !bWasAnimatedPress)
+	{
+		bPressStart = true;
+		PressAt = Local;
+	}
+	bWasAnimatedPress = bAnimatedPress;
+	const bool bPressed = bAnimatedPress || (!Settings.bDesignTime && bPressStartedOver && (bDown || PressHold > 0.f));
 
 	// How much each effect shows: its trigger and condition, within the component's own (Active When).
 	TMap<FName, bool> Asked;
-	const float HoverTarget = bOver ? 1.f : 0.f;
+	const float HoverTarget = HoverAmount;
 	const bool bSnapFades = bSnap || Settings.HoverFade <= 0.f;
 	const float Intensity = FMath::Max(Settings.Intensity, 0.f);
 	bool bMoving = false;
@@ -1147,7 +1233,64 @@ void UPointerEffectsComponent::Push()
 	Settings.PointerParameter = Outputs.PointerParameter;
 	Settings.HoverParameter = Outputs.HoverParameter;
 	Settings.VelocityParameter = Outputs.VelocityParameter;
+	Host->SetPointerInputs(ResolvePointerWidget(), AnimatedInputs);
 	Host->SetSettings(Settings);
+}
+
+UWidget* UPointerEffectsComponent::ResolvePointerWidget() const
+{
+	if (PointerSource != EPointerEffectsPointerSource::Widget)
+	{
+		return nullptr;
+	}
+	UWidget* OwnerWidget = GetOwner().Get();
+	UWidget* Found = PointerWidgetOverride.IsValid() ? PointerWidgetOverride.Get() : WidgetTreeLookup::FindWidget(OwnerWidget ? static_cast<const UObject*>(OwnerWidget) : this, PointerWidget);
+	return Found != OwnerWidget ? Found : nullptr;
+}
+
+TArray<FString> UPointerEffectsComponent::GetWidgetOptions() const
+{
+	TArray<FString> Names;
+	WidgetTreeLookup::GetWidgetNames(this, Names);
+	return Names;
+}
+
+void UPointerEffectsComponent::SetPointerSourceWidget(UWidget* InWidget)
+{
+	PointerWidgetOverride = InWidget;
+	if (InWidget)
+	{
+		PointerSource = EPointerEffectsPointerSource::Widget;
+	}
+	if (const TSharedPtr<SPointerEffectsHost> Host = MyHost.Pin())
+	{
+		Host->SetPointerWidget(ResolvePointerWidget());
+	}
+}
+
+void UPointerEffectsComponent::SetAnimatedInput(EPointerEffectsInput Input, float Value)
+{
+	AnimatedInputs.Get(Input) = Value;
+	if (const TSharedPtr<SPointerEffectsHost> Host = MyHost.Pin())
+	{
+		Host->SetAnimatedInputs(AnimatedInputs);
+	}
+}
+
+void UPointerEffectsComponent::ClearAnimatedInput(EPointerEffectsInput Input)
+{
+	AnimatedInputs.Get(Input).Reset();
+	if (const TSharedPtr<SPointerEffectsHost> Host = MyHost.Pin())
+	{
+		Host->SetAnimatedInputs(AnimatedInputs);
+	}
+}
+
+bool UPointerEffectsComponent::GetAnimatedInput(EPointerEffectsInput Input, float& OutValue) const
+{
+	const TOptional<float>& Animated = AnimatedInputs.Get(Input);
+	OutValue = Animated.Get(0.f);
+	return Animated.IsSet();
 }
 
 void UPointerEffectsComponent::CollectTargets()
@@ -1392,15 +1535,21 @@ UPointerEffectsComponent* UPointerEffectsComponent::FindPointerEffects(const UWi
 	{
 		return nullptr;
 	}
+	// The one whose Slate wrapper is alive first - a leftover registered for the same widget mustn't take a track's writes.
+	UPointerEffectsComponent* Unbuilt = nullptr;
 	for (const TWeakObjectPtr<UPointerEffectsComponent>& Weak : PointerEffectsPrivate::GetComponents())
 	{
 		UPointerEffectsComponent* Component = Weak.Get();
 		if (Component && Component->GetOwner().Get() == Widget)
 		{
-			return Component;
+			if (Component->MyHost.IsValid())
+			{
+				return Component;
+			}
+			Unbuilt = Unbuilt ? Unbuilt : Component;
 		}
 	}
-	return nullptr;
+	return Unbuilt;
 }
 
 #if WITH_EDITOR
@@ -1419,6 +1568,11 @@ void UPointerEffectsComponent::PostEditChangeProperty(FPropertyChangedEvent& Pro
 	else if (ChangedName == GET_MEMBER_NAME_CHECKED(UPointerEffectsComponent, PresetAsset))
 	{
 		ApplyPresetAsset(PresetAsset);
+	}
+	else if (ChangedName == GET_MEMBER_NAME_CHECKED(UPointerEffectsComponent, PointerWidget) && !PointerWidget.IsNone())
+	{
+		// Picking a widget is what was meant: the field is always shown.
+		PointerSource = EPointerEffectsPointerSource::Widget;
 	}
 	else if (MemberName == GET_MEMBER_NAME_CHECKED(UPointerEffectsComponent, Tilt) || MemberName == GET_MEMBER_NAME_CHECKED(UPointerEffectsComponent, Magnet)
 		|| MemberName == GET_MEMBER_NAME_CHECKED(UPointerEffectsComponent, Press) || MemberName == GET_MEMBER_NAME_CHECKED(UPointerEffectsComponent, Lights)

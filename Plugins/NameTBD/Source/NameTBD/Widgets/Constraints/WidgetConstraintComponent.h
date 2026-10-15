@@ -122,6 +122,37 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Widget Constraints")
 	bool GetConstraintValue(FName InName, EWidgetConstraintChannel Channel, float& OutValue) const;
 
+	/**
+	 * Sets any number (or switch) of a constraint by the name its Details show it by - "Path Position", "Copy Amount X", "Target
+	 * Point Y", "Radius X", "Orient" - what the Constraint track keys. False when the constraint or the value isn't there.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Widget Constraints", meta = (DisplayName = "Set Constraint Value By Name"))
+	bool SetConstraintValueByName(FName InName, FName ValueName, float Value);
+
+	UFUNCTION(BlueprintPure, Category = "Widget Constraints", meta = (DisplayName = "Get Constraint Value By Name"))
+	bool GetConstraintValueByName(FName InName, FName ValueName, float& OutValue) const;
+
+	/**
+	 * What the Constraint track writes: Value Name when it names one (any number by name), else Channel. bSolveNow shows it at
+	 * once in the designer. False when the constraint or the value isn't there.
+	 */
+	bool SetTrackValue(FName InName, FName ValueName, EWidgetConstraintChannel Channel, float Value, bool bSolveNow = true);
+	bool GetTrackValue(FName InName, FName ValueName, EWidgetConstraintChannel Channel, float& OutValue) const;
+
+	/** The Constraint track's Constraint dropdown: the constraint names of every widget with Constraints in the open designers, and each kind's name. */
+	UFUNCTION()
+	static TArray<FString> GetConstraintTrackNameOptions();
+
+	/** The Constraint track's Value dropdown: every number any kind of constraint can be animated by. */
+	UFUNCTION()
+	static TArray<FString> GetConstraintTrackValueOptions();
+
+	/** The widgets its constraints read - targets, paths, areas (not its parents). */
+	void GetTargetWidgets(TArray<const UWidget*>& OutWidgets) const;
+
+	/** Every Constraints component alive (registered as it is initialized). */
+	static void GetAllComponents(TArray<UWidgetConstraintComponent*>& OutComponents);
+
 	/** Every constraint's strength at once. */
 	UFUNCTION(BlueprintCallable, Category = "Widget Constraints")
 	void SetStrength(float InStrength) { Strength = FMath::Clamp(InStrength, 0.f, 1.f); }
@@ -151,6 +182,12 @@ public:
 	 */
 	bool PreviewTransform(const FWidgetTransform& OwnTransform, FWidgetTransform& OutTransform);
 
+	/**
+	 * The same, with some widgets it reads at other Render Transforms than they have now - its targets where an animation puts
+	 * them at the moment a motion path samples (a pupil's path drawn from its look target's keys).
+	 */
+	bool PreviewTransform(const FWidgetTransform& OwnTransform, FWidgetTransform& OutTransform, const TMap<const UWidget*, FWidgetTransform>* PosedWidgets);
+
 	/** The widget's Render Transform as authored: its Widget Blueprint's own widget's (in the designer), else its archetype's. */
 	static FWidgetTransform GetAuthoredTransform(const UWidget* Widget);
 
@@ -176,7 +213,11 @@ private:
 	void Register();
 
 	/** The context for solving the widget with its own Render Transform at Own: false when it isn't laid out. */
-	bool MakeContext(const FWidgetTransform& Own, float DeltaTime, const TMap<const UWidget*, UWidgetConstraintComponent*>* ByOwner, FWidgetConstraintContext& OutContext) const;
+	bool MakeContext(const FWidgetTransform& Own, float DeltaTime, const TMap<const UWidget*, UWidgetConstraintComponent*>* ByOwner, FWidgetConstraintContext& OutContext,
+		const TMap<const UWidget*, FWidgetTransform>* PosedWidgets = nullptr) const;
+
+	/** Shown at once in the designer (a Widget Animation previewed or scrubbed), not on the next tick. */
+	void SolveNowInDesigner() const;
 
 	/** Whether any enabled constraint follows the animation (While Animated: Follow the Keys). */
 	bool AnyFollowsAnimation() const;

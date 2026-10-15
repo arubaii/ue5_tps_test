@@ -1,0 +1,197 @@
+diff --git a/Docs/Design/ConstraintsAndPointerEffects.md b/Docs/Design/ConstraintsAndPointerEffects.md
+index f1d6456..97e60a0 100644
+--- a/Docs/Design/ConstraintsAndPointerEffects.md
++++ b/Docs/Design/ConstraintsAndPointerEffects.md
+@@ -147,5 +147,7 @@ Both are driven by Widget Animations through the **Interaction** tracks (`Widget
+ ## Interaction tracks (Widget Animations)
+ - **Constraint** (`FWidgetAnimConstraintParams`: Constraint - its Name or its kind's ("Follow Path"), dropdown; None the first -, **Value** - any number by name (see Values by name), dropdown -, Channel (shown while Value is None: tracks made before), Start / End Value) and **Pointer Effects** (`FWidgetAnimPointerEffectsParams`: **Animates** - Effect Setting / Pointer X / Pointer Y / Hover / Press -, Channel (Effect Setting), Start / End Value), listed under **Interaction**. Target: the Track Group's widget's component, or the first widget inside it with one. Baselines carry the name, value, channel or pointer part (and, for a pointer part, whether it was set: put back unset) and are put back by value. Like every registered type they can be keyed, eased, sprung, value-driven (fed by a Value Input - the pointer) and played by state machines.
+ - **New tracks** (`FWidgetAnimEvaluator::InitializeNewTrack`, called by `SWidgetAnimTimeline::AddLayer` for a registered type added from the menu, with the group's preview widget): a Constraint track on a Follow Path starts on Path Position from its value now to one lap on (100 px in Pixels), on a Distance on Distance (+40), else Strength 0 -> 1; a Pointer Effects track on Pointer X 0 -> 1. Saved tracks never pass through it, so struct defaults keep their old meaning.
++- **Motion paths** pose each sample with the value the track names (Value, else Channel) through `SetTrackValue` / `GetTrackValue` - the same calls the track plays through. (Before fix2 they read the Channel alone, so a Path Position track was drawn as a Strength fade: a straight line from where the widget is laid out to the path.)
++- Constraint tracks start **Linear** (`PrefersLinearEasing`): eased out, two laps in two seconds ran most of the way in the first moments. A track that can't write (no such constraint or value) logs a warning once (LogWidgetAnimInteraction), naming the constraints the widget has.
+ - The track's bar names what it animates after its type ("Constraint · Path Position", from `GetTrackSummary`, for non-cue registered types) and its tooltip has an Animates row.
+ - Unverified: the player treating a component (not a widget) as a track's resolved target throughout (baselines, previews).
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.cpp b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.cpp
+index 0bf75e6..5e6c699 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.cpp
+@@ -9,6 +9,8 @@
+ 
+ #define LOCTEXT_NAMESPACE "WidgetAnimInteractionTracks"
+ 
++DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimInteraction, Log, All);
++
+ namespace WidgetAnimInteractionPrivate
+ {
+ 	/** The first component Find gives at or beneath Widget, depth first, through panels and into User Widgets. */
+@@ -106,13 +108,24 @@ void FWidgetAnimConstraintEvaluator::Apply(UObject* Target, const FInstancedStru
+ 	{
+ 		return;
+ 	}
+-	if (!Settings->ValueName.IsNone())
+-	{
+-		Component->SetConstraintValueByName(Settings->ConstraintName, Settings->ValueName, static_cast<float>(Value));
+-	}
+-	else
++	if (!Component->SetTrackValue(Settings->ConstraintName, Settings->ValueName, Settings->Channel, static_cast<float>(Value)))
+ 	{
+-		Component->SetConstraintValue(Settings->ConstraintName, Settings->Channel, static_cast<float>(Value));
++		// Said once per widget and value: a track writing nothing looked like a broken track.
++		static TSet<FString> Told;
++		const UWidget* OwnerWidget = Component->GetConstrainedWidget();
++		const FString What = Settings->ValueName.IsNone()
++			? StaticEnum<EWidgetConstraintChannel>()->GetNameStringByValue(static_cast<int64>(Settings->Channel))
++			: Settings->ValueName.ToString();
++		const FString Key = FString::Printf(TEXT("%s|%s|%s"), *GetPathNameSafe(OwnerWidget), *Settings->ConstraintName.ToString(), *What);
++		if (!Told.Contains(Key))
++		{
++			Told.Add(Key);
++			UE_LOG(LogWidgetAnimInteraction, Warning, TEXT("Constraint track on %s: %s. Constraints there: %s."), *GetNameSafe(OwnerWidget),
++				Component->FindConstraint(Settings->ConstraintName)
++					? *FString::Printf(TEXT("constraint '%s' has no value '%s'"), *Settings->ConstraintName.ToString(), *What)
++					: *FString::Printf(TEXT("no constraint named '%s'"), *Settings->ConstraintName.ToString()),
++				*FString::JoinBy(Component->GetConstraintNames(), TEXT(", "), [](const FName& Name) { return Name.ToString(); }));
++		}
+ 	}
+ }
+ 
+@@ -121,14 +134,7 @@ bool FWidgetAnimConstraintEvaluator::CaptureBaseline(UObject* Target, const FIns
+ 	const UWidgetConstraintComponent* Component = Cast<UWidgetConstraintComponent>(Target);
+ 	const FWidgetAnimConstraintParams* Settings = GetParams(Params);
+ 	FWidgetAnimInteractionBaseline Baseline;
+-	if (!Component || !Settings)
+-	{
+-		return false;
+-	}
+-	const bool bRead = Settings->ValueName.IsNone()
+-		? Component->GetConstraintValue(Settings->ConstraintName, Settings->Channel, Baseline.Value)
+-		: Component->GetConstraintValueByName(Settings->ConstraintName, Settings->ValueName, Baseline.Value);
+-	if (!bRead)
++	if (!Component || !Settings || !Component->GetTrackValue(Settings->ConstraintName, Settings->ValueName, Settings->Channel, Baseline.Value))
+ 	{
+ 		return false;
+ 	}
+@@ -143,17 +149,9 @@ void FWidgetAnimConstraintEvaluator::RestoreBaseline(UObject* Target, const FIns
+ {
+ 	UWidgetConstraintComponent* Component = Cast<UWidgetConstraintComponent>(Target);
+ 	const FWidgetAnimInteractionBaseline* Captured = Baseline.GetPtr<FWidgetAnimInteractionBaseline>();
+-	if (!Component || !Captured)
+-	{
+-		return;
+-	}
+-	if (!Captured->ValueName.IsNone())
+-	{
+-		Component->SetConstraintValueByName(Captured->ConstraintName, Captured->ValueName, Captured->Value);
+-	}
+-	else
++	if (Component && Captured)
+ 	{
+-		Component->SetConstraintValue(Captured->ConstraintName, static_cast<EWidgetConstraintChannel>(Captured->Channel), Captured->Value);
++		Component->SetTrackValue(Captured->ConstraintName, Captured->ValueName, static_cast<EWidgetConstraintChannel>(Captured->Channel), Captured->Value);
+ 	}
+ }
+ 
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.h
+index 3149b0a..8bdd1e2 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.h
+@@ -122,6 +122,9 @@ public:
+ 	virtual FText GetDescription() const override;
+ 	virtual FText GetValueLabel() const override;
+ 	virtual FText GetCategory() const override;
++
++	/** A path position or a fade runs at the pace of its keys: a new track starts Linear, not Ease Out (two laps eased out ran most of the way in the first moments). */
++	virtual bool PrefersLinearEasing() const override { return true; }
+ 	virtual UObject* ResolveTarget(UWidget* Widget, const FInstancedStruct& Params) const override;
+ 	virtual FName GetChannel(const FInstancedStruct& Params) const override;
+ 	virtual double GetEndpointValue(const FInstancedStruct& Params, bool bStart) const override;
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintComponent.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintComponent.cpp
+index 147dc21..b79f5e9 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintComponent.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintComponent.cpp
+@@ -811,6 +811,23 @@ bool UWidgetConstraintComponent::GetConstraintValueByName(FName InName, FName Va
+ 	return WidgetConstraintValues::Get(FindConstraint(InName), ValueName, OutValue);
+ }
+ 
++bool UWidgetConstraintComponent::SetTrackValue(FName InName, FName ValueName, EWidgetConstraintChannel Channel, float Value, bool bSolveNow)
++{
++	UWidgetConstraint* Constraint = FindConstraint(InName);
++	const bool bSet = Constraint && (ValueName.IsNone() ? Constraint->SetChannel(Channel, Value) : WidgetConstraintValues::Set(Constraint, ValueName, Value));
++	if (bSet && bSolveNow)
++	{
++		SolveNowInDesigner();
++	}
++	return bSet;
++}
++
++bool UWidgetConstraintComponent::GetTrackValue(FName InName, FName ValueName, EWidgetConstraintChannel Channel, float& OutValue) const
++{
++	const UWidgetConstraint* Constraint = FindConstraint(InName);
++	return Constraint && (ValueName.IsNone() ? Constraint->GetChannel(Channel, OutValue) : WidgetConstraintValues::Get(Constraint, ValueName, OutValue));
++}
++
+ TArray<FString> UWidgetConstraintComponent::GetConstraintTrackNameOptions()
+ {
+ 	// None (the first), the names given on the widgets open in a designer, then every kind's name (a constraint left unnamed).
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintComponent.h b/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintComponent.h
+index e32ccc6..69c34a4 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintComponent.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintComponent.h
+@@ -132,6 +132,13 @@ public:
+ 	UFUNCTION(BlueprintPure, Category = "Widget Constraints", meta = (DisplayName = "Get Constraint Value By Name"))
+ 	bool GetConstraintValueByName(FName InName, FName ValueName, float& OutValue) const;
+ 
++	/**
++	 * What the Constraint track writes: Value Name when it names one (any number by name), else Channel. bSolveNow shows it at
++	 * once in the designer. False when the constraint or the value isn't there.
++	 */
++	bool SetTrackValue(FName InName, FName ValueName, EWidgetConstraintChannel Channel, float Value, bool bSolveNow = true);
++	bool GetTrackValue(FName InName, FName ValueName, EWidgetConstraintChannel Channel, float& OutValue) const;
++
+ 	/** The Constraint track's Constraint dropdown: the constraint names of every widget with Constraints in the open designers, and each kind's name. */
+ 	UFUNCTION()
+ 	static TArray<FString> GetConstraintTrackNameOptions();
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+index 8a5e57e..5226629 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetAnimMotionPath.cpp
+@@ -1332,7 +1332,8 @@ namespace WidgetAnimMotionPathImpl
+ 			}
+ 			struct FHeld
+ 			{
+-				UWidgetConstraint* Constraint = nullptr;
++				FName ConstraintName;
++				FName ValueName;
+ 				EWidgetConstraintChannel Channel = EWidgetConstraintChannel::Strength;
+ 				float Value = 0.f;
+ 			};
+@@ -1344,14 +1345,16 @@ namespace WidgetAnimMotionPathImpl
+ 				{
+ 					continue;
+ 				}
+-				UWidgetConstraint* Constraint = Constraints->FindConstraint(Track->ConstraintName);
++				// The value the track names (Value - a Path Position - or, left None, its Channel), exactly as the track writes it:
++				// reading the Channel alone drew a Path Position track as a Strength fade.
+ 				FHeld Kept;
+-				if (Constraint && Constraint->GetChannel(Track->Channel, Kept.Value))
++				Kept.ConstraintName = Track->ConstraintName;
++				Kept.ValueName = Track->ValueName;
++				Kept.Channel = Track->Channel;
++				if (Constraints->GetTrackValue(Kept.ConstraintName, Kept.ValueName, Kept.Channel, Kept.Value))
+ 				{
+-					Kept.Constraint = Constraint;
+-					Kept.Channel = Track->Channel;
+ 					Held.Add(Kept);
+-					Constraint->SetChannel(Track->Channel, static_cast<float>(Write.Value));
++					Constraints->SetTrackValue(Kept.ConstraintName, Kept.ValueName, Kept.Channel, static_cast<float>(Write.Value), /*bSolveNow=*/false);
+ 				}
+ 			}
+ 			TargetPoses.Reset();
+@@ -1363,7 +1366,7 @@ namespace WidgetAnimMotionPathImpl
+ 			// Put back as they were, last first: the preview's own pose is untouched.
+ 			for (int32 Index = Held.Num() - 1; Index >= 0; --Index)
+ 			{
+-				Held[Index].Constraint->SetChannel(Held[Index].Channel, Held[Index].Value);
++				Constraints->SetTrackValue(Held[Index].ConstraintName, Held[Index].ValueName, Held[Index].Channel, Held[Index].Value, /*bSolveNow=*/false);
+ 			}
+ 		};
+ 

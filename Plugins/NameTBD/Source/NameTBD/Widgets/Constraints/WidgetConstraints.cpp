@@ -6,6 +6,8 @@
 #include "Components/PanelWidget.h"
 #include "Components/Widget.h"
 #include "UObject/UnrealType.h"
+#include "UObject/Class.h"
+#include "UObject/UObjectIterator.h"
 #include "NameTBD/Widgets/WidgetEffectsDraw.h"
 #include "NameTBD/Widgets/WidgetTreeLookup.h"
 #include "NameTBD/Widgets/Paths/WidgetPathLayer.h"
@@ -1522,4 +1524,142 @@ bool UWidgetPointerParallaxConstraint::GetChannel(EWidgetConstraintChannel Chann
 		return true;
 	}
 	return Super::GetChannel(Channel, OutValue);
+}
+
+// =====================================================================================================
+// Values by name
+// =====================================================================================================
+
+namespace WidgetConstraintValues
+{
+	namespace
+	{
+		/** Visits every number and switch of a struct (a constraint's class, a Vector 2D, a Target) under its name; true stops. */
+		bool Walk(const UStruct* Struct, void* Container, const FString& Prefix, int32 Depth, TFunctionRef<bool(const FString&, const FProperty*, void*)> Visit)
+		{
+			for (TFieldIterator<FProperty> It(Struct); It; ++It)
+			{
+				const FProperty* Property = *It;
+				if (!Property->HasAnyPropertyFlags(CPF_Edit) || Property->ArrayDim != 1)
+				{
+					continue;
+				}
+				const bool bSwitch = Property->IsA<FBoolProperty>();
+				const FString Own = FName::NameToDisplayString(Property->GetName(), bSwitch);
+				const FString Name = Prefix.IsEmpty() ? Own : FString::Printf(TEXT("%s %s"), *Prefix, *Own);
+				void* Value = Container ? Property->ContainerPtrToValuePtr<void>(Container) : nullptr;
+
+				const FNumericProperty* Number = CastField<FNumericProperty>(Property);
+				if ((Number && !Number->IsEnum()) || bSwitch)
+				{
+					if (Visit(Name, Property, Value))
+					{
+						return true;
+					}
+					continue;
+				}
+				const FStructProperty* Inner = CastField<FStructProperty>(Property);
+				if (Inner && Depth < 2 && (Inner->Struct == TBaseStructure<FVector2D>::Get() || Inner->Struct == FWidgetConstraintTarget::StaticStruct()))
+				{
+					if (Walk(Inner->Struct, Value, Name, Depth + 1, Visit))
+					{
+						return true;
+					}
+				}
+			}
+			return false;
+		}
+
+		/** The value named ValueName on Constraint: its property and where it is. */
+		bool Find(const UWidgetConstraint* Constraint, FName ValueName, const FProperty*& OutProperty, void*& OutValue)
+		{
+			OutProperty = nullptr;
+			OutValue = nullptr;
+			if (!Constraint || ValueName.IsNone())
+			{
+				return false;
+			}
+			const FString Wanted = ValueName.ToString();
+			Walk(Constraint->GetClass(), const_cast<UWidgetConstraint*>(Constraint), FString(), 0, [&](const FString& Name, const FProperty* Property, void* Value)
+			{
+				if (Name.Equals(Wanted, ESearchCase::IgnoreCase))
+				{
+					OutProperty = Property;
+					OutValue = Value;
+					return true;
+				}
+				return false;
+			});
+			return OutProperty && OutValue;
+		}
+	}
+
+	void GetNames(const UClass* ConstraintClass, TArray<FName>& OutNames)
+	{
+		if (!ConstraintClass)
+		{
+			return;
+		}
+		Walk(ConstraintClass, nullptr, FString(), 0, [&OutNames](const FString& Name, const FProperty*, void*)
+		{
+			OutNames.AddUnique(FName(*Name));
+			return false;
+		});
+	}
+
+	void GetAllNames(TArray<FName>& OutNames)
+	{
+		// The base's first (Strength, Enabled...), then each kind's own.
+		GetNames(UWidgetConstraint::StaticClass(), OutNames);
+		for (TObjectIterator<UClass> It; It; ++It)
+		{
+			if (It->IsChildOf(UWidgetConstraint::StaticClass()) && !It->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+			{
+				GetNames(*It, OutNames);
+			}
+		}
+	}
+
+	bool Get(const UWidgetConstraint* Constraint, FName ValueName, float& OutValue)
+	{
+		const FProperty* Property = nullptr;
+		void* Value = nullptr;
+		if (!Find(Constraint, ValueName, Property, Value))
+		{
+			return false;
+		}
+		if (const FBoolProperty* Switch = CastField<FBoolProperty>(Property))
+		{
+			OutValue = Switch->GetPropertyValue(Value) ? 1.f : 0.f;
+			return true;
+		}
+		const FNumericProperty* Number = CastField<FNumericProperty>(Property);
+		OutValue = Number->IsFloatingPoint() ? static_cast<float>(Number->GetFloatingPointPropertyValue(Value)) : static_cast<float>(Number->GetSignedIntPropertyValue(Value));
+		return true;
+	}
+
+	bool Set(UWidgetConstraint* Constraint, FName ValueName, float InValue)
+	{
+		const FProperty* Property = nullptr;
+		void* Value = nullptr;
+		if (!Find(Constraint, ValueName, Property, Value))
+		{
+			return false;
+		}
+		if (const FBoolProperty* Switch = CastField<FBoolProperty>(Property))
+		{
+			Switch->SetPropertyValue(Value, InValue > 0.5f);
+			return true;
+		}
+		const FNumericProperty* Number = CastField<FNumericProperty>(Property);
+		if (Number->IsFloatingPoint())
+		{
+			Number->SetFloatingPointPropertyValue(Value, static_cast<double>(InValue));
+		}
+		else
+		{
+			Number->SetIntPropertyValue(Value, static_cast<int64>(FMath::RoundToDouble(InValue)));
+		}
+		return true;
+	}
 }

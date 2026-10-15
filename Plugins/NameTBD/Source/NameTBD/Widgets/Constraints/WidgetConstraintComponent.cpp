@@ -8,6 +8,7 @@
 #include "Layout/ArrangedChildren.h"
 #include "Rendering/DrawElements.h"
 #include "Slate/WidgetTransform.h"
+#include "UObject/UObjectIterator.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimInput.h"
 #include "NameTBD/Widgets/WidgetEditorHooks.h"
 
@@ -40,11 +41,18 @@ void SWidgetConstraintHost::Construct(const FArguments& InArgs)
 
 void SWidgetConstraintHost::SetSolved(const FSlateRenderTransform& InExtra, bool bInActive, float InOpacity)
 {
-	const bool bChanged = bInActive != bActive || SolvedOpacity != InOpacity || (bInActive && !WidgetConstraintHostPrivate::NearlySame(InExtra, Extra));
+	const bool bMoved = bInActive != bActive || (bInActive && !WidgetConstraintHostPrivate::NearlySame(InExtra, Extra));
+	const bool bFaded = SolvedOpacity != InOpacity;
 	Extra = InExtra;
 	bActive = bInActive;
 	SolvedOpacity = InOpacity;
-	if (bChanged)
+	if (bMoved)
+	{
+		// Where its child is arranged changed: under invalidation (the designer's preview, Global Invalidation) a paint alone kept
+		// the child's last geometry - a value set by a Widget Animation moved nothing until the widget was rebuilt.
+		Invalidate(EInvalidateWidgetReason::Layout);
+	}
+	else if (bFaded)
 	{
 		Invalidate(EInvalidateWidgetReason::Paint);
 	}
@@ -143,6 +151,43 @@ namespace WidgetConstraintSolver
 			|| !(Own.Scale - Authored.Scale).IsNearlyZero(0.0001);
 	}
 
+	/** A layout transform (scale and offset) as a render transform. */
+	FSlateRenderTransform ToRender(const FSlateLayoutTransform& Layout)
+	{
+		const float LayoutScale = Layout.GetScale();
+		return FSlateRenderTransform(FMatrix2x2(LayoutScale, 0.f, 0.f, LayoutScale), Layout.TransformPoint(FVector2f::ZeroVector));
+	}
+
+	/**
+	 * Where a widget is drawn with its Render Transform at Pose - its local space to desktop space, and its size: its box where it
+	 * is laid out, posed about its pivot, through its parent's place on screen. With Pose its current transform this is where it
+	 * is drawn this frame (its last paint's geometry would be a frame behind a widget a Widget Animation moves); with another,
+	 * where it would be (a motion path's sample).
+	 */
+	bool ReadPosedFrame(const UWidget* Widget, const FWidgetTransform& Pose, FSlateRenderTransform& OutLocalToDesktop, FVector2f& OutSize)
+	{
+		const TSharedPtr<SWidget> Slate = Widget ? Widget->GetCachedWidget() : nullptr;
+		const TSharedPtr<SWidget> Above = Slate.IsValid() ? Slate->GetParentWidget() : nullptr;
+		if (!Slate.IsValid() || !Above.IsValid())
+		{
+			return false;
+		}
+		const FGeometry& Geometry = Slate->GetTickSpaceGeometry();
+		const FVector2D LocalSize = Geometry.GetLocalSize();
+		if (LocalSize.X <= 0.0 || LocalSize.Y <= 0.0)
+		{
+			return false;
+		}
+		OutSize = FVector2f(static_cast<float>(LocalSize.X), static_cast<float>(LocalSize.Y));
+		const FVector2D PivotFraction = Widget->GetRenderTransformPivot();
+		const FVector2f Pivot = OutSize * FVector2f(static_cast<float>(PivotFraction.X), static_cast<float>(PivotFraction.Y));
+		const FSlateRenderTransform Posed = Concatenate(Concatenate(FSlateRenderTransform(-Pivot), Pose.ToSlateRenderTransform()), FSlateRenderTransform(Pivot));
+		const FGeometry& AboveGeometry = Above->GetTickSpaceGeometry();
+		const FSlateRenderTransform LaidOutInAbove = Concatenate(ToRender(Geometry.GetAccumulatedLayoutTransform()), ToRender(AboveGeometry.GetAccumulatedLayoutTransform().Inverse()));
+		OutLocalToDesktop = Concatenate(Concatenate(Posed, LaidOutInAbove), AboveGeometry.GetAccumulatedRenderTransform());
+		return true;
+	}
+
 	bool IsIdentity(const FSlateRenderTransform& Transform)
 	{
 		float A, B, C, D;
@@ -229,15 +274,48 @@ UWidgetConstraintComponent* UWidgetConstraintComponent::FindConstraintComponent(
 	{
 		return nullptr;
 	}
+	// The one whose Slate wrapper is alive first: a component left registered for the same widget (not yet collected, between
+	// rebuilds) would otherwise take a Constraint track's writes while another is the one drawn.
+	UWidgetConstraintComponent* Unbuilt = nullptr;
 	for (const TWeakObjectPtr<UWidgetConstraintComponent>& Weak : WidgetConstraintSolver::GetComponents())
 	{
 		UWidgetConstraintComponent* Component = Weak.Get();
 		if (Component && Component->GetOwner().Get() == Widget)
 		{
-			return Component;
+			if (Component->MyHost.IsValid())
+			{
+				return Component;
+			}
+			Unbuilt = Unbuilt ? Unbuilt : Component;
 		}
 	}
-	return nullptr;
+	return Unbuilt;
+}
+
+void UWidgetConstraintComponent::GetAllComponents(TArray<UWidgetConstraintComponent*>& OutComponents)
+{
+	for (const TWeakObjectPtr<UWidgetConstraintComponent>& Weak : WidgetConstraintSolver::GetComponents())
+	{
+		if (UWidgetConstraintComponent* Component = Weak.Get())
+		{
+			OutComponents.Add(Component);
+		}
+	}
+}
+
+void UWidgetConstraintComponent::GetTargetWidgets(TArray<const UWidget*>& OutWidgets) const
+{
+	FWidgetConstraintContext Context;
+	Context.Owner = GetOwner().Get();
+	for (const UWidgetConstraint* Constraint : Constraints)
+	{
+		if (Constraint && Constraint->bEnabled)
+		{
+			Constraint->GetDependencies(Context, OutWidgets);
+		}
+	}
+	OutWidgets.Remove(nullptr);
+	OutWidgets.Remove(Context.Owner);
 }
 
 void UWidgetConstraintComponent::SolveAll(float DeltaTime)
@@ -325,7 +403,7 @@ void UWidgetConstraintComponent::GatherDependencies(TArray<const UWidget*>& OutW
 }
 
 bool UWidgetConstraintComponent::MakeContext(const FWidgetTransform& Own, float DeltaTime, const TMap<const UWidget*, UWidgetConstraintComponent*>* ByOwner,
-	FWidgetConstraintContext& OutContext) const
+	FWidgetConstraintContext& OutContext, const TMap<const UWidget*, FWidgetTransform>* PosedWidgets) const
 {
 	UWidget* OwnerWidget = GetOwner().Get();
 	const TSharedPtr<SWidgetConstraintHost> Host = MyHost.Pin();
@@ -362,11 +440,21 @@ bool UWidgetConstraintComponent::MakeContext(const FWidgetTransform& Own, float 
 	OutContext.AnimatedPoint = FVector2f(OutContext.Rest.Position);
 
 	const FSlateRenderTransform DesktopToHost = OutContext.DesktopToHost;
-	OutContext.ResolveWidget = [ByOwner, DesktopToHost](const UWidget* Widget, FSlateRenderTransform& OutLocalToHost, FVector2f& OutSize) -> bool
+	OutContext.ResolveWidget = [ByOwner, DesktopToHost, PosedWidgets](const UWidget* Widget, FSlateRenderTransform& OutLocalToHost, FVector2f& OutSize) -> bool
 	{
 		if (!Widget)
 		{
 			return false;
+		}
+		// Asked for at another pose (a motion path's sample): there, whatever its own constraints do.
+		if (const FWidgetTransform* Posed = PosedWidgets ? PosedWidgets->Find(Widget) : nullptr)
+		{
+			FSlateRenderTransform LocalToDesktop;
+			if (WidgetConstraintSolver::ReadPosedFrame(Widget, *Posed, LocalToDesktop, OutSize))
+			{
+				OutLocalToHost = Concatenate(LocalToDesktop, DesktopToHost);
+				return true;
+			}
 		}
 		// A constrained widget: where its constraints put it (this frame, when it came first).
 		UWidgetConstraintComponent* Constrained = nullptr;
@@ -384,6 +472,16 @@ bool UWidgetConstraintComponent::MakeContext(const FWidgetTransform& Own, float 
 			OutLocalToHost = Concatenate(Constrained->SolvedLocalToDesktop, DesktopToHost);
 			OutSize = Constrained->SolvedSize;
 			return true;
+		}
+		// Anything else at its Render Transform as it is now - a target a Widget Animation moves is followed this frame, not a
+		// frame behind as its last paint would have it.
+		{
+			FSlateRenderTransform LocalToDesktop;
+			if (WidgetConstraintSolver::ReadPosedFrame(Widget, Widget->GetRenderTransform(), LocalToDesktop, OutSize))
+			{
+				OutLocalToHost = Concatenate(LocalToDesktop, DesktopToHost);
+				return true;
+			}
 		}
 		const TSharedPtr<SWidget> Slate = Widget->GetCachedWidget();
 		if (!Slate.IsValid())
@@ -549,8 +647,13 @@ void UWidgetConstraintComponent::SolveFrame(float DeltaTime, const TMap<const UW
 
 bool UWidgetConstraintComponent::PreviewTransform(const FWidgetTransform& OwnTransform, FWidgetTransform& OutTransform)
 {
+	return PreviewTransform(OwnTransform, OutTransform, nullptr);
+}
+
+bool UWidgetConstraintComponent::PreviewTransform(const FWidgetTransform& OwnTransform, FWidgetTransform& OutTransform, const TMap<const UWidget*, FWidgetTransform>* PosedWidgets)
+{
 	FWidgetConstraintContext Context;
-	if (Constraints.Num() == 0 || !MakeContext(OwnTransform, 0.f, nullptr, Context) || (Context.bDesignTime && !bSolveInDesigner))
+	if (Constraints.Num() == 0 || !MakeContext(OwnTransform, 0.f, nullptr, Context, PosedWidgets) || (Context.bDesignTime && !bSolveInDesigner))
 	{
 		return false;
 	}
@@ -678,13 +781,101 @@ bool UWidgetConstraintComponent::SetConstraintValue(FName InName, EWidgetConstra
 	{
 		return false;
 	}
+	SolveNowInDesigner();
+	return true;
+}
+
+void UWidgetConstraintComponent::SolveNowInDesigner() const
+{
 	// In the designer (a Widget Animation previewed, scrubbed): shown at once, not on the next tick.
 	const UWidget* OwnerWidget = GetOwner().Get();
 	if (OwnerWidget && OwnerWidget->IsDesignTime())
 	{
 		SolveAll(0.f);
 	}
+}
+
+bool UWidgetConstraintComponent::SetConstraintValueByName(FName InName, FName ValueName, float Value)
+{
+	UWidgetConstraint* Constraint = FindConstraint(InName);
+	if (!Constraint || !WidgetConstraintValues::Set(Constraint, ValueName, Value))
+	{
+		return false;
+	}
+	SolveNowInDesigner();
 	return true;
+}
+
+bool UWidgetConstraintComponent::GetConstraintValueByName(FName InName, FName ValueName, float& OutValue) const
+{
+	return WidgetConstraintValues::Get(FindConstraint(InName), ValueName, OutValue);
+}
+
+bool UWidgetConstraintComponent::SetTrackValue(FName InName, FName ValueName, EWidgetConstraintChannel Channel, float Value, bool bSolveNow)
+{
+	UWidgetConstraint* Constraint = FindConstraint(InName);
+	const bool bSet = Constraint && (ValueName.IsNone() ? Constraint->SetChannel(Channel, Value) : WidgetConstraintValues::Set(Constraint, ValueName, Value));
+	if (bSet && bSolveNow)
+	{
+		SolveNowInDesigner();
+	}
+	return bSet;
+}
+
+bool UWidgetConstraintComponent::GetTrackValue(FName InName, FName ValueName, EWidgetConstraintChannel Channel, float& OutValue) const
+{
+	const UWidgetConstraint* Constraint = FindConstraint(InName);
+	return Constraint && (ValueName.IsNone() ? Constraint->GetChannel(Channel, OutValue) : WidgetConstraintValues::Get(Constraint, ValueName, OutValue));
+}
+
+TArray<FString> UWidgetConstraintComponent::GetConstraintTrackNameOptions()
+{
+	// None (the first), the names given on the widgets open in a designer, then every kind's name (a constraint left unnamed).
+	TArray<FString> Options;
+	Options.Add(FName(NAME_None).ToString());
+	for (const TWeakObjectPtr<UWidgetConstraintComponent>& Weak : WidgetConstraintSolver::GetComponents())
+	{
+		const UWidgetConstraintComponent* Component = Weak.Get();
+		const UWidget* OwnerWidget = Component ? Component->GetOwner().Get() : nullptr;
+		if (!OwnerWidget || !OwnerWidget->IsDesignTime())
+		{
+			continue;
+		}
+		for (const FName& Name : Component->GetConstraintNames())
+		{
+			Options.AddUnique(Name.ToString());
+		}
+	}
+	TArray<FString> Kinds;
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		if (It->IsChildOf(UWidgetConstraint::StaticClass()) && !It->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists))
+		{
+			if (const UWidgetConstraint* Defaults = Cast<UWidgetConstraint>(It->GetDefaultObject()))
+			{
+				Kinds.AddUnique(Defaults->GetDisplayName().ToString());
+			}
+		}
+	}
+	Kinds.Sort();
+	for (const FString& Kind : Kinds)
+	{
+		Options.AddUnique(Kind);
+	}
+	return Options;
+}
+
+TArray<FString> UWidgetConstraintComponent::GetConstraintTrackValueOptions()
+{
+	TArray<FName> Names;
+	WidgetConstraintValues::GetAllNames(Names);
+	TArray<FString> Options;
+	Options.Add(FName(NAME_None).ToString());
+	for (const FName& Name : Names)
+	{
+		Options.Add(Name.ToString());
+	}
+	return Options;
 }
 
 bool UWidgetConstraintComponent::GetConstraintValue(FName InName, EWidgetConstraintChannel Channel, float& OutValue) const

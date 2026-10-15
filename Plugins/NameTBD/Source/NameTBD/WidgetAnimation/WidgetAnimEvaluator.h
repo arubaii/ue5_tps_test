@@ -344,6 +344,14 @@ public:
 	 */
 	virtual uint32 GetParamsLayoutHash(const FInstancedStruct& Params) const { return 0; }
 
+	/**
+	 * Called in the editor as a track of this type is added from the Add Track menu (not from a preset or a paste), on its new
+	 * settings, with the widget its Track Group plays on in the preview (null when there is none): starts it on what that widget
+	 * has - a Constraint track on its constraint's main number. Settings already saved never come through here, so what a struct
+	 * defaults to stays what older tracks meant.
+	 */
+	virtual void InitializeNewTrack(FInstancedStruct& Params, UWidget* Widget) const {}
+
 protected:
 
 	/** The first TargetClass at or beneath Widget, depth first, through panels and into User Widgets. */

@@ -3100,6 +3100,18 @@ int32 SWidgetAnimTimelineTracks::OnPaint(const FPaintArgs& Args, const FGeometry
 			}
 			// A track limited to part of its text names the words it moves.
 			FString TitleLabel = SWidgetAnimTimeline::GetLayerDisplayName(*Layer).ToString();
+
+			// A registered type that writes one of many values of its target names which ("Constraint · Path Position"): a
+			// track on the wrong value looked like a track that did nothing.
+			if (!bCue && Layer->AnimType == EWidgetAnimType::Custom)
+			{
+				const FWidgetAnimEvaluator* ValueEvaluator = Layer->FindEvaluator();
+				const FText Summary = ValueEvaluator && !Layer->IsAnimationTrack() ? ValueEvaluator->GetTrackSummary(Layer->TypeParams) : FText::GetEmpty();
+				if (!Summary.IsEmpty())
+				{
+					TitleLabel = FString::Printf(TEXT("%s \u00B7 %s"), *TitleLabel, *Summary.ToString());
+				}
+			}
 			if (Layer->TextTarget.IsSet())
 			{
 				TitleLabel = FString::Printf(TEXT("%s \u201C%s\u201D"), *TitleLabel, *Layer->TextTarget.Text);
@@ -18022,6 +18034,17 @@ void SWidgetAnimTimeline::AddLayer(int32 GroupIndex, EWidgetAnimType AnimType, c
 	// that shape has them now, so its keys start out as the shape already is; a Design track's, the look of the widget it
 	// plays on; a Shape Box track's, the outline of its box.
 	FWidgetAnimLayer& Added = Layers[InsertAt];
+
+	// A registered type picked from the menu starts on what the widget it plays on has - a Constraint track on its constraint's
+	// main number (a Follow Path's Path Position) rather than a Strength fade nobody asked for.
+	if (Added.AnimType == EWidgetAnimType::Custom && !Preset)
+	{
+		if (const FWidgetAnimEvaluator* NewEvaluator = Added.FindEvaluator())
+		{
+			NewEvaluator->InitializeNewTrack(Added.TypeParams, Source->GetLayerPreviewWidget(InsertAt));
+		}
+	}
+
 	if (WidgetAnimTypeIsKeyframed(Added.AnimType))
 	{
 		Added.Transform.Content = WidgetAnimKeyframeContentFor(Added.AnimType);
@@ -27654,6 +27677,11 @@ TSharedRef<SWidget> SWidgetAnimTimeline::MakeLayerToolTip(int32 LayerIndex) cons
 				break;
 			}
 
+			const FText Animates = Evaluator->GetTrackSummary(Layer.TypeParams);
+			if (!Animates.IsEmpty())
+			{
+				Rows.Add(TEXT("Animates"), Animates.ToString());
+			}
 			Rows.Add(Evaluator->GetTrackValueLabel(Layer.TypeParams).ToString(),
 				StartToEnd(Number(Evaluator->GetEndpointValue(Layer.TypeParams, true)), Number(Evaluator->GetEndpointValue(Layer.TypeParams, false))));
 		}

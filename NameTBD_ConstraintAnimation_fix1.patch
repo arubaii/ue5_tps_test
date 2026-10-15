@@ -1,0 +1,188 @@
+diff --git a/Docs/Design/ConstraintsAndPointerEffects.md b/Docs/Design/ConstraintsAndPointerEffects.md
+index ffa7623..f1d6456 100644
+--- a/Docs/Design/ConstraintsAndPointerEffects.md
++++ b/Docs/Design/ConstraintsAndPointerEffects.md
+@@ -4,7 +4,7 @@
+ 
+ Two UI Components (Add Component on a widget's Details), both wrapping the widget's own Slate widget the way Drop Shadow does (`RebuildWidgetWithContent`), and one widget:
+ - **Constraints** (`Widgets/Constraints/`): the widget's place, turn, size and opacity tied to other widgets, the pointer, paths and areas.
+-- **Constraint Target** (`Widgets/Constraints/WidgetConstraintTarget.h`): an invisible point to tie constraints and Pointer Effects to and key with its Transform track (Rive's target group).
++- **Constraint Target** (`Widgets/Constraints/ConstraintTargetWidget.h`): an invisible point to tie constraints and Pointer Effects to and key with its Transform track (Rive's target group).
+ - **Pointer Effects** (`Widgets/Pointer/`): how a widget answers the pointer (tilt, lean, press, lights, ripples), and the pointer handed on to materials, shapes, Widget Animations and state machines.
+ Both are driven by Widget Animations through the **Interaction** tracks (`WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.h/.cpp`).
+ 
+@@ -45,7 +45,7 @@ Both are driven by Widget Animations through the **Interaction** tracks (`Widget
+ - **Registration**: the component registers when initialized (`OnInitialize` / `OnPreConstruct`) as well as when its Slate wrapper is built, and stays registered without one (found, not solved), so the Constraint track resolves it in the designer's preview; a value set at design time solves at once (`SolveAll(0)`).
+ 
+ ### Constraint Target
+-- `UWidgetConstraintTarget` ("Constraint Target", palette NameTBD): a `SLeafWidget` of Marker Size (16 x 16) that draws a crosshair and ring in the designer (Marker Color; Show At Runtime to see it in a game), Hit Test Invisible, nothing else. Its place is its laid-out box plus its Render Transform, so its **Transform track** keys it: 2D keys with every easing, spring, value input and state machine, its motion path and the gizmo. Point any constraint's Target (Widget), Follow Path's Circle centre, Stay Inside's / Parallax's area, or Pointer Effects' Pointer Widget at it. Set Target Offset (Blueprint) moves it by its Render Translation.
++- `UConstraintTargetWidget` ("Constraint Target", palette NameTBD): a `SLeafWidget` of Marker Size (16 x 16) that draws a crosshair and ring in the designer (Marker Color; Show At Runtime to see it in a game), Hit Test Invisible, nothing else. Its place is its laid-out box plus its Render Transform, so its **Transform track** keys it: 2D keys with every easing, spring, value input and state machine, its motion path and the gizmo. Point any constraint's Target (Widget), Follow Path's Circle centre, Stay Inside's / Parallax's area, or Pointer Effects' Pointer Widget at it. Set Target Offset (Blueprint) moves it by its Render Translation.
+ 
+ ### Recipes
+ - Ball round a ring: Follow Path, Shape Outline of an Ellipse, Speed 0.25 - or a Constraint track: Add Track > Interaction > Constraint on the ball starts on **Path Position**, from where it is to one lap on (Loop on the track to keep it going).
+diff --git a/Plugins/NameTBD/Resources/AI/Docs/constraints.md b/Plugins/NameTBD/Resources/AI/Docs/constraints.md
+index 84d7a3c..4b84b9e 100644
+--- a/Plugins/NameTBD/Resources/AI/Docs/constraints.md
++++ b/Plugins/NameTBD/Resources/AI/Docs/constraints.md
+@@ -4,7 +4,7 @@
+ UWidgetConstraintComponent ("Constraints") on any widget: Constraints (a list, applied in order), Strength, bSolveInDesigner, bShowInDesigner (magenta lines to targets and paths). Never writes the Render Transform: the widget is drawn and hit-tested with an extra transform over it, so animations keep working underneath. Every constraint: ConstraintName, bEnabled, Strength 0..1, Activation Always / WhileHovered / WhilePressed / NearPointer (ActivationRadius), ActivationFade, WhileAnimated ActOver (default) / LetGo (fades out while a Widget Animation moves the widget) / FollowKeys (the keyed place becomes the target, reached with the constraint's smoothing and limits - keyed pupil looks), bSmooth + Smoothing (spring VisualDuration, Bounce - lag and overshoot). Motion paths in the designer show constrained widgets where their constraints put them (and Constraint tracks' paths). Target (FWidgetConstraintTarget): Kind Widget (Widget name, Anchor 0..1) / Pointer (WhenPointerAway Release or HoldLast) / Parent (Anchor) / Point (offset from rest). Types: Copy Position (SourceSpace Screen or Local, bCopyX/Y, CopyAmount = how far toward the target, Offset, bKeepStartingOffset, bLimit Min/Max from rest), Copy Rotation (Local copies the target's angle; CopyAmount -1 for meshing gears; AngleOffset; limits), Copy Scale, Copy Transform (pin to a widget: Offset in its units, AngleOffset, bKeepStartingOffset), Distance (Within / Outside / Exact, Distance), Follow Path (PathSource ShapeOutline - e.g. an Ellipse ring -, WidgetBox (EdgeShape), Circle (Radius, StartAngle round Target), WidgetPathConnection (PathWidget = layer, ConnectionFrom/To); PathOffset; Mode Distance (PathPosition fraction or bPositionInPixels, Speed per second, bLoop) or ClosestToTarget (knob following the pointer round a dial); bOrient + OrientOffset), Look At (ForwardAngle, AngleOffset, bKeepUpright, limits), Stay Inside (Area Parent or AreaWidget, AreaShape Auto/Box/Ellipse, Margin, bKeepWholeWidgetInside, Elasticity), Remap (Measure OffsetX/OffsetY/Distance/Direction/TargetAngle/TargetScale/TargetOpacity, FromRange -> Drive OffsetX/OffsetY/Angle/Scale/ScaleX/ScaleY/Opacity over ToRange, bClamp, curve), Pointer Parallax (Depth, Tilt, Area Screen or AreaWidget).
+ 
+ ## Constraint recipes
+-Ball round a ring: Follow Path, ShapeOutline of an Ellipse, Speed 0.25. Eyes following the cursor: on each pupil Copy Position -> Pointer, CopyAmount 0.15, bSmooth, WhileAnimated FollowKeys; then Stay Inside the eye white (Ellipse) - keyed looks on the pupil's Transform track then spring there inside the eye. Magnetic button: Copy Position -> Pointer, CopyAmount 0.3, Activation NearPointer, bLimit +-12, bSmooth Bounce 0.3. Dial knob: Follow Path Circle, ClosestToTarget -> Pointer (HoldLast), Activation WhilePressed. Trail: each dot Copy Position -> the previous dot, bSmooth. Dock magnify: Remap Distance (from edges) 0..150 -> Scale 1.5..1 toward the Pointer. Blueprint: Get Widget Constraints(widget), Find Constraint (by Name, or the kind's name e.g. "Follow Path"), Get Constraint Names, Add Constraint(class), Set Constraint Value(name, channel Strength/PathPosition/OffsetX/OffsetY/AngleOffset/Distance), Set Constraint Value By Name(name, value name, value) - any number or switch as the Details name it: "Path Position", "Strength", "Distance", "Copy Amount X", "Offset Y", "Radius X", "Target Point Y", "Orient" -, Set Target Widget, Reset Constraint Motion. Widget Animation track "Constraint" (category Interaction): ConstraintName (None = first), ValueName (any number by that name; None = the old Channel), Start/End Value; a new one on a Follow Path starts on Path Position, one lap. To key a PLACE (where eyes look, where something aims), don't key numbers: add a Constraint Target widget (UWidgetConstraintTarget, invisible, MarkerSize, crosshair in the designer), point the constraints' Target (Kind Widget) at it and key its Transform track - 2D keys, motion path, gizmo. Eyes looking where keyed: each pupil Copy Position -> Widget LookTarget (CopyAmount 1) then Stay Inside its eye (Ellipse); key LookTarget's Transform; give LookTarget Copy Position -> Pointer with WhileAnimated LetGo to follow the cursor between keyed glances.
++Ball round a ring: Follow Path, ShapeOutline of an Ellipse, Speed 0.25. Eyes following the cursor: on each pupil Copy Position -> Pointer, CopyAmount 0.15, bSmooth, WhileAnimated FollowKeys; then Stay Inside the eye white (Ellipse) - keyed looks on the pupil's Transform track then spring there inside the eye. Magnetic button: Copy Position -> Pointer, CopyAmount 0.3, Activation NearPointer, bLimit +-12, bSmooth Bounce 0.3. Dial knob: Follow Path Circle, ClosestToTarget -> Pointer (HoldLast), Activation WhilePressed. Trail: each dot Copy Position -> the previous dot, bSmooth. Dock magnify: Remap Distance (from edges) 0..150 -> Scale 1.5..1 toward the Pointer. Blueprint: Get Widget Constraints(widget), Find Constraint (by Name, or the kind's name e.g. "Follow Path"), Get Constraint Names, Add Constraint(class), Set Constraint Value(name, channel Strength/PathPosition/OffsetX/OffsetY/AngleOffset/Distance), Set Constraint Value By Name(name, value name, value) - any number or switch as the Details name it: "Path Position", "Strength", "Distance", "Copy Amount X", "Offset Y", "Radius X", "Target Point Y", "Orient" -, Set Target Widget, Reset Constraint Motion. Widget Animation track "Constraint" (category Interaction): ConstraintName (None = first), ValueName (any number by that name; None = the old Channel), Start/End Value; a new one on a Follow Path starts on Path Position, one lap. To key a PLACE (where eyes look, where something aims), don't key numbers: add a Constraint Target widget (UConstraintTargetWidget, invisible, MarkerSize, crosshair in the designer), point the constraints' Target (Kind Widget) at it and key its Transform track - 2D keys, motion path, gizmo. Eyes looking where keyed: each pupil Copy Position -> Widget LookTarget (CopyAmount 1) then Stay Inside its eye (Ellipse); key LookTarget's Transform; give LookTarget Copy Position -> Pointer with WhileAnimated LetGo to follow the cursor between keyed glances.
+ 
+ ## Pointer Effects (UI Component)
+ UPointerEffectsComponent ("Pointer Effects") on any widget. Preset (quick starts named by trigger) TiltCard "Tilt Card Hover" (default), HolographicCard "Holographic Card Hover", ShimmerButton "Shimmer Hover", MagneticButton "Magnetic Hover", Ripple "Ripple Click", Custom. PresetAsset (UPointerEffectsPresetAsset "Pointer Effects Preset": Tilt, Magnet, Press, Lights, Ripple, Overlays; Save As Preset, Apply Preset Asset, Copy To Preset Asset). Intensity. ActiveWhen (condition over everything). Tilt (bEnabled, ShowWhen, MaxAngle, Direction PressAway / RiseToward, Perspective, HoverScale, Spring). Magnet (ShowWhen, Pull, MaxOffset, Range, Spring). Press (ShowWhen, PressScale, Spring). Lights (list of FPointerLight: Kind Spotlight / Sheen (SheenAngle, SheenWidth) / BorderGlow (BorderWidth) / Holographic; Show WhileHovered / NearPointer / Always; ShowWhen; Color alpha = strength; Radius). Ripple (ShowWhen, Color, Duration). Overlays (FPointerOverlay: ShowWhen, Image = texture / material / SVG (FWidgetEffectImage with MaterialParameters), Placement Fill / FollowPointer (Size, cut to the widget) / FollowPointerUncut, Tint, bBehindContent) - materials get Pointer (U, V, hover, pressed), PointerHover, PointerVelocity (x, y, speed, proximity), PointerProximity, PointerPressed, EffectStrength, WidgetSize every frame. ShowWhen (FPointerEffectCondition): Trigger Default / Always / WhileHovered / NearPointer / WhilePressed / WhileFocused / ConditionOnly + Condition name (+ bInvertCondition); conditions come from Set Effect Condition(name, bool) / Clear Effect Condition, the widget or its User Widget implementing the Pointer Effects Condition interface (GetPointerEffectCondition(name, out met) -> answers), or built-ins On / Off (Context Menu Button toggle) and Usable / Disabled. bMatchWidgetCorners or CornerRadius. ProximityRange, HoverFade, bReactToFocus (keyboard/gamepad navigation focus = hover; a click's focus doesn't), bReactWhileDisabled (off: disabled widgets lie still), Set Virtual Pointer (stick). Outputs: bDriveMaterials (material parameters Pointer = (U, V, hover, pressed), PointerHover, PointerVelocity = (x, y, speed, proximity) on Image / Border / shape materials, bIncludeChildren), bDriveShapeGradients (radial gradient center follows the pointer), AnimationPointerValue / AnimationHoverValue (Widget Animation values), MachinePointerInput / MachineHoverInput / MachineProximityInput (state machine inputs). Event On Pointer Effects Updated; Get Pointer State. bPreviewInDesigner + DesignerPointer + bPreviewConditionsAsMet. PointerSource Pointer / Widget + PointerWidget (the pointer read as another widget's middle - a Constraint Target keyed on its Transform track sweeps the effects; Set Pointer Source Widget). Set / Clear / Get Animated Input (PointerX, PointerY 0..1 across the widget, Hover 0..1, Press >0.5 = pressed, rising past 0.5 = click + ripple). Widget Animation track "Pointer Effects": Animates Setting (Channel Intensity, TiltAngle, MagnetPull, LightStrength) / PointerX / PointerY / Hover / Press; a new track sweeps Pointer X 0 -> 1. Value input "Pointer Distance and Motion" (Distance, Proximity, Direction, Speed, VelocityX/Y) on any value track.
+diff --git a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.h b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.h
+index 917407b..3149b0a 100644
+--- a/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.h
++++ b/Plugins/NameTBD/Source/NameTBD/WidgetAnimation/Evaluators/WidgetAnimInteractionTracks.h
+@@ -18,7 +18,7 @@
+  * inside it that has the component.
+  *
+  * Keyed places (a look target, a pointer sweeping a card) are keyed on a Constraint Target widget's Transform track instead -
+- * 2D keys, motion path, gizmo - with constraints (or Pointer Effects' Pointer Source) tied to it: see WidgetConstraintTarget.h.
++ * 2D keys, motion path, gizmo - with constraints (or Pointer Effects' Pointer Source) tied to it: see ConstraintTargetWidget.h.
+  */
+ 
+ /** Constraint: animates any number of a widget's constraint - Path Position, Strength, Distance, Offset X, Copy Amount, Radius... */
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintTarget.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/ConstraintTargetWidget.cpp
+similarity index 76%
+rename from Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintTarget.cpp
+rename to Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/ConstraintTargetWidget.cpp
+index 337e7dc..c9a18cb 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintTarget.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/ConstraintTargetWidget.cpp
+@@ -1,21 +1,21 @@
+ // Copyright AR GameSystems 2026. All rights reserved.
+ 
+-#include "WidgetConstraintTarget.h"
++#include "ConstraintTargetWidget.h"
+ 
+ #include "Rendering/DrawElements.h"
+ 
+-#define LOCTEXT_NAMESPACE "WidgetConstraintTarget"
++#define LOCTEXT_NAMESPACE "ConstraintTargetWidget"
+ 
+ // =====================================================================================================
+-// SWidgetConstraintTargetMarker
++// SConstraintTargetMarker
+ // =====================================================================================================
+ 
+-void SWidgetConstraintTargetMarker::Construct(const FArguments& InArgs)
++void SConstraintTargetMarker::Construct(const FArguments& InArgs)
+ {
+ 	SetCanTick(false);
+ }
+ 
+-void SWidgetConstraintTargetMarker::SetMarker(const FVector2D& InMarkerSize, const FLinearColor& InMarkerColor, bool bInDrawn)
++void SConstraintTargetMarker::SetMarker(const FVector2D& InMarkerSize, const FLinearColor& InMarkerColor, bool bInDrawn)
+ {
+ 	const bool bResized = !MarkerSize.Equals(InMarkerSize);
+ 	MarkerSize = FVector2D(FMath::Max(InMarkerSize.X, 0.0), FMath::Max(InMarkerSize.Y, 0.0));
+@@ -24,7 +24,7 @@ void SWidgetConstraintTargetMarker::SetMarker(const FVector2D& InMarkerSize, con
+ 	Invalidate(bResized ? EInvalidateWidgetReason::Layout : EInvalidateWidgetReason::Paint);
+ }
+ 
+-int32 SWidgetConstraintTargetMarker::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
++int32 SConstraintTargetMarker::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+ 	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
+ {
+ 	if (!bDrawn)
+@@ -61,22 +61,22 @@ int32 SWidgetConstraintTargetMarker::OnPaint(const FPaintArgs& Args, const FGeom
+ }
+ 
+ // =====================================================================================================
+-// UWidgetConstraintTarget
++// UConstraintTargetWidget
+ // =====================================================================================================
+ 
+-UWidgetConstraintTarget::UWidgetConstraintTarget()
++UConstraintTargetWidget::UConstraintTargetWidget()
+ {
+ 	// A point, not something to click: whatever is under it keeps the pointer.
+ 	SetVisibilityInternal(ESlateVisibility::HitTestInvisible);
+ }
+ 
+-TSharedRef<SWidget> UWidgetConstraintTarget::RebuildWidget()
++TSharedRef<SWidget> UConstraintTargetWidget::RebuildWidget()
+ {
+-	MyMarker = SNew(SWidgetConstraintTargetMarker);
++	MyMarker = SNew(SConstraintTargetMarker);
+ 	return MyMarker.ToSharedRef();
+ }
+ 
+-void UWidgetConstraintTarget::SynchronizeProperties()
++void UConstraintTargetWidget::SynchronizeProperties()
+ {
+ 	Super::SynchronizeProperties();
+ 	if (MyMarker.IsValid())
+@@ -85,19 +85,19 @@ void UWidgetConstraintTarget::SynchronizeProperties()
+ 	}
+ }
+ 
+-void UWidgetConstraintTarget::ReleaseSlateResources(bool bReleaseChildren)
++void UConstraintTargetWidget::ReleaseSlateResources(bool bReleaseChildren)
+ {
+ 	Super::ReleaseSlateResources(bReleaseChildren);
+ 	MyMarker.Reset();
+ }
+ 
+-void UWidgetConstraintTarget::SetTargetOffset(FVector2D Point)
++void UConstraintTargetWidget::SetTargetOffset(FVector2D Point)
+ {
+ 	SetRenderTranslation(Point);
+ }
+ 
+ #if WITH_EDITOR
+-const FText UWidgetConstraintTarget::GetPaletteCategory()
++const FText UConstraintTargetWidget::GetPaletteCategory()
+ {
+ 	return LOCTEXT("PaletteCategory", "NameTBD");
+ }
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintTarget.h b/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/ConstraintTargetWidget.h
+similarity index 91%
+rename from Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintTarget.h
+rename to Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/ConstraintTargetWidget.h
+index c0c184e..c83f5ac 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/WidgetConstraintTarget.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Constraints/ConstraintTargetWidget.h
+@@ -6,13 +6,13 @@
+ #include "Components/Widget.h"
+ #include "Widgets/SLeafWidget.h"
+ 
+-#include "WidgetConstraintTarget.generated.h"
++#include "ConstraintTargetWidget.generated.h"
+ 
+ /** The Slate side of a Constraint Target: a point with a size, drawn as a crosshair in the designer (or always, Show At Runtime). */
+-class NAMETBD_API SWidgetConstraintTargetMarker : public SLeafWidget
++class NAMETBD_API SConstraintTargetMarker : public SLeafWidget
+ {
+ public:
+-	SLATE_BEGIN_ARGS(SWidgetConstraintTargetMarker) {}
++	SLATE_BEGIN_ARGS(SConstraintTargetMarker) {}
+ 	SLATE_END_ARGS()
+ 
+ 	void Construct(const FArguments& InArgs);
+@@ -45,12 +45,12 @@ private:
+  * Pivot, the middle by default) is the point constraints read with Anchor (0.5, 0.5).
+  */
+ UCLASS(meta = (DisplayName = "Constraint Target"))
+-class NAMETBD_API UWidgetConstraintTarget : public UWidget
++class NAMETBD_API UConstraintTargetWidget : public UWidget
+ {
+ 	GENERATED_BODY()
+ 
+ public:
+-	UWidgetConstraintTarget();
++	UConstraintTargetWidget();
+ 
+ 	/** Its size in Slate units: what it asks its panel for, and the box drawn in the designer. Anchors on it are fractions of it. */
+ 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Constraint Target")
+@@ -78,5 +78,5 @@ public:
+ protected:
+ 	virtual TSharedRef<SWidget> RebuildWidget() override;
+ 
+-	TSharedPtr<SWidgetConstraintTargetMarker> MyMarker;
++	TSharedPtr<SConstraintTargetMarker> MyMarker;
+ };

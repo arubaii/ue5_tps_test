@@ -1131,6 +1131,7 @@ namespace WidgetAnimMotionPathImpl
 
 		// Then every other widget the animation moves - each track group's Target Widget with a track that changes where it is -
 		// so its path shows whatever is selected, or nothing.
+		TSet<const UWidget*> Moved;
 		if (Posed.Settings)
 		{
 			for (const FWidgetAnimSettings& Layer : *Posed.Settings)
@@ -1144,6 +1145,29 @@ namespace WidgetAnimMotionPathImpl
 				if (bMovesPosition && !Layer.bMuted && Target)
 				{
 					OutWidgets.AddUnique(Target);
+					Moved.Add(Target);
+				}
+			}
+		}
+
+		// And every widget whose constraints read one the animation moves - pupils tied to a keyed look target - so their paths
+		// show where their constraints carry them as the target's keys play.
+		if (Moved.Num() > 0)
+		{
+			TArray<UWidgetConstraintComponent*> Constrained;
+			UWidgetConstraintComponent::GetAllComponents(Constrained);
+			for (const UWidgetConstraintComponent* Component : Constrained)
+			{
+				UWidget* ConstrainedWidget = Component->GetConstrainedWidget();
+				if (!ConstrainedWidget || OutWidgets.Contains(ConstrainedWidget) || UWidgetConstraintComponent::FindConstraintComponent(ConstrainedWidget) != Component)
+				{
+					continue;
+				}
+				TArray<const UWidget*> Reads;
+				Component->GetTargetWidgets(Reads);
+				if (Reads.ContainsByPredicate([&Moved](const UWidget* Read) { return Moved.Contains(Read); }))
+				{
+					OutWidgets.Add(ConstrainedWidget);
 				}
 			}
 		}
@@ -1283,6 +1307,11 @@ namespace WidgetAnimMotionPathImpl
 		FWidgetAnimBaselineSet ChainBaselines;
 
 		FWidgetAnimResult Result;
+
+		// The widgets the shown widget's constraints read that the animation moves (its look target): posed at each sample too.
+		TArray<const UWidget*> MovedTargets;
+		TMap<const UWidget*, FWidgetTransform> TargetPoses;
+
 		auto PoseChainAt = [&](const TArray<FWidgetAnimSettings>& LayersToPose, const TArray<TWeakObjectPtr<UWidget>>& PosedChain, float StackTime, TArray<FWidgetTransform>& OutPoses)
 		{
 			Result.ResetKeepingCapacity();
@@ -1303,7 +1332,8 @@ namespace WidgetAnimMotionPathImpl
 			}
 			struct FHeld
 			{
-				UWidgetConstraint* Constraint = nullptr;
+				FName ConstraintName;
+				FName ValueName;
 				EWidgetConstraintChannel Channel = EWidgetConstraintChannel::Strength;
 				float Value = 0.f;
 			};
@@ -1315,21 +1345,28 @@ namespace WidgetAnimMotionPathImpl
 				{
 					continue;
 				}
-				UWidgetConstraint* Constraint = Constraints->FindConstraint(Track->ConstraintName);
+				// The value the track names (Value - a Path Position - or, left None, its Channel), exactly as the track writes it:
+				// reading the Channel alone drew a Path Position track as a Strength fade.
 				FHeld Kept;
-				if (Constraint && Constraint->GetChannel(Track->Channel, Kept.Value))
+				Kept.ConstraintName = Track->ConstraintName;
+				Kept.ValueName = Track->ValueName;
+				Kept.Channel = Track->Channel;
+				if (Constraints->GetTrackValue(Kept.ConstraintName, Kept.ValueName, Kept.Channel, Kept.Value))
 				{
-					Kept.Constraint = Constraint;
-					Kept.Channel = Track->Channel;
 					Held.Add(Kept);
-					Constraint->SetChannel(Track->Channel, static_cast<float>(Write.Value));
+					Constraints->SetTrackValue(Kept.ConstraintName, Kept.ValueName, Kept.Channel, static_cast<float>(Write.Value), /*bSolveNow=*/false);
 				}
 			}
-			Constraints->PreviewTransform(OutPoses[First], OutPoses[First]);
+			TargetPoses.Reset();
+			for (const UWidget* MovedTarget : MovedTargets)
+			{
+				TargetPoses.Add(MovedTarget, UWidgetAnimLibrary::GetResultPose(Result, MovedTarget, FallbackWidget, ChainBaselines));
+			}
+			Constraints->PreviewTransform(OutPoses[First], OutPoses[First], TargetPoses.Num() > 0 ? &TargetPoses : nullptr);
 			// Put back as they were, last first: the preview's own pose is untouched.
 			for (int32 Index = Held.Num() - 1; Index >= 0; --Index)
 			{
-				Held[Index].Constraint->SetChannel(Held[Index].Channel, Held[Index].Value);
+				Constraints->SetTrackValue(Held[Index].ConstraintName, Held[Index].ValueName, Held[Index].Channel, Held[Index].Value, /*bSolveNow=*/false);
 			}
 		};
 
@@ -1352,6 +1389,14 @@ namespace WidgetAnimMotionPathImpl
 				FullChain.AddUnique(OwningPreview);
 			}
 
+			// What its constraints read - targets, paths, areas - since the layers moving those move it too.
+			TArray<const UWidget*> Reads;
+			if (const UWidgetConstraintComponent* ShownConstraints = UWidgetConstraintComponent::FindConstraintComponent(Shown))
+			{
+				ShownConstraints->GetTargetWidgets(Reads);
+			}
+			MovedTargets.Reset();
+
 			// Only the layers that move one of them - what the rest do doesn't move this widget - and the highest one they move.
 			TArray<FWidgetAnimSettings> Filtered;
 			TSet<const UWidget*> Targeted;
@@ -1366,10 +1411,20 @@ namespace WidgetAnimMotionPathImpl
 					Targeted.Add(Target);
 					Highest = FMath::Max(Highest, Level);
 				}
+				else if (Reads.Contains(Target))
+				{
+					Filtered.Add(Layer);
+					MovedTargets.AddUnique(Target);
+				}
 			}
 			if (Highest == INDEX_NONE)
 			{
-				continue;
+				if (MovedTargets.Num() == 0)
+				{
+					continue;
+				}
+				// Not moved itself - only what it is tied to: its own chain is just itself.
+				Highest = 0;
 			}
 
 			const int32 PathIndex = Paths.AddDefaulted();

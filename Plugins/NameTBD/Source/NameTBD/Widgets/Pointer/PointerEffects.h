@@ -447,6 +447,37 @@ enum class EPointerEffectsChannel : uint8
 	LightStrength UMETA(DisplayName = "Light Strength", ToolTip = "Every light's alpha, 0 to 1 (as a multiplier of the first light's).")
 };
 
+/** Part of the pointer Pointer Effects see that a Widget Animation (the Pointer Effects track) or Blueprint can set. */
+UENUM(BlueprintType)
+enum class EPointerEffectsInput : uint8
+{
+	PointerX UMETA(DisplayName = "Pointer X", ToolTip = "Across the widget: 0 its left edge, 1 its right. Set, the effects see the pointer there, hovering; the other axis, unset, is the middle."),
+	PointerY UMETA(DisplayName = "Pointer Y", ToolTip = "Down the widget: 0 its top edge, 1 its bottom."),
+	Hover UMETA(ToolTip = "How hovered it is, 0 to 1, whatever the pointer does."),
+	Press UMETA(ToolTip = "Pressed above 0.5; rising past 0.5 is a click - a ripple from the pointer.")
+};
+
+/** Where Pointer Effects read the pointer. */
+UENUM(BlueprintType)
+enum class EPointerEffectsPointerSource : uint8
+{
+	Pointer UMETA(ToolTip = "The mouse, touch or a Diegetic Screen's pointer (and navigation focus, React To Focus)."),
+	Widget UMETA(ToolTip = "Another widget's middle (Pointer Widget) - a Constraint Target whose Transform track is keyed: the effects follow its keys, its motion path showing the sweep. Over the widget when inside its box; near by its distance.")
+};
+
+/** Parts of the pointer set by an animation or Blueprint, over what is measured. */
+struct FPointerEffectsAnimatedInputs
+{
+	TOptional<float> PointerX;
+	TOptional<float> PointerY;
+	TOptional<float> Hover;
+	TOptional<float> Press;
+
+	bool IsEmpty() const { return !PointerX.IsSet() && !PointerY.IsSet() && !Hover.IsSet() && !Press.IsSet(); }
+	TOptional<float>& Get(EPointerEffectsInput Input);
+	const TOptional<float>& Get(EPointerEffectsInput Input) const;
+};
+
 /** The Slate side's settings. */
 struct FPointerEffectsSettings
 {
@@ -515,6 +546,15 @@ public:
 	/** A pointer of its own (0..1 across the widget) used instead of the real one - a stick tilting a focused card. Unset: back. */
 	void SetVirtualPointer(TOptional<FVector2D> InUV);
 
+	/** Parts of the pointer an animation sets (Pointer X / Y, Hover, Press), over whatever else it reads. */
+	void SetAnimatedInputs(const FPointerEffectsAnimatedInputs& InInputs);
+
+	/** The pointer read off another widget instead (Pointer Source: Widget): its middle, in desktop space. Unset: the real pointer. */
+	void SetPointerWidget(TWeakObjectPtr<UWidget> InPointerWidget) { PointerWidget = InPointerWidget; Wake(); }
+
+	/** Both, kept without stepping - for SetSettings, which steps, to follow. */
+	void SetPointerInputs(TWeakObjectPtr<UWidget> InPointerWidget, const FPointerEffectsAnimatedInputs& InInputs) { PointerWidget = InPointerWidget; AnimatedInputs = InInputs; }
+
 	const FPointerEffectsState& GetState() const { return State; }
 	const FPointerEffectsSettings& GetSettings() const { return Settings; }
 	FVector4f GetCorners(const FVector2f& Size) const;
@@ -550,6 +590,14 @@ private:
 	TFunction<void(const FPointerEffectsState&)> OnUpdated;
 	TFunction<bool(FName)> ConditionSource;
 	TOptional<FVector2D> VirtualPointer;
+	FPointerEffectsAnimatedInputs AnimatedInputs;
+	TWeakObjectPtr<UWidget> PointerWidget;
+
+	/** Animated Press was above 0.5 last step (rising past it is a click). */
+	bool bWasAnimatedPress = false;
+
+	/** Whether it steps on a timer at design time too: following a widget, which an animation may be moving. */
+	bool StepsInDesigner() const { return PointerWidget.IsValid(); }
 
 	TSharedPtr<SShapeBox> TiltBox;
 	TSharedPtr<SPointerEffectsSurface> Surface;
@@ -733,6 +781,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pointer")
 	bool bReactToFocus = true;
 
+	/**
+	 * Where the pointer is read: the real one, or another widget's middle - a Constraint Target keyed on its Transform track, so
+	 * an animation sweeps the tilt and lights across with 2D keys, eased and shown on a motion path.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pointer")
+	EPointerEffectsPointerSource PointerSource = EPointerEffectsPointerSource::Pointer;
+
+	/** The widget read as the pointer (Pointer Source: Widget) - always shown: picking one makes Pointer Source Widget. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pointer", meta = (GetOptions = "GetWidgetOptions"))
+	FName PointerWidget;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Outputs")
 	FPointerEffectsOutputs Outputs;
 
@@ -796,6 +855,29 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Pointer Effects")
 	void ClearVirtualPointer();
 
+	/**
+	 * Sets part of the pointer the effects see - Pointer X / Y (0..1 across the widget), Hover, Press - over whatever they read,
+	 * until cleared: what the Pointer Effects track animates. An intro sweeping a card's sheen, a selection shown hovered.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Pointer Effects")
+	void SetAnimatedInput(EPointerEffectsInput Input, float Value);
+
+	/** Back to what is measured for that part. */
+	UFUNCTION(BlueprintCallable, Category = "Pointer Effects")
+	void ClearAnimatedInput(EPointerEffectsInput Input);
+
+	/** That part as set, or false while it isn't. */
+	UFUNCTION(BlueprintPure, Category = "Pointer Effects")
+	bool GetAnimatedInput(EPointerEffectsInput Input, float& OutValue) const;
+
+	/** Reads the pointer off another widget (Pointer Source: Widget) - one made at runtime included. Null: back to Pointer Widget's name. */
+	UFUNCTION(BlueprintCallable, Category = "Pointer Effects")
+	void SetPointerSourceWidget(UWidget* InWidget);
+
+	/** The widget names offered in its dropdowns. */
+	UFUNCTION()
+	TArray<FString> GetWidgetOptions() const;
+
 	/** Sets an animatable value. */
 	UFUNCTION(BlueprintCallable, Category = "Pointer Effects")
 	void SetEffectValue(EPointerEffectsChannel Channel, float Value);
@@ -850,6 +932,15 @@ private:
 	void CollectTargets();
 
 	TWeakPtr<SPointerEffectsHost> MyHost;
+
+	/** Parts of the pointer set by the Pointer Effects track or Blueprint (kept here so a rebuilt widget keeps them). */
+	FPointerEffectsAnimatedInputs AnimatedInputs;
+
+	/** Set Pointer Source Widget's widget, over Pointer Widget's name. */
+	TWeakObjectPtr<UWidget> PointerWidgetOverride;
+
+	/** The widget read as the pointer now, or null (Pointer Source: Pointer, or none found). */
+	UWidget* ResolvePointerWidget() const;
 	TArray<TWeakObjectPtr<UMaterialInstanceDynamic>> Materials;
 	TArray<TWeakObjectPtr<UShapeWidget>> Shapes;
 	bool bTargetsCollected = false;

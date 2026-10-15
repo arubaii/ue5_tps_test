@@ -918,3 +918,23 @@ namespace WidgetConstraintMath
 	/** A polyline moved Offset along its normals (outward for a closed one, to the left of an open one). */
 	NAMETBD_API void OffsetLine(TArray<FVector2f>& Points, bool bClosed, float Offset);
 }
+
+/**
+ * Any number of a constraint, by name - what the Constraint track keys (as Rive keys any property of a constraint): every
+ * number and switch its Details show, named as they show it, a Vector 2D's and a Target's parts after it - "Path Position",
+ * "Copy Amount X", "Offset Y", "Radius X", "Target Point Y", "Target Anchor X", "Elasticity", "Orient" (a switch: on above 0.5).
+ * Names are worked out from the properties themselves (FName::NameToDisplayString), so they hold in a cooked game too.
+ */
+namespace WidgetConstraintValues
+{
+	/** Every name a constraint of ConstraintClass can be animated by, in the order its Details list them. */
+	NAMETBD_API void GetNames(const UClass* ConstraintClass, TArray<FName>& OutNames);
+
+	/** Every name any kind of constraint can be animated by, each once - what the Constraint track's Value dropdown lists. */
+	NAMETBD_API void GetAllNames(TArray<FName>& OutNames);
+
+	NAMETBD_API bool Get(const UWidgetConstraint* Constraint, FName ValueName, float& OutValue);
+
+	/** Writes it (a switch: on above 0.5, a whole number: rounded). False when the constraint has no such value. */
+	NAMETBD_API bool Set(UWidgetConstraint* Constraint, FName ValueName, float Value);
+}

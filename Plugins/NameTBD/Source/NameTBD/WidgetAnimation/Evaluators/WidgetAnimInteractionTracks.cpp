@@ -9,6 +9,8 @@
 
 #define LOCTEXT_NAMESPACE "WidgetAnimInteractionTracks"
 
+DEFINE_LOG_CATEGORY_STATIC(LogWidgetAnimInteraction, Log, All);
+
 namespace WidgetAnimInteractionPrivate
 {
 	/** The first component Find gives at or beneath Widget, depth first, through panels and into User Widgets. */
@@ -60,7 +62,7 @@ FText FWidgetAnimConstraintEvaluator::GetDisplayName() const
 
 FText FWidgetAnimConstraintEvaluator::GetDescription() const
 {
-	return LOCTEXT("ConstraintDescription", "Animates a value of the widget's Constraints - a constraint's Strength, a Follow Path's Path Position (a ball sent round a ring), an Offset, an Angle Offset or a Distance. On the Track Group's widget, or the first widget inside it with Constraints.");
+	return LOCTEXT("ConstraintDescription", "Animates any number of the widget's Constraints - a Follow Path's Path Position (a ball sent round a ring), a constraint's Strength, a Distance, an Offset, a Copy Amount, a Radius... (Value). On the Track Group's widget, or the first widget inside it with Constraints. To key a place for constraints to follow (where eyes look), key a Constraint Target widget's Transform instead.");
 }
 
 FText FWidgetAnimConstraintEvaluator::GetValueLabel() const
@@ -85,6 +87,10 @@ FName FWidgetAnimConstraintEvaluator::GetChannel(const FInstancedStruct& Params)
 	{
 		return NAME_None;
 	}
+	if (!Settings->ValueName.IsNone())
+	{
+		return FName(*FString::Printf(TEXT("Constraint.%s.%s"), *Settings->ConstraintName.ToString(), *Settings->ValueName.ToString()));
+	}
 	return FName(*FString::Printf(TEXT("Constraint.%s.%d"), *Settings->ConstraintName.ToString(), static_cast<int32>(Settings->Channel)));
 }
 
@@ -98,9 +104,28 @@ void FWidgetAnimConstraintEvaluator::Apply(UObject* Target, const FInstancedStru
 {
 	UWidgetConstraintComponent* Component = Cast<UWidgetConstraintComponent>(Target);
 	const FWidgetAnimConstraintParams* Settings = GetParams(Params);
-	if (Component && Settings)
+	if (!Component || !Settings)
 	{
-		Component->SetConstraintValue(Settings->ConstraintName, Settings->Channel, static_cast<float>(Value));
+		return;
+	}
+	if (!Component->SetTrackValue(Settings->ConstraintName, Settings->ValueName, Settings->Channel, static_cast<float>(Value)))
+	{
+		// Said once per widget and value: a track writing nothing looked like a broken track.
+		static TSet<FString> Told;
+		const UWidget* OwnerWidget = Component->GetConstrainedWidget();
+		const FString What = Settings->ValueName.IsNone()
+			? StaticEnum<EWidgetConstraintChannel>()->GetNameStringByValue(static_cast<int64>(Settings->Channel))
+			: Settings->ValueName.ToString();
+		const FString Key = FString::Printf(TEXT("%s|%s|%s"), *GetPathNameSafe(OwnerWidget), *Settings->ConstraintName.ToString(), *What);
+		if (!Told.Contains(Key))
+		{
+			Told.Add(Key);
+			UE_LOG(LogWidgetAnimInteraction, Warning, TEXT("Constraint track on %s: %s. Constraints there: %s."), *GetNameSafe(OwnerWidget),
+				Component->FindConstraint(Settings->ConstraintName)
+					? *FString::Printf(TEXT("constraint '%s' has no value '%s'"), *Settings->ConstraintName.ToString(), *What)
+					: *FString::Printf(TEXT("no constraint named '%s'"), *Settings->ConstraintName.ToString()),
+				*FString::JoinBy(Component->GetConstraintNames(), TEXT(", "), [](const FName& Name) { return Name.ToString(); }));
+		}
 	}
 }
 
@@ -109,11 +134,12 @@ bool FWidgetAnimConstraintEvaluator::CaptureBaseline(UObject* Target, const FIns
 	const UWidgetConstraintComponent* Component = Cast<UWidgetConstraintComponent>(Target);
 	const FWidgetAnimConstraintParams* Settings = GetParams(Params);
 	FWidgetAnimInteractionBaseline Baseline;
-	if (!Component || !Settings || !Component->GetConstraintValue(Settings->ConstraintName, Settings->Channel, Baseline.Value))
+	if (!Component || !Settings || !Component->GetTrackValue(Settings->ConstraintName, Settings->ValueName, Settings->Channel, Baseline.Value))
 	{
 		return false;
 	}
 	Baseline.ConstraintName = Settings->ConstraintName;
+	Baseline.ValueName = Settings->ValueName;
 	Baseline.Channel = static_cast<uint8>(Settings->Channel);
 	OutBaseline.InitializeAs<FWidgetAnimInteractionBaseline>(Baseline);
 	return true;
@@ -125,7 +151,7 @@ void FWidgetAnimConstraintEvaluator::RestoreBaseline(UObject* Target, const FIns
 	const FWidgetAnimInteractionBaseline* Captured = Baseline.GetPtr<FWidgetAnimInteractionBaseline>();
 	if (Component && Captured)
 	{
-		Component->SetConstraintValue(Captured->ConstraintName, static_cast<EWidgetConstraintChannel>(Captured->Channel), Captured->Value);
+		Component->SetTrackValue(Captured->ConstraintName, Captured->ValueName, static_cast<EWidgetConstraintChannel>(Captured->Channel), Captured->Value);
 	}
 }
 
@@ -136,13 +162,72 @@ FText FWidgetAnimConstraintEvaluator::GetTrackSummary(const FInstancedStruct& Pa
 	{
 		return FText::GetEmpty();
 	}
-	const FText Channel = WidgetAnimInteractionPrivate::ChannelName(StaticEnum<EWidgetConstraintChannel>(), static_cast<int64>(Settings->Channel));
-	return Settings->ConstraintName.IsNone() ? Channel : FText::Format(LOCTEXT("ConstraintSummary", "{0} {1}"), FText::FromName(Settings->ConstraintName), Channel);
+	const FText Animated = Settings->ValueName.IsNone()
+		? WidgetAnimInteractionPrivate::ChannelName(StaticEnum<EWidgetConstraintChannel>(), static_cast<int64>(Settings->Channel))
+		: FText::FromName(Settings->ValueName);
+	return Settings->ConstraintName.IsNone() ? Animated : FText::Format(LOCTEXT("ConstraintSummary", "{0} {1}"), FText::FromName(Settings->ConstraintName), Animated);
+}
+
+void FWidgetAnimConstraintEvaluator::InitializeNewTrack(FInstancedStruct& Params, UWidget* Widget) const
+{
+	FWidgetAnimConstraintParams* Settings = Params.GetMutablePtr<FWidgetAnimConstraintParams>();
+	const UWidgetConstraintComponent* Component = Cast<UWidgetConstraintComponent>(ResolveTarget(Widget, Params));
+	const UWidgetConstraint* First = Component ? Component->FindConstraint(NAME_None) : nullptr;
+	if (!Settings || !First)
+	{
+		// Nothing to read: a Strength fade, as before.
+		return;
+	}
+
+	// The constraint's main number, from where it is now: a lap of a path, a leash, a turn - else its Strength, faded in.
+	static const FName PathPositionName(TEXT("Path Position"));
+	static const FName DistanceName(TEXT("Distance"));
+	static const FName StrengthName(TEXT("Strength"));
+	FName Main = StrengthName;
+	double Span = 0.0;
+	if (First->IsA<UWidgetFollowPathConstraint>())
+	{
+		const UWidgetFollowPathConstraint* Path = CastChecked<UWidgetFollowPathConstraint>(First);
+		Main = PathPositionName;
+		Span = Path->bPositionInPixels ? 100.0 : 1.0;
+	}
+	else if (First->IsA<UWidgetDistanceConstraint>())
+	{
+		Main = DistanceName;
+		Span = 40.0;
+	}
+
+	float Now = 0.f;
+	Settings->ValueName = Main;
+	if (Main == StrengthName || !WidgetConstraintValues::Get(First, Main, Now))
+	{
+		Settings->StartValue = 0.0;
+		Settings->EndValue = 1.0;
+		return;
+	}
+	Settings->StartValue = Now;
+	Settings->EndValue = Now + Span;
 }
 
 // =====================================================================================================
 // Pointer Effects
 // =====================================================================================================
+
+namespace WidgetAnimInteractionPrivate
+{
+	/** The part of the pointer a Pointer Effects track animates, or false for a setting. */
+	bool ToPointerPart(EWidgetAnimPointerEffectsValue Animates, EPointerEffectsInput& OutInput)
+	{
+		switch (Animates)
+		{
+		case EWidgetAnimPointerEffectsValue::PointerX: OutInput = EPointerEffectsInput::PointerX; return true;
+		case EWidgetAnimPointerEffectsValue::PointerY: OutInput = EPointerEffectsInput::PointerY; return true;
+		case EWidgetAnimPointerEffectsValue::Hover: OutInput = EPointerEffectsInput::Hover; return true;
+		case EWidgetAnimPointerEffectsValue::Press: OutInput = EPointerEffectsInput::Press; return true;
+		default: return false;
+		}
+	}
+}
 
 FText FWidgetAnimPointerEffectsEvaluator::GetDisplayName() const
 {
@@ -151,7 +236,7 @@ FText FWidgetAnimPointerEffectsEvaluator::GetDisplayName() const
 
 FText FWidgetAnimPointerEffectsEvaluator::GetDescription() const
 {
-	return LOCTEXT("PointerEffectsDescription", "Animates a value of the widget's Pointer Effects - Intensity (every effect at once), Tilt Angle, Magnet Pull or Light Strength: a card's tilt and shine switched on as it is selected. On the Track Group's widget, or the first widget inside it with Pointer Effects.");
+	return LOCTEXT("PointerEffectsDescription", "Animates the pointer the widget's Pointer Effects see - Pointer X / Y across it, Hover, Press (a scripted click with its ripple) - so a sheen sweeps a card as it is dealt or a selection shows hovered with no one at the mouse; or a setting: Intensity, Tilt Angle, Magnet Pull, Light Strength. On the Track Group's widget, or the first widget inside it with Pointer Effects. For a keyed 2D path, point Pointer Source at a Constraint Target and key its Transform.");
 }
 
 FText FWidgetAnimPointerEffectsEvaluator::GetValueLabel() const
@@ -172,7 +257,16 @@ UObject* FWidgetAnimPointerEffectsEvaluator::ResolveTarget(UWidget* Widget, cons
 FName FWidgetAnimPointerEffectsEvaluator::GetChannel(const FInstancedStruct& Params) const
 {
 	const FWidgetAnimPointerEffectsParams* Settings = GetParams(Params);
-	return Settings ? FName(*FString::Printf(TEXT("PointerEffects.%d"), static_cast<int32>(Settings->Channel))) : NAME_None;
+	if (!Settings)
+	{
+		return NAME_None;
+	}
+	EPointerEffectsInput Input = EPointerEffectsInput::PointerX;
+	if (WidgetAnimInteractionPrivate::ToPointerPart(Settings->Animates, Input))
+	{
+		return FName(*FString::Printf(TEXT("PointerEffects.Input.%d"), static_cast<int32>(Input)));
+	}
+	return FName(*FString::Printf(TEXT("PointerEffects.%d"), static_cast<int32>(Settings->Channel)));
 }
 
 double FWidgetAnimPointerEffectsEvaluator::GetEndpointValue(const FInstancedStruct& Params, bool bStart) const
@@ -185,7 +279,16 @@ void FWidgetAnimPointerEffectsEvaluator::Apply(UObject* Target, const FInstanced
 {
 	UPointerEffectsComponent* Component = Cast<UPointerEffectsComponent>(Target);
 	const FWidgetAnimPointerEffectsParams* Settings = GetParams(Params);
-	if (Component && Settings)
+	if (!Component || !Settings)
+	{
+		return;
+	}
+	EPointerEffectsInput Input = EPointerEffectsInput::PointerX;
+	if (WidgetAnimInteractionPrivate::ToPointerPart(Settings->Animates, Input))
+	{
+		Component->SetAnimatedInput(Input, static_cast<float>(Value));
+	}
+	else
 	{
 		Component->SetEffectValue(Settings->Channel, static_cast<float>(Value));
 	}
@@ -200,7 +303,17 @@ bool FWidgetAnimPointerEffectsEvaluator::CaptureBaseline(UObject* Target, const 
 		return false;
 	}
 	FWidgetAnimInteractionBaseline Baseline;
-	Baseline.Value = Component->GetEffectValue(Settings->Channel);
+	EPointerEffectsInput Input = EPointerEffectsInput::PointerX;
+	if (WidgetAnimInteractionPrivate::ToPointerPart(Settings->Animates, Input))
+	{
+		// Usually not animated before: put back as following the real pointer again.
+		Baseline.PointerPart = static_cast<uint8>(Settings->Animates);
+		Baseline.bWasSet = Component->GetAnimatedInput(Input, Baseline.Value);
+	}
+	else
+	{
+		Baseline.Value = Component->GetEffectValue(Settings->Channel);
+	}
 	Baseline.Channel = static_cast<uint8>(Settings->Channel);
 	OutBaseline.InitializeAs<FWidgetAnimInteractionBaseline>(Baseline);
 	return true;
@@ -210,16 +323,49 @@ void FWidgetAnimPointerEffectsEvaluator::RestoreBaseline(UObject* Target, const 
 {
 	UPointerEffectsComponent* Component = Cast<UPointerEffectsComponent>(Target);
 	const FWidgetAnimInteractionBaseline* Captured = Baseline.GetPtr<FWidgetAnimInteractionBaseline>();
-	if (Component && Captured)
+	if (!Component || !Captured)
 	{
-		Component->SetEffectValue(static_cast<EPointerEffectsChannel>(Captured->Channel), Captured->Value);
+		return;
 	}
+	EPointerEffectsInput Input = EPointerEffectsInput::PointerX;
+	if (WidgetAnimInteractionPrivate::ToPointerPart(static_cast<EWidgetAnimPointerEffectsValue>(Captured->PointerPart), Input))
+	{
+		if (Captured->bWasSet)
+		{
+			Component->SetAnimatedInput(Input, Captured->Value);
+		}
+		else
+		{
+			Component->ClearAnimatedInput(Input);
+		}
+		return;
+	}
+	Component->SetEffectValue(static_cast<EPointerEffectsChannel>(Captured->Channel), Captured->Value);
 }
 
 FText FWidgetAnimPointerEffectsEvaluator::GetTrackSummary(const FInstancedStruct& Params) const
 {
 	const FWidgetAnimPointerEffectsParams* Settings = GetParams(Params);
-	return Settings ? WidgetAnimInteractionPrivate::ChannelName(StaticEnum<EPointerEffectsChannel>(), static_cast<int64>(Settings->Channel)) : FText::GetEmpty();
+	if (!Settings)
+	{
+		return FText::GetEmpty();
+	}
+	if (Settings->Animates != EWidgetAnimPointerEffectsValue::Setting)
+	{
+		return WidgetAnimInteractionPrivate::ChannelName(StaticEnum<EWidgetAnimPointerEffectsValue>(), static_cast<int64>(Settings->Animates));
+	}
+	return WidgetAnimInteractionPrivate::ChannelName(StaticEnum<EPointerEffectsChannel>(), static_cast<int64>(Settings->Channel));
+}
+
+void FWidgetAnimPointerEffectsEvaluator::InitializeNewTrack(FInstancedStruct& Params, UWidget* Widget) const
+{
+	// A new track sweeps the pointer across: left edge to right edge, the effects shown as it passes.
+	if (FWidgetAnimPointerEffectsParams* Settings = Params.GetMutablePtr<FWidgetAnimPointerEffectsParams>())
+	{
+		Settings->Animates = EWidgetAnimPointerEffectsValue::PointerX;
+		Settings->StartValue = 0.0;
+		Settings->EndValue = 1.0;
+	}
 }
 
 // =====================================================================================================
