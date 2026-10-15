@@ -133,7 +133,7 @@ Commands work from the game console or the editor's Output Log while playing (a 
 ## Still open
 - CommonUI integration: Common Action Widget key prompts and input actions for the shortcuts (`NameTBDCommonUI`), and MVVM view models for entries (`NameTBDMVVM`).
 - Grouping several merged notifications into one summary ("3 new messages from 2 players") beyond Merge by Stack Key.
-- Persisting preferences and history automatically (today: Get / Set + Restore for the game's save system).
+- Persisting history automatically (today: Restore for the game's save system). Preferences that have a menu setting (Do Not Disturb, sounds, duration scale, keep until dismissed, read aloud, reduce motion - see MenuSystem.md) are saved and restored by the menu settings; Muted Types are not.
 - Server-side handles (update / dismiss a specific client toast from the server) beyond Stack Key re-posts.
 - Touch: swipe works through Slate's mouse emulation of touch; no velocity fling or multi-touch.
 - A host in an inactive Widget Switcher page counts as live (it isn't collapsed); a per-host "is this page shown" check.

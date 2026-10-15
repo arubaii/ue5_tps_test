@@ -352,6 +352,7 @@ namespace NameTBDAITools
 		RegisterNiagaraTools();
 		RegisterDataTools();
 		RegisterCaptureTools();
+		RegisterMenuTools();
 	}
 
 	FNameTBDAIToolResult Execute(const FString& Name, const TSharedPtr<FJsonObject>& InArgs, FNameTBDAIToolContext& Context)

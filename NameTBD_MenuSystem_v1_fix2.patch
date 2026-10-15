@@ -1,0 +1,13 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Menu/Widgets/SMenuSettingsPanel.cpp b/Plugins/NameTBD/Source/NameTBD/Menu/Widgets/SMenuSettingsPanel.cpp
+index 223ab53..cabff5a 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Menu/Widgets/SMenuSettingsPanel.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Menu/Widgets/SMenuSettingsPanel.cpp
+@@ -901,7 +901,7 @@ void SMenuSettingsPanel::UpdateDescription(UMenuSetting* Setting)
+ 	}
+ 	if (Subsystem && Subsystem->IsRestartRequired())
+ 	{
+-		Notes.AddUnique(LOCTEXT("RestartPending", "Some changes need a restart of the game."));
++		Notes.Add(LOCTEXT("RestartPending", "Some changes need a restart of the game."));
+ 	}
+ 	DescNote = FText::Join(FText::FromString(TEXT("\n")), Notes);
+ 	if (PreviewImage.IsValid())

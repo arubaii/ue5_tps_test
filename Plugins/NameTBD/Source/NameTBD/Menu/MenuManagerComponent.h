@@ -4,8 +4,11 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Containers/Ticker.h"
+#include "Engine/StreamableManager.h"
 #include "GameplayTagContainer.h"
 #include "MenuTypes.h"
+#include "NameTBD/Menu/Input/MenuInputTypes.h"
 #include "MenuManagerComponent.generated.h"
 
 class APlayerController;
@@ -56,9 +59,13 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Menu|Input")
 	int32 MappingContextPriority = 0;
 
-	/** Action that closes the top-most open screen. Optional. */
+	/** Action that closes the top-most open screen. Optional. Goes through Request Back: a screen may handle Back itself. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Menu|Input")
 	TObjectPtr<UInputAction> CloseTopScreenAction;
+
+	/** Back with no screen open opens this one (the pause menu on Escape / Start). None: nothing happens, as before. */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Menu|Input")
+	FGameplayTag BackOpensScreen;
 
 	/**
 	 * Tags the owner must NOT have for a screen to open (in combat, airborne...).
@@ -113,6 +120,30 @@ public:
 	/** The live widget for a screen, or null if it was never created. */
 	UFUNCTION(BlueprintPure, Category = "Menu")
 	UUserWidget* GetScreenWidget(FGameplayTag ScreenTag) const;
+
+	/**
+	 * Back, as the player pressed it: the top screen is asked first (On Back Requested - it may close a sub-page or a dialog, or
+	 * ask about unsaved changes); if it doesn't handle it and allows Close On Back, it closes. With nothing open, Back Opens Screen
+	 * opens. True when something happened.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Menu")
+	bool RequestBack();
+
+	/** The screen a widget is (None when it isn't one of this manager's). */
+	UFUNCTION(BlueprintPure, Category = "Menu")
+	FGameplayTag FindScreenTag(const UUserWidget* Widget) const;
+
+	/** Closes the screen Widget is - what a screen calls to close itself. False when it isn't one of this manager's open screens. */
+	UFUNCTION(BlueprintCallable, Category = "Menu")
+	bool CloseScreenWidget(UUserWidget* Widget);
+
+	/** A screen is waiting for its widget class to load (Async Load). */
+	UFUNCTION(BlueprintPure, Category = "Menu")
+	bool IsMenuLoading(FGameplayTag ScreenTag) const;
+
+	/** The Menu Manager of a player: on the controller, its pawn or its player state. */
+	UFUNCTION(BlueprintPure, Category = "Menu", meta = (DisplayName = "Find Menu Manager"))
+	static UMenuManagerComponent* FindForPlayer(const APlayerController* Player);
 
 	/**
 	 * Whether this component is the one belonging to the local player. Everything public
@@ -179,4 +210,40 @@ private:
 	
 	UFUNCTION()
 	void HandleCloseTopScreenAction();
+
+	/** The top screen's own mapping context, input mode and cursor (re-applied when the top screen changes). */
+	void ApplyTopScreenInput();
+
+	/** Focus On Open for a screen that became the top one (bReturning: a screen above it closed). */
+	void ApplyScreenFocus(FGameplayTag ScreenTag, bool bReturning);
+
+	void HandleInputDeviceChanged(EMenuInputDevice Device);
+	void HideScreenWidget(FGameplayTag ScreenTag);
+	void CancelPendingHide(FGameplayTag ScreenTag);
+
+	/** Async Load: open requests waiting for their class, with their context. */
+	TMap<FGameplayTag, TWeakObjectPtr<UObject>> PendingOpens;
+	TMap<FGameplayTag, TSharedPtr<FStreamableHandle>> LoadHandles;
+	FStreamableManager Streamable;
+
+	/** Close Delay: screens closed but still shown for their exit, and when they go. */
+	TMap<FGameplayTag, double> PendingHides;
+	FTSTicker::FDelegateHandle HideTicker;
+	bool TickPendingHides(float DeltaTime);
+
+	/** Return To Closed Screens: what each open screen closed when it opened. */
+	TMap<FGameplayTag, FGameplayTagContainer> ClosedByScreen;
+
+	/** The notification suppression each open screen holds. */
+	TMap<FGameplayTag, int32> NotificationSuppressions;
+
+	/** The widget that had focus in each screen when another opened over it. */
+	TMap<FGameplayTag, TWeakPtr<class SWidget>> FocusMemory;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UInputMappingContext> ActiveScreenContext;
+
+	EMenuScreenInputMode AppliedInputMode = EMenuScreenInputMode::Default;
+	bool bClosingAll = false;
+	FDelegateHandle DeviceChangedHandle;
 };

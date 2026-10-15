@@ -158,4 +158,5 @@ namespace NameTBDAITools
 	void RegisterNiagaraTools();
 	void RegisterDataTools();
 	void RegisterCaptureTools();
+	void RegisterMenuTools();
 }

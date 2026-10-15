@@ -1,0 +1,14 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/NameTBD.Build.cs b/Plugins/NameTBD/Source/NameTBD/NameTBD.Build.cs
+index a134e8e..98a42bb 100644
+--- a/Plugins/NameTBD/Source/NameTBD/NameTBD.Build.cs
++++ b/Plugins/NameTBD/Source/NameTBD/NameTBD.Build.cs
+@@ -28,7 +28,8 @@ public class NameTBD : ModuleRules
+ 				"RenderCore",
+ 				"EnhancedInput",
+ 				"RHI",              // menus: the GPU vendor and name, frame times (benchmark, stat graph), ray tracing support
+-				"EngineSettings"    // menus: the project version for System Info
++				"EngineSettings",   // menus: the project version for System Info
++				"ApplicationCore"   // menus: FInputDeviceScope (which gamepad family sent the input)
+ 			}
+ 		);
+ 

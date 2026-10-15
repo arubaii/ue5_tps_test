@@ -26,7 +26,10 @@ public class NameTBD : ModuleRules
 				"Slate",
 				"SlateCore",
 				"RenderCore",
-				"EnhancedInput"
+				"EnhancedInput",
+				"RHI",              // menus: the GPU vendor and name, frame times (benchmark, stat graph), ray tracing support
+				"EngineSettings",   // menus: the project version for System Info
+				"ApplicationCore"   // menus: FInputDeviceScope (which gamepad family sent the input)
 			}
 		);
 

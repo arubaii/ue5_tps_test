@@ -1,0 +1,212 @@
+diff --git a/Docs/Design/MenuSystem.md b/Docs/Design/MenuSystem.md
+index 75701b1..dae2bcd 100644
+--- a/Docs/Design/MenuSystem.md
++++ b/Docs/Design/MenuSystem.md
+@@ -137,7 +137,7 @@ Sources: Lyra `GameSettings` / `LyraSettingsLocal` / `LyraSettingsShared` (edit
+ - Touch: swipe between tabs, larger touch targets preset.
+ 
+ ## Unverified (no engine here: written, not compiled or run)
+-- Enhanced Input user settings API names (`GetCurrentKeyProfile`, `GetPlayerMappingRows`, `FPlayerKeyMapping` getters, `MapPlayerKey` with an invalid key to clear a slot, `ResetAllPlayerKeysInRow`, `RegisterInputMappingContext`), `QueryKeysMappedToAction`.
++- Enhanced Input user settings API names (`GetActiveKeyProfile`, `GetPlayerMappingRows`, `FPlayerKeyMapping` getters, `MapPlayerKey` with an invalid key to clear a slot, `ResetAllPlayerKeysInRow`, `RegisterInputMappingContext`), `QueryKeysMappedToAction`.
+ - `FInputDeviceScope` (InputCoreTypes.h) carrying the hardware name during Slate input processing; the gamepad hardware strings per platform.
+ - Vendor console variable names and Blueprint support functions (`/Script/DLSSBlueprint.DLSSLibrary:IsDLSSSupported`, `/Script/StreamlineBlueprint.StreamlineLibraryDLSSG:IsDLSSGSupported`, `StreamlineLibraryReflex:IsReflexSupported`, `t.Streamline.Reflex.*`, `r.FidelityFX.AntiLag2.Enabled`, `r.XeFG.Enabled`, `r.XeLL.Enabled`, `r.XeSS.Quality` values), and whether each plugin also wants `r.ScreenPercentage` set by the game.
+ - `FAudioDevice::SetTransientPrimaryVolume`, `UEngine::bSubtitlesEnabled` assignment, `APlayerController` force feedback properties found by name (`bForceFeedbackEnabled`, `ForceFeedbackScale`), `UUserInterfaceSettings::ApplicationScale` taking effect live, `FApp::GetGraphicsRHI`, `UGameUserSettings::GetDefaultWindowMode`, `GetResolutionScaleInformationEx` / `SetResolutionScaleValueEx`.
+diff --git a/Plugins/NameTBD/Source/NameTBD/Menu/Graphics/MenuUpscalers.cpp b/Plugins/NameTBD/Source/NameTBD/Menu/Graphics/MenuUpscalers.cpp
+index c85b3a2..e9ed822 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Menu/Graphics/MenuUpscalers.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Menu/Graphics/MenuUpscalers.cpp
+@@ -361,13 +361,13 @@ bool UMenuSettingTarget_GraphicsFeature::GetOptions(const UMenuSetting& Setting,
+ 	{
+ 	case EMenuGraphicsFeatureField::Upscaler:
+ 	{
+-		const FMenuGraphicsFeature* Recommended = FindFeature(GetRecommendedUpscaler());
++		const FMenuGraphicsFeature* Recommended = UMenuGraphicsLibrary::FindFeature(UMenuGraphicsLibrary::GetRecommendedUpscaler());
+ 		OutOptions.Add(FMenuSettingOption(TEXT("Auto"),
+ 			Recommended ? FText::Format(LOCTEXT("AutoWith", "Auto ({0})"), Recommended->DisplayName) : LOCTEXT("Auto", "Auto"),
+ 			LOCTEXT("AutoDesc", "The best upscaler for your graphics card.")));
+ 		for (const FMenuGraphicsFeature& Feature : Settings.GraphicsFeatures)
+ 		{
+-			if (Feature.Kind == EMenuGraphicsFeatureKind::Upscaler && GetStatus(Feature).bSupported)
++			if (Feature.Kind == EMenuGraphicsFeatureKind::Upscaler && UMenuGraphicsLibrary::GetStatus(Feature).bSupported)
+ 			{
+ 				OutOptions.Add(FMenuSettingOption(Feature.Id.ToString(), Feature.DisplayName, Feature.Description));
+ 			}
+@@ -389,7 +389,7 @@ bool UMenuSettingTarget_GraphicsFeature::GetOptions(const UMenuSetting& Setting,
+ 		OutOptions.Add(FMenuSettingOption(TEXT("Off"), LOCTEXT("Off", "Off")));
+ 		for (const FMenuGraphicsFeature& Feature : Settings.GraphicsFeatures)
+ 		{
+-			if (Feature.Kind == EMenuGraphicsFeatureKind::FrameGeneration && GetStatus(Feature).bSupported
++			if (Feature.Kind == EMenuGraphicsFeatureKind::FrameGeneration && UMenuGraphicsLibrary::GetStatus(Feature).bSupported
+ 				&& (Feature.RequiresFeature.IsNone() || Feature.RequiresFeature == ActiveUpscaler))
+ 			{
+ 				OutOptions.Add(FMenuSettingOption(Feature.Id.ToString(), Feature.DisplayName, Feature.Description));
+@@ -401,7 +401,7 @@ bool UMenuSettingTarget_GraphicsFeature::GetOptions(const UMenuSetting& Setting,
+ 		OutOptions.Add(FMenuSettingOption(TEXT("Off"), LOCTEXT("Off", "Off")));
+ 		for (const FMenuGraphicsFeature& Feature : Settings.GraphicsFeatures)
+ 		{
+-			if (Feature.Kind != EMenuGraphicsFeatureKind::LatencyReduction || !GetStatus(Feature).bSupported)
++			if (Feature.Kind != EMenuGraphicsFeatureKind::LatencyReduction || !UMenuGraphicsLibrary::GetStatus(Feature).bSupported)
+ 			{
+ 				continue;
+ 			}
+@@ -432,9 +432,9 @@ void UMenuSettingTarget_GraphicsFeature::Write(const UMenuSetting& Setting, cons
+ 	{
+ 	case EMenuGraphicsFeatureField::Upscaler:
+ 	{
+-		const FName Chosen = Value.Equals(TEXT("Auto"), ESearchCase::IgnoreCase) ? GetRecommendedUpscaler() : FName(*Value);
++		const FName Chosen = Value.Equals(TEXT("Auto"), ESearchCase::IgnoreCase) ? UMenuGraphicsLibrary::GetRecommendedUpscaler() : FName(*Value);
+ 		// Keep the quality mode when the new upscaler has the same one (Quality stays Quality).
+-		const FName Mode = GetActiveGraphicsMode(EMenuGraphicsFeatureKind::Upscaler);
++		const FName Mode = UMenuGraphicsLibrary::GetActiveGraphicsMode(EMenuGraphicsFeatureKind::Upscaler);
+ 		UMenuGraphicsLibrary::ApplyGraphicsFeature(EMenuGraphicsFeatureKind::Upscaler, Chosen, Mode);
+ 		break;
+ 	}
+@@ -484,7 +484,7 @@ bool UMenuSettingTarget_GraphicsFeature::Read(const UMenuSetting& Setting, const
+ 	{
+ 	case EMenuGraphicsFeatureField::UpscalerMode:
+ 	{
+-		const FName Mode = GetActiveGraphicsMode(EMenuGraphicsFeatureKind::Upscaler);
++		const FName Mode = UMenuGraphicsLibrary::GetActiveGraphicsMode(EMenuGraphicsFeatureKind::Upscaler);
+ 		if (Mode.IsNone())
+ 		{
+ 			return false;
+@@ -497,7 +497,7 @@ bool UMenuSettingTarget_GraphicsFeature::Read(const UMenuSetting& Setting, const
+ 		{
+ 			return false;
+ 		}
+-		OutValue = GetActiveGraphicsFeature(EMenuGraphicsFeatureKind::FrameGeneration).IsNone() ? FString(TEXT("Off")) : GetActiveGraphicsFeature(EMenuGraphicsFeatureKind::FrameGeneration).ToString();
++		OutValue = UMenuGraphicsLibrary::GetActiveGraphicsFeature(EMenuGraphicsFeatureKind::FrameGeneration).IsNone() ? FString(TEXT("Off")) : UMenuGraphicsLibrary::GetActiveGraphicsFeature(EMenuGraphicsFeatureKind::FrameGeneration).ToString();
+ 		return true;
+ 	case EMenuGraphicsFeatureField::LatencyReduction:
+ 	{
+@@ -505,8 +505,8 @@ bool UMenuSettingTarget_GraphicsFeature::Read(const UMenuSetting& Setting, const
+ 		{
+ 			return false;
+ 		}
+-		const FName Active = GetActiveGraphicsFeature(EMenuGraphicsFeatureKind::LatencyReduction);
+-		const FName Mode = GetActiveGraphicsMode(EMenuGraphicsFeatureKind::LatencyReduction);
++		const FName Active = UMenuGraphicsLibrary::GetActiveGraphicsFeature(EMenuGraphicsFeatureKind::LatencyReduction);
++		const FName Mode = UMenuGraphicsLibrary::GetActiveGraphicsMode(EMenuGraphicsFeatureKind::LatencyReduction);
+ 		OutValue = Active.IsNone() ? FString(TEXT("Off")) : Mode.IsNone() ? Active.ToString() : FString::Printf(TEXT("%s.%s"), *Active.ToString(), *Mode.ToString());
+ 		return true;
+ 	}
+diff --git a/Plugins/NameTBD/Source/NameTBD/Menu/Settings/MenuSettingTargets.cpp b/Plugins/NameTBD/Source/NameTBD/Menu/Settings/MenuSettingTargets.cpp
+index 0549061..7e1afba 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Menu/Settings/MenuSettingTargets.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Menu/Settings/MenuSettingTargets.cpp
+@@ -415,7 +415,7 @@ bool UMenuSettingTarget_GameUserSettings::GetOptions(const UMenuSetting& Setting
+ 	}
+ 	if (Field == EMenuGameUserSetting::AudioQuality)
+ 	{
+-		const UAudioSettings* Audio = GetDefault<UAudioSettings>();
++		const UAudioSettings* Audio = ::GetDefault<UAudioSettings>();
+ 		for (int32 Index = 0; Audio && Index < Audio->QualityLevels.Num(); ++Index)
+ 		{
+ 			OutOptions.Add(FMenuSettingOption(MenuSettingValues::FromNumber(Index), Audio->QualityLevels[Index].DisplayName));
+@@ -516,7 +516,7 @@ bool UMenuSettingTarget_BuiltIn::Read(const UMenuSetting& Setting, const FMenuSe
+ 		OutValue = FromNumber(GEngine->DisplayGamma);
+ 		return true;
+ 	case EMenuBuiltInSetting::UIScale:
+-		OutValue = FromNumber(GetDefault<UUserInterfaceSettings>()->ApplicationScale);
++		OutValue = FromNumber(::GetDefault<UUserInterfaceSettings>()->ApplicationScale);
+ 		return true;
+ 	case EMenuBuiltInSetting::ColorBlindMode:
+ 		OutValue = MenuSettingTargetsLocal::ColorBlindNames[FMath::Clamp(static_cast<int32>(MenuSettingTargetsLocal::ColorBlindType), 0, 3)];
+@@ -828,7 +828,7 @@ bool UMenuSettingTarget_SystemInfo::Read(const UMenuSetting& Setting, const FMen
+ 		}
+ 		return false;
+ 	case EMenuSystemInfo::GameVersion:
+-		OutValue = GetDefault<UGeneralProjectSettings>()->ProjectVersion;
++		OutValue = ::GetDefault<UGeneralProjectSettings>()->ProjectVersion;
+ 		return true;
+ 	default:
+ 		return false;
+diff --git a/Plugins/NameTBD/Source/NameTBD/Menu/Settings/MenuSettingsSubsystem.cpp b/Plugins/NameTBD/Source/NameTBD/Menu/Settings/MenuSettingsSubsystem.cpp
+index e303331..fac363a 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Menu/Settings/MenuSettingsSubsystem.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Menu/Settings/MenuSettingsSubsystem.cpp
+@@ -195,7 +195,7 @@ void UMenuSettingsSubsystem::BuildKeyBindingSettings()
+ {
+ 	GeneratedSettings.Reset();
+ 	UEnhancedInputUserSettings* InputSettings = GetInputUserSettings();
+-	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetCurrentKeyProfile() : nullptr;
++	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetActiveKeyProfile() : nullptr;
+ 
+ 	for (FMenuSettingsPage& Page : Pages)
+ 	{
+@@ -1224,7 +1224,7 @@ bool UMenuSettingsSubsystem::CanRebindKeys() const
+ bool UMenuSettingsSubsystem::FindMappingSlot(FName MappingName, EMenuKeyBindingDevice Device, int32 SlotIndex, uint8& OutSlot, FKey& OutKey, FKey& OutDefaultKey) const
+ {
+ 	const UEnhancedInputUserSettings* InputSettings = GetInputUserSettings();
+-	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetCurrentKeyProfile() : nullptr;
++	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetActiveKeyProfile() : nullptr;
+ 	const FKeyMappingRow* Row = Profile ? Profile->GetPlayerMappingRows().Find(MappingName) : nullptr;
+ 	if (!Row)
+ 	{
+@@ -1254,7 +1254,7 @@ bool UMenuSettingsSubsystem::FindMappingSlot(FName MappingName, EMenuKeyBindingD
+ uint8 UMenuSettingsSubsystem::FindFreeSlot(FName MappingName) const
+ {
+ 	const UEnhancedInputUserSettings* InputSettings = GetInputUserSettings();
+-	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetCurrentKeyProfile() : nullptr;
++	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetActiveKeyProfile() : nullptr;
+ 	const FKeyMappingRow* Row = Profile ? Profile->GetPlayerMappingRows().Find(MappingName) : nullptr;
+ 	TSet<uint8> Used;
+ 	if (Row)
+@@ -1287,7 +1287,7 @@ void UMenuSettingsSubsystem::RememberKey(FName MappingName, uint8 SlotValue)
+ 	}
+ 	FKey Current;
+ 	const UEnhancedInputUserSettings* InputSettings = GetInputUserSettings();
+-	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetCurrentKeyProfile() : nullptr;
++	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetActiveKeyProfile() : nullptr;
+ 	if (const FKeyMappingRow* Row = Profile ? Profile->GetPlayerMappingRows().Find(MappingName) : nullptr)
+ 	{
+ 		for (const FPlayerKeyMapping& Mapping : Row->Mappings)
+@@ -1356,7 +1356,7 @@ FKey UMenuSettingsSubsystem::GetDefaultBoundKey(FName MappingName, EMenuKeyBindi
+ FName UMenuSettingsSubsystem::FindKeyConflict(FName MappingName, FKey Key) const
+ {
+ 	const UEnhancedInputUserSettings* InputSettings = GetInputUserSettings();
+-	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetCurrentKeyProfile() : nullptr;
++	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetActiveKeyProfile() : nullptr;
+ 	if (!Profile || !Key.IsValid())
+ 	{
+ 		return NAME_None;
+@@ -1381,7 +1381,7 @@ FName UMenuSettingsSubsystem::FindKeyConflict(FName MappingName, FKey Key) const
+ FText UMenuSettingsSubsystem::GetKeyBindingDisplayName(FName MappingName) const
+ {
+ 	const UEnhancedInputUserSettings* InputSettings = GetInputUserSettings();
+-	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetCurrentKeyProfile() : nullptr;
++	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetActiveKeyProfile() : nullptr;
+ 	if (const FKeyMappingRow* Row = Profile ? Profile->GetPlayerMappingRows().Find(MappingName) : nullptr)
+ 	{
+ 		for (const FPlayerKeyMapping& Mapping : Row->Mappings)
+@@ -1495,7 +1495,7 @@ void UMenuSettingsSubsystem::ResetKeyBinding(FName MappingName)
+ 	{
+ 		return;
+ 	}
+-	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings->GetCurrentKeyProfile();
++	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings->GetActiveKeyProfile();
+ 	if (const FKeyMappingRow* Row = Profile ? Profile->GetPlayerMappingRows().Find(MappingName) : nullptr)
+ 	{
+ 		for (const FPlayerKeyMapping& Mapping : Row->Mappings)
+@@ -1515,7 +1515,7 @@ void UMenuSettingsSubsystem::ResetKeyBinding(FName MappingName)
+ void UMenuSettingsSubsystem::ResetAllKeyBindings()
+ {
+ 	const UEnhancedInputUserSettings* InputSettings = GetInputUserSettings();
+-	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetCurrentKeyProfile() : nullptr;
++	const UEnhancedPlayerMappableKeyProfile* Profile = InputSettings ? InputSettings->GetActiveKeyProfile() : nullptr;
+ 	if (!Profile)
+ 	{
+ 		return;
+diff --git a/Plugins/NameTBD/Source/NameTBD/Menu/Widgets/SMenuSettingsPanel.cpp b/Plugins/NameTBD/Source/NameTBD/Menu/Widgets/SMenuSettingsPanel.cpp
+index 0e79df3..223ab53 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Menu/Widgets/SMenuSettingsPanel.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Menu/Widgets/SMenuSettingsPanel.cpp
+@@ -116,7 +116,7 @@ void SMenuSettingsPanel::Construct(const FArguments& InArgs, const FMenuStyleRef
+ 			.Visibility(EVisibility::HitTestInvisible)
+ 		]
+ 		+ SOverlay::Slot()
+-		.Padding_Lambda([Holder]() { return Holder->Style.ScreenPadding; })
++		.Padding(TAttribute<FMargin>::CreateLambda([Holder]() { return Holder->Style.ScreenPadding; }))
+ 		[
+ 			SNew(SVerticalBox)
+ 

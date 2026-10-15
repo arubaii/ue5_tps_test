@@ -40,4 +40,12 @@ public:
 	/** Called every time the screen is hidden. */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Menu")
 	void OnScreenClosed();
+
+	/**
+	 * Back was pressed while this is the top-most screen (the Menu Manager's Close Top Screen Action, or Request Back). Return true
+	 * when the screen handled it itself - closed a sub-page, a dialog, asked about unsaved changes, or closed itself - and false (the
+	 * default) to let the manager close it.
+	 */
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Menu")
+	bool OnBackRequested();
 };
