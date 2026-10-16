@@ -5,6 +5,7 @@
 #include "NameTBD/Sound/UISoundTypes.h"
 
 #include "InfoCardWidget.h"
+#include "SInfoCardDesignerPreview.h"
 #include "NameTBD/DeveloperSettings/InfoCardDeveloperSettings.h"
 #include "NameTBD/WidgetAnimation/WidgetAnimPreset.h"
 #include "Blueprint/WidgetTree.h"
@@ -97,6 +98,19 @@ TSharedRef<SWidget> UInfoCardAnchor::RebuildWidget()
 		BindSlateFocusChanging();
 	}
 
+#if WITH_EDITOR
+	// The designer gets the border wrapped in a panel that can also draw the previewed card beside it, outside layout
+	// (see Preview Card). In game the border is handed over as it always was.
+	if (IsDesignTime())
+	{
+		DesignerPreviewPanel = SNew(SInfoCardDesignerPreview)
+			[
+				Result
+			];
+		return DesignerPreviewPanel.ToSharedRef();
+	}
+#endif
+
 	return Result;
 }
 
@@ -113,7 +127,16 @@ void UInfoCardAnchor::SynchronizeProperties()
 	// default the next time a card reads it. Only sync once at runtime;
 	// always resync at design-time so editing the source — the Data Asset,
 	// or CustomInfoCards directly — is reflected live in the UMG preview.
-	if (SourceMode == EInfoCardSourceMode::Custom)
+	if (UsesGeneratedInfoCards())
+	{
+		// A subclass building its cards from its own fields (Tooltip Card Anchor, Context Menu Anchor). Same once-at-runtime
+		// rule as the other sources; its setters call RebuildGeneratedInfoCards themselves.
+		if (IsDesignTime() || !bInfoCardsSynced)
+		{
+			RebuildGeneratedInfoCards();
+		}
+	}
+	else if (SourceMode == EInfoCardSourceMode::Custom)
 	{
 		if (IsDesignTime() || !bInfoCardsSynced)
 		{
@@ -163,13 +186,17 @@ void UInfoCardAnchor::SynchronizeProperties()
 	// (and SyncPayloadDefaultsFromDataAsset allocates a payload object per
 	// slot while doing it), which has no business happening on a CDO during
 	// class construction.
-	if (IsDesignTime() && SourceMode == EInfoCardSourceMode::UseDataAsset && !HasAnyFlags(RF_ClassDefaultObject))
+	if (IsDesignTime() && SourceMode == EInfoCardSourceMode::UseDataAsset && !UsesGeneratedInfoCards() && !HasAnyFlags(RF_ClassDefaultObject))
 	{
 		SyncPayloadDefaultsFromDataAsset();
 		SyncSettingsOverridesFromDataAsset();
 		SyncAdditiveAnimationOverridesFromDataAsset();
 	}
 #endif
+
+	// The real card beside the anchor in the designer, from InfoCards as they now stand. Before the animation preview, which
+	// animates that card.
+	RefreshDesignerPreviewCard();
 
 	// After the syncs above, so the preview is built from InfoCards as they now stand - additive
 	// animation overrides included. Returns immediately at runtime, which is why there is no
@@ -242,6 +269,14 @@ void UInfoCardAnchor::ReleaseSlateResources(bool bReleaseChildren)
 	// The Slate widget the designer preview's active timer was registered against is going away.
 	UWidgetAnimDesignerPreview::Shutdown(this);
 
+	// The designer's card lives in that panel. Built again by the next SynchronizeProperties.
+	DesignerPreviewPanel.Reset();
+	if (DesignerPreviewCard)
+	{
+		DesignerPreviewCard->ReleaseSlateResources(true);
+		DesignerPreviewCard = nullptr;
+	}
+
 	Super::ReleaseSlateResources(bReleaseChildren);
 }
 
@@ -266,6 +301,25 @@ void UInfoCardAnchor::BeginDestroy()
 void UInfoCardAnchor::PostLoad()
 {
 	Super::PostLoad();
+
+	// The harness's mode is no longer in the Details panel (the toolbar plays the card on the designer's copy), so a mode
+	// an older version saved would play forever with no way to switch it off.
+	DesignerAnimPreview.Mode = EWidgetAnimPreviewMode::Off;
+
+	// Additive Animation Overrides from before Use Basic Animations: the three loose arrays become the struct.
+	for (FInfoCardAdditiveAnimationsOverride& Override : AdditiveAnimationOverrides)
+	{
+		if (Override.Animations.IsEmpty() && Override.PlayIn.IsEmpty() && Override.PlayOut.IsEmpty())
+		{
+			continue;
+		}
+
+		Override.AdditiveAnimations.PlayIn.Append(Override.PlayIn);
+		Override.AdditiveAnimations.PlayOut.Append(Override.PlayOut);
+		Override.AdditiveAnimations.MigrateLegacyAnimations(Override.Animations);
+		Override.PlayIn.Reset();
+		Override.PlayOut.Reset();
+	}
 
 	// PayloadDefaults used to be one element per CardId, each holding a slot
 	// per payload class gated by Set Defaults. It's now one flat element per
@@ -510,7 +564,14 @@ FReply UInfoCardAnchor::HandleMouseButtonDown(const FGeometry& Geometry, const F
 				// after would then be the one that actually shows it. See
 				// IsSlotActive's comment.
 				const bool bIsActive = IsSlotActive(Index);
-				if (bIsActive)
+				if (bIsActive && ShouldReopenOnRepeatClick(Index) && !IsSlotPinned(Index))
+				{
+					// A context menu follows the latest click: the open one goes, and a new one opens where this press
+					// landed. The closing card is already out of the slot once HideCardAtIndex returns.
+					HideCardAtIndex(Index);
+					ShowCardAtIndex(Index);
+				}
+				else if (bIsActive)
 				{
 					// Re-clicking the trigger is an automatic toggle, not an
 					// explicit close request, so a pinned card ignores it.
@@ -1243,31 +1304,7 @@ void UInfoCardAnchor::RebuildInfoCardsFromDataAsset()
 
 	for (const FInfoCardSpec& SourceSpec : InfoCards_DA->InfoCards)
 	{
-		FInfoCardSpec NewSpec = SourceSpec;
-		NewSpec.Payloads.Reset(SourceSpec.Payloads.Num());
-
-		for (const TObjectPtr<UNameTBD_Payload>& SourcePayload : SourceSpec.Payloads)
-		{
-			NewSpec.Payloads.Add(SourcePayload ? DuplicateObject<UNameTBD_Payload>(SourcePayload, this) : nullptr);
-		}
-
-		// Fallback, not a merge: an entry that authored its own sounds meant those and not the asset's. Done
-		// here rather than at play time so everything downstream - the overrides below, the card itself - only
-		// ever has one array to read.
-		if (NewSpec.Sounds.IsEmpty())
-		{
-			NewSpec.Sounds = InfoCards_DA->DefaultSounds;
-		}
-
-		// Same fallback-not-merge rule as the sounds above, for the same reason: an entry that named its
-		// own animations meant those and not the asset's. Applied here so everything downstream reads one
-		// already-resolved array.
-		if (NewSpec.AdditiveAnimations.Animations.IsEmpty())
-		{
-			NewSpec.AdditiveAnimations.Animations = InfoCards_DA->DefaultAdditiveAnimations;
-		}
-
-		InfoCards.Add(MoveTemp(NewSpec));
+		InfoCards.Add(MakeSpecFromDataAsset(*InfoCards_DA, SourceSpec, this));
 	}
 
 	// Layer this anchor's own defaults/overrides on top of what the Data
@@ -1276,8 +1313,93 @@ void UInfoCardAnchor::RebuildInfoCardsFromDataAsset()
 	ApplyPayloadDefaults();
 	ApplySettingsOverrides();
 	ApplyAdditiveAnimationOverrides();
+	ApplyCardTextOverrides();
 
 	bInfoCardsSynced = true;
+}
+
+FInfoCardSpec UInfoCardAnchor::MakeSpecFromDataAsset(const UInfoCardDataAsset& Asset, const FInfoCardSpec& SourceSpec, UObject* PayloadOuter)
+{
+	FInfoCardSpec NewSpec = SourceSpec;
+	NewSpec.Payloads.Reset(SourceSpec.Payloads.Num());
+
+	for (const TObjectPtr<UNameTBD_Payload>& SourcePayload : SourceSpec.Payloads)
+	{
+		NewSpec.Payloads.Add(SourcePayload ? DuplicateObject<UNameTBD_Payload>(SourcePayload, PayloadOuter) : nullptr);
+	}
+
+	// Fallback, not a merge: an entry that authored its own sounds meant those and not the asset's. Done
+	// here rather than at play time so everything downstream - the overrides, the card itself - only
+	// ever has one array to read.
+	if (NewSpec.Sounds.IsEmpty())
+	{
+		NewSpec.Sounds = Asset.DefaultSounds;
+	}
+
+	// Same fallback-not-merge rule as the sounds above, for the same reason: an entry that authored its
+	// own animations meant those and not the asset's.
+	if (NewSpec.AdditiveAnimations.IsEmpty())
+	{
+		NewSpec.AdditiveAnimations = Asset.DefaultCardAnimations;
+	}
+
+	return NewSpec;
+}
+
+void UInfoCardAnchor::SetCardText(FName CardId, FText Title, FText Body)
+{
+	FInfoCardTextOverride& Override = CardTextOverrides.FindOrAdd(CardId);
+	Override.Title = Title;
+	Override.Body = Body;
+
+	const int32 Index = FindCardIndexById(CardId);
+	if (InfoCards.IsValidIndex(Index))
+	{
+		ApplyCardTextOverrides();
+		RefreshCard(CardId);
+	}
+
+	// The designer's card shows it too: a Widget Blueprint wrapping an anchor sets its text from Pre Construct.
+	RefreshDesignerPreviewCard();
+}
+
+void UInfoCardAnchor::ClearCardText(FName CardId)
+{
+	CardTextOverrides.Remove(CardId);
+}
+
+void UInfoCardAnchor::ApplyCardTextOverrides()
+{
+	for (const TPair<FName, FInfoCardTextOverride>& Pair : CardTextOverrides)
+	{
+		const int32 Index = FindCardIndexById(Pair.Key);
+		if (!InfoCards.IsValidIndex(Index))
+		{
+			continue;
+		}
+
+		FInfoCardSpec& Spec = InfoCards[Index];
+		UInfoCardPayload_Text* TextPayload = nullptr;
+		for (const TObjectPtr<UNameTBD_Payload>& Payload : Spec.Payloads)
+		{
+			TextPayload = Cast<UInfoCardPayload_Text>(Payload.Get());
+			if (TextPayload)
+			{
+				break;
+			}
+		}
+
+		// A card with no text payload yet gets one: Set Card Text is meant to work on any card, not only on ones whose
+		// Data Asset happened to author one.
+		if (!TextPayload)
+		{
+			TextPayload = NewObject<UInfoCardPayload_Text>(this);
+			Spec.Payloads.Add(TextPayload);
+		}
+
+		TextPayload->Title = Pair.Value.Title;
+		TextPayload->Body = Pair.Value.Body;
+	}
 }
 
 void UInfoCardAnchor::RebuildInfoCardsFromCustomArray()
@@ -1311,7 +1433,52 @@ void UInfoCardAnchor::RebuildInfoCardsFromCustomArray()
 	// (InfoCards_DA). CustomInfoCards is already this anchor's own copy —
 	// there is nothing else for a default or override to be relative to.
 
+	ApplyCardTextOverrides();
 	bInfoCardsSynced = true;
+}
+
+void UInfoCardAnchor::RebuildGeneratedInfoCards()
+{
+	TArray<FInfoCardSpec> Generated;
+	if (!BuildGeneratedInfoCards(Generated))
+	{
+		return;
+	}
+
+	InfoCards = MoveTemp(Generated);
+	ApplyCardTextOverrides();
+	bInfoCardsSynced = true;
+
+	if (IsDesignTime())
+	{
+		return;
+	}
+
+	EnsureRuntimeStatesSize();
+
+	// A card already on screen shows the new values at once rather than on its next opening; one whose entry went away or
+	// was switched off closes. Indexed and re-bounds-checked: SetPayloads runs Blueprint (Apply Payloads).
+	for (int32 Index = 0; Index < InfoCards.Num(); ++Index)
+	{
+		if (!RuntimeStates.IsValidIndex(Index))
+		{
+			break;
+		}
+
+		UInfoCardWidget* LiveCard = RuntimeStates[Index].ActiveCard;
+		if (!LiveCard || LiveCard->IsClosing())
+		{
+			continue;
+		}
+
+		if (!InfoCards[Index].bEnabled || RuntimeStates[Index].ActiveCardId != InfoCards[Index].CardId)
+		{
+			HideCardAtIndex(Index);
+			continue;
+		}
+
+		RefreshCard(InfoCards[Index].CardId);
+	}
 }
 
 void UInfoCardAnchor::ApplyPayloadDefaults()
@@ -1486,10 +1653,7 @@ void UInfoCardAnchor::ApplyAdditiveAnimationOverrides()
 		// Replaces the Data Asset's additive set for this card. Still additive
 		// with respect to the card class: UInfoCardWidget::ApplyAdditiveAnimations
 		// appends these after the class's own Anim In / Anim Out.
-		FInfoCardAdditiveAnimations& AdditiveAnimations = InfoCards[Index].AdditiveAnimations;
-		AdditiveAnimations.Animations = Override.Animations;
-		AdditiveAnimations.PlayIn  = Override.PlayIn;
-		AdditiveAnimations.PlayOut = Override.PlayOut;
+		InfoCards[Index].AdditiveAnimations = Override.AdditiveAnimations;
 	}
 }
 
@@ -1505,24 +1669,139 @@ TArray<FString> UInfoCardAnchor::GetInfoCardIdOptions() const
 	// First, so there is a way back to "preview nothing" once a card has been picked.
 	Options.Add(TEXT("None"));
 
-	for (const FInfoCardSpec& Spec : InfoCards)
+	for (const FName Id : GetInfoCardIds())
 	{
-		if (Spec.CardId != NAME_None)
-		{
-			Options.AddUnique(Spec.CardId.ToString());
-		}
+		Options.AddUnique(Id.ToString());
 	}
 
 	return Options;
 }
 
+TArray<FName> UInfoCardAnchor::GetInfoCardIds() const
+{
+	TArray<FName> Ids;
+	for (const FInfoCardSpec& Spec : InfoCards)
+	{
+		if (Spec.CardId != NAME_None)
+		{
+			Ids.AddUnique(Spec.CardId);
+		}
+	}
+	return Ids;
+}
+
+FName UInfoCardAnchor::GetDesignerPreviewCard() const
+{
+	return bHasDesignerPreviewCardPick ? DesignerPreviewCardPick : DesignerPreviewCardId;
+}
+
+void UInfoCardAnchor::SetDesignerPreviewCardPick(FName CardId)
+{
+	if (!IsDesignTime())
+	{
+		return;
+	}
+
+	DesignerPreviewCardPick = CardId;
+	bHasDesignerPreviewCardPick = true;
+	RefreshDesignerPreviewCard();
+	UWidgetAnimDesignerPreview::Synchronize(this);
+}
+
+void UInfoCardAnchor::ClearDesignerPreviewCardPick()
+{
+	if (!bHasDesignerPreviewCardPick)
+	{
+		return;
+	}
+
+	bHasDesignerPreviewCardPick = false;
+	DesignerPreviewCardPick = NAME_None;
+	RefreshDesignerPreviewCard();
+	UWidgetAnimDesignerPreview::Synchronize(this);
+}
+
+void UInfoCardAnchor::PlayDesignerCardAnimation(bool bOut)
+{
+	if (!IsDesignTime() || !HasDesignerPreviewAnimations())
+	{
+		return;
+	}
+
+	// Once, from the start, the way the button toolbar plays a button's: the harness restarts on a changed mode, so a replay
+	// of the same one goes through Off first. Only this designer copy's mode changes; the template's stays Off.
+	const EWidgetAnimPreviewMode Mode = bOut ? EWidgetAnimPreviewMode::PlayOut : EWidgetAnimPreviewMode::PlayIn;
+	if (DesignerAnimPreview.Mode == Mode)
+	{
+		DesignerAnimPreview.Mode = EWidgetAnimPreviewMode::Off;
+		UWidgetAnimDesignerPreview::Synchronize(this);
+	}
+	DesignerAnimPreview.Mode = Mode;
+	UWidgetAnimDesignerPreview::Synchronize(this);
+}
+
+void UInfoCardAnchor::RefreshDesignerPreviewCard()
+{
+#if WITH_EDITOR
+	if (!IsDesignTime())
+	{
+		return;
+	}
+
+	const FName CardToShow = GetDesignerPreviewCard();
+	const int32 Index = CardToShow.IsNone() ? INDEX_NONE : FindCardIndexById(CardToShow);
+	const TSubclassOf<UInfoCardWidget> CardClass = InfoCards.IsValidIndex(Index) ? InfoCards[Index].CardClass : nullptr;
+
+	// Templates (the Widget Blueprint's own widgets) never draw; only the designer's copy, which lives in a User Widget,
+	// can own a card.
+	UUserWidget* OwningUserWidget = GetTypedOuter<UUserWidget>();
+
+	// Put the card back as authored before anything about it changes: the harness re-reads its baselines after this, and
+	// would otherwise record a mid-animation pose as the card's own.
+	UWidgetAnimLibrary::RestoreWidgetAnimBaselines(DesignerAnimBaselines);
+	DesignerAnimBaselines.ResetBaselines();
+
+	if (!CardClass || !OwningUserWidget || IsTemplate())
+	{
+		if (DesignerPreviewPanel.IsValid())
+		{
+			DesignerPreviewPanel->SetCard(nullptr, FInfoCardDesignerPlacement());
+		}
+		DesignerPreviewCard = nullptr;
+		return;
+	}
+
+	if (!DesignerPreviewCard || DesignerPreviewCard->GetClass() != CardClass)
+	{
+		DesignerPreviewCard = CreateWidget<UInfoCardWidget>(OwningUserWidget, CardClass);
+		if (!DesignerPreviewCard)
+		{
+			return;
+		}
+		DesignerPreviewCard->SetDesignerFlags(GetDesignerFlags());
+	}
+
+	// Payloads, transform and placement fields only: no timers, no press watcher, no viewport (see SetupDesignerPreview).
+	DesignerPreviewCard->SetupDesignerPreview(InfoCards[Index], this);
+
+	if (DesignerPreviewPanel.IsValid())
+	{
+		DesignerPreviewPanel->SetCard(DesignerPreviewCard->TakeWidget(), FInfoCardDesignerPlacement::FromSpec(InfoCards[Index]));
+	}
+#endif
+}
+
 UWidget* UInfoCardAnchor::GetPreviewAnimationTarget()
 {
-	// The anchor is a layout wrapper sized to its child, so animating the anchor itself would move the
-	// slot the child lives in rather than look like a card. An empty anchor has nothing else to offer,
-	// and animating it is harmless.
-	UWidget* Content = GetContent();
-	return Content ? Content : this;
+	if (DesignerPreviewCard)
+	{
+		return DesignerPreviewCard;
+	}
+
+	// No card to show (no Card Class, or a template): the anchor is a layout wrapper sized to its child, so animating the
+	// child is the closest stand-in. An empty anchor has nothing else to offer, and animating it is harmless.
+	UWidget* AnchorContent = GetContent();
+	return AnchorContent ? AnchorContent : this;
 }
 
 void UInfoCardAnchor::RebuildPreviewAnimations()
@@ -1530,12 +1809,13 @@ void UInfoCardAnchor::RebuildPreviewAnimations()
 	PreviewAnimIn.Reset();
 	PreviewAnimOut.Reset();
 
-	if (DesignerPreviewCardId == NAME_None)
+	const FName CardToShow = GetDesignerPreviewCard();
+	if (CardToShow == NAME_None)
 	{
 		return;
 	}
 
-	const int32 Index = FindCardIndexById(DesignerPreviewCardId);
+	const int32 Index = FindCardIndexById(CardToShow);
 	if (!InfoCards.IsValidIndex(Index))
 	{
 		// The selected id was renamed or the Data Asset swapped underneath it. Nothing to play, rather
@@ -1559,21 +1839,20 @@ void UInfoCardAnchor::RebuildPreviewAnimations()
 		UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(ClassAnimIn, EntriesIn, EntriesOut);
 		UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(ClassAnimOut, EntriesOut, EntriesIn);
 
-		// Every target resolved to null. A Target Widget path names something inside the card's own
-		// WidgetTree, and there is no card here to search - so those layers fall back to the widget
-		// the preview is animating, the same fallback the library applies everywhere else. It means a
-		// card that animates one of its own children shows that motion on the whole stand-in instead,
-		// which is the one way this preview is an approximation.
-		auto NullResolver = [](FName) -> UWidget* { return nullptr; };
-		UWidgetAnimEntryLibrary::FlattenEntries(EntriesIn, NullResolver, PreviewAnimIn);
-		UWidgetAnimEntryLibrary::FlattenEntries(EntriesOut, NullResolver, PreviewAnimOut);
+		// A Target Widget names something inside the card's own tree, which the designer's card has. Without one (a
+		// template), every target falls back to the stand-in the preview is animating.
+		UInfoCardWidget* PreviewCard = DesignerPreviewCard;
+		auto Resolver = [PreviewCard](FName TargetName) -> UWidget*
+		{
+			return (PreviewCard && !TargetName.IsNone()) ? PreviewCard->GetWidgetFromName(TargetName) : nullptr;
+		};
+		UWidgetAnimEntryLibrary::FlattenEntries(EntriesIn, Resolver, PreviewAnimIn);
+		UWidgetAnimEntryLibrary::FlattenEntries(EntriesOut, Resolver, PreviewAnimOut);
 	}
 
-	// Then the additives, on top - and these are the resolved ones. ApplyAdditiveAnimationOverrides has
-	// already written this anchor's Additive Animation Overrides into the spec by the time we get here,
-	// so what this appends is precisely what a spawned card would be handed. That is the whole point of
-	// the anchor having a preview at all: the total is the only thing neither the Data Asset nor the card
-	// class can show on its own.
+	// Then the additives, on top - and these are the resolved ones: ApplyAdditiveAnimationOverrides has already written
+	// this anchor's Additive Animation Overrides into the spec, so what this appends is precisely what a spawned card would
+	// be handed.
 	Spec.AdditiveAnimations.ResolveInto(PreviewAnimIn, PreviewAnimOut);
 }
 
@@ -1996,7 +2275,11 @@ UNameTBD_Payload* UInfoCardAnchor::GetOrAddPayload(FName CardId, TSubclassOf<UNa
 	
 	if (InfoCards.Num() == 0)
 	{
-		if (SourceMode == EInfoCardSourceMode::Custom)
+		if (UsesGeneratedInfoCards())
+		{
+			RebuildGeneratedInfoCards();
+		}
+		else if (SourceMode == EInfoCardSourceMode::Custom)
 		{
 			if (CustomInfoCards.Num() > 0)
 			{
@@ -2574,9 +2857,11 @@ void UInfoCardAnchor::SyncAdditiveAnimationOverridesFromDataAsset()
 		// there instead of from nothing.
 		if (!NewElement.bOverride)
 		{
-			NewElement.Animations = SourceSpec.AdditiveAnimations.Animations;
-			NewElement.PlayIn  = SourceSpec.AdditiveAnimations.PlayIn;
-			NewElement.PlayOut = SourceSpec.AdditiveAnimations.PlayOut;
+			// What the card really plays: its own set, or the Data Asset's Default Additive Animations when its own
+			// would play nothing (the same fallback RebuildInfoCardsFromDataAsset applies).
+			NewElement.AdditiveAnimations = SourceSpec.AdditiveAnimations.IsEmpty()
+				? InfoCards_DA->DefaultCardAnimations
+				: SourceSpec.AdditiveAnimations;
 		}
 
 		Rebuilt.Add(MoveTemp(NewElement));

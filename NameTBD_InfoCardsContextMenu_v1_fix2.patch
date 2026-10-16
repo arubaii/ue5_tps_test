@@ -1,0 +1,44 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuWidget.cpp b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuWidget.cpp
+index f7ce4da..f370309 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuWidget.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuWidget.cpp
+@@ -1109,7 +1109,7 @@ void UContextMenuWidget::HandleEntryChosen(UContextMenuEntryWidget* Row, bool bF
+ 		{
+ 			for (const TSubclassOf<UContextButtonPayload>& Expected : TagData->ExpectedPayloads)
+ 			{
+-				TagContext.Payloads.Add(UButtonAction::FindActionPayload(GetActionPayloads(), Expected ? Expected : UContextButtonPayload::StaticClass()));
++				TagContext.Payloads.Add(UButtonAction::FindActionPayload(GetActionPayloads(), Expected ? Expected : TSubclassOf<UContextButtonPayload>(UContextButtonPayload::StaticClass())));
+ 			}
+ 		}
+ 		for (UButtonAction* Action : Tagged)
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/SInfoCardDesignerPreview.cpp b/Plugins/NameTBD/Source/NameTBD/Cards/SInfoCardDesignerPreview.cpp
+index 7d2148e..66baeff 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/SInfoCardDesignerPreview.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/SInfoCardDesignerPreview.cpp
+@@ -103,7 +103,7 @@ void SInfoCardDesignerPreview::OnArrangeChildren(const FGeometry& AllottedGeomet
+ 
+ 	if (PanelChildren.Num() > 0)
+ 	{
+-		const TSharedRef<SWidget>& Content = PanelChildren.GetChildAt(0);
++		const TSharedRef<SWidget> Content = ConstCastSharedRef<SWidget>(PanelChildren.GetChildAt(0));
+ 		if (ArrangedChildren.Accepts(Content->GetVisibility()))
+ 		{
+ 			ArrangedChildren.AddWidget(AllottedGeometry.MakeChild(Content, AnchorSize, FSlateLayoutTransform()));
+@@ -112,7 +112,7 @@ void SInfoCardDesignerPreview::OnArrangeChildren(const FGeometry& AllottedGeomet
+ 
+ 	if (PanelChildren.Num() > 1)
+ 	{
+-		const TSharedRef<SWidget>& Card = PanelChildren.GetChildAt(1);
++		const TSharedRef<SWidget> Card = ConstCastSharedRef<SWidget>(PanelChildren.GetChildAt(1));
+ 		if (ArrangedChildren.Accepts(Card->GetVisibility()))
+ 		{
+ 			const bool bFill = CardPlacement.PositionMode == EInfoCardPosition::ToIcon && CardPlacement.IconPosition == EDirection2D::FillIcon;
+@@ -130,7 +130,7 @@ FVector2D SInfoCardDesignerPreview::ComputeDesiredSize(float LayoutScaleMultipli
+ 	// Only the anchor's own content takes part in layout; the card floats.
+ 	if (PanelChildren.Num() > 0)
+ 	{
+-		const TSharedRef<SWidget>& Content = PanelChildren.GetChildAt(0);
++		const TSharedRef<SWidget> Content = ConstCastSharedRef<SWidget>(PanelChildren.GetChildAt(0));
+ 		if (Content->GetVisibility() != EVisibility::Collapsed)
+ 		{
+ 			return Content->GetDesiredSize();

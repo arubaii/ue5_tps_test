@@ -14,6 +14,7 @@
 class UInfoCardWidget;
 class FWidgetPath;
 class FWeakWidgetPath;
+class SInfoCardDesignerPreview;
 
 /**
  * Live state for one entry in InfoCards. Kept index-parallel with InfoCards,
@@ -92,7 +93,10 @@ struct FInfoCardPayloadDefault
 {
     GENERATED_BODY()
 
-    /** Which InfoCards_DA entry this payload belongs to. Kept in sync automatically. */
+    /**
+     * Which InfoCards_DA entry this payload belongs to. Kept in sync automatically. Shown as the element's title (the
+     * editor module's customization hides the row itself, and shows the payload's fields directly under the title).
+     */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (DisplayName = "Card ID", EditCondition = "false"))
     FName CardId = NAME_None;
 
@@ -310,7 +314,7 @@ struct FInfoCardSettingsOverrideElement
  * One array element of AdditiveAnimationOverrides: which CardId (auto-synced,
  * not typed by hand) plus replacement Additive Animations for it on this anchor.
  *
- * While Override is off, Play In / Play Out just mirror the Data Asset (greyed
+ * While Override is off, Additive Animations just mirrors the Data Asset (greyed
  * out), so switching it on starts from what the card already does.
  */
 USTRUCT(BlueprintType)
@@ -318,26 +322,38 @@ struct FInfoCardAdditiveAnimationsOverride
 {
     GENERATED_BODY()
 
-    /** Which InfoCards_DA entry this applies to. Kept in sync automatically; not meant to be typed by hand. */
+    /** Which InfoCards_DA entry this applies to. Kept in sync automatically; shown as the element's title, not as a row. */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (DisplayName = "Card ID", EditCondition = "false"))
     FName CardId = NAME_None;
 
     /**
-     * When on, Play In / Play Out below replace the Data Asset's Additive Animations for this card on this anchor.
-     * Still played in addition to the card class's own Anim In / Anim Out, never instead of them. Turn this on and
-     * empty both arrays to remove the Data Asset's additive animations here.
+     * When on, Additive Animations below replace the Data Asset's for this card on this anchor. Still played in addition to
+     * the card class's own Anim In / Anim Out, never instead of them. Turn this on and empty them to remove the Data Asset's
+     * additive animations here.
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (DisplayName = "Override"))
     bool bOverride = false;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (DisplayName = "Animations", TitleProperty = "Animation", EditCondition = "bOverride", ToolTip = "Shared Widget Animation assets layered onto this card on this anchor. Resolved before Play In / Play Out below and additive with them. Mirrors the Data Asset while Override is off."))
+    /** This card's additive animations on this anchor. Mirrors the Data Asset while Override is off. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (DisplayName = "Additive Animations", EditCondition = "bOverride"))
+    FInfoCardAdditiveAnimations AdditiveAnimations;
+
+    /** Pre-Use Basic Animations layout. Hidden; UInfoCardAnchor::PostLoad folds them into Additive Animations. */
+    UPROPERTY()
     TArray<FWidgetAnimEntryBase> Animations;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (DisplayName = "Play In", EditCondition = "bOverride", ToolTip = "Played in addition to the card class's own Anim In. Always animates the whole card. Mirrors the Data Asset while Override is off."))
+    UPROPERTY()
     TArray<FInfoCardAdditiveAnimSettings> PlayIn;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (DisplayName = "Play Out", EditCondition = "bOverride", ToolTip = "Played in addition to the card class's own Anim Out. Always animates the whole card. Mirrors the Data Asset while Override is off."))
+    UPROPERTY()
     TArray<FInfoCardAdditiveAnimSettings> PlayOut;
+};
+
+/** Text set on a card by UInfoCardAnchor::SetCardText. Plain C++: runtime state, kept out of the Details panel and saves. */
+struct FInfoCardTextOverride
+{
+    FText Title;
+    FText Body;
 };
 
 /**
@@ -481,43 +497,64 @@ public:
     // ------------------------------------------------------------------
 
     /**
-     * Which entry's animation the Designer Preview below plays. Leave it None and nothing is previewed.
+     * Which card the UMG designer shows next to this anchor. None: no card is shown.
      *
-     * The list is this anchor's own InfoCards, so it follows whichever source mode is active.
+     * The REAL card: the entry's Card Class built in the designer, given this anchor's resolved payloads (so a tooltip shows
+     * its text), its Card Transform, and placed where the game would put it - Icon Position and padding beside the anchor;
+     * To Cursor treats the anchor's centre as the cursor; To Viewport shows it to the anchor's right. Clamping, flipping and
+     * overlap avoidance only happen in game. Editor only; never shown in game.
+     *
+     * The Widget Blueprint editor's toolbar plays the card's entrance and exit (In / Out, with this anchor selected) - the
+     * card class's Anim In / Anim Out plus this anchor's resolved additive animations - and can show another card without
+     * changing this field.
      */
-    UPROPERTY(EditAnywhere, Category = "Info Card|Designer Preview", meta = (DisplayName = "Preview Card ID", GetOptions = "GetInfoCardIdOptions"))
+    UPROPERTY(EditAnywhere, Category = "Info Card|Designer Preview", meta = (DisplayName = "Preview Card", GetOptions = "GetInfoCardIdOptions"))
     FName DesignerPreviewCardId = NAME_None;
 
     /**
-     * Plays the selected card's animation in the UMG designer, without compiling or running.
-     *
-     * What it plays is the TOTAL: the card class's own Anim In / Anim Out, plus the additive animations
-     * resolved for this anchor - the Data Asset's, or this anchor's Additive Animation Overrides where
-     * one is switched on. That combination only exists at the moment a card spawns, which is why judging
-     * an override previously meant a PIE session per adjustment.
-     *
-     * The animation plays on this anchor's own content, since the card itself does not exist in the
-     * designer. Timing, easing, overshoot and the interaction between the card's animation and the
-     * additive layers are all exactly what the spawned card will do; the widget being moved is a stand-in.
-     * For the same reason a layer that names a Target Widget inside the card animates the content here
-     * instead - there is no card tree to search.
-     *
-     * Non-destructive, like every other designer preview: setting Mode back to Off restores the content
-     * exactly as authored.
+     * The preview harness's settings. Not in the Details panel: the toolbar's In / Out drive it on the designer's copy only.
+     * A mode saved by an older version is switched back to Off on load.
      */
-    UPROPERTY(EditAnywhere, Category = "Info Card|Designer Preview", meta = (DisplayName = "Designer Preview", ShowOnlyInnerProperties))
+    UPROPERTY()
     FWidgetAnimPreviewSettings DesignerAnimPreview;
 
-    /** Backs the Preview Card ID dropdown. Must stay a UFUNCTION for GetOptions. */
+    /** Backs the Preview Card dropdown. Must stay a UFUNCTION for GetOptions. */
     UFUNCTION()
     TArray<FString> GetInfoCardIdOptions() const;
+
+    /** Every Card ID this anchor has, in order (unnamed entries skipped). */
+    TArray<FName> GetInfoCardIds() const;
+
+    /** The card the designer shows: the toolbar's pick on this designer copy, else Preview Card. */
+    FName GetDesignerPreviewCard() const;
+
+    /**
+     * Shows CardId in the designer on this copy only (the toolbar's card picker). Nothing authored changes. None hides the
+     * card; NAME_None after a pick goes back to Preview Card via ClearDesignerPreviewCardPick.
+     */
+    void SetDesignerPreviewCardPick(FName CardId);
+
+    /** Drops the toolbar's pick, so Preview Card decides again. */
+    void ClearDesignerPreviewCardPick();
+
+    /** Whether the toolbar has picked a card on this copy. */
+    bool HasDesignerPreviewCardPick() const { return bHasDesignerPreviewCardPick; }
+
+    /** Whether the previewed card has any entrance or exit to play. */
+    bool HasDesignerPreviewAnimations() const { return PreviewAnimIn.Num() > 0 || PreviewAnimOut.Num() > 0; }
+
+    /** Plays the previewed card's entrance (or exit) once on the designer's copy - what the toolbar's In / Out call. */
+    void PlayDesignerCardAnimation(bool bOut);
+
+    /** The card widget built for the designer, or null. Editor only in practice. */
+    UInfoCardWidget* GetDesignerPreviewCardWidget() const { return DesignerPreviewCard; }
 
     // IWidgetAnimDesignerPreviewHost
     virtual UWidget* GetPreviewOwnerWidget() override { return this; }
 
     /**
-     * The anchor's content, not the anchor. The anchor is a layout wrapper sized to its child; animating
-     * the child is what looks like a card moving. Falls back to the anchor itself when it is empty.
+     * The card shown in the designer when there is one: the animation plays on the real card. Without one (no Card Class,
+     * or the anchor is a template), the anchor's content stands in, and failing that the anchor itself.
      */
     virtual UWidget* GetPreviewAnimationTarget() override;
 
@@ -708,6 +745,27 @@ public:
 
     UFUNCTION(BlueprintPure, Category = "Info Card")
     UInfoCardWidget* GetActiveCardById(UPARAM(DisplayName = "Card ID") FName CardId) const;
+
+    /**
+     * The quick way to give a card its words: sets the Title / Body of CardId's text payload (Info Card Data (Text)), adding
+     * one if the card has none, and updates the card if it is showing. Kept across the anchor re-reading its Data Asset, and
+     * shown by the designer's card too - so a Widget Blueprint that wraps an anchor can expose a "Tooltip Text" variable and
+     * call this from Pre Construct, and every placement of it is a one-field tooltip. An empty Title hides the title line of
+     * the built-in Text Info Card.
+     */
+    UFUNCTION(BlueprintCallable, Category = "Info Card", meta = (Keywords = "Tooltip Title Body Description"))
+    void SetCardText(UPARAM(DisplayName = "Card ID") FName CardId, FText Title, FText Body);
+
+    /** Forgets text set by Set Card Text for CardId; the authored payload is used again from the next time the cards are re-read. */
+    UFUNCTION(BlueprintCallable, Category = "Info Card")
+    void ClearCardText(UPARAM(DisplayName = "Card ID") FName CardId);
+
+    /**
+     * One Data Asset entry as this anchor uses it: payloads duplicated (outered to PayloadOuter, so no two anchors share
+     * one), and the asset's Default Sounds / Default Additive Animations filled in where the entry has none of its own.
+     * Shared with subclasses that take a template entry from a Data Asset (Tooltip Card Anchor).
+     */
+    static FInfoCardSpec MakeSpecFromDataAsset(const UInfoCardDataAsset& Asset, const FInfoCardSpec& SourceSpec, UObject* PayloadOuter);
 
     // ------------------------------------------------------------------
     // Pinning
@@ -1040,6 +1098,32 @@ protected:
     // here is what makes right-click actually reach us.
     virtual void SynchronizeProperties() override;
 
+    /**
+     * For anchors that build their cards from fields of their own (Tooltip Card Anchor, Context Menu Anchor): fill OutSpecs
+     * and return true, and InfoCards comes from these instead of Source / Info Cards / Custom Info Cards (which such a
+     * subclass hides). Payloads made here should be outered to this anchor. Called on every design-time synchronize and once
+     * at runtime; call RebuildGeneratedInfoCards after changing the fields at runtime.
+     */
+    virtual bool BuildGeneratedInfoCards(TArray<FInfoCardSpec>& OutSpecs) { return false; }
+
+    /** Whether BuildGeneratedInfoCards supplies this anchor's cards. Must agree with it. */
+    virtual bool UsesGeneratedInfoCards() const { return false; }
+
+    /**
+     * Rebuilds InfoCards from BuildGeneratedInfoCards and re-delivers payloads to any card showing (one whose entry is gone
+     * or disabled closes). For a subclass's runtime setters.
+     */
+    void RebuildGeneratedInfoCards();
+
+    /**
+     * Whether a repeat of the click that opened entry Index, landing on the anchor while its card is up, closes it (false,
+     * the default: a toggle) or opens it again at the new spot (true: a context menu, which follows the latest right-click).
+     */
+    virtual bool ShouldReopenOnRepeatClick(int32 Index) const { return false; }
+
+    /** Builds, refreshes or removes the card shown in the designer (see Preview Card). Design time only. */
+    void RefreshDesignerPreviewCard();
+
     void HandleMouseEnter(const FGeometry& Geometry, const FPointerEvent& PointerEvent);
     void HandleMouseLeave(const FPointerEvent& PointerEvent);
     FReply HandleMouseButtonDown(const FGeometry& Geometry, const FPointerEvent& PointerEvent);
@@ -1071,6 +1155,17 @@ protected:
     /** What the previewed content looked like before the preview touched it, so Off can put it back. */
     UPROPERTY(Transient, DuplicateTransient)
     FWidgetAnimBaselineSet DesignerAnimBaselines;
+
+    /** The card built for the designer (see Preview Card). Design time only. */
+    UPROPERTY(Transient, DuplicateTransient)
+    TObjectPtr<UInfoCardWidget> DesignerPreviewCard;
+
+    /** What RebuildWidget hands the designer: the border plus the previewed card. Design time only. */
+    TSharedPtr<SInfoCardDesignerPreview> DesignerPreviewPanel;
+
+    /** The toolbar's card pick on this designer copy (see SetDesignerPreviewCardPick). Never saved. */
+    FName DesignerPreviewCardPick = NAME_None;
+    bool bHasDesignerPreviewCardPick = false;
 
     /**
      * Shows every ECardType::AlwaysOn entry that's currently eligible
@@ -1340,6 +1435,12 @@ protected:
 
     /** Replaces the matching CardId's AdditiveAnimations (animation assets included) with each AdditiveAnimationOverrides entry that has Override on. */
     void ApplyAdditiveAnimationOverrides();
+
+    /** Writes Set Card Text's text into the matching cards' text payloads. Last step of every rebuild of InfoCards. */
+    void ApplyCardTextOverrides();
+
+    /** Set Card Text's text, by Card ID. */
+    TMap<FName, FInfoCardTextOverride> CardTextOverrides;
 
 #if WITH_EDITOR
     /**

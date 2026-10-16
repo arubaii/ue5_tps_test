@@ -177,23 +177,28 @@ bool FInfoCardAdditiveAnimSettings::FromLegacyWidgetAnimSettings(const FWidgetAn
 
 void FInfoCardAdditiveAnimations::ResolveInto(TArray<FWidgetAnimSettings>& OutIn, TArray<FWidgetAnimSettings>& OutOut) const
 {
-	// Animations first: they are the base layer, and the hand-authored entries stack on top of them.
-	// Mirroring is resolved at the ENTRY level before any settings are built, so an entry marked Mirror
-	// In Out contributes its layers to both stacks rather than only to the one it was listed in.
-	TArray<FWidgetAnimEntryBase> EntriesIn;
-	TArray<FWidgetAnimEntryBase> EntriesOut;
-	UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(Animations, EntriesIn, EntriesOut);
-
-	// Null target throughout: an additive entry animates the whole card, and the animation library falls
-	// back to the widget it is given when an entry names no target.
-	for (const FWidgetAnimEntryBase& Entry : EntriesIn)
+	if (!bUseBasicAnimations)
 	{
-		Entry.BuildSettings(OutIn, nullptr);
-	}
+		// Mirroring is resolved at the ENTRY level before any settings are built, so an entry marked Mirror In Out
+		// contributes its layers to both stacks rather than only to the one it was listed in - the same order a
+		// Widget Animation Component resolves its own Anim In / Anim Out in.
+		TArray<FWidgetAnimEntryBase> EntriesIn;
+		TArray<FWidgetAnimEntryBase> EntriesOut;
+		UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(AnimIn, EntriesIn, EntriesOut);
+		UWidgetAnimEntryLibrary::AppendEntriesWithMirroring(AnimOut, EntriesOut, EntriesIn);
 
-	for (const FWidgetAnimEntryBase& Entry : EntriesOut)
-	{
-		Entry.BuildSettings(OutOut, nullptr);
+		// Null target throughout: an additive entry animates the whole card, and the animation library falls
+		// back to the widget it is given when an entry names no target.
+		for (const FWidgetAnimEntryBase& Entry : EntriesIn)
+		{
+			Entry.BuildSettings(OutIn, nullptr);
+		}
+
+		for (const FWidgetAnimEntryBase& Entry : EntriesOut)
+		{
+			Entry.BuildSettings(OutOut, nullptr);
+		}
+		return;
 	}
 
 	// Converted rather than appended directly, because the additive entries are the trimmed-down struct
@@ -218,9 +223,31 @@ void FInfoCardAdditiveAnimations::ResolveInto(TArray<FWidgetAnimSettings>& OutIn
 	UWidgetAnimLibrary::AppendWithMirroring(ConvertedOut, OutOut, OutIn);
 }
 
+bool FInfoCardAdditiveAnimations::MigrateLegacyAnimations(TArray<FWidgetAnimEntryBase>& LegacyAnimations)
+{
+	if (LegacyAnimations.IsEmpty())
+	{
+		return false;
+	}
+
+	// Before the switch, the shared list and the basic entries all played together. Only one side plays now; the
+	// assets are the richer of the two, so they win, and the basic entries stay saved for switching back.
+	AnimIn.Append(LegacyAnimations);
+	LegacyAnimations.Reset();
+	bUseBasicAnimations = false;
+	return true;
+}
+
 void FInfoCardAdditiveAnimations::PostSerialize(const FArchive& Ar)
 {
-	if (!Ar.IsLoading() || (PlayInAnimations.IsEmpty() && PlayOutAnimations.IsEmpty()))
+	if (!Ar.IsLoading())
+	{
+		return;
+	}
+
+	MigrateLegacyAnimations(Animations);
+
+	if (PlayInAnimations.IsEmpty() && PlayOutAnimations.IsEmpty())
 	{
 		return;
 	}

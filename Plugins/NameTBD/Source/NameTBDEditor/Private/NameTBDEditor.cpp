@@ -63,6 +63,8 @@
 #include "NameTBD/Diegetic/DiegeticScreenComponent.h"
 #include "NameTBD/Widgets/WidgetEditorHooks.h"
 #include "Factories/DataAssetFactory.h"
+#include "InfoCardDetails.h"
+#include "InfoCardAnchorPreviewToolbar.h"
 
 #define LOCTEXT_NAMESPACE "FNameTBDEditorModule"
 
@@ -117,6 +119,7 @@ void FNameTBDEditorModule::StartupModule()
 		FToolMenuOwnerScoped OwnerScoped(TEXT("NameTBDEditor"));
 		FWidgetAnimBuilderToolbar::Register();
 		FButtonPreviewToolbar::Register();
+		FInfoCardAnchorPreviewToolbar::Register();
 	}));
 	
 	PropertyModule.RegisterCustomClassLayout(
@@ -173,6 +176,10 @@ void FNameTBDEditorModule::StartupModule()
 		UDiegeticScreenComponent::StaticClass()->GetFName(),
 		FOnGetDetailCustomizationInstance::CreateStatic(&FDiegeticScreenDetails::MakeInstance));
 	PropertyModule.NotifyCustomizationModuleChanged();
+
+	// Info cards and context menus: an Info Card entry's and a menu entry's fields in groups, an anchor's Payload Defaults
+	// flat under their Card ID, and the Tooltip / Context Menu Anchors without the generic anchor's sources.
+	InfoCardDetails::Register();
 
 	// The ready-made buttons: their parts built once placed (never per drop preview), each with its Widget Blueprint GUID.
 	StyledButtonsEditor::Register();
@@ -383,6 +390,7 @@ void FNameTBDEditorModule::ShutdownModule()
 		PropertyModule->UnregisterCustomClassLayout(TEXT("DiegeticScreenComponent"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("Texture2D"));
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("WidgetSpringParams"));
+		InfoCardDetails::Unregister();
 
 	}
 	

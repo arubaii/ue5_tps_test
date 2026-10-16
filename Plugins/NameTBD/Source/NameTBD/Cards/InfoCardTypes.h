@@ -500,8 +500,18 @@ struct NAMETBD_API FInfoCardAdditiveAnimSettings
  * plays still plays, and every entry here plays alongside it. Since the
  * animation system combines simultaneous entries rather than letting them
  * overwrite each other (opacity and scale multiply, translation and angle
- * sum), an entry here can stack on top of the card's own — e.g. a small extra
+ * sum), an entry here can stack on top of the card's own - e.g. a small extra
  * slide on a card whose class already fades in.
+ *
+ * Two ways to author them, picked by Use Basic Animations - the same switch the
+ * Flow List's transitions have:
+ * - On (the default): Play In / Play Out, a fade, scale, slide, turn or pulse
+ *   typed right here (FInfoCardAdditiveAnimSettings).
+ * - Off: Anim In / Anim Out, Widget Animation assets (FWidgetAnimEntryBase),
+ *   as a Widget Animation Component's Anim In / Anim Out. An entry marked
+ *   Mirror In Out also plays backwards as the other direction.
+ * Only the side the switch shows plays; the other is kept, so switching back
+ * brings it back.
  *
  * Every entry animates the whole card; there is no target selection (see
  * FInfoCardAdditiveAnimSettings for why).
@@ -510,8 +520,7 @@ struct NAMETBD_API FInfoCardAdditiveAnimSettings
  * (UWidgetAnimationComponent::SetExtraAnimSettings) in
  * UInfoCardWidget::SetupCard, before the card is constructed, so the
  * NativeConstruct -> RebuildEffectiveAnimations -> PlayIn that follows already
- * includes them. Entries with bMirrorInOut set are mirrored into the other
- * direction exactly the way the card's own are.
+ * includes them.
  */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FInfoCardAdditiveAnimations
@@ -519,30 +528,36 @@ struct NAMETBD_API FInfoCardAdditiveAnimations
 	GENERATED_BODY()
 
 	/**
-	 * Shared Widget Animation assets layered onto this card, on top of everything else.
-	 *
-	 * The same thing as the entries below, authored once as an asset instead of retyped per card - point
-	 * three cards at "Anim_CardPop" and retuning the asset retunes all three.
-	 *
-	 * One entry covers both directions: Mirror In Out makes it play backwards as the exit too, so a card
-	 * that pops in and pops back out needs one line here rather than two. Invert Animation is the way to
-	 * author an exit-only entry.
-	 *
-	 * Resolved BEFORE the Play In / Play Out entries below, so these are the base layer and anything typed
-	 * underneath stacks on top. Additive throughout: neither replaces the card class's own animations, and
-	 * the entries below do not replace these.
-	 *
-	 * Widget targeting is deliberately absent for the same reason it is on the entries below - see
-	 * FInfoCardAdditiveAnimSettings. Every layer animates the whole card.
+	 * Basic animations: a fade, scale, slide, turn or pulse set right here (Play In / Play Out). Off, the card plays Widget
+	 * Animation assets instead (Anim In / Anim Out), as a Widget Animation Component's Anim In and Anim Out play.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Animations", TitleProperty = "Animation", ToolTip = "Shared Widget Animation assets layered onto this card. Resolved before the Play In / Play Out entries below, and additive with them and with the card class's own animations. Mirror In Out on an entry makes it play as the exit as well."))
-	TArray<FWidgetAnimEntryBase> Animations;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Use Basic Animations"))
+	bool bUseBasicAnimations = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Play In", ToolTip = "Played in addition to the card class's own Anim In when this card appears. Does not replace them. Always animates the whole card."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Play In", EditCondition = "bUseBasicAnimations", EditConditionHides, ToolTip = "Played in addition to the card class's own Anim In when this card appears. Does not replace them. Always animates the whole card."))
 	TArray<FInfoCardAdditiveAnimSettings> PlayIn;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Play Out", ToolTip = "Played in addition to the card class's own Anim Out when this card closes. Does not replace them. Always animates the whole card."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Play Out", EditCondition = "bUseBasicAnimations", EditConditionHides, ToolTip = "Played in addition to the card class's own Anim Out when this card closes. Does not replace them. Always animates the whole card."))
 	TArray<FInfoCardAdditiveAnimSettings> PlayOut;
+
+	/**
+	 * Widget Animation assets played on the card as it appears, on top of the card class's own Anim In. Point three cards
+	 * at "Anim_CardPop" and retuning the asset retunes all three. An entry marked Mirror In Out also plays backwards as the
+	 * card closes.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Anim In", TitleProperty = "Animation", EditCondition = "!bUseBasicAnimations", EditConditionHides))
+	TArray<FWidgetAnimEntryBase> AnimIn;
+
+	/** Widget Animation assets played on the card as it closes, on top of the card class's own Anim Out. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Anim Out", TitleProperty = "Animation", EditCondition = "!bUseBasicAnimations", EditConditionHides))
+	TArray<FWidgetAnimEntryBase> AnimOut;
+
+	/**
+	 * The single shared Animations list from before Use Basic Animations. Hidden; PostSerialize moves it into Anim In
+	 * (Mirror In Out still makes an entry play as the exit too) and empties it, so re-saving drops it.
+	 */
+	UPROPERTY()
+	TArray<FWidgetAnimEntryBase> Animations;
 
 	/**
 	 * Entries saved before additive animations lost their target picker, under
@@ -555,21 +570,30 @@ struct NAMETBD_API FInfoCardAdditiveAnimations
 	UPROPERTY()
 	TArray<FWidgetAnimSettings> PlayOutAnimations;
 
+	/** Nothing would play: the side Use Basic Animations picks has no usable entry. */
 	bool IsEmpty() const
 	{
-		return PlayIn.IsEmpty() && PlayOut.IsEmpty() && !UWidgetAnimEntryLibrary::HasAnyUsableAnimation(Animations);
+		return bUseBasicAnimations
+			? (PlayIn.IsEmpty() && PlayOut.IsEmpty())
+			: (!UWidgetAnimEntryLibrary::HasAnyUsableAnimation(AnimIn) && !UWidgetAnimEntryLibrary::HasAnyUsableAnimation(AnimOut));
 	}
 
 	/**
 	 * Everything this struct contributes, flattened into the two FWidgetAnimSettings stacks the animation
-	 * library actually plays: Animations first, then the Play In / Play Out entries, with Mirror In Out
-	 * resolved on both.
+	 * library actually plays: the side Use Basic Animations picks, with Mirror In Out resolved.
 	 *
 	 * The one place a consumer should go. UInfoCardWidget::SetupCard hands OutIn / OutOut to the card's
-	 * Widget Animation component as its extra layers rather than converting PlayIn / PlayOut itself, or
-	 * presets would be silently dropped.
+	 * Widget Animation component as its extra layers rather than converting PlayIn / PlayOut itself.
 	 */
 	void ResolveInto(TArray<FWidgetAnimSettings>& OutIn, TArray<FWidgetAnimSettings>& OutOut) const;
+
+	/**
+	 * Folds the pre-switch layout (one shared Animations list next to Play In / Play Out, all of which played) into this
+	 * one: the list becomes Anim In, and Use Basic Animations is switched off when it had anything in it (Widget
+	 * Animation assets win when both were authored; the basic entries are kept for switching back). True if it changed
+	 * anything. Shared by PostSerialize and the anchor's Additive Animation Overrides migration.
+	 */
+	bool MigrateLegacyAnimations(TArray<FWidgetAnimEntryBase>& LegacyAnimations);
 
 	void PostSerialize(const FArchive& Ar);
 };
@@ -630,14 +654,14 @@ struct NAMETBD_API FInfoCardSpec
 {
 	GENERATED_BODY()
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (DisplayName = "Card ID", ToolTip = "Identifier used for info card event handling."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Card", meta = (DisplayName = "Card ID", ToolTip = "Identifier used for info card event handling."))
 	FName CardId = NAME_None;
 	
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (ToolTip = "User defined info cards; children of UInfoCardWidgetBase."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Card", meta = (ToolTip = "The card widget shown: an Info Card Widget class (or a Widget Blueprint made from one). Text Info Card shows a Title / Body text payload with no Widget Blueprint at all."))
 	TSubclassOf<UInfoCardWidget> CardClass;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (ToolTip = "Particularlly useful for disabling cards in the overrides array."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Card", meta = (ToolTip = "Particularlly useful for disabling cards in the overrides array."))
 	bool bEnabled = true;
 	
 	/**
@@ -646,92 +670,92 @@ struct NAMETBD_API FInfoCardSpec
 	 * any tag in this container, the info card will be suppressed: it will not spawn, and if it is
 	 * already showing it is closed.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Suppression")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Suppression")
 	FGameplayTagContainer SuppressionTags;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger")
 	ECardType CardType = ECardType::AlwaysOn;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (DisplayName = "Highlight Delay", ToolTip = "Seconds to wait after being triggered (by mouse hover or focus) before this card appears. 0 shows it immediately. Also skipped — shown instantly regardless of this value — if another card closed within Successive Hover Window below; see UInfoCardDeveloperSettings' Successive Hover section for the on/off switch.", EditCondition = "CardType == ECardType::Hover"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (DisplayName = "Highlight Delay", ToolTip = "Seconds to wait after being triggered (by mouse hover or focus) before this card appears. 0 shows it immediately. Also skipped — shown instantly regardless of this value — if another card closed within Successive Hover Window below; see UInfoCardDeveloperSettings' Successive Hover section for the on/off switch.", EditCondition = "CardType == ECardType::Hover", EditConditionHides))
 	FInfoCardConfigurableFloat HoverDelay = FInfoCardConfigurableFloat(0.35f);
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (ToolTip = "Seconds after any card (anywhere) closes during which THIS card, if triggered, skips Highlight Delay entirely and shows instantly — the 'Windows tooltip' behaviour of hovering a second control right after dismissing the first one's tooltip. Only takes effect while UInfoCardDeveloperSettings::bEnableSuccessiveHover is on; that on/off switch isn't per-card, only this window length is.", EditCondition = "CardType == ECardType::Hover"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (ToolTip = "Seconds after any card (anywhere) closes during which THIS card, if triggered, skips Highlight Delay entirely and shows instantly — the 'Windows tooltip' behaviour of hovering a second control right after dismissing the first one's tooltip. Only takes effect while UInfoCardDeveloperSettings::bEnableSuccessiveHover is on; that on/off switch isn't per-card, only this window length is.", EditCondition = "CardType == ECardType::Hover", EditConditionHides))
 	FInfoCardConfigurableFloat SuccessiveHoverWindow = FInfoCardConfigurableFloat(0.5f);
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (ToolTip = "If true, this card can be triggered by the mouse hovering its anchor.", EditCondition = "CardType == ECardType::Hover"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (ToolTip = "If true, this card can be triggered by the mouse hovering its anchor.", EditCondition = "CardType == ECardType::Hover", EditConditionHides))
 	bool bTriggerOnMouseHover = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (ToolTip = "If true, this card can be triggered by keyboard/gamepad focus reaching its anchor. See UInfoCardAnchor::FocusTriggerMode for how that focus is detected.", EditCondition = "CardType == ECardType::Hover"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (ToolTip = "If true, this card can be triggered by keyboard/gamepad focus reaching its anchor. See UInfoCardAnchor::FocusTriggerMode for how that focus is detected.", EditCondition = "CardType == ECardType::Hover", EditConditionHides))
 	bool bTriggerOnFocus = true;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (DisplayName = "Reappear On Click Dismiss", ToolTip = "If true, dismissing this card by clicking its own anchor (cursor never actually leaving it) makes it trigger again immediately, instead of waiting for the cursor to leave and come back.\n \n Useful for tooltips on non-buttons", EditCondition = "CardType == ECardType::Hover"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (DisplayName = "Reappear On Click Dismiss", ToolTip = "If true, dismissing this card by clicking its own anchor (cursor never actually leaving it) makes it trigger again immediately, instead of waiting for the cursor to leave and come back.\n \n Useful for tooltips on non-buttons", EditCondition = "CardType == ECardType::Hover", EditConditionHides))
 	bool bReappearOnClickDismiss = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (ToolTip = "If true, once shown this card stays open even after the cursor leaves the anchor, as long as the cursor is still over the anchor's icon (expanded by Icon Anchor Padding) or over the card itself. Only closes once the cursor leaves both.\nUseful for interactable cards (e.g. containing buttons) so moving the mouse from the icon onto the card doesn't close it along the way. \n \nMouse-only — losing keyboard/gamepad focus still closes it immediately regardless of this setting.", EditCondition = "CardType == ECardType::Hover"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (ToolTip = "If true, once shown this card stays open even after the cursor leaves the anchor, as long as the cursor is still over the anchor's icon (expanded by Icon Anchor Padding) or over the card itself. Only closes once the cursor leaves both.\nUseful for interactable cards (e.g. containing buttons) so moving the mouse from the icon onto the card doesn't close it along the way. \n \nMouse-only — losing keyboard/gamepad focus still closes it immediately regardless of this setting.", EditCondition = "CardType == ECardType::Hover", EditConditionHides))
 	bool bKeepOpenUntilCursorLeaves = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (ToolTip = "Extra slack, in viewport units, added around both the icon and the card when deciding whether the cursor has 'left'. This is what bridges the gap the card is drawn across, so it should be at least as large as any Card Offset you apply. Raise it if the card still closes while the cursor is travelling toward it; lower it if the card hangs around too far away.", EditCondition = "CardType == ECardType::Hover && bKeepOpenUntilCursorLeaves"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (ToolTip = "Extra slack, in viewport units, added around both the icon and the card when deciding whether the cursor has 'left'. This is what bridges the gap the card is drawn across, so it should be at least as large as any Card Offset you apply. Raise it if the card still closes while the cursor is travelling toward it; lower it if the card hangs around too far away.", EditCondition = "CardType == ECardType::Hover && bKeepOpenUntilCursorLeaves", EditConditionHides))
 	FInfoCardConfigurableFloat KeepOpenSlack = FInfoCardConfigurableFloat(16.f);
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (ToolTip = "Seconds the cursor must stay outside the icon/card region before this card actually closes. Any return inside the region resets it. A small non-zero value here is what stops a single bad frame (a layout pass, a fast diagonal flick across a corner) from closing the card.", EditCondition = "CardType == ECardType::Hover && bKeepOpenUntilCursorLeaves"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trigger", meta = (ToolTip = "Seconds the cursor must stay outside the icon/card region before this card actually closes. Any return inside the region resets it. A small non-zero value here is what stops a single bad frame (a layout pass, a fast diagonal flick across a corner) from closing the card.", EditCondition = "CardType == ECardType::Hover && bKeepOpenUntilCursorLeaves", EditConditionHides))
 	FInfoCardConfigurableFloat KeepOpenGracePeriod = FInfoCardConfigurableFloat(0.2f);
 
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (ToolTip = "When this card shows, whether it closes other already-showing cards elsewhere to make room for it. Never affects this same anchor's other entries."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dismissal", meta = (ToolTip = "When this card shows, whether it closes other already-showing cards elsewhere to make room for it. Never affects this same anchor's other entries."))
 	ECardCloseOthersScope CloseOtherCardsScope = ECardCloseOthersScope::None;
 
 
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (ToolTip = "Where a press has to land to remove this card. Outside Anchor and Card is the ordinary 'click away to dismiss' behavior. Any mouse or gamepad button counts, not just whichever one triggered the card."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dismissal", meta = (ToolTip = "Where a press has to land to remove this card. Outside Anchor and Card is the ordinary 'click away to dismiss' behavior. Any mouse or gamepad button counts, not just whichever one triggered the card."))
 	ECardRemoveOnPressZone RemoveCardOnPressing = ECardRemoveOnPressZone::OutsideAnchorAndCard;
 
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (ToolTip = "Seconds after this card appears before it auto-closes itself, regardless of cursor position. 0 means never. Independent of KeepOpenGracePeriod, which only reacts to the cursor leaving."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dismissal", meta = (ToolTip = "Seconds after this card appears before it auto-closes itself, regardless of cursor position. 0 means never. Independent of KeepOpenGracePeriod, which only reacts to the cursor leaving."))
 	FInfoCardConfigurableFloat AutoDismissDuration = FInfoCardConfigurableFloat(0.f);
 
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (ToolTip = "If true, a dismissing card click will not have any effect on the screen, only to dismiss the card."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dismissal", meta = (ToolTip = "If true, a dismissing card click will not have any effect on the screen, only to dismiss the card."))
 	FInfoCardConfigurableBool DismissClickGetsConsumed = FInfoCardConfigurableBool(false);
 
 	/**
 	 * If true, this card persists through menus opening and closing instead of closing itself the moment any menu state 
 	 * changes. Useful for manually handling the card's lifetime.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card", meta = (ToolTip = "If true, the card will ignore the event and will persist throughout menus opening and closing. Useful for manually handling the card's lifetime."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dismissal", meta = (ToolTip = "If true, the card will ignore the event and will persist throughout menus opening and closing. Useful for manually handling the card's lifetime."))
 	bool bIgnoresMenuStateChange = false;
 
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Card Position")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement")
 	EInfoCardPosition PositionMode = EInfoCardPosition::ToIcon;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Card Position", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon", EditConditionHides, ToolTip = "Info card position relative to the icon (anchor's children in designer)."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon", EditConditionHides, ToolTip = "Info card position relative to the icon (anchor's children in designer)."))
 	EDirection2D IconPosition = EDirection2D::Up;
 
 	/**
 	 * Only used while IconPosition is Fill Icon.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Card Position", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon && IconPosition == EDirection2D::FillIcon", EditConditionHides, ToolTip = "Inset from each edge of the icon (Left/Top/Right/Bottom) when Icon Position is Fill Icon. 0 covers the icon exactly; negative values extend past it. The card is sized to the result, so its root content must be able to stretch."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon && IconPosition == EDirection2D::FillIcon", EditConditionHides, ToolTip = "Inset from each edge of the icon (Left/Top/Right/Bottom) when Icon Position is Fill Icon. 0 covers the icon exactly; negative values extend past it. The card is sized to the result, so its root content must be able to stretch."))
 	FMargin FillIconPadding = FMargin(0.f);
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Card Position", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
 	EInfoCardCursorPosition CursorPosition = EInfoCardCursorPosition::UpRight;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Card Position", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToViewport", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToViewport", EditConditionHides))
 	EViewportPosition ViewportPosition = EViewportPosition::TopRight;
 	
 	/**
 	 * The card widget's own render transform.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Card Transform", meta = (ToolTip = "Translation, scale, shear, and angle applied to the card widget itself, on top of wherever CardOffset/PositionMode placed it. Purely visual — plays no part in the icon/card/corridor hit-testing math."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (ToolTip = "Translation, scale, shear, and angle applied to the card widget itself, on top of wherever CardOffset/PositionMode placed it. Purely visual — plays no part in the icon/card/corridor hit-testing math."))
 	FWidgetTransform CardTransform;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Card Position", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor || PositionMode == EInfoCardPosition::ToViewport", EditConditionHides, ToolTip = "Offset between cursor/viewport to info card."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor || PositionMode == EInfoCardPosition::ToViewport", EditConditionHides, ToolTip = "Offset between cursor/viewport to info card."))
 	FVector2D CardOffset = FVector2D::ZeroVector;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Card Position", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon", EditConditionHides, ToolTip = "Padding between icon (anchor's children in designer) and info card."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon", EditConditionHides, ToolTip = "Padding between icon (anchor's children in designer) and info card."))
 	float IconAnchorPadding = 0.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Card Position", meta = (ToolTip = "If true, a card that would run out of room is kept fully on screen. For PositionMode::ToIcon and ToCursor specifically: if FlipToAvoidClipping is also on and the card would exit off the same side its IconPosition/CursorPosition points toward, it flips to the opposite side first — the way most OS tooltips behave. Only once flipping is off, isn't possible, or doesn't help does it fall back to clamping, with Clamp Padding kept as spacing from the edge. The axis perpendicular to the flip (e.g. left/right for a card anchored Up/Down) has no 'other side' to flip to and is always just clamped."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (ToolTip = "If true, a card that would run out of room is kept fully on screen. For PositionMode::ToIcon and ToCursor specifically: if FlipToAvoidClipping is also on and the card would exit off the same side its IconPosition/CursorPosition points toward, it flips to the opposite side first — the way most OS tooltips behave. Only once flipping is off, isn't possible, or doesn't help does it fall back to clamping, with Clamp Padding kept as spacing from the edge. The axis perpendicular to the flip (e.g. left/right for a card anchored Up/Down) has no 'other side' to flip to and is always just clamped."))
 	bool bClampToViewport = true;
 
 	/**
@@ -744,16 +768,16 @@ struct NAMETBD_API FInfoCardSpec
 	 * turn it off for a card that should only ever clamp, never flip
 	 * sides.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Card Position", meta = (EditCondition = "bClampToViewport && PositionMode != EInfoCardPosition::ToViewport", EditConditionHides, ToolTip = "Whether a card running out of room flips to the opposite side (Up<->Down, Left<->Right, and each axis of a diagonal independently) before falling back to a plain clamp. Only meaningful for ToIcon/ToCursor."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "bClampToViewport && PositionMode != EInfoCardPosition::ToViewport", EditConditionHides, ToolTip = "Whether a card running out of room flips to the opposite side (Up<->Down, Left<->Right, and each axis of a diagonal independently) before falling back to a plain clamp. Only meaningful for ToIcon/ToCursor."))
 	FInfoCardConfigurableBool FlipToAvoidClipping = FInfoCardConfigurableBool(true);
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Card Position", meta = (EditCondition = "bClampToViewport", EditConditionHides, ToolTip = "Breathing room, in viewport units, kept between the card and the screen edge whenever ClampToViewport has to pin it there, and between this card and any other currently-visible card it would otherwise overlap (see Avoid Overlapping Cards). Also the margin used to decide a ToIcon card has run out of room in the first place, so it flips a little before touching the edge rather than at the very last pixel. Applies to every PositionMode, not just ToIcon."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "bClampToViewport", EditConditionHides, ToolTip = "Breathing room, in viewport units, kept between the card and the screen edge whenever ClampToViewport has to pin it there, and between this card and any other currently-visible card it would otherwise overlap (see Avoid Overlapping Cards). Also the margin used to decide a ToIcon card has run out of room in the first place, so it flips a little before touching the edge rather than at the very last pixel. Applies to every PositionMode, not just ToIcon."))
 	float ClampPadding = 8.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Card Position", meta = (ToolTip = "If true, this card checks itself against every other currently-visible card (any anchor, any PositionMode) and, if it would overlap one, nudges itself below that card by Clamp Padding — the way toast notifications stack rather than pile on top of each other. A card only ever yields to a card that was shown before it, never the other way around, so two cards never fight over the same spot. A ToIcon card nested inside other cards may sit flush against the menu it came out of, but won't cover the rest of its own menu chain: if it would (a dropdown that flipped up over its own menu, or a cascading card landing on a menu further up the chain), it slides to the nearest clear spot beside it instead, preferring to carry on in its Icon Position's direction. Turn this off for a card that's meant to sit in an exact spot regardless of what else is on screen (e.g. a fixed HUD readout)."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (ToolTip = "If true, this card checks itself against every other currently-visible card (any anchor, any PositionMode) and, if it would overlap one, nudges itself below that card by Clamp Padding — the way toast notifications stack rather than pile on top of each other. A card only ever yields to a card that was shown before it, never the other way around, so two cards never fight over the same spot. A ToIcon card nested inside other cards may sit flush against the menu it came out of, but won't cover the rest of its own menu chain: if it would (a dropdown that flipped up over its own menu, or a cascading card landing on a menu further up the chain), it slides to the nearest clear spot beside it instead, preferring to carry on in its Icon Position's direction. Turn this off for a card that's meant to sit in an exact spot regardless of what else is on screen (e.g. a fixed HUD readout)."))
 	bool bAvoidOverlappingCards = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Card Position")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement")
 	bool bUpdatePositionOnTick = true;
 	
 
@@ -762,7 +786,7 @@ struct NAMETBD_API FInfoCardSpec
 	 * never instead of — the Anim In / Anim Out authored on CardClass. See
 	 * FInfoCardAdditiveAnimations.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Animations", meta = (DisplayName = "Additive Animations", ToolTip = "Extra Play In / Play Out animations, played in addition to the Anim In / Anim Out already set on the card class. They add to the card's own animations; they never replace them."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation", meta = (DisplayName = "Additive Animations", ToolTip = "Extra entrance / exit animations, played in addition to the Anim In / Anim Out already set on the card class: basic ones typed here, or Widget Animation assets with Use Basic Animations off. They add to the card's own animations; they never replace them."))
 	FInfoCardAdditiveAnimations AdditiveAnimations;
 
 	/**
@@ -770,16 +794,16 @@ struct NAMETBD_API FInfoCardSpec
 	 * and a Custom Info Cards entry get the same field, and an anchor can replace it per placement through
 	 * Settings Overrides > Sound.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Sound", meta = (DisplayName = "Sounds", TitleProperty = "Settings", ToolTip = "Sounds played as this card is triggered, shown and hidden. Several sets are allowed and all of them are heard."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (DisplayName = "Sounds", TitleProperty = "Settings", ToolTip = "Sounds played as this card is triggered, shown and hidden. Several sets are allowed and all of them are heard."))
 	TArray<FInfoCardSoundSet> Sounds;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Info Card|Placement")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement")
 	int32 ZOrder = 1000;
 
 	/** User defined payloads; children of UInfoCardPayload. 
 	 * The info card class defined above will recieve these payloads by the event ApplyPayloads. 
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Instanced, Category = "Info Card|Payloads")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Instanced, Category = "Payloads")
 	TArray<TObjectPtr<UNameTBD_Payload>> Payloads;
 
 };

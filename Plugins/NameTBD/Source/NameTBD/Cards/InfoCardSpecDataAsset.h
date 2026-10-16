@@ -10,13 +10,21 @@
 
 #include "InfoCardSpecDataAsset.generated.h"
 
+/**
+ * Info cards shared by every Info Card Anchor that points at this asset. Each entry is one independent card (a quick hover
+ * tip, a detailed one, a right-click card); an anchor layers its own Payload Defaults and Settings Overrides on top.
+ *
+ * Each entry's settings are grouped (Card, Trigger, Placement, Dismissal, Payloads, Animation, Sound, Suppression) by
+ * the editor module's FInfoCardSpec customization; only Card, Trigger and Payloads start expanded.
+ */
 UCLASS(BlueprintType)
 class NAMETBD_API UInfoCardDataAsset : public UDataAsset
 {
     GENERATED_BODY()
 public:
     
-    UPROPERTY(EditAnywhere, BlueprintReadOnly)
+    /** Every card this asset holds. Give each a Card ID: anchors match their per-instance defaults and overrides by it. */
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Info Cards", meta = (TitleProperty = "CardId"))
     TArray<FInfoCardSpec> InfoCards;
 
     /**
@@ -28,21 +36,24 @@ public:
      * sounds means those and not these. An anchor's Settings Overrides > Sound then sits on top of whichever
      * of the two won.
      */
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Info Card|Sound", meta = (DisplayName = "Default Sounds"))
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Defaults", meta = (DisplayName = "Default Sounds"))
     TArray<FInfoCardSoundSet> DefaultSounds;
 
     /**
-     * Animations used by every entry above whose own Additive Animations > Animations array is empty.
+     * Additive animations used by every entry above whose own Additive Animations would play nothing.
      *
      * The animation counterpart of Default Sounds, and it follows the same fallback-not-merge rule: an
-     * entry that named its own animations meant those and not these. An anchor's Additive Animation
+     * entry that authored its own animations meant those and not these. An anchor's Additive Animation
      * Overrides then sit on top of whichever of the two won.
      *
      * Additive, as always - these are layered on top of whatever the card class itself animates, never
-     * instead of it - and every layer animates the whole card, since an animation shared across assets
-     * has no way to name a widget inside one particular card.
+     * instead of it - and every layer animates the whole card.
      */
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Info Card|Animations", meta = (DisplayName = "Default Animations", TitleProperty = "Animation"))
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Defaults", meta = (DisplayName = "Default Additive Animations"))
+    FInfoCardAdditiveAnimations DefaultCardAnimations;
+
+    /** The Widget Animation list Default Additive Animations replaced. Hidden; PostLoad moves it into Default Additive Animations > Anim In. */
+    UPROPERTY()
     TArray<FWidgetAnimEntryBase> DefaultAdditiveAnimations;
 
     /**
@@ -53,6 +64,19 @@ public:
      * 
      * - For extra per-card suppression, add tags in the array element field SuppressionTags. 
      */
-    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Info Card|Suppression")
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Suppression")
     FGameplayTagContainer AnchorSuppressionTags;
+
+    virtual void PostLoad() override
+    {
+        Super::PostLoad();
+
+        // Fallback semantics kept: the old list was only used for entries with no animations of their own, which is
+        // what Default Additive Animations is.
+        if (!DefaultAdditiveAnimations.IsEmpty() && DefaultCardAnimations.IsEmpty())
+        {
+            DefaultCardAnimations.MigrateLegacyAnimations(DefaultAdditiveAnimations);
+        }
+        DefaultAdditiveAnimations.Reset();
+    }
 };

@@ -12,6 +12,10 @@
 #include "NameTBD/Buttons/Actions/ContextMenuInterface.h"
 #include "InfoCardDeveloperSettings.generated.h"
 
+class UInfoCardDataAsset;
+class UInfoCardWidget;
+class UContextMenuStyleAsset;
+
 
 
 
@@ -321,6 +325,34 @@ public:
 	UPROPERTY(Config)
 	TArray<FContextMenuDesignPreset> ContextMenuDesignPresets;
 	
+	// ------------------------------------------------------------------
+	// Tooltips (Tooltip Card Anchor)
+	// ------------------------------------------------------------------
+
+	/**
+	 * The card every Tooltip Card Anchor uses unless it picks its own Tooltip Template: an Info Card Data Asset whose first
+	 * entry (or the one named by the anchor's Template Card ID) supplies the card class, trigger, delay, placement, sounds
+	 * and animations. The anchor only adds its text. Empty: the built-in tooltip - Default Tooltip Card Class above the
+	 * widget, after the Highlight Delay preset, with a short fade.
+	 */
+	UPROPERTY(EditAnywhere, Config, Category = "Tooltips", meta = (DisplayName = "Default Tooltip Template"))
+	TSoftObjectPtr<UInfoCardDataAsset> DefaultTooltipTemplate;
+
+	/** The card class of the built-in tooltip (no template anywhere). Empty: Text Info Card, which needs no Widget Blueprint. */
+	UPROPERTY(EditAnywhere, Config, Category = "Tooltips", meta = (DisplayName = "Default Tooltip Card Class"))
+	TSoftClassPtr<UInfoCardWidget> DefaultTooltipCardClass;
+
+	// ------------------------------------------------------------------
+	// Context menus (Context Menu Anchor / Context Menu asset)
+	// ------------------------------------------------------------------
+
+	/**
+	 * The look every right-click menu uses unless its Context Menu asset or its anchor picks another Context Menu Style.
+	 * Empty: the built-in style (a dark rounded panel with highlighted rows).
+	 */
+	UPROPERTY(EditAnywhere, Config, Category = "Context Menus", meta = (DisplayName = "Default Context Menu Style"))
+	TSoftObjectPtr<UContextMenuStyleAsset> DefaultContextMenuStyle;
+
 	/** Set to BlueprintReadOnly for queries */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Config, Category = "Button Actions", meta = (Categories = "UIContext.Button"))
 	TMap<FGameplayTag, FContextMenuButtonData> ButtonActions; 

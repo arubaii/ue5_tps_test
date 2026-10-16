@@ -1,9 +1,34 @@
 #include "ButtonAction.h"
 
 #include "NameTBD/Buttons/ContextMenuButton.h"
+#include "NameTBD/Buttons/Actions/ContextMenuInterface.h"
 
 void UButtonAction::ExecuteAction_Implementation(UContextMenuButton* Button, const TArray<UContextButtonPayload*>& ActionPayloads)
 {
+}
+
+void UButtonAction::ExecuteMenuAction_Implementation(const FContextMenuActionContext& Context)
+{
+	TArray<UContextButtonPayload*> RawPayloads;
+	RawPayloads.Reserve(Context.Payloads.Num());
+	for (const TObjectPtr<UContextButtonPayload>& Payload : Context.Payloads)
+	{
+		RawPayloads.Add(Payload.Get());
+	}
+
+	Execute_ExecuteAction(this, Context.Button, RawPayloads);
+}
+
+UContextButtonPayload* UButtonAction::FindActionPayload(const TArray<UContextButtonPayload*>& Payloads, TSubclassOf<UContextButtonPayload> PayloadClass)
+{
+	for (UContextButtonPayload* Payload : Payloads)
+	{
+		if (Payload && (!PayloadClass || Payload->IsA(PayloadClass)))
+		{
+			return Payload;
+		}
+	}
+	return nullptr;
 }
 
 UWorld* UButtonAction::GetWorld() const

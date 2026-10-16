@@ -205,6 +205,14 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "InfoCard")
 	void SetPayloads(const TArray<UNameTBD_Payload*>& NewPayloads);
 
+	/**
+	 * The designer's version of SetupCard, for the card an Info Card Anchor shows beside itself in the UMG designer (see
+	 * UInfoCardAnchor::DesignerPreviewCardId): placement fields, Card Transform and payloads (Apply Payloads runs, so the
+	 * card shows its text), and nothing that belongs to a live card - no timers, no press watcher, no viewport, no
+	 * registration with the other cards. Hit-test invisible, so clicks reach the designer's widgets beneath.
+	 */
+	void SetupDesignerPreview(const FInfoCardSpec& Spec, UWidget* InAnchorWidget);
+
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "InfoCard", meta = (ToolTips = "Loop through the payload array and cast to the payload class(es) on each loop to implement."))
 	void ApplyPayloads(const TArray<UNameTBD_Payload*>& InPayloads);
 	virtual void ApplyPayloads_Implementation(const TArray<UNameTBD_Payload*>& InPayloads);
@@ -296,12 +304,26 @@ public:
 	bool IsEmbeddedInLayout() const { return bEmbeddedInLayout; }
 
 	/**
+	 * Treats this card as embedded (see IsEmbeddedInLayout) wherever it ends up - for a card shown somewhere the info card
+	 * system doesn't place it, such as an engine tooltip (UInfoCardLibrary::SetWidgetTooltipCard). Call before it is
+	 * constructed.
+	 */
+	void MarkAsEmbedded() { bForceEmbedded = true; }
+
+	/**
 	 * Embedded cards only (see IsEmbeddedInLayout). UUserWidget defaults to Self Hit Test Invisible, so the
 	 * card's own background never receives the cursor. When on, an embedded card left at that default is
 	 * promoted to Visible on construct. Any other visibility you chose is left alone.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "InfoCard|Embedded")
 	bool bHitTestableWhenEmbedded = true;
+
+private:
+
+	/** Set by MarkAsEmbedded. */
+	bool bForceEmbedded = false;
+
+public:
 
 	/**
 	 * True if the cursor is currently inside this card's "keep open" region:

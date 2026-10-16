@@ -4228,6 +4228,10 @@ void UContextMenuButton::ApplyButtonData()
 		FText Delimiter = FText::FromString(TEXT(", "));
 
 		FText ResolvedText = FText::Join(Delimiter, TextPieces);
+
+		// The label the tag supplies (blank never overwrites authored text - see ApplyButtonTextFromData). It was worked out
+		// here but never written to the button, so tagged buttons kept whatever placeholder they were authored with.
+		ApplyButtonTextFromData(ResolvedText);
 	}
 
 	bHasResolvedButtonData = true;

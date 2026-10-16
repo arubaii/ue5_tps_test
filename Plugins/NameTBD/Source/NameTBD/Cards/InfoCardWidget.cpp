@@ -405,6 +405,39 @@ void UInfoCardWidget::SetupCard(const FInfoCardSpec& Spec, UWidget* InAnchorWidg
 	SetPayloads(RawPayloads);
 }
 
+void UInfoCardWidget::SetupDesignerPreview(const FInfoCardSpec& Spec, UWidget* InAnchorWidget)
+{
+	// The fields a card's own Blueprint may read in Apply Payloads or Pre Construct, so the designer shows what the game will.
+	PositionMode      = Spec.PositionMode;
+	IconPosition      = Spec.IconPosition;
+	FillIconPadding   = Spec.FillIconPadding;
+	CursorPosition    = Spec.CursorPosition;
+	ViewportPosition  = Spec.ViewportPosition;
+	Offset            = Spec.CardOffset;
+	HoverAnchorPadding = Spec.IconAnchorPadding;
+	SourceCardType    = Spec.CardType;
+	CardId            = Spec.CardId;
+	AnchorWidget      = InAnchorWidget;
+	Sounds            = Spec.Sounds;
+	AdditiveAnimations = Spec.AdditiveAnimations;
+
+	CardTransform = Spec.CardTransform;
+	SetRenderTranslation(CardTransform.Translation);
+	SetRenderScale(CardTransform.Scale);
+	SetRenderShear(CardTransform.Shear);
+	SetRenderTransformAngle(CardTransform.Angle);
+
+	SetVisibility(ESlateVisibility::HitTestInvisible);
+
+	TArray<UNameTBD_Payload*> RawPayloads;
+	RawPayloads.Reserve(Spec.Payloads.Num());
+	for (const TObjectPtr<UNameTBD_Payload>& P : Spec.Payloads)
+	{
+		RawPayloads.Add(P.Get());
+	}
+	SetPayloads(RawPayloads);
+}
+
 void UInfoCardWidget::SetPayloads(const TArray<UNameTBD_Payload*>& NewPayloads)
 {
 	Payloads.Reset(NewPayloads.Num());
@@ -631,6 +664,12 @@ void UInfoCardWidget::NativeDestruct()
 
 bool UInfoCardWidget::ComputeEmbeddedInLayout() const
 {
+	// Shown by something else entirely (an engine tooltip): never the viewport's.
+	if (bForceEmbedded)
+	{
+		return true;
+	}
+
 	// Anything an anchor set up belongs to the viewport, whatever else is true.
 	if (AnchorWidget.IsValid())
 	{
@@ -1104,7 +1143,13 @@ bool UInfoCardWidget::ShouldPressCloseCard(const FVector2D& PressPoint, bool bHa
 		// Bare card rect, no padding: this is a dismissal boundary, not a
 		// hover tolerance, and a player pressing eight pixels off the edge of
 		// a card meant it.
-		return !bPressOnCard;
+		//
+		// Except for cards nested inside this one (a context menu's submenu):
+		// they sit outside this card's rect by design, and a press on one is
+		// the player using this menu, not leaving it. Without this, choosing
+		// an item in a submenu closed the menu it came from - and the submenu,
+		// whose anchor lives in it - before the item's click could land.
+		return !bPressOnCard && !IsPointOverDescendantCard(PressPoint);
 
 	case ECardRemoveOnPressZone::OutsideAnchorAndCard:
 	default:
@@ -1129,7 +1174,9 @@ bool UInfoCardWidget::ShouldPressCloseCard(const FVector2D& PressPoint, bool bHa
 		// is tolerable here in a way an unresolved card rect is not: it means
 		// the anchor is not currently painted, and a widget that is not on
 		// screen is not one the player just pressed.
-		return !bPressOnCard && !bPressOnAnchor;
+		// Nested cards count as this card, for the reason given under
+		// OutsideCard above.
+		return !bPressOnCard && !bPressOnAnchor && !IsPointOverDescendantCard(PressPoint);
 	}
 }
 

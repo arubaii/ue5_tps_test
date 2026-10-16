@@ -1,0 +1,86 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuTypes.h b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuTypes.h
+index dd65baa..9baffc2 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuTypes.h
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/ContextMenu/ContextMenuTypes.h
+@@ -155,7 +155,7 @@ struct NAMETBD_API FContextMenuEntry
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Show Line", EditCondition = "EntryType == EContextMenuEntryType::Header", EditConditionHides))
+ 	bool bShowDividerLine = true;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Height", EditCondition = "EntryType == EContextMenuEntryType::Spacer", EditConditionHides, ClampMin = "0", UIMax = "48", Units = "px"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Content", meta = (DisplayName = "Height", EditCondition = "EntryType == EContextMenuEntryType::Spacer", EditConditionHides, ClampMin = "0", UIMax = "48", ForceUnits = "px"))
+ 	float SpacerHeight = 8.f;
+ 
+ 	// Action -------------------------------------------------------------
+@@ -244,15 +244,15 @@ struct NAMETBD_API FContextMenuStyle
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Panel")
+ 	FMargin PanelPadding = FMargin(4.f);
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Panel", meta = (ClampMin = "0", UIMax = "600", Units = "px"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Panel", meta = (ClampMin = "0", UIMax = "600", ForceUnits = "px"))
+ 	float MinWidth = 180.f;
+ 
+ 	/** 0: no limit. */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Panel", meta = (ClampMin = "0", UIMax = "1000", Units = "px"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Panel", meta = (ClampMin = "0", UIMax = "1000", ForceUnits = "px"))
+ 	float MaxWidth = 420.f;
+ 
+ 	/** Past this the rows scroll. 0: no limit. */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Panel", meta = (ClampMin = "0", UIMax = "1600", Units = "px"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Panel", meta = (ClampMin = "0", UIMax = "1600", ForceUnits = "px"))
+ 	float MaxHeight = 640.f;
+ 
+ 	// Rows -------------------------------------------------------------------------------------------------------------
+@@ -264,7 +264,7 @@ struct NAMETBD_API FContextMenuStyle
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows")
+ 	TObjectPtr<UContextMenuButtonPresetAsset> RowButtonPreset = nullptr;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "0", UIMax = "64", Units = "px"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "0", UIMax = "64", ForceUnits = "px"))
+ 	float RowHeight = 28.f;
+ 
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows")
+@@ -278,11 +278,11 @@ struct NAMETBD_API FContextMenuStyle
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows")
+ 	FSlateBrush RowPressed;
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "4", UIMax = "48", Units = "px"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "4", UIMax = "48", ForceUnits = "px"))
+ 	float IconSize = 16.f;
+ 
+ 	/** Space between a row's parts (icon, label, right text, shortcut). */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "0", UIMax = "32", Units = "px"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "0", UIMax = "32", ForceUnits = "px"))
+ 	float PartGap = 8.f;
+ 
+ 	/** Keep the icon column even when no row has a left icon or check mark, so labels line up across menus. */
+@@ -341,7 +341,7 @@ struct NAMETBD_API FContextMenuStyle
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers")
+ 	FLinearColor DividerColor = FLinearColor(1.f, 1.f, 1.f, 0.1f);
+ 
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers", meta = (ClampMin = "0.5", UIMax = "8", Units = "px"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers", meta = (ClampMin = "0.5", UIMax = "8", ForceUnits = "px"))
+ 	float DividerThickness = 1.f;
+ 
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers")
+diff --git a/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTextWidget.h b/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTextWidget.h
+index 80bcf8f..e79471c 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTextWidget.h
++++ b/Plugins/NameTBD/Source/NameTBD/Cards/InfoCardTextWidget.h
+@@ -34,7 +34,7 @@ struct NAMETBD_API FInfoCardTextStyle
+ 	FMargin Padding = FMargin(12.f, 8.f);
+ 
+ 	/** Text wraps at this width (the panel's padding not included). 0: no limit, one line per paragraph. */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text Card", meta = (ClampMin = "0", UIMax = "800", Units = "px"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text Card", meta = (ClampMin = "0", UIMax = "800", ForceUnits = "px"))
+ 	float MaxWidth = 320.f;
+ 
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text Card")
+@@ -50,7 +50,7 @@ struct NAMETBD_API FInfoCardTextStyle
+ 	FSlateColor BodyColor = FSlateColor(FLinearColor(0.78f, 0.79f, 0.82f, 1.f));
+ 
+ 	/** Space between the title and the body, when both show. */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text Card", meta = (ClampMin = "0", UIMax = "24", Units = "px"))
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text Card", meta = (ClampMin = "0", UIMax = "24", ForceUnits = "px"))
+ 	float LineGap = 4.f;
+ 
+ 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text Card")
