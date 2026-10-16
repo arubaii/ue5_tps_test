@@ -1,0 +1,685 @@
+diff --git a/Docs/Design/Buttons.md b/Docs/Design/Buttons.md
+--- a/Docs/Design/Buttons.md
++++ b/Docs/Design/Buttons.md
+@@ -25,17 +25,17 @@
+ - **Asked:** Base Design not working until Override Normal Design is ticked; "Separate Transform And Shape" renamed "Shape Has Separate Interpolation", its fields hidden (not greyed) when off; chamfer X doing nothing until Y > 0; target widget on Design / Shape Targets defaulting to Self; Shape Status and Animation Status removed; Background Shape moved into the Shape Targets with every state, renamed (Shape Style), its look renamed and without its checkbox; the button's design showing when the Shape Style's fill is off (default off); the override set-up made a tick instead of a hand-made variable and events; design / shape presets as presets (assets, the plugin's pattern) instead of Project Settings; a whole button saved as a preset; "Invalidates Button" -> "Cooldown Sets Disabled State"; the button group settings in their own category under Settings; the Preview category (mode dropdown) removed; the toolbar's Idle / On -> Normal / Enabled; the toolbar's double divider.
+ - **Base Design fix:** two causes. (1) `PostLoad`'s old-layout migration ("a state that differs from a fresh one was authored flat: switch its override on") ran on every load of every target, and (2) `SyncMaterialParametersEditor` wrote Base Design's material and a parameter list into every state, overridden or not (also a state ticked then unticked keeps its copy) - so on the next load those states came back overridden with stale values and no longer showed Base Design. Now the migration only runs on a target in the old layout (Base Design fresh and no override on), and the sync writes only Base Design and overridden states. Also: `ShowPreview` None (an older default, no longer selectable) showed the designer's widgets without their designs - `PostLoad` makes it Normal.
+ - **Targets:** `TargetWidgetName` defaults to `Self` on both target kinds. The Design / Shape **Source** + **Preset Name** fields (Project Settings) are hidden legacy (`DesignSource`, `ShapeSource`, `PresetName`); the states are always shown. **Shape Has Separate Interpolation** (`bSeparateTransformAndSize`, display name only) with `EditConditionHides` on Shape Interpolation Speed / Curve / Overshoot / Delay (targets and the legacy struct).
+-- **Shape Style on Self targets:** `FContextMenuShapeTarget::ShapeStyle` (shown for Self targets only: mirror `bIsSelfTarget`). Picking it (`AdoptShapeStyleFromTarget(.., bStyleEdited)`) -> `ChangeShapeStyle`: `BackgroundShape` set, `BackgroundLook` laid out again keeping shared values; **picked from none it starts with Fill off** (`bFill` false in the bag). Editing a Self target's Base Shape Style Settings is the style's settings edit (`BackgroundLook` takes them, then `PropagateBackgroundLookEdit` into the states that still had the old value); told apart from a Base that only still mirrors an older style by `BackgroundLookSnapshot` (bFromDetails). Every Self target mirrors the one style. **Designer copy:** the UMG Details edit the designer's preview copy and copy only the edited member (`ShapeTargets`, whole, with no array index) to the Widget Blueprint's own button - not `BackgroundShape` / `BackgroundLook`, so its next mirror put the old style back (the pick "didn't stick"). Now an edit of the list that changes the style or its settings on a preview copy writes them onto the template too (`WidgetEditorHooks::FindDesignerTemplate`, `Modify`), and a whole-list set with no index (that copy, a paste, a reset) adopts the first Self target whose Shape Style differs, then the first whose Base Style Settings differ. `EnsureSelfShapeTargetForStyle`: a style always has a Self target to be authored on (an identity one is added on load / refresh when none is left - deleting the last Self target therefore doesn't clear the style; Shape Style None does). Blueprint: **Set Shape Style**, **Is Shape Style Filled**, Get Shape Style Widget.
+-- **Unfilled Shape Style:** `SContextMenuSlateButton::OnPaint` draws the state's style brush (with the Background Color and Design Target writes) under the vector shape, in the brush geometry, whenever the shape's live `bFill` is off - per state, since a state's Style Settings can switch Fill. Design channels on Self (Brush Texture / SVG, Material) go to the brush when the style as authored is unfilled (`IsShapeStyleFilled`), to the shape's paint when filled; Tint is Background Color either way.
++- **Shape Style on Self targets, per state:** shown on the **Base Shape and every state** of a Self target as `FContextMenuShapeStateSettings::ShapeStyleClass` ("Shape Style", mirror `bIsSelfTarget` per state). The Base Shape's is the button's Shape Style (`BackgroundShape`; mirrored into it by `MirrorShapeStyleToSelfTargets`, and `FContextMenuShapeTarget::ShapeStyle` is now a hidden mirror kept for presets / older data). A state's: None follows the Base Shape (a state switched on starts with None); a style of its own swaps the background to that kind of shape in that state - `RefreshShapeTargetLooks` lays the state's Look out for it (a new one from Background Look's shared settings; from no button style, Fill off); at runtime `SwitchBackgroundShapeForState` (on a state change of the Self runtime target) takes the widget for that kind (`GetBackgroundShapeWidgetFor`: the Shape Style widget, or one transient widget per other kind in `StateStyleShapeWidgets`), lays the blend's start out for the new kind from what was showing (shared settings blend, the shape itself switches), blends every setting of it towards the state's Look, and paints it (`ShowBackgroundShape`; `ShownBackgroundShape` is what Get Shape Style Widget, design channels and the hit shape read). The designer preview / toolbar show it the same way. Picking the Base Shape's (`AdoptShapeStyleFromTarget(.., bStyleEdited)`) -> `ChangeShapeStyle`: `BackgroundShape` set, `BackgroundLook` laid out again keeping shared values; **picked from none it starts with Fill off** (`bFill` false in the bag). Editing a Self target's Base Shape Style Settings is the style's settings edit (`BackgroundLook` takes them, then `PropagateBackgroundLookEdit` into the states that still had the old value); told apart from a Base that only still mirrors an older style by `BackgroundLookSnapshot` (bFromDetails). Every Self target mirrors the one style. **Designer copy:** the UMG Details edit the designer's preview copy and copy only the edited member (`ShapeTargets`, whole, with no array index) to the Widget Blueprint's own button - not `BackgroundShape` / `BackgroundLook`, so its next mirror put the old style back (the pick "didn't stick"). Now an edit of the list that changes the style or its settings on a preview copy writes them onto the template too (`WidgetEditorHooks::FindDesignerTemplate`, `Modify`), and a whole-list set with no index (that copy, a paste, a reset) adopts the first Self target whose Shape Style differs, then the first whose Base Style Settings differ. `EnsureSelfShapeTargetForStyle`: a style always has a Self target to be authored on (an identity one is added on load / refresh when none is left - deleting the last Self target therefore doesn't clear the style; Shape Style None does). Blueprint: **Set Shape Style**, **Is Shape Style Filled**, Get Shape Style Widget.
++- **Unfilled Shape Style:** whenever the shown shape's live `bFill` is off, `SContextMenuSlateButton::OnPaint` hands the state's style brush to the painter (`SWidgetShape::SetUnfilledBrush`), which fills the shape with it - its image across the shape's box, or its tint without one - cut to the outline, under the stroke, with the Background Color and Design Target writes. (It used to be drawn as a plain box under the shape: with a new style's Fill and Stroke both off the button showed no change - "the style doesn't apply".) Design channels on Self (Brush Texture / SVG, Material) go to the brush when the style as authored is unfilled (`IsShapeStyleFilled`), to the shape's paint when filled; Tint is Background Color either way.
+ - **Presets (assets, the Pointer Effects / Widget Path pattern):** `UContextMenuDesignPresetAsset` (Base Design, overrides and states, speeds), `UContextMenuShapePresetAsset` (state shapes with their Style Settings, overrides, interpolation; **Sets Shape Style** + Shape Style when saved from a Self target), `UContextMenuButtonPresetAsset` (`ButtonClass` + `Settings`, a bag of every property `GetButtonPresetProperties` returns: the button's and its subclasses' Details settings down to UButton's Style / colors / click methods, plus `BackgroundShape` / `BackgroundLook`; not Button Preset, Instance Overridable, Button Tag, Button Text Widget, Show Preview, the animation preview, read-only or transient ones; `GetOptions` metadata dropped so the asset's Details don't call button functions). Each target has **Preset** (`PresetAsset`); the button has **Button Preset**. Picking copies the preset in (`ApplyTo`, `ApplyButtonPresetSettings`) and keeps the link; any edit of what the preset covers clears the link (targets: any field but Target Widget / Target ID / Active / Preset; button: any property in the preset list). **Linked = untouched**, so `PostLoad` (`RefreshLinkedPresets`) takes linked presets again: edits made to a preset asset reach every button following it the next time it loads. Details rows (`FContextMenuButtonDetails`): **Save As Preset... / Update Preset** under the Button Preset picker (its value cell); **Save As Preset** (a menu of the targets) on the Shape / Design Targets header, after the element count and + / bin - made from the Widget Blueprint's own button (never the designer copy, whose design channels hold preview writes) through `WidgetEditorHooks::CreateAsset`. Blueprint: Apply Button Preset, Copy To Button Preset, **Apply Shape / Design Preset By ID** (a whole look swapped at runtime, blended).
+ - **Project Settings presets retired:** `UInfoCardDeveloperSettings::ContextMenuShapePresets / ContextMenuDesignPresets` are `UPROPERTY(Config)` only (hidden), kept for `MigrateProjectSettingsPresets`: on load, a target still naming one gets it copied into its own states once (a design preset's five states become overrides, Normal also the base; a shape preset's Transforms / Shape Box shapes, Style Settings kept) and becomes Custom. A target made in the editor is made Custom on its first `PostEditChangeProperty`, so it is never mistaken for a legacy one (the legacy field's C++ default stays Use Project Settings on purpose: old targets saved at that default load as it).
+ - **Instance Overridable** (`bInstanceOverridable`, in Settings): ticked, `FContextMenuButtonDetails::SyncInstanceOverridable` (next tick, one transaction, one compile) adds to the Widget Blueprint the 4 dispatchers (`On{Button}Clicked(bShouldDestroyCard, bEnabling)`, `EnabledStateChanged(bIsEnabled)`, `Hovered(bHovered)`, `PressCompleted`) and the Instance Editable `{Button}InstanceOverrides` variable, stamped with Target Button Name. Unticked: the blueprint's own overrides variables claiming the button and its own `On{Button}...` dispatchers (declared in this blueprint, not inherited) are removed - variable, then signature graph, as My Blueprint deletes one - in one undoable step; nodes elsewhere bound to them show broken. **Descriptions:** the variable's (`MD_Tooltip` through `SetBlueprintVariableMetaData`) says it was generated by Instance Overridable on the button and must not be deleted or renamed; each dispatcher's (its entry node's `MetaData.ToolTip`) says what calls it, the same. **Rename:** `UContextMenuButton::PostRename` (renamed in place, same outer) broadcasts `OnRenamedInEditor`; `FContextMenuButtonDetails::Register` (module startup) follows it for the Widget Blueprint's own button (not preview copies, not while transacting) and next tick `RenameInstanceOverridable` renames the button's own dispatchers (`RenameMemberVariable`, and the signature graph if that didn't) and the variable when it has the generated name (one named by hand keeps its name), re-describes them, compiles, re-stamps Target Button Name; a name already taken is kept and reported. Placements keep their values (blueprint variables keep their GUID through a rename). An undone rename (no `PostRename`) is caught when the Details open (`ReconcileRenamed`: a ticked button with neither variable nor dispatchers, and exactly one overrides variable pointing at a widget that is gone). **Notifications:** every add / remove / rename shows the editor toast (bottom right) listing what changed; a failed rename shows as failed. Its tooltip (name and checkbox) says what placements get, then what ticking does (`GetInstanceOverridableTooltip`). A button whose blueprint already has a claiming variable shows ticked when its Details open. The old **Add Overrides Variable** / **Add Matching Dispatcher** buttons are gone. Finding the variable at runtime is unchanged (declaring one by hand still works).
+ - **Cooldown Sets Disabled State** (`bInvalidatesButton`, display name; Cooldown Duration and it hidden while Has Button Cooldown is off): `ResolveButtonState` returns Disabled while `bIsOnCooldown`; `UpdateButtonState` at the start and end. It used to set the Visibility to Self Hit Test Invisible and back to **Visible** (overwriting an authored visibility) with no visual change. Is Enabled and the enabled state are untouched. Blueprint: **Is On Cooldown**, **Get Cooldown Remaining**.
+ - **Details layout:** **Button Group** category (`Context Menu Button|Button Group`) right after Settings: Unenable All Other Group Buttons On Enabled, Button Group, Group Index. Removed from the Details: Shape Status (property and `RebuildShapeTargetStatus` deleted), Animation Status (`ButtonAnimationStatus` kept as a hidden transient string), the Designer Preview struct (`DesignerAnimPreview` hidden; its Mode reset to Off on load).
+ - **Toolbar:** Normal / Hover / Press / **Enabled** / Disabled; **In / Out** (shown when the button has Anim In / Anim Out: `PlayDesignerAnimPreview(bOut)` sets the copy's preview mode to Play In / Play Out Once, through Off to replay); the entry is now in the selected widget's animation section (`FWidgetAnimBuilderToolbar::SelectedWidgetSectionName`): a toolbar draws a divider at the start of every section, collapsed controls or not, so the two sections drew two dividers with an empty gap.
+-- **Beyond the request:** linked presets follow later edits of their asset; Update Preset; Save As Preset per target from a menu; Apply Shape / Design Preset By ID at runtime; Set Shape Style / Is Shape Style Filled from Blueprint; the toolbar's In / Out (the removed dropdown's job); Is On Cooldown / Get Cooldown Remaining; a cooldown no longer overwrites an authored Visibility; Instance Overridable marks itself for existing set-ups and removes its variable when unticked; descriptions on the generated dispatchers too (not only the variable); a rename made by undo caught up when the Details open; a rename that would collide reported instead of forced; chamfer with one leg (Shape Box, every user of it).
++- **Beyond the request:** linked presets follow later edits of their asset; Update Preset; Save As Preset per target from a menu; Apply Shape / Design Preset By ID at runtime; Set Shape Style / Is Shape Style Filled from Blueprint; the toolbar's In / Out (the removed dropdown's job); Is On Cooldown / Get Cooldown Remaining; a cooldown no longer overwrites an authored Visibility; Instance Overridable marks itself for existing set-ups and removes its variable when unticked; descriptions on the generated dispatchers too (not only the variable); per-state Shape Styles blend the settings two kinds share across the swap, preview in the designer and toolbar, and go into Shape Presets with the states; a rename made by undo caught up when the Details open; a rename that would collide reported instead of forced; chamfer with one leg (Shape Box, every user of it).
+ - **Decisions made without asking:** the Shape Style lives on Self Shape Targets but is stored once on the button (one background, several Self targets for Target ID variants); only Self targets' Base Shape carries Style Settings (another vector shape's base stays its own Details, where it is authored); presets copy-on-pick with a link (the plugin's pattern) rather than being read live every frame; unticking Instance Overridable removes the dispatchers too (asked; it used to keep them); a whole-button preset keeps neither the button's content nor its Button Tag / label widget; Design channels on an unfilled Shape Style go to the brush, decided by the style as authored (not per state).
+-- **Still open:** deleting an Instance Overridable button leaves its variable and dispatchers (untick first); placements' graphs bound to a renamed dispatcher in other Widget Blueprints rely on the engine's rename following them; a preset asset edited while a Widget Blueprint using it is open reaches it on its next load, not live; whole-button presets across kinds of buttons only carry the settings both kinds have; Design channels following a per-state Fill switch (they follow the style as authored).
++- **Still open:** deleting an Instance Overridable button leaves its variable and dispatchers (untick first); placements' graphs bound to a renamed dispatcher in other Widget Blueprints rely on the engine's rename following them; a preset asset edited while a Widget Blueprint using it is open reaches it on its next load, not live; whole-button presets across kinds of buttons only carry the settings both kinds have; Design channels following a per-state Fill switch (they follow the style as authored, or a state's own style's Fill); a placement's instance overrides can't change a state's Shape Style; the brush inside an unfilled style is stretched across the shape's box (a Box / Border brush's margins aren't kept) and takes no Disabled draw effect.
+ 
+ ## Ready-made buttons (`Buttons/Widgets/`, palette "NameTBD Buttons")
+ - `UStyledButtonBase` (abstract, `StyledButtons.h`; `PrioritizeCategories = "Style"`): a ready-made button is **parts** + **Style**.
+diff --git a/Docs/Design/Shapes.md b/Docs/Design/Shapes.md
+--- a/Docs/Design/Shapes.md
++++ b/Docs/Design/Shapes.md
+@@ -13,7 +13,7 @@
+ 
+ ## Shapes hold a child (Shapes v1)
+ - **What:** every shape (`UShapeWidget`: Ellipse, Rectangle, Triangle, Star, N-gon, Custom Shape) is a **`UContentWidget`** now and holds one widget drawn over it, as a Border does - a star button's label, a badge's count, an icon in a circle; no Overlay needed. The split stays: **shapes = vector background with content on top; Shape Box = bending/warping the content itself.**
+-- **Slate:** `SWidgetShape : SCompoundWidget` (was `SLeafWidget`): paints the fill/stroke meshes exactly as before (layers LayerId, LayerId+1), then the hit cells (below), then the child via `SCompoundWidget::OnPaint` at `MaxLayer + 1`. `OnArrangeChildren` places the child in the **Content Area** (`GetContentArea`), then the slot's padding and alignment (`AlignAxis`, mirrored right-to-left). `ComputeDesiredSize`: `DesiredSize` when there is no child (or it is Collapsed), or Size To Content is off - so a shape without a child reports exactly what it did; else `ComputeSizeForContent`. Both the area and the size are cached by hash (mesh hash + size + content aspect). Arg **`PaintOnly`** (the Context Menu Button's Background Shape painter, `SContextMenuSlateButton::SetBackgroundShape`): no content, no hit cells, Desired Size.
++- **Slate:** `SWidgetShape : SCompoundWidget` (was `SLeafWidget`): paints the fill/stroke meshes exactly as before (layers LayerId, LayerId+1), then the hit cells (below), then the child via `SCompoundWidget::OnPaint` at `MaxLayer + 1`. `OnArrangeChildren` places the child in the **Content Area** (`GetContentArea`), then the slot's padding and alignment (`AlignAxis`, mirrored right-to-left). `ComputeDesiredSize`: `DesiredSize` when there is no child (or it is Collapsed), or Size To Content is off - so a shape without a child reports exactly what it did; else `ComputeSizeForContent`. Both the area and the size are cached by hash (mesh hash + size + content aspect). Arg **`PaintOnly`** (the Context Menu Button's Background Shape painter, `SContextMenuSlateButton::SetBackgroundShape`): no content, no hit cells, Desired Size. **`SetUnfilledBrush`**: while the shape's Fill is off, its inside is painted with that brush instead (Image paint over the shape's box when it has a resource, its tint as a Color paint otherwise); the fill mesh is then built (hash includes it) and cut for the paint actually used - the Context Menu Button's own brush inside an unfilled Shape Style.
+ - **Slot:** `UShapeWidgetSlot : UPanelSlot` ("Shape Slot"): **Padding**, **Horizontal / Vertical Alignment** (default **Center / Center**, padding 0), setters; `BuildSlot(SWidgetShape)` pushes content + layout (UBorderSlot pattern). `UShapeWidget::GetSlotClass / OnSlotAdded / OnSlotRemoved / RebuildWidget` build it (a plain `UPanelSlot` still works, without layout).
+ - **New settings on the shape** (category **Content**):
+   - **Content Area** (`EWidgetShapeContentArea`): **Bounds** (the box, as a Border), **Inside Stroke** (the box less the stroke's inner width - `GetInnerStrokeWidth`: all of it Inside, half Center, none Outside), **Inscribed** (default: the largest rectangle inside the outline and its stroke, at the content's aspect - padding included; the widget's aspect when the child asks for nothing). Follows Fit, Shape Scale and Shape Rotation (it is computed on the outline built through `MakeFrame`).
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+@@ -1423,14 +1423,17 @@
+ 		BrushLayer->MarkContentChanged();
+ 	}
+ 
+-	// An unfilled Shape Style: the brush under it, where the shape's own fill would be (same geometry, Transform included). Not in
+-	// the layer, so it isn't hit tested there - the button's own rect, which is the layout box without a Shape Box shape, is.
+-	int32 ShapeLayerId = LayerId;
+-	if (bVectorBackground && !BackgroundShape->bFill && Brush && Brush->DrawAs != ESlateBrushDrawType::NoDrawType)
+-	{
+-		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, BrushGeometry.ToPaintGeometry(), Brush, DrawEffects,
+-			Brush->GetTint(InWidgetStyle) * Owner->GetBackgroundColor() * InWidgetStyle.GetColorAndOpacityTint());
+-		ShapeLayerId = LayerId + 1;
++	// An unfilled Shape Style: the state's brush painted inside the shape, cut to its outline (its image across the shape's box, or
++	// its tint) - so the button takes the shape and keeps its own look, Design Target writes included. The layer's style already
++	// carries the Background Color.
++	const int32 ShapeLayerId = LayerId;
++	if (bVectorBackground)
++	{
++		const bool bBrushInside = !BackgroundShape->bFill && Brush && Brush->DrawAs != ESlateBrushDrawType::NoDrawType;
++		if (BackgroundPainter->SetUnfilledBrush(bBrushInside ? Brush : nullptr))
++		{
++			BrushLayer->MarkContentChanged();
++		}
+ 	}
+ 
+ 	// Painted with this button as its parent: that is what makes a hit anywhere on the drawn shape bubble to the
+@@ -2180,25 +2183,31 @@
+ 		if (ShapeTargets.IsValidIndex(TargetIndex))
+ 		{
+ 			FContextMenuShapeTarget& Target = ShapeTargets[TargetIndex];
++			// A state turned on follows the Base Shape's Shape Style until it is given one of its own.
+ 			if (PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, bOverrideNormalShape) && Target.bOverrideNormalShape)
+ 			{
+ 				Target.NormalShape = Target.BaseShape;
++				Target.NormalShape.ShapeStyleClass = nullptr;
+ 			}
+ 			else if (PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, bOverrideHoveredShape) && Target.bOverrideHoveredShape)
+ 			{
+ 				Target.HoveredShape = Target.BaseShape;
++				Target.HoveredShape.ShapeStyleClass = nullptr;
+ 			}
+ 			else if (PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, bOverridePressedShape) && Target.bOverridePressedShape)
+ 			{
+ 				Target.PressedShape = Target.BaseShape;
++				Target.PressedShape.ShapeStyleClass = nullptr;
+ 			}
+ 			else if (PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, bOverrideDisabledShape) && Target.bOverrideDisabledShape)
+ 			{
+ 				Target.DisabledShape = Target.BaseShape;
++				Target.DisabledShape.ShapeStyleClass = nullptr;
+ 			}
+ 			else if (PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, bOverrideEnabledShape) && Target.bOverrideEnabledShape)
+ 			{
+ 				Target.EnabledShape = Target.BaseShape;
++				Target.EnabledShape.ShapeStyleClass = nullptr;
+ 			}
+ 		}
+ 	}
+@@ -2275,6 +2284,11 @@
+ 			// index reaches it), a paste, a reset: a Self target holding another Shape Style, or edited Style Settings, is the button's.
+ 			for (int32 Index = 0; Index < ShapeTargets.Num(); ++Index)
+ 			{
++				// Shown and picked as the Base Shape's Shape Style.
++				if (IsSelfShapeTarget(ShapeTargets[Index]) && ShapeTargets[Index].BaseShape.ShapeStyleClass.Get() != BackgroundShape.Get())
++				{
++					ShapeTargets[Index].ShapeStyle = ShapeTargets[Index].BaseShape.ShapeStyleClass;
++				}
+ 				if (IsSelfShapeTarget(ShapeTargets[Index]) && ShapeTargets[Index].ShapeStyle.Get() != BackgroundShape.Get())
+ 				{
+ 					AdoptShapeStyleFromTarget(Index, /*bStyleEdited=*/true);
+@@ -2312,6 +2326,16 @@
+ 				Target.PresetAsset = nullptr;
+ 				AdoptShapeStyleFromTarget(TargetIndex, /*bStyleEdited=*/true);
+ 			}
++			else if (PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeStateSettings, ShapeStyleClass))
++			{
++				// The Base Shape's is the button's Shape Style; a state's is only that state's (its Look is laid out for it below).
++				Target.PresetAsset = nullptr;
++				if (IsSelfShapeTarget(Target) && Target.BaseShape.ShapeStyleClass.Get() != BackgroundShape.Get())
++				{
++					Target.ShapeStyle = Target.BaseShape.ShapeStyleClass;
++					AdoptShapeStyleFromTarget(TargetIndex, /*bStyleEdited=*/true);
++				}
++			}
+ 			else if (!bIdentityEdit)
+ 			{
+ 				Target.PresetAsset = nullptr;
+@@ -3512,6 +3536,14 @@
+ 	{
+ 		BackgroundShapeWidget->SetExternalPainter(nullptr);
+ 	}
++	for (UShapeWidget* Kept : StateStyleShapeWidgets)
++	{
++		if (Kept)
++		{
++			Kept->SetExternalPainter(nullptr);
++		}
++	}
++	ShownBackgroundShape.Reset();
+ 
+ 	// Parts hidden from the Hierarchy aren't among the panel's slots, so the panel doesn't release them itself.
+ 	if (bReleaseChildren && HiddenContentSlot)
+@@ -5862,6 +5894,12 @@
+ 			WidgetShapeAnimation::LayOut(Target.StartLook, StartLookWidget->GetClass(), StartLookWidget);
+ 			WidgetShapeAnimation::Capture(Target.StartLook, StartLookWidget);
+ 		}
++
++		// The button's background in a state with a Shape Style of its own: swapped to that kind of shape.
++		if (Target.Widget.Get() == this)
++		{
++			SwitchBackgroundShapeForState(Target, TargetShape);
++		}
+ 	}
+ 
+ 	if (!bInstant)
+@@ -5953,7 +5991,7 @@
+ 	{
+ 		// Self-targeting: the button's own brush layer, which bends the brush and carries the hit area with it. A vector
+ 		// Background Shape takes a Look instead of a Shape Box shape (the Details show no Shape for it), so none is applied.
+-		PushButtonShapeToSlate(BackgroundShapeWidget ? FShapeBoxShape() : Shape, Transform);
++		PushButtonShapeToSlate(ShownBackgroundShape.IsValid() ? FShapeBoxShape() : Shape, Transform);
+ 		return;
+ 	}
+ 
+@@ -6042,33 +6080,160 @@
+ 			BackgroundShapeWidget->SetExternalPainter(nullptr);
+ 			BackgroundShapeWidget = nullptr;
+ 		}
++	}
++	else
++	{
++		// Kept as it is when it already holds this kind of shape's settings.
++		WidgetShapeAnimation::LayOut(BackgroundLook, Class, nullptr);
++
++		// Only made once there is a Slate button to paint it: a Widget Blueprint's template never builds one, so it never
++		// carries this widget around. In the transient package, so nothing ever saves or duplicates it with the button.
+ 		if (SlateButton.IsValid())
+ 		{
+-			SlateButton->SetBackgroundShape(nullptr);
++			if (!BackgroundShapeWidget || BackgroundShapeWidget->GetClass() != Class)
++			{
++				if (BackgroundShapeWidget)
++				{
++					BackgroundShapeWidget->SetExternalPainter(nullptr);
++				}
++				BackgroundShapeWidget = NewObject<UShapeWidget>(GetTransientPackage(), Class, NAME_None, RF_Transient);
++			}
++
++			TArray<const FProperty*> All;
++			WidgetShapeAnimation::GetProperties(Class, All);
++			WriteLook(BackgroundShapeWidget, BackgroundLook, All);
+ 		}
+-		return;
+ 	}
+ 
+-	// Kept as it is when it already holds this kind of shape's settings.
+-	WidgetShapeAnimation::LayOut(BackgroundLook, Class, nullptr);
+-
+-	// Only made once there is a Slate button to paint it: a Widget Blueprint's template never builds one, so it never
+-	// carries this widget around. In the transient package, so nothing ever saves or duplicates it with the button.
+ 	if (!SlateButton.IsValid())
+ 	{
+ 		return;
+ 	}
+-	if (!BackgroundShapeWidget || BackgroundShapeWidget->GetClass() != Class)
++
++	// The Shape Style - unless a Self target is in a state that shows one of its own, which stays.
++	UShapeWidget* Show = BackgroundShapeWidget;
++	for (const FContextMenuRuntimeShapeTarget& Runtime : RuntimeShapeTargets)
++	{
++		UShapeWidget* RuntimeLook = Runtime.LookWidget.Get();
++		if (Runtime.Widget.Get() == this && RuntimeLook && StateStyleShapeWidgets.Contains(RuntimeLook))
++		{
++			Show = RuntimeLook;
++			break;
++		}
++	}
++	ShowBackgroundShape(Show);
++}
++
++UClass* UContextMenuButton::GetStateShapeStyle(const FContextMenuShapeStateSettings& Settings) const
++{
++	UClass* Class = Settings.ShapeStyleClass.Get();
++	if (!Class || Class->HasAnyClassFlags(CLASS_Abstract))
+ 	{
+-		BackgroundShapeWidget = NewObject<UShapeWidget>(GetTransientPackage(), Class, NAME_None, RF_Transient);
++		Class = BackgroundShape.Get();
+ 	}
++	return (Class && !Class->HasAnyClassFlags(CLASS_Abstract)) ? Class : nullptr;
++}
+ 
++UShapeWidget* UContextMenuButton::GetBackgroundShapeWidgetFor(UClass* Class, const FInstancedPropertyBag& Look)
++{
++	if (!Class || Class->HasAnyClassFlags(CLASS_Abstract) || !Class->IsChildOf(UShapeWidget::StaticClass()) || !MyContextMenuSlateButton.IsValid())
++	{
++		return nullptr;
++	}
++	if (Class == BackgroundShape.Get() && BackgroundShapeWidget)
++	{
++		return BackgroundShapeWidget;
++	}
++	for (UShapeWidget* Kept : StateStyleShapeWidgets)
++	{
++		if (Kept && Kept->GetClass() == Class)
++		{
++			return Kept;
++		}
++	}
++
++	// Started from the Shape Style as authored where the two kinds share a setting, then the state's own Look.
++	UShapeWidget* Made = NewObject<UShapeWidget>(GetTransientPackage(), Class, NAME_None, RF_Transient);
+ 	TArray<const FProperty*> All;
+ 	WidgetShapeAnimation::GetProperties(Class, All);
+-	WriteLook(BackgroundShapeWidget, BackgroundLook, All);
++	WriteLook(Made, BackgroundLook, All);
++	WriteLook(Made, Look, All);
++	StateStyleShapeWidgets.Add(Made);
++	return Made;
++}
+ 
+-	BackgroundShapeWidget->SetExternalPainter(SlateButton);
+-	SlateButton->SetBackgroundShape(BackgroundShapeWidget);
++void UContextMenuButton::ShowBackgroundShape(UShapeWidget* Shape)
++{
++	UShapeWidget* Previous = ShownBackgroundShape.Get();
++	ShownBackgroundShape = Shape;
++	if (Previous && Previous != Shape)
++	{
++		Previous->SetExternalPainter(nullptr);
++	}
++	const TSharedPtr<SContextMenuSlateButton> SlateButton = MyContextMenuSlateButton.Pin();
++	if (!SlateButton.IsValid())
++	{
++		return;
++	}
++	if (Shape)
++	{
++		Shape->SetExternalPainter(SlateButton);
++	}
++	SlateButton->SetBackgroundShape(Shape);
++}
++
++void UContextMenuButton::SwitchBackgroundShapeForState(FContextMenuRuntimeShapeTarget& Target, const FContextMenuShapeStateSettings& Goal)
++{
++	UClass* GoalClass = GetStateShapeStyle(Goal);
++	UShapeWidget* Current = Target.LookWidget.Get();
++	if ((Current && Current->GetClass() == GoalClass) || (!Current && !GoalClass))
++	{
++		// Already this kind - shown again in case a preview put another one up meanwhile.
++		if (ShownBackgroundShape.Get() != Current)
++		{
++			ShowBackgroundShape(Current);
++		}
++		return;
++	}
++
++	UShapeWidget* Next = GetBackgroundShapeWidgetFor(GoalClass, Goal.Look);
++	if (GoalClass && !Next)
++	{
++		return;
++	}
++
++	Target.LookProperties.Reset();
++	if (Next)
++	{
++		// What was showing, as the new kind: the settings both share blend on from where they were, the rest start as the state has them.
++		Target.StartLook.Reset();
++		WidgetShapeAnimation::LayOut(Target.StartLook, GoalClass, Next);
++		if (Current)
++		{
++			WidgetShapeAnimation::Capture(Target.StartLook, Current);
++		}
++
++		if (Next == BackgroundShapeWidget)
++		{
++			// Back on the button's own style: only what its states change, against the style as authored.
++			if (ShapeTargets.IsValidIndex(Target.AuthoredIndex))
++			{
++				GatherLookProperties(ShapeTargets[Target.AuthoredIndex], Next, Target.LookProperties);
++			}
++			if (const FInstancedPropertyBag* Baseline = FindLookBaseline(Next))
++			{
++				Target.BaselineLook = *Baseline;
++			}
++		}
++		else
++		{
++			// A state's own style: all of it, from that state's Look.
++			WidgetShapeAnimation::GetProperties(GoalClass, Target.LookProperties);
++			Target.BaselineLook = Goal.Look;
++		}
++	}
++	Target.LookWidget = Next;
++	ShowBackgroundShape(Next);
+ }
+ 
+ const FInstancedPropertyBag* UContextMenuButton::FindLookBaseline(UShapeWidget* Shape)
+@@ -6206,8 +6371,21 @@
+ 		for (const FStateLook& Entry : States)
+ 		{
+ 			FContextMenuShapeStateSettings* State = Entry.Settings;
+-			const bool bWantsLook = Class != nullptr && Entry.bOverridden;
+-			State->bIsVectorShape = Class != nullptr;
++
++			// On the button itself a state may draw a Shape Style of its own (the Base Shape's is the button's, mirrored below).
++			State->bIsSelfTarget = Widget == this;
++			UClass* StateClass = Class;
++			if (Widget == this && State != &Target.BaseShape)
++			{
++				UClass* Own = State->ShapeStyleClass.Get();
++				if (Own && !Own->HasAnyClassFlags(CLASS_Abstract))
++				{
++					StateClass = Own;
++				}
++			}
++
++			const bool bWantsLook = StateClass != nullptr && Entry.bOverridden;
++			State->bIsVectorShape = StateClass != nullptr;
+ 			State->bHasLook = bWantsLook;
+ 
+ 			if (!bWantsLook)
+@@ -6221,17 +6399,29 @@
+ 
+ 			// A Look for another kind of shape (or none yet) is laid out again, keeping what the two kinds share; one already
+ 			// right is left exactly as authored. Started from the shape as it is - the Background Look, for Self.
+-			if (WidgetShapeAnimation::IsLaidOutFor(State->Look, Class))
++			if (WidgetShapeAnimation::IsLaidOutFor(State->Look, StateClass))
+ 			{
+ 				continue;
+ 			}
+-			if (!Source && WidgetShapeAnimation::IsLaidOutFor(BackgroundLook, Class))
++			if (!Source && StateClass == Class && WidgetShapeAnimation::IsLaidOutFor(BackgroundLook, Class))
+ 			{
+ 				State->Look = BackgroundLook;
+ 			}
++			else if (!Source && !State->Look.GetPropertyBagStruct())
++			{
++				// A state's own Shape Style, new: the settings it shares with the button's style as they are there; with no style
++				// on the button, Fill off - the button's own brush fills it, as a newly picked style does.
++				const bool bFromNone = !BackgroundLook.GetPropertyBagStruct();
++				State->Look = BackgroundLook;
++				WidgetShapeAnimation::LayOut(State->Look, StateClass, nullptr);
++				if (bFromNone)
++				{
++					State->Look.SetValueBool(GET_MEMBER_NAME_CHECKED(UShapeWidget, bFill), false);
++				}
++			}
+ 			else
+ 			{
+-				WidgetShapeAnimation::LayOut(State->Look, Class, Source);
++				WidgetShapeAnimation::LayOut(State->Look, StateClass, Source);
+ 			}
+ 		}
+ 	}
+@@ -6252,6 +6442,8 @@
+ 	{
+ 		Target.bIsSelfTarget = IsSelfShapeTarget(Target);
+ 		Target.ShapeStyle = Target.bIsSelfTarget ? Class : nullptr;
++		Target.BaseShape.ShapeStyleClass = Target.ShapeStyle;
++		Target.BaseShape.bIsSelfTarget = Target.bIsSelfTarget;
+ 		if (Target.bIsSelfTarget && Class)
+ 		{
+ 			Target.BaseShape.Look = BackgroundLook;
+@@ -6274,6 +6466,8 @@
+ 	Added.ShapeSource = EContextMenuButtonSettingSource::Custom;
+ 	Added.ShapeStyle = BackgroundShape;
+ 	Added.bIsSelfTarget = true;
++	Added.BaseShape.ShapeStyleClass = BackgroundShape;
++	Added.BaseShape.bIsSelfTarget = true;
+ }
+ 
+ void UContextMenuButton::AdoptShapeStyleFromTarget(int32 TargetIndex, bool bStyleEdited, bool bFromDetails)
+@@ -6816,7 +7010,13 @@
+ {
+ 	if (const UContextMenuButton* Button = Cast<UContextMenuButton>(Widget))
+ 	{
+-		// Unfilled, the Shape Style is an outline over the button's own brush: images and materials go to the brush, which shows.
++		// Unfilled, the Shape Style is filled with the button's own brush: images and materials go to the brush, which shows. A
++		// state's own Shape Style showing: by its Fill.
++		UShapeWidget* Shown = Button->GetBackgroundShapeWidget();
++		if (Shown && Shown != Button->BackgroundShapeWidget)
++		{
++			return Shown->bFill ? Shown : nullptr;
++		}
+ 		return Button->IsShapeStyleFilled() ? Button->BackgroundShapeWidget.Get() : nullptr;
+ 	}
+ 	return Cast<UShapeWidget>(Widget);
+@@ -6826,7 +7026,7 @@
+ {
+ 	if (const UContextMenuButton* Button = Cast<UContextMenuButton>(Widget))
+ 	{
+-		return Button->BackgroundShapeWidget;
++		return Button->GetBackgroundShapeWidget();
+ 	}
+ 	return Cast<UShapeWidget>(Widget);
+ }
+@@ -7371,6 +7571,23 @@
+ 		}
+ 
+ 		const FContextMenuShapeStateSettings Shape = ResolveShapeForState(ShapeAuthored, State);
++
++		// The button in a state with a Shape Style of its own: the background swapped to it, with that state's whole Look.
++		if (ShapeWidget == this)
++		{
++			UClass* StateClass = GetStateShapeStyle(Shape);
++			UShapeWidget* StateWidget = (StateClass && StateClass != BackgroundShape.Get()) ? GetBackgroundShapeWidgetFor(StateClass, Shape.Look) : nullptr;
++			if (StateWidget)
++			{
++				TArray<const FProperty*> All;
++				WidgetShapeAnimation::GetProperties(StateClass, All);
++				WriteLook(StateWidget, Shape.Look, All);
++				ShowBackgroundShape(StateWidget);
++				ApplyShapeToTargetWidget(ShapeWidget, Shape.Shape, Shape.Transform);
++				continue;
++			}
++			ShowBackgroundShape(BackgroundShapeWidget);
++		}
+ 		ApplyShapeToTargetWidget(ShapeWidget, Shape.Shape, Shape.Transform);
+ 
+ 		if (UShapeWidget* LookWidget = GetLookWidget(ShapeWidget))
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+@@ -479,6 +479,24 @@
+ 	FShapeBoxShape Shape;
+ 
+ 	/**
++	 * Self targets: the vector shape the button's background is drawn as in this state - a Rectangle (Fully Rounded for a pill),
++	 * an Ellipse, a Star, any shape of the plugin - instead of the Style's brushes.
++	 *
++	 * On the Base Shape it is the button's Shape Style: every state without one of its own shows it, and None draws the Style's
++	 * brushes, as a stock button. On a state the target overrides, None follows the Base Shape; a style of its own swaps the
++	 * background to that kind of shape in that state (a Rectangle at rest, an Ellipse while hovered), its Style Settings laid
++	 * out for it - the settings both kinds share (fill, outline, trim...) blend across the swap, the shape itself switches.
++	 *
++	 * With the style's Fill off (a newly picked style starts that way) the button's own brush fills it, cut to its outline.
++	 */
++	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (DisplayName = "Shape Style", AllowAbstract = "false", EditCondition = "bIsSelfTarget", EditConditionHides, HideEditConditionToggle))
++	TSubclassOf<UShapeWidget> ShapeStyleClass;
++
++	/** Details-panel mirror: the target aims at the button itself, so Shape Style shows. Written by the button. */
++	UPROPERTY()
++	bool bIsSelfTarget = false;
++
++	/**
+ 	 * How a vector shape looks in this state - an Ellipse, Rectangle, Triangle, Star, N-gon or Custom Shape target, or the
+ 	 * button's own Shape Style: its fill, its outline (materials and all), Trim Path, rounding, points, sweep... every
+ 	 * setting it has, laid out for that kind of shape and started from how it is authored.
+@@ -773,13 +791,10 @@
+ 	// ---- Shape Style (Self only) ----
+ 
+ 	/**
+-	 * Draws the button's background as a vector shape - a Rectangle (Fully Rounded for a pill), an Ellipse, a Star, any shape of
+-	 * the plugin - instead of the Style's brushes: its outline (a material laid along it included), and its fill once Fill is
+-	 * on. Its look is the Base Shape's Style Settings, and each state the target overrides changes it. A newly picked style
+-	 * starts with Fill off, so the button's own look (its brush, tint, image or material) still shows inside the outline.
+-	 * None: the Style's brushes, as a stock button. Self targets only; every Self target shows the button's one Shape Style.
++	 * The button's Shape Style as this Self target holds it - shown and picked as the Base Shape's Shape Style
++	 * (BaseShape.ShapeStyleClass), kept here for presets and older data. Every Self target mirrors the button's one style.
+ 	 */
+-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (DisplayName = "Shape Style", AllowAbstract = "false", EditCondition = "bIsSelfTarget", EditConditionHides, HideEditConditionToggle))
++	UPROPERTY()
+ 	TSubclassOf<UShapeWidget> ShapeStyle;
+ 
+ 	/** Details-panel mirror: this target aims at the button itself, so Shape Style shows. Written by the button. */
+@@ -2095,7 +2110,7 @@
+ 
+ 	/** The Shape Style being drawn - set its values from Blueprint like any shape's. Null without a Shape Style. */
+ 	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Shape", meta = (DisplayName = "Get Shape Style Widget"))
+-	UShapeWidget* GetBackgroundShapeWidget() const { return BackgroundShapeWidget; }
++	UShapeWidget* GetBackgroundShapeWidget() const { return ShownBackgroundShape.IsValid() ? ShownBackgroundShape.Get() : BackgroundShapeWidget.Get(); }
+ 
+ 	/**
+ 	 * One entry per widget this button shapes: its own Transform and Shape Box shape across the button's states.
+@@ -2959,6 +2974,24 @@
+ 	/** Makes (or drops) the Background Shape's widget to match Background Shape, and writes Background Look onto it. */
+ 	void SyncBackgroundShape();
+ 
++	/** The Shape Style a Self target's state settings draw: their own, else the button's. Null: the Style's brushes. */
++	UClass* GetStateShapeStyle(const FContextMenuShapeStateSettings& Settings) const;
++
++	/**
++	 * The widget that draws the background as Class: the button's Shape Style widget for its own style, one kept per other style a
++	 * state uses (made on first use, written with Look). Null for a null Class, or before there is a Slate button.
++	 */
++	UShapeWidget* GetBackgroundShapeWidgetFor(UClass* Class, const FInstancedPropertyBag& Look);
++
++	/** Paints Shape as the button's background (null: the Style's brushes). */
++	void ShowBackgroundShape(UShapeWidget* Shape);
++
++	/**
++	 * A Self target entering a state: when the state draws another Shape Style than the one showing, the background swaps to it -
++	 * the Look blend then starts from what was showing (the settings both kinds share) and covers every setting of the new kind.
++	 */
++	void SwitchBackgroundShapeForState(FContextMenuRuntimeShapeTarget& Target, const FContextMenuShapeStateSettings& Goal);
++
+ 	/** The shape as authored, captured the first time a Look touches it (Background Look, for the Background Shape). */
+ 	const FInstancedPropertyBag* FindLookBaseline(UShapeWidget* Shape);
+ 
+@@ -3392,6 +3425,13 @@
+ 	UPROPERTY(Transient, DuplicateTransient)
+ 	TObjectPtr<UShapeWidget> BackgroundShapeWidget;
+ 
++	/** What draws a state's own Shape Style: one shape widget per other kind a state uses, like BackgroundShapeWidget. */
++	UPROPERTY(Transient, DuplicateTransient)
++	TArray<TObjectPtr<UShapeWidget>> StateStyleShapeWidgets;
++
++	/** The background shape widget being painted now (BackgroundShapeWidget, one of StateStyleShapeWidgets, or none). */
++	TWeakObjectPtr<UShapeWidget> ShownBackgroundShape;
++
+ 	/** Each Look-driven shape as authored. See FindLookBaseline. */
+ 	UPROPERTY(Transient, DuplicateTransient)
+ 	TArray<FContextMenuLookBaseline> LookBaselines;
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.cpp
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.cpp
+@@ -399,7 +399,20 @@
+ 	}
+ }
+ 
+-void SWidgetShape::Rebuild(const UShapeWidget& Shape, const FVector2f& LocalSize, float PixelScale) const
++bool SWidgetShape::SetUnfilledBrush(const FSlateBrush* Brush)
++{
++	const bool bHas = Brush != nullptr;
++	if (bHas == bHasUnfilledBrush && (!bHas || *Brush == UnfilledBrush))
++	{
++		return false;
++	}
++	bHasUnfilledBrush = bHas;
++	UnfilledBrush = bHas ? *Brush : FSlateBrush();
++	Invalidate(EInvalidateWidgetReason::Paint);
++	return true;
++}
++
++void SWidgetShape::Rebuild(const UShapeWidget& Shape, const FVector2f& LocalSize, float PixelScale, const FWidgetShapePaint* FillPaint) const
+ {
+ 	Frame = Shape.MakeFrame(LocalSize);
+ 	const float Tolerance = WidgetShapeGeometry::GetTolerance(PixelScale);
+@@ -411,7 +424,7 @@
+ 	FillMesh.Reset();
+ 	StrokeMesh.Reset();
+ 	TArray<int8> FillOnLeft;
+-	if (Shape.bFill)
++	if (FillPaint)
+ 	{
+ 		WidgetShapeGeometry::BuildFill(Outline, AntiAlias, FillMesh, FillOnLeft);
+ 	}
+@@ -423,7 +436,10 @@
+ 
+ 	// A radial gradient's cells about six pixels across on screen: its rings then read round.
+ 	const float CellSize = 6.f / PixelScale;
+-	WidgetShapeGeometry::CutForGradient(FillMesh, Shape.Fill, Frame, CellSize);
++	if (FillPaint)
++	{
++		WidgetShapeGeometry::CutForGradient(FillMesh, *FillPaint, Frame, CellSize);
++	}
+ 	WidgetShapeGeometry::CutForGradient(StrokeMesh, Shape.Stroke.Paint, Frame, CellSize);
+ }
+ 
+@@ -497,20 +513,40 @@
+ 	const FVector2f LocalSize(static_cast<float>(Size.X), static_cast<float>(Size.Y));
+ 	const float PixelScale = QuantizeScale(GetPixelScale(AllottedGeometry));
+ 
++	// What fills the inside: the shape's Fill, or - Fill off - the brush it was handed (SetUnfilledBrush), or nothing.
++	FWidgetShapePaint BrushPaint;
++	const FWidgetShapePaint* FillPaint = Shape->bFill ? &Shape->Fill : nullptr;
++	if (!FillPaint && bHasUnfilledBrush && UnfilledBrush.DrawAs != ESlateBrushDrawType::NoDrawType)
++	{
++		if (UnfilledBrush.GetResourceObject())
++		{
++			BrushPaint.Type = EWidgetShapePaintType::Image;
++			BrushPaint.Image = UnfilledBrush;
++			BrushPaint.Color = FLinearColor::White;
++		}
++		else
++		{
++			BrushPaint.Type = EWidgetShapePaintType::Color;
++			BrushPaint.Color = UnfilledBrush.GetTint(InWidgetStyle);
++		}
++		FillPaint = &BrushPaint;
++	}
++
+ 	uint32 Hash = Shape->GetMeshHash();
+ 	Hash = HashCombineFast(Hash, GetTypeHash(LocalSize));
+ 	Hash = HashCombineFast(Hash, GetTypeHash(PixelScale));
++	Hash = HashCombineFast(Hash, GetTypeHash(FillPaint == &BrushPaint));
+ 	if (!bBuilt || Hash != BuiltHash)
+ 	{
+-		Rebuild(*Shape, LocalSize, PixelScale);
++		Rebuild(*Shape, LocalSize, PixelScale, FillPaint);
+ 		BuiltHash = Hash;
+ 		bBuilt = true;
+ 		bHitRectsBuilt = false;
+ 	}
+ 
+-	if (Shape->bFill && !FillMesh.IsEmpty())
++	if (FillPaint && !FillMesh.IsEmpty())
+ 	{
+-		PaintMesh(FillMesh, Shape->Fill, FillSVG, /*bStroke=*/false, AllottedGeometry, OutDrawElements, LayerId, InWidgetStyle);
++		PaintMesh(FillMesh, *FillPaint, FillSVG, /*bStroke=*/false, AllottedGeometry, OutDrawElements, LayerId, InWidgetStyle);
+ 	}
+ 	if (!StrokeMesh.IsEmpty())
+ 	{
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.h b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.h
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.h
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/ShapeWidget.h
+@@ -117,8 +117,15 @@
+ 	/** The Content Area as last arranged, in local space. Invalid before the first arrange. */
+ 	const FBox2f& GetArrangedContentArea() const { return ArrangedArea; }
+ 
++	/**
++	 * While the shape's own Fill is off, its inside is painted with Brush instead (its image stretched across the shape's box, or
++	 * its tint where it has no image) - a Context Menu Button's own brush, cut to its unfilled Shape Style. Null: nothing inside.
++	 * Returns true when that changed what is painted.
++	 */
++	bool SetUnfilledBrush(const FSlateBrush* Brush);
++
+ private:
+-	void Rebuild(const UShapeWidget& ShapeWidget, const FVector2f& LocalSize, float PixelScale) const;
++	void Rebuild(const UShapeWidget& ShapeWidget, const FVector2f& LocalSize, float PixelScale, const FWidgetShapePaint* FillPaint) const;
+ 	void PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, FWidgetSVGBrush& PaintSVG, bool bStroke, const FGeometry& AllottedGeometry,
+ 		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle) const;
+ 
+@@ -143,6 +150,10 @@
+ 	TWeakObjectPtr<const UShapeWidget> ShapeWidget;
+ 	bool bPaintOnly = false;
+ 
++	/** SetUnfilledBrush's brush (a copy: the one handed in may not outlive the call). */
++	bool bHasUnfilledBrush = false;
++	FSlateBrush UnfilledBrush;
++
+ 	FMargin ContentPadding;
+ 	EHorizontalAlignment ContentHorizontalAlignment = HAlign_Center;
+ 	EVerticalAlignment ContentVerticalAlignment = VAlign_Center;
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
+@@ -166,6 +166,7 @@
+ 
+ 	const bool bShapeLayoutChange = bShapeTargets && (Name == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, TargetWidgetName)
+ 		|| Name == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, ShapeStyle)
++		|| Name == GET_MEMBER_NAME_CHECKED(FContextMenuShapeStateSettings, ShapeStyleClass)
+ 		|| Name == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, PresetAsset)
+ 		|| bArrayChange || bOverrideToggled);
+ 

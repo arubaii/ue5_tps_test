@@ -479,6 +479,24 @@ struct NAMETBD_API FContextMenuShapeStateSettings
 	FShapeBoxShape Shape;
 
 	/**
+	 * Self targets: the vector shape the button's background is drawn as in this state - a Rectangle (Fully Rounded for a pill),
+	 * an Ellipse, a Star, any shape of the plugin - instead of the Style's brushes.
+	 *
+	 * On the Base Shape it is the button's Shape Style: every state without one of its own shows it, and None draws the Style's
+	 * brushes, as a stock button. On a state the target overrides, None follows the Base Shape; a style of its own swaps the
+	 * background to that kind of shape in that state (a Rectangle at rest, an Ellipse while hovered), its Style Settings laid
+	 * out for it - the settings both kinds share (fill, outline, trim...) blend across the swap, the shape itself switches.
+	 *
+	 * With the style's Fill off (a newly picked style starts that way) the button's own brush fills it, cut to its outline.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (DisplayName = "Shape Style", AllowAbstract = "false", EditCondition = "bIsSelfTarget", EditConditionHides, HideEditConditionToggle))
+	TSubclassOf<UShapeWidget> ShapeStyleClass;
+
+	/** Details-panel mirror: the target aims at the button itself, so Shape Style shows. Written by the button. */
+	UPROPERTY()
+	bool bIsSelfTarget = false;
+
+	/**
 	 * How a vector shape looks in this state - an Ellipse, Rectangle, Triangle, Star, N-gon or Custom Shape target, or the
 	 * button's own Shape Style: its fill, its outline (materials and all), Trim Path, rounding, points, sweep... every
 	 * setting it has, laid out for that kind of shape and started from how it is authored.
@@ -773,13 +791,10 @@ struct NAMETBD_API FContextMenuShapeTarget
 	// ---- Shape Style (Self only) ----
 
 	/**
-	 * Draws the button's background as a vector shape - a Rectangle (Fully Rounded for a pill), an Ellipse, a Star, any shape of
-	 * the plugin - instead of the Style's brushes: its outline (a material laid along it included), and its fill once Fill is
-	 * on. Its look is the Base Shape's Style Settings, and each state the target overrides changes it. A newly picked style
-	 * starts with Fill off, so the button's own look (its brush, tint, image or material) still shows inside the outline.
-	 * None: the Style's brushes, as a stock button. Self targets only; every Self target shows the button's one Shape Style.
+	 * The button's Shape Style as this Self target holds it - shown and picked as the Base Shape's Shape Style
+	 * (BaseShape.ShapeStyleClass), kept here for presets and older data. Every Self target mirrors the button's one style.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (DisplayName = "Shape Style", AllowAbstract = "false", EditCondition = "bIsSelfTarget", EditConditionHides, HideEditConditionToggle))
+	UPROPERTY()
 	TSubclassOf<UShapeWidget> ShapeStyle;
 
 	/** Details-panel mirror: this target aims at the button itself, so Shape Style shows. Written by the button. */
@@ -2095,7 +2110,7 @@ public:
 
 	/** The Shape Style being drawn - set its values from Blueprint like any shape's. Null without a Shape Style. */
 	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Shape", meta = (DisplayName = "Get Shape Style Widget"))
-	UShapeWidget* GetBackgroundShapeWidget() const { return BackgroundShapeWidget; }
+	UShapeWidget* GetBackgroundShapeWidget() const { return ShownBackgroundShape.IsValid() ? ShownBackgroundShape.Get() : BackgroundShapeWidget.Get(); }
 
 	/**
 	 * One entry per widget this button shapes: its own Transform and Shape Box shape across the button's states.
@@ -2448,12 +2463,12 @@ public:
 	 * Ticked, the containing Widget Blueprint gets (and compiles with) a "{Button}InstanceOverrides" variable - Instance Editable,
 	 * already pointed at this button - so each placement of that widget shows this button's Shape and Design Targets to override
 	 * in its own Details, and its event dispatchers On{Button}Clicked / EnabledStateChanged / Hovered / PressCompleted, which this
-	 * button calls by itself, so a placement binds them with the + under Events. Unticked, the variable is removed again (undo
-	 * brings it back); the dispatchers stay, since graphs elsewhere may be bound to them.
+	 * button calls by itself, so a placement binds them with the + under Events. Renaming the button renames them. Unticked, the
+	 * variable and the dispatchers are removed again (undo brings them back). The editor says what changed in a notification.
 	 *
 	 * An overrides variable made by hand on any widget above the button still works, ticked or not.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Instance Overrides", meta = (DisplayName = "Instance Overridable"))
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Settings", meta = (DisplayName = "Instance Overridable"))
 	bool bInstanceOverridable = false;
 
 	/**
@@ -2717,7 +2732,15 @@ public:
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+	virtual void PostRename(UObject* OldOuter, const FName OldName) override;
 	virtual void OnCreationFromPalette() override;
+
+	/**
+	 * Editor only: a button renamed where it is (not moved - a deleted widget is moved out), with the name it had. The editor module
+	 * renames what Instance Overridable made for it (its dispatchers and overrides variable).
+	 */
+	DECLARE_MULTICAST_DELEGATE_TwoParams(FOnRenamedInEditor, UContextMenuButton* /*Button*/, FName /*OldName*/);
+	static FOnRenamedInEditor OnRenamedInEditor;
 
 	/** Whether this button was dropped from the Palette and still wants its default content built. */
 	bool HasPendingDefaultContent() const { return bPendingDefaultContent; }
@@ -2950,6 +2973,24 @@ protected:
 
 	/** Makes (or drops) the Background Shape's widget to match Background Shape, and writes Background Look onto it. */
 	void SyncBackgroundShape();
+
+	/** The Shape Style a Self target's state settings draw: their own, else the button's. Null: the Style's brushes. */
+	UClass* GetStateShapeStyle(const FContextMenuShapeStateSettings& Settings) const;
+
+	/**
+	 * The widget that draws the background as Class: the button's Shape Style widget for its own style, one kept per other style a
+	 * state uses (made on first use, written with Look). Null for a null Class, or before there is a Slate button.
+	 */
+	UShapeWidget* GetBackgroundShapeWidgetFor(UClass* Class, const FInstancedPropertyBag& Look);
+
+	/** Paints Shape as the button's background (null: the Style's brushes). */
+	void ShowBackgroundShape(UShapeWidget* Shape);
+
+	/**
+	 * A Self target entering a state: when the state draws another Shape Style than the one showing, the background swaps to it -
+	 * the Look blend then starts from what was showing (the settings both kinds share) and covers every setting of the new kind.
+	 */
+	void SwitchBackgroundShapeForState(FContextMenuRuntimeShapeTarget& Target, const FContextMenuShapeStateSettings& Goal);
 
 	/** The shape as authored, captured the first time a Look touches it (Background Look, for the Background Shape). */
 	const FInstancedPropertyBag* FindLookBaseline(UShapeWidget* Shape);
@@ -3383,6 +3424,13 @@ protected:
 	/** What draws the Background Shape: a shape widget of that kind, in no tree, painted by the Slate button. */
 	UPROPERTY(Transient, DuplicateTransient)
 	TObjectPtr<UShapeWidget> BackgroundShapeWidget;
+
+	/** What draws a state's own Shape Style: one shape widget per other kind a state uses, like BackgroundShapeWidget. */
+	UPROPERTY(Transient, DuplicateTransient)
+	TArray<TObjectPtr<UShapeWidget>> StateStyleShapeWidgets;
+
+	/** The background shape widget being painted now (BackgroundShapeWidget, one of StateStyleShapeWidgets, or none). */
+	TWeakObjectPtr<UShapeWidget> ShownBackgroundShape;
 
 	/** Each Look-driven shape as authored. See FindLookBaseline. */
 	UPROPERTY(Transient, DuplicateTransient)

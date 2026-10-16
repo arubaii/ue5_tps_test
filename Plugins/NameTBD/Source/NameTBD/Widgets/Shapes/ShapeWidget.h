@@ -117,8 +117,15 @@ public:
 	/** The Content Area as last arranged, in local space. Invalid before the first arrange. */
 	const FBox2f& GetArrangedContentArea() const { return ArrangedArea; }
 
+	/**
+	 * While the shape's own Fill is off, its inside is painted with Brush instead (its image stretched across the shape's box, or
+	 * its tint where it has no image) - a Context Menu Button's own brush, cut to its unfilled Shape Style. Null: nothing inside.
+	 * Returns true when that changed what is painted.
+	 */
+	bool SetUnfilledBrush(const FSlateBrush* Brush);
+
 private:
-	void Rebuild(const UShapeWidget& ShapeWidget, const FVector2f& LocalSize, float PixelScale) const;
+	void Rebuild(const UShapeWidget& ShapeWidget, const FVector2f& LocalSize, float PixelScale, const FWidgetShapePaint* FillPaint) const;
 	void PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, FWidgetSVGBrush& PaintSVG, bool bStroke, const FGeometry& AllottedGeometry,
 		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle) const;
 
@@ -142,6 +149,10 @@ private:
 
 	TWeakObjectPtr<const UShapeWidget> ShapeWidget;
 	bool bPaintOnly = false;
+
+	/** SetUnfilledBrush's brush (a copy: the one handed in may not outlive the call). */
+	bool bHasUnfilledBrush = false;
+	FSlateBrush UnfilledBrush;
 
 	FMargin ContentPadding;
 	EHorizontalAlignment ContentHorizontalAlignment = HAlign_Center;

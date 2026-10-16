@@ -399,7 +399,20 @@ void SWidgetShape::PaintHitCells(const FPaintArgs& Args, const FGeometry& Allott
 	}
 }
 
-void SWidgetShape::Rebuild(const UShapeWidget& Shape, const FVector2f& LocalSize, float PixelScale) const
+bool SWidgetShape::SetUnfilledBrush(const FSlateBrush* Brush)
+{
+	const bool bHas = Brush != nullptr;
+	if (bHas == bHasUnfilledBrush && (!bHas || *Brush == UnfilledBrush))
+	{
+		return false;
+	}
+	bHasUnfilledBrush = bHas;
+	UnfilledBrush = bHas ? *Brush : FSlateBrush();
+	Invalidate(EInvalidateWidgetReason::Paint);
+	return true;
+}
+
+void SWidgetShape::Rebuild(const UShapeWidget& Shape, const FVector2f& LocalSize, float PixelScale, const FWidgetShapePaint* FillPaint) const
 {
 	Frame = Shape.MakeFrame(LocalSize);
 	const float Tolerance = WidgetShapeGeometry::GetTolerance(PixelScale);
@@ -411,7 +424,7 @@ void SWidgetShape::Rebuild(const UShapeWidget& Shape, const FVector2f& LocalSize
 	FillMesh.Reset();
 	StrokeMesh.Reset();
 	TArray<int8> FillOnLeft;
-	if (Shape.bFill)
+	if (FillPaint)
 	{
 		WidgetShapeGeometry::BuildFill(Outline, AntiAlias, FillMesh, FillOnLeft);
 	}
@@ -423,7 +436,10 @@ void SWidgetShape::Rebuild(const UShapeWidget& Shape, const FVector2f& LocalSize
 
 	// A radial gradient's cells about six pixels across on screen: its rings then read round.
 	const float CellSize = 6.f / PixelScale;
-	WidgetShapeGeometry::CutForGradient(FillMesh, Shape.Fill, Frame, CellSize);
+	if (FillPaint)
+	{
+		WidgetShapeGeometry::CutForGradient(FillMesh, *FillPaint, Frame, CellSize);
+	}
 	WidgetShapeGeometry::CutForGradient(StrokeMesh, Shape.Stroke.Paint, Frame, CellSize);
 }
 
@@ -497,20 +513,40 @@ int32 SWidgetShape::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeo
 	const FVector2f LocalSize(static_cast<float>(Size.X), static_cast<float>(Size.Y));
 	const float PixelScale = QuantizeScale(GetPixelScale(AllottedGeometry));
 
+	// What fills the inside: the shape's Fill, or - Fill off - the brush it was handed (SetUnfilledBrush), or nothing.
+	FWidgetShapePaint BrushPaint;
+	const FWidgetShapePaint* FillPaint = Shape->bFill ? &Shape->Fill : nullptr;
+	if (!FillPaint && bHasUnfilledBrush && UnfilledBrush.DrawAs != ESlateBrushDrawType::NoDrawType)
+	{
+		if (UnfilledBrush.GetResourceObject())
+		{
+			BrushPaint.Type = EWidgetShapePaintType::Image;
+			BrushPaint.Image = UnfilledBrush;
+			BrushPaint.Color = FLinearColor::White;
+		}
+		else
+		{
+			BrushPaint.Type = EWidgetShapePaintType::Color;
+			BrushPaint.Color = UnfilledBrush.GetTint(InWidgetStyle);
+		}
+		FillPaint = &BrushPaint;
+	}
+
 	uint32 Hash = Shape->GetMeshHash();
 	Hash = HashCombineFast(Hash, GetTypeHash(LocalSize));
 	Hash = HashCombineFast(Hash, GetTypeHash(PixelScale));
+	Hash = HashCombineFast(Hash, GetTypeHash(FillPaint == &BrushPaint));
 	if (!bBuilt || Hash != BuiltHash)
 	{
-		Rebuild(*Shape, LocalSize, PixelScale);
+		Rebuild(*Shape, LocalSize, PixelScale, FillPaint);
 		BuiltHash = Hash;
 		bBuilt = true;
 		bHitRectsBuilt = false;
 	}
 
-	if (Shape->bFill && !FillMesh.IsEmpty())
+	if (FillPaint && !FillMesh.IsEmpty())
 	{
-		PaintMesh(FillMesh, Shape->Fill, FillSVG, /*bStroke=*/false, AllottedGeometry, OutDrawElements, LayerId, InWidgetStyle);
+		PaintMesh(FillMesh, *FillPaint, FillSVG, /*bStroke=*/false, AllottedGeometry, OutDrawElements, LayerId, InWidgetStyle);
 	}
 	if (!StrokeMesh.IsEmpty())
 	{

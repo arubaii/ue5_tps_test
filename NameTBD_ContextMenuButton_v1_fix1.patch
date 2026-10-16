@@ -1,0 +1,494 @@
+diff --git a/Docs/Design/Buttons.md b/Docs/Design/Buttons.md
+index 9c4fd1e..ef1ca62 100644
+--- a/Docs/Design/Buttons.md
++++ b/Docs/Design/Buttons.md
+@@ -17,7 +17,7 @@
+ - New settings: **Click Only Enables** (a click never un-enables; off on the ready-made Radio/Tile since fix6), **Repeat While Held** (Hold), **Progress Widget / Progress Value / Progress Range** (Hold: a shape value or a Progress Bar follows the press duration, via `BroadcastPressProgress`).
+ - **Palette drops (fix4):** `OnCreationFromPalette` builds nothing - it only sets `bPendingDefaultContent` (editor-only data). The editor module (`StyledButtonsEditor`) builds the parts once the button has really been placed (fix5): after any compile of the Widget Blueprint (a drop always compiles) and whenever a Context Menu Button's Details are shown, it schedules `BuildPendingInBlueprint`, which runs on a later tick once no drag-drop is in progress and the blueprint isn't compiling, and builds every pending button **of the Widget Blueprint's own tree hierarchy** - never the designer preview copies (which is what the UMG Details panel shows; their blueprint is found through `WidgetGeneratedByClass`). The pending flag is consumed before the transaction (`ConsumePendingDefaultContent`), so undoing the build leaves the button empty instead of rebuilding it; the build (`BuildDefaultContentForEditor`) is one undoable transaction, every part gets a GUID, the blueprint is marked structurally modified. Before every Widget Blueprint compile (`GEditor->OnBlueprintPreCompile`), every widget in its tree without a GUID gets one (through reflection on `WidgetVariableNameToGuidMap`); next tick, parts left behind by discarded drop previews (outside the hierarchy, their ready-made button already moved out of the tree by the designer) are moved to the transient package. **Rule:** never create widgets in a Widget Blueprint's tree from `OnCreationFromPalette` - the designer calls it for every drop preview and gives no GUID to children.
+ - Hooks for subclasses: `HandleNavigation(EUINavigation)` (Slate `OnNavigation` asks first; true keeps focus), `BuildDefaultContent()` (called from `OnCreationFromPalette`, and from `RebuildWidget` at runtime when `ShouldBuildDefaultContentWhenEmpty` and the button is empty), `GetLastPressPosition` (fraction) / `GetLastPressScreenPosition` (unset for key presses; `SContextMenuSlateButton` records presses in `OnMouseButtonDown`/`OnTouchStarted`, clears on `OnKeyDown`).
+-- `FContextMenuButtonDetails` refreshes Looks before laying out and re-lays the panel out after a target widget / Shape Style / preset / Shape Targets array change.
++- `FContextMenuButtonDetails` refreshes Looks before laying out and, after a target widget / Shape Style / preset / override toggle / Shape Targets array change, makes only that list's rows again next tick (`IPropertyHandle::RequestRebuildChildren` on the Shape / Design Targets handle) - the rest of the panel stays put; a Button Preset picked lays the whole panel out again (`ForceRefreshDetails`). **Rule:** its rows go onto the properties' own rows (`EditDefaultProperty` + `CustomWidget`), never into `EditCategory("Context Menu Button|X")`: in this panel that path is a sub-category of Context Menu Button, and editing it by name makes a second top-level category that lists the property again.
+ 
+ ## Context Menu Button: Shape Style, presets, instance overrides
+ > **Standing expectation (the user's own words):** "There could be more use cases that users desire that I haven't thought of, but would be expected in a production-grade application."
+@@ -25,11 +25,11 @@
+ - **Asked:** Base Design not working until Override Normal Design is ticked; "Separate Transform And Shape" renamed "Shape Has Separate Interpolation", its fields hidden (not greyed) when off; chamfer X doing nothing until Y > 0; target widget on Design / Shape Targets defaulting to Self; Shape Status and Animation Status removed; Background Shape moved into the Shape Targets with every state, renamed (Shape Style), its look renamed and without its checkbox; the button's design showing when the Shape Style's fill is off (default off); the override set-up made a tick instead of a hand-made variable and events; design / shape presets as presets (assets, the plugin's pattern) instead of Project Settings; a whole button saved as a preset; "Invalidates Button" -> "Cooldown Sets Disabled State"; the button group settings in their own category under Settings; the Preview category (mode dropdown) removed; the toolbar's Idle / On -> Normal / Enabled; the toolbar's double divider.
+ - **Base Design fix:** two causes. (1) `PostLoad`'s old-layout migration ("a state that differs from a fresh one was authored flat: switch its override on") ran on every load of every target, and (2) `SyncMaterialParametersEditor` wrote Base Design's material and a parameter list into every state, overridden or not (also a state ticked then unticked keeps its copy) - so on the next load those states came back overridden with stale values and no longer showed Base Design. Now the migration only runs on a target in the old layout (Base Design fresh and no override on), and the sync writes only Base Design and overridden states. Also: `ShowPreview` None (an older default, no longer selectable) showed the designer's widgets without their designs - `PostLoad` makes it Normal.
+ - **Targets:** `TargetWidgetName` defaults to `Self` on both target kinds. The Design / Shape **Source** + **Preset Name** fields (Project Settings) are hidden legacy (`DesignSource`, `ShapeSource`, `PresetName`); the states are always shown. **Shape Has Separate Interpolation** (`bSeparateTransformAndSize`, display name only) with `EditConditionHides` on Shape Interpolation Speed / Curve / Overshoot / Delay (targets and the legacy struct).
+-- **Shape Style on Self targets:** `FContextMenuShapeTarget::ShapeStyle` (shown for Self targets only: mirror `bIsSelfTarget`). Picking it (`AdoptShapeStyleFromTarget(.., bStyleEdited)`) -> `ChangeShapeStyle`: `BackgroundShape` set, `BackgroundLook` laid out again keeping shared values; **picked from none it starts with Fill off** (`bFill` false in the bag). Editing a Self target's Base Shape Style Settings is the style's settings edit (`BackgroundLook` takes them, then `PropagateBackgroundLookEdit` into the states that still had the old value); told apart from a Base that only still mirrors an older style by `BackgroundLookSnapshot` (bFromDetails). Every Self target mirrors the one style. `EnsureSelfShapeTargetForStyle`: a style always has a Self target to be authored on (an identity one is added on load / refresh when none is left - deleting the last Self target therefore doesn't clear the style; Shape Style None does). Blueprint: **Set Shape Style**, **Is Shape Style Filled**, Get Shape Style Widget.
++- **Shape Style on Self targets:** `FContextMenuShapeTarget::ShapeStyle` (shown for Self targets only: mirror `bIsSelfTarget`). Picking it (`AdoptShapeStyleFromTarget(.., bStyleEdited)`) -> `ChangeShapeStyle`: `BackgroundShape` set, `BackgroundLook` laid out again keeping shared values; **picked from none it starts with Fill off** (`bFill` false in the bag). Editing a Self target's Base Shape Style Settings is the style's settings edit (`BackgroundLook` takes them, then `PropagateBackgroundLookEdit` into the states that still had the old value); told apart from a Base that only still mirrors an older style by `BackgroundLookSnapshot` (bFromDetails). Every Self target mirrors the one style. **Designer copy:** the UMG Details edit the designer's preview copy and copy only the edited member (`ShapeTargets`, whole, with no array index) to the Widget Blueprint's own button - not `BackgroundShape` / `BackgroundLook`, so its next mirror put the old style back (the pick "didn't stick"). Now an edit of the list that changes the style or its settings on a preview copy writes them onto the template too (`WidgetEditorHooks::FindDesignerTemplate`, `Modify`), and a whole-list set with no index (that copy, a paste, a reset) adopts the first Self target whose Shape Style differs, then the first whose Base Style Settings differ. `EnsureSelfShapeTargetForStyle`: a style always has a Self target to be authored on (an identity one is added on load / refresh when none is left - deleting the last Self target therefore doesn't clear the style; Shape Style None does). Blueprint: **Set Shape Style**, **Is Shape Style Filled**, Get Shape Style Widget.
+ - **Unfilled Shape Style:** `SContextMenuSlateButton::OnPaint` draws the state's style brush (with the Background Color and Design Target writes) under the vector shape, in the brush geometry, whenever the shape's live `bFill` is off - per state, since a state's Style Settings can switch Fill. Design channels on Self (Brush Texture / SVG, Material) go to the brush when the style as authored is unfilled (`IsShapeStyleFilled`), to the shape's paint when filled; Tint is Background Color either way.
+-- **Presets (assets, the Pointer Effects / Widget Path pattern):** `UContextMenuDesignPresetAsset` (Base Design, overrides and states, speeds), `UContextMenuShapePresetAsset` (state shapes with their Style Settings, overrides, interpolation; **Sets Shape Style** + Shape Style when saved from a Self target), `UContextMenuButtonPresetAsset` (`ButtonClass` + `Settings`, a bag of every property `GetButtonPresetProperties` returns: the button's and its subclasses' Details settings down to UButton's Style / colors / click methods, plus `BackgroundShape` / `BackgroundLook`; not Button Preset, Instance Overridable, Button Tag, Button Text Widget, Show Preview, the animation preview, read-only or transient ones; `GetOptions` metadata dropped so the asset's Details don't call button functions). Each target has **Preset** (`PresetAsset`); the button has **Button Preset**. Picking copies the preset in (`ApplyTo`, `ApplyButtonPresetSettings`) and keeps the link; any edit of what the preset covers clears the link (targets: any field but Target Widget / Target ID / Active / Preset; button: any property in the preset list). **Linked = untouched**, so `PostLoad` (`RefreshLinkedPresets`) takes linked presets again: edits made to a preset asset reach every button following it the next time it loads. Details rows (`FContextMenuButtonDetails`): **Save As Preset... / Update Preset** by Button Preset; **Save Shape / Design Target As Preset...** (a menu of the targets) under each list - made from the Widget Blueprint's own button (never the designer copy, whose design channels hold preview writes) through `WidgetEditorHooks::CreateAsset`. Blueprint: Apply Button Preset, Copy To Button Preset, **Apply Shape / Design Preset By ID** (a whole look swapped at runtime, blended).
++- **Presets (assets, the Pointer Effects / Widget Path pattern):** `UContextMenuDesignPresetAsset` (Base Design, overrides and states, speeds), `UContextMenuShapePresetAsset` (state shapes with their Style Settings, overrides, interpolation; **Sets Shape Style** + Shape Style when saved from a Self target), `UContextMenuButtonPresetAsset` (`ButtonClass` + `Settings`, a bag of every property `GetButtonPresetProperties` returns: the button's and its subclasses' Details settings down to UButton's Style / colors / click methods, plus `BackgroundShape` / `BackgroundLook`; not Button Preset, Instance Overridable, Button Tag, Button Text Widget, Show Preview, the animation preview, read-only or transient ones; `GetOptions` metadata dropped so the asset's Details don't call button functions). Each target has **Preset** (`PresetAsset`); the button has **Button Preset**. Picking copies the preset in (`ApplyTo`, `ApplyButtonPresetSettings`) and keeps the link; any edit of what the preset covers clears the link (targets: any field but Target Widget / Target ID / Active / Preset; button: any property in the preset list). **Linked = untouched**, so `PostLoad` (`RefreshLinkedPresets`) takes linked presets again: edits made to a preset asset reach every button following it the next time it loads. Details rows (`FContextMenuButtonDetails`): **Save As Preset... / Update Preset** under the Button Preset picker (its value cell); **Save As Preset** (a menu of the targets) on the Shape / Design Targets header, after the element count and + / bin - made from the Widget Blueprint's own button (never the designer copy, whose design channels hold preview writes) through `WidgetEditorHooks::CreateAsset`. Blueprint: Apply Button Preset, Copy To Button Preset, **Apply Shape / Design Preset By ID** (a whole look swapped at runtime, blended).
+ - **Project Settings presets retired:** `UInfoCardDeveloperSettings::ContextMenuShapePresets / ContextMenuDesignPresets` are `UPROPERTY(Config)` only (hidden), kept for `MigrateProjectSettingsPresets`: on load, a target still naming one gets it copied into its own states once (a design preset's five states become overrides, Normal also the base; a shape preset's Transforms / Shape Box shapes, Style Settings kept) and becomes Custom. A target made in the editor is made Custom on its first `PostEditChangeProperty`, so it is never mistaken for a legacy one (the legacy field's C++ default stays Use Project Settings on purpose: old targets saved at that default load as it).
+-- **Instance Overridable** (`bInstanceOverridable`, Instance Overrides category): ticked, `FContextMenuButtonDetails::SyncInstanceOverridable` (next tick, one transaction, one compile) adds to the Widget Blueprint the 4 dispatchers (`On{Button}Clicked(bShouldDestroyCard, bEnabling)`, `EnabledStateChanged(bIsEnabled)`, `Hovered(bHovered)`, `PressCompleted`) and the Instance Editable `{Button}InstanceOverrides` variable, stamped with Target Button Name. Unticked: the blueprint's own overrides variables claiming the button are removed (undoable); the dispatchers stay. A status line says what placements get. A button whose blueprint already has a claiming variable shows ticked when its Details open. The old **Add Overrides Variable** / **Add Matching Dispatcher** buttons are gone. Finding the variable at runtime is unchanged (declaring one by hand still works).
++- **Instance Overridable** (`bInstanceOverridable`, in Settings): ticked, `FContextMenuButtonDetails::SyncInstanceOverridable` (next tick, one transaction, one compile) adds to the Widget Blueprint the 4 dispatchers (`On{Button}Clicked(bShouldDestroyCard, bEnabling)`, `EnabledStateChanged(bIsEnabled)`, `Hovered(bHovered)`, `PressCompleted`) and the Instance Editable `{Button}InstanceOverrides` variable, stamped with Target Button Name. Unticked: the blueprint's own overrides variables claiming the button are removed (undoable); the dispatchers stay. Its tooltip (name and checkbox) says what placements get, then what ticking does (`GetInstanceOverridableTooltip`). A button whose blueprint already has a claiming variable shows ticked when its Details open. The old **Add Overrides Variable** / **Add Matching Dispatcher** buttons are gone. Finding the variable at runtime is unchanged (declaring one by hand still works).
+ - **Cooldown Sets Disabled State** (`bInvalidatesButton`, display name; Cooldown Duration and it hidden while Has Button Cooldown is off): `ResolveButtonState` returns Disabled while `bIsOnCooldown`; `UpdateButtonState` at the start and end. It used to set the Visibility to Self Hit Test Invisible and back to **Visible** (overwriting an authored visibility) with no visual change. Is Enabled and the enabled state are untouched. Blueprint: **Is On Cooldown**, **Get Cooldown Remaining**.
+ - **Details layout:** **Button Group** category (`Context Menu Button|Button Group`) right after Settings: Unenable All Other Group Buttons On Enabled, Button Group, Group Index. Removed from the Details: Shape Status (property and `RebuildShapeTargetStatus` deleted), Animation Status (`ButtonAnimationStatus` kept as a hidden transient string), the Designer Preview struct (`DesignerAnimPreview` hidden; its Mode reset to Off on load).
+ - **Toolbar:** Normal / Hover / Press / **Enabled** / Disabled; **In / Out** (shown when the button has Anim In / Anim Out: `PlayDesignerAnimPreview(bOut)` sets the copy's preview mode to Play In / Play Out Once, through Off to replay); the entry is now in the selected widget's animation section (`FWidgetAnimBuilderToolbar::SelectedWidgetSectionName`): a toolbar draws a divider at the start of every section, collapsed controls or not, so the two sections drew two dividers with an empty gap.
+@@ -83,7 +83,7 @@
+ - **Still open:** telling a state's deliberate flat colour over an image apart from a stale one in assets saved before this fix (both read the same); per-state tint of an image fill as a relative brightness (a hovered material a step lighter) instead of a replacement.
+ 
+ ## Unverified
+-- Shape Style / presets / overrides: the property-bag layout of a whole button (`UPropertyBag::GetOrCreateFromDescs` from every Details property, arrays of structs holding bags, `TSubclassOf`, gameplay tags) and its Details in the asset editor; `FInstancedPropertyBag::Identical` / `SetValueBool` / `GetValueBool` as used; whether array-of-struct elements are delta-serialized against the struct defaults (if so, an old target saved with no Target Widget now loads as Self); `IPropertyHandle::GetDefaultCategoryName` putting the preset / status rows in the property's category; `FOnGetContent::CreateSP` on the details customization; `RemoveMemberVariable` + compile from a ticker after the property edit; the brush drawn under an unfilled Shape Style (layering with the shape, the disabled effect); `RF_NeedLoad` as the guard for reading a preset asset in `PostLoad`; the toolbar's In / Out restarting the preview harness - none of it compiled or run in the engine.
++- Shape Style / presets / overrides: the property-bag layout of a whole button (`UPropertyBag::GetOrCreateFromDescs` from every Details property, arrays of structs holding bags, `TSubclassOf`, gameplay tags) and its Details in the asset editor; `FInstancedPropertyBag::Identical` / `SetValueBool` / `GetValueBool` as used; whether array-of-struct elements are delta-serialized against the struct defaults (if so, an old target saved with no Target Widget now loads as Self); `EditDefaultProperty` + `CustomWidget(true)` on the target arrays keeping their elements, and `CreatePropertyValueWidget(true)` drawing the count and + / bin; `RequestRebuildChildren` remaking the Style Settings bag rows (else a Shape Style pick shows the old kind's rows until the panel is refreshed); UMG copying only the edited member to the template (and whether it calls `PostEditChangeProperty` there - both cases are handled); `FOnGetContent::CreateSP` on the details customization; `RemoveMemberVariable` + compile from a ticker after the property edit; the brush drawn under an unfilled Shape Style (layering with the shape, the disabled effect); `RF_NeedLoad` as the guard for reading a preset asset in `PostLoad`; the toolbar's In / Out restarting the preview harness - none of it compiled or run in the engine.
+ - Context Menu Button materials: `FInstancedPropertyBag::GetMutableValue()` memory written through the bag's own properties, `FProperty::CopySingleValue` / `Identical` on member addresses during propagation, the `UPROPERTY` property bag under `WITH_EDITORONLY_DATA`, the material repair running in game (not only PIE) - not run in the engine.
+ - Target ID API: blending a variant in from the one switched off (Shape Targets copy its current transform; a vector shape's Look starts from the widget as it stands) - not run in the engine. Deactivating a Design Target that showed an SVG on an Image leaves the drawn SVG brush until another target writes one.
+ - Pill Button knob fit: the layout-size report from `OnPaint` and the re-fit at runtime / in the designer preview - not run. A slot that sizes the switch from its own desired size (auto) never differs from Track Size, so nothing changes there.
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+index 7a95122..418635c 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.cpp
+@@ -2250,8 +2250,35 @@ void UContextMenuButton::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
+ 	// is the button's Shape Style; anything else edited makes its look its own (it stops following its preset).
+ 	if (MemberName == GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShapeTargets) && !bArrayEdit)
+ 	{
++		// The Shape Style lives on the button (Background Shape / Look), not in the list the designer copies to the Widget Blueprint's
++		// own button: what this edit does to it is handed over below, or the next mirror would put the old style back.
++		const UClass* const StyleBefore = BackgroundShape.Get();
++		const FInstancedPropertyBag LookBefore = BackgroundLook;
++
+ 		const int32 TargetIndex = PropertyChangedEvent.GetArrayIndex(GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShapeTargets).ToString());
+-		if (ShapeTargets.IsValidIndex(TargetIndex))
++		if (TargetIndex == INDEX_NONE)
++		{
++			// The whole list set at once - the designer copying an edit made on its preview to the Widget Blueprint's own button (no
++			// index reaches it), a paste, a reset: a Self target holding another Shape Style, or edited Style Settings, is the button's.
++			for (int32 Index = 0; Index < ShapeTargets.Num(); ++Index)
++			{
++				if (IsSelfShapeTarget(ShapeTargets[Index]) && ShapeTargets[Index].ShapeStyle.Get() != BackgroundShape.Get())
++				{
++					AdoptShapeStyleFromTarget(Index, /*bStyleEdited=*/true);
++					AdoptShapeStyleFromTarget(Index, /*bStyleEdited=*/false);
++					break;
++				}
++			}
++			for (int32 Index = 0; Index < ShapeTargets.Num(); ++Index)
++			{
++				if (IsSelfShapeTarget(ShapeTargets[Index]) && !ShapeTargets[Index].BaseShape.Look.Identical(&BackgroundLook, PPF_None))
++				{
++					AdoptShapeStyleFromTarget(Index, /*bStyleEdited=*/false, /*bFromDetails=*/true);
++					break;
++				}
++			}
++		}
++		else if (ShapeTargets.IsValidIndex(TargetIndex))
+ 		{
+ 			FContextMenuShapeTarget& Target = ShapeTargets[TargetIndex];
+ 			if (PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, PresetAsset))
+@@ -2278,6 +2305,26 @@ void UContextMenuButton::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
+ 				AdoptShapeStyleFromTarget(TargetIndex, /*bStyleEdited=*/false, /*bFromDetails=*/true);
+ 			}
+ 		}
++
++		// Edited on the designer's preview copy: the Widget Blueprint's own button takes the style too (it is what is saved, and what
++		// the next preview is made from).
++		if (BackgroundShape.Get() != StyleBefore || !BackgroundLook.Identical(&LookBefore, PPF_None))
++		{
++			if (UContextMenuButton* Template = Cast<UContextMenuButton>(WidgetEditorHooks::FindDesignerTemplate(this)))
++			{
++				if (Template != this)
++				{
++					Template->Modify();
++					Template->BackgroundShape = BackgroundShape;
++					Template->bHasBackgroundShape = bHasBackgroundShape;
++					Template->BackgroundLook = BackgroundLook;
++#if WITH_EDITORONLY_DATA
++					Template->BackgroundLookSnapshot = BackgroundLookSnapshot;
++#endif
++					Template->MirrorShapeStyleToSelfTargets();
++				}
++			}
++		}
+ 	}
+ 
+ 	// A Design Target, the same way (no style).
+diff --git a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+index 9f5e7d1..324e13b 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
++++ b/Plugins/NameTBD/Source/NameTBD/Buttons/ContextMenuButton.h
+@@ -2453,7 +2453,7 @@ public:
+ 	 *
+ 	 * An overrides variable made by hand on any widget above the button still works, ticked or not.
+ 	 */
+-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Instance Overrides", meta = (DisplayName = "Instance Overridable"))
++	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Settings", meta = (DisplayName = "Instance Overridable"))
+ 	bool bInstanceOverridable = false;
+ 
+ 	/**
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
+index c92fb25..fdf8c05 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.cpp
+@@ -10,10 +10,13 @@
+ #include "DetailCategoryBuilder.h"
+ #include "DetailLayoutBuilder.h"
+ #include "DetailWidgetRow.h"
++#include "IDetailPropertyRow.h"
+ #include "PropertyHandle.h"
+ #include "Framework/MultiBox/MultiBoxBuilder.h"
+ #include "Widgets/Input/SButton.h"
+ #include "Widgets/Input/SComboButton.h"
++#include "Widgets/Layout/SBox.h"
++#include "Widgets/SBoxPanel.h"
+ #include "Widgets/Layout/SWrapBox.h"
+ #include "Widgets/Text/STextBlock.h"
+ 
+@@ -74,8 +77,8 @@ void FContextMenuButtonDetails::HandleObjectPropertyChanged(UObject* Object, FPr
+ 	}
+ 
+ 	// What a target aims at, the Shape Style, or a preset picked decides whether Style Settings or a Shape shows - and Style
+-	// Settings newly laid out for another kind of shape have other rows. The property bag's rows are only made again by a fresh
+-	// layout.
++	// Settings newly laid out for another kind of shape have other rows. The property bag's rows are only made again when the
++	// rows holding it are.
+ 	const bool bArrayChange = (Event.ChangeType & (EPropertyChangeType::ArrayAdd | EPropertyChangeType::ArrayRemove | EPropertyChangeType::ArrayClear | EPropertyChangeType::Duplicate)) != 0;
+ 	const bool bShapeTargets = Member == GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShapeTargets);
+ 	const bool bDesignTargets = Member == GET_MEMBER_NAME_CHECKED(UContextMenuButton, DesignTargets);
+@@ -97,15 +100,27 @@ void FContextMenuButtonDetails::HandleObjectPropertyChanged(UObject* Object, FPr
+ 		|| Name == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, ShapeStyle)
+ 		|| Name == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, PresetAsset)
+ 		|| bArrayChange || bOverrideToggled);
+-	const bool bPresetPicked = Member == GET_MEMBER_NAME_CHECKED(UContextMenuButton, ButtonPreset)
+-		|| (bDesignTargets && Name == GET_MEMBER_NAME_CHECKED(FContextMenuDesignTarget, PresetAsset));
+ 
+-	if (bShapeLayoutChange || bPresetPicked)
++	// A target's change rebuilds only that list's rows, so the panel stays where it is; a Button Preset picked changes the whole
++	// button and lays the panel out again.
++	const bool bDesignLayoutChange = bDesignTargets && Name == GET_MEMBER_NAME_CHECKED(FContextMenuDesignTarget, PresetAsset);
++	const bool bButtonPresetPicked = Member == GET_MEMBER_NAME_CHECKED(UContextMenuButton, ButtonPreset);
++	if (bShapeLayoutChange || bDesignLayoutChange || bButtonPresetPicked)
+ 	{
+ 		const TWeakPtr<IDetailLayoutBuilder> Weak = WeakBuilder;
+-		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Weak](float)
++		TWeakPtr<IPropertyHandle> WeakList;
++		if (!bButtonPresetPicked)
+ 		{
+-			if (const TSharedPtr<IDetailLayoutBuilder> Builder = Weak.Pin())
++			WeakList = bShapeLayoutChange ? ShapeTargetsHandle : DesignTargetsHandle;
++		}
++		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Weak, WeakList](float)
++		{
++			const TSharedPtr<IPropertyHandle> ListHandle = WeakList.Pin();
++			if (ListHandle.IsValid() && ListHandle->IsValidHandle())
++			{
++				ListHandle->RequestRebuildChildren();
++			}
++			else if (const TSharedPtr<IDetailLayoutBuilder> Builder = Weak.Pin())
+ 			{
+ 				Builder->ForceRefreshDetails();
+ 			}
+@@ -464,6 +479,12 @@ void FContextMenuButtonDetails::SyncInstanceOverridable(UContextMenuButton* Butt
+ 	FKismetEditorUtilities::CompileBlueprint(Blueprint);
+ }
+ 
++FText FContextMenuButtonDetails::GetInstanceOverridableTooltip() const
++{
++	return FText::Format(LOCTEXT("OverridableTooltip", "{0}\n\n{1}"), GetInstanceOverridableStatus(),
++		LOCTEXT("OverridableAbout", "Ticked, the Widget Blueprint that contains this button gets an Instance Editable '{Button}InstanceOverrides' variable already pointed at it, and the event dispatchers the button calls by itself. Unticked, the variable is removed again (the dispatchers stay)."));
++}
++
+ FText FContextMenuButtonDetails::GetInstanceOverridableStatus() const
+ {
+ 	const UContextMenuButton* Button = CustomizedButtons.Num() > 0 ? CustomizedButtons[0].Get() : nullptr;
+@@ -640,103 +661,159 @@ void FContextMenuButtonDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
+ 		];
+ 	}
+ 
+-	// Each row goes into the category its property is in, whatever that category is called in this panel.
+-	auto CategoryOf = [&DetailBuilder](FName PropertyName) -> IDetailCategoryBuilder&
+-	{
+-		const TSharedRef<IPropertyHandle> Handle = DetailBuilder.GetProperty(PropertyName, UContextMenuButton::StaticClass());
+-		return DetailBuilder.EditCategory(Handle->GetDefaultCategoryName());
+-	};
+ 	const TWeakObjectPtr<UContextMenuButton> FirstButton = CustomizedButtons[0];
+ 	const bool bSingle = CustomizedButtons.Num() == 1;
+ 
++	// Rows are added onto the properties' own rows (EditDefaultProperty), never as custom rows in an EditCategory of a property's
++	// category: a "Context Menu Button|Shape" category is a sub-category of Context Menu Button in this panel, and editing it by that
++	// name makes a second, top-level category that lists the property again.
++
+ 	// ---- Button Preset: save this button as one, or write it back into the one it follows ----
+-	CategoryOf(GET_MEMBER_NAME_CHECKED(UContextMenuButton, ButtonPreset))
+-	.AddCustomRow(LOCTEXT("ButtonPresetFilter", "Save As Preset"))
+-	.WholeRowContent()
+-	[
+-		SNew(SWrapBox)
+-		.UseAllottedSize(true)
+-		+ SWrapBox::Slot()
+-		.Padding(0.f, 2.f, 4.f, 2.f)
++	const TSharedRef<IPropertyHandle> PresetHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UContextMenuButton, ButtonPreset), UContextMenuButton::StaticClass());
++	if (IDetailPropertyRow* PresetRow = DetailBuilder.EditDefaultProperty(PresetHandle))
++	{
++		PresetRow->CustomWidget()
++		.NameContent()
+ 		[
+-			SNew(SButton)
+-			.Text(LOCTEXT("SaveButtonPreset", "Save As Preset..."))
+-			.ToolTipText(LOCTEXT("SaveButtonPresetTooltip", "Saves this button's settings as a new Context Menu Button Preset asset and picks it, so other buttons can pick it too."))
+-			.IsEnabled(bSingle)
+-			.OnClicked_Lambda([FirstButton]()
+-			{
+-				UContextMenuButton* Current = FirstButton.Get();
+-				UContextMenuButton* Source = Current ? GetAuthoredButton(Current) : nullptr;
+-				if (Source)
+-				{
+-					const FScopedTransaction Transaction(LOCTEXT("SaveButtonPresetTransaction", "Save Button As Preset"));
+-					if (Source->SaveAsButtonPreset() && Current != Source)
+-					{
+-						Current->ButtonPreset = Source->ButtonPreset;
+-					}
+-				}
+-				return FReply::Handled();
+-			})
++			PresetHandle->CreatePropertyNameWidget()
+ 		]
+-		+ SWrapBox::Slot()
+-		.Padding(0.f, 2.f, 4.f, 2.f)
++		.ValueContent()
++		.MinDesiredWidth(250.f)
++		.MaxDesiredWidth(TOptional<float>())
+ 		[
+-			SNew(SButton)
+-			.Text(LOCTEXT("UpdateButtonPreset", "Update Preset"))
+-			.ToolTipText(LOCTEXT("UpdateButtonPresetTooltip", "Writes this button's settings into its Button Preset; every button following that preset takes them the next time it loads."))
+-			.IsEnabled_Lambda([FirstButton, bSingle]()
+-			{
+-				const UContextMenuButton* Current = FirstButton.Get();
+-				return bSingle && Current && Current->ButtonPreset != nullptr;
+-			})
+-			.OnClicked_Lambda([FirstButton]()
+-			{
+-				UContextMenuButton* Current = FirstButton.Get();
+-				if (UContextMenuButton* Source = Current ? GetAuthoredButton(Current) : nullptr)
+-				{
+-					if (!Source->ButtonPreset)
++			SNew(SVerticalBox)
++			+ SVerticalBox::Slot()
++			.AutoHeight()
++			[
++				PresetHandle->CreatePropertyValueWidget()
++			]
++			+ SVerticalBox::Slot()
++			.AutoHeight()
++			[
++				SNew(SWrapBox)
++				.UseAllottedSize(true)
++				+ SWrapBox::Slot()
++				.Padding(0.f, 2.f, 4.f, 2.f)
++				[
++					SNew(SButton)
++					.Text(LOCTEXT("SaveButtonPreset", "Save As Preset..."))
++					.ToolTipText(LOCTEXT("SaveButtonPresetTooltip", "Saves this button's settings as a new Context Menu Button Preset asset and picks it, so other buttons can pick it too."))
++					.IsEnabled(bSingle)
++					.OnClicked_Lambda([FirstButton]()
+ 					{
+-						Source->ButtonPreset = Current->ButtonPreset;
+-					}
+-					Source->UpdateButtonPreset();
+-				}
+-				return FReply::Handled();
+-			})
+-		]
+-	];
++						UContextMenuButton* Current = FirstButton.Get();
++						UContextMenuButton* Source = Current ? GetAuthoredButton(Current) : nullptr;
++						if (Source)
++						{
++							const FScopedTransaction Transaction(LOCTEXT("SaveButtonPresetTransaction", "Save Button As Preset"));
++							if (Source->SaveAsButtonPreset() && Current != Source)
++							{
++								Current->ButtonPreset = Source->ButtonPreset;
++							}
++						}
++						return FReply::Handled();
++					})
++				]
++				+ SWrapBox::Slot()
++				.Padding(0.f, 2.f, 4.f, 2.f)
++				[
++					SNew(SButton)
++					.Text(LOCTEXT("UpdateButtonPreset", "Update Preset"))
++					.ToolTipText(LOCTEXT("UpdateButtonPresetTooltip", "Writes this button's settings into its Button Preset; every button following that preset takes them the next time it loads."))
++					.IsEnabled_Lambda([FirstButton, bSingle]()
++					{
++						const UContextMenuButton* Current = FirstButton.Get();
++						return bSingle && Current && Current->ButtonPreset != nullptr;
++					})
++					.OnClicked_Lambda([FirstButton]()
++					{
++						UContextMenuButton* Current = FirstButton.Get();
++						if (UContextMenuButton* Source = Current ? GetAuthoredButton(Current) : nullptr)
++						{
++							if (!Source->ButtonPreset)
++							{
++								Source->ButtonPreset = Current->ButtonPreset;
++							}
++							Source->UpdateButtonPreset();
++						}
++						return FReply::Handled();
++					})
++				]
++			]
++		];
++	}
+ 
+-	// ---- Save a Shape / Design Target as a preset ----
+-	auto AddSaveTargetRow = [this, &CategoryOf, bSingle](FName ListProperty, bool bShape)
++	// ---- Save a Shape / Design Target as a preset: a menu on the list's own header, next to its + and bin ----
++	auto AddSaveTargetMenu = [this, &DetailBuilder, bSingle](FName ListProperty, bool bShape) -> TSharedPtr<IPropertyHandle>
+ 	{
+-		CategoryOf(ListProperty)
+-		.AddCustomRow(LOCTEXT("SaveTargetFilter", "Save Target As Preset"))
+-		.WholeRowContent()
++		const TSharedRef<IPropertyHandle> ListHandle = DetailBuilder.GetProperty(ListProperty, UContextMenuButton::StaticClass());
++		IDetailPropertyRow* ListRow = DetailBuilder.EditDefaultProperty(ListHandle);
++		if (!ListRow)
++		{
++			return ListHandle;
++		}
++		ListRow->CustomWidget(/*bShowChildren=*/true)
++		.NameContent()
+ 		[
+-			SNew(SComboButton)
+-			.IsEnabled(bSingle)
+-			.OnGetMenuContent(FOnGetContent::CreateSP(this, &FContextMenuButtonDetails::MakeSaveTargetPresetMenu, bShape))
+-			.ButtonContent()
++			ListHandle->CreatePropertyNameWidget()
++		]
++		.ValueContent()
++		.MinDesiredWidth(250.f)
++		.MaxDesiredWidth(TOptional<float>())
++		[
++			SNew(SHorizontalBox)
++			+ SHorizontalBox::Slot()
++			.AutoWidth()
++			.VAlign(VAlign_Center)
++			[
++				ListHandle->CreatePropertyValueWidget(/*bDisplayDefaultPropertyButtons=*/true)
++			]
++			+ SHorizontalBox::Slot()
++			.AutoWidth()
++			.VAlign(VAlign_Center)
++			.Padding(8.f, 0.f, 0.f, 0.f)
+ 			[
+-				SNew(STextBlock)
+-				.Font(IDetailLayoutBuilder::GetDetailFont())
+-				.Text(bShape ? LOCTEXT("SaveShapeTarget", "Save Shape Target As Preset...") : LOCTEXT("SaveDesignTarget", "Save Design Target As Preset..."))
+-				.ToolTipText(LOCTEXT("SaveTargetRowTooltip", "Pick a target: its look is saved as a new preset asset, which any target of any button can then pick (Preset)."))
++				SNew(SComboButton)
++				.IsEnabled(bSingle)
++				.ToolTipText(bShape
++					? LOCTEXT("SaveShapeTargetTooltip", "Pick a Shape Target: its look is saved as a new Context Menu Shape Preset asset, which any Shape Target of any button can then pick (Preset).")
++					: LOCTEXT("SaveDesignTargetTooltip", "Pick a Design Target: its look is saved as a new Context Menu Design Preset asset, which any Design Target of any button can then pick (Preset)."))
++				.OnGetMenuContent(FOnGetContent::CreateSP(this, &FContextMenuButtonDetails::MakeSaveTargetPresetMenu, bShape))
++				.ButtonContent()
++				[
++					SNew(STextBlock)
++					.Font(IDetailLayoutBuilder::GetDetailFont())
++					.Text(LOCTEXT("SaveTargetAsPreset", "Save As Preset"))
++				]
+ 			]
+ 		];
++		return ListHandle;
+ 	};
+-	AddSaveTargetRow(GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShapeTargets), /*bShape=*/true);
+-	AddSaveTargetRow(GET_MEMBER_NAME_CHECKED(UContextMenuButton, DesignTargets), /*bShape=*/false);
+-
+-	// ---- Instance Overridable: what the placements get ----
+-	CategoryOf(GET_MEMBER_NAME_CHECKED(UContextMenuButton, bInstanceOverridable))
+-	.AddCustomRow(LOCTEXT("OverridableFilter", "Instance Overridable"))
+-	.WholeRowContent()
+-	[
+-		SNew(STextBlock)
+-		.Font(IDetailLayoutBuilder::GetDetailFont())
+-		.AutoWrapText(true)
+-		.Text(this, &FContextMenuButtonDetails::GetInstanceOverridableStatus)
+-	];
++	ShapeTargetsHandle = AddSaveTargetMenu(GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShapeTargets), /*bShape=*/true);
++	DesignTargetsHandle = AddSaveTargetMenu(GET_MEMBER_NAME_CHECKED(UContextMenuButton, DesignTargets), /*bShape=*/false);
++
++	// ---- Instance Overridable: what the placements get, in its tooltip ----
++	const TSharedRef<IPropertyHandle> OverridableHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UContextMenuButton, bInstanceOverridable), UContextMenuButton::StaticClass());
++	if (IDetailPropertyRow* OverridableRow = DetailBuilder.EditDefaultProperty(OverridableHandle))
++	{
++		const TAttribute<FText> OverridableTip = TAttribute<FText>::CreateSP(this, &FContextMenuButtonDetails::GetInstanceOverridableTooltip);
++		OverridableRow->CustomWidget()
++		.NameContent()
++		[
++			SNew(STextBlock)
++			.Font(IDetailLayoutBuilder::GetDetailFont())
++			.Text(OverridableHandle->GetPropertyDisplayName())
++			.ToolTipText(OverridableTip)
++		]
++		.ValueContent()
++		[
++			SNew(SBox)
++			.ToolTipText(OverridableTip)
++			[
++				OverridableHandle->CreatePropertyValueWidget()
++			]
++		];
++	}
+ }
+ 
+ #undef LOCTEXT_NAMESPACE
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.h b/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.h
+index 79529fa..cdaf933 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/ContextMenuButtonDetails.h
+@@ -6,6 +6,7 @@
+ #include "IDetailCustomization.h"
+ 
+ class IDetailLayoutBuilder;
++class IPropertyHandle;
+ class UContextMenuButton;
+ struct FPropertyChangedEvent;
+ class UWidgetBlueprint;
+@@ -16,15 +17,16 @@ class UWidgetBlueprint;
+  *   - Instance Overridable: ticking it gives the Widget Blueprint that contains the button what its placements need - an
+  *     Instance Editable "{Button}InstanceOverrides" variable already pointed at the button, and the On{Button}Clicked /
+  *     EnabledStateChanged / Hovered / PressCompleted event dispatchers the button calls by itself - and compiles it, in one
+- *     undoable step. Unticking removes the variable again (the dispatchers stay: graphs elsewhere may be bound to them). A status
+- *     line under it says what the placements get. A button whose Widget Blueprint already has such a variable shows ticked.
+- *   - Presets: Save As Preset / Update Preset under Button Preset, and Save As Preset for any one Shape or Design Target (a menu
+- *     of the targets) under those lists - each made through the Save Asset As window and picked at once.
++ *     undoable step. Unticking removes the variable again (the dispatchers stay: graphs elsewhere may be bound to them). Its
++ *     tooltip says what the placements get. A button whose Widget Blueprint already has such a variable shows ticked.
++ *   - Presets: Save As Preset / Update Preset under the Button Preset picker, and Save As Preset for any one Shape or Design
++ *     Target (a menu of the targets) on those lists' headers - each made through the Save Asset As window and picked at once.
+  *   - A ready-made button: Show / Hide Parts In Hierarchy at the top of its Style.
+  *
+  * Before the rows are laid out, every Shape Target's Style Settings are laid out for the vector shape it aims at (and the Shape
+  * Style for Self), so a target shows Style Settings for a shape and a Shape Box Shape for anything else - never both. Picking
+- * another target widget, Shape Style or preset lays the panel out again, since those change which rows apply.
++ * another target widget, Shape Style or preset makes that list's rows again, since those change which rows apply (a Button
++ * Preset lays the whole panel out again).
+  */
+ class FContextMenuButtonDetails : public IDetailCustomization
+ {
+@@ -87,6 +89,9 @@ private:
+ 	/** What the placements of the button's Widget Blueprint get, in a line. */
+ 	FText GetInstanceOverridableStatus() const;
+ 
++	/** Instance Overridable's tooltip: that line, then what ticking it does. */
++	FText GetInstanceOverridableTooltip() const;
++
+ 	/** The Widget Blueprint's own button behind a designer copy (presets are made from what is authored, not from a preview). */
+ 	static UContextMenuButton* GetAuthoredButton(UContextMenuButton* Button);
+ 
+@@ -96,9 +101,13 @@ private:
+ 	/** Weak so a details panel outliving its selection can't resurrect a button. */
+ 	TArray<TWeakObjectPtr<UContextMenuButton>> CustomizedButtons;
+ 
+-	/** Lays the panel out again next frame after an edit that changes which rows apply, and runs Instance Overridable. */
++	/** Makes a list's rows (or the panel) again next frame after an edit that changes which rows apply, and runs Instance Overridable. */
+ 	void HandleObjectPropertyChanged(UObject* Object, FPropertyChangedEvent& Event);
+ 
+ 	TWeakPtr<IDetailLayoutBuilder> WeakBuilder;
++
++	/** The Shape / Design Targets lists, whose rows are made again after an edit that changes which apply. */
++	TSharedPtr<IPropertyHandle> ShapeTargetsHandle;
++	TSharedPtr<IPropertyHandle> DesignTargetsHandle;
+ 	FDelegateHandle PropertyChangedHandle;
+ };

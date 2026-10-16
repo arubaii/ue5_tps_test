@@ -177,6 +177,9 @@ void FNameTBDEditorModule::StartupModule()
 	// The ready-made buttons: their parts built once placed (never per drop preview), each with its Widget Blueprint GUID.
 	StyledButtonsEditor::Register();
 
+	// Instance Overridable follows a Context Menu Button renamed in the designer (its dispatchers and overrides variable).
+	FContextMenuButtonDetails::Register();
+
 	// The plugin's screen materials (a Diegetic Screen's Material Automatic): made in the editor when first needed, and rebuilt
 	// when out of date - see DiegeticScreenMaterial.h.
 	UDiegeticScreenComponent::SetEditorMaterialProvider([](EDiegeticMaterialVariant Variant)
@@ -283,6 +286,7 @@ void FNameTBDEditorModule::ShutdownModule()
 {
 	WidgetEditorHooks::SetAssetCreator(nullptr);
 	StyledButtonsEditor::Unregister();
+	FContextMenuButtonDetails::Unregister();
 	UDiegeticScreenComponent::SetEditorMaterialProvider(nullptr);
 
 	// The State Machine editors kept for the status bar drawers, while what they hold on to is still there.
