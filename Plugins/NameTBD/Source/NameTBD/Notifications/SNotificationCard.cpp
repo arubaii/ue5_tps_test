@@ -1007,7 +1007,10 @@ int32 SNotificationCard::OnPaint(const FPaintArgs& Args, const FGeometry& Allott
 		}
 		if (CardStyle.OutlineWidth > 0.f)
 		{
-			FSlateDrawElement::MakeBox(OutDrawElements, Layer, AllottedGeometry.ToPaintGeometry(), &OutlineBrush, ESlateDrawEffect::None, Tint);
+			// MakeBox fills in its tint (not the brush's own): an outline alone goes in with a near-clear tint (a fully clear one is
+			// culled), its colour in the brush.
+			const FSlateRoundedBoxBrush Outline(FLinearColor::White, CardStyle.CornerRadius, CardStyle.OutlineColor * Tint, CardStyle.OutlineWidth);
+			FSlateDrawElement::MakeBox(OutDrawElements, Layer, AllottedGeometry.ToPaintGeometry(), &Outline, ESlateDrawEffect::None, FLinearColor(1.f, 1.f, 1.f, 0.0001f));
 		}
 
 		const float Inset = FMath::Min(CardStyle.CornerRadius, static_cast<float>(LocalSize.Y) * 0.5f);

@@ -6,6 +6,7 @@
 #include "Engine/LocalPlayer.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/Application/SlateUser.h"
+#include "Widgets/Layout/SBox.h"
 #include "Widgets/Text/STextBlock.h"
 #include "NameTBD/Menu/MenuManagerComponent.h"
 #include "NameTBD/Menu/Settings/MenuSettingsDefaults.h"
@@ -132,10 +133,7 @@ UMenuSettingsSubsystem* USettingsMenu::FindSettings() const
 TSharedRef<SWidget> USettingsMenu::RebuildWidget()
 {
 	StyleHolder->Style = UMenuStyleAsset::Resolve(StyleAsset);
-	UMenuSettingsSubsystem* Settings = FindSettings();
-
-	TArray<FMenuSettingsPage> Preview;
-	if (Settings)
+	if (UMenuSettingsSubsystem* Settings = FindSettings())
 	{
 		for (UMenuSettingsSchema* Schema : ExtraSchemas)
 		{
@@ -143,10 +141,31 @@ TSharedRef<SWidget> USettingsMenu::RebuildWidget()
 		}
 		OpenSession();
 	}
-	else
+	if (!StyleHandle.IsValid())
+	{
+		StyleHandle = UMenuStyleAsset::OnStyleChanged().AddUObject(this, &USettingsMenu::HandleStyleChanged);
+	}
+	PanelHost = SNew(SBox);
+	RecreatePanel();
+	return PanelHost.ToSharedRef();
+}
+
+void USettingsMenu::RecreatePanel()
+{
+	if (!PanelHost.IsValid())
+	{
+		return;
+	}
+	UMenuSettingsSubsystem* Settings = FindSettings();
+	TArray<FMenuSettingsPage> Preview;
+	if (!Settings)
 	{
 		SettingsMenuLocal::MakePreviewPages(this, PreviewSchema, ExtraSchemas, Preview);
 	}
+
+	// Rebuilt on the page shown, focus kept where it was.
+	const FName ShownPage = Panel.IsValid() ? Panel->GetCurrentPageId() : InitialPage;
+	const bool bHadFocus = Panel.IsValid() && (Panel->HasFocusedDescendants() || Panel->HasAnyUserFocus().IsSet());
 
 	FMenuPanelKeys Keys;
 	Keys.PreviousTab = PreviousTabKeys;
@@ -161,13 +180,13 @@ TSharedRef<SWidget> USettingsMenu::RebuildWidget()
 	Texts.Back = BackText;
 	Texts.Search = SearchHint;
 
-	TWeakObjectPtr<USettingsMenu> WeakThis(this);
+	TWeakObjectPtr<USettingsMenu> WeakMenu(this);
 	Panel = SNew(SMenuSettingsPanel, StyleHolder)
 		.Settings(Settings)
 		.LocalPlayer(IsDesignTime() ? nullptr : GetOwningLocalPlayer())
 		.PreviewPages(Preview)
 		.PageFilter(Pages)
-		.InitialPage(InitialPage)
+		.InitialPage(ShownPage)
 		.Title(TAttribute<FText>::CreateWeakLambda(this, [this]() { return Title; }))
 		.ApplyButton(ApplyPolicy == EMenuApplyPolicy::ApplyButton)
 		.ConfirmUnsavedOnBack(bConfirmUnsavedOnBack)
@@ -176,72 +195,115 @@ TSharedRef<SWidget> USettingsMenu::RebuildWidget()
 		.Keys(Keys)
 		.Texts(Texts)
 		.SoundContext(this)
-		.MakeCustomRow([WeakThis](UMenuSetting* Setting) -> TSharedPtr<SWidget>
+		.HiddenSettings(HiddenSettings)
+		.HiddenSections(HiddenSections)
+		.MakeCustomRow([WeakMenu](const FMenuCustomRowRequest& Request) -> FMenuCustomRow
 		{
-			USettingsMenu* Menu = WeakThis.Get();
-			return Menu ? Menu->MakeCustomRow(Setting) : TSharedPtr<SWidget>();
+			USettingsMenu* Menu = WeakMenu.Get();
+			return Menu ? Menu->MakeCustomRow(Request) : FMenuCustomRow();
 		})
-		.OnBack_Lambda([WeakThis]()
+		.MakePartWidget([WeakMenu](UClass* Class) -> UUserWidget*
 		{
-			if (USettingsMenu* Menu = WeakThis.Get())
+			USettingsMenu* Menu = WeakMenu.Get();
+			return Menu ? Menu->MakePartWidget(Class) : nullptr;
+		})
+		.OnBack_Lambda([WeakMenu]()
+		{
+			if (USettingsMenu* Menu = WeakMenu.Get())
 			{
 				Menu->OnBack.Broadcast();
 			}
 		})
-		.OnPageChanged_Lambda([WeakThis](FName PageId)
+		.OnPageChanged_Lambda([WeakMenu](FName PageId)
 		{
-			if (USettingsMenu* Menu = WeakThis.Get())
+			if (USettingsMenu* Menu = WeakMenu.Get())
 			{
 				Menu->OnPageChanged.Broadcast(PageId);
 			}
 		})
-		.OnSettingFocused_Lambda([WeakThis](FName FocusedId)
+		.OnSettingFocused_Lambda([WeakMenu](FName FocusedId)
 		{
-			if (USettingsMenu* Menu = WeakThis.Get())
+			if (USettingsMenu* Menu = WeakMenu.Get())
 			{
 				Menu->OnSettingFocused.Broadcast(FocusedId);
 			}
 		});
+	PanelHost->SetContent(Panel.ToSharedRef());
 
-	if (!StyleHandle.IsValid())
-	{
-		StyleHandle = UMenuStyleAsset::OnStyleChanged().AddUObject(this, &USettingsMenu::HandleStyleChanged);
-	}
-	if (bFocusOnShow && Settings)
+	if (Settings && (bHadFocus || (bFocusOnShow && !bPanelShownOnce)))
 	{
 		Panel->FocusFirstRow();
 	}
-	return Panel.ToSharedRef();
+	bPanelShownOnce = true;
 }
 
-TSharedPtr<SWidget> USettingsMenu::MakeCustomRow(UMenuSetting* Setting)
+UUserWidget* USettingsMenu::CreateOwnedWidget(UClass* Class)
 {
-	if (!Setting)
+	if (!Class || !Class->IsChildOf(UUserWidget::StaticClass()) || Class->HasAnyClassFlags(CLASS_Abstract))
 	{
 		return nullptr;
 	}
-	const TSoftClassPtr<UMenuSettingRowWidget>* Entry = StyleHolder->Style.RowWidgetClasses.Find(Setting->GetKind());
-	UClass* Class = Entry ? Entry->LoadSynchronous() : nullptr;
-	if (!Class)
-	{
-		return nullptr;
-	}
-	UMenuSettingRowWidget* Row = nullptr;
+	// Let go of the ones whose screen part is gone (a page changed, the screen rebuilt).
+	CustomWidgets.RemoveAll([](const TObjectPtr<UUserWidget>& Widget) { return !Widget || !Widget->GetCachedWidget().IsValid(); });
+
+	UUserWidget* Made = nullptr;
 	if (APlayerController* Player = GetOwningPlayer())
 	{
-		Row = CreateWidget<UMenuSettingRowWidget>(Player, Class);
+		Made = CreateWidget<UUserWidget>(Player, Class);
 	}
 	else if (UWorld* World = GetWorld())
 	{
-		Row = CreateWidget<UMenuSettingRowWidget>(World, Class);
+		Made = CreateWidget<UUserWidget>(World, Class);
 	}
+	if (Made)
+	{
+		CustomWidgets.Add(Made);
+	}
+	return Made;
+}
+
+UUserWidget* USettingsMenu::MakePartWidget(UClass* Class)
+{
+	return CreateOwnedWidget(Class);
+}
+
+FMenuCustomRow USettingsMenu::MakeCustomRow(const FMenuCustomRowRequest& Request)
+{
+	FMenuCustomRow Out;
+	UMenuSetting* Setting = Request.Setting;
+	if (!Setting)
+	{
+		return Out;
+	}
+	const FMenuStyle& Style = StyleHolder->Style;
+
+	// A rule first (rows, then controls), then Custom Rows by kind (whole rows).
+	TSoftClassPtr<UMenuSettingRowWidget> Class = Style.Widgets.FindRule(EMenuWidgetRulePart::Row, *Setting, Request.PageId, Request.SectionId, Request.SectionTitle, Request.Display);
+	bool bWholeRow = true;
+	if (Class.IsNull())
+	{
+		if (const TSoftClassPtr<UMenuSettingRowWidget>* ByKind = Style.RowWidgetClasses.Find(Setting->GetKind()))
+		{
+			Class = *ByKind;
+		}
+	}
+	if (Class.IsNull())
+	{
+		Class = Style.Widgets.FindRule(EMenuWidgetRulePart::Control, *Setting, Request.PageId, Request.SectionId, Request.SectionTitle, Request.Display);
+		bWholeRow = false;
+	}
+	UClass* Loaded = Class.IsNull() ? nullptr : Class.LoadSynchronous();
+	UMenuSettingRowWidget* Row = Cast<UMenuSettingRowWidget>(CreateOwnedWidget(Loaded));
 	if (!Row)
 	{
-		return nullptr;
+		return Out;
 	}
+	Row->SetMenuStyleHolder(StyleHolder);
 	Row->InitializeRow(Setting);
-	CustomRows.Add(Row);
-	return Row->TakeWidget();
+	Out.Widget = Row->TakeWidget();
+	Out.Object = Row;
+	Out.bWholeRow = bWholeRow;
+	return Out;
 }
 
 void USettingsMenu::SynchronizeProperties()
@@ -250,7 +312,8 @@ void USettingsMenu::SynchronizeProperties()
 	StyleHolder->Style = UMenuStyleAsset::Resolve(StyleAsset);
 	if (Panel.IsValid() && IsDesignTime())
 	{
-		Panel->RebuildAll();
+		// The designer: every setting of the widget (hidden settings, texts, keys) shows at once.
+		RecreatePanel();
 	}
 }
 
@@ -261,7 +324,9 @@ void USettingsMenu::ReleaseSlateResources(bool bReleaseChildren)
 	UMenuStyleAsset::OnStyleChanged().Remove(StyleHandle);
 	StyleHandle.Reset();
 	Panel.Reset();
-	CustomRows.Reset();
+	PanelHost.Reset();
+	CustomWidgets.Reset();
+	bPanelShownOnce = false;
 }
 
 void USettingsMenu::HandleStyleChanged(const UMenuStyleAsset* Changed)
@@ -269,11 +334,8 @@ void USettingsMenu::HandleStyleChanged(const UMenuStyleAsset* Changed)
 	if (Changed == StyleAsset || !StyleAsset)
 	{
 		StyleHolder->Style = UMenuStyleAsset::Resolve(StyleAsset);
-		if (Panel.IsValid())
-		{
-			Panel->RebuildAll();
-			Panel->Invalidate(EInvalidateWidget::LayoutAndVolatility);
-		}
+		// Built again: custom part classes, alignments and the scroll bar take effect; the page and focus are kept.
+		RecreatePanel();
 	}
 }
 
@@ -507,7 +569,7 @@ void UMenuSettingRowWidget::InitializeRow(UMenuSetting* InSetting)
 		SettingId = InSetting->Id;
 		if (LabelText)
 		{
-			LabelText->SetText(InSetting->GetLabel());
+			LabelText->SetText(GetMenuStyle().bUppercaseLabels ? InSetting->GetLabel().ToUpper() : InSetting->GetLabel());
 		}
 		if (DescriptionText)
 		{
@@ -543,6 +605,84 @@ void UMenuSettingRowWidget::NativeDestruct()
 	Super::NativeDestruct();
 }
 
+void UMenuSettingRowWidget::SetMenuStyleHolder(const FMenuStyleRef& InHolder)
+{
+	MenuStyleHolder = InHolder;
+	bInSettingsMenu = true;
+}
+
+FMenuStyle UMenuSettingRowWidget::GetMenuStyle() const
+{
+	return MenuStyleHolder.IsValid() ? MenuStyleHolder->Style : UMenuStyleAsset::Resolve(StyleAsset);
+}
+
+FMenuStylePalette UMenuSettingRowWidget::GetMenuPalette() const
+{
+	return MenuStyleHolder.IsValid() ? MenuStyleHolder->Palette() : UMenuStyleAsset::Resolve(StyleAsset).GetPalette();
+}
+
+void UMenuSettingRowWidget::SetRowState(const FMenuSettingRowState& NewState)
+{
+	if (NewState == RowState)
+	{
+		return;
+	}
+	const FMenuSettingRowState Previous = RowState;
+	RowState = NewState;
+	OnRowStateChanged(NewState, Previous);
+}
+
+bool UMenuSettingRowWidget::OnRowActivated_Implementation()
+{
+	return false;
+}
+
+void UMenuSettingRowWidget::NativeOnMouseEnter(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent)
+{
+	Super::NativeOnMouseEnter(InGeometry, InMouseEvent);
+	// In a Settings Menu the row says; placed by hand, its own hover.
+	if (!bInSettingsMenu)
+	{
+		FMenuSettingRowState Next = RowState;
+		Next.bHovered = true;
+		SetRowState(Next);
+	}
+}
+
+void UMenuSettingRowWidget::NativeOnMouseLeave(const FPointerEvent& InMouseEvent)
+{
+	Super::NativeOnMouseLeave(InMouseEvent);
+	if (!bInSettingsMenu)
+	{
+		FMenuSettingRowState Next = RowState;
+		Next.bHovered = false;
+		Next.bPressed = false;
+		SetRowState(Next);
+	}
+}
+
+void UMenuSettingRowWidget::NativeOnAddedToFocusPath(const FFocusEvent& InFocusEvent)
+{
+	Super::NativeOnAddedToFocusPath(InFocusEvent);
+	if (!bInSettingsMenu)
+	{
+		FMenuSettingRowState Next = RowState;
+		Next.bFocused = true;
+		SetRowState(Next);
+	}
+}
+
+void UMenuSettingRowWidget::NativeOnRemovedFromFocusPath(const FFocusEvent& InFocusEvent)
+{
+	Super::NativeOnRemovedFromFocusPath(InFocusEvent);
+	if (!bInSettingsMenu)
+	{
+		FMenuSettingRowState Next = RowState;
+		Next.bFocused = false;
+		SetRowState(Next);
+	}
+}
+
 void UMenuSettingRowWidget::HandleSettingChanged(FName ChangedId, const FString& NewValue)
 {
 	// Any change can change this one (a preset, a condition): refresh.
@@ -562,6 +702,14 @@ void UMenuSettingRowWidget::RefreshRow()
 	if (ValueText)
 	{
 		ValueText->SetText(Display);
+	}
+	if (!bInSettingsMenu)
+	{
+		const UMenuSettingsSubsystem* Settings = GetSettings();
+		FMenuSettingRowState Next = RowState;
+		Next.bEnabled = bEnabled;
+		Next.bModified = Settings && Settings->IsSettingModified(Setting->Id);
+		SetRowState(Next);
 	}
 	OnSettingRefreshed(Current, Display, bEnabled, Reason);
 }

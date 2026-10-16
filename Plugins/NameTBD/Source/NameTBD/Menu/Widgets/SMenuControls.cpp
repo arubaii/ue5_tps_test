@@ -22,6 +22,12 @@
 
 namespace MenuDraw
 {
+	/** A fill as MakeBox's tint: a clear one made barely there, since a fully clear tint is culled with the outline on it. */
+	static FLinearColor FillTint(const FLinearColor& Fill)
+	{
+		return Fill.A > 0.f ? Fill : FLinearColor(Fill.R, Fill.G, Fill.B, 0.0001f);
+	}
+
 	void RoundedBox(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& Geometry, const FLinearColor& Fill, float Radius,
 		const FLinearColor& Outline, float OutlineWidth)
 	{
@@ -29,8 +35,10 @@ namespace MenuDraw
 		{
 			return;
 		}
-		const FSlateRoundedBoxBrush Brush(Fill, Radius, Outline, OutlineWidth);
-		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, Geometry.ToPaintGeometry(), &Brush);
+		// MakeBox draws in its tint, not the brush's own tint: the fill goes in as the tint over a white brush. The outline keeps its
+		// own colour (the brush's outline settings).
+		const FSlateRoundedBoxBrush Brush(FLinearColor::White, Radius, Outline, OutlineWidth);
+		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, Geometry.ToPaintGeometry(), &Brush, ESlateDrawEffect::None, FillTint(Fill));
 	}
 
 	void RoundedBoxAt(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& Geometry, const FVector2f& Offset, const FVector2f& Size,
@@ -40,8 +48,8 @@ namespace MenuDraw
 		{
 			return;
 		}
-		const FSlateRoundedBoxBrush Brush(Fill, FMath::Min(Radius, FMath::Min(Size.X, Size.Y) * 0.5f), Outline, OutlineWidth);
-		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, Geometry.ToPaintGeometry(Size, FSlateLayoutTransform(Offset)), &Brush);
+		const FSlateRoundedBoxBrush Brush(FLinearColor::White, FMath::Min(Radius, FMath::Min(Size.X, Size.Y) * 0.5f), Outline, OutlineWidth);
+		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, Geometry.ToPaintGeometry(Size, FSlateLayoutTransform(Offset)), &Brush, ESlateDrawEffect::None, FillTint(Fill));
 	}
 
 	void Chevron(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& Geometry, const FVector2f& Center, float HalfSize, int32 Direction,
@@ -94,6 +102,222 @@ namespace MenuControlsLocal
 	{
 		return MenuAccessibility::IsReduceMotionEnabled() ? EWidgetMotion::Instant : Style.Motion;
 	}
+
+	/** The scrim behind a dialog or list: its skin, else the palette's Scrim. */
+	TSharedRef<SWidget> MakeScrim(const FMenuStyleRef& Holder)
+	{
+		return SNew(SMenuPartBox, Holder)
+			.Part_Lambda([](const FMenuStyle& Style) { return &Style.Skin.Scrim; })
+			.BuiltIn_Lambda([](const FMenuStyle& Style, const FMenuPartState&)
+			{
+				FMenuBuiltInBox Box;
+				Box.Fill = Style.GetPalette().Scrim;
+				return Box;
+			});
+	}
+
+	/** A dialog's or list's card: its skin, else a rounded Surface box outlined in Divider. */
+	FMenuBuiltInBox CardBox(const FMenuStyle& Style, const FMenuPartState&)
+	{
+		FMenuBuiltInBox Box;
+		Box.Fill = Style.GetPalette().Surface;
+		Box.Outline = Style.GetPalette().Divider;
+		Box.OutlineWidth = Style.OutlineWidth;
+		Box.Radius = Style.CornerRadius * 1.5f;
+		return Box;
+	}
+}
+
+// =====================================================================================================
+//  Skin
+// =====================================================================================================
+
+bool FMenuSkinPainter::Draw(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& Geometry, const FMenuPartSkin& Part, const FMenuPartState& State,
+	const FLinearColor& PaletteColor, const FMenuStylePalette& Palette, const FLinearColor& WidgetTint, const SWidget& Widget, uint64 Key,
+	const FVector2f& Offset, const FVector2f& Size, float Angle) const
+{
+	if (!Part.IsSet())
+	{
+		return false;
+	}
+	const FWidgetEffectImage& Image = Part.ForState(State.bDisabled, State.bPressed, State.bSelected, State.Focus > 0.5f, State.Hover > 0.5f);
+	if (!Image.IsSet())
+	{
+		// Another state has an image, this one none: nothing for it.
+		return true;
+	}
+
+	FVector2f PartSize = (Size.X > 0.f && Size.Y > 0.f) ? Size : FVector2f(Geometry.GetLocalSize());
+	const FVector2f PartOffset = Offset - FVector2f(Part.Outset.Left, Part.Outset.Top);
+	PartSize += FVector2f(Part.Outset.Left + Part.Outset.Right, Part.Outset.Top + Part.Outset.Bottom);
+	if (PartSize.X <= 0.f || PartSize.Y <= 0.f)
+	{
+		return true;
+	}
+	const FGeometry PartGeometry = Angle != 0.f
+		? Geometry.MakeChild(PartSize, FSlateLayoutTransform(PartOffset), FSlateRenderTransform(FQuat2f(Angle)), FVector2f(0.5f, 0.5f))
+		: Geometry.MakeChild(PartSize, FSlateLayoutTransform(PartOffset));
+
+	FWidgetEffectMaterialInputs Inputs;
+	const bool bMaterial = Image.GetMaterial() != nullptr;
+	if (bMaterial)
+	{
+		Inputs.Add(TEXT("Hover"), State.Hover);
+		Inputs.Add(TEXT("Focus"), State.Focus);
+		Inputs.Add(TEXT("Pressed"), State.bPressed ? 1.f : 0.f);
+		Inputs.Add(TEXT("Selected"), State.bSelected ? 1.f : 0.f);
+		Inputs.Add(TEXT("Disabled"), State.bDisabled ? 1.f : 0.f);
+		Inputs.Add(TEXT("Value"), State.Value);
+		Inputs.Add(TEXT("Time"), static_cast<float>(FMath::Fmod(FPlatformTime::Seconds(), 3600.0)));
+		Inputs.Add(TEXT("Width"), PartSize.X);
+		Inputs.Add(TEXT("Height"), PartSize.Y);
+		Inputs.Add(TEXT("PaletteColor"), PaletteColor);
+		Inputs.Add(TEXT("Accent"), Palette.Accent);
+	}
+	const FSlateBrush* Brush = Materials.GetBrush(Key, Image, bMaterial ? &Inputs : nullptr, PartGeometry, PartSize, Widget);
+	if (!Brush)
+	{
+		return true;
+	}
+	FLinearColor Color = Part.Tint * WidgetTint;
+	if (Part.bTintWithPalette)
+	{
+		Color *= PaletteColor;
+	}
+	if (Image.ImageSource == EWidgetImageSource::Texture)
+	{
+		// MakeBox draws in its tint only: the brush's own tint goes in here.
+		Color *= Image.Image.TintColor.GetSpecifiedColor();
+	}
+	FSlateDrawElement::MakeBox(OutDrawElements, LayerId, PartGeometry.ToPaintGeometry(), Brush, ESlateDrawEffect::None, Color);
+	return true;
+}
+
+void SMenuPartBox::Construct(const FArguments& InArgs, const FMenuStyleRef& InStyle)
+{
+	StyleHolder = InStyle;
+	IsSelectedAttribute = InArgs._IsSelected;
+	IsFocusedAttribute = InArgs._IsFocused;
+	ValueAttribute = InArgs._Value;
+	PartDelegate = InArgs._Part;
+	BuiltInDelegate = InArgs._BuiltIn;
+	MouseDownHandler = InArgs._OnMouseButtonDown;
+	ChildSlot
+	.Padding(InArgs._Padding)
+	[
+		InArgs._Content.Widget
+	];
+}
+
+FReply SMenuPartBox::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	if (MouseDownHandler.IsBound())
+	{
+		return MouseDownHandler.Execute(MyGeometry, MouseEvent);
+	}
+	return SCompoundWidget::OnMouseButtonDown(MyGeometry, MouseEvent);
+}
+
+int32 SMenuPartBox::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
+{
+	const FMenuStyle& Style = StyleHolder->Style;
+	const FMenuStylePalette& Palette = StyleHolder->Palette();
+	const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
+
+	FMenuPartState State;
+	State.Hover = IsHovered() ? 1.f : 0.f;
+	State.Focus = IsFocusedAttribute.Get(false) ? 1.f : 0.f;
+	State.bSelected = IsSelectedAttribute.Get(false);
+	State.bDisabled = !ShouldBeEnabled(bParentEnabled);
+	State.Value = ValueAttribute.Get(-1.f);
+
+	const FMenuBuiltInBox Box = BuiltInDelegate.IsBound() ? BuiltInDelegate.Execute(Style, State) : FMenuBuiltInBox();
+	const FMenuPartSkin* Part = PartDelegate.IsBound() ? PartDelegate.Execute(Style) : nullptr;
+	if (!Part || Part->DrawsBuiltIn())
+	{
+		MenuDraw::RoundedBox(OutDrawElements, LayerId, AllottedGeometry, Box.Fill * Tint, Box.Radius, Box.Outline * Tint, Box.OutlineWidth);
+	}
+	if (Part)
+	{
+		Painter.Draw(OutDrawElements, LayerId + 1, AllottedGeometry, *Part, State, Box.Fill.A > 0.f ? Box.Fill : Palette.Surface, Palette, Tint, *this, 0);
+	}
+	return SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId + 2, InWidgetStyle, bParentEnabled);
+}
+
+// =====================================================================================================
+//  Custom part
+// =====================================================================================================
+
+void SMenuCustomPart::Construct(const FArguments& InArgs)
+{
+	bFocusable = InArgs._IsFocusable;
+	ClickedDelegate = InArgs._OnClicked;
+	PointerStateDelegate = InArgs._OnPointerState;
+	BackDelegate = InArgs._OnBack;
+	ChildSlot
+	[
+		InArgs._Content.Widget
+	];
+}
+
+void SMenuCustomPart::SendState()
+{
+	PointerStateDelegate.ExecuteIfBound(IsHovered(), bPressed);
+}
+
+FReply SMenuCustomPart::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton && IsEnabled() && ClickedDelegate.IsBound())
+	{
+		bPressed = true;
+		SendState();
+		return FReply::Handled().CaptureMouse(SharedThis(this));
+	}
+	return FReply::Unhandled();
+}
+
+FReply SMenuCustomPart::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	if (!bPressed)
+	{
+		return FReply::Unhandled();
+	}
+	bPressed = false;
+	SendState();
+	if (MyGeometry.IsUnderLocation(MouseEvent.GetScreenSpacePosition()))
+	{
+		ClickedDelegate.ExecuteIfBound();
+	}
+	return FReply::Handled().ReleaseMouseCapture();
+}
+
+void SMenuCustomPart::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	SCompoundWidget::OnMouseEnter(MyGeometry, MouseEvent);
+	SendState();
+}
+
+void SMenuCustomPart::OnMouseLeave(const FPointerEvent& MouseEvent)
+{
+	SCompoundWidget::OnMouseLeave(MouseEvent);
+	bPressed = false;
+	SendState();
+}
+
+FReply SMenuCustomPart::OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent)
+{
+	if (BackDelegate.IsBound() && MenuControlsLocal::IsBackKey(InKeyEvent))
+	{
+		BackDelegate.Execute();
+		return FReply::Handled();
+	}
+	if (bFocusable && ClickedDelegate.IsBound() && MenuControlsLocal::IsAcceptKey(InKeyEvent) && HasKeyboardFocus())
+	{
+		ClickedDelegate.Execute();
+		return FReply::Handled();
+	}
+	return SCompoundWidget::OnKeyDown(MyGeometry, InKeyEvent);
 }
 
 // =====================================================================================================
@@ -110,14 +334,19 @@ void SMenuButton::Construct(const FArguments& InArgs, const FMenuStyleRef& InSty
 	HoveredDelegate = InArgs._OnHovered;
 	Highlight.Snap(0.f);
 
-	FMargin ContentPadding(18.f, 10.f);
+	const FMenuStyle& ConstructStyle = StyleHolder->Style;
+	FMargin ContentPadding = ConstructStyle.ButtonPadding;
 	switch (Kind)
 	{
-	case EMenuButtonKind::Tab: ContentPadding = FMargin(14.f, 8.f); break;
+	case EMenuButtonKind::Tab: ContentPadding = ConstructStyle.TabPadding; break;
+	case EMenuButtonKind::Segment: ContentPadding = FMargin(10.f, 6.f); break;
 	case EMenuButtonKind::ListItem: ContentPadding = FMargin(16.f, 11.f); break;
 	case EMenuButtonKind::Ghost: ContentPadding = FMargin(10.f, 6.f); break;
 	default: break;
 	}
+	const bool bUppercase = Kind == EMenuButtonKind::Tab ? ConstructStyle.bUppercaseTabs
+		: (Kind == EMenuButtonKind::Primary || Kind == EMenuButtonKind::Secondary || Kind == EMenuButtonKind::Ghost) ? ConstructStyle.bUppercaseButtons : false;
+	const TAttribute<FText> TextAttribute = InArgs._Text;
 
 	const bool bHasIcon = InArgs._Icon.HasImage();
 	const bool bIconOnly = bHasIcon && InArgs._IconOnly;
@@ -142,7 +371,7 @@ void SMenuButton::Construct(const FArguments& InArgs, const FMenuStyleRef& InSty
 			.VAlign(VAlign_Center)
 			[
 				SNew(STextBlock)
-				.Text(InArgs._Text)
+				.Text_Lambda([TextAttribute, bUppercase]() { return bUppercase ? TextAttribute.Get(FText::GetEmpty()).ToUpper() : TextAttribute.Get(FText::GetEmpty()); })
 				.Font(this, &SMenuButton::GetFont)
 				.ColorAndOpacity(this, &SMenuButton::GetTextColor)
 			];
@@ -168,7 +397,8 @@ FSlateFontInfo SMenuButton::GetFont() const
 	const FMenuStyle& Style = StyleHolder->Style;
 	switch (Kind)
 	{
-	case EMenuButtonKind::Tab: return Style.TabFont;
+	case EMenuButtonKind::Tab:
+	case EMenuButtonKind::Segment: return Style.TabFont;
 	case EMenuButtonKind::ListItem: return Style.LabelFont;
 	default: return Style.ButtonFont;
 	}
@@ -187,6 +417,7 @@ FSlateColor SMenuButton::GetTextColor() const
 	case EMenuButtonKind::Primary:
 		return MenuDraw::ReadableOn(Palette.Accent);
 	case EMenuButtonKind::Tab:
+	case EMenuButtonKind::Segment:
 		if (bSelected && StyleHolder->Style.TabStyle != EMenuTabStyle::Underline)
 		{
 			return Palette.AccentText;
@@ -288,6 +519,7 @@ int32 SMenuButton::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeom
 	const float Radius = Style.CornerRadius;
 	const FVector2f Size(AllottedGeometry.GetLocalSize());
 	const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
+	const bool bTabLike = Kind == EMenuButtonKind::Tab || Kind == EMenuButtonKind::Segment;
 	auto Mix = [](const FLinearColor& A, const FLinearColor& B, float Alpha) { return FMath::Lerp(A, B, Alpha); };
 
 	FLinearColor Fill = FLinearColor::Transparent;
@@ -311,6 +543,7 @@ int32 SMenuButton::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeom
 		Fill = (bFocused || Hover > 0.f) ? Mix(Palette.Row, Palette.RowFocused, FMath::Max(Hover, bFocused ? 1.f : 0.f)) : FLinearColor::Transparent;
 		break;
 	case EMenuButtonKind::Tab:
+	case EMenuButtonKind::Segment:
 		switch (Style.TabStyle)
 		{
 		case EMenuTabStyle::Pills:
@@ -333,20 +566,49 @@ int32 SMenuButton::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeom
 		Fill = Fill * 0.85f;
 	}
 
-	const float BoxRadius = (Kind == EMenuButtonKind::Tab && Style.TabStyle == EMenuTabStyle::Pills) ? Size.Y * 0.5f : Radius;
-	MenuDraw::RoundedBox(OutDrawElements, LayerId, AllottedGeometry, Fill * Tint, BoxRadius, Outline * Tint, OutlineWidth);
+	const FMenuStyleSkin& Skin = Style.Skin;
+	const FMenuPartSkin* Part = nullptr;
+	switch (Kind)
+	{
+	case EMenuButtonKind::Primary: Part = &Skin.PrimaryButton; break;
+	case EMenuButtonKind::Secondary: Part = &Skin.SecondaryButton; break;
+	case EMenuButtonKind::Ghost: Part = &Skin.GhostButton; break;
+	case EMenuButtonKind::Tab: Part = &Skin.Tab; break;
+	case EMenuButtonKind::Segment: Part = &Skin.Segment; break;
+	default: Part = &Skin.ListOption; break;
+	}
+	FMenuPartState State;
+	State.Hover = Hover;
+	State.Focus = bFocused ? 1.f : 0.f;
+	State.bPressed = bPressed;
+	State.bSelected = bSelected;
+	State.bDisabled = !ShouldBeEnabled(bParentEnabled);
+
+	const float BoxRadius = (bTabLike && Style.TabStyle == EMenuTabStyle::Pills) ? Size.Y * 0.5f : Radius;
+	const bool bBuiltIn = Part->DrawsBuiltIn();
+	if (bBuiltIn)
+	{
+		MenuDraw::RoundedBox(OutDrawElements, LayerId, AllottedGeometry, Fill * Tint, BoxRadius, Outline * Tint, OutlineWidth);
+	}
+	Painter.Draw(OutDrawElements, LayerId, AllottedGeometry, *Part, State, Fill.A > 0.f ? Fill : Palette.Accent, Palette, Tint, *this, 0);
 
 	if (Kind == EMenuButtonKind::Tab && Style.TabStyle == EMenuTabStyle::Underline && (bSelected || Hover > 0.f))
 	{
 		const float BarWidth = Size.X * (bSelected ? 0.8f : 0.4f * Hover);
 		const FLinearColor BarColor = bSelected ? Palette.Accent : Palette.Track;
-		MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 1, AllottedGeometry, FVector2f((Size.X - BarWidth) * 0.5f, Size.Y - 3.f), FVector2f(BarWidth, 3.f), BarColor * Tint, 1.5f);
+		const FVector2f BarOffset((Size.X - BarWidth) * 0.5f, Size.Y - 3.f);
+		const FVector2f BarSize(BarWidth, 3.f);
+		if (Skin.TabIndicator.DrawsBuiltIn())
+		{
+			MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 1, AllottedGeometry, BarOffset, BarSize, BarColor * Tint, 1.5f);
+		}
+		Painter.Draw(OutDrawElements, LayerId + 1, AllottedGeometry, Skin.TabIndicator, State, BarColor, Palette, Tint, *this, 1, BarOffset, BarSize);
 	}
-	if (Kind == EMenuButtonKind::ListItem && bSelected)
+	if (Kind == EMenuButtonKind::ListItem && bSelected && bBuiltIn)
 	{
 		MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 1, AllottedGeometry, FVector2f(4.f, Size.Y * 0.25f), FVector2f(3.f, Size.Y * 0.5f), Palette.Accent * Tint, 1.5f);
 	}
-	if (bFocused && Style.FocusOutlineWidth > 0.f && Kind != EMenuButtonKind::ListItem)
+	if (bFocused && bBuiltIn && Style.FocusOutlineWidth > 0.f && Kind != EMenuButtonKind::ListItem)
 	{
 		MenuDraw::RoundedBox(OutDrawElements, LayerId + 1, AllottedGeometry, FLinearColor::Transparent, BoxRadius, Palette.FocusOutline * Tint, Style.FocusOutlineWidth);
 	}
@@ -401,16 +663,36 @@ FCursorReply SMenuSwitch::OnCursorQuery(const FGeometry& MyGeometry, const FPoin
 int32 SMenuSwitch::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
 	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
+	const FMenuStyleSkin& Skin = StyleHolder->Style.Skin;
 	const FMenuStylePalette& Palette = StyleHolder->Palette();
-	const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint() * (ShouldBeEnabled(bParentEnabled) ? 1.f : 0.45f);
+	const bool bEnabled = ShouldBeEnabled(bParentEnabled);
+	const FLinearColor WidgetTint = InWidgetStyle.GetColorAndOpacityTint();
+	const FLinearColor Tint = WidgetTint * (bEnabled ? 1.f : 0.45f);
 	const FVector2f Size(AllottedGeometry.GetLocalSize());
 	const float Alpha = FMath::Clamp(Knob.Value, 0.f, 1.f);
+
+	FMenuPartState State;
+	State.Hover = IsHovered() ? 1.f : 0.f;
+	State.Focus = FocusedAttribute.Get(false) ? 1.f : 0.f;
+	State.bSelected = IsOnAttribute.Get(false);
+	State.bDisabled = !bEnabled;
+	State.Value = Knob.Value;
+
 	const FLinearColor Track = FMath::Lerp(Palette.Track, Palette.Accent, Alpha);
-	MenuDraw::RoundedBox(OutDrawElements, LayerId, AllottedGeometry, Track * Tint, Size.Y * 0.5f);
+	if (Skin.SwitchTrack.DrawsBuiltIn())
+	{
+		MenuDraw::RoundedBox(OutDrawElements, LayerId, AllottedGeometry, Track * Tint, Size.Y * 0.5f);
+	}
+	Painter.Draw(OutDrawElements, LayerId, AllottedGeometry, Skin.SwitchTrack, State, Track, Palette, WidgetTint, *this, 0);
+
 	const float KnobSize = Size.Y - 6.f;
 	const float KnobX = 3.f + (Size.X - KnobSize - 6.f) * Knob.Value;
-	MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 1, AllottedGeometry, FVector2f(KnobX, 3.f), FVector2f(KnobSize, KnobSize),
-		FMath::Lerp(Palette.Text, MenuDraw::ReadableOn(Palette.Accent), Alpha) * Tint, KnobSize * 0.5f);
+	const FLinearColor KnobColor = FMath::Lerp(Palette.Text, MenuDraw::ReadableOn(Palette.Accent), Alpha);
+	if (Skin.SwitchKnob.DrawsBuiltIn())
+	{
+		MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 1, AllottedGeometry, FVector2f(KnobX, 3.f), FVector2f(KnobSize, KnobSize), KnobColor * Tint, KnobSize * 0.5f);
+	}
+	Painter.Draw(OutDrawElements, LayerId + 1, AllottedGeometry, Skin.SwitchKnob, State, KnobColor, Palette, WidgetTint, *this, 1, FVector2f(KnobX, 3.f), FVector2f(KnobSize, KnobSize));
 	return LayerId + 1;
 }
 
@@ -429,7 +711,7 @@ void SMenuSlider::Construct(const FArguments& InArgs, const FMenuStyleRef& InSty
 float SMenuSlider::FractionAt(const FGeometry& MyGeometry, const FVector2D& ScreenPosition) const
 {
 	const FVector2D Local = MyGeometry.AbsoluteToLocal(ScreenPosition);
-	const double Inset = 8.0;
+	const double Inset = FMath::Max(8.0, StyleHolder->Style.SliderThumbSize * 0.5 + 0.0);
 	const double Width = FMath::Max(1.0, MyGeometry.GetLocalSize().X - Inset * 2.0);
 	return FMath::Clamp(static_cast<float>((Local.X - Inset) / Width), 0.f, 1.f);
 }
@@ -483,19 +765,56 @@ FCursorReply SMenuSlider::OnCursorQuery(const FGeometry& MyGeometry, const FPoin
 int32 SMenuSlider::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
 	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
+	const FMenuStyle& Style = StyleHolder->Style;
+	const FMenuStyleSkin& Skin = Style.Skin;
 	const FMenuStylePalette& Palette = StyleHolder->Palette();
-	const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint() * (ShouldBeEnabled(bParentEnabled) ? 1.f : 0.45f);
+	const bool bEnabled = ShouldBeEnabled(bParentEnabled);
+	const FLinearColor WidgetTint = InWidgetStyle.GetColorAndOpacityTint();
+	const FLinearColor Tint = WidgetTint * (bEnabled ? 1.f : 0.45f);
 	const FVector2f Size(AllottedGeometry.GetLocalSize());
 	const float Fraction = bDragging ? DragFraction : FMath::Clamp(FractionAttribute.Get(0.f), 0.f, 1.f);
-	const float Inset = 8.f;
-	const float TrackHeight = 6.f;
+	const float Inset = FMath::Max(8.f, Style.SliderThumbSize * 0.5f);
+	const float TrackHeight = Style.SliderTrackHeight;
 	const float Width = FMath::Max(1.f, Size.X - Inset * 2.f);
 	const float TrackY = (Size.Y - TrackHeight) * 0.5f;
-	MenuDraw::RoundedBoxAt(OutDrawElements, LayerId, AllottedGeometry, FVector2f(Inset, TrackY), FVector2f(Width, TrackHeight), Palette.Track * Tint, TrackHeight * 0.5f);
-	MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 1, AllottedGeometry, FVector2f(Inset, TrackY), FVector2f(Width * Fraction, TrackHeight), Palette.Accent * Tint, TrackHeight * 0.5f);
-	const float KnobSize = (bDragging || IsHovered()) ? 18.f : 16.f;
-	MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 2, AllottedGeometry, FVector2f(Inset + Width * Fraction - KnobSize * 0.5f, (Size.Y - KnobSize) * 0.5f),
-		FVector2f(KnobSize, KnobSize), Palette.Text * Tint, KnobSize * 0.5f, Palette.Accent * Tint, 2.f);
+
+	FMenuPartState State;
+	State.Hover = IsHovered() ? 1.f : 0.f;
+	State.bPressed = bDragging;
+	State.bDisabled = !bEnabled;
+	State.Value = Fraction;
+
+	const FVector2f TrackOffset(Inset, TrackY);
+	const FVector2f TrackSize(Width, TrackHeight);
+	if (Skin.SliderTrack.DrawsBuiltIn())
+	{
+		MenuDraw::RoundedBoxAt(OutDrawElements, LayerId, AllottedGeometry, TrackOffset, TrackSize, Palette.Track * Tint, TrackHeight * 0.5f);
+	}
+	Painter.Draw(OutDrawElements, LayerId, AllottedGeometry, Skin.SliderTrack, State, Palette.Track, Palette, WidgetTint, *this, 0, TrackOffset, TrackSize);
+
+	if (Skin.SliderFill.DrawsBuiltIn())
+	{
+		MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 1, AllottedGeometry, TrackOffset, FVector2f(Width * Fraction, TrackHeight), Palette.Accent * Tint, TrackHeight * 0.5f);
+	}
+	if (Skin.SliderFill.IsSet() && Fraction > 0.f)
+	{
+		// The fill's image covers the whole track, cut at the value: an image isn't squashed as the value changes.
+		const FGeometry FillClip = AllottedGeometry.MakeChild(FVector2f(Width * Fraction, Size.Y), FSlateLayoutTransform(FVector2f(Inset, 0.f)));
+		OutDrawElements.PushClip(FSlateClippingZone(FillClip));
+		Painter.Draw(OutDrawElements, LayerId + 1, AllottedGeometry, Skin.SliderFill, State, Palette.Accent, Palette, WidgetTint, *this, 1, TrackOffset, TrackSize);
+		OutDrawElements.PopClip();
+	}
+
+	const float KnobSize = Style.SliderThumbSize + ((bDragging || IsHovered()) ? 2.f : 0.f);
+	if (KnobSize > 0.f)
+	{
+		const FVector2f KnobOffset(Inset + Width * Fraction - KnobSize * 0.5f, (Size.Y - KnobSize) * 0.5f);
+		if (Skin.SliderThumb.DrawsBuiltIn())
+		{
+			MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 2, AllottedGeometry, KnobOffset, FVector2f(KnobSize, KnobSize), Palette.Text * Tint, KnobSize * 0.5f, Palette.Accent * Tint, 2.f);
+		}
+		Painter.Draw(OutDrawElements, LayerId + 2, AllottedGeometry, Skin.SliderThumb, State, Palette.Text, Palette, WidgetTint, *this, 2, KnobOffset, FVector2f(KnobSize, KnobSize));
+	}
 	return LayerId + 2;
 }
 
@@ -574,6 +893,7 @@ int32 SMenuSelector::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGe
 	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
 	const FMenuStyle& Style = StyleHolder->Style;
+	const FMenuStyleSkin& Skin = Style.Skin;
 	const FMenuStylePalette& Palette = StyleHolder->Palette();
 	const bool bEnabled = ShouldBeEnabled(bParentEnabled);
 	const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
@@ -582,36 +902,87 @@ int32 SMenuSelector::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGe
 	const FVector2f TextSize = MenuDraw::MeasureText(Value, Style.ValueFont);
 	const FLinearColor TextColor = bEnabled ? Palette.Text : Palette.DisabledText;
 	const int32 Count = OptionCountAttribute.Get(0);
+	const int32 Current = OptionIndexAttribute.Get(0);
 	const bool bPips = !bDropdown && Style.bShowPips && Count > 1 && Count <= 12;
-	const float TextY = (Size.Y - TextSize.Y) * 0.5f - (bPips ? 4.f : 0.f);
+	const float PipSpace = bPips ? Style.PipHeight + 1.f : 0.f;
+	const float TextY = (Size.Y - TextSize.Y) * 0.5f - PipSpace;
+
+	FMenuPartState State;
+	State.Hover = IsHovered() ? 1.f : 0.f;
+	State.bDisabled = !bEnabled;
+	State.Value = Count > 1 ? static_cast<float>(Current) / static_cast<float>(Count - 1) : -1.f;
 
 	if (bDropdown)
 	{
-		MenuDraw::RoundedBox(OutDrawElements, LayerId, AllottedGeometry, Palette.Row * Tint, Style.CornerRadius, Palette.Track * Tint, Style.OutlineWidth);
+		if (Skin.Dropdown.DrawsBuiltIn())
+		{
+			MenuDraw::RoundedBox(OutDrawElements, LayerId, AllottedGeometry, Palette.Row * Tint, Style.CornerRadius, Palette.Track * Tint, Style.OutlineWidth);
+		}
+		Painter.Draw(OutDrawElements, LayerId, AllottedGeometry, Skin.Dropdown, State, Palette.Row, Palette, Tint, *this, 0);
 		MenuDraw::Text(OutDrawElements, LayerId + 1, AllottedGeometry, Value, Style.ValueFont, FVector2f(14.f, (Size.Y - TextSize.Y) * 0.5f), TextColor * Tint);
-		MenuDraw::Chevron(OutDrawElements, LayerId + 1, AllottedGeometry, FVector2f(Size.X - 18.f, Size.Y * 0.5f), 5.f, 0, Palette.MutedText * Tint);
+		const float ArrowHalf = Style.SelectorArrowSize * 0.85f;
+		const FVector2f ArrowCenter(Size.X - 18.f, Size.Y * 0.5f);
+		if (Skin.DropdownArrow.DrawsBuiltIn())
+		{
+			MenuDraw::Chevron(OutDrawElements, LayerId + 1, AllottedGeometry, ArrowCenter, ArrowHalf, 0, Palette.MutedText * Tint);
+		}
+		Painter.Draw(OutDrawElements, LayerId + 1, AllottedGeometry, Skin.DropdownArrow, State, Palette.MutedText, Palette, Tint, *this, 1,
+			ArrowCenter - FVector2f(ArrowHalf, ArrowHalf), FVector2f(ArrowHalf * 2.f, ArrowHalf * 2.f));
 		return LayerId + 1;
 	}
 
+	if (Skin.SelectorBox.IsSet())
+	{
+		Painter.Draw(OutDrawElements, LayerId, AllottedGeometry, Skin.SelectorBox, State, Palette.Row, Palette, Tint, *this, 2);
+	}
 	MenuDraw::Text(OutDrawElements, LayerId + 1, AllottedGeometry, Value, Style.ValueFont, FVector2f((Size.X - TextSize.X) * 0.5f, TextY), TextColor * Tint);
 	const float Glow = PulseTime > 0.f ? PulseTime / 0.18f : 0.f;
 	const bool bLeft = bEnabled && CanStepLeftAttribute.Get(true);
 	const bool bRight = bEnabled && CanStepRightAttribute.Get(true);
 	const FLinearColor LeftColor = bLeft ? FMath::Lerp(Palette.MutedText, Palette.Accent, PulseDirection < 0 ? Glow : 0.f) : Palette.DisabledText;
 	const FLinearColor RightColor = bRight ? FMath::Lerp(Palette.MutedText, Palette.Accent, PulseDirection > 0 ? Glow : 0.f) : Palette.DisabledText;
-	MenuDraw::Chevron(OutDrawElements, LayerId + 1, AllottedGeometry, FVector2f(14.f - (PulseDirection < 0 ? Glow * 3.f : 0.f), Size.Y * 0.5f), 6.f, -1, LeftColor * Tint);
-	MenuDraw::Chevron(OutDrawElements, LayerId + 1, AllottedGeometry, FVector2f(Size.X - 14.f + (PulseDirection > 0 ? Glow * 3.f : 0.f), Size.Y * 0.5f), 6.f, 1, RightColor * Tint);
+	const float ArrowHalf = Style.SelectorArrowSize;
+	const FVector2f LeftCenter(8.f + ArrowHalf - (PulseDirection < 0 ? Glow * 3.f : 0.f), Size.Y * 0.5f);
+	const FVector2f RightCenter(Size.X - 8.f - ArrowHalf + (PulseDirection > 0 ? Glow * 3.f : 0.f), Size.Y * 0.5f);
+	if (Skin.SelectorArrow.DrawsBuiltIn())
+	{
+		MenuDraw::Chevron(OutDrawElements, LayerId + 1, AllottedGeometry, LeftCenter, ArrowHalf, -1, LeftColor * Tint);
+		MenuDraw::Chevron(OutDrawElements, LayerId + 1, AllottedGeometry, RightCenter, ArrowHalf, 1, RightColor * Tint);
+	}
+	if (Skin.SelectorArrow.IsSet())
+	{
+		const FVector2f ArrowBox(ArrowHalf * 2.f, ArrowHalf * 2.f);
+		FMenuPartState LeftState = State;
+		LeftState.bDisabled = !bLeft;
+		LeftState.bPressed = PulseDirection < 0 && Glow > 0.f;
+		FMenuPartState RightState = State;
+		RightState.bDisabled = !bRight;
+		RightState.bPressed = PulseDirection > 0 && Glow > 0.f;
+		Painter.Draw(OutDrawElements, LayerId + 1, AllottedGeometry, Skin.SelectorArrow, LeftState, LeftColor, Palette, Tint, *this, 3, LeftCenter - ArrowBox * 0.5f, ArrowBox);
+		Painter.Draw(OutDrawElements, LayerId + 1, AllottedGeometry, Skin.SelectorArrow, RightState, RightColor, Palette, Tint, *this, 4, RightCenter - ArrowBox * 0.5f, ArrowBox, UE_PI);
+	}
 
 	if (bPips)
 	{
-		const int32 Current = OptionIndexAttribute.Get(0);
+		const float PipHeight = Style.PipHeight;
 		const float PipWidth = FMath::Min(18.f, (Size.X - 80.f) / Count - 3.f);
 		const float Total = Count * PipWidth + (Count - 1) * 3.f;
 		float X = (Size.X - Total) * 0.5f;
 		for (int32 Index = 0; Index < Count; ++Index)
 		{
-			MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 1, AllottedGeometry, FVector2f(X, Size.Y - 6.f), FVector2f(PipWidth, 3.f),
-				(Index == Current ? Palette.Accent : Palette.Track) * Tint, 1.5f);
+			const FVector2f PipOffset(X, Size.Y - PipHeight - 3.f);
+			const FVector2f PipSize(PipWidth, PipHeight);
+			const FLinearColor PipColor = Index == Current ? Palette.Accent : Palette.Track;
+			if (Skin.Pip.DrawsBuiltIn())
+			{
+				MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 1, AllottedGeometry, PipOffset, PipSize, PipColor * Tint, PipHeight * 0.5f);
+			}
+			if (Skin.Pip.IsSet())
+			{
+				FMenuPartState PipState = State;
+				PipState.bSelected = Index == Current;
+				Painter.Draw(OutDrawElements, LayerId + 1, AllottedGeometry, Skin.Pip, PipState, PipColor, Palette, Tint, *this, 16 + Index, PipOffset, PipSize);
+			}
 			X += PipWidth + 3.f;
 		}
 	}
@@ -649,25 +1020,23 @@ void SMenuDialog::Construct(const FArguments& InArgs, const FMenuStyleRef& InSty
 	}
 
 	const TAttribute<FText> BodyAttribute = InArgs._Body;
-	CardBrush = MakeUnique<FSlateRoundedBoxBrush>(Palette.Surface, Style.CornerRadius * 1.5f, Palette.Divider, Style.OutlineWidth);
 	ChildSlot
 	[
 		SNew(SOverlay)
 		+ SOverlay::Slot()
 		[
-			SNew(SBorder)
-			.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
-			.BorderBackgroundColor_Lambda([Holder = StyleHolder]() { return FSlateColor(Holder->Palette().Scrim); })
+			MenuControlsLocal::MakeScrim(StyleHolder)
 		]
 		+ SOverlay::Slot()
 		.HAlign(HAlign_Center)
 		.VAlign(VAlign_Center)
 		[
 			SNew(SBox)
-			.WidthOverride(InArgs._Width)
+			.WidthOverride(InArgs._Width > 0.f ? InArgs._Width : Style.DialogWidth)
 			[
-				SNew(SBorder)
-				.BorderImage(CardBrush.Get())
+				SNew(SMenuPartBox, StyleHolder)
+				.Part_Lambda([](const FMenuStyle& PartStyle) { return &PartStyle.Skin.DialogCard; })
+				.BuiltIn_Static(&MenuControlsLocal::CardBox)
 				.Padding(FMargin(28.f, 24.f))
 				[
 					SNew(SVerticalBox)
@@ -762,7 +1131,6 @@ void SMenuOptionList::Construct(const FArguments& InArgs, const FMenuStyleRef& I
 	const FMenuStyle& Style = StyleHolder->Style;
 	const FMenuStylePalette& Palette = StyleHolder->Palette();
 
-	CardBrush = MakeUnique<FSlateRoundedBoxBrush>(Palette.Surface, Style.CornerRadius * 1.5f, Palette.Divider, Style.OutlineWidth);
 	SAssignNew(ScrollBox, SScrollBox);
 	for (int32 Index = 0; Index < InArgs._Options.Num(); ++Index)
 	{
@@ -791,9 +1159,7 @@ void SMenuOptionList::Construct(const FArguments& InArgs, const FMenuStyleRef& I
 		SNew(SOverlay)
 		+ SOverlay::Slot()
 		[
-			SNew(SBorder)
-			.BorderImage(FCoreStyle::Get().GetBrush("GenericWhiteBox"))
-			.BorderBackgroundColor(Palette.Scrim)
+			MenuControlsLocal::MakeScrim(StyleHolder)
 		]
 		+ SOverlay::Slot()
 		.HAlign(HAlign_Center)
@@ -803,8 +1169,9 @@ void SMenuOptionList::Construct(const FArguments& InArgs, const FMenuStyleRef& I
 			.WidthOverride(440.f)
 			.MaxDesiredHeight(560.f)
 			[
-				SNew(SBorder)
-				.BorderImage(CardBrush.Get())
+				SNew(SMenuPartBox, StyleHolder)
+				.Part_Lambda([](const FMenuStyle& PartStyle) { return &PartStyle.Skin.ListCard; })
+				.BuiltIn_Static(&MenuControlsLocal::CardBox)
 				.Padding(FMargin(10.f, 16.f))
 				[
 					SNew(SVerticalBox)

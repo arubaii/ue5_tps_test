@@ -14,6 +14,8 @@
 
 class SMenuSettingRow;
 class SMenuSettingsPanel;
+struct FMenuCustomRow;
+struct FMenuCustomRowRequest;
 class UMenuSettingRowWidget;
 class UMenuSettingsSchema;
 class UMenuSettingsSubsystem;
@@ -85,6 +87,14 @@ public:
 	/** Focus goes to the first setting when it is shown (pads need focus to start). */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Settings Menu")
 	bool bFocusOnShow = true;
+
+	/** Settings this menu doesn't list, by Id, wildcards allowed ("Video.Info.*"). The project's Hidden Settings hide them everywhere. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Settings Menu")
+	TArray<FString> HiddenSettings;
+
+	/** Sections this menu doesn't list, by section Id or title ("System", "Camera Effects"). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Settings Menu")
+	TArray<FName> HiddenSections;
 
 	// ---- Keys ----
 
@@ -196,20 +206,28 @@ protected:
 private:
 	UMenuSettingsSubsystem* FindSettings() const;
 	void HandleStyleChanged(const UMenuStyleAsset* Changed);
-	TSharedPtr<SWidget> MakeCustomRow(UMenuSetting* Setting);
+	FMenuCustomRow MakeCustomRow(const FMenuCustomRowRequest& Request);
+	UUserWidget* MakePartWidget(UClass* Class);
+	UUserWidget* CreateOwnedWidget(UClass* Class);
 
+	/** Builds the screen into PanelHost (again after a style change: custom part classes and alignments take effect). */
+	void RecreatePanel();
+
+	TSharedPtr<class SBox> PanelHost;
 	TSharedPtr<SMenuSettingsPanel> Panel;
 	FMenuStyleRef StyleHolder = MakeShared<FMenuStyleHolder>();
 	FDelegateHandle StyleHandle;
 	TWeakObjectPtr<UMenuSettingsSubsystem> SessionSettings;
 	bool bSessionOpen = false;
+	bool bPanelShownOnce = false;
 
 	/** The designer's pages (no player there). */
 	UPROPERTY(Transient)
 	TObjectPtr<UMenuSettingsSchema> PreviewSchema;
 
+	/** Custom rows and parts in use (let go of once their Slate widget is gone). */
 	UPROPERTY(Transient)
-	TArray<TObjectPtr<UMenuSettingRowWidget>> CustomRows;
+	TArray<TObjectPtr<UUserWidget>> CustomWidgets;
 };
 
 /**
@@ -247,6 +265,42 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMenuSettingsSchema> PreviewSchema;
+};
+
+/** What a custom row (or control) is told about the row it is: hovered, focused, pressed, usable, changed, waiting for a key. */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FMenuSettingRowState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly, Category = "Row")
+	bool bHovered = false;
+
+	/** Keyboard / gamepad focus on the row. */
+	UPROPERTY(BlueprintReadOnly, Category = "Row")
+	bool bFocused = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Row")
+	bool bPressed = false;
+
+	/** False while the setting can't be changed (Enabled When, availability). */
+	UPROPERTY(BlueprintReadOnly, Category = "Row")
+	bool bEnabled = true;
+
+	/** Changed from its default. */
+	UPROPERTY(BlueprintReadOnly, Category = "Row")
+	bool bModified = false;
+
+	/** A key binding row waiting for a key. */
+	UPROPERTY(BlueprintReadOnly, Category = "Row")
+	bool bWaitingForKey = false;
+
+	bool operator==(const FMenuSettingRowState& Other) const
+	{
+		return bHovered == Other.bHovered && bFocused == Other.bFocused && bPressed == Other.bPressed && bEnabled == Other.bEnabled
+			&& bModified == Other.bModified && bWaitingForKey == Other.bWaitingForKey;
+	}
+	bool operator!=(const FMenuSettingRowState& Other) const { return !(*this == Other); }
 };
 
 /**
@@ -321,13 +375,69 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Menu|Setting Row")
 	void RefreshRow();
 
+	// ---- The row's state (in a Settings Menu the row tells it; placed by hand, its own hover and focus) ----
+
+	/** For one placed by hand: the style Get Menu Style reads (in a Settings Menu: the menu's). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Setting")
+	TObjectPtr<UMenuStyleAsset> StyleAsset;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Setting")
+	FMenuSettingRowState RowState;
+
+	/** Hovered, focused, pressed, usable, changed or waiting for a key changed: animate highlights, chevrons, focus frames. */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Menu|Setting Row")
+	void OnRowStateChanged(const FMenuSettingRowState& NewState, const FMenuSettingRowState& PreviousState);
+
+	/** Left (-1) or right (1) pressed on the row (before the value steps): bump a chevron, slide a segment. */
+	UFUNCTION(BlueprintImplementableEvent, Category = "Menu|Setting Row")
+	void OnRowStepped(int32 StepDirection);
+
+	/** Accept pressed on the row. Return true when you handled it (opened your own list): the row then does nothing else. */
+	UFUNCTION(BlueprintNativeEvent, Category = "Menu|Setting Row")
+	bool OnRowActivated();
+
+	/** The style of the menu showing it (or Style Asset, else the project's default): colours, fonts, sizes. */
+	UFUNCTION(BlueprintPure, Category = "Menu|Setting Row")
+	FMenuStyle GetMenuStyle() const;
+
+	/** The palette in use (High Contrast Colors while High Contrast Menus is on). */
+	UFUNCTION(BlueprintPure, Category = "Menu|Setting Row")
+	FMenuStylePalette GetMenuPalette() const;
+
+	/** Shown by a Settings Menu (rather than placed by hand). */
+	UFUNCTION(BlueprintPure, Category = "Menu|Setting Row")
+	bool IsInSettingsMenu() const { return bInSettingsMenu; }
+
+	/** C++: from the row showing it. */
+	void SetRowState(const FMenuSettingRowState& NewState);
+	void HandleRowStepped(int32 StepDirection) { OnRowStepped(StepDirection); }
+	bool HandleRowActivated() { return OnRowActivated(); }
+	void SetMenuStyleHolder(const FMenuStyleRef& InHolder);
+
 protected:
 	virtual void NativeConstruct() override;
 	virtual void NativeDestruct() override;
+	virtual void NativeOnMouseEnter(const FGeometry& InGeometry, const FPointerEvent& InMouseEvent) override;
+	virtual void NativeOnMouseLeave(const FPointerEvent& InMouseEvent) override;
+	virtual void NativeOnAddedToFocusPath(const FFocusEvent& InFocusEvent) override;
+	virtual void NativeOnRemovedFromFocusPath(const FFocusEvent& InFocusEvent) override;
 
 private:
 	void HandleSettingChanged(FName ChangedId, const FString& NewValue);
 	FDelegateHandle ChangedHandle;
+	TSharedPtr<FMenuStyleHolder> MenuStyleHolder;
+	bool bInSettingsMenu = false;
+};
+
+/**
+ * Your own control in UMG for the right side of the built-in row (a custom switch, slider or selector): the row keeps its name,
+ * highlight, focus bar and messages, and tells your control its state. Use it in a Menu Style's Custom Widgets > Rules with Part
+ * Control. Everything of Menu Setting Row Widget works the same (value, Set Value, Step, events).
+ */
+UCLASS(Abstract, Blueprintable, meta = (DisplayName = "Menu Setting Control Widget"))
+class NAMETBD_API UMenuSettingControlWidget : public UMenuSettingRowWidget
+{
+	GENERATED_BODY()
 };
 
 /**

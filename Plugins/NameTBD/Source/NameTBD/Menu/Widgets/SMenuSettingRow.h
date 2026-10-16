@@ -10,6 +10,7 @@
 
 class SMenuKeyGlyph;
 class SMenuSelector;
+class UMenuSettingRowWidget;
 class SMenuSettingRow;
 class STextBlock;
 class UMenuSettingsSubsystem;
@@ -90,6 +91,12 @@ class NAMETBD_API SMenuSettingRow : public SCompoundWidget
 {
 public:
 	SLATE_BEGIN_ARGS(SMenuSettingRow) {}
+		/** Your UMG widget as the whole row: the row draws nothing itself and keeps doing the work (focus, steps, sounds, narration). */
+		SLATE_ARGUMENT(TSharedPtr<SWidget>, CustomRow)
+		/** Your UMG widget as the control on the right of the built-in row. */
+		SLATE_ARGUMENT(TSharedPtr<SWidget>, CustomControl)
+		/** The UMG widget told about the row's state, its steps and Accept. */
+		SLATE_ARGUMENT(TWeakObjectPtr<UMenuSettingRowWidget>, CustomWidget)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs, IMenuSettingsRowHost* InHost, UMenuSetting* InSetting);
@@ -136,6 +143,7 @@ public:
 	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
 	virtual FNavigationReply OnNavigation(const FGeometry& MyGeometry, const FNavigationEvent& InNavigationEvent) override;
 	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual void OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual void OnMouseLeave(const FPointerEvent& MouseEvent) override;
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
@@ -150,6 +158,14 @@ private:
 	void RunAction();
 	EActiveTimerReturnType Animate(double InCurrentTime, float InDeltaTime);
 	void StartAnimating();
+	FMenuPartState GetPartState() const;
+	bool IsRowFocused() const;
+
+	/** Tells a custom widget the row's state when it changed. */
+	void NotifyCustomWidget();
+
+	TWeakObjectPtr<UMenuSettingRowWidget> CustomWidget;
+	bool bCustomRow = false;
 
 	IMenuSettingsRowHost* Host = nullptr;
 	TWeakObjectPtr<UMenuSetting> Setting;
@@ -175,7 +191,6 @@ private:
 	TSharedPtr<FMenuKeyCaptureProcessor> CaptureProcessor;
 	TArray<TSharedPtr<SMenuKeyGlyph>> SlotGlyphs;
 	TArray<FKey> SlotKeys;
-	TUniquePtr<FSlateBrush> SlotBrush;
 	FKey QueuedKey;
 	bool bQueuedCancel = false;
 	bool bQueued = false;
@@ -183,6 +198,9 @@ private:
 	void StopCaptureProcessor();
 
 	TSharedPtr<SMenuSelector> SelectorWidget;
+	TSharedPtr<SMenuSwitch> SwitchWidget;
 	FWidgetMotionValue Highlight;
+	FMenuSkinPainter SkinPainter;
 	bool bAnimating = false;
+	bool bPressedVisual = false;
 };

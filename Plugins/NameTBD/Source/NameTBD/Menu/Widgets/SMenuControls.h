@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/SLeafWidget.h"
+#include "NameTBD/Widgets/WidgetEffectImage.h"
 #include "NameTBD/Widgets/WidgetMotion.h"
 #include "MenuStyle.h"
 
@@ -44,6 +45,134 @@ namespace MenuDraw
 	NAMETBD_API FLinearColor ReadableOn(const FLinearColor& Background);
 }
 
+/** The state a menu part is drawn in: picks its skin's image and is handed to a material. */
+struct FMenuPartState
+{
+	/** 0..1, eased. */
+	float Hover = 0.f;
+	float Focus = 0.f;
+	bool bPressed = false;
+	bool bSelected = false;
+	bool bDisabled = false;
+	/** 0..1 (a slider, a switch's knob, a selector's option); -1: none. */
+	float Value = -1.f;
+};
+
+/**
+ * Draws style parts in their skin (FMenuPartSkin): the state's image, a material's live inputs, the tint. One per widget: it owns
+ * the material instances and SVG drawings of the parts that widget draws, one per Key.
+ */
+class NAMETBD_API FMenuSkinPainter
+{
+public:
+	/**
+	 * Draws Part over Geometry - or over Size at Offset in it, turned by Angle (radians) round its middle. False when the part has
+	 * no image (draw the built-in shape); true when it was drawn (or its SVG is still being made).
+	 */
+	bool Draw(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& Geometry, const FMenuPartSkin& Part, const FMenuPartState& State,
+		const FLinearColor& PaletteColor, const FMenuStylePalette& Palette, const FLinearColor& WidgetTint, const SWidget& Widget, uint64 Key,
+		const FVector2f& Offset = FVector2f::ZeroVector, const FVector2f& Size = FVector2f::ZeroVector, float Angle = 0.f) const;
+
+	void Reset() { Materials.Reset(); }
+
+private:
+	mutable FWidgetEffectMaterials Materials;
+};
+
+/** A part's built-in look where it is a plain rounded box. */
+struct FMenuBuiltInBox
+{
+	FLinearColor Fill = FLinearColor::Transparent;
+	FLinearColor Outline = FLinearColor::Transparent;
+	float OutlineWidth = 0.f;
+	float Radius = 0.f;
+};
+
+DECLARE_DELEGATE_RetVal_OneParam(const FMenuPartSkin*, FOnMenuGetPart, const FMenuStyle& /*Style*/);
+DECLARE_DELEGATE_RetVal_TwoParams(FMenuBuiltInBox, FOnMenuGetBuiltInBox, const FMenuStyle& /*Style*/, const FMenuPartState& /*State*/);
+
+/**
+ * A box behind its content drawn as a style part: the part's skin when it has one, else its built-in rounded box (from the
+ * palette). Key slots, the search box, the description panel, the footer, cards, headings, the tab bar. Reads the style at paint.
+ */
+class NAMETBD_API SMenuPartBox : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SMenuPartBox)
+		: _Padding(FMargin(0.f))
+		, _IsSelected(false)
+		, _IsFocused(false)
+		, _Value(-1.f)
+	{}
+		SLATE_DEFAULT_SLOT(FArguments, Content)
+		SLATE_ATTRIBUTE(FMargin, Padding)
+		SLATE_ATTRIBUTE(bool, IsSelected)
+		SLATE_ATTRIBUTE(bool, IsFocused)
+		SLATE_ATTRIBUTE(float, Value)
+		/** The part, from the style. */
+		SLATE_EVENT(FOnMenuGetPart, Part)
+		/** The built-in look (none: nothing drawn without a skin). */
+		SLATE_EVENT(FOnMenuGetBuiltInBox, BuiltIn)
+		SLATE_EVENT(FPointerEventHandler, OnMouseButtonDown)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs, const FMenuStyleRef& InStyle);
+
+	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
+
+private:
+	FMenuStyleRef StyleHolder = MakeShared<FMenuStyleHolder>();
+	TAttribute<bool> IsSelectedAttribute;
+	TAttribute<bool> IsFocusedAttribute;
+	TAttribute<float> ValueAttribute;
+	FOnMenuGetPart PartDelegate;
+	FOnMenuGetBuiltInBox BuiltInDelegate;
+	FPointerEventHandler MouseDownHandler;
+	FMenuSkinPainter Painter;
+};
+
+DECLARE_DELEGATE(FOnMenuControlClicked);
+DECLARE_DELEGATE_TwoParams(FOnMenuPartPointerState, bool /*bHovered*/, bool /*bPressed*/);
+
+/**
+ * Holds a part made in UMG (a custom tab, prompt, dialog...): tells it when it is hovered and pressed, clicks it when your widget
+ * doesn't handle the click itself, and answers Back for dialogs and lists while focus is inside.
+ */
+class NAMETBD_API SMenuCustomPart : public SCompoundWidget
+{
+public:
+	SLATE_BEGIN_ARGS(SMenuCustomPart)
+		: _IsFocusable(false)
+	{}
+		SLATE_DEFAULT_SLOT(FArguments, Content)
+		SLATE_ARGUMENT(bool, IsFocusable)
+		SLATE_EVENT(FOnMenuControlClicked, OnClicked)
+		SLATE_EVENT(FOnMenuPartPointerState, OnPointerState)
+		/** Back (or Escape) while focus is inside. Unbound: not handled. */
+		SLATE_EVENT(FSimpleDelegate, OnBack)
+	SLATE_END_ARGS()
+
+	void Construct(const FArguments& InArgs);
+
+	virtual bool SupportsKeyboardFocus() const override { return bFocusable; }
+	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	virtual void OnMouseEnter(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
+	virtual void OnMouseLeave(const FPointerEvent& MouseEvent) override;
+	virtual FReply OnKeyDown(const FGeometry& MyGeometry, const FKeyEvent& InKeyEvent) override;
+
+private:
+	void SendState();
+
+	FOnMenuControlClicked ClickedDelegate;
+	FOnMenuPartPointerState PointerStateDelegate;
+	FSimpleDelegate BackDelegate;
+	bool bFocusable = false;
+	bool bPressed = false;
+};
+
 /** How a menu button looks. */
 enum class EMenuButtonKind : uint8
 {
@@ -56,10 +185,11 @@ enum class EMenuButtonKind : uint8
 	/** A page tab (the style's Tab Style). */
 	Tab,
 	/** An option in a list (fills the width, left aligned). */
-	ListItem
+	ListItem,
+	/** One of a Choice's options shown side by side (drawn like a tab; its own skin part). */
+	Segment
 };
 
-DECLARE_DELEGATE(FOnMenuControlClicked);
 DECLARE_DELEGATE_OneParam(FOnMenuControlHovered, bool /*bHovered*/);
 
 /** A button drawn in the menu style: dialogs, footer, tabs, actions, list options. */
@@ -108,6 +238,7 @@ private:
 	FOnMenuControlClicked ClickedDelegate;
 	FOnMenuControlHovered HoveredDelegate;
 	FWidgetMotionValue Highlight;
+	FMenuSkinPainter Painter;
 	bool bFocusable = true;
 	bool bPressed = false;
 	bool bAnimating = false;
@@ -126,19 +257,24 @@ public:
 
 	void Construct(const FArguments& InArgs, const FMenuStyleRef& InStyle);
 
-	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override { return FVector2D(52.f, 28.f); }
+	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override { return StyleHolder->Style.SwitchSize; }
 	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual FCursorReply OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const override;
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
 		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
+
+	/** Whether its row (or what holds it) has focus: drawn focused. */
+	void SetFocusedAttribute(const TAttribute<bool>& InFocused) { FocusedAttribute = InFocused; }
 
 private:
 	EActiveTimerReturnType Animate(double InCurrentTime, float InDeltaTime);
 
 	FMenuStyleRef StyleHolder = MakeShared<FMenuStyleHolder>();
 	TAttribute<bool> IsOnAttribute;
+	TAttribute<bool> FocusedAttribute;
 	FOnMenuSwitchToggled ToggledDelegate;
 	FWidgetMotionValue Knob;
+	FMenuSkinPainter Painter;
 	bool bLastOn = false;
 };
 
@@ -157,7 +293,11 @@ public:
 
 	void Construct(const FArguments& InArgs, const FMenuStyleRef& InStyle);
 
-	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override { return FVector2D(160.f, 24.f); }
+	virtual FVector2D ComputeDesiredSize(float LayoutScaleMultiplier) const override
+	{
+		const FMenuStyle& Style = StyleHolder->Style;
+		return FVector2D(160.f, FMath::Max(24.f, FMath::Max(Style.SliderThumbSize + 4.f, Style.SliderTrackHeight)));
+	}
 	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual FReply OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 	virtual FReply OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
@@ -172,6 +312,7 @@ private:
 	TAttribute<float> FractionAttribute;
 	FOnMenuSliderChanged ChangedDelegate;
 	FOnMenuSliderChanged CommittedDelegate;
+	FMenuSkinPainter Painter;
 	bool bDragging = false;
 	float DragFraction = 0.f;
 };
@@ -217,6 +358,7 @@ private:
 	TAttribute<bool> CanStepRightAttribute;
 	FOnMenuSelectorStep StepDelegate;
 	FOnMenuControlClicked OpenDelegate;
+	FMenuSkinPainter Painter;
 	bool bDropdown = false;
 	int32 PulseDirection = 0;
 	float PulseTime = 0.f;
@@ -245,6 +387,7 @@ public:
 		SLATE_ARGUMENT(TArray<FMenuDialogButton>, Buttons)
 		SLATE_ARGUMENT(int32, DefaultButton)
 		SLATE_ARGUMENT(int32, CancelButton)
+		/** 0: the style's Dialog Width. */
 		SLATE_ARGUMENT(float, Width)
 		/** More content between the body and the buttons (an option list). */
 		SLATE_NAMED_SLOT(FArguments, Extra)
@@ -265,7 +408,6 @@ private:
 	void Choose(int32 Index);
 
 	FMenuStyleRef StyleHolder = MakeShared<FMenuStyleHolder>();
-	TUniquePtr<FSlateBrush> CardBrush;
 	TArray<TSharedPtr<SMenuButton>> ButtonWidgets;
 	FOnMenuDialogChoice ChoiceDelegate;
 	int32 DefaultIndex = 0;
@@ -297,7 +439,6 @@ public:
 
 private:
 	FMenuStyleRef StyleHolder = MakeShared<FMenuStyleHolder>();
-	TUniquePtr<FSlateBrush> CardBrush;
 	TSharedPtr<SWidget> Card;
 	TArray<TSharedPtr<SMenuButton>> OptionWidgets;
 	TSharedPtr<SScrollBox> ScrollBox;

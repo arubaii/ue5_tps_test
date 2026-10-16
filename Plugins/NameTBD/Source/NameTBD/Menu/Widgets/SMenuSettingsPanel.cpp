@@ -20,6 +20,8 @@
 #include "NameTBD/Menu/Input/MenuKeyPrompt.h"
 #include "NameTBD/Menu/Settings/MenuSettingTargets.h"
 #include "NameTBD/Menu/Settings/MenuSettingsSubsystem.h"
+#include "MenuPartWidgets.h"
+#include "SettingsMenu.h"
 #include "SMenuImage.h"
 
 #define LOCTEXT_NAMESPACE "SMenuSettingsPanel"
@@ -53,6 +55,9 @@ void SMenuSettingsPanel::Construct(const FArguments& InArgs, const FMenuStyleRef
 	Texts = InArgs._Texts;
 	TitleAttribute = InArgs._Title;
 	MakeCustomRow = InArgs._MakeCustomRow;
+	MakePartWidget = InArgs._MakePartWidget;
+	HiddenSettings = InArgs._HiddenSettings;
+	HiddenSections = InArgs._HiddenSections;
 	BackDelegate = InArgs._OnBack;
 	PageChangedDelegate = InArgs._OnPageChanged;
 	SettingFocusedDelegate = InArgs._OnSettingFocused;
@@ -90,10 +95,12 @@ void SMenuSettingsPanel::Construct(const FArguments& InArgs, const FMenuStyleRef
 		}
 	}
 
-	SearchBrush = MakeUnique<FSlateRoundedBoxBrush>(FLinearColor::White, 18.f);
-	PanelBrush = MakeUnique<FSlateRoundedBoxBrush>(FLinearColor::White, 12.f);
+	UpdateScrollBarStyle();
+	// A material in the skin may animate: repaint every frame then.
+	ForceVolatile(StyleHolder->Style.Skin.UsesMaterial());
 
 	const FMenuStyleRef Holder = StyleHolder;
+	const FMenuStyle& BuildStyle = StyleHolder->Style;
 	ChildSlot
 	[
 		SNew(SOverlay)
@@ -128,6 +135,7 @@ void SMenuSettingsPanel::Construct(const FArguments& InArgs, const FMenuStyleRef
 				+ SHorizontalBox::Slot()
 				.FillWidth(1.f)
 				.VAlign(VAlign_Center)
+				.HAlign(BuildStyle.TitleAlignment.GetValue())
 				[
 					SNew(STextBlock)
 					.Text(TitleAttribute)
@@ -138,22 +146,7 @@ void SMenuSettingsPanel::Construct(const FArguments& InArgs, const FMenuStyleRef
 				.AutoWidth()
 				.VAlign(VAlign_Center)
 				[
-					SNew(SBox)
-					.WidthOverride(300.f)
-					.Visibility_Lambda([Holder]() { return Holder->Style.bShowSearch ? EVisibility::Visible : EVisibility::Collapsed; })
-					[
-						SNew(SBorder)
-						.BorderImage(SearchBrush.Get())
-						.BorderBackgroundColor_Lambda([Holder]() { return FSlateColor(Holder->Palette().Row); })
-						.Padding(FMargin(16.f, 8.f))
-						[
-							SAssignNew(SearchWidget, SEditableText)
-							.HintText(OrDefault(Texts.Search, LOCTEXT("Search", "Search settings")))
-							.Font_Lambda([Holder]() { return Holder->Style.LabelFont; })
-							.ColorAndOpacity_Lambda([Holder]() { return FSlateColor(Holder->Palette().Text); })
-							.OnTextChanged_Lambda([this](const FText& Text) { SetSearchText(Text); })
-						]
-					]
+					BuildSearch()
 				]
 			]
 
@@ -161,27 +154,32 @@ void SMenuSettingsPanel::Construct(const FArguments& InArgs, const FMenuStyleRef
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			.Padding(0.f, 20.f, 0.f, 0.f)
+			.HAlign(BuildStyle.TabsAlignment.GetValue())
 			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(0.f, 0.f, 12.f, 0.f)
+				SNew(SMenuPartBox, StyleHolder)
+				.Part_Lambda([](const FMenuStyle& PartStyle) { return &PartStyle.Skin.TabBar; })
 				[
-					MakePrompt(Keys.PreviousTab, FText::GetEmpty(), FSimpleDelegate::CreateSP(this, &SMenuSettingsPanel::StepPage, -1))
-				]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				[
-					SAssignNew(TabsBox, SHorizontalBox)
-				]
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(12.f, 0.f, 0.f, 0.f)
-				[
-					MakePrompt(Keys.NextTab, FText::GetEmpty(), FSimpleDelegate::CreateSP(this, &SMenuSettingsPanel::StepPage, 1))
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(0.f, 0.f, 12.f, 0.f)
+					[
+						MakePrompt(Keys.PreviousTab, FText::GetEmpty(), FSimpleDelegate::CreateSP(this, &SMenuSettingsPanel::StepPage, -1), EMenuFooterAction::PreviousTab)
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SAssignNew(TabsBox, SHorizontalBox)
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(12.f, 0.f, 0.f, 0.f)
+					[
+						MakePrompt(Keys.NextTab, FText::GetEmpty(), FSimpleDelegate::CreateSP(this, &SMenuSettingsPanel::StepPage, 1), EMenuFooterAction::NextTab)
+					]
 				]
 			]
 
@@ -219,6 +217,7 @@ void SMenuSettingsPanel::Construct(const FArguments& InArgs, const FMenuStyleRef
 						.RenderTransform_Lambda([this]() -> TOptional<FSlateRenderTransform> { return FSlateRenderTransform(FVector2f(PageSlide.Value, 0.f)); })
 						[
 							SAssignNew(ScrollBox, SScrollBox)
+							.ScrollBarStyle(&ScrollBarStyle)
 							+ SScrollBox::Slot()
 							[
 								SAssignNew(RowsBox, SVerticalBox)
@@ -246,10 +245,138 @@ void SMenuSettingsPanel::Construct(const FArguments& InArgs, const FMenuStyleRef
 		]
 	];
 
+	if (BuildStyle.ScrollBarThickness > 0.f)
+	{
+		ScrollBox->SetScrollBarThickness(FVector2D(BuildStyle.ScrollBarThickness, BuildStyle.ScrollBarThickness));
+	}
 	BuildTabs();
 	BuildRows();
 	UpdateFooterPrompts();
 	RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateSP(this, &SMenuSettingsPanel::HandleTick));
+}
+
+template <typename WidgetType>
+WidgetType* SMenuSettingsPanel::MakePart(const TSoftClassPtr<WidgetType>& Class)
+{
+	if (Class.IsNull() || !MakePartWidget)
+	{
+		return nullptr;
+	}
+	UClass* Loaded = Class.LoadSynchronous();
+	if (!Loaded || Loaded->HasAnyClassFlags(CLASS_Abstract))
+	{
+		return nullptr;
+	}
+	WidgetType* Widget = Cast<WidgetType>(MakePartWidget(Loaded));
+	if (Widget)
+	{
+		Widget->SetStyleHolder(StyleHolder);
+		CustomParts.Add(Widget);
+	}
+	return Widget;
+}
+
+void SMenuSettingsPanel::UpdateScrollBarStyle()
+{
+	const FMenuStyle& Style = StyleHolder->Style;
+	const FMenuStylePalette& Palette = StyleHolder->Palette();
+	ScrollBarStyle = FCoreStyle::Get().GetWidgetStyle<FScrollBarStyle>("ScrollBar");
+
+	// The thumb: the skin's image (a texture or material; SVGs aren't brushes), else the palette's Track colour, rounded.
+	const FMenuPartSkin& Thumb = Style.Skin.ScrollThumb;
+	auto ThumbBrush = [&Thumb](bool bHovered, bool bPressed, const FLinearColor& Fallback) -> FSlateBrush
+	{
+		const FWidgetEffectImage& Image = Thumb.ForState(false, bPressed, false, false, bHovered);
+		if (Image.ImageSource == EWidgetImageSource::Texture && Image.IsSet())
+		{
+			FSlateBrush Brush = Image.Image;
+			Brush.TintColor = FSlateColor(Brush.TintColor.GetSpecifiedColor() * Thumb.Tint * (Thumb.bTintWithPalette ? Fallback : FLinearColor::White));
+			return Brush;
+		}
+		return FSlateRoundedBoxBrush(Fallback, 4.f);
+	};
+	const FLinearColor Rest = Palette.Track;
+	FLinearColor Hovered = Palette.Track;
+	Hovered.A = FMath::Min(1.f, Hovered.A * 2.f);
+	ScrollBarStyle.SetNormalThumbImage(ThumbBrush(false, false, Rest));
+	ScrollBarStyle.SetHoveredThumbImage(ThumbBrush(true, false, Hovered));
+	ScrollBarStyle.SetDraggedThumbImage(ThumbBrush(false, true, Palette.Accent));
+
+	const FMenuPartSkin& Track = Style.Skin.ScrollTrack;
+	if (Track.Normal.ImageSource == EWidgetImageSource::Texture && Track.Normal.IsSet())
+	{
+		FSlateBrush Brush = Track.Normal.Image;
+		Brush.TintColor = FSlateColor(Brush.TintColor.GetSpecifiedColor() * Track.Tint);
+		ScrollBarStyle.SetVerticalBackgroundImage(Brush);
+	}
+	else
+	{
+		ScrollBarStyle.SetVerticalBackgroundImage(FSlateNoResource());
+	}
+	ScrollBarStyle.SetVerticalTopSlotImage(FSlateNoResource());
+	ScrollBarStyle.SetVerticalBottomSlotImage(FSlateNoResource());
+}
+
+void SMenuSettingsPanel::NotifyPartsStyleChanged()
+{
+	CustomParts.RemoveAll([](const TWeakObjectPtr<UMenuPartWidget>& Part) { return !Part.IsValid(); });
+	for (const TWeakObjectPtr<UMenuPartWidget>& Part : CustomParts)
+	{
+		Part->NotifyStyleChanged();
+	}
+}
+
+TSharedRef<SWidget> SMenuSettingsPanel::BuildSearch()
+{
+	using namespace MenuPanelLocal;
+	const FMenuStyleRef Holder = StyleHolder;
+	const FText Hint = OrDefault(Texts.Search, LOCTEXT("Search", "Search settings"));
+	TSharedPtr<SWidget> Content;
+	if (UMenuSearchWidget* Custom = MakePart(StyleHolder->Style.Widgets.Search))
+	{
+		CustomSearch = Custom;
+		// Weak: the part widget (a UObject) can outlive this screen for a moment.
+		const TWeakPtr<SMenuSettingsPanel> WeakPanel = SharedThis(this);
+		Custom->AssignSearch(Hint, [WeakPanel](const FText& Text)
+		{
+			if (const TSharedPtr<SMenuSettingsPanel> Pinned = WeakPanel.Pin())
+			{
+				Pinned->SetSearchText(Text);
+			}
+		});
+		Content = Custom->TakeWidget();
+	}
+	else
+	{
+		Content = SNew(SBox)
+			.WidthOverride(300.f)
+			[
+				SNew(SMenuPartBox, StyleHolder)
+				.Part_Lambda([](const FMenuStyle& PartStyle) { return &PartStyle.Skin.SearchBox; })
+				.BuiltIn_Lambda([](const FMenuStyle& PartStyle, const FMenuPartState&)
+				{
+					FMenuBuiltInBox Box;
+					Box.Fill = PartStyle.GetPalette().Row;
+					Box.Radius = 18.f;
+					return Box;
+				})
+				.IsFocused_Lambda([this]() { return IsTyping(); })
+				.Padding(FMargin(16.f, 8.f))
+				[
+					SAssignNew(SearchWidget, SEditableText)
+					.HintText(Hint)
+					.Font_Lambda([Holder]() { return Holder->Style.LabelFont; })
+					.ColorAndOpacity_Lambda([Holder]() { return FSlateColor(Holder->Palette().Text); })
+					.OnTextChanged_Lambda([this](const FText& Text) { SetSearchText(Text); })
+				]
+			];
+	}
+	SearchArea = SNew(SBox)
+		.Visibility_Lambda([Holder]() { return Holder->Style.bShowSearch ? EVisibility::Visible : EVisibility::Collapsed; })
+		[
+			Content.ToSharedRef()
+		];
+	return SearchArea.ToSharedRef();
 }
 
 SMenuSettingsPanel::~SMenuSettingsPanel()
@@ -284,17 +411,30 @@ TSharedRef<SWidget> SMenuSettingsPanel::BuildDescription()
 			.Visibility_Lambda([Get]() { return Get().IsEmpty() ? EVisibility::Collapsed : EVisibility::HitTestInvisible; });
 	};
 
-	return SNew(SBox)
+	TSharedRef<SBox> Frame = SNew(SBox)
 		.WidthOverride_Lambda([Holder]() { return FOptionalSize(Holder->Style.DescriptionWidth); })
 		.Visibility_Lambda([this, Holder]()
 		{
 			const bool bWide = GetTickSpaceGeometry().GetLocalSize().X <= 0.0 || GetTickSpaceGeometry().GetLocalSize().X >= 1100.0;
 			return Holder->Style.bShowDescriptionPanel && bWide && DescribedSetting.IsValid() ? EVisibility::SelfHitTestInvisible : EVisibility::Hidden;
-		})
-		[
-			SNew(SBorder)
-			.BorderImage(PanelBrush.Get())
-			.BorderBackgroundColor_Lambda([Holder]() { return FSlateColor(Holder->Palette().Surface); })
+		});
+	if (UMenuDescriptionWidget* Custom = MakePart(StyleHolder->Style.Widgets.Description))
+	{
+		CustomDescription = Custom;
+		Frame->SetContent(Custom->TakeWidget());
+		return Frame;
+	}
+
+	Frame->SetContent(
+			SNew(SMenuPartBox, StyleHolder)
+			.Part_Lambda([](const FMenuStyle& PartStyle) { return &PartStyle.Skin.DescriptionPanel; })
+			.BuiltIn_Lambda([](const FMenuStyle& PartStyle, const FMenuPartState&)
+			{
+				FMenuBuiltInBox Box;
+				Box.Fill = PartStyle.GetPalette().Surface;
+				Box.Radius = 12.f;
+				return Box;
+			})
 			.Padding(FMargin(24.f))
 			[
 				SNew(SVerticalBox)
@@ -327,65 +467,120 @@ TSharedRef<SWidget> SMenuSettingsPanel::BuildDescription()
 				[
 					Line([this]() { return DescNote; }, false, false, true)
 				]
-			]
-		];
+			]);
+	return Frame;
 }
 
-TSharedRef<SWidget> SMenuSettingsPanel::MakePrompt(const TArray<FKey>& PromptKeys, const FText& Label, FSimpleDelegate OnClicked)
+TSharedRef<SWidget> SMenuSettingsPanel::MakePrompt(const TArray<FKey>& PromptKeys, const FText& Label, FSimpleDelegate OnClicked, EMenuFooterAction Action,
+	TAttribute<bool> IsPromptEnabled)
 {
 	const FMenuStyleRef Holder = StyleHolder;
+	if (UMenuFooterPromptWidget* Custom = MakePart(StyleHolder->Style.Widgets.FooterPrompt))
+	{
+		TSharedRef<FCustomPartEntry> Entry = MakeShared<FCustomPartEntry>();
+		Entry->Widget = Custom;
+		Entry->Keys = PromptKeys;
+		Entry->IsEnabled = IsPromptEnabled;
+		CustomPrompts.Add(Entry);
+		Custom->AssignPrompt(Action, Label, [OnClicked]() { OnClicked.ExecuteIfBound(); });
+		const TWeakObjectPtr<UMenuFooterPromptWidget> WeakPrompt = Custom;
+		return SNew(SMenuCustomPart)
+			.OnClicked_Lambda([WeakPrompt]()
+			{
+				if (UMenuFooterPromptWidget* Pinned = WeakPrompt.Get())
+				{
+					Pinned->Press();
+				}
+			})
+			.OnPointerState_Lambda([Entry, WeakPrompt](bool bHovered, bool bPressed)
+			{
+				Entry->bHovered = bHovered;
+				Entry->bPressed = bPressed;
+				if (UMenuFooterPromptWidget* Pinned = WeakPrompt.Get())
+				{
+					Pinned->SetPromptState(Entry->IsEnabled.Get(true), bHovered, bPressed);
+				}
+			})
+			[
+				Custom->TakeWidget()
+			];
+	}
+
+	const bool bUppercase = StyleHolder->Style.bUppercaseButtons;
 	TSharedPtr<SMenuKeyPrompt> Prompt;
 	SAssignNew(Prompt, SMenuKeyPrompt)
 		.CapStyle(StyleHolder->Style.KeyCap)
 		.LabelFont(StyleHolder->Style.HintFont)
-		.Label(Label)
+		.Label(bUppercase ? Label.ToUpper() : Label)
 		.LabelColor_Lambda([Holder]() { return FSlateColor(Holder->Palette().MutedText); })
 		.OnClicked(FOnMenuKeyPromptClicked::CreateLambda([OnClicked]() { OnClicked.ExecuteIfBound(); }));
+	Prompt->SetEnabled(IsPromptEnabled);
 	Prompts.Add({ Prompt, PromptKeys });
-	return Prompt.ToSharedRef();
+	return SNew(SMenuPartBox, StyleHolder)
+		.Part_Lambda([](const FMenuStyle& PartStyle) { return &PartStyle.Skin.FooterPrompt; })
+		.Visibility_Lambda([Prompt]() { return Prompt->GetVisibility(); })
+		[
+			Prompt.ToSharedRef()
+		];
 }
 
 TSharedRef<SWidget> SMenuSettingsPanel::BuildFooter()
 {
 	using namespace MenuPanelLocal;
-	TSharedRef<SHorizontalBox> Footer = SNew(SHorizontalBox)
-		.Visibility_Lambda([Holder = StyleHolder]() { return Holder->Style.bShowFooterHints ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed; });
+	TSharedRef<SHorizontalBox> Footer = SNew(SHorizontalBox);
 	Footer->AddSlot().FillWidth(1.f);
 
 	if (bShowReset)
 	{
 		Footer->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(20.f, 0.f, 0.f, 0.f)
 		[
-			MakePrompt(Keys.Reset, OrDefault(Texts.Reset, LOCTEXT("Reset", "Reset to Defaults")), FSimpleDelegate::CreateSP(this, &SMenuSettingsPanel::ResetCurrentPage))
+			MakePrompt(Keys.Reset, OrDefault(Texts.Reset, LOCTEXT("Reset", "Reset to Defaults")), FSimpleDelegate::CreateSP(this, &SMenuSettingsPanel::ResetCurrentPage), EMenuFooterAction::Reset)
 		];
 	}
-	Footer->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(20.f, 0.f, 0.f, 0.f)
-	[
-		SNew(SMenuButton, StyleHolder)
-		.Kind(EMenuButtonKind::Ghost)
-		.IsFocusable(false)
-		.Text(OrDefault(Texts.Revert, LOCTEXT("Revert", "Revert Changes")))
-		.OnClicked(FOnMenuControlClicked::CreateSP(this, &SMenuSettingsPanel::RevertChanges))
-		.Visibility_Lambda([this]()
-		{
-			const UMenuSettingsSubsystem* Subsystem = Settings.Get();
-			return Subsystem && Subsystem->IsEditing() && Subsystem->HasChangesSinceEditingBegan() ? EVisibility::Visible : EVisibility::Collapsed;
-		})
-	];
+	const auto RevertVisibility = [this]()
+	{
+		const UMenuSettingsSubsystem* Subsystem = Settings.Get();
+		return Subsystem && Subsystem->IsEditing() && Subsystem->HasChangesSinceEditingBegan() ? EVisibility::Visible : EVisibility::Collapsed;
+	};
+	const FText RevertLabel = OrDefault(Texts.Revert, LOCTEXT("Revert", "Revert Changes"));
+	if (!StyleHolder->Style.Widgets.FooterPrompt.IsNull())
+	{
+		// Your prompt widget for Revert too (no key: it is clicked).
+		const TSharedRef<SWidget> Revert = MakePrompt(TArray<FKey>(), RevertLabel, FSimpleDelegate::CreateSP(this, &SMenuSettingsPanel::RevertChanges), EMenuFooterAction::Revert);
+		Revert->SetVisibility(TAttribute<EVisibility>::CreateLambda(RevertVisibility));
+		Footer->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(20.f, 0.f, 0.f, 0.f)[Revert];
+	}
+	else
+	{
+		Footer->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(20.f, 0.f, 0.f, 0.f)
+		[
+			SNew(SMenuButton, StyleHolder)
+			.Kind(EMenuButtonKind::Ghost)
+			.IsFocusable(false)
+			.Text(RevertLabel)
+			.OnClicked(FOnMenuControlClicked::CreateSP(this, &SMenuSettingsPanel::RevertChanges))
+			.Visibility_Lambda(RevertVisibility)
+		];
+	}
 	if (bApplyButton)
 	{
-		const TSharedRef<SWidget> Apply = MakePrompt(Keys.Apply, OrDefault(Texts.Apply, LOCTEXT("Apply", "Apply")), FSimpleDelegate::CreateSP(this, &SMenuSettingsPanel::ApplyChanges));
-		Apply->SetEnabled(TAttribute<bool>::CreateLambda([this]() { return Settings.IsValid() && Settings->HasPendingChanges(); }));
+		const TSharedRef<SWidget> Apply = MakePrompt(Keys.Apply, OrDefault(Texts.Apply, LOCTEXT("Apply", "Apply")), FSimpleDelegate::CreateSP(this, &SMenuSettingsPanel::ApplyChanges),
+			EMenuFooterAction::Apply, TAttribute<bool>::CreateLambda([this]() { return Settings.IsValid() && Settings->HasPendingChanges(); }));
 		Footer->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(20.f, 0.f, 0.f, 0.f)[Apply];
 	}
 	if (bShowBack)
 	{
 		Footer->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(20.f, 0.f, 0.f, 0.f)
 		[
-			MakePrompt(Keys.Back, OrDefault(Texts.Back, LOCTEXT("Back", "Back")), FSimpleDelegate::CreateLambda([this]() { RequestBack(); }))
+			MakePrompt(Keys.Back, OrDefault(Texts.Back, LOCTEXT("Back", "Back")), FSimpleDelegate::CreateLambda([this]() { RequestBack(); }), EMenuFooterAction::Back)
 		];
 	}
-	return Footer;
+	return SNew(SMenuPartBox, StyleHolder)
+		.Part_Lambda([](const FMenuStyle& PartStyle) { return &PartStyle.Skin.Footer; })
+		.Visibility_Lambda([Holder = StyleHolder]() { return Holder->Style.bShowFooterHints ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed; })
+		[
+			Footer
+		];
 }
 
 // =====================================================================================================
@@ -497,22 +692,60 @@ void SMenuSettingsPanel::BuildTabs()
 		return;
 	}
 	TabsBox->ClearChildren();
+	CustomTabs.Reset();
 	const TArray<FMenuSettingsPage>& Pages = GetAllPages();
 	for (int32 Index = 0; Index < VisiblePages.Num(); ++Index)
 	{
 		const FMenuSettingsPage& Page = Pages[VisiblePages[Index]];
+		const FText PageName = Page.DisplayName.IsEmpty() ? FText::FromName(Page.Id) : Page.DisplayName;
+		TSharedPtr<SWidget> TabWidget;
+		if (UMenuTabWidget* Custom = MakePart(StyleHolder->Style.Widgets.Tab))
+		{
+			TSharedRef<FCustomPartEntry> Entry = MakeShared<FCustomPartEntry>();
+			Entry->Widget = Custom;
+			Entry->TabIndex = Index;
+			CustomTabs.Add(Entry);
+			const TWeakPtr<SMenuSettingsPanel> WeakPanel = SharedThis(this);
+			Custom->AssignTab(Page.Id, PageName, Page.Icon, Index, [WeakPanel, Index]()
+			{
+				if (const TSharedPtr<SMenuSettingsPanel> Pinned = WeakPanel.Pin())
+				{
+					Pinned->SetPage(Index);
+				}
+			});
+			Custom->SetTabState(SearchText.IsEmpty() && CurrentPage == Index, false, false);
+			const TWeakObjectPtr<UMenuTabWidget> WeakTab = Custom;
+			TabWidget = SNew(SMenuCustomPart)
+				.OnClicked_Lambda([this, Index]() { SetPage(Index); })
+				.OnPointerState_Lambda([this, Entry, WeakTab](bool bHovered, bool bPressed)
+				{
+					Entry->bHovered = bHovered;
+					Entry->bPressed = bPressed;
+					if (UMenuTabWidget* Pinned = WeakTab.Get())
+					{
+						Pinned->SetTabState(SearchText.IsEmpty() && CurrentPage == Entry->TabIndex, bHovered, bPressed);
+					}
+				})
+				[
+					Custom->TakeWidget()
+				];
+		}
+		else
+		{
+			TabWidget = SNew(SMenuButton, StyleHolder)
+				.Kind(EMenuButtonKind::Tab)
+				.IsFocusable(false)
+				.Text(PageName)
+				.Icon(StyleHolder->Style.bShowTabIcons ? Page.Icon : FMenuImage())
+				.IconOnly(StyleHolder->Style.bTabIconsOnly)
+				.IsSelected_Lambda([this, Index]() { return SearchText.IsEmpty() && CurrentPage == Index; })
+				.OnClicked_Lambda([this, Index]() { SetPage(Index); });
+		}
 		TabsBox->AddSlot()
 			.AutoWidth()
 			.Padding(Index > 0 ? StyleHolder->Style.TabSpacing : 0.f, 0.f, 0.f, 0.f)
 			[
-				SNew(SMenuButton, StyleHolder)
-				.Kind(EMenuButtonKind::Tab)
-				.IsFocusable(false)
-				.Text(Page.DisplayName.IsEmpty() ? FText::FromName(Page.Id) : Page.DisplayName)
-				.Icon(StyleHolder->Style.bShowTabIcons ? Page.Icon : FMenuImage())
-				.IconOnly(StyleHolder->Style.bTabIconsOnly)
-				.IsSelected_Lambda([this, Index]() { return SearchText.IsEmpty() && CurrentPage == Index; })
-				.OnClicked_Lambda([this, Index]() { SetPage(Index); })
+				TabWidget.ToSharedRef()
 			];
 	}
 }
@@ -521,29 +754,98 @@ void SMenuSettingsPanel::AddHeader(const FText& Text, bool bMinor)
 {
 	const FMenuStyleRef Holder = StyleHolder;
 	const bool bFirst = RowsBox->NumSlots() == 0;
+	TSharedPtr<SWidget> Heading;
+	if (UMenuHeadingWidget* Custom = MakePart(StyleHolder->Style.Widgets.Heading))
+	{
+		Custom->AssignHeading(Text, bMinor);
+		Heading = Custom->TakeWidget();
+	}
+	else
+	{
+		const FText Shown = !bMinor && StyleHolder->Style.bUppercaseSections ? Text.ToUpper() : Text;
+		Heading = SNew(SMenuPartBox, StyleHolder)
+			.Part_Lambda([bMinor](const FMenuStyle& PartStyle) { return bMinor ? &PartStyle.Skin.CategoryHeading : &PartStyle.Skin.SectionHeading; })
+			[
+				SNew(STextBlock)
+				.Text(Shown)
+				.Font_Lambda([Holder, bMinor]() { return bMinor ? Holder->Style.HintFont : Holder->Style.SectionFont; })
+				.ColorAndOpacity_Lambda([Holder, bMinor]() { return FSlateColor(bMinor ? Holder->Palette().MutedText : Holder->Palette().Accent); })
+			];
+	}
 	RowsBox->AddSlot()
 		.AutoHeight()
 		.Padding(4.f, bFirst ? 0.f : (bMinor ? 10.f : Holder->Style.SectionSpacing), 4.f, 8.f)
 		[
-			SNew(STextBlock)
-			.Text(bMinor ? Text : Text.ToUpper())
-			.Font_Lambda([Holder, bMinor]() { return bMinor ? Holder->Style.HintFont : Holder->Style.SectionFont; })
-			.ColorAndOpacity_Lambda([Holder, bMinor]() { return FSlateColor(bMinor ? Holder->Palette().MutedText : Holder->Palette().Accent); })
+			Heading.ToSharedRef()
 		];
 }
 
-void SMenuSettingsPanel::AddRow(UMenuSetting* Setting)
+EMenuChoiceDisplay SMenuSettingsPanel::ResolveChoiceDisplay(const UMenuSetting& Setting) const
+{
+	const UMenuSettingChoice* Choice = Cast<UMenuSettingChoice>(&Setting);
+	if (!Choice)
+	{
+		return EMenuChoiceDisplay::Selector;
+	}
+	TArray<FMenuSettingOption> Options;
+	if (const UMenuSettingsSubsystem* Subsystem = Settings.Get())
+	{
+		Options = Subsystem->GetSettingOptions(Setting.Id);
+	}
+	else
+	{
+		Choice->GetOptions(GetContext(), Options, GetPreviewValue(Setting));
+	}
+	switch (Choice->Display)
+	{
+	case EMenuChoiceDisplay::Dropdown:
+		return EMenuChoiceDisplay::Dropdown;
+	case EMenuChoiceDisplay::Buttons:
+		return Options.Num() <= 4 ? EMenuChoiceDisplay::Buttons : EMenuChoiceDisplay::Selector;
+	case EMenuChoiceDisplay::Auto:
+		return Options.Num() > StyleHolder->Style.SelectorMaxOptions ? EMenuChoiceDisplay::Dropdown : EMenuChoiceDisplay::Selector;
+	default:
+		return EMenuChoiceDisplay::Selector;
+	}
+}
+
+bool SMenuSettingsPanel::IsHiddenHere(const UMenuSetting& Setting) const
+{
+	const FString Id = Setting.Id.ToString();
+	return HiddenSettings.ContainsByPredicate([&Id](const FString& Pattern)
+	{
+		return Pattern.Contains(TEXT("*")) || Pattern.Contains(TEXT("?")) ? Id.MatchesWildcard(Pattern) : Id.Equals(Pattern, ESearchCase::IgnoreCase);
+	});
+}
+
+bool SMenuSettingsPanel::IsSectionHiddenHere(const FMenuSettingsSection& Section) const
+{
+	const FString Title = Section.Title.ToString();
+	return HiddenSections.ContainsByPredicate([&Section, &Title](const FName& Hidden)
+	{
+		return Hidden == Section.GetMergeId() || Hidden.ToString().Equals(Title, ESearchCase::IgnoreCase);
+	});
+}
+
+void SMenuSettingsPanel::AddRow(UMenuSetting* Setting, const FMenuSettingsPage& Page, const FMenuSettingsSection& Section)
 {
 	const float Spacing = StyleHolder->Style.RowSpacing;
-	if (MakeCustomRow)
+	FMenuCustomRow Custom;
+	if (MakeCustomRow && Setting)
 	{
-		if (const TSharedPtr<SWidget> Custom = MakeCustomRow(Setting))
-		{
-			RowsBox->AddSlot().AutoHeight().Padding(0.f, 0.f, 0.f, Spacing)[Custom.ToSharedRef()];
-			return;
-		}
+		FMenuCustomRowRequest Request;
+		Request.Setting = Setting;
+		Request.PageId = Page.Id;
+		Request.SectionId = Section.GetMergeId();
+		Request.SectionTitle = Section.Title;
+		Request.Display = ResolveChoiceDisplay(*Setting);
+		Custom = MakeCustomRow(Request);
 	}
-	TSharedRef<SMenuSettingRow> Row = SNew(SMenuSettingRow, this, Setting);
+	// Custom or not, the row is one of the screen's rows: focus, the description, narration, sounds and footer actions find it.
+	TSharedRef<SMenuSettingRow> Row = SNew(SMenuSettingRow, this, Setting)
+		.CustomRow(Custom.Widget.IsValid() && Custom.bWholeRow ? Custom.Widget : TSharedPtr<SWidget>())
+		.CustomControl(Custom.Widget.IsValid() && !Custom.bWholeRow ? Custom.Widget : TSharedPtr<SWidget>())
+		.CustomWidget(Custom.Object);
 	Rows.Add(Row);
 	RowsBox->AddSlot().AutoHeight().Padding(0.f, 0.f, 0.f, Spacing)[Row];
 }
@@ -562,13 +864,13 @@ TArray<FName> SMenuSettingsPanel::CollectShownIds() const
 		const FMenuSettingsPage& Page = Pages[VisiblePages[PageIndex]];
 		for (const FMenuSettingsSection& Section : Page.Sections)
 		{
-			if (!AreConditionsMetNow(Section.ShownWhen))
+			if (IsSectionHiddenHere(Section) || !AreConditionsMetNow(Section.ShownWhen))
 			{
 				continue;
 			}
 			for (const UMenuSetting* Setting : Section.Settings)
 			{
-				if (Setting && IsSettingShownNow(*Setting) && (Search.IsEmpty() || Setting->MatchesSearch(Search)))
+				if (Setting && !IsHiddenHere(*Setting) && IsSettingShownNow(*Setting) && (Search.IsEmpty() || Setting->MatchesSearch(Search)))
 				{
 					Ids.Add(Setting->Id);
 				}
@@ -601,14 +903,14 @@ void SMenuSettingsPanel::BuildRows()
 		bool bPageHeader = false;
 		for (const FMenuSettingsSection& Section : Page.Sections)
 		{
-			if (!AreConditionsMetNow(Section.ShownWhen))
+			if (IsSectionHiddenHere(Section) || !AreConditionsMetNow(Section.ShownWhen))
 			{
 				continue;
 			}
 			TArray<UMenuSetting*> Shown;
 			for (UMenuSetting* Setting : Section.Settings)
 			{
-				if (Setting && IsSettingShownNow(*Setting) && (Search.IsEmpty() || Setting->MatchesSearch(Search)))
+				if (Setting && !IsHiddenHere(*Setting) && IsSettingShownNow(*Setting) && (Search.IsEmpty() || Setting->MatchesSearch(Search)))
 				{
 					Shown.Add(Setting);
 				}
@@ -640,7 +942,7 @@ void SMenuSettingsPanel::BuildRows()
 						AddHeader(Category, true);
 					}
 				}
-				AddRow(Setting);
+				AddRow(Setting, Page, Section);
 			}
 		}
 	}
@@ -707,6 +1009,13 @@ void SMenuSettingsPanel::RebuildAll()
 	{
 		BackgroundImage->SetImage(StyleHolder->Style.BackgroundImage);
 	}
+	UpdateScrollBarStyle();
+	ForceVolatile(StyleHolder->Style.Skin.UsesMaterial());
+	if (ScrollBox.IsValid() && StyleHolder->Style.ScrollBarThickness > 0.f)
+	{
+		ScrollBox->SetScrollBarThickness(FVector2D(StyleHolder->Style.ScrollBarThickness, StyleHolder->Style.ScrollBarThickness));
+	}
+	NotifyPartsStyleChanged();
 	UpdateFooterPrompts();
 }
 
@@ -742,6 +1051,10 @@ void SMenuSettingsPanel::SetPage(int32 PageIndex, bool bAnimate)
 		if (SearchWidget.IsValid())
 		{
 			SearchWidget->SetText(FText::GetEmpty());
+		}
+		if (UMenuSearchWidget* Custom = CustomSearch.Get())
+		{
+			Custom->ShowSearchText(FText::GetEmpty());
 		}
 	}
 	FocusedRow.Reset();
@@ -836,6 +1149,10 @@ void SMenuSettingsPanel::SetSearchText(const FText& Text)
 	{
 		SearchWidget->SetText(Text);
 	}
+	if (UMenuSearchWidget* Custom = CustomSearch.Get())
+	{
+		Custom->ShowSearchText(Text);
+	}
 	BuildRows();
 }
 
@@ -853,8 +1170,13 @@ void SMenuSettingsPanel::UpdateDescription(UMenuSetting* Setting)
 		{
 			PreviewImage->SetImage(FMenuImage());
 		}
+		if (UMenuDescriptionWidget* Custom = CustomDescription.Get())
+		{
+			Custom->Describe(nullptr, FMenuSettingDescription());
+		}
 		return;
 	}
+	FMenuSettingDescription Described;
 	const FMenuSettingContext Context = GetContext();
 	UMenuSettingsSubsystem* Subsystem = Settings.Get();
 	const FString Value = Subsystem ? Subsystem->GetSettingValue(Setting->Id) : GetPreviewValue(*Setting);
@@ -882,6 +1204,8 @@ void SMenuSettingsPanel::UpdateDescription(UMenuSetting* Setting)
 			}
 		}
 		DescValueLine = FText::Format(LOCTEXT("ValueLine", "Current: {0}    Default: {1}"), Shown, Default);
+		Described.CurrentValue = Shown;
+		Described.DefaultValue = Default;
 	}
 
 	FText Reason;
@@ -907,6 +1231,19 @@ void SMenuSettingsPanel::UpdateDescription(UMenuSetting* Setting)
 	if (PreviewImage.IsValid())
 	{
 		PreviewImage->SetImage(Image);
+	}
+	if (UMenuDescriptionWidget* Custom = CustomDescription.Get())
+	{
+		Described.Title = DescTitle;
+		Described.ValueLine = DescValueLine;
+		Described.Body = DescBody;
+		Described.OptionText = DescOption;
+		Described.Warning = DescWarning;
+		Described.Note = DescNote;
+		Described.Preview = Image;
+		Described.bEnabled = bEnabled;
+		Described.bRequiresRestart = Setting->bRequiresRestart;
+		Custom->Describe(Setting, Described);
 	}
 }
 
@@ -946,6 +1283,31 @@ void SMenuSettingsPanel::UpdateFooterPrompts()
 		// Touch shows the prompts as plain buttons: no key, still tappable.
 		Entry.Prompt->SetVisibility(Key.IsValid() || bTouch ? EVisibility::Visible : EVisibility::Collapsed);
 	}
+	for (const TSharedRef<FCustomPartEntry>& Entry : CustomPrompts)
+	{
+		UMenuFooterPromptWidget* Custom = Cast<UMenuFooterPromptWidget>(Entry->Widget.Get());
+		if (!Custom)
+		{
+			continue;
+		}
+		const FKey Key = KeyForDevice(Entry->Keys);
+		FMenuKeyGlyph Glyph;
+		if (Input)
+		{
+			Glyph = Input->GetKeyGlyph(Key);
+		}
+		else
+		{
+			Glyph.Key = Key;
+			Glyph.Label = MenuInputUtils::GetKeyLabel(Key, EMenuGamepadFamily::Xbox);
+		}
+		Custom->SetGlyph(Glyph);
+		// A prompt with keys hides while the device has none of them (touch keeps it, tappable); Revert has none and stays.
+		if (Entry->Keys.Num() > 0)
+		{
+			Custom->SetVisibility(Key.IsValid() || bTouch ? ESlateVisibility::Visible : ESlateVisibility::Collapsed);
+		}
+	}
 }
 
 // =====================================================================================================
@@ -959,7 +1321,11 @@ bool SMenuSettingsPanel::MatchesKey(const TArray<FKey>& Candidates, const FKey& 
 
 bool SMenuSettingsPanel::IsTyping() const
 {
-	return SearchWidget.IsValid() && SearchWidget->HasAnyUserFocus().IsSet();
+	if (SearchWidget.IsValid() && SearchWidget->HasAnyUserFocus().IsSet())
+	{
+		return true;
+	}
+	return CustomSearch.IsValid() && SearchArea.IsValid() && SearchArea->HasFocusedDescendants();
 }
 
 FReply SMenuSettingsPanel::OnFocusReceived(const FGeometry& MyGeometry, const FFocusEvent& InFocusEvent)
@@ -1137,23 +1503,67 @@ void SMenuSettingsPanel::ShowDialog(const FText& DialogTitle, const TAttribute<F
 	{
 		FocusBeforeDialog = FSlateApplication::Get().GetUserFocusedWidget(GetUserIndex());
 	}
-	TSharedRef<SMenuDialog> Dialog = SNew(SMenuDialog, StyleHolder)
-		.Title(DialogTitle)
-		.Body(Body)
-		.Buttons(Buttons)
-		.DefaultButton(DefaultButton)
-		.CancelButton(CancelButton)
-		.OnChoice_Lambda([this](int32 Index)
+	const TWeakPtr<SMenuSettingsPanel> WeakPanel = SharedThis(this);
+	auto Queue = [WeakPanel](int32 Index)
+	{
+		// Handled next frame: the dialog isn't removed while its own button is being clicked.
+		if (const TSharedPtr<SMenuSettingsPanel> Pinned = WeakPanel.Pin())
 		{
-			// Handled next frame: the dialog isn't removed while its own button is being clicked.
-			QueuedDialogChoice = Index;
-			bDialogChoiceQueued = true;
-		});
-	ActiveDialog = Dialog;
-	ActiveDialogChoice = MoveTemp(Choice);
-	ActiveDialogCancel = CancelButton;
-	DialogLayer->AddSlot()[Dialog];
-	Dialog->FocusDefault(GetUserIndex());
+			Pinned->QueuedDialogChoice = Index;
+			Pinned->bDialogChoiceQueued = true;
+		}
+	};
+	if (UMenuDialogWidget* Custom = MakePart(StyleHolder->Style.Widgets.Dialog))
+	{
+		TArray<FText> Labels;
+		TArray<int32> Kinds;
+		for (const FMenuDialogButton& Button : Buttons)
+		{
+			Labels.Add(Button.Text);
+			Kinds.Add(Button.Kind == EMenuButtonKind::Primary ? 0 : Button.Kind == EMenuButtonKind::Ghost ? 2 : 1);
+		}
+		Custom->AssignDialog(DialogTitle, Body.Get(), Labels, Kinds, DefaultButton, CancelButton, Queue);
+		CustomDialog = Custom;
+		CustomDialogBody = Body;
+		const TWeakObjectPtr<UMenuDialogWidget> WeakDialog = Custom;
+		TSharedRef<SWidget> Wrapper = SNew(SMenuCustomPart)
+			.IsFocusable(true)
+			.OnBack_Lambda([WeakDialog]()
+			{
+				if (UMenuDialogWidget* Pinned = WeakDialog.Get())
+				{
+					Pinned->CancelDialog();
+				}
+			})
+			[
+				Custom->TakeWidget()
+			];
+		ActiveDialog = Wrapper;
+		ActiveDialogChoice = MoveTemp(Choice);
+		ActiveDialogCancel = CancelButton;
+		DialogLayer->AddSlot()[Wrapper];
+		UWidget* FocusTarget = Custom->GetDialogFocusWidget();
+		const TSharedPtr<SWidget> FocusSlate = FocusTarget ? FocusTarget->GetCachedWidget() : TSharedPtr<SWidget>();
+		if (FSlateApplication::IsInitialized())
+		{
+			FSlateApplication::Get().SetUserFocus(GetUserIndex(), FocusSlate.IsValid() ? FocusSlate : TSharedPtr<SWidget>(Wrapper), EFocusCause::SetDirectly);
+		}
+	}
+	else
+	{
+		TSharedRef<SMenuDialog> Dialog = SNew(SMenuDialog, StyleHolder)
+			.Title(DialogTitle)
+			.Body(Body)
+			.Buttons(Buttons)
+			.DefaultButton(DefaultButton)
+			.CancelButton(CancelButton)
+			.OnChoice_Lambda(Queue);
+		ActiveDialog = Dialog;
+		ActiveDialogChoice = MoveTemp(Choice);
+		ActiveDialogCancel = CancelButton;
+		DialogLayer->AddSlot()[Dialog];
+		Dialog->FocusDefault(GetUserIndex());
+	}
 	if (MenuAccessibility::IsMenuNarrationEnabled())
 	{
 		Announce(FText::Format(LOCTEXT("DialogNarration", "{0}. {1}"), DialogTitle, Body.Get()));
@@ -1167,6 +1577,8 @@ void SMenuSettingsPanel::CloseDialog()
 		DialogLayer->RemoveSlot(ActiveDialog.ToSharedRef());
 		ActiveDialog.Reset();
 	}
+	CustomDialog.Reset();
+	CustomDialogBody = TAttribute<FText>();
 	ActiveDialogChoice = nullptr;
 	ActiveDialogCancel = INDEX_NONE;
 	bKeepDialogShown = false;
@@ -1239,16 +1651,47 @@ bool SMenuSettingsPanel::OpenOptionList(const TSharedRef<SMenuSettingRow>& Row)
 	FocusBeforeDialog = Row;
 	const TWeakPtr<SMenuSettingRow> WeakRow = Row;
 	const TArray<FMenuSettingOption> Options = Row->GetOptions();
-	TSharedRef<SMenuOptionList> List = SNew(SMenuOptionList, StyleHolder)
-		.Title(Setting->GetLabel())
-		.Options(Labels)
-		.Current(Row->GetOptionIndex())
-		.OnPicked_Lambda([this](int32 Index)
+	const TWeakPtr<SMenuSettingsPanel> WeakPanel = SharedThis(this);
+	auto Queue = [WeakPanel](int32 Index)
+	{
+		if (const TSharedPtr<SMenuSettingsPanel> Pinned = WeakPanel.Pin())
 		{
-			QueuedDialogChoice = Index;
-			bDialogChoiceQueued = true;
-		});
-	ActiveDialog = List;
+			Pinned->QueuedDialogChoice = Index;
+			Pinned->bDialogChoiceQueued = true;
+		}
+	};
+	TSharedPtr<SWidget> ListWidget;
+	TSharedPtr<SWidget> FocusTarget;
+	TSharedPtr<SMenuOptionList> BuiltInList;
+	if (UMenuOptionListWidget* Custom = MakePart(StyleHolder->Style.Widgets.OptionList))
+	{
+		Custom->AssignList(Setting->GetLabel(), Labels, Row->GetOptionIndex(), Queue);
+		const TWeakObjectPtr<UMenuOptionListWidget> WeakList = Custom;
+		ListWidget = SNew(SMenuCustomPart)
+			.IsFocusable(true)
+			.OnBack_Lambda([WeakList]()
+			{
+				if (UMenuOptionListWidget* Pinned = WeakList.Get())
+				{
+					Pinned->CancelList();
+				}
+			})
+			[
+				Custom->TakeWidget()
+			];
+		UWidget* FocusWidget = Custom->GetListFocusWidget();
+		FocusTarget = FocusWidget ? FocusWidget->GetCachedWidget() : ListWidget;
+	}
+	else
+	{
+		BuiltInList = SNew(SMenuOptionList, StyleHolder)
+			.Title(Setting->GetLabel())
+			.Options(Labels)
+			.Current(Row->GetOptionIndex())
+			.OnPicked_Lambda(Queue);
+		ListWidget = BuiltInList;
+	}
+	ActiveDialog = ListWidget;
 	ActiveDialogCancel = INDEX_NONE;
 	ActiveDialogChoice = [WeakRow, Options](int32 Index)
 	{
@@ -1258,8 +1701,15 @@ bool SMenuSettingsPanel::OpenOptionList(const TSharedRef<SMenuSettingRow>& Row)
 			Pinned->ChangeValue(Options[Index].Value);
 		}
 	};
-	DialogLayer->AddSlot()[List];
-	List->FocusCurrent(GetUserIndex());
+	DialogLayer->AddSlot()[ListWidget.ToSharedRef()];
+	if (BuiltInList.IsValid())
+	{
+		BuiltInList->FocusCurrent(GetUserIndex());
+	}
+	else if (FocusTarget.IsValid() && FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().SetUserFocus(GetUserIndex(), FocusTarget, EFocusCause::SetDirectly);
+	}
 	return true;
 }
 
@@ -1301,6 +1751,29 @@ EActiveTimerReturnType SMenuSettingsPanel::HandleTick(double InCurrentTime, floa
 	else if (!bAwaiting && bKeepDialogShown)
 	{
 		CloseDialog();
+	}
+
+	// Custom parts follow what they show: the current tab, a prompt's enabled state, a dialog's countdown.
+	for (const TSharedRef<FCustomPartEntry>& Entry : CustomTabs)
+	{
+		if (UMenuTabWidget* Tab = Cast<UMenuTabWidget>(Entry->Widget.Get()))
+		{
+			Tab->SetTabState(SearchText.IsEmpty() && CurrentPage == Entry->TabIndex, Entry->bHovered, Entry->bPressed);
+		}
+	}
+	for (const TSharedRef<FCustomPartEntry>& Entry : CustomPrompts)
+	{
+		if (UMenuFooterPromptWidget* Prompt = Cast<UMenuFooterPromptWidget>(Entry->Widget.Get()))
+		{
+			Prompt->SetPromptState(Entry->IsEnabled.Get(true), Entry->bHovered, Entry->bPressed);
+		}
+	}
+	if (UMenuDialogWidget* Dialog = CustomDialog.Get())
+	{
+		if (CustomDialogBody.IsBound())
+		{
+			Dialog->SetBody(CustomDialogBody.Get());
+		}
 	}
 
 	const bool bFading = PageFade.Advance(InDeltaTime);

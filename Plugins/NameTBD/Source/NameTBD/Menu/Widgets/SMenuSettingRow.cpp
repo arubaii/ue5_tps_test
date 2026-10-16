@@ -15,6 +15,7 @@
 #include "NameTBD/Menu/Settings/MenuProjectSettings.h"
 #include "NameTBD/Menu/Settings/MenuSettingTargets.h"
 #include "NameTBD/Menu/Settings/MenuSettingsSubsystem.h"
+#include "SettingsMenu.h"
 
 #define LOCTEXT_NAMESPACE "SMenuSettingRow"
 
@@ -120,9 +121,21 @@ void SMenuSettingRow::Construct(const FArguments& InArgs, IMenuSettingsRowHost* 
 	SettingId = InSetting ? InSetting->Id : NAME_None;
 	StyleHolder = Host->GetStyle();
 	Highlight.Snap(0.f);
-	SlotBrush = MakeUnique<FSlateRoundedBoxBrush>(FLinearColor::White, 6.f);
 	Refresh();
 
+	CustomWidget = InArgs._CustomWidget;
+	bCustomRow = InArgs._CustomRow.IsValid();
+	if (bCustomRow)
+	{
+		ChildSlot
+		[
+			InArgs._CustomRow.ToSharedRef()
+		];
+		NotifyCustomWidget();
+		return;
+	}
+
+	const TSharedRef<SWidget> Control = InArgs._CustomControl.IsValid() ? InArgs._CustomControl.ToSharedRef() : BuildControl();
 	const FMenuStyleRef Holder = StyleHolder;
 	ChildSlot
 	[
@@ -141,7 +154,7 @@ void SMenuSettingRow::Construct(const FArguments& InArgs, IMenuSettingsRowHost* 
 				.AutoHeight()
 				[
 					SNew(STextBlock)
-					.Text(InSetting ? InSetting->GetLabel() : FText::GetEmpty())
+					.Text_Lambda([Holder, Label = InSetting ? InSetting->GetLabel() : FText::GetEmpty()]() { return Holder->Style.bUppercaseLabels ? Label.ToUpper() : Label; })
 					.Font_Lambda([Holder]() { return Holder->Style.LabelFont; })
 					.ColorAndOpacity_Lambda([this, Holder]() { return FSlateColor(bSettingEnabled ? Holder->Palette().Text : Holder->Palette().DisabledText); })
 					.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
@@ -164,11 +177,38 @@ void SMenuSettingRow::Construct(const FArguments& InArgs, IMenuSettingsRowHost* 
 				.WidthOverride_Lambda([Holder]() { return FOptionalSize(Holder->Style.ValueWidth); })
 				.VAlign(VAlign_Center)
 				[
-					BuildControl()
+					Control
 				]
 			]
 		]
 	];
+	if (SwitchWidget.IsValid())
+	{
+		SwitchWidget->SetFocusedAttribute(TAttribute<bool>::CreateSP(this, &SMenuSettingRow::IsRowFocused));
+	}
+	NotifyCustomWidget();
+}
+
+bool SMenuSettingRow::IsRowFocused() const
+{
+	return HasAnyUserFocus().IsSet();
+}
+
+void SMenuSettingRow::NotifyCustomWidget()
+{
+	UMenuSettingRowWidget* Widget = CustomWidget.Get();
+	if (!Widget)
+	{
+		return;
+	}
+	FMenuSettingRowState State;
+	State.bHovered = IsHovered();
+	State.bFocused = HasAnyUserFocus().IsSet();
+	State.bPressed = bPressedVisual;
+	State.bEnabled = bSettingEnabled;
+	State.bModified = bModified;
+	State.bWaitingForKey = bCapturing;
+	Widget->SetRowState(State);
 }
 
 SMenuSettingRow::~SMenuSettingRow()
@@ -233,7 +273,7 @@ TSharedRef<SWidget> SMenuSettingRow::BuildControl()
 				.AutoWidth()
 				.VAlign(VAlign_Center)
 				[
-					SNew(SMenuSwitch, StyleHolder)
+					SAssignNew(SwitchWidget, SMenuSwitch, StyleHolder)
 					.IsEnabled(Enabled)
 					.IsOn_Lambda([this]() { return MenuSettingValues::ToBool(CurrentValue); })
 					.OnToggled_Lambda([this](bool bOn) { ChangeValue(MenuSettingValues::FromBool(bOn)); })
@@ -292,7 +332,7 @@ TSharedRef<SWidget> SMenuSettingRow::BuildControl()
 					.Padding(Index > 0 ? 4.f : 0.f, 0.f, 0.f, 0.f)
 					[
 						SNew(SMenuButton, StyleHolder)
-						.Kind(EMenuButtonKind::Tab)
+						.Kind(EMenuButtonKind::Segment)
 						.IsFocusable(false)
 						.IsEnabled(Enabled)
 						.Text(Options[Index].GetLabel())
@@ -361,21 +401,27 @@ TSharedRef<SWidget> SMenuSettingRow::BuildKeySlots()
 			.FillWidth(1.f)
 			.Padding(Index > 0 ? 6.f : 0.f, 0.f, 0.f, 0.f)
 			[
-				SNew(SBorder)
-				.BorderImage(SlotBrush.Get())
-				.BorderBackgroundColor_Lambda([this, Holder, Index]()
+				SNew(SMenuPartBox, StyleHolder)
+				.Part_Lambda([](const FMenuStyle& PartStyle) { return &PartStyle.Skin.KeySlot; })
+				.BuiltIn_Lambda([this, Index](const FMenuStyle& PartStyle, const FMenuPartState&)
 				{
-					const FMenuStylePalette& Palette = Holder->Palette();
+					const FMenuStylePalette& Palette = PartStyle.GetPalette();
+					FMenuBuiltInBox Box;
+					Box.Radius = 6.f;
 					if (bCapturing && CaptureSlot == Index)
 					{
-						return FSlateColor(Palette.Accent.CopyWithNewOpacity(0.35f));
+						Box.Fill = Palette.Accent.CopyWithNewOpacity(0.35f);
 					}
-					const bool bSelected = HasAnyUserFocus().IsSet() && SelectedSlot == Index;
-					return FSlateColor(bSelected ? Palette.RowFocused : Palette.Row);
+					else
+					{
+						const bool bSlotFocused = HasAnyUserFocus().IsSet() && SelectedSlot == Index;
+						Box.Fill = bSlotFocused ? Palette.RowFocused : Palette.Row;
+					}
+					return Box;
 				})
+				.IsSelected_Lambda([this, Index]() { return bCapturing && CaptureSlot == Index; })
+				.IsFocused_Lambda([this, Index]() { return HasAnyUserFocus().IsSet() && SelectedSlot == Index; })
 				.Padding(FMargin(8.f, 4.f))
-				.HAlign(HAlign_Center)
-				.VAlign(VAlign_Center)
 				.OnMouseButtonDown_Lambda([this, Index](const FGeometry&, const FPointerEvent& MouseEvent)
 				{
 					if (!bSettingEnabled)
@@ -518,6 +564,7 @@ void SMenuSettingRow::Refresh()
 		Message = FText::GetEmpty();
 	}
 	Invalidate(EInvalidateWidgetReason::Paint);
+	NotifyCustomWidget();
 }
 
 void SMenuSettingRow::ShowMessage(const FText& InMessage, bool bWarning)
@@ -569,6 +616,10 @@ void SMenuSettingRow::Step(int32 Direction)
 	{
 		return;
 	}
+	if (UMenuSettingRowWidget* Widget = CustomWidget.Get())
+	{
+		Widget->HandleRowStepped(Direction);
+	}
 	switch (Current->GetKind())
 	{
 	case EMenuSettingKind::KeyBinding:
@@ -611,6 +662,14 @@ void SMenuSettingRow::Activate()
 	if (!Current)
 	{
 		return;
+	}
+	if (UMenuSettingRowWidget* Widget = CustomWidget.Get())
+	{
+		// Your widget may handle Accept itself (open its own list): then the row does nothing more.
+		if (Widget->HandleRowActivated())
+		{
+			return;
+		}
 	}
 	switch (Current->GetKind())
 	{
@@ -691,6 +750,7 @@ void SMenuSettingRow::BeginCapture(int32 SlotIndex)
 		Host->Announce(GetCaptureDevice() == EMenuKeyBindingDevice::Gamepad ? LOCTEXT("PressButton", "Press a button...") : LOCTEXT("PressKey", "Press a key..."));
 	}
 	Invalidate(EInvalidateWidgetReason::Paint);
+	NotifyCustomWidget();
 }
 
 void SMenuSettingRow::StopCaptureProcessor()
@@ -857,7 +917,22 @@ FReply SMenuSettingRow::OnMouseButtonDown(const FGeometry& MyGeometry, const FPo
 {
 	if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 	{
+		bPressedVisual = true;
+		NotifyCustomWidget();
+		Invalidate(EInvalidateWidgetReason::Paint);
 		return FReply::Handled().SetUserFocus(SharedThis(this), EFocusCause::Mouse);
+	}
+	return FReply::Unhandled();
+}
+
+FReply SMenuSettingRow::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
+{
+	if (bPressedVisual && MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
+	{
+		bPressedVisual = false;
+		NotifyCustomWidget();
+		Invalidate(EInvalidateWidgetReason::Paint);
+		return FReply::Handled();
 	}
 	return FReply::Unhandled();
 }
@@ -872,6 +947,7 @@ void SMenuSettingRow::OnMouseEnter(const FGeometry& MyGeometry, const FPointerEv
 void SMenuSettingRow::OnMouseLeave(const FPointerEvent& MouseEvent)
 {
 	SCompoundWidget::OnMouseLeave(MouseEvent);
+	bPressedVisual = false;
 	Host->OnRowHovered(SharedThis(this), false);
 	StartAnimating();
 }
@@ -899,12 +975,14 @@ void SMenuSettingRow::StartAnimating()
 		RegisterActiveTimer(0.f, FWidgetActiveTimerDelegate::CreateSP(this, &SMenuSettingRow::Animate));
 	}
 	Invalidate(EInvalidateWidgetReason::Paint);
+	NotifyCustomWidget();
 }
 
 int32 SMenuSettingRow::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
 	FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
 	const FMenuStyle& Style = StyleHolder->Style;
+	const FMenuStyleSkin& Skin = Style.Skin;
 	const FMenuStylePalette& Palette = StyleHolder->Palette();
 	const FLinearColor Tint = InWidgetStyle.GetColorAndOpacityTint();
 	const FVector2f Size(AllottedGeometry.GetLocalSize());
@@ -913,19 +991,53 @@ int32 SMenuSettingRow::OnPaint(const FPaintArgs& Args, const FGeometry& Allotted
 	const float State = FMath::Clamp(Highlight.Value, 0.f, 2.f);
 	const FLinearColor Fill = State <= 1.f ? FMath::Lerp(Palette.Row, Palette.RowHovered, State) : FMath::Lerp(Palette.RowHovered, Palette.RowFocused, State - 1.f);
 	const bool bFocused = HasAnyUserFocus().IsSet();
-	MenuDraw::RoundedBox(OutDrawElements, LayerId, AllottedGeometry, Fill * Tint, Style.CornerRadius,
-		bFocused ? Palette.FocusOutline * Tint : FLinearColor::Transparent, bFocused ? Style.FocusOutlineWidth : 0.f);
+	const FMenuPartState PartState = GetPartState();
+	if (bCustomRow)
+	{
+		// Your widget is the row: it draws its own states (On Row State Changed).
+		return SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId, InWidgetStyle, bParentEnabled);
+	}
+
+	if (Skin.Row.DrawsBuiltIn())
+	{
+		MenuDraw::RoundedBox(OutDrawElements, LayerId, AllottedGeometry, Fill * Tint, Style.CornerRadius,
+			bFocused ? Palette.FocusOutline * Tint : FLinearColor::Transparent, bFocused ? Style.FocusOutlineWidth : 0.f);
+	}
+	SkinPainter.Draw(OutDrawElements, LayerId, AllottedGeometry, Skin.Row, PartState, Fill, Palette, Tint, *this, 0);
+
 	if (bFocused && Style.bFocusBar)
 	{
-		MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 1, AllottedGeometry, FVector2f(0.f, Size.Y * 0.22f), FVector2f(3.f, Size.Y * 0.56f), Palette.Accent * Tint, 1.5f);
+		const FVector2f BarOffset(0.f, Size.Y * 0.22f);
+		const FVector2f BarSize(3.f, Size.Y * 0.56f);
+		if (Skin.FocusBar.DrawsBuiltIn())
+		{
+			MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 1, AllottedGeometry, BarOffset, BarSize, Palette.Accent * Tint, 1.5f);
+		}
+		SkinPainter.Draw(OutDrawElements, LayerId + 1, AllottedGeometry, Skin.FocusBar, PartState, Palette.Accent, Palette, Tint, *this, 1, BarOffset, BarSize);
 	}
 	if (bModified && Style.bShowModifiedDot)
 	{
 		const float Dot = 6.f;
-		MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 1, AllottedGeometry, FVector2f(FMath::Max(4.f, Style.RowPadding.Left * 0.5f - Dot * 0.5f), (Size.Y - Dot) * 0.5f),
-			FVector2f(Dot, Dot), Palette.Accent * Tint, Dot * 0.5f);
+		const FVector2f DotOffset(FMath::Max(4.f, Style.RowPadding.Left * 0.5f - Dot * 0.5f), (Size.Y - Dot) * 0.5f);
+		if (Skin.ModifiedDot.DrawsBuiltIn())
+		{
+			MenuDraw::RoundedBoxAt(OutDrawElements, LayerId + 1, AllottedGeometry, DotOffset, FVector2f(Dot, Dot), Palette.Accent * Tint, Dot * 0.5f);
+		}
+		SkinPainter.Draw(OutDrawElements, LayerId + 1, AllottedGeometry, Skin.ModifiedDot, PartState, Palette.Accent, Palette, Tint, *this, 2, DotOffset, FVector2f(Dot, Dot));
 	}
 	return SCompoundWidget::OnPaint(Args, AllottedGeometry, MyCullingRect, OutDrawElements, LayerId + 2, InWidgetStyle, bParentEnabled);
+}
+
+FMenuPartState SMenuSettingRow::GetPartState() const
+{
+	const float State = FMath::Clamp(Highlight.Value, 0.f, 2.f);
+	FMenuPartState PartState;
+	PartState.Hover = FMath::Min(State, 1.f);
+	PartState.Focus = FMath::Max(State - 1.f, 0.f);
+	PartState.bPressed = bPressedVisual;
+	PartState.bSelected = bCapturing;
+	PartState.bDisabled = !bSettingEnabled;
+	return PartState;
 }
 
 #undef LOCTEXT_NAMESPACE

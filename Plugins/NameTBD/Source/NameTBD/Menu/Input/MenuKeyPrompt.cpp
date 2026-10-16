@@ -115,16 +115,17 @@ int32 SMenuKeyGlyph::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGe
 	else
 	{
 		const float Radius = bRound ? static_cast<float>(LocalSize.Y) * 0.5f : CapStyle.Height * CapStyle.CornerRadius;
-		const FSlateRoundedBoxBrush Cap(CapStyle.CapColor, Radius, CapStyle.OutlineColor, CapStyle.OutlineWidth);
-		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), &Cap, Effect, Tint);
+		// MakeBox draws in its tint (the brush's own tint is not applied): the cap colour goes in as the tint.
+		const FSlateRoundedBoxBrush Cap(FLinearColor::White, Radius, CapStyle.OutlineColor * Tint, CapStyle.OutlineWidth);
+		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), &Cap, Effect, CapStyle.CapColor * Tint);
 
 		if (HoldProgress > 0.f)
 		{
-			const FSlateRoundedBoxBrush Fill(CapStyle.TextColor.CopyWithNewOpacity(0.35f), Radius);
+			const FSlateRoundedBoxBrush Fill(FLinearColor::White, Radius);
 			const float FillHeight = static_cast<float>(LocalSize.Y) * HoldProgress;
 			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
 				AllottedGeometry.ToPaintGeometry(FVector2f(static_cast<float>(LocalSize.X), FillHeight), FSlateLayoutTransform(FVector2f(0.f, static_cast<float>(LocalSize.Y) - FillHeight))),
-				&Fill, Effect, Tint);
+				&Fill, Effect, CapStyle.TextColor.CopyWithNewOpacity(0.35f) * Tint);
 		}
 
 		const FText Text = GetCapText();

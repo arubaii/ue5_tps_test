@@ -11,3 +11,9 @@ Choice Button (Options mode) and Segmented Choice: OptionsEnum = an enum's path 
 
 ## Changing targets at runtime
 Give Shape / Design Targets a Target ID (and Active on/off). Set Target Variant(ID) switches on the targets with that ID and off the other ID'd targets on the same widgets - e.g. three Design Targets on one Image with IDs Full / Half / Muted, each a Brush SVG, picked from the volume. Also Set Target Active, Set Design Target Image (SVG or texture in every state), Set Shape Target Transform, Get / Set Shape Target By ID, Get / Set Design Target By ID. Exit Interpolation Speed on a target: its own speed back to Normal.
+
+## Materials on a Context Menu Button
+A material on the Background Look's fill (set_shape_paint material=... on the button) shows in every state: a state Look made earlier with a flat fill takes the authored paint instead of covering it, and later edits of the Background Look reach the states that hadn't changed that setting. A Design Target's Material (and Brush Texture) on a shape is put back whenever a Look blend writes over it, and its parameters go to the instance actually drawn.
+
+## Engine Buttons in a Widget Blueprint
+A spec {class: "Button", text, icon, variant} builds a themed engine Button (primary: accent filled; secondary: raised, outlined; ghost: no fill until hovered) with its label and / or icon inside in a colour that reads on it. Use it (or a ready-made button) where a parent class binds a Button part by name.

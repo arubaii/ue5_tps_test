@@ -5,6 +5,8 @@
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/PanelSlot.h"
+#include "Components/Button.h"
+#include "Components/Image.h"
 #include "Components/PanelWidget.h"
 #include "Components/SizeBox.h"
 #include "Components/Widget.h"
@@ -20,6 +22,9 @@
 #include "NameTBDAIJson.h"
 #include "NameTBDAITheme.h"
 #include "NameTBDAITools.h"
+#include "NameTBDAIWidgetStyling.h"
+#include "NameTBD/Widgets/WidgetSVG.h"
+#include "NameTBD/Widgets/WidgetSVGImage.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "WidgetBlueprint.h"
 #include "WidgetBlueprintFactory.h"
@@ -179,7 +184,29 @@ namespace NameTBDAIWidgetTools
 		FNameTBDAIToolContext* Tool = nullptr;
 		TArray<FString> Warnings;
 		TArray<TSharedPtr<FJsonValue>> Made;
+		/** Every widget made, for the contrast check at the end. */
+		TArray<UWidget*> MadeWidgets;
 	};
+
+	/** "#RRGGBBAA" (sRGB, as the tools read colours) for a linear colour. */
+	FString ToHex(const FLinearColor& Color)
+	{
+		return TEXT("#") + Color.ToFColor(true).ToHex();
+	}
+
+	/** What a Widget Blueprint remembers for a themed engine widget (its button variant), beside the house roles. */
+	const TCHAR* EngineThemeMark = TEXT("$engine:");
+
+	/** Checks the text and icons among Widgets against what is behind them; fixes go into Warnings so the model sees them. */
+	void CheckContrast(const TArray<UWidget*>& Widgets, bool bDark, TArray<FString>& Warnings)
+	{
+		TArray<FString> Notes;
+		NameTBDAIWidgetStyling::FixContrast(Widgets, bDark, Notes);
+		for (const FString& Note : Notes)
+		{
+			Warnings.Add(TEXT("contrast fixed - ") + Note);
+		}
+	}
 
 	UClass* ResolveReadyMadeKind(const FString& Kind)
 	{
@@ -264,6 +291,42 @@ namespace NameTBDAIWidgetTools
 		{
 			ClassName = GetString(Role, TEXT("class"));
 		}
+
+		// Text and icons: a symbol the font doesn't have ("▶", "🔊") is the icon it means; other such characters go.
+		FString Text = GetString(Spec, TEXT("text"));
+		FString Label = GetString(Spec, TEXT("label"), Text);
+		FString IconName = GetString(Spec, TEXT("icon"), Role.IsValid() ? GetString(Role, TEXT("icon")) : FString());
+		if (IconName.IsEmpty())
+		{
+			const FString FromGlyph = NameTBDAIWidgetStyling::IconForGlyph(Label);
+			if (!FromGlyph.IsEmpty())
+			{
+				Build.Warnings.Add(FString::Printf(TEXT("'%s' is a symbol the font doesn't draw: shown as the %s icon instead (use \"icon\": \"%s\")."), *Label, *FromGlyph, *FromGlyph));
+				IconName = FromGlyph;
+				Text.Reset();
+				Label.Reset();
+			}
+		}
+		{
+			FString Removed;
+			Text = NameTBDAIWidgetStyling::RemoveUndrawableGlyphs(Text, Removed);
+			FString RemovedFromLabel;
+			Label = NameTBDAIWidgetStyling::RemoveUndrawableGlyphs(Label, RemovedFromLabel);
+			if (!Removed.IsEmpty() || !RemovedFromLabel.IsEmpty())
+			{
+				Build.Warnings.Add(FString::Printf(TEXT("Left out '%s': the font draws symbols and emoji as boxes. Use \"icon\" (list_options icons)."), *(Removed.IsEmpty() ? RemovedFromLabel : Removed)));
+			}
+		}
+		// An icon on its own is an SVG Image (a text or image asked to show a library icon is one too).
+		if (ButtonKind.IsEmpty() && !IconName.IsEmpty())
+		{
+			const FString ClassKey = Normalize(ClassName);
+			const bool bTextOrImage = ClassKey == TEXT("textblock") || ClassKey == TEXT("text") || ClassKey == TEXT("richtextblock") || ClassKey == TEXT("image");
+			if (ClassName.IsEmpty() || (bTextOrImage && !IconName.StartsWith(TEXT("/"))))
+			{
+				ClassName = TEXT("WidgetSVGImage");
+			}
+		}
 		FString Error;
 		UClass* Class = nullptr;
 		if (!ButtonKind.IsEmpty())
@@ -313,6 +376,22 @@ namespace NameTBDAIWidgetTools
 		}
 		const FName WidgetName = NameTBDAIHelpers::MakeWidgetName(Blueprint, BaseName);
 
+		// A part the parent class binds by name (a Media Box Transport Bar's PlayPauseButton): the name and class must match.
+		bool bOptionalPart = false;
+		if (UClass* PartClass = NameTBDAIWidgetStyling::FindBoundPartClass(Blueprint->ParentClass, BaseName, bOptionalPart))
+		{
+			if (WidgetName.ToString() != BaseName)
+			{
+				Build.Warnings.Add(FString::Printf(TEXT("%s is a part %s binds by name, but that name is taken: this one is %s and isn't bound. Remove or rename the other first."),
+					*BaseName, *Blueprint->ParentClass->GetName(), *WidgetName.ToString()));
+			}
+			else if (!Class->IsChildOf(PartClass))
+			{
+				Build.Warnings.Add(FString::Printf(TEXT("%s is bound by %s as a %s, but this is a %s: it won't be wired up (use class %s, or a ready-made button for a Button part)."),
+					*BaseName, *Blueprint->ParentClass->GetName(), *PartClass->GetName(), *Class->GetName(), *PartClass->GetName()));
+			}
+		}
+
 		Tree->Modify();
 		UWidget* Widget = Tree->ConstructWidget<UWidget>(Class, WidgetName);
 		if (!Widget)
@@ -350,6 +429,19 @@ namespace NameTBDAIWidgetTools
 			Widget->CreatedFromPalette();
 		}
 
+		// Engine widgets in the house look (an engine Button is light grey, its text unreadable in the dark theme), before the
+		// spec's own settings so those win. "theme": false keeps the engine's look.
+		const FString VariantName = GetString(Spec, TEXT("variant"), Role.IsValid() ? GetString(Role, TEXT("variant")) : FString());
+		const bool bTheme = GetBool(Spec, TEXT("theme"), true);
+		if (bTheme && NameTBDAIWidgetStyling::IsThemedEngineWidget(Widget))
+		{
+			NameTBDAIWidgetStyling::ThemeEngineWidget(Widget, Build.bDark, NameTBDAIWidgetStyling::ParseVariant(VariantName));
+			if (!Role.IsValid())
+			{
+				RememberRole(Blueprint, Widget, FString(EngineThemeMark) + (VariantName.IsEmpty() ? FString(TEXT("secondary")) : VariantName));
+			}
+		}
+
 		// Settings: the role's, then the spec's; text / label shorthands.
 		TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
 		if (Role.IsValid())
@@ -366,10 +458,54 @@ namespace NameTBDAIWidgetTools
 				Props->SetField(Pair.Key, Pair.Value);
 			}
 		}
-		const FString Text = GetString(Spec, TEXT("text"));
 		if (!Text.IsEmpty() && !Cast<UStyledButtonBase>(Widget) && FindFProperty<FProperty>(Widget->GetClass(), TEXT("Text")))
 		{
 			Props->SetStringField(TEXT("Text"), Text);
+		}
+
+		// An Image given a texture icon: its brush.
+		if (!IconName.IsEmpty() && Widget->IsA<UImage>())
+		{
+			FString IconError;
+			if (UObject* Icon = NameTBDAIWidgetStyling::FindOrMakeIcon(IconName, *Build.Tool, IconError))
+			{
+				if (Icon->IsA<UWidgetSVG>())
+				{
+					Build.Warnings.Add(FString::Printf(TEXT("%s: an Image can't draw an SVG - use an SVG Image (WidgetSVGImage) for %s."), *Widget->GetName(), *IconName));
+				}
+				else
+				{
+					Props->SetStringField(TEXT("Brush"), Icon->GetPathName());
+				}
+			}
+			else
+			{
+				Build.Warnings.Add(IconError);
+			}
+		}
+
+		// An SVG Image showing an icon: its asset, a size, the theme's text colour unless the spec says.
+		if (!IconName.IsEmpty() && Widget->IsA<UWidgetSVGImage>())
+		{
+			FString IconError;
+			if (UObject* Icon = NameTBDAIWidgetStyling::FindOrMakeIcon(IconName, *Build.Tool, IconError))
+			{
+				Props->SetStringField(TEXT("SVG"), Icon->GetPathName());
+				if (!Props->HasField(TEXT("ImageSize")))
+				{
+					const double IconSize = GetNumber(Spec, TEXT("icon_size"), 24.0);
+					Props->SetBoolField(TEXT("bOverrideImageSize"), true);
+					Props->SetArrayField(TEXT("ImageSize"), { NameTBDAIJson::Num(IconSize), NameTBDAIJson::Num(IconSize) });
+				}
+				if (!Props->HasField(TEXT("ColorAndOpacity")))
+				{
+					Props->SetStringField(TEXT("ColorAndOpacity"), TEXT("@text"));
+				}
+			}
+			else
+			{
+				Build.Warnings.Add(IconError);
+			}
 		}
 
 		TSharedPtr<FJsonObject> Slot = MakeShared<FJsonObject>();
@@ -410,10 +546,13 @@ namespace NameTBDAIWidgetTools
 
 		if (UStyledButtonBase* ReadyMade = Cast<UStyledButtonBase>(Widget))
 		{
-			const FString Label = GetString(Spec, TEXT("label"), Text);
 			if (!Label.IsEmpty())
 			{
 				ReadyMade->SetLabel(FText::FromString(Label));
+			}
+			if (!IconName.IsEmpty())
+			{
+				Build.Warnings.Add(FString::Printf(TEXT("%s: a ready-made button shows no icon from 'icon' (a Tile Button has an Icon part; or use a Button)."), *Widget->GetName()));
 			}
 		}
 
@@ -425,6 +564,7 @@ namespace NameTBDAIWidgetTools
 			Made->SetStringField(TEXT("parent"), Parent->GetName());
 		}
 		Build.Made.Add(Obj(Made));
+		Build.MadeWidgets.Add(Widget);
 		if (Role.IsValid())
 		{
 			RememberRole(Blueprint, Widget, RoleName);
@@ -432,7 +572,68 @@ namespace NameTBDAIWidgetTools
 		Build.Tool->Changes->NoteTouched(Blueprint, FString::Printf(TEXT("Added %s '%s'"), *Class->GetName(), *Widget->GetName()));
 
 		// Children.
-		const TArray<TSharedPtr<FJsonValue>> Children = GetArray(Spec, TEXT("children"));
+		TArray<TSharedPtr<FJsonValue>> Children = GetArray(Spec, TEXT("children"));
+
+		// A Button given text and / or an icon and no children: they become its content, in a colour that reads on its fill.
+		if (Children.Num() == 0 && Widget->IsA<UButton>() && !Widget->IsA<UStyledButtonBase>() && (!Label.IsEmpty() || !IconName.IsEmpty()))
+		{
+			FLinearColor Fill = NameTBDAIHelpers::GetPalette(Build.bDark).SurfaceRaised;
+			NameTBDAIWidgetStyling::GetButtonFill(Widget, Fill);
+			const NameTBDAIWidgetStyling::EButtonVariant Variant = NameTBDAIWidgetStyling::ParseVariant(VariantName);
+			const FLinearColor Behind = (Fill.A < 0.5f || Variant == NameTBDAIWidgetStyling::EButtonVariant::Ghost) ? NameTBDAIHelpers::GetPalette(Build.bDark).Surface : Fill;
+			const FString Ink = ToHex(NameTBDAIWidgetStyling::ReadableOn(Behind));
+
+			TSharedPtr<FJsonObject> IconSpec;
+			if (!IconName.IsEmpty())
+			{
+				IconSpec = MakeShared<FJsonObject>();
+				IconSpec->SetStringField(TEXT("class"), TEXT("WidgetSVGImage"));
+				IconSpec->SetStringField(TEXT("name"), WidgetName.ToString() + TEXT("Icon"));
+				IconSpec->SetStringField(TEXT("icon"), IconName);
+				IconSpec->SetNumberField(TEXT("icon_size"), GetNumber(Spec, TEXT("icon_size"), Role.IsValid() ? GetNumber(Role, TEXT("icon_size"), 20.0) : 20.0));
+				TSharedPtr<FJsonObject> IconProps = MakeShared<FJsonObject>();
+				IconProps->SetStringField(TEXT("ColorAndOpacity"), Ink);
+				IconProps->SetStringField(TEXT("Visibility"), TEXT("HitTestInvisible"));
+				IconSpec->SetObjectField(TEXT("props"), IconProps);
+			}
+			TSharedPtr<FJsonObject> LabelSpec;
+			if (!Label.IsEmpty())
+			{
+				LabelSpec = MakeShared<FJsonObject>();
+				LabelSpec->SetStringField(TEXT("class"), TEXT("TextBlock"));
+				LabelSpec->SetStringField(TEXT("name"), WidgetName.ToString() + TEXT("Label"));
+				LabelSpec->SetStringField(TEXT("text"), Label);
+				TSharedPtr<FJsonObject> LabelProps = MakeShared<FJsonObject>();
+				TSharedPtr<FJsonObject> Font = MakeShared<FJsonObject>();
+				Font->SetStringField(TEXT("Size"), TEXT("@type.body"));
+				Font->SetStringField(TEXT("TypefaceFontName"), TEXT("@font.strong"));
+				LabelProps->SetObjectField(TEXT("Font"), Font);
+				LabelProps->SetStringField(TEXT("ColorAndOpacity"), Ink);
+				LabelProps->SetStringField(TEXT("Visibility"), TEXT("HitTestInvisible"));
+				LabelSpec->SetObjectField(TEXT("props"), LabelProps);
+			}
+			if (IconSpec.IsValid() && LabelSpec.IsValid())
+			{
+				TSharedPtr<FJsonObject> RowSpec = MakeShared<FJsonObject>();
+				RowSpec->SetStringField(TEXT("class"), TEXT("HorizontalBox"));
+				RowSpec->SetStringField(TEXT("name"), WidgetName.ToString() + TEXT("Content"));
+				TSharedPtr<FJsonObject> LabelSlot = MakeShared<FJsonObject>();
+				LabelSlot->SetStringField(TEXT("align"), TEXT("left"));
+				TSharedPtr<FJsonObject> LabelPadding = MakeShared<FJsonObject>();
+				LabelPadding->SetNumberField(TEXT("Left"), 8.0);
+				LabelSlot->SetObjectField(TEXT("Padding"), LabelPadding);
+				LabelSpec->SetObjectField(TEXT("slot"), LabelSlot);
+				TSharedPtr<FJsonObject> IconSlot = MakeShared<FJsonObject>();
+				IconSlot->SetStringField(TEXT("align"), TEXT("left"));
+				IconSpec->SetObjectField(TEXT("slot"), IconSlot);
+				RowSpec->SetArrayField(TEXT("children"), { Obj(IconSpec), Obj(LabelSpec) });
+				Children.Add(Obj(RowSpec));
+			}
+			else
+			{
+				Children.Add(Obj(IconSpec.IsValid() ? IconSpec : LabelSpec));
+			}
+		}
 		if (Children.Num() > 0)
 		{
 			UPanelWidget* AsPanel = Cast<UPanelWidget>(Widget);
@@ -567,7 +768,7 @@ namespace NameTBDAIWidgetTools
 
 	FString SpecSchemaHelp()
 	{
-		return TEXT("A widget spec: {class (widget class or Widget Blueprint path; optional with role), name, role (house preset: card, panel, pill, divider, display, title, heading, body, caption, label, glow, aurora, particles, icon, stack, row, frame - list_options fields isn't needed for these), text (Text field shorthand), button (ready-made kind: generic, pill_switch, checkbox, radio, menu_item, hold, tile, choice, segmented, glass), label (a ready-made button's label), props {field: value}, slot {align: top_left|top|center|bottom|fill..., padding, any slot field}, children [specs]}. Values take theme tokens: \"@accent\", \"@text~0.6\", \"@space.4\", \"@radius.large\", \"@type.title\", \"@font.strong\", \"@spring.Bouncy\"; colors as \"#RRGGBB[AA]\".");
+		return TEXT("A widget spec: {class (widget class or Widget Blueprint path; optional with role), name, role (house preset: card, panel, pill, divider, display, title, heading, body, caption, label, glow, aurora, particles, icon, stack, row, frame, button, button_primary, button_ghost, icon_button, toolbar - list_options fields isn't needed for these), text (Text field shorthand; on a Button: its label, built inside it in a colour that reads on it), icon (an icon name - list_options icons: play, pause, stop, volume, mute, subtitles, fullscreen, settings, close... - or an SVG / texture path: on a Button its content beside any text, elsewhere an SVG Image; icon_size px), variant (engine Button: primary | secondary | ghost), theme (false: keep an engine widget's own look), button (ready-made kind: generic, pill_switch, checkbox, radio, menu_item, hold, tile, choice, segmented, glass), label (a ready-made button's label), props {field: value}, slot {align: top_left|top|center|bottom|fill..., padding, any slot field}, children [specs]}. Engine Buttons, Sliders, Check Boxes, Progress Bars and Editable Text Boxes are built in the theme's look and every text is checked against what is behind it. Never write symbols or emoji (the font draws them as boxes): use icon. Values take theme tokens: \"@accent\", \"@text~0.6\", \"@space.4\", \"@radius.large\", \"@type.title\", \"@font.strong\", \"@spring.Bouncy\"; colors as \"#RRGGBB[AA]\".");
 	}
 }
 
@@ -655,6 +856,13 @@ namespace NameTBDAITools
 
 				FNameTBDAIToolResult Result = FNameTBDAIToolResult::Ok();
 				Result.Data->SetStringField(TEXT("add_children_to"), Root->GetName());
+				// What the parent class wires up by name: build these with exactly these names and classes.
+				const TArray<TSharedPtr<FJsonValue>> Parts = NameTBDAIWidgetStyling::DescribeBoundParts(ParentClass);
+				if (Parts.Num() > 0)
+				{
+					Result.Data->SetArrayField(TEXT("bound_parts"), Parts);
+					Result.Data->SetStringField(TEXT("bound_parts_note"), TEXT("The parent class finds these widgets by name: give them exactly these names and classes (a Button part takes a Button or a ready-made button)."));
+				}
 				Result.Warnings = Build.Warnings;
 				FinishBlueprintEdit(Blueprint, Result, true);
 				return Result;
@@ -719,6 +927,7 @@ namespace NameTBDAITools
 				{
 					return FNameTBDAIToolResult::Fail(FString::Join(Build.Warnings, TEXT(" ")));
 				}
+				CheckContrast(Build.MadeWidgets, Build.bDark, Build.Warnings);
 				FNameTBDAIToolResult Result = FNameTBDAIToolResult::Ok();
 				Result.Data->SetArrayField(TEXT("added"), Build.Made);
 				Result.Warnings = Build.Warnings;
@@ -738,6 +947,7 @@ namespace NameTBDAITools
 				.Obj(TEXT("slot"), TEXT("Slot fields; shorthands: align (top_left, center, bottom...), padding."))
 				.Str(TEXT("text"), TEXT("Shorthand for the Text field / a ready-made button's label."))
 				.Str(TEXT("role"), TEXT("Apply a house preset's settings first."))
+				.Str(TEXT("variant"), TEXT("An engine Button's look again: primary (accent filled), secondary (raised, outlined), ghost (no fill until hovered). Also re-themes an engine Slider, Check Box, Progress Bar or Editable Text Box."))
 				.Str(TEXT("mode"), TEXT("dark or light, for tokens."))
 				.Build(),
 			true, false, false,
@@ -777,7 +987,21 @@ namespace NameTBDAITools
 				{
 					for (const auto& Pair : OwnSlot->Values) { Slot->SetField(Pair.Key, Pair.Value); }
 				}
-				const FString Text = GetString(Args, TEXT("text"));
+				FString Text = GetString(Args, TEXT("text"));
+				{
+					FString Removed;
+					Text = NameTBDAIWidgetStyling::RemoveUndrawableGlyphs(Text, Removed);
+					if (!Removed.IsEmpty())
+					{
+						Errors.Add(FString::Printf(TEXT("Left out '%s': the font draws symbols and emoji as boxes. Use add_widgets with \"icon\" (list_options icons)."), *Removed));
+					}
+				}
+				const FString VariantName = GetString(Args, TEXT("variant"));
+				if (!VariantName.IsEmpty() && NameTBDAIWidgetStyling::IsThemedEngineWidget(Widget))
+				{
+					NameTBDAIWidgetStyling::ThemeEngineWidget(Widget, bDark, NameTBDAIWidgetStyling::ParseVariant(VariantName));
+					RememberRole(Blueprint, Widget, FString(EngineThemeMark) + VariantName);
+				}
 				UStyledButtonBase* ReadyMade = Cast<UStyledButtonBase>(Widget);
 				if (!Text.IsEmpty() && !ReadyMade && FindFProperty<FProperty>(Widget->GetClass(), TEXT("Text")))
 				{
@@ -793,6 +1017,9 @@ namespace NameTBDAITools
 				{
 					ReadyMade->SetLabel(FText::FromString(Text));
 				}
+				TArray<UWidget*> Checked;
+				UWidgetTree::ForWidgetAndChildren(Widget, [&Checked](UWidget* Each) { Checked.Add(Each); });
+				CheckContrast(Checked, bDark, Errors);
 				Context.Changes->NoteTouched(Blueprint, FString::Printf(TEXT("Changed %s"), *Widget->GetName()));
 
 				FNameTBDAIToolResult Result = FNameTBDAIToolResult::Ok();
@@ -1021,10 +1248,11 @@ namespace NameTBDAITools
 		// ---- apply_theme ----
 		Register({
 			TEXT("apply_theme"),
-			TEXT("Repaints a Widget Blueprint in the theme's dark or light palette: every widget built with a house role gets that role's colors in the new palette (sizes and layout untouched); ready-made buttons get the accent. See the palette with list_options theme."),
+			TEXT("Repaints a Widget Blueprint in the theme's dark or light palette: every widget built with a house role gets that role's colors in the new palette (sizes and layout untouched); ready-made buttons get the accent; engine Buttons, Sliders, Check Boxes, Progress Bars and Editable Text Boxes get the house look in it; then every text is checked against what is behind it. See the palette with list_options theme."),
 			FNameTBDAISchema()
 				.Str(TEXT("blueprint"), TEXT("Widget Blueprint (omit: the one built last or open)."))
 				.Str(TEXT("mode"), TEXT("dark or light."), true, { TEXT("dark"), TEXT("light") })
+				.Bool(TEXT("engine_widgets"), TEXT("Also theme engine widgets that weren't built themed (default true)."))
 				.Build(),
 			true, false, false,
 			[](const TSharedPtr<FJsonObject>& Args, FNameTBDAIToolContext& Context)
@@ -1046,6 +1274,13 @@ namespace NameTBDAITools
 				{
 					TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
 					const FString RoleName = Remembered.IsValid() ? GetString(Remembered, Widget->GetName()) : FString();
+					if (RoleName.StartsWith(EngineThemeMark) || (RoleName.IsEmpty() && NameTBDAIWidgetStyling::IsThemedEngineWidget(Widget) && GetBool(Args, TEXT("engine_widgets"), true)))
+					{
+						// An engine widget in the house look: themed again in the other palette.
+						NameTBDAIWidgetStyling::ThemeEngineWidget(Widget, bDark, NameTBDAIWidgetStyling::ParseVariant(RoleName.Mid(FCString::Strlen(EngineThemeMark))));
+						Repainted.Add(Widget->GetName());
+						continue;
+					}
 					if (TSharedPtr<FJsonObject> Role = RoleName.IsEmpty() ? nullptr : Copy(FindRole(RoleName)))
 					{
 						const TSharedPtr<FJsonObject> RoleProps = GetObject(Role, TEXT("props"));
@@ -1065,6 +1300,7 @@ namespace NameTBDAITools
 					NameTBDAIHelpers::ApplyWidgetProps(Widget, Props, nullptr, bDark, Errors);
 					Repainted.Add(Widget->GetName());
 				}
+				CheckContrast(Widgets, bDark, Errors);
 				Context.Changes->NoteTouched(Blueprint, FString::Printf(TEXT("Applied the %s theme to %s"), bDark ? TEXT("dark") : TEXT("light"), *Blueprint->GetName()));
 				FNameTBDAIToolResult Result = FNameTBDAIToolResult::Ok();
 				Result.Data->SetField(TEXT("repainted"), Arr(Repainted));

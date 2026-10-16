@@ -440,6 +440,143 @@ const FContextMenuWidgetDesign& FContextMenuDesignTarget::GetDesignForState(ECon
 	}
 }
 
+namespace ContextMenuButtonLooks
+{
+	bool DrawsImage(const FWidgetShapePaint& Paint)
+	{
+		return Paint.DrawsBrush() || Paint.DrawsSVG();
+	}
+
+	/** A paint whose image can change by itself (a material, a render target): a cached drawing of it goes stale. */
+	bool IsLive(const FWidgetShapePaint& Paint)
+	{
+		const UObject* Resource = Paint.DrawsBrush() ? Paint.Image.GetResourceObject() : nullptr;
+		return Resource && !Resource->IsA<UTexture2D>();
+	}
+
+	bool KeepAuthoredImage(FWidgetShapePaint& StatePaint, const FWidgetShapePaint& Authored)
+	{
+		if (DrawsImage(Authored) && !DrawsImage(StatePaint))
+		{
+			StatePaint = Authored;
+			return true;
+		}
+		return false;
+	}
+
+	/** Every paint of Look (fill, a stroke's paint) that draws no image where Baseline's does takes Baseline's. True if any changed. */
+	bool RepairLook(FInstancedPropertyBag& Look, const FInstancedPropertyBag& Baseline)
+	{
+		const UPropertyBag* Struct = Look.GetPropertyBagStruct();
+		if (!Struct)
+		{
+			return false;
+		}
+		uint8* Memory = Look.GetMutableValue().GetMemory();
+		bool bChanged = false;
+		for (TFieldIterator<FStructProperty> It(Struct); It; ++It)
+		{
+			const void* AuthoredValue = WidgetShapeAnimation::FindValue(Baseline, *It);
+			if (!AuthoredValue || !Memory)
+			{
+				continue;
+			}
+			void* StateValue = It->ContainerPtrToValuePtr<void>(Memory);
+			if (It->Struct == FWidgetShapePaint::StaticStruct())
+			{
+				bChanged |= KeepAuthoredImage(*static_cast<FWidgetShapePaint*>(StateValue), *static_cast<const FWidgetShapePaint*>(AuthoredValue));
+			}
+			else if (It->Struct == FWidgetShapeStroke::StaticStruct())
+			{
+				bChanged |= KeepAuthoredImage(static_cast<FWidgetShapeStroke*>(StateValue)->Paint, static_cast<const FWidgetShapeStroke*>(AuthoredValue)->Paint);
+			}
+		}
+		return bChanged;
+	}
+
+	/** Whether a struct is followed member by member (it holds structs or lists: a paint, a stroke); else it is one value (a colour). */
+	bool IsComposite(const UScriptStruct* Struct)
+	{
+		if (!Struct || Struct == FSlateBrush::StaticStruct())
+		{
+			return false;
+		}
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			if (It->IsA<FStructProperty>() || It->IsA<FArrayProperty>())
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** One value of a state's Look following the shape's edit from OldBase to NewBase, where the state still had the old value. */
+	void Propagate(const FProperty* Property, const void* OldBase, const void* NewBase, void* State)
+	{
+		if (Property->Identical(OldBase, NewBase))
+		{
+			return;
+		}
+		const FStructProperty* AsStruct = CastField<FStructProperty>(Property);
+		if (AsStruct && AsStruct->Struct == FWidgetShapePaint::StaticStruct())
+		{
+			const FWidgetShapePaint& Old = *static_cast<const FWidgetShapePaint*>(OldBase);
+			const FWidgetShapePaint& New = *static_cast<const FWidgetShapePaint*>(NewBase);
+			FWidgetShapePaint& Current = *static_cast<FWidgetShapePaint*>(State);
+			if (DrawsImage(Old) != DrawsImage(New))
+			{
+				// Gaining (or losing) an image changes the paint as a whole: a state painted like the old one takes the new one.
+				if (DrawsImage(Current) == DrawsImage(Old))
+				{
+					Current = New;
+				}
+				return;
+			}
+		}
+		if (AsStruct && IsComposite(AsStruct->Struct))
+		{
+			for (TFieldIterator<FProperty> It(AsStruct->Struct); It; ++It)
+			{
+				for (int32 Index = 0; Index < It->ArrayDim; ++Index)
+				{
+					Propagate(*It, It->ContainerPtrToValuePtr<void>(OldBase, Index), It->ContainerPtrToValuePtr<void>(NewBase, Index), It->ContainerPtrToValuePtr<void>(State, Index));
+				}
+			}
+			return;
+		}
+		if (Property->Identical(OldBase, State))
+		{
+			Property->CopySingleValue(State, NewBase);
+		}
+	}
+
+	void PropagateLook(FInstancedPropertyBag& Look, const FInstancedPropertyBag& OldBase, const FInstancedPropertyBag& NewBase)
+	{
+		const UPropertyBag* Struct = Look.GetPropertyBagStruct();
+		uint8* Memory = Struct ? Look.GetMutableValue().GetMemory() : nullptr;
+		if (!Memory)
+		{
+			return;
+		}
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			const void* Old = WidgetShapeAnimation::FindValue(OldBase, *It);
+			const void* New = WidgetShapeAnimation::FindValue(NewBase, *It);
+			if (Old && New)
+			{
+				Propagate(*It, Old, New, It->ContainerPtrToValuePtr<void>(Memory));
+			}
+		}
+	}
+
+	/** The state settings of a target that can carry a Look. */
+	TArray<FContextMenuShapeStateSettings*, TInlineAllocator<6>> StatesOf(FContextMenuShapeTarget& Target)
+	{
+		return { &Target.BaseShape, &Target.NormalShape, &Target.HoveredShape, &Target.PressedShape, &Target.DisabledShape, &Target.EnabledShape };
+	}
+}
+
 namespace ContextMenuButtonDesign
 {
 	EContextMenuState PreviewToState(EContextMenuDesignPreview Preview)
@@ -1206,9 +1343,14 @@ int32 SContextMenuSlateButton::OnPaint(const FPaintArgs& Args, const FGeometry& 
 	if (bVectorBackground)
 	{
 		// The button's Background Color tints it, as it does the brush - which is what a Design Target's Tint on the button
-		// drives. The shape is painted live inside the layer (never warped: a vector background takes no Shape Box shape), so
-		// nothing is drawn offscreen and nothing needs marking as changed on every paint.
+		// drives. The shape is painted live inside the layer (never warped: a vector background takes no Shape Box shape).
 		LayerStyle.BlendColorAndOpacityTint(Owner->GetBackgroundColor());
+		// Should the layer ever keep a drawing of it, a material (which animates) has to be drawn again every paint.
+		const UShapeWidget* Shape = BackgroundShape.Get();
+		if (Shape && (ContextMenuButtonLooks::IsLive(Shape->Fill) || ContextMenuButtonLooks::IsLive(Shape->Stroke.Paint)))
+		{
+			BrushLayer->MarkContentChanged();
+		}
 	}
 	else if (BrushPainter->SetBrush(Brush, DrawEffects, Brush->GetTint(InWidgetStyle) * Owner->GetBackgroundColor()))
 	{
@@ -1717,10 +1859,60 @@ void UContextMenuButton::PostLoad()
 	InstanceOverrides.DesignOverride.Reset();
 	InstanceOverrides.bHasBeenSeeded = false;
 
+	// State Looks made before an image was put on the Background Look painted it over with their old flat colour: they take it.
+	RepairLookImages();
+#if WITH_EDITORONLY_DATA
+	BackgroundLookSnapshot = BackgroundLook;
+#endif
+
 	SyncEditConditionMirrors();
 }
 
+void UContextMenuButton::RepairLookImages()
+{
+	if (!BackgroundLook.GetPropertyBagStruct())
+	{
+		return;
+	}
+	for (FContextMenuShapeTarget& Target : ShapeTargets)
+	{
+		if (!IsSelfTargetName(Target.TargetWidgetName))
+		{
+			continue;
+		}
+		for (FContextMenuShapeStateSettings* State : ContextMenuButtonLooks::StatesOf(Target))
+		{
+			if (State->bHasLook)
+			{
+				ContextMenuButtonLooks::RepairLook(State->Look, BackgroundLook);
+			}
+		}
+	}
+}
+
 #if WITH_EDITOR
+void UContextMenuButton::PropagateBackgroundLookEdit()
+{
+	if (!BackgroundLookSnapshot.GetPropertyBagStruct() || !BackgroundLook.GetPropertyBagStruct())
+	{
+		return;
+	}
+	for (FContextMenuShapeTarget& Target : ShapeTargets)
+	{
+		if (!IsSelfTargetName(Target.TargetWidgetName))
+		{
+			continue;
+		}
+		for (FContextMenuShapeStateSettings* State : ContextMenuButtonLooks::StatesOf(Target))
+		{
+			if (State->bHasLook)
+			{
+				ContextMenuButtonLooks::PropagateLook(State->Look, BackgroundLookSnapshot, BackgroundLook);
+			}
+		}
+	}
+}
+
 void UContextMenuButton::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
 {
 	const FName PropertyName = PropertyChangedEvent.GetPropertyName();
@@ -1825,6 +2017,14 @@ void UContextMenuButton::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 				UseCustomForLooks(Target);
 			}
 		}
+	}
+
+	// An edit of the Background Look reaches the states that hadn't changed that setting (a material set on its fill shows in
+	// every state, not only at rest).
+	if (PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UContextMenuButton, BackgroundLook))
+	{
+		PropagateBackgroundLookEdit();
+		RepairLookImages();
 	}
 
 	// Every target's Look laid out for the shape it aims at, before anything below reads them.
@@ -5355,6 +5555,11 @@ void UContextMenuButton::RefreshShapeTargetLooks()
 			}
 		}
 	}
+
+#if WITH_EDITORONLY_DATA
+	// What the next edit of the Background Look is told apart from.
+	BackgroundLookSnapshot = BackgroundLook;
+#endif
 }
 
 void UContextMenuButton::RebuildShapeTargetStatus()
@@ -5537,6 +5742,17 @@ void UContextMenuButton::InitializeRuntimeShapeTargets()
 		if (UShapeWidget* LookWidget = GetLookWidget(Widget))
 		{
 			Entry.LookWidget = LookWidget;
+			// An image on the shape as authored (a material on its fill) isn't painted over by a state's old flat colour.
+			if (const FInstancedPropertyBag* AuthoredLook = FindLookBaseline(LookWidget))
+			{
+				for (FContextMenuShapeStateSettings* State : ContextMenuButtonLooks::StatesOf(ShapeTargets[i]))
+				{
+					if (State->bHasLook)
+					{
+						ContextMenuButtonLooks::RepairLook(State->Look, *AuthoredLook);
+					}
+				}
+			}
 			GatherLookProperties(Authored, LookWidget, Entry.LookProperties);
 			if (Entry.LookProperties.Num() > 0)
 			{
@@ -5677,8 +5893,18 @@ bool UContextMenuButton::ApplyDesignTarget(FContextMenuRuntimeDesignTarget& Targ
 		Widget->SetRenderOpacity(Target.CurrentOpacity);
 	}
 
-	// Discrete: a texture can't be blended, so it swaps once, on the frame the state changes.
-	if (Authored.DrivesBrushTextureAnywhere() && (!Target.bHasAppliedBrush || Target.LastBrushState != State))
+	// Taken off a shape since (its Look blend writes the whole paint): put on again.
+	bool bBrushLost = false;
+	if (Authored.DrivesBrushTextureAnywhere() && Target.bHasAppliedBrush && GetDesignShape(Widget))
+	{
+		const bool bWantsSVG = Design.bDriveBrushTexture && Design.BrushImageSource == EWidgetImageSource::SVG;
+		UWidgetSVG* WantedSVG = bWantsSVG ? Design.BrushSVG.Get() : (Design.bDriveBrushTexture ? nullptr : Target.BaselineSVG.Get());
+		UTexture2D* WantedTexture = Design.bDriveBrushTexture ? Design.BrushTexture.Get() : Target.BaselineBrushTexture.Get();
+		bBrushLost = WantedSVG ? ExtractWidgetSVG(Widget) != WantedSVG : (WantedTexture && !bWantsSVG && ExtractWidgetBrushTexture(Widget) != WantedTexture);
+	}
+
+	// Discrete: a texture can't be blended, so it swaps once, on the frame the state changes (or when it was taken off).
+	if (Authored.DrivesBrushTextureAnywhere() && (!Target.bHasAppliedBrush || Target.LastBrushState != State || bBrushLost))
 	{
 		Target.bHasAppliedBrush = true;
 		Target.LastBrushState = State;
@@ -5707,8 +5933,27 @@ bool UContextMenuButton::ApplyDesignTarget(FContextMenuRuntimeDesignTarget& Targ
 		// Same shape as the brush: a state that doesn't drive the material puts the authored one back, so a
 		// material swap on hover undoes itself on unhover without a second entry to say so.
 		UMaterialInterface* DesiredMaterial = Design.bDriveMaterial ? Design.Material.Get() : Target.BaselineMaterial.Get();
-		// Discrete: material swaps once, on the frame the state changes.
-		if (!Target.bHasAppliedMaterial || Target.LastMaterialState != State)
+
+		// Taken off the widget since it was put on (a shape's Look blend writes its whole paint, a rebuild writes the Background
+		// Look back): put on again, else the material shows for a frame and its parameters go to an instance nobody draws.
+		bool bMaterialLost = false;
+		if (Target.bHasAppliedMaterial && DesiredMaterial)
+		{
+			UMaterialInterface* Shown = ExtractWidgetMaterial(Widget);
+			const UMaterialInstanceDynamic* ShownDynamic = Cast<UMaterialInstanceDynamic>(Shown);
+			const bool bShowsDesired = Shown == DesiredMaterial || (ShownDynamic && ShownDynamic->Parent == DesiredMaterial)
+				|| (Shown && Shown == Target.CachedMaterial.Get());
+			bMaterialLost = !bShowsDesired;
+			if (!bMaterialLost && ShownDynamic && Target.CachedMaterial.Get() != ShownDynamic && ShownDynamic->Parent == DesiredMaterial)
+			{
+				// Another dynamic instance of it is drawn now: the parameters go there.
+				Target.CachedMaterial = const_cast<UMaterialInstanceDynamic*>(ShownDynamic);
+				Target.bHasResolvedMaterial = true;
+			}
+		}
+
+		// Discrete: material swaps once, on the frame the state changes (or when it was taken off).
+		if (!Target.bHasAppliedMaterial || Target.LastMaterialState != State || bMaterialLost)
 		{
 			Target.bHasAppliedMaterial = true;
 			Target.LastMaterialState = State;

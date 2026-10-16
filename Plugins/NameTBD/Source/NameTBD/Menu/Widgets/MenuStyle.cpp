@@ -2,6 +2,7 @@
 
 #include "MenuStyle.h"
 
+#include "Materials/MaterialInterface.h"
 #include "Styling/CoreStyle.h"
 #include "NameTBD/Menu/Settings/MenuProjectSettings.h"
 #include "NameTBD/Menu/Settings/MenuSettingTargets.h"
@@ -34,6 +35,128 @@ namespace MenuStyleLocal
 		Palette.Scrim = FLinearColor(0.f, 0.f, 0.f, 0.85f);
 		return Palette;
 	}
+}
+
+// =====================================================================================================
+//  Skin
+// =====================================================================================================
+
+bool FMenuPartSkin::IsSet() const
+{
+	return Normal.IsSet() || (bHoveredImage && Hovered.IsSet()) || (bFocusedImage && Focused.IsSet()) || (bPressedImage && Pressed.IsSet())
+		|| (bSelectedImage && Selected.IsSet()) || (bDisabledImage && Disabled.IsSet());
+}
+
+const FWidgetEffectImage& FMenuPartSkin::ForState(bool bIsDisabled, bool bIsPressed, bool bIsSelected, bool bIsFocused, bool bIsHovered) const
+{
+	if (bIsDisabled && bDisabledImage && Disabled.IsSet())
+	{
+		return Disabled;
+	}
+	if (bIsPressed && bPressedImage && Pressed.IsSet())
+	{
+		return Pressed;
+	}
+	if (bIsSelected && bSelectedImage && Selected.IsSet())
+	{
+		return Selected;
+	}
+	if (bIsFocused && bFocusedImage && Focused.IsSet())
+	{
+		return Focused;
+	}
+	if (bIsHovered && bHoveredImage && Hovered.IsSet())
+	{
+		return Hovered;
+	}
+	return Normal;
+}
+
+bool FMenuPartSkin::UsesMaterial() const
+{
+	const FWidgetEffectImage* const Images[] = { &Normal, &Hovered, &Focused, &Pressed, &Selected, &Disabled };
+	for (const FWidgetEffectImage* Image : Images)
+	{
+		if (Image->GetMaterial() != nullptr)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FMenuStyleSkin::UsesMaterial() const
+{
+	for (TFieldIterator<FStructProperty> It(FMenuStyleSkin::StaticStruct()); It; ++It)
+	{
+		if (It->Struct == FMenuPartSkin::StaticStruct() && It->ContainerPtrToValuePtr<FMenuPartSkin>(this)->UsesMaterial())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+// =====================================================================================================
+//  Custom widgets
+// =====================================================================================================
+
+bool FMenuWidgetRule::Matches(const UMenuSetting& Setting, FName PageId, FName SectionId, const FText& SectionTitle, EMenuChoiceDisplay ResolvedDisplay) const
+{
+	if (WidgetClass.IsNull())
+	{
+		return false;
+	}
+	if (SettingIds.Num() > 0)
+	{
+		const FString Id = Setting.Id.ToString();
+		const bool bAny = SettingIds.ContainsByPredicate([&Id](const FString& Pattern)
+		{
+			return Pattern.Contains(TEXT("*")) || Pattern.Contains(TEXT("?")) ? Id.MatchesWildcard(Pattern) : Id.Equals(Pattern, ESearchCase::IgnoreCase);
+		});
+		if (!bAny)
+		{
+			return false;
+		}
+	}
+	if (Sections.Num() > 0)
+	{
+		const FString Title = SectionTitle.ToString();
+		const bool bAny = Sections.ContainsByPredicate([SectionId, &Title](const FName& Wanted)
+		{
+			return Wanted == SectionId || Wanted.ToString().Equals(Title, ESearchCase::IgnoreCase);
+		});
+		if (!bAny)
+		{
+			return false;
+		}
+	}
+	if (Pages.Num() > 0 && !Pages.Contains(PageId))
+	{
+		return false;
+	}
+	if (bMatchKind && Setting.GetKind() != Kind)
+	{
+		return false;
+	}
+	if (bMatchChoiceDisplay && (Setting.GetKind() != EMenuSettingKind::Choice || ResolvedDisplay != ChoiceDisplay))
+	{
+		return false;
+	}
+	return true;
+}
+
+TSoftClassPtr<UMenuSettingRowWidget> FMenuStyleWidgets::FindRule(EMenuWidgetRulePart Part, const UMenuSetting& Setting, FName PageId, FName SectionId,
+	const FText& SectionTitle, EMenuChoiceDisplay ResolvedDisplay) const
+{
+	for (const FMenuWidgetRule& Rule : Rules)
+	{
+		if (Rule.Part == Part && Rule.Matches(Setting, PageId, SectionId, SectionTitle, ResolvedDisplay))
+		{
+			return Rule.WidgetClass;
+		}
+	}
+	return nullptr;
 }
 
 FMenuStyle::FMenuStyle()

@@ -19,6 +19,7 @@
 #include "NameTBDAILibrary.h"
 #include "NameTBDAIMaterialGraph.h"
 #include "NameTBDAITools.h"
+#include "NameTBDAIWidgetStyling.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/UObjectIterator.h"
 #include "WidgetAnimScripting.h"
@@ -245,9 +246,9 @@ namespace NameTBDAITools
 		// ---- list_options ----
 		Register({
 			TEXT("list_options"),
-			TEXT("Valid values, so you never guess: kind = widget_classes | components | track_types | motion_recipes | spring_presets | track_presets | material_masters (filter = one master: its params and graph) | material_functions | material_nodes (build_ui_material's macros and nodes with exact inputs and output widths; filter = one node in detail, or \"all\") | material_macros | niagara_templates | theme | enum (name in 'filter', e.g. EWidgetAnimEasing) | fields (a class or struct's editable fields with types and meaning: name in 'filter', e.g. RectangleShape, FWidgetShapePaint, FWidgetAnimLayer)."),
+			TEXT("Valid values, so you never guess: kind = widget_classes | components | track_types | motion_recipes | spring_presets | track_presets | material_masters (filter = one master: its params and graph) | material_functions | material_nodes (build_ui_material's macros and nodes with exact inputs and output widths; filter = one node in detail, or \"all\") | material_macros | niagara_templates | theme | icons (the icon names a widget spec's \"icon\" takes) | enum (name in 'filter', e.g. EWidgetAnimEasing) | fields (a class or struct's editable fields with types and meaning: name in 'filter', e.g. RectangleShape, FWidgetShapePaint, FWidgetAnimLayer)."),
 			FNameTBDAISchema()
-				.Str(TEXT("kind"), TEXT("What to list."), true, { TEXT("widget_classes"), TEXT("components"), TEXT("track_types"), TEXT("motion_recipes"), TEXT("spring_presets"), TEXT("track_presets"), TEXT("material_masters"), TEXT("material_functions"), TEXT("material_nodes"), TEXT("material_macros"), TEXT("niagara_templates"), TEXT("theme"), TEXT("enum"), TEXT("fields") })
+				.Str(TEXT("kind"), TEXT("What to list."), true, { TEXT("widget_classes"), TEXT("components"), TEXT("track_types"), TEXT("motion_recipes"), TEXT("spring_presets"), TEXT("track_presets"), TEXT("material_masters"), TEXT("material_functions"), TEXT("material_nodes"), TEXT("material_macros"), TEXT("niagara_templates"), TEXT("theme"), TEXT("icons"), TEXT("enum"), TEXT("fields") })
 				.Str(TEXT("filter"), TEXT("Narrows the list; for enum / fields, the type's name."))
 				.Str(TEXT("field_filter"), TEXT("For fields: only fields whose name contains this."))
 				.Build(),
@@ -319,6 +320,10 @@ namespace NameTBDAITools
 				else if (Kind == TEXT("niagara_templates"))
 				{
 					Out = NameTBDAILibrary::DescribeNiagaraTemplates();
+				}
+				else if (Kind == TEXT("icons"))
+				{
+					Out = NameTBDAIWidgetStyling::ListIcons();
 				}
 				else if (Kind == TEXT("theme"))
 				{

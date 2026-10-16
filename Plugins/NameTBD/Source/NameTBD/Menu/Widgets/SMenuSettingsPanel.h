@@ -8,9 +8,19 @@
 #include "NameTBD/Sound/UISoundTypes.h"
 #include "SMenuControls.h"
 #include "SMenuSettingRow.h"
+#include "Styling/SlateTypes.h"
 
 class SMenuImage;
 class SMenuKeyPrompt;
+class UMenuDescriptionWidget;
+class UMenuDialogWidget;
+class UMenuFooterPromptWidget;
+class UMenuPartWidget;
+class UMenuSearchWidget;
+class UMenuSettingRowWidget;
+class UMenuTabWidget;
+class UUserWidget;
+enum class EMenuFooterAction : uint8;
 class SOverlay;
 class SScrollBox;
 class SHorizontalBox;
@@ -36,6 +46,26 @@ struct FMenuPanelTexts
 	FText Reset;
 	FText Back;
 	FText Search;
+};
+
+/** What a custom row or control is asked for. */
+struct FMenuCustomRowRequest
+{
+	UMenuSetting* Setting = nullptr;
+	FName PageId;
+	FName SectionId;
+	FText SectionTitle;
+	/** How a Choice shows, Auto worked out. */
+	EMenuChoiceDisplay Display = EMenuChoiceDisplay::Selector;
+};
+
+/** A custom row or control made in UMG (none: the built-in row). */
+struct FMenuCustomRow
+{
+	TSharedPtr<SWidget> Widget;
+	TWeakObjectPtr<UMenuSettingRowWidget> Object;
+	/** The whole row; else only the control. */
+	bool bWholeRow = true;
 };
 
 DECLARE_DELEGATE_OneParam(FOnMenuPanelPage, FName /*PageId*/);
@@ -71,8 +101,13 @@ public:
 		SLATE_ARGUMENT(FMenuPanelKeys, Keys)
 		SLATE_ARGUMENT(FMenuPanelTexts, Texts)
 		SLATE_ARGUMENT(TWeakObjectPtr<UObject>, SoundContext)
-		/** Your own row for a setting (a Menu Setting Row Widget); null: the built-in row. */
-		SLATE_ARGUMENT(TFunction<TSharedPtr<SWidget>(UMenuSetting*)>, MakeCustomRow)
+		/** Your own row or control for a setting (a Menu Setting Row / Control Widget); no widget: the built-in row. */
+		SLATE_ARGUMENT(TFunction<FMenuCustomRow(const FMenuCustomRowRequest&)>, MakeCustomRow)
+		/** Makes a custom part's UMG widget of a class (the style's Custom Widgets); null: the built-in part. */
+		SLATE_ARGUMENT(TFunction<UUserWidget*(UClass*)>, MakePartWidget)
+		/** Settings (wildcards) and sections (Id or title) this screen doesn't list. */
+		SLATE_ARGUMENT(TArray<FString>, HiddenSettings)
+		SLATE_ARGUMENT(TArray<FName>, HiddenSections)
 		SLATE_EVENT(FSimpleDelegate, OnBack)
 		SLATE_EVENT(FOnMenuPanelPage, OnPageChanged)
 		SLATE_EVENT(FOnMenuPanelSetting, OnSettingFocused)
@@ -139,8 +174,17 @@ private:
 	void BuildTabs();
 	void BuildRows();
 	TArray<FName> CollectShownIds() const;
-	void AddRow(UMenuSetting* Setting);
+	void AddRow(UMenuSetting* Setting, const FMenuSettingsPage& Page, const FMenuSettingsSection& Section);
 	void AddHeader(const FText& Text, bool bMinor);
+	bool IsHiddenHere(const UMenuSetting& Setting) const;
+	bool IsSectionHiddenHere(const FMenuSettingsSection& Section) const;
+	EMenuChoiceDisplay ResolveChoiceDisplay(const UMenuSetting& Setting) const;
+	void UpdateScrollBarStyle();
+	void NotifyPartsStyleChanged();
+
+	/** A custom part's widget of the style's class, or null (no class, or it couldn't be made). */
+	template <typename WidgetType>
+	WidgetType* MakePart(const TSoftClassPtr<WidgetType>& Class);
 	void RefreshRows();
 	void UpdateFooterPrompts();
 	void UpdateDescription(UMenuSetting* Setting);
@@ -155,7 +199,8 @@ private:
 
 	TSharedRef<SWidget> BuildFooter();
 	TSharedRef<SWidget> BuildDescription();
-	TSharedRef<SWidget> MakePrompt(const TArray<FKey>& Keys, const FText& Label, FSimpleDelegate OnClicked);
+	TSharedRef<SWidget> BuildSearch();
+	TSharedRef<SWidget> MakePrompt(const TArray<FKey>& Keys, const FText& Label, FSimpleDelegate OnClicked, EMenuFooterAction Action, TAttribute<bool> IsPromptEnabled = true);
 
 	FMenuStyleRef StyleHolder = MakeShared<FMenuStyleHolder>();
 	TWeakObjectPtr<UMenuSettingsSubsystem> Settings;
@@ -173,7 +218,30 @@ private:
 	FMenuPanelKeys Keys;
 	FMenuPanelTexts Texts;
 	TAttribute<FText> TitleAttribute;
-	TFunction<TSharedPtr<SWidget>(UMenuSetting*)> MakeCustomRow;
+	TFunction<FMenuCustomRow(const FMenuCustomRowRequest&)> MakeCustomRow;
+	TFunction<UUserWidget*(UClass*)> MakePartWidget;
+	TArray<FString> HiddenSettings;
+	TArray<FName> HiddenSections;
+	FScrollBarStyle ScrollBarStyle;
+
+	/** A custom tab or prompt: its widget and what the screen tracks for it. */
+	struct FCustomPartEntry
+	{
+		TWeakObjectPtr<UMenuPartWidget> Widget;
+		int32 TabIndex = INDEX_NONE;
+		TArray<FKey> Keys;
+		TAttribute<bool> IsEnabled;
+		bool bHovered = false;
+		bool bPressed = false;
+	};
+	TArray<TSharedRef<FCustomPartEntry>> CustomTabs;
+	TArray<TSharedRef<FCustomPartEntry>> CustomPrompts;
+	TArray<TWeakObjectPtr<UMenuPartWidget>> CustomParts;
+	TWeakObjectPtr<UMenuDescriptionWidget> CustomDescription;
+	TWeakObjectPtr<UMenuSearchWidget> CustomSearch;
+	TWeakObjectPtr<UMenuDialogWidget> CustomDialog;
+	TAttribute<FText> CustomDialogBody;
+	TSharedPtr<SWidget> SearchArea;
 	FSimpleDelegate BackDelegate;
 	FOnMenuPanelPage PageChangedDelegate;
 	FOnMenuPanelSetting SettingFocusedDelegate;
@@ -198,8 +266,6 @@ private:
 	TArray<FPromptEntry> Prompts;
 
 	TSharedPtr<class SEditableText> SearchWidget;
-	TUniquePtr<FSlateBrush> SearchBrush;
-	TUniquePtr<FSlateBrush> PanelBrush;
 	TFunction<void(int32)> ActiveDialogChoice;
 	int32 ActiveDialogCancel = INDEX_NONE;
 	int32 QueuedDialogChoice = INDEX_NONE;

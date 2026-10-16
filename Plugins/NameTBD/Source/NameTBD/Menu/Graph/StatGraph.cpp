@@ -558,8 +558,9 @@ int32 SStatGraph::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeome
 	// Background.
 	if (Graph->BackgroundColor.A > 0.f)
 	{
-		const FSlateRoundedBoxBrush Background(Graph->BackgroundColor, Graph->CornerRadius);
-		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), &Background, Effect, Tint);
+		// MakeBox draws in its tint, not the brush's: the colour goes in as the tint.
+		const FSlateRoundedBoxBrush Background(FLinearColor::White, Graph->CornerRadius);
+		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(), &Background, Effect, Graph->BackgroundColor * Tint);
 	}
 	const int32 TextLayer = LayerId + 3;
 

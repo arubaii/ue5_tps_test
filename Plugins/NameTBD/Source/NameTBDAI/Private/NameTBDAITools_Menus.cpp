@@ -15,6 +15,7 @@
 #include "NameTBD/Menu/Settings/MenuSettingTargets.h"
 #include "NameTBD/Menu/Widgets/MenuStyle.h"
 #include "NameTBD/Menu/Widgets/SettingsMenu.h"
+#include "NameTBD/Widgets/WidgetSVG.h"
 #include "NameTBDAIHelpers.h"
 #include "NameTBDAIJson.h"
 #include "NameTBDAITools.h"
@@ -433,6 +434,146 @@ namespace NameTBDAIMenuTools
 		return Out;
 	}
 
+	/** One skin image spec ("<path>", or {image, material_params}) as FWidgetEffectImage JSON: an SVG asset or a texture / material brush. */
+	TSharedPtr<FJsonObject> MakeSkinImage(const TSharedPtr<FJsonValue>& Value, TArray<FString>& OutWarnings)
+	{
+		FString Path;
+		TSharedPtr<FJsonObject> Extra;
+		if (Value.IsValid() && Value->Type == EJson::String)
+		{
+			Path = Value->AsString();
+		}
+		else if (Value.IsValid() && Value->Type == EJson::Object)
+		{
+			Extra = Value->AsObject();
+			Path = GetString(Extra, TEXT("image"));
+		}
+		if (Path.IsEmpty())
+		{
+			return nullptr;
+		}
+		FString Error;
+		UObject* Asset = NameTBDAIHelpers::FindAsset(Path, nullptr, Error);
+		if (!Asset)
+		{
+			OutWarnings.Add(Error);
+			return nullptr;
+		}
+		TSharedPtr<FJsonObject> Image = MakeShared<FJsonObject>();
+		if (Asset->IsA<UWidgetSVG>())
+		{
+			Image->SetStringField(TEXT("ImageSource"), TEXT("SVG"));
+			Image->SetStringField(TEXT("SVG"), Asset->GetPathName());
+		}
+		else
+		{
+			Image->SetStringField(TEXT("ImageSource"), TEXT("Texture"));
+			Image->SetStringField(TEXT("Image"), Asset->GetPathName());
+		}
+		if (Extra.IsValid() && Extra->HasField(TEXT("material_params")))
+		{
+			TArray<TSharedPtr<FJsonValue>> Parameters;
+			for (const auto& Pair : GetObject(Extra, TEXT("material_params"))->Values)
+			{
+				TSharedPtr<FJsonObject> Parameter = MakeShared<FJsonObject>();
+				Parameter->SetStringField(TEXT("Name"), Pair.Key);
+				if (Pair.Value->Type == EJson::Number)
+				{
+					Parameter->SetStringField(TEXT("Type"), TEXT("Scalar"));
+					Parameter->SetNumberField(TEXT("Scalar"), Pair.Value->AsNumber());
+				}
+				else
+				{
+					Parameter->SetStringField(TEXT("Type"), TEXT("Color"));
+					Parameter->SetField(TEXT("Color"), Pair.Value);
+				}
+				Parameters.Add(MakeShared<FJsonValueObject>(Parameter));
+			}
+			Image->SetArrayField(TEXT("MaterialParameters"), Parameters);
+		}
+		return Image;
+	}
+
+	/**
+	 * The skin argument as FMenuStyleSkin JSON: {part: "<path>" | {normal, hovered, focused, pressed, selected, disabled (each a path or
+	 * {image, material_params}), tint_with_palette, tint, outset, keep_built_in}}.
+	 */
+	TSharedPtr<FJsonObject> MakeSkin(const TSharedPtr<FJsonObject>& Skin, TArray<FString>& OutWarnings)
+	{
+		TSharedPtr<FJsonObject> Out = MakeShared<FJsonObject>();
+		if (!Skin.IsValid())
+		{
+			return Out;
+		}
+		for (const auto& Pair : Skin->Values)
+		{
+			const FStructProperty* PartProperty = nullptr;
+			for (TFieldIterator<FStructProperty> It(FMenuStyleSkin::StaticStruct()); It; ++It)
+			{
+				if (Normalize(It->GetName()) == Normalize(Pair.Key))
+				{
+					PartProperty = *It;
+				}
+			}
+			if (!PartProperty)
+			{
+				TArray<FString> Names;
+				for (TFieldIterator<FStructProperty> It(FMenuStyleSkin::StaticStruct()); It; ++It)
+				{
+					Names.Add(It->GetName());
+				}
+				OutWarnings.Add(FString::Printf(TEXT("No skin part '%s' (parts: %s)."), *Pair.Key, *FString::Join(Names, TEXT(", "))));
+				continue;
+			}
+			TSharedPtr<FJsonObject> Part = MakeShared<FJsonObject>();
+			if (Pair.Value->Type == EJson::String)
+			{
+				if (TSharedPtr<FJsonObject> Image = MakeSkinImage(Pair.Value, OutWarnings))
+				{
+					Part->SetObjectField(TEXT("Normal"), Image);
+				}
+			}
+			else if (Pair.Value->Type == EJson::Object)
+			{
+				const TSharedPtr<FJsonObject> Spec = Pair.Value->AsObject();
+				struct FStateKey { const TCHAR* Key; const TCHAR* Field; const TCHAR* Toggle; };
+				const FStateKey States[] = {
+					{ TEXT("normal"), TEXT("Normal"), nullptr }, { TEXT("hovered"), TEXT("Hovered"), TEXT("bHoveredImage") },
+					{ TEXT("focused"), TEXT("Focused"), TEXT("bFocusedImage") }, { TEXT("pressed"), TEXT("Pressed"), TEXT("bPressedImage") },
+					{ TEXT("selected"), TEXT("Selected"), TEXT("bSelectedImage") }, { TEXT("disabled"), TEXT("Disabled"), TEXT("bDisabledImage") } };
+				for (const FStateKey& State : States)
+				{
+					if (TSharedPtr<FJsonObject> Image = MakeSkinImage(Spec->TryGetField(State.Key), OutWarnings))
+					{
+						Part->SetObjectField(State.Field, Image);
+						if (State.Toggle)
+						{
+							Part->SetBoolField(State.Toggle, true);
+						}
+					}
+				}
+				if (Spec->HasField(TEXT("tint_with_palette")))
+				{
+					Part->SetBoolField(TEXT("bTintWithPalette"), GetBool(Spec, TEXT("tint_with_palette")));
+				}
+				if (Spec->HasField(TEXT("keep_built_in")))
+				{
+					Part->SetBoolField(TEXT("bKeepBuiltIn"), GetBool(Spec, TEXT("keep_built_in")));
+				}
+				if (Spec->HasField(TEXT("tint")))
+				{
+					Part->SetField(TEXT("Tint"), Spec->TryGetField(TEXT("tint")));
+				}
+				if (Spec->HasField(TEXT("outset")))
+				{
+					Part->SetField(TEXT("Outset"), Spec->TryGetField(TEXT("outset")));
+				}
+			}
+			Out->SetObjectField(PartProperty->GetName(), Part);
+		}
+		return Out;
+	}
+
 	FString StylePresetName(const FString& Preset)
 	{
 		const FString Key = Normalize(Preset);
@@ -464,7 +605,9 @@ namespace NameTBDAITools
 				.Str(TEXT("style"), TEXT("Style preset: simple (dark, flat), light, glass, minimal, console (10-foot), high_contrast."))
 				.Str(TEXT("style_asset"), TEXT("Use this existing Menu Style asset instead of making one."))
 				.Obj(TEXT("colors"), TEXT("Palette overrides: background, surface, row, row_hovered, row_focused, accent, accent_text, text, muted_text, disabled_text, divider, track, focus_outline, warning, negative, scrim. \"#RRGGBB[AA]\" or theme tokens (\"@accent\")."))
-				.Obj(TEXT("style_props"), TEXT("Other Style fields: {\"RowHeight\": 60, \"CornerRadius\": 12, \"TitleFont\": {\"Size\": 36}, \"TabStyle\": \"Pills\", \"BackgroundBlur\": 12}."))
+				.Obj(TEXT("style_props"), TEXT("Other Style fields: {\"RowHeight\": 60, \"CornerRadius\": 12, \"TitleFont\": {\"Size\": 36}, \"TabStyle\": \"Pills\", \"BackgroundBlur\": 12, \"bUppercaseTabs\": true, \"TabsAlignment\": \"HAlign_Center\", \"SliderThumbSize\": 20}."))
+				.Obj(TEXT("skin"), TEXT("Art per part (an art-directed, AAA look): {part: \"<texture, material or SVG path>\" | {normal, hovered, focused, pressed, selected, disabled (each a path or {image, material_params {Name: number|color}}), tint_with_palette, tint, outset {Left,Top,Right,Bottom}, keep_built_in}}. Parts: Row, FocusBar, ModifiedDot, SectionHeading, CategoryHeading, TabBar, Tab, TabIndicator, SwitchTrack, SwitchKnob, SliderTrack, SliderFill, SliderThumb, SelectorBox, SelectorArrow, Pip, Segment, Dropdown, DropdownArrow, KeySlot, PrimaryButton, SecondaryButton, GhostButton, FooterPrompt, SearchBox, DescriptionPanel, Footer, DialogCard, ListCard, ListOption, Scrim, ScrollThumb, ScrollTrack. A material gets Hover, Focus, Pressed, Selected, Disabled, Value, Time, Width, Height, PaletteColor, Accent each draw: one material can do every state (build_ui_material)."))
+				.Obj(TEXT("widgets"), TEXT("Your own UMG Widget Blueprints for parts: {tab, heading, footer_prompt, description, search, dialog, option_list: \"<Widget Blueprint path>\"} (parents: MenuTabWidget, MenuHeadingWidget, MenuFooterPromptWidget, MenuDescriptionWidget, MenuSearchWidget, MenuDialogWidget, MenuOptionListWidget)."))
 				.Str(TEXT("apply_policy"), TEXT("instant (changes apply as made; console style, default) or apply_button (PC style: Apply / unsaved changes prompt)."), false, { TEXT("instant"), TEXT("apply_button") })
 				.Build(),
 			true, false, false,
@@ -546,6 +689,33 @@ namespace NameTBDAITools
 					{
 						StyleProps->SetObjectField(TEXT("Colors"), Colors);
 					}
+					if (const TSharedPtr<FJsonObject> Skin = GetObject(Args, TEXT("skin")))
+					{
+						StyleProps->SetObjectField(TEXT("Skin"), MakeSkin(Skin, Warnings));
+					}
+					if (const TSharedPtr<FJsonObject> PartWidgets = GetObject(Args, TEXT("widgets")))
+					{
+						TSharedPtr<FJsonObject> WidgetsJson = MakeShared<FJsonObject>();
+						const TPair<const TCHAR*, const TCHAR*> Keys[] = { { TEXT("tab"), TEXT("Tab") }, { TEXT("heading"), TEXT("Heading") },
+							{ TEXT("footer_prompt"), TEXT("FooterPrompt") }, { TEXT("description"), TEXT("Description") }, { TEXT("search"), TEXT("Search") },
+							{ TEXT("dialog"), TEXT("Dialog") }, { TEXT("option_list"), TEXT("OptionList") } };
+						for (const TPair<const TCHAR*, const TCHAR*>& Key : Keys)
+						{
+							FString Path = GetString(PartWidgets, Key.Key);
+							if (Path.IsEmpty())
+							{
+								continue;
+							}
+							// A Widget Blueprint's generated class.
+							FString FindError;
+							if (UWidgetBlueprint* PartBlueprint = Cast<UWidgetBlueprint>(NameTBDAIHelpers::FindAsset(Path, UWidgetBlueprint::StaticClass(), FindError)))
+							{
+								Path = PartBlueprint->GeneratedClass ? PartBlueprint->GeneratedClass->GetPathName() : Path;
+							}
+							WidgetsJson->SetStringField(Key.Value, Path);
+						}
+						StyleProps->SetObjectField(TEXT("Widgets"), WidgetsJson);
+					}
 					if (StyleProps->Values.Num() > 0)
 					{
 						TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
@@ -605,6 +775,8 @@ namespace NameTBDAITools
 				Result.Data->SetStringField(TEXT("blueprint"), Blueprint->GetPathName());
 				Result.Data->SetBoolField(TEXT("compiled"), bCompiled);
 				Result.Data->SetStringField(TEXT("style_asset"), StyleAsset->GetPathName());
+				// What the style asset says now (for a check against what was asked).
+				Result.Data->SetStringField(TEXT("style_preset"), StaticEnum<EMenuStylePreset>()->GetNameStringByValue(static_cast<int64>(StyleAsset->Preset)));
 				if (Schema)
 				{
 					Result.Data->SetStringField(TEXT("schema"), Schema->GetPathName());

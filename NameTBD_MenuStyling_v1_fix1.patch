@@ -1,0 +1,20 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Menu/Widgets/SMenuControls.h b/Plugins/NameTBD/Source/NameTBD/Menu/Widgets/SMenuControls.h
+index bc2eedc..93e99da 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Menu/Widgets/SMenuControls.h
++++ b/Plugins/NameTBD/Source/NameTBD/Menu/Widgets/SMenuControls.h
+@@ -133,6 +133,7 @@ private:
+ 	FMenuSkinPainter Painter;
+ };
+ 
++DECLARE_DELEGATE(FOnMenuControlClicked);
+ DECLARE_DELEGATE_TwoParams(FOnMenuPartPointerState, bool /*bHovered*/, bool /*bPressed*/);
+ 
+ /**
+@@ -189,7 +190,6 @@ enum class EMenuButtonKind : uint8
+ 	Segment
+ };
+ 
+-DECLARE_DELEGATE(FOnMenuControlClicked);
+ DECLARE_DELEGATE_OneParam(FOnMenuControlHovered, bool /*bHovered*/);
+ 
+ /** A button drawn in the menu style: dialogs, footer, tabs, actions, list options. */

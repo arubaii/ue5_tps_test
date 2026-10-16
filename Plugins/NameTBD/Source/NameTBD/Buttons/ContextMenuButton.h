@@ -2229,6 +2229,19 @@ public:
 	 */
 	void RefreshShapeTargetLooks();
 
+	/**
+	 * A state's Look that draws no image where the shape as authored draws one (a texture, a material or an SVG set on the
+	 * Background Look - or on a shape part - after the Looks were made) takes the authored paint, so the image shows in every
+	 * state instead of being painted over by an old flat colour. Self targets against the Background Look here; every target
+	 * against its shape as authored when the runtime targets are set up.
+	 */
+	void RepairLookImages();
+
+#if WITH_EDITOR
+	/** An edit of the Background Look into the state Looks of Self targets that hadn't changed that setting themselves. */
+	void PropagateBackgroundLookEdit();
+#endif
+
 	// ------------------------------------------------------------------
 	// Cursor Configurations
 	// ------------------------------------------------------------------
@@ -2797,6 +2810,13 @@ protected:
 #endif
 
 #if WITH_EDITORONLY_DATA
+	/**
+	 * The Background Look as last laid out: an edit of the Background Look flows into each state's Look that still had the old
+	 * value of what changed (a state keeps what it changed itself). See PropagateBackgroundLookEdit.
+	 */
+	UPROPERTY()
+	FInstancedPropertyBag BackgroundLookSnapshot;
+
 	/** Dropped from the Palette, its default content not built yet. See OnCreationFromPalette. */
 	UPROPERTY()
 	bool bPendingDefaultContent = false;

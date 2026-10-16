@@ -1,5 +1,5 @@
 {
- "$about": "House presets for add_widgets / set_widget 'role'. Values use theme tokens (@surface, @radius.large, @type.title...). Edit freely: read on every use.",
+ "$about": "House presets for add_widgets / set_widget 'role'. Values use theme tokens (@surface, @radius.large, @type.title...). Edit freely: read on every use. Engine Buttons, Sliders, Check Boxes, Progress Bars and Editable Text Boxes are themed by code (variant: primary | secondary | ghost for buttons); 'toolbar' is a dark translucent rounded bar: put one row (a Horizontal Box with slot padding) inside it.",
  "card": {
   "class": "RectangleShape",
   "props": {
@@ -282,5 +282,44 @@
  },
  "frame": {
   "class": "Overlay"
+ },
+ "button": {
+  "class": "Button",
+  "variant": "secondary"
+ },
+ "button_primary": {
+  "class": "Button",
+  "variant": "primary"
+ },
+ "button_ghost": {
+  "class": "Button",
+  "variant": "ghost"
+ },
+ "icon_button": {
+  "class": "Button",
+  "variant": "ghost",
+  "icon_size": 22
+ },
+ "toolbar": {
+  "class": "RectangleShape",
+  "props": {
+   "bFill": true,
+   "Fill": {
+    "Type": "Color",
+    "Color": "@background~0.82"
+   },
+   "CornerRounding": "@radius.medium",
+   "Stroke": {
+    "bEnabled": true,
+    "Width": 1,
+    "Align": "Inside",
+    "Paint": {
+     "Type": "Color",
+     "Color": "@outline"
+    }
+   },
+   "ContentArea": "InsideStroke",
+   "bSizeToContent": true
+  }
  }
 }
