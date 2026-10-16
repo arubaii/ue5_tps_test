@@ -1,6 +1,7 @@
 // Copyright AR GameSystems 2026. All rights reserved.
 
 #include "ButtonPreviewToolbar.h"
+#include "WidgetAnimBuilderToolbar.h"
 
 #include "NameTBD/Buttons/ContextMenuButton.h"
 
@@ -157,6 +158,20 @@ namespace ButtonPreviewToolbarPrivate
 			Choice.bCanReplay = true;
 		}
 
+		bool HasAnimations() const
+		{
+			const UContextMenuButton* Button = GetButton();
+			return Button && Button->HasButtonAnimations();
+		}
+
+		void PlayAnimation(bool bOut)
+		{
+			if (UContextMenuButton* Button = GetButton())
+			{
+				Button->PlayDesignerAnimPreview(bOut);
+			}
+		}
+
 		bool CanReplay() const
 		{
 			const UContextMenuButton* Button = GetButton();
@@ -290,7 +305,7 @@ namespace ButtonPreviewToolbarPrivate
 			];
 	}
 
-	/** The controls, collapsed away unless a Context Menu Button is selected. Kept narrow: about 400 px, 520 with the stepper. */
+	/** The controls, collapsed away unless a Context Menu Button is selected. Kept narrow: about 430 px, 550 with the stepper. */
 	TSharedRef<SWidget> MakeControls(const TSharedRef<FSelectedButtonPreview>& Preview)
 	{
 		const FSlateBrush* LeftBrush = PickBrush({ "Icons.ChevronLeft", "Icons.ArrowLeft" });
@@ -325,8 +340,8 @@ namespace ButtonPreviewToolbarPrivate
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot().AutoWidth()
 				[
-					MakeStateToggle(Preview, EContextMenuDesignPreview::Normal, LOCTEXT("Idle", "Idle"),
-						LOCTEXT("IdleTooltip", "Normal: the button at rest. It blends here as it does in game."))
+					MakeStateToggle(Preview, EContextMenuDesignPreview::Normal, LOCTEXT("Normal", "Normal"),
+						LOCTEXT("NormalTooltip", "Normal: the button at rest. It blends here as it does in game."))
 				]
 				+ SHorizontalBox::Slot().AutoWidth()
 				[
@@ -340,8 +355,8 @@ namespace ButtonPreviewToolbarPrivate
 				]
 				+ SHorizontalBox::Slot().AutoWidth()
 				[
-					MakeStateToggle(Preview, EContextMenuDesignPreview::Enabled, LOCTEXT("On", "On"),
-						LOCTEXT("OnTooltip", "Enabled: switched on, checked, chosen."),
+					MakeStateToggle(Preview, EContextMenuDesignPreview::Enabled, LOCTEXT("Enabled", "Enabled"),
+						LOCTEXT("EnabledTooltip", "Enabled: switched on, checked, chosen (buttons that can be enabled)."),
 						TAttribute<EVisibility>::CreateLambda([Preview]() { return Preview->CanBeEnabled() ? EVisibility::Visible : EVisibility::Collapsed; }))
 				]
 				+ SHorizontalBox::Slot().AutoWidth()
@@ -380,6 +395,26 @@ namespace ButtonPreviewToolbarPrivate
 				[
 					MakeSmallButton(MakeIcon(RightBrush, LOCTEXT("NextGlyph", ">")), LOCTEXT("NextTooltip", "Show the next value, as the button steps on in game."),
 						[Preview]() { Preview->StepValue(1); })
+				]
+			]
+
+			// Its Anim In / Anim Out, for a button that has them: played once on the designer's copy, as at runtime.
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(6.f, 0.f, 0.f, 0.f))
+			[
+				SNew(SHorizontalBox)
+				.Visibility_Lambda([Preview]() { return Preview->HasAnimations() ? EVisibility::Visible : EVisibility::Collapsed; })
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				[
+					MakeSmallButton(SNew(STextBlock).Text(LOCTEXT("AnimIn", "In")), LOCTEXT("AnimInTooltip", "Play the button's Anim In once."),
+						[Preview]() { Preview->PlayAnimation(/*bOut=*/false); })
+				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				[
+					MakeSmallButton(SNew(STextBlock).Text(LOCTEXT("AnimOut", "Out")), LOCTEXT("AnimOutTooltip", "Play the button's Anim Out once, from Anim In's end."),
+						[Preview]() { Preview->PlayAnimation(/*bOut=*/true); })
 				]
 			]
 
@@ -428,7 +463,10 @@ void FButtonPreviewToolbar::Register()
 		return;
 	}
 
-	FToolMenuSection& Section = Menu->FindOrAddSection("NameTBDButtonPreview");
+	// The same section as the selected widget's animation controls (FWidgetAnimBuilderToolbar, registered first): a toolbar draws
+	// a divider at the start of every section, whether or not its controls are collapsed, so a section of its own drew a second
+	// divider with an empty gap before it. One section, one divider.
+	FToolMenuSection& Section = Menu->FindOrAddSection(FWidgetAnimBuilderToolbar::SelectedWidgetSectionName);
 	Section.AddDynamicEntry("NameTBDButtonPreviewControls", FNewToolMenuSectionDelegate::CreateStatic(&ButtonPreviewToolbarPrivate::BuildEntries));
 }
 

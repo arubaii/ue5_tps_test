@@ -147,9 +147,9 @@ namespace NameTBDAIWidgetStylingLocal
 		{
 			if (const UContextMenuButton* PluginButton = Cast<UContextMenuButton>(Button))
 			{
-				if (PluginButton->BackgroundShape)
+				if (PluginButton->IsShapeStyleFilled())
 				{
-					// A vector background (its look is the button's own): not read here.
+					// A filled vector background (its look is the button's own): not read here. Unfilled, the brush shows.
 					return false;
 				}
 			}

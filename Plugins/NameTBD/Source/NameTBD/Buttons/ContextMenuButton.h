@@ -7,6 +7,7 @@
 #include "Components/PanelSlot.h"
 #include "Engine/TimerHandle.h"
 #include "Components/Widget.h"
+#include "Engine/DataAsset.h"
 #include "Slate/WidgetTransform.h"
 #include "Widgets/Input/SButton.h"
 #include "Sound/SoundBase.h"
@@ -43,6 +44,9 @@ class SContextMenuButtonBrush;
 class SWidgetShape;
 class UShapeWidget;
 class UWidgetTree;
+class UContextMenuDesignPresetAsset;
+class UContextMenuShapePresetAsset;
+class UContextMenuButtonPresetAsset;
 
 UENUM(BlueprintType)
 enum class EContextMenuButtonType : uint8
@@ -250,15 +254,21 @@ struct NAMETBD_API FContextMenuWidgetDesign
  * States are authored the same way the button's own Shape is: every state falls back to Base Design until
  * its own override is switched on, so a target that looks the same in every state is one field to fill in
  * rather than five.
+ *
+ * A look worth reusing is kept as a Context Menu Design Preset asset (Save As Preset under the Design Targets): picking one
+ * fills the states below from it, and the target follows the preset until one of its values is edited here.
  */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FContextMenuDesignTarget
 {
 	GENERATED_BODY()
 
-	/** Any widget in this button's tree, including the button itself. Does not need Is Variable. Stored by name, so renaming the widget breaks the link. */
+	/**
+	 * Any widget in this button's tree, including the button itself (Self, the default). Does not need Is Variable. Stored by
+	 * name, so renaming the widget breaks the link.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (DisplayName = "Target Widget", GetOptions = "GetColorTargetWidgetOptions"))
-	FName TargetWidgetName;
+	FName TargetWidgetName = TEXT("Self");
 
 	/**
 	 * Optional name for changing this target at runtime: Set Target Variant, Set Target Active, Set Design Target By ID, Set
@@ -272,14 +282,24 @@ struct NAMETBD_API FContextMenuDesignTarget
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (DisplayName = "Active"))
 	bool bActive = true;
 
-	// ---- Source ----
+	// ---- Preset ----
 
-	/** Use Project Settings: the design comes from a named Design Preset. Every channel is then the preset's, and the states below are hidden. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (DisplayName = "Design Source"))
+	/**
+	 * A Context Menu Design Preset asset: picking one fills Base Design, the states and the speeds below from it (Target Widget,
+	 * Target ID and Active stay this target's). The target keeps following the preset - edits made to the asset reach it the next
+	 * time the button loads - until a value is changed here, which makes the design this target's own again (the field clears).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (DisplayName = "Preset"))
+	TObjectPtr<UContextMenuDesignPresetAsset> PresetAsset = nullptr;
+
+	// ---- Legacy source ----
+	// Design Presets used to live in Project Settings > Game > Info Card, picked here by name. Hidden; UContextMenuButton::PostLoad
+	// copies a named preset into the states below once and switches the target to its own (Custom) design.
+
+	UPROPERTY()
 	EContextMenuButtonSettingSource DesignSource = EContextMenuButtonSettingSource::Custom;
 
-	/** Design Preset from Project Settings > Game > Info Card. Falls back to the states below if the preset is renamed or deleted. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::UseProjectSettings", EditConditionHides, GetOptions = "InfoCardDeveloperSettings.GetContextMenuDesignPresetNameOptions"))
+	UPROPERTY()
 	FName PresetName = TEXT("Default");
 
 	// ---- Legacy channels ----
@@ -309,40 +329,40 @@ struct NAMETBD_API FContextMenuDesignTarget
 	 * The design every state uses unless that state's own override below is switched on. Author here first;
 	 * turn on a state's override only once that state actually needs to look different from the rest.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States")
 	FContextMenuWidgetDesign BaseDesign;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States")
 	bool bOverrideNormalDesign = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::Custom && bOverrideNormalDesign", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "bOverrideNormalDesign", EditConditionHides))
 	FContextMenuWidgetDesign Normal;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States")
 	bool bOverrideHoveredDesign = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::Custom && bOverrideHoveredDesign", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "bOverrideHoveredDesign", EditConditionHides))
 	FContextMenuWidgetDesign Hovered;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States")
 	bool bOverridePressedDesign = false;
 
 	/** Not used by buttons with Button Can Be Enabled: a press on those blends straight from the current state to the state the click produces. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::Custom && bOverridePressedDesign", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "bOverridePressedDesign", EditConditionHides))
 	FContextMenuWidgetDesign Pressed;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States")
 	bool bOverrideDisabledDesign = false;
 
 	/** Used while the button's Is Enabled is false. Not the same as the Enabled state below. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::Custom && bOverrideDisabledDesign", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "bOverrideDisabledDesign", EditConditionHides))
 	FContextMenuWidgetDesign Disabled;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::Custom && bEnabledDesignApplicable", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "bEnabledDesignApplicable", EditConditionHides, HideEditConditionToggle))
 	bool bOverrideEnabledDesign = false;
 
-	/** Used while the button's enabled state is true. Grayed out unless Button Can Be Enabled is on, and while Enabled Matches Hover Design is on (Hovered is used instead). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "DesignSource == EContextMenuButtonSettingSource::Custom && bEnabledDesignApplicable && bOverrideEnabledDesign", EditConditionHides))
+	/** Used while the button's enabled state is true. Hidden unless Button Can Be Enabled is on, and while Enabled Matches Hover Design is on (Hovered is used instead). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Design|States", meta = (EditCondition = "bEnabledDesignApplicable && bOverrideEnabledDesign", EditConditionHides))
 	FContextMenuWidgetDesign Enabled;
 
 	/** Details-panel mirror of the owning button; no runtime effect. */
@@ -451,26 +471,29 @@ struct NAMETBD_API FContextMenuShapeStateSettings
 	 * layout are not affected.
 	 *
 	 * On any other target it needs a Shape Box to act through: target the Shape Box itself, or a widget that sits
-	 * alone inside one. Anything else only gets Transform - Shape Status on the button says which targets those are.
+	 * alone inside one. Anything else only gets Transform.
 	 *
-	 * Not shown for a vector shape (an Ellipse, Rectangle, Star... or the button's own Background Shape): those take Look.
+	 * Not shown for a vector shape (an Ellipse, Rectangle, Star... or the button's own Shape Style): those take Style Settings.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bIsApplicable && !bIsVectorShape", EditConditionHides))
 	FShapeBoxShape Shape;
 
 	/**
 	 * How a vector shape looks in this state - an Ellipse, Rectangle, Triangle, Star, N-gon or Custom Shape target, or the
-	 * button's own Background Shape: its fill, its outline (materials and all), Trim Path, rounding, points, sweep... every
+	 * button's own Shape Style: its fill, its outline (materials and all), Trim Path, rounding, points, sweep... every
 	 * setting it has, laid out for that kind of shape and started from how it is authored.
 	 *
 	 * Only what differs from the shape as authored is ever written, and it blends at the Shape speed: a hover that only
 	 * brightens the outline leaves the fill alone, and editing the shape itself still shows wherever no state changes it.
 	 *
-	 * Only a state its target overrides has a Look. The Base Shape has none: the base is the shape itself, as authored in its
-	 * own Details (Background Look, for Self), and a state with no Look shows it. That keeps a target to one Look per state it
-	 * actually changes - each Look is every setting of the shape, so there are never more of them than are used.
+	 * On a Self target with a Shape Style, the Base Shape's Style Settings ARE the Shape Style as authored - every state without
+	 * its own shows them. On any other vector shape the Base Shape has none: the base is the shape itself, as authored in its own
+	 * Details. Only a state the target overrides has Style Settings of its own, so there are never more of them than are used.
+	 *
+	 * With Fill off (a newly picked Shape Style starts that way), the button's own look shows inside the outline in that state:
+	 * its Style brush, tinted, with any image or material a Design Target on Self gives it.
 	 */
-	UPROPERTY(EditAnywhere, Category = "Shape", meta = (FixedLayout, EditCondition = "bIsApplicable && bHasLook", EditConditionHides))
+	UPROPERTY(EditAnywhere, Category = "Shape", meta = (DisplayName = "Style Settings", FixedLayout, EditCondition = "bIsApplicable && bHasLook", EditConditionHides))
 	FInstancedPropertyBag Look;
 
 	/** Details-panel mirror: this state has a Look (a vector shape's state the target overrides). Written by the button. */
@@ -492,7 +515,7 @@ struct NAMETBD_API FContextMenuShapeStateSettings
 };
 
 /**
- * Speed, curve, overshoot and delay for both channels, resolved through a preset and through Separate Transform And Shape.
+ * Speed, curve, overshoot and delay for both channels, resolved through Shape Has Separate Interpolation.
  * The "Size" channel is the whole Shape Box shape (the name predates it).
  */
 USTRUCT(BlueprintType)
@@ -526,8 +549,9 @@ struct NAMETBD_API FContextMenuResolvedInterpolation
 };
 
 /**
- * A named, project-wide set of state shapes, authored in Project Settings > Game > Info Card.
- * A Shape Target with Shape Source = Use Project Settings picks one of these by name.
+ * Legacy: a named, project-wide set of state shapes, from when Shape Presets lived in Project Settings > Game > Info Card.
+ * Shape presets are Context Menu Shape Preset assets now; a Shape Target that still names one of these has it copied into its
+ * own states once, on load (UContextMenuButton::PostLoad), and never reads it again.
  */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FContextMenuShapePreset
@@ -592,24 +616,24 @@ struct NAMETBD_API FContextMenuShapePreset
 	float TransformDelay = 0.0f;
 
 	/** When off, Shape reuses every Transform setting above, so the whole thing moves as one. Turn it on to give Shape its own speed, curve and delay. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Separate Transform And Shape"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Has Separate Interpolation"))
 	bool bSeparateTransformAndSize = false;
 
 	/** Blend speed for Shape (every Shape Box property). 0 snaps instantly. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Speed", EditCondition = "bSeparateTransformAndSize", ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Speed", EditCondition = "bSeparateTransformAndSize", EditConditionHides, ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
 	float SizeInterpolationSpeed = 5.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Curve", EditCondition = "bSeparateTransformAndSize"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Curve", EditCondition = "bSeparateTransformAndSize", EditConditionHides))
 	EContextMenuInterpolationCurve SizeInterpolationCurve = EContextMenuInterpolationCurve::Linear;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Overshoot", EditCondition = "bSeparateTransformAndSize && SizeInterpolationCurve == EContextMenuInterpolationCurve::Click"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Overshoot", EditCondition = "bSeparateTransformAndSize && SizeInterpolationCurve == EContextMenuInterpolationCurve::Click", EditConditionHides))
 	float SizeOvershoot = 1.5f;
 
 	/** Seconds to wait after the state changes before Shape starts moving. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Delay", EditCondition = "bSeparateTransformAndSize", ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Delay", EditCondition = "bSeparateTransformAndSize", EditConditionHides, ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
 	float SizeDelay = 0.0f;
 
-	/** This preset's own speed/curve/overshoot/delay, resolved through Separate Transform And Size. */
+	/** This preset's own speed/curve/overshoot/delay, resolved through Shape Has Separate Interpolation. */
 	FContextMenuResolvedInterpolation GetResolvedInterpolation() const;
 
 	/** This preset's shape for a state, honoring the button's Enabled Matches Hover Shape. No instance patch here - see UContextMenuButton::ResolveShapeForState. */
@@ -705,22 +729,23 @@ struct NAMETBD_API FContextMenuShapeOverride
 /**
  * One widget shaped per button state: its own Transform and Shape Box shape.
  *
- * Aimed at the button itself, the shape bends the button's background brush and the hit area follows it;
- * content and layout stay put. Aimed at a Shape Box (or at a widget that sits alone inside one), the Shape Box
- * is driven: its Shape and Render Transform follow the button's state. Aimed at anything else, only Transform
- * applies - wrap the widget in a Shape Box to give it the rest. Shape Status on the button lists which is which.
+ * Aimed at the button itself (Self, the default), the shape bends the button's background brush and the hit area follows
+ * it; content and layout stay put. A Self target also carries the button's Shape Style: the background drawn as a vector
+ * shape instead, its look (Style Settings) on the Base Shape and changed per state like any vector shape's. Aimed at a Shape
+ * Box (or at a widget that sits alone inside one), the Shape Box is driven: its Shape and Render Transform follow the
+ * button's state. Aimed at anything else, only Transform applies - wrap the widget in a Shape Box to give it the rest.
  *
  * Authored the same way a Design Target is: every state falls back to Base Shape until its own override is
- * switched on.
+ * switched on. A look worth reusing is kept as a Context Menu Shape Preset asset (Save As Preset under the Shape Targets).
  */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FContextMenuShapeTarget
 {
 	GENERATED_BODY()
 
-	/** Any widget in this button's tree, including the button itself. Stored by name, so renaming the widget breaks the link. */
+	/** Any widget in this button's tree, including the button itself (Self, the default). Stored by name, so renaming the widget breaks the link. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (DisplayName = "Target Widget", GetOptions = "GetColorTargetWidgetOptions"))
-	FName TargetWidgetName;
+	FName TargetWidgetName = TEXT("Self");
 
 	/**
 	 * Optional name for changing this target at runtime: Set Target Variant, Set Target Active, Set Shape Target By ID, Set Shape
@@ -734,48 +759,76 @@ struct NAMETBD_API FContextMenuShapeTarget
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (DisplayName = "Active"))
 	bool bActive = true;
 
-	// ---- Source ----
+	// ---- Preset ----
 
-	/** Use Project Settings: pick a Shape Preset from Project Settings > Game > Info Card. Custom: author the state shapes and speeds below. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (DisplayName = "Shape Source"))
+	/**
+	 * A Context Menu Shape Preset asset: picking one fills the state shapes and the interpolation below from it (and, on a Self
+	 * target, the Shape Style). Target Widget, Target ID and Active stay this target's. The target keeps following the preset -
+	 * edits made to the asset reach it the next time the button loads - until a value is changed here, which makes the shape this
+	 * target's own again (the field clears).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (DisplayName = "Preset"))
+	TObjectPtr<UContextMenuShapePresetAsset> PresetAsset = nullptr;
+
+	// ---- Shape Style (Self only) ----
+
+	/**
+	 * Draws the button's background as a vector shape - a Rectangle (Fully Rounded for a pill), an Ellipse, a Star, any shape of
+	 * the plugin - instead of the Style's brushes: its outline (a material laid along it included), and its fill once Fill is
+	 * on. Its look is the Base Shape's Style Settings, and each state the target overrides changes it. A newly picked style
+	 * starts with Fill off, so the button's own look (its brush, tint, image or material) still shows inside the outline.
+	 * None: the Style's brushes, as a stock button. Self targets only; every Self target shows the button's one Shape Style.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (DisplayName = "Shape Style", AllowAbstract = "false", EditCondition = "bIsSelfTarget", EditConditionHides, HideEditConditionToggle))
+	TSubclassOf<UShapeWidget> ShapeStyle;
+
+	/** Details-panel mirror: this target aims at the button itself, so Shape Style shows. Written by the button. */
+	UPROPERTY()
+	bool bIsSelfTarget = true;
+
+	// ---- Legacy source ----
+	// Shape Presets used to live in Project Settings > Game > Info Card, picked here by name (and new targets used to pick
+	// "Default"). Hidden; UContextMenuButton::PostLoad copies a named preset into the states below once and switches the target
+	// to its own (Custom) shape.
+
+	UPROPERTY()
 	EContextMenuButtonSettingSource ShapeSource = EContextMenuButtonSettingSource::UseProjectSettings;
 
-	/** Shape Preset from Project Settings > Game > Info Card. Falls back to this target's Custom shape if the preset is renamed or deleted. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "ShapeSource == EContextMenuButtonSettingSource::UseProjectSettings", EditConditionHides, GetOptions = "InfoCardDeveloperSettings.GetContextMenuShapePresetNameOptions"))
+	UPROPERTY()
 	FName PresetName = TEXT("Default");
 
 	// ---- State shapes ----
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "ShapeSource == EContextMenuButtonSettingSource::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape")
 	FContextMenuShapeStateSettings BaseShape;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "ShapeSource == EContextMenuButtonSettingSource::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape")
 	bool bOverrideNormalShape = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "ShapeSource == EContextMenuButtonSettingSource::Custom && bOverrideNormalShape", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bOverrideNormalShape", EditConditionHides))
 	FContextMenuShapeStateSettings NormalShape;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "ShapeSource == EContextMenuButtonSettingSource::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape")
 	bool bOverrideHoveredShape = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "ShapeSource == EContextMenuButtonSettingSource::Custom && bOverrideHoveredShape", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bOverrideHoveredShape", EditConditionHides))
 	FContextMenuShapeStateSettings HoveredShape;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "ShapeSource == EContextMenuButtonSettingSource::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape")
 	bool bOverridePressedShape = false;
 
 	/** Not used by buttons with Button Can Be Enabled: a press on those blends straight from the current state to the state the click produces. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "ShapeSource == EContextMenuButtonSettingSource::Custom && bOverridePressedShape", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bOverridePressedShape", EditConditionHides))
 	FContextMenuShapeStateSettings PressedShape;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "ShapeSource == EContextMenuButtonSettingSource::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape")
 	bool bOverrideDisabledShape = false;
 
 	/** Used while the button's Is Enabled is false. Disabled is NOT the same as the Enabled state: disabling is explicit, and disabling the button also sets its enabled state to false. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "ShapeSource == EContextMenuButtonSettingSource::Custom && bOverrideDisabledShape", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bOverrideDisabledShape", EditConditionHides))
 	FContextMenuShapeStateSettings DisabledShape;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "ShapeSource == EContextMenuButtonSettingSource::Custom", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape")
 	bool bOverrideEnabledShape = false;
 
 	/**
@@ -783,7 +836,7 @@ struct NAMETBD_API FContextMenuShapeTarget
 	 * NOT the same as disabled: a button can be enabled and un-enabled, and when un-enabled it simply returns to Normal.
 	 * Priority: Disabled > Pressed > Hovered > Enabled > Normal.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "ShapeSource == EContextMenuButtonSettingSource::Custom && bOverrideEnabledShape", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "bOverrideEnabledShape", EditConditionHides))
 	FContextMenuShapeStateSettings EnabledShape;
 
 	// ---- Interpolation ----
@@ -804,42 +857,42 @@ struct NAMETBD_API FContextMenuShapeTarget
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
 	float TransformDelay = 0.0f;
 
-	/** When off, Shape reuses every Transform setting above, so the whole thing moves as one. Turn it on to give Shape its own speed, curve and delay. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Separate Transform And Shape"))
+	/**
+	 * When off, Shape (the Shape Box shape, and a vector shape's Style Settings) reuses every Transform setting above, so the whole
+	 * thing moves as one. Turn it on to give Shape its own speed, curve, overshoot and delay.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Has Separate Interpolation"))
 	bool bSeparateTransformAndSize = false;
 
 	/** Blend speed for Shape (every Shape Box property). 0 snaps instantly. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Speed", EditCondition = "bSeparateTransformAndSize", ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Speed", EditCondition = "bSeparateTransformAndSize", EditConditionHides, ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
 	float SizeInterpolationSpeed = 5.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Curve", EditCondition = "bSeparateTransformAndSize"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Curve", EditCondition = "bSeparateTransformAndSize", EditConditionHides))
 	EContextMenuInterpolationCurve SizeInterpolationCurve = EContextMenuInterpolationCurve::Linear;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Overshoot", EditCondition = "bSeparateTransformAndSize && SizeInterpolationCurve == EContextMenuInterpolationCurve::Click"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Overshoot", EditCondition = "bSeparateTransformAndSize && SizeInterpolationCurve == EContextMenuInterpolationCurve::Click", EditConditionHides))
 	float SizeOvershoot = 1.5f;
 
 	/** Seconds to wait after the state changes before Shape starts moving. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Delay", EditCondition = "bSeparateTransformAndSize", ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Shape Delay", EditCondition = "bSeparateTransformAndSize", EditConditionHides, ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
 	float SizeDelay = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (InlineEditConditionToggle))
 	bool bSeparateExitSpeed = false;
 
-	/**
-	 * How fast it blends back to Normal (unhovered, switched off) - its exit - for Transform and Shape alike. Unticked: the speeds
-	 * above both ways. 0 snaps. Custom shapes only (a Shape Preset keeps its own speeds).
-	 */
+	/** How fast it blends back to Normal (unhovered, switched off) - its exit - for Transform and Shape alike. Unticked: the speeds above both ways. 0 snaps. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape Interpolation", meta = (DisplayName = "Exit Interpolation Speed", EditCondition = "bSeparateExitSpeed", ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
 	float ExitInterpolationSpeed = 5.0f;
 
 	/**
-	 * The shape for a state, honoring the button's Enabled Matches Hover Shape. Preset substitution and any
-	 * active instance patch are NOT applied here - see UContextMenuButton::ResolveShapeForState, the single
-	 * place both the runtime and the designer preview resolve a target so they can't disagree about it.
+	 * The shape for a state, honoring the button's Enabled Matches Hover Shape. Any active instance patch is NOT applied
+	 * here - see UContextMenuButton::ResolveShapeForState, the single place both the runtime and the designer preview
+	 * resolve a target so they can't disagree about it.
 	 */
 	FContextMenuShapeStateSettings GetShapeForState(EContextMenuState State, bool bEnabledMatchesHoverShape) const;
 
-	/** Speed/curve/overshoot/delay for this target, Custom-authored (a preset's own values are read directly by the caller when Shape Source is Use Project Settings). */
+	/** Speed/curve/overshoot/delay for this target. */
 	FContextMenuResolvedInterpolation GetResolvedInterpolation() const;
 };
 
@@ -1380,6 +1433,176 @@ struct FContextMenuRuntimeDesignTarget
 
 };
 
+// ==================================================================
+// Presets (assets)
+// ==================================================================
+
+/**
+ * A Design Target's look kept as an asset: its Base Design, the states it overrides and its speeds. Picked on any Design Target
+ * (Preset), it fills that target's states - the target's widget, Target ID and Active stay its own - and the target follows it
+ * until one of its values is edited on the button. Made with Save As Preset under a button's Design Targets, or from the Content
+ * Browser (Miscellaneous > Data Asset > Context Menu Design Preset).
+ */
+UCLASS(BlueprintType, meta = (DisplayName = "Context Menu Design Preset"))
+class NAMETBD_API UContextMenuDesignPresetAsset : public UDataAsset
+{
+	GENERATED_BODY()
+
+public:
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design|States")
+	FContextMenuWidgetDesign BaseDesign;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design|States")
+	bool bOverrideNormalDesign = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design|States", meta = (EditCondition = "bOverrideNormalDesign", EditConditionHides))
+	FContextMenuWidgetDesign Normal;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design|States")
+	bool bOverrideHoveredDesign = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design|States", meta = (EditCondition = "bOverrideHoveredDesign", EditConditionHides))
+	FContextMenuWidgetDesign Hovered;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design|States")
+	bool bOverridePressedDesign = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design|States", meta = (EditCondition = "bOverridePressedDesign", EditConditionHides))
+	FContextMenuWidgetDesign Pressed;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design|States")
+	bool bOverrideDisabledDesign = false;
+
+	/** Used while the button's Is Enabled is false. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design|States", meta = (EditCondition = "bOverrideDisabledDesign", EditConditionHides))
+	FContextMenuWidgetDesign Disabled;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design|States")
+	bool bOverrideEnabledDesign = false;
+
+	/** Used while the button's enabled state is true. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design|States", meta = (EditCondition = "bOverrideEnabledDesign", EditConditionHides))
+	FContextMenuWidgetDesign Enabled;
+
+	/** How fast a target with this preset blends between states. 0 snaps instantly. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
+	float InterpolationSpeed = 15.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design", meta = (InlineEditConditionToggle))
+	bool bSeparateExitSpeed = false;
+
+	/** How fast it blends back to Normal. Unticked: Interpolation Speed both ways. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Design", meta = (DisplayName = "Exit Interpolation Speed", EditCondition = "bSeparateExitSpeed", ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
+	float ExitInterpolationSpeed = 15.0f;
+
+	/** Fills Target's Base Design, states and speeds from this preset, and points its Preset at it. Its widget, ID and Active are kept. */
+	void ApplyTo(FContextMenuDesignTarget& Target) const;
+
+	/** Writes Target's Base Design, states and speeds into this preset. */
+	void CopyFrom(const FContextMenuDesignTarget& Target);
+};
+
+/**
+ * A Shape Target's look kept as an asset: its state shapes (Transforms, Shape Box shapes, a vector shape's Style Settings),
+ * which states it overrides, and its interpolation - and, saved from a Self target, the button's Shape Style. Picked on any Shape
+ * Target (Preset), it fills that target - its widget, Target ID and Active stay its own - and the target follows it until one
+ * of its values is edited on the button. Made with Save As Preset under a button's Shape Targets, or from the Content Browser
+ * (Miscellaneous > Data Asset > Context Menu Shape Preset).
+ */
+UCLASS(BlueprintType, meta = (DisplayName = "Context Menu Shape Preset"))
+class NAMETBD_API UContextMenuShapePresetAsset : public UDataAsset
+{
+	GENERATED_BODY()
+
+public:
+	/** Whether picking this on a Self target also sets the button's Shape Style (on by itself for a preset saved from one). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape Style", meta = (DisplayName = "Sets Shape Style"))
+	bool bIncludesShapeStyle = false;
+
+	/** The Shape Style a Self target takes - None for the Style's brushes. Style Settings below are laid out for it. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape Style", meta = (DisplayName = "Shape Style", AllowAbstract = "false", EditCondition = "bIncludesShapeStyle", EditConditionHides))
+	TSubclassOf<UShapeWidget> ShapeStyle;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape")
+	FContextMenuShapeStateSettings BaseShape;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape")
+	bool bOverrideNormalShape = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape", meta = (EditCondition = "bOverrideNormalShape", EditConditionHides))
+	FContextMenuShapeStateSettings NormalShape;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape")
+	bool bOverrideHoveredShape = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape", meta = (EditCondition = "bOverrideHoveredShape", EditConditionHides))
+	FContextMenuShapeStateSettings HoveredShape;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape")
+	bool bOverridePressedShape = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape", meta = (EditCondition = "bOverridePressedShape", EditConditionHides))
+	FContextMenuShapeStateSettings PressedShape;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape")
+	bool bOverrideDisabledShape = false;
+
+	/** Used while the button's Is Enabled is false. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape", meta = (EditCondition = "bOverrideDisabledShape", EditConditionHides))
+	FContextMenuShapeStateSettings DisabledShape;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape")
+	bool bOverrideEnabledShape = false;
+
+	/** Used while the button's enabled state is true. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape", meta = (EditCondition = "bOverrideEnabledShape", EditConditionHides))
+	FContextMenuShapeStateSettings EnabledShape;
+
+	/** Blend speed for Transform. 0 snaps instantly. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape Interpolation", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
+	float TransformInterpolationSpeed = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape Interpolation")
+	EContextMenuInterpolationCurve TransformInterpolationCurve = EContextMenuInterpolationCurve::Linear;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape Interpolation", meta = (EditCondition = "TransformInterpolationCurve == EContextMenuInterpolationCurve::Click", EditConditionHides))
+	float TransformOvershoot = 1.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape Interpolation", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
+	float TransformDelay = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape Interpolation", meta = (DisplayName = "Shape Has Separate Interpolation"))
+	bool bSeparateTransformAndSize = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Speed", EditCondition = "bSeparateTransformAndSize", EditConditionHides, ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
+	float SizeInterpolationSpeed = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape Interpolation", meta = (DisplayName = "Shape Interpolation Curve", EditCondition = "bSeparateTransformAndSize", EditConditionHides))
+	EContextMenuInterpolationCurve SizeInterpolationCurve = EContextMenuInterpolationCurve::Linear;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape Interpolation", meta = (DisplayName = "Shape Overshoot", EditCondition = "bSeparateTransformAndSize && SizeInterpolationCurve == EContextMenuInterpolationCurve::Click", EditConditionHides))
+	float SizeOvershoot = 1.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape Interpolation", meta = (DisplayName = "Shape Delay", EditCondition = "bSeparateTransformAndSize", EditConditionHides, ClampMin = "0.0", UIMin = "0.0", UIMax = "2.0", ForceUnits = "s"))
+	float SizeDelay = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape Interpolation", meta = (InlineEditConditionToggle))
+	bool bSeparateExitSpeed = false;
+
+	/** How fast it blends back to Normal, for Transform and Shape alike. Unticked: the speeds above both ways. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shape Interpolation", meta = (DisplayName = "Exit Interpolation Speed", EditCondition = "bSeparateExitSpeed", ClampMin = "0.0", UIMin = "0.0", UIMax = "50.0"))
+	float ExitInterpolationSpeed = 5.0f;
+
+	/**
+	 * Fills Target's state shapes and interpolation from this preset, and points its Preset at it; a Self target takes the Shape
+	 * Style too when the preset carries one. Its widget, ID and Active are kept.
+	 */
+	void ApplyTo(FContextMenuShapeTarget& Target) const;
+
+	/** Writes Target's state shapes and interpolation into this preset (and the Shape Style, from a Self target). */
+	void CopyFrom(const FContextMenuShapeTarget& Target, bool bFromSelfTarget);
+};
+
 /**
  * Slate button used by UContextMenuButton. Identical to SButton, except for two things.
  *
@@ -1586,6 +1809,18 @@ public:
 	bool bREADME = false;
 
 	/**
+	 * The whole button kept as a Context Menu Button Preset asset: picking one sets every setting below from it - behavior,
+	 * cooldown, Shape Style, Shape and Design Targets, sounds, animations, the button Style - so one look and feel is shared by
+	 * every button that picks it. Not set from it: Button Tag and Button Text Widget (what this button is) and its content.
+	 *
+	 * The button follows the preset - edits made to the asset reach it the next time it loads - until one of those settings is
+	 * edited here, which makes the button its own again (the field clears). Save As Preset (just below) makes one from this
+	 * button; Update Preset writes this button's settings back into the preset it was picked from.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button", meta = (DisplayName = "Button Preset"))
+	TObjectPtr<UContextMenuButtonPresetAsset> ButtonPreset = nullptr;
+
+	/**
 	 * Shows the button's design and shape for one state in the UMG designer, without pressing Play. Editor only.
 	 * Set it back to None to restore the authored look. Hidden from the Details panel: the Widget Blueprint editor's toolbar
 	 * previews states (and values) with their transitions now, and this stays the state shown until the toolbar picks one.
@@ -1666,45 +1901,11 @@ public:
 	bool bHoverDesignWhileEnabled = true;
 
 	/**
-	 * If true, enabling this button un-enables every other button in the same container that can be enabled, so only
-	 * one is enabled at a time (tabs, radio buttons, a filter row).
-	 *
-	 * It applies to the whole container: turn it on for ANY one button there and every button in that container
-	 * behaves this way, including buttons added later or spawned at runtime. The others don't need it set.
-	 *
-	 * The container is found automatically: the closest widget holding this button and at least one other button that
-	 * can be enabled. Wrappers are looked through, so buttons inside Size Boxes, or each inside its own User Widget
-	 * (e.g. a Vertical Box of W_TabButton), still share the box they're laid out in. Buttons that can be enabled are
-	 * ignored. To group buttons that don't share a container, give them the same Enable Group instead.
-	 *
-	 * Clicking the enabled button still un-enables it. If several start enabled, the first one built keeps it.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Settings", meta = (EditCondition = "bButtonCanBeEnabled", HideEditConditionToggle))
-	bool bUnenableAllOtherGroupButtonsOnEnabled = false;
-
-	/**
 	 * A click enables the button but never un-enables it - a radio button, a tab, a selected loadout slot: clicking the
 	 * one already chosen keeps it chosen. Off, a click toggles (a checkbox, a switch). Set Enabled State still does either.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Settings", meta = (EditCondition = "bButtonCanBeEnabled", HideEditConditionToggle))
 	bool bClickOnlyEnables = false;
-
-	/**
-	 * A ButtonGroup links buttons together to allow for management of other buttons from any one of them, e.g. setting
-	 * a button in a group to enabled can unenable all other buttons in the group.
-	 * 
-	 * - Leaving the group name automatically links buttons that share the same immediate UI layout box, e.g. Vertical Box. 
-	 * - (Recommended) Enroll the button into a group by naming it with the (exact) shared name that the other buttons use.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Settings", meta = (EditCondition = "bButtonCanBeEnabled", HideEditConditionToggle))
-	FName ButtonGroup = NAME_None;
-
-	/** 
-	 * The automatically assigned index of this button within its enable group. 
-	 * Useful for mapping to arrays, enums, or Widget Switchers.
-	 */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Settings", meta = (EditCondition = "bButtonCanBeEnabled", HideEditConditionToggle))
-	int32 GroupIndex = INDEX_NONE;
 
 	/** UseProjectSettings: Edit > Project Settings > Game > Info Card */ 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Settings")
@@ -1768,39 +1969,100 @@ public:
 	FVector2D PressProgressRange = FVector2D(0.0, 1.0);
 
 	// ------------------------------------------------------------------
+	// Button Group (buttons that can be enabled, working together)
+	// ------------------------------------------------------------------
+
+	/**
+	 * If true, enabling this button un-enables every other button in the same container that can be enabled, so only
+	 * one is enabled at a time (tabs, radio buttons, a filter row).
+	 *
+	 * It applies to the whole container: turn it on for ANY one button there and every button in that container
+	 * behaves this way, including buttons added later or spawned at runtime. The others don't need it set.
+	 *
+	 * The container is found automatically: the closest widget holding this button and at least one other button that
+	 * can be enabled. Wrappers are looked through, so buttons inside Size Boxes, or each inside its own User Widget
+	 * (e.g. a Vertical Box of W_TabButton), still share the box they're laid out in. Buttons that can't be enabled are
+	 * ignored. To group buttons that don't share a container, give them the same Button Group instead.
+	 *
+	 * Clicking the enabled button still un-enables it (unless Click Only Enables). If several start enabled, the first one
+	 * built keeps it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Button Group", meta = (EditCondition = "bButtonCanBeEnabled", HideEditConditionToggle))
+	bool bUnenableAllOtherGroupButtonsOnEnabled = false;
+
+	/**
+	 * A ButtonGroup links buttons together to allow for management of other buttons from any one of them, e.g. setting
+	 * a button in a group to enabled can unenable all other buttons in the group.
+	 * 
+	 * - Leaving the group name automatically links buttons that share the same immediate UI layout box, e.g. Vertical Box. 
+	 * - (Recommended) Enroll the button into a group by naming it with the (exact) shared name that the other buttons use.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Button Group", meta = (EditCondition = "bButtonCanBeEnabled", HideEditConditionToggle))
+	FName ButtonGroup = NAME_None;
+
+	/** 
+	 * The automatically assigned index of this button within its enable group. 
+	 * Useful for mapping to arrays, enums, or Widget Switchers.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Button Group", meta = (EditCondition = "bButtonCanBeEnabled", HideEditConditionToggle))
+	int32 GroupIndex = INDEX_NONE;
+
+	// ------------------------------------------------------------------
 	// Cooldown Configurations
 	// ------------------------------------------------------------------
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Cooldown", meta = (EditCondition = "ButtonType == EContextMenuButtonType::Press", EditConditionHides))
 	bool bHasButtonCooldown = false;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Cooldown", meta = (EditCondition = "ButtonType == EContextMenuButtonType::Press && bHasButtonCooldown", ClampMin = "0.01", UIMin = "0.01", UIMax = "3.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Cooldown", meta = (EditCondition = "ButtonType == EContextMenuButtonType::Press && bHasButtonCooldown", EditConditionHides, ClampMin = "0.01", UIMin = "0.01", UIMax = "3.0", ForceUnits = "s"))
 	float CooldownDuration = 1.0f;
 
-	/** If true, natively disables the button widget during cooldown by intercepting clicks without applying opacity fade. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Cooldown", meta = (EditCondition = "ButtonType == EContextMenuButtonType::Press && bHasButtonCooldown"))
+	/**
+	 * While the cooldown runs, the button shows its Disabled state - Disabled designs and shapes, the Style's Disabled brush -
+	 * and takes no hover, press or click, then goes back to the state it is in when the cooldown ends. Its Is Enabled and its
+	 * enabled state are left alone, so a toggle keeps its value. Off: it only ignores clicks during the cooldown and looks as usual.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Cooldown", meta = (DisplayName = "Cooldown Sets Disabled State", EditCondition = "ButtonType == EContextMenuButtonType::Press && bHasButtonCooldown", EditConditionHides))
 	bool bInvalidatesButton = true;
+
+	/** Whether the cooldown after a click is running. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Cooldown")
+	bool IsOnCooldown() const { return bIsOnCooldown; }
+
+	/** Seconds left on the cooldown; 0 when none runs. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Cooldown")
+	float GetCooldownRemaining() const;
 
 	// ------------------------------------------------------------------
 	// Shape Configurations
 	// ------------------------------------------------------------------
 
 	/**
-	 * Draws the button's background as a vector shape - a Rectangle (Fully Rounded for a pill), an Ellipse, a Star, any shape
-	 * of the plugin - instead of the Style's brushes. Its fill, outline (a material laid along it included) and the rest are
-	 * Background Look; a Shape Target aimed at Self changes them per state, and the hit area follows the shape's Transform
-	 * as it does the brush's. None: the Style's brushes, as a stock button.
+	 * The button's Shape Style: its background drawn as a vector shape instead of the Style's brushes. Authored on a Shape Target
+	 * aimed at Self (Shape Style there, its look the Base Shape's Style Settings) - every Self target shows this one; kept here
+	 * so the button has a single answer. None: the Style's brushes, as a stock button. Set from Blueprint with Set Shape Style.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Shape", meta = (AllowAbstract = "false"))
+	UPROPERTY(BlueprintReadOnly, Category = "Context Menu Button|Shape", meta = (DisplayName = "Shape Style"))
 	TSubclassOf<UShapeWidget> BackgroundShape;
 
-	/** The Background Shape as authored: every setting that kind of shape has. States change it through a Shape Target aimed at Self. */
-	UPROPERTY(EditAnywhere, Category = "Context Menu Button|Shape", meta = (FixedLayout, EditCondition = "bHasBackgroundShape", EditConditionHides))
+	/** The Shape Style as authored: every setting that kind of shape has (a Self target's Base Shape Style Settings mirror it). */
+	UPROPERTY()
 	FInstancedPropertyBag BackgroundLook;
 
-	/** Details-panel mirror of Background Shape being set. */
+	/** Background Shape is set (kept for older code reading it). */
 	UPROPERTY()
 	bool bHasBackgroundShape = false;
+
+	/**
+	 * Changes the Shape Style (None: the Style's brushes). Its settings start from what the old style shared with it - a new
+	 * style from nothing starts with Fill off, so the button's own look shows inside the outline. Every Self target follows.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Shape")
+	void SetShapeStyle(TSubclassOf<UShapeWidget> NewShapeStyle);
+
+	/** Whether the Shape Style as authored is filled; with its fill off, the button's own look (brush, tint, image, material) shows inside it. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Shape")
+	bool IsShapeStyleFilled() const;
 
 	/**
 	 * Parts hidden from the Hierarchy: the button's content kept in HiddenContentSlot instead of among its slots, the widgets
@@ -1831,27 +2093,19 @@ public:
 	/** Whether the button has content, listed or hidden. */
 	bool HasAnyContent() const { return GetChildrenCount() > 0 || GetHiddenContent() != nullptr; }
 
-	/** The Background Shape being drawn - set its values from Blueprint like any shape's. Null without a Background Shape. */
-	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Shape")
+	/** The Shape Style being drawn - set its values from Blueprint like any shape's. Null without a Shape Style. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu Button|Shape", meta = (DisplayName = "Get Shape Style Widget"))
 	UShapeWidget* GetBackgroundShapeWidget() const { return BackgroundShapeWidget; }
 
 	/**
 	 * One entry per widget this button shapes: its own Transform and Shape Box shape across the button's states.
 	 *
-	 * Aim one at the button itself to shape its background brush (the hit area follows; content and layout don't
-	 * move). Aim one at a Shape Box, or at a widget sitting alone inside a Shape Box, to drive that Shape Box.
-	 * Any other widget only takes the Transform.
+	 * Aim one at the button itself (Self) to shape its background brush (the hit area follows; content and layout don't
+	 * move) and to give it a Shape Style. Aim one at a Shape Box, or at a widget sitting alone inside a Shape Box, to drive
+	 * that Shape Box; at a vector shape, to change its Style Settings per state. Any other widget only takes the Transform.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Context Menu Button|Shape", meta = (TitleProperty = "TargetWidgetName"))
 	TArray<FContextMenuShapeTarget> ShapeTargets;
-
-	/**
-	 * What each Shape Target is actually shaping: the button's brush, a Shape Box, or - for a widget that is
-	 * neither a Shape Box nor alone inside one - Transform only, with its Shape ignored. Rebuilt whenever the
-	 * button is edited.
-	 */
-	UPROPERTY(VisibleAnywhere, Transient, Category = "Context Menu Button|Shape", meta = (DisplayName = "Shape Status", MultiLine = true))
-	FString ShapeTargetStatus;
 
 	// ------------------------------------------------------------------
 	// Design Configurations
@@ -1961,6 +2215,39 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Targets", meta = (DisplayName = "Set Shape Target Transform"))
 	bool SetShapeTargetTransform(FName InTargetId, EContextMenuState ForState, const FWidgetTransform& NewTransform, bool bInstant = false);
+
+	/**
+	 * Gives every Shape Target with Target ID InTargetId the look of InPreset (its widget, ID and Active kept) and blends to it
+	 * (bInstant: at once) - a whole set of hover / press shapes swapped at runtime. False when there is no such target.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Targets", meta = (DisplayName = "Apply Shape Preset By ID"))
+	bool ApplyShapePresetById(FName InTargetId, UContextMenuShapePresetAsset* InPreset, bool bInstant = false);
+
+	/** Gives every Design Target with Target ID InTargetId the look of InPreset and blends to it. False when there is no such target. */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Targets", meta = (DisplayName = "Apply Design Preset By ID"))
+	bool ApplyDesignPresetById(FName InTargetId, UContextMenuDesignPresetAsset* InPreset, bool bInstant = false);
+
+	// ------------------------------------------------------------------
+	// Presets
+	// ------------------------------------------------------------------
+
+	/**
+	 * Sets this button from a Context Menu Button Preset (see Button Preset) and makes it the Button Preset. Settings the preset
+	 * has that this kind of button hasn't are skipped. At runtime the button is rebuilt in its new look at once.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Presets")
+	void ApplyButtonPreset(UContextMenuButtonPresetAsset* InPreset);
+
+	/** Writes this button's settings (everything a Button Preset holds) into InPreset, replacing what it held. */
+	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Presets")
+	void CopyToButtonPreset(UContextMenuButtonPresetAsset* InPreset) const;
+
+	/**
+	 * The settings a Button Preset holds for a kind of button: every Details setting of the button and the classes above it up to
+	 * Button (its Style, colors, click methods), and the Shape Style - but not the Button Preset itself, Instance Overridable,
+	 * Button Tag, Button Text Widget, the designer preview, or anything read-only.
+	 */
+	static void GetButtonPresetProperties(const UClass* ButtonClass, TArray<const FProperty*>& OutProperties);
 
 	// ------------------------------------------------------------------
 	// Action
@@ -2077,27 +2364,18 @@ public:
 	bool bPlayAnimInOnConstruct = true;
 
 	/**
-	 * Runs the animations in the UMG designer so they can be judged without compiling and running. Set
-	 * Mode to Loop In and Out and the entrance and exit cycle in the viewport.
-	 *
-	 * Editor only, and non-destructive: the preview composes over a baseline taken when the designer built
-	 * it, and setting Mode back to Off restores every animated widget exactly.
-	 *
-	 * Show Only Inner Properties is what puts Mode, Playback Speed and the rest directly in the Animation
-	 * category instead of behind an expander. FContextMenuButtonDetails used to hide this property and
-	 * re-add its children by hand to get the same result, which meant the editor module had to know about
-	 * a purely cosmetic decision belonging to the property itself - and meant nothing else could have a
-	 * designer preview without its own customization.
+	 * How the designer previews Anim In / Anim Out. Not in the Details panel: the Widget Blueprint editor's toolbar plays them
+	 * (In / Out beside the button's states) on the designer's copy only, and nothing chosen there is saved. Kept for the shared
+	 * preview harness; a mode saved by an older version is switched back to Off on load.
 	 */
-	UPROPERTY(EditAnywhere, Category = "Context Menu Button|Animation", meta = (DisplayName = "Designer Preview", ShowOnlyInnerProperties))
+	UPROPERTY()
 	FWidgetAnimPreviewSettings DesignerAnimPreview;
 
 	/**
-	 * What the last animation rebuild found, written by the button itself: how many layers each stack
-	 * ended up with and how many were dropped for having no Target Widget. Read this first when an
-	 * animation authored here isn't doing anything. Transient and editor-only; nothing reads it back.
+	 * What the last animation rebuild found: how many layers each stack ended up with and how many were dropped for having no
+	 * Target Widget. Not shown in the Details panel; kept for debugging (and the AI tools). Nothing reads it back.
 	 */
-	UPROPERTY(VisibleAnywhere, Transient, Category = "Context Menu Button|Animation", meta = (DisplayName = "Animation Status", MultiLine = true))
+	UPROPERTY(Transient)
 	FString ButtonAnimationStatus;
 
 	/** Plays Anim In now. Safe to call repeatedly; each call restarts it. */
@@ -2107,6 +2385,9 @@ public:
 	/** Plays Anim Out now. */
 	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Animation")
 	void PlayButtonAnimOut();
+
+	/** Whether Anim In or Anim Out has anything to play. */
+	bool HasButtonAnimations() const { return AnimIn.Num() > 0 || AnimOut.Num() > 0; }
 
 	/** Flattens Anim In / Anim Out into the stacks that actually play. Called for you on every rebuild. */
 	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|Animation")
@@ -2160,6 +2441,20 @@ public:
 	 */
 	UPROPERTY()
 	bool bIsInstanceEditable_DEPRECATED = false;
+
+	/**
+	 * Lets every placement of the widget that contains this button restyle it and react to it, with nothing else to set up.
+	 *
+	 * Ticked, the containing Widget Blueprint gets (and compiles with) a "{Button}InstanceOverrides" variable - Instance Editable,
+	 * already pointed at this button - so each placement of that widget shows this button's Shape and Design Targets to override
+	 * in its own Details, and its event dispatchers On{Button}Clicked / EnabledStateChanged / Hovered / PressCompleted, which this
+	 * button calls by itself, so a placement binds them with the + under Events. Unticked, the variable is removed again (undo
+	 * brings it back); the dispatchers stay, since graphs elsewhere may be bound to them.
+	 *
+	 * An overrides variable made by hand on any widget above the button still works, ticked or not.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu Button|Instance Overrides", meta = (DisplayName = "Instance Overridable"))
+	bool bInstanceOverridable = false;
 
 	/**
 	 * What the last resolve actually found, written by the button itself. Read this first when a placement
@@ -2228,6 +2523,12 @@ public:
 	 * refreshes the mirrors that pick which rows show. Run on every edit; call it after changing targets from code.
 	 */
 	void RefreshShapeTargetLooks();
+
+	/**
+	 * Every Self Shape Target shows the button's Shape Style and, on its Base Shape, the style's settings (Background Look); the
+	 * others none. By name only (no widget looked up), so it is safe on load.
+	 */
+	void MirrorShapeStyleToSelfTargets();
 
 	/**
 	 * A state's Look that draws no image where the shape as authored draws one (a texture, a material or an SVG set on the
@@ -2457,6 +2758,23 @@ public:
 	/** Gives the preview back to Show Preview. */
 	void StopDesignerPreviewState();
 
+	/** Plays Anim In (or Anim Out, from Anim In's end pose) once on this designer preview copy, as at runtime. The toolbar's In / Out. */
+	void PlayDesignerAnimPreview(bool bOut);
+
+	// ---- Presets (editor) ----------------------------------------------------------------------
+
+	/** Saves this button as a new Context Menu Button Preset (the Save Asset As window) and makes it the Button Preset. False if cancelled. */
+	bool SaveAsButtonPreset();
+
+	/** Writes this button's settings into its Button Preset, so every button following that preset gets them. False without one. */
+	bool UpdateButtonPreset();
+
+	/** Saves Shape Target TargetIndex as a new Context Menu Shape Preset and makes it the target's Preset. False if cancelled. */
+	bool SaveShapeTargetAsPreset(int32 TargetIndex);
+
+	/** Saves Design Target TargetIndex as a new Context Menu Design Preset and makes it the target's Preset. False if cancelled. */
+	bool SaveDesignTargetAsPreset(int32 TargetIndex);
+
 	/** The state the preview shows: the toolbar's, else Show Preview's (or the placement's). */
 	EContextMenuDesignPreview GetEffectiveDesignPreview() const;
 
@@ -2542,11 +2860,8 @@ protected:
 	 */
 	bool DoesDesignDriveButtonBrush() const;
 
-	/** The project preset a Shape Target is using, or nullptr if its Shape Source is Custom or the named preset no longer exists. */
-	const FContextMenuShapePreset* FindActiveShapePreset(const FContextMenuShapeTarget& Target) const;
-
 	/**
-	 * The shape one target should show in a state: the target's own values, or its Shape Preset's, with any
+	 * The shape one target should show in a state: the target's own values (a preset it picked has been copied into them), with any
 	 * active instance patch merged over the top. The single place that resolution happens, so the runtime and
 	 * the designer preview can't disagree about it. By value rather than by reference, because the patched
 	 * result doesn't exist anywhere to point at - which is the whole reason a placement can nudge a shape
@@ -2555,7 +2870,7 @@ protected:
 	FContextMenuShapeStateSettings ResolveShapeForState(const FContextMenuShapeTarget& Authored, EContextMenuState State) const;
 
 	/**
-	 * The design one target should show in a state: the target's own values, or its Design Preset's, with any
+	 * The design one target should show in a state: the target's own values (a preset it picked has been copied into them), with any
 	 * active instance patch merged over the top. The single place that resolution happens, so the runtime and
 	 * the designer preview can't disagree about it.
 	 */
@@ -2680,15 +2995,46 @@ protected:
 	/** Whether a button with no content builds its default content when it is built at runtime. */
 	virtual bool ShouldBuildDefaultContentWhenEmpty() const { return false; }
 
-	/** Rebuilds Shape Status from the current Shape Targets. */
-	void RebuildShapeTargetStatus();
+	// ---- Presets and Shape Style ----
 
 	/**
-	 * The vector shape a Design Target's channels act on: a shape widget itself, or a button's Background Shape. On a shape,
-	 * Tint is its fill's color, Outline Tint its stroke's, and Brush Texture / Material its outline's image when the outline is
-	 * painted with one, otherwise its fill's.
+	 * Targets that still name a Project Settings preset (the old Design / Shape Source) get it copied into their own states once,
+	 * and become Custom. On load and on every edit (a target added in the Details starts out naming one).
+	 */
+	void MigrateProjectSettingsPresets();
+
+	/** Targets (and the button) that follow a preset asset take it again, so edits made to the asset reach them. */
+	void RefreshLinkedPresets();
+
+	/** Copies Settings - the button's, from a preset - over this button: every property of the preset that this kind of button has. */
+	void ApplyButtonPresetSettings(const UContextMenuButtonPresetAsset& InPreset);
+
+	/**
+	 * The Shape Style authored on Self target TargetIndex (its Shape Style just picked, bStyleEdited; else its Base Shape's Style
+	 * Settings - brought by a preset, or edited in the Details, bFromDetails) made the button's own; every Self target then
+	 * mirrors it (RefreshShapeTargetLooks).
+	 */
+	void AdoptShapeStyleFromTarget(int32 TargetIndex, bool bStyleEdited, bool bFromDetails = false);
+
+	/** The Shape Style changed to Class: its settings laid out again (a style picked from none starts with Fill off). */
+	void ChangeShapeStyle(UClass* Class);
+
+	/** A Shape Style always has a Self Shape Target to be authored on: one is added (doing nothing else) when none is left. */
+	void EnsureSelfShapeTargetForStyle();
+
+	/** Whether a target aims at this button itself. */
+	bool IsSelfShapeTarget(const FContextMenuShapeTarget& Target) const { return IsSelfTargetName(Target.TargetWidgetName); }
+
+	/**
+	 * The vector shape a Design Target's channels act on: a shape widget itself, or a button's Shape Style while it is filled. On a
+	 * shape, Tint is its fill's color, Outline Tint its stroke's, and Brush Texture / Material its outline's image when the outline
+	 * is painted with one, otherwise its fill's. A Shape Style with its fill off leaves them to the button's own brush, which shows
+	 * inside it.
 	 */
 	static UShapeWidget* GetDesignShape(UWidget* Widget);
+
+	/** The vector shape a Design Target's Outline Tint colors: a shape widget, or a button's Shape Style (filled or not). */
+	static UShapeWidget* GetOutlineShape(UWidget* Widget);
 
 	static FLinearColor ExtractWidgetColor(UWidget* Widget);
 	static void ApplyColorToWidget(UWidget* Widget, const FLinearColor& Color);
@@ -3115,4 +3461,27 @@ protected:
 
 	/** One entry per Sound Set, rebuilt whenever the array changes size. See FUISoundPlayer. */
 	TArray<FUISoundRuntime> RuntimeSounds;
+};
+/**
+ * A whole Context Menu Button kept as an asset: every setting a button's Details show - behavior, cooldown, button group,
+ * Shape Style, Shape and Design Targets, sounds, animations, cursor, the button Style and colors - so one look and feel is
+ * shared by every button that picks it (Button Preset). Not kept: the button's content (its child widgets), Button Tag and
+ * Button Text Widget. Targets aimed at a part by name apply on a button with a part of that name; Self targets on any button.
+ *
+ * Made with Save As Preset on a button (or Update Preset, to write a button back into the preset it follows). Its settings are
+ * editable here; buttons following the preset take the edits the next time they load.
+ */
+UCLASS(BlueprintType, meta = (DisplayName = "Context Menu Button Preset"))
+class NAMETBD_API UContextMenuButtonPresetAsset : public UDataAsset
+{
+	GENERATED_BODY()
+
+public:
+	/** The kind of button it was saved from (Generic Button, Checkbox...). Picked on another kind, the settings both have are set. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Preset")
+	TSubclassOf<UContextMenuButton> ButtonClass;
+
+	/** The button's settings, by name, laid out for the kind of button it was saved from. */
+	UPROPERTY(EditAnywhere, Category = "Preset", meta = (FixedLayout))
+	FInstancedPropertyBag Settings;
 };

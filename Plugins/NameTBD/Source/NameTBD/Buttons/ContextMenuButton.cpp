@@ -35,6 +35,7 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Engine/Texture2D.h"
 #include "NameTBD/Widgets/WidgetSVGImage.h"
+#include "NameTBD/Widgets/WidgetEditorHooks.h"
 #include "Containers/Ticker.h"
 #include "Styling/SlateTypes.h"
 #include "Fonts/SlateFontInfo.h"
@@ -422,6 +423,114 @@ FContextMenuResolvedInterpolation FContextMenuShapeTarget::GetResolvedInterpolat
 	return Out;
 }
 
+// ==================================================================
+// Preset assets
+// ==================================================================
+
+void UContextMenuDesignPresetAsset::ApplyTo(FContextMenuDesignTarget& Target) const
+{
+	Target.BaseDesign = BaseDesign;
+	Target.bOverrideNormalDesign = bOverrideNormalDesign;
+	Target.Normal = Normal;
+	Target.bOverrideHoveredDesign = bOverrideHoveredDesign;
+	Target.Hovered = Hovered;
+	Target.bOverridePressedDesign = bOverridePressedDesign;
+	Target.Pressed = Pressed;
+	Target.bOverrideDisabledDesign = bOverrideDisabledDesign;
+	Target.Disabled = Disabled;
+	Target.bOverrideEnabledDesign = bOverrideEnabledDesign;
+	Target.Enabled = Enabled;
+	Target.InterpolationSpeed = InterpolationSpeed;
+	Target.bSeparateExitSpeed = bSeparateExitSpeed;
+	Target.ExitInterpolationSpeed = ExitInterpolationSpeed;
+	Target.DesignSource = EContextMenuButtonSettingSource::Custom;
+	Target.PresetAsset = const_cast<UContextMenuDesignPresetAsset*>(this);
+}
+
+void UContextMenuDesignPresetAsset::CopyFrom(const FContextMenuDesignTarget& Target)
+{
+	Modify();
+	BaseDesign = Target.BaseDesign;
+	bOverrideNormalDesign = Target.bOverrideNormalDesign;
+	Normal = Target.Normal;
+	bOverrideHoveredDesign = Target.bOverrideHoveredDesign;
+	Hovered = Target.Hovered;
+	bOverridePressedDesign = Target.bOverridePressedDesign;
+	Pressed = Target.Pressed;
+	bOverrideDisabledDesign = Target.bOverrideDisabledDesign;
+	Disabled = Target.Disabled;
+	bOverrideEnabledDesign = Target.bOverrideEnabledDesign;
+	Enabled = Target.Enabled;
+	InterpolationSpeed = Target.InterpolationSpeed;
+	bSeparateExitSpeed = Target.bSeparateExitSpeed;
+	ExitInterpolationSpeed = Target.ExitInterpolationSpeed;
+	MarkPackageDirty();
+}
+
+void UContextMenuShapePresetAsset::ApplyTo(FContextMenuShapeTarget& Target) const
+{
+	// The states' Style Settings are laid out again for the shape the target aims at, keeping what the two kinds share
+	// (UContextMenuButton::RefreshShapeTargetLooks); the Shape Style itself is the button's to take (AdoptShapeStyleFromTarget).
+	if (bIncludesShapeStyle && Target.bIsSelfTarget)
+	{
+		Target.ShapeStyle = ShapeStyle;
+	}
+	Target.BaseShape = BaseShape;
+	Target.bOverrideNormalShape = bOverrideNormalShape;
+	Target.NormalShape = NormalShape;
+	Target.bOverrideHoveredShape = bOverrideHoveredShape;
+	Target.HoveredShape = HoveredShape;
+	Target.bOverridePressedShape = bOverridePressedShape;
+	Target.PressedShape = PressedShape;
+	Target.bOverrideDisabledShape = bOverrideDisabledShape;
+	Target.DisabledShape = DisabledShape;
+	Target.bOverrideEnabledShape = bOverrideEnabledShape;
+	Target.EnabledShape = EnabledShape;
+	Target.TransformInterpolationSpeed = TransformInterpolationSpeed;
+	Target.TransformInterpolationCurve = TransformInterpolationCurve;
+	Target.TransformOvershoot = TransformOvershoot;
+	Target.TransformDelay = TransformDelay;
+	Target.bSeparateTransformAndSize = bSeparateTransformAndSize;
+	Target.SizeInterpolationSpeed = SizeInterpolationSpeed;
+	Target.SizeInterpolationCurve = SizeInterpolationCurve;
+	Target.SizeOvershoot = SizeOvershoot;
+	Target.SizeDelay = SizeDelay;
+	Target.bSeparateExitSpeed = bSeparateExitSpeed;
+	Target.ExitInterpolationSpeed = ExitInterpolationSpeed;
+	Target.ShapeSource = EContextMenuButtonSettingSource::Custom;
+	Target.PresetAsset = const_cast<UContextMenuShapePresetAsset*>(this);
+}
+
+void UContextMenuShapePresetAsset::CopyFrom(const FContextMenuShapeTarget& Target, bool bFromSelfTarget)
+{
+	Modify();
+	bIncludesShapeStyle = bFromSelfTarget;
+	ShapeStyle = bFromSelfTarget ? Target.ShapeStyle : nullptr;
+	BaseShape = Target.BaseShape;
+	bOverrideNormalShape = Target.bOverrideNormalShape;
+	NormalShape = Target.NormalShape;
+	bOverrideHoveredShape = Target.bOverrideHoveredShape;
+	HoveredShape = Target.HoveredShape;
+	bOverridePressedShape = Target.bOverridePressedShape;
+	PressedShape = Target.PressedShape;
+	bOverrideDisabledShape = Target.bOverrideDisabledShape;
+	DisabledShape = Target.DisabledShape;
+	bOverrideEnabledShape = Target.bOverrideEnabledShape;
+	EnabledShape = Target.EnabledShape;
+	TransformInterpolationSpeed = Target.TransformInterpolationSpeed;
+	TransformInterpolationCurve = Target.TransformInterpolationCurve;
+	TransformOvershoot = Target.TransformOvershoot;
+	TransformDelay = Target.TransformDelay;
+	bSeparateTransformAndSize = Target.bSeparateTransformAndSize;
+	SizeInterpolationSpeed = Target.SizeInterpolationSpeed;
+	SizeInterpolationCurve = Target.SizeInterpolationCurve;
+	SizeOvershoot = Target.SizeOvershoot;
+	SizeDelay = Target.SizeDelay;
+	bSeparateExitSpeed = Target.bSeparateExitSpeed;
+	ExitInterpolationSpeed = Target.ExitInterpolationSpeed;
+	MarkPackageDirty();
+}
+
 const FContextMenuWidgetDesign& FContextMenuDesignTarget::GetDesignForState(EContextMenuState State, bool bEnabledMatchesHover) const
 {
 	switch (State)
@@ -668,70 +777,26 @@ namespace ContextMenuButtonOverrideSlots
 		return (State == EContextMenuState::Enabled && bEnabledMatchesHover) ? EContextMenuState::Hovered : State;
 	}
 
-	FStateMask MakeShapeMask(const FContextMenuShapeTarget& Target, const FContextMenuShapePreset* Preset)
+	FStateMask MakeShapeMask(const FContextMenuShapeTarget& Target)
 	{
 		FStateMask Mask;
-		if (Preset)
-		{
-			Mask.bNormal   = Preset->bOverrideNormalShape;
-			Mask.bHovered  = Preset->bOverrideHoveredShape;
-			Mask.bPressed  = Preset->bOverridePressedShape;
-			Mask.bDisabled = Preset->bOverrideDisabledShape;
-			Mask.bEnabled  = Preset->bOverrideEnabledShape;
-		}
-		else
-		{
-			Mask.bNormal   = Target.bOverrideNormalShape;
-			Mask.bHovered  = Target.bOverrideHoveredShape;
-			Mask.bPressed  = Target.bOverridePressedShape;
-			Mask.bDisabled = Target.bOverrideDisabledShape;
-			Mask.bEnabled  = Target.bOverrideEnabledShape;
-		}
+		Mask.bNormal   = Target.bOverrideNormalShape;
+		Mask.bHovered  = Target.bOverrideHoveredShape;
+		Mask.bPressed  = Target.bOverridePressedShape;
+		Mask.bDisabled = Target.bOverrideDisabledShape;
+		Mask.bEnabled  = Target.bOverrideEnabledShape;
 		return Mask;
 	}
 
-	const FContextMenuDesignPreset* FindDesignPreset(const FContextMenuDesignTarget& Target)
-	{
-		if (Target.DesignSource != EContextMenuButtonSettingSource::UseProjectSettings)
-		{
-			return nullptr;
-		}
-
-		const UInfoCardDeveloperSettings* Settings = UInfoCardDeveloperSettings::Get();
-		return Settings ? Settings->FindContextMenuDesignPreset(Target.PresetName) : nullptr;
-	}
-
-	/** A Design Preset authors every state on its own, so it has no Base to fall back to. */
-	FStateMask MakeDesignMask(const FContextMenuDesignTarget& Target, const FContextMenuDesignPreset* Preset)
+	FStateMask MakeDesignMask(const FContextMenuDesignTarget& Target)
 	{
 		FStateMask Mask;
-		if (Preset)
-		{
-			Mask.bNormal = Mask.bHovered = Mask.bPressed = Mask.bDisabled = Mask.bEnabled = true;
-		}
-		else
-		{
-			Mask.bNormal   = Target.bOverrideNormalDesign;
-			Mask.bHovered  = Target.bOverrideHoveredDesign;
-			Mask.bPressed  = Target.bOverridePressedDesign;
-			Mask.bDisabled = Target.bOverrideDisabledDesign;
-			Mask.bEnabled  = Target.bOverrideEnabledDesign;
-		}
+		Mask.bNormal   = Target.bOverrideNormalDesign;
+		Mask.bHovered  = Target.bOverrideHoveredDesign;
+		Mask.bPressed  = Target.bOverridePressedDesign;
+		Mask.bDisabled = Target.bOverrideDisabledDesign;
+		Mask.bEnabled  = Target.bOverrideEnabledDesign;
 		return Mask;
-	}
-
-	/** A preset's design for one state, with no Enabled-matches-Hover substitution. */
-	const FContextMenuWidgetDesign& GetPresetDesign(const FContextMenuDesignPreset& Preset, EContextMenuState State)
-	{
-		switch (State)
-		{
-		case EContextMenuState::Hovered:  return Preset.Hovered;
-		case EContextMenuState::Pressed:  return Preset.Pressed;
-		case EContextMenuState::Disabled: return Preset.Disabled;
-		case EContextMenuState::Enabled:  return Preset.Enabled;
-		case EContextMenuState::Normal:
-		default:                          return Preset.Normal;
-		}
 	}
 
 	/**
@@ -1304,7 +1369,8 @@ int32 SContextMenuSlateButton::OnPaint(const FPaintArgs& Args, const FGeometry& 
 		}
 	}
 
-	// A vector Background Shape replaces the style's brushes outright.
+	// A vector Shape Style replaces the style's brushes - outright while it is filled. Unfilled (in this state), the brush still
+	// shows inside its outline: the button's own look, tint, image or material a Design Target gives it included.
 	const bool bVectorBackground = BackgroundPainter.IsValid() && BackgroundShape.IsValid();
 
 	// Nothing to take over: paint exactly like a stock SButton, and commit so a shape that has just gone back to
@@ -1357,9 +1423,19 @@ int32 SContextMenuSlateButton::OnPaint(const FPaintArgs& Args, const FGeometry& 
 		BrushLayer->MarkContentChanged();
 	}
 
+	// An unfilled Shape Style: the brush under it, where the shape's own fill would be (same geometry, Transform included). Not in
+	// the layer, so it isn't hit tested there - the button's own rect, which is the layout box without a Shape Box shape, is.
+	int32 ShapeLayerId = LayerId;
+	if (bVectorBackground && !BackgroundShape->bFill && Brush && Brush->DrawAs != ESlateBrushDrawType::NoDrawType)
+	{
+		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, BrushGeometry.ToPaintGeometry(), Brush, DrawEffects,
+			Brush->GetTint(InWidgetStyle) * Owner->GetBackgroundColor() * InWidgetStyle.GetColorAndOpacityTint());
+		ShapeLayerId = LayerId + 1;
+	}
+
 	// Painted with this button as its parent: that is what makes a hit anywhere on the drawn shape bubble to the
 	// button, even though the layer isn't one of its layout children.
-	const int32 BrushLayerId = BrushLayer->Paint(Args.WithNewParent(this), BrushGeometry, MyCullingRect, OutDrawElements, LayerId, LayerStyle, bEnabled);
+	const int32 BrushLayerId = BrushLayer->Paint(Args.WithNewParent(this), BrushGeometry, MyCullingRect, OutDrawElements, ShapeLayerId, LayerStyle, bEnabled);
 	bBrushLayerPainted = true;
 
 	// Skip SButton/SBorder's own brush draw and paint only the content, with the layout geometry, above the brush.
@@ -1810,6 +1886,11 @@ void UContextMenuButton::PostLoad()
 	// loads. Detected the same way as the channel-switch migration above: by differing from what a freshly
 	// constructed state looks like. A state already sitting at those defaults doesn't care either way, since
 	// Base Design starts at the same defaults, so there's nothing for it to lose.
+	//
+	// Only for a target in the old layout: Base Design untouched and no override switched on. It used to run on every load of
+	// every target, and a state the button itself had written into without its override on (the material parameter sync filled
+	// every state's list, a state ticked and unticked kept its copy) came back overridden with stale values - the state no
+	// longer showing Base Design, which then only "worked" once Override Normal was ticked by hand.
 	for (FContextMenuDesignTarget& Target : DesignTargets)
 	{
 		static const FContextMenuWidgetDesign FreshDesign;
@@ -1830,6 +1911,13 @@ void UContextMenuButton::PostLoad()
 				|| Design.MaterialScalars.Num() != 0
 				|| Design.MaterialVectors.Num() != 0;
 		};
+
+		const bool bNewLayout = DiffersFromFreshDesign(Target.BaseDesign) || Target.bOverrideNormalDesign || Target.bOverrideHoveredDesign
+			|| Target.bOverridePressedDesign || Target.bOverrideDisabledDesign || Target.bOverrideEnabledDesign;
+		if (bNewLayout)
+		{
+			continue;
+		}
 
 		if (!Target.bOverrideNormalDesign && DiffersFromFreshDesign(Target.Normal))
 		{
@@ -1859,13 +1947,162 @@ void UContextMenuButton::PostLoad()
 	InstanceOverrides.DesignOverride.Reset();
 	InstanceOverrides.bHasBeenSeeded = false;
 
+	// Presets: those named in Project Settings copied in (once), those kept as assets taken again (edits made to them since).
+	MigrateProjectSettingsPresets();
+	RefreshLinkedPresets();
+
+	// The Shape Style is authored on a Self Shape Target: one there to show it, every Self target mirroring it.
+	EnsureSelfShapeTargetForStyle();
+	MirrorShapeStyleToSelfTargets();
+
 	// State Looks made before an image was put on the Background Look painted it over with their old flat colour: they take it.
 	RepairLookImages();
 #if WITH_EDITORONLY_DATA
 	BackgroundLookSnapshot = BackgroundLook;
 #endif
 
+	// The state preview is the designer toolbar's now: no preview (None, from an older version) showed the widgets without their
+	// designs, so a Base Design looked as if it did nothing. The animation preview's mode is no longer shown, so it can't be
+	// left running either.
+	if (ShowPreview == EContextMenuDesignPreview::None)
+	{
+		ShowPreview = EContextMenuDesignPreview::Normal;
+	}
+	DesignerAnimPreview.Mode = EWidgetAnimPreviewMode::Off;
+
 	SyncEditConditionMirrors();
+}
+
+void UContextMenuButton::MigrateProjectSettingsPresets()
+{
+	const UInfoCardDeveloperSettings* Settings = UInfoCardDeveloperSettings::Get();
+
+	for (FContextMenuShapeTarget& Target : ShapeTargets)
+	{
+		if (Target.ShapeSource != EContextMenuButtonSettingSource::UseProjectSettings)
+		{
+			continue;
+		}
+		Target.ShapeSource = EContextMenuButtonSettingSource::Custom;
+
+		// A preset that no longer exists already fell back to the target's own shapes.
+		const FContextMenuShapePreset* Preset = Settings ? Settings->FindContextMenuShapePreset(Target.PresetName) : nullptr;
+		if (!Preset)
+		{
+			continue;
+		}
+
+		// A Shape Preset carried Transforms and Shape Box shapes, never a vector shape's Style Settings: those stay the target's.
+		auto TakeState = [](FContextMenuShapeStateSettings& Own, const FContextMenuShapeStateSettings& FromPreset)
+		{
+			FContextMenuShapeStateSettings Merged = FromPreset;
+			Merged.Look = Own.Look;
+			Merged.bHasLook = Own.bHasLook;
+			Merged.bIsVectorShape = Own.bIsVectorShape;
+			Merged.bIsApplicable = Own.bIsApplicable;
+			Own = MoveTemp(Merged);
+		};
+		TakeState(Target.BaseShape, Preset->BaseShape);
+		TakeState(Target.NormalShape, Preset->NormalShape);
+		TakeState(Target.HoveredShape, Preset->HoveredShape);
+		TakeState(Target.PressedShape, Preset->PressedShape);
+		TakeState(Target.DisabledShape, Preset->DisabledShape);
+		TakeState(Target.EnabledShape, Preset->EnabledShape);
+		Target.bOverrideNormalShape = Preset->bOverrideNormalShape;
+		Target.bOverrideHoveredShape = Preset->bOverrideHoveredShape;
+		Target.bOverridePressedShape = Preset->bOverridePressedShape;
+		Target.bOverrideDisabledShape = Preset->bOverrideDisabledShape;
+		Target.bOverrideEnabledShape = Preset->bOverrideEnabledShape;
+		Target.TransformInterpolationSpeed = Preset->TransformInterpolationSpeed;
+		Target.TransformInterpolationCurve = Preset->TransformInterpolationCurve;
+		Target.TransformOvershoot = Preset->TransformOvershoot;
+		Target.TransformDelay = Preset->TransformDelay;
+		Target.bSeparateTransformAndSize = Preset->bSeparateTransformAndSize;
+		Target.SizeInterpolationSpeed = Preset->SizeInterpolationSpeed;
+		Target.SizeInterpolationCurve = Preset->SizeInterpolationCurve;
+		Target.SizeOvershoot = Preset->SizeOvershoot;
+		Target.SizeDelay = Preset->SizeDelay;
+
+		// A preset kept its own speeds both ways.
+		Target.bSeparateExitSpeed = false;
+	}
+
+	for (FContextMenuDesignTarget& Target : DesignTargets)
+	{
+		if (Target.DesignSource != EContextMenuButtonSettingSource::UseProjectSettings)
+		{
+			continue;
+		}
+		Target.DesignSource = EContextMenuButtonSettingSource::Custom;
+
+		const FContextMenuDesignPreset* Preset = Settings ? Settings->FindContextMenuDesignPreset(Target.PresetName) : nullptr;
+		if (!Preset)
+		{
+			continue;
+		}
+
+		// A Design Preset authored every state on its own: each becomes an override, with Normal's as the base besides.
+		Target.BaseDesign = Preset->Normal;
+		Target.Normal = Preset->Normal;
+		Target.Hovered = Preset->Hovered;
+		Target.Pressed = Preset->Pressed;
+		Target.Disabled = Preset->Disabled;
+		Target.Enabled = Preset->Enabled;
+		Target.bOverrideNormalDesign = true;
+		Target.bOverrideHoveredDesign = true;
+		Target.bOverridePressedDesign = true;
+		Target.bOverrideDisabledDesign = true;
+		Target.bOverrideEnabledDesign = true;
+		Target.InterpolationSpeed = Preset->InterpolationSpeed;
+		Target.bSeparateExitSpeed = false;
+	}
+}
+
+namespace ContextMenuButtonPresets
+{
+	/** A preset asset that has been read from disk (one still waiting to be would hand over its defaults). */
+	bool IsReadable(const UObject* Asset)
+	{
+		return Asset && !Asset->HasAnyFlags(RF_NeedLoad);
+	}
+}
+
+void UContextMenuButton::RefreshLinkedPresets()
+{
+	using namespace ContextMenuButtonPresets;
+
+	// The whole button first: it holds the targets, which may follow presets of their own.
+	if (IsReadable(ButtonPreset))
+	{
+		ApplyButtonPresetSettings(*ButtonPreset);
+	}
+	for (FContextMenuShapeTarget& Target : ShapeTargets)
+	{
+		if (IsReadable(Target.PresetAsset))
+		{
+			Target.bIsSelfTarget = IsSelfShapeTarget(Target);
+			Target.PresetAsset->ApplyTo(Target);
+		}
+	}
+	for (FContextMenuDesignTarget& Target : DesignTargets)
+	{
+		if (IsReadable(Target.PresetAsset))
+		{
+			Target.PresetAsset->ApplyTo(Target);
+		}
+	}
+
+	// A Self target's preset may carry a Shape Style: the first one that does is the button's.
+	for (int32 Index = 0; Index < ShapeTargets.Num(); ++Index)
+	{
+		const FContextMenuShapeTarget& Target = ShapeTargets[Index];
+		if (IsSelfShapeTarget(Target) && IsReadable(Target.PresetAsset) && Target.PresetAsset->bIncludesShapeStyle)
+		{
+			AdoptShapeStyleFromTarget(Index, /*bStyleEdited=*/true);
+			AdoptShapeStyleFromTarget(Index, /*bStyleEdited=*/false);
+			break;
+		}
+	}
 }
 
 void UContextMenuButton::RepairLookImages()
@@ -1990,32 +2227,95 @@ void UContextMenuButton::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 
 	Super::PostEditChangeProperty(PropertyChangedEvent);
 
-	// A Shape Target aimed at a vector shape (or at Self, once the button has a Background Shape) authors that shape's Look
-	// itself - a Shape Preset has none to give - so it is switched to Custom, where the Looks are.
-	auto UseCustomForLooks = [this](FContextMenuShapeTarget& Target)
+	const FName MemberName = PropertyChangedEvent.GetMemberPropertyName();
+	const bool bArrayEdit = (PropertyChangedEvent.ChangeType & (EPropertyChangeType::ArrayAdd | EPropertyChangeType::ArrayRemove
+		| EPropertyChangeType::ArrayClear | EPropertyChangeType::ArrayMove | EPropertyChangeType::Duplicate)) != 0;
+
+	// Targets made here are their own: the old Project Settings source is only read, once, for targets saved with it (PostLoad).
+	for (FContextMenuShapeTarget& Target : ShapeTargets)
 	{
-		if (Target.ShapeSource == EContextMenuButtonSettingSource::UseProjectSettings && GetLookClass(Target))
-		{
-			Target.ShapeSource = EContextMenuButtonSettingSource::Custom;
-		}
-	};
-	if (PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, TargetWidgetName)
-		&& PropertyChangedEvent.GetMemberPropertyName() == GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShapeTargets))
+		Target.ShapeSource = EContextMenuButtonSettingSource::Custom;
+	}
+	for (FContextMenuDesignTarget& Target : DesignTargets)
+	{
+		Target.DesignSource = EContextMenuButtonSettingSource::Custom;
+	}
+
+	// What a target is, not what it looks like: editing these keeps it following its preset.
+	const bool bIdentityEdit = PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, TargetWidgetName)
+		|| PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, TargetId)
+		|| PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, bActive);
+
+	// A Shape Target: a preset picked fills it; its Shape Style picked, or its Base Shape's Style Settings edited, on a Self target
+	// is the button's Shape Style; anything else edited makes its look its own (it stops following its preset).
+	if (MemberName == GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShapeTargets) && !bArrayEdit)
 	{
 		const int32 TargetIndex = PropertyChangedEvent.GetArrayIndex(GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShapeTargets).ToString());
 		if (ShapeTargets.IsValidIndex(TargetIndex))
 		{
-			UseCustomForLooks(ShapeTargets[TargetIndex]);
+			FContextMenuShapeTarget& Target = ShapeTargets[TargetIndex];
+			if (PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, PresetAsset))
+			{
+				if (UContextMenuShapePresetAsset* Preset = Target.PresetAsset)
+				{
+					Target.bIsSelfTarget = IsSelfShapeTarget(Target);
+					Preset->ApplyTo(Target);
+					if (IsSelfShapeTarget(Target) && Preset->bIncludesShapeStyle)
+					{
+						AdoptShapeStyleFromTarget(TargetIndex, /*bStyleEdited=*/true);
+						AdoptShapeStyleFromTarget(TargetIndex, /*bStyleEdited=*/false);
+					}
+				}
+			}
+			else if (PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, ShapeStyle))
+			{
+				Target.PresetAsset = nullptr;
+				AdoptShapeStyleFromTarget(TargetIndex, /*bStyleEdited=*/true);
+			}
+			else if (!bIdentityEdit)
+			{
+				Target.PresetAsset = nullptr;
+				AdoptShapeStyleFromTarget(TargetIndex, /*bStyleEdited=*/false, /*bFromDetails=*/true);
+			}
 		}
 	}
-	if (PropertyName == GET_MEMBER_NAME_CHECKED(UContextMenuButton, BackgroundShape))
+
+	// A Design Target, the same way (no style).
+	if (MemberName == GET_MEMBER_NAME_CHECKED(UContextMenuButton, DesignTargets) && !bArrayEdit)
 	{
-		for (FContextMenuShapeTarget& Target : ShapeTargets)
+		const int32 TargetIndex = PropertyChangedEvent.GetArrayIndex(GET_MEMBER_NAME_CHECKED(UContextMenuButton, DesignTargets).ToString());
+		if (DesignTargets.IsValidIndex(TargetIndex))
 		{
-			if (IsSelfTargetName(Target.TargetWidgetName))
+			FContextMenuDesignTarget& Target = DesignTargets[TargetIndex];
+			if (PropertyName == GET_MEMBER_NAME_CHECKED(FContextMenuDesignTarget, PresetAsset))
 			{
-				UseCustomForLooks(Target);
+				if (const UContextMenuDesignPresetAsset* Preset = Target.PresetAsset)
+				{
+					Preset->ApplyTo(Target);
+				}
 			}
+			else if (!bIdentityEdit)
+			{
+				Target.PresetAsset = nullptr;
+			}
+		}
+	}
+
+	// The whole button: a preset picked sets it; editing anything a Button Preset holds makes the button its own again.
+	if (MemberName == GET_MEMBER_NAME_CHECKED(UContextMenuButton, ButtonPreset))
+	{
+		if (const UContextMenuButtonPresetAsset* Preset = ButtonPreset)
+		{
+			ApplyButtonPresetSettings(*Preset);
+		}
+	}
+	else if (ButtonPreset && PropertyChangedEvent.MemberProperty)
+	{
+		TArray<const FProperty*> PresetProperties;
+		GetButtonPresetProperties(GetClass(), PresetProperties);
+		if (PresetProperties.Contains(PropertyChangedEvent.MemberProperty))
+		{
+			ButtonPreset = nullptr;
 		}
 	}
 
@@ -2049,10 +2349,6 @@ void UContextMenuButton::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 	// re-runs it too, which is how the Design Target list on the patch keeps up with targets being added,
 	// removed or renamed.
 	SeedInstanceOverrides(InstanceOverrides);
-
-	// Which Shape Targets actually take their Shape, for the Shape Status box. Same reason as above: the Details
-	// panel reads this object.
-	RebuildShapeTargetStatus();
 
 	// The Details panel is reading THIS object, not the preview, so the status string has to be rebuilt
 	// here as well or it only ever reflects whatever the preview last worked out.
@@ -2254,6 +2550,25 @@ void UContextMenuButton::StopDesignerPreviewState()
 	CacheResolvedOverridesSnapshot();
 }
 
+void UContextMenuButton::PlayDesignerAnimPreview(bool bOut)
+{
+	if (!IsDesignTime() || !HasButtonAnimations())
+	{
+		return;
+	}
+
+	// Once, from the start, as the preview harness plays a mode it hasn't run yet; the harness restarts on a changed mode, so a
+	// replay of the same one goes through Off. The template's mode stays Off, so the designer's next copy is still.
+	const EWidgetAnimPreviewMode Mode = bOut ? EWidgetAnimPreviewMode::PlayOut : EWidgetAnimPreviewMode::PlayIn;
+	if (DesignerAnimPreview.Mode == Mode)
+	{
+		DesignerAnimPreview.Mode = EWidgetAnimPreviewMode::Off;
+		UWidgetAnimDesignerPreview::Synchronize(this);
+	}
+	DesignerAnimPreview.Mode = Mode;
+	UWidgetAnimDesignerPreview::Synchronize(this);
+}
+
 EActiveTimerReturnType UContextMenuButton::TickDesignerPreviewState(double InCurrentTime, float InDeltaTime, int32 Serial)
 {
 	if (Serial != DesignerStateSerial || !bIsDesignerStateTimerActive)
@@ -2333,7 +2648,6 @@ void UContextMenuButton::BuildDefaultContentForEditor(TArray<UWidget*>& OutParts
 	BuildDefaultContent();
 	RefreshShapeTargetLooks();
 	SyncEditConditionMirrors();
-	RebuildShapeTargetStatus();
 
 	TArray<ContextMenuButtonTree::FTargetableWidget> Built;
 	ContextMenuButtonTree::Gather(this, FString(), /*bDescendIntoUserWidgets=*/false, Built);
@@ -2353,25 +2667,41 @@ void UContextMenuButton::SyncMaterialParametersEditor()
 		UWidget* TargetWidget = FindWidgetInButtonTree(Target.TargetWidgetName);
 		UMaterialInterface* DefaultMaterial = ExtractWidgetMaterial(TargetWidget);
 
-		FContextMenuWidgetDesign* const States[] = { &Target.BaseDesign, &Target.Normal, &Target.Hovered, &Target.Pressed, &Target.Disabled, &Target.Enabled };
-		for (FContextMenuWidgetDesign* Design : States)
+		// Base Design and the states the target overrides - nothing is written into a state left on Base Design. Filling those
+		// too (with Base's material and a parameter list) made them look authored, and loading then switched their overrides on
+		// with stale values, so the state stopped showing Base Design. A state whose override is switched on later starts as a
+		// copy of Base Design, list and all.
+		struct FSyncedDesign
 		{
-			UMaterialInterface* MatToSync = Design->Material.Get();
-			
-			// Inherit from Base Design if this state didn't override the material
-			if (!MatToSync && Design != &Target.BaseDesign)
+			FContextMenuWidgetDesign* Design;
+			bool bOverridden;
+		};
+		const FSyncedDesign States[] = {
+			{ &Target.BaseDesign, true },
+			{ &Target.Normal, Target.bOverrideNormalDesign },
+			{ &Target.Hovered, Target.bOverrideHoveredDesign },
+			{ &Target.Pressed, Target.bOverridePressedDesign },
+			{ &Target.Disabled, Target.bOverrideDisabledDesign },
+			{ &Target.Enabled, Target.bOverrideEnabledDesign } };
+		for (const FSyncedDesign& Entry : States)
+		{
+			if (!Entry.bOverridden)
+			{
+				continue;
+			}
+
+			// A state that drives no material of its own lists the parameters of the material it shows: Base Design's, else the widget's.
+			UMaterialInterface* MatToSync = Entry.Design->Material.Get();
+			if (!MatToSync && Entry.Design != &Target.BaseDesign)
 			{
 				MatToSync = Target.BaseDesign.Material.Get();
-				Design->Material = MatToSync; // Auto-populate in UI
 			}
-			
-			// Fallback to the target widget's default material
 			if (!MatToSync)
 			{
 				MatToSync = DefaultMaterial;
 			}
 
-			SyncMaterialParameters(*Design, MatToSync);
+			SyncMaterialParameters(*Entry.Design, MatToSync);
 		}
 	}
 }
@@ -2971,7 +3301,6 @@ void UContextMenuButton::SynchronizeProperties()
 		ResolveInstanceOverrides();
 		ApplyDesignPreviews();
 		CacheResolvedOverridesSnapshot();
-		RebuildShapeTargetStatus();
 
 		// Belt and braces for the case this whole comment is about: the designer does not reliably
 		// re-synchronize a button that lives inside a nested widget when only that nested widget's
@@ -3624,7 +3953,8 @@ void UContextMenuButton::ExecuteButtonAction()
 		bIsOnCooldown = true;
 		if (bInvalidatesButton)
 		{
-			SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+			// Disabled until it ends (ResolveButtonState). Clicks are ignored either way.
+			UpdateButtonState();
 		}
 
 		StopPressDuration();
@@ -3975,10 +4305,17 @@ void UContextMenuButton::OnCooldownFinished()
 {
 	bIsOnCooldown = false;
 
+	// Back to whatever state it is in now (hovered, enabled...).
 	if (bInvalidatesButton)
 	{
-		SetVisibility(ESlateVisibility::Visible);
+		UpdateButtonState();
 	}
+}
+
+float UContextMenuButton::GetCooldownRemaining() const
+{
+	const UWorld* World = bIsOnCooldown ? GetWorld() : nullptr;
+	return World ? FMath::Max(0.f, World->GetTimerManager().GetTimerRemaining(CooldownTimerHandle)) : 0.f;
 }
 
 float UContextMenuButton::GetElapsedPressTime() const
@@ -4072,6 +4409,12 @@ EContextMenuState UContextMenuButton::ResolveButtonState(bool bForDesign) const
 	// Priority: Disabled > Pressed (buttons that can be enabled only) > Hovered > Enabled > Normal.
 	// Pressed/Hovered use the same checks as the Slate brush, so content and background agree.
 	if (!IsWidgetEnabledForVisuals())
+	{
+		return EContextMenuState::Disabled;
+	}
+
+	// Cooldown Sets Disabled State: Disabled until the cooldown ends, without touching Is Enabled or the enabled state.
+	if (bIsOnCooldown && bInvalidatesButton)
 	{
 		return EContextMenuState::Disabled;
 	}
@@ -4391,6 +4734,312 @@ bool UContextMenuButton::SetShapeTargetTransform(FName InTargetId, EContextMenuS
 	return ChangedShapes.Num() > 0;
 }
 
+bool UContextMenuButton::ApplyShapePresetById(FName InTargetId, UContextMenuShapePresetAsset* InPreset, bool bInstant)
+{
+	TArray<int32> ChangedShapes;
+	for (int32 Index = 0; Index < ShapeTargets.Num() && InPreset && !InTargetId.IsNone(); ++Index)
+	{
+		if (ShapeTargets[Index].TargetId == InTargetId)
+		{
+			ShapeTargets[Index].bIsSelfTarget = IsSelfShapeTarget(ShapeTargets[Index]);
+			InPreset->ApplyTo(ShapeTargets[Index]);
+			ChangedShapes.Add(Index);
+		}
+	}
+	if (ChangedShapes.Num() == 0)
+	{
+		return false;
+	}
+
+	// A Self target's preset can bring a Shape Style: then the style (and every Self target's settings for it) is the preset's.
+	const UClass* StyleBefore = BackgroundShape.Get();
+	const int32 SelfIndex = ChangedShapes.IndexOfByPredicate([this](int32 Index) { return IsSelfShapeTarget(ShapeTargets[Index]); });
+	if (SelfIndex != INDEX_NONE && InPreset->bIncludesShapeStyle)
+	{
+		AdoptShapeStyleFromTarget(ChangedShapes[SelfIndex], /*bStyleEdited=*/true);
+		AdoptShapeStyleFromTarget(ChangedShapes[SelfIndex], /*bStyleEdited=*/false);
+	}
+	RefreshShapeTargetLooks();
+
+	// Another kind of Shape Style is another widget: every target is resolved again, shown at once. Otherwise only the changed
+	// targets blend to their new look.
+	if (BackgroundShape.Get() != StyleBefore)
+	{
+		RefreshButtonState(/*bInstant=*/true);
+		return true;
+	}
+	ApplyChangedTargets(ChangedShapes, {}, {}, {}, bInstant);
+	return true;
+}
+
+bool UContextMenuButton::ApplyDesignPresetById(FName InTargetId, UContextMenuDesignPresetAsset* InPreset, bool bInstant)
+{
+	TArray<int32> ChangedDesigns;
+	for (int32 Index = 0; Index < DesignTargets.Num() && InPreset && !InTargetId.IsNone(); ++Index)
+	{
+		if (DesignTargets[Index].TargetId == InTargetId)
+		{
+			InPreset->ApplyTo(DesignTargets[Index]);
+			ChangedDesigns.Add(Index);
+		}
+	}
+	ApplyChangedTargets({}, ChangedDesigns, {}, {}, bInstant);
+	return ChangedDesigns.Num() > 0;
+}
+
+// ------------------------------------------------------------------
+// Presets: the whole button
+// ------------------------------------------------------------------
+
+void UContextMenuButton::GetButtonPresetProperties(const UClass* ButtonClass, TArray<const FProperty*>& OutProperties)
+{
+	OutProperties.Reset();
+	if (!ButtonClass)
+	{
+		return;
+	}
+
+	// What the button is (its tag and label, the preset itself), editor-only plumbing, and what is only read: not part of a look.
+	static const FName Excluded[] = {
+		GET_MEMBER_NAME_CHECKED(UContextMenuButton, ButtonPreset),
+		GET_MEMBER_NAME_CHECKED(UContextMenuButton, bInstanceOverridable),
+		GET_MEMBER_NAME_CHECKED(UContextMenuButton, ButtonTag),
+		GET_MEMBER_NAME_CHECKED(UContextMenuButton, ButtonTextWidgetName),
+		GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShowPreview),
+		GET_MEMBER_NAME_CHECKED(UContextMenuButton, DesignerAnimPreview),
+		GET_MEMBER_NAME_CHECKED(UContextMenuButton, bREADME) };
+
+	// Not in the Details themselves (they are authored on a Self Shape Target), but the button's look all the same.
+	static const FName Included[] = {
+		GET_MEMBER_NAME_CHECKED(UContextMenuButton, BackgroundShape),
+		GET_MEMBER_NAME_CHECKED(UContextMenuButton, BackgroundLook) };
+
+	for (TFieldIterator<FProperty> It(ButtonClass); It; ++It)
+	{
+		const FProperty* Property = *It;
+		const UClass* Owner = Property->GetOwnerClass();
+		if (!Owner || !Owner->IsChildOf(UButton::StaticClass()))
+		{
+			continue;
+		}
+		const FName Name = Property->GetFName();
+		if (MakeArrayView(Excluded).Contains(Name))
+		{
+			continue;
+		}
+		const bool bForced = MakeArrayView(Included).Contains(Name);
+		if (!bForced && (!Property->HasAnyPropertyFlags(CPF_Edit) || Property->HasAnyPropertyFlags(CPF_EditConst | CPF_Transient | CPF_Deprecated)))
+		{
+			continue;
+		}
+		OutProperties.Add(Property);
+	}
+}
+
+void UContextMenuButton::CopyToButtonPreset(UContextMenuButtonPresetAsset* InPreset) const
+{
+	if (!InPreset)
+	{
+		return;
+	}
+	TArray<const FProperty*> Properties;
+	GetButtonPresetProperties(GetClass(), Properties);
+
+	InPreset->Modify();
+	InPreset->ButtonClass = GetClass();
+	InPreset->Settings.Reset();
+
+	// One value per setting, laid out from the button's own properties (their limits, conditions and tooltips with them, so the
+	// asset's Details read like the button's; dropdowns that only the button can fill are left out).
+	TArray<FPropertyBagPropertyDesc> Descs;
+	Descs.Reserve(Properties.Num());
+	for (const FProperty* Property : Properties)
+	{
+		FPropertyBagPropertyDesc& Desc = Descs.Emplace_GetRef(Property->GetFName(), Property);
+#if WITH_EDITORONLY_DATA
+		Desc.MetaData.Reset();
+		if (const TMap<FName, FString>* MetaData = Property->GetMetaDataMap())
+		{
+			for (const TPair<FName, FString>& Pair : *MetaData)
+			{
+				if (Pair.Key != TEXT("GetOptions"))
+				{
+					Desc.MetaData.Add(FPropertyBagPropertyDescMetaData(Pair.Key, Pair.Value));
+				}
+			}
+		}
+#endif
+	}
+	InPreset->Settings.InitializeFromBagStruct(UPropertyBag::GetOrCreateFromDescs(Descs));
+
+	const FStructView Values = InPreset->Settings.GetMutableValue();
+	if (Values.GetMemory())
+	{
+		for (const FProperty* Property : Properties)
+		{
+			const FPropertyBagPropertyDesc* Desc = InPreset->Settings.FindPropertyDescByName(Property->GetFName());
+			if (Desc && Desc->CachedProperty && Desc->CachedProperty->SameType(Property))
+			{
+				Desc->CachedProperty->CopyCompleteValue(Desc->CachedProperty->ContainerPtrToValuePtr<void>(Values.GetMemory()), Property->ContainerPtrToValuePtr<void>(this));
+			}
+		}
+	}
+	InPreset->MarkPackageDirty();
+}
+
+void UContextMenuButton::ApplyButtonPresetSettings(const UContextMenuButtonPresetAsset& InPreset)
+{
+	TArray<const FProperty*> Properties;
+	GetButtonPresetProperties(GetClass(), Properties);
+	for (const FProperty* Property : Properties)
+	{
+		// A setting this kind of button has and the preset holds, as the same type: taken whole.
+		if (const void* Value = WidgetShapeAnimation::FindValue(InPreset.Settings, Property))
+		{
+			Property->CopyCompleteValue(Property->ContainerPtrToValuePtr<void>(this), Value);
+		}
+	}
+	ButtonPreset = const_cast<UContextMenuButtonPresetAsset*>(&InPreset);
+
+	// Targets the preset brought may still name Project Settings presets (a preset saved by an older version), and the style's
+	// settings are the button's own now.
+	MigrateProjectSettingsPresets();
+	bHasBackgroundShape = BackgroundShape != nullptr;
+	MirrorShapeStyleToSelfTargets();
+}
+
+void UContextMenuButton::ApplyButtonPreset(UContextMenuButtonPresetAsset* InPreset)
+{
+	if (!InPreset)
+	{
+		return;
+	}
+	ApplyButtonPresetSettings(*InPreset);
+	RefreshShapeTargetLooks();
+	SyncEditConditionMirrors();
+	FUISoundPlayer::ResizeRuntimes(this, RuntimeSounds, Sounds.Num());
+
+	// The Slate button takes the new style and colors; the targets are resolved again and shown at once.
+	if (MyContextMenuSlateButton.IsValid())
+	{
+		SynchronizeProperties();
+	}
+	RefreshButtonState(/*bInstant=*/true);
+#if WITH_EDITOR
+	if (IsDesignTime())
+	{
+		ApplyDesignPreviews();
+	}
+#endif
+}
+
+#if WITH_EDITOR
+namespace ContextMenuButtonPresets
+{
+	/** Runs Change on Button and, when Button is a designer preview copy, on the Widget Blueprint's own button too (marked for undo). */
+	void ForButtonAndTemplate(UContextMenuButton* Button, TFunctionRef<void(UContextMenuButton&)> Change)
+	{
+		if (!Button)
+		{
+			return;
+		}
+		if (UContextMenuButton* Template = Cast<UContextMenuButton>(WidgetEditorHooks::FindDesignerTemplate(Button)))
+		{
+			Template->Modify();
+			Change(*Template);
+		}
+		Button->Modify();
+		Change(*Button);
+	}
+
+	FString MakeAssetName(const TCHAR* Prefix, const UContextMenuButton& Button, const FString& Detail = FString())
+	{
+		FString Name = FString::Printf(TEXT("%s_%s"), Prefix, *Button.GetName());
+		if (!Detail.IsEmpty())
+		{
+			Name += TEXT("_") + Detail;
+		}
+		return Name;
+	}
+}
+
+bool UContextMenuButton::SaveAsButtonPreset()
+{
+	using namespace ContextMenuButtonPresets;
+	UContextMenuButtonPresetAsset* Created = Cast<UContextMenuButtonPresetAsset>(
+		WidgetEditorHooks::CreateAsset(UContextMenuButtonPresetAsset::StaticClass(), MakeAssetName(TEXT("CMBP"), *this)));
+	if (!Created)
+	{
+		return false;
+	}
+	CopyToButtonPreset(Created);
+	ForButtonAndTemplate(this, [Created](UContextMenuButton& Button) { Button.ButtonPreset = Created; });
+	return true;
+}
+
+bool UContextMenuButton::UpdateButtonPreset()
+{
+	if (!ButtonPreset)
+	{
+		return false;
+	}
+	CopyToButtonPreset(ButtonPreset);
+	return true;
+}
+
+bool UContextMenuButton::SaveShapeTargetAsPreset(int32 TargetIndex)
+{
+	using namespace ContextMenuButtonPresets;
+	if (!ShapeTargets.IsValidIndex(TargetIndex))
+	{
+		return false;
+	}
+	const FContextMenuShapeTarget& Target = ShapeTargets[TargetIndex];
+	const FString Detail = IsSelfShapeTarget(Target) ? FString(TEXT("Self")) : Target.TargetWidgetName.ToString();
+	UContextMenuShapePresetAsset* Created = Cast<UContextMenuShapePresetAsset>(
+		WidgetEditorHooks::CreateAsset(UContextMenuShapePresetAsset::StaticClass(), MakeAssetName(TEXT("CMSP"), *this, Detail)));
+	if (!Created)
+	{
+		return false;
+	}
+	Created->CopyFrom(Target, IsSelfShapeTarget(Target));
+	ForButtonAndTemplate(this, [Created, TargetIndex](UContextMenuButton& Button)
+	{
+		if (Button.ShapeTargets.IsValidIndex(TargetIndex))
+		{
+			Button.ShapeTargets[TargetIndex].PresetAsset = Created;
+		}
+	});
+	return true;
+}
+
+bool UContextMenuButton::SaveDesignTargetAsPreset(int32 TargetIndex)
+{
+	using namespace ContextMenuButtonPresets;
+	if (!DesignTargets.IsValidIndex(TargetIndex))
+	{
+		return false;
+	}
+	const FContextMenuDesignTarget& Target = DesignTargets[TargetIndex];
+	const FString Detail = IsSelfTargetName(Target.TargetWidgetName) ? FString(TEXT("Self")) : Target.TargetWidgetName.ToString();
+	UContextMenuDesignPresetAsset* Created = Cast<UContextMenuDesignPresetAsset>(
+		WidgetEditorHooks::CreateAsset(UContextMenuDesignPresetAsset::StaticClass(), MakeAssetName(TEXT("CMDP"), *this, Detail)));
+	if (!Created)
+	{
+		return false;
+	}
+	Created->CopyFrom(Target);
+	ForButtonAndTemplate(this, [Created, TargetIndex](UContextMenuButton& Button)
+	{
+		if (Button.DesignTargets.IsValidIndex(TargetIndex))
+		{
+			Button.DesignTargets[TargetIndex].PresetAsset = Created;
+		}
+	});
+	return true;
+}
+#endif
+
 void UContextMenuButton::ApplyChangedTargets(const TArray<int32>& ChangedShapes, const TArray<int32>& ChangedDesigns, const TArray<int32>& ActivatedShapes, const TArray<int32>& ActivatedDesigns, bool bInstant)
 {
 	if (ChangedShapes.Num() == 0 && ChangedDesigns.Num() == 0)
@@ -4610,8 +5259,7 @@ void UContextMenuButton::SeedInstanceOverrides(FContextMenuButtonInstanceOverrid
 			Entry = *Existing;
 		}
 
-		const FContextMenuShapePreset* Preset = FindActiveShapePreset(Authored);
-		const FStateMask Mask = MakeShapeMask(Authored, Preset);
+		const FStateMask Mask = MakeShapeMask(Authored);
 
 		Entry.TargetWidgetName = Authored.TargetWidgetName;
 
@@ -4635,9 +5283,8 @@ void UContextMenuButton::SeedInstanceOverrides(FContextMenuButtonInstanceOverrid
 			// Enabled Matches Hover is ignored on purpose - this is the button's own Enabled slot, which only
 			// exists here when that setting is off anyway.
 			const FContextMenuShapeStateSettings Source = (i == 0)
-				? (Preset ? Preset->BaseShape : Authored.BaseShape)
-				: (Preset ? Preset->GetShapeForState(SlotStates[i - 1], /*bEnabledMatchesHoverShape=*/false)
-				          : Authored.GetShapeForState(SlotStates[i - 1], /*bEnabledMatchesHoverShape=*/false));
+				? Authored.BaseShape
+				: Authored.GetShapeForState(SlotStates[i - 1], /*bEnabledMatchesHoverShape=*/false);
 
 			// The slot untouched: nothing switched on, everything the button's.
 			FContextMenuShapeOverride& Default = Entry.SlotDefaults[i];
@@ -4689,13 +5336,12 @@ void UContextMenuButton::SeedInstanceOverrides(FContextMenuButtonInstanceOverrid
 		Entry.bHasMigratedStateLayout = true;
 		Entry.bHasMigratedSlotToggles = true;
 
-		const FContextMenuDesignPreset* Preset = FindDesignPreset(Authored);
-		const FStateMask Mask = MakeDesignMask(Authored, Preset);
+		const FStateMask Mask = MakeDesignMask(Authored);
 
 		Entry.TargetWidgetName = Authored.TargetWidgetName;
 
 		bool* const Applicable[NumSlots] = { &Entry.bBaseDesignApplicable, &Entry.bNormalDesignApplicable, &Entry.bHoveredDesignApplicable, &Entry.bPressedDesignApplicable, &Entry.bDisabledDesignApplicable, &Entry.bEnabledDesignApplicable };
-		*Applicable[0] = !Preset && IsBaseReachable(Mask, bEnabledDesignIsOwnState);
+		*Applicable[0] = IsBaseReachable(Mask, bEnabledDesignIsOwnState);
 		*Applicable[1] = Mask.bNormal;
 		*Applicable[2] = Mask.bHovered;
 		*Applicable[3] = Mask.bPressed;
@@ -4720,7 +5366,7 @@ void UContextMenuButton::SeedInstanceOverrides(FContextMenuButtonInstanceOverrid
 				else
 				{
 					const EContextMenuState State = SlotStates[i - 1];
-					Source = Preset ? &GetPresetDesign(*Preset, State) : &Authored.GetDesignForState(State, /*bEnabledMatchesHover=*/false);
+					Source = &Authored.GetDesignForState(State, /*bEnabledMatchesHover=*/false);
 				}
 			}
 
@@ -5030,35 +5676,11 @@ EActiveTimerReturnType UContextMenuButton::TickVisuals(double InCurrentTime, flo
 	return EActiveTimerReturnType::Continue;
 }
 
-const FContextMenuShapePreset* UContextMenuButton::FindActiveShapePreset(const FContextMenuShapeTarget& Target) const
-{
-	if (Target.ShapeSource != EContextMenuButtonSettingSource::UseProjectSettings)
-	{
-		return nullptr;
-	}
-
-	const UInfoCardDeveloperSettings* Settings = UInfoCardDeveloperSettings::Get();
-	return Settings ? Settings->FindContextMenuShapePreset(Target.PresetName) : nullptr;
-}
-
 FContextMenuShapeStateSettings UContextMenuButton::ResolveShapeForState(const FContextMenuShapeTarget& Authored, EContextMenuState State) const
 {
 	using namespace ContextMenuButtonOverrideSlots;
 
-	const FContextMenuShapePreset* Preset = FindActiveShapePreset(Authored);
-
-	FContextMenuShapeStateSettings Result = Preset
-		? Preset->GetShapeForState(State, bEnabledMatchesHoverShape)
-		: Authored.GetShapeForState(State, bEnabledMatchesHoverShape);
-
-	// A Shape Preset carries Transforms and Shape Box shapes, never a vector shape's Look: that stays the target's own.
-	if (Preset)
-	{
-		const FContextMenuShapeStateSettings Own = Authored.GetShapeForState(State, bEnabledMatchesHoverShape);
-		Result.Look = Own.Look;
-		Result.bHasLook = Own.bHasLook;
-		Result.bIsVectorShape = Own.bIsVectorShape;
-	}
+	FContextMenuShapeStateSettings Result = Authored.GetShapeForState(State, bEnabledMatchesHoverShape);
 
 	// Matched by widget name, so a Shape Target the patch doesn't mention is left exactly as authored and a
 	// patch entry for a target that has since been deleted or renamed is quietly dropped. The slot is the one
@@ -5067,7 +5689,7 @@ FContextMenuShapeStateSettings UContextMenuButton::ResolveShapeForState(const FC
 	if (const FContextMenuShapeTargetOverride* Patch = ActiveShapePatch.FindByPredicate(
 		[&Authored](const FContextMenuShapeTargetOverride& Candidate) { return Candidate.TargetWidgetName == Authored.TargetWidgetName; }))
 	{
-		if (const FContextMenuShapeOverride* PatchSlot = SelectShapeSlot(*Patch, MakeShapeMask(Authored, Preset), State, bEnabledMatchesHoverShape))
+		if (const FContextMenuShapeOverride* PatchSlot = SelectShapeSlot(*Patch, MakeShapeMask(Authored), State, bEnabledMatchesHoverShape))
 		{
 			PatchSlot->ApplyTo(Result);
 		}
@@ -5080,11 +5702,7 @@ FContextMenuWidgetDesign UContextMenuButton::ResolveDesignForState(const FContex
 {
 	using namespace ContextMenuButtonOverrideSlots;
 
-	const FContextMenuDesignPreset* Preset = FindDesignPreset(Authored);
-
-	FContextMenuWidgetDesign Resolved = Preset
-		? GetPresetDesign(*Preset, CanonicalState(State, bEnabledMatchesHoverDesign))
-		: Authored.GetDesignForState(State, bEnabledMatchesHoverDesign);
+	FContextMenuWidgetDesign Resolved = Authored.GetDesignForState(State, bEnabledMatchesHoverDesign);
 
 	// Matched by widget name, so a Design Target the patch doesn't mention is left exactly as authored and a
 	// patch entry for a target that has since been deleted or renamed is quietly dropped. Slot chosen the same
@@ -5093,7 +5711,7 @@ FContextMenuWidgetDesign UContextMenuButton::ResolveDesignForState(const FContex
 	if (const FContextMenuDesignTargetOverride* Patch = ActiveDesignPatch.FindByPredicate(
 		[&Authored](const FContextMenuDesignTargetOverride& Candidate) { return Candidate.TargetWidgetName == Authored.TargetWidgetName; }))
 	{
-		if (const FContextMenuDesignStateOverride* PatchSlot = SelectDesignSlot(*Patch, MakeDesignMask(Authored, Preset), State, bEnabledMatchesHoverDesign))
+		if (const FContextMenuDesignStateOverride* PatchSlot = SelectDesignSlot(*Patch, MakeDesignMask(Authored), State, bEnabledMatchesHoverDesign))
 		{
 			PatchSlot->ApplyTo(Resolved);
 		}
@@ -5143,7 +5761,6 @@ bool UContextMenuButton::ApplyShapeTarget(FContextMenuRuntimeShapeTarget& Target
 	// Read live, so editing a shape (or a preset) during PIE is picked up on the next transition. Resolved once per
 	// state change (or snap), not on every frame of the blend: it copies the state's whole settings, Look included.
 	const FContextMenuShapeTarget& Authored = ShapeTargets[Target.AuthoredIndex];
-	const FContextMenuShapePreset* Preset = FindActiveShapePreset(Authored);
 	const bool bStateChanged = !Target.bHasInitializedState || Target.LastShapeState != State;
 	if (bStateChanged || bInstant || !Target.bHasResolvedGoal)
 	{
@@ -5151,10 +5768,10 @@ bool UContextMenuButton::ApplyShapeTarget(FContextMenuRuntimeShapeTarget& Target
 		Target.bHasResolvedGoal = true;
 	}
 	const FContextMenuShapeStateSettings& TargetShape = Target.ResolvedGoal;
-	FContextMenuResolvedInterpolation Interp = Preset ? Preset->GetResolvedInterpolation() : Authored.GetResolvedInterpolation();
+	FContextMenuResolvedInterpolation Interp = Authored.GetResolvedInterpolation();
 
 	// Back to rest (Normal): the target's own exit speed, for both channels, when it has one.
-	if (!Preset && Authored.bSeparateExitSpeed && State == EContextMenuState::Normal)
+	if (Authored.bSeparateExitSpeed && State == EContextMenuState::Normal)
 	{
 		Interp.TransformSpeed = Authored.ExitInterpolationSpeed;
 		Interp.SizeSpeed = Authored.ExitInterpolationSpeed;
@@ -5296,8 +5913,7 @@ void UContextMenuButton::ApplyShapeToTargetWidget(UWidget* Widget, const FShapeB
 		return;
 	}
 
-	// Anything else has no way to take a shape without a Shape Box around it, so only the Transform applies (Shape
-	// Status says so in the Details panel).
+	// Anything else has no way to take a shape without a Shape Box around it, so only the Transform applies.
 	Widget->SetRenderTransform(Transform);
 }
 
@@ -5494,6 +6110,9 @@ void UContextMenuButton::RefreshShapeTargetLooks()
 {
 	SyncBackgroundShape();
 
+	// A Shape Style is authored on a Self target: there is always one to show it.
+	EnsureSelfShapeTargetForStyle();
+
 	for (FContextMenuShapeTarget& Target : ShapeTargets)
 	{
 		// Found once per target: what it aims at decides whether it has Looks at all.
@@ -5509,15 +6128,16 @@ void UContextMenuButton::RefreshShapeTargetLooks()
 		}
 		const UShapeWidget* Source = (Widget && Widget != this) ? Cast<UShapeWidget>(Widget) : nullptr;
 
-		// Only the states the target overrides carry a Look; the Base Shape never does (the base is the shape as authored).
-		// A Look nobody uses is emptied, so it costs nothing - not in the Details panel, not in every copy of the button.
+		// Only the states the target overrides carry a Look; the Base Shape only on a Self target, where it is the Shape Style as
+		// authored (Background Look) - any other shape's base is the shape itself, authored in its own Details. A Look nobody
+		// uses is emptied, so it costs nothing - not in the Details panel, not in every copy of the button.
 		struct FStateLook
 		{
 			FContextMenuShapeStateSettings* Settings;
 			bool bOverridden;
 		};
 		const FStateLook States[] = {
-			{ &Target.BaseShape, false },
+			{ &Target.BaseShape, Widget == this },
 			{ &Target.NormalShape, Target.bOverrideNormalShape },
 			{ &Target.HoveredShape, Target.bOverrideHoveredShape },
 			{ &Target.PressedShape, Target.bOverridePressedShape },
@@ -5556,95 +6176,141 @@ void UContextMenuButton::RefreshShapeTargetLooks()
 		}
 	}
 
+	// Every Self target shows the one Shape Style, its Base Shape the style's settings as authored.
+	MirrorShapeStyleToSelfTargets();
+
 #if WITH_EDITORONLY_DATA
 	// What the next edit of the Background Look is told apart from.
 	BackgroundLookSnapshot = BackgroundLook;
 #endif
 }
 
-void UContextMenuButton::RebuildShapeTargetStatus()
+void UContextMenuButton::MirrorShapeStyleToSelfTargets()
 {
-	if (ShapeTargets.Num() == 0)
+	UClass* Class = (BackgroundShape && !BackgroundShape->HasAnyClassFlags(CLASS_Abstract)) ? BackgroundShape.Get() : nullptr;
+	for (FContextMenuShapeTarget& Target : ShapeTargets)
 	{
-		ShapeTargetStatus = TEXT("No Shape Targets.");
+		Target.bIsSelfTarget = IsSelfShapeTarget(Target);
+		Target.ShapeStyle = Target.bIsSelfTarget ? Class : nullptr;
+		if (Target.bIsSelfTarget && Class)
+		{
+			Target.BaseShape.Look = BackgroundLook;
+			Target.BaseShape.bHasLook = true;
+			Target.BaseShape.bIsVectorShape = true;
+		}
+	}
+}
+
+void UContextMenuButton::EnsureSelfShapeTargetForStyle()
+{
+	if (!BackgroundShape || ShapeTargets.ContainsByPredicate([this](const FContextMenuShapeTarget& Target) { return IsSelfShapeTarget(Target); }))
+	{
 		return;
 	}
 
-	const EContextMenuState States[] = { EContextMenuState::Normal, EContextMenuState::Hovered, EContextMenuState::Pressed, EContextMenuState::Disabled, EContextMenuState::Enabled };
+	// Identity in every state: it changes nothing but showing the style (and its settings) in the Details.
+	FContextMenuShapeTarget& Added = ShapeTargets.AddDefaulted_GetRef();
+	Added.TargetWidgetName = SelfTargetName;
+	Added.ShapeSource = EContextMenuButtonSettingSource::Custom;
+	Added.ShapeStyle = BackgroundShape;
+	Added.bIsSelfTarget = true;
+}
 
-	TStringBuilder<1024> Builder;
-	for (int32 i = 0; i < ShapeTargets.Num(); ++i)
+void UContextMenuButton::AdoptShapeStyleFromTarget(int32 TargetIndex, bool bStyleEdited, bool bFromDetails)
+{
+	if (!ShapeTargets.IsValidIndex(TargetIndex) || !IsSelfShapeTarget(ShapeTargets[TargetIndex]))
 	{
-		const FContextMenuShapeTarget& Authored = ShapeTargets[i];
+		return;
+	}
+	const FContextMenuShapeTarget& Target = ShapeTargets[TargetIndex];
 
-		if (i > 0)
+	if (bStyleEdited)
+	{
+		if (Target.ShapeStyle.Get() != BackgroundShape.Get())
 		{
-			Builder.Append(TEXT("\n"));
+			ChangeShapeStyle(Target.ShapeStyle.Get());
 		}
-		Builder.Appendf(TEXT("%d. %s - "), i, Authored.TargetWidgetName.IsNone() ? TEXT("(none)") : *Authored.TargetWidgetName.ToString());
-
-		if (Authored.TargetWidgetName.IsNone())
-		{
-			Builder.Append(TEXT("no Target Widget picked."));
-			continue;
-		}
-
-		UWidget* Widget = FindWidgetInButtonTree(Authored.TargetWidgetName);
-		if (!Widget)
-		{
-			Builder.Append(TEXT("not found in this button's tree."));
-			continue;
-		}
-
-		if (Widget == this)
-		{
-			if (BackgroundShape)
-			{
-				Builder.Appendf(TEXT("shapes the button's Background Shape, a %s (Look and Transform)."), *BackgroundShape->GetDisplayNameText().ToString());
-			}
-			else
-			{
-				Builder.Append(TEXT("shapes the button's brush (Shape and Transform)."));
-			}
-			continue;
-		}
-
-		if (Widget->IsA<UShapeWidget>())
-		{
-			Builder.Appendf(TEXT("drives this %s (Look and Transform)."), *Widget->GetClass()->GetDisplayNameText().ToString());
-			continue;
-		}
-
-		if (const UShapeBox* ShapeBox = FindDrivenShapeBox(Widget))
-		{
-			if (ShapeBox == Widget)
-			{
-				Builder.Append(TEXT("drives this Shape Box (Shape and Transform)."));
-			}
-			else
-			{
-				Builder.Appendf(TEXT("drives the Shape Box around it, %s (Shape and Transform)."), *ShapeBox->GetName());
-			}
-			continue;
-		}
-
-		// Only worth shouting about when a state actually authors a shape that is going to be dropped.
-		bool bAuthorsShape = false;
-		for (const EContextMenuState State : States)
-		{
-			if (!ResolveShapeForState(Authored, State).Shape.IsFlat())
-			{
-				bAuthorsShape = true;
-				break;
-			}
-		}
-
-		Builder.Append(bAuthorsShape
-			? TEXT("Transform only: its Shape is IGNORED. Wrap it in a Shape Box (or target a Shape Box) to use Shape.")
-			: TEXT("Transform only. Wrap it in a Shape Box to give it a Shape."));
+		return;
 	}
 
-	ShapeTargetStatus = Builder.ToString();
+	// Its Base Shape's Style Settings, edited (or brought by a preset): the Shape Style as authored. Followed into the states that
+	// still had the old value of what changed, as an edit of the style's settings always is.
+	UClass* Class = BackgroundShape.Get();
+	if (!Class || !WidgetShapeAnimation::IsLaidOutFor(Target.BaseShape.Look, Class) || Target.BaseShape.Look.Identical(&BackgroundLook, PPF_None))
+	{
+		return;
+	}
+#if WITH_EDITORONLY_DATA
+	// From the Details: only what was edited there. A Base Shape still holding what was last mirrored into it (the style's settings
+	// having been changed elsewhere since - a tool, a script) is out of date, not edited.
+	if (bFromDetails && Target.BaseShape.Look.Identical(&BackgroundLookSnapshot, PPF_None))
+	{
+		return;
+	}
+#endif
+	BackgroundLook = Target.BaseShape.Look;
+#if WITH_EDITOR
+	PropagateBackgroundLookEdit();
+#endif
+	RepairLookImages();
+#if WITH_EDITORONLY_DATA
+	BackgroundLookSnapshot = BackgroundLook;
+#endif
+}
+
+void UContextMenuButton::ChangeShapeStyle(UClass* Class)
+{
+	if (Class && (Class->HasAnyClassFlags(CLASS_Abstract) || !Class->IsChildOf(UShapeWidget::StaticClass())))
+	{
+		Class = nullptr;
+	}
+	const bool bFromNone = !BackgroundShape || !BackgroundLook.GetPropertyBagStruct();
+
+	BackgroundShape = Class;
+	bHasBackgroundShape = Class != nullptr;
+
+	// Laid out again for the new kind, keeping what the two share (a null class empties it).
+	WidgetShapeAnimation::LayOut(BackgroundLook, Class, nullptr);
+
+	// Picked from none: an outline over the button's own look - its brush, tint, image or material - until Fill is switched on.
+	if (Class && bFromNone)
+	{
+		BackgroundLook.SetValueBool(GET_MEMBER_NAME_CHECKED(UShapeWidget, bFill), false);
+	}
+
+#if WITH_EDITORONLY_DATA
+	BackgroundLookSnapshot = BackgroundLook;
+#endif
+}
+
+void UContextMenuButton::SetShapeStyle(TSubclassOf<UShapeWidget> NewShapeStyle)
+{
+	if (NewShapeStyle.Get() == BackgroundShape.Get())
+	{
+		return;
+	}
+	ChangeShapeStyle(NewShapeStyle.Get());
+	RefreshShapeTargetLooks();
+	SyncEditConditionMirrors();
+
+	// The runtime targets hold the old style's widget and settings: taken again, then shown in the current state at once.
+	RefreshButtonState(/*bInstant=*/true);
+#if WITH_EDITOR
+	if (IsDesignTime())
+	{
+		ApplyDesignPreviews();
+	}
+#endif
+}
+
+bool UContextMenuButton::IsShapeStyleFilled() const
+{
+	if (!BackgroundShape)
+	{
+		return false;
+	}
+	const TValueOrError<bool, EPropertyBagResult> Filled = BackgroundLook.GetValueBool(GET_MEMBER_NAME_CHECKED(UShapeWidget, bFill));
+	return Filled.HasValue() ? Filled.GetValue() : true;
 }
 
 void UContextMenuButton::PushButtonShapeToSlate(const FShapeBoxShape& Shape, const FWidgetTransform& Transform)
@@ -5853,15 +6519,7 @@ bool UContextMenuButton::ApplyDesignTarget(FContextMenuRuntimeDesignTarget& Targ
 	const FContextMenuWidgetDesign Design = ResolveDesignForState(Authored, State);
 
 	float Speed = Authored.InterpolationSpeed;
-	if (Authored.DesignSource == EContextMenuButtonSettingSource::UseProjectSettings)
-	{
-		const UInfoCardDeveloperSettings* Settings = UInfoCardDeveloperSettings::Get();
-		if (const FContextMenuDesignPreset* Preset = Settings ? Settings->FindContextMenuDesignPreset(Authored.PresetName) : nullptr)
-		{
-			Speed = Preset->InterpolationSpeed;
-		}
-	}
-	else if (Authored.bSeparateExitSpeed && State == EContextMenuState::Normal)
+	if (Authored.bSeparateExitSpeed && State == EContextMenuState::Normal)
 	{
 		// Back to rest: its own exit speed.
 		Speed = Authored.ExitInterpolationSpeed;
@@ -6098,6 +6756,16 @@ UShapeWidget* UContextMenuButton::GetDesignShape(UWidget* Widget)
 {
 	if (const UContextMenuButton* Button = Cast<UContextMenuButton>(Widget))
 	{
+		// Unfilled, the Shape Style is an outline over the button's own brush: images and materials go to the brush, which shows.
+		return Button->IsShapeStyleFilled() ? Button->BackgroundShapeWidget.Get() : nullptr;
+	}
+	return Cast<UShapeWidget>(Widget);
+}
+
+UShapeWidget* UContextMenuButton::GetOutlineShape(UWidget* Widget)
+{
+	if (const UContextMenuButton* Button = Cast<UContextMenuButton>(Widget))
+	{
 		return Button->BackgroundShapeWidget;
 	}
 	return Cast<UShapeWidget>(Widget);
@@ -6156,7 +6824,7 @@ void UContextMenuButton::ApplyColorToWidget(UWidget* Widget, const FLinearColor&
 FLinearColor UContextMenuButton::ExtractWidgetOutlineTint(UWidget* Widget)
 {
 	// A vector shape's outline is its stroke.
-	if (const UShapeWidget* Shape = GetDesignShape(Widget))
+	if (const UShapeWidget* Shape = GetOutlineShape(Widget))
 	{
 		return Shape->Stroke.Paint.Color;
 	}
@@ -6183,7 +6851,7 @@ void UContextMenuButton::ApplyOutlineTintToWidget(UWidget* Widget, const FLinear
 	// The outline is baked into the brush's own OutlineSettings rather than being multiplied in at paint
 	// time the way Tint is, so coloring it means writing a modified copy of the brush back rather than
 	// setting a separate multiplier - there's no equivalent of SetColorAndOpacity for it.
-	if (UShapeWidget* Shape = GetDesignShape(Widget))
+	if (UShapeWidget* Shape = GetOutlineShape(Widget))
 	{
 		Shape->SetStrokeColor(Color);
 	}

@@ -38,6 +38,12 @@ public:
 	static void Register();
 
 	/**
+	 * The Widget Blueprint editor toolbar's section for the selected widget's controls - its animations here, a Context Menu
+	 * Button's state preview (FButtonPreviewToolbar) beside them. One section, so one divider before them.
+	 */
+	static const FName SelectedWidgetSectionName;
+
+	/**
 	 * Takes the tab and layout hooks off UMG again. Optional - call it from the module's ShutdownModule if the
 	 * module can be unloaded while the editor runs; the toolbar extension is cleaned up by UToolMenus itself.
 	 */

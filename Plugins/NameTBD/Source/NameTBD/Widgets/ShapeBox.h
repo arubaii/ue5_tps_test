@@ -47,7 +47,8 @@ struct NAMETBD_API FShapeBoxCorner
 	 * Bevel: the corner moves inward by this much along its edges. X alone leans the corner's left/right side over its
 	 *        full height (Top Right X = 20: the right side slants from 20 in at the top to the bottom corner). Y alone
 	 *        leans its top/bottom edge. Negative flares the corner outward instead.
-	 * Chamfer: the length of each leg of the cut. Both X and Y must be above zero; negative counts as zero.
+	 * Chamfer: the length of each leg of the cut. Negative counts as zero, and a leg left at zero follows the other: X 12 alone
+	 *          cuts a 45-degree corner, 12 along each edge.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Corner")
 	FVector2D Size = FVector2D::ZeroVector;

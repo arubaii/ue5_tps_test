@@ -60,9 +60,8 @@ struct NAMETBD_API FInfoCardPreset
 };
 
 /**
- * A named, project-wide set of state designs for a Context Menu Button target.
- * Any FContextMenuDesignTarget with Design Source set to Use Project Settings 
- * picks one of these by name, and reads its full set of channels live.
+ * Legacy: a named, project-wide set of state designs, from when Design Presets lived in Project Settings. Design presets are
+ * Context Menu Design Preset assets now; a Design Target that still names one of these has it copied in once, on load.
  */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FContextMenuDesignPreset
@@ -304,13 +303,11 @@ public:
 	// ------------------------------------------------------------------
 
 	/**
-	 * Named state-shape presets (Normal/Hovered/Pressed/Disabled bounds plus Transform and
-	 * Size interpolation speeds). A UContextMenuButton with Shape Setting Source set to
-	 * Use Project Settings picks one of these by name from its Shape Preset dropdown, and reads
-	 * it live. Seeded with a neutral "Default" entry (see the constructor); add, rename or remove
-	 * rows freely.
+	 * Legacy, hidden. Shape presets are Context Menu Shape Preset assets now (Save As Preset on a button). Kept, still read from
+	 * the config, only so Shape Targets saved naming one of these get it copied into their own states once, on load. Seeded with
+	 * the "Default" entry new targets used to pick (see the constructor).
 	 */
-	UPROPERTY(EditAnywhere, Config, Category = "Context Menu Button Shape Presets", meta = (TitleProperty = "PresetName"))
+	UPROPERTY(Config)
 	TArray<FContextMenuShapePreset> ContextMenuShapePresets;
 
 	// ------------------------------------------------------------------
@@ -318,11 +315,10 @@ public:
 	// ------------------------------------------------------------------
 
 	/**
-	 * Named design presets (Normal/Hover/Pressed/Disabled designs plus a per-preset Interpolation 
-	 * Speed). Any FContextMenuDesignTarget with Design Source set to Use Project Settings picks one 
-	 * of these by name, and reads it live. Seeded with a "Default" entry; add, rename or remove rows freely.
+	 * Legacy, hidden. Design presets are Context Menu Design Preset assets now (Save As Preset on a button). Kept, still read from
+	 * the config, only so Design Targets saved naming one of these get it copied into their own states once, on load.
 	 */
-	UPROPERTY(EditAnywhere, Config, Category = "Context Menu Button Design Presets", meta = (TitleProperty = "PresetName"))
+	UPROPERTY(Config)
 	TArray<FContextMenuDesignPreset> ContextMenuDesignPresets;
 	
 	/** Set to BlueprintReadOnly for queries */

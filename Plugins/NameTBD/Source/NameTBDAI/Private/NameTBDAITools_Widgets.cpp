@@ -1177,7 +1177,7 @@ namespace NameTBDAITools
 				TSharedPtr<FJsonObject> Props = MakeShared<FJsonObject>();
 				const bool bStroke = GetString(Args, TEXT("target"), TEXT("fill")) == TEXT("stroke");
 
-				// A ready-made button's background is its Background Look.
+				// A button's background is its Shape Style's settings (Background Look).
 				const bool bButton = Cast<UContextMenuButton>(Widget) != nullptr;
 				const FString Prefix = bButton ? TEXT("BackgroundLook.") : TEXT("");
 				if (bStroke)
@@ -1198,10 +1198,8 @@ namespace NameTBDAITools
 				}
 				else
 				{
-					if (!bButton)
-					{
-						Props->SetBoolField(TEXT("bFill"), true);
-					}
+					// A button's Shape Style starts unfilled (its own look shows inside): painting the fill switches it on.
+					Props->SetBoolField(Prefix + TEXT("bFill"), true);
 					Props->SetObjectField(Prefix + TEXT("Fill"), Paint);
 				}
 				Blueprint->Modify();

@@ -67,9 +67,25 @@ namespace ShapeBoxPrivate
 	/** Magnified areas (the near side of an angled box) get up to this much extra texture resolution. */
 	constexpr double MaxAutoMagnification = 2.0;
 
+	/**
+	 * A chamfer's two legs. One leg left at zero (or below) follows the other, so a single value cuts a 45-degree corner - the
+	 * way a chamfer is usually given - instead of nothing until both are typed in.
+	 */
+	FVector2D GetChamferLegs(const FShapeBoxCorner& Corner)
+	{
+		const double LegX = FMath::Max(Corner.Size.X, 0.0);
+		const double LegY = FMath::Max(Corner.Size.Y, 0.0);
+		return FVector2D(LegX > Tolerance ? LegX : LegY, LegY > Tolerance ? LegY : LegX);
+	}
+
 	bool IsChamferActive(const FShapeBoxCorner& Corner)
 	{
-		return Corner.Style == EShapeBoxCornerStyle::Chamfer && Corner.Size.X > Tolerance && Corner.Size.Y > Tolerance;
+		if (Corner.Style != EShapeBoxCornerStyle::Chamfer)
+		{
+			return false;
+		}
+		const FVector2D Legs = GetChamferLegs(Corner);
+		return Legs.X > Tolerance && Legs.Y > Tolerance;
 	}
 
 	FVector2D GetBevel(const FShapeBoxCorner& Corner)
@@ -214,8 +230,9 @@ namespace ShapeBoxPrivate
 					return;
 				}
 
-				const double LegX = FMath::Min(static_cast<double>(Corner.Size.X), Size.X);
-				const double LegY = FMath::Min(static_cast<double>(Corner.Size.Y), Size.Y);
+				const FVector2D Legs = GetChamferLegs(Corner);
+				const double LegX = FMath::Min(Legs.X, Size.X);
+				const double LegY = FMath::Min(Legs.Y, Size.Y);
 				const FVector2D P1 = CornerPoint + AlongHorizontal * LegX;
 				const FVector2D P2 = CornerPoint + AlongVertical * LegY;
 				const FVector2D Direction = (P2 - P1).GetSafeNormal();

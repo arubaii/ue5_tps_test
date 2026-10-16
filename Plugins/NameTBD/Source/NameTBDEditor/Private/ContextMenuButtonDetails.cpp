@@ -4,12 +4,16 @@
 
 #include "NameTBD/Buttons/ContextMenuButton.h"
 #include "NameTBD/Buttons/Widgets/StyledButtons.h"
+#include "NameTBD/Widgets/WidgetEditorHooks.h"
 #include "StyledButtonsEditor.h"
 
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
+#include "PropertyHandle.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -51,14 +55,32 @@ void FContextMenuButtonDetails::HandleObjectPropertyChanged(UObject* Object, FPr
 		return;
 	}
 
-	// What a target aims at, or the Background Shape, decides whether a Look or a Shape shows - and a Look newly laid out
-	// for another kind of shape has other rows. The property bag's rows are only made again by a fresh layout.
 	const FName Name = Event.GetPropertyName();
 	const FName Member = Event.GetMemberPropertyName();
+
+	// Instance Overridable: the Widget Blueprint is changed (and compiled) next tick, outside the property edit.
+	if (Name == GET_MEMBER_NAME_CHECKED(UContextMenuButton, bInstanceOverridable))
+	{
+		const TWeakObjectPtr<UContextMenuButton> WeakButton(Cast<UContextMenuButton>(Object));
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakButton](float)
+		{
+			if (UContextMenuButton* Button = WeakButton.Get())
+			{
+				SyncInstanceOverridable(Button);
+			}
+			return false;
+		}));
+		return;
+	}
+
+	// What a target aims at, the Shape Style, or a preset picked decides whether Style Settings or a Shape shows - and Style
+	// Settings newly laid out for another kind of shape have other rows. The property bag's rows are only made again by a fresh
+	// layout.
 	const bool bArrayChange = (Event.ChangeType & (EPropertyChangeType::ArrayAdd | EPropertyChangeType::ArrayRemove | EPropertyChangeType::ArrayClear | EPropertyChangeType::Duplicate)) != 0;
 	const bool bShapeTargets = Member == GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShapeTargets);
+	const bool bDesignTargets = Member == GET_MEMBER_NAME_CHECKED(UContextMenuButton, DesignTargets);
 
-	// Switching a state's override on or off gives it a Look or takes it away.
+	// Switching a state's override on or off gives it Style Settings or takes them away.
 	static const FName OverrideToggles[] = {
 		GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, bOverrideNormalShape),
 		GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, bOverrideHoveredShape),
@@ -71,8 +93,14 @@ void FContextMenuButtonDetails::HandleObjectPropertyChanged(UObject* Object, FPr
 		bOverrideToggled |= Name == Toggle;
 	}
 
-	if (Name == GET_MEMBER_NAME_CHECKED(UContextMenuButton, BackgroundShape)
-		|| (bShapeTargets && (Name == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, TargetWidgetName) || bArrayChange || bOverrideToggled)))
+	const bool bShapeLayoutChange = bShapeTargets && (Name == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, TargetWidgetName)
+		|| Name == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, ShapeStyle)
+		|| Name == GET_MEMBER_NAME_CHECKED(FContextMenuShapeTarget, PresetAsset)
+		|| bArrayChange || bOverrideToggled);
+	const bool bPresetPicked = Member == GET_MEMBER_NAME_CHECKED(UContextMenuButton, ButtonPreset)
+		|| (bDesignTargets && Name == GET_MEMBER_NAME_CHECKED(FContextMenuDesignTarget, PresetAsset));
+
+	if (bShapeLayoutChange || bPresetPicked)
 	{
 		const TWeakPtr<IDetailLayoutBuilder> Weak = WeakBuilder;
 		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Weak](float)
@@ -117,6 +145,11 @@ TArray<FContextMenuButtonDetails::FDispatcherEventInfo> FContextMenuButtonDetail
 	return Infos;
 }
 
+FName FContextMenuButtonDetails::GetDispatcherName(const UContextMenuButton* Button, const FDispatcherEventInfo& EventInfo)
+{
+	return Button ? FName(*FString::Printf(TEXT("On%s%s"), *Button->GetName(), EventInfo.NameSuffix)) : NAME_None;
+}
+
 UWidgetBlueprint* FContextMenuButtonDetails::FindOwningWidgetBlueprint(const UContextMenuButton* Button)
 {
 	if (!Button)
@@ -124,8 +157,7 @@ UWidgetBlueprint* FContextMenuButtonDetails::FindOwningWidgetBlueprint(const UCo
 		return nullptr;
 	}
 
-	// The object the Details panel shows is the template in the Widget Blueprint's own tree, so the outer
-	// chain usually reaches the blueprint directly.
+	// The template in the Widget Blueprint's own tree reaches the blueprint through its outers.
 	if (UWidgetBlueprint* Direct = Button->GetTypedOuter<UWidgetBlueprint>())
 	{
 		return Direct;
@@ -174,15 +206,12 @@ bool FContextMenuButtonDetails::DoesDispatcherExist(const UWidgetBlueprint* Blue
 	return false;
 }
 
-bool FContextMenuButtonDetails::CreateDispatcher(UWidgetBlueprint* Blueprint, FName DispatcherName, const TArray<FName>& BoolParameterNames)
+bool FContextMenuButtonDetails::AddDispatcher(UWidgetBlueprint* Blueprint, FName DispatcherName, const TArray<FName>& BoolParameterNames)
 {
 	if (!Blueprint)
 	{
 		return false;
 	}
-
-	const FScopedTransaction Transaction(LOCTEXT("AddMatchingDispatcher", "Add Matching Event Dispatcher"));
-	Blueprint->Modify();
 
 	const UEdGraphSchema_K2* K2Schema = GetDefault<UEdGraphSchema_K2>();
 
@@ -237,12 +266,6 @@ bool FContextMenuButtonDetails::CreateDispatcher(UWidgetBlueprint* Blueprint, FN
 		}
 	}
 
-	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
-
-	// Compiled now rather than left dirty, so the dispatcher is immediately bindable and the button's own
-	// matcher can see it on its next resolve.
-	FKismetEditorUtilities::CompileBlueprint(Blueprint);
-
 	return true;
 }
 
@@ -294,6 +317,39 @@ bool FContextMenuButtonDetails::DoesOverridesVariableExist(const UWidgetBlueprin
 	return false;
 }
 
+TArray<FName> FContextMenuButtonDetails::FindOwnOverridesVariables(const UWidgetBlueprint* Blueprint, const UContextMenuButton* Button)
+{
+	TArray<FName> Found;
+	if (!Blueprint || !Button)
+	{
+		return Found;
+	}
+
+	const UObject* CDO = Blueprint->GeneratedClass ? Blueprint->GeneratedClass->GetDefaultObject() : nullptr;
+	const FName ExpectedName = GetOverridesVariableName(Button);
+	for (const FBPVariableDescription& Variable : Blueprint->NewVariables)
+	{
+		if (Variable.VarType.PinSubCategoryObject.Get() != FContextMenuButtonInstanceOverrides::StaticStruct())
+		{
+			continue;
+		}
+		bool bClaims = Variable.VarName == ExpectedName;
+		if (!bClaims && CDO)
+		{
+			if (const FStructProperty* Property = FindFProperty<FStructProperty>(CDO->GetClass(), Variable.VarName))
+			{
+				const FContextMenuButtonInstanceOverrides* Value = Property->ContainerPtrToValuePtr<FContextMenuButtonInstanceOverrides>(CDO);
+				bClaims = Value && Value->TargetButtonName == Button->GetFName();
+			}
+		}
+		if (bClaims)
+		{
+			Found.Add(Variable.VarName);
+		}
+	}
+	return Found;
+}
+
 void FContextMenuButtonDetails::StampTargetButtonName(UWidgetBlueprint* Blueprint, FName VariableName, FName TargetButtonName)
 {
 	if (!Blueprint || !Blueprint->GeneratedClass)
@@ -336,195 +392,166 @@ void FContextMenuButtonDetails::StampTargetButtonName(UWidgetBlueprint* Blueprin
 	FBlueprintEditorUtils::MarkBlueprintAsModified(Blueprint);
 }
 
-bool FContextMenuButtonDetails::CreateOverridesVariable(UWidgetBlueprint* Blueprint, FName VariableName, FName TargetButtonName)
+void FContextMenuButtonDetails::SyncInstanceOverridable(UContextMenuButton* Button)
 {
+	UWidgetBlueprint* Blueprint = FindOwningWidgetBlueprint(Button);
 	if (!Blueprint)
 	{
-		return false;
+		return;
 	}
 
-	const FScopedTransaction Transaction(LOCTEXT("AddOverridesVariable", "Add Instance Overrides Variable"));
+	if (Button->bInstanceOverridable)
+	{
+		const FScopedTransaction Transaction(LOCTEXT("MakeOverridable", "Make Button Instance Overridable"));
+		Blueprint->Modify();
+
+		// The events placements bind: one dispatcher per event the button broadcasts by itself, each with its parameters.
+		bool bChanged = false;
+		for (const FDispatcherEventInfo& EventInfo : GetEventInfos())
+		{
+			const FName DispatcherName = GetDispatcherName(Button, EventInfo);
+			if (!DoesDispatcherExist(Blueprint, DispatcherName))
+			{
+				bChanged |= AddDispatcher(Blueprint, DispatcherName, EventInfo.ParameterNames);
+			}
+		}
+
+		// The overrides: a variable placements can set (Instance Editable), claimed by this button.
+		const FName VariableName = GetOverridesVariableName(Button);
+		bool bAddedVariable = false;
+		if (!DoesOverridesVariableExist(Blueprint, Button))
+		{
+			FEdGraphPinType StructType;
+			StructType.PinCategory = UEdGraphSchema_K2::PC_Struct;
+			StructType.PinSubCategoryObject = FContextMenuButtonInstanceOverrides::StaticStruct();
+			if (FBlueprintEditorUtils::AddMemberVariable(Blueprint, VariableName, StructType))
+			{
+				FBlueprintEditorUtils::SetBlueprintOnlyEditableFlag(Blueprint, VariableName, /*bNewBlueprintOnly=*/false);
+				bAddedVariable = true;
+				bChanged = true;
+			}
+		}
+
+		if (!bChanged)
+		{
+			return;
+		}
+
+		// Compiled now rather than left dirty, so the dispatchers are bindable and the variable shows on placements at once. The
+		// variable's default is stamped after: its CDO property only exists once compiled.
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
+		FKismetEditorUtilities::CompileBlueprint(Blueprint);
+		if (bAddedVariable)
+		{
+			StampTargetButtonName(Blueprint, VariableName, Button->GetFName());
+		}
+		return;
+	}
+
+	// Unticked: the variable goes (undo brings it back). The dispatchers stay - placements' graphs may be bound to them.
+	const TArray<FName> Variables = FindOwnOverridesVariables(Blueprint, Button);
+	if (Variables.Num() == 0)
+	{
+		return;
+	}
+	const FScopedTransaction Transaction(LOCTEXT("MakeNotOverridable", "Make Button Not Instance Overridable"));
 	Blueprint->Modify();
-
-	FEdGraphPinType StructType;
-	StructType.PinCategory = UEdGraphSchema_K2::PC_Struct;
-	StructType.PinSubCategoryObject = FContextMenuButtonInstanceOverrides::StaticStruct();
-
-	if (!FBlueprintEditorUtils::AddMemberVariable(Blueprint, VariableName, StructType))
+	for (const FName& VariableName : Variables)
 	{
-		return false;
+		FBlueprintEditorUtils::RemoveMemberVariable(Blueprint, VariableName);
 	}
-
-	// The whole point is that a PLACEMENT can set this, which means Instance Editable. A variable without
-	// it is invisible in the parent designer and the override could only ever be set from Blueprint.
-	FBlueprintEditorUtils::SetBlueprintOnlyEditableFlag(Blueprint, VariableName, /*bNewBlueprintOnly=*/false);
-
-	// Compiled before stamping: the CDO and the FStructProperty the default is written through don't exist
-	// until the variable has been through a compile.
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(Blueprint);
 	FKismetEditorUtilities::CompileBlueprint(Blueprint);
-
-	StampTargetButtonName(Blueprint, VariableName, TargetButtonName);
-
-	return true;
 }
 
-bool FContextMenuButtonDetails::CanAddOverrides() const
-{
-	for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : CustomizedButtons)
-	{
-		const UContextMenuButton* Button = WeakButton.Get();
-		if (!Button)
-		{
-			continue;
-		}
-
-		UWidgetBlueprint* Blueprint = FindOwningWidgetBlueprint(Button);
-		if (Blueprint && !DoesOverridesVariableExist(Blueprint, Button))
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-FText FContextMenuButtonDetails::GetAddOverridesTooltip() const
+FText FContextMenuButtonDetails::GetInstanceOverridableStatus() const
 {
 	const UContextMenuButton* Button = CustomizedButtons.Num() > 0 ? CustomizedButtons[0].Get() : nullptr;
-	if (!Button)
-	{
-		return LOCTEXT("NoButtonOverrides", "No button selected.");
-	}
-
 	UWidgetBlueprint* Blueprint = FindOwningWidgetBlueprint(Button);
-	if (!Blueprint)
+	if (!Button || !Blueprint)
 	{
-		return LOCTEXT("NoBlueprintOverrides",
-			"Can't reach a Widget Blueprint from here. Select the button in the Widget Blueprint that contains it.");
+		return LOCTEXT("OverridableNoBlueprint", "Select the button in the Widget Blueprint that contains it.");
 	}
 
-	const FName VariableName = GetOverridesVariableName(Button);
-
-	if (DoesOverridesVariableExist(Blueprint, Button))
+	const bool bHasVariable = DoesOverridesVariableExist(Blueprint, Button);
+	int32 Dispatchers = 0;
+	for (const FDispatcherEventInfo& EventInfo : GetEventInfos())
 	{
-		return FText::Format(
-			LOCTEXT("OverridesExist", "{0} already has an overrides variable for this button."),
+		Dispatchers += DoesDispatcherExist(Blueprint, GetDispatcherName(Button, EventInfo)) ? 1 : 0;
+	}
+
+	if (!Button->bInstanceOverridable && !bHasVariable)
+	{
+		return FText::Format(LOCTEXT("OverridableOff",
+			"Placements of {0} can't restyle this button. Tick Instance Overridable to let them, and to give them its events."),
 			FText::FromString(Blueprint->GetName()));
 	}
 
-	return FText::Format(
-		LOCTEXT("WillCreateOverrides",
-			"Creates '{0}' on {1}, marks it Instance Editable, and points it at this button. Every placement of {1} can then override this button's Shape and Design from its own Details panel."),
-		FText::FromName(VariableName),
-		FText::FromString(Blueprint->GetName()));
-}
-
-FReply FContextMenuButtonDetails::OnAddOverridesClicked()
-{
-	for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : CustomizedButtons)
-	{
-		UContextMenuButton* Button = WeakButton.Get();
-		if (!Button)
-		{
-			continue;
-		}
-
-		UWidgetBlueprint* Blueprint = FindOwningWidgetBlueprint(Button);
-		if (!Blueprint || DoesOverridesVariableExist(Blueprint, Button))
-		{
-			continue;
-		}
-
-		CreateOverridesVariable(Blueprint, GetOverridesVariableName(Button), Button->GetFName());
-	}
-
-	return FReply::Handled();
-}
-
-bool FContextMenuButtonDetails::CanAddDispatcher(FDispatcherEventInfo EventInfo) const
-{
-	for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : CustomizedButtons)
-	{
-		const UContextMenuButton* Button = WeakButton.Get();
-		if (!Button)
-		{
-			continue;
-		}
-
-		UWidgetBlueprint* Blueprint = FindOwningWidgetBlueprint(Button);
-		if (!Blueprint)
-		{
-			continue;
-		}
-
-		const FName DispatcherName(*FString::Printf(TEXT("On%s%s"), *Button->GetName(), EventInfo.NameSuffix));
-		if (!DoesDispatcherExist(Blueprint, DispatcherName))
-		{
-			return true;
-		}
-	}
-
-	return false;
-}
-
-FText FContextMenuButtonDetails::GetAddDispatcherTooltip(FDispatcherEventInfo EventInfo) const
-{
-	const UContextMenuButton* Button = CustomizedButtons.Num() > 0 ? CustomizedButtons[0].Get() : nullptr;
-	if (!Button)
-	{
-		return LOCTEXT("NoButton", "No button selected.");
-	}
-
-	UWidgetBlueprint* Blueprint = FindOwningWidgetBlueprint(Button);
-	if (!Blueprint)
-	{
-		return LOCTEXT("NoBlueprint",
-			"Can't reach a Widget Blueprint from here. Select the button in the Widget Blueprint that contains it.");
-	}
-
-	const FName DispatcherName(*FString::Printf(TEXT("On%s%s"), *Button->GetName(), EventInfo.NameSuffix));
-
-	if (DoesDispatcherExist(Blueprint, DispatcherName))
-	{
-		return FText::Format(
-			LOCTEXT("AlreadyExists", "'{0}' already exists on {1}."),
-			FText::FromName(DispatcherName),
-			FText::FromString(Blueprint->GetName()));
-	}
-
-	return FText::Format(
-		LOCTEXT("WillCreate", "Creates '{0}' on {1}, with {2} parameter(s), and compiles. Parameters are optional - delete them and it still binds."),
-		FText::FromName(DispatcherName),
+	return FText::Format(LOCTEXT("OverridableOn",
+		"Each placement of {0} restyles this button under '{1}' in its Details{2}, and binds its events ({3} of 4 dispatchers: On{4}Clicked, ...EnabledStateChanged, ...Hovered, ...PressCompleted)."),
 		FText::FromString(Blueprint->GetName()),
-		FText::AsNumber(EventInfo.ParameterNames.Num()));
+		FText::FromName(GetOverridesVariableName(Button)),
+		bHasVariable ? FText::GetEmpty() : LOCTEXT("OverridableVariablePending", " (variable not made yet - compile, or tick the box again)"),
+		FText::AsNumber(Dispatchers),
+		FText::FromString(Button->GetName()));
 }
 
-FReply FContextMenuButtonDetails::OnAddDispatcherClicked(FDispatcherEventInfo EventInfo)
+UContextMenuButton* FContextMenuButtonDetails::GetAuthoredButton(UContextMenuButton* Button)
 {
-	for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : CustomizedButtons)
+	UContextMenuButton* Template = Cast<UContextMenuButton>(WidgetEditorHooks::FindDesignerTemplate(Button));
+	return Template ? Template : Button;
+}
+
+TSharedRef<SWidget> FContextMenuButtonDetails::MakeSaveTargetPresetMenu(bool bShape) const
+{
+	FMenuBuilder Menu(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+	const TWeakObjectPtr<UContextMenuButton> WeakButton = CustomizedButtons.Num() > 0 ? CustomizedButtons[0] : nullptr;
+	UContextMenuButton* Button = WeakButton.Get();
+	UContextMenuButton* Authored = Button ? GetAuthoredButton(Button) : nullptr;
+	const int32 Count = Authored ? (bShape ? Authored->ShapeTargets.Num() : Authored->DesignTargets.Num()) : 0;
+
+	Menu.BeginSection(NAME_None, bShape ? LOCTEXT("SaveShapeHeading", "Save Shape Target As Preset") : LOCTEXT("SaveDesignHeading", "Save Design Target As Preset"));
+	if (Count == 0)
 	{
-		UContextMenuButton* Button = WeakButton.Get();
-		if (!Button)
-		{
-			continue;
-		}
-
-		UWidgetBlueprint* Blueprint = FindOwningWidgetBlueprint(Button);
-		if (!Blueprint)
-		{
-			continue;
-		}
-
-		const FName DispatcherName(*FString::Printf(TEXT("On%s%s"), *Button->GetName(), EventInfo.NameSuffix));
-		if (DoesDispatcherExist(Blueprint, DispatcherName))
-		{
-			continue;
-		}
-
-		CreateDispatcher(Blueprint, DispatcherName, EventInfo.ParameterNames);
+		Menu.AddWidget(SNew(STextBlock).Text(LOCTEXT("NoTargets", "No targets yet.")).Font(IDetailLayoutBuilder::GetDetailFont()), FText::GetEmpty());
 	}
+	for (int32 Index = 0; Index < Count; ++Index)
+	{
+		const FName TargetName = bShape ? Authored->ShapeTargets[Index].TargetWidgetName : Authored->DesignTargets[Index].TargetWidgetName;
+		const FName TargetId = bShape ? Authored->ShapeTargets[Index].TargetId : Authored->DesignTargets[Index].TargetId;
+		const FText Label = TargetId.IsNone()
+			? FText::Format(LOCTEXT("TargetEntry", "{0}: {1}"), FText::AsNumber(Index), FText::FromName(TargetName))
+			: FText::Format(LOCTEXT("TargetEntryWithId", "{0}: {1} ({2})"), FText::AsNumber(Index), FText::FromName(TargetName), FText::FromName(TargetId));
+		Menu.AddMenuEntry(Label,
+			LOCTEXT("SaveTargetTooltip", "Saves this target's look as a new preset asset and picks it on the target."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([WeakButton, Index, bShape]()
+			{
+				UContextMenuButton* Current = WeakButton.Get();
+				UContextMenuButton* Source = Current ? GetAuthoredButton(Current) : nullptr;
+				if (!Source)
+				{
+					return;
+				}
+				const FScopedTransaction Transaction(LOCTEXT("SaveTargetPreset", "Save Target As Preset"));
+				const bool bSaved = bShape ? Source->SaveShapeTargetAsPreset(Index) : Source->SaveDesignTargetAsPreset(Index);
 
-	return FReply::Handled();
+				// The designer's copy shows the preset picked too.
+				if (bSaved && Current != Source)
+				{
+					if (bShape && Current->ShapeTargets.IsValidIndex(Index) && Source->ShapeTargets.IsValidIndex(Index))
+					{
+						Current->ShapeTargets[Index].PresetAsset = Source->ShapeTargets[Index].PresetAsset;
+					}
+					else if (!bShape && Current->DesignTargets.IsValidIndex(Index) && Source->DesignTargets.IsValidIndex(Index))
+					{
+						Current->DesignTargets[Index].PresetAsset = Source->DesignTargets[Index].PresetAsset;
+					}
+				}
+			})));
+	}
+	Menu.EndSection();
+	return Menu.MakeWidget();
 }
 
 void FContextMenuButtonDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
@@ -549,12 +576,26 @@ void FContextMenuButtonDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
 	// A ready-made button just dropped from the Palette builds its parts now that it has really been placed (next tick).
 	StyledButtonsEditor::OnButtonsShown(CustomizedButtons);
 
-	// Looks laid out for what each target aims at, before any row is made from them.
 	for (const TWeakObjectPtr<UContextMenuButton>& WeakButton : CustomizedButtons)
 	{
-		if (UContextMenuButton* Button = WeakButton.Get())
+		UContextMenuButton* Button = WeakButton.Get();
+		if (!Button)
 		{
-			Button->RefreshShapeTargetLooks();
+			continue;
+		}
+
+		// Style Settings laid out for what each target aims at, before any row is made from them.
+		Button->RefreshShapeTargetLooks();
+
+		// A Widget Blueprint that already gives its placements an overrides variable for this button (made by hand, or before
+		// Instance Overridable existed) shows ticked: that is what the box describes.
+		if (!Button->bInstanceOverridable && DoesOverridesVariableExist(FindOwningWidgetBlueprint(Button), Button))
+		{
+			Button->bInstanceOverridable = true;
+			if (UContextMenuButton* Template = Cast<UContextMenuButton>(WidgetEditorHooks::FindDesignerTemplate(Button)))
+			{
+				Template->bInstanceOverridable = true;
+			}
 		}
 	}
 
@@ -599,101 +640,102 @@ void FContextMenuButtonDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBui
 		];
 	}
 
-	// NOTE: Designer Preview used to be hidden here and its children re-added one at a time into an
-	// "Animation" category. That is now meta = (ShowOnlyInnerProperties) on the UPROPERTY itself, which
-	// does the same thing with no editor module involved - and, more to the point, works for every other
-	// class that has a designer preview rather than only for this one. Nothing about laying out an
-	// ordinary struct property needs an IDetailCustomization.
-	//
-	// What is left here genuinely does: creating Event Dispatchers and Blueprint variables is editor-only
-	// work with no runtime equivalent.
-
-	// Full category path, matching the UPROPERTY Category string exactly - the '|' is part of the name,
-	// not a separator the builder splits on.
-	IDetailCategoryBuilder& EventsCategory = DetailBuilder.EditCategory(
-		TEXT("Context Menu Button Events"),
-		FText::GetEmpty(),
-		ECategoryPriority::Default);
-
-	TSharedRef<SWrapBox> ButtonBox = SNew(SWrapBox).UseAllottedSize(true);
-
-	for (const FDispatcherEventInfo& EventInfo : GetEventInfos())
+	// Each row goes into the category its property is in, whatever that category is called in this panel.
+	auto CategoryOf = [&DetailBuilder](FName PropertyName) -> IDetailCategoryBuilder&
 	{
-		ButtonBox->AddSlot()
-		.Padding(0.0f, 2.0f, 4.0f, 2.0f)
-		[
-			SNew(SButton)
-			.Text(FText::Format(LOCTEXT("AddDispatcherFormat", "Add On...{0}"), FText::FromString(EventInfo.NameSuffix)))
-			.ToolTipText(this, &FContextMenuButtonDetails::GetAddDispatcherTooltip, EventInfo)
-			.IsEnabled(this, &FContextMenuButtonDetails::CanAddDispatcher, EventInfo)
-			.OnClicked(this, &FContextMenuButtonDetails::OnAddDispatcherClicked, EventInfo)
-		];
-	}
+		const TSharedRef<IPropertyHandle> Handle = DetailBuilder.GetProperty(PropertyName, UContextMenuButton::StaticClass());
+		return DetailBuilder.EditCategory(Handle->GetDefaultCategoryName());
+	};
+	const TWeakObjectPtr<UContextMenuButton> FirstButton = CustomizedButtons[0];
+	const bool bSingle = CustomizedButtons.Num() == 1;
 
-	IDetailCategoryBuilder& OverridesCategory = DetailBuilder.EditCategory(
-		TEXT("Context Menu Button Instance Overrides"),
-		FText::GetEmpty(),
-		ECategoryPriority::Default);
-
-	OverridesCategory.AddCustomRow(LOCTEXT("AddOverridesFilter", "Add Overrides Variable"))
+	// ---- Button Preset: save this button as one, or write it back into the one it follows ----
+	CategoryOf(GET_MEMBER_NAME_CHECKED(UContextMenuButton, ButtonPreset))
+	.AddCustomRow(LOCTEXT("ButtonPresetFilter", "Save As Preset"))
 	.WholeRowContent()
 	[
-		SNew(SVerticalBox)
-
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(0.0f, 4.0f, 0.0f, 2.0f)
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("AddOverridesHint",
-				"Adds a per-placement overrides variable to the widget containing this button, already pointed at it. Every placement of that widget can then restyle this button from its own Details panel."))
-			.Font(IDetailLayoutBuilder::GetDetailFont())
-			.AutoWrapText(true)
-		]
-
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(0.0f, 2.0f, 0.0f, 4.0f)
+		SNew(SWrapBox)
+		.UseAllottedSize(true)
+		+ SWrapBox::Slot()
+		.Padding(0.f, 2.f, 4.f, 2.f)
 		[
 			SNew(SButton)
-			.HAlign(HAlign_Center)
-			.Text(LOCTEXT("AddOverridesButton", "Add Overrides Variable"))
-			.ToolTipText(this, &FContextMenuButtonDetails::GetAddOverridesTooltip)
-			.IsEnabled(this, &FContextMenuButtonDetails::CanAddOverrides)
-			.OnClicked(this, &FContextMenuButtonDetails::OnAddOverridesClicked)
+			.Text(LOCTEXT("SaveButtonPreset", "Save As Preset..."))
+			.ToolTipText(LOCTEXT("SaveButtonPresetTooltip", "Saves this button's settings as a new Context Menu Button Preset asset and picks it, so other buttons can pick it too."))
+			.IsEnabled(bSingle)
+			.OnClicked_Lambda([FirstButton]()
+			{
+				UContextMenuButton* Current = FirstButton.Get();
+				UContextMenuButton* Source = Current ? GetAuthoredButton(Current) : nullptr;
+				if (Source)
+				{
+					const FScopedTransaction Transaction(LOCTEXT("SaveButtonPresetTransaction", "Save Button As Preset"));
+					if (Source->SaveAsButtonPreset() && Current != Source)
+					{
+						Current->ButtonPreset = Source->ButtonPreset;
+					}
+				}
+				return FReply::Handled();
+			})
+		]
+		+ SWrapBox::Slot()
+		.Padding(0.f, 2.f, 4.f, 2.f)
+		[
+			SNew(SButton)
+			.Text(LOCTEXT("UpdateButtonPreset", "Update Preset"))
+			.ToolTipText(LOCTEXT("UpdateButtonPresetTooltip", "Writes this button's settings into its Button Preset; every button following that preset takes them the next time it loads."))
+			.IsEnabled_Lambda([FirstButton, bSingle]()
+			{
+				const UContextMenuButton* Current = FirstButton.Get();
+				return bSingle && Current && Current->ButtonPreset != nullptr;
+			})
+			.OnClicked_Lambda([FirstButton]()
+			{
+				UContextMenuButton* Current = FirstButton.Get();
+				if (UContextMenuButton* Source = Current ? GetAuthoredButton(Current) : nullptr)
+				{
+					if (!Source->ButtonPreset)
+					{
+						Source->ButtonPreset = Current->ButtonPreset;
+					}
+					Source->UpdateButtonPreset();
+				}
+				return FReply::Handled();
+			})
 		]
 	];
 
-	EventsCategory.AddCustomRow(LOCTEXT("AddDispatchersFilter", "Add Matching Dispatcher"))
+	// ---- Save a Shape / Design Target as a preset ----
+	auto AddSaveTargetRow = [this, &CategoryOf, bSingle](FName ListProperty, bool bShape)
+	{
+		CategoryOf(ListProperty)
+		.AddCustomRow(LOCTEXT("SaveTargetFilter", "Save Target As Preset"))
+		.WholeRowContent()
+		[
+			SNew(SComboButton)
+			.IsEnabled(bSingle)
+			.OnGetMenuContent(FOnGetContent::CreateSP(this, &FContextMenuButtonDetails::MakeSaveTargetPresetMenu, bShape))
+			.ButtonContent()
+			[
+				SNew(STextBlock)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.Text(bShape ? LOCTEXT("SaveShapeTarget", "Save Shape Target As Preset...") : LOCTEXT("SaveDesignTarget", "Save Design Target As Preset..."))
+				.ToolTipText(LOCTEXT("SaveTargetRowTooltip", "Pick a target: its look is saved as a new preset asset, which any target of any button can then pick (Preset)."))
+			]
+		];
+	};
+	AddSaveTargetRow(GET_MEMBER_NAME_CHECKED(UContextMenuButton, ShapeTargets), /*bShape=*/true);
+	AddSaveTargetRow(GET_MEMBER_NAME_CHECKED(UContextMenuButton, DesignTargets), /*bShape=*/false);
+
+	// ---- Instance Overridable: what the placements get ----
+	CategoryOf(GET_MEMBER_NAME_CHECKED(UContextMenuButton, bInstanceOverridable))
+	.AddCustomRow(LOCTEXT("OverridableFilter", "Instance Overridable"))
 	.WholeRowContent()
 	[
-		SNew(SVerticalBox)
-
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(0.0f, 4.0f, 0.0f, 2.0f)
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("AddDispatchersLabel", "Add Matching Dispatcher"))
-			.Font(IDetailLayoutBuilder::GetDetailFontBold())
-		]
-
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		.Padding(0.0f, 0.0f, 0.0f, 4.0f)
-		[
-			SNew(STextBlock)
-			.Text(LOCTEXT("AddDispatchersHint",
-				"Creates a correctly named Event Dispatcher on the widget that contains this button, and compiles it. Greyed out once it exists."))
-			.Font(IDetailLayoutBuilder::GetDetailFont())
-			.AutoWrapText(true)
-		]
-
-		+ SVerticalBox::Slot()
-		.AutoHeight()
-		[
-			ButtonBox
-		]
+		SNew(STextBlock)
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+		.AutoWrapText(true)
+		.Text(this, &FContextMenuButtonDetails::GetInstanceOverridableStatus)
 	];
 }
 

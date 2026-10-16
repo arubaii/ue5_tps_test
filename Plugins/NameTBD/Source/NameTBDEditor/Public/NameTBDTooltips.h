@@ -2258,7 +2258,7 @@ namespace NameTBD::Tooltips
 		inline FText KeyChoiceDescription(const FString& What)
 		{
 			if (What == TEXT("EShapeBoxCornerStyle.Bevel")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyChoiceDescription_Corner_Bevel", "Slides the corner along its edges, so a whole side leans: the cut runs the full length of the side. Size X leans the left or right side, Y the top or bottom edge; negative flares it outward."); }
-			if (What == TEXT("EShapeBoxCornerStyle.Chamfer")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyChoiceDescription_Corner_Chamfer", "Cuts the corner off with a straight line, leaving the rest of both edges where they were. Size X and Y are the lengths of the cut's legs - both above 0."); }
+			if (What == TEXT("EShapeBoxCornerStyle.Chamfer")) { return NSLOCTEXT("NameTBDTooltips.WidgetAnimEditor", "KeyChoiceDescription_Corner_Chamfer", "Cuts the corner off with a straight line, leaving the rest of both edges where they were. Size X and Y are the lengths of the cut's legs; one left at 0 follows the other (a 45-degree cut)."); }
 			return FText::GetEmpty();
 		}
 

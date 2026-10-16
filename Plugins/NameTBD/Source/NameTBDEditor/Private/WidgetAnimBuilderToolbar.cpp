@@ -1425,6 +1425,8 @@ namespace
 	}
 }
 
+const FName FWidgetAnimBuilderToolbar::SelectedWidgetSectionName(TEXT("WidgetAnimPreview"));
+
 void FWidgetAnimBuilderToolbar::Register()
 {
 	// The panel's tab, as one of the Widget Blueprint editor's own - see FWidgetAnimationsTabSummoner - and its
@@ -1479,7 +1481,7 @@ void FWidgetAnimBuilderToolbar::Register()
 		return;
 	}
 
-	FToolMenuSection& Section = Menu->FindOrAddSection("WidgetAnimPreview");
+	FToolMenuSection& Section = Menu->FindOrAddSection(SelectedWidgetSectionName);
 
 	// Dynamic, because it runs once per asset editor window and the context that says which asset that window
 	// is editing only exists at that point. It adds no buttons - the toolbar stays as UMG built it - it is
