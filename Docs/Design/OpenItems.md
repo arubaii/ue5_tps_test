@@ -27,3 +27,4 @@
 - **Constraints and Pointer Effects** (v1 follow-ups): see "Still open" in `ConstraintsAndPointerEffects.md` - 2D rigging (IK, bones) deliberately left out; a canvas gizmo for constraint targets; shadows that follow the pointer's light.
 - **Menu system** (v1 follow-ups): see "Still open" in `MenuSystem.md` - shipped sample assets (style, settings Widget Blueprint, glyph art), CommonUI bridge, audio device selection, safe-zone / brightness calibration screens. First compile in the engine expected to need small API fixes ("Unverified" there).
 - **Notifications** (v1 follow-ups): see "Still open" in `Notifications.md` - CommonUI action prompts, grouped summaries, server-side handles. First compile in the engine expected to need small API fixes ("Unverified" there).
+- **Help Assistant** (planned, build when the plugin is finished): see `HelpAssistant.md` - free local read-only help chatbot over the plugin docs, the user's project and UE.
