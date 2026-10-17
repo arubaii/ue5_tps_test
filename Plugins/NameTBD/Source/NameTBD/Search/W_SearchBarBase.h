@@ -47,6 +47,9 @@ struct FSearchFilterOption
  * The filter options are supplied by the owner via SetFilterOptions, for the same reason:
  * "Weapons / Consumables / Quest Items" is an inventory's vocabulary, not a search bar's.
  *
+ * For most uses, place the Search Bar widget instead (SearchBar.h, palette NameTBD): it needs no Widget Blueprint, draws
+ * itself, suggests, and filters a list or panel by name. This base is for a search bar laid out entirely by hand.
+ *
  * BLUEPRINT SETUP — create a WBP child of this class containing:
  *   - an EditableTextBox named exactly "SearchText"          (required)
  *   - a ComboBoxString named exactly "FilterBox"             (optional)
@@ -54,6 +57,7 @@ struct FSearchFilterOption
  * BindWidget will fail compilation if the required one is missing or misnamed.
  */
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnSearchChanged, const FString&, Query, FName, ActiveFilter);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnSearchBaseCommitted, const FString&, Query);
 
 UCLASS()
 class NAMETBD_API UW_SearchBarBase : public UUserWidget
@@ -69,6 +73,14 @@ public:
 	 */
 	UPROPERTY(BlueprintAssignable, Category = "Search")
 	FOnSearchChanged OnSearchChanged;
+
+	/** Enter pressed in Search Text: the player asked to search for this (after OnSearchChanged). */
+	UPROPERTY(BlueprintAssignable, Category = "Search")
+	FOnSearchBaseCommitted OnSearchCommitted;
+
+	/** Hides Clear Button while nothing is typed (off: always shown, as before). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Search")
+	bool bHideClearButtonWhenEmpty = false;
 
 	/**
 	 * Populate the filter dropdown. Pass an empty array to hide it entirely — a search
@@ -128,6 +140,9 @@ private:
 
 	UFUNCTION()
 	void HandleClearClicked();
+
+	/** Shows or hides Clear Button for what is typed (Hide Clear Button When Empty). */
+	void UpdateClearButton();
 
 	/** Start (or restart) the debounce window. Broadcasts immediately if the delay is 0. */
 	void ScheduleBroadcast();

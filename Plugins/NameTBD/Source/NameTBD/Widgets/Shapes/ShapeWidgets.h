@@ -195,6 +195,9 @@ public:
 
 	virtual void BuildPath(FWidgetShapePath& OutPath) const override;
 	virtual uint32 GetMeshHash() const override;
+
+	/** Whether the vertices' own Bezier handles shape the outline - what the canvas path editor shows and drags. A Curve smoothing through its points works out its own. */
+	virtual bool UsesVertexHandles() const { return true; }
 };
 
 /** The polygons' corners, for the shapes built from them. */

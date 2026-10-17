@@ -8,6 +8,7 @@
 #include "WidgetShapeEditorUI.h"
 #include "WidgetShapePathEditor.h"
 #include "WidgetShapePresets.h"
+#include "NameTBD/Widgets/Shapes/CurveShape.h"
 #include "NameTBD/Widgets/Shapes/ShapeWidgets.h"
 
 #include "Blueprint/WidgetTree.h"
@@ -30,6 +31,7 @@
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -274,6 +276,29 @@ void FWidgetShapeDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
 			.Padding(FMargin(0.f, 2.f, 0.f, 2.f))
 			[
 				PathChip(LOCTEXT("FlipV", "Flip V"), Tips::FlipVertical(), [](FWidgetShapePath& Path) { Path.Flip(/*bHorizontal=*/false); }, Tips::FlipVertical())
+			]
+
+			// A Curve's own: kept as a Curve Preset asset it then follows.
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(4.f, 2.f, 0.f, 2.f))
+			[
+				ShapeClass->IsChildOf(UCurveShape::StaticClass()) ? MakeChip([this, First]()
+				{
+					FChip SaveChip;
+					SaveChip.Label = Tips::SaveCurvePreset();
+					SaveChip.ToolTip = Tips::SaveCurvePresetTooltip();
+					SaveChip.OnClick = [this, First]()
+					{
+						if (UCurveShape* Curve = Cast<UCurveShape>(First.Get()))
+						{
+							Curve->SaveAsCurvePreset();
+							RefreshSoon();
+						}
+					};
+					return SaveChip;
+				}()) : SNullWidget::NullWidget
 			]
 		];
 
@@ -586,6 +611,33 @@ TSharedRef<SWidget> FWidgetShapeDetails::MakeStartFromMenu()
 			SetPath(Make(), FText::Format(LOCTEXT("StartFrom", "Start Shape From {0}"), Label));
 		})));
 	};
+
+	// A Curve's ready-made curves first: its points and how it runs through them.
+	if (ShapeClass && ShapeClass->IsChildOf(UCurveShape::StaticClass()))
+	{
+		Menu.BeginSection(NAME_None, Tips::StartFromCurves());
+		const UEnum* Templates = StaticEnum<EWidgetCurveTemplate>();
+		for (int32 Index = 0; Templates && Index < Templates->NumEnums() - 1; ++Index)
+		{
+			if (Templates->HasMetaData(TEXT("Hidden"), Index))
+			{
+				continue;
+			}
+			const EWidgetCurveTemplate Template = static_cast<EWidgetCurveTemplate>(Templates->GetValueByIndex(Index));
+			const FText Label = Templates->GetDisplayNameTextByIndex(Index);
+			Menu.AddMenuEntry(Label, Tips::CurveTemplateTooltip(), FSlateIcon(), FUIAction(FExecuteAction::CreateLambda([this, Template, Label]()
+			{
+				FWidgetShapePath Made;
+				EWidgetCurveSmoothing MadeSmoothing = EWidgetCurveSmoothing::Smooth;
+				UCurveShape::MakeTemplatePath(Template, Made, MadeSmoothing);
+				const FScopedTransaction Transaction(FText::Format(LOCTEXT("StartCurveFrom", "Start Curve From {0}"), Label));
+				SetPath(Made, FText::GetEmpty());
+				SetProperty(GET_MEMBER_NAME_CHECKED(UCurveShape, Smoothing), UCurveShape::StaticClass(),
+					StaticEnum<EWidgetCurveSmoothing>()->GetNameStringByValue(static_cast<int64>(MadeSmoothing)));
+			})));
+		}
+		Menu.EndSection();
+	}
 
 	Menu.BeginSection(NAME_None, Tips::StartFromPrimitives());
 	AddPrimitive(LOCTEXT("Circle", "Circle"), []() { return PathOf<UEllipseShape>([](UEllipseShape&) {}); });

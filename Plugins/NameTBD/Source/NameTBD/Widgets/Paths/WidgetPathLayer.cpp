@@ -282,6 +282,27 @@ namespace WidgetPathLayerPrivate
 	}
 }
 
+// The marker and ribbon builders, for other widgets that draw lines (a Curve's arrowheads and taper).
+namespace WidgetPathGeometry
+{
+	float GetMarkerInset(EWidgetPathMarker Marker, float Size, float Width)
+	{
+		return WidgetPathLayerPrivate::MarkerInset(Marker, Size, Width);
+	}
+
+	void BuildEndMarker(EWidgetPathMarker Marker, const FVector2f& Tip, const FVector2f& Direction, float Size, float LineWidth, float AntiAlias,
+		float Tolerance, FWidgetShapeMesh& Out)
+	{
+		WidgetPathLayerPrivate::BuildMarker(Marker, Tip, Direction, Size, LineWidth, AntiAlias, Tolerance, Out);
+	}
+
+	void BuildDashedRibbons(const TArray<FVector2f>& Route, float From, float To, float DashLength, float DashGap, float DashOffset,
+		TFunctionRef<float(float)> WidthAt, TFunctionRef<float(float)> OffsetAt, float AntiAlias, float TotalLength, FWidgetShapeMesh& Out)
+	{
+		WidgetPathLayerPrivate::BuildRibbons(Route, From, To, DashLength, DashGap, DashOffset, WidthAt, OffsetAt, AntiAlias, TotalLength, Out);
+	}
+}
+
 // =====================================================================================================
 // SWidgetPathLayer
 // =====================================================================================================

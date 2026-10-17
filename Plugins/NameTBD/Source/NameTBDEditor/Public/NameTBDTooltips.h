@@ -3377,6 +3377,30 @@ namespace NameTBD::Tooltips
 			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "OutlineSummary",
 				"{0} vertices in {1} contours");
 		}
+
+		inline FText StartFromCurves()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "StartFromCurves",
+				"Curves");
+		}
+
+		inline FText SaveCurvePreset()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "SaveCurvePreset",
+				"Save Preset");
+		}
+
+		inline FText SaveCurvePresetTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "SaveCurvePresetTooltip",
+				"Save As Curve Preset: keep this curve - its points and its look - as a Curve Preset asset, and follow it. Any Curve can pick it in Curve Preset; edits to the asset reach every Curve still following it the next time it loads.");
+		}
+
+		inline FText CurveTemplateTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "CurveTemplateTooltip",
+				"Replace the curve with this ready-made one, and the way it runs through its points (Smoothing). Its look stays.");
+		}
 	}
 
 

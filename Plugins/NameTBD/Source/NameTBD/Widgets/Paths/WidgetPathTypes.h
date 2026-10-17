@@ -849,6 +849,23 @@ namespace WidgetPathGeometry
 	NAMETBD_API void BuildRibbon(const TArray<FVector2f>& Points, TFunctionRef<float(float)> WidthAt, TFunctionRef<float(float)> OffsetAt, float AntiAlias,
 		float AlongStart, float TotalLength, FWidgetShapeMesh& Out);
 
+	/** How far a marker of Size pulls its end of a line Width wide back, so the line doesn't poke through an arrowhead's tip. */
+	NAMETBD_API float GetMarkerInset(EWidgetPathMarker Marker, float Size, float Width);
+
+	/**
+	 * A marker at Tip, pointing Direction (outward, away from the line): what a Widget Path draws at a line's ends, and a Curve at
+	 * its own. Its vertices' Along are left at zero.
+	 */
+	NAMETBD_API void BuildEndMarker(EWidgetPathMarker Marker, const FVector2f& Tip, const FVector2f& Direction, float Size, float LineWidth, float AntiAlias,
+		float Tolerance, FWidgetShapeMesh& Out);
+
+	/**
+	 * Ribbons (BuildRibbon) over the part of Route between From and To (distances along it), dashed when DashLength > 0 - each
+	 * dash its own ribbon, DashOffset sliding them. WidthAt and OffsetAt take the distance along the whole route.
+	 */
+	NAMETBD_API void BuildDashedRibbons(const TArray<FVector2f>& Route, float From, float To, float DashLength, float DashGap, float DashOffset,
+		TFunctionRef<float(float)> WidthAt, TFunctionRef<float(float)> OffsetAt, float AntiAlias, float TotalLength, FWidgetShapeMesh& Out);
+
 	/** Points moved sideways as Distortion says at Time (seconds); Seed gives each line a jitter of its own. */
 	NAMETBD_API void Distort(const TArray<FVector2f>& Points, const FWidgetPathDistortion& Distortion, double Time, uint32 Seed, TArray<FVector2f>& Out);
 }

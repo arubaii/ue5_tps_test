@@ -1,0 +1,22 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Search/SearchBar.cpp b/Plugins/NameTBD/Source/NameTBD/Search/SearchBar.cpp
+index 1597b9d..986504d 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Search/SearchBar.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Search/SearchBar.cpp
+@@ -1190,7 +1190,7 @@ void USearchBar::ClearSearch()
+ 	ActiveFilter = NAME_None;
+ 	if (SlateFilter.IsValid() && FilterItems.Num() > 0)
+ 	{
+-		SlateFilter->SetSelectedItem(FilterItems[0], ESelectInfo::Direct);
++		SlateFilter->SetSelectedItem(FilterItems[0]);
+ 	}
+ 	SetText(FText::GetEmpty(), /*bSearch=*/false);
+ 	OpenSuggestions(false);
+@@ -1295,7 +1295,7 @@ void USearchBar::RebuildFilterItems()
+ 		SlateFilter->RefreshOptions();
+ 		if (FilterItems.Num() > 0)
+ 		{
+-			SlateFilter->SetSelectedItem(Picked ? *Picked : FilterItems[0], ESelectInfo::Direct);
++			SlateFilter->SetSelectedItem(Picked ? *Picked : FilterItems[0]);
+ 		}
+ 	}
+ }

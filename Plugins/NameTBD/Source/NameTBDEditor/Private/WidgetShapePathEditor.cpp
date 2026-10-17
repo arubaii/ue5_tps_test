@@ -363,6 +363,20 @@ namespace WidgetShapePathEditorImpl
 
 		bool IsSelected(const FVertexId& Id) const { return State().Selection.Contains(Id); }
 
+		/** Whether the vertices' own handles shape the outline - not on a Curve smoothing through its points, which works them out. */
+		bool ShowsHandles() const
+		{
+			const UCustomShape* Shape = GetPreview();
+			Shape = Shape ? Shape : GetTemplate();
+			return !Shape || Shape->UsesVertexHandles();
+		}
+
+		/** Whether a vertex is drawn as a curve point (a circle) rather than a corner (a square). */
+		bool IsCurvePoint(const FWidgetShapeVertex& Vertex) const
+		{
+			return ShowsHandles() ? Vertex.HasHandles() : Vertex.Type != EWidgetShapeVertexType::Disconnected;
+		}
+
 		/** The selected vertex at an end of an open contour - where the Pen carries on from. bOutFirst: it is the first. */
 		FVertexId GetActiveEnd(bool& bOutFirst) const
 		{
@@ -711,7 +725,7 @@ namespace WidgetShapePathEditorImpl
 		for (const FVertexId& Id : State().Selection)
 		{
 			const FWidgetShapeVertex& Vertex = Path->Contours[Id.Contour].Vertices[Id.Vertex];
-			if (!Vertex.HasHandles())
+			if (!Vertex.HasHandles() || !ShowsHandles())
 			{
 				continue;
 			}
@@ -869,7 +883,7 @@ namespace WidgetShapePathEditorImpl
 		for (const FVertexId& Id : State().Selection)
 		{
 			const FWidgetShapeVertex& Vertex = Path->Contours[Id.Contour].Vertices[Id.Vertex];
-			if (!Vertex.HasHandles())
+			if (!Vertex.HasHandles() || !ShowsHandles())
 			{
 				continue;
 			}
@@ -898,7 +912,7 @@ namespace WidgetShapePathEditorImpl
 				const FVector2D Center = BoxToCanvas(Vertex.Position);
 				const bool bHovered = Hover.Kind == EHit::Vertex && Hover.Id == Id;
 				const float Size = Palette::VertexSize + (bHovered ? 2.f : 0.f);
-				const FSlateBrush* Brush = Vertex.HasHandles() ? CircleBrush() : SquareBrush();
+				const FSlateBrush* Brush = IsCurvePoint(Vertex) ? CircleBrush() : SquareBrush();
 				DrawDot(Center, Size + 2.f, Brush, Palette::VertexOutline, LayerId + 5);
 				DrawDot(Center, Size, Brush, IsSelected(Id) ? Palette::Selected : Palette::VertexFill, LayerId + 6);
 

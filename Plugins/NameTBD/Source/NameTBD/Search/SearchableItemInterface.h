@@ -24,4 +24,12 @@ public:
 	/** What category does this item belong to? (Matches the Dropdown Key). Return NAME_None if unused. */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Search")
 	FName GetSearchFilterCategory() const;
+
+	/**
+	 * More words this item is found by, beside its Search Text: synonyms, tags, its type ("sword" for Excalibur, "heal" for a
+	 * potion). Matched when the search's Search Keywords option is on. None by default.
+	 */
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "Search")
+	TArray<FString> GetSearchKeywords() const;
+	virtual TArray<FString> GetSearchKeywords_Implementation() const { return TArray<FString>(); }
 };

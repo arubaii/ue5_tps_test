@@ -1,6 +1,7 @@
 // Copyright AR GameSystems 2026. All rights reserved.
 
 #include "ShapeWidget.h"
+#include "CurveShape.h"
 
 #include "Layout/ArrangedChildren.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -432,7 +433,7 @@ void SWidgetShape::Rebuild(const UShapeWidget& Shape, const FVector2f& LocalSize
 	{
 		WidgetShapeGeometry::ClassifyLines(Outline, FillOnLeft);
 	}
-	WidgetShapeGeometry::BuildStroke(Outline, FillOnLeft, Shape.Stroke, Shape.Trim, AntiAlias, Tolerance, StrokeMesh);
+	Shape.BuildStrokeMesh(Outline, FillOnLeft, AntiAlias, Tolerance, StrokeMesh);
 
 	// A radial gradient's cells about six pixels across on screen: its rings then read round.
 	const float CellSize = 6.f / PixelScale;
@@ -440,7 +441,12 @@ void SWidgetShape::Rebuild(const UShapeWidget& Shape, const FVector2f& LocalSize
 	{
 		WidgetShapeGeometry::CutForGradient(FillMesh, *FillPaint, Frame, CellSize);
 	}
-	WidgetShapeGeometry::CutForGradient(StrokeMesh, Shape.Stroke.Paint, Frame, CellSize);
+
+	// A gradient laid along the outline is colored by each vertex's distance along it, not cut across the box.
+	if (!Shape.PaintsStrokeGradientAlongOutline())
+	{
+		WidgetShapeGeometry::CutForGradient(StrokeMesh, Shape.Stroke.Paint, Frame, CellSize);
+	}
 }
 
 void SWidgetShape::PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, FWidgetSVGBrush& PaintSVG, bool bStroke, const FGeometry& AllottedGeometry,
@@ -477,12 +483,19 @@ void SWidgetShape::PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePai
 	// A stroke's image laid along its outline: U round the outline, V across the stroke (a fill has no outline to follow).
 	const bool bAlongOutline = bImage && bStroke && Paint.MapsAlongOutline();
 
+	// A stroke's gradient laid along its outline (a Curve's Gradient Along Curve): colored by each vertex's distance along it.
+	const UShapeWidget* ShapeOwner = ShapeWidget.Get();
+	const bool bGradientAlong = bStroke && Paint.IsGradient() && ShapeOwner && ShapeOwner->PaintsStrokeGradientAlongOutline();
+
 	Vertices.SetNumUninitialized(Mesh.Vertices.Num());
 	for (int32 Index = 0; Index < Mesh.Vertices.Num(); ++Index)
 	{
 		const FWidgetShapeMeshVertex& Vertex = Mesh.Vertices[Index];
 		const FVector2f BoxPoint = Frame.ToBox(Vertex.Position);
-		FLinearColor Color = Paint.Evaluate(BoxPoint) * BrushTint * WidgetTint;
+		const FLinearColor PaintColor = bGradientAlong
+			? Paint.SampleGradient(Vertex.OutlineLength > KINDA_SMALL_NUMBER ? Vertex.Along.X / Vertex.OutlineLength : 0.f) * Paint.Color
+			: Paint.Evaluate(BoxPoint);
+		FLinearColor Color = PaintColor * BrushTint * WidgetTint;
 		Color.A *= Vertex.Coverage;
 		const FVector2f UV = bAlongOutline ? Paint.GetOutlineUV(Vertex.Along, Vertex.OutlineLength)
 			: bHasUVRegion ? UVRegion.Min + BoxPoint * UVRegion.GetSize() : BoxPoint;
@@ -858,7 +871,18 @@ bool UShapeWidget::IsContentProperty(const FProperty* Property)
 		GET_MEMBER_NAME_CHECKED(UShapeWidget, bSizeToContent),
 		GET_MEMBER_NAME_CHECKED(UShapeWidget, bHitTestOutline)
 	};
-	if (!Property || Property->GetOwnerClass() != UShapeWidget::StaticClass())
+	if (!Property)
+	{
+		return false;
+	}
+
+	// A Curve's Curve Preset is a link to an asset, not part of its look: a Look or a preset holding it would re-link every
+	// curve it is put on.
+	if (Property->GetOwnerClass() && Property->GetOwnerClass()->IsChildOf(UCurveShape::StaticClass()))
+	{
+		return Property->GetFName() == GET_MEMBER_NAME_CHECKED(UCurveShape, CurvePreset);
+	}
+	if (Property->GetOwnerClass() != UShapeWidget::StaticClass())
 	{
 		return false;
 	}
@@ -892,6 +916,11 @@ void UShapeWidget::BuildOutline(const FWidgetShapeFrame& InFrame, float Toleranc
 	FWidgetShapePath Path;
 	BuildPath(Path);
 	WidgetShapeGeometry::FlattenPath(Path, InFrame, Tolerance, Out);
+}
+
+void UShapeWidget::BuildStrokeMesh(const FWidgetShapeOutline& InOutline, const TArray<int8>& FillOnLeft, float AntiAlias, float Tolerance, FWidgetShapeMesh& Out) const
+{
+	WidgetShapeGeometry::BuildStroke(InOutline, FillOnLeft, Stroke, Trim, AntiAlias, Tolerance, Out);
 }
 
 uint32 UShapeWidget::GetMeshHash() const

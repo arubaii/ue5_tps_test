@@ -429,6 +429,15 @@ public:
 	/** A hash of everything that changes the mesh. A shape adds its own settings to the base's. */
 	virtual uint32 GetMeshHash() const;
 
+	/**
+	 * The stroke's mesh, from the flattened outline: by default the Stroke and Trim Path as every shape draws them. A shape that
+	 * draws more along its outline - a Curve's arrowheads and taper - builds it here. FillOnLeft as BuildFill gives it.
+	 */
+	virtual void BuildStrokeMesh(const FWidgetShapeOutline& InOutline, const TArray<int8>& FillOnLeft, float AntiAlias, float Tolerance, FWidgetShapeMesh& Out) const;
+
+	/** Whether a gradient on the stroke runs along the outline (by distance, from each contour's first vertex) instead of across the box. */
+	virtual bool PaintsStrokeGradientAlongOutline() const { return false; }
+
 	/** Repaints (and lays out again, when the shape sizes to a widget it holds). Called by every setter; anything changing a shape's settings directly should call it too. */
 	void InvalidateShape();
 
@@ -436,8 +445,9 @@ public:
 	float GetInnerStrokeWidth() const;
 
 	/**
-	 * Whether a property is one of the Content settings (Content Area, Size To Content, Hit Test Outline): how the shape holds
-	 * a widget, not how it looks - kept out of Looks, Shape tracks, Flow List item looks and presets, as Desired Size is.
+	 * Whether a property is one of the Content settings (Content Area, Size To Content, Hit Test Outline) - how the shape holds
+	 * a widget, not how it looks - or a link to an asset (a Curve's Curve Preset): kept out of Looks, Shape tracks, Flow List
+	 * item looks and presets, as Desired Size is.
 	 */
 	static bool IsContentProperty(const FProperty* Property);
 

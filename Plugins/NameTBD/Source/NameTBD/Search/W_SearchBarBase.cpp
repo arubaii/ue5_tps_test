@@ -25,12 +25,16 @@ void UW_SearchBarBase::NativeConstruct()
 		FilterBox->OnSelectionChanged.AddDynamic(this, &UW_SearchBarBase::HandleFilterSelectionChanged);
 
 		// Hidden until SetFilterOptions gives it something to show. A dropdown whose only
-		// entry is "All" is a control that can't do anything.
-		FilterBox->SetVisibility(ESlateVisibility::Collapsed);
+		// entry is "All" is a control that can't do anything. Options given before the bar
+		// was constructed (SetFilterOptions straight after CreateWidget) keep it shown.
+		if (FilterOptions.Num() == 0)
+			FilterBox->SetVisibility(ESlateVisibility::Collapsed);
 	}
 
 	if (ClearButton)
 		ClearButton->OnClicked.AddDynamic(this, &UW_SearchBarBase::HandleClearClicked);
+
+	UpdateClearButton();
 }
 
 void UW_SearchBarBase::NativeDestruct()
@@ -91,6 +95,8 @@ void UW_SearchBarBase::ClearSearch()
 	if (FilterBox && FilterBox->GetOptionCount() > 0)
 		FilterBox->SetSelectedIndex(0);
 
+	UpdateClearButton();
+
 	// Deliberately immediate rather than debounced: clearing is a discrete action, and
 	// the consumer needs to restore the unfiltered list now, not in 150ms.
 	BroadcastNow();
@@ -99,7 +105,14 @@ void UW_SearchBarBase::ClearSearch()
 void UW_SearchBarBase::HandleTextChanged(const FText& NewText)
 {
 	CurrentQuery = NewText.ToString();
+	UpdateClearButton();
 	ScheduleBroadcast();
+}
+
+void UW_SearchBarBase::UpdateClearButton()
+{
+	if (ClearButton && bHideClearButtonWhenEmpty)
+		ClearButton->SetVisibility(CurrentQuery.IsEmpty() ? ESlateVisibility::Collapsed : ESlateVisibility::Visible);
 }
 
 void UW_SearchBarBase::HandleTextCommitted(const FText& NewText, ETextCommit::Type CommitMethod)
@@ -109,6 +122,7 @@ void UW_SearchBarBase::HandleTextCommitted(const FText& NewText, ETextCommit::Ty
 
 	CurrentQuery = NewText.ToString();
 	BroadcastNow();
+	OnSearchCommitted.Broadcast(CurrentQuery);
 }
 
 void UW_SearchBarBase::HandleFilterSelectionChanged(FString SelectedItem, ESelectInfo::Type SelectionType)
