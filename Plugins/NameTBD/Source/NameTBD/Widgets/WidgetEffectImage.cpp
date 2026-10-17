@@ -72,6 +72,85 @@ namespace WidgetMaterialParameters
 		}
 	}
 
+	bool SyncFromMaterial(TArray<FWidgetMaterialParameter>& Parameters, UMaterialInterface* Material)
+	{
+		if (!Material)
+		{
+			const bool bHad = Parameters.Num() > 0;
+			Parameters.Reset();
+			return bHad;
+		}
+
+		TArray<FWidgetMaterialParameter> Listed;
+		auto Add = [&Parameters, &Listed](const FMaterialParameterInfo& Info, EWidgetMaterialParameterType ParameterType) -> FWidgetMaterialParameter&
+		{
+			FWidgetMaterialParameter& Parameter = Listed.AddDefaulted_GetRef();
+			const FWidgetMaterialParameter* Had = Parameters.FindByPredicate([&Info, ParameterType](const FWidgetMaterialParameter& Existing)
+			{
+				return Existing.Name == Info.Name && Existing.Type == ParameterType;
+			});
+			if (Had)
+			{
+				Parameter = *Had;
+			}
+			Parameter.Name = Info.Name;
+			Parameter.Type = ParameterType;
+			return Parameter;
+		};
+
+		TArray<FMaterialParameterInfo> Infos;
+		TArray<FGuid> Ids;
+		Material->GetAllScalarParameterInfo(Infos, Ids);
+		for (const FMaterialParameterInfo& Info : Infos)
+		{
+			const bool bNew = !Parameters.ContainsByPredicate([&Info](const FWidgetMaterialParameter& Existing) { return Existing.Name == Info.Name && Existing.Type == EWidgetMaterialParameterType::Scalar; });
+			FWidgetMaterialParameter& Parameter = Add(Info, EWidgetMaterialParameterType::Scalar);
+			float Default = 0.f;
+			if (bNew && Material->GetScalarParameterDefaultValue(Info, Default))
+			{
+				Parameter.Scalar = Default;
+			}
+		}
+		Infos.Reset();
+		Ids.Reset();
+		Material->GetAllVectorParameterInfo(Infos, Ids);
+		for (const FMaterialParameterInfo& Info : Infos)
+		{
+			const bool bNew = !Parameters.ContainsByPredicate([&Info](const FWidgetMaterialParameter& Existing) { return Existing.Name == Info.Name && Existing.Type == EWidgetMaterialParameterType::Color; });
+			FWidgetMaterialParameter& Parameter = Add(Info, EWidgetMaterialParameterType::Color);
+			FLinearColor Default = FLinearColor::White;
+			if (bNew && Material->GetVectorParameterDefaultValue(Info, Default))
+			{
+				Parameter.Color = Default;
+			}
+		}
+		Infos.Reset();
+		Ids.Reset();
+		Material->GetAllTextureParameterInfo(Infos, Ids);
+		for (const FMaterialParameterInfo& Info : Infos)
+		{
+			const bool bNew = !Parameters.ContainsByPredicate([&Info](const FWidgetMaterialParameter& Existing) { return Existing.Name == Info.Name && Existing.Type == EWidgetMaterialParameterType::Texture; });
+			FWidgetMaterialParameter& Parameter = Add(Info, EWidgetMaterialParameterType::Texture);
+			UTexture* Default = nullptr;
+			if (bNew && Material->GetTextureParameterDefaultValue(Info, Default))
+			{
+				Parameter.Texture = Default;
+			}
+		}
+
+		// Changed only when the names or kinds did: the values are kept either way (a Details panel isn't rebuilt for nothing).
+		bool bChanged = Listed.Num() != Parameters.Num();
+		for (int32 Index = 0; !bChanged && Index < Listed.Num(); ++Index)
+		{
+			bChanged = Listed[Index].Name != Parameters[Index].Name || Listed[Index].Type != Parameters[Index].Type;
+		}
+		if (bChanged)
+		{
+			Parameters = MoveTemp(Listed);
+		}
+		return bChanged;
+	}
+
 	uint32 Hash(const TArray<FWidgetMaterialParameter>& Parameters)
 	{
 		uint32 Hash = GetTypeHash(Parameters.Num());
@@ -121,8 +200,20 @@ const FSlateBrush* FWidgetEffectMaterials::GetBrush(uint64 Key, const FWidgetEff
 	}
 
 	// A material: an instance of its own, so live values can differ from one line or overlay to the next.
+	const FSlateBrush* Brush = GetMaterialBrush(Key, Material, Image.MaterialParameters, Inputs, &Image.Image);
+	return Brush ? Brush : &Image.Image;
+}
+
+const FSlateBrush* FWidgetEffectMaterials::GetMaterialBrush(uint64 Key, UMaterialInterface* Material, const TArray<FWidgetMaterialParameter>& Parameters,
+	const FWidgetEffectMaterialInputs* Inputs, const FSlateBrush* Template)
+{
+	if (!Material)
+	{
+		Entries.Remove(Key);
+		return nullptr;
+	}
 	FEntry& Entry = Entries.FindOrAdd(Key);
-	const uint32 ParameterHash = WidgetMaterialParameters::Hash(Image.MaterialParameters);
+	const uint32 ParameterHash = WidgetMaterialParameters::Hash(Parameters);
 	if (!Entry.Dynamic.IsValid() || Entry.Source.Get() != Material)
 	{
 		Entry.Dynamic.Reset(UMaterialInstanceDynamic::Create(Material, GetTransientPackage()));
@@ -134,12 +225,12 @@ const FSlateBrush* FWidgetEffectMaterials::GetBrush(uint64 Key, const FWidgetEff
 	UMaterialInstanceDynamic* Dynamic = Entry.Dynamic.Get();
 	if (!Dynamic)
 	{
-		return &Image.Image;
+		return nullptr;
 	}
 	if (Entry.ParameterHash != ParameterHash)
 	{
 		Entry.ParameterHash = ParameterHash;
-		WidgetMaterialParameters::Apply(Dynamic, Image.MaterialParameters);
+		WidgetMaterialParameters::Apply(Dynamic, Parameters);
 	}
 	if (Inputs)
 	{
@@ -164,16 +255,24 @@ const FSlateBrush* FWidgetEffectMaterials::GetBrush(uint64 Key, const FWidgetEff
 	}
 
 	// The brush as authored (tint, margins), holding the instance - copied again only when the brush changes.
-	uint32 BrushHash = GetTypeHash(Image.Image.TintColor.GetSpecifiedColor());
-	BrushHash = HashCombineFast(BrushHash, HashCombineFast(GetTypeHash(static_cast<float>(Image.Image.ImageSize.X)), GetTypeHash(static_cast<float>(Image.Image.ImageSize.Y))));
-	BrushHash = HashCombineFast(BrushHash, GetTypeHash(static_cast<uint8>(Image.Image.DrawAs.GetValue())));
+	static const FSlateBrush PlainImage;
+	const FSlateBrush& Look = Template ? *Template : PlainImage;
+	uint32 BrushHash = GetTypeHash(Look.TintColor.GetSpecifiedColor());
+	BrushHash = HashCombineFast(BrushHash, HashCombineFast(GetTypeHash(static_cast<float>(Look.ImageSize.X)), GetTypeHash(static_cast<float>(Look.ImageSize.Y))));
+	BrushHash = HashCombineFast(BrushHash, GetTypeHash(static_cast<uint8>(Look.DrawAs.GetValue())));
 	if (Entry.Brush.GetResourceObject() != Dynamic || Entry.BrushHash != BrushHash)
 	{
-		Entry.Brush = Image.Image;
+		Entry.Brush = Look;
 		Entry.Brush.SetResourceObject(Dynamic);
 		Entry.BrushHash = BrushHash;
 	}
 	return &Entry.Brush;
+}
+
+UMaterialInstanceDynamic* FWidgetEffectMaterials::FindDynamic(uint64 Key) const
+{
+	const FEntry* Entry = Entries.Find(Key);
+	return Entry ? Entry->Dynamic.Get() : nullptr;
 }
 
 void FWidgetEffectMaterials::Reset()

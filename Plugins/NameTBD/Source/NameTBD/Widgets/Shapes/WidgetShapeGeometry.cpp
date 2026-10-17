@@ -1510,6 +1510,63 @@ namespace WidgetShapeGeometry
 		}
 	}
 
+	float GetSlantReach(float AngleDegrees, float HalfWidth, float AntiAliasWidth)
+	{
+		const float Angle = FMath::DegreesToRadians(FMath::Clamp(FMath::Abs(AngleDegrees), 0.f, 80.f));
+		return HalfWidth * FMath::Tan(Angle) + AntiAliasWidth * 2.f + 0.5f;
+	}
+
+	void SlantStrokeEnd(FWidgetShapeMesh& Mesh, const FVector2f& EndPoint, const FVector2f& Outward, float AngleDegrees, float HalfWidth, float AntiAliasWidth)
+	{
+		using namespace WidgetShapeGeometryPrivate;
+
+		const FVector2f Direction = Outward.GetSafeNormal();
+		if (Mesh.IsEmpty() || Direction.IsNearlyZero())
+		{
+			return;
+		}
+		// The cut's normal: the line's own way at this end, turned by the angle (clockwise on screen, where Y runs down).
+		const float Angle = FMath::DegreesToRadians(FMath::Clamp(AngleDegrees, -80.f, 80.f));
+		float Sin = 0.f;
+		float Cos = 1.f;
+		FMath::SinCos(&Sin, &Cos, Angle);
+		const FVector2f Normal(Direction.X * Cos - Direction.Y * Sin, Direction.X * Sin + Direction.Y * Cos);
+		auto Past = [&EndPoint, &Normal](const FVector2f& Position) { return Dot(Position - EndPoint, Normal); };
+
+		// The fade across the new edge: from full half a fade inside the cut to nothing half a fade past it.
+		const float HalfFade = FMath::Max(AntiAliasWidth * 0.5f, 1e-3f);
+		const float Reach = HalfWidth / FMath::Max(Cos, 0.17f) + GetSlantReach(AngleDegrees, HalfWidth, AntiAliasWidth) + HalfWidth + AntiAliasWidth * 4.f;
+		const float ReachSquared = Reach * Reach;
+		auto IsNear = [&EndPoint, ReachSquared](const FVector2f& Position) { return (Position - EndPoint).SizeSquared() <= ReachSquared; };
+
+		CutAlong(Mesh, -HalfFade, Past);
+		CutAlong(Mesh, HalfFade, Past);
+
+		TArray<uint32> Kept;
+		Kept.Reserve(Mesh.Indices.Num());
+		for (int32 Triangle = 0; Triangle + 2 < Mesh.Indices.Num(); Triangle += 3)
+		{
+			const FVector2f Middle = (Mesh.Vertices[Mesh.Indices[Triangle]].Position + Mesh.Vertices[Mesh.Indices[Triangle + 1]].Position
+				+ Mesh.Vertices[Mesh.Indices[Triangle + 2]].Position) / 3.f;
+			if (IsNear(Middle) && Past(Middle) > HalfFade * 0.999f)
+			{
+				continue;
+			}
+			Kept.Add(Mesh.Indices[Triangle]);
+			Kept.Add(Mesh.Indices[Triangle + 1]);
+			Kept.Add(Mesh.Indices[Triangle + 2]);
+		}
+		Mesh.Indices = MoveTemp(Kept);
+
+		for (FWidgetShapeMeshVertex& Vertex : Mesh.Vertices)
+		{
+			if (IsNear(Vertex.Position))
+			{
+				Vertex.Coverage *= FMath::Clamp(0.5f - Past(Vertex.Position) / (2.f * HalfFade), 0.f, 1.f);
+			}
+		}
+	}
+
 	bool IsInside(const FWidgetShapeOutline& Outline, const FVector2f& LocalPoint)
 	{
 		using namespace WidgetShapeGeometryPrivate;

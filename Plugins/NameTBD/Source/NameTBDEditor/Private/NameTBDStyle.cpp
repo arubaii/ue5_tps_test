@@ -158,6 +158,7 @@ TSharedRef<FSlateStyleSet> FNameTBDStyle::Create()
        {
           { ShapeSelectIcon, TEXT("ShapeEdit_Select.svg") },
           { ShapePenIcon, TEXT("ShapeEdit_Pen.svg") },
+          { ShapePencilIcon, TEXT("ShapeEdit_Pencil.svg") },
           { ShapeStraightIcon, TEXT("ShapeEdit_Straight.svg") },
           { ShapeMirroredIcon, TEXT("ShapeEdit_Mirrored.svg") },
           { ShapeAsymmetricIcon, TEXT("ShapeEdit_Asymmetric.svg") },

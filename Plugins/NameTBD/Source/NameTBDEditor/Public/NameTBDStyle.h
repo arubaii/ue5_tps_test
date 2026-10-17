@@ -37,6 +37,7 @@ public:
 	 */
 	static inline const FName ShapeSelectIcon = TEXT("NameTBD.Shape.Select");
 	static inline const FName ShapePenIcon = TEXT("NameTBD.Shape.Pen");
+	static inline const FName ShapePencilIcon = TEXT("NameTBD.Shape.Pencil");
 	static inline const FName ShapeStraightIcon = TEXT("NameTBD.Shape.Straight");
 	static inline const FName ShapeMirroredIcon = TEXT("NameTBD.Shape.Mirrored");
 	static inline const FName ShapeAsymmetricIcon = TEXT("NameTBD.Shape.Asymmetric");

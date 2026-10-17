@@ -3153,7 +3153,7 @@ namespace NameTBD::Tooltips
 		inline FText EditShapeTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "EditShapeTooltip",
-				"Edit Shape: edit the outline's vertices on the canvas. Drag vertices and handles; double-click an edge to add a vertex; Delete removes the selected; the Pen draws new ones. Enter or Escape when done.");
+				"Edit Shape: edit the outline's vertices on the canvas. Drag vertices and handles; double-click an edge (or Shift-click anywhere) to add a vertex; Delete removes the selected; the Pen draws new ones and the Pencil draws freehand. While editing no other widget can be picked; Done, Enter or Escape when done.");
 		}
 
 		inline FText DoneTooltip()
@@ -3165,13 +3165,42 @@ namespace NameTBD::Tooltips
 		inline FText SelectToolTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "SelectToolTooltip",
-				"Select (V): pick vertices and handles and drag them. Shift adds to the selection and keeps a drag straight; Ctrl while dragging turns snapping off; Ctrl-drag a Straight vertex to pull handles out of it; Alt-drag a handle to break it from its partner; double-click a vertex to switch it between Straight and Mirrored; double-click an edge to add a vertex there.");
+				"Select (V): pick vertices and handles and drag them. Shift adds to the selection and keeps a drag straight; Shift-click empty space to add a vertex there; Ctrl while dragging turns snapping off; Ctrl-drag a Straight vertex to pull handles out of it; Alt-drag a handle to break it from its partner; double-click a vertex to switch it between Straight and Mirrored (on a smoothed Curve: between smooth and a corner); double-click an edge to add a vertex there.");
 		}
 
 		inline FText PenToolTooltip()
 		{
 			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PenToolTooltip",
 				"Pen (P): click to add vertices after the selected end of an open contour - or start a new contour - and drag as you click to pull out curve handles. Click the contour's first vertex to close it. Click an edge to add a vertex on it. Shift keeps each new edge to 45 degrees.");
+		}
+
+		inline FText CanvasToolsRow()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "CanvasToolsRow", "Canvas Tools");
+		}
+
+		inline FText PencilToolTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PencilToolTooltip",
+				"Pencil (N): draw freehand. On release the line is fitted to the fewest vertices that follow it within Fit - Bezier handles, or on a smoothed Curve the points it runs through - with sharp turns kept as corners. Start on an open contour's end to carry it on; end where you started (or on the contour's other end) to close it. Escape while drawing drops the line.");
+		}
+
+		inline FText PencilFitTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PencilFitTooltip",
+				"How closely the Pencil's line follows your hand, in Slate units: lower keeps every wobble (more vertices), higher smooths it into fewer.");
+		}
+
+		inline FText SmoothPointTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "SmoothPointTooltip",
+				"Smooth: the Curve flows through the selected points, its handles worked out by its Interpolation.");
+		}
+
+		inline FText CornerPointTooltip()
+		{
+			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "CornerPointTooltip",
+				"Corner: the Curve turns sharply at the selected points (rounded by their Corner Radius); each side is smoothed on its own. Double-click a point to switch.");
 		}
 
 		inline FText StraightTooltip()

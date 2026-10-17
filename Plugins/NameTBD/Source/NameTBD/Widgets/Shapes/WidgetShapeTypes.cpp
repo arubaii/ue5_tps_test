@@ -47,6 +47,28 @@ FWidgetShapePaint::FWidgetShapePaint()
 	GradientStops.Add(FWidgetShapeGradientStop(1.f, FLinearColor(0.05f, 0.05f, 0.05f, 1.f)));
 }
 
+bool FWidgetShapePaint::SyncMaterialParameters()
+{
+	return WidgetMaterialParameters::SyncFromMaterial(MaterialParameters, Type == EWidgetShapePaintType::Material ? Material.Get() : nullptr);
+}
+
+void FWidgetShapePaint::SetMaterialParameter(FName Name, EWidgetMaterialParameterType ParameterType, float Scalar, const FLinearColor& InColor, UTexture* Texture)
+{
+	FWidgetMaterialParameter* Found = MaterialParameters.FindByPredicate([Name, ParameterType](const FWidgetMaterialParameter& Parameter)
+	{
+		return Parameter.Name == Name && Parameter.Type == ParameterType;
+	});
+	if (!Found)
+	{
+		Found = &MaterialParameters.AddDefaulted_GetRef();
+		Found->Name = Name;
+		Found->Type = ParameterType;
+	}
+	Found->Scalar = Scalar;
+	Found->Color = InColor;
+	Found->Texture = Texture;
+}
+
 float FWidgetShapePaint::GetGradientPosition(const FVector2f& BoxPoint) const
 {
 	if (Type == EWidgetShapePaintType::RadialGradient)

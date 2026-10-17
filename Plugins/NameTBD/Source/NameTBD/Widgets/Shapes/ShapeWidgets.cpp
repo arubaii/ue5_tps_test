@@ -1,6 +1,7 @@
 // Copyright AR GameSystems 2026. All rights reserved.
 
 #include "ShapeWidgets.h"
+#include "CurveFitting.h"
 
 namespace ShapeWidgetsPrivate
 {
@@ -575,4 +576,23 @@ void UCustomShape::BuildPath(FWidgetShapePath& OutPath) const
 uint32 UCustomShape::GetMeshHash() const
 {
 	return HashCombineFast(Super::GetMeshHash(), Path.GetHash());
+}
+
+void UCustomShape::MakeContourFromStroke(const TArray<FVector2D>& BoxPoints, const FVector2D& PixelsPerBox, float Tolerance, bool bClosed, FWidgetShapeContour& Out) const
+{
+	// Fitted in local units, so a stretched widget gets the same curve as it shows; handles back to box fractions after.
+	const FVector2D Scale(FMath::Max(PixelsPerBox.X, 1e-6), FMath::Max(PixelsPerBox.Y, 1e-6));
+	TArray<FVector2D> Points;
+	Points.Reserve(BoxPoints.Num());
+	for (const FVector2D& Point : BoxPoints)
+	{
+		Points.Add(Point * Scale);
+	}
+	WidgetCurveFitting::FitBeziers(Points, FMath::Max(Tolerance, 0.1f), WidgetCurveFitting::DefaultCornerAngle, bClosed, Out);
+	for (FWidgetShapeVertex& Vertex : Out.Vertices)
+	{
+		Vertex.Position /= Scale;
+		Vertex.InHandle /= Scale;
+		Vertex.OutHandle /= Scale;
+	}
 }

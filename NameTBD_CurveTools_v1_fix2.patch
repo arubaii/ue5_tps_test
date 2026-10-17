@@ -1,0 +1,48 @@
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Progress/AdvancedProgressBar.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/Progress/AdvancedProgressBar.cpp
+index eec3da7..bda9f37 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Progress/AdvancedProgressBar.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Progress/AdvancedProgressBar.cpp
+@@ -1002,7 +1002,7 @@ int32 SAdvancedProgressBar::PaintCurve(const FGeometry& AllottedGeometry, FSlate
+ 			if (bCurveClosed)
+ 			{
+ 				// Round and back to the start: measured as one line from the first point to itself.
+-				CurvePoints.Add(CurvePoints[0]);
++				CurvePoints.Add(FVector2f(CurvePoints[0]));
+ 			}
+ 			if (BarStyle.bReverseCurve)
+ 			{
+diff --git a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/CurveShape.cpp b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/CurveShape.cpp
+index 4699c89..815b7b4 100644
+--- a/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/CurveShape.cpp
++++ b/Plugins/NameTBD/Source/NameTBD/Widgets/Shapes/CurveShape.cpp
+@@ -957,7 +957,7 @@ bool UCurveShape::GetPointAtDistance(float Distance, FVector2D& OutPosition, flo
+ 	TArray<FVector2f> Points = Line->Points;
+ 	if (Line->bClosed)
+ 	{
+-		Points.Add(Points[0]);
++		Points.Add(FVector2f(Points[0]));
+ 	}
+ 	const float Length = WidgetShapeGeometry::GetLength(Points, /*bClosed=*/false);
+ 	float Along = Distance;
+@@ -993,7 +993,7 @@ float UCurveShape::FindFractionNearest(FVector2D LocalPosition) const
+ 	TArray<FVector2f> Points = Line->Points;
+ 	if (Line->bClosed)
+ 	{
+-		Points.Add(Points[0]);
++		Points.Add(FVector2f(Points[0]));
+ 	}
+ 	const float Length = WidgetShapeGeometry::GetLength(Points, /*bClosed=*/false);
+ 	if (Length <= KINDA_SMALL_NUMBER)
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapePathEditor.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapePathEditor.cpp
+index 150f322..6d1ea56 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapePathEditor.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapePathEditor.cpp
+@@ -1110,7 +1110,7 @@ namespace WidgetShapePathEditorImpl
+ 				}
+ 				if (Contour.bClosed && Points.Num() > 2)
+ 				{
+-					Points.Add(Points[0]);
++					Points.Add(FVector2f(Points[0]));
+ 				}
+ 				DrawLine(Points, Palette::ControlCage, 1.f, LayerId);
+ 			}

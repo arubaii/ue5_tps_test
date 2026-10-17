@@ -5,8 +5,11 @@
 #include "CoreMinimal.h"
 #include "Styling/SlateBrush.h"
 #include "NameTBD/Widgets/WidgetSVG.h"
+#include "NameTBD/Widgets/WidgetEffectImage.h"
 
 #include "WidgetShapeTypes.generated.h"
+
+class UMaterialInterface;
 
 /**
  * The data every shape widget is made of (Ellipse, Triangle, Star, N-gon, Custom Shape): how its outline is painted (fill
@@ -34,7 +37,9 @@ enum class EWidgetShapePaintType : uint8
 
 	RadialGradient UMETA(DisplayName = "Radial Gradient", ToolTip = "Colors blended outward from Gradient Center to Gradient Radius."),
 
-	Image UMETA(ToolTip = "A brush - a texture or a material - stretched across the shape's box and cut to its outline, tinted by the brush's Tint and by Color.")
+	Image UMETA(ToolTip = "A brush - a texture or a material - stretched across the shape's box and cut to its outline, tinted by the brush's Tint and by Color."),
+
+	Material UMETA(ToolTip = "A material with its parameters listed and set right here (filled in from the material as it is picked): each shape draws its own instance, laid over the box or along the outline, tinted by Color. The shape also hands it live values - ShapeSize (width, height), OutlineLength, TrimStart, TrimEnd - and a progress bar its Progress.")
 };
 
 /**
@@ -110,8 +115,8 @@ struct NAMETBD_API FWidgetShapePaint
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::Image && ImageSource == EWidgetImageSource::SVG", EditConditionHides, DisplayName = "SVG"))
 	TObjectPtr<UWidgetSVG> SVG = nullptr;
 
-	/** How the image lies over what it paints. Along Outline is for strokes: on a fill it is stretched over the shape, as Stretch Over Shape. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::Image", EditConditionHides))
+	/** How the image or material lies over what it paints. Along Outline is for strokes: on a fill it is stretched over the shape, as Stretch Over Shape. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::Image || Type == EWidgetShapePaintType::Material", EditConditionHides))
 	EWidgetShapeImageMapping ImageMapping = EWidgetShapeImageMapping::Box;
 
 	/**
@@ -119,10 +124,36 @@ struct NAMETBD_API FWidgetShapePaint
 	 * keeps its size whatever the shape's size (a texture repeats if it tiles; a material can Frac it). 0 runs U from 0 to 1
 	 * once round each contour, for a material that fills or sweeps the whole outline.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::Image && ImageMapping == EWidgetShapeImageMapping::AlongOutline", EditConditionHides, ClampMin = "0", UIMin = "0", UIMax = "200", ForceUnits = "px"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "(Type == EWidgetShapePaintType::Image || Type == EWidgetShapePaintType::Material) && ImageMapping == EWidgetShapeImageMapping::AlongOutline", EditConditionHides, ClampMin = "0", UIMin = "0", UIMax = "200", ForceUnits = "px"))
 	float ImageTileLength = 0.f;
 
+	/**
+	 * The material, for Material. Drawn through a dynamic instance of its own per shape, with Material Parameters set on it -
+	 * and the live values the widget hands it (ShapeSize, OutlineLength, TrimStart, TrimEnd; a progress bar's Progress).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::Material", EditConditionHides))
+	TObjectPtr<UMaterialInterface> Material = nullptr;
+
+	/**
+	 * The material's parameters, listed from it as it is picked (scalars, colors, textures) with its own defaults: change the
+	 * values, not the list. Set from Blueprint with the shape's Set Paint ... Parameter.
+	 */
+	UPROPERTY(EditAnywhere, EditFixedSize, BlueprintReadWrite, Category = "Paint", meta = (EditCondition = "Type == EWidgetShapePaintType::Material", EditConditionHides, TitleProperty = "Name"))
+	TArray<FWidgetMaterialParameter> MaterialParameters;
+
 	FWidgetShapePaint();
+
+	/** Whether this is a Material paint with a material set. */
+	bool DrawsMaterial() const { return Type == EWidgetShapePaintType::Material && Material != nullptr; }
+
+	/**
+	 * Lists Material's parameters in Material Parameters - each with the value it had here, or the material's default - and
+	 * drops the ones it no longer has. Empty with no material. True when the list changed.
+	 */
+	bool SyncMaterialParameters();
+
+	/** Sets one of Material Parameters' values, adding it when it isn't listed. */
+	void SetMaterialParameter(FName Name, EWidgetMaterialParameterType ParameterType, float Scalar, const FLinearColor& InColor, UTexture* Texture);
 
 	/** Whether this is an Image paint drawn from an SVG (Image Source SVG, an SVG set). */
 	bool DrawsSVG() const { return Type == EWidgetShapePaintType::Image && ImageSource == EWidgetImageSource::SVG && SVG != nullptr; }
@@ -131,7 +162,7 @@ struct NAMETBD_API FWidgetShapePaint
 	bool DrawsBrush() const { return Type == EWidgetShapePaintType::Image && ImageSource == EWidgetImageSource::Texture && Image.GetResourceObject() != nullptr; }
 
 	/** Whether this paints an image laid along the outline (strokes only). */
-	bool MapsAlongOutline() const { return Type == EWidgetShapePaintType::Image && ImageMapping == EWidgetShapeImageMapping::AlongOutline; }
+	bool MapsAlongOutline() const { return (Type == EWidgetShapePaintType::Image || Type == EWidgetShapePaintType::Material) && ImageMapping == EWidgetShapeImageMapping::AlongOutline; }
 
 	/** The UV a vertex of a stroke laid Along Outline takes: Along is its distance along the outline and how far across (0..1), OutlineLength its contour's length. */
 	FVector2f GetOutlineUV(const FVector2f& Along, float OutlineLength) const

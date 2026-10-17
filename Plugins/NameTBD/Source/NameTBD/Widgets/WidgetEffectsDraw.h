@@ -7,6 +7,8 @@
 
 class FSlateWindowElementList;
 class FWidgetSVGBrush;
+class FWidgetEffectMaterials;
+struct FWidgetEffectMaterialInputs;
 class SWidget;
 struct FGeometry;
 struct FSlateBrush;
@@ -83,13 +85,16 @@ namespace WidgetEffectsDraw
 		const FSlateBrush* Brush = nullptr, TFunction<FVector2f(const FWidgetShapeMeshVertex&)> UVOf = nullptr);
 
 	/**
-	 * Paints a mesh with a shape paint (color, gradient, image or SVG) laid over Box (local space): what a shape's fill does.
-	 * The mesh should already be cut for the paint's gradient (WidgetShapeGeometry::CutForGradient with MakeBoxFrame(Box)).
+	 * Paints a mesh with a shape paint (color, gradient, image, SVG or material) laid over Box (local space): what a shape's fill
+	 * does. The mesh should already be cut for the paint's gradient (WidgetShapeGeometry::CutForGradient with MakeBoxFrame(Box)).
 	 * ColorScale multiplies every color (a hover brightening, an opacity). False while an SVG's first drawing isn't ready.
+	 * A Material paint is drawn through Materials (its instance kept under MaterialKey, handed MaterialInputs); without
+	 * Materials it is drawn as its Color. bAlongOutline: an image or material laid along the outline (U from each vertex's Along).
 	 */
 	NAMETBD_API bool PaintMeshWithPaint(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& Geometry, const FWidgetShapeMesh& Mesh,
 		const FWidgetShapePaint& Paint, const FBox2f& Box, FWidgetSVGBrush& SVGBrush, const SWidget& Widget, const FWidgetStyle& InWidgetStyle,
-		const FLinearColor& ColorScale = FLinearColor::White);
+		const FLinearColor& ColorScale = FLinearColor::White, FWidgetEffectMaterials* Materials = nullptr, uint64 MaterialKey = 0,
+		const FWidgetEffectMaterialInputs* MaterialInputs = nullptr, bool bAlongOutline = false);
 
 	/** The frame a shape paint is laid over for a box in local space: unturned, its middle and size. */
 	NAMETBD_API FWidgetShapeFrame MakeBoxFrame(const FBox2f& Box);

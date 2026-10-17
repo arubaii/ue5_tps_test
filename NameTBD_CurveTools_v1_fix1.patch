@@ -1,0 +1,20 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+index 815dcdf..2e90f89 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDColors.h
+@@ -868,7 +868,6 @@ namespace NameTBD
+ 			inline const FLinearColor PathLine(AnimationOrange_Normal.CopyWithNewOpacity(0.95f));
+ 			inline constexpr float PathUnplayedOpacity = 0.4f;
+ 			inline constexpr float PathThickness = 1.5f;
+-			inline constexpr float PencilThickness = 2.0f;
+ 			inline const FLinearColor Jump(1.0f, 1.0f, 1.0f, 0.45f);
+ 			inline constexpr float JumpDash = 4.0f;
+ 			inline const FLinearColor Dot(1.0f, 1.0f, 1.0f, 0.95f);
+@@ -941,6 +940,7 @@ namespace NameTBD
+ 			inline constexpr float VertexSize = 9.0f;
+ 			inline constexpr float HandleSize = 7.0f;
+ 			inline constexpr float PathThickness = 1.5f;
++			inline constexpr float PencilThickness = 2.0f;
+ 			inline constexpr float HitRadius = 7.0f;
+ 		}
+ 

@@ -8,6 +8,7 @@
 #include "WidgetAnimPanelSource.h"
 #include "WidgetAnimScripting.h"
 #include "WidgetGizmoSettings.h"
+#include "WidgetShapePathEditor.h"
 
 #include "Blueprint/UserWidget.h"
 #include "Blueprint/WidgetTree.h"
@@ -1057,7 +1058,8 @@ namespace WidgetGizmoImpl
 			UWidget* Authored = SelectedTemplate ? SelectedTemplate : SelectedPreview;
 			Target.Pose = Authored->GetRenderTransform();
 			Target.Pivot = Authored->GetRenderTransformPivot();
-			Target.bLocked = Authored->IsLockedInDesigner();
+			// A shape whose outline is being edited on the canvas gets no gizmo: its clicks and keys are the path editor's.
+			Target.bLocked = Authored->IsLockedInDesigner() || WidgetShapePathEditing::IsEditing(Authored);
 		}
 		Targets.Sort([](const FTarget& A, const FTarget& B) { return A.GetName() < B.GetName(); });
 		if (Targets.Num() > MaxTargets)

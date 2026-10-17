@@ -2,6 +2,7 @@
 
 #include "ShapeWidget.h"
 #include "CurveShape.h"
+#include "NameTBD/Widgets/WidgetEditorHooks.h"
 
 #include "Layout/ArrangedChildren.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -434,6 +435,7 @@ void SWidgetShape::Rebuild(const UShapeWidget& Shape, const FVector2f& LocalSize
 		WidgetShapeGeometry::ClassifyLines(Outline, FillOnLeft);
 	}
 	Shape.BuildStrokeMesh(Outline, FillOnLeft, AntiAlias, Tolerance, StrokeMesh);
+	OutlineLength = Outline.Lines.Num() > 0 ? WidgetShapeGeometry::GetLength(Outline.Lines[0].Points, Outline.Lines[0].bClosed) : 0.f;
 
 	// A radial gradient's cells about six pixels across on screen: its rings then read round.
 	const float CellSize = 6.f / PixelScale;
@@ -472,9 +474,22 @@ void SWidgetShape::PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePai
 		PaintSVG.Reset();
 	}
 
-	const bool bImage = SVGImage || Paint.DrawsBrush();
-	const FSlateBrush& Brush = SVGImage ? *SVGImage : bImage ? Paint.Image : GetUntexturedBrush();
-	const FLinearColor BrushTint = (bImage && !SVGImage) ? Paint.Image.GetTint(InWidgetStyle) : FLinearColor::White;
+	// A Material paint: the shape's own instance of it, handed the shape's live values.
+	const FSlateBrush* MaterialImage = nullptr;
+	if (Paint.DrawsMaterial())
+	{
+		const UShapeWidget* Owner = ShapeWidget.Get();
+		FWidgetEffectMaterialInputs Inputs;
+		Inputs.Add(TEXT("ShapeSize"), FLinearColor(FMath::Abs(Frame.Size.X), FMath::Abs(Frame.Size.Y), 0.f, 0.f));
+		Inputs.Add(TEXT("OutlineLength"), OutlineLength);
+		Inputs.Add(TEXT("TrimStart"), Owner ? Owner->Trim.Start : 0.f);
+		Inputs.Add(TEXT("TrimEnd"), Owner ? Owner->Trim.End : 1.f);
+		MaterialImage = PaintMaterials.GetMaterialBrush(bStroke ? 1 : 0, Paint.Material, Paint.MaterialParameters, &Inputs);
+	}
+
+	const bool bImage = SVGImage || MaterialImage || Paint.DrawsBrush();
+	const FSlateBrush& Brush = SVGImage ? *SVGImage : MaterialImage ? *MaterialImage : bImage ? Paint.Image : GetUntexturedBrush();
+	const FLinearColor BrushTint = (bImage && !SVGImage && !MaterialImage) ? Paint.Image.GetTint(InWidgetStyle) : FLinearColor::White;
 
 	// An image from an atlas covers only part of its texture: its UV Region says which.
 	const FBox2f UVRegion = Brush.GetUVRegion();
@@ -685,6 +700,11 @@ void UShapeWidget::SetFillMaterial(UMaterialInterface* InMaterial)
 
 UMaterialInstanceDynamic* UShapeWidget::GetDynamicMaterial(FWidgetShapePaint& Paint)
 {
+	// A Material paint's instance is the one its shape draws with (made when first drawn); its listed parameters win when they change.
+	if (Paint.Type == EWidgetShapePaintType::Material)
+	{
+		return MyShape.IsValid() ? MyShape->GetPaintMaterial(&Paint == &Stroke.Paint) : nullptr;
+	}
 	if (Paint.Type != EWidgetShapePaintType::Image)
 	{
 		return nullptr;
@@ -712,6 +732,49 @@ UMaterialInstanceDynamic* UShapeWidget::GetDynamicStrokeMaterial()
 UMaterialInstanceDynamic* UShapeWidget::GetDynamicFillMaterial()
 {
 	return GetDynamicMaterial(Fill);
+}
+
+void UShapeWidget::SetPaintMaterial(bool bStroke, UMaterialInterface* InMaterial)
+{
+	FWidgetShapePaint& Paint = bStroke ? Stroke.Paint : Fill;
+	if (InMaterial)
+	{
+		Paint.Type = EWidgetShapePaintType::Material;
+		Paint.Material = InMaterial;
+		Paint.SyncMaterialParameters();
+		if (bStroke)
+		{
+			Stroke.bEnabled = true;
+		}
+		else
+		{
+			bFill = true;
+		}
+	}
+	else if (Paint.Type == EWidgetShapePaintType::Material)
+	{
+		Paint.Type = EWidgetShapePaintType::Color;
+		Paint.Material = nullptr;
+	}
+	InvalidateShape();
+}
+
+void UShapeWidget::SetPaintScalarParameter(bool bStroke, FName ParameterName, float InValue)
+{
+	(bStroke ? Stroke.Paint : Fill).SetMaterialParameter(ParameterName, EWidgetMaterialParameterType::Scalar, InValue, FLinearColor::White, nullptr);
+	InvalidateShape();
+}
+
+void UShapeWidget::SetPaintColorParameter(bool bStroke, FName ParameterName, FLinearColor InValue)
+{
+	(bStroke ? Stroke.Paint : Fill).SetMaterialParameter(ParameterName, EWidgetMaterialParameterType::Color, 0.f, InValue, nullptr);
+	InvalidateShape();
+}
+
+void UShapeWidget::SetPaintTextureParameter(bool bStroke, FName ParameterName, UTexture* InValue)
+{
+	(bStroke ? Stroke.Paint : Fill).SetMaterialParameter(ParameterName, EWidgetMaterialParameterType::Texture, 0.f, FLinearColor::White, InValue);
+	InvalidateShape();
 }
 
 FWidgetShapePaint& UShapeWidget::GetImagePaint()
@@ -1082,6 +1145,27 @@ void UShapeWidgetSlot::ReleaseSlateResources(bool bReleaseChildren)
 const FText UShapeWidget::GetPaletteCategory()
 {
 	return FText::FromString(TEXT("AR GameSystems UI"));
+}
+
+void UShapeWidget::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	// A Material paint lists its material's parameters as the material is picked. The Details panel edits the designer's preview
+	// and hands only the edited value on to the Widget Blueprint's own widget, so the list is made there too.
+	const bool bListed = Fill.SyncMaterialParameters() | Stroke.Paint.SyncMaterialParameters();
+	if (bListed)
+	{
+		if (UShapeWidget* Template = Cast<UShapeWidget>(WidgetEditorHooks::FindDesignerTemplate(this)))
+		{
+			if (Template != this)
+			{
+				Template->Modify();
+				Template->Fill.MaterialParameters = Fill.MaterialParameters;
+				Template->Stroke.Paint.MaterialParameters = Stroke.Paint.MaterialParameters;
+			}
+		}
+	}
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+	InvalidateShape();
 }
 #endif
 

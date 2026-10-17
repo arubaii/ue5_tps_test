@@ -1,6 +1,7 @@
 // Copyright AR GameSystems 2026. All rights reserved.
 
 #include "CurveShape.h"
+#include "CurveFitting.h"
 
 #include "NameTBD/Widgets/WidgetEditorHooks.h"
 #include "NameTBD/Widgets/Paths/WidgetPathTypes.h"
@@ -36,6 +37,47 @@ namespace CurveShapePrivate
 	float AngleOf(const FVector2f& Direction)
 	{
 		return FMath::RadiansToDegrees(FMath::Atan2(Direction.Y, Direction.X));
+	}
+
+	/**
+	 * The way a line leaves at one end, outward: from a point a little way in (a couple of units, so the last tiny step of a
+	 * flattened curve doesn't swing it) to the end.
+	 */
+	FVector2f EndDirection(const TArray<FVector2f>& Points, bool bAtStart)
+	{
+		const int32 Count = Points.Num();
+		const FVector2f End = bAtStart ? Points[0] : Points[Count - 1];
+		FVector2f Inside = bAtStart ? Points[FMath::Min(1, Count - 1)] : Points[FMath::Max(Count - 2, 0)];
+		for (int32 Step = 1; Step < Count; ++Step)
+		{
+			Inside = bAtStart ? Points[Step] : Points[Count - 1 - Step];
+			if ((Inside - End).SizeSquared() >= 4.f)
+			{
+				break;
+			}
+		}
+		const FVector2f Way = (End - Inside).GetSafeNormal();
+		return Way.IsNearlyZero() ? FVector2f(bAtStart ? -1.f : 1.f, 0.f) : Way;
+	}
+
+	void AppendMesh(FWidgetShapeMesh& Out, const FWidgetShapeMesh& Piece)
+	{
+		const uint32 Base = static_cast<uint32>(Out.Vertices.Num());
+		Out.Vertices.Append(Piece.Vertices);
+		Out.Indices.Reserve(Out.Indices.Num() + Piece.Indices.Num());
+		for (const uint32 Index : Piece.Indices)
+		{
+			Out.Indices.Add(Base + Index);
+		}
+	}
+
+	/** The point of a Bezier segment of a contour (positions and handles in drawn units) at T. */
+	FVector2D SegmentPoint(const FWidgetShapeContour& Contour, int32 Segment, double T)
+	{
+		const int32 Count = Contour.Vertices.Num();
+		const FWidgetShapeVertex& From = Contour.Vertices[Segment % Count];
+		const FWidgetShapeVertex& To = Contour.Vertices[(Segment + 1) % Count];
+		return WidgetCurveFitting::EvaluateCubic(From.Position, From.Position + From.GetOut(), To.Position + To.GetIn(), To.Position, T);
 	}
 
 	/** The distance along Points of the point on them nearest Target. */
@@ -80,6 +122,16 @@ UWidgetCurvePresetAsset::UWidgetCurvePresetAsset()
 	Stroke.Paint.Color = FLinearColor::White;
 }
 
+#if WITH_EDITOR
+void UWidgetCurvePresetAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	// A Material paint lists its material's parameters as the material is picked, as on a shape.
+	Stroke.Paint.SyncMaterialParameters();
+	Fill.SyncMaterialParameters();
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+}
+#endif
+
 // =====================================================================================================
 // Curve
 // =====================================================================================================
@@ -103,95 +155,94 @@ UCurveShape::UCurveShape()
 
 void UCurveShape::SmoothContour(FWidgetShapeContour& Contour, float InSmoothness)
 {
-	const int32 Count = Contour.Vertices.Num();
-	if (Count < 2)
-	{
-		return;
-	}
-	const float Amount = FMath::Max(InSmoothness, 0.f);
-	const bool bClosed = Contour.bClosed;
-	auto PositionAt = [&Contour, Count](int32 Index) { return Contour.Vertices[(Index + Count) % Count].Position; };
+	WidgetCurveFitting::SmoothBalanced(Contour, InSmoothness);
+}
 
-	// Every point but the ends of an open line: its handles along the line between its neighbors, each a third of the way to
-	// that side's neighbor - smooth through the point, never overshooting a neighbor much closer than the other.
-	for (int32 Index = 0; Index < Count; ++Index)
+void UCurveShape::InterpolateContour(FWidgetShapeContour& Contour) const
+{
+	switch (Interpolation)
 	{
-		FWidgetShapeVertex& Vertex = Contour.Vertices[Index];
-		if (Vertex.Type == EWidgetShapeVertexType::Disconnected)
-		{
-			// A sharp corner of the smooth curve (still rounded by its Corner Radius).
-			Vertex.Type = EWidgetShapeVertexType::Straight;
-			Vertex.InHandle = FVector2D::ZeroVector;
-			Vertex.OutHandle = FVector2D::ZeroVector;
-			continue;
-		}
-		// An open line's ends are aimed below, once every point between has its handles; until then they have none.
-		const bool bEnd = !bClosed && (Index == 0 || Index == Count - 1);
-		if (bEnd)
-		{
-			Vertex.Type = EWidgetShapeVertexType::Straight;
-			Vertex.InHandle = FVector2D::ZeroVector;
-			Vertex.OutHandle = FVector2D::ZeroVector;
-			continue;
-		}
-		const FVector2D Previous = PositionAt(Index - 1);
-		const FVector2D Next = PositionAt(Index + 1);
-		const FVector2D Direction = (Next - Previous).GetSafeNormal();
-		Vertex.Type = EWidgetShapeVertexType::Asymmetric;
-		if (Direction.IsNearlyZero() || Amount <= 0.f)
-		{
-			Vertex.InHandle = FVector2D::ZeroVector;
-			Vertex.OutHandle = FVector2D::ZeroVector;
-			continue;
-		}
-		Vertex.InHandle = -Direction * ((Vertex.Position - Previous).Size() / 3.0 * Amount);
-		Vertex.OutHandle = Direction * ((Next - Vertex.Position).Size() / 3.0 * Amount);
-	}
-
-	if (bClosed)
-	{
-		return;
-	}
-
-	// An open line's ends: aimed at the tip of their neighbor's handle, so the curve leaves and arrives the way it bends.
-	for (const int32 End : { 0, Count - 1 })
-	{
-		FWidgetShapeVertex& Vertex = Contour.Vertices[End];
-		if (Amount <= 0.f)
-		{
-			continue;
-		}
-		const bool bFirst = End == 0;
-		const FWidgetShapeVertex& Neighbor = Contour.Vertices[bFirst ? 1 : Count - 2];
-		const FVector2D Aim = Neighbor.Position + (bFirst ? Neighbor.GetIn() : Neighbor.GetOut());
-		const FVector2D Direction = (Aim - Vertex.Position).GetSafeNormal();
-		const double Length = (Neighbor.Position - Vertex.Position).Size() / 3.0 * Amount;
-		Vertex.Type = EWidgetShapeVertexType::Asymmetric;
-		Vertex.InHandle = bFirst ? FVector2D::ZeroVector : Direction * Length;
-		Vertex.OutHandle = bFirst ? Direction * Length : FVector2D::ZeroVector;
+	case EWidgetCurveInterpolation::CatmullRom:
+		WidgetCurveFitting::SmoothCatmullRom(Contour, Smoothness, CatmullRomAlpha);
+		break;
+	case EWidgetCurveInterpolation::Natural:
+		WidgetCurveFitting::SmoothNatural(Contour, Smoothness);
+		break;
+	case EWidgetCurveInterpolation::Monotone:
+		WidgetCurveFitting::SmoothMonotone(Contour, Smoothness);
+		break;
+	case EWidgetCurveInterpolation::BSpline:
+		WidgetCurveFitting::MakeBSpline(Contour, Smoothness);
+		break;
+	default:
+		WidgetCurveFitting::SmoothBalanced(Contour, Smoothness);
+		break;
 	}
 }
 
-void UCurveShape::BuildPath(FWidgetShapePath& OutPath) const
+void UCurveShape::SmoothPath(FWidgetShapePath& InOutPath, const FVector2D& PixelsPerBox) const
+{
+	// Worked out at the drawn proportions: box fractions stretched 200 x 80 would aim the handles the wrong way once drawn.
+	const FVector2D Scale(FMath::Max(FMath::Abs(PixelsPerBox.X), 1e-6), FMath::Max(FMath::Abs(PixelsPerBox.Y), 1e-6));
+	for (FWidgetShapeContour& Contour : InOutPath.Contours)
+	{
+		for (FWidgetShapeVertex& Vertex : Contour.Vertices)
+		{
+			Vertex.Position *= Scale;
+		}
+		InterpolateContour(Contour);
+		for (FWidgetShapeVertex& Vertex : Contour.Vertices)
+		{
+			Vertex.Position /= Scale;
+			Vertex.InHandle /= Scale;
+			Vertex.OutHandle /= Scale;
+		}
+	}
+}
+
+void UCurveShape::BuildCurvePath(FWidgetShapePath& OutPath, const FVector2D& PixelsPerBox) const
 {
 	OutPath = Path;
-	for (FWidgetShapeContour& Contour : OutPath.Contours)
+	switch (Smoothing)
 	{
-		switch (Smoothing)
+	case EWidgetCurveSmoothing::Smooth:
+		SmoothPath(OutPath, PixelsPerBox);
+		break;
+	case EWidgetCurveSmoothing::Straight:
+		for (FWidgetShapeContour& Contour : OutPath.Contours)
 		{
-		case EWidgetCurveSmoothing::Smooth:
-			SmoothContour(Contour, Smoothness);
-			break;
-		case EWidgetCurveSmoothing::Straight:
 			for (FWidgetShapeVertex& Vertex : Contour.Vertices)
 			{
 				Vertex.Type = EWidgetShapeVertexType::Straight;
 			}
-			break;
-		default:
-			break;
 		}
+		break;
+	default:
+		break;
 	}
+}
+
+FVector2D UCurveShape::GetDrawnPixelsPerBox() const
+{
+	FVector2D Size = GetCachedGeometry().GetLocalSize();
+	if (Size.X <= 0.0 || Size.Y <= 0.0)
+	{
+		Size = DesiredSize;
+	}
+	const FWidgetShapeFrame DrawnFrame = MakeFrame(FVector2f(static_cast<float>(FMath::Max(Size.X, 1.0)), static_cast<float>(FMath::Max(Size.Y, 1.0))));
+	return FVector2D(FMath::Abs(DrawnFrame.Size.X), FMath::Abs(DrawnFrame.Size.Y));
+}
+
+void UCurveShape::BuildOutline(const FWidgetShapeFrame& InFrame, float Tolerance, FWidgetShapeOutline& Out) const
+{
+	FWidgetShapePath Built;
+	BuildCurvePath(Built, FVector2D(FMath::Abs(InFrame.Size.X), FMath::Abs(InFrame.Size.Y)));
+	WidgetShapeGeometry::FlattenPath(Built, InFrame, Tolerance, Out);
+}
+
+void UCurveShape::BuildPath(FWidgetShapePath& OutPath) const
+{
+	BuildCurvePath(OutPath, GetDrawnPixelsPerBox());
 }
 
 float UCurveShape::WidthScaleAt(float Fraction) const
@@ -219,8 +270,10 @@ bool UCurveShape::HasVaryingWidth() const
 uint32 UCurveShape::GetMeshHash() const
 {
 	uint32 Hash = Super::GetMeshHash();
-	Hash = HashCombineFast(Hash, GetTypeHash(static_cast<uint8>(Smoothing)));
+	Hash = HashCombineFast(Hash, GetTypeHash(static_cast<uint8>(Smoothing)) | (GetTypeHash(static_cast<uint8>(Interpolation)) << 8));
 	Hash = HashCombineFast(Hash, GetTypeHash(Smoothness));
+	Hash = HashCombineFast(Hash, GetTypeHash(CatmullRomAlpha));
+	Hash = HashCombineFast(Hash, HashCombineFast(GetTypeHash(StartCapAngle), GetTypeHash(EndCapAngle)));
 	Hash = HashCombineFast(Hash, GetTypeHash(static_cast<uint8>(StartMarker)) | (GetTypeHash(static_cast<uint8>(EndMarker)) << 8));
 	Hash = HashCombineFast(Hash, GetTypeHash(MarkerSize));
 	Hash = HashCombineFast(Hash, GetTypeHash(StartWidthScale));
@@ -247,7 +300,9 @@ void UCurveShape::BuildStrokeMesh(const FWidgetShapeOutline& InOutline, const TA
 	const bool bMarkers = StartMarker != EWidgetPathMarker::None || EndMarker != EWidgetPathMarker::None;
 	const bool bVarying = HasVaryingWidth();
 	const bool bResample = bVarying || (bGradientAlongCurve && Stroke.Paint.IsGradient());
-	if (!Stroke.IsDrawn() || (!bMarkers && !bResample))
+	const bool bSlantStart = Stroke.Cap != EWidgetShapeLineCap::Round && StartMarker == EWidgetPathMarker::None && !FMath::IsNearlyZero(StartCapAngle, 0.01f);
+	const bool bSlantEnd = Stroke.Cap != EWidgetShapeLineCap::Round && EndMarker == EWidgetPathMarker::None && !FMath::IsNearlyZero(EndCapAngle, 0.01f);
+	if (!Stroke.IsDrawn() || (!bMarkers && !bResample && !bSlantStart && !bSlantEnd))
 	{
 		Super::BuildStrokeMesh(InOutline, FillOnLeft, AntiAlias, Tolerance, Out);
 		return;
@@ -326,6 +381,69 @@ void UCurveShape::BuildStrokeMesh(const FWidgetShapeOutline& InOutline, const TA
 			const float B = Pieces[PieceIndex].Value - (PieceIndex == Pieces.Num() - 1 ? EndInset : 0.f);
 			if (B - A <= 0.05f)
 			{
+				continue;
+			}
+
+			// A slanted end: the piece is built longer, square-ended, and cut off at its angle after (SlantStrokeEnd).
+			const bool bSlantA = bSlantStart && PieceIndex == 0;
+			const bool bSlantB = bSlantEnd && PieceIndex == Pieces.Num() - 1;
+			if (bSlantA || bSlantB)
+			{
+				WidgetPathGeometry::CutBetween(Points, A, B, Cut);
+				if (Cut.Num() < 2)
+				{
+					continue;
+				}
+				const float HalfA = WidthAt(A) * 0.5f;
+				const float HalfB = WidthAt(B) * 0.5f;
+				const float SquareA = Stroke.Cap == EWidgetShapeLineCap::Square ? HalfA : 0.f;
+				const float SquareB = Stroke.Cap == EWidgetShapeLineCap::Square ? HalfB : 0.f;
+				const float ExtendA = SquareA + (bSlantA ? WidgetShapeGeometry::GetSlantReach(StartCapAngle, HalfA, AntiAlias) : 0.f);
+				const float ExtendB = SquareB + (bSlantB ? WidgetShapeGeometry::GetSlantReach(EndCapAngle, HalfB, AntiAlias) : 0.f);
+				const FVector2f StartPoint = Cut[0];
+				const FVector2f EndPoint = Cut.Last();
+				const FVector2f StartWay = EndDirection(Cut, /*bAtStart=*/true);
+				const FVector2f EndWay = EndDirection(Cut, /*bAtStart=*/false);
+				TArray<FVector2f> Extended;
+				Extended.Reserve(Cut.Num() + 2);
+				Extended.Add(StartPoint + StartWay * ExtendA);
+				Extended.Append(Cut);
+				Extended.Add(EndPoint + EndWay * ExtendB);
+				const float ExtendedLength = WidgetShapeGeometry::GetLength(Extended, /*bClosed=*/false);
+				const float Shift = A - ExtendA;
+
+				FWidgetShapeMesh Piece;
+				if (bVarying)
+				{
+					WidgetPathGeometry::BuildDashedRibbons(Extended, 0.f, ExtendedLength, Stroke.DashLength, Stroke.DashGap, Stroke.DashOffset + Shift,
+						[&WidthAt, Shift, A, B](float Distance) { return WidthAt(FMath::Clamp(Distance + Shift, A, B)); },
+						[](float) { return 0.f; }, AntiAlias, Length, Piece);
+				}
+				else
+				{
+					FWidgetShapeOutline Single;
+					FWidgetShapeLine& Run = Single.Lines.AddDefaulted_GetRef();
+					Run.Points = Extended;
+					Run.bClosed = false;
+					FWidgetShapeStroke PieceStroke = Stroke;
+					PieceStroke.Cap = EWidgetShapeLineCap::Butt;
+					PieceStroke.DashOffset = Stroke.DashOffset + Shift;
+					WidgetShapeGeometry::BuildStroke(Single, OpenSide, PieceStroke, FWidgetShapeTrim(), AntiAlias, Tolerance, Piece);
+				}
+				for (FWidgetShapeMeshVertex& Vertex : Piece.Vertices)
+				{
+					Vertex.Along.X += Shift;
+					Vertex.OutlineLength = Length;
+				}
+				if (bSlantA)
+				{
+					WidgetShapeGeometry::SlantStrokeEnd(Piece, StartPoint + StartWay * SquareA, StartWay, StartCapAngle, HalfA, AntiAlias);
+				}
+				if (bSlantB)
+				{
+					WidgetShapeGeometry::SlantStrokeEnd(Piece, EndPoint + EndWay * SquareB, EndWay, EndCapAngle, HalfB, AntiAlias);
+				}
+				AppendMesh(Out, Piece);
 				continue;
 			}
 
@@ -545,6 +663,176 @@ void UCurveShape::SetCurveFromTemplate(EWidgetCurveTemplate Template)
 	InvalidateShape();
 }
 
+void UCurveShape::SetInterpolation(EWidgetCurveInterpolation InInterpolation)
+{
+	Interpolation = InInterpolation;
+	InvalidateShape();
+}
+
+void UCurveShape::SetCapAngles(float InStartCapAngle, float InEndCapAngle)
+{
+	StartCapAngle = FMath::Clamp(InStartCapAngle, -80.f, 80.f);
+	EndCapAngle = FMath::Clamp(InEndCapAngle, -80.f, 80.f);
+	InvalidateShape();
+}
+
+void UCurveShape::FitCurveToPoints(float Tolerance)
+{
+	const FVector2D PixelsPerBox = GetDrawnPixelsPerBox();
+	TArray<FVector2D> Points;
+	for (FWidgetShapeContour& Contour : Path.Contours)
+	{
+		if (Contour.Vertices.Num() < 3)
+		{
+			continue;
+		}
+		Points.Reset();
+		for (const FWidgetShapeVertex& Vertex : Contour.Vertices)
+		{
+			Points.Add(Vertex.Position);
+		}
+		FWidgetShapeContour Fitted;
+		MakeContourFromStroke(Points, PixelsPerBox, Tolerance, Contour.bClosed, Fitted);
+		if (Fitted.Vertices.Num() >= 2)
+		{
+			Contour = MoveTemp(Fitted);
+		}
+	}
+	CurvePreset = nullptr;
+	PresetAppliedHash = 0;
+	InvalidateShape();
+}
+
+void UCurveShape::ReverseCurve()
+{
+	for (FWidgetShapeContour& Contour : Path.Contours)
+	{
+		Contour.Reverse();
+	}
+	CurvePreset = nullptr;
+	PresetAppliedHash = 0;
+	InvalidateShape();
+}
+
+void UCurveShape::MakeContourFromStroke(const TArray<FVector2D>& BoxPoints, const FVector2D& PixelsPerBox, float Tolerance, bool bClosed, FWidgetShapeContour& Out) const
+{
+	using namespace CurveShapePrivate;
+
+	if (Smoothing == EWidgetCurveSmoothing::Handles)
+	{
+		Super::MakeContourFromStroke(BoxPoints, PixelsPerBox, Tolerance, bClosed, Out);
+		return;
+	}
+
+	// In drawn units, so the tolerance means what it says on a stretched widget.
+	const FVector2D Scale(FMath::Max(FMath::Abs(PixelsPerBox.X), 1e-6), FMath::Max(FMath::Abs(PixelsPerBox.Y), 1e-6));
+	const double FitTolerance = FMath::Max(static_cast<double>(Tolerance), 0.1);
+	TArray<FVector2D> Points;
+	Points.Reserve(BoxPoints.Num());
+	for (const FVector2D& Point : BoxPoints)
+	{
+		Points.Add(Point * Scale);
+	}
+	WidgetCurveFitting::RemoveNearDuplicates(Points, FMath::Min(FitTolerance * 0.25, 0.5), bClosed);
+	Out.Vertices.Reset();
+	Out.bClosed = bClosed && Points.Num() >= 3;
+	if (Points.Num() < 3)
+	{
+		for (const FVector2D& Point : Points)
+		{
+			Out.Vertices.Add(FWidgetShapeVertex(Point / Scale));
+		}
+		return;
+	}
+
+	TArray<int32> Corners;
+	WidgetCurveFitting::FindCorners(Points, WidgetCurveFitting::DefaultCornerAngle, FMath::Max(FitTolerance * 3.0, 4.0), Corners);
+	TArray<int32> Anchors;
+	WidgetCurveFitting::Simplify(Points, Smoothing == EWidgetCurveSmoothing::Straight ? FitTolerance : FitTolerance * 2.0, Corners, Anchors);
+
+	auto MakeContour = [&]()
+	{
+		FWidgetShapeContour Made;
+		Made.bClosed = Out.bClosed;
+		for (const int32 Anchor : Anchors)
+		{
+			FWidgetShapeVertex& Vertex = Made.Vertices.Add_GetRef(FWidgetShapeVertex(Points[Anchor]));
+			Vertex.Type = Corners.Contains(Anchor) ? EWidgetShapeVertexType::Disconnected : EWidgetShapeVertexType::Straight;
+		}
+		return Made;
+	};
+
+	// Smooth Through Points: the fewest points whose smoothed curve follows the line drawn. From a sparse start, the point
+	// drawn farthest from the curve is added until none is farther than the tolerance - whichever interpolation is set, so
+	// the curve the points make is the one fitted.
+	if (Smoothing == EWidgetCurveSmoothing::Smooth)
+	{
+		constexpr int32 SamplesPerSegment = 16;
+		TArray<FVector2D> Near;
+		for (int32 Pass = 0; Pass < 256 && Anchors.Num() < Points.Num(); ++Pass)
+		{
+			FWidgetShapeContour Curve = MakeContour();
+			InterpolateContour(Curve);
+			const int32 AnchorCount = Anchors.Num();
+			const int32 Segments = Curve.bClosed ? AnchorCount : AnchorCount - 1;
+			double Worst = FitTolerance;
+			int32 WorstIndex = INDEX_NONE;
+			for (int32 Segment = 0; Segment < Segments; ++Segment)
+			{
+				const int32 From = Anchors[Segment];
+				const int32 To = Segment + 1 < AnchorCount ? Anchors[Segment + 1] : Points.Num();
+				if (To - From < 2)
+				{
+					continue;
+				}
+				// The segment and its neighbours (a B-Spline's points pull on the segments either side).
+				Near.Reset();
+				for (int32 Offset = -1; Offset <= 1; ++Offset)
+				{
+					int32 Other = Segment + Offset;
+					if (Curve.bClosed)
+					{
+						Other = (Other + Segments) % Segments;
+					}
+					else if (Other < 0 || Other >= Segments)
+					{
+						continue;
+					}
+					for (int32 Step = 0; Step <= SamplesPerSegment; ++Step)
+					{
+						Near.Add(SegmentPoint(Curve, Other, static_cast<double>(Step) / SamplesPerSegment));
+					}
+				}
+				for (int32 Index = From + 1; Index < To; ++Index)
+				{
+					double Distance = TNumericLimits<double>::Max();
+					for (int32 Sample = 1; Sample < Near.Num(); ++Sample)
+					{
+						Distance = FMath::Min(Distance, WidgetCurveFitting::DistanceToSegment(Points[Index], Near[Sample - 1], Near[Sample]));
+					}
+					if (Distance > Worst)
+					{
+						Worst = Distance;
+						WorstIndex = Index;
+					}
+				}
+			}
+			if (WorstIndex == INDEX_NONE)
+			{
+				break;
+			}
+			Anchors.Add(WorstIndex);
+			Anchors.Sort();
+		}
+	}
+
+	Out = MakeContour();
+	for (FWidgetShapeVertex& Vertex : Out.Vertices)
+	{
+		Vertex.Position /= Scale;
+	}
+}
+
 void UCurveShape::SetPoints(const TArray<FVector2D>& Points, bool bClosed)
 {
 	Path.Contours.Reset();
@@ -669,7 +957,7 @@ bool UCurveShape::GetPointAtDistance(float Distance, FVector2D& OutPosition, flo
 	TArray<FVector2f> Points = Line->Points;
 	if (Line->bClosed)
 	{
-		Points.Add(Points[0]);
+		Points.Add(FVector2f(Points[0]));
 	}
 	const float Length = WidgetShapeGeometry::GetLength(Points, /*bClosed=*/false);
 	float Along = Distance;
@@ -705,7 +993,7 @@ float UCurveShape::FindFractionNearest(FVector2D LocalPosition) const
 	TArray<FVector2f> Points = Line->Points;
 	if (Line->bClosed)
 	{
-		Points.Add(Points[0]);
+		Points.Add(FVector2f(Points[0]));
 	}
 	const float Length = WidgetShapeGeometry::GetLength(Points, /*bClosed=*/false);
 	if (Length <= KINDA_SMALL_NUMBER)
@@ -727,7 +1015,9 @@ void UCurveShape::GetPresetCoveredProperties(bool bWithLook, TArray<const FPrope
 	{
 		GET_MEMBER_NAME_CHECKED(UCustomShape, Path),
 		GET_MEMBER_NAME_CHECKED(UCurveShape, Smoothing),
-		GET_MEMBER_NAME_CHECKED(UCurveShape, Smoothness)
+		GET_MEMBER_NAME_CHECKED(UCurveShape, Interpolation),
+		GET_MEMBER_NAME_CHECKED(UCurveShape, Smoothness),
+		GET_MEMBER_NAME_CHECKED(UCurveShape, CatmullRomAlpha)
 	};
 	static const FName Look[] =
 	{
@@ -737,6 +1027,8 @@ void UCurveShape::GetPresetCoveredProperties(bool bWithLook, TArray<const FPrope
 		GET_MEMBER_NAME_CHECKED(UCurveShape, StartMarker),
 		GET_MEMBER_NAME_CHECKED(UCurveShape, EndMarker),
 		GET_MEMBER_NAME_CHECKED(UCurveShape, MarkerSize),
+		GET_MEMBER_NAME_CHECKED(UCurveShape, StartCapAngle),
+		GET_MEMBER_NAME_CHECKED(UCurveShape, EndCapAngle),
 		GET_MEMBER_NAME_CHECKED(UCurveShape, StartWidthScale),
 		GET_MEMBER_NAME_CHECKED(UCurveShape, EndWidthScale),
 		GET_MEMBER_NAME_CHECKED(UCurveShape, bUseWidthCurve),
@@ -785,7 +1077,9 @@ void UCurveShape::ApplyCurvePreset(UWidgetCurvePresetAsset* InPreset)
 	CurvePreset = InPreset;
 	Path = InPreset->Path;
 	Smoothing = InPreset->Smoothing;
+	Interpolation = InPreset->Interpolation;
 	Smoothness = InPreset->Smoothness;
+	CatmullRomAlpha = InPreset->CatmullRomAlpha;
 	if (InPreset->bApplyLook)
 	{
 		Stroke = InPreset->Stroke;
@@ -794,6 +1088,8 @@ void UCurveShape::ApplyCurvePreset(UWidgetCurvePresetAsset* InPreset)
 		StartMarker = InPreset->StartMarker;
 		EndMarker = InPreset->EndMarker;
 		MarkerSize = InPreset->MarkerSize;
+		StartCapAngle = InPreset->StartCapAngle;
+		EndCapAngle = InPreset->EndCapAngle;
 		StartWidthScale = InPreset->StartWidthScale;
 		EndWidthScale = InPreset->EndWidthScale;
 		bUseWidthCurve = InPreset->bUseWidthCurve;
@@ -813,13 +1109,17 @@ void UCurveShape::CopyToCurvePreset(UWidgetCurvePresetAsset* Target) const
 	Target->Modify();
 	Target->Path = Path;
 	Target->Smoothing = Smoothing;
+	Target->Interpolation = Interpolation;
 	Target->Smoothness = Smoothness;
+	Target->CatmullRomAlpha = CatmullRomAlpha;
 	Target->Stroke = Stroke;
 	Target->bFill = bFill;
 	Target->Fill = Fill;
 	Target->StartMarker = StartMarker;
 	Target->EndMarker = EndMarker;
 	Target->MarkerSize = MarkerSize;
+	Target->StartCapAngle = StartCapAngle;
+	Target->EndCapAngle = EndCapAngle;
 	Target->StartWidthScale = StartWidthScale;
 	Target->EndWidthScale = EndWidthScale;
 	Target->bUseWidthCurve = bUseWidthCurve;
@@ -930,10 +1230,8 @@ void UCurveShape::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 		}
 		if (!bAnyHandles)
 		{
-			for (FWidgetShapeContour& Contour : Path.Contours)
-			{
-				SmoothContour(Contour, Smoothness);
-			}
+			// Worked out at the drawn proportions, as the curve was drawn (a B-Spline's points move onto its curve).
+			SmoothPath(Path, GetDrawnPixelsPerBox());
 			bSync = true;
 		}
 	}
@@ -947,5 +1245,14 @@ void UCurveShape::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 	{
 		SyncPresetToTemplate();
 	}
+}
+
+void UCurveShape::OnCreationFromPalette()
+{
+	Super::OnCreationFromPalette();
+
+	// A Curve placed now flows through its points with Catmull-Rom; the property's own default stays Balanced, so Curves
+	// saved before keep the curve they had.
+	Interpolation = EWidgetCurveInterpolation::CatmullRom;
 }
 #endif

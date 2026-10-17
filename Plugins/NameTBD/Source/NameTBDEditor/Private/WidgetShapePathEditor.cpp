@@ -6,6 +6,7 @@
 #include "NameTBDStyle.h"
 #include "NameTBDTooltips.h"
 #include "WidgetShapeEditorUI.h"
+#include "NameTBD/Widgets/Shapes/CurveShape.h"
 #include "NameTBD/Widgets/Shapes/ShapeWidgets.h"
 
 #include "Brushes/SlateColorBrush.h"
@@ -36,6 +37,12 @@ namespace WidgetShapePathEditing
 	{
 		static TMap<FName, FState> States;
 		return States.FindOrAdd(Name);
+	}
+
+	float& PencilTolerance()
+	{
+		static float Tolerance = 2.5f;
+		return Tolerance;
 	}
 
 	bool IsEditing(const UObject* Shape)
@@ -77,8 +84,12 @@ namespace WidgetShapePathEditorImpl
 	using WidgetShapePathEditing::FState;
 	using WidgetShapePathEditing::FVertexId;
 
-	/** How far the layer reaches past the widget on every side, in canvas units: room to drag vertices and handles outside it. */
-	constexpr float OverlayMargin = 160.f;
+	/**
+	 * How far the layer reaches past the widget on every side, in canvas units, while editing: far enough to cover the whole
+	 * designer at any zoom, so a click anywhere in it is the editor's - never a click that picks another widget, starts the
+	 * designer's own selection box or leaves the editing. (The designer clips it, and its own toolbars sit above it.)
+	 */
+	constexpr float OverlayMargin = 50000.f;
 
 	/** How far above the widget the toolbar's bottom edge sits. */
 	constexpr float ToolbarLift = 6.f;
@@ -91,6 +102,9 @@ namespace WidgetShapePathEditorImpl
 
 	/** Points each curved segment is drawn and hit tested with on the canvas. */
 	constexpr int32 CurveSamples = 24;
+
+	/** How far (canvas units) the mouse must move while drawing with the Pencil before another point is taken. */
+	constexpr float PencilStep = 1.5f;
 
 	FVector2f ToF(const FVector2D& V) { return FVector2f(static_cast<float>(V.X), static_cast<float>(V.Y)); }
 	FVector2D ToD(const FVector2f& V) { return FVector2D(V.X, V.Y); }
@@ -220,7 +234,8 @@ namespace WidgetShapePathEditorImpl
 		Vertices,
 		Handle,
 		PullHandles,
-		Marquee
+		Marquee,
+		Pencil
 	};
 
 	/**
@@ -234,14 +249,25 @@ namespace WidgetShapePathEditorImpl
 	 *     drag a handle to bend its curve; Alt breaks it from its partner (Disconnected); Shift keeps it to 45 degrees;
 	 *       Ctrl-click a handle to remove it
 	 *     Ctrl-drag a vertex to pull handles out of it, as the vector tools' bend does
-	 *     double-click a vertex to switch it between Straight and Mirrored; double-click an edge to add a vertex on it,
-	 *       without changing the curve; double-click empty space to finish
+	 *     double-click a vertex to switch it between Straight and Mirrored (on a Curve that works out its own handles: between
+	 *       smooth and a corner); double-click an edge to add a vertex on it, without changing the curve
+	 *     Shift-click empty space to add a vertex there: after the selected end of an open contour, else where it lengthens
+	 *       the outline least (between two vertices, or past an end)
 	 *   Pen tool (P)
 	 *     click to add a vertex after the selected end of an open contour, or to start a new contour; drag as you click to
-	 *       pull out its handles; Shift keeps the new edge to 45 degrees
+	 *       pull out its handles (on a Curve that works out its handles: to place the vertex); Shift keeps the new edge to 45
+	 *       degrees
 	 *     click the contour's other end to close it; click an edge to add a vertex on it; click a vertex to select it
+	 *   Pencil tool (N)
+	 *     draw freehand: the line is fitted to the fewest vertices that follow it within the toolbar's Fit (Bezier handles,
+	 *       or points a Curve smooths through), sharp turns kept as corners; started on an open contour's end it carries that
+	 *       contour on, ended on its start (or the contour's other end) it closes it; Escape while drawing drops the line
 	 *   Keys: Delete / Backspace removes the selected vertices, arrows nudge them (Shift: 10), Ctrl+A selects all,
 	 *     Escape lets go of the selection then finishes, Enter finishes.
+	 *
+	 * While editing, the layer covers the whole designer: a click anywhere is the editor's, so no other widget is picked and
+	 * the editing is never left by a stray click (Done, Enter or Escape leave it). The outline it edits is drawn as the shape
+	 * draws it (a Curve smoothed through its points), by the extension's Paint, over the designer's selection outline.
 	 *
 	 * Every press that changes the path is one undo step; the change goes to the Widget Blueprint's widget and the
 	 * designer's preview at once.
@@ -315,7 +341,14 @@ namespace WidgetShapePathEditorImpl
 		}
 
 		virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
-			FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override;
+			FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
+		{
+			// Only takes the mouse: what it shows is drawn by the extension's Paint (PaintOverlay), over the designer's own outlines.
+			return LayerId;
+		}
+
+		/** Draws the outline being edited, its vertices, handles and the tools' previews, in the designer's own space (DesignerGeometry). */
+		void PaintOverlay(const FGeometry& DesignerGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
 
 		virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
 		virtual FReply OnMouseButtonDoubleClick(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
@@ -375,6 +408,49 @@ namespace WidgetShapePathEditorImpl
 		bool IsCurvePoint(const FWidgetShapeVertex& Vertex) const
 		{
 			return ShowsHandles() ? Vertex.HasHandles() : Vertex.Type != EWidgetShapeVertexType::Disconnected;
+		}
+
+		const UCustomShape* GetShape() const
+		{
+			const UCustomShape* Shape = GetPreview();
+			return Shape ? Shape : GetTemplate();
+		}
+
+		/** A Curve smoothing through its points: each vertex is smooth or a corner (Disconnected), its handles worked out. */
+		bool MarksCorners() const
+		{
+			const UCurveShape* Curve = Cast<UCurveShape>(GetShape());
+			return Curve && Curve->Smoothing == EWidgetCurveSmoothing::Smooth;
+		}
+
+		/**
+		 * The outline as the shape draws it, in box fractions - a Curve's points smoothed through - with the path's contours and
+		 * vertices (what is drawn and hit-tested as the edges). The path itself when they wouldn't line up.
+		 */
+		void GetDisplayPath(FWidgetShapePath& Out) const
+		{
+			const FWidgetShapePath* Path = GetPath();
+			const UCustomShape* Shape = GetShape();
+			if (!Path)
+			{
+				Out.Contours.Reset();
+				return;
+			}
+			if (!Shape)
+			{
+				Out = *Path;
+				return;
+			}
+			Shape->BuildDisplayPath(Out, PixelsPerBox());
+			bool bMatches = Out.Contours.Num() == Path->Contours.Num();
+			for (int32 Index = 0; bMatches && Index < Out.Contours.Num(); ++Index)
+			{
+				bMatches = Out.Contours[Index].Vertices.Num() == Path->Contours[Index].Vertices.Num() && Out.Contours[Index].bClosed == Path->Contours[Index].bClosed;
+			}
+			if (!bMatches)
+			{
+				Out = *Path;
+			}
 		}
 
 		/** The selected vertex at an end of an open contour - where the Pen carries on from. bOutFirst: it is the first. */
@@ -570,6 +646,12 @@ namespace WidgetShapePathEditorImpl
 		bool InsertOnSegment(const FHit& Hit)
 		{
 			FVertexId NewId;
+			const bool bSplit = ShowsHandles();
+			FWidgetShapePath Display;
+			if (!bSplit)
+			{
+				GetDisplayPath(Display);
+			}
 			EditOnce(LOCTEXT("AddVertex", "Add Vertex"), [&](FWidgetShapePath& Path)
 			{
 				if (!Path.Contours.IsValidIndex(Hit.Id.Contour))
@@ -581,7 +663,21 @@ namespace WidgetShapePathEditorImpl
 				{
 					return false;
 				}
-				NewId = FVertexId(Hit.Id.Contour, Contour.SplitSegment(Hit.Id.Vertex, FMath::Clamp(Hit.T, 0.01f, 0.99f)));
+				const float T = FMath::Clamp(Hit.T, 0.01f, 0.99f);
+				if (bSplit)
+				{
+					NewId = FVertexId(Hit.Id.Contour, Contour.SplitSegment(Hit.Id.Vertex, T));
+					return true;
+				}
+				// A Curve working out its own handles: a point where the line is drawn, which it then runs through.
+				if (!Display.Contours.IsValidIndex(Hit.Id.Contour) || Hit.Id.Vertex >= Display.Contours[Hit.Id.Contour].GetSegmentCount())
+				{
+					return false;
+				}
+				const FVector2D OnLine = Display.Contours[Hit.Id.Contour].EvaluateSegment(Hit.Id.Vertex, T);
+				const int32 At = Hit.Id.Vertex + 1;
+				Contour.Vertices.Insert(FWidgetShapeVertex(OnLine), At);
+				NewId = FVertexId(Hit.Id.Contour, At);
 				return true;
 			});
 			if (NewId.IsValid())
@@ -605,6 +701,134 @@ namespace WidgetShapePathEditorImpl
 				SetVertexType(Contour, Id.Vertex, bStraight ? EWidgetShapeVertexType::Mirrored : EWidgetShapeVertexType::Straight, Pixels);
 				return true;
 			});
+		}
+
+		/** A Curve's vertex between smooth and a sharp corner (Disconnected). */
+		void ToggleCorner(const FVertexId& Id)
+		{
+			EditOnce(LOCTEXT("ToggleCorner", "Toggle Corner"), [&](FWidgetShapePath& Path)
+			{
+				if (!IsValidId(Path, Id))
+				{
+					return false;
+				}
+				FWidgetShapeVertex& Vertex = Path.Contours[Id.Contour].Vertices[Id.Vertex];
+				Vertex.Type = Vertex.Type == EWidgetShapeVertexType::Disconnected ? EWidgetShapeVertexType::Straight : EWidgetShapeVertexType::Disconnected;
+				Vertex.InHandle = FVector2D::ZeroVector;
+				Vertex.OutHandle = FVector2D::ZeroVector;
+				return true;
+			});
+		}
+
+		/** The selected Curve vertices made corners, or smooth. */
+		void SetSelectedCorner(bool bCorner)
+		{
+			PruneSelection();
+			const TArray<FVertexId> Selection = State().Selection;
+			EditOnce(bCorner ? LOCTEXT("MakeCorners", "Make Corners") : LOCTEXT("MakeSmooth", "Make Smooth"), [&](FWidgetShapePath& Path)
+			{
+				bool bAny = false;
+				for (const FVertexId& Id : Selection)
+				{
+					if (IsValidId(Path, Id))
+					{
+						FWidgetShapeVertex& Vertex = Path.Contours[Id.Contour].Vertices[Id.Vertex];
+						Vertex.Type = bCorner ? EWidgetShapeVertexType::Disconnected : EWidgetShapeVertexType::Straight;
+						Vertex.InHandle = FVector2D::ZeroVector;
+						Vertex.OutHandle = FVector2D::ZeroVector;
+						bAny = true;
+					}
+				}
+				return bAny;
+			});
+		}
+
+		bool AreSelectedCorners() const
+		{
+			const FWidgetShapePath* Path = GetPath();
+			if (!Path || !HasSelection())
+			{
+				return false;
+			}
+			for (const FVertexId& Id : State().Selection)
+			{
+				if (Path->Contours[Id.Contour].Vertices[Id.Vertex].Type != EWidgetShapeVertexType::Disconnected)
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+
+		/**
+		 * Shift-click: a vertex at Box. After the selected end of an open contour; else where it lengthens the outline least - between
+		 * two vertices of any contour, or past an open contour's end (measured in local pixels); a new contour when there is none.
+		 */
+		void AddPointAnywhere(const FVector2D& Box)
+		{
+			const FVector2D Pixels = PixelsPerBox();
+			auto Distance = [&Pixels](const FVector2D& A, const FVector2D& B) { return ((A - B) * Pixels).Size(); };
+			bool bActiveFirst = false;
+			const FVertexId ActiveEnd = GetActiveEnd(bActiveFirst);
+			FVertexId NewId;
+			EditOnce(LOCTEXT("AddVertexHere", "Add Vertex"), [&](FWidgetShapePath& Path)
+			{
+				if (ActiveEnd.IsValid() && IsValidId(Path, ActiveEnd))
+				{
+					FWidgetShapeContour& Contour = Path.Contours[ActiveEnd.Contour];
+					const int32 At = bActiveFirst ? 0 : Contour.Vertices.Num();
+					Contour.Vertices.Insert(FWidgetShapeVertex(Box), At);
+					NewId = FVertexId(ActiveEnd.Contour, At);
+					return true;
+				}
+				double Best = TNumericLimits<double>::Max();
+				int32 BestContour = INDEX_NONE;
+				int32 BestAt = INDEX_NONE;
+				for (int32 ContourIndex = 0; ContourIndex < Path.Contours.Num(); ++ContourIndex)
+				{
+					const FWidgetShapeContour& Contour = Path.Contours[ContourIndex];
+					const int32 Count = Contour.Vertices.Num();
+					if (Count == 0)
+					{
+						continue;
+					}
+					auto Consider = [&](double Cost, int32 At)
+					{
+						if (Cost < Best)
+						{
+							Best = Cost;
+							BestContour = ContourIndex;
+							BestAt = At;
+						}
+					};
+					for (int32 Segment = 0; Segment < Contour.GetSegmentCount(); ++Segment)
+					{
+						const FVector2D& A = Contour.Vertices[Segment].Position;
+						const FVector2D& B = Contour.Vertices[(Segment + 1) % Count].Position;
+						Consider(Distance(A, Box) + Distance(Box, B) - Distance(A, B), Segment + 1);
+					}
+					if (!Contour.bClosed)
+					{
+						Consider(Distance(Contour.Vertices[0].Position, Box), 0);
+						Consider(Distance(Contour.Vertices.Last().Position, Box), Count);
+					}
+				}
+				if (BestContour == INDEX_NONE)
+				{
+					FWidgetShapeContour& Started = Path.Contours.AddDefaulted_GetRef();
+					Started.bClosed = false;
+					Started.Vertices.Add(FWidgetShapeVertex(Box));
+					NewId = FVertexId(Path.Contours.Num() - 1, 0);
+					return true;
+				}
+				Path.Contours[BestContour].Vertices.Insert(FWidgetShapeVertex(Box), BestAt);
+				NewId = FVertexId(BestContour, BestAt);
+				return true;
+			});
+			if (NewId.IsValid())
+			{
+				SelectOnly(NewId);
+			}
 		}
 
 		void DeleteSelection()
@@ -664,6 +888,9 @@ namespace WidgetShapePathEditorImpl
 		void DragPull(const FVector2D& Screen, bool bConstrain);
 		void DragMarquee(const FVector2D& Canvas);
 		FReply PenDown(const FHit& Hit, const FVector2D& Screen, bool bConstrain, FReply Reply);
+		void PencilDown(const FVector2D& Screen, const FVector2D& Canvas);
+		void PencilMove(const FVector2D& Screen, const FVector2D& Canvas);
+		void PencilUp(const FVector2D& Screen, const FVector2D& Canvas);
 
 		// Toolbar actions
 		void SetTool(ETool Tool) { State().Tool = Tool; }
@@ -698,6 +925,15 @@ namespace WidgetShapePathEditorImpl
 		FVertexId DragVertex;
 		FWidgetShapePath DragStartPath;
 		TArray<FVertexId> MarqueeBase;
+		bool bShiftClick = false;
+
+		// The Pencil's line as drawn: box fractions (what is fitted) and canvas points (what is shown), and the open contour's
+		// end it carries on, if it started on one.
+		TArray<FVector2D> PencilPoints;
+		TArray<FVector2D> PencilCanvas;
+		FVertexId PencilContinue;
+		bool bPencilPrepend = false;
+
 		TOptional<double> GuideX;
 		TOptional<double> GuideY;
 
@@ -769,12 +1005,14 @@ namespace WidgetShapePathEditorImpl
 			return Hit;
 		}
 
-		// Edges: the nearest point along each, and where along it that is.
+		// Edges, as drawn: the nearest point along each, and where along it that is.
 		Best = Radius * 0.8f;
 		TArray<FVector2f> Points;
-		for (int32 ContourIndex = 0; ContourIndex < Path->Contours.Num(); ++ContourIndex)
+		FWidgetShapePath Display;
+		GetDisplayPath(Display);
+		for (int32 ContourIndex = 0; ContourIndex < Display.Contours.Num(); ++ContourIndex)
 		{
-			const FWidgetShapeContour& Contour = Path->Contours[ContourIndex];
+			const FWidgetShapeContour& Contour = Display.Contours[ContourIndex];
 			for (int32 Segment = 0; Segment < Contour.GetSegmentCount(); ++Segment)
 			{
 				Points.Reset();
@@ -804,33 +1042,45 @@ namespace WidgetShapePathEditorImpl
 	// Painting
 	// ---------------------------------------------------------------------------------------------
 
-	int32 SWidgetShapePathCanvas::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
-		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
+	void SWidgetShapePathCanvas::PaintOverlay(const FGeometry& DesignerGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const
 	{
 		const FWidgetShapePath* Path = GetPath();
 		if (!IsEditing() || !bHasTarget || !Path)
 		{
-			return LayerId;
+			return;
 		}
 		PruneSelection();
 
-		auto DrawLine = [&](const TArray<FVector2f>& Points, const FLinearColor& Color, float Thickness, int32 Layer)
+		// Everything is worked out on this layer and drawn in the designer's space, kept inside the designer.
+		const FGeometry& CanvasGeometry = GetTickSpaceGeometry();
+		auto ToPaint = [&DesignerGeometry, &CanvasGeometry](const FVector2D& Canvas) { return DesignerGeometry.AbsoluteToLocal(CanvasGeometry.LocalToAbsolute(Canvas)); };
+		auto ToPaintF = [&ToPaint](const FVector2f& Canvas) { return ToF(ToPaint(ToD(Canvas))); };
+		OutDrawElements.PushClip(FSlateClippingZone(DesignerGeometry));
+
+		auto DrawLine = [&](TArray<FVector2f> LinePoints, const FLinearColor& Color, float Thickness, int32 Layer)
 		{
-			if (Points.Num() >= 2)
+			if (LinePoints.Num() >= 2)
 			{
-				FSlateDrawElement::MakeLines(OutDrawElements, Layer, AllottedGeometry.ToPaintGeometry(), Points, ESlateDrawEffect::None, Color, /*bAntialias=*/true, Thickness);
+				for (FVector2f& Point : LinePoints)
+				{
+					Point = ToPaintF(Point);
+				}
+				FSlateDrawElement::MakeLines(OutDrawElements, Layer, DesignerGeometry.ToPaintGeometry(), LinePoints, ESlateDrawEffect::None, Color, /*bAntialias=*/true, Thickness);
 			}
 		};
-		auto DrawDot = [&](const FVector2D& Center, float Size, const FSlateBrush* Brush, const FLinearColor& Color, int32 Layer)
+		auto DrawDot = [&](const FVector2D& Canvas, float Size, const FSlateBrush* Brush, const FLinearColor& Color, int32 Layer)
 		{
+			const FVector2D Center = ToPaint(Canvas);
 			FSlateDrawElement::MakeBox(OutDrawElements, Layer,
-				AllottedGeometry.ToPaintGeometry(FVector2f(Size, Size), FSlateLayoutTransform(ToF(Center) - FVector2f(Size, Size) * 0.5f)),
+				DesignerGeometry.ToPaintGeometry(FVector2f(Size, Size), FSlateLayoutTransform(ToF(Center) - FVector2f(Size, Size) * 0.5f)),
 				Brush, ESlateDrawEffect::None, Color);
 		};
 
-		// The outline: a dark line under a light one, so it reads on any background.
+		// The outline as the shape draws it: a dark line under a light one, so it reads on any background.
+		FWidgetShapePath Display;
+		GetDisplayPath(Display);
 		TArray<FVector2f> Points;
-		for (const FWidgetShapeContour& Contour : Path->Contours)
+		for (const FWidgetShapeContour& Contour : Display.Contours)
 		{
 			Points.Reset();
 			for (int32 Segment = 0; Segment < Contour.GetSegmentCount(); ++Segment)
@@ -847,10 +1097,29 @@ namespace WidgetShapePathEditorImpl
 			DrawLine(Points, Palette::PathLine, Palette::PathThickness, LayerId + 1);
 		}
 
-		// The edge under the mouse, where a double-click (or the Pen) adds a vertex.
-		if (Hover.Kind == EHit::Segment && DragKind == EDrag::None && Path->Contours.IsValidIndex(Hover.Id.Contour))
+		// A B-Spline Curve's control cage: its points joined straight, faint, under the line.
+		const UCustomShape* Shape = GetShape();
+		if (Shape && Shape->ShowsControlCage())
 		{
-			const FWidgetShapeContour& Contour = Path->Contours[Hover.Id.Contour];
+			for (const FWidgetShapeContour& Contour : Path->Contours)
+			{
+				Points.Reset();
+				for (const FWidgetShapeVertex& Vertex : Contour.Vertices)
+				{
+					Points.Add(ToF(BoxToCanvas(Vertex.Position)));
+				}
+				if (Contour.bClosed && Points.Num() > 2)
+				{
+					Points.Add(FVector2f(Points[0]));
+				}
+				DrawLine(Points, Palette::ControlCage, 1.f, LayerId);
+			}
+		}
+
+		// The edge under the mouse, where a double-click (or the Pen) adds a vertex.
+		if (Hover.Kind == EHit::Segment && DragKind == EDrag::None && Display.Contours.IsValidIndex(Hover.Id.Contour))
+		{
+			const FWidgetShapeContour& Contour = Display.Contours[Hover.Id.Contour];
 			if (Hover.Id.Vertex < Contour.GetSegmentCount())
 			{
 				Points.Reset();
@@ -879,6 +1148,18 @@ namespace WidgetShapePathEditorImpl
 			DrawLine({ ToF(From), ToF(LastMouseCanvas) }, Palette::PenPreview, 1.f, LayerId + 1);
 		}
 
+		// The Pencil's line, as drawn so far.
+		if (DragKind == EDrag::Pencil && PencilCanvas.Num() >= 2)
+		{
+			Points.Reset();
+			for (const FVector2D& Point : PencilCanvas)
+			{
+				Points.Add(ToF(Point));
+			}
+			DrawLine(Points, Palette::PathUnderlay, Palette::PencilThickness + 2.f, LayerId + 2);
+			DrawLine(Points, Palette::PencilLine, Palette::PencilThickness, LayerId + 3);
+		}
+
 		// Handles of the selected vertices.
 		for (const FVertexId& Id : State().Selection)
 		{
@@ -901,7 +1182,7 @@ namespace WidgetShapePathEditorImpl
 			}
 		}
 
-		// Vertices: squares for Straight, circles for curves; filled orange when selected.
+		// Vertices: squares for Straight (a Curve's corners), circles for curves; filled orange when selected.
 		for (int32 ContourIndex = 0; ContourIndex < Path->Contours.Num(); ++ContourIndex)
 		{
 			const FWidgetShapeContour& Contour = Path->Contours[ContourIndex];
@@ -929,14 +1210,15 @@ namespace WidgetShapePathEditorImpl
 		// The selection box.
 		if (DragKind == EDrag::Marquee && bDragStarted)
 		{
-			const FVector2D Min(FMath::Min(MarqueeStart.X, LastMouseCanvas.X), FMath::Min(MarqueeStart.Y, LastMouseCanvas.Y));
-			const FVector2D Max(FMath::Max(MarqueeStart.X, LastMouseCanvas.X), FMath::Max(MarqueeStart.Y, LastMouseCanvas.Y));
+			const FVector2D Min = ToPaint(FVector2D(FMath::Min(MarqueeStart.X, LastMouseCanvas.X), FMath::Min(MarqueeStart.Y, LastMouseCanvas.Y)));
+			const FVector2D Max = ToPaint(FVector2D(FMath::Max(MarqueeStart.X, LastMouseCanvas.X), FMath::Max(MarqueeStart.Y, LastMouseCanvas.Y)));
 			FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 7,
-				AllottedGeometry.ToPaintGeometry(ToF(Max - Min), FSlateLayoutTransform(ToF(Min))), SquareBrush(), ESlateDrawEffect::None, Palette::MarqueeFill);
-			DrawLine({ ToF(Min), ToF(FVector2D(Max.X, Min.Y)), ToF(Max), ToF(FVector2D(Min.X, Max.Y)), ToF(Min) }, Palette::MarqueeOutline, 1.f, LayerId + 8);
+				DesignerGeometry.ToPaintGeometry(ToF(Max - Min), FSlateLayoutTransform(ToF(Min))), SquareBrush(), ESlateDrawEffect::None, Palette::MarqueeFill);
+			const TArray<FVector2f> Edge = { ToF(Min), ToF(FVector2D(Max.X, Min.Y)), ToF(Max), ToF(FVector2D(Min.X, Max.Y)), ToF(Min) };
+			FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 8, DesignerGeometry.ToPaintGeometry(), Edge, ESlateDrawEffect::None, Palette::MarqueeOutline, true, 1.f);
 		}
 
-		return LayerId + 8;
+		OutDrawElements.PopClip();
 	}
 
 	// ---------------------------------------------------------------------------------------------
@@ -965,7 +1247,13 @@ namespace WidgetShapePathEditorImpl
 		const FHit Hit = HitTest(Canvas);
 		const bool bShift = MouseEvent.IsShiftDown();
 		const bool bCtrl = MouseEvent.IsControlDown();
+		bShiftClick = false;
 
+		if (State().Tool == ETool::Pencil)
+		{
+			PencilDown(Screen, Canvas);
+			return Reply;
+		}
 		if (State().Tool == ETool::Pen && Hit.Kind != EHit::InHandle && Hit.Kind != EHit::OutHandle)
 		{
 			return PenDown(Hit, Screen, bShift, Reply);
@@ -1001,7 +1289,7 @@ namespace WidgetShapePathEditorImpl
 			return Reply;
 
 		case EHit::Vertex:
-			if (bCtrl)
+			if (bCtrl && ShowsHandles())
 			{
 				// Ctrl-drag: pull handles out of the vertex.
 				SelectOnly(Hit.Id);
@@ -1046,7 +1334,7 @@ namespace WidgetShapePathEditorImpl
 		}
 
 		default:
-			// Empty space: a selection box, adding to the selection with Shift.
+			// Empty space: a selection box, adding to the selection with Shift - or, a Shift-click that doesn't drag, a vertex there.
 			if (!bShift)
 			{
 				State().Selection.Reset();
@@ -1055,6 +1343,7 @@ namespace WidgetShapePathEditorImpl
 			MarqueeStart = Canvas;
 			DragKind = EDrag::Marquee;
 			bClickedEmpty = true;
+			bShiftClick = bShift;
 			return Reply;
 		}
 	}
@@ -1130,9 +1419,10 @@ namespace WidgetShapePathEditorImpl
 		Commit(Path);
 		SelectOnly(NewId);
 
-		// Dragging on from here pulls the new vertex's handles out; the edit is one undo step with it.
+		// Dragging on from here pulls the new vertex's handles out (or, on a Curve working out its own, moves it); the edit is
+		// one undo step with it.
 		DragStartPath = Path;
-		DragKind = EDrag::PullHandles;
+		DragKind = ShowsHandles() ? EDrag::PullHandles : EDrag::Vertices;
 		DragVertex = NewId;
 		return Reply;
 	}
@@ -1150,19 +1440,28 @@ namespace WidgetShapePathEditorImpl
 		switch (Hit.Kind)
 		{
 		case EHit::Vertex:
-			ToggleSmooth(Hit.Id);
+			if (State().Tool == ETool::Pencil)
+			{
+				break;
+			}
+			if (MarksCorners())
+			{
+				ToggleCorner(Hit.Id);
+			}
+			else
+			{
+				ToggleSmooth(Hit.Id);
+			}
 			SelectOnly(Hit.Id);
 			break;
 		case EHit::Segment:
-			InsertOnSegment(Hit);
-			break;
-		case EHit::None:
-			if (State().Tool == ETool::Select)
+			if (State().Tool != ETool::Pencil)
 			{
-				FinishEditing();
+				InsertOnSegment(Hit);
 			}
 			break;
 		default:
+			// Empty space does nothing: leaving the editing takes Done, Enter or Escape, never a stray click.
 			break;
 		}
 		return FReply::Handled();
@@ -1182,9 +1481,17 @@ namespace WidgetShapePathEditorImpl
 		{
 			if (UpdateTarget())
 			{
-				Hover = HitTest(LastMouseCanvas);
+				Hover = State().Tool == ETool::Pencil ? FHit() : HitTest(LastMouseCanvas);
 			}
-			return FReply::Unhandled();
+			// Kept from the designer, which would light up whatever widget is under the mouse.
+			return FReply::Handled();
+		}
+
+		if (DragKind == EDrag::Pencil)
+		{
+			UpdateTarget();
+			PencilMove(Screen, LastMouseCanvas);
+			return FReply::Handled();
 		}
 
 		if (!bDragStarted)
@@ -1217,17 +1524,22 @@ namespace WidgetShapePathEditorImpl
 			return FReply::Unhandled();
 		}
 
-		// A plain click on empty space well away from the shape finishes, as clicking off a vector does in the vector tools.
-		if (bClickedEmpty && !bDragStarted && State().Tool == ETool::Select && bHasTarget)
+		if (DragKind == EDrag::Pencil)
 		{
-			const FVector2D Box = ScreenToBox(MouseEvent.GetScreenSpacePosition());
-			const FVector2D Slack = FVector2D(Palette::HitRadius, Palette::HitRadius) / CanvasPerBox().ComponentMax(FVector2D(1e-6, 1e-6));
-			const FBox2D Bounds = GetPath()->GetBounds(/*bIncludeHandles=*/false).ExpandBy(FVector2D(Slack.X, Slack.Y));
-			if (!Bounds.IsInside(Box))
-			{
-				FinishEditing();
-				return FReply::Handled().ReleaseMouseCapture();
-			}
+			UpdateTarget();
+			PencilUp(MouseEvent.GetScreenSpacePosition(), MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition()));
+			return FReply::Handled().ReleaseMouseCapture();
+		}
+
+		// A Shift-click on empty space (no drag): a vertex there. A plain one only lets go of the selection - it never leaves
+		// the editing, so a stray click can't throw the work away.
+		if (bClickedEmpty && !bDragStarted && bShiftClick && State().Tool == ETool::Select && bHasTarget)
+		{
+			EndEdit();
+			DragKind = EDrag::None;
+			State().Selection = MarqueeBase;
+			AddPointAnywhere(ScreenToBox(MouseEvent.GetScreenSpacePosition()));
+			return FReply::Handled().ReleaseMouseCapture();
 		}
 
 		EndEdit();
@@ -1240,6 +1552,8 @@ namespace WidgetShapePathEditorImpl
 
 	void SWidgetShapePathCanvas::OnMouseCaptureLost(const FCaptureLostEvent& CaptureLostEvent)
 	{
+		PencilPoints.Reset();
+		PencilCanvas.Reset();
 		EndEdit();
 		DragKind = EDrag::None;
 		bDragStarted = false;
@@ -1253,7 +1567,7 @@ namespace WidgetShapePathEditorImpl
 		{
 			return FCursorReply::Unhandled();
 		}
-		if (State().Tool == ETool::Pen && Hover.Kind == EHit::None)
+		if ((State().Tool == ETool::Pen && Hover.Kind == EHit::None) || State().Tool == ETool::Pencil)
 		{
 			return FCursorReply::Cursor(EMouseCursor::Crosshairs);
 		}
@@ -1404,6 +1718,187 @@ namespace WidgetShapePathEditorImpl
 		}
 	}
 
+
+	// ---------------------------------------------------------------------------------------------
+	// Pencil
+	// ---------------------------------------------------------------------------------------------
+
+	void SWidgetShapePathCanvas::PencilDown(const FVector2D& Screen, const FVector2D& Canvas)
+	{
+		PencilPoints.Reset();
+		PencilCanvas.Reset();
+		PencilContinue = FVertexId();
+		bPencilPrepend = false;
+		PencilPoints.Add(ScreenToBox(Screen));
+		PencilCanvas.Add(Canvas);
+
+		// Started on an open contour's end: the line carries that contour on, from exactly its end.
+		if (const FWidgetShapePath* Path = GetPath())
+		{
+			float Best = Palette::HitRadius;
+			for (int32 ContourIndex = 0; ContourIndex < Path->Contours.Num(); ++ContourIndex)
+			{
+				const FWidgetShapeContour& Contour = Path->Contours[ContourIndex];
+				if (Contour.bClosed || Contour.Vertices.Num() == 0)
+				{
+					continue;
+				}
+				for (const int32 End : { Contour.Vertices.Num() - 1, 0 })
+				{
+					const float Distance = static_cast<float>((BoxToCanvas(Contour.Vertices[End].Position) - Canvas).Size());
+					if (Distance < Best)
+					{
+						Best = Distance;
+						PencilContinue = FVertexId(ContourIndex, End);
+						bPencilPrepend = End == 0 && Contour.Vertices.Num() > 1;
+					}
+				}
+			}
+			if (PencilContinue.IsValid())
+			{
+				PencilPoints[0] = Path->Contours[PencilContinue.Contour].Vertices[PencilContinue.Vertex].Position;
+			}
+		}
+		DragKind = EDrag::Pencil;
+	}
+
+	void SWidgetShapePathCanvas::PencilMove(const FVector2D& Screen, const FVector2D& Canvas)
+	{
+		if (PencilCanvas.Num() > 0 && (Canvas - PencilCanvas.Last()).Size() < PencilStep)
+		{
+			return;
+		}
+		PencilPoints.Add(ScreenToBox(Screen));
+		PencilCanvas.Add(Canvas);
+	}
+
+	void SWidgetShapePathCanvas::PencilUp(const FVector2D& Screen, const FVector2D& Canvas)
+	{
+		DragKind = EDrag::None;
+		if (PencilCanvas.Num() > 0 && (Canvas - PencilCanvas.Last()).Size() > 0.25)
+		{
+			PencilPoints.Add(ScreenToBox(Screen));
+			PencilCanvas.Add(Canvas);
+		}
+		const FWidgetShapePath* Current = GetPath();
+		const UCustomShape* Shape = GetShape();
+		if (!Current || !Shape || PencilPoints.Num() < 2)
+		{
+			PencilPoints.Reset();
+			PencilCanvas.Reset();
+			return;
+		}
+
+		double Drawn = 0.0;
+		for (int32 Index = 1; Index < PencilCanvas.Num(); ++Index)
+		{
+			Drawn += (PencilCanvas[Index] - PencilCanvas[Index - 1]).Size();
+		}
+		if (Drawn < Palette::HitRadius)
+		{
+			// A click rather than a line.
+			PencilPoints.Reset();
+			PencilCanvas.Reset();
+			return;
+		}
+
+		// Ended where it began (or on the far end of the contour it carries on): closed.
+		bool bClose = false;
+		const bool bContinue = PencilContinue.IsValid() && IsValidId(*Current, PencilContinue) && !Current->Contours[PencilContinue.Contour].bClosed;
+		if (bContinue)
+		{
+			const FWidgetShapeContour& Contour = Current->Contours[PencilContinue.Contour];
+			const int32 OtherEnd = bPencilPrepend ? Contour.Vertices.Num() - 1 : 0;
+			if (Contour.Vertices.Num() > 1 && (BoxToCanvas(Contour.Vertices[OtherEnd].Position) - Canvas).Size() <= Palette::HitRadius * 1.5f)
+			{
+				bClose = true;
+				PencilPoints.Last() = Contour.Vertices[OtherEnd].Position;
+			}
+		}
+		else if ((PencilCanvas[0] - Canvas).Size() <= Palette::HitRadius * 1.5f && Drawn > Palette::HitRadius * 6.f)
+		{
+			bClose = true;
+			PencilPoints.Pop();
+		}
+
+		FWidgetShapeContour Fitted;
+		Shape->MakeContourFromStroke(PencilPoints, PixelsPerBox(), WidgetShapePathEditing::PencilTolerance(), bClose && !bContinue, Fitted);
+		PencilPoints.Reset();
+		PencilCanvas.Reset();
+		if (Fitted.Vertices.Num() < 2)
+		{
+			return;
+		}
+
+		const bool bHandles = ShowsHandles();
+		FVertexId NewId;
+		EditOnce(LOCTEXT("DrawWithPencil", "Draw With Pencil"), [&](FWidgetShapePath& Path)
+		{
+			if (!bContinue || !IsValidId(Path, PencilContinue))
+			{
+				Path.Contours.Add(Fitted);
+				NewId = FVertexId(Path.Contours.Num() - 1, Fitted.Vertices.Num() - 1);
+				return true;
+			}
+
+			// Joined on at the end it started from: that vertex keeps its place and takes the line's first handle.
+			FWidgetShapeContour& Contour = Path.Contours[PencilContinue.Contour];
+			FWidgetShapeContour Piece = Fitted;
+			auto Join = [bHandles](FWidgetShapeVertex& Vertex, const FVector2D& InHandle, const FVector2D& OutHandle)
+			{
+				if (!bHandles)
+				{
+					return;
+				}
+				Vertex.InHandle = InHandle;
+				Vertex.OutHandle = OutHandle;
+				const bool bNone = InHandle.IsNearlyZero(1e-9) && OutHandle.IsNearlyZero(1e-9);
+				Vertex.Type = bNone ? EWidgetShapeVertexType::Straight : EWidgetShapeVertexType::Disconnected;
+			};
+			if (bPencilPrepend)
+			{
+				Piece.Reverse();
+				FWidgetShapeVertex& OldFirst = Contour.Vertices[0];
+				Join(OldFirst, Piece.Vertices.Last().InHandle, OldFirst.GetOut());
+				Piece.Vertices.Pop();
+				Contour.Vertices.Insert(Piece.Vertices, 0);
+				NewId = FVertexId(PencilContinue.Contour, 0);
+				if (bClose && Contour.Vertices.Num() > 2)
+				{
+					// The line's far end lies on the contour's last vertex: that one stays, taking the first's handle out.
+					const FWidgetShapeVertex Dropped = Contour.Vertices[0];
+					Contour.Vertices.RemoveAt(0);
+					FWidgetShapeVertex& Last = Contour.Vertices.Last();
+					Join(Last, Last.GetIn(), Dropped.GetOut());
+					Contour.bClosed = true;
+					NewId = FVertexId(PencilContinue.Contour, Contour.Vertices.Num() - 1);
+				}
+			}
+			else
+			{
+				FWidgetShapeVertex& OldLast = Contour.Vertices.Last();
+				Join(OldLast, OldLast.GetIn(), Piece.Vertices[0].OutHandle);
+				Piece.Vertices.RemoveAt(0);
+				Contour.Vertices.Append(Piece.Vertices);
+				NewId = FVertexId(PencilContinue.Contour, Contour.Vertices.Num() - 1);
+				if (bClose && Contour.Vertices.Num() > 2)
+				{
+					// Its end lies on the contour's first vertex: that one stays, taking the last's handle in.
+					const FWidgetShapeVertex Dropped = Contour.Vertices.Pop();
+					FWidgetShapeVertex& First = Contour.Vertices[0];
+					Join(First, Dropped.GetIn(), First.GetOut());
+					Contour.bClosed = true;
+					NewId = FVertexId(PencilContinue.Contour, 0);
+				}
+			}
+			return true;
+		});
+		if (NewId.IsValid())
+		{
+			SelectOnly(NewId);
+		}
+	}
+
 	// ---------------------------------------------------------------------------------------------
 	// Keys
 	// ---------------------------------------------------------------------------------------------
@@ -1426,6 +1921,14 @@ namespace WidgetShapePathEditorImpl
 		}
 		if (Key == EKeys::Escape)
 		{
+			if (HasMouseCapture() && DragKind == EDrag::Pencil)
+			{
+				// Mid-line: the line is dropped.
+				PencilPoints.Reset();
+				PencilCanvas.Reset();
+				DragKind = EDrag::None;
+				return FReply::Handled().ReleaseMouseCapture();
+			}
 			if (HasMouseCapture())
 			{
 				// Mid-drag: put everything back as it was when the drag started.
@@ -1455,6 +1958,11 @@ namespace WidgetShapePathEditorImpl
 		if (Key == EKeys::P && !bCtrl)
 		{
 			SetTool(ETool::Pen);
+			return FReply::Handled();
+		}
+		if (Key == EKeys::N && !bCtrl)
+		{
+			SetTool(ETool::Pencil);
 			return FReply::Handled();
 		}
 		if (Key == EKeys::A && bCtrl)
@@ -1628,6 +2136,10 @@ namespace WidgetShapePathEditorImpl
 		};
 		const TFunction<bool()> Editing = Ask([](const SWidgetShapePathCanvas& Canvas) { return Canvas.IsEditing(); });
 		const TFunction<bool()> Selected = Ask([](const SWidgetShapePathCanvas& Canvas) { return Canvas.HasSelection(); });
+		// A shape whose vertices carry their own handles shows the four kinds; a Curve smoothing through its points, Smooth / Corner.
+		const TFunction<bool()> EditingHandles = Ask([](const SWidgetShapePathCanvas& Canvas) { return Canvas.IsEditing() && Canvas.ShowsHandles(); });
+		const TFunction<bool()> EditingCorners = Ask([](const SWidgetShapePathCanvas& Canvas) { return Canvas.IsEditing() && Canvas.MarksCorners(); });
+		const TFunction<bool()> EditingPencil = Ask([](const SWidgetShapePathCanvas& Canvas) { return Canvas.IsEditing() && Canvas.State().Tool == ETool::Pencil; });
 
 		auto TypeChip = [&](EWidgetShapeVertexType Type, FName Icon, const FText& ToolTip)
 		{
@@ -1701,11 +2213,62 @@ namespace WidgetShapePathEditorImpl
 			Chip.OnClick = Do([](SWidgetShapePathCanvas& Canvas) { Canvas.SetTool(ETool::Pen); });
 			Add(MakeChip(Chip), Editing);
 		}
+		{
+			FChip Chip;
+			Chip.Icon = FNameTBDStyle::ShapePencilIcon;
+			Chip.ToolTip = Tips::PencilToolTooltip();
+			Chip.IsActive = Ask([](const SWidgetShapePathCanvas& Canvas) { return Canvas.State().Tool == ETool::Pencil; });
+			Chip.OnClick = Do([](SWidgetShapePathCanvas& Canvas) { Canvas.SetTool(ETool::Pencil); });
+			Add(MakeChip(Chip), Editing);
+		}
+
+		// The Pencil's Fit: how closely its line follows the hand.
+		Add(SNew(SHorizontalBox)
+			.ToolTipText(Tips::PencilFitTooltip())
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(FMargin(0.f, 0.f, 4.f, 0.f))
+			[
+				SNew(STextBlock).Font(Font).ColorAndOpacity(FSlateColor(Palette::ToolText)).Text(LOCTEXT("PencilFit", "Fit"))
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(SBox)
+				.WidthOverride(50.f)
+				[
+					SNew(SNumericEntryBox<float>)
+					.Font(Font)
+					.AllowSpin(true)
+					.MinValue(0.25f)
+					.MaxValue(TOptional<float>())
+					.MinSliderValue(0.25f)
+					.MaxSliderValue(16.f)
+					.Value_Lambda([]() { return TOptional<float>(WidgetShapePathEditing::PencilTolerance()); })
+					.OnValueChanged_Lambda([](float Value) { WidgetShapePathEditing::PencilTolerance() = FMath::Max(Value, 0.25f); })
+					.OnValueCommitted_Lambda([](float Value, ETextCommit::Type) { WidgetShapePathEditing::PencilTolerance() = FMath::Max(Value, 0.25f); })
+				]
+			], EditingPencil, 6.f);
+
 		Add(Divider(), Editing, 6.f);
-		Add(TypeChip(EWidgetShapeVertexType::Straight, FNameTBDStyle::ShapeStraightIcon, Tips::StraightTooltip()), Editing, 6.f);
-		Add(TypeChip(EWidgetShapeVertexType::Mirrored, FNameTBDStyle::ShapeMirroredIcon, Tips::MirroredTooltip()), Editing);
-		Add(TypeChip(EWidgetShapeVertexType::Asymmetric, FNameTBDStyle::ShapeAsymmetricIcon, Tips::AsymmetricTooltip()), Editing);
-		Add(TypeChip(EWidgetShapeVertexType::Disconnected, FNameTBDStyle::ShapeDisconnectedIcon, Tips::DisconnectedTooltip()), Editing);
+		Add(TypeChip(EWidgetShapeVertexType::Straight, FNameTBDStyle::ShapeStraightIcon, Tips::StraightTooltip()), EditingHandles, 6.f);
+		Add(TypeChip(EWidgetShapeVertexType::Mirrored, FNameTBDStyle::ShapeMirroredIcon, Tips::MirroredTooltip()), EditingHandles);
+		Add(TypeChip(EWidgetShapeVertexType::Asymmetric, FNameTBDStyle::ShapeAsymmetricIcon, Tips::AsymmetricTooltip()), EditingHandles);
+		Add(TypeChip(EWidgetShapeVertexType::Disconnected, FNameTBDStyle::ShapeDisconnectedIcon, Tips::DisconnectedTooltip()), EditingHandles);
+		auto CornerChip = [&](bool bCorner, FName Icon, const FText& ToolTip)
+		{
+			FChip Chip;
+			Chip.Icon = Icon;
+			Chip.ToolTip = ToolTip;
+			Chip.IsEnabled = Selected;
+			Chip.IsActive = Ask([bCorner](const SWidgetShapePathCanvas& Canvas) { return Canvas.HasSelection() && Canvas.AreSelectedCorners() == bCorner; });
+			Chip.OnClick = Do([bCorner](SWidgetShapePathCanvas& Canvas) { Canvas.SetSelectedCorner(bCorner); });
+			return MakeChip(Chip);
+		};
+		Add(CornerChip(false, FNameTBDStyle::ShapeMirroredIcon, Tips::SmoothPointTooltip()), EditingCorners, 6.f);
+		Add(CornerChip(true, FNameTBDStyle::ShapeStraightIcon, Tips::CornerPointTooltip()), EditingCorners);
 		Add(Divider(), Editing, 6.f);
 
 		Add(SNew(SHorizontalBox)
@@ -1794,11 +2357,23 @@ void FWidgetShapePathEditorExtension::ExtendSelection(const TArray<FWidgetRefere
 		return;
 	}
 
-	// The layer first and the toolbar after it, so the toolbar is drawn - and clicked - on top where they overlap.
+	// The layer first and the toolbar after it, so the toolbar is clicked on top where they overlap.
 	const TSharedRef<SWidgetShapePathCanvas> Canvas = SNew(SWidgetShapePathCanvas).Widget(Selection[0]);
+	ActiveCanvas = Canvas;
 	SurfaceElements.Add(MakeShared<FDesignerSurfaceElement>(Canvas, EExtensionLayoutLocation::TopLeft, FVector2D(-OverlayMargin, -OverlayMargin), FVector2D(0.0, 0.0)));
 	// Centered above the shape: its bottom middle (alignment 0.5, 1) a few units over the shape's top middle.
 	SurfaceElements.Add(MakeShared<FDesignerSurfaceElement>(Canvas->MakeToolbar(), EExtensionLayoutLocation::TopCenter, FVector2D(0.0, -ToolbarLift), FVector2D(0.5, 1.0)));
+}
+
+void FWidgetShapePathEditorExtension::Paint(const TSet<FWidgetReference>& Selection, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
+	FSlateWindowElementList& OutDrawElements, int32 LayerId) const
+{
+	using namespace WidgetShapePathEditorImpl;
+
+	if (const TSharedPtr<SWidget> Canvas = ActiveCanvas.Pin())
+	{
+		StaticCastSharedPtr<SWidgetShapePathCanvas>(Canvas)->PaintOverlay(AllottedGeometry, OutDrawElements, LayerId);
+	}
 }
 
 TSharedRef<FDesignerExtension> FWidgetShapePathEditorFactory::CreateDesignerExtension() const

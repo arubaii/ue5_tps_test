@@ -329,7 +329,7 @@ namespace WidgetEffectsDraw
 
 	bool PaintMeshWithPaint(FSlateWindowElementList& OutDrawElements, int32 LayerId, const FGeometry& Geometry, const FWidgetShapeMesh& Mesh,
 		const FWidgetShapePaint& Paint, const FBox2f& Box, FWidgetSVGBrush& SVGBrush, const SWidget& Widget, const FWidgetStyle& InWidgetStyle,
-		const FLinearColor& ColorScale)
+		const FLinearColor& ColorScale, FWidgetEffectMaterials* Materials, uint64 MaterialKey, const FWidgetEffectMaterialInputs* MaterialInputs, bool bAlongOutline)
 	{
 		if (Mesh.IsEmpty())
 		{
@@ -350,9 +350,11 @@ namespace WidgetEffectsDraw
 			SVGBrush.Reset();
 		}
 
-		const bool bImage = SVGImage || Paint.DrawsBrush();
-		const FSlateBrush* Brush = SVGImage ? SVGImage : bImage ? &Paint.Image : nullptr;
-		const FLinearColor BrushTint = (bImage && !SVGImage) ? Paint.Image.GetTint(InWidgetStyle) : FLinearColor::White;
+		const FSlateBrush* MaterialImage = (Materials && Paint.DrawsMaterial())
+			? Materials->GetMaterialBrush(MaterialKey, Paint.Material, Paint.MaterialParameters, MaterialInputs) : nullptr;
+		const bool bImage = SVGImage || MaterialImage || Paint.DrawsBrush();
+		const FSlateBrush* Brush = SVGImage ? SVGImage : MaterialImage ? MaterialImage : bImage ? &Paint.Image : nullptr;
+		const FLinearColor BrushTint = (bImage && !SVGImage && !MaterialImage) ? Paint.Image.GetTint(InWidgetStyle) : FLinearColor::White;
 		FBox2f UVRegion(ForceInit);
 		if (Brush)
 		{
@@ -364,8 +366,13 @@ namespace WidgetEffectsDraw
 		TFunction<FVector2f(const FWidgetShapeMeshVertex&)> UVOf;
 		if (bImage)
 		{
-			UVOf = [Frame, bHasUVRegion, UVRegion](const FWidgetShapeMeshVertex& Vertex)
+			const bool bAlong = bAlongOutline && Paint.MapsAlongOutline();
+			UVOf = [Frame, bHasUVRegion, UVRegion, bAlong, &Paint](const FWidgetShapeMeshVertex& Vertex)
 			{
+				if (bAlong)
+				{
+					return Paint.GetOutlineUV(Vertex.Along, Vertex.OutlineLength);
+				}
 				const FVector2f BoxPoint = Frame.ToBox(Vertex.Position);
 				return bHasUVRegion ? UVRegion.Min + BoxPoint * UVRegion.GetSize() : BoxPoint;
 			};

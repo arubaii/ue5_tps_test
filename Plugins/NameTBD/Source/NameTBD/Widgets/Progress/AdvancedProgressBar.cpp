@@ -5,6 +5,10 @@
 #include "Rendering/DrawElements.h"
 #include "Styling/CoreStyle.h"
 #include "NameTBD/Widgets/WidgetEffectsDraw.h"
+#include "NameTBD/Widgets/WidgetTreeLookup.h"
+#include "NameTBD/Widgets/WidgetEditorHooks.h"
+#include "Algo/Reverse.h"
+#include "NameTBD/Widgets/Paths/WidgetPathTypes.h"
 
 #define LOCTEXT_NAMESPACE "AdvancedProgressBar"
 
@@ -191,6 +195,26 @@ void SAdvancedProgressBar::SetPercentSource(TAttribute<float> InSource)
 	}
 }
 
+void SAdvancedProgressBar::SetCurve(const UCurveShape* InCurve)
+{
+	if (Curve.Get() != InCurve)
+	{
+		Curve = InCurve;
+		CurveHash = 0;
+		bTrackBuilt = false;
+		Invalidate(EInvalidateWidgetReason::Paint);
+	}
+}
+
+FWidgetEffectMaterialInputs SAdvancedProgressBar::MakeMaterialInputs(const FVector2f& Size) const
+{
+	FWidgetEffectMaterialInputs Inputs;
+	Inputs.Add(TEXT("Progress"), FMath::Clamp(FillValue.Value, 0.f, 1.f));
+	Inputs.Add(TEXT("Trail"), FMath::Clamp(GhostValue.Value, 0.f, 1.f));
+	Inputs.Add(TEXT("ShapeSize"), FLinearColor(Size.X, Size.Y, 0.f, 0.f));
+	return Inputs;
+}
+
 void SAdvancedProgressBar::SetIndeterminate(bool bInIndeterminate)
 {
 	bIndeterminate = bInIndeterminate;
@@ -333,6 +357,10 @@ FVector2D SAdvancedProgressBar::ComputeDesiredSize(float LayoutScaleMultiplier) 
 	{
 		return FVector2D(BarStyle.RingDiameter, BarStyle.RingDiameter);
 	}
+	if (BarStyle.Shape == EProgressBarShape::Curve)
+	{
+		return BarStyle.CurveSize;
+	}
 	return AdvancedProgressBarPrivate::IsVertical(BarStyle.Direction) ? FVector2D(BarStyle.BarSize.Y, BarStyle.BarSize.X) : BarStyle.BarSize;
 }
 
@@ -368,9 +396,15 @@ int32 SAdvancedProgressBar::OnPaint(const FPaintArgs& Args, const FGeometry& All
 	{
 		return LayerId;
 	}
-	return BarStyle.Shape == EProgressBarShape::Ring
-		? PaintRing(AllottedGeometry, OutDrawElements, LayerId, InWidgetStyle)
-		: PaintBar(AllottedGeometry, OutDrawElements, LayerId, InWidgetStyle);
+	switch (BarStyle.Shape)
+	{
+	case EProgressBarShape::Ring:
+		return PaintRing(AllottedGeometry, OutDrawElements, LayerId, InWidgetStyle);
+	case EProgressBarShape::Curve:
+		return PaintCurve(AllottedGeometry, OutDrawElements, LayerId, InWidgetStyle);
+	default:
+		return PaintBar(AllottedGeometry, OutDrawElements, LayerId, InWidgetStyle);
+	}
 }
 
 int32 SAdvancedProgressBar::PaintBar(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle) const
@@ -440,7 +474,8 @@ int32 SAdvancedProgressBar::PaintBar(const FGeometry& AllottedGeometry, FSlateWi
 		TrackHash = Hash;
 		bTrackBuilt = true;
 	}
-	PaintMeshWithPaint(OutDrawElements, LayerId, AllottedGeometry, TrackMesh, BarStyle.Track, Whole, TrackSVG, *this, InWidgetStyle);
+	const FWidgetEffectMaterialInputs MaterialInputs = MakeMaterialInputs(Size);
+	PaintMeshWithPaint(OutDrawElements, LayerId, AllottedGeometry, TrackMesh, BarStyle.Track, Whole, TrackSVG, *this, InWidgetStyle, FLinearColor::White, &Materials, 0, &MaterialInputs);
 	if (!TrackOutlineMesh.IsEmpty())
 	{
 		const FLinearColor OutlineColor = BarStyle.TrackOutlineColor;
@@ -610,7 +645,7 @@ int32 SAdvancedProgressBar::PaintBar(const FGeometry& AllottedGeometry, FSlateWi
 	else
 	{
 		WidgetShapeGeometry::CutForGradient(FillMesh, Paint, MakeBoxFrame(Whole), 6.f / PixelScale);
-		PaintMeshWithPaint(OutDrawElements, LayerId + 4, AllottedGeometry, FillMesh, Paint, Whole, FillSVG, *this, InWidgetStyle);
+		PaintMeshWithPaint(OutDrawElements, LayerId + 4, AllottedGeometry, FillMesh, Paint, Whole, FillSVG, *this, InWidgetStyle, FLinearColor::White, &Materials, 1, &MaterialInputs);
 	}
 
 	// Stripes moving along the fill.
@@ -783,7 +818,8 @@ int32 SAdvancedProgressBar::PaintRing(const FGeometry& AllottedGeometry, FSlateW
 		TrackHash = Hash;
 		bTrackBuilt = true;
 	}
-	PaintMeshWithPaint(OutDrawElements, LayerId, AllottedGeometry, TrackMesh, BarStyle.Track, Whole, TrackSVG, *this, InWidgetStyle);
+	const FWidgetEffectMaterialInputs MaterialInputs = MakeMaterialInputs(Size);
+	PaintMeshWithPaint(OutDrawElements, LayerId, AllottedGeometry, TrackMesh, BarStyle.Track, Whole, TrackSVG, *this, InWidgetStyle, FLinearColor::White, &Materials, 0, &MaterialInputs);
 
 	// What is shown.
 	const float Shown = FMath::Clamp(FillValue.Value, 0.f, 1.f);
@@ -875,7 +911,7 @@ int32 SAdvancedProgressBar::PaintRing(const FGeometry& AllottedGeometry, FSlateW
 	else
 	{
 		WidgetShapeGeometry::CutForGradient(FillMesh, Paint, MakeBoxFrame(Whole), 6.f / PixelScale);
-		PaintMeshWithPaint(OutDrawElements, LayerId + 4, AllottedGeometry, FillMesh, Paint, Whole, FillSVG, *this, InWidgetStyle);
+		PaintMeshWithPaint(OutDrawElements, LayerId + 4, AllottedGeometry, FillMesh, Paint, Whole, FillSVG, *this, InWidgetStyle, FLinearColor::White, &Materials, 1, &MaterialInputs);
 	}
 
 	// The shine, round the fill.
@@ -917,6 +953,362 @@ int32 SAdvancedProgressBar::PaintRing(const FGeometry& AllottedGeometry, FSlateW
 	return LayerId + 7;
 }
 
+int32 SAdvancedProgressBar::PaintCurve(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle) const
+{
+	using namespace AdvancedProgressBarPrivate;
+
+	const FVector2D LocalSize = AllottedGeometry.GetLocalSize();
+	const FVector2f Size(static_cast<float>(LocalSize.X), static_cast<float>(LocalSize.Y));
+	const float PixelScale = QuantizeScale(GetPixelScale(AllottedGeometry));
+	const float Tolerance = WidgetShapeGeometry::GetTolerance(PixelScale);
+	const float AntiAlias = 1.f / PixelScale;
+	const FLinearColor WidgetTint = InWidgetStyle.GetColorAndOpacityTint();
+	const FBox2f Whole(FVector2f::ZeroVector, Size);
+	const UCurveShape* Line = Curve.Get();
+	if (!Line)
+	{
+		return LayerId;
+	}
+
+	const float Thickness = FMath::Clamp(BarStyle.CurveThickness, 1.f, FMath::Max(FMath::Min(Size.X, Size.Y), 1.f));
+	const bool bRound = BarStyle.CurveCap == EProgressRingCap::Round;
+	const float SlantAngle = bRound ? 0.f : FMath::Clamp(BarStyle.CurveCapAngle, -80.f, 80.f);
+	const bool bSlant = !FMath::IsNearlyZero(SlantAngle, 0.01f);
+	const float Inset = FMath::Clamp(BarStyle.FillInset, 0.f, Thickness * 0.45f);
+
+	// The line in local space: the Curve's points in this box, kept clear of its edges by half the thickness.
+	uint32 LineHash = Line->GetMeshHash();
+	LineHash = HashCombineFast(LineHash, GetTypeHash(Size));
+	LineHash = HashCombineFast(LineHash, GetTypeHash(PixelScale));
+	LineHash = HashCombineFast(LineHash, GetTypeHash(Thickness));
+	LineHash = HashCombineFast(LineHash, GetTypeHash(BarStyle.bReverseCurve));
+	if (CurveHash != LineHash || CurvePoints.Num() < 2)
+	{
+		CurveHash = LineHash;
+		bTrackBuilt = false;
+		FWidgetShapeFrame Frame;
+		Frame.Center = Size * 0.5f;
+		Frame.Size = FVector2f(FMath::Max(Size.X - Thickness, 1.f), FMath::Max(Size.Y - Thickness, 1.f));
+		FWidgetShapePath Path;
+		Line->BuildCurvePath(Path, FVector2D(Frame.Size.X, Frame.Size.Y));
+		FWidgetShapeOutline Outline;
+		WidgetShapeGeometry::FlattenPath(Path, Frame, Tolerance, Outline);
+		CurvePoints.Reset();
+		bCurveClosed = false;
+		if (Outline.Lines.Num() > 0 && Outline.Lines[0].Points.Num() >= 2)
+		{
+			CurvePoints = Outline.Lines[0].Points;
+			bCurveClosed = Outline.Lines[0].bClosed;
+			if (bCurveClosed)
+			{
+				// Round and back to the start: measured as one line from the first point to itself.
+				CurvePoints.Add(FVector2f(CurvePoints[0]));
+			}
+			if (BarStyle.bReverseCurve)
+			{
+				Algo::Reverse(CurvePoints);
+			}
+			// Fine enough that colors along it (a gradient, the shine) read smoothly.
+			WidgetPathGeometry::Resample(CurvePoints, 4.f);
+		}
+		CurveLength = WidgetShapeGeometry::GetLength(CurvePoints, /*bClosed=*/false);
+	}
+	if (CurvePoints.Num() < 2 || CurveLength <= KINDA_SMALL_NUMBER)
+	{
+		return LayerId;
+	}
+	const float Length = CurveLength;
+
+	const int32 Count = FMath::Clamp(BarStyle.Segments, 1, 100);
+	const float GapLength = Count > 1 ? FMath::Max(BarStyle.SegmentGap, 0.f) + (bRound ? Thickness : 0.f) : 0.f;
+	const float GapSpan = GapLength / Length;
+	const int32 Gaps = Count > 1 ? (bCurveClosed ? Count : Count - 1) : 0;
+	const float SegmentSpanLength = FMath::Max((1.f - GapSpan * static_cast<float>(Gaps)) / static_cast<float>(Count), 0.001f);
+	const float FirstOffset = (bCurveClosed && Count > 1) ? GapSpan * 0.5f : 0.f;
+
+	FWidgetShapeStroke Stroke;
+	Stroke.bEnabled = true;
+	Stroke.Align = EWidgetShapeStrokeAlign::Center;
+	Stroke.Join = EWidgetShapeLineJoin::Round;
+	Stroke.Cap = bRound ? EWidgetShapeLineCap::Round : EWidgetShapeLineCap::Butt;
+	TArray<int8> OpenSide;
+	OpenSide.Add(0);
+
+	// Pieces over a span (0..1 along the line), split by the segments; every vertex's Along.X becomes where it is along the line.
+	auto BuildPieces = [&](float SpanStart, float SpanEnd, float Width, bool bFreeSpan, FWidgetShapeMesh& Out, TArray<TArray<FVector2f>>* OutLines)
+	{
+		Stroke.Width = Width;
+		const float HalfWidth = Width * 0.5f;
+		auto AddPiece = [&](float From, float To)
+		{
+			TArray<FVector2f> Points;
+			WidgetPathGeometry::CutBetween(CurvePoints, From * Length, To * Length, Points);
+			if (Points.Num() < 2)
+			{
+				return;
+			}
+			if (OutLines)
+			{
+				OutLines->Add(Points);
+			}
+			// All the way round a closed line: one closed stroke, no ends meeting at the start.
+			if (bCurveClosed && From <= 1e-5f && To >= 1.f - 1e-5f && Points.Num() > 3)
+			{
+				FWidgetShapeOutline Loop;
+				FWidgetShapeLine& Closed = Loop.Lines.AddDefaulted_GetRef();
+				Closed.Points = Points;
+				Closed.Points.Pop();
+				Closed.bClosed = true;
+				FWidgetShapeMesh Piece;
+				WidgetShapeGeometry::BuildStroke(Loop, OpenSide, Stroke, FWidgetShapeTrim(), AntiAlias, Tolerance, Piece);
+				for (FWidgetShapeMeshVertex& Vertex : Piece.Vertices)
+				{
+					Vertex.Along.X /= Length;
+					Vertex.OutlineLength = 1.f;
+				}
+				AppendMesh(Out, Piece);
+				return;
+			}
+			// Slanted: built longer, square-ended, then cut at the angle.
+			float Extend = 0.f;
+			FVector2f StartWay = FVector2f::ZeroVector;
+			FVector2f EndWay = FVector2f::ZeroVector;
+			const FVector2f StartPoint = Points[0];
+			const FVector2f EndPoint = Points.Last();
+			if (bSlant)
+			{
+				Extend = WidgetShapeGeometry::GetSlantReach(SlantAngle, HalfWidth, AntiAlias);
+				StartWay = (Points[0] - Points[1]).GetSafeNormal();
+				EndWay = (Points.Last() - Points[Points.Num() - 2]).GetSafeNormal();
+				Points.Insert(StartPoint + StartWay * Extend, 0);
+				Points.Add(EndPoint + EndWay * Extend);
+			}
+			FWidgetShapeOutline Outline;
+			FWidgetShapeLine& Run = Outline.Lines.AddDefaulted_GetRef();
+			Run.Points = MoveTemp(Points);
+			Run.bClosed = false;
+			FWidgetShapeMesh Piece;
+			WidgetShapeGeometry::BuildStroke(Outline, OpenSide, Stroke, FWidgetShapeTrim(), AntiAlias, Tolerance, Piece);
+			for (FWidgetShapeMeshVertex& Vertex : Piece.Vertices)
+			{
+				Vertex.Along.X = From + (Vertex.Along.X - Extend) / Length;
+				Vertex.OutlineLength = 1.f;
+			}
+			if (bSlant)
+			{
+				WidgetShapeGeometry::SlantStrokeEnd(Piece, StartPoint, StartWay, SlantAngle, HalfWidth, AntiAlias);
+				WidgetShapeGeometry::SlantStrokeEnd(Piece, EndPoint, EndWay, SlantAngle, HalfWidth, AntiAlias);
+			}
+			AppendMesh(Out, Piece);
+		};
+		// A span running past the end of a closed line carries on from its start.
+		auto AddWrapped = [&](float From, float To)
+		{
+			if (!bCurveClosed)
+			{
+				From = FMath::Max(From, 0.f);
+				To = FMath::Min(To, 1.f);
+				if (To - From > 1e-5f)
+				{
+					AddPiece(From, To);
+				}
+				return;
+			}
+			const float Shift = FMath::FloorToFloat(From);
+			From -= Shift;
+			To -= Shift;
+			if (To <= 1.f)
+			{
+				AddPiece(From, To);
+				return;
+			}
+			AddPiece(From, 1.f);
+			AddPiece(0.f, FMath::Min(To - 1.f, 1.f));
+		};
+
+		if (bFreeSpan || Count == 1)
+		{
+			if (SpanEnd - SpanStart > 1e-5f)
+			{
+				AddWrapped(SpanStart, SpanEnd);
+			}
+			return;
+		}
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			const float A = FirstOffset + static_cast<float>(Index) * (SegmentSpanLength + GapSpan);
+			const float B = A + SegmentSpanLength;
+			const float From = FMath::Max(SpanStart, A);
+			const float To = FMath::Min(SpanEnd, B);
+			if (To - From > 1e-5f)
+			{
+				AddPiece(From, To);
+			}
+		}
+	};
+
+	// The track.
+	uint32 Hash = CurveHash;
+	Hash = HashCombineFast(Hash, GetTypeHash(Count));
+	Hash = HashCombineFast(Hash, GetTypeHash(GapLength));
+	Hash = HashCombineFast(Hash, GetTypeHash(bRound));
+	Hash = HashCombineFast(Hash, GetTypeHash(SlantAngle));
+	Hash = HashCombineFast(Hash, BarStyle.Track.GetLayoutHash() + 2u);
+	if (!bTrackBuilt || Hash != TrackHash)
+	{
+		TrackMesh.Reset();
+		TrackOutlineMesh.Reset();
+		BuildPieces(0.f, 1.f, Thickness, false, TrackMesh, nullptr);
+		if (!BarStyle.Track.MapsAlongOutline())
+		{
+			WidgetShapeGeometry::CutForGradient(TrackMesh, BarStyle.Track, MakeBoxFrame(Whole), 6.f / PixelScale);
+		}
+		TrackHash = Hash;
+		bTrackBuilt = true;
+	}
+	const FWidgetEffectMaterialInputs MaterialInputs = MakeMaterialInputs(Size);
+	PaintMeshWithPaint(OutDrawElements, LayerId, AllottedGeometry, TrackMesh, BarStyle.Track, Whole, TrackSVG, *this, InWidgetStyle, FLinearColor::White,
+		&Materials, 0, &MaterialInputs, /*bAlongOutline=*/true);
+
+	// What is shown.
+	const float Shown = FMath::Clamp(FillValue.Value, 0.f, 1.f);
+	const float Trail = FMath::Clamp(GhostValue.Value, 0.f, 1.f);
+	auto Snapped = [this, Count](float Value)
+	{
+		return (BarStyle.bWholeSegments && Count > 1) ? FMath::FloorToFloat(Value * static_cast<float>(Count) + 1e-3f) / static_cast<float>(Count) : Value;
+	};
+	float FillStart = 0.f;
+	float FillEnd = Snapped(Shown);
+	const float TrailEnd = Snapped(Trail);
+	bool bFreeSpan = false;
+	if (bIndeterminate)
+	{
+		if (bCurveClosed)
+		{
+			// Round and round, its length breathing, as a full ring's.
+			const float Rotation = static_cast<float>(Clock / 1.4);
+			const float Breath = 0.5f - 0.5f * FMath::Cos(static_cast<float>(Clock * UE_TWO_PI / 1.3));
+			FillStart = Rotation + 0.15f * Breath;
+			FillEnd = FillStart + 0.08f + 0.55f * Breath;
+		}
+		else
+		{
+			GetIndeterminateSpan(FillStart, FillEnd);
+		}
+		bFreeSpan = true;
+	}
+	const float FillWidth = FMath::Max(Thickness - 2.f * Inset, 0.5f);
+	const FWidgetShapePaint Paint = MakeFillPaint(Shown);
+	const bool bSpanGradient = Paint.IsGradient() && BarStyle.GradientSpan != EProgressGradientSpan::Box;
+	const float FillReach = FMath::Max(FillEnd - FillStart, 0.001f);
+	auto ColorPosition = [&](float Along)
+	{
+		return BarStyle.GradientSpan == EProgressGradientSpan::Fill ? (Along - FillStart) / FillReach : (bCurveClosed ? FMath::Frac(Along) : Along);
+	};
+	const FLinearColor LeadColor = bSpanGradient ? Paint.SampleGradient(ColorPosition(FillEnd)) * Paint.Color : Paint.Color;
+
+	// Glow along the fill, under it: four lanes across the line, clear at the outside, full over the fill.
+	TArray<TArray<FVector2f>> FillLines;
+	FWidgetShapeMesh FillMesh;
+	BuildPieces(FillStart, FillEnd, FillWidth, bFreeSpan, FillMesh, &FillLines);
+	if (BarStyle.Glow > 0.f && FillLines.Num() > 0)
+	{
+		const float Spread = FMath::Max(BarStyle.GlowSize, 1.f);
+		const float Offsets[4] = { -FillWidth * 0.5f - Spread, -FillWidth * 0.5f, FillWidth * 0.5f, FillWidth * 0.5f + Spread };
+		const float Strength[4] = { 0.f, 1.f, 1.f, 0.f };
+		FWidgetShapeMesh GlowMesh;
+		for (const TArray<FVector2f>& Points : FillLines)
+		{
+			const uint32 Base = static_cast<uint32>(GlowMesh.Vertices.Num());
+			for (int32 Index = 0; Index < Points.Num(); ++Index)
+			{
+				const FVector2f Along = (Points[FMath::Min(Index + 1, Points.Num() - 1)] - Points[FMath::Max(Index - 1, 0)]).GetSafeNormal();
+				const FVector2f Side(-Along.Y, Along.X);
+				for (int32 Lane = 0; Lane < 4; ++Lane)
+				{
+					GlowMesh.AddVertex(Points[Index] + Side * Offsets[Lane], Strength[Lane]);
+				}
+			}
+			for (int32 Step = 0; Step + 1 < Points.Num(); ++Step)
+			{
+				for (int32 Lane = 0; Lane < 3; ++Lane)
+				{
+					const uint32 A = Base + static_cast<uint32>(Step * 4 + Lane);
+					GlowMesh.AddQuad(A, A + 1, A + 5, A + 4);
+				}
+			}
+		}
+		FLinearColor GlowColor = LeadColor;
+		GlowColor.A *= BarStyle.Glow * 0.6f;
+		PaintMesh(OutDrawElements, LayerId + 2, AllottedGeometry, GlowMesh, WidgetTint, [&GlowColor](const FWidgetShapeMeshVertex&) { return GlowColor; });
+	}
+
+	// The trail.
+	if (!bIndeterminate && BarStyle.bTrail && TrailEnd > FillEnd + 1e-4f)
+	{
+		FWidgetShapeMesh TrailMesh;
+		BuildPieces(0.f, TrailEnd, FillWidth, false, TrailMesh, nullptr);
+		const FLinearColor TrailColor = bGain ? BarStyle.GainColor : BarStyle.LossColor;
+		PaintMesh(OutDrawElements, LayerId + 3, AllottedGeometry, TrailMesh, WidgetTint, [&TrailColor](const FWidgetShapeMeshVertex&) { return TrailColor; });
+	}
+
+	// The fill: fine enough along the line that colors along it are drawn per vertex.
+	if (bSpanGradient)
+	{
+		PaintMesh(OutDrawElements, LayerId + 4, AllottedGeometry, FillMesh, WidgetTint,
+			[&Paint, &ColorPosition](const FWidgetShapeMeshVertex& Vertex) { return Paint.SampleGradient(ColorPosition(Vertex.Along.X)) * Paint.Color; });
+	}
+	else
+	{
+		if (!Paint.MapsAlongOutline())
+		{
+			WidgetShapeGeometry::CutForGradient(FillMesh, Paint, MakeBoxFrame(Whole), 6.f / PixelScale);
+		}
+		PaintMeshWithPaint(OutDrawElements, LayerId + 4, AllottedGeometry, FillMesh, Paint, Whole, FillSVG, *this, InWidgetStyle, FLinearColor::White,
+			&Materials, 1, &MaterialInputs, /*bAlongOutline=*/true);
+	}
+
+	// The shine, along the fill.
+	float ShineCenter = 0.f;
+	if (BarStyle.bShine && !bIndeterminate && !FillMesh.IsEmpty() && GetShineCenter(Clock, BarStyle.ShineInterval, BarStyle.ShineWidth, ShineCenter))
+	{
+		const float Width = FMath::Max(BarStyle.ShineWidth, 0.02f);
+		const float Opacity = BarStyle.ShineOpacity;
+		PaintMesh(OutDrawElements, LayerId + 6, AllottedGeometry, FillMesh, WidgetTint, [FillStart, FillReach, ShineCenter, Width, Opacity](const FWidgetShapeMeshVertex& Vertex)
+		{
+			const float AlongFill = (Vertex.Along.X - FillStart) / FillReach;
+			return FLinearColor(1.f, 1.f, 1.f, Opacity * FMath::Max(0.f, 1.f - FMath::Abs(AlongFill - ShineCenter) / Width));
+		});
+	}
+
+	// Markers: ticks across the line.
+	if (BarStyle.Markers.Num() > 0)
+	{
+		FWidgetShapeMesh Ticks;
+		const float HalfWidth = FMath::Max(BarStyle.MarkerWidth, 0.5f) * 0.5f;
+		for (const float Marker : BarStyle.Markers)
+		{
+			FVector2f Point;
+			FVector2f Direction;
+			if (!WidgetPathGeometry::SampleAt(CurvePoints, FMath::Clamp(Marker, 0.f, 1.f) * Length, Point, Direction))
+			{
+				continue;
+			}
+			const FVector2f Across(-Direction.Y, Direction.X);
+			const FVector2f Inner = Point - Across * (Thickness * 0.5f);
+			const FVector2f Outer = Point + Across * (Thickness * 0.5f);
+			const uint32 A = Ticks.AddVertex(Inner - Direction * HalfWidth, 1.f);
+			const uint32 B = Ticks.AddVertex(Outer - Direction * HalfWidth, 1.f);
+			const uint32 C = Ticks.AddVertex(Outer + Direction * HalfWidth, 1.f);
+			const uint32 D = Ticks.AddVertex(Inner + Direction * HalfWidth, 1.f);
+			Ticks.AddQuad(A, B, C, D);
+		}
+		const FLinearColor MarkerColor = BarStyle.MarkerColor;
+		PaintMesh(OutDrawElements, LayerId + 7, AllottedGeometry, Ticks, WidgetTint, [&MarkerColor](const FWidgetShapeMeshVertex&) { return MarkerColor; });
+	}
+	return LayerId + 7;
+}
+
 // =====================================================================================================
 // UAdvancedProgressBar
 // =====================================================================================================
@@ -948,6 +1340,7 @@ void UAdvancedProgressBar::SynchronizeProperties()
 		return;
 	}
 	MyBar->SetBarStyle(BarStyle);
+	MyBar->SetCurve(BarStyle.Shape == EProgressBarShape::Curve ? ResolveCurve() : nullptr);
 	MyBar->SetMotion(Motion, EnterDuration, ExitDuration);
 	MyBar->SetIndeterminate(bIndeterminate);
 	if (PercentDelegate.IsBound())
@@ -1017,7 +1410,41 @@ void UAdvancedProgressBar::SetBarStyle(const FAdvancedProgressBarStyle& InStyle)
 	if (MyBar.IsValid())
 	{
 		MyBar->SetBarStyle(BarStyle);
+		MyBar->SetCurve(BarStyle.Shape == EProgressBarShape::Curve ? ResolveCurve() : nullptr);
 	}
+}
+
+const UCurveShape* UAdvancedProgressBar::ResolveCurve()
+{
+	if (BarStyle.CurveSource == EProgressCurveSource::Widget)
+	{
+		if (const UCurveShape* Found = Cast<UCurveShape>(WidgetTreeLookup::FindWidget(this, BarStyle.CurveWidget)))
+		{
+			return Found;
+		}
+	}
+	if (!MadeCurve)
+	{
+		MadeCurve = NewObject<UCurveShape>(this, NAME_None, RF_Transient);
+	}
+	if (BarStyle.CurveSource == EProgressCurveSource::Preset && BarStyle.CurvePreset)
+	{
+		MadeCurve->ApplyCurvePreset(BarStyle.CurvePreset);
+	}
+	else
+	{
+		// A ready-made line - or, with nothing picked yet, the ready-made line the bar shows while it waits.
+		MadeCurve->SetCurveFromTemplate(BarStyle.CurveTemplate);
+		MadeCurve->Interpolation = EWidgetCurveInterpolation::CatmullRom;
+	}
+	return MadeCurve;
+}
+
+TArray<FString> UAdvancedProgressBar::GetWidgetOptions() const
+{
+	TArray<FString> Names;
+	WidgetTreeLookup::GetWidgetNames(this, Names, this);
+	return Names;
 }
 
 void UAdvancedProgressBar::SetFillColor(FLinearColor InColor)
@@ -1057,6 +1484,26 @@ void UAdvancedProgressBar::HandleReachedEnd(bool bFull)
 const FText UAdvancedProgressBar::GetPaletteCategory()
 {
 	return LOCTEXT("PaletteCategory", "NameTBD");
+}
+
+void UAdvancedProgressBar::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	// A Material paint lists its material's parameters as the material is picked; made on the Widget Blueprint's own widget too
+	// (the Details panel hands it only the edited value).
+	const bool bListed = BarStyle.Fill.SyncMaterialParameters() | BarStyle.Track.SyncMaterialParameters();
+	if (bListed)
+	{
+		if (UAdvancedProgressBar* Template = Cast<UAdvancedProgressBar>(WidgetEditorHooks::FindDesignerTemplate(this)))
+		{
+			if (Template != this)
+			{
+				Template->Modify();
+				Template->BarStyle.Fill.MaterialParameters = BarStyle.Fill.MaterialParameters;
+				Template->BarStyle.Track.MaterialParameters = BarStyle.Track.MaterialParameters;
+			}
+		}
+	}
+	Super::PostEditChangeProperty(PropertyChangedEvent);
 }
 #endif
 

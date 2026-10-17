@@ -116,6 +116,16 @@ public:
 	const FSlateBrush* GetBrush(uint64 Key, const FWidgetEffectImage& Image, const FWidgetEffectMaterialInputs* Inputs, const FGeometry& Geometry,
 		const FVector2f& LocalSize, const SWidget& Widget);
 
+	/**
+	 * The brush for a material with Parameters (and live Inputs) set on a dynamic instance of its own, one per Key: Template's
+	 * look (tint, margins) when given, else a plain image brush. Null with no material.
+	 */
+	const FSlateBrush* GetMaterialBrush(uint64 Key, UMaterialInterface* Material, const TArray<FWidgetMaterialParameter>& Parameters,
+		const FWidgetEffectMaterialInputs* Inputs, const FSlateBrush* Template = nullptr);
+
+	/** The dynamic instance drawn for Key, once it has been drawn. */
+	UMaterialInstanceDynamic* FindDynamic(uint64 Key) const;
+
 	/** Lets go of every instance and drawing. */
 	void Reset();
 
@@ -143,4 +153,10 @@ namespace WidgetMaterialParameters
 {
 	NAMETBD_API void Apply(UMaterialInstanceDynamic* Dynamic, const TArray<FWidgetMaterialParameter>& Parameters);
 	NAMETBD_API uint32 Hash(const TArray<FWidgetMaterialParameter>& Parameters);
+
+	/**
+	 * Lists Material's scalar, vector and texture parameters in Parameters, in the material's order: each keeps the value it had
+	 * (by name and kind), a new one takes the material's default. Null empties it. True when the list (names, kinds) changed.
+	 */
+	NAMETBD_API bool SyncFromMaterial(TArray<FWidgetMaterialParameter>& Parameters, UMaterialInterface* Material);
 }

@@ -198,6 +198,22 @@ public:
 
 	/** Whether the vertices' own Bezier handles shape the outline - what the canvas path editor shows and drags. A Curve smoothing through its points works out its own. */
 	virtual bool UsesVertexHandles() const { return true; }
+
+	/**
+	 * The path as it is drawn, in box fractions, at PixelsPerBox (local units per box unit each way) - what the canvas path
+	 * editor draws and hit-tests. The Path itself here; a Curve's points smoothed. Same contours and vertex count as Path.
+	 */
+	virtual void BuildDisplayPath(FWidgetShapePath& OutPath, const FVector2D& PixelsPerBox) const { OutPath = Path; }
+
+	/** Whether the canvas path editor shows the points joined by straight lines too: they are a control cage the line is drawn inside (a B-Spline Curve). */
+	virtual bool ShowsControlCage() const { return false; }
+
+	/**
+	 * A line drawn by hand (box fractions, in the order drawn) as one contour of this shape: Bezier segments fitted to within
+	 * Tolerance (local units, at PixelsPerBox), corners kept sharp - what the canvas Pencil adds. A Curve fits points it runs
+	 * through as it is set to.
+	 */
+	virtual void MakeContourFromStroke(const TArray<FVector2D>& BoxPoints, const FVector2D& PixelsPerBox, float Tolerance, bool bClosed, FWidgetShapeContour& Out) const;
 };
 
 /** The polygons' corners, for the shapes built from them. */

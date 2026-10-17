@@ -7,6 +7,8 @@
 #include "Widgets/SLeafWidget.h"
 #include "NameTBD/Widgets/Shapes/WidgetShapeGeometry.h"
 #include "NameTBD/Widgets/Shapes/WidgetShapeTypes.h"
+#include "NameTBD/Widgets/Shapes/CurveShape.h"
+#include "NameTBD/Widgets/WidgetEffectImage.h"
 #include "NameTBD/Widgets/WidgetMotion.h"
 #include "NameTBD/Widgets/WidgetSVGBrush.h"
 
@@ -17,7 +19,17 @@ UENUM(BlueprintType)
 enum class EProgressBarShape : uint8
 {
 	Bar UMETA(ToolTip = "A straight bar, across or up (Fill Direction)."),
-	Ring UMETA(ToolTip = "A ring or an arc: a full circle, or a gauge with Sweep under 360.")
+	Ring UMETA(ToolTip = "A ring or an arc: a full circle, or a gauge with Sweep under 360."),
+	Curve UMETA(ToolTip = "Along a line of your own: a Curve's ready-made line, a Curve Preset asset, or a Curve widget in this Widget Blueprint - a swoosh, an S, a winding path, a loop. Fills from the line's first point.")
+};
+
+/** Where a Curve-shaped Advanced Progress Bar's line comes from. */
+UENUM(BlueprintType)
+enum class EProgressCurveSource : uint8
+{
+	Template UMETA(DisplayName = "Ready-Made Curve", ToolTip = "One of the Curve's ready-made lines (Curve Template)."),
+	Preset UMETA(DisplayName = "Curve Preset", ToolTip = "A Curve Preset asset's line (saved from any Curve with Save Preset) - shared by every bar that picks it."),
+	Widget UMETA(DisplayName = "Curve Widget", ToolTip = "A Curve widget in this Widget Blueprint, drawn in the bar's own box: edit its line on the canvas (Edit Shape, Pencil) and the bar follows it. Hide the Curve, or keep it as a guide.")
 };
 
 /** Which way a bar fills. */
@@ -107,7 +119,42 @@ struct NAMETBD_API FAdvancedProgressBarStyle
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "Shape == EProgressBarShape::Ring", EditConditionHides))
 	EProgressRingCap RingCap = EProgressRingCap::Round;
 
-	/** The filled part: a color, a gradient (see Gradient Span), an image or an SVG. */
+	/** Curve: where its line comes from. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "Shape == EProgressBarShape::Curve", EditConditionHides))
+	EProgressCurveSource CurveSource = EProgressCurveSource::Template;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "Shape == EProgressBarShape::Curve && CurveSource == EProgressCurveSource::Template", EditConditionHides))
+	EWidgetCurveTemplate CurveTemplate = EWidgetCurveTemplate::Swoosh;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "Shape == EProgressBarShape::Curve && CurveSource == EProgressCurveSource::Preset", EditConditionHides))
+	TObjectPtr<UWidgetCurvePresetAsset> CurvePreset = nullptr;
+
+	/** The Curve widget whose line the bar fills along (drawn in the bar's own box). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (GetOptions = "GetWidgetOptions", EditCondition = "Shape == EProgressBarShape::Curve && CurveSource == EProgressCurveSource::Widget", EditConditionHides))
+	FName CurveWidget;
+
+	/** The size it asks for; the line is laid in it, kept clear of its edges by half the thickness. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "Shape == EProgressBarShape::Curve", EditConditionHides))
+	FVector2D CurveSize = FVector2D(240.0, 80.0);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "Shape == EProgressBarShape::Curve", EditConditionHides, ClampMin = "1", UIMax = "64", ForceUnits = "px"))
+	float CurveThickness = 8.f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "Shape == EProgressBarShape::Curve", EditConditionHides))
+	EProgressRingCap CurveCap = EProgressRingCap::Round;
+
+	/**
+	 * Flat ends cut at a slant, in degrees from square (clockwise) - every end: the track's, each segment's and the fill's
+	 * leading edge. Slanted segments read as chevrons; a slanted leading edge as a sci-fi gauge.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (EditCondition = "Shape == EProgressBarShape::Curve && CurveCap == EProgressRingCap::Flat", EditConditionHides, ClampMin = "-80", ClampMax = "80", UIMin = "-60", UIMax = "60", ForceUnits = "Degrees"))
+	float CurveCapAngle = 0.f;
+
+	/** Fills from the line's last point instead of its first. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shape", meta = (DisplayName = "Reverse Curve", EditCondition = "Shape == EProgressBarShape::Curve", EditConditionHides))
+	bool bReverseCurve = false;
+
+	/** The filled part: a color, a gradient (see Gradient Span), an image, an SVG or a material (handed Progress, 0 to 1, as it fills). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Fill")
 	FWidgetShapePaint Fill;
 
@@ -234,6 +281,9 @@ public:
 
 	/** Read every frame while bound (a binding in the designer). */
 	void SetPercentSource(TAttribute<float> InSource);
+
+	/** The Curve a Curve-shaped bar fills along (its line is drawn in the bar's box). */
+	void SetCurve(const UCurveShape* InCurve);
 	void SetIndeterminate(bool bInIndeterminate);
 
 	float GetDisplayedPercent() const { return FillValue.Value; }
@@ -249,6 +299,10 @@ private:
 
 	int32 PaintBar(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle) const;
 	int32 PaintRing(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle) const;
+	int32 PaintCurve(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle) const;
+
+	/** The live values a Material paint is handed: Progress (what is shown), ShapeSize. */
+	FWidgetEffectMaterialInputs MakeMaterialInputs(const FVector2f& Size) const;
 
 	/** The fill's paint, its color taken from the value when Color By Value. */
 	FWidgetShapePaint MakeFillPaint(float Shown) const;
@@ -278,6 +332,16 @@ private:
 	mutable bool bTrackBuilt = false;
 	mutable FWidgetShapeMesh TrackMesh;
 	mutable FWidgetShapeMesh TrackOutlineMesh;
+
+	/** A Material Fill (key 1) or Track (key 0) paint's own instances. */
+	mutable FWidgetEffectMaterials Materials;
+
+	/** Curve: the line it fills along, and its points in local space as last built (and for what). */
+	TWeakObjectPtr<const UCurveShape> Curve;
+	mutable TArray<FVector2f> CurvePoints;
+	mutable float CurveLength = 0.f;
+	mutable bool bCurveClosed = false;
+	mutable uint32 CurveHash = 0;
 };
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnAdvancedProgressChanged, float, NewPercent, float, OldPercent);
@@ -285,7 +349,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnAdvancedProgressEvent);
 
 /**
  * Advanced Progress Bar: a progress bar or ring for health, stamina, loading, XP, timers and gauges. A straight bar (any
- * direction, or growing from the middle) or a ring / arc gauge; rounded or flat leading edge; segments (a battery, health
+ * direction, or growing from the middle), a ring / arc gauge, or along a curve of your own (a ready-made line, a Curve Preset
+ * or a Curve widget, flat ends optionally slanted); rounded or flat leading edge; segments (a battery, health
  * pips); a trail that shows what was just lost or gained; gradients along the track or the fill, an image or SVG, a color that
  * follows the value; glow, a sweeping shine, moving stripes, markers; an indeterminate (busy) mode. Every change is animated
  * with its Motion. Set Percent as a Progress Bar's; vector-drawn, sharp at any size.
@@ -375,6 +440,9 @@ public:
 	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
 #if WITH_EDITOR
 	virtual const FText GetPaletteCategory() override;
+
+	// UObject
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
 protected:
@@ -386,5 +454,16 @@ private:
 	/** Percent through its binding, when it has one. */
 	float GetBoundPercent() const;
 
+	/** The Curve a Curve-shaped bar fills along: the named Curve widget, or one made here from the ready-made line or preset. */
+	const UCurveShape* ResolveCurve();
+
+	/** The widgets in this Widget Blueprint, for Curve Widget. */
+	UFUNCTION()
+	TArray<FString> GetWidgetOptions() const;
+
 	TSharedPtr<SAdvancedProgressBar> MyBar;
+
+	/** The Curve made for a ready-made line or a Curve Preset (never in a tree, never drawn itself). */
+	UPROPERTY(Transient)
+	TObjectPtr<UCurveShape> MadeCurve;
 };

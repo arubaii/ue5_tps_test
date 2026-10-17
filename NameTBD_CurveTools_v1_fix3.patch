@@ -1,0 +1,103 @@
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapeDetails.cpp b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapeDetails.cpp
+index 0e9250c..dfc5a64 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapeDetails.cpp
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Private/WidgetShapeDetails.cpp
+@@ -28,6 +28,7 @@
+ #include "UObject/Package.h"
+ #include "Widgets/Input/SButton.h"
+ #include "Widgets/Input/SComboButton.h"
++#include "Widgets/Input/SNumericEntryBox.h"
+ #include "Widgets/Input/SEditableTextBox.h"
+ #include "Widgets/Layout/SBox.h"
+ #include "Widgets/Notifications/SNotificationList.h"
+@@ -302,6 +303,74 @@ void FWidgetShapeDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
+ 			]
+ 		];
+ 
++	// While editing: the canvas tools here too (the toolbar above the shape has them as well), so they are always at hand.
++	{
++		using WidgetShapePathEditing::ETool;
++		auto ToolChip = [First](ETool Tool, FName Icon, const FText& Label, const FText& ToolTip)
++		{
++			FChip Chip;
++			Chip.Icon = Icon;
++			Chip.Label = Label;
++			Chip.ToolTip = ToolTip;
++			Chip.IsActive = [First, Tool]() { return First.IsValid() && WidgetShapePathEditing::GetState(First->GetFName()).Tool == Tool; };
++			Chip.OnClick = [First, Tool]()
++			{
++				if (First.IsValid())
++				{
++					WidgetShapePathEditing::GetState(First->GetFName()).Tool = Tool;
++				}
++			};
++			return MakeChip(Chip);
++		};
++		Category.AddCustomRow(Tips::CanvasToolsRow())
++			.Visibility(TAttribute<EVisibility>::CreateLambda([First]() { return WidgetShapePathEditing::IsEditing(First.Get()) ? EVisibility::Visible : EVisibility::Collapsed; }))
++			.NameContent()
++			.VAlign(VAlign_Center)
++			[
++				SNew(STextBlock).Font(Font).Text(Tips::CanvasToolsRow())
++			]
++			.ValueContent()
++			.MinDesiredWidth(280.f)
++			.VAlign(VAlign_Center)
++			[
++				SNew(SHorizontalBox)
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 2.f, 4.f, 2.f))
++				[
++					ToolChip(ETool::Select, FNameTBDStyle::ShapeSelectIcon, LOCTEXT("SelectTool", "Select"), Tips::SelectToolTooltip())
++				]
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 2.f, 4.f, 2.f))
++				[
++					ToolChip(ETool::Pen, FNameTBDStyle::ShapePenIcon, LOCTEXT("PenTool", "Pen"), Tips::PenToolTooltip())
++				]
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 2.f, 8.f, 2.f))
++				[
++					ToolChip(ETool::Pencil, FNameTBDStyle::ShapePencilIcon, LOCTEXT("PencilTool", "Pencil"), Tips::PencilToolTooltip())
++				]
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(0.f, 2.f, 4.f, 2.f))
++				[
++					SNew(STextBlock).Font(Font).Text(LOCTEXT("PencilFit", "Fit")).ToolTipText(Tips::PencilFitTooltip())
++				]
++				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
++				[
++					SNew(SBox)
++					.WidthOverride(60.f)
++					[
++						SNew(SNumericEntryBox<float>)
++						.Font(Font)
++						.ToolTipText(Tips::PencilFitTooltip())
++						.AllowSpin(true)
++						.MinValue(0.25f)
++						.MaxValue(TOptional<float>())
++						.MinSliderValue(0.25f)
++						.MaxSliderValue(16.f)
++						.Value_Lambda([]() { return TOptional<float>(WidgetShapePathEditing::PencilTolerance()); })
++						.OnValueChanged_Lambda([](float Value) { WidgetShapePathEditing::PencilTolerance() = FMath::Max(Value, 0.25f); })
++						.OnValueCommitted_Lambda([](float Value, ETextCommit::Type) { WidgetShapePathEditing::PencilTolerance() = FMath::Max(Value, 0.25f); })
++					]
++				]
++			];
++	}
++
+ 	// An edit on the canvas changes the vertex list under this panel: lay it out again to show it.
+ 	TSet<FName> Names;
+ 	for (const TWeakObjectPtr<UObject>& Object : Objects)
+diff --git a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+index 9f292b1..56900fe 100644
+--- a/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
++++ b/Plugins/NameTBD/Source/NameTBDEditor/Public/NameTBDTooltips.h
+@@ -3174,6 +3174,11 @@ namespace NameTBD::Tooltips
+ 				"Pen (P): click to add vertices after the selected end of an open contour - or start a new contour - and drag as you click to pull out curve handles. Click the contour's first vertex to close it. Click an edge to add a vertex on it. Shift keeps each new edge to 45 degrees.");
+ 		}
+ 
++		inline FText CanvasToolsRow()
++		{
++			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "CanvasToolsRow", "Canvas Tools");
++		}
++
+ 		inline FText PencilToolTooltip()
+ 		{
+ 			return NSLOCTEXT("NameTBDTooltips.ShapeEditor", "PencilToolTooltip",

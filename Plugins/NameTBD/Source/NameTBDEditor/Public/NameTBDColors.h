@@ -913,6 +913,9 @@ namespace NameTBD
 			inline const FLinearColor HandleLine(AnimationOrange_Normal.CopyWithNewOpacity(0.85f));
 			inline const FLinearColor HandleFill(1.0f, 1.0f, 1.0f, 1.0f);
 			inline const FLinearColor PenPreview(AnimationOrange_Normal.CopyWithNewOpacity(0.7f));
+			// The Pencil's line while it is drawn (fitted on release), and a B-Spline Curve's control cage (its points joined straight).
+			inline const FLinearColor PencilLine(AnimationOrange_Hovered);
+			inline const FLinearColor ControlCage(1.0f, 1.0f, 1.0f, 0.35f);
 			inline const FLinearColor CloseRing(AnimationOrange_Hovered);
 			inline const FLinearColor SnapGuide(1.0f, 0.25f, 0.55f, 0.9f);
 			inline const FLinearColor MarqueeFill(AnimationOrange_Normal.CopyWithNewOpacity(0.08f));
@@ -937,6 +940,7 @@ namespace NameTBD
 			inline constexpr float VertexSize = 9.0f;
 			inline constexpr float HandleSize = 7.0f;
 			inline constexpr float PathThickness = 1.5f;
+			inline constexpr float PencilThickness = 2.0f;
 			inline constexpr float HitRadius = 7.0f;
 		}
 

@@ -12,6 +12,7 @@
 
 #include "WidgetShapeGeometry.h"
 #include "WidgetShapeTypes.h"
+#include "NameTBD/Widgets/WidgetEffectImage.h"
 #include "NameTBD/Widgets/WidgetSVGBrush.h"
 
 #include "ShapeWidget.generated.h"
@@ -124,6 +125,9 @@ public:
 	 */
 	bool SetUnfilledBrush(const FSlateBrush* Brush);
 
+	/** The dynamic instance a Material paint is drawn with (the fill's, or the stroke's), once it has been drawn. */
+	UMaterialInstanceDynamic* GetPaintMaterial(bool bStroke) const { return PaintMaterials.FindDynamic(bStroke ? 1 : 0); }
+
 private:
 	void Rebuild(const UShapeWidget& ShapeWidget, const FVector2f& LocalSize, float PixelScale, const FWidgetShapePaint* FillPaint) const;
 	void PaintMesh(const FWidgetShapeMesh& Mesh, const FWidgetShapePaint& Paint, FWidgetSVGBrush& PaintSVG, bool bStroke, const FGeometry& AllottedGeometry,
@@ -189,6 +193,12 @@ private:
 	/** The fill's and the stroke's SVG, for an Image paint with Image Source SVG: drawn at the shape's box size on screen. */
 	mutable FWidgetSVGBrush FillSVG;
 	mutable FWidgetSVGBrush StrokeSVG;
+
+	/** The fill's (key 0) and the stroke's (key 1) dynamic material instances, for a Material paint. */
+	mutable FWidgetEffectMaterials PaintMaterials;
+
+	/** The first contour's length as last built - handed to a Material paint as OutlineLength. */
+	mutable float OutlineLength = 0.f;
 };
 
 // =====================================================================================================
@@ -365,6 +375,25 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Shape|Material")
 	UMaterialInstanceDynamic* GetDynamicFillMaterial();
 
+	/**
+	 * Paints the outline (bStroke) or the fill with a Material paint: its parameters listed on the paint and set there (Set Paint
+	 * ... Parameter), live values handed to it. None goes back to Color. Turns the stroke or fill on.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Shape|Material")
+	void SetPaintMaterial(bool bStroke, UMaterialInterface* InMaterial);
+
+	/** Sets a scalar parameter of the outline's (bStroke) or the fill's Material paint. */
+	UFUNCTION(BlueprintCallable, Category = "Shape|Material")
+	void SetPaintScalarParameter(bool bStroke, FName ParameterName, float InValue);
+
+	/** Sets a color (vector) parameter of the outline's (bStroke) or the fill's Material paint. */
+	UFUNCTION(BlueprintCallable, Category = "Shape|Material")
+	void SetPaintColorParameter(bool bStroke, FName ParameterName, FLinearColor InValue);
+
+	/** Sets a texture parameter of the outline's (bStroke) or the fill's Material paint. */
+	UFUNCTION(BlueprintCallable, Category = "Shape|Material")
+	void SetPaintTextureParameter(bool bStroke, FName ParameterName, UTexture* InValue);
+
 	/** Draws only part of the outline's stroke. Start and End are fractions of the outline, Offset turns of it. */
 	UFUNCTION(BlueprintCallable, Category = "Shape")
 	void SetTrim(float InStart, float InEnd, float InOffset = 0.f);
@@ -468,6 +497,9 @@ public:
 
 #if WITH_EDITOR
 	virtual const FText GetPaletteCategory() override;
+
+	// UObject
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 #endif
 
 protected:

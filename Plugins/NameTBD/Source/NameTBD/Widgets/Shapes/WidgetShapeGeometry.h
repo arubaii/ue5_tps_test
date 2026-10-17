@@ -183,6 +183,18 @@ namespace WidgetShapeGeometry
 	 */
 	NAMETBD_API void CutAtLevel(FWidgetShapeMesh& Mesh, float Level, TFunctionRef<float(const FVector2f&)> ValueOf);
 
+	/**
+	 * Cuts an open stroke's end off at a slant: everything past the line through EndPoint turned AngleDegrees (clockwise,
+	 * -80..80) from square across the stroke is dropped, the new edge anti-aliased over AntiAliasWidth. Outward is the way the
+	 * line leaves at that end. The stroke must reach past EndPoint by HalfWidth x |tan(angle)| (build it longer, with a flat
+	 * cap); only the part of the mesh near EndPoint is touched, so a line that comes back across the cut's line elsewhere keeps
+	 * it. The same angle at both ends of a line slants them in parallel (a parallelogram); opposite angles taper it.
+	 */
+	NAMETBD_API void SlantStrokeEnd(FWidgetShapeMesh& Mesh, const FVector2f& EndPoint, const FVector2f& Outward, float AngleDegrees, float HalfWidth, float AntiAliasWidth);
+
+	/** How far past its end a stroke HalfWidth wide must reach for SlantStrokeEnd to cut it at AngleDegrees (anti-aliasing included). */
+	NAMETBD_API float GetSlantReach(float AngleDegrees, float HalfWidth, float AntiAliasWidth);
+
 	/** Whether a local point is inside the outline's fill (even-odd, open contours closed across). */
 	NAMETBD_API bool IsInside(const FWidgetShapeOutline& Outline, const FVector2f& LocalPoint);
 
