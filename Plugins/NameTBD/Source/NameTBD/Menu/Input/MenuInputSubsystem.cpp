@@ -12,6 +12,7 @@
 #include "InputCoreTypes.h"
 #include "NameTBD/Menu/MenuPlayerUtils.h"
 #include "NameTBD/Menu/Settings/MenuProjectSettings.h"
+#include "NameTBD/Menu/Settings/MenuSettingsSubsystem.h"
 
 /** Sees every input before widgets do, never takes it: only notes which device it came from. */
 class FMenuInputProcessor : public IInputProcessor
@@ -103,6 +104,7 @@ void UMenuInputSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	const UMenuProjectSettings& Settings = UMenuProjectSettings::Get();
 	DetectedFamily = Settings.DefaultGamepadFamily;
+	DetectedCustomFamily = Settings.DefaultGamepadFamily == EMenuGamepadFamily::Custom ? Settings.DefaultCustomGamepadFamily : NAME_None;
 
 	// Consoles: the platform's own pads.
 	const FString Platform = FPlatformProperties::IniPlatformName();
@@ -191,18 +193,35 @@ void UMenuInputSubsystem::NoteGamepadHardware()
 	}
 	GamepadHardware = Hardware;
 	const FString Device = Scope->InputDeviceName.ToString();
-	for (const TPair<FString, EMenuGamepadFamily>& Pair : UMenuProjectSettings::Get().GamepadHardware)
+
+	auto Detect = [this](EMenuGamepadFamily Family, FName CustomFamily)
+	{
+		const bool bChanged = DetectedFamily != Family || DetectedCustomFamily != CustomFamily;
+		DetectedFamily = Family;
+		DetectedCustomFamily = CustomFamily;
+		if (bChanged && CurrentDevice == EMenuInputDevice::Gamepad)
+		{
+			// Same device kind, other prompts: listeners refresh their glyphs.
+			OnInputDeviceChanged.Broadcast(CurrentDevice);
+			DeviceChangedNative.Broadcast(CurrentDevice);
+		}
+	};
+
+	// The project's own families first: an Elite pad also reports as an Xbox pad.
+	const UMenuProjectSettings& Settings = UMenuProjectSettings::Get();
+	for (const TPair<FString, FName>& Pair : Settings.CustomGamepadHardware)
+	{
+		if (!Pair.Value.IsNone() && (Hardware.Contains(Pair.Key) || Device.Contains(Pair.Key)))
+		{
+			Detect(EMenuGamepadFamily::Custom, Pair.Value);
+			return;
+		}
+	}
+	for (const TPair<FString, EMenuGamepadFamily>& Pair : Settings.GamepadHardware)
 	{
 		if (Hardware.Contains(Pair.Key) || Device.Contains(Pair.Key))
 		{
-			const bool bChanged = DetectedFamily != Pair.Value;
-			DetectedFamily = Pair.Value;
-			if (bChanged && CurrentDevice == EMenuInputDevice::Gamepad)
-			{
-				// Same device kind, other prompts: listeners refresh their glyphs.
-				OnInputDeviceChanged.Broadcast(CurrentDevice);
-				DeviceChangedNative.Broadcast(CurrentDevice);
-			}
+			Detect(Pair.Value, NAME_None);
 			return;
 		}
 	}
@@ -262,12 +281,27 @@ EMenuGamepadFamily UMenuInputSubsystem::GetGamepadFamily() const
 	{
 		const UEnum* Enum = StaticEnum<EMenuGamepadFamily>();
 		const int64 Value = Enum ? Enum->GetValueByNameString(FamilyOverride) : INDEX_NONE;
-		if (Value != INDEX_NONE)
+		if (Value != INDEX_NONE && static_cast<EMenuGamepadFamily>(Value) != EMenuGamepadFamily::Custom)
 		{
 			return static_cast<EMenuGamepadFamily>(Value);
 		}
+		// A Custom family's name.
+		if (FindCustomGlyphSet(FName(*FamilyOverride)))
+		{
+			return EMenuGamepadFamily::Custom;
+		}
 	}
 	return DetectedFamily;
+}
+
+FName UMenuInputSubsystem::GetCustomGamepadFamily() const
+{
+	if (GetGamepadFamily() != EMenuGamepadFamily::Custom)
+	{
+		return NAME_None;
+	}
+	const FName OverrideName = FamilyOverride.IsEmpty() ? NAME_None : FName(*FamilyOverride);
+	return (!OverrideName.IsNone() && FindCustomGlyphSet(OverrideName)) ? OverrideName : DetectedCustomFamily;
 }
 
 void UMenuInputSubsystem::SetGamepadFamilyOverride(const FString& Family)
@@ -304,8 +338,57 @@ FKey UMenuInputSubsystem::GetCurrentKeyForAction(const UInputAction* Action) con
 	return GetKeyForAction(Action, CurrentDevice);
 }
 
-const UMenuKeyGlyphSet* UMenuInputSubsystem::FindGlyphSet(bool bKeyboard, EMenuGamepadFamily Family) const
+FKey UMenuInputSubsystem::GetKeyForActionInContext(const UInputAction* Action, const UInputMappingContext* Context, EMenuInputDevice Device) const
 {
+	if (!Context)
+	{
+		return GetKeyForAction(Action, Device);
+	}
+
+	const bool bGamepad = Device == EMenuInputDevice::Gamepad;
+	FName MappingName;
+	const FKey ContextKey = MenuInputUtils::GetContextKey(Context, Action, bGamepad, &MappingName);
+
+	// The player's rebinding of that mapping (Enhanced Input user settings), when it is player-mappable.
+	const ULocalPlayer* LocalPlayer = GetLocalPlayer();
+	const UMenuSettingsSubsystem* MenuSettings = LocalPlayer ? LocalPlayer->GetSubsystem<UMenuSettingsSubsystem>() : nullptr;
+	if (!MappingName.IsNone() && MenuSettings && MenuSettings->CanRebindKeys())
+	{
+		const FKey Bound = MenuSettings->GetBoundKey(MappingName, bGamepad ? EMenuKeyBindingDevice::Gamepad : EMenuKeyBindingDevice::KeyboardMouse, 0);
+		if (Bound.IsValid())
+		{
+			return Bound;
+		}
+	}
+	return ContextKey;
+}
+
+const UMenuKeyGlyphSet* UMenuInputSubsystem::FindCustomGlyphSet(FName CustomFamily) const
+{
+	if (CustomFamily.IsNone())
+	{
+		return nullptr;
+	}
+	for (const UMenuKeyGlyphSet* Set : GlyphSets)
+	{
+		if (Set && !Set->bForKeyboard && Set->Family == EMenuGamepadFamily::Custom && Set->CustomFamilyName == CustomFamily)
+		{
+			return Set;
+		}
+	}
+	return nullptr;
+}
+
+const UMenuKeyGlyphSet* UMenuInputSubsystem::FindGlyphSet(bool bKeyboard, EMenuGamepadFamily Family, FName CustomFamily) const
+{
+	if (!bKeyboard && Family == EMenuGamepadFamily::Custom)
+	{
+		if (const UMenuKeyGlyphSet* Custom = FindCustomGlyphSet(CustomFamily))
+		{
+			return Custom;
+		}
+	}
+
 	const UMenuKeyGlyphSet* Fallback = nullptr;
 	for (const UMenuKeyGlyphSet* Set : GlyphSets)
 	{
@@ -313,7 +396,7 @@ const UMenuKeyGlyphSet* UMenuInputSubsystem::FindGlyphSet(bool bKeyboard, EMenuG
 		{
 			continue;
 		}
-		if (bKeyboard || Set->Family == Family)
+		if (bKeyboard || (Set->Family == Family && Family != EMenuGamepadFamily::Custom))
 		{
 			return Set;
 		}
@@ -327,15 +410,29 @@ const UMenuKeyGlyphSet* UMenuInputSubsystem::FindGlyphSet(bool bKeyboard, EMenuG
 
 FMenuKeyGlyph UMenuInputSubsystem::GetKeyGlyph(FKey Key) const
 {
-	const EMenuGamepadFamily Family = GetGamepadFamily();
+	EMenuGamepadFamily Family = GetGamepadFamily();
+	const bool bKeyboard = !Key.IsGamepadKey();
 	FMenuKeyGlyph Out;
 	Out.Key = Key;
-	if (const UMenuKeyGlyphSet* Set = FindGlyphSet(!Key.IsGamepadKey(), Family))
+
+	const UMenuKeyGlyphSet* Set = FindGlyphSet(bKeyboard, Family, GetCustomGamepadFamily());
+	const FMenuKeyGlyph* Found = Set ? Set->Find(Key) : nullptr;
+
+	// A Custom family's set holds only what differs (an Elite pad's paddles): everything else, and the key cap labels, come
+	// from its Fallback Family.
+	if (!bKeyboard && Set && Set->Family == EMenuGamepadFamily::Custom)
 	{
-		if (const FMenuKeyGlyph* Found = Set->Find(Key))
+		Family = Set->FallbackFamily == EMenuGamepadFamily::Custom ? EMenuGamepadFamily::Xbox : Set->FallbackFamily;
+		if (!Found)
 		{
-			Out = *Found;
+			const UMenuKeyGlyphSet* FallbackSet = FindGlyphSet(false, Family);
+			Found = FallbackSet ? FallbackSet->Find(Key) : nullptr;
 		}
+	}
+
+	if (Found)
+	{
+		Out = *Found;
 	}
 	if (Out.Label.IsEmpty())
 	{

@@ -150,7 +150,12 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Input", meta = (ClampMin = "2", UIMax = "30", Units = "s"))
 	float KeyCaptureTimeout = 8.f;
 
-	/** Button prompt art (one set per gamepad family, one for keyboard and mouse). */
+	/**
+	 * Button prompt art: Key Glyph Set data assets (Content Browser: Add > User Interface > Key Glyph Set, or Create New from
+	 * this picker), one per gamepad family - Xbox, PlayStation, Switch, Steam Deck, Generic, or Custom families of your own
+	 * (an Elite pad, a fight stick, VR controllers) - and one with For Keyboard on for keyboard and mouse. Each maps keys to an
+	 * image (Texture 2D or SVG) or a key cap label.
+	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Input")
 	TArray<TSoftObjectPtr<UMenuKeyGlyphSet>> KeyGlyphSets;
 
@@ -161,9 +166,20 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Input", meta = (ForceInlineRow))
 	TMap<FString, EMenuGamepadFamily> GamepadHardware;
 
+	/**
+	 * Gamepad hardware names and the Custom family they show (a Key Glyph Set's Custom Family Name): "Elite" for an Xbox Elite
+	 * pad's paddles, "OpenXR" for VR controllers. Checked before Gamepad Hardware; a name containing a key here matches it.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Input", meta = (ForceInlineRow))
+	TMap<FString, FName> CustomGamepadHardware;
+
 	/** The family a gamepad shows when its hardware isn't recognised. */
 	UPROPERTY(Config, EditAnywhere, Category = "Input")
 	EMenuGamepadFamily DefaultGamepadFamily = EMenuGamepadFamily::Xbox;
+
+	/** Default Gamepad Family Custom: which one (a Key Glyph Set's Custom Family Name). */
+	UPROPERTY(Config, EditAnywhere, Category = "Input", meta = (EditCondition = "DefaultGamepadFamily == EMenuGamepadFamily::Custom", EditConditionHides))
+	FName DefaultCustomGamepadFamily = NAME_None;
 
 	/** Pixels the mouse must move to count as switching back to mouse (stops a resting mouse's jitter flipping prompts). */
 	UPROPERTY(Config, EditAnywhere, Category = "Input", meta = (ClampMin = "0", UIMax = "50"))

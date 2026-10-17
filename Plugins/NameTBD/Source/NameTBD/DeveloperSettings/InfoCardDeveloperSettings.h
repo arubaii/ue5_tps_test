@@ -64,6 +64,26 @@ struct NAMETBD_API FInfoCardPreset
 };
 
 /**
+ * One named placement: where a card or menu opens (beside its widget, at the cursor, at a screen corner, with clamping,
+ * flipping, overlap avoidance and Z order). Anything with a placement - an Info Card entry, a Context Menu Style (menus,
+ * row tooltips, submenus), a Context Menu Anchor, a Tooltip Card Anchor, an attached menu - can pick one by name with
+ * Placement Source: Use Project Settings, so the whole game's placements live here.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FInfoCardPlacementPreset
+{
+	GENERATED_BODY()
+
+	/** What this preset is called in every Placement Preset dropdown. Keep unique; renaming breaks the link (they fall back to their own fields). */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadOnly, Category = "Placement")
+	FName PresetName = TEXT("Default");
+
+	/** The placement. Its own Placement Source isn't shown or followed here: a preset is always its fields. */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadOnly, Category = "Placement")
+	FInfoCardPositioning Placement;
+};
+
+/**
  * Legacy: a named, project-wide set of state designs, from when Design Presets lived in Project Settings. Design presets are
  * Context Menu Design Preset assets now; a Design Target that still names one of these has it copied in once, on load.
  */
@@ -252,6 +272,21 @@ public:
 	/** See FInfoCardSpec::FlipToAvoidClipping. Project-wide default used when that field's Source is UseProjectSettings. */
 	UPROPERTY(EditAnywhere, Config, Category = "Placement", meta = (ToolTip = "Project-wide default for FInfoCardSpec::FlipToAvoidClipping when that field is set to Use Project Settings."))
 	bool bFlipToAvoidClippingByDefault = true;
+
+	/**
+	 * Named placements every Placement Source: Use Project Settings picks from - Info Card entries, Context Menu Styles (the
+	 * menu, its row tooltips, its submenus), Context Menu and Tooltip Card Anchors, attached menus. Seeded with Default (at
+	 * the cursor, as a context menu), Tooltip (above the widget), Dropdown (below it) and Flyout (to its right).
+	 */
+	UPROPERTY(EditAnywhere, Config, Category = "Placement", meta = (DisplayName = "Placement Presets", TitleProperty = "PresetName"))
+	TArray<FInfoCardPlacementPreset> PlacementPresets;
+
+	/** The placement preset named PresetName, or null when there is none (callers keep their own fields). */
+	const FInfoCardPlacementPreset* FindPlacementPreset(FName PresetName) const;
+
+	/** Backs every Placement Preset dropdown. Must stay a UFUNCTION for GetOptions. */
+	UFUNCTION()
+	static TArray<FString> GetPlacementPresetNameOptions();
 	
 	// ------------------------------------------------------------------
 	// Context Menu Button Defaults

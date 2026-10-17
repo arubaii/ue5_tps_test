@@ -20,7 +20,7 @@ void UContextMenuAnchor::SynchronizeProperties()
 	{
 		SyncEntryOverridesFromMenu();
 
-		// An override not switched on shows the style's positioning, so switching it on starts from there.
+		// An override not switched on shows the style's placement, so switching it on starts from there.
 		if (!bOverridePositioning)
 		{
 			Positioning = UContextMenuStyleAsset::Resolve(StyleOverride, Menu).Positioning;
@@ -102,13 +102,12 @@ bool UContextMenuAnchor::BuildGeneratedInfoCards(TArray<FInfoCardSpec>& OutSpecs
 			Spec.bTriggerOnFocus = false;
 		}
 
-		// The style's positioning (default: where the click landed, staying there), or this anchor's own. A keyboard
-		// opening of a To Cursor menu goes beside the widget.
+		// The style's placement (default: where the click landed, staying there, Z Order 1500), or this anchor's own, or
+		// the Placement Preset either names. A keyboard opening of a To Cursor menu goes beside the widget.
 		(bOverridePositioning ? Positioning : MenuLook.Positioning).ApplyTo(Spec, bOpeningFromKeyboard);
 
 		Spec.RemoveCardOnPressing = ECardRemoveOnPressZone::OutsideCard;
 		Spec.CloseOtherCardsScope = MenuLook.bCloseOtherCardsOnOpen ? ECardCloseOthersScope::AllCards : ECardCloseOthersScope::None;
-		Spec.ZOrder = 1500;
 
 		Spec.Payloads.Add(MenuData);
 		for (const TObjectPtr<UContextButtonPayload>& ActionPayload : ActionPayloads)
@@ -141,7 +140,7 @@ bool UContextMenuAnchor::BuildGeneratedInfoCards(TArray<FInfoCardSpec>& OutSpecs
 
 const FInfoCardPositioning& UContextMenuAnchor::GetEffectivePositioning() const
 {
-	return bOverridePositioning ? Positioning : UContextMenuStyleAsset::Resolve(StyleOverride, Menu).Positioning;
+	return (bOverridePositioning ? Positioning : UContextMenuStyleAsset::Resolve(StyleOverride, Menu).Positioning).Resolve();
 }
 
 void UContextMenuAnchor::PostLoad()
@@ -149,12 +148,12 @@ void UContextMenuAnchor::PostLoad()
 	Super::PostLoad();
 
 #if WITH_EDITORONLY_DATA
-	// Below Widget / Right Of Widget were the anchor's own choice: they become its Override Positioning. At Cursor was the
-	// default, which the style's default Positioning is.
+	// Below Widget / Right Of Widget were the anchor's own choice: they become its Override Placement. At Cursor was the
+	// default, which the style's default Placement is.
 	if (Placement_DEPRECATED != EContextMenuPlacement::AtCursor && !bOverridePositioning)
 	{
 		bOverridePositioning = true;
-		Positioning = FInfoCardPositioning();
+		Positioning = FInfoCardPositioning::MakeAtCursor(1500);
 		Positioning.PositionMode = EInfoCardPosition::ToIcon;
 		Positioning.IconPosition = Placement_DEPRECATED == EContextMenuPlacement::RightOfWidget ? EDirection2D::Right : EDirection2D::Down;
 		Positioning.IconAnchorPadding = 2.f;

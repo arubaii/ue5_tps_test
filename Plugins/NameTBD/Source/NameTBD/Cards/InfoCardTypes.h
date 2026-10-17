@@ -725,37 +725,48 @@ struct NAMETBD_API FInfoCardSpec
 	bool bIgnoresMenuStateChange = false;
 
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement")
+	/**
+	 * Custom: this entry's own placement, below. Use Project Settings: a named preset from Project Settings > Info Card >
+	 * Placement Presets, so one change there moves every card that names it (an anchor's Settings Overrides still apply).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "Placement Source"))
+	EInfoCardValueSource PlacementSource = EInfoCardValueSource::Custom;
+
+	/** Which Placement Preset. One the project no longer has: this entry's own placement below. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "Placement Preset", GetOptions = "InfoCardDeveloperSettings.GetPlacementPresetNameOptions", EditCondition = "PlacementSource == EInfoCardValueSource::UseProjectSettings", EditConditionHides))
+	FName PlacementPreset = TEXT("Default");
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom", EditConditionHides))
 	EInfoCardPosition PositionMode = EInfoCardPosition::ToIcon;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon", EditConditionHides, ToolTip = "Info card position relative to the icon (anchor's children in designer)."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom && (PositionMode == EInfoCardPosition::ToIcon)", EditConditionHides, ToolTip = "Info card position relative to the icon (anchor's children in designer)."))
 	EDirection2D IconPosition = EDirection2D::Up;
 
 	/**
 	 * Only used while IconPosition is Fill Icon.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon && IconPosition == EDirection2D::FillIcon", EditConditionHides, ToolTip = "Inset from each edge of the icon (Left/Top/Right/Bottom) when Icon Position is Fill Icon. 0 covers the icon exactly; negative values extend past it. The card is sized to the result, so its root content must be able to stretch."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom && (PositionMode == EInfoCardPosition::ToIcon && IconPosition == EDirection2D::FillIcon)", EditConditionHides, ToolTip = "Inset from each edge of the icon (Left/Top/Right/Bottom) when Icon Position is Fill Icon. 0 covers the icon exactly; negative values extend past it. The card is sized to the result, so its root content must be able to stretch."))
 	FMargin FillIconPadding = FMargin(0.f);
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom && (PositionMode == EInfoCardPosition::ToCursor)", EditConditionHides))
 	EInfoCardCursorPosition CursorPosition = EInfoCardCursorPosition::UpRight;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToViewport", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom && (PositionMode == EInfoCardPosition::ToViewport)", EditConditionHides))
 	EViewportPosition ViewportPosition = EViewportPosition::TopRight;
 	
 	/**
 	 * The card widget's own render transform.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (ToolTip = "Translation, scale, shear, and angle applied to the card widget itself, on top of wherever CardOffset/PositionMode placed it. Purely visual — plays no part in the icon/card/corridor hit-testing math."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom", EditConditionHides, ToolTip = "Translation, scale, shear, and angle applied to the card widget itself, on top of wherever CardOffset/PositionMode placed it. Purely visual — plays no part in the icon/card/corridor hit-testing math."))
 	FWidgetTransform CardTransform;
 	
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor || PositionMode == EInfoCardPosition::ToViewport", EditConditionHides, ToolTip = "Offset between cursor/viewport to info card."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom && (PositionMode == EInfoCardPosition::ToCursor || PositionMode == EInfoCardPosition::ToViewport)", EditConditionHides, ToolTip = "Offset between cursor/viewport to info card."))
 	FVector2D CardOffset = FVector2D::ZeroVector;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon", EditConditionHides, ToolTip = "Padding between icon (anchor's children in designer) and info card."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom && (PositionMode == EInfoCardPosition::ToIcon)", EditConditionHides, ToolTip = "Padding between icon (anchor's children in designer) and info card."))
 	float IconAnchorPadding = 0.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (ToolTip = "If true, a card that would run out of room is kept fully on screen. For PositionMode::ToIcon and ToCursor specifically: if FlipToAvoidClipping is also on and the card would exit off the same side its IconPosition/CursorPosition points toward, it flips to the opposite side first — the way most OS tooltips behave. Only once flipping is off, isn't possible, or doesn't help does it fall back to clamping, with Clamp Padding kept as spacing from the edge. The axis perpendicular to the flip (e.g. left/right for a card anchored Up/Down) has no 'other side' to flip to and is always just clamped."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom", EditConditionHides, ToolTip = "If true, a card that would run out of room is kept fully on screen. For PositionMode::ToIcon and ToCursor specifically: if FlipToAvoidClipping is also on and the card would exit off the same side its IconPosition/CursorPosition points toward, it flips to the opposite side first — the way most OS tooltips behave. Only once flipping is off, isn't possible, or doesn't help does it fall back to clamping, with Clamp Padding kept as spacing from the edge. The axis perpendicular to the flip (e.g. left/right for a card anchored Up/Down) has no 'other side' to flip to and is always just clamped."))
 	bool bClampToViewport = true;
 
 	/**
@@ -768,16 +779,16 @@ struct NAMETBD_API FInfoCardSpec
 	 * turn it off for a card that should only ever clamp, never flip
 	 * sides.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "bClampToViewport && PositionMode != EInfoCardPosition::ToViewport", EditConditionHides, ToolTip = "Whether a card running out of room flips to the opposite side (Up<->Down, Left<->Right, and each axis of a diagonal independently) before falling back to a plain clamp. Only meaningful for ToIcon/ToCursor."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom && (bClampToViewport && PositionMode != EInfoCardPosition::ToViewport)", EditConditionHides, ToolTip = "Whether a card running out of room flips to the opposite side (Up<->Down, Left<->Right, and each axis of a diagonal independently) before falling back to a plain clamp. Only meaningful for ToIcon/ToCursor."))
 	FInfoCardConfigurableBool FlipToAvoidClipping = FInfoCardConfigurableBool(true);
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "bClampToViewport", EditConditionHides, ToolTip = "Breathing room, in viewport units, kept between the card and the screen edge whenever ClampToViewport has to pin it there, and between this card and any other currently-visible card it would otherwise overlap (see Avoid Overlapping Cards). Also the margin used to decide a ToIcon card has run out of room in the first place, so it flips a little before touching the edge rather than at the very last pixel. Applies to every PositionMode, not just ToIcon."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom && (bClampToViewport)", EditConditionHides, ToolTip = "Breathing room, in viewport units, kept between the card and the screen edge whenever ClampToViewport has to pin it there, and between this card and any other currently-visible card it would otherwise overlap (see Avoid Overlapping Cards). Also the margin used to decide a ToIcon card has run out of room in the first place, so it flips a little before touching the edge rather than at the very last pixel. Applies to every PositionMode, not just ToIcon."))
 	float ClampPadding = 8.f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (ToolTip = "If true, this card checks itself against every other currently-visible card (any anchor, any PositionMode) and, if it would overlap one, nudges itself below that card by Clamp Padding — the way toast notifications stack rather than pile on top of each other. A card only ever yields to a card that was shown before it, never the other way around, so two cards never fight over the same spot. A ToIcon card nested inside other cards may sit flush against the menu it came out of, but won't cover the rest of its own menu chain: if it would (a dropdown that flipped up over its own menu, or a cascading card landing on a menu further up the chain), it slides to the nearest clear spot beside it instead, preferring to carry on in its Icon Position's direction. Turn this off for a card that's meant to sit in an exact spot regardless of what else is on screen (e.g. a fixed HUD readout)."))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom", EditConditionHides, ToolTip = "If true, this card checks itself against every other currently-visible card (any anchor, any PositionMode) and, if it would overlap one, nudges itself below that card by Clamp Padding — the way toast notifications stack rather than pile on top of each other. A card only ever yields to a card that was shown before it, never the other way around, so two cards never fight over the same spot. A ToIcon card nested inside other cards may sit flush against the menu it came out of, but won't cover the rest of its own menu chain: if it would (a dropdown that flipped up over its own menu, or a cascading card landing on a menu further up the chain), it slides to the nearest clear spot beside it instead, preferring to carry on in its Icon Position's direction. Turn this off for a card that's meant to sit in an exact spot regardless of what else is on screen (e.g. a fixed HUD readout)."))
 	bool bAvoidOverlappingCards = true;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom", EditConditionHides))
 	bool bUpdatePositionOnTick = true;
 	
 
@@ -797,7 +808,7 @@ struct NAMETBD_API FInfoCardSpec
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Sound", meta = (DisplayName = "Sounds", TitleProperty = "Settings", ToolTip = "Sounds played as this card is triggered, shown and hidden. Several sets are allowed and all of them are heard."))
 	TArray<FInfoCardSoundSet> Sounds;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "PlacementSource == EInfoCardValueSource::Custom", EditConditionHides))
 	int32 ZOrder = 1000;
 
 	/** User defined payloads; children of UInfoCardPayload. 
@@ -806,84 +817,112 @@ struct NAMETBD_API FInfoCardSpec
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Instanced, Category = "Payloads")
 	TArray<TObjectPtr<UNameTBD_Payload>> Payloads;
 
+	/**
+	 * Placement Source Use Project Settings: copies the named Placement Preset's fields into this entry's own and sets the
+	 * source back to Custom (a preset the project no longer has leaves the entry's own). Run when an anchor builds its cards.
+	 */
+	void ResolvePlacementPreset();
+
 };
 
 /**
- * Where a card opens - the placement fields of an Info Card entry (FInfoCardSpec, Placement) in one struct, for the widgets
+ * Where a card opens - the Placement fields of an Info Card entry (FInfoCardSpec, Placement) in one struct, for the widgets
  * that build their cards themselves: beside the widget (To Icon), at the cursor (To Cursor) or at a corner of the screen
- * (To Viewport). Used by the Context Menu Style (menus, row tooltips), Context Menu Anchors' Override Positioning, Button
- * rows' attached menus and Tooltip Card Anchors' Position.
+ * (To Viewport). Used by the Context Menu Style (menus, row tooltips, submenus), Context Menu Anchors' Override Placement,
+ * Button rows' attached menus, Tooltip Card Anchors' Position, and Project Settings > Info Card > Placement Presets.
+ *
+ * Source picks where the fields come from: Custom (the fields below), or Use Project Settings - a named Placement Preset,
+ * so one change there moves every card and menu that names it. The fields are named and ordered as an Info Card entry's;
+ * From Keyboard is for menus opened from a key, Follow Cursor is the entry's Update Position On Tick for cursor cards.
  */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FInfoCardPositioning
 {
 	GENERATED_BODY()
 
-	/** To Cursor: where the click landed. To Icon: beside the widget (a dropdown, a flyout). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Position Mode"))
+	/** Custom: the fields below. Use Project Settings: Project Settings > Info Card > Placement Presets, by name. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "Placement Source"))
+	EInfoCardValueSource Source = EInfoCardValueSource::Custom;
+
+	/** Which Placement Preset. One the project no longer has: the fields below. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "Placement Preset", GetOptions = "InfoCardDeveloperSettings.GetPlacementPresetNameOptions", EditCondition = "Source == EInfoCardValueSource::UseProjectSettings", EditConditionHides))
+	FName PresetName = TEXT("Default");
+
+	/** To Cursor: where the click landed. To Icon: beside the widget (a dropdown, a flyout). To Viewport: a corner of the screen. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "Position Mode", EditCondition = "Source == EInfoCardValueSource::Custom", EditConditionHides))
 	EInfoCardPosition PositionMode = EInfoCardPosition::ToCursor;
 
 	/** Which side of the widget the card opens on. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "Source == EInfoCardValueSource::Custom && PositionMode == EInfoCardPosition::ToIcon", EditConditionHides))
 	EDirection2D IconPosition = EDirection2D::Down;
 
 	/** Fill Icon: the inset from each edge of the widget. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToIcon && IconPosition == EDirection2D::FillIcon", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "Source == EInfoCardValueSource::Custom && PositionMode == EInfoCardPosition::ToIcon && IconPosition == EDirection2D::FillIcon", EditConditionHides))
 	FMargin FillIconPadding = FMargin(0.f);
 
-	/** The gap between the widget and the card. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Icon Anchor Padding", EditCondition = "PositionMode == EInfoCardPosition::ToIcon", EditConditionHides, UIMin = "0", UIMax = "32", ForceUnits = "px"))
-	float IconAnchorPadding = 2.f;
-
 	/** Which way from the cursor the card opens. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "Source == EInfoCardValueSource::Custom && PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
 	EInfoCardCursorPosition CursorPosition = EInfoCardCursorPosition::DownRight;
 
 	/**
 	 * A To Cursor card opened from a key or a gamepad (a context menu's Open Context Menu with Focus First Entry) has no cursor
 	 * spot to open at: it opens beside the widget instead, on this side.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "From Keyboard", EditCondition = "PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "From Keyboard", EditCondition = "Source == EInfoCardValueSource::Custom && PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
 	EDirection2D KeyboardIconPosition = EDirection2D::Down;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToViewport", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "Source == EInfoCardValueSource::Custom && PositionMode == EInfoCardPosition::ToViewport", EditConditionHides))
 	EViewportPosition ViewportPosition = EViewportPosition::TopRight;
 
+	/** The card widget's own render transform, on top of where it was placed: translation, scale, shear, angle. Visual only. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "Source == EInfoCardValueSource::Custom", EditConditionHides))
+	FWidgetTransform CardTransform;
+
 	/** Moves the card from the cursor or the screen corner. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "PositionMode == EInfoCardPosition::ToCursor || PositionMode == EInfoCardPosition::ToViewport", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "Source == EInfoCardValueSource::Custom && (PositionMode == EInfoCardPosition::ToCursor || PositionMode == EInfoCardPosition::ToViewport)", EditConditionHides))
 	FVector2D CardOffset = FVector2D(2.f, 2.f);
 
+	/** The gap between the widget and the card. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "Icon Anchor Padding", EditCondition = "Source == EInfoCardValueSource::Custom && PositionMode == EInfoCardPosition::ToIcon", EditConditionHides, UIMin = "0", UIMax = "32", ForceUnits = "px"))
+	float IconAnchorPadding = 2.f;
+
 	/** Keeps the whole card on screen. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Clamp To Viewport"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "Clamp To Viewport", EditCondition = "Source == EInfoCardValueSource::Custom", EditConditionHides))
 	bool bClampToViewport = true;
 
 	/** A card that would run off the screen opens on the other side first (left of the cursor, above the widget). */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Flip To Avoid Clipping", EditCondition = "bClampToViewport && PositionMode != EInfoCardPosition::ToViewport", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "Flip To Avoid Clipping", EditCondition = "Source == EInfoCardValueSource::Custom && bClampToViewport && PositionMode != EInfoCardPosition::ToViewport", EditConditionHides))
 	bool bFlipToAvoidClipping = true;
 
 	/** Room kept between the card and the screen's edge. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (EditCondition = "bClampToViewport", EditConditionHides, ClampMin = "0", UIMax = "64", ForceUnits = "px"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "Source == EInfoCardValueSource::Custom && bClampToViewport", EditConditionHides, ClampMin = "0", UIMax = "64", ForceUnits = "px"))
 	float ClampPadding = 8.f;
 
 	/**
 	 * Moves away from other cards on screen, and keeps a card beside a menu row off the rest of its menu chain. Off: the card
 	 * stays exactly where it opened.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Avoid Overlapping Cards"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "Avoid Overlapping Cards", EditCondition = "Source == EInfoCardValueSource::Custom", EditConditionHides))
 	bool bAvoidOverlappingCards = false;
 
 	/**
-	 * Keeps moving with the cursor while open. Off: the card stays where it opened, as desktop menus do. (To Icon and To
-	 * Viewport cards always follow their widget / the screen.)
+	 * Keeps moving with the cursor while open (an Info Card entry's Update Position On Tick). Off: the card stays where it
+	 * opened, as desktop menus do. (To Icon and To Viewport cards always follow their widget / the screen.)
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (DisplayName = "Follow Cursor", EditCondition = "PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "Follow Cursor", EditCondition = "Source == EInfoCardValueSource::Custom && PositionMode == EInfoCardPosition::ToCursor", EditConditionHides))
 	bool bFollowCursor = false;
 
-	/** The card widget's own render transform, on top of where it was placed. Visual only. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning", meta = (AdvancedDisplay))
-	FWidgetTransform CardTransform;
+	/**
+	 * Which cards draw on top: higher is in front. A card opened from inside another card (a submenu, a row's tooltip, a card
+	 * in a card) is always kept in front of that card, whatever this says.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "Source == EInfoCardValueSource::Custom", EditConditionHides))
+	int32 ZOrder = 1000;
 
-	/** Writes these into an info card entry. bFromKeyboard: the opening came from a key (To Cursor goes beside the widget). */
+	/** The fields in force: the named Placement Preset's (Use Project Settings, when the project has it), else these. */
+	const FInfoCardPositioning& Resolve() const;
+
+	/** Writes the fields in force into an info card entry. bFromKeyboard: the opening came from a key (To Cursor goes beside the widget). */
 	void ApplyTo(FInfoCardSpec& Spec, bool bFromKeyboard = false) const;
 
 	/** An entry's placement as these fields (Follow Cursor from its per-tick update; From Keyboard left Down). */
@@ -893,5 +932,8 @@ struct NAMETBD_API FInfoCardPositioning
 	 * Beside the widget on Side, Gap away, following it, flipping and clamping, clear of other cards: a tooltip's placement
 	 * (Up), a submenu's and an attached menu's (Right).
 	 */
-	static FInfoCardPositioning MakeBeside(EDirection2D Side, float Gap);
+	static FInfoCardPositioning MakeBeside(EDirection2D Side, float Gap, int32 InZOrder = 1000);
+
+	/** The struct's defaults (at the cursor, below and to its right, staying there) with this Z Order. */
+	static FInfoCardPositioning MakeAtCursor(int32 InZOrder);
 };

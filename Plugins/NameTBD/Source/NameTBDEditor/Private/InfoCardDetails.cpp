@@ -5,10 +5,14 @@
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "IDetailChildrenBuilder.h"
 #include "IDetailGroup.h"
 #include "IDetailPropertyRow.h"
+#include "InputAction.h"
+#include "InputMappingContext.h"
 #include "Modules/ModuleManager.h"
+#include "PropertyCustomizationHelpers.h"
 #include "PropertyEditorModule.h"
 #include "PropertyHandle.h"
 #include "Widgets/SBoxPanel.h"
@@ -19,6 +23,8 @@
 #include "NameTBD/Cards/TooltipCardAnchor.h"
 #include "NameTBD/Cards/ContextMenu/ContextMenuAnchor.h"
 #include "NameTBD/Cards/ContextMenu/ContextMenuTypes.h"
+#include "NameTBD/DeveloperSettings/InfoCardDeveloperSettings.h"
+#include "NameTBD/Menu/Input/MenuKeyPrompt.h"
 
 #define LOCTEXT_NAMESPACE "InfoCardDetails"
 
@@ -34,6 +40,33 @@ namespace InfoCardDetailsPrivate
 			Category.RightChopInline(Bar + 1);
 		}
 		return Category.IsEmpty() ? NAME_None : FName(*Category);
+	}
+
+	/** A field marked ActionFromMappingContext gets an Input Action picker narrowed to its sibling context's actions. */
+	void NarrowActionPicker(IDetailPropertyRow& Row, const TSharedRef<IPropertyHandle>& Field, const TSharedPtr<FAssetThumbnailPool>& ThumbnailPool)
+	{
+		static const FName ContextMeta(TEXT("ActionFromMappingContext"));
+		if (!Field->HasMetaData(ContextMeta))
+		{
+			return;
+		}
+		const TSharedPtr<IPropertyHandle> Parent = Field->GetParentHandle();
+		const TSharedPtr<IPropertyHandle> Context = Parent.IsValid() ? Parent->GetChildHandle(FName(*Field->GetMetaData(ContextMeta))) : nullptr;
+		if (Context.IsValid())
+		{
+			InfoCardDetails::MakeActionFromContextRow(Row, Field, Context, ThumbnailPool);
+		}
+	}
+
+	/** Holds a Widget Blueprint class (which lays its own parts out), not a C++ one (which builds the native parts). */
+	bool HoldsBlueprintClass(const TSharedPtr<IPropertyHandle>& ClassHandle)
+	{
+		UObject* Value = nullptr;
+		if (!ClassHandle.IsValid() || ClassHandle->GetValue(Value) != FPropertyAccess::Success)
+		{
+			return false;
+		}
+		return Cast<UBlueprintGeneratedClass>(Value) != nullptr;
 	}
 }
 
@@ -144,7 +177,7 @@ void FInfoCardGroupedStructCustomization::CustomizeChildren(TSharedRef<IProperty
 		{
 			for (const TSharedRef<IPropertyHandle>& Field : *GroupFields)
 			{
-				ChildBuilder.AddProperty(Field);
+				InfoCardDetailsPrivate::NarrowActionPicker(ChildBuilder.AddProperty(Field), Field, CustomizationUtils.GetThumbnailPool());
 			}
 			continue;
 		}
@@ -152,7 +185,7 @@ void FInfoCardGroupedStructCustomization::CustomizeChildren(TSharedRef<IProperty
 		IDetailGroup& DetailGroup = ChildBuilder.AddGroup(Group, FText::FromName(Group));
 		for (const TSharedRef<IPropertyHandle>& Field : *GroupFields)
 		{
-			DetailGroup.AddPropertyRow(Field);
+			InfoCardDetailsPrivate::NarrowActionPicker(DetailGroup.AddPropertyRow(Field), Field, CustomizationUtils.GetThumbnailPool());
 		}
 		if (Layout.StartExpanded.Contains(Group))
 		{
@@ -340,11 +373,265 @@ void FInfoCardGeneratedAnchorDetails::CustomizeDetails(IDetailLayoutBuilder& Det
 }
 
 // =================================================================================================
+// Context Menu Style asset
+// =================================================================================================
+
+TSharedRef<IDetailCustomization> FContextMenuStyleAssetDetails::MakeInstance()
+{
+	return MakeShared<FContextMenuStyleAssetDetails>();
+}
+
+void FContextMenuStyleAssetDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
+{
+	using namespace InfoCardDetailsPrivate;
+
+	const TSharedRef<IPropertyHandle> StyleHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UContextMenuStyleAsset, Style));
+	if (!StyleHandle->IsValidHandle())
+	{
+		return;
+	}
+	DetailBuilder.HideProperty(StyleHandle);
+
+	// A Widget Blueprint picked as the row (or divider) class lays its parts out itself: these only arrange the native ones.
+	const TSharedPtr<IPropertyHandle> EntryClassHandle = StyleHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FContextMenuStyle, EntryWidgetClass));
+	const TSharedPtr<IPropertyHandle> DividerClassHandle = StyleHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FContextMenuStyle, DividerWidgetClass));
+	const TSharedPtr<IPropertyHandle> CustomSubmenuHandle = StyleHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FContextMenuStyle, bCustomSubmenuPlacement));
+
+	const TAttribute<bool> NativeRows = TAttribute<bool>::CreateLambda([EntryClassHandle]()
+	{
+		return !HoldsBlueprintClass(EntryClassHandle);
+	});
+	const TAttribute<bool> NativeDividers = TAttribute<bool>::CreateLambda([EntryClassHandle, DividerClassHandle]()
+	{
+		// Dividers use Entry Widget Class while Divider Widget Class is empty.
+		UObject* DividerClass = nullptr;
+		const bool bDividerSet = DividerClassHandle.IsValid() && DividerClassHandle->GetValue(DividerClass) == FPropertyAccess::Success && DividerClass;
+		return !HoldsBlueprintClass(bDividerSet ? DividerClassHandle : EntryClassHandle);
+	});
+	const TAttribute<bool> CustomSubmenu = TAttribute<bool>::CreateLambda([CustomSubmenuHandle]()
+	{
+		bool bCustom = false;
+		return CustomSubmenuHandle.IsValid() && CustomSubmenuHandle->GetValue(bCustom) == FPropertyAccess::Success && bCustom;
+	});
+
+	static const TSet<FName> NativeRowFields = {
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, RowContentHorizontalAlignment),
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, RowContentVerticalAlignment),
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, PartGap),
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, bAlwaysReserveIconColumn),
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, LabelAlignment),
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, CenterTextAlignment),
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, RightTextAlignment),
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, ShortcutAlignment),
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, IconGap),
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, IconDelimiter),
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, SubmenuArrowSize),
+	};
+	static const TSet<FName> NativeDividerFields = {
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, DividerThickness),
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, DividerPadding),
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, HeaderPadding),
+		GET_MEMBER_NAME_CHECKED(FContextMenuStyle, TextDividerAlignment),
+	};
+
+	// Every field of the style straight into its category (no Style row to open), in declaration order.
+	uint32 ChildCount = 0;
+	StyleHandle->GetNumChildren(ChildCount);
+	for (uint32 Index = 0; Index < ChildCount; ++Index)
+	{
+		const TSharedPtr<IPropertyHandle> Child = StyleHandle->GetChildHandle(Index);
+		if (!Child.IsValid() || !Child->GetProperty())
+		{
+			continue;
+		}
+
+		const FName Category = GroupOf(Child.ToSharedRef());
+		IDetailPropertyRow& Row = DetailBuilder.EditCategory(Category.IsNone() ? FName(TEXT("Style")) : Category).AddProperty(Child);
+
+		const FName ChildName = Child->GetProperty()->GetFName();
+		if (NativeRowFields.Contains(ChildName))
+		{
+			Row.IsEnabled(NativeRows);
+		}
+		else if (NativeDividerFields.Contains(ChildName))
+		{
+			Row.IsEnabled(NativeDividers);
+		}
+		else if (ChildName == GET_MEMBER_NAME_CHECKED(FContextMenuStyle, SubmenuPlacement))
+		{
+			Row.IsEnabled(CustomSubmenu);
+		}
+	}
+
+	// What it does first, what it looks like after (FContextMenuStyle::GetCategoryOrder); anything else after those.
+	DetailBuilder.SortCategories([](const TMap<FName, IDetailCategoryBuilder*>& Categories)
+	{
+		const TArray<FName>& Order = FContextMenuStyle::GetCategoryOrder();
+		for (const TPair<FName, IDetailCategoryBuilder*>& Pair : Categories)
+		{
+			const int32 Position = Order.IndexOfByKey(Pair.Key);
+			Pair.Value->SetSortOrder(Position == INDEX_NONE ? Order.Num() + 100 : Position);
+		}
+	});
+}
+
+// =================================================================================================
+// Placement Presets (Project Settings)
+// =================================================================================================
+
+TSharedRef<IPropertyTypeCustomization> FInfoCardPlacementPresetCustomization::MakeInstance()
+{
+	return MakeShared<FInfoCardPlacementPresetCustomization>();
+}
+
+void FInfoCardPlacementPresetCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
+{
+	// The array's Title Property (the preset's name) and its element buttons.
+	HeaderRow
+		.NameContent()
+		[
+			PropertyHandle->CreatePropertyNameWidget()
+		]
+		.ValueContent()
+		[
+			PropertyHandle->CreatePropertyValueWidget()
+		];
+}
+
+void FInfoCardPlacementPresetCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
+{
+	if (const TSharedPtr<IPropertyHandle> NameHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FInfoCardPlacementPreset, PresetName)))
+	{
+		ChildBuilder.AddProperty(NameHandle.ToSharedRef());
+	}
+
+	// The placement's fields directly under the name. A preset is always its own fields: no Placement Source / Preset here.
+	const TSharedPtr<IPropertyHandle> PlacementHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FInfoCardPlacementPreset, Placement));
+	if (!PlacementHandle.IsValid())
+	{
+		return;
+	}
+	uint32 ChildCount = 0;
+	PlacementHandle->GetNumChildren(ChildCount);
+	for (uint32 Index = 0; Index < ChildCount; ++Index)
+	{
+		const TSharedPtr<IPropertyHandle> Child = PlacementHandle->GetChildHandle(Index);
+		if (!Child.IsValid() || !Child->GetProperty())
+		{
+			continue;
+		}
+		const FName ChildName = Child->GetProperty()->GetFName();
+		if (ChildName == GET_MEMBER_NAME_CHECKED(FInfoCardPositioning, Source) || ChildName == GET_MEMBER_NAME_CHECKED(FInfoCardPositioning, PresetName))
+		{
+			continue;
+		}
+		ChildBuilder.AddProperty(Child.ToSharedRef());
+	}
+}
+
+// =================================================================================================
+// Input Action pickers narrowed to a mapping context
+// =================================================================================================
+
+TSharedRef<IPropertyTypeCustomization> FContextMenuShortcutInputCustomization::MakeInstance()
+{
+	return MakeShared<FContextMenuShortcutInputCustomization>();
+}
+
+void FContextMenuShortcutInputCustomization::CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils)
+{
+	HeaderRow
+		.NameContent()
+		[
+			PropertyHandle->CreatePropertyNameWidget()
+		]
+		.ValueContent()
+		[
+			PropertyHandle->CreatePropertyValueWidget()
+		];
+}
+
+void FContextMenuShortcutInputCustomization::CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils)
+{
+	const TSharedPtr<IPropertyHandle> ContextHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FContextMenuShortcutInput, MappingContext));
+	const TSharedPtr<IPropertyHandle> ActionHandle = PropertyHandle->GetChildHandle(GET_MEMBER_NAME_CHECKED(FContextMenuShortcutInput, Action));
+
+	// The context first: picking it narrows the action picker below to the actions it maps.
+	if (ContextHandle.IsValid())
+	{
+		ChildBuilder.AddProperty(ContextHandle.ToSharedRef());
+	}
+	if (ActionHandle.IsValid())
+	{
+		InfoCardDetails::MakeActionFromContextRow(ChildBuilder.AddProperty(ActionHandle.ToSharedRef()), ActionHandle.ToSharedRef(), ContextHandle, CustomizationUtils.GetThumbnailPool());
+	}
+}
+
+TSharedRef<IDetailCustomization> FMenuKeyPromptDetails::MakeInstance()
+{
+	return MakeShared<FMenuKeyPromptDetails>();
+}
+
+void FMenuKeyPromptDetails::CustomizeDetails(IDetailLayoutBuilder& DetailBuilder)
+{
+	const TSharedRef<IPropertyHandle> ActionHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UMenuKeyPrompt, InputAction));
+	const TSharedRef<IPropertyHandle> ContextHandle = DetailBuilder.GetProperty(GET_MEMBER_NAME_CHECKED(UMenuKeyPrompt, InputMappingContext));
+	if (IDetailPropertyRow* Row = DetailBuilder.EditDefaultProperty(ActionHandle))
+	{
+		InfoCardDetails::MakeActionFromContextRow(*Row, ActionHandle, ContextHandle, DetailBuilder.GetThumbnailPool());
+	}
+}
+
+// =================================================================================================
 // Registration
 // =================================================================================================
 
 namespace InfoCardDetails
 {
+	void MakeActionFromContextRow(IDetailPropertyRow& Row, const TSharedRef<IPropertyHandle>& ActionHandle, const TSharedPtr<IPropertyHandle>& ContextHandle,
+		const TSharedPtr<FAssetThumbnailPool>& ThumbnailPool)
+	{
+		// The actions the context maps, by path (filtering runs for every asset the picker lists).
+		auto ShouldFilter = [ContextHandle](const FAssetData& Asset) -> bool
+		{
+			UObject* ContextObject = nullptr;
+			if (!ContextHandle.IsValid() || ContextHandle->GetValue(ContextObject) != FPropertyAccess::Success)
+			{
+				return false;
+			}
+			const UInputMappingContext* Context = Cast<UInputMappingContext>(ContextObject);
+			if (!Context)
+			{
+				return false; // no context: every action
+			}
+			const FSoftObjectPath AssetPath = Asset.GetSoftObjectPath();
+			for (const FEnhancedActionKeyMapping& Mapping : Context->GetMappings())
+			{
+				if (Mapping.Action && FSoftObjectPath(Mapping.Action.Get()) == AssetPath)
+				{
+					return false;
+				}
+			}
+			return true;
+		};
+
+		Row.CustomWidget()
+			.NameContent()
+			[
+				ActionHandle->CreatePropertyNameWidget()
+			]
+			.ValueContent()
+			.MinDesiredWidth(250.f)
+			.MaxDesiredWidth(0.f)
+			[
+				SNew(SObjectPropertyEntryBox)
+				.PropertyHandle(ActionHandle)
+				.AllowedClass(UInputAction::StaticClass())
+				.ThumbnailPool(ThumbnailPool)
+				.OnShouldFilterAsset_Lambda(ShouldFilter)
+			];
+	}
+
 	void Register()
 	{
 		FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
@@ -367,6 +654,15 @@ namespace InfoCardDetails
 		PropertyModule.RegisterCustomClassLayout(FName(TEXT("ContextMenuAnchor")),
 			FOnGetDetailCustomizationInstance::CreateStatic(&FInfoCardGeneratedAnchorDetails::MakeInstance));
 
+		PropertyModule.RegisterCustomClassLayout(FName(TEXT("ContextMenuStyleAsset")),
+			FOnGetDetailCustomizationInstance::CreateStatic(&FContextMenuStyleAssetDetails::MakeInstance));
+		PropertyModule.RegisterCustomPropertyTypeLayout(FName(TEXT("InfoCardPlacementPreset")),
+			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FInfoCardPlacementPresetCustomization::MakeInstance));
+		PropertyModule.RegisterCustomPropertyTypeLayout(FName(TEXT("ContextMenuShortcutInput")),
+			FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FContextMenuShortcutInputCustomization::MakeInstance));
+		PropertyModule.RegisterCustomClassLayout(FName(TEXT("MenuKeyPrompt")),
+			FOnGetDetailCustomizationInstance::CreateStatic(&FMenuKeyPromptDetails::MakeInstance));
+
 		PropertyModule.NotifyCustomizationModuleChanged();
 	}
 
@@ -386,6 +682,10 @@ namespace InfoCardDetails
 		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("InfoCardPayloadDefault"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("TooltipCardAnchor"));
 		PropertyModule->UnregisterCustomClassLayout(TEXT("ContextMenuAnchor"));
+		PropertyModule->UnregisterCustomClassLayout(TEXT("ContextMenuStyleAsset"));
+		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("InfoCardPlacementPreset"));
+		PropertyModule->UnregisterCustomPropertyTypeLayout(TEXT("ContextMenuShortcutInput"));
+		PropertyModule->UnregisterCustomClassLayout(TEXT("MenuKeyPrompt"));
 	}
 }
 

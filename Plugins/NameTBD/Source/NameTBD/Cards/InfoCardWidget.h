@@ -465,6 +465,13 @@ public:
 	 */
 	static UInfoCardWidget* FindContainingCard(const UWidget* Widget);
 
+	/** The Z order this card was put on screen with (its entry's ZOrder, raised above the card it was opened from). */
+	UFUNCTION(BlueprintPure, Category = "InfoCard")
+	int32 GetCardZOrder() const { return CardZOrder; }
+
+	/** Set by the anchor as it puts the card on screen. */
+	void SetCardZOrder(int32 InZOrder) { CardZOrder = InZOrder; }
+
 	/**
 	 * The Widget Animation Component that plays this card's entrance and exit: one added in the card's
 	 * Widget Blueprint (on the card itself, its root, or any widget in its tree, in that order), or else the
@@ -675,6 +682,9 @@ protected:
 
 	/** GetParentCard's cache. Weak and not a UPROPERTY: weak pointers need no GC tracking. Reset in SetupCard. */
 	mutable TWeakObjectPtr<UInfoCardWidget> CachedParentCard;
+
+	/** See GetCardZOrder. */
+	int32 CardZOrder = 1000;
 
 	/** GFrameCounter of GetParentCard's most recent miss, so a card with no parent card re-walks the Slate tree at most once per frame. */
 	mutable uint64 ParentCardMissFrame = TNumericLimits<uint64>::Max();

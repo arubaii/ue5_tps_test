@@ -2,6 +2,9 @@
 
 #include "MenuInputTypes.h"
 
+#include "InputMappingContext.h"
+#include "NameTBD/Menu/Settings/MenuProjectSettings.h"
+
 #define LOCTEXT_NAMESPACE "MenuInputTypes"
 
 const FMenuKeyGlyph* UMenuKeyGlyphSet::Find(const FKey& Key) const
@@ -56,6 +59,75 @@ namespace MenuInputUtils
 			}
 		}
 		return Key.GetDisplayName(false);
+	}
+
+	FKey GetContextKey(const UInputMappingContext* Context, const UInputAction* Action, bool bGamepad, FName* OutMappingName)
+	{
+		if (!Context || !Action)
+		{
+			return EKeys::Invalid;
+		}
+		for (const FEnhancedActionKeyMapping& Mapping : Context->GetMappings())
+		{
+			if (Mapping.Action != Action || !Mapping.Key.IsValid() || Mapping.Key.IsTouch() || Mapping.Key.IsGamepadKey() != bGamepad)
+			{
+				continue;
+			}
+			if (OutMappingName)
+			{
+				*OutMappingName = Mapping.GetMappingName();
+			}
+			return Mapping.Key;
+		}
+		return EKeys::Invalid;
+	}
+
+	FMenuKeyGlyph GetProjectKeyGlyph(const FKey& Key)
+	{
+		const UMenuProjectSettings& Settings = UMenuProjectSettings::Get();
+		EMenuGamepadFamily Family = Settings.DefaultGamepadFamily;
+		const bool bKeyboard = !Key.IsGamepadKey();
+
+		auto FindSet = [&Settings, bKeyboard](EMenuGamepadFamily InFamily, FName CustomName) -> const UMenuKeyGlyphSet*
+		{
+			for (const TSoftObjectPtr<UMenuKeyGlyphSet>& SetEntry : Settings.KeyGlyphSets)
+			{
+				const UMenuKeyGlyphSet* GlyphSet = SetEntry.LoadSynchronous();
+				if (!GlyphSet || GlyphSet->bForKeyboard != bKeyboard)
+				{
+					continue;
+				}
+				if (bKeyboard || (GlyphSet->Family == InFamily && (InFamily != EMenuGamepadFamily::Custom || GlyphSet->CustomFamilyName == CustomName)))
+				{
+					return GlyphSet;
+				}
+			}
+			return nullptr;
+		};
+
+		const UMenuKeyGlyphSet* GlyphSet = FindSet(Family, Settings.DefaultCustomGamepadFamily);
+		const FMenuKeyGlyph* Found = GlyphSet ? GlyphSet->Find(Key) : nullptr;
+		if (!bKeyboard && Family == EMenuGamepadFamily::Custom)
+		{
+			Family = (GlyphSet && GlyphSet->FallbackFamily != EMenuGamepadFamily::Custom) ? GlyphSet->FallbackFamily : EMenuGamepadFamily::Xbox;
+			if (!Found)
+			{
+				const UMenuKeyGlyphSet* FallbackSet = FindSet(Family, NAME_None);
+				Found = FallbackSet ? FallbackSet->Find(Key) : nullptr;
+			}
+		}
+
+		FMenuKeyGlyph Out;
+		Out.Key = Key;
+		if (Found)
+		{
+			Out = *Found;
+		}
+		if (Out.Label.IsEmpty())
+		{
+			Out.Label = GetKeyLabel(Key, Family);
+		}
+		return Out;
 	}
 
 	EMenuInputDevice GetKeyDevice(const FKey& Key)

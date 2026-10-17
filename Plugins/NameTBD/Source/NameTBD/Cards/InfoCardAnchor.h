@@ -185,6 +185,13 @@ struct FInfoCardSettingsOverride
     // Placement
     // ------------------------------------------------------------------
 
+    /** Puts a named Placement Preset (Project Settings > Info Card > Placement Presets) on this card; Override Card Position and Offset still go on top. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "Override Placement Preset", EditCondition = "!bDisableCard"))
+    bool bOverridePlacementPreset = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "Placement Preset", GetOptions = "InfoCardDeveloperSettings.GetPlacementPresetNameOptions", EditCondition = "bOverridePlacementPreset", EditConditionHides))
+    FName PlacementPreset = TEXT("Default");
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (EditCondition = "!bDisableCard"))
     bool bOverrideCardPosition = false;
 

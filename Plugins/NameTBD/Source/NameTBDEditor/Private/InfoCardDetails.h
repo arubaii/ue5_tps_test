@@ -6,6 +6,10 @@
 #include "IDetailCustomization.h"
 #include "IPropertyTypeCustomization.h"
 
+class FAssetThumbnailPool;
+class IDetailPropertyRow;
+class IPropertyHandle;
+
 /**
  * Details layouts for info cards and context menus:
  *
@@ -18,6 +22,14 @@
  *     beside it; the element's fields grey out while it is removed.
  *   - FInfoCardGeneratedAnchorDetails: the Tooltip Card Anchor and Context Menu Anchor, which build their cards from their own
  *     fields, with the generic anchor's sources hidden and their own category first.
+ *   - FContextMenuStyleAssetDetails: a Context Menu Style's categories in the style's order (what it does, then how it looks),
+ *     the fields a Widget Blueprint row / divider lays out itself greyed out while one is picked, Submenu Placement greyed
+ *     out until Custom Submenu Placement is on.
+ *   - FInfoCardPlacementPresetCustomization: a Project Settings Placement Preset as its name and its placement's fields (no
+ *     Placement Source of its own).
+ *   - FContextMenuShortcutInputCustomization and FMenuKeyPromptDetails: an Input Action picker that offers only the actions
+ *     the Input Mapping Context beside it maps (any property with meta ActionFromMappingContext = "<context property>" in
+ *     the grouped structs gets the same).
  */
 class FInfoCardGroupedStructCustomization : public IPropertyTypeCustomization
 {
@@ -87,8 +99,53 @@ public:
 	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 };
 
+class FContextMenuStyleAssetDetails : public IDetailCustomization
+{
+public:
+
+	static TSharedRef<IDetailCustomization> MakeInstance();
+
+	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
+};
+
+class FInfoCardPlacementPresetCustomization : public IPropertyTypeCustomization
+{
+public:
+
+	static TSharedRef<IPropertyTypeCustomization> MakeInstance();
+
+	virtual void CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
+	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
+};
+
+class FContextMenuShortcutInputCustomization : public IPropertyTypeCustomization
+{
+public:
+
+	static TSharedRef<IPropertyTypeCustomization> MakeInstance();
+
+	virtual void CustomizeHeader(TSharedRef<IPropertyHandle> PropertyHandle, FDetailWidgetRow& HeaderRow, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
+	virtual void CustomizeChildren(TSharedRef<IPropertyHandle> PropertyHandle, IDetailChildrenBuilder& ChildBuilder, IPropertyTypeCustomizationUtils& CustomizationUtils) override;
+};
+
+class FMenuKeyPromptDetails : public IDetailCustomization
+{
+public:
+
+	static TSharedRef<IDetailCustomization> MakeInstance();
+
+	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
+};
+
 namespace InfoCardDetails
 {
+	/**
+	 * Turns Row (an Input Action property) into a picker that offers only the actions ContextHandle's Input Mapping Context maps,
+	 * every action while it is empty.
+	 */
+	void MakeActionFromContextRow(IDetailPropertyRow& Row, const TSharedRef<IPropertyHandle>& ActionHandle, const TSharedPtr<IPropertyHandle>& ContextHandle,
+		const TSharedPtr<FAssetThumbnailPool>& ThumbnailPool);
+
 	/** Registers everything above with the property editor. */
 	void Register();
 

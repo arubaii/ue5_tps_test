@@ -3459,6 +3459,9 @@ void UContextMenuButton::SynchronizeProperties()
 
 TSharedRef<SWidget> UContextMenuButton::RebuildWidget()
 {
+	// A rebuilt button is a new one on screen: a hold from a card that closed before doesn't carry over.
+	bHoldingIdleLook = false;
+
 	// Mirrors UButton::RebuildWidget, but builds SContextMenuSlateButton so the button brush can be
 	// painted independently of the content. (Same pattern CommonUI uses for its SCommonButton.)
 	TSharedRef<SContextMenuSlateButton> NewButton = SNew(SContextMenuSlateButton)
@@ -4079,6 +4082,9 @@ void UContextMenuButton::ExecuteButtonAction()
 		return;
 	}
 
+	// Idle while the card plays its exit: released under the cursor, it would otherwise go back to Hovered for as long as
+	// the exit animation lasts.
+	HoldIdleLook();
 	Card->CloseCard();
 }
 
@@ -4515,6 +4521,14 @@ EContextMenuState UContextMenuButton::ResolveButtonState(bool bForDesign) const
 		return EContextMenuState::Disabled;
 	}
 
+	const bool bIsStateEnabled = GetEnabledState();
+
+	// Its card is closing (or its group said so): idle, whatever the pointer does.
+	if (bHoldingIdleLook)
+	{
+		return bIsStateEnabled ? EContextMenuState::Enabled : EContextMenuState::Normal;
+	}
+
 	// A button that can be enabled skips Pressed. Its click changes the state, and passing through Pressed on the way
 	// made the shapes/designs blend Hovered -> Pressed -> Enabled. Without it they blend straight to the click result.
 	if (IsPressed() && !bButtonCanBeEnabled)
@@ -4522,9 +4536,7 @@ EContextMenuState UContextMenuButton::ResolveButtonState(bool bForDesign) const
 		return EContextMenuState::Pressed;
 	}
 
-	const bool bIsStateEnabled = GetEnabledState();
-
-	if (IsHovered() || bHasNavigationFocus)
+	if ((IsHovered() || bHasNavigationFocus) && !bHoverLookSuppressed)
 	{
 		const bool bAllowHoverWhileEnabled = bForDesign ? bHoverDesignWhileEnabled : bHoverShapeWhileEnabled;
 		const bool bLatched = bForDesign ? bHoverDesignLatched : bHoverShapeLatched;
@@ -4536,6 +4548,33 @@ EContextMenuState UContextMenuButton::ResolveButtonState(bool bForDesign) const
 	}
 
 	return bIsStateEnabled ? EContextMenuState::Enabled : EContextMenuState::Normal;
+}
+
+void UContextMenuButton::SetHoverLookSuppressed(bool bSuppressed)
+{
+	if (bHoverLookSuppressed == bSuppressed)
+	{
+		return;
+	}
+	bHoverLookSuppressed = bSuppressed;
+	// Before the button is on screen there is nothing to show yet: its first state update reads the flag.
+	if (MyContextMenuSlateButton.IsValid())
+	{
+		UpdateButtonState();
+	}
+}
+
+void UContextMenuButton::HoldIdleLook()
+{
+	if (bHoldingIdleLook)
+	{
+		return;
+	}
+	bHoldingIdleLook = true;
+	if (MyContextMenuSlateButton.IsValid())
+	{
+		UpdateButtonState();
+	}
 }
 
 void UContextMenuButton::RefreshButtonState(bool bInstant)

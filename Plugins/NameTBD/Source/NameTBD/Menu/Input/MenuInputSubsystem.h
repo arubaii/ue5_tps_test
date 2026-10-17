@@ -11,6 +11,7 @@
 
 class FMenuInputProcessor;
 class UInputAction;
+class UInputMappingContext;
 class UMenuKeyGlyphSet;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMenuInputDeviceChanged, EMenuInputDevice, Device);
@@ -48,11 +49,18 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Menu|Input")
 	EMenuGamepadFamily GetGamepadFamily() const;
 
+	/** While Get Gamepad Family is Custom: which one (a Key Glyph Set's Custom Family Name). None otherwise. */
+	UFUNCTION(BlueprintPure, Category = "Menu|Input")
+	FName GetCustomGamepadFamily() const;
+
 	/** The gamepad's hardware name as the platform reports it ("XInputController", "DualSense"); empty when none was seen. */
 	UFUNCTION(BlueprintPure, Category = "Menu|Input")
 	FString GetGamepadHardwareName() const { return GamepadHardware; }
 
-	/** Forces whose prompts show: "Auto" (the gamepad used), "Xbox", "PlayStation", "Switch", "SteamDeck", "Generic". */
+	/**
+	 * Forces whose prompts show: "Auto" (the gamepad used), "Xbox", "PlayStation", "Switch", "SteamDeck", "Generic", or a
+	 * Custom family's name (a Key Glyph Set's Custom Family Name).
+	 */
 	UFUNCTION(BlueprintCallable, Category = "Menu|Input")
 	void SetGamepadFamilyOverride(const FString& Family);
 
@@ -70,6 +78,13 @@ public:
 	/** The same for the current device. */
 	UFUNCTION(BlueprintPure, Category = "Menu|Input")
 	FKey GetCurrentKeyForAction(const UInputAction* Action) const;
+
+	/**
+	 * The key Action has in Context for Device: the player's rebinding of that mapping (when it is player-mappable), else the
+	 * context's own key - whether or not the context is applied right now. No Context: Get Key For Action.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Menu|Input")
+	FKey GetKeyForActionInContext(const UInputAction* Action, const UInputMappingContext* Context, EMenuInputDevice Device) const;
 
 	/** How Key is drawn: its art from the project's Key Glyph Sets for the current gamepad family, else a label for a key cap. */
 	UFUNCTION(BlueprintPure, Category = "Menu|Input")
@@ -90,11 +105,15 @@ private:
 	int32 GetSlateUserIndex() const;
 	void SwitchTo(EMenuInputDevice Device);
 	void NoteGamepadHardware();
-	const UMenuKeyGlyphSet* FindGlyphSet(bool bKeyboard, EMenuGamepadFamily Family) const;
+	const UMenuKeyGlyphSet* FindGlyphSet(bool bKeyboard, EMenuGamepadFamily Family, FName CustomFamily = NAME_None) const;
+
+	/** A Custom family's set by its name, or null. */
+	const UMenuKeyGlyphSet* FindCustomGlyphSet(FName CustomFamily) const;
 
 	TSharedPtr<FMenuInputProcessor> Processor;
 	EMenuInputDevice CurrentDevice = EMenuInputDevice::KeyboardMouse;
 	EMenuGamepadFamily DetectedFamily = EMenuGamepadFamily::Xbox;
+	FName DetectedCustomFamily = NAME_None;
 	FString FamilyOverride;
 	FString GamepadHardware;
 	float MouseTravel = 0.f;

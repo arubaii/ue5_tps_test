@@ -42,6 +42,7 @@ public class NameTBDEditor : ModuleRules
 			"AppFramework",      // the color picker, for the Text Editor's Color menu
 			"NameTBDMVVM",       // the Widget Data Binder's Details: its Data Preview
 			"MaterialEditor",    // UMaterialEditingLibrary: a Diegetic Screen's Create Screen Material
+			"EnhancedInput",     // UInputMappingContext: Input Action pickers narrowed to a mapping context's actions
 		});
 		if (Target.bBuildEditor)
 		{

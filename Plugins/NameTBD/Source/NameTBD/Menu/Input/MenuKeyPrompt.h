@@ -15,6 +15,7 @@
 
 class STextBlock;
 class UInputAction;
+class UInputMappingContext;
 
 /** How a key without art is drawn: a rounded cap with its name. */
 USTRUCT(BlueprintType)
@@ -130,8 +131,10 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FOnMenuKeyPromptClickedEvent);
 
 /**
  * Menu Key Prompt (palette NameTBD): the button to press for an input - "[A] Accept", "[Esc] Back", "[E] Interact" - that
- * follows the device the player uses (keyboard, Xbox, PlayStation, Switch) and their rebinding. Give it an Input Action (its
- * mapped key is found), or keys of your own. Art comes from the project's Key Glyph Sets; keys without art show as key caps.
+ * follows the device the player uses (keyboard, Xbox, PlayStation, Switch, the project's Custom families) and their
+ * rebinding. Give it an Input Mapping Context and one of its Input Actions (the binding is read from there, shown in the
+ * designer too), an Input Action alone (wherever the player has it mapped), or keys of your own. Art (an image: a gamepad
+ * button) comes from the project's Key Glyph Sets; keys without art show as key caps with their name (text: a key).
  */
 UCLASS(meta = (DisplayName = "Menu Key Prompt"))
 class NAMETBD_API UMenuKeyPrompt : public UWidget
@@ -142,8 +145,16 @@ public:
 
 	UMenuKeyPrompt();
 
-	/** The action whose key shows (the player's binding on the device shown). */
+	/**
+	 * Where Input Action's keys are read from: its key for the device shown, the player's rebinding of it included - shown
+	 * even while the context isn't applied, and in the designer. Picking it first narrows the action picker to the actions it
+	 * maps. Empty: wherever the player has the action mapped right now.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Prompt")
+	TObjectPtr<UInputMappingContext> InputMappingContext;
+
+	/** The action whose key shows (the player's binding on the device shown). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Prompt", meta = (ActionFromMappingContext = "InputMappingContext"))
 	TObjectPtr<UInputAction> InputAction;
 
 	/** Shown on keyboard and mouse when there is no action (or it has no key there). */
@@ -183,6 +194,10 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "Menu|Prompt")
 	void SetInputAction(UInputAction* InAction);
+
+	/** Where the action's keys are read from (None: wherever the player has it mapped). */
+	UFUNCTION(BlueprintCallable, Category = "Menu|Prompt")
+	void SetInputMappingContext(UInputMappingContext* InContext);
 
 	UFUNCTION(BlueprintCallable, Category = "Menu|Prompt")
 	void SetKeys(FKey InKeyboardKey, FKey InGamepadKey);

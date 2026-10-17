@@ -34,6 +34,31 @@ UInfoCardDeveloperSettings::UInfoCardDeveloperSettings()
 		ContextMenuShapePresets.Add(DefaultShapePreset);
 	}
 
+	// Placements most games want named: a context menu at the cursor, a tooltip above its widget, a dropdown below it, a
+	// flyout to its right.
+	if (PlacementPresets.Num() == 0)
+	{
+		FInfoCardPlacementPreset AtCursor;
+		AtCursor.PresetName = TEXT("Default");
+		AtCursor.Placement.ZOrder = 1500;
+		PlacementPresets.Add(AtCursor);
+
+		FInfoCardPlacementPreset Tooltip;
+		Tooltip.PresetName = TEXT("Tooltip");
+		Tooltip.Placement = FInfoCardPositioning::MakeBeside(EDirection2D::Up, 6.f);
+		PlacementPresets.Add(Tooltip);
+
+		FInfoCardPlacementPreset Dropdown;
+		Dropdown.PresetName = TEXT("Dropdown");
+		Dropdown.Placement = FInfoCardPositioning::MakeBeside(EDirection2D::Down, 2.f, 1500);
+		PlacementPresets.Add(Dropdown);
+
+		FInfoCardPlacementPreset Flyout;
+		Flyout.PresetName = TEXT("Flyout");
+		Flyout.Placement = FInfoCardPositioning::MakeBeside(EDirection2D::Right, 4.f, 1500);
+		PlacementPresets.Add(Flyout);
+	}
+
 	if (ContextMenuDesignPresets.Num() == 0)
 	{
 		FContextMenuDesignPreset DefaultDesignPreset;
@@ -131,5 +156,24 @@ TArray<FString> UInfoCardDeveloperSettings::GetContextMenuDesignPresetNameOption
 		}
 	}
 
+	return Options;
+}
+
+const FInfoCardPlacementPreset* UInfoCardDeveloperSettings::FindPlacementPreset(FName PresetName) const
+{
+	return PlacementPresets.FindByPredicate([PresetName](const FInfoCardPlacementPreset& Preset) { return Preset.PresetName == PresetName; });
+}
+
+TArray<FString> UInfoCardDeveloperSettings::GetPlacementPresetNameOptions()
+{
+	TArray<FString> Options;
+	if (const UInfoCardDeveloperSettings* Settings = Get())
+	{
+		Options.Reserve(Settings->PlacementPresets.Num());
+		for (const FInfoCardPlacementPreset& Preset : Settings->PlacementPresets)
+		{
+			Options.Add(Preset.PresetName.ToString());
+		}
+	}
 	return Options;
 }

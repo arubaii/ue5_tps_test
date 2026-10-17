@@ -326,7 +326,13 @@ void UMenuKeyPrompt::RefreshPrompt()
 		Device = EMenuInputDevice::KeyboardMouse;
 	}
 
-	FKey Key = (Input && InputAction) ? Input->GetKeyForAction(InputAction, Device) : FKey();
+	// The mapping context's key (with the player's rebinding of it); with no player (the designer) the context's own key.
+	FKey Key;
+	if (InputAction)
+	{
+		Key = Input ? Input->GetKeyForActionInContext(InputAction, InputMappingContext, Device)
+			: MenuInputUtils::GetContextKey(InputMappingContext, InputAction, Device == EMenuInputDevice::Gamepad);
+	}
 	if (!Key.IsValid())
 	{
 		Key = Device == EMenuInputDevice::Gamepad ? GamepadKey : KeyboardKey;
@@ -340,8 +346,8 @@ void UMenuKeyPrompt::RefreshPrompt()
 	}
 	else
 	{
-		Glyph.Key = Key;
-		Glyph.Label = MenuInputUtils::GetKeyLabel(Key, EMenuGamepadFamily::Xbox);
+		// The designer: the project's art for the key, as the game will show it.
+		Glyph = MenuInputUtils::GetProjectKeyGlyph(Key);
 	}
 	PromptWidget->SetGlyph(Glyph);
 
@@ -353,6 +359,12 @@ void UMenuKeyPrompt::RefreshPrompt()
 void UMenuKeyPrompt::SetInputAction(UInputAction* InAction)
 {
 	InputAction = InAction;
+	RefreshPrompt();
+}
+
+void UMenuKeyPrompt::SetInputMappingContext(UInputMappingContext* InContext)
+{
+	InputMappingContext = InContext;
 	RefreshPrompt();
 }
 

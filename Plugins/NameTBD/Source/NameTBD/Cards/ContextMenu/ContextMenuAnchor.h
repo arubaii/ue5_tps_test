@@ -17,12 +17,12 @@ UENUM(BlueprintType)
 enum class EContextMenuOpenTrigger : uint8
 {
 	RightClick UMETA(DisplayName = "Right Click"),
-	LeftClick UMETA(DisplayName = "Left Click", ToolTip = "A dropdown or an \"options\" button. Pair it with Override Positioning: To Icon, Down."),
+	LeftClick UMETA(DisplayName = "Left Click", ToolTip = "A dropdown or an \"options\" button. Pair it with Override Placement: To Icon, Down (or the Dropdown Placement Preset)."),
 	AnyClick UMETA(DisplayName = "Right Or Left Click"),
 	Manual UMETA(DisplayName = "Only From Blueprint", ToolTip = "Nothing opens it but Open Context Menu - from a gamepad button, a key, a long press.")
 };
 
-/** Where a Context Menu Anchor's menu opened before positioning moved to the style (Positioning, Override Positioning). Kept to load old anchors. */
+/** Where a Context Menu Anchor's menu opened before positioning moved to the style (Placement, Override Placement). Kept to load old anchors. */
 UENUM(BlueprintType)
 enum class EContextMenuPlacement : uint8
 {
@@ -43,7 +43,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FContextMenuAnchorOpeningSignature);
  *     checked.
  *   - Extra Entries: rows only this widget's menu has, at the start, the end, or before / after a named entry.
  *   - Style Override: another Context Menu Style for this widget's menu.
- *   - Override Positioning: where this widget's menu opens, instead of its style's Positioning.
+ *   - Override Placement: where this widget's menu opens, instead of its style's Placement.
  *   - Action Payloads: the data this widget's rows act on (the item in this slot), handed to every row's actions.
  *
  * When a row is chosen, its actions run and On Menu Entry Clicked fires with its Entry ID - so a menu can be wired up in the
@@ -71,11 +71,12 @@ public:
 	bool bOverridePositioning = false;
 
 	/**
-	 * Where this widget's menu opens, instead of its style's Positioning: beside the widget for a dropdown (To Icon, Down) or
-	 * a flyout (To Icon, Right), at the cursor, at a corner of the screen. Off: shows the style's.
+	 * Where this widget's menu opens, instead of its style's Placement: beside the widget for a dropdown (To Icon, Down) or
+	 * a flyout (To Icon, Right), at the cursor, at a corner of the screen, or (Placement Source Use Project Settings) a
+	 * named Placement Preset. Off: shows the style's.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu", meta = (DisplayName = "Override Positioning", EditCondition = "bOverridePositioning"))
-	FInfoCardPositioning Positioning;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu", meta = (DisplayName = "Override Placement", EditCondition = "bOverridePositioning"))
+	FInfoCardPositioning Positioning = FInfoCardPositioning::MakeAtCursor(1500);
 
 	/** This widget's menu in another Context Menu Style than the menu asset's. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Context Menu", meta = (DisplayName = "Style Override"))
@@ -166,7 +167,7 @@ public:
 	/** Called by the menu once a row's actions have run. */
 	void NotifyMenuEntryChosen(FName EntryId, bool bNowChecked);
 
-	/** Where this anchor's menu opens: Override Positioning when on, else its style's. */
+	/** Where this anchor's menu opens: Override Placement when on, else its style's (the Placement Preset either names, if any). */
 	const FInfoCardPositioning& GetEffectivePositioning() const;
 
 	virtual void PostLoad() override;
@@ -216,7 +217,7 @@ protected:
 
 #if WITH_EDITORONLY_DATA
 	// Where the menu opened before positioning moved to the style. Loaded from old anchors through CoreRedirects
-	// (Config/DefaultNameTBD.ini), turned into Override Positioning in PostLoad, never saved again (CPF_Deprecated).
+	// (Config/DefaultNameTBD.ini), turned into Override Placement in PostLoad, never saved again (CPF_Deprecated).
 	UPROPERTY()
 	EContextMenuPlacement Placement_DEPRECATED = EContextMenuPlacement::AtCursor;
 #endif

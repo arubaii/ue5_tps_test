@@ -273,25 +273,43 @@ void FInfoCardAdditiveAnimations::PostSerialize(const FArchive& Ar)
 // FInfoCardPositioning
 // =================================================================================================
 
+const FInfoCardPositioning& FInfoCardPositioning::Resolve() const
+{
+	if (Source == EInfoCardValueSource::UseProjectSettings)
+	{
+		const UInfoCardDeveloperSettings* Settings = UInfoCardDeveloperSettings::Get();
+		if (const FInfoCardPlacementPreset* Preset = Settings ? Settings->FindPlacementPreset(PresetName) : nullptr)
+		{
+			// A preset's own Source is never followed (it is hidden there): no chains, no loops.
+			return Preset->Placement;
+		}
+	}
+	return *this;
+}
+
 void FInfoCardPositioning::ApplyTo(FInfoCardSpec& Spec, bool bFromKeyboard) const
 {
+	const FInfoCardPositioning& Use = Resolve();
+
 	// A key or a gamepad opening has no click to open at: beside the widget instead.
-	const bool bBesideWidget = PositionMode == EInfoCardPosition::ToCursor && bFromKeyboard;
-	Spec.PositionMode = bBesideWidget ? EInfoCardPosition::ToIcon : PositionMode;
-	Spec.IconPosition = bBesideWidget ? KeyboardIconPosition : IconPosition;
-	Spec.FillIconPadding = FillIconPadding;
-	Spec.IconAnchorPadding = IconAnchorPadding;
-	Spec.CursorPosition = CursorPosition;
-	Spec.ViewportPosition = ViewportPosition;
-	Spec.CardOffset = CardOffset;
-	Spec.bClampToViewport = bClampToViewport;
+	const bool bBesideWidget = Use.PositionMode == EInfoCardPosition::ToCursor && bFromKeyboard;
+	Spec.PlacementSource = EInfoCardValueSource::Custom;
+	Spec.PositionMode = bBesideWidget ? EInfoCardPosition::ToIcon : Use.PositionMode;
+	Spec.IconPosition = bBesideWidget ? Use.KeyboardIconPosition : Use.IconPosition;
+	Spec.FillIconPadding = Use.FillIconPadding;
+	Spec.IconAnchorPadding = Use.IconAnchorPadding;
+	Spec.CursorPosition = Use.CursorPosition;
+	Spec.ViewportPosition = Use.ViewportPosition;
+	Spec.CardOffset = Use.CardOffset;
+	Spec.bClampToViewport = Use.bClampToViewport;
 	Spec.FlipToAvoidClipping.Source = EInfoCardValueSource::Custom;
-	Spec.FlipToAvoidClipping.CustomValue = bFlipToAvoidClipping;
-	Spec.ClampPadding = ClampPadding;
-	Spec.bAvoidOverlappingCards = bAvoidOverlappingCards;
+	Spec.FlipToAvoidClipping.CustomValue = Use.bFlipToAvoidClipping;
+	Spec.ClampPadding = Use.ClampPadding;
+	Spec.bAvoidOverlappingCards = Use.bAvoidOverlappingCards;
 	// At the cursor a menu stays where it opened unless asked to follow; beside a widget it follows the widget, as cards do.
-	Spec.bUpdatePositionOnTick = Spec.PositionMode == EInfoCardPosition::ToCursor ? bFollowCursor : true;
-	Spec.CardTransform = CardTransform;
+	Spec.bUpdatePositionOnTick = Spec.PositionMode == EInfoCardPosition::ToCursor ? Use.bFollowCursor : true;
+	Spec.CardTransform = Use.CardTransform;
+	Spec.ZOrder = Use.ZOrder;
 }
 
 FInfoCardPositioning FInfoCardPositioning::FromSpec(const FInfoCardSpec& Spec)
@@ -310,10 +328,11 @@ FInfoCardPositioning FInfoCardPositioning::FromSpec(const FInfoCardSpec& Spec)
 	Out.bAvoidOverlappingCards = Spec.bAvoidOverlappingCards;
 	Out.bFollowCursor = Spec.bUpdatePositionOnTick;
 	Out.CardTransform = Spec.CardTransform;
+	Out.ZOrder = Spec.ZOrder;
 	return Out;
 }
 
-FInfoCardPositioning FInfoCardPositioning::MakeBeside(EDirection2D Side, float Gap)
+FInfoCardPositioning FInfoCardPositioning::MakeBeside(EDirection2D Side, float Gap, int32 InZOrder)
 {
 	FInfoCardPositioning Beside;
 	Beside.PositionMode = EInfoCardPosition::ToIcon;
@@ -323,5 +342,35 @@ FInfoCardPositioning FInfoCardPositioning::MakeBeside(EDirection2D Side, float G
 	Beside.bFlipToAvoidClipping = true;
 	// As an Info Card entry's default; a menu beside a row slides clear of the rest of its chain rather than covering it.
 	Beside.bAvoidOverlappingCards = true;
+	Beside.ZOrder = InZOrder;
 	return Beside;
+}
+
+FInfoCardPositioning FInfoCardPositioning::MakeAtCursor(int32 InZOrder)
+{
+	FInfoCardPositioning AtCursor;
+	AtCursor.ZOrder = InZOrder;
+	return AtCursor;
+}
+
+// =================================================================================================
+// FInfoCardSpec
+// =================================================================================================
+
+void FInfoCardSpec::ResolvePlacementPreset()
+{
+	if (PlacementSource != EInfoCardValueSource::UseProjectSettings)
+	{
+		return;
+	}
+
+	FInfoCardPositioning Named;
+	Named.Source = EInfoCardValueSource::UseProjectSettings;
+	Named.PresetName = PlacementPreset;
+	const FInfoCardPositioning& Use = Named.Resolve();
+	if (&Use != &Named)
+	{
+		Use.ApplyTo(*this);
+	}
+	PlacementSource = EInfoCardValueSource::Custom;
 }

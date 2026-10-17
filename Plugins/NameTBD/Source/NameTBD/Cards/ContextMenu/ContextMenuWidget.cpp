@@ -35,6 +35,7 @@
 #include "NameTBD/Menu/Settings/MenuProjectSettings.h"
 #include "NameTBD/Widgets/WidgetSVGImage.h"
 #include "ContextMenuAnchor.h"
+#include "ContextMenuChevron.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogContextMenu, Log, All);
 
@@ -133,20 +134,7 @@ namespace ContextMenuWidgetPrivate
 			return Input->GetKeyGlyph(Key);
 		}
 
-		const UMenuProjectSettings& Settings = UMenuProjectSettings::Get();
-		FMenuKeyGlyph Found;
-		Found.Key = Key;
-		for (const TSoftObjectPtr<UMenuKeyGlyphSet>& SetEntry : Settings.KeyGlyphSets)
-		{
-			const UMenuKeyGlyphSet* Set = SetEntry.LoadSynchronous();
-			const bool bRightSet = Set && (Key.IsGamepadKey() ? (!Set->bForKeyboard && Set->Family == Settings.DefaultGamepadFamily) : Set->bForKeyboard);
-			if (const FMenuKeyGlyph* InSet = bRightSet ? Set->Find(Key) : nullptr)
-			{
-				Found = *InSet;
-				break;
-			}
-		}
-		return Found;
+		return MenuInputUtils::GetProjectKeyGlyph(Key);
 	}
 }
 
@@ -252,6 +240,39 @@ UWidget* UContextMenuEntryWidget::MakeIconPart(const FContextMenuIcon& Icon, FNa
 	IconBox->SetContent(Part);
 	OutPart = Part;
 	return IconBox;
+}
+
+UWidget* UContextMenuEntryWidget::MakeSubmenuArrowPart()
+{
+	const float ArrowSize = EntryStyle.GetSubmenuArrowSize();
+	USizeBox* ArrowBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass(), TEXT("SubmenuArrowBox"));
+	ArrowBox->SetWidthOverride(ArrowSize);
+	ArrowBox->SetHeightOverride(ArrowSize);
+
+	// The style's image (Texture 2D or SVG), else the arrow drawn as strokes: centred in the box, so in the row, whatever the
+	// font's baseline does (a text "›" sat low).
+	const FContextMenuIcon& Art = EntryStyle.SubmenuArrow;
+	UWidget* Part = nullptr;
+	if (Art.IsSet() && Art.ImageSource == EWidgetImageSource::SVG)
+	{
+		Part = WidgetTree->ConstructWidget<UWidgetSVGImage>(UWidgetSVGImage::StaticClass(), TEXT("SubmenuArrow"));
+	}
+	else if (Art.IsSet())
+	{
+		Part = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass(), TEXT("SubmenuArrow"));
+	}
+	else
+	{
+		Part = WidgetTree->ConstructWidget<UContextMenuChevron>(UContextMenuChevron::StaticClass(), TEXT("SubmenuArrow"));
+	}
+
+	if (USizeBoxSlot* ArrowSlot = Cast<USizeBoxSlot>(ArrowBox->SetContent(Part)))
+	{
+		ArrowSlot->SetHorizontalAlignment(HAlign_Center);
+		ArrowSlot->SetVerticalAlignment(VAlign_Center);
+	}
+	SubmenuArrow = Part;
+	return ArrowBox;
 }
 
 UWidget* UContextMenuEntryWidget::MakeIconList(const TArray<FContextMenuIcon>& Icons, const TCHAR* Base, TArray<TObjectPtr<UWidget>>& OutParts)
@@ -397,7 +418,7 @@ UWidget* UContextMenuEntryWidget::BuildButtonRow(int32 LeftColumnIcons)
 
 	if (Entry.EntryType == EContextMenuEntryType::Submenu || Entry.HasAttachedMenu())
 	{
-		AddPart(MakeIconPart(EntryStyle.SubmenuArrow, TEXT("SubmenuArrow"), TEXT("›"), SubmenuArrow), false);
+		AddPart(MakeSubmenuArrowPart(), false);
 	}
 
 	// The row's tooltip as an info card (the style's Row Tooltips): a Tooltip Card Anchor around the button.
@@ -562,6 +583,8 @@ void UContextMenuEntryWidget::FillParts()
 	RowButton->bButtonCanBeEnabled = false;
 	RowButton->SetIsEnabled(Entry.bEnabled);
 	RowButton->OnContextClicked.AddUniqueDynamic(this, &UContextMenuEntryWidget::HandleRowClicked);
+	// Until the menu makes it the lit row, its button doesn't look hovered (see SetRowActive).
+	RowButton->SetHoverLookSuppressed(!bRowActive);
 
 	if (RowHighlight)
 	{
@@ -626,6 +649,10 @@ void UContextMenuEntryWidget::FillParts()
 	if (SubmenuArrow)
 	{
 		SubmenuArrow->SetVisibility(OpensMenuBeside() ? ESlateVisibility::HitTestInvisible : ESlateVisibility::Collapsed);
+		if (UContextMenuChevron* Drawn = Cast<UContextMenuChevron>(SubmenuArrow))
+		{
+			Drawn->SetChevron(EntryStyle.SubmenuChevron);
+		}
 	}
 
 	if (OpensMenuBeside())
@@ -738,6 +765,29 @@ void UContextMenuEntryWidget::GatherBindings(TArray<TArray<FKey>>& OutBindings, 
 		}
 	};
 
+	// The Shortcut Inputs: the player's key (their rebinding included) from the input's mapping context, or wherever the
+	// action is mapped now. With no player (the designer) the mapping context's own key, so the row shows it there too.
+	TArray<FContextMenuShortcutInput> Inputs;
+	if (Entry.ShortcutAction)
+	{
+		FContextMenuShortcutInput& First = Inputs.AddDefaulted_GetRef();
+		First.MappingContext = Entry.ShortcutMappingContext;
+		First.Action = Entry.ShortcutAction;
+	}
+	Inputs.Append(Entry.MoreShortcutInputs);
+	auto AddInputKeys = [&Inputs, &AddKey, Input](EMenuInputDevice Device)
+	{
+		for (const FContextMenuShortcutInput& Shortcut : Inputs)
+		{
+			if (!Shortcut.Action)
+			{
+				continue;
+			}
+			AddKey(Input ? Input->GetKeyForActionInContext(Shortcut.Action, Shortcut.MappingContext, Device)
+				: MenuInputUtils::GetContextKey(Shortcut.MappingContext, Shortcut.Action, Device == EMenuInputDevice::Gamepad));
+		}
+	};
+
 	if (bKeyboard)
 	{
 		AddChord(Entry.Shortcut);
@@ -745,18 +795,12 @@ void UContextMenuEntryWidget::GatherBindings(TArray<TArray<FKey>>& OutBindings, 
 		{
 			AddChord(More);
 		}
-		if (Input && Entry.ShortcutAction)
-		{
-			AddKey(Input->GetKeyForAction(Entry.ShortcutAction, EMenuInputDevice::KeyboardMouse));
-		}
+		AddInputKeys(EMenuInputDevice::KeyboardMouse);
 	}
 	if (bGamepad)
 	{
 		AddKey(Entry.GamepadShortcut);
-		if (Input && Entry.ShortcutAction)
-		{
-			AddKey(Input->GetKeyForAction(Entry.ShortcutAction, EMenuInputDevice::Gamepad));
-		}
+		AddInputKeys(EMenuInputDevice::Gamepad);
 	}
 
 	if (bForDisplay && Look.MaxBindings > 0 && OutBindings.Num() > Look.MaxBindings)
@@ -961,13 +1005,16 @@ void UContextMenuEntryWidget::SetupSubmenuAnchor()
 	Spec.bTriggerOnFocus = false;
 	Spec.bKeepOpenUntilCursorLeaves = true;
 
-	// Beside the row on its right, its panel lined up with this one's (gap = panel padding); an attached menu as it says.
-	const FInfoCardPositioning Beside = bAttached ? Entry.AttachedMenuPositioning : FInfoCardPositioning::MakeBeside(EDirection2D::Right, EntryStyle.PanelPadding.Right);
+	// Beside the row on its right, its panel lined up with this one's (gap = panel padding), or the style's Submenu Placement;
+	// an attached menu as it says.
+	const FInfoCardPositioning Beside = bAttached ? Entry.AttachedMenuPositioning
+		: (EntryStyle.bCustomSubmenuPlacement ? EntryStyle.SubmenuPlacement : FInfoCardPositioning::MakeBeside(EDirection2D::Right, EntryStyle.PanelPadding.Right, 2000));
 	Beside.ApplyTo(Spec);
 
 	Spec.CloseOtherCardsScope = ECardCloseOthersScope::SameSourceWidgetClass;
 	Spec.RemoveCardOnPressing = ECardRemoveOnPressZone::OutsideAnchorAndCard;
-	Spec.ZOrder = 2000;
+	// Over the menus (as before Z Order was a placement field); the anchor keeps it in front of the menu it came from anyway.
+	Spec.ZOrder = FMath::Max(Spec.ZOrder, 2000);
 	Spec.Payloads.Add(SubPayload);
 	for (UContextButtonPayload* ActionPayload : Menu->GetActionPayloads())
 	{
@@ -1025,19 +1072,20 @@ UContextMenuWidget* UContextMenuEntryWidget::GetOpenSubmenu() const
 	return SubmenuAnchor ? Cast<UContextMenuWidget>(SubmenuAnchor->GetActiveCardById(SubmenuCardId)) : nullptr;
 }
 
-void UContextMenuEntryWidget::ApplyIcon(UWidget* Part, const FContextMenuIcon& Icon, const FLinearColor& StateTint) const
+void UContextMenuEntryWidget::ApplyIcon(UWidget* Part, const FContextMenuIcon& Icon, const FLinearColor& StateTint, float PartSize) const
 {
 	if (!Part)
 	{
 		return;
 	}
 
+	const float DrawSize = PartSize > 0.f ? PartSize : EntryStyle.IconSize;
 	if (UImage* AsImage = Cast<UImage>(Part))
 	{
 		if (Icon.ImageSource == EWidgetImageSource::Texture && Icon.Texture)
 		{
 			AsImage->SetBrushFromTexture(Icon.Texture, /*bMatchSize=*/false);
-			AsImage->SetDesiredSizeOverride(FVector2D(EntryStyle.IconSize));
+			AsImage->SetDesiredSizeOverride(FVector2D(DrawSize));
 		}
 	}
 	else if (UWidgetSVGImage* AsSVG = Cast<UWidgetSVGImage>(Part))
@@ -1045,7 +1093,7 @@ void UContextMenuEntryWidget::ApplyIcon(UWidget* Part, const FContextMenuIcon& I
 		if (Icon.ImageSource == EWidgetImageSource::SVG && Icon.SVG)
 		{
 			AsSVG->SetSVG(Icon.SVG);
-			AsSVG->SetImageSize(FVector2D(EntryStyle.IconSize));
+			AsSVG->SetImageSize(FVector2D(DrawSize));
 		}
 	}
 
@@ -1066,6 +1114,10 @@ void UContextMenuEntryWidget::TintIcon(UWidget* Part, const FContextMenuIcon& Ic
 	else if (UTextBlock* AsText = Cast<UTextBlock>(Part))
 	{
 		AsText->SetColorAndOpacity(FSlateColor(Tint));
+	}
+	else if (UContextMenuChevron* AsChevron = Cast<UContextMenuChevron>(Part))
+	{
+		AsChevron->SetArrowColor(Tint);
 	}
 }
 
@@ -1159,7 +1211,7 @@ void UContextMenuEntryWidget::ApplyStateLook()
 	}
 	ApplyIconList(CenterIconParts, Entry.CenterIcons);
 	ApplyIconList(RightIconParts, Entry.RightIcons);
-	ApplyIcon(SubmenuArrow, EntryStyle.SubmenuArrow, IconTint);
+	ApplyIcon(SubmenuArrow, EntryStyle.SubmenuArrow, IconTint, EntryStyle.GetSubmenuArrowSize());
 
 	// Key art keeps its own colours (its glyph's tint); a disabled row fades it like its icons.
 	for (int32 Index = 0; Index < BindingImageParts.Num(); ++Index)
@@ -1193,19 +1245,17 @@ void UContextMenuEntryWidget::NativeTick(const FGeometry& MyGeometry, float InDe
 		return;
 	}
 
-	// The cursor resting on a row moves keyboard focus to it, so the keyboard carries on from wherever the mouse was and
-	// only one row is ever highlighted.
-	if (RowButton->IsHovered() && !RowButton->HasKeyboardFocus() && IsSelectable())
+	// The menu picks one row to light up (UpdateActiveRow, before the rows tick). While the menu plays its exit nothing
+	// lights up: the row just chosen stays idle rather than going back to Hovered under the cursor.
+	const UContextMenuWidget* Menu = OwningMenu.Get();
+	const bool bMenuClosing = Menu && Menu->IsMenuChainClosing();
+	if (bMenuClosing)
 	{
-		const FVector2D CursorDelta = FSlateApplication::IsInitialized() ? FSlateApplication::Get().GetCursorPos() - FSlateApplication::Get().GetLastCursorPos() : FVector2D::ZeroVector;
-		if (!CursorDelta.IsNearlyZero())
-		{
-			RowButton->SetKeyboardFocus();
-		}
+		RowButton->HoldIdleLook();
 	}
 
-	const bool bNowHighlighted = IsSelectable() && (RowButton->IsHovered() || RowButton->HasKeyboardFocus() || GetOpenSubmenu() != nullptr);
-	const bool bNowPressed = IsSelectable() && RowButton->IsPressed();
+	const bool bNowHighlighted = !bMenuClosing && IsSelectable() && (bRowActive || GetOpenSubmenu() != nullptr);
+	const bool bNowPressed = !bMenuClosing && IsSelectable() && bRowActive && RowButton->IsPressed();
 	if (bNowHighlighted == bHighlighted && bNowPressed == bPressedLook)
 	{
 		return;
@@ -1219,6 +1269,19 @@ void UContextMenuEntryWidget::NativeTick(const FGeometry& MyGeometry, float InDe
 	if (bHighlightChanged)
 	{
 		OnHighlightChanged(bHighlighted);
+	}
+}
+
+void UContextMenuEntryWidget::SetRowActive(bool bActive)
+{
+	if (bRowActive == bActive)
+	{
+		return;
+	}
+	bRowActive = bActive;
+	if (RowButton)
+	{
+		RowButton->SetHoverLookSuppressed(!bActive);
 	}
 }
 
@@ -1780,6 +1843,11 @@ void UContextMenuWidget::HandleEntryChosen(UContextMenuEntryWidget* Row, bool bF
 
 	if (WeakMenu.IsValid() && ChosenEntry.bCloseMenuOnClick)
 	{
+		// Idle from this frame on: released under the cursor, the row would go back to Hovered for the whole exit.
+		if (WeakRow.IsValid() && WeakRow->GetRowButton())
+		{
+			WeakRow->GetRowButton()->HoldIdleLook();
+		}
 		CloseWholeMenu();
 	}
 }
@@ -1790,6 +1858,8 @@ void UContextMenuWidget::NativeConstruct()
 
 	if (!IsDesignTime())
 	{
+		// A cursor resting where the menu opens hasn't "moved onto" a row (UpdateActiveRow).
+		LastCursorPos = FSlateApplication::IsInitialized() ? FSlateApplication::Get().GetCursorPos() : FVector2D::ZeroVector;
 		bRestoreFocusOnClose = true;
 		// Focus goes to the first row for keyboard / gamepad openings, else to the menu itself (so Escape and the arrows
 		// work without highlighting a row the mouse isn't on). Next tick: the menu isn't in a window yet.
@@ -1819,6 +1889,8 @@ void UContextMenuWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTi
 {
 	Super::NativeTick(MyGeometry, InDeltaTime);
 
+	UpdateActiveRow();
+
 	if (!bPendingInitialFocus || IsDesignTime())
 	{
 		return;
@@ -1829,6 +1901,88 @@ void UContextMenuWidget::NativeTick(const FGeometry& MyGeometry, float InDeltaTi
 	if (!bFocusRow || !FocusFirstEntry())
 	{
 		SetKeyboardFocus();
+	}
+}
+
+bool UContextMenuWidget::IsMenuChainClosing() const
+{
+	const UContextMenuWidget* Root = GetRootMenu();
+	return IsClosing() || (Root && Root->IsClosing());
+}
+
+void UContextMenuWidget::UpdateActiveRow()
+{
+	if (IsDesignTime())
+	{
+		return;
+	}
+
+	const FVector2D CursorPos = FSlateApplication::IsInitialized() ? FSlateApplication::Get().GetCursorPos() : FVector2D::ZeroVector;
+	const bool bMouseMoved = !CursorPos.Equals(LastCursorPos, 0.5);
+	LastCursorPos = CursorPos;
+
+	UContextMenuEntryWidget* Current = ActiveRow.Get();
+	if (Current && !Current->IsSelectable())
+	{
+		Current = nullptr;
+	}
+
+	UContextMenuEntryWidget* HoveredRow = nullptr;
+	UContextMenuEntryWidget* FocusedRow = nullptr;
+	bool bHoveredUnderCursor = false;
+	for (const TObjectPtr<UContextMenuEntryWidget>& Row : EntryWidgets)
+	{
+		const UContextMenuButton* Button = Row ? Row->GetRowButton() : nullptr;
+		if (!Button || !Row->IsSelectable())
+		{
+			continue;
+		}
+		if (Row->IsEntryFocused())
+		{
+			FocusedRow = Row;
+		}
+		if (!Button->IsHovered())
+		{
+			continue;
+		}
+
+		// Two rows can both report hover where a button's hover area reaches past its row (a preset's shapes or hover scale
+		// over a wide Highlight Inset): the row whose own box holds the cursor wins, then the one already lit.
+		const bool bUnderCursor = Row->GetCachedGeometry().IsUnderLocation(CursorPos);
+		if (!HoveredRow || (bUnderCursor && !bHoveredUnderCursor) || (bUnderCursor == bHoveredUnderCursor && Row == Current))
+		{
+			HoveredRow = Row;
+			bHoveredUnderCursor = bUnderCursor;
+		}
+	}
+
+	UContextMenuEntryWidget* NewActive = Current;
+	if (HoveredRow && bMouseMoved)
+	{
+		// The mouse moved onto a row: it lights up and takes focus, so the keyboard carries on from where the mouse was.
+		NewActive = HoveredRow;
+		if (!HoveredRow->IsEntryFocused())
+		{
+			HoveredRow->FocusEntry();
+		}
+	}
+	else if (FocusedRow)
+	{
+		// The keyboard moved focus (the mouse resting on another row doesn't take it back).
+		NewActive = FocusedRow;
+	}
+	else if (!NewActive && HoveredRow)
+	{
+		NewActive = HoveredRow;
+	}
+
+	ActiveRow = NewActive;
+	for (const TObjectPtr<UContextMenuEntryWidget>& Row : EntryWidgets)
+	{
+		if (Row)
+		{
+			Row->SetRowActive(Row == NewActive);
+		}
 	}
 }
 

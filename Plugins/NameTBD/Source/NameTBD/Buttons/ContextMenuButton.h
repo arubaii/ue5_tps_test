@@ -2170,6 +2170,19 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Context Menu Button|State")
 	void RefreshButtonState(bool bInstant = false);
 
+	/**
+	 * Shows the button as neither hovered nor focused while it is (true): its Normal / Enabled look and no hover sound. For a
+	 * group that keeps one button highlighted at a time - a context menu's rows, whose hover areas can overlap. Not saved.
+	 */
+	void SetHoverLookSuppressed(bool bSuppressed);
+
+	/**
+	 * Holds the button in its idle look (Normal, or Enabled) from now on, whatever the pointer does. A button whose press
+	 * closes its card does this itself, so it doesn't go back to Hovered while the card plays its exit. Not saved; cleared
+	 * when the button is rebuilt.
+	 */
+	void HoldIdleLook();
+
 	// ------------------------------------------------------------------
 	// Targets at runtime (by Target ID)
 	// ------------------------------------------------------------------
@@ -3474,6 +3487,12 @@ protected:
 
 	/** True only while focus arrived by keyboard/gamepad navigation. Focus from a mouse click does not count as hover. */
 	bool bHasNavigationFocus = false;
+
+	/** See SetHoverLookSuppressed. */
+	bool bHoverLookSuppressed = false;
+
+	/** See HoldIdleLook. */
+	bool bHoldingIdleLook = false;
 
 	/** The enabled state flips once per press; Hold repeats within the same press report the same value. */
 	bool bHasToggledEnablingThisPress = false;

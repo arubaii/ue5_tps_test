@@ -34,8 +34,8 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FContextMenuEntryChosenSignature, F
  * row out yourself; it then builds nothing and fills the parts it finds by name, all optional:
  *   RowButton (Context Menu Button: clicks, focus, states), RowHighlight (Border: the style's highlight / pressed brush),
  *   LabelText, CenterText, RightText, ShortcutText, HeaderText (Text Blocks), LeftIcon, CenterIcon, RightIcon (the first
- *   icon of each list; LeftIcon_1, LeftIcon_2... take the next ones), CheckMark, SubmenuArrow (Image or SVG Image: shown,
- *   hidden and tinted), BindingsBox (a panel the shortcuts' keys are built into when they are drawn as art or framed; without
+ *   icon of each list; LeftIcon_1, LeftIcon_2... take the next ones), CheckMark, SubmenuArrow (Image, SVG Image or Context
+ *   Menu Chevron - which takes the style's Submenu Arrow - shown, hidden and tinted), BindingsBox (a panel the shortcuts' keys are built into when they are drawn as art or framed; without
  *   one, ShortcutText shows them as text), DividerLine (any widget: shown for dividers), SubmenuAnchor (Info Card Anchor
  *   around RowButton, for submenus and attached menus), TooltipAnchor (Tooltip Card Anchor around RowButton, for the style's
  *   Tooltip Card row tooltips).
@@ -120,6 +120,15 @@ public:
 
 	/** The Card ID of a submenu row's card on its Submenu Anchor. */
 	static const FName SubmenuCardId;
+
+	/**
+	 * Set by the menu every frame: whether this is the one row of its menu that may look hovered / focused (the one the mouse
+	 * last moved onto, else the focused one). Rows whose hover areas overlap never both light up.
+	 */
+	void SetRowActive(bool bActive);
+
+	UFUNCTION(BlueprintPure, Category = "Context Menu")
+	bool IsRowActive() const { return bRowActive; }
 
 protected:
 
@@ -226,6 +235,9 @@ protected:
 	bool bPressedLook = false;
 	bool bUsesRowPreset = false;
 
+	/** See SetRowActive. */
+	bool bRowActive = false;
+
 	/** The C++ class built this row's parts (the style's alignment options apply); false for a Widget Blueprint's own. */
 	bool bBuiltNativeTree = false;
 
@@ -237,6 +249,9 @@ private:
 
 	/** A Size Box of the style's icon size holding an Image or SVG Image for Icon (or a text glyph when Icon is unset and Glyph isn't empty). */
 	UWidget* MakeIconPart(const FContextMenuIcon& Icon, FName PartName, const TCHAR* Glyph, TObjectPtr<UWidget>& OutPart);
+
+	/** The submenu arrow's part (SubmenuArrow) in a square box of the style's Submenu Arrow Size: its image, else a drawn chevron. */
+	UWidget* MakeSubmenuArrowPart();
 
 	/** A Horizontal Box of an icon part per set icon (named Base, Base_1...), Icon Gap and Icon Delimiter between them. */
 	UWidget* MakeIconList(const TArray<FContextMenuIcon>& Icons, const TCHAR* Base, TArray<TObjectPtr<UWidget>>& OutParts);
@@ -256,7 +271,8 @@ private:
 	void SetupSubmenuAnchor();
 	void SetupTooltip();
 	void ApplyStateLook();
-	void ApplyIcon(UWidget* Part, const FContextMenuIcon& Icon, const FLinearColor& StateTint) const;
+	/** PartSize: the square the image is drawn at; 0: the style's Icon Size. */
+	void ApplyIcon(UWidget* Part, const FContextMenuIcon& Icon, const FLinearColor& StateTint, float PartSize = 0.f) const;
 	void TintIcon(UWidget* Part, const FContextMenuIcon& Icon, const FLinearColor& StateTint) const;
 };
 
@@ -326,6 +342,13 @@ public:
 	/** A row was chosen (clicked, Enter, a shortcut). What every row calls; runs the whole choice. */
 	void HandleEntryChosen(UContextMenuEntryWidget* Row, bool bFromKeyboard);
 
+	/** This menu, or the first menu of its chain, is playing its exit: its rows stay idle until it is gone. */
+	bool IsMenuChainClosing() const;
+
+	/** The row of this menu that may look highlighted now (see UContextMenuEntryWidget::SetRowActive), or null. */
+	UFUNCTION(BlueprintPure, Category = "Context Menu")
+	UContextMenuEntryWidget* GetActiveRow() const { return ActiveRow.Get(); }
+
 	/** A row was chosen: its Entry ID, and its checked state after the choice (false for rows that aren't check boxes / radios). */
 	UPROPERTY(BlueprintAssignable, Category = "Context Menu")
 	FContextMenuEntryChosenSignature OnEntryChosen;
@@ -361,7 +384,7 @@ protected:
 
 	FContextMenuStyle MenuStyle;
 
-	/** The style's Open Animations and Menu Sounds are taken once, on the first payload; a re-delivered payload leaves them. */
+	/** The style's Animations and Menu Sounds are taken once, on the first payload; a re-delivered payload leaves them. */
 	bool bAppliedOpenLook = false;
 
 	/** Focus is given on the first tick: during construction the menu isn't in a window yet. */
@@ -384,6 +407,16 @@ private:
 
 	/** For a submenu: focuses the row that opened it, then closes it. */
 	void CloseSubmenuLevel();
+
+	/**
+	 * Picks the one row that may look highlighted: the row the mouse moved onto (taking focus, so the keyboard carries on from
+	 * there), else the focused row (the keyboard moved it), else a row the resting cursor is over. Where hover areas overlap,
+	 * the row whose own box holds the cursor wins.
+	 */
+	void UpdateActiveRow();
+
+	TWeakObjectPtr<UContextMenuEntryWidget> ActiveRow;
+	FVector2D LastCursorPos = FVector2D::ZeroVector;
 
 	bool IsSubmenu() const;
 };

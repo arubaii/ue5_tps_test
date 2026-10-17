@@ -6,6 +6,8 @@
 #include "MenuSettingsSchema.h"
 #include "MenuSettingTargets.h"
 #include "NameTBD/Menu/Graphics/MenuUpscalers.h"
+#include "NameTBD/Menu/Input/MenuInputTypes.h"
+#include "MenuProjectSettings.h"
 
 #define LOCTEXT_NAMESPACE "MenuSettingsDefaults"
 
@@ -544,6 +546,16 @@ namespace MenuSettingsDefaults
 					FMenuSettingOption(TEXT("Switch"), LOCTEXT("PromptsSwitch", "Nintendo Switch")),
 					FMenuSettingOption(TEXT("Generic"), LOCTEXT("PromptsGeneric", "Generic")),
 				}, TEXT("Auto"));
+			// The project's Custom families (Key Glyph Sets with Family Custom) are choices too, by their names.
+			for (const TSoftObjectPtr<UMenuKeyGlyphSet>& SetEntry : UMenuProjectSettings::Get().KeyGlyphSets)
+			{
+				const UMenuKeyGlyphSet* GlyphSet = SetEntry.LoadSynchronous();
+				if (GlyphSet && !GlyphSet->bForKeyboard && GlyphSet->Family == EMenuGamepadFamily::Custom && !GlyphSet->CustomFamilyName.IsNone())
+				{
+					Prompts->Options.Add(FMenuSettingOption(GlyphSet->CustomFamilyName.ToString(),
+						GlyphSet->CustomFamilyDisplayName.IsEmpty() ? FText::FromName(GlyphSet->CustomFamilyName) : GlyphSet->CustomFamilyDisplayName));
+				}
+			}
 			BuiltIn(Prompts, EMenuBuiltInSetting::ControllerButtonStyle);
 			Prompts->Keywords = { TEXT("glyphs"), TEXT("icons") };
 		}

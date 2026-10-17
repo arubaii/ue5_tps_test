@@ -28,6 +28,7 @@ class UContextMenuWidget;
 class UInfoCardAnchor;
 class UInfoCardDataAsset;
 class UInputAction;
+class UInputMappingContext;
 class UTexture2D;
 
 /** What one line of a context menu is. */
@@ -170,7 +171,7 @@ struct NAMETBD_API FContextMenuTextAlignment
 
 /**
  * How rows show their Description (the row's tooltip): the engine's plain tooltip, or an info card tooltip with every setting
- * a Tooltip Card Anchor has - template, text style, delay, and the Info Card Anchor's positioning.
+ * a Tooltip Card Anchor has - template, text style, delay, and the Info Card Anchor's placement.
  */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FContextMenuTooltipStyle
@@ -208,18 +209,38 @@ struct NAMETBD_API FContextMenuTooltipStyle
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard && bOverrideDelay", EditConditionHides, ClampMin = "0", UIMax = "3", Units = "s"))
 	float Delay = 0.6f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Override Positioning", EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Override Placement", EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard", EditConditionHides))
 	bool bOverridePositioning = true;
 
 	/**
-	 * Where the tooltip opens, instead of the template's: every placement an Info Card Anchor's entry has. Default: below and
-	 * to the right of the cursor, clear of a submenu opening beside the row.
+	 * Where the tooltip opens, instead of the template's: every placement an Info Card Anchor's entry has, or (Placement
+	 * Source Use Project Settings) a named Placement Preset. Default: below and to the right of the cursor, clear of a submenu
+	 * opening beside the row. Whatever its Z Order, a row's tooltip always shows in front of its menu.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard && bOverridePositioning", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Placement", EditCondition = "Mode == EContextMenuTooltipMode::TooltipCard && bOverridePositioning", EditConditionHides))
 	FInfoCardPositioning Positioning;
 };
 
-/** How rows show their shortcuts (Shortcut, More Shortcuts, Gamepad Shortcut, Shortcut Input Action). */
+/**
+ * An Enhanced Input action a menu row answers to and shows the keys of, and the Input Mapping Context those keys are read
+ * from: the context's key for keyboard and for gamepad, or the player's rebinding of it. Picking the context first narrows
+ * the action picker to the actions it maps.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FContextMenuShortcutInput
+{
+	GENERATED_BODY()
+
+	/** Where the action's keys are read from. Empty: wherever the player has the action mapped right now (it shows nothing until a context that maps it is applied). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut Input", meta = (DisplayName = "Input Mapping Context"))
+	TObjectPtr<UInputMappingContext> MappingContext = nullptr;
+
+	/** The action. With an Input Mapping Context, the picker offers only the actions it maps. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut Input", meta = (DisplayName = "Input Action", ActionFromMappingContext = "MappingContext"))
+	TObjectPtr<UInputAction> Action = nullptr;
+};
+
+/** How rows show their shortcuts (Shortcut, More Shortcuts, Gamepad Shortcut, the Shortcut Inputs). */
 USTRUCT(BlueprintType)
 struct NAMETBD_API FContextMenuBindingStyle
 {
@@ -352,11 +373,23 @@ struct NAMETBD_API FContextMenuEntry
 	FKey GamepadShortcut;
 
 	/**
+	 * The Input Mapping Context Shortcut Input Action's keys are read from: its key for keyboard and for gamepad (the player's
+	 * rebinding of it included), shown even while the context isn't applied, and in the designer. Picking it first narrows
+	 * the action picker to the actions it maps. Empty: wherever the player has the action mapped right now.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (DisplayName = "Shortcut Input Mapping Context", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
+	TObjectPtr<UInputMappingContext> ShortcutMappingContext = nullptr;
+
+	/**
 	 * An Enhanced Input action whose keys this row shows: the key the player has it on for keyboard and for gamepad, their
 	 * rebinding included (Menu Input Subsystem). Those keys choose the row while the menu is open.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (DisplayName = "Shortcut Input Action", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (DisplayName = "Shortcut Input Action", ActionFromMappingContext = "ShortcutMappingContext", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
 	TObjectPtr<UInputAction> ShortcutAction = nullptr;
+
+	/** Other Enhanced Input actions for the same row, each with its own mapping context: shown after Shortcut Input Action, and working while open too. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (DisplayName = "More Shortcut Inputs", TitleProperty = "Action", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
+	TArray<FContextMenuShortcutInput> MoreShortcutInputs;
 
 	/** Text or the keys' art (Key Glyph Sets), instead of the style's Bindings > Display. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Shortcut", meta = (DisplayName = "Shortcut Display", EditCondition = "EntryType == EContextMenuEntryType::Button", EditConditionHides))
@@ -423,7 +456,7 @@ struct NAMETBD_API FContextMenuEntry
 	EContextMenuAttachedMenuTrigger AttachedMenuOpenOn = EContextMenuAttachedMenuTrigger::Hover;
 
 	/** Where it opens. Default: beside the row, on its right (flipping left at the screen's edge), as a hover dropdown. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attached Menu", meta = (DisplayName = "Positioning", EditCondition = "EntryType == EContextMenuEntryType::Button && AttachedMenu != nullptr", EditConditionHides))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Attached Menu", meta = (DisplayName = "Placement", EditCondition = "EntryType == EContextMenuEntryType::Button && AttachedMenu != nullptr", EditConditionHides))
 	FInfoCardPositioning AttachedMenuPositioning = FInfoCardPositioning::MakeBeside(EDirection2D::Right, 4.f);
 
 	// State --------------------------------------------------------------
@@ -496,8 +529,39 @@ struct TStructOpsTypeTraits<FContextMenuEntry> : public TStructOpsTypeTraitsBase
 };
 
 /**
+ * The submenu arrow drawn as two strokes (a ">"), when the style's Submenu Arrow Image is unset: sharp at any size and
+ * centred in the row whatever its height or font. Coloured by the style's icon tints for the row's state.
+ */
+USTRUCT(BlueprintType)
+struct NAMETBD_API FContextMenuChevronStyle
+{
+	GENERATED_BODY()
+
+	/** Width and height of the ">" (it points right). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chevron", meta = (ClampMin = "1", UIMax = "32", ForceUnits = "px"))
+	FVector2D Size = FVector2D(4.5f, 8.f);
+
+	/** Stroke width. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chevron", meta = (ClampMin = "0.5", UIMax = "6", ForceUnits = "px"))
+	float Thickness = 1.5f;
+
+	/** Moves the arrow from the centre of its slot (+X right, +Y down), for a font whose text sits high or low. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chevron")
+	FVector2D Offset = FVector2D::ZeroVector;
+
+	/** Smooth edges. Off: crisp, pixel-stepped strokes. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Chevron", meta = (DisplayName = "Anti-Alias"))
+	bool bAntiAlias = true;
+};
+
+/**
  * Everything about how context menus look and behave, kept in a Context Menu Style asset so one look serves every menu that
  * picks it (and Project Settings > Info Card > Context Menus > Default Context Menu Style serves every other menu).
+ *
+ * Laid out what-it-does first, what-it-looks-like after: Behavior, Placement, Submenu, Tooltips, then Panel, Rows, Text,
+ * Bindings, Icons, Dividers, Animation & Sound. Each part's custom widget class sits at the top of its category (Panel:
+ * Menu Widget Class, Rows: Entry Widget Class, Dividers: Divider Widget Class); the fields a Widget Blueprint picked there
+ * lays out itself are greyed out while it is set.
  *
  * The rows are Context Menu Buttons: give the style a Row Button Preset (style a button, Save As Preset) and every row gets
  * that button's shapes, design targets, sounds and animations - row parts are named for targets (see UContextMenuEntryWidget).
@@ -510,7 +574,75 @@ struct NAMETBD_API FContextMenuStyle
 
 	FContextMenuStyle();
 
+	// Behavior ---------------------------------------------------------------------------------------------------------
+
+	/** Opening a menu closes every other info card (tooltips and other menus) - one context menu at a time. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behavior")
+	bool bCloseOtherCardsOnOpen = true;
+
+	/** Typing a letter moves to the next row whose label starts with it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behavior")
+	bool bTypeToSelect = true;
+
+	/** Up / Down at the last / first row go round to the other end. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behavior")
+	bool bWrapNavigation = true;
+
+	// Placement --------------------------------------------------------------------------------------------------------
+
+	/**
+	 * Where menus in this style open: every placement an Info Card entry has - at the cursor (the default; opened from a key,
+	 * beside the widget), beside the widget (a dropdown, a flyout), at a corner of the screen - and its Z Order. Placement
+	 * Source Use Project Settings picks a named preset from Project Settings > Info Card > Placement Presets. A Context Menu
+	 * Anchor can override it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Placement", meta = (DisplayName = "Placement"))
+	FInfoCardPositioning Positioning;
+
+	// Submenu ----------------------------------------------------------------------------------------------------------
+
+	/** Seconds the cursor rests on a submenu row before its submenu opens. Clicking or pressing Right opens it at once. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Submenu", meta = (ClampMin = "0", UIMax = "1", Units = "s"))
+	float SubmenuDelay = 0.2f;
+
+	/**
+	 * The arrow on submenu rows (and rows with an Attached Menu) as an image: a Texture 2D or an SVG. Unset: the arrow is
+	 * drawn (Submenu Arrow below).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Submenu", meta = (DisplayName = "Submenu Arrow Image"))
+	FContextMenuIcon SubmenuArrow;
+
+	/** The drawn arrow (no Submenu Arrow Image): its size, stroke and nudge. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Submenu", meta = (DisplayName = "Submenu Arrow"))
+	FContextMenuChevronStyle SubmenuChevron;
+
+	/** The arrow's slot, square. 0: the style's Icon Size. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Submenu", meta = (DisplayName = "Submenu Arrow Size", ClampMin = "0", UIMax = "48", ForceUnits = "px"))
+	float SubmenuArrowSize = 0.f;
+
+	/** Submenus open where Submenu Placement says. Off: beside the row on its right, panels lined up (gap = Panel Padding). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Submenu", meta = (DisplayName = "Custom Submenu Placement"))
+	bool bCustomSubmenuPlacement = false;
+
+	/** Where submenus open (Custom Submenu Placement on): side, gap, overlap (a negative gap), flipping, Z Order, or a preset. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Submenu")
+	FInfoCardPositioning SubmenuPlacement = FInfoCardPositioning::MakeBeside(EDirection2D::Right, 4.f, 2000);
+
+	// Tooltips ---------------------------------------------------------------------------------------------------------
+
+	/** How rows show their Description: the engine's plain tooltip, or an info card tooltip set up here. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tooltips", meta = (DisplayName = "Row Tooltips"))
+	FContextMenuTooltipStyle RowTooltips;
+
 	// Panel ------------------------------------------------------------------------------------------------------------
+
+	/**
+	 * The menu itself: a Widget Blueprint made from Context Menu Widget, for a frame of your own. Empty: the native one. It
+	 * puts the rows into its panel named EntriesBox; the fields below go onto its parts named MenuPanel (Background, Padding),
+	 * MenuSizeBox (widths, Max Height) and MenuScroll when it has them.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Panel")
+	TSubclassOf<UContextMenuWidget> MenuWidgetClass;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Panel")
 	FSlateBrush PanelBackground;
@@ -532,6 +664,14 @@ struct NAMETBD_API FContextMenuStyle
 	// Rows -------------------------------------------------------------------------------------------------------------
 
 	/**
+	 * Every row: a Widget Blueprint made from Context Menu Entry Widget, laid out your own way (see that class for the part
+	 * names it fills - LabelText, ShortcutText, RowButton...). Empty: the native one. A Widget Blueprint row keeps its own
+	 * layout, so the fields here that only arrange the native row (alignments, gaps, the icon column) are greyed out.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows")
+	TSubclassOf<UContextMenuEntryWidget> EntryWidgetClass;
+
+	/**
 	 * Every row's button look: a Context Menu Button Preset (shapes, design targets per state, sounds, animations). The
 	 * native highlight below is then off, since the preset draws the states. Per entry: Row Button Preset.
 	 */
@@ -548,16 +688,16 @@ struct NAMETBD_API FContextMenuStyle
 	/**
 	 * Between a row's edges and its highlight (or its Row Button Preset's button), on top of the Panel Padding: highlights
 	 * that stop short of the panel's sides, or gaps between neighbouring highlights. 0: the highlight is as wide as the menu
-	 * less Panel Padding.
+	 * less Panel Padding. Only one row is ever highlighted, however its button's hover area overlaps its neighbours'.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (DisplayName = "Highlight Inset"))
 	FMargin RowHighlightInset = FMargin(0.f);
 
-	/** Where a row's parts sit across the row. Fill: the label takes the room left, so shortcuts line up on the right. */
+	/** Where a row's parts sit across the row. Fill: the label takes the room left, so shortcuts line up on the right. Native rows. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (DisplayName = "Content Horizontal Alignment"))
 	TEnumAsByte<EHorizontalAlignment> RowContentHorizontalAlignment = HAlign_Fill;
 
-	/** Where a row's parts sit in its height (Row Height). */
+	/** Where a row's parts sit in its height (Row Height). Native rows. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (DisplayName = "Content Vertical Alignment"))
 	TEnumAsByte<EVerticalAlignment> RowContentVerticalAlignment = VAlign_Center;
 
@@ -569,18 +709,11 @@ struct NAMETBD_API FContextMenuStyle
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows")
 	FSlateBrush RowPressed;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "4", UIMax = "48", ForceUnits = "px"))
-	float IconSize = 16.f;
-
-	/** How rows show their Description: the engine's plain tooltip, or an info card tooltip set up here. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (DisplayName = "Row Tooltips"))
-	FContextMenuTooltipStyle RowTooltips;
-
-	/** Space between a row's parts (icon, label, right text, shortcut). */
+	/** Space between a row's parts (icon, label, right text, shortcut). Native rows. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows", meta = (ClampMin = "0", UIMax = "32", ForceUnits = "px"))
 	float PartGap = 8.f;
 
-	/** Keep the icon column (one icon wide) even when no row has a left icon or check mark, so labels line up across menus. */
+	/** Keep the icon column (one icon wide) even when no row has a left icon or check mark, so labels line up across menus. Native rows. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Rows")
 	bool bAlwaysReserveIconColumn = false;
 
@@ -608,17 +741,19 @@ struct NAMETBD_API FContextMenuStyle
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text")
 	FSlateColor ShortcutColor = FSlateColor(FLinearColor(0.9f, 0.91f, 0.93f, 0.5f));
 
-	/** The label (a row's left text): left by default, taking the room the row's other parts leave. */
+	/** The label (a row's left text): left by default, taking the room the row's other parts leave. Native rows. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text", meta = (DisplayName = "Label Alignment"))
 	FContextMenuTextAlignment LabelAlignment = FContextMenuTextAlignment(ETextJustify::Left, HAlign_Fill);
 
-	/** Center Text (label font and colours): in the middle of the room between the label and the right-hand parts. */
+	/** Center Text (label font and colours): in the middle of the room between the label and the right-hand parts. Native rows. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text", meta = (DisplayName = "Center Text Alignment"))
 	FContextMenuTextAlignment CenterTextAlignment = FContextMenuTextAlignment(ETextJustify::Center, HAlign_Center);
 
+	/** Native rows. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text", meta = (DisplayName = "Right Text Alignment"))
 	FContextMenuTextAlignment RightTextAlignment = FContextMenuTextAlignment(ETextJustify::Right, HAlign_Right);
 
+	/** Native rows. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Text", meta = (DisplayName = "Shortcut Alignment"))
 	FContextMenuTextAlignment ShortcutAlignment = FContextMenuTextAlignment(ETextJustify::Right, HAlign_Right);
 
@@ -630,6 +765,9 @@ struct NAMETBD_API FContextMenuStyle
 
 	// Icons ------------------------------------------------------------------------------------------------------------
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons", meta = (ClampMin = "4", UIMax = "48", ForceUnits = "px"))
+	float IconSize = 16.f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons")
 	FLinearColor IconTint = FLinearColor(0.85f, 0.86f, 0.9f, 1.f);
 
@@ -639,17 +777,13 @@ struct NAMETBD_API FContextMenuStyle
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons")
 	FLinearColor DisabledIconTint = FLinearColor(0.85f, 0.86f, 0.9f, 0.35f);
 
-	/** Space between the icons of a row's Left / Center / Right Icons (on each side of Icon Delimiter, when there is one). */
+	/** Space between the icons of a row's Left / Center / Right Icons (on each side of Icon Delimiter, when there is one). Native rows. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons", meta = (ClampMin = "0", UIMax = "16", ForceUnits = "px"))
 	float IconGap = 4.f;
 
-	/** Drawn between a row's icons, in the shortcut font and colours ("|", "·"). Empty: just Icon Gap. */
+	/** Drawn between a row's icons, in the shortcut font and colours ("|", "·"). Empty: just Icon Gap. Native rows. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons")
 	FText IconDelimiter;
-
-	/** Shown on submenu rows. Unset: a chevron drawn as text. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons")
-	FContextMenuIcon SubmenuArrow;
 
 	/** Shown on checked Check Box rows. Unset: a check drawn as text. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Icons")
@@ -661,12 +795,22 @@ struct NAMETBD_API FContextMenuStyle
 
 	// Dividers ---------------------------------------------------------------------------------------------------------
 
+	/**
+	 * Dividers and Text Dividers only: a Widget Blueprint made from Context Menu Entry Widget, instead of Entry Widget Class.
+	 * Empty: Entry Widget Class's, else the native one. It fills its parts named DividerLine (an Image takes Divider Color)
+	 * and HeaderText (Text Divider Font and Color); the fields that lay out the native divider are greyed out.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers")
+	TSubclassOf<UContextMenuEntryWidget> DividerWidgetClass;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers")
 	FLinearColor DividerColor = FLinearColor(1.f, 1.f, 1.f, 0.1f);
 
+	/** Native dividers. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers", meta = (ClampMin = "0.5", UIMax = "8", ForceUnits = "px"))
 	float DividerThickness = 1.f;
 
+	/** Native dividers. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers")
 	FMargin DividerPadding = FMargin(8.f, 4.f);
 
@@ -676,6 +820,7 @@ struct NAMETBD_API FContextMenuStyle
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers", meta = (DisplayName = "Text Divider Color"))
 	FSlateColor HeaderColor = FSlateColor(FLinearColor(0.9f, 0.91f, 0.93f, 0.55f));
 
+	/** Native dividers. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers", meta = (DisplayName = "Text Divider Padding"))
 	FMargin HeaderPadding = FMargin(8.f, 6.f, 8.f, 2.f);
 
@@ -685,62 +830,29 @@ struct NAMETBD_API FContextMenuStyle
 
 	/**
 	 * Text Dividers whose Text Alignment is Style Default: Horizontal is where the text sits (the line fills the rest; Fill
-	 * reads as Left), Justification lines up text that wraps or stands alone, Vertical places it in the row.
+	 * reads as Left), Justification lines up text that wraps or stands alone, Vertical places it in the row. Native dividers.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dividers", meta = (DisplayName = "Text Divider Alignment"))
 	FContextMenuTextAlignment TextDividerAlignment = FContextMenuTextAlignment(ETextJustify::Left, HAlign_Left);
 
-	// Positioning ------------------------------------------------------------------------------------------------------
-
-	/**
-	 * Where menus in this style open: at the cursor (the default - opened from a key, beside the widget), beside the widget
-	 * (a dropdown, a flyout) or at a corner of the screen. A Context Menu Anchor can override it.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Positioning")
-	FInfoCardPositioning Positioning;
-
-	// Behaviour --------------------------------------------------------------------------------------------------------
-
-	/** Seconds the cursor rests on a submenu row before its submenu opens. Clicking or pressing Right opens it at once. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behavior", meta = (ClampMin = "0", UIMax = "1", Units = "s"))
-	float SubmenuDelay = 0.2f;
-
-	/** Opening a menu closes every other info card (tooltips and other menus) - one context menu at a time. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behavior")
-	bool bCloseOtherCardsOnOpen = true;
-
-	/** Typing a letter moves to the next row whose label starts with it. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behavior")
-	bool bTypeToSelect = true;
-
-	/** Up / Down at the last / first row go round to the other end. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behavior")
-	bool bWrapNavigation = true;
+	// Animation & Sound ------------------------------------------------------------------------------------------------
 
 	/** The menu's entrance and exit, on top of the menu class's own. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behavior", meta = (DisplayName = "Open Animations"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation & Sound", meta = (DisplayName = "Animations"))
 	FInfoCardAdditiveAnimations OpenAnimations;
 
 	/** Sounds as the menu opens (Shown) and closes (Hidden). Row sounds belong to the Row Button Preset. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Behavior", meta = (DisplayName = "Menu Sounds", TitleProperty = "Settings"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Animation & Sound", meta = (DisplayName = "Menu Sounds", TitleProperty = "Settings"))
 	TArray<FInfoCardSoundSet> MenuSounds;
-
-	// Custom widgets ---------------------------------------------------------------------------------------------------
-
-	/** The menu itself: a Widget Blueprint made from Context Menu Widget for a frame of your own. Empty: the native one. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Custom Widgets")
-	TSubclassOf<UContextMenuWidget> MenuWidgetClass;
-
-	/** Every row: a Widget Blueprint made from Context Menu Entry Widget (see that class for the part names it fills). Empty: the native one. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Custom Widgets")
-	TSubclassOf<UContextMenuEntryWidget> EntryWidgetClass;
-
-	/** Dividers and Text Dividers only, instead of Entry Widget Class. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Custom Widgets")
-	TSubclassOf<UContextMenuEntryWidget> DividerWidgetClass;
 
 	/** Replaces the engine fonts of a style made in code with the engine's font asset. UObject constructors only. */
 	void UseDefaultFontAssets();
+
+	/** The square slot the submenu arrow sits in: Submenu Arrow Size, else Icon Size. */
+	float GetSubmenuArrowSize() const { return SubmenuArrowSize > 0.f ? SubmenuArrowSize : IconSize; }
+
+	/** The category order the editor shows the style in (Behavior first, Animation & Sound last). */
+	static const TArray<FName>& GetCategoryOrder();
 };
 
 /** A Context Menu Style: how menus look and behave. Pick it on Context Menu assets, on anchors, or as the project default. */

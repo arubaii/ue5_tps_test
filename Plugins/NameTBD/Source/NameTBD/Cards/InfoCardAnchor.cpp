@@ -1343,6 +1343,9 @@ FInfoCardSpec UInfoCardAnchor::MakeSpecFromDataAsset(const UInfoCardDataAsset& A
 		NewSpec.AdditiveAnimations = Asset.DefaultCardAnimations;
 	}
 
+	// A Placement Preset becomes the entry's own placement here, before the anchor's Settings Overrides go on top.
+	NewSpec.ResolvePlacementPreset();
+
 	return NewSpec;
 }
 
@@ -1425,6 +1428,7 @@ void UInfoCardAnchor::RebuildInfoCardsFromCustomArray()
 			NewSpec.Payloads.Add(SourcePayload ? DuplicateObject<UNameTBD_Payload>(SourcePayload, this) : nullptr);
 		}
 
+		NewSpec.ResolvePlacementPreset();
 		InfoCards.Add(MoveTemp(NewSpec));
 	}
 
@@ -1587,6 +1591,13 @@ void UInfoCardAnchor::ApplySettingsOverrides()
 			Spec.bKeepOpenUntilCursorLeaves = Settings.bKeepOpenUntilCursorLeaves;
 			Spec.KeepOpenSlack = Settings.KeepOpenSlack;
 			Spec.KeepOpenGracePeriod = Settings.KeepOpenGracePeriod;
+		}
+
+		if (Settings.bOverridePlacementPreset)
+		{
+			Spec.PlacementSource = EInfoCardValueSource::UseProjectSettings;
+			Spec.PlacementPreset = Settings.PlacementPreset;
+			Spec.ResolvePlacementPreset();
 		}
 
 		if (Settings.bOverrideCardPosition)
@@ -2044,7 +2055,15 @@ void UInfoCardAnchor::ShowCardAtIndex(int32 Index)
 	RuntimeStates[Index].ActiveCard = NewCard;
 	RuntimeStates[Index].ActiveCardId = InfoCards[Index].CardId;
 
-	NewCard->AddToViewport(InfoCards[Index].ZOrder);
+	// A card opened from inside another card (a submenu, a menu row's tooltip, a card in a card) always draws in front of
+	// that card, whatever Z order its entry asks for: one under the menu it came from can't be seen or used.
+	int32 ShownZOrder = InfoCards[Index].ZOrder;
+	if (const UInfoCardWidget* HostCard = UInfoCardWidget::FindContainingCard(this))
+	{
+		ShownZOrder = FMath::Max(ShownZOrder, HostCard->GetCardZOrder() + 1);
+	}
+	NewCard->SetCardZOrder(ShownZOrder);
+	NewCard->AddToViewport(ShownZOrder);
 
 	// Did it survive being constructed? If it closed itself on the way up, the
 	// slot has already been cleared by NotifyCardSelfClosed and there is

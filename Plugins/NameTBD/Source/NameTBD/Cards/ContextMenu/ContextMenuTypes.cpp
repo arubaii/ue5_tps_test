@@ -60,6 +60,8 @@ FContextMenuTooltipStyle::FContextMenuTooltipStyle()
 	Positioning.CursorPosition = EInfoCardCursorPosition::DownRight;
 	Positioning.CardOffset = FVector2D(12.f, 20.f);
 	Positioning.bAvoidOverlappingCards = true;
+	// In front of every menu (a row's tooltip is kept in front of its own menu whatever this says).
+	Positioning.ZOrder = 3000;
 }
 
 FContextMenuBindingStyle::FContextMenuBindingStyle()
@@ -169,6 +171,18 @@ FContextMenuStyle::FContextMenuStyle()
 	OpenAnimations.bUseBasicAnimations = true;
 	OpenAnimations.PlayIn.Add(Fade);
 	OpenAnimations.PlayIn.Add(Grow);
+
+	// Menus drew at 1500 before Z Order was a placement field.
+	Positioning.ZOrder = 1500;
+}
+
+const TArray<FName>& FContextMenuStyle::GetCategoryOrder()
+{
+	// What it does first (a new user's first questions: when, where), what it looks like after.
+	static const TArray<FName> Order = {
+		TEXT("Behavior"), TEXT("Placement"), TEXT("Submenu"), TEXT("Tooltips"),
+		TEXT("Panel"), TEXT("Rows"), TEXT("Text"), TEXT("Bindings"), TEXT("Icons"), TEXT("Dividers"), TEXT("Animation & Sound") };
+	return Order;
 }
 
 void FContextMenuStyle::UseDefaultFontAssets()
